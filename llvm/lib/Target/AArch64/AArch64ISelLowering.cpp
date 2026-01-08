@@ -20409,6 +20409,9 @@ tryToReplaceScalarFPConversionWithSVE(SDNode *N, SelectionDAG &DAG,
       N->getOpcode() == ISD::FP_TO_UINT_SAT)
     return SDValue();
 
+  if (Subtarget->isStreaming() && Subtarget->hasFPRCVT())
+    return SDValue();
+
   if (!Subtarget->isSVEorStreamingSVEAvailable() ||
       (!Subtarget->isStreaming() && !Subtarget->isStreamingCompatible()))
     return SDValue();
