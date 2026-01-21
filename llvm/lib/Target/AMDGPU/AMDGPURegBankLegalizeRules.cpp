@@ -134,6 +134,18 @@ bool matchUniformityAndLLT(Register Reg, UniformityLLTOpPredicateID UniID,
     return MRI.getType(Reg).getSizeInBits() == 256 && MUI.isUniform(Reg);
   case UniB512:
     return MRI.getType(Reg).getSizeInBits() == 512 && MUI.isUniform(Reg);
+  case UniBRC: {
+    if (!MUI.isUniform(Reg))
+      return false;
+    // Check if there is SGPR register class of same size as the LLT.
+    auto TRI = static_cast<const SIRegisterInfo *>(MRI.getTargetRegisterInfo());
+    // There is no 16 bit SGPR register class. Extra size check is required
+    // since getSGPRClassForBitWidth returns SReg_32RegClass for Size 16.
+    unsigned LLTSize = MRI.getType(Reg).getSizeInBits();
+    if (LLTSize >= 32 && TRI->getSGPRClassForBitWidth(LLTSize))
+      return true;
+    return false;
+  }
   case DivS1:
     return MRI.getType(Reg) == LLT::scalar(1) && MUI.isDivergent(Reg);
   case DivS16:
@@ -176,6 +188,15 @@ bool matchUniformityAndLLT(Register Reg, UniformityLLTOpPredicateID UniID,
     return MRI.getType(Reg).getSizeInBits() == 256 && MUI.isDivergent(Reg);
   case DivB512:
     return MRI.getType(Reg).getSizeInBits() == 512 && MUI.isDivergent(Reg);
+  case DivBRC: {
+    if (!MUI.isDivergent(Reg))
+      return false;
+    // Check if there is VGPR register class of same size as the LLT.
+    auto TRI = static_cast<const SIRegisterInfo *>(MRI.getTargetRegisterInfo());
+    if (TRI->getSGPRClassForBitWidth(MRI.getType(Reg).getSizeInBits()))
+      return true;
+    return false;
+  }
   case _:
     return true;
   default:
@@ -596,6 +617,11 @@ RegBankLegalizeRules::RegBankLegalizeRules(const GCNSubtarget &_ST,
   addRulesForGOpcs({G_CONSTANT})
       .Any({{UniS1, _}, {{Sgpr32Trunc}, {None}, UniCstExt}});
   addRulesForGOpcs({G_FREEZE}).Any({{DivS1}, {{Vcc}, {Vcc}}});
+
+  addRulesForGOpcs({G_UNMERGE_VALUES})
+      .Any({{UniS16}, {{}, {}, UnmergeToShiftTrunc}})
+      .Any({{UniBRC}, {{}, {}, VerifyAllSgpr}})
+      .Any({{DivBRC}, {{}, {}, ApplyAllVgpr}});
 
   Predicate isSignedICmp([](const MachineInstr &MI) -> bool {
     auto Pred =
