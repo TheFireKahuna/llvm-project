@@ -2548,7 +2548,7 @@ bool SIInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     }
     break;
 
-  case AMDGPU::V_MAX_BF16_PSEUDO_e64:
+  case AMDGPU::V_MAX_BF16_PSEUDO_e64: {
     assert(ST.hasBF16PackedInsts());
     MI.setDesc(get(AMDGPU::V_PK_MAX_NUM_BF16));
     MI.addOperand(MachineOperand::CreateImm(0)); // op_sel
@@ -2558,6 +2558,12 @@ bool SIInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     Op0->setImm(Op0->getImm() | SISrcMods::OP_SEL_1);
     auto Op1 = getNamedOperand(MI, AMDGPU::OpName::src1_modifiers);
     Op1->setImm(Op1->getImm() | SISrcMods::OP_SEL_1);
+    break;
+  }
+
+  case AMDGPU::V_READANYLANE_B32:
+    MI.setDesc(get(AMDGPU::V_READFIRSTLANE_B32));
+    MI.setFlag(MachineInstr::NoConvergent);
     break;
   }
 
@@ -4604,7 +4610,8 @@ bool SIInstrInfo::hasUnwantedEffectsWhenEXECEmpty(const MachineInstr &MI) const 
   // However, executing them with EXEC = 0 causes them to operate on undefined
   // data, which we avoid by returning true here.
   if (Opcode == AMDGPU::V_READFIRSTLANE_B32 ||
-      Opcode == AMDGPU::V_READLANE_B32 || Opcode == AMDGPU::V_WRITELANE_B32 ||
+      Opcode == AMDGPU::V_READANYLANE_B32 || Opcode == AMDGPU::V_READLANE_B32 ||
+      Opcode == AMDGPU::V_WRITELANE_B32 ||
       Opcode == AMDGPU::SI_RESTORE_S32_FROM_VGPR ||
       Opcode == AMDGPU::SI_SPILL_S32_TO_VGPR)
     return true;
@@ -10687,6 +10694,7 @@ SIInstrInfo::getInstructionUniformity(const MachineInstr &MI) const {
   unsigned opcode = MI.getOpcode();
   if (opcode == AMDGPU::V_READLANE_B32 ||
       opcode == AMDGPU::V_READFIRSTLANE_B32 ||
+      opcode == AMDGPU::V_READANYLANE_B32 ||
       opcode == AMDGPU::SI_RESTORE_S32_FROM_VGPR)
     return InstructionUniformity::AlwaysUniform;
 

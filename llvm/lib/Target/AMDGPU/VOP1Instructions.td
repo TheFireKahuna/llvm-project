@@ -248,10 +248,26 @@ def V_READFIRSTLANE_B32 : VOP1_Pseudo <"v_readfirstlane_b32", VOP_READFIRSTLANE,
   let isConvergent = 1;
 }
 
+def V_READANYLANE_B32 : VOP1_Pseudo <"v_readfirstlane_b32", VOP_READFIRSTLANE,
+                                     [], 1>;
+
 foreach vt = Reg32Types.types in {
   def : GCNPat<(vt (int_amdgcn_readfirstlane (vt VRegOrLdsSrc_32:$src0))),
         (V_READFIRSTLANE_B32 (vt VRegOrLdsSrc_32:$src0))
   >;
+}
+
+class UniformUnaryIntrArgFrag<SDPatternOperator Op> : PatFrag<
+  (ops node:$src0),
+  (Op $src0),
+  [{ return !N->getOperand(1)->isDivergent(); }]> {
+}
+
+foreach vt = Reg32Types.types in {
+  def : GCNPat<(vt (UniformUnaryIntrArgFrag<int_amdgcn_readfirstlane> (vt VRegOrLdsSrc_32:$src0))),
+        (V_READANYLANE_B32 (vt VRegOrLdsSrc_32:$src0))> {
+    let AddedComplexity = 1;
+  }
 }
 
 let HasOMod = 0, HasClamp = 0 in {

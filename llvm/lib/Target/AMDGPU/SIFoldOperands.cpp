@@ -1431,9 +1431,10 @@ void SIFoldOperandsImpl::foldOperand(
 
     unsigned UseOpc = UseMI->getOpcode();
     if (UseOpc == AMDGPU::V_READFIRSTLANE_B32 ||
+        UseOpc == AMDGPU::V_READANYLANE_B32 ||
         (UseOpc == AMDGPU::V_READLANE_B32 &&
          (int)UseOpIdx ==
-         AMDGPU::getNamedOperandIdx(UseOpc, AMDGPU::OpName::src0))) {
+             AMDGPU::getNamedOperandIdx(UseOpc, AMDGPU::OpName::src0))) {
       // %vgpr = V_MOV_B32 imm
       // %sgpr = V_READFIRSTLANE_B32 %vgpr
       // =>
