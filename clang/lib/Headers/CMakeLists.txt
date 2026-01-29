@@ -304,6 +304,7 @@ set(windows_only_files
   intrin0.h
   intrin.h
   vadefs.h
+  vcruntime_new.h
   yvals_core.h
 )
 
