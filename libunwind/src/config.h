@@ -135,7 +135,11 @@
 #ifndef _LIBUNWIND_REMEMBER_HEAP_ALLOC
 #if defined(_LIBUNWIND_REMEMBER_STACK_ALLOC) || defined(__APPLE__) ||          \
     defined(__linux__) || defined(__ANDROID__) || defined(__MINGW32__) ||      \
-    defined(_LIBUNWIND_IS_BAREMETAL)
+    defined(_LIBUNWIND_IS_BAREMETAL) ||                                        \
+    (defined(_WIN32) && defined(__USING_SJLJ_EXCEPTIONS__))
+// Use __builtin_alloca on platforms that support it safely. On Windows with
+// SJLJ exceptions, _malloca/_freea require SEH for stack overflow protection,
+// so SJLJ builds (e.g., Windows Itanium) must use __builtin_alloca instead.
 #define _LIBUNWIND_REMEMBER_ALLOC(_size) __builtin_alloca(_size)
 #define _LIBUNWIND_REMEMBER_FREE(_ptr)                                         \
   do {                                                                         \
