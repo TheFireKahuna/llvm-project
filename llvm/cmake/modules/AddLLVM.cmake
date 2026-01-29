@@ -283,8 +283,15 @@ function(add_link_opts target_name)
         set_property(TARGET ${target_name} APPEND_STRING PROPERTY
                       LINK_FLAGS " -Wl,--lto-O0")
       elseif(LINKER_IS_LLD_LINK)
-        set_property(TARGET ${target_name} APPEND_STRING PROPERTY
-                      LINK_FLAGS " /opt:lldlto=0")
+        # MSVC and clang-cl pass /flag directly to linker, but GNU-style drivers
+        # (like clang++ targeting Windows Itanium) need -Xlinker prefix.
+        if(MSVC OR CLANG_CL)
+          set_property(TARGET ${target_name} APPEND_STRING PROPERTY
+                        LINK_FLAGS " /opt:lldlto=0")
+        else()
+          set_property(TARGET ${target_name} APPEND_STRING PROPERTY
+                        LINK_FLAGS " -Xlinker /opt:lldlto=0")
+        endif()
       elseif(APPLE AND NOT uppercase_LLVM_ENABLE_LTO STREQUAL "THIN")
         set_property(TARGET ${target_name} APPEND_STRING PROPERTY
                       LINK_FLAGS " -Wl,-mllvm,-O0")
@@ -308,7 +315,7 @@ function(add_link_opts target_name)
           set_property(TARGET ${target_name} APPEND_STRING PROPERTY
                        LINK_FLAGS " -Wl,-z,discard-unused=sections")
         endif()
-      elseif(NOT MSVC AND NOT CMAKE_SYSTEM_NAME MATCHES "AIX|OS390")
+      elseif(NOT MSVC AND NOT CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC" AND NOT CMAKE_SYSTEM_NAME MATCHES "AIX|OS390")
         # TODO Revisit this later on z/OS.
         set_property(TARGET ${target_name} APPEND_STRING PROPERTY
                      LINK_FLAGS " -Wl,--gc-sections")
@@ -1750,8 +1757,15 @@ function(set_unittest_link_flags target_name)
                       LINK_FLAGS " -Wl,--lto-O0")
       endif()
     elseif(LINKER_IS_LLD_LINK)
-      set_property(TARGET ${target_name} APPEND_STRING PROPERTY
-                    LINK_FLAGS " /opt:lldlto=0")
+      # MSVC and clang-cl pass /flag directly to linker, but GNU-style drivers
+      # (like clang++ targeting Windows Itanium) need -Xlinker prefix.
+      if(MSVC OR CLANG_CL)
+        set_property(TARGET ${target_name} APPEND_STRING PROPERTY
+                      LINK_FLAGS " /opt:lldlto=0")
+      else()
+        set_property(TARGET ${target_name} APPEND_STRING PROPERTY
+                      LINK_FLAGS " -Xlinker /opt:lldlto=0")
+      endif()
     elseif(APPLE AND NOT uppercase_LLVM_ENABLE_LTO STREQUAL "THIN")
       set_property(TARGET ${target_name} APPEND_STRING PROPERTY
                     LINK_FLAGS " -Wl,-mllvm,-O0")

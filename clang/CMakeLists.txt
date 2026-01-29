@@ -646,6 +646,12 @@ if (CLANG_ENABLE_BOOTSTRAP)
       set(LTO_LIBRARY -DDARWIN_LTO_LIBRARY=${LLVM_SHLIB_OUTPUT_INTDIR}/libLTO.dylib
         -DDYLD_LIBRARY_PATH=${LLVM_LIBRARY_OUTPUT_INTDIR})
       set(${CLANG_STAGE}_LIBTOOL -DCMAKE_LIBTOOL=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-libtool-darwin)
+    elseif(BOOTSTRAP_LLVM_HOST_TRIPLE MATCHES ".*-windows-itanium.*"
+           OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+      # Windows Itanium or GNU-style clang simulating MSVC: use llvm-ar
+      add_dependencies(clang-bootstrap-deps llvm-ar llvm-ranlib)
+      set(${CLANG_STAGE}_AR -DCMAKE_AR=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-ar)
+      set(${CLANG_STAGE}_RANLIB -DCMAKE_RANLIB=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-ranlib)
     elseif(MSVC)
       add_dependencies(clang-bootstrap-deps llvm-lib)
       set(${CLANG_STAGE}_AR -DCMAKE_AR=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-lib)
@@ -714,8 +720,16 @@ if (CLANG_ENABLE_BOOTSTRAP)
   set(C_COMPILER "clang")
   set(CXX_COMPILER "clang++")
   if(WIN32)
-    set(C_COMPILER "clang-cl.exe")
-    set(CXX_COMPILER "clang-cl.exe")
+    if(LLVM_HOST_TRIPLE MATCHES "windows-itanium"
+            OR BOOTSTRAP_LLVM_HOST_TRIPLE MATCHES "windows-itanium")
+      # Windows Itanium uses GNU-style driver with .exe extension
+      set(C_COMPILER "clang.exe")
+      set(CXX_COMPILER "clang++.exe")
+    else()
+      # All other Windows targets use the MSVC-style driver
+      set(C_COMPILER "clang-cl.exe")
+      set(CXX_COMPILER "clang-cl.exe")
+    endif()
   endif()
 
   set(COMPILER_OPTIONS
@@ -857,6 +871,21 @@ if (CLANG_ENABLE_BOOTSTRAP)
     USES_TERMINAL_INSTALL 1
     LIST_SEPARATOR |
     )
+
+  # Windows Itanium bootstrap: copy runtime DLLs to stage2 bin directory.
+  # Stage2 builds WI binaries that need c++.dll and unwind.dll at runtime.
+  # These must be in the stage2 bin directory for tablegen etc. to run.
+  if(WIN32 AND BOOTSTRAP_LLVM_HOST_TRIPLE MATCHES ".*-windows-itanium.*")
+    ExternalProject_Add_Step(${NEXT_CLANG_STAGE} copy-runtime-dlls
+      COMMAND ${CMAKE_COMMAND} -E make_directory <BINARY_DIR>/bin
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${LLVM_RUNTIME_OUTPUT_INTDIR}/c++.dll <BINARY_DIR>/bin/
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${LLVM_RUNTIME_OUTPUT_INTDIR}/unwind.dll <BINARY_DIR>/bin/
+      DEPENDERS configure
+      COMMENT "Copying Windows Itanium runtime DLLs to ${NEXT_CLANG_STAGE}"
+    )
+  endif()
 
   # exclude really-install from main target
   set_target_properties(${NEXT_CLANG_STAGE} PROPERTIES _EP_really-install_EXCLUDE_FROM_MAIN On)

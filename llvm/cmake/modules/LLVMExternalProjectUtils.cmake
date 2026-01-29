@@ -36,6 +36,15 @@ function(is_msvc_triple out_var triple)
   endif()
 endfunction()
 
+# is_itanium_triple(out_var triple)
+#   Checks whether the passed triple refers to an Itanium MSVC-like environment
+function(is_itanium_triple out_var triple)
+  if (triple MATCHES ".*-windows-itanium.*")
+    set(${out_var} TRUE PARENT_SCOPE)
+  else()
+    set(${out_var} FALSE PARENT_SCOPE)
+  endif()
+endfunction()
 
 # llvm_ExternalProject_Add(name source_dir ...
 #   ENABLE_FORTRAN
@@ -92,6 +101,7 @@ function(llvm_ExternalProject_Add name source_dir)
   endif()
 
   is_msvc_triple(is_msvc_target "${target_triple}")
+  is_itanium_triple(is_itanium_target "${target_triple}")
 
   if(NOT ARG_TOOLCHAIN_TOOLS)
     set(ARG_TOOLCHAIN_TOOLS clang)
@@ -238,7 +248,7 @@ function(llvm_ExternalProject_Add name source_dir)
       list(APPEND compiler_args -DCMAKE_Fortran_COMPILER=${LLVM_RUNTIME_OUTPUT_INTDIR}/flang${CMAKE_EXECUTABLE_SUFFIX})
     endif()
     if(lld IN_LIST TOOLCHAIN_TOOLS)
-      if(is_msvc_target)
+      if(is_msvc_target OR is_itanium_target)
         list(APPEND compiler_args -DCMAKE_LINKER=${LLVM_RUNTIME_OUTPUT_INTDIR}/lld-link${CMAKE_EXECUTABLE_SUFFIX})
       elseif(NOT _cmake_system_name STREQUAL Darwin)
         list(APPEND compiler_args -DCMAKE_LINKER=${LLVM_RUNTIME_OUTPUT_INTDIR}/ld.lld${CMAKE_EXECUTABLE_SUFFIX})

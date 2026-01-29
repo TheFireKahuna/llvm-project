@@ -219,7 +219,9 @@ set(LLVM_TARGET_TRIPLE "${LLVM_DEFAULT_TARGET_TRIPLE}")
 
 if(CMAKE_C_COMPILER_ID MATCHES "Clang")
   set(option_prefix "")
-  if (CMAKE_C_SIMULATE_ID MATCHES "MSVC")
+  # Only use /clang: prefix for clang-cl (MSVC frontend variant).
+  # Regular clang.exe targeting MSVC has SIMULATE_ID=MSVC but uses GNU-style CLI.
+  if (CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
     set(option_prefix "/clang:")
   endif()
   set(print_target_triple ${CMAKE_C_COMPILER} ${option_prefix}--target=${LLVM_DEFAULT_TARGET_TRIPLE} ${option_prefix}-print-target-triple)
