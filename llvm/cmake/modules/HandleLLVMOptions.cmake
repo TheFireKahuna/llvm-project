@@ -23,7 +23,7 @@ else()
   set(LINKER_IS_LLD FALSE)
 endif()
 
-if(CMAKE_LINKER MATCHES "lld-link" OR (MSVC AND (LLVM_USE_LINKER STREQUAL "lld" OR LLVM_ENABLE_LLD)))
+if(CMAKE_LINKER MATCHES "lld-link" OR ((MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC") AND (LLVM_USE_LINKER STREQUAL "lld" OR LLVM_ENABLE_LLD)))
   set(LINKER_IS_LLD_LINK TRUE)
 else()
   set(LINKER_IS_LLD_LINK FALSE)
@@ -398,10 +398,10 @@ if( LLVM_ENABLE_LLD )
     message(FATAL_ERROR "LLVM_ENABLE_LLD and LLVM_USE_LINKER can't be set at the same time")
   endif()
 
-  # In case of MSVC cmake always invokes the linker directly, so the linker
+  # In case of MSVC-like compilers, cmake always invokes the linker directly, so the linker
   # should be specified by CMAKE_LINKER cmake variable instead of by -fuse-ld
   # compiler option.
-  if ( MSVC )
+  if(MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
     if(NOT CMAKE_LINKER MATCHES "lld-link")
       get_filename_component(CXX_COMPILER_DIR ${CMAKE_CXX_COMPILER} DIRECTORY)
       get_filename_component(C_COMPILER_DIR ${CMAKE_C_COMPILER} DIRECTORY)
@@ -571,11 +571,10 @@ endif()
 
 option(LLVM_ENABLE_WARNINGS "Enable compiler warnings." ON)
 
-if( MSVC )
-
-  # Add definitions that make MSVC much less annoying.
+# Suppress deprecation warnings from Windows SDK headers. Any compiler
+# targeting native Windows (not MinGW/Cygwin) uses these headers.
+if(MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
   add_compile_definitions(
-    # For some reason MS wants to deprecate a bunch of standard functions...
     _CRT_SECURE_NO_DEPRECATE
     _CRT_SECURE_NO_WARNINGS
     _CRT_NONSTDC_NO_DEPRECATE
@@ -584,111 +583,113 @@ if( MSVC )
     _SCL_SECURE_NO_WARNINGS
     )
 
-  # Tell MSVC to use the Unicode version of the Win32 APIs instead of ANSI.
-  add_compile_definitions(
-    UNICODE
-    _UNICODE
-  )
+  if(MSVC)
+    # Tell MSVC to use the Unicode version of the Win32 APIs instead of ANSI.
+    add_compile_definitions(
+      UNICODE
+      _UNICODE
+    )
 
-  if (LLVM_WINSYSROOT)
-    if (NOT CLANG_CL)
-      message(ERROR "LLVM_WINSYSROOT requires clang-cl")
+    if (LLVM_WINSYSROOT)
+      if (NOT CLANG_CL)
+        message(ERROR "LLVM_WINSYSROOT requires clang-cl")
+      endif()
+      append("/winsysroot${LLVM_WINSYSROOT}" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
+      if (LINKER_IS_LLD_LINK)
+        append("/winsysroot:${LLVM_WINSYSROOT}"
+            CMAKE_EXE_LINKER_FLAGS CMAKE_MODULE_LINKER_FLAGS
+            CMAKE_SHARED_LINKER_FLAGS)
+      endif()
     endif()
-    append("/winsysroot${LLVM_WINSYSROOT}" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
-    if (LINKER_IS_LLD_LINK)
-      append("/winsysroot:${LLVM_WINSYSROOT}"
-          CMAKE_EXE_LINKER_FLAGS CMAKE_MODULE_LINKER_FLAGS
-          CMAKE_SHARED_LINKER_FLAGS)
+
+    if (LLVM_ENABLE_WERROR)
+      append("/WX" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
+    endif (LLVM_ENABLE_WERROR)
+
+    append("/Zc:inline" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
+
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+      # Enable standards-conforming preprocessor.
+      # https://learn.microsoft.com/en-us/cpp/build/reference/zc-preprocessor
+      append("/Zc:preprocessor" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
+    endif ()
+
+    # Some projects use the __cplusplus preprocessor macro to check support for
+    # a particular version of the C++ standard. When this option is not specified
+    # explicitly, macro's value is "199711L" that implies C++98 Standard.
+    # https://devblogs.microsoft.com/cppblog/msvc-now-correctly-reports-__cplusplus/
+    append("/Zc:__cplusplus" CMAKE_CXX_FLAGS)
+
+    # Allow users to request PDBs in release mode. CMake offeres the
+    # RelWithDebInfo configuration, but it uses different optimization settings
+    # (/Ob1 vs /Ob2 or -O2 vs -O3). LLVM provides this flag so that users can get
+    # PDBs without changing codegen.
+    option(LLVM_ENABLE_PDB OFF)
+    if (LLVM_ENABLE_PDB AND uppercase_CMAKE_BUILD_TYPE STREQUAL "RELEASE")
+      append("/Zi" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
+      # /DEBUG disables linker GC and ICF, but we want those in Release mode.
+      append("/DEBUG /OPT:REF /OPT:ICF"
+            CMAKE_EXE_LINKER_FLAGS CMAKE_MODULE_LINKER_FLAGS
+            CMAKE_SHARED_LINKER_FLAGS)
     endif()
-  endif()
 
-  if (LLVM_ENABLE_WERROR)
-    append("/WX" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
-  endif (LLVM_ENABLE_WERROR)
+    # Get all linker flags in upper case form so we can search them.
+    string(CONCAT all_linker_flags_uppercase
+      ${CMAKE_EXE_LINKER_FLAGS_${uppercase_CMAKE_BUILD_TYPE}} " "
+      ${CMAKE_EXE_LINKER_FLAGS} " "
+      ${CMAKE_MODULE_LINKER_FLAGS_${uppercase_CMAKE_BUILD_TYPE}} " "
+      ${CMAKE_MODULE_LINKER_FLAGS} " "
+      ${CMAKE_SHARED_LINKER_FLAGS_${uppercase_CMAKE_BUILD_TYPE}} " "
+      ${CMAKE_SHARED_LINKER_FLAGS})
+    string(TOUPPER "${all_linker_flags_uppercase}" all_linker_flags_uppercase)
 
-  append("/Zc:inline" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
-
-  if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
-    # Enable standards-conforming preprocessor.
-    # https://learn.microsoft.com/en-us/cpp/build/reference/zc-preprocessor
-    append("/Zc:preprocessor" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
-  endif ()
-
-  # Some projects use the __cplusplus preprocessor macro to check support for
-  # a particular version of the C++ standard. When this option is not specified
-  # explicitly, macro's value is "199711L" that implies C++98 Standard.
-  # https://devblogs.microsoft.com/cppblog/msvc-now-correctly-reports-__cplusplus/
-  append("/Zc:__cplusplus" CMAKE_CXX_FLAGS)
-
-  # Allow users to request PDBs in release mode. CMake offeres the
-  # RelWithDebInfo configuration, but it uses different optimization settings
-  # (/Ob1 vs /Ob2 or -O2 vs -O3). LLVM provides this flag so that users can get
-  # PDBs without changing codegen.
-  option(LLVM_ENABLE_PDB OFF)
-  if (LLVM_ENABLE_PDB AND uppercase_CMAKE_BUILD_TYPE STREQUAL "RELEASE")
-    append("/Zi" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
-    # /DEBUG disables linker GC and ICF, but we want those in Release mode.
-    append("/DEBUG /OPT:REF /OPT:ICF"
-          CMAKE_EXE_LINKER_FLAGS CMAKE_MODULE_LINKER_FLAGS
-          CMAKE_SHARED_LINKER_FLAGS)
-  endif()
-
-  # Get all linker flags in upper case form so we can search them.
-  string(CONCAT all_linker_flags_uppercase
-     ${CMAKE_EXE_LINKER_FLAGS_${uppercase_CMAKE_BUILD_TYPE}} " "
-     ${CMAKE_EXE_LINKER_FLAGS} " "
-     ${CMAKE_MODULE_LINKER_FLAGS_${uppercase_CMAKE_BUILD_TYPE}} " "
-     ${CMAKE_MODULE_LINKER_FLAGS} " "
-     ${CMAKE_SHARED_LINKER_FLAGS_${uppercase_CMAKE_BUILD_TYPE}} " "
-     ${CMAKE_SHARED_LINKER_FLAGS})
-  string(TOUPPER "${all_linker_flags_uppercase}" all_linker_flags_uppercase)
-
-  if (CLANG_CL AND LINKER_IS_LLD)
-    # If we are using clang-cl with lld-link and /debug is present in any of the
-    # linker flag variables, pass -gcodeview-ghash to the compiler to speed up
-    # linking. This flag is orthogonal from /Zi, /Z7, and other flags that
-    # enable debug info emission, and only has an effect if those are also in
-    # use.
-    string(FIND "${all_linker_flags_uppercase}" "/DEBUG" linker_flag_idx)
-    if (${linker_flag_idx} GREATER -1)
-      add_flag_if_supported("-gcodeview-ghash" GCODEVIEW_GHASH)
+    if (CLANG_CL AND LINKER_IS_LLD)
+      # If we are using clang-cl with lld-link and /debug is present in any of the
+      # linker flag variables, pass -gcodeview-ghash to the compiler to speed up
+      # linking. This flag is orthogonal from /Zi, /Z7, and other flags that
+      # enable debug info emission, and only has an effect if those are also in
+      # use.
+      string(FIND "${all_linker_flags_uppercase}" "/DEBUG" linker_flag_idx)
+      if (${linker_flag_idx} GREATER -1)
+        add_flag_if_supported("-gcodeview-ghash" GCODEVIEW_GHASH)
+      endif()
     endif()
-  endif()
 
-  # "Generate Intrinsic Functions".
-  append("/Oi" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
+    # "Generate Intrinsic Functions".
+    append("/Oi" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
 
-  if (CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT LLVM_ENABLE_LTO)
-    # clang-cl and cl by default produce non-deterministic binaries because
-    # link.exe /incremental requires a timestamp in the .obj file.  clang-cl
-    # has the flag /Brepro to force deterministic binaries. We want to pass that
-    # whenever you're building with clang unless you're passing /incremental
-    # or using LTO (/Brepro with LTO would result in a warning about the flag
-    # being unused, because we're not generating object files).
-    # This checks CMAKE_CXX_COMPILER_ID in addition to check_cxx_compiler_flag()
-    # because cl.exe does not emit an error on flags it doesn't understand,
-    # letting check_cxx_compiler_flag() claim it understands all flags.
+    if (CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT LLVM_ENABLE_LTO)
+      # clang-cl and cl by default produce non-deterministic binaries because
+      # link.exe /incremental requires a timestamp in the .obj file.  clang-cl
+      # has the flag /Brepro to force deterministic binaries. We want to pass that
+      # whenever you're building with clang unless you're passing /incremental
+      # or using LTO (/Brepro with LTO would result in a warning about the flag
+      # being unused, because we're not generating object files).
+      # This checks CMAKE_CXX_COMPILER_ID in addition to check_cxx_compiler_flag()
+      # because cl.exe does not emit an error on flags it doesn't understand,
+      # letting check_cxx_compiler_flag() claim it understands all flags.
 
-    # Check if /INCREMENTAL is passed to the linker and complain that it
-    # won't work with /Brepro.
-    has_msvc_incremental_no_flag("${CMAKE_EXE_LINKER_FLAGS_${uppercase_CMAKE_BUILD_TYPE}} ${CMAKE_EXE_LINKER_FLAGS}" NO_INCR_EXE)
-    has_msvc_incremental_no_flag("${CMAKE_MODULE_LINKER_FLAGS_${uppercase_CMAKE_BUILD_TYPE}} ${CMAKE_MODULE_LINKER_FLAGS}" NO_INCR_MODULE)
-    has_msvc_incremental_no_flag("${CMAKE_SHARED_LINKER_FLAGS_${uppercase_CMAKE_BUILD_TYPE}} ${CMAKE_SHARED_LINKER_FLAGS}" NO_INCR_SHARED)
-    if (NO_INCR_EXE AND NO_INCR_MODULE AND NO_INCR_SHARED)
-      append("/Brepro" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
-    else()
-      message(WARNING "/Brepro not compatible with /INCREMENTAL linking - builds will be non-deterministic")
+      # Check if /INCREMENTAL is passed to the linker and complain that it
+      # won't work with /Brepro.
+      has_msvc_incremental_no_flag("${CMAKE_EXE_LINKER_FLAGS_${uppercase_CMAKE_BUILD_TYPE}} ${CMAKE_EXE_LINKER_FLAGS}" NO_INCR_EXE)
+      has_msvc_incremental_no_flag("${CMAKE_MODULE_LINKER_FLAGS_${uppercase_CMAKE_BUILD_TYPE}} ${CMAKE_MODULE_LINKER_FLAGS}" NO_INCR_MODULE)
+      has_msvc_incremental_no_flag("${CMAKE_SHARED_LINKER_FLAGS_${uppercase_CMAKE_BUILD_TYPE}} ${CMAKE_SHARED_LINKER_FLAGS}" NO_INCR_SHARED)
+      if (NO_INCR_EXE AND NO_INCR_MODULE AND NO_INCR_SHARED)
+        append("/Brepro" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
+      else()
+        message(WARNING "/Brepro not compatible with /INCREMENTAL linking - builds will be non-deterministic")
+      endif()
     endif()
-  endif()
-  # By default MSVC has a 2^16 limit on the number of sections in an object file,
-  # but in many objects files need more than that. This flag is to increase the
-  # number of sections.
-  append("/bigobj" CMAKE_CXX_FLAGS)
+    # By default MSVC has a 2^16 limit on the number of sections in an object file,
+    # but in many objects files need more than that. This flag is to increase the
+    # number of sections.
+    append("/bigobj" CMAKE_CXX_FLAGS)
 
-  # Enable standards conformance mode.
-  # This ensures handling of various C/C++ constructs is more similar to other compilers.
-  append("/permissive-" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
-endif( MSVC )
+    # Enable standards conformance mode.
+    # This ensures handling of various C/C++ constructs is more similar to other compilers.
+    append("/permissive-" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
+  endif()
+endif()
 
 # Warnings-as-errors handling for GCC-compatible compilers:
 if ( LLVM_COMPILER_IS_GCC_COMPATIBLE )
@@ -1338,8 +1339,15 @@ if(uppercase_LLVM_ENABLE_LTO STREQUAL "THIN")
     append("-Wl,--plugin-opt,cache-dir=${LLVM_THINLTO_CACHE_PATH}"
            CMAKE_EXE_LINKER_FLAGS CMAKE_SHARED_LINKER_FLAGS)
   elseif(LINKER_IS_LLD_LINK)
-    append("/lldltocache:${LLVM_THINLTO_CACHE_PATH}"
-           CMAKE_EXE_LINKER_FLAGS CMAKE_SHARED_LINKER_FLAGS)
+    # MSVC and clang-cl pass /flag directly to linker, but GNU-style drivers
+    # (like clang++ targeting Windows Itanium) need -Xlinker prefix.
+    if(MSVC OR CLANG_CL)
+      append("/lldltocache:${LLVM_THINLTO_CACHE_PATH}"
+             CMAKE_EXE_LINKER_FLAGS CMAKE_SHARED_LINKER_FLAGS)
+    else()
+      append("-Xlinker /lldltocache:${LLVM_THINLTO_CACHE_PATH}"
+             CMAKE_EXE_LINKER_FLAGS CMAKE_SHARED_LINKER_FLAGS)
+    endif()
   endif()
 elseif(uppercase_LLVM_ENABLE_LTO STREQUAL "FULL")
   append("-flto=full" CMAKE_CXX_FLAGS CMAKE_C_FLAGS)
