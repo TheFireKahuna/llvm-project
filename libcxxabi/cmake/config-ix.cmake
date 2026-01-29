@@ -81,6 +81,15 @@ if (NOT CXX_SUPPORTS_NOSTDLIBXX_FLAG AND C_SUPPORTS_NODEFAULTLIBS_FLAG)
                         shell32 user32 kernel32 mingw32 ${MINGW_RUNTIME}
                         moldname mingwex msvcrt)
     list(APPEND CMAKE_REQUIRED_LIBRARIES ${MINGW_LIBRARIES})
+  elseif (WIN32 AND NOT MSVC AND CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+    # MSVC-simulating compilers (e.g., clang --target=x86_64-windows-itanium)
+    # need mem* functions but can't use vcruntime.lib as it contains MSVC C++
+    # ABI symbols that conflict with Itanium ABI. Import mem* from ucrtbase.dll.
+    include(HandleUCRTMemoryFunctions)
+    generate_ucrt_memory_import_library(LIBCXXABI_UCRT_MEMORY_LIB)
+    if (LIBCXXABI_UCRT_MEMORY_LIB)
+      list(APPEND CMAKE_REQUIRED_LIBRARIES "${LIBCXXABI_UCRT_MEMORY_LIB}")
+    endif()
   endif()
 endif()
 

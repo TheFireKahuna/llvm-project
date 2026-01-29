@@ -17,6 +17,11 @@ if(COMPILER_RT_BUILD_BUILTINS)
   add_subdirectory(builtins)
 endif()
 
+# CRT startup libraries for Windows targets that don't use msvcrt
+if(COMPILER_RT_BUILD_CRT AND WIN32)
+  add_subdirectory(crt)
+endif()
+
 function(compiler_rt_build_runtime runtime)
   string(TOUPPER ${runtime} runtime_uppercase)
   if(COMPILER_RT_HAS_${runtime_uppercase})

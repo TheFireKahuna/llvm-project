@@ -91,6 +91,17 @@ add_link_flags_if(CXX_SUPPORTS_UNWINDLIB_EQ_NONE_FLAG --unwindlib=none)
 # MINGW_LIBRARIES is defined in config-ix.cmake
 add_library_flags_if(MINGW "${MINGW_LIBRARIES}")
 
+# MSVC-simulating compilers (e.g., clang --target=x86_64-windows-itanium)
+# need mem* functions but can't use vcruntime.lib as it contains MSVC C++
+# ABI symbols that conflict with Itanium ABI. Import mem* from ucrtbase.dll.
+if (WIN32 AND NOT MSVC AND CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+  include(HandleUCRTMemoryFunctions)
+  generate_ucrt_memory_import_library(LIBUNWIND_UCRT_MEMORY_LIB)
+  if (LIBUNWIND_UCRT_MEMORY_LIB)
+    add_library_flags("${LIBUNWIND_UCRT_MEMORY_LIB}")
+  endif()
+endif()
+
 if (LIBUNWIND_ENABLE_SHARED AND
     NOT (CXX_SUPPORTS_FNO_EXCEPTIONS_FLAG AND
          CXX_SUPPORTS_FUNWIND_TABLES_FLAG))
