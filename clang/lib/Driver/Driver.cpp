@@ -51,6 +51,7 @@
 #include "ToolChains/UEFI.h"
 #include "ToolChains/VEToolchain.h"
 #include "ToolChains/WebAssembly.h"
+#include "ToolChains/WindowsItanium.h"
 #include "ToolChains/XCore.h"
 #include "ToolChains/ZOS.h"
 #include "clang/Basic/DiagnosticDriver.h"
@@ -6927,8 +6928,8 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
         TC = std::make_unique<toolchains::Cygwin>(*this, Target, Args);
         break;
       case llvm::Triple::Itanium:
-        TC = std::make_unique<toolchains::CrossWindowsToolChain>(*this, Target,
-                                                                  Args);
+        TC = std::make_unique<toolchains::WindowsItaniumToolChain>(*this, Target,
+                                                                   Args);
         break;
       case llvm::Triple::MSVC:
       case llvm::Triple::UnknownEnvironment:
