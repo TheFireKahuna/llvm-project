@@ -39,6 +39,16 @@ if (MSVC)
                       "targets must use the MS C++ ABI, and libc++abi provides the Itanium C++ ABI.")
 endif()
 
+# Detect clang-cl (Clang with MSVC-style command line interface).
+# This is different from Clang targeting Windows Itanium which uses GNU-style CLI
+# but still simulates MSVC for header compatibility.
+if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" AND
+   "${CMAKE_CXX_SIMULATE_ID}" STREQUAL "MSVC" AND
+   "${CMAKE_CXX_COMPILER_FRONTEND_VARIANT}" STREQUAL "MSVC")
+  message(STATUS "Configuring for clang-cl")
+  set(LIBCXXABI_TARGETING_CLANG_CL ON)
+endif()
+
 #===============================================================================
 # Setup CMake Options
 #===============================================================================
@@ -148,7 +158,7 @@ option(LIBCXXABI_HERMETIC_STATIC_LIBRARY
 
 if(MINGW)
   set(LIBCXXABI_DEFAULT_TEST_CONFIG "llvm-libc++abi-mingw.cfg.in")
-elseif(WIN32) # clang-cl
+elseif(LIBCXXABI_TARGETING_CLANG_CL)
   if (LIBCXXABI_ENABLE_SHARED)
     set(LIBCXXABI_DEFAULT_TEST_CONFIG "llvm-libc++abi-shared-clangcl.cfg.in")
   else()
@@ -434,7 +444,7 @@ if (LIBCXXABI_HAS_EXTERNAL_THREAD_API)
   add_definitions(-D_LIBCPP_HAS_THREAD_API_EXTERNAL)
 endif()
 
-if (MSVC)
+if (MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
   add_definitions(-D_CRT_SECURE_NO_WARNINGS)
 endif()
 
