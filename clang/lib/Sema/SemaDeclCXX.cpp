@@ -6573,6 +6573,13 @@ void Sema::checkClassLevelDLLAttribute(CXXRecordDecl *Class) {
 
   TemplateSpecializationKind TSK = Class->getTemplateSpecializationKind();
 
+  // For explicit instantiation declarations/definitions, check if we should
+  // skip members with exclude_from_explicit_instantiation attribute.
+  // These members should be instantiated locally, not imported/exported.
+  bool IsExplicitInstantiation =
+      TSK == TSK_ExplicitInstantiationDeclaration ||
+      TSK == TSK_ExplicitInstantiationDefinition;
+
   // Ignore explicit dllexport on explicit class template instantiation
   // declarations, except in MinGW mode.
   if (ClassExported && !ClassAttr->isInherited() &&
@@ -6597,6 +6604,14 @@ void Sema::checkClassLevelDLLAttribute(CXXRecordDecl *Class) {
 
     // Only methods and static fields inherit the attributes.
     if (!VD && !MD)
+      continue;
+
+    // Don't apply DLL attributes to members with exclude_from_explicit_instantiation
+    // during explicit instantiation. These members should be instantiated locally,
+    // not imported/exported from the DLL. This allows _LIBCPP_HIDE_FROM_ABI to work
+    // correctly with dllimport classes.
+    if (IsExplicitInstantiation &&
+        Member->hasAttr<ExcludeFromExplicitInstantiationAttr>())
       continue;
 
     if (MD) {
@@ -19118,7 +19133,21 @@ bool Sema::DefineUsedVTables() {
         }
       }
 
-      if (IsExplicitInstantiationDeclaration)
+      // However, if the class has a member with exclude_from_explicit_instantiation,
+      // we cannot suppress the vtable. Those excluded members will be instantiated
+      // locally and need a vtable. This is needed for _LIBCPP_HIDE_FROM_ABI to work
+      // correctly with dllimport classes.
+      bool HasExcludedMembers = false;
+      if (IsExplicitInstantiationDeclaration) {
+        for (const auto *M : Class->methods()) {
+          if (M->hasAttr<ExcludeFromExplicitInstantiationAttr>()) {
+            HasExcludedMembers = true;
+            break;
+          }
+        }
+      }
+
+      if (IsExplicitInstantiationDeclaration && !HasExcludedMembers)
         DefineVTable = false;
     }
 
