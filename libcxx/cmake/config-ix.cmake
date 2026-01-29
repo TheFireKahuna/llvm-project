@@ -6,6 +6,12 @@ include(CheckCCompilerFlag)
 include(CheckCXXCompilerFlag)
 include(CheckCSourceCompiles)
 
+# MSVC-simulating compilers and MinGW are mutually exclusive configurations.
+if(CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC" AND MINGW)
+  message(WARNING
+    "MSVC-compatible and MinGW configurations are mutually exclusive.")
+endif()
+
 # The compiler driver may be implicitly trying to link against libunwind.
 # This is normally ok (libcxx relies on an unwinder), but if libunwind is
 # built in the same cmake invocation as libcxx and we've got

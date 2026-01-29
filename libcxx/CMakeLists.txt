@@ -29,7 +29,12 @@ MACRO_ENSURE_OUT_OF_SOURCE_BUILD(
  "${PROJECT_NAME} requires an out of source build. Please create a separate
  build directory and run 'cmake /path/to/${PROJECT_NAME} [options]' there."
  )
-if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" AND "${CMAKE_CXX_SIMULATE_ID}" STREQUAL "MSVC")
+# Detect clang-cl (Clang with MSVC-style command line interface).
+# This is different from Clang targeting Windows Itanium which uses GNU-style CLI
+# but still simulates MSVC for header compatibility.
+if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" AND
+   "${CMAKE_CXX_SIMULATE_ID}" STREQUAL "MSVC" AND
+   "${CMAKE_CXX_COMPILER_FRONTEND_VARIANT}" STREQUAL "MSVC")
   message(STATUS "Configuring for clang-cl")
   set(LIBCXX_TARGETING_CLANG_CL ON)
 endif()
@@ -736,10 +741,14 @@ function(cxx_add_windows_flags target)
                                  # Don't warn on the use of "deprecated"
                                  # "insecure" functions which are standards
                                  # specified.
-                                 _CRT_SECURE_NO_WARNINGS
-                                 # Use the ISO conforming behaviour for conversion
-                                 # in printf, scanf.
+                                 _CRT_SECURE_NO_WARNINGS)
+    # Use ISO conforming behavior for printf/scanf conversions. Not enabled for
+    # Windows Itanium: incompatible with legacy_stdio_definitions.lib which
+    # provides non-inlined stdio function definitions.
+    if(MSVC OR CYGWIN)
+      target_compile_definitions(${target} PRIVATE
                                  _CRT_STDIO_ISO_WIDE_SPECIFIERS)
+    endif()
   endif()
 endfunction()
 

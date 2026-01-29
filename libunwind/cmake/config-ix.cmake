@@ -6,24 +6,34 @@ include(LLVMCheckCompilerLinkerFlag)
 include(CheckSymbolExists)
 include(CheckCSourceCompiles)
 
+# MSVC-simulating compilers and MinGW are mutually exclusive configurations.
+if(CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC" AND MINGW)
+  message(WARNING
+    "MSVC-compatible and MinGW configurations are mutually exclusive.")
+endif()
+
 # The compiler driver may be implicitly trying to link against libunwind, which
 # might not work if libunwind doesn't exist yet. Try to check if
 # --unwindlib=none is supported, and use that if possible.
 llvm_check_compiler_linker_flag(C "--unwindlib=none" CXX_SUPPORTS_UNWINDLIB_EQ_NONE_FLAG)
 
-if (HAIKU)
+# MSVC and MSVC-compatible compilers use MS VCRT, not libc/libgcc.
+if(MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+  set(LIBUNWIND_HAS_C_LIB NO)
+  set(LIBUNWIND_HAS_GCC_S_LIB NO)
+  set(LIBUNWIND_HAS_GCC_LIB NO)
+elseif (HAIKU)
   check_library_exists(root fopen "" LIBUNWIND_HAS_ROOT_LIB)
 else()
   check_library_exists(c fopen "" LIBUNWIND_HAS_C_LIB)
-endif()
-
-if (NOT LIBUNWIND_USE_COMPILER_RT)
-  if (ANDROID)
-    check_library_exists(gcc __gcc_personality_v0 "" LIBUNWIND_HAS_GCC_LIB)
-  else ()
-    check_library_exists(gcc_s __gcc_personality_v0 "" LIBUNWIND_HAS_GCC_S_LIB)
-    check_library_exists(gcc __absvdi2 "" LIBUNWIND_HAS_GCC_LIB)
-  endif ()
+  if (NOT LIBUNWIND_USE_COMPILER_RT)
+    if (ANDROID)
+      check_library_exists(gcc __gcc_personality_v0 "" LIBUNWIND_HAS_GCC_LIB)
+    else ()
+      check_library_exists(gcc_s __gcc_personality_v0 "" LIBUNWIND_HAS_GCC_S_LIB)
+      check_library_exists(gcc __absvdi2 "" LIBUNWIND_HAS_GCC_LIB)
+    endif ()
+  endif()
 endif()
 
 if (CXX_SUPPORTS_NOSTDLIBXX_FLAG OR C_SUPPORTS_NODEFAULTLIBS_FLAG)
@@ -60,7 +70,8 @@ if(LIBUNWIND_TARGET_ARM AND NOT LIBUNWIND_USES_SJLJ_EXCEPTIONS AND NOT LIBUNWIND
 endif()
 
 # Check libraries
-if(FUCHSIA)
+if(FUCHSIA OR MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+  # Fuchsia and MSVC-compatible targets don't have these Unix-style libraries.
   set(LIBUNWIND_HAS_DL_LIB NO)
   set(LIBUNWIND_HAS_PTHREAD_LIB NO)
 else()

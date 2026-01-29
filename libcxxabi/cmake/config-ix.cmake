@@ -4,15 +4,28 @@ include(CheckCCompilerFlag)
 include(CheckCXXCompilerFlag)
 include(CheckCSourceCompiles)
 
-check_library_exists(c fopen "" LIBCXXABI_HAS_C_LIB)
-if (NOT LIBCXXABI_USE_COMPILER_RT)
-  if (ANDROID)
-    check_library_exists(gcc __gcc_personality_v0 "" LIBCXXABI_HAS_GCC_LIB)
-  else ()
-    check_library_exists(gcc_s __gcc_personality_v0 "" LIBCXXABI_HAS_GCC_S_LIB)
-    check_library_exists(gcc __aeabi_uldivmod "" LIBCXXABI_HAS_GCC_LIB)
+# MSVC-simulating compilers and MinGW are mutually exclusive configurations.
+if(CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC" AND MINGW)
+  message(WARNING
+    "MSVC-compatible and MinGW configurations are mutually exclusive.")
+endif()
+
+# Windows Itanium uses MS VCRT, not libc/libgcc.
+if(MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+  set(LIBCXXABI_HAS_C_LIB NO)
+  set(LIBCXXABI_HAS_GCC_S_LIB NO)
+  set(LIBCXXABI_HAS_GCC_LIB NO)
+else()
+  check_library_exists(c fopen "" LIBCXXABI_HAS_C_LIB)
+  if (NOT LIBCXXABI_USE_COMPILER_RT)
+    if (ANDROID)
+      check_library_exists(gcc __gcc_personality_v0 "" LIBCXXABI_HAS_GCC_LIB)
+    else ()
+      check_library_exists(gcc_s __gcc_personality_v0 "" LIBCXXABI_HAS_GCC_S_LIB)
+      check_library_exists(gcc __aeabi_uldivmod "" LIBCXXABI_HAS_GCC_LIB)
+    endif ()
   endif ()
-endif ()
+endif()
 
 # libc++abi is using -nostdlib++ at the link step when available,
 # otherwise -nodefaultlibs is used. We want all our checks to also
@@ -105,6 +118,10 @@ elseif(ANDROID)
   set(LIBCXXABI_HAS_PTHREAD_LIB NO)
   check_library_exists(c __cxa_thread_atexit_impl ""
     LIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL)
+elseif(MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+  set(LIBCXXABI_HAS_DL_LIB NO)
+  set(LIBCXXABI_HAS_PTHREAD_LIB NO)
+  set(LIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL NO)
 else()
   check_library_exists(dl dladdr "" LIBCXXABI_HAS_DL_LIB)
   check_library_exists(pthread pthread_once "" LIBCXXABI_HAS_PTHREAD_LIB)

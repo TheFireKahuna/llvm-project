@@ -319,7 +319,7 @@ if(LIBUNWIND_REMEMBER_HEAP_ALLOC)
 endif()
 
 # This is the _ONLY_ place where add_definitions is called.
-if (MSVC)
+if (MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
   add_definitions(-D_CRT_SECURE_NO_WARNINGS)
 endif()
 

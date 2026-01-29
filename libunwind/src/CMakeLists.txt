@@ -70,17 +70,19 @@ set(LIBUNWIND_SOURCES
     ${LIBUNWIND_C_SOURCES}
     ${LIBUNWIND_ASM_SOURCES})
 
-# Generate library list.
-if (NOT APPLE)
-  add_library_flags_if(LIBUNWIND_HAS_DL_LIB dl)
-endif()
+if (NOT MSVC AND NOT CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+  # Generate library list.
+  if (NOT APPLE)
+    add_library_flags_if(LIBUNWIND_HAS_DL_LIB dl)
+  endif()
 
-if (LIBUNWIND_ENABLE_THREADS AND NOT APPLE)
-    add_library_flags_if(LIBUNWIND_HAS_PTHREAD_LIB pthread)
-endif()
+  if (LIBUNWIND_ENABLE_THREADS AND NOT APPLE)
+      add_library_flags_if(LIBUNWIND_HAS_PTHREAD_LIB pthread)
+  endif()
 
-if (LIBUNWIND_ENABLE_THREADS)
-  add_compile_flags_if(LIBUNWIND_WEAK_PTHREAD_LIB -DLIBUNWIND_USE_WEAK_PTHREAD=1)
+  if (LIBUNWIND_ENABLE_THREADS)
+    add_compile_flags_if(LIBUNWIND_WEAK_PTHREAD_LIB -DLIBUNWIND_USE_WEAK_PTHREAD=1)
+  endif()
 endif()
 
 # Setup flags.
