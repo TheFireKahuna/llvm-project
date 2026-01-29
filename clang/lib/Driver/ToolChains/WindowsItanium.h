@@ -93,6 +93,8 @@ public:
     return ToolChain::CST_Libcxx;
   }
 
+  CXXStdlibType GetCXXStdlibType(const llvm::opt::ArgList &Args) const override;
+
   // Windows Itanium uses MS VCRT by default for runtime library functionality.
   // compiler-rt CRT is available as an opt-in via -rtlib=compiler-rt.
   RuntimeLibType GetDefaultRuntimeLibType() const override {

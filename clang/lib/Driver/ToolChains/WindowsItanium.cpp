@@ -1040,6 +1040,20 @@ void WindowsItaniumToolChain::AddClangCXXStdlibIncludeArgs(
   }
 }
 
+ToolChain::CXXStdlibType
+WindowsItaniumToolChain::GetCXXStdlibType(const ArgList &Args) const {
+  // Claim the -stdlib= argument to avoid unused argument warnings.
+  // libc++ is the only supported option for Windows Itanium.
+  if (Arg *A = Args.getLastArg(options::OPT_stdlib_EQ)) {
+    StringRef Value = A->getValue();
+    if (Value != "libc++") {
+      getDriver().Diag(diag::err_drv_invalid_stdlib_name)
+          << A->getAsString(Args);
+    }
+  }
+  return ToolChain::CST_Libcxx;
+}
+
 void WindowsItaniumToolChain::AddCXXStdlibLibArgs(
     const ArgList &Args, ArgStringList &CmdArgs) const {
   // libc++ is the only supported C++ standard library for Windows Itanium.

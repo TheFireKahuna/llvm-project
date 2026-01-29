@@ -34,9 +34,10 @@ endif()
 message(STATUS "Applying Windows Itanium defaults (RUNTIMES_WINDOWS_ITANIUM_DEFAULTS=ON)")
 
 # The WindowsItaniumToolChain driver automatically handles:
-# - SJLJ exception model (the only currently supported model)
+# - SEH exceptions with Itanium personality (zero-cost, default)
+# - SJLJ exceptions available via -fsjlj-exceptions fallback
 # - Required defines (_LIBCPP_ABI_FORCE_ITANIUM, _NO_CRT_STDIO_INLINE)
-# - Default libraries (msvcrt, ucrt, legacy_stdio_definitions, etc.)
+# - Default libraries (ucrt, legacy_stdio_definitions, kernel32, etc.)
 # - Auto-import for vtable pseudo-relocations (-auto-import)
 # - LLD linker selection
 
