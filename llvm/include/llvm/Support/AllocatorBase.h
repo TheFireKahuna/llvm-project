@@ -19,11 +19,13 @@
 #ifndef LLVM_SUPPORT_ALLOCATORBASE_H
 #define LLVM_SUPPORT_ALLOCATORBASE_H
 
-#ifdef _MSC_VER
+// __declspec(empty_bases) is an MSVC ABI optimization for empty base classes.
+#if (defined(__has_declspec_attribute) && __has_declspec_attribute(empty_bases)) || \
+    (defined(_MSC_VER) && !defined(__clang__))
 #define LLVM_ALLOCATORHOLDER_EMPTYBASE __declspec(empty_bases)
 #else
 #define LLVM_ALLOCATORHOLDER_EMPTYBASE
-#endif // _MSC_VER
+#endif
 
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/MemAlloc.h"

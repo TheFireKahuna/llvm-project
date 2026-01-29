@@ -9,6 +9,11 @@
 // RUN: %clang -target aarch64-windows-gnu -fdwarf-exceptions -c %s -### 2>&1 | FileCheck -check-prefix=MINGW-DWARF %s
 // RUN: %clang -target aarch64-windows-gnu -c %s -### 2>&1 | FileCheck -check-prefix=MINGW-SEH %s
 
+// Windows Itanium uses SJLJ exceptions (the only currently supported model).
+// RUN: %clang --target=i686-windows-itanium -c %s -### 2>&1 | FileCheck -check-prefix=ITANIUM-SJLJ %s
+// RUN: %clang --target=x86_64-windows-itanium -c %s -### 2>&1 | FileCheck -check-prefix=ITANIUM-SJLJ %s
+// RUN: %clang --target=aarch64-windows-itanium -c %s -### 2>&1 | FileCheck -check-prefix=ITANIUM-SJLJ %s
+
 MSVC-NOT: -exception-model=dwarf
 MSVC-NOT: -exception-model=seh
 MSVC-NOSEH-NOT: -funwind-tables=2
@@ -16,3 +21,4 @@ MSVC-SEH: -funwind-tables=2
 MINGW-DWARF: -exception-model=dwarf
 MINGW-SEH: -funwind-tables=2
 MINGW-SEH: -exception-model=seh
+ITANIUM-SJLJ: -exception-model=sjlj
