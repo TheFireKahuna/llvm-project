@@ -59,6 +59,7 @@ float _m_to_float(__m64);
 #endif
 
 /* Other assorted instruction intrinsics. */
+/* Forward declarations needed by both MSVC and Clang (Clang has no static impl) */
 void __addfsbyte(unsigned long, unsigned char);
 void __addfsdword(unsigned long, unsigned long);
 void __addfsword(unsigned long, unsigned short);
@@ -68,36 +69,24 @@ void __cpuidex(int[4], int, int);
 __int64 __emul(int, int);
 unsigned __int64 __emulu(unsigned int, unsigned int);
 unsigned int __getcallerseflags(void);
-void __halt(void);
-unsigned char __inbyte(unsigned short);
 void __inbytestring(unsigned short, unsigned char *, unsigned long);
 void __incfsbyte(unsigned long);
 void __incfsdword(unsigned long);
 void __incfsword(unsigned long);
-unsigned long __indword(unsigned short);
 void __indwordstring(unsigned short, unsigned long *, unsigned long);
 void __int2c(void);
 void __invlpg(void *);
-unsigned short __inword(unsigned short);
 void __inwordstring(unsigned short, unsigned short *, unsigned long);
 void __lidt(void *);
 unsigned __int64 __ll_lshift(unsigned __int64, int);
 __int64 __ll_rshift(__int64, int);
-void __movsb(unsigned char *, unsigned char const *, size_t);
-void __movsd(unsigned long *, unsigned long const *, size_t);
-void __movsw(unsigned short *, unsigned short const *, size_t);
-void __nop(void);
 void __nvreg_restore_fence(void);
 void __nvreg_save_fence(void);
-void __outbyte(unsigned short, unsigned char);
 void __outbytestring(unsigned short, unsigned char *, unsigned long);
-void __outdword(unsigned short, unsigned long);
 void __outdwordstring(unsigned short, unsigned long *, unsigned long);
-void __outword(unsigned short, unsigned short);
 void __outwordstring(unsigned short, unsigned short *, unsigned long);
 unsigned long __readcr0(void);
 unsigned long __readcr2(void);
-unsigned __LPTRINT_TYPE__ __readcr3(void);
 unsigned __LPTRINT_TYPE__ __readcr4(void);
 unsigned __int64 __readcr8(void);
 unsigned int __readdr(unsigned int);
@@ -107,13 +96,10 @@ unsigned short __readfsword(unsigned long);
 unsigned long __readfsdword(unsigned long);
 unsigned __int64 __readfsqword(unsigned long);
 #endif
-unsigned __int64 __readmsr(unsigned long);
 unsigned __int64 __readpmc(unsigned long);
 unsigned long __segmentlimit(unsigned long);
 void __sidt(void *);
 void __stosb(unsigned char *, unsigned char, size_t);
-void __stosd(unsigned long *, unsigned long, size_t);
-void __stosw(unsigned short *, unsigned short, size_t);
 void __svm_clgi(void);
 void __svm_invlpga(void *, int);
 void __svm_skinit(int);
@@ -127,7 +113,6 @@ void __vmx_off(void);
 void __vmx_vmptrst(unsigned __int64 *);
 void __wbinvd(void);
 void __writecr0(unsigned int);
-void __writecr3(unsigned __INTPTR_TYPE__);
 void __writecr4(unsigned __INTPTR_TYPE__);
 void __writecr8(unsigned __int64);
 void __writedr(unsigned int, unsigned int);
@@ -167,7 +152,28 @@ void _Store64_HLERelease(__int64 volatile *, __int64);
 void _StorePointer_HLERelease(void *volatile *, void *);
 void _WriteBarrier(void);
 
+/* Forward declarations for MSVC only (Clang has static inline definitions below) */
+#ifndef __clang__
+void __halt(void);
+unsigned char __inbyte(unsigned short);
+unsigned long __indword(unsigned short);
+unsigned short __inword(unsigned short);
+void __movsb(unsigned char *, unsigned char const *, size_t);
+void __movsd(unsigned long *, unsigned long const *, size_t);
+void __movsw(unsigned short *, unsigned short const *, size_t);
+void __nop(void);
+void __outbyte(unsigned short, unsigned char);
+void __outdword(unsigned short, unsigned long);
+void __outword(unsigned short, unsigned short);
+unsigned __LPTRINT_TYPE__ __readcr3(void);
+unsigned __int64 __readmsr(unsigned long);
+void __stosd(unsigned long *, unsigned long, size_t);
+void __stosw(unsigned short *, unsigned short, size_t);
+void __writecr3(unsigned __INTPTR_TYPE__);
+#endif /* !__clang__ */
+
 /* These additional intrinsics are turned on in x64/amd64/x86_64 mode. */
+/* Forward declarations needed by both MSVC and Clang (Clang has no static impl) */
 #if defined(__x86_64__) && !defined(__arm64ec__)
 void __addgsbyte(unsigned long, unsigned char);
 void __addgsdword(unsigned long, unsigned long);
@@ -178,12 +184,10 @@ void __incgsbyte(unsigned long);
 void __incgsdword(unsigned long);
 void __incgsqword(unsigned long);
 void __incgsword(unsigned long);
-void __movsq(unsigned long long *, unsigned long long const *, size_t);
 unsigned char __readgsbyte(unsigned long);
 unsigned long __readgsdword(unsigned long);
 unsigned __int64 __readgsqword(unsigned long);
 unsigned short __readgsword(unsigned long);
-void __stosq(unsigned __int64 *, unsigned __int64, size_t);
 unsigned char __vmx_on(unsigned __int64 *);
 unsigned char __vmx_vmclear(unsigned __int64 *);
 unsigned char __vmx_vmlaunch(void);
@@ -233,6 +237,11 @@ __int64 __mulh(__int64, __int64);
 unsigned __int64 __umulh(unsigned __int64, unsigned __int64);
 __int64 _mul128(__int64, __int64, __int64 *);
 
+/* Forward declarations for MSVC only (Clang has static inline definitions below) */
+#ifndef __clang__
+void __movsq(unsigned long long *, unsigned long long const *, size_t);
+void __stosq(unsigned __int64 *, unsigned __int64, size_t);
+#endif
 #endif /* __x86_64__ */
 
 /*----------------------------------------------------------------------------*\
