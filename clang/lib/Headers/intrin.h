@@ -59,6 +59,8 @@ float _m_to_float(__m64);
 #endif
 
 /* Other assorted instruction intrinsics. */
+/* Forward declarations for MSVC. Clang uses the static inline definitions below. */
+#ifndef __clang__
 void __addfsbyte(unsigned long, unsigned char);
 void __addfsdword(unsigned long, unsigned long);
 void __addfsword(unsigned long, unsigned short);
@@ -166,9 +168,10 @@ void _Store_HLERelease(long volatile *, long);
 void _Store64_HLERelease(__int64 volatile *, __int64);
 void _StorePointer_HLERelease(void *volatile *, void *);
 void _WriteBarrier(void);
+#endif /* !__clang__ */
 
 /* These additional intrinsics are turned on in x64/amd64/x86_64 mode. */
-#if defined(__x86_64__) && !defined(__arm64ec__)
+#if defined(__x86_64__) && !defined(__arm64ec__) && !defined(__clang__)
 void __addgsbyte(unsigned long, unsigned char);
 void __addgsdword(unsigned long, unsigned long);
 void __addgsqword(unsigned long, unsigned __int64);
@@ -232,8 +235,7 @@ unsigned __int64 _shrx_u64(unsigned __int64, unsigned int);
 __int64 __mulh(__int64, __int64);
 unsigned __int64 __umulh(unsigned __int64, unsigned __int64);
 __int64 _mul128(__int64, __int64, __int64 *);
-
-#endif /* __x86_64__ */
+#endif /* __x86_64__ && !__clang__ */
 
 /*----------------------------------------------------------------------------*\
 |* movs, stos
