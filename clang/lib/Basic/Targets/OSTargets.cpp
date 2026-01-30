@@ -147,7 +147,8 @@ static void addMinGWDefines(const llvm::Triple &Triple, const LangOptions &Opts,
   addCygMingDefines(Opts, Builder);
 }
 
-static void addVisualCDefines(const LangOptions &Opts, MacroBuilder &Builder) {
+static void addVisualCDefines(const llvm::Triple &Triple,
+                              const LangOptions &Opts, MacroBuilder &Builder) {
   if (Opts.CPlusPlus) {
     if (Opts.RTTIData)
       Builder.defineMacro("_CPPRTTI");
@@ -216,11 +217,24 @@ static void addVisualCDefines(const LangOptions &Opts, MacroBuilder &Builder) {
     Builder.defineMacro("_MT");
 
   if (Opts.MSCompatibilityVersion) {
-    Builder.defineMacro("_MSC_VER",
-                        Twine(Opts.MSCompatibilityVersion / 100000));
-    Builder.defineMacro("_MSC_FULL_VER", Twine(Opts.MSCompatibilityVersion));
+    // For Windows Itanium, make _MSC_VER and _MSC_FULL_VER only visible in
+    // system headers. This ensures third-party code uses GCC/Clang code paths
+    // instead of MSVC-specific paths that might reference MSVC symbols.
+    if (Triple.isWindowsItaniumEnvironment()) {
+      Builder.defineSystemHeaderOnlyMacro(
+          "_MSC_VER", Twine(Opts.MSCompatibilityVersion / 100000));
+      Builder.defineSystemHeaderOnlyMacro("_MSC_FULL_VER",
+                                          Twine(Opts.MSCompatibilityVersion));
+    } else {
+      Builder.defineMacro("_MSC_VER",
+                          Twine(Opts.MSCompatibilityVersion / 100000));
+      Builder.defineMacro("_MSC_FULL_VER", Twine(Opts.MSCompatibilityVersion));
+    }
     // FIXME We cannot encode the revision information into 32-bits
-    Builder.defineMacro("_MSC_BUILD", Twine(1));
+    if (Triple.isWindowsItaniumEnvironment())
+      Builder.defineSystemHeaderOnlyMacro("_MSC_BUILD", Twine(1));
+    else
+      Builder.defineMacro("_MSC_BUILD", Twine(1));
     // Exposed by MSVC, used in their stddef.h.
     Builder.defineMacro("_CRT_USE_BUILTIN_OFFSETOF", Twine(1));
 
@@ -228,17 +242,24 @@ static void addVisualCDefines(const LangOptions &Opts, MacroBuilder &Builder) {
       Builder.defineMacro("_HAS_CHAR16_T_LANGUAGE_SUPPORT", Twine(1));
 
     if (Opts.isCompatibleWithMSVC(LangOptions::MSVC2015)) {
+      const char *MSVCLangVal = nullptr;
       if (Opts.CPlusPlus26)
-        // TODO update to the proper value.
-        Builder.defineMacro("_MSVC_LANG", "202400L");
+        MSVCLangVal = "202400L"; // TODO update to the proper value.
       else if (Opts.CPlusPlus23)
-        Builder.defineMacro("_MSVC_LANG", "202302L");
+        MSVCLangVal = "202302L";
       else if (Opts.CPlusPlus20)
-        Builder.defineMacro("_MSVC_LANG", "202002L");
+        MSVCLangVal = "202002L";
       else if (Opts.CPlusPlus17)
-        Builder.defineMacro("_MSVC_LANG", "201703L");
+        MSVCLangVal = "201703L";
       else if (Opts.CPlusPlus14)
-        Builder.defineMacro("_MSVC_LANG", "201402L");
+        MSVCLangVal = "201402L";
+
+      if (MSVCLangVal) {
+        if (Triple.isWindowsItaniumEnvironment())
+          Builder.defineSystemHeaderOnlyMacro("_MSVC_LANG", MSVCLangVal);
+        else
+          Builder.defineMacro("_MSVC_LANG", MSVCLangVal);
+      }
     }
 
     if (Opts.isCompatibleWithMSVC(LangOptions::MSVC2022_3))
@@ -246,6 +267,10 @@ static void addVisualCDefines(const LangOptions &Opts, MacroBuilder &Builder) {
   }
 
   if (Opts.MicrosoftExt) {
+    // _MSC_EXTENSIONS signals "MSVC extension syntax is available" (e.g.,
+    // __declspec, __int64). This is always visible when -fms-extensions is
+    // enabled, including for Windows Itanium, because the syntax IS available.
+    // (Unlike _MSC_VER which identifies the compiler, this just signals syntax.)
     Builder.defineMacro("_MSC_EXTENSIONS");
 
     if (Opts.CPlusPlus11) {
@@ -284,7 +309,7 @@ void addWindowsDefines(const llvm::Triple &Triple, const LangOptions &Opts,
     addMinGWDefines(Triple, Opts, Builder);
   else if (Triple.isKnownWindowsMSVCEnvironment() ||
            (Triple.isWindowsItaniumEnvironment() && Opts.MSVCCompat))
-    addVisualCDefines(Opts, Builder);
+    addVisualCDefines(Triple, Opts, Builder);
 }
 
 } // namespace targets

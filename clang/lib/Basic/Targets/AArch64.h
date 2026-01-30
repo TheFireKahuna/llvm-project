@@ -325,6 +325,17 @@ public:
                              bool HasNonWeakDef) const override;
 };
 
+// ARM64 Windows + Itanium C++ ABI Target
+class LLVM_LIBRARY_VISIBILITY ItaniumWindowsARM64TargetInfo
+    : public WindowsARM64TargetInfo {
+public:
+  ItaniumWindowsARM64TargetInfo(const llvm::Triple &Triple,
+                                const TargetOptions &Opts);
+
+  void getTargetDefines(const LangOptions &Opts,
+                        MacroBuilder &Builder) const override;
+};
+
 // ARM64 MinGW target
 class LLVM_LIBRARY_VISIBILITY MinGWARM64TargetInfo
     : public WindowsARM64TargetInfo {

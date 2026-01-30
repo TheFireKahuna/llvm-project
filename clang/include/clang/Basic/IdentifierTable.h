@@ -251,11 +251,18 @@ class alignas(IdentifierInfoAlignment) IdentifierInfo {
   LLVM_PREFERRED_TYPE(bool)
   unsigned IsFinal : 1;
 
+  // True if this macro should only be visible in system headers.
+  // When set, the macro is invisible (as if undefined) in user code,
+  // but visible in system headers. This is used for macros like _MSC_VER
+  // that should affect SDK headers but not third-party code.
+  LLVM_PREFERRED_TYPE(bool)
+  unsigned IsSystemHeaderMacro : 1;
+
   // True if this identifier would be a keyword in C++ mode.
   LLVM_PREFERRED_TYPE(bool)
   unsigned IsKeywordInCpp : 1;
 
-  // 21 bits left in a 64-bit word.
+  // 20 bits left in a 64-bit word.
 
   // Managed by the language front-end.
   void *FETokenInfo = nullptr;
@@ -273,7 +280,7 @@ class alignas(IdentifierInfoAlignment) IdentifierInfo {
         RevertedTokenID(false), OutOfDate(false), IsModulesImport(false),
         IsModulesDecl(false), IsMangledOpenMPVariantName(false),
         IsDeprecatedMacro(false), IsRestrictExpansion(false), IsFinal(false),
-        IsKeywordInCpp(false) {}
+        IsSystemHeaderMacro(false), IsKeywordInCpp(false) {}
 
 public:
   IdentifierInfo(const IdentifierInfo &) = delete;
@@ -328,6 +335,7 @@ public:
         // manually to avoid recomputing a bunch of times.
         IsDeprecatedMacro = false;
         IsRestrictExpansion = false;
+        IsSystemHeaderMacro = false;
       }
       RecomputeNeedsHandleIdentifier();
     }
@@ -366,6 +374,20 @@ public:
   bool isFinal() const { return IsFinal; }
 
   void setIsFinal(bool Val) { IsFinal = Val; }
+
+  /// Return true if this macro should only be visible in system headers.
+  bool isSystemHeaderMacro() const { return IsSystemHeaderMacro; }
+
+  /// Mark this macro as only visible in system headers.
+  void setIsSystemHeaderMacro(bool Val) {
+    if (IsSystemHeaderMacro == Val)
+      return;
+    IsSystemHeaderMacro = Val;
+    if (Val)
+      NeedsHandleIdentifier = true;
+    else
+      RecomputeNeedsHandleIdentifier();
+  }
 
   /// If this is a source-language token (e.g. 'for'), this API
   /// can be used to cause the lexer to map identifiers to source-language
@@ -646,7 +668,8 @@ private:
   void RecomputeNeedsHandleIdentifier() {
     NeedsHandleIdentifier = isPoisoned() || hasMacroDefinition() ||
                             isExtensionToken() || isFutureCompatKeyword() ||
-                            isOutOfDate() || isImportKeyword();
+                            isOutOfDate() || isImportKeyword() ||
+                            isSystemHeaderMacro();
   }
 };
 

@@ -2145,6 +2145,53 @@ struct PragmaFinalHandler : public PragmaHandler {
   }
 };
 
+/// "\#pragma clang system_header_only(...)"
+///
+/// The syntax is
+/// \code
+///   #pragma clang system_header_only(MACRO_NAME)
+/// \endcode
+///
+/// This marks the macro as only visible within system headers. The macro
+/// will be hidden (as if undefined) when preprocessing user code or
+/// third-party libraries, but visible when preprocessing system headers
+/// (SDK headers, etc.).
+///
+/// This is useful for macros like _MSC_VER that should affect how SDK
+/// headers are parsed, but should not cause third-party code to incorrectly
+/// detect MSVC and use MSVC-specific code paths.
+struct PragmaSystemHeaderOnlyHandler : public PragmaHandler {
+  PragmaSystemHeaderOnlyHandler() : PragmaHandler("system_header_only") {}
+
+  void HandlePragma(Preprocessor &PP, PragmaIntroducer Introducer,
+                    Token &Tok) override {
+    PP.Lex(Tok);
+    if (Tok.isNot(tok::l_paren)) {
+      PP.Diag(Tok, diag::err_expected) << "(";
+      return;
+    }
+
+    PP.LexUnexpandedToken(Tok);
+    if (!Tok.is(tok::identifier)) {
+      PP.Diag(Tok, diag::err_expected) << tok::identifier;
+      return;
+    }
+    IdentifierInfo *II = Tok.getIdentifierInfo();
+
+    if (!II->hasMacroDefinition()) {
+      PP.Diag(Tok, diag::err_pp_visibility_non_macro) << II;
+      return;
+    }
+
+    PP.Lex(Tok);
+    if (Tok.isNot(tok::r_paren)) {
+      PP.Diag(Tok, diag::err_expected) << ")";
+      return;
+    }
+    II->setIsSystemHeaderMacro(true);
+  }
+};
+
 } // namespace
 
 /// RegisterBuiltinPragmas - Install the standard preprocessor pragmas:
@@ -2176,6 +2223,7 @@ void Preprocessor::RegisterBuiltinPragmas() {
   AddPragmaHandler("clang", new PragmaDeprecatedHandler());
   AddPragmaHandler("clang", new PragmaRestrictExpansionHandler());
   AddPragmaHandler("clang", new PragmaFinalHandler());
+  AddPragmaHandler("clang", new PragmaSystemHeaderOnlyHandler());
 
   // #pragma clang module ...
   auto *ModuleHandler = new PragmaNamespace("module");

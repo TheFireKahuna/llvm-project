@@ -618,6 +618,28 @@ public:
   }
 };
 
+// x86-32 Windows + Itanium C++ ABI Target
+class LLVM_LIBRARY_VISIBILITY ItaniumWindowsX86_32TargetInfo
+    : public WindowsX86_32TargetInfo {
+public:
+  ItaniumWindowsX86_32TargetInfo(const llvm::Triple &Triple,
+                                 const TargetOptions &Opts)
+      : WindowsX86_32TargetInfo(Triple, Opts) {
+    // Use Itanium ABI, not Microsoft ABI
+    TheCXXABI.set(TargetCXXABI::GenericItanium);
+    // Match MSVC's long double for binary compatibility with Windows libraries
+    LongDoubleWidth = LongDoubleAlign = 64;
+    LongDoubleFormat = &llvm::APFloat::IEEEdouble();
+  }
+
+  void getTargetDefines(const LangOptions &Opts,
+                        MacroBuilder &Builder) const override {
+    // Call base class but do NOT define _M_IX86
+    // That is an MSVC-specific detection macro
+    WindowsX86_32TargetInfo::getTargetDefines(Opts, Builder);
+  }
+};
+
 // x86-32 MinGW target
 class LLVM_LIBRARY_VISIBILITY MinGWX86_32TargetInfo
     : public WindowsX86_32TargetInfo {
@@ -944,6 +966,28 @@ public:
   TargetInfo::CallingConvKind
   getCallingConvKind(bool ClangABICompat4) const override {
     return CCK_MicrosoftWin64;
+  }
+};
+
+// x86-64 Windows + Itanium C++ ABI Target
+class LLVM_LIBRARY_VISIBILITY ItaniumWindowsX86_64TargetInfo
+    : public WindowsX86_64TargetInfo {
+public:
+  ItaniumWindowsX86_64TargetInfo(const llvm::Triple &Triple,
+                                 const TargetOptions &Opts)
+      : WindowsX86_64TargetInfo(Triple, Opts) {
+    // Use Itanium ABI, not Microsoft ABI
+    TheCXXABI.set(TargetCXXABI::GenericItanium);
+    // Match MSVC's long double for binary compatibility with Windows libraries
+    LongDoubleWidth = LongDoubleAlign = 64;
+    LongDoubleFormat = &llvm::APFloat::IEEEdouble();
+  }
+
+  void getTargetDefines(const LangOptions &Opts,
+                        MacroBuilder &Builder) const override {
+    // Call base class but do NOT define _M_X64 or _M_AMD64
+    // Those are MSVC-specific detection macros
+    WindowsX86_64TargetInfo::getTargetDefines(Opts, Builder);
   }
 };
 

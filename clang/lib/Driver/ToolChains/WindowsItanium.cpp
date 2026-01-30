@@ -809,9 +809,13 @@ void WindowsItaniumToolChain::addClangTargetOptions(
                          /*Default=*/false))
     CC1Args.push_back("-D_HAS_STATIC_RTTI=0");
 
-  // Enable MS compatibility mode for full MSVC header compatibility.
-  if (!DriverArgs.hasArg(options::OPT_fno_ms_compatibility))
-    CC1Args.push_back("-fms-compatibility");
+  // NOTE: We intentionally do NOT enable -fms-compatibility for Windows Itanium.
+  // That flag enables permissive semantic behaviors (function ptr to void*,
+  // dependent base lookup hacks, etc.) that are workarounds for non-conforming
+  // MSVC code. Since Windows Itanium uses the Itanium ABI and targets Clang/GCC
+  // semantics, we want third-party code to use standard C++ code paths.
+  // -fms-extensions (enabled above) provides the necessary syntax extensions
+  // (__declspec, __int64, etc.) for SDK headers without the semantic hacks.
 
   // Force Itanium ABI in libc++ headers unless user explicitly controls it.
   // This ensures the Itanium name mangling and vtable layout are used instead
@@ -1073,6 +1077,10 @@ WindowsItaniumToolChain::computeMSVCVersion(const Driver *D,
   // Windows Itanium uses MSVC headers, so provide a reasonable default
   // MSVC compatibility version when -fms-extensions is enabled.
   // Use 19.33 (VS 2022 17.3) as the default, matching MSVC toolchain.
+  //
+  // Note: _MSC_VER is marked as system-header-only for Windows Itanium
+  // (see OSTargets.cpp), so it will be visible in SDK headers but not
+  // in third-party code like zstd/zlib, ensuring they use GCC/Clang code paths.
   if (Args.hasFlag(options::OPT_fms_extensions, options::OPT_fno_ms_extensions,
                    true))
     return VersionTuple(19, 33);

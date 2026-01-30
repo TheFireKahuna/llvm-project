@@ -1796,6 +1796,20 @@ unsigned MicrosoftARM64TargetInfo::getMinGlobalAlign(uint64_t TypeSize,
   return Align;
 }
 
+ItaniumWindowsARM64TargetInfo::ItaniumWindowsARM64TargetInfo(
+    const llvm::Triple &Triple, const TargetOptions &Opts)
+    : WindowsARM64TargetInfo(Triple, Opts) {
+  // Use Itanium ABI, not Microsoft ABI
+  TheCXXABI.set(TargetCXXABI::GenericAArch64);
+}
+
+void ItaniumWindowsARM64TargetInfo::getTargetDefines(
+    const LangOptions &Opts, MacroBuilder &Builder) const {
+  // Call base class but do NOT define _M_ARM64, _M_X64, _M_AMD64, or _M_ARM64EC
+  // Those are MSVC-specific detection macros
+  WindowsARM64TargetInfo::getTargetDefines(Opts, Builder);
+}
+
 MinGWARM64TargetInfo::MinGWARM64TargetInfo(const llvm::Triple &Triple,
                                            const TargetOptions &Opts)
     : WindowsARM64TargetInfo(Triple, Opts) {

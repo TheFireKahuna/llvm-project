@@ -36,6 +36,14 @@ public:
           << "\")\n";
   }
 
+  /// Append a \#define line and mark the macro as only visible in system
+  /// headers. This is useful for compiler compatibility macros that should
+  /// affect SDK headers but not third-party code.
+  void defineSystemHeaderOnlyMacro(const Twine &Name, const Twine &Value = "1") {
+    Out << "#define " << Name << ' ' << Value << '\n';
+    Out << "#pragma clang system_header_only(" << Name << ")\n";
+  }
+
   /// Append a \#undef line for Name.  Name should be of the form XXX
   /// and we emit "\#undef XXX".
   void undefineMacro(const Twine &Name) {

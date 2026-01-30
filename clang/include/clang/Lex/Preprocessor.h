@@ -1372,6 +1372,17 @@ public:
   /// expansions going on at the time.
   PreprocessorLexer *getCurrentFileLexer() const;
 
+  /// Return true if the current lexer position is within a system header.
+  ///
+  /// This is used for system-header-only macros, which should only be visible
+  /// when preprocessing system headers (e.g., SDK headers) but not user code
+  /// or third-party libraries.
+  bool isInSystemHeader() const {
+    if (CurPPLexer)
+      return SourceMgr.isInSystemHeader(CurPPLexer->getSourceLocation());
+    return false;
+  }
+
   /// Return the submodule owning the file being lexed. This may not be
   /// the current module if we have changed modules since entering the file.
   Module *getCurrentLexerSubmodule() const { return CurLexerSubmodule; }
@@ -1446,6 +1457,12 @@ public:
 
   MacroDefinition getMacroDefinition(const IdentifierInfo *II) {
     if (!II->hasMacroDefinition())
+      return {};
+
+    // System-header-only macros are invisible outside of system headers.
+    // This allows macros like _MSC_VER to be visible to SDK headers but
+    // hidden from third-party code that might incorrectly detect MSVC.
+    if (II->isSystemHeaderMacro() && !isInSystemHeader())
       return {};
 
     MacroState &S = CurSubmoduleState->Macros[II];
