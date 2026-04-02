@@ -1387,6 +1387,8 @@ void Writer::appendImportThunks() {
       rdataSec->addChunk(c);
     for (Chunk *c : delayIdata.getCodeUnwindInfo())
       rdataSec->addChunk(c);
+    for (Chunk *c : delayIdata.getUnloadAddresses())
+      dataSec->addChunk(c);
   }
 }
 

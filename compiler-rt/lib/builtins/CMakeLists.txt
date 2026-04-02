@@ -4,6 +4,9 @@
 
 if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   cmake_minimum_required(VERSION 3.20.0)
+  if(NOT DEFINED LLVM_COMMON_CMAKE_UTILS)
+    set(LLVM_COMMON_CMAKE_UTILS ${CMAKE_CURRENT_SOURCE_DIR}/../../../cmake)
+  endif()
 
   set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
   project(CompilerRTBuiltins C CXX ASM)
@@ -11,8 +14,6 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   set(COMPILER_RT_BUILTINS_STANDALONE_BUILD TRUE)
 
   set(COMPILER_RT_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../..")
-
-  set(LLVM_COMMON_CMAKE_UTILS "${COMPILER_RT_SOURCE_DIR}/../cmake")
 
   # Add path for custom modules
   list(INSERT CMAKE_MODULE_PATH 0
@@ -24,6 +25,7 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 
   include(base-config-ix)
   include(CompilerRTUtils)
+  include(DetectWindowsItanium)
 
   if (NOT LLVM_RUNTIMES_BUILD)
     load_llvm_config()
@@ -74,6 +76,7 @@ include(builtin-config-ix)
 include(CMakeDependentOption)
 include(CMakePushCheckState)
 include(CheckAssemblerFlag)
+include(DetectWindowsItanium)
 
 option(COMPILER_RT_BUILTINS_HIDE_SYMBOLS
   "Do not export any symbols from the static library." ON)
@@ -758,6 +761,11 @@ if (APPLE)
   list(REMOVE_ITEM aarch64_SOURCES enable_execute_stack.c)
 endif()
 
+# Windows Itanium has native TLS and W^X; these require a hosted C library.
+if(WIN32_ITANIUM)
+  list(REMOVE_ITEM x86_64_SOURCES emutls.c enable_execute_stack.c eprintf.c)
+endif()
+
 set(amdgcn_SOURCES ${GENERIC_SOURCES})
 
 set(armv4t_SOURCES ${arm_min_SOURCES})
@@ -968,6 +976,11 @@ else ()
     endif()
   endif()
 
+  # Freestanding targets: no system C library headers available at build time.
+  if(WIN32_ITANIUM)
+    append_list_if(COMPILER_RT_HAS_FFREESTANDING_FLAG -ffreestanding BUILTIN_CFLAGS)
+  endif()
+
   # Directly targeting the GPU requires a few extra flags.
   if("${COMPILER_RT_DEFAULT_TARGET_ARCH}" MATCHES "amdgcn|nvptx")
     append_list_if(COMPILER_RT_HAS_FFREESTANDING_FLAG -ffreestanding BUILTIN_CFLAGS)
@@ -987,6 +1000,10 @@ else ()
     append_list_if(COMPILER_RT_HAS_VISIBILITY_HIDDEN_FLAG VISIBILITY_HIDDEN BUILTIN_DEFS)
   endif()
 
+  if(WIN32_ITANIUM)
+    list(APPEND BUILTIN_DEFS _WIN32_ITANIUM)
+  endif()
+
   if(COMPILER_RT_DISABLE_AARCH64_FMV)
     list(APPEND BUILTIN_DEFS DISABLE_AARCH64_FMV)
   elseif(COMPILER_RT_BAREMETAL_BUILD)
@@ -998,6 +1015,20 @@ else ()
   endif()
 
   append_list_if(COMPILER_RT_HAS_ASM_LSE HAS_ASM_LSE BUILTIN_DEFS)
+
+  # Windows Itanium CRT sources - included in builtins.lib.
+  # Provides section sentinels, __dso_handle, and pseudo-reloc runtime.
+  if(WIN32_ITANIUM)
+    set(WINCRT_SOURCES
+      ${CMAKE_CURRENT_SOURCE_DIR}/crt_pseudo_reloc_windows.cpp
+    )
+    set_source_files_properties(${WINCRT_SOURCES}
+      PROPERTIES COMPILE_FLAGS "-ffreestanding -fno-builtin -fno-exceptions -fno-rtti"
+    )
+    foreach(arch ${BUILTIN_SUPPORTED_ARCH})
+      list(APPEND ${arch}_SOURCES ${WINCRT_SOURCES})
+    endforeach()
+  endif()
 
   foreach (arch ${BUILTIN_SUPPORTED_ARCH})
     if (CAN_TARGET_${arch})
@@ -1123,7 +1154,10 @@ endif()
 
 cmake_dependent_option(COMPILER_RT_BUILD_CRT "Build crtbegin.o/crtend.o" ON "COMPILER_RT_HAS_CRT" OFF)
 
-if (COMPILER_RT_BUILD_CRT)
+# Windows Itanium uses the COFF-specific CRT section sentinels from
+# crt_begin_windows.c / crt_end_windows.c instead of the generic ELF-style
+# crtbegin/crtend objects below.
+if (COMPILER_RT_BUILD_CRT AND NOT WIN32_ITANIUM)
   add_compiler_rt_component(crt)
 
   option(COMPILER_RT_CRT_USE_EH_FRAME_REGISTRY "Use eh_frame in crtbegin.o/crtend.o" ON)

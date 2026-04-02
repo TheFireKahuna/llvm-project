@@ -10,6 +10,7 @@ include(GNUInstallDirs)
 include(GetClangResourceDir)
 include(ExtendPath)
 include(CompilerRTDarwinUtils)
+include(DetectWindowsItanium)
 
 check_include_file(unwind.h HAVE_UNWIND_H)
 
@@ -117,6 +118,9 @@ if(NOT DEFINED COMPILER_RT_OS_DIR)
     # The CMAKE_SYSTEM_NAME for Android is Android, but the OS is Linux and the
     # driver will search for compiler-rt libraries in the "linux" directory.
     set(COMPILER_RT_OS_DIR linux)
+  elseif(WIN32_ITANIUM)
+    # Windows Itanium uses PE/COFF runtime lookup semantics.
+    set(COMPILER_RT_OS_DIR windows)
   else()
     string(TOLOWER ${CMAKE_SYSTEM_NAME} COMPILER_RT_OS_DIR)
   endif()
@@ -235,7 +239,11 @@ macro(test_targets)
     elseif("${COMPILER_RT_DEFAULT_TARGET_ARCH}" MATCHES "i[2-6]86|x86|amd64")
       if(NOT MSVC)
         test_target_arch(x86_64 "" "-m64")
-        test_target_arch(i386 __i386__ "-m32")
+        # Skip i386 for Windows Itanium - the -m32 flag doesn't switch target
+        # info, causing Windows SDK header errors. Use proper i386 triple instead.
+        if(NOT WIN32_ITANIUM)
+          test_target_arch(i386 __i386__ "-m32")
+        endif()
       else()
         if (CMAKE_SIZEOF_VOID_P EQUAL 4)
           test_target_arch(i386 "" "")

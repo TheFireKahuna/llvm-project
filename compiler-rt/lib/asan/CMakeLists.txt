@@ -291,7 +291,9 @@ else()
   # On AIX, we only need the static libraries.
   if (NOT "${CMAKE_SYSTEM_NAME}" MATCHES "AIX")
   foreach(arch ${ASAN_SUPPORTED_ARCH})
-    if (COMPILER_RT_HAS_VERSION_SCRIPT)
+    # Version scripts are GNU ld feature; skip on Windows where static asan
+    # library isn't built and lld-link doesn't use version scripts.
+    if (COMPILER_RT_HAS_VERSION_SCRIPT AND NOT WIN32_ITANIUM)
       if(WIN32)
         set(SANITIZER_RT_VERSION_LIST_LIBS clang_rt.asan-${arch})
       else()

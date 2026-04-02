@@ -2521,6 +2521,18 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     }
   }
 
+  // Handle /delay:unload and /delay:nobind
+  for (auto *arg : args.filtered(OPT_delay)) {
+    StringRef value = arg->getValue();
+    if (value.equals_insensitive("unload")) {
+      config->delayLoadUnload = true;
+    } else if (value.equals_insensitive("nobind")) {
+      // Default behavior - bound IAT is not populated.
+    } else {
+      Err(ctx) << "unknown /delay option: " << value;
+    }
+  }
+
   // Set default image name if neither /out or /def set it.
   if (config->outputFile.empty()) {
     config->outputFile = getOutputPath(

@@ -390,7 +390,7 @@ def nocoffgrpinfo: F<"nocoffgrpinfo">;
 def noexp : F<"noexp">;
 def novcfeature: F<"novcfeature">;
 
-def delay : P_priv<"delay">;
+def delay : P<"delay", "Delay load options (UNLOAD or NOBIND)">;
 def errorreport : P_priv<"errorreport">;
 def idlout : P_priv<"idlout">;
 def ilk : P_priv<"ilk">;

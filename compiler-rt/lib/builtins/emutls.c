@@ -138,6 +138,14 @@ static __inline void emutls_unlock(void) { pthread_mutex_unlock(&emutls_mutex); 
 #include <assert.h>
 #include <malloc.h>
 #include <stdio.h>
+
+// Exclude OLE/COM headers to avoid PROPVARIANT incomplete type errors
+// when compiling with Clang in non-MSVC mode.
+#define WIN32_LEAN_AND_MEAN
+#define NOGDI
+#ifndef NOMINMAX
+  #define NOMINMAX
+#endif
 #include <windows.h>
 
 static LPCRITICAL_SECTION emutls_mutex;

@@ -163,6 +163,7 @@ struct Configuration {
   StringRef implib;
   bool noimplib = false;
   llvm::StringSet<> delayLoads;
+  bool delayLoadUnload = false;
   std::map<std::string, int> dllOrder;
   Symbol *arm64ECIcallHelper = nullptr;
 

@@ -1517,6 +1517,12 @@ void PDBLinker::addImportFilesToPDB() {
     if (!file->thunkSym)
       continue;
 
+    // The thunk symbol may have been replaced by a regular definition (e.g.,
+    // when an import library and a static library both define the same symbol).
+    // Skip non-thunk symbols since there's no import thunk to record.
+    if (!isa<DefinedImportThunk>(file->thunkSym))
+      continue;
+
     if (!file->thunkSym->isLive())
       continue;
 

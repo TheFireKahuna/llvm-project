@@ -46,6 +46,7 @@
 
 #elif defined(__WIN32__) || defined(_WIN32)
 #define _CRT_SECURE_NO_WARNINGS 1
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
 static __inline bool OSAtomicCompareAndSwapLong(long oldl, long newl, long volatile *dst) {

@@ -226,12 +226,15 @@ public:
     e->ModuleHandle = moduleHandle->getRVA();
     e->DelayImportAddressTable = addressTab->getRVA();
     e->DelayImportNameTable = nameTab->getRVA();
+    if (unloadTab)
+      e->UnloadDelayImportTable = unloadTab->getRVA();
   }
 
   Chunk *dllName;
   Chunk *moduleHandle;
   Chunk *addressTab;
   Chunk *nameTab;
+  Chunk *unloadTab = nullptr;
 };
 
 // Initial contents for delay-loaded functions.
@@ -1025,6 +1028,22 @@ void DelayLoadContents::create() {
     dir->moduleHandle = mh;
     dir->addressTab = addresses[base];
     dir->nameTab = names[base];
+
+    // Generate unload IAT if /delay:unload is specified.
+    // The unload IAT is a copy of the original IAT (pointing to thunks).
+    // At runtime, the regular IAT is overwritten with resolved addresses;
+    // __FUnloadDelayLoadedDLL2 restores it from the unload IAT.
+    if (ctx.config.delayLoadUnload) {
+      size_t unloadBase = unloadAddresses.size();
+      for (size_t i = base; i < addresses.size(); ++i) {
+        if (auto *da = dyn_cast<DelayAddressChunk>(addresses[i]))
+          unloadAddresses.push_back(make<DelayAddressChunk>(ctx, da->thunk));
+        else
+          unloadAddresses.push_back(make<NullChunk>(ctx, 8));
+      }
+      dir->unloadTab = unloadAddresses[unloadBase];
+    }
+
     dirs.push_back(dir);
   }
 
