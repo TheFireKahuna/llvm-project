@@ -20,15 +20,22 @@ function(_get_common_test_compile_options output_var c_test flags)
       ${arch_flags})
 
   if(LLVM_LIBC_COMPILER_IS_GCC_COMPATIBLE)
-    list(APPEND compile_options "-fpie")
+    # -fpie is not supported on Windows.
+    if(NOT LIBC_TARGET_OS_IS_WINDOWS)
+      list(APPEND compile_options "-fpie")
+    endif()
 
     if(LLVM_LIBC_FULL_BUILD)
       list(APPEND compile_options "-DLIBC_FULL_BUILD")
       # Only add -ffreestanding flag in full build mode.
       list(APPEND compile_options "-ffreestanding")
       list(APPEND compile_options "-fno-exceptions")
-      list(APPEND compile_options "-fno-unwind-tables")
-      list(APPEND compile_options "-fno-asynchronous-unwind-tables")
+      if(LIBC_TARGET_OS_IS_WINDOWS)
+        list(APPEND compile_options "-funwind-tables")
+      else()
+        list(APPEND compile_options "-fno-unwind-tables")
+        list(APPEND compile_options "-fno-asynchronous-unwind-tables")
+      endif()
       if(NOT c_test)
         list(APPEND compile_options "-fno-rtti")
       endif()
@@ -148,6 +155,11 @@ function(get_object_files_for_test result skipped_entrypoints_list)
       get_target_property(dep_skip ${dep} "SKIPPED_LIST_FOR_TESTS")
     else()
       # Target full dependency hasn't been checked.  Recursively check its DEPS.
+      # Mark as in-progress before recursing to break cycles.
+      set_target_properties(${dep} PROPERTIES "CHECK_OBJ_FOR_TESTS" TRUE)
+      set_target_properties(${dep} PROPERTIES "OBJECT_FILES_FOR_TESTS" "")
+      set_target_properties(${dep} PROPERTIES "SKIPPED_LIST_FOR_TESTS" "")
+
       set(dep_obj "${dep}")
       set(dep_skip "")
 
@@ -242,6 +254,11 @@ function(create_libc_unittest fq_target_name)
   if(NOT LIBC_UNITTEST_C_TEST)
     list(APPEND fq_deps_list libc.src.__support.StringUtil.error_to_string
                              libc.test.UnitTest.ErrnoSetterMatcher)
+    # LibcTest.unit calls LIBC_NAMESPACE::clock() when TARGET_SUPPORTS_CLOCK
+    # is defined, so every unit test needs the clock object linked in.
+    if(libc.src.time.clock IN_LIST TARGET_LLVMLIBC_ENTRYPOINTS)
+      list(APPEND fq_deps_list libc.src.time.clock)
+    endif()
   endif()
   list(REMOVE_DUPLICATES fq_deps_list)
 

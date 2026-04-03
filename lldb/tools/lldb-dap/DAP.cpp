@@ -67,7 +67,9 @@
 #include <variant>
 
 #if defined(_WIN32)
-#define NOMINMAX
+#ifndef NOMINMAX
+#  define NOMINMAX
+#endif
 #include <fcntl.h>
 #include <io.h>
 #include <windows.h>

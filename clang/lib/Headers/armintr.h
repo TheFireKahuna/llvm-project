@@ -8,7 +8,7 @@
  */
 
 /* Only include this if we're compiling for the windows platform. */
-#ifndef _MSC_VER
+#if !defined(_MSC_VER) && !defined(_WIN32_ITANIUM)
 #include_next <armintr.h>
 #else
 

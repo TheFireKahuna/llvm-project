@@ -5,6 +5,14 @@ include(LLVMCheckCompilerLinkerFlag)
 include(CheckCCompilerFlag)
 include(CheckCXXCompilerFlag)
 include(CheckCSourceCompiles)
+include(DetectMSVCLike)
+include(DetectWindowsItanium)
+
+# MSVC-like and MinGW are mutually exclusive configurations.
+if((CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC" OR WIN32_ITANIUM) AND MINGW)
+  message(WARNING
+    "MSVC-like and MinGW configurations are mutually exclusive.")
+endif()
 
 # The compiler driver may be implicitly trying to link against libunwind.
 # This is normally ok (libcxx relies on an unwinder), but if libunwind is
@@ -78,6 +86,14 @@ if (NOT CXX_SUPPORTS_NOSTDLIBXX_FLAG AND C_SUPPORTS_NODEFAULTLIBS_FLAG)
                         shell32 user32 kernel32 mingw32 ${MINGW_RUNTIME}
                         moldname mingwex msvcrt)
     list(APPEND CMAKE_REQUIRED_LIBRARIES ${MINGW_LIBRARIES})
+  elseif (WIN32_ITANIUM)
+    # Import mem* from ucrtbase.dll. vcruntime.lib contains MSVC C++ ABI symbols
+    # that conflict with Itanium ABI.
+    include(HandleUCRTMemoryFunctions)
+    generate_ucrt_memory_import_library(LIBCXX_UCRT_MEMORY_LIB)
+    if (LIBCXX_UCRT_MEMORY_LIB)
+      list(APPEND CMAKE_REQUIRED_LIBRARIES "${LIBCXX_UCRT_MEMORY_LIB}")
+    endif()
   endif()
 endif()
 

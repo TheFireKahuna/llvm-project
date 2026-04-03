@@ -1,6 +1,18 @@
 function(collect_object_file_deps target result)
   # NOTE: This function does add entrypoint targets to |result|.
   # It is expected that the caller adds them separately.
+
+  # Memoization: avoid re-walking the same subtree. Deep dependency graphs
+  # (e.g., Windows libc with 39+ OSUtil support targets) cause exponential
+  # re-traversal without this cache.
+  get_property(_cached GLOBAL PROPERTY "COLLECT_OBJ_DEPS_CACHE_${target}")
+  if(_cached)
+    set(${result} ${_cached} PARENT_SCOPE)
+    return()
+  endif()
+  # Mark in-progress to handle cycles (shouldn't exist, but be safe).
+  set_property(GLOBAL PROPERTY "COLLECT_OBJ_DEPS_CACHE_${target}" "")
+
   set(all_deps "")
   get_target_property(target_type ${target} "TARGET_TYPE")
   if(NOT target_type)
@@ -15,6 +27,7 @@ function(collect_object_file_deps target result)
       list(APPEND all_deps ${dep_targets})
     endforeach(dep)
     list(REMOVE_DUPLICATES all_deps)
+    set_property(GLOBAL PROPERTY "COLLECT_OBJ_DEPS_CACHE_${target}" "${all_deps}")
     set(${result} ${all_deps} PARENT_SCOPE)
     return()
   endif()
@@ -36,6 +49,7 @@ function(collect_object_file_deps target result)
       list(APPEND all_deps ${dep_targets})
     endforeach(dep)
     list(REMOVE_DUPLICATES all_deps)
+    set_property(GLOBAL PROPERTY "COLLECT_OBJ_DEPS_CACHE_${target}" "${all_deps}")
     set(${result} ${all_deps} PARENT_SCOPE)
     return()
   endif()
@@ -44,9 +58,27 @@ function(collect_object_file_deps target result)
     # It is not possible to recursively extract deps of external dependencies.
     # So, we just accumulate the direct dep and return.
     get_target_property(deps ${target} "DEPS")
+    set_property(GLOBAL PROPERTY "COLLECT_OBJ_DEPS_CACHE_${target}" "${deps}")
     set(${result} ${deps} PARENT_SCOPE)
     return()
   endif()
+
+  if(${target_type} STREQUAL ${HDR_LIBRARY_TARGET_TYPE})
+    # Header libraries produce no objects, but may depend on object libraries
+    # (e.g., futex_utils -> wait_slot). Recurse to collect transitive objects.
+    get_target_property(deps ${target} "DEPS")
+    foreach(dep IN LISTS deps)
+      if(TARGET ${dep})
+        collect_object_file_deps(${dep} dep_targets)
+        list(APPEND all_deps ${dep_targets})
+      endif()
+    endforeach(dep)
+    list(REMOVE_DUPLICATES all_deps)
+    set_property(GLOBAL PROPERTY "COLLECT_OBJ_DEPS_CACHE_${target}" "${all_deps}")
+    set(${result} ${all_deps} PARENT_SCOPE)
+    return()
+  endif()
+
 endfunction(collect_object_file_deps)
 
 function(get_all_object_file_deps result fq_deps_list)

@@ -41,7 +41,7 @@ void __compilerrt_abort_impl(const char *file, int line, const char *function) {
 
 #else
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(_WIN32_ITANIUM)
 #include <stdlib.h>
 #endif
 
@@ -53,7 +53,7 @@ void __compilerrt_abort_impl(const char *file, int line, const char *function) {
 #if !__STDC_HOSTED__
   // Avoid depending on libc when compiling with -ffreestanding.
   __builtin_trap();
-#elif defined(_WIN32)
+#elif defined(_WIN32) && !defined(_WIN32_ITANIUM)
   abort();
 #else
   __builtin_abort();

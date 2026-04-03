@@ -17,9 +17,11 @@
 #undef NULL
 
 #ifdef __cplusplus
-#if !defined(__MINGW32__) && !defined(_MSC_VER)
+#if (!defined(__MINGW32__) && !defined(_MSC_VER)) || defined(_WIN32_ITANIUM)
+/* Windows Itanium preserves __null via sal.h wrapper. */
 #define NULL __null
 #else
+/* MSVC: SDK's sal.h redefines __null as a SAL annotation. */
 #define NULL 0
 #endif
 #else

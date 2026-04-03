@@ -16,7 +16,9 @@
 #ifdef _WIN32
 
 #define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
+#ifndef NOMINMAX
+  #define NOMINMAX
+#endif
 
 // Target Windows 2000 and above. This is needed for newer Windows API
 // functions, e.g. GetComputerNameExA()

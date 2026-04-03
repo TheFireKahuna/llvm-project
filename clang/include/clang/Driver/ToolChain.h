@@ -100,7 +100,8 @@ public:
 
   enum RuntimeLibType {
     RLT_CompilerRT,
-    RLT_Libgcc
+    RLT_Libgcc,
+    RLT_Msvcrt
   };
 
   enum UnwindLibType {

@@ -51,6 +51,7 @@
 #include "ToolChains/UEFI.h"
 #include "ToolChains/VEToolchain.h"
 #include "ToolChains/WebAssembly.h"
+#include "ToolChains/WindowsItanium.h"
 #include "ToolChains/XCore.h"
 #include "ToolChains/ZOS.h"
 #include "clang/Basic/DiagnosticDriver.h"
@@ -113,7 +114,7 @@
 #include <set>
 #include <string>
 #include <utility>
-#if LLVM_ON_UNIX
+#if defined(LLVM_ON_UNIX) || defined(LLVM_ON_NTPOSIX)
 #include <unistd.h> // getpid
 #endif
 
@@ -1922,7 +1923,7 @@ bool Driver::getCrashDiagnosticFile(StringRef ReproCrashFilename,
     CrashDiagDir = "/";
   path::append(CrashDiagDir, "Library/Logs/DiagnosticReports");
   int PID =
-#if LLVM_ON_UNIX
+#if defined(LLVM_ON_UNIX) || defined(LLVM_ON_NTPOSIX)
       getpid();
 #else
       0;
@@ -2698,6 +2699,9 @@ bool Driver::HandleImmediateArgs(Compilation &C) {
       break;
     case ToolChain::RLT_Libgcc:
       llvm::outs() << GetFilePath("libgcc.a", TC) << "\n";
+      break;
+    case ToolChain::RLT_Msvcrt:
+      // MSVC runtime is system-provided, no file path to print.
       break;
     }
     return false;
@@ -7109,8 +7113,8 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
         TC = std::make_unique<toolchains::Cygwin>(*this, Target, Args);
         break;
       case llvm::Triple::Itanium:
-        TC = std::make_unique<toolchains::CrossWindowsToolChain>(*this, Target,
-                                                                  Args);
+        TC = std::make_unique<toolchains::WindowsItaniumToolChain>(*this, Target,
+                                                                   Args);
         break;
       case llvm::Triple::MSVC:
       case llvm::Triple::UnknownEnvironment:

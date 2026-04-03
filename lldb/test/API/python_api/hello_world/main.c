@@ -1,6 +1,6 @@
 #include "attach.h"
 #include <stdio.h>
-#ifdef _MSC_VER
+#if (defined(_MSC_VER) || defined(_WIN32_ITANIUM))
 #include <windows.h>
 #define sleep(x) Sleep((x) * 1000)
 #else

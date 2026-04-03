@@ -62,6 +62,7 @@
 
 #if COMPILER_RT_HAS_ATOMICS == 1
 #ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #if defined(_MSC_VER) && _MSC_VER < 1900
 #define snprintf _snprintf
@@ -110,6 +111,7 @@
 #endif /* DIR_SEPARATOR_2 */
 
 #if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 static inline size_t getpagesize(void) {
   SYSTEM_INFO S;

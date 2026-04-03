@@ -156,6 +156,8 @@ private:
 //                       PlatformGetThreadID
 //===----------------------------------------------------------------------===//
 
+// Returns a 32-bit thread ID for recursive initialization detection.
+
 #if defined(__APPLE__) && _LIBCPP_HAS_THREAD_API_PTHREAD
 uint32_t PlatformThreadID() {
   static_assert(sizeof(mach_port_t) == sizeof(uint32_t), "");
@@ -165,6 +167,15 @@ uint32_t PlatformThreadID() {
 uint32_t PlatformThreadID() {
   static_assert(sizeof(pid_t) == sizeof(uint32_t), "");
   return static_cast<uint32_t>(syscall(SYS_gettid));
+}
+#elif defined(_WIN32)
+// Declare GetCurrentThreadId to avoid including <windows.h>.
+extern "C" __declspec(dllimport) unsigned long __stdcall GetCurrentThreadId();
+
+uint32_t PlatformThreadID() {
+  static_assert(sizeof(unsigned long) == sizeof(uint32_t),
+                "Windows DWORD must be 32 bits");
+  return static_cast<uint32_t>(GetCurrentThreadId());
 }
 #else
 constexpr uint32_t (*PlatformThreadID)() = nullptr;

@@ -17,7 +17,13 @@ llvm::allocate_buffer(size_t Size, size_t Alignment) {
 #ifdef __cpp_aligned_new
                                 std::align_val_t(Alignment),
 #endif
-                                std::nothrow);
+// Construct nothrow_t inline to avoid DLL data import (LTO relocation issue).
+#ifdef _WIN32_ITANIUM
+                                std::nothrow_t{}
+#else
+                                std::nothrow
+#endif
+  );
   if (Result == nullptr) {
     report_bad_alloc_error("Buffer allocation failed");
   }

@@ -9,7 +9,9 @@
 #include <__thread/support/windows.h>
 #include <chrono>
 
-#define NOMINMAX
+#ifndef NOMINMAX
+#  define NOMINMAX
+#endif
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <process.h>

@@ -19,11 +19,17 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <string.h>
 
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
 #include <windef.h>
 #include <excpt.h>
 #include <winnt.h>
 #include <ntstatus.h>
+#ifndef _NTDEF_
+typedef long NTSTATUS;
+#endif
 
 #include "libunwind_ext.h"
 #include "UnwindCursor.hpp"
@@ -45,6 +51,9 @@ using namespace libunwind;
 /// SEH exception raised by libunwind to initiate phase 2 of exception
 /// handling.
 #define STATUS_GCC_UNWIND MAKE_GCC_EXCEPTION(1) // 0x21474343
+
+/// Exception class for foreign SEH wrappers. ASCII: "LLVMFORG"
+#define FOREIGN_EXCEPTION_CLASS 0x4C4C564D464F5247ULL
 
 static int __unw_init_seh(unw_cursor_t *cursor, CONTEXT *ctx);
 static DISPATCHER_CONTEXT *__unw_seh_get_disp_ctx(unw_cursor_t *cursor);
@@ -76,6 +85,41 @@ union LOCAL_DISPATCHER_CONTEXT_NONVOLREG_ARM {
   };
 };
 #pragma clang diagnostic pop
+
+/// Foreign SEH wrapper embedded in ExceptionInformation[1..N].
+/// Layout-compatible with _Unwind_Exception for personality calls.
+struct ForeignExceptionWrapper {
+  uint64_t exception_class;           // FOREIGN_EXCEPTION_CLASS
+  void (*exception_cleanup)(_Unwind_Reason_Code, _Unwind_Exception *);
+  uintptr_t private_[6];
+  DWORD original_code;                // Original SEH exception code
+};
+
+static_assert(sizeof(ForeignExceptionWrapper) <=
+              sizeof(ULONG_PTR) * (EXCEPTION_MAXIMUM_PARAMETERS - 1),
+              "Wrapper must fit in ExceptionInformation");
+
+static bool isForeignException(const _Unwind_Exception *exc) {
+  return exc && exc->exception_class == FOREIGN_EXCEPTION_CLASS;
+}
+
+static ForeignExceptionWrapper *getForeignWrapper(PEXCEPTION_RECORD rec) {
+  if (rec->NumberParameters < 2)
+    return nullptr;
+  auto *w = reinterpret_cast<ForeignExceptionWrapper *>(&rec->ExceptionInformation[1]);
+  if (w->exception_class != FOREIGN_EXCEPTION_CLASS)
+    return nullptr;
+  return w;
+}
+
+static ForeignExceptionWrapper *createForeignWrapper(PEXCEPTION_RECORD rec) {
+  auto *w = reinterpret_cast<ForeignExceptionWrapper *>(&rec->ExceptionInformation[1]);
+  memset(w, 0, sizeof(*w));
+  w->exception_class = FOREIGN_EXCEPTION_CLASS;
+  w->original_code = rec->ExceptionCode;
+  rec->NumberParameters = 1 + (sizeof(*w) + sizeof(ULONG_PTR) - 1) / sizeof(ULONG_PTR);
+  return w;
+}
 
 /// Common implementation of SEH-style handler functions used by Itanium-
 /// style frames.  Depending on how and why it was called, it may do one of:
@@ -121,11 +165,65 @@ _GCC_specific_handler(PEXCEPTION_RECORD ms_exc, PVOID frame, PCONTEXT ms_ctx,
       action = (_Unwind_Action)ms_exc->ExceptionInformation[2];
     }
   } else {
-    // Foreign exception.
-    // We can't interact with them (we don't know the original target frame
-    // that we should pass on to RtlUnwindEx in _Unwind_Resume), so just
-    // pass without calling our destructors here.
-    return ExceptionContinueSearch;
+    // Foreign exception (SEH, MSVC C++, etc.).
+    // Create wrapper to present as _Unwind_Exception to personality.
+    ForeignExceptionWrapper *wrapper = getForeignWrapper(ms_exc);
+    if (!wrapper)
+      wrapper = createForeignWrapper(ms_exc);
+
+    exc = reinterpret_cast<_Unwind_Exception *>(wrapper);
+    ours = false;
+
+    __unw_init_seh(&cursor, disp->ContextRecord);
+    __unw_seh_set_disp_ctx(&cursor, disp);
+    __unw_set_reg(&cursor, UNW_REG_IP, disp->ControlPc);
+    ctx = (struct _Unwind_Context *)&cursor;
+
+    if (!IS_UNWINDING(ms_exc->ExceptionFlags)) {
+      // Search phase - let personality decide if catch(...) should catch.
+      // This enables Itanium catch(...) to catch foreign exceptions including
+      // MSVC C++ exceptions (0xE06D7363) and other SEH exceptions.
+      action = _UA_SEARCH_PHASE;
+
+      _LIBUNWIND_TRACE_UNWINDING("_GCC_specific_handler() foreign search%s", "");
+      urc = pers(1, action, exc->exception_class, exc, ctx);
+      _LIBUNWIND_TRACE_UNWINDING("_GCC_specific_handler() personality returned %d", urc);
+
+      if (urc == _URC_HANDLER_FOUND) {
+        // Personality found a catch(...) or exception spec that wants this.
+        // Record the handler frame for phase 2.
+        wrapper->private_[1] = (uintptr_t)frame;
+        return ExceptionContinueSearch; // Let SEH start phase 2 unwinding
+      }
+      // No handler found, continue searching.
+      return ExceptionContinueSearch;
+    }
+
+    // Cleanup phase - run destructors.
+    // Check if this is the handler frame found during search phase.
+    if (wrapper->private_[1] == (uintptr_t)frame) {
+      action = (_Unwind_Action)(_UA_CLEANUP_PHASE | _UA_HANDLER_FRAME);
+    } else {
+      action = (_Unwind_Action)(_UA_CLEANUP_PHASE | _UA_FORCE_UNWIND);
+    }
+
+    _LIBUNWIND_TRACE_UNWINDING("_GCC_specific_handler() foreign cleanup%s", "");
+    urc = pers(1, action, exc->exception_class, exc, ctx);
+    _LIBUNWIND_TRACE_UNWINDING("_GCC_specific_handler() personality returned %d", urc);
+
+    switch (urc) {
+    case _URC_CONTINUE_UNWIND:
+      return ExceptionContinueSearch;
+    case _URC_INSTALL_CONTEXT: {
+      __unw_get_reg(&cursor, UNW_REG_IP, &target);
+      wrapper->private_[2] = target;
+      CONTEXT new_ctx;
+      RtlUnwindEx(frame, (PVOID)target, ms_exc, exc, &new_ctx, disp->HistoryTable);
+      _LIBUNWIND_ABORT("RtlUnwindEx() failed");
+    }
+    default:
+      return ExceptionContinueSearch;
+    }
   }
   if (!ctx) {
     __unw_init_seh(&cursor, disp->ContextRecord);
@@ -268,7 +366,7 @@ __libunwind_seh_personality(int version, _Unwind_Action state,
   switch (ms_act) {
   case ExceptionContinueExecution: return _URC_END_OF_STACK;
   case ExceptionContinueSearch: return _URC_CONTINUE_UNWIND;
-  case 4 /*ExceptionExecuteHandler*/:
+  case 4: // ExceptionExecuteHandler
     return phase2 ? _URC_INSTALL_CONTEXT : _URC_HANDLER_FOUND;
   default:
     return phase2 ? _URC_FATAL_PHASE2_ERROR : _URC_FATAL_PHASE1_ERROR;
@@ -400,7 +498,12 @@ _Unwind_RaiseException(_Unwind_Exception *exception_object) {
 
   // phase 1: the search phase
   // We'll let the system do that for us.
-  RaiseException(STATUS_GCC_THROW, 0, 1, (ULONG_PTR *)&exception_object);
+  EXCEPTION_RECORD rec;
+  memset(&rec, 0, sizeof(rec));
+  rec.ExceptionCode = STATUS_GCC_THROW;
+  rec.NumberParameters = 1;
+  rec.ExceptionInformation[0] = (ULONG_PTR)exception_object;
+  RtlRaiseException(&rec);
 
   // If we get here, either something went horribly wrong or we reached the
   // top of the stack. Either way, let libc++abi call std::terminate().
@@ -429,6 +532,16 @@ _Unwind_Resume(_Unwind_Exception *exception_object) {
     unwind_phase2_forced(&uc, exception_object,
                          (_Unwind_Stop_Fn) exception_object->private_[0],
                          (void *)exception_object->private_[4]);
+  } else if (isForeignException(exception_object)) {
+    // Foreign exception cleanup done. Re-raise to continue SEH unwind.
+    auto *wrapper = reinterpret_cast<ForeignExceptionWrapper *>(exception_object);
+    _LIBUNWIND_TRACE_UNWINDING("_Unwind_Resume() re-raising foreign 0x%lx",
+                               (unsigned long)wrapper->original_code);
+    EXCEPTION_RECORD foreign_rec;
+    memset(&foreign_rec, 0, sizeof(foreign_rec));
+    foreign_rec.ExceptionCode = wrapper->original_code;
+    foreign_rec.ExceptionFlags = EXCEPTION_NONCONTINUABLE;
+    RtlRaiseException(&foreign_rec);
   } else {
     // Recover the parameters for the unwind from the exception object
     // so we can start unwinding again.

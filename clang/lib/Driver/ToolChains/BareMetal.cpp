@@ -673,6 +673,8 @@ void baremetal::Linker::ConstructJob(Compilation &C, const JobAction &JA,
             TC.getCompilerRTArgString(Args, "crtend", ToolChain::FT_Object);
         break;
       }
+      case (ToolChain::RLT_Msvcrt):
+        llvm_unreachable("msvcrt not supported for bare metal");
       }
       CmdArgs.push_back(Args.MakeArgString(TC.GetFilePath(CRTBegin)));
     }

@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <sys/types.h>
 // clang-format off
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 // These must be included after windows.h.
 // architecture need to be set before including

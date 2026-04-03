@@ -1472,9 +1472,20 @@ ItaniumWindowsARMleTargetInfo::ItaniumWindowsARMleTargetInfo(
 void ItaniumWindowsARMleTargetInfo::getTargetDefines(
     const LangOptions &Opts, MacroBuilder &Builder) const {
   WindowsARMTargetInfo::getTargetDefines(Opts, Builder);
+  Builder.defineMacro("_WIN32_ITANIUM");
+  Builder.defineMacro("NOMINMAX");
 
-  if (Opts.MSVCCompat)
+  if (Opts.MSVCCompat) {
     WindowsARMTargetInfo::getVisualStudioDefines(Opts, Builder);
+  } else {
+    // System-header-only for SDK compatibility.
+    assert((getTriple().getArch() == llvm::Triple::arm ||
+            getTriple().getArch() == llvm::Triple::thumb) &&
+           "invalid architecture for Windows ARM target info");
+    unsigned Offset = getTriple().getArch() == llvm::Triple::arm ? 4 : 6;
+    Builder.defineSystemHeaderOnlyMacro("_M_ARM",
+                                        getTriple().getArchName().substr(Offset));
+  }
 }
 
 // Windows ARM, MS (C++) ABI

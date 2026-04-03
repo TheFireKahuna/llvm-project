@@ -198,7 +198,7 @@ _LIBCPP_HARDENING_MODE_DEBUG
 #  elif defined(_LIBCPP_ABI_FORCE_MICROSOFT)
 #    define _LIBCPP_ABI_MICROSOFT
 #  else
-#    if defined(_WIN32) && defined(_MSC_VER)
+#    if defined(_WIN32) && defined(_MSC_VER) && !defined(_WIN32_ITANIUM)
 #      define _LIBCPP_ABI_MICROSOFT
 #    else
 #      define _LIBCPP_ABI_ITANIUM
@@ -224,9 +224,8 @@ _LIBCPP_HARDENING_MODE_DEBUG
 #    define _LIBCPP_SHORT_WCHAR 1
 // Both MinGW and native MSVC provide a "MSVC"-like environment
 #    define _LIBCPP_MSVCRT_LIKE
-// If mingw not explicitly detected, assume using MS C runtime only if
-// a MS compatibility version is specified.
-#    if defined(_MSC_VER) && !defined(__MINGW32__)
+// Assume MS C runtime if _MSC_VER or _WIN32_ITANIUM, but not MinGW.
+#    if (defined(_MSC_VER) || defined(_WIN32_ITANIUM)) && !defined(__MINGW32__)
 #      define _LIBCPP_MSVCRT // Using Microsoft's C Runtime library
 #    endif
 #    if (defined(_M_AMD64) || defined(__x86_64__)) || (defined(_M_ARM) || defined(__arm__))

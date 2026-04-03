@@ -68,6 +68,7 @@
 #endif
 
 #if defined(__SEH__) && !defined(__USING_SJLJ_EXCEPTIONS__)
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winnt.h>
 

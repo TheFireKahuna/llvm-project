@@ -19,6 +19,11 @@
 #include <stddef.h>
 
 #if defined(__SEH__) && !defined(__USING_SJLJ_EXCEPTIONS__) && defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOGDI
+#ifndef NOMINMAX
+  #define NOMINMAX
+#endif
 #include <windows.h>
 #include <ntverp.h>
 #endif
@@ -190,7 +195,7 @@ extern void *__deregister_frame_info_bases(const void *fde)
 typedef struct _EXCEPTION_RECORD EXCEPTION_RECORD;
 typedef struct _CONTEXT CONTEXT;
 typedef struct _DISPATCHER_CONTEXT DISPATCHER_CONTEXT;
-#elif !defined(__MINGW32__) && VER_PRODUCTBUILD < 8000
+#elif defined(VER_PRODUCTBUILD) && !defined(__MINGW32__) && VER_PRODUCTBUILD < 8000
 typedef struct _DISPATCHER_CONTEXT DISPATCHER_CONTEXT;
 #endif
 // This is the common wrapper for GCC-style personality functions with SEH.

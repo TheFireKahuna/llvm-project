@@ -9,6 +9,7 @@
 #ifdef _WIN32
 #include <direct.h>
 #include <process.h>
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include "WindowsMMap.h"
 #else

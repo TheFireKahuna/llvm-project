@@ -151,6 +151,13 @@ if config.clang_examples:
 if config.llvm_examples:
     config.available_features.add("llvm-examples")
 
+win32_itanium_default_rtlib = config.clang_win32_itanium_default_rtlib
+if win32_itanium_default_rtlib == "":
+    win32_itanium_default_rtlib = "msvcrt"
+config.available_features.add(
+    "win32-itanium-default-rtlib-" + win32_itanium_default_rtlib
+)
+
 
 def have_host_out_of_process_jit_feature_support():
     clang_repl_exe = lit.util.which("clang-repl", config.clang_tools_dir)

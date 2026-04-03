@@ -2453,6 +2453,10 @@ static void AddUnwindLibrary(const ToolChain &TC, const Driver &D,
         CmdArgs.push_back("-l:libunwind.dll.a");
       else
         CmdArgs.push_back("-l:libunwind.so");
+    } else if (TC.getTriple().isWindowsItaniumEnvironment()) {
+      // Let the linker choose between libunwind.so and libunwind.a
+      // depending on what's available, and depending on the -static flag
+      CmdArgs.push_back("unwind");
     } else {
       // Let the linker choose between libunwind.so and libunwind.a
       // depending on what's available, and depending on the -static flag
@@ -2506,6 +2510,9 @@ void tools::AddRunTimeLibs(const ToolChain &TC, const Driver &D,
       }
     } else
       AddLibgcc(TC, D, CmdArgs, Args);
+    break;
+  case ToolChain::RLT_Msvcrt:
+    // Handled by toolchain-specific linkers.
     break;
   }
 

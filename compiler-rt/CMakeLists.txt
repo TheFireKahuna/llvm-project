@@ -43,6 +43,8 @@ include(base-config-ix)
 include(CompilerRTUtils)
 include(CMakeDependentOption)
 include(GetDarwinLinkerVersion)
+include(DetectWindowsItanium)
+include(DetectMSVCLike)
 
 include(CheckCXXCompilerFlag)
 
@@ -797,6 +799,11 @@ if (CMAKE_LINKER MATCHES "link.exe$")
   # individual static libraries, so we enable the suppression flag for
   # the whole compiler-rt project.
   set(CMAKE_STATIC_LINKER_FLAGS "${CMAKE_STATIC_LINKER_FLAGS} ${CMAKE_CXX_LINKER_WRAPPER_FLAG}/IGNORE:4221")
+endif()
+
+if (CMAKE_AR MATCHES "lib\\.exe$")
+  # Same as above
+  set(CMAKE_STATIC_LINKER_FLAGS "${CMAKE_STATIC_LINKER_FLAGS} /IGNORE:4221")
 endif()
 
 add_subdirectory(include)

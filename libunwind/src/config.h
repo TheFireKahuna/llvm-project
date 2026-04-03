@@ -17,6 +17,9 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#if defined(_WIN32) && !defined(__MINGW32__) && !defined(_WIN32_ITANIUM)
+#include <malloc.h> // For _malloca/_freea
+#endif
 
 #include <__libunwind_config.h>
 
@@ -135,7 +138,9 @@
 #ifndef _LIBUNWIND_REMEMBER_HEAP_ALLOC
 #if defined(_LIBUNWIND_REMEMBER_STACK_ALLOC) || defined(__APPLE__) ||          \
     defined(__linux__) || defined(__ANDROID__) || defined(__MINGW32__) ||      \
-    defined(_LIBUNWIND_IS_BAREMETAL)
+    defined(_LIBUNWIND_IS_BAREMETAL) || defined(_WIN32_ITANIUM) ||            \
+    (defined(_WIN32) && defined(__USING_SJLJ_EXCEPTIONS__))
+// _malloca/_freea require SEH with WIN32; SJLJ builds must use __builtin_alloca.
 #define _LIBUNWIND_REMEMBER_ALLOC(_size) __builtin_alloca(_size)
 #define _LIBUNWIND_REMEMBER_FREE(_ptr)                                         \
   do {                                                                         \

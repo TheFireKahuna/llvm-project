@@ -17,7 +17,7 @@
     (__has_feature(modules) && !__building_module(_Builtin_stddef))
 #define _WCHAR_T
 
-#ifdef _MSC_EXTENSIONS
+#if defined(_MSC_EXTENSIONS) || defined(_WIN32_ITANIUM)
 #define _WCHAR_T_DEFINED
 #endif
 

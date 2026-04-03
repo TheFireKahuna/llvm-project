@@ -320,6 +320,16 @@ if (NOT(CLANG_DEFAULT_UNWINDLIB STREQUAL "" OR
     "Default unwind library to use (\"none\" \"libgcc\" or \"libunwind\", empty to match runtime library.)" FORCE)
 endif()
 
+set(CLANG_WIN32_ITANIUM_DEFAULT_RTLIB "" CACHE STRING
+  "Default runtime library for Win32 Itanium (\"msvcrt\" or \"compiler-rt\", empty for msvcrt)")
+if (NOT(CLANG_WIN32_ITANIUM_DEFAULT_RTLIB STREQUAL "" OR
+        CLANG_WIN32_ITANIUM_DEFAULT_RTLIB STREQUAL "msvcrt" OR
+        CLANG_WIN32_ITANIUM_DEFAULT_RTLIB STREQUAL "compiler-rt"))
+  message(WARNING "Resetting Win32 Itanium default rtlib to platform default")
+  set(CLANG_WIN32_ITANIUM_DEFAULT_RTLIB "" CACHE STRING
+    "Default runtime library for Win32 Itanium (\"msvcrt\" or \"compiler-rt\", empty for msvcrt)" FORCE)
+endif()
+
 set(CLANG_DEFAULT_OBJCOPY "objcopy" CACHE STRING
   "Default objcopy executable to use.")
 
@@ -684,6 +694,19 @@ if (CLANG_ENABLE_BOOTSTRAP)
       set(LTO_LIBRARY -DDARWIN_LTO_LIBRARY=${LLVM_SHLIB_OUTPUT_INTDIR}/libLTO.dylib
         -DDYLD_LIBRARY_PATH=${LLVM_LIBRARY_OUTPUT_INTDIR})
       set(${CLANG_STAGE}_LIBTOOL -DCMAKE_LIBTOOL=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-libtool-darwin)
+    elseif(BOOTSTRAP_CMAKE_AR OR BOOTSTRAP_CMAKE_RANLIB)
+      if(BOOTSTRAP_CMAKE_AR)
+        set(${CLANG_STAGE}_AR -DCMAKE_AR=${BOOTSTRAP_CMAKE_AR})
+      endif()
+      if(BOOTSTRAP_CMAKE_RANLIB)
+        set(${CLANG_STAGE}_RANLIB -DCMAKE_RANLIB=${BOOTSTRAP_CMAKE_RANLIB})
+      endif()
+    elseif(BOOTSTRAP_LLVM_HOST_TRIPLE MATCHES ".*-windows-itanium.*"
+           OR LLVM_DEFAULT_TARGET_TRIPLE MATCHES ".*-windows-itanium.*" OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+      # Windows Itanium or GNU-style clang simulating MSVC: use llvm-ar
+      add_dependencies(clang-bootstrap-deps llvm-ar llvm-ranlib)
+      set(${CLANG_STAGE}_AR -DCMAKE_AR=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-ar)
+      set(${CLANG_STAGE}_RANLIB -DCMAKE_RANLIB=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-ranlib)
     elseif(MSVC)
       add_dependencies(clang-bootstrap-deps llvm-lib)
       set(${CLANG_STAGE}_AR -DCMAKE_AR=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-lib)
@@ -755,8 +778,16 @@ if (CLANG_ENABLE_BOOTSTRAP)
   set(C_COMPILER "clang")
   set(CXX_COMPILER "clang++")
   if(WIN32)
-    set(C_COMPILER "clang-cl.exe")
-    set(CXX_COMPILER "clang-cl.exe")
+    if(LLVM_HOST_TRIPLE MATCHES ".*-windows-itanium.*" OR LLVM_DEFAULT_TARGET_TRIPLE MATCHES ".*-windows-itanium.*"
+            OR BOOTSTRAP_LLVM_HOST_TRIPLE MATCHES ".*-windows-itanium.*")
+      # Windows Itanium uses GNU-style driver with .exe extension
+      set(C_COMPILER "clang.exe")
+      set(CXX_COMPILER "clang++.exe")
+    else()
+      # All other Windows targets use the MSVC-style driver
+      set(C_COMPILER "clang-cl.exe")
+      set(CXX_COMPILER "clang-cl.exe")
+    endif()
   endif()
 
   set(COMPILER_OPTIONS
@@ -898,6 +929,23 @@ if (CLANG_ENABLE_BOOTSTRAP)
     USES_TERMINAL_INSTALL 1
     LIST_SEPARATOR |
     )
+
+  # Windows Itanium: copy runtime DLLs needed by stage2 tools.
+  # Stage2 clang/lld need these DLLs to run during the build.
+  # DLLs are in the staging directory to avoid locking conflicts.
+  if(WIN32 AND BOOTSTRAP_LLVM_HOST_TRIPLE MATCHES ".*-windows-itanium.*")
+    set(_WI_STAGING_DIR "${CMAKE_BINARY_DIR}/runtimes/runtimes-${BOOTSTRAP_LLVM_HOST_TRIPLE}-bins/runtime-staging/bin")
+    ExternalProject_Add_Step(${NEXT_CLANG_STAGE} copy-runtime-dlls
+      COMMAND ${CMAKE_COMMAND} -E make_directory <BINARY_DIR>/bin
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${_WI_STAGING_DIR}/unwind.dll"
+        "${_WI_STAGING_DIR}/c++.dll"
+        "${_WI_STAGING_DIR}/c.dll"
+        <BINARY_DIR>/bin/
+      DEPENDERS configure
+      COMMENT "Copying Windows Itanium runtime DLLs to ${NEXT_CLANG_STAGE}"
+    )
+  endif()
 
   # exclude really-install from main target
   set_target_properties(${NEXT_CLANG_STAGE} PROPERTIES _EP_really-install_EXCLUDE_FROM_MAIN On)

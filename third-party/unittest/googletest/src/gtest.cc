@@ -4115,7 +4115,7 @@ std::string FormatTimeInMillisAsSeconds(TimeInMillis ms) {
 }
 
 static bool PortableLocaltime(time_t seconds, struct tm* out) {
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) || defined(_WIN32_ITANIUM)
   return localtime_s(out, &seconds) == 0;
 #elif defined(__MINGW32__) || defined(__MINGW64__)
   // MINGW <time.h> provides neither localtime_r nor localtime_s, but uses

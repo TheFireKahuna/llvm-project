@@ -55,7 +55,7 @@ struct termios {
   speed_t c_ospeed; // output speed
 };
 
-#ifdef _MSC_VER
+#if (defined(_MSC_VER) || defined(_WIN32_ITANIUM))
 struct timeval {
   long tv_sec;
   long tv_usec;

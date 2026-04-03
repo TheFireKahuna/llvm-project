@@ -18,7 +18,9 @@
 #include "gtest/gtest.h"
 
 #if SANITIZER_WINDOWS
-#define NOMINMAX
+#ifndef NOMINMAX
+  #define NOMINMAX
+#endif
 #include <windows.h>
 #undef NOMINMAX
 #endif

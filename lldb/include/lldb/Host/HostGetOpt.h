@@ -9,7 +9,7 @@
 #ifndef LLDB_HOST_HOSTGETOPT_H
 #define LLDB_HOST_HOSTGETOPT_H
 
-#if !defined(_MSC_VER) && !defined(__NetBSD__) && !defined(_AIX)
+#if !defined(_MSC_VER) && !defined(_WIN32_ITANIUM) && !defined(__NetBSD__) && !defined(_AIX)
 
 #include <getopt.h>
 #include <unistd.h>

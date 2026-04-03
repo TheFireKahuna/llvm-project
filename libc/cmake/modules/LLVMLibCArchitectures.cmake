@@ -6,8 +6,10 @@
 # platform.
 # ------------------------------------------------------------------------------
 
-if(MSVC)
-  # If the compiler is visual c++ or equivalent, we will assume a host build.
+if(MSVC AND NOT "${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang")
+  # If the compiler is genuine MSVC (not clang-cl), assume a host build.
+  # clang-cl reports its target triple via --version and supports --target,
+  # so it falls through to normal detection below.
   set(LIBC_TARGET_OS ${CMAKE_HOST_SYSTEM_NAME})
   string(TOLOWER ${LIBC_TARGET_OS} LIBC_TARGET_OS)
   set(LIBC_TARGET_ARCHITECTURE ${CMAKE_HOST_SYSTEM_PROCESSOR})
@@ -249,10 +251,8 @@ if(LIBC_TARGET_OS_IS_DARWIN)
   endif()
 endif()
 
-# Windows does not support full mode build.
-if (LIBC_TARGET_OS_IS_WINDOWS AND LLVM_LIBC_FULL_BUILD)
-  message(FATAL_ERROR "Windows does not support full mode build.")
-endif ()
+# Windows Itanium supports full mode build.
+# Upstream LLVM libc does not yet support full builds on MSVC Windows.
 
 message(STATUS
         "Building libc for ${LIBC_TARGET_ARCHITECTURE} on ${LIBC_TARGET_OS} with "

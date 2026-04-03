@@ -243,7 +243,7 @@ int count_successful_threads(int num_threads) {
 
 int main (int argc, char **argv)
 {
-#if !defined(_MSC_VER)
+#if !defined(_MSC_VER) && !defined(_WIN32_ITANIUM)
   signal(SIGPIPE, SIG_IGN);
 #endif
 

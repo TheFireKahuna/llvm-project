@@ -39,6 +39,15 @@ if (MSVC)
                       "targets must use the MS C++ ABI, and libc++abi provides the Itanium C++ ABI.")
 endif()
 
+include(DetectMSVCLike)
+include(DetectWindowsItanium)
+
+# Detect clang-cl (MSVC-style CLI), distinct from Windows Itanium (GNU-style CLI).
+if("${CMAKE_CXX_COMPILER_FRONTEND_VARIANT}" STREQUAL "MSVC")
+  message(STATUS "Configuring for clang-cl")
+  set(LIBCXXABI_TARGETING_CLANG_CL ON)
+endif()
+
 #===============================================================================
 # Setup CMake Options
 #===============================================================================
@@ -148,7 +157,9 @@ option(LIBCXXABI_HERMETIC_STATIC_LIBRARY
 
 if(MINGW)
   set(LIBCXXABI_DEFAULT_TEST_CONFIG "llvm-libc++abi-mingw.cfg.in")
-elseif(WIN32) # clang-cl
+elseif(WIN32_ITANIUM)
+  set(LIBCXXABI_DEFAULT_TEST_CONFIG "llvm-libc++abi-windows-itanium.cfg.in")
+elseif(LIBCXXABI_TARGETING_CLANG_CL)
   if (LIBCXXABI_ENABLE_SHARED)
     set(LIBCXXABI_DEFAULT_TEST_CONFIG "llvm-libc++abi-shared-clangcl.cfg.in")
   else()
@@ -215,7 +226,12 @@ endif()
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${LIBCXXABI_LIBRARY_DIR})
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${LIBCXXABI_LIBRARY_DIR})
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${LIBCXXABI_LIBRARY_DIR})
+# On Windows, DLLs go to bin/, not lib/. Use LLVM_RUNTIME_OUTPUT_INTDIR if available.
+if(MSVC_LIKE AND LLVM_RUNTIME_OUTPUT_INTDIR)
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${LLVM_RUNTIME_OUTPUT_INTDIR})
+else()
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${LIBCXXABI_LIBRARY_DIR})
+endif()
 
 # By default, libcxx and libcxxabi share a library directory.
 if (NOT LIBCXXABI_LIBCXX_LIBRARY_PATH)
@@ -435,7 +451,8 @@ if (LIBCXXABI_HAS_EXTERNAL_THREAD_API)
   add_definitions(-D_LIBCPP_HAS_THREAD_API_EXTERNAL)
 endif()
 
-if (MSVC)
+# Windows Itanium driver provides _CRT_SECURE_NO_WARNINGS.
+if (MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
   add_definitions(-D_CRT_SECURE_NO_WARNINGS)
 endif()
 

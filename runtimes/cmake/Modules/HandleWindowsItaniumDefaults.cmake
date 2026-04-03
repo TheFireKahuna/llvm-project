@@ -122,24 +122,6 @@ set(_use_compiler_rt OFF)
 if(LIBUNWIND_USE_COMPILER_RT OR LIBCXXABI_USE_COMPILER_RT OR LIBCXX_USE_COMPILER_RT)
   set(_use_compiler_rt ON)
 endif()
-
-# wincrt provides CRT entry points when libc isn't providing startup.
-# With LLVM_LIBC_FULL_BUILD, libc's startup/windows/ replaces wincrt.
-if(_use_compiler_rt)
-  message(STATUS "  Using compiler-rt builtins")
-  set_windows_itanium_default(COMPILER_RT_BUILD_BUILTINS ON BOOL
-    "Compiler builtins for Windows Itanium")
-  if(NOT LLVM_LIBC_FULL_BUILD)
-    set_windows_itanium_default(COMPILER_RT_BUILD_WINCRT ON BOOL
-      "CRT startup and UCRT bridge for Windows Itanium")
-  endif()
-else()
-  set_windows_itanium_default(COMPILER_RT_BUILD_BUILTINS OFF BOOL
-    "Compiler builtins for Windows Itanium")
-  set_windows_itanium_default(COMPILER_RT_BUILD_WINCRT OFF BOOL
-    "CRT startup and UCRT bridge for Windows Itanium")
-endif()
-
 #===------------------------------------------------------------------------===#
 # libc Configuration
 #===------------------------------------------------------------------------===#

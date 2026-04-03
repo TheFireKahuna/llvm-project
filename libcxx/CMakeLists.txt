@@ -28,6 +28,8 @@ set(LIBCXX_BINARY_DIR  ${CMAKE_CURRENT_BINARY_DIR})
 
 include(GNUInstallDirs)
 include(WarningFlags)
+include(DetectMSVCLike)
+include(DetectWindowsItanium)
 
 # Require out of source build.
 include(MacroEnsureOutOfSourceBuild)
@@ -35,12 +37,17 @@ MACRO_ENSURE_OUT_OF_SOURCE_BUILD(
  "${PROJECT_NAME} requires an out of source build. Please create a separate
  build directory and run 'cmake /path/to/${PROJECT_NAME} [options]' there."
  )
-if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" AND "${CMAKE_CXX_SIMULATE_ID}" STREQUAL "MSVC")
+# Detect clang-cl. Windows Itanium uses GNU-style CLI but simulates MSVC.
+if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" AND
+   "${CMAKE_CXX_SIMULATE_ID}" STREQUAL "MSVC" AND
+   "${CMAKE_CXX_COMPILER_FRONTEND_VARIANT}" STREQUAL "MSVC")
   message(STATUS "Configuring for clang-cl")
   set(LIBCXX_TARGETING_CLANG_CL ON)
 endif()
 
-if (MSVC)
+if(WIN32_ITANIUM)
+  message(STATUS "Configuring for Windows Itanium")
+elseif (MSVC)
   message(STATUS "Configuring for MSVC")
 endif()
 
@@ -152,6 +159,8 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   set(LIBCXX_DEFAULT_TEST_CONFIG "llvm-libc++-shared-gcc.cfg.in")
 elseif(MINGW)
   set(LIBCXX_DEFAULT_TEST_CONFIG "llvm-libc++-mingw.cfg.in")
+elseif(WIN32_ITANIUM)
+  set(LIBCXX_DEFAULT_TEST_CONFIG "llvm-libc++-windows-itanium.cfg.in")
 elseif(WIN32) # clang-cl
   if (LIBCXX_ENABLE_SHARED)
     set(LIBCXX_DEFAULT_TEST_CONFIG "llvm-libc++-shared-clangcl.cfg.in")
@@ -483,7 +492,12 @@ endif()
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${LIBCXX_LIBRARY_DIR})
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${LIBCXX_LIBRARY_DIR})
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${LIBCXX_LIBRARY_DIR})
+# On Windows, DLLs go to bin/, not lib/. Use LLVM_RUNTIME_OUTPUT_INTDIR if available.
+if(MSVC_LIKE AND LLVM_RUNTIME_OUTPUT_INTDIR)
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${LLVM_RUNTIME_OUTPUT_INTDIR})
+else()
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${LIBCXX_LIBRARY_DIR})
+endif()
 
 # Declare libc++ configuration variables.
 # They are intended for use as follows:
@@ -762,14 +776,19 @@ function(cxx_add_windows_flags target)
                                  _ALLOW_ITERATOR_DEBUG_LEVEL_MISMATCH
                                  # We are building the c++ runtime, don't pull in
                                  # msvcprt.
-                                 _CRTBLD
+                                 _CRTBLD)
+    # Windows Itanium driver provides these; avoid double definition.
+    if(NOT WIN32_ITANIUM)
+      target_compile_definitions(${target} PRIVATE
                                  # Don't warn on the use of "deprecated"
                                  # "insecure" functions which are standards
                                  # specified.
                                  _CRT_SECURE_NO_WARNINGS
-                                 # Use the ISO conforming behaviour for conversion
-                                 # in printf, scanf.
+                                 # ISO-conforming wide specifiers (%s = char*,
+                                 # %ls = wchar_t*). Auto-links
+                                 # iso_stdio_wide_specifiers.lib.
                                  _CRT_STDIO_ISO_WIDE_SPECIFIERS)
+    endif()
   endif()
 endfunction()
 

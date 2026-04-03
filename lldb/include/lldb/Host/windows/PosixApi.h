@@ -18,6 +18,9 @@
 // va_start, va_end, etc macros.
 #include <cstdarg>
 
+// uint32_t, etc.
+#include <cstdint>
+
 // time_t, timespec, etc.
 #include <ctime>
 

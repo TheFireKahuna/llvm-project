@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) || defined(_WIN32_ITANIUM)
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 #endif
 

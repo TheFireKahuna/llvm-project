@@ -1,10 +1,11 @@
 if(NOT DEFINED LLVM_LIBC_COMPILER_IS_GCC_COMPATIBLE)
   if(CMAKE_COMPILER_IS_GNUCXX)
     set(LLVM_LIBC_COMPILER_IS_GCC_COMPATIBLE ON)
+  elseif( "${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang" )
+    # Clang and clang-cl both accept GCC-compatible flags (-f*, -W*, etc.).
+    set(LLVM_LIBC_COMPILER_IS_GCC_COMPATIBLE ON)
   elseif( MSVC )
     set(LLVM_LIBC_COMPILER_IS_GCC_COMPATIBLE OFF)
-  elseif( "${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang" )
-    set(LLVM_LIBC_COMPILER_IS_GCC_COMPATIBLE ON)
   elseif( "${CMAKE_CXX_COMPILER_ID}" MATCHES "Intel" )
     set(LLVM_LIBC_COMPILER_IS_GCC_COMPATIBLE ON)
   endif()
@@ -216,7 +217,10 @@ function(_get_common_compile_options output_var flags)
   set(compile_options ${LIBC_COMPILE_OPTIONS_DEFAULT} ${compile_flags} ${config_flags} ${arch_flags})
 
   if(LLVM_LIBC_COMPILER_IS_GCC_COMPATIBLE)
-    list(APPEND compile_options "-fpie")
+    # -fpie is not supported on Windows.
+    if(NOT LIBC_TARGET_OS_IS_WINDOWS)
+      list(APPEND compile_options "-fpie")
+    endif()
 
     if(LLVM_LIBC_FULL_BUILD)
       # Only add -ffreestanding flag in non-GPU full build mode.
@@ -256,8 +260,19 @@ function(_get_common_compile_options output_var flags)
 
     list(APPEND compile_options "-fno-exceptions")
     list(APPEND compile_options "-fno-lax-vector-conversions")
-    list(APPEND compile_options "-fno-unwind-tables")
-    list(APPEND compile_options "-fno-asynchronous-unwind-tables")
+    if(LIBC_TARGET_OS_IS_WINDOWS)
+      # Windows COFF requires .pdata/.xdata for SEH, stack walks, and
+      # RtlUnwindEx (used by longjmp and C++ EH). The driver suppresses
+      # them under -ffreestanding, so force them back on. Also disable
+      # -ffunction-sections: it creates COMDAT .pdata$ sections that
+      # LLD discards, stripping all unwind info from the final binary.
+      list(APPEND compile_options "-funwind-tables")
+      list(APPEND compile_options "-fno-function-sections")
+      list(APPEND compile_options "-fno-data-sections")
+    else()
+      list(APPEND compile_options "-fno-unwind-tables")
+      list(APPEND compile_options "-fno-asynchronous-unwind-tables")
+    endif()
     list(APPEND compile_options "-fno-rtti")
     if (LIBC_CC_SUPPORTS_PATTERN_INIT)
       list(APPEND compile_options "-ftrivial-auto-var-init=pattern")

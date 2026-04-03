@@ -630,6 +630,26 @@ public:
   }
 };
 
+// x86-32 Windows + Itanium C++ ABI Target
+class LLVM_LIBRARY_VISIBILITY ItaniumWindowsX86_32TargetInfo
+    : public WindowsX86_32TargetInfo {
+public:
+  ItaniumWindowsX86_32TargetInfo(const llvm::Triple &Triple,
+                                 const TargetOptions &Opts)
+      : WindowsX86_32TargetInfo(Triple, Opts) {
+    TheCXXABI.set(TargetCXXABI::GenericItanium);
+    LongDoubleWidth = LongDoubleAlign = 64;
+    LongDoubleFormat = &llvm::APFloat::IEEEdouble();
+  }
+
+  void getTargetDefines(const LangOptions &Opts,
+                        MacroBuilder &Builder) const override {
+    WindowsX86_32TargetInfo::getTargetDefines(Opts, Builder);
+    Builder.defineMacro("_X86_");
+    Builder.defineMacro("_M_IX86", "600");
+  }
+};
+
 // x86-32 MinGW target
 class LLVM_LIBRARY_VISIBILITY MinGWX86_32TargetInfo
     : public WindowsX86_32TargetInfo {
@@ -980,6 +1000,28 @@ public:
   TargetInfo::CallingConvKind
   getCallingConvKind(bool ClangABICompat4) const override {
     return CCK_MicrosoftWin64;
+  }
+};
+
+// x86-64 Windows + Itanium C++ ABI Target
+class LLVM_LIBRARY_VISIBILITY ItaniumWindowsX86_64TargetInfo
+    : public WindowsX86_64TargetInfo {
+public:
+  ItaniumWindowsX86_64TargetInfo(const llvm::Triple &Triple,
+                                 const TargetOptions &Opts)
+      : WindowsX86_64TargetInfo(Triple, Opts) {
+    TheCXXABI.set(TargetCXXABI::GenericItanium);
+    LongDoubleWidth = LongDoubleAlign = 64;
+    LongDoubleFormat = &llvm::APFloat::IEEEdouble();
+  }
+
+  void getTargetDefines(const LangOptions &Opts,
+                        MacroBuilder &Builder) const override {
+    WindowsX86_64TargetInfo::getTargetDefines(Opts, Builder);
+    Builder.defineMacro("_AMD64_");
+    Builder.defineMacro("__x86_64__");
+    Builder.defineMacro("_M_X64", "100");
+    Builder.defineMacro("_M_AMD64", "100");
   }
 };
 

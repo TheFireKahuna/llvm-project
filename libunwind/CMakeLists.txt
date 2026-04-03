@@ -34,6 +34,8 @@ endif()
 #===============================================================================
 include(CMakeDependentOption)
 include(HandleCompilerRT)
+include(DetectMSVCLike)
+include(DetectWindowsItanium)
 
 # Define options.
 option(LIBUNWIND_ENABLE_CET "Build libunwind with CET enabled." OFF)
@@ -163,7 +165,12 @@ endif()
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${LIBUNWIND_LIBRARY_DIR})
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${LIBUNWIND_LIBRARY_DIR})
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${LIBUNWIND_LIBRARY_DIR})
+# On Windows, DLLs go to bin/, not lib/. Use LLVM_RUNTIME_OUTPUT_INTDIR if available.
+if(MSVC_LIKE AND LLVM_RUNTIME_OUTPUT_INTDIR)
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${LLVM_RUNTIME_OUTPUT_INTDIR})
+else()
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${LIBUNWIND_LIBRARY_DIR})
+endif()
 
 set(LIBUNWIND_C_FLAGS "")
 set(LIBUNWIND_CXX_FLAGS "")
@@ -320,7 +327,8 @@ if(LIBUNWIND_REMEMBER_HEAP_ALLOC)
 endif()
 
 # This is the _ONLY_ place where add_definitions is called.
-if (MSVC)
+# Windows Itanium driver provides _CRT_SECURE_NO_WARNINGS.
+if (MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
   add_definitions(-D_CRT_SECURE_NO_WARNINGS)
 endif()
 

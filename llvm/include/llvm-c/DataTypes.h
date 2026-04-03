@@ -27,7 +27,7 @@
 #include <inttypes.h>
 #include <stdint.h>
 
-#ifndef _MSC_VER
+#if !defined(_MSC_VER) && !defined(_WIN32_ITANIUM)
 
 #if !defined(UINT32_MAX)
 # error "The standard header <cstdint> is not C++11 compliant. Must #define "\
@@ -48,7 +48,7 @@
 #undef INT64_MIN
 #endif
 
-#else /* _MSC_VER */
+#else /* _MSC_VER || _WIN32_ITANIUM */
 #ifdef __cplusplus
 #include <cstddef>
 #include <cstdlib>
@@ -64,7 +64,7 @@ typedef signed __int64 ssize_t;
 typedef signed int ssize_t;
 #endif /* _WIN64 */
 
-#endif /* _MSC_VER */
+#endif /* _MSC_VER || _WIN32_ITANIUM */
 
 /* Set defaults for constants which we cannot find. */
 #if !defined(INT64_MAX)

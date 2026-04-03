@@ -1829,6 +1829,25 @@ unsigned MicrosoftARM64TargetInfo::getMinGlobalAlign(uint64_t TypeSize,
   return Align;
 }
 
+ItaniumWindowsARM64TargetInfo::ItaniumWindowsARM64TargetInfo(
+    const llvm::Triple &Triple, const TargetOptions &Opts)
+    : WindowsARM64TargetInfo(Triple, Opts) {
+  TheCXXABI.set(TargetCXXABI::GenericAArch64);
+}
+
+void ItaniumWindowsARM64TargetInfo::getTargetDefines(
+    const LangOptions &Opts, MacroBuilder &Builder) const {
+  WindowsARM64TargetInfo::getTargetDefines(Opts, Builder);
+  Builder.defineMacro("_ARM64_");
+  if (getTriple().isWindowsArm64EC()) {
+    Builder.defineMacro("_M_X64", "100");
+    Builder.defineMacro("_M_AMD64", "100");
+    Builder.defineMacro("_M_ARM64EC", "1");
+  } else {
+    Builder.defineMacro("_M_ARM64", "1");
+  }
+}
+
 MinGWARM64TargetInfo::MinGWARM64TargetInfo(const llvm::Triple &Triple,
                                            const TargetOptions &Opts)
     : WindowsARM64TargetInfo(Triple, Opts) {

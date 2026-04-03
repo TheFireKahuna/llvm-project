@@ -2,8 +2,16 @@
 # DESTDIR environment variable may be unset at configuration time.
 # See PR8397.
 
-# Set to an arbitrary directory to silence GNUInstallDirs warnings
-# regarding being unable to determine libdir.
+# Silence GNUInstallDirs warnings in script mode (cmake -P) where no
+# language is enabled and CMAKE_SIZEOF_VOID_P is undefined.
+if(NOT DEFINED CMAKE_SIZEOF_VOID_P)
+  cmake_host_system_information(RESULT _is_64bit QUERY IS_64BIT)
+  if(_is_64bit)
+    set(CMAKE_SIZEOF_VOID_P 8)
+  else()
+    set(CMAKE_SIZEOF_VOID_P 4)
+  endif()
+endif()
 set(CMAKE_INSTALL_LIBDIR "lib")
 include(GNUInstallDirs)
 

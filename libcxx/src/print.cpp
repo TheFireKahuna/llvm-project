@@ -17,7 +17,9 @@
 
 #if defined(_LIBCPP_WIN32API)
 #  define WIN32_LEAN_AND_MEAN
-#  define NOMINMAX
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
 #  include <io.h>
 #  include <windows.h>
 #elif __has_include(<unistd.h>)

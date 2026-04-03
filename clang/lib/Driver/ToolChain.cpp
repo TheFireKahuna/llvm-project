@@ -1339,6 +1339,8 @@ ToolChain::RuntimeLibType ToolChain::GetRuntimeLibType(
     runtimeLibType = ToolChain::RLT_CompilerRT;
   else if (LibName == "libgcc")
     runtimeLibType = ToolChain::RLT_Libgcc;
+  else if (LibName == "msvcrt")
+    runtimeLibType = ToolChain::RLT_Msvcrt;
   else if (LibName == "platform")
     runtimeLibType = GetDefaultRuntimeLibType();
   else {
@@ -1365,12 +1367,17 @@ ToolChain::UnwindLibType ToolChain::GetUnwindLibType(
   else if (LibName == "platform" || LibName == "") {
     ToolChain::RuntimeLibType RtLibType = GetRuntimeLibType(Args);
     if (RtLibType == ToolChain::RLT_CompilerRT) {
-      if (getTriple().isAndroid() || getTriple().isOSAIX())
+      if (getTriple().isAndroid() || getTriple().isOSAIX() || getTriple().isWindowsItaniumEnvironment())
         unwindLibType = ToolChain::UNW_CompilerRT;
       else
         unwindLibType = ToolChain::UNW_None;
     } else if (RtLibType == ToolChain::RLT_Libgcc)
       unwindLibType = ToolChain::UNW_Libgcc;
+    else if (RtLibType == ToolChain::RLT_Msvcrt)
+      if (getTriple().isWindowsItaniumEnvironment())
+        unwindLibType = ToolChain::UNW_CompilerRT;
+      else
+        unwindLibType = ToolChain::UNW_None;
   } else if (LibName == "libunwind") {
     if (GetRuntimeLibType(Args) == RLT_Libgcc)
       getDriver().Diag(diag::err_drv_incompatible_unwindlib);

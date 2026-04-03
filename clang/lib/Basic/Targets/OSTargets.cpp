@@ -147,9 +147,32 @@ static void addMinGWDefines(const llvm::Triple &Triple, const LangOptions &Opts,
   addCygMingDefines(Opts, Builder);
 }
 
-static void addVisualCDefines(const LangOptions &Opts, MacroBuilder &Builder) {
+static void addWinItaniumDefines(const llvm::Triple &Triple, const LangOptions &Opts,
+                            MacroBuilder &Builder) {
+  
+  Builder.defineMacro("_WIN32_ITANIUM");
+  
+  DefineStd(Builder, "WIN32", Opts);
+  Builder.defineMacro("WINVER", "0x0A00"); // Windows 10
+  Builder.defineMacro("_WIN32_WINNT", "0x0A00"); // Windows 10
+  DefineStd(Builder, "WINNT", Opts);
+  if (Triple.isArch64Bit()) {
+    DefineStd(Builder, "WIN64", Opts);
+  }
+  Builder.defineMacro("STRICT");
+  Builder.defineMacro("ENABLE_RESTRICTED");
+  Builder.defineMacro("UNICODE");
+  Builder.defineMacro("_UNICODE");
+  Builder.defineMacro("WINDOWS_ENABLE_CPLUSPLUS");
+
+  // Enables __declspec(guard(suppress)) within the Windows SDK (winnt.h)
+  Builder.defineMacro("_D1VERSIONLKG171_");
+}
+
+static void addVisualCDefines(const llvm::Triple &Triple,
+                              const LangOptions &Opts, MacroBuilder &Builder) {
   if (Opts.CPlusPlus) {
-    if (Opts.RTTIData)
+    if (Opts.RTTIData && !Triple.isWindowsItaniumEnvironment())
       Builder.defineMacro("_CPPRTTI");
 
     if (Opts.CXXExceptions)
@@ -212,15 +235,26 @@ static void addVisualCDefines(const LangOptions &Opts, MacroBuilder &Builder) {
 
   // FIXME: POSIXThreads isn't exactly the option this should be defined for,
   //        but it works for now.
-  if (Opts.POSIXThreads)
+  if (Opts.POSIXThreads && !Triple.isWindowsItaniumEnvironment())
     Builder.defineMacro("_MT");
 
   if (Opts.MSCompatibilityVersion) {
-    Builder.defineMacro("_MSC_VER",
-                        Twine(Opts.MSCompatibilityVersion / 100000));
-    Builder.defineMacro("_MSC_FULL_VER", Twine(Opts.MSCompatibilityVersion));
+    // Windows Itanium: _MSC_VER visible only in system headers.
+    if (Triple.isWindowsItaniumEnvironment()) {
+      Builder.defineSystemHeaderOnlyMacro(
+          "_MSC_VER", Twine(Opts.MSCompatibilityVersion / 100000));
+      Builder.defineSystemHeaderOnlyMacro("_MSC_FULL_VER",
+                                          Twine(Opts.MSCompatibilityVersion));
+    } else {
+      Builder.defineMacro("_MSC_VER",
+                          Twine(Opts.MSCompatibilityVersion / 100000));
+      Builder.defineMacro("_MSC_FULL_VER", Twine(Opts.MSCompatibilityVersion));
+    }
     // FIXME We cannot encode the revision information into 32-bits
-    Builder.defineMacro("_MSC_BUILD", Twine(1));
+    if (Triple.isWindowsItaniumEnvironment())
+      Builder.defineSystemHeaderOnlyMacro("_MSC_BUILD", Twine(1));
+    else
+      Builder.defineMacro("_MSC_BUILD", Twine(1));
     // Exposed by MSVC, used in their stddef.h.
     Builder.defineMacro("_CRT_USE_BUILTIN_OFFSETOF", Twine(1));
 
@@ -228,17 +262,24 @@ static void addVisualCDefines(const LangOptions &Opts, MacroBuilder &Builder) {
       Builder.defineMacro("_HAS_CHAR16_T_LANGUAGE_SUPPORT", Twine(1));
 
     if (Opts.isCompatibleWithMSVC(LangOptions::MSVC2015)) {
+      const char *MSVCLangVal = nullptr;
       if (Opts.CPlusPlus26)
-        // TODO update to the proper value.
-        Builder.defineMacro("_MSVC_LANG", "202400L");
+        MSVCLangVal = "202400L"; // TODO update to the proper value.
       else if (Opts.CPlusPlus23)
-        Builder.defineMacro("_MSVC_LANG", "202302L");
+        MSVCLangVal = "202302L";
       else if (Opts.CPlusPlus20)
-        Builder.defineMacro("_MSVC_LANG", "202002L");
+        MSVCLangVal = "202002L";
       else if (Opts.CPlusPlus17)
-        Builder.defineMacro("_MSVC_LANG", "201703L");
+        MSVCLangVal = "201703L";
       else if (Opts.CPlusPlus14)
-        Builder.defineMacro("_MSVC_LANG", "201402L");
+        MSVCLangVal = "201402L";
+
+      if (MSVCLangVal) {
+        if (Triple.isWindowsItaniumEnvironment())
+          Builder.defineSystemHeaderOnlyMacro("_MSVC_LANG", MSVCLangVal);
+        else
+          Builder.defineMacro("_MSVC_LANG", MSVCLangVal);
+      }
     }
 
     if (Opts.isCompatibleWithMSVC(LangOptions::MSVC2022_3))
@@ -246,13 +287,23 @@ static void addVisualCDefines(const LangOptions &Opts, MacroBuilder &Builder) {
   }
 
   if (Opts.MicrosoftExt) {
-    Builder.defineMacro("_MSC_EXTENSIONS");
+    // Signals MSVC extension syntax availability, not compiler identity.
+    if (!Triple.isWindowsItaniumEnvironment()) {
+      Builder.defineMacro("_MSC_EXTENSIONS");
+    }
 
     if (Opts.CPlusPlus11) {
       Builder.defineMacro("_RVALUE_REFERENCES_V2_SUPPORTED");
       Builder.defineMacro("_RVALUE_REFERENCES_SUPPORTED");
       Builder.defineMacro("_NATIVE_NULLPTR_SUPPORTED");
     }
+  }
+  else if (!Opts.PtrSizeKeywords) {
+    // MSVC pointer size annotations used by Windows SDK (basetsd.h).
+    // If -fms-extensions or -fptr-size-keywords is enabled, these are real keywords.
+    // Otherwise, define them as empty macros for compatibility.
+    Builder.defineMacro("__ptr32");
+    Builder.defineMacro("__ptr64");
   }
 
   if (!Opts.MSVolatile)
@@ -261,10 +312,11 @@ static void addVisualCDefines(const LangOptions &Opts, MacroBuilder &Builder) {
   if (Opts.Kernel)
     Builder.defineMacro("_KERNEL_MODE");
 
+  Builder.defineMacro("_STDCALL_SUPPORTED");
   Builder.defineMacro("_INTEGRAL_MAX_BITS", "64");
   // Define __STDC_NO_THREADS__ based on MSVC version, threads.h availability,
   // and language standard.
-  if (!(Opts.isCompatibleWithMSVC(LangOptions::MSVC2022_9) && Opts.C11))
+  if (!(Opts.isCompatibleWithMSVC(LangOptions::MSVC2022_9) && Opts.C11) && !Triple.isWindowsItaniumEnvironment())
     Builder.defineMacro("__STDC_NO_THREADS__");
   // Starting with VS 2022 17.1, MSVC predefines the below macro to inform
   // users of the execution character set defined at compile time.
@@ -289,9 +341,12 @@ void addWindowsDefines(const llvm::Triple &Triple, const LangOptions &Opts,
     Builder.defineMacro("_WIN64");
   if (Triple.isWindowsGNUEnvironment())
     addMinGWDefines(Triple, Opts, Builder);
-  else if (Triple.isKnownWindowsMSVCEnvironment() ||
-           (Triple.isWindowsItaniumEnvironment() && Opts.MSVCCompat))
-    addVisualCDefines(Opts, Builder);
+  else if (Triple.isWindowsItaniumEnvironment()) {
+    addWinItaniumDefines(Triple, Opts, Builder);
+    addVisualCDefines(Triple, Opts, Builder);
+  } else if (Triple.isKnownWindowsMSVCEnvironment()) {
+    addVisualCDefines(Triple, Opts, Builder);
+  }
 }
 
 } // namespace targets

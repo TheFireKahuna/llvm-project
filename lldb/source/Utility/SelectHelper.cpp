@@ -28,7 +28,9 @@
 #include <cerrno>
 #if defined(_WIN32)
 // Define NOMINMAX to avoid macros that conflict with std::min and std::max
-#define NOMINMAX
+#ifndef NOMINMAX
+#  define NOMINMAX
+#endif
 #include <winsock2.h>
 #else
 #include <sys/time.h>

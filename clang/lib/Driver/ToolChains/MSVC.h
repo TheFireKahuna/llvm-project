@@ -76,6 +76,10 @@ public:
     return 4;
   }
 
+  RuntimeLibType GetDefaultRuntimeLibType() const override {
+    return ToolChain::RLT_Msvcrt;
+  }
+
   std::string getSubDirectoryPath(llvm::SubDirectoryType Type,
                                   llvm::StringRef SubdirParent = "") const;
   std::string getSubDirectoryPath(llvm::SubDirectoryType Type,
