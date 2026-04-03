@@ -1752,6 +1752,14 @@ CharLiteralParser::CharLiteralParser(const char *begin, const char *end,
 
   Kind = kind;
 
+  // -fwide-char16-literals: L'x' → char16_t in system headers only.
+  // User code keeps L'x' as wchar_t so libc++/application code works with
+  // 32-bit wchar_t. System headers (Windows SDK) need 16-bit L'x' to match
+  // the Win32 WCHAR ABI.
+  if (Kind == tok::wide_char_constant && PP.getLangOpts().WideChar16Literals &&
+      PP.getSourceManager().isInSystemHeader(Loc))
+    Kind = tok::utf16_char_constant;
+
   const char *TokBegin = begin;
 
   // Skip over wide character determinant.
@@ -2057,6 +2065,19 @@ void StringLiteralParser::init(ArrayRef<Token> StringToks){
         if (Diags)
           Diags->Report(Tok.getLocation(), diag::err_unsupported_string_concat);
         hadError = true;
+      }
+    }
+  }
+
+  // -fwide-char16-literals: L"..." → char16_t[] in system headers only.
+  // See comment in CharLiteralParser above.
+  if (Kind == tok::wide_string_literal && Features.WideChar16Literals) {
+    // Find the token that contributed the wide prefix.
+    for (const Token &Tok : StringToks) {
+      if (Tok.getKind() == tok::wide_string_literal) {
+        if (SM.isInSystemHeader(Tok.getLocation()))
+          Kind = tok::utf16_string_literal;
+        break;
       }
     }
   }

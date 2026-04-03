@@ -1019,11 +1019,15 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
   if (!LangOpts.MSVCCompat && LangOpts.CPlusPlus)
     Builder.defineMacro("__private_extern__", "extern");
 
-  if (LangOpts.MicrosoftExt) {
-    if (LangOpts.WChar) {
-      // wchar_t supported as a keyword.
-      Builder.defineMacro("_WCHAR_T_DEFINED");
-      Builder.defineMacro("_NATIVE_WCHAR_T_DEFINED");
+  if (LangOpts.WChar) {
+    if (LangOpts.MicrosoftExt) {
+        // wchar_t supported as a keyword.
+        Builder.defineMacro("_WCHAR_T_DEFINED");
+        Builder.defineMacro("_NATIVE_WCHAR_T_DEFINED");
+    }
+    else if (TI.getTriple().isWindowsItaniumEnvironment()) {
+        // wchar_t supported as a keyword.
+        Builder.defineMacro("_WCHAR_T_DEFINED");
     }
   }
 

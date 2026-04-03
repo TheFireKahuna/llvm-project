@@ -3475,6 +3475,11 @@ defm ms_volatile : BoolFOption<"ms-volatile",
   PosFlag<SetTrue, [], [ClangOption, CC1Option],
           "Volatile loads and stores have acquire and release semantics">,
   NegFlag<SetFalse>>;
+defm wide_char16_literals : BoolFOption<"wide-char16-literals",
+  LangOpts<"WideChar16Literals">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Treat L\"...\" and L'x' literals as char16_t instead of wchar_t">,
+  NegFlag<SetFalse>>;
 def fmsc_version : Joined<["-"], "fmsc-version=">, Group<f_Group>,
   Visibility<[ClangOption, CLOption]>,
   HelpText<"Microsoft compiler version number to report in _MSC_VER (0 = don't define it (default))">;
