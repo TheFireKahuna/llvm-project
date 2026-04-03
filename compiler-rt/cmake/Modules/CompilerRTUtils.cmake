@@ -258,6 +258,10 @@ function(get_compiler_rt_root_source_dir ROOT_DIR_VAR)
     # Compiler-RT CRT standalone build.
     # `llvm-project/compiler-rt/lib/crt`
     set(PATH_TO_COMPILER_RT_SOURCE_ROOT "${CompilerRTCRT_SOURCE_DIR}/../../")
+  elseif (DEFINED CompilerRTWinCRT_SOURCE_DIR)
+    # Compiler-RT wincrt standalone build.
+    # `llvm-project/compiler-rt/lib/wincrt`
+    set(PATH_TO_COMPILER_RT_SOURCE_ROOT "${CompilerRTWinCRT_SOURCE_DIR}/../../")
   elseif(DEFINED CompilerRT_SOURCE_DIR)
     # Compiler-RT standalone build.
     # `llvm-project/compiler-rt`

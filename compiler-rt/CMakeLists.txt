@@ -62,6 +62,8 @@ set(CMAKE_REQUIRED_FLAGS "${OLD_CMAKE_REQUIRED_FLAGS}")
 
 option(COMPILER_RT_BUILD_BUILTINS "Build builtins" ON)
 mark_as_advanced(COMPILER_RT_BUILD_BUILTINS)
+option(COMPILER_RT_BUILD_WINCRT "Build UCRT bridge for Windows Itanium" OFF)
+mark_as_advanced(COMPILER_RT_BUILD_WINCRT)
 option(COMPILER_RT_DISABLE_AARCH64_FMV "Disable AArch64 Function Multi Versioning support" OFF)
 mark_as_advanced(COMPILER_RT_DISABLE_AARCH64_FMV)
 option(COMPILER_RT_BUILD_SANITIZERS "Build sanitizers" ON)

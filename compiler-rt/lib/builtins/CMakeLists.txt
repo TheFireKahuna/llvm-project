@@ -1020,6 +1020,8 @@ else ()
   # Provides section sentinels, __dso_handle, and pseudo-reloc runtime.
   if(WIN32_ITANIUM)
     set(WINCRT_SOURCES
+      ${CMAKE_CURRENT_SOURCE_DIR}/crt_begin_windows.c
+      ${CMAKE_CURRENT_SOURCE_DIR}/crt_end_windows.c
       ${CMAKE_CURRENT_SOURCE_DIR}/crt_pseudo_reloc_windows.cpp
     )
     set_source_files_properties(${WINCRT_SOURCES}

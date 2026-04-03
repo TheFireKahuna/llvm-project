@@ -17,6 +17,12 @@ if(COMPILER_RT_BUILD_BUILTINS)
   add_subdirectory(builtins)
 endif()
 
+# UCRT bridge for Windows Itanium (Itanium ABI integration with UCRT).
+# Note: pseudo_reloc is now in builtins, automatically included for WIN32_ITANIUM.
+if(COMPILER_RT_BUILD_WINCRT AND WIN32)
+  add_subdirectory(wincrt)
+endif()
+
 function(compiler_rt_build_runtime runtime)
   string(TOUPPER ${runtime} runtime_uppercase)
   if(COMPILER_RT_HAS_${runtime_uppercase})

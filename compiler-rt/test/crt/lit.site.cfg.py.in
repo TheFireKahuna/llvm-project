@@ -1,0 +1,10 @@
+@LIT_SITE_CFG_IN_HEADER@
+
+config.name_suffix = "-windows"
+config.crt_lit_source_dir = "@CRT_LIT_SOURCE_DIR@"
+config.crt_test_libdir = "@CRT_TEST_LIBDIR@"
+config.target_arch = "@CRT_TEST_TARGET_ARCH@"
+config.is_msvc = @MSVC_PYBOOL@
+
+lit_config.load_config(config, "@COMPILER_RT_BINARY_DIR@/test/lit.common.configured")
+lit_config.load_config(config, "@CRT_LIT_SOURCE_DIR@/lit.cfg.py")
