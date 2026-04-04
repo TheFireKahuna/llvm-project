@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/Config/llvm-config.h"
 #include "llvm/WindowsDriver/MSVCPaths.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
@@ -35,7 +36,7 @@
 #include <windows.h>
 #endif
 
-#ifdef _MSC_VER
+#if defined(_MSC_VER) && defined(LLVM_RUNTIME_WIN32)
 // Don't support SetupApi on MinGW.
 #define USE_MSVC_SETUP_API
 

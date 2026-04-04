@@ -13,26 +13,24 @@
 #include "hdr/stdio_macros.h"
 #include "hdr/types/off_t.h"
 #include "src/__support/CPP/new.h"
+#include "src/__support/File/file_io_result.h"
 #include "src/__support/error_or.h"
 #include "src/__support/macros/config.h"
 #include "src/__support/macros/properties/architectures.h"
 #include "src/__support/threads/mutex.h"
 
+#ifdef LIBC_COPT_FILE_WIDE_SUPPORT
+#include "src/__support/wchar/mbstate.h"
+#include "hdr/types/wchar_t.h"
+#endif
+
 #include <stddef.h>
 
 namespace LIBC_NAMESPACE_DECL {
 
-struct FileIOResult {
-  size_t value;
-  int error;
-
-  constexpr FileIOResult(size_t val) : value(val), error(0) {}
-  constexpr FileIOResult(size_t val, int error) : value(val), error(error) {}
-
-  constexpr bool has_error() { return error != 0; }
-
-  constexpr operator size_t() { return value; }
-};
+// FileIOResult is defined in file_io_result.h (included above) so that
+// low-level platform helpers (e.g. IO Ring) can use it without pulling in
+// the full File class.
 
 // This a generic base class to encapsulate a platform independent file data
 // structure. Platform specific specializations should create a subclass as
@@ -45,10 +43,16 @@ public:
   static void lock_list();
   static void unlock_list();
 
+  // Flush all open streams. Called by exit() to satisfy C11 7.22.4.4p4.
+  static void flush_all();
+
   static File *list_all;
   static Mutex list_lock;
 
-  File *get_next() const { return next; }
+  LIBC_INLINE File *get_next() const { return next; }
+  LIBC_INLINE File *get_prev() const { return prev; }
+  LIBC_INLINE void set_next(File *f) { next = f; }
+  LIBC_INLINE void set_prev(File *f) { prev = f; }
 
   static constexpr size_t DEFAULT_BUFFER_SIZE = 1024;
 
@@ -61,6 +65,9 @@ public:
   // file position indicator.
   using SeekFunc = ErrorOr<off_t>(File *, off_t, int);
   using CloseFunc = int(File *);
+  // Called after flush_unlocked writes buffered data. Implementations use
+  // this to drain asynchronous write-behind pipelines. Returns errno or 0.
+  using SyncFunc = int(File *);
 
   using ModeFlags = uint32_t;
 
@@ -97,6 +104,7 @@ private:
   ReadFunc *platform_read;
   SeekFunc *platform_seek;
   CloseFunc *platform_close;
+  SyncFunc *platform_sync; // nullptr = no-op (no write-behind to drain).
 
   Mutex mutex;
 
@@ -131,6 +139,26 @@ private:
   bool eof;
   bool err;
 
+  File *prev;
+  File *next;
+
+#ifdef LIBC_COPT_FILE_WIDE_SUPPORT
+  // Stream orientation per C11 §7.21.2: 0 = unset, >0 = wide, <0 = byte.
+  // Set by the first byte or wide I/O operation; only freopen clears it.
+  int orientation;
+
+  // Conversion state for wide-oriented streams (C11 §7.21.2).
+  // Tracks partial multibyte sequences across fputwc/fgetwc calls.
+  // Reset on seek and freopen.
+  internal::mbstate wide_mbstate;
+
+  // Wide pushback slot for ungetwc (C11 §7.29.3.10). Separate from the
+  // byte buffer because the buffer holds encoded UTF-8, not wchar_t.
+  // Cleared by seek and freopen.
+  bool has_wide_pushback;
+  wchar_t wide_pushback_buf;
+#endif
+
   // This is a convenience RAII class to lock and unlock file objects.
   class FileLock {
     File *file;
@@ -145,6 +173,11 @@ private:
   };
 
 protected:
+  // Allows platform subclasses to redirect the stream buffer (e.g. for
+  // double-buffered write-behind). The buffer size is unchanged.
+  void set_buffer_ptr(uint8_t *new_buf) { buf = new_buf; }
+  uint8_t *get_buffer_ptr() const { return buf; }
+
   constexpr bool write_allowed() const {
     return mode & (static_cast<ModeFlags>(OpenMode::WRITE) |
                    static_cast<ModeFlags>(OpenMode::APPEND) |
@@ -156,6 +189,14 @@ protected:
                    static_cast<ModeFlags>(OpenMode::PLUS));
   }
 
+  constexpr bool is_append_mode() const {
+    return mode & static_cast<ModeFlags>(OpenMode::APPEND);
+  }
+
+  constexpr ModeFlags get_mode_flags() const { return mode; }
+
+  void set_mode_flags(ModeFlags modeflags) { mode = modeflags; }
+
 public:
   // We want this constructor to be constexpr so that global file objects
   // like stdout do not require invocation of the constructor which can
@@ -166,13 +207,19 @@ public:
   // the set_buffer method and allocate a buffer.
   constexpr File(WriteFunc *wf, ReadFunc *rf, SeekFunc *sf, CloseFunc *cf,
                  uint8_t *buffer, size_t buffer_size, int buffer_mode,
-                 bool owned, ModeFlags modeflags)
+                 bool owned, ModeFlags modeflags, SyncFunc *syncf = nullptr)
       : platform_write(wf), platform_read(rf), platform_seek(sf),
-        platform_close(cf), mutex(/*timed=*/false, /*recursive=*/false,
-                                  /*robust=*/false, /*pshared=*/false),
+        platform_close(cf), platform_sync(syncf),
+        mutex(/*timed=*/false, /*recursive=*/true,
+              /*robust=*/false, /*pshared=*/false),
         ungetc_buf(0), buf(buffer), bufsize(buffer_size), bufmode(buffer_mode),
         own_buf(owned), mode(modeflags), pos(0), prev_op(FileOp::NONE),
-        read_limit(0), eof(false), err(false), prev(nullptr), next(nullptr) {
+        read_limit(0), eof(false), err(false), prev(nullptr), next(nullptr)
+#ifdef LIBC_COPT_FILE_WIDE_SUPPORT
+        , orientation(0), wide_mbstate{}, has_wide_pushback(false),
+        wide_pushback_buf(0)
+#endif
+  {
     adjust_buf();
   }
 
@@ -194,8 +241,13 @@ public:
     return read_unlocked(data, len);
   }
 
+  // Callers holding the file lock use the *_unlocked variants to avoid the
+  // recursive re-entry when they need to pair a seek or tell with other
+  // state reads/writes (e.g. fgetpos/fsetpos snapshotting mbstate).
+  ErrorOr<int> seek_unlocked(off_t offset, int whence);
   ErrorOr<int> seek(off_t offset, int whence);
 
+  ErrorOr<off_t> tell_unlocked();
   ErrorOr<off_t> tell();
 
   // If buffer has data written to it, flush it out. Does nothing if the
@@ -215,33 +267,41 @@ public:
     return ungetc_unlocked(c);
   }
 
-  // Does the following:
-  // 1. If in write mode, Write out any data present in the buffer.
-  // 2. Call platform_close.
-  // platform_close is expected to cleanup the complete file object.
+  // Flushes buffered data (including async write-behind via platform_sync),
+  // frees owned buffers, then calls platform_close to release platform
+  // resources. POSIX requires fclose to close the file even if flush fails,
+  // so we always call platform_close and return the first error.
   int close() {
+    // Unlink from the global file list BEFORE acquiring the per-file mutex.
+    // This enforces a consistent lock ordering (list_lock → per-file mutex)
+    // shared with fflush(NULL), which holds list_lock while calling
+    // f->flush() on each file. The previous order (per-file mutex in
+    // FileLock, then list_lock in remove_file via platform_close) inverted
+    // this and caused ABBA deadlocks under concurrent fclose + fflush(NULL).
+    //
+    // POSIX §7.21.5.1: after fclose begins, any concurrent use of the
+    // stream is undefined behavior, so fflush(NULL) skipping a stream
+    // that is mid-close is correct — it is no longer an "open" stream.
+    File::remove_file(this);
+
+    int flush_err;
     {
       FileLock lock(this);
-      if (prev_op == FileOp::WRITE && pos > 0) {
-        auto buf_result = platform_write(this, buf, pos);
-        if (buf_result.has_error() || buf_result.value < pos) {
-          err = true;
-          return buf_result.error;
-        }
-      }
+      flush_err = flush_unlocked();
     }
 
-    // If we own the buffer, delete it before calling the platform close
-    // implementation. The platform close should not need to access the buffer
-    // and we need to clean it up before the entire structure is removed.
+    // Free owned buffer before platform_close destroys the File object.
+    // Platforms using non-heap buffers (e.g. mmap) set owned=false and
+    // handle their own buffer cleanup in platform_close.
     if (own_buf)
-      delete buf;
+      delete[] buf;
 
     // Platform close is expected to cleanup the file data structure which
     // includes the file mutex. Hence, we call platform_close after releasing
     // the file lock. Another thread doing file operations while a thread is
     // closing the file is undefined behavior as per POSIX.
-    return platform_close(this);
+    int close_err = platform_close(this);
+    return flush_err ? flush_err : close_err;
   }
 
   // Sets the internal buffer to |buffer| with buffering mode |mode|.
@@ -261,7 +321,15 @@ public:
   void lock() { mutex.lock(); }
   void unlock() { mutex.unlock(); }
 
+  // Non-blocking lock attempt for fflush(NULL). Returns true if the lock
+  // was acquired. Used to avoid ABBA deadlock: fflush(NULL) holds list_lock
+  // and must not block on a per-file mutex that a concurrent fclose holder
+  // might need list_lock to release.
+  bool try_lock_for_flush() { return mutex.try_lock() == MutexError::NONE; }
+
   bool error_unlocked() const { return err; }
+
+  void set_err_unlocked() { err = true; }
 
   bool error() {
     FileLock l(this);
@@ -275,7 +343,10 @@ public:
   // for the pre-processor.
 #pragma push_macro("clearerr_unlocked")
 #undef clearerr_unlocked
-  void clearerr_unlocked() { err = false; }
+  void clearerr_unlocked() {
+    err = false;
+    eof = false;
+  }
 #pragma pop_macro("clearerr_unlocked")
 
   void clearerr() {
@@ -289,6 +360,66 @@ public:
     FileLock l(this);
     return iseof_unlocked();
   }
+
+#ifdef LIBC_COPT_FILE_WIDE_SUPPORT
+  // C11 §7.29.3.5: query or set stream orientation.
+  // Returns >0 for wide, <0 for byte, 0 for unset.
+  int fwide_unlocked(int mode) {
+    if (mode && !orientation)
+      orientation = mode > 0 ? 1 : -1;
+    return orientation;
+  }
+
+  int fwide(int mode) {
+    FileLock l(this);
+    return fwide_unlocked(mode);
+  }
+
+  // Called by wide/byte I/O entry points on first byte of the op. Adopts
+  // the requested orientation on an unoriented stream and returns true; on
+  // a stream already oriented the other way returns false so the caller
+  // can bail. C11 §7.21.2p3 makes byte-on-wide and wide-on-byte undefined
+  // behavior — rejecting avoids silent corruption of wide_mbstate or the
+  // byte buffer. `mode` must be non-zero.
+  bool adopt_orientation_unlocked(int mode) {
+    if (!orientation) {
+      orientation = mode > 0 ? 1 : -1;
+      return true;
+    }
+    return (orientation > 0) == (mode > 0);
+  }
+
+  // Reset stream orientation and conversion state (called by freopen).
+  void reset_orientation() {
+    orientation = 0;
+    wide_mbstate = internal::mbstate{};
+    has_wide_pushback = false;
+  }
+
+  // Accessor for wide I/O functions that need the per-stream conversion state.
+  internal::mbstate *get_wide_mbstate() { return &wide_mbstate; }
+
+  // Wide pushback slot access for ungetwc / fgetwc.
+  bool has_wide_unget() const { return has_wide_pushback; }
+
+  bool push_wide_char(wchar_t wc) {
+    if (has_wide_pushback)
+      return false;
+    wide_pushback_buf = wc;
+    has_wide_pushback = true;
+    eof = false; // C11 §7.29.3.10: clears the EOF indicator.
+    return true;
+  }
+
+  wchar_t pop_wide_char() {
+    wchar_t wc = wide_pushback_buf;
+    has_wide_pushback = false;
+    wide_pushback_buf = 0;
+    return wc;
+  }
+
+  void clear_wide_unget() { has_wide_pushback = false; }
+#endif // LIBC_COPT_FILE_WIDE_SUPPORT
 
   // Returns an bit map of flags corresponding to enumerations of
   // OpenMode, ContentType and CreateType.
@@ -323,9 +454,6 @@ private:
       bufsize = 1;
     }
   }
-
-  File *prev;
-  File *next;
 };
 
 // The implementation of this function is provided by the platform_file

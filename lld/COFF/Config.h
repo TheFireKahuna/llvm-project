@@ -155,6 +155,13 @@ struct Configuration {
   // Symbols in this set are considered as live by the garbage collector.
   std::vector<Symbol *> gcroot;
 
+  // /includeglob: patterns collected from .drectve directives. Applied after
+  // the main convergence loop alongside command-line /includeglob: arguments
+  // because parseDirectives runs during initial input file load, before all
+  // archives' symbol indexes are populated — applying immediately would see
+  // a partial symbol table.
+  std::vector<llvm::StringRef> dtveIncludeGlobs;
+
   llvm::StringSet<> noDefaultLibs;
   bool noDefaultLibAll = false;
 
@@ -330,6 +337,7 @@ struct Configuration {
   bool highEntropyVA = false;
   bool appContainer = false;
   bool mergeDebugDirectory = true;
+  bool itanium = false;
   bool mingw = false;
   bool warnMissingOrderSymbol = true;
   bool warnLocallyDefinedImported = true;

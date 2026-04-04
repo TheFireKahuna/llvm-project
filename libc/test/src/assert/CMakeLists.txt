@@ -12,4 +12,7 @@ add_libc_unittest(
     libc.src.signal.raise
     libc.src.stdlib._Exit
     libc.src.stdlib.abort
+    # EXPECT_DEATH body calls extern-C close(); under freestanding-unit
+    # there is no c.lib to resolve it, so pull the entrypoint directly.
+    libc.src.unistd.close
 )

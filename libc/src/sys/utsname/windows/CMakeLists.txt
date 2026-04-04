@@ -1,0 +1,15 @@
+add_entrypoint_object(
+  uname
+  SRCS
+    uname.cpp
+  HDRS
+    ../uname.h
+  DEPENDS
+    libc.hdr.errno_macros
+    libc.include.sys_utsname
+    libc.src.__support.common
+    libc.src.__support.CPP.stringstream
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.misc_ops
+    libc.src.__support.OSUtil.windows.ntdll
+)

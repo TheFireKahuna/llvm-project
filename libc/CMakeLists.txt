@@ -13,7 +13,9 @@ if(NOT DEFINED LLVM_COMMON_CMAKE_UTILS)
 endif()
 include(${LLVM_COMMON_CMAKE_UTILS}/Modules/CMakePolicy.cmake
   NO_POLICY_SCOPE)
+include(CMakeDependentOption)
 include(CheckCXXCompilerFlag)
+include(GNUInstallDirs)
 
 if (LIBC_CMAKE_VERBOSE_LOGGING)
   get_directory_property(LIBC_OLD_PREPROCESSOR_DEFS COMPILE_DEFINITIONS)
@@ -138,6 +140,24 @@ endif()
 
 option(LLVM_LIBC_FULL_BUILD "Build and test LLVM libc as if it is the full libc" ${default_to_full_build})
 option(LLVM_LIBC_IMPLEMENTATION_DEFINED_TEST_BEHAVIOR "Build LLVM libc tests assuming our implementation-defined behavior" ON)
+
+option(LIBC_ENABLE_SHARED "Build LLVM libc as a shared library." OFF)
+option(LIBC_ENABLE_STATIC "Build LLVM libc as a static library." ON)
+
+if(NOT LIBC_ENABLE_SHARED AND NOT LIBC_ENABLE_STATIC)
+  message(FATAL_ERROR "LLVM libc must be built as either a shared or static library.")
+endif()
+
+cmake_dependent_option(LIBC_INSTALL_SHARED_LIBRARY
+  "Install the shared libc library." ON
+  "LIBC_ENABLE_SHARED" OFF)
+cmake_dependent_option(LIBC_INSTALL_STATIC_LIBRARY
+  "Install the static libc library." ON
+  "LIBC_ENABLE_STATIC" OFF)
+
+# When building a shared library on Windows, export all entrypoint symbols.
+# LLVM_LIBC_FUNCTION_ATTR / LLVM_LIBC_VARIABLE_ATTR are #ifndef-guarded in
+# common.h, so -D definitions here take precedence.
 option(LLVM_LIBC_ENABLE_LINTING "Enables linting of libc source files" OFF)
 option(LLVM_LIBC_ALL_HEADERS "Outputs all functions in header files, regardless of whether they are enabled on this target" OFF)
 
@@ -150,6 +170,18 @@ set(LIBC_KERNEL_HEADERS "${kernel_headers}" CACHE STRING "Path to Linux kernel h
 
 set(LIBC_ENABLE_UNITTESTS ON)
 set(LIBC_ENABLE_HERMETIC_TESTS ${LLVM_LIBC_FULL_BUILD})
+
+# When ON, unit tests use the freestanding link recipe (no libc, no startfiles,
+# no libc++, LibcHermeticTestSupport shims) in the same way hermetic tests do.
+# The test _compile_ side is already freestanding under LLVM_LIBC_FULL_BUILD
+# (-ffreestanding, __STDC_HOSTED__=0); this option extends freestanding to the
+# link side. Needed by targets whose compiler driver provides no foreign libc
+# on the test link line (i.e., where llvm-libc is the only libc reachable),
+# so that symbols like __llvm_libc_errno are supplied uniquely by the libc
+# __internal__ objects rather than duplicated with a libc DLL/archive.
+# Default OFF preserves upstream's hosted unit-test behavior.
+option(LIBC_UNIT_TEST_LINK_FREESTANDING
+  "Link unit tests as freestanding (same recipe as hermetic tests)." OFF)
 
 set(LIBC_CONFIG_JSON_FILE_LIST "")
 
@@ -239,7 +271,7 @@ if(NOT LIBC_CLANG_INCLUDE_TRIPLE)
 endif()
 
 if(LLVM_ENABLE_PER_TARGET_RUNTIME_DIR AND (LIBC_ENABLE_USE_BY_CLANG OR LIBC_TARGET_OS_IS_GPU))
-  set(LIBC_INCLUDE_DIR ${LLVM_BINARY_DIR}/include/${LLVM_DEFAULT_TARGET_TRIPLE})
+  set(LIBC_INCLUDE_DIR ${LLVM_BINARY_DIR}/include/${LIBC_CLANG_INCLUDE_TRIPLE})
   set(LIBC_INSTALL_INCLUDE_DIR ${CMAKE_INSTALL_INCLUDEDIR}/${LLVM_DEFAULT_TARGET_TRIPLE})
   set(LIBC_LIBRARY_DIR ${LLVM_LIBRARY_OUTPUT_INTDIR}/${LIBC_TARGET_SUBDIR})
 else()
@@ -247,10 +279,10 @@ else()
     set(LIBC_INCLUDE_DIR ${CMAKE_CURRENT_BINARY_DIR}/include)
     set(LIBC_LIBRARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/lib)
   elseif(LLVM_LIBRARY_OUTPUT_INTDIR)
-    set(LIBC_INCLUDE_DIR ${LLVM_BINARY_DIR}/include)
+    set(LIBC_INCLUDE_DIR ${LLVM_BINARY_DIR}/include/${LIBC_CLANG_INCLUDE_TRIPLE})
     set(LIBC_LIBRARY_DIR ${LLVM_LIBRARY_OUTPUT_INTDIR})
   else()
-    set(LIBC_INCLUDE_DIR ${CMAKE_BINARY_DIR}/include)
+    set(LIBC_INCLUDE_DIR ${CMAKE_BINARY_DIR}/include/${LIBC_CLANG_INCLUDE_TRIPLE})
     set(LIBC_LIBRARY_DIR ${CMAKE_BINARY_DIR}/lib${LLVM_LIBDIR_SUFFIX})
   endif()
   if(LLVM_ENABLE_PER_TARGET_RUNTIME_DIR)
@@ -272,6 +304,7 @@ elseif(LLVM_ENABLE_PER_TARGET_RUNTIME_DIR)
 else()
   set(LIBC_INSTALL_LIBRARY_DIR lib${LLVM_LIBDIR_SUFFIX})
 endif()
+set(LIBC_INSTALL_RUNTIME_DIR "${CMAKE_INSTALL_BINDIR}")
 
 if(LIBC_TARGET_OS_IS_GPU)
   include(prepare_libc_gpu_build)

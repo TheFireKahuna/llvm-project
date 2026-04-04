@@ -71,7 +71,7 @@ static_assert(__cplusplus >= 201703L, "Libsycl requires C++17 or later.");
 #  endif
 #endif // __SYCL2020_DEPRECATED
 
-#if defined(LLVM_RUNTIME_WIN32) && !defined(_DLL) && !defined(__SYCL_DEVICE_ONLY__)
+#if defined(_WIN32) && !defined(__NTPOSIX__) && !defined(_DLL) && !defined(__SYCL_DEVICE_ONLY__)
 // When built for use with the MSVC C++ standard library, libsycl requires
 // use of the DLL versions of the MSVC run-time (RT) library. This requirement
 // extends to applications that link with libsycl since the same MSVC run-time
@@ -90,6 +90,6 @@ static_assert(__cplusplus >= 201703L, "Libsycl requires C++17 or later.");
 #    warning ERROR_MESSAGE
 #  endif
 #  undef ERROR_MESSAGE
-#endif // defined(LLVM_RUNTIME_WIN32) && !defined(_DLL) && !defined(__SYCL_DEVICE_ONLY__)
+#endif // defined(_WIN32) && !defined(__NTPOSIX__) && !defined(_DLL) && !defined(__SYCL_DEVICE_ONLY__)
 
 #endif // _LIBSYCL___IMPL_DETAIL_CONFIG_HPP

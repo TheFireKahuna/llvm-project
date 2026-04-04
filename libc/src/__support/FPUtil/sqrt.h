@@ -11,6 +11,7 @@
 
 #include "src/__support/macros/properties/architectures.h"
 #include "src/__support/macros/properties/cpu_features.h"
+#include "src/__support/macros/properties/types.h"
 
 #include "src/__support/FPUtil/generic/sqrt.h"
 
@@ -41,6 +42,12 @@ template <> LIBC_INLINE double sqrt<double>(double x) {
 #ifdef LIBC_TYPES_LONG_DOUBLE_IS_X86_FLOAT80
 template <> LIBC_INLINE long double sqrt<long double>(long double x) {
   return __builtin_elementwise_sqrt(x);
+}
+#elif defined(LIBC_TYPES_LONG_DOUBLE_IS_FLOAT64)
+// When long double is the same as double, delegate to the double specialization
+// to ensure hardware sqrt instructions are used (with proper exception flags).
+template <> LIBC_INLINE long double sqrt<long double>(long double x) {
+  return static_cast<long double>(sqrt<double>(static_cast<double>(x)));
 }
 #endif // LIBC_TYPES_LONG_DOUBLE_IS_X86_FLOAT80
 

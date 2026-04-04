@@ -19,11 +19,29 @@ add_header_library(
     libc.src.__support.CPP.atomic
 )
 
+add_header_library(
+  cndvar_queue
+  HDRS
+    cndvar_queue.h
+  DEPENDS
+    libc.hdr.stdint_proxy
+    libc.src.__support.macros.attributes
+)
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${LIBC_TARGET_OS})
   add_subdirectory(${LIBC_TARGET_OS})
 endif()
 
 if(TARGET libc.src.__support.threads.${LIBC_TARGET_OS}.futex_utils)
+
+  add_header_library(
+    futex
+    HDRS
+      futex.h
+    DEPENDS
+      .${LIBC_TARGET_OS}.futex_utils
+  )
+
   libc_set_definition(rwlock_default_spin_count "LIBC_COPT_RWLOCK_DEFAULT_SPIN_COUNT=${LIBC_CONF_RWLOCK_DEFAULT_SPIN_COUNT}")
 
   add_header_library(
@@ -64,12 +82,26 @@ if(TARGET libc.src.__support.threads.${LIBC_TARGET_OS}.futex_utils)
       libc.src.__support.threads.identifier
   )
 
+  # On Windows, mutex.h includes windows/unix_mutex.h (which provides the full
+  # POSIX Mutex with robust support). On other platforms, it includes the shared
+  # unix_mutex.h. The windows/mutex object library provides the platform
+  # "syscalls" (death detection, robust list management).
+  set(_mutex_deps .raw_mutex)
+  if(TARGET libc.src.__support.threads.${LIBC_TARGET_OS}.mutex)
+    list(APPEND _mutex_deps .${LIBC_TARGET_OS}.mutex)
+  endif()
+
   add_header_library(
     unix_mutex
     HDRS
       unix_mutex.h
     DEPENDS
       .raw_mutex
+      .identifier
+      .mutex_common
+      libc.hdr.types.pid_t
+      libc.src.__support.CPP.optional
+      libc.src.__support.macros.optimization
   )
 
   add_header_library(
@@ -78,6 +110,7 @@ if(TARGET libc.src.__support.threads.${LIBC_TARGET_OS}.futex_utils)
       mutex.h
     DEPENDS
       .unix_mutex
+      ${_mutex_deps}
   )
 
   add_object_library(
@@ -106,6 +139,8 @@ add_header_library(
     thread.h
   DEPENDS
     libc.hdr.stdint_proxy
+    libc.hdr.types.clockid_t
+    libc.hdr.types.struct_timespec
     libc.src.__support.common
     libc.src.__support.CPP.atomic
     libc.src.__support.CPP.optional
@@ -128,6 +163,19 @@ if(TARGET libc.src.__support.threads.${LIBC_TARGET_OS}.thread)
       libc.src.__support.CPP.mutex
       libc.src.__support.CPP.optional
   )
+
+  add_object_library(
+    default_attr
+    SRCS
+      default_attr.cpp
+    HDRS
+      default_attr.h
+    DEPENDS
+      .spin_lock
+      .thread_common
+      libc.src.__support.common
+      libc.src.__support.macros.config
+  )
 endif()
 
 if(TARGET libc.src.__support.threads.${LIBC_TARGET_OS}.callonce)
@@ -148,8 +196,37 @@ if(TARGET libc.src.__support.threads.${LIBC_TARGET_OS}.CndVar)
   )
 endif()
 
+if(TARGET libc.src.__support.threads.futex)
+  add_object_library(
+    barrier
+    HDRS
+      barrier.h
+    SRCS
+      barrier.cpp
+    DEPENDS
+      libc.hdr.errno_macros
+      libc.hdr.pthread_macros
+      libc.include.llvm-libc-types.pthread_barrier_t
+      libc.include.llvm-libc-types.pthread_barrierattr_t
+      libc.src.__support.CPP.atomic
+      libc.src.__support.threads.futex
+  )
+endif()
+
+if(TARGET libc.src.__support.threads.${LIBC_TARGET_OS}.semaphore)
+  add_object_library(
+    semaphore
+    ALIAS
+    DEPENDS
+    .${LIBC_TARGET_OS}.semaphore
+  )
+endif()
+
 if (LLVM_LIBC_FULL_BUILD)
-  set(identifier_dependency_on_thread libc.src.__support.threads.thread)
+  # identifier.h only needs the inline Thread/self definitions from thread.h.
+  # Depending on the full thread object library creates a strong cycle:
+  # thread -> mutex -> identifier -> thread.
+  set(identifier_dependency_on_thread libc.src.__support.threads.thread_common)
 endif()
 
 add_header_library(
@@ -162,4 +239,47 @@ add_header_library(
     libc.include.sys_syscall
     libc.hdr.types.pid_t
     ${identifier_dependency_on_thread}
+)
+
+add_header_library(
+  cancel_support
+  HDRS
+    cancel_support.h
+  DEPENDS
+    libc.src.__support.CPP.atomic
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.optimization
+)
+
+# Platform-specific cancel_support provides the OS transport for cancellation
+# delivery (e.g., APC on Windows). Not all platforms define this target.
+set(_cancel_unwind_platform_deps)
+if(TARGET libc.src.__support.threads.${LIBC_TARGET_OS}.cancel_support)
+  list(APPEND _cancel_unwind_platform_deps .${LIBC_TARGET_OS}.cancel_support)
+endif()
+
+add_object_library(
+  cancel_unwind
+  SRCS
+    cancel_unwind.cpp
+  DEPENDS
+    .cancel_support
+    .thread
+    .thread_common
+    ${_cancel_unwind_platform_deps}
+    libc.include.pthread
+)
+
+add_header_library(
+  sched_support
+  HDRS
+    sched_support.h
+)
+
+add_header_library(
+  cpuclock_support
+  HDRS
+    cpuclock_support.h
+  DEPENDS
+    libc.hdr.types.clockid_t
 )

@@ -16,7 +16,6 @@
 #include "hdr/types/pid_t.h"
 #include "src/__support/OSUtil/syscall.h"
 #include "src/__support/macros/optimization.h"
-#include <sys/syscall.h>
 
 namespace LIBC_NAMESPACE_DECL {
 namespace internal {

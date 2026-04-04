@@ -1,0 +1,88 @@
+add_entrypoint_object(
+  epoll_create1
+  SRCS
+    epoll_create1.cpp
+  HDRS
+    ../epoll_create1.h
+  DEPENDS
+    libc.include.sys_epoll
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.epoll_ops
+)
+
+add_entrypoint_object(
+  epoll_ctl
+  SRCS
+    epoll_ctl.cpp
+  HDRS
+    ../epoll_ctl.h
+  DEPENDS
+    libc.include.sys_epoll
+    libc.hdr.types.struct_epoll_event
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.epoll_ops
+)
+
+add_entrypoint_object(
+  epoll_wait
+  SRCS
+    epoll_wait.cpp
+  HDRS
+    ../epoll_wait.h
+  DEPENDS
+    libc.include.sys_epoll
+    libc.hdr.types.struct_epoll_event
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.epoll_ops
+    libc.src.pthread.cancel_internal
+)
+
+add_entrypoint_object(
+  epoll_create
+  SRCS
+    epoll_create.cpp
+  HDRS
+    ../epoll_create.h
+  DEPENDS
+    libc.include.sys_epoll
+    libc.src.__support.common
+    libc.src.errno.errno
+    libc.src.sys.epoll.epoll_create1
+)
+
+add_entrypoint_object(
+  epoll_pwait
+  SRCS
+    epoll_pwait.cpp
+  HDRS
+    ../epoll_pwait.h
+  DEPENDS
+    libc.include.sys_epoll
+    libc.hdr.types.sigset_t
+    libc.hdr.types.struct_epoll_event
+    libc.src.__support.common
+    libc.src.signal.sigprocmask
+    libc.src.sys.epoll.epoll_wait
+)
+
+add_entrypoint_object(
+  epoll_pwait2
+  SRCS
+    epoll_pwait2.cpp
+  HDRS
+    ../epoll_pwait2.h
+  DEPENDS
+    libc.include.sys_epoll
+    libc.hdr.types.sigset_t
+    libc.hdr.types.struct_epoll_event
+    libc.hdr.types.struct_timespec
+    libc.src.__support.common
+    libc.src.signal.sigprocmask
+    libc.src.sys.epoll.epoll_wait
+)

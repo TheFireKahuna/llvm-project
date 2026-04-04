@@ -1,0 +1,40 @@
+//===-- windows_syscalls::open() wrapper -------------------------*- C++ -*-===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_SYSCALL_WRAPPERS_OPEN_H
+#define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_SYSCALL_WRAPPERS_OPEN_H
+
+#include "hdr/stdint_proxy.h"
+#include "hdr/types/mode_t.h"
+#include "src/__support/OSUtil/windows/io/fd_ops.h"
+#include "src/__support/common.h"
+#include "src/__support/error_or.h"
+#include "src/__support/macros/config.h"
+
+namespace LIBC_NAMESPACE_DECL {
+namespace windows_syscalls {
+
+LIBC_INLINE ErrorOr<int> open(const char *path, int flags, mode_t mode) {
+  intptr_t ret = internal::open(path, flags, mode);
+  if (ret < 0)
+    return Error(-static_cast<int>(ret));
+  return static_cast<int>(ret);
+}
+
+LIBC_INLINE ErrorOr<int> openat(int dirfd, const char *path, int flags,
+                                mode_t mode) {
+  intptr_t ret = internal::openat(dirfd, path, flags, mode);
+  if (ret < 0)
+    return Error(-static_cast<int>(ret));
+  return static_cast<int>(ret);
+}
+
+} // namespace windows_syscalls
+} // namespace LIBC_NAMESPACE_DECL
+
+#endif // LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_SYSCALL_WRAPPERS_OPEN_H

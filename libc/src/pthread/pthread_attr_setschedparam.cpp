@@ -1,4 +1,4 @@
-//===-- Implementation of the pthread_attr_setschedparam -----------------===//
+//===-- Implementation of the pthread_attr_setschedparam ------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -16,9 +16,10 @@
 namespace LIBC_NAMESPACE_DECL {
 
 LLVM_LIBC_FUNCTION(int, pthread_attr_setschedparam,
-                   (pthread_attr_t * attr,
-                    const struct sched_param *schedparam)) {
-  return ENOTSUP;
+                   (pthread_attr_t *__restrict attr,
+                    const struct sched_param *__restrict schedparam)) {
+  attr->__schedparam = *schedparam;
+  return 0;
 }
 
 } // namespace LIBC_NAMESPACE_DECL

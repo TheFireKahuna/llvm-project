@@ -1,0 +1,125 @@
+add_entrypoint_object(
+  cfgetispeed
+  SRCS
+    cfgetispeed.cpp
+  HDRS
+    ../cfgetispeed.h
+  DEPENDS
+    libc.include.termios
+)
+
+add_entrypoint_object(
+  cfsetispeed
+  SRCS
+    cfsetispeed.cpp
+  HDRS
+    ../cfsetispeed.h
+  DEPENDS
+    libc.include.termios
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  cfgetospeed
+  SRCS
+    cfgetospeed.cpp
+  HDRS
+    ../cfgetospeed.h
+  DEPENDS
+    libc.include.termios
+)
+
+add_entrypoint_object(
+  cfsetospeed
+  SRCS
+    cfsetospeed.cpp
+  HDRS
+    ../cfsetospeed.h
+  DEPENDS
+    libc.include.termios
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  tcgetsid
+  SRCS
+    tcgetsid.cpp
+  HDRS
+    ../tcgetsid.h
+  DEPENDS
+    libc.include.termios
+    libc.src.__support.OSUtil.windows.terminal_ops
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  tcdrain
+  SRCS
+    tcdrain.cpp
+  HDRS
+    ../tcdrain.h
+  DEPENDS
+    libc.include.termios
+    libc.src.__support.OSUtil.windows.terminal_ops
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  tcflow
+  SRCS
+    tcflow.cpp
+  HDRS
+    ../tcflow.h
+  DEPENDS
+    libc.include.termios
+    libc.src.__support.OSUtil.windows.terminal_ops
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  tcflush
+  SRCS
+    tcflush.cpp
+  HDRS
+    ../tcflush.h
+  DEPENDS
+    libc.include.termios
+    libc.src.__support.OSUtil.windows.terminal_ops
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  tcsendbreak
+  SRCS
+    tcsendbreak.cpp
+  HDRS
+    ../tcsendbreak.h
+  DEPENDS
+    libc.include.termios
+    libc.src.__support.OSUtil.windows.terminal_ops
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  tcgetattr
+  SRCS
+    tcgetattr.cpp
+  HDRS
+    ../tcgetattr.h
+  DEPENDS
+    libc.include.termios
+    libc.src.__support.OSUtil.windows.terminal_ops
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  tcsetattr
+  SRCS
+    tcsetattr.cpp
+  HDRS
+    ../tcsetattr.h
+  DEPENDS
+    libc.include.termios
+    libc.src.__support.OSUtil.windows.terminal_ops
+    libc.src.errno.errno
+)

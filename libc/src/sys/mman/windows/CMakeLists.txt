@@ -1,0 +1,332 @@
+# Windows implementations of POSIX mman functions
+#
+# All entry points are thin wrappers that delegate to engine code in
+# __support/OSUtil/windows/memory/ via windows_syscalls:: wrappers in
+# __support/OSUtil/windows/syscall_wrappers/.
+
+add_entrypoint_object(
+  mmap
+  SRCS
+    mmap.cpp
+  HDRS
+    ../mmap.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.mmap_engine
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.hdr.types.off_t
+)
+
+add_entrypoint_object(
+  munmap
+  SRCS
+    munmap.cpp
+  HDRS
+    ../munmap.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.vm_protect
+)
+
+add_entrypoint_object(
+  mprotect
+  SRCS
+    mprotect.cpp
+  HDRS
+    ../mprotect.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.vm_protect
+)
+
+add_entrypoint_object(
+  pkey_mprotect
+  SRCS
+    pkey_mprotect.cpp
+  HDRS
+    ../pkey_mprotect.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.vm_protect
+)
+
+add_entrypoint_object(
+  mremap
+  SRCS
+    mremap.cpp
+  HDRS
+    ../mremap.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.mremap_engine
+    libc.include.llvm-libc-macros.sys_mman_macros
+)
+
+add_entrypoint_object(
+  madvise
+  SRCS
+    madvise.cpp
+  HDRS
+    ../madvise.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.madvise_ops
+)
+
+add_entrypoint_object(
+  posix_madvise
+  SRCS
+    posix_madvise.cpp
+  HDRS
+    ../posix_madvise.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.posix_madvise_ops
+)
+
+add_entrypoint_object(
+  mlock
+  SRCS
+    mlock.cpp
+  HDRS
+    ../mlock.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.mlock_ops
+)
+
+add_entrypoint_object(
+  mlock2
+  SRCS
+    mlock2.cpp
+  HDRS
+    ../mlock2.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.mlock_ops
+)
+
+add_entrypoint_object(
+  mlockall
+  SRCS
+    mlockall.cpp
+  HDRS
+    ../mlockall.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.mlock_ops
+)
+
+add_entrypoint_object(
+  munlock
+  SRCS
+    munlock.cpp
+  HDRS
+    ../munlock.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.mlock_ops
+)
+
+add_entrypoint_object(
+  munlockall
+  SRCS
+    munlockall.cpp
+  HDRS
+    ../munlockall.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.mlock_ops
+)
+
+add_entrypoint_object(
+  msync
+  SRCS
+    msync.cpp
+  HDRS
+    ../msync.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.msync_ops
+)
+
+add_entrypoint_object(
+  mincore
+  SRCS
+    mincore.cpp
+  HDRS
+    ../mincore.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.mincore_ops
+)
+
+add_entrypoint_object(
+  memfd_create
+  SRCS
+    memfd_create.cpp
+  HDRS
+    ../memfd_create.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.shm_ops
+)
+
+add_entrypoint_object(
+  shm_open
+  SRCS
+    shm_open.cpp
+  HDRS
+    ../shm_open.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.shm_ops
+    libc.hdr.types.mode_t
+)
+
+add_entrypoint_object(
+  shm_unlink
+  SRCS
+    shm_unlink.cpp
+  HDRS
+    ../shm_unlink.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.shm_ops
+)
+
+add_entrypoint_object(
+  pkey_alloc
+  SRCS
+    pkey_alloc.cpp
+  HDRS
+    ../pkey_alloc.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.pkey_ops
+)
+
+add_entrypoint_object(
+  pkey_free
+  SRCS
+    pkey_free.cpp
+  HDRS
+    ../pkey_free.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.pkey_ops
+)
+
+add_entrypoint_object(
+  pkey_get
+  SRCS
+    pkey_get.cpp
+  HDRS
+    ../pkey_get.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.pkey_ops
+)
+
+add_entrypoint_object(
+  pkey_set
+  SRCS
+    pkey_set.cpp
+  HDRS
+    ../pkey_set.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.pkey_ops
+)
+
+add_entrypoint_object(
+  set_mempolicy
+  SRCS
+    set_mempolicy.cpp
+  HDRS
+    ../set_mempolicy.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.numa_ops
+)
+
+add_entrypoint_object(
+  get_mempolicy
+  SRCS
+    get_mempolicy.cpp
+  HDRS
+    ../get_mempolicy.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.numa_ops
+)
+
+add_entrypoint_object(
+  mbind
+  SRCS
+    mbind.cpp
+  HDRS
+    ../mbind.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.numa_ops
+)
+
+add_entrypoint_object(
+  remap_file_pages
+  SRCS
+    remap_file_pages.cpp
+  HDRS
+    ../remap_file_pages.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.remap_file_pages_ops
+)

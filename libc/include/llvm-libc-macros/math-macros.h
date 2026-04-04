@@ -28,8 +28,10 @@
 
 #define HUGE_VAL __builtin_huge_val()
 #define HUGE_VALF __builtin_huge_valf()
+#define HUGE_VALL __builtin_huge_vall()
 #define INFINITY __builtin_inff()
 #define NAN __builtin_nanf("")
+#define MAXFLOAT 3.4028234663852886e+38F
 
 #define FP_ILOGB0 (-INT_MAX - 1)
 #define FP_LLOGB0 (-LONG_MAX - 1)
@@ -173,5 +175,13 @@
 #define M_SQRT1_2f128 (__extension__ 0x1.6a09e667f3bcc908b2fb1366ea95p-1q)
 #define M_SQRT1_3f128 (__extension__ 0x1.279a74590331c4d218f81e4afb25p-1q)
 #endif // __SIZEOF_FLOAT128__
+
+// C99 comparison macros (7.12.14).
+#define isgreater(x, y) __builtin_isgreater(x, y)
+#define isgreaterequal(x, y) __builtin_isgreaterequal(x, y)
+#define isless(x, y) __builtin_isless(x, y)
+#define islessequal(x, y) __builtin_islessequal(x, y)
+#define islessgreater(x, y) __builtin_islessgreater(x, y)
+#define isunordered(x, y) __builtin_isunordered(x, y)
 
 #endif // LLVM_LIBC_MACROS_MATH_MACROS_H

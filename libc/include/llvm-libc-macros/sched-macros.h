@@ -11,6 +11,8 @@
 
 #ifdef __linux__
 #include "linux/sched-macros.h"
+#elif defined(__NTPOSIX__)
+#include "windows/sched-macros.h"
 #endif
 
 #endif // LLVM_LIBC_MACROS_SCHED_MACROS_H

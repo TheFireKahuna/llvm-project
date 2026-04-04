@@ -1,0 +1,28 @@
+add_entrypoint_object(
+  statvfs
+  SRCS
+    statvfs.cpp
+  HDRS
+    ../statvfs.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.ntdll
+    libc.src.__support.OSUtil.windows.nt_path
+    libc.src.__support.OSUtil.windows.statvfs_ops
+    libc.include.sys_statvfs
+)
+
+add_entrypoint_object(
+  fstatvfs
+  SRCS
+    fstatvfs.cpp
+  HDRS
+    ../fstatvfs.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.ntdll
+    libc.src.__support.OSUtil.windows.statvfs_ops
+    libc.include.sys_statvfs
+)

@@ -1,0 +1,53 @@
+add_entrypoint_object(
+  getpwuid
+  SRCS
+    getpwuid.cpp
+  HDRS
+    ../getpwuid.h
+  DEPENDS
+    libc.hdr.types.uid_t
+    libc.hdr.types.struct_passwd
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.passwd_ops
+)
+
+add_entrypoint_object(
+  getpwnam
+  SRCS
+    getpwnam.cpp
+  HDRS
+    ../getpwnam.h
+  DEPENDS
+    libc.hdr.types.struct_passwd
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.passwd_ops
+)
+
+add_entrypoint_object(
+  getpwuid_r
+  SRCS
+    getpwuid_r.cpp
+  HDRS
+    ../getpwuid_r.h
+  DEPENDS
+    libc.hdr.types.uid_t
+    libc.hdr.types.size_t
+    libc.hdr.types.struct_passwd
+    libc.src.__support.common
+    libc.src.__support.OSUtil.windows.passwd_ops
+)
+
+add_entrypoint_object(
+  getpwnam_r
+  SRCS
+    getpwnam_r.cpp
+  HDRS
+    ../getpwnam_r.h
+  DEPENDS
+    libc.hdr.types.size_t
+    libc.hdr.types.struct_passwd
+    libc.src.__support.common
+    libc.src.__support.OSUtil.windows.passwd_ops
+)

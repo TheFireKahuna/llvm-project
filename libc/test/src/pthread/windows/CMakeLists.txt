@@ -1,0 +1,139 @@
+add_custom_target(libc_pthread_windows_unittests)
+
+add_libc_unittest(
+  pthread_create_join_test
+  SUITE
+    libc_pthread_windows_unittests
+  SRCS
+    pthread_create_join_test.cpp
+  DEPENDS
+    libc.src.__support.CPP.atomic
+    libc.src.__support.threads.sleep
+    libc.src.pthread.pthread_create
+    libc.src.pthread.pthread_detach
+    libc.src.pthread.pthread_equal
+    libc.src.pthread.pthread_join
+    libc.src.pthread.pthread_self
+    libc.test.UnitTest.Test
+)
+
+add_libc_unittest(
+  pthread_mutex_test
+  SUITE
+    libc_pthread_windows_unittests
+  SRCS
+    pthread_mutex_test.cpp
+  DEPENDS
+    libc.src.errno.errno
+    libc.src.pthread.pthread_create
+    libc.src.pthread.pthread_join
+    libc.src.pthread.pthread_mutex_destroy
+    libc.src.pthread.pthread_mutex_init
+    libc.src.pthread.pthread_mutex_lock
+    libc.src.pthread.pthread_mutex_trylock
+    libc.src.pthread.pthread_mutex_unlock
+    libc.src.pthread.pthread_mutexattr_destroy
+    libc.src.pthread.pthread_mutexattr_init
+    libc.src.pthread.pthread_mutexattr_settype
+    libc.test.UnitTest.Test
+)
+
+add_libc_unittest(
+  pthread_tls_test
+  SUITE
+    libc_pthread_windows_unittests
+  SRCS
+    pthread_tls_test.cpp
+  DEPENDS
+    libc.src.__support.CPP.atomic
+    libc.src.pthread.pthread_create
+    libc.src.pthread.pthread_getspecific
+    libc.src.pthread.pthread_join
+    libc.src.pthread.pthread_key_create
+    libc.src.pthread.pthread_key_delete
+    libc.src.pthread.pthread_setspecific
+    libc.test.UnitTest.Test
+)
+
+add_libc_unittest(
+  pthread_cond_test
+  SUITE
+    libc_pthread_windows_unittests
+  SRCS
+    pthread_cond_test.cpp
+  DEPENDS
+    libc.src.__support.CPP.atomic
+    libc.src.__support.threads.sleep
+    libc.src.errno.errno
+    libc.src.pthread.pthread_cond_broadcast
+    libc.src.pthread.pthread_cond_destroy
+    libc.src.pthread.pthread_cond_init
+    libc.src.pthread.pthread_cond_signal
+    libc.src.pthread.pthread_cond_timedwait
+    libc.src.pthread.pthread_cond_wait
+    libc.src.pthread.pthread_create
+    libc.src.pthread.pthread_join
+    libc.src.pthread.pthread_mutex_destroy
+    libc.src.pthread.pthread_mutex_init
+    libc.src.pthread.pthread_mutex_lock
+    libc.src.pthread.pthread_mutex_unlock
+    libc.src.time.clock_gettime
+    libc.test.UnitTest.Test
+)
+
+add_libc_unittest(
+  pthread_rwlock_test
+  SUITE
+    libc_pthread_windows_unittests
+  SRCS
+    pthread_rwlock_test.cpp
+  DEPENDS
+    libc.src.__support.CPP.atomic
+    libc.src.errno.errno
+    libc.src.pthread.pthread_create
+    libc.src.pthread.pthread_join
+    libc.src.pthread.pthread_rwlock_destroy
+    libc.src.pthread.pthread_rwlock_init
+    libc.src.pthread.pthread_rwlock_rdlock
+    libc.src.pthread.pthread_rwlock_tryrdlock
+    libc.src.pthread.pthread_rwlock_trywrlock
+    libc.src.pthread.pthread_rwlock_unlock
+    libc.src.pthread.pthread_rwlock_wrlock
+    libc.test.UnitTest.Test
+)
+
+add_libc_unittest(
+  pthread_barrier_test
+  SUITE
+    libc_pthread_windows_unittests
+  SRCS
+    pthread_barrier_test.cpp
+  DEPENDS
+    libc.src.__support.CPP.atomic
+    libc.src.pthread.pthread_barrier_destroy
+    libc.src.pthread.pthread_barrier_init
+    libc.src.pthread.pthread_barrier_wait
+    libc.src.pthread.pthread_create
+    libc.src.pthread.pthread_join
+    libc.test.UnitTest.Test
+)
+
+add_libc_unittest(
+  pthread_once_spin_test
+  SUITE
+    libc_pthread_windows_unittests
+  SRCS
+    pthread_once_spin_test.cpp
+  DEPENDS
+    libc.src.__support.CPP.atomic
+    libc.src.errno.errno
+    libc.src.pthread.pthread_create
+    libc.src.pthread.pthread_join
+    libc.src.pthread.pthread_once
+    libc.src.pthread.pthread_spin_destroy
+    libc.src.pthread.pthread_spin_init
+    libc.src.pthread.pthread_spin_lock
+    libc.src.pthread.pthread_spin_trylock
+    libc.src.pthread.pthread_spin_unlock
+    libc.test.UnitTest.Test
+)

@@ -31,27 +31,41 @@
 # CLANG_BOOTSTRAP_PASSTHROUGH and BOOTSTRAP_ prefixed variables. This file
 # contains only stage2-specific configuration that cannot be passed through.
 
-cmake_minimum_required(VERSION 3.20)
-
-#===------------------------------------------------------------------------===#
+# ---
 # Compiler Selection
-#===------------------------------------------------------------------------===#
+# ---
 # Windows Itanium uses GNU-style driver (clang/clang++), not clang-cl.
 # The WindowsItaniumToolChain expects GNU-style flags.
 
+if(DEFINED _WI_PHASE1_BUILD_DIR)
+  set(_WI_BOOTSTRAP_COMPILER_DIR "${_WI_PHASE1_BUILD_DIR}/bin")
+endif()
+
 if(NOT DEFINED CMAKE_C_COMPILER)
-  find_program(_WI_CLANG NAMES clang REQUIRED)
+  if(DEFINED _WI_BOOTSTRAP_COMPILER_DIR)
+    find_program(_WI_CLANG NAMES clang clang.exe
+      HINTS "${_WI_BOOTSTRAP_COMPILER_DIR}" NO_DEFAULT_PATH)
+  endif()
+  if(NOT _WI_CLANG)
+    find_program(_WI_CLANG NAMES clang clang.exe REQUIRED)
+  endif()
   set(CMAKE_C_COMPILER "${_WI_CLANG}" CACHE FILEPATH "")
 endif()
 
 if(NOT DEFINED CMAKE_CXX_COMPILER)
-  find_program(_WI_CLANGXX NAMES clang++ REQUIRED)
+  if(DEFINED _WI_BOOTSTRAP_COMPILER_DIR)
+    find_program(_WI_CLANGXX NAMES clang++ clang++.exe
+      HINTS "${_WI_BOOTSTRAP_COMPILER_DIR}" NO_DEFAULT_PATH)
+  endif()
+  if(NOT _WI_CLANGXX)
+    find_program(_WI_CLANGXX NAMES clang++ clang++.exe REQUIRED)
+  endif()
   set(CMAKE_CXX_COMPILER "${_WI_CLANGXX}" CACHE FILEPATH "")
 endif()
 
-#===------------------------------------------------------------------------===#
+# ---
 # Build Dependencies with Windows Itanium ABI
-#===------------------------------------------------------------------------===#
+# ---
 # Build dependencies with Windows Itanium ABI using clang/clang++.
 # These are used to build the native WI toolchain itself.
 #
@@ -68,21 +82,16 @@ include(${CMAKE_CURRENT_LIST_DIR}/WindowsItanium-toolchain.cmake)
 if(DEFINED _WI_PHASE1_BUILD_DIR)
   set(_WI_COMPILER_DIR "${_WI_PHASE1_BUILD_DIR}/bin")
   set(_WI_PHASE1_LIB "${_WI_PHASE1_BUILD_DIR}/lib")
-  message(STATUS "Using stage 1 build directory: ${_WI_PHASE1_BUILD_DIR}")
 else()
   get_filename_component(_WI_COMPILER_DIR "${CMAKE_C_COMPILER}" DIRECTORY)
   get_filename_component(_WI_COMPILER_DIR "${_WI_COMPILER_DIR}" ABSOLUTE)
   get_filename_component(_WI_PHASE1_ROOT "${_WI_COMPILER_DIR}" DIRECTORY)
   set(_WI_PHASE1_LIB "${_WI_PHASE1_ROOT}/lib")
-  message(STATUS "Standalone mode - using compiler directory: ${_WI_COMPILER_DIR}")
 endif()
-message(STATUS "Looking for clang/clang++ in: ${_WI_COMPILER_DIR}")
 unset(_WI_DEP_CC CACHE)
 unset(_WI_DEP_CXX CACHE)
 find_program(_WI_DEP_CC NAMES clang HINTS "${_WI_COMPILER_DIR}" NO_DEFAULT_PATH REQUIRED)
 find_program(_WI_DEP_CXX NAMES clang++ HINTS "${_WI_COMPILER_DIR}" NO_DEFAULT_PATH REQUIRED)
-message(STATUS "Found clang: ${_WI_DEP_CC}")
-message(STATUS "Found clang++: ${_WI_DEP_CXX}")
 
 # Use llvm-ar/llvm-ranlib from the stage 1 compiler's bin directory instead of
 # system-installed llvm-lib/lib.exe. This avoids version mismatches.
@@ -119,13 +128,13 @@ set(ZLIB_LIBRARY "${ZLIB_ROOT}/lib/zlibstatic.lib" CACHE FILEPATH "")
 set(ZLIB_INCLUDE_DIR "${ZLIB_ROOT}/include" CACHE PATH "")
 set(zstd_LIBRARY "${zstd_ROOT}/lib/zstd_static.lib" CACHE FILEPATH "")
 set(zstd_INCLUDE_DIR "${zstd_ROOT}/include" CACHE PATH "")
-set(LIBXML2_LIBRARY "${LibXml2_ROOT}/lib/libxml2s.lib" CACHE FILEPATH "")
+set(LIBXML2_LIBRARY "${LibXml2_ROOT}/lib/libxml2.lib" CACHE FILEPATH "")
 set(LIBXML2_INCLUDE_DIR "${LibXml2_ROOT}/include/libxml2" CACHE PATH "")
-set(LibXml2_DIR "${LibXml2_ROOT}/lib/cmake/libxml2-2.14.0" CACHE PATH "")
+set(LibXml2_DIR "${LibXml2_ROOT}/lib/cmake/libxml2-${_WI_LIBXML2_VERSION}" CACHE PATH "")
 
-#===------------------------------------------------------------------------===#
+# ---
 # Native Windows Itanium Build Configuration
-#===------------------------------------------------------------------------===#
+# ---
 # These settings are specific to the native build and cannot be passed through.
 
 # Target configuration - this clang.exe will BE a Windows Itanium binary.
@@ -135,10 +144,11 @@ set(LLVM_HOST_TRIPLE "x86_64-unknown-windows-itanium" CACHE STRING "")
 # Tell CMake to compile for Windows Itanium target.
 set(CMAKE_C_COMPILER_TARGET "x86_64-unknown-windows-itanium" CACHE STRING "")
 set(CMAKE_CXX_COMPILER_TARGET "x86_64-unknown-windows-itanium" CACHE STRING "")
+set(CMAKE_ASM_COMPILER_TARGET "x86_64-unknown-windows-itanium" CACHE STRING "")
 
-#===------------------------------------------------------------------------===#
+# ---
 # Compiler Flags
-#===------------------------------------------------------------------------===#
+# ---
 
 # Suppress warnings for Microsoft extensions in LLVM headers.
 set(CMAKE_C_FLAGS "-Wno-language-extension-token -Wno-microsoft-enum-value" CACHE STRING "")
@@ -149,26 +159,24 @@ set(CMAKE_CXX_FLAGS "-Wno-language-extension-token -Wno-microsoft-enum-value" CA
 # Use -L (GNU-style) which the WindowsItanium toolchain converts to -libpath:.
 # Also explicitly add libraries since CMake may pass -nostdlib which suppresses
 # the toolchain's automatic -defaultlib: additions.
-message(STATUS "Looking for stage 1 runtimes in: ${_WI_PHASE1_LIB}")
 if(EXISTS "${_WI_PHASE1_LIB}/c++.lib")
-  message(STATUS "Found stage 1 runtimes: ${_WI_PHASE1_LIB}/c++.lib")
   set(CMAKE_EXE_LINKER_FLAGS "-L\"${_WI_PHASE1_LIB}\" -lc++ -lunwind" CACHE STRING "" FORCE)
   set(CMAKE_SHARED_LINKER_FLAGS "-L\"${_WI_PHASE1_LIB}\" -lc++ -lunwind" CACHE STRING "" FORCE)
 else()
-  message(STATUS "Stage 1 runtimes NOT found at: ${_WI_PHASE1_LIB}/c++.lib")
-  message(STATUS "CMake try_compile may fail - set CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY as workaround")
+  message(WARNING "Stage 1 runtimes not found at ${_WI_PHASE1_LIB}/c++.lib; "
+    "CMake try_compile may fail. Set CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY as workaround.")
 endif()
 
-#===------------------------------------------------------------------------===#
+# ---
 # Bootstrap Termination
-#===------------------------------------------------------------------------===#
+# ---
 
 # This is the final stage - no further bootstrap.
 set(CLANG_ENABLE_BOOTSTRAP OFF CACHE BOOL "")
 
-#===------------------------------------------------------------------------===#
+# ---
 # Standalone Mode Defaults
-#===------------------------------------------------------------------------===#
+# ---
 # These are only used when running standalone (not via bootstrap).
 # When bootstrapping, these are overridden by values passed from stage 1.
 
@@ -185,11 +193,8 @@ if(NOT DEFINED LLVM_ENABLE_PROJECTS)
 endif()
 
 if(NOT DEFINED LLVM_ENABLE_RUNTIMES)
-  set(LLVM_ENABLE_RUNTIMES "compiler-rt;libunwind;libcxxabi;libcxx;libc" CACHE STRING "")
+  set(LLVM_ENABLE_RUNTIMES "compiler-rt;libunwind;libcxxabi;libcxx" CACHE STRING "")
 endif()
-
-# LLVM libc provides POSIX headers — tell config-ix to enable POSIX paths.
-set(LLVM_LIBC_FULL_BUILD ON CACHE BOOL "")
 
 if(NOT DEFINED LLVM_RUNTIME_TARGETS)
   set(LLVM_RUNTIME_TARGETS "x86_64-unknown-windows-itanium" CACHE STRING "")
@@ -217,45 +222,8 @@ endif()
 
 # Standalone distribution components (used when not bootstrapping).
 if(NOT DEFINED LLVM_DISTRIBUTION_COMPONENTS)
-  set(LLVM_TOOLCHAIN_TOOLS
-    llvm-ar
-    llvm-cov
-    llvm-cxxfilt
-    llvm-dlltool
-    llvm-dwarfdump
-    llvm-dwp
-    llvm-gsymutil
-    llvm-ifs
-    llvm-lib
-    llvm-ml
-    llvm-mt
-    llvm-nm
-    llvm-objcopy
-    llvm-objdump
-    llvm-pdbutil
-    llvm-profdata
-    llvm-ranlib
-    llvm-rc
-    llvm-readelf
-    llvm-readobj
-    llvm-size
-    llvm-strings
-    llvm-strip
-    llvm-symbolizer
-    llvm-undname
-    llvm-xray
-    CACHE STRING "")
-
-  set(LLVM_DISTRIBUTION_COMPONENTS
-    clang
-    clang-format
-    clang-resource-headers
-    clang-tidy
-    clangd
-    lld
-    lldb
-    LTO
-    runtimes
-    ${LLVM_TOOLCHAIN_TOOLS}
-    CACHE STRING "")
+  include(${CMAKE_CURRENT_LIST_DIR}/WindowsItanium-distribution.cmake)
+  set(LLVM_TOOLCHAIN_TOOLS ${_WI_TOOLCHAIN_TOOLS} CACHE STRING "")
+  list(APPEND _WI_DISTRIBUTION_COMPONENTS lldb)
+  set(LLVM_DISTRIBUTION_COMPONENTS ${_WI_DISTRIBUTION_COMPONENTS} CACHE STRING "")
 endif()

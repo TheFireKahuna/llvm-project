@@ -1,0 +1,89 @@
+add_entrypoint_object(
+  getpriority
+  SRCS
+    getpriority.cpp
+  HDRS
+    ../getpriority.h
+  DEPENDS
+    libc.hdr.types.id_t
+    libc.include.sys_resource
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.syscall_wrapper_getpriority
+)
+
+add_entrypoint_object(
+  getrlimit
+  SRCS
+    getrlimit.cpp
+  HDRS
+    ../getrlimit.h
+  DEPENDS
+    libc.hdr.types.struct_rlimit
+    libc.include.sys_resource
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.syscall_wrapper_getrlimit
+)
+
+add_entrypoint_object(
+  setrlimit
+  SRCS
+    setrlimit.cpp
+  HDRS
+    ../setrlimit.h
+  DEPENDS
+    libc.hdr.types.struct_rlimit
+    libc.include.sys_resource
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.syscall_wrapper_setrlimit
+)
+
+add_entrypoint_object(
+  getrusage
+  SRCS
+    getrusage.cpp
+  HDRS
+    ../getrusage.h
+  DEPENDS
+    libc.hdr.types.struct_rusage
+    libc.include.sys_resource
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.syscall_wrapper_getrusage
+)
+
+add_entrypoint_object(
+  prlimit
+  SRCS
+    prlimit.cpp
+  HDRS
+    ../prlimit.h
+  DEPENDS
+    libc.hdr.types.struct_rlimit
+    libc.include.sys_resource
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.syscall_wrapper_prlimit
+)
+
+add_entrypoint_object(
+  setpriority
+  SRCS
+    setpriority.cpp
+  HDRS
+    ../setpriority.h
+  DEPENDS
+    libc.hdr.types.id_t
+    libc.include.sys_resource
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.syscall_wrapper_setpriority
+)

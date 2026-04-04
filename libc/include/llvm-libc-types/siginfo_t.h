@@ -88,7 +88,7 @@ typedef struct {
 #define si_pid _sifields._kill.si_pid
 #define si_uid _sifields._kill.si_uid
 #define si_timerid _sifields._timer.si_tid
-#define si_overrun _sifields._timer.si_overrun
+#define si_overrun _sifields._timer._overrun
 #define si_status _sifields._sigchld.si_status
 #define si_utime _sifields._sigchld.si_utime
 #define si_stime _sifields._sigchld.si_stime

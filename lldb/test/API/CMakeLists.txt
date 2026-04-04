@@ -99,7 +99,7 @@ if ("${LLDB_TEST_COMPILER}" STREQUAL "")
   message(FATAL_ERROR "LLDB test compiler not specified. Tests will not run.")
 endif()
 
-if ( CMAKE_SYSTEM_NAME MATCHES "Windows" )
+if (LLVM_RUNTIME_WIN32)
   set(LLDB_TEST_DEBUG_TEST_CRASHES
     0
     CACHE BOOL "(Windows only) Enables debugging of tests in the test suite by showing the crash dialog when lldb crashes")
@@ -145,7 +145,7 @@ if(CMAKE_HOST_APPLE)
   endif()
 endif()
 
-if(WIN32 AND CMAKE_BUILD_TYPE STREQUAL Debug)
+if(LLVM_RUNTIME_WIN32 AND CMAKE_BUILD_TYPE STREQUAL Debug)
   if(${CMAKE_VERSION} VERSION_LESS "3.30")
     message(WARNING "CMake version is inferior to 3.30. Some lldb tests will fail.")
     set(LLDB_PYTHON_API_TEST_EXECUTABLE "${Python3_EXECUTABLE}")

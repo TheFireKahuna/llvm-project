@@ -24,10 +24,10 @@ list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES
 # MSVC/clang-cl will use CMake's Clang-Windows.cmake platform file, exit here.
 # The remaining CMake configuration overrides CMake's default Windows-GNU.cmake
 # platform file, until an official Windows-Itanium.cmake alternative is upstreamed.
-if(NOT CMAKE_C_COMPILER_TARGET MATCHES "windows-itanium" AND
-   NOT CMAKE_CXX_COMPILER_TARGET MATCHES "windows-itanium" AND
-   NOT LLVM_RUNTIMES_TARGET MATCHES "windows-itanium" AND
-   NOT LLVM_HOST_TRIPLE MATCHES "windows-itanium")
+if(NOT CMAKE_C_COMPILER_TARGET MATCHES "windows-(itanium|ntposix)" AND
+   NOT CMAKE_CXX_COMPILER_TARGET MATCHES "windows-(itanium|ntposix)" AND
+   NOT LLVM_RUNTIMES_TARGET MATCHES "windows-(itanium|ntposix)" AND
+   NOT LLVM_HOST_TRIPLE MATCHES "windows-(itanium|ntposix)")
   return()
 endif()
 
@@ -41,7 +41,7 @@ foreach(_triple IN ITEMS
     "${CMAKE_C_COMPILER_TARGET}"
     "${CMAKE_CXX_COMPILER_TARGET}"
     "${LLVM_RUNTIMES_TARGET}")
-  if(_triple MATCHES "^([^-]+)-.*windows-itanium")
+  if(_triple MATCHES "^([^-]+)-.*windows-(itanium|ntposix)")
     set(_arch "${CMAKE_MATCH_1}")
     break()
   endif()
@@ -73,8 +73,9 @@ unset(_arch_id)
 # Disable MinGW Mode enabled by Windows-GNU
 set(MINGW FALSE)
 
-# Disable versioned library naming (foo.dll.1.0 -> foo.dll).
-set(CMAKE_SHARED_LIBRARY_NAME_WITH_VERSION 0)
+# Match Windows platform behavior: VERSION/SOVERSION set image metadata, but
+# should not produce versioned DLL/import-library filenames or symlink graphs.
+set(CMAKE_PLATFORM_NO_VERSIONED_SONAME 1)
 set(CMAKE_PLATFORM_HAS_INSTALLNAME 0)
 
 # Library Naming - Match Windows-Clang.cmake __windows_compiler_clang_gnu
@@ -108,6 +109,8 @@ macro(__windows_itanium_compiler lang)
   # Dependency file generation
   if(NOT "${lang}" STREQUAL "ASM")
     set(CMAKE_DEPFILE_FLAGS_${lang} "-MD -MT <DEP_TARGET> -MF <DEP_FILE>")
+    # Enable MS extensions (#pragma section, __declspec(allocate), etc.)
+    # needed by both Windows Itanium and NTPOSIX runtimes.
     string(APPEND CMAKE_${lang}_FLAGS_INIT " -fms-extensions")
   endif()
 
@@ -258,7 +261,8 @@ unset(_RTL_FLAGS)
 unset(_RTL_FLAGS_DEBUG)
 
 # LLVM Toolchain Programs
-# Override with LLVM tools to avoid VC SDK tools (lib.exe, mt.exe, rc.exe).
+# Prefer LLVM tools adjacent to the selected compiler to avoid VC SDK tools
+# (lib.exe, mt.exe, rc.exe), but preserve explicitly configured archive tools.
 if(CMAKE_C_COMPILER)
   get_filename_component(_compiler_dir "${CMAKE_C_COMPILER}" DIRECTORY)
 
@@ -269,14 +273,18 @@ if(CMAKE_C_COMPILER)
     endif()
   endmacro()
 
-  _find_llvm_tool(_llvm_ar llvm-ar)
-  if(_llvm_ar)
-    set(CMAKE_AR "${_llvm_ar}")
+  if(NOT CMAKE_AR)
+    _find_llvm_tool(_llvm_ar llvm-ar)
+    if(_llvm_ar)
+      set(CMAKE_AR "${_llvm_ar}")
+    endif()
   endif()
 
-  _find_llvm_tool(_llvm_ranlib llvm-ranlib)
-  if(_llvm_ranlib)
-    set(CMAKE_RANLIB "${_llvm_ranlib}")
+  if(NOT CMAKE_RANLIB)
+    _find_llvm_tool(_llvm_ranlib llvm-ranlib)
+    if(_llvm_ranlib)
+      set(CMAKE_RANLIB "${_llvm_ranlib}")
+    endif()
   endif()
 
   _find_llvm_tool(_llvm_rc llvm-rc)

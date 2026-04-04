@@ -87,6 +87,15 @@ add_proxy_header_library(
 )
 
 add_proxy_header_library(
+  semaphore_macros
+  HDRS
+    semaphore_macros.h
+  FULL_BUILD_DEPENDS
+    libc.include.llvm-libc-macros.semaphore_macros
+    libc.include.semaphore
+)
+
+add_proxy_header_library(
   sched_macros
   HDRS
     sched_macros.h
@@ -96,12 +105,30 @@ add_proxy_header_library(
 )
 
 add_proxy_header_library(
+  dlfcn_macros
+  HDRS
+    dlfcn_macros.h
+  FULL_BUILD_DEPENDS
+    libc.include.llvm-libc-macros.dlfcn_macros
+    libc.include.dlfcn
+)
+
+add_proxy_header_library(
   signal_macros
   HDRS
     signal_macros.h
   FULL_BUILD_DEPENDS
     libc.include.llvm-libc-macros.signal_macros
     libc.include.signal
+)
+
+add_proxy_header_library(
+  spawn_macros
+  HDRS
+    spawn_macros.h
+  FULL_BUILD_DEPENDS
+    libc.include.llvm-libc-macros.spawn_macros
+    libc.include.spawn
 )
 
 add_header_library(stdlib_overlay HDRS stdlib_overlay.h)
@@ -197,7 +224,7 @@ add_proxy_header_library(
     libc.include.llvm-libc-macros.unistd_macros
 )
 
-if (WIN32)
+if (WIN32 AND NOT WIN32_NTPOSIX)
   set(windows_addtional_time_macros libc.include.llvm-libc-macros.windows.time_macros_ext)
 else()
   set(windows_addtional_time_macros "")

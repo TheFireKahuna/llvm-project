@@ -10,6 +10,20 @@ add_entrypoint_object(
 )
 
 add_entrypoint_object(
+  lutimes
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.lutimes
+)
+
+add_entrypoint_object(
+  futimes
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.futimes
+)
+
+add_entrypoint_object(
   setitimer
   ALIAS
   DEPENDS

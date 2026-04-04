@@ -1475,6 +1475,18 @@ TEST(TripleTest, ParsedIDs) {
   EXPECT_EQ(Triple::spirv64, T.getArch());
   EXPECT_EQ(Triple::UnknownVendor, T.getVendor());
   EXPECT_EQ(Triple::ChipStar, T.getOS());
+
+  T = Triple("x86_64-pc-windows-ntposix");
+  EXPECT_EQ(Triple::x86_64, T.getArch());
+  EXPECT_EQ(Triple::PC, T.getVendor());
+  EXPECT_EQ(Triple::Win32, T.getOS());
+  EXPECT_EQ(Triple::NTPOSIX, T.getEnvironment());
+
+  T = Triple("aarch64-pc-windows-ntposix");
+  EXPECT_EQ(Triple::aarch64, T.getArch());
+  EXPECT_EQ(Triple::PC, T.getVendor());
+  EXPECT_EQ(Triple::Win32, T.getOS());
+  EXPECT_EQ(Triple::NTPOSIX, T.getEnvironment());
 }
 
 static std::string Join(StringRef A, StringRef B, StringRef C) {
@@ -2797,6 +2809,8 @@ TEST(TripleTest, FileFormat) {
 
   EXPECT_EQ(Triple::COFF, Triple("i686--win32").getObjectFormat());
 
+  EXPECT_EQ(Triple::COFF, Triple("x86_64-pc-windows-ntposix").getObjectFormat());
+
   EXPECT_EQ(Triple::ELF, Triple("i686-pc-windows-msvc-elf").getObjectFormat());
   EXPECT_EQ(Triple::ELF, Triple("i686-pc-cygwin-elf").getObjectFormat());
 
@@ -2985,6 +2999,11 @@ TEST(TripleTest, DefaultExceptionHandling) {
   EXPECT_EQ(ExceptionHandling::WinEH,
             Triple("x86_64-pc-windows-coreclr").getDefaultExceptionHandling());
 
+  EXPECT_EQ(ExceptionHandling::WinEH,
+            Triple("x86_64-pc-windows-ntposix").getDefaultExceptionHandling());
+  EXPECT_EQ(ExceptionHandling::WinEH,
+            Triple("aarch64-pc-windows-ntposix").getDefaultExceptionHandling());
+
   EXPECT_EQ(ExceptionHandling::None,
             Triple("ve-unknown-linux").getDefaultExceptionHandling());
   EXPECT_EQ(ExceptionHandling::None,
@@ -3091,12 +3110,25 @@ TEST(TripleTest, NormalizeWindows) {
   EXPECT_EQ("i686-pc-windows-gnu", Triple::normalize("i686-pc-windows-gnu"));
   EXPECT_EQ("i686-pc-windows-itanium",
             Triple::normalize("i686-pc-windows-itanium"));
+  EXPECT_EQ("x86_64-pc-windows-ntposix",
+            Triple::normalize("x86_64-pc-windows-ntposix"));
+  EXPECT_EQ("aarch64-pc-windows-ntposix",
+            Triple::normalize("aarch64-pc-windows-ntposix"));
   EXPECT_EQ("i686-pc-windows-msvc", Triple::normalize("i686-pc-windows-msvc"));
 
   EXPECT_EQ("i686-pc-windows-elf",
             Triple::normalize("i686-pc-windows-elf-elf"));
 
   EXPECT_TRUE(Triple("x86_64-pc-win32").isWindowsMSVCEnvironment());
+
+  // NTPOSIX environment predicates
+  EXPECT_TRUE(Triple("x86_64-pc-windows-ntposix").isWindowsNTPOSIXEnvironment());
+  EXPECT_TRUE(Triple("x86_64-pc-windows-ntposix").isOSWindows());
+  EXPECT_FALSE(Triple("x86_64-pc-windows-ntposix").isOSCygMing());
+  EXPECT_FALSE(Triple("x86_64-pc-windows-ntposix").isKnownWindowsMSVCEnvironment());
+  EXPECT_FALSE(Triple("x86_64-pc-windows-ntposix").isOSMSVCRT());
+  EXPECT_FALSE(Triple("x86_64-pc-windows-gnu").isWindowsNTPOSIXEnvironment());
+  EXPECT_FALSE(Triple("x86_64-pc-linux-gnu").isWindowsNTPOSIXEnvironment());
 
   EXPECT_TRUE(Triple(Triple::normalize("mipsel-windows-msvccoff")).isOSBinFormatCOFF());
   EXPECT_TRUE(Triple(Triple::normalize("mipsel-windows-msvc")).isOSBinFormatCOFF());
@@ -3413,6 +3445,7 @@ TEST(TripleTest, DefaultWCharSize) {
   EXPECT_EQ(2u, Triple("x86_64-pc-windows-msvc").getDefaultWCharSize());
   EXPECT_EQ(2u, Triple("aarch64-pc-windows-msvc").getDefaultWCharSize());
   EXPECT_EQ(2u, Triple("x86_64-w64-windows-gnu").getDefaultWCharSize());
+  EXPECT_EQ(4u, Triple("x86_64-pc-windows-ntposix").getDefaultWCharSize());
   EXPECT_EQ(2u, Triple("x86_64-unknown-uefi").getDefaultWCharSize());
   EXPECT_EQ(2u, Triple("x86_64-scei-ps4").getDefaultWCharSize());
   EXPECT_EQ(2u, Triple("x86_64-scei-ps5").getDefaultWCharSize());

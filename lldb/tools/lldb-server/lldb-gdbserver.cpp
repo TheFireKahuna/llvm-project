@@ -44,7 +44,7 @@
 #include "Plugins/Process/FreeBSD/NativeProcessFreeBSD.h"
 #elif defined(__NetBSD__)
 #include "Plugins/Process/NetBSD/NativeProcessNetBSD.h"
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
 #include "Plugins/Process/Windows/Common/NativeProcessWindows.h"
 #endif
 
@@ -69,7 +69,7 @@ typedef process_linux::NativeProcessLinux::Manager NativeProcessManager;
 typedef process_freebsd::NativeProcessFreeBSD::Manager NativeProcessManager;
 #elif defined(__NetBSD__)
 typedef process_netbsd::NativeProcessNetBSD::Manager NativeProcessManager;
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
 typedef NativeProcessWindows::Manager NativeProcessManager;
 #else
 // Dummy implementation to make sure the code compiles

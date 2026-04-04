@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "src/threads/thrd_create.h"
+#include "src/__support/OSUtil/windows/resource/rlimit_data_guard.h"
 #include "src/__support/common.h"
 #include "src/__support/libc_errno.h"
 #include "src/__support/macros/config.h"
@@ -21,6 +22,7 @@ static_assert(sizeof(thrd_t) == sizeof(LIBC_NAMESPACE::Thread),
 
 LLVM_LIBC_FUNCTION(int, thrd_create,
                    (thrd_t * th, thrd_start_t func, void *arg)) {
+  windows::ScopedRlimitDataPublicCall rlimit_scope;
   auto *thread = reinterpret_cast<LIBC_NAMESPACE::Thread *>(th);
   int result = thread->run(func, arg);
   if (result == 0)

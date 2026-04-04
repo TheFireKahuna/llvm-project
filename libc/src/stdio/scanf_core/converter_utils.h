@@ -19,8 +19,24 @@
 namespace LIBC_NAMESPACE_DECL {
 namespace scanf_core {
 
+// Narrow a character known to hold an ASCII value to `char`. Scanf's float
+// and int parsers accumulate input into a narrow CharVector because strtod's
+// interface is narrow; every call site is gated on a prior comparison to an
+// ASCII literal (digit, '+', '-', '.', 'e', 'x', or a letter of "infinity"/
+// "nan"), so the narrowing is correct by construction. The named helper
+// documents that invariant at each use site; codegen is identical to a plain
+// static_cast.
+template <typename CharT>
+LIBC_INLINE constexpr char ascii_narrow(CharT c) {
+  return static_cast<char>(c);
+}
+
+// Templated on section type so both FormatSection (narrow) and
+// WideFormatSection (wide) can be passed directly. Both types declare the
+// same char-agnostic descriptor field names — duck typing resolves access.
+template <typename Sec>
 LIBC_INLINE void write_int_with_length(uintmax_t output_val,
-                                       const FormatSection &to_conv) {
+                                       const Sec &to_conv) {
   if ((to_conv.flags & NO_WRITE) != 0) {
     return;
   }
@@ -68,8 +84,8 @@ LIBC_INLINE void write_int_with_length(uintmax_t output_val,
   }
 }
 
-LIBC_INLINE void write_float_with_length(char *str,
-                                         const FormatSection &to_conv) {
+template <typename Sec>
+LIBC_INLINE void write_float_with_length(char *str, const Sec &to_conv) {
   if ((to_conv.flags & NO_WRITE) != 0) {
     return;
   }

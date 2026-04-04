@@ -1,0 +1,30 @@
+add_entrypoint_object(
+  select
+  SRCS
+    select.cpp
+  HDRS
+    select.h
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_select_macros
+    libc.src.__support.OSUtil.windows.fd_table
+    libc.src.__support.OSUtil.windows.ntdll
+    libc.src.__support.OSUtil.windows.select_ops
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  pselect
+  SRCS
+    pselect.cpp
+  HDRS
+    pselect.h
+  DEPENDS
+    libc.hdr.types.sigset_t
+    libc.hdr.types.struct_timespec
+    libc.include.llvm-libc-macros.sys_select_macros
+    libc.src.__support.OSUtil.windows.fd_table
+    libc.src.__support.OSUtil.windows.ntdll
+    libc.src.__support.OSUtil.windows.select_ops
+    libc.src.errno.errno
+    libc.src.pthread.cancel_internal
+)

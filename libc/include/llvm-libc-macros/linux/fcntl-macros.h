@@ -54,6 +54,9 @@
 // has to perform the equivalent of "rmdir" on the path argument.
 #define AT_REMOVEDIR 0x200
 
+// Special flag for linkat to follow a symlink source operand.
+#define AT_SYMLINK_FOLLOW 0x400
+
 // Special flag for functions like lstat to convey that symlinks
 // should not be followed.
 #define AT_SYMLINK_NOFOLLOW 0x100

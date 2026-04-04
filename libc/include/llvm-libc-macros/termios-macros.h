@@ -11,6 +11,8 @@
 
 #ifdef __linux__
 #include "linux/termios-macros.h"
+#elif defined(__NTPOSIX__)
+#include "windows/termios-macros.h"
 #endif
 
 #endif // LLVM_LIBC_MACROS_TERMIOS_MACROS_H

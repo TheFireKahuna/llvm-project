@@ -138,13 +138,12 @@ LIBC_INLINE constexpr T logb(T x) {
     if (bits.is_nan())
       return x;
 
-    raise_except_if_required(FE_DIVBYZERO);
-
     if (bits.is_zero()) {
+      raise_except_if_required(FE_DIVBYZERO);
       set_errno_if_required(ERANGE);
       return FPBits<T>::inf(Sign::NEG).get_val();
     }
-    // bits is inf.
+    // bits is inf.  No exceptions per IEEE 754.
     return FPBits<T>::inf().get_val();
   }
 
@@ -180,7 +179,7 @@ ldexp(T x, U exp) {
       return FPBits<T>::max_normal(sign).get_val();
 
     set_errno_if_required(ERANGE);
-    raise_except_if_required(FE_OVERFLOW);
+    raise_except_if_required(FE_OVERFLOW | FE_INEXACT);
     return FPBits<T>::inf(sign).get_val();
   }
 
@@ -194,7 +193,7 @@ ldexp(T x, U exp) {
       return FPBits<T>::min_subnormal(sign).get_val();
 
     set_errno_if_required(ERANGE);
-    raise_except_if_required(FE_UNDERFLOW);
+    raise_except_if_required(FE_UNDERFLOW | FE_INEXACT);
     return FPBits<T>::zero(sign).get_val();
   }
 

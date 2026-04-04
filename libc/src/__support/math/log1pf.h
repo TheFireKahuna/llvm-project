@@ -46,6 +46,11 @@ LIBC_INLINE float log1pf(float x) {
 
   if (x_a <= 0x3c80'0000U) {
     // |x| <= 2^-6.
+    // log1p(x) ~ x for subnormal x; result is inexact and subnormal.
+    if (LIBC_UNLIKELY(x_a != 0 && x_a < 0x0080'0000U)) {
+      fputil::raise_except_if_required(FE_UNDERFLOW | FE_INEXACT);
+      return x;
+    }
 #ifndef LIBC_MATH_HAS_SKIP_ACCURATE_PASS
     // Hard-to round cases.
     switch (x_u) {

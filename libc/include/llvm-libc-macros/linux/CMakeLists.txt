@@ -47,6 +47,12 @@ add_header(
 )
 
 add_header(
+  sys_shm_macros
+  HDR
+    sys-shm-macros.h
+)
+
+add_header(
   sys_sem_macros
   HDR
     sys-sem-macros.h

@@ -9,7 +9,9 @@
 #ifndef LLVM_LIBC_HDR_TYPES_CLOCKID_T_H
 #define LLVM_LIBC_HDR_TYPES_CLOCKID_T_H
 
-// TODO: we will need to decide how to export extension to windows.
+// clockid_t is not provided by any Windows system header (UCRT or otherwise).
+// Always use the llvm-libc definition on Windows targets (_WIN32 is defined
+// for all Windows environments including NTPOSIX and Windows Itanium).
 #if defined(LIBC_FULL_BUILD) || defined(_WIN32)
 
 #include "include/llvm-libc-types/clockid_t.h"

@@ -39,6 +39,12 @@ extern FILE *stderr;
 
 #define BUFSIZ 1024
 
+#define FILENAME_MAX 4096
+#define L_ctermid 20
+#define L_tmpnam 20
+#define TMP_MAX 238328
+#define FOPEN_MAX 16
+
 #define _IONBF 2
 #define _IOLBF 1
 #define _IOFBF 0

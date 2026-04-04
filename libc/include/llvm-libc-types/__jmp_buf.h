@@ -11,7 +11,7 @@
 
 // TODO: implement sigjmp_buf related functions for other architectures
 // Issue: https://github.com/llvm/llvm-project/issues/136358
-#if defined(__linux__)
+#if defined(__linux__) || defined(__NTPOSIX__)
 #if defined(__i386__) || defined(__x86_64__) || defined(__aarch64__) ||        \
     defined(__arm__) || defined(__riscv)
 #define __LIBC_HAS_SIGJMP_BUF
@@ -32,6 +32,20 @@ typedef struct {
   __UINT64_TYPE__ r15;
   __UINTPTR_TYPE__ rsp;
   __UINTPTR_TYPE__ rip;
+#if defined(__NTPOSIX__)
+  // SysV AMD64 ABI: rdi, rsi, xmm0-xmm15 are caller-saved (volatile), so
+  // setjmp does not capture them. Only rbx, rbp, r12-r15 (above) plus
+  // MXCSR control bits and x87 FCW are callee-preserved per psABI §3.2.1.
+  __UINT32_TYPE__ mxcsr;
+  __UINT16_TYPE__ fpcw;
+  __UINT16_TYPE__ _pad;
+  // Establisher frame for RtlUnwindEx (longjmp unwind target)
+  __UINT64_TYPE__ frame;
+  // Whether sigsetjmp saved the signal mask. Read by siglongjmp to decide
+  // whether to restore it before calling longjmp.
+  __UINT32_TYPE__ did_save_mask;
+  __UINT32_TYPE__ _pad2;
+#endif
 #elif defined(__i386__)
   long ebx;
   long esi;
@@ -59,6 +73,16 @@ typedef struct {
   long opaque[14]; // x19-x29, lr, sp, optional x18
 #if __ARM_FP
   long fopaque[8]; // d8-d15
+#endif
+#if defined(__NTPOSIX__)
+  // FP control/status — callee-saved on Windows ARM64
+  __UINT32_TYPE__ fpcr;
+  __UINT32_TYPE__ fpsr;
+  // Establisher frame for RtlUnwindEx (longjmp unwind target)
+  __UINT64_TYPE__ frame;
+  // Whether sigsetjmp saved the signal mask
+  __UINT32_TYPE__ did_save_mask;
+  __UINT32_TYPE__ _pad;
 #endif
 #else
 #error "__jmp_buf not available for your target architecture."

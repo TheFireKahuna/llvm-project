@@ -293,7 +293,7 @@ else()
   foreach(arch ${ASAN_SUPPORTED_ARCH})
     # Version scripts are GNU ld feature; skip on Windows where static asan
     # library isn't built and lld-link doesn't use version scripts.
-    if (COMPILER_RT_HAS_VERSION_SCRIPT AND NOT WIN32_ITANIUM)
+    if (COMPILER_RT_HAS_VERSION_SCRIPT AND NOT WIN32_ITANIUM AND NOT WIN32_NTPOSIX)
       if(WIN32)
         set(SANITIZER_RT_VERSION_LIST_LIBS clang_rt.asan-${arch})
       else()

@@ -272,6 +272,15 @@ createTargetCodeGenInfo(CodeGenModule &CGM) {
     switch (Triple.getOS()) {
     case llvm::Triple::UEFI:
     case llvm::Triple::Win32:
+      // pc-windows-ntposix carries OS=Win32 but follows the Itanium C++ ABI
+      // and SysV x86_64 calling convention throughout. Kernel / loader /
+      // ntdll boundaries are annotated with `__attribute__((ms_abi))` (see
+      // libc LIBC_MSABI) to preserve MS x64 where the ABI is externally
+      // fixed. windows-itanium is NOT flipped here — it still depends on
+      // "runtime = win32" assumptions elsewhere in clang/llvm that have not
+      // been audited. All other x86_64 Win32 triples keep the MS x64 default.
+      if (Triple.isWindowsNTPOSIXEnvironment())
+        return createX86_64TargetCodeGenInfo(CGM, AVXLevel);
       return createWinX86_64TargetCodeGenInfo(CGM, AVXLevel);
     default:
       return createX86_64TargetCodeGenInfo(CGM, AVXLevel);
@@ -1961,10 +1970,10 @@ static bool shouldAssumeDSOLocal(const CodeGenModule &CGM,
 
   const llvm::Triple &TT = CGM.getTriple();
   const auto &CGOpts = CGM.getCodeGenOpts();
-  if (TT.isOSCygMing()) {
-    // In MinGW, variables without DLLImport can still be automatically
-    // imported from a DLL by the linker; don't mark variables that
-    // potentially could come from another DLL as DSO local.
+  if (TT.isOSCygMing() || TT.isWindowsItaniumOrNTPOSIXEnvironment()) {
+    // In MinGW/Windows Itanium/NTPOSIX, variables without DLLImport can
+    // still be automatically imported from a DLL by the linker; don't mark
+    // variables that potentially could come from another DLL as DSO local.
 
     // With EmulatedTLS, TLS variables can be autoimported from other DLLs
     // (and this actually happens in the public interface of libstdc++), so
@@ -1972,6 +1981,17 @@ static bool shouldAssumeDSOLocal(const CodeGenModule &CGM,
     // can't be dllimported at all, though.)
     if (GV->isDeclarationForLinker() && isa<llvm::GlobalVariable>(GV) &&
         (!GV->isThreadLocal() || CGM.getCodeGenOpts().EmulatedTLS) &&
+        CGOpts.AutoImport)
+      return false;
+
+    // On Windows Itanium/NTPOSIX, linkonce_odr and weak_odr data definitions
+    // (vtables, typeinfo, template statics) may be deduplicated by the linker
+    // across DLL boundaries via COMDAT. The winning copy could be in another
+    // DLL, so these can't be assumed DSO-local. The compiler emits .refptr.
+    // stubs which the linker collapses to __imp_ if the symbol is imported,
+    // or resolves directly if the symbol is local — zero overhead either way.
+    if (TT.isWindowsItaniumOrNTPOSIXEnvironment() &&
+        isa<llvm::GlobalVariable>(GV) && GV->isWeakForLinker() &&
         CGOpts.AutoImport)
       return false;
   }

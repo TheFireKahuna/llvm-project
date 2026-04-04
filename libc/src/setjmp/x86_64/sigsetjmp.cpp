@@ -6,11 +6,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+#define LLVM_LIBC_SIGSETJMP_DONT_DEFINE_MACRO
 #include "src/setjmp/sigsetjmp.h"
 #include "hdr/offsetof_macros.h"
 #include "src/__support/common.h"
 #include "src/__support/macros/config.h"
+#define LLVM_LIBC_SETJMP_DONT_DEFINE_MACRO
 #include "src/setjmp/setjmp_impl.h"
+#undef LLVM_LIBC_SETJMP_DONT_DEFINE_MACRO
+#undef LLVM_LIBC_SIGSETJMP_DONT_DEFINE_MACRO
 #include "src/setjmp/sigsetjmp_epilogue.h"
 
 #if !defined(LIBC_TARGET_ARCH_IS_X86)
@@ -57,7 +61,7 @@ LLVM_LIBC_FUNCTION(int, sigsetjmp, (sigjmp_buf, int)) {
       mov %%eax, %%esi
       mov %c[extra](%%rdi), %%rbx
       jmp %P[epilogue]
-      
+
 .Lnosave:
       jmp %P[setjmp])" ::[retaddr] "i"(offsetof(__jmp_buf, sig_retaddr)),
       [extra] "i"(offsetof(__jmp_buf, sig_extra)), [setjmp] "X"(setjmp),

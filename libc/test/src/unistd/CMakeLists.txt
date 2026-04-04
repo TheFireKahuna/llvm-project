@@ -226,6 +226,29 @@ add_libc_unittest(
 )
 
 add_libc_unittest(
+  write_sigpipe_test
+  SUITE
+    libc_unistd_unittests
+  SRCS
+    write_sigpipe_test.cpp
+  DEPENDS
+    libc.hdr.signal_macros
+    libc.include.unistd
+    libc.src.errno.errno
+    libc.src.signal.sigaction
+    libc.src.signal.sigaddset
+    libc.src.signal.sigemptyset
+    libc.src.signal.sigismember
+    libc.src.signal.sigpending
+    libc.src.signal.sigprocmask
+    libc.src.unistd.close
+    libc.src.unistd.pipe
+    libc.src.unistd.write
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
   link_test
   SUITE
     libc_unistd_unittests
@@ -565,6 +588,23 @@ add_libc_unittest(
     libc.src.unistd.geteuid
 )
 
+set(syscall_test_deps
+  libc.include.unistd
+  libc.hdr.fcntl_macros
+  libc.include.sys_syscall
+  libc.src.errno.errno
+  libc.src.unistd.close
+  libc.src.unistd.unlink
+  libc.test.UnitTest.ErrnoCheckingTest
+  libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+if(${LIBC_TARGET_OS} STREQUAL "windows")
+  list(APPEND syscall_test_deps libc.src.unistd.syscall)
+else()
+  list(APPEND syscall_test_deps libc.src.unistd.__llvm_libc_syscall)
+endif()
+
 add_libc_unittest(
   syscall_test
   SUITE
@@ -572,13 +612,7 @@ add_libc_unittest(
   SRCS
     syscall_test.cpp
   DEPENDS
-    libc.include.unistd
-    libc.hdr.fcntl_macros
-    libc.include.sys_syscall
-    libc.src.errno.errno
-    libc.src.unistd.__llvm_libc_syscall
-    libc.test.UnitTest.ErrnoCheckingTest
-    libc.test.UnitTest.ErrnoSetterMatcher
+    ${syscall_test_deps}
 )
 
 

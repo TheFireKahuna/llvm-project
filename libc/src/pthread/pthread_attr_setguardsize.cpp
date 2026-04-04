@@ -11,8 +11,8 @@
 #include "src/__support/common.h"
 #include "src/__support/libc_errno.h"
 #include "src/__support/macros/config.h"
+#include "src/__support/threads/thread.h" // For EXEC_PAGESIZE.
 
-#include <linux/param.h> // For EXEC_PAGESIZE.
 #include <pthread.h>
 
 namespace LIBC_NAMESPACE_DECL {

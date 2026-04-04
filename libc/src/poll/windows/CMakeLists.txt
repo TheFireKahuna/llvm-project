@@ -1,0 +1,33 @@
+add_entrypoint_object(
+  poll
+  SRCS
+    poll.cpp
+  HDRS
+    ../poll.h
+  DEPENDS
+    libc.hdr.types.nfds_t
+    libc.hdr.types.struct_pollfd
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.poll_ops
+    libc.src.pthread.cancel_internal
+)
+
+add_entrypoint_object(
+  ppoll
+  SRCS
+    ppoll.cpp
+  HDRS
+    ../ppoll.h
+  DEPENDS
+    libc.hdr.types.nfds_t
+    libc.hdr.types.sigset_t
+    libc.hdr.types.struct_pollfd
+    libc.hdr.types.struct_timespec
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.poll_ops
+    libc.src.pthread.cancel_internal
+)

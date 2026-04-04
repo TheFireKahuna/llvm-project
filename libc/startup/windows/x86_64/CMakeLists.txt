@@ -1,0 +1,13 @@
+add_startup_object(
+  start
+  OUTPUT_NAME
+    crt1.obj
+  SRC
+    start.cpp
+  DEPENDS
+    libc.startup.windows.do_start
+  COMPILE_OPTIONS
+    -ffreestanding
+    -fno-builtin
+    -fno-stack-protector
+)

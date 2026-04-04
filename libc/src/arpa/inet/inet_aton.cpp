@@ -19,6 +19,12 @@ LLVM_LIBC_FUNCTION(int, inet_aton, (const char *cp, in_addr *inp)) {
   int dot_num = 0;
 
   for (; dot_num <= IPV4_MAX_DOT_NUM; ++dot_num) {
+    // Reject whitespace, signs, and other non-digit prefixes that
+    // strtointeger would accept (it follows strtoul semantics: skip
+    // whitespace, parse optional sign). Valid inet_aton parts always start
+    // with a digit — even hex "0xFF" starts with '0'.
+    if (*cp < '0' || *cp > '9')
+      return 0;
     auto result = internal::strtointeger<unsigned long>(cp, 0);
     parts[dot_num] = result;
 

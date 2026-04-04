@@ -24,7 +24,7 @@
 #include "Registers.hpp"
 
 #ifndef _LIBUNWIND_USE_DLADDR
-  #if !(defined(_LIBUNWIND_IS_BAREMETAL) || defined(LLVM_RUNTIME_WIN32) || defined(_AIX))
+  #if !(defined(_LIBUNWIND_IS_BAREMETAL) || (defined(_WIN32) && !defined(__NTPOSIX__)) || defined(_AIX))
     #define _LIBUNWIND_USE_DLADDR 1
   #else
     #define _LIBUNWIND_USE_DLADDR 0
@@ -109,7 +109,7 @@ extern char __eh_frame_hdr_end;
 extern char __exidx_start;
 extern char __exidx_end;
 
-#elif defined(_LIBUNWIND_SUPPORT_DWARF_UNWIND) && defined(LLVM_RUNTIME_WIN32)
+#elif defined(_LIBUNWIND_SUPPORT_DWARF_UNWIND) && defined(_WIN32) && !defined(__NTPOSIX__)
 
 // TODO: DWARF module enumeration uses EnumProcessModules and PE parsing types
 // from <windows.h>/<psapi.h>. Not needed for SEH unwind (Windows Itanium),
@@ -559,7 +559,7 @@ inline bool LocalAddressSpace::findUnwindSections(
                              (void *)info.arm_section, (void *)info.arm_section_length);
   if (info.arm_section && info.arm_section_length)
     return true;
-#elif defined(_LIBUNWIND_SUPPORT_DWARF_UNWIND) && defined(LLVM_RUNTIME_WIN32)
+#elif defined(_LIBUNWIND_SUPPORT_DWARF_UNWIND) && defined(_WIN32) && !defined(__NTPOSIX__)
   HMODULE mods[1024];
   HANDLE process = GetCurrentProcess();
   DWORD needed;
@@ -599,7 +599,7 @@ inline bool LocalAddressSpace::findUnwindSections(
     }
   }
   return false;
-#elif defined(_LIBUNWIND_SUPPORT_SEH_UNWIND) && defined(LLVM_RUNTIME_WIN32)
+#elif defined(_LIBUNWIND_SUPPORT_SEH_UNWIND) && defined(_WIN32) && !defined(__NTPOSIX__)
   // Don't even bother, since Windows has functions that do all this stuff
   // for us.
   (void)targetAddr;

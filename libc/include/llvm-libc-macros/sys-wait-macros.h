@@ -11,6 +11,8 @@
 
 #ifdef __linux__
 #include "linux/sys-wait-macros.h"
+#elif defined(__NTPOSIX__)
+#include "windows/sys-wait-macros.h"
 #endif
 
 #endif // LLVM_LIBC_MACROS_SYS_WAIT_MACROS_H

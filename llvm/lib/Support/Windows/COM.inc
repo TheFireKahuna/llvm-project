@@ -33,6 +33,7 @@ __declspec(dllimport) void WINAPI CoUninitialize(void);
 }
 #else
 #include <objbase.h>
+#endif
 
 namespace llvm {
 namespace sys {

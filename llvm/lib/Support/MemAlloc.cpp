@@ -18,7 +18,7 @@ llvm::allocate_buffer(size_t Size, size_t Alignment) {
                                 std::align_val_t(Alignment),
 #endif
 // Construct nothrow_t inline to avoid DLL data import (LTO relocation issue).
-#ifdef _WIN32_ITANIUM
+#if defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
                                 std::nothrow_t{}
 #else
                                 std::nothrow

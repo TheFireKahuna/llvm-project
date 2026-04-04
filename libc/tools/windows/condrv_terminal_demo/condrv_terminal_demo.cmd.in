@@ -1,0 +1,16 @@
+@echo off
+setlocal
+set "DEMO_DIR=%~dp0"
+set "PATH=%DEMO_DIR%;%PATH%"
+
+"%DEMO_DIR%condrv_terminal_demo.exe"
+set "DEMO_EXIT=%ERRORLEVEL%"
+
+if not "%DEMO_EXIT%"=="0" (
+  echo.
+  echo condrv_terminal_demo exited with code %DEMO_EXIT%.
+  echo If you launched this by double-clicking, try running it from an existing terminal.
+  pause
+)
+
+exit /b %DEMO_EXIT%

@@ -11,6 +11,8 @@
 
 #ifdef __linux__
 #include "linux/sys-ioctl-macros.h"
+#elif defined(__NTPOSIX__)
+#include "windows/sys-ioctl-macros.h"
 #endif
 
 #endif // LLVM_LIBC_MACROS_SYS_IOCTL_MACROS_H

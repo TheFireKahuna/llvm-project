@@ -1,0 +1,12 @@
+add_entrypoint_object(
+  futex
+  SRCS
+    futex.cpp
+  HDRS
+    ../futex.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.threads.windows.wait_slot
+    libc.src.__support.OSUtil.windows.ntdll
+)

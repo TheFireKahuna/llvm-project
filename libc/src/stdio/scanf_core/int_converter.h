@@ -12,6 +12,8 @@
 #include "src/__support/CPP/limits.h"
 #include "src/__support/ctype_utils.h"
 #include "src/__support/macros/config.h"
+#include "src/__support/wctype_utils.h"
+#include "src/stdio/scanf_core/char_ops.h"
 #include "src/stdio/scanf_core/converter_utils.h"
 #include "src/stdio/scanf_core/core_structs.h"
 #include "src/stdio/scanf_core/reader.h"
@@ -46,8 +48,9 @@ namespace scanf_core {
 //      If a maximum width is specified, this conversion is only allowed to
 //      accept a certain number of characters. Strtol doesn't have any such
 //      limitation.
-template <typename T>
-int convert_int(Reader<T> *reader, const FormatSection &to_conv) {
+template <typename T, typename CharType = char>
+int convert_int(Reader<T, CharType> *reader,
+                const basic_format_section<CharType> &to_conv) {
   // %d "Matches an optionally signed decimal integer [...] with the value 10
   // for the base argument. The corresponding argument shall be a pointer to
   // signed integer."
@@ -92,11 +95,11 @@ int convert_int(Reader<T> *reader, const FormatSection &to_conv) {
     base = 10;
   }
 
-  char cur_char = reader->getc();
+  CharType cur_char = reader->getc();
 
-  char result_sign = '+';
+  bool is_negative = false;
   if (cur_char == '+' || cur_char == '-') {
-    result_sign = cur_char;
+    is_negative = (cur_char == '-');
     if (max_width > 1) {
       --max_width;
       cur_char = reader->getc();
@@ -107,7 +110,6 @@ int convert_int(Reader<T> *reader, const FormatSection &to_conv) {
       return MATCHING_FAILURE;
     }
   }
-  const bool is_negative = result_sign == '-';
 
   // Base of 0 means automatically determine the base. Base of 16 may have a
   // prefix of "0x"

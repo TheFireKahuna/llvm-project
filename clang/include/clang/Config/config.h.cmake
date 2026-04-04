@@ -26,8 +26,11 @@
 /* Default runtime library for Win32 Itanium. */
 #define CLANG_WIN32_ITANIUM_DEFAULT_RTLIB "${CLANG_WIN32_ITANIUM_DEFAULT_RTLIB}"
 
-/* Default C library for Win32 Itanium. */
-#define CLANG_WIN32_ITANIUM_DEFAULT_LIBC "${CLANG_WIN32_ITANIUM_DEFAULT_LIBC}"
+/* Default runtime library for NTPOSIX. */
+#define CLANG_NTPOSIX_DEFAULT_RTLIB "${CLANG_NTPOSIX_DEFAULT_RTLIB}"
+
+/* Default C library for NTPOSIX. */
+#define CLANG_NTPOSIX_DEFAULT_LIBC "${CLANG_NTPOSIX_DEFAULT_LIBC}"
 
 /* Default objcopy to use */
 #define CLANG_DEFAULT_OBJCOPY "${CLANG_DEFAULT_OBJCOPY}"

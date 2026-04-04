@@ -10,6 +10,7 @@
 #define LLVM_LIBC_SRC___SUPPORT_MATH_TANHF_H
 
 #include "exp10f_utils.h"
+#include "src/__support/FPUtil/FEnvImpl.h"
 #include "src/__support/FPUtil/FPBits.h"
 #include "src/__support/FPUtil/PolyEval.h"
 #include "src/__support/FPUtil/multiply_add.h"
@@ -38,9 +39,19 @@ LIBC_INLINE float tanhf(float x) {
       // |x| <= 0.078125
       if (LIBC_UNLIKELY(x_abs <= 0x3280'0000U)) {
         // |x| <= 2^-26
-        return (x_abs != 0)
-                   ? static_cast<float>(x - 0x1.5555555555555p-2 * x * x * x)
-                   : x;
+        if (LIBC_UNLIKELY(x_abs == 0))
+          return x;
+
+        // When |x| is subnormal, tanh(x) ≈ x (subnormal and inexact).
+        // The double-precision computation below returns x exactly, so the
+        // hardware never sees the subnormal result and won't raise the
+        // required UNDERFLOW + INEXACT flags.  Do it explicitly.
+        if (LIBC_UNLIKELY(x_abs < 0x0080'0000U)) {
+          fputil::raise_except_if_required(FE_UNDERFLOW | FE_INEXACT);
+          return x;
+        }
+
+        return static_cast<float>(x - 0x1.5555555555555p-2 * x * x * x);
       }
 
       const double TAYLOR[] = {-0x1.5555555555555p-2, 0x1.1111111111111p-3,

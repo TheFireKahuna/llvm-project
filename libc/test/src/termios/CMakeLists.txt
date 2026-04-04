@@ -9,6 +9,7 @@ add_libc_unittest(
   DEPENDS
     libc.include.termios
     libc.src.errno.errno
+    libc.src.termios.cfmakeraw
     libc.src.fcntl.open
     libc.src.termios.cfgetispeed
     libc.src.termios.cfgetospeed

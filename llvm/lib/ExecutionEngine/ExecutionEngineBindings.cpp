@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm-c/ExecutionEngine.h"
+#include "llvm/Config/config.h"
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
 #include "llvm/ExecutionEngine/GenericValue.h"
 #include "llvm/ExecutionEngine/RTDyldMemoryManager.h"
@@ -18,7 +19,6 @@
 #include "llvm/IR/Module.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Target/CodeGenCWrappers.h"
-#include "llvm/Support/PosixCompat.h"
 #include "llvm/Target/TargetOptions.h"
 #include <cstring>
 #include <optional>

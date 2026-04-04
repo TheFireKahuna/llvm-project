@@ -27,6 +27,16 @@ struct ipc_perm {
   unsigned long __unused_0;
   unsigned long __unused_1;
 };
+#elif defined(__NTPOSIX__)
+struct ipc_perm {
+  key_t __key;
+  uid_t uid;
+  gid_t gid;
+  uid_t cuid;
+  gid_t cgid;
+  mode_t mode;
+  unsigned short __seq;
+};
 #else
 #error "ipc_perm not defined for the target platform"
 #endif

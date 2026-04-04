@@ -169,8 +169,23 @@ LIBC_INLINE constexpr double atan2(double y, double x) {
   // We have the following bound for normalized n and d:
   //   2^(-exp_diff - 1) < n/d < 2^(-exp_diff + 1).
   if (LIBC_UNLIKELY(exp_diff > 54)) {
-    return fputil::multiply_add(final_sign, const_term.hi,
-                                final_sign * (const_term.lo + num / den));
+    // When const_term is nonzero (result is ±π, ±π/2, etc.), the num/den
+    // term is negligible.  Skip the division to avoid spurious UNDERFLOW
+    // flags from the tiny quotient.
+    if (const_term.hi != 0.0)
+      return fputil::multiply_add(final_sign, const_term.hi,
+                                  final_sign * const_term.lo);
+    // const_term is ±0 (result near zero); sign comes solely from final_sign.
+    // Direct multiply preserves sign-of-zero correctly (e.g. atan2(-0, +huge)
+    // returns -0), whereas multiply_add on mixed signed zeros loses it.
+    double result = final_sign * (num / den);
+#ifndef LIBC_MATH_HAS_NO_EXCEPT
+    // atan(x) ≈ x is always inexact for nonzero x (atan(x) < x for x > 0).
+    // When the result is subnormal, signal underflow per IEEE 754.
+    if (LIBC_UNLIKELY(FPBits(result).is_subnormal()))
+      fputil::raise_except_if_required(FE_UNDERFLOW | FE_INEXACT);
+#endif
+    return result;
   }
 
   double k = fputil::nearest_integer(64.0 * num / den);

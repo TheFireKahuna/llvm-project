@@ -322,7 +322,7 @@ LIBC_INLINE constexpr float atan2f(float y, float x) {
 #endif // LIBC_MATH_HAS_SMALL_TABLES
 
 #ifdef LIBC_MATH_HAS_SKIP_ACCURATE_PASS
-  return static_cast<float>(r);
+  float result = static_cast<float>(r);
 #else
   constexpr uint32_t LOWER_ERR = 4;
   // Mask sticky bits in double precision before rounding to single precision.
@@ -333,13 +333,21 @@ LIBC_INLINE constexpr float atan2f(float y, float x) {
 
   uint32_t r_bits = static_cast<uint32_t>(cpp::bit_cast<uint64_t>(r)) & MASK;
 
+  float result = 0.0f;
   // Ziv's rounding test.
   if (LIBC_LIKELY(r_bits > LOWER_ERR && r_bits < UPPER_ERR))
-    return static_cast<float>(r);
-
-  return atan2f_double_double(num_d, den_d, q_d, idx, k_d, final_sign,
-                              const_term);
+    result = static_cast<float>(r);
+  else
+    result = atan2f_double_double(num_d, den_d, q_d, idx, k_d, final_sign,
+                                  const_term);
 #endif // LIBC_MATH_HAS_SKIP_ACCURATE_PASS
+
+  // atan2f can produce subnormal float results when y/x is very tiny.
+  // The double→float conversion may not trigger hardware underflow.
+  if (LIBC_UNLIKELY(FPBits(result).abs().uintval() != 0 &&
+                    FPBits(result).abs().uintval() < 0x0080'0000U))
+    fputil::raise_except_if_required(FE_UNDERFLOW | FE_INEXACT);
+  return result;
 }
 
 } // namespace math

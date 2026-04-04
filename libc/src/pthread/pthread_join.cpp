@@ -10,6 +10,7 @@
 
 #include "src/__support/common.h"
 #include "src/__support/macros/config.h"
+#include "src/pthread/cancel_internal.h"
 #include "src/__support/threads/thread.h"
 
 #include <pthread.h> // For pthread_* type definitions.
@@ -20,6 +21,7 @@ static_assert(sizeof(pthread_t) == sizeof(LIBC_NAMESPACE::Thread),
               "Mismatch between pthread_t and internal Thread.");
 
 LLVM_LIBC_FUNCTION(int, pthread_join, (pthread_t th, void **retval)) {
+  cancel_check(); // POSIX cancellation point.
   auto *thread = reinterpret_cast<Thread *>(&th);
   int result = thread->join(retval);
   return result;

@@ -705,12 +705,12 @@ void __init_tzdb(tzdb& __tzdb, __tz::__rules_storage_type& __rules) {
   chrono::__parse_leap_seconds(__tzdb.leap_seconds, ifstream{__root / "leap-seconds.list"});
 }
 
-#ifdef defined(LLVM_RUNTIME_WIN32)
+#ifdef defined(_LIBCPP_WIN32API)
 [[nodiscard]] static const time_zone* __current_zone_windows(const tzdb& tzdb) {
   // TODO TZDB Implement this on Windows.
   std::__throw_runtime_error("unknown time zone");
 }
-#else  // ifdef LLVM_RUNTIME_WIN32
+#else  // ifdef _LIBCPP_WIN32API
 
 [[nodiscard]] static string __current_zone_environment() {
   if (const char* __tz = std::getenv("TZ"))
@@ -790,7 +790,7 @@ void __init_tzdb(tzdb& __tzdb, __tz::__rules_storage_type& __rules) {
 
   std::__throw_runtime_error(("tzdb: the time zone '" + __name + "' is not found in the database").c_str());
 }
-#endif // ifdef LLVM_RUNTIME_WIN32
+#endif // ifdef _LIBCPP_WIN32API
 
 //===----------------------------------------------------------------------===//
 //                           Public API
@@ -802,7 +802,7 @@ _LIBCPP_AVAILABILITY_TZDB _LIBCPP_EXPORTED_FROM_ABI tzdb_list& get_tzdb_list() {
 }
 
 [[nodiscard]] _LIBCPP_AVAILABILITY_TZDB _LIBCPP_EXPORTED_FROM_ABI const time_zone* tzdb::__current_zone() const {
-#ifdef LLVM_RUNTIME_WIN32
+#ifdef _LIBCPP_WIN32API
   return chrono::__current_zone_windows(*this);
 #else
   return chrono::__current_zone_posix(*this);

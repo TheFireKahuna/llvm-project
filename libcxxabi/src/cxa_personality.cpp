@@ -68,7 +68,7 @@
 #endif
 
 #if defined(__SEH__) && !defined(__USING_SJLJ_EXCEPTIONS__)
-#if defined(LLVM_RUNTIME_POSIX)
+#if defined(__NTPOSIX__)
 #include <sys/ntabi.h>
 #else
 #define WIN32_LEAN_AND_MEAN
@@ -1110,13 +1110,25 @@ __gxx_personality_v0
 }
 
 #if defined(__SEH__) && !defined(__USING_SJLJ_EXCEPTIONS__)
-extern "C" _LIBCXXABI_FUNC_VIS EXCEPTION_DISPOSITION
+// The SEH personality function is invoked by ntdll's RtlDispatchException via
+// the EXCEPTION_ROUTINE ABI contract — MS x64 on x86_64 Windows. On targets
+// whose default calling convention is not MS x64 (e.g. x86_64-pc-windows-
+// ntposix which uses SysV), the personality definition must be annotated
+// explicitly so the call from ntdll lands with args in rcx/rdx/r8/r9 as the
+// kernel unwinder expects.
+#if defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
+#define _LIBCXXABI_SEH_PERSONALITY_MSABI __attribute__((ms_abi))
+#else
+#define _LIBCXXABI_SEH_PERSONALITY_MSABI
+#endif
+extern "C" _LIBCXXABI_FUNC_VIS EXCEPTION_DISPOSITION _LIBCXXABI_SEH_PERSONALITY_MSABI
 __gxx_personality_seh0(PEXCEPTION_RECORD ms_exc, void *this_frame,
                        PCONTEXT ms_orig_context, PDISPATCHER_CONTEXT ms_disp)
 {
   return _GCC_specific_handler(ms_exc, this_frame, ms_orig_context, ms_disp,
                                __gxx_personality_imp);
 }
+#undef _LIBCXXABI_SEH_PERSONALITY_MSABI
 #endif
 
 #else

@@ -64,9 +64,16 @@ HEADER_TEMPLATE = """\
 #ifndef {guard}
 #define {guard}
 
+#if !defined(_WIN32) || defined(__NTPOSIX__)
+
 %%public_api()
 
+#endif // !defined(_WIN32) || defined(__NTPOSIX__)
 #endif // {guard}
+
+#if defined(_WIN32) && !defined(__NTPOSIX__) && __has_include_next(<{header}>)
+#include_next <{header}>
+#endif
 """
 
 LLVM_LICENSE_TEXT = [

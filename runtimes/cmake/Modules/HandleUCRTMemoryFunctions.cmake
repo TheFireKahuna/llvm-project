@@ -11,13 +11,10 @@
 #   _purecall - wincrt provides its own that bridges to __cxa_pure_virtual
 #   _amsg_exit - not exported from any DLL, wincrt provides implementation
 
-function(generate_ucrt_memory_import_library output_var)
-  if(NOT WIN32 OR MINGW OR MSVC)
-    set(${output_var} "" PARENT_SCOPE)
-    return()
-  endif()
+include(GenerateImportLibrary)
 
-  set(def_content "LIBRARY ucrtbase
+function(generate_ucrt_memory_import_library output_var)
+  set(_def_content "LIBRARY ucrtbase.dll
 EXPORTS
     ; Memory functions (compiler intrinsic fallbacks)
     memcpy
@@ -34,50 +31,6 @@ EXPORTS
     ; RTTI support
     __std_type_info_destroy_list
 ")
-  set(def_file "${CMAKE_CURRENT_BINARY_DIR}/ucrt_memory.def")
-  set(output_lib "${CMAKE_CURRENT_BINARY_DIR}/ucrt_memory.lib")
-
-  if(NOT EXISTS "${output_lib}")
-    file(WRITE "${def_file}" "${def_content}")
-
-    set(_arch_id "${CMAKE_C_COMPILER_ARCHITECTURE_ID}${CMAKE_CXX_COMPILER_ARCHITECTURE_ID}")
-    if(_arch_id MATCHES "x64|X64")
-      set(machine "X64")
-    elseif(_arch_id MATCHES "X86")
-      set(machine "X86")
-    elseif(_arch_id MATCHES "ARM64")
-      set(machine "ARM64")
-    elseif(_arch_id MATCHES "ARM")
-      set(machine "ARM")
-    else()
-      message(WARNING "Unknown architecture for ucrt_memory.lib generation: ARCH_ID='${_arch_id}'")
-      set(${output_var} "" PARENT_SCOPE)
-      return()
-    endif()
-
-    find_program(LIBEXE_TOOL llvm-lib HINTS ${LLVM_TOOLS_BINARY_DIR})
-    if(NOT LIBEXE_TOOL)
-      find_program(LIBEXE_TOOL lib)
-    endif()
-
-    if(LIBEXE_TOOL)
-      execute_process(
-        COMMAND ${LIBEXE_TOOL} /def:${def_file} /out:${output_lib} /machine:${machine}
-        RESULT_VARIABLE result
-        OUTPUT_VARIABLE output
-        ERROR_VARIABLE error
-      )
-      if(NOT result EQUAL 0)
-        message(WARNING "Failed to generate ucrt_memory.lib: ${error}")
-        set(${output_var} "" PARENT_SCOPE)
-        return()
-      endif()
-    else()
-      message(WARNING "Could not find llvm-lib or lib.exe to generate ucrt_memory.lib")
-      set(${output_var} "" PARENT_SCOPE)
-      return()
-    endif()
-  endif()
-
-  set(${output_var} "${output_lib}" PARENT_SCOPE)
+  generate_import_library(${output_var} ucrt_memory "${_def_content}")
+  set(${output_var} "${${output_var}}" PARENT_SCOPE)
 endfunction()

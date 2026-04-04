@@ -9,11 +9,13 @@
 #include "hdr/stdint_proxy.h"
 #include "src/__support/common.h"
 #include "src/__support/macros/config.h"
+#include "src/__support/macros/properties/runtime.h"
 #include <stddef.h>
 
 #ifdef LIBC_TARGET_ARCH_IS_AARCH64
 #include "src/sys/auxv/getauxval.h"
 #endif
+
 
 namespace LIBC_NAMESPACE_DECL {
 
@@ -23,7 +25,12 @@ int memcmp(const void *lhs, const void *rhs, size_t count);
 void *memcpy(void *__restrict, const void *__restrict, size_t);
 void *memmove(void *dst, const void *src, size_t count);
 void *memset(void *ptr, int value, size_t count);
+size_t strlen(const char *src);
+int strcmp(const char *lhs, const char *rhs);
+void *aligned_alloc(size_t alignment, size_t size);
 int atexit(void (*func)(void));
+int vsnprintf(char *__restrict buffer, size_t buffsz,
+              const char *__restrict format, __builtin_va_list vlist);
 
 // TODO: It seems that some old test frameworks does not use
 // add_libc_hermetic_test properly. Such that they won't get correct linkage
@@ -74,6 +81,25 @@ void *memmove(void *dst, const void *src, size_t count) {
 void *memset(void *ptr, int value, size_t count) {
   return LIBC_NAMESPACE::memset(ptr, value, count);
 }
+size_t strlen(const char *src) { return LIBC_NAMESPACE::strlen(src); }
+int strcmp(const char *lhs, const char *rhs) {
+  return LIBC_NAMESPACE::strcmp(lhs, rhs);
+}
+void *aligned_alloc(size_t alignment, size_t size) {
+  return LIBC_NAMESPACE::aligned_alloc(alignment, size);
+}
+
+// Compiler codegen lowers __builtin_snprintf (used inside e.g. time_utils)
+// to a plain extern-C snprintf call. Forward through vsnprintf since snprintf
+// itself is variadic and cannot be forwarded directly.
+int snprintf(char *__restrict buffer, size_t buffsz,
+             const char *__restrict format, ...) {
+  __builtin_va_list ap;
+  __builtin_va_start(ap, format);
+  int r = LIBC_NAMESPACE::vsnprintf(buffer, buffsz, format, ap);
+  __builtin_va_end(ap);
+  return r;
+}
 
 // This is needed if the test was compiled with '-fno-use-cxa-atexit'.
 int atexit(void (*func)(void)) { return LIBC_NAMESPACE::atexit(func); }
@@ -113,8 +139,13 @@ void __cxa_pure_virtual() {
 }
 
 // Hermetic tests are linked with -nostdlib. BFD linker expects
-// __dso_handle when -nostdlib is used.
+// __dso_handle when -nostdlib is used. On Windows, do_start.cpp (our
+// crt1 aggregate's entry TU) already defines __dso_handle as
+// `selectany` and initializes it to its own address for __cxa_atexit,
+// so defining it here again would be a duplicate symbol.
+#ifndef _WIN32
 void *__dso_handle = nullptr;
+#endif
 
 #ifdef LIBC_TARGET_ARCH_IS_AARCH64
 // Due to historical reasons, libgcc on aarch64 may expect __getauxval to be

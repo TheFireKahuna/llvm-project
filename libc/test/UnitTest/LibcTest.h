@@ -500,6 +500,23 @@ CString libc_make_test_file_path_func(const char *file_name);
 #define ASSERT_DEATH(FUNC, SIG)                                                \
   LIBC_TEST_PROCESS_(testProcessKilled, FUNC, SIG, return)
 
+#else
+
+// Some platforms, including Windows today, do not yet provide the subprocess
+// harness that backs EXPECT_EXITS / EXPECT_DEATH. Treat these checks as
+// unsupported test cases and return early from the current test body.
+#define LIBC_TEST_PROCESS_UNAVAILABLE_(NAME)                                   \
+  do {                                                                         \
+    LIBC_NAMESPACE::testing::tlog                                              \
+        << #NAME " is unavailable on this platform.\n";                        \
+    return;                                                                    \
+  } while (false)
+
+#define EXPECT_EXITS(FUNC, EXIT) LIBC_TEST_PROCESS_UNAVAILABLE_(EXPECT_EXITS)
+#define ASSERT_EXITS(FUNC, EXIT) LIBC_TEST_PROCESS_UNAVAILABLE_(ASSERT_EXITS)
+#define EXPECT_DEATH(FUNC, SIG) LIBC_TEST_PROCESS_UNAVAILABLE_(EXPECT_DEATH)
+#define ASSERT_DEATH(FUNC, SIG) LIBC_TEST_PROCESS_UNAVAILABLE_(ASSERT_DEATH)
+
 #endif // ENABLE_SUBPROCESS_TESTS
 
 ////////////////////////////////////////////////////////////////////////////////

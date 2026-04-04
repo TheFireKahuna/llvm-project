@@ -31,6 +31,7 @@ set(TARGET_LIBC_ENTRYPOINTS
     libc.src.fcntl.fcntl
     libc.src.fcntl.open
     libc.src.fcntl.openat
+    libc.src.fcntl.posix_fallocate
 
     # poll.h entrypoints
     libc.src.poll.poll
@@ -313,6 +314,7 @@ set(TARGET_LIBC_ENTRYPOINTS
     libc.src.sys.auxv.getauxval
 
     # termios.h entrypoints
+    libc.src.termios.cfmakeraw
     libc.src.termios.cfgetispeed
     libc.src.termios.cfgetospeed
     libc.src.termios.cfsetispeed
@@ -1118,11 +1120,17 @@ if(LLVM_LIBC_FULL_BUILD)
     libc.src.pthread.pthread_attr_destroy
     libc.src.pthread.pthread_attr_getdetachstate
     libc.src.pthread.pthread_attr_getguardsize
+    libc.src.pthread.pthread_attr_getinheritsched
+    libc.src.pthread.pthread_attr_getschedparam
+    libc.src.pthread.pthread_attr_getschedpolicy
     libc.src.pthread.pthread_attr_getstack
     libc.src.pthread.pthread_attr_getstacksize
     libc.src.pthread.pthread_attr_init
     libc.src.pthread.pthread_attr_setdetachstate
     libc.src.pthread.pthread_attr_setguardsize
+    libc.src.pthread.pthread_attr_setinheritsched
+    libc.src.pthread.pthread_attr_setschedparam
+    libc.src.pthread.pthread_attr_setschedpolicy
     libc.src.pthread.pthread_attr_setstack
     libc.src.pthread.pthread_attr_setstacksize
     libc.src.pthread.pthread_condattr_destroy
@@ -1311,6 +1319,7 @@ if(LLVM_LIBC_FULL_BUILD)
     libc.src.time.gmtime_r
     libc.src.time.mktime
     libc.src.time.nanosleep
+    libc.src.time.clock_nanosleep
     libc.src.time.strftime
     libc.src.time.strftime_l
     libc.src.time.time

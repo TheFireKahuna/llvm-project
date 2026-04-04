@@ -10,7 +10,7 @@
 #define LLVM_EXECUTIONENGINE_ORC_TARGETPROCESS_EXECUTORSHAREDMEMORYMAPPERSERVICE_H
 
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/Config/llvm-config.h" // for LLVM_ON_UNIX
+#include "llvm/Config/llvm-config.h"
 #include "llvm/ExecutionEngine/Orc/Shared/TargetProcessControlTypes.h"
 #include "llvm/ExecutionEngine/Orc/TargetProcess/ExecutorBootstrapService.h"
 #include "llvm/Support/Compiler.h"
@@ -68,7 +68,8 @@ private:
   static llvm::orc::shared::CWrapperFunctionBuffer
   releaseWrapper(const char *ArgData, size_t ArgSize);
 
-#if (defined(LLVM_ON_UNIX) && !defined(__ANDROID__)) || defined(LLVM_RUNTIME_WIN32)
+#if (defined(LLVM_RUNTIME_POSIX) && !defined(__ANDROID__)) ||                     \
+    defined(LLVM_RUNTIME_WIN32)
   std::atomic<int> SharedMemoryCount{0};
 #endif
 

@@ -1,0 +1,377 @@
+; ntdll.def - NT API imports for LLVM libc on Windows
+;
+; Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+; See https://llvm.org/LICENSE.txt for license information.
+; SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+LIBRARY ntdll.dll
+EXPORTS
+    ; Process state change (SIGSTOP/SIGCONT) — Windows 11+
+    NtCreateProcessStateChange
+    NtChangeProcessState
+    NtResumeProcess
+
+    ; Thread alerting (futex-like primitives + signal delivery)
+    NtAlertThread
+    NtAlertThreadByThreadId
+    ; NtAlertThreadByThreadIdEx — 24H2+, soft-resolved via nt_capabilities.h
+    ; NtAlertMultipleThreadByThreadId — 24H2+, soft-resolved via nt_capabilities.h
+    NtAlertResumeThread
+    NtWaitForAlertByThreadId
+    NtTestAlert
+
+    ; Thread state change (safe suspend/resume) - Windows 11+
+    NtCreateThreadStateChange
+    NtChangeThreadState
+
+    ; High-resolution timers
+    NtCreateTimer2
+    NtSetTimer
+    NtSetTimer2
+
+    ; Performance counter and precise system time
+    RtlQueryPerformanceCounter
+    RtlQueryPerformanceFrequency
+    RtlGetSystemTimePrecise
+    RtlQueryUnbiasedInterruptTime
+
+    ; APCs
+    NtQueueApcThreadEx2
+
+    ; Exception raising and context continuation
+    RtlRaiseException
+    NtRaiseException
+    NtContinue
+    NtContinueEx
+
+    ; Debugger output (RTL wrapper; internally raises DBG_PRINTEXCEPTION_C
+    ; via NtRaiseException, intercepted by an attached debugger).
+    DbgPrintEx
+
+    ; Stack unwinding and context capture/restore
+    RtlUnwindEx
+    RtlLookupFunctionEntry
+    RtlVirtualUnwind
+    RtlCaptureContext
+    RtlCaptureStackBackTrace
+    RtlRestoreContext
+
+    ; Vectored exception handler registration
+    RtlAddVectoredExceptionHandler
+    RtlRemoveVectoredExceptionHandler
+
+    ; Fiber Local Storage cleanup
+    RtlProcessFlsData
+
+    ; Dynamic function table (exception handling for mapped images)
+    RtlAddFunctionTable
+    RtlDeleteFunctionTable
+
+    ; Process/thread enumeration
+    NtGetNextProcess
+    NtGetNextThread
+
+    ; Process termination
+    NtTerminateProcess
+
+    ; Thread and process creation
+    NtCreateProcessEx
+    NtCreateThreadEx
+    NtCreateUserProcess
+    RtlCloneUserProcess
+    RtlPrepareForProcessCloning
+    RtlCompleteProcessCloning
+
+    ; Thread lifecycle and scheduling
+    NtOpenProcess
+    NtOpenThread
+    NtTerminateThread
+    NtSuspendThread
+    NtResumeThread
+    NtGetContextThread
+    NtSetContextThread
+    NtGetCurrentProcessorNumberEx
+    NtYieldExecution
+    NtSetInformationThread
+
+    ; Process/Thread/System info
+    NtQueryInformationThread
+    NtQueryInformationProcess
+    NtSetInformationProcess
+    NtQuerySystemInformation
+    NtQuerySystemInformationEx
+    NtQueryTimerResolution
+    NtSetTimerResolution
+    NtSetSystemTime
+
+    ; Volume / filesystem info
+    NtQueryVolumeInformationFile
+
+    ; Registry
+    NtOpenKeyEx
+    NtQueryValueKey
+    NtEnumerateKey
+
+    ; Security descriptors and ACLs
+    NtQuerySecurityObject
+    NtSetSecurityObject
+    RtlInitializeSid
+    RtlLengthSid
+    RtlEqualSid
+    RtlCopySid
+    RtlSubAuthoritySid
+    RtlConvertSidToUnicodeString
+    RtlFreeUnicodeString
+
+    ; Extended attributes (WSL metadata)
+    NtQueryEaFile
+    NtSetEaFile
+
+    ; Token manipulation
+    NtCreateTokenEx
+    NtOpenProcessTokenEx
+    NtQueryInformationToken
+    NtDuplicateToken
+    NtFilterTokenEx
+    NtSetInformationToken
+    NtOpenThreadTokenEx
+    NtAdjustPrivilegesToken
+    NtAdjustGroupsToken
+    NtCompareTokens
+    NtCreateLowBoxToken
+    NtImpersonateAnonymousToken
+    NtQuerySecurityAttributesToken
+
+    ; Access checking
+    NtAccessCheck
+    NtPrivilegeCheck
+
+    ; Virtual memory management
+    NtQueryVirtualMemory
+    NtPssCaptureVaSpaceBulk
+    NtAllocateVirtualMemoryEx
+    NtFreeVirtualMemory
+    NtProtectVirtualMemory
+    NtLockVirtualMemory
+    NtUnlockVirtualMemory
+    NtFlushVirtualMemory
+    NtFlushProcessWriteBuffers
+    NtSetInformationVirtualMemory
+    NtReadVirtualMemoryEx
+    NtWriteVirtualMemory
+    NtGetWriteWatch
+    NtResetWriteWatch
+    RtlAllocateHeap
+    RtlReAllocateHeap
+    RtlFreeHeap
+    RtlAcquireSRWLockExclusive
+    RtlReleaseSRWLockExclusive
+
+    ; Memory partitions
+    NtCreatePartition
+    NtOpenPartition
+    NtManagePartition
+
+    ; Section / file mapping
+    NtAreMappedFilesTheSame
+    NtOpenSection
+    NtCreateSectionEx
+    NtExtendSection
+    NtQuerySection
+    NtMapViewOfSectionEx
+    NtUnmapViewOfSection
+    NtUnmapViewOfSectionEx
+
+    ; File I/O
+    NtCreateFile
+    NtCreateNamedPipeFile
+    NtOpenFile
+    NtReadFile
+    NtReadFileScatter
+    NtWriteFile
+    NtWriteFileGather
+    NtCancelIoFileEx
+    NtCancelSynchronousIoFile
+    NtDeleteFile
+    NtFsControlFile
+    NtDeviceIoControlFile
+    NtFlushBuffersFile
+    NtFlushBuffersFileEx
+    NtQueryInformationFile
+    NtQueryInformationByName
+    NtSetInformationFile
+    NtLockFile
+    NtUnlockFile
+    NtQueryAttributesFile
+    NtQueryFullAttributesFile
+    NtCopyFileChunk
+    NtNotifyChangeDirectoryFileEx
+    NtQueryDirectoryFile
+    NtQueryDirectoryFileEx
+    NtClose
+    NtDuplicateObject
+
+    ; I/O completion ports (epoll/poll emulation)
+    NtCreateIoCompletion
+    NtOpenIoCompletion
+    NtQueryIoCompletion
+    NtSetIoCompletionEx
+    NtRemoveIoCompletionEx
+    NtAllocateReserveObject
+
+    ; Wait completion packets (poll on mixed handle types)
+    NtCreateWaitCompletionPacket
+    NtAssociateWaitCompletionPacket
+    NtCancelWaitCompletionPacket
+
+    ; Object management
+    NtQueryObject
+    NtSetInformationObject
+    NtCompareObjects
+    NtMakeTemporaryObject
+    NtMakePermanentObject
+
+    ; Thread termination port (kernel death notification via ALPC)
+    NtRegisterThreadTerminatePort
+
+    ; ALPC (Advanced Local Procedure Call — cross-process signal delivery, IPC)
+    NtAlpcCreatePort
+    NtAlpcConnectPortEx
+    NtAlpcAcceptConnectPort
+    NtCompleteConnectPort
+    NtAlpcCreateSecurityContext
+    NtAlpcDeleteSecurityContext
+    NtAlpcSendWaitReceivePort
+    NtAlpcDisconnectPort
+    NtAlpcSetInformation
+    AlpcInitializeMessageAttribute
+    AlpcGetMessageAttribute
+
+    ; Private namespaces (isolated sem_open/shm_open)
+    NtCreatePrivateNamespace
+    NtOpenPrivateNamespace
+    NtDeletePrivateNamespace
+    RtlCreateBoundaryDescriptor
+    RtlDeleteBoundaryDescriptor
+    RtlAddSIDToBoundaryDescriptor
+    RtlAddIntegrityLabelToBoundaryDescriptor
+
+    ; Event, wait, and sleep primitives
+    NtCreateEvent
+    NtOpenEvent
+    NtQueryEvent
+    NtSetEvent
+    NtSetEventEx
+    NtResetEvent
+    NtClearEvent
+    NtPulseEvent
+    NtWaitForSingleObject
+    NtSignalAndWaitForSingleObject
+    NtWaitForMultipleObjects
+    NtDelayExecution
+
+    ; Mutant (kernel mutex)
+    NtCreateMutant
+    NtReleaseMutant
+
+    ; Semaphore (kernel counting semaphore)
+    NtCreateSemaphore
+    NtOpenSemaphore
+    NtQuerySemaphore
+    NtReleaseSemaphore
+
+    ; Directory and string conversion
+    RtlGetCurrentDirectory_U
+    RtlSetCurrentDirectory_U
+    RtlCreateProcessParametersEx
+    RtlDestroyProcessParameters
+    RtlInitString
+    RtlInitUnicodeString
+    RtlInitUnicodeStringEx
+    RtlNtStatusToDosError
+    RtlSetLastWin32Error
+    RtlAppendUnicodeStringToString
+    RtlDosSearchPath_Ustr
+    RtlDosApplyFileIsolationRedirection_Ustr
+    RtlReleasePath
+    RtlImageNtHeaderEx
+    RtlPcToFileHeader
+
+    ; Loader entrypoints used by LoadLibraryExW reconstruction
+    LdrLoadDll
+    LdrGetDllHandleByName
+    LdrGetDllHandleByMapping
+    LdrGetDllPath
+    LdrGetProcedureAddress
+    LdrAddLoadAsDataTable
+    LdrRemoveLoadAsDataTable
+    LdrUnloadAlternateResourceModule
+    LdrUnloadDll
+    LdrAppxHandleIntegrityFailure
+    RtlGetActiveActivationContext
+    RtlImageNtHeader
+
+    ; Job objects (process groups / resource limits)
+    NtCreateJobObject
+    NtOpenJobObject
+    NtAssignProcessToJobObject
+    NtTerminateJobObject
+    NtIsProcessInJob
+    NtQueryInformationJobObject
+    NtSetInformationJobObject
+    NtCreateJobSet
+
+    ; Worker factory (kernel thread pool)
+    NtCreateWorkerFactory
+    NtQueryInformationWorkerFactory
+    NtSetInformationWorkerFactory
+    NtWorkerFactoryWorkerReady
+    NtWaitForWorkViaWorkerFactory
+    NtReleaseWorkerFactoryWorker
+    NtShutdownWorkerFactory
+
+    ; IoRing (io_uring equivalent)
+    NtCreateIoRing
+    NtSubmitIoRing
+    NtQueryIoRingCapabilities
+    NtSetInformationIoRing
+
+    ; LUID and UUID generation
+    NtAllocateLocallyUniqueId
+    NtAllocateUuids
+
+    ; NLS locale data
+    NtInitializeNlsFiles
+    NtQueryDefaultLocale
+
+    ; Unicode case mapping, comparison, and hashing
+    RtlUpcaseUnicodeChar
+    RtlDowncaseUnicodeChar
+    RtlCompareUnicodeStrings
+    RtlHashUnicodeString
+
+    ; Timer APIs (POSIX timer_create subsystem)
+    NtCancelTimer2
+    NtQueryTimer
+
+    ; Futex-like wake/wait primitives
+    RtlWaitOnAddress
+    RtlWakeAddressSingle
+    RtlWakeAddressAll
+
+    ; Privilege management
+    RtlAcquirePrivilege
+    RtlReleasePrivilege
+
+    ; Secure memory cache flush (CFG/CET page protection retry)
+    RtlFlushSecureMemoryCache
+
+    ; Instruction cache flush (ARM64 PROT_EXEC transitions)
+    NtFlushInstructionCache
+
+    ; DLL load notifications (for __cxa_finalize on unload)
+    LdrRegisterDllNotification
+    LdrUnregisterDllNotification
+
+    ; Console subsystem registration (ctrl dispatch function)
+    CsrClientConnectToServer

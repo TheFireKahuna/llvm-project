@@ -26,6 +26,7 @@
 
 #include <inttypes.h>
 #include <stdint.h>
+#include "llvm/Config/llvm-config.h"
 
 #if !defined(LLVM_CRT_UCRT)
 
@@ -48,7 +49,7 @@
 #undef INT64_MIN
 #endif
 
-#else /* _MSC_VER || _WIN32_ITANIUM */
+#else /* LLVM_CRT_UCRT */
 #ifdef __cplusplus
 #include <cstddef>
 #include <cstdlib>
@@ -64,7 +65,7 @@ typedef signed __int64 ssize_t;
 typedef signed int ssize_t;
 #endif /* _WIN64 */
 
-#endif /* _MSC_VER || _WIN32_ITANIUM */
+#endif /* LLVM_CRT_UCRT */
 
 /* Set defaults for constants which we cannot find. */
 #if !defined(INT64_MAX)

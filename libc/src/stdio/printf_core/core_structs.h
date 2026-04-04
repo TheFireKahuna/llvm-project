@@ -57,10 +57,20 @@ enum FormatFlags : uint8_t {
   //  locale_digits = 0x40,  // I
 };
 
-struct FormatSection {
+// Char-agnostic descriptor fields shared by narrow and wide sections. The
+// narrow-to-wide bridge in wide_converter.h takes this by const-ref (via
+// implicit upcast from basic_format_section<wchar_t>), so the bridge carries
+// exactly the fields it needs — zero drift risk, zero copy of char-specific
+// storage.
+//
+// The conv_val storage is a union: conv_val_raw holds scalar argument values
+// (ints, floats, fixed-point) and conv_val_ptr holds pointer arguments for
+// %p / %n / %s. The two are mutually exclusive — parser writes exactly one
+// based on conv_name and consumers read exactly one on the same key. Unioning
+// them saves 8 B of padding and lands basic_format_section<CharT> on one cache
+// line (64 B) instead of straddling two (72 B).
+struct FormatDesc {
   bool has_conv;
-
-  cpp::string_view raw_string;
 
   // Format Specifier Values
   FormatFlags flags = FormatFlags(0);
@@ -69,20 +79,34 @@ struct FormatSection {
   int min_width = 0;
   int precision = -1;
 
-  // Needs to be large enough to hold a long double. Special case handling for
-  // the PowerPC double double type because it has no FPBits interface.
+  // Argument value. Active member selected by conv_name:
+  //   'p' / 'n' / 's'  → conv_val_ptr
+  //   otherwise        → conv_val_raw
+  //
+  // conv_val_raw is large enough to hold a long double (or UInt128 for the
+  // PowerPC double-double special case, which has no FPBits interface).
+  union {
 #ifdef LIBC_TYPES_LONG_DOUBLE_IS_DOUBLE_DOUBLE
-  UInt128 conv_val_raw;
+    UInt128 conv_val_raw;
 #else
-  fputil::FPBits<long double>::StorageType conv_val_raw;
+    fputil::FPBits<long double>::StorageType conv_val_raw;
 #endif // LIBC_TYPES_LONG_DOUBLE_IS_DOUBLE_DOUBLE
-  void *conv_val_ptr;
+    void *conv_val_ptr;
+  };
 
   char conv_name;
+};
+
+// Format section parameterized on CharT. Narrow and wide differ only in the
+// raw-literal storage (basic_string_view<CharT>); descriptor fields live in
+// the shared FormatDesc base. Mirrors the std::basic_string / basic_string_view
+// pattern.
+template <typename CharT> struct basic_format_section : FormatDesc {
+  cpp::basic_string_view<CharT> raw_string;
 
   // This operator is only used for testing and should be automatically
   // optimized out for release builds.
-  LIBC_INLINE bool operator==(const FormatSection &other) const {
+  LIBC_INLINE bool operator==(const basic_format_section &other) const {
     if (has_conv != other.has_conv)
       return false;
 
@@ -106,6 +130,9 @@ struct FormatSection {
     return true;
   }
 };
+
+using FormatSection = basic_format_section<char>;
+using WideFormatSection = basic_format_section<wchar_t>;
 
 enum PrimaryType : uint8_t {
   Unknown = 0,

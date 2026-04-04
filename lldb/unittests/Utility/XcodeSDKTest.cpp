@@ -77,7 +77,7 @@ TEST(XcodeSDKTest, MergeTest) {
   EXPECT_EQ(empty.GetSysroot(), FileSpec{"/Path/To/MacOSX12.5.Internal.sdk"});
 }
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 TEST(XcodeSDKTest, SDKSupportsModules) {
   std::string base = "/Applications/Xcode.app/Contents/Developer/Platforms/";
   EXPECT_TRUE(XcodeSDK::SDKSupportsModules(

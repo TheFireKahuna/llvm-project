@@ -6,49 +6,43 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_LIBC___SUPPORT_SRC_THREADS_LINUX_CNDVAR_H
-#define LLVM_LIBC___SUPPORT_SRC_THREADS_LINUX_CNDVAR_H
+#ifndef LLVM_LIBC_SRC___SUPPORT_THREADS_CNDVAR_H
+#define LLVM_LIBC_SRC___SUPPORT_THREADS_CNDVAR_H
 
-#include "hdr/stdint_proxy.h" // uint32_t
+#include "src/__support/CPP/optional.h"
 #include "src/__support/macros/config.h"
-#include "src/__support/threads/linux/futex_utils.h" // Futex
-#include "src/__support/threads/mutex.h"             // Mutex
-#include "src/__support/threads/raw_mutex.h"         // RawMutex
+#include "src/__support/threads/cndvar_queue.h" // CndWaiterQueue, CndWaiter
+#include "src/__support/threads/mutex.h"        // Mutex
+#include "src/__support/threads/raw_mutex.h"    // RawMutex, Futex
 
 namespace LIBC_NAMESPACE_DECL {
 
 class CndVar {
-  enum CndWaiterStatus : uint32_t {
-    WS_Waiting = 0xE,
-    WS_Signalled = 0x5,
-  };
-
-  struct CndWaiter {
-    Futex futex_word = WS_Waiting;
-    CndWaiter *next = nullptr;
-  };
-
-  CndWaiter *waitq_front;
-  CndWaiter *waitq_back;
+  CndWaiterQueue waitq;
   RawMutex qmtx;
 
 public:
   LIBC_INLINE static int init(CndVar *cv) {
-    cv->waitq_front = cv->waitq_back = nullptr;
+    cv->waitq = CndWaiterQueue();
     RawMutex::init(&cv->qmtx);
     return 0;
   }
 
   LIBC_INLINE static void destroy(CndVar *cv) {
-    cv->waitq_front = cv->waitq_back = nullptr;
+    cv->waitq = CndWaiterQueue();
   }
 
   // Returns 0 on success, -1 on error.
   int wait(Mutex *m);
+
+  // Wait with optional timeout. Returns 0 on signal, ETIMEDOUT on timeout,
+  // -1 on error. When timeout is nullopt, waits indefinitely.
+  int wait(Mutex *m, cpp::optional<Futex::Timeout> timeout);
+
   void notify_one();
   void broadcast();
 };
 
 } // namespace LIBC_NAMESPACE_DECL
 
-#endif // LLVM_LIBC___SUPPORT_SRC_THREADS_LINUX_CNDVAR_H
+#endif // LLVM_LIBC_SRC___SUPPORT_THREADS_CNDVAR_H

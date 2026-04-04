@@ -53,11 +53,25 @@
 #include <string>
 #include <utility>
 
-#ifdef LLVM_ON_UNIX
+#if defined(LLVM_RUNTIME_POSIX)
+#include <unistd.h>
+#if __has_include(<netdb.h>) && __has_include(<netinet/in.h>) &&              \
+    __has_include(<sys/socket.h>)
+#define CLANG_INTERPRETER_HAS_TCP_EPC 1
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
-#include <unistd.h>
+#else
+#define CLANG_INTERPRETER_HAS_TCP_EPC 0
+#endif
+
+#if defined(LLVM_RUNTIME_POSIX) && !defined(LLVM_RUNTIME_NTPOSIX)
+#define CLANG_INTERPRETER_HAS_LOCAL_FORK_EXECUTOR 1
+#else
+#define CLANG_INTERPRETER_HAS_LOCAL_FORK_EXECUTOR 0
+#endif
+#else
+#define CLANG_INTERPRETER_HAS_TCP_EPC 0
 #endif
 
 namespace clang {
@@ -123,10 +137,10 @@ static llvm::Expected<
     std::pair<std::unique_ptr<llvm::orc::SimpleRemoteEPC>, uint32_t>>
 launchExecutor(llvm::StringRef ExecutablePath, bool UseSharedMemory,
                unsigned SlabAllocateSize, std::function<void()> CustomizeFork) {
-#ifndef LLVM_ON_UNIX
-  // FIXME: Add support for Windows.
+#if !defined(LLVM_RUNTIME_POSIX)
+  // FIXME: Add support for non-POSIX runtimes.
   return llvm::make_error<llvm::StringError>(
-      "-" + ExecutablePath + " not supported on non-unix platforms",
+      "-" + ExecutablePath + " not supported on non-POSIX runtimes",
       llvm::inconvertibleErrorCode());
 #elif !LLVM_ENABLE_THREADS
   // Out of process mode using SimpleRemoteEPC depends on threads.
@@ -134,6 +148,10 @@ launchExecutor(llvm::StringRef ExecutablePath, bool UseSharedMemory,
       "-" + ExecutablePath +
           " requires threads, but LLVM was built with "
           "LLVM_ENABLE_THREADS=Off",
+      llvm::inconvertibleErrorCode());
+#elif !CLANG_INTERPRETER_HAS_LOCAL_FORK_EXECUTOR
+  return llvm::make_error<llvm::StringError>(
+      "Local out-of-process JIT requires fork/exec support in the runtime",
       llvm::inconvertibleErrorCode());
 #else
 
@@ -214,7 +232,7 @@ launchExecutor(llvm::StringRef ExecutablePath, bool UseSharedMemory,
 #endif
 }
 
-#if defined(LLVM_RUNTIME_POSIX) && defined(LLVM_ENABLE_THREADS)
+#if CLANG_INTERPRETER_HAS_TCP_EPC && LLVM_ENABLE_THREADS
 
 static Expected<int> connectTCPSocketImpl(std::string Host,
                                           std::string PortStr) {
@@ -226,7 +244,7 @@ static Expected<int> connectTCPSocketImpl(std::string Host,
 
   if (int EC = getaddrinfo(Host.c_str(), PortStr.c_str(), &Hints, &AI))
     return llvm::make_error<llvm::StringError>(
-        llvm::formatv("address resolution failed ({0})", strerror(EC)),
+        llvm::formatv("address resolution failed ({0})", gai_strerror(EC)),
         llvm::inconvertibleErrorCode());
   // Cycle through the returned addrinfo structures and connect to the first
   // reachable endpoint.
@@ -235,7 +253,8 @@ static Expected<int> connectTCPSocketImpl(std::string Host,
   for (Server = AI; Server != nullptr; Server = Server->ai_next) {
     // socket might fail, e.g. if the address family is not supported. Skip to
     // the next addrinfo structure in such a case.
-    if ((SockFD = socket(AI->ai_family, AI->ai_socktype, AI->ai_protocol)) < 0)
+    if ((SockFD = socket(Server->ai_family, Server->ai_socktype,
+                         Server->ai_protocol)) < 0)
       continue;
 
     // If connect returns null, we exit the loop with a working socket.
@@ -258,10 +277,10 @@ static Expected<int> connectTCPSocketImpl(std::string Host,
 static llvm::Expected<std::unique_ptr<llvm::orc::SimpleRemoteEPC>>
 connectTCPSocket(llvm::StringRef NetworkAddress, bool UseSharedMemory,
                  unsigned SlabAllocateSize) {
-#ifndef LLVM_ON_UNIX
-  // FIXME: Add TCP support for Windows.
+#if !defined(LLVM_RUNTIME_POSIX)
+  // FIXME: Add TCP support for non-POSIX runtimes.
   return llvm::make_error<llvm::StringError>(
-      "-" + NetworkAddress + " not supported on non-unix platforms",
+      "-" + NetworkAddress + " not supported on non-POSIX runtimes",
       llvm::inconvertibleErrorCode());
 #elif !LLVM_ENABLE_THREADS
   // Out of process mode using SimpleRemoteEPC depends on threads.
@@ -307,7 +326,7 @@ connectTCPSocket(llvm::StringRef NetworkAddress, bool UseSharedMemory,
       std::move(S), *SockFD, *SockFD);
 #endif
 }
-#endif // LLVM_RUNTIME_POSIX
+#endif // CLANG_INTERPRETER_HAS_TCP_EPC && LLVM_ENABLE_THREADS
 
 static llvm::Expected<std::unique_ptr<llvm::orc::LLJITBuilder>>
 createLLJITBuilder(std::unique_ptr<llvm::orc::ExecutorProcessControl> EPC,
@@ -343,16 +362,22 @@ outOfProcessJITBuilder(const IncrementalExecutorBuilder &IncrExecutorBuilder) {
     auto EPCOrErr = std::move(ResultOrErr->first);
     EPC = std::move(EPCOrErr);
   } else if (IncrExecutorBuilder.OOPExecutorConnect != "") {
-#if LLVM_ON_UNIX && LLVM_ENABLE_THREADS
+#if CLANG_INTERPRETER_HAS_TCP_EPC && LLVM_ENABLE_THREADS
     auto EPCOrErr = connectTCPSocket(IncrExecutorBuilder.OOPExecutorConnect,
                                      IncrExecutorBuilder.UseSharedMemory,
                                      IncrExecutorBuilder.SlabAllocateSize);
     if (!EPCOrErr)
       return EPCOrErr.takeError();
     EPC = std::move(*EPCOrErr);
+#elif !CLANG_INTERPRETER_HAS_TCP_EPC
+    return llvm::make_error<llvm::StringError>(
+        "Out-of-process JIT over TCP requires POSIX networking support in the "
+        "runtime",
+        std::error_code());
 #else
     return llvm::make_error<llvm::StringError>(
-        "Out-of-process JIT over TCP is not supported on this platform",
+        "Out-of-process JIT over TCP requires threads, but LLVM was built "
+        "with LLVM_ENABLE_THREADS=Off",
         std::error_code());
 #endif
   }
@@ -375,7 +400,8 @@ IncrementalExecutorBuilder::create(llvm::orc::ThreadSafeContext &TSC,
   if (IE)
     return std::move(IE);
   llvm::Triple TT = TI.getTriple();
-  if (!TT.isOSWindows() && IsOutOfProcess) {
+  if ((!TT.isOSWindows() || TT.isWindowsNTPOSIXEnvironment()) &&
+      IsOutOfProcess) {
     if (!JITBuilder) {
       auto ResOrErr = outOfProcessJITBuilder(*this);
       if (!ResOrErr)

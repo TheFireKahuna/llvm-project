@@ -26,4 +26,8 @@ struct statvfs {
   unsigned long f_namemax; /* Maximum filename length */
 };
 
+// f_flag values for struct statvfs.
+#define ST_RDONLY 1
+#define ST_NOSUID 2
+
 #endif // LLVM_LIBC_TYPES_STRUCT_STATVFS_H

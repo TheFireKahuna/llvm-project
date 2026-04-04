@@ -11,7 +11,7 @@
 
 #if defined(__linux__)
 #define __UTS_NAME_LENGTH 65
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) || defined(__NTPOSIX__)
 #define __UTS_NAME_LENGTH 256
 #else
 // Arbitray default. Should be specialized for each platform.

@@ -304,7 +304,7 @@ void TestHelper<CharT, 4>::test() {
 }
 
 int main(int, char**) {
-#if !defined(LLVM_RUNTIME_WIN32) && !defined(TEST_HAS_NO_WIDE_CHARACTERS)
+#if !defined(_LIBCPP_WIN32API) && !defined(TEST_HAS_NO_WIDE_CHARACTERS)
   TestHelper<wchar_t>::test();
 #endif
   TestHelper<char32_t>::test();

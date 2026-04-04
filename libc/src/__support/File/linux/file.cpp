@@ -54,7 +54,7 @@ ErrorOr<off_t> linux_file_seek(File *f, off_t offset, int whence) {
 }
 
 int linux_file_close(File *f) {
-  File::remove_file(f);
+  // File::close() already called remove_file() before platform_close.
   auto *lf = reinterpret_cast<LinuxFile *>(f);
   int ret = LIBC_NAMESPACE::syscall_impl<int>(SYS_close, lf->get_fd());
   if (ret < 0) {

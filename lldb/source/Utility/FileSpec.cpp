@@ -37,11 +37,16 @@ using namespace lldb_private;
 namespace {
 
 static constexpr FileSpec::Style GetNativeStyle() {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   return FileSpec::Style::windows;
 #else
   return FileSpec::Style::posix;
 #endif
+}
+
+bool TripleUsesWindowsStyle(const llvm::Triple &triple) {
+  return triple.isOSWindows() && !triple.isWindowsCygwinEnvironment() &&
+         !triple.isWindowsNTPOSIXEnvironment();
 }
 
 bool PathStyleIsPosix(FileSpec::Style style) {
@@ -73,7 +78,8 @@ FileSpec::FileSpec(llvm::StringRef path, Style style) : m_style(style) {
 }
 
 FileSpec::FileSpec(llvm::StringRef path, const llvm::Triple &triple)
-    : FileSpec{path, triple.isOSWindows() ? Style::windows : Style::posix} {}
+    : FileSpec{path, TripleUsesWindowsStyle(triple) ? Style::windows
+                                                    : Style::posix} {}
 
 namespace {
 /// Safely get a character at the specified index.
@@ -208,7 +214,8 @@ void FileSpec::SetFile(llvm::StringRef pathname, Style style) {
 }
 
 void FileSpec::SetFile(llvm::StringRef path, const llvm::Triple &triple) {
-  return SetFile(path, triple.isOSWindows() ? Style::windows : Style::posix);
+  return SetFile(path, TripleUsesWindowsStyle(triple) ? Style::windows
+                                                      : Style::posix);
 }
 
 // Convert to pointer operator. This allows code to check any FileSpec objects

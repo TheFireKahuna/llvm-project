@@ -91,6 +91,16 @@ add_link_flags_if(CXX_SUPPORTS_UNWINDLIB_EQ_NONE_FLAG --unwindlib=none)
 # MINGW_LIBRARIES is defined in config-ix.cmake
 add_library_flags_if(MINGW "${MINGW_LIBRARIES}")
 
+# NTPOSIX runtimes build passes -nolibc to avoid the not-yet-built c.lib.
+# libunwind uses RtlUnwindEx and other NT kernel functions directly, so it
+# needs ntdll.lib explicitly. bcryptprimitives.lib is needed by the CRT
+# startup objects (crt_gs.obj → ProcessPrng for __security_init_cookie).
+# NTPOSIX_IMPORT_LIBS_DIR is set by HandleNTPOSIXDefaults.cmake.
+if (WIN32_NTPOSIX AND NTPOSIX_IMPORT_LIBS_DIR)
+  add_library_flags("${NTPOSIX_IMPORT_LIBS_DIR}/ntdll.lib")
+  add_library_flags("${NTPOSIX_IMPORT_LIBS_DIR}/bcryptprimitives.lib")
+endif()
+
 # MSVC-simulating compilers (e.g., clang --target=x86_64-windows-itanium)
 # need mem* functions but can't use vcruntime.lib as it contains MSVC C++
 # ABI symbols that conflict with Itanium ABI. Import mem* from ucrtbase.dll.

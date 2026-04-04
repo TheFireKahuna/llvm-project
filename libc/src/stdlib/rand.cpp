@@ -20,7 +20,7 @@ LLVM_LIBC_FUNCTION(int, rand, (void)) {
   // An implementation of the xorshift64star pseudo random number generator.
   // This is a good general purpose generator for most non-cryptographics
   // applications.
-  if constexpr (sizeof(void *) == sizeof(uint64_t)) {
+  if constexpr (sizeof(unsigned long) == sizeof(uint64_t)) {
     for (;;) {
       unsigned long x = orig;
       x ^= x >> 12;

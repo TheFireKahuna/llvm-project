@@ -15,3 +15,17 @@ add_entrypoint_object(
   DEPENDS
     .${LIBC_TARGET_OS}.readv
 )
+
+add_entrypoint_object(
+  preadv
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.preadv
+)
+
+add_entrypoint_object(
+  pwritev
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.pwritev
+)

@@ -6,46 +6,80 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "hdr/errno_macros.h"
 #include "hdr/time_macros.h"
 
-#include "src/__support/CPP/atomic.h"
-#include "src/__support/CPP/bit.h"
+#include "src/__support/OSUtil/windows/time/clock_ops.h"
 #include "src/__support/CPP/limits.h"
+#include "src/__support/OSUtil/windows/ntdll.h"
 #include "src/__support/macros/optimization.h"
 #include "src/__support/time/clock_gettime.h"
 #include "src/__support/time/units.h"
-#include "src/__support/time/windows/performance_counter.h"
-
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <Windows.h>
 
 namespace LIBC_NAMESPACE_DECL {
 namespace internal {
+
 ErrorOr<int> clock_gettime(clockid_t clockid, timespec *ts) {
   using namespace time_units;
   constexpr unsigned long long HNS_PER_SEC = 1_s_ns / 100ULL;
   constexpr long long SEC_LIMIT =
       cpp::numeric_limits<decltype(ts->tv_sec)>::max();
   ErrorOr<int> ret = 0;
+
+  if (is_thread_cpuclockid(clockid)) {
+    const uint32_t tid = thread_cpuclockid_tid(clockid);
+    HANDLE handle = NtCurrentThread();
+    bool opened = false;
+
+    if (tid != static_cast<uint32_t>(::NtCurrentThreadId())) {
+      CLIENT_ID cid{nullptr,
+                    reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(tid))};
+      NTSTATUS open_status =
+          ::NtOpenThread(&handle, THREAD_QUERY_INFORMATION, nullptr, &cid);
+      if (!NT_SUCCESS(open_status))
+        return cpp::unexpected(ESRCH);
+      opened = true;
+    }
+
+    KERNEL_USER_TIMES times;
+    NTSTATUS status =
+        ::NtQueryInformationThread(handle, ThreadTimes, &times, sizeof(times),
+                                   nullptr);
+    if (opened)
+      ::NtClose(handle);
+    if (!NT_SUCCESS(status))
+      return cpp::unexpected(ESRCH);
+
+    unsigned long long total_time_hns =
+        static_cast<unsigned long long>(times.KernelTime.QuadPart) +
+        static_cast<unsigned long long>(times.UserTime.QuadPart);
+    unsigned long long tv_sec = total_time_hns / HNS_PER_SEC;
+    unsigned long long tv_nsec = (total_time_hns % HNS_PER_SEC) * 100ULL;
+    if (LIBC_UNLIKELY(tv_sec > SEC_LIMIT))
+      return cpp::unexpected(EOVERFLOW);
+
+    ts->tv_sec = static_cast<decltype(ts->tv_sec)>(tv_sec);
+    ts->tv_nsec = static_cast<decltype(ts->tv_nsec)>(tv_nsec);
+    return 0;
+  }
+
   switch (clockid) {
   default:
     ret = cpp::unexpected(EINVAL);
     break;
 
-  case CLOCK_MONOTONIC: {
-    // see
-    // https://learn.microsoft.com/en-us/windows/win32/sysinfo/acquiring-high-resolution-time-stamps
-    // Is the performance counter monotonic (non-decreasing)?
-    // Yes. performance_counter does not go backward.
-    [[clang::uninitialized]] LARGE_INTEGER buffer;
-    // On systems that run Windows XP or later, the function will always
-    // succeed and will thus never return zero.
-    ::QueryPerformanceCounter(&buffer);
-    long long freq = performance_counter::get_ticks_per_second();
-    long long ticks = buffer.QuadPart;
-    long long tv_sec = ticks / freq;
-    long long tv_nsec = (ticks % freq) * 1_s_ns / freq;
+  // Interrupt time is hardware-driven and not NTP-slewed, so RAW and COARSE
+  // are identical to MONOTONIC on Windows.
+  case CLOCK_MONOTONIC:
+  case CLOCK_MONOTONIC_RAW:
+  case CLOCK_MONOTONIC_COARSE: {
+    // RtlQueryUnbiasedInterruptTime: 100ns units, excludes suspend time.
+    // Matches Linux CLOCK_MONOTONIC semantics. Reads KUSER_SHARED_DATA
+    // with a seqlock — zero syscalls, no frequency division needed.
+    ULONGLONG interrupt_time;
+    ::RtlQueryUnbiasedInterruptTime(&interrupt_time);
+    unsigned long long tv_sec = interrupt_time / HNS_PER_SEC;
+    unsigned long long tv_nsec = (interrupt_time % HNS_PER_SEC) * 100ULL;
     if (LIBC_UNLIKELY(tv_sec > SEC_LIMIT)) {
       ret = cpp::unexpected(EOVERFLOW);
       break;
@@ -54,18 +88,34 @@ ErrorOr<int> clock_gettime(clockid_t clockid, timespec *ts) {
     ts->tv_nsec = static_cast<decltype(ts->tv_nsec)>(tv_nsec);
     break;
   }
-  case CLOCK_REALTIME: {
-    // https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getsystemtimepreciseasfiletime
-    // GetSystemTimePreciseAsFileTime
-    // This function is best suited for high-resolution time-of-day
-    // measurements, or time stamps that are synchronized to UTC
-    [[clang::uninitialized]] FILETIME file_time;
-    [[clang::uninitialized]] ULARGE_INTEGER time;
-    ::GetSystemTimePreciseAsFileTime(&file_time);
-    time.LowPart = file_time.dwLowDateTime;
-    time.HighPart = file_time.dwHighDateTime;
 
-    // adjust to POSIX epoch (from Jan 1, 1601 to Jan 1, 1970)
+  // Alarm clocks read identically to their non-alarm counterparts.
+  // The "alarm" (wake-from-suspend) behavior only applies to timer_create.
+  case CLOCK_BOOTTIME_ALARM:
+  case CLOCK_BOOTTIME: {
+    // InterruptTime from KUSER_SHARED_DATA: 100ns units, includes suspend.
+    // Matches Linux CLOCK_BOOTTIME semantics. Single atomic 64-bit load.
+    ULONGLONG interrupt_time;
+    ::QueryInterruptTime(&interrupt_time);
+    unsigned long long tv_sec = interrupt_time / HNS_PER_SEC;
+    unsigned long long tv_nsec = (interrupt_time % HNS_PER_SEC) * 100ULL;
+    if (LIBC_UNLIKELY(tv_sec > SEC_LIMIT)) {
+      ret = cpp::unexpected(EOVERFLOW);
+      break;
+    }
+    ts->tv_sec = static_cast<decltype(ts->tv_sec)>(tv_sec);
+    ts->tv_nsec = static_cast<decltype(ts->tv_nsec)>(tv_nsec);
+    break;
+  }
+
+  case CLOCK_REALTIME_ALARM:
+  case CLOCK_REALTIME: {
+    // RtlGetSystemTimePrecise: 100ns units since 1601-01-01, sub-us precision.
+    // Interpolates between kernel ticks using QPC — zero syscalls.
+    ULARGE_INTEGER time;
+    time.QuadPart = static_cast<unsigned long long>(::RtlGetSystemTimePrecise());
+
+    // Adjust to POSIX epoch (from Jan 1, 1601 to Jan 1, 1970)
     constexpr unsigned long long POSIX_TIME_SHIFT =
         (11644473600ULL * HNS_PER_SEC);
     if (LIBC_UNLIKELY(POSIX_TIME_SHIFT > time.QuadPart)) {
@@ -83,36 +133,27 @@ ErrorOr<int> clock_gettime(clockid_t clockid, timespec *ts) {
     ts->tv_nsec = static_cast<decltype(ts->tv_nsec)>(tv_nsec);
     break;
   }
+
   case CLOCK_PROCESS_CPUTIME_ID:
   case CLOCK_THREAD_CPUTIME_ID: {
-    [[clang::uninitialized]] FILETIME creation_time;
-    [[clang::uninitialized]] FILETIME exit_time;
-    [[clang::uninitialized]] FILETIME kernel_time;
-    [[clang::uninitialized]] FILETIME user_time;
-    bool success;
+    // Query CPU times directly via NT API — avoids kernel32 indirection.
+    // Both info classes return KERNEL_USER_TIMES with 100ns-unit fields.
+    KERNEL_USER_TIMES times;
+    NTSTATUS status;
     if (clockid == CLOCK_PROCESS_CPUTIME_ID) {
-      // https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes
-      success = ::GetProcessTimes(::GetCurrentProcess(), &creation_time,
-                                  &exit_time, &kernel_time, &user_time);
+      status = ::NtQueryInformationProcess(NtCurrentProcess(), ProcessTimes,
+                                           &times, sizeof(times), nullptr);
     } else {
-      // https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadtimes
-      success = ::GetThreadTimes(::GetCurrentThread(), &creation_time,
-                                 &exit_time, &kernel_time, &user_time);
+      status = ::NtQueryInformationThread(NtCurrentThread(), ThreadTimes,
+                                          &times, sizeof(times), nullptr);
     }
-    if (!success) {
+    if (!NT_SUCCESS(status)) {
       ret = cpp::unexpected(EINVAL);
       break;
     }
-    // https://learn.microsoft.com/en-us/windows/win32/api/minwinbase/ns-minwinbase-filetime
-    // It is not recommended that you add and subtract values from the FILETIME
-    // structure to obtain relative times. Instead, you should copy the low- and
-    // high-order parts of the file time to a ULARGE_INTEGER structure, perform
-    // 64-bit arithmetic on the QuadPart member, and copy the LowPart and
-    // HighPart members into the FILETIME structure.
-    auto kernel_time_hns = cpp::bit_cast<ULARGE_INTEGER>(kernel_time);
-    auto user_time_hns = cpp::bit_cast<ULARGE_INTEGER>(user_time);
     unsigned long long total_time_hns =
-        kernel_time_hns.QuadPart + user_time_hns.QuadPart;
+        static_cast<unsigned long long>(times.KernelTime.QuadPart) +
+        static_cast<unsigned long long>(times.UserTime.QuadPart);
 
     unsigned long long tv_sec = total_time_hns / HNS_PER_SEC;
     unsigned long long tv_nsec = (total_time_hns % HNS_PER_SEC) * 100ULL;
@@ -127,8 +168,37 @@ ErrorOr<int> clock_gettime(clockid_t clockid, timespec *ts) {
 
     break;
   }
+
+  case CLOCK_REALTIME_COARSE: {
+    // KUSER_SHARED_DATA.SystemTime: tick-granularity (~1ms), no QPC
+    // interpolation. Single atomic load from 0x7FFE0014.
+    ULONGLONG system_time;
+    ::QueryCoarseSystemTime(&system_time);
+    constexpr unsigned long long POSIX_TIME_SHIFT =
+        (11644473600ULL * HNS_PER_SEC);
+    if (LIBC_UNLIKELY(POSIX_TIME_SHIFT > system_time)) {
+      ret = cpp::unexpected(EOVERFLOW);
+      break;
+    }
+    system_time -= POSIX_TIME_SHIFT;
+    unsigned long long tv_sec = system_time / HNS_PER_SEC;
+    unsigned long long tv_nsec = (system_time % HNS_PER_SEC) * 100ULL;
+    if (LIBC_UNLIKELY(tv_sec > SEC_LIMIT)) {
+      ret = cpp::unexpected(EOVERFLOW);
+      break;
+    }
+    ts->tv_sec = static_cast<decltype(ts->tv_sec)>(tv_sec);
+    ts->tv_nsec = static_cast<decltype(ts->tv_nsec)>(tv_nsec);
+    break;
+  }
+
+  case CLOCK_TAI: {
+    ret = cpp::unexpected(ENOTSUP);
+    break;
+  }
   }
   return ret;
 }
+
 } // namespace internal
 } // namespace LIBC_NAMESPACE_DECL

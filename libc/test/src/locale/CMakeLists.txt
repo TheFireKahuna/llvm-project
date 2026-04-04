@@ -23,3 +23,34 @@ add_libc_test(
     libc.hdr.locale_macros
     libc.src.locale.localeconv
 )
+
+add_libc_test(
+  nl_langinfo_test
+  SUITE
+    libc-locale-tests
+  SRCS
+    nl_langinfo_test.cpp
+  DEPENDS
+    libc.hdr.locale_macros
+    libc.include.llvm-libc-macros.langinfo_macros
+    libc.src.locale.freelocale
+    libc.src.locale.newlocale
+    libc.src.locale.nl_langinfo_l
+)
+
+add_libc_test(
+  setlocale_codeset_test
+  SUITE
+    libc-locale-tests
+  SRCS
+    setlocale_codeset_test.cpp
+  DEPENDS
+    libc.hdr.errno_macros
+    libc.hdr.locale_macros
+    libc.include.llvm-libc-macros.langinfo_macros
+    libc.src.__support.libc_errno
+    libc.src.locale.freelocale
+    libc.src.locale.newlocale
+    libc.src.locale.nl_langinfo
+    libc.src.locale.setlocale
+)

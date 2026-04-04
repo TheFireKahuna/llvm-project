@@ -9,6 +9,9 @@
 #ifndef LLVM_LIBC_STDIO_H
 #define LLVM_LIBC_STDIO_H
 
+// When not the sole libc, defer to the platform C library.
+#if !defined(_WIN32) || defined(__NTPOSIX__)
+
 #include "__llvm-libc-common.h"
 #include "llvm-libc-macros/file-seek-macros.h"
 #include "llvm-libc-macros/stdio-macros.h"
@@ -17,4 +20,10 @@
 
 %%public_api()
 
+#endif // !defined(_WIN32) || defined(__NTPOSIX__)
 #endif // LLVM_LIBC_STDIO_H
+
+// Chain to the platform header when coexisting with UCRT.
+#if defined(_WIN32) && !defined(__NTPOSIX__) && __has_include_next(<stdio.h>)
+#include_next <stdio.h>
+#endif

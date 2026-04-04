@@ -111,17 +111,21 @@ endfunction()
 # Usage:
 #   get_object_files_for_test(<result var>
 #                             <skipped_entrypoints_var>
+#                             <link_libraries_var>
 #                             <target0> [<target1> ...])
 #
 #   The list of object files is collected in <result_var>.
 #   If skipped entrypoints were found, then <skipped_entrypoints_var> is
 #   set to a true value.
+#   Any non-object library targets required by those dependencies are
+#   collected in <link_libraries_var>.
 #   targetN is either an "add_entrypoint_target" target or an
 #   "add_object_library" target.
-function(get_object_files_for_test result skipped_entrypoints_list)
+function(get_object_files_for_test result skipped_entrypoints_list
+         link_libraries_result)
   set(object_files "")
   set(skipped_list "")
-  set(checked_list "")
+  set(link_libraries "")
   set(unchecked_list "${ARGN}")
   list(REMOVE_DUPLICATES unchecked_list)
 
@@ -143,7 +147,16 @@ function(get_object_files_for_test result skipped_entrypoints_list)
 
     get_target_property(dep_type ${dep} "TARGET_TYPE")
     if(NOT dep_type)
-      # Skip tests with no object dependencies.
+      # Imported and regular libraries participate in the final link, even
+      # though they do not contribute object files directly.
+      get_target_property(cmake_target_type ${dep} "TYPE")
+      if(cmake_target_type STREQUAL "STATIC_LIBRARY"
+         OR cmake_target_type STREQUAL "SHARED_LIBRARY"
+         OR cmake_target_type STREQUAL "MODULE_LIBRARY"
+         OR cmake_target_type STREQUAL "INTERFACE_LIBRARY"
+         OR cmake_target_type STREQUAL "UNKNOWN_LIBRARY")
+        list(APPEND link_libraries ${dep})
+      endif()
       continue()
     endif()
 
@@ -153,18 +166,21 @@ function(get_object_files_for_test result skipped_entrypoints_list)
       # Target full dependency has already been checked.  Just use the results.
       get_target_property(dep_obj ${dep} "OBJECT_FILES_FOR_TESTS")
       get_target_property(dep_skip ${dep} "SKIPPED_LIST_FOR_TESTS")
+      get_target_property(dep_links ${dep} "LINK_LIBRARIES_FOR_TESTS")
     else()
       # Target full dependency hasn't been checked.  Recursively check its DEPS.
       # Mark as in-progress before recursing to break cycles.
       set_target_properties(${dep} PROPERTIES "CHECK_OBJ_FOR_TESTS" TRUE)
       set_target_properties(${dep} PROPERTIES "OBJECT_FILES_FOR_TESTS" "")
       set_target_properties(${dep} PROPERTIES "SKIPPED_LIST_FOR_TESTS" "")
+      set_target_properties(${dep} PROPERTIES "LINK_LIBRARIES_FOR_TESTS" "")
 
-      set(dep_obj "${dep}")
+      set(dep_obj "")
       set(dep_skip "")
+      set(dep_links "")
 
       get_target_property(indirect_deps ${dep} "DEPS")
-      get_object_files_for_test(dep_obj dep_skip ${indirect_deps})
+      get_object_files_for_test(dep_obj dep_skip dep_links ${indirect_deps})
 
       if(${dep_type} STREQUAL ${OBJECT_LIBRARY_TARGET_TYPE})
         get_target_property(dep_object_files ${dep} "OBJECT_FILES")
@@ -190,6 +206,7 @@ function(get_object_files_for_test result skipped_entrypoints_list)
       set_target_properties(${dep} PROPERTIES
         OBJECT_FILES_FOR_TESTS "${dep_obj}"
         SKIPPED_LIST_FOR_TESTS "${dep_skip}"
+        LINK_LIBRARIES_FOR_TESTS "${dep_links}"
         CHECK_OBJ_FOR_TESTS "YES"
       )
 
@@ -197,6 +214,7 @@ function(get_object_files_for_test result skipped_entrypoints_list)
 
     list(APPEND object_files ${dep_obj})
     list(APPEND skipped_list ${dep_skip})
+    list(APPEND link_libraries ${dep_links})
 
   endforeach(dep)
 
@@ -204,6 +222,8 @@ function(get_object_files_for_test result skipped_entrypoints_list)
   set(${result} ${object_files} PARENT_SCOPE)
   list(REMOVE_DUPLICATES skipped_list)
   set(${skipped_entrypoints_list} ${skipped_list} PARENT_SCOPE)
+  list(REMOVE_DUPLICATES link_libraries)
+  set(${link_libraries_result} ${link_libraries} PARENT_SCOPE)
 
 endfunction(get_object_files_for_test)
 
@@ -236,7 +256,7 @@ function(create_libc_unittest fq_target_name)
 
   cmake_parse_arguments(
     "LIBC_UNITTEST"
-    "NO_RUN_POSTBUILD;C_TEST" # Optional arguments
+    "NO_RUN_POSTBUILD;C_TEST;NO_ERRNO_SETTER_MATCHER" # Optional arguments
     "SUITE;CXX_STANDARD" # Single value arguments
     "SRCS;HDRS;DEPENDS;ENV;COMPILE_OPTIONS;LINK_LIBRARIES;FLAGS" # Multi-value arguments
     ${ARGN}
@@ -251,15 +271,69 @@ function(create_libc_unittest fq_target_name)
   endif()
 
   get_fq_deps_list(fq_deps_list ${LIBC_UNITTEST_DEPENDS})
+
   if(NOT LIBC_UNITTEST_C_TEST)
-    list(APPEND fq_deps_list libc.src.__support.StringUtil.error_to_string
-                             libc.test.UnitTest.ErrnoSetterMatcher)
+    if(NOT LIBC_UNITTEST_NO_ERRNO_SETTER_MATCHER)
+      list(APPEND fq_deps_list libc.src.__support.StringUtil.error_to_string
+                               libc.test.UnitTest.ErrnoSetterMatcher)
+    endif()
     # LibcTest.unit calls LIBC_NAMESPACE::clock() when TARGET_SUPPORTS_CLOCK
     # is defined, so every unit test needs the clock object linked in.
     if(libc.src.time.clock IN_LIST TARGET_LLVMLIBC_ENTRYPOINTS)
       list(APPEND fq_deps_list libc.src.time.clock)
     endif()
   endif()
+
+  # Freestanding unit-test link: pull the same auxiliary deps as hermetic
+  # tests so the resulting binary has everything it needs without relying on
+  # a host libc. Mirrors the list in add_libc_hermetic.
+  if(LIBC_UNIT_TEST_LINK_FREESTANDING AND NOT LIBC_UNITTEST_C_TEST)
+    list(APPEND fq_deps_list
+        libc.src.__support.StringUtil.error_to_string
+        libc.src.stdio.vsnprintf
+        libc.src.stdlib.aligned_alloc
+        libc.src.string.memcmp
+        libc.src.string.memcpy
+        libc.src.string.memmove
+        libc.src.string.memset
+        libc.src.string.strcmp
+        libc.src.string.strlen
+        libc.src.strings.bcmp
+        libc.src.strings.bzero
+    )
+    # HermeticTestUtils ships an extern-C syscall() shim on NT-POSIX; pull
+    # the fixed-arg entrypoint it forwards to so the shim resolves at link.
+    if(TARGET libc.src.unistd.__llvm_libc_syscall)
+      list(APPEND fq_deps_list libc.src.unistd.__llvm_libc_syscall)
+    endif()
+    if(TARGET libc.startup.${LIBC_TARGET_OS}.hermetic_runtime)
+      list(APPEND fq_deps_list libc.startup.${LIBC_TARGET_OS}.hermetic_runtime)
+    endif()
+    if(TARGET libc.startup.${LIBC_TARGET_OS}.crt1)
+      list(APPEND fq_deps_list libc.startup.${LIBC_TARGET_OS}.crt1)
+    endif()
+    if(TARGET libc.src.compiler.__stack_chk_fail)
+      list(APPEND fq_deps_list libc.src.compiler.__stack_chk_fail)
+    elseif(TARGET libc.src.compiler.generic.__stack_chk_fail)
+      list(APPEND fq_deps_list libc.src.compiler.generic.__stack_chk_fail)
+    endif()
+    # Death-test executors call LIBC_NAMESPACE:: POSIX primitives directly;
+    # every unit test links LibcDeathTestExecutors.unit, so every test must
+    # carry these entrypoints to resolve them.
+    if(TARGET libc.src.unistd.fork)
+      list(APPEND fq_deps_list
+        libc.src.poll.poll
+        libc.src.signal.kill
+        libc.src.stdlib._Exit
+        libc.src.string.strsignal
+        libc.src.sys.wait.waitpid
+        libc.src.unistd.close
+        libc.src.unistd.fork
+        libc.src.unistd.pipe
+      )
+    endif()
+  endif()
+
   list(REMOVE_DUPLICATES fq_deps_list)
 
   _get_common_test_compile_options(compile_options "${LIBC_UNITTEST_C_TEST}"
@@ -271,6 +345,21 @@ function(create_libc_unittest fq_target_name)
                    ${LIBC_LINK_OPTIONS_DEFAULT}
                    ${LIBC_TEST_LINK_OPTIONS_DEFAULT}
   )
+  # Freestanding link: suppress the driver's default libc/startfiles/libc++
+  # injection. __llvm_libc_* symbols then resolve uniquely from the libc
+  # __internal__ objects collected via DEPS, and extern-C compiler-runtime
+  # calls (memcpy/malloc/etc.) resolve from LibcHermeticTestSupport.unit
+  # appended to link_libraries below.
+  if(LIBC_UNIT_TEST_LINK_FREESTANDING AND NOT LIBC_UNITTEST_C_TEST)
+    if(LIBC_CC_SUPPORTS_NOSTDLIBPP)
+      list(APPEND link_options -nolibc -nostartfiles -nostdlib++)
+    else()
+      list(APPEND link_options -nolibc -nostartfiles -nostdlib)
+    endif()
+    if(LIBC_TARGET_OS_IS_WINDOWS)
+      list(APPEND link_options -unwindlib=none)
+    endif()
+  endif()
   list(APPEND compile_options ${LIBC_UNITTEST_COMPILE_OPTIONS})
 
   if(SHOW_INTERMEDIATE_OBJECTS)
@@ -283,7 +372,9 @@ function(create_libc_unittest fq_target_name)
   endif()
 
   get_object_files_for_test(
-      link_object_files skipped_entrypoints_list ${fq_deps_list})
+      link_object_files skipped_entrypoints_list inherited_link_libraries
+      ${fq_deps_list})
+  list(REMOVE_DUPLICATES link_object_files)
   if(skipped_entrypoints_list)
     # If a test is OS/target machine independent, it has to be skipped if the
     # OS/target machine combination does not provide any dependent entrypoints.
@@ -337,7 +428,32 @@ function(create_libc_unittest fq_target_name)
       CXX_STANDARD ${LIBC_UNITTEST_CXX_STANDARD}
   )
 
-  set(link_libraries ${link_object_files})
+  # Freestanding-unit link packs the dep objects into a static archive so
+  # archive-extraction semantics resolve NAME-colliding entrypoints (e.g. the
+  # default libc.src.string.memcmp vs. a variant libc.src.string.memcmp_x86_64
+  # _opt_sse2 both pulled in by add_libc_multi_impl_test). User-supplied DEPS
+  # sit first in link_object_files, so the variant member resolves the
+  # unresolved LIBC_NAMESPACE::memcmp and the default member is never pulled.
+  # Matches the pattern add_libc_hermetic already uses.
+  if(LIBC_UNIT_TEST_LINK_FREESTANDING AND NOT LIBC_UNITTEST_C_TEST)
+    add_library(
+      ${fq_target_name}.__libc__
+      STATIC
+      EXCLUDE_FROM_ALL
+      ${link_object_files}
+    )
+    set_target_properties(${fq_target_name}.__libc__
+        PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_target_properties(${fq_target_name}.__libc__
+        PROPERTIES ARCHIVE_OUTPUT_NAME ${fq_target_name}.libc)
+    if(inherited_link_libraries)
+      target_link_libraries(${fq_target_name}.__libc__
+                            PUBLIC ${inherited_link_libraries})
+    endif()
+    set(link_libraries ${fq_target_name}.__libc__)
+  else()
+    set(link_libraries ${link_object_files} ${inherited_link_libraries})
+  endif()
   # Test object files will depend on LINK_LIBRARIES passed down from `add_fp_unittest`
   foreach(lib IN LISTS LIBC_UNITTEST_LINK_LIBRARIES)
     if(TARGET ${lib}.unit)
@@ -358,6 +474,20 @@ function(create_libc_unittest fq_target_name)
   # LibcUnitTest should not depend on anything in LINK_LIBRARIES.
   if(NOT LIBC_UNITTEST_C_TEST)
     list(APPEND link_libraries LibcDeathTestExecutors.unit LibcTest.unit)
+  endif()
+
+  # Freestanding link: provide extern-C shims for malloc/memcpy/etc. that the
+  # compiler may emit for codegen, and — on Windows — the NT kernel import
+  # libs the driver would otherwise transitively pull via c.lib.
+  if(LIBC_UNIT_TEST_LINK_FREESTANDING AND NOT LIBC_UNITTEST_C_TEST)
+    list(APPEND link_libraries LibcHermeticTestSupport.unit)
+    if(LIBC_TARGET_OS_IS_WINDOWS)
+      foreach(_imp windows_ntdll windows_bcryptprimitives windows_sspicli)
+        if(TARGET ${_imp})
+          list(APPEND link_libraries ${_imp})
+        endif()
+      endforeach()
+    endif()
   endif()
 
   target_link_libraries(${fq_build_target_name} PRIVATE ${link_libraries})
@@ -443,7 +573,8 @@ function(add_libc_fuzzer target_name)
   get_fq_target_name(${target_name} fq_target_name)
   get_fq_deps_list(fq_deps_list ${LIBC_FUZZER_DEPENDS})
   get_object_files_for_test(
-      link_object_files skipped_entrypoints_list ${fq_deps_list})
+      link_object_files skipped_entrypoints_list inherited_link_libraries
+      ${fq_deps_list})
   if(skipped_entrypoints_list)
     if(LIBC_CMAKE_VERBOSE_LOGGING)
       set(msg "Skipping fuzzer target ${fq_target_name} as it has missing deps: "
@@ -472,6 +603,7 @@ function(add_libc_fuzzer target_name)
 
   target_link_libraries(${fq_target_name} PRIVATE
     ${link_object_files}
+    ${inherited_link_libraries}
     ${LIBC_FUZZER_LINK_LIBRARIES}
   )
 
@@ -562,10 +694,12 @@ function(add_integration_test test_name)
       libc.src.strings.bzero
   )
 
-  if(libc.src.compiler.__stack_chk_fail IN_LIST TARGET_LLVMLIBC_ENTRYPOINTS)
+  if(TARGET libc.src.compiler.__stack_chk_fail)
     # __stack_chk_fail should always be included if supported to allow building
     # libc with the stack protector enabled.
     list(APPEND fq_deps_list libc.src.compiler.__stack_chk_fail)
+  elseif(TARGET libc.src.compiler.generic.__stack_chk_fail)
+    list(APPEND fq_deps_list libc.src.compiler.generic.__stack_chk_fail)
   endif()
 
   list(REMOVE_DUPLICATES fq_deps_list)
@@ -573,7 +707,8 @@ function(add_integration_test test_name)
   # TODO: Instead of gathering internal object files from entrypoints,
   # collect the object files with public names of entrypoints.
   get_object_files_for_test(
-      link_object_files skipped_entrypoints_list ${fq_deps_list})
+      link_object_files skipped_entrypoints_list inherited_link_libraries
+      ${fq_deps_list})
   if(skipped_entrypoints_list)
     if(LIBC_CMAKE_VERBOSE_LOGGING)
       set(msg "Skipping integration test ${fq_target_name} as it has missing deps: "
@@ -595,6 +730,10 @@ function(add_integration_test test_name)
       PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
   set_target_properties(${fq_target_name}.__libc__
       PROPERTIES ARCHIVE_OUTPUT_NAME ${fq_target_name}.libc)
+  if(inherited_link_libraries)
+    target_link_libraries(${fq_target_name}.__libc__
+                          PUBLIC ${inherited_link_libraries})
+  endif()
 
   set(fq_build_target_name ${fq_target_name}.__build__)
   add_executable(
@@ -762,18 +901,32 @@ function(add_libc_hermetic test_name)
       # We always add the memory functions objects. This is because the
       # compiler's codegen can emit calls to the C memory functions.
       libc.src.__support.StringUtil.error_to_string
+      libc.src.stdio.vsnprintf
+      libc.src.stdlib.aligned_alloc
       libc.src.string.memcmp
       libc.src.string.memcpy
       libc.src.string.memmove
       libc.src.string.memset
+      libc.src.string.strcmp
+      libc.src.string.strlen
       libc.src.strings.bcmp
       libc.src.strings.bzero
   )
 
-  if(libc.src.compiler.__stack_chk_fail IN_LIST TARGET_LLVMLIBC_ENTRYPOINTS)
+  # Windows hermetic exes need the C++ itanium ABI floor (__cxa_guard_*,
+  # __cxa_finalize, exit/atexit, setjmp). Pull these via one aggregate so
+  # tests don't re-declare them per bench.
+  if(LIBC_TARGET_OS_IS_WINDOWS AND
+     TARGET libc.startup.${LIBC_TARGET_OS}.hermetic_runtime)
+    list(APPEND fq_deps_list libc.startup.${LIBC_TARGET_OS}.hermetic_runtime)
+  endif()
+
+  if(TARGET libc.src.compiler.__stack_chk_fail)
     # __stack_chk_fail should always be included if supported to allow building
     # libc with the stack protector enabled.
     list(APPEND fq_deps_list libc.src.compiler.__stack_chk_fail)
+  elseif(TARGET libc.src.compiler.generic.__stack_chk_fail)
+    list(APPEND fq_deps_list libc.src.compiler.generic.__stack_chk_fail)
   endif()
 
   if(libc.src.time.clock IN_LIST TARGET_LLVMLIBC_ENTRYPOINTS)
@@ -786,7 +939,8 @@ function(add_libc_hermetic test_name)
   # TODO: Instead of gathering internal object files from entrypoints,
   # collect the object files with public names of entrypoints.
   get_object_files_for_test(
-      link_object_files skipped_entrypoints_list ${fq_deps_list})
+      link_object_files skipped_entrypoints_list inherited_link_libraries
+      ${fq_deps_list})
   if(skipped_entrypoints_list)
     if(LIBC_CMAKE_VERBOSE_LOGGING)
       set(msg "Skipping hermetic test ${fq_target_name} as it has missing deps: "
@@ -808,6 +962,10 @@ function(add_libc_hermetic test_name)
       PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
   set_target_properties(${fq_target_name}.__libc__
       PROPERTIES ARCHIVE_OUTPUT_NAME ${fq_target_name}.libc)
+  if(inherited_link_libraries)
+    target_link_libraries(${fq_target_name}.__libc__
+                          PUBLIC ${inherited_link_libraries})
+  endif()
 
   if(HERMETIC_TEST_NO_RUN_POSTBUILD)
     set(fq_build_target_name ${fq_target_name})
@@ -860,6 +1018,22 @@ function(add_libc_hermetic test_name)
       "-Wl,-mllvm,-nvptx-emit-init-fini-kernel"
       -march=${LIBC_GPU_TARGET_ARCHITECTURE} -nostdlib -static
       "--cuda-path=${LIBC_CUDA_ROOT}")
+  elseif(LIBC_TARGET_OS_IS_WINDOWS)
+    # PE/COFF hermetic link. -static is not meaningful for lld-link; the
+    # absence of c.lib/libc.lib plus -nolibc is what makes this hermetic.
+    # -nostartfiles suppresses crt1.obj / crt_do_start.obj auto-injection —
+    # libc.startup.windows.crt1 supplies them via DEPS instead.
+    # -unwindlib=none prevents the driver from pulling unwind.lib (not built
+    # yet during libc stage-2).
+    set(link_options
+      -nolibc
+      -nostartfiles
+      -nostdlib++
+      -unwindlib=none
+      ${LIBC_LINK_OPTIONS_DEFAULT}
+      ${LIBC_TEST_LINK_OPTIONS_DEFAULT}
+    )
+    target_link_options(${fq_build_target_name} PRIVATE ${link_options})
   elseif(LIBC_CC_SUPPORTS_NOSTDLIBPP)
     set(link_options
       -nolibc
@@ -883,6 +1057,20 @@ function(add_libc_hermetic test_name)
     target_link_options(${fq_build_target_name} PRIVATE ${link_options})
     list(APPEND compiler_runtime ${LIBGCC_S_LOCATION})
   endif()
+
+  # Windows hermetic binaries must link NT kernel import libraries directly —
+  # every libc primitive eventually dispatches into ntdll; bcryptprimitives is
+  # needed by security_cookie init; sspicli is needed for SID/token queries.
+  # The driver would normally add these via c.lib's transitive deps, but under
+  # -nolibc we have to be explicit.
+  set(_hermetic_windows_system_libs "")
+  if(LIBC_TARGET_OS_IS_WINDOWS)
+    foreach(_imp windows_ntdll windows_bcryptprimitives windows_sspicli)
+      if(TARGET ${_imp})
+        list(APPEND _hermetic_windows_system_libs ${_imp})
+      endif()
+    endforeach()
+  endif()
   target_link_libraries(
     ${fq_build_target_name}
     PRIVATE
@@ -890,6 +1078,7 @@ function(add_libc_hermetic test_name)
       ${link_libraries}
       LibcHermeticTestSupport.hermetic
       ${fq_target_name}.__libc__
+      ${_hermetic_windows_system_libs}
       ${compiler_runtime}
     )
   add_dependencies(${fq_build_target_name}

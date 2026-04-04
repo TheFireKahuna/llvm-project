@@ -40,6 +40,7 @@ add_object_library(
     libc.config.app_h
     libc.include.sys_syscall
     libc.hdr.fcntl_macros
+    libc.hdr.time_macros
     libc.src.errno.errno
     libc.src.__support.CPP.atomic
     libc.src.__support.CPP.stringstream
@@ -47,6 +48,7 @@ add_object_library(
     libc.src.__support.common
     libc.src.__support.error_or
     libc.src.__support.threads.thread_common
+    libc.src.__support.time.abs_timeout
   COMPILE_OPTIONS
     ${libc_opt_high_flag}
     -fno-omit-frame-pointer # This allows us to sniff out the thread args from
@@ -75,19 +77,9 @@ add_object_library(
     libc.hdr.stdint_proxy
     libc.include.sys_syscall
     libc.src.__support.OSUtil.osutil
+    libc.src.__support.threads.cndvar_queue
     libc.src.__support.threads.linux.futex_word_type
     libc.src.__support.threads.mutex
     libc.src.__support.threads.raw_mutex
     libc.src.__support.CPP.mutex
-)
-
-add_object_library(
-  barrier
-  HDRS
-    barrier.h
-  SRCS
-    barrier.cpp
-  DEPENDS
-    libc.src.__support.threads.CndVar
-    libc.src.__support.threads.mutex
 )

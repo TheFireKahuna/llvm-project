@@ -22,7 +22,7 @@
 #endif
 
 #if defined(__SEH__) && !defined(__USING_SJLJ_EXCEPTIONS__) &&                 \
-    !defined(_WIN32_ITANIUM)
+    !defined(_WIN32_ITANIUM) && !defined(__NTPOSIX__)
 #define WIN32_LEAN_AND_MEAN
 #define NOGDI
 #define NOMINMAX
@@ -234,7 +234,7 @@ COMPILER_RT_ABI _Unwind_Reason_Code __gcc_personality_sj0(
 COMPILER_RT_ABI _Unwind_Reason_Code __gcc_personality_v0(
     _Unwind_State state, struct _Unwind_Exception *exceptionObject,
     struct _Unwind_Context *context)
-#elif defined(__SEH__) && !defined(_WIN32_ITANIUM)
+#elif defined(__SEH__) && !defined(_WIN32_ITANIUM) && !defined(__NTPOSIX__)
 static _Unwind_Reason_Code __gcc_personality_imp(
     int version, _Unwind_Action actions, uint64_t exceptionClass,
     struct _Unwind_Exception *exceptionObject, struct _Unwind_Context *context)
@@ -325,7 +325,7 @@ COMPILER_RT_ABI _Unwind_Reason_Code __gcc_personality_v0(
 }
 
 #if defined(__SEH__) && !defined(__USING_SJLJ_EXCEPTIONS__) &&                 \
-    !defined(_WIN32_ITANIUM)
+    !defined(_WIN32_ITANIUM) && !defined(__NTPOSIX__)
 COMPILER_RT_ABI EXCEPTION_DISPOSITION
 __gcc_personality_seh0(PEXCEPTION_RECORD ms_exc, void *this_frame,
                        PCONTEXT ms_orig_context, PDISPATCHER_CONTEXT ms_disp) {

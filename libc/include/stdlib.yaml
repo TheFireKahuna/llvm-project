@@ -48,6 +48,78 @@ functions:
     return_type: int
     arguments:
       - type: int
+  - name: mkdtemp
+    standards:
+      - POSIX
+    return_type: char *
+    arguments:
+      - type: char *
+  - name: mkstemp
+    standards:
+      - POSIX
+    return_type: int
+    arguments:
+      - type: char *
+  - name: mktemp
+    standards:
+      - POSIX
+    return_type: char *
+    arguments:
+      - type: char *
+  - name: getsubopt
+    standards:
+      - POSIX
+    return_type: int
+    arguments:
+      - type: char **
+      - type: "char *const *"
+      - type: char **
+  - name: realpath
+    standards:
+      - POSIX
+    return_type: char *
+    arguments:
+      - type: const char *__restrict
+      - type: char *__restrict
+  - name: grantpt
+    standards:
+      - POSIX
+    return_type: int
+    arguments:
+      - type: int
+  - name: unlockpt
+    standards:
+      - POSIX
+    return_type: int
+    arguments:
+      - type: int
+  - name: ptsname_r
+    standards:
+      - POSIX
+    return_type: int
+    arguments:
+      - type: int
+      - type: char *
+      - type: size_t
+  - name: arc4random
+    standards:
+      - posix
+    return_type: uint32_t
+    arguments:
+      - type: void
+  - name: arc4random_buf
+    standards:
+      - posix
+    return_type: void
+    arguments:
+      - type: void *
+      - type: size_t
+  - name: arc4random_uniform
+    standards:
+      - posix
+    return_type: uint32_t
+    arguments:
+      - type: uint32_t
   - name: at_quick_exit
     standards:
       - stdc
@@ -113,6 +185,31 @@ functions:
     return_type: char *
     arguments:
       - type: const char *
+  - name: setenv
+    standards:
+      - POSIX
+    return_type: int
+    arguments:
+      - type: const char *
+      - type: const char *
+      - type: int
+  - name: unsetenv
+    standards:
+      - POSIX
+    return_type: int
+    arguments:
+      - type: const char *
+  - name: putenv
+    standards:
+      - POSIX
+    return_type: int
+    arguments:
+      - type: char *
+  - name: clearenv
+    standards:
+      - GNUExtensions
+    return_type: int
+    arguments: []
   - name: labs
     standards:
       - stdc
@@ -146,6 +243,13 @@ functions:
     arguments:
       - type: wchar_t *__restrict
       - type: const char *__restrict
+      - type: size_t
+  - name: mblen
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: const char *
       - type: size_t
   - name: mbtowc
     standards:

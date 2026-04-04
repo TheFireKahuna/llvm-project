@@ -1,10 +1,13 @@
 add_header_library(
-  performance_counter
+  clock_conversion
   HDRS
-    performance_counter.h
+    clock_conversion.h
   DEPENDS
-    libc.src.__support.CPP.atomic
-    libc.src.__support.common
+    libc.hdr.time_macros
+    libc.hdr.types.struct_timespec
+    libc.src.__support.CPP.expected
+    libc.src.__support.OSUtil.windows.ntdll
+    libc.src.__support.time.abs_timeout
 )
 
 add_object_library(
@@ -14,13 +17,61 @@ add_object_library(
   SRCS
     clock_gettime.cpp
   DEPENDS
-    .performance_counter
     libc.hdr.types.struct_timespec
     libc.hdr.types.clockid_t
     libc.hdr.errno_macros
     libc.src.__support.common
     libc.src.__support.error_or
-    libc.src.__support.OSUtil.osutil
-    libc.src.__support.CPP.atomic
+    libc.src.__support.OSUtil.windows.ntdll
     libc.src.__support.CPP.limits
+)
+
+add_object_library(
+  clock_settime
+  HDRS
+    ../clock_settime.h
+  SRCS
+    clock_settime.cpp
+  DEPENDS
+    libc.hdr.types.struct_timespec
+    libc.hdr.types.clockid_t
+    libc.hdr.errno_macros
+    libc.hdr.time_macros
+    libc.src.__support.common
+    libc.src.__support.error_or
+    libc.src.__support.OSUtil.windows.ntdll
+    libc.src.__support.time.units
+)
+
+add_object_library(
+  nanosleep
+  HDRS
+    ../nanosleep.h
+  SRCS
+    nanosleep.cpp
+  DEPENDS
+    libc.hdr.errno_macros
+    libc.hdr.time_macros
+    libc.hdr.types.struct_timespec
+    libc.src.__support.OSUtil.windows.ntdll
+    libc.src.__support.time.clock_gettime
+    libc.src.__support.time.units
+    libc.src.__support.OSUtil.windows.signal_subsystem
+)
+
+add_object_library(
+  clock_nanosleep
+  HDRS
+    ../clock_nanosleep.h
+  SRCS
+    clock_nanosleep.cpp
+  DEPENDS
+    libc.hdr.errno_macros
+    libc.hdr.time_macros
+    libc.hdr.types.clockid_t
+    libc.hdr.types.struct_timespec
+    libc.src.__support.OSUtil.windows.ntdll
+    libc.src.__support.time.clock_gettime
+    libc.src.__support.time.units
+    libc.src.__support.OSUtil.windows.signal_subsystem
 )

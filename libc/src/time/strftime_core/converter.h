@@ -24,9 +24,8 @@ namespace strftime_core {
 // convert will call a conversion function to convert the FormatSection into
 // its string representation, and then that will write the result to the
 // writer.
-template <printf_core::WriteMode write_mode>
-int convert(printf_core::Writer<write_mode> *writer,
-            const FormatSection &to_conv, const tm *timeptr) {
+template <typename WriterT>
+int convert(WriterT *writer, const FormatSection &to_conv, const tm *timeptr) {
   // TODO: Implement the locale support.
   // Currently locale flags are ignored, as described by the posix standard for
   // the default locale.

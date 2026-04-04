@@ -11,16 +11,23 @@
 #include "src/__support/CPP/string_view.h"
 #include "src/__support/common.h"
 #include "src/__support/macros/config.h"
+#include "src/locale/locale.h"
 
 namespace LIBC_NAMESPACE_DECL {
 
-LLVM_LIBC_FUNCTION(char *, setlocale, (int category, const char *locale_name)) {
-  cpp::string_view name(locale_name);
-  if (category > LC_ALL || (!name.empty() && name != "C"))
-    return nullptr;
+// Returned by setlocale(). Valid until the next setlocale() call (per POSIX).
+static char locale_name_buf[64] = "C";
 
-  static char locale_str[] = "C";
-  return locale_str;
+LLVM_LIBC_FUNCTION(char *, setlocale,
+                   (int category, const char *locale_name)) {
+  if (category > LC_ALL)
+    return nullptr;
+  if (locale_name) {
+    cpp::string_view name(locale_name);
+    if (!name.empty() && name != "C")
+      return nullptr;
+  }
+  return locale_name_buf;
 }
 
 } // namespace LIBC_NAMESPACE_DECL

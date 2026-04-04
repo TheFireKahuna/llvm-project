@@ -11,6 +11,8 @@
 
 #ifdef __linux__
 #include "linux/sys-stat-macros.h"
+#elif defined(__NTPOSIX__)
+#include "windows/sys-stat-macros.h"
 #endif
 
 #endif // LLVM_LIBC_MACROS_SYS_STAT_MACROS_H

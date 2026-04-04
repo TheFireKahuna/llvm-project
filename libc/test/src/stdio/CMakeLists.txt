@@ -584,3 +584,7 @@ endif()
 add_subdirectory(printf_core)
 add_subdirectory(scanf_core)
 add_subdirectory(testdata)
+
+if(${LIBC_TARGET_OS} STREQUAL "windows")
+  add_subdirectory(windows)
+endif()

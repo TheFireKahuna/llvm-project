@@ -16,6 +16,7 @@
 #include "src/__support/common.h"
 #include "src/__support/error_or.h"
 #include "src/__support/wchar/character_converter.h"
+#include "src/__support/wchar/locale_encoding.h"
 #include "src/__support/wchar/mbstate.h"
 
 namespace LIBC_NAMESPACE_DECL {
@@ -52,7 +53,8 @@ private:
 public:
   LIBC_INLINE StringConverter(const T *s, mbstate *ps, size_t dstlen,
                               size_t srclen = SIZE_MAX)
-      : cr(ps), src(s), src_len(srclen), src_idx(0), num_to_write(dstlen) {}
+      : cr(ps, locale_encoding_is_utf8()), src(s), src_len(srclen), src_idx(0),
+        num_to_write(dstlen) {}
 
   template <typename CharType> LIBC_INLINE ErrorOr<CharType> pop() {
     if (num_to_write == 0)

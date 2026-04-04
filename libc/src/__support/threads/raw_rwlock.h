@@ -80,11 +80,30 @@ public:
       else
         return queue.pending_writers;
     }
-    template <Role role> LIBC_INLINE FutexWordType &serialization() {
+    template <Role role> LIBC_INLINE FutexValueType read_serialization() {
       if constexpr (role == Role::Reader)
-        return queue.reader_serialization.val;
+        return queue.reader_serialization.load(cpp::MemoryOrder::RELAXED);
       else
-        return queue.writer_serialization.val;
+        return queue.writer_serialization.load(cpp::MemoryOrder::RELAXED);
+    }
+    template <Role role> LIBC_INLINE void increment_serialization() {
+      // Use fetch_add on value_ (32-bit), NOT combined_ — operating on
+      // combined_ would corrupt the Treiber stack in the lower 32 bits.
+      // Futex::fetch_add is defined to touch only value_, so it is safe.
+      //
+      // SEQ_CST (default) is deliberate for robustness: notify_pending_threads
+      // calls queue.notify<role>() AFTER this increment, OUTSIDE the Guard
+      // mutex. On x86 every LOCK-prefixed RMW is already a full StoreLoad
+      // barrier, so the subsequent pop_and_signal_one's ACQUIRE load of
+      // stack_ observes the increment — no StoreLoad-reorder deadlock
+      // (see Futex::notify_one contract). Choosing SEQ_CST over RELAXED
+      // costs nothing extra on x86 (LOCK XADD either way) and documents
+      // that the barrier is load-bearing: a future refactor must not
+      // downgrade this without also ensuring the wake path gets a fence.
+      if constexpr (role == Role::Reader)
+        queue.reader_serialization.fetch_add(1, cpp::MemoryOrder::SEQ_CST);
+      else
+        queue.writer_serialization.fetch_add(1, cpp::MemoryOrder::SEQ_CST);
     }
     friend WaitingQueue;
   };
@@ -380,7 +399,7 @@ private:
         return result;
 
       // Phase 5: register ourselves as a  reader.
-      int serial_number;
+      FutexValueType serial_number;
       {
         // The queue need to be protected by a mutex since the operations in
         // this block must be executed as a whole transaction. It is possible
@@ -396,16 +415,27 @@ private:
         // sleep on the futex, we can avoid such waiting.
         old = RwState::fetch_set_pending_bit<role>(state,
                                                    cpp::MemoryOrder::RELAXED);
-        // no need to use atomic since it is already protected by the mutex.
-        serial_number = guard.serialization<role>();
+        serial_number = guard.template read_serialization<role>();
       }
 
       // Phase 6: do futex wait until the lock is available or timeout is
       // reached.
       bool timeout_flag = false;
-      if (!old.can_acquire<role>(get_preference()))
-        timeout_flag = (queue.wait<role>(serial_number, timeout, is_pshared) ==
-                        -ETIMEDOUT);
+      if (!old.can_acquire<role>(get_preference())) {
+        long wait_ret = queue.wait<role>(serial_number, timeout, is_pshared);
+        timeout_flag = (wait_ret == -ETIMEDOUT);
+#if defined(LIBC_TARGET_RUNTIME_IS_NTPOSIX)
+        // On NTPOSIX, Futex::wait may also return -ENOMEM (wait-slot
+        // pool exhaustion) or -EINVAL (concurrent rwlock destroy).
+        // Looping would re-fail identically or spin-burn; map them to
+        // the existing TimedOut exit so the caller's cleanup still
+        // runs. -EINTR is absorbed internally by Interruptible=false
+        // Futex::wait, so this branch is a belt-and-suspenders catch-
+        // all that excludes it.
+        if (wait_ret < 0 && wait_ret != -EINTR)
+          timeout_flag = true;
+#endif
+      }
 
       // Phase 7: unregister ourselves as a pending reader/writer.
       {
@@ -441,10 +471,10 @@ private:
     {
       WaitingQueue::Guard guard = queue.acquire(is_pshared);
       if (guard.pending_count<Role::Writer>() != 0) {
-        guard.serialization<Role::Writer>()++;
+        guard.increment_serialization<Role::Writer>();
         status = WakeTarget::Writers;
       } else if (guard.pending_count<Role::Reader>() != 0) {
-        guard.serialization<Role::Reader>()++;
+        guard.increment_serialization<Role::Reader>();
         status = WakeTarget::Readers;
       } else {
         status = WakeTarget::None;

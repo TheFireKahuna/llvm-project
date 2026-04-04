@@ -13,6 +13,8 @@
 #include "src/__support/char_vector.h"
 #include "src/__support/ctype_utils.h"
 #include "src/__support/macros/config.h"
+#include "src/__support/wctype_utils.h"
+#include "src/stdio/scanf_core/char_ops.h"
 #include "src/stdio/scanf_core/converter_utils.h"
 #include "src/stdio/scanf_core/core_structs.h"
 #include "src/stdio/scanf_core/reader.h"
@@ -24,8 +26,9 @@ namespace scanf_core {
 
 // All of the floating point conversions are the same for scanf, every name will
 // accept every style.
-template <typename T>
-int convert_float(Reader<T> *reader, const FormatSection &to_conv) {
+template <typename T, typename CharType = char>
+int convert_float(Reader<T, CharType> *reader,
+                  const basic_format_section<CharType> &to_conv) {
   // %a/A/e/E/f/F/g/G "Matches an optionally signed floating-point number,
   // infinity, or NaN, whose format is the same as expected for the subject
   // sequence of the strtod function. The corresponding argument shall be a
@@ -39,10 +42,10 @@ int convert_float(Reader<T> *reader, const FormatSection &to_conv) {
     max_width = to_conv.max_width;
   }
 
-  char cur_char = reader->getc();
+  CharType cur_char = reader->getc();
   // Handle the sign.
   if (cur_char == '+' || cur_char == '-') {
-    if (!out_str.append(cur_char)) {
+    if (!out_str.append(ascii_narrow(cur_char))) {
       return ALLOCATION_FAILURE;
     }
     if (out_str.length() == max_width) {
@@ -64,11 +67,13 @@ int convert_float(Reader<T> *reader, const FormatSection &to_conv) {
          inf_index < (sizeof(inf_string) - 1) && out_str.length() < max_width &&
          internal::tolower(cur_char) == inf_string[inf_index];
          ++inf_index) {
-      if (!out_str.append(cur_char)) {
+      if (!out_str.append(ascii_narrow(cur_char))) {
         return ALLOCATION_FAILURE;
       }
       cur_char = reader->getc();
     }
+
+    reader->ungetc(cur_char);
 
     if (inf_index == 3 || inf_index == sizeof(inf_string) - 1) {
       write_float_with_length(out_str.c_str(), to_conv);
@@ -88,11 +93,13 @@ int convert_float(Reader<T> *reader, const FormatSection &to_conv) {
          nan_index < (sizeof(nan_string) - 1) && out_str.length() < max_width &&
          internal::tolower(cur_char) == nan_string[nan_index];
          ++nan_index) {
-      if (!out_str.append(cur_char)) {
+      if (!out_str.append(ascii_narrow(cur_char))) {
         return ALLOCATION_FAILURE;
       }
       cur_char = reader->getc();
     }
+
+    reader->ungetc(cur_char);
 
     if (nan_index == sizeof(nan_string) - 1) {
       write_float_with_length(out_str.c_str(), to_conv);
@@ -109,7 +116,7 @@ int convert_float(Reader<T> *reader, const FormatSection &to_conv) {
   if (cur_char == '0') {
     is_number = true;
     // Read the next character to check.
-    if (!out_str.append(cur_char)) {
+    if (!out_str.append(ascii_narrow(cur_char))) {
       return ALLOCATION_FAILURE;
     }
     // If we've hit the end, then this is "0", which is valid.
@@ -124,7 +131,7 @@ int convert_float(Reader<T> *reader, const FormatSection &to_conv) {
     if (internal::tolower(cur_char) == 'x') {
       base = 16;
 
-      if (!out_str.append(cur_char)) {
+      if (!out_str.append(ascii_narrow(cur_char))) {
         return ALLOCATION_FAILURE;
       }
       // If we've hit the end here, we have "0x" which is a valid prefix to a
@@ -150,13 +157,13 @@ int convert_float(Reader<T> *reader, const FormatSection &to_conv) {
     if (internal::isalnum(cur_char) &&
         internal::b36_char_to_int(cur_char) < base) {
       is_number = true;
-      if (!out_str.append(cur_char)) {
+      if (!out_str.append(ascii_narrow(cur_char))) {
         return ALLOCATION_FAILURE;
       }
       cur_char = reader->getc();
     } else if (cur_char == DECIMAL_POINT && !after_decimal) {
       after_decimal = true;
-      if (!out_str.append(cur_char)) {
+      if (!out_str.append(ascii_narrow(cur_char))) {
         return ALLOCATION_FAILURE;
       }
       cur_char = reader->getc();
@@ -168,7 +175,7 @@ int convert_float(Reader<T> *reader, const FormatSection &to_conv) {
   // Handle the exponent, which has an exponent mark, an optional sign, and
   // decimal digits.
   if (internal::tolower(cur_char) == exponent_mark) {
-    if (!out_str.append(cur_char)) {
+    if (!out_str.append(ascii_narrow(cur_char))) {
       return ALLOCATION_FAILURE;
     }
     if (out_str.length() == max_width) {
@@ -180,7 +187,7 @@ int convert_float(Reader<T> *reader, const FormatSection &to_conv) {
     }
 
     if (cur_char == '+' || cur_char == '-') {
-      if (!out_str.append(cur_char)) {
+      if (!out_str.append(ascii_narrow(cur_char))) {
         return ALLOCATION_FAILURE;
       }
       if (out_str.length() == max_width) {
@@ -202,11 +209,12 @@ int convert_float(Reader<T> *reader, const FormatSection &to_conv) {
     // code follows the standard, but may be incompatible due to code expecting
     // these bugs.
     if (!internal::isdigit(cur_char)) {
+      reader->ungetc(cur_char);
       return MATCHING_FAILURE;
     }
 
     while (internal::isdigit(cur_char) && out_str.length() < max_width) {
-      if (!out_str.append(cur_char)) {
+      if (!out_str.append(ascii_narrow(cur_char))) {
         return ALLOCATION_FAILURE;
       }
       cur_char = reader->getc();

@@ -20,7 +20,7 @@
 
 
 //  MSVC's ABI doesn't follow the standard
-#if !defined(LLVM_RUNTIME_WIN32) || defined(__MINGW32__)
+#if !defined(_LIBCPP_WIN32API) || defined(__MINGW32__)
     #define TEST_UNSIGNED_UNDERLYING_TYPE 1
 #endif
 

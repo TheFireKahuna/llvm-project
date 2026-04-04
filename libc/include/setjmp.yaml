@@ -1,4 +1,5 @@
 header: setjmp.h
+header_template: setjmp.h.def
 standards:
   - stdc
 types:

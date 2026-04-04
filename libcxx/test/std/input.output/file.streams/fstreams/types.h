@@ -81,7 +81,7 @@ struct LibraryDefaultBuffer {
 };
 
 #if TEST_STD_VER >= 26
-#  if defined(LLVM_RUNTIME_WIN32)
+#  if defined(_LIBCPP_WIN32API)
 using NativeHandleT = void*; // HANDLE
 #  elif __has_include(<unistd.h>)
 using NativeHandleT = int; // POSIX file descriptor

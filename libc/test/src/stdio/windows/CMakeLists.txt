@@ -1,0 +1,172 @@
+add_custom_target(libc_stdio_windows_unittests)
+
+add_libc_unittest(
+  remove_test
+  SUITE
+    libc_stdio_windows_unittests
+  SRCS
+    remove_test.cpp
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.include.sys_stat
+    libc.src.errno.errno
+    libc.src.fcntl.open
+    libc.src.stdio.remove
+    libc.src.sys.stat.mkdir
+    libc.src.sys.stat.stat
+    libc.src.unistd.close
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  rename_test
+  SUITE
+    libc_stdio_windows_unittests
+  SRCS
+    rename_test.cpp
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.include.sys_stat
+    libc.src.errno.errno
+    libc.src.fcntl.open
+    libc.src.stdio.remove
+    libc.src.stdio.rename
+    libc.src.sys.stat.stat
+    libc.src.unistd.close
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  tmpfile_test
+  SUITE
+    libc_stdio_windows_unittests
+  SRCS
+    tmpfile_test.cpp
+  DEPENDS
+    libc.src.errno.errno
+    libc.src.stdio.fclose
+    libc.src.stdio.fread
+    libc.src.stdio.fwrite
+    libc.src.stdio.rewind
+    libc.src.stdio.tmpfile
+    libc.test.UnitTest.ErrnoCheckingTest
+)
+
+add_libc_unittest(
+  fdopen_test
+  SUITE
+    libc_stdio_windows_unittests
+  SRCS
+    fdopen_test.cpp
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.include.sys_stat
+    libc.src.errno.errno
+    libc.src.fcntl.open
+    libc.src.stdio.fclose
+    libc.src.stdio.fdopen
+    libc.src.stdio.fread
+    libc.src.stdio.fwrite
+    libc.src.stdio.remove
+    libc.src.stdio.rewind
+    libc.src.unistd.close
+    libc.test.UnitTest.ErrnoCheckingTest
+)
+
+add_libc_unittest(
+  freopen_test
+  SUITE
+    libc_stdio_windows_unittests
+  SRCS
+    freopen_test.cpp
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.include.sys_stat
+    libc.src.errno.errno
+    libc.src.fcntl.open
+    libc.src.stdio.fclose
+    libc.src.stdio.fdopen
+    libc.src.stdio.fread
+    libc.src.stdio.freopen
+    libc.src.stdio.fwrite
+    libc.src.stdio.remove
+    libc.src.stdio.rewind
+    libc.src.unistd.close
+    libc.test.UnitTest.ErrnoCheckingTest
+)
+
+add_libc_unittest(
+  renameat_test
+  SUITE
+    libc_stdio_windows_unittests
+  SRCS
+    renameat_test.cpp
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.include.sys_stat
+    libc.include.unistd
+    libc.src.errno.errno
+    libc.src.fcntl.open
+    libc.src.stdio.renameat
+    libc.src.sys.stat.stat
+    libc.src.unistd.close
+    libc.src.unistd.unlink
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  fscanf_test
+  SUITE
+    libc_stdio_windows_unittests
+  SRCS
+    fscanf_test.cpp
+  DEPENDS
+    libc.src.errno.errno
+    libc.src.stdio.fclose
+    libc.src.stdio.fopen
+    libc.src.stdio.fscanf
+    libc.src.stdio.fwrite
+    libc.src.stdio.remove
+    libc.src.stdio.rewind
+    libc.test.UnitTest.ErrnoCheckingTest
+)
+
+add_libc_unittest(
+  ungetc_test
+  SUITE
+    libc_stdio_windows_unittests
+  SRCS
+    ungetc_test.cpp
+  DEPENDS
+    libc.hdr.stdio_macros
+    libc.src.errno.errno
+    libc.src.stdio.fclose
+    libc.src.stdio.fopen
+    libc.src.stdio.fread
+    libc.src.stdio.fscanf
+    libc.src.stdio.fseek
+    libc.src.stdio.fwrite
+    libc.src.stdio.remove
+    libc.src.stdio.rewind
+    libc.src.stdio.ungetc
+    libc.test.UnitTest.ErrnoCheckingTest
+)
+
+add_libc_unittest(
+  mkstemp_test
+  SUITE
+    libc_stdio_windows_unittests
+  SRCS
+    mkstemp_test.cpp
+  DEPENDS
+    libc.src.errno.errno
+    libc.src.stdlib.mkstemp
+    libc.src.string.strcmp
+    libc.src.unistd.close
+    libc.src.unistd.unlink
+    libc.src.unistd.write
+    libc.test.UnitTest.ErrnoCheckingTest
+)

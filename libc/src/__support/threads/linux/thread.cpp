@@ -17,6 +17,9 @@
 #include "src/__support/libc_errno.h" // For error macros
 #include "src/__support/macros/config.h"
 #include "src/__support/threads/linux/futex_utils.h" // For FutexWordType
+#include "src/__support/time/abs_timeout.h"
+
+#include "hdr/time_macros.h"
 
 #ifdef LIBC_TARGET_ARCH_IS_AARCH64
 #include <arm_acle.h>
@@ -349,6 +352,77 @@ int Thread::join(ThreadReturnValue &retval) {
 
   cleanup_thread_resources(attrib);
 
+  return 0;
+}
+
+int Thread::try_join(ThreadReturnValue &retval) {
+  // The kernel writes 0 to *clear_tid (and FUTEX_WAKEs) on thread exit.
+  // No futex syscall needed for the non-blocking probe — an acquire
+  // load of clear_tid suffices to synchronize with the dying thread's
+  // final writes (retval, etc.) since the kernel's clear-tid store is
+  // ordered before any subsequent FUTEX_WAKE.
+  auto *clear_tid = reinterpret_cast<Futex *>(attrib->platform_data);
+  if (clear_tid->load() != 0)
+    return EBUSY;
+
+  if (attrib->style == ThreadStyle::POSIX)
+    retval.posix_retval = attrib->retval.posix_retval;
+  else
+    retval.stdc_retval = attrib->retval.stdc_retval;
+
+  cleanup_thread_resources(attrib);
+  return 0;
+}
+
+int Thread::timed_join(ThreadReturnValue &retval, clockid_t clockid,
+                       const struct timespec *abstime) {
+  if (!abstime)
+    return EINVAL;
+  // Glibc accepts CLOCK_REALTIME and CLOCK_MONOTONIC for clockjoin_np.
+  // Other clock domains return EINVAL.
+  bool realtime;
+  if (clockid == CLOCK_REALTIME)
+    realtime = true;
+  else if (clockid == CLOCK_MONOTONIC)
+    realtime = false;
+  else
+    return EINVAL;
+
+  auto deadline = internal::AbsTimeout::from_timespec(*abstime, realtime);
+  if (!deadline) {
+    // Negative tv_nsec / out-of-range → EINVAL. Negative tv_sec
+    // ("BeforeEpoch") → ETIMEDOUT, after one polling check so a
+    // thread that already exited still joins successfully.
+    if (deadline.error() == internal::AbsTimeout::Error::Invalid)
+      return EINVAL;
+    auto *clear_tid = reinterpret_cast<Futex *>(attrib->platform_data);
+    if (clear_tid->load() != 0)
+      return ETIMEDOUT;
+    if (attrib->style == ThreadStyle::POSIX)
+      retval.posix_retval = attrib->retval.posix_retval;
+    else
+      retval.stdc_retval = attrib->retval.stdc_retval;
+    cleanup_thread_resources(attrib);
+    return 0;
+  }
+
+  auto *clear_tid = reinterpret_cast<Futex *>(attrib->platform_data);
+  while (clear_tid->load() != 0) {
+    long ret =
+        clear_tid->wait(CLEAR_TID_VALUE, *deadline, /*is_shared=*/true);
+    if (ret == -ETIMEDOUT)
+      return ETIMEDOUT;
+    // -EINTR is benign (signal landed during wait); re-poll the futex.
+    // Anything else (-EAGAIN from value race, -EFAULT) is also benign:
+    // the value already differs, so the loop check will exit.
+  }
+
+  if (attrib->style == ThreadStyle::POSIX)
+    retval.posix_retval = attrib->retval.posix_retval;
+  else
+    retval.stdc_retval = attrib->retval.stdc_retval;
+
+  cleanup_thread_resources(attrib);
   return 0;
 }
 

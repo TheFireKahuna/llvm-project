@@ -18,12 +18,6 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 
-#if !defined(LLVM_CRT_UCRT)
-#include <unistd.h>
-#else
-#include <io.h>
-#endif
-
 using namespace llvm;
 
 Expected<FileCache> llvm::localCache(const Twine &CacheNameRef,

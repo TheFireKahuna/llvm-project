@@ -208,25 +208,25 @@ LIBC_INLINE double exp10_denorm(double x) {
   double lo = fputil::multiply_add(p, mid_lo, exp_mid.lo);
 
 #ifdef LIBC_MATH_HAS_SKIP_ACCURATE_PASS
-  return ziv_test_denorm</*SKIP_ZIV_TEST=*/true>(hi, exp_mid.hi, lo,
-                                                 EXP10_ERR_D)
-      .value();
+  return signal_underflow_if_subnormal(
+      ziv_test_denorm</*SKIP_ZIV_TEST=*/true>(hi, exp_mid.hi, lo, EXP10_ERR_D)
+          .value());
 #else
   if (auto r = ziv_test_denorm(hi, exp_mid.hi, lo, EXP10_ERR_D);
       LIBC_LIKELY(r.has_value()))
-    return r.value();
+    return signal_underflow_if_subnormal(r.value());
 
   // Use double-double
   DoubleDouble r_dd = exp10_double_double(x, kd, exp_mid);
 
   if (auto r = ziv_test_denorm(hi, r_dd.hi, r_dd.lo, EXP10_ERR_DD);
       LIBC_LIKELY(r.has_value()))
-    return r.value();
+    return signal_underflow_if_subnormal(r.value());
 
   // Use 128-bit precision
   Float128 r_f128 = exp10_f128(x, kd, idx1, idx2);
 
-  return static_cast<double>(r_f128);
+  return signal_underflow_if_subnormal(static_cast<double>(r_f128));
 #endif // LIBC_MATH_HAS_SKIP_ACCURATE_PASS
 }
 

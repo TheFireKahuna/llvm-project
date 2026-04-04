@@ -1,0 +1,35 @@
+//===-- windows_syscalls::sched_setscheduler() wrapper ----------*- C++ -*-===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_SYSCALL_WRAPPERS_SCHED_SETSCHEDULER_H
+#define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_SYSCALL_WRAPPERS_SCHED_SETSCHEDULER_H
+
+#include "hdr/stdint_proxy.h"
+#include "hdr/types/pid_t.h"
+#include "hdr/types/struct_sched_param.h"
+#include "src/__support/common.h"
+#include "src/__support/error_or.h"
+#include "src/__support/macros/config.h"
+
+#include "src/__support/OSUtil/windows/sched/scheduler_ops.h"
+
+namespace LIBC_NAMESPACE_DECL {
+namespace windows_syscalls {
+
+LIBC_INLINE ErrorOr<int> sched_setscheduler(pid_t tid, int policy,
+                                            const struct sched_param *param) {
+  intptr_t ret = internal::sched_setscheduler(tid, policy, param);
+  if (ret < 0)
+    return Error(-static_cast<int>(ret));
+  return static_cast<int>(ret);
+}
+
+} // namespace windows_syscalls
+} // namespace LIBC_NAMESPACE_DECL
+
+#endif // LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_SYSCALL_WRAPPERS_SCHED_SETSCHEDULER_H

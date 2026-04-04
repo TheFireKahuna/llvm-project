@@ -118,7 +118,7 @@ if(NOT DEFINED COMPILER_RT_OS_DIR)
     # The CMAKE_SYSTEM_NAME for Android is Android, but the OS is Linux and the
     # driver will search for compiler-rt libraries in the "linux" directory.
     set(COMPILER_RT_OS_DIR linux)
-  elseif(WIN32_ITANIUM)
+  elseif(WIN32_ITANIUM OR WIN32_NTPOSIX)
     # Windows Itanium uses PE/COFF runtime lookup semantics.
     set(COMPILER_RT_OS_DIR windows)
   else()
@@ -241,7 +241,7 @@ macro(test_targets)
         test_target_arch(x86_64 "" "-m64")
         # Skip i386 for Windows Itanium - the -m32 flag doesn't switch target
         # info, causing Windows SDK header errors. Use proper i386 triple instead.
-        if(NOT WIN32_ITANIUM)
+        if(NOT WIN32_ITANIUM AND NOT WIN32_NTPOSIX)
           test_target_arch(i386 __i386__ "-m32")
         endif()
       else()

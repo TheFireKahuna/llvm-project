@@ -192,8 +192,6 @@ static PTOP_LEVEL_EXCEPTION_FILTER OldFilter = NULL;
 static CRITICAL_SECTION CriticalSection;
 static bool CriticalSectionInitialized = false;
 
-static StringRef Argv0;
-
 enum {
 #if defined(_M_X64)
   NativeMachineType = IMAGE_FILE_MACHINE_AMD64
@@ -731,10 +729,12 @@ void llvm::sys::DefaultOneShotPipeSignalHandler() {
   llvm::sys::Process::Exit(EX_IOERR, /*NoCleanup=*/true);
 }
 
+#ifdef LLVM_RUNTIME_WIN32
 void llvm::sys::CallOneShotPipeSignalHandler() {
   if (auto OldOneShotPipeFunction = OneShotPipeSignalFunction.exchange(nullptr))
     OldOneShotPipeFunction();
 }
+#endif
 
 /// Add a function to be called when a signal is delivered to the process. The
 /// handler can have a cookie passed to it to identify what instance of the

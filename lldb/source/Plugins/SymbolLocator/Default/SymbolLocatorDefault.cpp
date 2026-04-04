@@ -131,7 +131,7 @@ std::optional<FileSpec> SymbolLocatorDefault::LocateExecutableSymbolFile(
       debug_file_search_paths.AppendIfUnique(file_spec);
     }
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 #if defined(__NetBSD__)
     // Add /usr/libdata/debug directory.
     {
@@ -165,7 +165,7 @@ std::optional<FileSpec> SymbolLocatorDefault::LocateExecutableSymbolFile(
     }
 #endif // __FreeBSD__
 #endif
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32
   }
 
   std::string uuid_str;

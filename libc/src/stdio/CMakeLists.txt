@@ -68,6 +68,31 @@ add_entrypoint_object(
 )
 
 add_entrypoint_object(
+  open_wmemstream
+  SRCS
+    open_wmemstream.cpp
+  HDRS
+    open_wmemstream.h
+  DEPENDS
+    libc.hdr.errno_macros
+    libc.hdr.func.realloc
+    libc.hdr.stdio_macros
+    libc.hdr.types.FILE
+    libc.hdr.types.char8_t
+    libc.hdr.types.char32_t
+    libc.hdr.types.off_t
+    libc.hdr.types.size_t
+    libc.hdr.types.wchar_t
+    libc.src.__support.CPP.new
+    libc.src.__support.File.file
+    libc.src.__support.common
+    libc.src.__support.error_or
+    libc.src.__support.wchar.character_converter
+    libc.src.__support.wchar.locale_encoding
+    libc.src.__support.wchar.mbstate
+)
+
+add_entrypoint_object(
   setbuf
   SRCS
     setbuf.cpp
@@ -251,6 +276,13 @@ add_entrypoint_object(
 )
 
 add_entrypoint_object(
+  renameat
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.renameat
+)
+
+add_entrypoint_object(
   fdopen
   ALIAS
   DEPENDS
@@ -263,14 +295,18 @@ add_stdio_entrypoint_object(feof_unlocked)
 add_stdio_entrypoint_object(ferror)
 add_stdio_entrypoint_object(ferror_unlocked)
 add_stdio_entrypoint_object(fseek)
+add_stdio_entrypoint_object(rewind)
 add_stdio_entrypoint_object(ftell)
 add_stdio_entrypoint_object(fseeko)
 add_stdio_entrypoint_object(fileno)
 add_stdio_entrypoint_object(ftello)
+add_stdio_entrypoint_object(fgetpos)
+add_stdio_entrypoint_object(fsetpos)
 add_stdio_entrypoint_object(fflush)
 add_stdio_entrypoint_object(clearerr)
 add_stdio_entrypoint_object(clearerr_unlocked)
 add_stdio_entrypoint_object(fopen)
+add_stdio_entrypoint_object(freopen)
 add_stdio_entrypoint_object(fclose)
 add_stdio_entrypoint_object(fread_unlocked)
 add_stdio_entrypoint_object(fread)
@@ -301,3 +337,6 @@ add_stdio_entrypoint_object(vprintf)
 add_stdio_entrypoint_object(vfprintf)
 add_stdio_entrypoint_object(vscanf)
 add_stdio_entrypoint_object(vfscanf)
+add_stdio_entrypoint_object(tmpfile)
+add_stdio_entrypoint_object(popen)
+add_stdio_entrypoint_object(pclose)

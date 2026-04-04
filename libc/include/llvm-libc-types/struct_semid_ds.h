@@ -19,12 +19,17 @@ struct semid_ds {
   unsigned long __unused1;
   time_t sem_ctime;
   unsigned long __unused2;
+#elif defined(__NTPOSIX__)
+  time_t sem_otime;
+  time_t sem_ctime;
+  unsigned short sem_nsems;
 #else
   time_t sem_otime;
   time_t sem_ctime;
-#endif
   unsigned long sem_nsems;
+#endif
 #ifdef __linux__
+  unsigned long sem_nsems;
   unsigned long __unused3;
   unsigned long __unused4;
 #endif

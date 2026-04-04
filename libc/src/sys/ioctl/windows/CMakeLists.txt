@@ -1,0 +1,12 @@
+add_entrypoint_object(
+  ioctl
+  SRCS
+    ioctl.cpp
+  HDRS
+    ../ioctl.h
+  DEPENDS
+    libc.hdr.types.struct_winsize
+    libc.include.sys_ioctl
+    libc.src.__support.OSUtil.windows.terminal_ops
+    libc.src.errno.errno
+)

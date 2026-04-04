@@ -2173,7 +2173,7 @@ ftm_header_test_file_include_unconditional = """\
 # libc++ provides the header. This means the test is also not executed when
 # using this test with MSVC and MSVC STL.
 ftm_header_test_file_include_conditional = """\
-#if !defined(LLVM_RUNTIME_WIN32) && __has_include(<{header}>)
+#if !defined(_LIBCPP_WIN32API) && __has_include(<{header}>)
 #  include <{header}>
 #endif\
 """

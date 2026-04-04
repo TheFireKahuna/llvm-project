@@ -20,6 +20,36 @@ add_entrypoint_object(
 )
 
 add_entrypoint_object(
+  alarm
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.alarm
+)
+
+add_entrypoint_object(
+  sleep
+  SRCS
+    sleep.cpp
+  HDRS
+    sleep.h
+  DEPENDS
+    libc.hdr.types.struct_timespec
+    libc.src.time.nanosleep
+)
+
+add_entrypoint_object(
+  usleep
+  SRCS
+    usleep.cpp
+  HDRS
+    usleep.h
+  DEPENDS
+    libc.hdr.types.useconds_t
+    libc.hdr.types.struct_timespec
+    libc.src.time.nanosleep
+)
+
+add_entrypoint_object(
   access
   ALIAS
   DEPENDS
@@ -90,6 +120,20 @@ add_entrypoint_object(
 )
 
 add_entrypoint_object(
+  fchownat
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.fchownat
+)
+
+add_entrypoint_object(
+  lchown
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.lchown
+)
+
+add_entrypoint_object(
   fork
   ALIAS
   DEPENDS
@@ -118,6 +162,34 @@ add_entrypoint_object(
 )
 
 add_entrypoint_object(
+  execvp
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.execvp
+)
+
+add_entrypoint_object(
+  execveat
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.execveat
+)
+
+add_entrypoint_object(
+  vfork
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.vfork
+)
+
+add_entrypoint_object(
+  fdatasync
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.fdatasync
+)
+
+add_entrypoint_object(
   fsync
   ALIAS
   DEPENDS
@@ -129,6 +201,20 @@ add_entrypoint_object(
   ALIAS
   DEPENDS
     .${LIBC_TARGET_OS}.ftruncate
+)
+
+add_entrypoint_object(
+  _get_osfhandle
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}._get_osfhandle
+)
+
+add_entrypoint_object(
+  _open_osfhandle
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}._open_osfhandle
 )
 
 add_entrypoint_object(
@@ -195,6 +281,111 @@ add_entrypoint_object(
 )
 
 add_entrypoint_object(
+  getegid
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.getegid
+)
+
+add_entrypoint_object(
+  setuid
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.setuid
+)
+
+add_entrypoint_object(
+  setgid
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.setgid
+)
+
+add_entrypoint_object(
+  seteuid
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.seteuid
+)
+
+add_entrypoint_object(
+  setegid
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.setegid
+)
+
+add_entrypoint_object(
+  setreuid
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.setreuid
+)
+
+add_entrypoint_object(
+  setregid
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.setregid
+)
+
+add_entrypoint_object(
+  getgroups
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.getgroups
+)
+
+add_entrypoint_object(
+  issetugid
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.issetugid
+)
+
+add_entrypoint_object(
+  getlogin
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.getlogin
+)
+
+add_entrypoint_object(
+  getlogin_r
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.getlogin_r
+)
+
+add_entrypoint_object(
+  getresuid
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.getresuid
+)
+
+add_entrypoint_object(
+  getresgid
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.getresgid
+)
+
+add_entrypoint_object(
+  setresuid
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.setresuid
+)
+
+add_entrypoint_object(
+  setresgid
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.setresgid
+)
+
+add_entrypoint_object(
   isatty
   ALIAS
   DEPENDS
@@ -242,6 +433,13 @@ add_entrypoint_object(
   ALIAS
   DEPENDS
     .${LIBC_TARGET_OS}.pipe2
+)
+
+add_entrypoint_object(
+  copy_file_range
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.copy_file_range
 )
 
 add_entrypoint_object(
@@ -294,6 +492,45 @@ add_entrypoint_object(
 )
 
 add_entrypoint_object(
+  setpgid
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.setpgid
+)
+
+add_entrypoint_object(
+  getpgid
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.getpgid
+)
+
+add_entrypoint_object(
+  getpgrp
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.getpgrp
+)
+
+if(LIBC_TARGET_OS STREQUAL "windows")
+  add_entrypoint_object(
+    tcgetpgrp
+    ALIAS
+    DEPENDS
+      .${LIBC_TARGET_OS}.tcgetpgrp
+  )
+endif()
+
+if(LIBC_TARGET_OS STREQUAL "windows")
+  add_entrypoint_object(
+    tcsetpgrp
+    ALIAS
+    DEPENDS
+      .${LIBC_TARGET_OS}.tcsetpgrp
+  )
+endif()
+
+add_entrypoint_object(
   symlink
   ALIAS
   DEPENDS
@@ -312,6 +549,13 @@ add_entrypoint_object(
   ALIAS
   DEPENDS
     .${LIBC_TARGET_OS}.__llvm_libc_syscall
+)
+
+add_entrypoint_object(
+  syscall
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.syscall
 )
 
 add_entrypoint_object(

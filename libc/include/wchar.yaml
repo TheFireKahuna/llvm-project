@@ -10,12 +10,12 @@ types:
   - type_name: FILE
   - type_name: rsize_t
   - type_name: size_t
-  # TODO: Remove this once we have a function declaration using "struct tm"
-  # (wcsftime). We're declaring it here now, since libc++ expects
-  # forward-declaration of "struct tm" in the <wchar.h> header.
+  # struct_tm is needed by wcsftime, and libc++ also expects its
+  # forward-declaration in <wchar.h>.
   - type_name: struct_tm
   - type_name: wint_t
   - type_name: wchar_t
+  - type_name: locale_t
   - type_name: mbstate_t
 enums: []
 objects: []
@@ -45,6 +45,182 @@ functions:
     return_type: wint_t
     arguments:
       - type: int
+  - name: fgetwc
+    standards:
+      - stdc
+    return_type: wint_t
+    arguments:
+      - type: FILE *
+  - name: fputwc
+    standards:
+      - stdc
+    return_type: wint_t
+    arguments:
+      - type: wchar_t
+      - type: FILE *
+  - name: fwide
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: FILE *
+      - type: int
+  - name: fwprintf
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: FILE *__restrict
+      - type: const wchar_t *__restrict
+      - type: '...'
+  - name: vfwprintf
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: FILE *__restrict
+      - type: const wchar_t *__restrict
+      - type: va_list
+  - name: wprintf
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: const wchar_t *__restrict
+      - type: '...'
+  - name: vwprintf
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: const wchar_t *__restrict
+      - type: va_list
+  - name: fputws
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: const wchar_t *__restrict
+      - type: FILE *__restrict
+  - name: fgetws
+    standards:
+      - stdc
+    return_type: wchar_t *
+    arguments:
+      - type: wchar_t *__restrict
+      - type: int
+      - type: FILE *__restrict
+  - name: open_wmemstream
+    standards:
+      - POSIX
+    return_type: FILE *
+    arguments:
+      - type: wchar_t **
+      - type: size_t *
+  - name: ungetwc
+    standards:
+      - stdc
+    return_type: wint_t
+    arguments:
+      - type: wint_t
+      - type: FILE *
+  - name: swprintf
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: wchar_t *__restrict
+      - type: size_t
+      - type: const wchar_t *__restrict
+      - type: '...'
+  - name: vswprintf
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: wchar_t *__restrict
+      - type: size_t
+      - type: const wchar_t *__restrict
+      - type: va_list
+  - name: fwscanf
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: FILE *__restrict
+      - type: const wchar_t *__restrict
+      - type: '...'
+  - name: vfwscanf
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: FILE *__restrict
+      - type: const wchar_t *__restrict
+      - type: va_list
+  - name: wscanf
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: const wchar_t *__restrict
+      - type: '...'
+  - name: vwscanf
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: const wchar_t *__restrict
+      - type: va_list
+  - name: swscanf
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: const wchar_t *__restrict
+      - type: const wchar_t *__restrict
+      - type: '...'
+  - name: vswscanf
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: const wchar_t *__restrict
+      - type: const wchar_t *__restrict
+      - type: va_list
+  - name: wcsftime
+    standards:
+      - stdc
+    return_type: size_t
+    arguments:
+      - type: wchar_t *__restrict
+      - type: size_t
+      - type: const wchar_t *__restrict
+      - type: const struct tm *
+  - name: getwc
+    standards:
+      - stdc
+    return_type: wint_t
+    arguments:
+      - type: FILE *
+  - name: getwchar
+    standards:
+      - stdc
+    return_type: wint_t
+    arguments: []
+  - name: putwc
+    standards:
+      - stdc
+    return_type: wint_t
+    arguments:
+      - type: wchar_t
+      - type: FILE *
+  - name: putwchar
+    standards:
+      - stdc
+    return_type: wint_t
+    arguments:
+      - type: wchar_t
   - name: mbrtowc
     standards:
       - stdc
@@ -78,7 +254,7 @@ functions:
       - stdc
     return_type: int
     arguments:
-      - type: mbstate_t *
+      - type: const mbstate_t *
   - name: mblen
     standards:
       - stdc
@@ -105,7 +281,7 @@ functions:
   - name: wcschr
     standards:
       - stdc
-    return_type: const wchar_t *
+    return_type: wchar_t *
     arguments:
       - type: const wchar_t *
       - type: wchar_t
@@ -127,14 +303,14 @@ functions:
   - name: wcspbrk
     standards:
       - stdc
-    return_type: const wchar_t *
+    return_type: wchar_t *
     arguments:
       - type: const wchar_t *
       - type: const wchar_t *
   - name: wcsrchr
     standards:
       - stdc
-    return_type: const wchar_t *
+    return_type: wchar_t *
     arguments:
       - type: const wchar_t *
       - type: wchar_t
@@ -163,7 +339,7 @@ functions:
   - name: wmemchr
     standards:
       - stdc
-    return_type: const wchar_t *
+    return_type: wchar_t *
     arguments:
       - type: const wchar_t *
       - type: wchar_t
@@ -218,7 +394,7 @@ functions:
   - name: wcsstr
     standards:
       - stdc
-    return_type: const wchar_t *
+    return_type: wchar_t *
     arguments:
       - type: const wchar_t *
       - type: const wchar_t *
@@ -354,3 +530,35 @@ functions:
     arguments:
       - type: const wchar_t *__restrict
       - type: wchar_t **__restrict
+  - name: wcscoll
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: const wchar_t *
+      - type: const wchar_t *
+  - name: wcscoll_l
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: const wchar_t *
+      - type: const wchar_t *
+      - type: locale_t
+  - name: wcsxfrm
+    standards:
+      - stdc
+    return_type: size_t
+    arguments:
+      - type: wchar_t *__restrict
+      - type: const wchar_t *__restrict
+      - type: size_t
+  - name: wcsxfrm_l
+    standards:
+      - posix
+    return_type: size_t
+    arguments:
+      - type: wchar_t *__restrict
+      - type: const wchar_t *__restrict
+      - type: size_t
+      - type: locale_t

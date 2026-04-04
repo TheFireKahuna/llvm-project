@@ -17,7 +17,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
-#if defined(LLVM_RUNTIME_WIN32)
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 #include <malloc.h> // For _malloca/_freea
 #endif
 
@@ -114,7 +114,7 @@
 #define _LIBUNWIND_WEAK_ALIAS(name, aliasname)                                 \
   extern "C" _LIBUNWIND_EXPORT __typeof(name) aliasname                        \
       __attribute__((alias(#name)));
-#elif defined(_WIN32_ITANIUM)
+#elif defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
 #define _LIBUNWIND_WEAK_ALIAS(name, aliasname)                                     \
   __attribute__((section(".drectve"), used))                                       \
   static const char __coff_drectve_##aliasname[] =                                 \
@@ -148,14 +148,14 @@
 #ifndef _LIBUNWIND_REMEMBER_HEAP_ALLOC
 #if defined(_LIBUNWIND_REMEMBER_STACK_ALLOC) || defined(__APPLE__) ||          \
     defined(__linux__) || defined(__ANDROID__) || defined(__MINGW32__) ||      \
-    defined(_LIBUNWIND_IS_BAREMETAL) || defined(_WIN32_ITANIUM) ||            \
+    defined(_LIBUNWIND_IS_BAREMETAL) || defined(_WIN32_ITANIUM) || defined(__NTPOSIX__) ||            \
     (defined(_WIN32) && defined(__USING_SJLJ_EXCEPTIONS__))
 // _malloca/_freea require SEH with WIN32; SJLJ builds must use __builtin_alloca.
 #define _LIBUNWIND_REMEMBER_ALLOC(_size) __builtin_alloca(_size)
 #define _LIBUNWIND_REMEMBER_FREE(_ptr)                                         \
   do {                                                                         \
   } while (0)
-#elif defined(LLVM_RUNTIME_WIN32)
+#elif defined(_WIN32) && !defined(__NTPOSIX__)
 #define _LIBUNWIND_REMEMBER_ALLOC(_size) _malloca(_size)
 #define _LIBUNWIND_REMEMBER_FREE(_ptr) _freea(_ptr)
 #define _LIBUNWIND_REMEMBER_CLEANUP_NEEDED

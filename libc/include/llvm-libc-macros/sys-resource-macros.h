@@ -11,6 +11,8 @@
 
 #ifdef __linux__
 #include "linux/sys-resource-macros.h"
+#elif defined(__NTPOSIX__)
+#include "windows/sys-resource-macros.h"
 #endif
 
 #endif // LLVM_LIBC_MACROS_SYS_RESOURCE_MACROS_H

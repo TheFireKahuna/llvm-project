@@ -36,7 +36,8 @@ LIBC_INLINE int convert_write_int(Writer<write_mode> *writer,
     *reinterpret_cast<int *>(to_conv.conv_val_ptr) = static_cast<int>(written);
     break;
   case LengthModifier::l:
-    *reinterpret_cast<long *>(to_conv.conv_val_ptr) = written;
+    *reinterpret_cast<long *>(to_conv.conv_val_ptr) =
+        static_cast<long>(written);
     break;
   case LengthModifier::ll:
   case LengthModifier::L:

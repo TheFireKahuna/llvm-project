@@ -30,7 +30,7 @@ public:
   _LIBCPP_HIDE_FROM_ABI explicit format_error(const char* __s) : runtime_error(__s) {}
   _LIBCPP_HIDE_FROM_ABI format_error(const format_error&)            = default;
   _LIBCPP_HIDE_FROM_ABI format_error& operator=(const format_error&) = default;
-#ifdef _WIN32_ITANIUM
+#if defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
   // Key function to anchor vtable in the library.
   ~format_error() noexcept override;
 #else

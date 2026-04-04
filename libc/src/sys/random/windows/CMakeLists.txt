@@ -1,0 +1,11 @@
+add_entrypoint_object(
+  getrandom
+  SRCS
+    getrandom.cpp
+  HDRS
+    ../getrandom.h
+  DEPENDS
+    libc.include.sys_random
+    libc.src.__support.OSUtil.windows.ntdll
+    libc.src.errno.errno
+)

@@ -43,7 +43,7 @@ void doShortStringTest(MultiStringType const& MS) {
   using Alloc = std::allocator<CharT>;
   Ptr value = MS;
   const path p((const char*)MS);
-#ifdef LLVM_RUNTIME_WIN32
+#ifdef _LIBCPP_WIN32API
   // On Windows, charset conversions cause allocations outside of the
   // provided allocator, but accessing the native type should work without
   // extra allocations.

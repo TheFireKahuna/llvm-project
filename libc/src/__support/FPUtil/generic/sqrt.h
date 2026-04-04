@@ -106,6 +106,7 @@ sqrt(InType x) {
     } else if (bits.is_neg()) {
       // sqrt(-Inf) = NaN
       // sqrt(-x) = NaN
+      raise_except_if_required(FE_INVALID);
       return FLT_NAN;
     } else {
       int x_exp = bits.get_exponent();

@@ -241,7 +241,15 @@ LIBC_INLINE constexpr double set_exceptional(double x) {
         return x;
       // |x| <= 2^-968, need to scale up a bit before rounding, then scale it
       // back down.
-      return 0x1.0p-200 * fputil::multiply_add(x, 0x1.0p+200, 0x1.0p-1022);
+      double r =
+          0x1.0p-200 * fputil::multiply_add(x, 0x1.0p+200, 0x1.0p-1022);
+      // The scaling trick produces the correctly-rounded subnormal result
+      // but never triggers hardware underflow flags.
+      if (LIBC_UNLIKELY(FPBits(r).is_subnormal())) {
+        fputil::set_errno_if_required(ERANGE);
+        fputil::raise_except_if_required(FE_UNDERFLOW | FE_INEXACT);
+      }
+      return r;
     }
 
     // 2^-968 < |x| <= 2^-53.
@@ -266,12 +274,12 @@ LIBC_INLINE constexpr double set_exceptional(double x) {
   // x >= round(log(MAX_NORMAL), D, RU) = 0x1.62e42fefa39fp+9 or +inf/nan
   // x is finite
   if (x_u < 0x7ff0'0000'0000'0000ULL) {
+    fputil::set_errno_if_required(ERANGE);
+    fputil::raise_except_if_required(FE_OVERFLOW | FE_INEXACT);
+
     int rounding = fputil::quick_get_round();
     if (rounding == FE_DOWNWARD || rounding == FE_TOWARDZERO)
       return FPBits::max_normal().get_val();
-
-    fputil::set_errno_if_required(ERANGE);
-    fputil::raise_except_if_required(FE_OVERFLOW);
   }
   // x is +inf or nan
   return x + FPBits::inf().get_val();
@@ -399,9 +407,17 @@ LIBC_INLINE constexpr double expm1(double x) {
 
   DoubleDouble exp_mid = fputil::quick_mult(exp_mid1, exp_mid2);
 
-  // -2^(-hi)
+  // -2^(-hi): the "minus 1" term in expm1(x) = 2^hi * (exp_mid*exp(lo) - 2^-hi).
+  // For hi >= EXP_BIAS (1023), create_value wraps the unsigned biased exponent
+  // and produces garbage.  Use 0.0 instead — the 2^(-hi) term is negligible
+  // relative to exp_mid (≈ 1.0–2.0) at this scale, and the final 2^hi scaling
+  // via the bit trick still produces a correct finite result because dx < 0
+  // guarantees upper < 1.0 whenever hi reaches 1024.
   double one_scaled =
-      FPBits::create_value(Sign::NEG, FPBits::EXP_BIAS - hi, 0).get_val();
+      LIBC_UNLIKELY(hi >= static_cast<int>(FPBits::EXP_BIAS))
+          ? 0.0
+          : FPBits::create_value(Sign::NEG, FPBits::EXP_BIAS - hi, 0)
+                .get_val();
 
   // 2^(mid1 + mid2) - 2^(-hi)
   DoubleDouble hi_part = x_is_neg ? fputil::exact_add(one_scaled, exp_mid.hi)

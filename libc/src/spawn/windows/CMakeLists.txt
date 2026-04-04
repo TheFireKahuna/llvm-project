@@ -1,0 +1,33 @@
+add_entrypoint_object(
+  posix_spawn
+  SRCS
+    posix_spawn.cpp
+  HDRS
+    ../posix_spawn.h
+  DEPENDS
+    libc.hdr.errno_macros
+    libc.hdr.spawn_macros
+    libc.hdr.types.pid_t
+    libc.include.spawn
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.spawn_ops
+)
+
+add_entrypoint_object(
+  posix_spawnp
+  SRCS
+    posix_spawnp.cpp
+  HDRS
+    ../posix_spawnp.h
+  DEPENDS
+    libc.hdr.errno_macros
+    libc.hdr.spawn_macros
+    libc.hdr.types.pid_t
+    libc.include.spawn
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.env_ops
+    libc.src.__support.OSUtil.windows.spawn_ops
+    libc.src.unistd.environ
+)

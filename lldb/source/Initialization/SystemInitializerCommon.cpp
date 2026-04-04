@@ -19,7 +19,7 @@
 #include "lldb/Version/Version.h"
 
 #if defined(__linux__) || defined(__FreeBSD__) || defined(__NetBSD__) ||       \
-    defined(__OpenBSD__)
+    defined(__OpenBSD__) || defined(LLVM_RUNTIME_POSIX)
 #include "Plugins/Process/POSIX/ProcessPOSIXLog.h"
 #endif
 
@@ -90,7 +90,7 @@ void SystemInitializerCommon::Terminate() {
   LLDB_SCOPED_TIMER();
 
 #if defined(__linux__) || defined(__FreeBSD__) || defined(__NetBSD__) ||       \
-    defined(__OpenBSD__)
+    defined(__OpenBSD__) || defined(LLVM_RUNTIME_POSIX)
   ProcessPOSIXLog::Terminate();
 #endif
 #if defined(LLVM_RUNTIME_WIN32)

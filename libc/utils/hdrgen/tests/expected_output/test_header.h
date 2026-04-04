@@ -33,24 +33,24 @@ enum {
 
 __BEGIN_C_DECLS
 
-CONST_FUNC_A MACRO_ATTR(A) void func_a(void) __NOEXCEPT;
+__LIBC_FUNC_IMPORT CONST_FUNC_A MACRO_ATTR(A) void func_a(void) __NOEXCEPT;
 
 #ifdef LIBC_TYPES_HAS_FLOAT128
-float128 func_b(void) __NOEXCEPT;
+__LIBC_FUNC_IMPORT float128 func_b(void) __NOEXCEPT;
 #endif // LIBC_TYPES_HAS_FLOAT128
 
 #ifdef LIBC_TYPES_HAS_FLOAT16
-_Float16 func_c(int, float) __NOEXCEPT;
+__LIBC_FUNC_IMPORT _Float16 func_c(int, float) __NOEXCEPT;
 
-_Float16 func_d(int, float) __NOEXCEPT;
+__LIBC_FUNC_IMPORT _Float16 func_d(int, float) __NOEXCEPT;
 #endif // LIBC_TYPES_HAS_FLOAT16
 
 #ifdef LIBC_TYPES_HAS_FLOAT16_AND_FLOAT128
-_Float16 func_e(float128) __NOEXCEPT;
+__LIBC_FUNC_IMPORT _Float16 func_e(float128) __NOEXCEPT;
 #endif // LIBC_TYPES_HAS_FLOAT16_AND_FLOAT128
 
-extern obj object_1;
-extern obj object_2;
+__LIBC_DATA_IMPORT extern obj object_1;
+__LIBC_DATA_IMPORT extern obj object_2;
 
 __END_C_DECLS
 

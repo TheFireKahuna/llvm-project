@@ -100,6 +100,15 @@ std::string x86::getX86TargetCPU(const Driver &D, const ArgList &Args,
   if (Triple.isAndroid())
     return Is64Bit ? "x86-64" : "i686";
 
+  // Windows Itanium and NT-POSIX: match Microsoft's Windows 11
+  // supported-CPU floor (8th-gen Coffee Lake / Zen+, with narrow 7th-
+  // gen Kaby Lake exceptions — all Haswell-or-later / Zen-or-later).
+  // Every such CPU is at or above x86-64-v3. Extra v3-adjacent
+  // features that are also universal are layered on in
+  // getX86TargetFeatures below.
+  if (Is64Bit && Triple.isWindowsItaniumOrNTPOSIXEnvironment())
+    return "x86-64-v3";
+
   // Everything else goes to x86-64 in 64-bit mode.
   if (Is64Bit)
     return "x86-64";
@@ -162,6 +171,23 @@ void x86::getX86TargetFeatures(const Driver &D, const llvm::Triple &Triple,
       Features.push_back("+ssse3");
   }
 
+  // Windows Itanium and NT-POSIX: layer on v3-adjacent features that
+  // are universal across Microsoft's Windows 11 supported-CPU list but
+  // aren't bundled into the x86-64-v3 level.
+  if (ArchType == llvm::Triple::x86_64 &&
+      Triple.isWindowsItaniumOrNTPOSIXEnvironment()) {
+    Features.push_back("+aes");
+    Features.push_back("+pclmul");
+    Features.push_back("+fsgsbase");
+    Features.push_back("+adx");
+    Features.push_back("+rdrnd");
+    Features.push_back("+rdseed");
+    Features.push_back("+clflushopt");
+    Features.push_back("+xsavec");
+    Features.push_back("+xsaveopt");
+    Features.push_back("+xsaves");
+    Features.push_back("+prfchw");
+  }
   // Translate the high level `-mretpoline` flag to the specific target feature
   // flags. We also detect if the user asked for retpoline external thunks but
   // failed to ask for retpolines themselves (through any of the different

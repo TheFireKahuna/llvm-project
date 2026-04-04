@@ -1,0 +1,43 @@
+header: pwd.h
+header_template: pwd.h.def
+macros: []
+types:
+  - type_name: uid_t
+  - type_name: gid_t
+  - type_name: size_t
+  - type_name: struct_passwd
+enums: []
+objects: []
+functions:
+  - name: getpwuid
+    standards:
+      - POSIX
+    return_type: struct passwd *
+    arguments:
+      - type: uid_t
+  - name: getpwnam
+    standards:
+      - POSIX
+    return_type: struct passwd *
+    arguments:
+      - type: const char *
+  - name: getpwuid_r
+    standards:
+      - POSIX
+    return_type: int
+    arguments:
+      - type: uid_t
+      - type: struct passwd *
+      - type: char *
+      - type: size_t
+      - type: struct passwd **
+  - name: getpwnam_r
+    standards:
+      - POSIX
+    return_type: int
+    arguments:
+      - type: const char *
+      - type: struct passwd *
+      - type: char *
+      - type: size_t
+      - type: struct passwd **

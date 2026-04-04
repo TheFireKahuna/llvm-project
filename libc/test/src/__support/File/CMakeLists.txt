@@ -52,3 +52,7 @@ foreach(target IN LISTS platform_file_targets)
 endforeach()
 
 add_subdirectory(testdata)
+
+if(LIBC_TARGET_OS_IS_WINDOWS)
+  add_subdirectory(windows)
+endif()

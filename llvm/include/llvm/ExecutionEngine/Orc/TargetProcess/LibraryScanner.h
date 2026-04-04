@@ -17,6 +17,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/Config/llvm-config.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/Error.h"
@@ -27,6 +28,10 @@
 #include <queue>
 #include <shared_mutex>
 #include <string>
+
+#if defined(LLVM_RUNTIME_POSIX)
+#include <sys/stat.h>
+#endif
 
 namespace llvm {
 namespace orc {
@@ -100,7 +105,7 @@ private:
   StringSet<> Seen;
   StringMap<PathInfo> RealPathCache;
 
-#ifndef LLVM_RUNTIME_WIN32
+#if defined(LLVM_RUNTIME_POSIX)
   StringMap<std::string> ReadlinkCache;
   StringMap<mode_t> LstatCache;
 
@@ -151,7 +156,7 @@ public:
   std::optional<std::string> resolve(StringRef Path, std::error_code &ec) {
     return realpathCached(Path, ec);
   }
-#ifndef LLVM_RUNTIME_WIN32
+#if defined(LLVM_RUNTIME_POSIX)
   mode_t lstatCached(StringRef Path);
   std::optional<std::string> readlinkCached(StringRef Path);
 #endif

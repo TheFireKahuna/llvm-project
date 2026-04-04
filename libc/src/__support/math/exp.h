@@ -221,12 +221,12 @@ LIBC_INLINE double set_exceptional(double x) {
   // x >= round(log(MAX_NORMAL), D, RU) = 0x1.62e42fefa39fp+9 or +inf/nan
   // x is finite
   if (x_u < 0x7ff0'0000'0000'0000ULL) {
+    fputil::set_errno_if_required(ERANGE);
+    fputil::raise_except_if_required(FE_OVERFLOW | FE_INEXACT);
+
     int rounding = fputil::quick_get_round();
     if (rounding == FE_DOWNWARD || rounding == FE_TOWARDZERO)
       return FPBits::max_normal().get_val();
-
-    fputil::set_errno_if_required(ERANGE);
-    fputil::raise_except_if_required(FE_OVERFLOW);
   }
   // x is +inf or nan
   return x + FPBits::inf().get_val();
@@ -388,9 +388,9 @@ LIBC_INLINE double exp(double x) {
 
 #ifdef LIBC_MATH_HAS_SKIP_ACCURATE_PASS
   if (LIBC_UNLIKELY(denorm)) {
-    return ziv_test_denorm</*SKIP_ZIV_TEST=*/true>(hi, exp_mid.hi, lo,
-                                                   EXP_ERR_D)
-        .value();
+    return signal_underflow_if_subnormal(
+        ziv_test_denorm</*SKIP_ZIV_TEST=*/true>(hi, exp_mid.hi, lo, EXP_ERR_D)
+            .value());
   } else {
     // to multiply by 2^hi, a fast way is to simply add hi to the exponent
     // field.
@@ -403,7 +403,7 @@ LIBC_INLINE double exp(double x) {
   if (LIBC_UNLIKELY(denorm)) {
     if (auto r = ziv_test_denorm(hi, exp_mid.hi, lo, EXP_ERR_D);
         LIBC_LIKELY(r.has_value()))
-      return r.value();
+      return signal_underflow_if_subnormal(r.value());
   } else {
     double upper = exp_mid.hi + (lo + EXP_ERR_D);
     double lower = exp_mid.hi + (lo - EXP_ERR_D);
@@ -423,7 +423,7 @@ LIBC_INLINE double exp(double x) {
   if (LIBC_UNLIKELY(denorm)) {
     if (auto r = ziv_test_denorm(hi, r_dd.hi, r_dd.lo, EXP_ERR_DD);
         LIBC_LIKELY(r.has_value()))
-      return r.value();
+      return signal_underflow_if_subnormal(r.value());
   } else {
     double upper_dd = r_dd.hi + (r_dd.lo + EXP_ERR_DD);
     double lower_dd = r_dd.hi + (r_dd.lo - EXP_ERR_DD);
@@ -439,7 +439,10 @@ LIBC_INLINE double exp(double x) {
   // Use 128-bit precision
   Float128 r_f128 = exp_f128(x, kd, idx1, idx2);
 
-  return static_cast<double>(r_f128);
+  double r = static_cast<double>(r_f128);
+  if (LIBC_UNLIKELY(denorm))
+    return signal_underflow_if_subnormal(r);
+  return r;
 #endif // LIBC_MATH_HAS_SKIP_ACCURATE_PASS
 }
 

@@ -27,33 +27,28 @@ unwrap_opt(cpp::optional<cpp::string_view> str_opt) {
   return str_opt.has_value() ? *str_opt : OUT_OF_BOUNDS_STR;
 }
 
-template <printf_core::WriteMode write_mode>
-LIBC_INLINE int convert_str(printf_core::Writer<write_mode> *writer,
-                            const FormatSection &to_conv, const tm *timeptr) {
+template <typename WriterT>
+LIBC_INLINE int convert_str(WriterT *writer, const FormatSection &to_conv,
+                            const tm *timeptr) {
   cpp::string_view str;
-  cpp::optional<cpp::string_view> str_opt;
   const time_utils::TMReader time_reader(timeptr);
 
   switch (to_conv.conv_name) {
   case 'a': // Abbreviated weekday name
-    str_opt = time_reader.get_weekday_short_name();
-    str = unwrap_opt(str_opt);
+    str = time_reader.get_locale_weekday_short_name();
     break;
   case 'A': // Full weekday name
-    str_opt = time_reader.get_weekday_full_name();
-    str = unwrap_opt(str_opt);
+    str = time_reader.get_locale_weekday_full_name();
     break;
   case 'b': // Abbreviated month name
   case 'h': // same as 'b'
-    str_opt = time_reader.get_month_short_name();
-    str = unwrap_opt(str_opt);
+    str = time_reader.get_locale_month_short_name();
     break;
   case 'B': // Full month name
-    str_opt = time_reader.get_month_full_name();
-    str = unwrap_opt(str_opt);
+    str = time_reader.get_locale_month_full_name();
     break;
   case 'p': // AM/PM designation
-    str = time_reader.get_am_pm();
+    str = time_reader.get_locale_am_pm();
     break;
   case 'Z': // Timezone name
     // the standard says if no time zone is determinable, write no characters.

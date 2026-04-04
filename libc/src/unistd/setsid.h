@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_LIBC_SRC_UNISTD_GETPID_H
-#define LLVM_LIBC_SRC_UNISTD_GETPID_H
+#ifndef LLVM_LIBC_SRC_UNISTD_SETSID_H
+#define LLVM_LIBC_SRC_UNISTD_SETSID_H
 
 #include "hdr/types/pid_t.h"
 #include "src/__support/macros/config.h"
@@ -18,4 +18,4 @@ pid_t setsid();
 
 } // namespace LIBC_NAMESPACE_DECL
 
-#endif // LLVM_LIBC_SRC_UNISTD_GETPID_H
+#endif // LLVM_LIBC_SRC_UNISTD_SETSID_H

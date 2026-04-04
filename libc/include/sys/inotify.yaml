@@ -1,0 +1,28 @@
+header: sys/inotify.h
+standards:
+  - linux
+macros:
+  - macro_name: IN_ACCESS
+    macro_header: sys-inotify-macros.h
+types: []
+enums: []
+objects: []
+functions:
+  - name: inotify_init
+    return_type: int
+    arguments: []
+  - name: inotify_init1
+    return_type: int
+    arguments:
+      - type: int
+  - name: inotify_add_watch
+    return_type: int
+    arguments:
+      - type: int
+      - type: const char *
+      - type: uint32_t
+  - name: inotify_rm_watch
+    return_type: int
+    arguments:
+      - type: int
+      - type: int

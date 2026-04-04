@@ -9,6 +9,7 @@
 #ifndef LLVM_LIBC_SRC__SUPPORT_WCHAR_WCSNRTOMBS_H
 #define LLVM_LIBC_SRC__SUPPORT_WCHAR_WCSNRTOMBS_H
 
+#include "hdr/errno_macros.h"
 #include "hdr/types/char32_t.h"
 #include "hdr/types/char8_t.h"
 #include "hdr/types/size_t.h"
@@ -16,6 +17,8 @@
 #include "src/__support/common.h"
 #include "src/__support/macros/config.h"
 #include "src/__support/macros/null_check.h"
+#include "src/__support/wchar/character_converter.h"
+#include "src/__support/wchar/locale_encoding.h"
 #include "src/__support/wchar/mbstate.h"
 #include "src/__support/wchar/string_converter.h"
 
@@ -28,7 +31,7 @@ wcsnrtombs(char *__restrict dest, const wchar_t **__restrict ptr_to_src,
   LIBC_CRASH_ON_NULLPTR(ptr_to_src);
   LIBC_CRASH_ON_NULLPTR(ps);
 
-  CharacterConverter cr(ps);
+  CharacterConverter cr(ps, locale_encoding_is_utf8());
   if (!cr.isValidState())
     return Error(EINVAL);
 

@@ -171,6 +171,8 @@ static void addWinItaniumDefines(const llvm::Triple &Triple, const LangOptions &
 
 static void addVisualCDefines(const llvm::Triple &Triple,
                               const LangOptions &Opts, MacroBuilder &Builder) {
+  const bool EmitMSVCIdentityMacros = Triple.isKnownWindowsMSVCEnvironment();
+
   if (Opts.CPlusPlus) {
     if (Opts.RTTIData && !Triple.isWindowsItaniumEnvironment())
       Builder.defineMacro("_CPPRTTI");
@@ -239,22 +241,13 @@ static void addVisualCDefines(const llvm::Triple &Triple,
     Builder.defineMacro("_MT");
 
   if (Opts.MSCompatibilityVersion) {
-    // Windows Itanium: _MSC_VER visible only in system headers.
-    if (Triple.isWindowsItaniumEnvironment()) {
-      Builder.defineSystemHeaderOnlyMacro(
-          "_MSC_VER", Twine(Opts.MSCompatibilityVersion / 100000));
-      Builder.defineSystemHeaderOnlyMacro("_MSC_FULL_VER",
-                                          Twine(Opts.MSCompatibilityVersion));
-    } else {
+    if (EmitMSVCIdentityMacros) {
       Builder.defineMacro("_MSC_VER",
                           Twine(Opts.MSCompatibilityVersion / 100000));
       Builder.defineMacro("_MSC_FULL_VER", Twine(Opts.MSCompatibilityVersion));
-    }
-    // FIXME We cannot encode the revision information into 32-bits
-    if (Triple.isWindowsItaniumEnvironment())
-      Builder.defineSystemHeaderOnlyMacro("_MSC_BUILD", Twine(1));
-    else
+      // FIXME We cannot encode the revision information into 32-bits
       Builder.defineMacro("_MSC_BUILD", Twine(1));
+    }
     // Exposed by MSVC, used in their stddef.h.
     Builder.defineMacro("_CRT_USE_BUILTIN_OFFSETOF", Twine(1));
 
@@ -274,21 +267,19 @@ static void addVisualCDefines(const llvm::Triple &Triple,
       else if (Opts.CPlusPlus14)
         MSVCLangVal = "201402L";
 
-      if (MSVCLangVal) {
-        if (Triple.isWindowsItaniumEnvironment())
-          Builder.defineSystemHeaderOnlyMacro("_MSVC_LANG", MSVCLangVal);
-        else
-          Builder.defineMacro("_MSVC_LANG", MSVCLangVal);
+      if (MSVCLangVal && EmitMSVCIdentityMacros) {
+        Builder.defineMacro("_MSVC_LANG", MSVCLangVal);
       }
     }
 
-    if (Opts.isCompatibleWithMSVC(LangOptions::MSVC2022_3))
+    if (Opts.isCompatibleWithMSVC(LangOptions::MSVC2022_3) &&
+        EmitMSVCIdentityMacros)
       Builder.defineMacro("_MSVC_CONSTEXPR_ATTRIBUTE");
   }
 
   if (Opts.MicrosoftExt) {
     // Signals MSVC extension syntax availability, not compiler identity.
-    if (!Triple.isWindowsItaniumEnvironment()) {
+    if (EmitMSVCIdentityMacros) {
       Builder.defineMacro("_MSC_EXTENSIONS");
     }
 
@@ -297,13 +288,6 @@ static void addVisualCDefines(const llvm::Triple &Triple,
       Builder.defineMacro("_RVALUE_REFERENCES_SUPPORTED");
       Builder.defineMacro("_NATIVE_NULLPTR_SUPPORTED");
     }
-  }
-  else if (!Opts.PtrSizeKeywords) {
-    // MSVC pointer size annotations used by Windows SDK (basetsd.h).
-    // If -fms-extensions or -fptr-size-keywords is enabled, these are real keywords.
-    // Otherwise, define them as empty macros for compatibility.
-    Builder.defineMacro("__ptr32");
-    Builder.defineMacro("__ptr64");
   }
 
   if (!Opts.MSVolatile)
@@ -324,14 +308,50 @@ static void addVisualCDefines(const llvm::Triple &Triple,
   // https://docs.microsoft.com/en-us/windows/win32/intl/code-page-identifiers
   //
   // Clang currently only supports UTF-8, so we'll use 65001
-  Builder.defineMacro("_MSVC_EXECUTION_CHARACTER_SET", "65001");
+  if (EmitMSVCIdentityMacros)
+    Builder.defineMacro("_MSVC_EXECUTION_CHARACTER_SET", "65001");
 
   // As of version 19.15 (VS 2017 15.8), MSVC predefines this macro to indicate
   // whether the traditional or standards-conforming preprocessor is in use.
   // Currently, MSVC compatibility mode only attempts to be compatible with the
   // traditional preprocessor.
-  if (Opts.isCompatibleWithMSVC(LangOptions::MSVC2017_8))
+  if (Opts.isCompatibleWithMSVC(LangOptions::MSVC2017_8) &&
+      EmitMSVCIdentityMacros)
     Builder.defineMacro("_MSVC_TRADITIONAL", "1");
+}
+
+static void addNTPOSIXDefines(const llvm::Triple &Triple,
+                              const LangOptions &Opts,
+                              MacroBuilder &Builder) {
+  // NT-POSIX: Windows NT kernel with a POSIX C runtime (llvm-libc).
+  // _WIN32/_WIN64 are already defined by addWindowsDefines — those signal
+  // PE/COFF ABI and Windows calling conventions, which are correct.
+  //
+  // We define kernel identity and version targeting macros — we ARE NT,
+  // and code needs to know which NT version to target.
+  //
+  // We do NOT define:
+  //   __unix__ / __unix       — this is NT, not a Unix kernel
+  //   WIN32                   — implies Win32 API surface
+  //   UNICODE / _UNICODE      — Win32 wide-char API convention
+  //   STRICT                  — Win32 type-safety macro
+  //   _MSC_VER et al.         — MSVC compiler identity
+  //   __MSVCRT__              — no MSVCRT/UCRT runtime
+  //   __MINGW32/64__          — not MinGW
+  //
+  // Code detects this environment via __NTPOSIX__.
+  Builder.defineMacro("__NTPOSIX__");
+
+  // Kernel identity and version targeting.
+  DefineStd(Builder, "WINNT", Opts);
+  Builder.defineMacro("WINVER", "0x0A00");
+  Builder.defineMacro("_WIN32_WINNT", "0x0A00");
+
+  if (Opts.POSIXThreads)
+    Builder.defineMacro("_REENTRANT");
+  // libc++ locale support requires _GNU_SOURCE in C++ mode.
+  if (Opts.CPlusPlus)
+    Builder.defineMacro("_GNU_SOURCE");
 }
 
 void addWindowsDefines(const llvm::Triple &Triple, const LangOptions &Opts,
@@ -341,7 +361,9 @@ void addWindowsDefines(const llvm::Triple &Triple, const LangOptions &Opts,
     Builder.defineMacro("_WIN64");
   if (Triple.isWindowsGNUEnvironment())
     addMinGWDefines(Triple, Opts, Builder);
-  else if (Triple.isWindowsItaniumEnvironment()) {
+  else if (Triple.isWindowsNTPOSIXEnvironment()) {
+    addNTPOSIXDefines(Triple, Opts, Builder);
+  } else if (Triple.isWindowsItaniumEnvironment()) {
     addWinItaniumDefines(Triple, Opts, Builder);
     addVisualCDefines(Triple, Opts, Builder);
   } else if (Triple.isKnownWindowsMSVCEnvironment()) {

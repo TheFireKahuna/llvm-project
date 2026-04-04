@@ -15,7 +15,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifdef _WIN32_ITANIUM
+#if defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
 
 #include <stddef.h>
 #include <stdint.h>
@@ -234,8 +234,12 @@ public:
     unsigned long oldProtect;
     void *base = reinterpret_cast<void *>(startPage);
     size_t regionSize = endPage - startPage;
+    // Use PAGE_EXECUTE_READWRITE for executable pages to avoid DEP violations
+    // if the pseudo-reloc code itself shares a page with the target.
+    unsigned long newProtect =
+        wasExecutable ? kPageExecuteReadwrite : kPageReadwrite;
     if (!ntSuccess(::NtProtectVirtualMemory(ntCurrentProcess(), &base,
-                                            &regionSize, kPageReadwrite,
+                                            &regionSize, newProtect,
                                             &oldProtect)))
       return false;
 
@@ -507,4 +511,4 @@ extern "C" __attribute__((section(".CRT$XIB"), used)) _PIFV
 
 extern "C" void _pei386_runtime_relocator(void) { runPseudoRelocator(); }
 
-#endif // _WIN32_ITANIUM
+#endif // _WIN32_ITANIUM || __NTPOSIX__

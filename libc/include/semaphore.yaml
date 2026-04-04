@@ -1,0 +1,58 @@
+header: semaphore.h
+header_template: semaphore.h.def
+standards:
+  - posix
+macros:
+  - macro_name: SEM_FAILED
+    macro_header: semaphore-macros.h
+  - macro_name: SEM_VALUE_MAX
+    macro_header: semaphore-macros.h
+types:
+  - type_name: sem_t
+functions:
+  - name: sem_init
+    return_type: int
+    arguments:
+      - type: sem_t *
+      - type: int
+      - type: unsigned int
+  - name: sem_destroy
+    return_type: int
+    arguments:
+      - type: sem_t *
+  - name: sem_open
+    return_type: sem_t *
+    arguments:
+      - type: const char *
+      - type: int
+      - type: ...
+  - name: sem_close
+    return_type: int
+    arguments:
+      - type: sem_t *
+  - name: sem_unlink
+    return_type: int
+    arguments:
+      - type: const char *
+  - name: sem_post
+    return_type: int
+    arguments:
+      - type: sem_t *
+  - name: sem_wait
+    return_type: int
+    arguments:
+      - type: sem_t *
+  - name: sem_trywait
+    return_type: int
+    arguments:
+      - type: sem_t *
+  - name: sem_getvalue
+    return_type: int
+    arguments:
+      - type: sem_t *__restrict
+      - type: int *__restrict
+  - name: sem_timedwait
+    return_type: int
+    arguments:
+      - type: sem_t *__restrict
+      - type: const struct timespec *__restrict

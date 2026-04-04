@@ -8,22 +8,17 @@
 # See: https://llvm.org/docs/HowToBuildWindowsItaniumPrograms.html
 #
 # Prerequisites:
-#   - C++ compiler: MSVC (cl.exe) or Clang (clang-cl.exe)
-#   - Visual Studio with Windows SDK (for headers/libs)
+#   - LLVM Clang (clang-cl.exe) on PATH or passed via -DCMAKE_C_COMPILER
+#   - Windows SDK headers/libs available on the host
 #   - CMake 3.20+, Ninja, Python 3, Git
 #
-# Setup (run once per shell session):
-#   # PowerShell - find and load VS dev environment:
+# Optional setup (only if the shell does not already expose the Windows SDK):
+#   # PowerShell - find and load the SDK environment:
 #   $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
 #             -latest -property installationPath
 #   & "$vsPath\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -SkipAutomaticLocation
 #
 # Build (produces native Windows Itanium toolchain):
-#   # Using MSVC:
-#   cmake -G Ninja -B build -C <path>/clang/cmake/caches/WindowsItanium-runtimes.cmake \
-#         -DCMAKE_INSTALL_PREFIX=<install-path> <path>/llvm
-#
-#   # Or using Clang:
 #   cmake -G Ninja -B build -C <path>/clang/cmake/caches/WindowsItanium-runtimes.cmake \
 #         -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl \
 #         -DCMAKE_INSTALL_PREFIX=<install-path> <path>/llvm
@@ -33,32 +28,29 @@
 #
 # The final native Windows Itanium toolchain will be in <install-path>.
 
-cmake_minimum_required(VERSION 3.20)
-
 set(PACKAGE_VENDOR "Windows-Itanium" CACHE STRING "")
 
-#===------------------------------------------------------------------------===#
-# Compiler Selection - Use clang-cl or MSVC (both produce MSVC ABI binaries)
-#===------------------------------------------------------------------------===#
+# ---
+# Compiler Selection - Use clang-cl for the host ABI build
+# ---
 if(NOT DEFINED CMAKE_C_COMPILER)
-  # Prefer clang-cl if available, fall back to MSVC cl.exe
-  find_program(_WI_HOST_CC NAMES clang-cl cl)
+  find_program(_WI_HOST_CC NAMES clang-cl)
   if(_WI_HOST_CC)
     set(CMAKE_C_COMPILER "${_WI_HOST_CC}" CACHE FILEPATH "")
     set(CMAKE_CXX_COMPILER "${_WI_HOST_CC}" CACHE FILEPATH "")
-    message(STATUS "Using host compiler: ${_WI_HOST_CC}")
   else()
-    message(FATAL_ERROR "No suitable C++ compiler found. Install MSVC or Clang.")
+    message(FATAL_ERROR "clang-cl.exe not found. Install LLVM Clang and/or pass -DCMAKE_C_COMPILER/-DCMAKE_CXX_COMPILER explicitly.")
   endif()
 endif()
 
-#===------------------------------------------------------------------------===#
-# Build Dependencies with MSVC ABI (for this phase's toolchain)
-#===------------------------------------------------------------------------===#
-# Build dependencies with MSVC ABI using the host compiler (clang-cl or cl.exe).
+# ---
+# Build Dependencies with the host ABI (for this phase's toolchain)
+# ---
+# Build dependencies with the host ABI using clang-cl.
 # Stage 2 will build its own Windows Itanium ABI versions using the WI driver.
 
 include(${CMAKE_CURRENT_LIST_DIR}/WindowsItanium-toolchain.cmake)
+wi_configure_host_masm("${CMAKE_C_COMPILER}")
 
 wi_build_all_dependencies(
   COMPILER "${CMAKE_C_COMPILER}"
@@ -86,13 +78,13 @@ set(ZLIB_LIBRARY "${ZLIB_ROOT}/lib/zlibstatic.lib" CACHE FILEPATH "")
 set(ZLIB_INCLUDE_DIR "${ZLIB_ROOT}/include" CACHE PATH "")
 set(zstd_LIBRARY "${zstd_ROOT}/lib/zstd_static.lib" CACHE FILEPATH "")
 set(zstd_INCLUDE_DIR "${zstd_ROOT}/include" CACHE PATH "")
-set(LIBXML2_LIBRARY "${LibXml2_ROOT}/lib/libxml2s.lib" CACHE FILEPATH "")
+set(LIBXML2_LIBRARY "${LibXml2_ROOT}/lib/libxml2.lib" CACHE FILEPATH "")
 set(LIBXML2_INCLUDE_DIR "${LibXml2_ROOT}/include/libxml2" CACHE PATH "")
-set(LibXml2_DIR "${LibXml2_ROOT}/lib/cmake/libxml2-2.14.0" CACHE PATH "")
+set(LibXml2_DIR "${LibXml2_ROOT}/lib/cmake/libxml2-${_WI_LIBXML2_VERSION}" CACHE PATH "")
 
-#===------------------------------------------------------------------------===#
+# ---
 # Stage 1: Clang + Runtimes (host-ABI compiler targeting WI)
-#===------------------------------------------------------------------------===#
+# ---
 
 set(LLVM_TARGETS_TO_BUILD "X86" CACHE STRING "")
 
@@ -106,6 +98,17 @@ set(LLVM_RUNTIME_TARGETS "x86_64-unknown-windows-itanium" CACHE STRING "")
 # Build target-specific builtins to get BUILTINS_<target>_ variable unpacking.
 set(LLVM_BUILTIN_TARGETS "x86_64-unknown-windows-itanium" CACHE STRING "")
 
+# Toolchain file for stage 1 runtimes/builtins: overrides Windows-GNU.cmake
+# platform rules with MSVC-style linking (lld-link) and sets RC compiler to
+# llvm-rc. Without this, CMake detects the GNU-style driver as MinGW.
+get_filename_component(_WI_TOOLCHAIN
+  "${CMAKE_CURRENT_LIST_DIR}/../../../llvm/cmake/modules/WindowsItaniumToolchain.cmake"
+  ABSOLUTE)
+set(RUNTIMES_x86_64-unknown-windows-itanium_CMAKE_TOOLCHAIN_FILE
+  "${_WI_TOOLCHAIN}" CACHE FILEPATH "")
+set(BUILTINS_x86_64-unknown-windows-itanium_CMAKE_TOOLCHAIN_FILE
+  "${_WI_TOOLCHAIN}" CACHE FILEPATH "")
+
 set(CMAKE_BUILD_TYPE Release CACHE STRING "")
 set(LLVM_ENABLE_LLD ON CACHE BOOL "")
 
@@ -117,10 +120,8 @@ set(LLVM_ENABLE_BACKTRACES OFF CACHE BOOL "")
 set(LLVM_ENABLE_DIA_SDK OFF CACHE BOOL "")
 set(LLVM_INCLUDE_BENCHMARKS OFF CACHE BOOL "")
 set(LLVM_INCLUDE_TESTS OFF CACHE BOOL "")
-# Prefer config-file packages for correct LIBXML_STATIC handling.
 # Prefer CMake config-file packages over Find modules so our built dependencies
-# are used instead of system-installed ones. The libxml2 config file correctly
-# sets LIBXML_STATIC for static builds.
+# are used instead of system-installed ones (e.g. libxml2 LIBXML_STATIC).
 set(CMAKE_FIND_PACKAGE_PREFER_CONFIG ON CACHE BOOL "")
 set(LLVM_ENABLE_LIBXML2 ON CACHE BOOL "")
 set(LLVM_ENABLE_Z3_SOLVER OFF CACHE BOOL "")
@@ -134,9 +135,9 @@ set(LLVM_INCLUDE_EXAMPLES OFF CACHE BOOL "")
 # Use RelWithDebInfo for runtimes to enable debugging into libc++ if needed.
 set(RUNTIMES_x86_64-unknown-windows-itanium_CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "")
 
-#===------------------------------------------------------------------------===#
+# ---
 # Variables to pass through to Stage 2 (native build)
-#===------------------------------------------------------------------------===#
+# ---
 # These variables are set once here and automatically passed to stage2.
 # See clang/CMakeLists.txt for _BOOTSTRAP_DEFAULT_PASSTHROUGH (auto-passed:
 # PACKAGE_VENDOR, CMAKE_BUILD_TYPE, LLVM_ENABLE_PROJECTS, LLVM_ENABLE_RUNTIMES).
@@ -157,15 +158,13 @@ set(CLANG_BOOTSTRAP_PASSTHROUGH
   LLDB_ENABLE_CURSES
   LLDB_ENABLE_LIBEDIT
   CMAKE_FIND_PACKAGE_PREFER_CONFIG
-  RUNTIMES_USE_LIBC
   RUNTIMES_x86_64-unknown-windows-itanium_CMAKE_BUILD_TYPE
-  RUNTIMES_x86_64-unknown-windows-itanium_RUNTIMES_USE_LIBC
   RUNTIMES_x86_64-unknown-windows-itanium_LIBUNWIND_USE_COMPILER_RT
   CACHE STRING "")
 
-#===------------------------------------------------------------------------===#
+# ---
 # Stage 2-only settings (BOOTSTRAP_ prefix)
-#===------------------------------------------------------------------------===#
+# ---
 # These settings apply only to the native Windows Itanium build.
 
 # Build LLVM/Clang using libc++. The resulting binaries depend on c++.dll
@@ -183,58 +182,20 @@ set(BOOTSTRAP_LLVM_ENABLE_PLUGINS OFF CACHE BOOL "")
 set(BOOTSTRAP_LLVM_ENABLE_UNWIND_TABLES OFF CACHE BOOL "")
 set(BOOTSTRAP_LLVM_USE_RELATIVE_PATHS_IN_FILES ON CACHE BOOL "")
 
-# Force HAVE_LIBXML2=TRUE to skip check_symbol_exists in stage2. We build
-# libxml2 ourselves, so we know it's valid.
+# Pre-seed HAVE_LIBXML2 for stage 2. check_symbol_exists may fail during
+# bootstrap when the CRT link environment is incomplete, but we build
+# libxml2 ourselves so the library is known-good.
 set(BOOTSTRAP_HAVE_LIBXML2 TRUE CACHE BOOL "")
 
 # Distribution components for stage2.
-set(BOOTSTRAP_LLVM_INSTALL_TOOLCHAIN_ONLY OFF CACHE BOOL "")
+include(${CMAKE_CURRENT_LIST_DIR}/WindowsItanium-distribution.cmake)
+set(BOOTSTRAP_LLVM_TOOLCHAIN_TOOLS ${_WI_TOOLCHAIN_TOOLS} CACHE STRING "")
+list(APPEND _WI_DISTRIBUTION_COMPONENTS lldb)
+set(BOOTSTRAP_LLVM_DISTRIBUTION_COMPONENTS ${_WI_DISTRIBUTION_COMPONENTS} CACHE STRING "")
 
-set(BOOTSTRAP_LLVM_TOOLCHAIN_TOOLS
-  llvm-ar
-  llvm-cov
-  llvm-cxxfilt
-  llvm-dlltool
-  llvm-dwarfdump
-  llvm-dwp
-  llvm-gsymutil
-  llvm-ifs
-  llvm-lib
-  llvm-ml
-  llvm-mt
-  llvm-nm
-  llvm-objcopy
-  llvm-objdump
-  llvm-pdbutil
-  llvm-profdata
-  llvm-ranlib
-  llvm-rc
-  llvm-readelf
-  llvm-readobj
-  llvm-size
-  llvm-strings
-  llvm-strip
-  llvm-symbolizer
-  llvm-undname
-  llvm-xray
-  CACHE STRING "")
-
-set(BOOTSTRAP_LLVM_DISTRIBUTION_COMPONENTS
-  clang
-  clang-format
-  clang-resource-headers
-  clang-tidy
-  clangd
-  lld
-  lldb
-  LTO
-  runtimes
-  ${BOOTSTRAP_LLVM_TOOLCHAIN_TOOLS}
-  CACHE STRING "")
-
-#===------------------------------------------------------------------------===#
+# ---
 # Bootstrap to Stage 2
-#===------------------------------------------------------------------------===#
+# ---
 
 set(CLANG_ENABLE_BOOTSTRAP ON CACHE BOOL "")
 
@@ -244,10 +205,9 @@ set(CLANG_ENABLE_BOOTSTRAP ON CACHE BOOL "")
 # Note: -C cache files run BEFORE -D options, so we must pass this via -D.
 set(CLANG_BOOTSTRAP_CMAKE_ARGS
   -D_WI_PHASE1_BUILD_DIR=${CMAKE_BINARY_DIR}
-  -DCMAKE_TOOLCHAIN_FILE=${_WI_TOOLCHAIN}
+  -DCMAKE_TOOLCHAIN_FILE=${RUNTIMES_x86_64-unknown-windows-itanium_CMAKE_TOOLCHAIN_FILE}
   -C ${CMAKE_CURRENT_LIST_DIR}/WindowsItanium-native.cmake
   CACHE STRING "")
-unset(_WI_TOOLCHAIN)
 
 # Note: LLVM_ENABLE_PROJECTS and LLVM_ENABLE_RUNTIMES are auto-passed via
 # _BOOTSTRAP_DEFAULT_PASSTHROUGH, no need to set BOOTSTRAP_ versions.

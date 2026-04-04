@@ -12,16 +12,25 @@
 #include "src/__support/macros/config.h"
 #include "src/__support/threads/mutex.h"
 
+#include <errno.h>
 #include <pthread.h>
 
 namespace LIBC_NAMESPACE_DECL {
 
-// The implementation currently handles only plain mutexes.
 LLVM_LIBC_FUNCTION(int, pthread_mutex_lock, (pthread_mutex_t * mutex)) {
-  reinterpret_cast<Mutex *>(mutex)->lock();
-  // TODO: When the Mutex class supports all the possible error conditions
-  // return the appropriate error value here.
-  return 0;
+  auto err = reinterpret_cast<Mutex *>(mutex)->lock();
+  switch (err) {
+  case MutexError::NONE:
+    return 0;
+  case MutexError::OWNER_DEAD:
+    return EOWNERDEAD;
+  case MutexError::NOT_RECOVERABLE:
+    return ENOTRECOVERABLE;
+  case MutexError::BAD_LOCK_STATE:
+    return EDEADLK;
+  default:
+    return EINVAL;
+  }
 }
 
 } // namespace LIBC_NAMESPACE_DECL

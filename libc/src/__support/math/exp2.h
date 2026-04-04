@@ -162,6 +162,12 @@ LIBC_INLINE DoubleDouble exp2_double_double(double x,
 
 // When output is denormal.
 LIBC_INLINE double exp2_denorm(double x) {
+  // exp2 of an exact integer in [-1074, -1022] produces an exact subnormal
+  // (2^n is always exactly representable).  Detect this to avoid raising
+  // spurious UNDERFLOW | INEXACT for exact results per IEEE 754 / C23.
+  // nearest_integer uses _MM_FROUND_NO_EXC on x86, so no flags are raised.
+  bool is_exact_int = (x == fputil::nearest_integer(x));
+
   // Range reduction.
   int k =
       static_cast<int>(cpp::bit_cast<uint64_t>(x + 0x1.8000'0000'4p21) >> 19);
@@ -186,25 +192,34 @@ LIBC_INLINE double exp2_denorm(double x) {
 
   double lo = fputil::multiply_add(p, mid_lo, exp_mid.lo);
 
+  // For exact integer inputs, bypass the full Ziv test to avoid spurious
+  // INEXACT from the ±ERR bound additions, and skip underflow signaling
+  // since the subnormal result is exact.
+  if (is_exact_int) {
+    return ziv_test_denorm</*SKIP_ZIV_TEST=*/true>(hi, exp_mid.hi, lo, ERR_D)
+        .value();
+  }
+
 #ifdef LIBC_MATH_HAS_SKIP_ACCURATE_PASS
-  return ziv_test_denorm</*SKIP_ZIV_TEST=*/true>(hi, exp_mid.hi, lo, ERR_D)
-      .value();
+  return signal_underflow_if_subnormal(
+      ziv_test_denorm</*SKIP_ZIV_TEST=*/true>(hi, exp_mid.hi, lo, ERR_D)
+          .value());
 #else
   if (auto r = ziv_test_denorm(hi, exp_mid.hi, lo, ERR_D);
       LIBC_LIKELY(r.has_value()))
-    return r.value();
+    return signal_underflow_if_subnormal(r.value());
 
   // Use double-double
   DoubleDouble r_dd = exp2_double_double(dx, exp_mid);
 
   if (auto r = ziv_test_denorm(hi, r_dd.hi, r_dd.lo, ERR_DD);
       LIBC_LIKELY(r.has_value()))
-    return r.value();
+    return signal_underflow_if_subnormal(r.value());
 
   // Use 128-bit precision
   Float128 r_f128 = exp2_f128(dx, hi, idx1, idx2);
 
-  return static_cast<double>(r_f128);
+  return signal_underflow_if_subnormal(static_cast<double>(r_f128));
 #endif // LIBC_MATH_HAS_SKIP_ACCURATE_PASS
 }
 

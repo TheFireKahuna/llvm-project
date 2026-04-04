@@ -583,6 +583,10 @@ void LinkerDriver::parseDirectives(InputFile *file) {
     case OPT_incl:
       file->symtab.addGCRoot(arg->getValue());
       break;
+    case OPT_incl_glob:
+      // Defer to after the main convergence loop — see Config::dtveIncludeGlobs.
+      ctx.config.dtveIncludeGlobs.push_back(arg->getValue());
+      break;
     case OPT_manifestdependency:
       ctx.config.manifestDependencies.insert(arg->getValue());
       break;
@@ -1647,8 +1651,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     return;
   }
 
-  // Handle /lldmingw early, since it can potentially affect how other
-  // options are handled.
+  // Handle /lldmingw and /llditanium early, since they can potentially
+  // affect how other options are handled.
+  config->itanium = args.hasArg(OPT_llditanium);
   config->mingw = args.hasArg(OPT_lldmingw);
   if (config->mingw)
     ctx.e.errorLimitExceededMsg = "too many errors emitted, stopping now"
@@ -2706,10 +2711,24 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     } while (run());
   }
 
-  // Handle /includeglob
-  for (StringRef pat : args::getStrings(args, OPT_incl_glob))
+  // Handle /includeglob from both command line and .drectve directives.
+  // .drectve patterns were deferred to here because parseDirectives runs
+  // during initial file load, before all archives' symbol indexes are
+  // populated — applying immediately would see a partial symbol table.
+  // The trailing run() drains any archive members enqueued by the globs
+  // so pulled symbols are loaded before subsequent passes; this matches
+  // the ELF --undefined-glob synchronous-extract semantics, and is a
+  // no-op when no glob actually queued work.
+  auto applyGlob = [&](StringRef pat) {
     ctx.forEachActiveSymtab(
         [&](SymbolTable &symtab) { symtab.addUndefinedGlob(pat); });
+  };
+  for (StringRef pat : args::getStrings(args, OPT_incl_glob))
+    applyGlob(pat);
+  for (StringRef pat : ctx.config.dtveIncludeGlobs)
+    applyGlob(pat);
+  while (run())
+    ;
 
   // Create wrapped symbols for -wrap option.
   ctx.forEachSymtab([&](SymbolTable &symtab) {
@@ -2760,9 +2779,11 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   ctx.forEachSymtab([](SymbolTable &symtab) {
     symtab.hadExplicitExports = !symtab.exports.empty();
   });
-  if (config->mingw) {
+  if (config->mingw ||
+      (config->itanium && args.hasArg(OPT_export_all_symbols))) {
     // In MinGW, all symbols are automatically exported if no symbols
-    // are chosen to be exported.
+    // are chosen to be exported. Itanium ABI targets (Windows Itanium,
+    // NTPOSIX) also honor -export-all-symbols when explicitly requested.
     maybeExportMinGWSymbols(args);
   }
 

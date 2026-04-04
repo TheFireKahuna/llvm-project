@@ -75,6 +75,12 @@
       "doc": "Disable index mode in the scanf format string."
     }
   },
+  "file": {
+    "LIBC_CONF_FILE_WIDE_SUPPORT": {
+      "value": false,
+      "doc": "Enable wide stream orientation and conversion state in File."
+    }
+  },
   "str_to_float": {
     "LIBC_CONF_STRTOFLOAT_DISABLE_EISEL_LEMIRE": {
       "value": false,

@@ -1,0 +1,20 @@
+add_entrypoint_object(
+  sendfile
+  SRCS
+    sendfile.cpp
+  HDRS
+    ../sendfile.h
+  DEPENDS
+    libc.hdr.types.off_t
+    libc.hdr.types.ssize_t
+    libc.src.__support.common
+    libc.src.__support.OSUtil.windows.afd_core
+    libc.src.__support.OSUtil.windows.fd_table
+    libc.src.__support.OSUtil.windows.fifo_channel
+    libc.src.__support.OSUtil.windows.nt_afd
+    libc.src.__support.OSUtil.windows.sendfile_ops
+    libc.src.__support.OSUtil.windows.sockpair_channel
+    libc.src.__support.OSUtil.windows.socket_state
+    libc.src.errno.errno
+    libc.src.pthread.cancel_internal
+)

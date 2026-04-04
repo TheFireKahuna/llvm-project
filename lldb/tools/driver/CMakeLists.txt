@@ -34,7 +34,7 @@ set(LLDB_DRIVER_LINK_LIBS
   lldbUtility
 )
 
-if(WIN32)
+if(LLVM_RUNTIME_WIN32)
   list(APPEND LLDB_DRIVER_LINK_LIBS lldbHostPythonPathSetup)
 endif()
 

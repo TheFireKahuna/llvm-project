@@ -18,21 +18,22 @@
 namespace LIBC_NAMESPACE_DECL {
 namespace scanf_core {
 
-class StringReader : public Reader<StringReader> {
-  const char *buffer;
+template <typename CharType = char>
+class StringReader : public Reader<StringReader<CharType>, CharType> {
+  const CharType *buffer;
   [[maybe_unused]] size_t buff_len;
   size_t buff_cur = 0;
 
 public:
-  LIBC_INLINE StringReader(const char *buffer, size_t buff_len)
+  LIBC_INLINE StringReader(const CharType *buffer, size_t buff_len)
       : buffer(buffer), buff_len(buff_len) {}
 
-  LIBC_INLINE char getc() {
-    char output = buffer[buff_cur];
+  LIBC_INLINE CharType getc() {
+    CharType output = buffer[buff_cur];
     ++buff_cur;
     return output;
   }
-  LIBC_INLINE void ungetc(int) {
+  LIBC_INLINE void ungetc(CharType) {
     if (buff_cur > 0) {
       // While technically c should be written back to the buffer, in scanf we
       // always write the character that was already there. Additionally, the
@@ -42,6 +43,9 @@ public:
     }
   }
 };
+
+template <typename CharType>
+StringReader(const CharType *, size_t) -> StringReader<CharType>;
 
 } // namespace scanf_core
 } // namespace LIBC_NAMESPACE_DECL

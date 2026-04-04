@@ -3,6 +3,10 @@ functions:
     in-latest-posix: ''
   utimes:
     in-latest-posix: ''
+  lutimes:
+    in-latest-posix: ''
+  futimes:
+    in-latest-posix: ''
   getitimer:
     removed-in-posix-2024: ''
   gettimeofday:

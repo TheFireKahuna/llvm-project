@@ -35,7 +35,14 @@ ErrorOr<int> platform_opendir(const char *name) {
   return fd;
 }
 
-ErrorOr<size_t> platform_fetch_dirents(int fd, cpp::span<uint8_t> buffer) {
+ErrorOr<size_t> platform_fetch_dirents(int fd, cpp::span<uint8_t> buffer,
+                                       bool restart,
+                                       long /*last_cookie*/) {
+  if (restart) {
+    // Reset the directory cursor to the beginning.
+    LIBC_NAMESPACE::syscall_impl<long>(SYS_lseek, fd, 0, SEEK_SET);
+  }
+
 #ifdef SYS_getdents64
   long size = LIBC_NAMESPACE::syscall_impl<long>(SYS_getdents64, fd,
                                                  buffer.data(), buffer.size());
@@ -55,6 +62,34 @@ int platform_closedir(int fd) {
     return static_cast<int>(-ret);
   }
   return 0;
+}
+
+int platform_fdopendir(int fd) {
+  // Validate that fd refers to a directory via fstat.
+  struct stat st;
+#ifdef SYS_fstat
+  int ret = LIBC_NAMESPACE::syscall_impl<int>(SYS_fstat, fd, &st);
+#elif defined(SYS_fstatat)
+  int ret = LIBC_NAMESPACE::syscall_impl<int>(
+      SYS_fstatat, fd, "", &st, AT_EMPTY_PATH);
+#elif defined(SYS_newfstatat)
+  int ret = LIBC_NAMESPACE::syscall_impl<int>(
+      SYS_newfstatat, fd, "", &st, AT_EMPTY_PATH);
+#else
+#error "No fstat syscall available."
+#endif
+  if (ret < 0)
+    return static_cast<int>(-ret);
+  if (!S_ISDIR(st.st_mode))
+    return ENOTDIR;
+  return 0;
+}
+
+bool platform_seekdir(int fd, long cookie) {
+  // The cookie is the kernel's d_off value. lseek positions the directory
+  // stream directly — O(1). Cookie 0 rewinds to the beginning.
+  LIBC_NAMESPACE::syscall_impl<long>(SYS_lseek, fd, cookie, SEEK_SET);
+  return false; // No restart needed — kernel is positioned.
 }
 
 } // namespace LIBC_NAMESPACE_DECL

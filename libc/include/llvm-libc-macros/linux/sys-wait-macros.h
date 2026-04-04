@@ -11,6 +11,42 @@
 
 #include <linux/wait.h>
 
+#ifndef WNOHANG
+#define WNOHANG 0x00000001
+#endif
+
+#ifndef WUNTRACED
+#define WUNTRACED 0x00000002
+#endif
+
+#ifndef WSTOPPED
+#define WSTOPPED WUNTRACED
+#endif
+
+#ifndef WEXITED
+#define WEXITED 0x00000004
+#endif
+
+#ifndef WCONTINUED
+#define WCONTINUED 0x00000008
+#endif
+
+#ifndef WNOWAIT
+#define WNOWAIT 0x01000000
+#endif
+
+#ifndef P_ALL
+#define P_ALL 0
+#endif
+
+#ifndef P_PID
+#define P_PID 1
+#endif
+
+#ifndef P_PGID
+#define P_PGID 2
+#endif
+
 #define WCOREDUMP(status) ((status) & WCOREFLAG)
 #define WEXITSTATUS(status) (((status) & 0xff00) >> 8)
 #define WIFCONTINUED(status) ((status) == 0xffff)

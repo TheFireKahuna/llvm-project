@@ -89,5 +89,4 @@ namespace LIBC_NAMESPACE_DECL {
         ret
       )");
 }
-
 } // namespace LIBC_NAMESPACE_DECL

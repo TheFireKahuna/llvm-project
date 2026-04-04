@@ -580,7 +580,7 @@ Status Host::RunShellCommand(llvm::StringRef shell_path, const Args &args,
 #if !defined(__APPLE__)
 Status Host::LaunchProcess(ProcessLaunchInfo &launch_info) {
   std::unique_ptr<ProcessLauncher> delegate_launcher;
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   delegate_launcher.reset(new ProcessLauncherWindows());
 #else
   delegate_launcher.reset(new ProcessLauncherPosixFork());

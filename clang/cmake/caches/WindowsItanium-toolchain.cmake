@@ -1,7 +1,72 @@
 # WindowsItaniumDependencies.cmake - Helper functions for building dependencies
 #
-# Provides a reusable function to clone, build, and install dependencies
-# for both MSVC ABI (Phase 2) and Windows Itanium ABI (Phase 3).
+# Provides reusable helpers shared by the Windows Itanium and NT-POSIX cache
+# files for host tool selection and third-party dependency builds.
+
+# Pinned dependency versions — used here for the build and by cache files
+# to locate config-file packages.
+set(_WI_LIBXML2_VERSION "2.14.0" CACHE INTERNAL "")
+
+function(wi_configure_host_masm CompilerPath)
+  # Keep host builds independent from an ambient VS developer shell by using
+  # the MASM frontend that ships with the selected LLVM toolchain when
+  # available. Fall back to PATH discovery only if the LLVM bindir does not
+  # provide one.
+  get_filename_component(_wi_host_bindir "${CompilerPath}" DIRECTORY)
+  find_program(_wi_host_masm NAMES llvm-ml64 HINTS "${_wi_host_bindir}"
+               NO_DEFAULT_PATH)
+  if(NOT _wi_host_masm)
+    find_program(_wi_host_masm NAMES llvm-ml64 llvm-ml ml64
+                 HINTS "${_wi_host_bindir}")
+  endif()
+
+  if(_wi_host_masm)
+    set(CMAKE_ASM_MASM_COMPILER "${_wi_host_masm}" CACHE FILEPATH "" FORCE)
+    message(STATUS "Using MASM compiler: ${_wi_host_masm}")
+  else()
+    message(WARNING
+      "No MASM compiler found; MASM-assembled support sources may fail to build.")
+  endif()
+
+  unset(_wi_host_bindir)
+  unset(_wi_host_masm CACHE)
+  unset(_wi_host_masm)
+endfunction()
+
+function(wi_stage_zlib_static_artifacts BUILD_DIR SRC_DIR INSTALL_DIR)
+  set(_zlib_static_lib "${BUILD_DIR}/zlibstatic.lib")
+  if(NOT EXISTS "${_zlib_static_lib}")
+    file(GLOB _zlib_static_candidates LIST_DIRECTORIES FALSE
+      "${BUILD_DIR}/*zlibstatic*.lib")
+    list(LENGTH _zlib_static_candidates _zlib_static_candidate_count)
+    if(_zlib_static_candidate_count GREATER 0)
+      list(GET _zlib_static_candidates 0 _zlib_static_lib)
+    endif()
+    unset(_zlib_static_candidate_count)
+    unset(_zlib_static_candidates)
+  endif()
+
+  set(_zlib_header "${SRC_DIR}/zlib.h")
+  set(_zconf_header "${BUILD_DIR}/zconf.h")
+  if(NOT EXISTS "${_zlib_static_lib}" OR
+     NOT EXISTS "${_zlib_header}" OR
+     NOT EXISTS "${_zconf_header}")
+    message(FATAL_ERROR
+      "Failed to locate zlib static artifacts in ${BUILD_DIR}")
+  endif()
+
+  file(MAKE_DIRECTORY "${INSTALL_DIR}/lib" "${INSTALL_DIR}/include")
+  file(COPY_FILE "${_zlib_static_lib}" "${INSTALL_DIR}/lib/zlibstatic.lib"
+       ONLY_IF_DIFFERENT)
+  file(COPY_FILE "${_zlib_header}" "${INSTALL_DIR}/include/zlib.h"
+       ONLY_IF_DIFFERENT)
+  file(COPY_FILE "${_zconf_header}" "${INSTALL_DIR}/include/zconf.h"
+       ONLY_IF_DIFFERENT)
+
+  unset(_zlib_static_lib)
+  unset(_zlib_header)
+  unset(_zconf_header)
+endfunction()
 
 #===------------------------------------------------------------------------===#
 # Helper function to build a dependency library
@@ -70,8 +135,9 @@ function(wi_build_dependency)
       endif()
     endif()
 
-    if(DEP_NAME STREQUAL "libxml2" AND NOT _WI_DEP_TARGET AND
-       _WI_DEP_COMPILER MATCHES [[clang-cl(\\.exe)?$]])
+    if(DEP_NAME STREQUAL "libxml2" AND
+       ((NOT _WI_DEP_TARGET AND _WI_DEP_COMPILER MATCHES [[clang-cl(\\.exe)?$]]) OR
+        _WI_DEP_TARGET MATCHES "windows-ntposix"))
       set(_libxml2_cmakelists "${_src_dir}/CMakeLists.txt")
       if(EXISTS "${_libxml2_cmakelists}")
         file(READ "${_libxml2_cmakelists}" _libxml2_contents)
@@ -85,15 +151,16 @@ function(wi_build_dependency)
       unset(_libxml2_cmakelists)
     endif()
 
-  set(_build_static_only FALSE)
-  if(DEP_NAME STREQUAL "zlib" AND NOT _WI_DEP_TARGET AND
-     _WI_DEP_COMPILER MATCHES [[clang-cl(\\.exe)?$]])
-    set(_build_static_only TRUE)
-  endif()
+    set(_build_static_only FALSE)
+    if(DEP_NAME STREQUAL "zlib" AND
+       ((NOT _WI_DEP_TARGET AND _WI_DEP_COMPILER MATCHES [[clang-cl(\\.exe)?$]]) OR
+        _WI_DEP_TARGET MATCHES "windows-ntposix"))
+      set(_build_static_only TRUE)
+    endif()
 
-  # Determine source directory for CMake
-  if(DEP_CMAKE_SUBDIR)
-    set(_cmake_src "${_src_dir}/${DEP_CMAKE_SUBDIR}")
+    # Determine source directory for CMake
+    if(DEP_CMAKE_SUBDIR)
+      set(_cmake_src "${_src_dir}/${DEP_CMAKE_SUBDIR}")
     else()
       set(_cmake_src "${_src_dir}")
     endif()
@@ -105,11 +172,11 @@ function(wi_build_dependency)
       string(APPEND _c_flags " --target=${_WI_DEP_TARGET}")
       string(APPEND _cxx_flags " --target=${_WI_DEP_TARGET}")
     endif()
-    # Windows Itanium: undef _WIN32 so deps use POSIX code paths (open/fopen/
-    # pthreads) instead of UCRT paths (_wopen/_beginthreadex/etc.). Our libc
-    # provides the full POSIX surface; the UCRT surface has wchar_t size and
-    # calling convention mismatches.
-    if(_WI_DEP_TARGET MATCHES "windows-itanium")
+    # NT POSIX: undef _WIN32 so deps use POSIX code paths (open/fopen/pthreads)
+    # instead of UCRT paths (_wopen/_beginthreadex/etc.). Our libc provides
+    # the full POSIX surface; the UCRT surface has wchar_t size and calling
+    # convention mismatches.
+    if(_WI_DEP_TARGET MATCHES "windows-ntposix")
       string(APPEND _c_flags " -U_WIN32 -UWIN32")
       string(APPEND _cxx_flags " -U_WIN32 -UWIN32")
     elseif(_WI_DEP_COMPILER MATCHES [[clang-cl(\\.exe)?$]] AND
@@ -136,6 +203,30 @@ function(wi_build_dependency)
       )
     endif()
 
+    # Cross-compilation targets (NTPOSIX, Windows Itanium) may not have a
+    # linkable C runtime available at dependency-configure time — the CRT is
+    # part of the runtimes being bootstrapped.  Tell CMake to compile to a
+    # static library for try_compile tests instead of linking an executable.
+    if(_WI_DEP_TARGET)
+      list(APPEND _configure_cmd
+        -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY)
+    endif()
+
+    if(_WI_DEP_TARGET MATCHES "windows-(itanium|ntposix)")
+      get_filename_component(_wi_dep_toolchain
+        "${CMAKE_CURRENT_LIST_DIR}/../../../llvm/cmake/modules/WindowsItaniumToolchain.cmake"
+        ABSOLUTE)
+      list(APPEND _configure_cmd
+        -DCMAKE_TOOLCHAIN_FILE=${_wi_dep_toolchain}
+        -DLLVM_RUNTIMES_TARGET=${_WI_DEP_TARGET}
+        -DCMAKE_C_COMPILER_TARGET=${_WI_DEP_TARGET})
+      if(_WI_DEP_CXX_COMPILER)
+        list(APPEND _configure_cmd
+          -DCMAKE_CXX_COMPILER_TARGET=${_WI_DEP_TARGET})
+      endif()
+      unset(_wi_dep_toolchain)
+    endif()
+
     # Add user options
     foreach(_opt IN LISTS DEP_OPTIONS)
       list(APPEND _configure_cmd "${_opt}")
@@ -156,22 +247,33 @@ function(wi_build_dependency)
 
     # Build
     message(STATUS "Building ${DEP_NAME}...")
+    set(_build_cmd ${CMAKE_COMMAND} --build "${_build_dir}")
+    if(_build_static_only)
+      list(APPEND _build_cmd --target zlibstatic)
+    endif()
     execute_process(
-      COMMAND ${CMAKE_COMMAND} --build "${_build_dir}"
+      COMMAND ${_build_cmd}
       RESULT_VARIABLE _result
     )
+    unset(_build_cmd)
     if(NOT _result EQUAL 0)
       message(FATAL_ERROR "Failed to build ${DEP_NAME}")
     endif()
 
-    # Install
-    message(STATUS "Installing ${DEP_NAME}...")
-    execute_process(
-      COMMAND ${CMAKE_COMMAND} --install "${_build_dir}"
-      RESULT_VARIABLE _result
-    )
-    if(NOT _result EQUAL 0)
-      message(FATAL_ERROR "Failed to install ${DEP_NAME}")
+    if(_build_static_only)
+      message(STATUS "Staging ${DEP_NAME} static artifacts...")
+      wi_stage_zlib_static_artifacts("${_build_dir}" "${_src_dir}"
+                                     "${_install_dir}")
+    else()
+      # Install
+      message(STATUS "Installing ${DEP_NAME}...")
+      execute_process(
+        COMMAND ${CMAKE_COMMAND} --install "${_build_dir}"
+        RESULT_VARIABLE _result
+      )
+      if(NOT _result EQUAL 0)
+        message(FATAL_ERROR "Failed to install ${DEP_NAME}")
+      endif()
     endif()
 
     message(STATUS "=== ${DEP_NAME} built successfully ===")
@@ -244,13 +346,14 @@ function(wi_build_all_dependencies)
   wi_build_dependency(
     NAME libxml2
     GIT_URL https://github.com/GNOME/libxml2.git
-    GIT_TAG v2.14.0
+    GIT_TAG v${_WI_LIBXML2_VERSION}
     INSTALL_VAR LibXml2_ROOT
     CHECK_FILES "lib/libxml2s.lib;lib/libxml2.lib;lib/xml2.lib"
     OPTIONS
       -DBUILD_SHARED_LIBS=OFF
       -DLIBXML2_WITH_ICONV=OFF
       -DLIBXML2_WITH_LZMA=OFF
+      -DLIBXML2_WITH_MODULES=OFF
       -DLIBXML2_WITH_PYTHON=OFF
       -DLIBXML2_WITH_ZLIB=OFF
       -DLIBXML2_WITH_TESTS=OFF

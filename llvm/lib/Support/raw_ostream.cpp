@@ -41,6 +41,8 @@
 #include <io.h>
 #endif
 
+// MSVC and Windows Itanium (UCRT) need <io.h> and FILENO defines.
+// NTPOSIX is excluded: it uses POSIX I/O via <unistd.h> (HAVE_UNISTD_H path).
 #if defined(_MSC_VER) || defined(_WIN32_ITANIUM)
 #include <io.h>
 #ifndef STDIN_FILENO

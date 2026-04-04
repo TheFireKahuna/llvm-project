@@ -1,3 +1,9 @@
+set(libc_unittest_is_ntposix OFF)
+if(CMAKE_CXX_COMPILER_TARGET MATCHES "windows-ntposix"
+   OR LLVM_DEFAULT_TARGET_TRIPLE MATCHES "windows-ntposix")
+  set(libc_unittest_is_ntposix ON)
+endif()
+
 function(add_unittest_framework_library name)
   cmake_parse_arguments(
     "TEST_LIB"
@@ -20,7 +26,8 @@ function(add_unittest_framework_library name)
       ${TEST_LIB_HDRS}
     )
     target_include_directories(${lib} PRIVATE ${LIBC_SOURCE_DIR})
-    if(TARGET libc.src.time.clock)
+    if(libc.src.time.clock IN_LIST TARGET_LLVMLIBC_ENTRYPOINTS
+       AND NOT libc_unittest_is_ntposix)
       target_compile_definitions(${lib} PRIVATE TARGET_SUPPORTS_CLOCK)
     endif()
   endforeach()
@@ -37,6 +44,9 @@ function(add_unittest_framework_library name)
 
   if (TEST_LIB_COMPILE_OPTIONS)
     list(APPEND compile_options ${TEST_LIB_COMPILE_OPTIONS})
+  endif()
+  if(libc_unittest_is_ntposix)
+    list(APPEND compile_options -fno-exceptions -fno-rtti)
   endif()
   target_compile_options(${name}.unit PRIVATE ${compile_options})
 
@@ -63,10 +73,10 @@ endfunction()
 if (NOT TARGET libc.src.__support.OSUtil.osutil OR NOT LLVM_LIBC_FULL_BUILD)
   message(STATUS "TestLogger will use system libc's stdio to print.")
   set(test_logger_compile_options "-DLIBC_TEST_USE_SYSTEM_PRINTF")
-  set(test_logger_osutil "")
+  set(test_logger_deps "")
 else()
   set(test_logger_compile_options "")
-  set(test_logger_osutil "libc.src.__support.OSUtil.osutil")
+  set(test_logger_deps "libc.src.__support.OSUtil.osutil")
 endif()
 
 add_unittest_framework_library(
@@ -93,12 +103,33 @@ add_unittest_framework_library(
     libc.src.__support.macros.properties.compiler
     libc.src.__support.macros.properties.types
     libc.src.__support.uint128
-    ${test_logger_osutil}
+    ${test_logger_deps}
 )
 
 set(libc_death_test_srcs LibcDeathTestExecutors.cpp)
+set(libc_death_test_deps libc.hdr.stdint_proxy)
+# Linux/Darwin: death tests rely on the system libc providing extern-C
+# pipe/fork/poll/waitpid/… via the hosted link recipe.
+# NT-POSIX: freestanding-unit links have no foreign libc — use a clone that
+# calls LIBC_NAMESPACE:: directly (same protocol, C++-mangled names).
 if(${LIBC_TARGET_OS} STREQUAL "linux" OR ${LIBC_TARGET_OS} STREQUAL "darwin")
   list(APPEND libc_death_test_srcs ExecuteFunctionUnix.cpp)
+elseif(libc_unittest_is_ntposix)
+  list(APPEND libc_death_test_srcs ExecuteFunctionNTPOSIX.cpp)
+  list(APPEND libc_death_test_deps
+    libc.hdr.signal_macros
+    libc.hdr.types.pid_t
+    libc.hdr.types.struct_pollfd
+    libc.include.sys_wait
+    libc.src.poll.poll
+    libc.src.signal.kill
+    libc.src.stdlib._Exit
+    libc.src.string.strsignal
+    libc.src.sys.wait.waitpid
+    libc.src.unistd.close
+    libc.src.unistd.fork
+    libc.src.unistd.pipe
+  )
 endif()
 
 add_unittest_framework_library(
@@ -108,13 +139,27 @@ add_unittest_framework_library(
   HDRS
     ExecuteFunction.h
   DEPENDS
-    libc.hdr.stdint_proxy
+    ${libc_death_test_deps}
 )
+
+set(libc_hermetic_test_support_srcs HermeticTestUtils.cpp)
+if(libc_unittest_is_ntposix)
+  # NT-POSIX-specific extern-C aliases (the __internal__ entrypoint objects
+  # only carry the C++-mangled form). Each shim lives in its own TU so the
+  # static archive only pulls the one a test actually references — sharing
+  # a single TU would force every test to resolve every forwardee's
+  # entrypoint, regardless of whether its source code ever calls it.
+  list(APPEND libc_hermetic_test_support_srcs
+    HermeticTestUtilsNTPOSIX.cpp
+    HermeticTestUtilsNTPOSIXSyscall.cpp
+    HermeticTestUtilsNTPOSIXClose.cpp
+    HermeticTestUtilsNTPOSIXGetpid.cpp)
+endif()
 
 add_unittest_framework_library(
   LibcHermeticTestSupport
   SRCS
-    HermeticTestUtils.cpp
+    ${libc_hermetic_test_support_srcs}
   DEPENDS
     libc.hdr.stdint_proxy
 )

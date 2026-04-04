@@ -12,6 +12,7 @@
 #include "src/__support/error_or.h"
 #include "src/__support/macros/null_check.h"
 #include "src/__support/wchar/character_converter.h"
+#include "src/__support/wchar/locale_encoding.h"
 #include "src/__support/wchar/mbstate.h"
 
 #include "hdr/errno_macros.h"
@@ -28,14 +29,22 @@ LIBC_INLINE ErrorOr<size_t> wcrtomb(char *__restrict dest_ptr, wchar_t wc,
                                     mbstate *__restrict ps) {
   LIBC_CRASH_ON_NULLPTR(dest_ptr);
   LIBC_CRASH_ON_NULLPTR(ps);
-  static_assert(sizeof(wchar_t) == 4);
 
-  CharacterConverter cr(ps);
+  CharacterConverter cr(ps, locale_encoding_is_utf8());
 
   if (!cr.isValidState())
     return Error(EINVAL);
 
-  int status = cr.push(static_cast<char32_t>(wc));
+  // On platforms with 32-bit wchar_t (Linux), this is a direct cast.
+  // On Windows (16-bit wchar_t / UTF-16), BMP characters convert directly;
+  // surrogates (0xD800-0xDFFF) are encoding artifacts, not valid scalars.
+  char32_t scalar = static_cast<char32_t>(static_cast<unsigned int>(wc));
+  if constexpr (sizeof(wchar_t) < 4) {
+    if (scalar >= 0xD800 && scalar <= 0xDFFF)
+      return Error(EILSEQ);
+  }
+
+  int status = cr.push(scalar);
   if (status != 0)
     return Error(status);
 

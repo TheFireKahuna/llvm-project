@@ -61,6 +61,55 @@ LIBC_INLINE uint8_t lookup_properties(const wchar_t wc) {
   return LEVEL2[l2_idx];
 }
 
+//===----------------------------------------------------------------------===//
+// Unicode case mapping tables (sorted {from, to} pairs for binary search)
+//===----------------------------------------------------------------------===//
+
+struct CasePair {
+  char32_t from;
+  char32_t to;
+};
+
+LIBC_INLINE_VAR constexpr CasePair upper_to_lower_table[] = {
+#include "upper_to_lower.inc"
+};
+
+LIBC_INLINE_VAR constexpr CasePair lower_to_upper_table[] = {
+#include "lower_to_upper.inc"
+};
+
+LIBC_INLINE_VAR constexpr size_t UPPER_TO_LOWER_SIZE =
+    sizeof(upper_to_lower_table) / sizeof(CasePair);
+LIBC_INLINE_VAR constexpr size_t LOWER_TO_UPPER_SIZE =
+    sizeof(lower_to_upper_table) / sizeof(CasePair);
+
+// Binary search over a sorted CasePair table. Returns the mapped codepoint,
+// or the input unchanged if not found.
+LIBC_INLINE constexpr wchar_t case_map_lookup(const CasePair *table,
+                                               size_t table_size,
+                                               wchar_t wc) {
+  auto cp = static_cast<char32_t>(wc);
+  size_t lo = 0, hi = table_size;
+  while (lo < hi) {
+    size_t mid = lo + (hi - lo) / 2;
+    if (table[mid].from < cp)
+      lo = mid + 1;
+    else if (table[mid].from > cp)
+      hi = mid;
+    else
+      return static_cast<wchar_t>(table[mid].to);
+  }
+  return wc;
+}
+
+LIBC_INLINE constexpr wchar_t unicode_to_lower(wchar_t wc) {
+  return case_map_lookup(upper_to_lower_table, UPPER_TO_LOWER_SIZE, wc);
+}
+
+LIBC_INLINE constexpr wchar_t unicode_to_upper(wchar_t wc) {
+  return case_map_lookup(lower_to_upper_table, LOWER_TO_UPPER_SIZE, wc);
+}
+
 } // namespace LIBC_NAMESPACE_DECL
 
 #endif // LLVM_LIBC_SRC___SUPPORT_WCTYPE_WCTYPE_CLASSIFICATION_UTILS_H

@@ -14,6 +14,11 @@ add_header_library(
     libc.src.__support.CPP.string_view
 )
 
+set(time_utils_platform_deps "")
+if(LIBC_TARGET_OS_IS_WINDOWS)
+  list(APPEND time_utils_platform_deps libc.src.locale.nl_langinfo)
+endif()
+
 add_object_library(
   time_utils
   SRCS
@@ -31,6 +36,7 @@ add_object_library(
     libc.hdr.types.size_t
     libc.hdr.types.struct_tm
     libc.hdr.stdint_proxy
+    ${time_utils_platform_deps}
 )
 
 add_entrypoint_object(
@@ -147,6 +153,32 @@ add_entrypoint_object(
 )
 
 add_entrypoint_object(
+  localtime_s
+  SRCS
+    localtime_s.cpp
+  HDRS
+    localtime_s.h
+  DEPENDS
+    .time_utils
+    libc.hdr.types.time_t
+    libc.hdr.types.struct_tm
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  gmtime_s
+  SRCS
+    gmtime_s.cpp
+  HDRS
+    gmtime_s.h
+  DEPENDS
+    .time_utils
+    libc.hdr.types.time_t
+    libc.hdr.types.struct_tm
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
   mktime
   SRCS
     mktime.cpp
@@ -226,6 +258,13 @@ add_entrypoint_object(
 )
 
 add_entrypoint_object(
+  clock_getcpuclockid
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.clock_getcpuclockid
+)
+
+add_entrypoint_object(
   clock_gettime
   ALIAS
   DEPENDS
@@ -251,5 +290,47 @@ add_entrypoint_object(
   ALIAS
   DEPENDS
     .${LIBC_TARGET_OS}.clock_settime
+)
+
+add_entrypoint_object(
+  clock_nanosleep
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.clock_nanosleep
+)
+
+add_entrypoint_object(
+  timer_create
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.timer_create
+)
+
+add_entrypoint_object(
+  timer_delete
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.timer_delete
+)
+
+add_entrypoint_object(
+  timer_getoverrun
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.timer_getoverrun
+)
+
+add_entrypoint_object(
+  timer_gettime
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.timer_gettime
+)
+
+add_entrypoint_object(
+  timer_settime
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.timer_settime
 )
 

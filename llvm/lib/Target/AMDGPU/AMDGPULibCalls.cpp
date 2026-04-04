@@ -16,6 +16,7 @@
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/Config/llvm-config.h"
 #include "llvm/IR/AttributeMask.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/IRBuilder.h"
@@ -43,6 +44,29 @@ static cl::list<std::string> UseNative("amdgpu-use-native",
 #define MATH_E       numbers::e
 #define MATH_SQRT2   numbers::sqrt2
 #define MATH_SQRT1_2 numbers::inv_sqrt2
+
+#if defined(LLVM_RUNTIME_NTPOSIX)
+static double evalHostSinh(double X) {
+  double AbsX = fabs(X);
+  double ExpAbsX = exp(AbsX);
+  return copysign(0.5 * ExpAbsX - 0.5 / ExpAbsX, X);
+}
+
+static double evalHostCosh(double X) {
+  double ExpAbsX = exp(fabs(X));
+  return 0.5 * ExpAbsX + 0.5 / ExpAbsX;
+}
+
+static double evalHostTanh(double X) {
+  double ExpNeg2AbsX = exp(-2.0 * fabs(X));
+  double Result = (1.0 - ExpNeg2AbsX) / (1.0 + ExpNeg2AbsX);
+  return copysign(Result, X);
+}
+#else
+static double evalHostSinh(double X) { return sinh(X); }
+static double evalHostCosh(double X) { return cosh(X); }
+static double evalHostTanh(double X) { return tanh(X); }
+#endif
 
 enum class PowKind { Pow, PowR, PowN, RootN };
 
@@ -1860,7 +1884,7 @@ bool AMDGPULibCalls::evaluateScalarMathFunc(const FuncInfo &FInfo,
     return true;
 
   case AMDGPULibFunc::EI_COSH:
-    Res0 = APFloat{cosh(opr0)};
+    Res0 = APFloat{evalHostCosh(opr0)};
     return true;
 
   case AMDGPULibFunc::EI_COSPI:
@@ -1900,7 +1924,7 @@ bool AMDGPULibCalls::evaluateScalarMathFunc(const FuncInfo &FInfo,
     return true;
 
   case AMDGPULibFunc::EI_SINH:
-    Res0 = APFloat{sinh(opr0)};
+    Res0 = APFloat{evalHostSinh(opr0)};
     return true;
 
   case AMDGPULibFunc::EI_SINPI:
@@ -1912,7 +1936,7 @@ bool AMDGPULibCalls::evaluateScalarMathFunc(const FuncInfo &FInfo,
     return true;
 
   case AMDGPULibFunc::EI_TANH:
-    Res0 = APFloat{tanh(opr0)};
+    Res0 = APFloat{evalHostTanh(opr0)};
     return true;
 
   case AMDGPULibFunc::EI_TANPI:

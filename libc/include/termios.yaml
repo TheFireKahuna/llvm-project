@@ -10,6 +10,12 @@ types:
 enums: []
 objects: []
 functions:
+  - name: cfmakeraw
+    standards:
+      - posix
+    return_type: void
+    arguments:
+      - type: struct termios *
   - name: cfgetispeed
     standards:
       - POSIX
@@ -25,14 +31,14 @@ functions:
   - name: cfsetispeed
     standards:
       - POSIX
-    return_type: speed_t
+    return_type: int
     arguments:
       - type: struct termios *
       - type: speed_t
   - name: cfsetospeed
     standards:
       - POSIX
-    return_type: speed_t
+    return_type: int
     arguments:
       - type: struct termios *
       - type: speed_t
@@ -83,4 +89,4 @@ functions:
     arguments:
       - type: int
       - type: int
-      - type: struct termios *
+      - type: const struct termios *

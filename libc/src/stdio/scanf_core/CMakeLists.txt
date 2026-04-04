@@ -35,10 +35,20 @@ add_header_library(
     core_structs.h
   DEPENDS
     .scanf_config
+    libc.hdr.types.wchar_t
     libc.include.inttypes
-    libc.src.__support.CPP.string_view
     libc.src.__support.CPP.bitset
+    libc.src.__support.CPP.string_view
     libc.src.__support.FPUtil.fp_bits
+)
+
+add_header_library(
+  char_ops
+  HDRS
+    char_ops.h
+  DEPENDS
+    .core_structs
+    libc.hdr.types.wchar_t
 )
 
 add_header_library(
@@ -47,12 +57,15 @@ add_header_library(
     parser.h
   DEPENDS
     .core_structs
+    libc.hdr.types.wchar_t
     libc.src.__support.arg_list
     libc.src.__support.ctype_utils
+    libc.src.__support.wctype_utils
     libc.src.__support.str_to_integer
     libc.src.__support.CPP.bit
     libc.src.__support.CPP.bitset
     libc.src.__support.CPP.string_view
+    libc.src.__support.CPP.type_traits
 )
 
 add_header_library(
@@ -96,14 +109,20 @@ add_header_library(
     current_pos_converter.h
     ptr_converter.h
   DEPENDS
+    .char_ops
     .reader
     .core_structs
+    libc.hdr.types.wchar_t
     libc.include.inttypes
     libc.src.__support.common
     libc.src.__support.ctype_utils
+    libc.src.__support.wctype_utils
+    libc.src.__support.wchar.character_converter
+    libc.src.__support.wchar.locale_encoding
+    libc.src.__support.wchar.mbstate
     libc.src.__support.CPP.bitset
-    libc.src.__support.CPP.string_view
     libc.src.__support.CPP.limits
+    libc.src.__support.CPP.type_traits
     libc.src.__support.char_vector
     libc.src.__support.str_to_float
   ${use_system_file}
@@ -120,4 +139,27 @@ add_header_library(
       libc.src.__support.arg_list
       ${file_deps}
     ${use_system_file}
+)
+
+add_header_library(
+    wide_stream_reader
+    HDRS
+      wide_stream_reader.h
+    DEPENDS
+      .reader
+      libc.hdr.types.wchar_t
+      libc.src.__support.File.file
+      libc.src.__support.wchar.wide_io
+)
+
+add_header_library(
+    vfwscanf_internal
+    HDRS
+      vfwscanf_internal.h
+    DEPENDS
+      .wide_stream_reader
+      .scanf_main
+      libc.hdr.types.FILE
+      libc.src.__support.File.file
+      libc.src.__support.arg_list
 )

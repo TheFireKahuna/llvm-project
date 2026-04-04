@@ -9,11 +9,21 @@ add_libc_unittest(
     dirent_test.cpp
   DEPENDS
     libc.src.__support.CPP.string_view
+    libc.src.dirent.alphasort
     libc.src.dirent.closedir
     libc.src.dirent.dirfd
+    libc.src.dirent.fdopendir
     libc.src.dirent.opendir
     libc.src.dirent.readdir
+    libc.src.dirent.rewinddir
+    libc.src.dirent.scandir
+    libc.src.dirent.seekdir
+    libc.src.dirent.telldir
     libc.src.errno.errno
+    libc.src.fcntl.open
+    libc.src.stdlib.free
+    libc.src.unistd.close
+    libc.hdr.fcntl_macros
     libc.test.UnitTest.ErrnoCheckingTest
 )
 

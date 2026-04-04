@@ -1,0 +1,23 @@
+add_entrypoint_object(
+  basename
+  SRCS
+    basename.cpp
+  HDRS
+    ../basename.h
+  DEPENDS
+    libc.include.libgen
+    libc.src.__support.OSUtil.windows.libgen_ops
+    libc.src.__support.common
+)
+
+add_entrypoint_object(
+  dirname
+  SRCS
+    dirname.cpp
+  HDRS
+    ../dirname.h
+  DEPENDS
+    libc.include.libgen
+    libc.src.__support.OSUtil.windows.libgen_ops
+    libc.src.__support.common
+)

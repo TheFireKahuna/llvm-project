@@ -12,12 +12,16 @@
 #include "src/__support/macros/config.h"
 #include "src/__support/macros/optimization.h" // LIBC_LIKELY
 
-// Plaform specific routines, provides:
+// Platform specific routines, provides:
 // - OnceFlag definition
 // - callonce_impl::callonce_fastpath for fast path check
 // - callonce_impl::callonce_slowpath for slow path execution
-#ifdef __linux__
+#include "src/__support/macros/properties/runtime.h"
+
+#if defined(__linux__)
 #include "src/__support/threads/linux/callonce.h"
+#elif defined(LIBC_TARGET_RUNTIME_IS_NTPOSIX)
+#include "src/__support/threads/windows/callonce.h"
 #else
 #error "callonce is not supported on this platform"
 #endif

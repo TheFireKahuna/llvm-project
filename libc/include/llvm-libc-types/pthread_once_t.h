@@ -11,7 +11,7 @@
 
 #include "__futex_word.h"
 
-#ifdef __linux__
+#if defined(__linux__) || defined(__NTPOSIX__)
 typedef __futex_word pthread_once_t;
 #else
 #error "Once flag type not defined for the target platform."

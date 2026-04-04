@@ -9,12 +9,17 @@
 #ifndef LLVM_LIBC_SRC_STDIO_SCANF_CORE_PARSER_H
 #define LLVM_LIBC_SRC_STDIO_SCANF_CORE_PARSER_H
 
+#include "src/__support/CPP/string_view.h"
+#include "src/__support/CPP/type_traits.h"
 #include "src/__support/arg_list.h"
 #include "src/__support/ctype_utils.h"
 #include "src/__support/macros/config.h"
 #include "src/__support/str_to_integer.h"
+#include "src/__support/wctype_utils.h"
 #include "src/stdio/scanf_core/core_structs.h"
 #include "src/stdio/scanf_core/scanf_config.h"
+
+#include "hdr/types/wchar_t.h"
 
 #include <stddef.h>
 
@@ -27,11 +32,13 @@ namespace scanf_core {
 #define GET_ARG_VAL_SIMPLEST(arg_type, _) get_next_arg_value<arg_type>()
 #endif // LIBC_COPT_SCANF_DISABLE_INDEX_MODE
 
-template <typename ArgProvider> class Parser {
-  const char *__restrict str;
+template <typename ArgProvider, typename CharType = char> class Parser {
+  const CharType *__restrict str;
 
   size_t cur_pos = 0;
   ArgProvider args_cur;
+
+  using SectionType = basic_format_section<CharType>;
 
 #ifndef LIBC_COPT_SCANF_DISABLE_INDEX_MODE
   // args_start stores the start of the va_args, which is used when a previous
@@ -43,19 +50,22 @@ template <typename ArgProvider> class Parser {
 
 public:
 #ifndef LIBC_COPT_SCANF_DISABLE_INDEX_MODE
-  LIBC_INLINE Parser(const char *__restrict new_str, internal::ArgList &args)
+  LIBC_INLINE Parser(const CharType *__restrict new_str,
+                     internal::ArgList &args)
       : str(new_str), args_cur(args), args_start(args) {}
 #else
-  LIBC_INLINE Parser(const char *__restrict new_str, internal::ArgList &args)
+  LIBC_INLINE Parser(const CharType *__restrict new_str,
+                     internal::ArgList &args)
       : str(new_str), args_cur(args) {}
 #endif // LIBC_COPT_SCANF_DISABLE_INDEX_MODE
 
-  // get_next_section will parse the format string until it has a fully
-  // specified format section. This can either be a raw format section with no
-  // conversion, or a format section with a conversion that has all of its
-  // variables stored in the format section.
-  LIBC_INLINE FormatSection get_next_section() {
-    FormatSection section;
+  // get_next_section parses the format string until it has a fully specified
+  // format section: either a raw literal segment or a conversion with all its
+  // specifiers collected. Narrow returns FormatSection; wide returns
+  // WideFormatSection. Both declare the same char-agnostic descriptor fields,
+  // so the parsing body writes them via duck typing on `section` directly.
+  LIBC_INLINE SectionType get_next_section() {
+    SectionType section;
     size_t starting_pos = cur_pos;
     if (str[cur_pos] == '%') {
       // format section
@@ -90,7 +100,11 @@ public:
       LengthModifier lm = parse_length_modifier(&cur_pos);
       section.length_modifier = lm;
 
-      section.conv_name = str[cur_pos];
+      if constexpr (cpp::is_same_v<CharType, char>)
+        section.conv_name = str[cur_pos];
+      else
+        section.conv_name =
+            static_cast<char>(static_cast<unsigned>(str[cur_pos]) & 0x7f);
 
       // If NO_WRITE is not set, then read the next arg as the output pointer.
       if ((section.flags & FormatFlags::NO_WRITE) == 0) {
@@ -108,64 +122,65 @@ public:
         section.has_conv = false;
       }
 
-      // If the format is a bracketed one, then we need to parse out the insides
-      // of the brackets.
+      // If the format is a bracketed one, parse the scanset. Narrow uses
+      // bitset<256>; wide uses WideScanSet (sorted range array).
       if (section.conv_name == '[') {
-        constexpr char CLOSING_BRACKET = ']';
-        constexpr char INVERT_FLAG = '^';
-        constexpr char RANGE_OPERATOR = '-';
+        constexpr CharType CLOSING_BRACKET = ']';
+        constexpr CharType INVERT_FLAG = '^';
+        constexpr CharType RANGE_OPERATOR = '-';
 
-        cpp::bitset<256> scan_set;
         bool invert = false;
 
-        // The circumflex in the first position represents the inversion flag,
-        // but it's easier to apply that at the end so we just store it for now.
         if (str[cur_pos] == INVERT_FLAG) {
           invert = true;
           ++cur_pos;
         }
 
-        // This is used to determine if a hyphen is being used as a literal or
-        // as a range operator.
         size_t set_start_pos = cur_pos;
 
-        // Normally the right bracket closes the set, but if it's the first
-        // character (possibly after the inversion flag) then it's instead
-        // included as a character in the set and the second right bracket
-        // closes the set.
+        // Right bracket as first character is a literal, not a closer.
         if (str[cur_pos] == CLOSING_BRACKET) {
-          scan_set.set(CLOSING_BRACKET);
+          if constexpr (cpp::is_same_v<CharType, char>)
+            section.scan_set.set(CLOSING_BRACKET);
+          else
+            section.scan_set.set(CLOSING_BRACKET);
           ++cur_pos;
         }
 
-        while (str[cur_pos] != '\0' && str[cur_pos] != CLOSING_BRACKET) {
-          // If a hyphen is being used as a range operator, since it's neither
-          // at the beginning nor end of the set.
+        while (str[cur_pos] != CharType() && str[cur_pos] != CLOSING_BRACKET) {
           if (str[cur_pos] == RANGE_OPERATOR && cur_pos != set_start_pos &&
-              str[cur_pos + 1] != CLOSING_BRACKET && str[cur_pos + 1] != '\0') {
-            // Technically there is no requirement to correct the ordering of
-            // the range, but since the range operator is entirely
-            // implementation defined it seems like a good convenience.
-            char a = str[cur_pos - 1];
-            char b = str[cur_pos + 1];
-            char start = (a < b ? a : b);
-            char end = (a < b ? b : a);
-            scan_set.set_range(static_cast<size_t>(start),
-                               static_cast<size_t>(end));
+              str[cur_pos + 1] != CLOSING_BRACKET &&
+              str[cur_pos + 1] != CharType()) {
+            // Range operator: correct ordering as a convenience.
+            CharType a = str[cur_pos - 1];
+            CharType b = str[cur_pos + 1];
+            if constexpr (cpp::is_same_v<CharType, char>) {
+              char start = (a < b ? a : b);
+              char end = (a < b ? b : a);
+              section.scan_set.set_range(static_cast<size_t>(start),
+                                         static_cast<size_t>(end));
+            } else {
+              section.scan_set.set_range(a, b);
+            }
             cur_pos += 2;
           } else {
-            scan_set.set(static_cast<size_t>(str[cur_pos]));
+            if constexpr (cpp::is_same_v<CharType, char>)
+              section.scan_set.set(static_cast<size_t>(str[cur_pos]));
+            else
+              section.scan_set.set(str[cur_pos]);
             ++cur_pos;
           }
         }
-        if (invert)
-          scan_set.flip();
 
         if (str[cur_pos] == CLOSING_BRACKET) {
           ++cur_pos;
-          section.scan_set = scan_set;
+          if constexpr (cpp::is_same_v<CharType, char>) {
+            if (invert)
+              section.scan_set.flip();
+          } else {
+            section.scan_set.inverted = invert;
+          }
         } else {
-          // if the end of the string was encountered, this is not a valid set.
           section.has_conv = false;
         }
       }
@@ -175,6 +190,7 @@ public:
       while (str[cur_pos] != '%' && str[cur_pos] != '\0')
         ++cur_pos;
     }
+
     section.raw_string = {str + starting_pos, cur_pos - starting_pos};
     return section;
   }

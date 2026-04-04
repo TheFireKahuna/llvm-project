@@ -11,19 +11,21 @@ add_libc_unittest(
     libc.src.signal.raise
 )
 
-add_libc_unittest(
-  kill_test
-  SUITE
-    libc_signal_unittests
-  SRCS
-    kill_test.cpp
-  DEPENDS
-    libc.include.signal
-    libc.src.signal.kill
-    libc.include.sys_syscall
-    libc.src.__support.OSUtil.osutil
-    libc.test.UnitTest.ErrnoSetterMatcher
-)
+if(NOT LIBC_TARGET_OS_IS_WINDOWS)
+  add_libc_unittest(
+    kill_test
+    SUITE
+      libc_signal_unittests
+    SRCS
+      kill_test.cpp
+    DEPENDS
+      libc.include.signal
+      libc.src.signal.kill
+      libc.include.sys_syscall
+      libc.src.__support.OSUtil.osutil
+      libc.test.UnitTest.ErrnoSetterMatcher
+  )
+endif()
 
 add_libc_unittest(
   sigaction_test
@@ -83,6 +85,29 @@ add_libc_unittest(
 )
 
 add_libc_unittest(
+  psignal_test
+  SUITE
+    libc_signal_unittests
+  SRCS
+    psignal_test.cpp
+  DEPENDS
+    libc.include.signal
+    libc.src.signal.psignal
+)
+
+add_libc_unittest(
+  psiginfo_test
+  SUITE
+    libc_signal_unittests
+  SRCS
+    psiginfo_test.cpp
+  DEPENDS
+    libc.hdr.stdint_proxy
+    libc.include.signal
+    libc.src.signal.psiginfo
+)
+
+add_libc_unittest(
   sigfillset_test
   SUITE
     libc_signal_unittests
@@ -113,13 +138,7 @@ add_libc_unittest(
     libc.test.UnitTest.ErrnoSetterMatcher
 )
 
-add_libc_unittest(
-  sigaltstack_test
-  SUITE
-    libc_signal_unittests
-  SRCS
-    sigaltstack_test.cpp
-  DEPENDS
+set(_sigaltstack_test_deps
     libc.hdr.signal_macros
     libc.hdr.stdint_proxy
     libc.src.errno.errno
@@ -129,3 +148,22 @@ add_libc_unittest(
     libc.test.UnitTest.ErrnoCheckingTest
     libc.test.UnitTest.ErrnoSetterMatcher
 )
+if(NOT LIBC_TARGET_OS_IS_WINDOWS)
+  list(APPEND _sigaltstack_test_deps
+    libc.src.__support.OSUtil.osutil
+  )
+endif()
+
+add_libc_unittest(
+  sigaltstack_test
+  SUITE
+    libc_signal_unittests
+  SRCS
+    sigaltstack_test.cpp
+  DEPENDS
+    ${_sigaltstack_test_deps}
+)
+
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${LIBC_TARGET_OS})
+  add_subdirectory(${LIBC_TARGET_OS})
+endif()

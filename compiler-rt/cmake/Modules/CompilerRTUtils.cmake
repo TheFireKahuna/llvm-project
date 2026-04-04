@@ -393,7 +393,9 @@ macro(construct_compiler_rt_default_triple)
 
   if(CMAKE_C_COMPILER_ID MATCHES "Clang")
     set(option_prefix "")
-    if (CMAKE_C_SIMULATE_ID MATCHES "MSVC")
+    # Only clang-cl uses /clang:; regular clang.exe may still simulate MSVC
+    # while keeping GNU-style command-line parsing.
+    if (CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
       set(option_prefix "/clang:")
     endif()
     set(print_target_triple ${CMAKE_C_COMPILER} ${option_prefix}--target=${COMPILER_RT_DEFAULT_TARGET_TRIPLE} ${option_prefix}-print-target-triple)

@@ -1,9 +1,40 @@
 header: fcntl.h
 header_template: fcntl.h.def
-macros: []
+macros:
+  - macro_name: S_ISUID
+    macro_header: sys-stat-macros.h
+  - macro_name: S_ISGID
+    macro_header: sys-stat-macros.h
+  - macro_name: S_ISVTX
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IRWXU
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IRUSR
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IWUSR
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IXUSR
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IRWXG
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IRGRP
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IWGRP
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IXGRP
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IRWXO
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IROTH
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IWOTH
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IXOTH
+    macro_header: sys-stat-macros.h
 types:
   - type_name: off_t
   - type_name: mode_t
+  - type_name: struct_flock
 enums: []
 objects: []
 functions:
@@ -39,3 +70,17 @@ functions:
       - type: const char *
       - type: int
       - type: '...'
+  - name: posix_openpt
+    standards:
+      - POSIX
+    return_type: int
+    arguments:
+      - type: int
+  - name: posix_fallocate
+    standards:
+      - POSIX
+    return_type: int
+    arguments:
+      - type: int
+      - type: off_t
+      - type: off_t

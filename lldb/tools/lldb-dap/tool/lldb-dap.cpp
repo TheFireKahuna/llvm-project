@@ -190,7 +190,7 @@ notifyError(RunInTerminalLauncherCommChannel &comm_channel, std::string message,
   comm_channel.NotifyError(message);
 
   std::error_code ec = error_code.value_or(
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
       std::error_code(GetLastError(), std::system_category())
 #else
       llvm::inconvertibleErrorCode()
@@ -206,7 +206,7 @@ notifyError(RunInTerminalLauncherCommChannel &comm_channel, std::string message,
   comm_channel.NotifyError(message);
 
   std::error_code ec = error_code.value_or(
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
       std::error_code(GetLastError(), std::system_category())
 #else
       llvm::inconvertibleErrorCode()
@@ -323,7 +323,7 @@ static llvm::Expected<int> LaunchRunInTerminalTarget(llvm::opt::Arg &target_arg,
 
   lldb_private::FileSystem::Initialize();
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   RunInTerminalLauncherCommChannel comm_channel(comm_file);
 
   llvm::ArrayRef<const char *> args_arr = llvm::ArrayRef(argv, argc);
@@ -684,7 +684,7 @@ int main(int argc, char *argv[]) {
     return EXIT_SUCCESS;
   }
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   if (input_args.hasArg(OPT_check_python)) {
     auto python_path_or_err = SetupPythonRuntimeLibrary();
     if (!python_path_or_err) {

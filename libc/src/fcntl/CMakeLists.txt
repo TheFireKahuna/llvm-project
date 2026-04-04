@@ -29,3 +29,17 @@ add_entrypoint_object(
   DEPENDS
     .${LIBC_TARGET_OS}.openat
 )
+
+add_entrypoint_object(
+  posix_fallocate
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.posix_fallocate
+)
+
+add_entrypoint_object(
+  posix_openpt
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.posix_openpt
+)

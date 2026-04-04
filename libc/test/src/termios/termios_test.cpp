@@ -10,6 +10,7 @@
 #include "src/fcntl/open.h"
 #include "src/termios/cfgetispeed.h"
 #include "src/termios/cfgetospeed.h"
+#include "src/termios/cfmakeraw.h"
 #include "src/termios/cfsetispeed.h"
 #include "src/termios/cfsetospeed.h"
 #include "src/termios/tcgetattr.h"
@@ -38,6 +39,26 @@ TEST_F(LlvmLibcTermiosTest, SpeedSmokeTest) {
 
   ASSERT_THAT(LIBC_NAMESPACE::cfsetispeed(&t, ~CBAUD), Fails(EINVAL));
   ASSERT_THAT(LIBC_NAMESPACE::cfsetospeed(&t, ~CBAUD), Fails(EINVAL));
+}
+
+TEST_F(LlvmLibcTermiosTest, CfmakerawClearsCookedFlags) {
+  struct termios t = {};
+  t.c_iflag = BRKINT | ICRNL | IXON;
+  t.c_oflag = OPOST | ONLCR;
+  t.c_cflag = PARENB;
+  t.c_lflag = ECHO | ECHONL | ICANON | ISIG;
+  t.c_cc[VMIN] = 7;
+  t.c_cc[VTIME] = 9;
+
+  LIBC_NAMESPACE::cfmakeraw(&t);
+
+  ASSERT_EQ(t.c_iflag & (BRKINT | ICRNL | IXON), tcflag_t(0));
+  ASSERT_EQ(t.c_oflag & OPOST, tcflag_t(0));
+  ASSERT_EQ(t.c_lflag & (ECHO | ECHONL | ICANON | ISIG), tcflag_t(0));
+  ASSERT_EQ(t.c_cflag & CSIZE, tcflag_t(CS8));
+  ASSERT_EQ(t.c_cflag & PARENB, tcflag_t(0));
+  ASSERT_EQ(t.c_cc[VMIN], cc_t(1));
+  ASSERT_EQ(t.c_cc[VTIME], cc_t(0));
 }
 
 TEST_F(LlvmLibcTermiosTest, GetAttrSmokeTest) {

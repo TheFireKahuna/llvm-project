@@ -9,13 +9,21 @@
 #ifndef LLVM_LIBC_SIGNAL_H
 #define LLVM_LIBC_SIGNAL_H
 
+#if !defined(_WIN32) || defined(__NTPOSIX__)
+
 #include "__llvm-libc-common.h"
 
 #define __need_size_t
 #include <stddef.h>
 
 #include "llvm-libc-macros/signal-macros.h"
+#include <time.h>
 
 %%public_api()
 
+#endif // !defined(_WIN32) || defined(__NTPOSIX__)
 #endif // LLVM_LIBC_SIGNAL_H
+
+#if defined(_WIN32) && !defined(__NTPOSIX__) && __has_include_next(<signal.h>)
+#include_next <signal.h>
+#endif

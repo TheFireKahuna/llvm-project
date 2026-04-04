@@ -598,6 +598,14 @@ add_math_entrypoint_object(tgammaf)
 add_math_entrypoint_object(lgamma)
 add_math_entrypoint_object(lgamma_r)
 
+add_entrypoint_object(
+  signgam
+  SRCS
+    signgam.cpp
+  HDRS
+    signgam.h
+)
+
 add_math_entrypoint_object(totalorder)
 add_math_entrypoint_object(totalorderf)
 add_math_entrypoint_object(totalorderl)

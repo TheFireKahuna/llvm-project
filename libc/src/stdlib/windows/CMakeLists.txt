@@ -1,0 +1,302 @@
+add_object_library(
+  dtor_call
+  SRCS
+    dtor_call.cpp
+  DEPENDS
+    libc.src.__support.macros.config
+)
+
+add_entrypoint_object(
+  abort
+  SRCS
+    abort.cpp
+  HDRS
+    ../abort.h
+  DEPENDS
+    libc.include.stdlib
+    libc.src.signal.raise
+    libc.src.signal.sigaction
+    libc.src.signal.sigprocmask
+)
+
+# Slab allocator built on SlabPool + large mmap path.
+# Used when LLVM_LIBC_INCLUDE_SCUDO is OFF.
+add_object_library(
+  posix_alloc
+  SRCS
+    posix_alloc.cpp
+  HDRS
+    posix_alloc.h
+    posix_alloc_size_classes.h
+  DEPENDS
+    libc.hdr.stdint_proxy
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munmap
+    libc.src.sys.mman.madvise
+    libc.src.__support.OSUtil.windows.bcryptprimitives
+    libc.src.__support.OSUtil.windows.libc_fini_registry
+    libc.src.__support.OSUtil.windows.slab_pool
+    libc.src.__support.OSUtil.windows.slab_registry
+    libc.src.__support.OSUtil.windows.teb_tls
+    libc.src.__support.OSUtil.windows.tls_cleanup
+    libc.src.__support.CPP.atomic
+    libc.src.__support.libc_assert
+    libc.src.__support.libc_errno
+    libc.hdr.errno_macros
+    libc.src.string.memory_utils.inline_memcpy
+    libc.src.string.memory_utils.inline_memset
+)
+
+set(HEAP_ALLOC_DEPS
+    libc.src.stdlib.windows.posix_alloc
+)
+
+add_entrypoint_object(
+  malloc
+  SRCS
+    malloc.cpp
+  HDRS
+    ../malloc.h
+  DEPENDS
+    ${HEAP_ALLOC_DEPS}
+)
+
+add_entrypoint_object(
+  free
+  SRCS
+    free.cpp
+  HDRS
+    ../free.h
+  DEPENDS
+    ${HEAP_ALLOC_DEPS}
+)
+
+add_entrypoint_object(
+  calloc
+  SRCS
+    calloc.cpp
+  HDRS
+    ../calloc.h
+  DEPENDS
+    ${HEAP_ALLOC_DEPS}
+)
+
+add_entrypoint_object(
+  realloc
+  SRCS
+    realloc.cpp
+  HDRS
+    ../realloc.h
+  DEPENDS
+    ${HEAP_ALLOC_DEPS}
+)
+
+add_entrypoint_object(
+  aligned_alloc
+  SRCS
+    aligned_alloc.cpp
+  HDRS
+    ../aligned_alloc.h
+  DEPENDS
+    ${HEAP_ALLOC_DEPS}
+)
+
+add_entrypoint_object(
+  posix_memalign
+  SRCS
+    posix_memalign.cpp
+  HDRS
+    ../posix_memalign.h
+  DEPENDS
+    ${HEAP_ALLOC_DEPS}
+)
+
+add_entrypoint_object(
+  malloc_usable_size
+  SRCS
+    malloc_usable_size.cpp
+  HDRS
+    ../malloc_usable_size.h
+  DEPENDS
+    ${HEAP_ALLOC_DEPS}
+)
+
+add_entrypoint_object(
+  arc4random
+  SRCS
+    arc4random.cpp
+  HDRS
+    ../arc4random.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.OSUtil.windows.ntdll
+)
+
+add_entrypoint_object(
+  arc4random_buf
+  SRCS
+    arc4random_buf.cpp
+  HDRS
+    ../arc4random_buf.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.OSUtil.windows.ntdll
+)
+
+add_entrypoint_object(
+  arc4random_uniform
+  SRCS
+    arc4random_uniform.cpp
+  HDRS
+    ../arc4random_uniform.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.OSUtil.windows.ntdll
+)
+
+add_entrypoint_object(
+  mkdtemp
+  SRCS
+    mkdtemp.cpp
+  HDRS
+    ../mkdtemp.h
+  DEPENDS
+    libc.src.__support.OSUtil.windows.mkdtemp_ops
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+)
+
+add_entrypoint_object(
+  mkstemp
+  SRCS
+    mkstemp.cpp
+  HDRS
+    ../mkstemp.h
+  DEPENDS
+    libc.src.__support.OSUtil.windows.mkstemp_ops
+    libc.hdr.errno_macros
+    libc.hdr.fcntl_macros
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  mktemp
+  SRCS
+    mktemp.cpp
+  HDRS
+    ../mktemp.h
+  DEPENDS
+    libc.src.__support.OSUtil.windows.mktemp_ops
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+)
+
+add_entrypoint_object(
+  grantpt
+  SRCS
+    grantpt.cpp
+  HDRS
+    ../grantpt.h
+  DEPENDS
+    libc.include.stdlib
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.vt_pty
+)
+
+add_entrypoint_object(
+  unlockpt
+  SRCS
+    unlockpt.cpp
+  HDRS
+    ../unlockpt.h
+  DEPENDS
+    libc.include.stdlib
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.vt_pty
+)
+
+add_entrypoint_object(
+  ptsname_r
+  SRCS
+    ptsname_r.cpp
+  HDRS
+    ../ptsname_r.h
+  DEPENDS
+    libc.include.stdlib
+    libc.src.__support.common
+    libc.src.__support.OSUtil.windows.vt_pty
+)
+
+add_entrypoint_object(
+  getenv
+  SRCS
+    getenv.cpp
+  HDRS
+    ../getenv.h
+  DEPENDS
+    libc.src.__support.OSUtil.windows.env_ops
+    libc.src.__support.common
+    libc.src.__support.macros.config
+)
+
+add_entrypoint_object(
+  setenv
+  SRCS
+    setenv.cpp
+  HDRS
+    ../setenv.h
+  DEPENDS
+    libc.src.__support.OSUtil.windows.env_ops
+    libc.src.__support.common
+    libc.src.__support.macros.config
+)
+
+add_entrypoint_object(
+  unsetenv
+  SRCS
+    unsetenv.cpp
+  HDRS
+    ../unsetenv.h
+  DEPENDS
+    libc.src.__support.OSUtil.windows.env_ops
+    libc.src.__support.common
+    libc.src.__support.macros.config
+)
+
+add_entrypoint_object(
+  putenv
+  SRCS
+    putenv.cpp
+  HDRS
+    ../putenv.h
+  DEPENDS
+    libc.src.__support.OSUtil.windows.env_ops
+    libc.src.__support.common
+    libc.src.__support.macros.config
+)
+
+add_entrypoint_object(
+  clearenv
+  SRCS
+    clearenv.cpp
+  HDRS
+    ../clearenv.h
+  DEPENDS
+    libc.src.__support.OSUtil.windows.env_ops
+    libc.src.__support.common
+    libc.src.__support.macros.config
+)
+
+add_entrypoint_object(
+  realpath
+  SRCS
+    realpath.cpp
+  HDRS
+    ../realpath.h
+  DEPENDS
+    libc.src.__support.OSUtil.windows.realpath_ops
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+)

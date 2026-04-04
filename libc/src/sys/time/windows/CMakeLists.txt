@@ -1,0 +1,69 @@
+add_entrypoint_object(
+  utimes
+  SRCS
+    utimes.cpp
+  HDRS
+    ../utimes.h
+  DEPENDS
+    libc.hdr.types.struct_timeval
+    libc.src.__support.OSUtil.windows.ntdll
+    libc.src.__support.OSUtil.windows.nt_path
+    libc.src.__support.OSUtil.windows.utimes_ops
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  lutimes
+  SRCS
+    lutimes.cpp
+  HDRS
+    ../lutimes.h
+  DEPENDS
+    libc.hdr.types.struct_timeval
+    libc.src.__support.OSUtil.windows.ntdll
+    libc.src.__support.OSUtil.windows.nt_path
+    libc.src.__support.OSUtil.windows.utimes_ops
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  futimes
+  SRCS
+    futimes.cpp
+  HDRS
+    ../futimes.h
+  DEPENDS
+    libc.hdr.types.struct_timeval
+    libc.src.__support.OSUtil.windows.fd_table
+    libc.src.__support.OSUtil.windows.ntdll
+    libc.src.__support.OSUtil.windows.utimes_ops
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  setitimer
+  SRCS
+    setitimer.cpp
+  HDRS
+    ../setitimer.h
+  DEPENDS
+    libc.hdr.signal_macros
+    libc.hdr.types.struct_itimerval
+    libc.src.__support.OSUtil.windows.itimer_ops
+    libc.src.__support.OSUtil.windows.ntdll
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.signal_subsystem
+)
+
+add_entrypoint_object(
+  getitimer
+  SRCS
+    getitimer.cpp
+  HDRS
+    ../getitimer.h
+  DEPENDS
+    libc.hdr.types.struct_itimerval
+    libc.src.__support.OSUtil.windows.itimer_ops
+    libc.src.__support.libc_errno
+    libc.src.sys.time.windows.setitimer
+)

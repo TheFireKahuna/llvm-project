@@ -79,6 +79,7 @@ add_header_library(
   DEPENDS
     libc.include.inttypes
     libc.src.__support.CPP.string_view
+    libc.src.__support.CPP.type_traits
     libc.src.__support.FPUtil.fp_bits
     libc.hdr.errno_macros
 )
@@ -89,11 +90,15 @@ add_header_library(
     parser.h
   DEPENDS
     .core_structs
+    .printf_config
+    libc.hdr.types.wchar_t
     libc.src.__support.arg_list
     libc.src.__support.ctype_utils
+    libc.src.__support.wctype_utils
     libc.src.__support.str_to_integer
     libc.src.__support.CPP.algorithm
     libc.src.__support.CPP.bit
+    libc.src.__support.CPP.limits
     libc.src.__support.CPP.optional
     libc.src.__support.CPP.string_view
     libc.src.__support.CPP.type_traits
@@ -164,6 +169,69 @@ add_object_library(
     .converter
     .writer
     .core_structs
+    libc.src.__support.arg_list
+    libc.src.__support.error_or
+)
+
+add_header_library(
+  wide_writer
+  HDRS
+    wide_writer.h
+  DEPENDS
+    .core_structs
+    libc.hdr.types.wchar_t
+    libc.src.__support.CPP.string_view
+    libc.src.__support.macros.optimization
+)
+
+add_header_library(
+  wide_converter
+  HDRS
+    wide_converter.h
+  DEPENDS
+    .converter
+    .core_structs
+    .writer
+    libc.hdr.types.wchar_t
+    libc.src.__support.CPP.string_view
+    libc.src.__support.wchar.mbrtowc
+    libc.src.__support.wchar.mbstate
+)
+
+add_header_library(
+  wprintf_main
+  HDRS
+    wprintf_main.h
+  DEPENDS
+    .core_structs
+    .parser
+    .wide_converter
+    libc.hdr.types.wchar_t
+    libc.src.__support.arg_list
+    libc.src.__support.error_or
+)
+
+add_header_library(
+  wide_stream_writer
+  HDRS
+    wide_stream_writer.h
+  DEPENDS
+    .core_structs
+    libc.hdr.types.wchar_t
+    libc.src.__support.File.file
+    libc.src.__support.wchar.wide_io
+)
+
+add_header_library(
+  vfwprintf_internal
+  HDRS
+    vfwprintf_internal.h
+  DEPENDS
+    .wide_stream_writer
+    .wprintf_main
+    libc.hdr.types.FILE
+    libc.hdr.types.wchar_t
+    libc.src.__support.File.file
     libc.src.__support.arg_list
     libc.src.__support.error_or
 )

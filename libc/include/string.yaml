@@ -183,10 +183,17 @@ functions:
     return_type: char *
     arguments:
       - type: int
+  - name: strerror_l
+    standards:
+      - posix
+    return_type: char *
+    arguments:
+      - type: int
+      - type: locale_t
   - name: strerror_r
     standards:
-      - GNUExtensions
-    return_type: char *
+      - POSIX
+    return_type: int
     arguments:
       - type: int
       - type: char *

@@ -1,0 +1,55 @@
+add_entrypoint_object(
+  inotify_init
+  SRCS
+    inotify_init.cpp
+  HDRS
+    ../inotify_init.h
+  DEPENDS
+    libc.include.sys_inotify
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.syscall_wrapper_inotify_init1
+)
+
+add_entrypoint_object(
+  inotify_init1
+  SRCS
+    inotify_init1.cpp
+  HDRS
+    ../inotify_init1.h
+  DEPENDS
+    libc.include.sys_inotify
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.syscall_wrapper_inotify_init1
+)
+
+add_entrypoint_object(
+  inotify_add_watch
+  SRCS
+    inotify_add_watch.cpp
+  HDRS
+    ../inotify_add_watch.h
+  DEPENDS
+    libc.include.sys_inotify
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.syscall_wrapper_inotify_add_watch
+)
+
+add_entrypoint_object(
+  inotify_rm_watch
+  SRCS
+    inotify_rm_watch.cpp
+  HDRS
+    ../inotify_rm_watch.h
+  DEPENDS
+    libc.include.sys_inotify
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.OSUtil.windows.syscall_wrapper_inotify_rm_watch
+)

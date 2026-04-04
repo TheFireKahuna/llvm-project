@@ -1,4 +1,4 @@
-//===-- Linux implementation of the pthread_create function ---------------===//
+//===-- Implementation of the pthread_create function ---------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -9,13 +9,17 @@
 #include "pthread_create.h"
 
 #include "pthread_attr_destroy.h"
-#include "pthread_attr_init.h"
-
 #include "pthread_attr_getdetachstate.h"
 #include "pthread_attr_getguardsize.h"
+#include "pthread_attr_getinheritsched.h"
+#include "pthread_attr_getschedparam.h"
+#include "pthread_attr_getschedpolicy.h"
 #include "pthread_attr_getstack.h"
+#include "pthread_attr_init.h"
+#include "pthread_setschedparam.h"
 
 #include "src/__support/common.h"
+#include "src/__support/OSUtil/windows/resource/rlimit_data_guard.h"
 #include "src/__support/libc_errno.h"
 #include "src/__support/macros/config.h"
 #include "src/__support/macros/optimization.h"
@@ -74,15 +78,35 @@ LLVM_LIBC_FUNCTION(int, pthread_create,
       detachstate != PTHREAD_CREATE_JOINABLE)
     return EINVAL;
 
-  // Thread::run will check validity of the `stack` argument (stack alignment is
-  // universal, not sure a pthread requirement).
+  int inheritsched;
+  LIBC_NAMESPACE::pthread_attr_getinheritsched(attr, &inheritsched);
 
+  int schedpolicy;
+  struct sched_param schedparam;
+  if (inheritsched == PTHREAD_EXPLICIT_SCHED) {
+    LIBC_NAMESPACE::pthread_attr_getschedpolicy(attr, &schedpolicy);
+    LIBC_NAMESPACE::pthread_attr_getschedparam(attr, &schedparam);
+  }
+
+  windows::ScopedRlimitDataPublicCall rlimit_scope;
   auto *thread = reinterpret_cast<LIBC_NAMESPACE::Thread *>(th);
   int result = thread->run(func, arg, stack, stacksize, guardsize,
                            detachstate == PTHREAD_CREATE_DETACHED);
   if (result != 0 && result != EPERM && result != EINVAL)
     return EAGAIN;
-  return result;
+  if (result != 0)
+    return result;
+
+  // Apply explicit scheduling attributes after creation. For
+  // PTHREAD_INHERIT_SCHED (the default), the OS already inherited the
+  // creating thread's priority; the sched_policy field in ThreadSignalState
+  // is inherited via StartArgs in the platform thread.cpp.
+  if (inheritsched == PTHREAD_EXPLICIT_SCHED) {
+    pthread_t created = *th;
+    LIBC_NAMESPACE::pthread_setschedparam(created, schedpolicy, &schedparam);
+  }
+
+  return 0;
 }
 
 } // namespace LIBC_NAMESPACE_DECL

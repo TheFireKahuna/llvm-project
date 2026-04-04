@@ -243,13 +243,22 @@ if( LLVM_REVERSE_ITERATION )
   set( LLVM_ENABLE_REVERSE_ITERATION 1 )
 endif()
 
+include(LLVMTargetTriple)
+llvm_get_effective_target_triple(_llvm_runtime_personality_triple)
+
 if(WIN32 OR CYGWIN)
   set(LLVM_HAVE_LINK_VERSION_SCRIPT 0)
   set(LLVM_ON_UNIX 0)
 
   set(LLVM_CRT_UCRT 0)
 
-  # Primary runtime personality.
+  # Primary runtime personality — which API surface the code targets:
+  #   LLVM_RUNTIME_WIN32   - Win32/UCRT personality (MSVC, MinGW, Windows Itanium)
+  #   LLVM_RUNTIME_POSIX   - POSIX personality (NTPOSIX on Windows, or Unix/Fuchsia)
+  #   LLVM_RUNTIME_NTPOSIX - NT-POSIX specifically (implies POSIX=1, WIN32=0;
+  #                          set ONLY for windows-ntposix targets)
+  # Use LLVM_RUNTIME_WIN32 where upstream uses WIN32 for "has Win32 APIs."
+  # Use (UNIX OR LLVM_RUNTIME_POSIX) where upstream uses UNIX or NOT WIN32.
   set(LLVM_RUNTIME_POSIX 0)
   set(LLVM_RUNTIME_WIN32 1)
 
@@ -259,19 +268,20 @@ if(WIN32 OR CYGWIN)
   set(LLVM_TOOLCHAIN_LLVM 0)
   set(LLVM_TOOLCHAIN_CYGNUS 0)
 
-  if (MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+  if (_llvm_runtime_personality_triple MATCHES ".*-windows-itanium.*")
+    set(LLVM_TOOLCHAIN_LLVM 1)
+    set(LLVM_CRT_UCRT 1)
+  elseif (_llvm_runtime_personality_triple MATCHES ".*-windows-(posix|ntposix).*")
+    set(LLVM_RUNTIME_POSIX 1)
+    set(LLVM_RUNTIME_WIN32 0)
+    set(LLVM_RUNTIME_NTPOSIX 1)
+    set(LLVM_TOOLCHAIN_LLVM 1)
+  elseif (MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
     set(LLVM_TOOLCHAIN_MSVC 1)
     set(LLVM_CRT_UCRT 1)
   elseif (MINGW)
     set(LLVM_TOOLCHAIN_GNU 1)
     set(LLVM_CRT_UCRT 1)
-  elseif (LLVM_HOST_TRIPLE MATCHES ".*-windows-itanium.*")
-    set(LLVM_TOOLCHAIN_LLVM 1)
-    set(LLVM_CRT_UCRT 1)
-  elseif (LLVM_HOST_TRIPLE MATCHES ".*-windows-(posix|ntposix).*")
-    set(LLVM_RUNTIME_POSIX 1)
-    set(LLVM_RUNTIME_WIN32 0)
-    set(LLVM_TOOLCHAIN_LLVM 1)
   elseif (CYGWIN)
     set(LLVM_RUNTIME_POSIX 1)
     set(LLVM_RUNTIME_WIN32 0)
@@ -1498,14 +1508,9 @@ if(uppercase_LLVM_ENABLE_LTO STREQUAL "THIN")
     append("-Wl,--plugin-opt,cache-dir=${LLVM_THINLTO_CACHE_PATH}"
            CMAKE_EXE_LINKER_FLAGS CMAKE_SHARED_LINKER_FLAGS)
   elseif(LINKER_IS_LLD_LINK)
-    # GNU-style drivers require -Xlinker prefix for MSVC linker flags.
-    if(MSVC OR CLANG_CL)
-      append("/lldltocache:${LLVM_THINLTO_CACHE_PATH}"
-             CMAKE_EXE_LINKER_FLAGS CMAKE_SHARED_LINKER_FLAGS)
-    else()
-      append("-Xlinker /lldltocache:${LLVM_THINLTO_CACHE_PATH}"
-             CMAKE_EXE_LINKER_FLAGS CMAKE_SHARED_LINKER_FLAGS)
-    endif()
+    llvm_lld_link_flag(_lto_cache_flag "/lldltocache:${LLVM_THINLTO_CACHE_PATH}")
+    append("${_lto_cache_flag}"
+           CMAKE_EXE_LINKER_FLAGS CMAKE_SHARED_LINKER_FLAGS)
   endif()
 elseif(uppercase_LLVM_ENABLE_LTO STREQUAL "FULL")
   append("-flto=full" CMAKE_CXX_FLAGS CMAKE_C_FLAGS)
@@ -1660,8 +1665,9 @@ if(LLVM_ENABLE_LLVM_LIBC)
   if(NOT HAVE_LLVM_LIBC)
     message(WARNING "Unable to link against LLVM libc. LLVM will be built without linking against the LLVM libc overlay.")
   endif()
-  if(WIN32)
+  if(WIN32 AND _llvm_runtime_personality_triple MATCHES ".*-windows-(posix|ntposix).*")
     set(LLVM_RUNTIME_POSIX ON)
+    set(LLVM_RUNTIME_NTPOSIX ON)
   endif()
 endif()
 

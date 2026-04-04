@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ExecutionEngine/Orc/TargetProcess/ExecutorSharedMemoryMapperService.h"
-#include "llvm/Config/llvm-config.h" // for LLVM_ON_UNIX
+#include "llvm/Config/llvm-config.h"
 #include "llvm/ExecutionEngine/Orc/Shared/OrcRTBridge.h"
 #include "llvm/Support/Process.h"
 #include "llvm/Support/WindowsError.h"
@@ -50,7 +50,8 @@ static DWORD getWindowsProtectionFlags(MemProt MP) {
 
 Expected<std::pair<ExecutorAddr, std::string>>
 ExecutorSharedMemoryMapperService::reserve(uint64_t Size) {
-#if (defined(LLVM_ON_UNIX) && !defined(__ANDROID__)) || defined(_WIN32)
+#if (defined(LLVM_RUNTIME_POSIX) && !defined(__ANDROID__)) ||                     \
+    defined(LLVM_RUNTIME_WIN32)
 
 #if defined(LLVM_RUNTIME_POSIX)
 
@@ -139,7 +140,8 @@ ExecutorSharedMemoryMapperService::reserve(uint64_t Size) {
 
 Expected<ExecutorAddr> ExecutorSharedMemoryMapperService::initialize(
     ExecutorAddr Reservation, tpctypes::SharedMemoryFinalizeRequest &FR) {
-#if (defined(LLVM_ON_UNIX) && !defined(__ANDROID__)) || defined(_WIN32)
+#if (defined(LLVM_RUNTIME_POSIX) && !defined(__ANDROID__)) ||                     \
+    defined(LLVM_RUNTIME_WIN32)
 
   ExecutorAddr MinAddr(~0ULL);
 
@@ -233,7 +235,8 @@ Error ExecutorSharedMemoryMapperService::deinitialize(
 
 Error ExecutorSharedMemoryMapperService::release(
     const std::vector<ExecutorAddr> &Bases) {
-#if (defined(LLVM_ON_UNIX) && !defined(__ANDROID__)) || defined(_WIN32)
+#if (defined(LLVM_RUNTIME_POSIX) && !defined(__ANDROID__)) ||                     \
+    defined(LLVM_RUNTIME_WIN32)
   Error Err = Error::success();
 
   for (auto Base : Bases) {
@@ -260,7 +263,7 @@ Error ExecutorSharedMemoryMapperService::release(
     if (Error E = deinitialize(AllocAddrs))
       Err = joinErrors(std::move(Err), std::move(E));
 
-#if defined(LLVM_ON_UNIX)
+#if defined(LLVM_RUNTIME_POSIX)
 
 #if defined(__MVS__)
     (void)Size;

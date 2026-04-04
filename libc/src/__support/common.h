@@ -26,6 +26,15 @@
 #define LLVM_LIBC_VARIABLE_ATTR
 #endif
 
+// Entrypoint symbols do not carry per-symbol __LIBC_DLLEXPORT_ATTR. c.dll
+// exports its public ABI through a .def file generated from
+// TARGET_LLVMLIBC_ENTRYPOINTS at configure time (see
+// generate_libc_entrypoints_def in LLVMLibCLibraryRules.cmake). The .def
+// route keeps libc.a free of export-table pollution when statically linked
+// and matches the ucrtbase / ucrt.lib convention for Windows system DLLs.
+#define LLVM_LIBC_ENTRYPOINT_EXPORT
+#define LLVM_LIBC_VARIABLE_EXPORT
+
 // clang-format off
 // Allow each function `func` to have extra attributes specified by defining:
 // `LLVM_LIBC_FUNCTION_ATTR_func` macro, which should always start with
@@ -52,7 +61,8 @@
 #ifndef __APPLE__
 #define LLVM_LIBC_FUNCTION_IMPL_4(type, name, arglist, c_alias)                \
   LLVM_LIBC_ATTR(name)                                                         \
-  LLVM_LIBC_FUNCTION_ATTR decltype(LIBC_NAMESPACE::name)                       \
+  LLVM_LIBC_ENTRYPOINT_EXPORT LLVM_LIBC_FUNCTION_ATTR                         \
+      decltype(LIBC_NAMESPACE::name)                                           \
       __##name##_impl__ asm(c_alias);                                          \
   decltype(LIBC_NAMESPACE::name) name [[gnu::alias(c_alias)]];                 \
   type __##name##_impl__ arglist
@@ -86,7 +96,8 @@
 #ifndef __APPLE__
 #define LLVM_LIBC_VARIABLE_IMPL(type, name)                                    \
   LLVM_LIBC_ATTR(name)                                                         \
-  extern LLVM_LIBC_VARIABLE_ATTR decltype(LIBC_NAMESPACE::name)                \
+  extern LLVM_LIBC_VARIABLE_EXPORT LLVM_LIBC_VARIABLE_ATTR                     \
+      decltype(LIBC_NAMESPACE::name)                                           \
       __##name##_impl__ asm(#name);                                            \
   extern decltype(LIBC_NAMESPACE::name) name [[gnu::alias(#name)]];            \
   type __##name##_impl__

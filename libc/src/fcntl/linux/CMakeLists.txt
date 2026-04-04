@@ -46,3 +46,15 @@ add_entrypoint_object(
     libc.src.__support.OSUtil.osutil
     libc.src.errno.errno
 )
+
+add_entrypoint_object(
+  posix_fallocate
+  SRCS
+    posix_fallocate.cpp
+  HDRS
+    ../posix_fallocate.h
+  DEPENDS
+    libc.hdr.types.off_t
+    libc.include.sys_syscall
+    libc.src.__support.OSUtil.osutil
+)

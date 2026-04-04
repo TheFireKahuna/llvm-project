@@ -10,6 +10,7 @@
 #define LLVM_LIBC_SRC_STDIO_SCANF_CORE_CURRENT_POS_CONVERTER_H
 
 #include "src/__support/macros/config.h"
+#include "src/stdio/scanf_core/char_ops.h"
 #include "src/stdio/scanf_core/converter_utils.h"
 #include "src/stdio/scanf_core/core_structs.h"
 #include "src/stdio/scanf_core/reader.h"
@@ -19,9 +20,10 @@
 namespace LIBC_NAMESPACE_DECL {
 namespace scanf_core {
 
-template <typename T>
-LIBC_INLINE int convert_current_pos(Reader<T> *reader,
-                                    const FormatSection &to_conv) {
+template <typename T, typename CharType = char>
+LIBC_INLINE int
+convert_current_pos(Reader<T, CharType> *reader,
+                    const basic_format_section<CharType> &to_conv) {
   write_int_with_length(reader->chars_read(), to_conv);
   return READ_OK;
 }

@@ -3,6 +3,16 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${LIBC_TARGET_OS})
 endif()
 
 add_entrypoint_object(
+  cfmakeraw
+  SRCS
+    cfmakeraw.cpp
+  HDRS
+    cfmakeraw.h
+  DEPENDS
+    libc.include.termios
+)
+
+add_entrypoint_object(
   cfgetispeed
   ALIAS
     DEPENDS

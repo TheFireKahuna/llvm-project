@@ -1479,6 +1479,8 @@ add_entrypoint_object(
   DEPENDS
     libc.src.__support.math.powf
     libc.src.errno.errno
+  COMPILE_OPTIONS
+    -ffp-exception-behavior=strict
 )
 
 add_entrypoint_object(
@@ -1490,6 +1492,8 @@ add_entrypoint_object(
   DEPENDS
     libc.src.__support.math.pow
     libc.src.errno.errno
+  COMPILE_OPTIONS
+    -ffp-exception-behavior=strict
 )
 
 add_entrypoint_object(
@@ -4248,6 +4252,8 @@ add_entrypoint_object(
     ../atan2.h
   DEPENDS
     libc.src.__support.math.atan2
+  COMPILE_OPTIONS
+    -ffp-exception-behavior=strict
 )
 
 add_entrypoint_object(

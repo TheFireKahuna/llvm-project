@@ -27,7 +27,7 @@
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/TimeProfiler.h"
 #include "llvm/Support/raw_ostream.h"
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "llvm/Support/Windows/WindowsSupport.h"
 #endif
 
@@ -63,7 +63,7 @@ Error save(lto::InputFile *Input, StringRef Path) {
 // machine-local and break distribution systems; other normalization is
 // handled by the DTLTO distributors.
 Expected<StringRef> normalizePath(StringRef Path, StringSaver &Saver) {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   if (Path.empty())
     return Path;
   SmallString<256> Expanded;
@@ -177,7 +177,7 @@ lto::DTLTO::addInput(std::unique_ptr<InputFile> InputPtr) {
   // paths. These paths are machine-local and break distribution systems; other
   // normalization is handled by the DTLTO distributors.
   if (ArchivePath.empty() && !Input->isFatLTOObject()) {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
     if (Error E = setIdFromPath(Input->getName()))
       return std::move(E);
 #endif

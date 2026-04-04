@@ -21,7 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(LLVM_RUNTIME_POSIX)
+#if defined(__NTPOSIX__)
 #include <sys/ntabi.h>
 #else
 #define WIN32_LEAN_AND_MEAN

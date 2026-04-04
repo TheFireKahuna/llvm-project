@@ -11,11 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifdef LLVM_RUNTIME_POSIX
-#include <semaphore.h>
-#include <fcntl.h>
-#else
 #include "llvm/Support/Windows/WindowsSupport.h"
+#include "llvm/ADT/SmallVector.h"
 #include <atomic>
 #include <cassert>
 
@@ -25,29 +22,32 @@ namespace llvm {
 /// GNU make in the --jobserver-auth argument. If the semaphore is opened
 /// successfully, the client is marked as initialized.
 JobserverClientImpl::JobserverClientImpl(const JobserverConfig &Config) {
-#ifdef LLVM_RUNTIME_POSIX
-  Semaphore = (void *)sem_open(Config.Path.c_str(), 0);
-  if (Semaphore != (void *)SEM_FAILED)
-    IsInitialized = true;
-  else
-    Semaphore = nullptr;
-#else
+  if (Config.TheMode != JobserverConfig::Win32Semaphore)
+    return;
+
   Semaphore = (void *)::OpenSemaphoreA(SEMAPHORE_MODIFY_STATE | SYNCHRONIZE,
                                        FALSE, Config.Path.c_str());
-  if (Semaphore != nullptr) {
-    IsInitialized = true;
+  if (Semaphore == nullptr)
+    return;
+
+  IsInitialized = true;
+  SmallVector<JobSlot, 8> Slots;
+  while (true) {
+    auto S = tryAcquire();
+    if (!S.isValid())
+      break;
+    Slots.push_back(std::move(S));
   }
-#endif
+  NumJobs = Slots.size();
+  assert(NumJobs >= 1 && "Invalid number of jobs");
+  for (auto &S : Slots)
+    release(std::move(S));
 }
 
 /// The destructor closes the handle to the semaphore, releasing the resource.
 JobserverClientImpl::~JobserverClientImpl() {
-  if (Semaphore != nullptr) {
-#ifdef LLVM_RUNTIME_POSIX
-    sem_close((sem_t *)Semaphore);
-#else
+  if (Semaphore != nullptr)
     ::CloseHandle((HANDLE)Semaphore);
-  }
 }
 
 /// Tries to acquire a job slot. The first call always returns the implicit
@@ -65,18 +65,12 @@ JobSlot JobserverClientImpl::tryAcquire() {
     return JobSlot::createImplicit();
   }
 
-#ifdef LLVM_RUNTIME_POSIX
-  if (sem_trywait((sem_t *)Semaphore) == 0) {
-    return JobSlot::createExplicit(1);
-  }
-#else
   // Try to acquire a slot from the semaphore without blocking.
   if (::WaitForSingleObject((HANDLE)Semaphore, 0) == WAIT_OBJECT_0) {
     // The explicit token value is arbitrary on Windows, as the semaphore
     // count is the real resource.
     return JobSlot::createExplicit(1);
   }
-#endif
 
   return JobSlot(); // Invalid slot
 }
@@ -96,11 +90,7 @@ void JobserverClientImpl::release(JobSlot Slot) {
     return;
   }
 
-#ifdef LLVM_RUNTIME_POSIX
-  sem_post((sem_t *)Semaphore);
-#else
   // Release the slot by incrementing the semaphore count.
   (void)::ReleaseSemaphore((HANDLE)Semaphore, 1, NULL);
-#endif
 }
 } // namespace llvm

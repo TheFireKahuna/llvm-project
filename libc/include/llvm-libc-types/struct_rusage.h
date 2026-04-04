@@ -14,7 +14,7 @@
 struct rusage {
   struct timeval ru_utime;
   struct timeval ru_stime;
-#ifdef __linux__
+#if defined(__linux__) || defined(__NTPOSIX__)
   // Following fields are linux extensions as expected by the
   // linux syscalls.
   long ru_maxrss;   // Maximum resident set size

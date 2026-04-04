@@ -18,24 +18,26 @@ add_libc_unittest(
     libc.test.UnitTest.ErrnoSetterMatcher
 )
 
-add_libc_unittest(
-  fcntl_test
-  SUITE
-    libc_fcntl_unittests
-  SRCS
-    fcntl_test.cpp
-  DEPENDS
-    libc.include.fcntl
-    libc.src.errno.errno
-    libc.src.fcntl.fcntl
-    libc.src.fcntl.open
-    libc.src.unistd.close
-    libc.src.unistd.getpid
-    libc.hdr.types.struct_flock
-    libc.hdr.fcntl_macros
-    libc.test.UnitTest.ErrnoCheckingTest
-    libc.test.UnitTest.ErrnoSetterMatcher
-)
+if(NOT ${LIBC_TARGET_OS} STREQUAL "windows")
+  add_libc_unittest(
+    fcntl_test
+    SUITE
+      libc_fcntl_unittests
+    SRCS
+      fcntl_test.cpp
+    DEPENDS
+      libc.include.fcntl
+      libc.src.errno.errno
+      libc.src.fcntl.fcntl
+      libc.src.fcntl.open
+      libc.src.unistd.close
+      libc.src.unistd.getpid
+      libc.hdr.types.struct_flock
+      libc.hdr.fcntl_macros
+      libc.test.UnitTest.ErrnoCheckingTest
+      libc.test.UnitTest.ErrnoSetterMatcher
+  )
+endif()
 
 add_libc_unittest(
   openat_test
@@ -53,3 +55,7 @@ add_libc_unittest(
     libc.test.UnitTest.ErrnoCheckingTest
     libc.test.UnitTest.ErrnoSetterMatcher
 )
+
+if(${LIBC_TARGET_OS} STREQUAL "windows")
+  add_subdirectory(windows)
+endif()

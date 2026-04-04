@@ -24,9 +24,9 @@
 #include "llvm/Support/Signals.h"
 #include <cctype>
 
-#if !defined(LLVM_CRT_UCRT)
+#if defined(LLVM_RUNTIME_POSIX)
 #include <unistd.h>
-#else
+#elif defined(LLVM_RUNTIME_WIN32)
 #include <io.h>
 #endif
 

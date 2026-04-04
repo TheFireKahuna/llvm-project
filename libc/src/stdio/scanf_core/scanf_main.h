@@ -21,24 +21,43 @@
 namespace LIBC_NAMESPACE_DECL {
 namespace scanf_core {
 
-template <typename T>
-int scanf_main(Reader<T> *reader, const char *__restrict str,
+template <typename T, typename CharType = char>
+int scanf_main(Reader<T, CharType> *reader, const CharType *__restrict str,
                internal::ArgList &args) {
-  Parser<internal::ArgList> parser(str, args);
+  using SectionT = basic_format_section<CharType>;
+  Parser<internal::ArgList, CharType> parser(str, args);
   int ret_val = READ_OK;
   int conversions = 0;
-  for (FormatSection cur_section = parser.get_next_section();
+  for (SectionT cur_section = parser.get_next_section();
        !cur_section.raw_string.empty() && ret_val == READ_OK;
        cur_section = parser.get_next_section()) {
     if (cur_section.has_conv) {
       ret_val = convert(reader, cur_section);
-      // The %n (current position) conversion doesn't increment the number of
-      // assignments.
-      if (cur_section.conv_name != 'n')
+      // Only count successful assignments. %n doesn't count (C11 §7.21.6.2p12)
+      // and assignment-suppressed conversions (%*) don't count either
+      // (C11 §7.21.6.2p16: returns "the number of input items assigned").
+      if (cur_section.conv_name != 'n' &&
+          (cur_section.flags & FormatFlags::NO_WRITE) == 0)
         conversions += ret_val == READ_OK ? 1 : 0;
     } else {
       ret_val = raw_match(reader, cur_section.raw_string);
     }
+  }
+
+  // C11 §7.21.6.2p16: return EOF when an input failure occurs before the
+  // first conversion completes.  If the conversion consumed characters
+  // (chars_read > 0) the failure is a matching failure, not input failure.
+  // When chars_read == 0, the converter read one char and pushed it back
+  // (balanced getc/ungetc) — we must probe to distinguish "first char was
+  // EOF" (input failure → -1) from "first char didn't match" (matching
+  // failure → 0).
+  if (conversions == 0 && ret_val != READ_OK) {
+    if (reader->chars_read() > 0)
+      return 0;
+    CharType probe = reader->getc();
+    reader->ungetc(probe);
+    if (probe == CharType('\0'))
+      return -1;
   }
 
   return conversions;

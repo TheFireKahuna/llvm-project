@@ -14,6 +14,10 @@
 #include "src/__support/threads/unix_rwlock.h"
 #include "src/__support/time/abs_timeout.h"
 
+#ifdef LIBC_TARGET_OS_IS_WINDOWS
+#include "src/__support/time/windows/clock_conversion.h"
+#endif
+
 #include <pthread.h>
 
 namespace LIBC_NAMESPACE_DECL {
@@ -29,13 +33,20 @@ LLVM_LIBC_FUNCTION(int, pthread_rwlock_clockwrlock,
                     const timespec *abstime)) {
   if (!rwlock)
     return EINVAL;
+  RwLock *rw = reinterpret_cast<RwLock *>(rwlock);
+  LIBC_ASSERT(abstime && "clockwrlock called with a null timeout");
+
+#ifdef LIBC_TARGET_OS_IS_WINDOWS
+  if (!internal::is_valid_wait_clock(clockid))
+    return EINVAL;
+  auto timeout = internal::abs_timeout_from_clock(clockid, *abstime);
+#else
   if (clockid != CLOCK_MONOTONIC && clockid != CLOCK_REALTIME)
     return EINVAL;
   bool is_realtime = (clockid == CLOCK_REALTIME);
-  RwLock *rw = reinterpret_cast<RwLock *>(rwlock);
-  LIBC_ASSERT(abstime && "clockwrlock called with a null timeout");
   auto timeout = internal::AbsTimeout::from_timespec(
       *abstime, /*is_realtime=*/is_realtime);
+#endif
   if (LIBC_LIKELY(timeout.has_value()))
     return static_cast<int>(rw->write_lock(timeout.value()));
 

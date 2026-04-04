@@ -1478,14 +1478,27 @@ void ItaniumWindowsARMleTargetInfo::getTargetDefines(
   if (Opts.MSVCCompat) {
     WindowsARMTargetInfo::getVisualStudioDefines(Opts, Builder);
   } else {
-    // System-header-only for SDK compatibility.
     assert((getTriple().getArch() == llvm::Triple::arm ||
             getTriple().getArch() == llvm::Triple::thumb) &&
            "invalid architecture for Windows ARM target info");
     unsigned Offset = getTriple().getArch() == llvm::Triple::arm ? 4 : 6;
-    Builder.defineSystemHeaderOnlyMacro("_M_ARM",
-                                        getTriple().getArchName().substr(Offset));
+    Builder.defineMacro("_M_ARM", getTriple().getArchName().substr(Offset));
   }
+}
+
+// Windows ARM + NT-POSIX
+NTPOSIXWindowsARMleTargetInfo::NTPOSIXWindowsARMleTargetInfo(
+    const llvm::Triple &Triple, const TargetOptions &Opts)
+    : WindowsARMTargetInfo(Triple, Opts) {
+  TheCXXABI.set(TargetCXXABI::GenericARM);
+  WCharType = TargetInfo::SignedInt;
+  WIntType = TargetInfo::SignedInt;
+}
+
+void NTPOSIXWindowsARMleTargetInfo::getTargetDefines(
+    const LangOptions &Opts, MacroBuilder &Builder) const {
+  WindowsARMTargetInfo::getTargetDefines(Opts, Builder);
+  Builder.defineMacro("_ARM_");
 }
 
 // Windows ARM, MS (C++) ABI

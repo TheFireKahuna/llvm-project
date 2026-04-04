@@ -198,7 +198,7 @@ _LIBCPP_HARDENING_MODE_DEBUG
 #  elif defined(_LIBCPP_ABI_FORCE_MICROSOFT)
 #    define _LIBCPP_ABI_MICROSOFT
 #  else
-#    if defined(LLVM_RUNTIME_WIN32) && defined(_MSC_VER) && !defined(_WIN32_ITANIUM)
+#    if defined(_WIN32) && defined(_MSC_VER) && !defined(_WIN32_ITANIUM) && !defined(__NTPOSIX__)
 #      define _LIBCPP_ABI_MICROSOFT
 #    else
 #      define _LIBCPP_ABI_ITANIUM
@@ -219,7 +219,7 @@ _LIBCPP_HARDENING_MODE_DEBUG
 #    include <features.h> // for __NATIVE_ASCII_F
 #  endif
 
-#  if defined(LLVM_RUNTIME_WIN32)
+#  if defined(_WIN32) && !defined(__NTPOSIX__)
 #    define _LIBCPP_WIN32API
 #    define _LIBCPP_SHORT_WCHAR 1
 // Both MinGW and native MSVC provide a "MSVC"-like environment
@@ -232,7 +232,7 @@ _LIBCPP_HARDENING_MODE_DEBUG
 #      define _LIBCPP_HAS_BITSCAN64
 #    endif
 #    define _LIBCPP_HAS_OPEN_WITH_WCHAR
-#  endif // defined(LLVM_RUNTIME_WIN32)
+#  endif
 
 #  if defined(_AIX) && !defined(__64BIT__)
 // The size of wchar is 2 byte on 32-bit mode on AIX.

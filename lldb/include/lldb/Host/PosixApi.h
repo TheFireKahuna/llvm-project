@@ -16,6 +16,7 @@
 #if defined(LLVM_RUNTIME_WIN32)
 #include "lldb/Host/windows/PosixApi.h"
 #else
+#include <fcntl.h>
 #include <unistd.h>
 #include <csignal>
 #endif

@@ -12,6 +12,7 @@
 #include "src/__support/common.h"
 #include "src/__support/macros/config.h"
 #include "src/__support/wchar/character_converter.h"
+#include "src/__support/wchar/locale_encoding.h"
 #include "src/__support/wchar/mbstate.h"
 
 namespace LIBC_NAMESPACE_DECL {
@@ -19,7 +20,8 @@ namespace LIBC_NAMESPACE_DECL {
 LLVM_LIBC_FUNCTION(int, mbsinit, (mbstate_t * ps)) {
   if (ps == nullptr)
     return true;
-  internal::CharacterConverter cr(reinterpret_cast<internal::mbstate *>(ps));
+  internal::CharacterConverter cr(reinterpret_cast<internal::mbstate *>(ps),
+                                  internal::locale_encoding_is_utf8());
   return cr.isValidState() && cr.isEmpty();
 }
 

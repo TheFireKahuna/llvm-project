@@ -14,4 +14,13 @@
 
 %%public_api()
 
+// Internal helpers used by CPU_* macros. Declared here (after cpu_set_t)
+// so they are visible to any code that uses CPU_ZERO, CPU_SET, etc.
+__BEGIN_C_DECLS
+int __sched_getcpucount(size_t, const cpu_set_t *);
+int __sched_getcpuisset(int, size_t, cpu_set_t *);
+void __sched_setcpuzero(size_t, cpu_set_t *);
+void __sched_setcpuset(int, size_t, cpu_set_t *);
+__END_C_DECLS
+
 #endif // LLVM_LIBC_SCHED_H

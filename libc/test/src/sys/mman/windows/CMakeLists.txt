@@ -1,0 +1,345 @@
+add_custom_target(libc_sys_mman_unittests)
+
+add_libc_unittest(
+  mmap_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    mmap_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.errno.errno
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munmap
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  mremap_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    mremap_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.errno.errno
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.mremap
+    libc.src.sys.mman.munmap
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  mprotect_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    mprotect_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.errno.errno
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munmap
+    libc.src.sys.mman.mprotect
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  madvise_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    madvise_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.errno.errno
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munmap
+    libc.src.sys.mman.madvise
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  msync_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    msync_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.errno.errno
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munmap
+    libc.src.sys.mman.msync
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  mlock_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    mlock_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.errno.errno
+    libc.src.sys.mman.mlock
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munlock
+    libc.src.sys.mman.munmap
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  mincore_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    mincore_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.errno.errno
+    libc.src.sys.mman.mincore
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munmap
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  shm_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    shm_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.fcntl_macros
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.errno.errno
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munmap
+    libc.src.sys.mman.shm_open
+    libc.src.sys.mman.shm_unlink
+    libc.src.unistd.close
+    libc.src.unistd.ftruncate
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  mmap_stress_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    mmap_stress_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.__support.CPP.atomic
+    libc.src.errno.errno
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.mprotect
+    libc.src.sys.mman.mremap
+    libc.src.sys.mman.munmap
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+# Radix-tree + region-pool state-machine stress. Exercises every
+# FREE↔LIVE↔REMAPPING transition and the alloc_id ABA defence via
+# public mmap/mremap/mprotect/munmap patterns that naturally drive the
+# internal state machine.
+add_libc_unittest(
+  mmap_radix_stress_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    mmap_radix_stress_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.__support.CPP.atomic
+    libc.src.__support.OSUtil.windows.ntdll
+    libc.src.errno.errno
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.mprotect
+    libc.src.sys.mman.mremap
+    libc.src.sys.mman.munmap
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+# Post-fork VA reconcile end-to-end. Forks children that read and write
+# parent pages, allocate independently, and verify CoW isolation.
+add_libc_unittest(
+  mmap_reconcile_fork_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    mmap_reconcile_fork_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.include.llvm-libc-macros.sys_wait_macros
+    libc.src.__support.OSUtil.windows.ntdll
+    libc.src.errno.errno
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munmap
+    libc.src.sys.wait.waitpid
+    libc.src.unistd.fork
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.Test
+)
+
+add_libc_unittest(
+  demand_commit_stress_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    demand_commit_stress_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.__support.CPP.atomic
+    libc.src.errno.errno
+    libc.src.sys.mman.madvise
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.mprotect
+    libc.src.sys.mman.munmap
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  memfd_create_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    memfd_create_test.cpp
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.hdr.types.off_t
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.errno.errno
+    libc.src.fcntl.fcntl
+    libc.src.sys.mman.memfd_create
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munmap
+    libc.src.unistd.close
+    libc.src.unistd.ftruncate
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  mlockall_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    mlockall_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.errno.errno
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.mlockall
+    libc.src.sys.mman.mlock2
+    libc.src.sys.mman.munlockall
+    libc.src.sys.mman.munmap
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  posix_madvise_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    posix_madvise_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.errno.errno
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munmap
+    libc.src.sys.mman.posix_madvise
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+# File-backed partial-unmap public-API surface. The redesign added
+# MONO->CHUNKED shape promotion on first split of a file view; this test
+# black-box-verifies the externally-visible contract for both MAP_SHARED
+# (writes still persist) and MAP_PRIVATE (CoW dirty pages preserved, never
+# leak into backing file) across head/middle/tail partial-unmap shapes.
+add_libc_unittest(
+  mmap_file_partial_unmap_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    mmap_file_partial_unmap_test.cpp
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.__support.CPP.atomic
+    libc.src.__support.OSUtil.windows.ntdll
+    libc.src.errno.errno
+    libc.src.fcntl.open
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.mprotect
+    libc.src.sys.mman.munmap
+    libc.src.unistd.close
+    libc.src.unistd.ftruncate
+    libc.src.unistd.unlink
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+# Plan-mandated four-phase MAP_PRIVATE file CoW stress. Pressures
+# region_flag::COW + CowContext save/restore around MONO->CHUNKED promotion,
+# concurrent partial-unmaps over disjoint slices, and the working-set
+# bounded-leak invariant under mixed-thread churn.
+add_libc_unittest(
+  mmap_private_file_stress
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    mmap_private_file_stress.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.__support.CPP.atomic
+    libc.src.__support.OSUtil.windows.ntdll
+    libc.src.errno.errno
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munmap
+    libc.src.unistd._open_osfhandle
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+# post_dlopen_reconcile contract — when the loader maps a DLL, our
+# mapping table must stamp FOREIGN cordons over the consumed VA so
+# subsequent mmap-with-hint and MAP_FIXED_NOREPLACE behave correctly.
+# Drives both LdrLoadDll/LdrUnloadDll directly (isolating the reconcile
+# function contract) and LIBC_NAMESPACE::dlopen/dlclose end-to-end.
+add_libc_unittest(
+  post_dlopen_reconcile_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    post_dlopen_reconcile_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.__support.CPP.atomic
+    libc.src.__support.OSUtil.windows.mapping_table
+    libc.src.__support.OSUtil.windows.ntdll
+    libc.src.__support.OSUtil.windows.region_pool
+    libc.src.__support.OSUtil.windows.region_reconcile
+    libc.src.dlfcn.dlclose
+    libc.src.dlfcn.dlopen
+    libc.src.errno.errno
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munmap
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.Test
+)

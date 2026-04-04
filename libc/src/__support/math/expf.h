@@ -63,12 +63,12 @@ LIBC_INLINE constexpr float expf(float x) {
     if (xbits.is_pos() && (xbits.uintval() >= 0x42b2'0000)) {
       // x is finite
       if (xbits.uintval() < 0x7f80'0000U) {
+        fputil::set_errno_if_required(ERANGE);
+        fputil::raise_except_if_required(FE_OVERFLOW | FE_INEXACT);
+
         int rounding = fputil::quick_get_round();
         if (rounding == FE_DOWNWARD || rounding == FE_TOWARDZERO)
           return FPBits::max_normal().get_val();
-
-        fputil::set_errno_if_required(ERANGE);
-        fputil::raise_except_if_required(FE_OVERFLOW);
       }
       // x is +inf or nan
       return x + FPBits::inf().get_val();

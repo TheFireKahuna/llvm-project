@@ -344,6 +344,17 @@ public:
                         MacroBuilder &Builder) const override;
 };
 
+// ARM64 Windows NT-POSIX Target
+class LLVM_LIBRARY_VISIBILITY NTPOSIXWindowsARM64TargetInfo
+    : public WindowsARM64TargetInfo {
+public:
+  NTPOSIXWindowsARM64TargetInfo(const llvm::Triple &Triple,
+                                const TargetOptions &Opts);
+
+  void getTargetDefines(const LangOptions &Opts,
+                        MacroBuilder &Builder) const override;
+};
+
 // ARM64 MinGW target
 class LLVM_LIBRARY_VISIBILITY MinGWARM64TargetInfo
     : public WindowsARM64TargetInfo {

@@ -9,7 +9,7 @@
 #ifndef LLVM_LIBC_TYPES_STRUCT_SEMINFO_H
 #define LLVM_LIBC_TYPES_STRUCT_SEMINFO_H
 
-#ifdef __linux__
+#if defined(__linux__) || defined(__NTPOSIX__)
 struct seminfo {
   int semmap;
   int semmni;

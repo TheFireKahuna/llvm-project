@@ -65,13 +65,8 @@ set_windows_itanium_default(LIBCXXABI_ENABLE_STATIC ON BOOL
   "Build libc++abi as static library")
 set_windows_itanium_default(LIBCXXABI_ENABLE_THREADS ON BOOL
   "Build with threads enabled")
-if(LLVM_LIBC_FULL_BUILD)
-  set_windows_itanium_default(LIBCXXABI_HAS_PTHREAD_API ON BOOL
-    "Use pthread API (provided by llvm-libc)")
-else()
-  set_windows_itanium_default(LIBCXXABI_HAS_WIN32_THREAD_API ON BOOL
-    "Use win32 thread API")
-endif()
+set_windows_itanium_default(LIBCXXABI_HAS_WIN32_THREAD_API ON BOOL
+  "Use win32 thread API")
 set_windows_itanium_default(LIBCXXABI_USE_COMPILER_RT OFF BOOL
   "Use compiler-rt")
 
@@ -85,15 +80,8 @@ set_windows_itanium_default(LIBCXX_ENABLE_STATIC OFF BOOL
   "Build libc++ as static library")
 set_windows_itanium_default(LIBCXX_ABI_FORCE_ITANIUM ON BOOL
   "Force Itanium ABI")
-if(LLVM_LIBC_FULL_BUILD)
-  set_windows_itanium_default(LIBCXX_HAS_PTHREAD_API ON BOOL
-    "Use pthread API (provided by llvm-libc)")
-  set_windows_itanium_default(LIBCXX_ENABLE_WIDE_CHARACTERS ON BOOL
-    "Enable wide characters (llvm-libc provides wide I/O)")
-else()
-  set_windows_itanium_default(LIBCXX_HAS_WIN32_THREAD_API ON BOOL
-    "Use win32 thread API")
-endif()
+set_windows_itanium_default(LIBCXX_HAS_WIN32_THREAD_API ON BOOL
+  "Use win32 thread API")
 set_windows_itanium_default(LIBCXX_CXX_ABI "libcxxabi" STRING
   "C++ ABI library")
 set_windows_itanium_default(LIBCXX_ENABLE_STATIC_ABI_LIBRARY ON BOOL
@@ -122,38 +110,20 @@ set(_use_compiler_rt OFF)
 if(LIBUNWIND_USE_COMPILER_RT OR LIBCXXABI_USE_COMPILER_RT OR LIBCXX_USE_COMPILER_RT)
   set(_use_compiler_rt ON)
 endif()
-#===------------------------------------------------------------------------===#
-# libc Configuration
-#===------------------------------------------------------------------------===#
 
-# Shared c.dll is required — runtime DLLs (libunwind, libc++) must share a
-# single libc instance to avoid duplicated global state (heap, fd table,
-# signal handlers). Static c.lib is skipped to avoid import lib conflict.
-set_windows_itanium_default(LIBC_ENABLE_SHARED ON BOOL
-  "Build LLVM libc as a shared library (c.dll)")
-set_windows_itanium_default(LIBC_ENABLE_STATIC OFF BOOL
-  "Build LLVM libc as a static library")
+# wincrt bridges UCRT with Itanium C++ ABI (__cxa_atexit, entry points,
+# security cookie). Required for correct C++ DLL semantics with --rtlib=compiler-rt.
+if(_use_compiler_rt)
+  set_windows_itanium_default(COMPILER_RT_BUILD_WINCRT ON BOOL
+    "Build UCRT bridge for Windows Itanium")
+endif()
 
 #===------------------------------------------------------------------------===#
 # compiler-rt Configuration
 #===------------------------------------------------------------------------===#
 
-# Scudo standalone as libc allocator — disabled until scudo/libc integration
-# works on Windows. When re-enabled, set BUILD_SANITIZERS=ON and
-# SANITIZERS_TO_BUILD=scudo_standalone.
-set_windows_itanium_default(LLVM_LIBC_INCLUDE_SCUDO OFF BOOL
-  "Use scudo standalone as the allocator for LLVM libc")
-if(LLVM_LIBC_INCLUDE_SCUDO)
-  set_windows_itanium_default(COMPILER_RT_BUILD_SANITIZERS ON BOOL
-    "Enable compiler-rt sanitizer build (for scudo standalone)")
-  set_windows_itanium_default(COMPILER_RT_SANITIZERS_TO_BUILD "scudo_standalone" STRING
-    "Only build scudo standalone allocator")
-  set_windows_itanium_default(COMPILER_RT_BUILD_SCUDO_STANDALONE_WITH_LLVM_LIBC ON BOOL
-    "Build scudo with LLVM libc headers")
-else()
-  set_windows_itanium_default(COMPILER_RT_BUILD_SANITIZERS OFF BOOL
-    "Sanitizers disabled (scudo not in use)")
-endif()
+set_windows_itanium_default(COMPILER_RT_BUILD_SANITIZERS OFF BOOL
+  "Sanitizers disabled")
 set_windows_itanium_default(COMPILER_RT_BUILD_XRAY OFF BOOL
   "Unused compiler-rt runtime component")
 set_windows_itanium_default(COMPILER_RT_BUILD_LIBFUZZER OFF BOOL

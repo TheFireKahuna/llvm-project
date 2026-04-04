@@ -136,13 +136,13 @@ Globals &getGlobals() {
 
 } // namespace
 
-#ifdef LLVM_RUNTIME_WIN32
-
-#include "Windows/DynamicLibrary.inc"
-
-#else
+#ifdef LLVM_ON_UNIX
 
 #include "Unix/DynamicLibrary.inc"
+
+#elif defined(_WIN32)
+
+#include "Windows/DynamicLibrary.inc"
 
 #endif
 

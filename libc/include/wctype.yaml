@@ -1,76 +1,250 @@
 header: wctype.h
+standards:
+  - stdc
+macros:
+  - macro_name: WEOF
+    macro_header: wchar-macros.h
 types:
+  - type_name: locale_t
+  - type_name: wctrans_t
+  - type_name: wctype_t
   - type_name: wint_t
 functions:
-  - name: iswalpha
-    standards:
-      - stdc
-    return_type: int
-    arguments:
-      - type: wint_t
-  - name: iswupper
-    standards:
-      - stdc
-    return_type: int
-    arguments:
-      - type: wint_t
-  - name: iswcntrl
-    standards:
-      - stdc
-    return_type: int
-    arguments:
-      - type: wint_t
-  - name: iswgraph
-    standards:
-      - stdc
-    return_type: int
-    arguments:
-      - type: wint_t
-  - name: iswdigit
-    standards:
-      - stdc
-    return_type: int
-    arguments:
-      - type: wint_t
-  - name: iswlower
-    standards:
-      - stdc
-    return_type: int
-    arguments:
-      - type: wint_t
-  - name: iswspace
-    standards:
-      - stdc
-    return_type: int
-    arguments:
-      - type: wint_t
-  - name: iswblank
-    standards:
-      - stdc
-    return_type: int
-    arguments:
-      - type: wint_t
-  - name: iswxdigit
-    standards:
-      - stdc
-    return_type: int
-    arguments:
-      - type: wint_t
   - name: iswalnum
     standards:
       - stdc
     return_type: int
     arguments:
       - type: wint_t
-  - name: iswpunct
+  - name: iswalnum_l
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: wint_t
+      - type: locale_t
+  - name: iswalpha
     standards:
       - stdc
     return_type: int
     arguments:
       - type: wint_t
+  - name: iswalpha_l
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: wint_t
+      - type: locale_t
+  - name: iswblank
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: wint_t
+  - name: iswblank_l
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: wint_t
+      - type: locale_t
+  - name: iswcntrl
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: wint_t
+  - name: iswcntrl_l
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: wint_t
+      - type: locale_t
+  - name: iswctype
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: wint_t
+      - type: wctype_t
+  - name: iswctype_l
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: wint_t
+      - type: wctype_t
+      - type: locale_t
+  - name: iswdigit
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: wint_t
+  - name: iswdigit_l
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: wint_t
+      - type: locale_t
+  - name: iswgraph
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: wint_t
+  - name: iswgraph_l
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: wint_t
+      - type: locale_t
+  - name: iswlower
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: wint_t
+  - name: iswlower_l
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: wint_t
+      - type: locale_t
   - name: iswprint
     standards:
       - stdc
     return_type: int
     arguments:
       - type: wint_t
+  - name: iswprint_l
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: wint_t
+      - type: locale_t
+  - name: iswpunct
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: wint_t
+  - name: iswpunct_l
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: wint_t
+      - type: locale_t
+  - name: iswspace
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: wint_t
+  - name: iswspace_l
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: wint_t
+      - type: locale_t
+  - name: iswupper
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: wint_t
+  - name: iswupper_l
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: wint_t
+      - type: locale_t
+  - name: iswxdigit
+    standards:
+      - stdc
+    return_type: int
+    arguments:
+      - type: wint_t
+  - name: iswxdigit_l
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: wint_t
+      - type: locale_t
+  - name: towctrans
+    standards:
+      - stdc
+    return_type: wint_t
+    arguments:
+      - type: wint_t
+      - type: wctrans_t
+  - name: towctrans_l
+    standards:
+      - posix
+    return_type: wint_t
+    arguments:
+      - type: wint_t
+      - type: wctrans_t
+      - type: locale_t
+  - name: towlower
+    standards:
+      - stdc
+    return_type: wint_t
+    arguments:
+      - type: wint_t
+  - name: towlower_l
+    standards:
+      - posix
+    return_type: wint_t
+    arguments:
+      - type: wint_t
+      - type: locale_t
+  - name: towupper
+    standards:
+      - stdc
+    return_type: wint_t
+    arguments:
+      - type: wint_t
+  - name: towupper_l
+    standards:
+      - posix
+    return_type: wint_t
+    arguments:
+      - type: wint_t
+      - type: locale_t
+  - name: wctrans
+    standards:
+      - stdc
+    return_type: wctrans_t
+    arguments:
+      - type: const char *
+  - name: wctrans_l
+    standards:
+      - posix
+    return_type: wctrans_t
+    arguments:
+      - type: const char *
+      - type: locale_t
+  - name: wctype
+    standards:
+      - stdc
+    return_type: wctype_t
+    arguments:
+      - type: const char *
+  - name: wctype_l
+    standards:
+      - posix
+    return_type: wctype_t
+    arguments:
+      - type: const char *
+      - type: locale_t

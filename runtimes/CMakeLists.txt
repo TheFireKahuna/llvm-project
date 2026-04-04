@@ -100,19 +100,21 @@ endif()
 
 # Windows Itanium ABI support - detect target and apply recommended defaults.
 include(HandleWindowsItaniumDefaults)
+# NTPOSIX (POSIX-on-NT) support - detect target and apply recommended defaults.
+include(HandleNTPOSIXDefaults)
 include(DetectMSVCLike)
 
 if(LLVM_TREE_AVAILABLE)
-  if(WIN32_ITANIUM)
-    # Windows Itanium: stage only DLLs to avoid file locking during parallel
-    # builds. Keep .lib files in the standard location (LLVM_LIBRARY_DIR) so
-    # the linker can find them - the WindowsItanium driver adds ../lib to the
-    # library search path. DLLs go to a staging directory to prevent conflicts
-    # when ninja runs clang.exe (which loads DLLs) while rebuilding them.
+  if(WIN32_ITANIUM OR WIN32_NTPOSIX)
+    # Windows Itanium/NTPOSIX: stage only DLLs to avoid file locking during
+    # parallel builds. Keep .lib files in the standard location (LLVM_LIBRARY_DIR)
+    # so the linker can find them - the driver adds ../lib to the library search
+    # path. DLLs go to a staging directory to prevent conflicts when ninja runs
+    # clang.exe (which loads DLLs) while rebuilding them.
     set(_WI_RUNTIME_STAGING_DIR "${CMAKE_BINARY_DIR}/runtime-staging")
     set(LLVM_LIBRARY_OUTPUT_INTDIR ${LLVM_LIBRARY_DIR})
     set(LLVM_RUNTIME_OUTPUT_INTDIR "${_WI_RUNTIME_STAGING_DIR}/bin")
-    message(STATUS "Windows Itanium: staging DLLs to ${_WI_RUNTIME_STAGING_DIR}/bin")
+    message(STATUS "Staging DLLs to ${_WI_RUNTIME_STAGING_DIR}/bin")
   else()
     # Standard: output directly to top-level build directories.
     set(LLVM_LIBRARY_OUTPUT_INTDIR ${LLVM_LIBRARY_DIR})
@@ -218,8 +220,8 @@ set(LLVM_COMPILER_CHECKED ON)
 include(AddLLVM)
 include(HandleLLVMOptions)
 
-# Windows Itanium: install staged DLLs. Requires GNUInstallDirs from AddLLVM
-if(LLVM_TREE_AVAILABLE AND WIN32_ITANIUM)
+# Windows Itanium/NTPOSIX: install staged DLLs. Requires GNUInstallDirs from AddLLVM
+if(LLVM_TREE_AVAILABLE AND (WIN32_ITANIUM OR WIN32_NTPOSIX))
   install(DIRECTORY "${_WI_RUNTIME_STAGING_DIR}/bin/"
           DESTINATION "${CMAKE_INSTALL_BINDIR}"
           FILES_MATCHING PATTERN "*.dll")

@@ -96,11 +96,21 @@ if (LIBCXX_ENABLE_LOCALIZATION)
 endif()
 
 if(WIN32)
-  list(APPEND LIBCXX_SOURCES
-    support/win32/compiler_rt_shims.cpp
-    support/win32/locale_win32.cpp
-    support/win32/support.cpp
-    )
+  if (NOT LIBCXX_USE_COMPILER_RT)
+    list(APPEND LIBCXX_SOURCES
+      support/win32/compiler_rt_shims.cpp
+      )
+  endif()
+
+  # locale_win32 and support use MSVCRT-specific APIs (_create_locale,
+  # wcrtomb_s, errno_t).  NTPOSIX uses llvm-libc which provides POSIX
+  # locale and wchar functions directly.
+  if (NOT WIN32_NTPOSIX)
+    list(APPEND LIBCXX_SOURCES
+      support/win32/locale_win32.cpp
+      support/win32/support.cpp
+      )
+  endif()
 
   if (NOT LIBCXX_HAS_PTHREAD_API)
     list(APPEND LIBCXX_SOURCES

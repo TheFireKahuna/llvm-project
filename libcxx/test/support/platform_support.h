@@ -22,7 +22,7 @@
 #ifdef __linux__
 #    define LOCALE_fr_CA_ISO8859_1 "fr_CA.ISO-8859-1"
 #    define LOCALE_cs_CZ_ISO8859_2 "cs_CZ.ISO-8859-2"
-#elif defined(LLVM_RUNTIME_WIN32)
+#elif defined(_LIBCPP_WIN32API)
 #    define LOCALE_fr_CA_ISO8859_1 "fr-CA"
 #    define LOCALE_cs_CZ_ISO8859_2 "cs-CZ"
 #else
@@ -57,7 +57,7 @@ extern "C" {
 #endif
 
 inline std::string get_temp_file_name() {
-#if defined(LLVM_RUNTIME_WIN32)
+#if _LIBCPP_WIN32API
   while (true) {
     char Name[] = "libcxx.XXXXXX";
     if (_mktemp_s(Name, sizeof(Name)) != 0)

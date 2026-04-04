@@ -21,7 +21,7 @@ LLVM_LIBC_FUNCTION(int, pthread_key_create,
                    (pthread_key_t * key, __pthread_tss_dtor_t dtor)) {
   auto k = LIBC_NAMESPACE::new_tss_key(dtor);
   if (!k)
-    return EINVAL;
+    return EAGAIN;
   *key = *k;
   return 0;
 }

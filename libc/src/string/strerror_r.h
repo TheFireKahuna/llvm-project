@@ -14,7 +14,7 @@
 
 namespace LIBC_NAMESPACE_DECL {
 
-char *strerror_r(int err_num, char *buf, size_t buflen);
+int strerror_r(int err_num, char *buf, size_t buflen);
 
 } // namespace LIBC_NAMESPACE_DECL
 

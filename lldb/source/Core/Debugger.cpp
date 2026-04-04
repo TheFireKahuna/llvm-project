@@ -1121,7 +1121,7 @@ Debugger::Debugger(lldb::LogOutputCallback log_callback, void *baton)
         });
   }
 
-#if defined(_WIN32) && defined(ENABLE_VIRTUAL_TERMINAL_PROCESSING)
+#if defined(LLVM_RUNTIME_WIN32) && defined(ENABLE_VIRTUAL_TERMINAL_PROCESSING)
   // Enabling use of ANSI color codes because LLDB is using them to highlight
   // text.
   llvm::sys::Process::UseANSIEscapeCodes(true);
@@ -2126,7 +2126,7 @@ void Debugger::CancelForwardEvents(const ListenerSP &listener_sp) {
 /// Conservative heuristic to detect whether OSC 9;4 progress is supported by
 /// the current terminal.
 static bool TerminalSupportsOSCProgress() {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   // On Windows, we assume that the user is using the Windows Terminal.
   return true;
 #else
@@ -2175,7 +2175,7 @@ bool Debugger::IsEscapeCodeCapableTTY() {
 bool Debugger::StatuslineSupported() {
 // We have trouble with the contol codes on Windows, see
 // https://github.com/llvm/llvm-project/issues/134846.
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   return GetShowStatusline() && IsEscapeCodeCapableTTY();
 #else
   return false;

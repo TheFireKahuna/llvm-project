@@ -9,7 +9,8 @@
 #include <detail/global_objects.hpp>
 #include <detail/platform_impl.hpp>
 
-#if defined(LLVM_RUNTIME_WIN32)
+#if defined(_WIN32) && !defined(__NTPOSIX__)
+#  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
 #endif
 

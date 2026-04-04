@@ -1,0 +1,109 @@
+add_custom_target(libc_sys_stat_windows_unittests)
+
+add_libc_unittest(
+  stat_test
+  SUITE
+    libc_sys_stat_windows_unittests
+  SRCS
+    stat_test.cpp
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.include.sys_stat
+    libc.src.errno.errno
+    libc.src.fcntl.open
+    libc.src.sys.stat.mkdir
+    libc.src.sys.stat.stat
+    libc.src.unistd.close
+    libc.src.unistd.rmdir
+    libc.src.unistd.unlink
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  fstat_test
+  SUITE
+    libc_sys_stat_windows_unittests
+  SRCS
+    fstat_test.cpp
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.include.sys_stat
+    libc.src.errno.errno
+    libc.src.fcntl.open
+    libc.src.sys.stat.fstat
+    libc.src.unistd.close
+    libc.src.unistd.unlink
+    libc.src.unistd.write
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  lstat_test
+  SUITE
+    libc_sys_stat_windows_unittests
+  SRCS
+    lstat_test.cpp
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.include.sys_stat
+    libc.src.errno.errno
+    libc.src.fcntl.open
+    libc.src.sys.stat.lstat
+    libc.src.unistd.close
+    libc.src.unistd.unlink
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  mkdir_test
+  SUITE
+    libc_sys_stat_windows_unittests
+  SRCS
+    mkdir_test.cpp
+  DEPENDS
+    libc.include.sys_stat
+    libc.src.errno.errno
+    libc.src.sys.stat.mkdir
+    libc.src.unistd.rmdir
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  fstatat_mkdirat_test
+  SUITE
+    libc_sys_stat_windows_unittests
+  SRCS
+    fstatat_mkdirat_test.cpp
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.include.sys_stat
+    libc.include.unistd
+    libc.src.errno.errno
+    libc.src.fcntl.open
+    libc.src.sys.stat.fstatat
+    libc.src.sys.stat.mkdir
+    libc.src.sys.stat.mkdirat
+    libc.src.unistd.close
+    libc.src.unistd.rmdir
+    libc.src.unistd.unlink
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  mkfifo_test
+  SUITE
+    libc_sys_stat_windows_unittests
+  SRCS
+    mkfifo_test.cpp
+  DEPENDS
+    libc.include.sys_stat
+    libc.src.errno.errno
+    libc.src.sys.stat.mkfifo
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)

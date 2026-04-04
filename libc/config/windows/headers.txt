@@ -1,11 +1,67 @@
 set(TARGET_PUBLIC_HEADERS
+    libc.include.arpa_inet
+    libc.include.assert
+    libc.include.complex
     libc.include.ctype
-    libc.include.string
-    libc.include.inttypes
-    libc.include.stdlib
+    libc.include.dirent
+    libc.include.dlfcn
     libc.include.errno
+    libc.include.execinfo
+    libc.include.fcntl
     libc.include.fenv
+    libc.include.float
+    libc.include.inttypes
+    libc.include.langinfo
+    libc.include.libgen
+    libc.include.limits
+    libc.include.locale
     libc.include.math
+    libc.include.malloc
+    libc.include.netinet_in
+    libc.include.grp
+    libc.include.poll
+    libc.include.pthread
+    libc.include.pwd
+    libc.include.sched
+    libc.include.search
+    libc.include.semaphore
+    libc.include.setjmp
+    libc.include.signal
+    libc.include.spawn
+    libc.include.stdbit
+    libc.include.stdio
+    libc.include.stdlib
+    libc.include.string
+    libc.include.strings
+    libc.include.sys_epoll
+    libc.include.sys_inotify
+    libc.include.sys_futex
+    libc.include.sys_mman
+    libc.include.sys_ntabi
+    libc.include.sys_random
+    libc.include.sys_resource
+    libc.include.sys_select
+    libc.include.sys_syscall
+    libc.include.sys_ioctl
+    libc.include.sys_ipc
+    libc.include.sys_sem
+    libc.include.sys_sendfile
+    libc.include.sys_shm
+    libc.include.sys_socket
+    libc.include.sys_stat
+    libc.include.sys_statvfs
+    libc.include.sys_time
+    libc.include.sys_types
+    libc.include.sys_un
+    libc.include.sys_uio
+    libc.include.sys_utsname
+    libc.include.sys_wait
+    libc.include.sysexits
+    libc.include.termios
+    libc.include.threads
+    libc.include.time
+    libc.include.uchar
     libc.include.unistd
+    libc.include.wchar
     libc.include.wctype
 )

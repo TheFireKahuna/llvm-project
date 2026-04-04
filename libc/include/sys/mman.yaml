@@ -32,14 +32,14 @@ functions:
       - POSIX
     return_type: int
     arguments:
-      - type: void *
+      - type: const void *
       - type: size_t
   - name: mlock2
     standards:
       - Linux
     return_type: int
     arguments:
-      - type: void *
+      - type: const void *
       - type: size_t
       - type: unsigned int
   - name: mlockall
@@ -89,7 +89,7 @@ functions:
     standards: POSIX
     return_type: int
     arguments:
-      - type: void *
+      - type: const void *
       - type: size_t
   - name: munlockall
     standards:
@@ -157,6 +157,13 @@ functions:
       - type: int
       - type: size_t
       - type: int
+  - name: memfd_create
+    standards:
+      - Linux
+    return_type: int
+    arguments:
+      - type: const char *
+      - type: unsigned int
   - name: shm_open
     standards:
       - POSIX
@@ -165,6 +172,35 @@ functions:
       - type: const char *
       - type: int
       - type: mode_t
+  - name: mbind
+    standards:
+      - Linux
+    return_type: long
+    arguments:
+      - type: void *
+      - type: unsigned long
+      - type: int
+      - type: const unsigned long *
+      - type: unsigned long
+      - type: unsigned int
+  - name: get_mempolicy
+    standards:
+      - Linux
+    return_type: long
+    arguments:
+      - type: int *
+      - type: unsigned long *
+      - type: unsigned long
+      - type: void *
+      - type: unsigned long
+  - name: set_mempolicy
+    standards:
+      - Linux
+    return_type: long
+    arguments:
+      - type: int
+      - type: const unsigned long *
+      - type: unsigned long
   - name: shm_unlink
     standards:
       - POSIX

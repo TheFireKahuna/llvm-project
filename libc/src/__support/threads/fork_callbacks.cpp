@@ -47,10 +47,11 @@ public:
     return true;
   }
 
+  // POSIX: prepare handlers run in LIFO order (last registered first).
   void invoke_prepare() {
     cpp::lock_guard lock(mtx);
-    for (size_t i = 0; i < next_index; ++i) {
-      auto prepare = list[i].prepare;
+    for (size_t i = next_index; i > 0; --i) {
+      auto prepare = list[i - 1].prepare;
       if (prepare)
         prepare();
     }

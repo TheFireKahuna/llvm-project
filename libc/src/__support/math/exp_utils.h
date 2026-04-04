@@ -9,8 +9,11 @@
 #ifndef LLVM_LIBC_SRC___SUPPORT_MATH_EXP_UTILS_H
 #define LLVM_LIBC_SRC___SUPPORT_MATH_EXP_UTILS_H
 
+#include "hdr/errno_macros.h"
+#include "hdr/fenv_macros.h"
 #include "src/__support/CPP/bit.h"
 #include "src/__support/CPP/optional.h"
+#include "src/__support/FPUtil/FEnvImpl.h"
 #include "src/__support/FPUtil/FPBits.h"
 
 namespace LIBC_NAMESPACE_DECL {
@@ -65,6 +68,17 @@ ziv_test_denorm(int hi, double mid, double lo, double err) {
 
     return cpp::nullopt;
   }
+}
+
+// Signal underflow for a denormal result from an exp-family function.
+// exp/exp2/exp10 are transcendental, so subnormal results are always inexact.
+// Call this on the final result of any denorm computation path.
+LIBC_INLINE constexpr double signal_underflow_if_subnormal(double r) {
+  if (LIBC_UNLIKELY(fputil::FPBits<double>(r).is_subnormal())) {
+    fputil::set_errno_if_required(ERANGE);
+    fputil::raise_except_if_required(FE_UNDERFLOW | FE_INEXACT);
+  }
+  return r;
 }
 
 } // namespace LIBC_NAMESPACE_DECL

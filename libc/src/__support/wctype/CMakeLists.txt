@@ -12,3 +12,12 @@ add_object_library(
     libc.src.__support.CPP.limits
     libc.src.__support.libc_assert
 )
+
+add_header_library(
+  wctype_descriptors
+  HDRS
+    wctype_descriptors.h
+  DEPENDS
+    libc.hdr.types.wctrans_t
+    libc.hdr.types.wctype_t
+)

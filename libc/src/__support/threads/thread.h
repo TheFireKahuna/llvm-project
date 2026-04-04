@@ -10,6 +10,8 @@
 #define LLVM_LIBC_SRC___SUPPORT_THREADS_THREAD_H
 
 #include "hdr/stdint_proxy.h"
+#include "hdr/types/clockid_t.h"
+#include "hdr/types/struct_timespec.h"
 #include "src/__support/CPP/atomic.h"
 #include "src/__support/CPP/optional.h"
 #include "src/__support/CPP/string_view.h"
@@ -18,8 +20,11 @@
 #include "src/__support/macros/config.h"
 #include "src/__support/macros/properties/architectures.h"
 
-// TODO: fix this unguarded linux dep
-#include <linux/param.h> // for exec_pagesize.
+#if defined(__linux__)
+#include <linux/param.h> // for EXEC_PAGESIZE
+#else
+#define EXEC_PAGESIZE 4096
+#endif
 
 #include <stddef.h> // For size_t
 
@@ -51,10 +56,42 @@ constexpr unsigned int STACK_ALIGNMENT = 8;
 #endif
 // TODO: Provide stack alignment requirements for other architectures.
 
+// Lifecycle's `detach_state` is the SINGLE atomic that arbitrates which
+// thread (the joinable owner / the detacher / the dying thread itself /
+// a joiner) is responsible for the lifecycle's final retire. Every
+// transition is a CAS so that double-join, double-detach, and the
+// thread-exit-vs-detach race converge to a single owner without the
+// possibility of two threads concurrently entering the retire path
+// (which would corrupt the Crystalline batch chain).
+//
+// State transitions:
+//
+//      JOINABLE ──┬──> JOINING   (joiner CAS, owns retire)
+//                 ├──> DETACHED  (detacher CAS, dying thread retires)
+//                 └──> EXITING   (dying thread CAS, joiner will claim)
+//
+//      EXITING  ──┬──> JOINING   (joiner CAS, owns retire)
+//                 └──> JOINING   (late detacher CAS, owns retire)
+//
+//      DETACHED  └─> (terminal — retire owned by dying thread's
+//                     lifecycle_cleanup; second detach is UB and
+//                     refused via CAS failure.)
+//
+//      JOINING   └─> (terminal — second join/detach refused via CAS
+//                     failure with EINVAL.)
+//
+// The values are non-overlapping byte patterns so a corrupted/free'd
+// lifecycle's stale detach_state is unlikely to alias a valid one and
+// quietly slip through a CAS.
 enum class DetachState : uint32_t {
   JOINABLE = 0x11,
   EXITING = 0x22,
-  DETACHED = 0x33
+  DETACHED = 0x33,
+  // Joiner / late-detacher claimed cleanup ownership. Set via CAS
+  // from JOINABLE or EXITING; only the winner runs cleanup +
+  // registry_deregister_and_retire. Any other thread that tries to
+  // join/detach observes JOINING and returns EINVAL.
+  JOINING = 0x44,
 };
 
 enum class ThreadStyle : uint8_t { POSIX = 0x1, STDC = 0x2 };
@@ -193,6 +230,27 @@ struct Thread {
     return 0;
   }
 
+  int try_join(void **val) {
+    ThreadReturnValue retval;
+    int status = try_join(retval);
+    if (status != 0)
+      return status;
+    if (val != nullptr)
+      *val = retval.posix_retval;
+    return 0;
+  }
+
+  int timed_join(void **val, clockid_t clockid,
+                 const struct timespec *abstime) {
+    ThreadReturnValue retval;
+    int status = timed_join(retval, clockid, abstime);
+    if (status != 0)
+      return status;
+    if (val != nullptr)
+      *val = retval.posix_retval;
+    return 0;
+  }
+
   // Platform should implement the functions below.
 
   // Return 0 on success or an error value on failure.
@@ -201,6 +259,21 @@ struct Thread {
 
   // Return 0 on success or an error value on failure.
   int join(ThreadReturnValue &retval);
+
+  // Non-blocking join. If the target thread has already terminated, behaves
+  // like join() (drains retval, releases lifecycle, returns 0). Otherwise
+  // returns EBUSY without changing any state — pthread_tryjoin_np contract.
+  // EINVAL on detached / already-claimed-for-join targets.
+  int try_join(ThreadReturnValue &retval);
+
+  // Bounded join. Waits for the target to terminate up to `abstime` measured
+  // against `clockid` (CLOCK_REALTIME or CLOCK_MONOTONIC). On termination
+  // within the deadline, behaves like join(). Returns ETIMEDOUT if the
+  // deadline elapses before termination; EINVAL on bad clock / detached /
+  // already-claimed; the underlying wait is alertable so cancellation
+  // (pthread_cancel) is delivered.
+  int timed_join(ThreadReturnValue &retval, clockid_t clockid,
+                 const struct timespec *abstime);
 
   // Detach a joinable thread.
   //
@@ -248,7 +321,7 @@ ThreadAtExitCallbackMgr *get_thread_atexit_callback_mgr();
 
 // Call the currently registered thread specific atexit callbacks. Useful for
 // implementing the thread_exit function.
-void call_atexit_callbacks(ThreadAttributes *attrib);
+void call_atexit_callbacks(ThreadAttributes *attrib, void *dso = nullptr);
 
 } // namespace internal
 
