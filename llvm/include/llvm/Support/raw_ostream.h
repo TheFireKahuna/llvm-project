@@ -469,7 +469,7 @@ class LLVM_ABI raw_fd_ostream : public raw_pwrite_stream {
   /// tied-to stream will be flushed first.
   raw_ostream *TiedStream = nullptr;
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   /// True if this fd refers to a Windows console device. Mintty and other
   /// terminal emulators are TTYs, but they are not consoles.
   bool IsWindowsConsole = false;

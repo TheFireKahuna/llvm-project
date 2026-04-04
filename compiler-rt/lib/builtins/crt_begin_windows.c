@@ -19,7 +19,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 
 // Function pointer types matching UCRT conventions.
 typedef int (__cdecl *_PIFV)(void);   // C initializers
@@ -57,4 +57,4 @@ WINCRT_SELECTANY void *__dso_handle = &__dso_handle;
 
 WINCRT_SELECTANY int _fltused = 0x9875;
 
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32

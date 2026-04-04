@@ -16,7 +16,7 @@ bool is_accessible(size_t page) {
 // allocate_memory_with_holes returns a pointer to `num_pages` pages of memory,
 // where some of the pages are inaccessible (even to debugging APIs). We use
 // this to test lldb's ability to skip over inaccessible blocks.
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 #include "Windows.h"
 
 int getpagesize() {

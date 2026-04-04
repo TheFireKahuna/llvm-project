@@ -23,7 +23,7 @@
 #ifndef COMPILER_RT_LIB_WINCRT_INTERNAL_H
 #define COMPILER_RT_LIB_WINCRT_INTERNAL_H
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 #error "This file is Windows-only"
 #endif
 

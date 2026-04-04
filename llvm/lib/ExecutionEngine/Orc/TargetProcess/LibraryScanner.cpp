@@ -418,7 +418,7 @@ DylibResolverImpl::resolve(StringRef LibStem, bool VariateLibStem) const {
   return std::nullopt;
 }
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 mode_t PathResolver::lstatCached(StringRef Path) {
   // If already cached - retun cached result
   if (auto Cache = LibPathCache->read_lstat(Path))
@@ -544,7 +544,7 @@ std::optional<std::string> PathResolver::realpathCached(StringRef Path,
 
   StringRef Separator(sys::path::get_separator());
   SmallString<256> Resolved(Separator);
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   SmallVector<StringRef, 16> Components;
 
   if (isRelative) {

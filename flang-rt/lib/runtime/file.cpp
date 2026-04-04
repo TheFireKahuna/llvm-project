@@ -16,7 +16,7 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <sys/stat.h>
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "flang/Common/windows-include.h"
 #include <io.h>
 #else
@@ -31,7 +31,7 @@ void OpenFile::set_path(OwningPtr<char> &&path, std::size_t bytes) {
 }
 
 static int openfile_mkstemp(IoErrorHandler &handler) {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   const unsigned int uUnique{0};
   // GetTempFileNameA needs a directory name < MAX_PATH-14 characters in length.
   // https://docs.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-gettempfilenamea
@@ -54,7 +54,7 @@ static int openfile_mkstemp(IoErrorHandler &handler) {
   if (fd < 0) {
     handler.SignalErrno();
   }
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   ::unlink(path);
 #endif
   return fd;
@@ -88,7 +88,7 @@ void OpenFile::Open(OpenStatus status, common::optional<Action> action,
       return;
     }
     int flags{0};
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     // We emit explicit CR+LF line endings and cope with them on input
     // for formatted files, since we can't yet always know now at OPEN
     // time whether the file is formatted or not.
@@ -154,13 +154,13 @@ void OpenFile::Open(OpenStatus status, common::optional<Action> action,
   mayWrite_ = *action != Action::Read;
   if (status == OpenStatus::Old || status == OpenStatus::Unknown) {
     knownSize_.reset();
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
     struct stat buf;
     if (fd_ >= 0 && ::fstat(fd_, &buf) == 0) {
       mayPosition_ = S_ISREG(buf.st_mode);
       knownSize_ = buf.st_size;
     }
-#else // _WIN32
+#else // LLVM_RUNTIME_WIN32
     struct _stat64 buf;
     if (fd_ >= 0 && ::_fstat64(fd_, &buf) == 0) {
       mayPosition_ = S_IFREG & buf.st_mode;
@@ -186,7 +186,7 @@ void OpenFile::Predefine(int fd) {
   mayRead_ = fd == 0;
   mayWrite_ = fd != 0;
   mayPosition_ = false;
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   isWindowsTextFile_ = true;
 #endif
 }
@@ -266,7 +266,7 @@ std::size_t OpenFile::Write(FileOffset at, const char *buffer,
 }
 
 inline static int openfile_ftruncate(int fd, OpenFile::FileOffset at) {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   return ::_chsize(fd, at);
 #else
   return ::ftruncate(fd, at);
@@ -467,12 +467,12 @@ bool MayReadAndWrite(const char *path) {
 }
 
 std::int64_t SizeInBytes(const char *path) {
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   struct stat buf;
   if (::stat(path, &buf) == 0) {
     return buf.st_size;
   }
-#else // TODO: _WIN32
+#else // TODO: LLVM_RUNTIME_WIN32
 #endif
   // No Fortran compiler signals an error
   return -1;

@@ -25,7 +25,7 @@
 #include "llvm/TargetParser/Host.h"
 #include <cstdio>
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
   #define WIN32_LEAN_AND_MEAN
   #define NOGDI
   #ifndef NOMINMAX
@@ -358,7 +358,7 @@ void visualstudio::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     if (TC.getSanitizerArgs(Args).needsAsanRt())
       CmdArgs.push_back("/INFERASANLIBS:NO");
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
     // When cross-compiling with VS2017 or newer, link.exe expects to have
     // its containing bin directory at the top of PATH, followed by the
     // native target bin directory.
@@ -611,7 +611,7 @@ bool MSVCToolChain::getUniversalCRTLibraryPath(const ArgList &Args,
 
 static VersionTuple getMSVCVersionFromExe(const std::string &BinDir) {
   VersionTuple Version;
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
   SmallString<128> ClExe(BinDir);
   llvm::sys::path::append(ClExe, "cl.exe");
 
@@ -779,7 +779,7 @@ void MSVCToolChain::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
     return;
   }
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   // As a fallback, select default install paths.
   // FIXME: Don't guess drives and paths like this on Windows.
   const StringRef Paths[] = {

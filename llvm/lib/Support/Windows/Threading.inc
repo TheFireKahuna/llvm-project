@@ -10,6 +10,263 @@
 //
 //===----------------------------------------------------------------------===//
 
+#ifdef LLVM_RUNTIME_POSIX
+// LLVM libc provides POSIX pthreads and sched_*affinity on Windows.
+// Thread affinity uses sched_getaffinity/sched_setaffinity (GNU extension).
+// EcoQoS power throttling and physical core topology require ntdll directly
+// — these have no POSIX or GNU equivalents.
+#include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/Twine.h"
+#include "llvm/Support/Windows/WindowsSupport.h"
+#include "llvm/Support/thread.h"
+
+#include <bitset>
+#include <pthread.h>
+#include <sched.h>
+#include <sys/mman.h>
+#include <thread>
+#include <unistd.h>
+
+// --- NT declarations for features beyond POSIX scope ---
+// EcoQoS power throttling and physical core topology have no POSIX
+// equivalents. Thread affinity uses sched_getaffinity/sched_setaffinity
+// (GNU extension, provided by our libc). Struct types come from
+// <sys/ntabi.h> via WindowsSupport.h.
+extern "C" {
+__declspec(dllimport) NTSTATUS NTAPI NtSetInformationThread(
+    HANDLE, ULONG, void *, ULONG);
+__declspec(dllimport) NTSTATUS NTAPI NtQuerySystemInformation(
+    ULONG, void *, ULONG, ULONG *);
+// NUMA policy — Linux extension, provided by our libc on Windows.
+long get_mempolicy(int *, unsigned long *, unsigned long, void *, unsigned long);
+} // extern "C"
+
+static const auto NtCurrentThread_ = reinterpret_cast<HANDLE>(
+    static_cast<LONG_PTR>(-2));
+
+// Information classes for NT calls with no POSIX equivalent.
+static constexpr ULONG ThreadPowerThrottling_ = 49;
+static constexpr ULONG SysLogicalProcInfoEx_ = 107;
+
+// EcoQoS power throttling (Win11+, no POSIX equivalent).
+struct ThreadPowerThrottlingState_ {
+  ULONG Version;
+  ULONG ControlMask;
+  ULONG StateMask;
+};
+static constexpr ULONG THROTTLE_VERSION_ = 1;
+static constexpr ULONG THROTTLE_EXEC_SPEED_ = 1;
+
+// --- Thread lifecycle (POSIX pthreads) ---
+
+namespace llvm {
+pthread_t
+llvm_execute_on_thread_impl(void *(*ThreadFunc)(void *), void *Arg,
+                            std::optional<unsigned> StackSizeInBytes) {
+  int errnum;
+  pthread_attr_t Attr;
+  if ((errnum = ::pthread_attr_init(&Attr)) != 0)
+    report_fatal_error("pthread_attr_init failed");
+
+  if (StackSizeInBytes) {
+    if ((errnum = ::pthread_attr_setstacksize(&Attr, *StackSizeInBytes)) != 0)
+      report_fatal_error("pthread_attr_setstacksize failed");
+  }
+
+  pthread_t Thread;
+  if ((errnum = ::pthread_create(&Thread, &Attr, ThreadFunc, Arg)) != 0)
+    report_fatal_error("pthread_create failed");
+
+  ::pthread_attr_destroy(&Attr);
+  return Thread;
+}
+
+void llvm_thread_join_impl(pthread_t Thread) {
+  if (int errnum = ::pthread_join(Thread, nullptr))
+    report_fatal_error("pthread_join failed");
+}
+
+void llvm_thread_detach_impl(pthread_t Thread) {
+  if (int errnum = ::pthread_detach(Thread))
+    report_fatal_error("pthread_detach failed");
+}
+
+llvm::thread::id llvm_thread_get_id_impl(pthread_t Thread) {
+  return Thread;
+}
+
+llvm::thread::id llvm_thread_get_current_id_impl() {
+  return ::pthread_self();
+}
+
+} // namespace llvm
+
+// --- Thread naming (POSIX) ---
+
+uint64_t llvm::get_threadid() { return uint64_t(::pthread_self()); }
+
+uint32_t llvm::get_max_thread_name_length() { return 0; }
+
+void llvm::set_thread_name(const Twine &Name) {
+  SmallString<64> Storage;
+  StringRef NameStr = Name.toNullTerminatedStringRef(Storage);
+  ::pthread_setname_np(::pthread_self(), NameStr.data());
+}
+
+void llvm::get_thread_name(SmallVectorImpl<char> &Name) { Name.clear(); }
+
+// --- Thread priority (POSIX sched + NT EcoQoS) ---
+
+llvm::SetThreadPriorityResult
+llvm::set_thread_priority(ThreadPriority Priority) {
+  // EcoQoS power throttling via NT — no POSIX equivalent exists.
+  // This enables the OS to schedule Background threads on efficiency cores
+  // at reduced frequency (Win11+ heterogeneous scheduling).
+  ThreadPowerThrottlingState_ PTS{};
+  PTS.Version = THROTTLE_VERSION_;
+  if (Priority == ThreadPriority::Background) {
+    PTS.ControlMask = THROTTLE_EXEC_SPEED_;
+    PTS.StateMask = THROTTLE_EXEC_SPEED_;
+  }
+  // Ignore failure — EcoQoS is best-effort.
+  NtSetInformationThread(NtCurrentThread_, ThreadPowerThrottling_,
+                         &PTS, sizeof(PTS));
+
+  // Base scheduling priority via POSIX (our libc maps to NtSetInformationThread
+  // ThreadBasePriority internally).
+  struct sched_param Param = {};
+  int Policy;
+  if (Priority == ThreadPriority::Background) {
+    Policy = SCHED_RR;
+    Param.sched_priority = 1; // Maps to NT THREAD_PRIORITY_LOWEST
+  } else {
+    Policy = SCHED_OTHER;
+    Param.sched_priority = 0; // Maps to NT THREAD_PRIORITY_NORMAL
+  }
+  if (::pthread_setschedparam(::pthread_self(), Policy, &Param) == 0)
+    return SetThreadPriorityResult::SUCCESS;
+  return SetThreadPriorityResult::FAILURE;
+}
+
+// --- Hardware thread count ---
+
+static int computeHostNumHardwareThreads() {
+  if (unsigned Val = std::thread::hardware_concurrency())
+    return Val;
+  long N = ::sysconf(_SC_NPROCESSORS_ONLN);
+  return N > 0 ? static_cast<int>(N) : 1;
+}
+
+// --- CPU topology (POSIX get_mempolicy for NUMA, NT for physical cores) ---
+
+unsigned llvm::get_cpus() {
+  // NUMA topology via POSIX memory policy. get_mempolicy with
+  // MPOL_F_MEMS_ALLOWED returns the set of NUMA nodes available to this
+  // process — the closest POSIX equivalent to Windows processor groups.
+  unsigned long nodemask[16] = {}; // Up to 1024 NUMA nodes.
+  if (::get_mempolicy(nullptr, nodemask, sizeof(nodemask) * 8, nullptr,
+                      MPOL_F_MEMS_ALLOWED) == 0) {
+    unsigned Count = 0;
+    for (unsigned long Bits : nodemask)
+      Count += __builtin_popcountl(Bits);
+    if (Count > 0)
+      return Count;
+  }
+  return 1;
+}
+
+int llvm::get_physical_cores() {
+  // POSIX has no API to distinguish physical from logical cores.
+  // Use NT system information to count RelationProcessorCore entries.
+  static int Cores = [] {
+    ULONG Len = 0;
+    NtQuerySystemInformation(SysLogicalProcInfoEx_, nullptr, 0, &Len);
+    if (Len == 0)
+      return computeHostNumHardwareThreads();
+
+    auto *Buf = static_cast<uint8_t *>(std::calloc(1, Len));
+    if (!Buf)
+      return computeHostNumHardwareThreads();
+
+    NTSTATUS St = NtQuerySystemInformation(SysLogicalProcInfoEx_,
+                                           Buf, Len, &Len);
+    if (St < 0) {
+      std::free(Buf);
+      return computeHostNumHardwareThreads();
+    }
+
+    int Count = 0;
+    for (ULONG Off = 0; Off < Len;) {
+      auto *E = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *>(Buf + Off);
+      if (E->Relationship == RelationProcessorCore)
+        ++Count;
+      Off += E->Size;
+    }
+
+    std::free(Buf);
+    return Count > 0 ? Count : computeHostNumHardwareThreads();
+  }();
+  return Cores;
+}
+
+// --- Thread affinity (sched_getaffinity — GNU extension, our libc) ---
+
+llvm::BitVector llvm::get_thread_affinity_mask() {
+  cpu_set_t CpuSet;
+  unsigned Total = computeHostNumHardwareThreads();
+
+  if (::sched_getaffinity(0, sizeof(CpuSet), &CpuSet) == 0) {
+    llvm::BitVector V(Total, false);
+    for (unsigned I = 0; I < CPU_SETSIZE && I < Total; ++I) {
+      if (CPU_ISSET_S(I, sizeof(CpuSet), &CpuSet))
+        V.set(I);
+    }
+    return V;
+  }
+
+  // Fallback: assume all processors available.
+  return llvm::BitVector(Total, true);
+}
+
+// --- Thread pool strategy (POSIX NUMA + sched_setaffinity) ---
+
+std::optional<unsigned>
+llvm::ThreadPoolStrategy::compute_cpu_socket(unsigned ThreadPoolNum) const {
+  unsigned NumNodes = get_cpus();
+  if (NumNodes <= 1)
+    return std::nullopt;
+
+  // Distribute threads across NUMA nodes proportionally.
+  unsigned ThreadsPerNode = computeHostNumHardwareThreads() / NumNodes;
+  if (compute_thread_count() <= ThreadsPerNode)
+    return std::nullopt;
+
+  assert(ThreadPoolNum < compute_thread_count());
+  return (ThreadPoolNum * NumNodes) / compute_thread_count();
+}
+
+void llvm::ThreadPoolStrategy::apply_thread_strategy(
+    unsigned ThreadPoolNum) const {
+  // Win11+ automatically distributes threads across processor groups.
+  if (llvm::RunningWindows11OrGreater())
+    return;
+
+  std::optional<unsigned> Socket = compute_cpu_socket(ThreadPoolNum);
+  if (!Socket)
+    return;
+
+  // Assign thread to the target processor group via sched_setaffinity.
+  // Bits [group*64, group*64+63] in cpu_set_t map to Windows processor groups.
+  cpu_set_t CpuSet;
+  CPU_ZERO(&CpuSet);
+  unsigned GroupBase = *Socket * (sizeof(KAFFINITY) * 8);
+  for (unsigned I = 0; I < sizeof(KAFFINITY) * 8; ++I)
+    CPU_SET_S(GroupBase + I, sizeof(CpuSet), &CpuSet);
+  ::sched_setaffinity(0, sizeof(CpuSet), &CpuSet);
+}
+
+#else // !LLVM_RUNTIME_POSIX
+
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/thread.h"
@@ -367,3 +624,5 @@ llvm::BitVector llvm::get_thread_affinity_mask() {
 }
 
 unsigned llvm::get_cpus() { return getProcessorGroups().size(); }
+
+#endif // LLVM_RUNTIME_POSIX

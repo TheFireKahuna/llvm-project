@@ -15,7 +15,8 @@
 #include "llvm/Support/Program.h"
 #include "gtest/gtest.h"
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
+// UCRT: waitable handle is the Win32 HANDLE obtained via _get_osfhandle.
 #include "lldb/Host/windows/windows.h"
 #endif
 
@@ -37,7 +38,7 @@ TEST(File, GetWaitableHandleFileno) {
   ASSERT_TRUE(stream);
 
   NativeFile file(stream, File::eOpenOptionReadWrite, true);
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
   EXPECT_EQ(file.GetWaitableHandle(), (HANDLE)_get_osfhandle(fd));
 #else
   EXPECT_EQ(file.GetWaitableHandle(), (file_t)fd);
@@ -62,7 +63,7 @@ TEST(File, GetStreamFromDescriptor) {
   ASSERT_TRUE(stream != NULL);
 
   EXPECT_EQ(file.GetDescriptor(), fd);
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
   EXPECT_EQ(file.GetWaitableHandle(), (HANDLE)_get_osfhandle(fd));
 #else
   EXPECT_EQ(file.GetWaitableHandle(), (file_t)fd);

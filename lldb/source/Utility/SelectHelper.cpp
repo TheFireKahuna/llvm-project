@@ -26,7 +26,7 @@
 #include <optional>
 
 #include <cerrno>
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 // Define NOMINMAX to avoid macros that conflict with std::min and std::max
 #ifndef NOMINMAX
 #  define NOMINMAX
@@ -94,7 +94,7 @@ static void updateMaxFd(std::optional<lldb::socket_t> &vold,
 
 lldb_private::Status SelectHelper::Select() {
   lldb_private::Status error;
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   // On windows FD_SETSIZE limits the number of file descriptors, not their
   // numeric value.
   lldbassert(m_fd_map.size() <= FD_SETSIZE);
@@ -110,7 +110,7 @@ lldb_private::Status SelectHelper::Select() {
   for (auto &pair : m_fd_map) {
     pair.second.PrepareForSelect();
     const lldb::socket_t fd = pair.first;
-#if !defined(__APPLE__) && !defined(_WIN32)
+#if !defined(__APPLE__) && !defined(LLVM_RUNTIME_WIN32)
     lldbassert(fd < static_cast<int>(FD_SETSIZE));
     if (fd >= static_cast<int>(FD_SETSIZE)) {
       error = lldb_private::Status::FromErrorStringWithFormat(

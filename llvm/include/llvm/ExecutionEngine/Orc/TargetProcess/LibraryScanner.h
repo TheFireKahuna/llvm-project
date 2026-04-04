@@ -44,7 +44,7 @@ public:
     Seen.clear();
     if (isRealPathCache) {
       RealPathCache.clear();
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
       ReadlinkCache.clear();
       LstatCache.clear();
 #endif
@@ -100,7 +100,7 @@ private:
   StringSet<> Seen;
   StringMap<PathInfo> RealPathCache;
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   StringMap<std::string> ReadlinkCache;
   StringMap<mode_t> LstatCache;
 
@@ -151,7 +151,7 @@ public:
   std::optional<std::string> resolve(StringRef Path, std::error_code &ec) {
     return realpathCached(Path, ec);
   }
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   mode_t lstatCached(StringRef Path);
   std::optional<std::string> readlinkCached(StringRef Path);
 #endif

@@ -37,7 +37,7 @@
 
 #include "test_macros.h"
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 #  include <windows.h> // SetFileApisToANSI & friends
 #endif
 namespace fs = std::filesystem;

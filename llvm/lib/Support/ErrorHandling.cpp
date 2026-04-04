@@ -34,7 +34,7 @@
 #if defined(HAVE_UNISTD_H)
 # include <unistd.h>
 #endif
-#if defined(_WIN32)
+#if defined(LLVM_CRT_UCRT)
 # include <io.h>
 # include <fcntl.h>
 #endif
@@ -265,7 +265,7 @@ void LLVMResetFatalErrorHandler() {
   remove_fatal_error_handler();
 }
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 
 #define WIN32_NO_STATUS
 #include "llvm/Support/Windows/WindowsSupport.h"

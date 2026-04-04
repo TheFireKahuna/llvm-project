@@ -12,7 +12,7 @@
 #include <cstdlib>
 #include <sys/types.h>
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 #include <dlfcn.h>
 #include <grp.h>
 #include <netdb.h>
@@ -60,7 +60,7 @@
 #include "llvm/Support/Errno.h"
 #include "llvm/Support/FileSystem.h"
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include "lldb/Host/windows/ConnectionGenericFileWindows.h"
 #include "lldb/Host/windows/ProcessLauncherWindows.h"
 #else
@@ -82,7 +82,7 @@ int __pthread_fchdir(int fildes);
 using namespace lldb;
 using namespace lldb_private;
 
-#if !defined(__APPLE__) && !defined(_WIN32)
+#if !defined(__APPLE__) && !defined(LLVM_RUNTIME_WIN32)
 // The system log is currently only meaningful on Darwin and Windows.
 // On Darwin, this means os_log. On Windows this means Events Viewer.
 // The meaning of a "system log" isn't as clear on other platforms, and
@@ -107,7 +107,7 @@ void LogChannelSystem::Initialize() {
 
 void LogChannelSystem::Terminate() { g_system_log.Disable(); }
 
-#if !defined(__APPLE__) && !defined(_WIN32)
+#if !defined(__APPLE__) && !defined(LLVM_RUNTIME_WIN32)
 extern "C" char **environ;
 
 Environment Host::GetEnvironment() { return Environment(environ); }
@@ -234,11 +234,11 @@ MonitorChildProcessThreadFunction(::pid_t pid,
   return nullptr;
 }
 
-#endif // #if !defined (__APPLE__) && !defined (_WIN32)
+#endif // #if !defined (__APPLE__) && !defined (LLVM_RUNTIME_WIN32)
 
 lldb::pid_t Host::GetCurrentProcessID() { return ::getpid(); }
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 
 lldb::thread_t Host::GetCurrentThread() {
   return lldb::thread_t(pthread_self());
@@ -342,7 +342,7 @@ bool Host::GetBundleDirectory(const FileSpec &file, FileSpec &bundle) {
 bool Host::ResolveExecutableInBundle(FileSpec &file) { return false; }
 #endif
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 
 FileSpec Host::GetModuleFileSpecForHostAddress(const void *host_addr) {
   FileSpec module_filespec;
@@ -598,7 +598,7 @@ Status Host::LaunchProcess(ProcessLaunchInfo &launch_info) {
 }
 #endif // !defined(__APPLE__)
 
-#ifndef _WIN32
+#if !defined(LLVM_RUNTIME_WIN32)
 void Host::Kill(lldb::pid_t pid, int signo) { ::kill(pid, signo); }
 
 #endif
@@ -615,14 +615,14 @@ bool Host::IsInteractiveGraphicSession() { return false; }
 #endif
 
 std::unique_ptr<Connection> Host::CreateDefaultConnection(llvm::StringRef url) {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   if (url.starts_with("file://"))
     return std::unique_ptr<Connection>(new ConnectionGenericFile());
 #endif
   return std::unique_ptr<Connection>(new ConnectionFileDescriptor());
 }
 
-#if defined(LLVM_ON_UNIX)
+#if defined(LLVM_RUNTIME_POSIX)
 WaitStatus WaitStatus::Decode(int wstatus) {
   if (WIFEXITED(wstatus))
     return {Exit, uint8_t(WEXITSTATUS(wstatus))};

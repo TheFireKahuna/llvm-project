@@ -10,6 +10,265 @@
 //
 //===----------------------------------------------------------------------===//
 
+#ifdef LLVM_RUNTIME_POSIX
+// LLVM libc provides POSIX APIs on Windows. For process-level queries beyond
+// POSIX scope (command line, commit charge), we call ntdll directly.
+#include "llvm/ADT/Hashing.h"
+#include "llvm/Support/Allocator.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/ConvertUTF.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/StringSaver.h"
+#include "llvm/Support/Windows/WindowsSupport.h"
+
+#include <cerrno>
+#include <cstdlib>
+#include <optional>
+#include <signal.h>
+#include <sys/resource.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <unistd.h>
+
+// --- NT declarations for features beyond POSIX scope ---
+// Struct types (VM_COUNTERS, UNICODE_STRING) come from <sys/ntabi.h> via
+// WindowsSupport.h.
+extern "C" {
+__declspec(dllimport) NTSTATUS NTAPI NtQueryInformationProcess(
+    HANDLE, ULONG, void *, ULONG, ULONG *);
+} // extern "C"
+
+static const auto NtCurrentProcess_ = reinterpret_cast<HANDLE>(
+    static_cast<LONG_PTR>(-1));
+
+// Process information classes not yet in <sys/ntabi.h>.
+static constexpr ULONG ProcessVmCounters_ = 3;
+static constexpr ULONG ProcessCommandLineInfo_ = 60;
+
+using namespace llvm;
+
+Process::Pid Process::getProcessId() {
+  static_assert(sizeof(Pid) >= sizeof(pid_t),
+                "Process::Pid should be big enough to store pid_t");
+  return Pid(::getpid());
+}
+
+Expected<unsigned> Process::getPageSize() {
+  static long page_size = ::sysconf(_SC_PAGESIZE);
+  if (page_size == -1)
+    return errorCodeToError(errnoAsErrorCode());
+  return static_cast<unsigned>(page_size);
+}
+
+size_t Process::GetMallocUsage() {
+  // Query current private commit charge via NT — the closest equivalent to
+  // the Win32 _heapwalk approach. PagefileUsage is the total committed
+  // private memory (heap + stack + other private mappings).
+  VM_COUNTERS VMC;
+  NTSTATUS St = NtQueryInformationProcess(NtCurrentProcess_,
+      ProcessVmCounters_, &VMC, sizeof(VMC), nullptr);
+  if (St >= 0)
+    return VMC.PagefileUsage;
+  return 0;
+}
+
+void Process::GetTimeUsage(TimePoint<> &elapsed,
+                           std::chrono::nanoseconds &user_time,
+                           std::chrono::nanoseconds &sys_time) {
+  elapsed = std::chrono::system_clock::now();
+  struct rusage RU;
+  if (::getrusage(RUSAGE_SELF, &RU) == 0) {
+    user_time = std::chrono::seconds(RU.ru_utime.tv_sec) +
+                std::chrono::microseconds(RU.ru_utime.tv_usec);
+    sys_time = std::chrono::seconds(RU.ru_stime.tv_sec) +
+               std::chrono::microseconds(RU.ru_stime.tv_usec);
+  }
+}
+
+void Process::PreventCoreFiles() {
+  struct rlimit rlim;
+  getrlimit(RLIMIT_CORE, &rlim);
+  rlim.rlim_cur = 0;
+  setrlimit(RLIMIT_CORE, &rlim);
+  coreFilesPrevented = true;
+}
+
+std::optional<std::string> Process::GetEnv(StringRef Name) {
+  std::string NameStr = Name.str();
+  const char *Val = ::getenv(NameStr.c_str());
+  if (!Val)
+    return std::nullopt;
+  return std::string(Val);
+}
+
+std::error_code Process::FixupStandardFileDescriptors() {
+  return std::error_code();
+}
+
+std::error_code Process::SafelyCloseFileDescriptor(int FD) {
+  if (::close(FD) < 0)
+    return errnoAsErrorCode();
+  return std::error_code();
+}
+
+bool Process::StandardInIsUserInput() { return FileDescriptorIsDisplayed(0); }
+bool Process::StandardOutIsDisplayed() { return FileDescriptorIsDisplayed(1); }
+bool Process::StandardErrIsDisplayed() { return FileDescriptorIsDisplayed(2); }
+
+bool Process::FileDescriptorIsDisplayed(int fd) { return isatty(fd); }
+
+static unsigned getColumnsFromEnv() {
+  if (const char *Cols = std::getenv("COLUMNS")) {
+    int Val = std::atoi(Cols);
+    if (Val > 0)
+      return static_cast<unsigned>(Val);
+  }
+  return 0;
+}
+
+unsigned Process::StandardOutColumns() {
+  if (!StandardOutIsDisplayed())
+    return 0;
+  return getColumnsFromEnv();
+}
+
+unsigned Process::StandardErrColumns() {
+  if (!StandardErrIsDisplayed())
+    return 0;
+  return getColumnsFromEnv();
+}
+
+bool Process::FileDescriptorHasColors(int fd) {
+  // Windows Terminal and ConHost on Windows 11+ support ANSI escape codes
+  // natively. If the fd is a terminal, assume color support — this matches
+  // the Win32 path's behavior (which always returns true for console handles).
+  return FileDescriptorIsDisplayed(fd);
+}
+
+bool Process::StandardOutHasColors() { return FileDescriptorHasColors(1); }
+bool Process::StandardErrHasColors() { return FileDescriptorHasColors(2); }
+
+void Process::UseANSIEscapeCodes(bool /*enable*/) {}
+bool Process::ColorNeedsFlush() { return false; }
+
+const char *Process::OutputColor(char code, bool bold, bool bg) {
+  return colorcodes[bg ? 1 : 0][bold ? 1 : 0][code & 15];
+}
+
+const char *Process::OutputBold(bool bg) { return "\033[1m"; }
+const char *Process::OutputReverse() { return "\033[7m"; }
+const char *Process::ResetColor() { return "\033[0m"; }
+
+unsigned Process::GetRandomNumber() {
+  // Our libc provides getentropy() backed by ProcessPrng (bcrypt).
+  unsigned Ret;
+  if (::getentropy(&Ret, sizeof(Ret)) == 0)
+    return Ret;
+  // Fallback (should not happen — getentropy always succeeds on Windows).
+  static int x = (static_cast<void>(::srand(
+      hash_combine(std::chrono::high_resolution_clock::now()
+                       .time_since_epoch()
+                       .count(),
+                   ::getpid()))), 0);
+  (void)x;
+  return ::rand();
+}
+
+[[noreturn]] void Process::ExitNoCleanup(int RetCode) { _Exit(RetCode); }
+
+// Windows-specific functions still needed by other code.
+// Under LLVM libc we provide minimal implementations.
+llvm::VersionTuple llvm::GetWindowsOSVersion() {
+  // Report Windows 11 (10.0.0.22000) as a reasonable default.
+  return llvm::VersionTuple(10, 0, 0, 22000);
+}
+
+bool llvm::RunningWindows8OrGreater() { return true; }
+bool llvm::RunningWindows11OrGreater() { return true; }
+
+bool llvm::MakeErrMsg(std::string *ErrMsg, const std::string &prefix) {
+  if (!ErrMsg)
+    return true;
+  *ErrMsg = prefix + ": " + std::string(strerror(errno));
+  return true;
+}
+
+namespace llvm::sys::windows {
+
+std::error_code
+GetCommandLineArguments(SmallVectorImpl<const char *> &Args,
+                        BumpPtrAllocator &Alloc) {
+  // Query the process command line from NT — POSIX uses main(argc,argv)
+  // directly, but some LLVM tools call this for wildcard expansion.
+  ULONG BufLen = 1024;
+  auto *Buf = static_cast<uint8_t *>(std::malloc(BufLen));
+  if (!Buf)
+    return std::make_error_code(std::errc::not_enough_memory);
+
+  NTSTATUS St = NtQueryInformationProcess(NtCurrentProcess_,
+      ProcessCommandLineInfo_, Buf, BufLen, &BufLen);
+  if (St == static_cast<NTSTATUS>(0xC0000004L) /*STATUS_INFO_LENGTH_MISMATCH*/) {
+    auto *NewBuf = static_cast<uint8_t *>(std::realloc(Buf, BufLen));
+    if (!NewBuf) {
+      std::free(Buf);
+      return std::make_error_code(std::errc::not_enough_memory);
+    }
+    Buf = NewBuf;
+    St = NtQueryInformationProcess(NtCurrentProcess_,
+        ProcessCommandLineInfo_, Buf, BufLen, &BufLen);
+  }
+  if (St < 0) {
+    std::free(Buf);
+    return std::make_error_code(std::errc::not_supported);
+  }
+
+  // Result is a UNICODE_STRING (header + data) within the output buffer.
+  auto *CmdLine = reinterpret_cast<UNICODE_STRING *>(Buf);
+  size_t Len16 = CmdLine->Length / sizeof(wchar_t);
+
+  // Convert UTF-16 → UTF-8 via LLVM's ConvertUTF (wcstombs fails in C locale).
+  auto *Buf16 = reinterpret_cast<const UTF16 *>(CmdLine->Buffer);
+  std::string CmdUtf8Str;
+  if (!convertUTF16ToUTF8String(ArrayRef<UTF16>(Buf16, Len16), CmdUtf8Str)) {
+    std::free(Buf);
+    return std::make_error_code(std::errc::illegal_byte_sequence);
+  }
+  std::free(Buf);
+  StringRef CmdUtf8(CmdUtf8Str);
+
+  // Parse using LLVM's Windows command line tokenizer.
+  StringSaver Saver(Alloc);
+  cl::TokenizeWindowsCommandLineFull(CmdUtf8, Saver, Args,
+                                     /*MarkEOLs=*/false);
+
+  if (Args.empty())
+    return std::make_error_code(std::errc::invalid_argument);
+
+  return std::error_code();
+}
+
+std::error_code widenPath(const Twine &Path8, SmallVectorImpl<wchar_t> &Path16,
+                          size_t MaxPathLen) {
+  // UTF-8 → UTF-16 via LLVM's ConvertUTF.
+  SmallString<256> PathStr;
+  Path8.toVector(PathStr);
+
+  SmallVector<UTF16, 256> Utf16;
+  if (!convertUTF8ToUTF16String(PathStr, Utf16))
+    return std::make_error_code(std::errc::illegal_byte_sequence);
+  if (Utf16.size() >= MaxPathLen)
+    return std::make_error_code(std::errc::filename_too_long);
+
+  Path16.clear();
+  Path16.append(reinterpret_cast<const wchar_t *>(Utf16.data()),
+                reinterpret_cast<const wchar_t *>(Utf16.data()) + Utf16.size());
+  return std::error_code();
+}
+
+} // namespace llvm::sys::windows
+
+#else // !LLVM_RUNTIME_POSIX
+
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ConvertUTF.h"
@@ -550,3 +809,5 @@ HMODULE loadSystemModuleSecure(LPCWSTR lpModuleName) {
   return ::GetModuleHandleW(Buf.data());
 }
 } // namespace llvm::sys::windows
+
+#endif // LLVM_RUNTIME_POSIX

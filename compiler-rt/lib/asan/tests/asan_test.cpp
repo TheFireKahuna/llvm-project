@@ -1122,7 +1122,7 @@ TEST(AddressSanitizer, ThreadedStressStackReuseTest) {
   const int kNumThreads = 20;
   pthread_t t[kNumThreads];
 // pthread_attr isn't supported on Windows.
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   size_t curStackSize = 0;
   pthread_attr_t attr;
   pthread_attr_init(&attr);
@@ -1134,7 +1134,7 @@ TEST(AddressSanitizer, ThreadedStressStackReuseTest) {
   }
 #endif
   for (int i = 0; i < kNumThreads; i++) {
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
     PTHREAD_CREATE(&t[i], 0, (void* (*)(void* x))LotsOfStackReuse, 0);
 #else
     PTHREAD_CREATE(&t[i], &attr, (void* (*)(void* x))LotsOfStackReuse, 0);
@@ -1143,7 +1143,7 @@ TEST(AddressSanitizer, ThreadedStressStackReuseTest) {
   for (int i = 0; i < kNumThreads; i++) {
     PTHREAD_JOIN(t[i], 0);
   }
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   pthread_attr_destroy(&attr);
 #endif
 }
@@ -1186,7 +1186,7 @@ TEST(AddressSanitizer, DISABLED_StressStackReuseAndExceptionsTest) {
 }
 #endif
 
-#if !defined(_WIN32) && !defined(__HAIKU__)
+#if !defined(LLVM_RUNTIME_WIN32) && !defined(__HAIKU__)
 TEST(AddressSanitizer, MlockTest) {
   EXPECT_EQ(0, mlockall(MCL_CURRENT));
   EXPECT_EQ(0, mlock((void *)0x12345, 0x5678));
@@ -1348,7 +1348,7 @@ TEST(AddressSanitizer, LongDoubleNegativeTest) {
   memcpy(Ident(&c), Ident(&b), sizeof(long double));
 }
 
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
 TEST(AddressSanitizer, pthread_getschedparam) {
   int policy;
   struct sched_param param;

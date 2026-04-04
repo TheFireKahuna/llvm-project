@@ -20,7 +20,7 @@
 #include <fcntl.h>
 #include <functional>
 
-#ifndef _WIN32
+#if !defined(LLVM_RUNTIME_WIN32)
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -33,7 +33,7 @@
 #include <afunix.h>
 // clang-format on
 #include <io.h>
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32
 
 #if defined(HAVE_UNISTD_H)
 #include <unistd.h>

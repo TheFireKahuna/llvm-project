@@ -26,7 +26,7 @@
 #ifdef __cplusplus
 
 namespace std {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 class _LIBCXXABI_TYPE_VIS type_info; // forward declaration
 #else
 class type_info; // forward declaration

@@ -47,7 +47,7 @@ int main(int, char**) {
   //
   // With trivial_abi, local_addr is the address of a local variable in
   // make_val, and hence different from &ret.
-#if !defined(__i386__) && !defined(_WIN32) && !defined(_AIX)
+#if !defined(__i386__) && !defined(LLVM_RUNTIME_WIN32) && !defined(_AIX)
   // On X86, structs are never returned in registers.
   // On AIX, structs are never returned in registers.
   // Thus, unique_ptr will be passed indirectly even if it is trivial.

@@ -7,7 +7,7 @@
 #include <string.h>
 #include <stdint.h>
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include <windows.h>
 #else
 #include <unistd.h>
@@ -65,7 +65,7 @@ int main()
       return 1;
     if (mprotect(execution_buffer, kSize, PROT_READ | PROT_EXEC) == -1)
       return 1;
-#elif !defined(_WIN32)
+#elif !defined(LLVM_RUNTIME_WIN32)
     uint8_t *execution_buffer = mmap(0, kSize,
                                      PROT_READ | PROT_WRITE | PROT_EXEC,
                                      MAP_ANON | MAP_PRIVATE, -1, 0);

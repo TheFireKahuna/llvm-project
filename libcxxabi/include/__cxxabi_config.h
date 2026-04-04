@@ -75,7 +75,7 @@
 #  define _LIBCXXABI_NO_EXCEPTIONS
 #endif
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #define _LIBCXXABI_DTOR_FUNC __thiscall
 #else
 #define _LIBCXXABI_DTOR_FUNC

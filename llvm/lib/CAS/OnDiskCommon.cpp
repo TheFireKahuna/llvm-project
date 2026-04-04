@@ -77,7 +77,7 @@ std::error_code cas::ondisk::lockFileThreadSafe(int FD,
   if (flock(FD, Kind == sys::fs::LockKind::Exclusive ? LOCK_EX : LOCK_SH) == 0)
     return std::error_code();
   return std::error_code(errno, std::generic_category());
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
   // On Windows this implementation is thread-safe.
   return sys::fs::lockFile(FD, Kind);
 #else
@@ -90,7 +90,7 @@ std::error_code cas::ondisk::unlockFileThreadSafe(int FD) {
   if (flock(FD, LOCK_UN) == 0)
     return std::error_code();
   return std::error_code(errno, std::generic_category());
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
   // On Windows this implementation is thread-safe.
   return sys::fs::unlockFile(FD);
 #else
@@ -119,7 +119,7 @@ cas::ondisk::tryLockFileThreadSafe(int FD, std::chrono::milliseconds Timeout,
     return std::error_code(Error, std::generic_category());
   } while (std::chrono::steady_clock::now() < End);
   return make_error_code(std::errc::no_lock_available);
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
   // On Windows this implementation is thread-safe.
   return sys::fs::tryLockFile(FD, Timeout, Kind);
 #else

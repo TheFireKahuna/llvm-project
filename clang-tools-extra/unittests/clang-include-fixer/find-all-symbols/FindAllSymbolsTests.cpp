@@ -107,7 +107,7 @@ public:
                           "\"\n"
                           "#include \"" +
                           InternalHeader + "\"";
-#if !defined(_MSC_VER) && !defined(__MINGW32__) && !defined(_WIN32_ITANIUM)
+#if !defined(LLVM_CRT_UCRT)
     // Test path cleaning for both decls and macros.
     const std::string DirtyHeader = "./internal/./a/b.h";
     Content += "\n#include \"" + DirtyHeader + "\"";
@@ -127,7 +127,7 @@ public:
     Invocation.run();
     EXPECT_EQ(1, seen(InternalSymbol));
     EXPECT_EQ(1, seen(IncSymbol));
-#if !defined(_MSC_VER) && !defined(__MINGW32__) && !defined(_WIN32_ITANIUM)
+#if !defined(LLVM_CRT_UCRT)
     EXPECT_EQ(1, seen(DirtySymbol));
     EXPECT_EQ(1, seen(DirtyMacro));
 #endif  // _MSC_VER && __MINGW32__

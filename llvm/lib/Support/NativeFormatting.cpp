@@ -15,7 +15,7 @@
 
 #include <cmath>
 
-#if defined(_WIN32) && !defined(__MINGW32__)
+#if defined(LLVM_RUNTIME_WIN32) && !defined(__MINGW32__)
 #include <float.h> // For _fpclass in llvm::write_double.
 #endif
 
@@ -191,7 +191,7 @@ void llvm::write_double(raw_ostream &S, double N, FloatStyle Style,
   Out << "%." << Prec << Letter;
 
   if (Style == FloatStyle::Exponent || Style == FloatStyle::ExponentUpper) {
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 // On MSVCRT and compatible, output of %e is incompatible to Posix
 // by default. Number of exponent digits should be at least 2. "%+03d"
 // FIXME: Implement our formatter to here or Support/Format.h!

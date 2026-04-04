@@ -23,7 +23,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
 #include "../internal.h"
 
@@ -131,4 +131,4 @@ __declspec(allocate(".rdata$T")) __declspec(selectany)
 
 }
 
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32

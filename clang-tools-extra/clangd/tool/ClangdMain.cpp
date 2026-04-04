@@ -53,7 +53,7 @@
 #include <utility>
 #include <vector>
 
-#ifndef _WIN32
+#if !defined(LLVM_CRT_UCRT)
 #include <unistd.h>
 #endif
 
@@ -608,7 +608,7 @@ private:
   const static char TestDir[];
 };
 
-#ifdef _WIN32
+#if defined(_WIN32)
 const char TestScheme::TestDir[] = "C:\\clangd-test";
 #else
 const char TestScheme::TestDir[] = "/clangd-test";

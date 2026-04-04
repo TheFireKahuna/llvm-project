@@ -10,6 +10,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+#ifdef LLVM_RUNTIME_POSIX
+// LLVM libc provides alarm() via POSIX-compatible unistd.h.
+#include <unistd.h>
+
+namespace llvm {
+namespace sys {
+Watchdog::Watchdog(unsigned int seconds) { alarm(seconds); }
+Watchdog::~Watchdog() { alarm(0); }
+} // namespace sys
+} // namespace llvm
+#else
 // TODO: implement.
 // Currently this is only used by PrettyStackTrace which is also unimplemented
 // on Windows. Roughly, a Windows implementation would use CreateWaitableTimer
@@ -21,3 +32,4 @@ Watchdog::Watchdog(unsigned int seconds) {}
 Watchdog::~Watchdog() {}
 } // namespace sys
 } // namespace llvm
+#endif

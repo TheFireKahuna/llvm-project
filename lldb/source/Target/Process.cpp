@@ -4780,7 +4780,7 @@ public:
     llvm::consumeError(terminal.SetCanonical(false));
     llvm::consumeError(terminal.SetEcho(false));
 // FD_ZERO, FD_SET are not supported on windows
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
     const int pipe_read_fd = m_pipe.GetReadFileDescriptor();
     SetIsRunning(true);
     while (true) {

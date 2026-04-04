@@ -43,7 +43,7 @@ void ReportError(llvm::StringRef message) {
 }
 
 extern "C" int LLVMFuzzerInitialize(int *argc, char ***argv) {
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
   signal(SIGPIPE, SIG_IGN);
 #endif
 

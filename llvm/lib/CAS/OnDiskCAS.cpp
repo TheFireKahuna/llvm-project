@@ -226,7 +226,7 @@ Error OnDiskCAS::pruneStorageData() { return UnifiedDB->collectGarbage(); }
 
 Expected<std::unique_ptr<OnDiskCAS>> OnDiskCAS::open(StringRef AbsPath) {
   std::shared_ptr<ondisk::OnDiskCASLogger> Logger;
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   if (Error E =
           ondisk::OnDiskCASLogger::openIfEnabled(AbsPath).moveInto(Logger))
     return std::move(E);

@@ -22,7 +22,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
 extern "C" {
 
@@ -51,4 +51,4 @@ void invokeDestructorImpl(void (*dtor)(void*), void* obj,
 
 } // namespace wincrt
 
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32

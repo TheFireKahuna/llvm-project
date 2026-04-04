@@ -168,7 +168,7 @@ uint32_t PlatformThreadID() {
   static_assert(sizeof(pid_t) == sizeof(uint32_t), "");
   return static_cast<uint32_t>(syscall(SYS_gettid));
 }
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
 // Declare GetCurrentThreadId to avoid including <windows.h>.
 extern "C" __declspec(dllimport) unsigned long __stdcall GetCurrentThreadId();
 

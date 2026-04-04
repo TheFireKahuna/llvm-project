@@ -10,7 +10,7 @@
 #define LLDB_HOST_HOSTNATIVETHREADFORWARD_H
 
 namespace lldb_private {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 class HostThreadWindows;
 typedef HostThreadWindows HostNativeThread;
 #elif defined(__APPLE__)

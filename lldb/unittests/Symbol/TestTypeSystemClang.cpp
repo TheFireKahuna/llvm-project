@@ -1438,7 +1438,7 @@ TEST_F(TestTypeSystemClang, AsmLabel_CtorDtor) {
   ASSERT_TRUE(ctor);
   ASSERT_TRUE(dtor);
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   EXPECT_STREQ(m_ast->DeclGetMangledName(ctor_nolabel).GetCString(),
                "??0S@@QEAA@XZ");
   EXPECT_STREQ(m_ast->DeclGetMangledName(dtor_nolabel).GetCString(),

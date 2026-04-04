@@ -39,7 +39,7 @@ struct OneBytePadding final {
   std::int8_t b;
 };
 
-#if defined(_WIN32) && !defined(__MINGW32__)
+#if defined(LLVM_RUNTIME_WIN32) && !defined(__MINGW32__)
 static_assert(std::__datasizeof_v<OneBytePadding> == 4, "");
 #else
 static_assert(std::__datasizeof_v<OneBytePadding> == 3, "");

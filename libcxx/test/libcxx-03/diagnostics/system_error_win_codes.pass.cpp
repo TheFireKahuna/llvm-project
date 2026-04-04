@@ -12,7 +12,9 @@
 // used by win32 APIs and reported by GetLastError), and that they are properly
 // translated to generic conditions.
 
+#if defined(LLVM_RUNTIME_WIN32)
 #include <windows.h>
+#endif
 #include <system_error>
 #include <cassert>
 

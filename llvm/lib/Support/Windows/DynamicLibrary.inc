@@ -10,6 +10,47 @@
 //
 //===----------------------------------------------------------------------===//
 
+#ifdef LLVM_RUNTIME_POSIX
+// LLVM libc provides POSIX dlopen/dlsym/dlclose on Windows.
+#include <dlfcn.h>
+
+DynamicLibrary::HandleSet::~HandleSet() {
+  for (void *Handle : llvm::reverse(Handles))
+    ::dlclose(Handle);
+  if (Process != &Invalid)
+    ::dlclose(Process);
+
+  DynamicLibrary::SearchOrder = DynamicLibrary::SO_Linker;
+}
+
+void *DynamicLibrary::HandleSet::DLOpen(const char *File, std::string *Err) {
+  void *Handle = ::dlopen(File, RTLD_LAZY | RTLD_GLOBAL);
+  if (!Handle) {
+    if (Err)
+      *Err = ::dlerror();
+    return &DynamicLibrary::Invalid;
+  }
+  return Handle;
+}
+
+static DynamicLibrary::HandleSet *IsOpenedHandlesInstance(void *Handle) {
+  DynamicLibrary::HandleSet &Inst = getGlobals().OpenedHandles;
+  return Handle == &Inst ? &Inst : nullptr;
+}
+
+void DynamicLibrary::HandleSet::DLClose(void *Handle) {
+  if (HandleSet *HS = IsOpenedHandlesInstance(Handle))
+    HS->Process = &Invalid;
+  else
+    ::dlclose(Handle);
+}
+
+void *DynamicLibrary::HandleSet::DLSym(void *Handle, const char *Symbol) {
+  return ::dlsym(Handle, Symbol);
+}
+
+#else // !LLVM_RUNTIME_POSIX
+
 #include "llvm/Support/ConvertUTF.h"
 #include "llvm/Support/Windows/WindowsSupport.h"
 #include "llvm/Support/raw_ostream.h"
@@ -143,6 +184,8 @@ void *DynamicLibrary::HandleSet::DLSym(void *Handle, const char *Symbol) {
   }
   return nullptr;
 }
+
+#endif // LLVM_RUNTIME_POSIX
 
 // Stack probing routines are in the support library (e.g. libgcc), but we don't
 // have dynamic linking on windows. Provide a hook.

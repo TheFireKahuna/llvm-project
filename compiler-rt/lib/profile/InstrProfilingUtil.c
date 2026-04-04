@@ -6,7 +6,7 @@
 |*
 \*===----------------------------------------------------------------------===*/
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include <direct.h>
 #include <process.h>
 #define WIN32_LEAN_AND_MEAN
@@ -89,7 +89,7 @@ void __llvm_profile_recursive_mkdir(char *path) {
     if (!IS_DIR_SEPARATOR(path[i]))
       continue;
     path[i] = '\0';
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     _mkdir(path);
 #else
     /* Some of these will fail, ignore it. */
@@ -124,7 +124,7 @@ void *lprofPtrFetchAdd(void **Mem, long ByteIncr) {
 
 #endif
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 COMPILER_RT_VISIBILITY int lprofGetHostName(char *Name, int Len) {
   WCHAR Buffer[COMPILER_RT_MAX_HOSTLEN];
   DWORD BufferSize = sizeof(Buffer);
@@ -167,7 +167,7 @@ COMPILER_RT_VISIBILITY int lprofLockFd(int fd) {
     }
   }
   return 0;
-#elif defined(COMPILER_RT_HAS_FLOCK) || defined(_WIN32)
+#elif defined(COMPILER_RT_HAS_FLOCK) || defined(LLVM_RUNTIME_WIN32)
   // Windows doesn't have flock but WindowsMMap.h provides a shim
   flock(fd, LOCK_EX);
   return 0;
@@ -195,7 +195,7 @@ COMPILER_RT_VISIBILITY int lprofUnlockFd(int fd) {
     }
   }
   return 0;
-#elif defined(COMPILER_RT_HAS_FLOCK) || defined(_WIN32)
+#elif defined(COMPILER_RT_HAS_FLOCK) || defined(LLVM_RUNTIME_WIN32)
   // Windows doesn't have flock but WindowsMMap.h provides a shim
   flock(fd, LOCK_UN);
   return 0;
@@ -206,7 +206,7 @@ COMPILER_RT_VISIBILITY int lprofUnlockFd(int fd) {
 
 COMPILER_RT_VISIBILITY int lprofLockFileHandle(FILE *F) {
   int fd;
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   fd = _fileno(F);
 #else
   fd = fileno(F);
@@ -216,7 +216,7 @@ COMPILER_RT_VISIBILITY int lprofLockFileHandle(FILE *F) {
 
 COMPILER_RT_VISIBILITY int lprofUnlockFileHandle(FILE *F) {
   int fd;
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   fd = _fileno(F);
 #else
   fd = fileno(F);
@@ -237,7 +237,7 @@ COMPILER_RT_VISIBILITY FILE *lprofOpenFileEx(const char *ProfileName) {
               "Fail to obtain file lock due to system limit.");
 
   f = fdopen(fd, "r+b");
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
   // FIXME: Use the wide variants to handle Unicode filenames.
   HANDLE h = CreateFileA(ProfileName, GENERIC_READ | GENERIC_WRITE,
                          FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_ALWAYS,

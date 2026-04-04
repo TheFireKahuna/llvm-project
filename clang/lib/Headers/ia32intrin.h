@@ -688,7 +688,7 @@ __rorq(unsigned long long __X, int __C) {
 }
 #endif /* __x86_64__ */
 
-#if !defined(_MSC_VER) && !defined(_WIN32_ITANIUM)
+#if !defined(LLVM_CRT_UCRT)
 /* Provided as builtins for MSVC and Windows Itanium. */
 /* Select the correct function based on the size of long. */
 #ifdef __LP64__

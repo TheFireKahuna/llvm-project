@@ -10,6 +10,399 @@
 //
 //===----------------------------------------------------------------------===//
 
+#ifdef LLVM_RUNTIME_POSIX
+
+// POSIX implementation for LLVM libc on Windows.
+// Uses posix_spawn/waitpid provided by our libc instead of Win32 APIs.
+
+#include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/Support/Errc.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
+#include "llvm/Support/StringSaver.h"
+#include "llvm/Support/Errno.h"
+#include "llvm/Support/raw_ostream.h"
+#include <cstring>
+#include <fcntl.h>
+#include <signal.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+
+using namespace llvm;
+using namespace sys;
+
+static bool MakeErrMsg(std::string *ErrMsg, const std::string &prefix,
+                       int errnum = -1) {
+  if (!ErrMsg)
+    return true;
+  if (errnum == -1)
+    errnum = errno;
+  *ErrMsg = prefix + ": " + llvm::sys::StrError(errnum);
+  return true;
+}
+
+ProcessInfo::ProcessInfo()
+    : Pid(0), Process(nullptr), ReturnCode(0) {}
+
+ErrorOr<std::string> sys::findProgramByName(StringRef Name,
+                                            ArrayRef<StringRef> Paths) {
+  assert(!Name.empty() && "Must have a name!");
+
+  if (Name.find_first_of("/\\") != StringRef::npos)
+    return std::string(Name);
+
+  SmallVector<StringRef, 16> EnvironmentPaths;
+  if (Paths.empty()) {
+    if (const char *PathEnv = std::getenv("PATH")) {
+      SplitString(PathEnv, EnvironmentPaths, ";");
+      Paths = EnvironmentPaths;
+    }
+  }
+
+  // On Windows, check with and without .exe extension.
+  SmallVector<StringRef, 4> Extensions;
+  Extensions.push_back("");
+  Extensions.push_back(".exe");
+  if (const char *PathExtEnv = std::getenv("PATHEXT"))
+    SplitString(PathExtEnv, Extensions, ";");
+
+  for (auto Path : Paths) {
+    if (Path.empty())
+      continue;
+
+    for (StringRef Ext : Extensions) {
+      SmallString<128> FilePath(Path);
+      sys::path::append(FilePath, Name);
+      FilePath.append(Ext);
+      if (sys::fs::can_execute(FilePath.c_str())) {
+        sys::path::make_preferred(FilePath);
+        return std::string(FilePath);
+      }
+    }
+  }
+  return errc::no_such_file_or_directory;
+}
+
+static bool RedirectIO_PS(const std::string *Path, int FD, std::string *ErrMsg,
+                          posix_spawn_file_actions_t *FileActions) {
+  if (!Path)
+    return false;
+  const char *File;
+  if (Path->empty())
+    File = "NUL";
+  else
+    File = Path->c_str();
+
+  if (int Err = posix_spawn_file_actions_addopen(
+          FileActions, FD, File, FD == 0 ? O_RDONLY : O_WRONLY | O_CREAT,
+          0666))
+    return MakeErrMsg(ErrMsg, "Cannot posix_spawn_file_actions_addopen", Err);
+  return false;
+}
+
+static void TimeOutHandler(int Sig) {}
+
+static std::vector<const char *>
+toNullTerminatedCStringArray(ArrayRef<StringRef> Strings, StringSaver &Saver) {
+  std::vector<const char *> Result;
+  for (StringRef S : Strings)
+    Result.push_back(Saver.save(S).data());
+  Result.push_back(nullptr);
+  return Result;
+}
+
+// environ is declared by our libc's <unistd.h>.
+
+static bool Execute(ProcessInfo &PI, StringRef Program,
+                    ArrayRef<StringRef> Args,
+                    std::optional<ArrayRef<StringRef>> Env,
+                    ArrayRef<std::optional<StringRef>> Redirects,
+                    unsigned MemoryLimit, std::string *ErrMsg,
+                    BitVector *AffinityMask, bool DetachProcess) {
+  if (!sys::fs::can_execute(Program)) {
+    if (ErrMsg)
+      *ErrMsg = "program not executable";
+    return false;
+  }
+
+  // can_execute may succeed via Program + ".exe".
+  SmallString<64> ProgramStorage;
+  if (!sys::fs::exists(Program))
+    Program = Twine(Program + ".exe").toStringRef(ProgramStorage);
+
+  BumpPtrAllocator Allocator;
+  StringSaver Saver(Allocator);
+  std::vector<const char *> ArgVector, EnvVector;
+  const char **Argv = nullptr;
+  const char **Envp = nullptr;
+  ArgVector = toNullTerminatedCStringArray(Args, Saver);
+  Argv = ArgVector.data();
+  if (Env) {
+    EnvVector = toNullTerminatedCStringArray(*Env, Saver);
+    Envp = EnvVector.data();
+  }
+
+  posix_spawn_file_actions_t FileActionsStore;
+  posix_spawn_file_actions_t *FileActions = nullptr;
+
+  // Storage for redirect paths that must outlive the posix_spawn call.
+  std::string RedirectsStorage[3];
+
+  if (!Redirects.empty()) {
+    assert(Redirects.size() == 3);
+    std::string *RedirectsStr[3] = {nullptr, nullptr, nullptr};
+    for (int I = 0; I < 3; ++I) {
+      if (Redirects[I]) {
+        RedirectsStorage[I] = std::string(*Redirects[I]);
+        RedirectsStr[I] = &RedirectsStorage[I];
+      }
+    }
+
+    FileActions = &FileActionsStore;
+    posix_spawn_file_actions_init(FileActions);
+
+    if (RedirectIO_PS(RedirectsStr[0], 0, ErrMsg, FileActions) ||
+        RedirectIO_PS(RedirectsStr[1], 1, ErrMsg, FileActions))
+      return false;
+    if (!Redirects[1] || !Redirects[2] || *Redirects[1] != *Redirects[2]) {
+      if (RedirectIO_PS(RedirectsStr[2], 2, ErrMsg, FileActions))
+        return false;
+    } else {
+      // stdout and stderr go to the same place.
+      if (int Err = posix_spawn_file_actions_adddup2(FileActions, 1, 2))
+        return !MakeErrMsg(ErrMsg, "Can't redirect stderr to stdout", Err);
+    }
+  }
+
+  if (!Envp)
+    Envp = const_cast<const char **>(environ);
+
+  constexpr int maxRetries = 8;
+  int retries = 0;
+  pid_t PID;
+  int Err;
+  do {
+    PID = 0;
+    Err = posix_spawn(&PID, Program.str().c_str(), FileActions,
+                      /*attrp*/ nullptr, const_cast<char **>(Argv),
+                      const_cast<char **>(Envp));
+  } while (Err == EINTR && ++retries < maxRetries);
+
+  if (FileActions)
+    posix_spawn_file_actions_destroy(FileActions);
+
+  if (Err)
+    return !MakeErrMsg(ErrMsg, "posix_spawn failed", Err);
+
+  PI.Pid = PID;
+  PI.Process = reinterpret_cast<void *>(static_cast<intptr_t>(PID));
+
+  return true;
+}
+
+static bool argNeedsQuotes(StringRef Arg) {
+  if (Arg.empty())
+    return true;
+  return StringRef::npos != Arg.find_first_of("\t \"&\'()*<>\\`^|\n");
+}
+
+static std::string quoteSingleArg(StringRef Arg) {
+  std::string Result;
+  Result.push_back('"');
+
+  while (!Arg.empty()) {
+    size_t FirstNonBackslash = Arg.find_first_not_of('\\');
+    size_t BackslashCount = FirstNonBackslash;
+    if (FirstNonBackslash == StringRef::npos) {
+      BackslashCount = Arg.size();
+      Result.append(BackslashCount * 2, '\\');
+      break;
+    }
+
+    if (Arg[FirstNonBackslash] == '\"') {
+      Result.append(BackslashCount * 2 + 1, '\\');
+      Result.push_back('\"');
+    } else {
+      Result.append(BackslashCount, '\\');
+      Result.push_back(Arg[FirstNonBackslash]);
+    }
+
+    Arg = Arg.drop_front(FirstNonBackslash + 1);
+  }
+
+  Result.push_back('"');
+  return Result;
+}
+
+namespace llvm {
+
+ErrorOr<std::wstring> sys::flattenWindowsCommandLine(ArrayRef<StringRef> Args) {
+  std::string Command;
+  for (StringRef Arg : Args) {
+    if (argNeedsQuotes(Arg))
+      Command += quoteSingleArg(Arg);
+    else
+      Command += Arg;
+
+    Command.push_back(' ');
+  }
+
+  // Convert UTF-8 to wstring directly.
+  std::wstring Result;
+  Result.reserve(Command.size());
+  for (char C : Command)
+    Result.push_back(static_cast<wchar_t>(static_cast<unsigned char>(C)));
+  return Result;
+}
+
+ProcessInfo sys::Wait(const ProcessInfo &PI,
+                      std::optional<unsigned> SecondsToWait,
+                      std::string *ErrMsg,
+                      std::optional<ProcessStatistics> *ProcStat,
+                      bool Polling) {
+  struct sigaction Act, Old;
+  assert(PI.Pid && "invalid pid to wait on, process not started?");
+
+  int WaitPidOptions = 0;
+  pid_t ChildPid = PI.Pid;
+  bool WaitUntilTerminates = false;
+  if (!SecondsToWait) {
+    WaitUntilTerminates = true;
+  } else {
+    if (*SecondsToWait == 0)
+      WaitPidOptions = WNOHANG;
+
+    // Install a timeout handler. The handler itself does nothing, but having
+    // one causes waitpid to return with EINTR when the alarm fires.
+    memset(&Act, 0, sizeof(Act));
+    Act.sa_handler = TimeOutHandler;
+    sigemptyset(&Act.sa_mask);
+    sigaction(SIGALRM, &Act, &Old);
+    alarm(*SecondsToWait);
+  }
+
+  int status = 0;
+  ProcessInfo WaitResult;
+  if (ProcStat)
+    ProcStat->reset();
+
+  do {
+    WaitResult.Pid = waitpid(ChildPid, &status, WaitPidOptions);
+  } while (WaitUntilTerminates && WaitResult.Pid == -1 && errno == EINTR);
+
+  if (WaitResult.Pid != PI.Pid) {
+    if (WaitResult.Pid == 0) {
+      // Non-blocking wait.
+      return WaitResult;
+    } else {
+      if (SecondsToWait && errno == EINTR && !Polling) {
+        kill(PI.Pid, SIGKILL);
+
+        alarm(0);
+        sigaction(SIGALRM, &Old, nullptr);
+
+        if (wait(&status) != ChildPid)
+          MakeErrMsg(ErrMsg, "Child timed out but wouldn't die");
+        else
+          MakeErrMsg(ErrMsg, "Child timed out", 0);
+
+        WaitResult.ReturnCode = -2;
+        return WaitResult;
+      } else if (errno != EINTR) {
+        MakeErrMsg(ErrMsg, "Error waiting for child process");
+        WaitResult.ReturnCode = -1;
+        return WaitResult;
+      }
+    }
+  }
+
+  // Turn off the timer.
+  if (SecondsToWait && !WaitUntilTerminates) {
+    alarm(0);
+    sigaction(SIGALRM, &Old, nullptr);
+  }
+
+  // Decode exit status.
+  int result = 0;
+  if (WIFEXITED(status)) {
+    result = WEXITSTATUS(status);
+    WaitResult.ReturnCode = result;
+
+    if (result == 127) {
+      if (ErrMsg)
+        *ErrMsg = llvm::sys::StrError(ENOENT);
+      WaitResult.ReturnCode = -1;
+      return WaitResult;
+    }
+    if (result == 126) {
+      if (ErrMsg)
+        *ErrMsg = "Program could not be executed";
+      WaitResult.ReturnCode = -1;
+      return WaitResult;
+    }
+  } else if (WIFSIGNALED(status)) {
+    if (ErrMsg) {
+      *ErrMsg = strsignal(WTERMSIG(status));
+    }
+    WaitResult.ReturnCode = -2;
+  }
+  return WaitResult;
+}
+
+std::error_code llvm::sys::ChangeStdinMode(sys::fs::OpenFlags Flags) {
+  if (!(Flags & fs::OF_Text))
+    return ChangeStdinToBinary();
+  return std::error_code();
+}
+
+std::error_code llvm::sys::ChangeStdoutMode(sys::fs::OpenFlags Flags) {
+  if (!(Flags & fs::OF_Text))
+    return ChangeStdoutToBinary();
+  return std::error_code();
+}
+
+// Our libc uses POSIX semantics -- no text/binary distinction.
+std::error_code sys::ChangeStdinToBinary() { return std::error_code(); }
+
+std::error_code sys::ChangeStdoutToBinary() { return std::error_code(); }
+
+std::error_code
+llvm::sys::writeFileWithEncoding(StringRef FileName, StringRef Contents,
+                                 WindowsEncodingMethod Encoding /*unused*/) {
+  std::error_code EC;
+  llvm::raw_fd_ostream OS(FileName, EC,
+                          llvm::sys::fs::OpenFlags::OF_TextWithCRLF);
+  if (EC)
+    return EC;
+
+  OS << Contents;
+
+  if (OS.has_error())
+    return make_error_code(errc::io_error);
+
+  return EC;
+}
+
+bool llvm::sys::commandLineFitsWithinSystemLimits(StringRef Program,
+                                                  ArrayRef<StringRef> Args) {
+  // Windows CreateProcessW limit is 32767 chars. Use conservative limit.
+  static const size_t MaxCommandStringLength = 32000;
+  size_t ArgLength = Program.size() + 1;
+  for (StringRef Arg : Args) {
+    ArgLength += Arg.size() + 1;
+    if (ArgLength > MaxCommandStringLength)
+      return false;
+  }
+  return true;
+}
+
+} // namespace llvm
+
+#else // !LLVM_RUNTIME_POSIX
+
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/ConvertUTF.h"
@@ -578,3 +971,5 @@ bool llvm::sys::commandLineFitsWithinSystemLimits(StringRef Program,
   return (Result->size() + 1) <= MaxCommandStringLength;
 }
 } // namespace llvm
+
+#endif // LLVM_RUNTIME_POSIX

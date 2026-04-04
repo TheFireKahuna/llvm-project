@@ -24,7 +24,7 @@
 ///
 //===----------------------------------------------------------------------===//
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
 #include "../internal.h"
 #include <process.h>
@@ -1104,4 +1104,4 @@ __declspec(allocate(".CRT$XIU")) _PIFV __wincrt_c11threads_init = initC11Threads
 
 } // extern "C"
 
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32

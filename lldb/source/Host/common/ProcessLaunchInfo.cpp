@@ -20,7 +20,7 @@
 #include "llvm/Support/ConvertUTF.h"
 #include "llvm/Support/FileSystem.h"
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "lldb/Host/windows/PseudoConsole.h"
 #include "lldb/Host/windows/WindowsFileAction.h"
 #else
@@ -231,7 +231,7 @@ llvm::Error ProcessLaunchInfo::SetUpPtyRedirection() {
 
   LLDB_LOG(log, "Generating a pty to use for stdin/out/err");
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   if (llvm::Error Err = m_pty->OpenPseudoConsole())
     return Err;
   return llvm::Error::success();

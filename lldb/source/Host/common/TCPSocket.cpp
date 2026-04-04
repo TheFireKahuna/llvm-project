@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if defined(_MSC_VER) || defined(_WIN32_ITANIUM)
+#if defined(LLVM_CRT_UCRT)
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 #endif
 
@@ -29,7 +29,7 @@
 #include <sys/socket.h>
 #endif
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include <winsock2.h>
 #endif
 

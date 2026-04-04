@@ -68,9 +68,13 @@
 #endif
 
 #if defined(__SEH__) && !defined(__USING_SJLJ_EXCEPTIONS__)
+#if defined(LLVM_RUNTIME_POSIX)
+#include <sys/ntabi.h>
+#else
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winnt.h>
+#endif
 
 extern "C" EXCEPTION_DISPOSITION _GCC_specific_handler(PEXCEPTION_RECORD,
                                                        void *, PCONTEXT,

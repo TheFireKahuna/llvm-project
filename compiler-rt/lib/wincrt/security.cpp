@@ -17,7 +17,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
 #include "internal.h"
 
@@ -130,4 +130,4 @@ void securityInitCookie() {
 
 } // namespace wincrt
 
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32

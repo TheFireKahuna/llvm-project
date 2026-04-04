@@ -1,6 +1,6 @@
 #include "attach.h"
 #include <stdio.h>
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 #include <process.h>
 #include <windows.h>
 #else
@@ -21,7 +21,7 @@ int main(int argc, char const *argv[]) {
   }
 
   printf("pid = %i\n", getpid());
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   Sleep(10 * 1000);
 #else
   sleep(10);

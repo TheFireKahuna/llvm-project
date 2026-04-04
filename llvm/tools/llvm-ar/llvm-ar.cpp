@@ -41,13 +41,13 @@
 #include "llvm/ToolDrivers/llvm-dlltool/DlltoolDriver.h"
 #include "llvm/ToolDrivers/llvm-lib/LibDriver.h"
 
-#if !defined(_MSC_VER) && !defined(__MINGW32__) && !defined(_WIN32_ITANIUM)
+#if !defined(LLVM_CRT_UCRT)
 #include <unistd.h>
 #else
 #include <io.h>
 #endif
 
-#if defined(_WIN32) && !defined(__LLVM_LIBC__)
+#if defined(LLVM_RUNTIME_WIN32)
 #include "llvm/Support/Windows/WindowsSupport.h"
 #endif
 
@@ -562,7 +562,7 @@ static bool comparePaths(StringRef Path1, StringRef Path2) {
 // as Windows file paths are case-insensitive.
 // CompareStringOrdinal compares two Unicode strings for
 // binary equivalence and allows for case insensitivity.
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   SmallVector<wchar_t, 128> WPath1, WPath2;
   failIfError(sys::windows::UTF8ToUTF16(normalizePath(Path1), WPath1));
   failIfError(sys::windows::UTF8ToUTF16(normalizePath(Path2), WPath2));

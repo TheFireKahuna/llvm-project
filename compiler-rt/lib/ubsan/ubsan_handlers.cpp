@@ -899,7 +899,7 @@ static void handleCFIBadIcall(CFICheckFailData *Data, ValueHandle Function,
 
 namespace __ubsan {
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 extern "C" void __ubsan_handle_cfi_bad_type_default(CFICheckFailData *Data,
                                                     ValueHandle Vtable,
                                                     bool ValidVtable,

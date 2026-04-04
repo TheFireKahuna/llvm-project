@@ -1,7 +1,7 @@
 // This header is included in all the test programs (C and C++) and provides a
 // hook for dealing with platform-specifics.
 
-#if defined(_WIN32) || defined(_WIN64)
+#if defined(_WIN32)
 #define LLDB_DYLIB_EXPORT __declspec(dllexport)
 #define LLDB_DYLIB_IMPORT __declspec(dllimport)
 #else

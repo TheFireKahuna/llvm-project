@@ -12,7 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if defined(_MSC_VER) || defined(_WIN32_ITANIUM)
+#if defined(LLVM_CRT_UCRT)
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 #endif
 
@@ -20,7 +20,7 @@
 #include <cstddef>
 #include <cstdio>
 
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
 #include <arpa/inet.h>
 #endif
 
@@ -30,7 +30,7 @@
 #include "lldb/Host/PosixApi.h"
 
 // WindowsXP needs an inet_ntop implementation
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
 #ifndef INET6_ADDRSTRLEN // might not be defined in older Windows SDKs
 #define INET6_ADDRSTRLEN 46

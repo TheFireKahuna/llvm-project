@@ -27,7 +27,7 @@
 #include <inttypes.h>
 #include <stdint.h>
 
-#if !defined(_MSC_VER) && !defined(_WIN32_ITANIUM)
+#if !defined(LLVM_CRT_UCRT)
 
 #if !defined(UINT32_MAX)
 # error "The standard header <cstdint> is not C++11 compliant. Must #define "\

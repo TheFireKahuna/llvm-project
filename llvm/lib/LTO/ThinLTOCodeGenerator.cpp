@@ -59,7 +59,7 @@
 #include "llvm/Transforms/IPO/WholeProgramDevirt.h"
 #include "llvm/Transforms/Utils/FunctionImportUtils.h"
 
-#if !defined(_MSC_VER) && !defined(__MINGW32__) && !defined(_WIN32_ITANIUM)
+#if !defined(LLVM_CRT_UCRT)
 #include <unistd.h>
 #else
 #include <io.h>

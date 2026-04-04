@@ -22,6 +22,9 @@
 #  endif
 #  include <io.h>
 #  include <windows.h>
+#  if defined(__MSVCRT__) && !defined(_MSC_VER)
+#    define fileno _fileno
+#  endif
 #elif __has_include(<unistd.h>)
 #  include <unistd.h>
 #  if defined(_NEWLIB_VERSION)

@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 // Failing on Windows, see https://github.com/llvm/llvm-project/issues/153446.
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 
 #include "lldb/Host/JSONTransport.h"
 #include "TestingSupport/Host/JSONTransportTestUtilities.h"
@@ -812,4 +812,4 @@ TEST_F(TransportBinderTest, InBoundEventsVoidParams) {
   EXPECT_TRUE(called);
 }
 
-#endif // ifndef _WIN32
+#endif // ifndef LLVM_RUNTIME_WIN32

@@ -114,7 +114,7 @@
 #include <set>
 #include <string>
 #include <utility>
-#if defined(LLVM_ON_UNIX) || defined(LLVM_ON_NTPOSIX)
+#if defined(LLVM_RUNTIME_POSIX)
 #include <unistd.h> // getpid
 #endif
 
@@ -1923,7 +1923,7 @@ bool Driver::getCrashDiagnosticFile(StringRef ReproCrashFilename,
     CrashDiagDir = "/";
   path::append(CrashDiagDir, "Library/Logs/DiagnosticReports");
   int PID =
-#if defined(LLVM_ON_UNIX) || defined(LLVM_ON_NTPOSIX)
+#if defined(LLVM_RUNTIME_POSIX)
       getpid();
 #else
       0;

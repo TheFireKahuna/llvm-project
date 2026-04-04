@@ -300,7 +300,7 @@ class Test(unittest.TestCase):
 
 // clang-format off
 
-#if !defined(_WIN32) && __has_include(<charconv>)
+#if !defined(LLVM_RUNTIME_WIN32) && __has_include(<charconv>)
 #  include <charconv>
 #endif
 #include "test_macros.h"

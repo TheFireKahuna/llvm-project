@@ -429,10 +429,10 @@ int clang_main(int Argc, char **Argv, const llvm::ToolContext &ToolContext) {
       // On Windows, abort will return an exit code of 3.  In these cases,
       // generate additional diagnostic information if possible.
       IsCrash = CommandRes < 0 || CommandRes == 70;
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
       IsCrash |= CommandRes == 3;
 #endif
-#if LLVM_ON_UNIX
+#if defined(LLVM_RUNTIME_POSIX)
       // When running in integrated-cc1 mode, the CrashRecoveryContext returns
       // the same codes as if the program crashed. See section "Exit Status for
       // Commands":

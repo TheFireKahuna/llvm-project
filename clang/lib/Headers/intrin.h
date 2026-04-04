@@ -8,7 +8,7 @@
  */
 
 /* Only include this if we're compiling for the windows platform. */
-#if !defined(_MSC_VER) && !defined(_WIN32_ITANIUM)
+#if !defined(LLVM_CRT_UCRT)
 #include_next <intrin.h>
 #else
 

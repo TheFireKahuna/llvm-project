@@ -28,7 +28,7 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Chrono.h"
 #include "llvm/Support/Windows/WindowsSupport.h"
@@ -440,7 +440,8 @@ TEST(Support, AbsolutePathIteratorEnd) {
   }
 }
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
+// UCRT uses a wide (UTF-16) environment; read it with _wgetenv.
 std::string getEnvWin(const wchar_t *Var) {
   std::string expected;
   if (wchar_t const *path = ::_wgetenv(Var)) {
@@ -480,7 +481,8 @@ public:
 
 TEST(Support, HomeDirectory) {
   std::string expected;
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
+  // UCRT: home directory comes from wide USERPROFILE env var.
   expected = getEnvWin(L"USERPROFILE");
 #else
   if (char const *path = ::getenv("HOME"))
@@ -565,7 +567,8 @@ TEST(Support, ConfigDirectory) {
 }
 #endif
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
+// UCRT: config/cache directories come from wide LOCALAPPDATA env var.
 TEST(Support, ConfigDirectory) {
   std::string Expected = getEnvWin(L"LOCALAPPDATA");
   // Do not try to test it if we don't know what to expect.
@@ -596,7 +599,9 @@ TEST(Support, TempDirectory) {
   EXPECT_TRUE(!TempDir.empty());
 }
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
+// UCRT-specific: system_temp_directory reads wide TMP/TEMP/USERPROFILE env
+// vars.  LLVM_RUNTIME_POSIX uses POSIX getenv("TMP") / getenv("TMPDIR").
 static std::string path2regex(std::string Path) {
   size_t Pos = 0;
   bool Forward = path::get_separator()[0] == '/';
@@ -1944,7 +1949,8 @@ TEST_F(FileSystemTest, OpenFileForRead) {
 TEST_F(FileSystemTest, OpenDirectoryAsFileForRead) {
   std::string Buf(5, '?');
   Expected<fs::file_t> FD = fs::openNativeFileForRead(TestDirectory);
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
+  // UCRT: opening a directory returns is_a_directory immediately.
   EXPECT_EQ(errorToErrorCode(FD.takeError()), errc::is_a_directory);
 #else
   ASSERT_THAT_EXPECTED(FD, Succeeded());

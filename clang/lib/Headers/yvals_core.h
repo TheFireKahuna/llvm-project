@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 // Only include this if we are aiming for MSVC compatibility.
-#if !defined(_MSC_VER) && !defined(_WIN32_ITANIUM)
+#if !defined(LLVM_CRT_UCRT)
 #include_next <yvals_core.h>
 #else
 

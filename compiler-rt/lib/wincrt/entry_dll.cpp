@@ -14,7 +14,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
 #include "internal.h"
 
@@ -67,4 +67,4 @@ _DllMainCRTStartup(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
   return DllMain(hinstDLL, fdwReason, lpvReserved);
 }
 
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32

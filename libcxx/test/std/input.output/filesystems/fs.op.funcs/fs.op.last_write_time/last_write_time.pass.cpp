@@ -34,7 +34,7 @@
 #include "filesystem_test_helper.h"
 
 #include <fcntl.h>
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 #include <windows.h>
 #else
 #include <sys/time.h>

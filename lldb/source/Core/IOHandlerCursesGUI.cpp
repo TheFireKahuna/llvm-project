@@ -62,7 +62,7 @@
 
 #include "llvm/ADT/StringRef.h"
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "lldb/Host/windows/windows.h"
 #endif
 

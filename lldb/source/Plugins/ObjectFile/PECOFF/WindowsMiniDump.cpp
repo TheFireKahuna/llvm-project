@@ -13,7 +13,7 @@
 #include "lldb/Utility/FileSpec.h"
 #include "llvm/Support/ConvertUTF.h"
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "lldb/Host/windows/windows.h"
 #include <dbghelp.h>
 #endif
@@ -24,7 +24,7 @@ bool SaveMiniDump(const lldb::ProcessSP &process_sp,
                   SaveCoreOptions &core_options, lldb_private::Status &error) {
   if (!process_sp)
     return false;
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   std::optional<FileSpec> outfileSpec = core_options.GetOutputFile();
   const auto &outfile = outfileSpec.value();
   HANDLE process_handle = ::OpenProcess(

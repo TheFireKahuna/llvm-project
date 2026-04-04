@@ -26,10 +26,10 @@
 #include <system_error>
 #include <tuple>
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 #include <windows.h>
 #endif
-#if LLVM_ON_UNIX
+#if defined(LLVM_RUNTIME_POSIX)
 #include <unistd.h>
 #endif
 

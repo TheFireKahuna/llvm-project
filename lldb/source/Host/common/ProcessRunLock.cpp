@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 #include "lldb/Host/ProcessRunLock.h"
 
 namespace lldb_private {

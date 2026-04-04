@@ -10,7 +10,7 @@
 #include <string>
 
 // Windows does not have strcasestr and memmem, so we are not testing them.
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #define strcasestr strstr
 #define memmem(a, b, c, d) true
 #endif

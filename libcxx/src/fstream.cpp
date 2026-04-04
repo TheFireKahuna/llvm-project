@@ -17,6 +17,9 @@
 #  endif
 #  include <io.h>
 #  include <windows.h>
+#  if defined(_WIN32_ITANIUM)
+#    define fileno _fileno
+#  endif
 #endif
 
 _LIBCPP_BEGIN_NAMESPACE_STD

@@ -40,7 +40,7 @@ LLVM_ABI extern ThreadPoolStrategy strategy;
          "ThreadPoolExecutor");                                                \
   return threadIndex;
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 // Direct access to thread_local variables from a different DLL isn't
 // possible with Windows Native TLS.
 LLVM_ABI unsigned getThreadIndex();

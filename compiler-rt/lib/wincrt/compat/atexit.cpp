@@ -10,7 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
 #include "../internal.h"
 
@@ -67,4 +67,4 @@ _onexit_t __cdecl __dllonexit(_onexit_t func, _PVFV **, _PVFV **) {
 
 } // extern "C"
 
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32

@@ -37,7 +37,7 @@
 #include <mutex>
 #include <utility>
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #ifndef NOMINMAX
 #  define NOMINMAX
 #endif

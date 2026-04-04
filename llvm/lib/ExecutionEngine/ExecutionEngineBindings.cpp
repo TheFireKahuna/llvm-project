@@ -18,6 +18,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Target/CodeGenCWrappers.h"
+#include "llvm/Support/PosixCompat.h"
 #include "llvm/Target/TargetOptions.h"
 #include <cstring>
 #include <optional>

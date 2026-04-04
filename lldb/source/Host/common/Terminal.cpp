@@ -401,7 +401,7 @@ llvm::Error Terminal::SetHardwareFlowControl(bool enabled) {
 }
 
 bool Terminal::SupportsUnicode() {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   return true;
 #else
   static std::optional<bool> g_result;

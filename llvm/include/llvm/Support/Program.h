@@ -31,11 +31,11 @@ namespace sys {
 // a colon on Unix or a semicolon on Windows.
 #if defined(LLVM_ON_UNIX)
 const char EnvPathSeparator = ':';
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
 const char EnvPathSeparator = ';';
 #endif
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 typedef unsigned long procid_t; // Must match the type of DWORD on Windows.
 typedef void *process_t;        // Must match the type of HANDLE on Windows.
 #else
@@ -235,7 +235,7 @@ LLVM_ABI ProcessInfo Wait(
 /// Print a command argument, and optionally quote it.
 LLVM_ABI void printArg(llvm::raw_ostream &OS, StringRef Arg, bool Quote);
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 /// Given a list of command line arguments, quote and escape them as necessary
 /// to build a single flat command line appropriate for calling CreateProcess
 /// on

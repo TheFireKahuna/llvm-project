@@ -155,7 +155,7 @@ public:
 
 } // end namespace llvm
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 /// Instantiate a registry class.
 #define LLVM_INSTANTIATE_REGISTRY(REGISTRY_CLASS)                              \
   namespace llvm {                                                             \

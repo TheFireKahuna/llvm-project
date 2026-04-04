@@ -31,7 +31,7 @@
 #  define _LIBCPP_ABI_MICROSOFT
 #else
 // Windows with MSVC uses the Microsoft ABI (but not Windows Itanium).
-#  if defined(_WIN32) && defined(_MSC_VER) && !defined(_WIN32_ITANIUM)
+#  if defined(LLVM_RUNTIME_WIN32) && defined(_MSC_VER) && !defined(_WIN32_ITANIUM)
 #    define _LIBCPP_ABI_MICROSOFT
 
 // 32-bit ARM uses the Itanium ABI with a few differences (array cookies, etc),

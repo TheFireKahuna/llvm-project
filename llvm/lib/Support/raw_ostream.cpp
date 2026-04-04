@@ -54,7 +54,7 @@
 #endif
 #endif
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 #include "llvm/Support/ConvertUTF.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/Windows/WindowsSupport.h"
@@ -73,7 +73,7 @@ raw_ostream::~raw_ostream() {
 }
 
 size_t raw_ostream::preferred_buffer_size() const {
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
   // On Windows BUFSIZ is only 512 which results in more calls to write. This
   // overhead can cause significant performance degradation. Therefore use a
   // better default.
@@ -629,7 +629,7 @@ raw_fd_ostream::raw_fd_ostream(int fd, bool shouldClose, bool unbuffered,
   if (FD <= STDERR_FILENO)
     ShouldClose = false;
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
   // Check if this is a console device. This is not equivalent to isatty.
   IsWindowsConsole =
       ::GetFileType((HANDLE)::_get_osfhandle(fd)) == FILE_TYPE_CHAR;
@@ -640,7 +640,7 @@ raw_fd_ostream::raw_fd_ostream(int fd, bool shouldClose, bool unbuffered,
   sys::fs::file_status Status;
   std::error_code EC = status(FD, Status);
   IsRegularFile = Status.type() == sys::fs::file_type::regular_file;
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
   // MSVCRT's _lseek(SEEK_CUR) doesn't return -1 for pipes.
   SupportsSeeking = !EC && IsRegularFile;
 #else
@@ -678,7 +678,7 @@ raw_fd_ostream::~raw_fd_ostream() {
                           error().message());
 }
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 // The most reliable way to print unicode in a Windows console is with
 // WriteConsoleW. To use that, first transcode from UTF-8 to UTF-16. This
 // assumes that LLVM programs always print valid UTF-8 to the console. The data
@@ -735,7 +735,7 @@ void raw_fd_ostream::write_impl(const char *Ptr, size_t Size) {
   assert(FD >= 0 && "File already closed.");
   pos += Size;
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   // If this is a Windows console device, try re-encoding from UTF-8 to UTF-16
   // and using WriteConsoleW. If that fails, fall back to plain write().
   if (IsWindowsConsole)
@@ -774,7 +774,7 @@ void raw_fd_ostream::write_impl(const char *Ptr, size_t Size) {
           )
         continue;
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
       // Windows equivalents of SIGPIPE/EPIPE.
       DWORD WinLastError = GetLastError();
       if (WinLastError == ERROR_BROKEN_PIPE ||
@@ -808,7 +808,7 @@ void raw_fd_ostream::close() {
 uint64_t raw_fd_ostream::seek(uint64_t off) {
   assert(SupportsSeeking && "Stream does not support seeking!");
   flush();
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
   pos = ::_lseeki64(FD, off, SEEK_SET);
 #else
   pos = ::lseek(FD, off, SEEK_SET);
@@ -827,7 +827,7 @@ void raw_fd_ostream::pwrite_impl(const char *Ptr, size_t Size,
 }
 
 size_t raw_fd_ostream::preferred_buffer_size() const {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   // Disable buffering for console devices. Console output is re-encoded from
   // UTF-8 to UTF-16 on Windows, and buffering it would require us to split the
   // buffer on a valid UTF-8 codepoint boundary. Terminal buffering is disabled

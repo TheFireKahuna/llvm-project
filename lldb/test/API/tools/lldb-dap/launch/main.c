@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include <direct.h>
 #else
 #include <unistd.h>

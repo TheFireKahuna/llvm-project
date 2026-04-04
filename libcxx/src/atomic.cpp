@@ -51,6 +51,14 @@
 #  include <memory>
 #  include <windows.h>
 
+#elif defined(LLVM_RUNTIME_POSIX)
+
+// LLVM libc on Windows provides futex(2) backed by
+// NtAlertThreadByThreadId with a Treiber-stack wait pool.
+#  include <sys/futex.h>
+// Cast void* to volatile uint32_t* — futex(2) always operates on a uint32_t.
+#  define _LIBCPP_FUTEX(addr, ...) futex(static_cast<volatile uint32_t*>(const_cast<void*>(addr)), __VA_ARGS__)
+
 #else // <- Add other operating systems here
 
 // Baseline needs no new headers
@@ -66,7 +74,7 @@ _LIBCPP_BEGIN_NAMESPACE_STD
 
 struct NoTimeout {};
 
-#if defined(__linux__) || defined(LLVM_RUNTIME_WIN32)
+#if defined(__linux__) || (defined(_WIN32) && defined(LLVM_RUNTIME_POSIX))
 
 template <std::size_t _Size, class MaybeTimeout>
 static void __platform_wait_on_address(void const* __ptr, void const* __val, MaybeTimeout maybe_timeout_ns) {

@@ -4,7 +4,7 @@
 #include <filesystem>
 
 #include <sys/stat.h> // for stat, mkdir, mkfifo
-#ifndef _WIN32
+#if defined(LLVM_RUNTIME_POSIX)
 #include <unistd.h> // for ftruncate, link, symlink, getcwd, chdir
 #include <sys/statvfs.h>
 #else
@@ -30,14 +30,14 @@
 #include "format_string.h"
 
 // For creating socket files
-#if !defined(__FreeBSD__) && !defined(__APPLE__) && !defined(_WIN32)
+#if !defined(__FreeBSD__) && !defined(__APPLE__) && !defined(LLVM_RUNTIME_WIN32)
 # include <sys/socket.h>
 # include <sys/un.h>
 #endif
 namespace fs = std::filesystem;
 
 namespace utils {
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
     inline int mkdir(const char* path, int mode) { (void)mode; return ::_mkdir(path); }
     inline int symlink(const char* oldname, const char* newname, bool is_dir) {
         DWORD flags = is_dir ? SYMBOLIC_LINK_FLAG_DIRECTORY : 0;
@@ -104,7 +104,7 @@ namespace utils {
 
     // N.B. libc might define some of the foo[64] identifiers using macros from
     // foo64 -> foo or vice versa.
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
     using off64_t = std::int64_t;
 #elif defined(__MVS__) || defined(__LP64__)
     using off64_t = ::off_t;
@@ -115,7 +115,7 @@ namespace utils {
     inline FILE* fopen64(const char* pathname, const char* mode) {
         // Bionic does not distinguish between fopen and fopen64, but fopen64
         // wasn't added until API 24.
-#if defined(_WIN32) || defined(__MVS__) || defined(__LP64__) || defined(__BIONIC__)
+#if defined(LLVM_RUNTIME_WIN32) || defined(__MVS__) || defined(__LP64__) || defined(__BIONIC__)
         return ::fopen(pathname, mode);
 #else
         return ::fopen64(pathname, mode);
@@ -123,7 +123,7 @@ namespace utils {
     }
 
     inline int ftruncate64(int fd, off64_t length) {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
         // _chsize_s sets errno on failure and also returns the error number.
         return ::_chsize_s(fd, length) ? -1 : 0;
 #elif defined(__MVS__) || defined(__LP64__)
@@ -151,7 +151,7 @@ namespace utils {
 struct scoped_test_env
 {
     scoped_test_env() : test_root(available_cwd_path()) {
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
         // Windows mkdir can create multiple recursive directories
         // if needed.
         std::string cmd = "mkdir " + test_root.string();
@@ -169,7 +169,7 @@ struct scoped_test_env
     }
 
     ~scoped_test_env() {
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
         std::string cmd = "rmdir /s /q " + test_root.string();
         int ret = std::system(cmd.c_str());
         assert(ret == 0);
@@ -238,7 +238,7 @@ struct scoped_test_env
             std::abort();
         }
 
-#if defined(_WIN32) || defined(__MVS__)
+#if defined(LLVM_RUNTIME_WIN32) || defined(__MVS__)
 #  define FOPEN_CLOEXEC_FLAG ""
 #else
 #  define FOPEN_CLOEXEC_FLAG "e"
@@ -308,7 +308,7 @@ struct scoped_test_env
         return to;
     }
 
-#ifndef _WIN32
+#if !defined(LLVM_RUNTIME_WIN32)
     std::string create_fifo(std::string file) {
         file = sanitize_path(std::move(file));
         int ret = ::mkfifo(file.c_str(), 0666); // rw-rw-rw- mode
@@ -319,7 +319,7 @@ struct scoped_test_env
 
   // Some platforms doesn't support socket files so we shouldn't even
   // allow tests to call this unguarded.
-#if !defined(__FreeBSD__) && !defined(__APPLE__) && !defined(_WIN32)
+#if !defined(__FreeBSD__) && !defined(__APPLE__) && !defined(LLVM_RUNTIME_WIN32)
     std::string create_socket(std::string file) {
       file = sanitize_path(std::move(file));
 
@@ -541,7 +541,7 @@ template <class Dur> void SleepFor(Dur dur) {
 }
 
 inline fs::perms NormalizeExpectedPerms(fs::perms P) {
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
   // On Windows, fs::perms only maps down to one bit stored in the filesystem,
   // a boolean readonly flag.
   // Normalize permissions to the format it gets returned; all fs entries are
@@ -583,7 +583,7 @@ struct ExceptionChecker {
     assert(ErrorIsImp(Err.code(), {expected_err}));
     assert(Err.path1() == expected_path1);
     assert(Err.path2() == expected_path2);
-#ifndef _WIN32
+#if !defined(LLVM_RUNTIME_WIN32)
     // On Windows, the error strings are windows error code strings, and don't
     // match textually with the strings generated for generic std::errc::*.
     LIBCPP_ONLY(check_libcxx_string(Err));

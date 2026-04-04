@@ -11,7 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 
 // Function pointer types matching UCRT conventions.
 typedef int (__cdecl *_PIFV)(void);   // C initializers
@@ -28,4 +28,4 @@ WINCRT_SECTION(".CRT$XCZ") _PVFV __xc_z[] = {0};
 WINCRT_SECTION(".CRT$XPZ") _PVFV __xp_z[] = {0};
 WINCRT_SECTION(".CRT$XTZ") _PVFV __xt_z[] = {0};
 
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32

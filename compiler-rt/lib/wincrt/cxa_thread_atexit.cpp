@@ -45,7 +45,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
 #include "internal.h"
 
@@ -351,4 +351,4 @@ void __cxa_thread_finalize_dso_unload(void *Dso) {
 
 }
 
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32

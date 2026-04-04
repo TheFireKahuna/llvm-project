@@ -172,11 +172,11 @@ bool isUsableArch(Triple::ArchType Arch) {
   case Triple::thumb:
   case Triple::aarch64:
     // These work properly with the clang driver, setting the expected
-    // defines such as _WIN32 etc.
+    // defines such as LLVM_RUNTIME_WIN32 etc.
     return true;
   default:
     // Other archs aren't set up for use with windows as target OS, (clang
-    // doesn't define e.g. _WIN32 etc), so with them we need to set a
+    // doesn't define e.g. LLVM_RUNTIME_WIN32 etc), so with them we need to set a
     // different default arch.
     return false;
   }
@@ -549,7 +549,7 @@ RcOptions parseRcOptions(ArrayRef<const char *> ArgsArr,
   Opts.Params.NoInclude = InputArgs.hasArg(OPT_noinclude);
   if (Opts.Params.NoInclude) {
     // Clear the INLCUDE variable for the external preprocessor
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     ::_putenv("INCLUDE=");
 #else
     ::unsetenv("INCLUDE");

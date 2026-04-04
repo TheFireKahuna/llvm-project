@@ -13,7 +13,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
 #include "internal.h"
 
@@ -168,4 +168,4 @@ void __cdecl __cxa_finalize(void* dso) {
 
 }
 
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32

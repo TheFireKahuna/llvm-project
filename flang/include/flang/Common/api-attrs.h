@@ -206,7 +206,7 @@
 
 /* We always assume Windows is little endian, otherwise use the GCC compatible
  * flags. */
-#if defined(_MSC_VER) || defined(_WIN32)
+#if defined(_WIN32)
 #define FLANG_LITTLE_ENDIAN 1
 #elif defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
 #define FLANG_LITTLE_ENDIAN 1

@@ -75,14 +75,20 @@
 #  endif
 
 #  if defined(_WIN32)
-#    define _LIBCPP_WIN32API
 #    define _LIBCPP_SHORT_WCHAR 1
-// Both MinGW and native MSVC provide a "MSVC"-like environment
-#    define _LIBCPP_MSVCRT_LIKE
-// If mingw not explicitly detected, assume using MS C runtime only if
-// a MS compatibility version is specified.
+// _LIBCPP_WIN32API: use Win32 system calls directly for filesystem, chrono,
+// I/O, etc.  Windows Itanium with llvm-libc provides a full POSIX surface —
+// libc++ uses the POSIX/Linux code paths instead of calling Win32 directly.
+#    if !defined(_WIN32_ITANIUM) || defined(__MSVCRT__)
+#      define _LIBCPP_WIN32API
+#    endif
+// __MSVCRT__ is defined by MinGW and the Windows Itanium driver when the
+// C runtime is MSVCRT/UCRT.  Not defined with llvm-libc (POSIX names).
+#    if defined(_MSC_VER) || defined(__MSVCRT__)
+#      define _LIBCPP_MSVCRT_LIKE
+#    endif
 #    if defined(_MSC_VER) && !defined(__MINGW32__)
-#      define _LIBCPP_MSVCRT // Using Microsoft's C Runtime library
+#      define _LIBCPP_MSVCRT
 #    endif
 #    if (defined(_M_AMD64) || defined(__x86_64__)) || (defined(_M_ARM) || defined(__arm__))
 #      define _LIBCPP_HAS_BITSCAN64 1

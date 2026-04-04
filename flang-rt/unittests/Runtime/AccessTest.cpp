@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 // TODO: ACCESS is not yet implemented on Windows
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 
 #include "CrashHandlerFixture.h"
 #include "gtest/gtest.h"
@@ -490,4 +490,4 @@ TEST(AccessTests, TestNotRWX4) {
   ASSERT_NE(res, 0);
 }
 
-#endif // !_WIN32
+#endif // !LLVM_RUNTIME_WIN32

@@ -33,6 +33,9 @@ using __cxx_contention_t _LIBCPP_NODEBUG = int64_t;
 using __cxx_contention_t _LIBCPP_NODEBUG = int64_t;
 #  elif defined(_AIX) && !defined(__64BIT__)
 using __cxx_contention_t _LIBCPP_NODEBUG = int32_t;
+#  elif defined(_WIN32) && defined(_LIBCPP_LIBC_LLVM_LIBC)
+// LLVM libc on Windows provides futex(2) on 32-bit words, matching Linux.
+using __cxx_contention_t _LIBCPP_NODEBUG = int32_t;
 #  elif defined(_WIN32)
 using __cxx_contention_t _LIBCPP_NODEBUG = int64_t;
 #  else
@@ -41,11 +44,11 @@ using __cxx_contention_t _LIBCPP_NODEBUG = int64_t;
 
 #else // _LIBCPP_ABI_ATOMIC_WAIT_NATIVE_BY_SIZE
 
-#  if defined(__linux__) || (defined(_AIX) && !defined(__64BIT__))
+#  if defined(__linux__) || (defined(_AIX) && !defined(__64BIT__)) || (defined(_WIN32) && defined(_LIBCPP_LIBC_LLVM_LIBC))
 using __cxx_contention_t _LIBCPP_NODEBUG = int32_t;
 #  else
 using __cxx_contention_t _LIBCPP_NODEBUG = int64_t;
-#  endif // __linux__ || (_AIX && !__64BIT__)
+#  endif
 
 #endif // _LIBCPP_ABI_ATOMIC_WAIT_NATIVE_BY_SIZE
 

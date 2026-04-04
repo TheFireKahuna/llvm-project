@@ -19,7 +19,9 @@
 #include "llvm/TargetParser/Triple.h"
 #include "gtest/gtest.h"
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
+// These headers and tests use Win32-specific APIs unavailable under
+// LLVM_RUNTIME_POSIX, which provides SEH signals via its own signal handlers.
 #define WIN32_LEAN_AND_MEAN
 #define NOGDI
 #include <windows.h>
@@ -112,7 +114,7 @@ TEST(CrashRecoveryTest, LimitedStackTrace) {
   EXPECT_EQ(std::string::npos, Res.find("#1"));
 }
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 static void raiseIt() {
   RaiseException(123, EXCEPTION_NONCONTINUABLE, 0, NULL);
 }

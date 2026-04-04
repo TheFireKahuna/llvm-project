@@ -41,7 +41,7 @@ void __compilerrt_abort_impl(const char *file, int line, const char *function) {
 
 #else
 
-#if defined(_WIN32) && !defined(_WIN32_ITANIUM)
+#if defined(LLVM_CRT_UCRT)
 #include <stdlib.h>
 #endif
 
@@ -53,7 +53,7 @@ void __compilerrt_abort_impl(const char *file, int line, const char *function) {
 #if !__STDC_HOSTED__
   // Avoid depending on libc when compiling with -ffreestanding.
   __builtin_trap();
-#elif defined(_WIN32) && !defined(_WIN32_ITANIUM)
+#elif defined(LLLVM_RUNTIME_WIN32)
   abort();
 #else
   __builtin_abort();

@@ -19,7 +19,7 @@
 
 #include "sanitizer_test_utils.h"
 
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
 # include <pthread.h>
 // Simply forward the arguments and check that the pthread functions succeed.
 # define PTHREAD_CREATE(a, b, c, d) ASSERT_EQ(0, pthread_create(a, b, c, d))
@@ -62,6 +62,6 @@ inline void pthread_exit(void *retval) {
   ASSERT_EQ(0, retval) << "Nonzero retval is not supported yet.";
   ExitThread(0);
 }
-#endif  // _WIN32
+#endif  // LLVM_RUNTIME_WIN32
 
 #endif  // SANITIZER_PTHREAD_WRAPPERS_H

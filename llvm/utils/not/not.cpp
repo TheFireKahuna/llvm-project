@@ -16,7 +16,7 @@
 #include "llvm/Support/WithColor.h"
 #include "llvm/Support/raw_ostream.h"
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 #include <windows.h>
 #endif
 
@@ -35,7 +35,7 @@ int main(int argc, const char **argv) {
 
     // Crash is expected, so disable crash report and symbolization to reduce
     // output and avoid potentially slow symbolization.
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
     SetEnvironmentVariableA("LLVM_DISABLE_CRASH_REPORT", "1");
     SetEnvironmentVariableA("LLVM_DISABLE_SYMBOLIZATION", "1");
 #else
@@ -61,7 +61,7 @@ int main(int argc, const char **argv) {
   std::string ErrMsg;
   int Result =
       sys::ExecuteAndWait(*Program, Argv, std::nullopt, {}, 0, 0, &ErrMsg);
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   // Handle abort() in msvcrt -- It has exit code as 3.  abort(), aka
   // unreachable, should be recognized as a crash.  However, some binaries use
   // exit code 3 on non-crash failure paths, so only do this if we expect a

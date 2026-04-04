@@ -9,7 +9,7 @@
 #include <detail/global_objects.hpp>
 #include <detail/platform_impl.hpp>
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 #  include <windows.h>
 #endif
 

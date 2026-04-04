@@ -803,7 +803,7 @@ GDBRemoteCommunicationServerCommon::Handle_vFile_FStat(
   fill_clamp(data.gdb_st_gid, file_stats.st_gid, 0);
   fill_clamp(data.gdb_st_rdev, file_stats.st_rdev, 0);
   data.gdb_st_size = file_stats.st_size;
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
   data.gdb_st_blksize = file_stats.st_blksize;
   data.gdb_st_blocks = file_stats.st_blocks;
 #else

@@ -17,7 +17,7 @@
 #include <cstdio>
 #include <cstring>
 
-#if defined(__linux__)
+#if defined(__linux__) || (defined(_WIN32) && defined(LLVM_RUNTIME_POSIX))
 #include "lldb/Host/posix/Support.h"
 #include "llvm/Support/LineIterator.h"
 #include <fcntl.h>
@@ -27,14 +27,14 @@
 #include <unistd.h>
 #endif
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include <atomic>
 #include <windows.h>
 #endif
 
 using namespace lldb_private;
 
-#if defined(__linux__)
+#if defined(__linux__) || (defined(_WIN32) && defined(LLVM_RUNTIME_POSIX))
 class MemoryMonitorLinux : public MemoryMonitor {
 public:
   using MemoryMonitor::MemoryMonitor;
@@ -165,7 +165,7 @@ private:
   int m_stop_fd = -1;
   HostThread m_memory_monitor_thread;
 };
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
 
 class MemoryMonitorWindows : public MemoryMonitor {
 public:
@@ -214,7 +214,7 @@ private:
 
 #if !defined(__APPLE__)
 std::unique_ptr<MemoryMonitor> MemoryMonitor::Create(Callback callback) {
-#if defined(__linux__)
+#if defined(__linux__) || (defined(_WIN32) && defined(LLVM_RUNTIME_POSIX))
   return std::make_unique<MemoryMonitorLinux>(std::move(callback));
 #elif defined(_WIN32)
   return std::make_unique<MemoryMonitorWindows>(std::move(callback));

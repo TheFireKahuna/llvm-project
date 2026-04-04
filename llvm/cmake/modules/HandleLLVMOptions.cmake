@@ -243,18 +243,75 @@ if( LLVM_REVERSE_ITERATION )
   set( LLVM_ENABLE_REVERSE_ITERATION 1 )
 endif()
 
-if(WIN32)
+if(WIN32 OR CYGWIN)
   set(LLVM_HAVE_LINK_VERSION_SCRIPT 0)
   set(LLVM_ON_UNIX 0)
-elseif(FUCHSIA OR UNIX OR CYGWIN)
+
+  set(LLVM_CRT_UCRT 0)
+
+  # Primary runtime personality.
+  set(LLVM_RUNTIME_POSIX 0)
+  set(LLVM_RUNTIME_WIN32 1)
+
+  # Toolchain family / driver + linker + headers/libs world.
+  set(LLVM_TOOLCHAIN_MSVC 0)
+  set(LLVM_TOOLCHAIN_GNU 0)
+  set(LLVM_TOOLCHAIN_LLVM 0)
+  set(LLVM_TOOLCHAIN_CYGNUS 0)
+
+  if (MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+    set(LLVM_TOOLCHAIN_MSVC 1)
+    set(LLVM_CRT_UCRT 1)
+  elseif (MINGW)
+    set(LLVM_TOOLCHAIN_GNU 1)
+    set(LLVM_CRT_UCRT 1)
+  elseif (LLVM_HOST_TRIPLE MATCHES ".*-windows-itanium.*")
+    set(LLVM_TOOLCHAIN_LLVM 1)
+    set(LLVM_CRT_UCRT 1)
+  elseif (LLVM_HOST_TRIPLE MATCHES ".*-windows-(posix|ntposix).*")
+    set(LLVM_RUNTIME_POSIX 1)
+    set(LLVM_RUNTIME_WIN32 0)
+    set(LLVM_TOOLCHAIN_LLVM 1)
+  elseif (CYGWIN)
+    set(LLVM_RUNTIME_POSIX 1)
+    set(LLVM_RUNTIME_WIN32 0)
+    set(LLVM_TOOLCHAIN_CYGNUS 1)
+  else ()
+    # Default unknown Windows personality to native Win32/MSVC-style behavior.
+    set(LLVM_TOOLCHAIN_MSVC 1)
+  endif()
+
+elseif(FUCHSIA OR UNIX)
   set(LLVM_ON_UNIX 1)
-  if(APPLE OR CYGWIN OR "${CMAKE_SYSTEM_NAME}" MATCHES "AIX")
+
+  # Primary runtime personality.
+  set(LLVM_RUNTIME_POSIX 1)
+  set(LLVM_RUNTIME_WIN32 0)
+
+  # Toolchain family / driver + linker + headers/libs world.
+  set(LLVM_TOOLCHAIN_MSVC 0)
+  set(LLVM_TOOLCHAIN_GNU 0)
+  set(LLVM_TOOLCHAIN_LLVM 1)
+  set(LLVM_TOOLCHAIN_CYGNUS 0)
+  
+  if(APPLE OR "${CMAKE_SYSTEM_NAME}" MATCHES "AIX")
     set(LLVM_HAVE_LINK_VERSION_SCRIPT 0)
   else()
     set(LLVM_HAVE_LINK_VERSION_SCRIPT 1)
   endif()
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Generic")
   set(LLVM_ON_UNIX 0)
+
+  # Primary runtime personality.
+  set(LLVM_RUNTIME_POSIX 0)
+  set(LLVM_RUNTIME_WIN32 0)
+
+  # Toolchain family / driver + linker + headers/libs world.
+  set(LLVM_TOOLCHAIN_MSVC 0)
+  set(LLVM_TOOLCHAIN_GNU 0)
+  set(LLVM_TOOLCHAIN_LLVM 1)
+  set(LLVM_TOOLCHAIN_CYGNUS 0)
+
   set(LLVM_HAVE_LINK_VERSION_SCRIPT 0)
 else()
   MESSAGE(SEND_ERROR "Unable to determine platform")
@@ -585,7 +642,6 @@ option(LLVM_ENABLE_WARNING_SUPPRESSIONS "Suppress compiler warnings." ON)
 # Suppress deprecation warnings from Windows SDK headers.
 if(MSVC_LIKE)
   add_compile_definitions(
-    # For some reason MS wants to deprecate a bunch of standard functions...
     _CRT_SECURE_NO_DEPRECATE
     _CRT_SECURE_NO_WARNINGS
     _CRT_NONSTDC_NO_DEPRECATE
@@ -1603,6 +1659,9 @@ if(LLVM_ENABLE_LLVM_LIBC)
   check_library_exists(llvmlibc printf "" HAVE_LLVM_LIBC)
   if(NOT HAVE_LLVM_LIBC)
     message(WARNING "Unable to link against LLVM libc. LLVM will be built without linking against the LLVM libc overlay.")
+  endif()
+  if(WIN32)
+    set(LLVM_RUNTIME_POSIX ON)
   endif()
 endif()
 

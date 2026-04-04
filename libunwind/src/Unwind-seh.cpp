@@ -21,6 +21,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(LLVM_RUNTIME_POSIX)
+#include <sys/ntabi.h>
+#else
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #include <windef.h>
@@ -29,6 +32,7 @@
 #include <ntstatus.h>
 #ifndef _NTDEF_
 typedef long NTSTATUS;
+#endif
 #endif
 
 #include "libunwind_ext.h"

@@ -464,7 +464,7 @@ TEST_F(SourceManagerTest, loadedSLocEntryIsInTheSameTranslationUnit) {
   EXPECT_FALSE(InSameTU(-12, -11));
 }
 
-#if defined(LLVM_ON_UNIX)
+#if defined(LLVM_RUNTIME_POSIX)
 
 // A single SourceManager instance is sometimes reused across multiple
 // compilations. This test makes sure we're resetting caches built for tracking

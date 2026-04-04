@@ -322,7 +322,7 @@
 // TODO: Enable additional explicit instantiations on GCC once it supports exclude_from_explicit_instantiation,
 //       or once libc++ doesn't use the attribute anymore.
 // TODO: Enable them on Windows once https://llvm.org/PR41018 has been fixed.
-#if !defined(_LIBCPP_COMPILER_GCC) && !defined(_WIN32)
+#if !defined(_LIBCPP_COMPILER_GCC) && !defined(LLVM_RUNTIME_WIN32)
 #  define _LIBCPP_AVAILABILITY_HAS_ADDITIONAL_IOSTREAM_EXPLICIT_INSTANTIATIONS_1 _LIBCPP_INTRODUCED_IN_LLVM_12
 #else
 #  define _LIBCPP_AVAILABILITY_HAS_ADDITIONAL_IOSTREAM_EXPLICIT_INSTANTIATIONS_1 0

@@ -71,7 +71,7 @@
 #include <cerrno>
 #include <optional>
 
-#if !defined(_MSC_VER) && !defined(__MINGW32__) && !defined(_WIN32_ITANIUM)
+#if !defined(LLVM_CRT_UCRT)
 #include <unistd.h>
 #else
 #include <io.h>

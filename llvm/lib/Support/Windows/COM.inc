@@ -14,6 +14,24 @@
 //=== WARNING: Implementation here must contain only Windows code.
 //===----------------------------------------------------------------------===//
 
+// When building against LLVM libc (POSIX-on-NT), declare the COM APIs inline
+// so that <objbase.h> and its transitive MSVC SDK headers are never pulled in.
+#if defined(LLVM_RUNTIME_POSIX)
+#include <stdint.h>
+typedef unsigned long DWORD;
+typedef long HRESULT;
+typedef void *PVOID;
+#define WINAPI __stdcall
+#ifndef COINIT_APARTMENTTHREADED
+#define COINIT_APARTMENTTHREADED 0x2
+#define COINIT_MULTITHREADED     0x0
+#define COINIT_SPEED_OVER_MEMORY 0x8
+#endif
+extern "C" {
+__declspec(dllimport) HRESULT WINAPI CoInitializeEx(PVOID, DWORD);
+__declspec(dllimport) void WINAPI CoUninitialize(void);
+}
+#else
 #include <objbase.h>
 
 namespace llvm {

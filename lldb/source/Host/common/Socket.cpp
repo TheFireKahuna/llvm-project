@@ -43,20 +43,20 @@
 using namespace lldb;
 using namespace lldb_private;
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 typedef const char *set_socket_option_arg_type;
 typedef char *get_socket_option_arg_type;
 const NativeSocket Socket::kInvalidSocketValue = INVALID_SOCKET;
 const shared_fd_t SharedSocket::kInvalidFD = LLDB_INVALID_PIPE;
-#else  // #if defined(_WIN32)
+#else  // #if defined(LLVM_RUNTIME_WIN32)
 typedef const void *set_socket_option_arg_type;
 typedef void *get_socket_option_arg_type;
 const NativeSocket Socket::kInvalidSocketValue = -1;
 const shared_fd_t SharedSocket::kInvalidFD = Socket::kInvalidSocketValue;
-#endif // #if defined(_WIN32)
+#endif // #if defined(LLVM_RUNTIME_WIN32)
 
 static bool IsInterrupted() {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   return ::WSAGetLastError() == WSAEINTR;
 #else
   return errno == EINTR;
@@ -64,7 +64,7 @@ static bool IsInterrupted() {
 }
 
 SharedSocket::SharedSocket(const Socket *socket, Status &error) {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   m_socket = socket->GetNativeSocket();
   m_fd = kInvalidFD;
 
@@ -81,7 +81,7 @@ SharedSocket::SharedSocket(const Socket *socket, Status &error) {
 }
 
 Status SharedSocket::CompleteSending(lldb::pid_t child_pid) {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   // Transfer WSAPROTOCOL_INFO to the child process.
   m_socket_pipe.CloseReadFileDescriptor();
 
@@ -106,7 +106,7 @@ Status SharedSocket::CompleteSending(lldb::pid_t child_pid) {
 }
 
 Status SharedSocket::GetNativeSocket(shared_fd_t fd, NativeSocket &socket) {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   socket = Socket::kInvalidSocketValue;
   // Read WSAPROTOCOL_INFO from the parent process and create NativeSocket.
   WSAPROTOCOL_INFO protocol_info;
@@ -174,7 +174,7 @@ Socket::Socket(SocketProtocol protocol, bool should_close)
 Socket::~Socket() { Close(); }
 
 llvm::Error Socket::Initialize() {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   auto wVersion = WINSOCK_VERSION;
   WSADATA wsaData;
   int err = ::WSAStartup(wVersion, &wsaData);
@@ -192,7 +192,7 @@ llvm::Error Socket::Initialize() {
 }
 
 void Socket::Terminate() {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   ::WSACleanup();
 #endif
 }
@@ -406,7 +406,7 @@ size_t Socket::Send(const void *buf, const size_t num_bytes) {
 }
 
 void Socket::SetLastError(Status &error) {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   error = Status(::WSAGetLastError(), lldb::eErrorTypeWin32);
 #else
   error = Status::FromErrno();
@@ -415,7 +415,7 @@ void Socket::SetLastError(Status &error) {
 
 Status Socket::GetLastError() {
   std::error_code EC;
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   EC = llvm::mapWindowsError(WSAGetLastError());
 #else
   EC = std::error_code(errno, std::generic_category());
@@ -424,7 +424,7 @@ Status Socket::GetLastError() {
 }
 
 int Socket::CloseSocket(NativeSocket sockfd) {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   return ::closesocket(sockfd);
 #else
   return ::close(sockfd);

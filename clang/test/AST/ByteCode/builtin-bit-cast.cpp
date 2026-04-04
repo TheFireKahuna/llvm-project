@@ -492,7 +492,7 @@ namespace test_complex {
 
 
 namespace OversizedBitField {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   /// This is an error (not just a warning) on Windows and the field ends up with a size of 1 instead of 4.
 #else
   typedef unsigned __INT16_TYPE__ uint16_t;
@@ -584,7 +584,7 @@ namespace ToPrimPtrs {
                                                                            // both-note {{bit_cast to a pointer type is not allowed in a constant expression}}
   constexpr auto cnptr = __builtin_bit_cast(nullptr_t, ((__INTPTR_TYPE__)0));
 
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
   auto memptr = __builtin_bit_cast(int S::*, ((__INTPTR_TYPE__) 0));
   constexpr auto cmemptr = __builtin_bit_cast(int S::*, ((__INTPTR_TYPE__) 0)); // both-error {{must be initialized by a constant expression}} \
                                                                                 // both-note {{bit_cast to a member pointer type is not allowed in a constant expression}}

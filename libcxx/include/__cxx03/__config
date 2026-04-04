@@ -198,7 +198,7 @@ _LIBCPP_HARDENING_MODE_DEBUG
 #  elif defined(_LIBCPP_ABI_FORCE_MICROSOFT)
 #    define _LIBCPP_ABI_MICROSOFT
 #  else
-#    if defined(_WIN32) && defined(_MSC_VER) && !defined(_WIN32_ITANIUM)
+#    if defined(LLVM_RUNTIME_WIN32) && defined(_MSC_VER) && !defined(_WIN32_ITANIUM)
 #      define _LIBCPP_ABI_MICROSOFT
 #    else
 #      define _LIBCPP_ABI_ITANIUM
@@ -219,7 +219,7 @@ _LIBCPP_HARDENING_MODE_DEBUG
 #    include <features.h> // for __NATIVE_ASCII_F
 #  endif
 
-#  if defined(_WIN32)
+#  if defined(LLVM_RUNTIME_WIN32)
 #    define _LIBCPP_WIN32API
 #    define _LIBCPP_SHORT_WCHAR 1
 // Both MinGW and native MSVC provide a "MSVC"-like environment
@@ -232,7 +232,7 @@ _LIBCPP_HARDENING_MODE_DEBUG
 #      define _LIBCPP_HAS_BITSCAN64
 #    endif
 #    define _LIBCPP_HAS_OPEN_WITH_WCHAR
-#  endif // defined(_WIN32)
+#  endif // defined(LLVM_RUNTIME_WIN32)
 
 #  if defined(_AIX) && !defined(__64BIT__)
 // The size of wchar is 2 byte on 32-bit mode on AIX.
@@ -339,7 +339,15 @@ typedef __char32_t char32_t;
 #      define _LIBCPP_CRT_FUNC
 #    endif
 
-#    if defined(_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS) || (defined(__MINGW32__) && !defined(_LIBCPP_BUILDING_LIBRARY))
+#    if defined(_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS)
+#      define _LIBCPP_DLL_VIS
+#      define _LIBCPP_EXTERN_TEMPLATE_TYPE_VIS
+#      define _LIBCPP_CLASS_TEMPLATE_INSTANTIATION_VIS
+#      define _LIBCPP_OVERRIDABLE_FUNC_VIS
+#      define _LIBCPP_EXPORTED_FROM_ABI
+#      define _LIBCPP_EXPORTED_DATA_FROM_ABI
+#    elif defined(__MINGW32__) && !defined(_LIBCPP_BUILDING_LIBRARY)
+// MinGW: Use auto-import to avoid ABI tag mismatches.
 #      define _LIBCPP_DLL_VIS
 #      define _LIBCPP_EXTERN_TEMPLATE_TYPE_VIS
 #      define _LIBCPP_CLASS_TEMPLATE_INSTANTIATION_VIS

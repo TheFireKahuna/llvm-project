@@ -214,7 +214,7 @@ launchExecutor(llvm::StringRef ExecutablePath, bool UseSharedMemory,
 #endif
 }
 
-#if LLVM_ON_UNIX && LLVM_ENABLE_THREADS
+#if defined(LLVM_RUNTIME_POSIX) && defined(LLVM_ENABLE_THREADS)
 
 static Expected<int> connectTCPSocketImpl(std::string Host,
                                           std::string PortStr) {
@@ -307,7 +307,7 @@ connectTCPSocket(llvm::StringRef NetworkAddress, bool UseSharedMemory,
       std::move(S), *SockFD, *SockFD);
 #endif
 }
-#endif // _WIN32
+#endif // LLVM_RUNTIME_POSIX
 
 static llvm::Expected<std::unique_ptr<llvm::orc::LLJITBuilder>>
 createLLJITBuilder(std::unique_ptr<llvm::orc::ExecutorProcessControl> EPC,

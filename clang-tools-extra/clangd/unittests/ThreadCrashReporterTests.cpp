@@ -21,7 +21,7 @@ namespace {
 static void infoSignalHandler() { ThreadCrashReporter::runCrashHandlers(); }
 
 TEST(ThreadCrashReporterTest, All) {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   // Simulate signals on Windows for unit testing purposes.
   // The `crash.test` lit test checks the end-to-end integration.
   auto SignalCurrentThread = []() { infoSignalHandler(); };

@@ -1,4 +1,4 @@
-#if defined(_MSC_VER) || defined(_WIN32_ITANIUM)
+#if defined(LLVM_CRT_UCRT)
 #include <intrin.h>
 #define BREAKPOINT_INTRINSIC()    __debugbreak()
 #else

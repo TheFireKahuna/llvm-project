@@ -10,7 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
 #include "internal.h"
 
@@ -48,4 +48,4 @@ int __cdecl _purecall(void) {
 
 } // extern "C"
 
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32

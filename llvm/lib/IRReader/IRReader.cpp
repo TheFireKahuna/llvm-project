@@ -16,6 +16,7 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/Timer.h"
+#include "llvm/Support/PosixCompat.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cstring>
 #include <optional>

@@ -22,7 +22,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include <mutex>
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "lldb/Host/windows/PosixApi.h"
 #else
 #include <unistd.h>
@@ -108,7 +108,7 @@ RunInTerminal(DAP &dap, const protocol::LaunchRequestArguments &arguments) {
   RunInTerminalDebugAdapterCommChannel comm_channel(comm_file);
 
   lldb::pid_t debugger_pid = LLDB_INVALID_PROCESS_ID;
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
   debugger_pid = getpid();
 #endif
 

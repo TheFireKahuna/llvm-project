@@ -28,7 +28,7 @@ llvm::ThreadPoolStrategy parallel::strategy;
 
 #if LLVM_ENABLE_THREADS
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 static thread_local unsigned threadIndex = UINT_MAX;
 
 unsigned parallel::getThreadIndex() { GET_THREAD_INDEX_IMPL; }
@@ -202,7 +202,7 @@ private:
 } // namespace
 
 static ThreadPoolExecutor *getDefaultExecutor() {
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
   // The ManagedStatic enables the ThreadPoolExecutor to be stopped via
   // llvm_shutdown() on Windows. This is important to avoid various race
   // conditions at process exit that can cause crashes or deadlocks.

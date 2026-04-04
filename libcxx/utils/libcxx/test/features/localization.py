@@ -78,7 +78,7 @@ def _getLocaleFlagsAction(cfg, locale, alts, members):
     localeconv_info = programOutput(
         cfg,
         r"""
-        #if defined(_WIN32) && !defined(_CRT_SECURE_NO_WARNINGS)
+        #if defined(LLVM_RUNTIME_WIN32) && !defined(_CRT_SECURE_NO_WARNINGS)
         #define _CRT_SECURE_NO_WARNINGS
         #endif
         #include <stdio.h>

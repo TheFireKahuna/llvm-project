@@ -22,7 +22,7 @@
 #ifdef LLVM_ON_UNIX
 #include "Unix/Memory.inc"
 #endif
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "Windows/Memory.inc"
 #endif
 

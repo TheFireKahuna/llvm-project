@@ -24,7 +24,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
 #include "internal.h"
 
@@ -227,4 +227,4 @@ __declspec(selectany) void* __os_arm64x_dispatch_call_no_redirect = nullptr;
 
 #endif // __arm64ec__
 
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32

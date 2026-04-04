@@ -20,7 +20,7 @@
 // to native paths; thus, the virtual file is not found.
 // This needs to be fixed in the FileManager before we can make
 // clang-tidy tests work.
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
 
 namespace clang {
 namespace tidy {

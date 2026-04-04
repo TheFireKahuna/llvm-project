@@ -16,7 +16,7 @@
 #include "lldb/Utility/Stream.h"
 #include "lldb/Utility/StringList.h"
 #include "lldb/ValueObject/ValueObject.h"
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include "lldb/Host/windows/ConnectionGenericFileWindows.h"
 #endif
 #include <cstdio>
@@ -288,7 +288,7 @@ ScriptInterpreterIORedirect::ScriptInterpreterIORedirect(
 
     Pipe pipe;
     Status pipe_result = pipe.CreateNew();
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
     lldb::file_t read_file = pipe.GetReadNativeHandle();
     pipe.ReleaseReadFileDescriptor();
     std::unique_ptr<ConnectionGenericFile> conn_up =

@@ -77,7 +77,7 @@
 // related value.
 #ifdef DEFINE_C_COMPLEX_TYPES
 #ifdef PGMATH_LINKING
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 using c_float_complex_t = _Fcomplex;
 using c_double_complex_t = _Dcomplex;
 #else

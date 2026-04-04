@@ -14,7 +14,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
 #include "internal.h"
 #include <stdlib.h> // exit()
@@ -41,4 +41,4 @@ extern "C" void __cdecl wWinMainCRTStartup(void) {
   exit(wWinMain(hInstance, nullptr, cmdline, nCmdShow));
 }
 
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32

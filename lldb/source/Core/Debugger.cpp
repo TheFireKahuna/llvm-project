@@ -60,7 +60,7 @@
 #include "lldb/Version/Version.h"
 #include "lldb/lldb-enumerations.h"
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include "lldb/Host/windows/PosixApi.h"
 #include "lldb/Host/windows/windows.h"
 #endif
@@ -89,7 +89,7 @@
 #include <system_error>
 
 // Includes for pipe()
-#if defined(_WIN32)
+#if defined(LLVM_CRT_UCRT)
 #include <fcntl.h>
 #include <io.h>
 #else
@@ -1181,7 +1181,7 @@ void Debugger::SetAsyncExecution(bool async_execution) {
 }
 
 static inline int OpenPipe(int fds[2], std::size_t size) {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   return _pipe(fds, size, O_BINARY);
 #else
   (void)size;

@@ -18,7 +18,7 @@
 
 #define FORTRAN_PROCEDURE_NAME(name) name##_
 
-#if defined(_WIN32) || !__has_include("sys/types.h")
+#if defined(LLVM_RUNTIME_WIN32) || !__has_include("sys/types.h")
 // UID and GID don't exist on all targets, these exist to avoid errors.
 typedef std::uint32_t uid_t;
 typedef std::uint32_t gid_t;
@@ -86,7 +86,7 @@ std::int64_t RTNAME(time)();
 
 // GNU extension function ACCESS(NAME, MODE)
 // TODO: not supported on Windows
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 std::int64_t FORTRAN_PROCEDURE_NAME(access)(const char *name,
     std::int64_t nameLength, const char *mode, std::int64_t modeLength);
 #endif

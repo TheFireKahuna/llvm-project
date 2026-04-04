@@ -17,7 +17,7 @@ using namespace lldb_private;
 using namespace lldb_protocol::mcp;
 
 // Flakey, see https://github.com/llvm/llvm-project/issues/152677.
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 
 TEST(ProtocolMCPTest, Request) {
   Request request;

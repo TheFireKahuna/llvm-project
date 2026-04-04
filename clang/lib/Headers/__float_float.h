@@ -10,7 +10,7 @@
 #ifndef __CLANG_FLOAT_FLOAT_H
 #define __CLANG_FLOAT_FLOAT_H
 
-#if (defined(__MINGW32__) || defined(_MSC_VER) || defined(_WIN32_ITANIUM) || defined(_AIX)) &&            \
+#if (defined(LLVM_CRT_UCRT) || defined(_AIX)) &&            \
     __STDC_HOSTED__
 
 /* Undefine anything that we'll be redefining below. */

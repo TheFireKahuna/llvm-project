@@ -27,7 +27,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
 #include "internal.h"
 
@@ -577,4 +577,4 @@ __declspec(allocate(".rdata$T")) extern "C" const wincrt_load_config32
 #pragma comment(linker, "/INCLUDE:_load_config_used")
 #endif
 
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32

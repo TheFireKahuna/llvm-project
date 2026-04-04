@@ -30,7 +30,7 @@
 #include <system_error>
 #include <cassert>
 
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
 #include <unistd.h>
 #endif
 
@@ -83,7 +83,7 @@ int main(int, char**) {
 #endif
   }
 
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
 // Test that random_device(const string&) properly handles getting
 // a file descriptor with the value '0'. Do this by closing the standard
 // streams so that the descriptor '0' is available.
@@ -97,7 +97,7 @@ int main(int, char**) {
     assert(!ec);
     std::random_device r;
   }
-#endif // !defined(_WIN32)
+#endif // !defined(LLVM_RUNTIME_WIN32)
 
 #if TEST_STD_VER >= 11
   static_assert(test_convertible<std::random_device>(), "");

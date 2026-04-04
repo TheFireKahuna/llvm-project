@@ -16,7 +16,7 @@
 #include <libkern/OSCacheControl.h>
 #endif
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 // Forward declare Win32 APIs since the GCC mode driver does not handle the
 // newer SDKs as well as needed.
 uint32_t FlushInstructionCache(uintptr_t hProcess, void *lpBaseAddress,
@@ -59,7 +59,7 @@ uintptr_t GetCurrentProcess(void);
 // specified range.
 
 void __clear_cache(void *start, void *end) {
-#if defined(_WIN32) &&                                                         \
+#if defined(LLVM_RUNTIME_WIN32) &&                                                         \
     (defined(__arm__) || defined(__aarch64__) || defined(__arm64ec__))
   FlushInstructionCache(GetCurrentProcess(), start, end - start);
 #elif __i386__ || __x86_64__ || defined(_M_IX86) || defined(_M_X64)

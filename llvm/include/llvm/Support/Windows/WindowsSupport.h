@@ -21,16 +21,6 @@
 #ifndef LLVM_SUPPORT_WINDOWSSUPPORT_H
 #define LLVM_SUPPORT_WINDOWSSUPPORT_H
 
-// mingw-w64 tends to define it as 0x0502 in its headers.
-#undef _WIN32_WINNT
-
-// Require at least Windows 7 API.
-#define _WIN32_WINNT 0x0601
-#define WIN32_LEAN_AND_MEAN
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
@@ -44,6 +34,64 @@
 #include <cassert>
 #include <string>
 #include <system_error>
+
+#if defined(LLVM_RUNTIME_POSIX)
+// Under LLVM libc, use <sys/ntabi.h> for NT ABI types (HANDLE, DWORD,
+// CONTEXT, EXCEPTION_RECORD, etc.) and POSIX for everything else.
+// Win32-specific utilities (ScopedHandle, FILETIME conversions) are not
+// needed — the POSIX codepaths in the .inc files don't use them.
+#include <sys/ntabi.h>
+
+namespace llvm {
+
+LLVM_ABI bool RunningWindows8OrGreater();
+LLVM_ABI bool RunningWindows11OrGreater();
+LLVM_ABI llvm::VersionTuple GetWindowsOSVersion();
+
+LLVM_ABI bool MakeErrMsg(std::string *ErrMsg, const std::string &prefix);
+
+[[noreturn]] inline void ReportLastErrorFatal(const char *Msg) {
+  std::string ErrMsg;
+  MakeErrMsg(&ErrMsg, Msg);
+  llvm::report_fatal_error(Twine(ErrMsg));
+}
+
+template <class T>
+class SmallVectorImpl;
+
+template <class T>
+typename SmallVectorImpl<T>::const_pointer
+c_str(SmallVectorImpl<T> &str) {
+  str.push_back(0);
+  str.pop_back();
+  return str.data();
+}
+
+namespace sys {
+namespace windows {
+LLVM_ABI std::error_code
+GetCommandLineArguments(SmallVectorImpl<const char *> &Args,
+                        BumpPtrAllocator &Alloc);
+
+LLVM_ABI std::error_code widenPath(const Twine &Path8,
+                                   SmallVectorImpl<wchar_t> &Path16,
+                                   size_t MaxPathLen = 260);
+} // end namespace windows
+} // end namespace sys
+} // end namespace llvm.
+
+#else // !LLVM_RUNTIME_POSIX
+
+// mingw-w64 tends to define it as 0x0502 in its headers.
+#undef _WIN32_WINNT
+
+// Require at least Windows 7 API.
+#define _WIN32_WINNT 0x0601
+#define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include <windows.h>
 
 // Must be included after windows.h
@@ -258,4 +306,6 @@ LLVM_ABI std::error_code makeLongFormPath(const Twine &Path8,
 } // end namespace sys
 } // end namespace llvm.
 
-#endif
+#endif // LLVM_RUNTIME_POSIX
+
+#endif // LLVM_SUPPORT_WINDOWSSUPPORT_H

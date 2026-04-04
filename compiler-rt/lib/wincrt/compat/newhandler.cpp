@@ -20,7 +20,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
 #include "../internal.h"
 #include <new>
@@ -85,4 +85,4 @@ _PNH __cdecl _query_new_handler(void) {
 
 } // extern "C"
 
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32

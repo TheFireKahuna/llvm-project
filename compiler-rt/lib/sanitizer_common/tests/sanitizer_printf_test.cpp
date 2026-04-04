@@ -96,7 +96,7 @@ TEST(Printf, OverflowPtr) {
   EXPECT_EQ(buf[9], 0);
 }
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 // Oh well, MSVS headers don't define snprintf.
 # define snprintf _snprintf
 #endif
@@ -118,7 +118,7 @@ TEST(Printf, MinMax) {
   TestAgainstLibc<long>("%ld-%ld", LONG_MIN, LONG_MAX);
   TestAgainstLibc<unsigned long>("%lu-%lu", 0, LONG_MAX);
   TestAgainstLibc<unsigned long>("%lx-%lx", 0, LONG_MAX);
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
   // %z* format doesn't seem to be supported by MSVS.
   TestAgainstLibc<long>("%zd-%zd", LONG_MIN, LONG_MAX);
   TestAgainstLibc<unsigned long>("%zu-%zu", 0, ULONG_MAX);

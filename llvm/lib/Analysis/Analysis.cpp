@@ -11,6 +11,7 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/PassRegistry.h"
+#include "llvm/Support/PosixCompat.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cstring>
 

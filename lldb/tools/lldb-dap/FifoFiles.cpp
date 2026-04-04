@@ -9,7 +9,7 @@
 #include "FifoFiles.h"
 #include "JSONUtils.h"
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 #include "lldb/Host/windows/PipeWindows.h"
 #include "lldb/Host/windows/windows.h"
 #include "llvm/Support/Path.h"
@@ -43,7 +43,7 @@ FifoFile::FifoFile(StringRef path, lldb::pipe_t pipe) : m_path(path) {
 }
 
 FifoFile::~FifoFile() {
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
   if (m_pipe != INVALID_HANDLE_VALUE) {
     DisconnectNamedPipe(m_pipe);
     CloseHandle(m_pipe);
@@ -95,7 +95,7 @@ std::string FifoFile::ReadLine() {
 }
 
 Expected<std::shared_ptr<FifoFile>> CreateFifoFile(StringRef path) {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   assert(path.starts_with("\\\\.\\pipe\\") &&
          "FifoFile path should start with '\\\\.\\pipe\\'");
   HANDLE pipe_handle =

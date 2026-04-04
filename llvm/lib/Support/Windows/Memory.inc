@@ -11,6 +11,133 @@
 //
 //===----------------------------------------------------------------------===//
 
+#ifdef LLVM_RUNTIME_POSIX
+// LLVM libc provides POSIX mmap/munmap/mprotect on Windows.
+#include "llvm/Support/DataTypes.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/Process.h"
+
+#include <sys/mman.h>
+
+extern "C" void __clear_cache(void *, void *);
+
+static int getPosixProtectionFlags(unsigned Flags) {
+  switch (Flags & llvm::sys::Memory::MF_RWE_MASK) {
+  case llvm::sys::Memory::MF_READ:
+    return PROT_READ;
+  case llvm::sys::Memory::MF_WRITE:
+    return PROT_WRITE;
+  case llvm::sys::Memory::MF_READ | llvm::sys::Memory::MF_WRITE:
+    return PROT_READ | PROT_WRITE;
+  case llvm::sys::Memory::MF_READ | llvm::sys::Memory::MF_EXEC:
+    return PROT_READ | PROT_EXEC;
+  case llvm::sys::Memory::MF_READ | llvm::sys::Memory::MF_WRITE |
+      llvm::sys::Memory::MF_EXEC:
+    return PROT_READ | PROT_WRITE | PROT_EXEC;
+  case llvm::sys::Memory::MF_EXEC:
+    return PROT_EXEC;
+  default:
+    llvm_unreachable("Illegal memory protection flag specified!");
+  }
+  return PROT_NONE;
+}
+
+namespace llvm {
+namespace sys {
+
+MemoryBlock Memory::allocateMappedMemory(size_t NumBytes,
+                                         const MemoryBlock *const NearBlock,
+                                         unsigned PFlags, std::error_code &EC) {
+  EC = std::error_code();
+  if (NumBytes == 0)
+    return MemoryBlock();
+
+  static const size_t PageSize = Process::getPageSizeEstimate();
+  const size_t NumPages = (NumBytes + PageSize - 1) / PageSize;
+
+  uintptr_t Start = NearBlock ? reinterpret_cast<uintptr_t>(NearBlock->base()) +
+                                    NearBlock->allocatedSize()
+                              : 0;
+
+  if (Start && Start % PageSize)
+    Start += PageSize - Start % PageSize;
+
+  int Protect = getPosixProtectionFlags(PFlags);
+  int MMFlags = MAP_PRIVATE | MAP_ANON;
+
+  void *Addr = ::mmap(reinterpret_cast<void *>(Start), PageSize * NumPages,
+                      Protect, MMFlags, -1, 0);
+  if (Addr == MAP_FAILED) {
+    if (NearBlock)
+      return allocateMappedMemory(NumBytes, nullptr, PFlags, EC);
+    EC = errnoAsErrorCode();
+    return MemoryBlock();
+  }
+
+  MemoryBlock Result;
+  Result.Address = Addr;
+  Result.AllocatedSize = PageSize * NumPages;
+  Result.Flags = PFlags;
+
+  if (PFlags & MF_EXEC) {
+    EC = Memory::protectMappedMemory(Result, PFlags);
+    if (EC != std::error_code())
+      return MemoryBlock();
+  }
+
+  return Result;
+}
+
+std::error_code Memory::releaseMappedMemory(MemoryBlock &M) {
+  if (M.Address == nullptr || M.AllocatedSize == 0)
+    return std::error_code();
+
+  if (0 != ::munmap(M.Address, M.AllocatedSize))
+    return errnoAsErrorCode();
+
+  M.Address = nullptr;
+  M.AllocatedSize = 0;
+
+  return std::error_code();
+}
+
+std::error_code Memory::protectMappedMemory(const MemoryBlock &M,
+                                            unsigned Flags) {
+  if (M.Address == nullptr || M.AllocatedSize == 0)
+    return std::error_code();
+
+  if (!Flags)
+    return std::error_code(EINVAL, std::generic_category());
+
+  int Protect = getPosixProtectionFlags(Flags);
+
+  if (0 != ::mprotect(M.Address, M.AllocatedSize, Protect))
+    return errnoAsErrorCode();
+
+  if (Flags & MF_EXEC)
+    Memory::InvalidateInstructionCache(M.Address, M.AllocatedSize);
+
+  return std::error_code();
+}
+
+void Memory::InvalidateInstructionCache(const void *Addr, size_t Len) {
+#if defined(__aarch64__) || defined(_M_ARM64)
+  // AArch64 has non-coherent icache — must explicitly flush.
+  __clear_cache(const_cast<void *>(Addr),
+                const_cast<void *>(static_cast<const void *>(
+                    static_cast<const char *>(Addr) + Len)));
+#else
+  // x86/x86_64 has coherent icache; no-op.
+  (void)Addr;
+  (void)Len;
+#endif
+}
+
+} // namespace sys
+} // namespace llvm
+
+#else // !LLVM_RUNTIME_POSIX
+
 #include "llvm/Support/DataTypes.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Process.h"
@@ -191,3 +318,5 @@ void Memory::InvalidateInstructionCache(const void *Addr, size_t Len) {
 
 } // namespace sys
 } // namespace llvm
+
+#endif // LLVM_RUNTIME_POSIX

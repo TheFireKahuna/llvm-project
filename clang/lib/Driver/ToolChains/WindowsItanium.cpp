@@ -26,7 +26,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/WindowsDriver/MSVCPaths.h"
 
-#if defined(_WIN32) && !defined(__LLVM_LIBC__)
+#if defined(LLVM_RUNTIME_WIN32)
   #define WIN32_LEAN_AND_MEAN
   #define NOGDI
   #ifndef NOMINMAX
@@ -788,10 +788,6 @@ void WindowsItaniumToolChain::addClangTargetOptions(
   // (_access, _open, _vsnprintf, etc.).  Mirrors MinGW's convention.
   if (!usesLLVMLibC()) {
     CC1Args.push_back("-D__MSVCRT__");
-  } else {
-    // Positive define for llvm-libc mode.  Headers check this to select
-    // POSIX functions and skip UCRT-only headers (corecrt.h, crtdbg.h).
-    CC1Args.push_back("-D__LLVM_LIBC__");
   }
 
   // llvm-libc uses 32-bit wchar_t for full POSIX compliance (UTF-32,

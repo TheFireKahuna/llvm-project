@@ -9,7 +9,7 @@
 #include "RunInTerminal.h"
 #include "JSONUtils.h"
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 #include "lldb/Host/windows/windows.h"
 #else
 #include <sys/stat.h>

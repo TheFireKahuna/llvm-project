@@ -24,7 +24,7 @@
 #else
 #define LLDB_API __declspec(dllimport)
 #endif
-#else // defined (_WIN32)
+#else // defined(_WIN32)
 #define LLDB_API
 #endif
 #endif

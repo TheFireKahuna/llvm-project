@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <sys/types.h>
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include <windows.h>
 #else
 #include <unistd.h>
@@ -11,7 +11,7 @@
 
 int main (int argc, char const *argv[])
 {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 		::ExitProcess(1);
 #else
     kill(getpid(), SIGINT); // Set break point at this line and setup signal ignores.

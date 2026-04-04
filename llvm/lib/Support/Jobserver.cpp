@@ -118,7 +118,7 @@ Expected<JobserverConfig> parseNativeMakeFlags(StringRef MakeFlags) {
   }
 
 // Perform platform-specific validation.
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   if (Config.TheMode == JobserverConfig::PosixFifo ||
       Config.TheMode == JobserverConfig::PosixPipe)
     return createStringError(

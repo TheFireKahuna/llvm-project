@@ -14,7 +14,7 @@
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/MemoryBuffer.h"
 
-#if !defined(_MSC_VER) && !defined(__MINGW32__) && !defined(_WIN32_ITANIUM)
+#if !defined(LLVM_CRT_UCRT)
 #include <unistd.h>
 #else
 #include <io.h>

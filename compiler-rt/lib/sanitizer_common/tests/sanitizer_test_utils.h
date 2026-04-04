@@ -14,7 +14,7 @@
 #ifndef SANITIZER_TEST_UTILS_H
 #define SANITIZER_TEST_UTILS_H
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 // <windows.h> should always be the first include on Windows.
 # include <windows.h>
 // MSVS headers define max/min as macros, so std::max/min gets crazy.
@@ -65,7 +65,7 @@
 
 // Make the compiler thinks that something is going on there.
 inline void break_optimization(void *arg) {
-#if !defined(_WIN32) || defined(__clang__)
+#if !defined(LLVM_RUNTIME_WIN32) || defined(__clang__)
   __asm__ __volatile__("" : : "r" (arg) : "memory");
 #endif
 }

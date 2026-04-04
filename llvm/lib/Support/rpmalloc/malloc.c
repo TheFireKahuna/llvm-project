@@ -116,7 +116,7 @@ extern inline size_t RPMALLOC_CDECL malloc_size(void *ptr) {
   return rpmalloc_usable_size(ptr);
 }
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 extern inline RPMALLOC_RESTRICT void *RPMALLOC_CDECL _malloc_base(size_t size) {
   return rpmalloc(size);
 }
@@ -137,7 +137,7 @@ _realloc_base(void *ptr, size_t size) {
 }
 #endif
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 // For Windows, #include <rpnew.h> in one source file to get the C++ operator
 // overrides implemented in your module
 #else
@@ -546,7 +546,7 @@ extern inline void *RPMALLOC_CDECL pvalloc(size_t size) {
 
 #if ENABLE_PRELOAD
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
 #if defined(BUILD_DYNAMIC_LINK) && BUILD_DYNAMIC_LINK
 

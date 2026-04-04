@@ -149,7 +149,7 @@ LLVM_ABI void SetOneShotPipeSignalFunction(void (*Handler)());
 /// code.
 LLVM_ABI void DefaultOneShotPipeSignalHandler();
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 /// Windows does not support signals and this handler must be called manually.
 LLVM_ABI void CallOneShotPipeSignalHandler();
 #endif

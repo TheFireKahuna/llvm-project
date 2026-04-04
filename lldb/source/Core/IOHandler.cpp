@@ -31,7 +31,7 @@
 #include "lldb/Interpreter/CommandInterpreter.h"
 #include "llvm/ADT/StringRef.h"
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "lldb/Host/windows/windows.h"
 #endif
 
@@ -394,7 +394,7 @@ bool IOHandlerEditline::GetLine(std::string &line, bool &interrupted) {
   if (!got_line && in) {
     while (!got_line) {
       char *r = fgets(buffer, sizeof(buffer), in);
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
       // ReadFile on Windows is supposed to set ERROR_OPERATION_ABORTED
       // according to the docs on MSDN. However, this has evidently been a
       // known bug since Windows 8. Therefore, we can't detect if a signal
@@ -648,7 +648,7 @@ void IOHandlerEditline::PrintAsync(const char *s, size_t len, bool is_stdout) {
   } else
 #endif
   {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     const char *prompt = GetPrompt();
     if (prompt) {
       // Back up over previous prompt using Windows API
@@ -663,7 +663,7 @@ void IOHandlerEditline::PrintAsync(const char *s, size_t len, bool is_stdout) {
     }
 #endif
     IOHandler::PrintAsync(s, len, is_stdout);
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     if (prompt)
       IOHandler::PrintAsync(prompt, strlen(prompt), is_stdout);
 #endif

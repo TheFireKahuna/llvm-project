@@ -24,7 +24,7 @@
 #include "llvm/Support/Signals.h"
 #include <cctype>
 
-#if !defined(_MSC_VER) && !defined(__MINGW32__) && !defined(_WIN32_ITANIUM)
+#if !defined(LLVM_CRT_UCRT)
 #include <unistd.h>
 #else
 #include <io.h>
@@ -1240,7 +1240,7 @@ TempFile &TempFile::operator=(TempFile &&Other) {
   FD = Other.FD;
   Other.Done = true;
   Other.FD = -1;
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WUN32)
   RemoveOnClose = Other.RemoveOnClose;
   Other.RemoveOnClose = false;
 #endif
@@ -1257,7 +1257,7 @@ Error TempFile::discard() {
   }
   FD = -1;
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
   // On Windows, closing will remove the file, if we set the delete
   // disposition. If not, remove it manually.
   bool Remove = RemoveOnClose;
@@ -1281,7 +1281,7 @@ Error TempFile::keep(const Twine &Name) {
   assert(!Done);
   Done = true;
   // Always try to close and rename.
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
   // If we can't cancel the delete don't rename.
   auto H = reinterpret_cast<HANDLE>(_get_osfhandle(FD));
   std::error_code RenameEC =
@@ -1332,7 +1332,7 @@ Error TempFile::keep() {
   assert(!Done);
   Done = true;
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
   auto H = reinterpret_cast<HANDLE>(_get_osfhandle(FD));
   if (std::error_code EC = setDeleteDisposition(H, false))
     return errorCodeToError(EC);
@@ -1357,7 +1357,7 @@ Expected<TempFile> TempFile::create(const Twine &Model, unsigned Mode,
     return errorCodeToError(EC);
 
   TempFile Ret(ResultPath, FD);
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
   auto H = reinterpret_cast<HANDLE>(_get_osfhandle(FD));
   bool SetSignalHandler = false;
   if (std::error_code EC = setDeleteDisposition(H, true)) {

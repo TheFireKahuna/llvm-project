@@ -13,7 +13,7 @@
 #ifndef FORTRAN_COMMON_WINDOWS_INCLUDE_H_
 #define FORTRAN_COMMON_WINDOWS_INCLUDE_H_
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
@@ -28,6 +28,6 @@
 
 #include <windows.h>
 
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32
 
 #endif // FORTRAN_COMMON_WINDOWS_INCLUDE_H_

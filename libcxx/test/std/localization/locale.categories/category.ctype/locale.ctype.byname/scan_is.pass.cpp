@@ -65,7 +65,7 @@ int main(int, char**)
             assert(f.scan_is(F::punct, in.data(), in.data() + in.size()) - in.data() == 4);
             assert(f.scan_is(F::xdigit, in.data(), in.data() + in.size()) - in.data() == 2);
             assert(f.scan_is(F::blank, in.data(), in.data() + in.size()) - in.data() == 1);
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
             // On Windows, these wchars are classified according to their
             // Unicode interpretation even in the "C" locale, where
             // the scan_is function returns the same as above for the

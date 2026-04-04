@@ -2182,7 +2182,7 @@ _mm_storer_ps(float *__p, __m128 __a)
 #define _MM_HINT_T2  1
 #define _MM_HINT_NTA 0
 
-#if !defined(_MSC_VER) && !defined(_WIN32_ITANIUM)
+#if !defined(LLVM_CRT_UCRT)
 // MSVC and Windows Itanium use the builtin. Otherwise, provide a macro
 // with a cast to accept any pointer type.
 

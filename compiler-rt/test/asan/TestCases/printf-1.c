@@ -4,7 +4,7 @@
 // RUN: %run %t 2>&1 | FileCheck %s
 
 #include <stdio.h>
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 # define snprintf _snprintf
 #endif
 

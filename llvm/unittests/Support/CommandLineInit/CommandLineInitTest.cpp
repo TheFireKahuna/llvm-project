@@ -19,7 +19,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "gtest/gtest.h"
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include <windows.h>
 #if defined(_MSC_VER)
 #include <crtdbg.h>
@@ -31,7 +31,7 @@ using namespace llvm;
 int main(int argc, char **argv) {
   testing::InitGoogleTest(&argc, argv);
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   // Disable all of the possible ways Windows conspires to make automated
   // testing impossible.
   ::SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);

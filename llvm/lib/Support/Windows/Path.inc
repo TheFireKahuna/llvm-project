@@ -15,6 +15,797 @@
 //===          is guaranteed to work on *all* Windows variants.
 //===----------------------------------------------------------------------===//
 
+#ifdef LLVM_RUNTIME_POSIX
+// POSIX implementation for LLVM libc on Windows NT.
+// Our libc provides POSIX functions that handle Windows paths internally.
+// All filesystem operations use standard C/POSIX interfaces.
+// Path format remains Windows-native (backslashes, drive letters).
+
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/ConvertUTF.h"
+#include "llvm/Support/Errno.h"
+#include "llvm/Support/IOSandbox.h"
+#include "llvm/Support/Process.h"
+#include "llvm/Support/Windows/WindowsSupport.h"
+
+#include <dirent.h>
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/types.h>
+#include <unistd.h>
+
+#undef max
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
+using namespace llvm;
+using namespace llvm::sys;
+using namespace llvm::sys::fs;
+
+// --- file_t encoding ---
+// file_t is void* on LLVM_RUNTIME_WIN32. Under LLVM_RUNTIME_POSIX we encode POSIX fds
+// in the pointer value. (void*)-1 naturally maps to invalid fd (-1).
+
+static sys::fs::file_t fdToFileT(int FD) {
+  return reinterpret_cast<sys::fs::file_t>(static_cast<intptr_t>(FD));
+}
+
+static int fileTToFd(sys::fs::file_t F) {
+  return static_cast<int>(reinterpret_cast<intptr_t>(F));
+}
+
+// --- Time conversion ---
+// FILETIME: 100ns intervals since 1601-01-01.
+// Unix time: seconds since 1970-01-01.
+// Delta: 11644473600 seconds.
+
+static void timeToFileTime(time_t T, uint32_t &High, uint32_t &Low) {
+  uint64_t FT = (static_cast<uint64_t>(T) + 11644473600ULL) * 10000000ULL;
+  High = static_cast<uint32_t>(FT >> 32);
+  Low = static_cast<uint32_t>(FT);
+}
+
+static TimePoint<> fileTimeToTimePoint(uint32_t High, uint32_t Low) {
+  using namespace std::chrono;
+  uint64_t Ticks = (uint64_t(High) << 32) | Low;
+  constexpr uint64_t EpochDiff = 116444736000000000ULL;
+  if (Ticks < EpochDiff)
+    return TimePoint<>();
+  return TimePoint<>(nanoseconds((Ticks - EpochDiff) * 100));
+}
+
+// --- File type / permissions from stat mode ---
+
+static file_type typeForMode(mode_t Mode) {
+  if (S_ISDIR(Mode))  return file_type::directory_file;
+  if (S_ISREG(Mode))  return file_type::regular_file;
+  if (S_ISCHR(Mode))  return file_type::character_file;
+  if (S_ISFIFO(Mode)) return file_type::fifo_file;
+  return file_type::type_unknown;
+}
+
+static std::error_code fillStatus(int StatRet, const struct stat &St,
+                                  file_status &Result) {
+  if (StatRet != 0) {
+    std::error_code EC = errnoAsErrorCode();
+    if (EC == errc::no_such_file_or_directory)
+      Result = file_status(file_type::file_not_found);
+    else
+      Result = file_status(file_type::status_error);
+    return EC;
+  }
+  uint32_t ATHi, ATLo, MTHi, MTLo;
+  timeToFileTime(St.st_atim.tv_sec, ATHi, ATLo);
+  timeToFileTime(St.st_mtim.tv_sec, MTHi, MTLo);
+  Result = file_status(
+      typeForMode(St.st_mode),
+      static_cast<perms>(St.st_mode) & all_perms,
+      St.st_nlink, ATHi, ATLo, MTHi, MTLo,
+      static_cast<uint32_t>(St.st_dev),
+      static_cast<uint32_t>(static_cast<uint64_t>(St.st_size) >> 32),
+      static_cast<uint32_t>(St.st_size),
+      static_cast<uint64_t>(St.st_ino));
+  return std::error_code();
+}
+
+// Reserved device names (pure string check, same for both paths).
+static bool isReservedName(StringRef path) {
+  static const char *const sReservedNames[] = {
+      "nul",  "con",  "prn",  "aux",  "com1", "com2", "com3", "com4",
+      "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3",
+      "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"};
+  if (path.starts_with("\\\\.\\"))
+    return true;
+  for (size_t i = 0; i < std::size(sReservedNames); ++i)
+    if (path.equals_insensitive(sReservedNames[i]))
+      return true;
+  return false;
+}
+
+// POSIX open flags from LLVM's CreationDisposition/OpenFlags.
+static int nativeOpenFlags(CreationDisposition Disp, OpenFlags Flags,
+                           FileAccess Access) {
+  int Result = 0;
+  if (Access == FA_Read)
+    Result |= O_RDONLY;
+  else if (Access == FA_Write)
+    Result |= O_WRONLY;
+  else if (Access == (FA_Read | FA_Write))
+    Result |= O_RDWR;
+  if (Flags & OF_Append)
+    Disp = CD_OpenAlways;
+  if (Disp == CD_CreateNew)
+    Result |= O_CREAT | O_EXCL;
+  else if (Disp == CD_CreateAlways)
+    Result |= O_CREAT | O_TRUNC;
+  else if (Disp == CD_OpenAlways)
+    Result |= O_CREAT;
+  if (Flags & OF_Append)
+    Result |= O_APPEND;
+#ifdef O_CLOEXEC
+  if (!(Flags & OF_ChildInherit))
+    Result |= O_CLOEXEC;
+#endif
+  return Result;
+}
+
+namespace llvm {
+namespace sys {
+
+// UTF-8 ↔ UTF-16 conversion via LLVM ConvertUTF.
+// Still needed by some LLVM code even under LLVM_RUNTIME_POSIX.
+// Note: widenPath is defined in Process.inc to avoid duplicate symbols.
+namespace windows {
+
+std::error_code UTF8ToUTF16(llvm::StringRef utf8,
+                            llvm::SmallVectorImpl<wchar_t> &utf16) {
+  utf16.clear();
+  if (utf8.empty()) {
+    utf16.push_back(0);
+    utf16.pop_back();
+    return std::error_code();
+  }
+  SmallVector<UTF16, 256> Tmp;
+  if (!convertUTF8ToUTF16String(utf8, Tmp))
+    return make_error_code(errc::illegal_byte_sequence);
+  utf16.reserve(Tmp.size() + 1);
+  for (UTF16 C : Tmp)
+    utf16.push_back(static_cast<wchar_t>(C));
+  utf16.push_back(0);
+  utf16.pop_back();
+  return std::error_code();
+}
+
+std::error_code CurCPToUTF16(llvm::StringRef curcp,
+                             llvm::SmallVectorImpl<wchar_t> &utf16) {
+  return UTF8ToUTF16(curcp, utf16);
+}
+
+std::error_code UTF16ToUTF8(const wchar_t *utf16, size_t utf16_len,
+                            llvm::SmallVectorImpl<char> &utf8) {
+  utf8.clear();
+  if (utf16_len == 0) {
+    utf8.push_back(0);
+    utf8.pop_back();
+    return std::error_code();
+  }
+  ArrayRef<char> Src(reinterpret_cast<const char *>(utf16),
+                     utf16_len * sizeof(wchar_t));
+  std::string Out;
+  if (!convertUTF16ToUTF8String(Src, Out))
+    return make_error_code(errc::illegal_byte_sequence);
+  utf8.append(Out.begin(), Out.end());
+  utf8.push_back(0);
+  utf8.pop_back();
+  return std::error_code();
+}
+
+std::error_code UTF16ToCurCP(const wchar_t *utf16, size_t utf16_len,
+                             llvm::SmallVectorImpl<char> &curcp) {
+  return UTF16ToUTF8(utf16, utf16_len, curcp);
+}
+
+std::error_code CodePageToUTF16(unsigned, llvm::StringRef original,
+                                llvm::SmallVectorImpl<wchar_t> &utf16) {
+  return UTF8ToUTF16(original, utf16);
+}
+
+} // end namespace windows
+
+namespace fs {
+
+const file_t kInvalidFile = reinterpret_cast<file_t>(static_cast<intptr_t>(-1));
+
+std::string getMainExecutable(const char *argv0, void *MainExecAddr) {
+  auto BypassSandbox = sandbox::scopedDisable();
+  char buf[PATH_MAX];
+  Dl_info DLInfo;
+  if (dladdr(MainExecAddr, &DLInfo) && DLInfo.dli_fname) {
+    if (::realpath(DLInfo.dli_fname, buf))
+      return std::string(buf);
+  }
+  if (argv0 && ::realpath(argv0, buf))
+    return std::string(buf);
+  return "";
+}
+
+UniqueID file_status::getUniqueID() const {
+  return UniqueID(VolumeSerialNumber, PathHash);
+}
+
+ErrorOr<space_info> disk_space(const Twine &Path) {
+  // TODO: implement via NtQueryVolumeInformationFile when statvfs is available.
+  space_info SpaceInfo;
+  SpaceInfo.capacity = static_cast<uint64_t>(-1);
+  SpaceInfo.free = static_cast<uint64_t>(-1);
+  SpaceInfo.available = static_cast<uint64_t>(-1);
+  return SpaceInfo;
+}
+
+TimePoint<> basic_file_status::getLastAccessedTime() const {
+  return fileTimeToTimePoint(LastAccessedTimeHigh, LastAccessedTimeLow);
+}
+
+TimePoint<> basic_file_status::getLastModificationTime() const {
+  return fileTimeToTimePoint(LastWriteTimeHigh, LastWriteTimeLow);
+}
+
+uint32_t file_status::getLinkCount() const { return NumLinks; }
+
+std::error_code current_path(SmallVectorImpl<char> &result) {
+  sandbox::violationIfEnabled();
+  result.clear();
+  result.resize_for_overwrite(PATH_MAX);
+  while (true) {
+    if (::getcwd(result.data(), result.size()) == nullptr) {
+      if (errno != ERANGE) {
+        result.clear();
+        return errnoAsErrorCode();
+      }
+      result.resize_for_overwrite(result.capacity() * 2);
+    } else
+      break;
+  }
+  result.truncate(strlen(result.data()));
+  return std::error_code();
+}
+
+std::error_code set_current_path(const Twine &path) {
+  sandbox::violationIfEnabled();
+  SmallString<128> Storage;
+  StringRef P = path.toNullTerminatedStringRef(Storage);
+  if (::chdir(P.data()) == -1)
+    return errnoAsErrorCode();
+  return std::error_code();
+}
+
+std::error_code create_directory(const Twine &path, bool IgnoreExisting,
+                                 perms Perms) {
+  SmallString<128> Storage;
+  StringRef P = path.toNullTerminatedStringRef(Storage);
+  if (::mkdir(P.data(), Perms) == -1) {
+    if (errno != EEXIST || !IgnoreExisting)
+      return errnoAsErrorCode();
+  }
+  return std::error_code();
+}
+
+std::error_code create_link(const Twine &to, const Twine &from) {
+  SmallString<128> FromStorage, ToStorage;
+  StringRef F = from.toNullTerminatedStringRef(FromStorage);
+  StringRef T = to.toNullTerminatedStringRef(ToStorage);
+  if (::symlink(T.data(), F.data()) == -1)
+    return errnoAsErrorCode();
+  return std::error_code();
+}
+
+std::error_code create_hard_link(const Twine &to, const Twine &from) {
+  SmallString<128> FromStorage, ToStorage;
+  StringRef F = from.toNullTerminatedStringRef(FromStorage);
+  StringRef T = to.toNullTerminatedStringRef(ToStorage);
+  if (::link(T.data(), F.data()) == -1)
+    return errnoAsErrorCode();
+  return std::error_code();
+}
+
+std::error_code remove(const Twine &path, bool IgnoreNonExisting) {
+  SmallString<128> Storage;
+  StringRef P = path.toNullTerminatedStringRef(Storage);
+  struct stat St;
+  if (::lstat(P.data(), &St) != 0) {
+    if (errno != ENOENT || !IgnoreNonExisting)
+      return errnoAsErrorCode();
+    return std::error_code();
+  }
+  if (::remove(P.data()) == -1) {
+    if (errno != ENOENT || !IgnoreNonExisting)
+      return errnoAsErrorCode();
+  }
+  return std::error_code();
+}
+
+std::error_code is_local(const Twine &path, bool &result) {
+  sandbox::violationIfEnabled();
+  result = true;
+  return std::error_code();
+}
+
+std::error_code is_local(int FD, bool &Result) {
+  sandbox::violationIfEnabled();
+  Result = true;
+  return std::error_code();
+}
+
+std::error_code rename(const Twine &from, const Twine &to) {
+  SmallString<128> FromStorage, ToStorage;
+  StringRef F = from.toNullTerminatedStringRef(FromStorage);
+  StringRef T = to.toNullTerminatedStringRef(ToStorage);
+  if (::rename(F.data(), T.data()) == -1)
+    return errnoAsErrorCode();
+  return std::error_code();
+}
+
+std::error_code resize_file(int FD, uint64_t Size) {
+  if (::ftruncate(FD, Size) == -1)
+    return errnoAsErrorCode();
+  return std::error_code();
+}
+
+std::error_code resize_file_sparse(int FD, uint64_t Size) {
+  return resize_file(FD, Size);
+}
+
+static int convertAccessMode(AccessMode Mode) {
+  switch (Mode) {
+  case AccessMode::Exist:   return F_OK;
+  case AccessMode::Write:   return W_OK;
+  case AccessMode::Execute: return R_OK | X_OK;
+  }
+  llvm_unreachable("invalid enum");
+}
+
+std::error_code access(const Twine &Path, AccessMode Mode) {
+  sandbox::violationIfEnabled();
+  SmallString<128> Storage;
+  StringRef P = Path.toNullTerminatedStringRef(Storage);
+  if (::access(P.data(), convertAccessMode(Mode)) == -1)
+    return errnoAsErrorCode();
+  return std::error_code();
+}
+
+bool can_execute(const Twine &Path) {
+  return !access(Path, AccessMode::Execute) ||
+         !access(Path + ".exe", AccessMode::Execute);
+}
+
+bool equivalent(file_status A, file_status B) {
+  assert(status_known(A) && status_known(B));
+  return A.getUniqueID() == B.getUniqueID();
+}
+
+std::error_code equivalent(const Twine &A, const Twine &B, bool &result) {
+  sandbox::violationIfEnabled();
+  file_status fsA, fsB;
+  if (std::error_code ec = status(A, fsA)) return ec;
+  if (std::error_code ec = status(B, fsB)) return ec;
+  result = equivalent(fsA, fsB);
+  return std::error_code();
+}
+
+std::error_code status(const Twine &path, file_status &result, bool Follow) {
+  sandbox::violationIfEnabled();
+  SmallString<128> Storage;
+  StringRef P = path.toNullTerminatedStringRef(Storage);
+  if (isReservedName(P)) {
+    result = file_status(file_type::character_file);
+    return std::error_code();
+  }
+  struct stat St;
+  int Ret = (Follow ? ::stat : ::lstat)(P.data(), &St);
+  return fillStatus(Ret, St, result);
+}
+
+std::error_code status(int FD, file_status &Result) {
+  sandbox::violationIfEnabled();
+  struct stat St;
+  int Ret = ::fstat(FD, &St);
+  return fillStatus(Ret, St, Result);
+}
+
+std::error_code status(file_t FileHandle, file_status &Result) {
+  sandbox::violationIfEnabled();
+  return status(fileTToFd(FileHandle), Result);
+}
+
+unsigned getUmask() { return 0; }
+
+std::error_code setPermissions(const Twine &Path, perms Permissions) {
+  SmallString<128> Storage;
+  StringRef P = Path.toNullTerminatedStringRef(Storage);
+  if (::chmod(P.data(), Permissions))
+    return errnoAsErrorCode();
+  return std::error_code();
+}
+
+std::error_code setPermissions(int FD, perms Permissions) {
+  if (::fchmod(FD, Permissions))
+    return errnoAsErrorCode();
+  return std::error_code();
+}
+
+std::error_code setLastAccessAndModificationTime(int FD, TimePoint<> AccessTime,
+                                                 TimePoint<> ModificationTime) {
+  using namespace std::chrono;
+  auto toTimeVal = [](TimePoint<> TP) -> timeval {
+    auto D = TP.time_since_epoch();
+    auto Sec = duration_cast<seconds>(D);
+    auto USec = duration_cast<microseconds>(D - Sec);
+    timeval TV;
+    TV.tv_sec = Sec.count();
+    TV.tv_usec = USec.count();
+    return TV;
+  };
+  timeval Times[2];
+  Times[0] = toTimeVal(AccessTime);
+  Times[1] = toTimeVal(ModificationTime);
+  if (::futimes(FD, Times))
+    return errnoAsErrorCode();
+  return std::error_code();
+}
+
+// --- Memory-mapped files (POSIX mmap) ---
+
+std::error_code mapped_file_region::init(sys::fs::file_t OrigFileHandle,
+                                         uint64_t Offset, mapmode Mode) {
+  this->Mode = Mode;
+  this->FileHandle = kInvalidFile; // mmap keeps its own file reference.
+  int FD = fileTToFd(OrigFileHandle);
+  if (FD == -1)
+    return make_error_code(errc::bad_file_descriptor);
+  if (Size == 0) {
+    struct stat St;
+    if (::fstat(FD, &St) != 0)
+      return errnoAsErrorCode();
+    Size = St.st_size;
+    if (Size == 0)
+      return make_error_code(errc::invalid_argument);
+  }
+  int prot = (Mode == readonly) ? PROT_READ : (PROT_READ | PROT_WRITE);
+  int flags = (Mode == readwrite) ? MAP_SHARED : MAP_PRIVATE;
+  Mapping = ::mmap(nullptr, Size, prot, flags, FD, Offset);
+  if (Mapping == MAP_FAILED) {
+    Mapping = nullptr;
+    return errnoAsErrorCode();
+  }
+  return std::error_code();
+}
+
+mapped_file_region::mapped_file_region(sys::fs::file_t fd, mapmode mode,
+                                       size_t length, uint64_t offset,
+                                       std::error_code &ec)
+    : Size(length) {
+  sandbox::violationIfEnabled();
+  ec = init(fd, offset, mode);
+  if (ec)
+    copyFrom(mapped_file_region());
+}
+
+void mapped_file_region::unmapImpl() {
+  if (Mapping)
+    ::munmap(Mapping, Size);
+}
+
+void mapped_file_region::dontNeedImpl() {
+  if (Mapping)
+    ::madvise(Mapping, Size, MADV_DONTNEED);
+}
+
+void mapped_file_region::willNeedImpl() {
+  if (Mapping)
+    ::madvise(Mapping, Size, MADV_WILLNEED);
+}
+
+std::error_code mapped_file_region::sync() const {
+  if (::msync(Mapping, Size, MS_SYNC))
+    return errnoAsErrorCode();
+  return std::error_code();
+}
+
+int mapped_file_region::alignment() {
+  return Process::getPageSizeEstimate();
+}
+
+// --- Directory iteration (POSIX opendir/readdir) ---
+
+std::error_code detail::directory_iterator_construct(detail::DirIterState &IT,
+                                                     StringRef Path,
+                                                     bool FollowSymlinks) {
+  sandbox::violationIfEnabled();
+  SmallString<128> PathNull(Path);
+  DIR *Dir = ::opendir(PathNull.c_str());
+  if (!Dir)
+    return errnoAsErrorCode();
+  IT.IterationHandle = reinterpret_cast<intptr_t>(Dir);
+  path::append(PathNull, ".");
+  IT.CurrentEntry = directory_entry(PathNull.str(), FollowSymlinks);
+  return detail::directory_iterator_increment(IT);
+}
+
+std::error_code detail::directory_iterator_destruct(detail::DirIterState &IT) {
+  if (IT.IterationHandle)
+    ::closedir(reinterpret_cast<DIR *>(IT.IterationHandle));
+  IT.IterationHandle = 0;
+  IT.CurrentEntry = directory_entry();
+  return std::error_code();
+}
+
+std::error_code detail::directory_iterator_increment(detail::DirIterState &IT) {
+  sandbox::violationIfEnabled();
+  errno = 0;
+  dirent *Entry = ::readdir(reinterpret_cast<DIR *>(IT.IterationHandle));
+  if (!Entry && errno != 0)
+    return errnoAsErrorCode();
+  if (Entry) {
+    StringRef Name(Entry->d_name);
+    if ((Name.size() == 1 && Name[0] == '.') ||
+        (Name.size() == 2 && Name[0] == '.' && Name[1] == '.'))
+      return detail::directory_iterator_increment(IT);
+    IT.CurrentEntry.replace_filename(Name, file_type::type_unknown);
+  } else {
+    return detail::directory_iterator_destruct(IT);
+  }
+  return std::error_code();
+}
+
+ErrorOr<basic_file_status> directory_entry::status() const {
+  file_status s;
+  if (auto EC = fs::status(Path, s, FollowSymlinks))
+    return EC;
+  return s;
+}
+
+// --- File open/read/write/close (POSIX) ---
+
+std::error_code openFile(const Twine &Name, int &ResultFD,
+                         CreationDisposition Disp, FileAccess Access,
+                         OpenFlags Flags, unsigned int Mode) {
+  sandbox::violationIfEnabled();
+  int OFlags = nativeOpenFlags(Disp, Flags, Access);
+  SmallString<128> Storage;
+  StringRef P = Name.toNullTerminatedStringRef(Storage);
+  ResultFD = ::open(P.data(), OFlags, Mode);
+  if (ResultFD < 0)
+    return errnoAsErrorCode();
+  return std::error_code();
+}
+
+Expected<file_t> openNativeFile(const Twine &Name, CreationDisposition Disp,
+                                FileAccess Access, OpenFlags Flags,
+                                unsigned Mode) {
+  sandbox::violationIfEnabled();
+  int FD;
+  std::error_code EC = openFile(Name, FD, Disp, Access, Flags, Mode);
+  if (EC)
+    return errorCodeToError(EC);
+  return fdToFileT(FD);
+}
+
+std::error_code openFileForRead(const Twine &Name, int &ResultFD,
+                                OpenFlags Flags,
+                                SmallVectorImpl<char> *RealPath) {
+  sandbox::violationIfEnabled();
+  std::error_code EC =
+      openFile(Name, ResultFD, CD_OpenExisting, FA_Read, Flags, 0666);
+  if (EC)
+    return EC;
+  if (RealPath) {
+    RealPath->clear();
+    char Buf[PATH_MAX];
+    SmallString<128> Storage;
+    StringRef P = Name.toNullTerminatedStringRef(Storage);
+    if (::realpath(P.data(), Buf))
+      RealPath->append(Buf, Buf + strlen(Buf));
+  }
+  return std::error_code();
+}
+
+Expected<file_t> openNativeFileForRead(const Twine &Name, OpenFlags Flags,
+                                       SmallVectorImpl<char> *RealPath) {
+  sandbox::violationIfEnabled();
+  int FD;
+  std::error_code EC = openFileForRead(Name, FD, Flags, RealPath);
+  if (EC)
+    return errorCodeToError(EC);
+  return fdToFileT(FD);
+}
+
+file_t convertFDToNativeFile(int FD) { return fdToFileT(FD); }
+
+file_t getStdinHandle() { return fdToFileT(0); }
+file_t getStdoutHandle() { return fdToFileT(1); }
+file_t getStderrHandle() { return fdToFileT(2); }
+
+Expected<size_t> readNativeFile(file_t FileHandle, MutableArrayRef<char> Buf) {
+  sandbox::violationIfEnabled();
+  int FD = fileTToFd(FileHandle);
+  ssize_t NumRead = ::read(FD, Buf.data(), Buf.size());
+  if (NumRead == -1)
+    return errorCodeToError(errnoAsErrorCode());
+  return static_cast<size_t>(NumRead);
+}
+
+Expected<size_t> readNativeFileSlice(file_t FileHandle,
+                                     MutableArrayRef<char> Buf,
+                                     uint64_t Offset) {
+  sandbox::violationIfEnabled();
+  int FD = fileTToFd(FileHandle);
+  ssize_t NumRead = ::pread(FD, Buf.data(), Buf.size(), Offset);
+  if (NumRead == -1)
+    return errorCodeToError(errnoAsErrorCode());
+  return static_cast<size_t>(NumRead);
+}
+
+// File locking stubs — our libc doesn't expose flock() or fcntl(F_SETLK)
+// yet. These operations are used for parallel build coordination (ThinLTO,
+// LockFileManager) and are non-critical for correctness.
+// TODO: implement via NtLockFile/NtUnlockFile when libc exposes them.
+std::error_code tryLockFile(int FD, std::chrono::milliseconds Timeout,
+                            LockKind Kind) {
+  return std::error_code();
+}
+
+std::error_code lockFile(int FD, LockKind Kind) {
+  return std::error_code();
+}
+
+std::error_code unlockFile(int FD) {
+  return std::error_code();
+}
+
+std::error_code closeFile(file_t &F) {
+  int FD = fileTToFd(F);
+  F = kInvalidFile;
+  if (::close(FD) == -1)
+    return errnoAsErrorCode();
+  return std::error_code();
+}
+
+std::error_code remove_directories(const Twine &path, bool IgnoreErrors) {
+  auto EC = std::error_code();
+  std::error_code IterEC;
+  for (directory_iterator I(path, IterEC), E; I != E; I.increment(IterEC)) {
+    if (IterEC) {
+      if (!IgnoreErrors) EC = IterEC;
+      continue;
+    }
+    auto St = I->status();
+    if (!St) {
+      if (!IgnoreErrors) EC = St.getError();
+      continue;
+    }
+    if (is_directory(*St)) {
+      auto DirEC = remove_directories(I->path(), IgnoreErrors);
+      if (DirEC && !IgnoreErrors) EC = DirEC;
+    } else {
+      auto FileEC = fs::remove(I->path());
+      if (FileEC && !IgnoreErrors) EC = FileEC;
+    }
+  }
+  auto DirEC = fs::remove(path);
+  if (DirEC && !IgnoreErrors) EC = DirEC;
+  return EC;
+}
+
+static void expandTildeExpr(SmallVectorImpl<char> &Path) {
+  if (Path.empty() || Path[0] != '~')
+    return;
+  StringRef PathStr(Path.begin(), Path.size());
+  PathStr = PathStr.drop_front();
+  StringRef Expr =
+      PathStr.take_until([](char c) { return path::is_separator(c); });
+  if (!Expr.empty())
+    return; // ~username/ not supported on Windows.
+  SmallString<128> HomeDir;
+  if (!path::home_directory(HomeDir))
+    return;
+  Path[0] = HomeDir[0];
+  Path.insert(Path.begin() + 1, HomeDir.begin() + 1, HomeDir.end());
+}
+
+void expand_tilde(const Twine &path, SmallVectorImpl<char> &dest) {
+  dest.clear();
+  if (path.isTriviallyEmpty())
+    return;
+  path.toVector(dest);
+  expandTildeExpr(dest);
+}
+
+std::error_code real_path(const Twine &path, SmallVectorImpl<char> &dest,
+                          bool expand_tilde) {
+  sandbox::violationIfEnabled();
+  dest.clear();
+  if (path.isTriviallyEmpty())
+    return std::error_code();
+  if (expand_tilde) {
+    SmallString<128> Storage;
+    path.toVector(Storage);
+    expandTildeExpr(Storage);
+    return real_path(Storage, dest, false);
+  }
+  SmallString<256> Storage;
+  StringRef P = path.toNullTerminatedStringRef(Storage);
+  char Buf[PATH_MAX];
+  if (::realpath(P.data(), Buf)) {
+    dest.append(Buf, Buf + strlen(Buf));
+    return std::error_code();
+  }
+  return errnoAsErrorCode();
+}
+
+} // end namespace fs
+
+namespace path {
+
+bool home_directory(SmallVectorImpl<char> &result) {
+  if (const char *P = ::getenv("USERPROFILE")) {
+    result.clear();
+    result.append(P, P + strlen(P));
+    llvm::sys::path::make_preferred(result);
+    return true;
+  }
+  if (const char *P = ::getenv("HOME")) {
+    result.clear();
+    result.append(P, P + strlen(P));
+    llvm::sys::path::make_preferred(result);
+    return true;
+  }
+  return false;
+}
+
+bool user_config_directory(SmallVectorImpl<char> &result) {
+  if (const char *P = ::getenv("LOCALAPPDATA")) {
+    result.clear();
+    result.append(P, P + strlen(P));
+    llvm::sys::path::make_preferred(result);
+    return true;
+  }
+  return home_directory(result);
+}
+
+bool cache_directory(SmallVectorImpl<char> &result) {
+  return user_config_directory(result);
+}
+
+void system_temp_directory(bool ErasedOnReboot, SmallVectorImpl<char> &Result) {
+  (void)ErasedOnReboot;
+  Result.clear();
+  const char *Vars[] = {"TMP", "TEMP", "USERPROFILE"};
+  for (const char *Var : Vars) {
+    if (const char *P = ::getenv(Var)) {
+      Result.append(P, P + strlen(P));
+      llvm::sys::path::make_preferred(Result);
+      fs::make_absolute(Result);
+      return;
+    }
+  }
+  const char *Default = "C:\\Temp";
+  Result.append(Default, Default + strlen(Default));
+}
+
+} // end namespace path
+} // end namespace sys
+} // end namespace llvm
+
+#else // !LLVM_RUNTIME_POSIX
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ConvertUTF.h"
 #include "llvm/Support/IOSandbox.h"
@@ -1968,3 +2759,5 @@ std::error_code UTF16ToCurCP(const wchar_t *utf16, size_t utf16_len,
 } // end namespace windows
 } // end namespace sys
 } // end namespace llvm
+
+#endif // LLVM_RUNTIME_POSIX

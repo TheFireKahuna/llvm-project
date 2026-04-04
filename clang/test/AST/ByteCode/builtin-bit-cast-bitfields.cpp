@@ -354,7 +354,7 @@ static_assert(round_trip<R>(t) == t);
 
 
 /// The oversized bitfield is an error on Windows and not just a warning.
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
 struct U {
   // expected-warning@+1 {{exceeds the width of its type}}
   uint32_t trunc : 33;

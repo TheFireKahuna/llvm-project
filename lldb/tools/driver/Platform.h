@@ -9,7 +9,7 @@
 #ifndef LLDB_TOOLS_DRIVER_PLATFORM_H
 #define LLDB_TOOLS_DRIVER_PLATFORM_H
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 
 #include <io.h>
 #if defined(_MSC_VER)

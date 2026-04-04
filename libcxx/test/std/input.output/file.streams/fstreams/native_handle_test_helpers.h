@@ -18,7 +18,7 @@
 #include <type_traits>
 #include <utility>
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #  include <io.h>
 #  include <windows.h>
 #else
@@ -31,7 +31,7 @@
 #if TEST_STD_VER >= 26
 
 inline bool is_handle_valid(NativeHandleT handle) {
-#  if defined(_WIN32)
+#  if defined(LLVM_RUNTIME_WIN32)
   BY_HANDLE_FILE_INFORMATION fileInformation;
   return GetFileInformationByHandle(handle, &fileInformation);
 #  elif __has_include(<unistd.h>) // POSIX

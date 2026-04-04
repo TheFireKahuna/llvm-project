@@ -10,18 +10,26 @@
 //
 //===----------------------------------------------------------------------===//
 #include "llvm/Config/llvm-config.h"
-#include "llvm/Support/ConvertUTF.h"
 #include "llvm/Support/ExitCodes.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
-#include "llvm/Support/WindowsError.h"
-#include <io.h>
 #include <signal.h>
 #include <stdio.h>
 
 #include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
+
+#ifdef LLVM_RUNTIME_POSIX
+// POSIX signal handling under LLVM libc.
+#include "llvm/Support/Windows/WindowsSupport.h"
+#include <dlfcn.h>
+#include <mutex>
+#include <unistd.h>
+#else
+#include "llvm/Support/ConvertUTF.h"
+#include "llvm/Support/WindowsError.h"
+#include <io.h>
 
 // The Windows.h header must be after LLVM and standard headers.
 #include "llvm/Support/Windows/WindowsSupport.h"
@@ -48,7 +56,9 @@
 #pragma GCC diagnostic ignored "-Wformat"
 #pragma GCC diagnostic ignored "-Wformat-extra-args"
 #endif // __MINGW32__
+#endif // LLVM_RUNTIME_POSIX
 
+#ifndef LLVM_RUNTIME_POSIX
 typedef BOOL(__stdcall *PREAD_PROCESS_MEMORY_ROUTINE64)(
     HANDLE hProcess, DWORD64 qwBaseAddress, PVOID lpBuffer, DWORD nSize,
     LPDWORD lpNumberOfBytesRead);
@@ -137,23 +147,44 @@ static bool load64BitDebugHelp(void) {
   }
   return isDebugHelpInitialized();
 }
+#endif // !LLVM_RUNTIME_POSIX
 
 using namespace llvm;
-
-// Forward declare.
-static LONG WINAPI LLVMUnhandledExceptionFilter(LPEXCEPTION_POINTERS ep);
-static BOOL WINAPI LLVMConsoleCtrlHandler(DWORD dwCtrlType);
 
 // The function to call if ctrl-c is pressed.
 static void (*InterruptFunction)() = 0;
 
 static std::vector<std::string> *FilesToRemove = NULL;
-static bool RegisteredUnhandledExceptionFilter = false;
 static bool CleanupExecuted = false;
-static PTOP_LEVEL_EXCEPTION_FILTER OldFilter = NULL;
 
 /// The function to call on "SIGPIPE" (one-time use only).
 static std::atomic<void (*)()> OneShotPipeSignalFunction(nullptr);
+
+static StringRef Argv0;
+
+#ifdef LLVM_RUNTIME_POSIX
+// POSIX signal handling — sigaction-based registration with mutex.
+static std::mutex SignalsMutex;
+static bool HandlersRegistered = false;
+
+static void SignalHandler(int Sig);
+
+static const int KillSigs[] = {SIGILL, SIGABRT, SIGFPE, SIGSEGV};
+static const int IntSigs[] = {SIGINT, SIGTERM};
+
+static struct {
+  struct sigaction SA;
+  int SigNo;
+} SavedSignalInfo[16];
+static unsigned NumSavedSignals = 0;
+
+#else // !LLVM_RUNTIME_POSIX
+// Forward declare.
+static LONG WINAPI LLVMUnhandledExceptionFilter(LPEXCEPTION_POINTERS ep);
+static BOOL WINAPI LLVMConsoleCtrlHandler(DWORD dwCtrlType);
+
+static bool RegisteredUnhandledExceptionFilter = false;
+static PTOP_LEVEL_EXCEPTION_FILTER OldFilter = NULL;
 
 // Windows creates a new thread to execute the console handler when an event
 // (such as CTRL/C) occurs.  This causes concurrency issues with the above
@@ -176,7 +207,9 @@ enum {
   NativeMachineType = IMAGE_FILE_MACHINE_UNKNOWN
 #endif
 };
+#endif // LLVM_RUNTIME_POSIX
 
+#ifndef LLVM_RUNTIME_POSIX
 static bool printStackTraceWithLLVMSymbolizer(llvm::raw_ostream &OS,
                                               HANDLE hProcess, HANDLE hThread,
                                               STACKFRAME64 &StackFrameOrig,
@@ -341,9 +374,11 @@ static void PrintStackTraceForThread(llvm::raw_ostream &OS, HANDLE hProcess,
     OS << '\n';
   }
 }
+#endif // !LLVM_RUNTIME_POSIX
 
 namespace llvm {
 
+#ifndef LLVM_RUNTIME_POSIX
 //===----------------------------------------------------------------------===//
 //=== WARNING: Implementation here must contain only Win32 specific code
 //===          and must not be UNIX code
@@ -410,6 +445,37 @@ static void RegisterHandler() {
   // else multi-threading problems will ensue.
 }
 
+#else // LLVM_RUNTIME_POSIX
+
+extern "C" void HandleAbort(int Sig) {
+  if (Sig == SIGABRT)
+    LLVM_BUILTIN_TRAP;
+}
+
+static void RegisterHandler() {
+  std::lock_guard<std::mutex> Lock(SignalsMutex);
+  if (HandlersRegistered)
+    return;
+  HandlersRegistered = true;
+
+  auto registerSig = [](int Sig) {
+    struct sigaction NewHandler;
+    NewHandler.sa_handler = SignalHandler;
+    NewHandler.sa_flags = SA_RESETHAND;
+    sigemptyset(&NewHandler.sa_mask);
+    sigaction(Sig, &NewHandler, &SavedSignalInfo[NumSavedSignals].SA);
+    SavedSignalInfo[NumSavedSignals].SigNo = Sig;
+    NumSavedSignals++;
+  };
+
+  for (int S : IntSigs)
+    registerSig(S);
+  for (int S : KillSigs)
+    registerSig(S);
+}
+
+#endif // LLVM_RUNTIME_POSIX
+
 // The public API
 bool sys::RemoveFileOnSignal(StringRef Filename, std::string *ErrMsg) {
   RegisterHandler();
@@ -430,7 +496,9 @@ bool sys::RemoveFileOnSignal(StringRef Filename, std::string *ErrMsg) {
 
   FilesToRemove->push_back(std::string(Filename));
 
+#ifndef LLVM_RUNTIME_POSIX
   LeaveCriticalSection(&CriticalSection);
+#endif
   return false;
 }
 
@@ -439,20 +507,31 @@ void sys::DontRemoveFileOnSignal(StringRef Filename) {
   if (FilesToRemove == NULL)
     return;
 
+#ifdef LLVM_RUNTIME_POSIX
+  std::lock_guard<std::mutex> Lock(SignalsMutex);
+#else
   RegisterHandler();
+#endif
 
   std::vector<std::string>::reverse_iterator I =
       find(reverse(*FilesToRemove), Filename);
   if (I != FilesToRemove->rend())
     FilesToRemove->erase(I.base() - 1);
 
+#ifndef LLVM_RUNTIME_POSIX
   LeaveCriticalSection(&CriticalSection);
+#endif
 }
 
 void sys::DisableSystemDialogsOnCrash() {
   // Crash to stack trace handler on abort.
   signal(SIGABRT, HandleAbort);
 
+#ifdef LLVM_RUNTIME_POSIX
+  // Ensure all crash signals are handled — prevents Windows Error Reporting
+  // dialogs by catching signals before the default handler invokes WER.
+  RegisterHandler();
+#else
   // The following functions are not reliably accessible on MinGW.
 #ifdef _MSC_VER
   // We're already handling writing a "something went wrong" message.
@@ -466,6 +545,7 @@ void sys::DisableSystemDialogsOnCrash() {
   SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX |
                SEM_NOOPENFILEERRORBOX);
   _set_error_mode(_OUT_TO_STDERR);
+#endif // LLVM_RUNTIME_POSIX
 }
 
 /// When an error signal (such as SIGABRT or SIGSEGV) is delivered to the
@@ -479,13 +559,120 @@ void sys::PrintStackTraceOnErrorSignal(StringRef Argv0,
 
   DisableSystemDialogsOnCrash();
   RegisterHandler();
+#ifndef LLVM_RUNTIME_POSIX
   LeaveCriticalSection(&CriticalSection);
+#endif
 }
 } // namespace llvm
 
 #if LLVM_ENABLE_DEBUGLOC_TRACKING_ORIGIN
 #error DebugLoc origin-tracking currently unimplemented for Windows.
 #endif
+
+#ifdef LLVM_RUNTIME_POSIX
+// POSIX stack trace — use printSymbolizedStackTrace (llvm-symbolizer).
+static bool findModulesAndOffsets(void **StackTrace, int Depth,
+                                  const char **Modules, intptr_t *Offsets,
+                                  const char *MainExecutableName,
+                                  StringSaver &StrPool) {
+  // Use dladdr to resolve modules — LLVM libc provides it.
+  for (int I = 0; I < Depth; I++) {
+    Dl_info Info;
+    if (dladdr(StackTrace[I], &Info)) {
+      Modules[I] = StrPool.save(Info.dli_fname).data();
+      Offsets[I] = (intptr_t)StackTrace[I] - (intptr_t)Info.dli_fbase;
+    }
+  }
+  return true;
+}
+
+static bool printMarkupContext(llvm::raw_ostream &OS,
+                               const char *MainExecutableName) {
+  return false;
+}
+
+void llvm::sys::PrintStackTrace(raw_ostream &OS, int Depth) {
+  // Walk the stack using NT RTL unwind APIs (declared in <sys/ntabi.h>).
+  // RtlVirtualUnwind is the standard mechanism for x64/ARM64 stack walking
+  // on Windows — it uses the .pdata/.xdata unwind tables in PE images.
+  static void *StackTrace[256];
+  int FrameCount = 0;
+
+  CONTEXT Context;
+  RtlCaptureContext(&Context);
+
+  // Skip frames internal to this function and its caller.
+  const int SkipFrames = 0;
+
+  while (FrameCount < (int)std::size(StackTrace)) {
+#if defined(__x86_64__) || defined(_M_X64)
+    DWORD64 PC = Context.Rip;
+    if (PC == 0)
+      break;
+
+    DWORD64 ImageBase;
+    RUNTIME_FUNCTION *RF = RtlLookupFunctionEntry(PC, &ImageBase, nullptr);
+    if (!RF)
+      break;
+
+    void *HandlerData;
+    DWORD64 EstablisherFrame;
+    RtlVirtualUnwind(UNW_FLAG_NHANDLER, ImageBase, PC, RF, &Context,
+                     &HandlerData, &EstablisherFrame, nullptr);
+
+    if (Context.Rip == 0)
+      break;
+
+    StackTrace[FrameCount++] = (void *)(uintptr_t)Context.Rip;
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    DWORD64 PC = Context.Pc;
+    if (PC == 0)
+      break;
+
+    DWORD64 ImageBase;
+    RUNTIME_FUNCTION *RF = RtlLookupFunctionEntry(PC, &ImageBase, nullptr);
+    if (!RF)
+      break;
+
+    void *HandlerData;
+    DWORD64 EstablisherFrame;
+    RtlVirtualUnwind(UNW_FLAG_NHANDLER, ImageBase, PC, RF, &Context,
+                     &HandlerData, &EstablisherFrame, nullptr);
+
+    if (Context.Pc == 0)
+      break;
+
+    StackTrace[FrameCount++] = (void *)(uintptr_t)Context.Pc;
+#else
+    break; // Unsupported architecture.
+#endif
+  }
+
+  if (!FrameCount)
+    return;
+
+  if (!Depth)
+    Depth = FrameCount;
+  if (Depth > FrameCount)
+    Depth = FrameCount;
+
+  if (printSymbolizedStackTrace(Argv0, StackTrace, Depth, OS))
+    return;
+
+  OS << "Stack dump without symbol names (ensure you have llvm-symbolizer in "
+        "your PATH or set the environment var `LLVM_SYMBOLIZER_PATH` to point "
+        "to it):\n";
+  for (int I = 0; I < Depth; I++) {
+    Dl_info Info;
+    if (dladdr(StackTrace[I], &Info) && Info.dli_fname)
+      OS << format("#%-2d %p %s + 0x%zx\n", I, StackTrace[I], Info.dli_fname,
+                   (uintptr_t)StackTrace[I] - (uintptr_t)Info.dli_fbase);
+    else
+      OS << format("#%-2d %p\n", I, StackTrace[I]);
+  }
+}
+
+#else // !LLVM_RUNTIME_POSIX
 
 static void LocalPrintStackTrace(raw_ostream &OS, PCONTEXT C) {
   STACKFRAME64 StackFrame{};
@@ -522,11 +709,14 @@ void llvm::sys::PrintStackTrace(raw_ostream &OS, int Depth) {
   // FIXME: Handle "Depth" parameter to print stack trace upto specified Depth
   LocalPrintStackTrace(OS, nullptr);
 }
+#endif // LLVM_RUNTIME_POSIX
 
 void llvm::sys::SetInterruptFunction(void (*IF)()) {
   RegisterHandler();
   InterruptFunction = IF;
+#ifndef LLVM_RUNTIME_POSIX
   LeaveCriticalSection(&CriticalSection);
+#endif
 }
 
 void llvm::sys::SetInfoSignalFunction(void (*Handler)()) {
@@ -553,14 +743,18 @@ void llvm::sys::AddSignalHandler(sys::SignalHandlerCallback FnPtr, void *Cookie,
                                  bool NeedsPOSIXUtilitySignalHandling) {
   insertSignalHandler(FnPtr, Cookie);
   RegisterHandler();
+#ifndef LLVM_RUNTIME_POSIX
   LeaveCriticalSection(&CriticalSection);
+#endif
 }
 
 static void Cleanup(bool ExecuteSignalHandlers) {
   if (CleanupExecuted)
     return;
 
+#ifndef LLVM_RUNTIME_POSIX
   EnterCriticalSection(&CriticalSection);
+#endif
 
   // Prevent other thread from registering new files and directories for
   // removal, should we be executing because of the console handler callback.
@@ -576,20 +770,57 @@ static void Cleanup(bool ExecuteSignalHandlers) {
   if (ExecuteSignalHandlers)
     llvm::sys::RunSignalHandlers();
 
+#ifndef LLVM_RUNTIME_POSIX
   LeaveCriticalSection(&CriticalSection);
+#endif
 }
 
 void llvm::sys::RunInterruptHandlers() {
   // Let's not interfere with stack trace symbolication and friends.
   auto BypassSandbox = sandbox::scopedDisable();
 
+#ifndef LLVM_RUNTIME_POSIX
   // The interrupt handler may be called from an interrupt, but it may also be
   // called manually (such as the case of report_fatal_error with no registered
   // error handler). We must ensure that the critical section is properly
   // initialized.
   InitializeThreading();
+#endif
   Cleanup(true);
 }
+
+#ifdef LLVM_RUNTIME_POSIX
+// POSIX signal handler.
+static void SignalHandler(int Sig) {
+  // Restore default handler to avoid recursion.
+  signal(Sig, SIG_DFL);
+
+  Cleanup(true);
+
+  if (auto IF = InterruptFunction) {
+    InterruptFunction = nullptr;
+    IF();
+    return;
+  }
+
+  // Re-raise to get default behavior (core dump, termination).
+  raise(Sig);
+}
+
+void sys::CleanupOnSignal(uintptr_t Context) {
+  auto BypassSandbox = sandbox::scopedDisable();
+  Cleanup(true);
+}
+
+void sys::unregisterHandlers() {
+  for (unsigned i = 0; i < NumSavedSignals; i++) {
+    sigaction(SavedSignalInfo[i].SigNo, &SavedSignalInfo[i].SA, nullptr);
+  }
+  NumSavedSignals = 0;
+  HandlersRegistered = false;
+}
+
+#else // !LLVM_RUNTIME_POSIX
 
 /// Find the Windows Registry Key for a given location.
 ///
@@ -868,3 +1099,5 @@ static BOOL WINAPI LLVMConsoleCtrlHandler(DWORD dwCtrlType) {
 #endif
 
 void sys::unregisterHandlers() {}
+
+#endif // LLVM_RUNTIME_POSIX
