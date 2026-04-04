@@ -17,7 +17,7 @@
 #  endif
 #  include <io.h>
 #  include <windows.h>
-#  if defined(_WIN32_ITANIUM)
+#  if defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
 #    define fileno _fileno
 #  endif
 #endif

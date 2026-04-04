@@ -42,7 +42,6 @@ using namespace clang;
 using namespace llvm::opt;
 
 using llvm::VersionTuple;
-using LibCMode = WindowsItaniumToolChain::LibCMode;
 
 // Translate MSVC-style /O flags to clang equivalents.
 static void TranslateOptArg(Arg *A, DerivedArgList &DAL,
@@ -260,7 +259,6 @@ void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
   auto &TC = static_cast<const WindowsItaniumToolChain &>(getToolChain());
   const Driver &D = C.getDriver();
-  const bool UseLLVMLibC = TC.usesLLVMLibC();
   const bool NoStdLib = Args.hasArg(options::OPT_nostdlib);
   const bool NoStartFiles = Args.hasArg(options::OPT_nostartfiles);
   const bool NoDefaultLibs = Args.hasArg(options::OPT_nodefaultlibs);
@@ -277,23 +275,6 @@ void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     }
     CmdArgs.push_back(Args.MakeArgString(Path));
     return true;
-  };
-
-  auto NeedsDelayLoadRuntime = [&]() {
-    auto IsDelayLoadArg = [](StringRef Value) {
-      return Value.starts_with_insensitive("/delayload:") ||
-             Value.starts_with_insensitive("-delayload:");
-    };
-
-    for (const Arg *A :
-         Args.filtered(options::OPT__SLASH_link, options::OPT_Xlinker,
-                       options::OPT_Wl_COMMA)) {
-      for (const char *Value : A->getValues()) {
-        if (IsDelayLoadArg(Value))
-          return true;
-      }
-    }
-    return false;
   };
 
   // Silence warning for "clang -g foo.o -o foo"
@@ -389,9 +370,9 @@ void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back(Args.MakeArgString("--dependent-lib=amath"));
   }
 
-  // Add UCRT + Windows SDK lib paths (only).
+  // Add UCRT + Windows SDK lib paths.
   if (!NoStdLib) {
-    if (!UseLLVMLibC && TC.useUniversalCRT()) {
+    if (TC.useUniversalCRT()) {
       std::string UCRTLib;
       if (TC.getUniversalCRTLibraryPath(Args, UCRTLib))
         CmdArgs.push_back(Args.MakeArgString(Twine("-libpath:") + UCRTLib));
@@ -421,27 +402,6 @@ void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   // Runtime library selection.
   ToolChain::RuntimeLibType RLT = TC.GetRuntimeLibType(Args);
 
-  if (UseLLVMLibC && LinkDefaultLibs && RLT != ToolChain::RLT_CompilerRT) {
-    StringRef RuntimeName = "platform";
-    if (const Arg *A = Args.getLastArg(options::OPT_rtlib_EQ))
-      RuntimeName = A->getValue();
-    D.Diag(diag::err_drv_unsupported_rtlib_for_platform)
-        << RuntimeName << TC.getTriple().normalize();
-    return;
-  }
-
-  if (LinkStartFiles && UseLLVMLibC) {
-    if (!AddRequiredInstalledFile(isDLL ? "dllcrt.obj" : "crt1.obj") ||
-        (!isDLL && !AddRequiredInstalledFile("crt_do_start.obj")) ||
-        !AddRequiredInstalledFile("crt_tls.obj") ||
-        !AddRequiredInstalledFile("crt_gs.obj") ||
-        !AddRequiredInstalledFile("crt_cfg.obj") ||
-        !AddRequiredInstalledFile("crt_loadcfg.obj"))
-      return;
-    if (NeedsDelayLoadRuntime() && !AddRequiredInstalledFile("crt_delayload.obj"))
-      return;
-  }
-
   if (LinkDefaultLibs) {
     // C++ standard library.
     if (TC.ShouldLinkCXXStdlib(Args))
@@ -459,23 +419,10 @@ void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     }
 
     if (RLT == ToolChain::RLT_CompilerRT) {
-      // compiler-rt builtins remain the builtins provider in both libc modes.
       CmdArgs.push_back(TC.getCompilerRTArgString(Args, "builtins"));
     }
 
-    if (UseLLVMLibC) {
-      if (LinkLibC) {
-        if (!AddRequiredInstalledFile("c.lib") ||
-            !AddRequiredInstalledFile("kernelbase.lib") ||
-            !AddRequiredInstalledFile("ntdll.lib") ||
-            !AddRequiredInstalledFile("sspicli.lib") ||
-            !AddRequiredInstalledFile("bcryptprimitives.lib"))
-          return;
-
-        CmdArgs.push_back("kernel32.lib");
-        CmdArgs.push_back("bcrypt.lib");
-      }
-    } else if (LinkLibC) {
+    if (LinkLibC) {
       CmdArgs.push_back("ucrt.lib");
       CmdArgs.push_back("kernel32.lib");
 
@@ -506,15 +453,9 @@ void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-nodefaultlib:oldnames");
     CmdArgs.push_back("-nodefaultlib:ucrtd");
 
-    if (UseLLVMLibC || RLT == ToolChain::RLT_CompilerRT) {
-      // Block system CRTs whenever llvm-libc owns the C runtime, and also
-      // when compiler-rt is serving as the legacy system runtime personality.
+    if (RLT == ToolChain::RLT_CompilerRT) {
       CmdArgs.push_back("-nodefaultlib:msvcrt");
       CmdArgs.push_back("-nodefaultlib:vcruntime");
-    }
-    if (UseLLVMLibC) {
-      CmdArgs.push_back("-nodefaultlib:ucrt");
-      CmdArgs.push_back("-nodefaultlib:wincrt");
     }
 
     if (LinkLibC) {
@@ -680,9 +621,7 @@ void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 WindowsItaniumToolChain::WindowsItaniumToolChain(const Driver &D,
                                                  const llvm::Triple &Triple,
                                                  const ArgList &Args)
-    : ToolChain(D, Triple, Args), CudaInstallation(D, Triple, Args),
-      RocmInstallation(D, Triple, Args), SYCLInstallation(D, Triple, Args) {
-  getProgramPaths().push_back(getDriver().Dir);
+    : WindowsItaniumBaseToolChain(D, Triple, Args) {
 
   std::optional<llvm::StringRef> VCToolsDir, VCToolsVersion;
   if (Arg *A = Args.getLastArg(options::OPT__SLASH_vctoolsdir))
@@ -714,63 +653,6 @@ WindowsItaniumToolChain::WindowsItaniumToolChain(const Driver &D,
                            WindowsSDKDir, WindowsSDKMajor,
                            WindowsSDKIncludeVersion, WindowsSDKLibVersion);
   }
-
-  SmallString<128> LibPath(D.Dir);
-  llvm::sys::path::append(LibPath, "..", "lib");
-  if (getVFS().exists(LibPath))
-    getFilePaths().push_back(std::string(LibPath));
-
-  SmallString<128> TargetLibPath(D.Dir);
-  llvm::sys::path::append(TargetLibPath, "..", "lib", Triple.str());
-  if (getVFS().exists(TargetLibPath))
-    getFilePaths().push_back(std::string(TargetLibPath));
-}
-
-ToolChain::UnwindTableLevel
-WindowsItaniumToolChain::getDefaultUnwindTableLevel(const ArgList &Args) const {
-  // Enable for architectures where LLVM generates unwind tables.
-  if (getArch() == llvm::Triple::x86_64 || getArch() == llvm::Triple::arm ||
-      getArch() == llvm::Triple::thumb || getArch() == llvm::Triple::aarch64)
-    return UnwindTableLevel::Asynchronous;
-
-  return UnwindTableLevel::None;
-}
-
-bool WindowsItaniumToolChain::isPICDefault() const {
-  return getArch() == llvm::Triple::x86_64 ||
-         getArch() == llvm::Triple::aarch64;
-}
-
-bool WindowsItaniumToolChain::isPIEDefault(const ArgList &Args) const {
-  return false;
-}
-
-bool WindowsItaniumToolChain::isPICDefaultForced() const {
-  // 64-bit Windows ABIs require position-independent code.
-  return getArch() == llvm::Triple::x86_64 ||
-         getArch() == llvm::Triple::aarch64;
-}
-
-SanitizerMask WindowsItaniumToolChain::getSupportedSanitizers() const {
-  SanitizerMask Res = ToolChain::getSupportedSanitizers();
-  Res |= SanitizerKind::Address;
-  Res |= SanitizerKind::PointerCompare;
-  Res |= SanitizerKind::PointerSubtract;
-  Res |= SanitizerKind::Fuzzer;
-  Res |= SanitizerKind::FuzzerNoLink;
-  Res &= ~SanitizerKind::CFIMFCall;
-  return Res;
-}
-
-llvm::ExceptionHandling
-WindowsItaniumToolChain::GetExceptionModel(const ArgList &Args) const {
-  if (Args.hasArg(options::OPT_fsjlj_exceptions))
-    return llvm::ExceptionHandling::SjLj;
-  // SEH with Itanium personality on 64-bit; SJLJ on 32-bit.
-  // Table-based SEH (DISPATCHER_CONTEXT) only exists on x64/ARM64.
-  if (getArch() == llvm::Triple::x86_64 || getArch() == llvm::Triple::aarch64)
-    return llvm::ExceptionHandling::WinEH;
-  return llvm::ExceptionHandling::SjLj;
 }
 
 void WindowsItaniumToolChain::addClangTargetOptions(
@@ -783,27 +665,10 @@ void WindowsItaniumToolChain::addClangTargetOptions(
   if (!DriverArgs.hasArg(options::OPT_fno_ms_extensions))
     CC1Args.push_back("-fms-extensions");
 
-  // When targeting UCRT (not llvm-libc), define __MSVCRT__ so headers and
-  // libraries know the C runtime provides underscore-prefixed functions
-  // (_access, _open, _vsnprintf, etc.).  Mirrors MinGW's convention.
-  if (!usesLLVMLibC()) {
-    CC1Args.push_back("-D__MSVCRT__");
-  }
-
-  // llvm-libc uses 32-bit wchar_t for full POSIX compliance (UTF-32,
-  // matching Linux/macOS). UCRT retains the standard Windows 16-bit
-  // wchar_t (UTF-16).
-  if (usesLLVMLibC() &&
-      !DriverArgs.hasArg(options::OPT_fshort_wchar,
-                         options::OPT_fno_short_wchar)) {
-    CC1Args.push_back("-fwchar-type=int");
-    CC1Args.push_back("-fsigned-wchar");
-    // L"..." produces char16_t[] so SDK headers (which use L"..." for
-    // UTF-16 strings) remain compatible with the 16-bit Win32 WCHAR ABI.
-    if (!DriverArgs.hasFlag(options::OPT_fno_wide_char16_literals,
-                            options::OPT_fwide_char16_literals, false))
-      CC1Args.push_back("-fwide-char16-literals");
-  }
+  // Define __MSVCRT__ so headers and libraries know the C runtime provides
+  // underscore-prefixed functions (_access, _open, _vsnprintf, etc.).
+  // Mirrors MinGW's convention.
+  CC1Args.push_back("-D__MSVCRT__");
 
   // ISO-conforming wide specifiers for wprintf/wscanf (%s = char*, %ls = wchar_t*).
   // Auto-links iso_stdio_wide_specifiers.lib via #pragma comment(lib, ...).
@@ -877,36 +742,10 @@ void WindowsItaniumToolChain::AddClangSystemIncludeArgs(
   // This prevents vcvars* from injecting VC include paths.
   // (If you want to allow *explicit* env-based injection, use /external:env:. above.)
 
-  // -nostdlibinc suppresses C library headers (UCRT / llvm-libc) but not
-  // Windows SDK headers (shared/, um/).  Runtimes built with llvm-libc pass
-  // -nostdlibinc to avoid UCRT; they still need SDK headers for SEH types.
+  // -nostdlibinc suppresses C library headers (UCRT) but not
+  // Windows SDK headers (shared/, um/).
   if (!DriverArgs.hasArg(options::OPT_nostdlibinc)) {
-    if (usesLLVMLibC()) {
-      auto AddInstalledLibCIncludes = [&](const llvm::Twine &Root) {
-        llvm::SmallString<128> TargetInclude(Root.str());
-        llvm::sys::path::append(TargetInclude, "include", getTripleString());
-        if (getVFS().exists(TargetInclude))
-          addSystemInclude(DriverArgs, CC1Args, TargetInclude);
-
-        llvm::SmallString<128> GenericInclude(Root.str());
-        llvm::sys::path::append(GenericInclude, "include");
-        if (getVFS().exists(GenericInclude))
-          addSystemInclude(DriverArgs, CC1Args, GenericInclude);
-      };
-
-      if (!getDriver().SysRoot.empty())
-        AddInstalledLibCIncludes(getDriver().SysRoot);
-
-      llvm::SmallString<128> DriverRoot(getDriver().Dir);
-      llvm::sys::path::append(DriverRoot, "..");
-      AddInstalledLibCIncludes(DriverRoot);
-
-      for (const std::string &LibPath : getFilePaths()) {
-        llvm::SmallString<128> Root(LibPath);
-        llvm::sys::path::append(Root, "..");
-        AddInstalledLibCIncludes(Root);
-      }
-    } else if (useUniversalCRT()) {
+    if (useUniversalCRT()) {
       std::string UniversalCRTSdkPath;
       std::string UCRTVersion;
       if (llvm::getUniversalCRTSdkDir(getVFS(), WinSdkDir, WinSdkVersion,
@@ -923,14 +762,11 @@ void WindowsItaniumToolChain::AddClangSystemIncludeArgs(
   }
 
   // Windows SDK includes (shared/um/winrt/cppwinrt).
-  // When using LLVM libc, <sys/ntabi.h> provides the SEH/CONTEXT types that
-  // runtimes need, so the SDK include paths are not added.
   std::string WindowsSDKDir;
   int Major = 0;
   std::string IncludeVer;
   std::string LibVer;
-  if (!usesLLVMLibC() &&
-      llvm::getWindowsSDKDir(getVFS(), WinSdkDir, WinSdkVersion, WinSysRoot,
+  if (llvm::getWindowsSDKDir(getVFS(), WinSdkDir, WinSdkVersion, WinSysRoot,
                              WindowsSDKDir, Major, IncludeVer, LibVer)) {
     if (Major >= 10) {
       if (!(WinSdkDir.has_value() || WinSysRoot.has_value()) && WinSdkVersion.has_value())
@@ -971,59 +807,6 @@ void WindowsItaniumToolChain::AddClangSystemIncludeArgs(
   }
 }
 
-void WindowsItaniumToolChain::AddClangCXXStdlibIncludeArgs(
-    const ArgList &DriverArgs, ArgStringList &CC1Args) const {
-  // Claim -stdlib= to suppress "unused during compilation" warning.
-  // Windows Itanium always uses libc++.
-  DriverArgs.getLastArg(options::OPT_stdlib_EQ);
-
-  if (DriverArgs.hasArg(options::OPT_nostdinc, options::OPT_nostdincxx,
-                        options::OPT_nostdlibinc))
-    return;
-
-  const Driver &D = getDriver();
-
-  // Target-specific path for multi-target installations.
-  SmallString<128> TargetPath(D.Dir);
-  llvm::sys::path::append(TargetPath, "..", "include", getTripleString());
-  llvm::sys::path::append(TargetPath, "c++", "v1");
-  if (D.getVFS().exists(TargetPath))
-    addSystemInclude(DriverArgs, CC1Args, TargetPath);
-
-  SmallString<128> InstallPath(D.Dir);
-  llvm::sys::path::append(InstallPath, "..", "include", "c++", "v1");
-  if (D.getVFS().exists(InstallPath))
-    addSystemInclude(DriverArgs, CC1Args, InstallPath);
-
-  for (const std::string &LibPath : getFilePaths()) {
-    SmallString<128> LibIncludePath(LibPath);
-    llvm::sys::path::append(LibIncludePath, "..", "include", "c++", "v1");
-    if (D.getVFS().exists(LibIncludePath)) {
-      addSystemInclude(DriverArgs, CC1Args, LibIncludePath);
-      break;
-    }
-  }
-
-  if (!D.SysRoot.empty()) {
-    SmallString<128> SysrootPath(D.SysRoot);
-    llvm::sys::path::append(SysrootPath, "include", "c++", "v1");
-    if (D.getVFS().exists(SysrootPath))
-      addSystemInclude(DriverArgs, CC1Args, SysrootPath);
-  }
-}
-
-ToolChain::CXXStdlibType
-WindowsItaniumToolChain::GetCXXStdlibType(const ArgList &Args) const {
-  if (Arg *A = Args.getLastArg(options::OPT_stdlib_EQ)) {
-    StringRef Value = A->getValue();
-    if (Value != "libc++") {
-      getDriver().Diag(diag::err_drv_invalid_stdlib_name)
-          << A->getAsString(Args);
-    }
-  }
-  return ToolChain::CST_Libcxx;
-}
-
 ToolChain::RuntimeLibType
 WindowsItaniumToolChain::GetDefaultRuntimeLibType() const {
   // Configurable via -DCLANG_WIN32_ITANIUM_DEFAULT_RTLIB at build time.
@@ -1033,31 +816,8 @@ WindowsItaniumToolChain::GetDefaultRuntimeLibType() const {
   return ToolChain::RLT_Msvcrt;
 }
 
-LibCMode WindowsItaniumToolChain::GetDefaultLibCMode() const {
-  StringRef DefaultLibC = CLANG_WIN32_ITANIUM_DEFAULT_LIBC;
-  if (DefaultLibC == "llvm-libc")
-    return LibCMode::LLVMLibC;
-  return LibCMode::System;
-}
-
-void WindowsItaniumToolChain::AddCXXStdlibLibArgs(
-    const ArgList &Args, ArgStringList &CmdArgs) const {
-  CmdArgs.push_back("c++.lib");
-  if (Args.hasArg(options::OPT_fexperimental_library))
-    CmdArgs.push_back("c++experimental.lib");
-}
-
 Tool *WindowsItaniumToolChain::buildLinker() const {
   return new tools::windowsitanium::Linker(*this);
-}
-
-void WindowsItaniumToolChain::AddSystemIncludeWithSubfolder(
-    const ArgList &DriverArgs, ArgStringList &CC1Args,
-    const std::string &Folder, const Twine &Sub1,
-    const Twine &Sub2, const Twine &Sub3) const {
-  llvm::SmallString<128> P(Folder);
-  llvm::sys::path::append(P, Sub1, Sub2, Sub3);
-  addSystemInclude(DriverArgs, CC1Args, P);
 }
 
 bool WindowsItaniumToolChain::getWindowsSDKLibraryPath(const ArgList &Args,
@@ -1133,44 +893,3 @@ bool WindowsItaniumToolChain::getUniversalCRTLibraryPath(const ArgList &Args,
   return true;
 }
 
-void WindowsItaniumToolChain::AddCudaIncludeArgs(const ArgList &DriverArgs,
-                                                 ArgStringList &CC1Args) const {
-  CudaInstallation->AddCudaIncludeArgs(DriverArgs, CC1Args);
-}
-
-void WindowsItaniumToolChain::AddHIPIncludeArgs(const ArgList &DriverArgs,
-                                                ArgStringList &CC1Args) const {
-  RocmInstallation->AddHIPIncludeArgs(DriverArgs, CC1Args);
-}
-
-void WindowsItaniumToolChain::addSYCLIncludeArgs(const ArgList &DriverArgs,
-                                                 ArgStringList &CC1Args) const {
-  SYCLInstallation->addSYCLIncludeArgs(DriverArgs, CC1Args);
-}
-
-void WindowsItaniumToolChain::addOffloadRTLibs(unsigned ActiveKinds,
-                                               const ArgList &Args,
-                                               ArgStringList &CmdArgs) const {
-  if (Args.hasArg(options::OPT_no_hip_rt) || Args.hasArg(options::OPT_r))
-    return;
-
-  if (ActiveKinds & Action::OFK_HIP) {
-    CmdArgs.append({Args.MakeArgString(StringRef("-libpath:") +
-                                       RocmInstallation->getLibPath()),
-                    "amdhip64.lib"});
-  }
-}
-
-void WindowsItaniumToolChain::printVerboseInfo(raw_ostream &OS) const {
-  CudaInstallation->print(OS);
-  RocmInstallation->print(OS);
-
-  if (FoundWindowsSDK()) {
-    OS << "Windows SDK: " << WindowsSDKDir;
-    if (!WindowsSDKIncludeVersion.empty())
-      OS << " (version " << WindowsSDKIncludeVersion << ")";
-    OS << "\n";
-  } else if (llvm::sys::Process::GetEnv("INCLUDE").has_value()) {
-    OS << "Windows SDK: using INCLUDE/LIB environment variables\n";
-  }
-}

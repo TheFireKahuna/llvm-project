@@ -1488,6 +1488,21 @@ void ItaniumWindowsARMleTargetInfo::getTargetDefines(
   }
 }
 
+// Windows ARM + NT-POSIX
+NTPOSIXWindowsARMleTargetInfo::NTPOSIXWindowsARMleTargetInfo(
+    const llvm::Triple &Triple, const TargetOptions &Opts)
+    : WindowsARMTargetInfo(Triple, Opts) {
+  TheCXXABI.set(TargetCXXABI::GenericARM);
+  WCharType = TargetInfo::SignedInt;
+  WIntType = TargetInfo::SignedInt;
+}
+
+void NTPOSIXWindowsARMleTargetInfo::getTargetDefines(
+    const LangOptions &Opts, MacroBuilder &Builder) const {
+  WindowsARMTargetInfo::getTargetDefines(Opts, Builder);
+  Builder.defineMacro("_ARM_");
+}
+
 // Windows ARM, MS (C++) ABI
 MicrosoftARMleTargetInfo::MicrosoftARMleTargetInfo(const llvm::Triple &Triple,
                                                    const TargetOptions &Opts)

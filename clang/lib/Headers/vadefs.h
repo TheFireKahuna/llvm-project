@@ -8,7 +8,7 @@
  */
 
 /* Only include this if we are aiming for MSVC compatibility. */
-#if !defined(_MSC_VER) && !defined(_WIN32_ITANIUM)
+#if !defined(_MSC_VER) && !defined(_WIN32_ITANIUM) && !defined(__NTPOSIX__)
 #include_next <vadefs.h>
 #else
 

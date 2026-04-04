@@ -1,11 +1,12 @@
-# WindowsItanium-runtimes.cmake - Build Clang and Windows Itanium runtimes
+# NTPOSIX-runtimes.cmake - Build Clang and NTPOSIX runtimes
 #
-# Stage 1 of 2: Builds Clang/LLD/LLDB plus runtimes (libunwind, libc++abi,
-# libc++) targeting Windows Itanium. The compiler produced uses the host ABI
-# (MSVC) but can target Windows Itanium. Bootstraps to stage 2 for a
-# self-hosted native build.
+# Stage 1 of 2: Builds Clang/LLD/LLDB plus runtimes (compiler-rt, libunwind,
+# libc++abi, libc++, llvm-libc) targeting NTPOSIX (POSIX-on-NT). The compiler
+# produced uses the host ABI (MSVC) but can target NTPOSIX. Bootstraps to
+# stage 2 for a self-hosted native build.
 #
-# See: https://llvm.org/docs/HowToBuildWindowsItaniumPrograms.html
+# NTPOSIX is POSIX-on-NT: Itanium ABI, compiler-rt, libunwind, libc++,
+# llvm-libc as the sole C runtime, lld-link, PE/COFF. No UCRT dependency.
 #
 # Prerequisites:
 #   - C++ compiler: MSVC (cl.exe) or Clang (clang-cl.exe)
@@ -18,24 +19,24 @@
 #             -latest -property installationPath
 #   & "$vsPath\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -SkipAutomaticLocation
 #
-# Build (produces native Windows Itanium toolchain):
+# Build (produces native NTPOSIX toolchain):
 #   # Using MSVC:
-#   cmake -G Ninja -B build -C <path>/clang/cmake/caches/WindowsItanium-runtimes.cmake \
+#   cmake -G Ninja -B build -C <path>/clang/cmake/caches/NTPOSIX-runtimes.cmake \
 #         -DCMAKE_INSTALL_PREFIX=<install-path> <path>/llvm
 #
 #   # Or using Clang:
-#   cmake -G Ninja -B build -C <path>/clang/cmake/caches/WindowsItanium-runtimes.cmake \
+#   cmake -G Ninja -B build -C <path>/clang/cmake/caches/NTPOSIX-runtimes.cmake \
 #         -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl \
 #         -DCMAKE_INSTALL_PREFIX=<install-path> <path>/llvm
 #
 #   ninja -C build stage2-distribution
 #   ninja -C build stage2-install-distribution
 #
-# The final native Windows Itanium toolchain will be in <install-path>.
+# The final native NTPOSIX toolchain will be in <install-path>.
 
 cmake_minimum_required(VERSION 3.20)
 
-set(PACKAGE_VENDOR "Windows-Itanium" CACHE STRING "")
+set(PACKAGE_VENDOR "NTPOSIX" CACHE STRING "")
 
 #===------------------------------------------------------------------------===#
 # Compiler Selection - Use clang-cl or MSVC (both produce MSVC ABI binaries)
@@ -56,7 +57,7 @@ endif()
 # Build Dependencies with MSVC ABI (for this phase's toolchain)
 #===------------------------------------------------------------------------===#
 # Build dependencies with MSVC ABI using the host compiler (clang-cl or cl.exe).
-# Stage 2 will build its own Windows Itanium ABI versions using the WI driver.
+# Stage 2 will build its own NTPOSIX ABI versions using the NTPOSIX driver.
 
 include(${CMAKE_CURRENT_LIST_DIR}/WindowsItanium-toolchain.cmake)
 
@@ -91,7 +92,7 @@ set(LIBXML2_INCLUDE_DIR "${LibXml2_ROOT}/include/libxml2" CACHE PATH "")
 set(LibXml2_DIR "${LibXml2_ROOT}/lib/cmake/libxml2-2.14.0" CACHE PATH "")
 
 #===------------------------------------------------------------------------===#
-# Stage 1: Clang + Runtimes (host-ABI compiler targeting WI)
+# Stage 1: Clang + Runtimes (host-ABI compiler targeting NTPOSIX)
 #===------------------------------------------------------------------------===#
 
 set(LLVM_TARGETS_TO_BUILD "X86" CACHE STRING "")
@@ -99,12 +100,12 @@ set(LLVM_TARGETS_TO_BUILD "X86" CACHE STRING "")
 # Note: LLVM_ENABLE_PROJECTS and LLVM_ENABLE_RUNTIMES are auto-passed to stage2
 # via _BOOTSTRAP_DEFAULT_PASSTHROUGH in clang/CMakeLists.txt.
 set(LLVM_ENABLE_PROJECTS "clang;clang-tools-extra;lld;lldb" CACHE STRING "")
-set(LLVM_ENABLE_RUNTIMES "libunwind;libcxxabi;libcxx" CACHE STRING "")
+set(LLVM_ENABLE_RUNTIMES "compiler-rt;libunwind;libcxxabi;libcxx;libc" CACHE STRING "")
 
-# Build runtimes for Windows Itanium target.
-set(LLVM_RUNTIME_TARGETS "x86_64-unknown-windows-itanium" CACHE STRING "")
+# Build runtimes for NTPOSIX target.
+set(LLVM_RUNTIME_TARGETS "x86_64-pc-windows-ntposix" CACHE STRING "")
 # Build target-specific builtins to get BUILTINS_<target>_ variable unpacking.
-set(LLVM_BUILTIN_TARGETS "x86_64-unknown-windows-itanium" CACHE STRING "")
+set(LLVM_BUILTIN_TARGETS "x86_64-pc-windows-ntposix" CACHE STRING "")
 
 set(CMAKE_BUILD_TYPE Release CACHE STRING "")
 set(LLVM_ENABLE_LLD ON CACHE BOOL "")
@@ -129,10 +130,20 @@ set(LLVM_ENABLE_ZSTD ON CACHE BOOL "")
 set(LLVM_INCLUDE_DOCS OFF CACHE BOOL "")
 set(LLVM_INCLUDE_EXAMPLES OFF CACHE BOOL "")
 
-# Runtime configuration is handled by HandleWindowsItaniumDefaults.cmake,
-# which is automatically included for the windows-itanium triple.
+# Runtime configuration for NTPOSIX target.
 # Use RelWithDebInfo for runtimes to enable debugging into libc++ if needed.
-set(RUNTIMES_x86_64-unknown-windows-itanium_CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "")
+set(RUNTIMES_x86_64-pc-windows-ntposix_CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "")
+
+# NTPOSIX: llvm-libc is the sole C runtime - enable full build.
+set(RUNTIMES_x86_64-pc-windows-ntposix_LLVM_LIBC_FULL_BUILD ON CACHE BOOL "")
+
+# NTPOSIX: Always use compiler-rt instead of libgcc.
+set(RUNTIMES_x86_64-pc-windows-ntposix_LIBUNWIND_USE_COMPILER_RT ON CACHE BOOL "")
+set(RUNTIMES_x86_64-pc-windows-ntposix_LIBCXXABI_USE_COMPILER_RT ON CACHE BOOL "")
+set(RUNTIMES_x86_64-pc-windows-ntposix_LIBCXX_USE_COMPILER_RT ON CACHE BOOL "")
+
+# NTPOSIX: Use llvm-libc for runtime builds.
+set(RUNTIMES_x86_64-pc-windows-ntposix_RUNTIMES_USE_LIBC ON CACHE BOOL "")
 
 #===------------------------------------------------------------------------===#
 # Variables to pass through to Stage 2 (native build)
@@ -157,14 +168,19 @@ set(CLANG_BOOTSTRAP_PASSTHROUGH
   LLDB_ENABLE_CURSES
   LLDB_ENABLE_LIBEDIT
   CMAKE_FIND_PACKAGE_PREFER_CONFIG
-  RUNTIMES_x86_64-unknown-windows-itanium_CMAKE_BUILD_TYPE
-  RUNTIMES_x86_64-unknown-windows-itanium_LIBUNWIND_USE_COMPILER_RT
+  RUNTIMES_USE_LIBC
+  RUNTIMES_x86_64-pc-windows-ntposix_CMAKE_BUILD_TYPE
+  RUNTIMES_x86_64-pc-windows-ntposix_RUNTIMES_USE_LIBC
+  RUNTIMES_x86_64-pc-windows-ntposix_LIBUNWIND_USE_COMPILER_RT
+  RUNTIMES_x86_64-pc-windows-ntposix_LIBCXXABI_USE_COMPILER_RT
+  RUNTIMES_x86_64-pc-windows-ntposix_LIBCXX_USE_COMPILER_RT
+  RUNTIMES_x86_64-pc-windows-ntposix_LLVM_LIBC_FULL_BUILD
   CACHE STRING "")
 
 #===------------------------------------------------------------------------===#
 # Stage 2-only settings (BOOTSTRAP_ prefix)
 #===------------------------------------------------------------------------===#
-# These settings apply only to the native Windows Itanium build.
+# These settings apply only to the native NTPOSIX build.
 
 # Build LLVM/Clang using libc++. The resulting binaries depend on c++.dll
 # and unwind.dll at runtime (distributed with the toolchain).
@@ -236,14 +252,14 @@ set(BOOTSTRAP_LLVM_DISTRIBUTION_COMPONENTS
 
 set(CLANG_ENABLE_BOOTSTRAP ON CACHE BOOL "")
 
-# Build bootstrap cmake args for stage 2 (native Windows Itanium build).
-# Stage 2 will build its own Windows Itanium ABI dependencies.
+# Build bootstrap cmake args for stage 2 (native NTPOSIX build).
+# Stage 2 will build its own NTPOSIX ABI dependencies.
 # Pass the stage 1 build directory so stage 2 can find runtimes and tools.
 # Note: -C cache files run BEFORE -D options, so we must pass this via -D.
 set(CLANG_BOOTSTRAP_CMAKE_ARGS
   -D_WI_PHASE1_BUILD_DIR=${CMAKE_BINARY_DIR}
   -DCMAKE_TOOLCHAIN_FILE=${_WI_TOOLCHAIN}
-  -C ${CMAKE_CURRENT_LIST_DIR}/WindowsItanium-native.cmake
+  -C ${CMAKE_CURRENT_LIST_DIR}/NTPOSIX-native.cmake
   CACHE STRING "")
 unset(_WI_TOOLCHAIN)
 
@@ -251,7 +267,7 @@ unset(_WI_TOOLCHAIN)
 # _BOOTSTRAP_DEFAULT_PASSTHROUGH, no need to set BOOTSTRAP_ versions.
 
 # Tell bootstrap to use GNU-style driver (clang/clang++) instead of clang-cl.
-set(BOOTSTRAP_LLVM_HOST_TRIPLE "x86_64-unknown-windows-itanium" CACHE STRING "")
+set(BOOTSTRAP_LLVM_HOST_TRIPLE "x86_64-pc-windows-ntposix" CACHE STRING "")
 
 # Targets to expose through the stage 1 build.
 set(CLANG_BOOTSTRAP_TARGETS

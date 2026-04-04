@@ -1848,6 +1848,21 @@ void ItaniumWindowsARM64TargetInfo::getTargetDefines(
   }
 }
 
+NTPOSIXWindowsARM64TargetInfo::NTPOSIXWindowsARM64TargetInfo(
+    const llvm::Triple &Triple, const TargetOptions &Opts)
+    : WindowsARM64TargetInfo(Triple, Opts) {
+  TheCXXABI.set(TargetCXXABI::GenericAArch64);
+  WCharType = TargetInfo::SignedInt;
+  WIntType = TargetInfo::SignedInt;
+}
+
+void NTPOSIXWindowsARM64TargetInfo::getTargetDefines(
+    const LangOptions &Opts, MacroBuilder &Builder) const {
+  WindowsARM64TargetInfo::getTargetDefines(Opts, Builder);
+  Builder.defineMacro("_ARM64_");
+  Builder.defineMacro("_M_ARM64", "1");
+}
+
 MinGWARM64TargetInfo::MinGWARM64TargetInfo(const llvm::Triple &Triple,
                                            const TargetOptions &Opts)
     : WindowsARM64TargetInfo(Triple, Opts) {

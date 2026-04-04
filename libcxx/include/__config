@@ -79,7 +79,7 @@
 // _LIBCPP_WIN32API: use Win32 system calls directly for filesystem, chrono,
 // I/O, etc.  Windows Itanium with llvm-libc provides a full POSIX surface —
 // libc++ uses the POSIX/Linux code paths instead of calling Win32 directly.
-#    if !defined(_WIN32_ITANIUM) || defined(__MSVCRT__)
+#    if (!defined(_WIN32_ITANIUM) && !defined(__NTPOSIX__)) || defined(__MSVCRT__)
 #      define _LIBCPP_WIN32API
 #    endif
 // __MSVCRT__ is defined by MinGW and the Windows Itanium driver when the

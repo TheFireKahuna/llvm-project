@@ -200,7 +200,7 @@ function(add_llvm_symbol_exports target_name export_file)
     if(MSVC)
       # cl.exe or clang-cl, i.e. MSVC style command line interface
       set(export_file_linker_flag "LINKER:/DEF:${export_file_linker_flag}")
-    elseif(CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC" OR WIN32_ITANIUM)
+    elseif(CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC" OR WIN32_ITANIUM OR WIN32_NTPOSIX)
       # clang in msvc mode or Windows Itanium, calling a lld-link style linker
       set(export_file_linker_flag "-Wl,/DEF:${export_file_linker_flag}")
     elseif(MINGW OR CYGWIN)

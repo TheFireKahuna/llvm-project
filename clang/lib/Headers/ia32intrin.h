@@ -812,7 +812,7 @@ __rorq(unsigned long long __X, int __C) {
 /// \returns The rotated value.
 /// \see __rord
 #define _rotr(a,b) __rord((a), (b))
-#endif // !_MSC_VER && !_WIN32_ITANIUM
+#endif // !defined(LLVM_CRT_UCRT)
 
 /* These are not builtins so need to be provided in all modes. */
 /// Rotates a 16-bit value to the left by the specified number of bits.

@@ -17,6 +17,8 @@
     (__has_feature(modules) && !__building_module(_Builtin_stddef))
 #define _WCHAR_T
 
+// NTPOSIX is excluded: it uses POSIX wchar_t (32-bit, UTF-32), not Windows
+// wchar_t (16-bit unsigned short). NTPOSIX wchar_t is set by TargetInfo.
 #if defined(_MSC_EXTENSIONS) || defined(_WIN32_ITANIUM)
 #define _WCHAR_T_DEFINED
 #endif

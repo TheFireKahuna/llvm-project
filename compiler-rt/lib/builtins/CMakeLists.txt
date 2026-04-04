@@ -762,7 +762,7 @@ if (APPLE)
 endif()
 
 # Windows Itanium has native TLS and W^X; these require a hosted C library.
-if(WIN32_ITANIUM)
+if(WIN32_ITANIUM OR WIN32_NTPOSIX)
   list(REMOVE_ITEM x86_64_SOURCES emutls.c enable_execute_stack.c eprintf.c)
 endif()
 
@@ -977,7 +977,7 @@ else ()
   endif()
 
   # Freestanding targets: no system C library headers available at build time.
-  if(WIN32_ITANIUM)
+  if(WIN32_ITANIUM OR WIN32_NTPOSIX)
     append_list_if(COMPILER_RT_HAS_FFREESTANDING_FLAG -ffreestanding BUILTIN_CFLAGS)
   endif()
 
@@ -1004,6 +1004,10 @@ else ()
     list(APPEND BUILTIN_DEFS _WIN32_ITANIUM)
   endif()
 
+  if(WIN32_NTPOSIX)
+    list(APPEND BUILTIN_DEFS __NTPOSIX__)
+  endif()
+
   if(COMPILER_RT_DISABLE_AARCH64_FMV)
     list(APPEND BUILTIN_DEFS DISABLE_AARCH64_FMV)
   elseif(COMPILER_RT_BAREMETAL_BUILD)
@@ -1018,7 +1022,7 @@ else ()
 
   # Windows Itanium CRT sources - included in builtins.lib.
   # Provides section sentinels, __dso_handle, and pseudo-reloc runtime.
-  if(WIN32_ITANIUM)
+  if(WIN32_ITANIUM OR WIN32_NTPOSIX)
     set(WINCRT_SOURCES
       ${CMAKE_CURRENT_SOURCE_DIR}/crt_begin_windows.c
       ${CMAKE_CURRENT_SOURCE_DIR}/crt_end_windows.c
@@ -1159,7 +1163,7 @@ cmake_dependent_option(COMPILER_RT_BUILD_CRT "Build crtbegin.o/crtend.o" ON "COM
 # Windows Itanium uses the COFF-specific CRT section sentinels from
 # crt_begin_windows.c / crt_end_windows.c instead of the generic ELF-style
 # crtbegin/crtend objects below.
-if (COMPILER_RT_BUILD_CRT AND NOT WIN32_ITANIUM)
+if (COMPILER_RT_BUILD_CRT AND NOT WIN32_ITANIUM AND NOT WIN32_NTPOSIX)
   add_compiler_rt_component(crt)
 
   option(COMPILER_RT_CRT_USE_EH_FRAME_REGISTRY "Use eh_frame in crtbegin.o/crtend.o" ON)

@@ -9,7 +9,7 @@ include(DetectMSVCLike)
 include(DetectWindowsItanium)
 
 # MSVC-like and MinGW are mutually exclusive configurations.
-if((CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC" OR WIN32_ITANIUM) AND MINGW)
+if((CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC" OR WIN32_ITANIUM OR WIN32_NTPOSIX) AND MINGW)
   message(WARNING
     "MSVC-like and MinGW configurations are mutually exclusive.")
 endif()

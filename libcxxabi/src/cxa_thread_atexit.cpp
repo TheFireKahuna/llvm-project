@@ -106,7 +106,7 @@ namespace {
 
 #endif // HAVE___CXA_THREAD_ATEXIT_IMPL
 
-#if defined(__linux__) || defined(__Fuchsia__) || defined(_WIN32_ITANIUM)
+#if defined(__linux__) || defined(__Fuchsia__) || defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
 extern "C" {
 
   _LIBCXXABI_FUNC_VIS int __cxa_thread_atexit(Dtor dtor, void* obj, void* dso_symbol) throw() {
@@ -142,5 +142,5 @@ extern "C" {
 #endif // HAVE___CXA_THREAD_ATEXIT_IMPL
   }
 } // extern "C"
-#endif // defined(__linux__) || defined(__Fuchsia__) || defined(_WIN32_ITANIUM)
+#endif // defined(__linux__) || defined(__Fuchsia__) || defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
 } // namespace __cxxabiv1

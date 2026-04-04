@@ -67,14 +67,17 @@
 #endif
 
 // POSIX types not provided by MSVC headers (MinGW/Cygwin provide their own).
-#if defined(_MSC_VER) || defined(_WIN32_ITANIUM)
+// NTPOSIX is excluded: it provides real POSIX types via llvm-libc headers.
+#if (defined(_MSC_VER) || defined(_WIN32_ITANIUM)) && !defined(__NTPOSIX__)
 typedef unsigned short mode_t;
 #ifndef NO_PID_T
 typedef uint32_t pid_t;
 #endif
 #endif
 
-#if defined(_MSC_VER) || defined(_WIN32_ITANIUM)
+// NTPOSIX is excluded: it has real POSIX I/O via llvm-libc (fd-based, not
+// Win32 HANDLE-based), with proper <unistd.h> providing FILENO defines.
+#if (defined(_MSC_VER) || defined(_WIN32_ITANIUM)) && !defined(__NTPOSIX__)
 
 // PRIxxx format macros for printf()
 #include <cinttypes>
@@ -86,7 +89,7 @@ typedef uint32_t pid_t;
 #define STDOUT_FILENO 1
 #define STDERR_FILENO 2
 
-#endif // _MSC_VER || _WIN32_ITANIUM
+#endif // (_MSC_VER || _WIN32_ITANIUM) && !__NTPOSIX__
 
 // empty functions
 inline int posix_openpt(int flag) { LLVM_BUILTIN_UNREACHABLE; }

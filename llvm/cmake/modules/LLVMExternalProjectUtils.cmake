@@ -42,9 +42,9 @@ function(is_msvc_triple out_var triple)
 endfunction()
 
 # is_itanium_triple(out_var triple)
-#   Checks whether the triple refers to a Windows Itanium environment
+#   Checks whether the triple refers to a Windows Itanium or NTPOSIX environment
 function(is_itanium_triple out_var triple)
-  if (triple MATCHES ".*-windows-itanium.*")
+  if (triple MATCHES ".*-windows-(itanium|ntposix).*")
     set(${out_var} TRUE PARENT_SCOPE)
   else()
     set(${out_var} FALSE PARENT_SCOPE)

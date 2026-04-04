@@ -330,6 +330,21 @@ if (NOT(CLANG_WIN32_ITANIUM_DEFAULT_RTLIB STREQUAL "" OR
     "Default runtime library for Win32 Itanium (\"msvcrt\" or \"compiler-rt\", empty for msvcrt)" FORCE)
 endif()
 
+set(CLANG_NTPOSIX_DEFAULT_RTLIB "compiler-rt" CACHE STRING
+  "Default runtime library for NTPOSIX (always compiler-rt)")
+
+set(CLANG_NTPOSIX_DEFAULT_LIBC "llvm-libc" CACHE STRING
+  "Default C library for NTPOSIX (always llvm-libc)")
+
+if(NOT CLANG_NTPOSIX_DEFAULT_RTLIB STREQUAL "compiler-rt")
+  message(WARNING "NTPOSIX requires compiler-rt. Resetting CLANG_NTPOSIX_DEFAULT_RTLIB.")
+  set(CLANG_NTPOSIX_DEFAULT_RTLIB "compiler-rt" CACHE STRING "" FORCE)
+endif()
+if(NOT CLANG_NTPOSIX_DEFAULT_LIBC STREQUAL "llvm-libc")
+  message(WARNING "NTPOSIX requires llvm-libc. Resetting CLANG_NTPOSIX_DEFAULT_LIBC.")
+  set(CLANG_NTPOSIX_DEFAULT_LIBC "llvm-libc" CACHE STRING "" FORCE)
+endif()
+
 set(CLANG_DEFAULT_OBJCOPY "objcopy" CACHE STRING
   "Default objcopy executable to use.")
 

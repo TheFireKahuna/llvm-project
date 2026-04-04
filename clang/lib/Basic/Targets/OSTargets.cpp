@@ -334,6 +334,40 @@ static void addVisualCDefines(const llvm::Triple &Triple,
     Builder.defineMacro("_MSVC_TRADITIONAL", "1");
 }
 
+static void addNTPOSIXDefines(const llvm::Triple &Triple,
+                              const LangOptions &Opts,
+                              MacroBuilder &Builder) {
+  // NT-POSIX: Windows NT kernel with a POSIX C runtime (llvm-libc).
+  // _WIN32/_WIN64 are already defined by addWindowsDefines — those signal
+  // PE/COFF ABI and Windows calling conventions, which are correct.
+  //
+  // We define kernel identity and version targeting macros — we ARE NT,
+  // and code needs to know which NT version to target.
+  //
+  // We do NOT define:
+  //   __unix__ / __unix       — this is NT, not a Unix kernel
+  //   WIN32                   — implies Win32 API surface
+  //   UNICODE / _UNICODE      — Win32 wide-char API convention
+  //   STRICT                  — Win32 type-safety macro
+  //   _MSC_VER et al.         — MSVC compiler identity
+  //   __MSVCRT__              — no MSVCRT/UCRT runtime
+  //   __MINGW32/64__          — not MinGW
+  //
+  // Code detects this environment via __NTPOSIX__.
+  Builder.defineMacro("__NTPOSIX__");
+
+  // Kernel identity and version targeting.
+  DefineStd(Builder, "WINNT", Opts);
+  Builder.defineMacro("WINVER", "0x0A00");
+  Builder.defineMacro("_WIN32_WINNT", "0x0A00");
+
+  if (Opts.POSIXThreads)
+    Builder.defineMacro("_REENTRANT");
+  // libc++ locale support requires _GNU_SOURCE in C++ mode.
+  if (Opts.CPlusPlus)
+    Builder.defineMacro("_GNU_SOURCE");
+}
+
 void addWindowsDefines(const llvm::Triple &Triple, const LangOptions &Opts,
                        MacroBuilder &Builder) {
   Builder.defineMacro("_WIN32");
@@ -341,7 +375,9 @@ void addWindowsDefines(const llvm::Triple &Triple, const LangOptions &Opts,
     Builder.defineMacro("_WIN64");
   if (Triple.isWindowsGNUEnvironment())
     addMinGWDefines(Triple, Opts, Builder);
-  else if (Triple.isWindowsItaniumEnvironment()) {
+  else if (Triple.isWindowsNTPOSIXEnvironment()) {
+    addNTPOSIXDefines(Triple, Opts, Builder);
+  } else if (Triple.isWindowsItaniumEnvironment()) {
     addWinItaniumDefines(Triple, Opts, Builder);
     addVisualCDefines(Triple, Opts, Builder);
   } else if (Triple.isKnownWindowsMSVCEnvironment()) {

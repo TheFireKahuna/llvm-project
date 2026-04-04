@@ -15,7 +15,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifdef _WIN32_ITANIUM
+#if defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
 
 #include <stddef.h>
 #include <stdint.h>
@@ -507,4 +507,4 @@ extern "C" __attribute__((section(".CRT$XIB"), used)) _PIFV
 
 extern "C" void _pei386_runtime_relocator(void) { runPseudoRelocator(); }
 
-#endif // _WIN32_ITANIUM
+#endif // _WIN32_ITANIUM || __NTPOSIX__

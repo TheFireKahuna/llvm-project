@@ -51,6 +51,7 @@
 #include "ToolChains/UEFI.h"
 #include "ToolChains/VEToolchain.h"
 #include "ToolChains/WebAssembly.h"
+#include "ToolChains/NTPOSIX.h"
 #include "ToolChains/WindowsItanium.h"
 #include "ToolChains/XCore.h"
 #include "ToolChains/ZOS.h"
@@ -7115,6 +7116,9 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
       case llvm::Triple::Itanium:
         TC = std::make_unique<toolchains::WindowsItaniumToolChain>(*this, Target,
                                                                    Args);
+        break;
+      case llvm::Triple::NTPOSIX:
+        TC = std::make_unique<toolchains::NTPOSIXToolChain>(*this, Target, Args);
         break;
       case llvm::Triple::MSVC:
       case llvm::Triple::UnknownEnvironment:

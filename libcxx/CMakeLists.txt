@@ -47,6 +47,8 @@ endif()
 
 if(WIN32_ITANIUM)
   message(STATUS "Configuring for Windows Itanium")
+elseif(WIN32_NTPOSIX)
+  message(STATUS "Configuring for NTPOSIX")
 elseif (MSVC)
   message(STATUS "Configuring for MSVC")
 endif()
@@ -160,6 +162,8 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 elseif(MINGW)
   set(LIBCXX_DEFAULT_TEST_CONFIG "llvm-libc++-mingw.cfg.in")
 elseif(WIN32_ITANIUM)
+  set(LIBCXX_DEFAULT_TEST_CONFIG "llvm-libc++-windows-itanium.cfg.in")
+elseif(WIN32_NTPOSIX)
   set(LIBCXX_DEFAULT_TEST_CONFIG "llvm-libc++-windows-itanium.cfg.in")
 elseif(WIN32) # clang-cl
   if (LIBCXX_ENABLE_SHARED)
@@ -778,7 +782,7 @@ function(cxx_add_windows_flags target)
                                  # msvcprt.
                                  _CRTBLD)
     # Windows Itanium driver provides these; avoid double definition.
-    if(NOT WIN32_ITANIUM)
+    if(NOT WIN32_ITANIUM AND NOT WIN32_NTPOSIX)
       target_compile_definitions(${target} PRIVATE
                                  # Don't warn on the use of "deprecated"
                                  # "insecure" functions which are standards

@@ -24,10 +24,10 @@ list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES
 # MSVC/clang-cl will use CMake's Clang-Windows.cmake platform file, exit here.
 # The remaining CMake configuration overrides CMake's default Windows-GNU.cmake
 # platform file, until an official Windows-Itanium.cmake alternative is upstreamed.
-if(NOT CMAKE_C_COMPILER_TARGET MATCHES "windows-itanium" AND
-   NOT CMAKE_CXX_COMPILER_TARGET MATCHES "windows-itanium" AND
-   NOT LLVM_RUNTIMES_TARGET MATCHES "windows-itanium" AND
-   NOT LLVM_HOST_TRIPLE MATCHES "windows-itanium")
+if(NOT CMAKE_C_COMPILER_TARGET MATCHES "windows-(itanium|ntposix)" AND
+   NOT CMAKE_CXX_COMPILER_TARGET MATCHES "windows-(itanium|ntposix)" AND
+   NOT LLVM_RUNTIMES_TARGET MATCHES "windows-(itanium|ntposix)" AND
+   NOT LLVM_HOST_TRIPLE MATCHES "windows-(itanium|ntposix)")
   return()
 endif()
 
@@ -41,7 +41,7 @@ foreach(_triple IN ITEMS
     "${CMAKE_C_COMPILER_TARGET}"
     "${CMAKE_CXX_COMPILER_TARGET}"
     "${LLVM_RUNTIMES_TARGET}")
-  if(_triple MATCHES "^([^-]+)-.*windows-itanium")
+  if(_triple MATCHES "^([^-]+)-.*windows-(itanium|ntposix)")
     set(_arch "${CMAKE_MATCH_1}")
     break()
   endif()

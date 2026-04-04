@@ -4,10 +4,10 @@
 # Sets CMAKE_USER_MAKE_RULES_OVERRIDE and CMAKE_RC_COMPILER_INIT to prevent
 # CMake from using MinGW-style platform rules and finding windres.
 
-if(CMAKE_C_COMPILER_TARGET MATCHES "windows-itanium" OR
-   CMAKE_CXX_COMPILER_TARGET MATCHES "windows-itanium" OR
-   LLVM_HOST_TRIPLE MATCHES "windows-itanium" OR
-   LLVM_RUNTIMES_TARGET MATCHES "windows-itanium")
+if(CMAKE_C_COMPILER_TARGET MATCHES "windows-(itanium|ntposix)" OR
+   CMAKE_CXX_COMPILER_TARGET MATCHES "windows-(itanium|ntposix)" OR
+   LLVM_HOST_TRIPLE MATCHES "windows-(itanium|ntposix)" OR
+   LLVM_RUNTIMES_TARGET MATCHES "windows-(itanium|ntposix)")
 
   # Override Windows-GNU.cmake rules with MSVC-style linking for lld-link.
   if(NOT CMAKE_USER_MAKE_RULES_OVERRIDE)
