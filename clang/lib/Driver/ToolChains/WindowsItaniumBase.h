@@ -88,6 +88,10 @@ public:
                           llvm::opt::ArgStringList &CC1Args) const override;
   void addOffloadRTLibs(unsigned ActiveKinds, const llvm::opt::ArgList &Args,
                         llvm::opt::ArgStringList &CmdArgs) const override;
+  void AddRuntimeLibSearchPaths(const llvm::opt::ArgList &Args,
+                                llvm::opt::ArgStringList &CmdArgs) const;
+  void NormalizeLLDLinkArgs(const llvm::opt::ArgList &Args,
+                            llvm::opt::ArgStringList &CmdArgs) const;
 
   void printVerboseInfo(raw_ostream &OS) const override;
 

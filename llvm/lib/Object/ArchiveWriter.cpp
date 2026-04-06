@@ -38,12 +38,6 @@
 #include <cerrno>
 #include <map>
 
-#if !defined(LLVM_CRT_UCRT)
-#include <unistd.h>
-#else
-#include <io.h>
-#endif
-
 using namespace llvm;
 using namespace llvm::object;
 

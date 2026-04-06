@@ -17,6 +17,25 @@ endif()
 
 message(STATUS "Applying NTPOSIX defaults (RUNTIMES_NTPOSIX_DEFAULTS=ON)")
 
+# Long-path-enabled Windows installations can handle object paths well beyond
+# CMake's conservative default. Raise the threshold to avoid premature hashing
+# and spurious warnings for the deeply nested NT POSIX runtime tree.
+set(CMAKE_OBJECT_PATH_MAX 32768 CACHE STRING "" FORCE)
+
+# Pre-seed compiler flag checks that would otherwise fail.
+# check_cxx_compiler_flag / llvm_check_compiler_linker_flag try to link an
+# executable, but NTPOSIX CRT startup objects (crt1.obj) aren't available
+# during configure — they're part of the runtimes being built.  Clang always
+# supports these flags; only the link step is missing.
+set(CXX_SUPPORTS_NOSTDLIBXX_FLAG ON CACHE INTERNAL
+  "Forced ON for NTPOSIX — link check cannot succeed during bootstrap")
+set(CXX_SUPPORTS_NOSTDINCXX_FLAG ON CACHE INTERNAL
+  "Forced ON for NTPOSIX — link check cannot succeed during bootstrap")
+set(CXX_SUPPORTS_NOSTDLIBINC_FLAG ON CACHE INTERNAL
+  "Forced ON for NTPOSIX — link check cannot succeed during bootstrap")
+set(CXX_SUPPORTS_UNWINDLIB_EQ_NONE_FLAG ON CACHE INTERNAL
+  "Forced ON for NTPOSIX — link check cannot succeed during bootstrap")
+
 # Set cache variable only if not already defined.
 function(set_ntposix_default var value type docstring)
   if(NOT DEFINED ${var})
@@ -32,6 +51,19 @@ endfunction()
 if(NOT DEFINED LLVM_ENABLE_LLD AND NOT DEFINED LLVM_USE_LINKER)
   set(LLVM_ENABLE_LLD ON CACHE BOOL "Use LLD linker")
 endif()
+
+#===------------------------------------------------------------------------===#
+# Bootstrap Link Flags
+#===------------------------------------------------------------------------===#
+
+# During the runtimes build the NTPOSIX toolchain driver injects c.lib
+# (llvm-libc) and NT kernel import libraries as default libraries, but c.lib
+# doesn't exist yet — it is part of what is being built.  Pass -nolibc so the
+# driver keeps compiler-rt builtins and the unwinder but skips c.lib and the
+# kernel import libraries.  Each shared runtime that needs NT kernel libraries
+# adds them explicitly.
+set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -nolibc"
+  CACHE STRING "" FORCE)
 
 #===------------------------------------------------------------------------===#
 # libunwind Configuration
@@ -94,10 +126,28 @@ set_ntposix_default(LIBCXX_INSTALL_MODULES ON BOOL
 # llvm-libc is the sole C runtime for NTPOSIX.
 set_ntposix_default(LLVM_LIBC_FULL_BUILD ON BOOL
   "Full llvm-libc build (not overlay mode)")
+
+# NTPOSIX uses #pragma section / __declspec(allocate) for CRT and fork-reinit
+# init sections. These are Microsoft extensions that Clang supports with
+# -fms-extensions.
+if(NOT CMAKE_C_FLAGS MATCHES "-fms-extensions")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fms-extensions" CACHE STRING "" FORCE)
+endif()
+if(NOT CMAKE_CXX_FLAGS MATCHES "-fms-extensions")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fms-extensions" CACHE STRING "" FORCE)
+endif()
 set_ntposix_default(LIBC_ENABLE_SHARED ON BOOL
   "Build LLVM libc as a shared library (c.dll)")
 set_ntposix_default(LIBC_ENABLE_STATIC OFF BOOL
   "Build LLVM libc as a static library")
+
+# Place c.lib (import library for c.dll) in the top-level build lib directory
+# and libc headers in the target-specific include directory so the just-built
+# clang can find them via its default search paths. Without this, libc outputs
+# end up in deep runtimes subdirectories and the stage-2 bootstrap cannot
+# locate them.
+set_ntposix_default(LIBC_ENABLE_USE_BY_CLANG ON BOOL
+  "Place libc output where the just-built clang can find it")
 
 #===------------------------------------------------------------------------===#
 # compiler-rt Configuration

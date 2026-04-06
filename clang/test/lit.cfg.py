@@ -151,6 +151,12 @@ if config.clang_examples:
 if config.llvm_examples:
     config.available_features.add("llvm-examples")
 
+win32_itanium_default_libc = config.clang_win32_itanium_default_libc
+if win32_itanium_default_libc == "" or win32_itanium_default_libc == "system":
+    config.available_features.add("win32-itanium-default-libc-system")
+elif win32_itanium_default_libc == "llvm-libc":
+    config.available_features.add("win32-itanium-default-libc-llvm-libc")
+
 win32_itanium_default_rtlib = config.clang_win32_itanium_default_rtlib
 if win32_itanium_default_rtlib == "":
     win32_itanium_default_rtlib = "msvcrt"

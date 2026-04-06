@@ -39,7 +39,7 @@ else()
   set(gtest_main_src UnitTestMain/TestMain.cpp)
 endif()
 
-if(WIN32)
+if(WIN32 AND NOT WIN32_NTPOSIX)
   add_definitions(-DGTEST_OS_WINDOWS=1)
 endif()
 

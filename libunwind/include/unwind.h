@@ -19,7 +19,7 @@
 #include <stddef.h>
 
 #if defined(__SEH__) && !defined(__USING_SJLJ_EXCEPTIONS__) && defined(_WIN32)
-#if defined(LLVM_RUNTIME_POSIX)
+#if defined(__NTPOSIX__)
 #include <sys/ntabi.h>
 #else
 #define WIN32_LEAN_AND_MEAN

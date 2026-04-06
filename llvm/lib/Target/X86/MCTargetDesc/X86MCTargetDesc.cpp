@@ -441,7 +441,7 @@ static MCAsmInfo *createX86MCAsmInfo(const MCRegisterInfo &MRI,
     else
       MAI = new X86MCAsmInfoMicrosoft(TheTriple);
   } else if (TheTriple.isOSCygMing() ||
-             TheTriple.isWindowsItaniumEnvironment()) {
+             TheTriple.isWindowsItaniumOrNTPOSIXEnvironment()) {
     MAI = new X86MCAsmInfoGNUCOFF(TheTriple);
   } else {
     // The default is ELF.

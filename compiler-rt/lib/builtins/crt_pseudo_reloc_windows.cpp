@@ -234,8 +234,12 @@ public:
     unsigned long oldProtect;
     void *base = reinterpret_cast<void *>(startPage);
     size_t regionSize = endPage - startPage;
+    // Use PAGE_EXECUTE_READWRITE for executable pages to avoid DEP violations
+    // if the pseudo-reloc code itself shares a page with the target.
+    unsigned long newProtect =
+        wasExecutable ? kPageExecuteReadwrite : kPageReadwrite;
     if (!ntSuccess(::NtProtectVirtualMemory(ntCurrentProcess(), &base,
-                                            &regionSize, kPageReadwrite,
+                                            &regionSize, newProtect,
                                             &oldProtect)))
       return false;
 

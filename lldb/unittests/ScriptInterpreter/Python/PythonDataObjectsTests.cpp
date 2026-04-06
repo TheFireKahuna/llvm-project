@@ -808,7 +808,7 @@ main = foo
                                 testing::ContainsRegex("line 7, in baz"),
                                 testing::ContainsRegex("ZeroDivisionError")))));
 
-#if !((defined(_WIN32) || defined(_WIN64)) &&                                  \
+#if !(defined(LLVM_RUNTIME_WIN32) &&                                           \
       (defined(__aarch64__) || defined(_M_ARM64)))
 
   static const char script2[] = R"(

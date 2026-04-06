@@ -1022,12 +1022,19 @@ else ()
 
   # Windows Itanium CRT sources - included in builtins.lib.
   # Provides section sentinels, __dso_handle, and pseudo-reloc runtime.
+  # NTPOSIX does not need the pseudo-reloc runtime: cross-DLL code refs
+  # use .refptr. stubs (zero overhead), and cross-DLL data refs in RTTI
+  # use dynamic initialization + SEC_NO_CHANGE sealing.
   if(WIN32_ITANIUM OR WIN32_NTPOSIX)
     set(WINCRT_SOURCES
       ${CMAKE_CURRENT_SOURCE_DIR}/crt_begin_windows.c
       ${CMAKE_CURRENT_SOURCE_DIR}/crt_end_windows.c
-      ${CMAKE_CURRENT_SOURCE_DIR}/crt_pseudo_reloc_windows.cpp
     )
+    if(WIN32_ITANIUM)
+      list(APPEND WINCRT_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/crt_pseudo_reloc_windows.cpp
+      )
+    endif()
     set_source_files_properties(${WINCRT_SOURCES}
       PROPERTIES COMPILE_FLAGS "-ffreestanding -fno-builtin -fno-exceptions -fno-rtti"
     )

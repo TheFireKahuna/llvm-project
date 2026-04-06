@@ -758,7 +758,7 @@ std::string ToolChain::buildCompilerRTBasename(const llvm::opt::ArgList &Args,
                                                bool IsFortran) const {
   const llvm::Triple &TT = getTriple();
   bool IsITANMSVCWindows =
-      TT.isWindowsMSVCEnvironment() || TT.isWindowsItaniumEnvironment();
+      TT.isWindowsMSVCEnvironment() || TT.isWindowsItaniumOrNTPOSIXEnvironment();
 
   const char *Prefix =
       IsITANMSVCWindows || Type == ToolChain::FT_Object ? "" : "lib";
@@ -1367,14 +1367,15 @@ ToolChain::UnwindLibType ToolChain::GetUnwindLibType(
   else if (LibName == "platform" || LibName == "") {
     ToolChain::RuntimeLibType RtLibType = GetRuntimeLibType(Args);
     if (RtLibType == ToolChain::RLT_CompilerRT) {
-      if (getTriple().isAndroid() || getTriple().isOSAIX() || getTriple().isWindowsItaniumEnvironment())
+      if (getTriple().isAndroid() || getTriple().isOSAIX() ||
+          getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
         unwindLibType = ToolChain::UNW_CompilerRT;
       else
         unwindLibType = ToolChain::UNW_None;
     } else if (RtLibType == ToolChain::RLT_Libgcc)
       unwindLibType = ToolChain::UNW_Libgcc;
     else if (RtLibType == ToolChain::RLT_Msvcrt)
-      if (getTriple().isWindowsItaniumEnvironment())
+      if (getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
         unwindLibType = ToolChain::UNW_CompilerRT;
       else
         unwindLibType = ToolChain::UNW_None;

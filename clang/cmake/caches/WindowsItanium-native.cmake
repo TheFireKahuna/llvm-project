@@ -39,13 +39,29 @@ cmake_minimum_required(VERSION 3.20)
 # Windows Itanium uses GNU-style driver (clang/clang++), not clang-cl.
 # The WindowsItaniumToolChain expects GNU-style flags.
 
+if(DEFINED _WI_PHASE1_BUILD_DIR)
+  set(_WI_BOOTSTRAP_COMPILER_DIR "${_WI_PHASE1_BUILD_DIR}/bin")
+endif()
+
 if(NOT DEFINED CMAKE_C_COMPILER)
-  find_program(_WI_CLANG NAMES clang REQUIRED)
+  if(DEFINED _WI_BOOTSTRAP_COMPILER_DIR)
+    find_program(_WI_CLANG NAMES clang clang.exe
+      HINTS "${_WI_BOOTSTRAP_COMPILER_DIR}" NO_DEFAULT_PATH)
+  endif()
+  if(NOT _WI_CLANG)
+    find_program(_WI_CLANG NAMES clang clang.exe REQUIRED)
+  endif()
   set(CMAKE_C_COMPILER "${_WI_CLANG}" CACHE FILEPATH "")
 endif()
 
 if(NOT DEFINED CMAKE_CXX_COMPILER)
-  find_program(_WI_CLANGXX NAMES clang++ REQUIRED)
+  if(DEFINED _WI_BOOTSTRAP_COMPILER_DIR)
+    find_program(_WI_CLANGXX NAMES clang++ clang++.exe
+      HINTS "${_WI_BOOTSTRAP_COMPILER_DIR}" NO_DEFAULT_PATH)
+  endif()
+  if(NOT _WI_CLANGXX)
+    find_program(_WI_CLANGXX NAMES clang++ clang++.exe REQUIRED)
+  endif()
   set(CMAKE_CXX_COMPILER "${_WI_CLANGXX}" CACHE FILEPATH "")
 endif()
 
@@ -135,6 +151,7 @@ set(LLVM_HOST_TRIPLE "x86_64-unknown-windows-itanium" CACHE STRING "")
 # Tell CMake to compile for Windows Itanium target.
 set(CMAKE_C_COMPILER_TARGET "x86_64-unknown-windows-itanium" CACHE STRING "")
 set(CMAKE_CXX_COMPILER_TARGET "x86_64-unknown-windows-itanium" CACHE STRING "")
+set(CMAKE_ASM_COMPILER_TARGET "x86_64-unknown-windows-itanium" CACHE STRING "")
 
 #===------------------------------------------------------------------------===#
 # Compiler Flags
@@ -247,6 +264,7 @@ if(NOT DEFINED LLVM_DISTRIBUTION_COMPONENTS)
     clang
     clang-format
     clang-resource-headers
+    builtins
     clang-tidy
     clangd
     lld

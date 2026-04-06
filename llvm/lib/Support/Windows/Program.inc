@@ -45,7 +45,7 @@ static bool MakeErrMsg(std::string *ErrMsg, const std::string &prefix,
 }
 
 ProcessInfo::ProcessInfo()
-    : Pid(0), Process(nullptr), ReturnCode(0) {}
+    : Pid(0), Process(0), ReturnCode(0) {}
 
 ErrorOr<std::string> sys::findProgramByName(StringRef Name,
                                             ArrayRef<StringRef> Paths) {
@@ -198,7 +198,7 @@ static bool Execute(ProcessInfo &PI, StringRef Program,
     return !MakeErrMsg(ErrMsg, "posix_spawn failed", Err);
 
   PI.Pid = PID;
-  PI.Process = reinterpret_cast<void *>(static_cast<intptr_t>(PID));
+  PI.Process = PID;
 
   return true;
 }
@@ -239,6 +239,7 @@ static std::string quoteSingleArg(StringRef Arg) {
 
 namespace llvm {
 
+#if defined(LLVM_RUNTIME_WIN32)
 ErrorOr<std::wstring> sys::flattenWindowsCommandLine(ArrayRef<StringRef> Args) {
   std::string Command;
   for (StringRef Arg : Args) {
@@ -257,6 +258,7 @@ ErrorOr<std::wstring> sys::flattenWindowsCommandLine(ArrayRef<StringRef> Args) {
     Result.push_back(static_cast<wchar_t>(static_cast<unsigned char>(C)));
   return Result;
 }
+#endif
 
 ProcessInfo sys::Wait(const ProcessInfo &PI,
                       std::optional<unsigned> SecondsToWait,

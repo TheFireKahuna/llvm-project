@@ -1418,9 +1418,9 @@ endif()
 # the runtimes build needs to add a KillTheDoctor dep for compiler-rt on
 # Windows.
 if (LLVM_INCLUDE_TESTS)
-  if (WIN32)
+  if (WIN32 AND NOT WIN32_NTPOSIX)
     # This utility is used to prevent crashing tests from calling Dr. Watson on
-    # Windows.
+    # Windows. NTPOSIX does not have Win32 headers.
     add_subdirectory(utils/KillTheDoctor)
   endif()
 endif()

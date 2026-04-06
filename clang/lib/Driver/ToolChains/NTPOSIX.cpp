@@ -153,6 +153,7 @@ void ntposix::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   const bool LinkStartFiles = !NoStdLib && !NoStartFiles;
   const bool LinkDefaultLibs = !NoStdLib && !NoDefaultLibs;
   const bool LinkLibC = LinkDefaultLibs && !NoLibC;
+  bool HasExplicitLibC = false;
 
   auto AddRequiredFile = [&](const char *Name) -> bool {
     std::string Path = TC.GetFilePath(Name);
@@ -169,6 +170,27 @@ void ntposix::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   Args.ClaimAllArgs(options::OPT_emit_llvm);
   Args.ClaimAllArgs(options::OPT_w);
   Args.ClaimAllArgs(options::OPT_stdlib_EQ);
+
+  for (const auto &Input : Inputs) {
+    if (Input.isFilename()) {
+      if (llvm::sys::path::filename(Input.getFilename()).equals_insensitive(
+              "c.lib")) {
+        HasExplicitLibC = true;
+        break;
+      }
+      continue;
+    }
+
+    const Arg &A = Input.getInputArg();
+    if (!A.getOption().matches(options::OPT_l))
+      continue;
+
+    StringRef Lib = A.getValue();
+    if (Lib.equals_insensitive("c") || Lib.equals_insensitive("c.lib")) {
+      HasExplicitLibC = true;
+      break;
+    }
+  }
 
   // Enforce lld-link.
   StringRef Req = Args.getLastArgValue(options::OPT_fuse_ld_EQ);
@@ -240,14 +262,8 @@ void ntposix::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     for (const auto &LibPath : Args.getAllArgValues(options::OPT_L))
       CmdArgs.push_back(Args.MakeArgString(Twine("-libpath:") + LibPath));
 
-  // LLVM runtime lib paths.
-  for (const auto &LibPath : TC.getLibraryPaths()) {
-    if (TC.getVFS().exists(LibPath))
-      CmdArgs.push_back(Args.MakeArgString(Twine("-libpath:") + LibPath));
-  }
-  auto CRTPath = TC.getCompilerRTPath();
-  if (TC.getVFS().exists(CRTPath))
-    CmdArgs.push_back(Args.MakeArgString(Twine("-libpath:") + CRTPath));
+  // Driver-owned runtime libraries live under the toolchain install root.
+  TC.AddRuntimeLibSearchPaths(Args, CmdArgs);
 
   CmdArgs.push_back("-nologo");
 
@@ -277,19 +293,16 @@ void ntposix::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
     // llvm-libc and NT kernel libraries.
     if (LinkLibC) {
-      if (!AddRequiredFile("c.lib") ||
-          !AddRequiredFile("ntdll.lib") ||
-          !AddRequiredFile("kernelbase.lib") ||
-          !AddRequiredFile("bcryptprimitives.lib"))
+      if (!AddRequiredFile("c.lib"))
         return;
-
-      CmdArgs.push_back("kernel32.lib");
     }
   }
 
-  // TODO: Remove once NTPOSIX no longer needs MinGW-style pseudo-relocations.
+  // Auto-import enables .refptr. stub collapsing in lld for cross-DLL
+  // variable references. No runtime pseudo-reloc table is needed —
+  // RTTI data refs use dynamic init + SEC_NO_CHANGE sealing instead.
   CmdArgs.push_back("-auto-import");
-  CmdArgs.push_back("-runtime-pseudo-reloc");
+  CmdArgs.push_back("-llditanium");
 
   // Block all MSVC CRT libraries — NT-POSIX never uses them.
   if (!NoDefaultLibs) {
@@ -385,9 +398,20 @@ void ntposix::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     A.renderAsInput(Args, CmdArgs);
   }
 
+  // llvm-libc is layered directly on NT imports. Keep those base platform
+  // dependencies after libc in the final link line so explicit "-lc" probes
+  // under -nodefaultlibs behave like ordinary library checks.
+  if (LinkLibC || HasExplicitLibC) {
+    if (!AddRequiredFile("ntdll.lib") ||
+        !AddRequiredFile("sspicli.lib") ||
+        !AddRequiredFile("bcryptprimitives.lib"))
+      return;
+  }
+
   // Offload/profile.
   TC.addOffloadRTLibs(C.getActiveOffloadKinds(), Args, CmdArgs);
   TC.addProfileRTLibs(Args, CmdArgs);
+  TC.NormalizeLLDLinkArgs(Args, CmdArgs);
 
   // Linker path.
   const char *LinkerExe = Args.MakeArgString(TC.GetProgramPath("lld-link"));

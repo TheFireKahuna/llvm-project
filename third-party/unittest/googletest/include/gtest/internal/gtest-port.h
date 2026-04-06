@@ -419,7 +419,7 @@ typedef struct _RTL_CRITICAL_SECTION GTEST_CRITICAL_SECTION;
 #define GTEST_HAS_POSIX_RE (__ANDROID_API__ >= 9)
 #else
 #if !(defined(GTEST_OS_WINDOWS) || defined(GTEST_OS_XTENSA) || \
-      defined(GTEST_OS_QURT))
+      defined(GTEST_OS_QURT) || defined(__NTPOSIX__))
 #define GTEST_HAS_POSIX_RE 1
 #else
 #define GTEST_HAS_POSIX_RE 0

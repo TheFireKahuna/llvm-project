@@ -330,6 +330,7 @@ struct Configuration {
   bool highEntropyVA = false;
   bool appContainer = false;
   bool mergeDebugDirectory = true;
+  bool itanium = false;
   bool mingw = false;
   bool warnMissingOrderSymbol = true;
   bool warnLocallyDefinedImported = true;

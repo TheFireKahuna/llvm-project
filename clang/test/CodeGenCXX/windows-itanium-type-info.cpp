@@ -1,5 +1,6 @@
 // RUN: %clang_cc1 -triple i686-windows-itanium -fdeclspec -fcxx-exceptions -emit-llvm %s -o - | FileCheck %s
 // RUN: %clang_cc1 -triple i686-windows-itanium -fdeclspec -fcxx-exceptions -fno-rtti -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-EH-IMPORT
+// RUN: %clang_cc1 -triple x86_64-pc-windows-ntposix -fdeclspec -fcxx-exceptions -emit-llvm %s -o - | FileCheck %s
 
 namespace __cxxabiv1 {
 class __declspec(dllexport) __fundamental_type_info {

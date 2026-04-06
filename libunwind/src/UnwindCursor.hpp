@@ -17,9 +17,9 @@
 #include <stdlib.h>
 #include <unwind.h>
 
-#if defined(_WIN32) && defined(LLVM_RUNTIME_POSIX)
+#if defined(_WIN32) && defined(__NTPOSIX__)
   #include <sys/ntabi.h>
-#elif defined(LLVM_RUNTIME_WIN32)
+#elif defined(_WIN32)
   #include <windows.h>
   #include <ntverp.h>
 #endif
@@ -65,7 +65,7 @@
 // Provide a definition for the DISPATCHER_CONTEXT struct for old (Win7 and
 // earlier) SDKs.
 // MinGW-w64 has always provided this struct.
-  #if defined(LLVM_RUNTIME_WIN32) && defined(_LIBUNWIND_TARGET_X86_64) && \
+  #if defined(_WIN32) && !defined(__NTPOSIX__) && defined(_LIBUNWIND_TARGET_X86_64) && \
       !defined(__MINGW32__) && \
       VER_PRODUCTBUILD < 8000
 struct _DISPATCHER_CONTEXT {

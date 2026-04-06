@@ -256,7 +256,7 @@ namespace __cxxabiv1 {
 struct __attribute__((aligned)) __aligned_type {};
 
 void* __aligned_malloc_with_fallback(size_t size) {
-#if defined(LLVM_RUNTIME_WIN32)
+#if defined(_WIN32) && !defined(__NTPOSIX__)
   if (void* dest = std::__libcpp_aligned_alloc(alignof(__aligned_type), size))
     return dest;
 #elif !_LIBCPP_HAS_LIBRARY_ALIGNED_ALLOCATION

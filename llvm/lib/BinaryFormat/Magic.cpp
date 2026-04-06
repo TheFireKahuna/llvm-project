@@ -14,12 +14,6 @@
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/MemoryBuffer.h"
 
-#if !defined(LLVM_CRT_UCRT)
-#include <unistd.h>
-#else
-#include <io.h>
-#endif
-
 using namespace llvm;
 using namespace llvm::support::endian;
 using namespace llvm::sys::fs;

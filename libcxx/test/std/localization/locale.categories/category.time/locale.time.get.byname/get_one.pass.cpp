@@ -73,7 +73,7 @@ int main(int, char**)
         assert(t.tm_mday == 31);
         assert(t.tm_mon == 11);
         assert(t.tm_year == 161);
-#if !defined(LLVM_RUNTIME_WIN32) && !defined(_AIX)
+#if !defined(_LIBCPP_WIN32API) && !defined(_AIX)
         assert(t.tm_wday == 6);
 #endif
         assert(err == std::ios_base::eofbit);
@@ -115,7 +115,7 @@ int main(int, char**)
         assert(t.tm_mday == 31);
         assert(t.tm_mon == 11);
         assert(t.tm_year == 161);
-#if !defined(LLVM_RUNTIME_WIN32) && !defined(_AIX)
+#if !defined(_LIBCPP_WIN32API) && !defined(_AIX)
         assert(t.tm_wday == 6);
 #endif
         assert(err == std::ios_base::eofbit);
@@ -160,7 +160,7 @@ int main(int, char**)
         assert(t.tm_mday == 31);
         assert(t.tm_mon == 11);
         assert(t.tm_year == 161);
-#if !defined(LLVM_RUNTIME_WIN32) && !defined(_AIX)
+#if !defined(_LIBCPP_WIN32API) && !defined(_AIX)
         assert(t.tm_wday == 6);
 #endif
         assert(err == std::ios_base::eofbit);
@@ -210,7 +210,7 @@ int main(int, char**)
         assert(t.tm_mday == 31);
         assert(t.tm_mon == 11);
         assert(t.tm_year == 161);
-#if !defined(LLVM_RUNTIME_WIN32) && !defined(_AIX)
+#if !defined(_LIBCPP_WIN32API) && !defined(_AIX)
         assert(t.tm_wday == 6);
 #endif
 #if !defined(_AIX)

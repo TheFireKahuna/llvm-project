@@ -37,7 +37,7 @@
 #include "lldb/Host/StreamFile.h"
 #include "lldb/lldb-private.h"
 
-#if !defined(_WIN32) && !defined(__ANDROID__)
+#if !defined(LLVM_RUNTIME_WIN32) && !defined(__ANDROID__)
 #include <histedit.h>
 #endif
 

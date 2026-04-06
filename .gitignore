@@ -90,3 +90,10 @@ pythonenv*
 *.exe
 *.bin
 *.obj
+utils/parallels/prlctl-windows-vm.sh
+/scratch
+/smoke-tests
+*.tmp
+/dual-bench
+*.log
+*.diag

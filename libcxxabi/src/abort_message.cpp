@@ -22,7 +22,7 @@ extern "C" void android_set_abort_message(const char* msg);
 #endif
 
 #if defined(_WIN32)
-#  if defined(LLVM_RUNTIME_POSIX)
+#  if defined(__NTPOSIX__)
 #    include <sys/ntabi.h>
 #  else
 #    define WIN32_LEAN_AND_MEAN
@@ -89,7 +89,7 @@ void __abort_message(const char* format, ...)
         len = sizeof(buffer) - 1;
     buffer[len] = '\0';
 
-#if defined(LLVM_RUNTIME_POSIX)
+#if defined(__NTPOSIX__)
     // Raise DBG_PRINTEXCEPTION_C directly via ntdll — same thing
     // OutputDebugStringA does internally, without the kernel32 wrapper.
     EXCEPTION_RECORD rec = {};

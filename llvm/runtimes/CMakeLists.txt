@@ -537,7 +537,7 @@ if(build_runtimes)
         list(APPEND extra_deps ${dep})
       endif()
     endforeach()
-    if(WIN32)
+    if(WIN32 AND TARGET KillTheDoctor)
       list(APPEND extra_deps KillTheDoctor)
     endif()
   endif()
@@ -545,11 +545,13 @@ if(build_runtimes)
   # Forward user-provived system configuration to runtimes for requirement introspection.
   # CMAKE_PREFIX_PATH is the search path for CMake packages.
   if(CMAKE_PREFIX_PATH)
-    list(APPEND extra_cmake_args "-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}")
+    string(REPLACE ";" "|" runtime_cmake_prefix_path "${CMAKE_PREFIX_PATH}")
+    list(APPEND extra_cmake_args "-DCMAKE_PREFIX_PATH=${runtime_cmake_prefix_path}")
   endif()
   # CMAKE_PROGRAM_PATH is the search path for executables such as python.
   if(CMAKE_PROGRAM_PATH)
-    list(APPEND extra_cmake_args "-DCMAKE_PROGRAM_PATH=${CMAKE_PROGRAM_PATH}")
+    string(REPLACE ";" "|" runtime_cmake_program_path "${CMAKE_PROGRAM_PATH}")
+    list(APPEND extra_cmake_args "-DCMAKE_PROGRAM_PATH=${runtime_cmake_program_path}")
   endif()
 
   # TODO: We need to consider passing it as '-DRUNTIMES_x86_64_LLVM_ENABLE_RUNTIMES'.

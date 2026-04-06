@@ -1647,8 +1647,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     return;
   }
 
-  // Handle /lldmingw early, since it can potentially affect how other
-  // options are handled.
+  // Handle /lldmingw and /llditanium early, since they can potentially
+  // affect how other options are handled.
+  config->itanium = args.hasArg(OPT_llditanium);
   config->mingw = args.hasArg(OPT_lldmingw);
   if (config->mingw)
     ctx.e.errorLimitExceededMsg = "too many errors emitted, stopping now"
@@ -2760,9 +2761,11 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   ctx.forEachSymtab([](SymbolTable &symtab) {
     symtab.hadExplicitExports = !symtab.exports.empty();
   });
-  if (config->mingw) {
+  if (config->mingw ||
+      (config->itanium && args.hasArg(OPT_export_all_symbols))) {
     // In MinGW, all symbols are automatically exported if no symbols
-    // are chosen to be exported.
+    // are chosen to be exported. Itanium ABI targets (Windows Itanium,
+    // NTPOSIX) also honor -export-all-symbols when explicitly requested.
     maybeExportMinGWSymbols(args);
   }
 

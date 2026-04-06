@@ -51,6 +51,16 @@ function(is_itanium_triple out_var triple)
   endif()
 endfunction()
 
+# is_ntposix_triple(out_var triple)
+#   Checks whether the triple refers to the NT POSIX runtime environment
+function(is_ntposix_triple out_var triple)
+  if (triple MATCHES ".*-windows-ntposix.*")
+    set(${out_var} TRUE PARENT_SCOPE)
+  else()
+    set(${out_var} FALSE PARENT_SCOPE)
+  endif()
+endfunction()
+
 # llvm_ExternalProject_Add(name source_dir ...
 #   ENABLE_FORTRAN
 #     External project requires the Flang compiler
@@ -78,6 +88,10 @@ endfunction()
 #     Optional target triple to pass to the compiler
 #   FOLDER
 #     For IDEs, the Folder to put the targets into.
+#   LLVM_EXTERNAL_PROJECT_USE_PARENT_ARCHIVE_TOOLS
+#     Cache variable. When enabled, preserve the parent build's CMAKE_AR and
+#     CMAKE_RANLIB for nested external projects instead of switching to the
+#     just-built toolchain archiver tools.
 #   )
 function(llvm_ExternalProject_Add name source_dir)
   cmake_parse_arguments(ARG
@@ -107,6 +121,7 @@ function(llvm_ExternalProject_Add name source_dir)
 
   is_msvc_triple(is_msvc_target "${target_triple}")
   is_itanium_triple(is_itanium_target "${target_triple}")
+  is_ntposix_triple(is_ntposix_target "${target_triple}")
 
   if(NOT ARG_TOOLCHAIN_TOOLS)
     set(ARG_TOOLCHAIN_TOOLS clang)
@@ -118,7 +133,7 @@ function(llvm_ExternalProject_Add name source_dir)
       list(APPEND ARG_TOOLCHAIN_TOOLS lld llvm-ar llvm-ranlib llvm-nm llvm-objdump)
       if(_cmake_system_name STREQUAL Darwin)
         list(APPEND ARG_TOOLCHAIN_TOOLS llvm-libtool-darwin llvm-lipo)
-      elseif(is_msvc_target)
+      elseif(is_msvc_target OR is_itanium_target)
         list(APPEND ARG_TOOLCHAIN_TOOLS llvm-lib llvm-rc)
         if (LLVM_ENABLE_LIBXML2)
           list(APPEND ARG_TOOLCHAIN_TOOLS llvm-mt)
@@ -267,7 +282,9 @@ function(llvm_ExternalProject_Add name source_dir)
       endif()
     endif()
     if(llvm-ar IN_LIST TOOLCHAIN_TOOLS)
-      if(is_msvc_target)
+      if(LLVM_EXTERNAL_PROJECT_USE_PARENT_ARCHIVE_TOOLS)
+        list(APPEND compiler_args -DCMAKE_AR=${CMAKE_AR})
+      elseif(is_msvc_target)
         list(APPEND compiler_args -DCMAKE_AR=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-lib${CMAKE_EXECUTABLE_SUFFIX})
       else()
         list(APPEND compiler_args -DCMAKE_AR=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-ar${CMAKE_EXECUTABLE_SUFFIX})
@@ -280,7 +297,11 @@ function(llvm_ExternalProject_Add name source_dir)
       list(APPEND compiler_args -DCMAKE_LIPO=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-lipo${CMAKE_EXECUTABLE_SUFFIX})
     endif()
     if(llvm-ranlib IN_LIST TOOLCHAIN_TOOLS)
-      list(APPEND compiler_args -DCMAKE_RANLIB=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-ranlib${CMAKE_EXECUTABLE_SUFFIX})
+      if(LLVM_EXTERNAL_PROJECT_USE_PARENT_ARCHIVE_TOOLS)
+        list(APPEND compiler_args -DCMAKE_RANLIB=${CMAKE_RANLIB})
+      else()
+        list(APPEND compiler_args -DCMAKE_RANLIB=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-ranlib${CMAKE_EXECUTABLE_SUFFIX})
+      endif()
     endif()
     if(llvm-nm IN_LIST TOOLCHAIN_TOOLS)
       list(APPEND compiler_args -DCMAKE_NM=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-nm${CMAKE_EXECUTABLE_SUFFIX})
@@ -446,6 +467,15 @@ function(llvm_ExternalProject_Add name source_dir)
     USES_TERMINAL_BUILD 1
     USES_TERMINAL_INSTALL 1
     LIST_SEPARATOR |
+    )
+  ExternalProject_Add_Step(${name} reset-configure-state
+    COMMAND ${CMAKE_COMMAND} -E rm -f ${BINARY_DIR}/CMakeCache.txt
+    COMMAND ${CMAKE_COMMAND} -E remove_directory ${BINARY_DIR}/CMakeFiles
+    COMMENT "Resetting ${name} CMake configure state"
+    DEPENDEES patch
+    DEPENDERS configure
+    ALWAYS 1
+    USES_TERMINAL 1
     )
   if (ARG_FOLDER)
     set_target_properties(

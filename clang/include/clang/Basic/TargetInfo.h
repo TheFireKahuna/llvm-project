@@ -1360,7 +1360,8 @@ public:
   /// Microsoft C++ code using dllimport/export attributes?
   virtual bool shouldDLLImportComdatSymbols() const {
     return getTriple().isWindowsMSVCEnvironment() ||
-           getTriple().isWindowsItaniumEnvironment() || getTriple().isPS();
+           getTriple().isWindowsItaniumEnvironment() ||
+           getTriple().isWindowsNTPOSIXEnvironment() || getTriple().isPS();
   }
 
   // Does this target have PS4 specific dllimport/export handling?

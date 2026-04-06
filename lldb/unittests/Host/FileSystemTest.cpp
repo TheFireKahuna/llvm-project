@@ -171,7 +171,7 @@ TEST(FileSystemTest, FileAndDirectoryComponents) {
   using namespace std::chrono;
   FileSystem fs;
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   FileSpec fs1("C:\\FILE\\THAT\\DOES\\NOT\\EXIST.TXT");
 #else
   FileSpec fs1("/file/that/does/not/exist.txt");
@@ -303,7 +303,7 @@ TEST(FileSystemTest, EnumerateDirectory) {
 }
 
 TEST(FileSystemTest, OpenErrno) {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   FileSpec spec("C:\\FILE\\THAT\\DOES\\NOT\\EXIST.TXT");
 #else
   FileSpec spec("/file/that/does/not/exist.txt");

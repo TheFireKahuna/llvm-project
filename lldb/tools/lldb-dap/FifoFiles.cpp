@@ -29,7 +29,7 @@ using namespace llvm;
 namespace lldb_dap {
 
 FifoFile::FifoFile(StringRef path, lldb::pipe_t pipe) : m_path(path) {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   if (pipe == INVALID_HANDLE_VALUE) {
     assert(path.starts_with("\\\\.\\pipe\\") &&
            "FifoFile path should start with '\\\\.\\pipe\\'");
@@ -54,7 +54,7 @@ FifoFile::~FifoFile() {
 }
 
 void FifoFile::WriteLine(llvm::StringRef line) {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   DWORD written;
   std::string str = line.str() + "\n";
   WriteFile(m_pipe, str.data(), static_cast<DWORD>(str.size()), &written, NULL);
@@ -66,13 +66,13 @@ void FifoFile::WriteLine(llvm::StringRef line) {
 }
 
 void FifoFile::Connect() {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   ConnectNamedPipe(m_pipe, NULL);
 #endif
 }
 
 std::string FifoFile::ReadLine() {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   std::string buffer;
   char read_buffer[4096];
   DWORD bytes_read;

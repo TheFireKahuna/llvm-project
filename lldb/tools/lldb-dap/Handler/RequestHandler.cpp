@@ -224,7 +224,7 @@ llvm::Error BaseRequestHandler::LaunchProcess(
       SetLaunchFlag(flags, arguments.disableASLR, lldb::eLaunchFlagDisableASLR);
   flags = SetLaunchFlag(flags, arguments.disableSTDIO,
                         lldb::eLaunchFlagDisableSTDIO);
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   flags = SetLaunchFlag(flags, arguments.console == protocol::eConsoleInternal,
                         lldb::eLaunchFlagUsePipes);
 #endif

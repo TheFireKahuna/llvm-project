@@ -36,6 +36,7 @@
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -51,9 +52,10 @@ using namespace llvm::sys;
 using namespace llvm::sys::fs;
 
 // --- file_t encoding ---
-// file_t is void* on LLVM_RUNTIME_WIN32. Under LLVM_RUNTIME_POSIX we encode POSIX fds
-// in the pointer value. (void*)-1 naturally maps to invalid fd (-1).
+// file_t is void* on LLVM_RUNTIME_WIN32. Under LLVM_RUNTIME_POSIX file_t is
+// int, so these helpers are identity functions.
 
+#if defined(LLVM_RUNTIME_WIN32)
 static sys::fs::file_t fdToFileT(int FD) {
   return reinterpret_cast<sys::fs::file_t>(static_cast<intptr_t>(FD));
 }
@@ -61,26 +63,10 @@ static sys::fs::file_t fdToFileT(int FD) {
 static int fileTToFd(sys::fs::file_t F) {
   return static_cast<int>(reinterpret_cast<intptr_t>(F));
 }
-
-// --- Time conversion ---
-// FILETIME: 100ns intervals since 1601-01-01.
-// Unix time: seconds since 1970-01-01.
-// Delta: 11644473600 seconds.
-
-static void timeToFileTime(time_t T, uint32_t &High, uint32_t &Low) {
-  uint64_t FT = (static_cast<uint64_t>(T) + 11644473600ULL) * 10000000ULL;
-  High = static_cast<uint32_t>(FT >> 32);
-  Low = static_cast<uint32_t>(FT);
-}
-
-static TimePoint<> fileTimeToTimePoint(uint32_t High, uint32_t Low) {
-  using namespace std::chrono;
-  uint64_t Ticks = (uint64_t(High) << 32) | Low;
-  constexpr uint64_t EpochDiff = 116444736000000000ULL;
-  if (Ticks < EpochDiff)
-    return TimePoint<>();
-  return TimePoint<>(nanoseconds((Ticks - EpochDiff) * 100));
-}
+#else
+static sys::fs::file_t fdToFileT(int FD) { return FD; }
+static int fileTToFd(sys::fs::file_t F) { return F; }
+#endif
 
 // --- File type / permissions from stat mode ---
 
@@ -102,17 +88,13 @@ static std::error_code fillStatus(int StatRet, const struct stat &St,
       Result = file_status(file_type::status_error);
     return EC;
   }
-  uint32_t ATHi, ATLo, MTHi, MTLo;
-  timeToFileTime(St.st_atim.tv_sec, ATHi, ATLo);
-  timeToFileTime(St.st_mtim.tv_sec, MTHi, MTLo);
   Result = file_status(
       typeForMode(St.st_mode),
       static_cast<perms>(St.st_mode) & all_perms,
-      St.st_nlink, ATHi, ATLo, MTHi, MTLo,
-      static_cast<uint32_t>(St.st_dev),
-      static_cast<uint32_t>(static_cast<uint64_t>(St.st_size) >> 32),
-      static_cast<uint32_t>(St.st_size),
-      static_cast<uint64_t>(St.st_ino));
+      St.st_dev, St.st_nlink, St.st_ino,
+      St.st_atim.tv_sec, St.st_atim.tv_nsec,
+      St.st_mtim.tv_sec, St.st_mtim.tv_nsec,
+      St.st_uid, St.st_gid, St.st_size);
   return std::error_code();
 }
 
@@ -222,7 +204,11 @@ std::error_code CodePageToUTF16(unsigned, llvm::StringRef original,
 
 namespace fs {
 
+#if defined(LLVM_RUNTIME_WIN32)
 const file_t kInvalidFile = reinterpret_cast<file_t>(static_cast<intptr_t>(-1));
+#else
+const file_t kInvalidFile = -1;
+#endif
 
 std::string getMainExecutable(const char *argv0, void *MainExecAddr) {
   auto BypassSandbox = sandbox::scopedDisable();
@@ -238,27 +224,32 @@ std::string getMainExecutable(const char *argv0, void *MainExecAddr) {
 }
 
 UniqueID file_status::getUniqueID() const {
-  return UniqueID(VolumeSerialNumber, PathHash);
+  return UniqueID(fs_st_dev, fs_st_ino);
 }
 
 ErrorOr<space_info> disk_space(const Twine &Path) {
-  // TODO: implement via NtQueryVolumeInformationFile when statvfs is available.
+  struct statvfs Vfs;
+  SmallString<256> P;
+  Path.toVector(P);
+  P.push_back('\0');
+  if (::statvfs(P.c_str(), &Vfs))
+    return errnoAsErrorCode();
   space_info SpaceInfo;
-  SpaceInfo.capacity = static_cast<uint64_t>(-1);
-  SpaceInfo.free = static_cast<uint64_t>(-1);
-  SpaceInfo.available = static_cast<uint64_t>(-1);
+  SpaceInfo.capacity = static_cast<uint64_t>(Vfs.f_blocks) * Vfs.f_frsize;
+  SpaceInfo.free = static_cast<uint64_t>(Vfs.f_bfree) * Vfs.f_frsize;
+  SpaceInfo.available = static_cast<uint64_t>(Vfs.f_bavail) * Vfs.f_frsize;
   return SpaceInfo;
 }
 
 TimePoint<> basic_file_status::getLastAccessedTime() const {
-  return fileTimeToTimePoint(LastAccessedTimeHigh, LastAccessedTimeLow);
+  return toTimePoint(fs_st_atime, fs_st_atime_nsec);
 }
 
 TimePoint<> basic_file_status::getLastModificationTime() const {
-  return fileTimeToTimePoint(LastWriteTimeHigh, LastWriteTimeLow);
+  return toTimePoint(fs_st_mtime, fs_st_mtime_nsec);
 }
 
-uint32_t file_status::getLinkCount() const { return NumLinks; }
+uint32_t file_status::getLinkCount() const { return fs_st_nlinks; }
 
 std::error_code current_path(SmallVectorImpl<char> &result) {
   sandbox::violationIfEnabled();
@@ -420,10 +411,14 @@ std::error_code status(int FD, file_status &Result) {
   return fillStatus(Ret, St, Result);
 }
 
+// When file_t == int (NTPOSIX/Unix), status(file_t, ...) is the same as
+// status(int, ...) above — skip the overload to avoid redefinition.
+#if defined(LLVM_RUNTIME_WIN32)
 std::error_code status(file_t FileHandle, file_status &Result) {
   sandbox::violationIfEnabled();
   return status(fileTToFd(FileHandle), Result);
 }
+#endif
 
 unsigned getUmask() { return 0; }
 
@@ -466,7 +461,6 @@ std::error_code setLastAccessAndModificationTime(int FD, TimePoint<> AccessTime,
 std::error_code mapped_file_region::init(sys::fs::file_t OrigFileHandle,
                                          uint64_t Offset, mapmode Mode) {
   this->Mode = Mode;
-  this->FileHandle = kInvalidFile; // mmap keeps its own file reference.
   int FD = fileTToFd(OrigFileHandle);
   if (FD == -1)
     return make_error_code(errc::bad_file_descriptor);
@@ -627,8 +621,6 @@ Expected<file_t> openNativeFileForRead(const Twine &Name, OpenFlags Flags,
   return fdToFileT(FD);
 }
 
-file_t convertFDToNativeFile(int FD) { return fdToFileT(FD); }
-
 file_t getStdinHandle() { return fdToFileT(0); }
 file_t getStdoutHandle() { return fdToFileT(1); }
 file_t getStderrHandle() { return fdToFileT(2); }
@@ -748,6 +740,13 @@ std::error_code real_path(const Twine &path, SmallVectorImpl<char> &dest,
     return std::error_code();
   }
   return errnoAsErrorCode();
+}
+
+std::error_code changeFileOwnership(int FD, uint32_t Owner, uint32_t Group) {
+  auto FChown = [&]() { return ::fchown(FD, Owner, Group); };
+  if (sys::RetryAfterSignal(-1, FChown) < 0)
+    return errnoAsErrorCode();
+  return std::error_code();
 }
 
 } // end namespace fs

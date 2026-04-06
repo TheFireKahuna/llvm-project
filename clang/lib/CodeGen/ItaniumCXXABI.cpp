@@ -32,6 +32,7 @@
 #include "clang/CodeGen/ConstantInitBuilder.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/GlobalValue.h"
+#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Value.h"
@@ -3578,6 +3579,13 @@ class ItaniumRTTIBuilder {
   /// struct, used for member pointer types.
   void BuildPointerToMemberTypeInfo(const MemberPointerType *Ty);
 
+  /// On Windows Itanium/NTPOSIX, if a typeinfo's constant initializer contains
+  /// fields referencing non-DSO-local globals (cross-DLL pointers), replace
+  /// those fields with null and emit a dynamic init function that fills them
+  /// in at startup through .refptr. stubs. This eliminates the need for
+  /// runtime pseudo-relocations on these data-section references.
+  void emitTypeInfoDynamicInit(llvm::GlobalVariable *GV);
+
 public:
   ItaniumRTTIBuilder(const ItaniumCXXABI &ABI)
       : CGM(ABI.CGM), VMContext(CGM.getModule().getContext()), CXXABI(ABI) {}
@@ -3690,7 +3698,8 @@ ItaniumRTTIBuilder::GetAddrOfExternalRTTIDescriptor(QualType Ty) {
     CGM.setGVProperties(GV, RD);
     // Import the typeinfo symbol when all non-inline virtual methods are
     // imported.
-    if (CGM.getTarget().hasPS4DLLImportExport()) {
+    if (CGM.getTarget().hasPS4DLLImportExport() ||
+        CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
       if (RD && CXXRecordNonInlineHasAttr<DLLImportAttr>(RD)) {
         GV->setDLLStorageClass(llvm::GlobalVariable::DLLImportStorageClass);
         CGM.setDSOLocal(GV);
@@ -3884,9 +3893,8 @@ static bool ShouldUseExternalRTTIDescriptor(CodeGenModule &CGM,
       if (CGM.getTarget().hasPS4DLLImportExport())
         return true;
 
-      return IsDLLImport && !CGM.getTriple().isWindowsItaniumEnvironment()
-                 ? false
-                 : true;
+      return !IsDLLImport ||
+             CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment();
     }
     if (IsDLLImport)
       return true;
@@ -4157,7 +4165,7 @@ static llvm::GlobalVariable::LinkageTypes getTypeInfoLinkage(CodeGenModule &CGM,
           cast<CXXRecordDecl>(Record->getDecl())->getDefinitionOrSelf();
       if (RD->hasAttr<WeakAttr>())
         return llvm::GlobalValue::WeakODRLinkage;
-      if (CGM.getTriple().isWindowsItaniumEnvironment())
+      if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
         if (RD->hasAttr<DLLImportAttr>() &&
             ShouldUseExternalRTTIDescriptor(CGM, Ty))
           return llvm::GlobalValue::ExternalLinkage;
@@ -4213,7 +4221,7 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(QualType Ty) {
   llvm::GlobalValue::DLLStorageClassTypes DLLStorageClass =
       llvm::GlobalValue::DefaultStorageClass;
   if (auto RD = Ty->getAsCXXRecordDecl()) {
-    if ((CGM.getTriple().isWindowsItaniumEnvironment() &&
+    if ((CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
          RD->hasAttr<DLLExportAttr>()) ||
         (CGM.shouldMapVisibilityToDLLExport(RD) &&
          !llvm::GlobalValue::isLocalLinkage(Linkage) &&
@@ -4362,6 +4370,13 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(
   }
 
   GV->replaceInitializer(llvm::ConstantStruct::getAnon(Fields));
+
+  // On Windows Itanium/NTPOSIX, convert cross-DLL data references in the
+  // typeinfo initializer into dynamic initialization through .refptr. stubs.
+  // This eliminates runtime pseudo-relocations for RTTI data structures.
+  if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      CGM.getCodeGenOpts().AutoImport)
+    emitTypeInfoDynamicInit(GV);
 
   // Export the typeinfo in the same circumstances as the vtable is exported.
   auto GVDLLStorageClass = DLLStorageClass;
@@ -4598,6 +4613,80 @@ void ItaniumRTTIBuilder::BuildVMIClassTypeInfo(const CXXRecordDecl *RD) {
 
     Fields.push_back(llvm::ConstantInt::getSigned(OffsetFlagsLTy, OffsetFlags));
   }
+}
+
+/// Check if a constant references a non-DSO-local global that would require
+/// a runtime pseudo-relocation if placed in a data section on COFF.
+static bool referencesNonDSOLocalGlobal(llvm::Constant *C) {
+  C = C->stripPointerCasts();
+  if (auto *GV = dyn_cast<llvm::GlobalValue>(C))
+    return !GV->isDSOLocal();
+  if (auto *CE = dyn_cast<llvm::ConstantExpr>(C))
+    return llvm::any_of(CE->operands(), [](llvm::Value *Op) {
+      return referencesNonDSOLocalGlobal(cast<llvm::Constant>(Op));
+    });
+  return false;
+}
+
+void ItaniumRTTIBuilder::emitTypeInfoDynamicInit(llvm::GlobalVariable *GV) {
+  auto *Init = dyn_cast<llvm::ConstantStruct>(GV->getInitializer());
+  if (!Init)
+    return;
+
+  // Scan fields — collect dynamic (non-DSO-local) ones and build the
+  // nulled-out constant initializer in a single pass.
+  auto *StructTy = cast<llvm::StructType>(Init->getType());
+  SmallVector<std::pair<unsigned, llvm::Constant *>, 4> DynFields;
+  SmallVector<llvm::Constant *, 8> NewFields;
+  for (unsigned i = 0, e = Init->getNumOperands(); i != e; ++i) {
+    llvm::Constant *Field = Init->getOperand(i);
+    if (referencesNonDSOLocalGlobal(Field)) {
+      DynFields.push_back({i, Field});
+      NewFields.push_back(llvm::Constant::getNullValue(Field->getType()));
+    } else {
+      NewFields.push_back(Field);
+    }
+  }
+
+  if (DynFields.empty())
+    return;
+
+  GV->setInitializer(llvm::ConstantStruct::get(StructTy, NewFields));
+
+  // Make the typeinfo non-constant (writable .data instead of .rdata).
+  GV->setConstant(false);
+
+  // Place in dedicated RTTI section for post-init sealing.
+  GV->setSection(".rdata$ti");
+
+  // Generate an init function that fills in the dynamic fields.
+  llvm::Module &M = CGM.getModule();
+  llvm::FunctionType *FTy =
+      llvm::FunctionType::get(CGM.VoidTy, /*isVarArg=*/false);
+  llvm::Function *InitFn = llvm::Function::Create(
+      FTy, llvm::GlobalValue::InternalLinkage,
+      ("__typeinfo_init_" + GV->getName()).str(), &M);
+  InitFn->setSection(".text$ti");
+
+  // If the typeinfo is in a COMDAT, put the init function in the same
+  // COMDAT so they are discarded together.
+  if (GV->hasComdat())
+    InitFn->setComdat(GV->getComdat());
+
+  llvm::BasicBlock *BB =
+      llvm::BasicBlock::Create(VMContext, "entry", InitFn);
+  llvm::IRBuilder<> Builder(BB);
+
+  for (auto &[FieldIdx, OrigVal] : DynFields) {
+    auto *FieldPtr = Builder.CreateStructGEP(StructTy, GV, FieldIdx);
+    Builder.CreateStore(OrigVal, FieldPtr);
+  }
+  Builder.CreateRetVoid();
+
+  // Register as a global constructor with early priority (before C++ ctors).
+  // Priority 200 runs in .CRT$XIB — after security cookie init, before
+  // user C++ constructors in .CRT$XC*.
+  CGM.AddGlobalCtor(InitFn, 200, /*LexOrder=*/0, GV);
 }
 
 /// Compute the flags for a __pbase_type_info, and remove the corresponding

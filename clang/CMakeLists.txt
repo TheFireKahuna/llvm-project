@@ -716,9 +716,10 @@ if (CLANG_ENABLE_BOOTSTRAP)
       if(BOOTSTRAP_CMAKE_RANLIB)
         set(${CLANG_STAGE}_RANLIB -DCMAKE_RANLIB=${BOOTSTRAP_CMAKE_RANLIB})
       endif()
-    elseif(BOOTSTRAP_LLVM_HOST_TRIPLE MATCHES ".*-windows-itanium.*"
-           OR LLVM_DEFAULT_TARGET_TRIPLE MATCHES ".*-windows-itanium.*" OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
-      # Windows Itanium or GNU-style clang simulating MSVC: use llvm-ar
+    elseif(BOOTSTRAP_LLVM_HOST_TRIPLE MATCHES ".*-windows-(itanium|ntposix).*"
+           OR LLVM_DEFAULT_TARGET_TRIPLE MATCHES ".*-windows-(itanium|ntposix).*"
+           OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+      # Windows Itanium and NT POSIX use GNU-style clang on Windows: use llvm-ar
       add_dependencies(clang-bootstrap-deps llvm-ar llvm-ranlib)
       set(${CLANG_STAGE}_AR -DCMAKE_AR=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-ar)
       set(${CLANG_STAGE}_RANLIB -DCMAKE_RANLIB=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-ranlib)
@@ -793,9 +794,10 @@ if (CLANG_ENABLE_BOOTSTRAP)
   set(C_COMPILER "clang")
   set(CXX_COMPILER "clang++")
   if(WIN32)
-    if(LLVM_HOST_TRIPLE MATCHES ".*-windows-itanium.*" OR LLVM_DEFAULT_TARGET_TRIPLE MATCHES ".*-windows-itanium.*"
-            OR BOOTSTRAP_LLVM_HOST_TRIPLE MATCHES ".*-windows-itanium.*")
-      # Windows Itanium uses GNU-style driver with .exe extension
+    if(LLVM_HOST_TRIPLE MATCHES ".*-windows-(itanium|ntposix).*"
+            OR LLVM_DEFAULT_TARGET_TRIPLE MATCHES ".*-windows-(itanium|ntposix).*"
+            OR BOOTSTRAP_LLVM_HOST_TRIPLE MATCHES ".*-windows-(itanium|ntposix).*")
+      # Windows Itanium and NT POSIX use GNU-style drivers with .exe extension.
       set(C_COMPILER "clang.exe")
       set(CXX_COMPILER "clang++.exe")
     else()
@@ -819,10 +821,10 @@ if (CLANG_ENABLE_BOOTSTRAP)
     endif()
   endif()
 
-  if(BOOTSTRAP_CMAKE_SYSTEM_NAME)
+  if(BOOTSTRAP_CMAKE_SYSTEM_NAME OR WIN32_NTPOSIX)
     set(${CLANG_STAGE}_TABLEGEN
-      -DLLVM_TABLEGEN=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-tblgen
-      -DCLANG_TABLEGEN=${LLVM_RUNTIME_OUTPUT_INTDIR}/clang-tblgen)
+      -DLLVM_TABLEGEN=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-tblgen${CMAKE_EXECUTABLE_SUFFIX}
+      -DCLANG_TABLEGEN=${LLVM_RUNTIME_OUTPUT_INTDIR}/clang-tblgen${CMAKE_EXECUTABLE_SUFFIX})
     if(BOOTSTRAP_CMAKE_SYSTEM_NAME STREQUAL "Linux")
       if(BOOTSTRAP_LLVM_ENABLE_LLD)
         set(${CLANG_STAGE}_LINKER -DCMAKE_LINKER=${LLVM_RUNTIME_OUTPUT_INTDIR}/ld.lld)
@@ -945,10 +947,10 @@ if (CLANG_ENABLE_BOOTSTRAP)
     LIST_SEPARATOR |
     )
 
-  # Windows Itanium: copy runtime DLLs needed by stage2 tools.
+  # Windows Itanium and NT POSIX: copy runtime DLLs needed by stage2 tools.
   # Stage2 clang/lld need these DLLs to run during the build.
   # DLLs are in the staging directory to avoid locking conflicts.
-  if(WIN32 AND BOOTSTRAP_LLVM_HOST_TRIPLE MATCHES ".*-windows-itanium.*")
+  if(WIN32 AND BOOTSTRAP_LLVM_HOST_TRIPLE MATCHES ".*-windows-(itanium|ntposix).*")
     set(_WI_STAGING_DIR "${CMAKE_BINARY_DIR}/runtimes/runtimes-${BOOTSTRAP_LLVM_HOST_TRIPLE}-bins/runtime-staging/bin")
     ExternalProject_Add_Step(${NEXT_CLANG_STAGE} copy-runtime-dlls
       COMMAND ${CMAKE_COMMAND} -E make_directory <BINARY_DIR>/bin
@@ -958,7 +960,7 @@ if (CLANG_ENABLE_BOOTSTRAP)
         "${_WI_STAGING_DIR}/c.dll"
         <BINARY_DIR>/bin/
       DEPENDERS configure
-      COMMENT "Copying Windows Itanium runtime DLLs to ${NEXT_CLANG_STAGE}"
+      COMMENT "Copying Windows runtime DLLs to ${NEXT_CLANG_STAGE}"
     )
   endif()
 

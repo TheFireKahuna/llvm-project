@@ -8,24 +8,20 @@
 # See: https://llvm.org/docs/HowToBuildWindowsItaniumPrograms.html
 #
 # Prerequisites:
-#   - C++ compiler: MSVC (cl.exe) or Clang (clang-cl.exe)
-#   - Visual Studio with Windows SDK (for headers/libs)
+#   - LLVM Clang 22.1 (clang-cl.exe), typically from C:/Program Files/LLVM/bin
+#   - Windows SDK headers/libs available on the host
 #   - CMake 3.20+, Ninja, Python 3, Git
 #
-# Setup (run once per shell session):
-#   # PowerShell - find and load VS dev environment:
+# Optional setup (only if the shell does not already expose the Windows SDK):
+#   # PowerShell - find and load the SDK environment:
 #   $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
 #             -latest -property installationPath
 #   & "$vsPath\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -SkipAutomaticLocation
 #
 # Build (produces native Windows Itanium toolchain):
-#   # Using MSVC:
 #   cmake -G Ninja -B build -C <path>/clang/cmake/caches/WindowsItanium-runtimes.cmake \
-#         -DCMAKE_INSTALL_PREFIX=<install-path> <path>/llvm
-#
-#   # Or using Clang:
-#   cmake -G Ninja -B build -C <path>/clang/cmake/caches/WindowsItanium-runtimes.cmake \
-#         -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl \
+#         -DCMAKE_C_COMPILER="C:/Program Files/LLVM/bin/clang-cl.exe" \
+#         -DCMAKE_CXX_COMPILER="C:/Program Files/LLVM/bin/clang-cl.exe" \
 #         -DCMAKE_INSTALL_PREFIX=<install-path> <path>/llvm
 #
 #   ninja -C build stage2-distribution
@@ -38,27 +34,27 @@ cmake_minimum_required(VERSION 3.20)
 set(PACKAGE_VENDOR "Windows-Itanium" CACHE STRING "")
 
 #===------------------------------------------------------------------------===#
-# Compiler Selection - Use clang-cl or MSVC (both produce MSVC ABI binaries)
+# Compiler Selection - Use clang-cl for the host ABI build
 #===------------------------------------------------------------------------===#
 if(NOT DEFINED CMAKE_C_COMPILER)
-  # Prefer clang-cl if available, fall back to MSVC cl.exe
-  find_program(_WI_HOST_CC NAMES clang-cl cl)
+  find_program(_WI_HOST_CC NAMES clang-cl HINTS "C:/Program Files/LLVM/bin")
   if(_WI_HOST_CC)
     set(CMAKE_C_COMPILER "${_WI_HOST_CC}" CACHE FILEPATH "")
     set(CMAKE_CXX_COMPILER "${_WI_HOST_CC}" CACHE FILEPATH "")
     message(STATUS "Using host compiler: ${_WI_HOST_CC}")
   else()
-    message(FATAL_ERROR "No suitable C++ compiler found. Install MSVC or Clang.")
+    message(FATAL_ERROR "clang-cl.exe not found. Install LLVM Clang and/or pass -DCMAKE_C_COMPILER/-DCMAKE_CXX_COMPILER explicitly.")
   endif()
 endif()
 
 #===------------------------------------------------------------------------===#
-# Build Dependencies with MSVC ABI (for this phase's toolchain)
+# Build Dependencies with the host ABI (for this phase's toolchain)
 #===------------------------------------------------------------------------===#
-# Build dependencies with MSVC ABI using the host compiler (clang-cl or cl.exe).
+# Build dependencies with the host ABI using clang-cl.
 # Stage 2 will build its own Windows Itanium ABI versions using the WI driver.
 
 include(${CMAKE_CURRENT_LIST_DIR}/WindowsItanium-toolchain.cmake)
+wi_configure_host_masm("${CMAKE_C_COMPILER}")
 
 wi_build_all_dependencies(
   COMPILER "${CMAKE_C_COMPILER}"
@@ -105,6 +101,17 @@ set(LLVM_ENABLE_RUNTIMES "libunwind;libcxxabi;libcxx" CACHE STRING "")
 set(LLVM_RUNTIME_TARGETS "x86_64-unknown-windows-itanium" CACHE STRING "")
 # Build target-specific builtins to get BUILTINS_<target>_ variable unpacking.
 set(LLVM_BUILTIN_TARGETS "x86_64-unknown-windows-itanium" CACHE STRING "")
+
+# Toolchain file for stage 1 runtimes/builtins: overrides Windows-GNU.cmake
+# platform rules with MSVC-style linking (lld-link) and sets RC compiler to
+# llvm-rc. Without this, CMake detects the GNU-style driver as MinGW.
+get_filename_component(_WI_TOOLCHAIN
+  "${CMAKE_CURRENT_LIST_DIR}/../../../llvm/cmake/modules/WindowsItaniumToolchain.cmake"
+  ABSOLUTE)
+set(RUNTIMES_x86_64-unknown-windows-itanium_CMAKE_TOOLCHAIN_FILE
+  "${_WI_TOOLCHAIN}" CACHE FILEPATH "")
+set(BUILTINS_x86_64-unknown-windows-itanium_CMAKE_TOOLCHAIN_FILE
+  "${_WI_TOOLCHAIN}" CACHE FILEPATH "")
 
 set(CMAKE_BUILD_TYPE Release CACHE STRING "")
 set(LLVM_ENABLE_LLD ON CACHE BOOL "")
@@ -221,6 +228,7 @@ set(BOOTSTRAP_LLVM_DISTRIBUTION_COMPONENTS
   clang
   clang-format
   clang-resource-headers
+  builtins
   clang-tidy
   clangd
   lld
@@ -240,11 +248,12 @@ set(CLANG_ENABLE_BOOTSTRAP ON CACHE BOOL "")
 # Stage 2 will build its own Windows Itanium ABI dependencies.
 # Pass the stage 1 build directory so stage 2 can find runtimes and tools.
 # Note: -C cache files run BEFORE -D options, so we must pass this via -D.
+# _WI_TOOLCHAIN was computed above (stage 1 runtimes section).
 set(CLANG_BOOTSTRAP_CMAKE_ARGS
   -D_WI_PHASE1_BUILD_DIR=${CMAKE_BINARY_DIR}
-  -DCMAKE_TOOLCHAIN_FILE=${_WI_TOOLCHAIN}
+  -DCMAKE_TOOLCHAIN_FILE=${RUNTIMES_x86_64-unknown-windows-itanium_CMAKE_TOOLCHAIN_FILE}
   -C ${CMAKE_CURRENT_LIST_DIR}/WindowsItanium-native.cmake
-  CACHE STRING "")
+  CACHE STRING "" FORCE)
 unset(_WI_TOOLCHAIN)
 
 # Note: LLVM_ENABLE_PROJECTS and LLVM_ENABLE_RUNTIMES are auto-passed via

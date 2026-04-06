@@ -17,7 +17,7 @@
 
 #include "lldb/Host/FileAction.h"
 #include "lldb/Host/Host.h"
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "lldb/Host/windows/PseudoConsole.h"
 #include "lldb/Host/windows/WindowsFileAction.h"
 #else
@@ -28,7 +28,7 @@
 
 namespace lldb_private {
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 using PTY = PseudoConsole;
 using FileActionImpl = WindowsFileAction;
 #else
@@ -57,7 +57,7 @@ public:
 
   bool AppendDuplicateFileAction(int fd, int dup_fd);
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   bool AppendDuplicateFileAction(HANDLE fh, HANDLE dup_fh);
 #endif
 
@@ -71,7 +71,7 @@ public:
   // but stderr doesn't, then only stderr will be redirected to a pty.)
   llvm::Error SetUpPtyRedirection();
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   // Redirect stdin/stdout/stderr to anonymous pipes instead of a ConPTY.
   // Used when terminal emulation is not needed (e.g. lldb-dap internalConsole).
   llvm::Error SetUpPipeRedirection();
@@ -150,7 +150,7 @@ public:
   /// Returns whether if lldb should read information from the PTY. This is
   /// always true on non Windows.
   bool ShouldUsePTY() const {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     if (!m_pty)
       return false;
     return GetPTY().GetMode() != PseudoConsole::Mode::None &&

@@ -17,7 +17,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
-#if defined(LLVM_RUNTIME_WIN32)
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 #include <malloc.h> // For _malloca/_freea
 #endif
 
@@ -155,7 +155,7 @@
 #define _LIBUNWIND_REMEMBER_FREE(_ptr)                                         \
   do {                                                                         \
   } while (0)
-#elif defined(LLVM_RUNTIME_WIN32)
+#elif defined(_WIN32) && !defined(__NTPOSIX__)
 #define _LIBUNWIND_REMEMBER_ALLOC(_size) _malloca(_size)
 #define _LIBUNWIND_REMEMBER_FREE(_ptr) _freea(_ptr)
 #define _LIBUNWIND_REMEMBER_CLEANUP_NEEDED

@@ -73,8 +73,9 @@ unset(_arch_id)
 # Disable MinGW Mode enabled by Windows-GNU
 set(MINGW FALSE)
 
-# Disable versioned library naming (foo.dll.1.0 -> foo.dll).
-set(CMAKE_SHARED_LIBRARY_NAME_WITH_VERSION 0)
+# Match Windows platform behavior: VERSION/SOVERSION set image metadata, but
+# should not produce versioned DLL/import-library filenames or symlink graphs.
+set(CMAKE_PLATFORM_NO_VERSIONED_SONAME 1)
 set(CMAKE_PLATFORM_HAS_INSTALLNAME 0)
 
 # Library Naming - Match Windows-Clang.cmake __windows_compiler_clang_gnu
@@ -108,7 +109,6 @@ macro(__windows_itanium_compiler lang)
   # Dependency file generation
   if(NOT "${lang}" STREQUAL "ASM")
     set(CMAKE_DEPFILE_FLAGS_${lang} "-MD -MT <DEP_TARGET> -MF <DEP_FILE>")
-    string(APPEND CMAKE_${lang}_FLAGS_INIT " -fms-extensions")
   endif()
 
   # Sysroot support
@@ -258,7 +258,8 @@ unset(_RTL_FLAGS)
 unset(_RTL_FLAGS_DEBUG)
 
 # LLVM Toolchain Programs
-# Override with LLVM tools to avoid VC SDK tools (lib.exe, mt.exe, rc.exe).
+# Prefer LLVM tools adjacent to the selected compiler to avoid VC SDK tools
+# (lib.exe, mt.exe, rc.exe), but preserve explicitly configured archive tools.
 if(CMAKE_C_COMPILER)
   get_filename_component(_compiler_dir "${CMAKE_C_COMPILER}" DIRECTORY)
 
@@ -269,14 +270,18 @@ if(CMAKE_C_COMPILER)
     endif()
   endmacro()
 
-  _find_llvm_tool(_llvm_ar llvm-ar)
-  if(_llvm_ar)
-    set(CMAKE_AR "${_llvm_ar}")
+  if(NOT CMAKE_AR)
+    _find_llvm_tool(_llvm_ar llvm-ar)
+    if(_llvm_ar)
+      set(CMAKE_AR "${_llvm_ar}")
+    endif()
   endif()
 
-  _find_llvm_tool(_llvm_ranlib llvm-ranlib)
-  if(_llvm_ranlib)
-    set(CMAKE_RANLIB "${_llvm_ranlib}")
+  if(NOT CMAKE_RANLIB)
+    _find_llvm_tool(_llvm_ranlib llvm-ranlib)
+    if(_llvm_ranlib)
+      set(CMAKE_RANLIB "${_llvm_ranlib}")
+    endif()
   endif()
 
   _find_llvm_tool(_llvm_rc llvm-rc)

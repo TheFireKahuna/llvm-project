@@ -25,10 +25,10 @@
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
 
-#ifdef LLVM_ON_UNIX
+#if defined(LLVM_RUNTIME_POSIX)
 #include <sys/stat.h>
 #include <unistd.h>
-#endif // LLVM_ON_UNIX
+#endif // LLVM_RUNTIME_POSIX
 
 #ifdef __APPLE__
 #include <sys/stat.h>
@@ -418,7 +418,7 @@ DylibResolverImpl::resolve(StringRef LibStem, bool VariateLibStem) const {
   return std::nullopt;
 }
 
-#ifndef LLVM_RUNTIME_WIN32
+#if defined(LLVM_RUNTIME_POSIX)
 mode_t PathResolver::lstatCached(StringRef Path) {
   // If already cached - retun cached result
   if (auto Cache = LibPathCache->read_lstat(Path))
@@ -544,7 +544,7 @@ std::optional<std::string> PathResolver::realpathCached(StringRef Path,
 
   StringRef Separator(sys::path::get_separator());
   SmallString<256> Resolved(Separator);
-#ifndef LLVM_RUNTIME_WIN32
+#if defined(LLVM_RUNTIME_POSIX)
   SmallVector<StringRef, 16> Components;
 
   if (isRelative) {

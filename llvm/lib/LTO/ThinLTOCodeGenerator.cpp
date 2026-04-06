@@ -59,12 +59,6 @@
 #include "llvm/Transforms/IPO/WholeProgramDevirt.h"
 #include "llvm/Transforms/Utils/FunctionImportUtils.h"
 
-#if !defined(LLVM_CRT_UCRT)
-#include <unistd.h>
-#else
-#include <io.h>
-#endif
-
 using namespace llvm;
 using namespace ThinLTOCodeGeneratorImpl;
 

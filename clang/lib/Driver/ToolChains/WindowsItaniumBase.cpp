@@ -158,6 +158,56 @@ void WindowsItaniumBaseToolChain::AddCXXStdlibLibArgs(
 // Utilities
 // ============================================================================
 
+void WindowsItaniumBaseToolChain::AddRuntimeLibSearchPaths(
+    const ArgList &Args, ArgStringList &CmdArgs) const {
+  auto AddLibPath = [&](const std::string &LibPath) {
+    if (getVFS().exists(LibPath))
+      CmdArgs.push_back(Args.MakeArgString(Twine("-libpath:") + LibPath));
+  };
+
+  for (const std::string &LibPath : getFilePaths())
+    AddLibPath(LibPath);
+
+  for (const std::string &LibPath : getLibraryPaths())
+    AddLibPath(LibPath);
+
+  std::string CRTPath = getCompilerRTPath();
+  if (getVFS().exists(CRTPath))
+    CmdArgs.push_back(Args.MakeArgString(Twine("-libpath:") + CRTPath));
+}
+
+void WindowsItaniumBaseToolChain::NormalizeLLDLinkArgs(
+    const ArgList &Args, ArgStringList &CmdArgs) const {
+  // -rdynamic: export all symbols from the executable, equivalent to
+  // -export-dynamic on ELF. lld-link uses /export-all-symbols.
+  if (Args.hasArg(options::OPT_rdynamic))
+    CmdArgs.push_back("-export-all-symbols");
+
+  for (auto It = CmdArgs.begin(); It != CmdArgs.end();) {
+    StringRef Value(*It);
+    // PE image-version flags are currently unstable with the custom
+    // Windows-Itanium/NTPOSIX lld-link path and can crash the linker during
+    // try-link probes. Drop them until lld grows reliable support here.
+    if (Value.starts_with_insensitive("/version:") ||
+        Value.starts_with_insensitive("-version:")) {
+      It = CmdArgs.erase(It);
+      continue;
+    }
+    // -rpath is an ELF concept with no PE/COFF equivalent. Windows DLL
+    // search uses the exe directory, system dirs, and PATH instead.
+    // Strip silently so POSIX-oriented build systems don't produce warnings.
+    // Handles both "-rpath=VALUE" and "-rpath VALUE" (two separate args).
+    if (Value.starts_with_insensitive("-rpath")) {
+      bool is_separate = (Value == "-rpath") && (It + 1) != CmdArgs.end();
+      It = CmdArgs.erase(It);
+      if (is_separate && It != CmdArgs.end())
+        It = CmdArgs.erase(It); // consume the path argument
+      continue;
+    }
+    ++It;
+  }
+}
+
 void WindowsItaniumBaseToolChain::AddSystemIncludeWithSubfolder(
     const ArgList &DriverArgs, ArgStringList &CC1Args,
     const std::string &Folder, const Twine &Sub1, const Twine &Sub2,

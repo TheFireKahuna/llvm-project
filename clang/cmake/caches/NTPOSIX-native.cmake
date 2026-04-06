@@ -16,7 +16,6 @@
 #   - Clang compiler with NTPOSIX support
 #   - NTPOSIX runtimes installed (in compiler search paths or via
 #     CMAKE_PREFIX_PATH pointing to install location)
-#   - Visual Studio with Windows SDK (for headers/libs)
 #   - CMake 3.20+, Ninja, Python 3, Git
 #
 # Standalone build:
@@ -35,18 +34,38 @@
 
 cmake_minimum_required(VERSION 3.20)
 
+# Windows 10/11 with long paths enabled can tolerate much deeper object paths
+# than CMake's conservative default.
+set(CMAKE_OBJECT_PATH_MAX 32768 CACHE STRING "")
+
 #===------------------------------------------------------------------------===#
 # Compiler Selection
 #===------------------------------------------------------------------------===#
 # NTPOSIX uses GNU-style driver (clang/clang++), not clang-cl.
 
+if(DEFINED _WI_PHASE1_BUILD_DIR)
+  set(_WI_BOOTSTRAP_COMPILER_DIR "${_WI_PHASE1_BUILD_DIR}/bin")
+endif()
+
 if(NOT DEFINED CMAKE_C_COMPILER)
-  find_program(_WI_CLANG NAMES clang REQUIRED)
+  if(DEFINED _WI_BOOTSTRAP_COMPILER_DIR)
+    find_program(_WI_CLANG NAMES clang clang.exe
+      HINTS "${_WI_BOOTSTRAP_COMPILER_DIR}" NO_DEFAULT_PATH)
+  endif()
+  if(NOT _WI_CLANG)
+    find_program(_WI_CLANG NAMES clang clang.exe REQUIRED)
+  endif()
   set(CMAKE_C_COMPILER "${_WI_CLANG}" CACHE FILEPATH "")
 endif()
 
 if(NOT DEFINED CMAKE_CXX_COMPILER)
-  find_program(_WI_CLANGXX NAMES clang++ REQUIRED)
+  if(DEFINED _WI_BOOTSTRAP_COMPILER_DIR)
+    find_program(_WI_CLANGXX NAMES clang++ clang++.exe
+      HINTS "${_WI_BOOTSTRAP_COMPILER_DIR}" NO_DEFAULT_PATH)
+  endif()
+  if(NOT _WI_CLANGXX)
+    find_program(_WI_CLANGXX NAMES clang++ clang++.exe REQUIRED)
+  endif()
   set(CMAKE_CXX_COMPILER "${_WI_CLANGXX}" CACHE FILEPATH "")
 endif()
 
@@ -94,6 +113,11 @@ find_program(_WI_RANLIB NAMES llvm-ranlib HINTS "${_WI_COMPILER_DIR}" NO_DEFAULT
 set(CMAKE_AR "${_WI_AR}" CACHE FILEPATH "" FORCE)
 set(CMAKE_RANLIB "${_WI_RANLIB}" CACHE FILEPATH "" FORCE)
 
+# Nested stage2 runtimes must keep using the parent archive tools for now.
+# The freshly built NTPOSIX llvm-ar/llvm-ranlib path is still hitting I/O
+# failures on large archives during bootstrap.
+set(LLVM_EXTERNAL_PROJECT_USE_PARENT_ARCHIVE_TOOLS ON CACHE BOOL "" FORCE)
+
 wi_build_all_dependencies(
   COMPILER "${_WI_DEP_CC}"
   CXX_COMPILER "${_WI_DEP_CXX}"
@@ -107,12 +131,46 @@ wi_build_all_dependencies(
 set(CMAKE_PREFIX_PATH "${ZLIB_ROOT};${zstd_ROOT};${LibXml2_ROOT}" CACHE PATH "")
 
 # Pass CMAKE_PREFIX_PATH and *_ROOT variables to runtimes external project.
+# Stage2's top-level configure has already identified the native NTPOSIX
+# compiler ABI. Propagate those results into nested external projects so they
+# don't re-run compiler ABI probes with the freshly built driver.
+#
+# These bootstrapped NTPOSIX toolchains always use libc++, never libstdc++.
+# Seed the known-negative libstdc++ checks so nested runtimes configure does
+# not spin up redundant try-compiles under -nostdinc++ / -nostdlib++.
+set(LLVM_USES_LIBSTDCXX OFF CACHE BOOL "" FORCE)
+set(LLVM_DEFAULT_TO_GLIBCXX_USE_CXX11_ABI OFF CACHE BOOL "" FORCE)
+set(RUNTIMES_X86_64_PC_WINDOWS_NTPOSIX_CMAKE_ARGS
+  -DLLVM_USES_LIBSTDCXX=OFF
+  -DLLVM_DEFAULT_TO_GLIBCXX_USE_CXX11_ABI=OFF
+  CACHE STRING "" FORCE)
+
+# The freshly built native NTPOSIX toolchain can deadlock when CMake drives
+# try_compile() through a full executable link in nested runtimes configure.
+# Compile-only probes are sufficient for these configure-time feature checks and
+# match how other cross/runtime caches avoid fragile bootstrap link steps.
+set(RUNTIMES_x86_64-pc-windows-ntposix_CMAKE_TRY_COMPILE_TARGET_TYPE
+  STATIC_LIBRARY CACHE STRING "" FORCE)
+
 set(LLVM_EXTERNAL_PROJECT_PASSTHROUGH
   CMAKE_PREFIX_PATH
+  CMAKE_C_ABI_COMPILED
+  CMAKE_CXX_ABI_COMPILED
+  CMAKE_C_COMPILER_ABI
+  CMAKE_CXX_COMPILER_ABI
+  CMAKE_C_COMPILER_ARCHITECTURE_ID
+  CMAKE_CXX_COMPILER_ARCHITECTURE_ID
+  CMAKE_C_SIZEOF_DATA_PTR
+  CMAKE_CXX_SIZEOF_DATA_PTR
+  CMAKE_C_BYTE_ORDER
+  CMAKE_CXX_BYTE_ORDER
+  CMAKE_SIZEOF_VOID_P
+  LLVM_USES_LIBSTDCXX
+  LLVM_DEFAULT_TO_GLIBCXX_USE_CXX11_ABI
   ZLIB_ROOT
   zstd_ROOT
   LibXml2_ROOT
-  CACHE STRING "")
+  CACHE STRING "" FORCE)
 
 # Set explicit paths for dependencies that get passed through to runtimes via
 # LLVMExternalProjectUtils DEFAULT_PASSTHROUGH_VARIABLES.
@@ -136,6 +194,7 @@ set(LLVM_HOST_TRIPLE "x86_64-pc-windows-ntposix" CACHE STRING "")
 # Tell CMake to compile for NTPOSIX target.
 set(CMAKE_C_COMPILER_TARGET "x86_64-pc-windows-ntposix" CACHE STRING "")
 set(CMAKE_CXX_COMPILER_TARGET "x86_64-pc-windows-ntposix" CACHE STRING "")
+set(CMAKE_ASM_COMPILER_TARGET "x86_64-pc-windows-ntposix" CACHE STRING "")
 
 #===------------------------------------------------------------------------===#
 # Compiler Flags
@@ -182,7 +241,7 @@ if(NOT DEFINED LLVM_TARGETS_TO_BUILD)
 endif()
 
 if(NOT DEFINED LLVM_ENABLE_PROJECTS)
-  set(LLVM_ENABLE_PROJECTS "clang;clang-tools-extra;lld;lldb" CACHE STRING "")
+  set(LLVM_ENABLE_PROJECTS "clang;clang-tools-extra;lld" CACHE STRING "")
 endif()
 
 if(NOT DEFINED LLVM_ENABLE_RUNTIMES)
@@ -251,10 +310,10 @@ if(NOT DEFINED LLVM_DISTRIBUTION_COMPONENTS)
     clang
     clang-format
     clang-resource-headers
+    builtins
     clang-tidy
     clangd
     lld
-    lldb
     LTO
     runtimes
     ${LLVM_TOOLCHAIN_TOOLS}

@@ -1961,10 +1961,10 @@ static bool shouldAssumeDSOLocal(const CodeGenModule &CGM,
 
   const llvm::Triple &TT = CGM.getTriple();
   const auto &CGOpts = CGM.getCodeGenOpts();
-  if (TT.isOSCygMing()) {
-    // In MinGW, variables without DLLImport can still be automatically
-    // imported from a DLL by the linker; don't mark variables that
-    // potentially could come from another DLL as DSO local.
+  if (TT.isOSCygMing() || TT.isWindowsItaniumOrNTPOSIXEnvironment()) {
+    // In MinGW/Windows Itanium/NTPOSIX, variables without DLLImport can
+    // still be automatically imported from a DLL by the linker; don't mark
+    // variables that potentially could come from another DLL as DSO local.
 
     // With EmulatedTLS, TLS variables can be autoimported from other DLLs
     // (and this actually happens in the public interface of libstdc++), so
@@ -1972,6 +1972,17 @@ static bool shouldAssumeDSOLocal(const CodeGenModule &CGM,
     // can't be dllimported at all, though.)
     if (GV->isDeclarationForLinker() && isa<llvm::GlobalVariable>(GV) &&
         (!GV->isThreadLocal() || CGM.getCodeGenOpts().EmulatedTLS) &&
+        CGOpts.AutoImport)
+      return false;
+
+    // On Windows Itanium/NTPOSIX, linkonce_odr and weak_odr data definitions
+    // (vtables, typeinfo, template statics) may be deduplicated by the linker
+    // across DLL boundaries via COMDAT. The winning copy could be in another
+    // DLL, so these can't be assumed DSO-local. The compiler emits .refptr.
+    // stubs which the linker collapses to __imp_ if the symbol is imported,
+    // or resolves directly if the symbol is local — zero overhead either way.
+    if (TT.isWindowsItaniumOrNTPOSIXEnvironment() &&
+        isa<llvm::GlobalVariable>(GV) && GV->isWeakForLinker() &&
         CGOpts.AutoImport)
       return false;
   }

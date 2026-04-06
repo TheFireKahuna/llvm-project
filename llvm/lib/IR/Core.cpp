@@ -13,6 +13,7 @@
 
 #include "llvm-c/Core.h"
 #include "llvm-c/Types.h"
+#include "llvm/Config/config.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/ConstantRange.h"
@@ -39,7 +40,6 @@
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/MemoryBuffer.h"
-#include "llvm/Support/PosixCompat.h"
 #include "llvm/Support/Threading.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>

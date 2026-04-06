@@ -33,6 +33,8 @@
     #define NOMINMAX
   #endif
   #include <windows.h>
+#else
+extern "C" char **environ;
 #endif
 
 using namespace clang::driver;
@@ -388,16 +390,10 @@ void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     for (const auto &LibPath : Args.getAllArgValues(options::OPT_L))
       CmdArgs.push_back(Args.MakeArgString(Twine("-libpath:") + LibPath));
 
-  // LLVM runtimes (compiler-rt, libc++ libs, unwind, etc.) if present.
-  // These are "LLVM paths", not MSVC.
-  for (const auto &LibPath : TC.getLibraryPaths()) {
-    if (TC.getVFS().exists(LibPath))
-      CmdArgs.push_back(Args.MakeArgString(Twine("-libpath:") + LibPath));
-  }
-  auto CRTPath = TC.getCompilerRTPath();
-  if (TC.getVFS().exists(CRTPath))
-    CmdArgs.push_back(Args.MakeArgString(Twine("-libpath:") + CRTPath));
+  // Driver-owned runtime libraries live under the toolchain install root.
+  TC.AddRuntimeLibSearchPaths(Args, CmdArgs);
   CmdArgs.push_back("-nologo");
+  CmdArgs.push_back("-llditanium");
 
   // Runtime library selection.
   ToolChain::RuntimeLibType RLT = TC.GetRuntimeLibType(Args);
@@ -555,6 +551,7 @@ void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   // Offload/profile libs as appropriate (LLVM-side)
   TC.addOffloadRTLibs(C.getActiveOffloadKinds(), Args, CmdArgs);
   TC.addProfileRTLibs(Args, CmdArgs);
+  TC.NormalizeLLDLinkArgs(Args, CmdArgs);
 
   // Choose linker path: ALWAYS lld-link (LLVM-first).
   llvm::SmallString<128> LinkPath(FindLLVMExecutable(TC, "lld-link.exe"));
@@ -562,6 +559,12 @@ void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   // Environment sanitization: prevent VC dev shells from contaminating tool lookup.
   // We intentionally *clear* LIB/INCLUDE so your toolchain logic is authoritative.
   std::vector<const char *> Environment;
+  // Helper: case-insensitive starts_with for ASCII keys (env var names).
+  auto startsWithKeyCI = [](StringRef S, StringRef KeyWithEq) -> bool {
+    return S.size() >= KeyWithEq.size() && S.substr(0, KeyWithEq.size()).equals_insensitive(KeyWithEq);
+  };
+
+#if defined(LLVM_RUNTIME_WIN32)
   auto EnvBlockWide =
       std::unique_ptr<wchar_t[], decltype(&FreeEnvironmentStringsW)>(
           GetEnvironmentStringsW(), FreeEnvironmentStringsW);
@@ -580,11 +583,6 @@ void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
                                EnvBlockLen * sizeof(wchar_t)),
           EnvBlockUtf8))
     return;
-
-  // Helper: case-insensitive starts_with for ASCII keys (env var names).
-  auto startsWithKeyCI = [](StringRef S, StringRef KeyWithEq) -> bool {
-    return S.size() >= KeyWithEq.size() && S.substr(0, KeyWithEq.size()).equals_insensitive(KeyWithEq);
-  };
 
   for (const char *Cursor = EnvBlockUtf8.data(); *Cursor != '\0';) {
     StringRef EnvVar(Cursor);
@@ -607,6 +605,22 @@ void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     Environment.push_back(Args.MakeArgString(EnvVar));
     Cursor += EnvVar.size() + 1;
   }
+#else
+  for (char **Cursor = ::environ; Cursor && *Cursor; ++Cursor) {
+    StringRef EnvVar(*Cursor);
+
+    if (startsWithKeyCI(EnvVar, "vctoolsinstalldir=") ||
+        startsWithKeyCI(EnvVar, "vcinstalldir=") ||
+        startsWithKeyCI(EnvVar, "vsinstalldir=") ||
+        startsWithKeyCI(EnvVar, "vscmd_ver=") ||
+        startsWithKeyCI(EnvVar, "vscmd_arg_tgt_arch=") ||
+        startsWithKeyCI(EnvVar, "vscmd_arg_host_arch=") ||
+        startsWithKeyCI(EnvVar, "platform="))
+      continue;
+
+    Environment.push_back(Args.MakeArgString(EnvVar));
+  }
+#endif
 
   auto LinkCmd = std::make_unique<Command>(
       JA, *this, ResponseFileSupport::AtFileUTF16(),
@@ -816,6 +830,10 @@ WindowsItaniumToolChain::GetDefaultRuntimeLibType() const {
   return ToolChain::RLT_Msvcrt;
 }
 
+void WindowsItaniumToolChain::printVerboseInfo(raw_ostream &OS) const {
+  WindowsItaniumBaseToolChain::printVerboseInfo(OS);
+}
+
 Tool *WindowsItaniumToolChain::buildLinker() const {
   return new tools::windowsitanium::Linker(*this);
 }
@@ -892,4 +910,3 @@ bool WindowsItaniumToolChain::getUniversalCRTLibraryPath(const ArgList &Args,
   Path = std::string(LibPath);
   return true;
 }
-

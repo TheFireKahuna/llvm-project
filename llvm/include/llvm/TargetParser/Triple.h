@@ -751,6 +751,10 @@ public:
     return isOSWindows() && getEnvironment() == Triple::NTPOSIX;
   }
 
+  bool isWindowsItaniumOrNTPOSIXEnvironment() const {
+    return isWindowsItaniumEnvironment() || isWindowsNTPOSIXEnvironment();
+  }
+
   bool isWindowsGNUEnvironment() const {
     return isOSWindows() && getEnvironment() == Triple::GNU;
   }

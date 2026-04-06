@@ -38,10 +38,18 @@ if(LLVM_ENABLE_ZSTD)
 endif()
 
 if( WIN32 )
-  # libuuid required for FOLDERID_Profile usage in lib/Support/Windows/Path.inc.
-  # advapi32 required for CryptAcquireContextW in lib/Support/Windows/Path.inc.
-  # ntdll required for RtlGetLastNtStatus in lib/Support/ErrorHandling.cpp.
-  set(system_libs ${system_libs} psapi shell32 combase uuid advapi32 ws2_32 ntdll)
+  if(LLVM_RUNTIME_NTPOSIX)
+    # ntdll required for RtlGetLastNtStatus in lib/Support/ErrorHandling.cpp.
+    # bcryptprimitives provides ProcessPrng for the llvm-libc getentropy()
+    # implementation used by Support on NTPOSIX.
+    # combase provides CoInitializeEx / CoUninitialize for COM.cpp.
+    set(system_libs ${system_libs} bcryptprimitives combase ntdll)
+  else()
+    # libuuid required for FOLDERID_Profile usage in lib/Support/Windows/Path.inc.
+    # advapi32 required for CryptAcquireContextW in lib/Support/Windows/Path.inc.
+    # ntdll required for RtlGetLastNtStatus in lib/Support/ErrorHandling.cpp.
+    set(system_libs ${system_libs} psapi shell32 uuid advapi32 ws2_32 ntdll)
+  endif()
   if( HAVE_WINDOWS_ICU )
     list(APPEND system_libs icu)
   endif()
@@ -87,7 +95,7 @@ endif()
 
 # Delay load shell32.dll if possible to speed up process startup.
 set (delayload_flags)
-if (MSVC)
+if (MSVC AND NOT LLVM_RUNTIME_NTPOSIX)
   # When linking with Swift, `swiftc.exe` is used as the linker drive rather
   # than invoking `link.exe` directly.  In such a case, the flags should be
   # marked as `-Xlinker` to pass them directly to the linker.  As a temporary

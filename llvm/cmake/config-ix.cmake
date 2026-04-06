@@ -12,6 +12,19 @@ include(CheckCompilerVersion)
 include(CheckProblematicConfigurations)
 include(HandleLLVMStdlib)
 
+set(_llvm_config_ix_runtime_triple "")
+foreach(_triple_candidate IN ITEMS
+    "${CMAKE_C_COMPILER_TARGET}"
+    "${CMAKE_CXX_COMPILER_TARGET}"
+    "${LLVM_DEFAULT_TARGET_TRIPLE}"
+    "${LLVM_TARGET_TRIPLE}"
+    "${LLVM_HOST_TRIPLE}")
+  if(_triple_candidate)
+    set(_llvm_config_ix_runtime_triple "${_triple_candidate}")
+    break()
+  endif()
+endforeach()
+
 if (ANDROID OR CYGWIN OR CMAKE_SYSTEM_NAME MATCHES "AIX|DragonFly|FreeBSD|Haiku|Linux|NetBSD|OpenBSD|SunOS")
   set(HAVE_MACH_MACH_H 0)
   set(HAVE_MALLOC_MALLOC_H 0)
@@ -28,8 +41,12 @@ elseif (APPLE)
   set(HAVE_SYSEXITS_H 1)
   set(HAVE_UNISTD_H 1)
   set(HAVE_SYS_IOCTL_H 1)
-elseif (WIN32 AND LLVM_HOST_TRIPLE MATCHES "windows-itanium" AND LLVM_LIBC_FULL_BUILD)
-  # Windows Itanium with LLVM libc provides POSIX headers.
+elseif (WIN32 AND
+        ((_llvm_config_ix_runtime_triple MATCHES ".*-windows-(posix|ntposix).*") OR
+         (_llvm_config_ix_runtime_triple MATCHES ".*-windows-itanium.*" AND
+          LLVM_LIBC_FULL_BUILD)))
+  # Windows targets with the POSIX runtime personality provide POSIX headers.
+  # Windows Itanium can also provide them when using the full LLVM libc build.
   set(HAVE_MACH_MACH_H 0)
   set(HAVE_MALLOC_MALLOC_H 0)
   set(HAVE_PTHREAD_H 1)

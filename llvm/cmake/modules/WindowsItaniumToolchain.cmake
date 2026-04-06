@@ -15,18 +15,32 @@ if(CMAKE_C_COMPILER_TARGET MATCHES "windows-(itanium|ntposix)" OR
         "${CMAKE_CURRENT_LIST_DIR}/WindowsItaniumRules.cmake")
   endif()
 
-  # Set RC compiler before project() to prevent Windows-GNU.cmake from finding windres.
-  if(CMAKE_C_COMPILER AND NOT CMAKE_RC_COMPILER_INIT)
-    get_filename_component(_wi_compiler_dir "${CMAKE_C_COMPILER}" DIRECTORY)
-    find_program(_wi_llvm_rc NAMES llvm-rc HINTS "${_wi_compiler_dir}" NO_DEFAULT_PATH)
-    if(NOT _wi_llvm_rc)
-      find_program(_wi_llvm_rc NAMES llvm-rc)
+  # Set RC compiler before project() to prevent Windows-GNU.cmake from finding
+  # windres. Prefer llvm-rc from the selected toolchain; fall back to rc.exe
+  # from the VS/Windows SDK environment when llvm-rc is not installed yet.
+  if(NOT CMAKE_RC_COMPILER_INIT AND NOT CMAKE_RC_COMPILER)
+    unset(_wi_compiler_dir)
+    if(CMAKE_C_COMPILER)
+      get_filename_component(_wi_compiler_dir "${CMAKE_C_COMPILER}" DIRECTORY)
     endif()
-    if(_wi_llvm_rc)
-      set(CMAKE_RC_COMPILER_INIT "${_wi_llvm_rc}")
-      set(CMAKE_RC_COMPILER "${_wi_llvm_rc}")
+
+    set(_wi_rc_hints)
+    if(_wi_compiler_dir)
+      list(APPEND _wi_rc_hints "${_wi_compiler_dir}")
     endif()
-    unset(_wi_llvm_rc)
+
+    find_program(_wi_rc_compiler NAMES llvm-rc rc HINTS ${_wi_rc_hints}
+                 NO_DEFAULT_PATH)
+    if(NOT _wi_rc_compiler)
+      find_program(_wi_rc_compiler NAMES llvm-rc rc)
+    endif()
+    if(_wi_rc_compiler)
+      set(CMAKE_RC_COMPILER_INIT "${_wi_rc_compiler}")
+      set(CMAKE_RC_COMPILER "${_wi_rc_compiler}")
+    endif()
+
+    unset(_wi_rc_compiler)
+    unset(_wi_rc_hints)
     unset(_wi_compiler_dir)
   endif()
 endif()

@@ -36,6 +36,9 @@
 //    (`fifo:PATH`) or a pair of file descriptors (`R,W`). The pipe is
 //    pre-loaded with single-character tokens, one for each available job slot.
 //
+//    On Windows, GNU make uses a named semaphore instead. Windows builds with
+//    a POSIX runtime personality may need to consume either auth form.
+//
 //    - To acquire an additional slot, a client reads a single-character token
 //      from the pipe.
 //    - To release a slot, the client must write the *exact same* character

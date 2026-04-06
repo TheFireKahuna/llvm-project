@@ -262,6 +262,7 @@ def include_optional : Joined<["/", "-", "/?", "-?"], "includeoptional:">,
 def kill_at : F<"kill-at">;
 defm lld_allow_duplicate_weak : B_priv<"lld-allow-duplicate-weak">;
 def lldemit : P<"lldemit", "Specify output type">;
+def llditanium : F<"llditanium">;
 def lldmingw : F<"lldmingw">;
 def noseh : F<"noseh">;
 def osversion : P_priv<"osversion">;

@@ -30,11 +30,6 @@
 #include <new>
 #include <sys/types.h>
 #include <system_error>
-#if !defined(LLVM_CRT_UCRT)
-#include <unistd.h>
-#else
-#include <io.h>
-#endif
 
 using namespace llvm;
 

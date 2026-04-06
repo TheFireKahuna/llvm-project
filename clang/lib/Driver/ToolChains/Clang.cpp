@@ -6040,7 +6040,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back("-fms-layout-compatibility=itanium");
   }
 
-  if (Triple.isOSCygMing()) {
+  if (Triple.isOSCygMing() || Triple.isWindowsItaniumOrNTPOSIXEnvironment()) {
     Args.addOptOutFlag(CmdArgs, options::OPT_fauto_import,
                        options::OPT_fno_auto_import);
   }
@@ -7441,9 +7441,10 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   Args.addOptInFlag(CmdArgs, options::OPT_fborland_extensions,
                     options::OPT_fno_borland_extensions);
 
-  // -fno-declspec is default, except for PS4/PS5.
+  // -fno-declspec is default, except for PS4/PS5 and Windows Itanium/NTPOSIX.
   if (Args.hasFlag(options::OPT_fdeclspec, options::OPT_fno_declspec,
-                   RawTriple.isPS()))
+                   RawTriple.isPS() ||
+                       RawTriple.isWindowsItaniumOrNTPOSIXEnvironment()))
     CmdArgs.push_back("-fdeclspec");
   else if (Args.hasArg(options::OPT_fno_declspec))
     CmdArgs.push_back("-fno-declspec"); // Explicitly disabling __declspec.
