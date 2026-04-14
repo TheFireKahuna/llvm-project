@@ -124,11 +124,12 @@ fma(InType x, InType y, InType z) {
   InFPBits x_bits(x), y_bits(y), z_bits(z);
 
   if (LIBC_UNLIKELY(x_bits.is_nan() || y_bits.is_nan() || z_bits.is_nan())) {
-    if (x_bits.is_nan() || y_bits.is_nan()) {
-      if (x_bits.is_signaling_nan() || y_bits.is_signaling_nan() ||
-          z_bits.is_signaling_nan())
-        raise_except_if_required(FE_INVALID);
+    // Raise INVALID for any signaling NaN operand, regardless of which one.
+    if (x_bits.is_signaling_nan() || y_bits.is_signaling_nan() ||
+        z_bits.is_signaling_nan())
+      raise_except_if_required(FE_INVALID);
 
+    if (x_bits.is_nan() || y_bits.is_nan()) {
       if (x_bits.is_quiet_nan()) {
         InStorageType x_payload = x_bits.get_mantissa();
         x_payload >>= InFPBits::FRACTION_LEN - OutFPBits::FRACTION_LEN;
@@ -155,6 +156,19 @@ fma(InType x, InType y, InType z) {
 
       return OutFPBits::quiet_nan().get_val();
     }
+
+    // z is NaN, x and y are not NaN.
+    // Per IEEE 754 / C23: fma(±inf, 0, qNaN) and fma(0, ±inf, qNaN) raise
+    // INVALID because the inf × 0 product is an invalid operation,
+    // independent of the NaN addend.
+    if ((x_bits.is_inf() && y == 0) || (y_bits.is_inf() && x == 0))
+      raise_except_if_required(FE_INVALID);
+
+    InStorageType z_payload = z_bits.get_mantissa();
+    z_payload >>= InFPBits::FRACTION_LEN - OutFPBits::FRACTION_LEN;
+    return OutFPBits::quiet_nan(z_bits.sign(),
+                                static_cast<OutStorageType>(z_payload))
+        .get_val();
   }
 
   if (LIBC_UNLIKELY(x == 0 || y == 0 || z == 0))

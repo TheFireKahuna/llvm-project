@@ -15,7 +15,9 @@
 #include "hdr/offsetof_macros.h"
 #include "src/__support/common.h"
 #include "src/__support/macros/config.h"
+#define LLVM_LIBC_SETJMP_DONT_DEFINE_MACRO
 #include "src/setjmp/setjmp_impl.h"
+#undef LLVM_LIBC_SETJMP_DONT_DEFINE_MACRO
 
 #if !defined(LIBC_TARGET_ARCH_IS_X86)
 #error "Invalid file include"

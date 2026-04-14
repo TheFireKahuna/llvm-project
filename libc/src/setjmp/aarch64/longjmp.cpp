@@ -11,7 +11,6 @@
 #include "src/__support/macros/config.h"
 
 namespace LIBC_NAMESPACE_DECL {
-
 // TODO: if MTE stack tagging is in use (-fsanitize=memtag-stack), we need to
 // iterate over the region between the old and new values of sp, using STG or
 // ST2G instructions to clear the memory tags on the invalidated region of the
@@ -25,12 +24,6 @@ namespace LIBC_NAMESPACE_DECL {
 [[gnu::naked]] LLVM_LIBC_FUNCTION(void, longjmp,
                                   ([[maybe_unused]] jmp_buf buf,
                                    [[maybe_unused]] int val)) {
-  // If BTI branch protection is in use, the compiler will automatically insert
-  // a BTI here, so we don't need to make any extra effort to do so.
-
-  // If PAC branch protection is in use, there's no need to sign the return
-  // address at the start of longjmp, because we're not going to use it anyway!
-
   asm(
       // Reload the callee-saved GPRs, including fp and lr.
       R"(
@@ -88,5 +81,4 @@ namespace LIBC_NAMESPACE_DECL {
         ret
       )");
 }
-
 } // namespace LIBC_NAMESPACE_DECL

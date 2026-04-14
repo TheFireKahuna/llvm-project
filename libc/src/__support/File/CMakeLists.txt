@@ -11,6 +11,7 @@ add_object_library(
     file.cpp
   HDRS
     file.h
+    file_io_result.h
   DEPENDS
     libc.hdr.stdio_macros
     libc.hdr.stdint_proxy
@@ -20,6 +21,7 @@ add_object_library(
     libc.src.__support.CPP.span
     libc.src.__support.threads.mutex
     libc.src.__support.error_or
+    libc.src.__support.wchar.mbstate
 )
 
 add_object_library(

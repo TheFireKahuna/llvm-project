@@ -40,8 +40,12 @@
 // few global locks. So, to avoid static initialization order fiasco, we
 // want the constructors of the Mutex classes to be constexprs.
 
+#include "src/__support/macros/properties/runtime.h"
+
 #if defined(__linux__) || defined(__APPLE__)
 #include "src/__support/threads/unix_mutex.h"
+#elif defined(LIBC_TARGET_RUNTIME_IS_NTPOSIX)
+#include "src/__support/threads/windows/unix_mutex.h"
 #endif
 
 #elif LIBC_THREAD_MODE == LIBC_THREAD_MODE_SINGLE

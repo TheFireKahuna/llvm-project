@@ -30,8 +30,8 @@ struct IntFormatSection {
   char padding_char = '0';
 };
 
-template <printf_core::WriteMode write_mode>
-LIBC_INLINE int write_padded_int(printf_core::Writer<write_mode> *writer,
+template <typename WriterT>
+LIBC_INLINE int write_padded_int(WriterT *writer,
                                  const IntFormatSection &num_info) {
 
   DecFmt d(num_info.num);
@@ -61,16 +61,18 @@ LIBC_INLINE IntFormatSection get_int_format(const FormatSection &to_conv,
 
   IntFormatSection result = {0, 0, 0, '0'};
 
-  // gets_plus_sign is only true for year conversions where the year would be
-  // positive and more than 4 digits, including leading spaces. Both the
-  // FORCE_SIGN flag and gets_plus_sign must be true for a plus sign to be
-  // output.
+  // gets_plus_sign is true for year conversions where the year would be
+  // positive and more than 4 digits, including leading spaces. A plus sign is
+  // output when gets_plus_sign is true AND either FORCE_SIGN is set or no flags
+  // are set (bare %Y/%G/%C). Per POSIX, bare %Y is equivalent to %+4Y, so the
+  // '+' prefix is implicit. The LEADING_ZEROES flag (without FORCE_SIGN)
+  // suppresses the implicit '+' (e.g., %05Y gives "10009", not "+10009").
   bool gets_plus_sign = false;
 
   switch (to_conv.conv_name) {
   case 'C': // Century [00-99]
     raw_num = time_reader.get_year() / 100;
-    gets_plus_sign = raw_num > 99 || to_conv.min_width > 2;
+    gets_plus_sign = to_conv.min_width > 2;
     result.pad_to_len = 2;
     break;
   case 'd':                           // Day of the month [01-31]
@@ -174,9 +176,10 @@ LIBC_INLINE IntFormatSection get_int_format(const FormatSection &to_conv,
 
   if (is_negative)
     result.sign_char = '-';
-  else if ((to_conv.flags & FormatFlags::FORCE_SIGN) ==
-               FormatFlags::FORCE_SIGN &&
-           gets_plus_sign)
+  else if (gets_plus_sign &&
+           ((to_conv.flags & FormatFlags::FORCE_SIGN) ==
+                FormatFlags::FORCE_SIGN ||
+            to_conv.flags == FormatFlags(0)))
     result.sign_char = '+';
 
   // sign isn't a problem because we're taking the max. The result is always
@@ -188,8 +191,8 @@ LIBC_INLINE IntFormatSection get_int_format(const FormatSection &to_conv,
   return result;
 }
 
-template <printf_core::WriteMode write_mode>
-LIBC_INLINE int convert_int(printf_core::Writer<write_mode> *writer,
+template <typename WriterT>
+LIBC_INLINE int convert_int(WriterT *writer,
                             const FormatSection &to_conv, const tm *timeptr) {
 
   return write_padded_int(writer, get_int_format(to_conv, timeptr));

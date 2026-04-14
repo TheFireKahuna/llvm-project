@@ -67,6 +67,18 @@ add_macro_header(
 )
 
 add_macro_header(
+  dirent_macros
+  HDR
+    dirent-macros.h
+)
+
+add_macro_header(
+  arpa_inet_macros
+  HDR
+    arpa-inet-macros.h
+)
+
+add_macro_header(
   fcntl_macros
   HDR
     fcntl-macros.h
@@ -196,6 +208,12 @@ add_macro_header(
 )
 
 add_macro_header(
+  spawn_macros
+  HDR
+    spawn-macros.h
+)
+
+add_macro_header(
   stdbit_macros
   HDR
     stdbit-macros.h
@@ -226,6 +244,12 @@ add_macro_header(
 )
 
 add_macro_header(
+  sys_inotify_macros
+  HDR
+    sys-inotify-macros.h
+)
+
+add_macro_header(
   sys_ioctl_macros
   HDR
     sys-ioctl-macros.h
@@ -241,6 +265,12 @@ add_macro_header(
   sys_sem_macros
   HDR
     sys-sem-macros.h
+)
+
+add_macro_header(
+  sys_shm_macros
+  HDR
+    sys-shm-macros.h
 )
 
 add_macro_header(
@@ -369,6 +399,12 @@ add_macro_header(
 )
 
 add_macro_header(
+  langinfo_macros
+  HDR
+    langinfo-macros.h
+)
+
+add_macro_header(
   nl_types_macros
   HDR
     nl-types-macros.h
@@ -380,6 +416,12 @@ add_macro_header(
     pthread-macros.h
   DEPENDS
     .null_macro
+)
+
+add_macro_header(
+  semaphore_macros
+  HDR
+    semaphore-macros.h
 )
 
 add_macro_header(

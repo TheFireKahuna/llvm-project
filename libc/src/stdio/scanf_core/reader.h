@@ -17,21 +17,21 @@
 namespace LIBC_NAMESPACE_DECL {
 namespace scanf_core {
 
-template <typename Derived> class Reader {
+template <typename Derived, typename CharType = char> class Reader {
   size_t cur_chars_read = 0;
 
 public:
   // This returns the next character from the input and advances it by one
   // character. When it hits the end of the string or file it returns '\0' to
   // signal to stop parsing.
-  LIBC_INLINE char getc() {
+  LIBC_INLINE CharType getc() {
     ++cur_chars_read;
     return static_cast<Derived *>(this)->getc();
   }
 
   // This moves the input back by one character, placing c into the buffer if
   // this is a file reader, else c is ignored.
-  LIBC_INLINE void ungetc(int c) {
+  LIBC_INLINE void ungetc(CharType c) {
     --cur_chars_read;
     static_cast<Derived *>(this)->ungetc(c);
   }

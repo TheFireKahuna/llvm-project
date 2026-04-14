@@ -20,10 +20,14 @@
 
 #include <stdio.h>
 
+#include "src/__support/macros/properties/runtime.h"
+
 #if defined(__linux__)
 #include "src/__support/threads/linux/futex_utils.h"
 #elif defined(__APPLE__)
 #include "src/__support/threads/darwin/futex_utils.h"
+#elif defined(LIBC_TARGET_RUNTIME_IS_NTPOSIX)
+#include "src/__support/threads/windows/futex_utils.h"
 #endif
 
 #ifndef LIBC_COPT_TIMEOUT_ENSURE_MONOTONICITY
@@ -91,10 +95,31 @@ private:
           futex.exchange(IN_CONTENTION, cpp::MemoryOrder::ACQUIRE) == UNLOCKED)
         return true;
       // Contention persists. Park the thread and wait for further notification.
-      if (ETIMEDOUT == -futex.wait(IN_CONTENTION, timeout, is_pshared))
+      long wait_ret = futex.wait(IN_CONTENTION, timeout, is_pshared);
+#if defined(LIBC_TARGET_RUNTIME_IS_NTPOSIX)
+      // Handoff: the unlocker transferred ownership directly to us
+      // without changing the futex value. We own the lock — the value
+      // stays IN_CONTENTION, which is correct (other waiters may exist).
+      if (wait_ret == 1)
+        return true;
+#endif
+      if (ETIMEDOUT == -wait_ret)
         return false;
+      // Invalidation: the mutex was destroyed/recycled while we slept.
+      // Bail out — the futex address no longer belongs to our mutex.
+      if (EINVAL == -wait_ret)
+        return false;
+#if defined(LIBC_TARGET_RUNTIME_IS_NTPOSIX)
+      // Skip post-wake spin: try exchange immediately. At high thread
+      // counts, spinning after wake steals CPU from the lock holder
+      // (threads > cores) and the lock is typically re-grabbed before
+      // our spin completes. Setting state to LOCKED forces one exchange
+      // attempt at the top of the loop without 100 wasted PAUSE iters.
+      state = LOCKED;
+#else
       // Continue to spin after waking up.
       state = spin(spin_count);
+#endif
     }
   }
 
@@ -102,7 +127,17 @@ private:
 
 public:
   LIBC_INLINE static void init(RawMutex *mutex) {
-    mutex->futex.store(UNLOCKED);
+#if defined(LIBC_TARGET_RUNTIME_IS_NTPOSIX)
+    // init() atomically sets both value_ AND stack_ to clean state.
+    // Do NOT use reset() here — reset() calls drain_waiters() which
+    // walks the Treiber stack. For first-time init of opaque storage
+    // (pthread_mutex_t, pthread_cond_t), the stack may contain garbage
+    // from uninitialized memory, causing pool[garbage_index] accesses
+    // on uncommitted VA → access violation.
+    mutex->futex.init(UNLOCKED);
+#else
+    mutex->futex = UNLOCKED;
+#endif
   }
   LIBC_INLINE constexpr RawMutex() : futex(UNLOCKED) {}
   [[nodiscard]] LIBC_INLINE bool try_lock() {
@@ -121,18 +156,44 @@ public:
     return lock_slow(timeout, is_shared, spin_count);
   }
   LIBC_INLINE bool unlock(bool is_pshared = false) {
+#if defined(LIBC_TARGET_RUNTIME_IS_NTPOSIX)
+    // Handoff unlock: transfer ownership directly to one parked waiter
+    // without publishing UNLOCKED. Spinners never see UNLOCKED, so no
+    // thundering-herd CAS stampede.
+    //
+    // Fast path: CAS LOCKED→UNLOCKED (uncontended — no waiters).
+    FutexWordType expected = LOCKED;
+    if (LIBC_LIKELY(futex.compare_exchange_strong(
+            expected, UNLOCKED, cpp::MemoryOrder::RELEASE,
+            cpp::MemoryOrder::RELAXED)))
+      return true;
+    if (LIBC_UNLIKELY(expected == UNLOCKED))
+      return false;
+    // Contended: single scan tries handoff (WAITING) first, then
+    // Dekker-safe wake (IN_KERNEL), then bare store (empty list).
+    futex.unlock_notify(UNLOCKED, is_pshared);
+    return true;
+#else
     FutexWordType prev = futex.exchange(UNLOCKED, cpp::MemoryOrder::RELEASE);
     // if there is someone waiting, wake them up
     if (LIBC_UNLIKELY(prev == IN_CONTENTION))
       wake(is_pshared);
     // Detect invalid unlock operation.
     return prev != UNLOCKED;
+#endif
   }
   LIBC_INLINE void static destroy([[maybe_unused]] RawMutex *lock) {
-    LIBC_ASSERT(lock->futex == UNLOCKED && "Mutex destroyed while used.");
+    LIBC_ASSERT(lock->futex.load(cpp::MemoryOrder::RELAXED) == UNLOCKED &&
+                "Mutex destroyed while used.");
+#if defined(LIBC_TARGET_RUNTIME_IS_NTPOSIX)
+    // reset() drains stale waiters (clears their wait_address so they
+    // detect invalidation on wake) then zeroes value + stack atomically.
+    lock->futex.reset(UNLOCKED);
+#endif
   }
   LIBC_INLINE Futex &get_raw_futex() { return futex; }
-  LIBC_INLINE void reset() { futex.store(UNLOCKED); }
+  LIBC_INLINE void reset() { futex.reset(UNLOCKED); }
+  LIBC_INLINE void reset_for_fork() { futex.reset_for_fork(UNLOCKED); }
 };
 } // namespace LIBC_NAMESPACE_DECL
 

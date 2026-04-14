@@ -1,0 +1,68 @@
+add_entrypoint_object(
+  cnd_init
+  SRCS
+    cnd_init.cpp
+  HDRS
+    ../cnd_init.h
+  DEPENDS
+    libc.include.threads
+    libc.src.__support.threads.CndVar
+)
+
+add_entrypoint_object(
+  cnd_destroy
+  SRCS
+    cnd_destroy.cpp
+  HDRS
+    ../cnd_destroy.h
+  DEPENDS
+    libc.include.threads
+    libc.src.__support.threads.CndVar
+)
+
+add_entrypoint_object(
+  cnd_wait
+  SRCS
+    cnd_wait.cpp
+  HDRS
+    ../cnd_wait.h
+  DEPENDS
+    libc.include.threads
+    libc.src.__support.threads.mutex
+    libc.src.__support.threads.CndVar
+)
+
+add_entrypoint_object(
+  cnd_signal
+  SRCS
+    cnd_signal.cpp
+  HDRS
+    ../cnd_signal.h
+  DEPENDS
+    libc.include.threads
+    libc.src.__support.threads.CndVar
+)
+
+add_entrypoint_object(
+  cnd_broadcast
+  SRCS
+    cnd_broadcast.cpp
+  HDRS
+    ../cnd_broadcast.h
+  DEPENDS
+    libc.include.threads
+    libc.src.__support.threads.CndVar
+)
+
+add_entrypoint_object(
+  cnd_timedwait
+  SRCS
+    cnd_timedwait.cpp
+  HDRS
+    ../cnd_timedwait.h
+  DEPENDS
+    libc.include.threads
+    libc.src.__support.threads.mutex
+    libc.src.__support.threads.CndVar
+    libc.src.__support.time.abs_timeout
+)

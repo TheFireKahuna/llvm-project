@@ -42,4 +42,24 @@ add_integration_test(
     libc.src.sys.wait.waitpid
 )
 
+add_integration_test(
+  waitid_test
+  SUITE
+    spawn-integration-tests
+  SRCS
+    waitid_test.cpp
+  DEPENDS
+    libc_posix_spawn_test_binary
+    libc.test.integration.src.spawn.test_binary_properties
+    libc.include.fcntl
+    libc.include.signal
+    libc.include.spawn
+    libc.include.sys_wait
+    libc.src.spawn.posix_spawn
+    libc.src.spawn.posix_spawn_file_actions_addopen
+    libc.src.spawn.posix_spawn_file_actions_destroy
+    libc.src.spawn.posix_spawn_file_actions_init
+    libc.src.sys.wait.waitid
+)
+
 add_subdirectory(testdata)

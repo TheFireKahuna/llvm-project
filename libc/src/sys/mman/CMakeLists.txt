@@ -80,6 +80,27 @@ add_entrypoint_object(
 )
 
 add_entrypoint_object(
+  mbind
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.mbind
+)
+
+add_entrypoint_object(
+  get_mempolicy
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.get_mempolicy
+)
+
+add_entrypoint_object(
+  set_mempolicy
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.set_mempolicy
+)
+
+add_entrypoint_object(
   msync
   ALIAS
   DEPENDS
@@ -126,6 +147,13 @@ add_entrypoint_object(
   ALIAS
   DEPENDS
   .${LIBC_TARGET_OS}.remap_file_pages
+)
+
+add_entrypoint_object(
+  memfd_create
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.memfd_create
 )
 
 add_entrypoint_object(

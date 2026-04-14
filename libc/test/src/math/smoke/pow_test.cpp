@@ -12,6 +12,7 @@
 #include "test/UnitTest/Test.h"
 
 using LlvmLibcPowTest = LIBC_NAMESPACE::testing::FPTest<double>;
+using FPBits = LIBC_NAMESPACE::fputil::FPBits<double>;
 using LIBC_NAMESPACE::fputil::testing::ForceRoundingMode;
 using LIBC_NAMESPACE::fputil::testing::RoundingMode;
 
@@ -215,6 +216,52 @@ TEST_F(LlvmLibcPowTest, SpecialNumbers) {
     // EXPECT_FP_EQ(100000000.0, LIBC_NAMESPACE::pow(10.0, 8.0));
     // EXPECT_FP_EQ(1000000000.0, LIBC_NAMESPACE::pow(10.0, 9.0));
     // EXPECT_FP_EQ(10000000000.0, LIBC_NAMESPACE::pow(10.0, 10.0));
+
+    // Subnormal bases with small exponents.
+    // Before the fix, the denormal normalization path set e_x = -1023 - 64 for
+    // ALL subnormals instead of deriving the true exponent from the normalized
+    // value, causing large ULP errors.
+
+    // 2^(-1074) is the smallest subnormal (5e-324).
+    // pow(2^-1074, 0.5) = 2^-537, which is normal.
+    EXPECT_FP_EQ(0x1.0p-537, LIBC_NAMESPACE::pow(0x1.0p-1074, 0.5));
+
+    // A mid-range subnormal: 2^-1040.
+    // pow(2^-1040, 0.5) = 2^-520, which is normal.
+    EXPECT_FP_EQ(0x1.0p-520, LIBC_NAMESPACE::pow(0x1.0p-1040, 0.5));
+
+    // Subnormal base with exponent 0.25.
+    // pow(2^-1040, 0.25) = 2^-260.
+    EXPECT_FP_EQ(0x1.0p-260, LIBC_NAMESPACE::pow(0x1.0p-1040, 0.25));
+
+    // Subnormal base with y = 2.0 (integer exponent, tests negative x_sign
+    // path too since the base is positive and subnormal).
+    // pow(2^-1040, 2) = 2^-2080 = 0 (underflow).
+    EXPECT_FP_EQ(0.0, LIBC_NAMESPACE::pow(0x1.0p-1040, 2.0));
+
+    // x^(-2) must raise exceptions for the final result, not for any
+    // intermediate square. In particular, tiny x should overflow and huge x
+    // should underflow.
+    const double overflow_result =
+        (ROUNDING_MODES[i] == RoundingMode::Downward ||
+         ROUNDING_MODES[i] == RoundingMode::TowardZero)
+            ? FPBits::max_normal().get_val()
+            : inf;
+    const double underflow_result = (ROUNDING_MODES[i] == RoundingMode::Upward)
+                                        ? FPBits::min_subnormal().get_val()
+                                        : 0.0;
+    EXPECT_FP_EQ_WITH_EXCEPTION(overflow_result,
+                                LIBC_NAMESPACE::pow(0x1.0p-1022, -2.0),
+                                FE_OVERFLOW | FE_INEXACT);
+    EXPECT_FP_EQ_WITH_EXCEPTION(overflow_result,
+                                LIBC_NAMESPACE::pow(-0x1.0p-1022, -2.0),
+                                FE_OVERFLOW | FE_INEXACT);
+    EXPECT_FP_EQ_WITH_EXCEPTION(underflow_result,
+                                LIBC_NAMESPACE::pow(0x1.0p+1023, -2.0),
+                                FE_UNDERFLOW | FE_INEXACT);
+    EXPECT_FP_EQ_WITH_EXCEPTION(underflow_result,
+                                LIBC_NAMESPACE::pow(-0x1.0p+1023, -2.0),
+                                FE_UNDERFLOW | FE_INEXACT);
 
     // Overflow / Underflow:
     if (ROUNDING_MODES[i] != RoundingMode::Downward &&

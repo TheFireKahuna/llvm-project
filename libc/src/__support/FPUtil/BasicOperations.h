@@ -236,15 +236,23 @@ template <typename T, cpp::enable_if_t<cpp::is_floating_point_v<T>, int> = 0>
 LIBC_INLINE T fdim(T x, T y) {
   FPBits<T> bitx(x), bity(y);
 
-  if (bitx.is_nan()) {
-    return x;
+  if (bitx.is_nan() || bity.is_nan()) {
+    if (bitx.is_signaling_nan() || bity.is_signaling_nan())
+      raise_except_if_required(FE_INVALID);
+
+    // Return a quiet NaN, preferring x's payload if x is NaN.
+    if (bitx.is_nan())
+      return FPBits<T>::quiet_nan(bitx.sign(), bitx.get_mantissa()).get_val();
+    return FPBits<T>::quiet_nan(bity.sign(), bity.get_mantissa()).get_val();
   }
 
-  if (bity.is_nan()) {
-    return y;
-  }
-
-  return (x > y ? x - y : T(0));
+  // Use an explicit branch so that x - y is never speculatively evaluated
+  // when x <= y.  A ternary can compile to branchless code that executes
+  // the subtraction unconditionally, leaving spurious INEXACT / UNDERFLOW
+  // flags from the discarded result.
+  if (x > y)
+    return static_cast<T>(x - y);
+  return T(0);
 }
 
 // Avoid reusing `issignaling` macro.

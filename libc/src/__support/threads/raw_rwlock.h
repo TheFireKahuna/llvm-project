@@ -80,11 +80,25 @@ public:
       else
         return queue.pending_writers;
     }
-    template <Role role> LIBC_INLINE FutexWordType &serialization() {
+    template <Role role> LIBC_INLINE FutexValueType read_serialization() {
       if constexpr (role == Role::Reader)
-        return queue.reader_serialization.val;
+        return queue.reader_serialization.load(cpp::MemoryOrder::RELAXED);
       else
-        return queue.writer_serialization.val;
+        return queue.writer_serialization.load(cpp::MemoryOrder::RELAXED);
+    }
+    template <Role role> LIBC_INLINE void increment_serialization() {
+      // Must go through the Futex value-level store (CAS loop) rather than
+      // raw val++ to avoid racing with the Treiber stack packed in the
+      // upper 32 bits of the 64-bit futex word on Windows.
+      if constexpr (role == Role::Reader) {
+        FutexValueType v =
+            queue.reader_serialization.load(cpp::MemoryOrder::RELAXED);
+        queue.reader_serialization.store(v + 1, cpp::MemoryOrder::RELAXED);
+      } else {
+        FutexValueType v =
+            queue.writer_serialization.load(cpp::MemoryOrder::RELAXED);
+        queue.writer_serialization.store(v + 1, cpp::MemoryOrder::RELAXED);
+      }
     }
     friend WaitingQueue;
   };
@@ -380,7 +394,7 @@ private:
         return result;
 
       // Phase 5: register ourselves as a  reader.
-      int serial_number;
+      FutexValueType serial_number;
       {
         // The queue need to be protected by a mutex since the operations in
         // this block must be executed as a whole transaction. It is possible
@@ -396,8 +410,7 @@ private:
         // sleep on the futex, we can avoid such waiting.
         old = RwState::fetch_set_pending_bit<role>(state,
                                                    cpp::MemoryOrder::RELAXED);
-        // no need to use atomic since it is already protected by the mutex.
-        serial_number = guard.serialization<role>();
+        serial_number = guard.template read_serialization<role>();
       }
 
       // Phase 6: do futex wait until the lock is available or timeout is
@@ -441,10 +454,10 @@ private:
     {
       WaitingQueue::Guard guard = queue.acquire(is_pshared);
       if (guard.pending_count<Role::Writer>() != 0) {
-        guard.serialization<Role::Writer>()++;
+        guard.increment_serialization<Role::Writer>();
         status = WakeTarget::Writers;
       } else if (guard.pending_count<Role::Reader>() != 0) {
-        guard.serialization<Role::Reader>()++;
+        guard.increment_serialization<Role::Reader>();
         status = WakeTarget::Readers;
       } else {
         status = WakeTarget::None;

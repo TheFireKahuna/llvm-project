@@ -17,6 +17,7 @@
 #include "src/__support/macros/config.h"
 #include "src/__support/macros/null_check.h"
 #include "src/__support/wchar/character_converter.h"
+#include "src/__support/wchar/locale_encoding.h"
 #include "src/__support/wchar/mbstate.h"
 #include "src/__support/wchar/string_converter.h"
 
@@ -27,7 +28,7 @@ LIBC_INLINE static ErrorOr<size_t>
 mbsnrtowcs(wchar_t *__restrict dst, const char **__restrict src,
            size_t max_src_bytes, size_t max_dst_chars, mbstate *__restrict ps) {
   LIBC_CRASH_ON_NULLPTR(src);
-  CharacterConverter char_conv(ps);
+  CharacterConverter char_conv(ps, locale_encoding_is_utf8());
   if (!char_conv.isValidState())
     return Error(EINVAL);
 
@@ -36,8 +37,13 @@ mbsnrtowcs(wchar_t *__restrict dst, const char **__restrict src,
   size_t dst_idx = 0;
   ErrorOr<char32_t> converted = str_conv.pop<char32_t>();
   while (converted.has_value()) {
+    // On Windows (16-bit wchar_t), codepoints above BMP don't fit.
+    if constexpr (sizeof(wchar_t) < 4) {
+      if (converted.value() > 0xFFFF)
+        return Error(EILSEQ);
+    }
     if (dst != nullptr)
-      dst[dst_idx] = converted.value();
+      dst[dst_idx] = static_cast<wchar_t>(converted.value());
     // null terminator should not be counted in return value
     if (converted.value() == L'\0') {
       if (dst != nullptr)

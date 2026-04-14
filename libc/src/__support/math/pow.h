@@ -221,7 +221,8 @@ LIBC_INLINE double pow(double x, double y) {
   uint64_t x_a = x_abs.uintval();
   uint64_t y_a = y_abs.uintval();
 
-  double e_x = static_cast<double>(xbits.get_exponent());
+  int x_exp = xbits.get_exponent();
+  double e_x = static_cast<double>(x_exp);
   uint64_t sign = 0;
 
   ///////// BEGIN - Check exceptional cases ////////////////////////////////////
@@ -259,7 +260,15 @@ LIBC_INLINE double pow(double x, double y) {
     case 0x3ff0'0000'0000'0000: // y = +-1.0
       return y_sign ? (1.0 / x) : x;
     case 0x4000'0000'0000'0000: // y = +-2.0;
-      return y_sign ? (1.0 / (x * x)) : (x * x);
+      // Fast-path when x*x and 1/(x*x) stay finite+normal — avoids
+      // intermediate underflow→DIVBYZERO for tiny x or overflow for huge x.
+      // For extreme exponents, fall through to the general exp2(y*log2(x))
+      // path which has proper exception isolation.
+      if (!y_sign)
+        return x * x;
+      if (x_exp >= -511 && x_exp <= 510)
+        return 1.0 / (x * x);
+      break;
     }
 
     // |y| > |1075 / log2(1 - 2^-53)|.
@@ -285,9 +294,7 @@ LIBC_INLINE double pow(double x, double y) {
         }
 
         if (x == 0.0 && y_sign) {
-          // pow(+-0, -Inf) = +inf and raise FE_DIVBYZERO
-          fputil::set_errno_if_required(EDOM);
-          fputil::raise_except_if_required(FE_DIVBYZERO);
+          // pow(+-0, -Inf) = +inf.  No exceptions per IEEE 754 / C23 F.10.4.4.
           return FPBits::inf().get_val();
         }
         // pow (|x| < 1, -inf) = +inf
@@ -340,8 +347,10 @@ LIBC_INLINE double pow(double x, double y) {
 
     // Normalize denormal inputs.
     if (x_a < FPBits::min_normal().uintval()) {
-      e_x -= 64.0;
-      x_mant = FPBits(x * 0x1.0p64).get_mantissa();
+      FPBits x_normalized(x * 0x1.0p64);
+      x_exp = x_normalized.get_exponent() - 64;
+      e_x = static_cast<double>(x_exp);
+      x_mant = x_normalized.get_mantissa();
     }
 
     // x is finite and negative, and y is a finite integer.
@@ -361,6 +370,16 @@ LIBC_INLINE double pow(double x, double y) {
   }
 
   ///////// END - Check exceptional cases //////////////////////////////////////
+
+  // Isolate exception flags from intermediate computation.  The
+  // exp2(y * log2(x)) pipeline can spuriously set DIVBYZERO (from log2 of
+  // subnormals), OVERFLOW, or UNDERFLOW in hardware.  We save the caller's
+  // flags, clear them, run the computation, then raise only the flags that
+  // the result warrants per C23 F.10.4.4.
+#ifndef LIBC_MATH_HAS_NO_EXCEPT
+  int saved_excepts = fputil::test_except(FE_ALL_EXCEPT);
+  fputil::clear_except(FE_ALL_EXCEPT);
+#endif
 
   // x^y = 2^( y * log2(x) )
   //     = 2^( y * ( e_x + log2(m_x) ) )
@@ -476,13 +495,23 @@ LIBC_INLINE double pow(double x, double y) {
     if (FPBits(y6_log2_x.hi).sign() == Sign::POS) {
       scale = 0x1.0p512;
       y6_log2_x.hi -= 512.0 * 64.0;
-      if (y6_log2_x.hi > 513.0 * 64.0)
+      if (y6_log2_x.hi > 513.0 * 64.0) {
         y6_log2_x.hi = 513.0 * 64.0;
+        // The lo part is a residual from the original unclamped product.
+        // After hard-clamping hi, lo is stale and can be arbitrarily large,
+        // which corrupts the polynomial evaluation (e.g. producing -inf
+        // instead of +inf for pow(huge, huge)).  Zero it so that the
+        // polynomial sees lo ≈ 0 and evaluates to ≈ 1, giving a clean
+        // overflow or underflow from the subsequent scaling.
+        y6_log2_x.lo = 0.0;
+      }
     } else {
       scale = 0x1.0p-512;
       y6_log2_x.hi += 512.0 * 64.0;
-      if (y6_log2_x.hi < (-1076.0 + 512.0) * 64.0)
+      if (y6_log2_x.hi < (-1076.0 + 512.0) * 64.0) {
         y6_log2_x.hi = -564.0 * 64.0;
+        y6_log2_x.lo = 0.0;
+      }
     }
   }
 
@@ -536,7 +565,53 @@ LIBC_INLINE double pow(double x, double y) {
   double r = fputil::multiply_add(exp2_hm_hi * lo6, pp, exp2_hm_lo);
   r += exp2_hm_hi;
 
-  return r * scale;
+  r *= scale;
+
+  // The sign bit was toggled into the intermediate bit patterns above.  For
+  // normal finite results this is exact, but overflow/underflow can lose or
+  // flip the sign (e.g. +inf becomes -inf).  Re-apply the correct sign.
+  if (LIBC_UNLIKELY(sign != 0))
+    r = -FPBits(r).abs().get_val();
+
+  // Restore the caller's exception flags and raise only the mathematically
+  // correct exceptions for the result.  The classification below is
+  // branchless up to the final raise/errno calls (which are inherently
+  // side-effects that cannot be elided).
+#ifndef LIBC_MATH_HAS_NO_EXCEPT
+  {
+    int comp_excepts = fputil::test_except(FE_ALL_EXCEPT);
+    fputil::set_except(saved_excepts);
+
+    FPBits r_bits(r);
+    bool is_overflow = r_bits.is_inf();
+    bool is_zero_uf = (r == 0.0);
+    bool is_subnormal = r_bits.is_subnormal();
+    bool hw_inexact = (comp_excepts & FE_INEXACT) != 0;
+
+    // Build the exception mask from the result classification.
+    // Overflow and underflow-to-zero always imply INEXACT (the true result
+    // is finite nonzero but unrepresentable).  Subnormal only signals
+    // UNDERFLOW when the computation was actually inexact — exact subnormals
+    // like pow(2, -1023) must raise nothing per IEEE 754 / C23.
+    int except_mask = 0;
+    if (LIBC_UNLIKELY(is_overflow))
+      except_mask = FE_OVERFLOW | FE_INEXACT;
+    else if (LIBC_UNLIKELY(is_zero_uf))
+      except_mask = FE_UNDERFLOW | FE_INEXACT;
+    else if (LIBC_UNLIKELY(is_subnormal) && hw_inexact)
+      except_mask = FE_UNDERFLOW | FE_INEXACT;
+    else if (hw_inexact)
+      except_mask = FE_INEXACT;
+
+    // Single call site for errno and exception raising.
+    if (LIBC_UNLIKELY((except_mask & (FE_OVERFLOW | FE_UNDERFLOW)) != 0))
+      fputil::set_errno_if_required(ERANGE);
+    if (LIBC_UNLIKELY(except_mask != 0))
+      fputil::raise_except_if_required(except_mask);
+  }
+#endif
+
+  return r;
 }
 
 } // namespace math

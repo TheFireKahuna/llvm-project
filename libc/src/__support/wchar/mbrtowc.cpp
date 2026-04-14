@@ -14,6 +14,7 @@
 #include "src/__support/error_or.h"
 #include "src/__support/macros/config.h"
 #include "src/__support/wchar/character_converter.h"
+#include "src/__support/wchar/locale_encoding.h"
 #include "src/__support/wchar/mbstate.h"
 
 namespace LIBC_NAMESPACE_DECL {
@@ -21,7 +22,7 @@ namespace internal {
 
 ErrorOr<size_t> mbrtowc(wchar_t *__restrict pwc, const char *__restrict src_ptr,
                         size_t max_src_bytes, mbstate *__restrict ps) {
-  CharacterConverter char_conv(ps);
+  CharacterConverter char_conv(ps, locale_encoding_is_utf8());
   if (!char_conv.isValidState())
     return Error(EINVAL);
   if (src_ptr == nullptr)
@@ -37,12 +38,15 @@ ErrorOr<size_t> mbrtowc(wchar_t *__restrict pwc, const char *__restrict src_ptr,
   auto wc = char_conv.pop_utf32();
   if (wc.has_value()) {
     if (pwc != nullptr)
-      *pwc = wc.value();
+      *pwc = static_cast<wchar_t>(wc.value());
     // null terminator -> return 0
     if (wc.value() == L'\0')
       return 0;
     return i;
   }
+  // Validation failure (overlong, surrogate, out-of-range)
+  if (wc.error() == EILSEQ)
+    return Error(EILSEQ);
   // Incomplete but potentially valid
   return -2;
 }

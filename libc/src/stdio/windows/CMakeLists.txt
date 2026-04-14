@@ -1,0 +1,140 @@
+add_entrypoint_object(
+  stdin
+  SRCS
+    stdin.cpp
+  HDRS
+    ../stdin.h
+  DEPENDS
+    libc.hdr.types.FILE
+    libc.src.__support.common
+    libc.src.__support.macros.config
+)
+
+add_entrypoint_object(
+  stdout
+  SRCS
+    stdout.cpp
+  HDRS
+    ../stdout.h
+  DEPENDS
+    libc.hdr.types.FILE
+    libc.src.__support.common
+    libc.src.__support.macros.config
+)
+
+add_entrypoint_object(
+  stderr
+  SRCS
+    stderr.cpp
+  HDRS
+    ../stderr.h
+  DEPENDS
+    libc.hdr.types.FILE
+    libc.src.__support.common
+    libc.src.__support.macros.config
+)
+
+add_entrypoint_object(
+  fdopen
+  SRCS
+    fdopen.cpp
+  HDRS
+    ../fdopen.h
+  DEPENDS
+    libc.hdr.types.FILE
+    libc.src.__support.OSUtil.windows.stdio_file_ops
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  fclose
+  SRCS
+    fclose.cpp
+  HDRS
+    ../fclose.h
+  DEPENDS
+    libc.hdr.types.FILE
+    libc.src.__support.OSUtil.windows.stdio_file_ops
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  freopen
+  SRCS
+    freopen.cpp
+  HDRS
+    ../freopen.h
+  DEPENDS
+    libc.hdr.types.FILE
+    libc.src.__support.OSUtil.windows.stdio_file_ops
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  remove
+  SRCS
+    remove.cpp
+  HDRS
+    ../remove.h
+  DEPENDS
+    libc.src.__support.OSUtil.windows.rename_ops
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  rename
+  SRCS
+    rename.cpp
+  HDRS
+    ../rename.h
+  DEPENDS
+    libc.src.__support.OSUtil.windows.rename_ops
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  renameat
+  SRCS
+    renameat.cpp
+  HDRS
+    ../renameat.h
+  DEPENDS
+    libc.src.__support.OSUtil.windows.syscall_wrapper_renameat
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  tmpfile
+  SRCS
+    tmpfile.cpp
+  HDRS
+    ../tmpfile.h
+  DEPENDS
+    libc.hdr.types.FILE
+    libc.src.__support.OSUtil.windows.stdio_file_ops
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  popen
+  SRCS
+    popen.cpp
+  HDRS
+    ../popen.h
+  DEPENDS
+    libc.hdr.types.FILE
+    libc.src.__support.OSUtil.windows.stdio_file_ops
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  pclose
+  SRCS
+    pclose.cpp
+  HDRS
+    ../pclose.h
+  DEPENDS
+    libc.hdr.types.FILE
+    libc.src.__support.OSUtil.windows.stdio_file_ops
+    libc.src.errno.errno
+)

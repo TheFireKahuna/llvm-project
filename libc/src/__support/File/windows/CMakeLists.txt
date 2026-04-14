@@ -1,0 +1,65 @@
+add_object_library(
+  file
+  SRCS
+    file.cpp
+  HDRS
+    file.h
+  DEPENDS
+    libc.hdr.stdio_macros
+    libc.hdr.types.off_t
+    libc.src.__support.CPP.new
+    libc.src.__support.error_or
+    libc.src.__support.File.file
+    libc.src.__support.OSUtil.windows.file_pool
+    libc.src.__support.OSUtil.windows.io_ring_helpers
+    libc.src.__support.OSUtil.windows.nt_path
+    libc.src.__support.OSUtil.windows.signal_syscalls
+    libc.src.errno.errno
+    libc.src.__support.OSUtil.windows.signal_subsystem
+    libc.hdr.signal_macros
+)
+
+add_object_library(
+  stdout
+  SRCS
+    stdout.cpp
+  DEPENDS
+    .file
+    libc.hdr.types.FILE
+    libc.hdr.stdio_macros
+)
+
+add_object_library(
+  stdin
+  SRCS
+    stdin.cpp
+  DEPENDS
+    .file
+    libc.hdr.types.FILE
+    libc.hdr.stdio_macros
+)
+
+add_object_library(
+  stderr
+  SRCS
+    stderr.cpp
+  DEPENDS
+    .file
+    libc.hdr.types.FILE
+    libc.hdr.stdio_macros
+)
+
+add_object_library(
+  windows_dir
+  SRCS
+    dir.cpp
+  DEPENDS
+    libc.include.dirent
+    libc.hdr.fcntl_macros
+    libc.src.__support.error_or
+    libc.src.__support.File.dir
+    libc.src.__support.OSUtil.windows.fd_table
+    libc.src.__support.OSUtil.windows.fifo
+    libc.src.__support.OSUtil.windows.nt_path
+    libc.src.__support.OSUtil.windows.ntdll
+)

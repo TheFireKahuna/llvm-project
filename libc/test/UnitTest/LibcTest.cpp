@@ -17,10 +17,9 @@
 #include "src/__support/uint128.h"
 #include "test/UnitTest/TestLogger.h"
 
-#if __STDC_HOSTED__
-#include <time.h>
-#define LIBC_TEST_USE_CLOCK
-#elif defined(TARGET_SUPPORTS_CLOCK)
+#include <stdint.h>
+
+#if defined(TARGET_SUPPORTS_CLOCK)
 #include <time.h>
 
 #include "src/time/clock.h"
@@ -69,6 +68,15 @@ cpp::enable_if_t<cpp::is_fixed_point_v<T>, cpp::string> describeValue(T Value) {
 
 cpp::string_view describeValue(const cpp::string &Value) { return Value; }
 cpp::string_view describeValue(cpp::string_view Value) { return Value; }
+cpp::string describeValue(char16_t Value) {
+  return cpp::to_string(static_cast<uint32_t>(Value));
+}
+cpp::string describeValue(char32_t Value) {
+  return cpp::to_string(static_cast<uint32_t>(Value));
+}
+cpp::string describeValue(wchar_t Value) {
+  return cpp::to_string(static_cast<uint32_t>(Value));
+}
 
 template <typename ValType>
 bool test(RunContext *Ctx, TestCond Cond, ValType LHS, ValType RHS,
@@ -158,13 +166,17 @@ int Test::runTests(const TestOptions &Options) {
     }
 
     tlog << green << "[ RUN      ] " << reset << TestName << '\n';
-    [[maybe_unused]] const uint64_t start_time = static_cast<uint64_t>(clock());
+#ifdef LIBC_TEST_USE_CLOCK
+    const uint64_t start_time = static_cast<uint64_t>(clock());
+#endif
     RunContext Ctx;
     T->SetUp();
     T->setContext(&Ctx);
     T->Run();
     T->TearDown();
-    [[maybe_unused]] const uint64_t end_time = static_cast<uint64_t>(clock());
+#ifdef LIBC_TEST_USE_CLOCK
+    const uint64_t end_time = static_cast<uint64_t>(clock());
+#endif
     switch (Ctx.status()) {
     case RunContext::RunResult::Fail:
       tlog << red << "[  FAILED  ] " << reset << TestName << '\n';
@@ -231,6 +243,9 @@ TEST_SPECIALIZATION(unsigned long);
 TEST_SPECIALIZATION(unsigned long long);
 
 TEST_SPECIALIZATION(bool);
+TEST_SPECIALIZATION(char16_t);
+TEST_SPECIALIZATION(char32_t);
+TEST_SPECIALIZATION(wchar_t);
 
 // We cannot just use a single UInt128 specialization as that resolves to only
 // one type, UInt<128> or __uint128_t. We want both overloads as we want to

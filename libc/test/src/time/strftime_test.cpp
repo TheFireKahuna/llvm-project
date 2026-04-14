@@ -2030,6 +2030,9 @@ TEST(LlvmLibcStrftimeTest, DateFormatISO) {
   written = LIBC_NAMESPACE::strftime(buffer, sizeof(buffer), "%+10F", &time);
   EXPECT_STREQ_LEN(written, buffer, "0476-09-04");
 
+  written = LIBC_NAMESPACE::strftime(buffer, sizeof(buffer), "%+11F", &time);
+  EXPECT_STREQ_LEN(written, buffer, "+0476-09-04");
+
   written = LIBC_NAMESPACE::strftime(buffer, sizeof(buffer), "%+12F", &time);
   EXPECT_STREQ_LEN(written, buffer, "+00476-09-04");
 
@@ -2044,6 +2047,44 @@ TEST(LlvmLibcStrftimeTest, DateFormatISO) {
 
   written = LIBC_NAMESPACE::strftime(buffer, sizeof(buffer), "%+12F", &time);
   EXPECT_STREQ_LEN(written, buffer, "-00100-10-31");
+
+  // Composite width only applies to the leading year. Month and day must keep
+  // their intrinsic two-digit formatting.
+  time.tm_year = get_adjusted_year(2016);
+  time.tm_mon = 0;
+  time.tm_mday = 3;
+  written = LIBC_NAMESPACE::strftime(buffer, sizeof(buffer), "%012F", &time);
+  EXPECT_STREQ_LEN(written, buffer, "002016-01-03");
+
+  written = LIBC_NAMESPACE::strftime(buffer, sizeof(buffer), "%+10F", &time);
+  EXPECT_STREQ_LEN(written, buffer, "2016-01-03");
+
+  written = LIBC_NAMESPACE::strftime(buffer, sizeof(buffer), "%+11F", &time);
+  EXPECT_STREQ_LEN(written, buffer, "+2016-01-03");
+
+  time.tm_year = get_adjusted_year(10009);
+  time.tm_mon = 0;
+  time.tm_mday = 5;
+  written = LIBC_NAMESPACE::strftime(buffer, sizeof(buffer), "%011F", &time);
+  EXPECT_STREQ_LEN(written, buffer, "10009-01-05");
+
+  time.tm_year = get_adjusted_year(0);
+  time.tm_mon = 1;
+  time.tm_mday = 23;
+  written = LIBC_NAMESPACE::strftime(buffer, sizeof(buffer), "%01F", &time);
+  EXPECT_STREQ_LEN(written, buffer, "0-02-23");
+
+  written = LIBC_NAMESPACE::strftime(buffer, sizeof(buffer), "%06F", &time);
+  EXPECT_STREQ_LEN(written, buffer, "0-02-23");
+
+  written = LIBC_NAMESPACE::strftime(buffer, sizeof(buffer), "%010F", &time);
+  EXPECT_STREQ_LEN(written, buffer, "0000-02-23");
+
+  time.tm_year = get_adjusted_year(-123);
+  time.tm_mon = 0;
+  time.tm_mday = 1;
+  written = LIBC_NAMESPACE::strftime(buffer, sizeof(buffer), "%011F", &time);
+  EXPECT_STREQ_LEN(written, buffer, "-0123-01-01");
 }
 
 TEST(LlvmLibcStrftimeTest, TimeFormatAMPM) {

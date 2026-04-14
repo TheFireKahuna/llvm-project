@@ -17,12 +17,16 @@
 
 #include <time.h>
 
-#endif // LLVM_LIBC_FULL_BUILD
-
-// TODO: For now, on windows, let's always include the extension header.
-// We will need to decide how to export this header.
+// Windows system <time.h> (UCRT) does not define POSIX clock constants
+// (CLOCK_MONOTONIC, CLOCK_REALTIME, etc.) or timer macros. Pull in the
+// extension header so that overlay-mode code on any Windows target can use
+// the POSIX time interfaces provided by llvm-libc.
+// In full-build mode the platform dispatcher in time-macros.h already
+// includes this header for __NTPOSIX__ and other Windows environments.
 #ifdef _WIN32
 #include "include/llvm-libc-macros/windows/time-macros-ext.h"
-#endif // _WIN32
+#endif
+
+#endif // LLVM_LIBC_FULL_BUILD
 
 #endif // LLVM_LIBC_HDR_TIME_MACROS_H

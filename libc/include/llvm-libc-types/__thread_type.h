@@ -9,8 +9,6 @@
 #ifndef LLVM_LIBC_TYPES___THREAD_TYPE_H
 #define LLVM_LIBC_TYPES___THREAD_TYPE_H
 
-typedef struct {
-  void *__attrib;
-} __thread_type;
+typedef struct __thread_type_tag *__thread_type;
 
 #endif // LLVM_LIBC_TYPES___THREAD_TYPE_H

@@ -14,6 +14,7 @@
 #include "hdr/types/jmp_buf.h"
 #include "src/__support/macros/config.h"
 #include "src/__support/macros/properties/compiler.h"
+#include "src/__support/macros/properties/os.h"
 
 namespace LIBC_NAMESPACE_DECL {
 
@@ -30,8 +31,19 @@ namespace LIBC_NAMESPACE_DECL {
 [[gnu::nothrow]]
 #endif
 [[gnu::returns_twice]] int
+#ifdef LIBC_TARGET_OS_IS_WINDOWS
+// On Windows, the real entrypoint takes a second argument: the caller's
+// establisher frame for RtlUnwindEx (longjmp). The public/internal setjmp
+// spelling remains a macro so the caller's frame is captured at the call site.
+__llvm_libc_setjmp(jmp_buf buf, void *frame);
+#else
 setjmp(jmp_buf buf);
+#endif
 
 } // namespace LIBC_NAMESPACE_DECL
+
+#if defined(LIBC_TARGET_OS_IS_WINDOWS) && !defined(LLVM_LIBC_SETJMP_DONT_DEFINE_MACRO)
+#define setjmp(buf) __llvm_libc_setjmp((buf), __builtin_frame_address(0))
+#endif
 
 #endif // LLVM_LIBC_SRC_SETJMP_SETJMP_IMPL_H

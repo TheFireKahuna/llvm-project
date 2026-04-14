@@ -12,6 +12,7 @@
 #include "BasicOperations.h"
 #include "FEnvImpl.h"
 #include "FPBits.h"
+#include "hdr/errno_macros.h"
 #include "cast.h"
 #include "rounding_mode.h"
 #include "src/__support/CPP/bit.h"
@@ -199,6 +200,8 @@ LIBC_INLINE T hypot(T x, T y) {
       sum >>= 2;
       ++out_exp;
       if (out_exp >= FPBits_t::MAX_BIASED_EXPONENT) {
+        set_errno_if_required(ERANGE);
+        raise_except_if_required(FE_OVERFLOW | FE_INEXACT);
         if (int round_mode = quick_get_round();
             round_mode == FE_TONEAREST || round_mode == FE_UPWARD)
           return FPBits_t::inf().get_val();
@@ -259,6 +262,8 @@ LIBC_INLINE T hypot(T x, T y) {
     y_new -= ONE >> 1;
     ++out_exp;
     if (out_exp >= FPBits_t::MAX_BIASED_EXPONENT) {
+      set_errno_if_required(ERANGE);
+      raise_except_if_required(FE_OVERFLOW | FE_INEXACT);
       if (round_mode == FE_TONEAREST || round_mode == FE_UPWARD)
         return FPBits_t::inf().get_val();
       return FPBits_t::max_normal().get_val();
@@ -270,7 +275,12 @@ LIBC_INLINE T hypot(T x, T y) {
   if (!(round_bit || sticky_bits || (r != 0)))
     fputil::clear_except_if_required(FE_INEXACT);
 
-  return cpp::bit_cast<T>(y_new);
+  T result = cpp::bit_cast<T>(y_new);
+  if (LIBC_UNLIKELY(FPBits_t(result).is_subnormal())) {
+    set_errno_if_required(ERANGE);
+    raise_except_if_required(FE_UNDERFLOW | FE_INEXACT);
+  }
+  return result;
 }
 
 } // namespace fputil

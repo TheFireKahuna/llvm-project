@@ -99,4 +99,12 @@
 
 #endif // __cplusplus
 
+// Import annotation for data objects when libc is built as a shared library.
+// When building libc itself the build system defines __LIBC_DATA_IMPORT to
+// __declspec(dllexport); consumers get __declspec(dllimport); static builds
+// leave it empty.
+#ifndef __LIBC_DATA_IMPORT
+#define __LIBC_DATA_IMPORT
+#endif
+
 #endif // _LLVM_LIBC_COMMON_H

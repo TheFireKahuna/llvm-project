@@ -179,6 +179,10 @@ function(_get_compile_options_from_config output_var)
     libc_add_definition(config_options "LIBC_COPT_PRINTF_DISABLE_WIDE")
   endif()
 
+  if(LIBC_CONF_FILE_WIDE_SUPPORT)
+    libc_add_definition(config_options "LIBC_COPT_FILE_WIDE_SUPPORT")
+  endif()
+
   if(LIBC_COPT_PRINTF_DISABLE_BITINT)
     libc_add_definition(config_options "LIBC_COPT_PRINTF_DISABLE_BITINT")
   endif()

@@ -942,6 +942,12 @@ LIBC_INLINE double log1p(double x) {
       if (x + x == 0.0)
         return x + x; // Handle FTZ/DAZ correctly.
 
+      // log1p(x) ~ x for subnormal x; result is inexact and subnormal.
+      if (LIBC_UNLIKELY(xbits.is_subnormal())) {
+        fputil::set_errno_if_required(ERANGE);
+        fputil::raise_except_if_required(FE_UNDERFLOW | FE_INEXACT);
+      }
+
       volatile float tp = 1.0f;
       volatile float tn = -1.0f;
       bool rdp = (tp - 0x1p-25f != tp);

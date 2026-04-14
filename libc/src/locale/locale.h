@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_LIBC_SRC_LOCALE_LOCALECONV_H
-#define LLVM_LIBC_SRC_LOCALE_LOCALECONV_H
+#ifndef LLVM_LIBC_SRC_LOCALE_LOCALE_H
+#define LLVM_LIBC_SRC_LOCALE_LOCALE_H
 
 #include "src/__support/macros/attributes.h"
 #include "src/__support/macros/config.h"
@@ -16,21 +16,41 @@
 
 #include <stddef.h>
 
-namespace LIBC_NAMESPACE_DECL {
+// Max locale name: "xx-Xxxx-XX" (BCP 47 script subtag) + NUL.
+inline constexpr size_t MAX_LOCALE_NAME_SIZE = 16;
 
-// We only support the "C" locale right now.
-static constexpr size_t MAX_LOCALE_NAME_SIZE = 2;
-
+// Base locale data — platform-agnostic. Platform-specific subclasses (e.g.,
+// WindowsLocaleData) extend this with additional fields, following the same
+// pattern as File/LinuxFile. Platform code downcasts to the concrete type.
 struct __locale_data {
   char name[MAX_LOCALE_NAME_SIZE];
 };
 
-// The pointer to the default "C" locale.
+namespace LIBC_NAMESPACE_DECL {
+
+// The default "C" locale.
 extern __locale_t c_locale;
 
-// The global locale instance.
-extern locale_t locale;
+// Per-thread locale pointer. nullptr = global locale.
+// On Windows, use __declspec(thread) instead of C++ thread_local to avoid
+// per-TU initialization routines that cause duplicate symbol errors in DLLs.
+#ifdef _WIN32
+extern __declspec(thread) locale_t thread_locale;
+#else
+extern LIBC_THREAD_LOCAL locale_t thread_locale;
+#endif
+
+// Global locale — set by setlocale(), read as fallback when thread_locale
+// is nullptr. Atomic pointer swap for thread safety.
+locale_t get_global_locale();
+void set_global_locale(locale_t loc);
+
+// Return the effective locale for the calling thread.
+inline locale_t get_current_locale() {
+  locale_t tl = thread_locale;
+  return tl ? tl : get_global_locale();
+}
 
 } // namespace LIBC_NAMESPACE_DECL
 
-#endif // LLVM_LIBC_SRC_LOCALE_LOCALECONV_H
+#endif // LLVM_LIBC_SRC_LOCALE_LOCALE_H

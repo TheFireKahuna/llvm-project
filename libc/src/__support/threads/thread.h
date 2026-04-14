@@ -18,8 +18,11 @@
 #include "src/__support/macros/config.h"
 #include "src/__support/macros/properties/architectures.h"
 
-// TODO: fix this unguarded linux dep
-#include <linux/param.h> // for exec_pagesize.
+#if defined(__linux__)
+#include <linux/param.h> // for EXEC_PAGESIZE
+#else
+#define EXEC_PAGESIZE 4096
+#endif
 
 #include <stddef.h> // For size_t
 
@@ -248,7 +251,7 @@ ThreadAtExitCallbackMgr *get_thread_atexit_callback_mgr();
 
 // Call the currently registered thread specific atexit callbacks. Useful for
 // implementing the thread_exit function.
-void call_atexit_callbacks(ThreadAttributes *attrib);
+void call_atexit_callbacks(ThreadAttributes *attrib, void *dso = nullptr);
 
 } // namespace internal
 

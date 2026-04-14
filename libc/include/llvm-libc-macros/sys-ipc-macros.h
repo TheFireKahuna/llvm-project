@@ -11,6 +11,8 @@
 
 #ifdef __linux__
 #include "linux/sys-ipc-macros.h"
+#elif defined(__NTPOSIX__)
+#include "windows/sys-ipc-macros.h"
 #endif
 
 #endif // LLVM_LIBC_MACROS_SYS_IPC_MACROS_H

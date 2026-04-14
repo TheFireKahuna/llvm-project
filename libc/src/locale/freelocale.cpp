@@ -9,9 +9,10 @@
 #include "src/locale/freelocale.h"
 #include "src/__support/common.h"
 #include "src/__support/macros/config.h"
+#include "src/locale/locale.h"
 
 namespace LIBC_NAMESPACE_DECL {
 
-LLVM_LIBC_FUNCTION(void, freelocale, (locale_t)) {}
+LLVM_LIBC_FUNCTION(void, freelocale, (locale_t loc)) { (void)loc; }
 
 } // namespace LIBC_NAMESPACE_DECL

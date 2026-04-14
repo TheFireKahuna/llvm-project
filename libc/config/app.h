@@ -10,11 +10,14 @@
 #define LLVM_LIBC_CONFIG_APP_H
 
 #include "src/__support/macros/properties/architectures.h"
+#include "src/__support/macros/properties/runtime.h"
 
 #if defined(LIBC_TARGET_ARCH_IS_GPU)
 #include "gpu/app.h"
 #elif defined(__linux__)
 #include "linux/app.h"
+#elif defined(LIBC_TARGET_RUNTIME_IS_NTPOSIX)
+#include "windows/app.h"
 #elif defined(__UEFI__)
 #include "uefi/app.h"
 #endif

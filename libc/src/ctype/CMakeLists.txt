@@ -130,6 +130,11 @@ add_entrypoint_object(
     libc.src.__support.ctype_utils
 )
 
+set(ctype_case_deps libc.src.__support.CPP.limits libc.src.__support.ctype_utils)
+if(LIBC_TARGET_OS_IS_WINDOWS)
+  set(ctype_case_deps libc.src.__support.OSUtil.windows.ntdll)
+endif()
+
 add_entrypoint_object(
   tolower
   SRCS
@@ -137,8 +142,7 @@ add_entrypoint_object(
   HDRS
     tolower.h
   DEPENDS
-    libc.src.__support.CPP.limits
-    libc.src.__support.ctype_utils
+    ${ctype_case_deps}
 )
 
 add_entrypoint_object(
@@ -156,8 +160,7 @@ add_entrypoint_object(
   HDRS
     toupper.h
   DEPENDS
-    libc.src.__support.CPP.limits
-    libc.src.__support.ctype_utils
+    ${ctype_case_deps}
 )
 
 # Do not build the locale versions in overlay mode.
@@ -309,8 +312,7 @@ add_entrypoint_object(
   HDRS
     tolower_l.h
   DEPENDS
-    libc.src.__support.CPP.limits
-    libc.src.__support.ctype_utils
+    ${ctype_case_deps}
     libc.hdr.types.locale_t
 )
 
@@ -321,7 +323,6 @@ add_entrypoint_object(
   HDRS
     toupper_l.h
   DEPENDS
-    libc.src.__support.CPP.limits
-    libc.src.__support.ctype_utils
+    ${ctype_case_deps}
     libc.hdr.types.locale_t
 )

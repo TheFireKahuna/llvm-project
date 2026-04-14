@@ -692,9 +692,7 @@ LIBC_INLINE float powf(float x, float y) {
         return 1.0f;
       }
       if (x == 0.0f && y_u == 0xff80'0000) {
-        // pow(+-0, -Inf) = +inf and raise FE_DIVBYZERO
-        fputil::set_errno_if_required(EDOM);
-        fputil::raise_except_if_required(FE_DIVBYZERO);
+        // pow(+-0, -Inf) = +inf.  No exceptions per IEEE 754 / C23 F.10.4.4.
         return FloatBits::inf().get_val();
       }
       // pow (|x| < 1, -inf) = +inf
@@ -707,9 +705,8 @@ LIBC_INLINE float powf(float x, float y) {
     }
     default:
       // Speed up for common exponents
-      float r = fputil::sqrt<float>(x);
       switch (y_u) {
-      case 0x3f00'0000: // y = 0.5f
+      case 0x3f00'0000: { // y = 0.5f
         // pow(x, 1/2) = sqrt(x)
         if (LIBC_UNLIKELY(x == 0.0f || x_u == 0xff80'0000)) {
           // pow(-0, 1/2) = +0
@@ -717,12 +714,55 @@ LIBC_INLINE float powf(float x, float y) {
           // Make sure it is correct for FTZ/DAZ.
           return x * x;
         }
+        // Compute sqrt only after ruling out -0 and -inf, so that sqrt of
+        // a negative input (which raises FE_INVALID) is only reached when
+        // the mathematical result is genuinely NaN (negative finite base).
+        float r = fputil::sqrt<float>(x);
         return (FloatBits(r).uintval() != 0x8000'0000) ? r : 0.0f;
+      }
       case 0x3f80'0000: // y = 1.0f
         return x;
       case 0x4000'0000: // y = 2.0f
         // pow(x, 2) = x^2
         return x * x;
+      case 0xbf80'0000: { // y = -1.0f
+        // Double has enough range and precision: 1.0/(double)x is correctly
+        // rounded to float, with no intermediate overflow/underflow in double.
+        // The float cast raises the correct IEEE exceptions.
+        if (LIBC_UNLIKELY(x == 0.0f))
+          break; // pole error: needs errno + DIVBYZERO, handled below
+        double r_d = 1.0 / static_cast<double>(x);
+        float r = static_cast<float>(r_d);
+        // Overflow (subnormal x) or inexact subnormal (|x| near FLT_MAX).
+        // Underflow to zero is impossible: min |1/x| ≈ 2^-129 > FLT_MIN_SUB.
+        if (LIBC_UNLIKELY(FloatBits(r).is_inf()))
+          fputil::set_errno_if_required(ERANGE);
+        else if (LIBC_UNLIKELY(FloatBits(r).is_subnormal() &&
+                               r_d != static_cast<double>(r)))
+          fputil::set_errno_if_required(ERANGE);
+        return r;
+      }
+      case 0xc000'0000: { // y = -2.0f
+        // (double)x * (double)x is exact (24*2 < 53 mantissa bits), and the
+        // reciprocal stays within double range for all float inputs.  The
+        // float cast produces correctly rounded results with correct IEEE
+        // exceptions.
+        if (LIBC_UNLIKELY(x == 0.0f))
+          break; // pole error: needs errno + DIVBYZERO, handled below
+        double xd = static_cast<double>(x);
+        double r_d = 1.0 / (xd * xd);
+        float r = static_cast<float>(r_d);
+        // Overflow (tiny x), underflow to zero (large x), or inexact
+        // subnormal.  For x = +-inf the result is exact zero (no errno).
+        if (LIBC_UNLIKELY(FloatBits(r).is_inf()))
+          fputil::set_errno_if_required(ERANGE);
+        else if (LIBC_UNLIKELY(r == 0.0f && x_abs < 0x7f80'0000))
+          fputil::set_errno_if_required(ERANGE);
+        else if (LIBC_UNLIKELY(FloatBits(r).is_subnormal() &&
+                               r_d != static_cast<double>(r)))
+          fputil::set_errno_if_required(ERANGE);
+        return r;
+      }
         // TODO: Enable special case speed-up for x^(-1/2) when rsqrt is ready.
         // case 0xbf00'0000:  // pow(x, -1/2) = rsqrt(x)
         //   return rsqrt(x);
@@ -1002,20 +1042,39 @@ LIBC_INLINE float powf(float x, float y) {
   return static_cast<float>(r);
 #else
   // Ziv accuracy test.
+  // The double-to-float conversions are only for rounding-bucket comparison;
+  // they can spuriously raise INEXACT (always) and OVERFLOW/UNDERFLOW (when
+  // the double is outside float range).  Save and restore exception flags so
+  // only the mathematically correct exceptions are visible to the caller.
   uint64_t r_u = cpp::bit_cast<uint64_t>(r);
+
+#ifndef LIBC_MATH_HAS_NO_EXCEPT
+  int saved_excepts = fputil::test_except(FE_ALL_EXCEPT);
+#endif
   float r_upper = static_cast<float>(cpp::bit_cast<double>(r_u + ERR));
   float r_lower = static_cast<float>(cpp::bit_cast<double>(r_u - ERR));
+#ifndef LIBC_MATH_HAS_NO_EXCEPT
+  fputil::set_except(saved_excepts);
+#endif
 
   if (LIBC_LIKELY(r_upper == r_lower)) {
-    // Check for overflow or underflow.
-    if (LIBC_UNLIKELY(FloatBits(r_upper).get_mantissa() == 0)) {
-      if (FloatBits(r_upper).is_inf()) {
+    if (LIBC_UNLIKELY(FloatBits(r_upper).is_inf())) {
+      fputil::set_errno_if_required(ERANGE);
+      fputil::raise_except_if_required(FE_OVERFLOW | FE_INEXACT);
+    } else if (LIBC_UNLIKELY(r_upper == 0.0f)) {
+      if (r != 0.0) {
         fputil::set_errno_if_required(ERANGE);
-        fputil::raise_except_if_required(FE_OVERFLOW);
-      } else if (r_upper == 0.0f) {
-        fputil::set_errno_if_required(ERANGE);
-        fputil::raise_except_if_required(FE_UNDERFLOW);
+        fputil::raise_except_if_required(FE_UNDERFLOW | FE_INEXACT);
       }
+    } else if (LIBC_UNLIKELY(FloatBits(r_upper).is_subnormal())) {
+      // Subnormal result: signal underflow only if the rounding was inexact.
+      // Exact subnormals (e.g. powf(4, -64) = 0x1p-128f) raise nothing.
+      if (r != static_cast<double>(r_upper)) {
+        fputil::set_errno_if_required(ERANGE);
+        fputil::raise_except_if_required(FE_UNDERFLOW | FE_INEXACT);
+      }
+    } else if (LIBC_UNLIKELY(r != static_cast<double>(r_upper))) {
+      fputil::raise_except_if_required(FE_INEXACT);
     }
     return r_upper;
   }

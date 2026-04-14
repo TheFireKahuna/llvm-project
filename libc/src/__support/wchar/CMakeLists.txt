@@ -8,6 +8,16 @@ add_header_library(
 )
 
 add_header_library(
+  locale_encoding
+  HDRS
+    locale_encoding.h
+  DEPENDS
+    libc.src.__support.macros.config
+    libc.src.__support.macros.properties.os
+    libc.src.locale.locale
+)
+
+add_header_library(
   string_converter
   HDRS
     string_converter.h
@@ -19,7 +29,8 @@ add_header_library(
     libc.src.__support.CPP.type_traits
     libc.src.__support.error_or
     .mbstate
-    .character_converter 
+    .character_converter
+    .locale_encoding
 )
 
 add_header_library(
@@ -53,6 +64,7 @@ add_header_library(
     libc.src.__support.libc_assert
     libc.src.__support.macros.null_check
     .character_converter
+    .locale_encoding
     .mbstate
 )
 
@@ -70,6 +82,7 @@ add_object_library(
     libc.src.__support.error_or
     libc.src.__support.macros.config
     .character_converter
+    .locale_encoding
     .mbstate
 )
 

@@ -20,9 +20,7 @@ static_assert(sizeof(pthread_t) == sizeof(LIBC_NAMESPACE::Thread),
               "Mismatch between pthread_t and internal Thread.");
 
 LLVM_LIBC_FUNCTION(pthread_t, pthread_self, ()) {
-  pthread_t th;
-  th.__attrib = self.attrib;
-  return th;
+  return reinterpret_cast<pthread_t>(self.attrib);
 }
 
 } // namespace LIBC_NAMESPACE_DECL

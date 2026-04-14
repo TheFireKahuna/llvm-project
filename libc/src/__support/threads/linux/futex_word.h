@@ -16,6 +16,9 @@ namespace LIBC_NAMESPACE_DECL {
 
 // Futexes are 32 bits in size on all platforms, including 64-bit platforms.
 using FutexWordType = uint32_t;
+// On Linux, the caller-visible value is the same as the word type.
+// On Windows, FutexWordType is 64-bit (packs value + wait queue metadata).
+using FutexValueType = uint32_t;
 
 #if SYS_futex
 constexpr auto FUTEX_SYSCALL_ID = SYS_futex;

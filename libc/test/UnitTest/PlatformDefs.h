@@ -9,7 +9,9 @@
 #ifndef LLVM_LIBC_TEST_UNITTEST_PLATFORMDEFS_H
 #define LLVM_LIBC_TEST_UNITTEST_PLATFORMDEFS_H
 
-#if !defined(_WIN32)
+#include "src/__support/macros/properties/runtime.h"
+
+#if !defined(LIBC_TARGET_RUNTIME_IS_WIN32)
 #define ENABLE_SUBPROCESS_TESTS
 #endif
 

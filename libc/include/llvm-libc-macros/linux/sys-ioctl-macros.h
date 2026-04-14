@@ -9,11 +9,10 @@
 #ifndef LLVM_LIBC_MACROS_LINUX_SYS_IOCTL_MACROS_H
 #define LLVM_LIBC_MACROS_LINUX_SYS_IOCTL_MACROS_H
 
-// TODO (michaelrj): Finish defining these macros.
-// Just defining this macro for the moment since it's all that we need right
-// now. The other macros are mostly just constants, but there's some complexity
-// around the definitions of macros like _IO, _IOR, _IOW, and _IOWR that I don't
-// think is worth digging into right now.
+// TODO (michaelrj): Finish defining the broader ioctl macro set, including the
+// _IO / _IOR / _IOW / _IOWR families. For now, keep the small set of concrete
+// tty and file-status requests that llvm-libc actually uses.
+#define TIOCGWINSZ 0x5413
 #define TIOCGETD 0x5424
 #define FIONREAD 0x541B
 

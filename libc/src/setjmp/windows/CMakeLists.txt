@@ -1,0 +1,13 @@
+add_object_library(
+  sigsetjmp_epilogue
+  HDRS
+    ../sigsetjmp_epilogue.h
+  SRCS
+    sigsetjmp_epilogue.cpp
+  DEPENDS
+    libc.src.__support.common
+    libc.hdr.signal_macros
+    libc.hdr.types.sigjmp_buf
+    libc.hdr.types.sigset_t
+    libc.src.signal.sigprocmask
+)

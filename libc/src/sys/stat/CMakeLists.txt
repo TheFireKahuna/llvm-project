@@ -52,6 +52,13 @@ add_entrypoint_object(
 )
 
 add_entrypoint_object(
+  fstatat
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.fstatat
+)
+
+add_entrypoint_object(
   stat
   ALIAS
   DEPENDS
@@ -63,4 +70,30 @@ add_entrypoint_object(
   ALIAS
   DEPENDS
     .${LIBC_TARGET_OS}.utimensat
+)
+
+add_entrypoint_object(
+  futimens
+  SRCS
+    futimens.cpp
+  HDRS
+    futimens.h
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.hdr.types.struct_timespec
+    libc.src.sys.stat.utimensat
+)
+
+add_entrypoint_object(
+  mkfifo
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.mkfifo
+)
+
+add_entrypoint_object(
+  umask
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.umask
 )

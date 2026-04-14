@@ -51,6 +51,54 @@ add_entrypoint_object(
 )
 
 add_entrypoint_object(
+  inet_ntoa
+  SRCS
+    inet_ntoa.cpp
+  HDRS
+    inet_ntoa.h
+  DEPENDS
+    libc.include.arpa_inet
+    libc.include.llvm-libc-macros.arpa_inet_macros
+    libc.include.llvm-libc-macros.sys_socket_macros
+    libc.include.llvm-libc-types.in_addr
+    libc.src.__support.common
+    libc.src.arpa.inet.inet_ntop
+)
+
+add_entrypoint_object(
+  inet_ntop
+  SRCS
+    inet_ntop.cpp
+  HDRS
+    inet_ntop.h
+  DEPENDS
+    libc.hdr.errno_macros
+    libc.hdr.stdint_proxy
+    libc.include.arpa_inet
+    libc.include.llvm-libc-macros.arpa_inet_macros
+    libc.include.llvm-libc-macros.sys_socket_macros
+    libc.src.__support.common
+    libc.src.__support.ctype_utils
+    libc.src.__support.libc_errno
+)
+
+add_entrypoint_object(
+  inet_pton
+  SRCS
+    inet_pton.cpp
+  HDRS
+    inet_pton.h
+  DEPENDS
+    libc.hdr.errno_macros
+    libc.hdr.stdint_proxy
+    libc.include.arpa_inet
+    libc.include.llvm-libc-macros.sys_socket_macros
+    libc.src.__support.common
+    libc.src.__support.ctype_utils
+    libc.src.__support.libc_errno
+)
+
+add_entrypoint_object(
   ntohl
   SRCS
     ntohl.cpp

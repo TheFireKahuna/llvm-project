@@ -17,6 +17,27 @@ add_entrypoint_object(
 )
 
 add_entrypoint_object(
+  listen
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.listen
+)
+
+add_entrypoint_object(
+  connect
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.connect
+)
+
+add_entrypoint_object(
+  accept
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.accept
+)
+
+add_entrypoint_object(
   socketpair
   ALIAS
   DEPENDS
@@ -63,4 +84,39 @@ add_entrypoint_object(
   ALIAS
   DEPENDS
     .${LIBC_TARGET_OS}.recvmsg
+)
+
+add_entrypoint_object(
+  shutdown
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.shutdown
+)
+
+add_entrypoint_object(
+  getsockname
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.getsockname
+)
+
+add_entrypoint_object(
+  getpeername
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.getpeername
+)
+
+add_entrypoint_object(
+  setsockopt
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.setsockopt
+)
+
+add_entrypoint_object(
+  getsockopt
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.getsockopt
 )

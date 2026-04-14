@@ -1,8 +1,57 @@
 header: sys/stat.h
+header_template: stat.h.def
 standards:
   - posix
 macros:
   - macro_name: S_IFMT
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IFSOCK
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IFLNK
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IFREG
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IFBLK
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IFDIR
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IFCHR
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IFIFO
+    macro_header: sys-stat-macros.h
+  - macro_name: S_ISUID
+    macro_header: sys-stat-macros.h
+  - macro_name: S_ISGID
+    macro_header: sys-stat-macros.h
+  - macro_name: S_ISVTX
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IRWXU
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IRUSR
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IWUSR
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IXUSR
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IRWXG
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IRGRP
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IWGRP
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IXGRP
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IRWXO
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IROTH
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IWOTH
+    macro_header: sys-stat-macros.h
+  - macro_name: S_IXOTH
+    macro_header: sys-stat-macros.h
+  - macro_name: UTIME_NOW
+    macro_header: sys-stat-macros.h
+  - macro_name: UTIME_OMIT
     macro_header: sys-stat-macros.h
 types:
   - type_name: blkcnt_t
@@ -58,11 +107,27 @@ functions:
       - type: int
       - type: const char *
       - type: mode_t
+  - name: fstatat
+    return_type: int
+    arguments:
+      - type: int
+      - type: const char *__restrict
+      - type: struct stat *__restrict
+      - type: int
   - name: stat
     return_type: int
     arguments:
       - type: const char *__restrict
       - type: struct stat *__restrict
+  - name: mkfifo
+    return_type: int
+    arguments:
+      - type: const char *
+      - type: mode_t
+  - name: umask
+    return_type: mode_t
+    arguments:
+      - type: mode_t
   - name: utimensat
     return_type: int
     arguments:
@@ -70,3 +135,8 @@ functions:
       - type: const char *
       - type: const struct timespec *
       - type: int
+  - name: futimens
+    return_type: int
+    arguments:
+      - type: int
+      - type: const struct timespec *

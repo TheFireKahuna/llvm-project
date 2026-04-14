@@ -61,6 +61,22 @@ add_entrypoint_object(
 )
 
 add_entrypoint_object(
+  clock_nanosleep
+  SRCS
+    clock_nanosleep.cpp
+  HDRS
+    ../clock_nanosleep.h
+  DEPENDS
+    libc.hdr.stdint_proxy
+    libc.hdr.time_macros
+    libc.hdr.types.clockid_t
+    libc.hdr.types.struct_timespec
+    libc.include.sys_syscall
+    libc.src.__support.OSUtil.osutil
+    libc.src.__support.common
+)
+
+add_entrypoint_object(
   clock_settime
   SRCS
     clock_settime.cpp

@@ -1,3 +1,23 @@
+set(wchar_wcscoll_deps "")
+set(wchar_wcscoll_l_deps "")
+
+# mbrtowc/wcrtomb use CharacterConverter on all platforms.
+set(wchar_wcrtomb_support_deps
+    libc.src.__support.wchar.wcrtomb
+    libc.src.__support.wchar.mbstate)
+set(wchar_mbrtowc_support_deps
+    libc.src.__support.wchar.mbrtowc
+    libc.src.__support.wchar.mbstate)
+
+if(LIBC_TARGET_OS_IS_WINDOWS)
+  list(APPEND wchar_wcscoll_deps
+       libc.src.__support.OSUtil.windows.ntdll
+       libc.src.locale.locale)
+  list(APPEND wchar_wcscoll_l_deps
+       libc.src.wchar.wcscoll
+       libc.src.locale.locale)
+endif()
+
 add_header_library(
   wchar_utils
   HDRS
@@ -40,6 +60,9 @@ add_entrypoint_object(
   DEPENDS
     libc.hdr.types.wint_t
     libc.hdr.stdio_macros
+    libc.hdr.wchar_macros
+    libc.src.__support.wchar.mbstate
+    libc.src.__support.wchar.wcrtomb
 )
 
 add_entrypoint_object(
@@ -51,6 +74,8 @@ add_entrypoint_object(
   DEPENDS
     libc.hdr.types.wint_t
     libc.hdr.wchar_macros
+    libc.src.__support.wchar.mbrtowc
+    libc.src.__support.wchar.mbstate
 )
 
 add_entrypoint_object(
@@ -150,8 +175,7 @@ add_entrypoint_object(
     libc.hdr.types.wchar_t
     libc.hdr.types.mbstate_t
     libc.src.__support.libc_errno
-    libc.src.__support.wchar.wcrtomb
-    libc.src.__support.wchar.mbstate
+    ${wchar_wcrtomb_support_deps}
 )
 
 add_entrypoint_object(
@@ -170,6 +194,119 @@ add_entrypoint_object(
 )
 
 add_entrypoint_object(
+  fgetwc
+  SRCS
+    fgetwc.cpp
+  HDRS
+    fgetwc.h
+  DEPENDS
+    libc.hdr.types.FILE
+    libc.hdr.types.wint_t
+    libc.hdr.wchar_macros
+    libc.src.__support.File.file
+    libc.src.__support.File.platform_file
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.wchar.character_converter
+    libc.src.__support.wchar.mbstate
+)
+
+add_entrypoint_object(
+  fputwc
+  SRCS
+    fputwc.cpp
+  HDRS
+    fputwc.h
+  DEPENDS
+    libc.hdr.types.FILE
+    libc.hdr.types.wchar_t
+    libc.hdr.types.wint_t
+    libc.hdr.wchar_macros
+    libc.src.__support.File.file
+    libc.src.__support.File.platform_file
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.wchar.character_converter
+    libc.src.__support.wchar.mbstate
+)
+
+add_entrypoint_object(
+  getwc
+  SRCS
+    getwc.cpp
+  HDRS
+    getwc.h
+  DEPENDS
+    libc.hdr.types.FILE
+    libc.hdr.types.wint_t
+    libc.src.__support.common
+    libc.src.__support.macros.config
+    libc.src.wchar.fgetwc
+)
+
+add_entrypoint_object(
+  getwchar
+  SRCS
+    getwchar.cpp
+  HDRS
+    getwchar.h
+  DEPENDS
+    libc.hdr.types.wint_t
+    libc.src.__support.File.file
+    libc.src.__support.File.platform_file
+    libc.src.__support.common
+    libc.src.__support.macros.config
+    libc.src.wchar.fgetwc
+)
+
+add_entrypoint_object(
+  putwc
+  SRCS
+    putwc.cpp
+  HDRS
+    putwc.h
+  DEPENDS
+    libc.hdr.types.FILE
+    libc.hdr.types.wchar_t
+    libc.hdr.types.wint_t
+    libc.src.__support.common
+    libc.src.__support.macros.config
+    libc.src.wchar.fputwc
+)
+
+add_entrypoint_object(
+  putwchar
+  SRCS
+    putwchar.cpp
+  HDRS
+    putwchar.h
+  DEPENDS
+    libc.hdr.types.wchar_t
+    libc.hdr.types.wint_t
+    libc.src.__support.File.file
+    libc.src.__support.File.platform_file
+    libc.src.__support.common
+    libc.src.__support.macros.config
+    libc.src.wchar.fputwc
+)
+
+add_entrypoint_object(
+  fwide
+  SRCS
+    fwide.cpp
+  HDRS
+    fwide.h
+  DEPENDS
+    libc.hdr.types.FILE
+    libc.src.__support.File.file
+    libc.src.__support.File.platform_file
+    libc.src.__support.common
+    libc.src.__support.macros.config
+)
+
+add_entrypoint_object(
   mbrtowc
   SRCS
     mbrtowc.cpp
@@ -181,9 +318,8 @@ add_entrypoint_object(
     libc.hdr.types.wchar_t
     libc.src.__support.common
     libc.src.__support.macros.config
-    libc.src.__support.wchar.mbrtowc
     libc.src.__support.libc_errno
-    libc.src.__support.wchar.mbstate
+    ${wchar_mbrtowc_support_deps}
 )
 
 add_entrypoint_object(
@@ -542,4 +678,299 @@ add_entrypoint_object(
   DEPENDS
     libc.hdr.types.size_t
     libc.hdr.wchar_macros
+)
+
+add_entrypoint_object(
+  wcscoll
+  SRCS
+    wcscoll.cpp
+  HDRS
+    wcscoll.h
+  DEPENDS
+    ${wchar_wcscoll_deps}
+)
+
+add_entrypoint_object(
+  wcscoll_l
+  SRCS
+    wcscoll_l.cpp
+  HDRS
+    wcscoll_l.h
+  DEPENDS
+    libc.hdr.types.locale_t
+    ${wchar_wcscoll_l_deps}
+)
+
+add_entrypoint_object(
+  wcsxfrm
+  SRCS
+    wcsxfrm.cpp
+  HDRS
+    wcsxfrm.h
+  DEPENDS
+    libc.hdr.types.size_t
+    libc.hdr.types.wchar_t
+)
+
+add_entrypoint_object(
+  wcsxfrm_l
+  SRCS
+    wcsxfrm_l.cpp
+  HDRS
+    wcsxfrm_l.h
+  DEPENDS
+    libc.hdr.types.locale_t
+    libc.hdr.types.size_t
+    libc.hdr.types.wchar_t
+)
+
+add_entrypoint_object(
+  ungetwc
+  SRCS
+    ungetwc.cpp
+  HDRS
+    ungetwc.h
+  DEPENDS
+    libc.hdr.types.FILE
+    libc.hdr.types.wint_t
+    libc.hdr.wchar_macros
+    libc.src.__support.File.file
+    libc.src.__support.File.platform_file
+    libc.src.__support.common
+    libc.src.__support.macros.config
+)
+
+add_entrypoint_object(
+  fputws
+  SRCS
+    fputws.cpp
+  HDRS
+    fputws.h
+  DEPENDS
+    libc.hdr.types.FILE
+    libc.hdr.types.wchar_t
+    libc.hdr.types.wint_t
+    libc.hdr.wchar_macros
+    libc.src.__support.File.file
+    libc.src.__support.File.platform_file
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.wchar.character_converter
+    libc.src.__support.wchar.mbstate
+)
+
+add_entrypoint_object(
+  fgetws
+  SRCS
+    fgetws.cpp
+  HDRS
+    fgetws.h
+  DEPENDS
+    libc.hdr.errno_macros
+    libc.hdr.types.FILE
+    libc.hdr.types.wchar_t
+    libc.hdr.types.wint_t
+    libc.hdr.wchar_macros
+    libc.src.__support.File.file
+    libc.src.__support.File.platform_file
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+    libc.src.__support.wchar.character_converter
+    libc.src.__support.wchar.mbstate
+)
+
+add_entrypoint_object(
+  vfwprintf
+  SRCS
+    vfwprintf.cpp
+  HDRS
+    vfwprintf.h
+  DEPENDS
+    libc.hdr.types.FILE
+    libc.hdr.types.wchar_t
+    libc.src.__support.arg_list
+    libc.src.__support.libc_errno
+    libc.src.stdio.printf_core.error_mapper
+    libc.src.stdio.printf_core.vfwprintf_internal
+)
+
+add_entrypoint_object(
+  fwprintf
+  SRCS
+    fwprintf.cpp
+  HDRS
+    fwprintf.h
+  DEPENDS
+    libc.hdr.types.FILE
+    libc.hdr.types.wchar_t
+    libc.src.__support.arg_list
+    libc.src.__support.libc_errno
+    libc.src.stdio.printf_core.error_mapper
+    libc.src.stdio.printf_core.vfwprintf_internal
+)
+
+add_entrypoint_object(
+  vwprintf
+  SRCS
+    vwprintf.cpp
+  HDRS
+    vwprintf.h
+  DEPENDS
+    libc.hdr.types.FILE
+    libc.hdr.types.wchar_t
+    libc.src.__support.File.file
+    libc.src.__support.arg_list
+    libc.src.__support.libc_errno
+    libc.src.stdio.printf_core.error_mapper
+    libc.src.stdio.printf_core.vfwprintf_internal
+)
+
+add_entrypoint_object(
+  wprintf
+  SRCS
+    wprintf.cpp
+  HDRS
+    wprintf.h
+  DEPENDS
+    libc.hdr.types.FILE
+    libc.hdr.types.wchar_t
+    libc.src.__support.File.file
+    libc.src.__support.arg_list
+    libc.src.__support.libc_errno
+    libc.src.stdio.printf_core.error_mapper
+    libc.src.stdio.printf_core.vfwprintf_internal
+)
+
+add_entrypoint_object(
+  vswprintf
+  SRCS
+    vswprintf.cpp
+  HDRS
+    vswprintf.h
+  DEPENDS
+    libc.hdr.types.size_t
+    libc.hdr.types.wchar_t
+    libc.src.__support.arg_list
+    libc.src.__support.libc_errno
+    libc.src.stdio.printf_core.core_structs
+    libc.src.stdio.printf_core.error_mapper
+    libc.src.stdio.printf_core.wprintf_main
+)
+
+add_entrypoint_object(
+  swprintf
+  SRCS
+    swprintf.cpp
+  HDRS
+    swprintf.h
+  DEPENDS
+    libc.hdr.types.size_t
+    libc.hdr.types.wchar_t
+    libc.src.__support.arg_list
+    libc.src.__support.libc_errno
+    libc.src.stdio.printf_core.core_structs
+    libc.src.stdio.printf_core.error_mapper
+    libc.src.stdio.printf_core.wprintf_main
+)
+
+add_entrypoint_object(
+  vfwscanf
+  SRCS
+    vfwscanf.cpp
+  HDRS
+    vfwscanf.h
+  DEPENDS
+    libc.hdr.types.FILE
+    libc.hdr.types.wchar_t
+    libc.src.__support.arg_list
+    libc.src.stdio.scanf_core.vfwscanf_internal
+)
+
+add_entrypoint_object(
+  fwscanf
+  SRCS
+    fwscanf.cpp
+  HDRS
+    fwscanf.h
+  DEPENDS
+    libc.hdr.types.FILE
+    libc.hdr.types.wchar_t
+    libc.src.__support.arg_list
+    libc.src.stdio.scanf_core.vfwscanf_internal
+)
+
+add_entrypoint_object(
+  vwscanf
+  SRCS
+    vwscanf.cpp
+  HDRS
+    vwscanf.h
+  DEPENDS
+    libc.hdr.types.FILE
+    libc.hdr.types.wchar_t
+    libc.src.__support.File.file
+    libc.src.__support.arg_list
+    libc.src.stdio.scanf_core.vfwscanf_internal
+)
+
+add_entrypoint_object(
+  wscanf
+  SRCS
+    wscanf.cpp
+  HDRS
+    wscanf.h
+  DEPENDS
+    libc.hdr.types.FILE
+    libc.hdr.types.wchar_t
+    libc.src.__support.File.file
+    libc.src.__support.arg_list
+    libc.src.stdio.scanf_core.vfwscanf_internal
+)
+
+add_entrypoint_object(
+  vswscanf
+  SRCS
+    vswscanf.cpp
+  HDRS
+    vswscanf.h
+  DEPENDS
+    libc.hdr.stdio_macros
+    libc.hdr.types.wchar_t
+    libc.src.__support.CPP.limits
+    libc.src.__support.arg_list
+    libc.src.stdio.scanf_core.scanf_main
+    libc.src.stdio.scanf_core.string_reader
+)
+
+add_entrypoint_object(
+  swscanf
+  SRCS
+    swscanf.cpp
+  HDRS
+    swscanf.h
+  DEPENDS
+    libc.hdr.stdio_macros
+    libc.hdr.types.wchar_t
+    libc.src.__support.CPP.limits
+    libc.src.__support.arg_list
+    libc.src.stdio.scanf_core.scanf_main
+    libc.src.stdio.scanf_core.string_reader
+)
+
+add_entrypoint_object(
+  wcsftime
+  SRCS
+    wcsftime.cpp
+  HDRS
+    wcsftime.h
+  DEPENDS
+    libc.hdr.types.size_t
+    libc.hdr.types.struct_tm
+    libc.hdr.types.wchar_t
+    libc.src.__support.CPP.string_view
+    libc.src.__support.common
+    libc.src.time.strftime_core.converter
+    libc.src.time.strftime_core.core_structs
 )

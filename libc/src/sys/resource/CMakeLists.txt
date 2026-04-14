@@ -3,6 +3,13 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${LIBC_TARGET_OS})
 endif()
 
 add_entrypoint_object(
+  getpriority
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.getpriority
+)
+
+add_entrypoint_object(
   getrlimit
   ALIAS
   DEPENDS
@@ -14,4 +21,25 @@ add_entrypoint_object(
   ALIAS
   DEPENDS
     .${LIBC_TARGET_OS}.setrlimit
+)
+
+add_entrypoint_object(
+  getrusage
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.getrusage
+)
+
+add_entrypoint_object(
+  prlimit
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.prlimit
+)
+
+add_entrypoint_object(
+  setpriority
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.setpriority
 )

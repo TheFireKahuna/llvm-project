@@ -1,0 +1,84 @@
+add_entrypoint_object(
+  creat
+  SRCS
+    creat.cpp
+  HDRS
+    ../creat.h
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.hdr.types.mode_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.fcntl
+    libc.src.__support.OSUtil.windows.syscall_wrapper_open
+)
+
+add_entrypoint_object(
+  fcntl
+  SRCS
+    fcntl.cpp
+  HDRS
+    ../fcntl.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_fcntl
+)
+
+add_entrypoint_object(
+  open
+  SRCS
+    open.cpp
+  HDRS
+    ../open.h
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.hdr.types.mode_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.fcntl
+    libc.src.__support.OSUtil.windows.syscall_wrapper_open
+    libc.src.pthread.cancel_internal
+)
+
+add_entrypoint_object(
+  openat
+  SRCS
+    openat.cpp
+  HDRS
+    ../openat.h
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.hdr.types.mode_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.fcntl
+    libc.src.__support.OSUtil.windows.syscall_wrapper_open
+    libc.src.pthread.cancel_internal
+)
+
+add_entrypoint_object(
+  posix_fallocate
+  SRCS
+    posix_fallocate.cpp
+  HDRS
+    ../posix_fallocate.h
+  DEPENDS
+    libc.hdr.types.off_t
+    libc.hdr.errno_macros
+    libc.src.__support.OSUtil.windows.fallocate_ops
+    libc.src.__support.OSUtil.windows.ntdll
+)
+
+add_entrypoint_object(
+  posix_openpt
+  SRCS
+    posix_openpt.cpp
+  HDRS
+    ../posix_openpt.h
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.vt_pty
+)

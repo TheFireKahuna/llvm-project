@@ -1,0 +1,79 @@
+add_custom_target(libc_time_windows_unittests)
+
+add_libc_unittest(
+  clock_gettime_test
+  SUITE
+    libc_time_windows_unittests
+  SRCS
+    clock_gettime_test.cpp
+  DEPENDS
+    libc.hdr.errno_macros
+    libc.hdr.time_macros
+    libc.hdr.types.struct_timespec
+    libc.src.errno.errno
+    libc.src.time.clock_gettime
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  clock_getres_test
+  SUITE
+    libc_time_windows_unittests
+  SRCS
+    clock_getres_test.cpp
+  DEPENDS
+    libc.hdr.errno_macros
+    libc.hdr.time_macros
+    libc.hdr.types.struct_timespec
+    libc.src.errno.errno
+    libc.src.time.clock_getres
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  gettimeofday_test
+  SUITE
+    libc_time_windows_unittests
+  SRCS
+    gettimeofday_test.cpp
+  DEPENDS
+    libc.hdr.types.struct_timeval
+    libc.hdr.types.suseconds_t
+    libc.src.errno.errno
+    libc.src.time.gettimeofday
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  nanosleep_test
+  SUITE
+    libc_time_windows_unittests
+  SRCS
+    nanosleep_test.cpp
+  DEPENDS
+    libc.hdr.time_macros
+    libc.hdr.types.struct_timespec
+    libc.src.errno.errno
+    libc.src.time.nanosleep
+    libc.src.time.clock_gettime
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  clock_nanosleep_test
+  SUITE
+    libc_time_windows_unittests
+  SRCS
+    clock_nanosleep_test.cpp
+  DEPENDS
+    libc.hdr.time_macros
+    libc.hdr.types.struct_timespec
+    libc.src.errno.errno
+    libc.src.time.clock_gettime
+    libc.src.time.clock_nanosleep
+    libc.test.UnitTest.ErrnoCheckingTest
+)

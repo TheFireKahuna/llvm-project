@@ -15,4 +15,18 @@
 
 %%public_api()
 
+#if defined(__NTPOSIX__)
+// syscall() reads variadic arguments as pointer-width integers on Windows so
+// pointers survive the LLP64 variadic round-trip. Pad the call to six
+// arguments, matching the internal dispatcher contract, and cast each variadic
+// operand at the call site.
+#define __llvm_libc_syscall_arg(value) ((__INTPTR_TYPE__)(value))
+#define __syscall_helper(sysno, arg1, arg2, arg3, arg4, arg5, arg6, ...)       \
+  (syscall)((long)(sysno), __llvm_libc_syscall_arg(arg1),                       \
+            __llvm_libc_syscall_arg(arg2), __llvm_libc_syscall_arg(arg3),      \
+            __llvm_libc_syscall_arg(arg4), __llvm_libc_syscall_arg(arg5),      \
+            __llvm_libc_syscall_arg(arg6))
+#define syscall(...) __syscall_helper(__VA_ARGS__, 0, 0, 0, 0, 0, 0, 0)
+#endif
+
 #endif // LLVM_LIBC_UNISTD_H

@@ -17,8 +17,11 @@
 #include "src/__support/macros/config.h"
 #include "src/__support/macros/properties/types.h"
 #include "src/__support/str_to_integer.h"
+#include "src/__support/wctype_utils.h"
 #include "src/stdio/printf_core/core_structs.h"
 #include "src/stdio/printf_core/printf_config.h"
+
+#include "hdr/types/wchar_t.h"
 
 #include <stddef.h>
 
@@ -72,11 +75,15 @@ template <typename T> using int_type_of_v = typename int_type_of<T>::type;
   dst = cpp::bit_cast<int_type_of_v<arg_type>>(get_next_arg_value<arg_type>())
 #endif // LIBC_COPT_PRINTF_DISABLE_INDEX_MODE
 
-template <typename ArgProvider> class Parser {
-  const char *__restrict str;
+template <typename ArgProvider, typename CharType = char> class Parser {
+  const CharType *__restrict str;
 
   size_t cur_pos = 0;
   ArgProvider args_cur;
+
+  using SectionType =
+      cpp::conditional_t<cpp::is_same_v<CharType, char>, FormatSection,
+                         WideFormatSection>;
 
 #ifndef LIBC_COPT_PRINTF_DISABLE_INDEX_MODE
   // args_start stores the start of the va_args, which helps in getting the
@@ -101,10 +108,10 @@ template <typename ArgProvider> class Parser {
 
 public:
 #ifndef LIBC_COPT_PRINTF_DISABLE_INDEX_MODE
-  LIBC_INLINE Parser(const char *__restrict new_str, ArgProvider &args)
+  LIBC_INLINE Parser(const CharType *__restrict new_str, ArgProvider &args)
       : str(new_str), args_cur(args), args_start(args) {}
 #else
-  LIBC_INLINE Parser(const char *__restrict new_str, ArgProvider &args)
+  LIBC_INLINE Parser(const CharType *__restrict new_str, ArgProvider &args)
       : str(new_str), args_cur(args) {}
 #endif // LIBC_COPT_PRINTF_DISABLE_INDEX_MODE
 
@@ -112,7 +119,7 @@ public:
   // specified format section. This can either be a raw format section with no
   // conversion, or a format section with a conversion that has all of its
   // variables stored in the format section.
-  LIBC_INLINE FormatSection get_next_section() {
+  LIBC_INLINE SectionType get_next_section() {
     FormatSection section;
     size_t starting_pos = cur_pos;
     if (str[cur_pos] == '%') {
@@ -166,7 +173,11 @@ public:
 
       auto [lm, bw] = parse_length_modifier(&cur_pos);
       section.length_modifier = lm;
-      section.conv_name = str[cur_pos];
+      if constexpr (cpp::is_same_v<CharType, char>)
+        section.conv_name = str[cur_pos];
+      else
+        section.conv_name =
+            static_cast<char>(static_cast<unsigned>(str[cur_pos]) & 0x7f);
       section.bit_width = bw;
       switch (str[cur_pos]) {
       case ('%'):
@@ -315,8 +326,16 @@ public:
       while (str[cur_pos] != '%' && str[cur_pos] != '\0')
         ++cur_pos;
     }
-    section.raw_string = {str + starting_pos, cur_pos - starting_pos};
-    return section;
+    if constexpr (cpp::is_same_v<CharType, char>) {
+      section.raw_string = {str + starting_pos, cur_pos - starting_pos};
+      return section;
+    } else {
+      WideFormatSection result;
+      result.conv = section;
+      result.raw_begin = str + starting_pos;
+      result.raw_len = cur_pos - starting_pos;
+      return result;
+    }
   }
 
 private:

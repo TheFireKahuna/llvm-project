@@ -9,12 +9,8 @@
 #ifndef LLVM_LIBC_TYPES_CND_T_H
 #define LLVM_LIBC_TYPES_CND_T_H
 
-#include "__futex_word.h"
-
 typedef struct {
-  void *__qfront;
-  void *__qback;
-  __futex_word __qmtx;
+  _Alignas(8) unsigned char __data[24];
 } cnd_t;
 
 #endif // LLVM_LIBC_TYPES_CND_T_H

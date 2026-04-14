@@ -46,13 +46,22 @@ LLVM_LIBC_FUNCTION(int, fflush, (::FILE * stream)) {
     }
   }
 
-  // We iterate over the global list of all open File objects to flush any
-  // other streams that were opened via fopen.
+  // Flush all dynamically opened streams. We must not hold list_lock while
+  // blocking on a per-file mutex because fclose takes them in the opposite
+  // order — that would ABBA deadlock.
+  //
+  // Strategy: hold list_lock, try_lock each file. If try_lock succeeds,
+  // flush it (we hold both locks briefly but never block). If try_lock
+  // fails, skip it — another thread is actively using that stream and
+  // will flush it on close. This matches glibc's fflush(NULL) behavior.
   File::lock_list();
   for (File *f = File::get_first_file(); f != nullptr; f = f->get_next()) {
-    int result = f->flush();
-    if (result != 0)
-      total_error = result;
+    if (f->try_lock_for_flush()) {
+      int result = f->flush_unlocked();
+      f->unlock();
+      if (result != 0)
+        total_error = result;
+    }
   }
   File::unlock_list();
 

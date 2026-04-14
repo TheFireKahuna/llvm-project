@@ -3,6 +3,8 @@
 
 #ifdef __linux__
 #include "linux/unistd-macros.h"
+#elif defined(__NTPOSIX__)
+#include "windows/unistd-macros.h"
 #endif
 
 #define STDIN_FILENO 0

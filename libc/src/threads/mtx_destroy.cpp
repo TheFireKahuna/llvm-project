@@ -15,6 +15,8 @@
 
 namespace LIBC_NAMESPACE_DECL {
 
-LLVM_LIBC_FUNCTION(void, mtx_destroy, (mtx_t *)) {}
+LLVM_LIBC_FUNCTION(void, mtx_destroy, (mtx_t * mutex)) {
+  Mutex::destroy(reinterpret_cast<Mutex *>(mutex));
+}
 
 } // namespace LIBC_NAMESPACE_DECL

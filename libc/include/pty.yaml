@@ -1,0 +1,24 @@
+header: pty.h
+header_template: pty.h.def
+standards:
+  - bsd
+types:
+  - type_name: struct_termios
+  - type_name: struct_winsize
+functions:
+  - name: openpty
+    standards:
+      - bsd
+    return_type: int
+    arguments:
+      - type: int *
+      - type: int *
+      - type: char *
+      - type: const struct termios *
+      - type: const struct winsize *
+  - name: login_tty
+    standards:
+      - bsd
+    return_type: int
+    arguments:
+      - type: int

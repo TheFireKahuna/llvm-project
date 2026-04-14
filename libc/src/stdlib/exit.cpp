@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "src/stdlib/exit.h"
+#include "src/__support/File/file.h"
 #include "src/__support/OSUtil/exit.h"
 #include "src/__support/common.h"
 #include "src/__support/macros/config.h"
@@ -29,12 +30,18 @@ extern "C" void __cxa_finalize(void *);
 //       as we have no way to ensure system libc will call the TLS destructors.
 //       We should run exit related tests in hermetic mode but this is currently
 //       blocked by https://github.com/llvm/llvm-project/issues/133925.
-extern "C" [[gnu::weak]] void __cxa_thread_finalize() {}
+extern "C" [[gnu::weak]] void __cxa_thread_finalize(void *) {}
 
-// TODO: use recursive mutex to protect this routine.
+// Per [basic.start.term]: thread_local destructors before static.
+// __cxa_finalize(nullptr) is idempotent (guarded internally), so concurrent
+// calls to exit() are safe — the second caller finds nothing to finalize.
 [[noreturn]] LLVM_LIBC_FUNCTION(void, exit, (int status)) {
-  __cxa_thread_finalize();
+  __cxa_thread_finalize(nullptr);
   __cxa_finalize(nullptr);
+  // C11 7.22.4.4p4: "all open streams with unwritten buffered data are
+  // flushed, all open streams are closed". Flush after atexit callbacks
+  // so that callbacks can still write to streams.
+  File::flush_all();
   internal::exit(status);
 }
 

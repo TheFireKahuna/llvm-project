@@ -1,0 +1,15 @@
+add_object_library(
+  child_table
+  SRCS
+    child_table.cpp
+  HDRS
+    child_table.h
+  DEPENDS
+    libc.hdr.errno_macros
+    libc.hdr.types.pid_t
+    libc.hdr.types.struct_rusage
+    libc.src.__support.CPP.atomic
+    libc.src.__support.OSUtil.windows.ntdll
+    libc.src.__support.OSUtil.windows.reactor
+    libc.src.__support.OSUtil.windows.signal_subsystem
+)

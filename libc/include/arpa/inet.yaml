@@ -1,9 +1,13 @@
 header: arpa/inet.h
 header_template: inet.h.def
-macros: []
+macros:
+  - macro_name: INET_ADDRSTRLEN
+    macro_header: arpa-inet-macros.h
 types:
   - type_name: in_addr
   - type_name: in_addr_t
+  - type_name: in_port_t
+  - type_name: socklen_t
 enums: []
 objects: []
 functions:
@@ -25,6 +29,12 @@ functions:
     return_type: in_addr_t
     arguments:
       - type: const char *
+  - name: inet_ntoa
+    standards:
+      - POSIX
+    return_type: char *
+    arguments:
+      - type: in_addr
   - name: inet_aton
     standards:
       - llvm_libc_ext
@@ -38,6 +48,23 @@ functions:
     return_type: uint32_t
     arguments:
       - type: uint32_t
+  - name: inet_ntop
+    standards:
+      - POSIX
+    return_type: const char *
+    arguments:
+      - type: int
+      - type: const void *__restrict
+      - type: char *__restrict
+      - type: socklen_t
+  - name: inet_pton
+    standards:
+      - POSIX
+    return_type: int
+    arguments:
+      - type: int
+      - type: const char *__restrict
+      - type: void *__restrict
   - name: ntohs
     standards:
       - POSIX

@@ -93,6 +93,11 @@
 #define SIG_IGN __LLVM_LIBC_CAST(reinterpret_cast, void (*)(int), 1)
 #define SIG_HOLD __LLVM_LIBC_CAST(reinterpret_cast, void (*)(int), 2)
 
+// sigev_notify values for struct sigevent
+#define SIGEV_SIGNAL 0
+#define SIGEV_NONE 1
+#define SIGEV_THREAD 2
+
 // SIGCHLD si_codes
 #define CLD_EXITED 1    // child has exited
 #define CLD_KILLED 2    // child was killed

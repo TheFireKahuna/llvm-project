@@ -2,20 +2,35 @@ function(collect_object_file_deps target result)
   # NOTE: This function does add entrypoint targets to |result|.
   # It is expected that the caller adds them separately.
 
+  if(NOT TARGET ${target})
+    if(LLVM_LIBC_FULL_BUILD)
+      message(FATAL_ERROR "Missing full-build dependency target ${target}")
+    endif()
+    set_property(GLOBAL PROPERTY "COLLECT_OBJ_DEPS_STATE_${target}" "DONE")
+    set_property(GLOBAL PROPERTY "COLLECT_OBJ_DEPS_CACHE_${target}" "")
+    set(${result} "" PARENT_SCOPE)
+    return()
+  endif()
+
   # Memoization: avoid re-walking the same subtree. Deep dependency graphs
   # (e.g., Windows libc with 39+ OSUtil support targets) cause exponential
   # re-traversal without this cache.
-  get_property(_cached GLOBAL PROPERTY "COLLECT_OBJ_DEPS_CACHE_${target}")
-  if(_cached)
+  get_property(_cache_state GLOBAL PROPERTY "COLLECT_OBJ_DEPS_STATE_${target}")
+  if(_cache_state STREQUAL "DONE")
+    get_property(_cached GLOBAL PROPERTY "COLLECT_OBJ_DEPS_CACHE_${target}")
     set(${result} ${_cached} PARENT_SCOPE)
     return()
+  elseif(_cache_state STREQUAL "IN_PROGRESS")
+    set(${result} "" PARENT_SCOPE)
+    return()
   endif()
-  # Mark in-progress to handle cycles (shouldn't exist, but be safe).
+  set_property(GLOBAL PROPERTY "COLLECT_OBJ_DEPS_STATE_${target}" "IN_PROGRESS")
   set_property(GLOBAL PROPERTY "COLLECT_OBJ_DEPS_CACHE_${target}" "")
 
   set(all_deps "")
   get_target_property(target_type ${target} "TARGET_TYPE")
   if(NOT target_type)
+    set_property(GLOBAL PROPERTY "COLLECT_OBJ_DEPS_STATE_${target}" "DONE")
     return()
   endif()
 
@@ -27,6 +42,7 @@ function(collect_object_file_deps target result)
       list(APPEND all_deps ${dep_targets})
     endforeach(dep)
     list(REMOVE_DUPLICATES all_deps)
+    set_property(GLOBAL PROPERTY "COLLECT_OBJ_DEPS_STATE_${target}" "DONE")
     set_property(GLOBAL PROPERTY "COLLECT_OBJ_DEPS_CACHE_${target}" "${all_deps}")
     set(${result} ${all_deps} PARENT_SCOPE)
     return()
@@ -49,6 +65,7 @@ function(collect_object_file_deps target result)
       list(APPEND all_deps ${dep_targets})
     endforeach(dep)
     list(REMOVE_DUPLICATES all_deps)
+    set_property(GLOBAL PROPERTY "COLLECT_OBJ_DEPS_STATE_${target}" "DONE")
     set_property(GLOBAL PROPERTY "COLLECT_OBJ_DEPS_CACHE_${target}" "${all_deps}")
     set(${result} ${all_deps} PARENT_SCOPE)
     return()
@@ -58,6 +75,7 @@ function(collect_object_file_deps target result)
     # It is not possible to recursively extract deps of external dependencies.
     # So, we just accumulate the direct dep and return.
     get_target_property(deps ${target} "DEPS")
+    set_property(GLOBAL PROPERTY "COLLECT_OBJ_DEPS_STATE_${target}" "DONE")
     set_property(GLOBAL PROPERTY "COLLECT_OBJ_DEPS_CACHE_${target}" "${deps}")
     set(${result} ${deps} PARENT_SCOPE)
     return()
@@ -74,11 +92,13 @@ function(collect_object_file_deps target result)
       endif()
     endforeach(dep)
     list(REMOVE_DUPLICATES all_deps)
+    set_property(GLOBAL PROPERTY "COLLECT_OBJ_DEPS_STATE_${target}" "DONE")
     set_property(GLOBAL PROPERTY "COLLECT_OBJ_DEPS_CACHE_${target}" "${all_deps}")
     set(${result} ${all_deps} PARENT_SCOPE)
     return()
   endif()
 
+  set_property(GLOBAL PROPERTY "COLLECT_OBJ_DEPS_STATE_${target}" "DONE")
 endfunction(collect_object_file_deps)
 
 function(get_all_object_file_deps result fq_deps_list)
@@ -187,6 +207,76 @@ function(add_entrypoint_library target_name)
   )
   set_target_properties(${target_name} PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${LIBC_LIBRARY_DIR})
 endfunction(add_entrypoint_library)
+
+# A rule to build a shared library from a collection of entrypoint objects.
+# Usage:
+#     add_entrypoint_library_shared(
+#       DEPENDS <list of add_entrypoint_object targets>
+#     )
+function(add_entrypoint_library_shared target_name)
+  cmake_parse_arguments(
+    "ENTRYPOINT_LIBRARY"
+    "" # No optional arguments
+    "" # No single value arguments
+    "DEPENDS" # Multi-value arguments
+    ${ARGN}
+  )
+  if(NOT ENTRYPOINT_LIBRARY_DEPENDS)
+    message(FATAL_ERROR "'add_entrypoint_library_shared' target requires a DEPENDS list "
+                        "of 'add_entrypoint_object' targets.")
+  endif()
+
+  get_fq_deps_list(fq_deps_list ${ENTRYPOINT_LIBRARY_DEPENDS})
+  get_all_object_file_deps(all_deps "${fq_deps_list}")
+
+  set(objects "")
+  foreach(dep IN LISTS all_deps)
+    list(APPEND objects $<$<STREQUAL:$<TARGET_NAME_IF_EXISTS:${dep}>,${dep}>:$<TARGET_OBJECTS:${dep}>>)
+  endforeach(dep)
+
+  if(WIN32)
+    # COFF shared-library links do not scale well when we hand lld-link the
+    # full llvm-libc object set directly. Build a single archive first, then
+    # whole-archive that into the DLL so we keep the same exported surface with
+    # a much smaller link graph.
+    set(archive_target "${target_name}.__archive")
+    add_library(
+      ${archive_target}
+      STATIC
+      ${objects}
+    )
+    set_target_properties(${archive_target} PROPERTIES
+      ARCHIVE_OUTPUT_DIRECTORY ${LIBC_LIBRARY_DIR}
+    )
+
+    add_library(${target_name} SHARED)
+    if(MSVC OR WIN32_ITANIUM OR WIN32_NTPOSIX OR
+       CMAKE_LINKER MATCHES [[(^|[/\\])lld-link(\\.exe)?$]])
+      target_link_options(${target_name} PRIVATE
+        "LINKER:/WHOLEARCHIVE:$<TARGET_FILE:${archive_target}>"
+      )
+    else()
+      target_link_libraries(${target_name} PRIVATE
+        "-Wl,--whole-archive"
+        ${archive_target}
+        "-Wl,--no-whole-archive"
+      )
+    endif()
+    target_link_libraries(${target_name} PRIVATE ${archive_target})
+  else()
+    add_library(
+      ${target_name}
+      SHARED
+      ${objects}
+    )
+  endif()
+
+  set_target_properties(${target_name} PROPERTIES
+    ARCHIVE_OUTPUT_DIRECTORY ${LIBC_LIBRARY_DIR}
+    LIBRARY_OUTPUT_DIRECTORY ${LIBC_LIBRARY_DIR}
+    RUNTIME_OUTPUT_DIRECTORY ${LIBC_LIBRARY_DIR}
+  )
+endfunction(add_entrypoint_library_shared)
 
 set(HDR_LIBRARY_TARGET_TYPE "HDR_LIBRARY")
 

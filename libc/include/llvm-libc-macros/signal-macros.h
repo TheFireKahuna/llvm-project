@@ -13,6 +13,8 @@
 #include "linux/signal-macros.h"
 #elif defined(__NVPTX__) || defined(__AMDGPU__) || defined(__SPIRV__)
 #include "gpu/signal-macros.h"
+#elif defined(__NTPOSIX__)
+#include "windows/signal-macros.h"
 #endif
 
 #endif // LLVM_LIBC_MACROS_SIGNAL_MACROS_H

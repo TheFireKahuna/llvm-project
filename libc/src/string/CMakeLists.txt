@@ -1,5 +1,16 @@
 add_subdirectory(memory_utils)
 
+set(strcoll_platform_deps "")
+set(strcoll_l_platform_deps "")
+if(LIBC_TARGET_OS_IS_WINDOWS)
+  list(APPEND strcoll_platform_deps
+       libc.src.__support.OSUtil.windows.ntdll
+       libc.src.locale.locale)
+  list(APPEND strcoll_l_platform_deps
+       libc.src.string.strcoll
+       libc.src.locale.locale)
+endif()
+
 add_header_library(
   string_utils
   HDRS
@@ -151,6 +162,8 @@ add_entrypoint_object(
     strcoll.cpp
   HDRS
     strcoll.h
+  DEPENDS
+    ${strcoll_platform_deps}
 )
 
 add_entrypoint_object(
@@ -158,7 +171,9 @@ add_entrypoint_object(
   SRCS
     strcoll_l.cpp
   HDRS
-  strcoll_l.h
+    strcoll_l.h
+  DEPENDS
+    ${strcoll_l_platform_deps}
 )
 
 add_entrypoint_object(
@@ -207,13 +222,27 @@ add_entrypoint_object(
 )
 
 add_entrypoint_object(
+  strerror_l
+  SRCS
+    strerror_l.cpp
+  HDRS
+    strerror_l.h
+  DEPENDS
+    libc.src.__support.StringUtil.error_to_string
+    libc.hdr.types.locale_t
+)
+
+add_entrypoint_object(
   strerror_r
   SRCS
     strerror_r.cpp
   HDRS
     strerror_r.h
   DEPENDS
+    libc.hdr.errno_macros
+    libc.src.__support.CPP.string_view
     libc.src.__support.StringUtil.error_to_string
+    libc.src.string.memory_utils.inline_memcpy
 )
 
 add_entrypoint_object(

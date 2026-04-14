@@ -23,6 +23,30 @@ add_entrypoint_object(
 )
 
 add_entrypoint_object(
+  wcstoimax
+  SRCS
+    wcstoimax.cpp
+  HDRS
+    wcstoimax.h
+  DEPENDS
+    libc.hdr.stdint_proxy
+    libc.src.__support.str_to_integer
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  wcstoumax
+  SRCS
+    wcstoumax.cpp
+  HDRS
+    wcstoumax.h
+  DEPENDS
+    libc.hdr.stdint_proxy
+    libc.src.__support.str_to_integer
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
   imaxdiv
   SRCS
     imaxdiv.cpp

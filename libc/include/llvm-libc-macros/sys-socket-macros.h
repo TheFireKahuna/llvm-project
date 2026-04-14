@@ -11,6 +11,8 @@
 
 #ifdef __linux__
 #include "linux/sys-socket-macros.h"
+#elif defined(__NTPOSIX__)
+#include "windows/sys-socket-macros.h"
 #endif
 
 #endif // LLVM_LIBC_MACROS_SYS_SOCKET_MACROS_H

@@ -49,8 +49,8 @@ _Float16 func_d(int, float) __NOEXCEPT;
 _Float16 func_e(float128) __NOEXCEPT;
 #endif // LIBC_TYPES_HAS_FLOAT16_AND_FLOAT128
 
-extern obj object_1;
-extern obj object_2;
+extern __LIBC_DATA_IMPORT obj object_1;
+extern __LIBC_DATA_IMPORT obj object_2;
 
 __END_C_DECLS
 

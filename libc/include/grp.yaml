@@ -1,0 +1,42 @@
+header: grp.h
+header_template: grp.h.def
+macros: []
+types:
+  - type_name: gid_t
+  - type_name: size_t
+  - type_name: struct_group
+enums: []
+objects: []
+functions:
+  - name: getgrgid
+    standards:
+      - POSIX
+    return_type: struct group *
+    arguments:
+      - type: gid_t
+  - name: getgrnam
+    standards:
+      - POSIX
+    return_type: struct group *
+    arguments:
+      - type: const char *
+  - name: getgrgid_r
+    standards:
+      - POSIX
+    return_type: int
+    arguments:
+      - type: gid_t
+      - type: struct group *
+      - type: char *
+      - type: size_t
+      - type: struct group **
+  - name: getgrnam_r
+    standards:
+      - POSIX
+    return_type: int
+    arguments:
+      - type: const char *
+      - type: struct group *
+      - type: char *
+      - type: size_t
+      - type: struct group **

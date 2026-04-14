@@ -30,6 +30,14 @@ add_entrypoint_object(
 )
 
 if (TARGET libc.src.setjmp.sigsetjmp_epilogue)
+  set(_siglongjmp_deps .longjmp)
+  if(LIBC_TARGET_OS_IS_WINDOWS)
+    list(APPEND _siglongjmp_deps
+      libc.hdr.signal_macros
+      libc.src.signal.sigprocmask
+    )
+  endif()
+
   add_entrypoint_object(
     siglongjmp
     SRCS
@@ -37,7 +45,7 @@ if (TARGET libc.src.setjmp.sigsetjmp_epilogue)
     HDRS
       siglongjmp.h
     DEPENDS
-      .longjmp
+      ${_siglongjmp_deps}
   )
 
   add_entrypoint_object(

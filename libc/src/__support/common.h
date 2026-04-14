@@ -26,6 +26,28 @@
 #define LLVM_LIBC_VARIABLE_ATTR
 #endif
 
+// PE/COFF shared library export attribute for entrypoint symbols.
+// On NTPOSIX, entrypoints are __declspec(dllexport) so they appear in the DLL
+// export table. [[gnu::visibility("default")]] overrides the namespace-level
+// [[gnu::visibility("hidden")]] on these specific symbols.
+// dllexport is a no-op when linking a static archive, so this is always safe.
+//
+// Two variants: LLVM_LIBC_ENTRYPOINT_EXPORT for functions (uses C++ attribute
+// syntax [[gnu::...]]), and LLVM_LIBC_VARIABLE_EXPORT for variables (uses GNU
+// __attribute__ syntax — the C++ [[gnu::visibility(...)]] in attribute position
+// before a decltype specifier is parsed as a type attribute, which is invalid).
+// Both include visibility("default") to override the namespace-level
+// [[gnu::visibility("hidden")]] on LIBC_NAMESPACE_DECL.
+#if defined(_WIN32) && defined(LIBC_COPT_PUBLIC_PACKAGING)
+#define LLVM_LIBC_ENTRYPOINT_EXPORT                                            \
+  [[gnu::visibility("default")]] __declspec(dllexport)
+#define LLVM_LIBC_VARIABLE_EXPORT                                              \
+  __attribute__((visibility("default"))) __declspec(dllexport)
+#else
+#define LLVM_LIBC_ENTRYPOINT_EXPORT
+#define LLVM_LIBC_VARIABLE_EXPORT
+#endif
+
 // clang-format off
 // Allow each function `func` to have extra attributes specified by defining:
 // `LLVM_LIBC_FUNCTION_ATTR_func` macro, which should always start with
@@ -52,7 +74,8 @@
 #ifndef __APPLE__
 #define LLVM_LIBC_FUNCTION_IMPL_4(type, name, arglist, c_alias)                \
   LLVM_LIBC_ATTR(name)                                                         \
-  LLVM_LIBC_FUNCTION_ATTR decltype(LIBC_NAMESPACE::name)                       \
+  LLVM_LIBC_ENTRYPOINT_EXPORT LLVM_LIBC_FUNCTION_ATTR                         \
+      decltype(LIBC_NAMESPACE::name)                                           \
       __##name##_impl__ asm(c_alias);                                          \
   decltype(LIBC_NAMESPACE::name) name [[gnu::alias(c_alias)]];                 \
   type __##name##_impl__ arglist
@@ -86,7 +109,8 @@
 #ifndef __APPLE__
 #define LLVM_LIBC_VARIABLE_IMPL(type, name)                                    \
   LLVM_LIBC_ATTR(name)                                                         \
-  extern LLVM_LIBC_VARIABLE_ATTR decltype(LIBC_NAMESPACE::name)                \
+  extern LLVM_LIBC_VARIABLE_EXPORT LLVM_LIBC_VARIABLE_ATTR                     \
+      decltype(LIBC_NAMESPACE::name)                                           \
       __##name##_impl__ asm(#name);                                            \
   extern decltype(LIBC_NAMESPACE::name) name [[gnu::alias(#name)]];            \
   type __##name##_impl__

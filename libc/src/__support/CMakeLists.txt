@@ -448,6 +448,10 @@ add_subdirectory(File)
 
 add_subdirectory(HashTable)
 
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/process)
+  add_subdirectory(process)
+endif()
+
 add_subdirectory(fixed_point)
 
 add_subdirectory(time)

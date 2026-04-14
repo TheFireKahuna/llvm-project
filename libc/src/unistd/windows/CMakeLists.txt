@@ -1,11 +1,989 @@
 add_entrypoint_object(
+  alarm
+  SRCS
+    alarm.cpp
+  HDRS
+    ../alarm.h
+  DEPENDS
+    libc.hdr.types.struct_itimerval
+    libc.src.sys.time.setitimer
+)
+
+add_entrypoint_object(
+  access
+  SRCS
+    access.cpp
+  HDRS
+    ../access.h
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.src.unistd.faccessat
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  faccessat
+  SRCS
+    faccessat.cpp
+  HDRS
+    ../faccessat.h
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_faccessat
+)
+
+add_entrypoint_object(
+  fdatasync
+  SRCS
+    fdatasync.cpp
+  HDRS
+    ../fdatasync.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_fdatasync
+    libc.src.pthread.cancel_internal
+)
+
+add_entrypoint_object(
+  fsync
+  SRCS
+    fsync.cpp
+  HDRS
+    ../fsync.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_fsync
+    libc.src.pthread.cancel_internal
+)
+
+add_entrypoint_object(
+  ftruncate
+  SRCS
+    ftruncate.cpp
+  HDRS
+    ../ftruncate.h
+  DEPENDS
+    libc.hdr.types.off_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_ftruncate
+)
+
+add_entrypoint_object(
+  _get_osfhandle
+  SRCS
+    _get_osfhandle.cpp
+  HDRS
+    ../_get_osfhandle.h
+  DEPENDS
+    libc.src.__support.OSUtil.windows.file_ops
+    libc.src.__support.OSUtil.windows.fd_table
+)
+
+add_entrypoint_object(
+  _open_osfhandle
+  SRCS
+    _open_osfhandle.cpp
+  HDRS
+    ../_open_osfhandle.h
+  DEPENDS
+    libc.src.__support.OSUtil.windows.file_ops
+    libc.src.__support.OSUtil.windows.fd_table
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  truncate
+  SRCS
+    truncate.cpp
+  HDRS
+    ../truncate.h
+  DEPENDS
+    libc.hdr.types.off_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_truncate
+)
+
+add_entrypoint_object(
   getentropy
   SRCS
     getentropy.cpp
   HDRS
     ../getentropy.h
   DEPENDS
-    libc.hdr.types.size_t
-    libc.hdr.errno_macros
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.misc_ops
+)
+
+add_entrypoint_object(
+  read
+  SRCS
+    read.cpp
+  HDRS
+    ../read.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_read
+    libc.src.pthread.cancel_internal
+)
+
+add_entrypoint_object(
+  write
+  SRCS
+    write.cpp
+  HDRS
+    ../write.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_write
+    libc.src.pthread.cancel_internal
+)
+
+add_entrypoint_object(
+  close
+  SRCS
+    close.cpp
+  HDRS
+    ../close.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_close
+    libc.src.pthread.cancel_internal
+)
+
+add_entrypoint_object(
+  lseek
+  SRCS
+    lseek.cpp
+  HDRS
+    ../lseek.h
+  DEPENDS
+    libc.hdr.types.off_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_lseek
+)
+
+add_entrypoint_object(
+  dup
+  SRCS
+    dup.cpp
+  HDRS
+    ../dup.h
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_fcntl
+)
+
+add_entrypoint_object(
+  dup2
+  SRCS
+    dup2.cpp
+  HDRS
+    ../dup2.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_dup2
+)
+
+add_entrypoint_object(
+  dup3
+  SRCS
+    dup3.cpp
+  HDRS
+    ../dup3.h
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_dup3
+)
+
+add_entrypoint_object(
+  copy_file_range
+  SRCS
+    copy_file_range.cpp
+  HDRS
+    ../copy_file_range.h
+  DEPENDS
+    libc.hdr.types.off_t
+    libc.hdr.types.ssize_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_copy_file_range
+    libc.src.pthread.cancel_internal
+)
+
+add_entrypoint_object(
+  pread
+  SRCS
+    pread.cpp
+  HDRS
+    ../pread.h
+  DEPENDS
+    libc.hdr.types.off_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_pread
+    libc.src.pthread.cancel_internal
+)
+
+add_entrypoint_object(
+  pwrite
+  SRCS
+    pwrite.cpp
+  HDRS
+    ../pwrite.h
+  DEPENDS
+    libc.hdr.types.off_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_pwrite
+    libc.src.pthread.cancel_internal
+)
+
+add_entrypoint_object(
+  isatty
+  SRCS
+    isatty.cpp
+  HDRS
+    ../isatty.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.terminal_ops
+)
+
+add_entrypoint_object(
+  pipe
+  SRCS
+    pipe.cpp
+  HDRS
+    ../pipe.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_pipe2
+)
+
+add_entrypoint_object(
+  pipe2
+  SRCS
+    pipe2.cpp
+  HDRS
+    ../pipe2.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_pipe2
+)
+
+add_entrypoint_object(
+  unlinkat
+  SRCS
+    unlinkat.cpp
+  HDRS
+    ../unlinkat.h
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_unlinkat
+)
+
+add_entrypoint_object(
+  unlink
+  SRCS
+    unlink.cpp
+  HDRS
+    ../unlink.h
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.src.unistd.unlinkat
     libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  rmdir
+  SRCS
+    rmdir.cpp
+  HDRS
+    ../rmdir.h
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.src.unistd.unlinkat
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  linkat
+  SRCS
+    linkat.cpp
+  HDRS
+    ../linkat.h
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_linkat
+)
+
+add_entrypoint_object(
+  link
+  SRCS
+    link.cpp
+  HDRS
+    ../link.h
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.src.unistd.linkat
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  symlinkat
+  SRCS
+    symlinkat.cpp
+  HDRS
+    ../symlinkat.h
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_symlinkat
+)
+
+add_entrypoint_object(
+  symlink
+  SRCS
+    symlink.cpp
+  HDRS
+    ../symlink.h
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.src.unistd.symlinkat
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  readlinkat
+  SRCS
+    readlinkat.cpp
+  HDRS
+    ../readlinkat.h
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.hdr.types.ssize_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_readlinkat
+)
+
+add_entrypoint_object(
+  readlink
+  SRCS
+    readlink.cpp
+  HDRS
+    ../readlink.h
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.hdr.types.ssize_t
+    libc.src.unistd.readlinkat
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  getcwd
+  SRCS
+    getcwd.cpp
+  HDRS
+    ../getcwd.h
+  DEPENDS
+    libc.hdr.types.size_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_getcwd
+)
+
+add_entrypoint_object(
+  chdir
+  SRCS
+    chdir.cpp
+  HDRS
+    ../chdir.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_chdir
+)
+
+add_entrypoint_object(
+  fchdir
+  SRCS
+    fchdir.cpp
+  HDRS
+    ../fchdir.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_fchdir
+)
+
+add_entrypoint_object(
+  gethostname
+  SRCS
+    gethostname.cpp
+  HDRS
+    ../gethostname.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.misc_ops
+)
+
+add_entrypoint_object(
+  getpagesize
+  SRCS
+    getpagesize.cpp
+  HDRS
+    ../getpagesize.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.OSUtil.windows.page_size
+)
+
+add_entrypoint_object(
+  getpid
+  SRCS
+    getpid.cpp
+  HDRS
+    ../getpid.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.OSUtil.windows.syscall_wrapper_getpid
+)
+
+add_entrypoint_object(
+  gettid
+  SRCS
+    gettid.cpp
+  HDRS
+    ../gettid.h
+  DEPENDS
+    libc.hdr.types.pid_t
+    libc.src.__support.common
+    libc.src.__support.OSUtil.windows.syscall_wrapper_gettid
+)
+
+add_entrypoint_object(
+  getppid
+  SRCS
+    getppid.cpp
+  HDRS
+    ../getppid.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.OSUtil.windows.syscall_wrapper_getppid
+)
+
+add_entrypoint_object(
+  getsid
+  SRCS
+    getsid.cpp
+  HDRS
+    ../getsid.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_getsid
+)
+
+add_entrypoint_object(
+  setsid
+  SRCS
+    setsid.cpp
+  HDRS
+    ../setsid.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_getsid
+)
+
+add_entrypoint_object(
+  setpgid
+  SRCS
+    setpgid.cpp
+  HDRS
+    ../setpgid.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_setpgid
+)
+
+add_entrypoint_object(
+  getpgid
+  SRCS
+    getpgid.cpp
+  HDRS
+    ../getpgid.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_setpgid
+)
+
+add_entrypoint_object(
+  getpgrp
+  SRCS
+    getpgrp.cpp
+  HDRS
+    ../getpgrp.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.OSUtil.windows.syscall_wrapper_setpgid
+)
+
+add_entrypoint_object(
+  tcgetpgrp
+  SRCS
+    tcgetpgrp.cpp
+  HDRS
+    ../tcgetpgrp.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.terminal_ops
+)
+
+add_entrypoint_object(
+  tcsetpgrp
+  SRCS
+    tcsetpgrp.cpp
+  HDRS
+    ../tcsetpgrp.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.terminal_ops
+)
+
+add_entrypoint_object(
+  getuid
+  SRCS
+    getuid.cpp
+  HDRS
+    ../getuid.h
+  DEPENDS
+    libc.hdr.types.uid_t
+    libc.src.__support.common
+    libc.src.__support.OSUtil.windows.syscall_wrapper_getuid
+)
+
+add_entrypoint_object(
+  geteuid
+  SRCS
+    geteuid.cpp
+  HDRS
+    ../geteuid.h
+  DEPENDS
+    libc.hdr.types.uid_t
+    libc.src.__support.common
+    libc.src.__support.OSUtil.windows.syscall_wrapper_geteuid
+)
+
+add_entrypoint_object(
+  getgid
+  SRCS
+    getgid.cpp
+  HDRS
+    ../getgid.h
+  DEPENDS
+    libc.hdr.types.gid_t
+    libc.src.__support.common
+    libc.src.__support.OSUtil.windows.syscall_wrapper_getgid
+)
+
+add_entrypoint_object(
+  getegid
+  SRCS
+    getegid.cpp
+  HDRS
+    ../getegid.h
+  DEPENDS
+    libc.hdr.types.gid_t
+    libc.src.__support.common
+    libc.src.__support.OSUtil.windows.syscall_wrapper_getegid
+)
+
+add_entrypoint_object(
+  setuid
+  SRCS
+    setuid.cpp
+  HDRS
+    ../setuid.h
+  DEPENDS
+    libc.hdr.types.uid_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_setuid
+)
+
+add_entrypoint_object(
+  seteuid
+  SRCS
+    seteuid.cpp
+  HDRS
+    ../seteuid.h
+  DEPENDS
+    libc.hdr.types.uid_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_seteuid
+)
+
+add_entrypoint_object(
+  setgid
+  SRCS
+    setgid.cpp
+  HDRS
+    ../setgid.h
+  DEPENDS
+    libc.hdr.types.gid_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_setgid
+)
+
+add_entrypoint_object(
+  setegid
+  SRCS
+    setegid.cpp
+  HDRS
+    ../setegid.h
+  DEPENDS
+    libc.hdr.types.gid_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_setegid
+)
+
+add_entrypoint_object(
+  getgroups
+  SRCS
+    getgroups.cpp
+  HDRS
+    ../getgroups.h
+  DEPENDS
+    libc.hdr.types.gid_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_getgroups
+)
+
+add_entrypoint_object(
+  issetugid
+  SRCS
+    issetugid.cpp
+  HDRS
+    ../issetugid.h
+  DEPENDS
+    libc.hdr.types.uid_t
+    libc.hdr.types.gid_t
+    libc.src.__support.common
+    libc.src.__support.OSUtil.windows.process_control_block
+)
+
+add_entrypoint_object(
+  getlogin
+  SRCS
+    getlogin.cpp
+  HDRS
+    ../getlogin.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.identity_ops
+)
+
+add_entrypoint_object(
+  getlogin_r
+  SRCS
+    getlogin_r.cpp
+  HDRS
+    ../getlogin_r.h
+  DEPENDS
+    libc.hdr.types.size_t
+    libc.src.__support.common
+    libc.src.__support.OSUtil.windows.identity_ops
+)
+
+add_entrypoint_object(
+  setreuid
+  SRCS
+    setreuid.cpp
+  HDRS
+    ../setreuid.h
+  DEPENDS
+    libc.hdr.types.uid_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_setreuid
+)
+
+add_entrypoint_object(
+  setregid
+  SRCS
+    setregid.cpp
+  HDRS
+    ../setregid.h
+  DEPENDS
+    libc.hdr.types.gid_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_setregid
+)
+
+add_entrypoint_object(
+  getresuid
+  SRCS
+    getresuid.cpp
+  HDRS
+    ../getresuid.h
+  DEPENDS
+    libc.hdr.types.uid_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.identity_ops
+)
+
+add_entrypoint_object(
+  getresgid
+  SRCS
+    getresgid.cpp
+  HDRS
+    ../getresgid.h
+  DEPENDS
+    libc.hdr.types.gid_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.identity_ops
+)
+
+add_entrypoint_object(
+  setresuid
+  SRCS
+    setresuid.cpp
+  HDRS
+    ../setresuid.h
+  DEPENDS
+    libc.hdr.types.uid_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.identity_ops
+)
+
+add_entrypoint_object(
+  setresgid
+  SRCS
+    setresgid.cpp
+  HDRS
+    ../setresgid.h
+  DEPENDS
+    libc.hdr.types.gid_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.identity_ops
+)
+
+add_entrypoint_object(
+  execve
+  SRCS
+    execve.cpp
+  HDRS
+    ../execve.h
+  DEPENDS
+    libc.hdr.errno_macros
+    libc.hdr.fcntl_macros
+    libc.src.__support.CPP.atomic
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.exec_ops
+    libc.src.__support.OSUtil.windows.fd_table
+    libc.src.__support.OSUtil.windows.ntdll
+    libc.src.__support.OSUtil.windows.process_identity
+    libc.src.__support.OSUtil.windows.process_utils
+)
+
+add_entrypoint_object(
+  execv
+  SRCS
+    execv.cpp
+  HDRS
+    ../execv.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.unistd.environ
+    libc.src.unistd.execve
+)
+
+add_entrypoint_object(
+  execvp
+  SRCS
+    execvp.cpp
+  HDRS
+    ../execvp.h
+  DEPENDS
+    libc.hdr.errno_macros
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.exec_ops
+    libc.src.unistd.environ
+    libc.src.unistd.execve
+)
+
+add_entrypoint_object(
+  pathconf
+  SRCS
+    pathconf.cpp
+  HDRS
+    ../pathconf.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.misc_ops
+)
+
+add_entrypoint_object(
+  fpathconf
+  SRCS
+    fpathconf.cpp
+  HDRS
+    ../fpathconf.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.misc_ops
+)
+
+add_entrypoint_object(
+  sysconf
+  SRCS
+    sysconf.cpp
+  HDRS
+    ../sysconf.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.misc_ops
+)
+
+add_entrypoint_object(
+  chown
+  SRCS
+    chown.cpp
+  HDRS
+    ../chown.h
+  DEPENDS
+    libc.hdr.types.uid_t
+    libc.hdr.types.gid_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_chown
+)
+
+add_entrypoint_object(
+  fchown
+  SRCS
+    fchown.cpp
+  HDRS
+    ../fchown.h
+  DEPENDS
+    libc.hdr.types.uid_t
+    libc.hdr.types.gid_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_fchown
+)
+
+add_entrypoint_object(
+  fchownat
+  SRCS
+    fchownat.cpp
+  HDRS
+    ../fchownat.h
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.hdr.types.uid_t
+    libc.hdr.types.gid_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.syscall_wrapper_fchownat
+)
+
+add_entrypoint_object(
+  lchown
+  SRCS
+    lchown.cpp
+  HDRS
+    ../lchown.h
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.hdr.types.uid_t
+    libc.hdr.types.gid_t
+    libc.src.unistd.fchownat
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  __llvm_libc_syscall
+  SRCS
+    syscall.cpp
+  HDRS
+    ../syscall.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.osutil
+)
+
+add_entrypoint_object(
+  fork
+  SRCS
+    fork.cpp
+  HDRS
+    ../fork.h
+  DEPENDS
+    libc.hdr.types.pid_t
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.fork_reinit
+    libc.src.__support.OSUtil.windows.process_control_block
+    libc.src.__support.OSUtil.windows.ntdll
+    libc.src.__support.process.windows.child_table
+)
+
+add_entrypoint_object(
+  syscall
+  SRCS
+    syscall_wrapper.cpp
+  HDRS
+    ../syscall_wrapper.h
+  DEPENDS
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.osutil
 )

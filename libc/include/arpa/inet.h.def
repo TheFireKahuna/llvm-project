@@ -12,6 +12,7 @@
 #include "__llvm-libc-common.h"
 
 #include <inttypes.h>
+#include <sys/socket.h>
 
 %%public_api()
 

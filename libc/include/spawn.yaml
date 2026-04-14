@@ -1,4 +1,5 @@
 header: spawn.h
+header_template: spawn.h.def
 standards:
   - posix
 types:
@@ -6,6 +7,33 @@ types:
   - type_name: posix_spawnattr_t
   - type_name: pid_t
   - type_name: mode_t
+  - type_name: sigset_t
+  - type_name: struct_sched_param
+macros:
+  - macro_name: POSIX_SPAWN_RESETIDS
+    macro_header: spawn-macros.h
+    standards:
+      - posix
+  - macro_name: POSIX_SPAWN_SETPGROUP
+    macro_header: spawn-macros.h
+    standards:
+      - posix
+  - macro_name: POSIX_SPAWN_SETSIGDEF
+    macro_header: spawn-macros.h
+    standards:
+      - posix
+  - macro_name: POSIX_SPAWN_SETSIGMASK
+    macro_header: spawn-macros.h
+    standards:
+      - posix
+  - macro_name: POSIX_SPAWN_SETSCHEDPARAM
+    macro_header: spawn-macros.h
+    standards:
+      - posix
+  - macro_name: POSIX_SPAWN_SETSCHEDULER
+    macro_header: spawn-macros.h
+    standards:
+      - posix
 functions:
   - name: posix_spawn
     standards:
@@ -14,8 +42,8 @@ functions:
     arguments:
       - type: pid_t *__restrict
       - type: const char *__restrict
-      - type: posix_spawn_file_actions_t *
-      - type: posix_spawnattr_t *__restrict
+      - type: const posix_spawn_file_actions_t *
+      - type: const posix_spawnattr_t *__restrict
       - type: char * const * __restrict
       - type: char * const * __restrict
   - name: posix_spawn_file_actions_addclose
@@ -55,3 +83,110 @@ functions:
     return_type: int
     arguments:
       - type: posix_spawn_file_actions_t *
+  - name: posix_spawnattr_init
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: posix_spawnattr_t *
+  - name: posix_spawnattr_destroy
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: posix_spawnattr_t *
+  - name: posix_spawnattr_getflags
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: const posix_spawnattr_t *__restrict
+      - type: short *__restrict
+  - name: posix_spawnattr_setflags
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: posix_spawnattr_t *
+      - type: short
+  - name: posix_spawnattr_getsigdefault
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: const posix_spawnattr_t *__restrict
+      - type: sigset_t *__restrict
+  - name: posix_spawnattr_setsigdefault
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: posix_spawnattr_t *__restrict
+      - type: const sigset_t *__restrict
+  - name: posix_spawnattr_getsigmask
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: const posix_spawnattr_t *__restrict
+      - type: sigset_t *__restrict
+  - name: posix_spawnattr_setsigmask
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: posix_spawnattr_t *__restrict
+      - type: const sigset_t *__restrict
+  - name: posix_spawnattr_getpgroup
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: const posix_spawnattr_t *__restrict
+      - type: pid_t *__restrict
+  - name: posix_spawnattr_setpgroup
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: posix_spawnattr_t *
+      - type: pid_t
+  - name: posix_spawnattr_getschedparam
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: const posix_spawnattr_t *__restrict
+      - type: struct sched_param *__restrict
+  - name: posix_spawnattr_setschedparam
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: posix_spawnattr_t *__restrict
+      - type: const struct sched_param *__restrict
+  - name: posix_spawnattr_getschedpolicy
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: const posix_spawnattr_t *__restrict
+      - type: int *__restrict
+  - name: posix_spawnp
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: pid_t *__restrict
+      - type: const char *__restrict
+      - type: const posix_spawn_file_actions_t *
+      - type: const posix_spawnattr_t *__restrict
+      - type: char * const * __restrict
+      - type: char * const * __restrict
+  - name: posix_spawnattr_setschedpolicy
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: posix_spawnattr_t *
+      - type: int

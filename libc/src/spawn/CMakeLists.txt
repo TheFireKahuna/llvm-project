@@ -74,8 +74,155 @@ add_entrypoint_object(
 )
 
 add_entrypoint_object(
+  posix_spawnattr_init
+  SRCS
+    posix_spawnattr_init.cpp
+  HDRS
+    posix_spawnattr_init.h
+  DEPENDS
+    libc.include.spawn
+)
+
+add_entrypoint_object(
+  posix_spawnattr_destroy
+  SRCS
+    posix_spawnattr_destroy.cpp
+  HDRS
+    posix_spawnattr_destroy.h
+  DEPENDS
+    libc.include.spawn
+)
+
+add_entrypoint_object(
+  posix_spawnattr_getflags
+  SRCS
+    posix_spawnattr_getflags.cpp
+  HDRS
+    posix_spawnattr_getflags.h
+  DEPENDS
+    libc.include.spawn
+)
+
+add_entrypoint_object(
+  posix_spawnattr_setflags
+  SRCS
+    posix_spawnattr_setflags.cpp
+  HDRS
+    posix_spawnattr_setflags.h
+  DEPENDS
+    libc.include.spawn
+)
+
+add_entrypoint_object(
+  posix_spawnattr_getsigdefault
+  SRCS
+    posix_spawnattr_getsigdefault.cpp
+  HDRS
+    posix_spawnattr_getsigdefault.h
+  DEPENDS
+    libc.include.spawn
+)
+
+add_entrypoint_object(
+  posix_spawnattr_setsigdefault
+  SRCS
+    posix_spawnattr_setsigdefault.cpp
+  HDRS
+    posix_spawnattr_setsigdefault.h
+  DEPENDS
+    libc.include.spawn
+)
+
+add_entrypoint_object(
+  posix_spawnattr_getsigmask
+  SRCS
+    posix_spawnattr_getsigmask.cpp
+  HDRS
+    posix_spawnattr_getsigmask.h
+  DEPENDS
+    libc.include.spawn
+)
+
+add_entrypoint_object(
+  posix_spawnattr_setsigmask
+  SRCS
+    posix_spawnattr_setsigmask.cpp
+  HDRS
+    posix_spawnattr_setsigmask.h
+  DEPENDS
+    libc.include.spawn
+)
+
+add_entrypoint_object(
+  posix_spawnattr_getpgroup
+  SRCS
+    posix_spawnattr_getpgroup.cpp
+  HDRS
+    posix_spawnattr_getpgroup.h
+  DEPENDS
+    libc.include.spawn
+)
+
+add_entrypoint_object(
+  posix_spawnattr_setpgroup
+  SRCS
+    posix_spawnattr_setpgroup.cpp
+  HDRS
+    posix_spawnattr_setpgroup.h
+  DEPENDS
+    libc.include.spawn
+)
+
+add_entrypoint_object(
+  posix_spawnattr_getschedparam
+  SRCS
+    posix_spawnattr_getschedparam.cpp
+  HDRS
+    posix_spawnattr_getschedparam.h
+  DEPENDS
+    libc.include.spawn
+)
+
+add_entrypoint_object(
+  posix_spawnattr_setschedparam
+  SRCS
+    posix_spawnattr_setschedparam.cpp
+  HDRS
+    posix_spawnattr_setschedparam.h
+  DEPENDS
+    libc.include.spawn
+)
+
+add_entrypoint_object(
+  posix_spawnattr_getschedpolicy
+  SRCS
+    posix_spawnattr_getschedpolicy.cpp
+  HDRS
+    posix_spawnattr_getschedpolicy.h
+  DEPENDS
+    libc.include.spawn
+)
+
+add_entrypoint_object(
+  posix_spawnattr_setschedpolicy
+  SRCS
+    posix_spawnattr_setschedpolicy.cpp
+  HDRS
+    posix_spawnattr_setschedpolicy.h
+  DEPENDS
+    libc.include.spawn
+)
+
+add_entrypoint_object(
   posix_spawn
   ALIAS
   DEPENDS
     .${LIBC_TARGET_OS}.posix_spawn
+)
+
+add_entrypoint_object(
+  posix_spawnp
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.posix_spawnp
 )

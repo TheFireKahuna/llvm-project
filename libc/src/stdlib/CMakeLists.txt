@@ -56,16 +56,6 @@ add_entrypoint_object(
 )
 
 add_entrypoint_object(
-  getenv
-  SRCS
-    getenv.cpp
-  HDRS
-    getenv.h
-  DEPENDS
-  libc.config.app_h
-)
-
-add_entrypoint_object(
   strfromf
   SRCS
     strfromf.cpp
@@ -427,7 +417,8 @@ add_entrypoint_object(
     libc.src.__support.libc_errno
 )
 
-if(NOT LIBC_TARGET_OS_IS_BAREMETAL AND NOT LIBC_TARGET_OS_IS_GPU)
+if(NOT LIBC_TARGET_OS_IS_BAREMETAL AND NOT LIBC_TARGET_OS_IS_GPU AND
+   NOT (LIBC_TARGET_OS_IS_WINDOWS AND NOT LLVM_LIBC_INCLUDE_SCUDO))
   if(LLVM_LIBC_INCLUDE_SCUDO)
     set(SCUDO_DEPS "")
 
@@ -607,7 +598,15 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${LIBC_TARGET_OS})
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/${LIBC_TARGET_OS})
 endif()
 
-if(LIBC_TARGET_OS_IS_BAREMETAL OR LIBC_TARGET_OS_IS_GPU)
+add_entrypoint_object(
+  getenv
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.getenv
+)
+
+if(LIBC_TARGET_OS_IS_BAREMETAL OR LIBC_TARGET_OS_IS_GPU OR
+   (LIBC_TARGET_OS_IS_WINDOWS AND NOT LLVM_LIBC_INCLUDE_SCUDO))
   add_entrypoint_object(
     malloc
     ALIAS
@@ -638,7 +637,110 @@ if(LIBC_TARGET_OS_IS_BAREMETAL OR LIBC_TARGET_OS_IS_GPU)
     DEPENDS
       .${LIBC_TARGET_OS}.aligned_alloc
   )
+  add_entrypoint_object(
+    posix_memalign
+    ALIAS
+    DEPENDS
+      .${LIBC_TARGET_OS}.posix_memalign
+  )
+  add_entrypoint_object(
+    malloc_usable_size
+    ALIAS
+    DEPENDS
+      .${LIBC_TARGET_OS}.malloc_usable_size
+  )
 endif()
+
+add_entrypoint_object(
+  mkdtemp
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.mkdtemp
+)
+
+add_entrypoint_object(
+  mkstemp
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.mkstemp
+)
+
+add_entrypoint_object(
+  mktemp
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.mktemp
+)
+
+add_entrypoint_object(
+  grantpt
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.grantpt
+)
+
+add_entrypoint_object(
+  unlockpt
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.unlockpt
+)
+
+add_entrypoint_object(
+  ptsname_r
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.ptsname_r
+)
+
+add_entrypoint_object(
+  setenv
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.setenv
+)
+
+add_entrypoint_object(
+  unsetenv
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.unsetenv
+)
+
+add_entrypoint_object(
+  putenv
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.putenv
+)
+
+add_entrypoint_object(
+  clearenv
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.clearenv
+)
+
+add_entrypoint_object(
+  arc4random
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.arc4random
+)
+
+add_entrypoint_object(
+  arc4random_buf
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.arc4random_buf
+)
+
+add_entrypoint_object(
+  arc4random_uniform
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.arc4random_uniform
+)
 
 add_entrypoint_object(
   _Exit
@@ -725,4 +827,21 @@ add_entrypoint_object(
   ALIAS
   DEPENDS
     .${LIBC_TARGET_OS}.system
+)
+
+add_entrypoint_object(
+  getsubopt
+  SRCS
+    getsubopt.cpp
+  HDRS
+    getsubopt.h
+  DEPENDS
+    libc.src.__support.CPP.string_view
+)
+
+add_entrypoint_object(
+  realpath
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.realpath
 )

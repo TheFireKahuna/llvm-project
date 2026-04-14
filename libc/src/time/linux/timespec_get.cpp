@@ -15,19 +15,26 @@
 
 namespace LIBC_NAMESPACE_DECL {
 
+// Internal constants matching the public TIME_* macros.
+// The library supports all bases; user visibility is controlled by headers.
+constexpr int TIMESPEC_UTC = 1;           // C11
+constexpr int TIMESPEC_MONOTONIC = 2;     // C23
+constexpr int TIMESPEC_ACTIVE = 3;        // C23
+constexpr int TIMESPEC_THREAD_ACTIVE = 4; // C23
+
 LLVM_LIBC_FUNCTION(int, timespec_get, (timespec * ts, int base)) {
   clockid_t clockid;
   switch (base) {
-  case TIME_UTC:
+  case TIMESPEC_UTC:
     clockid = CLOCK_REALTIME;
     break;
-  case TIME_MONOTONIC:
+  case TIMESPEC_MONOTONIC:
     clockid = CLOCK_MONOTONIC;
     break;
-  case TIME_ACTIVE:
+  case TIMESPEC_ACTIVE:
     clockid = CLOCK_PROCESS_CPUTIME_ID;
     break;
-  case TIME_THREAD_ACTIVE:
+  case TIMESPEC_THREAD_ACTIVE:
     clockid = CLOCK_THREAD_CPUTIME_ID;
     break;
   default:

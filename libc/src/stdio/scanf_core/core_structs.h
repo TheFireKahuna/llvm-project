@@ -10,9 +10,9 @@
 #define LLVM_LIBC_SRC_STDIO_SCANF_CORE_CORE_STRUCTS_H
 
 #include "src/__support/CPP/bitset.h"
-#include "src/__support/CPP/string_view.h"
 #include "src/__support/macros/config.h"
 
+#include "hdr/types/wchar_t.h"
 #include <inttypes.h>
 #include <stddef.h>
 
@@ -29,10 +29,49 @@ enum FormatFlags : uint8_t {
   ALLOCATE = 0x02, // m
 };
 
+// Scan set for wide %[ conversions. Stores up to MAX_RANGES inclusive
+// character ranges. Membership tested by linear scan — bracket sets are
+// small in practice.
+struct WideScanSet {
+  struct Range {
+    wchar_t lo, hi;
+  };
+  static constexpr size_t MAX_RANGES = 32;
+  Range ranges[MAX_RANGES];
+  size_t count = 0;
+  bool inverted = false;
+
+  LIBC_INLINE void add(wchar_t c) {
+    if (count < MAX_RANGES)
+      ranges[count++] = {c, c};
+  }
+
+  LIBC_INLINE void add_range(wchar_t lo, wchar_t hi) {
+    wchar_t a = lo < hi ? lo : hi;
+    wchar_t b = lo < hi ? hi : lo;
+    if (count < MAX_RANGES)
+      ranges[count++] = {a, b};
+  }
+
+  LIBC_INLINE bool test(wchar_t c) const {
+    bool found = false;
+    for (size_t i = 0; i < count; ++i) {
+      if (c >= ranges[i].lo && c <= ranges[i].hi) {
+        found = true;
+        break;
+      }
+    }
+    return inverted ? !found : found;
+  }
+};
+
 struct FormatSection {
   bool has_conv;
 
-  cpp::string_view raw_string;
+  // Type-erased pointer to the raw format string segment. Cast to the
+  // appropriate CharType (char or wchar_t) in templated call sites.
+  const void *raw_begin = nullptr;
+  size_t raw_len = 0;
 
   // Format Specifier Values
   FormatFlags flags = FormatFlags::NONE;
@@ -45,12 +84,13 @@ struct FormatSection {
   char conv_name;
 
   cpp::bitset<256> scan_set;
+  WideScanSet wide_scan_set;
 
   LIBC_INLINE bool operator==(const FormatSection &other) {
     if (has_conv != other.has_conv)
       return false;
 
-    if (raw_string != other.raw_string)
+    if (raw_len != other.raw_len || raw_begin != other.raw_begin)
       return false;
 
     if (has_conv) {

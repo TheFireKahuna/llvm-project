@@ -31,12 +31,30 @@ add_header_library(
     libc.src.__support.time.units
 )
 
-if(TARGET libc.src.__support.time.${LIBC_TARGET_OS}.clock_settime)  
+if(TARGET libc.src.__support.time.${LIBC_TARGET_OS}.clock_settime)
   add_object_library(
     clock_settime
     ALIAS
     DEPENDS
       libc.src.__support.time.${LIBC_TARGET_OS}.clock_settime
+  )
+endif()
+
+if(TARGET libc.src.__support.time.${LIBC_TARGET_OS}.nanosleep)
+  add_object_library(
+    nanosleep
+    ALIAS
+    DEPENDS
+      libc.src.__support.time.${LIBC_TARGET_OS}.nanosleep
+  )
+endif()
+
+if(TARGET libc.src.__support.time.${LIBC_TARGET_OS}.clock_nanosleep)
+  add_object_library(
+    clock_nanosleep
+    ALIAS
+    DEPENDS
+      libc.src.__support.time.${LIBC_TARGET_OS}.clock_nanosleep
   )
 endif()
 

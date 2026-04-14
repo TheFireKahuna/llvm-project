@@ -220,7 +220,7 @@ TEST(LlvmLibcSScanfTest, IntConvNoWriteTests) {
   EXPECT_EQ(result, 0);
 
   ret_val = LIBC_NAMESPACE::sscanf("01", "%*1i", &result);
-  EXPECT_EQ(ret_val, 1);
+  EXPECT_EQ(ret_val, 0);
   EXPECT_EQ(result, 0);
 
   ret_val = LIBC_NAMESPACE::sscanf("0x1", "%*2i", &result);
@@ -232,7 +232,7 @@ TEST(LlvmLibcSScanfTest, IntConvNoWriteTests) {
   EXPECT_EQ(result, 0);
 
   ret_val = LIBC_NAMESPACE::sscanf("123", "%*i", &result);
-  EXPECT_EQ(ret_val, 1);
+  EXPECT_EQ(ret_val, 0);
   EXPECT_EQ(result, 0);
 }
 
@@ -540,52 +540,54 @@ TEST(LlvmLibcSScanfTest, FloatConvNoWrite) {
   int ret_val;
   float result = 0;
 
+  // Assignment-suppressed conversions don't count toward the return value
+  // (C11 §7.21.6.2p16: "the number of input items assigned").
   ret_val = LIBC_NAMESPACE::sscanf("123", "%*f", &result);
-  EXPECT_EQ(ret_val, 1);
+  EXPECT_EQ(ret_val, 0);
   EXPECT_FP_EQ(result, 0.0f);
 
   ret_val = LIBC_NAMESPACE::sscanf("456.1", "%*a", &result);
-  EXPECT_EQ(ret_val, 1);
+  EXPECT_EQ(ret_val, 0);
   EXPECT_FP_EQ(result, 0.0f);
 
   ret_val = LIBC_NAMESPACE::sscanf("0x789.ap0", "%*e", &result);
-  EXPECT_EQ(ret_val, 1);
+  EXPECT_EQ(ret_val, 0);
   EXPECT_FP_EQ(result, 0.0f);
 
   ret_val = LIBC_NAMESPACE::sscanf("+12.0e1", "%*g", &result);
-  EXPECT_EQ(ret_val, 1);
+  EXPECT_EQ(ret_val, 0);
   EXPECT_FP_EQ(result, 0.0f);
 
   ret_val = LIBC_NAMESPACE::sscanf("inf", "%*F", &result);
-  EXPECT_EQ(ret_val, 1);
+  EXPECT_EQ(ret_val, 0);
   EXPECT_FP_EQ(result, 0.0f);
 
   ret_val = LIBC_NAMESPACE::sscanf("NaN", "%*A", &result);
-  EXPECT_EQ(ret_val, 1);
+  EXPECT_EQ(ret_val, 0);
   EXPECT_FP_EQ(result, 0.0f);
 
   ret_val = LIBC_NAMESPACE::sscanf("-InFiNiTy", "%*E", &result);
-  EXPECT_EQ(ret_val, 1);
+  EXPECT_EQ(ret_val, 0);
   EXPECT_FP_EQ(result, 0.0f);
 
   ret_val = LIBC_NAMESPACE::sscanf("1e10", "%*G", &result);
-  EXPECT_EQ(ret_val, 1);
+  EXPECT_EQ(ret_val, 0);
   EXPECT_FP_EQ(result, 0.0f);
 
   ret_val = LIBC_NAMESPACE::sscanf(".1", "%*G", &result);
-  EXPECT_EQ(ret_val, 1);
+  EXPECT_EQ(ret_val, 0);
   EXPECT_FP_EQ(result, 0.0f);
 
   ret_val = LIBC_NAMESPACE::sscanf("123", "%*3f", &result);
-  EXPECT_EQ(ret_val, 1);
+  EXPECT_EQ(ret_val, 0);
   EXPECT_FP_EQ(result, 0.0f);
 
   ret_val = LIBC_NAMESPACE::sscanf("123", "%*5f", &result);
-  EXPECT_EQ(ret_val, 1);
+  EXPECT_EQ(ret_val, 0);
   EXPECT_FP_EQ(result, 0.0f);
 
   ret_val = LIBC_NAMESPACE::sscanf("456", "%*1f", &result);
-  EXPECT_EQ(ret_val, 1);
+  EXPECT_EQ(ret_val, 0);
   EXPECT_FP_EQ(result, 0.0f);
 
   ret_val = LIBC_NAMESPACE::sscanf("Not a float", "%*f", &result);
@@ -623,7 +625,7 @@ TEST(LlvmLibcSScanfTest, CurPosCombined) {
                                    "00000000000000000000000000000000"
                                    "00000000000000000000000000000000",
                                    "%*d%hhn", &c_result);
-  EXPECT_EQ(ret_val, 1);
+  EXPECT_EQ(ret_val, 0);
   EXPECT_EQ(c_result, char(288)); // Overflow is handled by casting.
 
   // 320 characters
@@ -638,7 +640,7 @@ TEST(LlvmLibcSScanfTest, CurPosCombined) {
                                    "00000000000000000000000000000000"
                                    "00000000000000000000000000000000",
                                    "%*d%n", &result);
-  EXPECT_EQ(ret_val, 1);
+  EXPECT_EQ(ret_val, 0);
   EXPECT_EQ(result, 320);
 }
 #endif

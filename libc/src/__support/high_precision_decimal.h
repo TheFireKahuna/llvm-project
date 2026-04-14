@@ -50,11 +50,13 @@ template <> struct constants<char> {
   static constexpr char NAN_STRING[] = "nan";
 };
 template <> struct constants<wchar_t> {
-  static constexpr wchar_t DECIMAL_POINT = L'.';
-  static constexpr wchar_t DECIMAL_EXPONENT_MARKER = L'e';
-  static constexpr wchar_t HEX_EXPONENT_MARKER = L'p';
-  static constexpr wchar_t INF_STRING[] = L"infinity";
-  static constexpr wchar_t NAN_STRING[] = L"nan";
+  // Brace-init to prevent any issues with 16/32byte wchat_t and L handling
+  static constexpr wchar_t DECIMAL_POINT = '.';
+  static constexpr wchar_t DECIMAL_EXPONENT_MARKER = 'e';
+  static constexpr wchar_t HEX_EXPONENT_MARKER = 'p';
+  static constexpr wchar_t INF_STRING[] = {'i', 'n', 'f', 'i',
+                                           'n', 'i', 't', 'y', '\0'};
+  static constexpr wchar_t NAN_STRING[] = {'n', 'a', 'n', '\0'};
 };
 
 // This is based on the HPD data structure described as part of the Simple

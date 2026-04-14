@@ -57,10 +57,17 @@ class Function(Symbol):
             assert type_string
             # Split into words at nonidentifier characters (`*`, `[`, etc.),
             # filter out keywords and numbers, and then rejoin with "_".
+            # Use dict.fromkeys to deduplicate while preserving order —
+            # complex types like function pointers may reference the same
+            # struct multiple times (e.g. int (*)(const struct dirent **,
+            # const struct dirent **) should yield struct_dirent, not
+            # struct_dirent_struct_dirent).
             return "_".join(
-                word
-                for word in NONIDENTIFIER.split(type_string)
-                if word and not word.isdecimal() and word not in KEYWORDS
+                dict.fromkeys(
+                    word
+                    for word in NONIDENTIFIER.split(type_string)
+                    if word and not word.isdecimal() and word not in KEYWORDS
+                )
             )
 
         all_types = [self.return_type] + self.arguments

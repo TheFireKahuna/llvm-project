@@ -15,6 +15,8 @@
 namespace LIBC_NAMESPACE_DECL {
 
 LLVM_LIBC_FUNCTION(void, funlockfile, (::FILE * stream)) {
+  if (!stream)
+    return;
   reinterpret_cast<LIBC_NAMESPACE::File *>(stream)->unlock();
 }
 

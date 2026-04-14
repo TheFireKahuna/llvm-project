@@ -34,6 +34,17 @@ add_libc_unittest(
 )
 
 add_libc_unittest(
+  inet_ntoa
+  SUITE
+    libc_arpa_inet_unittests
+  SRCS
+    inet_ntoa_test.cpp
+  DEPENDS
+    libc.src.arpa.inet.htonl
+    libc.src.arpa.inet.inet_ntoa
+)
+
+add_libc_unittest(
   inet_aton
   SUITE
     libc_arpa_inet_unittests
@@ -42,6 +53,28 @@ add_libc_unittest(
   DEPENDS
     libc.src.arpa.inet.htonl
     libc.src.arpa.inet.inet_aton
+)
+
+add_libc_unittest(
+  inet_ntop
+  SUITE
+    libc_arpa_inet_unittests
+  SRCS
+    inet_ntop_test.cpp
+  DEPENDS
+    libc.src.errno.errno
+    libc.src.arpa.inet.inet_ntop
+)
+
+add_libc_unittest(
+  inet_pton
+  SUITE
+    libc_arpa_inet_unittests
+  SRCS
+    inet_pton_test.cpp
+  DEPENDS
+    libc.src.errno.errno
+    libc.src.arpa.inet.inet_pton
 )
 
 add_libc_unittest(

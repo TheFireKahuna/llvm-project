@@ -16,6 +16,20 @@ set(TARGET_LIBC_ENTRYPOINTS
     libc.src.ctype.toascii
     libc.src.ctype.tolower
     libc.src.ctype.toupper
+    libc.src.ctype.isalnum_l
+    libc.src.ctype.isalpha_l
+    libc.src.ctype.isblank_l
+    libc.src.ctype.iscntrl_l
+    libc.src.ctype.isdigit_l
+    libc.src.ctype.isgraph_l
+    libc.src.ctype.islower_l
+    libc.src.ctype.isprint_l
+    libc.src.ctype.ispunct_l
+    libc.src.ctype.isspace_l
+    libc.src.ctype.isupper_l
+    libc.src.ctype.isxdigit_l
+    libc.src.ctype.tolower_l
+    libc.src.ctype.toupper_l
 
     # string.h entrypoints
     libc.src.string.memccpy
@@ -50,6 +64,17 @@ set(TARGET_LIBC_ENTRYPOINTS
     libc.src.string.strtok
     libc.src.string.strtok_r
 
+    libc.src.string.strerror
+    libc.src.string.strerror_l
+    libc.src.string.strerror_r
+    libc.src.string.strsignal
+    libc.src.string.memset_explicit
+    libc.src.string.strcoll
+    libc.src.string.strcoll_l
+    libc.src.string.strsep
+    libc.src.string.strxfrm
+    libc.src.string.strxfrm_l
+
     # string.h entrypoints that depend on malloc
     libc.src.string.strdup
     libc.src.string.strndup
@@ -58,16 +83,26 @@ set(TARGET_LIBC_ENTRYPOINTS
     libc.src.strings.bcmp
     libc.src.strings.bcopy
     libc.src.strings.bzero
+    libc.src.strings.ffs
+    libc.src.strings.ffsl
+    libc.src.strings.ffsll
+    libc.src.strings.index
+    libc.src.strings.rindex
     libc.src.strings.strcasecmp
+    libc.src.strings.strcasecmp_l
     libc.src.strings.strncasecmp
+    libc.src.strings.strncasecmp_l
 
     # inttypes.h entrypoints
     libc.src.inttypes.imaxabs
     libc.src.inttypes.imaxdiv
     libc.src.inttypes.strtoimax
     libc.src.inttypes.strtoumax
+    libc.src.inttypes.wcstoimax
+    libc.src.inttypes.wcstoumax
 
     # stdlib.h entrypoints
+    libc.src.stdlib.abort
     libc.src.stdlib.abs
     libc.src.stdlib.atoi
     libc.src.stdlib.atof
@@ -81,44 +116,994 @@ set(TARGET_LIBC_ENTRYPOINTS
     libc.src.stdlib.lldiv
     libc.src.stdlib.memalignment
     libc.src.stdlib.qsort
+    libc.src.stdlib.qsort_r
+    libc.src.stdlib.rand
+    libc.src.stdlib.srand
+    libc.src.stdlib.a64l
+    libc.src.stdlib.l64a
+    libc.src.stdlib.strfromd
+    libc.src.stdlib.strfromf
+    libc.src.stdlib.strfroml
+    libc.src.stdlib.mbstowcs
+    libc.src.stdlib.mbtowc
+    libc.src.stdlib.wcstombs
+    libc.src.stdlib.wctomb
     libc.src.stdlib.strtod
+    libc.src.stdlib.strtod_l
     libc.src.stdlib.strtof
+    libc.src.stdlib.strtof_l
     libc.src.stdlib.strtol
+    libc.src.stdlib.strtol_l
     libc.src.stdlib.strtold
+    libc.src.stdlib.strtold_l
     libc.src.stdlib.strtoll
+    libc.src.stdlib.strtoll_l
     libc.src.stdlib.strtoul
+    libc.src.stdlib.strtoul_l
     libc.src.stdlib.strtoull
+    libc.src.stdlib.strtoull_l
+
+    libc.src.stdlib.atexit
+    libc.src.stdlib.at_quick_exit
+    libc.src.stdlib.exit
+    libc.src.stdlib._Exit
+    libc.src.stdlib.quick_exit
+    libc.src.stdlib.getenv
+    libc.src.stdlib.setenv
+    libc.src.stdlib.unsetenv
+    libc.src.stdlib.putenv
+    libc.src.stdlib.clearenv
 
     # stdlib.h external entrypoints
     libc.src.stdlib.malloc
     libc.src.stdlib.calloc
     libc.src.stdlib.realloc
     libc.src.stdlib.aligned_alloc
+    libc.src.stdlib.posix_memalign
+    libc.src.stdlib.malloc_usable_size
     libc.src.stdlib.free
+    libc.src.stdlib.mkdtemp
+    libc.src.stdlib.mkstemp
+    libc.src.stdlib.mktemp
+    libc.src.stdlib.grantpt
+    libc.src.stdlib.unlockpt
+    libc.src.stdlib.ptsname_r
+    libc.src.stdlib.getsubopt
+    libc.src.stdlib.realpath
+    libc.src.stdlib.arc4random
+    libc.src.stdlib.arc4random_buf
+    libc.src.stdlib.arc4random_uniform
+
+    # pty.h entrypoints
+    libc.src.pty.openpty
+    libc.src.pty.login_tty
 
     # errno.h entrypoints
     libc.src.errno.errno
 
+    # setjmp.h entrypoints
+    libc.src.setjmp.setjmp
+    libc.src.setjmp.longjmp
+    libc.src.setjmp.sigsetjmp
+    libc.src.setjmp.siglongjmp
+
+    # signal.h entrypoints
+    libc.src.signal.kill
+    libc.src.signal.killpg
+    libc.src.signal.raise
+    libc.src.signal.psiginfo
+    libc.src.signal.psignal
+    libc.src.signal.signal
+    libc.src.signal.sigaction
+    libc.src.signal.sigaddset
+    libc.src.signal.sigdelset
+    libc.src.signal.sigemptyset
+    libc.src.signal.sigfillset
+    libc.src.signal.sigismember
+    libc.src.signal.sigpending
+    libc.src.signal.sigaltstack
+    libc.src.signal.sigprocmask
+    libc.src.signal.sigsuspend
+    libc.src.signal.sigtimedwait
+    libc.src.signal.sigwait
+    libc.src.signal.sigwaitinfo
+    libc.src.signal.sigqueue
+
+    # dlfcn.h entrypoints
+    libc.src.dlfcn.dladdr
+    libc.src.dlfcn.dlclose
+    libc.src.dlfcn.dlerror
+    libc.src.dlfcn.dlinfo
+    libc.src.dlfcn.dlopen
+    libc.src.dlfcn.dlsym
+
+    # sys/mman.h entrypoints
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munmap
+    libc.src.sys.mman.mprotect
+    libc.src.sys.mman.madvise
+    libc.src.sys.mman.posix_madvise
+    libc.src.sys.mman.msync
+    libc.src.sys.mman.mlock
+    libc.src.sys.mman.munlock
+    libc.src.sys.mman.mlockall
+    libc.src.sys.mman.munlockall
+    libc.src.sys.mman.mincore
+    libc.src.sys.mman.mbind
+    libc.src.sys.mman.get_mempolicy
+    libc.src.sys.mman.set_mempolicy
+    libc.src.sys.mman.mremap
+    libc.src.sys.mman.mlock2
+    libc.src.sys.mman.memfd_create
+    libc.src.sys.mman.shm_open
+    libc.src.sys.mman.shm_unlink
+    libc.src.sys.mman.pkey_alloc
+    libc.src.sys.mman.pkey_free
+    libc.src.sys.mman.pkey_get
+    libc.src.sys.mman.pkey_set
+    libc.src.sys.mman.pkey_mprotect
+    libc.src.sys.mman.remap_file_pages
+
+    # sys/shm.h entrypoints
+    libc.src.sys.shm.shmget
+    libc.src.sys.shm.shmat
+    libc.src.sys.shm.shmdt
+    libc.src.sys.shm.shmctl
+
+    # sys/sem.h entrypoints
+    libc.src.sys.sem.semget
+    libc.src.sys.sem.semctl
+    libc.src.sys.sem.semop
+
+    # sys/ipc.h entrypoints
+    libc.src.sys.ipc.ftok
+
+    # sys/random.h entrypoints
+    libc.src.sys.random.getrandom
+
+    # sys/futex.h entrypoints
+    libc.src.sys.futex.futex
+
+    # pthread.h entrypoints (platform-independent wrappers over __support/threads)
+    libc.src.pthread.pthread_attr_init
+    libc.src.pthread.pthread_attr_destroy
+    libc.src.pthread.pthread_attr_getdetachstate
+    libc.src.pthread.pthread_attr_setdetachstate
+    libc.src.pthread.pthread_attr_getguardsize
+    libc.src.pthread.pthread_attr_setguardsize
+    libc.src.pthread.pthread_attr_getschedparam
+    libc.src.pthread.pthread_attr_setschedparam
+    libc.src.pthread.pthread_attr_getschedpolicy
+    libc.src.pthread.pthread_attr_setschedpolicy
+    libc.src.pthread.pthread_attr_getinheritsched
+    libc.src.pthread.pthread_attr_setinheritsched
+    libc.src.pthread.pthread_setschedparam
+    libc.src.pthread.pthread_getattr_np
+    libc.src.pthread.pthread_getschedparam
+    libc.src.pthread.pthread_setschedprio
+    libc.src.pthread.pthread_attr_getstacksize
+    libc.src.pthread.pthread_attr_setstacksize
+    libc.src.pthread.pthread_attr_getstack
+    libc.src.pthread.pthread_attr_setstack
+    libc.src.pthread.pthread_create
+    libc.src.pthread.pthread_join
+    libc.src.pthread.pthread_detach
+    libc.src.pthread.pthread_equal
+    libc.src.pthread.pthread_exit
+    libc.src.pthread.pthread_cancel
+    libc.src.pthread.pthread_setcancelstate
+    libc.src.pthread.pthread_setcanceltype
+    libc.src.pthread.pthread_testcancel
+    libc.src.pthread.__pthread_cleanup_push
+    libc.src.pthread.__pthread_cleanup_pop
+    libc.src.pthread.pthread_self
+    libc.src.pthread.pthread_kill
+    libc.src.pthread.pthread_getcpuclockid
+    libc.src.pthread.pthread_sigmask
+    libc.src.pthread.pthread_setname_np
+    libc.src.pthread.pthread_getname_np
+    libc.src.pthread.pthread_mutex_init
+    libc.src.pthread.pthread_mutex_destroy
+    libc.src.pthread.pthread_mutex_lock
+    libc.src.pthread.pthread_mutex_unlock
+    libc.src.pthread.pthread_mutex_trylock
+    libc.src.pthread.pthread_mutex_timedlock
+    libc.src.pthread.pthread_mutex_clocklock
+    libc.src.pthread.pthread_mutex_consistent
+    libc.src.pthread.pthread_mutexattr_init
+    libc.src.pthread.pthread_mutexattr_destroy
+    libc.src.pthread.pthread_mutexattr_gettype
+    libc.src.pthread.pthread_mutexattr_settype
+    libc.src.pthread.pthread_mutexattr_getrobust
+    libc.src.pthread.pthread_mutexattr_setrobust
+    libc.src.pthread.pthread_mutexattr_getpshared
+    libc.src.pthread.pthread_mutexattr_setpshared
+    libc.src.pthread.pthread_key_create
+    libc.src.pthread.pthread_key_delete
+    libc.src.pthread.pthread_getspecific
+    libc.src.pthread.pthread_setspecific
+    libc.src.pthread.pthread_condattr_init
+    libc.src.pthread.pthread_condattr_destroy
+    libc.src.pthread.pthread_condattr_getclock
+    libc.src.pthread.pthread_condattr_setclock
+    libc.src.pthread.pthread_condattr_getpshared
+    libc.src.pthread.pthread_condattr_setpshared
+    libc.src.pthread.pthread_cond_init
+    libc.src.pthread.pthread_cond_destroy
+    libc.src.pthread.pthread_cond_wait
+    libc.src.pthread.pthread_cond_timedwait
+    libc.src.pthread.pthread_cond_clockwait
+    libc.src.pthread.pthread_cond_signal
+    libc.src.pthread.pthread_cond_broadcast
+    libc.src.pthread.pthread_barrier_init
+    libc.src.pthread.pthread_barrierattr_init
+    libc.src.pthread.pthread_barrierattr_destroy
+    libc.src.pthread.pthread_barrierattr_getpshared
+    libc.src.pthread.pthread_barrierattr_setpshared
+    libc.src.pthread.pthread_barrier_destroy
+    libc.src.pthread.pthread_barrier_wait
+    libc.src.pthread.pthread_rwlockattr_init
+    libc.src.pthread.pthread_rwlockattr_destroy
+    libc.src.pthread.pthread_rwlockattr_getkind_np
+    libc.src.pthread.pthread_rwlockattr_setkind_np
+    libc.src.pthread.pthread_rwlockattr_getpshared
+    libc.src.pthread.pthread_rwlockattr_setpshared
+    libc.src.pthread.pthread_rwlock_init
+    libc.src.pthread.pthread_rwlock_destroy
+    libc.src.pthread.pthread_rwlock_rdlock
+    libc.src.pthread.pthread_rwlock_wrlock
+    libc.src.pthread.pthread_rwlock_tryrdlock
+    libc.src.pthread.pthread_rwlock_trywrlock
+    libc.src.pthread.pthread_rwlock_timedrdlock
+    libc.src.pthread.pthread_rwlock_timedwrlock
+    libc.src.pthread.pthread_rwlock_clockrdlock
+    libc.src.pthread.pthread_rwlock_clockwrlock
+    libc.src.pthread.pthread_rwlock_unlock
+    libc.src.pthread.pthread_spin_init
+    libc.src.pthread.pthread_spin_destroy
+    libc.src.pthread.pthread_spin_lock
+    libc.src.pthread.pthread_spin_trylock
+    libc.src.pthread.pthread_spin_unlock
+    libc.src.pthread.pthread_once
+    libc.src.pthread.pthread_atfork
+
+    # semaphore.h entrypoints
+    libc.src.semaphore.sem_init
+    libc.src.semaphore.sem_destroy
+    libc.src.semaphore.sem_open
+    libc.src.semaphore.sem_close
+    libc.src.semaphore.sem_unlink
+    libc.src.semaphore.sem_post
+    libc.src.semaphore.sem_wait
+    libc.src.semaphore.sem_trywait
+    libc.src.semaphore.sem_timedwait
+    libc.src.semaphore.sem_getvalue
+
+    # threads.h entrypoints (C11 threading)
+    libc.src.threads.call_once
+    libc.src.threads.cnd_init
+    libc.src.threads.cnd_destroy
+    libc.src.threads.cnd_wait
+    libc.src.threads.cnd_signal
+    libc.src.threads.cnd_broadcast
+    libc.src.threads.cnd_timedwait
+    libc.src.threads.mtx_init
+    libc.src.threads.mtx_destroy
+    libc.src.threads.mtx_lock
+    libc.src.threads.mtx_unlock
+    libc.src.threads.mtx_trylock
+    libc.src.threads.mtx_timedlock
+    libc.src.threads.thrd_create
+    libc.src.threads.thrd_current
+    libc.src.threads.thrd_detach
+    libc.src.threads.thrd_equal
+    libc.src.threads.thrd_exit
+    libc.src.threads.thrd_join
+    libc.src.threads.thrd_sleep
+    libc.src.threads.tss_create
+    libc.src.threads.tss_delete
+    libc.src.threads.tss_get
+    libc.src.threads.tss_set
+
+    # sys/ioctl.h entrypoints
+    libc.src.sys.ioctl.ioctl
+
+    # termios.h entrypoints
+    libc.src.termios.cfmakeraw
+    libc.src.termios.cfgetispeed
+    libc.src.termios.cfgetospeed
+    libc.src.termios.cfsetispeed
+    libc.src.termios.cfsetospeed
+    libc.src.termios.tcdrain
+    libc.src.termios.tcflush
+    libc.src.termios.tcgetattr
+    libc.src.termios.tcgetsid
+    libc.src.termios.tcsetattr
+    libc.src.termios.tcflow
+    libc.src.termios.tcsendbreak
+
+    # sys/uio.h entrypoints
+    libc.src.sys.uio.readv
+    libc.src.sys.uio.writev
+    libc.src.sys.uio.preadv
+    libc.src.sys.uio.pwritev
+
+    # sys/resource.h entrypoints
+    libc.src.sys.resource.getpriority
+    libc.src.sys.resource.getrlimit
+    libc.src.sys.resource.getrusage
+    libc.src.sys.resource.prlimit
+    libc.src.sys.resource.setpriority
+    libc.src.sys.resource.setrlimit
+
+    # sys/wait.h entrypoints
+    libc.src.sys.wait.wait
+    libc.src.sys.wait.wait4
+    libc.src.sys.wait.waitpid
+    libc.src.sys.wait.waitid
+
+    # sys/time.h entrypoints
+    libc.src.sys.time.utimes
+    libc.src.sys.time.lutimes
+    libc.src.sys.time.futimes
+    libc.src.sys.time.setitimer
+    libc.src.sys.time.getitimer
+    libc.src.time.gettimeofday
+
     # time.h entrypoints
     libc.src.time.time
+    libc.src.time.clock
+    libc.src.time.clock_getcpuclockid
+    libc.src.time.clock_gettime
+    libc.src.time.clock_settime
     libc.src.time.clock_getres
+    libc.src.time.nanosleep
+    libc.src.time.clock_nanosleep
+    libc.src.time.localtime
+    libc.src.time.localtime_r
+    libc.src.time.asctime
+    libc.src.time.asctime_r
+    libc.src.time.ctime
+    libc.src.time.ctime_r
+    libc.src.time.difftime
+    libc.src.time.gmtime
+    libc.src.time.gmtime_r
+    libc.src.time.localtime_s
+    libc.src.time.gmtime_s
+    libc.src.time.mktime
+    libc.src.time.strftime
+    libc.src.time.strftime_l
+    libc.src.time.timespec_get
+    libc.src.time.timer_create
+    libc.src.time.timer_delete
+    libc.src.time.timer_getoverrun
+    libc.src.time.timer_gettime
+    libc.src.time.timer_settime
+
+    # dirent.h entrypoints
+    libc.src.dirent.alphasort
+    libc.src.dirent.closedir
+    libc.src.dirent.dirfd
+    libc.src.dirent.fdopendir
+    libc.src.dirent.opendir
+    libc.src.dirent.readdir
+    libc.src.dirent.readdir_r
+    libc.src.dirent.rewinddir
+    libc.src.dirent.scandir
+    libc.src.dirent.seekdir
+    libc.src.dirent.telldir
+
+    # libgen.h entrypoints
+    libc.src.libgen.basename
+    libc.src.libgen.dirname
+
+    # stdio.h entrypoints
+    libc.src.stdio.stdin
+    libc.src.stdio.stdout
+    libc.src.stdio.stderr
+    libc.src.stdio.fopen
+    libc.src.stdio.fclose
+    libc.src.stdio.freopen
+    libc.src.stdio.fdopen
+    libc.src.stdio.fread
+    libc.src.stdio.fread_unlocked
+    libc.src.stdio.fwrite
+    libc.src.stdio.fwrite_unlocked
+    libc.src.stdio.fflush
+    libc.src.stdio.fseek
+    libc.src.stdio.rewind
+    libc.src.stdio.fseeko
+    libc.src.stdio.ftell
+    libc.src.stdio.ftello
+    libc.src.stdio.fgetpos
+    libc.src.stdio.fsetpos
+    libc.src.stdio.fileno
+    libc.src.stdio.feof
+    libc.src.stdio.feof_unlocked
+    libc.src.stdio.ferror
+    libc.src.stdio.ferror_unlocked
+    libc.src.stdio.clearerr
+    libc.src.stdio.clearerr_unlocked
+    libc.src.stdio.fgetc
+    libc.src.stdio.fgetc_unlocked
+    libc.src.stdio.getc
+    libc.src.stdio.getc_unlocked
+    libc.src.stdio.getchar
+    libc.src.stdio.getchar_unlocked
+    libc.src.stdio.fgets
+    libc.src.stdio.fputc
+    libc.src.stdio.putc
+    libc.src.stdio.putchar
+    libc.src.stdio.fputs
+    libc.src.stdio.puts
+    libc.src.stdio.ungetc
+    libc.src.stdio.printf
+    libc.src.stdio.fprintf
+    libc.src.stdio.vprintf
+    libc.src.stdio.vfprintf
+    libc.src.stdio.sprintf
+    libc.src.stdio.snprintf
+    libc.src.stdio.vsprintf
+    libc.src.stdio.vsnprintf
+    libc.src.stdio.asprintf
+    libc.src.stdio.vasprintf
+    libc.src.stdio.scanf
+    libc.src.stdio.fscanf
+    libc.src.stdio.sscanf
+    libc.src.stdio.vscanf
+    libc.src.stdio.vfscanf
+    libc.src.stdio.vsscanf
+    libc.src.stdio.perror
+    libc.src.stdio.setbuf
+    libc.src.stdio.setvbuf
+    libc.src.stdio.flockfile
+    libc.src.stdio.funlockfile
+    libc.src.stdio.remove
+    libc.src.stdio.rename
+    libc.src.stdio.renameat
+    libc.src.stdio.tmpfile
+    libc.src.stdio.popen
+    libc.src.stdio.pclose
+
+    # fcntl.h entrypoints
+    libc.src.fcntl.creat
+    libc.src.fcntl.open
+    libc.src.fcntl.openat
+    libc.src.fcntl.fcntl
+    libc.src.fcntl.posix_openpt
+    libc.src.fcntl.posix_fallocate
 
     # unistd.h entrypoints
+    libc.src.unistd._exit
+    libc.src.unistd.read
+    libc.src.unistd.write
+    libc.src.unistd.close
+    libc.src.unistd.lseek
+    libc.src.unistd.dup
+    libc.src.unistd.dup2
+    libc.src.unistd.dup3
+    libc.src.unistd.copy_file_range
+    libc.src.unistd.pread
+    libc.src.unistd.pwrite
+    libc.src.unistd.fsync
+    libc.src.unistd.fdatasync
+    libc.src.unistd.ftruncate
+    libc.src.unistd.truncate
+    libc.src.unistd._get_osfhandle
+    libc.src.unistd._open_osfhandle
+    libc.src.unistd.access
+    libc.src.unistd.alarm
+    libc.src.unistd.sleep
+    libc.src.unistd.usleep
+    libc.src.unistd.isatty
+    libc.src.unistd.pipe
+    libc.src.unistd.pipe2
     libc.src.unistd.getentropy
+    libc.src.unistd.getopt
+    libc.src.unistd.optarg
+    libc.src.unistd.opterr
+    libc.src.unistd.optind
+    libc.src.unistd.optopt
+    libc.src.unistd.getpagesize
+    libc.src.unistd.getcwd
+    libc.src.unistd.chdir
+    libc.src.unistd.chown
+    libc.src.unistd.fchdir
+    libc.src.unistd.fchown
+    libc.src.unistd.fchownat
+    libc.src.unistd.lchown
+    libc.src.unistd.gettid
+    libc.src.unistd.gethostname
+    libc.src.unistd.getpid
+    libc.src.unistd.getppid
+    libc.src.unistd.getsid
+    libc.src.unistd.tcgetpgrp
+    libc.src.unistd.tcsetpgrp
+    libc.src.unistd.setsid
+    libc.src.unistd.setpgid
+    libc.src.unistd.getpgid
+    libc.src.unistd.getpgrp
+    libc.src.unistd.getuid
+    libc.src.unistd.geteuid
+    libc.src.unistd.getgid
+    libc.src.unistd.getegid
+    libc.src.unistd.getgroups
+    libc.src.unistd.issetugid
+    libc.src.unistd.getlogin
+    libc.src.unistd.getlogin_r
+    libc.src.unistd.setuid
+    libc.src.unistd.seteuid
+    libc.src.unistd.setgid
+    libc.src.unistd.setegid
+    libc.src.unistd.setreuid
+    libc.src.unistd.setregid
+    libc.src.unistd.getresuid
+    libc.src.unistd.getresgid
+    libc.src.unistd.setresuid
+    libc.src.unistd.setresgid
+    libc.src.unistd.fpathconf
+    libc.src.unistd.environ
+    libc.src.unistd.execv
+    libc.src.unistd.execve
+    libc.src.unistd.execvp
+    libc.src.unistd.fork
+    libc.src.unistd.unlink
+    libc.src.unistd.unlinkat
+    libc.src.unistd.rmdir
+    libc.src.unistd.faccessat
+    libc.src.unistd.link
+    libc.src.unistd.linkat
+    libc.src.unistd.symlink
+    libc.src.unistd.symlinkat
+    libc.src.unistd.readlink
+    libc.src.unistd.readlinkat
+    libc.src.unistd.swab
+    libc.src.unistd.sysconf
+    libc.src.unistd.pathconf
+    libc.src.unistd.__llvm_libc_syscall
+    libc.src.unistd.syscall
+
+    # grp.h entrypoints
+    libc.src.grp.getgrgid
+    libc.src.grp.getgrnam
+    libc.src.grp.getgrgid_r
+    libc.src.grp.getgrnam_r
+
+    # pwd.h entrypoints
+    libc.src.pwd.getpwuid
+    libc.src.pwd.getpwnam
+    libc.src.pwd.getpwuid_r
+    libc.src.pwd.getpwnam_r
+
+    # spawn.h entrypoints
+    libc.src.spawn.posix_spawn
+    libc.src.spawn.posix_spawnp
+    libc.src.spawn.posix_spawn_file_actions_init
+    libc.src.spawn.posix_spawn_file_actions_destroy
+    libc.src.spawn.posix_spawn_file_actions_addclose
+    libc.src.spawn.posix_spawn_file_actions_adddup2
+    libc.src.spawn.posix_spawn_file_actions_addopen
+    libc.src.spawn.posix_spawnattr_init
+    libc.src.spawn.posix_spawnattr_destroy
+    libc.src.spawn.posix_spawnattr_getflags
+    libc.src.spawn.posix_spawnattr_setflags
+    libc.src.spawn.posix_spawnattr_getsigdefault
+    libc.src.spawn.posix_spawnattr_setsigdefault
+    libc.src.spawn.posix_spawnattr_getsigmask
+    libc.src.spawn.posix_spawnattr_setsigmask
+    libc.src.spawn.posix_spawnattr_getpgroup
+    libc.src.spawn.posix_spawnattr_setpgroup
+    libc.src.spawn.posix_spawnattr_getschedparam
+    libc.src.spawn.posix_spawnattr_setschedparam
+    libc.src.spawn.posix_spawnattr_getschedpolicy
+    libc.src.spawn.posix_spawnattr_setschedpolicy
+
+    # sys/stat.h entrypoints
+    libc.src.sys.stat.chmod
+    libc.src.sys.stat.fchmod
+    libc.src.sys.stat.fchmodat
+    libc.src.sys.stat.fstat
+    libc.src.sys.stat.fstatat
+    libc.src.sys.stat.lstat
+    libc.src.sys.stat.mkdir
+    libc.src.sys.stat.mkdirat
+    libc.src.sys.stat.mkfifo
+    libc.src.sys.stat.stat
+    libc.src.sys.stat.utimensat
+    libc.src.sys.stat.futimens
+    libc.src.sys.stat.umask
+
+    # sys/statvfs.h entrypoints
+    libc.src.sys.statvfs.statvfs
+    libc.src.sys.statvfs.fstatvfs
+
+    # sys/utsname.h entrypoints
+    libc.src.sys.utsname.uname
+
+    # sched.h entrypoints
+    libc.src.sched.sched_yield
+    libc.src.sched.sched_get_priority_min
+    libc.src.sched.sched_get_priority_max
+    libc.src.sched.sched_getscheduler
+    libc.src.sched.sched_setscheduler
+    libc.src.sched.sched_getparam
+    libc.src.sched.sched_setparam
+    libc.src.sched.sched_rr_get_interval
+    libc.src.sched.getcpu
+    libc.src.sched.sched_getcpu
+    libc.src.sched.sched_getaffinity
+    libc.src.sched.sched_setaffinity
+    libc.src.sched.__sched_getcpucount
+    libc.src.sched.__sched_setcpuzero
+    libc.src.sched.__sched_setcpuset
+    libc.src.sched.__sched_getcpuisset
+
+    # poll.h entrypoints
+    libc.src.poll.poll
+
+    # sys/select.h entrypoints
+    libc.src.sys.select.pselect
+    libc.src.sys.select.select
+
+    # sys/socket.h entrypoints
+    libc.src.sys.socket.socket
+    libc.src.sys.socket.bind
+    libc.src.sys.socket.listen
+    libc.src.sys.socket.connect
+    libc.src.sys.socket.accept
+    libc.src.sys.socket.socketpair
+    libc.src.sys.socket.send
+    libc.src.sys.socket.sendto
+    libc.src.sys.socket.sendmsg
+    libc.src.sys.socket.recv
+    libc.src.sys.socket.recvfrom
+    libc.src.sys.socket.recvmsg
+    libc.src.sys.socket.shutdown
+    libc.src.sys.socket.getsockname
+    libc.src.sys.socket.getpeername
+    libc.src.sys.socket.setsockopt
+    libc.src.sys.socket.getsockopt
+
+    # sys/epoll.h entrypoints
+    libc.src.sys.epoll.epoll_create
+    libc.src.sys.epoll.epoll_create1
+    libc.src.sys.epoll.epoll_ctl
+    libc.src.sys.epoll.epoll_wait
+    libc.src.sys.epoll.epoll_pwait
+    libc.src.sys.epoll.epoll_pwait2
+
+    # sys/inotify.h entrypoints
+    libc.src.sys.inotify.inotify_init
+    libc.src.sys.inotify.inotify_init1
+    libc.src.sys.inotify.inotify_add_watch
+    libc.src.sys.inotify.inotify_rm_watch
+
+    # sys/sendfile.h entrypoints
+    libc.src.sys.sendfile.sendfile
+
+    # locale.h entrypoints
+    libc.src.locale.duplocale
+    libc.src.locale.freelocale
+    libc.src.locale.localeconv
+    libc.src.locale.newlocale
+    libc.src.locale.setlocale
+    libc.src.locale.uselocale
+
+    # langinfo.h entrypoints
+    libc.src.locale.nl_langinfo
+    libc.src.locale.nl_langinfo_l
+
+    # arpa/inet.h entrypoints
+    libc.src.arpa.inet.htonl
+    libc.src.arpa.inet.htons
+    libc.src.arpa.inet.inet_addr
+    libc.src.arpa.inet.inet_aton
+    libc.src.arpa.inet.inet_ntoa
+    libc.src.arpa.inet.inet_ntop
+    libc.src.arpa.inet.inet_pton
+    libc.src.arpa.inet.ntohl
+    libc.src.arpa.inet.ntohs
+
+    # search.h entrypoints
+    libc.src.search.hcreate
+    libc.src.search.hcreate_r
+    libc.src.search.hdestroy
+    libc.src.search.hdestroy_r
+    libc.src.search.hsearch
+    libc.src.search.hsearch_r
+    libc.src.search.insque
+    libc.src.search.remque
+    libc.src.search.lfind
+    libc.src.search.lsearch
+    libc.src.search.tsearch
+    libc.src.search.tfind
+    libc.src.search.tdelete
+    libc.src.search.twalk
+    libc.src.search.twalk_r
+
+    # wchar.h entrypoints
+    libc.src.wchar.btowc
+    libc.src.wchar.fgetwc
+    libc.src.wchar.fputwc
+    libc.src.wchar.fputws
+    libc.src.wchar.fgetws
+    libc.src.wchar.fwide
+    libc.src.wchar.fwprintf
+    libc.src.wchar.vfwprintf
+    libc.src.wchar.wprintf
+    libc.src.wchar.vwprintf
+    libc.src.wchar.ungetwc
+    libc.src.wchar.swprintf
+    libc.src.wchar.vswprintf
+    libc.src.wchar.fwscanf
+    libc.src.wchar.vfwscanf
+    libc.src.wchar.wscanf
+    libc.src.wchar.vwscanf
+    libc.src.wchar.swscanf
+    libc.src.wchar.vswscanf
+    libc.src.wchar.getwc
+    libc.src.wchar.getwchar
+    libc.src.wchar.putwc
+    libc.src.wchar.putwchar
+    libc.src.wchar.wctob
+    libc.src.wchar.mbsinit
+    libc.src.wchar.mbrtowc
+    libc.src.wchar.wcrtomb
+    libc.src.wchar.mblen
+    libc.src.wchar.mbrlen
+    libc.src.wchar.wcslen
+    libc.src.wchar.wcscpy
+    libc.src.wchar.wcsncpy
+    libc.src.wchar.wcscat
+    libc.src.wchar.wcsncat
+    libc.src.wchar.wcscmp
+    libc.src.wchar.wcsncmp
+    libc.src.wchar.wcschr
+    libc.src.wchar.wcsrchr
+    libc.src.wchar.wcsspn
+    libc.src.wchar.wcscoll
+    libc.src.wchar.wcscoll_l
+    libc.src.wchar.wcsxfrm
+    libc.src.wchar.wcsxfrm_l
+    libc.src.wchar.wcscspn
+    libc.src.wchar.wcspbrk
+    libc.src.wchar.wcsstr
+    libc.src.wchar.wcstok
+    libc.src.wchar.wmemchr
+    libc.src.wchar.wmemcmp
+    libc.src.wchar.wmemcpy
+    libc.src.wchar.wmemmove
+    libc.src.wchar.wcpcpy
+    libc.src.wchar.wcpncpy
+    libc.src.wchar.wcsdup
+    libc.src.wchar.wcslcat
+    libc.src.wchar.wcslcpy
+    libc.src.wchar.wcsnlen
+    libc.src.wchar.wcsnrtombs
+    libc.src.wchar.wcsrtombs
+    libc.src.wchar.mbsnrtowcs
+    libc.src.wchar.mbsrtowcs
+    libc.src.wchar.wcstod
+    libc.src.wchar.wcstof
+    libc.src.wchar.wcstol
+    libc.src.wchar.wcstold
+    libc.src.wchar.wcstoll
+    libc.src.wchar.wcstoul
+    libc.src.wchar.wcstoull
+    libc.src.wchar.wcsftime
+    libc.src.wchar.wmempcpy
+    libc.src.wchar.wmemset
+
+    # stdbit.h entrypoints
+    libc.src.stdbit.stdc_bit_ceil_uc
+    libc.src.stdbit.stdc_bit_ceil_ui
+    libc.src.stdbit.stdc_bit_ceil_ul
+    libc.src.stdbit.stdc_bit_ceil_ull
+    libc.src.stdbit.stdc_bit_ceil_us
+    libc.src.stdbit.stdc_bit_floor_uc
+    libc.src.stdbit.stdc_bit_floor_ui
+    libc.src.stdbit.stdc_bit_floor_ul
+    libc.src.stdbit.stdc_bit_floor_ull
+    libc.src.stdbit.stdc_bit_floor_us
+    libc.src.stdbit.stdc_bit_width_uc
+    libc.src.stdbit.stdc_bit_width_ui
+    libc.src.stdbit.stdc_bit_width_ul
+    libc.src.stdbit.stdc_bit_width_ull
+    libc.src.stdbit.stdc_bit_width_us
+    libc.src.stdbit.stdc_count_ones_uc
+    libc.src.stdbit.stdc_count_ones_ui
+    libc.src.stdbit.stdc_count_ones_ul
+    libc.src.stdbit.stdc_count_ones_ull
+    libc.src.stdbit.stdc_count_ones_us
+    libc.src.stdbit.stdc_count_zeros_uc
+    libc.src.stdbit.stdc_count_zeros_ui
+    libc.src.stdbit.stdc_count_zeros_ul
+    libc.src.stdbit.stdc_count_zeros_ull
+    libc.src.stdbit.stdc_count_zeros_us
+    libc.src.stdbit.stdc_first_leading_one_uc
+    libc.src.stdbit.stdc_first_leading_one_ui
+    libc.src.stdbit.stdc_first_leading_one_ul
+    libc.src.stdbit.stdc_first_leading_one_ull
+    libc.src.stdbit.stdc_first_leading_one_us
+    libc.src.stdbit.stdc_first_leading_zero_uc
+    libc.src.stdbit.stdc_first_leading_zero_ui
+    libc.src.stdbit.stdc_first_leading_zero_ul
+    libc.src.stdbit.stdc_first_leading_zero_ull
+    libc.src.stdbit.stdc_first_leading_zero_us
+    libc.src.stdbit.stdc_first_trailing_one_uc
+    libc.src.stdbit.stdc_first_trailing_one_ui
+    libc.src.stdbit.stdc_first_trailing_one_ul
+    libc.src.stdbit.stdc_first_trailing_one_ull
+    libc.src.stdbit.stdc_first_trailing_one_us
+    libc.src.stdbit.stdc_first_trailing_zero_uc
+    libc.src.stdbit.stdc_first_trailing_zero_ui
+    libc.src.stdbit.stdc_first_trailing_zero_ul
+    libc.src.stdbit.stdc_first_trailing_zero_ull
+    libc.src.stdbit.stdc_first_trailing_zero_us
+    libc.src.stdbit.stdc_has_single_bit_uc
+    libc.src.stdbit.stdc_has_single_bit_ui
+    libc.src.stdbit.stdc_has_single_bit_ul
+    libc.src.stdbit.stdc_has_single_bit_ull
+    libc.src.stdbit.stdc_has_single_bit_us
+    libc.src.stdbit.stdc_leading_ones_uc
+    libc.src.stdbit.stdc_leading_ones_ui
+    libc.src.stdbit.stdc_leading_ones_ul
+    libc.src.stdbit.stdc_leading_ones_ull
+    libc.src.stdbit.stdc_leading_ones_us
+    libc.src.stdbit.stdc_leading_zeros_uc
+    libc.src.stdbit.stdc_leading_zeros_ui
+    libc.src.stdbit.stdc_leading_zeros_ul
+    libc.src.stdbit.stdc_leading_zeros_ull
+    libc.src.stdbit.stdc_leading_zeros_us
+    libc.src.stdbit.stdc_trailing_ones_uc
+    libc.src.stdbit.stdc_trailing_ones_ui
+    libc.src.stdbit.stdc_trailing_ones_ul
+    libc.src.stdbit.stdc_trailing_ones_ull
+    libc.src.stdbit.stdc_trailing_ones_us
+    libc.src.stdbit.stdc_trailing_zeros_uc
+    libc.src.stdbit.stdc_trailing_zeros_ui
+    libc.src.stdbit.stdc_trailing_zeros_ul
+    libc.src.stdbit.stdc_trailing_zeros_ull
+    libc.src.stdbit.stdc_trailing_zeros_us
+
+)
+
+if(LIBC_COMPILER_HAS_FIXED_POINT)
+  list(APPEND TARGET_LIBC_ENTRYPOINTS
+    # stdfix.h entrypoints
+    libc.src.stdfix.abshk
+    libc.src.stdfix.abshr
+    libc.src.stdfix.absk
+    libc.src.stdfix.abslk
+    libc.src.stdfix.abslr
+    libc.src.stdfix.absr
+    libc.src.stdfix.bitshk
+    libc.src.stdfix.bitshr
+    libc.src.stdfix.bitsk
+    libc.src.stdfix.bitslk
+    libc.src.stdfix.bitslr
+    libc.src.stdfix.bitsr
+    libc.src.stdfix.bitsuhk
+    libc.src.stdfix.bitsuhr
+    libc.src.stdfix.bitsuk
+    libc.src.stdfix.bitsulk
+    libc.src.stdfix.bitsulr
+    libc.src.stdfix.bitsur
+    libc.src.stdfix.countlshk
+    libc.src.stdfix.countlshr
+    libc.src.stdfix.countlsk
+    libc.src.stdfix.countlslk
+    libc.src.stdfix.countlslr
+    libc.src.stdfix.countlsr
+    libc.src.stdfix.countlsuhk
+    libc.src.stdfix.countlsuhr
+    libc.src.stdfix.countlsuk
+    libc.src.stdfix.countlsulk
+    libc.src.stdfix.countlsulr
+    libc.src.stdfix.countlsur
+    libc.src.stdfix.exphk
+    libc.src.stdfix.expk
+    libc.src.stdfix.hkbits
+    libc.src.stdfix.hrbits
+    libc.src.stdfix.idivk
+    libc.src.stdfix.idivlk
+    libc.src.stdfix.idivlr
+    libc.src.stdfix.idivr
+    libc.src.stdfix.idivuk
+    libc.src.stdfix.idivulk
+    libc.src.stdfix.idivulr
+    libc.src.stdfix.idivur
+    libc.src.stdfix.kbits
+    libc.src.stdfix.lkbits
+    libc.src.stdfix.lrbits
+    libc.src.stdfix.rbits
+    libc.src.stdfix.rdivi
+    libc.src.stdfix.roundhk
+    libc.src.stdfix.roundhr
+    libc.src.stdfix.roundk
+    libc.src.stdfix.roundlk
+    libc.src.stdfix.roundlr
+    libc.src.stdfix.roundr
+    libc.src.stdfix.rounduhk
+    libc.src.stdfix.rounduhr
+    libc.src.stdfix.rounduk
+    libc.src.stdfix.roundulk
+    libc.src.stdfix.roundulr
+    libc.src.stdfix.roundur
+    libc.src.stdfix.sqrtuhk
+    libc.src.stdfix.sqrtuhr
+    libc.src.stdfix.sqrtuk
+    libc.src.stdfix.sqrtulr
+    libc.src.stdfix.sqrtur
+    libc.src.stdfix.uhkbits
+    libc.src.stdfix.uhksqrtus
+    libc.src.stdfix.uhrbits
+    libc.src.stdfix.ukbits
+    libc.src.stdfix.uksqrtui
+    libc.src.stdfix.ulkbits
+    libc.src.stdfix.ulrbits
+    libc.src.stdfix.urbits
+  )
+endif()
+
+set(TARGET_LIBC_ENTRYPOINTS ${TARGET_LIBC_ENTRYPOINTS}
+    # complex.h entrypoints
+    libc.src.complex.cimag
+    libc.src.complex.cimagf
+    libc.src.complex.cimagl
+    libc.src.complex.conj
+    libc.src.complex.conjf
+    libc.src.complex.conjl
+    libc.src.complex.cproj
+    libc.src.complex.cprojf
+    libc.src.complex.cprojl
+    libc.src.complex.creal
+    libc.src.complex.crealf
+    libc.src.complex.creall
+
+    # assert.h entrypoints
+    libc.src.assert.__assert_fail
+
+    # compiler support entrypoints
+    libc.src.compiler.__stack_chk_fail
 
     # wctype.h entrypoints
-    libc.src.wctype.iswalpha
-    libc.src.wctype.iswupper
     libc.src.wctype.iswalnum
-    libc.src.wctype.iswgraph
+    libc.src.wctype.iswalpha
+    libc.src.wctype.iswblank
     libc.src.wctype.iswcntrl
     libc.src.wctype.iswdigit
+    libc.src.wctype.iswgraph
     libc.src.wctype.iswlower
-    libc.src.wctype.iswspace
-    libc.src.wctype.iswblank
-    libc.src.wctype.iswxdigit
-    libc.src.wctype.iswpunct
     libc.src.wctype.iswprint
+    libc.src.wctype.iswpunct
+    libc.src.wctype.iswspace
+    libc.src.wctype.iswupper
+    libc.src.wctype.iswxdigit
+    libc.src.wctype.iswalnum_l
+    libc.src.wctype.iswctype
+    libc.src.wctype.iswctype_l
+    libc.src.wctype.iswalpha_l
+    libc.src.wctype.iswblank_l
+    libc.src.wctype.iswcntrl_l
+    libc.src.wctype.iswdigit_l
+    libc.src.wctype.iswgraph_l
+    libc.src.wctype.iswlower_l
+    libc.src.wctype.iswprint_l
+    libc.src.wctype.iswpunct_l
+    libc.src.wctype.iswspace_l
+    libc.src.wctype.iswupper_l
+    libc.src.wctype.iswxdigit_l
+    libc.src.wctype.towctrans
+    libc.src.wctype.towctrans_l
+    libc.src.wctype.towlower
+    libc.src.wctype.towlower_l
+    libc.src.wctype.towupper
+    libc.src.wctype.towupper_l
+    libc.src.wctype.wctype
+    libc.src.wctype.wctype_l
+    libc.src.wctype.wctrans
+    libc.src.wctype.wctrans_l
 )
 
 set(TARGET_LIBM_ENTRYPOINTS
@@ -155,6 +1140,9 @@ set(TARGET_LIBM_ENTRYPOINTS
     libc.src.math.atan
     libc.src.math.atanf
     libc.src.math.atanhf
+    libc.src.math.canonicalize
+    libc.src.math.canonicalizef
+    libc.src.math.canonicalizel
     libc.src.math.cbrt
     libc.src.math.cbrtf
     libc.src.math.cbrtbf16
@@ -167,9 +1155,11 @@ set(TARGET_LIBM_ENTRYPOINTS
     libc.src.math.cos
     libc.src.math.cosf
     libc.src.math.coshf
+    libc.src.math.cospif
     libc.src.math.daddl
     libc.src.math.ddivl
     libc.src.math.dfmal
+    libc.src.math.dmull
     libc.src.math.dsubl
     libc.src.math.erff
     libc.src.math.exp
@@ -178,6 +1168,8 @@ set(TARGET_LIBM_ENTRYPOINTS
     libc.src.math.exp10f
     libc.src.math.exp2
     libc.src.math.exp2f
+    libc.src.math.exp2m1f
+    libc.src.math.exp10m1f
     libc.src.math.expm1
     libc.src.math.expm1f
     libc.src.math.fabs
@@ -229,22 +1221,46 @@ set(TARGET_LIBM_ENTRYPOINTS
     libc.src.math.fminimum_mag_numf
     libc.src.math.fminimum_mag_numl
     libc.src.math.fmul
+    libc.src.math.fmull
     libc.src.math.fmod
     libc.src.math.fmodf
     libc.src.math.fmodl
     libc.src.math.frexp
     libc.src.math.frexpf
     libc.src.math.frexpl
+    libc.src.math.fsqrt
+    libc.src.math.fsqrtl
     libc.src.math.fsub
     libc.src.math.fsubl
+    libc.src.math.fromfp
+    libc.src.math.fromfpf
+    libc.src.math.fromfpl
+    libc.src.math.fromfpx
+    libc.src.math.fromfpxf
+    libc.src.math.fromfpxl
+    libc.src.math.getpayload
+    libc.src.math.getpayloadf
+    libc.src.math.getpayloadl
     libc.src.math.hypot
     libc.src.math.hypotf
     libc.src.math.ilogb
     libc.src.math.ilogbf
     libc.src.math.ilogbl
+    libc.src.math.iscanonical
+    libc.src.math.iscanonicalf
+    libc.src.math.iscanonicall
+    libc.src.math.isnan
+    libc.src.math.isnanf
+    libc.src.math.isnanl
+    libc.src.math.issignaling
+    libc.src.math.issignalingf
+    libc.src.math.issignalingl
     libc.src.math.ldexp
     libc.src.math.ldexpf
     libc.src.math.ldexpl
+    libc.src.math.llogb
+    libc.src.math.llogbf
+    libc.src.math.llogbl
     libc.src.math.llrint
     libc.src.math.llrintf
     libc.src.math.llrintl
@@ -280,9 +1296,15 @@ set(TARGET_LIBM_ENTRYPOINTS
     libc.src.math.nextafter
     libc.src.math.nextafterf
     libc.src.math.nextafterl
+    libc.src.math.nextdown
+    libc.src.math.nextdownf
+    libc.src.math.nextdownl
     libc.src.math.nexttoward
     libc.src.math.nexttowardf
     libc.src.math.nexttowardl
+    libc.src.math.nextup
+    libc.src.math.nextupf
+    libc.src.math.nextupl
     libc.src.math.pow
     libc.src.math.powf
     libc.src.math.remainderf
@@ -297,6 +1319,10 @@ set(TARGET_LIBM_ENTRYPOINTS
     libc.src.math.round
     libc.src.math.roundf
     libc.src.math.roundl
+    libc.src.math.roundeven
+    libc.src.math.roundevenf
+    libc.src.math.roundevenl
+    libc.src.math.rsqrtf
     libc.src.math.scalbln
     libc.src.math.scalblnf
     libc.src.math.scalblnl
@@ -305,9 +1331,10 @@ set(TARGET_LIBM_ENTRYPOINTS
     libc.src.math.scalbnl
     libc.src.math.sin
     libc.src.math.sincosf
-    libc.src.math.sincosf
+    libc.src.math.sincos
     libc.src.math.sinf
     libc.src.math.sinhf
+    libc.src.math.sinpif
     libc.src.math.sqrt
     libc.src.math.sqrtf
     libc.src.math.sqrtl
@@ -315,9 +1342,30 @@ set(TARGET_LIBM_ENTRYPOINTS
     libc.src.math.tanf
     libc.src.math.tanhf
     libc.src.math.tanpif
+    libc.src.math.totalorder
+    libc.src.math.totalorderf
+    libc.src.math.totalorderl
+    libc.src.math.totalordermag
+    libc.src.math.totalordermagf
+    libc.src.math.totalordermagl
     libc.src.math.trunc
     libc.src.math.truncf
     libc.src.math.truncl
+    libc.src.math.ufromfp
+    libc.src.math.ufromfpf
+    libc.src.math.ufromfpl
+    libc.src.math.ufromfpx
+    libc.src.math.ufromfpxf
+    libc.src.math.ufromfpxl
+    libc.src.math.setpayload
+    libc.src.math.setpayloadf
+    libc.src.math.setpayloadl
+    libc.src.math.setpayloadsig
+    libc.src.math.setpayloadsigf
+    libc.src.math.setpayloadsigl
+
+    # POSIX signgam global (set by lgamma)
+    libc.src.math.signgam
 )
 
 list(APPEND TARGET_LIBM_ENTRYPOINTS
@@ -400,4 +1448,3 @@ set(TARGET_LLVMLIBC_ENTRYPOINTS
   ${TARGET_LIBC_ENTRYPOINTS}
   ${TARGET_LIBM_ENTRYPOINTS}
 )
-

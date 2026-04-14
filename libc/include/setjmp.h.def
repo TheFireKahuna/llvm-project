@@ -1,0 +1,42 @@
+//===-- Standard C header <setjmp.h> -------------------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef LLVM_LIBC_SETJMP_H
+#define LLVM_LIBC_SETJMP_H
+
+#include "__llvm-libc-common.h"
+#include "llvm-libc-types/jmp_buf.h"
+#include "llvm-libc-types/sigjmp_buf.h"
+
+__BEGIN_C_DECLS
+
+_Noreturn void longjmp(jmp_buf, int) __NOEXCEPT;
+
+#if defined(_WIN32) || defined(_WIN32_ITANIUM)
+_Returns_twice int __llvm_libc_setjmp(jmp_buf, void *) __NOEXCEPT;
+#else
+_Returns_twice int setjmp(jmp_buf) __NOEXCEPT;
+#endif
+
+_Noreturn void siglongjmp(sigjmp_buf, int) __NOEXCEPT;
+
+#if defined(_WIN32) || defined(_WIN32_ITANIUM)
+_Returns_twice int __llvm_libc_sigsetjmp(sigjmp_buf, int, void *) __NOEXCEPT;
+#else
+_Returns_twice int sigsetjmp(sigjmp_buf, int) __NOEXCEPT;
+#endif
+
+__END_C_DECLS
+
+#if defined(_WIN32) || defined(_WIN32_ITANIUM)
+#define setjmp(buf) __llvm_libc_setjmp((buf), __builtin_frame_address(0))
+#define sigsetjmp(buf, savesigs)                                               \
+  __llvm_libc_sigsetjmp((buf), (savesigs), __builtin_frame_address(0))
+#endif
+
+#endif // LLVM_LIBC_SETJMP_H

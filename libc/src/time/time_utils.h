@@ -18,7 +18,13 @@
 #include "src/__support/common.h"
 #include "src/__support/libc_errno.h"
 #include "src/__support/macros/config.h"
+#include "src/__support/macros/properties/os.h"
 #include "time_constants.h"
+
+#ifdef LIBC_TARGET_OS_IS_WINDOWS
+#include "include/llvm-libc-macros/langinfo-macros.h"
+#include "src/locale/nl_langinfo.h"
+#endif
 
 namespace LIBC_NAMESPACE_DECL {
 namespace time_utils {
@@ -121,7 +127,7 @@ LIBC_INLINE constexpr bool is_leap_year(const int64_t year) {
   return (((year) % 4) == 0 && (((year) % 100) != 0 || ((year) % 400) == 0));
 }
 
-LIBC_INLINE constexpr int get_days_in_year(const int year) {
+LIBC_INLINE constexpr int get_days_in_year(const intmax_t year) {
   return is_leap_year(year) ? time_constants::DAYS_PER_LEAP_YEAR
                             : time_constants::DAYS_PER_NON_LEAP_YEAR;
 }
@@ -177,6 +183,67 @@ public:
     return "UTC";
   }
 
+  // Locale-aware string accessors. On Windows these use nl_langinfo for
+  // NLS-based locale data; on other platforms they fall back to the
+  // hardcoded C-locale constants above.
+  LIBC_INLINE cpp::string_view get_locale_weekday_short_name() const {
+#ifdef LIBC_TARGET_OS_IS_WINDOWS
+    if (timeptr->tm_wday >= 0 && timeptr->tm_wday <= 6) {
+      const char *s = LIBC_NAMESPACE::nl_langinfo(ABDAY_1 + timeptr->tm_wday);
+      if (s && s[0])
+        return cpp::string_view(s);
+    }
+#endif
+    auto opt = get_weekday_short_name();
+    return opt.has_value() ? *opt : "?";
+  }
+
+  LIBC_INLINE cpp::string_view get_locale_weekday_full_name() const {
+#ifdef LIBC_TARGET_OS_IS_WINDOWS
+    if (timeptr->tm_wday >= 0 && timeptr->tm_wday <= 6) {
+      const char *s = LIBC_NAMESPACE::nl_langinfo(DAY_1 + timeptr->tm_wday);
+      if (s && s[0])
+        return cpp::string_view(s);
+    }
+#endif
+    auto opt = get_weekday_full_name();
+    return opt.has_value() ? *opt : "?";
+  }
+
+  LIBC_INLINE cpp::string_view get_locale_month_short_name() const {
+#ifdef LIBC_TARGET_OS_IS_WINDOWS
+    if (timeptr->tm_mon >= 0 && timeptr->tm_mon <= 11) {
+      const char *s = LIBC_NAMESPACE::nl_langinfo(ABMON_1 + timeptr->tm_mon);
+      if (s && s[0])
+        return cpp::string_view(s);
+    }
+#endif
+    auto opt = get_month_short_name();
+    return opt.has_value() ? *opt : "?";
+  }
+
+  LIBC_INLINE cpp::string_view get_locale_month_full_name() const {
+#ifdef LIBC_TARGET_OS_IS_WINDOWS
+    if (timeptr->tm_mon >= 0 && timeptr->tm_mon <= 11) {
+      const char *s = LIBC_NAMESPACE::nl_langinfo(MON_1 + timeptr->tm_mon);
+      if (s && s[0])
+        return cpp::string_view(s);
+    }
+#endif
+    auto opt = get_month_full_name();
+    return opt.has_value() ? *opt : "?";
+  }
+
+  LIBC_INLINE cpp::string_view get_locale_am_pm() const {
+#ifdef LIBC_TARGET_OS_IS_WINDOWS
+    const char *s = LIBC_NAMESPACE::nl_langinfo(
+        timeptr->tm_hour < 12 ? AM_STR : PM_STR);
+    if (s && s[0])
+      return cpp::string_view(s);
+#endif
+    return get_am_pm();
+  }
+
   // Numbers
   LIBC_INLINE constexpr int get_sec() const { return timeptr->tm_sec; }
   LIBC_INLINE constexpr int get_min() const { return timeptr->tm_min; }
@@ -190,8 +257,10 @@ public:
   // returns the year, counting from 1900
   LIBC_INLINE constexpr int get_year_raw() const { return timeptr->tm_year; }
   // returns the year, counting from 0
-  LIBC_INLINE constexpr int get_year() const {
-    return timeptr->tm_year + time_constants::TIME_YEAR_BASE;
+  // Uses intmax_t to avoid overflow when tm_year is near INT_MAX/INT_MIN.
+  LIBC_INLINE constexpr intmax_t get_year() const {
+    return static_cast<intmax_t>(timeptr->tm_year) +
+           time_constants::TIME_YEAR_BASE;
   }
 
   LIBC_INLINE constexpr int is_leap_year() const {
@@ -278,8 +347,8 @@ public:
     return ceil_weeks_since_start + WEEK_STARTS_IN_PREV_YEAR;
   }
 
-  LIBC_INLINE constexpr int get_iso_year() const {
-    const int BASE_YEAR = get_year();
+  LIBC_INLINE constexpr intmax_t get_iso_year() const {
+    const intmax_t BASE_YEAR = get_year();
     // The ISO year is the same as a standard year for all dates after the start
     // of the first week and before the last week. Since the first ISO week of a
     // year starts on the 4th, anything after that is in this year.

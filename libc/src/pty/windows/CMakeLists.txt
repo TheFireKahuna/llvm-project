@@ -1,0 +1,25 @@
+add_entrypoint_object(
+  openpty
+  SRCS
+    openpty.cpp
+  HDRS
+    ../openpty.h
+  DEPENDS
+    libc.include.pty
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.vt_pty
+)
+
+add_entrypoint_object(
+  login_tty
+  SRCS
+    login_tty.cpp
+  HDRS
+    ../login_tty.h
+  DEPENDS
+    libc.include.pty
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.vt_pty
+)

@@ -10,6 +10,7 @@
 
 #include "hdr/stdint_proxy.h"
 #include "src/__support/FPUtil/FPBits.h"
+#include "src/__support/CPP/string_view.h"
 #include "src/__support/macros/config.h"
 #include "src/stdio/scanf_core/core_structs.h"
 
@@ -41,10 +42,15 @@ namespace {
     break
 
 void display(FormatSection form) {
-  tlog << "Raw String (len " << form.raw_string.size() << "): \"";
-  for (size_t i = 0; i < form.raw_string.size(); ++i) {
-    tlog << form.raw_string[i];
-  }
+  tlog << "Raw String (len " << form.raw_len << "): \"";
+  // scanf_core::FormatSection stores the raw segment as a type-erased pointer
+  // so the parser can share one representation between narrow and wide builds.
+  // The matcher is currently only used by narrow-format parser tests, so we
+  // render the span as a char sequence for readable diagnostics.
+  const cpp::string_view raw_string(static_cast<const char *>(form.raw_begin),
+                                    form.raw_len);
+  for (char ch : raw_string)
+    tlog << ch;
   tlog << "\"";
   if (form.has_conv) {
     tlog << "\n\tHas Conv\n\tFlags:";

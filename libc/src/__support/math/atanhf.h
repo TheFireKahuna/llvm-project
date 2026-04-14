@@ -52,9 +52,14 @@ LIBC_INLINE constexpr float atanhf(float x) {
   if (LIBC_UNLIKELY(x_abs <= 0x3dcc'0000U)) {
     // |x| <= 2^-26
     if (LIBC_UNLIKELY(x_abs <= 0x3280'0000U)) {
-      return static_cast<float>(LIBC_UNLIKELY(x_abs == 0)
-                                    ? x
-                                    : (x + 0x1.5555555555555p-2 * x * x * x));
+      if (LIBC_UNLIKELY(x_abs == 0))
+        return x;
+      // atanh(x) ~ x for subnormal x, signal underflow.
+      if (LIBC_UNLIKELY(x_abs < 0x0080'0000U)) {
+        fputil::raise_except_if_required(FE_UNDERFLOW | FE_INEXACT);
+        return x;
+      }
+      return static_cast<float>(x + 0x1.5555555555555p-2 * x * x * x);
     }
 
     double xdbl = x;

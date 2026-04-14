@@ -14,6 +14,7 @@
 #include "src/setjmp/sigsetjmp_epilogue.h"
 
 namespace LIBC_NAMESPACE_DECL {
+
 [[gnu::naked]]
 LLVM_LIBC_FUNCTION(int, sigsetjmp, (sigjmp_buf, int)) {
   asm(R"(

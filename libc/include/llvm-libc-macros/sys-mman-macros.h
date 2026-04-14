@@ -14,6 +14,8 @@
 // architectures.
 #if __has_include(<linux/mman.h>)
 #include <linux/mman.h>
+#elif defined(__NTPOSIX__)
+#include "windows/sys-mman-macros.h"
 #else
 #error "cannot use <sys/mman.h> without proper system headers."
 #endif

@@ -11,6 +11,8 @@
 
 #ifdef __linux__
 #include "linux/sys-time-macros.h"
+#elif defined(__NTPOSIX__)
+#include "windows/sys-time-macros.h"
 #endif
 
 #endif // LLVM_LIBC_MACROS_SYS_TIME_MACROS_H

@@ -20,9 +20,9 @@
 namespace LIBC_NAMESPACE_DECL {
 namespace strftime_core {
 
-template <printf_core::WriteMode write_mode>
-ErrorOr<size_t> strftime_main(printf_core::Writer<write_mode> *writer,
-                              const char *__restrict str, const tm *timeptr) {
+template <typename WriterT>
+ErrorOr<size_t> strftime_main(WriterT *writer, const char *__restrict str,
+                              const tm *timeptr) {
   Parser parser(str);
   int result = 0;
   for (strftime_core::FormatSection cur_section = parser.get_next_section();

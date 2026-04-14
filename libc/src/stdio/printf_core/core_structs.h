@@ -12,6 +12,7 @@
 #include "src/__support/macros/config.h"
 
 #include "src/__support/CPP/string_view.h"
+#include "hdr/types/wchar_t.h"
 #include "src/__support/CPP/type_traits.h"
 #include "src/__support/FPUtil/FPBits.h"
 #include "src/stdio/printf_core/printf_config.h"
@@ -105,6 +106,15 @@ struct FormatSection {
     }
     return true;
   }
+};
+
+// Returned by Parser<ArgProvider, wchar_t>::get_next_section. For literal text
+// segments, raw_begin/raw_len point into the wide format string. For
+// conversions, conv holds all specifier fields.
+struct WideFormatSection {
+  FormatSection conv;
+  const wchar_t *raw_begin = nullptr;
+  size_t raw_len = 0;
 };
 
 enum PrimaryType : uint8_t {

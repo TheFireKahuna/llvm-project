@@ -52,12 +52,30 @@ File *File::get_first_file() { return File::list_all; }
 void File::lock_list() { File::list_lock.lock(); }
 void File::unlock_list() { File::list_lock.unlock(); }
 
+// Flush all open streams. Called by exit() to satisfy C11 7.22.4.4p4.
+// Uses try_lock to avoid ABBA deadlock with concurrent fclose (same
+// strategy as fflush(NULL)).
+void File::flush_all() {
+  File::list_lock.lock();
+  for (File *f = File::list_all; f != nullptr; f = f->next) {
+    if (f->try_lock_for_flush()) {
+      f->flush_unlocked();
+      f->unlock();
+    }
+  }
+  File::list_lock.unlock();
+}
+
 FileIOResult File::write_unlocked(const void *data, size_t len) {
   if (!write_allowed()) {
     err = true;
     return {0, EBADF};
   }
 
+#ifdef LIBC_COPT_FILE_WIDE_SUPPORT
+  if (!orientation)
+    orientation = -1;
+#endif
   prev_op = FileOp::WRITE;
 
   if (bufmode == _IONBF) { // unbuffered.
@@ -219,6 +237,10 @@ FileIOResult File::read_unlocked(void *data, size_t len) {
     return {0, EBADF};
   }
 
+#ifdef LIBC_COPT_FILE_WIDE_SUPPORT
+  if (!orientation)
+    orientation = -1;
+#endif
   prev_op = FileOp::READ;
 
   if (bufmode == _IONBF) { // unbuffered.
@@ -336,19 +358,26 @@ int File::ungetc_unlocked(int c) {
     ++read_limit;
   } else {
     // If |read_limit| is non-zero, it means that there is data in the buffer
-    // from a previous read operation. Which would also mean that |pos| is not
-    // zero. So, we decrement |pos| and write |c| in to the buffer at the new
-    // |pos|. If too many ungetc operations are performed without reads, it
-    // can lead to (pos == 0 but read_limit != 0). We will just error out in
-    // such a case.
-    if (pos == 0)
+    // from a previous read operation.
+    if (pos > 0) {
+      --pos;
+      bufref[pos] = static_cast<unsigned char>(c);
+    } else if (read_limit < bufsize) {
+      // pos == 0 but the buffer isn't full.  Shift valid data right by one
+      // byte to make room for the pushback character.  C11 guarantees at
+      // least one character of pushback; this covers the case where an
+      // internal ungetc (e.g. inside scanf) already moved pos to 0.
+      // In practice read_limit is small here (scanf just filled the buffer
+      // and pushed back one byte), so the copy is cheap.
+      __builtin_memmove(buf + 1, buf, read_limit);
+      buf[0] = static_cast<unsigned char>(c);
+      ++read_limit;
+    } else {
       return EOF;
-    --pos;
-    bufref[pos] = static_cast<unsigned char>(c);
+    }
   }
 
-  eof = false; // There is atleast one character that can be read now.
-  err = false; // This operation was a success.
+  eof = false; // C11 §7.21.7.10: clears the EOF indicator.
   return c;
 }
 
@@ -372,6 +401,12 @@ ErrorOr<int> File::seek(off_t offset, int whence) {
   // Reset the eof flag as a seek might move the file positon to some place
   // readable.
   eof = false;
+#ifdef LIBC_COPT_FILE_WIDE_SUPPORT
+  // C11 §7.21.9.2: seeking resets the conversion state for wide streams
+  // and discards any pushed-back wide characters (§7.29.3.10).
+  wide_mbstate = internal::mbstate{};
+  has_wide_pushback = false;
+#endif
   auto result = platform_seek(this, offset, whence);
   if (!result.has_value())
     return Error(result.error());
@@ -380,7 +415,13 @@ ErrorOr<int> File::seek(off_t offset, int whence) {
 
 ErrorOr<off_t> File::tell() {
   FileLock lock(this);
-  auto seek_target = eof ? SEEK_END : SEEK_CUR;
+  // In append mode with pending writes, the current file position (SEEK_CUR)
+  // does not reflect where data was actually written — append writes always go
+  // to EOF (via O_APPEND / FILE_WRITE_TO_END_OF_FILE). Use SEEK_END to get
+  // the actual file size so buffered bytes are correctly offset from EOF.
+  auto seek_target = eof                                          ? SEEK_END
+                     : (prev_op == FileOp::WRITE && is_append_mode()) ? SEEK_END
+                                                                      : SEEK_CUR;
   auto result = platform_seek(this, 0, seek_target);
   if (!result.has_value() || result.value() < 0)
     return Error(result.error());
@@ -400,6 +441,13 @@ int File::flush_unlocked() {
       return buf_result.error;
     }
     pos = 0;
+    // Allow platforms with asynchronous write-behind (e.g. IO Ring) to drain
+    // their pipeline after the buffered data has been handed to the OS.
+    if (platform_sync) {
+      int sync_err = platform_sync(this);
+      if (sync_err)
+        return sync_err;
+    }
   } else if (prev_op == FileOp::READ) {
     if (read_limit > pos) {
       if (!platform_seek(this, -static_cast<off_t>(read_limit - pos), SEEK_CUR)
@@ -448,7 +496,7 @@ int File::set_buffer(void *buffer, size_t size, int buffer_mode) {
     // TODO: Handle allocation failures.
   } else {
     if (own_buf)
-      delete buf;
+      delete[] buf;
     if (buffer_mode != _IONBF) {
       buf = static_cast<uint8_t *>(buffer);
       bufsize = size;

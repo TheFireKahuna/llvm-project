@@ -1,4 +1,5 @@
 header: sys/select.h
+header_template: select.h.def
 standards:
   - posix
 macros:
@@ -14,6 +15,17 @@ types:
 enums: []
 objects: []
 functions:
+  - name: pselect
+    standards:
+      - POSIX
+    return_type: int
+    arguments:
+      - type: int
+      - type: fd_set *__restrict
+      - type: fd_set *__restrict
+      - type: fd_set *__restrict
+      - type: const struct timespec *__restrict
+      - type: const sigset_t *__restrict
   - name: select
     standards:
       - POSIX

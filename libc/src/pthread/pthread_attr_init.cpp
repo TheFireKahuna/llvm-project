@@ -8,6 +8,7 @@
 
 #include "pthread_attr_init.h"
 
+#include "hdr/sched_macros.h"
 #include "src/__support/common.h"
 #include "src/__support/macros/config.h"
 #include "src/__support/threads/thread.h" // For thread::DEFAULT_*
@@ -22,6 +23,9 @@ LLVM_LIBC_FUNCTION(int, pthread_attr_init, (pthread_attr_t * attr)) {
       nullptr,                   // Let the thread manage its stack
       Thread::DEFAULT_STACKSIZE, // stack size.
       Thread::DEFAULT_GUARDSIZE, // Default page size for the guard size.
+      SCHED_OTHER,               // Default scheduling policy.
+      {0},                       // Default sched_param (priority 0).
+      PTHREAD_INHERIT_SCHED,     // Inherit scheduling from creating thread.
   };
   return 0;
 }

@@ -26,6 +26,13 @@ TEST_F(LlvmLibcPowTest, TrickyInputs) {
       {0x1.f558a88a8aadep-1, 0x1.88ap+12},
       {0x1.e84d32731e593p-1, 0x1.2cb8p+13},
       {0x1.ffffffffffffcp-1, 0x1.fffffffffffffp-2},
+      // Subnormal bases: the denormal normalization must derive the true
+      // exponent from the scaled value, not assume -1023 for all subnormals.
+      {0x1.0p-1074, 0.5},
+      {0x1.0p-1040, 0.25},
+      {0x1.0p-1040, 0.1},
+      {0x1.0p-1060, 0.5},
+      {0x1.8p-1070, 0.5},
   };
 
   for (auto input : INPUTS) {

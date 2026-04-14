@@ -22,28 +22,40 @@
 namespace LIBC_NAMESPACE_DECL {
 namespace strftime_core {
 
-LIBC_INLINE IntFormatSection
-get_specific_int_format(const tm *timeptr, const FormatSection &base_to_conv,
-                        char new_conv_name, int TRAILING_CONV_LEN = -1) {
-  // a negative padding will be treated as the default
-  const int NEW_MIN_WIDTH =
-      TRAILING_CONV_LEN > 0 ? base_to_conv.min_width - TRAILING_CONV_LEN : 0;
+LIBC_INLINE IntFormatSection get_leading_composite_int_format(
+    const tm *timeptr, const FormatSection &base_to_conv, char new_conv_name,
+    int trailing_conv_len_after_component) {
   FormatSection new_conv = base_to_conv;
   new_conv.conv_name = new_conv_name;
-  new_conv.min_width = NEW_MIN_WIDTH;
+  new_conv.min_width =
+      base_to_conv.min_width > trailing_conv_len_after_component
+          ? base_to_conv.min_width - trailing_conv_len_after_component
+          : 0;
 
   IntFormatSection result = get_int_format(new_conv, timeptr);
 
-  // If the user set the padding, but it's below the width of the trailing
-  // conversions, then there should be no padding.
-  if (base_to_conv.min_width > 0 && NEW_MIN_WIDTH < 0)
+  // Composite widths only apply to the leftmost field. If the requested width
+  // is fully consumed by the suffix, emit the leading field without extra
+  // padding rather than suppressing its own intrinsic formatting.
+  if (base_to_conv.min_width > 0 &&
+      base_to_conv.min_width <= trailing_conv_len_after_component)
     result.pad_to_len = 0;
 
   return result;
 }
 
-template <printf_core::WriteMode write_mode>
-LIBC_INLINE int convert_date_us(printf_core::Writer<write_mode> *writer,
+LIBC_INLINE IntFormatSection
+get_trailing_composite_int_format(const tm *timeptr,
+                                  const FormatSection &base_to_conv,
+                                  char new_conv_name) {
+  FormatSection new_conv = base_to_conv;
+  new_conv.conv_name = new_conv_name;
+  new_conv.min_width = 0;
+  return get_int_format(new_conv, timeptr);
+}
+
+template <typename WriterT>
+LIBC_INLINE int convert_date_us(WriterT *writer,
                                 const FormatSection &to_conv,
                                 const tm *timeptr) {
   // format is %m/%d/%y (month/day/year)
@@ -54,9 +66,10 @@ LIBC_INLINE int convert_date_us(printf_core::Writer<write_mode> *writer,
   IntFormatSection mon_conv;
   IntFormatSection mday_conv;
 
-  mon_conv = get_specific_int_format(timeptr, to_conv, 'm', TRAILING_CONV_LEN);
-  mday_conv = get_specific_int_format(timeptr, to_conv, 'd');
-  year_conv = get_specific_int_format(timeptr, to_conv, 'y');
+  mon_conv =
+      get_leading_composite_int_format(timeptr, to_conv, 'm', TRAILING_CONV_LEN);
+  mday_conv = get_trailing_composite_int_format(timeptr, to_conv, 'd');
+  year_conv = get_trailing_composite_int_format(timeptr, to_conv, 'y');
 
   RET_IF_RESULT_NEGATIVE(write_padded_int(writer, mon_conv));
   RET_IF_RESULT_NEGATIVE(writer->write('/'));
@@ -67,8 +80,8 @@ LIBC_INLINE int convert_date_us(printf_core::Writer<write_mode> *writer,
   return WRITE_OK;
 }
 
-template <printf_core::WriteMode write_mode>
-LIBC_INLINE int convert_date_iso(printf_core::Writer<write_mode> *writer,
+template <typename WriterT>
+LIBC_INLINE int convert_date_iso(WriterT *writer,
                                  const FormatSection &to_conv,
                                  const tm *timeptr) {
   // format is "%Y-%m-%d" (year-month-day)
@@ -79,9 +92,10 @@ LIBC_INLINE int convert_date_iso(printf_core::Writer<write_mode> *writer,
   IntFormatSection mon_conv;
   IntFormatSection mday_conv;
 
-  year_conv = get_specific_int_format(timeptr, to_conv, 'Y', TRAILING_CONV_LEN);
-  mon_conv = get_specific_int_format(timeptr, to_conv, 'm');
-  mday_conv = get_specific_int_format(timeptr, to_conv, 'd');
+  year_conv =
+      get_leading_composite_int_format(timeptr, to_conv, 'Y', TRAILING_CONV_LEN);
+  mon_conv = get_trailing_composite_int_format(timeptr, to_conv, 'm');
+  mday_conv = get_trailing_composite_int_format(timeptr, to_conv, 'd');
 
   RET_IF_RESULT_NEGATIVE(write_padded_int(writer, year_conv));
   RET_IF_RESULT_NEGATIVE(writer->write('-'));
@@ -92,8 +106,8 @@ LIBC_INLINE int convert_date_iso(printf_core::Writer<write_mode> *writer,
   return WRITE_OK;
 }
 
-template <printf_core::WriteMode write_mode>
-LIBC_INLINE int convert_time_am_pm(printf_core::Writer<write_mode> *writer,
+template <typename WriterT>
+LIBC_INLINE int convert_time_am_pm(WriterT *writer,
                                    const FormatSection &to_conv,
                                    const tm *timeptr) {
   // format is "%I:%M:%S %p" (hour:minute:second AM/PM)
@@ -107,9 +121,10 @@ LIBC_INLINE int convert_time_am_pm(printf_core::Writer<write_mode> *writer,
 
   const time_utils::TMReader time_reader(timeptr);
 
-  hour_conv = get_specific_int_format(timeptr, to_conv, 'I', TRAILING_CONV_LEN);
-  min_conv = get_specific_int_format(timeptr, to_conv, 'M');
-  sec_conv = get_specific_int_format(timeptr, to_conv, 'S');
+  hour_conv =
+      get_leading_composite_int_format(timeptr, to_conv, 'I', TRAILING_CONV_LEN);
+  min_conv = get_trailing_composite_int_format(timeptr, to_conv, 'M');
+  sec_conv = get_trailing_composite_int_format(timeptr, to_conv, 'S');
 
   RET_IF_RESULT_NEGATIVE(write_padded_int(writer, hour_conv));
   RET_IF_RESULT_NEGATIVE(writer->write(':'));
@@ -122,8 +137,8 @@ LIBC_INLINE int convert_time_am_pm(printf_core::Writer<write_mode> *writer,
   return WRITE_OK;
 }
 
-template <printf_core::WriteMode write_mode>
-LIBC_INLINE int convert_time_minute(printf_core::Writer<write_mode> *writer,
+template <typename WriterT>
+LIBC_INLINE int convert_time_minute(WriterT *writer,
                                     const FormatSection &to_conv,
                                     const tm *timeptr) {
   // format is "%H:%M" (hour:minute)
@@ -133,8 +148,9 @@ LIBC_INLINE int convert_time_minute(printf_core::Writer<write_mode> *writer,
   IntFormatSection hour_conv;
   IntFormatSection min_conv;
 
-  hour_conv = get_specific_int_format(timeptr, to_conv, 'H', TRAILING_CONV_LEN);
-  min_conv = get_specific_int_format(timeptr, to_conv, 'M');
+  hour_conv =
+      get_leading_composite_int_format(timeptr, to_conv, 'H', TRAILING_CONV_LEN);
+  min_conv = get_trailing_composite_int_format(timeptr, to_conv, 'M');
 
   RET_IF_RESULT_NEGATIVE(write_padded_int(writer, hour_conv));
   RET_IF_RESULT_NEGATIVE(writer->write(':'));
@@ -143,8 +159,8 @@ LIBC_INLINE int convert_time_minute(printf_core::Writer<write_mode> *writer,
   return WRITE_OK;
 }
 
-template <printf_core::WriteMode write_mode>
-LIBC_INLINE int convert_time_second(printf_core::Writer<write_mode> *writer,
+template <typename WriterT>
+LIBC_INLINE int convert_time_second(WriterT *writer,
                                     const FormatSection &to_conv,
                                     const tm *timeptr) {
   // format is "%H:%M:%S" (hour:minute:second)
@@ -155,9 +171,10 @@ LIBC_INLINE int convert_time_second(printf_core::Writer<write_mode> *writer,
   IntFormatSection min_conv;
   IntFormatSection sec_conv;
 
-  hour_conv = get_specific_int_format(timeptr, to_conv, 'H', TRAILING_CONV_LEN);
-  min_conv = get_specific_int_format(timeptr, to_conv, 'M');
-  sec_conv = get_specific_int_format(timeptr, to_conv, 'S');
+  hour_conv =
+      get_leading_composite_int_format(timeptr, to_conv, 'H', TRAILING_CONV_LEN);
+  min_conv = get_trailing_composite_int_format(timeptr, to_conv, 'M');
+  sec_conv = get_trailing_composite_int_format(timeptr, to_conv, 'S');
 
   RET_IF_RESULT_NEGATIVE(write_padded_int(writer, hour_conv));
   RET_IF_RESULT_NEGATIVE(writer->write(':'));
@@ -168,8 +185,8 @@ LIBC_INLINE int convert_time_second(printf_core::Writer<write_mode> *writer,
   return WRITE_OK;
 }
 
-template <printf_core::WriteMode write_mode>
-LIBC_INLINE int convert_full_date_time(printf_core::Writer<write_mode> *writer,
+template <typename WriterT>
+LIBC_INLINE int convert_full_date_time(WriterT *writer,
                                        const FormatSection &to_conv,
                                        const tm *timeptr) {
   const time_utils::TMReader time_reader(timeptr);
@@ -183,13 +200,17 @@ LIBC_INLINE int convert_full_date_time(printf_core::Writer<write_mode> *writer,
   // handled below.
   const int requested_padding = to_conv.min_width - FULL_CONV_LEN;
 
-  cpp::string_view wday_str = unwrap_opt(time_reader.get_weekday_short_name());
-  cpp::string_view month_str = unwrap_opt(time_reader.get_month_short_name());
+  cpp::string_view wday_str = time_reader.get_locale_weekday_short_name();
+  cpp::string_view month_str = time_reader.get_locale_month_short_name();
   IntFormatSection mday_conv;
   IntFormatSection year_conv;
 
-  mday_conv = get_specific_int_format(timeptr, to_conv, 'e');
-  year_conv = get_specific_int_format(timeptr, to_conv, 'Y');
+  mday_conv = get_trailing_composite_int_format(timeptr, to_conv, 'e');
+  year_conv = get_trailing_composite_int_format(timeptr, to_conv, 'Y');
+
+  // POSIX requires a '+' prefix for years > 9999 in %c output.
+  if (time_reader.get_year() > 9999)
+    year_conv.sign_char = '+';
 
   FormatSection raw_time_conv = to_conv;
   raw_time_conv.conv_name = 'T';
@@ -210,8 +231,8 @@ LIBC_INLINE int convert_full_date_time(printf_core::Writer<write_mode> *writer,
   return WRITE_OK;
 }
 
-template <printf_core::WriteMode write_mode>
-LIBC_INLINE int convert_composite(printf_core::Writer<write_mode> *writer,
+template <typename WriterT>
+LIBC_INLINE int convert_composite(WriterT *writer,
                                   const FormatSection &to_conv,
                                   const tm *timeptr) {
   switch (to_conv.conv_name) {

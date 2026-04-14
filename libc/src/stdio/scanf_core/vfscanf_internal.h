@@ -64,7 +64,7 @@ LIBC_INLINE int getc(FILE *f) {
       reinterpret_cast<LIBC_NAMESPACE::File *>(f)->read_unlocked(&c, 1);
   size_t r = result.value;
   if (result.has_error() || r != 1)
-    return '\0';
+    return EOF;
 
   return c;
 }
@@ -95,15 +95,27 @@ namespace scanf_core {
 
 class StreamReader : public Reader<StreamReader> {
   ::FILE *stream;
+  bool last_was_eof = false;
 
 public:
   LIBC_INLINE StreamReader(::FILE *stream) : stream(stream) {}
 
   LIBC_INLINE char getc() {
-    return static_cast<char>(internal::getc(static_cast<FILE *>(stream)));
+    int c = internal::getc(static_cast<FILE *>(stream));
+    if (c == EOF) {
+      last_was_eof = true;
+      return '\0'; // Reader contract: '\0' signals end-of-input.
+    }
+    last_was_eof = false;
+    return static_cast<char>(c);
   }
   LIBC_INLINE void ungetc(int c) {
-    internal::ungetc(c, static_cast<FILE *>(stream));
+    // If the previous getc() synthesized '\0' for EOF, the character was never
+    // read from the file — pushing it back would corrupt the buffer and cause
+    // subsequent ungetc calls to fail.
+    if (!last_was_eof)
+      internal::ungetc(c, static_cast<FILE *>(stream));
+    last_was_eof = false;
   }
 };
 

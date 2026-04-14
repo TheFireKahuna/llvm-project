@@ -20,3 +20,13 @@ add_entrypoint_object(
     libc.src.signal.linux.__restore
     libc.include.stdlib
 )
+
+add_entrypoint_object(
+  getenv
+  SRCS
+    getenv.cpp
+  HDRS
+    ../getenv.h
+  DEPENDS
+    libc.config.app_h
+)

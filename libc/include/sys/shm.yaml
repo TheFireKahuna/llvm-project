@@ -1,0 +1,89 @@
+header: sys/shm.h
+header_template: shm.h.def
+standards:
+  - posix
+  - linux
+macros:
+  - macro_name: IPC_CREAT
+    macro_header: sys-ipc-macros.h
+    standards:
+      - posix
+  - macro_name: SHM_RDONLY
+    macro_header: sys-shm-macros.h
+    standards:
+      - posix
+  - macro_name: SHM_RND
+    macro_header: sys-shm-macros.h
+    standards:
+      - posix
+  - macro_name: SHM_REMAP
+    macro_header: sys-shm-macros.h
+    standards:
+      - linux
+  - macro_name: SHM_EXEC
+    macro_header: sys-shm-macros.h
+    standards:
+      - linux
+  - macro_name: SHM_LOCK
+    macro_header: sys-shm-macros.h
+    standards:
+      - posix
+  - macro_name: SHM_UNLOCK
+    macro_header: sys-shm-macros.h
+    standards:
+      - posix
+  - macro_name: SHMLBA
+    macro_header: sys-shm-macros.h
+    standards:
+      - posix
+  - macro_name: SHM_STAT
+    macro_header: sys-shm-macros.h
+    standards:
+      - linux
+  - macro_name: SHM_INFO
+    macro_header: sys-shm-macros.h
+    standards:
+      - linux
+  - macro_name: SHM_STAT_ANY
+    macro_header: sys-shm-macros.h
+    standards:
+      - linux
+types:
+  - type_name: key_t
+  - type_name: size_t
+  - type_name: pid_t
+  - type_name: time_t
+  - type_name: shmatt_t
+  - type_name: struct_ipc_perm
+  - type_name: struct_shmid_ds
+functions:
+  - name: shmget
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: key_t
+      - type: size_t
+      - type: int
+  - name: shmat
+    standards:
+      - posix
+    return_type: void *
+    arguments:
+      - type: int
+      - type: const void *
+      - type: int
+  - name: shmdt
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: const void *
+  - name: shmctl
+    standards:
+      - posix
+    return_type: int
+    arguments:
+      - type: int
+      - type: int
+      - type: struct shmid_ds *

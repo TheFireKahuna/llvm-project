@@ -272,3 +272,7 @@ add_libc_test(
     libc.src.errno.errno
     libc.hdr.types.clock_t
 )
+
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${LIBC_TARGET_OS})
+  add_subdirectory(${LIBC_TARGET_OS})
+endif()

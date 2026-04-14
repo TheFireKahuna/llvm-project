@@ -11,6 +11,8 @@
 
 #if defined(__linux__) || defined(__Fuchsia__)
 #include "tables/linux_platform_signals.h"
+#elif defined(__NTPOSIX__)
+#include "tables/windows_platform_signals.h"
 #else
 #include "tables/minimal_platform_signals.h"
 #endif

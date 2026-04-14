@@ -1,0 +1,53 @@
+add_entrypoint_object(
+  getgrgid
+  SRCS
+    getgrgid.cpp
+  HDRS
+    ../getgrgid.h
+  DEPENDS
+    libc.hdr.types.gid_t
+    libc.hdr.types.struct_group
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.group_ops
+)
+
+add_entrypoint_object(
+  getgrnam
+  SRCS
+    getgrnam.cpp
+  HDRS
+    ../getgrnam.h
+  DEPENDS
+    libc.hdr.types.struct_group
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.OSUtil.windows.group_ops
+)
+
+add_entrypoint_object(
+  getgrgid_r
+  SRCS
+    getgrgid_r.cpp
+  HDRS
+    ../getgrgid_r.h
+  DEPENDS
+    libc.hdr.types.gid_t
+    libc.hdr.types.size_t
+    libc.hdr.types.struct_group
+    libc.src.__support.common
+    libc.src.__support.OSUtil.windows.group_ops
+)
+
+add_entrypoint_object(
+  getgrnam_r
+  SRCS
+    getgrnam_r.cpp
+  HDRS
+    ../getgrnam_r.h
+  DEPENDS
+    libc.hdr.types.size_t
+    libc.hdr.types.struct_group
+    libc.src.__support.common
+    libc.src.__support.OSUtil.windows.group_ops
+)

@@ -31,14 +31,7 @@ int CndVar::wait(Mutex *m) {
   CndWaiter waiter;
   {
     cpp::lock_guard ml(qmtx);
-    CndWaiter *old_back = nullptr;
-    if (waitq_front == nullptr) {
-      waitq_front = waitq_back = &waiter;
-    } else {
-      old_back = waitq_back;
-      waitq_back->next = &waiter;
-      waitq_back = &waiter;
-    }
+    CndWaiter *old_back = waitq.enqueue(&waiter);
 
     if (m->unlock() != MutexError::NONE) {
       // If we do not remove the queued up waiter before returning,
@@ -46,12 +39,7 @@ int CndVar::wait(Mutex *m) {
       // waiter. Note also that we do this with |qmtx| locked. This
       // ensures that another thread will not signal the withdrawing
       // waiter.
-      waitq_back = old_back;
-      if (waitq_back == nullptr)
-        waitq_front = nullptr;
-      else
-        waitq_back->next = nullptr;
-
+      waitq.rollback(&waiter, old_back);
       return -1;
     }
   }
@@ -68,17 +56,16 @@ void CndVar::notify_one() {
   // We don't use an RAII locker in this method as we want to unlock
   // |qmtx| and signal the waiter using a single FUTEX_WAKE_OP signal.
   qmtx.lock();
-  if (waitq_front == nullptr)
+  CndWaiter *first = waitq.dequeue();
+  if (first == nullptr) {
     qmtx.unlock();
-
-  CndWaiter *first = waitq_front;
-  waitq_front = waitq_front->next;
-  if (waitq_front == nullptr)
-    waitq_back = nullptr;
+    return;
+  }
 
   qmtx.reset();
 
-  // this is a special WAKE_OP, so we use syscall directly
+  // FUTEX_WAKE_OP atomically sets the waiter's futex word to WS_Signalled
+  // and wakes it, while also waking one thread waiting on qmtx.
   LIBC_NAMESPACE::syscall_impl<long>(
       FUTEX_SYSCALL_ID, &qmtx.get_raw_futex(), FUTEX_WAKE_OP, 1, 1,
       &first->futex_word.val,
@@ -88,8 +75,7 @@ void CndVar::notify_one() {
 void CndVar::broadcast() {
   cpp::lock_guard ml(qmtx);
   uint32_t dummy_futex_word;
-  CndWaiter *waiter = waitq_front;
-  waitq_front = waitq_back = nullptr;
+  CndWaiter *waiter = waitq.detach_all();
   while (waiter != nullptr) {
     // FUTEX_WAKE_OP is used instead of just FUTEX_WAKE as it allows us to
     // atomically update the waiter status to WS_Signalled before waking

@@ -15,4 +15,4 @@ class Object(Symbol):
         self.type = type
 
     def __str__(self):
-        return f"extern {self.type} {self.name};"
+        return f"extern __LIBC_DATA_IMPORT {self.type} {self.name};"

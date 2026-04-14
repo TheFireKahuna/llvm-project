@@ -21,8 +21,18 @@
 #define USE_LINUX_PLATFORM_SIGNALS 0
 #endif
 
+#if defined(__NTPOSIX__)
+#define USE_WINDOWS_PLATFORM_SIGNALS 1
+#else
+#define USE_WINDOWS_PLATFORM_SIGNALS 0
+#endif
+
 #if USE_LINUX_PLATFORM_SIGNALS
 #include "linux_extension_signals.h"
+#endif
+
+#if USE_WINDOWS_PLATFORM_SIGNALS
+#include "windows_extension_signals.h"
 #endif
 
 namespace LIBC_NAMESPACE_DECL {
@@ -31,6 +41,8 @@ namespace internal {
 LIBC_INLINE_VAR constexpr auto PLATFORM_SIGNALS = []() {
   if constexpr (USE_LINUX_PLATFORM_SIGNALS) {
     return STDC_SIGNALS + POSIX_SIGNALS + LINUX_SIGNALS;
+  } else if constexpr (USE_WINDOWS_PLATFORM_SIGNALS) {
+    return STDC_SIGNALS + POSIX_SIGNALS + WINDOWS_SIGNALS;
   } else {
     return STDC_SIGNALS;
   }

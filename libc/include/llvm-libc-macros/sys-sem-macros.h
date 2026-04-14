@@ -11,6 +11,8 @@
 
 #ifdef __linux__
 #include "linux/sys-sem-macros.h"
+#elif defined(__NTPOSIX__)
+#include "windows/sys-sem-macros.h"
 #endif
 
 #endif // LLVM_LIBC_MACROS_SYS_SEM_MACROS_H

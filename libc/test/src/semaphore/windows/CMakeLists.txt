@@ -1,0 +1,18 @@
+add_libc_unittest(
+  sem_open_native_name_test
+  SUITE
+    libc_semaphore_unittests
+  SRCS
+    sem_open_native_name_test.cpp
+  DEPENDS
+    libc.hdr.errno_macros
+    libc.hdr.fcntl_macros
+    libc.src.errno.errno
+    libc.src.semaphore.sem_close
+    libc.src.semaphore.sem_open
+    libc.src.semaphore.sem_post
+    libc.src.semaphore.sem_trywait
+    libc.src.unistd.getpid
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)

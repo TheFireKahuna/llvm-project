@@ -1,0 +1,23 @@
+//===-- POSIX header <libgen.h> ------------------------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef LLVM_LIBC_LIBGEN_H
+#define LLVM_LIBC_LIBGEN_H
+
+#if !defined(_WIN32) || defined(__NTPOSIX__)
+
+#include "__llvm-libc-common.h"
+
+%%public_api()
+
+#endif // !defined(_WIN32) || defined(__NTPOSIX__)
+#endif // LLVM_LIBC_LIBGEN_H
+
+#if defined(_WIN32) && !defined(__NTPOSIX__) && __has_include_next(<libgen.h>)
+#include_next <libgen.h>
+#endif

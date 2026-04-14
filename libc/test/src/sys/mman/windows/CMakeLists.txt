@@ -1,0 +1,224 @@
+add_custom_target(libc_sys_mman_unittests)
+
+add_libc_unittest(
+  mmap_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    mmap_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.errno.errno
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munmap
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  mremap_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    mremap_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.errno.errno
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.mremap
+    libc.src.sys.mman.munmap
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  mprotect_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    mprotect_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.errno.errno
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munmap
+    libc.src.sys.mman.mprotect
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  madvise_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    madvise_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.errno.errno
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munmap
+    libc.src.sys.mman.madvise
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  msync_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    msync_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.errno.errno
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munmap
+    libc.src.sys.mman.msync
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  mlock_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    mlock_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.errno.errno
+    libc.src.sys.mman.mlock
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munlock
+    libc.src.sys.mman.munmap
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  mincore_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    mincore_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.errno.errno
+    libc.src.sys.mman.mincore
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munmap
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  shm_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    shm_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.fcntl_macros
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.errno.errno
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munmap
+    libc.src.sys.mman.shm_open
+    libc.src.sys.mman.shm_unlink
+    libc.src.unistd.close
+    libc.src.unistd.ftruncate
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  mmap_stress_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    mmap_stress_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.__support.CPP.atomic
+    libc.src.errno.errno
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.mprotect
+    libc.src.sys.mman.mremap
+    libc.src.sys.mman.munmap
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  demand_commit_stress_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    demand_commit_stress_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.__support.CPP.atomic
+    libc.src.errno.errno
+    libc.src.sys.mman.madvise
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.mprotect
+    libc.src.sys.mman.munmap
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  memfd_create_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    memfd_create_test.cpp
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.hdr.types.off_t
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.errno.errno
+    libc.src.fcntl.fcntl
+    libc.src.sys.mman.memfd_create
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munmap
+    libc.src.unistd.close
+    libc.src.unistd.ftruncate
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  mlockall_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    mlockall_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.errno.errno
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.mlockall
+    libc.src.sys.mman.mlock2
+    libc.src.sys.mman.munlockall
+    libc.src.sys.mman.munmap
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  posix_madvise_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    posix_madvise_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.errno.errno
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munmap
+    libc.src.sys.mman.posix_madvise
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)

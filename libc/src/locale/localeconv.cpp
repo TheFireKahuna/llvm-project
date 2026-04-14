@@ -8,9 +8,17 @@
 
 #include "src/locale/localeconv.h"
 
+#include "hdr/locale_macros.h"
 #include "src/__support/CPP/limits.h"
 #include "src/__support/common.h"
 #include "src/__support/macros/config.h"
+#include "src/__support/macros/properties/os.h"
+#include "src/locale/locale.h"
+
+#ifdef LIBC_TARGET_OS_IS_WINDOWS
+#include "src/__support/OSUtil/windows/nls_locale.h"
+#include "src/locale/windows/locale_data.h"
+#endif
 
 namespace LIBC_NAMESPACE_DECL {
 
@@ -44,6 +52,25 @@ static struct lconv C_LCONV = {
     .int_n_sign_posn = CHAR_MAX,
 };
 
-LLVM_LIBC_FUNCTION(struct lconv *, localeconv, ()) { return &C_LCONV; }
+LLVM_LIBC_FUNCTION(struct lconv *, localeconv, ()) {
+#ifdef LIBC_TARGET_OS_IS_WINDOWS
+  locale_t loc = get_current_locale();
+  if (loc && loc != &c_locale) {
+    // Try LC_NUMERIC category first, fall back to any category with a record.
+    const unsigned char *record = nullptr;
+    if (loc->data[LC_NUMERIC] && get_nls_record(loc->data[LC_NUMERIC]))
+      record = get_nls_record(loc->data[LC_NUMERIC]);
+    else if (loc->data[LC_MONETARY] && get_nls_record(loc->data[LC_MONETARY]))
+      record = get_nls_record(loc->data[LC_MONETARY]);
+
+    if (record) {
+      static struct lconv nls_lconv;
+      nls::nls_fill_lconv(record, &nls_lconv);
+      return &nls_lconv;
+    }
+  }
+#endif
+  return &C_LCONV;
+}
 
 } // namespace LIBC_NAMESPACE_DECL

@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_LIBC_SRC_LOCALE_SETLOCALE_H
-#define LLVM_LIBC_SRC_LOCALE_SETLOCALE_H
+#ifndef LLVM_LIBC_SRC_LOCALE_NEWLOCALE_H
+#define LLVM_LIBC_SRC_LOCALE_NEWLOCALE_H
 
 #include "hdr/types/locale_t.h"
 #include "src/__support/macros/config.h"
@@ -18,4 +18,4 @@ locale_t newlocale(int category_mask, const char *locale_name, locale_t base);
 
 } // namespace LIBC_NAMESPACE_DECL
 
-#endif // LLVM_LIBC_SRC_LOCALE_SETLOCALE_H
+#endif // LLVM_LIBC_SRC_LOCALE_NEWLOCALE_H

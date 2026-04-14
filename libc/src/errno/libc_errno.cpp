@@ -10,6 +10,14 @@
 #include "src/__support/macros/attributes.h"
 #include "src/__support/macros/config.h"
 
+// Export __llvm_libc_errno from the shared library (c.dll) so other DLLs
+// (libc++, libunwind) can resolve it via c.lib.  Using a linker directive
+// avoids conflicts with the generated errno.h declaration which lacks
+// __declspec(dllexport).
+#if defined(_WIN32) && defined(LIBC_COPT_PUBLIC_PACKAGING)
+#pragma comment(linker, "/export:__llvm_libc_errno")
+#endif
+
 namespace LIBC_NAMESPACE_DECL {
 
 #if LIBC_ERRNO_MODE != LIBC_ERRNO_MODE_SYSTEM_INLINE

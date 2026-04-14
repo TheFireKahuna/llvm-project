@@ -27,6 +27,7 @@ namespace internal {
 class CharacterConverter {
 private:
   mbstate *state;
+  bool utf8;
 
   // This is for utf-8 bytes other than the first byte
   static constexpr size_t ENCODED_BITS_PER_UTF8 = 6;
@@ -42,8 +43,9 @@ private:
   static constexpr int MAX_UTF8_LENGTH = 4;
 
 public:
-  explicit LIBC_INLINE CharacterConverter(mbstate *state_ptr)
-      : state(state_ptr) {}
+  explicit LIBC_INLINE CharacterConverter(mbstate *state_ptr,
+                                          bool utf8_encoding = true)
+      : state(state_ptr), utf8(utf8_encoding) {}
 
   LIBC_INLINE void clear() {
     state->partial = 0;
@@ -67,6 +69,11 @@ public:
 };
 
 LIBC_INLINE bool CharacterConverter::isValidState() {
+  // Single-byte encoding: total_bytes is 0 (empty) or 1, partial <= 0xFF.
+  if (!utf8)
+    return state->total_bytes <= 1 && state->bytes_stored <= state->total_bytes &&
+           (state->total_bytes == 0 || state->partial <= 0xFF);
+
   if (state->total_bytes > MAX_UTF8_LENGTH)
     return false;
 
@@ -78,6 +85,18 @@ LIBC_INLINE bool CharacterConverter::isValidState() {
 }
 
 LIBC_INLINE int CharacterConverter::push(char8_t utf8_byte) {
+  // Single-byte encoding (C/POSIX locale): every byte is a complete character.
+  if (!utf8) {
+    if (!isEmpty()) {
+      clear();
+      return EILSEQ;
+    }
+    state->partial = static_cast<char32_t>(static_cast<uint8_t>(utf8_byte));
+    state->total_bytes = 1;
+    state->bytes_stored = 1;
+    return 0;
+  }
+
   uint8_t num_ones = static_cast<uint8_t>(cpp::countl_one(utf8_byte));
   // Checking the first byte if first push
   if (isEmpty()) {
@@ -87,6 +106,14 @@ LIBC_INLINE int CharacterConverter::push(char8_t utf8_byte) {
     }
     // UTF-8 char has 2 through 4 bytes total
     else if (num_ones >= 2 && num_ones <= 4) {
+      // Reject bytes that can only start illegal sequences:
+      //   0xC0-0xC1: all continuations produce overlong encodings (< 0x80)
+      //   0xF5-0xF7: all continuations produce codepoints > U+10FFFF
+      uint8_t b = static_cast<uint8_t>(utf8_byte);
+      if (b <= 0xC1 || b >= 0xF5) {
+        state->partial = static_cast<char32_t>(0);
+        return EILSEQ;
+      }
       /* Since the format is 110xxxxx, 1110xxxx, and 11110xxx for 2, 3, and 4,
       we will make the base mask with 7 ones and right shift it as necessary. */
       constexpr size_t SIGNIFICANT_BITS = 7;
@@ -125,6 +152,18 @@ LIBC_INLINE int CharacterConverter::push(char32_t utf32) {
   if (!isEmpty())
     return -1;
 
+  // Single-byte encoding: only values 0x00-0xFF can be represented.
+  if (!utf8) {
+    if (utf32 > 0xFF) {
+      clear();
+      return EILSEQ;
+    }
+    state->partial = utf32;
+    state->total_bytes = 1;
+    state->bytes_stored = 1;
+    return 0;
+  }
+
   state->partial = utf32;
 
   // determine number of utf-8 bytes needed to represent this utf32 value
@@ -147,10 +186,39 @@ LIBC_INLINE ErrorOr<char32_t> CharacterConverter::pop_utf32() {
   // whether enough bytes have been pushed
   if (!isFull())
     return Error(-1);
-  char32_t utf32 = state->partial;
-  // reset if successful pop
+
+  char32_t codepoint = state->partial;
+  uint8_t len = state->total_bytes;
+
+  // UTF-8 multi-byte sequences require additional validation.
+  // Single-byte ASCII (len == 1) and single-byte locale mode are always valid.
+  if (utf8 && len > 1) {
+    // Minimum codepoint value that legitimately requires N bytes.
+    // A shorter encoding exists for anything below these thresholds.
+    static constexpr char32_t MIN_FOR_LENGTH[] = {0x80, 0x800, 0x10000};
+
+    // Overlong: the codepoint could have been encoded in fewer bytes.
+    if (codepoint < MIN_FOR_LENGTH[len - 2]) {
+      clear();
+      return Error(EILSEQ);
+    }
+
+    // UTF-16 surrogates (U+D800..U+DFFF) are not Unicode scalar values
+    // and must never appear in UTF-8.
+    if (codepoint >= 0xD800 && codepoint <= 0xDFFF) {
+      clear();
+      return Error(EILSEQ);
+    }
+
+    // Unicode is defined up to U+10FFFF.
+    if (codepoint > 0x10FFFF) {
+      clear();
+      return Error(EILSEQ);
+    }
+  }
+
   clear();
-  return utf32;
+  return codepoint;
 }
 
 LIBC_INLINE ErrorOr<char8_t> CharacterConverter::pop_utf8() {

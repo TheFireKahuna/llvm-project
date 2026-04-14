@@ -20,10 +20,14 @@
 namespace LIBC_NAMESPACE_DECL {
 
 using FutexWordType = uint32_t;
+using FutexValueType = uint32_t;
 
 struct Futex : public cpp::Atomic<FutexWordType> {
   using cpp::Atomic<FutexWordType>::Atomic;
   using Timeout = internal::AbsTimeout;
+  // First-time initialization of opaque storage. On Darwin (no Treiber stack)
+  // this is equivalent to set(), but exists for cross-platform API parity.
+  LIBC_INLINE void init(FutexWordType value) { this->set(value); }
 
   LIBC_INLINE long wait(FutexWordType val, cpp::optional<Timeout> timeout,
                         bool /* is_shared */) {

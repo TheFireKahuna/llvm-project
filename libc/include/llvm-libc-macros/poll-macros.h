@@ -11,6 +11,8 @@
 
 #ifdef __linux__
 #include "linux/poll-macros.h"
+#elif defined(__NTPOSIX__)
+#include "windows/poll-macros.h"
 #endif
 
 #endif // LLVM_LIBC_MACROS_POLL_MACROS_H

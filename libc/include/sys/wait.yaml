@@ -1,10 +1,13 @@
 header: sys/wait.h
+header_template: wait.h.def
 standards:
   - posix
 macros:
   - macro_name: WCOREDUMP
     macro_header: sys-wait-macros.h
 types:
+  - type_name: id_t
+  - type_name: idtype_t
   - type_name: siginfo_t
   - type_name: struct_rusage
   - type_name: pid_t
@@ -20,7 +23,6 @@ functions:
   - name: wait4
     standards:
       - BSDExtensions
-      - POSIX
     return_type: pid_t
     arguments:
       - type: pid_t
@@ -34,4 +36,13 @@ functions:
     arguments:
       - type: pid_t
       - type: int *
+      - type: int
+  - name: waitid
+    standards:
+      - POSIX
+    return_type: int
+    arguments:
+      - type: idtype_t
+      - type: id_t
+      - type: siginfo_t *
       - type: int

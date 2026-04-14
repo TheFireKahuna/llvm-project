@@ -24,7 +24,7 @@
 namespace LIBC_NAMESPACE_DECL {
 namespace testing {
 
-#if defined(_WIN32)
+#if defined(__NTPOSIX__)
 #define sigjmp_buf jmp_buf
 #define sigsetjmp(buf, save) setjmp(buf)
 #define siglongjmp(buf, val) longjmp(buf, val)

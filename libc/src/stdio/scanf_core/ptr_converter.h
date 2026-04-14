@@ -20,12 +20,12 @@
 namespace LIBC_NAMESPACE_DECL {
 namespace scanf_core {
 
-template <typename T>
-int convert_pointer(Reader<T> *reader, const FormatSection &to_conv) {
+template <typename T, typename CharType = char>
+int convert_pointer(Reader<T, CharType> *reader, const FormatSection &to_conv) {
   static const char nullptr_string[] = "(nullptr)";
 
   // Check if it's exactly the nullptr string, if so then it's a nullptr.
-  char cur_char = reader->getc();
+  CharType cur_char = reader->getc();
   size_t i = 0;
   for (; i < (sizeof(nullptr_string) - 1) &&
          internal::tolower(cur_char) == nullptr_string[i];

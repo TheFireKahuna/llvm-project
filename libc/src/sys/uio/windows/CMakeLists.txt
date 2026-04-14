@@ -1,0 +1,78 @@
+add_entrypoint_object(
+  readv
+  SRCS
+    readv.cpp
+  HDRS
+    ../readv.h
+  DEPENDS
+    libc.hdr.errno_macros
+    libc.hdr.fcntl_macros
+    libc.hdr.types.ssize_t
+    libc.hdr.types.struct_iovec
+    libc.src.__support.OSUtil.windows.fd_table
+    libc.src.__support.OSUtil.windows.io_ring_helpers
+    libc.src.__support.OSUtil.windows.scatter_io_ops
+    libc.src.__support.common
+    libc.src.errno.errno
+    libc.src.__support.OSUtil.windows.signal_subsystem
+)
+
+add_entrypoint_object(
+  writev
+  SRCS
+    writev.cpp
+  HDRS
+    ../writev.h
+  DEPENDS
+    libc.hdr.errno_macros
+    libc.hdr.fcntl_macros
+    libc.hdr.signal_macros
+    libc.hdr.types.ssize_t
+    libc.hdr.types.struct_iovec
+    libc.src.__support.OSUtil.windows.fd_table
+    libc.src.__support.OSUtil.windows.io_ring_helpers
+    libc.src.__support.OSUtil.windows.scatter_io_ops
+    libc.src.__support.common
+    libc.src.errno.errno
+    libc.src.__support.OSUtil.windows.signal_subsystem
+)
+
+add_entrypoint_object(
+  preadv
+  SRCS
+    preadv.cpp
+  HDRS
+    ../preadv.h
+  DEPENDS
+    libc.hdr.errno_macros
+    libc.hdr.types.off_t
+    libc.hdr.types.ssize_t
+    libc.hdr.types.struct_iovec
+    libc.src.__support.OSUtil.windows.fd_table
+    libc.src.__support.OSUtil.windows.io_ring_helpers
+    libc.src.__support.OSUtil.windows.scatter_io_ops
+    libc.src.__support.common
+    libc.src.errno.errno
+    libc.src.__support.OSUtil.windows.signal_subsystem
+    libc.src.pthread.cancel_internal
+)
+
+add_entrypoint_object(
+  pwritev
+  SRCS
+    pwritev.cpp
+  HDRS
+    ../pwritev.h
+  DEPENDS
+    libc.hdr.errno_macros
+    libc.hdr.types.off_t
+    libc.hdr.types.ssize_t
+    libc.hdr.types.struct_iovec
+    libc.src.__support.OSUtil.windows.fd_table
+    libc.src.__support.OSUtil.windows.io_ring_helpers
+    libc.src.__support.OSUtil.windows.scatter_io_ops
+    libc.src.__support.common
+    libc.src.errno.errno
+    libc.src.__support.OSUtil.windows.signal_subsystem
+    libc.src.pthread.cancel_internal
+)

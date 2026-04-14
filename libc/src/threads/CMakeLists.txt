@@ -85,6 +85,19 @@ add_entrypoint_object(
 )
 
 add_entrypoint_object(
+  thrd_sleep
+  SRCS
+    thrd_sleep.cpp
+  HDRS
+    thrd_sleep.h
+  DEPENDS
+    libc.include.threads
+    libc.hdr.errno_macros
+    libc.src.errno.errno
+    libc.src.time.nanosleep
+)
+
+add_entrypoint_object(
   mtx_init
   SRCS
     mtx_init.cpp
@@ -126,6 +139,29 @@ add_entrypoint_object(
   DEPENDS
     libc.include.threads
     libc.src.__support.threads.mutex
+)
+
+add_entrypoint_object(
+  mtx_trylock
+  SRCS
+    mtx_trylock.cpp
+  HDRS
+    mtx_trylock.h
+  DEPENDS
+    libc.include.threads
+    libc.src.__support.threads.mutex
+)
+
+add_entrypoint_object(
+  mtx_timedlock
+  SRCS
+    mtx_timedlock.cpp
+  HDRS
+    mtx_timedlock.h
+  DEPENDS
+    libc.include.threads
+    libc.src.__support.threads.mutex
+    libc.src.__support.time.abs_timeout
 )
 
 add_entrypoint_object(
@@ -205,4 +241,11 @@ add_entrypoint_object(
   ALIAS
   DEPENDS
     .${LIBC_TARGET_OS}.cnd_broadcast
+)
+
+add_entrypoint_object(
+  cnd_timedwait
+  ALIAS
+  DEPENDS
+    .${LIBC_TARGET_OS}.cnd_timedwait
 )

@@ -2,6 +2,10 @@ header: limits.h
 standards:
   - stdc
 macros:
+  - macro_name: _POSIX_SSIZE_MAX
+    macro_header: limits-macros.h
+  - macro_name: SSIZE_MAX
+    macro_header: limits-macros.h
   - macro_name: CHAR_BIT
     macro_header: limits-macros.h
   - macro_name: MB_LEN_MAX
@@ -17,6 +21,8 @@ macros:
   - macro_name: USHRT_WIDTH
     macro_header: limits-macros.h
   - macro_name: INT_WIDTH
+    macro_header: limits-macros.h
+  - macro_name: WORD_BIT
     macro_header: limits-macros.h
   - macro_name: UINT_WIDTH
     macro_header: limits-macros.h
@@ -73,6 +79,20 @@ macros:
   - macro_name: LLONG_MIN
     macro_header: limits-macros.h
   - macro_name: ULLONG_MIN
+    macro_header: limits-macros.h
+  - macro_name: NL_ARGMAX
+    macro_header: limits-macros.h
+  - macro_name: NL_LANGMAX
+    macro_header: limits-macros.h
+  - macro_name: NL_MSGMAX
+    macro_header: limits-macros.h
+  - macro_name: NL_NMAX
+    macro_header: limits-macros.h
+  - macro_name: NL_SETMAX
+    macro_header: limits-macros.h
+  - macro_name: NL_TEXTMAX
+    macro_header: limits-macros.h
+  - macro_name: NZERO
     macro_header: limits-macros.h
 types: []
 enums: []

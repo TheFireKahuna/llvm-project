@@ -4,6 +4,7 @@ standards:
 types:
   - type_name: struct_iovec
   - type_name: ssize_t
+  - type_name: off_t
 functions:
   - name: writev
     standards:
@@ -21,3 +22,21 @@ functions:
       - type: int
       - type: const struct iovec *
       - type: int
+  - name: preadv
+    standards:
+      - posix
+    return_type: ssize_t
+    arguments:
+      - type: int
+      - type: const struct iovec *
+      - type: int
+      - type: off_t
+  - name: pwritev
+    standards:
+      - posix
+    return_type: ssize_t
+    arguments:
+      - type: int
+      - type: const struct iovec *
+      - type: int
+      - type: off_t

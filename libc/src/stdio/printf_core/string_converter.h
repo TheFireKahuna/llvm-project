@@ -22,6 +22,13 @@
 #include "src/stdio/printf_core/writer.h"
 #include "src/string/string_utils.h" // string_length
 
+#ifndef LIBC_COPT_PRINTF_DISABLE_WIDE
+#include "hdr/limits_macros.h"
+#include "hdr/types/wchar_t.h"
+#include "src/__support/wchar/mbstate.h"
+#include "src/__support/wchar/wcrtomb.h"
+#endif // LIBC_COPT_PRINTF_DISABLE_WIDE
+
 #include <stddef.h>
 
 namespace LIBC_NAMESPACE_DECL {
@@ -30,6 +37,67 @@ namespace printf_core {
 template <WriteMode write_mode>
 LIBC_INLINE int char_writer(Writer<write_mode> *writer,
                             const FormatSection &to_conv) {
+
+#ifndef LIBC_COPT_PRINTF_DISABLE_WIDE
+  if (to_conv.length_modifier == LengthModifier::l) {
+    // %ls: convert wide string to multibyte, then write.
+    const wchar_t *ws =
+        reinterpret_cast<const wchar_t *>(to_conv.conv_val_ptr);
+
+#ifndef LIBC_COPT_PRINTF_NO_NULLPTR_CHECKS
+    if (ws == nullptr) {
+      FormatSection new_conv = to_conv;
+      new_conv.length_modifier = LengthModifier::none;
+      new_conv.conv_val_ptr = nullptr;
+      return convert_string(writer, new_conv);
+    }
+#endif // LIBC_COPT_PRINTF_NO_NULLPTR_CHECKS
+
+    // First pass: compute the multibyte length (respecting precision as a
+    // byte limit per C11 §7.21.6.1p8).
+    size_t mb_len = 0;
+    for (size_t i = 0; ws[i] != L'\0'; ++i) {
+      internal::mbstate len_state{};
+      char temp[MB_LEN_MAX];
+      auto ret = internal::wcrtomb(temp, ws[i], &len_state);
+      if (!ret.has_value())
+        return MB_CONVERSION_ERROR;
+      size_t char_bytes = ret.value();
+      if (to_conv.precision >= 0 &&
+          mb_len + char_bytes > static_cast<size_t>(to_conv.precision))
+        break;
+      mb_len += char_bytes;
+    }
+
+    size_t padding_spaces =
+        to_conv.min_width > static_cast<int>(mb_len)
+            ? to_conv.min_width - mb_len
+            : 0;
+
+    if (padding_spaces > 0 &&
+        (to_conv.flags & FormatFlags::LEFT_JUSTIFIED) == 0)
+      RET_IF_RESULT_NEGATIVE(writer->write(' ', padding_spaces));
+
+    // Second pass: convert and write each wide character.
+    size_t written = 0;
+    for (size_t i = 0; ws[i] != L'\0' && written < mb_len; ++i) {
+      internal::mbstate conv_state{};
+      char buf[MB_LEN_MAX];
+      auto ret = internal::wcrtomb(buf, ws[i], &conv_state);
+      // Cannot fail — first pass already validated.
+      size_t n = ret.value();
+      RET_IF_RESULT_NEGATIVE(writer->write({buf, n}));
+      written += n;
+    }
+
+    if (padding_spaces > 0 &&
+        (to_conv.flags & FormatFlags::LEFT_JUSTIFIED) != 0)
+      RET_IF_RESULT_NEGATIVE(writer->write(' ', padding_spaces));
+
+    return WRITE_OK;
+  }
+#endif // LIBC_COPT_PRINTF_DISABLE_WIDE
+
   const char *str_ptr = reinterpret_cast<const char *>(to_conv.conv_val_ptr);
   size_t string_len = 0;
 

@@ -12,15 +12,15 @@
 #include "src/__support/macros/config.h"
 #include "src/__support/threads/mutex.h"
 
+#include <errno.h>
 #include <pthread.h>
 
 namespace LIBC_NAMESPACE_DECL {
 
 LLVM_LIBC_FUNCTION(int, pthread_mutex_destroy, (pthread_mutex_t * mutex)) {
-  auto *m = reinterpret_cast<Mutex *>(mutex);
-  Mutex::destroy(m);
-  // TODO: When the Mutex class supports all the possible error conditions
-  // return the appropriate error value here.
+  auto err = Mutex::destroy(reinterpret_cast<Mutex *>(mutex));
+  if (err == MutexError::BUSY)
+    return EBUSY;
   return 0;
 }
 

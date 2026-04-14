@@ -112,6 +112,15 @@ add_header_library(
 )
 
 add_header_library(
+  scope_guard
+  HDRS
+    scope_guard.h
+  DEPENDS
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+)
+
+add_header_library(
   type_traits
   HDRS
     type_traits.h

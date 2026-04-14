@@ -111,17 +111,21 @@ endfunction()
 # Usage:
 #   get_object_files_for_test(<result var>
 #                             <skipped_entrypoints_var>
+#                             <link_libraries_var>
 #                             <target0> [<target1> ...])
 #
 #   The list of object files is collected in <result_var>.
 #   If skipped entrypoints were found, then <skipped_entrypoints_var> is
 #   set to a true value.
+#   Any non-object library targets required by those dependencies are
+#   collected in <link_libraries_var>.
 #   targetN is either an "add_entrypoint_target" target or an
 #   "add_object_library" target.
-function(get_object_files_for_test result skipped_entrypoints_list)
+function(get_object_files_for_test result skipped_entrypoints_list
+         link_libraries_result)
   set(object_files "")
   set(skipped_list "")
-  set(checked_list "")
+  set(link_libraries "")
   set(unchecked_list "${ARGN}")
   list(REMOVE_DUPLICATES unchecked_list)
 
@@ -143,7 +147,16 @@ function(get_object_files_for_test result skipped_entrypoints_list)
 
     get_target_property(dep_type ${dep} "TARGET_TYPE")
     if(NOT dep_type)
-      # Skip tests with no object dependencies.
+      # Imported and regular libraries participate in the final link, even
+      # though they do not contribute object files directly.
+      get_target_property(cmake_target_type ${dep} "TYPE")
+      if(cmake_target_type STREQUAL "STATIC_LIBRARY"
+         OR cmake_target_type STREQUAL "SHARED_LIBRARY"
+         OR cmake_target_type STREQUAL "MODULE_LIBRARY"
+         OR cmake_target_type STREQUAL "INTERFACE_LIBRARY"
+         OR cmake_target_type STREQUAL "UNKNOWN_LIBRARY")
+        list(APPEND link_libraries ${dep})
+      endif()
       continue()
     endif()
 
@@ -153,18 +166,21 @@ function(get_object_files_for_test result skipped_entrypoints_list)
       # Target full dependency has already been checked.  Just use the results.
       get_target_property(dep_obj ${dep} "OBJECT_FILES_FOR_TESTS")
       get_target_property(dep_skip ${dep} "SKIPPED_LIST_FOR_TESTS")
+      get_target_property(dep_links ${dep} "LINK_LIBRARIES_FOR_TESTS")
     else()
       # Target full dependency hasn't been checked.  Recursively check its DEPS.
       # Mark as in-progress before recursing to break cycles.
       set_target_properties(${dep} PROPERTIES "CHECK_OBJ_FOR_TESTS" TRUE)
       set_target_properties(${dep} PROPERTIES "OBJECT_FILES_FOR_TESTS" "")
       set_target_properties(${dep} PROPERTIES "SKIPPED_LIST_FOR_TESTS" "")
+      set_target_properties(${dep} PROPERTIES "LINK_LIBRARIES_FOR_TESTS" "")
 
       set(dep_obj "${dep}")
       set(dep_skip "")
+      set(dep_links "")
 
       get_target_property(indirect_deps ${dep} "DEPS")
-      get_object_files_for_test(dep_obj dep_skip ${indirect_deps})
+      get_object_files_for_test(dep_obj dep_skip dep_links ${indirect_deps})
 
       if(${dep_type} STREQUAL ${OBJECT_LIBRARY_TARGET_TYPE})
         get_target_property(dep_object_files ${dep} "OBJECT_FILES")
@@ -190,6 +206,7 @@ function(get_object_files_for_test result skipped_entrypoints_list)
       set_target_properties(${dep} PROPERTIES
         OBJECT_FILES_FOR_TESTS "${dep_obj}"
         SKIPPED_LIST_FOR_TESTS "${dep_skip}"
+        LINK_LIBRARIES_FOR_TESTS "${dep_links}"
         CHECK_OBJ_FOR_TESTS "YES"
       )
 
@@ -197,6 +214,7 @@ function(get_object_files_for_test result skipped_entrypoints_list)
 
     list(APPEND object_files ${dep_obj})
     list(APPEND skipped_list ${dep_skip})
+    list(APPEND link_libraries ${dep_links})
 
   endforeach(dep)
 
@@ -204,6 +222,8 @@ function(get_object_files_for_test result skipped_entrypoints_list)
   set(${result} ${object_files} PARENT_SCOPE)
   list(REMOVE_DUPLICATES skipped_list)
   set(${skipped_entrypoints_list} ${skipped_list} PARENT_SCOPE)
+  list(REMOVE_DUPLICATES link_libraries)
+  set(${link_libraries_result} ${link_libraries} PARENT_SCOPE)
 
 endfunction(get_object_files_for_test)
 
@@ -234,9 +254,15 @@ function(create_libc_unittest fq_target_name)
     return()
   endif()
 
+  set(libc_unittest_is_ntposix OFF)
+  if(CMAKE_CXX_COMPILER_TARGET MATCHES "windows-ntposix"
+     OR LLVM_DEFAULT_TARGET_TRIPLE MATCHES "windows-ntposix")
+    set(libc_unittest_is_ntposix ON)
+  endif()
+
   cmake_parse_arguments(
     "LIBC_UNITTEST"
-    "NO_RUN_POSTBUILD;C_TEST" # Optional arguments
+    "NO_RUN_POSTBUILD;C_TEST;NO_ERRNO_SETTER_MATCHER" # Optional arguments
     "SUITE;CXX_STANDARD" # Single value arguments
     "SRCS;HDRS;DEPENDS;ENV;COMPILE_OPTIONS;LINK_LIBRARIES;FLAGS" # Multi-value arguments
     ${ARGN}
@@ -251,12 +277,40 @@ function(create_libc_unittest fq_target_name)
   endif()
 
   get_fq_deps_list(fq_deps_list ${LIBC_UNITTEST_DEPENDS})
+  if(libc_unittest_is_ntposix)
+    # NT-POSIX unit-test executables use the ambient EXE startup objects
+    # (crt1/crt_do_start/crt_tls), which rely on the PCB-backed process state.
+    foreach(runtime_dep libc.src.__support.OSUtil.windows.process_control_block)
+      if(TARGET ${runtime_dep})
+        list(APPEND fq_deps_list ${runtime_dep})
+      endif()
+    endforeach()
+  endif()
+  if(libc_unittest_is_ntposix AND LIBC_UNITTEST_C_TEST)
+    # NT-POSIX C unit tests do not link the C++ test framework, but some of
+    # the internal support objects they exercise still emit Itanium static
+    # guard references and require an explicit stack protector runtime.
+    foreach(runtime_dep libc.src.__support.OSUtil.windows.cxa_guard)
+      if(TARGET ${runtime_dep})
+        list(APPEND fq_deps_list ${runtime_dep})
+      endif()
+    endforeach()
+    if(TARGET libc.src.compiler.__stack_chk_fail)
+      list(APPEND fq_deps_list libc.src.compiler.__stack_chk_fail)
+    elseif(TARGET libc.src.compiler.generic.__stack_chk_fail)
+      list(APPEND fq_deps_list libc.src.compiler.generic.__stack_chk_fail)
+    endif()
+  endif()
+
   if(NOT LIBC_UNITTEST_C_TEST)
-    list(APPEND fq_deps_list libc.src.__support.StringUtil.error_to_string
-                             libc.test.UnitTest.ErrnoSetterMatcher)
+    if(NOT LIBC_UNITTEST_NO_ERRNO_SETTER_MATCHER)
+      list(APPEND fq_deps_list libc.src.__support.StringUtil.error_to_string
+                               libc.test.UnitTest.ErrnoSetterMatcher)
+    endif()
     # LibcTest.unit calls LIBC_NAMESPACE::clock() when TARGET_SUPPORTS_CLOCK
     # is defined, so every unit test needs the clock object linked in.
-    if(libc.src.time.clock IN_LIST TARGET_LLVMLIBC_ENTRYPOINTS)
+    if(libc.src.time.clock IN_LIST TARGET_LLVMLIBC_ENTRYPOINTS
+       AND NOT libc_unittest_is_ntposix)
       list(APPEND fq_deps_list libc.src.time.clock)
     endif()
   endif()
@@ -283,7 +337,20 @@ function(create_libc_unittest fq_target_name)
   endif()
 
   get_object_files_for_test(
-      link_object_files skipped_entrypoints_list ${fq_deps_list})
+      link_object_files skipped_entrypoints_list inherited_link_libraries
+      ${fq_deps_list})
+  if(libc_unittest_is_ntposix
+     AND NOT libc.src.errno.errno IN_LIST fq_deps_list
+     AND TARGET libc.src.errno.errno)
+    # NT-POSIX unit tests execute against the shared runtime from c.dll. If a
+    # test did not explicitly request the internal errno object, prefer the
+    # shared-runtime __llvm_libc_errno and drop any accidental transitive copy
+    # of libc_errno.cpp to avoid duplicate definitions at link time.
+    get_target_property(errno_object_file_raw libc.src.errno.errno OBJECT_FILE_RAW)
+    if(errno_object_file_raw)
+      list(REMOVE_ITEM link_object_files ${errno_object_file_raw})
+    endif()
+  endif()
   if(skipped_entrypoints_list)
     # If a test is OS/target machine independent, it has to be skipped if the
     # OS/target machine combination does not provide any dependent entrypoints.
@@ -337,7 +404,7 @@ function(create_libc_unittest fq_target_name)
       CXX_STANDARD ${LIBC_UNITTEST_CXX_STANDARD}
   )
 
-  set(link_libraries ${link_object_files})
+  set(link_libraries ${link_object_files} ${inherited_link_libraries})
   # Test object files will depend on LINK_LIBRARIES passed down from `add_fp_unittest`
   foreach(lib IN LISTS LIBC_UNITTEST_LINK_LIBRARIES)
     if(TARGET ${lib}.unit)
@@ -443,7 +510,8 @@ function(add_libc_fuzzer target_name)
   get_fq_target_name(${target_name} fq_target_name)
   get_fq_deps_list(fq_deps_list ${LIBC_FUZZER_DEPENDS})
   get_object_files_for_test(
-      link_object_files skipped_entrypoints_list ${fq_deps_list})
+      link_object_files skipped_entrypoints_list inherited_link_libraries
+      ${fq_deps_list})
   if(skipped_entrypoints_list)
     if(LIBC_CMAKE_VERBOSE_LOGGING)
       set(msg "Skipping fuzzer target ${fq_target_name} as it has missing deps: "
@@ -472,6 +540,7 @@ function(add_libc_fuzzer target_name)
 
   target_link_libraries(${fq_target_name} PRIVATE
     ${link_object_files}
+    ${inherited_link_libraries}
     ${LIBC_FUZZER_LINK_LIBRARIES}
   )
 
@@ -562,10 +631,12 @@ function(add_integration_test test_name)
       libc.src.strings.bzero
   )
 
-  if(libc.src.compiler.__stack_chk_fail IN_LIST TARGET_LLVMLIBC_ENTRYPOINTS)
+  if(TARGET libc.src.compiler.__stack_chk_fail)
     # __stack_chk_fail should always be included if supported to allow building
     # libc with the stack protector enabled.
     list(APPEND fq_deps_list libc.src.compiler.__stack_chk_fail)
+  elseif(TARGET libc.src.compiler.generic.__stack_chk_fail)
+    list(APPEND fq_deps_list libc.src.compiler.generic.__stack_chk_fail)
   endif()
 
   list(REMOVE_DUPLICATES fq_deps_list)
@@ -573,7 +644,8 @@ function(add_integration_test test_name)
   # TODO: Instead of gathering internal object files from entrypoints,
   # collect the object files with public names of entrypoints.
   get_object_files_for_test(
-      link_object_files skipped_entrypoints_list ${fq_deps_list})
+      link_object_files skipped_entrypoints_list inherited_link_libraries
+      ${fq_deps_list})
   if(skipped_entrypoints_list)
     if(LIBC_CMAKE_VERBOSE_LOGGING)
       set(msg "Skipping integration test ${fq_target_name} as it has missing deps: "
@@ -595,6 +667,10 @@ function(add_integration_test test_name)
       PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
   set_target_properties(${fq_target_name}.__libc__
       PROPERTIES ARCHIVE_OUTPUT_NAME ${fq_target_name}.libc)
+  if(inherited_link_libraries)
+    target_link_libraries(${fq_target_name}.__libc__
+                          PUBLIC ${inherited_link_libraries})
+  endif()
 
   set(fq_build_target_name ${fq_target_name}.__build__)
   add_executable(
@@ -770,10 +846,12 @@ function(add_libc_hermetic test_name)
       libc.src.strings.bzero
   )
 
-  if(libc.src.compiler.__stack_chk_fail IN_LIST TARGET_LLVMLIBC_ENTRYPOINTS)
+  if(TARGET libc.src.compiler.__stack_chk_fail)
     # __stack_chk_fail should always be included if supported to allow building
     # libc with the stack protector enabled.
     list(APPEND fq_deps_list libc.src.compiler.__stack_chk_fail)
+  elseif(TARGET libc.src.compiler.generic.__stack_chk_fail)
+    list(APPEND fq_deps_list libc.src.compiler.generic.__stack_chk_fail)
   endif()
 
   if(libc.src.time.clock IN_LIST TARGET_LLVMLIBC_ENTRYPOINTS)
@@ -786,7 +864,8 @@ function(add_libc_hermetic test_name)
   # TODO: Instead of gathering internal object files from entrypoints,
   # collect the object files with public names of entrypoints.
   get_object_files_for_test(
-      link_object_files skipped_entrypoints_list ${fq_deps_list})
+      link_object_files skipped_entrypoints_list inherited_link_libraries
+      ${fq_deps_list})
   if(skipped_entrypoints_list)
     if(LIBC_CMAKE_VERBOSE_LOGGING)
       set(msg "Skipping hermetic test ${fq_target_name} as it has missing deps: "
@@ -808,6 +887,10 @@ function(add_libc_hermetic test_name)
       PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
   set_target_properties(${fq_target_name}.__libc__
       PROPERTIES ARCHIVE_OUTPUT_NAME ${fq_target_name}.libc)
+  if(inherited_link_libraries)
+    target_link_libraries(${fq_target_name}.__libc__
+                          PUBLIC ${inherited_link_libraries})
+  endif()
 
   if(HERMETIC_TEST_NO_RUN_POSTBUILD)
     set(fq_build_target_name ${fq_target_name})

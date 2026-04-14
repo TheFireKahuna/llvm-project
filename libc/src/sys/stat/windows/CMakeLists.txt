@@ -1,0 +1,179 @@
+add_entrypoint_object(
+  stat
+  SRCS
+    stat.cpp
+  HDRS
+    ../stat.h
+  DEPENDS
+    libc.include.sys_stat
+    libc.src.__support.OSUtil.windows.stat_ops
+    libc.src.__support.OSUtil.windows.syscall_wrapper_stat
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+)
+
+add_entrypoint_object(
+  lstat
+  SRCS
+    lstat.cpp
+  HDRS
+    ../lstat.h
+  DEPENDS
+    libc.include.sys_stat
+    libc.src.__support.OSUtil.windows.stat_ops
+    libc.src.__support.OSUtil.windows.syscall_wrapper_lstat
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+)
+
+add_entrypoint_object(
+  fstat
+  SRCS
+    fstat.cpp
+  HDRS
+    ../fstat.h
+  DEPENDS
+    libc.include.sys_stat
+    libc.src.__support.OSUtil.windows.stat_ops
+    libc.src.__support.OSUtil.windows.syscall_wrapper_fstat
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+)
+
+add_entrypoint_object(
+  fstatat
+  SRCS
+    fstatat.cpp
+  HDRS
+    ../fstatat.h
+  DEPENDS
+    libc.include.sys_stat
+    libc.src.__support.OSUtil.windows.stat_ops
+    libc.src.__support.OSUtil.windows.syscall_wrapper_fstatat
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+)
+
+add_entrypoint_object(
+  chmod
+  SRCS
+    chmod.cpp
+  HDRS
+    ../chmod.h
+  DEPENDS
+    libc.include.sys_stat
+    libc.src.__support.OSUtil.windows.chmod_ops
+    libc.src.__support.OSUtil.windows.syscall_wrapper_chmod
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+)
+
+add_entrypoint_object(
+  fchmod
+  SRCS
+    fchmod.cpp
+  HDRS
+    ../fchmod.h
+  DEPENDS
+    libc.include.sys_stat
+    libc.src.__support.OSUtil.windows.chmod_ops
+    libc.src.__support.OSUtil.windows.syscall_wrapper_fchmod
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+)
+
+add_entrypoint_object(
+  fchmodat
+  SRCS
+    fchmodat.cpp
+  HDRS
+    ../fchmodat.h
+  DEPENDS
+    libc.include.sys_stat
+    libc.src.__support.OSUtil.windows.chmod_ops
+    libc.src.__support.OSUtil.windows.syscall_wrapper_fchmodat
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+)
+
+add_entrypoint_object(
+  umask
+  SRCS
+    umask.cpp
+  HDRS
+    ../umask.h
+  DEPENDS
+    libc.include.sys_stat
+    libc.src.__support.OSUtil.windows.security
+    libc.src.__support.OSUtil.windows.syscall_wrapper_umask
+    libc.src.__support.common
+    libc.src.__support.macros.config
+)
+
+add_entrypoint_object(
+  mkdirat
+  SRCS
+    mkdirat.cpp
+  HDRS
+    ../mkdirat.h
+  DEPENDS
+    libc.hdr.types.mode_t
+    libc.include.sys_stat
+    libc.src.__support.OSUtil.windows.mkdir_ops
+    libc.src.__support.OSUtil.windows.syscall_wrapper_mkdirat
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+)
+
+add_entrypoint_object(
+  mkfifo
+  SRCS
+    mkfifo.cpp
+  HDRS
+    ../mkfifo.h
+  DEPENDS
+    libc.hdr.types.mode_t
+    libc.include.sys_stat
+    libc.src.__support.OSUtil.windows.mkdir_ops
+    libc.src.__support.OSUtil.windows.syscall_wrapper_mkfifo
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+)
+
+add_entrypoint_object(
+  mkdir
+  SRCS
+    mkdir.cpp
+  HDRS
+    ../mkdir.h
+  DEPENDS
+    libc.hdr.fcntl_macros
+    libc.hdr.types.mode_t
+    libc.src.sys.stat.mkdirat
+    libc.src.__support.common
+    libc.src.__support.macros.config
+)
+
+add_entrypoint_object(
+  utimensat
+  SRCS
+    utimensat.cpp
+  HDRS
+    ../utimensat.h
+  DEPENDS
+    libc.hdr.types.struct_timespec
+    libc.include.sys_stat
+    libc.src.__support.OSUtil.windows.syscall_wrapper_utimensat
+    libc.src.__support.common
+    libc.src.__support.libc_errno
+    libc.src.__support.macros.config
+)

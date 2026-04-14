@@ -13,29 +13,62 @@ else()
 endif()
 
 set(added_archive_targets "")
+# Collect all entrypoints across archives for the unified shared library.
+set(all_shared_entrypoints "")
+
 foreach(archive IN ZIP_LISTS
         libc_archive_names libc_archive_targets libc_archive_entrypoint_lists)
   if(NOT ${archive_2})
     # If an entrypoint list is missing, then skip adding targets for it.
     continue()
   endif()
-  add_entrypoint_library(
-    ${archive_1}
-    DEPENDS
-      ${${archive_2}}
-  )
-  set_target_properties(
-    ${archive_1}
-    PROPERTIES
-      ARCHIVE_OUTPUT_NAME ${archive_0}
-  )
-  if(LLVM_LIBC_FULL_BUILD)
-    target_link_libraries(${archive_1} PUBLIC libc-headers)
-    if(TARGET libc-startup)
-      add_dependencies(${archive_1} libc-startup)
+
+  set(archive_entrypoints "")
+  foreach(entrypoint_target IN LISTS ${archive_2})
+    if(TARGET ${entrypoint_target})
+      list(APPEND archive_entrypoints ${entrypoint_target})
+    elseif(NOT LLVM_LIBC_FULL_BUILD)
+      if(LIBC_CMAKE_VERBOSE_LOGGING)
+        message(STATUS
+                "Skipping unavailable non-fullbuild entrypoint target ${entrypoint_target} from archive ${archive_1}")
+      endif()
+    else()
+      message(FATAL_ERROR
+              "Missing full-build entrypoint target ${entrypoint_target} for archive ${archive_1}")
     endif()
+  endforeach()
+
+  if(NOT archive_entrypoints)
+    continue()
   endif()
-  list(APPEND added_archive_targets ${archive_1})
+
+  #===----------------------------------------------------------------------===#
+  # Static library (separate archives: c.lib, m.lib, mvec.lib)
+  #===----------------------------------------------------------------------===#
+  if(LIBC_ENABLE_STATIC)
+    add_entrypoint_library(
+      ${archive_1}
+      DEPENDS
+        ${archive_entrypoints}
+    )
+    set_target_properties(
+      ${archive_1}
+      PROPERTIES
+        ARCHIVE_OUTPUT_NAME ${archive_0}
+    )
+    if(LLVM_LIBC_FULL_BUILD)
+      target_link_libraries(${archive_1} PUBLIC libc-headers)
+      if(TARGET libc-startup)
+        add_dependencies(${archive_1} libc-startup)
+      endif()
+    endif()
+    list(APPEND added_archive_targets ${archive_1})
+  endif()
+
+  # Accumulate entrypoints for the unified shared library.
+  if(LIBC_ENABLE_SHARED)
+    list(APPEND all_shared_entrypoints ${archive_entrypoints})
+  endif()
 
   # Add the offloading version of the library for offloading languages. These
   # are installed in the standard search path separate from the other libraries.
@@ -55,11 +88,116 @@ foreach(archive IN ZIP_LISTS
   endif()
 endforeach()
 
-install(
-  TARGETS ${added_archive_targets}
-  ARCHIVE DESTINATION ${LIBC_INSTALL_LIBRARY_DIR}
-  COMPONENT libc
-)
+#===------------------------------------------------------------------------===#
+# Shared library: single unified DLL (c.dll) containing all entrypoints
+#===------------------------------------------------------------------------===#
+# Math and vector entrypoints share internal state (errno, allocator, etc.)
+# with libc, so they must live in the same shared library. Static archives
+# remain separate (c.lib, m.lib, mvec.lib) for traditional link granularity.
+set(added_shared_targets "")
+if(LIBC_ENABLE_SHARED AND all_shared_entrypoints AND
+   (NOT WIN32 OR NOT LIBC_ENABLE_STATIC))
+  add_entrypoint_library_shared(
+    libc_shared
+    DEPENDS
+      ${all_shared_entrypoints}
+  )
+  set_target_properties(
+    libc_shared
+    PROPERTIES
+      OUTPUT_NAME c
+      LINKER_LANGUAGE C
+  )
+  if(LLVM_LIBC_FULL_BUILD)
+    target_link_libraries(libc_shared PUBLIC libc-headers)
+  endif()
+
+  # Windows: DLLs go to bin/ staging directory when available.
+  if(MSVC_LIKE AND LLVM_RUNTIME_OUTPUT_INTDIR)
+    set_target_properties(libc_shared PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY ${LLVM_RUNTIME_OUTPUT_INTDIR})
+  endif()
+
+  list(APPEND added_shared_targets libc_shared)
+endif()
+
+#===------------------------------------------------------------------------===#
+# Windows shared library: link startup objects and kernel import libraries
+#===------------------------------------------------------------------------===#
+if(added_shared_targets AND LIBC_TARGET_OS_IS_WINDOWS)
+  # Startup objects for DLL entry and libc initialization.
+  set(_libc_dll_startup_objects "")
+  foreach(_obj libc_dll_entry libc_init security_cookie tls_directory cfguard load_config)
+    if(TARGET libc.startup.windows.${_obj})
+      list(APPEND _libc_dll_startup_objects libc.startup.windows.${_obj})
+    endif()
+  endforeach()
+
+  # Kernel import libraries generated from .def files.
+  set(_libc_import_libs "")
+  foreach(_imp ntdll bcryptprimitives sspicli)
+    if(TARGET windows_${_imp})
+      list(APPEND _libc_import_libs windows_${_imp})
+    endif()
+  endforeach()
+
+  # These support objects are runtime-owned pieces of c.dll. They used to be
+  # reached transitively through unrelated support targets, which made the DLL
+  # link fragile and leaked them into unit-test links. Keep the ownership
+  # explicit here instead.
+  set(_libc_shared_support_objects "")
+  foreach(_obj
+          libc.src.__support.OSUtil.windows.cxa_guard
+          libc.src.__support.OSUtil.windows.mem_fault_handler
+          libc.src.__support.OSUtil.windows.libc_subsystem_init)
+    if(TARGET ${_obj})
+      list(APPEND _libc_shared_support_objects $<TARGET_OBJECTS:${_obj}>)
+    endif()
+  endforeach()
+
+  foreach(_shared_target IN LISTS added_shared_targets)
+    if(_libc_shared_support_objects)
+      target_sources(${_shared_target} PRIVATE ${_libc_shared_support_objects})
+    endif()
+    if(_libc_dll_startup_objects)
+      target_link_libraries(${_shared_target} PRIVATE ${_libc_dll_startup_objects})
+    endif()
+    if(_libc_import_libs)
+      target_link_libraries(${_shared_target} PRIVATE ${_libc_import_libs})
+    endif()
+    if(TARGET libc-windows-import-libs)
+      # Stage NT import libs into the ambient lib directory so the freshly
+      # built clang can find them via Dir/../lib during bootstrap.
+      add_dependencies(${_shared_target} libc-windows-import-libs)
+    endif()
+    # -nostartfiles: prevent the driver from adding staged startup objects
+    # (dllcrt.obj, crt_gs.obj, etc.) that conflict with the ones we link
+    # explicitly above. c.dll provides its own entry point and startup.
+    # --unwindlib=none: prevent the driver from adding unwind.lib (not built yet).
+    target_link_options(${_shared_target} PRIVATE -nostartfiles --unwindlib=none)
+  endforeach()
+endif()
+
+#===------------------------------------------------------------------------===#
+# Install
+#===------------------------------------------------------------------------===#
+if(added_archive_targets)
+  install(
+    TARGETS ${added_archive_targets}
+    ARCHIVE DESTINATION ${LIBC_INSTALL_LIBRARY_DIR}
+    COMPONENT libc
+  )
+endif()
+
+if(added_shared_targets)
+  install(
+    TARGETS ${added_shared_targets}
+    ARCHIVE DESTINATION ${LIBC_INSTALL_LIBRARY_DIR}
+    LIBRARY DESTINATION ${LIBC_INSTALL_LIBRARY_DIR}
+    RUNTIME DESTINATION ${LIBC_INSTALL_RUNTIME_DIR}
+    COMPONENT libc
+  )
+endif()
 
 foreach(file ${added_bitcode_targets})
   install(FILES $<TARGET_FILE:${file}>
@@ -80,9 +218,16 @@ if(LLVM_LIBC_FULL_BUILD)
   set(header_install_target install-libc-headers)
 endif()
 
+set(_libc_install_extra_deps "")
+if(TARGET libc-windows-import-libs)
+  list(APPEND _libc_install_extra_deps libc-windows-import-libs)
+endif()
+
 add_custom_target(install-libc
                   DEPENDS ${added_archive_targets}
+                          ${added_shared_targets}
                           ${added_bitcode_targets}
+                          ${_libc_install_extra_deps}
                           ${startup_target}
                           ${header_install_target}
                   COMMAND "${CMAKE_COMMAND}"
@@ -90,7 +235,9 @@ add_custom_target(install-libc
                           -P "${CMAKE_BINARY_DIR}/cmake_install.cmake")
 add_custom_target(install-libc-stripped
                   DEPENDS ${added_archive_targets}
+                          ${added_shared_targets}
                           ${added_bitcode_targets}
+                          ${_libc_install_extra_deps}
                           ${startup_target}
                           ${header_install_target}
                   COMMAND "${CMAKE_COMMAND}"

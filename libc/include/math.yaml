@@ -6,7 +6,9 @@ types:
   - type_name: double_t
   - type_name: float128
 enums: []
-objects: []
+objects:
+  - object_name: signgam
+    object_type: int
 functions:
   - name: acos
     standards:

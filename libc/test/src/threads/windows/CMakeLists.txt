@@ -1,0 +1,27 @@
+add_custom_target(libc_threads_windows_unittests)
+
+add_libc_unittest(
+  cnd_test
+  SUITE
+    libc_threads_windows_unittests
+  SRCS
+    cnd_test.cpp
+  DEPENDS
+    libc.hdr.errno_macros
+    libc.include.threads
+    libc.src.__support.CPP.atomic
+    libc.src.__support.threads.mutex
+    libc.src.__support.threads.sleep
+    libc.src.__support.threads.thread_common
+    libc.src.__support.threads.windows.CndVar
+    libc.src.__support.threads.windows.mutex
+    libc.src.__support.threads.windows.thread
+    libc.src.__support.time.clock_gettime
+    libc.src.threads.cnd_broadcast
+    libc.src.threads.cnd_destroy
+    libc.src.threads.cnd_init
+    libc.src.threads.cnd_signal
+    libc.src.threads.cnd_timedwait
+    libc.src.threads.cnd_wait
+    libc.test.UnitTest.Test
+)

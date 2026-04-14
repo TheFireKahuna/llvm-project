@@ -39,8 +39,14 @@ LIBC_INLINE constexpr float sinhf(float x) {
 
       // |x| <= 2^-26
       if (LIBC_UNLIKELY(x_abs <= 0x3280'0000U)) {
-        return static_cast<float>(
-            LIBC_UNLIKELY(x_abs == 0) ? x : (x + 0.25 * x * x * x));
+        if (LIBC_UNLIKELY(x_abs == 0))
+          return x;
+        // sinh(x) ~ x for subnormal x, signal underflow.
+        if (LIBC_UNLIKELY(x_abs < 0x0080'0000U)) {
+          fputil::raise_except_if_required(FE_UNDERFLOW | FE_INEXACT);
+          return x;
+        }
+        return static_cast<float>(x + 0.25 * x * x * x);
       }
 
       double xdbl = x;
@@ -61,6 +67,9 @@ LIBC_INLINE constexpr float sinhf(float x) {
     if (xbits.is_inf())
       return x;
 
+    fputil::set_errno_if_required(ERANGE);
+    fputil::raise_except_if_required(FE_OVERFLOW | FE_INEXACT);
+
     int rounding = fputil::quick_get_round();
     if (xbits.is_neg()) {
       if (LIBC_UNLIKELY(rounding == FE_UPWARD || rounding == FE_TOWARDZERO))
@@ -69,9 +78,6 @@ LIBC_INLINE constexpr float sinhf(float x) {
       if (LIBC_UNLIKELY(rounding == FE_DOWNWARD || rounding == FE_TOWARDZERO))
         return FPBits::max_normal().get_val();
     }
-
-    fputil::set_errno_if_required(ERANGE);
-    fputil::raise_except_if_required(FE_OVERFLOW);
 
     return x + FPBits::inf(xbits.sign()).get_val();
   }

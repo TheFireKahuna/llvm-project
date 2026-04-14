@@ -48,3 +48,92 @@ add_entrypoint_object(
     libc.src.__support.File.platform_dir
     libc.src.errno.errno
 )
+
+add_entrypoint_object(
+  readdir_r
+  SRCS
+    readdir_r.cpp
+  HDRS
+    readdir_r.h
+  DEPENDS
+    libc.include.dirent
+    libc.src.__support.File.dir
+    libc.src.__support.File.platform_dir
+)
+
+add_entrypoint_object(
+  fdopendir
+  SRCS
+    fdopendir.cpp
+  HDRS
+    fdopendir.h
+  DEPENDS
+    libc.include.dirent
+    libc.src.__support.File.dir
+    libc.src.__support.File.platform_dir
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  rewinddir
+  SRCS
+    rewinddir.cpp
+  HDRS
+    rewinddir.h
+  DEPENDS
+    libc.include.dirent
+    libc.src.__support.File.dir
+    libc.src.__support.File.platform_dir
+)
+
+add_entrypoint_object(
+  seekdir
+  SRCS
+    seekdir.cpp
+  HDRS
+    seekdir.h
+  DEPENDS
+    libc.include.dirent
+    libc.src.__support.File.dir
+    libc.src.__support.File.platform_dir
+)
+
+add_entrypoint_object(
+  telldir
+  SRCS
+    telldir.cpp
+  HDRS
+    telldir.h
+  DEPENDS
+    libc.include.dirent
+    libc.src.__support.File.dir
+    libc.src.__support.File.platform_dir
+)
+
+add_entrypoint_object(
+  alphasort
+  SRCS
+    alphasort.cpp
+  HDRS
+    alphasort.h
+  DEPENDS
+    libc.include.dirent
+    libc.src.string.strcoll
+)
+
+add_entrypoint_object(
+  scandir
+  SRCS
+    scandir.cpp
+  HDRS
+    scandir.h
+  DEPENDS
+    libc.include.dirent
+    libc.src.__support.File.dir
+    libc.src.__support.File.platform_dir
+    libc.src.errno.errno
+    libc.src.stdlib.free
+    libc.src.stdlib.malloc
+    libc.src.stdlib.qsort_r
+    libc.src.stdlib.realloc
+)

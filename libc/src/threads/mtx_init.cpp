@@ -20,8 +20,11 @@ static_assert(sizeof(Mutex) <= sizeof(mtx_t),
               "type.");
 
 LLVM_LIBC_FUNCTION(int, mtx_init, (mtx_t * m, int type)) {
+  // Convert C11 mtx_recursive flag to POSIX mutex type.
+  int mutex_type = (type & mtx_recursive) ? PTHREAD_MUTEX_RECURSIVE
+                                          : PTHREAD_MUTEX_NORMAL;
   auto err = Mutex::init(reinterpret_cast<Mutex *>(m), type & mtx_timed,
-                         type & mtx_recursive, /* is_robust */ false,
+                         mutex_type, /* is_robust */ false,
                          /* is_pshared */ false);
   return err == MutexError::NONE ? thrd_success : thrd_error;
 }

@@ -14,8 +14,19 @@
 #include "src/__support/macros/config.h"
 #include "src/__support/macros/macro-utils.h"
 #include "src/__support/macros/properties/compiler.h"
+#include "src/__support/macros/properties/os.h"
 
 #include <stddef.h> // For size_t
+
+// On Windows with UCRT, aligned allocations must be freed with _aligned_free
+// rather than free. Provide a single abstraction point for all callers.
+LIBC_INLINE void aligned_free(void *mem) {
+#if defined(LIBC_TARGET_OS_IS_WINDOWS) && defined(LLVM_CRT_UCRT)
+  ::_aligned_free(mem);
+#else
+  ::free(mem);
+#endif
+}
 
 // Defining members in the std namespace is not preferred. But, we do it here
 // so that we can use it to define the operator new which takes std::align_val_t

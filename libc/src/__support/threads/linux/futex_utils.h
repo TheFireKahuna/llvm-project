@@ -30,6 +30,9 @@ public:
     cpp::Atomic<FutexWordType>::store(value);
     return *this;
   }
+  // First-time initialization of opaque storage. On Linux (no Treiber stack)
+  // this is equivalent to set(), but exists for cross-platform API parity.
+  LIBC_INLINE void init(FutexWordType value) { this->set(value); }
   LIBC_INLINE long wait(FutexWordType expected,
                         cpp::optional<Timeout> timeout = cpp::nullopt,
                         bool is_shared = false) {

@@ -251,6 +251,19 @@ public:
 #endif
   }
 
+  LIBC_INLINE T
+  fetch_xor(T mask, MemoryOrder mem_ord = MemoryOrder::SEQ_CST,
+            [[maybe_unused]] MemoryScope mem_scope = MemoryScope::DEVICE) {
+    static_assert(cpp::is_integral_v<T>, "T must be an integral type.");
+#if __has_builtin(__scoped_atomic_fetch_xor)
+    return __scoped_atomic_fetch_xor(impl::addressof(val), mask,
+                                     impl::order(mem_ord),
+                                     impl::scope(mem_scope));
+#else
+    return __atomic_fetch_xor(impl::addressof(val), mask, impl::order(mem_ord));
+#endif
+  }
+
   // Set the value without using an atomic operation. This is useful
   // in initializing atomic values without a constructor.
   LIBC_INLINE void set(T rhs) { val = rhs; }
@@ -392,6 +405,18 @@ public:
                                      impl::scope(mem_scope));
 #else
     return __atomic_fetch_sub(ptr, decrement, impl::order(mem_ord));
+#endif
+  }
+
+  LIBC_INLINE T fetch_xor(
+      T mask, MemoryOrder mem_ord = MemoryOrder::SEQ_CST,
+      [[maybe_unused]] MemoryScope mem_scope = MemoryScope::DEVICE) const {
+    static_assert(cpp::is_integral_v<T>, "T must be an integral type.");
+#if __has_builtin(__scoped_atomic_fetch_xor)
+    return __scoped_atomic_fetch_xor(ptr, mask, impl::order(mem_ord),
+                                     impl::scope(mem_scope));
+#else
+    return __atomic_fetch_xor(ptr, mask, impl::order(mem_ord));
 #endif
   }
 };

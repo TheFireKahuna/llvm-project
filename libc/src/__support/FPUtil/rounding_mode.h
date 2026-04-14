@@ -13,8 +13,11 @@
 #include "src/__support/CPP/type_traits.h"   // is_constant_evaluated
 #include "src/__support/macros/attributes.h" // LIBC_INLINE
 #include "src/__support/macros/config.h"
+#include "src/__support/macros/properties/architectures.h"
 
 namespace LIBC_NAMESPACE_DECL {
+
+
 namespace fputil {
 
 namespace generic {
@@ -84,7 +87,11 @@ LIBC_INLINE constexpr bool fenv_is_round_up() {
   if (cpp::is_constant_evaluated()) {
     return false;
   } else {
+#if defined(LIBC_TARGET_ARCH_IS_X86) && defined(__SSE__)
+    return ((__builtin_ia32_stmxcsr() >> 13) & 0x3) == 2;
+#else
     return generic::fenv_is_round_up();
+#endif
   }
 }
 
@@ -92,7 +99,11 @@ LIBC_INLINE constexpr bool fenv_is_round_down() {
   if (cpp::is_constant_evaluated()) {
     return false;
   } else {
+#if defined(LIBC_TARGET_ARCH_IS_X86) && defined(__SSE__)
+    return ((__builtin_ia32_stmxcsr() >> 13) & 0x3) == 1;
+#else
     return generic::fenv_is_round_down();
+#endif
   }
 }
 
@@ -100,7 +111,11 @@ LIBC_INLINE constexpr bool fenv_is_round_to_nearest() {
   if (cpp::is_constant_evaluated()) {
     return true;
   } else {
+#if defined(LIBC_TARGET_ARCH_IS_X86) && defined(__SSE__)
+    return ((__builtin_ia32_stmxcsr() >> 13) & 0x3) == 0;
+#else
     return generic::fenv_is_round_to_nearest();
+#endif
   }
 }
 
@@ -108,7 +123,11 @@ LIBC_INLINE constexpr bool fenv_is_round_to_zero() {
   if (cpp::is_constant_evaluated()) {
     return false;
   } else {
+#if defined(LIBC_TARGET_ARCH_IS_X86) && defined(__SSE__)
+    return ((__builtin_ia32_stmxcsr() >> 13) & 0x3) == 3;
+#else
     return generic::fenv_is_round_to_zero();
+#endif
   }
 }
 
@@ -117,7 +136,26 @@ LIBC_INLINE constexpr int quick_get_round() {
   if (cpp::is_constant_evaluated()) {
     return FE_TONEAREST;
   } else {
+#if defined(LIBC_TARGET_ARCH_IS_X86) && defined(__SSE__)
+    // Read the rounding mode directly from MXCSR bits 13:14 without performing
+    // any floating-point arithmetic that would pollute the exception flags.
+    // This is critical for functions like nearbyint that must not raise spurious
+    // FP exceptions.
+    switch ((__builtin_ia32_stmxcsr() >> 13) & 0x3) {
+    case 0:
+      return FE_TONEAREST;
+    case 1:
+      return FE_DOWNWARD;
+    case 2:
+      return FE_UPWARD;
+    case 3:
+      return FE_TOWARDZERO;
+    default:
+      __builtin_unreachable();
+    }
+#else
     return generic::quick_get_round();
+#endif
   }
 }
 

@@ -1,4 +1,5 @@
 header: sys/sem.h
+header_template: sem.h.def
 standards:
   - posix
   - linux
@@ -49,7 +50,9 @@ macros:
       - linux
 types:
   - type_name: key_t
+  - type_name: pid_t
   - type_name: size_t
+  - type_name: time_t
   - type_name: struct_ipc_perm
   - type_name: struct_semid_ds
   - type_name: struct_sembuf

@@ -7,13 +7,29 @@
 //===----------------------------------------------------------------------===//
 
 #include "src/locale/locale.h"
+#include "src/__support/CPP/atomic.h"
 #include "src/__support/common.h"
 #include "src/__support/macros/config.h"
 
 namespace LIBC_NAMESPACE_DECL {
 
-__locale_t c_locale = {nullptr};
+__locale_t c_locale = {};
 
-locale_t locale = nullptr;
+#ifdef _WIN32
+__declspec(thread) locale_t thread_locale = nullptr;
+#else
+LIBC_THREAD_LOCAL locale_t thread_locale = nullptr;
+#endif
+
+// Atomic global locale. nullptr means C locale (default).
+static cpp::Atomic<locale_t> global_locale{nullptr};
+
+locale_t get_global_locale() {
+  return global_locale.load(cpp::MemoryOrder::ACQUIRE);
+}
+
+void set_global_locale(locale_t loc) {
+  global_locale.store(loc, cpp::MemoryOrder::RELEASE);
+}
 
 } // namespace LIBC_NAMESPACE_DECL
