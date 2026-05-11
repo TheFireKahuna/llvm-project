@@ -14,12 +14,12 @@
 //   2. Carve-up:   reserve → split → consume parts → release remainder
 //
 // Does NOT cover:
-//   - CAS swap (preserve_to_placeholder → replace_placeholder_commit):
+//   - CAS swap (nt_pal::preserve_to_placeholder → nt_pal::commit_replace):
 //     atomic state transitions on existing VA, no ownership to track.
 //   - Coalesce-or-release: topology operation depending on neighbor state.
 //   - Remap rollback: RemapGuard owns the envelope, raw addresses suffice.
 //
-// The destructor calls release_placeholder() (simple MEM_RELEASE) and never
+// The destructor calls nt_pal::free_placeholder() (simple MEM_RELEASE) and never
 // attempts neighbor-aware release. The "release if isolated from live
 // neighbors" decision lives at the munmap / vm_protect layer (see
 // release_if_isolated in vm_protect.cpp), which has the mapping-table
@@ -34,8 +34,8 @@
 #ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_PLACEHOLDER_RANGE_H
 #define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_PLACEHOLDER_RANGE_H
 
-#include "src/__support/OSUtil/windows/memory/memory_primitives.h"
-#include "src/__support/OSUtil/windows/memory/view_spec.h"
+#include "src/__support/OSUtil/windows/nt_pal/nt_pal.h"
+#include "src/__support/OSUtil/windows/memory/legacy/view_spec.h"
 #include "src/__support/libc_assert.h"
 #include "src/__support/macros/attributes.h"
 #include "src/__support/macros/config.h"
@@ -86,7 +86,7 @@ public:
   /// Returns empty on failure.
   [[nodiscard]] LIBC_INLINE static PlaceholderRange
   reserve(SIZE_T size, void *addr = nullptr) {
-    void *p = create_placeholder(addr, size);
+    void *p = nt_pal::reserve_placeholder(addr, size);
     return p ? PlaceholderRange(p, size) : PlaceholderRange();
   }
 
@@ -95,7 +95,7 @@ public:
   /// Returns empty on failure.
   [[nodiscard]] LIBC_INLINE static PlaceholderRange
   reserve_ex(SIZE_T requested, SIZE_T &actual_size, void *addr = nullptr) {
-    void *p = create_placeholder_ex(addr, requested, actual_size);
+    void *p = nt_pal::reserve_placeholder_ex(addr, requested, actual_size);
     return p ? PlaceholderRange(p, actual_size) : PlaceholderRange();
   }
 
@@ -103,7 +103,7 @@ public:
   /// Returns empty on failure.
   [[nodiscard]] LIBC_INLINE static PlaceholderRange
   reserve_32bit(SIZE_T size) {
-    void *p = create_placeholder_32bit(size);
+    void *p = nt_pal::reserve_placeholder_32bit(size);
     return p ? PlaceholderRange(p, size) : PlaceholderRange();
   }
 
@@ -111,7 +111,7 @@ public:
   /// Returns empty on failure.
   [[nodiscard]] LIBC_INLINE static PlaceholderRange
   reserve_numa(SIZE_T size, ULONG numa_node, void *addr = nullptr) {
-    void *p = create_placeholder_numa(addr, size, numa_node);
+    void *p = nt_pal::reserve_placeholder_numa(addr, size, numa_node);
     return p ? PlaceholderRange(p, size) : PlaceholderRange();
   }
 
@@ -217,7 +217,7 @@ public:
   /// Returns raw NTSTATUS.
   LIBC_INLINE NTSTATUS commit(DWORD prot) {
     LIBC_ASSERT(base_ && "commit() on empty PlaceholderRange");
-    NTSTATUS st = replace_placeholder_commit(base_, size_, prot);
+    NTSTATUS st = nt_pal::commit_replace(base_, size_, prot);
     if (NT_SUCCESS(st)) {
       base_ = nullptr;
       size_ = 0;
@@ -239,7 +239,7 @@ public:
     SIZE_T s = size_;
     base_ = nullptr;
     size_ = 0;
-    return replace_placeholder_commit(b, s, prot);
+    return nt_pal::commit_replace(b, s, prot);
   }
 
   /// Reserve-replace: placeholder → MEM_RESERVE private (no commit).
@@ -248,7 +248,7 @@ public:
   /// Same ownership semantics as commit(): consumes on success, valid on failure.
   LIBC_INLINE NTSTATUS reserve_replace(DWORD prot) {
     LIBC_ASSERT(base_ && "reserve_replace() on empty PlaceholderRange");
-    NTSTATUS st = replace_placeholder_reserve(base_, size_, prot);
+    NTSTATUS st = nt_pal::commit_replace_reserve_only(base_, size_, prot);
     if (NT_SUCCESS(st)) {
       base_ = nullptr;
       size_ = 0;
@@ -268,7 +268,7 @@ public:
   LIBC_INLINE bool split(SIZE_T offset, PlaceholderRange *left,
                          PlaceholderRange *right) {
     LIBC_ASSERT(base_ && "split() on empty PlaceholderRange");
-    if (!split_placeholder(base_, offset))
+    if (!nt_pal::split_placeholder(base_, offset))
       return false;
     char *b = static_cast<char *>(base_);
     *left = PlaceholderRange(b, offset);
@@ -290,7 +290,7 @@ public:
   /// releasing placeholders adjacent to live mappings.
   LIBC_INLINE void release() {
     if (base_) {
-      release_placeholder(base_);
+      nt_pal::free_placeholder(base_);
       base_ = nullptr;
       size_ = 0;
     }

@@ -10,7 +10,7 @@
 #include "hdr/errno_macros.h"
 #include "hdr/locale_macros.h"
 #include "src/__support/CPP/string_view.h"
-#include "src/__support/OSUtil/windows/alloc/slab_pool.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/slab_pool.h"
 #include "src/__support/OSUtil/windows/nls_locale.h"
 #include "src/__support/common.h"
 #include "src/__support/libc_errno.h"

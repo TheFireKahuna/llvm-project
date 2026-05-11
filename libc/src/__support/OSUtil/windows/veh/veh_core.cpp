@@ -41,6 +41,8 @@
 #include "src/__support/OSUtil/windows/pcb_init_access.h"
 #include "src/__support/OSUtil/windows/process_control_block.h"
 #include "src/__support/OSUtil/windows/section_registry.h"
+#include "src/__support/OSUtil/windows/signal/signal.h"
+#include "src/__support/OSUtil/windows/signal/signal_types.h"
 #include "src/__support/CPP/atomic.h"
 #include "src/__support/macros/config.h"
 #include "src/setjmp/longjmp.h"
@@ -147,6 +149,21 @@ NTAPI static LONG master_veh_handler(EXCEPTION_POINTERS *ep) {
       LIBC_NAMESPACE::longjmp(fg->buf, 1);
     }
   }
+
+  // ── Fatal-raise sentinel ──────────────────────────────────────────
+  // execute_default_action's fatal-raise path re-raises the original
+  // hardware fault (or a synthesized one for software signals) via
+  // NtRaiseException so debuggers, WER, and the OS unhandled-exception
+  // path see the true fault site. The re-raise re-enters this master
+  // handler on the same thread; without this skip, our filter table
+  // would walk again and signal_veh_transport would try to dispatch
+  // the "fatal" signal a second time, looping. The sentinel is set
+  // once on the dying thread and never cleared (process dies). Plain
+  // bool: same-thread set-then-read across an NtRaiseException syscall,
+  // which is itself a full barrier.
+  if (auto *ts = signal_state::get_thread_state_noinit();
+      ts && ts->fatal_raise_in_progress)
+    return EXCEPTION_CONTINUE_SEARCH;
 
   // ── Debugger transparency ─────────────────────────────────────────
   // When a debugger is attached (PEB.BeingDebugged), pass breakpoint and

@@ -118,10 +118,164 @@ add_header_library(
 add_header_library(
   page_alloc
   HDRS
-    alloc/page_alloc.h
+    alloc/legacy/page_alloc.h
   DEPENDS
     .ntdll
     libc.src.__support.common
+)
+
+# ---- Layer 0 PAL (`nt_pal::`) -----------------------------------------------
+# Sole NT primitive surface for every later layer of the Phase 1 memory
+# architecture (NTPOSIX_MEMORY_ARCHITECTURE_DESIGN §6.0). One header per
+# operation family; one object library that probes process cookie +
+# SeLockMemoryPrivilege at libc init and re-probes after fork.
+
+# `nt_pal/nt_pal_process_state.h` is a pure-leaf header — types only,
+# included by `process_control_block.h` to embed the PAL state in the
+# PCB. Keeping it as its own header_library prevents the PCB→nt_pal_state
+# include cycle (`pal_state.h` reaches g_pcb through this struct's PCB
+# slot, which means `pal_state.h` itself can't be on the PCB include
+# path).
+add_header_library(
+  nt_pal_process_state
+  HDRS
+    nt_pal/nt_pal_process_state.h
+  DEPENDS
+    libc.hdr.stdint_proxy
+    libc.src.__support.CPP.atomic
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+)
+
+add_header_library(
+  nt_pal_state
+  HDRS
+    nt_pal/pal_state.h
+  DEPENDS
+    .nt_pal_process_state
+    .process_control_block
+    libc.hdr.stdint_proxy
+    libc.src.__support.CPP.atomic
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+)
+
+add_header_library(
+  nt_pal_placeholder
+  HDRS
+    nt_pal/placeholder.h
+  DEPENDS
+    .ntdll
+    libc.src.__support.libc_assert
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+)
+
+add_header_library(
+  nt_pal_section
+  HDRS
+    nt_pal/section.h
+  DEPENDS
+    .ntdll
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+)
+
+add_header_library(
+  nt_pal_protect
+  HDRS
+    nt_pal/protect.h
+  DEPENDS
+    .ntdll
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+)
+
+add_header_library(
+  nt_pal_write_watch
+  HDRS
+    nt_pal/write_watch.h
+  DEPENDS
+    .ntdll
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+)
+
+add_header_library(
+  nt_pal_large_pages
+  HDRS
+    nt_pal/large_pages.h
+  DEPENDS
+    .ntdll
+    .nt_pal_state
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+)
+
+add_header_library(
+  nt_pal_query
+  HDRS
+    nt_pal/query.h
+  DEPENDS
+    .ntdll
+    .page_alloc
+    .nt_pal_placeholder
+    .nt_pal_write_watch
+    libc.src.__support.common
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+)
+
+add_header_library(
+  nt_pal_lock
+  HDRS
+    nt_pal/lock.h
+  DEPENDS
+    .ntdll
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+)
+
+# Aggregate header-only umbrella so callers can depend on a single
+# `.nt_pal` target instead of listing every sub-library. Each sub-header
+# is already tracked by its own header_library above; the umbrella only
+# pins one HDRS entry (`pal_state.h`) for CMake to anchor the INTERFACE
+# library against — listing the entire HDRS set here, especially the
+# meta-`nt_pal/nt_pal.h`, made `target_sources(... INTERFACE ...)`
+# propagate relative paths into consuming targets in sibling directories
+# and the CMake Generate step then failed to resolve the file.
+add_header_library(
+  nt_pal
+  HDRS
+    nt_pal/pal_state.h
+  DEPENDS
+    .nt_pal_process_state
+    .nt_pal_state
+    .nt_pal_placeholder
+    .nt_pal_section
+    .nt_pal_protect
+    .nt_pal_write_watch
+    .nt_pal_large_pages
+    .nt_pal_query
+    .nt_pal_lock
+)
+
+# Object library: probe state at libc init (.libcmem$P0) and re-probe
+# at fork (LIBC_REGISTER_FORK_REINIT).
+add_object_library(
+  nt_pal_init
+  SRCS
+    nt_pal/pal_init.cpp
+    nt_pal/pal_fork.cpp
+  DEPENDS
+    .memory_primitives_registry
+    .nt_pal_large_pages
+    .nt_pal_state
+    .ntdll
+    .process_control_block
+    .section_registry
+    libc.src.__support.CPP.atomic
+    libc.src.__support.macros.config
 )
 
 # ---- Shared allocator sub-primitives ----------------------------------------
@@ -264,7 +418,7 @@ add_header_library(
 add_header_library(
   slab_pool
   HDRS
-    alloc/slab_pool.h
+    alloc/legacy/slab_pool.h
   DEPENDS
     .alloc_canary_seed
     .alloc_init_latch
@@ -315,7 +469,7 @@ add_object_library(
 add_object_library(
   slab_registry
   SRCS
-    alloc/slab_registry.cpp
+    alloc/legacy/slab_registry.cpp
   DEPENDS
     .slab_pool
     libc.src.__support.macros.config
@@ -329,7 +483,7 @@ add_object_library(
 add_header_library(
   alloc_substrate_registry
   HDRS
-    alloc/substrate_registry.h
+    alloc/legacy/substrate_registry.h
   DEPENDS
     .alloc_init_latch
     .page_alloc
@@ -349,9 +503,9 @@ add_header_library(
 add_object_library(
   va_substrate
   SRCS
-    alloc/va_substrate.cpp
+    alloc/legacy/va_substrate.cpp
   HDRS
-    alloc/va_substrate.h
+    alloc/legacy/va_substrate.h
   DEPENDS
     .alloc_canary_seed
     .alloc_init_latch
@@ -361,6 +515,7 @@ add_object_library(
     .libc_fini_registry
     .mapping_table
     .memory_primitives_registry
+    .nt_pal
     .ntdll
     .page_alloc
     .page_size
@@ -372,6 +527,482 @@ add_object_library(
     libc.src.__support.macros.optimization
     libc.src.__support.threads.windows.spin_wait
     libc.src.__support.threads.windows.thread_registry
+)
+
+# Layer 2 flat 8 B / 64 KiB chunkmap. Out-of-band address->metadata
+# index for libc-allocator chunks, sealed Tier-A libc-internal ranges,
+# and cordons (Image / Kernel / Foreign). POSIX-visible VA is NOT
+# stamped here — it is tracked by `memory/va_tracker.h` (ART + interval
+# skiplist) and the classifier composes the two indexes. Single 8 B
+# cookie-XOR'd tagged-pointer entry encoding (slot_idx << 8 | tag).
+# Stay-committed PAGE_READONLY backing array (snmalloc lazy-commit /
+# notify_using_readonly pattern; Liétar et al ISMM 2019) — every
+# load is wait-free and non-faulting from any context (SIGSEGV
+# classifier, debug probes, fault classifier). Touched OS pages
+# upgraded RO->RW lazily on first publish via nt_pal::protect.
+# The chunk-VA decommit lives in the chunk-owning descriptor's
+# Crystalline domain FreeFn (the §7.2 layered reclamation rule via
+# FreeFn ordering), not in pagemap itself.
+add_object_library(
+  pagemap
+  SRCS
+    alloc/pagemap.cpp
+    alloc/pagemap_cordon.cpp
+  HDRS
+    alloc/pagemap.h
+    alloc/pagemap_cordon.h
+  DEPENDS
+    .memory_primitives_registry
+    .nt_pal
+    .ntdll
+    .process_control_block
+    .section_registry
+    libc.src.__support.CPP.atomic
+    libc.src.__support.libc_assert
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+    libc.src.__support.macros.optimization
+)
+
+# Sealed-VA publisher — single Tier-A chokepoint that every libc-sealed
+# VA range routes through. Enforces disjointness between the pagemap,
+# descriptor pools, and individual partition VAs at publication time
+# (trap on overlap). NT's user-space VAD allocator packs hint-less
+# reservations adjacently and the current reservation surface does not
+# carry a base hint, so no inter-range gap is enforced today.
+# Drives eager pagemap registration (tag=`LibcSealed`, slot_idx=`SealedKind`)
+# for descriptor-pool-class ranges so wild pointers landing in libc-internal
+# VA decode to a recognizable kind via the pagemap reader. POSIX-visible VA
+# is out of scope here — that lookup goes through `memory/va_tracker.h`.
+# Backing table is BSS-resident during Tier A and wiped at
+# `seal_time_assert_and_wipe()` immediately before `pcb_seal_readonly_a`,
+# so no centralized base-table honeypot persists post-seal.
+add_object_library(
+  alloc_sealed_va_publisher
+  SRCS
+    alloc/sealed_va_publisher.cpp
+  HDRS
+    alloc/sealed_va_publisher.h
+  DEPENDS
+    .pagemap
+    .process_control_block
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+    libc.src.__support.macros.optimization
+)
+
+# Layer 2 NBALLOC lock-free buddy chunk broker. Reserves per-process
+# 4 GiB compact-pointer partitions, hands out power-of-2 chunks
+# (64 KiB - 4 MiB) via per-arena NBALLOC trees. Cross-class coalescing
+# real (Marotta arXiv:1804.03436 v2). Pagemap-coupled (every chunk
+# stamped via pagemap_store(slot_idx, tag) on alloc; decoded on free
+# via pagemap_load_decoded; entries zeroed via pagemap_retire_range).
+# Crystalline-W gated reclaim through g_arena_domain — FreeFn ordering
+# is canary --> pagemap_unregister_range (no-op post-pivot) -->
+# nt_pal::decommit_preserve --> return descriptor slot (no-leak /
+# no-UAF guarantee, design doc S 7.2 layered reclamation rule). Hybrid
+# init: eager VA reservation, lazy tree commit on first allocation.
+# Sized-free API mandatory. Lock-free hot path, no spinlocks anywhere
+# in the buddy itself.
+add_object_library(
+  buddy_arena
+  SRCS
+    alloc/buddy_arena.cpp
+  HDRS
+    alloc/buddy_arena.h
+  DEPENDS
+    .alloc_canary_seed
+    .alloc_init_latch
+    .alloc_occupancy_bitmap
+    .alloc_sealed_va_publisher
+    .crystalline_domain
+    .memory_primitives_registry
+    .nt_pal
+    .ntdll
+    .pagemap
+    .process_control_block
+    .section_registry
+    libc.src.__support.CPP.atomic
+    libc.src.__support.libc_assert
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+    libc.src.__support.macros.optimization
+)
+
+# Layer 3 prerequisite — sub-slab decommit substrate. Owns the
+# `committed_subpage_mask` (Atomic<uint16_t>, 1 bit per 4 KiB OS sub-page
+# within a 64 KiB slab page) and the protocol contract that future
+# slab_page.cpp / purge_timer.cpp will compose with. Pure-arithmetic /
+# pure-atomic, no syscall surface — see header prologue for the
+# RELEASE-clear-before-decommit / RELEASE-set-after-commit ordering rules
+# and §9.3.10.1 sub-slab decommit machinery.
+add_header_library(
+  alloc_slab_chunk_state
+  HDRS
+    alloc/slab_chunk_state.h
+  DEPENDS
+    libc.hdr.stdint_proxy
+    libc.src.__support.CPP.atomic
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+)
+
+# ---- Layer 7 partition layer (`alloc::partition`) ---------------------------
+#
+# Type-isolated 4 GiB VA partitions enforced by VA disjointness across
+# (class, numa_node) pairs. Owns the 4 GiB compact-pointer windows that
+# every allocator subsystem draws from (buddy_arena chunks, future
+# segment / slab_page / IndexedPool / ThreadScratch consumers). Provides
+# the §8.4 source-of-truth for "is this VA allocator-owned?" — Layer 1's
+# future va_tracker calls partition::lookup(addr) to skip allocator-
+# internal VA on every fault.
+#
+# Three indices, three query modes, one descriptor pool:
+#   * Coarse pagemap (snmalloc-style, 4 GiB stride flat index, 256 KiB
+#     reservation lazy-committed) — addr→PartitionDescriptor* hot path,
+#     ~3 ns warm.
+#   * Reserve table (lock-free open-addressed hash on packed (cls, node))
+#     — (cls, node)→PartitionDescriptor* deduplication for reserve_or_grow,
+#     CAS-based, bounded retries.
+#   * Pagemap consumer_tag stamping — chunk-owner-side, populates the
+#     existing 64 KiB chunk pagemap entry's tag byte with partition
+#     class for diagnostics + chunk-level fast classification.
+#
+# Reclamation is event-driven on the empty-transition (no polling, no
+# heartbeat counter, no periodic sweep). Crystalline-W via
+# g_partition_domain (slot 3 of 8-domain budget) gates the FreeFn until
+# all in-flight lookup() pin holders release; FreeFn issues MEM_RELEASE
+# on the 4 GiB VA.
+add_header_library(
+  alloc_partition_class
+  HDRS
+    alloc/partition_class.h
+  DEPENDS
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+)
+
+add_object_library(
+  partition
+  SRCS
+    alloc/partition.cpp
+  HDRS
+    alloc/partition.h
+  DEPENDS
+    .alloc_canary_seed
+    .alloc_init_latch
+    .alloc_occupancy_bitmap
+    .alloc_partition_class
+    .alloc_sealed_va_publisher
+    .crystalline_domain
+    .memory_primitives_registry
+    .nt_pal
+    .ntdll
+    .pagemap
+    .process_control_block
+    .section_registry
+    libc.src.__support.CPP.atomic
+    libc.src.__support.libc_assert
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+    libc.src.__support.macros.optimization
+)
+
+# va_tracker outer ART (P1.G L3) — ROWEX-synchronised Adaptive Radix Tree
+# from Leis 2013 + Leis 2016. Per-node-type chunk-bitmap allocator within
+# the PINNED PartitionClass::ArtNode partition; Crystalline-W
+# `g_va_tracker_art_domain` (slot 4 of 8) gates retire of obsolete nodes.
+#
+# Implementation split (mirrors reference/repos/ARTSynchronized/ROWEX/):
+#   art_node.{h,cpp}       — node types + lock primitives + insert/remove
+#                             dispatch (= reference N.{h,cpp} + N{4..256}.cpp)
+#   art_node_alloc.{h,cpp}  — chunk-bitmap allocator + Crystalline FreeFn
+#   art_tree.cpp           — Tree class + lookup/insert/remove/walk_range
+#                             (= reference Tree.cpp)
+#   art_index.h            — public façade re-exporting the Tree API
+add_object_library(
+  art_index
+  SRCS
+    memory/art_node.cpp
+    memory/art_node_alloc.cpp
+    memory/art_tree.cpp
+  HDRS
+    memory/art_index.h
+    memory/art_node.h
+    memory/art_node_alloc.h
+  DEPENDS
+    .alloc_canary_seed
+    .alloc_init_latch
+    .alloc_occupancy_bitmap
+    .alloc_partition_class
+    .va_tracker_chunk
+    .crystalline_domain
+    .nt_pal
+    .ntdll
+    .partition
+    .process_control_block
+    libc.src.__support.CPP.atomic
+    libc.src.__support.libc_assert
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+    libc.src.__support.macros.optimization
+)
+
+# Header-only carrier for the SkiplistLinkTraits state-machine policy
+# class consumed by the va_tracker interval skiplist. Pure substrate-Link
+# adapter; no .cpp.
+add_header_library(
+  skiplist_link_traits
+  HDRS
+    memory/skiplist_link_traits.h
+  DEPENDS
+    .lock_free_linkage
+    libc.hdr.stdint_proxy
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+)
+
+# va_tracker leaf RegionDesc payload — Crystalline-W-managed; cache-line.
+# The header surface stays a leaf — `va_region_desc.cpp` (allocator,
+# release, clone-for-fragment, fork-reinit phase) is compiled into the
+# `interval_skiplist` object library, because it depends on the bucket
+# capacity constants in `interval_skiplist.h` and the skiplist
+# Crystalline domain instance — a separate library would create a cycle.
+add_header_library(
+  va_region_desc
+  HDRS
+    memory/va_region_desc.h
+  DEPENDS
+    .crystalline_domain
+    .nt_types
+    libc.hdr.stdint_proxy
+    libc.src.__support.CPP.atomic
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+)
+
+# va_tracker shared chunk-pool allocator. Process-global VaChunkDesc pool
+# + chunk-state state-machine + commit_new_va_chunk_for + canary derivation.
+# Consumed by both interval_skiplist (skiplist node chunks + RegionDesc
+# chunks) and art_index (ART node chunks) — same partition_secret-based
+# canary derivation, same Crystalline-W FreeFn discipline, single
+# definition site for `va_chunk_desc_*` / `commit_new_va_chunk_for` /
+# `va_chunk_init` / `va_chunk_fork_reinit`.
+add_object_library(
+  va_tracker_chunk
+  SRCS
+    memory/va_tracker_chunk.cpp
+  HDRS
+    memory/va_tracker_chunk.h
+    memory/va_tracker_chunk_state.h
+  DEPENDS
+    .alloc_occupancy_bitmap
+    .alloc_partition_class
+    .crystalline_domain
+    .nt_pal
+    .ntdll
+    .pagemap
+    .partition
+    .process_control_block
+    libc.hdr.errno_macros
+    libc.hdr.stdint_proxy
+    libc.src.__support.CPP.atomic
+    libc.src.__support.libc_assert
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+    libc.src.__support.macros.optimization
+)
+
+# va_tracker per-leaf range index. Lock-free reader, lock-free writer
+# with per-link state-byte LOCKED gate, multi-level Swap with single-CAS
+# linearisation at level 0.
+add_object_library(
+  interval_skiplist
+  SRCS
+    memory/interval_skiplist.cpp
+    memory/arena_alloc.cpp
+    memory/va_region_desc.cpp
+  HDRS
+    memory/interval_skiplist.h
+    memory/arena_alloc.h
+    memory/chunked_append_store.h
+  DEPENDS
+    .alloc_occupancy_bitmap
+    .alloc_partition_class
+    .va_tracker_chunk
+    .crystalline_domain
+    .lock_free_linkage
+    .nt_pal
+    .ntdll
+    .partition
+    .process_control_block
+    .skiplist_link_traits
+    .va_region_desc
+    libc.hdr.errno_macros
+    libc.hdr.stdint_proxy
+    libc.src.__support.CPP.atomic
+    libc.src.__support.libc_assert
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+    libc.src.__support.macros.optimization
+    libc.src.__support.threads.windows.futex_addr
+)
+
+# va_tracker (P1.G L4) — public Phase 1 VA-index API. Composes the outer
+# ART (`art_index`) with the inner concurrent interval skiplist
+# (`interval_skiplist`) into the surface defined by
+# `NTPOSIX_MEMORY_ARCHITECTURE_DESIGN.md` §8.2: acquire / release /
+# replace / mutate / split / resolve / walk_range / serialize_for_fork /
+# replay_in_child / va_tracker_fork_reinit. Registers the Phase 6
+# memory-primitive bootstrap entry and the `kForkPrioVaTracker = 39`
+# fork-reinit hook.
+#
+# `va_tracker.cpp` carries the read-side machinery (`resolve`,
+# `walk_range`, fork serialize/replay, init). `va_tracker_transaction.cpp`
+# carries the write-side engine (the typed ops, the single-envelope
+# commit machinery, `backing_kill_and_retire`). Both are part of the
+# same logical module and share the `va_tracker.h` public surface — no
+# intermediate `transaction.h` / `acquire.h` exists.
+add_object_library(
+  va_tracker
+  SRCS
+    memory/va_tracker.cpp
+    memory/va_tracker_transaction.cpp
+  HDRS
+    memory/va_tracker.h
+  DEPENDS
+    .alloc_partition_class
+    .art_index
+    .crystalline_domain
+    .desc_backing
+    .interval_skiplist
+    .memory_primitives_registry
+    .nt_pal
+    .ntdll
+    .page_alloc
+    .pagemap
+    .partition
+    .section_registry
+    .va_region_desc
+    .va_tracker_chunk
+    libc.hdr.errno_macros
+    libc.hdr.stdint_proxy
+    libc.src.__support.CPP.atomic
+    libc.src.__support.error_or
+    libc.src.__support.libc_assert
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+    libc.src.__support.macros.optimization
+)
+
+# desc_backing — the Crystalline-W-managed shared kernel-state object
+# holding placeholder identity + section/file handles. Synchronous
+# Stage 2 kernel-state teardown lives in `va_tracker_transaction.cpp`
+# (`backing_kill_and_retire` body); Crystalline grace governs Stage 3
+# slot reclamation (the FreeFn in this TU is metadata-only).
+add_object_library(
+  desc_backing
+  SRCS
+    memory/desc_backing.cpp
+  HDRS
+    memory/desc_backing.h
+  DEPENDS
+    .alloc_partition_class
+    .crystalline_domain
+    .ntdll
+    .pagemap
+    .partition
+    .process_control_block
+    .va_tracker_chunk
+    libc.hdr.errno_macros
+    libc.hdr.stdint_proxy
+    libc.src.__support.CPP.atomic
+    libc.src.__support.libc_assert
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+    libc.src.__support.macros.optimization
+)
+
+# ============================================================================
+# POSIX memory-op layer (Layer 8).
+#
+# Header utilities and DescMutator callbacks consumed by the per-op
+# files under `memory/posix/{mmap,madvise,mremap,...}/`. Header-only
+# except for `posix_mutators.cpp`, which carries the twelve free-function
+# callbacks the substrate's `va_tracker::mutate` invokes.
+# ============================================================================
+
+# POSIX-layer errno overrides for the three call sites where POSIX
+# mandates an errno different from the generic `nt_error.h` mapping
+# (MAP_FIXED_NOREPLACE → EEXIST, MAP_HUGETLB → EPERM, mlock retry →
+# EAGAIN), plus an `ErrorOr<T>` → negative-errno helper.
+add_header_library(
+  memory_posix_errno
+  HDRS
+    memory/posix/posix_errno.h
+  DEPENDS
+    .ntdll
+    libc.hdr.errno_macros
+    libc.src.__support.error_or
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+)
+
+# Page-rounding, overflow-safe size checks, POSIX prot/flag validation,
+# HUGETLB privilege probe, MAP_HUGE_SHIFT decoder, madvise advice-code
+# whitelist. Pure validation — no syscalls, no substrate touch.
+add_header_library(
+  memory_posix_validation
+  HDRS
+    memory/posix/posix_validation.h
+  DEPENDS
+    .alloc_page_size
+    .nt_pal
+    .ntdll
+    libc.hdr.errno_macros
+    libc.hdr.stdint_proxy
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+)
+
+# AcquireMeta builders, one per POSIX call shape (anon_private,
+# anon_shared, file_private, file_shared, hugetlb, brk, shm_posix,
+# shm_sysv). The single site that translates POSIX flag bits into
+# `region_flag::*` bits the substrate's fault and fork paths consume.
+add_header_library(
+  memory_posix_meta
+  HDRS
+    memory/posix/posix_meta.h
+  DEPENDS
+    .memory_posix_validation
+    .nt_pal
+    .ntdll
+    .va_region_desc
+    .va_tracker
+    libc.hdr.stdint_proxy
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+)
+
+# Twelve `DescMutator` free-function callbacks for the POSIX layer.
+# Each mutator runs on a fresh `RegionDesc` clone under the substrate's
+# LOCKED hold and writes only the fields its intent names; unrelated
+# `flags` bits are preserved through the OR / AND-NOT pattern in
+# `set_flag_bits` / `clear_flag_bits`.
+add_object_library(
+  memory_posix_mutators
+  SRCS
+    memory/posix/posix_mutators.cpp
+  HDRS
+    memory/posix/posix_mutators.h
+  DEPENDS
+    .ntdll
+    .va_region_desc
+    .va_tracker
+    libc.hdr.stdint_proxy
+    libc.src.__support.CPP.atomic
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
 )
 
 # Reserve-and-commit atexit callback list. Replaces BlockStore on Windows
@@ -1273,10 +1904,10 @@ add_object_library(
 add_object_library(
   region_pool
   SRCS
-    memory/region_pool.cpp
+    memory/legacy/region_pool.cpp
   HDRS
-    memory/region_desc.h
-    memory/region_pool.h
+    memory/legacy/region_desc.h
+    memory/legacy/region_pool.h
   DEPENDS
     .fork_reinit
     .ntdll
@@ -1309,14 +1940,15 @@ add_object_library(
 add_object_library(
   mapping_table
   SRCS
-    memory/mapping_table.cpp
+    memory/legacy/mapping_table.cpp
   HDRS
-    memory/mapping_table.h
+    memory/legacy/mapping_table.h
     memory/va_inventory.h
   DEPENDS
     .fork_reinit
     .libc_fini_registry
     .memory_primitives_registry
+    .nt_pal
     .ntdll
     .page_alloc
     .page_size
@@ -1337,7 +1969,7 @@ add_object_library(
 add_header_library(
   memory_primitives_registry
   HDRS
-    memory/memory_primitives_bootstrap.h
+    memory/legacy/memory_primitives_bootstrap.h
   DEPENDS
     .section_registry
     libc.hdr.stdint_proxy
@@ -1351,7 +1983,7 @@ add_header_library(
 add_object_library(
   memory_primitives_bootstrap
   SRCS
-    memory/memory_primitives_bootstrap.cpp
+    memory/legacy/memory_primitives_bootstrap.cpp
   DEPENDS
     .mapping_table
     .memory_primitives_registry
@@ -1367,11 +1999,12 @@ add_object_library(
 add_object_library(
   region_reconcile
   SRCS
-    memory/region_reconcile.cpp
+    memory/legacy/region_reconcile.cpp
   HDRS
-    memory/region_reconcile.h
+    memory/legacy/region_reconcile.h
   DEPENDS
     .mapping_table
+    .nt_pal
     .ntdll
     .page_alloc
     .page_size
@@ -1394,6 +2027,7 @@ add_object_library(
   DEPENDS
     .mapping_table
     .memory_lock_policy_state
+    .nt_pal
     .ntdll
     .veh_core
     .veh_filter_registry
@@ -1407,11 +2041,12 @@ add_object_library(
 add_object_library(
   remap_guard
   SRCS
-    memory/remap_guard.cpp
+    memory/legacy/remap_guard.cpp
   HDRS
-    memory/remap_guard.h
+    memory/legacy/remap_guard.h
   DEPENDS
     .mapping_table
+    .nt_pal
     .ntdll
     .page_alloc
     .page_size
@@ -1425,11 +2060,12 @@ add_object_library(
 add_object_library(
   remap_transaction
   SRCS
-    memory/remap_transaction.cpp
+    memory/legacy/remap_transaction.cpp
   HDRS
-    memory/remap_transaction.h
+    memory/legacy/remap_transaction.h
   DEPENDS
     .mapping_table
+    .nt_pal
     .remap_guard
     .page_size
     libc.src.__support.macros.config
@@ -1623,6 +2259,33 @@ add_header_library(
     signal/control/sigchld.h
   DEPENDS
     libc.hdr.types.siginfo_t
+    libc.src.__support.macros.config
+)
+
+# Layer 4 supporting subsystem: rich signal payload (Crystalline-backed).
+# Wait-free per-signum atomic latest-event pointer; one Crystalline domain
+# carries SIGCHLD / SIGEV_SIGNAL / cross-process kill records. Replaces
+# the old PCB-resident packed SIGCHLD atomic and the racy CrossProcessSender
+# side array with a single uniform mechanism that is signal-safe and
+# NtTerminateThread-resilient.
+add_header_library(
+  signal_payload_h
+  HDRS
+    signal/payload/sig_payload.h
+  DEPENDS
+    libc.hdr.types.siginfo_t
+    libc.hdr.types.union_sigval
+    libc.src.__support.macros.config
+)
+
+add_object_library(
+  signal_payload
+  SRCS
+    signal/payload/sig_payload.cpp
+  DEPENDS
+    .signal_payload_h
+    .crystalline_domain
+    libc.hdr.signal_macros
     libc.src.__support.CPP.atomic
     libc.src.__support.macros.config
     libc.src.__support.macros.optimization
@@ -1888,6 +2551,7 @@ add_object_library(
   DEPENDS
     .signal_process_control_h
     .signal_sigchld_h
+    .signal_payload
     .signal_dispatch_engine_h
     .signal_restart_state_h
     .signal_internal_h
@@ -1920,6 +2584,7 @@ add_object_library(
     .signal_dispatch_engine
     .signal_process_control
     .signal_process_control_h
+    .signal_payload
     .signal_dispatch_engine_h
     .signal_sigqueue_pool_h
     .signal_alpc_transport_h
@@ -1995,11 +2660,12 @@ add_object_library(
 add_object_library(
   mmap_engine
   SRCS
-    memory/mmap_engine.cpp
+    memory/legacy/mmap_engine.cpp
   HDRS
-    memory/mmap_engine.h
+    memory/legacy/mmap_engine.h
   DEPENDS
     .fd_table
+    .nt_pal
     .ntdll
     .mapping_table
     .region_reconcile
@@ -2022,10 +2688,11 @@ add_object_library(
 add_object_library(
   vm_protect
   SRCS
-    memory/vm_protect.cpp
+    memory/legacy/vm_protect.cpp
   HDRS
-    memory/vm_protect.h
+    memory/legacy/vm_protect.h
   DEPENDS
+    .nt_pal
     .ntdll
     .mapping_table
     .remap_transaction
@@ -2045,9 +2712,9 @@ add_object_library(
 add_object_library(
   brk_state
   SRCS
-    memory/brk_state.cpp
+    memory/legacy/brk_state.cpp
   HDRS
-    memory/brk_state.h
+    memory/legacy/brk_state.h
   DEPENDS
     .fork_reinit
     .page_alloc
@@ -2082,10 +2749,11 @@ add_object_library(
 add_object_library(
   mlock_ops
   SRCS
-    memory/mlock_ops.cpp
+    memory/legacy/mlock_ops.cpp
   HDRS
-    memory/mlock_ops.h
+    memory/legacy/mlock_ops.h
   DEPENDS
+    .nt_pal
     .ntdll
     .ntdll
     .page_size
@@ -2106,10 +2774,11 @@ add_object_library(
 add_object_library(
   madvise_ops
   SRCS
-    memory/madvise_ops.cpp
+    memory/legacy/madvise_ops.cpp
   HDRS
-    memory/madvise_ops.h
+    memory/legacy/madvise_ops.h
   DEPENDS
+    .nt_pal
     .ntdll
     .ntdll
     .page_size
@@ -2128,10 +2797,11 @@ add_object_library(
 add_object_library(
   posix_madvise_ops
   SRCS
-    memory/posix_madvise_ops.cpp
+    memory/legacy/posix_madvise_ops.cpp
   HDRS
-    memory/posix_madvise_ops.h
+    memory/legacy/posix_madvise_ops.h
   DEPENDS
+    .nt_pal
     .ntdll
     .ntdll
     .page_size
@@ -2150,10 +2820,11 @@ add_object_library(
 add_object_library(
   msync_ops
   SRCS
-    memory/msync_ops.cpp
+    memory/legacy/msync_ops.cpp
   HDRS
-    memory/msync_ops.h
+    memory/legacy/msync_ops.h
   DEPENDS
+    .nt_pal
     .ntdll
     .ntdll
     .page_size
@@ -2173,10 +2844,11 @@ add_object_library(
 add_object_library(
   mincore_ops
   SRCS
-    memory/mincore_ops.cpp
+    memory/legacy/mincore_ops.cpp
   HDRS
-    memory/mincore_ops.h
+    memory/legacy/mincore_ops.h
   DEPENDS
+    .nt_pal
     .ntdll
     .ntdll
     .page_size
@@ -2194,9 +2866,9 @@ add_object_library(
 add_object_library(
   shm_ops
   SRCS
-    memory/shm_ops.cpp
+    memory/legacy/shm_ops.cpp
   HDRS
-    memory/shm_ops.h
+    memory/legacy/shm_ops.h
   DEPENDS
     .fd_ops
     .ntdll
@@ -2221,9 +2893,9 @@ add_object_library(
 add_object_library(
   sysv_shm_ops
   SRCS
-    memory/sysv_shm_ops.cpp
+    memory/legacy/sysv_shm_ops.cpp
   HDRS
-    memory/sysv_shm_ops.h
+    memory/legacy/sysv_shm_ops.h
   DEPENDS
     .ntdll
     .process_control_block
@@ -2284,10 +2956,11 @@ add_object_library(
 add_object_library(
   numa_ops
   SRCS
-    memory/numa_ops.cpp
+    memory/legacy/numa_ops.cpp
   HDRS
-    memory/numa_ops.h
+    memory/legacy/numa_ops.h
   DEPENDS
+    .nt_pal
     .ntdll
     .ntdll
     .page_size
@@ -2308,10 +2981,11 @@ add_object_library(
 add_object_library(
   remap_file_pages_ops
   SRCS
-    memory/remap_file_pages_ops.cpp
+    memory/legacy/remap_file_pages_ops.cpp
   HDRS
-    memory/remap_file_pages_ops.h
+    memory/legacy/remap_file_pages_ops.h
   DEPENDS
+    .nt_pal
     .ntdll
     .ntdll
     .page_size
@@ -2332,10 +3006,11 @@ add_object_library(
 add_object_library(
   mremap_engine
   SRCS
-    memory/mremap_engine.cpp
+    memory/legacy/mremap_engine.cpp
   HDRS
-    memory/mremap_engine.h
+    memory/legacy/mremap_engine.h
   DEPENDS
+    .nt_pal
     .ntdll
     .ntdll
     .page_size
@@ -2443,7 +3118,7 @@ add_object_library(
 add_header_library(
   working_set
   HDRS
-    memory/working_set.h
+    memory/legacy/working_set.h
   DEPENDS
     .ntdll
     libc.src.__support.macros.config
@@ -2456,11 +3131,12 @@ add_header_library(
 add_object_library(
   memory_lock_policy_state
   SRCS
-    memory/memory_lock_policy.cpp
+    memory/legacy/memory_lock_policy.cpp
   HDRS
-    memory/memory_lock_policy.h
+    memory/legacy/memory_lock_policy.h
   DEPENDS
     .libc_fini_registry
+    .nt_pal
     .ntdll
     .page_size
     .veh_core
@@ -2599,6 +3275,7 @@ add_object_library(
     process_control_block.h
     pcb_init_access.h
   DEPENDS
+    .nt_pal_process_state
     .ntdll
     .page_alloc
     .fork_reinit
@@ -2632,6 +3309,7 @@ add_object_library(
   HDRS
     io/thread_ring.h
   DEPENDS
+    .nt_pal
     .ntdll
     .nt_ioring_ops
     .slab_pool
@@ -4720,6 +5398,7 @@ add_object_library(
     .fd_table
     .itimer_ops
     .lazy_init_reset
+    .nt_pal
     .ntdll
     .nt_path
     .ntdll

@@ -84,6 +84,33 @@ add_header_library(
     libc.src.__support.time.units
 )
 
+# Address-keyed parking lot — 256 cache-line-aligned bucket table over
+# `wait_slot`. Header-only by virtue of `futex_addr::wait` being a
+# template; runtime symbols come from `wait_slot.cpp`. Existing
+# consumers (`thread_registry`, `named_semaphore`, `reactor`, etc.)
+# include the header directly and rely on `wait_slot`'s `.cpp` for
+# linkage; this declaration gives the header a first-class CMake target
+# so unit tests that depend on subsystems composing on `futex_addr`
+# (`interval_skiplist`, `va_tracker`) can list it in DEPENDS without
+# the `add_libc_unittest` skip filter dropping the test.
+add_header_library(
+  futex_addr
+  HDRS
+    futex_addr.h
+  DEPENDS
+    .spin_wait
+    .wait_slot
+    libc.hdr.errno_macros
+    libc.hdr.types.struct_timespec
+    libc.src.__support.CPP.atomic
+    libc.src.__support.OSUtil.windows.nt_capabilities
+    libc.src.__support.OSUtil.windows.ntdll
+    libc.src.__support.OSUtil.windows.page_alloc
+    libc.src.__support.OSUtil.windows.thread_scratch
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+)
+
 add_header_library(
   thread_local_word
   HDRS

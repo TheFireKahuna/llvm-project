@@ -13,12 +13,14 @@
 #include "src/__support/CPP/atomic.h"
 #include "src/__support/CPP/string_view.h"
 #include "src/__support/CPP/stringstream.h"
-#include "src/__support/OSUtil/windows/alloc/slab_pool.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/slab_pool.h"
 #include "src/__support/OSUtil/windows/libc_fini_registry.h"
 #include "src/__support/OSUtil/windows/libc_subsystem_init.h"
+#include "src/__support/OSUtil/windows/concurrent/crystalline_domain_registry.h"
 #include "src/__support/OSUtil/windows/nt/nt_wstring_view.h"
 #include "src/__support/OSUtil/windows/nt/scoped_nt_handle.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
+#include "src/__support/OSUtil/windows/tls/teb_fixup.h"
 #include "src/__support/OSUtil/windows/tls/teb_tls.h"
 #include "src/__support/OSUtil/windows/tls/tls_cleanup.h"
 #include "src/__support/common.h"
@@ -42,7 +44,7 @@
 // NUMA policy inheritance. Linux clone() inherits the parent's mempolicy;
 // Windows thread_local reinitializes to MPOL_DEFAULT. We snapshot the
 // parent's policy in StartArgs and apply it in thread_entry().
-#include "src/__support/OSUtil/windows/memory/numa_policy.h"
+#include "src/__support/OSUtil/windows/memory/legacy/numa_policy.h"
 
 // Process identity — impersonation token inheritance for POSIX setuid.
 // Linux clone() inherits the parent's credentials; Windows CreateThread
@@ -201,6 +203,23 @@ WINAPI static DWORD thread_entry_impl(void *arg) {
   // The kernel owns the real stack reservation. Fill in the pthread-visible
   // low stack address once the child thread is live.
   populate_kernel_stack_metadata(attrib, lc, NtCurrentTeb());
+
+  // Reserve LIBC_STACK_GUARANTEE_BYTES for the SEH dispatcher + master VEH
+  // + signal transport on stack-overflow. Without this the user's SIGSEGV
+  // handler (or SA_ONSTACK alt-stack switch) cannot reliably run after a
+  // guard-page hit. Pure TEB store, idempotent across re-entry. Done
+  // BEFORE register_thread_state so the guarantee is in place before any
+  // sigaction / signal delivery in the new thread.
+  windows::apply_libc_stack_guarantee();
+
+  // Pre-claim Crystalline-W slot indices on every registered domain so
+  // a future fault-context `protect()` (e.g. a VEH filter that calls
+  // `va_tracker::resolve()`) is allocation-free. Without warmup, the
+  // first protect() on a fault path could demand-commit slot-pool VA,
+  // which itself could re-enter the master VEH handler. Idempotent
+  // and cheap — domains not yet registered at this point are simply
+  // skipped (the calling thread will lazy-claim on first use).
+  ::LIBC_NAMESPACE::concurrent::registry_warm_thread_all();
 
   // Register the stable per-thread signal state with TLS and inherit the
   // parent's signal mask.

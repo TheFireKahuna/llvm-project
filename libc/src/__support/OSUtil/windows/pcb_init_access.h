@@ -144,6 +144,91 @@ public:
     g_pcb.zone0.substrate_root_ = v;
   }
 
+  // Pagemap sealed handles — populated by `pagemap_init_fn` during
+  // Tier A Phase 3. All three values are lifetime-immutable after the
+  // Tier A seal. The reservation stays committed PAGE_READONLY for the
+  // process lifetime (snmalloc `notify_using_readonly` pattern); the
+  // kernel mutates PTE state on `nt_pal::protect` upgrades but never
+  // touches the [base, end) bounds or the cookie.
+  LIBC_INLINE static void set_pagemap_base(void *v) {
+    LIBC_PCB_ASSERT_TIER_A_OPEN();
+    g_pcb.zone0.pagemap_base_ = v;
+  }
+  LIBC_INLINE static void set_pagemap_end(void *v) {
+    LIBC_PCB_ASSERT_TIER_A_OPEN();
+    g_pcb.zone0.pagemap_end_ = v;
+  }
+  LIBC_INLINE static void set_pagemap_cookie(uintptr_t v) {
+    LIBC_PCB_ASSERT_TIER_A_OPEN();
+    g_pcb.zone0.pagemap_cookie_ = v;
+  }
+
+  // Buddy arena sealed handles — populated by `buddy_arena_init_fn` during
+  // Tier A Phase 4 (after pagemap is online so the buddy's three
+  // reservations can be marked LIBC_INTERNAL via the Receipt mechanism).
+  // All six values are lifetime-immutable after the Tier A seal; chunk
+  // alloc/free mutates the per-arena BSS state (live_count, generation,
+  // tree_init latch) but never the sealed bases / capacity / secret.
+  LIBC_INLINE static void set_buddy_partition_base(void *v) {
+    LIBC_PCB_ASSERT_TIER_A_OPEN();
+    g_pcb.zone0.buddy_partition_base_ = v;
+  }
+  LIBC_INLINE static void set_buddy_partition_bytes(size_t v) {
+    LIBC_PCB_ASSERT_TIER_A_OPEN();
+    g_pcb.zone0.buddy_partition_bytes_ = v;
+  }
+  LIBC_INLINE static void set_buddy_tree_base(void *v) {
+    LIBC_PCB_ASSERT_TIER_A_OPEN();
+    g_pcb.zone0.buddy_tree_base_ = v;
+  }
+  LIBC_INLINE static void set_buddy_desc_pool_base(void *v) {
+    LIBC_PCB_ASSERT_TIER_A_OPEN();
+    g_pcb.zone0.buddy_desc_pool_base_ = v;
+  }
+  LIBC_INLINE static void set_buddy_desc_pool_capacity(size_t v) {
+    LIBC_PCB_ASSERT_TIER_A_OPEN();
+    g_pcb.zone0.buddy_desc_pool_capacity_ = v;
+  }
+  LIBC_INLINE static void set_buddy_arena_secret(uintptr_t v) {
+    LIBC_PCB_ASSERT_TIER_A_OPEN();
+    g_pcb.zone0.buddy_arena_secret_ = v;
+  }
+
+  // Partition layer sealed handles — populated by `partition_init_fn`
+  // during Tier A Phase 5 (after pagemap=3 and buddy_arena=4 are online so
+  // the partition's three reservations can be marked LIBC_INTERNAL via
+  // the Receipt mechanism). The three Zone 0 pointers are lifetime-
+  // immutable after the Tier A seal; partition lifecycle (reserve_or_grow
+  // / commit / decommit / retire) mutates the descriptor pool slots and
+  // reserve table entries via atomic operations on file-scope bitmaps
+  // and the inline atomic-pointer table — never the sealed bases.
+  // The fork-mutable canary key (`partition_secret`) is a Zone 0b setter
+  // — see further down.
+  LIBC_INLINE static void set_partition_coarse_pagemap(void *v) {
+    LIBC_PCB_ASSERT_TIER_A_OPEN();
+    g_pcb.zone0.partition_coarse_pagemap_ = v;
+  }
+  LIBC_INLINE static void set_partition_reserve_table(void *v) {
+    LIBC_PCB_ASSERT_TIER_A_OPEN();
+    g_pcb.zone0.partition_reserve_table_ = v;
+  }
+  LIBC_INLINE static void set_partition_desc_pool_base(void *v) {
+    LIBC_PCB_ASSERT_TIER_A_OPEN();
+    g_pcb.zone0.partition_desc_pool_base_ = v;
+  }
+
+  // NUMA topology snapshot — populated by `pal_init_fn` during Tier A
+  // Phase 0. Returns a writable reference; the probe walks the
+  // `NtQuerySystemInformationEx(SystemLogicalProcessorInformationEx,
+  // RelationNumaNode, ...)` result and stamps `cpu_to_node[]`,
+  // `highest_node`, `single_node`, `group_count`, and `populated`
+  // before the Tier A seal closes Zone 0 PAGE_READONLY for the rest of
+  // the process lifetime.
+  LIBC_INLINE static windows::NumaTopology &numa_topology_mut() {
+    LIBC_PCB_ASSERT_TIER_A_OPEN();
+    return g_pcb.zone0.numa_topology_;
+  }
+
   // ---------------------------------------------------------------------
   // Zone 0b setters (fork-mutable). Callable during Tier A bring-up AND
   // inside libc_fork_reinit() / veh_core fini, between matching
@@ -169,6 +254,23 @@ public:
   LIBC_INLINE static void set_dll_notify_cookie(void *v) {
     LIBC_PCB_ASSERT_ZONE0B_OPEN();
     g_pcb.zone0b.dll_notify_cookie_ = v;
+  }
+  // Layer 7 partition canary key. Drawn fresh at Tier A Phase 5
+  // (`partition_init_fn`) and re-rolled at fork priority 38
+  // (`partition_fork_reinit`) inside the Zone 0b unseal window so the
+  // child's canaries cannot be replayed against the parent.
+  LIBC_INLINE static void set_partition_secret(uintptr_t v) {
+    LIBC_PCB_ASSERT_ZONE0B_OPEN();
+    g_pcb.zone0b.partition_secret_ = v;
+  }
+  // Per-process cookie probed via NtQueryInformationProcess(ProcessCookie).
+  // Written at libc init by `pal_init_fn` and re-read after fork by
+  // `pal_fork_reinit_impl` inside the Zone 0b unseal window — the kernel
+  // rerolls the cookie on `RtlCloneUserProcess`, so the child must
+  // re-probe rather than inherit the parent's value.
+  LIBC_INLINE static void set_process_cookie(uint32_t v) {
+    LIBC_PCB_ASSERT_ZONE0B_OPEN();
+    g_pcb.zone0b.process_cookie_ = v;
   }
   LIBC_INLINE static void init_canary() {
     LIBC_PCB_ASSERT_ZONE0B_OPEN();

@@ -37,7 +37,7 @@
 
 #include "src/__support/OSUtil/windows/bcryptprimitives.h"
 #include "src/__support/OSUtil/windows/libc_fork_registry.h"
-#include "src/__support/OSUtil/windows/memory/mmap_lock.h"
+#include "src/__support/OSUtil/windows/memory/legacy/mmap_lock.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
 #include "src/__support/OSUtil/windows/pcb_init_access.h"
 #include "src/__support/OSUtil/windows/process_control_block.h"
@@ -157,6 +157,15 @@ void libc_fork_reinit() {
   // overflow detection).
   // =====================================================================
   windows::fix_teb_stack_bounds();
+
+  // Re-apply the libc stack-overflow handler reserve. Fork delivers the
+  // child a fresh TEB with GuaranteedStackBytes = 0 — the parent's value
+  // does not survive NtCreateUserProcess (clone mode). Without this the
+  // child is one guard-page deep on stack-overflow until pthread_create
+  // spawns a new thread that runs apply_libc_stack_guarantee in its own
+  // entry. Keep it adjacent to fix_teb_stack_bounds for the same reason
+  // — both are TEB-state repairs that the VEH chain depends on.
+  windows::apply_libc_stack_guarantee();
 
   // =====================================================================
   // Walk the .libcfork registry: collect, audit, sort, dispatch.

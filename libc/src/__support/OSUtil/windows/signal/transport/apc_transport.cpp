@@ -69,6 +69,14 @@ inline bool validate_apc_p1(uint64_t p1_val) {
   return static_cast<uint16_t>(p1_val & 0xFFFF) == APC_SIGNAL_MAGIC;
 }
 
+// Recover the sender's signum from the encoded p1 cookie. Used to bind
+// the captured CONTEXT to its specific signum so dispatch_pending only
+// feeds the original-fault-or-sender CONTEXT to *that* signal's handler,
+// not to other signals that happen to be pending in the same drain pass.
+inline int decode_apc_p1_signum(uint64_t p1_val) {
+  return static_cast<int>((p1_val >> 16) & 0xFF);
+}
+
 // Pend a signal record into a PendingSet, allocating an RT entry if needed.
 // Returns true on success, false only on RT sigqueue_alloc() failure (OOM).
 // Standard signals never fail here — the bitmap CAS is wait-free.
@@ -146,7 +154,13 @@ NTAPI void intra_process_apc(PVOID p1_raw, PVOID /*p2*/, PVOID /*p3*/,
   // Capture the interrupted CONTEXT for SA_SIGINFO handlers. Valid for
   // the duration of this APC frame — dispatch_pending runs synchronously
   // below, so the pointer remains live on KiUserApcDispatcher's stack.
+  //
+  // Bind it to the sender's signum (recovered from the APC cookie). The
+  // dispatch drain loop processes all pending standard signals lowest-
+  // first; without the binding, a co-pending signal would inherit this
+  // CONTEXT and ship a wrong-context ucontext_t to its SA_SIGINFO handler.
   state->interrupted_context = interrupted;
+  state->interrupted_signum = decode_apc_p1_signum(p1_val);
 
   // The sender already pended the signal into state->pending and set the
   // notify::SIGNAL bit via trigger(). dispatch_pending drains everything
@@ -157,6 +171,7 @@ NTAPI void intra_process_apc(PVOID p1_raw, PVOID /*p2*/, PVOID /*p3*/,
   // state->pending for a later dispatch boundary. Context won't carry
   // forward — matches POSIX: deferred delivery has no meaningful context.
   state->interrupted_context = nullptr;
+  state->interrupted_signum = 0;
 }
 
 // ---------------------------------------------------------------------------

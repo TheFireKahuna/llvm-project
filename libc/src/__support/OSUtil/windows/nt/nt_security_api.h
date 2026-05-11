@@ -277,6 +277,34 @@ RtlAcquirePrivilege(ULONG *Privilege, ULONG NumPrivileges, ULONG Flags,
 NTAPI __LIBC_EXTERN_DLLIMPORT_ATTR NTSTATUS
 RtlReleasePrivilege(PVOID ReturnedState);
 
+// Single-shot privilege adjustment on the current process or thread token.
+// Privilege:    SE_*_PRIVILEGE LUID low part (e.g. SeLockMemoryPrivilege = 4).
+// Enable:       TRUE to enable, FALSE to disable.
+// CurrentThread: TRUE = thread impersonation token, FALSE = process token.
+// Enabled:      receives the *prior* state of the privilege (TRUE if it was
+//               already enabled, FALSE if not). Caller can use this to
+//               revert later without keeping a state handle.
+//
+// Returns STATUS_PRIVILEGE_NOT_HELD if the token does not contain the
+// requested privilege at all (i.e. cannot be enabled).
+//
+// Used by Layer 0 PAL (`nt_pal::large_pages_available()`) to probe
+// SeLockMemoryPrivilege once at libc init.
+NTAPI __LIBC_EXTERN_DLLIMPORT_ATTR NTSTATUS
+RtlAdjustPrivilege(ULONG Privilege, BOOLEAN Enable, BOOLEAN CurrentThread,
+                   PBOOLEAN Enabled);
+
+// SE_*_PRIVILEGE values — the LUID low part as expected by RtlAdjustPrivilege
+// and by the LUID_AND_ATTRIBUTES.Luid.LowPart field in TOKEN_PRIVILEGES.
+// Mirrors the Win32 SDK numeric values (winnt.h).
+inline constexpr ULONG SeCreateTokenPrivilege = 2;
+inline constexpr ULONG SeAssignPrimaryTokenPrivilege = 3;
+inline constexpr ULONG SeLockMemoryPrivilege = 4;
+inline constexpr ULONG SeIncreaseQuotaPrivilege = 5;
+inline constexpr ULONG SeTcbPrivilege = 7;
+inline constexpr ULONG SeSecurityPrivilege = 8;
+inline constexpr ULONG SeDebugPrivilege = 20;
+
 //===----------------------------------------------------------------------===//
 // Extended Attributes (EAs) — for $LXMOD/$LXUID/$LXGID WSL metadata
 //===----------------------------------------------------------------------===//

@@ -8,7 +8,7 @@
 
 #include "src/__support/OSUtil/windows/fd/ofd_pool.h"
 #include "src/__support/OSUtil/windows/fd/fd_table.h"
-#include "src/__support/OSUtil/windows/alloc/slab_pool.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/slab_pool.h"
 #include "src/__support/OSUtil/windows/libc_fini_registry.h"
 #include "src/__support/OSUtil/windows/libc_subsystem_init.h"
 #include "src/__support/macros/config.h"

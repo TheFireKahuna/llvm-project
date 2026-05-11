@@ -8,7 +8,7 @@
 
 #include "src/__support/threads/windows/robust_list_cleanup.h"
 #include "src/__support/CPP/atomic.h"
-#include "src/__support/OSUtil/windows/alloc/slab_pool.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/slab_pool.h"
 #include "src/__support/macros/config.h"
 #include "src/__support/threads/windows/mutex.h"
 #include "src/__support/threads/windows/futex_utils.h"

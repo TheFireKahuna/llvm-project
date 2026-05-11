@@ -19,6 +19,8 @@
 #include "hdr/sched_macros.h"
 #include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
 #include "src/__support/OSUtil/windows/nt/scoped_nt_handle.h"
+#include "src/__support/OSUtil/windows/nt_pal/numa_topology.h"
+#include "src/__support/OSUtil/windows/nt_pal/pal_state.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
 #include "src/__support/common.h"
 #include "src/__support/macros/config.h"
@@ -29,49 +31,34 @@ namespace internal {
 namespace {
 
 // Find the NUMA node for a given processor group + mask.
-// Returns the node number, or 0 if lookup fails (safe default).
+//
+// Reads the sealed Zone 0 NUMA topology snapshot built once at libc
+// init — no syscall, no scratch allocation, no buffer-walk on the
+// `getcpu()` hot path. The snapshot was built from
+// `NtQuerySystemInformationEx(SystemLogicalProcessorInformationEx,
+// RelationNumaNode, ...)` so the answer is identical to the previous
+// on-demand walk; only the cost shape changed.
+//
+// `proc_mask` carries the caller's affinity bits (typically a single
+// processor's bit selected from `RtlGetCurrentProcessorNumberEx`); we
+// return the node id of the first matching CPU. Returns 0 if no CPU
+// in the mask was enumerated by the topology probe — same safe default
+// as the previous implementation.
 unsigned int find_numa_node(WORD group, KAFFINITY proc_mask) {
-  ULONG needed = 0;
-  ULONG relationship = RelationNumaNode;
-  NTSTATUS st = ::NtQuerySystemInformationEx(
-      SystemLogicalProcessorInformationEx, &relationship, sizeof(relationship),
-      nullptr, 0, &needed);
-
-  if (st != STATUS_INFO_LENGTH_MISMATCH || needed == 0)
+  if (group >= 4 || proc_mask == 0)
     return 0;
-
-  // Each NUMA entry is ~48 bytes; 4KB covers ~80 nodes.
-  auto ss = internal::byte_scratch(4096);
-  if (!ss)
-    return 0;
-  if (needed > ss.size())
-    return 0;
-
-  st = ::NtQuerySystemInformationEx(
-      SystemLogicalProcessorInformationEx, &relationship, sizeof(relationship),
-      ss.data(), needed, nullptr);
-  if (!NT_SUCCESS(st))
-    return 0;
-
-  // Minimum valid entry: Relationship (4) + Size (4) = 8 bytes.
-  constexpr DWORD MIN_ENTRY = 8;
-  const char *ptr = ss.data();
-  const char *end = ss.data() + needed;
-  while (ptr + MIN_ENTRY <= end) {
-    auto *entry =
-        reinterpret_cast<const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *>(ptr);
-    if (entry->Size < MIN_ENTRY || ptr + entry->Size > end)
-      break;
-
-    if (entry->Relationship == RelationNumaNode &&
-        entry->NumaNode.GroupMask.Group == group &&
-        (entry->NumaNode.GroupMask.Mask & proc_mask) != 0) {
-      return entry->NumaNode.NodeNumber;
-    }
-
-    ptr += entry->Size;
+  const windows::NumaTopology &topo = nt_pal::numa_topology();
+  KAFFINITY mask = proc_mask;
+  while (mask != 0) {
+    ULONG bit = __builtin_ctzll(mask);
+    mask &= mask - 1;
+    uint32_t idx = static_cast<uint32_t>(group) * 64u + bit;
+    if (idx >= windows::kNumaCpuTableSize)
+      continue;
+    uint8_t node = topo.cpu_to_node[idx];
+    if (node != windows::kNumaNodeUnassigned)
+      return node;
   }
-
   return 0;
 }
 

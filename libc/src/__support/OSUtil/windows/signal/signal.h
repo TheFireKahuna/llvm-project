@@ -60,8 +60,6 @@ bool should_restart_syscall();
 // Signal delivery (external entry points)
 // ---------------------------------------------------------------------------
 
-void deliver_signal(int signum, siginfo_t *info,
-                    ucontext_t *context = nullptr);
 intptr_t deliver_signal_to_thread(DWORD tid, int signum);
 intptr_t deliver_process_signal(int signum);
 
@@ -94,7 +92,8 @@ intptr_t deliver_process_signal(int signum);
 // SIGCHLD metadata
 // ---------------------------------------------------------------------------
 
-void deliver_sigchld(int code, int pid, int status);
+void deliver_sigchld(int code, int pid, int status, long long utime_us,
+                     long long stime_us);
 void populate_sigchld_info(siginfo_t *info);
 
 // ---------------------------------------------------------------------------

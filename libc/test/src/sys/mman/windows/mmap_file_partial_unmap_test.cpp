@@ -6,15 +6,14 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Public-API counterpart to the hermetic region_shape_transition_test.
+// Public-API coverage for file-backed partial munmap.
 //
-// Every existing public mmap test in this directory is MAP_ANONYMOUS; this
-// file is the externally-visible coverage for the FILE_VIEW_MONO ->
-// FILE_VIEW_CHUNKED dispatch driven by partial_unmap_view (vm_protect.cpp).
-// The tests touch only the POSIX surface (mmap, munmap, mprotect) and verify
-// promotion behaviour by observing what the user is contractually entitled to
-// see: surrounding pages stay readable with their data intact, MAP_SHARED
-// writes still reach the backing file after promotion, and MAP_PRIVATE CoW
+// Every other public mmap test in this directory is MAP_ANONYMOUS; this
+// file covers the externally-visible behaviour of partial-unmap on a
+// file-backed view. The tests touch only the POSIX surface (mmap, munmap,
+// mprotect) and verify what the user is contractually entitled to see:
+// surrounding pages stay readable with their data intact, MAP_SHARED writes
+// still reach the backing file after a partial unmap, and MAP_PRIVATE CoW
 // dirty pages stay isolated from the file.
 //
 // The backing file is created and verified through direct NtCreateFile /

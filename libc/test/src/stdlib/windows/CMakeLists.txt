@@ -10,7 +10,6 @@ add_libc_unittest(
     libc.src.stdlib.arc4random
     libc.src.stdlib.arc4random_buf
     libc.src.stdlib.arc4random_uniform
-    libc.test.UnitTest.Test
 )
 
 add_libc_unittest(
@@ -22,7 +21,6 @@ add_libc_unittest(
   DEPENDS
     libc.src.stdlib.malloc
     libc.src.stdlib.free
-    libc.test.UnitTest.Test
 )
 
 add_libc_unittest(
@@ -34,5 +32,4 @@ add_libc_unittest(
   DEPENDS
     libc.src.stdlib.malloc
     libc.src.stdlib.free
-    libc.test.UnitTest.Test
 )

@@ -50,7 +50,6 @@ add_libc_unittest(
   DEPENDS
     libc.hdr.types.pid_t
     libc.src.unistd.getpid
-    libc.test.UnitTest.Test
 )
 
 add_libc_unittest(

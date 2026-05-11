@@ -10,6 +10,7 @@
 
 #include "hdr/errno_macros.h"
 #include "hdr/signal_macros.h"
+#include "hdr/stdint_proxy.h"
 #include "hdr/types/siginfo_t.h"
 #include "hdr/types/union_sigval.h"
 #include "src/__support/OSUtil/syscall.h"
@@ -56,7 +57,7 @@ LLVM_LIBC_FUNCTION(int, pthread_sigqueue,
 
   long ret = syscall_impl<long>(SYS_rt_tgsigqueueinfo,
                                 syscall_impl<long>(SYS_getpid), tid, sig,
-                                reinterpret_cast<long>(&info));
+                                reinterpret_cast<intptr_t>(&info));
   return ret == 0 ? 0 : static_cast<int>(-ret);
 }
 

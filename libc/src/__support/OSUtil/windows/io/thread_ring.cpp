@@ -13,10 +13,10 @@
 #include "src/__support/OSUtil/windows/io/thread_ring.h"
 #include "src/__support/OSUtil/windows/nt/handle_attributes.h"
 #include "src/__support/OSUtil/windows/nt/nt_ioring_ops.h"
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
-#include "src/__support/OSUtil/windows/alloc/slab_pool.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/slab_pool.h"
 #include "src/__support/OSUtil/windows/libc_subsystem_init.h"
-#include "src/__support/OSUtil/windows/memory/memory_primitives.h"
+#include "src/__support/OSUtil/windows/nt_pal/nt_pal.h"
 #include "src/__support/OSUtil/windows/reactor/reactor.h"
 #include "src/__support/threads/windows/thread_lifecycle.h"
 #include "src/__support/macros/config.h"
@@ -97,7 +97,7 @@ static bool reg_buf_init(ThreadRing *tr) {
     return false;
 
   auto free_on_fail = cpp::make_scope_guard(
-      [&] { windows::vm_release(base); });
+      [&] { nt_pal::free_va(base); });
 
   // Register as a single buffer entry for IORING_OP_FLAG_REGISTERED_BUFFER.
   IORING_BUFFER_INFO buf_info;
@@ -129,7 +129,7 @@ static bool reg_buf_init(ThreadRing *tr) {
 
 static void reg_buf_destroy(ThreadRing *tr) {
   if (tr->reg_buf_base) {
-    windows::vm_release(tr->reg_buf_base);
+    nt_pal::free_va(tr->reg_buf_base);
     tr->reg_buf_base = nullptr;
     tr->reg_buf_ready = false;
   }

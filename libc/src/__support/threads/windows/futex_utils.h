@@ -5,33 +5,14 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-//
-// 8-byte Futex: union { Atomic<u64> combined_; struct { Atomic<u32> stack_;
-// Atomic<FutexWordType> value_; }; }. Little-endian layout.
-//
-//   value_    — caller-visible 32-bit futex word; direct LOCK'd RMWs.
-//   stack_    — Treiber wait stack head, [gen:16 | top:16]. CAS-32 pop.
-//   combined_ — 64-bit view for atomic value-check + push: one CAS-64 both
-//               verifies value hasn't changed AND publishes the new head,
-//               so push has no Dekker re-check and no lost-wakeup window.
-//
-// Wake fold — one pre-mark CAS publishes everything; detach is best-effort:
-//   (B') link_cas_snap WAITING/IN_KERNEL → SIGNALED_*_ORPHAN. Single CAS
-//        carries wake signal + wake kind + cleanup responsibility + tag
-//        bump, closing both the harris walker's mid-splice race and the
-//        old separate-wake_word race window.
-//   (A') stack_ CAS detach. Loss leaves slot ORPHAN; waiter self-splices
-//        via self_splice_if_orphan, keeping unlock O(1).
-//   (U)  On detach win: link_cas_state_certify atomically upgrades
-//        ORPHAN → CLEAN and publishes LINK_CERT_BIT. Waiter then sees
-//        CLEAN+CERT (skip splice) or ORPHAN+CERT=0 (splice; harris's
-//        splice-success path publishes CERT before clear_slot_owned
-//        consumes it). LINK_CERT_BIT is the structural off-chain
-//        certificate that gates clear_slot_owned's IDLE write — see
-//        wait_slot.h for the full bit-level protocol.
-//
-// LIFO wake order — cache-warm, matches Linux qspinlock / parking_lot.
-//
+///
+/// \file
+/// Universal NT-POSIX blocking primitive: an 8-byte Futex unioning a 32-bit
+/// caller-visible value word with a 32-bit Treiber wait-stack head, composing
+/// with WaitSlot for parking and ThreadLocalWord for single-owner external-
+/// address waits. Per-method invariants and the wake-fold / detach protocol
+/// live on the Futex class doc and at each waker call site.
+///
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_LIBC_SRC___SUPPORT_THREADS_WINDOWS_FUTEX_UTILS_H
@@ -46,6 +27,7 @@
 #include "src/__support/macros/attributes.h"
 #include "src/__support/macros/config.h"
 #include "src/__support/threads/windows/futex_addr.h"
+#include "src/__support/threads/windows/futex_instrument.h"
 #include "src/__support/threads/windows/futex_word.h"
 #include "src/__support/threads/windows/spin_wait.h"
 #include "src/__support/threads/windows/wait_slot.h"
@@ -86,6 +68,11 @@ LIBC_INLINE void clear_slot_owned(wait_slot::WaitSlot &slot, uint32_t my_idx) {
   uint32_t new_gen =
       slot.generation.fetch_add(1, cpp::MemoryOrder::RELEASE) + 1;
   wait_slot::refresh_tls_slot_generation(my_idx, new_gen);
+  // Clear park_state on every wake exit. Owner is the only writer
+  // and is committed to leaving the wait at this point; any later
+  // notifier consults park_state on a future wait cycle (after the
+  // gen bump above invalidates any stale waker capture).
+  slot.park_state.store(0, cpp::MemoryOrder::RELAXED);
   slot.subsystem.store(wait_slot::SubsystemKind::None,
                         cpp::MemoryOrder::RELAXED);
 
@@ -163,6 +150,27 @@ flush_alert_batch(wait_slot::CompactTarget *tgt_buf, HANDLE *out_buf,
   scratch_used = 0;
 }
 
+/// Universal NT-POSIX blocking primitive: 32-bit value word plus an embedded
+/// Treiber wait stack, exposed as a single 8-byte CAS-64 target.
+///
+/// Composes with WaitSlot (per-thread parking record) and ThreadLocalWord
+/// (single-owner external-address parking). Every higher-level primitive
+/// (RawMutex, CndVar, Barrier, RawRwLock, sem_t, CallOnceFlag) is built on
+/// this class.
+///
+///   * Layout (little-endian): offset 0 = stack_ [gen:16 | top:16], offset 4
+///     = value_; CAS-64 on combined_ acts on both, native RMW on value_
+///     leaves stack_ alone, CAS-32 on stack_ leaves value_ alone.
+///   * Push linearisation: a single CAS-64 on combined_ atomically value-
+///     verifies and publishes the new stack head, so push carries no Dekker
+///     re-check and no lost-wakeup window.
+///   * Wake fold: link_cas_snap WAITING/IN_KERNEL → SIGNALED_*_ORPHAN is the
+///     single atomic publishing wake signal + wake kind + cleanup responsi-
+///     bility + tag bump; stack_ detach is best-effort, with detach-loss
+///     leaving the slot ORPHAN for waiter-side self_splice_if_orphan.
+///   * LINK_CERT_BIT is the structural off-chain certificate gating
+///     clear_slot_owned's IDLE write; see wait_slot.h for the bit protocol.
+///   * Wake order is LIFO — cache-warm, matches Linux qspinlock / parking_lot.
 class Futex {
   // LE: offset 0 = stack_ [gen:16 | top:16], offset 4 = value_.
   // CAS-64 on combined_ acts on both; native RMW on value_ leaves
@@ -474,11 +482,10 @@ public:
       auto &slot = wait_slot::get_slot(slot_idx);
       // wait_address=0 BEFORE the state CAS so the waiter's
       // invalidation check trips. wait_address=0 ALSO short-circuits
-      // slot_cleanup's thread-exit dispatch (see wait_slot.cpp:277)
-      // before it reads subsystem — so we don't need to clear
-      // subsystem here on the !ours path. The `ours` branch below
-      // clears subsystem alongside the wake commit, mirroring
-      // commit_pop_wake's "clear-on-detach-win" pattern.
+      // slot_cleanup's thread-exit dispatch before it reads subsystem
+      // — so we don't need to clear subsystem here on the !ours path.
+      // The `ours` branch below clears subsystem alongside the wake
+      // commit, mirroring commit_pop_wake's "clear-on-detach-win".
       slot.wait_address.store(0, cpp::MemoryOrder::RELAXED);
 
       // TID before the state CAS — CompactTarget skips owner_ref
@@ -486,22 +493,24 @@ public:
       // (I4 contract) so a recycled slot post-CAS can't bind a wrong
       // tid.
       uint32_t tid = slot.thread_id.load(cpp::MemoryOrder::RELAXED);
+      // Pre-CAS park_state hint selects ALERT_FIRED publish on the
+      // steal CAS (see notify_all for protocol).
+      bool hint = slot.park_state.load(cpp::MemoryOrder::RELAXED) != 0;
       bool ours = false;
-      uint8_t old = linkage::link_cas_state_detached<
-          wait_slot::SIGNALED_CLEAN, wait_slot::WaitSlotStateTraits>(slot.link, slot_snap, ours);
+      uint8_t old = linkage::link_cas_state_detached_runtime_alert<
+          wait_slot::SIGNALED_CLEAN>(slot.link, slot_snap, hint, ours);
       if (!ours) {
-        // Owner / unrelated waker handled the slot independently
-        // (typically: pre-mark + alert preceded our steal, owner
-        // ran clear_slot_owned). Only TIMED_OUT obliges us to
-        // reclaim — owner's harris would walk the post-steal NULL.
         // SIGNALED_*_ORPHAN ⇒ slot off-chain by our steal but our
         // failed CAS didn't publish CERT; follow up with certify CAS.
-        // SIGNALED_*_CLEAN and IDLE already carry CERT=1 from their 
-        // committing publisher.
-        if (old == wait_slot::TIMED_OUT) {
-          wait_slot::reclaim_slot(
-              wait_slot::ReclaimAuthority::after_stack_steal(slot_idx));
-        } else if (old == wait_slot::SIGNALED_ORPHAN) {
+        // SIGNALED_*_CLEAN / IDLE already carry CERT=1 from prior
+        // committer. WAITING is unreachable for our snap state byte
+        // here (the CAS-with-snap matched the snap; mismatch on tag
+        // alone falls through to !ours with old==WAITING — harmless,
+        // walker mid-splice or another notifier will handle).
+        // IN_KERNEL / TIMED_OUT branches retired: Futex no longer
+        // produces those states; futex_addr-shared slots can show
+        // them but their lifecycle is bucket-locked, not ours.
+        if (old == wait_slot::SIGNALED_ORPHAN) {
           (void)linkage::link_cas_state_certify<
               wait_slot::SIGNALED_ORPHAN, wait_slot::SIGNALED_CLEAN, wait_slot::WaitSlotStateTraits>(
               slot.link);
@@ -519,18 +528,19 @@ public:
       // harmless harris-walk-to-NULL on the post-steal stack.
       slot.subsystem.store(wait_slot::SubsystemKind::None,
                            cpp::MemoryOrder::RELAXED);
-      if (old == wait_slot::IN_KERNEL) {
+      // Post-CAS Dekker re-read (SEQ_CST) authoritative for alert
+      // decision. See notify_all for the full Dekker rationale.
+      bool should_alert =
+          slot.park_state.load(cpp::MemoryOrder::SEQ_CST) != 0;
+      if (old == wait_slot::WAITING && should_alert) {
         tgt_buf[scratch_used++] = {tid, slot_idx};
         if (scratch_used == kAlertBatch)
           flush_alert_batch(tgt_buf, out_buf, scratch_used, &ab_ctx);
-      } else if (old == wait_slot::WAITING) {
-        // Phase 2.5 cache spin observes our state CAS — no alert.
-      } else if (old == wait_slot::TIMED_OUT) {
-        wait_slot::reclaim_slot(
-            wait_slot::ReclaimAuthority::after_stack_steal(slot_idx));
       }
+      // WAITING + !should_alert: Phase 2.5 cache spin catches.
       // SIGNALED_*: concurrent pop/handoff already pre-marked
       // (benign — same wake + off-stack to same owner).
+      // IN_KERNEL / TIMED_OUT: unreachable from `ours==true`.
 
       pipe_push_one();
     }
@@ -576,80 +586,105 @@ public:
   // Termination: each retry re-reads head; progress bounded by
   // concurrent wake activity (≤ thread count).
 
-  // Lock-free find+splice on the Treiber stack. Callers: Phase 1.75
-  // stale-self reclaim, thread-exit trampoline, Phase 4 self-splice.
+  // Lock-free find+splice on the embedded Treiber stack. Delegates
+  // to the substrate's templated harris_unlink (see lock_free_linkage.h
+  // for the full mark-then-help walk protocol, Safety Triad, and per-
+  // branch invariants — this method preserves them by construction).
   //
-  // Splices dead intermediates opportunistically:
-  //   TIMED_OUT  — owner self-cancel; walker reclaims.
-  //   SIGNALED_* — popper pre-mark + lost detach (orphan); owner
-  //                reclaims on wake.
-  // IDLE on a reachable chain is the legitimate stale-snapshot signal
-  // (stack-steal + reclaim's IDLE+CERT=1 write left .next pointing
-  // into stolen successors); walker retries — NEVER assert.
+  // Futex-specific bits live in two nested types:
+  //   HarrisCtx   binds Ctx::try_splice_head to the CAS-64 on the
+  //               embedded combined_ word (head splice that simulta-
+  //               neously value-verifies and pivots stack head).
+  //   DeadPolicy  classifies state bytes for futex: live = WAITING
+  //               (IN_KERNEL no longer produced); dead intermediate =
+  //               TIMED_OUT or SIGNALED_*; only TIMED_OUT authorises
+  //               walker reclaim — SIGNALED_* stays owner-managed
+  //               (the slot owner reclaims via clear_slot_owned on
+  //               its wake path); IDLE on a reachable chain is the
+  //               documented T2 Retry signal.
   //
   // Splice-success atomically publishes LINK_CERT_BIT on the spliced
   // slot, satisfying clear_slot_owned's precondition for any owner
   // reaching its epilogue concurrently.
   //
-  // `expected_gen` — caller's gen capture. Mismatch ⇒ slot was
-  // reclaimed and possibly reallocated; MUST NOT splice (would steal
-  // a live slot from an unrelated waiter). Return false immediately.
+  // Callers: Phase 1.75 stale-self reclaim, thread-exit trampoline,
+  // Phase 4 self-splice, drain_stale_top fallback, cancel_or_absorb.
   //
-  // Return true iff caller should reclaim_slot(target). The target-
+  // expected_gen — caller's gen capture. Mismatch ⇒ slot was
+  // reclaimed and possibly reallocated; the substrate refuses to
+  // splice (would steal a live slot from an unrelated waiter).
+  //
+  // Returns true iff caller should reclaim_slot(target). The target-
   // splicing CAS is the single authority for reclaim rights — at
   // most one actor per lifecycle-gen sees true.
   //
-  // Structured per-attempt outcome. int8_t so the outer dispatcher
-  // can return `r == SplicedReclaim` directly as a bool.
-  //   Retry            — race; re-walk from head.
-  //   NotFound         — walked to NULL (or target gen advanced).
-  //   SplicedNoReclaim — target SIGNALED_*: spliced; owner reclaims.
-  //   SplicedReclaim   — target TIMED_OUT:  spliced; we reclaim.
-  enum class WalkResult : int8_t {
-    Retry = -1,
-    NotFound = 0,
-    SplicedNoReclaim = 1,
-    SplicedReclaim = 2,
-  };
-
   // Non-blocking, non-allocating, no syscalls.
   LIBC_INLINE bool harris_unlink(uint16_t target, uint32_t expected_gen) {
-    if (target == wait_slot::NULL_INDEX)
-      return false;
-
-    auto &target_slot = wait_slot::get_slot(target);
-    // Bind target's generation to the caller's expected gen. Any
-    // subsequent reclaim bumps the slot's gen; the per-attempt
-    // re-check inside harris_walk_attempt catches it before any
-    // splice CAS.
-    if (target_slot.generation.load(cpp::MemoryOrder::ACQUIRE) !=
-        expected_gen)
-      return false;
-    const uint32_t target_gen_entry = expected_gen;
-
-    // No hazard-window bracketing: reclaim_slot pushes directly to
-    // the freelist; the state+tag fold (every link write bumps tag,
-    // mid-splice CAS validates the full link including tag) ensures
-    // a stale walker snapshot fails CAS, and IDLE-on-reachable-chain
-    // is the documented Retry signal. Pool memory is statically
-    // allocated and never freed — stale derefs read valid memory.
-    for (;;) {
-      WalkResult r =
-          harris_walk_attempt(target, target_gen_entry, target_slot);
-      if (r == WalkResult::Retry)
-        continue;
-      return r == WalkResult::SplicedReclaim;
-    }
+    HarrisCtx ctx{this};
+    return linkage::harris_unlink<HarrisCtx, DeadPolicy>(ctx, target,
+                                                         expected_gen);
   }
 
 private:
-  // Splice helpers used by harris_walk_attempt. Each returns the
-  // splice's success bool directly — no mutable flag the caller can
-  // forget to update.
+  // Substrate Harris-walker DeadPolicy. All three hooks `static
+  // constexpr` per the substrate contract — `static_assert` and
+  // compile-time branch folding inside lock_free_linkage.h evaluate
+  // them at instantiation time.
+  struct DeadPolicy {
+    static constexpr bool is_idle_on_chain(uint8_t s) {
+      return s == wait_slot::IDLE;
+    }
+    static constexpr bool is_dead_intermediate(linkage::Link l) {
+      uint8_t s = l.state();
+      return s == wait_slot::TIMED_OUT || wait_slot::state_is_signaled(s);
+    }
+    static constexpr bool target_state_reclaims(uint8_t s) {
+      return s == wait_slot::TIMED_OUT;
+    }
+  };
+
+  // Per-instance adapter the substrate template binds against.
+  // try_splice_head forwards to Futex's CAS-64 head splice; the
+  // remaining hooks are mechanical pool accessors and reclaim
+  // dispatch. on_dead_intermediate_reclaim is gated upstream by
+  // DeadPolicy::target_state_reclaims, so the slot is provably
+  // reclaimable when this fires (TIMED_OUT only).
+  //
+  // kNullIndex is the substrate's Ctx-side chain-end sentinel —
+  // wait_slot::NULL_INDEX = 0 by structural invariant.
+  struct HarrisCtx {
+    Futex *self;
+    static constexpr uint16_t kNullIndex =
+        static_cast<uint16_t>(wait_slot::NULL_INDEX);
+
+    LIBC_INLINE cpp::Atomic<linkage::Link> &link_at(uint16_t idx) {
+      return wait_slot::get_slot(idx).link;
+    }
+    LIBC_INLINE uint32_t load_gen(uint16_t idx) {
+      return wait_slot::get_slot(idx).generation.load(
+          cpp::MemoryOrder::ACQUIRE);
+    }
+    LIBC_INLINE uint16_t load_head() {
+      return stack_top(combined_stack(
+          self->combined_.load(cpp::MemoryOrder::ACQUIRE)));
+    }
+    LIBC_INLINE bool try_splice_head(uint16_t expected_head,
+                                      uint16_t new_top) {
+      return self->try_splice_head(expected_head, new_top);
+    }
+    LIBC_INLINE void on_dead_intermediate_reclaim(uint16_t idx,
+                                                   uint8_t /*pre_state*/) {
+      wait_slot::reclaim_slot(
+          wait_slot::ReclaimAuthority::after_walker_splice(idx));
+    }
+  };
 
   // Head splice via combined_ CAS. Returns false if stack_top is no
   // longer expected_head (caller restarts); loops on weak-CAS
-  // spurious failures while it still matches.
+  // spurious failures while it still matches. Futex-specific because
+  // it CASes the embedded value+stack 64-bit word, not just the
+  // stack head — preserving value_ across the splice is what makes
+  // the head case race-free against a concurrent value mutation.
   LIBC_INLINE bool try_splice_head(uint16_t expected_head,
                                     uint16_t new_top) {
     for (;;) {
@@ -665,267 +700,6 @@ private:
         return true;
     }
   }
-
-  // Mid splice via pred.link strong CAS: rewrite pred.next, preserving
-  // pred's state. Any concurrent mutation to pred.link (state
-  // transition, walker mark/finalize, opp-splice on pred's predecessor)
-  // fails the CAS — caller restarts.
-  LIBC_INLINE bool try_splice_at_pred(uint16_t pred,
-                                        linkage::Link expected_pred_link,
-                                        uint16_t new_next) {
-    // with_next_uncertify drops MARK/CERT in desired; the strong CAS
-    // validates expected as the full word, so any non-zero MARK/CERT
-    // in actual would have failed it anyway — preservation would be
-    // a no-op in the only legal call pattern.
-    linkage::Link desired = expected_pred_link.with_next_uncertify(new_next);
-    auto &ps = wait_slot::get_slot(pred);
-    return ps.link.compare_exchange_strong(expected_pred_link, desired,
-                                            cpp::MemoryOrder::ACQ_REL,
-                                            cpp::MemoryOrder::ACQUIRE);
-  }
-
-  // Dead-prev mid-splice. Distinct from try_splice_at_pred: no
-  // captured snap of gp.link, so re-loads gp.link fresh and requires
-  // it to still point at prev with a live state and unmarked.
-  LIBC_INLINE bool try_splice_dead_prev_mid(uint16_t gp, uint16_t prev,
-                                              uint16_t p_next) {
-    auto &gs = wait_slot::get_slot(gp);
-    linkage::Link expected_link = gs.link.load(cpp::MemoryOrder::ACQUIRE);
-    uint8_t gs_state = expected_link.state();
-    if (expected_link.next() != prev || expected_link.is_marked() ||
-        (gs_state != wait_slot::WAITING &&
-         gs_state != wait_slot::IN_KERNEL))
-      return false;
-    return gs.link.compare_exchange_strong(
-        expected_link, expected_link.with_next_uncertify(p_next),
-        cpp::MemoryOrder::ACQ_REL, cpp::MemoryOrder::ACQUIRE);
-  }
-
-  // One head-anchored walk attempt. Caller (harris_unlink) loops
-  // until a non-Retry result; each attempt does only walk + race
-  // dispatch.
-  LIBC_INLINE WalkResult
-  harris_walk_attempt(uint16_t target, uint32_t target_gen_entry,
-                       wait_slot::WaitSlot &target_slot) {
-    // If target was reclaimed between caller's bind and now, we're
-    // done — someone else already unlinked it.
-    if (target_slot.generation.load(cpp::MemoryOrder::ACQUIRE) !=
-        target_gen_entry)
-      return WalkResult::NotFound;
-
-    uint16_t gp = wait_slot::NULL_INDEX;   // grandparent (prev of prev)
-    uint16_t prev = wait_slot::NULL_INDEX; // virtual head sentinel
-    uint16_t curr = stack_top(
-        combined_stack(combined_.load(cpp::MemoryOrder::ACQUIRE)));
-
-    while (curr != wait_slot::NULL_INDEX) {
-        // One atomic re-read of prev.link serves three purposes:
-        //   (1) reachability check prev.next == curr,
-        //   (2) expected-value for the mid-splice CAS (closes the
-        //       "prev popped, CAS succeeds on detached slot" race),
-        //   (3) prev.state dispatch — live (WAITING/IN_KERNEL) or
-        //       dead (TIMED_OUT / SIGNALED_* → dead-prev splice).
-        uint16_t observed;
-        linkage::Link prev_link;
-        if (prev == wait_slot::NULL_INDEX) {
-          observed = stack_top(
-              combined_stack(combined_.load(cpp::MemoryOrder::ACQUIRE)));
-        } else {
-          prev_link = wait_slot::get_slot(prev).link.load(
-              cpp::MemoryOrder::ACQUIRE);
-          // Marked: another walker is mid-splicing prev. Rather than
-          // wait for the marker to finalize (which deadlocks the
-          // walk if the marker died between parent CAS and finalize),
-          // help complete the splice ourselves. Strong CAS at both
-          // the parent rewrite and the finalize serializes the
-          // original-marker vs helper races: at most one winner per
-          // CAS, losers bail harmlessly.
-          if (prev_link.is_marked()) {
-            // Finalize ONLY on our own parent-CAS success — that is
-            // the proof of off-chain. On parent-CAS failure we don't
-            // know if the splice succeeded (marker did it / will do
-            // it) or if the chain shape no longer admits the splice
-            // (e.g. parent transitioned dead between mark and help):
-            // clear MARK to release the freeze so the next walk
-            // iteration can re-evaluate from scratch. link_clear_mark
-            // is idempotent and exits early on MARK=0 observed
-            // (covers the marker-already-finalized branch).
-            uint16_t p_next = prev_link.next();
-            bool spliced =
-                (gp == wait_slot::NULL_INDEX)
-                    ? try_splice_head(prev, p_next)
-                    : try_splice_dead_prev_mid(gp, prev, p_next);
-            if (spliced) {
-              linkage::link_finalize_after_splice(
-                  wait_slot::get_slot(prev).link,
-                  linkage::MarkedLinkSnap::from_observed_marked(prev_link));
-            } else {
-              linkage::link_clear_mark(wait_slot::get_slot(prev).link);
-            }
-            return WalkResult::Retry;
-          }
-          observed = prev_link.next();
-          uint8_t prev_state = prev_link.state();
-
-          // IDLE on a reachable chain = stale-snapshot from a stolen-
-          // list reclaim (see walker race table above). Retry, NEVER
-          // assert.
-          if (prev_state == wait_slot::IDLE)
-            return WalkResult::Retry;
-
-          // Dead-prev splice (TIMED_OUT or SIGNALED_*). Splice via
-          // gp.link (or combined_ if prev was head); resume with
-          // prev := gp, curr unchanged.
-          if (prev_state == wait_slot::TIMED_OUT ||
-              wait_slot::state_is_signaled(prev_state)) {
-            bool p_timed_out = (prev_state == wait_slot::TIMED_OUT);
-
-            // Mark prev.link to freeze prev.next while we CAS the
-            // parent — closes the stale-p_next race where a
-            // concurrent op-splice of prev's successor advances
-            // prev.next between our capture and the parent CAS.
-            auto &ps = wait_slot::get_slot(prev);
-            if (!linkage::link_cas_set_mark(ps.link, prev_link))
-              return WalkResult::Retry;
-            // MarkedLinkSnap is typed — only link_pack_after_mark
-            // produces one — so the finalize call's "input must be
-            // marked" precondition is checked at the type level.
-            // Required so the strong-CAS bail-on-fail in finalize
-            // can't certify a re-pushed slot in a new lifecycle.
-            linkage::MarkedLinkSnap prev_marked_snap =
-                linkage::link_pack_after_mark(prev_link);
-            // p_next is stable post-mark: only link_clear_mark or
-            // clear_slot_owned can modify prev.link's next, and both
-            // are post-off-chain. Waker state transitions preserve
-            // both mark and next.
-            uint16_t p_next = prev_link.next();
-
-            if (!(gp == wait_slot::NULL_INDEX
-                      ? try_splice_head(prev, p_next)
-                      : try_splice_dead_prev_mid(gp, prev, p_next))) {
-              // Release the mark so other walkers can make progress.
-              linkage::link_clear_mark(ps.link);
-              return WalkResult::Retry;
-            }
-            // Splice ok: atomically publish CERT and clear MARK via
-            // single strong CAS bail-on-fail (any racing writer takes
-            // over the terminal CERT publish; retrying could certify
-            // a re-pushed slot in a new lifecycle).
-            linkage::link_finalize_after_splice(
-                wait_slot::get_slot(prev).link, prev_marked_snap);
-            // Reclaim only TIMED_OUT — SIGNALED is owner-managed.
-            if (p_timed_out)
-              wait_slot::reclaim_slot(
-                  wait_slot::ReclaimAuthority::after_walker_splice(prev));
-            // Rewind: gp's own predecessor isn't tracked, so drop gp
-            // to NULL. Bounded — dead-set shrinks by one per splice.
-            prev = gp;
-            gp = wait_slot::NULL_INDEX;
-            continue;
-          }
-          // prev live (WAITING / IN_KERNEL).
-        }
-        if (observed != curr)
-          return WalkResult::Retry;
-
-        // One load covers curr's next AND state (folded in link).
-        auto &cs = wait_slot::get_slot(curr);
-        linkage::Link c_link = cs.link.load(cpp::MemoryOrder::ACQUIRE);
-        // Marked: another walker mid-splice on curr. Help complete
-        // (mark-then-help; see LINK_MARK_BIT doc in wait_slot.h).
-        // Parent for curr is `prev` (or head if prev == NULL).
-        // Same parent-CAS-success-gates-finalize discipline as the
-        // prev-marked branch above.
-        if (c_link.is_marked()) {
-          uint16_t c_next_marked = c_link.next();
-          bool spliced =
-              (prev == wait_slot::NULL_INDEX)
-                  ? try_splice_head(curr, c_next_marked)
-                  : try_splice_at_pred(prev, prev_link, c_next_marked);
-          if (spliced) {
-            linkage::link_finalize_after_splice(
-                cs.link,
-                linkage::MarkedLinkSnap::from_observed_marked(c_link));
-          } else {
-            linkage::link_clear_mark(cs.link);
-          }
-          return WalkResult::Retry;
-        }
-        uint16_t c_next = c_link.next();
-        uint8_t c_state = c_link.state();
-        // IDLE on chain = stale snapshot from stolen-list reclaim;
-        // retry, NEVER assert.
-        if (c_state == wait_slot::IDLE)
-          return WalkResult::Retry;
-        bool c_timed_out = (c_state == wait_slot::TIMED_OUT);
-        bool c_orphan = wait_slot::state_is_signaled(c_state);
-        bool c_dead = c_timed_out || c_orphan;
-
-        if (curr == target) {
-          // Target reclaimed by another actor between bind and now.
-          if (target_slot.generation.load(cpp::MemoryOrder::ACQUIRE) !=
-              target_gen_entry)
-            return WalkResult::NotFound;
-
-          // Mark target.link to freeze target.next during parent CAS
-          // (closes the stale-c_next race).
-          if (!linkage::link_cas_set_mark(cs.link, c_link))
-            return WalkResult::Retry;
-          linkage::MarkedLinkSnap target_marked_snap =
-              linkage::link_pack_after_mark(c_link);
-          // Mid-splice CAS uses prev_link as expected; any concurrent
-          // mutation to prev fails on tag mismatch.
-          if (prev == wait_slot::NULL_INDEX
-                  ? try_splice_head(target, c_next)
-                  : try_splice_at_pred(prev, prev_link, c_next)) {
-            linkage::link_finalize_after_splice(cs.link,
-                                                   target_marked_snap);
-            // Only TIMED_OUT is walker-reclaimable (owner moved on);
-            // SIGNALED_* stays owner-managed.
-            return c_timed_out ? WalkResult::SplicedReclaim
-                                : WalkResult::SplicedNoReclaim;
-          }
-          linkage::link_clear_mark(cs.link);
-          return WalkResult::Retry;
-        }
-
-        // Opp-splice dead intermediates — bounds ghost lifetime by
-        // folding cleanup into every walker. Self-reclaim is safe:
-        // reclaim_slot direct-pushes to freelist; the state+tag fold
-        // ensures any later walker that observes the freelist-pushed
-        // slot either trips the IDLE-on-chain retry or fails its
-        // mid-splice CAS via tag mismatch.
-        if (c_dead) {
-          if (!linkage::link_cas_set_mark(cs.link, c_link))
-            return WalkResult::Retry;
-          linkage::MarkedLinkSnap opp_marked_snap =
-              linkage::link_pack_after_mark(c_link);
-          if (prev == wait_slot::NULL_INDEX
-                  ? try_splice_head(curr, c_next)
-                  : try_splice_at_pred(prev, prev_link, c_next)) {
-            linkage::link_finalize_after_splice(cs.link, opp_marked_snap);
-            if (c_timed_out)
-              wait_slot::reclaim_slot(
-                  wait_slot::ReclaimAuthority::after_walker_splice(curr));
-            curr = c_next;
-            continue;
-          }
-          linkage::link_clear_mark(cs.link);
-          return WalkResult::Retry;
-        }
-
-        // Advance. gp = old prev so the next iteration can splice prev
-        // via gp.link if prev transitions dead. No gp_link snap — the
-        // dead-prev splice re-reads gs.link fresh.
-        gp = prev;
-        prev = curr;
-        curr = c_next;
-      }
-
-      // Walked to NULL — target removed by another actor or never on
-      // chain in this attempt's snapshot.
-      return WalkResult::NotFound;
-    }
 
 public:
   // Self-splice after IN_KERNEL → TIMED_OUT. Bounds ghost
@@ -1037,19 +811,21 @@ public:
                                     linkage::Link slot_snap, uint16_t top,
                                     uint8_t st, uint32_t old_stk,
                                     uint32_t new_stk) {
-    if (st == wait_slot::WAITING || st == wait_slot::IN_KERNEL) {
-      // Pre-mark ORPHAN — single-atomic wake publish.
-      if (!linkage::link_cas_snap<wait_slot::SIGNALED_ORPHAN, wait_slot::WaitSlotStateTraits>(
-              slot.link, slot_snap))
+    if (st == wait_slot::WAITING) {
+      // Pre-CAS park_state hint for ALERT_FIRED publish.
+      bool hint = slot.park_state.load(cpp::MemoryOrder::RELAXED) != 0;
+      // Pre-mark ORPHAN — single-atomic wake publish, SEQ_CST CAS
+      // for Dekker total order with owner's pre-park sequence.
+      if (!linkage::link_cas_snap_runtime_alert<wait_slot::SIGNALED_ORPHAN>(
+              slot.link, slot_snap, hint, cpp::MemoryOrder::SEQ_CST,
+              cpp::MemoryOrder::ACQUIRE))
         return; // pre-mark raced; caller retries with fresh snap.
       // Invalidate wait_address so the waiter's post-wake check
       // trips; subsystem→None for thread-exit dispatch.
       slot.wait_address.store(0, cpp::MemoryOrder::RELAXED);
       slot.subsystem.store(wait_slot::SubsystemKind::None,
                             cpp::MemoryOrder::RELAXED);
-      // I4: capture tid AND owner_ref together, post-pre-mark and
-      // pre-detach, via the typed token. The unconditional alert
-      // below is the only consumer.
+      // I4 + post-CAS Dekker park observation.
       WakeCommitToken token = capture_wake_target(slot);
       bool detached = stack_.compare_exchange_strong(
           old_stk, new_stk, cpp::MemoryOrder::ACQ_REL,
@@ -1069,19 +845,9 @@ public:
       (void)linkage::link_cas_state_certify<
           wait_slot::SIGNALED_ORPHAN, wait_slot::SIGNALED_CLEAN, wait_slot::WaitSlotStateTraits>(
           slot.link);
-      // Pre-mark committed the wake unconditionally; WAITING catches
-      // via Phase 2.5 cache spin, IN_KERNEL needs the syscall.
-      if (st == wait_slot::IN_KERNEL)
+      // Alert iff post-CAS Dekker observed park_state=1.
+      if (token.should_alert())
         wait_slot::alert_one_if_live(token.owner_packed(), token.tid(), slot);
-      return;
-    }
-    if (st == wait_slot::TIMED_OUT) {
-      // Dead-and-stale: safe to reclaim (no live TLS ref).
-      if (stack_.compare_exchange_strong(
-              old_stk, new_stk, cpp::MemoryOrder::ACQ_REL,
-              cpp::MemoryOrder::RELAXED))
-        wait_slot::reclaim_slot(
-            wait_slot::ReclaimAuthority::after_stack_pop(top));
       return;
     }
     if (wait_slot::state_is_signaled(st)) {
@@ -1089,26 +855,64 @@ public:
       (void)help_detach_signaled(slot, st, old_stk, new_stk);
       return;
     }
-    // IDLE / unknown — caller's `continue` reloads fresh.
+    // IDLE / TIMED_OUT (futex_addr-shared slot residue) / unknown —
+    // caller's `continue` reloads fresh. Futex's own state machine
+    // never produces TIMED_OUT under the new protocol; cancel goes
+    // through harris_unlink without a state CAS, so the dead-stale
+    // reclaim branch from the prior protocol is no longer reachable
+    // from this subsystem.
   }
 
-  // Self-cancel Phase-4 via link_cas IN_KERNEL → TIMED_OUT.
-  //   Cancel wins: slot unlinked, return cancel_ret (caller's reason:
-  //                -ETIMEDOUT, -EINTR, or 0 for spurious-pred-fail).
-  //   Waker wins:  pre-mark raced; read state, decode (0/1 for
-  //                handoff), drain the unconditional alert.
+  // Self-cancel Phase-4 via Harris splice — owner abandons the wait.
+  //
+  //   Cancel wins: harris_unlink spliced our slot off the chain
+  //                (state stays WAITING; splice's link_finalize_after
+  //                splice publishes CERT atomically). We reclaim the
+  //                slot directly and return cancel_ret.
+  //   Waker wins:  notifier pre-marked between our last spin/load
+  //                and our walk. Slot.link.state is SIGNALED_*; we
+  //                drain the in-flight alert and decode the wake
+  //                (0 = normal, 1 = handoff).
+  //
+  // Rationale for routing cancel through the Harris splice rather
+  // than a state-byte CAS: slot.link.state is now notifier-exclusive
+  // on-chain. Owner cannot write WAITING → TIMED_OUT without
+  // re-introducing the very race notify_all was designed around.
+  // Splice-CAS targets parent.link.next (and target's MARK bit), not
+  // target's state byte — owner's cancel is structurally orthogonal
+  // to notifier's pre-mark.
+  //
+  // park_state is not cleared here: clear_slot_owned (success path)
+  // and reclaim_slot (cancel path via freelist_push) both reset it.
   LIBC_INLINE long cancel_or_absorb(wait_slot::WaitSlot &slot,
                                      uint32_t my_idx, bool nested,
                                      PVOID tid_ptr, long cancel_ret) {
-    if (linkage::link_cas_state<wait_slot::IN_KERNEL,
-                                    wait_slot::TIMED_OUT, wait_slot::WaitSlotStateTraits>(slot.link)) {
-      inline_unlink_timed_out_slot(my_idx, nested);
-      return cancel_ret;
+    uint32_t my_gen = slot.generation.load(cpp::MemoryOrder::ACQUIRE);
+    // harris_unlink loops on Retry until splice success / NotFound /
+    // gen mismatch. For our own slot, only TIMED_OUT (which Futex no
+    // longer produces) returns SplicedReclaim true — we always see
+    // false. Re-read state to distinguish "cancel won" from "waker
+    // raced".
+    (void)harris_unlink(static_cast<uint16_t>(my_idx), my_gen);
+    linkage::Link snap = slot.link.load(cpp::MemoryOrder::ACQUIRE);
+    uint8_t st = snap.state();
+    if (wait_slot::state_is_signaled(st)) {
+      // Waker raced. Pre-mark with ALERT_FIRED set ⇒ alert syscall
+      // was issued (or about to be). Drain the latched alert; on
+      // miss, mark_expect_late_alert via drain_waker_alert.
+      drain_waker_alert(tid_ptr);
+      if (snap.is_alert_fired())
+        wait_slot::mark_expect_late_alert();
+      return decode_signaled_ret(st);
     }
-    // Waker raced — link_cas_snap(IN_KERNEL → SIGNALED_*) won.
-    uint8_t st = linkage::link_load_state(slot.link);
-    drain_waker_alert(tid_ptr);
-    return decode_signaled_ret(st);
+    // Cancel won — slot is off-chain (state still WAITING + CERT=1
+    // from splice finalize, or state IDLE if a concurrent reclaim
+    // tagged it post-splice). reclaim_slot is idempotent on IDLE.
+    wait_slot::reclaim_slot(
+        wait_slot::ReclaimAuthority::after_walker_splice(my_idx));
+    if (!nested)
+      wait_slot::clear_tls_slot();
+    return cancel_ret;
   }
 
   // ===== In-kernel re-park (HasPredicate, CLEAN-only) =====
@@ -1244,20 +1048,25 @@ public:
       }
     }
 
-    // Phase 3 CAS WAITING → IN_KERNEL. CAS-fail snap state is
-    // SIGNALED via WAITING-pre-mark (CAS expected WAITING) →
-    // ALERT_FIRED 0 by invariant; no-op on the bit but the rule
-    // stays uniform.
-    if (!linkage::link_cas_state<wait_slot::WAITING,
-                                     wait_slot::IN_KERNEL, wait_slot::WaitSlotStateTraits>(slot.link)) {
-      linkage::Link snap = slot.link.load(cpp::MemoryOrder::ACQUIRE);
+    // Phase 3 (Dekker park-handshake) — same protocol as
+    // wait_one_cycle's primary Phase 3, see that comment for the
+    // SC-total-order rationale. Owner stores park_state SEQ_CST,
+    // re-reads slot.link.state SEQ_CST. SIGNALED ⇒ notifier raced;
+    // clear park_state, decode, return Signaled. Else: Installed
+    // (caller proceeds to NtWait).
+    slot.park_state.store(1, cpp::MemoryOrder::SEQ_CST);
+    {
+      linkage::Link snap = slot.link.load(cpp::MemoryOrder::SEQ_CST);
       uint8_t st = snap.state();
-      if (wait_slot::state_is_signaled(st) && snap.is_alert_fired())
-        wait_slot::mark_expect_late_alert();
-      long decoded_ret = decode_signaled_ret(st);
-      return (slot.wait_address.load(cpp::MemoryOrder::RELAXED) == 0)
-                 ? ReparkResult::invalidated()
-                                       : ReparkResult::signaled(decoded_ret);
+      if (wait_slot::state_is_signaled(st)) {
+        slot.park_state.store(0, cpp::MemoryOrder::RELAXED);
+        if (snap.is_alert_fired())
+          wait_slot::mark_expect_late_alert();
+        long decoded_ret = decode_signaled_ret(st);
+        return (slot.wait_address.load(cpp::MemoryOrder::RELAXED) == 0)
+                   ? ReparkResult::invalidated()
+                   : ReparkResult::signaled(decoded_ret);
+      }
     }
 
     return ReparkResult::installed();
@@ -1418,7 +1227,8 @@ public:
 
   // VEH-nested release: secondary slots that landed back in IDLE by
   // return go to the freelist here. Skipped on -ETIMEDOUT/-EINTR
-  // because those paths leave the slot TIMED_OUT for self-reclaim.
+  // because cancel_or_absorb already routed the slot through
+  // reclaim_slot (which freelist-pushed it).
   LIBC_INLINE static long wait_epilogue(bool nested, uint32_t my_idx,
                                         long ret) {
     if (nested && ret != -ETIMEDOUT && ret != -EINTR &&
@@ -1490,6 +1300,15 @@ private:
   LIBC_INLINE long wait_impl(WaitCondition cond,
                              cpp::optional<Timeout> timeout,
                              bool is_shared) {
+    // Diagnostic publish of the parked Futex address. Production
+    // build (LIBC_FUTEX_INSTRUMENT undefined) compiles both calls to
+    // empty no-ops, zero codegen impact; instrumented bench reads
+    // wait_address from the worker's TLS phase record so the lost-
+    // alert tripwire dump can distinguish "stuck in user-space CAS
+    // retry" from "stuck in NtWaitForAlertByThreadId on this Futex"
+    // and identify which Futex object the parked workers are waiting
+    // on.
+    futex_instrument::set_wait_address(reinterpret_cast<uintptr_t>(this));
     for (;;) {
       long ret =
           wait_one_cycle<Interruptible, HasPredicate>(cond, timeout,
@@ -1499,6 +1318,7 @@ private:
             !cond.satisfied(value_.load(cpp::MemoryOrder::ACQUIRE)))
           continue; // spurious wake; re-enter.
       }
+      futex_instrument::set_wait_address(0);
       return ret;
     }
   }
@@ -1707,25 +1527,47 @@ private:
       // out, defensively.
     }
 
-    // Phase 3: WAITING → IN_KERNEL. Tells the popper to use the
-    // alert syscall instead of relying on the Phase-2.5 cache spin.
-    // CAS fail ⇒ waker pre-marked between Phase-2.5 exit and here;
-    // decode and exit. Pre-mark snap was WAITING (CAS expected
-    // WAITING), so ALERT_FIRED is 0 by invariant — the bit check
-    // is a no-op here for the same reason as Phase 2.5.
-    if (!linkage::link_cas_state<wait_slot::WAITING,
-                                     wait_slot::IN_KERNEL, wait_slot::WaitSlotStateTraits>(slot.link)) {
-      linkage::Link snap = slot.link.load(cpp::MemoryOrder::ACQUIRE);
+    // Phase 3 (Dekker park-handshake): publish "I am about to enter
+    // NtWait" via slot.park_state and re-read slot.link.state to
+    // absorb on race.
+    //
+    // Replaces the prior WAITING→IN_KERNEL state-byte CAS, which
+    // gave owner write-access to slot.link.state on-chain and
+    // opened the broadcast race in notify_all (notifier's pre-mark
+    // CAS could fail with old==IN_KERNEL on an unhandled `!ours`
+    // arm, silently dropping the slot). With slot.link.state now
+    // notifier-exclusive on-chain, the parking decision moves off
+    // slot.link entirely.
+    //
+    // Order is load-bearing:
+    //   (1) Store park_state = 1 SEQ_CST. Owner is the only writer.
+    //   (2) Re-read slot.link.state SEQ_CST (Dekker pair). If
+    //       SIGNALED, notifier won the race; clear park_state and
+    //       absorb the wake.
+    //   (3) Else proceed to NtWait. Notifier's post-CAS Dekker
+    //       re-read of park_state will observe 1 (SC total order
+    //       guarantees: if (2) saw WAITING, notifier's CAS hadn't
+    //       committed; notifier's later CAS commits, then notifier's
+    //       post-CAS load sees the park_state=1 from (1)).
+    {
+      slot.park_state.store(1, cpp::MemoryOrder::SEQ_CST);
+      linkage::Link snap = slot.link.load(cpp::MemoryOrder::SEQ_CST);
       uint8_t st = snap.state();
-      if (wait_slot::state_is_signaled(st) && snap.is_alert_fired())
-        wait_slot::mark_expect_late_alert();
-      long ho = decode_signaled_ret(st);
-      bool invalidated =
-        (slot.wait_address.load(cpp::MemoryOrder::RELAXED) == 0);
-      if (wait_slot::state_is_orphan(st))
-        self_splice_if_orphan(slot, my_idx);
-      clear_slot_owned(slot, my_idx);
-      return wait_epilogue(nested, my_idx, invalidated ? -EINVAL : ho);
+      if (wait_slot::state_is_signaled(st)) {
+        // Notifier raced. Clear park_state (we never entered NtWait;
+        // any later notifier observing this slot's park_state must
+        // see the cleared value to skip a spurious alert).
+        slot.park_state.store(0, cpp::MemoryOrder::RELAXED);
+        if (snap.is_alert_fired())
+          wait_slot::mark_expect_late_alert();
+        long ho = decode_signaled_ret(st);
+        bool invalidated =
+            (slot.wait_address.load(cpp::MemoryOrder::RELAXED) == 0);
+        if (wait_slot::state_is_orphan(st))
+          self_splice_if_orphan(slot, my_idx);
+        clear_slot_owned(slot, my_idx);
+        return wait_epilogue(nested, my_idx, invalidated ? -EINVAL : ho);
+      }
     }
     // Phase 4: kernel sleep.
     LARGE_INTEGER nt_timeout;
@@ -1878,10 +1720,9 @@ private:
       if (invalidated)
         return wait_epilogue(nested, my_idx, -EINVAL);
     }
-    // ETIMEDOUT/EINTR: slot was spliced+reclaimed via
-    // inline_unlink (or another actor; gen-check kept reclaim
-    // single-actor). DO NOT roll state back from TIMED_OUT — would
-    // alert a moved-on thread.
+    // ETIMEDOUT/EINTR: cancel_or_absorb already harris-spliced the
+    // slot and reclaimed (or absorbed a racing wake). park_state was
+    // cleared via reclaim_slot's freelist_push reset.
     return wait_epilogue(nested, my_idx, ret);
   }
 
@@ -1934,9 +1775,17 @@ public:
   // post-detach state-upgrade) so a single fix here covers every
   // call site and a new caller can't silently reorder them.
 
-  // I4 token: tid + captured ThreadHandle (packed), the two pieces a
-  // waker needs to alert an IN_KERNEL owner. Both must be read pre-
-  // recycle — late capture can bind a recycled slot's new owner.
+  // I4 token: tid + captured ThreadHandle (packed) + post-CAS Dekker
+  // park observation. Three fields the waker needs to commit:
+  //
+  //   owner_packed / tid  — alert addressing (must be read pre-recycle).
+  //   should_alert        — captured slot.park_state SEQ_CST AFTER
+  //                         the pre-mark CAS, the Dekker pair against
+  //                         the owner's pre-park "store park_state
+  //                         SEQ_CST → load slot.link state SEQ_CST"
+  //                         sequence. Closes the Phase-3 race from
+  //                         the prior IN_KERNEL state byte.
+  //
   // Constructible only via capture_wake_target; commit helpers
   // consume the token and never re-load the slot, so there is no
   // "second sample" path.
@@ -1946,43 +1795,65 @@ public:
       return owner_packed_;
     }
     LIBC_INLINE constexpr uint32_t tid() const { return tid_; }
+    // True iff the owner had committed to NtWait at the time the
+    // notifier observed park_state post-CAS. Cache-spin path leaves
+    // park_state at 0 and the notifier skips the alert syscall.
+    LIBC_INLINE constexpr bool should_alert() const {
+      return should_alert_;
+    }
 
   private:
-    LIBC_INLINE constexpr WakeCommitToken(uint64_t o, uint32_t t)
-        : owner_packed_(o), tid_(t) {}
+    LIBC_INLINE constexpr WakeCommitToken(uint64_t o, uint32_t t, bool a)
+        : owner_packed_(o), tid_(t), should_alert_(a) {}
     // Friend the enclosing class so the static factory below can
     // call the private ctor (free-function friend would name a
     // different entity in the enclosing namespace).
     friend class Futex;
     uint64_t owner_packed_;
     uint32_t tid_;
+    bool should_alert_;
   };
 
-  // Caller MUST have pre-marked (link_cas_snap → SIGNALED_*) before
-  // calling — pre-mark blocks owner's clear_slot_owned, so tid +
-  // owner handle reflect the current lifecycle. tid first so the
-  // cheaper u32 read narrows the recycle window between the two
-  // loads.
+  // Caller MUST have pre-marked (link_cas_snap_runtime_alert →
+  // SIGNALED_*) before calling — pre-mark blocks owner's
+  // clear_slot_owned, so tid + owner handle reflect the current
+  // lifecycle. tid first so the cheaper u32 read narrows the
+  // recycle window between the two loads.
+  //
+  // The park_state load is SEQ_CST: it pairs with the owner's pre-
+  // park sequence (store park_state SEQ_CST → load slot.link state
+  // SEQ_CST) under the SC total order. Notifier's pre-mark CAS
+  // participates in that order via SEQ_CST CAS (LOCK on x86 is a
+  // full fence; AArch64 needs the explicit SEQ_CST). Dekker
+  // guarantees: at least one of {owner sees SIGNALED in re-read,
+  // notifier sees park_state=1} is true. If both, owner absorbs and
+  // the alert latches stale (consumed via expect_late_alert).
   LIBC_INLINE static WakeCommitToken
   capture_wake_target(wait_slot::WaitSlot &slot) {
     uint32_t tid = slot.thread_id.load(cpp::MemoryOrder::RELAXED);
     uint64_t owner_packed = wait_slot::owner_handle_packed(slot);
-    return WakeCommitToken{owner_packed, tid};
+    bool parked =
+        slot.park_state.load(cpp::MemoryOrder::SEQ_CST) != 0;
+    return WakeCommitToken{owner_packed, tid, parked};
   }
 
   // Post-detach commit + alert for pop_and_signal_one /
   // signal_first_match_after.
   //   (1) iff detached: subsystem=None, ORPHAN→CLEAN+CERT atomic.
-  //   (2) iff pre_mark_state==IN_KERNEL: alert via captured token.
+  //   (2) iff token.should_alert(): alert via captured token.
   // ORPHAN-stay-ORPHAN bail is benign — waiter's
   // self_splice_if_orphan publishes CERT on splice success.
   // subsystem clear is detach-gated: an undetached slot may still
   // be chain-reachable, so subsystem must remain Futex for thread-
   // exit cleanup to dispatch the right unlinker.
+  //
+  // The alert decision is the captured Dekker observation, not the
+  // pre-mark source state — slot.link.state is now waker-exclusive
+  // on-chain, so the source state is always WAITING. The "is the
+  // owner parked?" decision moved to slot.park_state.
   LIBC_INLINE void
   commit_pop_wake(wait_slot::WaitSlot &slot,
-                   const WakeCommitToken &token,
-                   uint8_t pre_mark_state, bool detached) {
+                   const WakeCommitToken &token, bool detached) {
     if (detached) {
       slot.subsystem.store(wait_slot::SubsystemKind::None,
                             cpp::MemoryOrder::RELAXED);
@@ -1991,17 +1862,22 @@ public:
           wait_slot::SIGNALED_ORPHAN, wait_slot::SIGNALED_CLEAN, wait_slot::WaitSlotStateTraits>(
           slot.link);
     }
-    // [K] Phase 2.5 cache spin catches WAITING; IN_KERNEL needs syscall.
-    if (pre_mark_state == wait_slot::IN_KERNEL)
+    // [K] Phase 2.5 cache spin catches non-parked owners; parked
+    // owners need the alert syscall.
+    if (token.should_alert())
       wait_slot::alert_one_if_live(token.owner_packed(), token.tid(), slot);
   }
 
-  // Post-detach commit for handoff_one WAITING. Differs from
-  // commit_pop_wake: HANDOFF state pair, no alert (HANDOFF only
-  // emits to WAITING; alert-loss risk on IN_KERNEL), no value
-  // store (transit_val published BEFORE the pre-mark — see
-  // handoff_one WAITING branch).
+  // Post-detach commit for handoff_one's WAITING + non-parked path.
+  // Cache-spin observes our HANDOFF pre-mark — no alert needed; no
+  // value store (transit_val published BEFORE the pre-mark). If the
+  // captured token shows late-park (owner parked between hint and
+  // CAS), we must alert despite HANDOFF — the kernel-park owner
+  // won't observe state via cache spin. The alert + HANDOFF
+  // combination is safe: woken owner observes SIGNALED_HANDOFF,
+  // decodes ret=1, takes the lock cleanly.
   LIBC_INLINE void commit_handoff_waiting(wait_slot::WaitSlot &slot,
+                                            const WakeCommitToken &token,
                                             bool detached) {
     if (detached) {
       slot.subsystem.store(wait_slot::SubsystemKind::None,
@@ -2010,16 +1886,23 @@ public:
           wait_slot::SIGNALED_HANDOFF_ORPHAN,
           wait_slot::SIGNALED_HANDOFF_CLEAN, wait_slot::WaitSlotStateTraits>(slot.link);
     }
+    if (token.should_alert())
+      wait_slot::alert_one_if_live(token.owner_packed(), token.tid(), slot);
   }
 
-  // Full IN_KERNEL unlock-wake — most ordering-sensitive helper.
-  // Used only by handoff_one's IN_KERNEL branch.
+  // Full unlock-wake for handoff_one's parked-owner path. Used when
+  // the pre-CAS park_state hint was 1 (owner is parked) and the
+  // notifier elected plain SIGNALED_ORPHAN over HANDOFF — handing
+  // off to a parked waiter risks the lost-alert convoy where
+  // value stays at transit_val with no consumer (see handoff_one
+  // doc).
   //
   // Order is LOAD-BEARING (inverting (2)/(3) is the 16T starve
-  // vector documented in handoff_one IN_KERNEL):
+  // vector documented in handoff_one):
   //   (1) iff detached: subsystem=None, ORPHAN→CLEAN+CERT atomic.
   //   (2) value_.store(unlock_val, SEQ_CST)   ← MUST PRECEDE (3)
-  //   (3) alert_one_if_live(token)
+  //   (3) alert_one_if_live(token) — fired unconditionally; this
+  //       path is only entered with parked-owner intent.
   //
   // Alert is a cumulative fence, so the woken waiter's re-read of
   // value_ sees unlock_val. Inverted, the waker can be preempted
@@ -2028,14 +1911,14 @@ public:
   //
   // SEQ_CST store: RawMutex's exchange(IN_CONTENTION, ACQUIRE)
   // retry depends on globally-ordered observation.
-  LIBC_INLINE void commit_handoff_in_kernel_unlock(
+  LIBC_INLINE void commit_handoff_parked_unlock(
       wait_slot::WaitSlot &slot, const WakeCommitToken &token,
       bool detached, FutexValueType unlock_val) {
     if (detached) {
       slot.subsystem.store(wait_slot::SubsystemKind::None,
                             cpp::MemoryOrder::RELAXED);
       // CERT publish via fetch_or instead of certify CAS-loop. This
-      // path is mutex-only (handoff_one IN_KERNEL → RawMutex unlock,
+      // path is mutex-only (handoff_one parked → RawMutex unlock,
       // no predicate-wait waiters), so the SIGNALED_ORPHAN→CLEAN
       // upgrade is functionally equivalent to ORPHAN+CERT=1: the
       // waiter's self_splice_if_orphan early-exits on CERT=1, then
@@ -2075,11 +1958,13 @@ private:
       uint8_t c_st = c_snap.state();
 
       // Advance past non-live-same-futex slots. wait_address!=this
-      // ⇒ cross-futex; state non-live ⇒ dead (harris_unlink paths).
+      // ⇒ cross-futex; state non-WAITING ⇒ dead (harris_unlink
+      // paths) or already-signaled by another actor. Live Futex
+      // slots are now exclusively WAITING — IN_KERNEL no longer
+      // exists for Futex; Phase-3 park flag lives on slot.park_state.
       if (cs.wait_address.load(cpp::MemoryOrder::RELAXED) !=
               reinterpret_cast<uintptr_t>(this) ||
-          (c_st != wait_slot::WAITING &&
-           c_st != wait_slot::IN_KERNEL)) {
+          c_st != wait_slot::WAITING) {
         prev = curr;
         prev_link = c_snap;
         curr = c_next;
@@ -2100,17 +1985,25 @@ private:
         }
       }
 
-      // [B'] Pre-mark ORPHAN. Fail ⇒ state raced; advance (legit
-      // wake comes from another actor — don't retry in place).
-      if (!linkage::link_cas_snap<wait_slot::SIGNALED_ORPHAN, wait_slot::WaitSlotStateTraits>(
-              cs.link, c_snap)) {
+      // Pre-CAS park_state hint — selects ALERT_FIRED publish on
+      // the pre-mark CAS. See pop_and_signal_one for the protocol.
+      bool hint = cs.park_state.load(cpp::MemoryOrder::RELAXED) != 0;
+
+      // [B'] Pre-mark WAITING → SIGNALED_ORPHAN with runtime
+      // alerting. SEQ_CST CAS for the Dekker total order against
+      // owner's pre-park sequence. Fail ⇒ walker mark-then-help or
+      // another notifier raced; advance (the legit wake comes from
+      // another actor — don't retry in place).
+      if (!linkage::link_cas_snap_runtime_alert<wait_slot::SIGNALED_ORPHAN>(
+              cs.link, c_snap, hint, cpp::MemoryOrder::SEQ_CST,
+              cpp::MemoryOrder::ACQUIRE)) {
         prev = curr;
         prev_link = c_snap;
         curr = c_next;
         continue;
       }
 
-      // I4 token: post pre-mark, pre-detach.
+      // I4 token + post-CAS Dekker park observation.
       WakeCommitToken token = capture_wake_target(cs);
 
       // [A'] Mid-stack detach via prev.link CAS. Success ⇒ commit
@@ -2121,8 +2014,8 @@ private:
           prev_link, prev_link.with_next_uncertify(c_next),
           cpp::MemoryOrder::ACQ_REL, cpp::MemoryOrder::ACQUIRE);
 
-      // [U] + [K]: state upgrade + IN_KERNEL alert.
-      commit_pop_wake(cs, token, c_st, detached);
+      // [U] + [K]: state upgrade + alert iff token.should_alert().
+      commit_pop_wake(cs, token, detached);
       return true;
     }
 
@@ -2160,7 +2053,7 @@ public:
 
       // ---- Live slot on this Futex ----
 
-      if (st == wait_slot::WAITING || st == wait_slot::IN_KERNEL) {
+      if (st == wait_slot::WAITING) {
         // Filter (I7). Null fn ⇒ classic wake. Non-null + FALSE ⇒
         // descend into the walker to find a matching waiter deeper.
         // MUST NOT mutate link/subsystem on this filter path.
@@ -2175,14 +2068,29 @@ public:
             return signal_first_match_after(top, slot_snap);
         }
 
-        // [B'] Pre-mark. Fail ⇒ state raced (owner moved
-        // WAITING→IN_KERNEL or TIMED_OUT, or walker bumped tag);
-        // retry with fresh snap.
-        if (!linkage::link_cas_snap<wait_slot::SIGNALED_ORPHAN, wait_slot::WaitSlotStateTraits>(
-                slot.link, slot_snap)) {
+        // Pre-CAS park_state hint (RELAXED): selects whether the
+        // pre-mark CAS publishes LINK_ALERT_FIRED_BIT. If hint=1,
+        // owner has committed to NtWait — set the bit so the
+        // owner's SIGNALED-observation site sets expect_late_alert
+        // for any latched stale alert. Hint=0 leaves the bit at 0
+        // (cache spin catches without an alert).
+        bool hint = slot.park_state.load(cpp::MemoryOrder::RELAXED) != 0;
+
+        // [B'] Pre-mark WAITING → SIGNALED_ORPHAN with runtime
+        // alerting. SEQ_CST CAS participates in the Dekker total
+        // order with owner's pre-park sequence. Fail ⇒ walker
+        // bumped tag (mid-splice freeze) or another notifier raced;
+        // retry with fresh snap. Owner state mutation (Phase 3 /
+        // cancel) is no longer a failure source — slot.link.state
+        // is waker-exclusive on-chain.
+        if (!linkage::link_cas_snap_runtime_alert<wait_slot::SIGNALED_ORPHAN>(
+                slot.link, slot_snap, hint,
+                cpp::MemoryOrder::SEQ_CST,
+                cpp::MemoryOrder::ACQUIRE)) {
           continue;
         }
-        // I4 token, post pre-mark, pre-detach.
+        // I4 token + post-CAS Dekker park observation, post pre-mark,
+        // pre-detach.
         WakeCommitToken token = capture_wake_target(slot);
 
         // [A'] Best-effort detach — no harris_unlink here, keeps
@@ -2190,22 +2098,9 @@ public:
         bool detached = stack_.compare_exchange_strong(
             old_stk, new_stk, cpp::MemoryOrder::ACQ_REL,
             cpp::MemoryOrder::RELAXED);
-        // [U]+[K]: state upgrade + alert iff IN_KERNEL.
-        commit_pop_wake(slot, token, st, detached);
+        // [U]+[K]: state upgrade + alert iff token.should_alert().
+        commit_pop_wake(slot, token, detached);
         return true;
-      }
-
-      if (st == wait_slot::TIMED_OUT) {
-        // Dead at head — detach + reclaim. No state CAS (terminal).
-        // wait_address stays as `this`; reclaim_slot's freelist_push
-        // clears it before any new owner observes the slot.
-        if (!stack_.compare_exchange_strong(
-                old_stk, new_stk, cpp::MemoryOrder::ACQ_REL,
-                cpp::MemoryOrder::RELAXED))
-          continue;
-        wait_slot::reclaim_slot(
-            wait_slot::ReclaimAuthority::after_stack_pop(top));
-        continue;
       }
 
       if (wait_slot::state_is_signaled(st)) {
@@ -2320,26 +2215,39 @@ public:
       // tid must be pre-detach to bind the original owner, not a
       // recycled tid post-CAS).
       uint32_t tid = slot.thread_id.load(cpp::MemoryOrder::RELAXED);
+      // Pre-CAS park_state hint (RELAXED) selects ALERT_FIRED publish
+      // on the steal-state CAS. See pop_and_signal_one for the
+      // protocol — Futex slots are now WAITING-only on-chain, so the
+      // CAS source state is fixed; the alerting decision moved to the
+      // runtime hint.
+      bool hint = slot.park_state.load(cpp::MemoryOrder::RELAXED) != 0;
       // Strong CAS-with-snap (not XCHG) closes the silent-overwrite
       // leak: an unrelated waker whose detach lost to our steal but
       // whose pre-mark + alert preceded would otherwise have its
       // owner's IDLE+CERT clobbered with our SIGNALED_CLEAN.
+      // Runtime-alerting variant: ALERT_FIRED set iff hint==1.
       bool ours = false;
-      uint8_t old = linkage::link_cas_state_detached<
-          wait_slot::SIGNALED_CLEAN, wait_slot::WaitSlotStateTraits>(slot.link, slot_snap, ours);
+      uint8_t old = linkage::link_cas_state_detached_runtime_alert<
+          wait_slot::SIGNALED_CLEAN>(slot.link, slot_snap, hint, ours);
       if (!ours) {
-        // Owner / another waker handled the slot. Only TIMED_OUT
-        // obliges us to reclaim (owner's harris walks post-steal
-        // NULL head and won't reclaim). SIGNALED_*_ORPHAN ⇒ slot
-        // off-chain by our steal but our failed CAS didn't publish
-        // CERT; follow up via certify CAS. SIGNALED_*_CLEAN and IDLE
-        // already carry CERT=1. wait_address stays as `this` —
-        // reclaim_slot's freelist_push clears it before any new
-        // owner could observe it.
-        if (old == wait_slot::TIMED_OUT) {
-          wait_slot::reclaim_slot(
-              wait_slot::ReclaimAuthority::after_stack_steal(slot_idx));
-        } else if (old == wait_slot::SIGNALED_ORPHAN) {
+        // Owner-vs-waker race on slot.link.state byte is no longer a
+        // failure source — slot.link.state is waker-exclusive on-chain
+        // under the new protocol. The remaining failure modes are:
+        //   SIGNALED_*_ORPHAN  cross-waker pre-mark beat us. Our CAS
+        //                      didn't publish CERT; follow up via
+        //                      certify CAS to publish.
+        //   SIGNALED_*_CLEAN / IDLE  already certified by the prior
+        //                      committer; no follow-up.
+        //   WAITING            walker mark-then-help bumped tag
+        //                      mid-flight; harmless (cache spin or a
+        //                      future waker handles the slot).
+        // The IN_KERNEL / TIMED_OUT branches are unreachable for
+        // Futex slots (Futex no longer writes those states); a slot
+        // observing them was reused by futex_addr after our snap, in
+        // which case it's no longer ours and we MUST NOT touch it
+        // (subsystem field would be ParkingLot — its tag/state lives
+        // under bucket lock, not snap+CAS).
+        if (old == wait_slot::SIGNALED_ORPHAN) {
           (void)linkage::link_cas_state_certify<
               wait_slot::SIGNALED_ORPHAN, wait_slot::SIGNALED_CLEAN, wait_slot::WaitSlotStateTraits>(
               slot.link);
@@ -2358,23 +2266,36 @@ public:
       // thread-exit dispatch tight on the rare owner-death window.
       slot.subsystem.store(wait_slot::SubsystemKind::None,
                            cpp::MemoryOrder::RELAXED);
-      if (old == wait_slot::IN_KERNEL) {
-        tgt_buf[scratch_used++] = {tid, slot_idx};
-        if (scratch_used == kAlertBatch)
-          flush_alert_batch(tgt_buf, out_buf, scratch_used, &ab_ctx);
-        ++total_woken;
-      } else if (old == wait_slot::WAITING) {
-        // Phase 2.5 cache spin observes our state CAS.
+      // Post-CAS Dekker re-read: SEQ_CST load of park_state pairs
+      // with the owner's pre-park "store park_state SEQ_CST → load
+      // slot.link state SEQ_CST" sequence under SC total order.
+      // Pre-CAS hint is over-eager (it sets ALERT_FIRED based on a
+      // stale read); post-CAS load is the authoritative alert
+      // decision. Mismatches:
+      //   hint=0, post=1: owner late-parked between hint and CAS;
+      //                   alert fires (correct).
+      //   hint=1, post=0: owner unparked (already absorbed via
+      //                   re-read seeing SIGNALED); no alert.
+      //                   ALERT_FIRED=1 sets owner's expect_late_alert,
+      //                   benign (next NtWait absorbs a stale alert).
+      bool should_alert =
+          slot.park_state.load(cpp::MemoryOrder::SEQ_CST) != 0;
+      if (old == wait_slot::WAITING) {
+        if (should_alert) {
+          tgt_buf[scratch_used++] = {tid, slot_idx};
+          if (scratch_used == kAlertBatch)
+            flush_alert_batch(tgt_buf, out_buf, scratch_used, &ab_ctx);
+        }
+        // Cache-spin owners (post=0) catch the wake via slot.link
+        // SIGNALED state byte. Both branches count as woken.
         ++total_woken;
       } else if (wait_slot::state_is_signaled(old)) {
         // Concurrent pop already pre-marked — our CAS to CLEAN is
         // benign (same wake, same off-stack semantics).
-      } else if (old == wait_slot::TIMED_OUT) {
-        // wait_address stays as `this`; reclaim_slot's freelist_push
-        // clears it.
-        wait_slot::reclaim_slot(
-            wait_slot::ReclaimAuthority::after_stack_steal(slot_idx));
       }
+      // IDLE / IN_KERNEL / TIMED_OUT: unreachable from `ours==true`
+      // (CAS-with-snap matched the snapshot; snap state was the
+      // current state at snap-load time). Defensive no-op.
 
       pipe_push_one();
     }
@@ -2464,19 +2385,22 @@ public:
         // TID before state CAS (CompactTarget; I4 contract — pre-CAS
         // capture so a recycled slot post-CAS can't bind a wrong tid).
         uint32_t tid = slot.thread_id.load(cpp::MemoryOrder::RELAXED);
+        // Pre-CAS park_state hint selects ALERT_FIRED publish on the
+        // steal CAS (see notify_all for protocol).
+        bool hint = slot.park_state.load(cpp::MemoryOrder::RELAXED) != 0;
         // Strong CAS-with-snap, not XCHG — see notify_all for the
         // silent-overwrite leak rationale.
         bool ours = false;
-        uint8_t old = linkage::link_cas_state_detached<
-            wait_slot::SIGNALED_CLEAN, wait_slot::WaitSlotStateTraits>(slot.link, slot_snap, ours);
+        uint8_t old = linkage::link_cas_state_detached_runtime_alert<
+            wait_slot::SIGNALED_CLEAN>(slot.link, slot_snap, hint, ours);
         if (!ours) {
-          // SIGNALED_*_ORPHAN ⇒ certify CAS follow-up; wait_address
-          // stays as `this` for TIMED_OUT — reclaim_slot's freelist_push
-          // clears it before any new owner observes the slot.
-          if (old == wait_slot::TIMED_OUT) {
-            wait_slot::reclaim_slot(
-                wait_slot::ReclaimAuthority::after_stack_steal(slot_idx));
-          } else if (old == wait_slot::SIGNALED_ORPHAN) {
+          // SIGNALED_*_ORPHAN ⇒ certify CAS follow-up; SIGNALED_*_CLEAN
+          // / IDLE already certified. WAITING (snap mismatch via tag
+          // bump from a walker) — harmless, the slot is still on-chain
+          // and another notifier or the cache spin handles it.
+          // IN_KERNEL / TIMED_OUT branches retired (Futex doesn't
+          // produce those states).
+          if (old == wait_slot::SIGNALED_ORPHAN) {
             (void)linkage::link_cas_state_certify<
                 wait_slot::SIGNALED_ORPHAN, wait_slot::SIGNALED_CLEAN, wait_slot::WaitSlotStateTraits>(
                 slot.link);
@@ -2493,23 +2417,23 @@ public:
         // (matches commit_pop_wake's pattern).
         slot.subsystem.store(wait_slot::SubsystemKind::None,
                              cpp::MemoryOrder::RELAXED);
-        if (old == wait_slot::IN_KERNEL) {
-          tgt_buf[scratch_used++] = {tid, slot_idx};
-          ++chunk_alerts;
-          // Mid-chunk flush only when the ring fills (lp > 128).
-          if (scratch_used == kAlertBatch)
-            flush_alert_batch(tgt_buf, out_buf, scratch_used, &ab_ctx);
-          ++chunk_live;
-        } else if (old == wait_slot::WAITING) {
+        // Post-CAS Dekker re-read — see notify_all for protocol.
+        bool should_alert =
+            slot.park_state.load(cpp::MemoryOrder::SEQ_CST) != 0;
+        if (old == wait_slot::WAITING) {
+          if (should_alert) {
+            tgt_buf[scratch_used++] = {tid, slot_idx};
+            ++chunk_alerts;
+            // Mid-chunk flush only when the ring fills (lp > 128).
+            if (scratch_used == kAlertBatch)
+              flush_alert_batch(tgt_buf, out_buf, scratch_used, &ab_ctx);
+          }
+          // Cache-spin owners (post=0) catch via state byte.
           ++chunk_live;
         } else if (wait_slot::state_is_signaled(old)) {
           // Concurrent pop pre-marked; benign.
-        } else if (old == wait_slot::TIMED_OUT) {
-          // wait_address stays as `this`; reclaim_slot's freelist_push
-          // clears it.
-          wait_slot::reclaim_slot(
-              wait_slot::ReclaimAuthority::after_stack_steal(slot_idx));
         }
+        // IDLE / IN_KERNEL / TIMED_OUT: unreachable from `ours==true`.
 
         // Refill only while under chunk budget — else drain
         // in-flight and close the chunk.
@@ -2600,84 +2524,93 @@ public:
       }
 
       if (st == wait_slot::WAITING) {
-        // Store transit_val BEFORE the pre-mark CAS — load-bearing.
-        // link_cas_snap IS the single wake publish; a WAITING
-        // waiter spinning in Phase 2.5 can wake the instant the
-        // state byte changes, so any value_.store AFTER the
-        // pre-mark would race the claim CAS (waiter sees stale
-        // LOCKED → fails → re-parks → handoff stranded). The
-        // marker is only emitted when transit_val != unlock_val;
-        // otherwise this degrades to "leave value at locked
-        // sentinel" (RawMutex).
-        bool use_transit = (transit_val != unlock_val);
-        if (use_transit)
-          value_.store(transit_val, cpp::MemoryOrder::SEQ_CST);
+        // Pre-CAS park_state hint splits HANDOFF (cache-spin owner)
+        // vs plain SIGNALED (parked owner). Handing off to a parked
+        // waiter is unsafe under alert-loss: a HANDOFF leaves
+        // value at transit_val with no other consumer, so a lost
+        // alert strands the lock. Plain SIGNALED + value=unlock_val
+        // lets a third acquirer make progress and indirectly wake
+        // the lost waiter.
+        bool hint = slot.park_state.load(cpp::MemoryOrder::RELAXED) != 0;
 
-        // [B'] Pre-mark HANDOFF_ORPHAN.
-        if (!linkage::link_cas_snap<wait_slot::SIGNALED_HANDOFF_ORPHAN, wait_slot::WaitSlotStateTraits>(
-                slot.link, slot_snap, cpp::MemoryOrder::ACQ_REL,
-                cpp::MemoryOrder::ACQUIRE)) {
-          // DO NOT roll value_ back to unlock_val on pre-mark fail.
-          // The transient UNLOCKED window would let try_lock steal
-          // the lock; our IN_KERNEL retry's later store(UNLOCKED)
-          // would then clobber their LOCKED → double ownership.
-          // Leaving value_ at transit_val is safe: try_lock sees
-          // TRANSIT and fails; lock_slow parks on wait(TRANSIT);
-          // retry path (IN_KERNEL or Empty) publishes UNLOCKED
-          // atomically.
-          continue;
+        if (!hint) {
+          // Cache-spin path (HANDOFF speculation).
+          //
+          // Store transit_val BEFORE the pre-mark CAS —
+          // load-bearing. link_cas_snap_runtime_alert IS the single
+          // wake publish; a WAITING waiter spinning in Phase 2.5
+          // can wake the instant the state byte changes, so any
+          // value_.store AFTER the pre-mark would race the claim
+          // CAS (waiter sees stale LOCKED → fails → re-parks →
+          // handoff stranded). The marker is only emitted when
+          // transit_val != unlock_val; otherwise this degrades to
+          // "leave value at locked sentinel" (RawMutex).
+          bool use_transit = (transit_val != unlock_val);
+          if (use_transit)
+            value_.store(transit_val, cpp::MemoryOrder::SEQ_CST);
+
+          // [B'] Pre-mark HANDOFF_ORPHAN. ALERT_FIRED unset
+          // (hint=0). SEQ_CST CAS for the Dekker total order.
+          if (!linkage::link_cas_snap_runtime_alert<
+                  wait_slot::SIGNALED_HANDOFF_ORPHAN>(
+                  slot.link, slot_snap, /*alerting=*/false,
+                  cpp::MemoryOrder::SEQ_CST,
+                  cpp::MemoryOrder::ACQUIRE)) {
+            // DO NOT roll value_ back to unlock_val on pre-mark
+            // fail. The transient UNLOCKED window would let
+            // try_lock steal the lock; the parked-retry's later
+            // store(UNLOCKED) would then clobber their LOCKED →
+            // double ownership. Leaving value_ at transit_val is
+            // safe: try_lock sees TRANSIT and fails; lock_slow
+            // parks on wait(TRANSIT); retry path (parked branch
+            // or Empty) publishes UNLOCKED atomically.
+            continue;
+          }
+          // I4 + post-CAS Dekker. token.should_alert() reflects
+          // whether the owner late-parked between hint and CAS.
+          WakeCommitToken token = capture_wake_target(slot);
+          // [A'] Best-effort detach.
+          bool detached = stack_.compare_exchange_strong(
+              old_stk, new_stk, cpp::MemoryOrder::ACQ_REL,
+              cpp::MemoryOrder::RELAXED);
+          // [U]: HANDOFF_ORPHAN → HANDOFF_CLEAN+CERT. Alert iff
+          // late-park observed — the kernel-park owner can't catch
+          // a HANDOFF via cache spin so they need the syscall;
+          // alert + HANDOFF wakes them cleanly to take the lock.
+          // No value store (transit_val published pre pre-mark).
+          commit_handoff_waiting(slot, token, detached);
+          return UnlockOutcome::Handoff;
         }
-        // [A'] Best-effort detach.
-        bool detached = stack_.compare_exchange_strong(
-            old_stk, new_stk, cpp::MemoryOrder::ACQ_REL,
-            cpp::MemoryOrder::RELAXED);
-        // [U]: HANDOFF_ORPHAN → HANDOFF_CLEAN+CERT. No alert
-        // (WAITING catches via Phase 2.5 cache spin). No value
-        // store (transit_val published pre pre-mark above).
-        commit_handoff_waiting(slot, detached);
-        return UnlockOutcome::Handoff;
-      }
 
-      if (st == wait_slot::IN_KERNEL) {
-        // Handoff to a parked waiter is unsafe (alert-loss risk):
-        // pre-mark plain ORPHAN, waiter returns ret=0 and retries
-        // acquire against unlock_val.
+        // Parked path (plain SIGNALED, alert-loss-safe).
         //
-        //   [B']  IN_KERNEL → SIGNALED_ORPHAN.
+        //   [B']  WAITING → SIGNALED_ORPHAN with ALERT_FIRED
+        //         (hint=1). SEQ_CST CAS for Dekker.
         //   [A']  Best-effort detach.
-        //         Capture tid + owner_ref (I4).
+        //         Capture tid + owner_ref + post-CAS park (I4).
         //   store value_ = unlock_val (SEQ_CST)   ← BEFORE alert
         //   [U]   ORPHAN → CLEAN.
-        //   [K]   alert_one_if_live (unconditional).
+        //   [K]   alert_one_if_live (unconditional in this path —
+        //         we elected the parked branch).
         //
         // Store-before-alert is mandatory (alert syscall is the
         // cumulative fence). Inverting it is the hang vector —
         // waker preempted between alert and store, waiter re-CASs
         // LOCKED, re-parks, starves indefinitely. The full
-        // sequence is packaged in commit_handoff_in_kernel_unlock
-        // so per-site reordering is impossible.
-        if (!linkage::link_cas_snap<wait_slot::SIGNALED_ORPHAN, wait_slot::WaitSlotStateTraits>(
-                slot.link, slot_snap)) {
+        // sequence is packaged in commit_handoff_parked_unlock so
+        // per-site reordering is impossible.
+        if (!linkage::link_cas_snap_runtime_alert<wait_slot::SIGNALED_ORPHAN>(
+                slot.link, slot_snap, /*alerting=*/true,
+                cpp::MemoryOrder::SEQ_CST,
+                cpp::MemoryOrder::ACQUIRE)) {
           continue;
         }
         WakeCommitToken token = capture_wake_target(slot);
         bool detached = stack_.compare_exchange_strong(
             old_stk, new_stk, cpp::MemoryOrder::ACQ_REL,
             cpp::MemoryOrder::RELAXED);
-        commit_handoff_in_kernel_unlock(slot, token, detached, unlock_val);
+        commit_handoff_parked_unlock(slot, token, detached, unlock_val);
         return UnlockOutcome::Completed;
-      }
-
-      if (st == wait_slot::TIMED_OUT) {
-        // wait_address stays as `this`; reclaim_slot's freelist_push
-        // clears it before any new owner observes the slot.
-        if (!stack_.compare_exchange_strong(
-                old_stk, new_stk, cpp::MemoryOrder::ACQ_REL,
-                cpp::MemoryOrder::RELAXED))
-          continue;
-        wait_slot::reclaim_slot(
-            wait_slot::ReclaimAuthority::after_stack_pop(top));
-        continue;
       }
 
       if (wait_slot::state_is_signaled(st)) {

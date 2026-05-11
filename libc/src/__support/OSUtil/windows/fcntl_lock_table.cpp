@@ -8,7 +8,7 @@
 
 #include "src/__support/OSUtil/windows/fcntl_lock_table.h"
 
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/OSUtil/windows/bcryptprimitives.h"
 #include "src/__support/OSUtil/windows/ipc/alpc_bus.h"
 #include "src/__support/OSUtil/windows/libc_fini_registry.h"

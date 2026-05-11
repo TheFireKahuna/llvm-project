@@ -5,22 +5,14 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-//
-// AFD is the kernel driver behind all Windows sockets. Every Winsock call
-// (socket, bind, listen, connect, accept, send, recv, poll, shutdown) is
-// an NtDeviceIoControlFile to \Device\Afd with an AFD ioctl code.
-//
-// This header declares the ioctl codes, structures, and constants needed
-// to implement POSIX socket APIs directly against AFD, bypassing Winsock
-// (ws2_32.dll, mswsock.dll) entirely.
-//
-// Transport mode: TLI (no transport device name at open time). This is the
-// default and most common mode. TLI sockets use _TL structures and raw
-// SOCKADDR for addresses. All structures here are the TLI/_TL variants.
-//
-// Reference: System Informer phnt/include/ntafd.h
-// Validated: experiments/AfUnixCleanPath/ (pure-NT AF_UNIX proof-of-concept)
-//
+///
+/// \file
+/// AFD ioctl codes, structures, and constants for driving the Windows socket
+/// kernel directly via NtDeviceIoControlFile to \\Device\\Afd, bypassing
+/// ws2_32.dll / mswsock.dll. Structures use the TLI variant (no open-time
+/// transport device); validated against System Informer phnt/include/ntafd.h
+/// plus afd.sys / afunix.sys disassembly cited inline.
+///
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_NT_AFD_H

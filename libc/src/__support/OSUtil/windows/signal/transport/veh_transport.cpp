@@ -33,6 +33,7 @@
 #include "src/__support/OSUtil/windows/signal/dispatch/dispatch_fwd.h"
 #include "src/__support/OSUtil/windows/signal/signal_types.h"
 #include "src/__support/OSUtil/windows/tls/teb_tls.h"
+#include "src/__support/OSUtil/windows/veh/fault_guard.h"
 #include "src/__support/OSUtil/windows/veh/veh_core.h"
 #include "src/__support/OSUtil/windows/veh/veh_filter_registry.h"
 #include "src/__support/macros/config.h"
@@ -165,6 +166,12 @@ int build_si_code(int signum, const EXCEPTION_RECORD *rec,
     }
     return BUS_ADRERR;
   case SIGILL:
+    // EXCEPTION_PRIV_INSTRUCTION — CPL>0 attempted a CPL=0-only opcode
+    // (HLT, MOV CRn, WRMSR, etc.). POSIX ILL_PRVOPC is the matching code;
+    // collapsing it into ILL_ILLOPC hides the privilege violation from
+    // handlers that rely on si_code to triage faults.
+    if (rec->ExceptionCode == EXCEPTION_PRIV_INSTRUCTION)
+      return ILL_PRVOPC;
     return ILL_ILLOPC;
   case SIGTRAP:
     // EXCEPTION_BREAKPOINT (INT3 / BRK #0xF000) → software breakpoint.
@@ -229,9 +236,6 @@ inline constexpr DWORD EXCEPTION_CPP = 0xE06D7363;
 // CLR exception magic number.
 inline constexpr DWORD EXCEPTION_CLR = 0xE0434352;
 
-// Guard page violation status code.
-inline constexpr DWORD STATUS_GUARD_PAGE_VIOLATION = 0x80000001;
-
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -246,11 +250,6 @@ LONG handle_exception(EXCEPTION_POINTERS *ep) {
 
   // Stage 1: Skip language runtime exceptions immediately.
   if (code == EXCEPTION_CPP || code == EXCEPTION_CLR)
-    return EXCEPTION_CONTINUE_SEARCH;
-
-  // Stage 1b: Skip guard page violations — those are stack growth probes
-  // handled by the OS or our memory fault handler.
-  if (code == STATUS_GUARD_PAGE_VIOLATION)
     return EXCEPTION_CONTINUE_SEARCH;
 
   // Stage 2: Map exception code to signal number.
@@ -366,6 +365,49 @@ LONG handle_exception(EXCEPTION_POINTERS *ep) {
   state->last_fault_pc = fault_pc;
   state->last_fault_code = code;
 
+  // EXCEPTION_BREAKPOINT PC fixup — advance past the trap instruction so
+  // the dispatched ucontext_t mirrors Linux SIGTRAP-from-int3 semantics.
+  //
+  // Windows reports EXCEPTION_BREAKPOINT as a fault: ContextRecord->Rip is
+  // the trap byte itself. Returning EXCEPTION_CONTINUE_EXECUTION re-runs
+  // the trap, so without this fixup the handler is invoked, returns, and
+  // the second VEH entry is caught by the re-fault detector above and
+  // surrendered to the OS terminator — handler effectively runs once and
+  // the process dies. Linux instead delivers SIGTRAP with the saved PC
+  // already past the int3, so handler-return resumes after the trap.
+  //
+  // We probe the byte/word at PC under FaultGuard before advancing, to
+  // distinguish a real INT3/BRK from RaiseException(EXCEPTION_BREAKPOINT)
+  // — there ContextRecord->Rip is a normal post-call site, not a trap
+  // instruction; advancing would corrupt control flow. The probe also
+  // covers the (rare) case of a trap at the last byte of an unmapped
+  // page boundary, where the next-byte read itself would fault.
+  //
+  // si_addr was already built from ExceptionAddress (the trap byte) by
+  // build_si_addr above, so the SA_SIGINFO contract — si_addr at trap,
+  // ucontext at post-trap — matches Linux exactly.
+  //
+  // The BeingDebugged guard in master_veh_handler returns CONTINUE_SEARCH
+  // for EXCEPTION_BREAKPOINT before this filter runs, so this code only
+  // executes when no debugger is attached — debuggers always see the
+  // trap with PC unmodified.
+  if (signum == SIGTRAP && code == EXCEPTION_BREAKPOINT) {
+#if defined(__x86_64__) || defined(_M_X64)
+    auto *pc = reinterpret_cast<const uint8_t *>(ep->ContextRecord->Rip);
+    uint8_t op;
+    if (windows::safe_load_u8(pc, &op) && op == 0xCC)
+      ep->ContextRecord->Rip += 1;
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    // BRK #imm16 encoding: bits 31..21 = 11010100001, bits 4..0 = 00000.
+    // Mask = 0xFFE0001F, fixed pattern = 0xD4200000.
+    auto *pc = reinterpret_cast<const uint32_t *>(ep->ContextRecord->Pc);
+    uint32_t insn;
+    if (windows::safe_load_u32(pc, &insn) &&
+        (insn & 0xFFE0001Fu) == 0xD4200000u)
+      ep->ContextRecord->Pc += 4;
+#endif
+  }
+
   // Forward the interrupted CONTEXT so SA_SIGINFO handlers receive a
   // meaningful ucontext_t. The pointer is valid for the duration of this
   // VEH callback frame — ep->ContextRecord lives on the kernel-provided
@@ -375,7 +417,14 @@ LONG handle_exception(EXCEPTION_POINTERS *ep) {
   //
   // Without this, SA_SIGINFO handlers for hardware exceptions would
   // receive a null ucontext — only the APC transport previously set it.
+  //
+  // The signum binding pairs the captured CONTEXT with the signal it
+  // belongs to. dispatch_pending drains all pending standard signals
+  // lowest-first, so without this binding any software signal queued
+  // before the fault would inherit the fault site's CONTEXT — wrong.
   state->interrupted_context = ep->ContextRecord;
+  state->interrupted_record = rec;
+  state->interrupted_signum = signum;
 
   // Clear the master VEH reentry guard before handing control to user
   // code. The guard was set by master_veh_handler to gate libc filter
@@ -413,6 +462,8 @@ LONG handle_exception(EXCEPTION_POINTERS *ep) {
   // Clear the context pointer after dispatch. Deferred signals delivered
   // later won't carry the original exception context.
   state->interrupted_context = nullptr;
+  state->interrupted_record = nullptr;
+  state->interrupted_signum = 0;
 
   return EXCEPTION_CONTINUE_EXECUTION;
 }

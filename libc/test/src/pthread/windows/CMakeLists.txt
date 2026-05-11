@@ -14,7 +14,6 @@ add_libc_unittest(
     libc.src.pthread.pthread_equal
     libc.src.pthread.pthread_join
     libc.src.pthread.pthread_self
-    libc.test.UnitTest.Test
 )
 
 add_libc_unittest(
@@ -35,7 +34,6 @@ add_libc_unittest(
     libc.src.pthread.pthread_mutexattr_destroy
     libc.src.pthread.pthread_mutexattr_init
     libc.src.pthread.pthread_mutexattr_settype
-    libc.test.UnitTest.Test
 )
 
 add_libc_unittest(
@@ -52,7 +50,6 @@ add_libc_unittest(
     libc.src.pthread.pthread_key_create
     libc.src.pthread.pthread_key_delete
     libc.src.pthread.pthread_setspecific
-    libc.test.UnitTest.Test
 )
 
 add_libc_unittest(
@@ -78,7 +75,6 @@ add_libc_unittest(
     libc.src.pthread.pthread_mutex_lock
     libc.src.pthread.pthread_mutex_unlock
     libc.src.time.clock_gettime
-    libc.test.UnitTest.Test
 )
 
 add_libc_unittest(
@@ -99,7 +95,6 @@ add_libc_unittest(
     libc.src.pthread.pthread_rwlock_trywrlock
     libc.src.pthread.pthread_rwlock_unlock
     libc.src.pthread.pthread_rwlock_wrlock
-    libc.test.UnitTest.Test
 )
 
 add_libc_unittest(
@@ -115,7 +110,6 @@ add_libc_unittest(
     libc.src.pthread.pthread_barrier_wait
     libc.src.pthread.pthread_create
     libc.src.pthread.pthread_join
-    libc.test.UnitTest.Test
 )
 
 add_libc_unittest(
@@ -135,5 +129,4 @@ add_libc_unittest(
     libc.src.pthread.pthread_spin_lock
     libc.src.pthread.pthread_spin_trylock
     libc.src.pthread.pthread_spin_unlock
-    libc.test.UnitTest.Test
 )

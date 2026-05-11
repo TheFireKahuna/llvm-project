@@ -55,16 +55,38 @@ enum class ThreadRegistryNodeKind : uint8_t {
 // retirable type so static_cast<NodeT*>(ThreadRegistryNode*) is a
 // no-op pointer reinterpret.
 //
-// `kind` discriminates the dispatch in `free_thread_registry_node`.
-// Set once at allocation; Crystalline's reclamation phase reads it
-// without contention (the node is quiesced — no other thread holds
-// a reservation).
+// `kind` discriminates the dispatch in `free_thread_registry_node`
+// AND in `BatchLinkCodec<ThreadRegistryNode>` (which dispatches
+// per-kind to the right serial table for decode).
+//
+// `node_index` is the per-kind serial stamped at allocation: the
+// pool slot index for Lifecycle/BucketEntry, the page_index for
+// BucketHeadPage. Together with `kind` it forms the codec's 32-bit
+// encoding `1 + (kind << 28) | node_index`.
+//
+// Set once at allocation; Crystalline's reclamation phase reads
+// these without contention (the node is quiesced — no other thread
+// holds a reservation).
+//
+// Layout: 24 (CrystallineNode) + 1 (kind) + 4 (node_index, packed
+// at offset 21..24 once the Itanium-ABI tail-pad reuse is taken
+// into account; see CrystallineNode comment about its 4-byte tail
+// pad at offsets 20..23) + 3 (pad). Header total: 32 bytes — same
+// as before the codec migration.
 struct ThreadRegistryNode : public concurrent::CrystallineNode {
+  // [0..19] Intrusive Crystalline-W runtime fields emitted directly
+  // so ThreadRegistryNode is standard-layout. `kind` then packs at
+  // offset 20 (natural 1-byte alignment); `_pad[3]` at 21..23;
+  // `node_index` at 24 — total 28 B header, same as the pre-refactor
+  // tail-pad-reuse layout.
+  LIBC_CRYSTALLINE_NODE_FIELDS(ThreadRegistryNode);
+
   ThreadRegistryNodeKind kind;
-  // Reserved padding so derived types have a predictable first-field
-  // offset for layout math. Header total: 32 bytes (24 from
-  // CrystallineNode + 1 + 7 padding).
-  uint8_t _pad[7];
+  uint8_t _pad[3];
+  // Stamped at allocation; immutable for node lifetime. Used by
+  // BatchLinkCodec<ThreadRegistryNode> to decode the batch_link
+  // back to a NodeT*.
+  uint32_t node_index;
 };
 
 // Crystalline FreeFn for the thread-registry domain. Dispatches on

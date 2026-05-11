@@ -42,7 +42,7 @@
 #include "src/__support/OSUtil/windows/nt/nt_wstringstream.h"
 #include "src/__support/OSUtil/windows/nt/session_bno.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/OSUtil/windows/alloc/section_view.h"
 #include "src/__support/OSUtil/windows/nt/handle_attributes.h"
 #include "src/__support/OSUtil/windows/nt/section_handle.h"

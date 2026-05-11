@@ -16,7 +16,7 @@
 #include "src/__support/OSUtil/windows/dlfcn/r_debug.h"
 
 #include "hdr/stdint_proxy.h"
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/OSUtil/windows/libc_fork_registry.h"
 #include "src/__support/OSUtil/windows/nt/nt_wstring_view.h"
 #include "src/__support/OSUtil/windows/ntdll.h"

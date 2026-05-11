@@ -32,6 +32,7 @@
 #include "src/__support/OSUtil/windows/nt/scoped_nt_handle.h"
 #include "src/__support/OSUtil/windows/process_control_block.h"
 #include "src/__support/OSUtil/windows/signal/dispatch/dispatch_fwd.h"
+#include "src/__support/OSUtil/windows/signal/payload/sig_payload.h"
 #include "src/__support/OSUtil/windows/signal/pending/pending_storage.h"
 #include "src/__support/OSUtil/windows/signal/pending/sigqueue_pool.h"
 #include "src/__support/OSUtil/windows/signal/signal_types.h"
@@ -63,10 +64,16 @@ int32_t pend_cross_process_signal(int signum, int si_code, pid_t sender_pid,
     entry->uid = sender_uid;
     signal_pending::pend_rt(g_pcb.signal_dispatch.process_pending, entry);
   } else {
-    // Publish sender identity first; pend_standard's RELEASE CAS promotes
-    // both this and the si_code to other threads observing the bitmap.
-    g_pcb.signal_dispatch.process_sender[signum - 1] = {
-        static_cast<int>(sender_pid), static_cast<int>(sender_uid)};
+    // Publish sender identity (pid, uid, sival) into the wait-free
+    // payload subsystem. The receiver's build_standard_siginfo path
+    // pulls these via populate_signal_payload alongside si_code from
+    // the PendingSet sidecar — coherent multi-field publish, no
+    // shared mutable side-array (the previous CrossProcessSender
+    // process_sender[] write here had a torn-tuple race with
+    // concurrent same-signum senders).
+    payload::publish_cross_kill(signum, si_code,
+                                static_cast<int>(sender_pid),
+                                static_cast<unsigned>(sender_uid), sval);
     (void)signal_pending::pend_standard(g_pcb.signal_dispatch.process_pending,
                                         signum, si_code);
   }

@@ -9,5 +9,4 @@ add_libc_unittest(
   DEPENDS
     libc.src.libgen.basename
     libc.src.libgen.dirname
-    libc.test.UnitTest.Test
 )

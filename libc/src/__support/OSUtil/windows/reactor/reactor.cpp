@@ -66,6 +66,7 @@
 #include "src/__support/OSUtil/windows/nt/nt_job.h"
 #include "src/__support/OSUtil/windows/nt/nt_process_api.h"
 #include "src/__support/OSUtil/windows/process_control_block.h"
+#include "src/__support/OSUtil/windows/tls/teb_fixup.h"
 #include "src/__support/threads/raw_mutex.h"
 #include "src/__support/threads/windows/futex_addr.h"
 #include "src/__support/OSUtil/windows/libc_fork_registry.h"
@@ -612,6 +613,12 @@ void drain_cleanup_slots() {
 // =========================================================================
 
 NTAPI DWORD drain_thread_proc(PVOID param) {
+  // Reserve handler-stack budget — drain dispatches user-installed
+  // completion routers (epoll callbacks, timer callbacks, AIO completion)
+  // which can recursively trigger more dispatch and overflow the stack
+  // on adversarial workloads.
+  windows::apply_libc_stack_guarantee();
+
   uint32_t my_index =
       static_cast<uint32_t>(reinterpret_cast<uintptr_t>(param));
   ReactorState &rr = g_pcb.reactor;

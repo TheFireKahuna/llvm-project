@@ -42,7 +42,7 @@
 #define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_PRIMITIVES_GUARDED_REGION_H
 
 #include "hdr/stdint_proxy.h"
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/common.h"
 #include "src/__support/libc_assert.h"
 #include "src/__support/macros/attributes.h"

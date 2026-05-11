@@ -8,7 +8,7 @@
 
 #include "src/__support/threads/windows/wait_slot.h"
 #include "src/__support/CPP/atomic.h"
-#include "src/__support/OSUtil/windows/memory/commit_region.h"
+#include "src/__support/OSUtil/windows/memory/legacy/commit_region.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
 #include "src/__support/OSUtil/windows/alloc/page_size.h"
 #include "src/__support/OSUtil/windows/libc_fini_registry.h"
@@ -114,6 +114,13 @@ static void freelist_push(uint32_t index) {
   pool[index].subsystem.store(SubsystemKind::None, cpp::MemoryOrder::RELAXED);
   pool[index].thread_id.store(0, cpp::MemoryOrder::RELAXED);
   pool[index].wait_address.store(0, cpp::MemoryOrder::RELAXED);
+  // Park flag belongs to the owner of the prior wait cycle; clear
+  // before the slot becomes a free-pool entry so the next allocator
+  // observes a clean field. Owner-exclusive while linked, so the
+  // single-threaded reset here races only with other freelist_push
+  // entrants on the same slot — impossible by reclaim_slot's idempotent
+  // entry CAS.
+  pool[index].park_state.store(0, cpp::MemoryOrder::RELAXED);
   pool[index].generation.fetch_add(1, cpp::MemoryOrder::RELEASE);
   for (;;) {
     uint32_t old = g_freelist.head.load(cpp::MemoryOrder::ACQUIRE);
@@ -517,6 +524,7 @@ void fork_reinit() {
   for (uint32_t i = 1; i < committed; ++i) {
     pool[i].thread_id.store(0, cpp::MemoryOrder::RELAXED);
     pool[i].wait_address.store(0, cpp::MemoryOrder::RELAXED);
+    pool[i].park_state.store(0, cpp::MemoryOrder::RELAXED);
     // Parent owner ThreadHandle references the parent registry —
     // invalid in the child. Surviving slot rebinds on next wait entry.
     pool[i].owner_tid = 0;

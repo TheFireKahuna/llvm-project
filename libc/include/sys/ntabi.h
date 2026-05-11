@@ -74,6 +74,7 @@ extern "C" {
 //===----------------------------------------------------------------------===//
 
 typedef unsigned char BOOLEAN;
+typedef BOOLEAN *PBOOLEAN;
 typedef unsigned char BYTE;
 typedef unsigned char UCHAR;
 typedef char CHAR;

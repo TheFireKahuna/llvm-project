@@ -25,7 +25,7 @@
 
 #include "src/__support/OSUtil/windows/process_control_block.h"
 
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
 #include "src/__support/OSUtil/windows/pcb_init_access.h"
 #include "src/__support/OSUtil/windows/process_control_block_access.h"

@@ -13,7 +13,7 @@
 #include "src/__support/error_or.h"
 #include "src/__support/macros/config.h"
 
-#include "src/__support/OSUtil/windows/memory/brk_state.h"
+#include "src/__support/OSUtil/windows/memory/legacy/brk_state.h"
 
 namespace LIBC_NAMESPACE_DECL {
 namespace windows_syscalls {

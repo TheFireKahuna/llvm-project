@@ -11,7 +11,7 @@
 
 #include "hdr/stdint_proxy.h"
 #include "hdr/types/mode_t.h"
-#include "src/__support/OSUtil/windows/memory/shm_ops.h"
+#include "src/__support/OSUtil/windows/memory/legacy/shm_ops.h"
 #include "src/__support/common.h"
 #include "src/__support/error_or.h"
 #include "src/__support/macros/config.h"

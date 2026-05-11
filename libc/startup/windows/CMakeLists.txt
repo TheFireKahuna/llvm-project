@@ -88,6 +88,19 @@ add_object_library(
     # former mapping_table_startup_init path. Pulls in the walker
     # implementation + the .libcmem bookends.
     libc.src.__support.OSUtil.windows.memory_primitives_bootstrap
+    # Layer 0 PAL — registers a `.libcmem$P0` handler that probes
+    # ProcessCookie + SeLockMemoryPrivilege, plus a fork-reinit hook.
+    libc.src.__support.OSUtil.windows.nt_pal_init
+    # Layer 2 pagemap — registers a `.libcmem$P3` handler that
+    # reserves the 16 B / 16 KiB chunkmap (split-half 8 B + 8 B
+    # entries) and the two-tier demand-commit metadata (L0 + L1
+    # state-machine arrays); registers a fork-reinit hook at
+    # priority 37.
+    libc.src.__support.OSUtil.windows.pagemap
+    # Sealed-VA publisher — bootstrap publishes the pagemap range
+    # post-memory-init and runs the seal-time invariant assert + wipe
+    # immediately before pcb_seal_readonly_a.
+    libc.src.__support.OSUtil.windows.alloc_sealed_va_publisher
     libc.src.__support.OSUtil.windows.memory_lock_policy_state
   COMPILE_OPTIONS
     -ffreestanding

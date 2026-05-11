@@ -10,7 +10,7 @@
 #define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_SYSCALL_WRAPPERS_MEMFD_CREATE_H
 
 #include "hdr/stdint_proxy.h"
-#include "src/__support/OSUtil/windows/memory/shm_ops.h"
+#include "src/__support/OSUtil/windows/memory/legacy/shm_ops.h"
 #include "src/__support/common.h"
 #include "src/__support/error_or.h"
 #include "src/__support/macros/config.h"

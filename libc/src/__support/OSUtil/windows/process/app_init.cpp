@@ -20,7 +20,7 @@
 #include "src/__support/OSUtil/windows/libc_subsystem_init.h"
 
 #include "config/windows/app.h"
-#include "src/__support/OSUtil/windows/alloc/va_substrate.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/va_substrate.h"
 #include "src/__support/OSUtil/windows/bcryptprimitives.h"
 #include "src/__support/OSUtil/windows/nt/nt_capabilities.h"
 #include "src/__support/OSUtil/windows/nt/shared_user_data.h"

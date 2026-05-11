@@ -41,7 +41,7 @@
 
 #include "src/__support/CPP/array.h"
 #include "src/__support/CPP/atomic.h"
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/OSUtil/windows/alloc/page_size.h"
 #include "src/__support/OSUtil/windows/alloc/primitives/guarded_region.h"
 #include "src/__support/OSUtil/windows/alloc/primitives/init_latch.h"

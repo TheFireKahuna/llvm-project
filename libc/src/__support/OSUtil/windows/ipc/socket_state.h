@@ -38,7 +38,7 @@
 #include "src/__support/OSUtil/windows/ipc/afd_io_completion.h"
 #include "src/__support/OSUtil/windows/nt/nt_afd.h"
 #include "src/__support/OSUtil/windows/nt/nt_types.h"
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/macros/attributes.h"
 #include "src/__support/macros/config.h"
 

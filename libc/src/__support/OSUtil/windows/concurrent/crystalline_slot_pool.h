@@ -86,7 +86,7 @@
 #include "src/__support/CPP/atomic.h"
 #include "src/__support/OSUtil/windows/concurrent/crystalline_local_state.h"
 #include "src/__support/OSUtil/windows/concurrent/lock_free_linkage.h"
-#include "src/__support/OSUtil/windows/memory/commit_region.h"
+#include "src/__support/OSUtil/windows/memory/legacy/commit_region.h"
 #include "src/__support/macros/attributes.h"
 #include "src/__support/macros/config.h"
 #include "src/__support/macros/optimization.h"
@@ -118,11 +118,20 @@ inline constexpr size_t kCrystallineSlotPoolReserveBytes =
     static_cast<size_t>(kCrystallineSlotPoolCapacity) *
     sizeof(CrystallineDomainSlot);
 
-// Cache-line isolated chain head: `[gen:16 | head:16]` packing defends
+// Cache-line isolated chain head: `[gen:48 | head:16]` packing defends
 // the Treiber stack against ABA on the head field even before the per-
 // slot tag bump kicks in. Used for both freelist_ and active_head_.
+//
+// Gen is 48-bit so wrap-around takes ~2.8e14 head mutations — at a
+// sustained 1 GHz mutation rate that is ~9 years, structurally
+// unreachable. A 16-bit gen wrapped under realistic 16-thread
+// teardown workloads (~75K head ops per `[E]` bench section) and
+// produced active-chain self-loops via active_push reading
+// `old.head == idx` post-wrap; the dump showed `slot N self-loop
+// (next=N)` after roughly 7K successful CASes — gen had wrapped at
+// least once during the run.
 struct alignas(64) CrystallineFreelistLine {
-  cpp::Atomic<uint32_t> head{0};
+  cpp::Atomic<uint64_t> head{0};
 };
 static_assert(sizeof(CrystallineFreelistLine) == 64,
               "CrystallineFreelistLine must occupy exactly one 64-byte "
@@ -231,17 +240,30 @@ public:
   }
 
   // Release a slot: tombstone its fields, splice off active chain via
-  // mark-then-help, then push onto freelist.
+  // the substrate harris_unlink walker, then push onto freelist.
+  //
+  // Caller holds idx exclusively (claim/release ownership), so
+  // capturing the slot's generation here is race-free against
+  // freelist_push (only this thread's release path bumps it) — the
+  // substrate walker uses it to bind the splice CAS path against
+  // accidental cross-lifecycle reuse if any other path were to bump
+  // gen mid-walk.
   LIBC_INLINE void release_slot(uint16_t idx) {
     // Tombstone fields BEFORE the splice. While the slot is still on
     // the active chain, peer walkers see inv_ptr in first[] and zero
-    // in epoch/state — the existing algorithmic filters skip it the
+    // in era/state — the existing algorithmic filters skip it the
     // same way they skip a never-claimed slot.
     reset_slot_fields(slots_[idx]);
-    // Splice. Returns false on chain-shape changes (concurrent
-    // walker mark-then-help, prev's state transition, etc.) — retry.
-    while (!active_splice(idx))
-      ;
+    uint32_t my_gen =
+        slots_[idx].generation.load(cpp::MemoryOrder::ACQUIRE);
+    // Substrate walker drains all chain-shape races internally
+    // (loops on Retry until SplicedReclaim / SplicedNoReclaim /
+    // NotFound). Pool's DeadPolicy declares target_state_reclaims
+    // ≡ true — caller always proceeds to freelist_push regardless
+    // of whether the walker self-spliced or vacuously walked-to-end.
+    SubstrateCtx ctx{*this};
+    (void)linkage::harris_unlink<SubstrateCtx, PoolDeadPolicy>(ctx, idx,
+                                                                my_gen);
     freelist_push(idx);
   }
 
@@ -267,18 +289,31 @@ public:
 
   LIBC_INLINE CrystallineDomainSlot &at(uint16_t idx) { return slots_[idx]; }
 
+  // Diagnostic-only getters — packed [gen:48|head:16] words. Used by
+  // crystalline_slot_pool_stress to record observed values per op boundary
+  // for race localization. Production code should not consume these.
+  LIBC_INLINE uint64_t debug_active_head_packed() {
+    return active_head_.head.load(cpp::MemoryOrder::ACQUIRE);
+  }
+  LIBC_INLINE uint64_t debug_freelist_head_packed() {
+    return freelist_.head.load(cpp::MemoryOrder::ACQUIRE);
+  }
+  LIBC_INLINE uint32_t debug_committed_slots() {
+    return committed_slots_.load(cpp::MemoryOrder::ACQUIRE);
+  }
+
 private:
-  // ----- [gen:16|head:16] packers, copied from wait_slot.cpp:74-78 -----
+  // ----- [gen:48|head:16] packers (64-bit head packing).
   static constexpr uint32_t kFlGenShift = 16;
-  static constexpr uint32_t kFlIndexMask = (1u << kFlGenShift) - 1;
-  LIBC_INLINE static uint32_t fl_head(uint32_t packed) {
+  static constexpr uint64_t kFlIndexMask = (1ull << kFlGenShift) - 1;
+  LIBC_INLINE static uint64_t fl_head(uint64_t packed) {
     return packed & kFlIndexMask;
   }
-  LIBC_INLINE static uint32_t fl_gen(uint32_t packed) {
+  LIBC_INLINE static uint64_t fl_gen(uint64_t packed) {
     return packed >> kFlGenShift;
   }
-  LIBC_INLINE static uint32_t fl_pack(uint32_t gen, uint32_t head) {
-    return ((gen & 0xFFFFu) << kFlGenShift) | (head & kFlIndexMask);
+  LIBC_INLINE static uint64_t fl_pack(uint64_t gen, uint64_t head) {
+    return (gen << kFlGenShift) | (head & kFlIndexMask);
   }
 
   // Reset every algorithmically-meaningful slot field to its
@@ -291,13 +326,14 @@ private:
       slot.first[j].list[0].store(crystalline_inv_ptr(),
                                   cpp::MemoryOrder::RELAXED);
       slot.first[j].pair[1].store(0, cpp::MemoryOrder::RELAXED);
-      slot.epoch[j].pair[0].store(0, cpp::MemoryOrder::RELAXED);
-      slot.epoch[j].pair[1].store(0, cpp::MemoryOrder::RELAXED);
+      slot.era[j].pair[0].store(0, cpp::MemoryOrder::RELAXED);
+      slot.era[j].pair[1].store(0, cpp::MemoryOrder::RELAXED);
       slot.state[j].result.pair[0].store(0, cpp::MemoryOrder::RELAXED);
       slot.state[j].result.pair[1].store(0, cpp::MemoryOrder::RELAXED);
-      slot.state[j].pointer.store(0, cpp::MemoryOrder::RELAXED);
+      slot.state[j].load_thunk.store(nullptr, cpp::MemoryOrder::RELAXED);
+      slot.state[j].load_ctx.store(nullptr, cpp::MemoryOrder::RELAXED);
       slot.state[j].parent.store(nullptr, cpp::MemoryOrder::RELAXED);
-      slot.state[j].epoch.store(0, cpp::MemoryOrder::RELAXED);
+      slot.state[j].birth_era.store(0, cpp::MemoryOrder::RELAXED);
     }
   }
 
@@ -309,7 +345,7 @@ private:
   // Treiber pop from freelist. Returns 0 only on pool exhaustion.
   LIBC_INLINE uint16_t freelist_pop() {
     for (;;) {
-      uint32_t old = freelist_.head.load(cpp::MemoryOrder::ACQUIRE);
+      uint64_t old = freelist_.head.load(cpp::MemoryOrder::ACQUIRE);
       uint16_t head = static_cast<uint16_t>(fl_head(old));
       if (head == kCrystallineSlotNullIndex) {
         if (!commit_more_slots())
@@ -317,7 +353,7 @@ private:
         continue;
       }
       uint16_t next = slots_[head].link.load(cpp::MemoryOrder::ACQUIRE).next();
-      uint32_t desired = fl_pack(fl_gen(old) + 1, next);
+      uint64_t desired = fl_pack(fl_gen(old) + 1, next);
       if (freelist_.head.compare_exchange_weak(old, desired,
                                                cpp::MemoryOrder::ACQ_REL,
                                                cpp::MemoryOrder::ACQUIRE))
@@ -329,13 +365,22 @@ private:
   // chain (active chain splice succeeded). `link_store` writes
   // state=FREE, next=fl_head, sets CERT, drops MARK + ALERT_FIRED, bumps
   // tag — all via the substrate's `rewrite_certified` wither.
+  //
+  // generation bump is the substrate walker's slot-lifecycle ABA
+  // defense: any concurrent harris_walk_attempt that captured this
+  // slot's gen pre-push observes the bumped value at its target
+  // re-check and returns NotFound rather than splicing on a slot
+  // about to be reallocated. RELEASE ordering pairs with the
+  // walker's ACQUIRE load + the freelist_.head ACQUIRE load on the
+  // pop side, so the bumped gen happens-before any post-pop reuse.
   LIBC_INLINE void freelist_push(uint16_t idx) {
+    slots_[idx].generation.fetch_add(1, cpp::MemoryOrder::RELEASE);
     for (;;) {
-      uint32_t old = freelist_.head.load(cpp::MemoryOrder::ACQUIRE);
+      uint64_t old = freelist_.head.load(cpp::MemoryOrder::ACQUIRE);
       linkage::link_store(slots_[idx].link,
                           static_cast<uint8_t>(SlotPoolState::FREE),
                           static_cast<uint16_t>(fl_head(old)));
-      uint32_t desired = fl_pack(fl_gen(old) + 1, idx);
+      uint64_t desired = fl_pack(fl_gen(old) + 1, idx);
       if (freelist_.head.compare_exchange_weak(old, desired,
                                                cpp::MemoryOrder::RELEASE,
                                                cpp::MemoryOrder::RELAXED))
@@ -366,11 +411,11 @@ private:
     //    ALERT_FIRED — we are about to commit on-chain), then CAS
     //    publishes us as the new head.
     for (;;) {
-      uint32_t old = active_head_.head.load(cpp::MemoryOrder::ACQUIRE);
+      uint64_t old = active_head_.head.load(cpp::MemoryOrder::ACQUIRE);
       cur = linkage::link_store_next_uncertify_known(
           slots_[idx].link, cur,
           static_cast<uint16_t>(fl_head(old)));
-      uint32_t desired = fl_pack(fl_gen(old) + 1, idx);
+      uint64_t desired = fl_pack(fl_gen(old) + 1, idx);
       if (active_head_.head.compare_exchange_weak(old, desired,
                                                   cpp::MemoryOrder::RELEASE,
                                                   cpp::MemoryOrder::RELAXED))
@@ -378,100 +423,19 @@ private:
     }
   }
 
-  // Harris splice off active chain. Returns true on success (target
-  // detached, CERT published) or "target was not on chain" (vacuously
-  // succeeded). Returns false on chain-shape race (caller retries).
-  //
-  // Mark-then-help walker discipline copied from
-  // futex_utils.h:harris_walk_attempt — encountering another walker's
-  // MARK on the chain triggers HELP-NOT-WAIT (we complete the splice
-  // ourselves) so a killed splicer cannot freeze progress for any
-  // other thread.
-  LIBC_INLINE bool active_splice(uint16_t target) {
-    // Iterate from head, tracking prev + prev_link snap for the
-    // mid-splice CAS expected-value.
-    uint16_t prev = kCrystallineSlotNullIndex;
-    linkage::Link prev_link;
-    uint16_t curr = static_cast<uint16_t>(
-        fl_head(active_head_.head.load(cpp::MemoryOrder::ACQUIRE)));
-
-    while (curr != kCrystallineSlotNullIndex) {
-      auto &cs = slots_[curr];
-      linkage::Link c_link = cs.link.load(cpp::MemoryOrder::ACQUIRE);
-
-      // HELP-NOT-WAIT on observed MARK: another splicer is mid-flight
-      // on `curr`. Complete its splice ourselves, then restart.
-      if (c_link.is_marked()) {
-        uint16_t c_next_marked = c_link.next();
-        bool spliced = (prev == kCrystallineSlotNullIndex)
-                           ? try_splice_active_head(curr, c_next_marked)
-                           : try_splice_at_pred(prev, prev_link,
-                                                  c_next_marked);
-        if (spliced)
-          linkage::link_finalize_after_splice(
-              cs.link,
-              linkage::MarkedLinkSnap::from_observed_marked(c_link));
-        else
-          linkage::link_clear_mark(cs.link);
-        return false; // Restart from head.
-      }
-
-      // Stale snap — slot was concurrently released by another path
-      // (shouldn't happen for our own target since we own it, but
-      // could happen for an intermediate). Restart.
-      uint8_t c_state = c_link.state();
-      if (c_state != static_cast<uint8_t>(SlotPoolState::CLAIMED))
-        return false;
-
-      if (curr == target) {
-        // Found target. Mark target.link to freeze target.next while
-        // we CAS the parent — closes the stale c_next race where a
-        // concurrent op-splice of target's successor could advance
-        // target.next between our capture and the parent CAS.
-        if (!linkage::link_cas_set_mark(cs.link, c_link))
-          return false; // Concurrent mutation; retry.
-
-        linkage::MarkedLinkSnap target_marked =
-            linkage::link_pack_after_mark(c_link);
-        uint16_t my_next = c_link.next();
-
-        bool spliced = (prev == kCrystallineSlotNullIndex)
-                           ? try_splice_active_head(target, my_next)
-                           : try_splice_at_pred(prev, prev_link, my_next);
-        if (spliced) {
-          // Atomic CERT publish + MARK clear on target.link.
-          linkage::link_finalize_after_splice(cs.link, target_marked);
-          return true;
-        }
-        // Splice failed: parent's link or chain head changed
-        // concurrently. Release the mark; retry.
-        linkage::link_clear_mark(cs.link);
-        return false;
-      }
-
-      // Advance.
-      prev = curr;
-      prev_link = c_link;
-      curr = c_link.next();
-    }
-
-    // Walked to end without finding target. Means another actor
-    // already removed it (shouldn't happen for our own target unless
-    // a concurrent helper-then-splice path is active; we accept it as
-    // already-spliced and proceed to freelist push).
-    return true;
-  }
-
   // Head splice via active_head_ CAS. Returns false if the chain head
   // is no longer `expected_head` (caller restarts). Loops on weak-CAS
   // spurious failures while the head still matches.
+  //
+  // Called both from active_push's CAS-publish loop and from the
+  // substrate harris walker's SubstrateCtx::try_splice_head adapter.
   LIBC_INLINE bool try_splice_active_head(uint16_t expected_head,
                                             uint16_t new_top) {
     for (;;) {
-      uint32_t old = active_head_.head.load(cpp::MemoryOrder::ACQUIRE);
+      uint64_t old = active_head_.head.load(cpp::MemoryOrder::ACQUIRE);
       if (static_cast<uint16_t>(fl_head(old)) != expected_head)
         return false;
-      uint32_t desired = fl_pack(fl_gen(old) + 1, new_top);
+      uint64_t desired = fl_pack(fl_gen(old) + 1, new_top);
       if (active_head_.head.compare_exchange_weak(old, desired,
                                                   cpp::MemoryOrder::ACQ_REL,
                                                   cpp::MemoryOrder::RELAXED))
@@ -479,18 +443,76 @@ private:
     }
   }
 
-  // Mid splice via pred.link strong CAS: rewrite pred.next, drop
-  // CERT/MARK/ALERT, preserve state. Any concurrent mutation to
-  // pred.link (state transition, walker mark/finalize, opp-splice on
-  // pred's predecessor) fails the CAS — caller restarts.
-  LIBC_INLINE bool try_splice_at_pred(uint16_t pred,
-                                        linkage::Link expected_pred_link,
-                                        uint16_t new_next) {
-    linkage::Link desired = expected_pred_link.with_next_uncertify(new_next);
-    return slots_[pred].link.compare_exchange_strong(
-        expected_pred_link, desired, cpp::MemoryOrder::ACQ_REL,
-        cpp::MemoryOrder::ACQUIRE);
-  }
+  // Substrate harris walker's Ctx adapter — wraps `*this` so the
+  // walker template can call into the pool's link/gen/head accessors
+  // without indirection. All members LIBC_INLINE so the walker
+  // compiles to identical code as the prior open-coded active_splice.
+  //
+  // Refers to the enclosing CrystallineSlotPool by reference; the
+  // adapter is constructed transiently in release_slot's stack frame
+  // (`SubstrateCtx ctx{*this};`) and lives only across one
+  // harris_unlink call.
+  struct SubstrateCtx {
+    CrystallineSlotPool &pool;
+    static constexpr uint16_t kNullIndex = kCrystallineSlotNullIndex;
+
+    LIBC_INLINE cpp::Atomic<linkage::Link> &link_at(uint16_t idx) {
+      return pool.slots_[idx].link;
+    }
+    LIBC_INLINE uint32_t load_gen(uint16_t idx) {
+      return pool.slots_[idx].generation.load(cpp::MemoryOrder::ACQUIRE);
+    }
+    LIBC_INLINE uint16_t load_head() {
+      return static_cast<uint16_t>(
+          pool.fl_head(pool.active_head_.head.load(
+              cpp::MemoryOrder::ACQUIRE)));
+    }
+    LIBC_INLINE bool try_splice_head(uint16_t expected_head,
+                                      uint16_t new_top) {
+      return pool.try_splice_active_head(expected_head, new_top);
+    }
+    // Pool's DeadPolicy declares no dead-intermediate states, so the
+    // substrate walker never invokes this hook. Defined only to
+    // satisfy the duck-typed interface; never called at runtime.
+    LIBC_INLINE void on_dead_intermediate_reclaim(uint16_t /*idx*/,
+                                                    uint8_t /*pre_state*/) {}
+  };
+
+  // Substrate harris walker's DeadPolicy. Pool's link-state lattice:
+  //
+  //   CLAIMED + CERT=0   on the live chain (live).
+  //   CLAIMED + CERT=1   post-finalize, pre-freelist-push transient
+  //                      (DEAD-INTERMEDIATE — walker opp-splices).
+  //   CLAIMED + MARK=1   mid-release (mark-curr help branch handles).
+  //   FREE    + CERT=1   on freelist (idle-on-chain — walker Retries).
+  //
+  // The dead-intermediate case is load-bearing for chain self-healing.
+  // When two threads release adjacent slots concurrently, T1's target
+  // case can publish prev.next = (slot T2 is mid-releasing). Without
+  // dead-intermediate handling, that stale link survives T2's
+  // freelist_push as a FREE-on-chain entry and walkers retry forever.
+  // With dead-intermediate handling, walkers passing through the
+  // post-finalize / pre-push window (CLAIMED+CERT=1) opp-splice the
+  // slot using its still-chain-linkage `.next`, repairing the chain
+  // before it transitions to FREE.
+  //
+  // target_state_reclaims ≡ true: caller of harris_unlink is the
+  // slot's owner (release_slot) and always proceeds to freelist_push
+  // regardless of walker outcome. on_dead_intermediate_reclaim is a
+  // no-op — walker only repairs the chain; the slot's lifecycle owner
+  // (release_slot caller) handles the eventual freelist_push.
+  struct PoolDeadPolicy {
+    static constexpr bool is_idle_on_chain(uint8_t state) {
+      return state == static_cast<uint8_t>(SlotPoolState::FREE);
+    }
+    static constexpr bool is_dead_intermediate(linkage::Link l) {
+      return l.state() == static_cast<uint8_t>(SlotPoolState::CLAIMED) &&
+             l.is_certified();
+    }
+    static constexpr bool target_state_reclaims(uint8_t /*pre_mark_state*/) {
+      return true;
+    }
+  };
 
   // Grow the pool by one chunk. `committed_slots_` is purely internal
   // coordination — walkers iterate the active chain via Link traversal,
@@ -544,13 +566,13 @@ private:
     // CAS-loop because freelist_.head can change concurrently — same
     // Treiber discipline as wait_slot.cpp:274-282.
     for (;;) {
-      uint32_t old = freelist_.head.load(cpp::MemoryOrder::ACQUIRE);
+      uint64_t old = freelist_.head.load(cpp::MemoryOrder::ACQUIRE);
       slots_[end - 1].link.store(
           linkage::Link::pack_certified(
               static_cast<uint8_t>(SlotPoolState::FREE), /*tag=*/0,
               static_cast<uint16_t>(fl_head(old))),
           cpp::MemoryOrder::RELAXED);
-      uint32_t desired = fl_pack(fl_gen(old) + 1, cur);
+      uint64_t desired = fl_pack(fl_gen(old) + 1, cur);
       if (freelist_.head.compare_exchange_weak(old, desired,
                                                cpp::MemoryOrder::RELEASE,
                                                cpp::MemoryOrder::RELAXED))

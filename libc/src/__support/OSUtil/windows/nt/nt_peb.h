@@ -5,14 +5,12 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-//
-// Full PEB and TEB layout definitions for Windows 11 24H2.
-//
-// TEB access: gs:0x30 (x64) / x18 (AArch64) points to the TEB.
-// PEB access: TEB offset +0x60 (x64) / +0x60 (AArch64).
-//
-// Reference: System Informer phnt/include/ntpebteb.h
-//
+///
+/// \file
+/// PEB / TEB layouts for Windows 11 24H2 (validated against System Informer
+/// phnt and ntdll disassembly). Layouts the libc relies on are pinned with
+/// `static_assert`; TEB lives at gs:0x30 (x64) / x18 (AArch64), PEB at TEB+0x60.
+///
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_NT_PEB_H
@@ -92,11 +90,8 @@ struct tagCLIENTTHREADINFO;
 // Activation Context — SxS (Side-by-Side) assembly resolution
 //===----------------------------------------------------------------------===//
 //
-// Activation contexts handle DLL redirection, COM registration, and window
-// class isolation via XML manifests embedded in PE resources. The kernel
-// maintains per-thread and per-process activation context stacks. Decoding
-// these structures enables direct manifest queries and DLL redirection
-// lookups without QueryActCtxW.
+// Decoded so manifest queries and DLL redirection can run without
+// QueryActCtxW; the kernel keeps per-thread and per-process context stacks.
 
 // Requested run level from the manifest's trustInfo element.
 typedef enum _ACTCTX_REQUESTED_RUN_LEVEL {
@@ -212,11 +207,9 @@ typedef struct _ASSEMBLY_STORAGE_MAP {
   PASSEMBLY_STORAGE_MAP_ENTRY *AssemblyArray;
 } ASSEMBLY_STORAGE_MAP, *PASSEMBLY_STORAGE_MAP;
 
-// Notification callback — invoked when activation contexts are
-// activated/deactivated. MS x64 ABI; type derived via `decltype` on an
-// unreferenced external prototype (LIBC_MSABI attaches to declarations,
-// not to function-type aliases). The _Function_class_ SAL annotation is
-// omitted.
+// Notification callback fired on activation/deactivation. Type is derived
+// via `decltype` on an external prototype because `LIBC_MSABI` appertains to
+// declarations, not function-type aliases.
 LIBC_MSABI void __activation_context_notify_type_source(
     ULONG NotificationType, // ACTIVATION_CONTEXT_NOTIFICATION_*
     struct _ACTIVATION_CONTEXT *ActivationContext,
@@ -261,8 +254,8 @@ typedef struct _ACTIVATION_CONTEXT_STACK {
 // NT_TIB — Thread Information Block (x64)
 //===----------------------------------------------------------------------===//
 //
-// The first field of every TEB. Contains the SEH exception chain, stack
-// bounds, and a self-pointer. gs:0x00 on x64, x18+0x00 on AArch64.
+// First field of every TEB; carries the SEH chain head, stack bounds, and
+// self-pointer. Lives at gs:0x00 on x64, x18+0x00 on AArch64.
 
 struct EXCEPTION_REGISTRATION_RECORD {
   EXCEPTION_REGISTRATION_RECORD *Next;
@@ -338,9 +331,8 @@ typedef struct _RTL_DRIVE_LETTER_CURDIR {
 // RTL_USER_PROCESS_PARAMETERS — process startup parameters
 //===----------------------------------------------------------------------===//
 //
-// Allocated in the new process address space by RtlCreateProcessParametersEx.
-// Contains image path, command line, environment block, console handles,
-// current directory, standard I/O handles, and window creation info.
+// Allocated in the new process's address space by
+// RtlCreateProcessParametersEx; addressable via PEB::ProcessParameters.
 
 typedef struct _RTL_USER_PROCESS_PARAMETERS {
   ULONG MaximumLength;
@@ -693,8 +685,8 @@ typedef ULONG GDI_HANDLE_BUFFER[GDI_HANDLE_BUFFER_SIZE];
 // PS_POST_PROCESS_INIT_ROUTINE — PEB::PostProcessInitRoutine callback
 //===----------------------------------------------------------------------===//
 //
-// Optional callback invoked by the loader after process initialization.
-// The _Function_class_ SAL annotation is MSVC-specific and omitted here.
+// Loader-invoked optional callback after process init. Same `decltype`
+// idiom as the activation-context notify above.
 
 LIBC_MSABI void __pps_post_process_init_type_source(void);
 using PPS_POST_PROCESS_INIT_ROUTINE =
@@ -835,16 +827,13 @@ typedef struct tagDPICONTEXTINFO {
 // PEB — Process Environment Block
 //===----------------------------------------------------------------------===//
 //
-// Offsets marked in comments are for x64. The PEB is version-dependent;
-// this layout targets Windows 11 24H2 (sizeof = 0x7d0).
-//
-// Well-known offsets:
-//   +0x002  BeingDebugged
-//   +0x020  ProcessParameters
-//   +0x030  ProcessHeap
-//   +0x058  KernelCallbackTable
-//   +0x060  TlsExpansionCounter  (not to be confused with TEB offset 0x60 = PEB
-//   pointer) +0x078  TlsBitmap +0x2C0  SessionId
+// Layout pinned to Windows 11 24H2 (sizeof = 0x7d0); inline offset comments
+// are x64 only. Well-known anchors used by raw-memory readers:
+//   +0x002 BeingDebugged   +0x020 ProcessParameters   +0x030 ProcessHeap
+//   +0x058 KernelCallbackTable                        +0x078 TlsBitmap
+//   +0x2C0 SessionId
+// Note: PEB+0x60 is TlsExpansionCounter, not to be confused with TEB+0x60
+// (the PEB pointer).
 
 #define PeBeingDebugged 0x2
 #define PeProcessParameters 0x20
@@ -1089,10 +1078,9 @@ static_assert(__builtin_offsetof(PEB, TlsBitmap) == 0x78,
 // CLIENT_ID — process/thread identifier pair (TEB::ClientId)
 //===----------------------------------------------------------------------===//
 //
-// Fields hold numeric IDs cast to HANDLE width — not real kernel handles.
-// Defined here (not nt_types.h) because the TEB embeds it directly.
-// nt_types.h has its own CLIENT_ID for use by nt_process.h callers;
-// they are layout-compatible.
+// Numeric PID/TID widened to HANDLE — not real kernel handles. Mirrored in
+// nt_types.h (layout-compatible) for nt_process.h callers; defined here too
+// because the TEB embeds the struct directly.
 
 typedef struct _CLIENT_ID32 {
   ULONG UniqueProcess;
@@ -1220,25 +1208,17 @@ typedef struct _TEB_ACTIVE_FRAME_EX {
 // TEB — Thread Environment Block
 //===----------------------------------------------------------------------===//
 //
-// Offsets (x64):
-//   +0x000  NtTib.Self (gs:0x30)
-//   +0x008  StackBase
-//   +0x010  StackLimit
-//   +0x020  FiberData
-//   +0x030  Self
-//   +0x038  EnvironmentPointer
-//   +0x040  ClientId.UniqueProcess (PID)
-//   +0x048  ClientId.UniqueThread  (TID)
-//   +0x058  ThreadLocalStoragePointer
-//   +0x060  ProcessEnvironmentBlock (PEB pointer)
-//   +0x068  LastErrorValue
-//   +0x100  WOW32Reserved
-//   +0x1478 DeallocationStack
-//   +0x1480 TlsSlots
-//   +0x1744 CurrentIdealProcessor
-//   +0x1780 TlsExpansionSlots
+// x64 anchor offsets pinned for raw-memory readers (TLS, ClientId, FLS):
+//   +0x000 NtTib.Self                +0x008 StackBase
+//   +0x010 StackLimit                +0x020 FiberData
+//   +0x030 Self                      +0x038 EnvironmentPointer
+//   +0x040 ClientId.UniqueProcess    +0x048 ClientId.UniqueThread
+//   +0x058 ThreadLocalStoragePointer +0x060 ProcessEnvironmentBlock
+//   +0x068 LastErrorValue            +0x100 WOW32Reserved
+//   +0x1478 DeallocationStack        +0x1480 TlsSlots
+//   +0x1744 CurrentIdealProcessor    +0x1780 TlsExpansionSlots
 //   +0x17C8 FlsData
-//   +0x1850 SchedulerSharedDataSlot (since 24H2)
+//   +0x1850 SchedulerSharedDataSlot  (since 24H2)
 //   +0x1860 PrimaryGroupAffinity
 
 #define STATIC_UNICODE_BUFFER_LENGTH 261

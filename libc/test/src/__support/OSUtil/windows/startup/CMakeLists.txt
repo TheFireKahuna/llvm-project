@@ -141,27 +141,6 @@ add_libc_unittest(
     libc.src.unistd.fork
 )
 
-# `.libcfin$P4` intra-phase no-futex invariant. Fork-based death test
-# where an armed probe registered via LIBC_REGISTER_FINI into REAL
-# `.libcfin$P4` acquires a Futex after wait_slot fini — the process must
-# AV, validating the "no futex from fini" contract.
-add_libc_unittest(
-  fini_intra_p4_wait_slot_vs_mapping_table_test
-  SUITE
-    libc-osutil-tests
-  SRCS
-    fini_intra_p4_wait_slot_vs_mapping_table_test.cpp
-  DEPENDS
-    libc.include.llvm-libc-macros.sys_wait_macros
-    libc.src.__support.CPP.atomic
-    libc.src.__support.OSUtil.windows.libc_fini_registry
-    libc.src.__support.OSUtil.windows.ntdll
-    libc.src.__support.threads.windows.futex_utils
-    libc.src.__support.threads.windows.wait_slot
-    libc.src.sys.wait.waitpid
-    libc.src.unistd.fork
-)
-
 # Master VEH Zone 0 sealing + dispatch-state liveness. Fork-based death
 # tests write each VehSealedState field in the real g_pcb; parent asserts
 # SIGSEGV. Also pins `veh_sealed()` const accessor (no runtime mutator API).

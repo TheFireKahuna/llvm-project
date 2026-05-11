@@ -18,7 +18,7 @@
 #include "hdr/types/struct_rlimit.h"
 #include "hdr/types/struct_rusage.h"
 #include "include/llvm-libc-macros/sys-resource-macros.h"
-#include "src/__support/OSUtil/windows/memory/working_set.h"
+#include "src/__support/OSUtil/windows/memory/legacy/working_set.h"
 #include "src/__support/OSUtil/windows/nt/nt_job.h"
 #include "src/__support/OSUtil/windows/nt/nt_process.h"
 #include "src/__support/macros/config.h"

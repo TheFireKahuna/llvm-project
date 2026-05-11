@@ -33,7 +33,7 @@
 #include "src/__support/CPP/new.h"
 #include "src/__support/OSUtil/windows/bcryptprimitives.h"
 #include "src/__support/OSUtil/windows/alloc/page_size.h"
-#include "src/__support/OSUtil/windows/alloc/slab_pool.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/slab_pool.h"
 #include "src/__support/OSUtil/windows/resource/rlimit_data_guard.h"
 #include "src/__support/OSUtil/windows/tls/teb_tls.h"
 #include "src/__support/OSUtil/windows/tls/tls_cleanup.h"

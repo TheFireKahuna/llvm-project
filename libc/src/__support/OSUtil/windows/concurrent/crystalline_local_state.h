@@ -80,10 +80,8 @@ namespace concurrent {
 // Maximum Crystalline domains per process. Structural compile-time
 // ceiling: each domain's domain_id (assigned at registry_push time)
 // indexes ThreadScratchState::crystalline_slot_idx[] /
-// crystalline_batches[]. Bumping requires a rebuild. 8 is the projected
-// libc-wide cap — slab / page / mapping-table / fd-table / future
-// subsystems — with headroom.
-inline constexpr uint32_t kMaxCrystallineDomains = 8;
+// crystalline_batches[]. 
+inline constexpr uint32_t kMaxCrystallineDomains = 16;
 
 // Reservation-slots per thread per domain (WFRTracker's MAX_WFR).
 // Concurrency-depth parameter, NOT a thread/memory scale cap: bounds
@@ -93,54 +91,147 @@ inline constexpr uint32_t kMaxCrystallineDomains = 8;
 // traversals fit comfortably. Expose `+2` extra internal slots
 // for the helping-protocol's parent/helpee scratch (see
 // WFRTracker.hpp help_thread's use of slots[mytid].state[hr_num]
-// and slots[mytid].epoch[hr_num+1]).
+// and slots[mytid].era[hr_num+1]).
 inline constexpr uint32_t kCrystallineHrNum = 16;
 inline constexpr uint32_t kCrystallineSlotCount = kCrystallineHrNum + 2;
 
 // -------------------------------------------------------------------------
-// CrystallineNode — intrusive base for every retirable user type.
+// CrystallineNode — empty tag base for every retirable user type.
+// -------------------------------------------------------------------------
+//
+// Carries identity only (so `static_cast<CrystallineNode*>(NodeT*)` at
+// the slot-pool / batch-chain boundary type-checks, and `is_base_of_v<
+// CrystallineNode, NodeT>` works as a SFINAE predicate). The storage
+// — `next`/`slot`/`birth_era` union, `refs`/`batch_next` union, and
+// `batch_link` — lives in the derived class, emitted by the macro
+// `LIBC_CRYSTALLINE_NODE_FIELDS(Self)` below.
+//
+// Why empty: derived classes pin offsets via `static_assert(offsetof(...))`
+// — e.g. `RegionDesc::view_prot == 20`, `DescBacking::generation == 20`.
+// C++17 [class]/7 requires, for `offsetof` to be unconditionally
+// supported, that ALL non-static data members of the class and its base
+// classes be first-declared in the same class. With fields in the base
+// AND fields in the derived class, the derived class is non-standard-
+// layout and `offsetof` becomes conditionally-supported (clang fires
+// `-Winvalid-offsetof`). Making the base empty puts every NSDM in the
+// derived class — `offsetof` becomes ISO-conformant, and the layout is
+// guaranteed by `[class.mem]/26` (NSDM in the same access-control
+// region are laid out in declaration order with natural alignment),
+// not by the Itanium-ABI tail-padding-reuse rule.
+//
+// Under empty-base optimization the empty `CrystallineNode` contributes
+// zero bytes to any standard-layout derived class, so the macro fields
+// land at offset 0 in the derived class — same byte layout as today,
+// achieved by ordinary layout rules.
+//
+// All field semantics live on the macro below; see that comment for the
+// 1:1 mapping to WFRTracker.hpp's `struct WFRInfo`.
+struct CrystallineNode {};
+
+// Forward declaration for the `slot` alias in the first union of
+// LIBC_CRYSTALLINE_NODE_FIELDS below — the full definition appears
+// later in this file, but only a pointer-to-incomplete is needed by
+// the macro.
+struct CrystallineWordPair;
+
+// -------------------------------------------------------------------------
+// LIBC_CRYSTALLINE_NODE_FIELDS(Self) — emit the intrusive Crystalline-W
+// node fields into a derived class.
 // -------------------------------------------------------------------------
 //
 // Ported 1:1 from WFRTracker.hpp's `struct WFRInfo` (lines 84-95). The
-// three-way union encodes the node's role in the algorithm at any
-// moment in time:
+// three-way first union encodes the node's role at any moment:
 //
-//   - List nodes in a slot's retirement chain: `next` (atomic link to
-//     next node in slot chain).
-//   - List nodes being prepared for publication by try_retire: `slot`
-//     (raw pointer to the target slot's `first` word-pair).
-//   - The anchor ("refs") node of a batch: `birth_epoch` in the first
-//     union and `refs` in the second.
+//   First union (8 B at offset 0):
+//     next        (inserted state)  — atomic chain link in a slot's list
+//     slot        (prepare state)   — target CrystallineWordPair* for a
+//                                      try_retire slot assignment
+//     birth_era   (anchor / refs node) — era stamped by init_node
 //
-//   - `batch_link` — points at the anchor (refs-node) of the batch
-//     this node belongs to. WFR_IS_RNODE(batch_link) (low bit set)
-//     identifies the node itself as the anchor. See WFR_RNODE /
-//     WFR_IS_RNODE in crystalline_domain.h.
+//   Second union (8 B at offset 8):
+//     refs        (anchor)           — modular-addend refcount on the
+//                                      batch anchor node
+//     batch_next  (non-anchor)       — chain link for walking a batch's
+//                                      nodes in retire order
 //
-//   - Second union:
-//       * refs        — modular-addend refcount on the anchor node.
-//       * batch_next  — chain link for walking a batch's nodes
-//                       (non-anchor role).
+//   batch_link    (4 B at offset 16) — 32-bit encoded anchor reference;
+//                                      see crystalline_domain.h for the
+//                                      bit layout and BatchLinkCodec
+//                                      specialization contract.
+//
+// `Self` is the enclosing derived class — `next` and `batch_next` carry
+// `Self*` so chain walks inside the template body stay typed (avoiding
+// universal-pointer downcasts on every hop). At the slot-pool / batch-
+// chain boundary the template upcasts to `CrystallineNode*` (the
+// universal type erased into the slot's `Atomic<CrystallineNode*>`
+// view); the upcast is well-defined empty-base.
 //
 // All fields are owned by the runtime; user code must never write them.
-// Zero-initialization is the valid "freshly allocated, never retired"
-// state — `batch_link == nullptr` is what retire() checks to decide
-// whether a pointer is live or already retired.
+// Zero-initialization is the valid "freshly allocated, not yet retired"
+// state — `init_node()` stamps `birth_era` and `batch_link = 0u` at
+// publication time.
 //
-// The full struct is ABI-compatible with WFRInfo — fields are in the
-// same order and same sizes. A NodeT that inherits CrystallineNode and
-// adds trailing fields works the same way as the reference's
-// `char block[sizeof(WFRInfo) + sizeof(T)]` layout.
-struct CrystallineNode;
+// Macro shape rationale (vs. a CRTP template base):
+//   - A CRTP template base with these as NSDM would re-introduce the
+//     non-standard-layout split (base has NSDM, derived has NSDM).
+//   - A macro emits the fields *as members of the derived class itself*,
+//     keeping the derived class standard-layout when its own field set
+//     respects standard-layout rules.
+// The chain-link member is named `cn_next` rather than `next` to keep the
+// macro composable with derived types that already carry a `next` field
+// of their own (notably the skiplist's `next[]` per-level link array in
+// `SkiplistNodeBase`). The reference paper / WFRTracker.hpp calls this
+// field `next`; the rename is local to the macro and the substrate
+// template — it doesn't change the algorithm.
+#define LIBC_CRYSTALLINE_NODE_FIELDS(Self)                                     \
+  union {                                                                      \
+    ::LIBC_NAMESPACE::cpp::Atomic<Self *> cn_next;                             \
+    ::LIBC_NAMESPACE::concurrent::CrystallineWordPair *slot;                   \
+    uint64_t birth_era;                                                        \
+  };                                                                           \
+  union {                                                                      \
+    ::LIBC_NAMESPACE::cpp::Atomic<uintptr_t> refs;                             \
+    Self *batch_next;                                                          \
+  };                                                                           \
+  ::LIBC_NAMESPACE::cpp::Atomic<uint32_t> batch_link
+
+// Layout-reference type — never instantiated standalone, only used to
+// pin the field layout the macro produces independently of any
+// particular derived class. Standard-layout, so `offsetof` here is
+// unconditionally supported and asserts the byte layout once for the
+// whole substrate.
+struct CrystallineNodeLayoutRef : public CrystallineNode {
+  LIBC_CRYSTALLINE_NODE_FIELDS(CrystallineNodeLayoutRef);
+};
+
+static_assert(sizeof(CrystallineNodeLayoutRef) == 24,
+              "CrystallineNodeLayoutRef must be 24 B — the macro emits two "
+              "8-byte unions plus a 4-byte batch_link, rounded to alignof(8) "
+              "for the atomic-uintptr_t union member; derived classes rely "
+              "on the 4-byte slot at offset 20..23 being available for a "
+              "natural 4-byte first user field (RegionDesc::view_prot, "
+              "DescBacking::generation, ArenaHeader::arena_serial, ...).");
+static_assert(alignof(CrystallineNodeLayoutRef) == 8,
+              "CrystallineNodeLayoutRef must be 8 B aligned (atomic uintptr_t "
+              "in the second union)");
+static_assert(__builtin_offsetof(CrystallineNodeLayoutRef, batch_link) == 16,
+              "batch_link must be at offset 16 — the 4-byte tail slot at "
+              "[20..23] is the substrate-shared first-user-field landing pad");
 
 // -------------------------------------------------------------------------
 // Invalid-slot sentinel (lifted from crystalline_domain.h to the leaf
 // header so both crystalline_domain.h and crystalline_slot_pool.h share
 // a single definition).
 // -------------------------------------------------------------------------
+//
+// Templated default returns `CrystallineNode*` (the universal type used
+// at the slot-pool boundary). Explicit-typed variants give NodeT*-typed
+// sentinels for chain comparisons inside the template body where the
+// chain field is `Atomic<NodeT*>`.
 inline constexpr uintptr_t kCrystallineInvPtr64 = static_cast<uintptr_t>(-1LL);
-LIBC_INLINE CrystallineNode *crystalline_inv_ptr() {
-  return reinterpret_cast<CrystallineNode *>(kCrystallineInvPtr64);
+template <typename T = CrystallineNode>
+LIBC_INLINE T *crystalline_inv_ptr() {
+  return reinterpret_cast<T *>(kCrystallineInvPtr64);
 }
 
 // 16-byte aligned word-pair atomic — union of two uint64_t halves
@@ -181,22 +272,37 @@ static_assert(sizeof(CrystallineValuePair) == 16,
 
 // Per-reservation-slot helping state (reference's `struct state_t`).
 // Written by the slot's owner when it enters slow_path; read by
-// helpers during help_thread / help_read. All four fields are
+// helpers during help_thread / help_read. All five fields are
 // "for helpee only" — helpers never write them, they only read and
-// then CAS the result word to indicate a produced value. The
-// trailing _pad keeps the struct 48 bytes exactly for the array-
-// indexed layout math to hold.
+// then CAS the result word to indicate a produced value. Layout sized
+// at 48 bytes — fits the slot-array indexing math the algorithm relies
+// on.
+//
+// Deviation from the reference's `state_t`: the reference stores a
+// single `pointer` field (`std::atomic<T**>`) — the atomic address the
+// helpee was about to dereference. Helpers redo the load via
+// `obj->load()`. That works because the reference assumes every
+// protected load is a single atomic-pointer load.
+//
+// This port generalizes: ART's `art_node_get_child` is a multi-step
+// scan (N4/N16/N48 indirection), and the skiplist's link decode is a
+// packed-Link load + chunk-table indirection. To support those, we
+// publish a (load_thunk, load_ctx) pair — a free-function pointer +
+// stack-borne context — that helpers invoke instead of redoing a
+// single atomic load. The simple atomic-pointer case feeds through
+// the same machinery via a static atomic-load thunk in
+// CrystallineDomain.
 struct CrystallineStateT {
-  CrystallineWordPair result;           // {ptr | invptr64, seqno}
-  cpp::Atomic<uint64_t> epoch;          // birth_epoch snapshot
-  cpp::Atomic<uint64_t> pointer;        // atomic<T*>* being dereferenced
-  cpp::Atomic<CrystallineNode *> parent; // parent node's anchor
-  void *_pad;
+  CrystallineWordPair result;                            // {ptr | invptr64, seqno}
+  cpp::Atomic<uint64_t> birth_era;                       // parent birth-era snapshot
+  cpp::Atomic<CrystallineNode *(*)(void *)> load_thunk;  // helpee load callable
+  cpp::Atomic<void *> load_ctx;                          // opaque ctx for thunk
+  cpp::Atomic<CrystallineNode *> parent;                 // parent node's anchor
 };
 
 static_assert(sizeof(CrystallineStateT) == 48,
-              "CrystallineStateT must be 48 bytes — reference's state_t "
-              "layout used in the slot-array sizing");
+              "CrystallineStateT must be 48 bytes — slot-array sizing math "
+              "depends on this");
 
 // -------------------------------------------------------------------------
 // Per-thread per-domain slot — the WFRSlot of the reference.
@@ -206,8 +312,17 @@ static_assert(sizeof(CrystallineStateT) == 48,
 //   first[0 .. hr_num-1]    — reservation-slot head pointers
 //   first[hr_num]           — help-protocol parent-reservation scratch
 //   first[hr_num+1]         — help-protocol helpee scratch
-//   epoch[i]                — paired with first[i], carries (epoch, seqno)
-//   state[i]                — paired with first[i]/epoch[i], helping state
+//   era[i]                  — paired with first[i], carries (era, seqno)
+//   state[i]                — paired with first[i]/era[i], helping state
+//
+// Field naming note: the reference paper Figs. 5/6/10/13 use "era"
+// (Hazard-Era lineage). The codebase previously used "epoch", which
+// reads like a classical EBR (Epoch-Based Reclamation) global
+// reclamation-cycle counter — misleading, since Crystalline-W's
+// counter is an allocation-generation watermark bumped by `init_node`,
+// used purely for slot-eligibility filtering on retire batches. The
+// rename to `era` aligns with paper terminology and makes the
+// algorithm auditable line-by-line against the reference figures.
 //
 // 64-byte alignment isolates adjacent per-domain slot structs within
 // one thread's region from sharing a cache line. Cross-thread readers
@@ -219,20 +334,27 @@ static_assert(sizeof(CrystallineStateT) == 48,
 // without algorithmic change).
 struct alignas(64) CrystallineDomainSlot {
   CrystallineWordPair first[kCrystallineSlotCount];
-  CrystallineWordPair epoch[kCrystallineSlotCount];
+  CrystallineWordPair era[kCrystallineSlotCount];
   CrystallineStateT state[kCrystallineSlotCount];
   // Lock-free linkage substrate hookup. CrystallineSlotPool uses the
   // `next` field (16-bit pool index) for its Treiber freelist and the
-  // `state` byte for the FREE/CLAIMED two-state machine. Tag bumping
-  // (T1) defends every freelist push/pop against ABA without a separate
-  // generation counter.
+  // `state` byte for the FREE/CLAIMED two-state machine.
   cpp::Atomic<linkage::Link> link;
+  // Slot-lifecycle generation counter — substrate-mandatory for
+  // consumers of harris_walk_attempt / harris_unlink. Bumped on every
+  // freelist_push (slot leaves the active chain and re-enters the
+  // free-pool); captured by release_slot before the splice; re-checked
+  // by the walker at the target site. Closes the slot-lifecycle ABA
+  // window the per-link tag (T1) doesn't cover — T1 defends one
+  // lifecycle's link writes, `generation` defends across reclaim+
+  // realloc cycles.
+  cpp::Atomic<uint32_t> generation;
 };
 
 inline constexpr size_t kCrystallineDomainSlotNaturalSize =
     kCrystallineSlotCount *
         (sizeof(CrystallineWordPair) * 2 + sizeof(CrystallineStateT)) +
-    sizeof(cpp::Atomic<linkage::Link>);
+    sizeof(cpp::Atomic<linkage::Link>) + sizeof(cpp::Atomic<uint32_t>);
 
 static_assert(sizeof(CrystallineDomainSlot) >=
                   kCrystallineDomainSlotNaturalSize,
@@ -246,13 +368,15 @@ static_assert(sizeof(CrystallineDomainSlot) -
               "bumping kCrystallineHrNum may have crossed an alignment "
               "boundary; re-check the sizing math");
 
-// Pin the substrate-required offset structurally. arrays:
-//   first[18]: 0..287
-//   epoch[18]: 288..575
-//   state[18]: 576..1439
-//   link:      1440..1447   (8 bytes, naturally aligned on the 8-byte
-//                            boundary that follows the state[] array)
+// Pin the substrate-required offsets structurally. arrays:
+//   first[18]:   0..287
+//   era[18]:     288..575
+//   state[18]:   576..1439
+//   link:        1440..1447   (8 bytes, naturally aligned)
+//   generation:  1448..1451   (4 bytes, naturally aligned)
+//   tail pad:    1452..1471   (20 bytes, alignas(64) round-up)
 LINKAGE_REQUIRES_LINK_AT(CrystallineDomainSlot, 1440);
+LINKAGE_REQUIRES_GENERATION_AT(CrystallineDomainSlot, 1448);
 
 // -------------------------------------------------------------------------
 // Per-thread per-domain retire-batch.
@@ -266,7 +390,7 @@ LINKAGE_REQUIRES_LINK_AT(CrystallineDomainSlot, 1440);
 // `alloc_counter` splits the reference's separate per-thread
 // alloc_counters[] into the same struct (removes the need for a
 // second padded array). Bumped by init_node(); every Freq-th bump
-// triggers help_read + global epoch increment.
+// triggers help_read + global era increment.
 //
 // Packed tight at 48 B (alignof 8). No cross-thread access — only
 // the owner writes, and only the owner reads. Lives on ThreadScratchState
@@ -278,7 +402,7 @@ struct CrystallineBatch {
   CrystallineNode *list;      // chain of refs-nodes ready to reclaim
   uint64_t counter;           // retire counter — drives try_retire cadence
   uint64_t list_count;        // free-cache population (≤ MAX_WFRC)
-  uint64_t alloc_counter;     // init_node counter — drives epoch bumps
+  uint64_t alloc_counter;     // init_node counter — drives era bumps
 };
 
 static_assert(sizeof(CrystallineBatch) == 48,

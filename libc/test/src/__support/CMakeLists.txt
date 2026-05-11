@@ -305,6 +305,7 @@ add_libc_test(
 add_subdirectory(CPP)
 add_subdirectory(File)
 add_subdirectory(RPC)
+add_subdirectory(concurrent_fuzz)
 add_subdirectory(OSUtil)
 add_subdirectory(FPUtil)
 add_subdirectory(fixed_point)

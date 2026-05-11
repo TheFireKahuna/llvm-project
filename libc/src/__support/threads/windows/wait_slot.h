@@ -309,12 +309,50 @@ struct alignas(64) WaitSlot {
   // for the ride: it's the syscall arg used after resolve confirms
   // liveness.
   //
-  // Layout: 8 bytes occupied by the two ids plus 4 bytes of
-  // trailing padding so `filter_arg` lands at offset 44 (asserted
-  // below).
+  // Layout: 8 bytes occupied by the two ids; the trailing 4 bytes
+  // hold park_state (Futex Dekker park flag) so `filter_arg` lands
+  // at offset 44 (asserted below).
   uint32_t owner_tid{0};
   uint32_t owner_task_id{0};
-  uint32_t _pad_owner{0};
+
+  // Park-state flag for Futex Phase-3 Dekker handoff (futex_utils
+  // only — futex_addr keeps its bucket-lock state machine and does
+  // NOT consult this field).
+  //
+  // 0 = owner not in NtWait. 1 = owner has committed to NtWait
+  // (Phase 3 commit on this cycle).
+  //
+  // The Futex protocol with this field replaces the prior Phase-3
+  // CAS WAITING→IN_KERNEL on slot.link. Owner writes 1 SEQ_CST
+  // BEFORE re-reading slot.link.state for the absorb-or-park
+  // decision, then NtWaits if state was still WAITING. Owner
+  // unconditionally writes 0 on every wait exit (decode SIGNALED,
+  // cancel-via-splice, abandon path).
+  //
+  // Notifier protocol — pre-CAS RELAXED hint + post-CAS Dekker
+  // re-read:
+  //   1. RELAXED load park_state → hint.
+  //   2. Pre-mark CAS WAITING → SIGNALED_*. Variant selected by
+  //      hint: hint=1 publishes LINK_ALERT_FIRED_BIT atomically
+  //      (so the owner's SIGNALED-observation site sets
+  //      expect_late_alert if the alert latches stale); hint=0
+  //      leaves the bit at 0.
+  //   3. SEQ_CST re-load park_state. If 1: alert. If 0: cache spin
+  //      catches the wake (owner is in Phase 2.5 spin, hasn't
+  //      parked).
+  //
+  // Linearization: SEQ_CST on owner's store + SEQ_CST on owner's
+  // re-read of slot.link.state pair against the notifier's pre-mark
+  // CAS (LOCK on x86 is a full fence) + post-CAS SEQ_CST re-read of
+  // park_state. Standard Dekker store-load handshake — both sides
+  // observe the other's update if it landed before their commit;
+  // the absorb-on-race re-read by the owner closes any case where
+  // the notifier wins.
+  //
+  // Cleared on freelist push and on clear_slot_owned for hygiene.
+  // Owner is the only writer; readers (notifier) are concurrent and
+  // RELAXED-or-SEQ_CST per the Dekker pair above.
+  cpp::Atomic<uint32_t> park_state{0};
 
   // Waker-evaluated predicate / filter. Populated by
   // Futex::wait_on_predicate at Phase 2 setup; cleared by
@@ -376,6 +414,9 @@ static_assert(sizeof(WaitSlot) == 64,
               "WaitSlot must fit in one 64-byte cache line");
 static_assert(alignof(WaitSlot) == 64,
               "WaitSlot must be cache-line aligned");
+static_assert(__builtin_offsetof(WaitSlot, park_state) == 40,
+              "park_state @ 40 in the trailing slot of the owner-id "
+              "triple; reordering shifts filter_arg's offset");
 static_assert(__builtin_offsetof(WaitSlot, filter_arg) == 44,
               "filter_arg @ 44 ahead of filter_fn so the 8-byte fn "
               "pointer aligns naturally at 48 (no inserted padding)");

@@ -68,8 +68,17 @@ inline constexpr uint32_t VEH_ALL_FPE =
     VEH_FLT_STACK_CHECK;
 
 /// All exception codes that the signal subsystem may convert to POSIX signals.
+///
+/// Deliberately omits VEH_GUARD_PAGE: STATUS_GUARD_PAGE_VIOLATION is a
+/// stack-growth probe / mlock-policy passthrough, not a fault. The memory
+/// (PRIORITY=10) and mlock (PRIORITY=15) filters claim it before the signal
+/// filter (PRIORITY=20) would ever run, so including it in the signal mask
+/// only widens the dispatch surface without serving a purpose. Worse, a
+/// future refactor that reordered priorities or weakened the runtime stage-
+/// 1b skip could silently start delivering legitimate guard-page probes as
+/// SIGSEGV.
 inline constexpr uint32_t VEH_ALL_SIGNAL =
-    VEH_ACCESS_VIOLATION | VEH_GUARD_PAGE | VEH_STACK_OVERFLOW |
+    VEH_ACCESS_VIOLATION | VEH_STACK_OVERFLOW |
     VEH_DATATYPE_MISALIGN | VEH_IN_PAGE_ERROR | VEH_ARRAY_BOUNDS |
     VEH_ALL_FPE |
     VEH_ILLEGAL_INSTRUCTION | VEH_PRIV_INSTRUCTION |

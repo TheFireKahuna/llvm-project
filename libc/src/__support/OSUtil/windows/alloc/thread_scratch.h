@@ -60,13 +60,13 @@
 #define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_THREAD_SCRATCH_H
 
 #include "src/__support/CPP/atomic.h"
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/OSUtil/windows/alloc/page_size.h"
 #include "src/__support/OSUtil/windows/alloc/primitives/canary_seed.h"
 #include "src/__support/OSUtil/windows/alloc/primitives/guarded_region.h"
 #include "src/__support/OSUtil/windows/bcryptprimitives.h"
 #include "src/__support/OSUtil/windows/concurrent/crystalline_local_state.h"
-#include "src/__support/OSUtil/windows/memory/memory_primitives_bootstrap.h"
+#include "src/__support/OSUtil/windows/memory/legacy/memory_primitives_bootstrap.h"
 #include "src/__support/OSUtil/windows/tls/teb_tls.h"
 #include "src/__support/OSUtil/windows/tls/tls_cleanup.h"
 #include "src/__support/libc_assert.h"
@@ -317,7 +317,7 @@ struct alignas(64) ThreadScratchState {
   // -- Crystalline per-thread state --
   // Per-domain index into the cross-thread CrystallineSlotPool. 0 is
   // the pool's null sentinel — "this thread has not yet reserved in
-  // domain `d`"; lazy-claimed on the first read()/reserve_slot() call
+  // domain `d`"; lazy-claimed on the first protect() / init_node() call
   // for that domain. Cleared by CrystallineDomain::fork_reinit on the
   // surviving thread so its next reservation lazy-claims into the
   // post-fork-reset pool (the slot it owned pre-fork is back on the

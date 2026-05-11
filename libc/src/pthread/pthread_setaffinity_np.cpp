@@ -9,6 +9,7 @@
 #include "pthread_setaffinity_np.h"
 
 #include "hdr/errno_macros.h"
+#include "hdr/stdint_proxy.h"
 #include "hdr/types/cpu_set_t.h"
 #include "hdr/types/size_t.h"
 #include "src/__support/OSUtil/syscall.h"
@@ -45,7 +46,7 @@ LLVM_LIBC_FUNCTION(int, pthread_setaffinity_np,
   // Linux's sched_setaffinity returns 0 on success, -errno on failure;
   // syscall_impl returns the same convention.
   long ret = syscall_impl<long>(SYS_sched_setaffinity, tid, cpusetsize,
-                                reinterpret_cast<long>(cpuset));
+                                reinterpret_cast<intptr_t>(cpuset));
   return ret == 0 ? 0 : static_cast<int>(-ret);
 }
 

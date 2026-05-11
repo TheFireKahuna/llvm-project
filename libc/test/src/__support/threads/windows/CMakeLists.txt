@@ -16,7 +16,6 @@ add_libc_unittest(
     libc.src.__support.threads.windows.mutex
     libc.src.__support.threads.windows.thread
     libc.src.__support.time.clock_gettime
-    libc.test.UnitTest.Test
 )
 
 add_libc_unittest(
@@ -33,7 +32,6 @@ add_libc_unittest(
     libc.src.__support.threads.thread_common
     libc.src.__support.threads.windows.mutex
     libc.src.__support.threads.windows.thread
-    libc.test.UnitTest.Test
 )
 
 # Crystalline-W thread registry: basic-correctness coverage. Each test
@@ -53,7 +51,6 @@ add_libc_unittest(
     libc.src.__support.threads.thread_common
     libc.src.__support.threads.windows.thread
     libc.src.__support.threads.windows.thread_registry
-    libc.test.UnitTest.Test
 )
 
 # TID-recycling regression: structural-claim test. Captures a handle
@@ -73,7 +70,6 @@ add_libc_unittest(
     libc.src.__support.threads.thread_common
     libc.src.__support.threads.windows.thread
     libc.src.__support.threads.windows.thread_registry
-    libc.test.UnitTest.Test
 )
 
 # Concurrency / scale stress: hash split under contention, lookup vs.
@@ -93,7 +89,6 @@ add_libc_unittest(
     libc.src.__support.threads.thread_common
     libc.src.__support.threads.windows.thread
     libc.src.__support.threads.windows.thread_registry
-    libc.test.UnitTest.Test
 )
 
 # Long-running soak: thread create/destroy with PagefileUsage sampling
@@ -115,7 +110,6 @@ add_libc_unittest(
     libc.src.__support.threads.thread_common
     libc.src.__support.threads.windows.thread
     libc.src.__support.threads.windows.thread_registry
-    libc.test.UnitTest.Test
 )
 
 add_libc_unittest(
@@ -134,7 +128,6 @@ add_libc_unittest(
     libc.src.__support.threads.windows.mutex
     libc.src.__support.threads.windows.thread
     libc.src.__support.time.clock_gettime
-    libc.test.UnitTest.Test
 )
 
 add_libc_unittest(
@@ -151,7 +144,6 @@ add_libc_unittest(
     libc.src.__support.threads.thread_common
     libc.src.__support.threads.barrier
     libc.src.__support.threads.windows.thread
-    libc.test.UnitTest.Test
 )
 
 add_libc_unittest(
@@ -165,7 +157,6 @@ add_libc_unittest(
     libc.src.__support.CPP.atomic
     libc.src.__support.threads.sleep
     libc.src.__support.threads.windows.futex_utils
-    libc.test.UnitTest.Test
 )
 
 add_libc_unittest(
@@ -178,7 +169,6 @@ add_libc_unittest(
     libc.hdr.errno_macros
     libc.src.__support.CPP.atomic
     libc.src.__support.threads.windows.futex_utils
-    libc.test.UnitTest.Test
 )
 
 # Deep state-machine coverage for Futex: 64-bit CAS-64 ABA, three-phase
@@ -196,7 +186,6 @@ add_libc_unittest(
     libc.src.__support.CPP.atomic
     libc.src.__support.threads.windows.futex_utils
     libc.src.__support.time.abs_timeout
-    libc.test.UnitTest.Test
 )
 
 # Robust-mutex EOWNERDEAD death-detection tests. The recovery path is
@@ -214,7 +203,6 @@ add_libc_unittest(
     libc.src.__support.threads.mutex_common
     libc.src.__support.threads.raw_mutex
     libc.src.__support.threads.windows.mutex
-    libc.test.UnitTest.Test
 )
 
 # Internal-primitive bench: exercises Futex directly via its LIBC_NAMESPACE

@@ -195,7 +195,29 @@ struct ThreadSignalState {
   // APC_CALLBACK_DATA_CONTEXT) or VEH handler (from EXCEPTION_POINTERS),
   // used by dispatch_engine to construct ucontext_t for SA_SIGINFO handlers,
   // then cleared after dispatch returns. nullptr for deferred delivery.
+  //
+  // Bound to a specific signum via interrupted_signum below: the dispatch
+  // drain loop processes all pending signals lowest-first, so the captured
+  // CONTEXT must only feed the handler for the signal that actually
+  // interrupted execution. Without this binding, a software signal pending
+  // alongside a hardware fault would receive the fault site's CONTEXT —
+  // POSIX SA_SIGINFO violation (uc_mcontext must reflect the interrupted
+  // CPU state for *this* signal, not some other concurrently-pending one).
   CONTEXT *interrupted_context;
+  // Original EXCEPTION_RECORD paired with interrupted_context. Borrowed
+  // pointer into the kernel exception frame, lifetime identical to
+  // interrupted_context. Lets execute_default_action's fatal-raise path
+  // re-raise the original hardware fault verbatim through NtRaiseException
+  // so debuggers, WER, and the OS unhandled-exception filter see the true
+  // fault site rather than the libc dispatcher frame.
+  EXCEPTION_RECORD *interrupted_record;
+  int interrupted_signum;
+
+  // Set once just before NtRaiseException in fatal_raise_signal; never
+  // cleared (the process dies). Read by master_veh_handler to suppress
+  // recursive VEH dispatch on the re-raised exception so the OS unhandled-
+  // exception path runs instead of looping back through signal dispatch.
+  bool fatal_raise_in_progress;
 
   // Deferred re-fault handler reset. VEH stores the signal number here
   // instead of writing sa_handler = SIG_DFL lock-free. dispatch_pending

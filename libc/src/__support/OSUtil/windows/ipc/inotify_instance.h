@@ -22,7 +22,7 @@
 #define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_INOTIFY_INSTANCE_H
 
 #include "src/__support/CPP/atomic.h"
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/OSUtil/windows/nt/nt_file_api.h"
 #include "src/__support/OSUtil/windows/nt/nt_file_types.h"
 #include "src/__support/OSUtil/windows/nt/nt_types.h"

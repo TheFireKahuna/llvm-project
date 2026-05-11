@@ -56,6 +56,13 @@ using CrystallineThreadFlushFn =
 // republished into the slot chains the released slot is leaving behind.
 using CrystallineReleaseSlotFn = void (*)(void *context, uint16_t slot_idx);
 
+// Called from a freshly-created thread's bring-up path to eagerly
+// claim this thread's per-domain slot index — moves the slot pool's
+// demand-commit (NtAllocateVirtualMemory) off any future fault path.
+// Idempotent: subsequent calls on the same thread short-circuit on the
+// cached index in ThreadScratchState::crystalline_slot_idx[].
+using CrystallineWarmThreadFn = void (*)(void *context);
+
 // Intrusive SLL node. Defined inside each CrystallineDomain<>
 // instantiation as a `static` member; the ctor pushes it onto the
 // registry head at static init time. Never freed — the static lives
@@ -68,6 +75,7 @@ struct CrystallineDomainDescriptor {
   CrystallineFiniFn fini_fn;
   CrystallineThreadFlushFn thread_flush_fn;
   CrystallineReleaseSlotFn release_slot_fn;
+  CrystallineWarmThreadFn warm_thread_fn;
   // Stable identifier for diagnostics — pointer to a compile-time string.
   const char *name;
   // Dense index in [0, kMaxCrystallineDomains). Assigned at registry_push
@@ -116,6 +124,19 @@ void registry_flush_thread_all(CrystallineBatch *batches);
 // `ThreadScratchState::crystalline_slot_idx[0]`; an entry of 0 means
 // the thread never reserved in that domain (no slot to release).
 void registry_release_slots_all(uint16_t *slot_indices);
+
+// Walks every registered domain and eagerly claims the calling
+// thread's per-domain slot. Drives the slot pool's potentially-VA-
+// committing claim_slot path off the fault path so any later
+// `protect()` / `retire()` call on this thread is allocation-free.
+// Idempotent across re-entry; safe to call multiple times.
+//
+// Wired into `thread_entry_impl` for libc-created threads, and into
+// the late-Tier-A bring-up of any subsystem that wants its consumer
+// threads warm. Domains registered AFTER this call won't be warmed
+// for the calling thread until either another `registry_warm_thread_all`
+// call or the lazy claim on first `protect()`.
+void registry_warm_thread_all();
 
 // Phase-4 startup hook. Asserts registry invariants. Per-thread state
 // lives inline in the ThreadScratch arena VA, so nothing pool-like

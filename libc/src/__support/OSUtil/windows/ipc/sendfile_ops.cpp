@@ -20,7 +20,7 @@
 #include "hdr/fcntl_macros.h"
 #include "src/__support/CPP/atomic.h"
 #include "src/__support/CPP/scope_guard.h"
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/OSUtil/windows/fd/fd_table.h"
 #include "src/__support/OSUtil/windows/io/alertable_io.h"
 #include "src/__support/OSUtil/windows/io/file_ops.h"

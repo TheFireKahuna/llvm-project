@@ -28,7 +28,7 @@
 #include "src/__support/OSUtil/windows/nt/nt_afd.h"
 #include "src/__support/threads/windows/spin_wait.h"
 #include "src/__support/OSUtil/windows/nt/nt_file.h"
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/threads/raw_mutex.h"
 #include "src/__support/threads/windows/futex_addr.h"
 #include "src/__support/macros/attributes.h"

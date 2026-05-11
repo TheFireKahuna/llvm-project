@@ -26,6 +26,7 @@
 #include "src/__support/OSUtil/windows/syscall_wrappers/getsid.h"
 #include "src/__support/OSUtil/windows/signal/control/process_control.h"
 #include "src/__support/OSUtil/windows/signal/dispatch/dispatch_engine.h"
+#include "src/__support/OSUtil/windows/signal/payload/sig_payload.h"
 #include "src/__support/OSUtil/windows/signal/pending/sigqueue_pool.h"
 #include "src/__support/OSUtil/windows/signal/transport/alpc_transport.h"
 #include "src/__support/OSUtil/windows/signal/transport/console_transport.h"
@@ -89,6 +90,7 @@ static void zero_thread_state(ThreadSignalState *state) {
   state->notify_word = nullptr;
   state->restart = {};
   state->interrupted_context = nullptr;
+  state->interrupted_signum = 0;
   state->refault_reset_signum = 0;
   state->in_signal_handler = false;
   state->handler_ran = false;
@@ -415,6 +417,13 @@ void fini_inherited_child_state() {
 int signal_subsystem_init() {
   init_signal_state();
 
+  // Rich signal payload subsystem (SIGCHLD, timer, cross-kill records via
+  // Crystalline). Must run before any deliver_sigchld / publish_timer_signal
+  // / publish_cross_kill writer can fire — drain threads (SIGCHLD) and
+  // ALPC listener don't start until later in this init, so this ordering
+  // is uncontested.
+  payload::init_payload_subsystem();
+
   // Initialize cross-process ALPC transport: create private namespace,
   // create port, build security descriptor, start listener thread.
   // Non-fatal: if ALPC init fails, cross-process signal delivery is
@@ -435,6 +444,7 @@ void signal_subsystem_fini() {
   // handler's runtime gate (custom_mask) is cleared as user handlers
   // are torn down.
   fini_inherited_child_state();
+  payload::fini_payload_subsystem();
   fini_signal_state();
 }
 
@@ -477,6 +487,12 @@ void signal_fork_reinit() {
 
   // Reset process-wide pending signals.
   signal_pending::clear_all(g_pcb.signal_dispatch.process_pending);
+
+  // Drop all rich payload latest-event pointers — the child has no
+  // pre-fork SIGCHLD/timer/cross-kill events. The Crystalline domain's
+  // own fork hook (registered via init_registration) handles per-thread
+  // retire batches; this clears the per-signum publish slots.
+  payload::fork_reinit_payload_subsystem();
 
   // Reset stop state. The reactor death watch (if any) was created by the
   // parent — the WCP handle is non-inheritable, so it doesn't exist in the

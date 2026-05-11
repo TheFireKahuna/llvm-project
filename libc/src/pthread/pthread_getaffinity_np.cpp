@@ -9,6 +9,7 @@
 #include "pthread_getaffinity_np.h"
 
 #include "hdr/errno_macros.h"
+#include "hdr/stdint_proxy.h"
 #include "hdr/types/cpu_set_t.h"
 #include "hdr/types/size_t.h"
 #include "src/__support/OSUtil/syscall.h"
@@ -41,7 +42,7 @@ LLVM_LIBC_FUNCTION(int, pthread_getaffinity_np,
   // success, -errno on failure. Glibc's pthread_getaffinity_np returns
   // 0 on success — discard the byte count.
   long ret = syscall_impl<long>(SYS_sched_getaffinity, tid, cpusetsize,
-                                reinterpret_cast<long>(cpuset));
+                                reinterpret_cast<intptr_t>(cpuset));
   if (ret < 0)
     return static_cast<int>(-ret);
   return 0;

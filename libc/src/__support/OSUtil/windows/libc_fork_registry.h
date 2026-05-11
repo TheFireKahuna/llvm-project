@@ -106,6 +106,31 @@ enum LibcForkReinitPriority : uint16_t {
   // pkey / mmap_lock are independent of each other and of scratch.
   kForkPrioPkey = 34,
   kForkPrioMmapLock = 35,
+  // Layer 0 PAL — re-probes ProcessCookie + SeLockMemoryPrivilege after
+  // RtlCloneUserProcess. Slotted post-VA / pre-allocator-follow-up.
+  // Renumber to 32 in Phase 1.G when MappingTable is deleted.
+  kForkPrioPal = 36,
+  // Layer 2 pagemap — decommits all CoW-inherited pagemap pages so the
+  // child's allocator (which fork-reinits at the allocator band) starts
+  // with a fresh empty map. The reservation itself stays valid (CoW
+  // from parent); only the per-page commit state is reset.
+  kForkPrioPagemap = 37,
+  // Layer 7 partition — re-rolls partition_secret in the Zone 0b unseal
+  // window, then walks the reserve table to recompute every live
+  // descriptor's canary against the new process_cookie + new
+  // partition_secret. Coarse pagemap, reserve table, descriptor pool,
+  // and per-partition VAs are CoW-inherited. PINNED state on the 12
+  // core libc-internal partitions survives across fork; user-class
+  // partitions inherit at LIVE state and reach IDLE/DRAINING/RETIRED
+  // only on the child's own decommit_chunk_unregister calls.
+  kForkPrioPartition = 38,
+  // Layer 1 va_tracker — POSIX-visible VA index. Drains pending retires
+  // on `g_va_tracker_art_domain` and `g_va_tracker_skiplist_domain`,
+  // resets per-arena hints, and re-publishes ART root for child
+  // `replay_in_child`. Runs after partition (descriptor canaries valid)
+  // and before memory reconcile (downstream consumers depend on the
+  // tracker's child-side empty state to drive replay).
+  kForkPrioVaTracker = 39,
 
   // Memory follow-up — depends on mmap_lock having reset.
   kForkPrioMemoryReconcile = 50,

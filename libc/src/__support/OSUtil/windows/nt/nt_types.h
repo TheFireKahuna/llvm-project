@@ -367,6 +367,10 @@ inline constexpr NTSTATUS STATUS_TOO_MANY_THREADS =
     static_cast<NTSTATUS>(0xC0000129);
 inline constexpr NTSTATUS STATUS_SECTION_NOT_EXTENDED =
     static_cast<NTSTATUS>(0xC0000087);
+inline constexpr NTSTATUS STATUS_SECTION_TOO_BIG =
+    static_cast<NTSTATUS>(0xC0000040);
+inline constexpr NTSTATUS STATUS_USER_MAPPED_FILE =
+    static_cast<NTSTATUS>(0xC0000243);
 inline constexpr NTSTATUS STATUS_FILE_RENAMED =
     static_cast<NTSTATUS>(0xC00000D5);
 inline constexpr NTSTATUS STATUS_NETWORK_NAME_DELETED =

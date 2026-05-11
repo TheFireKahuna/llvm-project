@@ -1,76 +1,90 @@
-# VaSubstrate comprehensive hermetic test — drives every public entry
-# point (acquire/release/try_reclaim/arena_count) single-threaded, plus
-# multi-thread acquire/release stress and a producer/consumer cross-
-# thread release pattern. Hermetic model (LibcTest.hermetic, no c.dll).
+# Layer 2 NBALLOC buddy arena hermetic suite. Drives every public entry
+# point (buddy_alloc / buddy_free_sized / buddy_alloc_huge / buddy_free_huge
+# / buddy_stats_snapshot) plus multi-thread CAS contention, cross-class
+# coalescing, pagemap entry round-trip, generation bump on retire, and
+# 1000-cycle stress. Hermetic model so Tier A bring-up runs the full
+# memory-primitive registry chain (pal=0, va_substrate=1, mapping_table=2,
+# pagemap=3, buddy_arena=4) before main(). 20-test suite mirroring
+# pagemap_test.cpp depth.
 add_libc_hermetic(
-  va_substrate_test
+  buddy_arena_test
   SUITE
     libc-osutil-tests
   NO_RUN_POSTBUILD
   SRCS
-    va_substrate_test.cpp
+    buddy_arena_test.cpp
   LINK_LIBRARIES
     LibcTest.hermetic
   DEPENDS
     libc.src.__support.CPP.atomic
     libc.src.__support.OSUtil.windows.brk_state
+    libc.src.__support.OSUtil.windows.buddy_arena
+    libc.src.__support.OSUtil.windows.nt_pal
     libc.src.__support.OSUtil.windows.ntdll
-    libc.src.__support.OSUtil.windows.va_substrate
+    libc.src.__support.OSUtil.windows.pagemap
     libc.src.pthread.pthread_create
     libc.src.pthread.pthread_join
 )
 
-# SlabPool→VaSubstrate migration deliverable: every slab body returned by
-# SlabPool (i.e. every malloc routed through the slab classes) must
-# resolve as RegionShape::LIBC_INTERNAL through `g_mapping_table`. Drives
-# the production `malloc`/`free` surface, then snapshots the resulting VA
-# directly. Failure here means a slab body escaped substrate ownership.
-#
-# Hermetic model (matches sibling va_substrate_test): NTPOSIX gates the
-# unittest path and only hermetic tests build cleanly here. Hermetic mode
-# pulls in libc.startup.windows.crt1 + hermetic_runtime, so g_mapping_table
-# / posix_alloc are fully booted by the time main() runs (same contract
-# va_substrate_test relies on for `MappingTableReadyByMainEntry`).
+# Layer 7 partition layer hermetic suite. Quality + stress + non-death
+# hardening coverage. The PAGE_NOACCESS guard fault tests and the canary-
+# tamper trap test require fork/waitpid (death tests in a child process)
+# and live in a sibling file `partition_death_test.cpp` that uses
+# add_libc_unittest (c.dll runtime; partition symbols NOT exported from
+# c.dll today, so death tests are deferred until either the export list
+# grows or the canary-trap path can be exercised through a public API).
 add_libc_hermetic(
-  slab_body_internal_coverage_test
+  partition_test
   SUITE
     libc-osutil-tests
   NO_RUN_POSTBUILD
   SRCS
-    slab_body_internal_coverage_test.cpp
+    partition_test.cpp
   LINK_LIBRARIES
     LibcTest.hermetic
   DEPENDS
     libc.src.__support.CPP.atomic
+    libc.src.__support.OSUtil.windows.app_init
     libc.src.__support.OSUtil.windows.brk_state
-    libc.src.__support.OSUtil.windows.mapping_table
     libc.src.__support.OSUtil.windows.ntdll
-    libc.src.stdlib.free
-    libc.src.stdlib.malloc
+    libc.src.__support.OSUtil.windows.partition
+    libc.src.__support.OSUtil.windows.process_control_block
+    libc.src.pthread.pthread_create
+    libc.src.pthread.pthread_join
 )
 
-# Phase 3 deliverable: SlabRegistry's L1 root and every populated L2 / L3
-# directory page is substrate-served and stamped LIBC_INTERNAL. Walks the
-# live radix from a real slab base and snapshots each level. Also covers
-# `pick_class_for_directory`'s full Small / Medium / Large / XLarge / Huge
-# ladder synthetically — CI only ever hits one VA-width branch at runtime.
 add_libc_hermetic(
-  slab_registry_internal_coverage_test
+  partition_min_test
   SUITE
     libc-osutil-tests
   NO_RUN_POSTBUILD
   SRCS
-    slab_registry_internal_coverage_test.cpp
+    partition_min_test.cpp
   LINK_LIBRARIES
     LibcTest.hermetic
   DEPENDS
-    libc.src.__support.CPP.atomic
     libc.src.__support.OSUtil.windows.brk_state
-    libc.src.__support.OSUtil.windows.mapping_table
     libc.src.__support.OSUtil.windows.ntdll
-    libc.src.__support.OSUtil.windows.slab_pool
-    libc.src.__support.OSUtil.windows.slab_registry
-    libc.src.__support.OSUtil.windows.va_substrate
-    libc.src.stdlib.free
-    libc.src.stdlib.malloc
+    libc.src.__support.OSUtil.windows.partition
+)
+
+# §9.3.10.1 sub-slab decommit substrate (alloc/slab_chunk_state.h). Pure-
+# arithmetic / pure-atomic header — no Tier-A bring-up needed beyond the
+# standard hermetic frame. Covers geometry constants, mask round-trip,
+# cross-bit isolation, slot-to-sub-page arithmetic for 16 B / 8 KiB /
+# 16 KiB / 32 KiB / 64 KiB slot sizes, range-to-mask conversion,
+# subpage_address_for offsets, and compute_idle_subpages boundaries.
+add_libc_hermetic(
+  slab_chunk_state_test
+  SUITE
+    libc-osutil-tests
+  NO_RUN_POSTBUILD
+  SRCS
+    slab_chunk_state_test.cpp
+  LINK_LIBRARIES
+    LibcTest.hermetic
+  DEPENDS
+    libc.src.__support.OSUtil.windows.alloc_slab_chunk_state
+    libc.src.__support.OSUtil.windows.brk_state
+    libc.src.__support.OSUtil.windows.ntdll
 )

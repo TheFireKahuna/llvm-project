@@ -213,7 +213,24 @@ TEST_F(LlvmLibcDemandCommitStressTest, NoreserveMprotectSlowPath) {
   for (size_t i = 8; i < 16; i++)
     EXPECT_EQ(p[i * PAGE], 'B');
 
-  // First half should still be read-only (VEH didn't cluster-commit over it).
+  // Kernel-truth witness that the second-half fault took the slow path
+  // and did NOT cluster-commit over the first half. Query the VAD that
+  // contains the first page — the kernel collapses adjacent pages with
+  // identical protection into a single run, so a healthy first half
+  // reports one MBI with BaseAddress=addr, RegionSize >= 8*PAGE,
+  // State=MEM_COMMIT, Protect=PAGE_READONLY. If the VEH had reverted
+  // the first half to PAGE_READWRITE while committing the second, the
+  // Protect field would be PAGE_READWRITE (cluster-commit regression).
+  MEMORY_BASIC_INFORMATION mbi = {};
+  SIZE_T ret_len = 0;
+  ASSERT_TRUE(NT_SUCCESS(::NtQueryVirtualMemory(
+      ::NtCurrentProcess(), addr, MemoryBasicInformation, &mbi, sizeof(mbi),
+      &ret_len)));
+  EXPECT_EQ(mbi.State, static_cast<DWORD>(MEM_COMMIT));
+  EXPECT_EQ(mbi.Protect, static_cast<DWORD>(PAGE_READONLY));
+  EXPECT_GE(mbi.RegionSize, static_cast<SIZE_T>(8 * PAGE));
+  EXPECT_EQ(mbi.BaseAddress, addr);
+
   // Restore to RW for cleanup.
   ASSERT_EQ(LIBC_NAMESPACE::mprotect(addr, 8 * PAGE, PROT_READ | PROT_WRITE),
             0);

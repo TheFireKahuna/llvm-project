@@ -31,7 +31,7 @@
 
 #include "src/__support/threads/windows/thread_lifecycle.h"
 #include "src/__support/OSUtil/windows/io.h"
-#include "src/__support/OSUtil/windows/alloc/slab_pool.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/slab_pool.h"
 #include "src/__support/OSUtil/windows/libc_fini_registry.h"
 #include "src/__support/OSUtil/windows/libc_subsystem_init.h"
 #include "src/__support/OSUtil/windows/nt/nt_process_api.h"
@@ -359,6 +359,15 @@ void LIBC_NAMESPACE::internal::lifecycle_fork_reinit() {
     // Clearing here prevents the child's first Phase 4 wait from
     // misclassifying a real STATUS_ALERTED as stale.
     self->expect_late_alert.store(0, cpp::MemoryOrder::RELAXED);
+
+    // The cached preferred NUMA node belongs to the parent's CPU at
+    // the time of `pthread_create`; the child resumes on whatever CPU
+    // NT picks for the post-fork process and the parent's cached
+    // value is stale by definition. Reset to the unresolved sentinel
+    // so the next user-facing allocation re-probes via
+    // `NtGetCurrentProcessorNumberEx` against the child's actual CPU.
+    self->preferred_node.store(LIBC_NAMESPACE::kPreferredNodeUnresolved,
+                                cpp::MemoryOrder::RELAXED);
   }
 
   // Reset the pool: release dead-thread slabs, reset internal spinlocks.

@@ -11,7 +11,7 @@
 #include "src/__support/CPP/new.h"
 #include "src/__support/CPP/utility.h"
 #include "src/__support/macros/config.h"
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/OSUtil/windows/nt/nt_process.h"
 #include "src/__support/OSUtil/windows/process_control_block.h"
 #include "src/__support/threads/windows/spin_wait.h"
@@ -51,6 +51,26 @@ void filetime_to_timeval(LARGE_INTEGER ft, struct timeval &tv) {
   LONGLONG total_us = ft.QuadPart / 10;
   tv.tv_sec = static_cast<decltype(tv.tv_sec)>(total_us / 1000000);
   tv.tv_usec = static_cast<decltype(tv.tv_usec)>(total_us % 1000000);
+}
+
+// Snapshot the child's cumulative user/kernel CPU time in microseconds for
+// SIGCHLD si_utime / si_stime. Returns (0, 0) if the query fails (handle
+// revoked early, child terminated unexpectedly) — POSIX permits these
+// fields to be best-effort.
+void query_child_cpu_times_us(HANDLE process_handle, long long &utime_us,
+                              long long &stime_us) {
+  utime_us = 0;
+  stime_us = 0;
+  if (!process_handle)
+    return;
+  KERNEL_USER_TIMES times;
+  NTSTATUS st = ::NtQueryInformationProcess(process_handle, ProcessTimes,
+                                            &times, sizeof(times), nullptr);
+  if (NT_SUCCESS(st)) {
+    // FILETIME is 100-ns ticks; /10 → microseconds.
+    utime_us = times.UserTime.QuadPart / 10;
+    stime_us = times.KernelTime.QuadPart / 10;
+  }
 }
 
 void capture_child_rusage(HANDLE process_handle, struct rusage &usage) {
@@ -250,8 +270,10 @@ void child_state_reactor_cb(void *context, NTSTATUS /*status*/,
                      ? CLD_CONTINUED
                      : CLD_STOPPED;
       int status = (claimed_state > 0) ? claimed_state : SIGCONT;
+      long long utime_us = 0, stime_us = 0;
+      query_child_cpu_times_us(entry->process_handle, utime_us, stime_us);
       signal_state::deliver_sigchld(code, static_cast<int>(entry->pid),
-                                    status);
+                                    status, utime_us, stime_us);
     }
   }
 }
@@ -270,6 +292,16 @@ void child_exit_reactor_cb(void *context, NTSTATUS /*status*/,
     exit_code = static_cast<DWORD>(pbi.ExitStatus);
 
   capture_child_rusage(entry->process_handle, entry->exit_rusage);
+
+  // Snapshot CPU times in microseconds for SIGCHLD si_utime/si_stime.
+  // Done from the already-captured rusage so we don't requery; the
+  // FILETIME→timeval conversion above preserves μs precision (ns/10).
+  long long sigchld_utime_us =
+      static_cast<long long>(entry->exit_rusage.ru_utime.tv_sec) * 1000000 +
+      entry->exit_rusage.ru_utime.tv_usec;
+  long long sigchld_stime_us =
+      static_cast<long long>(entry->exit_rusage.ru_stime.tv_sec) * 1000000 +
+      entry->exit_rusage.ru_stime.tv_usec;
 
   if (is_nocldwait_set()) {
     // SA_NOCLDWAIT: auto-reap the child. No zombie state, waitpid sees
@@ -330,7 +362,8 @@ void child_exit_reactor_cb(void *context, NTSTATUS /*status*/,
     int sig = exit_code_to_signal(exit_code);
     int code = sig ? CLD_KILLED : CLD_EXITED;
     int status = sig ? sig : static_cast<int>(exit_code & 0xFF);
-    signal_state::deliver_sigchld(code, static_cast<int>(child_pid), status);
+    signal_state::deliver_sigchld(code, static_cast<int>(child_pid), status,
+                                  sigchld_utime_us, sigchld_stime_us);
     return;
   }
 
@@ -348,7 +381,8 @@ void child_exit_reactor_cb(void *context, NTSTATUS /*status*/,
   int sig = exit_code_to_signal(exit_code);
   int code = sig ? CLD_KILLED : CLD_EXITED;
   int status = sig ? sig : static_cast<int>(exit_code & 0xFF);
-  signal_state::deliver_sigchld(code, static_cast<int>(entry->pid), status);
+  signal_state::deliver_sigchld(code, static_cast<int>(entry->pid), status,
+                                sigchld_utime_us, sigchld_stime_us);
 }
 
 } // anonymous namespace

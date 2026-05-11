@@ -36,7 +36,7 @@
 #include "src/__support/OSUtil/windows/fd/file_ops_table.h"
 #include "hdr/fcntl_macros.h"
 #include "src/__support/CPP/scope_guard.h"
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/OSUtil/windows/fd/fd_table.h"
 #include "src/__support/OSUtil/windows/ipc/inotify_instance.h"
 #include "src/__support/OSUtil/windows/nt/handle_attributes.h"

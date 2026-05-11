@@ -161,6 +161,10 @@ LIBC_INLINE int ntstatus_to_errno(NTSTATUS status) {
   case STATUS_SHARING_VIOLATION:
   case STATUS_CANNOT_DELETE:
   case STATUS_DEVICE_BUSY:
+  // File has user-mode mappings blocking destructive op (truncate /
+  // delete / unlink). POSIX answer is EBUSY so the caller can retry
+  // once the mapping is released.
+  case STATUS_USER_MAPPED_FILE:
     return EBUSY;
 
   // --- Not-found family ---
@@ -239,6 +243,10 @@ LIBC_INLINE int ntstatus_to_errno(NTSTATUS status) {
   case STATUS_NAME_TOO_LONG:
     return ENAMETOOLONG;
   case STATUS_FILE_TOO_LARGE:
+  // Section creation request exceeds either the kernel's per-section
+  // ceiling or the backing file's size. Surfaces from
+  // `NtCreateSectionEx` on file-backed mappings.
+  case STATUS_SECTION_TOO_BIG:
     return EFBIG;
   case STATUS_INTEGER_OVERFLOW:
     return EOVERFLOW;

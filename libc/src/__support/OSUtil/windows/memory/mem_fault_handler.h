@@ -1,55 +1,71 @@
-//===-- Memory fault VEH filter (remap guard + demand-commit) ----*- C++ -*-===//
+//===- mem_fault_handler.h - Memory-subsystem VEH classifier ----*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-//
-// VEH filter for memory infrastructure faults. Registered into the unified
-// VEH dispatch table (veh/veh_core.h) at VEH_PRIORITY_MEMORY.
-//
-// Two responsibilities:
-//
-//   1. Remap guard: stalls threads that fault during mmap/munmap/mremap VA
-//      mutations. Mirrors Linux mmap_lock page fault serialization.
-//
-//   2. Demand-commit: commits pages on first access for SEC_RESERVE section
-//      views (MAP_NORESERVE). Self-identifying via NtQueryVirtualMemory ---
-//      MEM_RESERVE + MEM_MAPPED uniquely identifies uncommitted section pages.
-//      No mapping table dependency on the fault path.
-//
-// This filter only processes EXCEPTION_ACCESS_VIOLATION. The exception_mask
-// in the VehFilter registration ensures the master handler only calls this
-// filter for access violations.
-//
+///
+/// \file
+/// Memory-subsystem VEH filter for `EXCEPTION_ACCESS_VIOLATION` faults.
+///
+/// Registered into the master VEH dispatch table via the `.libcveh`
+/// section registry at `VEH_PRIORITY_MEMORY`. The master handler
+/// invokes this filter only for access violations - the
+/// `exception_mask` on the registration record narrows dispatch.
+///
+/// The filter classifies a fault VA against the libc's two address-space
+/// indexes (pagemap and `va_tracker`) and dispatches to the appropriate
+/// handler, or returns `EXCEPTION_CONTINUE_SEARCH` so the master can
+/// fall through to the next filter and ultimately to signal delivery.
+///
+/// Probe order:
+///
+///   1. `pagemap::classify` - cordons (Kernel / Image / Foreign) and
+///       libc-internal tags fast-reject; only `Empty` chunks proceed.
+///   2. `va_tracker::resolve` - authoritative for POSIX VA.
+///   3. NT-protection compatibility check (read vs PAGE_READONLY,
+///       execute vs PAGE_READWRITE, ...).
+///   4. Demand-commit dispatch (NUMA-interleave or plain cluster).
+///
+/// State read on the VEH path MUST be lock-free. VEH fires on the
+/// faulting thread, so any lock the thread might hold would deadlock
+/// against itself; the pattern is atomic projections (e.g. the
+/// pagemap entry, the `RegionShape`/`flags` atomic on the desc)
+/// readable wait-free, with the full mutable table behind a separate
+/// lock that the VEH path never acquires.
+///
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEM_FAULT_HANDLER_H
 #define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEM_FAULT_HANDLER_H
 
-#include "src/__support/OSUtil/windows/memory/mapping_table.h"
-#include "src/__support/OSUtil/windows/memory/memory_primitives.h"
-#include "src/__support/macros/config.h"
 #include "src/__support/OSUtil/windows/nt/nt_types.h"
+#include "src/__support/OSUtil/windows/nt_pal/nt_pal.h"
+#include "src/__support/macros/config.h"
 #include <stdint.h>
 
 namespace LIBC_NAMESPACE_DECL {
 namespace windows {
 
-/// Try to handle an ACCESS_VIOLATION as a memory infrastructure fault.
-/// Returns EXCEPTION_CONTINUE_EXECUTION if handled (remap guard wait
-/// or demand-commit), EXCEPTION_CONTINUE_SEARCH otherwise.
-LONG try_remap_guard(EXCEPTION_POINTERS *ep);
+/// Classifies an `EXCEPTION_ACCESS_VIOLATION` and, when the fault names
+/// an uncommitted page belonging to a demand-commit-shaped mapping,
+/// commits the page in place.
+///
+/// \returns `EXCEPTION_CONTINUE_EXECUTION` when the fault was resolved
+///          by a synchronous commit; `EXCEPTION_CONTINUE_SEARCH`
+///          otherwise (cordon hit, tracker miss, incompatible
+///          protection, or commit failure).
 LONG try_demand_commit(EXCEPTION_POINTERS *ep);
 
-/// Pre-fault source buffer pages before kernel I/O (lightweight path).
+/// Pre-faults source pages by touching one byte per page.
 ///
-/// Touches every page in [addr, addr+len) via volatile read, triggering
-/// VEH naturally for any uncommitted pages (file MAP_PRIVATE demand-read,
-/// MAP_NORESERVE demand-commit, etc.).  For committed memory (stack,
-/// heap — 99.9% of writes) each read is a cache-line hit (~1 cycle).
-/// Zero syscalls, replacing NtQueryVirtualMemory (~8,000 cycles/region).
+/// Used by I/O paths to drive lazy commits via the natural fault path
+/// before a kernel call inspects the buffer. Already-committed pages
+/// (stack, heap - the common case) cost a single cache-line load
+/// (~1 cycle each); uncommitted pages take the VEH demand-commit
+/// trip. Zero syscalls, in contrast with the
+/// `NtQueryVirtualMemory`-per-region alternative.
 LIBC_INLINE void prefault_read_pages(const void *addr, SIZE_T len) {
   if (!addr || len == 0)
     return;
@@ -57,10 +73,8 @@ LIBC_INLINE void prefault_read_pages(const void *addr, SIZE_T len) {
   auto *p = static_cast<const volatile unsigned char *>(addr);
   auto *end = p + len;
 
-  // Touch first byte.
+  // Touch the first byte, then stride one byte per page.
   (void)*p;
-
-  // Advance to next page boundary, then stride by page size.
   uintptr_t page_size = get_page_size();
   uintptr_t next = (reinterpret_cast<uintptr_t>(p) | (page_size - 1)) + 1;
   p = reinterpret_cast<const volatile unsigned char *>(next);
@@ -70,37 +84,42 @@ LIBC_INLINE void prefault_read_pages(const void *addr, SIZE_T len) {
   }
 }
 
-/// Access violation sub-types from ExceptionInformation[0].
+/// `EXCEPTION_RECORD::ExceptionInformation[0]` access-type codes,
+/// documented in phnt-style headers as the access-violation sub-type.
 inline constexpr ULONG AV_READ = 0;
 inline constexpr ULONG AV_WRITE = 1;
-inline constexpr ULONG AV_DEP = 8; // Data Execution Prevention (execute)
+inline constexpr ULONG AV_DEP = 8; ///< Data Execution Prevention (execute).
 
-/// Per-thread demand-read I/O error state for SIGBUS delivery.
+/// Per-thread demand-read I/O error flag, consumed by the signal filter
+/// to promote `SIGSEGV` to `SIGBUS` after a MAP_PRIVATE file-backed
+/// page-fault hits an I/O error.
 ///
-/// When a MAP_PRIVATE file-backed page fault hits an I/O error, the memory
-/// filter sets a generation stamp here and returns CONTINUE_SEARCH. The
-/// signal filter consumes the stamp to promote SIGSEGV → SIGBUS, matching
-/// Linux BUS_ADRERR semantics.
+/// The memory filter sets a generation stamp and returns
+/// `EXCEPTION_CONTINUE_SEARCH`; the signal filter observes the stamp
+/// and replaces the in-flight `SIGSEGV` with `BUS_ADRERR`, matching
+/// Linux semantics for irrecoverable storage failures behind a
+/// mapping.
 ///
-/// A monotonic generation counter (not a bool flag) prevents stale state
-/// from a prior fault from falsely promoting an unrelated ACCESS_VIOLATION.
-/// The signal filter only promotes when its snapshot of the generation
-/// matches the current value.
+/// The generation counter (not a bool flag) guards against stale state
+/// from a prior fault promoting an unrelated `ACCESS_VIOLATION`; the
+/// signal filter only promotes when its consumed generation snapshot
+/// matches the current generation.
 ///
-/// Thread-local, no synchronization needed — VEH filters run on the
-/// faulting thread.
+/// Thread-local - VEH filters run on the faulting thread, no
+/// synchronisation needed.
 struct PendingSigbus {
-  uint32_t generation = 0;     // Bumped by memory filter on I/O error.
-  uint32_t consumed = 0;       // Last generation consumed by signal filter.
-  uintptr_t fault_address = 0;
+  uint32_t generation = 0;     ///< Bumped on each I/O-error fault.
+  uint32_t consumed = 0;       ///< Last generation consumed by signals.
+  uintptr_t fault_address = 0; ///< Faulting VA, captured at set time.
 
-  /// Called by the memory fault filter on demand-read I/O error.
+  /// Bumps the generation and records the faulting address. Called by
+  /// the memory fault filter on a demand-read I/O error.
   void set(uintptr_t addr) {
     ++generation;
     fault_address = addr;
   }
 
-  /// Called by the signal filter. Returns true exactly once per set().
+  /// \returns `true` exactly once per matching `set()` call.
   bool consume() {
     if (generation != consumed) {
       consumed = generation;

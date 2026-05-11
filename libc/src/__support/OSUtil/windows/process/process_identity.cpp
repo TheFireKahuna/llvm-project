@@ -23,7 +23,7 @@
 #include "src/__support/OSUtil/windows/process/process_identity.h"
 #include "hdr/errno_macros.h"
 #include "src/__support/CPP/atomic.h"
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
 #include "src/__support/OSUtil/windows/libc_subsystem_init.h"
 #include "src/__support/OSUtil/windows/process/sid_utils.h"

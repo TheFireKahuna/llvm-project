@@ -14,7 +14,7 @@
 #include "src/__support/error_or.h"
 #include "src/__support/macros/config.h"
 
-#include "src/__support/OSUtil/windows/memory/madvise_ops.h"
+#include "src/__support/OSUtil/windows/memory/legacy/madvise_ops.h"
 
 namespace LIBC_NAMESPACE_DECL {
 namespace windows_syscalls {

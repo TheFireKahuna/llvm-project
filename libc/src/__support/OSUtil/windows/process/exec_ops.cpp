@@ -34,6 +34,7 @@
 #include "src/__support/OSUtil/windows/nt/nt_wstring_view.h"
 #include "src/__support/OSUtil/windows/nt/nt_path.h"
 #include "src/__support/OSUtil/windows/nt/scoped_nt_handle.h"
+#include "src/__support/OSUtil/windows/nt_pal/nt_pal.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
 #include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
 #include "src/__support/OSUtil/windows/process/process_identity.h"
@@ -220,9 +221,7 @@ struct ExecImage {
   SIZE_T patch_alloc = sizeof(IatPatch) * MAX_IAT_PATCHES;
   patch_alloc = (patch_alloc + 4095) & ~SIZE_T{4095}; // round to page
   void *patch_mem = nullptr;
-  st = ::NtAllocateVirtualMemoryEx(NtCurrentProcess(), &patch_mem, &patch_alloc,
-                                   MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE,
-                                   nullptr, 0);
+  st = nt_pal::allocate_private(&patch_mem, &patch_alloc, PAGE_READWRITE);
   if (!NT_SUCCESS(st))
     return -ENOMEM;
   img.patches = static_cast<IatPatch *>(patch_mem);
@@ -989,9 +988,8 @@ void exec_update_ldr_names(LDR_DATA_TABLE_ENTRY *ldr,
   void *commit_addr = commit_start;
   SIZE_T commit_len = static_cast<uint8_t *>(stack_base) +
                       reserve_size - commit_start;
-  st = ::NtAllocateVirtualMemoryEx(NtCurrentProcess(), &commit_addr,
-                                   &commit_len, MEM_COMMIT, PAGE_READWRITE,
-                                   nullptr, 0);
+  st = nt_pal::commit_in_reservation_no_writewatch(commit_addr, commit_len,
+                                                    PAGE_READWRITE);
   if (!NT_SUCCESS(st)) {
     SIZE_T free_sz = 0;
     ::NtFreeVirtualMemory(NtCurrentProcess(), &stack_base, &free_sz,
@@ -1380,6 +1378,7 @@ static intptr_t execve_impl(const char *path, char *const argv[],
   return execve_nt_impl(nt_path, nt_path_len, argv, envp, path, depth);
 }
 
+// Public POSIX execve. Enters execve_impl with shebang depth = 0.
 intptr_t execve(const char *path, char *const argv[], char *const envp[]) {
   return execve_impl(path, argv, envp, 0);
 }
@@ -1565,6 +1564,7 @@ static intptr_t execvp_path_cb(const char *candidate, void *ctx) {
   return internal::execve(candidate, argv, LIBC_NAMESPACE::environ);
 }
 
+// Public POSIX execvp. PATH search dispatches each candidate through execve.
 intptr_t execvp(const char *file, char *const argv[]) {
   return process_utils::search_path_for_exec(file, execvp_path_cb,
                                              const_cast<char **>(argv));

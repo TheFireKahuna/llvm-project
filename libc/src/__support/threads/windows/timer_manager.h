@@ -33,7 +33,12 @@
 #include "src/__support/OSUtil/windows/ntdll.h"
 #include "src/__support/OSUtil/windows/nt/scoped_nt_handle.h"
 #include "src/__support/OSUtil/windows/alloc/indexed_pool.h"
+#include "src/__support/OSUtil/windows/process_control_block.h"
 #include "src/__support/OSUtil/windows/reactor/reactor.h"
+#include "src/__support/OSUtil/windows/signal/dispatch/dispatch_engine.h"
+#include "src/__support/OSUtil/windows/signal/payload/sig_payload.h"
+#include "src/__support/OSUtil/windows/signal/pending/pending_storage.h"
+#include "src/__support/OSUtil/windows/tls/teb_fixup.h"
 #include "src/__support/threads/windows/futex_addr.h"
 #include "src/__support/macros/config.h"
 #include "src/__support/macros/optimization.h"
@@ -250,6 +255,11 @@ inline LARGE_INTEGER compute_due_time(clockid_t clock_id, long long target_hns,
 // all in-flight callbacks (including this thread's parent callback) complete,
 // and the sigevent fields are immutable after timer_create.
 WINAPI inline DWORD sigev_thread_entry(PVOID arg) {
+  // Reserve handler-stack budget before invoking user callback — the
+  // SIGEV_THREAD function is application code and may legitimately do
+  // anything, including overflow the stack.
+  windows::apply_libc_stack_guarantee();
+
   auto *slot = static_cast<TimerSlot *>(arg);
   // Copy to locals before calling — defensive against slot reuse in
   // pathological timer_delete + timer_create sequences, though the
@@ -293,14 +303,23 @@ inline void timer_reactor_cb(void *context, NTSTATUS /*status*/,
 
   switch (slot->sigev_notify) {
   case SIGEV_SIGNAL: {
-    siginfo_t info{};
-    info.si_signo = slot->sigev_signo;
-    info.si_code = SI_TIMER;
-    // si_tid = timer index (matches the integer encoded in timer_t).
-    info._sifields._timer.si_tid = static_cast<int>(slot->pool_index);
-    info._sifields._timer._overrun = overruns;
-    info._sifields._timer.si_sigval = slot->sigev_value;
-    signal_state::deliver_signal(slot->sigev_signo, &info);
+    // Publish the rich payload (timer_id, overrun, sigval) into the
+    // wait-free Crystalline-backed payload subsystem; pend the bit on
+    // the process-wide bitmap; wake a dispatcher. The receiver's
+    // build_standard_siginfo path reads the payload back through
+    // populate_signal_payload to populate si_timerid / si_overrun /
+    // si_value alongside si_signo / si_code = SI_TIMER.
+    //
+    // Replaces the previous signal_state::deliver_signal(signum, &info)
+    // path which discarded the constructed info entirely (the info
+    // parameter was unused), causing all SIGEV_SIGNAL deliveries to
+    // arrive with si_code = SI_USER and zeroed timer fields.
+    LIBC_NAMESPACE::signal_state::payload::publish_timer_signal(
+        slot->sigev_signo, static_cast<int>(slot->pool_index), overruns,
+        slot->sigev_value);
+    (void)LIBC_NAMESPACE::signal_state::signal_pending::pend_standard(
+        g_pcb.signal_dispatch.process_pending, slot->sigev_signo, SI_TIMER);
+    LIBC_NAMESPACE::signal_state::signal_dispatch::trigger_any_thread();
     break;
   }
   case SIGEV_THREAD: {

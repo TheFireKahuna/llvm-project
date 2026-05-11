@@ -34,15 +34,6 @@ struct SignalHandlerState {
   cpp::Atomic<uint64_t> custom;
 };
 
-// Per-signal sender identity for cross-process standard signals.
-// Written by ALPC transport before pend_standard(), read and cleared by
-// the dispatch engine after draining from the process-wide PendingSet.
-// Only needed process-wide — thread-local signals are always self-delivery.
-struct CrossProcessSender {
-  int pid; // Sender PID (0 = derive from self at dispatch time).
-  int uid; // Sender UID.
-};
-
 struct SignalDispatchState {
   PendingSet process_pending;
 
@@ -56,17 +47,15 @@ struct SignalDispatchState {
   cpp::Atomic<uint64_t> preferred_thread;
   cpp::Atomic<uint64_t> preferred_blocked;
 
-  // Sender identity for standard signals arriving via cross-process
-  // transports (ALPC). Indexed by (signum - 1). Written before the
-  // RELEASE CAS in pend_standard() — the same release/acquire pairing
-  // publishes this data. Cleared by the dispatch engine after reading
-  // to prevent stale data on coalesced deliveries.
-  CrossProcessSender process_sender[STANDARD_SIG_SLOTS];
+  // Cross-process sender identity (pid/uid/sival) is no longer kept in
+  // the dispatch state. ALPC transport now publishes it into the wait-
+  // free Crystalline-backed payload subsystem at signal/payload/, and
+  // build_standard_siginfo reads it back via populate_signal_payload.
+  // The previous process_sender[] side-array had a torn-tuple race with
+  // concurrent same-signum senders — fixed structurally by giving each
+  // event its own immutable record.
 };
 
-struct SignalSigchldState {
-  cpp::Atomic<uint64_t> packed;
-};
 
 struct SignalTransportState {
   cpp::Atomic<uint32_t> veh_registered;

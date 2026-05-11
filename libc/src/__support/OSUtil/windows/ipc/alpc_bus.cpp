@@ -21,7 +21,7 @@
 
 #include "src/__support/CPP/atomic.h"
 #include "src/__support/CPP/span.h"
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/OSUtil/windows/nt/handle_attributes.h"
 #include "src/__support/OSUtil/windows/nt/nt_ipc.h"
 #include "src/__support/OSUtil/windows/nt/nt_process_api.h"

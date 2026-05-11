@@ -16,7 +16,7 @@
 
 #include "src/sys/mman/posix_madvise.h"
 
-#include "src/__support/OSUtil/windows/memory/posix_madvise_ops.h"
+#include "src/__support/OSUtil/windows/memory/legacy/posix_madvise_ops.h"
 #include "src/__support/common.h"
 #include "src/__support/macros/config.h"
 

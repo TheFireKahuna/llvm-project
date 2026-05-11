@@ -36,9 +36,10 @@
 
 #include "src/__support/threads/windows/thread_registry.h"
 
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
-#include "src/__support/OSUtil/windows/alloc/slab_pool.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/slab_pool.h"
 #include "src/__support/OSUtil/windows/concurrent/crystalline_domain.h"
+#include "src/__support/OSUtil/windows/concurrent/crystalline_serial_table.h"
 #include "src/__support/OSUtil/windows/libc_fini_registry.h"
 #include "src/__support/OSUtil/windows/nt/nt_capabilities.h"
 #include "src/__support/OSUtil/windows/nt/nt_process_api.h"
@@ -76,6 +77,60 @@ constexpr ACCESS_MASK kThreadHandleAccess =
 
 } // anonymous namespace
 
+// Per-kind serial counters and tables for BatchLinkCodec<ThreadRegistryNode>.
+// Each kind has its own monotonic counter and serial→node lookup table.
+// Codec packs as `1 + (kind << 28) | node_index` and dispatches per-kind
+// for decode. node_index ∈ [0, 2^28-1] (256M entries per kind, well over
+// any realistic registry workload).
+cpp::Atomic<uint32_t> g_lifecycle_serial_counter{0};
+cpp::Atomic<uint32_t> g_bucket_head_page_serial_counter{0};
+cpp::Atomic<uint32_t> g_bucket_entry_serial_counter{0};
+::LIBC_NAMESPACE::concurrent::CrystallineSerialTable<ThreadRegistryNode>
+    g_lifecycle_serial_table;
+::LIBC_NAMESPACE::concurrent::CrystallineSerialTable<ThreadRegistryNode>
+    g_bucket_head_page_serial_table;
+::LIBC_NAMESPACE::concurrent::CrystallineSerialTable<ThreadRegistryNode>
+    g_bucket_entry_serial_table;
+
+} // namespace LIBC_NAMESPACE_DECL
+
+namespace LIBC_NAMESPACE_DECL {
+namespace concurrent {
+// BatchLinkCodec for ThreadRegistryNode — heterogeneous over three
+// kinds (Lifecycle / BucketHeadPage / BucketEntry), each with its
+// own per-kind serial table. Encoded value packs `1 + (kind << 28)
+// | node_index`; decode dispatches on the embedded kind bits.
+//
+// Bit budget: kind needs 2 bits (3 values), node_index gets 28 bits
+// (≤ 256M nodes per kind). The encoding stays under 30 bits, well
+// clear of bit 31.
+template <> struct BatchLinkCodec<::LIBC_NAMESPACE::ThreadRegistryNode> {
+  using Node = ::LIBC_NAMESPACE::ThreadRegistryNode;
+  using Kind = ::LIBC_NAMESPACE::ThreadRegistryNodeKind;
+  LIBC_INLINE static uint32_t encode(CrystallineNode *n) noexcept {
+    auto *node = static_cast<Node *>(n);
+    return 1u + ((static_cast<uint32_t>(node->kind) << 28) | node->node_index);
+  }
+  LIBC_INLINE static CrystallineNode *decode(uint32_t code) noexcept {
+    uint32_t v = code - 1u;
+    auto kind = static_cast<Kind>((v >> 28) & 0xFu);
+    uint32_t idx = v & 0x0FFFFFFFu;
+    switch (kind) {
+    case Kind::Lifecycle:
+      return ::LIBC_NAMESPACE::g_lifecycle_serial_table.lookup(idx);
+    case Kind::BucketHeadPage:
+      return ::LIBC_NAMESPACE::g_bucket_head_page_serial_table.lookup(idx);
+    case Kind::BucketEntry:
+      return ::LIBC_NAMESPACE::g_bucket_entry_serial_table.lookup(idx);
+    }
+    __builtin_trap();
+  }
+};
+} // namespace concurrent
+} // namespace LIBC_NAMESPACE_DECL
+
+namespace LIBC_NAMESPACE_DECL {
+
 ::LIBC_NAMESPACE::concurrent::CrystallineDomain<
     ThreadRegistryNode, &free_thread_registry_node, kRetireFreq>
     g_registry_domain;
@@ -104,7 +159,7 @@ LIBC_INLINE Subclass *crys_read(cpp::Atomic<Subclass *> &obj,
   auto &node_atom =
       reinterpret_cast<cpp::Atomic<ThreadRegistryNode *> &>(obj);
   return static_cast<Subclass *>(
-      g_registry_domain.read(node_atom, index, parent));
+      g_registry_domain.protect(node_atom, index, parent));
 }
 
 // Slab pool backing BucketEntry allocations. One BucketEntry per
@@ -272,6 +327,16 @@ BucketHeadPage *alloc_bucket_head_page(uint32_t page_index) {
   auto *page = static_cast<BucketHeadPage *>(mem);
   page->kind = ThreadRegistryNodeKind::BucketHeadPage;
   page->page_index = page_index;
+  // Stamp the BatchLinkCodec serial. For BucketHeadPage we use a
+  // monotonic per-kind counter so retired pages can be decoded back
+  // through `g_bucket_head_page_serial_table`. Don't reuse `page_index`
+  // — page_index can repeat after a fork-reinit zero, while the
+  // codec serial must be unique for the lifetime of the table.
+  page->node_index =
+      g_bucket_head_page_serial_counter.fetch_add(
+          1, cpp::MemoryOrder::RELAXED) +
+      1;
+  g_bucket_head_page_serial_table.insert(page->node_index, page);
   // init_node stamps birth_epoch so future retire's batch-anchor min
   // computation has a meaningful starting point.
   g_registry_domain.init_node(page);
@@ -346,6 +411,12 @@ BucketEntry *alloc_bucket_entry(uint32_t task_id, ThreadLifecycle *lc) {
   entry->kind = ThreadRegistryNodeKind::BucketEntry;
   entry->task_id = task_id;
   entry->lc = lc;
+  // BatchLinkCodec serial — see alloc_bucket_head_page for rationale.
+  // BucketEntries churn at task creation/exit rate; serial is monotonic
+  // per-process so the table grows but never aliases a freed entry.
+  entry->node_index =
+      g_bucket_entry_serial_counter.fetch_add(1, cpp::MemoryOrder::RELAXED) + 1;
+  g_bucket_entry_serial_table.insert(entry->node_index, entry);
   g_registry_domain.init_node(entry);
   return entry;
 }
@@ -1031,6 +1102,18 @@ bool registry_register_with_entry(ThreadLifecycle *lc, BucketEntry *entry,
   // Any failure path below MUST roll the sentinel back to nullptr to
   // unblock spinning losers AND clear t_registering_self.
   //
+  // BatchLinkCodec serial — Lifecycle nodes are slab-pool allocated;
+  // we monotonically stamp the per-kind serial here so retired nodes
+  // can be decoded back via `g_lifecycle_serial_table`. Serial is
+  // stamped only ONCE per lifecycle (the first registration); a
+  // recycled lifecycle slot keeps its prior serial — but the serial
+  // table will see an insert with the same key from the same pointer,
+  // which is idempotent. Initialise on first registration only.
+  if (lc->node_index == 0) {
+    lc->node_index =
+        g_lifecycle_serial_counter.fetch_add(1, cpp::MemoryOrder::RELAXED) + 1;
+    g_lifecycle_serial_table.insert(lc->node_index, lc);
+  }
   // Stamp birth_epoch on lc so Crystalline retire's anchor batch-min
   // computation is meaningful — lifecycles are retirable nodes too,
   // and prior to this fix were retired with a zero birth_epoch which
@@ -1341,12 +1424,12 @@ void registry_fork_reinit(ThreadLifecycle *self) {
   // child is single-threaded and can safely walk the iter list /
   // hash without Crystalline reservation discipline.
 
-  // Order assertion: g_registry_domain.current_epoch() == 1 iff the
+  // Order assertion: g_registry_domain.current_era() == 1 iff the
   // Crystalline fork-reinit pass already ran (it stores 1 there).
-  // If we observe a higher epoch, the orchestrator has been reordered
+  // If we observe a higher era, the orchestrator has been reordered
   // and this walker would dereference parent-thread reservation state
   // — trap rather than corrupt the child.
-  if (g_registry_domain.current_epoch() != 1)
+  if (g_registry_domain.current_era() != 1)
     __builtin_trap();
 
   if (!ensure_initialized())

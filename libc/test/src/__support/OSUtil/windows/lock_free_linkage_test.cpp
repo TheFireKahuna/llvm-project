@@ -318,6 +318,31 @@ TEST(LlvmLibcLockFreeLinkageTest, CompoundWithersBumpTagOnce) {
   EXPECT_TRUE(d.is_alert_fired());
 }
 
+// `with_state_and_next` mutates state + next in one tag bump, preserving
+// MARK / CERT / ALERT_FIRED. Skiplist Swap relies on the compound write
+// — a two-step `with_state(LIVE).with_next(N)` would expose either
+// (LOCKED + new next) or (LIVE + old next) mid-Swap, breaking the
+// linearisation point.
+TEST(LlvmLibcLockFreeLinkageTest, WithStateAndNextSingleBumpAndPreservation) {
+  // Pre-load all reserved bits so we can verify preservation.
+  auto base = linkage::Link::pack_marked(M_PARKED, 200, 5).certified();
+  base = linkage::Link::from_raw(base.raw() | linkage::LINK_ALERT_FIRED_BIT);
+  EXPECT_TRUE(base.is_marked());
+  EXPECT_TRUE(base.is_certified());
+  EXPECT_TRUE(base.is_alert_fired());
+
+  uint32_t bt = base.tag();
+  auto r = base.with_state_and_next(M_LIVE, 9);
+
+  EXPECT_EQ(static_cast<uint8_t>(M_LIVE), r.state());
+  EXPECT_EQ(static_cast<uint16_t>(9), r.next());
+  EXPECT_EQ(bt + 1, r.tag()); // Single bump.
+  // All three reserved bits preserved.
+  EXPECT_TRUE(r.is_marked());
+  EXPECT_TRUE(r.is_certified());
+  EXPECT_TRUE(r.is_alert_fired());
+}
+
 // --- 6. Free decoder shorthand --------------------------------------------
 TEST(LlvmLibcLockFreeLinkageTest, FreeDecodersMatchClassAccessors) {
   auto l = linkage::Link::pack_marked(M_PARKED, 0xC0FFEEu, 4).certified();
@@ -445,6 +470,53 @@ TEST(LlvmLibcLockFreeLinkageTest,
                                                                 snap);
   EXPECT_TRUE(ok);
   EXPECT_FALSE(load(0).is_alert_fired());
+}
+
+// `link_cas_snap_relink` strong-CAS publishes (state, next) atomically
+// from a captured snap. The state byte transitions to To while the
+// next-pointer advances; reserved bits preserved. This is the
+// interval-skiplist Swap linearisation primitive (Kim et al. SOSP 2025
+// Algorithm 2).
+TEST(LlvmLibcLockFreeLinkageTest, LinkCasSnapRelinkPublishesAtomically) {
+  reset_pool();
+  // Predecessor with reserved bits set, state LOCKED (M_PARKED used as
+  // mock LOCKED), pointing at the soon-to-be-stale successor index 4.
+  auto seed = linkage::Link::pack_marked(M_PARKED, 0, 4).certified();
+  g_pool[0].link.store(seed, MemoryOrder::RELEASE);
+  auto snap = load(0);
+  uint32_t snap_tag = snap.tag();
+
+  // Swap commits LIVE + new successor 7 in one CAS.
+  bool ok = linkage::link_cas_snap_relink<M_LIVE, PermissiveTraits>(
+      g_pool[0].link, snap, /*new_next=*/7);
+  EXPECT_TRUE(ok);
+
+  auto post = load(0);
+  EXPECT_EQ(static_cast<uint8_t>(M_LIVE), post.state());
+  EXPECT_EQ(static_cast<uint16_t>(7), post.next());
+  EXPECT_EQ(snap_tag + 1, post.tag()); // Single bump.
+  // Reserved bits preserved.
+  EXPECT_TRUE(post.is_marked());
+  EXPECT_TRUE(post.is_certified());
+}
+
+// Strong CAS must reject any concurrent mutation that bumps the tag
+// between snap capture and the CAS — otherwise Swap could clobber
+// another writer's progress.
+TEST(LlvmLibcLockFreeLinkageTest, LinkCasSnapRelinkRejectsTagBumped) {
+  reset_pool();
+  g_pool[0].link.store(linkage::Link::pack(M_PARKED, 50, 4),
+                       MemoryOrder::RELEASE);
+  auto snap = load(0);
+
+  // Concurrent mutation bumps tag.
+  g_pool[0].link.store(snap.with_state(M_PARKED), MemoryOrder::RELEASE);
+
+  bool ok = linkage::link_cas_snap_relink<M_LIVE, PermissiveTraits>(
+      g_pool[0].link, snap, /*new_next=*/7);
+  EXPECT_FALSE(ok);
+  // Original successor preserved (the post-mutation value, next=4).
+  EXPECT_EQ(static_cast<uint16_t>(4), load(0).next());
 }
 
 // --- 12. link_cas_state_detached ------------------------------------------

@@ -24,5 +24,4 @@ add_libc_unittest(
     libc.src.threads.mtx_unlock
     libc.src.threads.thrd_create
     libc.src.threads.thrd_join
-    libc.test.UnitTest.Test
 )

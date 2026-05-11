@@ -23,6 +23,8 @@
 #include "src/__support/OSUtil/windows/signal/dispatch/dispatch_engine.h"
 
 #include "src/__support/OSUtil/windows/signal/control/process_control.h"
+#include "src/__support/OSUtil/windows/signal/control/sigchld.h"
+#include "src/__support/OSUtil/windows/signal/payload/sig_payload.h"
 #include "hdr/signal_macros.h"
 #include "hdr/types/siginfo_t.h"
 #include "hdr/types/struct_sigaction.h"
@@ -186,10 +188,24 @@ bool invoke_handler_impl(ThreadSignalState *state, int signum, siginfo_t *info,
   // Build ucontext_t from interrupted CONTEXT if available and handler
   // wants it (SA_SIGINFO). The interrupted_context pointer is valid only
   // during APC/VEH dispatch frames — it's a borrowed pointer, not a copy.
+  //
+  // Signum match is required: the captured CONTEXT belongs to the signal
+  // that actually interrupted execution. The dispatch drain loop runs
+  // lowest-first across all pending signals, so a software signal pending
+  // alongside a hardware fault must NOT inherit the fault site's CONTEXT
+  // — POSIX SA_SIGINFO requires uc_mcontext to describe the CPU state at
+  // the moment *this* signal was received.
+  //
+  // TODO: For software signals (no signum match), Linux delivers a
+  // ucontext_t built from the dispatch-point CPU state via the kernel's
+  // signal-frame setup. Mirror this by RtlCaptureContext-snapshotting at
+  // dispatch_pending entry and feeding it here when the captured CONTEXT
+  // doesn't match. For now we pass null, which is POSIX-permitted.
   ucontext_t uc;
   ucontext_t *uc_ptr = nullptr;
   if ((action->sa_flags & SA_SIGINFO) && state &&
-      state->interrupted_context) {
+      state->interrupted_context &&
+      state->interrupted_signum == signum) {
     context_win32_to_ucontext(state->interrupted_context, &uc);
     uc_ptr = &uc;
   }
@@ -240,36 +256,53 @@ void build_rt_siginfo(siginfo_t *info, const SigqueueEntry *entry) {
   info->si_uid = entry->uid;
 }
 
-// Build a siginfo_t for a standard signal from the PendingSet sidecars.
-// si_code comes from the sidecar. si_pid/si_uid come from the process-wide
-// CrossProcessSender array (for cross-process ALPC delivery) or are derived
-// from the current process (for self-delivery). si_addr, populated by the
-// VEH transport for hardware faults, carries the faulting VA (SIGSEGV/
-// SIGBUS from access violations) or faulting instruction PC (SIGFPE/SIGILL/
-// SIGTRAP and misc fault classes) — nullptr for software signals.
+// Build a siginfo_t for a standard signal.
 //
-// siginfo_t's _kill and _sigfault union members alias (si_pid/si_uid share
-// storage with si_addr), so the SI_USER/SI_TKILL and fault branches are
-// mutually exclusive: write si_pid/si_uid on software signals, si_addr on
-// faults. Kernel-sourced software signals (SI_KERNEL, SI_QUEUE, SI_TIMER,
-// etc.) leave the union zeroed.
+// Three sources contribute, in order:
+//   1. Base init from (signum, si_code).
+//   2. Rich payload subsystem — wait-free Crystalline domain holding
+//      per-signum latest-event records published by SIGCHLD generation,
+//      SIGEV_SIGNAL timer expiry, and cross-process ALPC kill. Populates
+//      whichever fields apply to the published record's kind (si_pid /
+//      si_status / si_utime / si_stime for SIGCHLD; si_timerid /
+//      si_overrun / si_value for timers; si_pid / si_uid / si_value for
+//      cross-process kill). No-op for signums with no published payload.
+//   3. SI_USER/SI_TKILL self-delivery fallback — derive si_pid/si_uid
+//      from current process when the payload subsystem didn't populate
+//      them (intra-process kill / pthread_kill paths).
+//   4. Hardware-fault si_addr from the VEH transport (accessed via the
+//      fault_addr parameter, sourced from PendingSet's standard_si_addr
+//      sidecar).
+//
+// siginfo_t's _kill and _sigfault union members alias (si_pid/si_uid
+// share storage with si_addr), so software-signal and fault branches are
+// mutually exclusive. The payload reader writes only into the union arm
+// that matches the published kind, so it never collides with the fault
+// branch below.
 void build_standard_siginfo(siginfo_t *info, int signum, int si_code,
-                            CrossProcessSender sender, void *fault_addr) {
+                            void *fault_addr) {
   __builtin_memset(info, 0, sizeof(siginfo_t));
   info->si_signo = signum;
   info->si_code = si_code;
+
+  // Wait-free protected read from the per-signum latest-event pointer.
+  // Populates the kind-appropriate union arm (SIGCHLD pid/status/utime/
+  // stime, timer timerid/overrun/value, or cross-kill pid/uid/value) if
+  // a record exists for this signum; no-op otherwise. Overwrites
+  // si_signo/si_code with the payload's stored values when present.
+  payload::populate_signal_payload(info, signum);
+
   if (si_code == SI_USER || si_code == SI_TKILL) {
-    if (sender.pid != 0) {
-      // Cross-process: use stored sender identity from ALPC transport.
-      info->si_pid = sender.pid;
-      info->si_uid = sender.uid;
-    } else {
-      // Self-delivery: derive from current process.
+    // If the payload subsystem didn't fill si_pid (no cross-kill record
+    // published), it's a self-delivery — derive from current process.
+    if (info->si_pid == 0) {
       info->si_pid = static_cast<pid_t>(NtCurrentProcessId());
       info->si_uid = static_cast<uid_t>(
           g_pcb.identity.real_uid.load(cpp::MemoryOrder::RELAXED));
     }
-  } else if (fault_addr != nullptr) {
+  } else if (fault_addr != nullptr && info->si_addr == nullptr) {
+    // Hardware fault — payload subsystem doesn't carry si_addr (fault
+    // transport writes the PendingSet sidecar directly), so apply here.
     info->si_addr = fault_addr;
   }
 }
@@ -536,24 +569,19 @@ void dispatch_pending(ThreadSignalState *state) {
       if (sig == 0)
         break;
 
-      // Read cross-process sender identity if drained from process-wide.
-      // Clear after reading to prevent stale data on coalesced delivery.
-      CrossProcessSender sender = {0, 0};
-      if (source == &dispatch.process_pending) {
-        sender = dispatch.process_sender[sig - 1];
-        dispatch.process_sender[sig - 1] = {0, 0};
-      }
-
       struct sigaction action = handler_table::read_and_consume(sig);
       siginfo_t info;
       // ACQUIRE loads pair with pend_standard's RELEASE stores, giving us
       // the (si_code, si_addr) tuple written together with the bit we
-      // just drained.
+      // just drained. Sender pid/uid for cross-process kill comes via
+      // build_standard_siginfo's payload-subsystem read — the previous
+      // process_sender[] side-array is gone (cross-kill writers now
+      // publish through the wait-free Crystalline domain).
       int si_code =
           source->standard_si_code[sig - 1].load(cpp::MemoryOrder::ACQUIRE);
       void *fault_addr = reinterpret_cast<void *>(
           source->standard_si_addr[sig - 1].load(cpp::MemoryOrder::ACQUIRE));
-      build_standard_siginfo(&info, sig, si_code, sender, fault_addr);
+      build_standard_siginfo(&info, sig, si_code, fault_addr);
       if (!invoke_handler_impl(state, sig, &info, &action)) {
         // Nesting overflow — re-pend so the signal is retried after an
         // outer handler returns and frees a restart stack slot. Preserve

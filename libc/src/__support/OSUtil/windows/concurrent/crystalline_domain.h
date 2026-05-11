@@ -26,9 +26,9 @@
 // (see crystalline_slot_pool.h) — VA reserved up front, demand-committed
 // on growth. Each thread carries a uint16_t slot index per domain on its
 // ThreadScratchState (`crystalline_slot_idx[domain_id]`); 0 = "no slot
-// claimed yet". The first read()/reserve_slot() call on a new thread for
-// this domain lazy-claims a slot (Treiber-pop, lock-free); thread exit
-// releases it (Treiber-push). Per-thread retire batches (CrystallineBatch)
+// claimed yet". The first protect()/init_node() call on a new thread
+// for this domain lazy-claims a slot (Treiber-pop, lock-free); thread
+// exit releases it (Treiber-push). Per-thread retire batches (CrystallineBatch)
 // also live on ThreadScratchState — they are owner-exclusive and need no
 // cross-thread reachability.
 //
@@ -44,33 +44,69 @@
 //
 // API shape
 // ---------
-// The API mirrors the reference 1:1 (no Handle/Guard wrapper; callers
-// manage reservation indices and pass the parent node themselves).
-// Methods:
-//   * init_node(NodeT*)                                — stamp birth_epoch,
+// The API mirrors the reference paper §4.2 Fig. 10's `protect()`
+// primitive (no Handle/Guard wrapper; callers manage reservation
+// indices and pass the parent node themselves). Method surface:
+//
+//   * init_node(NodeT*)                                — stamp birth_era,
 //     called by the user after allocating a NodeT and before publishing
 //     it to a lock-free data structure. Replaces the reference's alloc().
-//   * read(atomic<NodeT*>&, index, NodeT* parent)       — hot-path read.
-//     attempts=16 fast path, then slow_path helping.
-//   * reserve_slot(NodeT* ptr, index, NodeT* parent)    — declare a
-//     reservation without reading; for amortized traversals where the
-//     same slot gets reused.
+//   * protect(atomic<NodeT*>&, index, NodeT* parent)   — atomic-pointer
+//     overload, paper Fig. 10 canonical. 16-attempt era-stability
+//     fast path + bounded slow_path (paper §5 Lemma 5.2 / 5.3).
+//   * protect<LoadThunk>(ctx, index, NodeT* parent)    — generalized
+//     overload for multi-step loads (ART scan, encoded-link decode).
+//     Same algorithm; `LoadThunk` is a free-function pointer published
+//     into state[index] for foreign-thread helpers to invoke.
 //   * retire(NodeT*)                                    — submit for
 //     deferred reclamation.
 //   * clear_all()                                       — drop every
 //     reservation on the current thread (for API boundaries).
-//   * current_epoch()                                   — introspection.
+//   * current_era()                                     — introspection.
+//
+// Deviations from the reference
+// -----------------------------
+// 1. Reference `read()` is renamed to `protect()` to match paper §4.2
+//    Fig. 10 directly. Algorithm-identical.
+// 2. Reference has no `reserve_slot()` (advance era without loading).
+//    A previous draft of this port carried one; it enabled an unbounded
+//    `load → reserve_slot → re-load → equality-check` antipattern at
+//    consumer sites and has been deleted. The remaining no-load case is
+//    `is_walk_range`'s predecessor-pin rotation: the `walk_prev` is
+//    already pinned by the previous iteration's `pinned_read_link_target`
+//    on the cur slot, and on advance the prev slot's era is refreshed
+//    via `protect<&anchor_thunk>` so `try_retire` won't skip the slot.
+//    This is bounded (two slots, ping-pong rotation) and load-bearing
+//    (the prev slot needs an era ≥ batch min_era for retire-attachment
+//    to find it) — distinct from the deleted `DomainPin` antipattern,
+//    which was a per-operation outer "pin" that the inner protect()s
+//    on real loads already covered.
+// 3. The thunk overload of `protect()` extends Fig. 10 to multi-step
+//    loads; slow_path / help_thread publish a (load_thunk, load_ctx)
+//    pair via `state[index]` so foreign helpers can invoke the load
+//    on the helpee's behalf. Atomic-pointer `protect` feeds through
+//    the same generalization via a static `atomic_load_thunk` member.
+// 4. Naming: paper Figs. 5/6/10/13 use "era" (Hazard-Era lineage).
+//    The codebase previously used "epoch", which read like classical
+//    EBR (Epoch-Based Reclamation). Renamed to `era` to match the
+//    paper and avoid the EBR connotation — Crystalline-W's counter
+//    is an allocation-generation watermark, not a reclamation cycle.
 //
 // NodeT contract
 // --------------
 // User types inherit from CrystallineNode. The base class provides the
 // intrusive metadata fields (next / batch_link / refs / batch_next /
-// birth_epoch). Zero-initialization is a valid "never retired" state
-// (batch_link == nullptr is the retired-check discriminator). User
+// birth_era). Zero-initialization is a valid "never retired" state
+// (batch_link == 0u is the retired-check discriminator). User
 // allocation is outside the primitive — init_node stamps the runtime
 // state but doesn't allocate. FreeFn (template parameter) is invoked
 // once per node when the batch's refcount wraps to zero, and receives
 // the full NodeT* for the user-side reclaim.
+//
+// Each consumer must specialize `BatchLinkCodec<NodeT>` (defined
+// below) — the codec encodes the back-pointer from a retired node to
+// its batch's anchor as a 31-bit slot identifier so `batch_link` can
+// fit in 4 bytes. See the BatchLinkCodec contract for details.
 //
 //===----------------------------------------------------------------------===//
 
@@ -92,60 +128,57 @@ namespace LIBC_NAMESPACE_DECL {
 namespace concurrent {
 
 // -------------------------------------------------------------------------
-// CrystallineNode — intrusive base for every retirable user type.
+// CrystallineNode — empty tag base; field semantics
 // -------------------------------------------------------------------------
 //
-// 1:1 port of WFRTracker.hpp's `struct WFRInfo`. The two type-punned
-// unions encode the node's current role in the algorithm:
+// The empty-tag-base definition is in crystalline_local_state.h, alongside
+// `LIBC_CRYSTALLINE_NODE_FIELDS(Self)` which emits the intrusive runtime
+// fields directly into each derived class (keeping the derived class
+// standard-layout so `offsetof` is unconditionally supported per
+// [support.types.layout]/1).
+//
+// The macro is a 1:1 port of WFRTracker.hpp's `struct WFRInfo`, with one
+// substrate-level deviation: `batch_link` is encoded as a 32-bit slot
+// code via `BatchLinkCodec<NodeT>` rather than as a raw pointer. The
+// encoding keeps every Crystalline-managed type's intrusive header at
+// 20 bytes (a 4-byte trailing slot is the natural landing pad for a
+// 4-byte first user field) — the back-reference from a retired node to
+// its batch's anchor is a slow-path-only field, never read on the
+// `protect()` fast path, so the codec's encode/decode indirection is
+// confined to retire / reclaim.
+//
+// The two type-punned unions encode the node's current role:
 //
 //   First union:
-//     next        (inserted state)  — atomic chain link in a slot's list
+//     next        (inserted state)  — atomic chain link, `Atomic<NodeT*>`
 //     slot        (prepare state)   — target CrystallineWordPair* for a
 //                                      try_retire slot assignment
-//     birth_epoch (anchor / refs node) — epoch stamped by init_node
+//     birth_era   (anchor / refs node) — era stamped by init_node
 //
 //   Second union:
 //     refs        (anchor)           — modular-addend refcount on the
 //                                      batch anchor node
-//     batch_next  (non-anchor)       — chain link for walking a batch's
-//                                      nodes in retire order
+//     batch_next  (non-anchor)       — chain link `NodeT*` for walking a
+//                                      batch's nodes in retire order
 //
-// `batch_link` is an atomic pointer to the anchor node, OR a tagged
-// self-reference indicating THIS node is its batch's anchor (low-bit
-// tag via WFR_RNODE / WFR_IS_RNODE below). `batch_link == nullptr` is
-// the retired-check discriminator: untouched nodes have nullptr, retired
-// nodes have either the anchor or the self-tag.
+// `batch_link` is a 32-bit code:
+//   * 0x00000000              — unretired (sentinel; codecs never emit 0)
+//   * (1u << 31) | code(self) — this node IS its batch's anchor; the
+//                                bottom 31 bits encode the chain head
+//                                (the most-recently-retired node in the
+//                                batch, batch.first at retire-close)
+//   * code(anchor)            — non-anchor retired; bottom 31 bits
+//                                encode the anchor node
+//
+// The bit-31 RNODE tag is namespace-distinct from the bit-0 RNODE tag
+// the chain pointer carries in `next` (see crystalline_rnode /
+// crystalline_is_rnode below) — the two share no semantics beyond
+// "marks the anchor end of a chain in their respective fields."
 //
 // All fields are owned by the runtime; user code must never read or
 // write them. Zero-initialization is the valid "freshly allocated, not
-// yet retired" state — init_node() stamps birth_epoch and batch_link=0
+// yet retired" state — init_node() stamps birth_era and batch_link=0u
 // at publication time.
-struct CrystallineNode {
-  union {
-    // Inserted state: link to the next node in a slot's retirement chain.
-    cpp::Atomic<CrystallineNode *> next;
-    // Preparation state: target slot's first-word-pair during try_retire's
-    // slot-selection loop. A raw (non-atomic) pointer — the node isn't yet
-    // visible to any reader during this phase, so the store is plain.
-    CrystallineWordPair *slot;
-    // Anchor-node (refs-node) role: birth epoch stamped at init_node time,
-    // used by subsequent retire() calls to track the batch's min-epoch.
-    uint64_t birth_epoch;
-  };
-
-  // Anchor pointer (or WFR_IS_RNODE-tagged self-reference when this node
-  // IS the anchor). Zero in fresh nodes; set by retire() at batch close.
-  cpp::Atomic<CrystallineNode *> batch_link;
-
-  union {
-    // Anchor role: batch-level reference count. Modular-addend
-    // arithmetic — wraps to zero when the last holder releases.
-    cpp::Atomic<uintptr_t> refs;
-    // Non-anchor role: chain pointer across the batch's nodes in
-    // retire order (from batches.first backwards).
-    CrystallineNode *batch_next;
-  };
-};
 
 // -------------------------------------------------------------------------
 // Sentinels and tag-bit helpers — reference's macros, typed.
@@ -163,16 +196,67 @@ inline constexpr uintptr_t kCrystallineProtect1 =
 inline constexpr uintptr_t kCrystallineProtect2 =
     static_cast<uintptr_t>(1ULL << 62);
 
-// Tag bit 0 on `batch_link` distinguishes "this node is the batch's
-// anchor" from "here is a plain pointer to the anchor". Reference
-// WFR_RNODE / WFR_IS_RNODE.
-LIBC_INLINE CrystallineNode *crystalline_rnode(CrystallineNode *n) {
-  return reinterpret_cast<CrystallineNode *>(
-      reinterpret_cast<uintptr_t>(n) ^ 1U);
+// Tag bit 0 on chain pointers (the value stored in `next`) distinguishes
+// "the next link IS a tagged self-reference to the anchor" from "the
+// next link is a plain pointer to another non-anchor chain entry". This
+// is the chain-pointer RNODE namespace; it is SEPARATE from the bit-31
+// RNODE tag that lives in `batch_link` (see `kCrystallineBatchLinkRnodeBit`
+// below).
+//
+// Templated on the pointer type so call sites can pass either the
+// type-erased `CrystallineNode *` (slot-pool boundary, batch-chain
+// crossings) or the typed `NodeT *` (chain field is `Atomic<NodeT*>`
+// in the derived class via LIBC_CRYSTALLINE_NODE_FIELDS) without
+// requiring round-trip casts. Both forms perform the same bit
+// arithmetic on the raw pointer value.
+template <typename T>
+LIBC_INLINE T *crystalline_rnode(T *n) {
+  return reinterpret_cast<T *>(reinterpret_cast<uintptr_t>(n) ^ 1U);
 }
-LIBC_INLINE bool crystalline_is_rnode(CrystallineNode *n) {
+template <typename T>
+LIBC_INLINE bool crystalline_is_rnode(T *n) {
   return (reinterpret_cast<uintptr_t>(n) & 1U) != 0;
 }
+
+// -------------------------------------------------------------------------
+// `batch_link` 32-bit code layout
+// -------------------------------------------------------------------------
+//
+// bit 31     — RNODE tag: this node IS its batch's anchor; bottom 31
+//              bits encode the chain head (most-recent retire).
+// bits 30..0 — codec slot encoding produced by `BatchLinkCodec<NodeT>`.
+//
+// 0x00000000 is the unretired sentinel. Codecs MUST never emit 0 and
+// MUST never set bit 31 in their encode output.
+inline constexpr uint32_t kCrystallineBatchLinkRnodeBit = 1u << 31;
+inline constexpr uint32_t kCrystallineBatchLinkCodeMask = 0x7FFFFFFFu;
+
+// -------------------------------------------------------------------------
+// BatchLinkCodec<NodeT>
+// -------------------------------------------------------------------------
+//
+// Per-NodeT trait that encodes a CrystallineNode pointer (which is
+// always a `NodeT *` upcast, since each domain only retires its own
+// NodeT) into a 31-bit slot identifier and decodes it back. The
+// substrate calls `BatchLinkCodec<NodeT>::encode(...)` /
+// `BatchLinkCodec<NodeT>::decode(...)` on every retire / reclaim slow-
+// path access to `batch_link`.
+//
+// Contract — every specialization must satisfy:
+//   1. `encode(node) ∈ [1, 0x7FFFFFFFu]` — never 0, never has bit 31 set.
+//   2. `decode(encode(node)) == node` — bijective round-trip.
+//   3. `encode` and `decode` are static, noexcept, and may be called on
+//      any thread at any time after the NodeT was first published to
+//      Crystalline (init_node having run is sufficient).
+//   4. `decode` may safely run on a NodeT whose memory is still
+//      committed but whose user-visible content has been torn down by
+//      the FreeFn — only the encoded identity must remain resolvable.
+//
+// Each consumer's TU specializes the template. The primary template
+// is left undefined: a missing specialization fires a clean "no
+// definition for BatchLinkCodec<...>" link error, surfacing unported
+// consumers immediately.
+template <typename NodeT> struct BatchLinkCodec;
 
 // Cap on the free-list cache held per-thread during a traverse walk
 // (reference's MAX_WFRC). Bounds memory the reaper carries between
@@ -220,13 +304,15 @@ public:
         &CrystallineDomain::thread_flush_trampoline;
     descriptor_.release_slot_fn =
         &CrystallineDomain::release_slot_trampoline;
+    descriptor_.warm_thread_fn =
+        &CrystallineDomain::warm_thread_trampoline;
     descriptor_.name = "crystalline_domain";
     if (LIBC_UNLIKELY(!pool_.init()))
       __builtin_trap();
     registry_push(&descriptor_);
     domain_id_ = descriptor_.domain_id;
-    // epoch starts at 1 (reference uses 0 as sentinel / "uninitialized")
-    epoch_.store(1, cpp::MemoryOrder::RELEASE);
+    // era starts at 1 (reference uses 0 as sentinel / "uninitialized")
+    era_.store(1, cpp::MemoryOrder::RELEASE);
     slow_counter_.store(0, cpp::MemoryOrder::RELEASE);
   }
 
@@ -237,62 +323,103 @@ public:
   // Public API — 1:1 with WFRTracker's surface (minus `tid` — implicit).
   // -----------------------------------------------------------------------
 
-  // Stamp birth_epoch on a freshly allocated node. Replaces the
+  // Stamp birth_era on a freshly allocated node. Replaces the
   // reference's alloc() — the user handles allocation, then calls this
   // to prepare the node for use in the lock-free data structure.
-  // Amortized global-epoch bump every Freq-th call; precedes a
+  // Amortized global-era bump every Freq-th call; precedes a
   // help_read() so stalled readers make progress.
   LIBC_INLINE void init_node(NodeT *node) {
     CrystallineBatch &batch = my_batch();
     batch.alloc_counter++;
     if (batch.alloc_counter % Freq == 0) {
       help_read();
-      epoch_.fetch_add(1, cpp::MemoryOrder::ACQ_REL);
+      era_.fetch_add(1, cpp::MemoryOrder::ACQ_REL);
     }
-    auto *cn = static_cast<CrystallineNode *>(node);
-    cn->birth_epoch = current_epoch();
-    cn->batch_link.store(nullptr, cpp::MemoryOrder::RELAXED);
+    node->birth_era = current_era();
+    node->batch_link.store(0u, cpp::MemoryOrder::RELAXED);
   }
 
-  // Fast-path read. Attempts up to 16 epoch-matches on the caller's
-  // existing reservation; falls through to slow_path helping if the
-  // global epoch drifts. `parent` is the node whose atomic field is
-  // being dereferenced (used in slow_path for parent-handoff accounting).
-  LIBC_INLINE NodeT *read(cpp::Atomic<NodeT *> &obj, uint32_t index,
-                          NodeT *parent) {
+  // -----------------------------------------------------------------------
+  // protect() — paper §4.2 Fig. 10 primitive. Two overloads.
+  // -----------------------------------------------------------------------
+  //
+  // Both overloads run the era-stability fast path: up to 16 attempts
+  // matching `prev_era` against `current_era()` while the load returns
+  // a pointer; if the global era keeps drifting past us, fall through
+  // to slow_path, which is bounded by the active-slot count via the
+  // helping protocol (paper §5 Lemma 5.2 / 5.3).
+  //
+  // `parent` is the node whose field is being dereferenced. Used by
+  // slow_path's parent-handoff accounting to defer reclamation of
+  // `parent` itself if it gets retired while we're stalled — see
+  // slow_path's PROTECT2 / active-chain CAS scan (lines below).
+  //
+  // Atomic-pointer overload — the canonical Fig. 10 shape, used wherever
+  // the protected field is a single `cpp::Atomic<NodeT *>`. The static
+  // member thunk inside dispatches to this overload's load through the
+  // same generalized slow_path machinery, so a slow_path activation
+  // here uses the exact same helping protocol as the thunk overload.
+  [[nodiscard]] LIBC_INLINE NodeT *
+  protect(cpp::Atomic<NodeT *> &obj, uint32_t index, NodeT *parent) {
     CrystallineDomainSlot &my = my_slot_state();
-    uint64_t prev_epoch =
-        my.epoch[index].pair[0].load(cpp::MemoryOrder::ACQUIRE);
+    uint64_t prev_era =
+        my.era[index].pair[0].load(cpp::MemoryOrder::ACQUIRE);
     uint32_t attempts = 16;
     do {
       NodeT *ptr = obj.load(cpp::MemoryOrder::ACQUIRE);
-      uint64_t curr_epoch = current_epoch();
-      if (curr_epoch == prev_epoch)
+      uint64_t curr_era = current_era();
+      if (curr_era == prev_era)
         return ptr;
-      prev_epoch = do_update(curr_epoch, index);
+      prev_era = do_update(curr_era, index);
     } while (--attempts != 0);
 
-    return slow_path(&obj, index, parent);
+    return slow_path(&atomic_load_thunk, &obj, index, parent);
   }
 
-  // Declare a reservation without producing a pointer value. The fast
-  // path matches read() up to the "return ptr" line; on falling through
-  // to slow_path, passes a null `obj` so the protocol only advances the
-  // epoch/seqno without loading.
-  LIBC_INLINE void reserve_slot(NodeT * /*ptr_unused*/, uint32_t index,
-                                NodeT *parent) {
+  // Generalized overload — for multi-step protected loads (ART's
+  // N4/N16/N48 child-by-key scan, the skiplist's encoded Link decode).
+  // `LoadThunk` is a non-type compile-time function-pointer parameter
+  // of type `NodeT *(*)(void *)`; `ctx` is a stack-borne struct holding
+  // everything the thunk needs. The compile-time function pointer means
+  // the fast-path call inlines (no indirect call); the same pointer is
+  // published into `state[index].load_thunk` for slow-path helpers to
+  // invoke if convergence fails.
+  //
+  // Contract on `LoadThunk`:
+  //   * Pure function (no captured state, no side effects beyond reads).
+  //   * Safe to invoke from a foreign helper thread holding `parent`
+  //     pinned via the parent-handoff protocol — i.e., the thunk may
+  //     dereference `parent` and any pointer reachable from it via
+  //     Crystalline-managed loads, but must NOT assume any other slot
+  //     is held by the helper.
+  //   * Returning nullptr is legal (key not present, link encodes null,
+  //     etc.) — slow_path & help_thread treat null as a valid result.
+  //   * Must NOT recurse back into protect() on this domain at this
+  //     index (would clobber state[index]). Other domains / other
+  //     indices are fine.
+  //
+  // Contract on `ctx`:
+  //   * Must outlive every invocation of the thunk for this protect()
+  //     call. Slow_path is synchronous from the caller's view (returns
+  //     when help completes), so a stack-borne ctx is sound.
+  template <auto LoadThunk, class Ctx>
+  [[nodiscard]] LIBC_INLINE NodeT *
+  protect(Ctx &ctx, uint32_t index, NodeT *parent) {
+    static_assert(cpp::is_same_v<decltype(LoadThunk), NodeT *(*)(void *)>,
+                  "LoadThunk must be NodeT *(*)(void *)");
     CrystallineDomainSlot &my = my_slot_state();
-    uint64_t prev_epoch =
-        my.epoch[index].pair[0].load(cpp::MemoryOrder::ACQUIRE);
+    uint64_t prev_era =
+        my.era[index].pair[0].load(cpp::MemoryOrder::ACQUIRE);
     uint32_t attempts = 16;
     do {
-      uint64_t curr_epoch = current_epoch();
-      if (curr_epoch == prev_epoch)
-        return;
-      prev_epoch = do_update(curr_epoch, index);
+      NodeT *ptr = LoadThunk(static_cast<void *>(&ctx));
+      uint64_t curr_era = current_era();
+      if (curr_era == prev_era)
+        return ptr;
+      prev_era = do_update(curr_era, index);
     } while (--attempts != 0);
 
-    (void)slow_path(nullptr, index, parent);
+    return slow_path(LoadThunk, static_cast<void *>(&ctx), index, parent);
   }
 
   // Submit `node` for deferred reclamation. Buffers into the per-thread
@@ -300,26 +427,34 @@ public:
   LIBC_INLINE void retire(NodeT *node) {
     if (node == nullptr)
       return;
-    auto *info = static_cast<CrystallineNode *>(node);
     CrystallineBatch &batch = my_batch();
     if (!batch.first) {
-      batch.last = info;
-      info->refs.store(kCrystallineProtect1, cpp::MemoryOrder::RELAXED);
+      batch.last = node; // implicit upcast NodeT* → CrystallineNode*
+      node->refs.store(kCrystallineProtect1, cpp::MemoryOrder::RELAXED);
     } else {
-      // The anchor (batch.last) carries the minimum birth_epoch across
-      // the batch — lets try_retire filter slots by epoch efficiently.
-      if (batch.last->birth_epoch > info->birth_epoch)
-        batch.last->birth_epoch = info->birth_epoch;
-      info->batch_link.store(batch.last, cpp::MemoryOrder::SEQ_CST);
-      info->batch_next = batch.first;
+      // The anchor (batch.last) carries the minimum birth_era across
+      // the batch — lets try_retire filter slots by era efficiently.
+      NodeT *last = as_node(batch.last);
+      if (last->birth_era > node->birth_era)
+        last->birth_era = node->birth_era;
+      // Encode the anchor reference. The codec produces a value in
+      // [1, 0x7FFFFFFF] — 0 is reserved as the unretired sentinel,
+      // bit 31 is reserved as the RNODE tag for the anchor's own
+      // self-reference (set in the try_retire close path below).
+      node->batch_link.store(BatchLinkCodec<NodeT>::encode(batch.last),
+                             cpp::MemoryOrder::SEQ_CST);
+      node->batch_next = as_node(batch.first);
     }
 
-    batch.first = info;
+    batch.first = node;
     batch.counter++;
     if (batch.counter % Freq == 0) {
       // Mark anchor as "I'm the refs-node, and here's my chain head".
-      batch.last->batch_link.store(crystalline_rnode(info),
-                                   cpp::MemoryOrder::SEQ_CST);
+      // Bit 31 set + bottom 31 bits encode the chain head node `info`.
+      as_node(batch.last)
+          ->batch_link.store(
+              kCrystallineBatchLinkRnodeBit | BatchLinkCodec<NodeT>::encode(node),
+              cpp::MemoryOrder::SEQ_CST);
       try_retire(batch);
     }
   }
@@ -346,18 +481,58 @@ public:
 
   // ---------- Introspection ----------
 
-  LIBC_INLINE uint64_t current_epoch() {
-    return epoch_.load(cpp::MemoryOrder::ACQUIRE);
+  LIBC_INLINE uint64_t current_era() {
+    return era_.load(cpp::MemoryOrder::ACQUIRE);
   }
 
   LIBC_INLINE static constexpr uint32_t reservation_slots() {
     return kCrystallineHrNum;
   }
 
+  // Pre-claim this thread's slot in the domain's pool. Idempotent;
+  // subsequent calls on the same thread short-circuit on the cached
+  // index in `ThreadScratchState::crystalline_slot_idx[domain_id]`.
+  //
+  // Use case: a thread that may take its first protect()/retire() call
+  // on this domain in a context where allocation isn't safe (VEH filter,
+  // signal handler, loader-lock context). Calling `warm_thread()` once
+  // during normal thread bring-up forces the slot-pool demand-commit
+  // off the fault path. No reservation is held — the slot is claimed
+  // and pushed onto the active chain, but every `first[i].list[0]` /
+  // era field stays at the constructor-init tombstone until the first
+  // real `protect()` call.
+  LIBC_INLINE void warm_thread() { (void)my_slot_idx(); }
+
 private:
+  // -------- Static helpers --------
+
+  // Thunk used by the atomic-pointer overload of protect(). Runs the
+  // single ACQUIRE load that paper Fig. 10's `protect(loc, idx, p)`
+  // does inline. Lives as a static member so its address is a single
+  // file-scope function-pointer constant per CrystallineDomain<>
+  // instantiation — same compile-time constant whether published from
+  // the atomic-pointer overload's slow_path fall-through or invoked
+  // directly from a foreign helper thread.
+  LIBC_INLINE static NodeT *atomic_load_thunk(void *ctx) {
+    return static_cast<cpp::Atomic<NodeT *> *>(ctx)->load(
+        cpp::MemoryOrder::ACQUIRE);
+  }
+
+  // Type-erased→typed downcast at the substrate boundary. The slot
+  // pool, batch chains, and CrystallineStateT all carry the universal
+  // `CrystallineNode *` pointer; field access (`birth_era`, `refs`,
+  // `next`, `batch_link`, ...) lives in the derived class via
+  // LIBC_CRYSTALLINE_NODE_FIELDS, so any access through a CrystallineNode
+  // pointer must downcast first. Sound because each CrystallineDomain<
+  // NodeT, FreeFn> instance only ever stores `NodeT*`s into the
+  // type-erased slots — the dynamic type is always NodeT.
+  LIBC_INLINE static NodeT *as_node(CrystallineNode *p) {
+    return static_cast<NodeT *>(p);
+  }
+
   // -------- Instance state --------
 
-  alignas(64) cpp::Atomic<uint64_t> epoch_{0};
+  alignas(64) cpp::Atomic<uint64_t> era_{0};
   alignas(64) cpp::Atomic<uint64_t> slow_counter_{0};
   uint32_t domain_id_ = 0;
   // Value-init (`{}` not just `;`) so the defaulted constexpr default
@@ -409,12 +584,14 @@ private:
   // -----------------------------------------------------------------------
 
   // Resolve the anchor ("refs") node for a given batch member.
+  // Bit 31 set on `batch_link` means `node` IS its own anchor; otherwise
+  // the bottom 31 bits decode through the codec to the anchor.
   LIBC_INLINE CrystallineNode *get_refs_node(CrystallineNode *node) {
-    CrystallineNode *r =
-        node->batch_link.load(cpp::MemoryOrder::ACQUIRE);
-    if (crystalline_is_rnode(r))
-      r = node;
-    return r;
+    NodeT *n = as_node(node);
+    uint32_t code = n->batch_link.load(cpp::MemoryOrder::ACQUIRE);
+    if ((code & kCrystallineBatchLinkRnodeBit) != 0)
+      return node;
+    return BatchLinkCodec<NodeT>::decode(code & kCrystallineBatchLinkCodeMask);
   }
 
   // Walk a detached chain `next`, decrement each node's batch_link's
@@ -427,25 +604,33 @@ private:
       if (!curr)
         break;
       if (crystalline_is_rnode(curr)) {
-        // Terminal refs-node: we've walked the full chain, decrement
-        // the anchor's share and stop.
-        CrystallineNode *refs =
+        // Terminal refs-node reached via the chain pointer's bit-0
+        // tag: we've walked the full chain, decrement the anchor's
+        // share and stop.
+        CrystallineNode *refs_cn =
             reinterpret_cast<CrystallineNode *>(
                 reinterpret_cast<uintptr_t>(curr) ^ 1U);
+        NodeT *refs = as_node(refs_cn);
         if (refs->refs.fetch_sub(1, cpp::MemoryOrder::ACQ_REL) == 1) {
-          refs->next.store(*list, cpp::MemoryOrder::RELAXED);
-          *list = refs;
+          refs->cn_next.store(as_node(*list), cpp::MemoryOrder::RELAXED);
+          *list = refs_cn;
         }
         break;
       }
-      next =
-          curr->next.exchange(crystalline_inv_ptr(),
-                              cpp::MemoryOrder::ACQ_REL);
-      CrystallineNode *refs =
-          curr->batch_link.load(cpp::MemoryOrder::RELAXED);
+      NodeT *curr_node = as_node(curr);
+      next = curr_node->cn_next.exchange(crystalline_inv_ptr<NodeT>(),
+                                      cpp::MemoryOrder::ACQ_REL);
+      // Non-anchor chain entry: decode batch_link to the anchor.
+      // The encoded code never has bit 31 set in this path (bit 31
+      // marks the anchor's self-reference, which is handled above
+      // via the chain pointer's bit-0 tag — disjoint encoding).
+      uint32_t code = curr_node->batch_link.load(cpp::MemoryOrder::RELAXED);
+      CrystallineNode *refs_cn =
+          BatchLinkCodec<NodeT>::decode(code & kCrystallineBatchLinkCodeMask);
+      NodeT *refs = as_node(refs_cn);
       if (refs->refs.fetch_sub(1, cpp::MemoryOrder::ACQ_REL) == 1) {
-        refs->next.store(*list, cpp::MemoryOrder::RELAXED);
-        *list = refs;
+        refs->cn_next.store(as_node(*list), cpp::MemoryOrder::RELAXED);
+        *list = refs_cn;
       }
     }
   }
@@ -470,32 +655,33 @@ private:
   // each anchor's batch chains through `batch_next`.
   LIBC_INLINE void free_list(CrystallineNode *list) {
     while (list != nullptr) {
-      // The reference stores `WFR_RNODE(node)` in the anchor's batch_link
-      // at batch close (retire's try_retire path), so untagging gives
-      // the chain head. A RELAXED load suffices — the anchor was
-      // exclusively claimed by the refs->refs wrap-to-zero above.
-      CrystallineNode *tagged =
-          list->batch_link.load(cpp::MemoryOrder::RELAXED);
-      CrystallineNode *start = reinterpret_cast<CrystallineNode *>(
-          reinterpret_cast<uintptr_t>(tagged) ^ 1U);
-      list = list->next.load(cpp::MemoryOrder::RELAXED);
+      NodeT *list_node = as_node(list);
+      // The anchor's batch_link carries (RNODE_BIT | encode(chain_head))
+      // — see retire's try_retire path. Mask off the RNODE bit; the
+      // bottom 31 bits decode to the chain head. A RELAXED load
+      // suffices — the anchor was exclusively claimed by the
+      // refs->refs wrap-to-zero above.
+      uint32_t code = list_node->batch_link.load(cpp::MemoryOrder::RELAXED);
+      NodeT *start = as_node(
+          BatchLinkCodec<NodeT>::decode(code & kCrystallineBatchLinkCodeMask));
+      list = list_node->cn_next.load(cpp::MemoryOrder::RELAXED);
       do {
-        auto *obj = static_cast<NodeT *>(start);
-        start = start->batch_next;
+        NodeT *obj = start;
+        start = obj->batch_next;
         FreeFn(obj);
       } while (start != nullptr);
     }
   }
 
   // -----------------------------------------------------------------------
-  // do_update — epoch refresh and chain drain on the caller's slot.
+  // do_update — era refresh and chain drain on the caller's slot.
   // -----------------------------------------------------------------------
   //
-  // Called from the read() / reserve_slot() fast-path loop whenever the
-  // observed epoch advances. Detaches any pending chain on first[index],
-  // cache-traverses it (drops refs on freed batches), then publishes the
-  // new current_epoch into epoch[index].pair[0].
-  LIBC_INLINE uint64_t do_update(uint64_t curr_epoch, uint32_t index) {
+  // Called from the protect() fast-path loop whenever the observed era
+  // advances. Detaches any pending chain on first[index], cache-traverses
+  // it (drops refs on freed batches), then publishes the new
+  // current_era into era[index].pair[0].
+  LIBC_INLINE uint64_t do_update(uint64_t curr_era, uint32_t index) {
     CrystallineDomainSlot &my = my_slot_state();
     CrystallineBatch &batch = my_batch();
     if (my.first[index].list[0].load(cpp::MemoryOrder::ACQUIRE) != nullptr) {
@@ -504,50 +690,69 @@ private:
       if (first != crystalline_inv_ptr())
         traverse_cache(batch, first);
       my.first[index].list[0].store(nullptr, cpp::MemoryOrder::SEQ_CST);
-      curr_epoch = current_epoch();
+      curr_era = current_era();
     }
-    my.epoch[index].pair[0].store(curr_epoch, cpp::MemoryOrder::SEQ_CST);
-    return curr_epoch;
+    my.era[index].pair[0].store(curr_era, cpp::MemoryOrder::SEQ_CST);
+    return curr_era;
   }
 
   // -----------------------------------------------------------------------
   // slow_path — the wait-free fallback when the fast path's attempts
   // are exhausted. Publishes a help-request via `state[index].result =
-  // {WFR_INVPTR64, seqno}`, waits for either a self-observed epoch
-  // match or a helper-produced result, then reconciles the returned
-  // (epoch, ptr) pair with any pending list and parent-handoff.
+  // {WFR_INVPTR64, seqno}` plus the (load_thunk, load_ctx) pair that
+  // helpers will invoke to produce a value, waits for either a self-
+  // observed era match or a helper-produced result, then reconciles
+  // the returned (era, ptr) pair with any pending list and parent
+  // handoff.
+  //
+  // Generalization vs. paper Fig. 13: the reference stores `obj`
+  // (the atomic-pointer address) and helpers redo the load via
+  // `obj->load()`. We publish a (thunk, ctx) pair so the helper's
+  // load can be a multi-step computation (ART scan, encoded-link
+  // decode). Atomic-pointer protect() feeds through the same path
+  // via the `atomic_load_thunk` static member.
   // -----------------------------------------------------------------------
-  LIBC_INLINE NodeT *slow_path(cpp::Atomic<NodeT *> *obj, uint32_t index,
+  LIBC_INLINE NodeT *slow_path(NodeT *(*load_thunk)(void *),
+                               void *load_ctx, uint32_t index,
                                NodeT *node) {
     CrystallineDomainSlot &my = my_slot_state();
     CrystallineBatch &batch = my_batch();
 
-    // Compute the birth epoch for the parent-node reference we're
-    // holding. If the parent has already been retired (its batch_link
-    // points at a non-rnode anchor), we use the anchor's birth_epoch
-    // (the min across the retired batch) instead of the parent's own
-    // — protects us from ABA where the parent was reclaimed while we
-    // were mid-traversal.
-    uint64_t birth_epoch = 0;
+    // Compute the birth era for the parent-node reference we're
+    // holding. If the parent has already been retired AND the parent
+    // is NOT its own batch's anchor (RNODE bit clear), decode the
+    // anchor and use its birth_era (the min across the retired batch)
+    // instead of the parent's own — protects us from ABA where the
+    // parent was reclaimed while we were mid-traversal.
+    uint64_t birth_era = 0;
     CrystallineNode *parent = nullptr;
     if (node != nullptr) {
-      parent = static_cast<CrystallineNode *>(node);
-      birth_epoch = parent->birth_epoch;
-      CrystallineNode *info =
-          parent->batch_link.load(cpp::MemoryOrder::ACQUIRE);
-      if (info != nullptr && !crystalline_is_rnode(info))
-        birth_epoch = info->birth_epoch;
+      parent = node; // implicit upcast NodeT* → CrystallineNode*
+      birth_era = node->birth_era;
+      uint32_t code = node->batch_link.load(cpp::MemoryOrder::ACQUIRE);
+      if (code != 0 && (code & kCrystallineBatchLinkRnodeBit) == 0) {
+        NodeT *info = as_node(BatchLinkCodec<NodeT>::decode(
+            code & kCrystallineBatchLinkCodeMask));
+        birth_era = info->birth_era;
+      }
     }
 
-    uint64_t prev_epoch =
-        my.epoch[index].pair[0].load(cpp::MemoryOrder::ACQUIRE);
+    uint64_t prev_era =
+        my.era[index].pair[0].load(cpp::MemoryOrder::ACQUIRE);
     slow_counter_.fetch_add(1, cpp::MemoryOrder::ACQ_REL);
-    my.state[index].pointer.store(reinterpret_cast<uint64_t>(obj),
-                                  cpp::MemoryOrder::RELEASE);
+    // Publish (load_ctx, load_thunk) for helpers. Order: ctx RELEASE
+    // first, thunk RELEASE last; helpers consume thunk ACQUIRE first
+    // and on a non-null observation re-load ctx ACQUIRE. The thunk
+    // pointer is the publication anchor — non-null thunk ⇒ ctx
+    // happens-before-visible.
+    my.state[index].load_ctx.store(load_ctx, cpp::MemoryOrder::RELEASE);
+    my.state[index].load_thunk.store(
+        reinterpret_cast<CrystallineNode *(*)(void *)>(load_thunk),
+        cpp::MemoryOrder::RELEASE);
     my.state[index].parent.store(parent, cpp::MemoryOrder::RELEASE);
-    my.state[index].epoch.store(birth_epoch, cpp::MemoryOrder::RELEASE);
+    my.state[index].birth_era.store(birth_era, cpp::MemoryOrder::RELEASE);
     uint64_t seqno =
-        my.epoch[index].pair[1].load(cpp::MemoryOrder::ACQUIRE);
+        my.era[index].pair[1].load(cpp::MemoryOrder::ACQUIRE);
 
     CrystallineValuePair last_result;
     last_result.pair[0] = kCrystallineInvPtr64;
@@ -556,12 +761,12 @@ private:
                                       cpp::MemoryOrder::RELEASE);
 
     CrystallineValuePair old, value;
-    uint64_t result_epoch, result_ptr, expseqno;
+    uint64_t result_era, result_ptr, expseqno;
     CrystallineNode *first;
     do {
-      NodeT *ptr = obj ? obj->load(cpp::MemoryOrder::ACQUIRE) : nullptr;
-      uint64_t curr_epoch = current_epoch();
-      if (curr_epoch == prev_epoch) {
+      NodeT *ptr = load_thunk ? load_thunk(load_ctx) : nullptr;
+      uint64_t curr_era = current_era();
+      if (curr_era == prev_era) {
         last_result.pair[0] = kCrystallineInvPtr64;
         last_result.pair[1] = seqno;
         value.pair[0] = 0;
@@ -570,7 +775,7 @@ private:
                 last_result.full, value.full,
                 cpp::MemoryOrder::ACQ_REL,
                 cpp::MemoryOrder::ACQUIRE)) {
-          my.epoch[index].pair[1].store(seqno + 2,
+          my.era[index].pair[1].store(seqno + 2,
                                         cpp::MemoryOrder::RELEASE);
           my.first[index].pair[1].store(seqno + 2,
                                         cpp::MemoryOrder::RELEASE);
@@ -587,24 +792,24 @@ private:
           goto done;
         if (first != crystalline_inv_ptr())
           traverse_cache(batch, first);
-        curr_epoch = current_epoch();
+        curr_era = current_era();
       }
       first = nullptr;
-      old.pair[0] = prev_epoch;
+      old.pair[0] = prev_era;
       old.pair[1] = seqno;
-      value.pair[0] = curr_epoch;
+      value.pair[0] = curr_era;
       value.pair[1] = seqno;
-      my.epoch[index].full.compare_exchange_strong(
+      my.era[index].full.compare_exchange_strong(
           old.full, value.full, cpp::MemoryOrder::SEQ_CST,
           cpp::MemoryOrder::ACQUIRE);
-      prev_epoch = curr_epoch;
+      prev_era = curr_era;
       result_ptr =
           my.state[index].result.pair[0].load(cpp::MemoryOrder::ACQUIRE);
     } while (result_ptr == kCrystallineInvPtr64);
 
-    // Empty-epoch seqno advance.
+    // Empty-era seqno advance.
     expseqno = seqno;
-    my.epoch[index].pair[1].compare_exchange_strong(
+    my.era[index].pair[1].compare_exchange_strong(
         expseqno, seqno + 1, cpp::MemoryOrder::ACQ_REL,
         cpp::MemoryOrder::RELAXED);
     value.list[0] = nullptr;
@@ -626,11 +831,11 @@ private:
   done:
     seqno++;
 
-    // Publish the produced epoch into this slot's visible epoch.
-    my.epoch[index].pair[1].store(seqno + 1, cpp::MemoryOrder::RELEASE);
-    result_epoch =
+    // Publish the produced era into this slot's visible era.
+    my.era[index].pair[1].store(seqno + 1, cpp::MemoryOrder::RELEASE);
+    result_era =
         my.state[index].result.pair[1].load(cpp::MemoryOrder::ACQUIRE);
-    my.epoch[index].pair[0].store(result_epoch,
+    my.era[index].pair[0].store(result_era,
                                   cpp::MemoryOrder::RELEASE);
 
     // Check whether the produced pointer was retired while we were
@@ -640,15 +845,16 @@ private:
     result_ptr =
         my.state[index].result.pair[0].load(cpp::MemoryOrder::ACQUIRE) &
         0xFFFFFFFFFFFFFFFCULL;
-    auto *ptr_node = reinterpret_cast<CrystallineNode *>(result_ptr);
+    auto *ptr_node = reinterpret_cast<NodeT *>(result_ptr);
     if (result_ptr != 0 &&
-        ptr_node->batch_link.load(cpp::MemoryOrder::ACQUIRE) != nullptr) {
-      CrystallineNode *refs = get_refs_node(ptr_node);
+        ptr_node->batch_link.load(cpp::MemoryOrder::ACQUIRE) != 0) {
+      CrystallineNode *refs_cn = get_refs_node(ptr_node);
+      NodeT *refs = as_node(refs_cn);
       refs->refs.fetch_add(1, cpp::MemoryOrder::ACQ_REL);
       if (first != crystalline_inv_ptr())
         traverse_cache(batch, first);
       first = my.first[index].list[0].exchange(
-          crystalline_rnode(refs), cpp::MemoryOrder::ACQ_REL);
+          crystalline_rnode(refs_cn), cpp::MemoryOrder::ACQ_REL);
     }
     slow_counter_.fetch_sub(1, cpp::MemoryOrder::ACQ_REL);
 
@@ -660,8 +866,8 @@ private:
     // every live thread's state[hr_num].parent field to claim back
     // the references they would have held. Net delta is added once.
     if (parent != nullptr &&
-        parent->batch_link.load(cpp::MemoryOrder::ACQUIRE) != nullptr) {
-      CrystallineNode *refs = get_refs_node(parent);
+        as_node(parent)->batch_link.load(cpp::MemoryOrder::ACQUIRE) != 0) {
+      NodeT *refs = as_node(get_refs_node(parent));
       refs->refs.fetch_add(kCrystallineProtect2,
                            cpp::MemoryOrder::ACQ_REL);
       uintptr_t adjs = static_cast<uintptr_t>(-kCrystallineProtect2);
@@ -683,8 +889,11 @@ private:
 
   // -----------------------------------------------------------------------
   // help_thread — wait-free helping protocol for a stalled slow_path
-  // on some other thread `target`. Produces a (ptr, epoch) into the
-  // target's result word if a consistent epoch observation is possible.
+  // on some other thread `target`. Produces a (ptr, era) into the
+  // target's result word if a consistent era observation is possible.
+  //
+  // Loads via the helpee's published (load_thunk, load_ctx) pair —
+  // see slow_path's matching publication.
   // -----------------------------------------------------------------------
   LIBC_INLINE void help_thread(uint16_t target_idx, uint32_t index,
                                uint16_t my_idx) {
@@ -697,45 +906,50 @@ private:
         cpp::MemoryOrder::ACQUIRE);
     if (last_result.pair[0] != kCrystallineInvPtr64)
       return;
-    uint64_t birth_epoch =
-        their.state[index].epoch.load(cpp::MemoryOrder::ACQUIRE);
+    uint64_t birth_era =
+        their.state[index].birth_era.load(cpp::MemoryOrder::ACQUIRE);
     CrystallineNode *parent =
         their.state[index].parent.load(cpp::MemoryOrder::ACQUIRE);
     if (parent != nullptr) {
       my.first[kCrystallineHrNum].list[0].store(
           nullptr, cpp::MemoryOrder::SEQ_CST);
-      my.epoch[kCrystallineHrNum].pair[0].store(
-          birth_epoch, cpp::MemoryOrder::SEQ_CST);
+      my.era[kCrystallineHrNum].pair[0].store(
+          birth_era, cpp::MemoryOrder::SEQ_CST);
     }
     my.state[kCrystallineHrNum].parent.store(parent,
                                              cpp::MemoryOrder::SEQ_CST);
-    auto *obj = reinterpret_cast<cpp::Atomic<NodeT *> *>(
-        their.state[index].pointer.load(cpp::MemoryOrder::ACQUIRE));
+    // Consume helpee's (load_thunk, load_ctx). Order: thunk ACQUIRE
+    // first; on non-null thunk, ctx ACQUIRE pairs with the helpee's
+    // RELEASE writes.
+    auto *thunk = reinterpret_cast<NodeT *(*)(void *)>(
+        their.state[index].load_thunk.load(cpp::MemoryOrder::ACQUIRE));
+    void *ctx = thunk ? their.state[index].load_ctx.load(
+                            cpp::MemoryOrder::ACQUIRE)
+                      : nullptr;
     uint64_t seqno =
-        their.epoch[index].pair[1].load(cpp::MemoryOrder::ACQUIRE);
+        their.era[index].pair[1].load(cpp::MemoryOrder::ACQUIRE);
     if (last_result.pair[1] == seqno) {
-      uint64_t prev_epoch = current_epoch();
+      uint64_t prev_era = current_era();
       do {
         // Use our OWN slot kCrystallineHrNum+1 as the helper's
         // dereference workspace. do_update on our slot refreshes the
-        // epoch publication without perturbing the target's state.
-        prev_epoch = do_update_on(my, my_b, prev_epoch,
+        // era publication without perturbing the target's state.
+        prev_era = do_update_on(my, my_b, prev_era,
                                   kCrystallineHrNum + 1);
-        NodeT *ptr =
-            obj ? obj->load(cpp::MemoryOrder::ACQUIRE) : nullptr;
-        uint64_t curr_epoch = current_epoch();
-        if (curr_epoch == prev_epoch) {
+        NodeT *ptr = thunk ? thunk(ctx) : nullptr;
+        uint64_t curr_era = current_era();
+        if (curr_era == prev_era) {
           CrystallineValuePair value;
           value.pair[0] = reinterpret_cast<uint64_t>(ptr);
-          value.pair[1] = curr_epoch;
+          value.pair[1] = curr_era;
           if (their.state[index].result.full.compare_exchange_strong(
                   last_result.full, value.full,
                   cpp::MemoryOrder::ACQ_REL,
                   cpp::MemoryOrder::ACQUIRE)) {
-            // Empty-epoch transition on the target's seqno (best-
+            // Empty-era transition on the target's seqno (best-
             // effort; another helper may have done it already).
             uint64_t expseqno = seqno;
-            their.epoch[index].pair[1].compare_exchange_strong(
+            their.era[index].pair[1].compare_exchange_strong(
                 expseqno, seqno + 1, cpp::MemoryOrder::ACQ_REL,
                 cpp::MemoryOrder::RELAXED);
             // Clean up the pending list on the target's first[index].
@@ -757,15 +971,15 @@ private:
               }
             }
             seqno++;
-            // Set the real epoch on the target's epoch slot.
-            value.pair[0] = curr_epoch;
+            // Set the real era on the target's era slot.
+            value.pair[0] = curr_era;
             value.pair[1] = seqno + 1;
-            old_val.pair[1] = their.epoch[index].pair[1].load(
+            old_val.pair[1] = their.era[index].pair[1].load(
                 cpp::MemoryOrder::ACQUIRE);
-            old_val.pair[0] = their.epoch[index].pair[0].load(
+            old_val.pair[0] = their.era[index].pair[0].load(
                 cpp::MemoryOrder::ACQUIRE);
             while (old_val.pair[1] == seqno) { // 2 iterations at most
-              if (their.epoch[index].full.compare_exchange_weak(
+              if (their.era[index].full.compare_exchange_weak(
                       old_val.full, value.full,
                       cpp::MemoryOrder::ACQ_REL,
                       cpp::MemoryOrder::ACQUIRE)) {
@@ -777,13 +991,14 @@ private:
             // first[index] chain so they retain the hold.
             uint64_t ptr_val = reinterpret_cast<uint64_t>(ptr) &
                                0xFFFFFFFFFFFFFFFCULL;
-            auto *ptr_node = reinterpret_cast<CrystallineNode *>(ptr_val);
+            auto *ptr_node = reinterpret_cast<NodeT *>(ptr_val);
             if (ptr_val != 0 &&
                 ptr_node->batch_link.load(
-                    cpp::MemoryOrder::ACQUIRE) != nullptr) {
-              CrystallineNode *refs = get_refs_node(ptr_node);
+                    cpp::MemoryOrder::ACQUIRE) != 0) {
+              CrystallineNode *refs_cn = get_refs_node(ptr_node);
+              NodeT *refs = as_node(refs_cn);
               refs->refs.fetch_add(1, cpp::MemoryOrder::ACQ_REL);
-              value.list[0] = crystalline_rnode(refs);
+              value.list[0] = crystalline_rnode(refs_cn);
               value.pair[1] = seqno + 1;
               old_val.pair[1] = their.first[index].pair[1].load(
                   cpp::MemoryOrder::ACQUIRE);
@@ -811,12 +1026,12 @@ private:
           }
           break;
         }
-        prev_epoch = curr_epoch;
+        prev_era = curr_era;
       } while (last_result.full ==
                their.state[index].result.full.load(
                    cpp::MemoryOrder::ACQUIRE));
     done:
-      if (my.epoch[kCrystallineHrNum + 1].pair[0].exchange(
+      if (my.era[kCrystallineHrNum + 1].pair[0].exchange(
               0, cpp::MemoryOrder::SEQ_CST) != 0) {
         CrystallineNode *first =
             my.first[kCrystallineHrNum + 1].list[0].exchange(
@@ -828,13 +1043,14 @@ private:
     // longer own, release it.
     if (my.state[kCrystallineHrNum].parent.exchange(
             nullptr, cpp::MemoryOrder::SEQ_CST) != parent) {
-      CrystallineNode *refs = get_refs_node(parent);
+      CrystallineNode *refs_cn = get_refs_node(parent);
+      NodeT *refs = as_node(refs_cn);
       if (refs->refs.fetch_sub(1, cpp::MemoryOrder::ACQ_REL) == 1) {
-        refs->next.store(my_b.list, cpp::MemoryOrder::RELAXED);
-        my_b.list = refs;
+        refs->cn_next.store(as_node(my_b.list), cpp::MemoryOrder::RELAXED);
+        my_b.list = refs_cn;
       }
     }
-    if (my.epoch[kCrystallineHrNum].pair[0].exchange(
+    if (my.era[kCrystallineHrNum].pair[0].exchange(
             0, cpp::MemoryOrder::SEQ_CST) != 0) {
       CrystallineNode *first =
           my.first[kCrystallineHrNum].list[0].exchange(
@@ -870,17 +1086,17 @@ private:
   // to do_update modulo the arguments.
   LIBC_INLINE uint64_t do_update_on(CrystallineDomainSlot &my,
                                     CrystallineBatch &batch,
-                                    uint64_t curr_epoch, uint32_t index) {
+                                    uint64_t curr_era, uint32_t index) {
     if (my.first[index].list[0].load(cpp::MemoryOrder::ACQUIRE) != nullptr) {
       CrystallineNode *first = my.first[index].list[0].exchange(
           crystalline_inv_ptr(), cpp::MemoryOrder::ACQ_REL);
       if (first != crystalline_inv_ptr())
         traverse_cache(batch, first);
       my.first[index].list[0].store(nullptr, cpp::MemoryOrder::SEQ_CST);
-      curr_epoch = current_epoch();
+      curr_era = current_era();
     }
-    my.epoch[index].pair[0].store(curr_epoch, cpp::MemoryOrder::SEQ_CST);
-    return curr_epoch;
+    my.era[index].pair[0].store(curr_era, cpp::MemoryOrder::SEQ_CST);
+    return curr_era;
   }
 
   // -----------------------------------------------------------------------
@@ -889,15 +1105,15 @@ private:
   // 535-611 of the reference.
   // -----------------------------------------------------------------------
   LIBC_INLINE void try_retire(CrystallineBatch &batch) {
-    CrystallineNode *curr = batch.first;
-    CrystallineNode *refs = batch.last;
-    uint64_t min_epoch = refs->birth_epoch;
+    NodeT *curr = as_node(batch.first);
+    NodeT *refs = as_node(batch.last);
+    uint64_t min_era = refs->birth_era;
 
     // Phase A — walk every claimed pool slot and claim a batch node
     // for each eligible slot. Claim = write the slot's first word-pair
     // address into the node's `slot` field (first union's pointer alias
     // of `next`). Stops early if we run out of batch nodes.
-    CrystallineNode *last = curr;
+    NodeT *last = curr;
     for (uint16_t i = pool_.active_head(); i != 0;
          i = pool_.active_next(i)) {
       CrystallineDomainSlot &their = slot_state_of(i);
@@ -909,11 +1125,11 @@ private:
           continue;
         if (their.first[j].pair[1].load(cpp::MemoryOrder::ACQUIRE) & 0x1U)
           continue; // in slow-path final transition
-        uint64_t eepoch =
-            their.epoch[j].pair[0].load(cpp::MemoryOrder::ACQUIRE);
-        if (eepoch < min_epoch)
+        uint64_t era_v =
+            their.era[j].pair[0].load(cpp::MemoryOrder::ACQUIRE);
+        if (era_v < min_era)
           continue;
-        if (their.epoch[j].pair[1].load(cpp::MemoryOrder::ACQUIRE) & 0x1U)
+        if (their.era[j].pair[1].load(cpp::MemoryOrder::ACQUIRE) & 0x1U)
           continue;
         if (last == refs) {
           return;
@@ -928,9 +1144,9 @@ private:
             cpp::MemoryOrder::ACQUIRE);
         if (first == crystalline_inv_ptr())
           continue;
-        uint64_t eepoch =
-            their.epoch[j].pair[0].load(cpp::MemoryOrder::ACQUIRE);
-        if (eepoch < min_epoch)
+        uint64_t era_v =
+            their.era[j].pair[0].load(cpp::MemoryOrder::ACQUIRE);
+        if (era_v < min_era)
           continue;
         if (last == refs) {
           return;
@@ -948,14 +1164,14 @@ private:
     uintptr_t adjs = static_cast<uintptr_t>(-kCrystallineProtect1);
     for (; curr != last; curr = curr->batch_next) {
       CrystallineWordPair *slot_first = curr->slot;
-      CrystallineWordPair *slot_epoch = slot_first + kCrystallineSlotCount;
-      curr->next.store(nullptr, cpp::MemoryOrder::RELAXED);
+      CrystallineWordPair *slot_era_field = slot_first + kCrystallineSlotCount;
+      curr->cn_next.store(nullptr, cpp::MemoryOrder::RELAXED);
       if (slot_first->list[0].load(cpp::MemoryOrder::ACQUIRE) ==
           crystalline_inv_ptr())
         continue;
-      uint64_t eepoch =
-          slot_epoch->pair[0].load(cpp::MemoryOrder::ACQUIRE);
-      if (eepoch < min_epoch)
+      uint64_t era_v =
+          slot_era_field->pair[0].load(cpp::MemoryOrder::ACQUIRE);
+      if (era_v < min_era)
         continue;
       CrystallineNode *prev = slot_first->list[0].exchange(
           curr, cpp::MemoryOrder::ACQ_REL);
@@ -973,9 +1189,13 @@ private:
           }
         } else {
           // Slot had a pending chain; graft it onto our new head.
-          CrystallineNode *exp = nullptr;
-          if (!curr->next.compare_exchange_strong(
-                  exp, prev, cpp::MemoryOrder::ACQ_REL,
+          // `curr->cn_next` is Atomic<NodeT*>, so the CAS's expected/
+          // desired must be NodeT*; downcast `prev` from the
+          // type-erased slot view.
+          NodeT *exp = nullptr;
+          NodeT *prev_node = as_node(prev);
+          if (!curr->cn_next.compare_exchange_strong(
+                  exp, prev_node, cpp::MemoryOrder::ACQ_REL,
                   cpp::MemoryOrder::RELAXED)) {
             // Lost the graft race — someone already linked curr.
             // Drain `prev` ourselves.
@@ -991,7 +1211,7 @@ private:
     // batch is reclaim-ready.
     if (refs->refs.fetch_add(adjs, cpp::MemoryOrder::ACQ_REL) ==
         static_cast<uintptr_t>(-adjs)) {
-      refs->next.store(nullptr, cpp::MemoryOrder::RELAXED);
+      refs->cn_next.store(nullptr, cpp::MemoryOrder::RELAXED);
       free_list(refs);
     }
     batch.first = nullptr;
@@ -1020,9 +1240,13 @@ private:
     if (batch == nullptr || batch->first == nullptr)
       return;
     auto *self = static_cast<CrystallineDomain *>(context);
-    // Close the batch: mark anchor, then try_retire publishes.
-    batch->last->batch_link.store(crystalline_rnode(batch->first),
-                                  cpp::MemoryOrder::SEQ_CST);
+    // Close the batch: mark anchor, then try_retire publishes. Same
+    // encoding as the in-line retire close path: bit 31 set + bottom
+    // 31 bits encode the chain head (batch->first).
+    as_node(batch->last)
+        ->batch_link.store(kCrystallineBatchLinkRnodeBit |
+                               BatchLinkCodec<NodeT>::encode(batch->first),
+                           cpp::MemoryOrder::SEQ_CST);
     self->try_retire(*batch);
   }
 
@@ -1030,10 +1254,69 @@ private:
   // scratch_thread_cleanup AFTER thread_flush_trampoline so any pending
   // retires are already published into the slot chains the released
   // slot is leaving behind.
+  //
+  // Drain THIS slot's first[] arrays before splicing — peer threads
+  // may have published batch nodes to first[j].list[0] while the
+  // exiting thread was still on the active chain (during the flush
+  // window). Without draining, reset_slot_fields zeroes those entries
+  // and the publishing peers' refs counters never decrement → batch
+  // leak. The drain exchanges first[j].list[0] to invptr (which also
+  // signals to subsequent peer try_retire calls to skip publishing
+  // here via the `prev == invptr` rollback path) and traverses each
+  // popped chain to decrement its refs.
+  //
+  // Order matters: drain BEFORE release_slot. release_slot calls
+  // active_splice (removes from active chain), then freelist_push
+  // (rewrites the link). After active_splice succeeds, no new peer
+  // publications can target us, so the only nodes we need to drain
+  // are the ones already in first[] at the moment of drain.
   LIBC_INLINE static void release_slot_trampoline(void *context,
                                                   uint16_t slot_idx) {
     auto *self = static_cast<CrystallineDomain *>(context);
+    self->drain_slot_first(slot_idx);
     self->pool_.release_slot(slot_idx);
+  }
+
+  // Eager per-thread slot claim. Forces `pool_.claim_slot()` to commit
+  // its slot-pool VA on a benign code path so any later fault-context
+  // protect()/retire() doesn't pay the demand-commit cost. Idempotent
+  // — if the calling thread has already claimed a slot in this domain,
+  // `my_slot_idx()` short-circuits on the cached TLS index.
+  LIBC_INLINE static void warm_thread_trampoline(void *context) {
+    auto *self = static_cast<CrystallineDomain *>(context);
+    self->warm_thread();
+  }
+
+  // Drain a per-thread slot's first[] arrays via exchange(invptr) +
+  // traverse. Called by release_slot_trampoline before splicing the
+  // slot off the active chain, to ensure peer threads' published
+  // batch nodes get their refs decremented (otherwise the peers'
+  // batches leak).
+  //
+  // Uses the calling thread's CrystallineBatch (this is the exiting
+  // thread's batch) to accumulate freed anchors. After the drain,
+  // free_list runs the FreeFn destructor on every batch that hit
+  // refs==0.
+  LIBC_INLINE void drain_slot_first(uint16_t slot_idx) {
+    CrystallineDomainSlot &slot = pool_.at(slot_idx);
+    CrystallineBatch &batch = my_batch();
+    // Exchange first[] entries to invptr; capture old values.
+    // Uses kCrystallineHrNum + 2 to cover the helper slots
+    // (hr_num and hr_num+1) populated by the slow_path helping
+    // protocol — those carry the same chain semantics and need
+    // draining too.
+    CrystallineNode *first[kCrystallineHrNum + 2];
+    for (uint32_t i = 0; i < kCrystallineHrNum + 2; i++) {
+      first[i] = slot.first[i].list[0].exchange(
+          crystalline_inv_ptr(), cpp::MemoryOrder::ACQ_REL);
+    }
+    for (uint32_t i = 0; i < kCrystallineHrNum + 2; i++) {
+      if (first[i] != crystalline_inv_ptr() && first[i] != nullptr)
+        traverse(&batch.list, first[i]);
+    }
+    free_list(batch.list);
+    batch.list = nullptr;
+    batch.list_count = 0;
   }
 
   LIBC_INLINE void fork_reinit() {
@@ -1048,7 +1331,7 @@ private:
     //
     // Any pre-fork retires the surviving thread had buffered on its
     // CrystallineBatch are discarded — fork is a POSIX quiesce point.
-    epoch_.store(1, cpp::MemoryOrder::RELAXED);
+    era_.store(1, cpp::MemoryOrder::RELAXED);
     slow_counter_.store(0, cpp::MemoryOrder::RELAXED);
     pool_.fork_reinit();
 

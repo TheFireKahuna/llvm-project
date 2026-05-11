@@ -42,12 +42,14 @@
 
 #include "hdr/stdint_proxy.h"
 #include "src/__support/CPP/atomic.h"
+#include "src/__support/OSUtil/windows/alloc/sealed_va_publisher.h"
 #include "src/__support/OSUtil/windows/libc_subsystem_init.h"
-#include "src/__support/OSUtil/windows/memory/memory_primitives_bootstrap.h"
+#include "src/__support/OSUtil/windows/memory/legacy/memory_primitives_bootstrap.h"
 #include "src/__support/OSUtil/windows/nt/nt_capabilities.h"
 #include "src/__support/OSUtil/windows/nt/shared_user_data.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
 #include "src/__support/OSUtil/windows/process_control_block.h"
+#include "src/__support/OSUtil/windows/tls/teb_fixup.h"
 #include "src/__support/OSUtil/windows/veh/veh_filter_registry.h"
 #include "src/__support/macros/config.h"
 #include "startup/windows/tier_a_trace.h"
@@ -70,6 +72,14 @@ constexpr NTSTATUS STATUS_BOOTSTRAP_FAILED = static_cast<NTSTATUS>(0xC0000142L);
 void run_bootstrap() {
   using namespace LIBC_NAMESPACE;
   using namespace LIBC_NAMESPACE::internal;
+
+  // Phase −2: install per-thread stack-overflow handler reserve on the
+  // main thread. Pure TEB write — no PCB dependency, no syscall, cannot
+  // fault — so it is safe to run before every other phase. Doing it here
+  // means even bootstrap-time faults (a Phase 0c PCB write hitting an
+  // unexpected page state, an identity_startup_init token query) get the
+  // full handler-reserve budget if they happen to overflow the stack.
+  windows::apply_libc_stack_guarantee();
 
   // Load env-gated trace knobs once. Safe at Phase −1: PEB and
   // ProcessParameters are mapped before user code ever runs, and the
@@ -144,6 +154,28 @@ void run_bootstrap() {
   // for the protocol and unified-memory-bootstrap.md for the design.
   trace.phase("phase 0c.5: memory primitives (.libcmem sweep)");
   memory_primitives_startup_init();
+  // Publish the pagemap range to the sealed-VA publisher. Done from
+  // bootstrap (not pagemap_init_fn) to keep the publisher's CMake
+  // dependency on `.pagemap` from becoming circular — the publisher
+  // calls into pagemap.cpp's out-of-line `pagemap_register_range` for
+  // the eager-stamp path used by descriptor-pool kinds, and routing
+  // the pagemap's own self-publish through bootstrap avoids the cycle
+  // without losing the disjointness invariant. The Pagemap kind itself
+  // is non-eager (the pagemap reader uses Zone 0 bounds for its own
+  // VA), so this publish has no pagemap-stamp side effect.
+  {
+    void *pm_base = g_pcb.zone0.pagemap_base();
+    void *pm_end = g_pcb.zone0.pagemap_end();
+    if (pm_base == nullptr || pm_end == nullptr ||
+        reinterpret_cast<uintptr_t>(pm_end) <=
+            reinterpret_cast<uintptr_t>(pm_base))
+      bootstrap_abort(STATUS_BOOTSTRAP_FAILED);
+    size_t pm_size = static_cast<size_t>(
+        reinterpret_cast<unsigned char *>(pm_end) -
+        reinterpret_cast<unsigned char *>(pm_base));
+    windows::alloc::publish_sealed_va_range(
+        windows::alloc::SealedKind::Pagemap, pm_base, pm_size);
+  }
   pcb_init_state_advance_checked(PcbInitState::TierA_PcbWritten,
                                  PcbInitState::TierA_MappingTable);
 
@@ -193,6 +225,14 @@ void run_bootstrap() {
   trace.phase("phase 2: seal Zone 0/0b");
   if (!pcb_check_canary())
     bootstrap_abort(STATUS_BOOTSTRAP_FAILED);
+  // Sealed-VA publisher contract test + transient-table wipe. Runs
+  // before the Zone 0 seal so a violation traps loud (pre-seal traps
+  // surface in the bootstrap path; post-seal traps would be harder to
+  // reason about). The wipe leaves the publisher's BSS table all-zero
+  // so a post-seal partial-read primitive lands on zeros instead of
+  // the consolidated sealed-VA inventory — closes the centralized-
+  // base-table honeypot risk.
+  windows::alloc::seal_time_assert_and_wipe();
   if (!pcb_seal_readonly_a())
     bootstrap_abort(STATUS_BOOTSTRAP_FAILED);
   if (!pcb_seal_readonly_b())

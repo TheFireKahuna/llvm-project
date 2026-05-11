@@ -16,7 +16,7 @@
 #include "src/__support/macros/attributes.h"
 
 #ifdef __NTPOSIX__
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #endif
 
 namespace LIBC_NAMESPACE_DECL {

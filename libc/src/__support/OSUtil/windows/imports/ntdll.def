@@ -362,6 +362,7 @@ EXPORTS
     ; Privilege management
     RtlAcquirePrivilege
     RtlReleasePrivilege
+    RtlAdjustPrivilege
 
     ; Secure memory cache flush (CFG/CET page protection retry)
     RtlFlushSecureMemoryCache

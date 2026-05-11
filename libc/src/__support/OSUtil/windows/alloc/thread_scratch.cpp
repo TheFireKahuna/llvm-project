@@ -32,10 +32,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/OSUtil/windows/concurrent/crystalline_domain_registry.h"
 #include "src/__support/OSUtil/windows/libc_fini_registry.h"
-#include "src/__support/OSUtil/windows/memory/mapping_table.h"
+#include "src/__support/OSUtil/windows/memory/legacy/mapping_table.h"
 #include "src/__support/OSUtil/windows/tls/teb_tls.h"
 #include "src/__support/OSUtil/windows/tls/tls_cleanup.h"
 #include "src/__support/libc_assert.h"

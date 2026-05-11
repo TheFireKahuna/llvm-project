@@ -105,6 +105,68 @@
 #include "src/__support/macros/attributes.h"
 #include "src/__support/macros/config.h"
 
+// ===========================================================================
+// Debug instrumentation hooks — default to no-op for production.
+// ===========================================================================
+//
+// LFL_TRACE_BRANCH: called at every walker branch entry that performs a
+//   parent-CAS attempt. Records (branch_id, prev_or_gp, prev_link_raw,
+//   curr, c_link_raw, c_next, spliced).
+//
+// LFL_VALIDATE_PUBLISH: called immediately after every successful parent
+//   CAS site, passing the post-CAS snap of slot[c_next].link. The harness
+//   uses this to detect stale c_next publication. NOTE: a post-CAS load
+//   sees state at validation time, NOT at CAS time — so a FREE state is
+//   AMBIGUOUS:
+//     - STALE-AT-CAS  ⇒ real corruption: the chain has a FREE slot
+//                       reachable from head right now.
+//     - RACE-AFTER-CAS ⇒ benign: c_next was legitimately on chain at
+//                        CAS time, but a peer raced to splice + push
+//                        before our load. Chain self-heals.
+//   The harness disambiguates by walking the active chain: if any
+//   reachable slot is FREE, it's real corruption; otherwise the publish
+//   was just outraced.
+//
+// Branch IDs:
+//   1 = mark-prev help
+//   2 = dead-prev splice
+//   3 = mark-curr help
+//   4 = target case
+//   5 = c_dead opp-splice
+//
+// Macros default to no-op so production callers pay zero overhead. The
+// crystalline_slot_pool_stress harness defines them before including the
+// substrate (transitively via crystalline_slot_pool.h) to plumb diagnostic
+// dump + trap on stale publish.
+#ifndef LFL_TRACE_BRANCH
+#define LFL_TRACE_BRANCH(branch_id, parent, prev_link_raw, curr,                \
+                          c_link_raw, c_next, spliced)                          \
+  ((void)0)
+#endif
+#ifndef LFL_VALIDATE_PUBLISH
+#define LFL_VALIDATE_PUBLISH(branch_id, parent, c_next, post_link_raw)         \
+  ((void)0)
+#endif
+
+// LFL_RETRY_OVERFLOW: called when harris_unlink's outer Retry loop
+// exceeds LFL_RETRY_LIMIT iterations on a single target. Catches
+// livelock at the moment a walker stops making progress — the
+// substrate's failure mode under the bug we're hunting (S3 hangs).
+//
+// Production default: LFL_RETRY_LIMIT is large enough that legitimate
+// contention never trips it; LFL_RETRY_OVERFLOW is no-op.
+//
+// Test (crystalline_slot_pool_stress): LFL_RETRY_LIMIT is small (e.g.
+// 10000), LFL_RETRY_OVERFLOW dumps full ring + traps. The walker
+// retries are bounded by concurrent activity (~thread count per
+// resolution); 10K is well above that.
+#ifndef LFL_RETRY_LIMIT
+#define LFL_RETRY_LIMIT (1u << 30)
+#endif
+#ifndef LFL_RETRY_OVERFLOW
+#define LFL_RETRY_OVERFLOW(target, retries) ((void)0)
+#endif
+
 namespace LIBC_NAMESPACE_DECL {
 namespace linkage {
 
@@ -142,7 +204,17 @@ inline constexpr int LINK_STATE_SHIFT = 56;
 //      because any other CAS fails on tag or mark mismatch.
 //   3. CAS parent.link with node.next as desired.next.
 //   4a. Success ⇒ node off-chain. Finalize CAS (marked → CERT+!MARK).
-//   4b. Failure ⇒ link_clear_mark to release, restart.
+//   4b. Failure ⇒ LEAVE the mark. Splice-fail does not own the
+//       mark — the original splicer (if alive) needs it for their
+//       own finalize, and clearing it under contention is the
+//       dominant livelock vector at N-way concurrent splice on a
+//       shared chain. Caller restarts; a future walk re-observes
+//       the mark and either we or another walker eventually wins
+//       a help-success and finalizes (which clears MARK + sets
+//       CERT in one strong CAS). Self-mark callers (target case
+//       and dead-intermediate opp-splice) likewise leave their
+//       mark and reuse it on retry via `is_marked()` detection
+//       at the call site.
 //
 // HELP-NOT-WAIT on observed MARK: a walker observing MARK=1 on some
 // other node.link does NOT spin waiting for the marker to clear. It
@@ -150,9 +222,14 @@ inline constexpr int LINK_STATE_SHIFT = 56;
 // `MarkedLinkSnap::from_observed_marked`) and re-runs steps 3-4
 // itself. Strong CAS at both step 3 (parent) and step 4 (finalize)
 // serializes original-marker vs helper races: each CAS has at most
-// one winner, the loser bails harmlessly. This eliminates the hang
-// vector where an aborted/killed marker would otherwise leave
-// MARK=1 set indefinitely and block every observer.
+// one winner, the loser bails harmlessly.
+//
+// Dead-splicer recovery (when the marker thread is killed mid-
+// protocol): the mark persists, but every future walk through the
+// chain encounters it and attempts help. Once concurrent activity
+// quiesces (chain stabilizes), some walker's help-success wins the
+// parent CAS and the finalize clears the mark. Bounded by chain
+// stabilization, not by any global retry budget.
 //
 // Waker/owner primitives MUST preserve the mark bit (link_cas_snap,
 // link_cas_state, link_exchange_state, link_cas_state_detached all
@@ -274,11 +351,12 @@ static_assert((LINK_MARK_BIT & LINK_CERT_BIT) == 0 &&
 //                        withers preserve ALERT_FIRED.
 //   Compound (1 bump)    with_state_set_cert, with_cert_unmark,
 //                        with_state_alerting,
-//                        with_state_set_cert_alerting — replace
-//                        chained two-step writers at the detach-
-//                        prover, splice-finalize, alerting-pre-
-//                        mark, and stack-steal-alerting-pre-mark
-//                        sites.
+//                        with_state_set_cert_alerting,
+//                        with_state_and_next — replace chained
+//                        two-step writers at the detach-prover,
+//                        splice-finalize, alerting-pre-mark,
+//                        stack-steal-alerting-pre-mark, and
+//                        skiplist-Swap-relink sites.
 //   Static factories     pack, pack_marked, pack_certified, from_raw
 //                        — fresh construction at pool init / atomic-
 //                        load boundaries.
@@ -420,6 +498,34 @@ public:
   // the walker's splice freeze and publishes the off-chain cert.
   LIBC_INLINE constexpr Link with_cert_unmark() const {
     uint64_t v = (value_ & ~LINK_MARK_BIT) | LINK_CERT_BIT;
+    return Link{bumped_tag(v)};
+  }
+
+  // state + next, preserve MARK + CERT + ALERT_FIRED, one bump.
+  // Used by interval-skiplist Swap to publish atomic LOCKED→LIVE
+  // state transition simultaneously with the new successor pointer
+  // (Kim et al. SOSP 2025 §4.2 linearisation point on level-0
+  // predecessor's `next[0]`). Without compound write, the predecessor
+  // would expose either (LOCKED + new next) or (LIVE + old next)
+  // mid-Swap — the first leaks the in-progress lock to readers, the
+  // second resurrects the old chain. Compound publishes both fields in
+  // one CAS so the linearisation is observably atomic.
+  //
+  // MARK preservation: a Harris walker may have marked the
+  // predecessor mid-Swap (cleanup of an earlier orphaned chain
+  // segment); the compound wither carries the mark forward so the
+  // walker's freeze remains intact across the relink. CERT preservation:
+  // skiplist predecessors are on-chain (CERT=0), so no-op in practice;
+  // hygiene against hypothetical caller misuse. ALERT_FIRED
+  // preservation: set on a prior pre-Lock CAS that fired
+  // NtAlertThreadByThreadId on a parker; the bit must survive into
+  // the Swap so the parker's post-park observation classifies as
+  // alert-bearing.
+  LIBC_INLINE constexpr Link with_state_and_next(uint8_t s,
+                                                  uint16_t n) const {
+    uint64_t v = (value_ & ~(kStateField | kNextField)) |
+                 (static_cast<uint64_t>(s) << LINK_STATE_SHIFT) |
+                 (static_cast<uint64_t>(n) & LINK_NEXT_MASK);
     return Link{bumped_tag(v)};
   }
 
@@ -904,6 +1010,99 @@ link_cas_snap(cpp::Atomic<Link> &link_field, Link expected_snap,
                                              failure);
 }
 
+// Runtime-alerting variant of link_cas_snap. The alerting decision
+// is supplied by the caller (rather than computed by Traits at
+// compile time from the source state). Callers whose alert
+// condition lives outside the Link word — e.g., Futex's notifier
+// reading slot.park_state as a Dekker hint — use this entry point.
+//
+// Single-shot strong CAS, same shape as link_cas_snap; semantics
+// identical except for the source of the ALERT_FIRED choice.
+//
+// Use cases:
+//   Futex notifiers   pre-mark CAS WAITING → SIGNALED_* with
+//                     `alerting = (slot.park_state == 1)`. Owner's
+//                     SIGNALED-observation site sets
+//                     expect_late_alert iff the bit is set.
+template <auto To>
+LIBC_INLINE bool
+link_cas_snap_runtime_alert(cpp::Atomic<Link> &link_field, Link expected_snap,
+                             bool alerting,
+                             cpp::MemoryOrder success = cpp::MemoryOrder::ACQ_REL,
+                             cpp::MemoryOrder failure = cpp::MemoryOrder::ACQUIRE) {
+  Link desired = alerting
+                     ? expected_snap.with_state_alerting(
+                           static_cast<uint8_t>(To))
+                     : expected_snap.with_state(static_cast<uint8_t>(To));
+  return link_field.compare_exchange_strong(expected_snap, desired, success,
+                                             failure);
+}
+
+// Runtime-alerting variant of link_cas_state_detached. Stack-steal
+// pre-mark with the alert decision computed by the caller from a
+// runtime hint (Futex broadcast paths read slot.park_state pre-CAS).
+//
+// CAS-with-snap, MARK preserved, CERT set on success, ALERT_FIRED
+// set iff `alerting` is true. Returns OLD state on success,
+// CURRENT state on failure (same shape as the Traits-based variant).
+template <auto To>
+LIBC_INLINE uint8_t
+link_cas_state_detached_runtime_alert(cpp::Atomic<Link> &link_field,
+                                       Link pre_detach_snap, bool alerting,
+                                       bool &cas_succeeded_out,
+                                       cpp::MemoryOrder ord = cpp::MemoryOrder::ACQ_REL) {
+  Link desired = alerting
+                     ? pre_detach_snap.with_state_set_cert_alerting(
+                           static_cast<uint8_t>(To))
+                     : pre_detach_snap.with_state_set_cert(
+                           static_cast<uint8_t>(To));
+  Link expected = pre_detach_snap;
+  if (link_field.compare_exchange_strong(expected, desired, ord,
+                                          cpp::MemoryOrder::ACQUIRE)) {
+    cas_succeeded_out = true;
+    return pre_detach_snap.state();
+  }
+  cas_succeeded_out = false;
+  return expected.state();
+}
+
+// Single-shot strong CAS publishing state + next atomically from a
+// captured snap. State transition To and a new next-pointer commit
+// in one tag bump; MARK / CERT / ALERT_FIRED preserved.
+//
+// Use case: interval-skiplist Swap (Kim et al. SOSP 2025 Algorithm 2).
+// The level-0 linearisation CAS on the predecessor's `next[0]`
+// transitions the predecessor's state byte (e.g. LOCKED→LIVE) AND
+// pivots the chain to point at the head of the freshly-published
+// run of new nodes — both must be observably atomic, otherwise a
+// concurrent Query would either traverse half-published state
+// (state=LIVE but next still points at the locked old chain) or
+// observe LOCKED on a node that has already structurally moved on.
+//
+// Single-shot, no retry loop: any concurrent mutation tag-bumps the
+// snap, the CAS fails, and the Swap caller is expected to restart
+// its Lock acquisition phase from the new predecessor (Kim et al.
+// §4.3 — the swap is the linearisation point and must not race with
+// any other writer; concurrent activity invalidates the locked-set
+// proof). To-only template: Swap always targets a single fixed
+// destination state. Non-noop state changes are checked through
+// Traits::is_valid; same-state relinks are allowed for ordinary upper-level
+// skiplist insertion.
+template <auto To, class Traits = DefaultStateTraits>
+LIBC_INLINE bool
+link_cas_snap_relink(cpp::Atomic<Link> &link_field, Link expected_snap,
+                     uint16_t new_next,
+                     cpp::MemoryOrder success = cpp::MemoryOrder::ACQ_REL,
+                     cpp::MemoryOrder failure = cpp::MemoryOrder::ACQUIRE) {
+  const uint8_t to_state = static_cast<uint8_t>(To);
+  if (expected_snap.state() != to_state &&
+      !Traits::is_valid(expected_snap.state(), to_state))
+    return false;
+  Link desired = expected_snap.with_state_and_next(to_state, new_next);
+  return link_field.compare_exchange_strong(expected_snap, desired, success,
+                                             failure);
+}
+
 // ===== Walker mark/unmark primitives =====
 //
 // Used by Harris-style splice sites (op-splice, dead-prev-splice,
@@ -1018,6 +1217,389 @@ LIBC_INLINE void link_clear_mark(cpp::Atomic<Link> &link_field) {
 }
 
 // ===========================================================================
+// Harris walker — single canonical implementation for every consumer
+// ===========================================================================
+//
+// `harris_unlink` / `harris_walk_attempt` codify the mark-then-help
+// splice protocol that wait_slot, futex_addr, and crystalline_slot_pool
+// independently re-derived. Consumers parameterise the walker with two
+// policy types:
+//
+//   Ctx        — instance-level adapter for the consumer's pool.
+//   DeadPolicy — compile-time classification of state bytes.
+//
+// Ctx contract (duck-typed, called as `ctx.foo(...)`):
+//   cpp::Atomic<Link> &link_at(uint16_t idx);     // node-link accessor
+//   uint32_t           load_gen(uint16_t idx);    // ACQUIRE
+//   uint16_t           load_head();                // ACQUIRE chain head
+//   bool               try_splice_head(uint16_t expected_head,
+//                                       uint16_t new_top);
+//   void               on_dead_intermediate_reclaim(uint16_t idx,
+//                                                    uint8_t pre_state);
+// `null_index()` must equal the consumer's chain-end sentinel (0 in
+// every existing consumer). Encoded as `Ctx::kNullIndex` static
+// constexpr — the sentinel is structural, not per-instance.
+//
+// DeadPolicy contract (all `static constexpr`):
+//   bool is_idle_on_chain(uint8_t state);
+//   bool is_dead_intermediate(Link l);
+//   bool target_state_reclaims(uint8_t pre_mark_state);
+//
+//   `is_idle_on_chain`     IDLE/FREE state observed on a node that is
+//                          still reachable from head — the documented
+//                          T2 retry signal of the Safety Triad.
+//   `is_dead_intermediate` Per-consumer "node has died on the chain"
+//                          predicate. Takes the full Link so consumers
+//                          can inspect reserved bits (CERT/MARK) in
+//                          addition to state (futex's TIMED_OUT /
+//                          SIGNALED_* on state byte alone;
+//                          crystalline_slot_pool's CLAIMED+CERT=1
+//                          post-finalize-pre-freelist-push transient).
+//                          Walkers opp-splice such nodes and continue,
+//                          repairing chains left dangling by other
+//                          splicers — the load-bearing self-healing
+//                          mechanism that prevents stale-link
+//                          accumulation.
+//   `target_state_reclaims` Whether a target observed in this state
+//                          authorises reclaim by the walker (true →
+//                          SplicedReclaim, false → SplicedNoReclaim).
+//
+// Per-slot `generation` field (32-bit atomic, ACQUIRE-readable) is a
+// MANDATORY contract for every consumer of this walker. Bumped on
+// every reclaim / freelist-push (consumer-side); captured by the
+// caller of `harris_unlink` BEFORE entry; re-checked at the target
+// site. Closes the slot-lifecycle ABA window (slot reclaimed +
+// reallocated mid-walk) the per-link tag (T1) doesn't cover.
+//
+// Walker shape: identical to wait_slot's prior open-coded
+// `harris_walk_attempt` (futex_utils.h) — mark-prev help-or-recede,
+// dead-prev splice (futex-only via DeadPolicy), prev-state
+// idle-on-chain Retry, mark-curr help-or-recede returning Retry,
+// curr-state idle-on-chain Retry, target case with gen re-check,
+// dead-curr opp-splice with continue (futex-only). Pool consumers
+// where DeadPolicy::is_dead_intermediate ≡ false elide the dead-
+// prev / dead-curr branches at compile time.
+
+enum class WalkResult : int8_t {
+  Retry = -1,
+  NotFound = 0,
+  SplicedNoReclaim = 1,
+  SplicedReclaim = 2,
+};
+
+// Splice helpers shared by the walker and (optionally) consumer-side
+// fast paths. Both are templates over Ctx so the link-and-CAS
+// predicates resolve through the consumer's adapter without indirection.
+
+// Mid splice via pred.link strong CAS: rewrite pred.next, drop
+// CERT/MARK/ALERT, preserve state. Any concurrent mutation to
+// pred.link (state transition, walker mark/finalize, opp-splice on
+// pred's predecessor) fails the CAS — caller restarts.
+template <class Ctx>
+LIBC_INLINE bool harris_try_splice_at_pred(Ctx &ctx, uint16_t pred,
+                                            Link expected_pred_link,
+                                            uint16_t new_next) {
+  Link desired = expected_pred_link.with_next_uncertify(new_next);
+  return ctx.link_at(pred).compare_exchange_strong(
+      expected_pred_link, desired, cpp::MemoryOrder::ACQ_REL,
+      cpp::MemoryOrder::ACQUIRE);
+}
+
+// Dead-prev mid-splice. Distinct from harris_try_splice_at_pred: no
+// captured snap of gp.link, so re-loads gp.link fresh and requires
+// it to still point at prev with a live state and unmarked.
+template <class Ctx, class DeadPolicy>
+LIBC_INLINE bool harris_try_splice_dead_prev_mid(Ctx &ctx, uint16_t gp,
+                                                  uint16_t prev,
+                                                  uint16_t p_next) {
+  auto &gs = ctx.link_at(gp);
+  Link expected_link = gs.load(cpp::MemoryOrder::ACQUIRE);
+  if (expected_link.next() != prev || expected_link.is_marked() ||
+      DeadPolicy::is_idle_on_chain(expected_link.state()) ||
+      DeadPolicy::is_dead_intermediate(expected_link))
+    return false;
+  return gs.compare_exchange_strong(
+      expected_link, expected_link.with_next_uncertify(p_next),
+      cpp::MemoryOrder::ACQ_REL, cpp::MemoryOrder::ACQUIRE);
+}
+
+// One head-anchored walk attempt. Caller (harris_unlink) loops on
+// Retry; each attempt does one walk + race dispatch.
+template <class Ctx, class DeadPolicy>
+LIBC_INLINE WalkResult harris_walk_attempt(Ctx &ctx, uint16_t target,
+                                            uint32_t target_gen_entry) {
+  // Entry gen check — target reclaimed between bind and now ⇒ done.
+  if (ctx.load_gen(target) != target_gen_entry)
+    return WalkResult::NotFound;
+
+  uint16_t gp = Ctx::kNullIndex;     // grandparent (prev of prev)
+  uint16_t prev = Ctx::kNullIndex;   // virtual head sentinel
+  uint16_t curr = ctx.load_head();
+
+  while (curr != Ctx::kNullIndex) {
+    // One atomic re-read of prev.link serves three purposes:
+    //   (1) reachability check prev.next == curr,
+    //   (2) expected-value for the mid-splice CAS (closes the
+    //       "prev popped, CAS succeeds on detached slot" race),
+    //   (3) prev.state dispatch — live, idle-on-chain, or dead.
+    uint16_t observed;
+    Link prev_link;
+    if (prev == Ctx::kNullIndex) {
+      observed = ctx.load_head();
+    } else {
+      prev_link = ctx.link_at(prev).load(cpp::MemoryOrder::ACQUIRE);
+      // Mark-prev: another walker is mid-splicing prev. HELP-NOT-WAIT
+      // — strong CAS at the parent rewrite serializes original-marker
+      // vs helper races. On help-success, finalize publishes CERT
+      // atomically with MARK clear; if the spliced slot was a
+      // reclaimable dead state, reclaim too. On help-failure, LEAVE
+      // the mark — clearing sabotages a live original splicer's
+      // finalize. Dead-splicer recovery: a future help-success on
+      // this slot clears the mark via finalize once the chain
+      // stabilizes.
+      if (prev_link.is_marked()) {
+        uint16_t p_next = prev_link.next();
+        uint8_t pre_state = prev_link.state();
+        bool spliced =
+            (gp == Ctx::kNullIndex)
+                ? ctx.try_splice_head(prev, p_next)
+                : harris_try_splice_dead_prev_mid<Ctx, DeadPolicy>(
+                      ctx, gp, prev, p_next);
+        LFL_TRACE_BRANCH(1, gp, prev_link.raw(), prev, prev_link.raw(),
+                          p_next, spliced);
+        if (spliced) {
+          // Validate published p_next is not on freelist. Inline load
+          // is intentional — the no-op macro discards args unevaluated,
+          // so production pays nothing.
+          LFL_VALIDATE_PUBLISH(
+              1, gp, p_next,
+              ctx.link_at(p_next).load(cpp::MemoryOrder::ACQUIRE).raw());
+          link_finalize_after_splice(
+              ctx.link_at(prev),
+              MarkedLinkSnap::from_observed_marked(prev_link));
+          if (DeadPolicy::is_dead_intermediate(prev_link) &&
+              DeadPolicy::target_state_reclaims(pre_state))
+            ctx.on_dead_intermediate_reclaim(prev, pre_state);
+        }
+        return WalkResult::Retry;
+      }
+      observed = prev_link.next();
+      uint8_t prev_state = prev_link.state();
+
+      // Idle-on-chain (T2): stale snapshot from a stolen-list reclaim
+      // or peer-completed splice. Retry, NEVER assert.
+      if (DeadPolicy::is_idle_on_chain(prev_state))
+        return WalkResult::Retry;
+
+      // Dead-prev splice — opp-splice through nodes the consumer
+      // declares dead-on-chain. For futex this is TIMED_OUT/SIGNALED_*
+      // (state-byte based); for crystalline_slot_pool this is
+      // CLAIMED+CERT=1 (post-finalize, pre-freelist-push transient
+      // — load-bearing for chain self-healing). Splice via gp.link
+      // (or head if gp is null); resume with prev := gp.
+      if (DeadPolicy::is_dead_intermediate(prev_link)) {
+        bool reclaim_dead = DeadPolicy::target_state_reclaims(prev_state);
+        // Self-mark on dead prev to freeze prev.next while we CAS
+        // the parent. Closes the stale-p_next race where a
+        // concurrent op-splice of prev's successor advances
+        // prev.next between our capture and the parent CAS.
+        auto &ps = ctx.link_at(prev);
+        if (!link_cas_set_mark(ps, prev_link))
+          return WalkResult::Retry;
+        MarkedLinkSnap prev_marked_snap = link_pack_after_mark(prev_link);
+        uint16_t p_next = prev_link.next();
+        bool spliced =
+            (gp == Ctx::kNullIndex)
+                ? ctx.try_splice_head(prev, p_next)
+                : harris_try_splice_dead_prev_mid<Ctx, DeadPolicy>(
+                      ctx, gp, prev, p_next);
+        LFL_TRACE_BRANCH(2, gp, prev_link.raw(), prev, prev_link.raw(),
+                          p_next, spliced);
+        if (!spliced) {
+          // LEAVE the self-mark — clearing forces re-marking on
+          // retry. A future walker observing the leftover mark
+          // opp-splices and reclaims if the state is reclaimable,
+          // so the dead slot doesn't leak.
+          return WalkResult::Retry;
+        }
+        // Validate published p_next is not on freelist.
+        LFL_VALIDATE_PUBLISH(
+            2, gp, p_next,
+            ctx.link_at(p_next).load(cpp::MemoryOrder::ACQUIRE).raw());
+        link_finalize_after_splice(ps, prev_marked_snap);
+        if (reclaim_dead)
+          ctx.on_dead_intermediate_reclaim(prev, prev_state);
+        // Rewind: gp's own predecessor isn't tracked, so drop gp
+        // to NULL. Bounded — dead-set shrinks by one per splice.
+        prev = gp;
+        gp = Ctx::kNullIndex;
+        continue;
+      }
+      // prev live.
+    }
+    if (observed != curr)
+      return WalkResult::Retry;
+
+    // One load covers curr's next AND state (folded in link).
+    auto &cs = ctx.link_at(curr);
+    Link c_link = cs.load(cpp::MemoryOrder::ACQUIRE);
+    // Mark-curr: another walker mid-splice on curr (or our own
+    // leftover self-mark from a prior failed dead-curr / target
+    // splice attempt). HELP-NOT-WAIT — opp-splice + finalize.
+    //
+    // Splice-fail always Retries — leave the mark for the original
+    // splicer's finalize (or a future helper).
+    if (c_link.is_marked()) {
+      uint16_t c_next_marked = c_link.next();
+      uint8_t pre_state = c_link.state();
+      bool spliced =
+          (prev == Ctx::kNullIndex)
+              ? ctx.try_splice_head(curr, c_next_marked)
+              : harris_try_splice_at_pred<Ctx>(ctx, prev, prev_link,
+                                                c_next_marked);
+      LFL_TRACE_BRANCH(3, prev, prev_link.raw(), curr, c_link.raw(),
+                        c_next_marked, spliced);
+      if (spliced) {
+        // Validate published c_next_marked is not on freelist.
+        LFL_VALIDATE_PUBLISH(3, prev, c_next_marked,
+                              ctx.link_at(c_next_marked)
+                                  .load(cpp::MemoryOrder::ACQUIRE)
+                                  .raw());
+        link_finalize_after_splice(
+            cs, MarkedLinkSnap::from_observed_marked(c_link));
+        if (DeadPolicy::is_dead_intermediate(c_link) &&
+            DeadPolicy::target_state_reclaims(pre_state))
+          ctx.on_dead_intermediate_reclaim(curr, pre_state);
+      }
+      return WalkResult::Retry;
+    }
+    uint16_t c_next = c_link.next();
+    uint8_t c_state = c_link.state();
+    // Idle-on-chain (T2): stale snapshot. Retry, NEVER assert.
+    if (DeadPolicy::is_idle_on_chain(c_state))
+      return WalkResult::Retry;
+    bool c_dead = DeadPolicy::is_dead_intermediate(c_link);
+
+    if (curr == target) {
+      // Target reclaimed by another actor between bind and now.
+      if (ctx.load_gen(target) != target_gen_entry)
+        return WalkResult::NotFound;
+
+      // Mark target.link to freeze target.next during parent CAS.
+      // If a prior failed attempt left our self-mark, reuse the
+      // existing snap (re-marking would CAS-fail on the already-
+      // set MARK).
+      MarkedLinkSnap target_marked_snap =
+          c_link.is_marked()
+              ? MarkedLinkSnap::from_observed_marked(c_link)
+              : link_pack_after_mark(c_link);
+      if (!c_link.is_marked()) {
+        if (!link_cas_set_mark(cs, c_link))
+          return WalkResult::Retry;
+      }
+      bool spliced =
+          (prev == Ctx::kNullIndex)
+              ? ctx.try_splice_head(target, c_next)
+              : harris_try_splice_at_pred<Ctx>(ctx, prev, prev_link,
+                                                c_next);
+      LFL_TRACE_BRANCH(4, prev, prev_link.raw(), target, c_link.raw(),
+                        c_next, spliced);
+      if (spliced) {
+        // Validate published c_next is not on freelist.
+        LFL_VALIDATE_PUBLISH(
+            4, prev, c_next,
+            ctx.link_at(c_next).load(cpp::MemoryOrder::ACQUIRE).raw());
+        link_finalize_after_splice(cs, target_marked_snap);
+        return DeadPolicy::target_state_reclaims(c_state)
+                   ? WalkResult::SplicedReclaim
+                   : WalkResult::SplicedNoReclaim;
+      }
+      // Splice failed. LEAVE the self-mark — next retry observes
+      // it via the c_link.is_marked() check above and reuses
+      // the snap without re-CAS'ing.
+      return WalkResult::Retry;
+    }
+
+    // Opp-splice dead intermediates (futex-only via DeadPolicy).
+    // Self-reclaim is safe: reclaim direct-pushes to freelist; the
+    // state+tag fold ensures any later walker that observes the
+    // freelist-pushed slot either trips the IDLE-on-chain retry or
+    // fails its mid-splice CAS via tag mismatch.
+    if (c_dead) {
+      if (!link_cas_set_mark(cs, c_link))
+        return WalkResult::Retry;
+      MarkedLinkSnap opp_marked_snap = link_pack_after_mark(c_link);
+      bool spliced =
+          (prev == Ctx::kNullIndex)
+              ? ctx.try_splice_head(curr, c_next)
+              : harris_try_splice_at_pred<Ctx>(ctx, prev, prev_link,
+                                                c_next);
+      LFL_TRACE_BRANCH(5, prev, prev_link.raw(), curr, c_link.raw(),
+                        c_next, spliced);
+      if (spliced) {
+        // Validate published c_next is not on freelist.
+        LFL_VALIDATE_PUBLISH(
+            5, prev, c_next,
+            ctx.link_at(c_next).load(cpp::MemoryOrder::ACQUIRE).raw());
+        link_finalize_after_splice(cs, opp_marked_snap);
+        if (DeadPolicy::target_state_reclaims(c_state))
+          ctx.on_dead_intermediate_reclaim(curr, c_state);
+        curr = c_next;
+        continue;
+      }
+      // Splice failed. LEAVE the self-mark. A future walker visiting
+      // this slot via the c_link.is_marked() observed-mark branch
+      // above will opp-splice and reclaim if the state is reclaimable.
+      return WalkResult::Retry;
+    }
+
+    // Advance. gp = old prev so the next iteration can splice prev
+    // via gp.link if prev transitions dead. No gp_link snap — the
+    // dead-prev splice re-reads gs.link fresh.
+    gp = prev;
+    prev = curr;
+    curr = c_next;
+  }
+
+  // Walked to NULL — target removed by another actor or never on
+  // chain in this attempt's snapshot.
+  return WalkResult::NotFound;
+}
+
+// Lock-free find+splice of `target` from the chain `ctx` exposes.
+// Loops on Retry; bounded by concurrent activity (≤ thread count).
+//
+// `expected_gen` — caller's gen capture. Mismatch ⇒ slot was
+// reclaimed and possibly reallocated; MUST NOT splice (would steal
+// a live slot from an unrelated waiter). Return false immediately.
+//
+// Returns true iff the walker spliced the target AND
+// DeadPolicy::target_state_reclaims(target_state) — i.e., the caller
+// is authorised to reclaim. Pool consumers (DeadPolicy where
+// target_state_reclaims ≡ true on the live-state) get true on
+// successful splice; futex-style consumers get true only when
+// target was in a reclaimable dead state.
+template <class Ctx, class DeadPolicy>
+LIBC_INLINE bool harris_unlink(Ctx &ctx, uint16_t target,
+                                uint32_t expected_gen) {
+  if (target == Ctx::kNullIndex)
+    return false;
+  if (ctx.load_gen(target) != expected_gen)
+    return false;
+  uint32_t retries = 0;
+  for (;;) {
+    WalkResult r = harris_walk_attempt<Ctx, DeadPolicy>(ctx, target,
+                                                          expected_gen);
+    if (r == WalkResult::Retry) {
+      if (++retries > LFL_RETRY_LIMIT)
+        LFL_RETRY_OVERFLOW(target, retries);
+      continue;
+    }
+    return r == WalkResult::SplicedReclaim;
+  }
+}
+
+// ===========================================================================
 // Consumer offset contract
 // ===========================================================================
 //
@@ -1039,6 +1621,21 @@ LIBC_INLINE void link_clear_mark(cpp::Atomic<Link> &link_field) {
                     sizeof(::LIBC_NAMESPACE::cpp::Atomic<                      \
                            ::LIBC_NAMESPACE::linkage::Link>),                  \
                 #NodeT "::link must be cpp::Atomic<linkage::Link>")
+
+// Per-slot 32-bit generation counter — substrate-mandatory whenever
+// a consumer plugs the harris_walk_attempt / harris_unlink walker
+// templates. Bumped on every reclaim / freelist-push; captured at
+// walker entry; re-checked at the target site. 32-bit width is
+// load-bearing: at 10K reclaims/sec the wraparound horizon is >130
+// years; 16-bit would wrap in seconds under stress.
+#define LINKAGE_REQUIRES_GENERATION_AT(NodeT, OFFSET)                          \
+  static_assert(__builtin_offsetof(NodeT, generation) == (OFFSET),             \
+                #NodeT "::generation must live at offset " #OFFSET             \
+                       " — substrate walker reads it for entry-bind + "      \
+                       "target re-check");                                     \
+  static_assert(sizeof(decltype(NodeT::generation)) ==                         \
+                    sizeof(::LIBC_NAMESPACE::cpp::Atomic<uint32_t>),           \
+                #NodeT "::generation must be cpp::Atomic<uint32_t>")
 
 } // namespace linkage
 } // namespace LIBC_NAMESPACE_DECL

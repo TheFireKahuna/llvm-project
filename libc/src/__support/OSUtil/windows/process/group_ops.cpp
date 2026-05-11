@@ -26,7 +26,7 @@
 #include "hdr/types/gid_t.h"
 #include "include/llvm-libc-types/struct_group.h"
 #include "src/__support/CPP/atomic.h"
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
 #include "src/__support/OSUtil/windows/nt/nt_process_api.h"
 #include "src/__support/OSUtil/windows/nt/nt_security_api.h"

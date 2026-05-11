@@ -239,6 +239,34 @@ struct ThreadLifecycle : public ThreadRegistryNode {
   void *thread_ring; // ThreadRing*, lazy.
   void *atexit_data; // Reserved.
 
+  // === Per-thread NUMA preferred node (lazy-resolved) ===
+  //
+  // The id of the NUMA node this thread should prefer for type-isolated
+  // partition reservations (`alloc::partition::pick_node_for_alloc`).
+  // Resolved on the first user-facing allocation that reaches the
+  // selector — `NtGetCurrentProcessorNumberEx` + the sealed
+  // `g_pcb.zone0.numa_topology()` cpu→node table — and stashed here
+  // for every subsequent allocation.
+  //
+  // Lazy in the child thread (not parent-prequeried) because the
+  // parent's CPU at `pthread_create` time is not the child's CPU; NT
+  // picks the child's CPU during `NtCreateThreadEx` and even reading
+  // the child's ideal-processor cross-thread would be stale by the
+  // time `thread_entry_impl` runs. The first malloc on the child
+  // resolves once and pays the syscall (~50 ns); every malloc after
+  // that takes a single byte-load + predictable branch.
+  //
+  // Sentinel `kPreferredNodeUnresolved` (0xFF) marks "not yet probed"
+  // — distinct from node 0 which is a valid id on every multi-socket
+  // box. `0` is also a valid concrete node id, so the sentinel can't
+  // be plain zero. `zero_lifecycle` and the fork-reinit hook both
+  // re-stamp this field to the sentinel.
+  //
+  // Atomic because foreign signal handlers and hardened-build paths
+  // may read the lifecycle's NUMA preference cross-thread; the ABI
+  // cost on x86 is identical to a plain byte load/store.
+  cpp::Atomic<uint8_t> preferred_node;
+
   // === Cross-cycle latched-alert expectation (owner-only) ===
   //
   // The single distinguisher between a real Futex/parking-lot wake
@@ -277,6 +305,12 @@ static_assert(__is_trivially_constructible(cpp::Atomic<uint8_t>),
               "Atomic<uint8_t> must be trivially constructible");
 static_assert(__is_trivially_constructible(cpp::Atomic<HANDLE>),
               "Atomic<HANDLE> must be trivially constructible");
+
+// Sentinel for `ThreadLifecycle::preferred_node`. Stored when the field
+// has not yet been resolved by the partition-layer NUMA selector. Any
+// real node id is in `[0, 63]` (cf. `kNumaCpuTableSize` budget), so
+// `0xFF` is unambiguous.
+inline constexpr uint8_t kPreferredNodeUnresolved = 0xFF;
 
 // ---------------------------------------------------------------------------
 // Process-wide monotonic task_id counter
@@ -358,6 +392,12 @@ inline void zero_lifecycle(ThreadLifecycle *lc) {
   lc->kind = ThreadRegistryNodeKind::Lifecycle;
   lc->detach_state.store(uint32_t(DetachState::DETACHED),
                          cpp::MemoryOrder::RELAXED);
+  // `preferred_node` defaults to the unresolved sentinel — the
+  // partition-layer NUMA selector lazily resolves it on first use.
+  // Plain zero (the memset default) would alias node 0, which is a
+  // valid concrete id on every multi-socket system.
+  lc->preferred_node.store(kPreferredNodeUnresolved,
+                           cpp::MemoryOrder::RELAXED);
 }
 
 // Sentinel value stored in `exit_word` before the thread starts running.

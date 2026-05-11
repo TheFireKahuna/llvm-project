@@ -116,6 +116,22 @@ void registry_flush_thread_all(CrystallineBatch *batches) {
   }
 }
 
+void registry_warm_thread_all() {
+  // Walks every registered domain. For each, eagerly claim the
+  // calling thread's per-domain slot so any future protect() / retire()
+  // call is allocation-free. Idempotent — the trampoline calls
+  // `my_slot_idx()` which short-circuits on an already-cached index.
+  // Domains without a warm_thread_fn (legacy / shouldn't happen — every
+  // CrystallineDomain ctor wires one) are silently skipped.
+  uintptr_t cur = g_registry_head.load(cpp::MemoryOrder::ACQUIRE);
+  while (cur != 0) {
+    auto *desc = reinterpret_cast<CrystallineDomainDescriptor *>(cur);
+    if (desc->warm_thread_fn != nullptr)
+      desc->warm_thread_fn(desc->context);
+    cur = reinterpret_cast<uintptr_t>(desc->next);
+  }
+}
+
 void registry_release_slots_all(uint16_t *slot_indices) {
   // Walks every registered domain. For each, release the exiting
   // thread's per-domain slot (`slot_indices[desc->domain_id]`) back to

@@ -37,7 +37,7 @@
 #include "hdr/types/struct_timespec.h"
 #include "include/llvm-libc-macros/poll-macros.h"
 #include "src/__support/CPP/scope_guard.h"
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/OSUtil/windows/fd/fd_table.h"
 #include "src/__support/OSUtil/windows/ipc/afd_core.h"
 #include "src/__support/threads/windows/spin_wait.h"

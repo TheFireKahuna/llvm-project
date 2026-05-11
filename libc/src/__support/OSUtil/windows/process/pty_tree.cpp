@@ -5,13 +5,19 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+//
+// Per-tree PTY namespace, allocator, owner registry, and ALPC join service
+// bridging ConDrv master/slave handles to POSIX fd pairs. ConDrv message
+// formats are reverse-engineered; layouts pinned with `static_assert`.
+//
+//===----------------------------------------------------------------------===//
 
 #include "src/__support/OSUtil/windows/process/pty_tree.h"
 
 #include "src/__support/CPP/scope_guard.h"
 #include "src/__support/CPP/span.h"
 #include "src/__support/threads/windows/spin_wait.h"
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/OSUtil/windows/alloc/section_view.h"
 #include "src/__support/OSUtil/windows/nt/nt_error.h"
 #include "src/__support/OSUtil/windows/nt/handle_attributes.h"
@@ -101,12 +107,9 @@ constexpr uint32_t PTY_JOIN_REPLY_MAGIC = 0x52545950; // 'PYTR'
 constexpr uint16_t PTY_JOIN_REPLY_VERSION = 1;
 constexpr ULONG PTY_JOIN_HANDLE_COUNT = 4;
 
-// --- State-mutation ALPC messages (slave → master) ---
-//
-// Slaves hold read-only section mappings and cannot write shared state
-// directly. Instead they send a PtyStateRequest to the master's ALPC
-// service port. The master validates, applies the mutation under the
-// kernel mutant (bumping change_seq), and replies with status.
+// State-mutation ALPC messages (slave -> master). Slaves hold read-only
+// section mappings; mutations go through the master's ALPC port, which
+// applies them under the kernel mutant (bumping change_seq).
 
 constexpr uint32_t PTY_STATE_REQUEST_MAGIC = 0x53545950; // 'PYTS'
 constexpr uint16_t PTY_STATE_REQUEST_VERSION = 1;
@@ -165,10 +168,9 @@ static PtyTreeState pty_tree_state = {};
 
 PtyTreeState &state() { return pty_tree_state; }
 
-// RAII guard for state().lock. Locks on construction, unlocks on destruction.
-// For simple read/mutate sites that don't need to drop the lock mid-body.
-// Sites that must release the lock before a blocking call (kernel mutant,
-// ALPC transact) stay manual or release early via unlock().
+// RAII guard for state().lock. Sites that must drop the lock before a
+// blocking call (kernel mutant, ALPC transact) stay manual or release
+// early via unlock().
 class TreeStateLock {
 public:
   LIBC_INLINE TreeStateLock() { state().lock.lock(); }
@@ -285,9 +287,8 @@ NTSTATUS ensure_namespace_locked() {
       return STATUS_UNSUCCESSFUL;
   }
 
-  // The boundary descriptor carries the namespace identity (name + SID +
-  // integrity label). NtCreatePrivateNamespace expects an unnamed OA — the
-  // name lives in the boundary, not the OA.
+  // NtCreatePrivateNamespace expects an unnamed OA; the name lives in the
+  // boundary descriptor along with the SID and integrity label.
   OBJECT_ATTRIBUTES oa = windows::internal_oa();
 
   auto *boundary = reinterpret_cast<POBJECT_BOUNDARY_DESCRIPTOR>(
@@ -304,10 +305,9 @@ NTSTATUS ensure_namespace_locked() {
   return STATUS_SUCCESS;
 }
 
-// Unmap a raw detached view pointer stored in PtyTreeState.
-// SectionView handles scope-local mapping/unmapping throughout this file;
-// this helper only exists for the raw void* slots the PCB stores after
-// SectionView::detach(). |view| must be the exact base from detach().
+// Unmap a raw detached view pointer stored in PtyTreeState. Used only for
+// the void* slots that hold a SectionView::detach() base; scope-local maps
+// use SectionView directly. |view| must be the exact base from detach().
 void unmap_raw_view(void **view) {
   if (view && *view) {
     ::NtUnmapViewOfSectionEx(NtCurrentProcess(), *view, 0);
@@ -395,23 +395,18 @@ int create_shared_state_locked(uint32_t id, HANDLE *state_lock,
   return 0;
 }
 
-// Map |state_section| and validate the PtySharedState header.
-// Tries PAGE_READWRITE first so masters (which hold SECTION_MAP_WRITE) get a
-// writable view usable under the seqlock; falls back to PAGE_READONLY for
-// slaves that only hold SECTION_MAP_READ. On success writes the owned
-// SectionView into |*out| and returns 0. On failure returns a positive
-// errno (caller negates at public API boundary). |*out| is valid only on
-// success; otherwise left as-supplied.
-//
-// SectionView is move-only so we can't return it through ErrorOr<T> (the
-// in-tree cpp::expected still copies T by value).
+// Map |state_section| and validate the PtySharedState header. Tries
+// PAGE_READWRITE first (masters), falls back to PAGE_READONLY (slaves).
+// Returns positive errno on failure; caller negates at the public API.
+// Uses an out-parameter rather than ErrorOr<SectionView> because the
+// in-tree cpp::expected still copies T by value and SectionView is
+// move-only.
 int validate_shared_state_view(HANDLE state_section, uint32_t expected_id,
                                windows::SectionView *out) {
   if (!state_section || !out)
     return EINVAL;
 
-  // Non-owning wrapper: |state_section| is owned by the caller
-  // (PtyTreeState field, OwnedPtyEntry::handles, or stack scope).
+  // Non-owning wrapper; |state_section| stays owned by the caller.
   auto section_ref = windows::SectionHandle::borrow(state_section);
 
   NTSTATUS status = STATUS_SUCCESS;
@@ -434,6 +429,9 @@ int validate_shared_state_view(HANDLE state_section, uint32_t expected_id,
   return 0;
 }
 
+// Open-or-create the named TreeJob mutant in the private namespace and
+// assign self into it; re-membership-checks an existing handle to detect
+// fork/exec drift.
 NTSTATUS ensure_tree_job_locked() {
   if (state().tree_job) {
     NTSTATUS membership =
@@ -471,6 +469,8 @@ NTSTATUS ensure_tree_job_locked() {
   return STATUS_SUCCESS;
 }
 
+// Treats STATUS_ABANDONED (prior owner died holding the mutant) as success;
+// shared-state fields are validated separately on each access.
 NTSTATUS wait_mutant(HANDLE mutant) {
   NTSTATUS status = ::NtWaitForSingleObject(mutant, FALSE, nullptr);
   if (status == STATUS_ABANDONED)
@@ -509,16 +509,10 @@ void fill_state_request_header(PtyStateRequest &req, PtyStateOp op,
   req.pty_id = pty_id;
 }
 
-// --- Seqlock helpers for PtySharedState ---
-//
-// Writers (master process, under mutant):
-//   seqlock_write_begin(shared)  → increments change_seq to odd (write-in-progress)
-//   seqlock_write_end(shared)    → increments change_seq to even (consistent)
-//
-// Readers (slave processes, PAGE_READONLY mapping, no mutant):
-//   seq = seqlock_read_begin(shared)  → load change_seq; retry if odd
-//   ... read fields ...
-//   seqlock_read_retry(shared, seq)   → true if change_seq differs (must retry)
+// Seqlock helpers for PtySharedState. Writers (master, under mutant)
+// flip change_seq odd-then-even around mutations; readers (slave,
+// PAGE_READONLY) snapshot the seq, read fields, and retry if the seq
+// changed or was odd.
 
 void seqlock_write_begin(PtySharedState *shared) {
   uint32_t seq = __atomic_load_n(&shared->change_seq, __ATOMIC_RELAXED);
@@ -537,8 +531,8 @@ uint32_t seqlock_read_begin(const PtySharedState *shared) {
     seq = __atomic_load_n(&shared->change_seq, __ATOMIC_ACQUIRE);
     if ((seq & 1) == 0)
       return seq;
-    // Writer in progress — park the CPU in UMWAIT / MWAITX on the
-    // seqlock word until the writer's even-parity store wakes us.
+    // Writer in progress; park in UMWAIT / MWAITX until the even-parity
+    // store wakes us.
     spin_wait::spin_on_raw(const_cast<uint32_t *>(&shared->change_seq), seq,
                             1024);
   }
@@ -645,18 +639,10 @@ size_t format_service_leaf_name(WCHAR *buffer, size_t cap, DWORD pid,
   return ss.str().size();
 }
 
-// Connect to the tree service port for |owner_pid|+|owner_create_time|,
-// send+receive a synchronous ALPC message in |*message_buf|, and always
-// disconnect/close the connection port before returning.
-//
-// On entry |*message_buf| holds a fully-populated request; on success the
-// reply overwrites it (union layout at the call site) and |*receive_length|
-// is set. On connect failure |*receive_length| is unchanged.
-//
-// Precondition: state().namespace_handle is already populated — callers run
-// ensure_namespace_locked() with the appropriate lock discipline for their
-// context (the _locked callers hold state().lock; the slave send path does
-// not, matching the original code's non-atomic namespace_handle read).
+// Connect, transact a synchronous ALPC round-trip, and always close the
+// connection port. |*message_buf| is overwritten in place with the reply
+// (union layout at the call site). Caller must have populated
+// state().namespace_handle via ensure_namespace_locked().
 NTSTATUS alpc_transact_with_service(DWORD owner_pid, uint64_t owner_create_time,
                                     void *message_buf, SIZE_T message_buf_size,
                                     SIZE_T *receive_length,
@@ -839,8 +825,7 @@ OwnedHandles duplicate_owned_handles_for_pid(const OwnedHandles &source,
 
 OwnedHandles duplicate_join_handles_for_pid(const OwnedHandles &source,
                                             DWORD pid) {
-  // Slaves get SECTION_MAP_READ | SECTION_QUERY only — they cannot write to
-  // shared state directly. Mutations go through ALPC to the master.
+  // Slaves get read-only section access; mutations route through ALPC.
   constexpr ACCESS_MASK SECTION_READ_ONLY =
       SECTION_MAP_READ | SECTION_QUERY;
 
@@ -881,8 +866,7 @@ OwnedHandles accept_join_request(uint32_t id) {
 
 void *service_thread_main(void *context);
 
-// Handle a state-mutation request from a slave process (ALPC connection).
-// The master applies the mutation under the kernel mutant with seqlock.
+// Apply a slave's state-mutation request under the kernel mutant + seqlock.
 void handle_state_request(HANDLE server_port, PPORT_MESSAGE request) {
   if (!request)
     return;
@@ -1044,6 +1028,9 @@ void handle_connection_request(HANDLE server_port, PPORT_MESSAGE request) {
   }
 }
 
+// Long-running ALPC server loop for incoming join + state-mutation
+// requests; dispatches on PORT_MESSAGE type and exits only on receive
+// failure.
 void *service_thread_main(void *context) {
   auto *start = static_cast<ServiceThreadStartContext *>(context);
   HANDLE port = start ? start->port : nullptr;
@@ -1143,9 +1130,8 @@ NTSTATUS ensure_service_locked() {
                          true);
   if (thread_result != 0)
     return STATUS_UNSUCCESSFUL;
-  // Thread now owns |start| (it calls page_free in service_thread_main).
-  // |ready_event| is still closed here by close_event — the thread signals
-  // and closes its own copy independently.
+  // Service thread now owns |start| (frees it itself); we still close our
+  // |ready_event| handle locally — the thread signals and closes its copy.
   free_start.dismiss();
 
   LARGE_INTEGER timeout = {};
@@ -1219,6 +1205,9 @@ ErrorOr<OwnedHandles> connect_to_service_locked(uint32_t id, DWORD owner_pid,
   return handles;
 }
 
+// Drops state().lock across the blocking ALPC transact so namespace
+// bring-up doesn't stall behind a remote round-trip. The two-attempt
+// retry handles a startup race against the owner publishing its port.
 ErrorOr<OwnedHandles> request_handles_locked(uint32_t id, DWORD owner_pid,
                                              uint64_t owner_create_time) {
   HANDLE join_lock = nullptr;
@@ -1358,6 +1347,9 @@ int parse_inherited_startup(PtyReserved2Ext *out) {
   return 0;
 }
 
+// Two LUIDs concatenated give a 128-bit boot-unique nonce; falls back to
+// (create_time, pid) if NtAllocateLocallyUniqueId fails, which is unique
+// only within this process lifetime.
 void generate_tree_nonce(uint8_t (&nonce)[16]) {
   LUID first = {};
   LUID second = {};
@@ -1524,13 +1516,16 @@ void fini() {
   owned_pty_lock.unlock();
 }
 
+// Post-fork repair: drop CoW views and reset the lock + initialized flag
+// so the child re-runs init() lazily (which reopens the namespace etc.
+// against the child's own handle table).
 void fork_reinit() {
   auto &tree = state();
   tree.lock.reset_for_fork();
   tree.lock.lock();
-  // Unmap CoW views (valid VA operation in the child), but don't NtClose
-  // the section/lock handles — they were created with internal_oa()
-  // (non-inheritable) and don't exist in the child's handle table.
+  // CoW views unmap is valid in the child, but the section/lock handles
+  // were created with internal_oa() (non-inheritable) and aren't in the
+  // child's handle table — don't NtClose them.
   unmap_raw_view(&tree.alloc_state_view);
   tree.alloc_section = nullptr;
   tree.alloc_lock = nullptr;
@@ -1750,6 +1745,9 @@ ErrorOr<OwnedHandles> duplicate_local_owned_handles(uint32_t id) {
   return duplicate;
 }
 
+// Tries the local owner-table first, then walks the tree job's PID list
+// asking each peer's ALPC service. PTY_SHARED_FLAG_UNLOCKED / HUNGUP are
+// checked under the state mutant before returning success.
 ErrorOr<OwnedHandles> join_handles(uint32_t id) {
   if (id == 0)
     return Error(ENOENT);
@@ -1834,11 +1832,8 @@ ErrorOr<OwnedHandles> join_handles(uint32_t id) {
 } // namespace internal
 } // namespace LIBC_NAMESPACE_DECL
 
-// Forward-declare vt_pty::ensure_adoption so the gated pty_tree leaf
-// queries below can trigger inherited-PTY adoption on first use without
-// adding a pty_tree → vt_pty header dependency. vt_pty.h would also
-// work, but the forward declaration keeps pty_tree.cpp's include surface
-// minimal.
+// Forward-declared to trigger inherited-PTY adoption on first leaf
+// query without pulling vt_pty.h into pty_tree's include surface.
 namespace LIBC_NAMESPACE_DECL {
 namespace internal {
 namespace vt_pty {
@@ -1946,8 +1941,8 @@ void clear_current_attached_pty() {
   (void)map_current_state_locked(empty);
 }
 
-// Lock-free read of PtySharedState using the seqlock. No kernel transitions.
-// The view is PAGE_READONLY for slaves; the seqlock ensures consistency.
+// Lock-free seqlock read of PtySharedState; no kernel transitions even
+// when the view is PAGE_READONLY (slave).
 template <typename Fn>
 int with_current_state_seqlock(Fn &&fn) {
   const PtySharedState *view;
@@ -1963,9 +1958,8 @@ int with_current_state_seqlock(Fn &&fn) {
     int result = fn(*view);
     if (!seqlock_read_retry(view, seq))
       return result;
-    // Writer was active — retry. seqlock_read_begin already parks in
-    // UMWAIT / MWAITX if the writer is still mid-transaction, so no
-    // additional backoff is needed here.
+    // seqlock_read_begin parks the retry in UMWAIT / MWAITX; no extra
+    // backoff needed here.
   }
 }
 
@@ -1978,8 +1972,8 @@ int current_get_attr(struct termios *attrs) {
   });
 }
 
-// Send a state-mutation request to the master process via ALPC.
-// The slave cannot write shared memory directly (read-only mapping).
+// Slave-side ALPC dispatch: the slave's read-only mapping cannot write
+// shared state, so the request travels to the master.
 int send_state_request_to_owner(const PtyStateRequest &req, uint64_t owner_pid,
                                 uint64_t owner_create_time) {
   if (!owner_pid)
@@ -2073,12 +2067,10 @@ int current_set_attr(const struct termios *attrs) {
   return send_current_state_request(req);
 }
 
-// Apply a shared-state mutation either locally (master path: direct write
-// under the mutant + seqlock) or by sending an ALPC PtyStateRequest to the
-// owning master (slave path). |apply| mutates the PtySharedState in place
-// on the master path; |fill_payload| populates the wire-format union on the
-// slave path. Split because the master writes concrete fields while the
-// slave marshals through the anonymous payload union.
+// Master path applies |apply| in place under mutant + seqlock; slave path
+// marshals via |fill_payload| into the wire-format union and sends ALPC.
+// Two callbacks are needed because the master writes concrete fields
+// while the slave marshals through the anonymous payload union.
 template <typename Mutator, typename PayloadFill>
 int dispatch_state_mutation(uint32_t pty_id, HANDLE state_section,
                             PtyStateOp op, Mutator &&apply,

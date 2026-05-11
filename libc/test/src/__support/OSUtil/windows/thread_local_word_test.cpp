@@ -36,6 +36,7 @@
 #include "src/__support/threads/windows/futex_utils.h"
 #include "src/__support/threads/windows/thread_local_word.h"
 #include "src/__support/time/abs_timeout.h"
+#include "src/__support/time/clock_gettime.h"
 #include "test/UnitTest/Test.h"
 #include "test/src/__support/windows/nt_test_utils.h"
 
@@ -73,20 +74,38 @@ static void main_wait_owner(OwnerCtx *ctx, uint32_t step) {
     LIBC_NAMESPACE::test_support::sleep_ms(0);
 }
 
+// `AbsTimeout` is exactly that — absolute. The wait primitives compare
+// against `clock_gettime(CLOCK_MONOTONIC)` and a raw `{N, 0}` timespec is
+// long in the past, returning -ETIMEDOUT before any park happens. Build
+// the absolute deadline by adding the relative offset to "now".
+static LIBC_NAMESPACE::internal::AbsTimeout
+relative_abs_timeout(long sec, long nsec) {
+  timespec now{};
+  (void)LIBC_NAMESPACE::internal::clock_gettime(CLOCK_MONOTONIC, &now);
+  long total_nsec = now.tv_nsec + nsec;
+  long carry = total_nsec / 1'000'000'000L;
+  now.tv_sec += sec + carry;
+  now.tv_nsec = total_nsec % 1'000'000'000L;
+  return *LIBC_NAMESPACE::internal::AbsTimeout::from_timespec(
+      now, /*is_realtime=*/false);
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
 // 1. Owner hot path: read/write/test_flags/any_pending/clear_flags
 // ---------------------------------------------------------------------------
 
-static DWORD hot_path_owner(void *arg) {
+LIBC_MSABI static DWORD hot_path_owner(void *arg) {
   auto *ctx = static_cast<OwnerCtx *>(arg);
   ctx->tlw.init();
   ctx->ready.store(1, MemoryOrder::RELEASE);
 
-  // Step 1 — basic read/write round trip.
+  // Step 1 — basic read/write round trip. Payload has no flag bits set so
+  // step 2's signal_or(0x03) and step 3's clear_flags(0x01) leave a
+  // distinguishable footprint in value_.
   owner_wait_checkpoint(ctx, 1);
-  ctx->tlw.write(0xC0DE);
+  ctx->tlw.write(0xC0DC);
   ctx->observed.store(ctx->tlw.read(), MemoryOrder::RELEASE);
 
   // Step 2 — test_flags and any_pending after main's signal_or.
@@ -112,21 +131,23 @@ TEST(LlvmLibcThreadLocalWord, OwnerHotPath) {
   while (!ctx.ready.load(MemoryOrder::ACQUIRE))
     LIBC_NAMESPACE::test_support::sleep_ms(0);
 
-  // Step 1: owner writes 0xC0DE and reads it back.
+  // Step 1: owner writes 0xC0DC and reads it back.
   ctx.observed.store(0, MemoryOrder::RELEASE);
   main_release_checkpoint(&ctx, 1);
-  main_wait_owner(&ctx, 0xC0DE);
+  main_wait_owner(&ctx, 0xC0DC);
 
-  // Step 2: cross-thread signal_or sets bits 0 and 1.
+  // Step 2: cross-thread signal_or sets flag bits 0 and 1, leaving payload
+  // intact. Owner reports the test_flags / any_pending probe as 0x13.
   ctx.observed.store(0, MemoryOrder::RELEASE);
   ThreadLocalWord::signal_or(&ctx.tlw, 0x03);
   main_release_checkpoint(&ctx, 2);
   main_wait_owner(&ctx, 0x13); // flags bit0 + bit1 + any_pending
 
-  // Step 3: owner clears bit 0. Observed value should be 0x02.
+  // Step 3: owner clears flag bit 0. value_ goes 0xC0DF -> 0xC0DE — payload
+  // preserved, bit 1 still set, bit 0 cleared.
   ctx.observed.store(0, MemoryOrder::RELEASE);
   main_release_checkpoint(&ctx, 3);
-  main_wait_owner(&ctx, 0x02);
+  main_wait_owner(&ctx, 0xC0DE);
 
   EXPECT_EQ(LIBC_NAMESPACE::test_support::wait_for_single_object(t, 10000),
             static_cast<DWORD>(LIBC_NAMESPACE::test_support::WAIT_OBJECT_0));
@@ -137,7 +158,7 @@ TEST(LlvmLibcThreadLocalWord, OwnerHotPath) {
 // 2. Generation counter: every cross-thread write bumps it exactly once.
 // ---------------------------------------------------------------------------
 
-static DWORD gen_owner(void *arg) {
+LIBC_MSABI static DWORD gen_owner(void *arg) {
   auto *ctx = static_cast<OwnerCtx *>(arg);
   ctx->tlw.init();
   ctx->tlw.reset(0);
@@ -185,7 +206,7 @@ TEST(LlvmLibcThreadLocalWord, GenerationBumpsOncePerWrite) {
 //    wait_for_change — exercising the Dekker protocol end-to-end.
 // ---------------------------------------------------------------------------
 
-static DWORD wait_change_owner(void *arg) {
+LIBC_MSABI static DWORD wait_change_owner(void *arg) {
   auto *ctx = static_cast<OwnerCtx *>(arg);
   ctx->tlw.init();
   ctx->tlw.reset(0);
@@ -193,17 +214,15 @@ static DWORD wait_change_owner(void *arg) {
 
   // Park on value_ == 0 with a very generous timeout (10s). Expect to
   // wake via signal(), not timeout.
-  auto t_exp = LIBC_NAMESPACE::internal::AbsTimeout::from_timespec(
-      {10, 0}, /*is_realtime=*/false);
-  long rc = ctx->tlw.wait_for_change(/*expected=*/0, *t_exp);
+  auto t_exp = relative_abs_timeout(10, 0);
+  long rc = ctx->tlw.wait_for_change(/*expected=*/0, t_exp);
   ctx->wait_rc.store(rc, MemoryOrder::RELEASE);
   ctx->observed.store(ctx->tlw.read(), MemoryOrder::RELEASE);
 
   // Regression — no ghost wake. Immediately re-park with a short timeout;
   // expect -ETIMEDOUT, not spurious 0.
-  auto t2_exp = LIBC_NAMESPACE::internal::AbsTimeout::from_timespec(
-      {0, 20'000'000}, /*is_realtime=*/false); // 20ms
-  long rc2 = ctx->tlw.wait_for_change(ctx->tlw.read(), *t2_exp);
+  auto t2_exp = relative_abs_timeout(0, 20'000'000); // 20ms
+  long rc2 = ctx->tlw.wait_for_change(ctx->tlw.read(), t2_exp);
   ctx->observed_gen.store(static_cast<uint32_t>(rc2), MemoryOrder::RELEASE);
   return 0;
 }
@@ -235,7 +254,7 @@ TEST(LlvmLibcThreadLocalWord, WaitForChangeDekkerAndNoGhostWake) {
 // 4. wait_for_change fast path: value already != expected → no park.
 // ---------------------------------------------------------------------------
 
-static DWORD fastpath_owner(void *arg) {
+LIBC_MSABI static DWORD fastpath_owner(void *arg) {
   auto *ctx = static_cast<OwnerCtx *>(arg);
   ctx->tlw.init();
   ctx->tlw.reset(0xAAAA);
@@ -261,15 +280,14 @@ TEST(LlvmLibcThreadLocalWord, WaitForChangeFastPathAlreadyChanged) {
 // 5. wait_for_change timeout path — no writer at all.
 // ---------------------------------------------------------------------------
 
-static DWORD timeout_owner(void *arg) {
+LIBC_MSABI static DWORD timeout_owner(void *arg) {
   auto *ctx = static_cast<OwnerCtx *>(arg);
   ctx->tlw.init();
   ctx->tlw.reset(0);
   ctx->ready.store(1, MemoryOrder::RELEASE);
 
-  auto t_exp = LIBC_NAMESPACE::internal::AbsTimeout::from_timespec(
-      {0, 30'000'000}, /*is_realtime=*/false); // 30ms
-  long rc = ctx->tlw.wait_for_change(0, *t_exp);
+  auto t_exp = relative_abs_timeout(0, 30'000'000); // 30ms
+  long rc = ctx->tlw.wait_for_change(0, t_exp);
   ctx->wait_rc.store(rc, MemoryOrder::RELEASE);
   return 0;
 }
@@ -299,16 +317,15 @@ struct ExtCtx {
   Atomic<uint32_t> observed{0};
 };
 
-static DWORD ext_owner(void *arg) {
+LIBC_MSABI static DWORD ext_owner(void *arg) {
   auto *ctx = static_cast<ExtCtx *>(arg);
   ctx->tlw.init();
   ctx->ready.store(1, MemoryOrder::RELEASE);
 
-  auto t_exp = LIBC_NAMESPACE::internal::AbsTimeout::from_timespec(
-      {10, 0}, /*is_realtime=*/false);
+  auto t_exp = relative_abs_timeout(10, 0);
   long rc = ctx->tlw.wait_for_addr(
       reinterpret_cast<const volatile uint32_t *>(&ctx->ext_word),
-      /*ext_expected=*/0u, *t_exp);
+      /*ext_expected=*/0u, t_exp);
   ctx->wait_rc.store(rc, MemoryOrder::RELEASE);
   ctx->observed.store(ctx->ext_word.load(MemoryOrder::ACQUIRE),
                       MemoryOrder::RELEASE);
@@ -341,7 +358,7 @@ TEST(LlvmLibcThreadLocalWord, WaitForAddrExternalWake) {
 // 7. signal_clear_bits: AND-NOT + gen bump from a cross-thread writer.
 // ---------------------------------------------------------------------------
 
-static DWORD clear_bits_owner(void *arg) {
+LIBC_MSABI static DWORD clear_bits_owner(void *arg) {
   auto *ctx = static_cast<OwnerCtx *>(arg);
   ctx->tlw.init();
   ctx->tlw.reset(0xFFu);

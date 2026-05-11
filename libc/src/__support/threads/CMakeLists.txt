@@ -171,8 +171,8 @@ if(TARGET libc.src.__support.threads.${LIBC_TARGET_OS}.thread)
     HDRS
       default_attr.h
     DEPENDS
-      .spin_lock
       .thread_common
+      libc.src.__support.CPP.atomic
       libc.src.__support.common
       libc.src.__support.macros.config
   )

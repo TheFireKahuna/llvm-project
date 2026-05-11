@@ -37,7 +37,7 @@
 
 #include "hdr/types/struct_timespec.h"
 #include "src/__support/CPP/atomic.h"
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
 #include "src/__support/OSUtil/windows/nt/nt_capabilities.h"
 #include "src/__support/OSUtil/windows/ntdll.h"

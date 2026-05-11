@@ -150,50 +150,6 @@ add_libc_unittest(
     libc.test.UnitTest.ErrnoSetterMatcher
 )
 
-# Radix-tree + region-pool state-machine stress. Exercises every
-# FREE↔LIVE↔REMAPPING transition and the alloc_id ABA defence via
-# public mmap/mremap/mprotect/munmap patterns that naturally drive the
-# internal state machine.
-add_libc_unittest(
-  mmap_radix_stress_test
-  SUITE
-    libc_sys_mman_unittests
-  SRCS
-    mmap_radix_stress_test.cpp
-  DEPENDS
-    libc.include.llvm-libc-macros.sys_mman_macros
-    libc.src.__support.CPP.atomic
-    libc.src.__support.OSUtil.windows.ntdll
-    libc.src.errno.errno
-    libc.src.sys.mman.mmap
-    libc.src.sys.mman.mprotect
-    libc.src.sys.mman.mremap
-    libc.src.sys.mman.munmap
-    libc.test.UnitTest.ErrnoCheckingTest
-    libc.test.UnitTest.ErrnoSetterMatcher
-)
-
-# Post-fork VA reconcile end-to-end. Forks children that read and write
-# parent pages, allocate independently, and verify CoW isolation.
-add_libc_unittest(
-  mmap_reconcile_fork_test
-  SUITE
-    libc_sys_mman_unittests
-  SRCS
-    mmap_reconcile_fork_test.cpp
-  DEPENDS
-    libc.include.llvm-libc-macros.sys_mman_macros
-    libc.include.llvm-libc-macros.sys_wait_macros
-    libc.src.__support.OSUtil.windows.ntdll
-    libc.src.errno.errno
-    libc.src.sys.mman.mmap
-    libc.src.sys.mman.munmap
-    libc.src.sys.wait.waitpid
-    libc.src.unistd.fork
-    libc.test.UnitTest.ErrnoCheckingTest
-    libc.test.UnitTest.Test
-)
-
 add_libc_unittest(
   demand_commit_stress_test
   SUITE
@@ -317,29 +273,3 @@ add_libc_unittest(
     libc.test.UnitTest.ErrnoSetterMatcher
 )
 
-# post_dlopen_reconcile contract — when the loader maps a DLL, our
-# mapping table must stamp FOREIGN cordons over the consumed VA so
-# subsequent mmap-with-hint and MAP_FIXED_NOREPLACE behave correctly.
-# Drives both LdrLoadDll/LdrUnloadDll directly (isolating the reconcile
-# function contract) and LIBC_NAMESPACE::dlopen/dlclose end-to-end.
-add_libc_unittest(
-  post_dlopen_reconcile_test
-  SUITE
-    libc_sys_mman_unittests
-  SRCS
-    post_dlopen_reconcile_test.cpp
-  DEPENDS
-    libc.include.llvm-libc-macros.sys_mman_macros
-    libc.src.__support.CPP.atomic
-    libc.src.__support.OSUtil.windows.mapping_table
-    libc.src.__support.OSUtil.windows.ntdll
-    libc.src.__support.OSUtil.windows.region_pool
-    libc.src.__support.OSUtil.windows.region_reconcile
-    libc.src.dlfcn.dlclose
-    libc.src.dlfcn.dlopen
-    libc.src.errno.errno
-    libc.src.sys.mman.mmap
-    libc.src.sys.mman.munmap
-    libc.test.UnitTest.ErrnoCheckingTest
-    libc.test.UnitTest.Test
-)

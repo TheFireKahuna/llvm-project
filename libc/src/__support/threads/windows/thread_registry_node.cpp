@@ -18,7 +18,7 @@
 
 #include "src/__support/threads/windows/thread_registry_node.h"
 
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/threads/windows/lockfree_hash.h"
 #include "src/__support/threads/windows/thread_lifecycle.h"
 

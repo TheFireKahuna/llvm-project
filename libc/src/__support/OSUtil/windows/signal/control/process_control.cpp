@@ -65,6 +65,7 @@
 #include "src/__support/OSUtil/windows/signal/signal_internal.h"
 #include "src/__support/OSUtil/windows/signal/signal_types.h"
 #include "src/__support/OSUtil/windows/nt/handle_attributes.h"
+#include "src/__support/OSUtil/windows/nt/nt_context_api.h"
 #include "src/__support/OSUtil/windows/nt/nt_process_api.h"
 #include "src/__support/OSUtil/windows/nt/scoped_nt_handle.h"
 #include "src/__support/OSUtil/windows/nt/shared_user_data.h"
@@ -690,6 +691,99 @@ void notify_parent_state_change(int state_code) {
 // execute_default_action
 // ---------------------------------------------------------------------------
 
+namespace {
+
+// Map a fatal POSIX signal to the canonical Windows NTSTATUS used when
+// re-raising via NtRaiseException for software-derived signals (no original
+// EXCEPTION_RECORD available). The resulting exit code that the kernel
+// plants in the process's ExitStatus flows back through the parent's
+// ntstatus_to_signal table (child_table.cpp) to the same POSIX signum —
+// round-trip-fidelity for waitpid / WIFSIGNALED / WTERMSIG.
+//
+// Hardware-derived signals do not pass through this map: fatal_raise_signal
+// uses the original EXCEPTION_RECORD's ExceptionCode unchanged so minidumps
+// carry the true fault classification, not a synthetic.
+DWORD signal_to_ntstatus(int signum) {
+  switch (signum) {
+  case SIGSEGV: return EXCEPTION_ACCESS_VIOLATION;       // 0xC0000005
+  case SIGBUS:  return EXCEPTION_DATATYPE_MISALIGNMENT;  // 0x80000002
+  case SIGFPE:  return EXCEPTION_INT_DIVIDE_BY_ZERO;     // 0xC0000094
+  case SIGILL:  return EXCEPTION_ILLEGAL_INSTRUCTION;    // 0xC000001D
+  case SIGTRAP: return EXCEPTION_BREAKPOINT;             // 0x80000003
+  case SIGABRT: return 0x40000015u;                       // STATUS_FATAL_APP_EXIT
+  default:      return 0x40000015u;
+  }
+}
+
+// Re-raise a fatal signal as a structured Windows exception so the
+// debugger, WER, and the OS unhandled-exception filter chain can act on
+// it. Replaces the legacy NtTerminateProcess(128+signum) silent terminate
+// for the SIG_DFL=core+terminate signals.
+//
+// Two paths:
+//   - Hardware-derived (state has a saved record + context paired with
+//     this signum, set by the VEH transport): replay the original record
+//     verbatim with the original ContextRecord. Minidumps capture the
+//     actual fault site; debuggers stop where the fault originally
+//     occurred; parent's GetExitCodeProcess yields the real fault NTSTATUS.
+//   - Software-derived (raise(), abort(), console ctrl): synthesize a
+//     record carrying the canonical NTSTATUS for the signum and capture
+//     the current CPU state. The fault site is execute_default_action's
+//     caller — close enough for software signals.
+//
+// The fatal_raise_in_progress sentinel must be set BEFORE NtRaiseException:
+// the kernel re-enters master_veh_handler on this thread for the new
+// exception, and the sentinel must already be visible there to short-
+// circuit our filter chain. Otherwise signal_veh_transport would re-pend
+// the signal and dispatch in a loop. Set once, never cleared — the
+// process is dying.
+[[noreturn]]
+void fatal_raise_signal(int signum, ThreadSignalState *state) {
+  EXCEPTION_RECORD synth_rec;
+  CONTEXT captured;
+  EXCEPTION_RECORD *rec;
+  CONTEXT *ctx;
+
+  if (state && state->interrupted_record && state->interrupted_context &&
+      state->interrupted_signum == signum) {
+    // Hardware-derived: replay the original record + context unchanged.
+    // Force EXCEPTION_NONCONTINUABLE so any handler that survives our
+    // sentinel skip cannot return EXCEPTION_CONTINUE_EXECUTION and re-run
+    // the faulting instruction.
+    state->interrupted_record->ExceptionFlags |= EXCEPTION_NONCONTINUABLE;
+    rec = state->interrupted_record;
+    ctx = state->interrupted_context;
+  } else {
+    // Software-derived: synthesize a record at our caller's PC and
+    // capture the current CPU state.
+    __builtin_memset(&synth_rec, 0, sizeof(synth_rec));
+    synth_rec.ExceptionCode    = signal_to_ntstatus(signum);
+    synth_rec.ExceptionFlags   = EXCEPTION_NONCONTINUABLE;
+    synth_rec.ExceptionAddress = __builtin_return_address(0);
+    synth_rec.NumberParameters = 0;
+    ::RtlCaptureContext(&captured);
+    rec = &synth_rec;
+    ctx = &captured;
+  }
+
+  if (state)
+    state->fatal_raise_in_progress = true;
+
+  // FirstChance=FALSE: the application's only "handler" was the SIG_DFL
+  // terminate path now executing here — first-chance dispatch has nothing
+  // useful to do. Skip directly to second chance so the unhandled-
+  // exception filter and WER run sooner.
+  ::NtRaiseException(rec, ctx, /*FirstChance=*/FALSE);
+
+  // Defensive — second-chance NONCONTINUABLE never returns. If somehow
+  // it does, fall back to a hard terminate so the process still dies and
+  // the parent observes a meaningful exit code.
+  ::NtTerminateProcess(NtCurrentProcess(), rec->ExceptionCode);
+  __builtin_trap();
+}
+
+} // namespace
+
 void execute_default_action(int signum) {
   auto &child = g_pcb.signal_child;
 
@@ -730,13 +824,26 @@ void execute_default_action(int signum) {
     cooperative_stop(signum);
     return;
 
-  case SIGQUIT:
   case SIGABRT:
   case SIGSEGV:
   case SIGBUS:
   case SIGFPE:
   case SIGILL:
   case SIGTRAP:
+    // Write the in-process backtrace to stderr first so users without a
+    // debugger / without WER configured still see a fault report. Then
+    // re-raise as a structured exception so debuggers stop, WER captures
+    // a minidump, and the parent's waitpid sees the right NTSTATUS.
+    internal::crash_backtrace(signum);
+    fatal_raise_signal(signum, get_thread_state_noinit());
+    __builtin_unreachable();
+
+  case SIGQUIT:
+    // SIGQUIT keeps the Cygwin/Unix 128+sig encoding rather than G1's
+    // NtRaiseException. No Microsoft NTSTATUS fits "user-requested core
+    // dump", and a libc customer-bit code would be opaque to shell
+    // tooling that already speaks 128+sig — meanwhile our parent
+    // round-trips Cygwin's 131 for free via the existing 128+sig arm.
     internal::crash_backtrace(signum);
     ::NtTerminateProcess(NtCurrentProcess(), 128 + signum);
     return;

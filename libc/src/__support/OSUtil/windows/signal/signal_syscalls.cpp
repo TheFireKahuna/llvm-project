@@ -142,26 +142,6 @@ bool should_restart_syscall() {
   return signal_dispatch::should_restart_syscall(state);
 }
 
-// Self-delivery: pend the signal with SI_USER si_code and dispatch.
-// The si_code is stored in the PendingSet sidecar and forwarded to the
-// handler via build_standard_siginfo() in the dispatch engine. For
-// software-generated signals, si_pid/si_uid are derived at dispatch time
-// (always the current process for self-delivery).
-void deliver_signal(int signum, siginfo_t * /*info*/, ucontext_t * /*context*/) {
-  if (!is_valid_signal(signum))
-    return;
-
-  ThreadSignalState *state = get_thread_state_noinit();
-  if (!state)
-    return;
-
-  // Pend the signal to the current thread.
-  if (!pend_signal(state->pending, signum, SI_USER))
-    return;
-  signal_dispatch::trigger(state);
-  signal_dispatch::dispatch_pending(state);
-}
-
 intptr_t deliver_signal_to_thread(DWORD tid, int signum) {
   // Self-delivery: synchronous, matching Linux kernel tgkill behavior.
   if (tid == NtCurrentThreadId()) {
@@ -174,9 +154,22 @@ intptr_t deliver_signal_to_thread(DWORD tid, int signum) {
   }
 
   // Cross-thread: use APC transport (sender-side validation).
+  //
+  // si_code = SI_TKILL: this entry point implements tgkill/tkill/pthread_kill
+  // semantics. Linux always reports SI_TKILL for thread-directed signals,
+  // distinct from SI_USER (whole-process kill). Mirrors the self-target path
+  // in generate_standard_signal_for_current_thread, which already pends with
+  // SI_TKILL — same syscall must produce the same si_code regardless of
+  // whether the target tid is self or a peer.
+  //
+  // si_pid = our own PID: required by Linux SI_TKILL siginfo contract
+  // (sender PID). For intra-process tkill that's the calling process. The
+  // APC transport's nullable-info default would otherwise leave si_pid = 0,
+  // because info is non-null but value-initialised.
   siginfo_t info = {};
   info.si_signo = signum;
-  info.si_code = SI_USER;
+  info.si_code = SI_TKILL;
+  info.si_pid = static_cast<pid_t>(NtCurrentProcessId());
   info.si_uid = get_current_uid();
   return apc_transport::send_to_thread(tid, signum, &info);
 }
@@ -194,8 +187,9 @@ intptr_t deliver_process_signal(int signum) {
 }
 
 // SIGCHLD bridge — delegates to Layer 4.
-void deliver_sigchld(int code, int pid, int status) {
-  process_control::deliver_sigchld(code, pid, status);
+void deliver_sigchld(int code, int pid, int status, long long utime_us,
+                     long long stime_us) {
+  process_control::deliver_sigchld(code, pid, status, utime_us, stime_us);
 }
 
 void populate_sigchld_info(siginfo_t *info) {

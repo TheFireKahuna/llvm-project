@@ -176,6 +176,16 @@ if(added_shared_targets AND LIBC_TARGET_OS_IS_WINDOWS)
   foreach(_obj
           libc.src.__support.OSUtil.windows.cxa_guard
           libc.src.__support.OSUtil.windows.memory_primitives_bootstrap
+          libc.src.__support.OSUtil.windows.nt_pal_init
+          libc.src.__support.OSUtil.windows.pagemap
+          libc.src.__support.OSUtil.windows.alloc_sealed_va_publisher
+          libc.src.__support.OSUtil.windows.buddy_arena
+          libc.src.__support.OSUtil.windows.partition
+          libc.src.__support.OSUtil.windows.va_tracker_chunk
+          libc.src.__support.OSUtil.windows.desc_backing
+          libc.src.__support.OSUtil.windows.art_index
+          libc.src.__support.OSUtil.windows.interval_skiplist
+          libc.src.__support.OSUtil.windows.va_tracker
           libc.src.__support.OSUtil.windows.libc_subsystem_init
           libc.src.__support.OSUtil.windows.libc_subsystem_fini
           libc.src.__support.OSUtil.windows.tls_thread_detach)

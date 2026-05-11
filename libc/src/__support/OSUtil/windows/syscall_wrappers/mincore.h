@@ -14,7 +14,7 @@
 #include "src/__support/error_or.h"
 #include "src/__support/macros/config.h"
 
-#include "src/__support/OSUtil/windows/memory/mincore_ops.h"
+#include "src/__support/OSUtil/windows/memory/legacy/mincore_ops.h"
 
 namespace LIBC_NAMESPACE_DECL {
 namespace windows_syscalls {

@@ -126,6 +126,40 @@ LIBC_INLINE void fault_guard_leave(FaultGuard *g) {
   fault_guard_leave(g, g_pcb.zone0.veh_sealed().fault_guard_tls_index);
 }
 
+//===----------------------------------------------------------------------===//
+// Safe load helpers — read fixed-width memory under FaultGuard protection.
+//
+// On normal completion: writes through `out` and returns true. On any
+// access-violation / in-page-error during the load: returns false, `*out`
+// untouched. Useful for "probe instruction byte at faulting PC" patterns
+// where the address is trusted to usually be valid but a paranoid path-end
+// case (mapped page boundary, JIT region torn down) must not double-fault.
+//
+// The volatile read prevents the compiler from speculating the load above
+// the setjmp barrier — important because a longjmp out of the VEH handler
+// must observe a stable program point.
+//===----------------------------------------------------------------------===//
+
+[[gnu::returns_twice]]
+LIBC_INLINE bool safe_load_u8(const void *src, uint8_t *out) {
+  FaultGuard g;
+  if (fault_guard_enter(&g, FAULT_GUARD_MEMORY))
+    return false;
+  *out = *static_cast<const volatile uint8_t *>(src);
+  fault_guard_leave(&g);
+  return true;
+}
+
+[[gnu::returns_twice]]
+LIBC_INLINE bool safe_load_u32(const void *src, uint32_t *out) {
+  FaultGuard g;
+  if (fault_guard_enter(&g, FAULT_GUARD_MEMORY))
+    return false;
+  *out = *static_cast<const volatile uint32_t *>(src);
+  fault_guard_leave(&g);
+  return true;
+}
+
 } // namespace windows
 } // namespace LIBC_NAMESPACE_DECL
 

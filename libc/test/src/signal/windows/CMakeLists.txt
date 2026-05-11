@@ -195,7 +195,6 @@ add_libc_unittest(
     libc.src.signal.sigqueue
     libc.src.signal.sigtimedwait
     libc.src.unistd.getpid
-    libc.test.UnitTest.Test
 )
 
 add_libc_unittest(
@@ -212,7 +211,6 @@ add_libc_unittest(
     libc.src.signal.kill
     libc.src.sys.wait.waitpid
     libc.src.unistd.fork
-    libc.test.UnitTest.Test
 )
 
 add_libc_unittest(
@@ -231,7 +229,6 @@ add_libc_unittest(
     libc.src.signal.sigemptyset
     libc.src.sys.wait.waitpid
     libc.src.unistd.fork
-    libc.test.UnitTest.Test
 )
 
 add_libc_unittest(

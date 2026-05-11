@@ -5,6 +5,12 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+//
+// POSIX PTY (master/slave) backend layered on a headless conhost child and
+// the ConDrv kernel surface. Cross-process state lives in a section-mapped
+// PtySharedState guarded by a kernel mutant; one byte pipe carries VT input
+// master->conhost, another carries VT output conhost->master, and the slave
+// drives the line discipline through console_tty against the ConDrv handles.
 
 #include "src/__support/OSUtil/windows/process/vt_pty.h"
 #include "src/__support/OSUtil/windows/lazy_init.h"
@@ -22,7 +28,7 @@
 #include "src/__support/CPP/string_view.h"
 #include "src/__support/CPP/stringstream.h"
 #include "src/__support/OSUtil/windows/nt/nt_wstringstream.h"
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
 #include "src/__support/OSUtil/windows/fd/fd_table.h"
 #include "src/__support/OSUtil/windows/fd/file_ops_table.h"
@@ -52,6 +58,8 @@
 namespace LIBC_NAMESPACE_DECL {
 namespace internal {
 namespace vt_pty {
+/// Per-PTY refcounted state shared by every master and slave fd of one PTY.
+/// Released through release(); destruction tears down conhost + handles.
 struct Session {
   cpp::Atomic<uint32_t> refcount;
   RawMutex lock;
@@ -122,13 +130,9 @@ constexpr size_t CONHOST_INHERIT_HANDLE_COUNT = 4;
 RawMutex current_attachment_lock;
 Session *current_attachment_keepalive = nullptr;
 
-// Typed accessors over PtySharedState::flags. The underlying field stays
-// uint16_t (cross-process ABI stored in shared memory, shared with
-// pty_tree.cpp) — these just give the call sites readable names and keep
-// the raw bit-ops in one place.
 // Non-owning view over PtySharedState::flags. The underlying field stays
 // uint16_t (cross-process ABI shared with pty_tree.cpp); this type keeps
-// the raw bit-ops in one place and gives call sites readable names.
+// the raw bit-ops in one place.
 struct PtyFlagView {
   PtySharedState &state;
 
@@ -156,6 +160,9 @@ Session *session_from_ofd(OpenFileDescription *ofd) {
   return reinterpret_cast<Session *>(ofd->pty_session());
 }
 
+// Holds a reference to the currently-attached PTY session so destruction is
+// deferred until exec/exit. Releases the previous holder outside the lock
+// to avoid holding it across destroy_session.
 void set_current_attachment_keepalive(Session *session) {
   current_attachment_lock.lock();
   Session *old = current_attachment_keepalive;
@@ -166,6 +173,9 @@ void set_current_attachment_keepalive(Session *session) {
   release(old);
 }
 
+// Swap the calling thread's "current attached PTY" to this session for the
+// scope, restoring the previous attachment on destruction. Used to route
+// console_tty IOCTLs through the right session during read/write.
 struct ScopedAttachedPtyId {
   pty_tree::CurrentAttachment previous = {};
   bool active = false;
@@ -320,17 +330,9 @@ void unlock_shared_state(Session *session) {
     (void)::NtReleaseMutant(session->shared_state_lock.get(), nullptr);
 }
 
-// RAII guards replacing the old with_shared_state / with_shared_state_write
-// templates. Each call site used to synthesize a unique lambda closure,
-// forcing a distinct template instantiation; a plain RAII type compiles to
-// a single set of inline functions and frees the call sites to read/write
-// PtySharedState fields directly.
-//
-// Contract: status() returns 0 on successful lock acquisition, or a
-// negative errno. Callers must check status() before touching state().
-// When status() == 0, destruction releases the mutex (and, for the writer
-// variant, publishes the seqlock end bump). On lock-failure the dtor is
-// a no-op.
+// RAII guard around the shared-state mutant for read access. status() must
+// be checked before state() — non-zero means the lock was not acquired and
+// the dtor is a no-op.
 class [[nodiscard]] SharedStateReader {
   Session *session_;
   int status_;
@@ -352,12 +354,10 @@ public:
   }
 };
 
-// Writer variant: wraps the mutation in a seqlock begin/end pair so
-// lock-free readers (slave processes with PAGE_READONLY mappings) can
-// detect torn writes and retry. The begin bump happens in the ctor
-// (paired with a RELEASE store); the end bump is emitted by the dtor
-// with a preceding RELEASE fence so all data writes precede the end
-// bump in program order.
+// Writer variant: wraps the mutation in a seqlock begin/end bump pair so
+// PAGE_READONLY-mapped readers in slave processes can detect torn writes.
+// Ctor RELEASE-bumps; dtor emits a RELEASE fence then bumps so all data
+// writes precede the end bump in program order.
 class [[nodiscard]] SharedStateWriter {
   Session *session_;
   int status_;
@@ -390,8 +390,7 @@ public:
 
 // A ConDrv console handle can be addressed two ways: directly, or via an
 // explicit per-session connection handle. The three wrappers below keep
-// that dispatch in one place per-op so callers don't bake the conditional
-// into every site. Plain inline helpers — no template/lambda indirection.
+// that dispatch in one place per-op.
 LIBC_INLINE NTSTATUS session_set_console_mode(Session *session, HANDLE target,
                                               DWORD mode) {
   HANDLE conn = session->slave_console.handles.Connection;
@@ -399,6 +398,8 @@ LIBC_INLINE NTSTATUS session_set_console_mode(Session *session, HANDLE target,
               : condrv::set_console_mode(target, mode);
 }
 
+// Translates the session's termios attrs into ConDrv input/output console
+// modes and pushes them to the slave-side handles.
 int apply_termios_to_session(Session *session) {
   if (!session || !session->shared_state ||
       !session->slave_console.handles.Input ||
@@ -453,6 +454,8 @@ LIBC_INLINE NTSTATUS set_session_screen_buffer_info(
              : condrv::set_console_screen_buffer_info_ex_wrapper(output, info);
 }
 
+// Resizes the slave screen buffer / window to match \p ws. Returns -EINVAL
+// if the new window would extend past the SHORT-positive screen-buffer range.
 int apply_winsize_to_session(Session *session,
                                          const struct winsize &ws) {
   condrv::CONSOLE_SCREEN_BUFFER_INFO_EX info = {};
@@ -480,6 +483,8 @@ int apply_winsize_to_session(Session *session,
   return 0;
 }
 
+// Delivers SIGWINCH to the recorded controller process, gated on a
+// create_time match to defeat PID reuse. Self-PID short-circuits the open.
 bool deliver_controller_winsize_signal(pid_t controller_pid,
                                                    uint64_t controller_create_time) {
   if (controller_pid <= 0)
@@ -552,6 +557,8 @@ bool is_connect_retry_status(NTSTATUS status) {
 wait_for_condrv_connect(HANDLE *out, HANDLE reference, HANDLE conhost_process,
                         SHORT cols, SHORT rows);
 
+// Re-attaches as a client of an existing reference handle and replaces
+// session->handles with a fresh client-handle set.
 [[maybe_unused]] NTSTATUS rebuild_local_client_handles_from_reference(
     console::Session *session) {
   if (!session || !session->reference)
@@ -653,6 +660,9 @@ wait_for_condrv_connect(HANDLE *out, HANDLE reference, HANDLE conhost_process,
   return STATUS_OBJECT_NAME_NOT_FOUND;
 }
 
+// Launches a conhost.exe child with --headless and the inheritable handles
+// the caller already opened (server, child input/output, signal). Returns
+// the process handle in \p process_out; the child thread handle is closed.
 int launch_headless_conhost(const UNICODE_STRING *nt_image_path,
                             const UNICODE_STRING *command_line,
                             HANDLE *inherit_handles,
@@ -700,6 +710,9 @@ int launch_headless_conhost(const UNICODE_STRING *nt_image_path,
   return 0;
 }
 
+// Creates an anonymous byte-stream pipe with both ends inheritable. The
+// MESSAGE_TYPE choice is deliberate; see the rationale at NtCreateNamedPipeFile
+// below.
 NTSTATUS create_inheritable_pipe_pair(HANDLE *read_end_out,
                                       HANDLE *write_end_out) {
   if (!read_end_out || !write_end_out)
@@ -771,6 +784,8 @@ enum class PipeDirection {
   ParentReads,  // parent holds the read end, child inherits the write end
 };
 
+// Creates an inheritable pipe pair, then redups the parent's end into a
+// non-inheritable handle so only the child end propagates across spawn.
 NTSTATUS create_pipe_endpair(HANDLE *parent_end, HANDLE *child_end,
                              PipeDirection direction) {
   if (!parent_end || !child_end)
@@ -836,6 +851,8 @@ struct SpawnHandlesScratch {
   }
 };
 
+// Duplicates the eight session-owned handles a spawned child needs to
+// rejoin this PTY. All-or-nothing: any failure releases the partial set.
 NTSTATUS duplicate_spawn_session_handles(const Session *session,
                                          SpawnHandles *handles) {
   if (!session || !handles)
@@ -886,6 +903,8 @@ void close_spawn_session_handles(SpawnHandles *handles) {
   handles->session_key = 0;
 }
 
+// Formats `"<image>" --headless --width N --height N --signal 0xH --server 0xH`
+// into \p buffer and returns it as a UNICODE_STRING for ProcessParameters.
 NTSTATUS
 build_headless_command_line(WCHAR *buffer, size_t capacity,
                             const WCHAR *image_path, uint16_t cols,
@@ -1048,8 +1067,6 @@ void destroy_session(Session *session) {
 
 // Scope-guard RAII: owns a Session* until release() is called. If the
 // guard goes out of scope still owning a session, destroy_session runs.
-// Collapses the repeated `destroy_session(session); return Error(...);`
-// pattern in create_session / adopt_inherited_current_pty / open_pts_id.
 struct SessionBuilder {
   Session *session_ = nullptr;
 
@@ -1112,6 +1129,9 @@ int create_slave_fd(Session *session, int flags) {
                            session->slave_console.handles.Input, flags);
 }
 
+// Dups \p source_fd onto the stdio fds selected by \p bind_mask. If
+// source_fd < 0, opens a fresh slave fd for the dup source and releases it
+// after the dups complete.
 int bind_session_stdio(Session *session, int source_fd,
                                    uint16_t bind_mask =
                                        LLVM_LIBC_PTY_ATTACH_ALL) {
@@ -1154,6 +1174,9 @@ int bind_session_stdio(Session *session, int source_fd,
   return 0;
 }
 
+// Adopts a PTY reference inherited across spawn into a fresh Session,
+// rebuilds local client handles, and binds the requested stdio slots.
+// Returns positive errno (this is a process-startup callee).
 int adopt_inherited_current_pty(HANDLE reference,
                                             uint16_t bind_mask) {
   pty_tree::CurrentAttachment attachment = {};
@@ -1247,6 +1270,10 @@ int adopt_inherited_current_pty(HANDLE reference,
   return 0;
 }
 
+// Allocates a Session, brings up the conhost child, builds the master/slave
+// handle topology, and registers in the PTY tree. Optional \p termp / \p winp
+// override the defaults; otherwise libc termios defaults are used and the
+// initial winsize is seeded from the calling process's current console.
 ErrorOr<int> create_session(Session **out_session,
                                         const struct termios *termp,
                                         const struct winsize *winp) {
@@ -1523,6 +1550,8 @@ int pty_set_attr(Session *session, int actions, const struct termios *t) {
                             t);
 }
 
+// No-op: ConDrv pipes carry no userspace queue we can flush. We only
+// validate the queue selector so tcflush() returns EINVAL for bad input.
 int pty_flush(Session *session, int queue_selector) {
   (void)session;
   switch (queue_selector) {
@@ -1535,6 +1564,8 @@ int pty_flush(Session *session, int queue_selector) {
   }
 }
 
+// No-op: synchronous pipes have no kernel-side drain primitive analogous
+// to tcdrain; pending writes have already been pushed to conhost.
 int pty_drain(Session *session) {
   (void)session;
   return 0;
@@ -1573,6 +1604,8 @@ int pty_set_foreground_pgrp(Session *session, pid_t pgid) {
       session->id, session->shared_state_section.get(), pgid);
 }
 
+// No-op: software flow control is not modelled by ConDrv. Validate the
+// action code so tcflow() returns EINVAL on garbage.
 int pty_flow(Session *session, int action) {
   (void)session;
   switch (action) {
@@ -1629,6 +1662,8 @@ int pty_get_winsize(Session *session, struct winsize *ws) {
   return 0;
 }
 
+// Resizes the slave screen buffer and, if the dimensions actually changed,
+// delivers SIGWINCH to the foreground pgrp / controller.
 int pty_set_winsize(Session *session, const struct winsize *ws) {
   if (!session || !ws)
     return -EINVAL;
@@ -1851,6 +1886,9 @@ void retain(Session *session) {
     session->refcount.fetch_add(1, cpp::MemoryOrder::ACQ_REL);
 }
 
+// Drops one reference; on the last drop closes the slave console and tears
+// down the Session. ACQ_REL pairs with retain() to ensure the destructor
+// sees all writes that preceded the final retain/release.
 void release(Session *session) {
   if (!session)
     return;
@@ -1886,6 +1924,8 @@ ErrorOr<int> openpty(int *master_fd, int *slave_fd, char *name,
     return Error(-master);
   }
 
+  // openpty() implies grantpt/unlockpt: skip the explicit dance and stamp
+  // the PTY as ready before the slave open.
   {
     SharedStateWriter writer(session);
     if (writer.status() == 0)
@@ -1908,6 +1948,9 @@ ErrorOr<int> openpty(int *master_fd, int *slave_fd, char *name,
   return 0;
 }
 
+// Make \p fd the controlling terminal: setsid() if not already a session
+// leader, install this process as the session controller, publish the
+// console handles into the PEB, then dup the fd onto stdin/stdout/stderr.
 int login_tty(int fd) {
   Session *session = nullptr;
   int err = validate_pty_fd(fd, nullptr, &session);
@@ -1960,8 +2003,9 @@ int is_terminal_fd(int fd) {
   return validate_pty_fd(fd, nullptr, nullptr);
 }
 
-// Initialise a stack-local OFD that proxies a slave PTY fd through to the
-// underlying ConDrv console handle.  Used by read() and write() below.
+// Stamp \p proxy as a stack-local ConDrv OFD that mirrors \p source's
+// access/status flags but targets \p handle. Used by read() and write()
+// to drive console_tty without a heap allocation per call.
 void init_slave_proxy_ofd(OpenFileDescription *proxy,
                                       OpenFileDescription *source,
                                       HANDLE handle) {
@@ -2034,18 +2078,12 @@ void fork_reinit() {
   // reference.  Just reset the lock so the child can acquire it.
 }
 
-// ---------------------------------------------------------------------------
-// Debug entry points exported from c.dll for use by pty_probe. These wrap the
-// slave-side Input handle with the session Connection as the IOCTL target so
-// that pending counts and record injection can be measured side-by-side.
-// Diagnoses whether conhost's InteractDispatch::WriteInput lands in the same
-// InputBuffer our Input handle resolves to.
-//
-// Export surface: listed in c.def (pty_debug_exports block of
-// generate_libc_entrypoints_def). Source-level dllexport is intentionally
-// absent so vt_pty.cpp.obj carries no -export directive — this keeps the
-// OBJ safe to pull into a unit test that also links c.lib.
-// ---------------------------------------------------------------------------
+// Debug entry points exported from c.dll for use by pty_probe. They route
+// the slave-side Input handle through the session Connection so pending
+// counts and injection target the same InputBuffer that conhost's
+// InteractDispatch::WriteInput writes to. Exports are listed in c.def
+// rather than via dllexport so vt_pty.cpp.obj stays safe to link into
+// unit tests that also pull in c.lib.
 extern "C" {
 
 int
@@ -2201,18 +2239,12 @@ void LIBC_NAMESPACE::internal::vt_pty_fork_reinit() {
   LIBC_NAMESPACE::internal::vt_pty::fork_reinit();
 }
 
-// First-use gate for inherited attached-PTY adoption. The InitFn
-// consumes the PEB-inherited reference and (if there's a recorded
-// attached pty id) adopts it as the process's current vt_pty session.
-//
-// Callers through pty_tree::current_attached_pty_id / has_current_attached_pty
-// observe adoption before they can ask "is there a current attached PTY?"
-// After exec_self_hollow() the gate is cleared via `.libclzr`, so the
-// new image re-runs adoption against its own PEB on the first query.
-//
-// Kept at `LIBC_NAMESPACE::internal` scope (not in the file's anonymous
-// namespace) so LIBC_REGISTER_LAZY_RESET's thunk can resolve the symbol
-// via its fully-qualified name.
+// First-use gate for inherited attached-PTY adoption: consumes the
+// PEB-inherited reference and adopts the recorded attached pty id as
+// the process's current vt_pty session. Cleared via `.libclzr` after
+// exec_self_hollow() so the new image re-runs adoption against its own
+// PEB. Kept at namespace scope (not anonymous) so the LIBC_REGISTER_LAZY_RESET
+// thunk can resolve its fully-qualified name.
 namespace LIBC_NAMESPACE_DECL {
 namespace internal {
 static int vt_pty_init_impl() {
@@ -2242,6 +2274,8 @@ LazyInit<&vt_pty_init_impl> g_vt_pty_init;
 namespace LIBC_NAMESPACE_DECL {
 namespace internal {
 namespace vt_pty {
+// Public hook that triggers the first-use gate. Callers in pty_tree query
+// this before claiming "no current attached PTY".
 void ensure_adoption() {
   ::LIBC_NAMESPACE::internal::g_vt_pty_init.ensure();
 }

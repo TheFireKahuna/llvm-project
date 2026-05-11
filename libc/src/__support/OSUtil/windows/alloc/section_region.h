@@ -9,7 +9,7 @@
 // SectionRegion composes SectionHandle + mapped view into a single owning
 // type for the common "create section, map it, use it, destroy it" pattern.
 //
-// Replaces the old SectionRegion in alloc/page_alloc.h with a primitive
+// Replaces the old SectionRegion in alloc/legacy/page_alloc.h with a primitive
 // built on PlaceholderRange + SectionHandle, providing:
 //   - Placeholder-backed mapping (no VA race windows)
 //   - Named section support (signal mailbox, FIFO)

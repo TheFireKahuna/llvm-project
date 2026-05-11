@@ -24,7 +24,7 @@
 #include "hdr/types/struct_msghdr.h"
 #include "hdr/types/struct_sockaddr.h"
 #include "include/llvm-libc-macros/sys-socket-macros.h"
-#include "src/__support/OSUtil/windows/alloc/page_alloc.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "hdr/types/struct_sockaddr_un.h"
 #include "src/__support/OSUtil/windows/ipc/afd_core.h"
 #include "src/__support/OSUtil/windows/fd/fd_table.h"

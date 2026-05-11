@@ -64,9 +64,11 @@
 #include "src/__support/OSUtil/windows/nt/nt_capabilities.h"
 #include "src/__support/OSUtil/windows/ipc/alpc_bus_state.h"
 #include "src/__support/OSUtil/windows/ipc/ipc_process_state.h"
-#include "src/__support/OSUtil/windows/memory/brk_process_state.h"
-#include "src/__support/OSUtil/windows/memory/mapping_table_process_state.h"
+#include "src/__support/OSUtil/windows/memory/legacy/brk_process_state.h"
+#include "src/__support/OSUtil/windows/memory/legacy/mapping_table_process_state.h"
 #include "src/__support/OSUtil/windows/nls_state.h"
+#include "src/__support/OSUtil/windows/nt_pal/nt_pal_process_state.h"
+#include "src/__support/OSUtil/windows/nt_pal/numa_topology.h"
 #include "src/__support/OSUtil/windows/process/console_process_state.h"
 #include "src/__support/OSUtil/windows/process/child_table_state.h"
 #include "src/__support/OSUtil/windows/process/console_tty_state.h"
@@ -242,6 +244,115 @@ public:
     return substrate_root_;
   }
 
+  // --- Pagemap sealed handles (populated by Tier A Phase 3) ---
+  //
+  // The flat 8 B / 64 KiB cookie-XOR'd tagged-pointer chunkmap (Layer 2)
+  // reserves its backing array once at libc init via the snmalloc-style
+  // `nt_pal::reserve_commit_readonly` (one syscall, `MEM_RESERVE | MEM_COMMIT`
+  // with `PAGE_READONLY`). Every PTE in the range is backed by the
+  // kernel's shared zero page; touched OS pages get upgraded to
+  // `PAGE_READWRITE` lazily via `nt_pal::protect()` on first publish.
+  // The reservation stays committed for the process lifetime — never
+  // decommitted — so every `pagemap_load_*` is wait-free and non-faulting
+  // from any context (SIGSEGV classifier, debug probes, fault classifier).
+  //
+  // `pagemap_cookie_` is a `ProcessPrng`-derived fork-stable XOR mask
+  // applied to every encoded entry word. Constraint: low byte must be
+  // zero so a freshly zero-filled (untouched) entry decodes to
+  // `VaChunkConsumer::Empty`. Sealed here so an arbitrary-write attacker
+  // cannot trivially inject controlled `(slot_idx, tag)` decode targets.
+  [[nodiscard]] LIBC_INLINE void *pagemap_base() const { return pagemap_base_; }
+  [[nodiscard]] LIBC_INLINE void *pagemap_end() const { return pagemap_end_; }
+  [[nodiscard]] LIBC_INLINE uintptr_t pagemap_cookie() const {
+    return pagemap_cookie_;
+  }
+
+  // --- Buddy arena sealed handles (populated by Tier A Phase 4) ---
+  //
+  // Layer 2's NBALLOC chunk broker reserves three immutable-for-lifetime
+  // VA regions at libc init: the 4 GiB compact-pointer partition, the
+  // ~512 KiB NBALLOC tree backing, and the ~8 MiB BuddyChunkDescriptor
+  // pool. All three bases plus the partition byte count and pool
+  // capacity are sealed here so the allocator hot path resolves them
+  // through hardware-immutable values — an arbitrary-write primitive
+  // cannot redirect chunk allocation by rewriting a BSS pointer to the
+  // partition / tree / descriptor pool.
+  //
+  // `buddy_arena_secret_` is a ProcessPrng-derived 64-bit key,
+  // non-zero by contract (init_seed_or_trap fail-closed). Used as the
+  // input seed to `derive_canary` for every BuddyChunkDescriptor's
+  // canary field; sealing it here prevents an attacker from forging
+  // canaries by rewriting a mutable seed cache.
+  [[nodiscard]] LIBC_INLINE void *buddy_partition_base() const {
+    return buddy_partition_base_;
+  }
+  [[nodiscard]] LIBC_INLINE size_t buddy_partition_bytes() const {
+    return buddy_partition_bytes_;
+  }
+  [[nodiscard]] LIBC_INLINE void *buddy_tree_base() const {
+    return buddy_tree_base_;
+  }
+  [[nodiscard]] LIBC_INLINE void *buddy_desc_pool_base() const {
+    return buddy_desc_pool_base_;
+  }
+  [[nodiscard]] LIBC_INLINE size_t buddy_desc_pool_capacity() const {
+    return buddy_desc_pool_capacity_;
+  }
+  [[nodiscard]] LIBC_INLINE uintptr_t buddy_arena_secret() const {
+    return buddy_arena_secret_;
+  }
+
+  // --- Partition layer sealed handles (populated by Tier A Phase 5) ---
+  //
+  // Layer 7 hardening's type-isolated 4 GiB VA partitions index. Three
+  // lifetime-immutable sealed pointers (the per-fork-mutable
+  // `partition_secret_` lives in Zone 0b — see `PcbZone0b` below):
+  //
+  //   * `partition_coarse_pagemap_` — snmalloc-style flat partition-
+  //     granularity index (256 KiB reserved, lazy-commit). Indexed by
+  //     `(addr - coverage_base) >> 32`; one entry per 4 GiB of user VA.
+  //     Hot-path `partition::lookup(addr)` does one ACQUIRE load on this
+  //     array — wait-free, ~3 ns. Sealed so an arbitrary-write attacker
+  //     cannot redirect every partition membership lookup by rewriting a
+  //     mutable pointer.
+  //
+  //   * `partition_reserve_table_` — pointer to the file-scope
+  //     `ReserveTable` (64-slot lock-free open-addressed hash on packed
+  //     `(class, numa_node)`). Used by `reserve_or_grow` for
+  //     deduplication of in-flight reservations. Sealed for the same
+  //     reason as the coarse pagemap — the hash table contents are
+  //     mutable, but the pointer-to-table is immutable.
+  //
+  //   * `partition_desc_pool_base_` — pointer to the 32 KiB descriptor
+  //     pool VA. Each `PartitionDescriptor` is 128 B (cache-line-pair
+  //     aligned). The pool is allocated via AtomicBitmap with
+  //     trap-on-collision; pool memory is never freed for the process
+  //     lifetime (Crystalline-W discipline).
+  [[nodiscard]] LIBC_INLINE void *partition_coarse_pagemap() const {
+    return partition_coarse_pagemap_;
+  }
+  [[nodiscard]] LIBC_INLINE void *partition_reserve_table() const {
+    return partition_reserve_table_;
+  }
+  [[nodiscard]] LIBC_INLINE void *partition_desc_pool_base() const {
+    return partition_desc_pool_base_;
+  }
+
+  // --- NUMA topology snapshot (populated by Tier A Phase 0) ---
+  //
+  // CPU-to-node table sourced from
+  // `NtQuerySystemInformationEx(SystemLogicalProcessorInformationEx,
+  //                             RelationNumaNode, ...)`
+  // at `pal_init_fn`. Stored inline so the partition-layer NUMA selector,
+  // sched_getcpu, and the numa_ops syscalls all read it through hardware-
+  // immutable bytes — an arbitrary-write primitive cannot steer NUMA-
+  // affined reservations to attacker-chosen replicas. Survives fork via
+  // CoW (NT preserves NUMA layout across `RtlCloneUserProcess`); no
+  // Zone 0b rewrite path.
+  [[nodiscard]] LIBC_INLINE const windows::NumaTopology &numa_topology() const {
+    return numa_topology_;
+  }
+
 private:
   // --- Cache line 0: read-only constants ---
 
@@ -290,7 +401,53 @@ private:
   uintptr_t substrate_secret_;                 //   8 B  ProcessPrng, !=0
   uintptr_t substrate_token_key_;              //   8 B  ProcessPrng, !=0, indep
   void *substrate_root_;                       //   8 B  &g_substrate
-                                               // = 128 B used (prev 104)
+                                               // = 128 B used
+
+  // --- Pagemap sealed handles (populated by Tier A Phase 3) ---
+  // Stay-committed `PAGE_READONLY` reservation backed by the kernel
+  // shared zero page (snmalloc `notify_using_readonly` pattern). No
+  // commit-state machine, no per-page refcounts — every entry is
+  // wait-free, non-faulting from any context. Three sealed values:
+  //   * `pagemap_base_` / `pagemap_end_` — flat array bounds.
+  //   * `pagemap_cookie_` — ProcessPrng-derived XOR mask applied to
+  //     every encoded `(slot_idx, tag)` word. Low byte == 0 so a
+  //     freshly zero-filled entry decodes to `VaChunkConsumer::Empty`.
+  //     Sealed for the same reason as `buddy_arena_secret_`: an
+  //     arbitrary-write attacker cannot forge controlled decode targets.
+  void *pagemap_base_;                         //   8 B  flat array base
+  void *pagemap_end_;                          //   8 B  flat array end (exclusive)
+  uintptr_t pagemap_cookie_;                   //   8 B  ProcessPrng XOR mask, low byte == 0
+                                               // = 152 B used
+
+  // --- Buddy arena sealed handles (populated by Tier A Phase 4) ---
+  // Six lifetime-immutable values for Layer 2's NBALLOC chunk broker.
+  // Hot-path lookups (alloc / free / canary derive) read directly from
+  // these sealed bytes — no BSS pointer indirection that an attacker
+  // with arbitrary-write could redirect.
+  void *buddy_partition_base_;                 //   8 B  4 GiB compact-pointer partition VA
+  size_t buddy_partition_bytes_;               //   8 B  partition size (= 4 GiB)
+  void *buddy_tree_base_;                      //   8 B  NBALLOC tree storage VA
+  void *buddy_desc_pool_base_;                 //   8 B  BuddyChunkDescriptor pool VA
+  size_t buddy_desc_pool_capacity_;            //   8 B  descriptor pool slot count
+  uintptr_t buddy_arena_secret_;               //   8 B  ProcessPrng canary key, !=0
+                                               // = 200 B used
+
+  // --- Partition layer sealed handles (populated by Tier A Phase 5) ---
+  // Three lifetime-immutable values for Layer 7 hardening's partition
+  // index. Sealed so an arbitrary-write primitive cannot redirect
+  // partition lookup, reservation deduplication, or descriptor allocation.
+  // The per-fork-mutable canary key (`partition_secret`) lives in Zone 0b
+  // alongside the kernel-supplied `process_cookie`.
+  void *partition_coarse_pagemap_;             //   8 B  CoarsePagemap VA (256 KiB reservation)
+  void *partition_reserve_table_;              //   8 B  ReserveTable VA (file-scope, 1024 B)
+  void *partition_desc_pool_base_;             //   8 B  PartitionDescriptor pool VA (32 KiB)
+                                               // = 224 B used
+
+  // --- NUMA topology snapshot (populated by Tier A Phase 0) ---
+  // Inline 264 B (8 B header + 256 B cpu_to_node table). Sized at compile
+  // time from `kNumaCpuTableSize`; sealed with the rest of Zone 0.
+  windows::NumaTopology numa_topology_;        // 264 B
+                                               // = 488 B used
 
   // Explicit padding to page boundary. All mutable fields live in Zone 0b
   // (page 1) or Zone 1 (page 2+). The static_assert below verifies size.
@@ -300,12 +457,13 @@ private:
   // static_assert keeps a confusing "negative array bound" diagnostic
   // from blocking the actual root cause if the filter table ever grows
   // past the page budget.
-  static_assert(128 + sizeof(windows::VehSealedState) < 4096,
-                "VehSealedState + substrate fields exceed Zone 0 page "
-                "budget — reduce VEH_MAX_FILTERS or shrink VehFilter");
+  static_assert(488 + sizeof(windows::VehSealedState) < 4096,
+                "VehSealedState + substrate + pagemap + buddy + partition + "
+                "numa_topology fields exceed Zone 0 page budget — reduce "
+                "VEH_MAX_FILTERS or shrink VehFilter");
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-private-field"
-  uint8_t _pad[4096 - 128 - sizeof(windows::VehSealedState)];
+  uint8_t _pad[4096 - 488 - sizeof(windows::VehSealedState)];
 #pragma clang diagnostic pop
 };
 
@@ -335,6 +493,29 @@ public:
     return dll_notify_cookie_;
   }
 
+  // ProcessPrng-derived 64-bit canary key for Layer 7 partition descriptors
+  // (`canary = process_cookie ^ partition_secret ^ uintptr_t(base) ^
+  // descriptor_seq`, see partition.cpp::compute_canary). Re-rolled on fork
+  // by `partition_fork_reinit` inside the Zone 0b unseal window. Lives
+  // here rather than Zone 0 so the fork-time rotation is hardware-legal —
+  // Zone 0 is sealed PAGE_READONLY for the process lifetime.
+  [[nodiscard]] LIBC_INLINE uintptr_t partition_secret() const {
+    return partition_secret_;
+  }
+
+  // Per-process cookie probed at libc init via
+  // `NtQueryInformationProcess(ProcessCookie /* class 36 */)`. Re-probed
+  // by `pal_fork_reinit_impl` inside the Zone 0b unseal window because
+  // the kernel rerolls this value across `RtlCloneUserProcess`. Sealed
+  // PAGE_READONLY at runtime so an arbitrary-write primitive cannot
+  // poison the cookie ahead of every encoded freelist pointer or shift
+  // the partition descriptor canary's XOR inputs (see
+  // NTPOSIX_MEMORY_ARCHITECTURE_DESIGN.md §17.2 #7). Non-zero on a
+  // healthy process; zero is the "not yet probed" sentinel.
+  [[nodiscard]] LIBC_INLINE uint32_t process_cookie() const {
+    return process_cookie_;
+  }
+
   // Canary validation — public read, safe for any caller.
   [[nodiscard]] LIBC_INLINE bool check_canary() const {
     return zone_canary_ == (security_cookie_ ^ PCB_CANARY_MAGIC);
@@ -348,10 +529,14 @@ private:
   uintptr_t zone_canary_;                      //   8 B
   void *dll_notify_cookie_;                    //   8 B  combined LdrRegisterDllNotification
                                                // = 40 B
+  uintptr_t partition_secret_;                 //   8 B  ProcessPrng canary key, !=0
+  uint32_t process_cookie_;                    //   4 B  NtQueryInformationProcess(ProcessCookie)
+  [[maybe_unused]] uint32_t _reserved0_;       //   4 B  pad to 8-byte align
+                                               // = 56 B
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-private-field"
-  uint8_t _pad[4096 - 40];
+  uint8_t _pad[4096 - 56];
 #pragma clang diagnostic pop
 };
 
@@ -407,13 +592,17 @@ struct alignas(4096) ProcessControlBlock {
   // SIGNAL SUBSYSTEM
   //
   // Canonical process-wide signal state: handlers, dispatch routing,
-  // latest SIGCHLD snapshot, stop coordination, inherited child state,
-  // and ALPC transport cache.
+  // stop coordination, inherited child state, and ALPC transport cache.
+  // Rich signal payloads (SIGCHLD code/pid/status/utime/stime, SIGEV_SIGNAL
+  // timer info, cross-process kill sender id) live separately in the
+  // wait-free Crystalline-backed signal/payload/ subsystem.
   // ==================================================================
 
   signal_state::SignalHandlerState signal_handler;
   signal_state::SignalDispatchState signal_dispatch;
-  signal_state::SignalSigchldState signal_sigchld;
+  // SIGCHLD payload now lives in signal/payload/sig_payload.{h,cpp} —
+  // wait-free Crystalline-backed per-signum atomic latest-event pointer.
+  // No PCB-resident SIGCHLD state remains.
   signal_state::SignalTransportState signal_transport;
   signal_state::SignalChildState signal_child;
   signal_state::SignalStopState signal_stop;
@@ -456,6 +645,16 @@ struct alignas(4096) ProcessControlBlock {
   // counter, diagnostic counters, guard-array watermark).
   // ------------------------------------------------------------------
   windows::memory::MappingTableProcessState mapping_table;
+
+  // ------------------------------------------------------------------
+  // Layer 0 PAL state — process cookie, large-pages availability,
+  // partition base table. Probed once at libc init via the `.libcmem$P0`
+  // handler in `nt_pal/pal_init.cpp` and re-probed after fork. Replaces
+  // three file-scope atomics that used to live in `pal_init.cpp`; the
+  // PCB home buys uniform fork-COW handling and avoids namespace-scope
+  // dtor pressure.
+  // ------------------------------------------------------------------
+  internal::NtPalProcessState nt_pal;
 
   // ==================================================================
   // THREADS — registry + wait infrastructure
@@ -596,6 +795,25 @@ struct PcbZone0LayoutCheck {
                     offsetof(PcbZone0, substrate_token_key_) +
                         sizeof(uintptr_t),
                 "substrate_root_ must follow substrate_token_key_");
+  static_assert(offsetof(PcbZone0, pagemap_base_) ==
+                    offsetof(PcbZone0, substrate_root_) + sizeof(void *),
+                "pagemap_base_ must follow substrate_root_");
+  static_assert(offsetof(PcbZone0, pagemap_end_) ==
+                    offsetof(PcbZone0, pagemap_base_) + sizeof(void *),
+                "pagemap_end_ must follow pagemap_base_");
+  static_assert(offsetof(PcbZone0, pagemap_cookie_) ==
+                    offsetof(PcbZone0, pagemap_end_) + sizeof(void *),
+                "pagemap_cookie_ must follow pagemap_end_");
+
+  // numa_topology_ is the last named field before _pad. Assert it
+  // immediately follows the partition handles so the Zone 0 size
+  // accounting in the page-budget static_assert (488 B used) stays
+  // honest even if a refactor renames or repacks the partition block.
+  static_assert(offsetof(PcbZone0, numa_topology_) ==
+                    offsetof(PcbZone0, partition_desc_pool_base_) +
+                        sizeof(void *),
+                "numa_topology_ must immediately follow the partition "
+                "sealed handles");
 };
 
 struct PcbZone0bLayoutCheck {
@@ -607,6 +825,11 @@ struct PcbZone0bLayoutCheck {
                 "Security cookie follows parent_pid");
   static_assert(offsetof(PcbZone0b, dll_notify_cookie_) == 32,
                 "dll_notify_cookie must follow zone_canary");
+  static_assert(offsetof(PcbZone0b, partition_secret_) == 40,
+                "partition_secret must follow dll_notify_cookie "
+                "(natural 8-byte alignment, no padding)");
+  static_assert(offsetof(PcbZone0b, process_cookie_) == 48,
+                "process_cookie must follow partition_secret");
 };
 
 // Both zones are exactly one page (4096 bytes on x64).

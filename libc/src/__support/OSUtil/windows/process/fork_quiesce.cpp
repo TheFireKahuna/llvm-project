@@ -44,7 +44,7 @@
 
 #include "src/__support/File/file.h"
 #include "src/__support/OSUtil/windows/libc_subsystem_init.h"
-#include "src/__support/OSUtil/windows/memory/mmap_lock.h"
+#include "src/__support/OSUtil/windows/memory/va_tracker.h"
 #include "src/__support/OSUtil/windows/process_control_block.h"
 #include "src/__support/OSUtil/windows/section_registry.h"
 #include "src/__support/macros/config.h"
@@ -100,7 +100,12 @@ static void flush_all_streams() {
 // correct shape for this protocol.
 
 static void acquire_critical_locks() {
-  windows::g_mmap_lock.acquire_exclusive();
+  // No global VA writer-lock under the va_tracker design — concurrent
+  // disjoint mutators serialise per-skiplist-node. Pre-fork drain advances
+  // the Crystalline grace on both va_tracker domains (single-shot barrier;
+  // no paired release — child resets via va_tracker_fork_reinit at fork
+  // priority 39).
+  windows::va_tracker::pre_fork_drain();
   g_pcb.environment.lock.lock();
   g_pcb.signal_handler.lock.lock();
   g_pcb.child_table.lock.lock();
@@ -110,7 +115,7 @@ static void release_critical_locks() {
   g_pcb.child_table.lock.unlock();
   g_pcb.signal_handler.lock.unlock();
   g_pcb.environment.lock.unlock();
-  windows::g_mmap_lock.release_exclusive();
+  // No counterpart for pre_fork_drain — see acquire_critical_locks above.
 }
 
 // =========================================================================

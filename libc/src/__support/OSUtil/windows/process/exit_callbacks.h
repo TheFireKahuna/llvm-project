@@ -15,7 +15,7 @@
 #ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_EXIT_CALLBACKS_H
 #define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_EXIT_CALLBACKS_H
 
-#include "src/__support/OSUtil/windows/memory/commit_region.h"
+#include "src/__support/OSUtil/windows/memory/legacy/commit_region.h"
 #include "src/__support/OSUtil/windows/alloc/page_size.h"
 #include "src/__support/common.h"
 #include "src/__support/macros/config.h"

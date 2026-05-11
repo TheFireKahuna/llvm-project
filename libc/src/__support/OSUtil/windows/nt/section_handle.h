@@ -29,7 +29,7 @@
 #ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_NT_SECTION_HANDLE_H
 #define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_NT_SECTION_HANDLE_H
 
-#include "src/__support/OSUtil/windows/memory/view_spec.h"
+#include "src/__support/OSUtil/windows/memory/legacy/view_spec.h"
 #include "src/__support/OSUtil/windows/nt/nt_memory_api.h"
 #include "src/__support/OSUtil/windows/nt/nt_memory_helpers.h"
 #include "src/__support/OSUtil/windows/nt/nt_memory_types.h"

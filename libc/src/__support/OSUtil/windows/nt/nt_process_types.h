@@ -1,10 +1,16 @@
-//===-- NT thread, process, and system type definitions --------- *- C++
-//-*-===//
+//===-- nt_process_types.h - NT process / thread / system types -*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
+//===----------------------------------------------------------------------===//
+///
+/// \file
+/// NT process / thread / system kernel-type layouts (validated against phnt
+/// and ntdll disassembly). Layouts the libc depends on are pinned with
+/// `static_assert`; targets Windows 11 build 22631+.
+///
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_NT_PROCESS_TYPES_H
@@ -525,6 +531,10 @@ inline constexpr ULONG ProcessImageSection =
 // Buffer is a single ULONG containing MEM_EXECUTE_OPTION_* flags.
 inline constexpr ULONG ProcessExecuteFlags =
     34; // qs: ULONG (MEM_EXECUTE_OPTION_*) — DEP / NX enforcement
+inline constexpr ULONG ProcessCookie =
+    36; // q: ULONG — per-process random cookie. Probed once at libc init,
+        // cached in RX-only memory, used as canary/freelist seed (Layer 0
+        // PAL invariant — see NTPOSIX_MEMORY_ARCHITECTURE_DESIGN §17.2).
 
 // MEM_EXECUTE_OPTION_* flags for ProcessExecuteFlags.
 inline constexpr ULONG MEM_EXECUTE_OPTION_DISABLE = 0x1;
