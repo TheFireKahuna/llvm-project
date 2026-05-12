@@ -6,13 +6,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implements the §17.3 risk #1 mitigation named in
-// `NTPOSIX_MEMORY_ARCHITECTURE_DESIGN.md:1518` and gated on Phase 3 by
-// `ROADMAP.md:1315`. Composes the generic concurrent_fuzz framework
+// Property-based linearizability fuzzer for `va_tracker`. Composes the
+// generic concurrent_fuzz framework
 // (`libc/test/src/__support/concurrent_fuzz/`) with a SUT adapter +
-// oracle for `va_tracker` to verify linearizability of every public
-// va_tracker mutator/reader against a sequential interval-map
-// reference.
+// oracle that verifies every public va_tracker mutator/reader linearises
+// against a sequential interval-map reference.
 //
 // SUT op surface (both SUT and oracle agree on the abstract spec):
 //
@@ -352,14 +350,15 @@ void oracle_reset_impl_cb(void *ctx) {
 }
 
 // ===========================================================================
-// SUT adapter — translates Op → va_tracker typed-op call (post-2026-05-10
-// API pivot from §8.2 insert/erase/protect/split_at/coalesce_around to
-// typed acquire/release/replace/mutate/split). The abstract op semantics
-// the oracle models are preserved by composing the typed ops:
+// SUT adapter — translates Op → va_tracker typed-op call
+// (acquire / release / replace / mutate / split). The abstract op
+// semantics the oracle models are preserved by composing the typed ops:
 //
 //   INSERT  → split lo + split hi + acquire (on MEM_FREE) / replace (on
 //             EEXIST). Replace gives the same overwrite-overlap semantic
-//             the original §8.2 insert had, atomically.
+//             — atomically replace every interval overlapping [lo, hi)
+//             with one [lo, hi)→value_id entry — that the abstract
+//             INSERT op specifies.
 //   ERASE   → split lo + split hi + release.
 //   PROTECT → split lo + split hi + mutate (mutator writes the new
 //             flags onto the published clone).
@@ -953,8 +952,7 @@ cf::GenParams default_params(uint64_t va_window_offset) {
   // linearizability checker reports as Mismatch. Re-enabling
   // thread_count >= 2 requires a SUT refactor that maps each abstract
   // op to a single typed-op call (acquire / replace / release / mutate
-  // / split) and an oracle that mirrors those exact semantics — see
-  // memory `project_va_tracker_typed_op_gaps.md`.
+  // / split) and an oracle that mirrors those exact semantics.
   p.thread_count = 1;
   p.value_cardinality = 4;
   p.weights.kind_count = kOpKindCount;

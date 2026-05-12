@@ -668,16 +668,14 @@ void run_scenario_5() {
 // ====================================================================
 //
 // The slow_path / help_thread split that this scenario wants to
-// observe directly is pending the detach_nodes extraction from
-// slow_path + help_thread (still open per the cross-cutting
-// Crystalline-W tracking task in current/ROADMAP.md). Without that
-// split there is no observable boundary between "spilled retires
-// drained via slow_path" and "drained via help_thread" — the two
-// share the same per-slot try_retire body and the test would not
-// add coverage beyond what scenario 7's adversarial race already
-// exercises end-to-end.
+// observe directly is pending the `detach_nodes` extraction from
+// `slow_path` + `help_thread`. Without that split there is no
+// observable boundary between "spilled retires drained via slow_path"
+// and "drained via help_thread" — the two share the same per-slot
+// try_retire body and the test would not add coverage beyond what
+// scenario 7's adversarial race already exercises end-to-end.
 //
-// Land scenario 6 in the same PR that extracts detach_nodes.
+// Land scenario 6 in the same PR that extracts `detach_nodes`.
 
 void run_scenario_6() {
   wstr("scenario 6: SlowPathReclaim DEFERRED (detach_nodes pending)\n");

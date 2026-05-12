@@ -6,9 +6,13 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Verification target called out by the unified region/shape redesign plan
-// (`humble-roaming-lampson.md`, step 4 of "Verification") and the only stress
-// path that exercises file-backed Copy-on-Write on the new shape pipeline:
+// Stress path for file-backed Copy-on-Write on the unified region/shape
+// pipeline — the only test that exercises MAP_PRIVATE on a real disk file
+// (not anonymous, not shared) and the legacy region/shape teardown machinery
+// it sits on top of. Note: this test targets the legacy mmap engines in
+// `memory/legacy/`; the comment block below names legacy mechanism IDs
+// (MONO/CHUNKED, RegionDesc, CowContext, commit_remap) verbatim until the
+// Layer 8 P3 cutover rewires the test to typed va_tracker ops.
 //
 //   * MAP_PRIVATE on a real disk file (not anonymous, not shared).
 //   * `RegionDesc.flags & REGION_FLAG_COW` must drive `CowContext::save_cow_pages`
@@ -17,9 +21,9 @@
 //     section view is unmapped during the MONO→CHUNKED promotion.
 //   * The MONO→CHUNKED shape promotion must serialize cleanly under multiple
 //     concurrent partial-unmap punches into the same region.
-//   * The `commit_remap` rollback path (replacing the silent slot drop at the
-//     old `remap_transaction.cpp:147`) must keep the surviving fragment(s)
-//     and the underlying section refcount consistent.
+//   * The `commit_remap` rollback path must keep the surviving fragment(s)
+//     and the underlying section refcount consistent — a silent slot drop
+//     during rollback strands the CoW context and leaks the section refcount.
 //   * The backing file content is a separate witness: CoW writes must never
 //     leak into the file regardless of the partial-unmap shape we drive.
 //

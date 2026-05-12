@@ -19,10 +19,10 @@
 // unpinned — schedule-level coverage still applies, only the ART arena
 // routing diversity weakens.
 //
-// Thread entry must be MS-ABI per CLAUDE.md (NT calls into the entry
-// under MS x64). The framework's caller-visible `SutApplyFn` signature
-// is SysV (libc-internal); the worker pool wraps SysV ↔ MS-ABI at the
-// thread-entry boundary.
+// Thread entry must be MS-ABI: NT calls the entry point under MS x64.
+// The framework's caller-visible `SutApplyFn` signature is SysV (the
+// libc-internal default for these targets); the worker pool wraps
+// SysV ↔ MS-ABI at the thread-entry boundary.
 //
 //===----------------------------------------------------------------------===//
 

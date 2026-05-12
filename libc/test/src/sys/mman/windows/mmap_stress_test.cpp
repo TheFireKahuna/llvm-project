@@ -20,6 +20,15 @@
 //  10. Concurrent mmap + mremap + munmap — full lifecycle contention.
 //  11. Tombstone accumulation — distinct-address churn.
 //
+// NOTE: This test still drives the legacy mmap engines under
+// `memory/legacy/` — the per-TEST comment blocks below name legacy
+// machinery verbatim (`MmapLockWriterGuard`, `MappingTable`, region_id
+// state-machine slots). Those comments are intentionally not rewritten
+// in this sweep; they will be reworded when the Layer 8 P3 cutover
+// rewires the underlying mmap implementations to typed va_tracker ops,
+// at which point both the test bodies and the comments need to land
+// together.
+//
 //===----------------------------------------------------------------------===//
 
 #include "src/sys/mman/mmap.h"

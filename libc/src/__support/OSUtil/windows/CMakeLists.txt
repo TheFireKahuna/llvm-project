@@ -2029,6 +2029,7 @@ add_object_library(
     .memory_lock_policy_state
     .nt_pal
     .ntdll
+    .va_tracker
     .veh_core
     .veh_filter_registry
     libc.src.__support.CPP.atomic

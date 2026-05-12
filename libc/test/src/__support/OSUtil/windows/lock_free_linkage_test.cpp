@@ -475,8 +475,10 @@ TEST(LlvmLibcLockFreeLinkageTest,
 // `link_cas_snap_relink` strong-CAS publishes (state, next) atomically
 // from a captured snap. The state byte transitions to To while the
 // next-pointer advances; reserved bits preserved. This is the
-// interval-skiplist Swap linearisation primitive (Kim et al. SOSP 2025
-// Algorithm 2).
+// interval-skiplist Swap linearisation primitive: one atomic write
+// commits both the per-level state transition and the new successor,
+// so a concurrent reader either sees the predecessor-state with the old
+// successor or the successor-state with the new — never a torn pair.
 TEST(LlvmLibcLockFreeLinkageTest, LinkCasSnapRelinkPublishesAtomically) {
   reset_pool();
   // Predecessor with reserved bits set, state LOCKED (M_PARKED used as

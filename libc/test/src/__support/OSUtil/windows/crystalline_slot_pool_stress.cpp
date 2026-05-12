@@ -236,7 +236,7 @@ ThreadRing g_rings[kMaxThreads];
 // (success or fail) made by harris_walk_attempt. Populated by the
 // LFL_TRACE_BRANCH hook the substrate calls at every branch entry.
 //
-// Branch IDs (mirror lock_free_linkage.h doc):
+// Branch IDs (mirror the LFL_TRACE_BRANCH IDs the substrate emits):
 //   1 = mark-prev help splice
 //   2 = dead-prev splice
 //   3 = mark-curr help splice
@@ -545,10 +545,12 @@ void lfl_trace_branch_impl(int branch_id, unsigned parent,
 }
 
 // Stale-publish discriminator. A post-CAS load of slot[c_next] alone is
-// AMBIGUOUS — see LFL_VALIDATE_PUBLISH doc in lock_free_linkage.h. The
-// substrate could have published a c_next that was perfectly valid at
-// CAS time, but a peer raced to splice + freelist_push it before our
-// load.
+// AMBIGUOUS: the substrate could have published a c_next that was
+// perfectly valid at CAS time, but a peer raced to splice +
+// freelist_push it before our load. The hook below disambiguates by
+// walking the active chain (see Trap rationale block below) — what the
+// substrate's `LFL_VALIDATE_PUBLISH` hook gives consumers in exchange
+// for sealing the publish.
 //
 // To distinguish stale-at-CAS from race-after-CAS, walk the active
 // chain when we see post.state == FREE: if any slot reachable from

@@ -18,8 +18,9 @@
 // thread-join NTSTATUS handshake.
 //
 // TSC is bracketed by `LFENCE` per Intel's invariant-TSC guidance; on
-// the x86-64-v3 floor this codebase enforces (CLAUDE.md), the result is
-// monotonic across CPUs and sufficient for real-time-order extraction.
+// the x86-64-v3 baseline the libc targets (Haswell-or-later / Zen-or-later
+// — invariant TSC universally available), the result is monotonic across
+// CPUs and sufficient for real-time-order extraction.
 //
 //===----------------------------------------------------------------------===//
 

@@ -1,7 +1,11 @@
-# Memory subsystem hermetic tests — drive g_region_pool / g_mapping_table /
-# region_reconcile directly, mostly via the public mmap surface. Each test
-# below establishes a load-bearing invariant of the new region-and-shape
-# design (alloc_id ABA, MONO->CHUNKED promotion, FOREIGN cordon, etc.).
+# Memory subsystem hermetic tests — drive the va_tracker substrate
+# (ART index + interval skiplist + RegionDesc + Crystalline-W SMR)
+# directly, mostly via the typed-op surface (acquire / release / replace
+# / mutate / split). Each test below establishes a load-bearing invariant
+# of the Phase 1 memory architecture: per-leaf Lock/Swap/Unlock
+# linearisation in the skiplist, ART 2-slot pin rotation, the
+# Crystalline-W per-pointer pin lifetime contract, and the placeholder
+# state machine the nt_pal PAL exposes.
 add_subdirectory(alloc)
 add_subdirectory(memory)
 
@@ -140,10 +144,8 @@ add_libc_unittest(
 )
 
 # Property-based linearizability fuzzer for the ART × interval-skiplist
-# × Crystalline-W composition. Mitigates the §17.3 risk #1 named in
-# `NTPOSIX_MEMORY_ARCHITECTURE_DESIGN.md` and gates Phase 3 cutover per
-# `ROADMAP.md`. Built on the generic `concurrent_fuzz` framework
-# (history-recording + sequential-reference replay + Wing-Gibbons
+# × Crystalline-W composition. Built on the generic `concurrent_fuzz`
+# framework (history-recording + sequential-reference replay + Wing-Gibbons
 # linearizability checker + delta-debugging shrinker).
 add_libc_unittest(
   interval_skiplist_lin_fuzz_test

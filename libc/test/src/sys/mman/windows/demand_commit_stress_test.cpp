@@ -112,7 +112,9 @@ TEST_F(LlvmLibcDemandCommitStressTest, ConcurrentDemandCommit) {
 // ---------------------------------------------------------------------------
 // 2. MADV_WILLNEED on SEC_RESERVE — proactive commit.
 //    After WILLNEED, pages should be committed and accessible without
-//    triggering VEH faults. Verifies the P4 fix.
+//    triggering the demand-commit VEH fault path: WILLNEED is supposed to
+//    pull every page in range from RESERVED to COMMITTED up front, so a
+//    subsequent read/write touches resident memory, not a faulting VAD.
 // ---------------------------------------------------------------------------
 
 TEST_F(LlvmLibcDemandCommitStressTest, WillneedCommitsReserve) {

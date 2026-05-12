@@ -7,10 +7,18 @@
 //===----------------------------------------------------------------------===//
 //
 // `MEM_WRITE_WATCH` enables per-page dirty tracking on `MEM_PRIVATE`
-// regions at zero additional syscall cost — the flag is set on the
-// commit syscall (always; see `nt_pal::commit_replace` invariant) and
-// the kernel maintains a one-bit-per-page bitmap updated by the
-// hardware PTE dirty mechanism.
+// regions at zero additional syscall cost: the kernel maintains a
+// one-bit-per-page bitmap updated by the hardware PTE dirty mechanism.
+//
+// Arming WW is opt-in. `nt_pal::commit_replace_writewatch` is the only
+// commit entry point that sets the flag; the default `commit_replace`
+// does NOT arm WW. The split is load-bearing: WW-armed VADs cannot be
+// sub-range released (the kernel returns `STATUS_FREE_VM_NOT_AT_BASE`
+// from `NtFreeVirtualMemory`), so paying WW universally would forfeit
+// the partial-unmap and split-remap paths. Consumers that need dirty
+// telemetry (fork CoW preservation, slab reclaim, mremap split-remap
+// survivor detection) ask for WW explicitly; the rest of the surface
+// keeps the cheaper plain-commit VAD.
 //
 // `write_watch_get_reset` is the canonical query+reset entry point —
 // atomic (no race window between query and reset), the primary path

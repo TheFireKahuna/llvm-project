@@ -11,18 +11,17 @@
 Enforce the Layer 0 PAL invariant: every `MEM_COMMIT` allocation-type use
 in the libc tree lives inside `nt_pal::`.
 
-`NTPOSIX_MEMORY_ARCHITECTURE_DESIGN` §6.0 + §17.1 require that every
-private commit pairs `MEM_COMMIT` with `MEM_WRITE_WATCH`, so the
-dirty-page bitmap is universally available (fork CoW preservation,
-`MADV_DONTNEED` fast paths, slab reclaim telemetry, mremap split-remap
-dirty detection). The architectural fix is to route every commit through
-`nt_pal::commit_replace` (which has no opt-out for `MEM_WRITE_WATCH`),
-`nt_pal::commit_replace_large` (the documented carve-out — the kernel
-rejects `MEM_LARGE_PAGES + MEM_WRITE_WATCH`, MMAP_OPTIMIZATION_RESEARCH
-§17.9), or one of the small set of explicit no-watch entry points in
-`nt_pal/placeholder.h`. Any direct
-`NtAllocateVirtualMemoryEx(..., MEM_COMMIT, ...)` outside the PAL
-silently violates the invariant and motivates this gate.
+The Layer 0 PAL is the only surface allowed to issue commit syscalls.
+That confines three concerns to one place: the `MEM_COMMIT` /
+`MEM_RESERVE` placeholder state machine; the opt-in `MEM_WRITE_WATCH`
+flag (armed by `nt_pal::commit_replace_writewatch`, omitted by the
+default `commit_replace` because WW-armed VADs reject sub-range release
+with `STATUS_FREE_VM_NOT_AT_BASE`); and the documented large-page
+carve-out (`nt_pal::commit_replace_large`, since the kernel rejects
+`MEM_LARGE_PAGES + MEM_WRITE_WATCH`). Direct
+`NtAllocateVirtualMemoryEx(..., MEM_COMMIT, ...)` outside the PAL routes
+around all three and silently desynchronises consumers from the
+placeholder/VAD state they rely on; this gate exists to prevent that.
 
 The script greps the libc tree for `MEM_COMMIT`, suppresses occurrences
 that are clearly comments or state-query reads (`mbi.State == MEM_COMMIT`,
