@@ -593,6 +593,53 @@ private:
     return pool_.at(idx);
   }
 
+  // Refresh the per-thread snapshot of the active-slot chain if the pool's
+  // chain_version has moved since the last refresh. Returns true when the
+  // cache is usable (a subsequent walk should iterate
+  // batch.cached_active_slots[0 .. cached_count)); returns false when the
+  // active chain at refresh time exceeded kCrystallineSnapshotCapacity —
+  // the caller must fall through to direct chain traversal.
+  //
+  // Two staleness modes are tolerated by every walker call site:
+  //
+  //   (a) A slot claimed AFTER the snapshot. era[j].pair[0] = 0 from
+  //       reset_slot_fields, max_era_seen = 0; min_era >= 1 (era_ starts
+  //       at 1 in init_registration). Per-index era_v < min_era and the
+  //       E8 max_era_seen < min_era fast-skip both exclude it; missing
+  //       the slot is safe.
+  //
+  //   (b) A slot RELEASED after the snapshot. release_slot_trampoline
+  //       drains every first[j].list[0] to crystalline_inv_ptr() before
+  //       the harris splice; the per-index first == invptr filter
+  //       excludes the slot. max_era_seen may still carry a stale-high
+  //       value from the prior owner, but the invptr filter fires before
+  //       any era check.
+  //
+  // Lemma 5.2 / 5.3 bounds preserved: the cache shortens the eligibility
+  // loop from |active chain| to |cached|, and |cached| <= |active chain|
+  // by construction. The overflow path reverts to the paper's exact
+  // loop bound.
+  LIBC_INLINE bool refresh_active_snapshot(CrystallineBatch &batch) {
+    uint64_t cv = pool_.chain_version();
+    if (cv == batch.cached_chain_version && batch.cached_overflow == 0)
+      return true;
+    uint32_t count = 0;
+    for (uint16_t idx = pool_.active_head(); idx != 0;
+         idx = pool_.active_next(idx)) {
+      if (count >= kCrystallineSnapshotCapacity) {
+        batch.cached_overflow = 1;
+        batch.cached_count = 0;
+        batch.cached_chain_version = cv;
+        return false;
+      }
+      batch.cached_active_slots[count++] = idx;
+    }
+    batch.cached_count = count;
+    batch.cached_overflow = 0;
+    batch.cached_chain_version = cv;
+    return true;
+  }
+
   // -----------------------------------------------------------------------
   // Reclamation helpers — ported from the reference, no algorithmic
   // changes.
@@ -708,6 +755,13 @@ private:
       curr_era = current_era();
     }
     my.era[index].pair[0].store(curr_era, cpp::MemoryOrder::SEQ_CST);
+    // E8 mirror — keep max_era_seen tracking the largest era ever
+    // published into this slot's era[] array so try_retire Phase A
+    // can fast-skip stale slots with one RELAXED load. Owner-exclusive
+    // write on the owner's own slot; no CAS needed.
+    uint64_t prev_max = my.max_era_seen.load(cpp::MemoryOrder::RELAXED);
+    if (curr_era > prev_max)
+      my.max_era_seen.store(curr_era, cpp::MemoryOrder::RELAXED);
     return curr_era;
   }
 
@@ -817,6 +871,17 @@ private:
       my.era[index].full.compare_exchange_strong(
           old.full, value.full, cpp::MemoryOrder::SEQ_CST,
           cpp::MemoryOrder::ACQUIRE);
+      // E8 mirror — `my` is the slot owner running its own slow_path,
+      // so the bump is owner-exclusive. We bump unconditionally on
+      // curr_era regardless of CAS outcome: a CAS-success publishes
+      // curr_era; a CAS-failure means a helper raced and may have set
+      // era to an even higher value, which the helpee re-publishes at
+      // line ~853 below (also mirrored).
+      {
+        uint64_t prev_max = my.max_era_seen.load(cpp::MemoryOrder::RELAXED);
+        if (curr_era > prev_max)
+          my.max_era_seen.store(curr_era, cpp::MemoryOrder::RELAXED);
+      }
       prev_era = curr_era;
       result_ptr =
           my.state[index].result.pair[0].load(cpp::MemoryOrder::ACQUIRE);
@@ -852,6 +917,16 @@ private:
         my.state[index].result.pair[1].load(cpp::MemoryOrder::ACQUIRE);
     my.era[index].pair[0].store(result_era,
                                   cpp::MemoryOrder::RELEASE);
+    // E8 mirror — owner-exclusive write on the owner's own slot. This
+    // is also the recovery point that closes the brief window where a
+    // helper at help_thread's WCAS site advanced their.era[index].pair[0]
+    // beyond max_era_seen: as soon as the helpee returns through this
+    // path it re-publishes the helper-set era, sweeping max_era_seen up.
+    {
+      uint64_t prev_max = my.max_era_seen.load(cpp::MemoryOrder::RELAXED);
+      if (result_era > prev_max)
+        my.max_era_seen.store(result_era, cpp::MemoryOrder::RELAXED);
+    }
 
     // Check whether the produced pointer was retired while we were
     // in slow_path. If so, attach a refs-node reference onto our
@@ -886,14 +961,27 @@ private:
       refs->refs.fetch_add(kCrystallineProtect2,
                            cpp::MemoryOrder::ACQ_REL);
       uintptr_t adjs = static_cast<uintptr_t>(-kCrystallineProtect2);
-      for (uint16_t i = pool_.active_head(); i != 0;
-           i = pool_.active_next(i)) {
-        CrystallineDomainSlot &their = slot_state_of(i);
-        CrystallineNode *exp = parent;
-        if (their.state[kCrystallineHrNum].parent.compare_exchange_strong(
-                exp, nullptr, cpp::MemoryOrder::ACQ_REL,
-                cpp::MemoryOrder::RELAXED)) {
-          adjs++;
+      if (refresh_active_snapshot(batch)) {
+        for (uint32_t k = 0; k < batch.cached_count; k++) {
+          uint16_t i = batch.cached_active_slots[k];
+          CrystallineDomainSlot &their = slot_state_of(i);
+          CrystallineNode *exp = parent;
+          if (their.state[kCrystallineHrNum].parent.compare_exchange_strong(
+                  exp, nullptr, cpp::MemoryOrder::ACQ_REL,
+                  cpp::MemoryOrder::RELAXED)) {
+            adjs++;
+          }
+        }
+      } else {
+        for (uint16_t i = pool_.active_head(); i != 0;
+             i = pool_.active_next(i)) {
+          CrystallineDomainSlot &their = slot_state_of(i);
+          CrystallineNode *exp = parent;
+          if (their.state[kCrystallineHrNum].parent.compare_exchange_strong(
+                  exp, nullptr, cpp::MemoryOrder::ACQ_REL,
+                  cpp::MemoryOrder::RELAXED)) {
+            adjs++;
+          }
         }
       }
       refs->refs.fetch_add(adjs, cpp::MemoryOrder::ACQ_REL);
@@ -930,6 +1018,12 @@ private:
           nullptr, cpp::MemoryOrder::SEQ_CST);
       my.era[kCrystallineHrNum].pair[0].store(
           birth_era, cpp::MemoryOrder::SEQ_CST);
+      // E8 mirror — helper writes its OWN scratch slot
+      // (kCrystallineHrNum lives in `my`, the helper thread's slot),
+      // so the bump is owner-exclusive.
+      uint64_t prev_max = my.max_era_seen.load(cpp::MemoryOrder::RELAXED);
+      if (birth_era > prev_max)
+        my.max_era_seen.store(birth_era, cpp::MemoryOrder::RELAXED);
     }
     my.state[kCrystallineHrNum].parent.store(parent,
                                              cpp::MemoryOrder::SEQ_CST);
@@ -986,7 +1080,14 @@ private:
               }
             }
             seqno++;
-            // Set the real era on the target's era slot.
+            // Set the real era on the target's era slot. E8 design
+            // note: this is the one foreign-thread write to era[].pair[0]
+            // in the substrate. It is intentionally NOT mirrored into
+            // their.max_era_seen — the helpee re-publishes the same era
+            // via slow_path's final my.era[index].pair[0].store at
+            // line ~853, which DOES mirror, sweeping max_era_seen up
+            // shortly after. The window is bounded by the helpee's
+            // slow_path tail.
             value.pair[0] = curr_era;
             value.pair[1] = seqno + 1;
             old_val.pair[1] = their.era[index].pair[1].load(
@@ -1083,14 +1184,29 @@ private:
     if (slow_counter_.load(cpp::MemoryOrder::ACQUIRE) == 0)
       return;
     uint16_t my_idx = my_slot_idx();
-    for (uint16_t target_idx = pool_.active_head(); target_idx != 0;
-         target_idx = pool_.active_next(target_idx)) {
-      CrystallineDomainSlot &their = slot_state_of(target_idx);
-      for (uint32_t j = 0; j < kCrystallineHrNum; j++) {
-        uint64_t result_ptr = their.state[j].result.pair[0].load(
-            cpp::MemoryOrder::ACQUIRE);
-        if (result_ptr == kCrystallineInvPtr64) {
-          help_thread(target_idx, j, my_idx);
+    CrystallineBatch &batch = my_batch();
+    if (refresh_active_snapshot(batch)) {
+      for (uint32_t k = 0; k < batch.cached_count; k++) {
+        uint16_t target_idx = batch.cached_active_slots[k];
+        CrystallineDomainSlot &their = slot_state_of(target_idx);
+        for (uint32_t j = 0; j < kCrystallineHrNum; j++) {
+          uint64_t result_ptr = their.state[j].result.pair[0].load(
+              cpp::MemoryOrder::ACQUIRE);
+          if (result_ptr == kCrystallineInvPtr64) {
+            help_thread(target_idx, j, my_idx);
+          }
+        }
+      }
+    } else {
+      for (uint16_t target_idx = pool_.active_head(); target_idx != 0;
+           target_idx = pool_.active_next(target_idx)) {
+        CrystallineDomainSlot &their = slot_state_of(target_idx);
+        for (uint32_t j = 0; j < kCrystallineHrNum; j++) {
+          uint64_t result_ptr = their.state[j].result.pair[0].load(
+              cpp::MemoryOrder::ACQUIRE);
+          if (result_ptr == kCrystallineInvPtr64) {
+            help_thread(target_idx, j, my_idx);
+          }
         }
       }
     }
@@ -1111,6 +1227,12 @@ private:
       curr_era = current_era();
     }
     my.era[index].pair[0].store(curr_era, cpp::MemoryOrder::SEQ_CST);
+    // E8 mirror — `my` here is help_thread's own slot (the helper writes
+    // its scratch slot kCrystallineHrNum+1 via this path), so the write
+    // remains owner-exclusive.
+    uint64_t prev_max = my.max_era_seen.load(cpp::MemoryOrder::RELAXED);
+    if (curr_era > prev_max)
+      my.max_era_seen.store(curr_era, cpp::MemoryOrder::RELAXED);
     return curr_era;
   }
 
@@ -1134,46 +1256,103 @@ private:
     // for each eligible slot. Claim = write the slot's first word-pair
     // address into the node's `slot` field (first union's pointer alias
     // of `next`). Stops early if we run out of batch nodes.
+    //
+    // Two-layer fast-skip:
+    //   * Outer: cached active-slot snapshot iterated when the pool's
+    //     chain_version still matches the cache. Avoids the per-walker
+    //     active-chain traversal on every retire close.
+    //   * Inner: a single RELAXED max_era_seen load per slot rejects
+    //     slots whose largest-reserved era is already < min_era — no
+    //     per-index era[j] in the slot could pass the eligibility
+    //     check, so the inner per-index loop is skipped entirely.
     NodeT *last = curr;
-    for (uint16_t i = pool_.active_head(); i != 0;
-         i = pool_.active_next(i)) {
-      CrystallineDomainSlot &their = slot_state_of(i);
-      uint32_t j = 0;
-      for (; j < kCrystallineHrNum; j++) {
-        CrystallineNode *first = their.first[j].list[0].load(
-            cpp::MemoryOrder::ACQUIRE);
-        if (first == crystalline_inv_ptr())
+    if (refresh_active_snapshot(batch)) {
+      for (uint32_t k = 0; k < batch.cached_count; k++) {
+        uint16_t i = batch.cached_active_slots[k];
+        CrystallineDomainSlot &their = slot_state_of(i);
+        if (their.max_era_seen.load(cpp::MemoryOrder::RELAXED) < min_era)
           continue;
-        if (their.first[j].pair[1].load(cpp::MemoryOrder::ACQUIRE) & 0x1U)
-          continue; // in slow-path final transition
-        uint64_t era_v =
-            their.era[j].pair[0].load(cpp::MemoryOrder::ACQUIRE);
-        if (era_v < min_era)
-          continue;
-        if (their.era[j].pair[1].load(cpp::MemoryOrder::ACQUIRE) & 0x1U)
-          continue;
-        if (last == refs) {
-          return;
+        uint32_t j = 0;
+        for (; j < kCrystallineHrNum; j++) {
+          CrystallineNode *first = their.first[j].list[0].load(
+              cpp::MemoryOrder::ACQUIRE);
+          if (first == crystalline_inv_ptr())
+            continue;
+          if (their.first[j].pair[1].load(cpp::MemoryOrder::ACQUIRE) & 0x1U)
+            continue; // in slow-path final transition
+          uint64_t era_v =
+              their.era[j].pair[0].load(cpp::MemoryOrder::ACQUIRE);
+          if (era_v < min_era)
+            continue;
+          if (their.era[j].pair[1].load(cpp::MemoryOrder::ACQUIRE) & 0x1U)
+            continue;
+          if (last == refs) {
+            return;
+          }
+          last->slot = &their.first[j];
+          last = last->batch_next;
         }
-        last->slot = &their.first[j];
-        last = last->batch_next;
+        // Helper slots hr_num and hr_num+1 don't carry the seqno filter
+        // — they're one-shot scratch used by the helping protocol.
+        for (; j < kCrystallineHrNum + 2; j++) {
+          CrystallineNode *first = their.first[j].list[0].load(
+              cpp::MemoryOrder::ACQUIRE);
+          if (first == crystalline_inv_ptr())
+            continue;
+          uint64_t era_v =
+              their.era[j].pair[0].load(cpp::MemoryOrder::ACQUIRE);
+          if (era_v < min_era)
+            continue;
+          if (last == refs) {
+            return;
+          }
+          last->slot = &their.first[j];
+          last = last->batch_next;
+        }
       }
-      // Helper slots hr_num and hr_num+1 don't carry the seqno filter —
-      // they're one-shot scratch used by the helping protocol.
-      for (; j < kCrystallineHrNum + 2; j++) {
-        CrystallineNode *first = their.first[j].list[0].load(
-            cpp::MemoryOrder::ACQUIRE);
-        if (first == crystalline_inv_ptr())
+    } else {
+      // Snapshot overflowed — fall back to direct chain traversal. E8
+      // fast-skip still applies per slot.
+      for (uint16_t i = pool_.active_head(); i != 0;
+           i = pool_.active_next(i)) {
+        CrystallineDomainSlot &their = slot_state_of(i);
+        if (their.max_era_seen.load(cpp::MemoryOrder::RELAXED) < min_era)
           continue;
-        uint64_t era_v =
-            their.era[j].pair[0].load(cpp::MemoryOrder::ACQUIRE);
-        if (era_v < min_era)
-          continue;
-        if (last == refs) {
-          return;
+        uint32_t j = 0;
+        for (; j < kCrystallineHrNum; j++) {
+          CrystallineNode *first = their.first[j].list[0].load(
+              cpp::MemoryOrder::ACQUIRE);
+          if (first == crystalline_inv_ptr())
+            continue;
+          if (their.first[j].pair[1].load(cpp::MemoryOrder::ACQUIRE) & 0x1U)
+            continue;
+          uint64_t era_v =
+              their.era[j].pair[0].load(cpp::MemoryOrder::ACQUIRE);
+          if (era_v < min_era)
+            continue;
+          if (their.era[j].pair[1].load(cpp::MemoryOrder::ACQUIRE) & 0x1U)
+            continue;
+          if (last == refs) {
+            return;
+          }
+          last->slot = &their.first[j];
+          last = last->batch_next;
         }
-        last->slot = &their.first[j];
-        last = last->batch_next;
+        for (; j < kCrystallineHrNum + 2; j++) {
+          CrystallineNode *first = their.first[j].list[0].load(
+              cpp::MemoryOrder::ACQUIRE);
+          if (first == crystalline_inv_ptr())
+            continue;
+          uint64_t era_v =
+              their.era[j].pair[0].load(cpp::MemoryOrder::ACQUIRE);
+          if (era_v < min_era)
+            continue;
+          if (last == refs) {
+            return;
+          }
+          last->slot = &their.first[j];
+          last = last->batch_next;
+        }
       }
     }
 
@@ -1369,6 +1548,13 @@ private:
     batch.list = nullptr;
     batch.counter = 0;
     batch.list_count = 0;
+    // Pool's chain_version_ has been reset to 0 by pool_.fork_reinit().
+    // Mirror that here so the next walker call observes a mismatch and
+    // refreshes the snapshot against the post-fork active chain (empty,
+    // until the surviving thread lazy-claims a fresh slot).
+    batch.cached_chain_version = 0;
+    batch.cached_count = 0;
+    batch.cached_overflow = 0;
   }
 
   LIBC_INLINE void fini() {

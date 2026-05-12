@@ -336,6 +336,16 @@ struct alignas(64) CrystallineDomainSlot {
   CrystallineWordPair first[kCrystallineSlotCount];
   CrystallineWordPair era[kCrystallineSlotCount];
   CrystallineStateT state[kCrystallineSlotCount];
+  // Monotonic upper bound on max{era[j].pair[0] : j ∈ [0, kCrystallineSlotCount)}.
+  // The owner publishes here on every era[j].pair[0] write site so the
+  // value tracks the highest era this slot has reserved. try_retire's
+  // Phase A reads it RELAXED once per slot — if < min_era, every per-
+  // index era is also < min_era and the slot can be skipped without
+  // entering the inner per-index eligibility loop. One load substitutes
+  // for kCrystallineSlotCount per-index loads on the dominant
+  // "stale slot" walker path. Lives adjacent to `link` so the walker's
+  // active_next(link) load brings this line into L1 too.
+  cpp::Atomic<uint64_t> max_era_seen;
   // Lock-free linkage substrate hookup. CrystallineSlotPool uses the
   // `next` field (16-bit pool index) for its Treiber freelist and the
   // `state` byte for the FREE/CLAIMED two-state machine.
@@ -354,6 +364,7 @@ struct alignas(64) CrystallineDomainSlot {
 inline constexpr size_t kCrystallineDomainSlotNaturalSize =
     kCrystallineSlotCount *
         (sizeof(CrystallineWordPair) * 2 + sizeof(CrystallineStateT)) +
+    sizeof(cpp::Atomic<uint64_t>) +
     sizeof(cpp::Atomic<linkage::Link>) + sizeof(cpp::Atomic<uint32_t>);
 
 static_assert(sizeof(CrystallineDomainSlot) >=
@@ -369,14 +380,15 @@ static_assert(sizeof(CrystallineDomainSlot) -
               "boundary; re-check the sizing math");
 
 // Pin the substrate-required offsets structurally. arrays:
-//   first[18]:   0..287
-//   era[18]:     288..575
-//   state[18]:   576..1439
-//   link:        1440..1447   (8 bytes, naturally aligned)
-//   generation:  1448..1451   (4 bytes, naturally aligned)
-//   tail pad:    1452..1471   (20 bytes, alignas(64) round-up)
-LINKAGE_REQUIRES_LINK_AT(CrystallineDomainSlot, 1440);
-LINKAGE_REQUIRES_GENERATION_AT(CrystallineDomainSlot, 1448);
+//   first[18]:     0..287
+//   era[18]:       288..575
+//   state[18]:     576..1439
+//   max_era_seen:  1440..1447   (8 bytes, naturally aligned)
+//   link:          1448..1455   (8 bytes, naturally aligned)
+//   generation:    1456..1459   (4 bytes, naturally aligned)
+//   tail pad:      1460..1471   (12 bytes, alignas(64) round-up)
+LINKAGE_REQUIRES_LINK_AT(CrystallineDomainSlot, 1448);
+LINKAGE_REQUIRES_GENERATION_AT(CrystallineDomainSlot, 1456);
 
 // -------------------------------------------------------------------------
 // Per-thread per-domain retire-batch.
@@ -387,21 +399,54 @@ LINKAGE_REQUIRES_GENERATION_AT(CrystallineDomainSlot, 1448);
 // via batch_next) accumulates retires; try_retire publishes the batch
 // across the K slots using the modular-addend refcount trick.
 //
-// Packed tight at 40 B (alignof 8). No cross-thread access — only
-// the owner writes, and only the owner reads. Lives on ThreadScratchState
-// (per-thread arena) so retire bookkeeping shares the owner's L1 with
-// the rest of the per-thread allocator hot data.
+// No cross-thread access — only the owner writes, and only the owner
+// reads. Lives on ThreadScratchState (per-thread arena) so retire
+// bookkeeping shares the owner's L1 with the rest of the per-thread
+// allocator hot data.
+//
+// Active-slot snapshot cache fields (cached_*) memoise the slot-pool
+// active chain at the chain-version observed on the last refresh.
+// CrystallineDomain::refresh_active_snapshot() bumps to the current
+// version on demand; walkers (try_retire Phase A, help_read, slow_path's
+// parent-handoff scan) iterate cached_active_slots instead of the active
+// chain when cached_chain_version matches the pool's. The cache is a
+// hint — both staleness modes (missing newly-claimed slots, including
+// recently-released slots) are caught by the inner per-slot eligibility
+// filters that the walkers retain.
+//
+// Capacity sized for the ThreadScratchState page budget: the array lives
+// inline on the per-thread control page (one OS page, 4 KiB), shared
+// across kMaxCrystallineDomains batches. 16 domains × (40 B base + 16 B
+// snapshot header + 2 B × kCrystallineSnapshotCapacity) plus the rest of
+// ThreadScratchState must fit in 4096 B; 64 lands well inside that with
+// headroom. Active-slot counts above 64 fall through the cache (overflow
+// = 1) and walk the active chain directly — bounded, correctness-preserving
+// degradation. If workloads grow past this, the alternatives are reducing
+// kMaxCrystallineDomains or lifting the cache out of the control page.
+inline constexpr uint32_t kCrystallineSnapshotCapacity = 64;
+
 struct CrystallineBatch {
   CrystallineNode *first;     // batch chain head (most recent retire)
   CrystallineNode *last;      // batch chain tail (anchor / refs node)
   CrystallineNode *list;      // chain of refs-nodes ready to reclaim
   uint64_t counter;           // retire counter — drives try_retire cadence
   uint64_t list_count;        // free-cache population (≤ MAX_WFRC)
+  // Cached active-slot snapshot. 0 in cached_chain_version is the
+  // "never refreshed" sentinel — the slot-pool starts at chain_version=0
+  // and the first claim_slot bumps it to ≥1, so any post-bring-up walker
+  // refresh observes a non-zero version.
+  uint64_t cached_chain_version;
+  uint32_t cached_count;      // number of valid entries in cached_active_slots
+  uint32_t cached_overflow;   // 1 if last refresh hit kCrystallineSnapshotCapacity
+  uint16_t cached_active_slots[kCrystallineSnapshotCapacity];
 };
 
-static_assert(sizeof(CrystallineBatch) == 40,
-              "CrystallineBatch must pack to exactly 40 bytes — owner-only "
-              "access, no cross-thread line isolation needed");
+static_assert(sizeof(CrystallineBatch) ==
+                  40 + 8 + 4 + 4 +
+                      kCrystallineSnapshotCapacity * sizeof(uint16_t),
+              "CrystallineBatch layout: 40 B of retire bookkeeping plus "
+              "16 B of snapshot header (version, count, overflow) plus "
+              "kCrystallineSnapshotCapacity × uint16_t of cached slot indices");
 
 // CrystallineThreadRegion was removed when slots moved out of the
 // ThreadScratch arena into per-domain CrystallineSlotPools. The only

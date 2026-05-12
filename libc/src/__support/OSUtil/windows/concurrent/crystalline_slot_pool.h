@@ -189,6 +189,7 @@ public:
     committed_slots_.store(0, cpp::MemoryOrder::RELAXED);
     freelist_.head.store(0, cpp::MemoryOrder::RELAXED);
     active_head_.head.store(0, cpp::MemoryOrder::RELAXED);
+    chain_version_.store(0, cpp::MemoryOrder::RELAXED);
   }
 
   // Post-fork relink. Single-threaded post-fork. Every committed slot
@@ -203,6 +204,7 @@ public:
     active_head_.head.store(
         fl_pack(/*gen=*/0, kCrystallineSlotNullIndex),
         cpp::MemoryOrder::RELAXED);
+    chain_version_.store(0, cpp::MemoryOrder::RELAXED);
     if (hwm <= 1) {
       freelist_.head.store(fl_pack(/*gen=*/0, kCrystallineSlotNullIndex),
                            cpp::MemoryOrder::RELAXED);
@@ -236,6 +238,7 @@ public:
     // reference's ctor body — first[].list[0] = inv_ptr, all else 0).
     reset_slot_fields(slots_[idx]);
     active_push(idx);
+    chain_version_.fetch_add(1, cpp::MemoryOrder::RELEASE);
     return idx;
   }
 
@@ -264,6 +267,7 @@ public:
     SubstrateCtx ctx{*this};
     (void)linkage::harris_unlink<SubstrateCtx, PoolDeadPolicy>(ctx, idx,
                                                                 my_gen);
+    chain_version_.fetch_add(1, cpp::MemoryOrder::RELEASE);
     freelist_push(idx);
   }
 
@@ -272,6 +276,16 @@ public:
   LIBC_INLINE uint16_t active_head() {
     return static_cast<uint16_t>(
         fl_head(active_head_.head.load(cpp::MemoryOrder::ACQUIRE)));
+  }
+
+  // Monotonic counter bumped on every active-chain mutation (claim_slot
+  // post-active_push, release_slot post-harris_unlink). Consumers cache
+  // a snapshot of the active chain keyed on this counter; a value mismatch
+  // tells the consumer to refresh. RELEASE on bump pairs with the
+  // ACQUIRE here so the cached snapshot's contents happen-after every
+  // mutation reflected in the counter.
+  LIBC_INLINE uint64_t chain_version() {
+    return chain_version_.load(cpp::MemoryOrder::ACQUIRE);
   }
 
   // Walker step. Returns the next slot in the active chain after
@@ -335,6 +349,7 @@ private:
       slot.state[j].parent.store(nullptr, cpp::MemoryOrder::RELAXED);
       slot.state[j].birth_era.store(0, cpp::MemoryOrder::RELAXED);
     }
+    slot.max_era_seen.store(0, cpp::MemoryOrder::RELAXED);
   }
 
   LIBC_INLINE void init_slot_storage_at_origin(uint32_t hwm) {
@@ -586,6 +601,12 @@ private:
   cpp::Atomic<uint32_t> committed_slots_{0};
   CrystallineFreelistLine freelist_{};    // FREE slots
   CrystallineFreelistLine active_head_{}; // CLAIMED slots (walker entry)
+  // Active-chain-mutation counter. Bumped (RELEASE) after every successful
+  // claim_slot active_push and after every successful release_slot
+  // harris_unlink. Read by per-thread-per-domain snapshot caches that
+  // pin the chain layout to amortise repeated walks. uint64 — wrap is
+  // structurally unreachable (≥ 2^64 mutations).
+  alignas(64) cpp::Atomic<uint64_t> chain_version_{0};
 };
 
 } // namespace concurrent
