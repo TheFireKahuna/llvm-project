@@ -14,7 +14,7 @@
 #include "src/__support/error_or.h"
 #include "src/__support/macros/config.h"
 
-#include "src/__support/OSUtil/windows/memory/legacy/mmap_engine.h"
+#include "src/__support/OSUtil/windows/memory/posix/mmap/mmap.h"
 
 namespace LIBC_NAMESPACE_DECL {
 namespace windows_syscalls {

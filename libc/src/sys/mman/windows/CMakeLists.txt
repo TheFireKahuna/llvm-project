@@ -14,7 +14,7 @@ add_entrypoint_object(
     libc.src.__support.common
     libc.src.__support.libc_errno
     libc.src.__support.macros.config
-    libc.src.__support.OSUtil.windows.mmap_engine
+    libc.src.__support.OSUtil.windows.posix_mmap_ops
     libc.include.llvm-libc-macros.sys_mman_macros
     libc.hdr.types.off_t
 )
@@ -28,7 +28,7 @@ add_entrypoint_object(
   DEPENDS
     libc.src.__support.common
     libc.src.__support.macros.config
-    libc.src.__support.OSUtil.windows.vm_protect
+    libc.src.__support.OSUtil.windows.posix_munmap_ops
 )
 
 add_entrypoint_object(
@@ -40,7 +40,7 @@ add_entrypoint_object(
   DEPENDS
     libc.src.__support.common
     libc.src.__support.macros.config
-    libc.src.__support.OSUtil.windows.vm_protect
+    libc.src.__support.OSUtil.windows.posix_mprotect_ops
 )
 
 add_entrypoint_object(
@@ -53,7 +53,7 @@ add_entrypoint_object(
     libc.src.__support.common
     libc.src.__support.libc_errno
     libc.src.__support.macros.config
-    libc.src.__support.OSUtil.windows.vm_protect
+    libc.src.__support.OSUtil.windows.posix_mprotect_ops
 )
 
 add_entrypoint_object(

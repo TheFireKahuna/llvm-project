@@ -1530,11 +1530,12 @@ add_header_library(
     .clock_ops
     .fcntl
     .inotify_ops
-    .mmap_engine
+    .posix_mmap_ops
+    .posix_munmap_ops
+    .posix_mprotect_ops
     .priority_ops
     .read_write
     .signal_syscalls
-    .vm_protect
     # Mass-wire additions: every engine reachable from syscall_dispatch.
     # File I/O
     .file_ops
@@ -2778,6 +2779,93 @@ add_object_library(
     libc.src.__support.macros.optimization
     libc.hdr.errno_macros
     libc.include.llvm-libc-macros.sys_mman_macros
+)
+
+# ---------------------------------------------------------------------------
+# POSIX mmap / munmap / mprotect — P2 rebuild on the va_tracker substrate.
+# `internal::mmap` is the new dispatcher; the anonymous-private shape lands
+# in `mmap_anon_private.cpp` as one `va_tracker::acquire` call. Every shape
+# the new tree has not yet implemented (MAP_FIXED → P3, MAP_HUGETLB and the
+# file-backed / anon-shared shapes → P4) delegates to the renamed legacy
+# entry `internal::legacy_mmap_engine`; the delegation lives in
+# `mmap_entry.cpp` and is removed phase by phase.
+#
+# `internal::munmap` and `internal::mprotect` / `internal::pkey_mprotect`
+# are complete in P2 — the new files fully replace `memory/legacy/
+# vm_protect.cpp`. The legacy object library is removed from the link
+# chain in this PR.
+# ---------------------------------------------------------------------------
+
+add_object_library(
+  posix_mmap_ops
+  SRCS
+    memory/posix/mmap/mmap_entry.cpp
+    memory/posix/mmap/mmap_anon_private.cpp
+  HDRS
+    memory/posix/mmap/mmap.h
+  DEPENDS
+    .memory_posix_errno
+    .memory_posix_meta
+    .memory_posix_validation
+    .mlock_ops
+    .mmap_engine
+    .nt_pal
+    .ntdll
+    .page_size
+    .mapping_table
+    .va_tracker
+    libc.hdr.errno_macros
+    libc.hdr.types.off_t
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.__support.common
+    libc.src.__support.error_or
+    libc.src.__support.macros.config
+    libc.src.__support.macros.optimization
+)
+
+add_object_library(
+  posix_munmap_ops
+  SRCS
+    memory/posix/munmap.cpp
+  HDRS
+    memory/posix/munmap.h
+  DEPENDS
+    .memory_posix_meta
+    .memory_posix_validation
+    .nt_pal
+    .ntdll
+    .page_size
+    .mapping_table
+    .va_tracker
+    libc.hdr.errno_macros
+    libc.src.__support.macros.config
+    libc.src.__support.macros.optimization
+)
+
+add_object_library(
+  posix_mprotect_ops
+  SRCS
+    memory/posix/mprotect.cpp
+  HDRS
+    memory/posix/mprotect.h
+  DEPENDS
+    .memory_posix_errno
+    .memory_posix_meta
+    .memory_posix_mutators
+    .memory_posix_validation
+    .nt_pal
+    .ntdll
+    .page_size
+    .process_control_block
+    .va_region_desc
+    .va_tracker
+    libc.hdr.errno_macros
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.__support.CPP.atomic
+    libc.src.__support.error_or
+    libc.src.__support.macros.config
+    libc.src.__support.macros.optimization
+    libc.src.__support.macros.properties.architectures
 )
 
 # ---------------------------------------------------------------------------

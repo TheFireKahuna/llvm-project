@@ -1479,8 +1479,8 @@ intptr_t alloc_fixed_anon(void *addr, SIZE_T size, int prot, int flags) {
 
 namespace internal {
 
-intptr_t mmap(void *addr, size_t size, int prot, int flags, int fd,
-              off_t offset) {
+intptr_t legacy_mmap_engine(void *addr, size_t size, int prot, int flags,
+                            int fd, off_t offset) {
   if (LIBC_UNLIKELY(size == 0))
     return -EINVAL;
 

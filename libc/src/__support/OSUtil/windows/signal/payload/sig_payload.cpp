@@ -165,10 +165,15 @@ namespace signal_state {
 namespace payload {
 namespace {
 
-// Single Crystalline domain instance. One of 8 available domains
-// (see crystalline_slot_pool.h).
+// MaxIdx for the sig-payload domain. Single protect() site uses
+// index 0 (`g_domain.protect(g_latest[signum - 1], /*index=*/0, ...)`);
+// MaxIdx = 1.
+inline constexpr uint32_t kSigPayloadMaxIdx = 1;
+
+// Single Crystalline domain instance for SIGRT delivery.
 ::LIBC_NAMESPACE::concurrent::CrystallineDomain<SigPayload, &return_to_pool,
-                                                kRetireFreq>
+                                                kRetireFreq,
+                                                kSigPayloadMaxIdx>
     g_domain;
 
 // Per-signum "latest event" pointer. POSIX-correct: standard signals

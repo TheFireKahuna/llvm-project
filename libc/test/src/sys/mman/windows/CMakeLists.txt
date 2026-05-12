@@ -48,6 +48,39 @@ add_libc_unittest(
 )
 
 add_libc_unittest(
+  munmap_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    munmap_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.errno.errno
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munmap
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
+  pkey_mprotect_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    pkey_mprotect_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.errno.errno
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munmap
+    libc.src.sys.mman.pkey_alloc
+    libc.src.sys.mman.pkey_free
+    libc.src.sys.mman.pkey_mprotect
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
+add_libc_unittest(
   madvise_test
   SUITE
     libc_sys_mman_unittests
