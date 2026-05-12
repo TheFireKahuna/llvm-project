@@ -462,6 +462,31 @@ add_libc_hermetic(
     libc.src.stdlib.getenv
 )
 
+# --- Crystalline-W domain SMR protocol stress test ---
+# Hermetic — exercises CrystallineDomain<NodeT, FreeFn>::{init_node /
+# protect / retire / clear_all / warm_thread} under multi-thread load.
+# This is the SMR-protocol witness; the slot-pool chain primitives are
+# tested separately by crystalline_slot_pool_stress.cpp above. Scenarios
+# are env-var dispatched via CDS_SCENARIO (1-7) and CDS_ITERS.
+add_libc_hermetic(
+  crystalline_domain_stress
+  SUITE
+    libc-osutil-tests
+  NO_RUN_POSTBUILD
+  SRCS
+    crystalline_domain_stress.cpp
+  DEPENDS
+    libc.src.__support.CPP.atomic
+    libc.src.__support.OSUtil.windows.crystalline_domain
+    libc.src.__support.OSUtil.windows.crystalline_local_state
+    libc.src.__support.OSUtil.windows.page_alloc
+    libc.src.errno.errno
+    libc.src.pthread.pthread_create
+    libc.src.pthread.pthread_join
+    libc.src.stdlib._Exit
+    libc.src.stdlib.getenv
+)
+
 # --- ThreadRing / BatchEngineT microbenchmark ---
 # Internal-primitive bench: exercises ThreadRing / BatchEngineT directly via
 # their LIBC_NAMESPACE APIs. Hermetic link — no c.dll or c.lib involvement.
