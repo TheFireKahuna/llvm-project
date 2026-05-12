@@ -232,13 +232,9 @@ VaChunkDesc *commit_new_va_chunk_for(
         // Init the Crystalline node header on the descriptor in whichever
         // domain it will retire through. Both domains use the same FreeFn,
         // and `CrystallineDomain::init_node` only stamps birth_era +
-        // batch_link, which is identical across our two domains. Pick by
-        // `bucket_id` for clarity.
-        if (bucket_id <= kPoolBucketArena) {
-            g_va_tracker_skiplist_chunk_domain.init_node(cd);
-        } else {
-            g_va_tracker_art_chunk_domain.init_node(cd);
-        }
+        // batch_link, which is identical across our two domains. The
+        // bucket-to-domain split is centralised in `pick_chunk_domain`.
+        pick_chunk_domain(bucket_id).init_node(cd);
 
         if (chunk_table[cid].compare_exchange_strong(
                 expected, cd, cpp::MemoryOrder::ACQ_REL,
@@ -290,11 +286,7 @@ void release_slot_in_va_chunk(VaChunkDesc *cd, uint32_t slot_idx,
     // Chunk pages stay committed until the descriptor's batch passes
     // grace and `va_chunk_desc_free` runs the decommit; any pinned
     // reader's slot dereferences still land on live pages.
-    if (cd->bucket_id <= kPoolBucketArena) {
-        g_va_tracker_skiplist_chunk_domain.retire(cd);
-    } else {
-        g_va_tracker_art_chunk_domain.retire(cd);
-    }
+    pick_chunk_domain(cd->bucket_id).retire(cd);
 }
 
 //===----------------------------------------------------------------------===//
@@ -312,12 +304,16 @@ void *va_chunk_acquire_slot(const VaChunkAcquireSpec &spec) {
         spec.next_chunk_id_hint->load(cpp::MemoryOrder::ACQUIRE) %
         spec.chunk_count;
     uint64_t secret = partition_secret();
+    auto &domain = pick_chunk_domain(spec.consumer_bucket_id);
     for (uint32_t scan = 0; scan < spec.chunk_count; ++scan) {
         uint32_t cid = (hint + scan) % spec.chunk_count;
         // Pin via domain.protect so `cd` is safe to dereference through
         // the rest of this iteration. Era convergence closes the
         // load <-> refresh race that a manual load would leave open.
-        VaChunkDesc *cd = g_va_tracker_skiplist_chunk_domain.protect(
+        // The domain is picked from the consumer's bucket so ART
+        // consumers (buckets 7..10) pin and retire through
+        // `g_va_tracker_art_chunk_domain` rather than the skiplist's.
+        VaChunkDesc *cd = domain.protect(
             spec.chunk_table[cid], kVaChunkPinSlot, /*parent=*/nullptr);
         if (cd == nullptr)
             continue;
@@ -325,12 +321,12 @@ void *va_chunk_acquire_slot(const VaChunkAcquireSpec &spec) {
         // this cid; the descriptor pointer is not yet meaningful.
         if (cd == va_chunk_installing_sentinel())
             continue;
-        // Skiplist consumers share one flat chunk_table across four
-        // height buckets; reject foreign-bucket chunks before paying any
-        // CAS cost. Non-skiplist consumers pass `kVaChunkNoBucketFilter`
-        // and short-circuit this check.
-        if (spec.filter_bucket_id != kVaChunkNoBucketFilter &&
-            cd->bucket_id != spec.filter_bucket_id)
+        // Reject foreign-bucket chunks before paying any CAS cost. Load-
+        // bearing for the skiplist's flat table shared across four
+        // height buckets; trivially passes for homogeneous tables
+        // (RegionDesc / Arena / DescBacking / ART-per-type) where every
+        // chunk carries the consumer's own bucket id.
+        if (cd->bucket_id != spec.consumer_bucket_id)
             continue;
 
         // `try_va_chunk_reserve` atomically establishes (state == LIVE
@@ -349,7 +345,7 @@ void *va_chunk_acquire_slot(const VaChunkAcquireSpec &spec) {
             if (release_va_chunk_slot(cd->live_state)) {
                 spec.chunk_table[cid].store(nullptr,
                                             cpp::MemoryOrder::RELEASE);
-                g_va_tracker_skiplist_chunk_domain.retire(cd);
+                domain.retire(cd);
             }
             continue;
         }

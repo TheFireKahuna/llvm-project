@@ -308,7 +308,7 @@ constexpr uintptr_t kAllocGranularity = 64u * 1024u;
 // stamps both coords once at slot initialisation and never mutates them,
 // so the encode is three independent loads with no synchronisation
 // dependency between them — `generation` is ACQUIRE because subsequent
-// `deref_backing` consumers compare against it for slot-recycling ABA
+// `deref_backing_raw` consumers compare against it for slot-recycling ABA
 // defence.
 [[nodiscard]] LIBC_INLINE BackingRef encode_backing_ref(DescBacking *backing) {
   if (backing == nullptr)
@@ -317,53 +317,6 @@ constexpr uintptr_t kAllocGranularity = 64u * 1024u;
   return make_backing_ref(static_cast<uint16_t>(backing->cached_chunk_id),
                            static_cast<uint16_t>(backing->cached_slot_idx),
                            gen);
-}
-
-//===----------------------------------------------------------------------===//
-//  Backing-domain Crystalline-W anchor pin
-//===----------------------------------------------------------------------===//
-
-// Pin the backing domain's era for the rest of the envelope.
-//
-// The engine reads `DescBacking` fields (placeholder_base, placeholder_pages,
-// section/file handles) in `run_stage2` and the replace-path ownership-
-// transfer step; those reads must be era-stable against a peer envelope's
-// state CAS + `backing_kill_and_retire` + Crystalline grace + slot recycle
-// sequence. The chain-side LOCKED state on `pred->next[0]` keeps the
-// descriptors reachable, but the backing lives on a different Crystalline
-// domain — pin chains do not extend transitively across domains.
-//
-// Anchor-thunk pattern per Nikolaev & Ravindran, "A Family of Fast and
-// Memory Efficient Lock- and Wait-Free Reclamation" (PLDI 2024), Crystalline-W
-// figures: the thunk's load is irrelevant (returns nullptr); only the era-
-// stability convergence inside `protect()` matters. One `protect()` at
-// envelope entry fixes the era; `try_retire` then skips any batch whose
-// minimum birth era is past the pinned era, so every backing reachable at
-// envelope entry (or allocated later by us) stays alive for the envelope's
-// duration. The bounded-retry loop never makes a sibling va_tracker call
-// that would rotate this slot, so the anchor covers every attempt.
-//
-// `protect()` is non-cumulative: each call resets any previous reservation
-// on the same slot index, and there is no matching per-slot release
-// primitive (the slot recycles at the next `protect()` on the same index,
-// or at thread-exit / fork-drain via `clear_all()`). RAII wrapping would
-// impose acquire/release symmetry the primitive does not have.
-//
-// The skiplist and chunk domains are anchored internally by `is_walk_range`
-// / `Query` via their own slot indices; the engine only touches
-// `locked.at(i)->value` here, and the chain LOCK on `pred->next[0]` already
-// keeps those nodes and their `RegionDesc`s reachable.
-namespace backing_anchor_ {
-inline DescBacking *thunk(void *) { return nullptr; }
-struct Ctx {};
-} // namespace backing_anchor_
-
-constexpr uint32_t kPinSlotBackingAnchor = 0;
-
-LIBC_INLINE void anchor_backing_domain_pin() {
-  backing_anchor_::Ctx ctx{};
-  (void)g_va_tracker_backing_domain.protect<&backing_anchor_::thunk>(
-      ctx, kPinSlotBackingAnchor, /*parent=*/nullptr);
 }
 
 } // namespace
@@ -892,7 +845,7 @@ locked_uniform_for_backing(const LockedSet &locked, DescBacking *target_b,
     RegionDesc *d = n->value.load(cpp::MemoryOrder::ACQUIRE);
     if (d == nullptr || d->backing_ref == kBackingRefNull)
       continue;
-    if (deref_backing(d->backing_ref) != target_b)
+    if (deref_backing_raw(d->backing_ref) != target_b)
       continue;
     DWORD prot = d->view_prot;
     uint16_t flags = d->flags.load(cpp::MemoryOrder::ACQUIRE);
@@ -985,7 +938,7 @@ int build_plan_release(const CommitIntent &i, Arena *arena,
     RegionDesc *d = n->value.load(cpp::MemoryOrder::ACQUIRE);
     if (d == nullptr || d->backing_ref == kBackingRefNull)
       continue;
-    DescBacking *b = deref_backing(d->backing_ref);
+    DescBacking *b = deref_backing_raw(d->backing_ref);
     if (b == nullptr)
       continue;
     void *ph_base = b->placeholder_base.load(cpp::MemoryOrder::ACQUIRE);
@@ -1124,7 +1077,7 @@ int build_plan_replace(const CommitIntent &i, Arena *arena,
     RegionDesc *d = n->value.load(cpp::MemoryOrder::ACQUIRE);
     if (d == nullptr || d->backing_ref == kBackingRefNull)
       continue;
-    DescBacking *b = deref_backing(d->backing_ref);
+    DescBacking *b = deref_backing_raw(d->backing_ref);
     if (b == nullptr)
       continue;
     void *ph_base = b->placeholder_base.load(cpp::MemoryOrder::ACQUIRE);
@@ -1389,7 +1342,7 @@ int execute_plan(CommitPlan &plan, const LockedSet &locked,
       case RegionShape::ANON_RESERVE_SECTION: {
         DescBacking *ob = d->backing_ref == kBackingRefNull
                               ? nullptr
-                              : deref_backing(d->backing_ref);
+                              : deref_backing_raw(d->backing_ref);
         if (ob == nullptr) {
           st = STATUS_SUCCESS;
           break;
@@ -1608,7 +1561,7 @@ int execute_plan(CommitPlan &plan, const LockedSet &locked,
         RegionDesc *d = n->value.load(cpp::MemoryOrder::ACQUIRE);
         if (d == nullptr || d->backing_ref == kBackingRefNull)
           continue;
-        DescBacking *b = deref_backing(d->backing_ref);
+        DescBacking *b = deref_backing_raw(d->backing_ref);
         if (b == nullptr)
           continue;
         right_b = b;
@@ -1930,7 +1883,7 @@ void post_swap_ownership_transfer(const CommitPlan &plan,
     RegionDesc *d = old_node->value.load(cpp::MemoryOrder::ACQUIRE);
     if (d == nullptr || d->backing_ref == kBackingRefNull)
       continue;
-    DescBacking *ob = deref_backing(d->backing_ref);
+    DescBacking *ob = deref_backing_raw(d->backing_ref);
     if (ob == nullptr)
       continue;
     bool reused_by_new = false;
@@ -1941,7 +1894,7 @@ void post_swap_ownership_transfer(const CommitPlan &plan,
       RegionDesc *Nd = N->value.load(cpp::MemoryOrder::ACQUIRE);
       if (Nd == nullptr || Nd->backing_ref == kBackingRefNull)
         continue;
-      if (deref_backing(Nd->backing_ref) == ob) {
+      if (deref_backing_raw(Nd->backing_ref) == ob) {
         reused_by_new = true;
         break;
       }
@@ -1976,7 +1929,7 @@ void survivor_scan_visitor(SkiplistNodeBase *node, void *ctx_p) {
   RegionDesc *d = node->value.load(cpp::MemoryOrder::ACQUIRE);
   if (d == nullptr || d->backing_ref == kBackingRefNull)
     return;
-  if (deref_backing(d->backing_ref) == ctx->target)
+  if (deref_backing_raw(d->backing_ref) == ctx->target)
     ctx->found = true;
 }
 
@@ -2028,7 +1981,7 @@ void run_stage2(Arena *arena, VaRange range, const LockedSet &locked,
     RegionDesc *d = old_node->value.load(cpp::MemoryOrder::ACQUIRE);
     if (d == nullptr || d->backing_ref == kBackingRefNull)
       continue;
-    DescBacking *b = deref_backing(d->backing_ref);
+    DescBacking *b = deref_backing_raw(d->backing_ref);
     if (b == nullptr)
       continue;
 
@@ -2046,7 +1999,7 @@ void run_stage2(Arena *arena, VaRange range, const LockedSet &locked,
       RegionDesc *Nd = N->value.load(cpp::MemoryOrder::ACQUIRE);
       if (Nd == nullptr || Nd->backing_ref == kBackingRefNull)
         continue;
-      if (deref_backing(Nd->backing_ref) == b) {
+      if (deref_backing_raw(Nd->backing_ref) == b) {
         has_survivor = true;
         break;
       }
@@ -2140,10 +2093,13 @@ int run_envelope(const CommitIntent &intent) {
   if (LIBC_UNLIKELY(build == nullptr))
     return -EINVAL;
 
-  // Pin the backing-domain era for the rest of the envelope. One call
-  // covers every retry — the slot is never rotated by sibling va_tracker
-  // calls inside the loop. See `anchor_backing_domain_pin`.
-  anchor_backing_domain_pin();
+  // Pin the backing-domain era for the rest of the envelope on
+  // `BackingPinSlot::kEngineAnchor`. One call covers every retry — the
+  // slot is never rotated by sibling va_tracker calls inside the loop,
+  // and the typed slot tag is statically disjoint from the reader-side
+  // `BackingPinSlot::kReaderPin` per the `BackingPinSlot` namespace's
+  // static_assert. See `desc_backing.h` for the full discipline.
+  anchor_backing_engine_pin();
 
   // The locked range may extend past `intent.range` for replace when a
   // shared backing extends past either edge. Widening is monotonic — we
@@ -2187,7 +2143,7 @@ int run_envelope(const CommitIntent &intent) {
         RegionDesc *d = n->value.load(cpp::MemoryOrder::ACQUIRE);
         if (d == nullptr || d->backing_ref == kBackingRefNull)
           continue;
-        DescBacking *b = deref_backing(d->backing_ref);
+        DescBacking *b = deref_backing_raw(d->backing_ref);
         if (b == nullptr)
           continue;
         void *ph = b->placeholder_base.load(cpp::MemoryOrder::ACQUIRE);

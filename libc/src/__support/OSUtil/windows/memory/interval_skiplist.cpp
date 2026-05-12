@@ -586,7 +586,7 @@ SkiplistNodeBase *bucket_alloc_node(uint8_t height, Arena *owning_arena) {
         /*next_chunk_id_hint=*/&b.next_chunk_id_hint,
         /*chunk_count=*/kSkiplistAddressableChunks,
         /*slots_per_chunk=*/kSlotsPerChunk,
-        /*filter_bucket_id=*/bucket_id,
+        /*consumer_bucket_id=*/bucket_id,
         /*init=*/&skiplist_init_slot,
         /*init_ctx=*/&ctx,
     };

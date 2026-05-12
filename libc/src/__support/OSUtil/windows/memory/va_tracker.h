@@ -91,10 +91,9 @@ enum class RegionKind : uint8_t {
 /// `va_tracker` call on this thread rotates the pin slot, invalidating
 /// any previously-returned `RegionRef`.
 struct RegionRef {
-  SkiplistNodeBase *node{nullptr};
   RegionDesc *desc{nullptr};
 
-  [[nodiscard]] LIBC_INLINE bool valid() const { return node != nullptr; }
+  [[nodiscard]] LIBC_INLINE bool valid() const { return desc != nullptr; }
 };
 
 //===----------------------------------------------------------------------===//

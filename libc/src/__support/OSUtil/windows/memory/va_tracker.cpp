@@ -204,7 +204,6 @@ struct WalkAdapter {
 
     RegionRef ref;
     ref.desc = desc;
-    ref.node = nullptr;
     return ref;
 }
 
@@ -283,16 +282,25 @@ struct SerializeIntervalVisitor {
         // whatever the kernel state currently is; the child re-acquires
         // fresh handles anyway, so a torn-down backing produces a no-op
         // entry rather than a fault.
-        DescBacking *b = deref_backing(rd->backing_ref);
-        if (b != nullptr) {
+        //
+        // Cross-domain reader path. The desc is pinned on the skiplist
+        // domain via the surrounding `is_walk_range`, but pin chains do
+        // not extend across Crystalline-W domains; we anchor
+        // `BackingPinSlot::kReaderPin` for this serializer and wrap the
+        // multi-field read in a `BackingView` so a peer
+        // kill+recycle that lands between successive field loads traps
+        // via the view's per-load generation re-check.
+        anchor_backing_reader_pin();
+        BackingView b{deref_backing_raw(rd->backing_ref)};
+        if (b) {
             meta.section_handle =
-                b->section_handle.load(cpp::MemoryOrder::ACQUIRE);
+                b.load<&DescBacking::section_handle>(cpp::MemoryOrder::ACQUIRE);
             meta.file_handle =
-                b->file_handle.load(cpp::MemoryOrder::ACQUIRE);
+                b.load<&DescBacking::file_handle>(cpp::MemoryOrder::ACQUIRE);
             meta.placeholder_base =
-                b->placeholder_base.load(cpp::MemoryOrder::ACQUIRE);
+                b.load<&DescBacking::placeholder_base>(cpp::MemoryOrder::ACQUIRE);
             meta.placeholder_size =
-                static_cast<size_t>(b->placeholder_pages) *
+                static_cast<size_t>(b.read<&DescBacking::placeholder_pages>()) *
                 static_cast<size_t>(kAllocGranularity);
         }
         meta.section_offset =

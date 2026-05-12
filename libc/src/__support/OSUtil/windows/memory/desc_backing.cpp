@@ -180,7 +180,7 @@ namespace windows {
 namespace va_tracker {
 
 //===----------------------------------------------------------------------===//
-// backing_alloc / backing_set_kernel_state / deref_backing
+// backing_alloc / backing_set_kernel_state / deref_backing_raw
 //===----------------------------------------------------------------------===//
 
 DescBacking *backing_alloc() {
@@ -298,7 +298,7 @@ void backing_set_kernel_state(DescBacking *backing,
                                      cpp::MemoryOrder::RELEASE);
 }
 
-DescBacking *deref_backing(BackingRef ref) {
+DescBacking *deref_backing_raw(BackingRef ref) {
     if (ref == kBackingRefNull)
         return nullptr;
 
@@ -349,6 +349,43 @@ DescBacking *deref_backing(BackingRef ref) {
         __builtin_trap();
 
     return b;
+}
+
+//===----------------------------------------------------------------------===//
+// Cross-domain pin defence — anchor pins on the backing domain
+//===----------------------------------------------------------------------===//
+
+// Anchor thunk for `protect()`. Returns nullptr because the call's
+// value is irrelevant; only the era-stability convergence inside
+// `protect()` matters. Pure (no captures, no side effects beyond the
+// read of its argument); safe to invoke from a foreign helper thread
+// per CrystallineDomain's helping-protocol thunk contract.
+namespace {
+inline DescBacking *backing_anchor_thunk(void *) { return nullptr; }
+struct BackingAnchorCtx {};
+} // namespace
+
+// Engine path: pins `BackingPinSlot::kEngineAnchor` for the rest of
+// the run_envelope retry loop. The slot is never rotated by sibling
+// va_tracker calls inside the envelope, so one call covers every
+// attempt.
+void anchor_backing_engine_pin() {
+    BackingAnchorCtx ctx{};
+    (void)g_va_tracker_backing_domain.protect<&backing_anchor_thunk>(
+        ctx, BackingPinSlot::kEngineAnchor, /*parent=*/nullptr);
+}
+
+// Reader path: pins `BackingPinSlot::kReaderPin` for the calling
+// thread. Crystalline-W `protect()` is non-cumulative, so the pinned
+// era stays in effect until the next `protect()` on the same slot
+// (typically the next call to this function on this thread), at
+// `clear_all()`, or at thread exit. Reader sites that need
+// inter-field staleness defence within the pinned scope wrap the raw
+// deref's return in `BackingView`.
+void anchor_backing_reader_pin() {
+    BackingAnchorCtx ctx{};
+    (void)g_va_tracker_backing_domain.protect<&backing_anchor_thunk>(
+        ctx, BackingPinSlot::kReaderPin, /*parent=*/nullptr);
 }
 
 //===----------------------------------------------------------------------===//

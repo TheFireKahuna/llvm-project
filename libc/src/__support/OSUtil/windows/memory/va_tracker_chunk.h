@@ -227,6 +227,31 @@ extern ::LIBC_NAMESPACE::concurrent::CrystallineDomain<
     VaChunkDesc, &va_chunk_desc_free, kVaChunkRetireFreq>
     g_va_tracker_art_chunk_domain;
 
+/// True when \p bucket_id identifies an ART node-type bucket
+/// (`kPoolBucketArtNode4..kPoolBucketArtNode256`).
+///
+/// Bucket id is the unambiguous indicator of which chunk domain a
+/// descriptor retires through: skiplist-side buckets (0..6) live in
+/// `g_va_tracker_skiplist_chunk_domain`, ART-side buckets (7..10) live in
+/// `g_va_tracker_art_chunk_domain`. The split keeps the skiplist's chunk-
+/// table reader-race grace window independent of the ART's.
+[[nodiscard]] LIBC_INLINE constexpr bool
+is_art_chunk_bucket(uint8_t bucket_id) {
+    return bucket_id >= kPoolBucketArtNode4;
+}
+
+/// Returns the Crystalline-W chunk domain owning descriptors of bucket
+/// \p bucket_id. Used at every chunk-domain dispatch site
+/// (`commit_new_va_chunk_for::init_node`, `release_slot_in_va_chunk::retire`,
+/// `va_chunk_acquire_slot::protect/retire`) so the skiplist/ART split is
+/// expressed once and stays consistent across the file.
+[[nodiscard]] LIBC_INLINE ::LIBC_NAMESPACE::concurrent::CrystallineDomain<
+    VaChunkDesc, &va_chunk_desc_free, kVaChunkRetireFreq> &
+pick_chunk_domain(uint8_t bucket_id) {
+    return is_art_chunk_bucket(bucket_id) ? g_va_tracker_art_chunk_domain
+                                          : g_va_tracker_skiplist_chunk_domain;
+}
+
 //===----------------------------------------------------------------------===//
 //  Pool API
 //===----------------------------------------------------------------------===//
@@ -384,14 +409,6 @@ inline constexpr uint32_t kVaChunkPinSlot = 0;
     return reinterpret_cast<VaChunkDesc *>(static_cast<uintptr_t>(1));
 }
 
-/// Sentinel value for `VaChunkAcquireSpec::filter_bucket_id` meaning
-/// "every chunk in `chunk_table` belongs to the calling consumer; no
-/// filter required". Per-class chunk_tables (RegionDesc, Arena,
-/// DescBacking) always pass this. The skiplist passes its real bucket
-/// id (0..3) because its chunk_table is shared across all four height
-/// buckets and the scan must skip foreign-bucket chunks.
-inline constexpr uint8_t kVaChunkNoBucketFilter = 0xFFu;
-
 /// Per-class slot initialiser. Invoked once `va_chunk_acquire_slot` has
 /// claimed and zero-filled the slot. The callback completes any
 /// consumer-specific publication (canary stamp, link-traits state, etc.).
@@ -410,11 +427,18 @@ struct VaChunkAcquireSpec {
     /// Capacity passed to `try_acquire_first_free_slot`; usually equals
     /// `cd->slot_capacity` at commit time.
     uint32_t slots_per_chunk;
-    /// Bucket id this scan accepts. `kVaChunkNoBucketFilter` (0xFF) on
-    /// non-skiplist consumers whose chunk_table holds only chunks of
-    /// one bucket; the skiplist's flat shared table holds chunks across
-    /// four buckets and must filter on `cd->bucket_id` before any CAS.
-    uint8_t filter_bucket_id;
+    /// Bucket id of the *calling consumer*. Serves two purposes:
+    ///   (a) Filter — chunks in the table whose `cd->bucket_id` differs
+    ///       are skipped. Trivially passes for homogeneous tables
+    ///       (RegionDesc / Arena / DescBacking / ART-per-type) where every
+    ///       chunk shares the consumer's bucket; load-bearing for the
+    ///       skiplist's flat table shared across four height buckets.
+    ///   (b) Domain selector — `pick_chunk_domain(consumer_bucket_id)`
+    ///       picks `g_va_tracker_skiplist_chunk_domain` for buckets 0..6
+    ///       and `g_va_tracker_art_chunk_domain` for buckets 7..10, so the
+    ///       reservation pin and any drain-on-rollback retire land in the
+    ///       descriptor's owning domain.
+    uint8_t consumer_bucket_id;
     VaChunkSlotInitFn init;
     void *init_ctx;
 };
@@ -422,11 +446,14 @@ struct VaChunkAcquireSpec {
 /// Single-pass acquire over `spec.chunk_table` using the rotating-hint
 /// pattern.
 ///
-/// For each `cid` in the rotation: pin via
-/// `g_va_tracker_skiplist_chunk_domain.protect`, attempt
+/// For each `cid` in the rotation: pin via the chunk domain selected by
+/// `pick_chunk_domain(spec.consumer_bucket_id)`, attempt
 /// `try_va_chunk_reserve`, attempt `try_acquire_first_free_slot`. The
 /// reservation CAS on `cd->live_state` is the linearisation point for
-/// slot ownership; the rotating hint is RELAXED.
+/// slot ownership; the rotating hint is RELAXED. ART consumers
+/// (buckets 7..10) pin and retire through `g_va_tracker_art_chunk_domain`;
+/// skiplist-side consumers (buckets 0..6) pin and retire through
+/// `g_va_tracker_skiplist_chunk_domain`.
 ///
 /// On bitmap-raced-out (every free bit lost to a peer mid-CAS): rolls
 /// back the reservation. If the rollback drives count to zero, mirrors

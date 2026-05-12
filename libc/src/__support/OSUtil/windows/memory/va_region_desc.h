@@ -246,13 +246,21 @@ struct alignas(64) RegionDesc
   /// on \c g_va_tracker_backing_domain:
   ///
   /// \code{.cpp}
-  ///   auto *b = deref_backing(desc->backing_ref);
+  ///   // Engine path (run_envelope holds anchor + LockedSet):
+  ///   auto *b = deref_backing_raw(desc->backing_ref);
   ///   HANDLE sec = b->section_handle.load(MemoryOrder::ACQUIRE);
+  ///
+  ///   // Reader path (no LockedSet — wrap in BackingView for
+  ///   // per-load generation re-check):
+  ///   anchor_backing_reader_pin();
+  ///   BackingView v{deref_backing_raw(desc->backing_ref)};
+  ///   HANDLE sec = v.load<&DescBacking::section_handle>(MemoryOrder::ACQUIRE);
   /// \endcode
   ///
   /// The pin on \c g_va_tracker_skiplist_domain that keeps this desc alive
   /// does \b not extend to the backing — the caller must hold the backing
-  /// pin for the duration of the dereference.
+  /// pin for the duration of the dereference. See \c desc_backing.h for the
+  /// engine vs reader access discipline.
   uint64_t backing_ref{0};
 
   /// Section offset for this view, as an NT \c LARGE_INTEGER. Partial unmaps

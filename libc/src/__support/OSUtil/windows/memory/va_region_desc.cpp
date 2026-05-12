@@ -116,7 +116,7 @@ RegionDesc *region_desc_alloc() {
       /*next_chunk_id_hint=*/&p.next_chunk_id_hint,
       /*chunk_count=*/kChunksPerBucket,
       /*slots_per_chunk=*/kRegionDescSlotsPerChunk,
-      /*filter_bucket_id=*/kVaChunkNoBucketFilter,
+      /*consumer_bucket_id=*/kPoolBucketRegionDesc,
       /*init=*/&region_desc_init_slot,
       /*init_ctx=*/nullptr,
   };

@@ -196,7 +196,7 @@ struct alignas(64) DescBacking
 
     /// Per-slot canary derived at alloc time from `partition_secret`
     /// XOR class_id XOR chunk_id XOR slot_idx. Validated in every
-    /// `deref_backing` before any other field read. An attacker with
+    /// `deref_backing_raw` before any other field read. An attacker with
     /// arbitrary write into a freed-but-unreused slot cannot guess
     /// `partition_secret` — it lives in Zone 0b of the PCB,
     /// ProcessPrng-derived, and is never observable to user code.
@@ -386,22 +386,178 @@ void backing_set_kernel_state(DescBacking *backing,
 /// `desc_backing.cpp` returns clean.
 void backing_kill_and_retire(DescBacking *backing);
 
-/// Wait-free dereference of a `BackingRef` under a held pin on
-/// `g_va_tracker_backing_domain`.
+//===----------------------------------------------------------------------===//
+// Cross-domain pin defence — slot tags / anchor pins / BackingView
+//===----------------------------------------------------------------------===//
+//
+// Pin transitivity does not extend across Crystalline-W domains
+// (Nikolaev and Ravindran, PLDI 2024). A consumer holding a pin on
+// `g_va_tracker_skiplist_domain` for a `RegionDesc` can dereference
+// the desc, but following `desc->backing_ref` into
+// `g_va_tracker_backing_domain` requires a separate pin on the
+// backing domain.
+//
+// Two access disciplines exist:
+//
+// **Engine path (`run_envelope` and the build_plan_* / execute_plan /
+// Stage 2 helpers it calls).** Anchors `BackingPinSlot::kEngineAnchor`
+// once at envelope entry via `anchor_backing_engine_pin()`. Inside the
+// envelope, `LockedSet` holds locks on every descriptor in the working
+// range; a peer envelope cannot kill a backing whose descriptor is
+// locked Live (the kill protocol requires no LIVE desc references the
+// backing). Lock-set + anchor pin together exclude both
+// peer-mid-read-kill and recycle, so raw access via
+// `deref_backing_raw` is safe per-call.
+//
+// **Reader path (fork serializer, VEH probes, future msync / madvise /
+// numa_ops consumers).** Anchors `BackingPinSlot::kReaderPin` once at
+// the read site via `anchor_backing_reader_pin()`. There is no
+// LockedSet; peer envelopes can run, kill backings, and recycle slots
+// while the reader is mid-read. The anchor pin alone fixes the era
+// but does not prevent inter-field staleness within the pinned scope
+// (preempted between two field loads while peer killed-and-recycled).
+// `BackingView`'s per-load generation re-check is the structural
+// defence: every `view.load<&DescBacking::field>(mo)` reloads
+// `generation` post-field-read and traps on mismatch.
+//
+// Crystalline-W's reservation primitive (`protect()`) is non-cumulative
+// — each call on a (thread, slot index) pair supersedes the previous
+// era reservation — and has no matching release; the slot is reclaimed
+// by the next `protect()` on the same index, by `clear_all()`, or by
+// thread exit. The anchor functions are therefore one-shot calls with
+// no destructor; there is no acquire/release pair to wrap.
+//
+// `kEngineAnchor` and `kReaderPin` are statically disjoint, so engine
+// and reader sides cannot rotate each other's pin via Crystalline's
+// per-index non-cumulative semantics.
+//
+// Forward-compat note. Under cross-domain retire transitivity
+// (CROSS_DOMAIN_PIN_SOLUTIONS.md Proposal 5) the reader anchor becomes
+// a redundant era refresh — the skiplist pin would already cover the
+// backing. The anchor call and the `BackingView` re-check both reduce
+// to no-ops in that future world; both are removable transformations.
+namespace BackingPinSlot {
+inline constexpr uint32_t kEngineAnchor = 0;
+inline constexpr uint32_t kReaderPin = 1;
+static_assert(kEngineAnchor != kReaderPin,
+              "engine anchor and reader pin must be distinct slot indices — "
+              "Crystalline-W protect() is non-cumulative per (thread, index), "
+              "so sharing one index would let either side rotate the other");
+} // namespace BackingPinSlot
+
+/// Engine-path anchor pin on `BackingPinSlot::kEngineAnchor`. Called
+/// once at `run_envelope` entry; covers every build_plan / execute /
+/// Stage 2 raw deref through the entire retry loop. Sibling va_tracker
+/// calls inside the envelope do not rotate this slot.
+void anchor_backing_engine_pin();
+
+/// Reader-path anchor pin on `BackingPinSlot::kReaderPin`. Called once
+/// at a cross-domain reader site (fork serializer, VEH probe, msync /
+/// madvise / numa_ops); the pinned scope extends until the next
+/// `protect()` on the same slot in this thread (or `clear_all()`, or
+/// thread exit).
 ///
-/// Triple-validates bounds, canary, and generation; on any mismatch
-/// `__builtin_trap()`. Returns nullptr only when `ref` is
-/// `kBackingRefNull`.
+/// A grep over `anchor_backing_reader_pin` enumerates every
+/// cross-domain reader entry in the tree. Pair with `BackingView` for
+/// field reads, since the pin alone does not catch inter-field
+/// staleness within the pinned scope.
+void anchor_backing_reader_pin();
+
+/// Generation-checking view of a `DescBacking`. Defends against
+/// kill+recycle that slips through between successive field reads.
 ///
-/// \pre The caller must hold a Crystalline pin on the backing
-///      domain that was established before `ref` was captured.
-///      Typically the pin is inherited transitively — the caller
-///      already holds a pin on the skiplist domain via the
-///      descriptor that carried the ref, and the same discipline
-///      anchors the backing pin via a sibling slot on the backing
-///      domain. Callers that capture `BackingRef` outside any pin
-///      must establish their own pin before calling.
-[[nodiscard]] DescBacking *deref_backing(BackingRef ref);
+/// Constructed from the raw pointer (typically the return of
+/// `deref_backing_raw`); snapshots `generation` at construction.
+/// Every `load<MemberPtr>(mo)` reloads `generation` after the field
+/// load and `__builtin_trap`s on mismatch — a slot whose generation
+/// has advanced between view construction and the load is a different
+/// incarnation, and the trap fires before the caller acts on the
+/// wrong-incarnation field value.
+///
+/// Use only on the reader path. Engine callers under
+/// `anchor_backing_engine_pin` + `LockedSet` already exclude the race
+/// the view defends; wrapping engine accesses would add cost without
+/// safety. A null pointer in is null-on-load — `operator bool()`
+/// reports the wrap.
+class BackingView {
+public:
+    /// Construct over a raw `DescBacking *`. Snapshots `generation`
+    /// with ACQUIRE so subsequent `load` re-checks pair with the
+    /// alloc-side seed write. Null in -> null view; subsequent loads
+    /// on a null view trap.
+    LIBC_INLINE explicit BackingView(DescBacking *b) noexcept : b_(b) {
+        pinned_gen_ =
+            b == nullptr
+                ? 0
+                : b->generation.load(cpp::MemoryOrder::ACQUIRE);
+    }
+
+    /// Empty view, equivalent to `BackingView{nullptr}`.
+    LIBC_INLINE BackingView() noexcept : b_(nullptr), pinned_gen_(0) {}
+
+    [[nodiscard]] LIBC_INLINE explicit operator bool() const noexcept {
+        return b_ != nullptr;
+    }
+
+    /// Identity comparison against a raw `DescBacking *` (typically
+    /// from a sibling `deref_backing_raw` under the engine anchor).
+    /// Identity test only; does not re-validate generation.
+    [[nodiscard]] LIBC_INLINE bool operator==(const DescBacking *o) const
+        noexcept {
+        return b_ == o;
+    }
+    [[nodiscard]] LIBC_INLINE bool operator!=(const DescBacking *o) const
+        noexcept {
+        return b_ != o;
+    }
+
+    /// Load an atomic field of `DescBacking` under the view's
+    /// generation snapshot; reloads `generation` post-load and
+    /// `__builtin_trap`s on mismatch.
+    template <auto MemberPtr>
+    [[nodiscard]] LIBC_INLINE auto load(cpp::MemoryOrder mo) const {
+        if (LIBC_UNLIKELY(b_ == nullptr))
+            __builtin_trap();
+        auto v = (b_->*MemberPtr).load(mo);
+        if (LIBC_UNLIKELY(b_->generation.load(cpp::MemoryOrder::ACQUIRE) !=
+                          pinned_gen_))
+            __builtin_trap();
+        return v;
+    }
+
+    /// Read a plain (non-atomic) field of `DescBacking` under the
+    /// view's generation snapshot. Used for write-once fields whose
+    /// cross-thread happens-before is supplied by the descriptor
+    /// publish (`shape`, `placeholder_pages`, `cached_chunk_id`,
+    /// `cached_slot_idx`).
+    template <auto MemberPtr>
+    [[nodiscard]] LIBC_INLINE auto read() const {
+        if (LIBC_UNLIKELY(b_ == nullptr))
+            __builtin_trap();
+        auto v = b_->*MemberPtr;
+        if (LIBC_UNLIKELY(b_->generation.load(cpp::MemoryOrder::ACQUIRE) !=
+                          pinned_gen_))
+            __builtin_trap();
+        return v;
+    }
+
+private:
+    DescBacking *b_;
+    uint32_t pinned_gen_;
+};
+
+/// Raw dereference. Triple-validates bounds, canary, and generation;
+/// on any mismatch `__builtin_trap()`. Returns nullptr only when
+/// `ref` is `kBackingRefNull`.
+///
+/// \pre Caller already holds a Crystalline pin on the backing domain
+///      — `anchor_backing_engine_pin` for engine paths,
+///      `anchor_backing_reader_pin` for reader paths. The two pin
+///      indices are statically disjoint; either is sufficient for the
+///      raw deref to be safe against slot recycle. The recycle defence
+///      is the pin; inter-field staleness defence (reader path only)
+///      is `BackingView`.
+[[nodiscard]] DescBacking *deref_backing_raw(BackingRef ref);
 
 //===----------------------------------------------------------------------===//
 // Bootstrap and fork hooks

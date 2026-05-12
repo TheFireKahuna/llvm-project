@@ -271,7 +271,7 @@ Arena *arena_alloc(uintptr_t arena_lo, uint32_t cpu_index) {
         /*next_chunk_id_hint=*/&a.next_chunk_id_hint,
         /*chunk_count=*/kChunksPerBucket,
         /*slots_per_chunk=*/kArenaSlotsPerChunk,
-        /*filter_bucket_id=*/kVaChunkNoBucketFilter,
+        /*consumer_bucket_id=*/kPoolBucketArena,
         /*init=*/&arena_init_slot,
         /*init_ctx=*/&ctx,
     };

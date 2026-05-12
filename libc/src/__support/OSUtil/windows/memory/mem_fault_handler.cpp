@@ -41,13 +41,14 @@
 // va_tracker call on this thread rotates the slot - no scope-exit drop
 // step. Reading kernel-state fields off the resolved desc requires an
 // additional pin on the backing domain plus a triple-validate via
-// `deref_backing(desc->backing_ref)`. The current implementation only
+// `deref_backing_raw(desc->backing_ref)`. The current implementation only
 // reads `current_shape()`, `flags_load()`, and `numa_interleave_mask`,
 // all of which live on the desc proper.
 //
 //===----------------------------------------------------------------------===//
 
 #include "src/__support/OSUtil/windows/memory/mem_fault_handler.h"
+#include "src/__support/OSUtil/windows/alloc/page_size.h"
 #include "src/__support/OSUtil/windows/alloc/pagemap_classifier.h"
 #include "src/__support/OSUtil/windows/memory/desc_backing.h"
 #include "src/__support/OSUtil/windows/memory/legacy/memory_lock_policy.h"
@@ -74,8 +75,16 @@ LONG try_demand_commit(EXCEPTION_POINTERS *ep) {
   ULONG access_type = static_cast<ULONG>(
       ep->ExceptionRecord->ExceptionInformation[0]);
 
-  void *fault_page = reinterpret_cast<void *>(
-      fault_addr & ~static_cast<uintptr_t>(4095));
+  // Cached PCB read populated by pcb_startup_init (Tier A Phase 0). Demand
+  // commits are guarded by `mbi.State == MEM_RESERVE`, which cannot hold
+  // for libc-owned VA before the memory primitives bootstrap publishes
+  // reservations — and that bootstrap runs strictly after the PCB is
+  // populated. A pre-bootstrap AV reaches this handler only via the
+  // pagemap-Empty + non-MEM_RESERVE early exits, never the page-size
+  // arithmetic below.
+  const SIZE_T page_size = get_page_size();
+  void *fault_page =
+      reinterpret_cast<void *>(align_down_to_page(fault_addr));
 
   // First-line dispatch reads only the atomic pagemap projection - any
   // non-`Empty` tag is libc-internal or a cordon, both of which the
@@ -146,7 +155,7 @@ LONG try_demand_commit(EXCEPTION_POINTERS *ep) {
       // matching Linux `do_numa_page`'s per-page interleave. One
       // syscall per fault.
       uintptr_t view_base = reinterpret_cast<uintptr_t>(mbi.AllocationBase);
-      SIZE_T page_index = (fault_addr - view_base) / 4096;
+      SIZE_T page_index = (fault_addr - view_base) / page_size;
       ULONG node_count = static_cast<ULONG>(__builtin_popcount(mask));
       ULONG slot_idx = static_cast<ULONG>(page_index % node_count);
 
@@ -157,13 +166,29 @@ LONG try_demand_commit(EXCEPTION_POINTERS *ep) {
         m &= m - 1;
       ULONG node = static_cast<ULONG>(__builtin_ctz(m));
 
-      void *page = fault_page;
-      SIZE_T page_size = 4096;
       NTSTATUS numa_st =
-          nt_pal::commit_in_reservation_numa(page, page_size, prot, node);
+          nt_pal::commit_in_reservation_numa(fault_page, page_size, prot,
+                                             node);
       if (NT_SUCCESS(numa_st)) {
+        // VEH-path entry into the legacy memory_lock_policy. The
+        // `onfault_contains` reader takes a futex-backed RW reader lock —
+        // not formally lock-free. Two properties keep the VEH wait-free
+        // invariant intact:
+        //   (1) Writers (`arm_range`, `disarm_range`) touch only the
+        //       singleton's in-memory `ranges[]` / `count` while holding
+        //       the write lock; `apply_guard_pages` runs strictly
+        //       *outside* the lock. A writer therefore never faults on
+        //       user VA inside its own write-locked window, so the
+        //       same-thread reentrant-deadlock case cannot fire.
+        //   (2) Cross-thread contention parks the faulting thread on the
+        //       Futex until the writer unlocks; the wait is bounded by
+        //       the writer's short binary-search-plus-memmove window.
+        // `lock_range` then issues only NT syscalls (`NtLockVirtualMemory`,
+        // working-set quota adjust) and never re-enters this code path.
+        // Future migration of the lock-policy state into the va_tracker
+        // substrate will remove the reliance on property (1).
         if (onfault_contains(fault_addr))
-          lock_range(fault_page, 4096);
+          lock_range(fault_page, page_size);
         return EXCEPTION_CONTINUE_EXECUTION;
       }
     }
@@ -193,9 +218,13 @@ LONG try_demand_commit(EXCEPTION_POINTERS *ep) {
   NTSTATUS st = nt_pal::commit_in_reservation_no_writewatch(base, commit_size, prot);
   if (NT_SUCCESS(st)) {
     // `MLOCK_ONFAULT` semantics: if this VA is inside a lock-on-fault
-    // range, lock the freshly-committed page right away.
+    // range, lock the freshly-committed page right away. The same VEH
+    // wait-free invariant analysis as the NUMA-interleave branch above
+    // applies — `onfault_contains` is safe against same-thread reentry
+    // because writers never touch user VA inside the write-locked
+    // window, and `lock_range` issues only NT syscalls.
     if (onfault_contains(fault_addr))
-      lock_range(fault_page, 4096);
+      lock_range(fault_page, page_size);
     return EXCEPTION_CONTINUE_EXECUTION;
   }
 
