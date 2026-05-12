@@ -387,12 +387,7 @@ LINKAGE_REQUIRES_GENERATION_AT(CrystallineDomainSlot, 1448);
 // via batch_next) accumulates retires; try_retire publishes the batch
 // across the K slots using the modular-addend refcount trick.
 //
-// `alloc_counter` splits the reference's separate per-thread
-// alloc_counters[] into the same struct (removes the need for a
-// second padded array). Bumped by init_node(); every Freq-th bump
-// triggers help_read + global era increment.
-//
-// Packed tight at 48 B (alignof 8). No cross-thread access — only
+// Packed tight at 40 B (alignof 8). No cross-thread access — only
 // the owner writes, and only the owner reads. Lives on ThreadScratchState
 // (per-thread arena) so retire bookkeeping shares the owner's L1 with
 // the rest of the per-thread allocator hot data.
@@ -402,11 +397,10 @@ struct CrystallineBatch {
   CrystallineNode *list;      // chain of refs-nodes ready to reclaim
   uint64_t counter;           // retire counter — drives try_retire cadence
   uint64_t list_count;        // free-cache population (≤ MAX_WFRC)
-  uint64_t alloc_counter;     // init_node counter — drives era bumps
 };
 
-static_assert(sizeof(CrystallineBatch) == 48,
-              "CrystallineBatch must pack to exactly 48 bytes — owner-only "
+static_assert(sizeof(CrystallineBatch) == 40,
+              "CrystallineBatch must pack to exactly 40 bytes — owner-only "
               "access, no cross-thread line isolation needed");
 
 // CrystallineThreadRegion was removed when slots moved out of the

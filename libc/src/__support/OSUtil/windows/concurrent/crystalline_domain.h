@@ -326,16 +326,9 @@ public:
   // Stamp birth_era on a freshly allocated node. Replaces the
   // reference's alloc() — the user handles allocation, then calls this
   // to prepare the node for use in the lock-free data structure.
-  // Amortized global-era bump every Freq-th call; precedes a
-  // help_read() so stalled readers make progress.
+  // Pure era stamp — era ticks move to try_retire close (see below).
   LIBC_INLINE void init_node(NodeT *node) {
-    CrystallineBatch &batch = my_batch();
-    batch.alloc_counter++;
-    if (batch.alloc_counter % Freq == 0) {
-      help_read();
-      era_.fetch_add(1, cpp::MemoryOrder::ACQ_REL);
-    }
-    node->birth_era = current_era();
+    node->birth_era = era_.load(cpp::MemoryOrder::ACQUIRE);
     node->batch_link.store(0u, cpp::MemoryOrder::RELAXED);
   }
 
@@ -1105,6 +1098,12 @@ private:
   // 535-611 of the reference.
   // -----------------------------------------------------------------------
   LIBC_INLINE void try_retire(CrystallineBatch &batch) {
+    // Help any stalled slow paths before walking the active chain — drains
+    // wait-free progress for the slowpath protocol and is gated on a non-
+    // zero slow_counter so quiescent domains pay only one atomic load.
+    if (slow_counter_.load(cpp::MemoryOrder::ACQUIRE) != 0)
+      help_read();
+
     NodeT *curr = as_node(batch.first);
     NodeT *refs = as_node(batch.last);
     uint64_t min_era = refs->birth_era;
@@ -1214,6 +1213,9 @@ private:
       refs->cn_next.store(nullptr, cpp::MemoryOrder::RELAXED);
       free_list(refs);
     }
+    // Era advances on retire close — drives protect()'s convergence so
+    // readers learn that a retirement happened and may need to drain.
+    era_.fetch_add(1, cpp::MemoryOrder::ACQ_REL);
     batch.first = nullptr;
     batch.counter = 0;
   }
@@ -1345,7 +1347,6 @@ private:
     batch.list = nullptr;
     batch.counter = 0;
     batch.list_count = 0;
-    batch.alloc_counter = 0;
   }
 
   LIBC_INLINE void fini() {
