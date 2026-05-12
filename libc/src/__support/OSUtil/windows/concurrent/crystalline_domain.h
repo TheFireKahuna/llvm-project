@@ -75,12 +75,14 @@
 //    `is_walk_range`'s predecessor-pin rotation: the `walk_prev` is
 //    already pinned by the previous iteration's `pinned_read_link_target`
 //    on the cur slot, and on advance the prev slot's era is refreshed
-//    via `protect<&anchor_thunk>` so `try_retire` won't skip the slot.
-//    This is bounded (two slots, ping-pong rotation) and load-bearing
-//    (the prev slot needs an era ≥ batch min_era for retire-attachment
-//    to find it) — distinct from the deleted `DomainPin` antipattern,
+//    via `anchor()` so `try_retire` won't skip the slot. This is
+//    bounded (two slots, ping-pong rotation) and load-bearing (the
+//    prev slot needs an era ≥ batch min_era for retire-attachment to
+//    find it) — distinct from the deleted `DomainPin` antipattern,
 //    which was a per-operation outer "pin" that the inner protect()s
-//    on real loads already covered.
+//    on real loads already covered. `anchor()` is the first-class API
+//    for this case; callers MUST hold the pinned pointer alive through
+//    an external mechanism (see `anchor()`'s declaration below).
 // 3. The thunk overload of `protect()` extends Fig. 10 to multi-step
 //    loads; slow_path / help_thread publish a (load_thunk, load_ctx)
 //    pair via `state[index]` so foreign helpers can invoke the load
@@ -413,6 +415,26 @@ public:
     } while (--attempts != 0);
 
     return slow_path(LoadThunk, static_cast<void *>(&ctx), index, parent);
+  }
+
+  // Refresh this slot's era to current_era() so try_retire considers
+  // it eligible against future retire batches. Drains any pending chain
+  // attached to first[index] before publishing the era.
+  //
+  // PRECONDITION: the caller already holds the pointer being pinned
+  // through an external mechanism — another reservation slot on this
+  // thread, an external refcount, a thread-private lock, etc. Calling
+  // anchor() on a slot whose pinned pointer is not externally held
+  // races a concurrent retire and is a UAF in the caller (anchor()
+  // publishes the new era after try_retire's eligibility check has
+  // already excluded this slot, so the retiring batch may free the
+  // pointer while the caller is still reading).
+  //
+  // Cheaper than protect()'s era-stability loop because it skips the
+  // 16-attempt fast path and the load-thunk indirection; the caller
+  // is asserting they already know the pointer is alive.
+  LIBC_INLINE void anchor(uint32_t index) {
+    (void)do_update(era_.load(cpp::MemoryOrder::ACQUIRE), index);
   }
 
   // Submit `node` for deferred reclamation. Buffers into the per-thread

@@ -2779,25 +2779,18 @@ public:
   /// thread freers and abandoned-chain walkers MUST bracket their slab
   /// dereferences with `retire_reservation_acquire` ... drop so a
   /// concurrent last-freer's retire cannot run substrate_release while
-  /// the dereference is in flight. Drop is a second protect() which
-  /// re-anchors the slot's era (cheaper than `clear_all`'s full walk).
+  /// the dereference is in flight. Drop is a second `anchor()` which
+  /// re-publishes the slot's era (cheaper than `clear_all`'s full walk).
   ///
-  /// Anchor-only protocol: passes a thunk that returns nullptr — the
-  /// era-stability convergence inside protect() is the only meaningful
-  /// effect.
-  LIBC_INLINE static SlabHeader *slab_retire_anchor_thunk(void *) {
-    return nullptr;
-  }
-  struct SlabRetireAnchorCtx {};
+  /// Both endpoints publish era only; the slab pointer the caller is
+  /// dereferencing is held alive by the caller's existing pin path
+  /// (slab_registry membership for cross-thread free, the abandoned
+  /// chain link for the chain walker).
   LIBC_INLINE void retire_reservation_acquire() {
-    SlabRetireAnchorCtx ctx{};
-    (void)slab_retire_domain_.template protect<&slab_retire_anchor_thunk>(
-        ctx, /*index=*/0, /*parent=*/nullptr);
+    slab_retire_domain_.anchor(0);
   }
   LIBC_INLINE void retire_reservation_drop() {
-    SlabRetireAnchorCtx ctx{};
-    (void)slab_retire_domain_.template protect<&slab_retire_anchor_thunk>(
-        ctx, /*index=*/0, /*parent=*/nullptr);
+    slab_retire_domain_.anchor(0);
   }
 
   /// Initialize with a given slot size. Thread-safe and idempotent —

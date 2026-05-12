@@ -99,6 +99,7 @@
 
 #include "hdr/stdint_proxy.h"
 #include "src/__support/CPP/atomic.h"
+#include "src/__support/libc_assert.h"
 #include "src/__support/macros/attributes.h"
 #include "src/__support/macros/config.h"
 
@@ -186,6 +187,7 @@ init_subpage_mask_all_committed(SubPageCommitMask &m) {
 /// in this codebase.
 [[nodiscard]] LIBC_INLINE bool
 is_subpage_committed(SubPageCommitMask &m, uint8_t idx) {
+  LIBC_ASSERT(idx < kSubPagesPerSlab);
   uint16_t bits = m.load(cpp::MemoryOrder::ACQUIRE);
   return ((bits >> idx) & 1u) != 0u;
 }
@@ -202,6 +204,7 @@ is_subpage_committed(SubPageCommitMask &m, uint8_t idx) {
 ///          (idempotent re-arm).
 LIBC_INLINE bool
 mark_subpage_committed(SubPageCommitMask &m, uint8_t idx) {
+  LIBC_ASSERT(idx < kSubPagesPerSlab);
   uint16_t bit = static_cast<uint16_t>(static_cast<uint16_t>(1u) << idx);
   uint16_t prev = m.fetch_or(bit, cpp::MemoryOrder::RELEASE);
   return (prev & bit) == 0u;
@@ -219,6 +222,7 @@ mark_subpage_committed(SubPageCommitMask &m, uint8_t idx) {
 ///          \c false if it was already clear (no syscall needed).
 LIBC_INLINE bool
 mark_subpage_decommitted(SubPageCommitMask &m, uint8_t idx) {
+  LIBC_ASSERT(idx < kSubPagesPerSlab);
   uint16_t bit = static_cast<uint16_t>(static_cast<uint16_t>(1u) << idx);
   uint16_t mask = static_cast<uint16_t>(~bit);
   uint16_t prev = m.fetch_and(mask, cpp::MemoryOrder::RELEASE);
@@ -295,6 +299,7 @@ subpage_range_to_mask(SubPageRange r) {
 /// commit and decommit syscalls expect for that sub-page.
 [[nodiscard]] LIBC_INLINE void *
 subpage_address_for(void *slab_payload_base, uint8_t idx) {
+  LIBC_ASSERT(idx < kSubPagesPerSlab);
   return static_cast<void *>(static_cast<unsigned char *>(slab_payload_base) +
                              static_cast<size_t>(idx) * kSubPageBytes);
 }

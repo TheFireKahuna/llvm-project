@@ -1066,16 +1066,6 @@ pinned_read_link_target(
     cpp::Atomic<::LIBC_NAMESPACE::linkage::Link> &link_field,
     uint32_t cur_slot, SkiplistNodeBase *parent_for_helper);
 
-namespace walk_pin_anchor_ {
-// No-load anchor thunk for `is_walk_range`'s predecessor-pin
-// rotation. Returns nullptr — the era-stability convergence inside
-// `protect()` is the only meaningful effect, and the returned value
-// is discarded. Each call site flags "anchor era only — no logical
-// load" so the contract is visible without chasing the thunk.
-inline SkiplistNodeBase *thunk(void *) { return nullptr; }
-struct Ctx {};
-} // namespace walk_pin_anchor_
-
 template <class Visitor>
 void is_walk_range(Arena *arena, uintptr_t lo, uintptr_t hi,
                    Visitor &&visitor) {
@@ -1087,10 +1077,8 @@ void is_walk_range(Arena *arena, uintptr_t lo, uintptr_t hi,
 
     // Anchor era only — walk_prev is already known-alive (head
     // sentinel here, or pinned from the prior iteration's kCur).
-    walk_pin_anchor_::Ctx anchor_ctx{};
     SkiplistNodeBase *walk_prev = &arena->head;
-    (void)dom.protect<&walk_pin_anchor_::thunk>(
-        anchor_ctx, walk_pin_slots_::kPrev, /*parent=*/nullptr);
+    dom.anchor(walk_pin_slots_::kPrev);
 
     // Capacity-derived corruption guard, not a retry budget. Closes
     // the wait-free invariant on this reader path.
@@ -1126,8 +1114,7 @@ void is_walk_range(Arena *arena, uintptr_t lo, uintptr_t hi,
         // Advance: rotate pins (cur -> prev). Anchor era only — node
         // was just pinned on kCur and we know it is alive.
         walk_prev = node;
-        (void)dom.protect<&walk_pin_anchor_::thunk>(
-            anchor_ctx, walk_pin_slots_::kPrev, /*parent=*/nullptr);
+        dom.anchor(walk_pin_slots_::kPrev);
     }
 }
 

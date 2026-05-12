@@ -306,20 +306,6 @@ SkiplistNodeBase *skiplist_load_link_target_thunk(void *ctx_p) {
     return resolve_link_target_impl(enc);
 }
 
-// Era-only anchor thunk. Used at predecessor-pin rotation sites that
-// already hold a known-alive pointer on a different reservation slot —
-// the convergence work inside `protect()` is the only effect; the
-// returned value is discarded.
-SkiplistNodeBase *skiplist_anchor_thunk(void *) { return nullptr; }
-struct SkiplistAnchorCtx {};
-
-LIBC_INLINE void anchor_skiplist_pin(uint32_t index,
-                                       SkiplistNodeBase *parent) {
-    SkiplistAnchorCtx ctx{};
-    (void)g_va_tracker_skiplist_domain
-        .protect<&skiplist_anchor_thunk>(ctx, index, parent);
-}
-
 } // namespace
 
 // Pinned chain advance. One `protect()` call does the load, era
@@ -687,7 +673,7 @@ struct PredLookupResult {
     PredLookupResult plr;
 
     SkiplistNodeBase *prev = &arena->head;
-    anchor_skiplist_pin(kPinSlotPrev, /*parent=*/nullptr);
+    g_va_tracker_skiplist_domain.anchor(kPinSlotPrev);
 
     for (uint32_t lvl = kMaxHeight; lvl > 0;) {
         --lvl;
@@ -735,7 +721,7 @@ struct PredLookupResult {
                 break;
 
             prev = cur;
-            anchor_skiplist_pin(kPinSlotPrev, /*parent=*/nullptr);
+            g_va_tracker_skiplist_domain.anchor(kPinSlotPrev);
         }
     }
 
@@ -779,7 +765,7 @@ gather_level_bookmarks(Arena *arena, uintptr_t lo) {
     LevelBookmarks out;
 
     SkiplistNodeBase *prev = &arena->head;
-    anchor_skiplist_pin(kPinSlotLevelPrev, /*parent=*/nullptr);
+    g_va_tracker_skiplist_domain.anchor(kPinSlotLevelPrev);
 
     for (uint32_t lvl = kMaxHeight; lvl > 0;) {
         --lvl;
@@ -838,7 +824,7 @@ gather_level_bookmarks(Arena *arena, uintptr_t lo) {
             // comes from carrying `prev` down across level descents —
             // the next-level walk starts where this level stopped.
             prev = cur;
-            anchor_skiplist_pin(kPinSlotLevelPrev, /*parent=*/nullptr);
+            g_va_tracker_skiplist_domain.anchor(kPinSlotLevelPrev);
         }
     }
     return out;
@@ -926,7 +912,7 @@ bool LockedSet::acquire(Arena *arena_in, uintptr_t lo_in, uintptr_t hi_in) {
         // it structurally retire-blocked, the pin maintains the
         // help-protocol invariants for any peer that observes the link
         // word and tries to help.
-        anchor_skiplist_pin(kPinSlotPrev, /*parent=*/nullptr);
+        g_va_tracker_skiplist_domain.anchor(kPinSlotPrev);
 
         set.pred = pred;
         set.pred_snap = pred->next[0].load(cpp::MemoryOrder::ACQUIRE);
@@ -1001,7 +987,7 @@ bool LockedSet::acquire(Arena *arena_in, uintptr_t lo_in, uintptr_t hi_in) {
             // on the next `pinned_read_link_target`; slot Prev is
             // re-anchored to stay era-current.
             walk_prev = cur;
-            anchor_skiplist_pin(kPinSlotPrev, /*parent=*/nullptr);
+            g_va_tracker_skiplist_domain.anchor(kPinSlotPrev);
 
             cur_snap = cur->next[0].load(cpp::MemoryOrder::ACQUIRE);
             cur_enc = cur_snap.next();
@@ -1478,7 +1464,7 @@ RegionDesc *Query(Arena *arena, uintptr_t key,
         return nullptr;
 
     SkiplistNodeBase *prev = &arena->head;
-    anchor_skiplist_pin(kPinSlotPrev, /*parent=*/nullptr);
+    g_va_tracker_skiplist_domain.anchor(kPinSlotPrev);
 
     // Per-level step bound is `kTraversalStepLimit = kMaxSkiplistNodes
     // + kMaxHeight`, the structural ceiling on how many distinct nodes
@@ -1516,7 +1502,7 @@ RegionDesc *Query(Arena *arena, uintptr_t key,
                         st == static_cast<uint8_t>(SkiplistNodeState::INVALIDATED));
             if (cur->hi <= key) {
                 prev = cur;
-                anchor_skiplist_pin(kPinSlotPrev, /*parent=*/nullptr);
+                g_va_tracker_skiplist_domain.anchor(kPinSlotPrev);
                 continue;
             }
             // cur extends past key; descend a level.
@@ -1547,7 +1533,7 @@ RegionDesc *Query(Arena *arena, uintptr_t key,
             return cur->value.load(cpp::MemoryOrder::ACQUIRE);
         }
         prev = cur;
-        anchor_skiplist_pin(kPinSlotPrev, /*parent=*/nullptr);
+        g_va_tracker_skiplist_domain.anchor(kPinSlotPrev);
     }
 }
 
@@ -1630,7 +1616,7 @@ uintptr_t Alloc(Arena *arena, uintptr_t lo, uintptr_t hi, size_t len,
                 continue;
 
             SkiplistNodeBase *pred = plr.pred;
-            anchor_skiplist_pin(kPinSlotPrev, /*parent=*/nullptr);
+            g_va_tracker_skiplist_domain.anchor(kPinSlotPrev);
 
             bool restart = false;
             while (!restart) {
@@ -1757,7 +1743,7 @@ uintptr_t Alloc(Arena *arena, uintptr_t lo, uintptr_t hi, size_t len,
                 if (next == nullptr || next->lo >= pass_hi)
                     break;
                 pred = next;
-                anchor_skiplist_pin(kPinSlotPrev, /*parent=*/nullptr);
+                g_va_tracker_skiplist_domain.anchor(kPinSlotPrev);
             }
             if (!restart)
                 break;
