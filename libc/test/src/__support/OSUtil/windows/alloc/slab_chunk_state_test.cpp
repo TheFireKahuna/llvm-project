@@ -28,7 +28,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "src/__support/OSUtil/windows/alloc/slab_chunk_state.h"
+#include "src/__support/CPP/atomic.h"
+#include "src/__support/OSUtil/windows/ntdll.h"
 #include "test/UnitTest/Test.h"
+#include "test/src/__support/windows/nt_test_utils.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -198,6 +201,146 @@ TEST(LlvmLibcSlabChunkStateTest, SubPageAddressFor) {
         static_cast<void *>(buf + static_cast<size_t>(i) * kSubPageBytes);
     EXPECT_EQ(subpage_address_for(base, i), expected);
   }
+}
+
+// Concurrent reader / single writer — verifies the RELEASE store in
+// mark_subpage_committed is observed via ACQUIRE in is_subpage_committed.
+// The protocol is:
+//   * Writer (single) maintains an atomic sentinel that is set to zero
+//     immediately before clearing the bit and set to a non-zero generation
+//     immediately before setting the bit, both stores RELAXED.
+//   * Each bit transition is RELEASE; each reader load is ACQUIRE.
+//   * A reader that observes bit = 1 must therefore see sentinel != 0
+//     because the matching RELEASE was preceded in program order by the
+//     non-zero sentinel store, and a single-writer modification order on
+//     `sentinel` keeps writes ordered.
+// Manually weakening either accessor's RELEASE/ACQUIRE to RELAXED breaks
+// this property: a reader can then observe bit = 1 with sentinel still
+// reading 0.
+namespace {
+
+constexpr uint32_t kCrReaders = 4;
+constexpr uint32_t kCrIters = 100000;
+constexpr uint8_t kCrIdx = 7;
+
+struct ConcurrentReaderCtx {
+  SubPageCommitMask mask;
+  LIBC_NAMESPACE::cpp::Atomic<uint64_t> sentinel{0};
+  LIBC_NAMESPACE::cpp::Atomic<uint32_t> ready{0};
+  LIBC_NAMESPACE::cpp::Atomic<uint32_t> start{0};
+  LIBC_NAMESPACE::cpp::Atomic<uint32_t> done{0};
+  LIBC_NAMESPACE::cpp::Atomic<uint32_t> mismatches{0};
+};
+
+LIBC_MSABI DWORD cr_writer(void *arg) {
+  auto *ctx = static_cast<ConcurrentReaderCtx *>(arg);
+  ctx->ready.fetch_add(1, LIBC_NAMESPACE::cpp::MemoryOrder::ACQ_REL);
+  while (ctx->start.load(LIBC_NAMESPACE::cpp::MemoryOrder::ACQUIRE) == 0u) {
+  }
+  for (uint64_t g = 1; g <= kCrIters; ++g) {
+    ctx->sentinel.store(0u, LIBC_NAMESPACE::cpp::MemoryOrder::RELAXED);
+    mark_subpage_decommitted(ctx->mask, kCrIdx);
+    ctx->sentinel.store(g, LIBC_NAMESPACE::cpp::MemoryOrder::RELAXED);
+    mark_subpage_committed(ctx->mask, kCrIdx);
+  }
+  ctx->done.store(1u, LIBC_NAMESPACE::cpp::MemoryOrder::RELEASE);
+  return 0;
+}
+
+LIBC_MSABI DWORD cr_reader(void *arg) {
+  auto *ctx = static_cast<ConcurrentReaderCtx *>(arg);
+  ctx->ready.fetch_add(1, LIBC_NAMESPACE::cpp::MemoryOrder::ACQ_REL);
+  while (ctx->start.load(LIBC_NAMESPACE::cpp::MemoryOrder::ACQUIRE) == 0u) {
+  }
+  uint32_t local_mismatches = 0;
+  for (;;) {
+    bool committed = is_subpage_committed(ctx->mask, kCrIdx);
+    if (committed) {
+      uint64_t s =
+          ctx->sentinel.load(LIBC_NAMESPACE::cpp::MemoryOrder::RELAXED);
+      if (s == 0u)
+        ++local_mismatches;
+    }
+    if (ctx->done.load(LIBC_NAMESPACE::cpp::MemoryOrder::ACQUIRE) == 1u)
+      break;
+  }
+  if (local_mismatches != 0u)
+    ctx->mismatches.fetch_add(local_mismatches,
+                              LIBC_NAMESPACE::cpp::MemoryOrder::RELAXED);
+  return 0;
+}
+
+} // namespace
+
+TEST(LlvmLibcSlabChunkStateTest, SetBitReleaseOrdersPublishedSentinel) {
+  ConcurrentReaderCtx ctx;
+  init_subpage_mask_all_committed(ctx.mask);
+  // Start with bit clear so the first commit is the 0→1 transition the
+  // readers latch on.
+  mark_subpage_decommitted(ctx.mask, kCrIdx);
+
+  HANDLE threads[1 + kCrReaders] = {};
+  threads[0] = LIBC_NAMESPACE::test_support::create_thread(&cr_writer, &ctx);
+  ASSERT_TRUE(LIBC_NAMESPACE::test_support::is_valid_handle(threads[0]));
+  for (uint32_t i = 0; i < kCrReaders; ++i) {
+    threads[1 + i] =
+        LIBC_NAMESPACE::test_support::create_thread(&cr_reader, &ctx);
+    ASSERT_TRUE(LIBC_NAMESPACE::test_support::is_valid_handle(threads[1 + i]));
+  }
+
+  while (ctx.ready.load(LIBC_NAMESPACE::cpp::MemoryOrder::ACQUIRE) !=
+         1u + kCrReaders) {
+    LIBC_NAMESPACE::test_support::sleep_ms(1);
+  }
+  ctx.start.store(1u, LIBC_NAMESPACE::cpp::MemoryOrder::RELEASE);
+
+  for (uint32_t i = 0; i < 1u + kCrReaders; ++i) {
+    LIBC_NAMESPACE::test_support::wait_for_single_object(
+        threads[i], LIBC_NAMESPACE::test_support::INFINITE);
+    ::NtClose(threads[i]);
+  }
+
+  EXPECT_EQ(0u,
+            ctx.mismatches.load(LIBC_NAMESPACE::cpp::MemoryOrder::ACQUIRE));
+}
+
+// Bounds-check coverage for the sub-page accessors. In a release build
+// LIBC_ASSERT is a no-op, so we document and verify the documented UB
+// contract: the bit-shift / fetch-or / fetch-and ops degrade to a no-op
+// because `static_cast<uint16_t>(1u << 16)` evaluates to 0 (the shift
+// result is implicitly truncated to the 16-bit operand width on the
+// fetch_or / fetch_and bit). subpage_address_for is the bounds-sensitive
+// case — the documented UB at idx == kSubPagesPerSlab is "do not call",
+// so we only exercise the in-range boundary (idx == 15) and verify the
+// mask accessor no-op contract for the out-of-range value.
+//
+// In a debug build the LIBC_ASSERT on each accessor traps before any of
+// the operations below execute; exercising that path needs a death-test
+// fixture and is deferred until a shared death-test util lands.
+TEST(LlvmLibcSlabChunkStateTest, SubPageIndexAtCapacityIsRejectedInDebug) {
+#ifdef LIBC_COPT_TEST_USE_LIBC_DEATH_TESTS_DISABLED
+  // The death-test path is gated; this test only verifies the release-
+  // mode no-op contract.
+#endif
+  SubPageCommitMask m;
+  init_subpage_mask_all_committed(m);
+  // In-range boundary: idx == 15 must round-trip cleanly.
+  EXPECT_TRUE(is_subpage_committed(m, 15));
+  EXPECT_TRUE(mark_subpage_decommitted(m, 15));
+  EXPECT_FALSE(is_subpage_committed(m, 15));
+  EXPECT_TRUE(mark_subpage_committed(m, 15));
+  EXPECT_TRUE(is_subpage_committed(m, 15));
+#ifdef NDEBUG
+  // Release-only: the documented no-op for an out-of-range index. The
+  // assert macro compiles to nothing in release, and the bit value
+  // `1u << kSubPagesPerSlab` truncates to 0 when narrowed to uint16_t,
+  // so the fetch_or / fetch_and leave the mask untouched.
+  uint16_t snap_before = snapshot_subpage_mask(m);
+  (void)mark_subpage_committed(m, kSubPagesPerSlab);
+  EXPECT_EQ(snapshot_subpage_mask(m), snap_before);
+  (void)mark_subpage_decommitted(m, kSubPagesPerSlab);
+  EXPECT_EQ(snapshot_subpage_mask(m), snap_before);
+#endif
 }
 
 TEST(LlvmLibcSlabChunkStateTest, ComputeIdleSubpagesBoundaries) {

@@ -504,9 +504,20 @@ DWORD phase3_worker(void *arg) {
   int slot = ctx->ready.fetch_add(1, MemoryOrder::ACQ_REL);
   size_t slice_start = static_cast<size_t>(slot) * ctx->slice_pages;
 
-  // Wait at the start gate so all threads punch concurrently.
-  while (ctx->go.load(MemoryOrder::ACQUIRE) == 0)
-    ::NtYieldExecution();
+  // Wait at the start gate so all threads punch concurrently. Bounded so
+  // a parent death pre-gate converts a worker hang into a deterministic
+  // exit with the errors counter incremented.
+  {
+    int waited_ms = 0;
+    while (ctx->go.load(MemoryOrder::ACQUIRE) == 0 && waited_ms < 5000) {
+      LIBC_NAMESPACE::test_support::sleep_ms(1);
+      ++waited_ms;
+    }
+    if (ctx->go.load(MemoryOrder::ACQUIRE) == 0) {
+      ctx->errors.fetch_add(1, MemoryOrder::RELAXED);
+      return 0;
+    }
+  }
 
   ULONG tag = 0x9000'0000u | (tid & 0x0FFF'FFFFu);
   char *base = static_cast<char *>(ctx->base);
@@ -568,9 +579,17 @@ TEST_F(LlvmLibcMmapPrivateFileStressTest, Phase3_ConcurrentPartialUnmapsCoW) {
     ASSERT_NE(ths[i], static_cast<HANDLE>(nullptr));
   }
   // Wait for every worker to claim its slice, then release the gate so the
-  // partial-munmap calls overlap in time.
-  while (ctx.ready.load(MemoryOrder::ACQUIRE) < N)
-    ::NtYieldExecution();
+  // partial-munmap calls overlap in time. Bounded so a worker dying before
+  // it claims its slice becomes a deterministic test failure rather than
+  // an indefinite parent hang.
+  {
+    int waited_ms = 0;
+    while (ctx.ready.load(MemoryOrder::ACQUIRE) < N && waited_ms < 5000) {
+      LIBC_NAMESPACE::test_support::sleep_ms(1);
+      ++waited_ms;
+    }
+    ASSERT_EQ(ctx.ready.load(MemoryOrder::ACQUIRE), N);
+  }
   ctx.go.store(1, MemoryOrder::RELEASE);
 
   for (int i = 0; i < N; ++i) {

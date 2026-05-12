@@ -23,6 +23,7 @@
 #include "test/UnitTest/ErrnoCheckingTest.h"
 #include "test/UnitTest/ErrnoSetterMatcher.h"
 #include "test/UnitTest/Test.h"
+#include "test/src/sys/mman/windows/test_utils.h"
 
 #include "hdr/fcntl_macros.h"
 #include "hdr/types/off_t.h"
@@ -30,12 +31,15 @@
 
 using LIBC_NAMESPACE::testing::ErrnoSetterMatcher::Fails;
 using LIBC_NAMESPACE::testing::ErrnoSetterMatcher::Succeeds;
+using LIBC_NAMESPACE::mman_test_utils::make_unique_name;
 using LlvmLibcWindowsMemfdCreateTest =
     LIBC_NAMESPACE::testing::ErrnoCheckingTest;
 
 // memfd_create returns a usable fd; ftruncate + mmap round-trips data.
 TEST_F(LlvmLibcWindowsMemfdCreateTest, MapShared) {
-  int fd = LIBC_NAMESPACE::memfd_create("test_memfd", 0);
+  char name[64];
+  ASSERT_TRUE(make_unique_name("test_memfd", name, sizeof(name)));
+  int fd = LIBC_NAMESPACE::memfd_create(name, 0);
   ASSERT_GT(fd, 0);
 
   constexpr off_t SIZE = 4096;
@@ -55,7 +59,9 @@ TEST_F(LlvmLibcWindowsMemfdCreateTest, MapShared) {
 
 // Two MAP_SHARED mappings on the same fd must share backing storage.
 TEST_F(LlvmLibcWindowsMemfdCreateTest, TwoMappingsShareData) {
-  int fd = LIBC_NAMESPACE::memfd_create("test_memfd_shared", 0);
+  char name[64];
+  ASSERT_TRUE(make_unique_name("test_memfd_shared", name, sizeof(name)));
+  int fd = LIBC_NAMESPACE::memfd_create(name, 0);
   ASSERT_GT(fd, 0);
 
   constexpr off_t SIZE = 4096;
@@ -80,7 +86,9 @@ TEST_F(LlvmLibcWindowsMemfdCreateTest, TwoMappingsShareData) {
 
 // MFD_CLOEXEC must set FD_CLOEXEC on the returned fd.
 TEST_F(LlvmLibcWindowsMemfdCreateTest, CloexecFlag) {
-  int fd = LIBC_NAMESPACE::memfd_create("test_memfd_cloexec", MFD_CLOEXEC);
+  char name[64];
+  ASSERT_TRUE(make_unique_name("test_memfd_cloexec", name, sizeof(name)));
+  int fd = LIBC_NAMESPACE::memfd_create(name, MFD_CLOEXEC);
   ASSERT_GT(fd, 0);
 
   int flags = LIBC_NAMESPACE::fcntl(fd, F_GETFD);
@@ -92,7 +100,9 @@ TEST_F(LlvmLibcWindowsMemfdCreateTest, CloexecFlag) {
 
 // memfd_create without MFD_CLOEXEC must NOT set FD_CLOEXEC.
 TEST_F(LlvmLibcWindowsMemfdCreateTest, NoCloexecByDefault) {
-  int fd = LIBC_NAMESPACE::memfd_create("test_memfd_nocloexec", 0);
+  char name[64];
+  ASSERT_TRUE(make_unique_name("test_memfd_nocloexec", name, sizeof(name)));
+  int fd = LIBC_NAMESPACE::memfd_create(name, 0);
   ASSERT_GT(fd, 0);
 
   int flags = LIBC_NAMESPACE::fcntl(fd, F_GETFD);

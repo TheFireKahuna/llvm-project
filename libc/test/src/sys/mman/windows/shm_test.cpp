@@ -27,6 +27,7 @@
 #include "test/UnitTest/ErrnoCheckingTest.h"
 #include "test/UnitTest/ErrnoSetterMatcher.h"
 #include "test/UnitTest/Test.h"
+#include "test/src/sys/mman/windows/test_utils.h"
 
 #include "include/llvm-libc-macros/fcntl-macros.h"
 #include "include/llvm-libc-macros/sys-mman-macros.h"
@@ -34,28 +35,28 @@
 using LlvmLibcShmTest = LIBC_NAMESPACE::testing::ErrnoCheckingTest;
 using LIBC_NAMESPACE::testing::ErrnoSetterMatcher::Fails;
 using LIBC_NAMESPACE::testing::ErrnoSetterMatcher::Succeeds;
+using LIBC_NAMESPACE::mman_test_utils::make_unique_name;
+using LIBC_NAMESPACE::mman_test_utils::ShmUnlinkGuard;
 
 // POSIX: shm_open() creates and opens a shared memory object.
 TEST_F(LlvmLibcShmTest, CreateAndUnlink) {
-  const char *name = "/llvm_libc_shm_test_basic";
-
-  // Clean up from any prior run.
-  LIBC_NAMESPACE::shm_unlink(name);
+  char name[64];
+  ASSERT_TRUE(make_unique_name("/llvm_libc_shm_test_basic", name, sizeof(name)));
+  ShmUnlinkGuard guard(name);
 
   int fd = LIBC_NAMESPACE::shm_open(name, O_CREAT | O_RDWR, 0600);
   ASSERT_ERRNO_SUCCESS();
   ASSERT_GE(fd, 0);
 
   EXPECT_THAT(LIBC_NAMESPACE::close(fd), Succeeds());
-  EXPECT_THAT(LIBC_NAMESPACE::shm_unlink(name), Succeeds());
 }
 
 // POSIX: "O_CREAT|O_EXCL — If [...] the named shared memory object already
 // exists, [...] fail and set errno to [EEXIST]."
 TEST_F(LlvmLibcShmTest, ExclusiveCreate) {
-  const char *name = "/llvm_libc_shm_test_excl";
-
-  LIBC_NAMESPACE::shm_unlink(name);
+  char name[64];
+  ASSERT_TRUE(make_unique_name("/llvm_libc_shm_test_excl", name, sizeof(name)));
+  ShmUnlinkGuard guard(name);
 
   int fd1 = LIBC_NAMESPACE::shm_open(name, O_CREAT | O_RDWR, 0600);
   ASSERT_GE(fd1, 0);
@@ -65,7 +66,6 @@ TEST_F(LlvmLibcShmTest, ExclusiveCreate) {
   EXPECT_THAT(fd2, Fails(EEXIST));
 
   LIBC_NAMESPACE::close(fd1);
-  LIBC_NAMESPACE::shm_unlink(name);
 }
 
 // POSIX: shm_unlink of nonexistent name → ENOENT.
@@ -91,10 +91,10 @@ TEST_F(LlvmLibcShmTest, InvalidName) {
 
 // POSIX: mmap on shm fd allows read/write, ftruncate sets size.
 TEST_F(LlvmLibcShmTest, MmapOnShmFd) {
-  const char *name = "/llvm_libc_shm_test_mmap";
+  char name[64];
+  ASSERT_TRUE(make_unique_name("/llvm_libc_shm_test_mmap", name, sizeof(name)));
+  ShmUnlinkGuard guard(name);
   size_t shm_size = 4096;
-
-  LIBC_NAMESPACE::shm_unlink(name);
 
   int fd = LIBC_NAMESPACE::shm_open(name, O_CREAT | O_RDWR, 0600);
   ASSERT_GE(fd, 0);
@@ -114,5 +114,4 @@ TEST_F(LlvmLibcShmTest, MmapOnShmFd) {
 
   EXPECT_THAT(LIBC_NAMESPACE::munmap(addr, shm_size), Succeeds());
   EXPECT_THAT(LIBC_NAMESPACE::close(fd), Succeeds());
-  EXPECT_THAT(LIBC_NAMESPACE::shm_unlink(name), Succeeds());
 }

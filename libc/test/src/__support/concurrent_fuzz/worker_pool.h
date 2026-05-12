@@ -57,16 +57,35 @@ struct PoolParams {
   // Pin workers to distinct logical CPUs. Best-effort.
   bool pin_affinity{true};
 
-  // Soft per-op deadline budget (TSC ticks). The worker bails on its
-  // remaining slice if it exceeds total budget — avoids wedging when a
-  // bug livelocks the SUT. Sentinel 0 = unbounded.
+  // Cumulative slice budget (TSC ticks). The worker bails on its
+  // remaining slice if its TSC delta from slice start crosses this. A
+  // one-op-stall-forever bug still wedges until the budget elapses;
+  // pair with `per_op_tsc_budget` for tighter loops. Sentinel 0 =
+  // unbounded.
   uint64_t per_worker_tsc_budget{0};
+
+  // Per-op TSC budget. The worker stamps each op's res_tsc; if the
+  // delta `res_tsc - inv_tsc` exceeds this, the HistoryEntry's status
+  // is rewritten to `kOpResultStatusTimeoutHint` and the worker breaks
+  // out of its slice loop. The first-offender op's TSC delta and kind
+  // are surfaced through `PoolStats::slowest_op_*` so CI logs identify
+  // the culprit instead of "test timed out". Sentinel 0 = unbounded.
+  uint64_t per_op_tsc_budget{0};
 };
 
 struct PoolStats {
   uint64_t pinned_workers; // # workers that successfully pinned
   uint64_t total_ops_run;  // sum of HistoryEntry counts across rings
   uint64_t timed_out_workers; // # workers that hit per_worker_tsc_budget
+  uint64_t per_op_timeouts;   // # ops that hit per_op_tsc_budget
+
+  // Slowest op observed across the run. Only meaningful when
+  // `per_op_timeouts > 0` or when the caller wants p99 telemetry on a
+  // clean run.
+  uint64_t slowest_op_dt_tsc;   // res_tsc - inv_tsc of the slowest op
+  uint64_t slowest_op_inv_tsc;  // its inv_tsc, for cross-worker timeline
+  uint16_t slowest_op_kind;     // Op::kind of the slowest op
+  uint16_t slowest_op_worker_id;// owning worker
 };
 
 // Run `schedule` against `sut`, recording into `history`. Spawns

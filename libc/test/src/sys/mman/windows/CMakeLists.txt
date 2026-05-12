@@ -121,6 +121,7 @@ add_libc_unittest(
   DEPENDS
     libc.include.llvm-libc-macros.fcntl_macros
     libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.__support.CPP.atomic
     libc.src.errno.errno
     libc.src.sys.mman.mmap
     libc.src.sys.mman.munmap
@@ -128,6 +129,8 @@ add_libc_unittest(
     libc.src.sys.mman.shm_unlink
     libc.src.unistd.close
     libc.src.unistd.ftruncate
+    libc.src.unistd.getpid
+    libc.src.unistd.gettid
     libc.test.UnitTest.ErrnoCheckingTest
     libc.test.UnitTest.ErrnoSetterMatcher
 )
@@ -178,13 +181,17 @@ add_libc_unittest(
     libc.hdr.fcntl_macros
     libc.hdr.types.off_t
     libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.__support.CPP.atomic
     libc.src.errno.errno
     libc.src.fcntl.fcntl
     libc.src.sys.mman.memfd_create
     libc.src.sys.mman.mmap
     libc.src.sys.mman.munmap
+    libc.src.sys.mman.shm_unlink
     libc.src.unistd.close
     libc.src.unistd.ftruncate
+    libc.src.unistd.getpid
+    libc.src.unistd.gettid
     libc.test.UnitTest.ErrnoCheckingTest
     libc.test.UnitTest.ErrnoSetterMatcher
 )

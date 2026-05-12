@@ -31,9 +31,16 @@ struct WorkerArg {
   const Schedule *schedule;
   History *history;
   uint64_t per_worker_tsc_budget;
+  uint64_t per_op_tsc_budget;
   cpp::Atomic<uint32_t> *start_gate;     // workers spin-wait until released
   cpp::Atomic<uint32_t> *finished_count; // bumped on exit; for stats
   cpp::Atomic<uint32_t> *timed_out_count;
+  cpp::Atomic<uint32_t> *per_op_timeouts;
+  // Slowest-op telemetry, written by the worker after slice completion.
+  // Read by the aggregator after join, so no atomicity needed.
+  uint64_t my_slowest_dt_tsc;
+  uint64_t my_slowest_inv_tsc;
+  uint16_t my_slowest_kind;
 };
 
 // CPU-set ID table populated once at run start.
@@ -101,11 +108,16 @@ LIBC_MSABI DWORD worker_entry(void *arg) {
   WorkerHistory &ring = wa->history->per_worker[wa->worker_id];
 
   uint64_t budget = wa->per_worker_tsc_budget;
+  uint64_t per_op_budget = wa->per_op_tsc_budget;
   uint64_t deadline = 0;
   if (budget != 0) {
     deadline = rdtsc_lfence_pre() + budget;
   }
   bool timed_out = false;
+  bool per_op_violated = false;
+  uint64_t worst_dt = 0;
+  uint64_t worst_inv = 0;
+  uint16_t worst_kind = 0;
 
   for (uint32_t i = 0; i < slice.count; ++i) {
     const Op &op = s.ops[slice.start + i];
@@ -115,16 +127,37 @@ LIBC_MSABI DWORD worker_entry(void *arg) {
     e.inv_tsc = rdtsc_lfence_pre();
     e.result = wa->sut_apply(wa->sut_ctx, op);
     e.res_tsc = rdtsc_lfence_post();
+    uint64_t dt = e.res_tsc - e.inv_tsc;
+    if (dt > worst_dt) {
+      worst_dt = dt;
+      worst_inv = e.inv_tsc;
+      worst_kind = op.kind;
+    }
+    if (per_op_budget != 0 && dt > per_op_budget) {
+      // Rewrite the status so the linearizability checker surfaces the
+      // offender instead of a status-zero "all good" entry. The payload
+      // is left untouched — it carries whatever the SUT happened to
+      // return, which is useful diagnostic context.
+      e.result.status = kOpResultStatusTimeoutHint;
+      per_op_violated = true;
+    }
     (void)ring.push(e);
 
+    if (per_op_violated)
+      break;
     if (deadline != 0 && e.res_tsc > deadline) {
       timed_out = true;
       break;
     }
   }
 
+  wa->my_slowest_dt_tsc = worst_dt;
+  wa->my_slowest_inv_tsc = worst_inv;
+  wa->my_slowest_kind = worst_kind;
   if (timed_out)
     wa->timed_out_count->fetch_add(1, cpp::MemoryOrder::RELAXED);
+  if (per_op_violated)
+    wa->per_op_timeouts->fetch_add(1, cpp::MemoryOrder::RELAXED);
   wa->finished_count->fetch_add(1, cpp::MemoryOrder::RELEASE);
   return 0;
 }
@@ -150,6 +183,7 @@ int run_pool(const Schedule &schedule, SutApplyFn sut_apply,
   cpp::Atomic<uint32_t> start_gate{0};
   cpp::Atomic<uint32_t> finished_count{0};
   cpp::Atomic<uint32_t> timed_out_count{0};
+  cpp::Atomic<uint32_t> per_op_timeouts{0};
 
   // Per-worker WorkerArg storage (size cap from History).
   WorkerArg wargs[History::kMaxWorkers];
@@ -164,9 +198,14 @@ int run_pool(const Schedule &schedule, SutApplyFn sut_apply,
     wargs[w].schedule = &schedule;
     wargs[w].history = &history;
     wargs[w].per_worker_tsc_budget = params.per_worker_tsc_budget;
+    wargs[w].per_op_tsc_budget = params.per_op_tsc_budget;
     wargs[w].start_gate = &start_gate;
     wargs[w].finished_count = &finished_count;
     wargs[w].timed_out_count = &timed_out_count;
+    wargs[w].per_op_timeouts = &per_op_timeouts;
+    wargs[w].my_slowest_dt_tsc = 0;
+    wargs[w].my_slowest_inv_tsc = 0;
+    wargs[w].my_slowest_kind = 0;
 
     HANDLE t = nullptr;
     NTSTATUS st = ::NtCreateThreadEx(
@@ -221,6 +260,20 @@ int run_pool(const Schedule &schedule, SutApplyFn sut_apply,
     out_stats->total_ops_run = history.flat_count;
     out_stats->timed_out_workers =
         timed_out_count.load(cpp::MemoryOrder::ACQUIRE);
+    out_stats->per_op_timeouts =
+        per_op_timeouts.load(cpp::MemoryOrder::ACQUIRE);
+    out_stats->slowest_op_dt_tsc = 0;
+    out_stats->slowest_op_inv_tsc = 0;
+    out_stats->slowest_op_kind = 0;
+    out_stats->slowest_op_worker_id = 0;
+    for (uint16_t w = 0; w < schedule.thread_count; ++w) {
+      if (wargs[w].my_slowest_dt_tsc > out_stats->slowest_op_dt_tsc) {
+        out_stats->slowest_op_dt_tsc = wargs[w].my_slowest_dt_tsc;
+        out_stats->slowest_op_inv_tsc = wargs[w].my_slowest_inv_tsc;
+        out_stats->slowest_op_kind = wargs[w].my_slowest_kind;
+        out_stats->slowest_op_worker_id = w;
+      }
+    }
   }
   return 0;
 }

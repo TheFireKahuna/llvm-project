@@ -422,9 +422,20 @@ struct NoreplaceCtx {
 static DWORD noreplace_claimer(void *arg) {
   auto *ctx = static_cast<NoreplaceCtx *>(arg);
   ctx->started.fetch_add(1, MemoryOrder::RELEASE);
-  // Wait for all threads to start.
-  while (ctx->started.load(MemoryOrder::ACQUIRE) < 3)
-    ::NtYieldExecution();
+  // Wait for all threads to start. Bounded: a peer worker dying pre-gate
+  // would otherwise leave this worker spinning until the outer test
+  // timeout fires.
+  {
+    int waited_ms = 0;
+    while (ctx->started.load(MemoryOrder::ACQUIRE) < 3 && waited_ms < 5000) {
+      LIBC_NAMESPACE::test_support::sleep_ms(1);
+      ++waited_ms;
+    }
+    if (ctx->started.load(MemoryOrder::ACQUIRE) < 3) {
+      ctx->errors.fetch_add(1, MemoryOrder::RELAXED);
+      return 0;
+    }
+  }
 
   for (int round = 0; round < 20; round++) {
     for (int i = 0; i < 8; i++) {
@@ -450,8 +461,18 @@ static DWORD noreplace_claimer(void *arg) {
 static DWORD noreplace_freer(void *arg) {
   auto *ctx = static_cast<NoreplaceCtx *>(arg);
   ctx->started.fetch_add(1, MemoryOrder::RELEASE);
-  while (ctx->started.load(MemoryOrder::ACQUIRE) < 3)
-    ::NtYieldExecution();
+  // Bounded peer-gate wait — see noreplace_claimer for rationale.
+  {
+    int waited_ms = 0;
+    while (ctx->started.load(MemoryOrder::ACQUIRE) < 3 && waited_ms < 5000) {
+      LIBC_NAMESPACE::test_support::sleep_ms(1);
+      ++waited_ms;
+    }
+    if (ctx->started.load(MemoryOrder::ACQUIRE) < 3) {
+      ctx->errors.fetch_add(1, MemoryOrder::RELAXED);
+      return 0;
+    }
+  }
 
   for (int round = 0; round < 20; round++) {
     for (int i = 0; i < 8; i++) {

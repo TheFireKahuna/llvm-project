@@ -750,15 +750,18 @@ TEST(LlvmLibcLockFreeLinkageTest, LinkCasNextSingleThreadMatchesLinkStoreNext) {
 //
 // N threads race link_cas_state from M_LIVE → M_PARKED → M_LIVE in a tight
 // loop. The substrate's tag-bump invariant must yield monotonically growing
-// tags with no spurious stale-snap CAS wins (which would produce a tag
-// regression). Each thread accumulates the "saw a regression" flag — must
-// remain false for the entire run.
+// tags. Each worker compares its own post-CAS tag against its own private
+// high-water mark — never against a cross-thread scoreboard, because the
+// tag is a single global counter and a benign interleave (worker A reads
+// tag T, worker B CASes to T+1 and publishes, worker A then exchanges T
+// against the new scoreboard) yields a regression flag without any
+// substrate bug. Per-worker compare is the property that actually has to
+// hold: every worker's observations are monotonic from its own vantage.
 namespace {
 constexpr uint32_t kAbaIterations = 50000;
 constexpr uint32_t kAbaWorkers = 4;
 
 struct AbaCtx {
-  Atomic<uint64_t> last_tag{0};
   Atomic<uint32_t> regressions{0};
   Atomic<uint32_t> ready{0};
   Atomic<uint32_t> start{0};
@@ -770,29 +773,31 @@ LIBC_MSABI DWORD aba_worker(void *arg) {
   while (ctx->start.load(MemoryOrder::ACQUIRE) == 0) {
     // spin
   }
+  uint64_t local_high_water = 0;
+  uint32_t local_regressions = 0;
   for (uint32_t i = 0; i < kAbaIterations; ++i) {
-    // LIVE → PARKED
     bool ok =
         linkage::link_cas_state<M_LIVE, M_PARKED, PermissiveTraits>(
             g_pool[0].link);
     if (ok) {
       uint64_t tag_now = load(0).tag();
-      uint64_t prior =
-          ctx->last_tag.exchange(tag_now, MemoryOrder::ACQ_REL);
-      if (tag_now <= prior)
-        ctx->regressions.fetch_add(1, MemoryOrder::RELAXED);
+      if (tag_now <= local_high_water)
+        ++local_regressions;
+      else
+        local_high_water = tag_now;
     }
-    // PARKED → LIVE
     ok = linkage::link_cas_state<M_PARKED, M_LIVE, PermissiveTraits>(
         g_pool[0].link);
     if (ok) {
       uint64_t tag_now = load(0).tag();
-      uint64_t prior =
-          ctx->last_tag.exchange(tag_now, MemoryOrder::ACQ_REL);
-      if (tag_now <= prior)
-        ctx->regressions.fetch_add(1, MemoryOrder::RELAXED);
+      if (tag_now <= local_high_water)
+        ++local_regressions;
+      else
+        local_high_water = tag_now;
     }
   }
+  if (local_regressions != 0)
+    ctx->regressions.fetch_add(local_regressions, MemoryOrder::RELAXED);
   return 0;
 }
 } // namespace

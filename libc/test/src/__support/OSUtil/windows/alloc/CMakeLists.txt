@@ -73,7 +73,9 @@ add_libc_hermetic(
 # standard hermetic frame. Covers geometry constants, mask round-trip,
 # cross-bit isolation, slot-to-sub-page arithmetic for 16 B / 8 KiB /
 # 16 KiB / 32 KiB / 64 KiB slot sizes, range-to-mask conversion,
-# subpage_address_for offsets, and compute_idle_subpages boundaries.
+# subpage_address_for offsets, compute_idle_subpages boundaries, and a
+# 1+4-thread concurrent reader test that verifies the RELEASE/ACQUIRE
+# pairing on the commit-mask bit flips.
 add_libc_hermetic(
   slab_chunk_state_test
   SUITE
@@ -84,7 +86,10 @@ add_libc_hermetic(
   LINK_LIBRARIES
     LibcTest.hermetic
   DEPENDS
+    libc.src.__support.CPP.atomic
     libc.src.__support.OSUtil.windows.alloc_slab_chunk_state
     libc.src.__support.OSUtil.windows.brk_state
     libc.src.__support.OSUtil.windows.ntdll
+    libc.src.pthread.pthread_create
+    libc.src.pthread.pthread_join
 )

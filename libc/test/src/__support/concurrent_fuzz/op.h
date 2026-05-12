@@ -70,6 +70,15 @@ struct OpResult {
 // `OpResult{0, 0}`.
 inline constexpr uint16_t kOpKindNoop = 0;
 
+// Sentinel status reserved by the framework's worker pool. Written into
+// HistoryEntry::result by `run_pool` when an op exceeded
+// `PoolParams::per_op_tsc_budget`. The linearizability checker treats
+// any non-zero status as an SUT-level failure, so the sentinel
+// surfaces as a checker mismatch instead of being silently merged
+// with a legitimate status the SUT might return. Picked well above any
+// realistic errno so an SUT cannot collide with it.
+inline constexpr uint32_t kOpResultStatusTimeoutHint = 0xFFFEFFFEu;
+
 } // namespace concurrent_fuzz
 } // namespace LIBC_NAMESPACE_DECL
 

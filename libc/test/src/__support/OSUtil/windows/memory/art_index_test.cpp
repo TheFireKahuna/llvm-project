@@ -81,6 +81,7 @@ using LIBC_NAMESPACE::windows::va_tracker::art_is_leaf;
 using LIBC_NAMESPACE::windows::va_tracker::art_lookup;
 using LIBC_NAMESPACE::windows::va_tracker::art_remove;
 using LIBC_NAMESPACE::windows::va_tracker::art_walk_range;
+using LIBC_NAMESPACE::windows::va_tracker::ArtLoadKeyFn;
 using LIBC_NAMESPACE::windows::va_tracker::ArtNode16;
 using LIBC_NAMESPACE::windows::va_tracker::ArtNode256;
 using LIBC_NAMESPACE::windows::va_tracker::ArtNode4;
@@ -90,8 +91,10 @@ using LIBC_NAMESPACE::windows::va_tracker::ArtNodeType;
 using LIBC_NAMESPACE::windows::va_tracker::ArtPrefix;
 using LIBC_NAMESPACE::windows::va_tracker::ArtTree;
 using LIBC_NAMESPACE::windows::va_tracker::g_va_tracker_art_domain;
+using LIBC_NAMESPACE::windows::va_tracker::kArtKeyLen;
 using LIBC_NAMESPACE::windows::va_tracker::kArtLeafTagBit;
 using LIBC_NAMESPACE::windows::va_tracker::kArtMaxStoredPrefixLength;
+using LIBC_NAMESPACE::windows::va_tracker::make_node;
 
 // =========================================================================
 // Fake Arena — we never dereference it from the ART layer; the tests
@@ -140,18 +143,49 @@ LIBC_NAMESPACE::windows::va_tracker::Arena g_arena_c{3};
 Atomic<bool> g_init_done{false};
 LIBC_NAMESPACE::internal::alloc_primitives::InitLatch g_test_init;
 
+// load_key for the test tree. Tests stash an 8-byte big-endian key in
+// the low bits of `Arena::test_id`; this callback writes that key back
+// into `out_key` so the ART optimistic-prefix tail and lazy-leaf
+// expansion paths can verify against the descendant leaf.
+void test_load_key(Arena *leaf, uint8_t out_key[kArtKeyLen]) {
+  uint64_t v = static_cast<uint64_t>(leaf->test_id);
+  for (int i = 7; i >= 0; --i) {
+    out_key[i] = static_cast<uint8_t>(v & 0xFFu);
+    v >>= 8;
+  }
+}
+
 void ensure_inited() {
   if (g_init_done.load(MemoryOrder::ACQUIRE))
     return;
   // Single-flight init — only one test invokes art_index_init.
   if (g_test_init.try_begin()) {
-    art_index_init();
+    art_index_init(&test_load_key);
     g_test_init.publish_ready();
     g_init_done.store(true, MemoryOrder::RELEASE);
   } else {
     g_test_init.wait_ready();
     g_init_done.store(true, MemoryOrder::RELEASE);
   }
+}
+
+// Install a fresh Node256 root on a local ArtTree, reusing the per-
+// type chunk pools that `art_index_init` set up. After this returns,
+// the local tree behaves identically to the singleton for the public
+// `art_insert` / `art_lookup` / `art_walk_range` / `art_remove` API:
+// every grow / shrink path runs against real chunk allocation and
+// Crystalline-W reclamation, not a synthesised in-memory node. This is
+// the unblocker for the public-API grow / lazy-leaf / prefix-split
+// tests that the test header advertised but never landed.
+[[nodiscard]] bool install_local_root(ArtTree &tree) {
+  ensure_inited();
+  ArtPrefix empty{};
+  ArtNodeBase *root = make_node<ArtNode256, ArtNodeType::N256>(0, empty);
+  if (root == nullptr)
+    return false;
+  tree.load_key = &test_load_key;
+  tree.root.store(root, MemoryOrder::RELEASE);
+  return true;
 }
 
 // Build a key from a u64 in big-endian order (8 bytes).
@@ -828,4 +862,202 @@ TEST(LlvmLibcArtIndexTest, WriteLockObsoleteAndUnlock) {
   EXPECT_FALSE(ArtNodeBase::is_locked(v_obsolete));
   // A subsequent write_lock_or_restart returns false (obsolete edge).
   EXPECT_FALSE(n.write_lock_or_restart());
+}
+
+// =========================================================================
+// Populated-tree art_lookup. The pre-existing test surface only exercised
+// art_lookup against an empty local tree (line 218, EmptyTreeLookupMiss).
+// The hit / miss differentiation against an actually populated tree was
+// untested — every art_insert grow-path test in the file used direct
+// per-node-type insert_unlocked instead of the public art_insert flow.
+// =========================================================================
+
+TEST(LlvmLibcArtIndexTest, ArtLookupPopulatedTreeHitsAndMisses) {
+  ArtTree tree;
+  ASSERT_TRUE(install_local_root(tree));
+
+  // Carry the leaf identity in `test_id` so the load_key callback can
+  // serialise it back to the canonical key — that's what art_lookup's
+  // optimistic-prefix tail comparison expects.
+  static Arena lookup_arenas[4];
+  static const uint64_t keys[4] = {0x1100000000000001ULL,
+                                    0x2200000000000002ULL,
+                                    0x3300000000000003ULL,
+                                    0x4400000000000004ULL};
+  for (int i = 0; i < 4; ++i) {
+    lookup_arenas[i].test_id = static_cast<uintptr_t>(keys[i]);
+    uint8_t key[8];
+    encode_be64(keys[i], key);
+    ASSERT_TRUE(art_insert(tree, key, 8, &lookup_arenas[i]));
+  }
+
+  for (int i = 0; i < 4; ++i) {
+    uint8_t key[8];
+    encode_be64(keys[i], key);
+    EXPECT_EQ(art_lookup(tree, key, 8), &lookup_arenas[i]);
+  }
+
+  uint8_t miss[8];
+  encode_be64(0xCAFE000000000000ULL, miss);
+  EXPECT_EQ(art_lookup(tree, miss, 8), static_cast<Arena *>(nullptr));
+}
+
+// =========================================================================
+// #8/9/10 (review [va-6]): the existing GrowPath*Direct tests stop short
+// of the public art_insert grow flow; they only call copy_to between
+// manually-constructed nodes. The tests below drive each grow boundary
+// through art_insert against a locally-rooted tree and verify every
+// pre-grow and post-grow key remains lookup-reachable.
+// =========================================================================
+
+TEST(LlvmLibcArtIndexTest, Grow_Node4_to_Node16_RealInsertPath) {
+  ArtTree tree;
+  ASSERT_TRUE(install_local_root(tree));
+
+  // Five distinct keys whose first byte differs but the rest of the key
+  // is identical. They share a common 7-byte prefix under the root, so
+  // the second descent level installs an N4 once the first one becomes
+  // full and grows to N16.
+  static Arena grow_arenas[5];
+  for (int i = 0; i < 5; ++i) {
+    uint64_t k = (static_cast<uint64_t>(0xA0u + i) << 56) | 0x0000DEADBEEF0000ULL;
+    grow_arenas[i].test_id = static_cast<uintptr_t>(k);
+    uint8_t key[8];
+    encode_be64(k, key);
+    ASSERT_TRUE(art_insert(tree, key, 8, &grow_arenas[i]));
+  }
+
+  // All five must be reachable post-grow.
+  for (int i = 0; i < 5; ++i) {
+    uint64_t k = static_cast<uint64_t>(grow_arenas[i].test_id);
+    uint8_t key[8];
+    encode_be64(k, key);
+    EXPECT_EQ(art_lookup(tree, key, 8), &grow_arenas[i]);
+  }
+}
+
+TEST(LlvmLibcArtIndexTest, Grow_Node16_to_Node48_RealInsertPath) {
+  ArtTree tree;
+  ASSERT_TRUE(install_local_root(tree));
+
+  // Insert 17 keys distinguished by their high byte. The first 16 fit
+  // in an N16 directly under the root; the 17th promotes N16 → N48.
+  static Arena grow16_arenas[17];
+  for (int i = 0; i < 17; ++i) {
+    uint64_t k =
+        (static_cast<uint64_t>(0xB0u + i) << 56) | 0x000000FACEFEED01ULL;
+    grow16_arenas[i].test_id = static_cast<uintptr_t>(k);
+    uint8_t key[8];
+    encode_be64(k, key);
+    ASSERT_TRUE(art_insert(tree, key, 8, &grow16_arenas[i]));
+  }
+  for (int i = 0; i < 17; ++i) {
+    uint64_t k = static_cast<uint64_t>(grow16_arenas[i].test_id);
+    uint8_t key[8];
+    encode_be64(k, key);
+    EXPECT_EQ(art_lookup(tree, key, 8), &grow16_arenas[i]);
+  }
+}
+
+TEST(LlvmLibcArtIndexTest, Grow_Node48_to_Node256_RealInsertPath) {
+  ArtTree tree;
+  ASSERT_TRUE(install_local_root(tree));
+
+  // Insert 49 keys differing only in the high byte at level 1 (under
+  // the root's N256). The level-1 node grows N4 → N16 → N48 → N256
+  // across this run; this test asserts the final boundary at 48+1.
+  static Arena grow48_arenas[49];
+  for (int i = 0; i < 49; ++i) {
+    uint64_t k =
+        (static_cast<uint64_t>(0xC0u + i) << 48) | 0x0000FEDCBA987600ULL;
+    grow48_arenas[i].test_id = static_cast<uintptr_t>(k);
+    uint8_t key[8];
+    encode_be64(k, key);
+    ASSERT_TRUE(art_insert(tree, key, 8, &grow48_arenas[i]));
+  }
+  for (int i = 0; i < 49; ++i) {
+    uint64_t k = static_cast<uint64_t>(grow48_arenas[i].test_id);
+    uint8_t key[8];
+    encode_be64(k, key);
+    EXPECT_EQ(art_lookup(tree, key, 8), &grow48_arenas[i]);
+  }
+}
+
+// =========================================================================
+// #14 (review [va-6]): Lazy-leaf expansion. Insert key A, then insert
+// key B where the two share a prefix. The implementation must promote
+// the existing leaf into an N4 whose compressed prefix equals the
+// longest common prefix of the two keys, with both leaves as children.
+// =========================================================================
+
+TEST(LlvmLibcArtIndexTest, LazyLeafExpansion) {
+  ArtTree tree;
+  ASSERT_TRUE(install_local_root(tree));
+
+  // Two keys that share a 6-byte prefix and diverge at byte 6.
+  static Arena lazy_arenas[2];
+  uint64_t key_a = 0xABCDEF1122000000ULL;
+  uint64_t key_b = 0xABCDEF1122110000ULL;
+  lazy_arenas[0].test_id = static_cast<uintptr_t>(key_a);
+  lazy_arenas[1].test_id = static_cast<uintptr_t>(key_b);
+
+  uint8_t ka[8];
+  uint8_t kb[8];
+  encode_be64(key_a, ka);
+  encode_be64(key_b, kb);
+
+  ASSERT_TRUE(art_insert(tree, ka, 8, &lazy_arenas[0]));
+  // At this point the only child under the root is a leaf for key_a.
+  EXPECT_EQ(art_lookup(tree, ka, 8), &lazy_arenas[0]);
+
+  // Inserting key_b must trigger lazy-leaf expansion: the existing
+  // leaf is replaced by a fresh N4 carrying both leaves under the
+  // divergence byte.
+  ASSERT_TRUE(art_insert(tree, kb, 8, &lazy_arenas[1]));
+  EXPECT_EQ(art_lookup(tree, ka, 8), &lazy_arenas[0]);
+  EXPECT_EQ(art_lookup(tree, kb, 8), &lazy_arenas[1]);
+}
+
+// =========================================================================
+// #15 (review [va-6]): Prefix-split insert. Install a deep prefix via a
+// pair of keys that share many leading bytes, then insert a third key
+// that diverges mid-prefix. The split must construct a new internal
+// node at the divergence point, hand off the deeper subtree under one
+// branch, and place the new leaf under the other.
+// =========================================================================
+
+TEST(LlvmLibcArtIndexTest, PrefixSplitInsert) {
+  ArtTree tree;
+  ASSERT_TRUE(install_local_root(tree));
+
+  // Two keys sharing a 5-byte prefix install a node whose compressed
+  // prefix is 5 bytes long under the root.
+  uint64_t key_x = 0x1122334455660001ULL;
+  uint64_t key_y = 0x1122334455660002ULL;
+  static Arena split_arenas[3];
+  split_arenas[0].test_id = static_cast<uintptr_t>(key_x);
+  split_arenas[1].test_id = static_cast<uintptr_t>(key_y);
+  uint8_t kx[8];
+  uint8_t ky[8];
+  encode_be64(key_x, kx);
+  encode_be64(key_y, ky);
+  ASSERT_TRUE(art_insert(tree, kx, 8, &split_arenas[0]));
+  ASSERT_TRUE(art_insert(tree, ky, 8, &split_arenas[1]));
+  EXPECT_EQ(art_lookup(tree, kx, 8), &split_arenas[0]);
+  EXPECT_EQ(art_lookup(tree, ky, 8), &split_arenas[1]);
+
+  // A third key that diverges at byte 2 of the compressed prefix
+  // (shared prefix is now just 2 bytes). The implementation must
+  // split the deep node's prefix: the surviving suffix carries the
+  // old subtree, and the new branch holds the diverging leaf.
+  uint64_t key_z = 0x1122999999000001ULL;
+  split_arenas[2].test_id = static_cast<uintptr_t>(key_z);
+  uint8_t kz[8];
+  encode_be64(key_z, kz);
+  ASSERT_TRUE(art_insert(tree, kz, 8, &split_arenas[2]));
+
+  // Both original keys remain reachable; the new key also resolves.
+  EXPECT_EQ(art_lookup(tree, kx, 8), &split_arenas[0]);
+  EXPECT_EQ(art_lookup(tree, ky, 8), &split_arenas[1]);
+  EXPECT_EQ(art_lookup(tree, kz, 8), &split_arenas[2]);
 }

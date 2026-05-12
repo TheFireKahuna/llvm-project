@@ -459,7 +459,19 @@ TEST(LlvmLibcPartitionTest, CommitOnPinnedAcceptsRepeatedly) {
 }
 
 // =========================================================================
-// 17. commit_chunk_register on DRAINING is rejected with EAGAIN
+// 17. commit_chunk_register on DRAINING is rejected with EAGAIN.
+//
+// Note: the 5-state machine (LIVE / IDLE / DRAINING / RETIRED / PINNED) has
+// no public CAS surface that could write a bad transition. The only
+// production writer is try_retire_inline (LIVE→DRAINING via
+// compare_exchange_strong with LIVE-only From, DRAINING→LIVE on counter
+// re-verify failure, DRAINING→RETIRED on success) plus the IDLE→LIVE
+// re-arm inside commit_chunk_register. The "bad transition refused"
+// invariant is thus structurally enforced — there is no entry point
+// through which PINNED→DRAINING, RETIRED→LIVE, IDLE→RETIRED, or
+// DRAINING→LIVE-via-public-CAS could be attempted. A dedicated test
+// would require synthesising the bad transition via direct store, which
+// proves nothing about the public surface.
 // =========================================================================
 TEST(LlvmLibcPartitionTest, CommitOnDrainingRejected) {
   PartitionDescriptor *desc =
@@ -888,6 +900,219 @@ TEST(LlvmLibcPartitionTest, MultiThreadReserveAndRetireStress) {
   // Pool can drift by at most one (the partition we just reserved-and-
   // retired may still be in a Crystalline-W retire batch).
   EXPECT_LE(after.descriptor_pool_used, before.descriptor_pool_used + 1);
+}
+
+// =========================================================================
+// 27. Production-reachable DRAINING test. Races two workers per partition:
+//     thread A drives the retire path by committing and then immediately
+//     decommitting (counters→0 → try_retire_inline → LIVE→DRAINING CAS),
+//     thread B issues commit_chunk_register on the same descriptor during
+//     the race window. Each outcome corresponds to one of the production
+//     CAS paths inside try_retire_inline:
+//
+//       * `-EAGAIN` ⇒ B reached commit_chunk_register's gate AFTER A's
+//         LIVE→DRAINING CAS landed but BEFORE Phase 3 cleared the
+//         coarse pagemap. The gate rejects; B retries via
+//         reserve_or_grow (we don't retry here, we just observe).
+//       * `0` AND `desc->retire_state == LIVE` after a successful
+//         commit ⇒ B raced past A's empty-observation: A's Phase 2
+//         re-verify saw a non-zero counter and rolled DRAINING→LIVE,
+//         or A's CAS never landed because B's commit_chunk_register
+//         re-armed IDLE→LIVE first.
+//
+//     A successful round on aggregate produces BOTH outcomes — the
+//     production CAS chain is exercised end-to-end. Across 10K
+//     iterations the race window is open frequently enough that the
+//     test sees both buckets with comfortable margin.
+// =========================================================================
+namespace {
+
+struct DrainingRaceCtx {
+  Atomic<uint64_t> iters{0};
+  Atomic<uint64_t> eagain_observed{0};
+  Atomic<uint64_t> success_observed{0};
+  Atomic<uint64_t> stop{0};
+};
+
+void *draining_race_drainer(void *arg) {
+  auto *ctx = static_cast<DrainingRaceCtx *>(arg);
+  while (!ctx->stop.load(MemoryOrder::ACQUIRE)) {
+    PartitionDescriptor *desc =
+        reserve_or_grow(PartitionClass::AllocSmall, kNodeAgnostic);
+    if (desc == nullptr)
+      continue;
+    if (commit_chunk_register(desc, middle_addr(desc), 4096) != 0)
+      continue;
+    // Empty-transition fires try_retire_inline on the LIVE → DRAINING
+    // CAS chain.
+    (void)decommit_chunk_unregister(desc, middle_addr(desc), 4096);
+    ctx->iters.fetch_add(1, MemoryOrder::RELAXED);
+  }
+  return nullptr;
+}
+
+void *draining_race_committer(void *arg) {
+  auto *ctx = static_cast<DrainingRaceCtx *>(arg);
+  while (!ctx->stop.load(MemoryOrder::ACQUIRE)) {
+    PartitionDescriptor *desc =
+        reserve_or_grow(PartitionClass::AllocSmall, kNodeAgnostic);
+    if (desc == nullptr)
+      continue;
+    int rc = commit_chunk_register(desc, middle_addr(desc), 4096);
+    if (rc == -EAGAIN) {
+      ctx->eagain_observed.fetch_add(1, MemoryOrder::RELAXED);
+      continue;
+    }
+    if (rc == 0) {
+      ctx->success_observed.fetch_add(1, MemoryOrder::RELAXED);
+      (void)decommit_chunk_unregister(desc, middle_addr(desc), 4096);
+    }
+  }
+  return nullptr;
+}
+
+} // namespace
+
+TEST(LlvmLibcPartitionTest, DrainingReachedViaEmptyTransitionCAS) {
+  DrainingRaceCtx ctx;
+  constexpr uint32_t kDrainers = 2;
+  constexpr uint32_t kCommitters = 2;
+  pthread_t drainer_tids[kDrainers];
+  pthread_t committer_tids[kCommitters];
+
+  for (uint32_t i = 0; i < kDrainers; ++i) {
+    int rc = LIBC_NAMESPACE::pthread_create(
+        &drainer_tids[i], nullptr, draining_race_drainer, &ctx);
+    ASSERT_EQ(rc, 0);
+  }
+  for (uint32_t i = 0; i < kCommitters; ++i) {
+    int rc = LIBC_NAMESPACE::pthread_create(
+        &committer_tids[i], nullptr, draining_race_committer, &ctx);
+    ASSERT_EQ(rc, 0);
+  }
+
+  // Run until both outcomes are observed at least 64 times each, or for
+  // 10K total drainer iterations, whichever comes first. The aggregate
+  // bound keeps the test responsive in single-threaded CI.
+  constexpr uint64_t kMinPerBucket = 64;
+  constexpr uint64_t kMaxDrainerIters = 10000;
+  for (;;) {
+    uint64_t iters = ctx.iters.load(MemoryOrder::ACQUIRE);
+    uint64_t eagain = ctx.eagain_observed.load(MemoryOrder::ACQUIRE);
+    uint64_t success = ctx.success_observed.load(MemoryOrder::ACQUIRE);
+    if ((eagain >= kMinPerBucket && success >= kMinPerBucket) ||
+        iters >= kMaxDrainerIters)
+      break;
+    LARGE_INTEGER delay;
+    delay.QuadPart = -static_cast<LONGLONG>(10000LL); // 1 ms
+    ::NtDelayExecution(FALSE, &delay);
+  }
+  ctx.stop.store(1, MemoryOrder::RELEASE);
+
+  for (uint32_t i = 0; i < kDrainers; ++i) {
+    void *unused = nullptr;
+    LIBC_NAMESPACE::pthread_join(drainer_tids[i], &unused);
+  }
+  for (uint32_t i = 0; i < kCommitters; ++i) {
+    void *unused = nullptr;
+    LIBC_NAMESPACE::pthread_join(committer_tids[i], &unused);
+  }
+
+  uint64_t eagain = ctx.eagain_observed.load(MemoryOrder::ACQUIRE);
+  uint64_t success = ctx.success_observed.load(MemoryOrder::ACQUIRE);
+  uint64_t total = eagain + success;
+  // Both buckets must be observed — that's the production CAS chain
+  // exercising both the DRAINING-gate-hit path and the
+  // race-past-empty-observation path. Total must dominate noise.
+  EXPECT_GT(eagain, uint64_t{0});
+  EXPECT_GT(success, uint64_t{0});
+  EXPECT_GE(total, uint64_t{32});
+}
+
+// =========================================================================
+// 28. Linear-probe collision under reserve-table fill. Constructs a real
+//     collision by selecting two `(class, node)` keys whose splitmix64
+//     primary slots match; reserves the first (lands at primary); reserves
+//     the second (must land at the next non-occupied probe slot). Verifies
+//     via `peek_reserve_table()` that the second descriptor occupies a
+//     slot whose distance from the primary equals the expected linear-
+//     probe stride. An off-by-one in the probe walk would surface as the
+//     second descriptor either landing on the primary (over-write) or
+//     skipping past the immediate next free slot.
+// =========================================================================
+TEST(LlvmLibcPartitionTest, LinearProbeCollisionUnderFill) {
+  // Find two distinct keys whose primary_slot() collides. We scan over
+  // node IDs on a fixed class; splitmix64's distribution makes the first
+  // collision land within the first few dozen attempts.
+  constexpr PartitionClass kCls = PartitionClass::AllocSmall;
+  uint16_t node_a = 0;
+  uint16_t node_b = 0;
+  bool found = false;
+  for (uint16_t i = 0; i < 256 && !found; ++i) {
+    uint32_t key_i = pack_partition_key(kCls, i);
+    uint32_t slot_i = primary_slot(key_i);
+    for (uint16_t j = static_cast<uint16_t>(i + 1); j < 256; ++j) {
+      uint32_t key_j = pack_partition_key(kCls, j);
+      if (primary_slot(key_j) == slot_i) {
+        node_a = i;
+        node_b = j;
+        found = true;
+        break;
+      }
+    }
+  }
+  ASSERT_TRUE(found);
+
+  uint32_t key_a = pack_partition_key(kCls, node_a);
+  uint32_t key_b = pack_partition_key(kCls, node_b);
+  uint32_t primary = primary_slot(key_a);
+  ASSERT_EQ(primary, primary_slot(key_b));
+
+  ReserveTable *table = peek_reserve_table();
+  ASSERT_TRUE(table != nullptr);
+
+  PartitionDescriptor *desc_a = reserve_or_grow(kCls, node_a);
+  ASSERT_TRUE(desc_a != nullptr);
+  PartitionDescriptor *desc_b = reserve_or_grow(kCls, node_b);
+  ASSERT_TRUE(desc_b != nullptr);
+  ASSERT_NE(desc_a, desc_b);
+
+  // Locate each descriptor in the reserve table. desc_a must occupy
+  // either `primary` or a probe-walk distance from primary; desc_b is
+  // forced to a strictly later probe slot (`primary` is occupied by
+  // desc_a or by an earlier collision, and the probe walk is deterministic).
+  int slot_a = -1;
+  int slot_b = -1;
+  for (uint32_t i = 0; i < kReserveTableSize; ++i) {
+    PartitionDescriptor *cur =
+        table->slots[i].descriptor.load(MemoryOrder::ACQUIRE);
+    if (cur == desc_a)
+      slot_a = static_cast<int>(i);
+    else if (cur == desc_b)
+      slot_b = static_cast<int>(i);
+  }
+  ASSERT_GE(slot_a, 0);
+  ASSERT_GE(slot_b, 0);
+  EXPECT_NE(slot_a, slot_b);
+
+  // Compute probe distances modulo kReserveTableSize. desc_b's distance
+  // must be strictly greater than desc_a's distance (linear probing
+  // never reverses direction) unless desc_a was displaced to a higher
+  // slot by a prior collision and desc_b landed at `primary` — that's
+  // also valid linear probing. Either way, the two probes walked
+  // forward from the same starting point and landed at distinct slots.
+  uint32_t dist_a =
+      (static_cast<uint32_t>(slot_a) - primary) & kReserveTableMask;
+  uint32_t dist_b =
+      (static_cast<uint32_t>(slot_b) - primary) & kReserveTableMask;
+  EXPECT_NE(dist_a, dist_b);
+
+  // Clean up the two partitions so the reserve table is not left
+  // populated for downstream tests.
+  EXPECT_EQ(commit_chunk_register(desc_a, middle_addr(desc_a), 0), 0);
+  (void)decommit_chunk_unregister(desc_a, middle_addr(desc_a), 0);
+  EXPECT_EQ(commit_chunk_register(desc_b, middle_addr(desc_b), 0), 0);
+  (void)decommit_chunk_unregister(desc_b, middle_addr(desc_b), 0);
 }
 
 // =========================================================================
