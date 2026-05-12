@@ -21,10 +21,12 @@
 namespace LIBC_NAMESPACE_DECL {
 namespace internal {
 
-intptr_t mlock(const void *addr, size_t len);
-intptr_t mlock2(const void *addr, size_t len, int flags);
+// mlock / mlock2 / munlock now live in
+// src/__support/OSUtil/windows/memory/posix/mlock.h. Only the
+// process-wide mlockall / munlockall paths remain in the legacy
+// implementation until P9 rebuilds them on the new substrate.
+
 intptr_t mlockall(int flags);
-intptr_t munlock(const void *addr, size_t len);
 intptr_t munlockall();
 
 } // namespace internal

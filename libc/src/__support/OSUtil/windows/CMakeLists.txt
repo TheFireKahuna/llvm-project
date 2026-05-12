@@ -2743,19 +2743,25 @@ add_object_library(
 )
 
 # ---------------------------------------------------------------------------
-# Memory locking engine — mlock, mlock2, mlockall, munlock, munlockall.
-# Extracted from src/sys/mman/windows/mlock*.cpp (Phase 3.3).
+# Memory locking engine — mlock, mlock2, munlock (POSIX-layer rebuild,
+# memory/posix/mlock.cpp) plus the legacy mlockall / munlockall paths
+# that stay quarantined until P9 of the POSIX_ROADMAP rebuilds them on
+# the new substrate. The single object library combines both so the
+# windows_syscalls aggregate keeps one .mlock_ops dependency edge.
 # ---------------------------------------------------------------------------
 
 add_object_library(
   mlock_ops
   SRCS
+    memory/posix/mlock.cpp
     memory/legacy/mlock_ops.cpp
   HDRS
+    memory/posix/mlock.h
     memory/legacy/mlock_ops.h
   DEPENDS
+    .memory_posix_errno
+    .memory_posix_validation
     .nt_pal
-    .ntdll
     .ntdll
     .page_size
     .working_set
@@ -2838,19 +2844,19 @@ add_object_library(
 )
 
 # ---------------------------------------------------------------------------
-# mincore engine — working set residency queries.
-# Extracted from src/sys/mman/windows/mincore.cpp (Phase 3.3).
+# mincore engine — POSIX-layer page residency probe
+# (memory/posix/mincore.cpp on the read-only nt_pal surface).
 # ---------------------------------------------------------------------------
 
 add_object_library(
   mincore_ops
   SRCS
-    memory/legacy/mincore_ops.cpp
+    memory/posix/mincore.cpp
   HDRS
-    memory/legacy/mincore_ops.h
+    memory/posix/mincore.h
   DEPENDS
+    .memory_posix_validation
     .nt_pal
-    .ntdll
     .ntdll
     .page_size
     libc.src.__support.common
