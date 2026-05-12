@@ -82,7 +82,8 @@ ReserveTable g_reserve_table;
 // `partition` namespace scope so the extern declaration resolves to this
 // symbol rather than to a separate anonymous-namespace symbol.
 ::LIBC_NAMESPACE::concurrent::CrystallineDomain<
-    PartitionDescriptor, &partition_free_descriptor, kPartitionRetireFreq>
+    PartitionDescriptor, &partition_free_descriptor, kPartitionRetireFreq,
+    kPartitionMaxIdx>
     g_partition_domain;
 
 //===----------------------------------------------------------------------===//

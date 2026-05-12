@@ -315,8 +315,17 @@ void desc_backing_free(DescBacking *backing);
 
 inline constexpr uint32_t kBackingRetireFreq = 16;
 
+/// MaxIdx for the desc_backing domain. Pin slots:
+///   `BackingPinSlot::kEngineAnchor = 0` — engine path anchor for
+///       `run_envelope` retry window.
+///   `BackingPinSlot::kReaderPin    = 1` — reader path anchor across
+///       `BackingView` lifetimes.
+///
+/// Audited max index = 1, so MaxIdx = 2.
+inline constexpr uint32_t kBackingMaxIdx = 2;
+
 extern ::LIBC_NAMESPACE::concurrent::CrystallineDomain<
-    DescBacking, &desc_backing_free, kBackingRetireFreq>
+    DescBacking, &desc_backing_free, kBackingRetireFreq, kBackingMaxIdx>
     g_va_tracker_backing_domain;
 
 //===----------------------------------------------------------------------===//

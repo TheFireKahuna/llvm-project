@@ -267,12 +267,18 @@ constexpr uint32_t kPartitionRetireFreq = 4;
 
 void partition_free_descriptor(PartitionDescriptor *desc);
 
+/// MaxIdx for the partition domain. Call sites: init_node / retire
+/// only — no protect()/anchor() pins. MaxIdx = 1 sizes the (unused)
+/// reservation slot space minimally.
+inline constexpr uint32_t kPartitionMaxIdx = 1;
+
 /// Process-wide Crystalline-W (Nikolaev / Ravindran, PLDI 2024) domain
 /// governing partition descriptor reclamation. The free callback runs only
 /// after every concurrent `lookup()` pin holder has released, so a wait-free
 /// reader can never observe a freed descriptor.
 extern ::LIBC_NAMESPACE::concurrent::CrystallineDomain<
-    PartitionDescriptor, &partition_free_descriptor, kPartitionRetireFreq>
+    PartitionDescriptor, &partition_free_descriptor, kPartitionRetireFreq,
+    kPartitionMaxIdx>
     g_partition_domain;
 
 } // namespace partition

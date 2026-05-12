@@ -317,9 +317,15 @@ static void substrate_free_arena(ArenaHeader *a);
 // `slow_counter_.load() == 0` makes the common case O(1).
 inline constexpr uint32_t kSubstrateRetireFreq = 8;
 
+// MaxIdx for the substrate domain. Single protect() site uses index 0
+// (`g_substrate_domain.protect(active_, /*index=*/0, ...)`); no
+// additional pin slots needed. MaxIdx = 1.
+inline constexpr uint32_t kSubstrateMaxIdx = 1;
+
 ::LIBC_NAMESPACE::concurrent::CrystallineDomain<ArenaHeader,
                                                 &substrate_free_arena,
-                                                kSubstrateRetireFreq>
+                                                kSubstrateRetireFreq,
+                                                kSubstrateMaxIdx>
     g_substrate_domain;
 
 } // namespace alloc

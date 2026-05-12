@@ -620,12 +620,22 @@ void skiplist_node_free(SkiplistNodeBase *node);
 /// every reachable node) and returns the arena body to its slot pool.
 void arena_free(Arena *arena);
 
+/// MaxIdx for the skiplist Crystalline-W domain. Slots consumed:
+///   0 — walker `kPinSlotPrev`.
+///   1 — walker `kPinSlotCur` (rotated to prev on advance).
+///   2 — `gather_level_bookmarks` `kPinSlotLevelPrev`.
+///   3 — `gather_level_bookmarks` `kPinSlotLevelCur`.
+///
+/// Audited max index = 3, so MaxIdx = 4.
+inline constexpr uint32_t kSkiplistMaxIdx = 4;
+
 /// Crystalline-W domain governing skiplist-node body lifetime. Reader
 /// paths (`is_walk`, `is_walk_range`) pin into this domain; writer
 /// paths retire here after the substrate has proven the node is
 /// off-chain via the CERT bit.
 extern ::LIBC_NAMESPACE::concurrent::CrystallineDomain<
-    SkiplistNodeBase, &skiplist_node_free, kSkiplistRetireFreq>
+    SkiplistNodeBase, &skiplist_node_free, kSkiplistRetireFreq,
+    kSkiplistMaxIdx>
     g_va_tracker_skiplist_domain;
 
 } // namespace va_tracker

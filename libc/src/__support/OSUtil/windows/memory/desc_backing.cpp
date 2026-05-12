@@ -58,7 +58,7 @@ namespace partition_ns = alloc::partition;
 // Self-installs from `backing_init()`, which is invoked from
 // `va_tracker_init_fn` after the skiplist init.
 ::LIBC_NAMESPACE::concurrent::CrystallineDomain<
-    DescBacking, &desc_backing_free, kBackingRetireFreq>
+    DescBacking, &desc_backing_free, kBackingRetireFreq, kBackingMaxIdx>
     g_va_tracker_backing_domain;
 
 //===----------------------------------------------------------------------===//

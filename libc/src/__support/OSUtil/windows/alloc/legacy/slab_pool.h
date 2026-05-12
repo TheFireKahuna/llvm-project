@@ -1336,8 +1336,12 @@ private:
   // registers the domain; later inits wait_ready and skip registration.
   // Tier A bring-up is still single-threaded by contract; the latch is
   // belt-and-suspenders against future cross-thread init paths.
+  // MaxIdx for the slab retire domain. Anchor calls (`anchor(0)`) are
+  // the only pin sites; no protect(). Single slot space suffices.
+  static constexpr uint32_t kSlabRetireMaxIdx = 1;
+
   inline static ::LIBC_NAMESPACE::concurrent::CrystallineDomain<
-      SlabHeader, &slab_release_callback, /*Freq=*/8>
+      SlabHeader, &slab_release_callback, /*Freq=*/8, kSlabRetireMaxIdx>
       slab_retire_domain_;
   inline static alloc_primitives::InitLatch slab_retire_domain_init_latch_;
 

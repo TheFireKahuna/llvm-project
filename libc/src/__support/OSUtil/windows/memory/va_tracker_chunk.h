@@ -213,18 +213,23 @@ void va_chunk_desc_free(VaChunkDesc *desc);
 /// amortised across multiple drains.
 inline constexpr uint32_t kVaChunkRetireFreq = 4;
 
+/// MaxIdx for the chunk domains. Both domains use only
+/// `kVaChunkPinSlot = 0` (single pin per `va_chunk_acquire_slot` and
+/// `resolve_link_target_impl` call). MaxIdx = 1.
+inline constexpr uint32_t kVaChunkMaxIdx = 1;
+
 /// Crystalline-W domain covering the va_tracker leaf side: skiplist height
 /// buckets, `RegionDesc`, `Arena`, and `DescBacking`. Separating this
 /// domain from the ART domain keeps the skiplist's reader-race grace
 /// window independent of the ART's.
 extern ::LIBC_NAMESPACE::concurrent::CrystallineDomain<
-    VaChunkDesc, &va_chunk_desc_free, kVaChunkRetireFreq>
+    VaChunkDesc, &va_chunk_desc_free, kVaChunkRetireFreq, kVaChunkMaxIdx>
     g_va_tracker_skiplist_chunk_domain;
 
 /// Crystalline-W domain covering ART node-type partitions (Node4 / Node16 /
 /// Node48 / Node256).
 extern ::LIBC_NAMESPACE::concurrent::CrystallineDomain<
-    VaChunkDesc, &va_chunk_desc_free, kVaChunkRetireFreq>
+    VaChunkDesc, &va_chunk_desc_free, kVaChunkRetireFreq, kVaChunkMaxIdx>
     g_va_tracker_art_chunk_domain;
 
 /// True when \p bucket_id identifies an ART node-type bucket
@@ -246,7 +251,7 @@ is_art_chunk_bucket(uint8_t bucket_id) {
 /// `va_chunk_acquire_slot::protect/retire`) so the skiplist/ART split is
 /// expressed once and stays consistent across the file.
 [[nodiscard]] LIBC_INLINE ::LIBC_NAMESPACE::concurrent::CrystallineDomain<
-    VaChunkDesc, &va_chunk_desc_free, kVaChunkRetireFreq> &
+    VaChunkDesc, &va_chunk_desc_free, kVaChunkRetireFreq, kVaChunkMaxIdx> &
 pick_chunk_domain(uint8_t bucket_id) {
     return is_art_chunk_bucket(bucket_id) ? g_va_tracker_art_chunk_domain
                                           : g_va_tracker_skiplist_chunk_domain;

@@ -267,15 +267,14 @@ SkiplistNodeBase *resolve_link_target(uint16_t enc) {
 // sound: one chain step pins the chunk descriptor, then the node body
 // it resolves to.
 //
-// Per-thread skiplist-node pin slot assignments (`kCrystallineHrNum = 16`
-// slots available, dense-from-zero — the head sentinel is inline in
-// Arena and never retired, so no anchor slot is needed):
+// Per-thread skiplist-node pin slot assignments (this domain declares
+// MaxIdx=4 — the head sentinel is inline in Arena and never retired,
+// so no anchor slot is needed):
 //
 //   0  — walker prev pointer.
 //   1  — walker cur pointer; rotated to prev on advance.
 //   2  — gather_level_bookmarks prev (top-down GETPREDSUCC walk).
 //   3  — gather_level_bookmarks cur.
-//   4+ — reserved.
 //
 // Slot indices are call-site discipline; the substrate does not enforce
 // them. Keeping the mapping fixed makes nested-reader pin lifetimes
@@ -375,7 +374,8 @@ namespace va_tracker {
 //===----------------------------------------------------------------------===//
 
 ::LIBC_NAMESPACE::concurrent::CrystallineDomain<
-    SkiplistNodeBase, &skiplist_node_free, kSkiplistRetireFreq>
+    SkiplistNodeBase, &skiplist_node_free, kSkiplistRetireFreq,
+    kSkiplistMaxIdx>
     g_va_tracker_skiplist_domain;
 
 // `g_va_tracker_arena_domain` lives in arena_alloc.cpp (with `g_arena_state`

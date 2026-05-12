@@ -42,11 +42,11 @@ namespace partition_ns = alloc::partition;
 // skiplist's chunk-table reader-race window is independent of the ART's.
 
 ::LIBC_NAMESPACE::concurrent::CrystallineDomain<
-    VaChunkDesc, &va_chunk_desc_free, kVaChunkRetireFreq>
+    VaChunkDesc, &va_chunk_desc_free, kVaChunkRetireFreq, kVaChunkMaxIdx>
     g_va_tracker_skiplist_chunk_domain;
 
 ::LIBC_NAMESPACE::concurrent::CrystallineDomain<
-    VaChunkDesc, &va_chunk_desc_free, kVaChunkRetireFreq>
+    VaChunkDesc, &va_chunk_desc_free, kVaChunkRetireFreq, kVaChunkMaxIdx>
     g_va_tracker_art_chunk_domain;
 
 //===----------------------------------------------------------------------===//

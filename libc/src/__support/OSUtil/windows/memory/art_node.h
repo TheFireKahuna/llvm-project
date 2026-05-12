@@ -683,11 +683,24 @@ void art_node_free(ArtNodeBase *node);
 /// around grow/shrink boundaries rather than streaming.
 inline constexpr uint32_t kArtRetireFreq = 4;
 
+/// MaxIdx for the ART Crystalline-W domain.
+///
+/// Two consumers share this slot space:
+///   - `art_lookup`/`art_insert`/`art_remove` linear descent: ping-pongs
+///     between `kArtPinSlotDescendA = 0` and `kArtPinSlotDescendB = 1`.
+///   - `art_walk_range` DFS: each stack frame at depth `d` pins slot
+///     `kArtPinSlotWalkBase + (d - 1)`. Walk stack capacity is
+///     `kWalkStackDepth = kArtKeyLen + 2 = 10`, so depth ∈ [1, 10] and
+///     the maximum slot index is 9.
+///
+/// Audited max index = 9, so MaxIdx = 10.
+inline constexpr uint32_t kArtMaxIdx = 10;
+
 /// The Crystalline-W domain governing ART internal-node body
 /// reclamation. Each ART node inherits `CrystallineNode` and rides
 /// this domain through retire / grace / FreeFn.
 extern ::LIBC_NAMESPACE::concurrent::CrystallineDomain<
-    ArtNodeBase, &art_node_free, kArtRetireFreq>
+    ArtNodeBase, &art_node_free, kArtRetireFreq, kArtMaxIdx>
     g_va_tracker_art_domain;
 
 } // namespace va_tracker

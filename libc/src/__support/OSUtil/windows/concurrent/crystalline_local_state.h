@@ -41,14 +41,16 @@
 // - Fork-reinit zeroes every surviving thread's region from a
 //   single-threaded context before any other thread restart.
 //
-// Layout math (MAX_WFR=16, kMaxCrystallineDomains=8)
+// Layout math (default MaxIdx=16, kMaxCrystallineDomains=16)
 // --------------------------------------------------
 //   CrystallineWordPair               = 16 B
 //   CrystallineStateT (result+3 ptrs) = 48 B
-//   CrystallineDomainSlot natural     = 18×(16+16+48) + linkage::Link = 1448 B
-//     alignas(64) — cross-thread reads hit this struct, so line
-//     isolation between adjacent domains' slots matters. sizeof
-//     rounds up to 1472 B (one line of tail padding, ~2% overhead).
+//   CrystallineDomainSlot<MaxIdx> natural = (MaxIdx+2)×(16+16+48)
+//                                            + Atomic<u64> max_era_seen
+//                                            + linkage::Link + u32 gen.
+//     For default MaxIdx=16: 18×80 + 8 + 8 + 4 = 1460 B (sizeof rounds
+//     up to 1472 B; alignas(64), ~2% tail). Low-MaxIdx domains shrink:
+//     MaxIdx=1 → 3×80 + 20 = 260 B → 320 B after alignas(64).
 //   CrystallineBatch packed           = 48 B  (alignof 8 — owner-only
 //                                              writes, no cross-thread
 //                                              access, no line iso needed)
@@ -83,17 +85,16 @@ namespace concurrent {
 // crystalline_batches[]. 
 inline constexpr uint32_t kMaxCrystallineDomains = 16;
 
-// Reservation-slots per thread per domain (WFRTracker's MAX_WFR).
-// Concurrency-depth parameter, NOT a thread/memory scale cap: bounds
-// the maximum number of pointer reservations one thread holds
-// simultaneously on one domain. Reference default; skiplists up to
-// MAX_LEVEL=8 (pred/succ pinned simultaneously) and radix/B+tree
-// traversals fit comfortably. Expose `+2` extra internal slots
-// for the helping-protocol's parent/helpee scratch (see
+// Default per-domain reservation-slot count (WFRTracker's MAX_WFR,
+// paper's MAX_IDX). Concurrency-depth parameter, NOT a thread/memory
+// scale cap: bounds the maximum number of pointer reservations one
+// thread holds simultaneously on one domain. Per-domain after E3 —
+// each CrystallineDomain<> instantiation declares its own MaxIdx
+// (default = this value). The substrate adds `+2` extra internal
+// slots for the helping-protocol's parent/helpee scratch (see
 // WFRTracker.hpp help_thread's use of slots[mytid].state[hr_num]
 // and slots[mytid].era[hr_num+1]).
-inline constexpr uint32_t kCrystallineHrNum = 16;
-inline constexpr uint32_t kCrystallineSlotCount = kCrystallineHrNum + 2;
+inline constexpr uint32_t kCrystallineDefaultMaxIdx = 16;
 
 // -------------------------------------------------------------------------
 // CrystallineNode — empty tag base for every retirable user type.
@@ -309,11 +310,18 @@ static_assert(sizeof(CrystallineStateT) == 48,
 // -------------------------------------------------------------------------
 //
 // Indexed access contract (lifted verbatim from WFRTracker.hpp):
-//   first[0 .. hr_num-1]    — reservation-slot head pointers
-//   first[hr_num]           — help-protocol parent-reservation scratch
-//   first[hr_num+1]         — help-protocol helpee scratch
+//   first[0 .. MaxIdx-1]    — reservation-slot head pointers
+//   first[MaxIdx]           — help-protocol parent-reservation scratch
+//   first[MaxIdx+1]         — help-protocol helpee scratch
 //   era[i]                  — paired with first[i], carries (era, seqno)
 //   state[i]                — paired with first[i]/era[i], helping state
+//
+// MaxIdx is the per-domain template parameter — each CrystallineDomain<>
+// instantiation declares its own. The paper's WFRTracker constructor
+// `(int task_num, int hr_num, ...)` takes hr_num per-domain too; this
+// is the compile-time analog. Per-domain MaxIdx tightens paper Lemma
+// 5.2/5.3's `task_num × MAX_IDX × thunk_cost` latency bound for any
+// domain with MaxIdx < the prior global default.
 //
 // Field naming note: the reference paper Figs. 5/6/10/13 use "era"
 // (Hazard-Era lineage). The codebase previously used "epoch", which
@@ -332,19 +340,20 @@ static_assert(sizeof(CrystallineStateT) == 48,
 // owner write. alignof(64) is the minimum line isolation on x86-64
 // (128-byte pairing under DMLC is a perf tune we can adopt later
 // without algorithmic change).
+template <uint32_t MaxIdx>
 struct alignas(64) CrystallineDomainSlot {
-  CrystallineWordPair first[kCrystallineSlotCount];
-  CrystallineWordPair era[kCrystallineSlotCount];
-  CrystallineStateT state[kCrystallineSlotCount];
-  // Monotonic upper bound on max{era[j].pair[0] : j ∈ [0, kCrystallineSlotCount)}.
+  CrystallineWordPair first[MaxIdx + 2];
+  CrystallineWordPair era[MaxIdx + 2];
+  CrystallineStateT state[MaxIdx + 2];
+  // Monotonic upper bound on max{era[j].pair[0] : j ∈ [0, MaxIdx + 2)}.
   // The owner publishes here on every era[j].pair[0] write site so the
   // value tracks the highest era this slot has reserved. try_retire's
   // Phase A reads it RELAXED once per slot — if < min_era, every per-
   // index era is also < min_era and the slot can be skipped without
   // entering the inner per-index eligibility loop. One load substitutes
-  // for kCrystallineSlotCount per-index loads on the dominant
-  // "stale slot" walker path. Lives adjacent to `link` so the walker's
-  // active_next(link) load brings this line into L1 too.
+  // for MaxIdx + 2 per-index loads on the dominant "stale slot" walker
+  // path. Lives adjacent to `link` so the walker's active_next(link)
+  // load brings this line into L1 too.
   cpp::Atomic<uint64_t> max_era_seen;
   // Lock-free linkage substrate hookup. CrystallineSlotPool uses the
   // `next` field (16-bit pool index) for its Treiber freelist and the
@@ -361,34 +370,71 @@ struct alignas(64) CrystallineDomainSlot {
   cpp::Atomic<uint32_t> generation;
 };
 
-inline constexpr size_t kCrystallineDomainSlotNaturalSize =
-    kCrystallineSlotCount *
-        (sizeof(CrystallineWordPair) * 2 + sizeof(CrystallineStateT)) +
-    sizeof(cpp::Atomic<uint64_t>) +
-    sizeof(cpp::Atomic<linkage::Link>) + sizeof(cpp::Atomic<uint32_t>);
+namespace detail {
+// Per-MaxIdx natural size: sum of the array members plus the trailing
+// atomic words. Substrate code uses this to (a) verify the compiler
+// laid the struct out without reordering the array block and (b)
+// derive the canonical `link` / `generation` offsets.
+template <uint32_t MaxIdx>
+inline constexpr size_t crystalline_slot_array_size() {
+  return static_cast<size_t>(MaxIdx + 2) *
+         (sizeof(CrystallineWordPair) * 2 + sizeof(CrystallineStateT));
+}
+template <uint32_t MaxIdx>
+inline constexpr size_t crystalline_slot_link_offset() {
+  return crystalline_slot_array_size<MaxIdx>() + sizeof(cpp::Atomic<uint64_t>);
+}
+template <uint32_t MaxIdx>
+inline constexpr size_t crystalline_slot_generation_offset() {
+  return crystalline_slot_link_offset<MaxIdx>() +
+         sizeof(cpp::Atomic<linkage::Link>);
+}
+template <uint32_t MaxIdx>
+inline constexpr size_t crystalline_slot_natural_size() {
+  return crystalline_slot_generation_offset<MaxIdx>() +
+         sizeof(cpp::Atomic<uint32_t>);
+}
+} // namespace detail
 
-static_assert(sizeof(CrystallineDomainSlot) >=
-                  kCrystallineDomainSlotNaturalSize,
-              "CrystallineDomainSlot cannot be smaller than the sum of its "
-              "array members — compiler reordering would break the array-"
-              "indexed layout the algorithm relies on");
-static_assert(sizeof(CrystallineDomainSlot) -
-                      kCrystallineDomainSlotNaturalSize <
-                  64,
-              "CrystallineDomainSlot tail padding exceeds one cache line — "
-              "bumping kCrystallineHrNum may have crossed an alignment "
-              "boundary; re-check the sizing math");
+// Per-instantiation layout check. Replaces the previous namespace-scope
+// LINKAGE_REQUIRES_*_AT assertions (which baked in the MaxIdx=16
+// offsets); CrystallineSlotPool<MaxIdx> instantiates this so every
+// pool instantiation forces the check. A mismatch surfaces at the
+// consumer's pool-instantiation site with a clear offset error.
+template <uint32_t MaxIdx>
+struct CrystallineSlotLayoutCheck {
+  static_assert(__builtin_offsetof(CrystallineDomainSlot<MaxIdx>, link) ==
+                    detail::crystalline_slot_link_offset<MaxIdx>(),
+                "CrystallineDomainSlot<MaxIdx>::link offset mismatch — "
+                "substrate harris walker depends on this layout");
+  static_assert(
+      __builtin_offsetof(CrystallineDomainSlot<MaxIdx>, generation) ==
+          detail::crystalline_slot_generation_offset<MaxIdx>(),
+      "CrystallineDomainSlot<MaxIdx>::generation offset mismatch — "
+      "substrate walker reads it for entry-bind + target re-check");
+  static_assert(sizeof(CrystallineDomainSlot<MaxIdx>) >=
+                    detail::crystalline_slot_natural_size<MaxIdx>(),
+                "CrystallineDomainSlot<MaxIdx> cannot be smaller than the "
+                "sum of its array members — compiler reordering would "
+                "break the array-indexed layout the algorithm relies on");
+  static_assert(sizeof(CrystallineDomainSlot<MaxIdx>) -
+                        detail::crystalline_slot_natural_size<MaxIdx>() <
+                    64,
+                "CrystallineDomainSlot<MaxIdx> tail padding exceeds one "
+                "cache line — re-check the sizing math");
+};
 
-// Pin the substrate-required offsets structurally. arrays:
-//   first[18]:     0..287
-//   era[18]:       288..575
-//   state[18]:     576..1439
-//   max_era_seen:  1440..1447   (8 bytes, naturally aligned)
-//   link:          1448..1455   (8 bytes, naturally aligned)
-//   generation:    1456..1459   (4 bytes, naturally aligned)
-//   tail pad:      1460..1471   (12 bytes, alignas(64) round-up)
-LINKAGE_REQUIRES_LINK_AT(CrystallineDomainSlot, 1448);
-LINKAGE_REQUIRES_GENERATION_AT(CrystallineDomainSlot, 1456);
+// Regression-prevention: the default-MaxIdx (= 16) instantiation must
+// produce the same `link` and `generation` offsets as the pre-E3 fixed
+// slot. With max_era_seen ahead of link (E8), those are 1448 and 1456.
+static_assert(
+    __builtin_offsetof(CrystallineDomainSlot<kCrystallineDefaultMaxIdx>,
+                       link) == 1448,
+    "Default-MaxIdx slot layout drifted from the pre-E3 substrate offsets");
+static_assert(
+    __builtin_offsetof(CrystallineDomainSlot<kCrystallineDefaultMaxIdx>,
+                       generation) == 1456,
+    "Default-MaxIdx slot layout drifted from the pre-E3 substrate offsets");
 
 // -------------------------------------------------------------------------
 // Per-thread per-domain retire-batch.

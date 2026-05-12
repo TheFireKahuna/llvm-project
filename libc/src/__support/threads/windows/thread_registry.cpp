@@ -131,8 +131,17 @@ template <> struct BatchLinkCodec<::LIBC_NAMESPACE::ThreadRegistryNode> {
 
 namespace LIBC_NAMESPACE_DECL {
 
+// MaxIdx for the registry domain. Two pin slot classes:
+//   `kReservationLookup = 0` — hash table walks (find_by_task_id /
+//       find_by_tid, BucketHeadPage / BucketEntry traversal).
+//   `kReservationIter   = 1` — iter list walks (for_each, collect_tids,
+//       suspend_all_others).
+// Audited max index = 1, so MaxIdx = 2.
+inline constexpr uint32_t kRegistryMaxIdx = 2;
+
 ::LIBC_NAMESPACE::concurrent::CrystallineDomain<
-    ThreadRegistryNode, &free_thread_registry_node, kRetireFreq>
+    ThreadRegistryNode, &free_thread_registry_node, kRetireFreq,
+    kRegistryMaxIdx>
     g_registry_domain;
 
 // Crystalline `read()` is templated on the domain's NodeT

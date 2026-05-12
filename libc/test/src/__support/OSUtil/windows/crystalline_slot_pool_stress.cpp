@@ -169,7 +169,12 @@ void wu64(uint64_t v) {
 // The pool we stress — file-scope so the SIGILL handler can reach it.
 // ====================================================================
 
-concurrent::CrystallineSlotPool g_test_pool;
+// Stress this pool at the default-MaxIdx instantiation — that is the
+// pre-E3 slot footprint and the most relevant configuration for the
+// substrate's race coverage (the Treiber/Harris paths don't depend on
+// MaxIdx, only on the slot's link/generation offsets).
+concurrent::CrystallineSlotPool<concurrent::kCrystallineDefaultMaxIdx>
+    g_test_pool;
 
 // ====================================================================
 // Op-trace ring — per-thread fixed-size circular log of ops.

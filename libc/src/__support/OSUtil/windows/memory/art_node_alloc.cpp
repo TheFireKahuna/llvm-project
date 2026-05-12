@@ -1051,7 +1051,7 @@ namespace va_tracker {
 // specialization above (which references state_for_type) is in scope
 // at instantiation time.
 ::LIBC_NAMESPACE::concurrent::CrystallineDomain<
-    ArtNodeBase, &art_node_free, kArtRetireFreq>
+    ArtNodeBase, &art_node_free, kArtRetireFreq, kArtMaxIdx>
     g_va_tracker_art_domain;
 
 } // namespace va_tracker

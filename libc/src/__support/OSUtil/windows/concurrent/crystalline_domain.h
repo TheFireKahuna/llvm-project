@@ -269,15 +269,26 @@ inline constexpr uint32_t kCrystallineFreeCacheCap = 12;
 // CrystallineDomain<NodeT, FreeFn, Freq>
 // -------------------------------------------------------------------------
 //
-// NodeT — user retirable type, inherits CrystallineNode.
+// NodeT  — user retirable type, inherits CrystallineNode.
 // FreeFn — `void (*)(NodeT*)` invoked once per node on final reclaim.
 // Freq   — retire counter threshold for try_retire triggering. Matches
 //          the reference's `emptyFreq` parameter. Default 128.
-template <typename NodeT, auto FreeFn, uint32_t Freq = 128>
+// MaxIdx — per-domain reservation-slot budget (paper's MAX_IDX, the
+//          WFRTracker constructor's `hr_num`). Each consumer declares
+//          the maximum number of pointer reservations any one thread
+//          holds simultaneously on this domain; the slot type sizes
+//          first[]/era[]/state[] as MaxIdx + 2. Default mirrors the
+//          pre-E3 global cap so domains that don't tune it keep the
+//          old footprint.
+template <typename NodeT, auto FreeFn, uint32_t Freq = 128,
+          uint32_t MaxIdx = kCrystallineDefaultMaxIdx>
 class CrystallineDomain {
   static_assert(cpp::is_base_of_v<CrystallineNode, NodeT>,
                 "NodeT must derive from CrystallineNode");
   static_assert(Freq > 0, "Freq must be positive");
+  static_assert(MaxIdx > 0, "MaxIdx must be positive");
+
+  using SlotT = CrystallineDomainSlot<MaxIdx>;
 
 public:
   // Trivially constructible — every member zero-inits via in-class
@@ -356,7 +367,7 @@ public:
   // here uses the exact same helping protocol as the thunk overload.
   [[nodiscard]] LIBC_INLINE NodeT *
   protect(cpp::Atomic<NodeT *> &obj, uint32_t index, NodeT *parent) {
-    CrystallineDomainSlot &my = my_slot_state();
+    SlotT &my = my_slot_state();
     uint64_t prev_era =
         my.era[index].pair[0].load(cpp::MemoryOrder::ACQUIRE);
     uint32_t attempts = 16;
@@ -402,7 +413,7 @@ public:
   protect(Ctx &ctx, uint32_t index, NodeT *parent) {
     static_assert(cpp::is_same_v<decltype(LoadThunk), NodeT *(*)(void *)>,
                   "LoadThunk must be NodeT *(*)(void *)");
-    CrystallineDomainSlot &my = my_slot_state();
+    SlotT &my = my_slot_state();
     uint64_t prev_era =
         my.era[index].pair[0].load(cpp::MemoryOrder::ACQUIRE);
     uint32_t attempts = 16;
@@ -478,14 +489,14 @@ public:
   // where the caller has finished all dereferences and wants to let
   // retiring threads claim the slots.
   LIBC_INLINE void clear_all() {
-    CrystallineDomainSlot &my = my_slot_state();
+    SlotT &my = my_slot_state();
     CrystallineBatch &batch = my_batch();
-    CrystallineNode *first[kCrystallineHrNum];
-    for (uint32_t i = 0; i < kCrystallineHrNum; i++) {
+    CrystallineNode *first[MaxIdx];
+    for (uint32_t i = 0; i < MaxIdx; i++) {
       first[i] = my.first[i].list[0].exchange(
           crystalline_inv_ptr(), cpp::MemoryOrder::ACQ_REL);
     }
-    for (uint32_t i = 0; i < kCrystallineHrNum; i++) {
+    for (uint32_t i = 0; i < MaxIdx; i++) {
       if (first[i] != crystalline_inv_ptr())
         traverse(&batch.list, first[i]);
     }
@@ -501,7 +512,7 @@ public:
   }
 
   LIBC_INLINE static constexpr uint32_t reservation_slots() {
-    return kCrystallineHrNum;
+    return MaxIdx;
   }
 
   // Pre-claim this thread's slot in the domain's pool. Idempotent;
@@ -580,7 +591,7 @@ private:
     return idx;
   }
 
-  LIBC_INLINE CrystallineDomainSlot &my_slot_state() {
+  LIBC_INLINE SlotT &my_slot_state() {
     return pool_.at(my_slot_idx());
   }
 
@@ -589,7 +600,7 @@ private:
   }
 
   // Index-keyed slot accessor for cross-thread walks.
-  LIBC_INLINE CrystallineDomainSlot &slot_state_of(uint16_t idx) {
+  LIBC_INLINE SlotT &slot_state_of(uint16_t idx) {
     return pool_.at(idx);
   }
 
@@ -744,7 +755,7 @@ private:
   // it (drops refs on freed batches), then publishes the new
   // current_era into era[index].pair[0].
   LIBC_INLINE uint64_t do_update(uint64_t curr_era, uint32_t index) {
-    CrystallineDomainSlot &my = my_slot_state();
+    SlotT &my = my_slot_state();
     CrystallineBatch &batch = my_batch();
     if (my.first[index].list[0].load(cpp::MemoryOrder::ACQUIRE) != nullptr) {
       CrystallineNode *first = my.first[index].list[0].exchange(
@@ -784,7 +795,7 @@ private:
   LIBC_INLINE NodeT *slow_path(NodeT *(*load_thunk)(void *),
                                void *load_ctx, uint32_t index,
                                NodeT *node) {
-    CrystallineDomainSlot &my = my_slot_state();
+    SlotT &my = my_slot_state();
     CrystallineBatch &batch = my_batch();
 
     // Compute the birth era for the parent-node reference we're
@@ -972,9 +983,9 @@ private:
       if (refresh_active_snapshot(batch)) {
         for (uint32_t k = 0; k < batch.cached_count; k++) {
           uint16_t i = batch.cached_active_slots[k];
-          CrystallineDomainSlot &their = slot_state_of(i);
+          SlotT &their = slot_state_of(i);
           CrystallineNode *exp = parent;
-          if (their.state[kCrystallineHrNum].parent.compare_exchange_strong(
+          if (their.state[MaxIdx].parent.compare_exchange_strong(
                   exp, nullptr, cpp::MemoryOrder::ACQ_REL,
                   cpp::MemoryOrder::RELAXED)) {
             adjs++;
@@ -983,9 +994,9 @@ private:
       } else {
         for (uint16_t i = pool_.active_head(); i != 0;
              i = pool_.active_next(i)) {
-          CrystallineDomainSlot &their = slot_state_of(i);
+          SlotT &their = slot_state_of(i);
           CrystallineNode *exp = parent;
-          if (their.state[kCrystallineHrNum].parent.compare_exchange_strong(
+          if (their.state[MaxIdx].parent.compare_exchange_strong(
                   exp, nullptr, cpp::MemoryOrder::ACQ_REL,
                   cpp::MemoryOrder::RELAXED)) {
             adjs++;
@@ -1008,8 +1019,8 @@ private:
   // -----------------------------------------------------------------------
   LIBC_INLINE void help_thread(uint16_t target_idx, uint32_t index,
                                uint16_t my_idx) {
-    CrystallineDomainSlot &their = slot_state_of(target_idx);
-    CrystallineDomainSlot &my = slot_state_of(my_idx);
+    SlotT &their = slot_state_of(target_idx);
+    SlotT &my = slot_state_of(my_idx);
     CrystallineBatch &my_b = my_batch();
 
     CrystallineValuePair last_result;
@@ -1022,18 +1033,18 @@ private:
     CrystallineNode *parent =
         their.state[index].parent.load(cpp::MemoryOrder::ACQUIRE);
     if (parent != nullptr) {
-      my.first[kCrystallineHrNum].list[0].store(
+      my.first[MaxIdx].list[0].store(
           nullptr, cpp::MemoryOrder::SEQ_CST);
-      my.era[kCrystallineHrNum].pair[0].store(
+      my.era[MaxIdx].pair[0].store(
           birth_era, cpp::MemoryOrder::SEQ_CST);
       // E8 mirror — helper writes its OWN scratch slot
-      // (kCrystallineHrNum lives in `my`, the helper thread's slot),
+      // (MaxIdx lives in `my`, the helper thread's slot),
       // so the bump is owner-exclusive.
       uint64_t prev_max = my.max_era_seen.load(cpp::MemoryOrder::RELAXED);
       if (birth_era > prev_max)
         my.max_era_seen.store(birth_era, cpp::MemoryOrder::RELAXED);
     }
-    my.state[kCrystallineHrNum].parent.store(parent,
+    my.state[MaxIdx].parent.store(parent,
                                              cpp::MemoryOrder::SEQ_CST);
     // Consume helpee's (load_thunk, load_ctx). Order: thunk ACQUIRE
     // first; on non-null thunk, ctx ACQUIRE pairs with the helpee's
@@ -1048,11 +1059,11 @@ private:
     if (last_result.pair[1] == seqno) {
       uint64_t prev_era = current_era();
       do {
-        // Use our OWN slot kCrystallineHrNum+1 as the helper's
+        // Use our OWN slot MaxIdx+1 as the helper's
         // dereference workspace. do_update on our slot refreshes the
         // era publication without perturbing the target's state.
         prev_era = do_update_on(my, my_b, prev_era,
-                                  kCrystallineHrNum + 1);
+                                  MaxIdx + 1);
         NodeT *ptr = thunk ? thunk(ctx) : nullptr;
         uint64_t curr_era = current_era();
         if (curr_era == prev_era) {
@@ -1155,17 +1166,17 @@ private:
                their.state[index].result.full.load(
                    cpp::MemoryOrder::ACQUIRE));
     done:
-      if (my.era[kCrystallineHrNum + 1].pair[0].exchange(
+      if (my.era[MaxIdx + 1].pair[0].exchange(
               0, cpp::MemoryOrder::SEQ_CST) != 0) {
         CrystallineNode *first =
-            my.first[kCrystallineHrNum + 1].list[0].exchange(
+            my.first[MaxIdx + 1].list[0].exchange(
                 crystalline_inv_ptr(), cpp::MemoryOrder::ACQ_REL);
         traverse_cache(my_b, first);
       }
     }
     // If the helpee handed us a parent reservation reference we no
     // longer own, release it.
-    if (my.state[kCrystallineHrNum].parent.exchange(
+    if (my.state[MaxIdx].parent.exchange(
             nullptr, cpp::MemoryOrder::SEQ_CST) != parent) {
       CrystallineNode *refs_cn = get_refs_node(parent);
       NodeT *refs = as_node(refs_cn);
@@ -1174,10 +1185,10 @@ private:
         my_b.list = refs_cn;
       }
     }
-    if (my.era[kCrystallineHrNum].pair[0].exchange(
+    if (my.era[MaxIdx].pair[0].exchange(
             0, cpp::MemoryOrder::SEQ_CST) != 0) {
       CrystallineNode *first =
-          my.first[kCrystallineHrNum].list[0].exchange(
+          my.first[MaxIdx].list[0].exchange(
               crystalline_inv_ptr(), cpp::MemoryOrder::ACQ_REL);
       traverse_cache(my_b, first);
     }
@@ -1212,8 +1223,8 @@ private:
     if (refresh_active_snapshot(batch)) {
       for (uint32_t k = 0; k < batch.cached_count; k++) {
         uint16_t target_idx = batch.cached_active_slots[k];
-        CrystallineDomainSlot &their = slot_state_of(target_idx);
-        for (uint32_t j = 0; j < kCrystallineHrNum; j++) {
+        SlotT &their = slot_state_of(target_idx);
+        for (uint32_t j = 0; j < MaxIdx; j++) {
           uint64_t result_ptr = their.state[j].result.pair[0].load(
               cpp::MemoryOrder::ACQUIRE);
           if (result_ptr == kCrystallineInvPtr64) {
@@ -1224,8 +1235,8 @@ private:
     } else {
       for (uint16_t target_idx = pool_.active_head(); target_idx != 0;
            target_idx = pool_.active_next(target_idx)) {
-        CrystallineDomainSlot &their = slot_state_of(target_idx);
-        for (uint32_t j = 0; j < kCrystallineHrNum; j++) {
+        SlotT &their = slot_state_of(target_idx);
+        for (uint32_t j = 0; j < MaxIdx; j++) {
           uint64_t result_ptr = their.state[j].result.pair[0].load(
               cpp::MemoryOrder::ACQUIRE);
           if (result_ptr == kCrystallineInvPtr64) {
@@ -1239,7 +1250,7 @@ private:
   // do_update variant for help_thread that operates on an explicit
   // slot/batch rather than the calling thread's own. Body identical
   // to do_update modulo the arguments.
-  LIBC_INLINE uint64_t do_update_on(CrystallineDomainSlot &my,
+  LIBC_INLINE uint64_t do_update_on(SlotT &my,
                                     CrystallineBatch &batch,
                                     uint64_t curr_era, uint32_t index) {
     if (my.first[index].list[0].load(cpp::MemoryOrder::ACQUIRE) != nullptr) {
@@ -1252,7 +1263,7 @@ private:
     }
     my.era[index].pair[0].store(curr_era, cpp::MemoryOrder::SEQ_CST);
     // E8 mirror — `my` here is help_thread's own slot (the helper writes
-    // its scratch slot kCrystallineHrNum+1 via this path), so the write
+    // its scratch slot MaxIdx+1 via this path), so the write
     // remains owner-exclusive.
     uint64_t prev_max = my.max_era_seen.load(cpp::MemoryOrder::RELAXED);
     if (curr_era > prev_max)
@@ -1292,11 +1303,11 @@ private:
     if (refresh_active_snapshot(batch)) {
       for (uint32_t k = 0; k < batch.cached_count; k++) {
         uint16_t i = batch.cached_active_slots[k];
-        CrystallineDomainSlot &their = slot_state_of(i);
+        SlotT &their = slot_state_of(i);
         if (their.max_era_seen.load(cpp::MemoryOrder::RELAXED) < min_era)
           continue;
         uint32_t j = 0;
-        for (; j < kCrystallineHrNum; j++) {
+        for (; j < MaxIdx; j++) {
           CrystallineNode *first = their.first[j].list[0].load(
               cpp::MemoryOrder::ACQUIRE);
           if (first == crystalline_inv_ptr())
@@ -1317,7 +1328,7 @@ private:
         }
         // Helper slots hr_num and hr_num+1 don't carry the seqno filter
         // — they're one-shot scratch used by the helping protocol.
-        for (; j < kCrystallineHrNum + 2; j++) {
+        for (; j < MaxIdx + 2; j++) {
           CrystallineNode *first = their.first[j].list[0].load(
               cpp::MemoryOrder::ACQUIRE);
           if (first == crystalline_inv_ptr())
@@ -1338,11 +1349,11 @@ private:
       // fast-skip still applies per slot.
       for (uint16_t i = pool_.active_head(); i != 0;
            i = pool_.active_next(i)) {
-        CrystallineDomainSlot &their = slot_state_of(i);
+        SlotT &their = slot_state_of(i);
         if (their.max_era_seen.load(cpp::MemoryOrder::RELAXED) < min_era)
           continue;
         uint32_t j = 0;
-        for (; j < kCrystallineHrNum; j++) {
+        for (; j < MaxIdx; j++) {
           CrystallineNode *first = their.first[j].list[0].load(
               cpp::MemoryOrder::ACQUIRE);
           if (first == crystalline_inv_ptr())
@@ -1361,7 +1372,7 @@ private:
           last->slot = &their.first[j];
           last = last->batch_next;
         }
-        for (; j < kCrystallineHrNum + 2; j++) {
+        for (; j < MaxIdx + 2; j++) {
           CrystallineNode *first = their.first[j].list[0].load(
               cpp::MemoryOrder::ACQUIRE);
           if (first == crystalline_inv_ptr())
@@ -1387,7 +1398,7 @@ private:
     uintptr_t adjs = static_cast<uintptr_t>(-kCrystallineProtect1);
     for (; curr != last; curr = curr->batch_next) {
       CrystallineWordPair *slot_first = curr->slot;
-      CrystallineWordPair *slot_era_field = slot_first + kCrystallineSlotCount;
+      CrystallineWordPair *slot_era_field = slot_first + (MaxIdx + 2);
       curr->cn_next.store(nullptr, cpp::MemoryOrder::RELAXED);
       if (slot_first->list[0].load(cpp::MemoryOrder::ACQUIRE) ==
           crystalline_inv_ptr())
@@ -1524,19 +1535,19 @@ private:
   // free_list runs the FreeFn destructor on every batch that hit
   // refs==0.
   LIBC_INLINE void drain_slot_first(uint16_t slot_idx) {
-    CrystallineDomainSlot &slot = pool_.at(slot_idx);
+    SlotT &slot = pool_.at(slot_idx);
     CrystallineBatch &batch = my_batch();
     // Exchange first[] entries to invptr; capture old values.
-    // Uses kCrystallineHrNum + 2 to cover the helper slots
+    // Uses MaxIdx + 2 to cover the helper slots
     // (hr_num and hr_num+1) populated by the slow_path helping
     // protocol — those carry the same chain semantics and need
     // draining too.
-    CrystallineNode *first[kCrystallineHrNum + 2];
-    for (uint32_t i = 0; i < kCrystallineHrNum + 2; i++) {
+    CrystallineNode *first[MaxIdx + 2];
+    for (uint32_t i = 0; i < MaxIdx + 2; i++) {
       first[i] = slot.first[i].list[0].exchange(
           crystalline_inv_ptr(), cpp::MemoryOrder::ACQ_REL);
     }
-    for (uint32_t i = 0; i < kCrystallineHrNum + 2; i++) {
+    for (uint32_t i = 0; i < MaxIdx + 2; i++) {
       if (first[i] != crystalline_inv_ptr() && first[i] != nullptr)
         traverse(&batch.list, first[i]);
     }
@@ -1596,7 +1607,7 @@ private:
   // Pool is mutable because slot_state_of (called from const-y walks
   // via try_retire / help_read) needs `at()` access. The pool itself
   // is internally synchronized.
-  CrystallineSlotPool pool_;
+  CrystallineSlotPool<MaxIdx> pool_;
 };
 
 } // namespace concurrent

@@ -113,10 +113,13 @@ inline constexpr uint32_t kCrystallineSlotPoolCapacity = 1u << 16;
 // in CommitRegion::ensure_committed doesn't oscillate.
 inline constexpr uint32_t kCrystallineSlotsPerCommitStep = 8;
 
-// Total VA bytes reserved per pool.
-inline constexpr size_t kCrystallineSlotPoolReserveBytes =
-    static_cast<size_t>(kCrystallineSlotPoolCapacity) *
-    sizeof(CrystallineDomainSlot);
+// Total VA bytes reserved per pool. Computed per-instantiation inside
+// CrystallineSlotPool<MaxIdx>; this helper centralises the formula.
+template <uint32_t MaxIdx>
+inline constexpr size_t crystalline_slot_pool_reserve_bytes() {
+  return static_cast<size_t>(kCrystallineSlotPoolCapacity) *
+         sizeof(CrystallineDomainSlot<MaxIdx>);
+}
 
 // Cache-line isolated chain head: `[gen:48 | head:16]` packing defends
 // the Treiber stack against ABA on the head field even before the per-
@@ -139,24 +142,28 @@ static_assert(sizeof(CrystallineFreelistLine) == 64,
 static_assert(alignof(CrystallineFreelistLine) == 64,
               "CrystallineFreelistLine must be cache-line aligned");
 
-// CrystallineSlotPool — one instance per CrystallineDomain<>.
+// CrystallineSlotPool<MaxIdx> — one instance per CrystallineDomain<>.
+// MaxIdx mirrors the owning CrystallineDomain<>'s template parameter
+// so the slot type sizes correctly per-domain.
 //
 // Trivially constructible (constinit-safe). NOT usable until `init()`
 // has run once, single-threaded, before any thread calls claim/release/
 // walker accessors.
+template <uint32_t MaxIdx>
 class CrystallineSlotPool {
 public:
+  using SlotT = CrystallineDomainSlot<MaxIdx>;
+
   LIBC_INLINE constexpr CrystallineSlotPool() = default;
 
   // One-shot bring-up. Reserves the full slot VA, commits the first
   // chunk of slots, links them into the freelist, sentinels slot 0.
   // Returns false on VA reservation or first-commit failure.
   [[nodiscard]] LIBC_INLINE bool init() {
-    if (!slot_region_.init(kCrystallineSlotPoolReserveBytes,
-                           kCrystallineSlotsPerCommitStep *
-                               sizeof(CrystallineDomainSlot)))
+    if (!slot_region_.init(kReserveBytes,
+                           kCrystallineSlotsPerCommitStep * sizeof(SlotT)))
       return false;
-    slots_ = slot_region_.as<CrystallineDomainSlot>();
+    slots_ = slot_region_.template as<SlotT>();
     init_slot_storage_at_origin(kCrystallineSlotsPerCommitStep);
     committed_slots_.store(kCrystallineSlotsPerCommitStep,
                            cpp::MemoryOrder::RELEASE);
@@ -301,7 +308,7 @@ public:
     return link.next();
   }
 
-  LIBC_INLINE CrystallineDomainSlot &at(uint16_t idx) { return slots_[idx]; }
+  LIBC_INLINE SlotT &at(uint16_t idx) { return slots_[idx]; }
 
   // Diagnostic-only getters — packed [gen:48|head:16] words. Used by
   // crystalline_slot_pool_stress to record observed values per op boundary
@@ -335,8 +342,8 @@ private:
   // (crystalline_reference.hpp.inc:134-144). The slot's `link` is NOT
   // touched here — caller handles link transitions for the freelist /
   // active chain.
-  LIBC_INLINE static void reset_slot_fields(CrystallineDomainSlot &slot) {
-    for (uint32_t j = 0; j < kCrystallineSlotCount; ++j) {
+  LIBC_INLINE static void reset_slot_fields(SlotT &slot) {
+    for (uint32_t j = 0; j < MaxIdx + 2; ++j) {
       slot.first[j].list[0].store(crystalline_inv_ptr(),
                                   cpp::MemoryOrder::RELAXED);
       slot.first[j].pair[1].store(0, cpp::MemoryOrder::RELAXED);
@@ -468,7 +475,7 @@ private:
   // (`SubstrateCtx ctx{*this};`) and lives only across one
   // harris_unlink call.
   struct SubstrateCtx {
-    CrystallineSlotPool &pool;
+    CrystallineSlotPool<MaxIdx> &pool;
     static constexpr uint16_t kNullIndex = kCrystallineSlotNullIndex;
 
     LIBC_INLINE cpp::Atomic<linkage::Link> &link_at(uint16_t idx) {
@@ -563,7 +570,7 @@ private:
     // any realistic workload this never fires; under the OOM scenario
     // where it could, the process is dying anyway.
     if (LIBC_UNLIKELY(!slot_region_.ensure_committed(
-            static_cast<size_t>(end) * sizeof(CrystallineDomainSlot))))
+            static_cast<size_t>(end) * sizeof(SlotT))))
       __builtin_trap();
 
     // Phase 3: stamp constructor-init field values + link tombstone
@@ -595,8 +602,17 @@ private:
     }
   }
 
+  // Force per-instantiation layout assertions (link/generation offsets,
+  // tail-pad bounds). The check struct contains only static_asserts;
+  // including it as a member with [[no_unique_address]] keeps the
+  // instantiation point on every CrystallineSlotPool<MaxIdx>.
+  [[no_unique_address]] CrystallineSlotLayoutCheck<MaxIdx> layout_check_{};
+
+  static constexpr size_t kReserveBytes =
+      static_cast<size_t>(kCrystallineSlotPoolCapacity) * sizeof(SlotT);
+
   internal::CommitRegion slot_region_{};
-  CrystallineDomainSlot *slots_ = nullptr;
+  SlotT *slots_ = nullptr;
   // Internal coordinator for commit_more_slots — never read by walkers.
   cpp::Atomic<uint32_t> committed_slots_{0};
   CrystallineFreelistLine freelist_{};    // FREE slots

@@ -134,8 +134,14 @@ void arena_init_slot(void *slot, VaChunkDesc * /*cd*/,
 // memsets the slot, and returns it to the shared pool via
 // release_slot_in_va_chunk.
 
+// MaxIdx for the arena domain. Call sites: init_node / retire /
+// clear_all only — no protect()/anchor() pins. MaxIdx = 1 sizes the
+// (unused) reservation slot space minimally.
+inline constexpr uint32_t kArenaDomainMaxIdx = 1;
+
 ::LIBC_NAMESPACE::concurrent::CrystallineDomain<Arena, &arena_free,
-                                                kSkiplistRetireFreq>
+                                                kSkiplistRetireFreq,
+                                                kArenaDomainMaxIdx>
     g_va_tracker_arena_domain;
 
 void arena_init_registration() {

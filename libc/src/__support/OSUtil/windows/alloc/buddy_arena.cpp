@@ -191,9 +191,15 @@ cpp::Atomic<uint32_t> g_desc_pool_hint{0};
 // defining the function at namespace scope would trip -Wundefined-internal.
 void buddy_free_chunk_descriptor(BuddyChunkDescriptor *desc);
 
+// MaxIdx for the buddy arena domain. Call sites: init_node / retire
+// only — no protect()/anchor() pins. MaxIdx = 1 sizes the (unused)
+// reservation slot space minimally.
+inline constexpr uint32_t kArenaDomainMaxIdx = 1;
+
 ::LIBC_NAMESPACE::concurrent::CrystallineDomain<BuddyChunkDescriptor,
                                                  &buddy_free_chunk_descriptor,
-                                                 kArenaRetireFreq>
+                                                 kArenaRetireFreq,
+                                                 kArenaDomainMaxIdx>
     g_arena_domain;
 
 //===----------------------------------------------------------------------===//
