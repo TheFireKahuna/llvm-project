@@ -367,55 +367,29 @@ void drain_arena_nodes(Arena *arena) {
 } // namespace
 
 void arena_free(Arena *arena) {
-    // Recover (chunk_id, slot_idx) from the Arena pointer's VA and
-    // validate the canary BEFORE touching any chunk-descriptor field.
-    // Mirrors the slot-free shape in skiplist_node_free: the path
-    // from "external pointer" to "trusted descriptor" must catch
-    // every corruption it can before it reaches a real pool entry.
-    uintptr_t addr = reinterpret_cast<uintptr_t>(arena);
-    uintptr_t chunk_base_addr =
-        addr & ~static_cast<uintptr_t>(kArenaChunkBytes - 1);
-    size_t slot_off = static_cast<size_t>(addr - chunk_base_addr);
-    if (LIBC_UNLIKELY(slot_off % kArenaSlotSize != 0))
-        __builtin_trap();
-    uint32_t slot_idx = static_cast<uint32_t>(slot_off / kArenaSlotSize);
-    if (LIBC_UNLIKELY(slot_idx >= kArenaSlotsPerChunk))
-        __builtin_trap();
-
-    partition_ns::PartitionDescriptor *part =
-        partition_ns::lookup(reinterpret_cast<void *>(chunk_base_addr));
-    if (LIBC_UNLIKELY(part == nullptr))
-        __builtin_trap();
-    uintptr_t partition_base = reinterpret_cast<uintptr_t>(part->base);
-    uintptr_t off_in_partition = chunk_base_addr - partition_base -
-                                 static_cast<uintptr_t>(
-                                     partition_ns::kPartitionGuardBytes);
-    if (LIBC_UNLIKELY(off_in_partition % kArenaChunkBytes != 0))
-        __builtin_trap();
-    uint32_t chunk_id =
-        static_cast<uint32_t>(off_in_partition / kArenaChunkBytes);
-    if (LIBC_UNLIKELY(chunk_id >= kChunksPerBucket))
-        __builtin_trap();
-
-    uint64_t expected_canary = compute_va_node_canary(
-        partition_secret(),
-        static_cast<uint16_t>(partition_ns::PartitionClass::VaTrackerArena),
-        static_cast<uint8_t>(chunk_id), static_cast<uint8_t>(slot_idx));
-    if (LIBC_UNLIKELY(arena->arena_canary != expected_canary))
-        __builtin_trap();
-
+    // Recover (cd, chunk_id, slot_idx) from the Arena VA and
+    // triple-validate canaries BEFORE touching any chunk-descriptor
+    // field. The path from "external pointer" to "trusted descriptor"
+    // must catch every corruption it can before it reaches a real pool
+    // entry. The shared helper expresses this once for every va_tracker
+    // pool consumer.
     PerArenaState &a = g_arena_state;
-    // ACQUIRE pairs with the RELEASE-CAS that publishes a fresh chunk
-    // descriptor in commit_new_va_chunk_for.
-    VaChunkDesc *cd =
-        a.chunk_table[chunk_id].load(cpp::MemoryOrder::ACQUIRE);
-    if (LIBC_UNLIKELY(cd == nullptr))
-        __builtin_trap();
+    RecoveredSlot rec = recover_slot_from_va(
+        arena, kArenaChunkBytes, kArenaSlotSize, kArenaSlotsPerChunk,
+        kChunksPerBucket, a.chunk_table);
+
+    // Per-slot canary check uses Arena::arena_canary as the node canary
+    // (it is the per-slot canary under the va_tracker derivation).
+    validate_slot_canaries_or_trap(
+        arena->arena_canary, rec.cd,
+        static_cast<uint16_t>(partition_ns::PartitionClass::VaTrackerArena),
+        static_cast<uint8_t>(rec.chunk_id),
+        static_cast<uint8_t>(rec.slot_idx), partition_secret());
 
     drain_arena_nodes(arena);
     g_live_arenas.fetch_sub(1, cpp::MemoryOrder::RELAXED);
     __builtin_memset(static_cast<void *>(arena), 0, sizeof(Arena));
-    release_slot_in_va_chunk(cd, slot_idx, a.chunk_table);
+    release_slot_in_va_chunk(rec.cd, rec.slot_idx, a.chunk_table);
 }
 
 //===----------------------------------------------------------------------===//
@@ -424,50 +398,21 @@ void arena_free(Arena *arena) {
 
 namespace {
 
-// Walk the occupancy bitmap of one Arena chunk and refresh every live
-// slot's per-Arena and per-head-node canaries against the rotated
-// partition_secret. Also scrubs stale LOCKED on each head's level-0
-// link as belt-and-braces; an Arena head should never carry LOCKED in
-// steady state, but a corrupted pre-fork state would otherwise park a
-// future parker indefinitely.
-void arena_fork_refresh_slot_canary(VaChunkDesc *cd, uint16_t cls_id,
-                                    uint8_t chunk_id) {
-    constexpr uint32_t kBitsPerWord = 64;
-    const uint32_t cap_bits = kArenaSlotsPerChunk;
-    const uint32_t word_count =
-        (cap_bits + kBitsPerWord - 1) / kBitsPerWord;
-    uintptr_t base = reinterpret_cast<uintptr_t>(cd->chunk_base);
-    for (uint32_t w = 0; w < word_count; ++w) {
-        uint64_t bits = cd->occupancy.template word_at<
-            cpp::MemoryOrder::RELAXED>(w);
-        const uint32_t word_lo = w * kBitsPerWord;
-        // Mask off bits past the chunk's slot capacity — the bitmap
-        // word may contain stale set bits in the tail that no longer
-        // correspond to real slots.
-        if (word_lo + kBitsPerWord > cap_bits) {
-            const uint32_t valid = cap_bits - word_lo;
-            bits &= (valid == kBitsPerWord)
-                        ? ~uint64_t{0}
-                        : ((uint64_t{1} << valid) - 1);
-        }
-        while (bits != 0) {
-            const uint32_t bit =
-                static_cast<uint32_t>(__builtin_ctzll(bits));
-            bits &= bits - 1;
-            const uint32_t slot = word_lo + bit;
-            auto *arena = reinterpret_cast<Arena *>(
-                base + static_cast<uintptr_t>(slot) *
-                           static_cast<uintptr_t>(cd->slot_size));
-            uint64_t fresh = compute_va_node_canary(
-                partition_secret(), cls_id, chunk_id,
-                static_cast<uint8_t>(slot));
-            arena->arena_canary = fresh;
-            arena->head.node_canary = fresh;
-            (void)link_cas_state<SkiplistNodeState::LOCKED,
-                                 SkiplistNodeState::LIVE,
-                                 SkiplistLinkTraits>(arena->head.next[0]);
-        }
-    }
+// Per-slot fork canary refresh callback. The shared
+// `refresh_slot_canaries_in_chunk` walks the occupancy bitmap and
+// dispatches here with the slot VA and pre-computed canary. Arena
+// additionally writes the same canary into its inline sentinel head
+// (which shares the per-slot derivation by construction) and scrubs
+// stale LOCKED on the head's level-0 link as belt-and-braces; an
+// Arena head should never carry LOCKED in steady state, but a
+// corrupted pre-fork state would otherwise park a future parker
+// indefinitely.
+void arena_per_slot_canary_refresh(void *slot_va, uint64_t fresh_canary) {
+    auto *arena = static_cast<Arena *>(slot_va);
+    arena->arena_canary = fresh_canary;
+    arena->head.node_canary = fresh_canary;
+    (void)link_cas_state<SkiplistNodeState::LOCKED, SkiplistNodeState::LIVE,
+                          SkiplistLinkTraits>(arena->head.next[0]);
 }
 
 } // namespace
@@ -485,8 +430,10 @@ void arena_fork_reinit_phase(ArenaForkChunkVisitor visit, void *ctx) {
             visit(cd, ctx);
         cd->chunk_canary = compute_va_chunk_canary(
             partition_secret(), kArenaClsId, static_cast<uint8_t>(cid));
-        arena_fork_refresh_slot_canary(cd, kArenaClsId,
-                                       static_cast<uint8_t>(cid));
+        refresh_slot_canaries_in_chunk(
+            cd, kArenaClsId, static_cast<uint8_t>(cid),
+            kArenaSlotsPerChunk, partition_secret(),
+            &arena_per_slot_canary_refresh);
     }
 }
 

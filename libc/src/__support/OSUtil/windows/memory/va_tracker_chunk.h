@@ -546,6 +546,170 @@ LIBC_INLINE void validate_slot_or_trap(VaChunkDesc *cd, uint32_t slot) {
 }
 
 //===----------------------------------------------------------------------===//
+//  Slot recovery and fork canary refresh helpers
+//===----------------------------------------------------------------------===//
+
+/// The (cd, chunk_id, slot_idx) triple recovered from a slot VA.
+struct RecoveredSlot {
+    VaChunkDesc *cd;
+    uint32_t chunk_id;
+    uint32_t slot_idx;
+};
+
+/// Recovers \c (cd, chunk_id, slot_idx) from a slot pointer for a FreeFn.
+///
+/// Identical recovery shape across every slot-typed allocator: derive
+/// `chunk_base` by masking out the in-chunk byte offset; divide for
+/// `slot_idx`; resolve the owning partition through
+/// `partition::lookup(chunk_base)`; divide the partition-relative offset
+/// for `chunk_id`; load the descriptor from the caller's `chunk_table`.
+/// Each step that deviates from a structural invariant traps — a stale or
+/// recycled reference is a control-flow violation, not a recoverable state.
+///
+/// Caller still owns canary validation (see
+/// `validate_slot_canaries_or_trap`) — the pool-specific class id is not
+/// derivable from this helper alone.
+///
+/// \param slot_va pointer to the slot inside the chunk's VA range.
+/// \param chunk_bytes per-chunk byte span (load-bearing — must be a power
+///        of two; the helper masks out the in-chunk offset by
+///        `addr & ~(chunk_bytes - 1)`).
+/// \param slot_size per-slot byte stride within the chunk.
+/// \param slots_per_chunk slot capacity used for bounds-checking
+///        `slot_idx`.
+/// \param chunk_table_size capacity of `chunk_table[]` (usually
+///        `kChunksPerPoolBucket`).
+/// \param chunk_table per-class chunk table; loaded ACQUIRE to pair with
+///        the publishing CAS in `commit_new_va_chunk_for`.
+[[nodiscard]] LIBC_INLINE RecoveredSlot
+recover_slot_from_va(const void *slot_va, uint32_t chunk_bytes,
+                     uint32_t slot_size, uint32_t slots_per_chunk,
+                     uint32_t chunk_table_size,
+                     cpp::Atomic<VaChunkDesc *> *chunk_table) {
+    uintptr_t addr = reinterpret_cast<uintptr_t>(slot_va);
+    uintptr_t chunk_base_addr =
+        addr & ~static_cast<uintptr_t>(chunk_bytes - 1);
+    size_t slot_off = static_cast<size_t>(addr - chunk_base_addr);
+    if (LIBC_UNLIKELY(slot_off % slot_size != 0))
+        __builtin_trap();
+    uint32_t slot_idx = static_cast<uint32_t>(slot_off / slot_size);
+    if (LIBC_UNLIKELY(slot_idx >= slots_per_chunk))
+        __builtin_trap();
+
+    alloc::partition::PartitionDescriptor *part = alloc::partition::lookup(
+        reinterpret_cast<void *>(chunk_base_addr));
+    if (LIBC_UNLIKELY(part == nullptr))
+        __builtin_trap();
+    uintptr_t partition_base = reinterpret_cast<uintptr_t>(part->base);
+    uintptr_t off_in_partition =
+        chunk_base_addr - partition_base -
+        static_cast<uintptr_t>(alloc::partition::kPartitionGuardBytes);
+    if (LIBC_UNLIKELY(off_in_partition % chunk_bytes != 0))
+        __builtin_trap();
+    uint32_t chunk_id =
+        static_cast<uint32_t>(off_in_partition / chunk_bytes);
+    if (LIBC_UNLIKELY(chunk_id >= chunk_table_size))
+        __builtin_trap();
+
+    // ACQUIRE pairs with the RELEASE-CAS that publishes a fresh chunk
+    // descriptor in `commit_new_va_chunk_for`.
+    VaChunkDesc *cd = chunk_table[chunk_id].load(cpp::MemoryOrder::ACQUIRE);
+    if (LIBC_UNLIKELY(cd == nullptr))
+        __builtin_trap();
+
+    return {cd, chunk_id, slot_idx};
+}
+
+/// Triple-validates per-slot and per-chunk canaries against the
+/// freshly-mixed `partition_secret`.
+///
+/// Per-slot canary is checked first — heap-spray crafting cannot guess
+/// `partition_secret` (it lives in PCB Zone 0b, ProcessPrng-derived, not
+/// observable to user code), so the per-slot check is the harder check
+/// to forge and trapping there preserves the strongest signal in the
+/// debug context.
+LIBC_INLINE void
+validate_slot_canaries_or_trap(uint64_t slot_node_canary, VaChunkDesc *cd,
+                               uint16_t cls_id, uint8_t chunk_id,
+                               uint8_t slot_idx, uint64_t partition_secret) {
+    uint64_t expected_node_canary = compute_va_node_canary(
+        partition_secret, cls_id, chunk_id, slot_idx);
+    if (LIBC_UNLIKELY(slot_node_canary != expected_node_canary))
+        __builtin_trap();
+    uint64_t expected_chunk_canary = compute_va_chunk_canary(
+        partition_secret, cls_id, chunk_id);
+    if (LIBC_UNLIKELY(cd->chunk_canary != expected_chunk_canary))
+        __builtin_trap();
+}
+
+/// Per-slot fork canary refresh callback.
+///
+/// Invoked once per live slot during `refresh_slot_canaries_in_chunk`.
+/// The pool implementation writes the freshly-rotated canary into the
+/// slot and performs any additional pool-specific post-fork repair
+/// (the Arena pool clears stale LOCKED state on the head's level-0 link;
+/// the RegionDesc / DescBacking pools just write the canary).
+using SlotCanaryRefreshFn = void (*)(void *slot_va, uint64_t fresh_canary);
+
+/// Walks one chunk's occupancy bitmap post-fork and refreshes per-slot
+/// canaries against the freshly-rotated `partition_secret`.
+///
+/// Single-threaded by contract — runs in the child after
+/// `RtlCloneUserProcess` before any other thread reaches a pool code
+/// path, so RELAXED bitmap loads suffice. Each set bit is dispatched to
+/// `per_slot` with the slot's VA and the freshly-computed canary.
+///
+/// \param cd chunk descriptor being walked; must have been validated
+///        before this call (per-chunk canary refresh + chunk_table
+///        reachability are the consumer's responsibility).
+/// \param cls_id partition class id used in the canary derivation.
+/// \param chunk_id chunk id used in the canary derivation.
+/// \param slots_per_chunk slot capacity; the bitmap word past this many
+///        bits is masked off so stale tail-bits do not get dispatched.
+/// \param partition_secret freshly-rotated secret read out of PCB
+///        Zone 0b after fork.
+/// \param per_slot per-pool refresh callback; receives the slot VA and
+///        the canary value derived for `(cls_id, chunk_id, slot_idx)`.
+LIBC_INLINE void
+refresh_slot_canaries_in_chunk(VaChunkDesc *cd, uint16_t cls_id,
+                               uint8_t chunk_id, uint32_t slots_per_chunk,
+                               uint64_t partition_secret,
+                               SlotCanaryRefreshFn per_slot) {
+    constexpr uint32_t kBitsPerWord = 64;
+    const uint32_t cap_bits = slots_per_chunk;
+    const uint32_t word_count =
+        (cap_bits + kBitsPerWord - 1) / kBitsPerWord;
+    uintptr_t base = reinterpret_cast<uintptr_t>(cd->chunk_base);
+    for (uint32_t w = 0; w < word_count; ++w) {
+        uint64_t bits = cd->occupancy.template word_at<
+            cpp::MemoryOrder::RELAXED>(w);
+        const uint32_t word_lo = w * kBitsPerWord;
+        // Mask off bits past the chunk's slot capacity — the bitmap
+        // word may contain stale set bits in the tail that no longer
+        // correspond to real slots.
+        if (word_lo + kBitsPerWord > cap_bits) {
+            const uint32_t valid = cap_bits - word_lo;
+            bits &= (valid == kBitsPerWord)
+                        ? ~uint64_t{0}
+                        : ((uint64_t{1} << valid) - 1);
+        }
+        while (bits != 0) {
+            const uint32_t bit =
+                static_cast<uint32_t>(__builtin_ctzll(bits));
+            bits &= bits - 1;
+            const uint32_t slot = word_lo + bit;
+            void *slot_va = reinterpret_cast<void *>(
+                base + static_cast<uintptr_t>(slot) *
+                           static_cast<uintptr_t>(cd->slot_size));
+            uint64_t fresh = compute_va_node_canary(
+                partition_secret, cls_id, chunk_id,
+                static_cast<uint8_t>(slot));
+            per_slot(slot_va, fresh);
+        }
+    }
+}
+
+//===----------------------------------------------------------------------===//
 //  Class metadata
 //===----------------------------------------------------------------------===//
 

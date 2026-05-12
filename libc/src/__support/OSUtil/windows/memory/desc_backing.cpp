@@ -18,13 +18,13 @@
 // Ravindran, PLDI 2024, §1: Crystalline-W is asynchronous and has no
 // synchronous grace primitive).
 //
-// The pool-walk allocator mirrors `region_desc_alloc` /
-// `region_desc_release` in `interval_skiplist.cpp` — same
-// chunk-bitmap pattern, same canary triple-validate, same
-// chunk-state-machine drain. The chunk validation and slot-claim
-// helpers are duplicated locally because the originals are private
-// to that translation unit; the duplication is short and the
-// contract is stable.
+// Allocation routes through the shared `va_chunk_acquire_slot`
+// scaffold in `va_tracker_chunk.h`; the per-slot publish (generation
+// seed, cached coords, Live state, canary stamp, Crystalline init)
+// runs as the spec's init callback. FreeFn and fork canary refresh
+// use the shared `recover_slot_from_va` / `refresh_slot_canaries_in_chunk`
+// helpers so the slot-recovery shape is expressed once for every
+// va_tracker pool consumer.
 //
 //===----------------------------------------------------------------------===//
 
@@ -65,12 +65,13 @@ namespace partition_ns = alloc::partition;
 // Per-class chunk-table state
 //===----------------------------------------------------------------------===//
 
-// Mirrors `PerRegionDescState` in `interval_skiplist.cpp`'s anonymous
-// namespace — same chunk-bitmap pattern keyed by chunk_id within a
-// 256-entry table, same RELAXED hint scan, same Crystalline-pinned
-// chunk lookup. Process-lifetime; CoW-inherited across fork; the
-// fork-reinit hook refreshes canaries and reclaims stranded slots
-// without touching the table layout.
+// Per-class chunk table for the VaTrackerDescBacking partition. Identical
+// shape to `PerRegionDescState` and `PerArenaState`; the chunk-bitmap scan,
+// Crystalline-pinned chunk lookup, and rotating hint all ride the shared
+// `va_chunk_acquire_slot` scaffold in `va_tracker_chunk.h`.
+// Process-lifetime; CoW-inherited across fork; the fork-reinit hook
+// refreshes canaries and reclaims stranded slots without touching the
+// table layout.
 
 namespace {
 
@@ -101,19 +102,9 @@ PerBackingState g_backing_state;
 // same domain.
 cpp::Atomic<uint32_t> g_backing_init_done{0};
 
-// Pin slot on the chunk domain shared by every chunk_table cd-load in
-// this TU. Slot 0 of the skiplist chunk domain is shared across every
-// cd-load on this thread, so the most recent `protect()` pins the
-// active cd while the caller dereferences it. Nested re-entry from an
-// inner allocator would need a distinct slot; the backing path has no
-// such nesting.
-constexpr uint32_t kPinSlotChunkDomain = 0;
-
 LIBC_INLINE uint64_t partition_secret() {
     return ::LIBC_NAMESPACE::g_pcb.zone0b.partition_secret();
 }
-
-// `try_acquire_first_free_slot` is LIBC_INLINE in `va_tracker_chunk.h`
 
 // Derive a non-zero starting generation for a fresh allocation by
 // mixing `partition_secret` with the slot coordinates. Keeps a fresh
@@ -127,6 +118,49 @@ seed_generation_for_slot(uint16_t chunk_id, uint16_t slot_idx) {
                                             (uint32_t{chunk_id} << 16) +
                                             uint32_t{slot_idx});
     return mixed == 0 ? 1u : mixed;
+}
+
+// Per-slot initializer invoked by `va_chunk_acquire_slot` after the
+// slot has been bitmap-claimed, memset to zero, and had its chunk and
+// slot canaries validated against the pool's class id. Seeds the
+// generation, stamps the cached coords, stamps state Live, computes
+// the node canary, and stamps the Crystalline birth_era.
+void backing_init_slot(void *slot, VaChunkDesc * /*cd*/,
+                       uint32_t chunk_id, uint32_t slot_idx,
+                       void * /*ctx*/) {
+    auto *b = static_cast<DescBacking *>(slot);
+    // Seed generation to a non-zero value so the encoded ref never
+    // collides with `kBackingRefNull`.
+    b->generation.store(
+        seed_generation_for_slot(static_cast<uint16_t>(chunk_id),
+                                  static_cast<uint16_t>(slot_idx)),
+        cpp::MemoryOrder::RELAXED);
+    // Cache (chunk_id, slot_idx) so encoders never need a
+    // pagemap_load_descriptor roundtrip. Plain (non-atomic) writes:
+    // the descriptor that captures this slot's `BackingRef` is
+    // published via Swap CAS on `pred->next[0]`, which provides the
+    // cross-thread happens-before for any reader that arrives through
+    // the published desc. Both coordinates fit in u8 because
+    // `kChunksPerPoolBucket` and `kSlotsPerChunk` are both 256.
+    b->cached_chunk_id = static_cast<uint8_t>(chunk_id);
+    b->cached_slot_idx = static_cast<uint8_t>(slot_idx);
+    // Freshly allocated backings are always Live. The caller (a
+    // Transaction visitor) is the sole owner until it publishes a
+    // desc that references this backing through Swap; the eventual
+    // Live -> Killed transition is owned by either the post-Swap
+    // survivor walk (when no LIVE desc references the backing) or
+    // the Transaction's rollback path (STEP 2 / STEP 3 failure).
+    // Kernel-state atomics remain nullptr until
+    // `backing_set_kernel_state` runs.
+    b->state.store(kBackingStateLive, cpp::MemoryOrder::RELAXED);
+    b->node_canary = compute_va_node_canary(
+        partition_secret(),
+        static_cast<uint16_t>(
+            partition_ns::PartitionClass::VaTrackerDescBacking),
+        static_cast<uint8_t>(chunk_id), static_cast<uint8_t>(slot_idx));
+    // Stamp the Crystalline-W birth_era and zero the batch_link so
+    // the slot is ready to ride future retire batches.
+    g_va_tracker_backing_domain.init_node(b);
 }
 
 } // namespace
@@ -183,82 +217,33 @@ namespace va_tracker {
 // backing_alloc / backing_set_kernel_state / deref_backing_raw
 //===----------------------------------------------------------------------===//
 
+// Two-phase acquire: hand the shared va_chunk allocator a spec
+// describing the partition class and slot geometry, then loop — pull
+// a slot from any live chunk if one is available, otherwise commit a
+// fresh chunk and retry. A null return from `commit_new_va_chunk_for`
+// is the only terminal failure. The chunk pin, the rotating-hint
+// scan, and the per-slot publish (generation seed, cached coords,
+// Live state, node canary, Crystalline init) all ride the shared
+// `va_chunk_acquire_slot` scaffold; `backing_init_slot` carries the
+// pool-specific publish.
 DescBacking *backing_alloc() {
     PerBackingState &p = g_backing_state;
 
+    VaChunkAcquireSpec spec{
+        /*cls=*/partition_ns::PartitionClass::VaTrackerDescBacking,
+        /*chunk_table=*/p.chunk_table,
+        /*next_chunk_id_hint=*/&p.next_chunk_id_hint,
+        /*chunk_count=*/kChunksPerPoolBucket,
+        /*slots_per_chunk=*/kBackingSlotsPerChunk,
+        /*consumer_bucket_id=*/kPoolBucketDescBacking,
+        /*init=*/&backing_init_slot,
+        /*init_ctx=*/nullptr,
+    };
+
     for (;;) {
-        for (uint32_t cid = 0; cid < kChunksPerPoolBucket; ++cid) {
-            // Pin via the skiplist chunk domain (shared with the
-            // backing pool — DescBacking lives on the va_tracker
-            // leaf side per the bucket-id taxonomy in
-            // `va_tracker_chunk.h`).
-            VaChunkDesc *cd = g_va_tracker_skiplist_chunk_domain.protect(
-                p.chunk_table[cid], kPinSlotChunkDomain, nullptr);
-            if (cd == nullptr)
-                continue;
-
-            if (!try_va_chunk_reserve(cd->live_state, kBackingSlotsPerChunk))
-                continue;
-
-            uint32_t slot =
-                try_acquire_first_free_slot(cd, kBackingSlotsPerChunk);
-            if (slot >= kBackingSlotsPerChunk) {
-                if (release_va_chunk_slot(cd->live_state)) {
-                    p.chunk_table[cid].store(nullptr,
-                                              cpp::MemoryOrder::RELEASE);
-                    g_va_tracker_skiplist_chunk_domain.retire(cd);
-                }
-                continue;
-            }
-
-            validate_chunk_or_trap(
-                cd, partition_ns::PartitionClass::VaTrackerDescBacking,
-                /*expected_cid=*/cid, partition_secret());
-            validate_slot_or_trap(cd, slot);
-
-            uintptr_t base = reinterpret_cast<uintptr_t>(cd->chunk_base);
-            DescBacking *b = reinterpret_cast<DescBacking *>(
-                base + static_cast<size_t>(slot) * cd->slot_size);
-            __builtin_memset(static_cast<void *>(b), 0, sizeof(DescBacking));
-
-            // Seed generation to a non-zero value so the encoded ref
-            // never collides with `kBackingRefNull`.
-            b->generation.store(seed_generation_for_slot(
-                                    static_cast<uint16_t>(cid),
-                                    static_cast<uint16_t>(slot)),
-                                cpp::MemoryOrder::RELAXED);
-            // Cache (chunk_id, slot_idx) so encoders never need a
-            // pagemap_load_descriptor roundtrip. Plain (non-atomic)
-            // writes: the descriptor that captures this slot's
-            // `BackingRef` is published via Swap CAS on
-            // `pred->next[0]`, which provides the cross-thread
-            // happens-before for any reader that arrives through
-            // the published desc. Both coordinates fit in u8 because
-            // `kChunksPerPoolBucket` and `kSlotsPerChunk` are both 256.
-            b->cached_chunk_id = static_cast<uint8_t>(cid);
-            b->cached_slot_idx = static_cast<uint8_t>(slot);
-            // Freshly allocated backings are always Live. The caller
-            // (a Transaction visitor) is the sole owner until it
-            // publishes a desc that references this backing through
-            // Swap; the eventual Live -> Killed transition is owned
-            // by either the post-Swap survivor walk (when no LIVE
-            // desc references the backing) or the Transaction's
-            // rollback path (STEP 2 / STEP 3 failure). Kernel-state
-            // atomics remain nullptr until `backing_set_kernel_state`
-            // runs.
-            b->state.store(kBackingStateLive, cpp::MemoryOrder::RELAXED);
-            b->node_canary = compute_va_node_canary(
-                partition_secret(),
-                static_cast<uint16_t>(
-                    partition_ns::PartitionClass::VaTrackerDescBacking),
-                static_cast<uint8_t>(cid),
-                static_cast<uint8_t>(slot));
-            // Stamp the Crystalline-W birth_era and zero the
-            // batch_link so the slot is ready to ride future retire
-            // batches.
-            g_va_tracker_backing_domain.init_node(b);
-            return b;
-        }
+        void *slot = va_chunk_acquire_slot(spec);
+        if (slot != nullptr)
+            return static_cast<DescBacking *>(slot);
 
         VaChunkDesc *cd = commit_new_va_chunk_for(
             partition_ns::PartitionClass::VaTrackerDescBacking,
@@ -411,60 +396,19 @@ void desc_backing_free(DescBacking *backing) {
 
     PerBackingState &p = g_backing_state;
 
-    // Recover (chunk_id, slot_idx) from the slot VA. Mirrors the
-    // `region_desc_release` shape — chunk_base is the
-    // chunk_bytes-aligned address below the slot.
-    uintptr_t addr = reinterpret_cast<uintptr_t>(backing);
-    uintptr_t chunk_base_addr =
-        addr & ~static_cast<uintptr_t>(kBackingChunkBytes - 1);
-    size_t slot_off = static_cast<size_t>(addr - chunk_base_addr);
-    if (LIBC_UNLIKELY(slot_off % kBackingSlotSize != 0))
-        __builtin_trap();
-    uint32_t slot_idx = static_cast<uint32_t>(slot_off / kBackingSlotSize);
-    if (LIBC_UNLIKELY(slot_idx >= kBackingSlotsPerChunk))
-        __builtin_trap();
+    RecoveredSlot rec = recover_slot_from_va(
+        backing, kBackingChunkBytes, kBackingSlotSize,
+        kBackingSlotsPerChunk, kChunksPerPoolBucket, p.chunk_table);
 
-    auto *part = partition_ns::lookup(
-        reinterpret_cast<void *>(chunk_base_addr));
-    if (LIBC_UNLIKELY(part == nullptr))
-        __builtin_trap();
-    uintptr_t partition_base = reinterpret_cast<uintptr_t>(part->base);
-    uintptr_t off_in_partition =
-        chunk_base_addr - partition_base -
-        static_cast<uintptr_t>(partition_ns::kPartitionGuardBytes);
-    if (LIBC_UNLIKELY(off_in_partition % kBackingChunkBytes != 0))
-        __builtin_trap();
-    uint32_t chunk_id =
-        static_cast<uint32_t>(off_in_partition / kBackingChunkBytes);
-    if (LIBC_UNLIKELY(chunk_id >= kChunksPerPoolBucket))
-        __builtin_trap();
-
-    VaChunkDesc *cd =
-        p.chunk_table[chunk_id].load(cpp::MemoryOrder::ACQUIRE);
-    if (LIBC_UNLIKELY(cd == nullptr))
-        __builtin_trap();
-
-    // Per-slot canary first — heap-spray crafting cannot guess
-    // `partition_secret`.
-    uint64_t expected_node_canary = compute_va_node_canary(
-        partition_secret(),
+    validate_slot_canaries_or_trap(
+        backing->node_canary, rec.cd,
         static_cast<uint16_t>(
             partition_ns::PartitionClass::VaTrackerDescBacking),
-        static_cast<uint8_t>(chunk_id),
-        static_cast<uint8_t>(slot_idx));
-    if (LIBC_UNLIKELY(backing->node_canary != expected_node_canary))
-        __builtin_trap();
-
-    uint64_t expected_chunk_canary = compute_va_chunk_canary(
-        partition_secret(),
-        static_cast<uint16_t>(
-            partition_ns::PartitionClass::VaTrackerDescBacking),
-        static_cast<uint8_t>(chunk_id));
-    if (LIBC_UNLIKELY(cd->chunk_canary != expected_chunk_canary))
-        __builtin_trap();
+        static_cast<uint8_t>(rec.chunk_id),
+        static_cast<uint8_t>(rec.slot_idx), partition_secret());
 
     __builtin_memset(static_cast<void *>(backing), 0, sizeof(DescBacking));
-    release_slot_in_va_chunk(cd, slot_idx, p.chunk_table);
+    release_slot_in_va_chunk(rec.cd, rec.slot_idx, p.chunk_table);
 }
 
 //===----------------------------------------------------------------------===//
@@ -542,40 +486,14 @@ void backing_fork_reclaim_visit(VaChunkDesc *cd, void *ctx_p) {
     va_chunk_desc_pool_release(cd);
 }
 
-// Per-slot canary refresh visitor. Single-threaded (post-fork) so
-// RELAXED bitmap reads suffice. The interval_skiplist helper this
-// mirrors is TU-private; the body is re-implemented here rather than
-// promoted to a shared header.
-void backing_fork_refresh_slot_canary(VaChunkDesc *cd, uint16_t cls_id,
-                                       uint8_t chunk_id) {
-    constexpr uint32_t kBitsPerWord = 64;
-    const uint32_t cap_bits = kBackingSlotsPerChunk;
-    const uint32_t word_count =
-        (cap_bits + kBitsPerWord - 1) / kBitsPerWord;
-    uintptr_t base = reinterpret_cast<uintptr_t>(cd->chunk_base);
-    for (uint32_t w = 0; w < word_count; ++w) {
-        uint64_t bits = cd->occupancy.template word_at<
-            cpp::MemoryOrder::RELAXED>(w);
-        const uint32_t word_lo = w * kBitsPerWord;
-        if (word_lo + kBitsPerWord > cap_bits) {
-            const uint32_t valid = cap_bits - word_lo;
-            bits &= (valid == kBitsPerWord)
-                        ? ~uint64_t{0}
-                        : ((uint64_t{1} << valid) - 1);
-        }
-        while (bits != 0) {
-            const uint32_t bit =
-                static_cast<uint32_t>(__builtin_ctzll(bits));
-            bits &= bits - 1;
-            const uint32_t slot = word_lo + bit;
-            auto *b = reinterpret_cast<DescBacking *>(
-                base + static_cast<uintptr_t>(slot) *
-                           static_cast<uintptr_t>(cd->slot_size));
-            b->node_canary = compute_va_node_canary(
-                partition_secret(), cls_id, chunk_id,
-                static_cast<uint8_t>(slot));
-        }
-    }
+// Per-slot fork canary refresh callback. The shared
+// `refresh_slot_canaries_in_chunk` walks the occupancy bitmap, computes
+// the fresh canary for each live slot, and dispatches here with the
+// slot VA and pre-computed value. DescBacking carries no additional
+// per-slot post-fork repair beyond the canary write.
+void backing_per_slot_canary_refresh(void *slot_va, uint64_t fresh_canary) {
+    auto *b = static_cast<DescBacking *>(slot_va);
+    b->node_canary = fresh_canary;
 }
 
 } // namespace
@@ -597,8 +515,10 @@ void backing_fork_reinit() {
         mark_backing_chunk_reachable(reclaim_ctx, cd);
         cd->chunk_canary = compute_va_chunk_canary(
             partition_secret(), kBackingClsId, static_cast<uint8_t>(cid));
-        backing_fork_refresh_slot_canary(cd, kBackingClsId,
-                                          static_cast<uint8_t>(cid));
+        refresh_slot_canaries_in_chunk(
+            cd, kBackingClsId, static_cast<uint8_t>(cid),
+            kBackingSlotsPerChunk, partition_secret(),
+            &backing_per_slot_canary_refresh);
     }
 
     // Phase 3: stranded-chunk reclaim. Walks the shared chunk-desc

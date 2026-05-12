@@ -155,60 +155,22 @@ void region_desc_release(RegionDesc *desc) {
     __builtin_trap();
   PerRegionDescState &p = g_region_desc_state;
 
-  // Recover (chunk_id, slot_idx) from VA.
-  uintptr_t addr = reinterpret_cast<uintptr_t>(desc);
-  uintptr_t chunk_base_addr =
-      addr & ~static_cast<uintptr_t>(kRegionDescChunkBytes - 1);
-  size_t slot_off = static_cast<size_t>(addr - chunk_base_addr);
-  if (LIBC_UNLIKELY(slot_off % kRegionDescSlotSize != 0))
-    __builtin_trap();
-  uint32_t slot_idx =
-      static_cast<uint32_t>(slot_off / kRegionDescSlotSize);
-  if (LIBC_UNLIKELY(slot_idx >= kRegionDescSlotsPerChunk))
-    __builtin_trap();
+  RecoveredSlot rec = recover_slot_from_va(
+      desc, kRegionDescChunkBytes, kRegionDescSlotSize,
+      kRegionDescSlotsPerChunk, kChunksPerBucket, p.chunk_table);
 
-  partition_ns::PartitionDescriptor *part =
-      partition_ns::lookup(reinterpret_cast<void *>(chunk_base_addr));
-  if (LIBC_UNLIKELY(part == nullptr))
-    __builtin_trap();
-  uintptr_t partition_base = reinterpret_cast<uintptr_t>(part->base);
-  uintptr_t off_in_partition = chunk_base_addr - partition_base -
-                               static_cast<uintptr_t>(
-                                   partition_ns::kPartitionGuardBytes);
-  if (LIBC_UNLIKELY(off_in_partition % kRegionDescChunkBytes != 0))
-    __builtin_trap();
-  uint32_t chunk_id =
-      static_cast<uint32_t>(off_in_partition / kRegionDescChunkBytes);
-  if (LIBC_UNLIKELY(chunk_id >= kChunksPerBucket))
-    __builtin_trap();
-
-  VaChunkDesc *cd =
-      p.chunk_table[chunk_id].load(cpp::MemoryOrder::ACQUIRE);
-  if (LIBC_UNLIKELY(cd == nullptr))
-    __builtin_trap();
-
-  // Validate per-slot canary BEFORE chunk canary — heap-spray crafting
-  // cannot guess partition_secret, so this is the harder check to forge.
-  uint64_t expected_node_canary = compute_va_node_canary(
-      partition_secret(),
+  validate_slot_canaries_or_trap(
+      desc->node_canary, rec.cd,
       static_cast<uint16_t>(partition_ns::PartitionClass::VaTrackerRegionDesc),
-      static_cast<uint8_t>(chunk_id), static_cast<uint8_t>(slot_idx));
-  if (LIBC_UNLIKELY(desc->node_canary != expected_node_canary))
-    __builtin_trap();
-
-  uint64_t expected_chunk_canary = compute_va_chunk_canary(
-      partition_secret(),
-      static_cast<uint16_t>(partition_ns::PartitionClass::VaTrackerRegionDesc),
-      static_cast<uint8_t>(chunk_id));
-  if (LIBC_UNLIKELY(cd->chunk_canary != expected_chunk_canary))
-    __builtin_trap();
+      static_cast<uint8_t>(rec.chunk_id),
+      static_cast<uint8_t>(rec.slot_idx), partition_secret());
 
   // Metadata-only cleanup. Kernel state was torn down at Transaction commit
   // via the backing's synchronous teardown; here we only zero the slot and
   // return it to the partition pool.
   __builtin_memset(static_cast<void *>(desc), 0, sizeof(RegionDesc));
 
-  release_slot_in_va_chunk(cd, slot_idx, p.chunk_table);
+  release_slot_in_va_chunk(rec.cd, rec.slot_idx, p.chunk_table);
 }
 
 //===----------------------------------------------------------------------===//
@@ -252,42 +214,15 @@ RegionDesc *clone_region_desc_for_fragment(RegionDesc *src, uintptr_t src_lo,
 
 namespace {
 
-// Iterate the chunk's occupancy bitmap and refresh the per-slot canary for
-// every live slot against the freshly-rotated partition_secret. RELAXED is
-// sufficient on the bitmap load because the fork-reinit phase runs
-// single-threaded in the child before any user code resumes.
-void region_desc_fork_refresh_slot_canary(VaChunkDesc *cd, uint16_t cls_id,
-                                          uint8_t chunk_id) {
-  constexpr uint32_t kBitsPerWord = 64;
-  const uint32_t cap_bits = kRegionDescSlotsPerChunk;
-  const uint32_t word_count =
-      (cap_bits + kBitsPerWord - 1) / kBitsPerWord;
-  uintptr_t base = reinterpret_cast<uintptr_t>(cd->chunk_base);
-  for (uint32_t w = 0; w < word_count; ++w) {
-    uint64_t bits = cd->occupancy.template word_at<
-        cpp::MemoryOrder::RELAXED>(w);
-    const uint32_t word_lo = w * kBitsPerWord;
-    if (word_lo + kBitsPerWord > cap_bits) {
-      // Mask off tail bits beyond the chunk's slot capacity in the final
-      // word.
-      const uint32_t valid = cap_bits - word_lo;
-      bits &= (valid == kBitsPerWord)
-                  ? ~uint64_t{0}
-                  : ((uint64_t{1} << valid) - 1);
-    }
-    while (bits != 0) {
-      const uint32_t bit =
-          static_cast<uint32_t>(__builtin_ctzll(bits));
-      bits &= bits - 1;
-      const uint32_t slot = word_lo + bit;
-      auto *rd = reinterpret_cast<RegionDesc *>(
-          base + static_cast<uintptr_t>(slot) *
-                     static_cast<uintptr_t>(cd->slot_size));
-      rd->node_canary = compute_va_node_canary(
-          partition_secret(), cls_id, chunk_id,
-          static_cast<uint8_t>(slot));
-    }
-  }
+// Per-slot fork canary refresh callback. The shared
+// `refresh_slot_canaries_in_chunk` walks the occupancy bitmap and
+// dispatches here with the slot VA and pre-computed canary. RegionDesc
+// carries no additional per-slot post-fork repair beyond the canary
+// write.
+void region_desc_per_slot_canary_refresh(void *slot_va,
+                                         uint64_t fresh_canary) {
+  auto *rd = static_cast<RegionDesc *>(slot_va);
+  rd->node_canary = fresh_canary;
 }
 
 } // anonymous namespace
@@ -306,8 +241,10 @@ void region_desc_fork_reinit_phase(RegionDescForkChunkVisitor visit,
     cd->chunk_canary = compute_va_chunk_canary(
         partition_secret(), kRegionDescClsId,
         static_cast<uint8_t>(cid));
-    region_desc_fork_refresh_slot_canary(cd, kRegionDescClsId,
-                                         static_cast<uint8_t>(cid));
+    refresh_slot_canaries_in_chunk(
+        cd, kRegionDescClsId, static_cast<uint8_t>(cid),
+        kRegionDescSlotsPerChunk, partition_secret(),
+        &region_desc_per_slot_canary_refresh);
   }
 }
 
