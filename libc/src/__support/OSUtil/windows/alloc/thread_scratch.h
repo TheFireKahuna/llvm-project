@@ -335,6 +335,16 @@ struct alignas(64) ThreadScratchState {
   concurrent::CrystallineBatch
       crystalline_batches[concurrent::kMaxCrystallineDomains];
 
+  // Per-domain last-observed slow-path generation. `slow_counter_` on
+  // each CrystallineDomain is a monotonic counter incremented once per
+  // slow_path entry; help_read fires only when the calling thread's
+  // recorded gen differs from the current counter, then advances the
+  // recorded gen so a second back-to-back retire on the same thread
+  // skips the walk. Reset to 0 on fork by CrystallineDomain::fork_reinit
+  // for the surviving thread.
+  uint64_t crystalline_last_helped_slow_gen
+      [concurrent::kMaxCrystallineDomains];
+
   // Reconstruct the VA reservation base from `this`. The control block
   // is always at page 0 of a 64KB-aligned reservation.
   LIBC_INLINE char *base() const {

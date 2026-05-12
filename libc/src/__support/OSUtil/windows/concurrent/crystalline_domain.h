@@ -808,7 +808,6 @@ private:
 
     uint64_t prev_era =
         my.era[index].pair[0].load(cpp::MemoryOrder::ACQUIRE);
-    slow_counter_.fetch_add(1, cpp::MemoryOrder::ACQ_REL);
     // Publish (load_ctx, load_thunk) for helpers. Order: ctx RELEASE
     // first, thunk RELEASE last; helpers consume thunk ACQUIRE first
     // and on a non-null observation re-load ctx ACQUIRE. The thunk
@@ -829,6 +828,17 @@ private:
     my.state[index].result.full.store(last_result.full,
                                       cpp::MemoryOrder::RELEASE);
 
+    // Bump the monotonic slow-path generation AFTER the state fields
+    // above are published. Helpers gate on this counter and ACQUIRE-
+    // load it before scanning state[index]; the ACQ_REL fetch_add is
+    // the publication fence that pairs with their ACQUIRE load, so a
+    // helper that observes gen ≥ this value is guaranteed to also see
+    // load_ctx / load_thunk / parent / birth_era / result.full in their
+    // freshly-published state. Counter is write-only (never decremented
+    // at slow_path exit); per-thread last_helped_slow_gen drives the
+    // gate. See help_read.
+    slow_counter_.fetch_add(1, cpp::MemoryOrder::ACQ_REL);
+
     CrystallineValuePair old, value;
     uint64_t result_era, result_ptr, expseqno;
     CrystallineNode *first;
@@ -848,7 +858,6 @@ private:
                                         cpp::MemoryOrder::RELEASE);
           my.first[index].pair[1].store(seqno + 2,
                                         cpp::MemoryOrder::RELEASE);
-          slow_counter_.fetch_sub(1, cpp::MemoryOrder::ACQ_REL);
           return ptr;
         }
       }
@@ -946,7 +955,6 @@ private:
       first = my.first[index].list[0].exchange(
           crystalline_rnode(refs_cn), cpp::MemoryOrder::ACQ_REL);
     }
-    slow_counter_.fetch_sub(1, cpp::MemoryOrder::ACQ_REL);
 
     if (first != crystalline_inv_ptr())
       traverse_cache(batch, first);
@@ -1180,9 +1188,25 @@ private:
 
   // help_read — scan every live slot in the pool for a stalled
   // slow_path (state[j].result.pair[0] == WFR_INVPTR64) and help it.
+  //
+  // Self-gating: `slow_counter_` is a monotonic generation (bumped once
+  // per slow_path entry, never decremented). Each thread records the
+  // largest gen it has already helped against in `ts->crystalline_
+  // last_helped_slow_gen[domain_id_]`. The walk fires only when the
+  // current counter differs from the recorded value, then the recorded
+  // value advances BEFORE the walk so that a second back-to-back
+  // help_read on the same thread without an intervening slow_path is a
+  // no-op. last_helped is updated pre-walk so that even if the walk
+  // finds no INVPTR64 (e.g. all stalled slow_paths happen to complete
+  // between our gen load and the walk) the bookkeeping is correct:
+  // subsequent slow_path bumps push the counter past last_helped and
+  // re-enable the walk.
   LIBC_INLINE void help_read() {
-    if (slow_counter_.load(cpp::MemoryOrder::ACQUIRE) == 0)
+    uint64_t gen = slow_counter_.load(cpp::MemoryOrder::ACQUIRE);
+    auto *ts = my_thread();
+    if (gen == ts->crystalline_last_helped_slow_gen[domain_id_])
       return;
+    ts->crystalline_last_helped_slow_gen[domain_id_] = gen;
     uint16_t my_idx = my_slot_idx();
     CrystallineBatch &batch = my_batch();
     if (refresh_active_snapshot(batch)) {
@@ -1242,11 +1266,10 @@ private:
   // 535-611 of the reference.
   // -----------------------------------------------------------------------
   LIBC_INLINE void try_retire(CrystallineBatch &batch) {
-    // Help any stalled slow paths before walking the active chain — drains
-    // wait-free progress for the slowpath protocol and is gated on a non-
-    // zero slow_counter so quiescent domains pay only one atomic load.
-    if (slow_counter_.load(cpp::MemoryOrder::ACQUIRE) != 0)
-      help_read();
+    // Help any stalled slow paths before walking the active chain.
+    // help_read self-gates on the per-thread last_helped_slow_gen, so
+    // a redundant outer gate would just duplicate that load.
+    help_read();
 
     NodeT *curr = as_node(batch.first);
     NodeT *refs = as_node(batch.last);
@@ -1542,6 +1565,12 @@ private:
     if (ts == nullptr)
       return;
     ts->crystalline_slot_idx[domain_id_] = kCrystallineSlotNullIndex;
+    // Match the slow_counter_ reset above. Without this the surviving
+    // thread's recorded gen would still reflect the pre-fork counter
+    // value and help_read's gate would short-circuit forever on
+    // post-fork slow_paths until the counter wrapped past the stale
+    // value.
+    ts->crystalline_last_helped_slow_gen[domain_id_] = 0;
     CrystallineBatch &batch = ts->crystalline_batches[domain_id_];
     batch.first = nullptr;
     batch.last = nullptr;
