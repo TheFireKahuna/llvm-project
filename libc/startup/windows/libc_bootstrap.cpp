@@ -179,17 +179,8 @@ void run_bootstrap() {
   pcb_init_state_advance_checked(PcbInitState::TierA_PcbWritten,
                                  PcbInitState::TierA_MappingTable);
 
-  // Phase 0d: mlock policy onfault state.
+  // Phase 0d.1: mlock policy onfault
   //
-  // Runs BEFORE the .libcveh sweep so the mlock filter's dispatch
-  // handler has a constructed OnfaultState to dereference. The
-  // register_all_static_veh_filters() call below asserts this ordering
-  // via the TierA_MlockPolicy predecessor check — a future reordering
-  // that installs the filter first would terminate at that CAS rather
-  // than expose a live VEH filter that reads uninitialised state.
-  trace.phase("phase 0d.1: mlock policy onfault state");
-  if (mlock_policy_startup_init() != 0)
-    bootstrap_abort(STATUS_BOOTSTRAP_FAILED);
   pcb_init_state_advance_checked(PcbInitState::TierA_MappingTable,
                                  PcbInitState::TierA_MlockPolicy);
 
@@ -197,7 +188,7 @@ void run_bootstrap() {
   // populates the sealed filter table in priority order. Filters self-
   // gate against their own subsystem state (signal_veh_transport returns
   // CONTINUE_SEARCH when no SEH-class handler is installed; mem_fault
-  // degrades via zero-init mapping table).
+  // and mlock_onfault degrade via zero-init va_tracker / clear flag bits).
   trace.phase("phase 0d.2: .libcveh sweep");
   register_all_static_veh_filters();
   pcb_init_state_advance_checked(PcbInitState::TierA_MlockPolicy,

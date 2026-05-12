@@ -79,12 +79,6 @@ int thread_storage_startup_init();
 int brk_startup_init();
 
 // Phase 5: VEH fault handlers
-//   mlock_policy_startup_init() constructs the onfault state struct. The
-//   actual VEH filter installation (mem_fault + mlock_policy) is handled
-//   declaratively via `.libcveh` — see veh/veh_filter_registry.h. Tier B
-//   Phase 3 calls register_all_static_veh_filters() to install all static
-//   filter records at once.
-int mlock_policy_startup_init();
 
 // Phase 6: Fd table
 int fd_table_startup_init();
