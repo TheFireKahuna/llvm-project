@@ -62,13 +62,13 @@ void lock_mutator(RegionDesc *new_desc, void *ctx) {
 void lock_set_onfault_mutator(RegionDesc *new_desc, void *ctx) {
   (void)ctx;
   set_flag_bits(new_desc,
-                ::LIBC_NAMESPACE::windows::va_tracker::region_flag::MLOCK_ONFAULT);
+                ::LIBC_NAMESPACE::windows::va_tracker::region_flag::LOCK_ONFAULT);
 }
 
 void lock_clear_mutator(RegionDesc *new_desc, void *ctx) {
   (void)ctx;
   clear_flag_bits(new_desc,
-                  ::LIBC_NAMESPACE::windows::va_tracker::region_flag::MLOCK_ONFAULT);
+                  ::LIBC_NAMESPACE::windows::va_tracker::region_flag::LOCK_ONFAULT);
 }
 
 void brk_extend_mutator(RegionDesc *new_desc, void *ctx) {

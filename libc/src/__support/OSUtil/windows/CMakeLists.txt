@@ -2031,7 +2031,6 @@ add_object_library(
     .va_tracker
     .veh_core
     .veh_filter_registry
-    .veh_state
     libc.src.__support.CPP.atomic
     libc.src.__support.macros.config
 )
@@ -2762,7 +2761,6 @@ add_object_library(
     memory/posix/mlock.h
     memory/posix/mlockall.h
     memory/posix/mlock_policy.h
-    memory/posix/mlock_process_state.h
   DEPENDS
     .memory_posix_errno
     .memory_posix_mutators

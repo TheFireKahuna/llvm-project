@@ -101,7 +101,9 @@ add_object_library(
     # post-memory-init and runs the seal-time invariant assert + wipe
     # immediately before pcb_seal_readonly_a.
     libc.src.__support.OSUtil.windows.alloc_sealed_va_publisher
-    libc.src.__support.OSUtil.windows.memory_lock_policy_state
+    # `memory_lock_policy_state` retired — the per-region MLOCK_ONFAULT
+    # bit on the va_tracker desc replaces the global onfault table; the
+    # process-wide `mcl_flags` lives in `g_pcb.mlock` (PCB Zone 1).
   COMPILE_OPTIONS
     -ffreestanding
     -fno-builtin

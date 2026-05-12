@@ -61,7 +61,7 @@
 #include "src/__support/OSUtil/windows/memory/legacy/region_desc.h"
 #include "src/__support/OSUtil/windows/memory/legacy/region_pool.h"
 #include "src/__support/OSUtil/windows/memory/legacy/remap_transaction.h"
-#include "src/__support/OSUtil/windows/memory/legacy/memory_lock_policy.h"
+#include "src/__support/OSUtil/windows/memory/posix/mlock_policy.h"
 #include "src/__support/OSUtil/windows/memory/legacy/memory_region.h"
 #include "src/__support/OSUtil/windows/memory/va_inventory.h"
 #include "src/__support/OSUtil/windows/memory/legacy/view_spec.h"

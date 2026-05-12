@@ -55,6 +55,7 @@
 #include "src/__support/OSUtil/windows/memory/posix/posix_validation.h"
 #include "src/__support/OSUtil/windows/memory/va_tracker.h"
 #include "src/__support/OSUtil/windows/nt_pal/lock.h"
+#include "src/__support/OSUtil/windows/nt_pal/protect.h"
 #include "src/__support/OSUtil/windows/nt_pal/query.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
 #include "src/__support/macros/config.h"

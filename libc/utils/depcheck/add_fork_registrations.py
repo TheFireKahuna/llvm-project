@@ -32,7 +32,7 @@ ENTRIES = [
      "mmap_lock", "kForkPrioMmapLock", "mmap_lock_fork_reinit"),
     ("libc/src/__support/OSUtil/windows/memory/region_reconcile.cpp",
      "memory_reconcile", "kForkPrioMemoryReconcile", "memory_reconcile_fork_reinit"),
-    ("libc/src/__support/OSUtil/windows/memory/memory_lock_policy.cpp",
+    ("libc/src/__support/OSUtil/windows/memory/posix/mlockall.cpp",
      "mlock_policy", "kForkPrioMlockPolicy", "mlock_policy_fork_reinit"),
     ("libc/src/__support/OSUtil/windows/libc_subsystem_init.cpp",
      "va_inventory", "kForkPrioVaInventory", "va_inventory_fork_reinit"),

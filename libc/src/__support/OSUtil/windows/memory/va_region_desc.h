@@ -157,9 +157,9 @@ inline constexpr uint16_t LOW_32BIT = 0x200;
 /// flag for paired MADV_DODUMP, which clears it before re-including.
 inline constexpr uint16_t DUMP_EXCLUDE = 0x400;
 
-/// MLOCK_ONFAULT: arm lock-on-first-touch for this region.
+/// LOCK_ONFAULT: arm lock-on-first-touch for this region.
 ///
-/// Set by `mlock2(MLOCK_ONFAULT)` and the `mlockall(... | MCL_ONFAULT)`
+/// Set by `mlock2(LOCK_ONFAULT)` and the `mlockall(... | MCL_ONFAULT)`
 /// per-tracked-region pass; cleared by `munlock`. The fault handler in
 /// `mem_fault_handler.cpp` reads this bit on every demand-commit and
 /// guard-page violation that resolves to a tracked region; on hit it
@@ -179,7 +179,7 @@ inline constexpr uint16_t DUMP_EXCLUDE = 0x400;
 /// `serialize_for_fork` strips this bit before emitting each entry to
 /// the child snapshot; the bit cannot survive fork via CoW because the
 /// substrate replays each region freshly in the child.
-inline constexpr uint16_t MLOCK_ONFAULT = 0x800;
+inline constexpr uint16_t LOCK_ONFAULT = 0x800;
 
 } // namespace region_flag
 

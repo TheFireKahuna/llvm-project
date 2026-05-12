@@ -312,7 +312,7 @@ struct SerializeIntervalVisitor {
         // wants the same posture re-issues `mlock2(MLOCK_ONFAULT)`
         // itself.
         meta.flags = static_cast<uint16_t>(
-            cur_flags & ~region_flag::MLOCK_ONFAULT);
+            cur_flags & ~region_flag::LOCK_ONFAULT);
 
         last_err = sink->emit(sink->ctx, r, kind, meta);
     }

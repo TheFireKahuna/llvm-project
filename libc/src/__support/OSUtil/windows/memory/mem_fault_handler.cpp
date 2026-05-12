@@ -176,7 +176,7 @@ LONG try_demand_commit(EXCEPTION_POINTERS *ep) {
         // so the check is one mask off `flags` — already loaded above
         // for the demand-commit shape gate. No global table, no
         // reader lock, no extra resolve.
-        if (flags & va_tracker::region_flag::MLOCK_ONFAULT)
+        if (flags & va_tracker::region_flag::LOCK_ONFAULT)
           (void)nt_pal::lock_range(fault_page, page_size);
         return EXCEPTION_CONTINUE_EXECUTION;
       }
@@ -208,7 +208,7 @@ LONG try_demand_commit(EXCEPTION_POINTERS *ep) {
   if (NT_SUCCESS(st)) {
     // MLOCK_ONFAULT trip on the freshly-committed page. Per-desc flag
     // already loaded above; one mask, no global table.
-    if (flags & va_tracker::region_flag::MLOCK_ONFAULT)
+    if (flags & va_tracker::region_flag::LOCK_ONFAULT)
       (void)nt_pal::lock_range(fault_page, page_size);
     return EXCEPTION_CONTINUE_EXECUTION;
   }
@@ -255,7 +255,7 @@ LONG try_mlock_onfault(EXCEPTION_POINTERS *ep) {
   if (desc == nullptr)
     return EXCEPTION_CONTINUE_SEARCH;
 
-  if (!(desc->flags_load() & va_tracker::region_flag::MLOCK_ONFAULT))
+  if (!(desc->flags_load() & va_tracker::region_flag::LOCK_ONFAULT))
     return EXCEPTION_CONTINUE_SEARCH;
 
   // Guard bit already cleared by the CPU; the page is accessible.
