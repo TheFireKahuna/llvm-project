@@ -157,6 +157,30 @@ inline constexpr uint16_t LOW_32BIT = 0x200;
 /// flag for paired MADV_DODUMP, which clears it before re-including.
 inline constexpr uint16_t DUMP_EXCLUDE = 0x400;
 
+/// MLOCK_ONFAULT: arm lock-on-first-touch for this region.
+///
+/// Set by `mlock2(MLOCK_ONFAULT)` and the `mlockall(... | MCL_ONFAULT)`
+/// per-tracked-region pass; cleared by `munlock`. The fault handler in
+/// `mem_fault_handler.cpp` reads this bit on every demand-commit and
+/// guard-page violation that resolves to a tracked region; on hit it
+/// calls `nt_pal::lock_range` for the faulting page before returning
+/// `EXCEPTION_CONTINUE_EXECUTION`.
+///
+/// Per-desc rather than a separate global table: one atomic load
+/// already in the resolver fast path, no futex-RW lock, no sorted-
+/// range binary search, no out-of-band dispatch via PAGE_GUARD ↔ VEH
+/// without va_tracker correlation. The PAGE_GUARD bit on each chunk's
+/// protection is still applied at arm time so the kernel raises
+/// `STATUS_GUARD_PAGE_VIOLATION` on first touch — that is what gives
+/// us a fault to react to on already-committed pages — but the
+/// state-of-armed-ness lives here, not in a side table.
+///
+/// POSIX requires that locks not survive `fork()`. The va_tracker's
+/// `serialize_for_fork` strips this bit before emitting each entry to
+/// the child snapshot; the bit cannot survive fork via CoW because the
+/// substrate replays each region freshly in the child.
+inline constexpr uint16_t MLOCK_ONFAULT = 0x800;
+
 } // namespace region_flag
 
 /// Per-region leaf descriptor for the va_tracker's interval skiplist.

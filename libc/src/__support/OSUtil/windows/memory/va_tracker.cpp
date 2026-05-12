@@ -306,7 +306,13 @@ struct SerializeIntervalVisitor {
         meta.section_offset =
             static_cast<uint64_t>(rd->section_offset.QuadPart);
         meta.view_prot = rd->view_prot;
-        meta.flags = cur_flags;
+        // POSIX requires that memory locks not be inherited across
+        // fork(). Strip lock-arming bits so the child replay produces
+        // descs with no lock-on-fault state armed; a child that
+        // wants the same posture re-issues `mlock2(MLOCK_ONFAULT)`
+        // itself.
+        meta.flags = static_cast<uint16_t>(
+            cur_flags & ~region_flag::MLOCK_ONFAULT);
 
         last_err = sink->emit(sink->ctx, r, kind, meta);
     }

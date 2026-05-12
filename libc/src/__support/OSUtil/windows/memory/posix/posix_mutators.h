@@ -88,15 +88,48 @@ struct NumaRebindCtx {
 void prot_mutator(::LIBC_NAMESPACE::windows::va_tracker::RegionDesc *new_desc,
                   void *ctx);
 
-/// `mlock` / `munlock` lock-state update (when the substrate tracks the
-/// locked state as a flag bit; today the lock state lives outside the
-/// desc, so the mutator is a no-op stub the substrate can still hand
-/// the locked-range API to without surprise).
+/// `mlock` / `munlock` immediate-lock case — no per-desc state change.
 ///
-/// The mutator never fails; `mlock` failure surfaces from
-/// `nt_pal::lock_range` instead.
+/// Immediate locking is tracked entirely by the kernel's per-page lock
+/// counter; the desc carries no flag for it. The mutator stays as a
+/// no-op so the substrate's `mutate(...)` envelope can still serve as
+/// the publish-and-protect path when an op needs `prot_change` on the
+/// same range, and as a typed entry point even when no field changes.
+///
+/// `mlock` itself does not currently route through this mutator (it
+/// calls `nt_pal::lock_range` directly inside a kernel-VAD walk —
+/// every page in the range gets locked, including foreign / image VA
+/// the va_tracker does not see). Kept callable in case a future shape
+/// shift wants to attach diagnostics or telemetry to the lock window.
 void lock_mutator(::LIBC_NAMESPACE::windows::va_tracker::RegionDesc *new_desc,
                   void *ctx);
+
+/// `mlock2(MLOCK_ONFAULT)` — set `region_flag::MLOCK_ONFAULT`.
+///
+/// The fault handler in `mem_fault_handler.cpp` reads the bit on every
+/// resolve and locks the faulting page on hit. The bit replaces the
+/// legacy global `OnfaultState` table: per-desc storage lives in the
+/// existing `flags` atomic; lookup is a flag-mask off the already-
+/// pinned desc; teardown is the symmetric `lock_clear_mutator`.
+///
+/// PAGE_GUARD is applied to the range as a side effect of the
+/// `mlock2` entry (not by this mutator — the protection write needs
+/// the kernel-VAD walk, and the substrate's `mutate` already
+/// serialises the publish window for us). On first touch the kernel
+/// raises `STATUS_GUARD_PAGE_VIOLATION`, the fault handler resolves
+/// the desc, sees the flag, and locks.
+void lock_set_onfault_mutator(
+    ::LIBC_NAMESPACE::windows::va_tracker::RegionDesc *new_desc, void *ctx);
+
+/// `munlock` — clear `region_flag::MLOCK_ONFAULT`.
+///
+/// Pairs with `lock_set_onfault_mutator`. PAGE_GUARD residue on
+/// already-armed pages is harmless: the kernel auto-clears PAGE_GUARD
+/// on the trip through the fault handler, and with the flag now
+/// clear the handler returns `EXCEPTION_CONTINUE_SEARCH` rather than
+/// re-locking.
+void lock_clear_mutator(
+    ::LIBC_NAMESPACE::windows::va_tracker::RegionDesc *new_desc, void *ctx);
 
 /// `brk` / `sbrk` cursor extension. `ctx` is a `BrkExtendCtx *`. The
 /// mutator runs as the metadata-update step; the substrate handles the

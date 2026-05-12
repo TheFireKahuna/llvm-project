@@ -59,6 +59,18 @@ void lock_mutator(RegionDesc *new_desc, void *ctx) {
   (void)ctx;
 }
 
+void lock_set_onfault_mutator(RegionDesc *new_desc, void *ctx) {
+  (void)ctx;
+  set_flag_bits(new_desc,
+                ::LIBC_NAMESPACE::windows::va_tracker::region_flag::MLOCK_ONFAULT);
+}
+
+void lock_clear_mutator(RegionDesc *new_desc, void *ctx) {
+  (void)ctx;
+  clear_flag_bits(new_desc,
+                  ::LIBC_NAMESPACE::windows::va_tracker::region_flag::MLOCK_ONFAULT);
+}
+
 void brk_extend_mutator(RegionDesc *new_desc, void *ctx) {
   auto *c = static_cast<BrkExtendCtx *>(ctx);
   new_desc->section_offset.QuadPart =

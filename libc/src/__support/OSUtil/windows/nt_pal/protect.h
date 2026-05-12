@@ -36,6 +36,8 @@
 #ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_NT_PAL_PROTECT_H
 #define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_NT_PAL_PROTECT_H
 
+#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/nt_pal/query.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
 #include "src/__support/macros/attributes.h"
 #include "src/__support/macros/config.h"
@@ -128,6 +130,48 @@ LIBC_INLINE bool reclaim(void *addr, size_t size) {
   // if the kernel reclaimed and re-faulted, but explicit is cheap.
   set_page_priority(addr, size, MEMORY_PRIORITY_NORMAL);
   return NT_SUCCESS(st);
+}
+
+// Arm a one-shot guard trap on every committed page in the range.
+//
+// ORs `PAGE_GUARD` into each chunk's existing protection via a
+// kernel-VAD walk + per-chunk `NtProtectVirtualMemory`. The kernel
+// raises `STATUS_GUARD_PAGE_VIOLATION` on the first access to any
+// armed page and clears `PAGE_GUARD` as part of dispatching the
+// exception — so the trap fires exactly once per page per arm, and a
+// consumer must re-arm if it wants further trips.
+//
+// Per-chunk-protection-aware: the existing `Protect` value is read
+// from MBI and ORed (not replaced) so PROT_READ / PROT_WRITE / PROT_EXEC
+// stay correct after the trap clears. Chunks that already carry
+// `PAGE_GUARD` or `PAGE_NOACCESS` are skipped (re-arming a guarded
+// page is a no-op; arming a no-access page would prevent the kernel
+// from delivering the trap as a guard violation).
+//
+// Best-effort per chunk: a chunk whose `NtProtect` call fails simply
+// will not trap. Used by `mlock2(MLOCK_ONFAULT)` to arm fault-on-touch
+// across already-committed pages — pairs with the
+// `try_mlock_onfault` filter in `mem_fault_handler.cpp` which reads
+// `region_flag::MLOCK_ONFAULT` on the resolved desc to decide what
+// to do with the trap.
+LIBC_INLINE void arm_guard_trap(void *addr, size_t size) {
+  auto ws = ::LIBC_NAMESPACE::windows::byte_scratch(4096);
+  if (!ws)
+    return;
+  RegionWalker walk(addr, static_cast<SIZE_T>(size), ws.data(),
+                    ws.size());
+  while (walk.next()) {
+    if (walk.entry->State != MEM_COMMIT)
+      continue;
+    if (walk.entry->Protect & (PAGE_NOACCESS | PAGE_GUARD))
+      continue;
+    PVOID base = walk.chunk;
+    SIZE_T sz = walk.chunk_size;
+    ULONG old_prot = 0;
+    (void)::NtProtectVirtualMemory(NtCurrentProcess(), &base, &sz,
+                                    walk.entry->Protect | PAGE_GUARD,
+                                    &old_prot);
+  }
 }
 
 // Evict pages from the process working set (commit + VA preserved;

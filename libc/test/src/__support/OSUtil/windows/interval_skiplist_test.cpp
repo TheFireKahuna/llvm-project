@@ -50,9 +50,7 @@ using LIBC_NAMESPACE::cpp::MemoryOrder;
 //
 // Substrate-level test by design: we go through `arena_alloc` directly
 // rather than the ART-aware `va_tracker::resolve_or_install_arena` —
-// the skiplist's invariants don't depend on the outer dispatcher, and
-// keeping the dep set tight avoids the unresolved transitive
-// `alloc_page_size` requirement that drops the test from the build.
+// the skiplist's invariants don't depend on the outer dispatcher.
 // ---------------------------------------------------------------------------
 
 constexpr uintptr_t kSkiplistTestBase = 0x500000000000ULL;

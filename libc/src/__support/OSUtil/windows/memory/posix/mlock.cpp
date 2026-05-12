@@ -49,10 +49,11 @@
 #include "include/llvm-libc-macros/sys-mman-macros.h"
 #include "src/__support/OSUtil/windows/alloc/page_size.h"
 #include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
-#include "src/__support/OSUtil/windows/memory/legacy/memory_lock_policy.h"
-#include "src/__support/OSUtil/windows/memory/legacy/working_set.h"
+#include "src/__support/OSUtil/windows/nt_pal/working_set.h"
 #include "src/__support/OSUtil/windows/memory/posix/posix_errno.h"
+#include "src/__support/OSUtil/windows/memory/posix/posix_mutators.h"
 #include "src/__support/OSUtil/windows/memory/posix/posix_validation.h"
+#include "src/__support/OSUtil/windows/memory/va_tracker.h"
 #include "src/__support/OSUtil/windows/nt_pal/lock.h"
 #include "src/__support/OSUtil/windows/nt_pal/query.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
@@ -67,6 +68,7 @@ namespace LIBC_NAMESPACE_DECL {
 namespace {
 
 namespace mp = ::LIBC_NAMESPACE::windows::memory_posix;
+namespace vt = ::LIBC_NAMESPACE::windows::va_tracker;
 
 /// Round a POSIX `(addr, len)` pair to a kernel-friendly
 /// `(start, rounded_len)`. Encodes the two-tier overflow check the
@@ -122,7 +124,7 @@ LIBC_INLINE intptr_t lock_chunk(void *addr, SIZE_T size) {
       return 0;
 
     if (st == STATUS_WORKING_SET_QUOTA) {
-      if (::LIBC_NAMESPACE::windows::expand_working_set(NtCurrentProcess(),
+      if (::LIBC_NAMESPACE::nt_pal::expand_working_set(NtCurrentProcess(),
                                                         size))
         continue;
       return -ENOMEM;
@@ -144,7 +146,7 @@ LIBC_INLINE intptr_t walk_and_lock(void *start, SIZE_T size) {
   // Pre-expand the working-set quota for the full range so that the
   // per-chunk loop only retries on contention spikes, not on the
   // common case of locking a fresh allocation.
-  ::LIBC_NAMESPACE::windows::expand_working_set(NtCurrentProcess(), size);
+  ::LIBC_NAMESPACE::nt_pal::expand_working_set(NtCurrentProcess(), size);
 
   auto ws = ::LIBC_NAMESPACE::windows::byte_scratch(4096);
   if (!ws)
@@ -153,7 +155,7 @@ LIBC_INLINE intptr_t walk_and_lock(void *start, SIZE_T size) {
                                               ws.size());
 
   while (walk.next()) {
-    if (!::LIBC_NAMESPACE::windows::is_lockable(*walk.entry))
+    if (!::LIBC_NAMESPACE::nt_pal::is_lockable(*walk.entry))
       return -ENOMEM;
     if (intptr_t r = lock_chunk(walk.chunk, walk.chunk_size); r < 0)
       return r;
@@ -202,15 +204,33 @@ intptr_t mlock2(const void *addr, size_t len, int flags) {
   void *range_addr = reinterpret_cast<void *>(start);
 
   if (flags & MLOCK_ONFAULT) {
-    // Pages are locked lazily by the VEH handler on first fault. Pre-
-    // expand the quota so the handler doesn't immediately bounce on
-    // STATUS_WORKING_SET_QUOTA when the first fault arrives.
-    ::LIBC_NAMESPACE::windows::expand_working_set(
+    // Pages are locked lazily by the memory subsystem's guard-page
+    // filter (`mem_fault_handler.cpp::try_mlock_onfault`) on first
+    // touch. Pre-expand the working-set quota so the filter doesn't
+    // bounce on STATUS_WORKING_SET_QUOTA when the first fault arrives.
+    ::LIBC_NAMESPACE::nt_pal::expand_working_set(
         NtCurrentProcess(), static_cast<SIZE_T>(rounded_len));
 
-    if (!::LIBC_NAMESPACE::windows::onfault_arm_range(
-            range_addr, static_cast<SIZE_T>(rounded_len)))
-      return -ENOMEM;
+    // Set the per-region MLOCK_ONFAULT bit on every tracked desc that
+    // intersects the range. The substrate's mutate envelope serialises
+    // the publish window; on return every reader of these descs sees
+    // the bit set. A range that touches no tracked region (caller
+    // armed onfault on a foreign / image / libc-internal VA) finds
+    // ENOENT — silently treat as success since the only observable
+    // effect would have been a no-op anyway.
+    int rc = vt::mutate(vt::VaRange{range_addr,
+                                    static_cast<size_t>(rounded_len)},
+                        &mp::lock_set_onfault_mutator,
+                        /*ctx=*/nullptr,
+                        /*prot_change=*/0);
+    if (rc != 0 && rc != ENOENT)
+      return -rc;
+
+    // Arm one-shot guard traps on every committed page in the range
+    // so already-resident pages also enter the filter on next access.
+    // Best-effort per chunk.
+    ::LIBC_NAMESPACE::nt_pal::arm_guard_trap(
+        range_addr, static_cast<size_t>(rounded_len));
     return 0;
   }
 
@@ -231,11 +251,19 @@ intptr_t munlock(const void *addr, size_t len) {
 
   void *range_addr = reinterpret_cast<void *>(start);
 
-  // Disarm before the unlock walk — otherwise the VEH onfault handler
-  // continues to fire on pages that the loop below has just unlocked,
-  // and the next access re-locks them in the wrong working-set state.
-  ::LIBC_NAMESPACE::windows::onfault_disarm_range(
-      range_addr, static_cast<SIZE_T>(rounded_len));
+  // Clear the per-region MLOCK_ONFAULT bit BEFORE the unlock walk —
+  // otherwise the guard-page filter would re-lock pages that the
+  // loop below has just unlocked, on the next access. PAGE_GUARD
+  // residue on already-armed pages is harmless: the kernel auto-
+  // clears PAGE_GUARD on fault dispatch, and with the flag now clear
+  // the filter returns CONTINUE_SEARCH instead of re-locking.
+  // ENOENT (no tracked desc in the range) is fine — there's nothing
+  // to disarm; munlock on a never-armed range is POSIX-permitted.
+  (void)vt::mutate(vt::VaRange{range_addr,
+                               static_cast<size_t>(rounded_len)},
+                   &mp::lock_clear_mutator,
+                   /*ctx=*/nullptr,
+                   /*prot_change=*/0);
 
   auto ws = ::LIBC_NAMESPACE::windows::byte_scratch(4096);
   if (!ws)
@@ -247,7 +275,7 @@ intptr_t munlock(const void *addr, size_t len) {
     // Only attempt to unlock memory that could plausibly be locked.
     // PAGE_NOACCESS / uncommitted regions cannot hold lock state, so
     // skipping them silently is correct.
-    if (!::LIBC_NAMESPACE::windows::is_lockable(*walk.entry))
+    if (!::LIBC_NAMESPACE::nt_pal::is_lockable(*walk.entry))
       continue;
 
     NTSTATUS st = ::LIBC_NAMESPACE::nt_pal::unlock_range(walk.chunk,

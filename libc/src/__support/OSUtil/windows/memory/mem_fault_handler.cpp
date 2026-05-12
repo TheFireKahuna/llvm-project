@@ -51,12 +51,13 @@
 #include "src/__support/OSUtil/windows/alloc/page_size.h"
 #include "src/__support/OSUtil/windows/alloc/pagemap_classifier.h"
 #include "src/__support/OSUtil/windows/memory/desc_backing.h"
-#include "src/__support/OSUtil/windows/memory/legacy/memory_lock_policy.h"
 #include "src/__support/OSUtil/windows/memory/va_region_desc.h"
 #include "src/__support/OSUtil/windows/memory/va_tracker.h"
+#include "src/__support/OSUtil/windows/nt_pal/lock.h"
 #include "src/__support/OSUtil/windows/nt_pal/nt_pal.h"
 #include "src/__support/OSUtil/windows/veh/veh_core.h"
 #include "src/__support/OSUtil/windows/veh/veh_filter_registry.h"
+#include "src/__support/OSUtil/windows/veh/veh_state.h"
 #include "src/__support/OSUtil/windows/nt/handle_attributes.h"
 #include "src/__support/CPP/atomic.h"
 #include "src/__support/macros/config.h"
@@ -170,25 +171,13 @@ LONG try_demand_commit(EXCEPTION_POINTERS *ep) {
           nt_pal::commit_in_reservation_numa(fault_page, page_size, prot,
                                              node);
       if (NT_SUCCESS(numa_st)) {
-        // VEH-path entry into the legacy memory_lock_policy. The
-        // `onfault_contains` reader takes a futex-backed RW reader lock —
-        // not formally lock-free. Two properties keep the VEH wait-free
-        // invariant intact:
-        //   (1) Writers (`arm_range`, `disarm_range`) touch only the
-        //       singleton's in-memory `ranges[]` / `count` while holding
-        //       the write lock; `apply_guard_pages` runs strictly
-        //       *outside* the lock. A writer therefore never faults on
-        //       user VA inside its own write-locked window, so the
-        //       same-thread reentrant-deadlock case cannot fire.
-        //   (2) Cross-thread contention parks the faulting thread on the
-        //       Futex until the writer unlocks; the wait is bounded by
-        //       the writer's short binary-search-plus-memmove window.
-        // `lock_range` then issues only NT syscalls (`NtLockVirtualMemory`,
-        // working-set quota adjust) and never re-enters this code path.
-        // Future migration of the lock-policy state into the va_tracker
-        // substrate will remove the reliance on property (1).
-        if (onfault_contains(fault_addr))
-          lock_range(fault_page, page_size);
+        // MLOCK_ONFAULT trip on the freshly-committed page. The bit is
+        // a property of the desc this fault already resolved against,
+        // so the check is one mask off `flags` — already loaded above
+        // for the demand-commit shape gate. No global table, no
+        // reader lock, no extra resolve.
+        if (flags & va_tracker::region_flag::MLOCK_ONFAULT)
+          (void)nt_pal::lock_range(fault_page, page_size);
         return EXCEPTION_CONTINUE_EXECUTION;
       }
     }
@@ -217,18 +206,65 @@ LONG try_demand_commit(EXCEPTION_POINTERS *ep) {
   SIZE_T commit_size = static_cast<SIZE_T>(cluster_end - cluster_start);
   NTSTATUS st = nt_pal::commit_in_reservation_no_writewatch(base, commit_size, prot);
   if (NT_SUCCESS(st)) {
-    // `MLOCK_ONFAULT` semantics: if this VA is inside a lock-on-fault
-    // range, lock the freshly-committed page right away. The same VEH
-    // wait-free invariant analysis as the NUMA-interleave branch above
-    // applies — `onfault_contains` is safe against same-thread reentry
-    // because writers never touch user VA inside the write-locked
-    // window, and `lock_range` issues only NT syscalls.
-    if (onfault_contains(fault_addr))
-      lock_range(fault_page, page_size);
+    // MLOCK_ONFAULT trip on the freshly-committed page. Per-desc flag
+    // already loaded above; one mask, no global table.
+    if (flags & va_tracker::region_flag::MLOCK_ONFAULT)
+      (void)nt_pal::lock_range(fault_page, page_size);
     return EXCEPTION_CONTINUE_EXECUTION;
   }
 
   return EXCEPTION_CONTINUE_SEARCH;
+}
+
+//===----------------------------------------------------------------------===//
+// Guard-page filter — the second half of MLOCK_ONFAULT
+//===----------------------------------------------------------------------===//
+//
+// Demand-commit faults are EXCEPTION_ACCESS_VIOLATION. MLOCK_ONFAULT
+// also has to fire on already-committed pages — `mlock2(MLOCK_ONFAULT)`
+// can be called on a fully-touched mapping, in which case there is no
+// commit fault to ride. The `mlock2` entry walks the range and ORs
+// `PAGE_GUARD` into each committed chunk's protection; the kernel then
+// raises `STATUS_GUARD_PAGE_VIOLATION` on first touch (and clears
+// PAGE_GUARD as a one-shot). This filter catches that violation,
+// resolves the desc, and locks if the bit is still set. The flag is
+// the source of truth for "should we react"; PAGE_GUARD is just the
+// mechanism that gets us a fault.
+//
+// Lives here rather than in a separate TU so that the two halves of
+// MLOCK_ONFAULT (commit-time and guard-page) sit next to each other
+// and share the same desc-resolution pattern.
+
+LONG try_mlock_onfault(EXCEPTION_POINTERS *ep) {
+  if (ep->ExceptionRecord->ExceptionCode !=
+      static_cast<DWORD>(STATUS_GUARD_PAGE_VIOLATION))
+    return EXCEPTION_CONTINUE_SEARCH;
+
+  uintptr_t fault_addr = reinterpret_cast<uintptr_t>(
+      ep->ExceptionRecord->ExceptionInformation[1]);
+
+  // Resolve against the va_tracker. A foreign / image / libc-internal
+  // PAGE_GUARD trip is not ours to handle; the master VEH chain falls
+  // through to whoever owns those VAs (the loader's stack-grow handler,
+  // a debugger, etc.).
+  auto ref_or =
+      va_tracker::resolve(reinterpret_cast<void *>(fault_addr));
+  if (!ref_or.has_value())
+    return EXCEPTION_CONTINUE_SEARCH;
+  va_tracker::RegionDesc *desc = ref_or.value().desc;
+  if (desc == nullptr)
+    return EXCEPTION_CONTINUE_SEARCH;
+
+  if (!(desc->flags_load() & va_tracker::region_flag::MLOCK_ONFAULT))
+    return EXCEPTION_CONTINUE_SEARCH;
+
+  // Guard bit already cleared by the CPU; the page is accessible.
+  // Lock it into the working set.
+  const SIZE_T page_size = get_page_size();
+  uintptr_t page_base = fault_addr & ~(page_size - 1);
+  (void)nt_pal::lock_range(reinterpret_cast<void *>(page_base), page_size);
+
+  return EXCEPTION_CONTINUE_EXECUTION;
 }
 
 } // namespace windows
@@ -251,3 +287,16 @@ LIBC_REGISTER_VEH_FILTER(mem_fault,
                          ::LIBC_NAMESPACE::windows::VEH_ACCESS_VIOLATION,
                          &mem_fault_filter,
                          ::LIBC_NAMESPACE::windows::VEH_PRIORITY_MEMORY)
+
+//===----------------------------------------------------------------------===//
+// MLOCK_ONFAULT guard-page filter
+//===----------------------------------------------------------------------===//
+
+static LONG mlock_onfault_filter(EXCEPTION_POINTERS *ep) {
+  return LIBC_NAMESPACE::windows::try_mlock_onfault(ep);
+}
+
+LIBC_REGISTER_VEH_FILTER(mlock_onfault,
+                         ::LIBC_NAMESPACE::windows::VEH_GUARD_PAGE,
+                         &mlock_onfault_filter,
+                         ::LIBC_NAMESPACE::windows::VEH_PRIORITY_MLOCK)

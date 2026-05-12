@@ -58,6 +58,14 @@ namespace windows {
 ///          protection, or commit failure).
 LONG try_demand_commit(EXCEPTION_POINTERS *ep);
 
+/// Catches `STATUS_GUARD_PAGE_VIOLATION` on pages that
+/// `mlock2(MLOCK_ONFAULT)` armed. Resolves the desc, checks the
+/// `region_flag::MLOCK_ONFAULT` bit, and locks the faulting page on
+/// hit. Returns `EXCEPTION_CONTINUE_EXECUTION` on hit, `CONTINUE_SEARCH`
+/// otherwise (foreign-VA guard-page trips fall through to the next
+/// filter — typically the loader's stack-grow handler).
+LONG try_mlock_onfault(EXCEPTION_POINTERS *ep);
+
 /// Pre-faults source pages by touching one byte per page.
 ///
 /// Used by I/O paths to drive lazy commits via the natural fault path

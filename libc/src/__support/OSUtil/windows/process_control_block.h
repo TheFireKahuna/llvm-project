@@ -66,6 +66,7 @@
 #include "src/__support/OSUtil/windows/ipc/ipc_process_state.h"
 #include "src/__support/OSUtil/windows/memory/legacy/brk_process_state.h"
 #include "src/__support/OSUtil/windows/memory/legacy/mapping_table_process_state.h"
+#include "src/__support/OSUtil/windows/memory/posix/mlock_process_state.h"
 #include "src/__support/OSUtil/windows/nls_state.h"
 #include "src/__support/OSUtil/windows/nt_pal/nt_pal_process_state.h"
 #include "src/__support/OSUtil/windows/nt_pal/numa_topology.h"
@@ -655,6 +656,19 @@ struct alignas(4096) ProcessControlBlock {
   // dtor pressure.
   // ------------------------------------------------------------------
   internal::NtPalProcessState nt_pal;
+
+  // ------------------------------------------------------------------
+  // mlockall flag bitmask — process-wide MCL_FUTURE / MCL_ONFAULT.
+  //
+  // Read on every successful mmap (P2 `lock_if_future`); written by
+  // mlockall (RELEASE merge via `fetch_or`) and munlockall (RELEASE
+  // store of zero). PCB-resident for the same reasons brk and nt_pal
+  // are: uniform fork-COW handling, no namespace-scope dtor pressure,
+  // and locality with sibling memory subsystem state. POSIX requires
+  // mlock state to be reset across fork; a small posix-band fork hook
+  // stores zero into `mcl_flags`.
+  // ------------------------------------------------------------------
+  internal::MlockProcessState mlock;
 
   // ==================================================================
   // THREADS — registry + wait infrastructure

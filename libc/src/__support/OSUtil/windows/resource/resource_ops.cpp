@@ -18,7 +18,7 @@
 #include "hdr/types/struct_rlimit.h"
 #include "hdr/types/struct_rusage.h"
 #include "include/llvm-libc-macros/sys-resource-macros.h"
-#include "src/__support/OSUtil/windows/memory/legacy/working_set.h"
+#include "src/__support/OSUtil/windows/nt_pal/working_set.h"
 #include "src/__support/OSUtil/windows/nt/nt_job.h"
 #include "src/__support/OSUtil/windows/nt/nt_process.h"
 #include "src/__support/macros/config.h"
@@ -94,8 +94,8 @@ intptr_t getrlimit(int resource, struct rlimit *lim) {
     if (lim->rlim_cur == RLIM_INFINITY) {
       SIZE_T min_ws, max_ws;
       ULONG ws_flags;
-      if (windows::query_working_set(NtCurrentProcess(), min_ws, max_ws,
-                                     ws_flags)) {
+      if (nt_pal::query_working_set(NtCurrentProcess(), min_ws, max_ws,
+                                    ws_flags)) {
         lim->rlim_cur = static_cast<rlim_t>(max_ws);
         lim->rlim_max = static_cast<rlim_t>(max_ws);
       }

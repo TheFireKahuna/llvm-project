@@ -956,7 +956,7 @@ add_header_library(
   HDRS
     memory/posix/posix_validation.h
   DEPENDS
-    .alloc_page_size
+    .page_size
     .nt_pal
     .ntdll
     libc.hdr.errno_macros
@@ -2026,12 +2026,12 @@ add_object_library(
     memory/mem_fault_handler.h
   DEPENDS
     .mapping_table
-    .memory_lock_policy_state
     .nt_pal
     .ntdll
     .va_tracker
     .veh_core
     .veh_filter_registry
+    .veh_state
     libc.src.__support.CPP.atomic
     libc.src.__support.macros.config
 )
@@ -2671,13 +2671,15 @@ add_object_library(
     .mapping_table
     .region_reconcile
     .remap_transaction
-    .memory_lock_policy_state
+    .process_control_block
+    .working_set
     .page_size
     libc.src.__support.CPP.bit
     libc.src.__support.common
     libc.src.__support.macros.config
     libc.src.__support.macros.optimization
     libc.hdr.errno_macros
+    libc.include.llvm-libc-macros.sys_mman_macros
 )
 
 # ---------------------------------------------------------------------------
@@ -2743,29 +2745,36 @@ add_object_library(
 )
 
 # ---------------------------------------------------------------------------
-# Memory locking engine — mlock, mlock2, munlock (POSIX-layer rebuild,
-# memory/posix/mlock.cpp) plus the legacy mlockall / munlockall paths
-# that stay quarantined until P9 of the POSIX_ROADMAP rebuilds them on
-# the new substrate. The single object library combines both so the
-# windows_syscalls aggregate keeps one .mlock_ops dependency edge.
+# Memory locking engine — full POSIX-layer rebuild on the new substrate.
+# Per-region MLOCK_ONFAULT flag lives on the va_tracker desc; the
+# PCB-resident `g_pcb.mlock.mcl_flags` carries process-wide MCL_FUTURE /
+# MCL_ONFAULT state; `mem_fault_handler.cpp`'s guard-page filter bridges
+# fault-time lock-on-touch into the per-desc check. The legacy
+# `memory_lock_policy.{h,cpp}` / `mlock_ops.{h,cpp}` are retired.
 # ---------------------------------------------------------------------------
 
 add_object_library(
   mlock_ops
   SRCS
     memory/posix/mlock.cpp
-    memory/legacy/mlock_ops.cpp
+    memory/posix/mlockall.cpp
   HDRS
     memory/posix/mlock.h
-    memory/legacy/mlock_ops.h
+    memory/posix/mlockall.h
+    memory/posix/mlock_policy.h
+    memory/posix/mlock_process_state.h
   DEPENDS
     .memory_posix_errno
+    .memory_posix_mutators
     .memory_posix_validation
+    .section_registry
     .nt_pal
     .ntdll
     .page_size
-    .working_set
-    .memory_lock_policy_state
+    .process_control_block
+    .va_region_desc
+    .va_tracker
+    libc.src.__support.CPP.atomic
     libc.src.__support.common
     libc.src.__support.macros.config
     libc.src.__support.macros.optimization
@@ -3121,38 +3130,24 @@ add_object_library(
     libc.include.llvm-libc-macros.sys_socket_macros
 )
 
-# Working set quota expansion and lockability checks for mlock/mlockall
+# Process working-set quota helpers + lockability predicate. Now lives
+# under nt_pal/ as a Layer 0 PAL header — process-wide kernel resource
+# state below POSIX (see file header for rationale).
 add_header_library(
   working_set
   HDRS
-    memory/legacy/working_set.h
+    nt_pal/working_set.h
   DEPENDS
     .ntdll
     libc.src.__support.macros.config
 )
 
-# Explicitly-owned MLOCK_ONFAULT state. VEH filter registered into the
-# unified dispatch table at VEH_PRIORITY_MLOCK via a `.libcveh` record;
-# Tier B Phase 3's register_all_static_veh_filters() installs it after
-# mlock_policy_startup_init() constructs the onfault state.
-add_object_library(
-  memory_lock_policy_state
-  SRCS
-    memory/legacy/memory_lock_policy.cpp
-  HDRS
-    memory/legacy/memory_lock_policy.h
-  DEPENDS
-    .libc_fini_registry
-    .nt_pal
-    .ntdll
-    .page_size
-    .veh_core
-    .veh_filter_registry
-    .working_set
-    libc.src.__support.CPP.new
-    libc.src.__support.macros.config
-    libc.src.__support.threads.windows.futex_utils
-)
+# Process-wide MLOCK_ONFAULT state is now per-region
+# (`region_flag::MLOCK_ONFAULT` on the va_tracker desc); the
+# `memory_lock_policy_state` object library that owned the legacy
+# sorted-ranges table + futex-RW lock + STATUS_GUARD_PAGE_VIOLATION
+# VEH filter is retired. The filter folded into `mem_fault_handler.cpp`;
+# the per-process `mlockall` flag bits live in `g_pcb.mlock`.
 
 add_object_library(
   windows_util
