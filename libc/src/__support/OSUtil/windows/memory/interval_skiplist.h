@@ -175,6 +175,14 @@ struct BucketGeometry {
 /// commit-charge cost (~30 MiB worst case across all buckets at
 /// saturation; pages stay zero-backed until touched, so no RSS hit).
 ///
+/// `chunk_bytes` is an allocator storage-domain constant — it dictates
+/// how many `SkiplistNodeBase` slots fit in one pagemap-stamped chunk,
+/// nothing more. It is **orthogonal** to the VA-range granularity of
+/// the intervals those nodes describe; `[lo, hi)` is arbitrary
+/// `uintptr_t`, and the substrate routes 4 KiB-granular intervals
+/// through the same buckets as 64 KiB-granular ones with no change in
+/// node layout, pin discipline, or retire path.
+///
 /// Static asserts in interval_skiplist.cpp pin the derived sizes.
 [[nodiscard]] LIBC_INLINE constexpr BucketGeometry
 bucket_geometry(uint32_t bucket) {

@@ -122,7 +122,7 @@ enum class BackingShape : uint8_t {
 ///   [25]     cached_chunk_id   — chunk_id of this slot (<=256).
 ///   [26]     cached_slot_idx   — slot index within the chunk (<=256).
 ///   [27]     shape             — PrivateCommit / SectionView.
-///   [28..31] placeholder_pages — placeholder size in 64 KiB units.
+///   [28..31] placeholder_pages — placeholder size in 4 KiB (NT page) units.
 ///   [32..39] node_canary       — per-slot canary, triple-validated.
 ///   [40..47] placeholder_base  — atomic; nulled at Stage 2 teardown.
 ///   [48..55] section_handle    — atomic; nulled at Stage 2 teardown.
@@ -184,14 +184,16 @@ struct alignas(64) DescBacking
     /// shape is separated from handle ownership.
     BackingShape shape{BackingShape::PrivateCommit};
 
-    /// Placeholder size in 64 KiB units. The placeholder covers
+    /// Placeholder size in 4 KiB (NT page) units. The placeholder covers
     /// `[placeholder_base, placeholder_base + placeholder_pages *
-    /// 64 KiB)`. May exceed any single referencing descriptor's
-    /// (lo, hi) range (brk reserves 4096 pages around a narrow
-    /// cursor; aligned reservations carry their kernel-rounded
-    /// actual size). Write-once at `backing_set_kernel_state` time;
-    /// extending the placeholder is handled by allocating a fresh
-    /// backing rather than mutating this field.
+    /// 4 KiB)`. May exceed any single referencing descriptor's
+    /// (lo, hi) range (brk reserves a wide cursor; aligned reservations
+    /// carry their kernel-rounded actual size; 4 KiB-granular post-
+    /// split survivors carry their exact byte length). Write-once at
+    /// `backing_set_kernel_state` time; extending the placeholder is
+    /// handled by allocating a fresh backing rather than mutating this
+    /// field. `uint32_t` × 4 KiB caps a single backing's placeholder
+    /// extent at 16 TiB, well above the 47-bit POSIX user VA ceiling.
     uint32_t placeholder_pages{0};
 
     /// Per-slot canary derived at alloc time from `partition_secret`
@@ -377,7 +379,8 @@ void backing_set_kernel_state(DescBacking *backing,
 ///   2. `NtClose` the captured handles if non-null.
 ///   3. RELEASE-store nullptr to `placeholder_base`, capturing the
 ///      prior value.
-///   4. `nt_pal::free_placeholder(saved_base, saved_pages * 64 KiB)`.
+///   4. `nt_pal::free_placeholder(saved_base)` — releases the entire
+///      placeholder VAD; the `saved_pages` value is informational only.
 ///   5. `g_va_tracker_backing_domain.retire(backing)`.
 ///
 /// Synchronous teardown — the kernel placeholder is `MEM_FREE` on

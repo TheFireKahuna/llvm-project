@@ -63,33 +63,32 @@ intptr_t mmap_anon_private(void *addr, size_t size, int prot, int flags) {
   if (LIBC_UNLIKELY(rounded_size == 0))
     return -ENOMEM;
 
-  // The substrate works at NT allocation granularity (64 KiB). A
-  // caller request smaller than that consumes a full 64 KiB
-  // placeholder; the difference is wasted by NT regardless of which
-  // layer rounds.
-  const uintptr_t kernel_bytes_raw =
-      ::LIBC_NAMESPACE::windows::align_up_to_granularity(rounded_size);
-  if (LIBC_UNLIKELY(kernel_bytes_raw == 0))
-    return -ENOMEM;
-  const size_t kernel_bytes = static_cast<size_t>(kernel_bytes_raw);
+  // NT reserves placeholders at 64 KiB allocation granularity. All
+  // acquire variants (`acquire`, `acquire_kernel_chosen`,
+  // `acquire_kernel_chosen_32bit`) internally split the rounded-up
+  // placeholder at the user boundary and release the pad to MEM_FREE,
+  // so a sub-64 KiB request commits exactly its page-aligned bytes
+  // with no lifetime-of-mapping waste. See
+  // `shrink_placeholder_to_user_bytes` in `va_tracker_transaction.cpp`.
 
   const vt::AcquireMeta meta = mp::anon_private_meta(prot, flags);
 
   if (flags & MAP_32BIT) {
     auto chosen = vt::acquire_kernel_chosen_32bit(
-        kernel_bytes, vt::RegionKind::AnonPrivate, meta);
+        rounded_size, vt::RegionKind::AnonPrivate, meta);
     if (!chosen.has_value())
       return -chosen.error();
     return reinterpret_cast<intptr_t>(chosen.value());
   }
 
-  // Hint path: honour an alloc-granularity-aligned caller hint via the
-  // regular `acquire`. A collision returns `EEXIST` and we fall
-  // through to the kernel-chosen path. Sub-granularity hints skip
-  // the honour attempt because the substrate refuses them and the
-  // kernel-chosen path will pick a clean base.
+  // Hint path: honour an alloc-granularity-aligned caller hint via
+  // `vt::acquire`. The hint must be alloc-aligned because that is
+  // NT's `MEM_RESERVE_PLACEHOLDER` base placement constraint, but the
+  // user's bytes are page-granular and the substrate handles the
+  // shrink internally. A collision returns `EEXIST` and we fall
+  // through to the kernel-chosen path.
   if (addr != nullptr && mp::is_alloc_aligned(addr)) {
-    vt::VaRange range = mp::make_range(addr, kernel_bytes);
+    vt::VaRange range = mp::make_range(addr, rounded_size);
     auto ref = vt::acquire(range, vt::RegionKind::AnonPrivate, meta);
     if (ref.has_value())
       return reinterpret_cast<intptr_t>(addr);
@@ -103,7 +102,7 @@ intptr_t mmap_anon_private(void *addr, size_t size, int prot, int flags) {
   // reservation. Single envelope, single substrate-side reserve, no
   // retry loop. The chosen base is returned directly.
   auto chosen =
-      vt::acquire_kernel_chosen(kernel_bytes, vt::RegionKind::AnonPrivate,
+      vt::acquire_kernel_chosen(rounded_size, vt::RegionKind::AnonPrivate,
                                 meta);
   if (!chosen.has_value())
     return -chosen.error();

@@ -77,6 +77,43 @@ LIBC_INLINE bool query_region_mri(const void *addr,
                                            sizeof(mri), &ret));
 }
 
+// Release `[base, base+bytes)` back to MEM_FREE if and only if it is a
+// pure placeholder VAD with no committed pages. Best-effort: any
+// negative signal (MEM_FREE, committed content, multi-VAD span, or any
+// kernel error) returns false without modifying state, so the caller
+// can proceed with its normal teardown path.
+//
+// Pure-placeholder detection uses one `MemoryRegionInformationEx`
+// query (constant-time, ~218 ns per `LatencyReference.md` §4) and
+// checks `PlaceholderReservation == 1`. Per `QueryVirtualMemory.md`
+// §1.3, that bit is set iff the VAD is bare placeholder (no commit-
+// replace has run); a placeholder VAD cannot contain committed
+// children because commit-replace turns the parent into independent
+// VADs first (`Placeholders.md` §2). Therefore one query per VAD is
+// sufficient — no per-page walk needed.
+//
+// Intended use: post-Swap survivor inspection after a partial release,
+// where a sibling slice would otherwise linger as reserved VA the
+// user no longer needs. Activation is gated on the acquire path
+// leaving the pad uncommitted; today's `mmap_anon_private` commits
+// the full placeholder, so the helper exists for future acquire-path
+// tightening and is not on the hot path.
+LIBC_INLINE bool pad_release_if_uncommitted(void *base, size_t bytes) {
+  if (base == nullptr || bytes == 0)
+    return false;
+  MEMORY_REGION_INFORMATION mri{};
+  if (!query_region_mri(base, mri))
+    return false;
+  if (mri.PlaceholderReservation == 0)
+    return false;
+  if (mri.RegionSize < bytes)
+    return false;
+  PVOID release_base = base;
+  SIZE_T release_size = bytes;
+  return NT_SUCCESS(::NtFreeVirtualMemory(
+      NtCurrentProcess(), &release_base, &release_size, MEM_RELEASE));
+}
+
 // Query MemoryWorkingSetExInformation (class 4) for a contiguous run
 // of pages starting at `addr`. The kernel takes an array of
 // `MEMORY_WORKING_SET_EX_INFORMATION` entries whose `VirtualAddress`

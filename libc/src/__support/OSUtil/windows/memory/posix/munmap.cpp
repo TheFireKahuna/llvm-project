@@ -12,14 +12,14 @@
 //      party VAs map to `EINVAL`. The same primitive the MAP_FIXED
 //      path uses; sharing the gate keeps the "what is unmappable"
 //      answer in one place.
-//   2) Two `va_tracker::split` calls at the alloc-granularity edges
-//      of the requested range. Pure metadata; no kernel work. Catches
-//      the straddler case (a region whose extent crosses one of the
-//      edges) so the subsequent release sees only fully-inside descs.
-//      A boundary that lands in MEM_FREE or on an exact region edge
+//   2) Two `va_tracker::split` calls at the page-aligned edges of the
+//      requested range. Pure metadata; no kernel work. Catches the
+//      straddler case (a region whose extent crosses one of the edges)
+//      so the subsequent release sees only fully-inside descs. A
+//      boundary that lands in MEM_FREE or on an exact region edge
 //      surfaces a benign `ENOENT` / `EINVAL` from split — both are
 //      "no straddle, nothing to do."
-//   3) `va_tracker::release` over the whole 64 KiB-aligned range. The
+//   3) `va_tracker::release` over the page-aligned range. The
 //      substrate iterates the locked set, releases each desc, and
 //      runs the Stage-2 teardown (unmap section view, free
 //      placeholder, close handles) synchronously per the substrate's
@@ -74,16 +74,14 @@ intptr_t munmap(void *addr, size_t size) {
   if (LIBC_UNLIKELY(mp::addr_plus_len_overflows(addr_val, rounded)))
     return -EINVAL;
 
-  // The substrate's typed-op API works at NT allocation granularity
-  // (64 KiB) — both edges round outward. `addr` from a successful
-  // mmap is already 64 KiB aligned, so the round-down is normally a
-  // no-op; the round-up captures the partial-tail case.
-  const uintptr_t lo = mp::align_down_to_granularity(addr_val);
-  const uintptr_t hi_raw = mp::align_up_to_granularity(addr_val + rounded);
-  if (LIBC_UNLIKELY(hi_raw == 0 || hi_raw <= lo))
-    return -EINVAL;
-
-  const size_t kernel_bytes = static_cast<size_t>(hi_raw - lo);
+  // The substrate's typed-op API now accepts page-granular ranges; the
+  // POSIX layer no longer rounds outward to NT allocation granularity.
+  // `addr` and `addr + rounded` are page-aligned by entry validation,
+  // so a 4 KiB munmap releases exactly 4 KiB. Straddler severance
+  // happens at the same page-aligned edges via `vt::split` below.
+  const uintptr_t lo = addr_val;
+  const uintptr_t hi = addr_val + rounded;
+  const size_t kernel_bytes = static_cast<size_t>(rounded);
 
   // Cordon probe. Loaded PE images, kernel mappings (TEB / PEB /
   // stack), and any foreign third-party VAs surface `EINVAL` before
@@ -96,13 +94,13 @@ intptr_t munmap(void *addr, size_t size) {
       e != 0)
     return -e;
 
-  // Pre-split at the alloc-granularity edges. A boundary that lands
-  // in MEM_FREE returns `ENOENT`; a boundary that lands on an exact
+  // Pre-split at the page-aligned edges. A boundary that lands in
+  // MEM_FREE returns `ENOENT`; a boundary that lands on an exact
   // region edge returns `EINVAL`. Both mean "no straddle here, no
-  // work to do" — silently tolerated. Only a strict-interior
-  // boundary triggers an actual split.
+  // work to do" — silently tolerated. Only a strict-interior boundary
+  // triggers an actual split.
   (void)vt::split(reinterpret_cast<void *>(lo));
-  (void)vt::split(reinterpret_cast<void *>(hi_raw));
+  (void)vt::split(reinterpret_cast<void *>(hi));
 
   vt::VaRange range =
       mp::make_range(reinterpret_cast<void *>(lo), kernel_bytes);

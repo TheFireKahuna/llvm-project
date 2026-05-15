@@ -52,9 +52,13 @@ namespace va_tracker {
 
 /// Half-open VA range, inclusive low / exclusive high.
 ///
-/// `start` must be 64 KiB aligned (NT allocation granularity) and `bytes`
-/// must be a positive multiple of 64 KiB; the API rejects other inputs
-/// with `Error(EINVAL)`. Empty ranges are rejected.
+/// Interior ops (`release`, `replace`, `mutate`, `split`, `walk_range`,
+/// `resolve`) require `start` and `bytes` to be page aligned (4 KiB on x86_64
+/// and AArch64). The acquire family (`acquire`, `acquire_kernel_chosen`,
+/// `acquire_kernel_chosen_32bit`) additionally requires alignment to NT
+/// allocation granularity (64 KiB) because that is the kernel's `MEM_RESERVE_
+/// PLACEHOLDER` base-placement granularity — see each op's precondition.
+/// The API rejects misaligned, empty, or wrapping ranges with `Error(EINVAL)`.
 struct VaRange {
   void *start{nullptr};
   size_t bytes{0};
@@ -181,10 +185,12 @@ using WalkVisitor = void (*)(VaRange covered, RegionDesc *desc, void *ctx);
 /// For a `range` that spans multiple ART leaves the engine decomposes
 /// into N per-arena envelopes (see `dispatch_per_arena_op` in
 /// `va_tracker_transaction.cpp`); each sub-envelope is atomic on its
-/// own arena, but the multi-arena composite is **best-effort** — if
-/// envelope `k` of N fails, envelopes `0..k-1` remain committed and
-/// visible, and the caller observes the first failed envelope's
-/// errno. Cross-arena cleanup is the caller's responsibility.
+/// own arena. On per-arena failure, the public surface automatically
+/// rolls back every sub-envelope that had committed (via `release` on
+/// the registered range) and frees any placeholder VADs the scout
+/// established. The caller observes the first failed envelope's errno
+/// and a fully-rolled-back state — no cross-arena partial residue,
+/// no per-call cleanup work.
 ///
 /// \pre `range` is `MEM_FREE`. The engine does not unmap an existing
 ///      mapping; use `replace` for that.
@@ -320,8 +326,10 @@ acquire_kernel_chosen_32bit(size_t bytes, RegionKind kind,
 /// straddler).
 ///
 /// \returns 0 on success; `-ENOENT` if no desc covers `boundary`;
-///          `-EINVAL` if `boundary` is not a 64 KiB-aligned strict
-///          interior of the covering desc.
+///          `-EINVAL` if `boundary` is not a 4 KiB-aligned (NT page-
+///          granularity) strict interior of the covering desc. NT supports
+///          placeholder splits at any page-aligned offset; see
+///          `Placeholders.md` §2 for the empirical contract.
 [[nodiscard]] int split(void *boundary);
 
 //===----------------------------------------------------------------------===//

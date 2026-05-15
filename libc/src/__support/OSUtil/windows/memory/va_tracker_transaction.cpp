@@ -231,17 +231,45 @@ namespace {
 //  Range validation and arena geometry
 //===----------------------------------------------------------------------===//
 
-// NT's allocation granularity. Every VA range entering the engine must be a
-// non-empty multiple of this on both base and length, and must not wrap.
+// NT's allocation granularity. Fresh-VA reservation (`NtAllocateVirtualMemoryEx
+// (MEM_RESERVE_PLACEHOLDER)`) is the only kernel constraint that requires it;
+// interior placeholder operations (split / partial release / replace / mutate)
+// accept page granularity per `Placeholders.md` §2.
 constexpr uintptr_t kAllocGranularity = 64u * 1024u;
 
-[[nodiscard]] LIBC_INLINE bool range_valid(VaRange r) {
+// NT page granularity. The lower bound for interior placeholder operations
+// (split / release / replace / mutate). Empirically confirmed against the
+// kernel in `Placeholders.md` §2: split offsets at 4 KiB and 8 KiB succeed,
+// 1-byte offsets are rejected with `STATUS_INVALID_PARAMETER_1`.
+constexpr uintptr_t kPageGranularity = 4u * 1024u;
+
+// Validator for acquire-family ops (`OpKind::Acquire`,
+// `OpKind::AcquireAtReserved`). Base must be NT-allocation-granularity
+// aligned (the kernel's `MEM_RESERVE_PLACEHOLDER` placement constraint)
+// but `bytes` may be any positive non-wrapping page-aligned value: the
+// envelope's NT phase rounds the reservation up to alloc granularity
+// internally and shrinks the placeholder to exactly `bytes` before the
+// commit step (see the `op.reserve_bytes > op.bytes` branch in
+// `run_envelope`'s commit loop).
+[[nodiscard]] LIBC_INLINE bool range_valid_acquire(VaRange r) {
   if (r.bytes == 0)
     return false;
   uintptr_t lo = r.lo();
   if ((lo & (kAllocGranularity - 1)) != 0)
     return false;
-  if ((r.bytes & (kAllocGranularity - 1)) != 0)
+  if ((r.bytes & (kPageGranularity - 1)) != 0)
+    return false;
+  uintptr_t hi = lo + r.bytes;
+  return hi >= lo;
+}
+
+[[nodiscard]] LIBC_INLINE bool range_valid_interior(VaRange r) {
+  if (r.bytes == 0)
+    return false;
+  uintptr_t lo = r.lo();
+  if ((lo & (kPageGranularity - 1)) != 0)
+    return false;
+  if ((r.bytes & (kPageGranularity - 1)) != 0)
     return false;
   uintptr_t hi = lo + r.bytes;
   return hi >= lo;
@@ -824,19 +852,41 @@ LIBC_INLINE int build_acquire_plan_body(const CommitIntent &i, Arena *arena,
   void *ph_base = i.meta.placeholder_base != nullptr
                       ? i.meta.placeholder_base
                       : reinterpret_cast<void *>(i.range.lo());
-  size_t ph_size = i.meta.placeholder_size != 0
-                       ? i.meta.placeholder_size
-                       : i.range.bytes;
-  if ((ph_size & (kAllocGranularity - 1)) != 0)
-    return -EINVAL;
-  uint32_t ph_pages = static_cast<uint32_t>(ph_size / kAllocGranularity);
+  // Two cases for the reserve geometry:
+  //   * Explicit identity override (brk's 256 MiB single-shot,
+  //     `posix_memalign` alignment headroom, mremap grow-into-headroom):
+  //     `meta.placeholder_size` is the full reservation extent and must
+  //     be alloc-granularity-aligned. The caller's `range.bytes` is the
+  //     narrow registered slice inside that extent; the commit step
+  //     covers only the slice. No envelope-side shrink runs because
+  //     the caller explicitly sized the reservation.
+  //   * Default (`meta.placeholder_size == 0`): the reservation matches
+  //     `range.bytes`, rounded up to alloc granularity for NT's
+  //     `MEM_RESERVE_PLACEHOLDER` placement constraint. The envelope's
+  //     NT phase shrinks the rounded-up placeholder down to `bytes`
+  //     (split + pad release) so `commit_replace` sees an exact-sized
+  //     placeholder.
+  size_t identity_bytes;
+  size_t reserve_bytes;
+  if (i.meta.placeholder_size != 0) {
+    if ((i.meta.placeholder_size & (kAllocGranularity - 1)) != 0)
+      return -EINVAL;
+    identity_bytes = i.meta.placeholder_size;
+    reserve_bytes = i.meta.placeholder_size;
+  } else {
+    identity_bytes = i.range.bytes;
+    reserve_bytes = (i.range.bytes + (kAllocGranularity - 1)) &
+                    ~(kAllocGranularity - 1);
+  }
+  uint32_t ph_pages =
+      static_cast<uint32_t>(identity_bytes / kPageGranularity);
 
   CommitOp &op = plan.inside_commit;
   op.kind = kind_is_section_backed(i.kind) ? CommitKind::MapSectionReplace
                                             : CommitKind::CommitReplace;
   op.reserve_placeholder_first = ReserveFirst;
   op.reserve_base = ph_base;
-  op.reserve_bytes = ph_size;
+  op.reserve_bytes = reserve_bytes;
   op.base = reinterpret_cast<void *>(i.range.lo());
   op.bytes = i.range.bytes;
   op.prot = i.meta.view_prot;
@@ -1008,7 +1058,7 @@ int build_plan_release(const CommitIntent &i, Arena *arena,
       continue;
     uintptr_t b_lo = reinterpret_cast<uintptr_t>(ph_base);
     uintptr_t b_hi = b_lo + static_cast<uintptr_t>(b->placeholder_pages) *
-                                kAllocGranularity;
+                                kPageGranularity;
     if (b_lo < i.range.lo()) {
       if (left_b != nullptr && left_b != b)
         return -ENOTSUP;
@@ -1147,7 +1197,7 @@ int build_plan_replace(const CommitIntent &i, Arena *arena,
       continue;
     uintptr_t b_lo = reinterpret_cast<uintptr_t>(ph_base);
     uintptr_t b_hi = b_lo + static_cast<uintptr_t>(b->placeholder_pages) *
-                                kAllocGranularity;
+                                kPageGranularity;
     if (b_lo < i.range.lo()) {
       // Multiple distinct left-edge-extending backings would imply a
       // chain discontinuity. Refuse rather than try to interpret it.
@@ -1201,7 +1251,7 @@ int build_plan_replace(const CommitIntent &i, Arena *arena,
   op.section_offset.QuadPart = static_cast<int64_t>(i.meta.section_offset);
   op.placeholder_identity_base = reinterpret_cast<void *>(i.range.lo());
   op.placeholder_identity_pages =
-      static_cast<uint32_t>(i.range.bytes / kAllocGranularity);
+      static_cast<uint32_t>(i.range.bytes / kPageGranularity);
   op.backing_shape = kind_is_section_backed(i.kind)
                          ? BackingShape::SectionView
                          : BackingShape::PrivateCommit;
@@ -1701,6 +1751,39 @@ int execute_plan(CommitPlan &plan, const LockedSet &locked,
       op.placeholder_identity_base = reserved;
     }
 
+    // Sub-granularity shrink. NT reserves placeholders at allocation
+    // granularity, so a page-granular `bytes` produces an over-reserve
+    // of up to `kAllocGranularity - kPageGranularity` bytes. The
+    // backing's placeholder identity is `placeholder_identity_pages *
+    // kPageGranularity` — the size the caller meant to keep — which
+    // can be less than `reserve_bytes` only in the over-reserve case.
+    // When `meta.placeholder_size` is explicitly set (brk's 256 MiB
+    // single-shot, `posix_memalign` headroom, `mremap` grow-into-
+    // headroom), `reserve_bytes == identity_bytes` and no shrink
+    // runs: the caller-sized placeholder is preserved intact.
+    //
+    // The split is on `placeholder_identity_base` whether the
+    // envelope just reserved (`reserve_placeholder_first == true`) or
+    // the caller pre-reserved via the scout pattern in
+    // `acquire_kernel_chosen[_32bit]`. The pad is a bare placeholder
+    // by construction — no MRI_Ex probe needed before MEM_RELEASE.
+    const size_t identity_bytes =
+        static_cast<size_t>(op.placeholder_identity_pages) *
+        kPageGranularity;
+    if (op.reserve_bytes > identity_bytes) {
+      if (LIBC_UNLIKELY(!nt_pal::split_placeholder(
+              op.placeholder_identity_base, identity_bytes))) {
+        if (op.reserve_placeholder_first)
+          (void)nt_pal::free_placeholder(op.placeholder_identity_base);
+        return -ENOMEM;
+      }
+      PVOID pad = static_cast<char *>(op.placeholder_identity_base) +
+                  identity_bytes;
+      SIZE_T pad_size = op.reserve_bytes - identity_bytes;
+      (void)::NtFreeVirtualMemory(NtCurrentProcess(), &pad, &pad_size,
+                                  MEM_RELEASE);
+    }
+
     NTSTATUS st = run_commit(op);
     if (!NT_SUCCESS(st)) {
       if (op.reserve_placeholder_first &&
@@ -1752,7 +1835,7 @@ int execute_plan(CommitPlan &plan, const LockedSet &locked,
     size_t sibling_bytes =
         static_cast<size_t>(plan.range.lo() - plan.left_sibling.lo);
     uint32_t sibling_pages =
-        static_cast<uint32_t>(sibling_bytes / kAllocGranularity);
+        static_cast<uint32_t>(sibling_bytes / kPageGranularity);
 
     if (plan.left_sibling.old_shape == BackingShape::SectionView) {
       // Placeholder → MAPPED at the surviving slice.
@@ -1787,7 +1870,7 @@ int execute_plan(CommitPlan &plan, const LockedSet &locked,
     size_t sibling_bytes =
         static_cast<size_t>(plan.right_sibling.hi - plan.right_sibling.lo);
     uint32_t sibling_pages =
-        static_cast<uint32_t>(sibling_bytes / kAllocGranularity);
+        static_cast<uint32_t>(sibling_bytes / kPageGranularity);
 
     if (plan.right_sibling.old_shape == BackingShape::SectionView) {
       NTSTATUS st = nt_pal::map_section_replace(
@@ -2265,7 +2348,7 @@ void run_stage2(Arena *arena, VaRange range, const LockedSet &locked,
     uintptr_t b_lo = reinterpret_cast<uintptr_t>(
         b->placeholder_base.load(cpp::MemoryOrder::ACQUIRE));
     uintptr_t b_hi = b_lo + static_cast<uintptr_t>(b->placeholder_pages) *
-                                kAllocGranularity;
+                                kPageGranularity;
     if (b_lo != 0 && b_lo < range.lo()) {
       SurvivorScanCtx sctx{b, /*found=*/false};
       SurvivorScanAdapter adapter;
@@ -2328,7 +2411,15 @@ using BuildPlanFn = int (*)(const CommitIntent &, Arena *, const LockedSet &,
 /// the provisional list and `retire_unpublished_nodes` catch every backing
 /// and node alloc so failure paths cannot leak.
 int run_envelope(const CommitIntent &intent) {
-  if (LIBC_UNLIKELY(!range_valid(intent.range)))
+  // Acquire family demands 64 KiB alignment because the kernel chooses the
+  // base under `MEM_RESERVE_PLACEHOLDER` at NT allocation granularity.
+  // Interior ops (release/replace/mutate/split) act on already-reserved
+  // placeholders where NT accepts page granularity (`Placeholders.md` §2).
+  const bool ok_range =
+      (intent.op == OpKind::Acquire || intent.op == OpKind::AcquireAtReserved)
+          ? range_valid_acquire(intent.range)
+          : range_valid_interior(intent.range);
+  if (LIBC_UNLIKELY(!ok_range))
     return -EINVAL;
   if (LIBC_UNLIKELY(!fits_one_arena(intent.range)))
     return -ENOTSUP; // Caller (the public typed op) decomposes.
@@ -2400,7 +2491,7 @@ int run_envelope(const CommitIntent &intent) {
         uintptr_t b_lo = reinterpret_cast<uintptr_t>(ph);
         uintptr_t b_hi =
             b_lo + static_cast<uintptr_t>(b->placeholder_pages) *
-                       kAllocGranularity;
+                       kPageGranularity;
         if (b_lo < want_lo)
           want_lo = b_lo;
         if (b_hi > want_hi)
@@ -2526,21 +2617,6 @@ int dispatch_per_arena_op(CommitIntent intent) {
 // shorthands implemented as one-step transactions over the same engine —
 // not as a parallel mechanism.
 
-::LIBC_NAMESPACE::ErrorOr<RegionRef>
-acquire(VaRange range, RegionKind kind, const AcquireMeta &meta) {
-  CommitIntent intent;
-  intent.op = OpKind::Acquire;
-  intent.range = range;
-  intent.kind = kind;
-  intent.meta = meta;
-
-  int rc = dispatch_per_arena_op(intent);
-  if (rc != 0)
-    return ::LIBC_NAMESPACE::Error{rc < 0 ? -rc : rc};
-
-  return resolve(range.start);
-}
-
 // Shared tail of every kernel-chosen acquire variant. The caller has
 // already scouted a placeholder at `base` (any sub-2-GiB / unconstrained /
 // future NUMA-affined scout dispatches here); this routine drives the
@@ -2552,11 +2628,104 @@ acquire(VaRange range, RegionKind kind, const AcquireMeta &meta) {
 // the callers funnel a failed scout through here without duplicating
 // the ENOMEM return.
 namespace {
+
+constexpr uintptr_t kArenaStep = uintptr_t{1} << 32;
+
+// Free every BARE-PLACEHOLDER VAD that still spans `[base, base + bytes)`
+// after a partial-failure cleanup. Walks the range at arena-step
+// granularity because every interior arena boundary was split into
+// its own VAD by `split_reserved_at_arena_boundaries` before the
+// dispatch ran.
+//
+// Probes each VAD via `MemoryRegionInformationEx` and only releases
+// when `PlaceholderReservation == 1`: a committed VAD whose desc is
+// still registered (rare — only reached if `vt::release` itself
+// failed) must NOT be MEM_RELEASE'd here, because that releases the
+// commit too and leaves the desc pointing at MEM_FREE memory. A
+// MEM_FREE address fails the MRI_Ex query and is silently skipped.
+LIBC_INLINE void free_placeholders_in_range(void *base, size_t bytes) {
+  uintptr_t lo = reinterpret_cast<uintptr_t>(base);
+  uintptr_t end = lo + bytes;
+  uintptr_t cur = lo;
+  while (cur < end) {
+    MEMORY_REGION_INFORMATION mri{};
+    if (nt_pal::query_region_mri(reinterpret_cast<void *>(cur), mri) &&
+        mri.PlaceholderReservation != 0) {
+      (void)nt_pal::free_placeholder(reinterpret_cast<void *>(cur));
+    }
+    // Next VAD starts at the next arena boundary above `cur`. If
+    // `cur` is itself arena-aligned, advance by one full arena.
+    cur = (cur & ~(kArenaStep - 1)) + kArenaStep;
+  }
+}
+
+// Split the placeholder anchored at `base` at every arena boundary
+// strictly within `[base, base + bytes)`. After return on success the
+// scout reservation is N adjacent VADs whose boundaries align with
+// the dispatcher's per-arena decomposition.
+//
+// Required because `MEM_REPLACE_PLACEHOLDER` requires the commit
+// size to exactly match the underlying placeholder VAD
+// (`Placeholders.md` §3); the kernel-chosen scout creates a single
+// VAD spanning every arena, so without these splits the 2nd+ per-
+// arena `commit_replace` would fail with STATUS_INVALID_PARAMETER.
+//
+// `OpKind::Acquire` does not need this because each per-arena sub-
+// envelope reserves its own slice (one VAD per slice by
+// construction). The fix applies only to `OpKind::AcquireAtReserved`
+// (the `acquire_kernel_chosen[_32bit]` scout path).
+//
+// On split failure the helper frees every VAD it already created
+// plus the un-split tail before returning, so the caller does not
+// own any partial state and surfaces `-ENOMEM` directly.
+[[nodiscard]] LIBC_INLINE int
+split_reserved_at_arena_boundaries(void *base, size_t bytes) {
+  uintptr_t lo = reinterpret_cast<uintptr_t>(base);
+  uintptr_t end = lo + bytes;
+  uintptr_t boundary = (lo & ~(kArenaStep - 1)) + kArenaStep;
+  uintptr_t current_lo = lo;
+  while (boundary < end) {
+    size_t offset = static_cast<size_t>(boundary - current_lo);
+    if (LIBC_UNLIKELY(!nt_pal::split_placeholder(
+            reinterpret_cast<void *>(current_lo), offset))) {
+      // Free every VAD we already split off plus the un-split
+      // remainder. Walk arena boundaries from `lo` through and
+      // including `current_lo` (the still-too-big VAD).
+      uintptr_t cleanup_lo = lo;
+      while (true) {
+        (void)nt_pal::free_placeholder(
+            reinterpret_cast<void *>(cleanup_lo));
+        if (cleanup_lo == current_lo)
+          break;
+        cleanup_lo = (cleanup_lo & ~(kArenaStep - 1)) + kArenaStep;
+      }
+      return -ENOMEM;
+    }
+    current_lo = boundary;
+    boundary += kArenaStep;
+  }
+  return 0;
+}
+
 [[nodiscard]] LIBC_INLINE ::LIBC_NAMESPACE::ErrorOr<void *>
 finish_acquire_at_reserved(void *base, size_t bytes, RegionKind kind,
                            const AcquireMeta &meta) {
   if (base == nullptr)
     return ::LIBC_NAMESPACE::Error{ENOMEM};
+
+  // Multi-arena handling. The scout reserves one big VAD; the per-
+  // arena dispatcher splits the registration into N sub-envelopes,
+  // but `commit_replace` needs each slice to be its own VAD. Pre-
+  // split at every arena boundary before dispatch so the size-match
+  // constraint holds for every per-arena commit.
+  const bool multi_arena = !fits_one_arena(VaRange{base, bytes});
+  if (multi_arena) {
+    int srx = split_reserved_at_arena_boundaries(base, bytes);
+    if (LIBC_UNLIKELY(srx != 0)) {
+      // The helper already cleaned up every VAD it created.
+      return ::LIBC_NAMESPACE::Error{-srx};
+    }
+  }
 
   CommitIntent intent;
   intent.op = OpKind::AcquireAtReserved;
@@ -2568,27 +2737,80 @@ finish_acquire_at_reserved(void *base, size_t bytes, RegionKind kind,
   if (rc != 0) {
     // Envelope failed. The Acquire-at-reserved plan never frees the
     // placeholder on its own — that contract belongs to the caller
-    // (us). Free silently; if a later phase already tore it down via
-    // Stage 2, NT returns STATUS_INVALID_ADDRESS and we treat the
-    // double-free as a no-op.
-    (void)nt_pal::free_placeholder(base);
+    // (us).
+    //
+    // Multi-arena composite is best-effort per the public `acquire`
+    // contract: some slices may have committed before the failing
+    // one. Release any committed slices via `va_tracker::release`
+    // (Stage 2 frees their kernel state and unregisters the descs)
+    // and free every remaining placeholder VAD by walking arena
+    // boundaries. Single-arena collapses to a direct free of the one
+    // VAD.
+    if (multi_arena) {
+      (void)::LIBC_NAMESPACE::windows::va_tracker::release(
+          VaRange{base, bytes});
+      free_placeholders_in_range(base, bytes);
+    } else {
+      (void)nt_pal::free_placeholder(base);
+    }
     return ::LIBC_NAMESPACE::Error{rc < 0 ? -rc : rc};
   }
 
   return base;
 }
+
 } // namespace
+
+::LIBC_NAMESPACE::ErrorOr<RegionRef>
+acquire(VaRange range, RegionKind kind, const AcquireMeta &meta) {
+  // Validation matches `range_valid_acquire`: alloc-aligned base
+  // (NT's `MEM_RESERVE_PLACEHOLDER` placement constraint) + page-
+  // aligned bytes. The envelope's NT phase rounds the reservation up
+  // to alloc granularity internally and shrinks the placeholder so
+  // sub-granularity requests commit exactly `bytes`. Multi-arena is
+  // handled by the per-arena dispatcher: each sub-envelope's slice
+  // is shrunk independently within its own arena, so a sub-granular
+  // tail spanning a 4 GiB boundary works without coordination.
+  CommitIntent intent;
+  intent.op = OpKind::Acquire;
+  intent.range = range;
+  intent.kind = kind;
+  intent.meta = meta;
+  int rc = dispatch_per_arena_op(intent);
+  if (rc != 0) {
+    // Multi-arena composite failure: some per-arena sub-envelopes
+    // may have committed and registered before the failing one.
+    // Roll them back via `release` so the caller never observes a
+    // partial multi-arena acquire. The failed sub-envelope's own
+    // state was rolled back inside the envelope (its `reserve_first
+    // == true` path frees its placeholder on commit failure, or
+    // `backing_kill_and_retire` runs via the provisional list on
+    // post-commit failures); slices that never ran were never
+    // reserved. No `free_placeholders_in_range` walk is needed for
+    // `OpKind::Acquire` for the same reason — each slice owns its
+    // own reservation, and that reservation is either committed-
+    // and-registered (handled by `release`) or already freed.
+    if (range.bytes != 0)
+      (void)release(range);
+    return ::LIBC_NAMESPACE::Error{rc < 0 ? -rc : rc};
+  }
+  return resolve(range.start);
+}
 
 ::LIBC_NAMESPACE::ErrorOr<void *>
 acquire_kernel_chosen(size_t bytes, RegionKind kind,
                       const AcquireMeta &meta) {
   if (LIBC_UNLIKELY(bytes == 0 ||
-                    (bytes & (kAllocGranularity - 1)) != 0))
+                    (bytes & (kPageGranularity - 1)) != 0))
     return ::LIBC_NAMESPACE::Error{EINVAL};
 
   // Unconstrained scout — kernel picks any MEM_FREE base across the
-  // full user VA. The placeholder stays in our hands across the
-  // envelope so no other POSIX-layer consumer can race the VA.
+  // full user VA, rounding the request up to alloc granularity. The
+  // envelope's `AcquireAtReserved` path shrinks the placeholder to
+  // exactly `bytes` before commit (see the
+  // `op.reserve_bytes > op.bytes` branch in `run_envelope`), so a
+  // sub-64 KiB request returns the over-reservation pad to MEM_FREE
+  // without any pre-envelope NT work in the public path.
   return finish_acquire_at_reserved(
       nt_pal::reserve_placeholder(nullptr, bytes), bytes, kind, meta);
 }
@@ -2597,13 +2819,14 @@ acquire_kernel_chosen(size_t bytes, RegionKind kind,
 acquire_kernel_chosen_32bit(size_t bytes, RegionKind kind,
                             const AcquireMeta &meta) {
   if (LIBC_UNLIKELY(bytes == 0 ||
-                    (bytes & (kAllocGranularity - 1)) != 0))
+                    (bytes & (kPageGranularity - 1)) != 0))
     return ::LIBC_NAMESPACE::Error{EINVAL};
 
   // Low-2-GiB-constrained scout for `MAP_32BIT`. Same envelope
   // contract as the unconstrained sibling — the placeholder is
   // never visible as MEM_FREE between the scout and the commit, so
-  // a concurrent MAP_32BIT request cannot win the same VA.
+  // a concurrent MAP_32BIT request cannot win the same VA. Sub-
+  // granularity shrink runs inside the envelope.
   return finish_acquire_at_reserved(
       nt_pal::reserve_placeholder_32bit(bytes), bytes, kind, meta);
 }
@@ -2650,19 +2873,19 @@ int mutate(VaRange range, DescMutator mutator, void *ctx, DWORD prot_change,
 
 int split(void *boundary) {
   uintptr_t b = reinterpret_cast<uintptr_t>(boundary);
-  if ((b & (kAllocGranularity - 1)) != 0)
+  if ((b & (kPageGranularity - 1)) != 0)
     return EINVAL;
 
   // The envelope range must lie entirely inside one arena (4 GiB leaf),
   // or `run_envelope`'s `fits_one_arena` check rejects it with `-ENOTSUP`.
-  // A naive `[b - 64K, b + 64K)` window straddles an arena boundary
+  // A naive `[b - 4K, b + 4K)` window straddles an arena boundary
   // whenever `b` is itself 4 GiB-aligned, silently breaking the
   // single-cover, boundary-strictly-interior contract.
   //
   // Geometry: when `b` is 4 GiB-aligned, no desc can straddle `b` (the
   // arena edge is itself a hard boundary in the ART/skiplist routing),
   // so split at an arena edge is meaningless and returns `EINVAL`.
-  // Otherwise the 2 × 64 KiB window is centred at `b` and clamped to
+  // Otherwise the 2 × 4 KiB window is centred at `b` and clamped to
   // the arena interior; `b` must remain strictly inside the window so
   // `build_plan_split` can verify the boundary lies inside one captured
   // desc.
@@ -2670,8 +2893,8 @@ int split(void *boundary) {
   uintptr_t arena_hi_excl = arena_lo + (uintptr_t{1} << 32);
   if (b == arena_lo)
     return EINVAL;
-  uintptr_t lo = b - kAllocGranularity;
-  uintptr_t hi = b + kAllocGranularity;
+  uintptr_t lo = b - kPageGranularity;
+  uintptr_t hi = b + kPageGranularity;
   if (lo < arena_lo)
     lo = arena_lo;
   if (hi > arena_hi_excl)

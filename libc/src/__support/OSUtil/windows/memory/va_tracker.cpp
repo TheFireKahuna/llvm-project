@@ -101,15 +101,19 @@ void va_tracker_load_key_for_arena(Arena *leaf, uint8_t out_key[kArtKeyLen]) {
 // Range validation and arena resolution.
 //===----------------------------------------------------------------------===//
 
-constexpr uintptr_t kAllocGranularity = 64u * 1024u;
+constexpr uintptr_t kPageGranularity = 4u * 1024u;
 
-[[nodiscard]] LIBC_INLINE bool range_valid(VaRange r) {
+// Read-side predicate for `walk_range`. Accepts page-aligned ranges so a
+// caller iterating a 4 KiB-granular mapping (post-`split` sub-range) is not
+// rejected here. The 64 KiB constraint only applies to fresh-VA acquisition;
+// see `va_tracker_transaction.cpp` `range_valid_acquire` for that path.
+[[nodiscard]] LIBC_INLINE bool range_valid_interior(VaRange r) {
     if (r.bytes == 0)
         return false;
     uintptr_t lo = r.lo();
-    if ((lo & (kAllocGranularity - 1)) != 0)
+    if ((lo & (kPageGranularity - 1)) != 0)
         return false;
-    if ((r.bytes & (kAllocGranularity - 1)) != 0)
+    if ((r.bytes & (kPageGranularity - 1)) != 0)
         return false;
     uintptr_t hi = lo + r.bytes;
     // Overflow check: a wraparound `hi` indicates lo + bytes exceeds the
@@ -212,7 +216,7 @@ struct WalkAdapter {
 //===----------------------------------------------------------------------===//
 
 void walk_range(VaRange range, WalkVisitor visitor, void *ctx) {
-    if (visitor == nullptr || !range_valid(range))
+    if (visitor == nullptr || !range_valid_interior(range))
         return;
 
     Arena *arena = resolve_arena_for_va(range.lo());
@@ -301,7 +305,7 @@ struct SerializeIntervalVisitor {
                 b.load<&DescBacking::placeholder_base>(cpp::MemoryOrder::ACQUIRE);
             meta.placeholder_size =
                 static_cast<size_t>(b.read<&DescBacking::placeholder_pages>()) *
-                static_cast<size_t>(kAllocGranularity);
+                static_cast<size_t>(kPageGranularity);
         }
         meta.section_offset =
             static_cast<uint64_t>(rd->section_offset.QuadPart);

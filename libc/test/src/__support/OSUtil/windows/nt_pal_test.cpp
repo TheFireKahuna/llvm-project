@@ -350,4 +350,125 @@ TEST(LlvmLibcNtPalTest, QueryWorkingSetExSeesResidency) {
   EXPECT_TRUE(nt_pal::free_placeholder(p));
 }
 
+// ---------------------------------------------------------------------------
+// Phase 2 — 4 KiB-granular placeholder split contract on WW-armed VADs.
+//
+// NT supports placeholder splits at any page-aligned offset
+// (`Placeholders.md` §2). The pre-existing
+// `CommitReplaceWritewatchArmsWriteWatch` test takes the conservative
+// full-range cleanup because the kernel's published behavior on WW-armed
+// VADs was unclear; this empirical probe nails down the actual contract:
+// `MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER` over a 4 KiB sub-range of a
+// WW-armed VAD succeeds, the bitmap on the released slice is destroyed
+// (per `WriteWatch.md` §5), and the surviving siblings remain queryable
+// via `MemoryRegionInformationEx`.
+// ---------------------------------------------------------------------------
+
+TEST(LlvmLibcNtPalTest, SubPageReleaseOnWritewatchArmedSucceeds) {
+  void *p = nt_pal::reserve_placeholder(kRegionSize);
+  ASSERT_NE(p, static_cast<void *>(nullptr));
+  ASSERT_TRUE(NT_SUCCESS(
+      nt_pal::commit_replace_writewatch(p, kRegionSize, PAGE_READWRITE)));
+
+  // Dirty one page in the head slice so WW carries observable state.
+  auto *bytes = static_cast<volatile unsigned char *>(p);
+  bytes[0] = 0xA5;
+
+  // Release one page at offset +4 KiB via MEM_RELEASE | MEM_PRESERVE_
+  // PLACEHOLDER. The kernel splits the WW-armed VAD into three: head
+  // [base, base+4K), hole [base+4K, base+8K) → MEM_FREE, tail
+  // [base+8K, base+64K).
+  PVOID release_base = static_cast<unsigned char *>(p) + kPage;
+  SIZE_T release_size = kPage;
+  NTSTATUS st =
+      ::NtFreeVirtualMemory(::NtCurrentProcess(), &release_base,
+                            &release_size,
+                            MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER);
+  EXPECT_TRUE(NT_SUCCESS(st));
+
+  // Three MRI_Ex queries pin the resulting layout. Constant-time per
+  // call; structural fit beats a bulk enumeration at three known VADs.
+  MEMORY_REGION_INFORMATION head{}, hole{}, tail{};
+  EXPECT_TRUE(nt_pal::query_region_mri(p, head));
+  EXPECT_TRUE(nt_pal::query_region_mri(
+      static_cast<unsigned char *>(p) + 2 * kPage, tail));
+
+  // The hole VAD reports MEM_FREE via MBI; MRI_Ex fails on MEM_FREE
+  // addresses per its documented contract, so use MBI to characterize
+  // the hole.
+  MEMORY_BASIC_INFORMATION hole_mbi{};
+  ASSERT_TRUE(
+      nt_pal::query_region(static_cast<unsigned char *>(p) + kPage, hole_mbi));
+  EXPECT_EQ(hole_mbi.State, static_cast<DWORD>(MEM_FREE));
+
+  // Cleanup. Release surviving siblings to MEM_FREE.
+  PVOID head_base = p;
+  SIZE_T head_size = kPage;
+  EXPECT_TRUE(NT_SUCCESS(
+      ::NtFreeVirtualMemory(::NtCurrentProcess(), &head_base, &head_size,
+                            MEM_RELEASE)));
+
+  PVOID tail_base = static_cast<unsigned char *>(p) + 2 * kPage;
+  SIZE_T tail_size = kRegionSize - 2 * kPage;
+  EXPECT_TRUE(NT_SUCCESS(
+      ::NtFreeVirtualMemory(::NtCurrentProcess(), &tail_base, &tail_size,
+                            MEM_RELEASE)));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — pad_release_if_uncommitted helper contract.
+//
+// Best-effort helper: returns true and releases the slice iff the target
+// VAD is a bare placeholder reservation (PlaceholderReservation == 1) and
+// the slice fits inside one VAD. Any other state — committed content,
+// MEM_FREE, multi-VAD span, kernel error — returns false without touching
+// VA state.
+// ---------------------------------------------------------------------------
+
+TEST(LlvmLibcNtPalTest, PadReleaseIfUncommittedReleasesBarePlaceholder) {
+  void *p = nt_pal::reserve_placeholder(kRegionSize);
+  ASSERT_NE(p, static_cast<void *>(nullptr));
+
+  // Split off the first page so we have a 4 KiB placeholder slice
+  // adjacent to a 60 KiB placeholder slice — both bare placeholders.
+  EXPECT_TRUE(nt_pal::split_placeholder(p, kPage));
+
+  EXPECT_TRUE(nt_pal::pad_release_if_uncommitted(p, kPage));
+
+  MEMORY_BASIC_INFORMATION mbi{};
+  ASSERT_TRUE(nt_pal::query_region(p, mbi));
+  EXPECT_EQ(mbi.State, static_cast<DWORD>(MEM_FREE));
+
+  // Cleanup the surviving 60 KiB placeholder.
+  PVOID tail = static_cast<unsigned char *>(p) + kPage;
+  SIZE_T tail_size = 0;
+  EXPECT_TRUE(NT_SUCCESS(::NtFreeVirtualMemory(::NtCurrentProcess(), &tail,
+                                                &tail_size, MEM_RELEASE)));
+}
+
+TEST(LlvmLibcNtPalTest, PadReleaseIfUncommittedSkipsCommitted) {
+  void *p = nt_pal::reserve_placeholder(kRegionSize);
+  ASSERT_NE(p, static_cast<void *>(nullptr));
+  ASSERT_TRUE(
+      NT_SUCCESS(nt_pal::commit_replace(p, kRegionSize, PAGE_READWRITE)));
+
+  // The whole VAD is now committed (PlaceholderReservation == 0); the
+  // helper must skip.
+  EXPECT_FALSE(nt_pal::pad_release_if_uncommitted(p, kPage));
+
+  MEMORY_BASIC_INFORMATION mbi{};
+  ASSERT_TRUE(nt_pal::query_region(p, mbi));
+  EXPECT_EQ(mbi.State, static_cast<DWORD>(MEM_COMMIT));
+
+  EXPECT_TRUE(nt_pal::decommit_preserve(p, kRegionSize));
+  EXPECT_TRUE(nt_pal::free_placeholder(p));
+}
+
+TEST(LlvmLibcNtPalTest, PadReleaseIfUncommittedSkipsMemFree) {
+  // Any MEM_FREE address — the MRI_Ex query fails on MEM_FREE per its
+  // contract, the helper returns false without touching state.
+  void *fake = reinterpret_cast<void *>(0x600000010000ULL);
+  EXPECT_FALSE(nt_pal::pad_release_if_uncommitted(fake, kPage));
+}
+
 } // namespace

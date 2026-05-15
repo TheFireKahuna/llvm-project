@@ -269,6 +269,15 @@ reserve_placeholder_numa_aligned(size_t size, size_t alignment,
 //===----------------------------------------------------------------------===//
 
 // Split a placeholder at split_offset into two independent placeholders.
+//
+// `split_offset` must be a non-zero multiple of NT page granularity (4 KiB)
+// and strictly less than the placeholder's size. NT supports any page-aligned
+// offset — the 64 KiB allocation-granularity rule applies only to *fresh*
+// reservations (where the kernel chooses a base), not to splits of an already-
+// reserved placeholder. Sub-page offsets are rejected by the kernel with
+// `STATUS_INVALID_PARAMETER_1`; 4 KiB and 8 KiB offsets succeed. The
+// resulting fragments are truly independent VADs that can be committed,
+// released, or coalesced individually.
 LIBC_INLINE bool split_placeholder(void *addr, size_t split_offset) {
   PVOID base = addr;
   SIZE_T size = split_offset;

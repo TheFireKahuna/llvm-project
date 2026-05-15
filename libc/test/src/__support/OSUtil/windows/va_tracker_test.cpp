@@ -47,6 +47,7 @@
 #include "src/__support/CPP/atomic.h"
 #include "src/__support/OSUtil/windows/memory/va_region_desc.h"
 #include "src/__support/OSUtil/windows/memory/va_tracker.h"
+#include "src/__support/OSUtil/windows/ntdll.h"
 #include "test/UnitTest/Test.h"
 
 #include "hdr/errno_macros.h"
@@ -364,4 +365,260 @@ TEST(LlvmLibcVaTrackerTest, ReplayInChildReturnsZeroOnSuccess) {
   EXPECT_FALSE(rr.has_error());
 
   EXPECT_EQ(0, vt::release(make_range(base, kAllocGran)));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — 4 KiB-granular split / release on already-tracked ranges.
+//
+// NT supports placeholder splits at any page-aligned offset (see
+// `Placeholders.md` §2 empirical probes; the kernel rejects only sub-page
+// offsets with STATUS_INVALID_PARAMETER_1). The substrate's typed-op API
+// gates fresh-VA acquisition on 64 KiB allocation granularity but accepts
+// page-aligned interior operations (`range_valid_interior` in
+// `va_tracker_transaction.cpp`). These tests pin that contract.
+// ---------------------------------------------------------------------------
+
+namespace {
+constexpr size_t kPage = 4u * 1024u;
+} // namespace
+
+// --- 11. Split at a 4 KiB-aligned boundary inside a 64 KiB desc ----------
+TEST(LlvmLibcVaTrackerTest, SplitAtPageBoundaryFragmentsRegion) {
+  uintptr_t base = kTestBase + 11 * kSpacing;
+  ASSERT_FALSE(vt::acquire(make_range(base, kAllocGran),
+                           vt::RegionKind::AnonPrivate, make_meta())
+                   .has_error());
+
+  uintptr_t boundary = base + kPage;
+  EXPECT_EQ(0, vt::split(reinterpret_cast<void *>(boundary)));
+
+  WalkBuffer wb;
+  vt::walk_range(make_range(base, kAllocGran), &walk_collect, &wb);
+  ASSERT_EQ(static_cast<size_t>(2), wb.count);
+  EXPECT_EQ(base, reinterpret_cast<uintptr_t>(wb.ranges[0].start));
+  EXPECT_EQ(kPage, wb.ranges[0].bytes);
+  EXPECT_EQ(boundary, reinterpret_cast<uintptr_t>(wb.ranges[1].start));
+  EXPECT_EQ(kAllocGran - kPage, wb.ranges[1].bytes);
+
+  EXPECT_EQ(0, vt::release(make_range(base, kAllocGran)));
+}
+
+// --- 12. Split near the end (+60 KiB) ------------------------------------
+TEST(LlvmLibcVaTrackerTest, SplitNearEndPageBoundary) {
+  uintptr_t base = kTestBase + 12 * kSpacing;
+  ASSERT_FALSE(vt::acquire(make_range(base, kAllocGran),
+                           vt::RegionKind::AnonPrivate, make_meta())
+                   .has_error());
+
+  uintptr_t boundary = base + (kAllocGran - kPage);
+  EXPECT_EQ(0, vt::split(reinterpret_cast<void *>(boundary)));
+
+  WalkBuffer wb;
+  vt::walk_range(make_range(base, kAllocGran), &walk_collect, &wb);
+  ASSERT_EQ(static_cast<size_t>(2), wb.count);
+  EXPECT_EQ(kAllocGran - kPage, wb.ranges[0].bytes);
+  EXPECT_EQ(kPage, wb.ranges[1].bytes);
+
+  EXPECT_EQ(0, vt::release(make_range(base, kAllocGran)));
+}
+
+// --- 13. Three-way split: release the middle 32 KiB slice ---------------
+TEST(LlvmLibcVaTrackerTest, ThreeWaySplitReleasesMiddle) {
+  uintptr_t base = kTestBase + 13 * kSpacing;
+  ASSERT_FALSE(vt::acquire(make_range(base, kAllocGran),
+                           vt::RegionKind::AnonPrivate, make_meta())
+                   .has_error());
+
+  uintptr_t mid_lo = base + (16u * 1024u);
+  uintptr_t mid_hi = base + (48u * 1024u);
+  EXPECT_EQ(0, vt::split(reinterpret_cast<void *>(mid_lo)));
+  EXPECT_EQ(0, vt::split(reinterpret_cast<void *>(mid_hi)));
+
+  // Release the middle 32 KiB slice. Page-aligned base + page-aligned
+  // length — accepted by `range_valid_interior`.
+  EXPECT_EQ(0, vt::release(make_range(mid_lo,
+                                       static_cast<size_t>(mid_hi - mid_lo))));
+
+  // Two surviving descs: [base, mid_lo) and [mid_hi, base + 64 KiB).
+  WalkBuffer wb;
+  vt::walk_range(make_range(base, kAllocGran), &walk_collect, &wb);
+  ASSERT_EQ(static_cast<size_t>(2), wb.count);
+  EXPECT_EQ(base, reinterpret_cast<uintptr_t>(wb.ranges[0].start));
+  EXPECT_EQ(static_cast<size_t>(16u * 1024u), wb.ranges[0].bytes);
+  EXPECT_EQ(mid_hi, reinterpret_cast<uintptr_t>(wb.ranges[1].start));
+  EXPECT_EQ(static_cast<size_t>(16u * 1024u), wb.ranges[1].bytes);
+
+  // The middle hole resolves to ENOENT.
+  auto rr = vt::resolve(reinterpret_cast<void *>(base + (24u * 1024u)));
+  ASSERT_TRUE(rr.has_error());
+  EXPECT_EQ(ENOENT, rr.error());
+
+  // Cleanup: release surviving head and tail. Each is 16 KiB (page-
+  // aligned but not alloc-granularity-aligned).
+  EXPECT_EQ(0, vt::release(make_range(base, 16u * 1024u)));
+  EXPECT_EQ(0, vt::release(make_range(mid_hi, 16u * 1024u)));
+}
+
+// --- 14. Split rejects sub-page boundary --------------------------------
+TEST(LlvmLibcVaTrackerTest, SplitRejectsSubPageBoundary) {
+  uintptr_t base = kTestBase + 14 * kSpacing;
+  ASSERT_FALSE(vt::acquire(make_range(base, kAllocGran),
+                           vt::RegionKind::AnonPrivate, make_meta())
+                   .has_error());
+
+  // Sub-page boundaries are rejected by `range_valid_interior`.
+  EXPECT_EQ(EINVAL, vt::split(reinterpret_cast<void *>(base + 1)));
+  EXPECT_EQ(EINVAL, vt::split(reinterpret_cast<void *>(base + 1024)));
+
+  EXPECT_EQ(0, vt::release(make_range(base, kAllocGran)));
+}
+
+// --- 15. Release rejects sub-page range --------------------------------
+TEST(LlvmLibcVaTrackerTest, ReleaseRejectsSubPageRange) {
+  uintptr_t base = kTestBase + 15 * kSpacing;
+  ASSERT_FALSE(vt::acquire(make_range(base, kAllocGran),
+                           vt::RegionKind::AnonPrivate, make_meta())
+                   .has_error());
+
+  // Page-aligned base but sub-page length.
+  EXPECT_EQ(EINVAL, vt::release(make_range(base, 1024)));
+  // Non-page-aligned base.
+  EXPECT_EQ(EINVAL, vt::release(make_range(base + 1, kPage)));
+
+  EXPECT_EQ(0, vt::release(make_range(base, kAllocGran)));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9 — Sub-64 KiB acquire shrinks the placeholder pad.
+//
+// NT reserves placeholders at allocation granularity (64 KiB). When the
+// caller asks for fewer bytes, the envelope's NT phase splits the
+// placeholder at the user boundary and releases the pad to MEM_FREE
+// before the commit step. Applies uniformly to all three entry points
+// — `acquire` (hint path), `acquire_kernel_chosen`, and
+// `acquire_kernel_chosen_32bit` — because the shrink lives inside
+// `run_envelope` (see the `op.reserve_bytes > identity_bytes` branch
+// in `va_tracker_transaction.cpp`). The user-visible desc covers
+// exactly the page-aligned request; the rest of the 64 KiB granule is
+// returned to the OS, not held committed for the life of the mapping.
+// ---------------------------------------------------------------------------
+
+namespace {
+// Read MBI to verify that the VA at `addr` is MEM_FREE — i.e. the
+// kernel reclaimed the pad. Kept inline rather than reaching into
+// nt_pal so this test stays self-contained.
+[[nodiscard]] bool va_is_free(void *addr) {
+  ::MEMORY_BASIC_INFORMATION mbi{};
+  ::SIZE_T ret = 0;
+  ::NTSTATUS st = ::NtQueryVirtualMemory(
+      ::NtCurrentProcess(), addr, ::MemoryBasicInformation, &mbi,
+      sizeof(mbi), &ret);
+  if (!NT_SUCCESS(st))
+    return false;
+  return mbi.State == static_cast<DWORD>(MEM_FREE);
+}
+} // namespace
+
+// --- 16. acquire_kernel_chosen(4 KiB) shrinks the placeholder ------------
+TEST(LlvmLibcVaTrackerTest, AcquireKernelChosenShrinksSubGranule) {
+  auto chosen = vt::acquire_kernel_chosen(kPage, vt::RegionKind::AnonPrivate,
+                                          make_meta());
+  ASSERT_FALSE(chosen.has_error());
+  void *base = chosen.value();
+  ASSERT_NE(base, static_cast<void *>(nullptr));
+
+  // The user's 4 KiB is tracked and resolvable.
+  auto rr = vt::resolve(base);
+  ASSERT_FALSE(rr.has_error());
+  EXPECT_NE(rr.value().desc, static_cast<vt::RegionDesc *>(nullptr));
+
+  // The pad at base + 4 KiB through base + 64 KiB is MEM_FREE — the
+  // kernel reclaimed it via `nt_pal::pad_release_if_uncommitted`.
+  void *pad = static_cast<char *>(base) + kPage;
+  EXPECT_TRUE(va_is_free(pad));
+
+  EXPECT_EQ(0, vt::release(make_range(reinterpret_cast<uintptr_t>(base),
+                                       kPage)));
+}
+
+// --- 17. acquire_kernel_chosen(64 KiB) leaves the placeholder intact -----
+TEST(LlvmLibcVaTrackerTest, AcquireKernelChosenExactGranuleSkipsShrink) {
+  auto chosen = vt::acquire_kernel_chosen(kAllocGran,
+                                           vt::RegionKind::AnonPrivate,
+                                           make_meta());
+  ASSERT_FALSE(chosen.has_error());
+  void *base = chosen.value();
+  ASSERT_NE(base, static_cast<void *>(nullptr));
+
+  // No shrink needed: bytes == kAllocGranularity. The placeholder
+  // covers the full request; no MEM_FREE region adjacent.
+  auto rr = vt::resolve(static_cast<char *>(base) + kPage);
+  ASSERT_FALSE(rr.has_error());
+  EXPECT_NE(rr.value().desc, static_cast<vt::RegionDesc *>(nullptr));
+
+  EXPECT_EQ(0, vt::release(make_range(reinterpret_cast<uintptr_t>(base),
+                                       kAllocGran)));
+}
+
+// --- 18. acquire_kernel_chosen rejects sub-page bytes -------------------
+TEST(LlvmLibcVaTrackerTest, AcquireKernelChosenRejectsSubPageBytes) {
+  auto chosen = vt::acquire_kernel_chosen(1024, vt::RegionKind::AnonPrivate,
+                                           make_meta());
+  ASSERT_TRUE(chosen.has_error());
+  EXPECT_EQ(EINVAL, chosen.error());
+}
+
+// --- 19. acquire(hint, 4 KiB) shrinks the placeholder -------------------
+TEST(LlvmLibcVaTrackerTest, AcquireHintShrinksSubGranule) {
+  uintptr_t base = kTestBase + 19 * kSpacing;
+  auto ref = vt::acquire(make_range(base, kPage),
+                         vt::RegionKind::AnonPrivate, make_meta());
+  ASSERT_FALSE(ref.has_error());
+  EXPECT_NE(ref.value().desc, static_cast<vt::RegionDesc *>(nullptr));
+
+  // Pad at base + kPage through base + kAllocGran returned to MEM_FREE
+  // by the envelope's shrink step.
+  void *pad = reinterpret_cast<void *>(base + kPage);
+  EXPECT_TRUE(va_is_free(pad));
+
+  EXPECT_EQ(0, vt::release(make_range(base, kPage)));
+}
+
+// --- 20. acquire(hint, page-aligned > 64 KiB) shrinks the tail ----------
+TEST(LlvmLibcVaTrackerTest, AcquireHintShrinksOverGranuleTail) {
+  uintptr_t base = kTestBase + 20 * kSpacing;
+  // 68 KiB = 64 KiB + 4 KiB. NT reserves 128 KiB; envelope shrinks to
+  // 68 KiB, leaving 60 KiB of MEM_FREE adjacent.
+  const size_t user_bytes = kAllocGran + kPage;
+  auto ref = vt::acquire(make_range(base, user_bytes),
+                         vt::RegionKind::AnonPrivate, make_meta());
+  ASSERT_FALSE(ref.has_error());
+
+  // The user's full range is committed and tracked.
+  void *interior_hi = reinterpret_cast<void *>(base + user_bytes - kPage);
+  auto rr = vt::resolve(interior_hi);
+  ASSERT_FALSE(rr.has_error());
+  EXPECT_NE(rr.value().desc, static_cast<vt::RegionDesc *>(nullptr));
+
+  // Pad just past the user bytes is MEM_FREE.
+  void *pad = reinterpret_cast<void *>(base + user_bytes);
+  EXPECT_TRUE(va_is_free(pad));
+
+  EXPECT_EQ(0, vt::release(make_range(base, user_bytes)));
+}
+
+// --- 21. acquire rejects sub-page or misaligned-base hints ---------------
+TEST(LlvmLibcVaTrackerTest, AcquireHintRejectsBadAlignment) {
+  uintptr_t base = kTestBase + 21 * kSpacing;
+  // Page-aligned base but sub-page length.
+  auto bad_size = vt::acquire(make_range(base, 1024),
+                              vt::RegionKind::AnonPrivate, make_meta());
+  ASSERT_TRUE(bad_size.has_error());
+  EXPECT_EQ(EINVAL, bad_size.error());
+
+  // Page-aligned but not alloc-aligned base.
+  auto bad_base = vt::acquire(make_range(base + kPage, kPage),
+                              vt::RegionKind::AnonPrivate, make_meta());
+  ASSERT_TRUE(bad_base.has_error());
+  EXPECT_EQ(EINVAL, bad_base.error());
 }
