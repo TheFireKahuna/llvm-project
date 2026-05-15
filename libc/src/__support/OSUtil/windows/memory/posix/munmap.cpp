@@ -38,9 +38,9 @@
 
 #include "hdr/errno_macros.h"
 #include "src/__support/OSUtil/windows/alloc/page_size.h"
+#include "src/__support/OSUtil/windows/alloc/pagemap_classifier.h"
 #include "src/__support/OSUtil/windows/memory/posix/posix_meta.h"
 #include "src/__support/OSUtil/windows/memory/posix/posix_validation.h"
-#include "src/__support/OSUtil/windows/memory/va_inventory.h"
 #include "src/__support/OSUtil/windows/memory/va_tracker.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
 #include "src/__support/macros/config.h"
@@ -90,9 +90,9 @@ intptr_t munmap(void *addr, size_t size) {
   // any destructive substrate call. This is the new home for the
   // legacy MEM_IMAGE rejection — the cordon decision pre-dates the
   // walk and is wait-free.
-  if (int e = ::LIBC_NAMESPACE::windows::validate_map_fixed_target(
-          reinterpret_cast<void *>(lo),
-          static_cast<SIZE_T>(kernel_bytes));
+  if (int e = ::LIBC_NAMESPACE::windows::alloc::pagemap::
+          validate_map_fixed_target(reinterpret_cast<void *>(lo),
+                                    static_cast<size_t>(kernel_bytes));
       e != 0)
     return -e;
 

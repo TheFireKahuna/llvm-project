@@ -29,9 +29,10 @@
 /// Cordon entries carry the same encoded \c (slot_idx, tag) shape as
 /// every other pagemap entry, but \c slot_idx is always zero — cordons
 /// have no per-entry descriptor pool. The wait-free, non-faulting reader
-/// contract from \c pagemap.h applies unchanged: \c is_cordon(addr) is
-/// one ACQUIRE load + cookie XOR + numeric range check, safe from any
-/// context including SIGSEGV / VEH / \c __cxa_finalize.
+/// contract from \c pagemap.h applies unchanged. The cordon membership
+/// predicate \c pagemap_classifier::is_cordon is one ACQUIRE load +
+/// cookie XOR + numeric range check, safe from any context including
+/// SIGSEGV / VEH / \c __cxa_finalize.
 ///
 /// Tag lifecycle:
 ///
@@ -188,20 +189,13 @@ void clear_cordon_stale(void *base, size_t bytes);
 // Wait-free predicates
 //===----------------------------------------------------------------------===//
 
-// Same shape as `pagemap_classifier::is_cordon`, kept here so
-// cordon-aware callers don't have to pull in the full classifier
-// surface. One ACQUIRE load + cookie XOR + numeric range check;
-// non-faulting on any user-VA address (pagemap stays committed
+// The general `is_cordon(addr)` predicate lives in `pagemap_classifier.h`
+// to keep cordon membership detection in one place. Only the stale-
+// specific predicate (a strict subset of the cordon band) is defined
+// here, because it requires the `VaChunkConsumer::ForeignStale` enum
+// constant directly. One ACQUIRE load + cookie XOR + numeric range
+// check; non-faulting on any user-VA address (pagemap stays committed
 // PAGE_READONLY for life). Safe from VEH / SIGSEGV / __cxa_finalize.
-
-/// \c true iff \p addr falls in a chunk currently tagged \c Image,
-/// \c Kernel, \c Foreign, or \c ForeignStale.
-[[nodiscard]] LIBC_INLINE bool is_cordon(const void *addr) noexcept {
-  PagemapDecoded d = pagemap_load_decoded(addr);
-  uint8_t tag_byte = static_cast<uint8_t>(d.tag);
-  return tag_byte >= static_cast<uint8_t>(VaChunkConsumer::Image) &&
-         tag_byte <= static_cast<uint8_t>(VaChunkConsumer::ForeignStale);
-}
 
 /// \c true iff \p addr falls in a chunk currently tagged
 /// \c ForeignStale. False for live \c Foreign, every other cordon kind,

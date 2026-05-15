@@ -56,10 +56,13 @@
 #ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_PAGEMAP_CLASSIFIER_H
 #define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_PAGEMAP_CLASSIFIER_H
 
+#include "hdr/errno_macros.h"
 #include "hdr/stdint_proxy.h"
 #include "src/__support/OSUtil/windows/alloc/pagemap.h"
 #include "src/__support/macros/attributes.h"
 #include "src/__support/macros/config.h"
+
+#include <stddef.h>
 
 namespace LIBC_NAMESPACE_DECL {
 namespace windows {
@@ -175,6 +178,67 @@ classify(const void *addr) noexcept {
   if (t == static_cast<uint8_t>(VaChunkConsumer::Misc))
     return true;
   return false;
+}
+
+//===----------------------------------------------------------------------===//
+// MAP_FIXED / MREMAP_FIXED pre-validation
+//===----------------------------------------------------------------------===//
+
+/// Rejects a destructive-placement target (`MAP_FIXED`,
+/// `MAP_FIXED_NOREPLACE`, `MREMAP_FIXED`) that overlaps any chunk the
+/// caller must not overwrite. Single-callsite anti-data-loss gate
+/// consumed by every POSIX op that names an explicit base address.
+///
+/// Per-chunk classification of `[addr, addr + size)` from the pagemap:
+///
+///   * \c Empty (POSIX-visible VA, MEM_FREE, or out-of-bounds): safe
+///     to overwrite. The substrate's typed-op envelope owns the rest
+///     of the dispatch — `split` / `replace` for an existing POSIX
+///     desc; gap-fill placeholder reserve for MEM_FREE.
+///   * \c Image / \c Kernel cordon: PE images and kernel-loaned
+///     regions (PEB / TEB / KUSER_SHARED_DATA / ALPC / Win32 client
+///     shared section / heap / ApiSet schema). The caller cannot
+///     meaningfully replace these; surface \c EINVAL.
+///   * \c Foreign / \c ForeignStale cordon: third-party
+///     `VirtualAllocEx` allocations or otherwise-unowned VA. POSIX's
+///     "cannot allocate" errno is \c ENOMEM; surfacing \c EINVAL
+///     would lose the "address space contended by foreign tenant"
+///     signal apps rely on for retry-with-NULL fallback.
+///   * Libc body / facade / \c Misc (every other non-\c Empty tag):
+///     the libc's own allocator chunks, sealed Tier-A regions,
+///     va_tracker internals, internal-VA facade ranges. Overwriting
+///     these would corrupt the runtime — surface \c EINVAL.
+///
+/// Wait-free and non-faulting on any user-VA address: one ACQUIRE
+/// load + cookie XOR per 64 KiB chunk. Out-of-bounds addresses decode
+/// to \c Empty and pass through.
+///
+/// The walk strides at 64 KiB chunk granularity aligned to the chunk
+/// grid so every chunk overlapping `[addr, addr + size)` is probed
+/// exactly once, even when \p addr is sub-chunk-aligned.
+///
+/// \returns 0 on success; \c EINVAL for libc-internal / Image /
+///          Kernel hits; \c ENOMEM for Foreign / ForeignStale hits.
+[[nodiscard]] LIBC_INLINE int validate_map_fixed_target(void *addr,
+                                                        size_t size) noexcept {
+  if (addr == nullptr || size == 0)
+    return 0;
+
+  const uintptr_t end = reinterpret_cast<uintptr_t>(addr) + size;
+  uintptr_t chunk =
+      reinterpret_cast<uintptr_t>(addr) & ~(kPagemapChunkBytes - 1);
+  while (chunk < end) {
+    const VaChunkConsumer t =
+        classify(reinterpret_cast<void *>(chunk)).tag;
+    if (t != VaChunkConsumer::Empty) {
+      if (t == VaChunkConsumer::Foreign ||
+          t == VaChunkConsumer::ForeignStale)
+        return ENOMEM;
+      return EINVAL;
+    }
+    chunk += kPagemapChunkBytes;
+  }
+  return 0;
 }
 
 } // namespace pagemap

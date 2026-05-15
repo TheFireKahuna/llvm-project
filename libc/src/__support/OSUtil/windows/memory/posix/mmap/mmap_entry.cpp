@@ -31,10 +31,10 @@
 #include "hdr/errno_macros.h"
 #include "include/llvm-libc-macros/sys-mman-macros.h"
 #include "include/llvm-libc-macros/windows/sys-mman-macros.h"
+#include "src/__support/OSUtil/windows/alloc/pagemap_classifier.h"
 #include "src/__support/OSUtil/windows/memory/legacy/mmap_engine.h"
 #include "src/__support/OSUtil/windows/memory/posix/mlock_policy.h"
 #include "src/__support/OSUtil/windows/memory/posix/posix_validation.h"
-#include "src/__support/OSUtil/windows/memory/va_inventory.h"
 #include "src/__support/OSUtil/windows/nt_pal/query.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
 #include "src/__support/macros/config.h"
@@ -126,8 +126,9 @@ intptr_t mmap(void *addr, size_t size, int prot, int flags, int fd,
   // to the legacy engine — the cordon answer never gets weaker as
   // later phases land.
   if (flags & (MAP_FIXED | MAP_FIXED_NOREPLACE)) {
-    if (int e = ::LIBC_NAMESPACE::windows::validate_map_fixed_target(
-            addr, static_cast<SIZE_T>(rounded_size));
+    if (int e = ::LIBC_NAMESPACE::windows::alloc::pagemap::
+            validate_map_fixed_target(addr,
+                                      static_cast<size_t>(rounded_size));
         e != 0)
       return -e;
     return ::LIBC_NAMESPACE::internal::legacy_mmap_engine(addr, size, prot,

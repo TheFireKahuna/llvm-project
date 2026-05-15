@@ -39,10 +39,10 @@
 #ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEMORY_FIXED_RANGE_GUARD_H
 #define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEMORY_FIXED_RANGE_GUARD_H
 
+#include "src/__support/OSUtil/windows/alloc/pagemap_classifier.h"
 #include "src/__support/OSUtil/windows/memory/legacy/mapping_table.h"
 #include "src/__support/OSUtil/windows/memory/legacy/memory_region.h"
 #include "src/__support/OSUtil/windows/memory/legacy/mmap_lock.h"
-#include "src/__support/OSUtil/windows/memory/va_inventory.h"
 #include "src/__support/common.h"
 #include "src/__support/macros/config.h"
 
@@ -92,7 +92,7 @@ public:
     addr_ = addr;
     size_ = size;
 
-    if (int err = validate_map_fixed_target(addr, size))
+    if (int err = alloc::pagemap::validate_map_fixed_target(addr, size))
       return err;
 
     if (!g_mapping_table.begin_remap_guard(addr, size))

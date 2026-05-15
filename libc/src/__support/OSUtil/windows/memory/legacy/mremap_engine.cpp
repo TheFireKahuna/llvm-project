@@ -76,7 +76,7 @@
 #include "src/__support/OSUtil/windows/memory/legacy/remap_transaction.h"
 #include "src/__support/OSUtil/windows/nt_pal/nt_pal.h"
 #include "src/__support/OSUtil/windows/memory/legacy/memory_region.h"
-#include "src/__support/OSUtil/windows/memory/va_inventory.h"
+#include "src/__support/OSUtil/windows/alloc/pagemap_classifier.h"
 #include "src/__support/OSUtil/windows/memory/legacy/view_spec.h"
 #include "src/__support/OSUtil/windows/nt/handle_attributes.h"
 #include "src/__support/OSUtil/windows/nt/nt_memory_helpers.h"
@@ -630,7 +630,7 @@ intptr_t move_section(void *old_addr, SIZE_T old_size,
       windows::MmapLockWriterGuard::defer_acquire};
 
   if (fixed_addr) {
-    if (int err = windows::validate_map_fixed_target(fixed_addr, new_size)) {
+    if (int err = windows::alloc::pagemap::validate_map_fixed_target(fixed_addr, new_size)) {
       // Cannot clean up TLB shootdown here — fall through to restore below.
       // Restore original protections after TLB shootdown.
       if (rec_count > 0)
@@ -1236,7 +1236,7 @@ intptr_t move_bare_placeholder(void *old_addr, SIZE_T new_size,
                                         bool dontunmap) {
   PlaceholderRange new_ph;
   if (fixed_addr) {
-    if (int err = windows::validate_map_fixed_target(fixed_addr, new_size)) {
+    if (int err = windows::alloc::pagemap::validate_map_fixed_target(fixed_addr, new_size)) {
       return -err;
     }
     {
@@ -1324,7 +1324,7 @@ intptr_t move_private(void *old_addr, SIZE_T old_size,
 
   if (fixed_addr) {
     // MREMAP_FIXED: tear down target VA and allocate there.
-    if (int err = windows::validate_map_fixed_target(fixed_addr, new_size))
+    if (int err = windows::alloc::pagemap::validate_map_fixed_target(fixed_addr, new_size))
       return -err;
 
     {

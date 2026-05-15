@@ -334,40 +334,6 @@ LIBC_INLINE void va_inventory_fini() {
   }
 }
 
-//===----------------------------------------------------------------------===//
-// MAP_FIXED pre-validation
-//===----------------------------------------------------------------------===//
-
-/// Rejects a `MAP_FIXED` target that straddles any cordon-stamped chunk.
-///
-/// Call sites probe the target before the destructive prepare step;
-/// returning `-EINVAL` lets the caller bail without an irreversible
-/// teardown. Cordons (Image / Kernel / Foreign / ForeignStale) name VAs
-/// the caller MUST NOT overwrite. POSIX-tagged and libc-internal-tagged
-/// chunks are NOT rejected: POSIX mappings are the exact VAs the caller
-/// wants to overwrite (the prepare path will tear them down), and
-/// libc-internal VAs carry their own substrate-side guard.
-///
-/// Wait-free and non-faulting on any user-VA address: one ACQUIRE load +
-/// cookie XOR + range check per 64 KiB chunk.
-///
-/// \returns 0 if every chunk in `[addr, addr + size)` is safe to
-///          overwrite; `EINVAL` otherwise.
-[[nodiscard]] LIBC_INLINE int validate_map_fixed_target(void *addr,
-                                                        SIZE_T size) {
-  if (addr == nullptr || size == 0)
-    return 0;
-
-  char *cur = static_cast<char *>(addr);
-  char *end = cur + size;
-  while (cur < end) {
-    if (alloc::pagemap::is_cordon(cur))
-      return EINVAL;
-    cur += alloc::kPagemapChunkBytes;
-  }
-  return 0;
-}
-
 } // namespace windows
 } // namespace LIBC_NAMESPACE_DECL
 
