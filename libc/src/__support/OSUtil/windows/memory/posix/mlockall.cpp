@@ -172,20 +172,9 @@ intptr_t mlockall(int flags) {
     HANDLE process = NtCurrentProcess();
     const bool use_onfault = (flags & MCL_ONFAULT) != 0;
 
-    // 64 KiB walk buffer — ~1300 entries/batch. Per-thread scratch
-    // arena: no PlaceholderRange / nt_pal::reserve_placeholder round
-    // trip (those are forbidden in POSIX-layer code per the substrate
-    // anti-pattern list). thread_scratch's docs explicitly list walk
-    // buffers as a supported use case.
-    constexpr SIZE_T kBufBytes = 0x10000;
-    auto ws = ::LIBC_NAMESPACE::windows::byte_scratch(kBufBytes);
-    if (!ws)
+    auto walk = ::LIBC_NAMESPACE::nt_pal::RegionWalker::whole_process();
+    if (!walk)
       return -ENOMEM;
-
-    ::LIBC_NAMESPACE::nt_pal::RegionWalker walk(
-        nullptr,
-        reinterpret_cast<NTPSS_MEMORY_BULK_INFORMATION *>(ws.data()),
-        ws.size());
 
     bool failed = false;
     while (walk.next()) {
@@ -233,17 +222,11 @@ intptr_t munlockall() {
   // which targets the current process implicitly.
   HANDLE process = NtCurrentProcess();
 
-  // Walk: best-effort. Buffer-alloc failure does NOT propagate as an
+  // Walk: best-effort. Scratch-alloc failure does NOT propagate as an
   // error — POSIX requires munlockall to clear its flags even if the
   // walk cannot proceed (the flags clear above already happened).
-  constexpr SIZE_T kBufBytes = 0x10000;
-  auto ws = ::LIBC_NAMESPACE::windows::byte_scratch(kBufBytes);
-  if (ws) {
-    ::LIBC_NAMESPACE::nt_pal::RegionWalker walk(
-        nullptr,
-        reinterpret_cast<NTPSS_MEMORY_BULK_INFORMATION *>(ws.data()),
-        ws.size());
-
+  auto walk = ::LIBC_NAMESPACE::nt_pal::RegionWalker::whole_process();
+  if (walk) {
     while (walk.next()) {
       if (!::LIBC_NAMESPACE::nt_pal::is_lockable(*walk.entry))
         continue;

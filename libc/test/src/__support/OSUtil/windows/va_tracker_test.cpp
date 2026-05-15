@@ -607,18 +607,59 @@ TEST(LlvmLibcVaTrackerTest, AcquireHintShrinksOverGranuleTail) {
   EXPECT_EQ(0, vt::release(make_range(base, user_bytes)));
 }
 
-// --- 21. acquire rejects sub-page or misaligned-base hints ---------------
-TEST(LlvmLibcVaTrackerTest, AcquireHintRejectsBadAlignment) {
+// --- 21. acquire rejects sub-page lengths --------------------------------
+TEST(LlvmLibcVaTrackerTest, AcquireHintRejectsSubPageSize) {
   uintptr_t base = kTestBase + 21 * kSpacing;
   // Page-aligned base but sub-page length.
   auto bad_size = vt::acquire(make_range(base, 1024),
                               vt::RegionKind::AnonPrivate, make_meta());
   ASSERT_TRUE(bad_size.has_error());
   EXPECT_EQ(EINVAL, bad_size.error());
+}
 
-  // Page-aligned but not alloc-aligned base.
-  auto bad_base = vt::acquire(make_range(base + kPage, kPage),
-                              vt::RegionKind::AnonPrivate, make_meta());
-  ASSERT_TRUE(bad_base.has_error());
-  EXPECT_EQ(EINVAL, bad_base.error());
+// --- 22. acquire honours a non-alloc-aligned page-aligned hint -----------
+// NT requires the placeholder base to be alloc-aligned, but the public
+// surface accepts any page-aligned hint. The substrate reserves at the
+// enclosing alloc granule and shaves the prefix to MEM_FREE so the
+// caller observes their requested address.
+TEST(LlvmLibcVaTrackerTest, AcquireHintHonoursPageAlignedNonGranule) {
+  uintptr_t alloc_base = kTestBase + 22 * kSpacing;
+  uintptr_t hint = alloc_base + kPage;  // page-aligned, not alloc-aligned
+
+  auto ref = vt::acquire(make_range(hint, kPage),
+                         vt::RegionKind::AnonPrivate, make_meta());
+  ASSERT_FALSE(ref.has_error());
+
+  // The desc covers exactly the user's hint range.
+  auto rr = vt::resolve(reinterpret_cast<void *>(hint));
+  ASSERT_FALSE(rr.has_error());
+  EXPECT_NE(rr.value().desc, static_cast<vt::RegionDesc *>(nullptr));
+
+  // The prefix (alloc_base..hint) was shaved to MEM_FREE.
+  EXPECT_TRUE(va_is_free(reinterpret_cast<void *>(alloc_base)));
+  // The suffix (hint+kPage..alloc_base+kAllocGran) was released by the
+  // envelope's shrink.
+  EXPECT_TRUE(va_is_free(reinterpret_cast<void *>(hint + kPage)));
+
+  EXPECT_EQ(0, vt::release(make_range(hint, kPage)));
+}
+
+// --- 23. acquire honours a page-aligned mid-granule hint at granule end --
+// Edge case: hint sits at the last page of an alloc granule. After
+// prefix shave, the placeholder covers exactly the user's page.
+TEST(LlvmLibcVaTrackerTest, AcquireHintHonoursLastPageOfGranule) {
+  uintptr_t alloc_base = kTestBase + 23 * kSpacing;
+  uintptr_t hint = alloc_base + kAllocGran - kPage;  // last page
+
+  auto ref = vt::acquire(make_range(hint, kPage),
+                         vt::RegionKind::AnonPrivate, make_meta());
+  ASSERT_FALSE(ref.has_error());
+
+  auto rr = vt::resolve(reinterpret_cast<void *>(hint));
+  ASSERT_FALSE(rr.has_error());
+
+  // The prefix (alloc_base..hint, 60 KiB) is MEM_FREE.
+  EXPECT_TRUE(va_is_free(reinterpret_cast<void *>(alloc_base)));
+
+  EXPECT_EQ(0, vt::release(make_range(hint, kPage)));
 }

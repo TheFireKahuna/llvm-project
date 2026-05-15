@@ -149,11 +149,9 @@ LIBC_INLINE intptr_t walk_and_lock(void *start, SIZE_T size) {
   // common case of locking a fresh allocation.
   ::LIBC_NAMESPACE::nt_pal::expand_working_set(NtCurrentProcess(), size);
 
-  auto ws = ::LIBC_NAMESPACE::windows::byte_scratch(4096);
-  if (!ws)
+  ::LIBC_NAMESPACE::nt_pal::RegionWalker walk(start, size);
+  if (!walk)
     return -ENOMEM;
-  ::LIBC_NAMESPACE::nt_pal::RegionWalker walk(start, size, ws.data(),
-                                              ws.size());
 
   while (walk.next()) {
     if (!::LIBC_NAMESPACE::nt_pal::is_lockable(*walk.entry))

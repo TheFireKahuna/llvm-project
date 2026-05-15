@@ -71,11 +71,9 @@ intptr_t mincore(void *addr, size_t len, unsigned char *vec) {
   // RegionWalker stitches the kernel's MBI snapshot across the
   // requested span; a single contiguous `vec_index` accumulates output
   // across chunks so multi-VAD ranges produce one continuous vector.
-  auto ws = ::LIBC_NAMESPACE::windows::byte_scratch(4096);
-  if (!ws)
+  ::LIBC_NAMESPACE::nt_pal::RegionWalker walk(addr, rounded_len);
+  if (!walk)
     return -ENOMEM;
-  ::LIBC_NAMESPACE::nt_pal::RegionWalker walk(addr, rounded_len, ws.data(),
-                                              ws.size());
 
   const SIZE_T page_size = ::LIBC_NAMESPACE::windows::get_page_size();
   size_t vec_index = 0;

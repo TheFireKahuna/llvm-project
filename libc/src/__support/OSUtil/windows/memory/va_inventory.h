@@ -214,9 +214,7 @@ LIBC_INLINE void discover_foreign_regions() {
   if (buf == nullptr)
     return;
 
-  nt_pal::RegionWalker walk(nullptr,
-                    reinterpret_cast<NTPSS_MEMORY_BULK_INFORMATION *>(buf),
-                    BULK_BYTES);
+  auto walk = nt_pal::RegionWalker::whole_process(buf, BULK_BYTES);
 
   void *pending_base = nullptr;
   SIZE_T pending_size = 0;

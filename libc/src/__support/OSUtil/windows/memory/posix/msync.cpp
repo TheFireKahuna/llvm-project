@@ -121,11 +121,10 @@ void flush_untracked_mapping(void *addr) {
 /// the mapping may simply have nothing to revert (every page already
 /// shared).
 void revert_cow_pages(char *start, char *end) {
-  auto ws = ::LIBC_NAMESPACE::windows::byte_scratch(4096);
-  if (!ws)
-    return;
   ::LIBC_NAMESPACE::nt_pal::RegionWalker walk(
-      start, static_cast<SIZE_T>(end - start), ws.data(), ws.size());
+      start, static_cast<SIZE_T>(end - start));
+  if (!walk)
+    return;
 
   // No backing pin needed here — we only read desc shape + COW flag,
   // which the resolve-side skiplist pin already covers for the
@@ -197,11 +196,9 @@ intptr_t msync(void *addr, size_t len, int flags) {
 
   // Walk the range. Per-region MEM_FREE is ENOMEM for both MS_SYNC and
   // MS_ASYNC; MS_ASYNC stops at validation and skips the flush.
-  auto ws = ::LIBC_NAMESPACE::windows::byte_scratch(4096);
-  if (!ws)
+  ::LIBC_NAMESPACE::nt_pal::RegionWalker walk(cur, rounded_len);
+  if (!walk)
     return -ENOMEM;
-  ::LIBC_NAMESPACE::nt_pal::RegionWalker walk(cur, rounded_len, ws.data(),
-                                              ws.size());
 
   // Reader pin for resolve + deref_backing_raw on the MS_SYNC durability
   // path. Anchored once outside the loop; the per-call generation check

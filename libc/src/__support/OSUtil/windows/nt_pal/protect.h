@@ -171,11 +171,9 @@ LIBC_INLINE bool reclaim(void *addr, size_t size) {
 // `region_flag::MLOCK_ONFAULT` on the resolved desc to decide what
 // to do with the trap.
 LIBC_INLINE void arm_guard_trap(void *addr, size_t size) {
-  auto ws = ::LIBC_NAMESPACE::windows::byte_scratch(4096);
-  if (!ws)
+  RegionWalker walk(addr, static_cast<SIZE_T>(size));
+  if (!walk)
     return;
-  RegionWalker walk(addr, static_cast<SIZE_T>(size), ws.data(),
-                    ws.size());
   while (walk.next()) {
     if (walk.entry->State != MEM_COMMIT)
       continue;

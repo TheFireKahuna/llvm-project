@@ -1552,45 +1552,37 @@ int execute_plan(CommitPlan &plan, const LockedSet &locked,
     GapResv gap_resvs[kMaxGapResv];
     uint32_t gap_count = 0;
 
-    uintptr_t cursor = plan.range.lo();
+    uintptr_t plan_lo = plan.range.lo();
     uintptr_t plan_end = plan.range.hi();
-    // TODO: switch to `nt_pal::RegionWalker`.
-    while (cursor < plan_end) {
-      MEMORY_BASIC_INFORMATION mbi;
-      if (!nt_pal::query_region(reinterpret_cast<void *>(cursor), mbi)) {
+    nt_pal::RegionWalker walk(reinterpret_cast<void *>(plan_lo),
+                              static_cast<SIZE_T>(plan_end - plan_lo));
+    if (!walk) {
+      for (uint32_t k = 0; k < gap_count; ++k)
+        (void)nt_pal::free_placeholder(gap_resvs[k].base);
+      return -EFAULT;
+    }
+    while (walk.next()) {
+      if (walk.entry->State != MEM_FREE)
+        continue;
+      // RegionWalker clips `chunk` / `chunk_size` to the plan range,
+      // so an MBI that extends below plan.range.lo() or above
+      // plan.range.hi() is automatically narrowed to the FREE gap
+      // inside our authority.
+      void *resv =
+          nt_pal::reserve_placeholder(walk.chunk, walk.chunk_size);
+      if (resv == nullptr) {
         for (uint32_t k = 0; k < gap_count; ++k)
           (void)nt_pal::free_placeholder(gap_resvs[k].base);
         return -EFAULT;
       }
-      uintptr_t region_lo = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
-      uintptr_t region_hi = region_lo + mbi.RegionSize;
-      if (region_hi > plan_end)
-        region_hi = plan_end;
-      if (mbi.State == MEM_FREE) {
-        // Clip to the plan range; the very first iteration's MBI may
-        // start at an alloc-granularity boundary below `cursor` if the
-        // FREE region extends backwards past `range.lo`.
-        uintptr_t gap_lo = cursor;
-        if (gap_lo < region_lo)
-          gap_lo = region_lo;
-        size_t gap_bytes = static_cast<size_t>(region_hi - gap_lo);
-        void *resv = nt_pal::reserve_placeholder(
-            reinterpret_cast<void *>(gap_lo), gap_bytes);
-        if (resv == nullptr) {
-          for (uint32_t k = 0; k < gap_count; ++k)
-            (void)nt_pal::free_placeholder(gap_resvs[k].base);
-          return -EFAULT;
-        }
-        if (gap_count >= kMaxGapResv) {
-          // Pathological fragmentation — bail with rollback.
-          (void)nt_pal::free_placeholder(resv);
-          for (uint32_t k = 0; k < gap_count; ++k)
-            (void)nt_pal::free_placeholder(gap_resvs[k].base);
-          return -ENOMEM;
-        }
-        gap_resvs[gap_count++] = {resv, gap_bytes};
+      if (gap_count >= kMaxGapResv) {
+        // Pathological fragmentation — bail with rollback.
+        (void)nt_pal::free_placeholder(resv);
+        for (uint32_t k = 0; k < gap_count; ++k)
+          (void)nt_pal::free_placeholder(gap_resvs[k].base);
+        return -ENOMEM;
       }
-      cursor = region_hi;
+      gap_resvs[gap_count++] = {resv, walk.chunk_size};
     }
   }
 
@@ -2411,14 +2403,22 @@ using BuildPlanFn = int (*)(const CommitIntent &, Arena *, const LockedSet &,
 /// the provisional list and `retire_unpublished_nodes` catch every backing
 /// and node alloc so failure paths cannot leak.
 int run_envelope(const CommitIntent &intent) {
-  // Acquire family demands 64 KiB alignment because the kernel chooses the
-  // base under `MEM_RESERVE_PLACEHOLDER` at NT allocation granularity.
-  // Interior ops (release/replace/mutate/split) act on already-reserved
-  // placeholders where NT accepts page granularity (`Placeholders.md` §2).
-  const bool ok_range =
-      (intent.op == OpKind::Acquire || intent.op == OpKind::AcquireAtReserved)
-          ? range_valid_acquire(intent.range)
-          : range_valid_interior(intent.range);
+  // `OpKind::Acquire` demands alloc-granularity-aligned base because the
+  // envelope itself reserves the placeholder via NT's
+  // `MEM_RESERVE_PLACEHOLDER`, which only accepts alloc-aligned bases.
+  // `OpKind::AcquireAtReserved` and every interior op accept page-
+  // aligned bases — the caller (or a prior typed op) already placed
+  // the VAD, so NT's reserve constraint no longer applies.
+  bool ok_range;
+  switch (intent.op) {
+  case OpKind::Acquire:
+    ok_range = range_valid_acquire(intent.range);
+    break;
+  case OpKind::AcquireAtReserved:
+  default:
+    ok_range = range_valid_interior(intent.range);
+    break;
+  }
   if (LIBC_UNLIKELY(!ok_range))
     return -EINVAL;
   if (LIBC_UNLIKELY(!fits_one_arena(intent.range)))
@@ -2763,14 +2763,61 @@ finish_acquire_at_reserved(void *base, size_t bytes, RegionKind kind,
 
 ::LIBC_NAMESPACE::ErrorOr<RegionRef>
 acquire(VaRange range, RegionKind kind, const AcquireMeta &meta) {
-  // Validation matches `range_valid_acquire`: alloc-aligned base
-  // (NT's `MEM_RESERVE_PLACEHOLDER` placement constraint) + page-
-  // aligned bytes. The envelope's NT phase rounds the reservation up
-  // to alloc granularity internally and shrinks the placeholder so
-  // sub-granularity requests commit exactly `bytes`. Multi-arena is
-  // handled by the per-arena dispatcher: each sub-envelope's slice
-  // is shrunk independently within its own arena, so a sub-granular
-  // tail spanning a 4 GiB boundary works without coordination.
+  // Public-side validation: base + bytes must both be page-aligned
+  // and non-wrapping. The hint may sit at any page-aligned address;
+  // when it is not also alloc-granularity-aligned, the page-aligned-
+  // hint path below shaves the unused prefix off the surrounding
+  // alloc granule so the user observes their requested address even
+  // though NT itself can only place placeholders at alloc granularity.
+  if (LIBC_UNLIKELY(!range_valid_interior(range)))
+    return ::LIBC_NAMESPACE::Error{EINVAL};
+
+  uintptr_t base_addr = range.lo();
+  if ((base_addr & (kAllocGranularity - 1)) != 0) {
+    // Page-aligned hint that is not alloc-aligned. NT cannot reserve
+    // at this base directly, but a placeholder split is page-granular
+    // — reserve the enclosing alloc granule, shave the prefix to
+    // MEM_FREE, and hand the remaining placeholder (anchored at the
+    // caller's exact hint) to the AcquireAtReserved envelope.
+    //
+    // Race semantics: the reserve+shave pair holds a placeholder at
+    // the enclosing granule before yielding back. A concurrent
+    // acquirer at any address inside that granule observes
+    // `STATUS_CONFLICTING_ADDRESSES` on its own reserve and gets
+    // EEXIST, same as the alloc-aligned hint path.
+    const uintptr_t rounded_down =
+        base_addr & ~(kAllocGranularity - 1);
+    const size_t prefix_bytes =
+        static_cast<size_t>(base_addr - rounded_down);
+    const size_t total_reserve = prefix_bytes + range.bytes;
+    void *reserved = nt_pal::reserve_placeholder_at(
+        reinterpret_cast<void *>(rounded_down), total_reserve);
+    if (reserved == nullptr)
+      return ::LIBC_NAMESPACE::Error{EEXIST};
+    if (LIBC_UNLIKELY(!nt_pal::split_placeholder(reserved, prefix_bytes))) {
+      (void)nt_pal::free_placeholder(reserved);
+      return ::LIBC_NAMESPACE::Error{ENOMEM};
+    }
+    PVOID prefix_p = reserved;
+    SIZE_T prefix_size = prefix_bytes;
+    (void)::NtFreeVirtualMemory(NtCurrentProcess(), &prefix_p,
+                                &prefix_size, MEM_RELEASE);
+    // `finish_acquire_at_reserved` handles multi-arena pre-arena-
+    // boundary splits and the per-slice envelope shrink that
+    // releases the over-reserve suffix on the last slice.
+    auto result = finish_acquire_at_reserved(
+        reinterpret_cast<void *>(base_addr), range.bytes, kind, meta);
+    if (!result.has_value())
+      return ::LIBC_NAMESPACE::Error{result.error()};
+    return resolve(range.start);
+  }
+
+  // Alloc-aligned base: the envelope itself reserves the placeholder
+  // per-arena, and the per-arena dispatcher decomposes multi-arena
+  // ranges into independent atomic envelopes (each sub-envelope's
+  // slice is shrunk independently within its own arena, so a sub-
+  // granular tail spanning a 4 GiB boundary works without
+  // coordination).
   CommitIntent intent;
   intent.op = OpKind::Acquire;
   intent.range = range;

@@ -81,13 +81,14 @@ intptr_t mmap_anon_private(void *addr, size_t size, int prot, int flags) {
     return reinterpret_cast<intptr_t>(chosen.value());
   }
 
-  // Hint path: honour an alloc-granularity-aligned caller hint via
-  // `vt::acquire`. The hint must be alloc-aligned because that is
-  // NT's `MEM_RESERVE_PLACEHOLDER` base placement constraint, but the
-  // user's bytes are page-granular and the substrate handles the
-  // shrink internally. A collision returns `EEXIST` and we fall
-  // through to the kernel-chosen path.
-  if (addr != nullptr && mp::is_alloc_aligned(addr)) {
+  // Hint path: honour any page-aligned caller hint via `vt::acquire`.
+  // NT's `MEM_RESERVE_PLACEHOLDER` requires an alloc-aligned base,
+  // but `vt::acquire` shaves the prefix off the enclosing alloc
+  // granule when the hint sits mid-granule — so the user's exact
+  // page-aligned address is honoured for any hint, not just alloc-
+  // aligned ones. A collision returns `EEXIST` and we fall through
+  // to the kernel-chosen path.
+  if (addr != nullptr) {
     vt::VaRange range = mp::make_range(addr, rounded_size);
     auto ref = vt::acquire(range, vt::RegionKind::AnonPrivate, meta);
     if (ref.has_value())

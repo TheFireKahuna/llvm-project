@@ -176,9 +176,7 @@ ReconcileStats reconcile_scan_locked(void *bound_start, SIZE_T bound_size,
       stamp_foreign_holes(walk.chunk, walk.chunk_size, stats);
     }
   } else {
-    void *start = nullptr;
-    auto *bulk = reinterpret_cast<NTPSS_MEMORY_BULK_INFORMATION *>(ws.data());
-    nt_pal::RegionWalker walk(start, bulk, ws.size());
+    auto walk = nt_pal::RegionWalker::whole_process(ws.data(), ws.size());
     while (walk.next()) {
       if (walk.entry->State == MEM_FREE) {
         if (purge_orphans)

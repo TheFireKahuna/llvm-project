@@ -163,48 +163,93 @@ LIBC_INLINE bool find_alloc_range(const void *addr, char *&out_base,
 }
 
 //===----------------------------------------------------------------------===//
-// RegionWalker — zero-overhead bulk MBI iterator
+// RegionWalker — bulk MBI iterator with internally-sized scratch
 //===----------------------------------------------------------------------===//
 //
-// Replaces per-region NtQueryVirtualMemory loops with bulk queries via
-// NtPssCaptureVaSpaceBulk. The caller drives the iteration directly —
-// no callbacks, no indirection, no lambda captures.
+// Wraps NtPssCaptureVaSpaceBulk into a forward iterator over the
+// MEMORY_BASIC_INFORMATION entries inside a caller-supplied range.
+// Sizes its own bulk scratch from the range — the kernel charges per
+// buffer byte above ~256 KiB (QueryVirtualMemory.md §2.5), so caller
+// over-allocation directly costs latency.
 //
-// Range-bounded: walks [start, start+size). The kernel splits MBI
-// entries at BaseAddress boundaries, so the first entry starts exactly
-// at `start`. `chunk` / `chunk_size` are clamped to the requested range.
+// Sizing rule (per LatencyReference.md §10 sweet spot):
+//   bounded(start, size)   -> header + (size/64KiB + 2) * MBI bytes,
+//                              clamped to [64 B, 16 KiB]
+//   whole_process()         -> 64 KiB (~1365 entries per batch)
+//
+// Range-bounded entries are clamped to [start, start+size) — the
+// `chunk` / `chunk_size` fields expose the trimmed slice; the raw
+// kernel entry is available via `entry`.
 //
 // Usage:
-//   auto ws = byte_scratch(4096);
-//   RegionWalker walk(addr, size, ws.data(), ws.size());
+//   nt_pal::RegionWalker walk(addr, size);
+//   if (!walk) return -ENOMEM;
 //   while (walk.next()) {
 //     if (walk.entry->State == MEM_COMMIT)
 //       do_work(walk.chunk, walk.chunk_size);
 //   }
+//
+//   auto walk = nt_pal::RegionWalker::whole_process();
+//   if (!walk) return -ENOMEM;
+//   while (walk.next()) { ... }
+//
+// Atomicity: each `next()` call may issue one NtPssCaptureVaSpaceBulk
+// syscall. The kernel guarantees self-consistency *within* one
+// syscall (QueryVirtualMemory.md §2.7), but successive syscalls can
+// disagree if the VA space is being mutated concurrently. Callers
+// that need a strict snapshot must externally serialise mutations.
 
 struct RegionWalker {
-  const MEMORY_BASIC_INFORMATION *entry;
-  char *chunk;
-  SIZE_T chunk_size;
+  const MEMORY_BASIC_INFORMATION *entry = nullptr;
+  char *chunk = nullptr;
+  SIZE_T chunk_size = 0;
 
-  // Range-bounded walk over [start, start+size).
+  // Bounded walk with auto-sized scratch from thread_scratch.
+  LIBC_INLINE RegionWalker(void *start, SIZE_T size)
+      : scratch_(size_scratch_for_range(size)),
+        bulk_(scratch_ ? reinterpret_cast<NTPSS_MEMORY_BULK_INFORMATION *>(
+                              scratch_.data())
+                       : nullptr),
+        buf_size_(scratch_ ? scratch_.size_bytes() : 0),
+        range_start_(static_cast<char *>(start)),
+        range_end_(static_cast<char *>(start) + size),
+        cursor_(static_cast<char *>(start)) {}
+
+  // Bounded walk with caller-supplied buffer. Use for bring-up paths
+  // that run before thread_scratch is wired up (va_inventory). Caller
+  // owns `buf` and must keep it alive for the walker's lifetime.
   LIBC_INLINE RegionWalker(void *start, SIZE_T size, void *buf,
                            SIZE_T buf_size)
-      : entry(nullptr), chunk(nullptr), chunk_size(0),
+      : scratch_(0),
         bulk_(static_cast<NTPSS_MEMORY_BULK_INFORMATION *>(buf)),
         buf_size_(buf_size),
         range_start_(static_cast<char *>(start)),
         range_end_(static_cast<char *>(start) + size),
-        cursor_(start), entries_(nullptr), count_(0), pos_(0) {}
+        cursor_(static_cast<char *>(start)) {}
 
-  // Unbounded walk from `start` (mlockall / munlockall).
-  LIBC_INLINE RegionWalker(void *start, NTPSS_MEMORY_BULK_INFORMATION *buf,
-                           SIZE_T buf_size)
-      : entry(nullptr), chunk(nullptr), chunk_size(0),
-        bulk_(buf), buf_size_(buf_size),
-        range_start_(static_cast<char *>(start)),
-        range_end_(reinterpret_cast<char *>(windows::get_max_address())),
-        cursor_(start), entries_(nullptr), count_(0), pos_(0) {}
+  // Whole-process: from address 0 to the top of user VA. Auto-scratch
+  // form sizes to the 16 KiB clamp (a few extra paginations vs 64 KiB
+  // cost <1 % of a 50 K-VAD walk per LatencyReference.md §22b).
+  LIBC_INLINE static RegionWalker whole_process() {
+    return RegionWalker(nullptr,
+                        reinterpret_cast<SIZE_T>(windows::get_max_address()));
+  }
+
+  // Whole-process with caller-supplied buffer (bring-up form).
+  LIBC_INLINE static RegionWalker whole_process(void *buf, SIZE_T buf_size) {
+    return RegionWalker(nullptr,
+                        reinterpret_cast<SIZE_T>(windows::get_max_address()),
+                        buf, buf_size);
+  }
+
+  // Move-only.
+  LIBC_INLINE RegionWalker(RegionWalker &&) = default;
+  LIBC_INLINE RegionWalker &operator=(RegionWalker &&) = default;
+  RegionWalker(const RegionWalker &) = delete;
+  RegionWalker &operator=(const RegionWalker &) = delete;
+
+  // True iff the walker has a usable buffer. Check before iterating.
+  LIBC_INLINE explicit operator bool() const { return bulk_ != nullptr; }
 
   LIBC_INLINE bool next() {
     for (;;) {
@@ -233,17 +278,27 @@ struct RegionWalker {
   }
 
 private:
-  NTPSS_MEMORY_BULK_INFORMATION *bulk_;
-  SIZE_T buf_size_;
-  char *range_start_;
-  char *range_end_;
-  PVOID cursor_;
-  MEMORY_BASIC_INFORMATION *entries_;
-  ULONG count_;
-  ULONG pos_;
+  // Each 64 KiB allocation granule holds at most one VAD, so the
+  // upper bound on entries in a range is `size / 64 KiB`. The +2
+  // covers start-side alignment slack and the trailing partial. Clamp
+  // to [64, 16 KiB] — below 64 the kernel returns a header-only
+  // result; above 16 KiB the per-buffer-byte cost kicks in (§2.5).
+  LIBC_INLINE static SIZE_T size_scratch_for_range(SIZE_T range_size) {
+    constexpr SIZE_T MIN_BYTES = 64;
+    constexpr SIZE_T MAX_BYTES = 16 * 1024;
+    constexpr SIZE_T GRANULE = 64 * 1024;
+    SIZE_T expected = range_size / GRANULE + 2;
+    SIZE_T bytes = sizeof(NTPSS_MEMORY_BULK_INFORMATION) +
+                   expected * sizeof(MEMORY_BASIC_INFORMATION);
+    if (bytes < MIN_BYTES)
+      bytes = MIN_BYTES;
+    if (bytes > MAX_BYTES)
+      bytes = MAX_BYTES;
+    return bytes;
+  }
 
   LIBC_INLINE bool fetch_page_() {
-    if (cursor_ >= range_end_)
+    if (!bulk_ || cursor_ >= range_end_)
       return false;
 
     bulk_->QueryFlags = MEMORY_BULK_INFORMATION_FLAG_BASIC;
@@ -254,13 +309,19 @@ private:
     NTSTATUS st = ::NtPssCaptureVaSpaceBulk(
         NtCurrentProcess(), cursor_, bulk_, buf_size_, &ret_len);
 
-    if (!NT_SUCCESS(st) && st != STATUS_BUFFER_OVERFLOW)
+    // SUCCESS = entire remaining tail fit; MORE_ENTRIES = partial
+    // fill, resume via NextValidAddress. Anything else terminates.
+    // (STATUS_BUFFER_OVERFLOW is NOT what this API returns on partial
+    // fill — that's a file/named-pipe code with the same English.)
+    if (st != STATUS_SUCCESS && st != STATUS_MORE_ENTRIES)
       return false;
 
     count_ = bulk_->NumberOfEntries;
     pos_ = 0;
     entries_ = reinterpret_cast<MEMORY_BASIC_INFORMATION *>(bulk_ + 1);
 
+    // Defensive cap: the kernel truncates at MBI boundaries, so this
+    // should never trigger — guards against a malformed return.
     ULONG max_entries = static_cast<ULONG>(
         (buf_size_ - sizeof(NTPSS_MEMORY_BULK_INFORMATION)) /
         sizeof(MEMORY_BASIC_INFORMATION));
@@ -274,18 +335,27 @@ private:
     if (!next || next <= cursor_)
       cursor_ = range_end_;
     else
-      cursor_ = next;
+      cursor_ = static_cast<char *>(next);
 
     return true;
   }
+
+  ::LIBC_NAMESPACE::internal::ScratchAlloc<char> scratch_;
+  NTPSS_MEMORY_BULK_INFORMATION *bulk_;
+  SIZE_T buf_size_;
+  char *range_start_;
+  char *range_end_;
+  char *cursor_;
+  MEMORY_BASIC_INFORMATION *entries_ = nullptr;
+  ULONG count_ = 0;
+  ULONG pos_ = 0;
 };
 
 // Check that the entire [addr, addr+size) range is MEM_FREE.
 LIBC_INLINE bool is_range_free(const void *addr, SIZE_T size) {
-  auto ws = windows::byte_scratch(4096);
-  if (!ws)
+  RegionWalker walk(const_cast<void *>(addr), size);
+  if (!walk)
     return false;
-  RegionWalker walk(const_cast<void *>(addr), size, ws.data(), ws.size());
   while (walk.next()) {
     if (walk.entry->State != MEM_FREE)
       return false;
@@ -301,10 +371,9 @@ LIBC_INLINE void for_committed_batched(void *addr, SIZE_T total_size,
   MEMORY_RANGE_ENTRY range_entries[MAX_BATCH];
   SIZE_T batch_count = 0;
 
-  auto ws = windows::byte_scratch(4096);
-  if (!ws)
+  RegionWalker walk(addr, total_size);
+  if (!walk)
     return;
-  RegionWalker walk(addr, total_size, ws.data(), ws.size());
   while (walk.next()) {
     if (walk.entry->State == MEM_COMMIT) {
       range_entries[batch_count].VirtualAddress = walk.chunk;
@@ -338,7 +407,9 @@ bulk_query_regions(NTPSS_MEMORY_BULK_INFORMATION *bulk, SIZE_T buf_size,
   SIZE_T ret_len = 0;
   NTSTATUS st = ::NtPssCaptureVaSpaceBulk(NtCurrentProcess(), start_addr,
                                            bulk, buf_size, &ret_len);
-  if (NT_SUCCESS(st) || st == STATUS_BUFFER_OVERFLOW) {
+  // Partial fill returns STATUS_MORE_ENTRIES (NT_SUCCESS-positive),
+  // not STATUS_BUFFER_OVERFLOW.
+  if (st == STATUS_SUCCESS || st == STATUS_MORE_ENTRIES) {
     count = bulk->NumberOfEntries;
     next_addr = bulk->NextValidAddress;
     return reinterpret_cast<MEMORY_BASIC_INFORMATION *>(bulk + 1);
