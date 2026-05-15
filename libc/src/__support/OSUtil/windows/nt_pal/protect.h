@@ -63,6 +63,14 @@ enum class OfferPriority : unsigned int {
 // the first page's prior protection in `*old_prot` — the standard
 // `NtProtectVirtualMemory` semantic. Callers needing per-page snapshot
 // must walk via `query.h::RegionWalker`.
+//
+// CFG-secured / `MmSecureVirtualMemory`-locked ranges cache the live
+// protection in the kernel; an `NtProtect` against a stale cached
+// entry returns `STATUS_INVALID_PAGE_PROTECTION`. `RtlFlushSecureMemoryCache`
+// invalidates the cache and the retry surfaces the real result. The
+// retry only fires on that NTSTATUS and only with `NtCurrentProcess`
+// (cross-process protect is not a supported configuration of the
+// secure-memory cache).
 LIBC_INLINE bool protect(void *addr, size_t size, ULONG new_prot,
                          ULONG *old_prot = nullptr) {
   ULONG previous = 0;
@@ -71,6 +79,14 @@ LIBC_INLINE bool protect(void *addr, size_t size, ULONG new_prot,
   SIZE_T sz = size;
   NTSTATUS st =
       ::NtProtectVirtualMemory(NtCurrentProcess(), &base, &sz, new_prot, out);
+  if (st == STATUS_INVALID_PAGE_PROTECTION) {
+    if (::RtlFlushSecureMemoryCache(addr, size)) {
+      base = addr;
+      sz = size;
+      st = ::NtProtectVirtualMemory(NtCurrentProcess(), &base, &sz, new_prot,
+                                     out);
+    }
+  }
   return NT_SUCCESS(st);
 }
 

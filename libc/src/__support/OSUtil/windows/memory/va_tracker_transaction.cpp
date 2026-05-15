@@ -554,11 +554,18 @@ locked_has_edge_straddler(const LockedSet &locked, uintptr_t edge_lo,
 // constructs a `CommitIntent` with the matching `OpKind` and routes through
 // `dispatch_per_arena_op`.
 enum class OpKind : uint8_t {
-  Acquire = 0,
-  Release = 1,
-  Replace = 2,
-  Mutate  = 3,
-  Split   = 4,
+  Acquire           = 0,
+  Release           = 1,
+  Replace           = 2,
+  Mutate            = 3,
+  Split             = 4,
+  // Variant of Acquire whose `range.start` is a placeholder the caller
+  // has already reserved via `nt_pal::reserve_placeholder`. The plan
+  // builder for this op hardcodes `reserve_placeholder_first = false`;
+  // every other code path is shared with `Acquire`. Used by
+  // `acquire_kernel_chosen` so the POSIX layer can let the kernel pick
+  // a MEM_FREE base without a release / re-reserve race window.
+  AcquireAtReserved = 5,
 };
 
 // Opaque input bundle forwarded from the public typed op into the per-arena
@@ -573,6 +580,23 @@ struct CommitIntent {
   void *        mutator_ctx{nullptr};
   DWORD         prot_change{0};
   void *        boundary{nullptr};
+
+  // Mutate-with-commit-on-uncommitted: when true, the envelope walks
+  // each locked succ's intersection with `range` via RegionWalker
+  // and dispatches per chunk (committed → protect, uncommitted +
+  // accessible + MEM_MAPPED → commit_in_reservation, uncommitted +
+  // accessible + MEM_PRIVATE → commit_replace[_numa]). Replaces the
+  // post_swap_protect per-VAD nt_pal::protect with a per-chunk
+  // dispatch. Per locked succ, the substrate also writes
+  // `region_flag::PROT_DIVERGED` (partial coverage) or updates
+  // `view_prot` (full coverage) on the new clone, so the desc stays
+  // consistent with kernel state after a sub-region mprotect.
+  bool          commit_if_uncommitted_accessible{false};
+
+  // NUMA node hint for commit_replace_numa on the demand-map path.
+  // `-1` selects unhinted commit_replace. Honoured only when
+  // `commit_if_uncommitted_accessible == true`.
+  int           numa_node{-1};
 };
 
 /// Kernel-program configuration for one envelope attempt.
@@ -741,6 +765,19 @@ struct CommitPlan {
   bool issue_protect{false};
   DWORD protect_value{0};
 
+  // Per-chunk dispatch instead of post_swap_protect's per-VAD call.
+  // When set, the post-Swap phase walks each locked succ's
+  // intersection with `range` via `nt_pal::RegionWalker` and dispatches
+  // per chunk: committed → `nt_pal::protect(prot_value)`,
+  // uncommitted+accessible+MEM_MAPPED →
+  // `nt_pal::commit_in_reservation_no_writewatch`, uncommitted+
+  // accessible+MEM_PRIVATE → `nt_pal::commit_replace[_numa]` using
+  // `numa_node`, uncommitted+PROT_NONE → no-op. `MEM_FREE` aborts
+  // with `-ENOMEM` (POSIX mprotect contract). COW translation is
+  // applied per-succ using the OLD desc's `region_flag::COW`.
+  bool dispatch_per_chunk{false};
+  int  numa_node{-1};
+
   // Post-Swap OLD backing ownership transfer.
   enum class OwnershipMode : uint8_t { None, AllSuccs };
   OwnershipMode ownership_mode{OwnershipMode::None};
@@ -768,10 +805,19 @@ struct CommitPlan {
 
 // Acquire over a fresh VA range. No locked succs are required (the range
 // was MEM_FREE before this call). The single `inside_commit` slot is
-// populated with the caller's kind / handles / offset and a pre-commit
+// populated with the caller's kind / handles / offset and (for the
+// `ReserveFirst == true` instantiation) a pre-commit
 // `nt_pal::reserve_placeholder` to establish the VA in RESERVE state.
-int build_plan_acquire(const CommitIntent &i, Arena *arena,
-                        const LockedSet & /*locked*/, CommitPlan &plan) {
+//
+// The `ReserveFirst` template parameter is the only thing that varies
+// between `Acquire` and `AcquireAtReserved`; templating compile-time-
+// hardcodes the reserve flag on each specialization so neither public
+// path pays a runtime test. The body is otherwise identical, and the
+// specialisations are emitted only at the two callsites in
+// `build_plan_acquire` / `build_plan_acquire_at_reserved`.
+template <bool ReserveFirst>
+LIBC_INLINE int build_acquire_plan_body(const CommitIntent &i, Arena *arena,
+                                         CommitPlan &plan) {
   plan.arena = arena;
   plan.range = i.range;
 
@@ -788,7 +834,7 @@ int build_plan_acquire(const CommitIntent &i, Arena *arena,
   CommitOp &op = plan.inside_commit;
   op.kind = kind_is_section_backed(i.kind) ? CommitKind::MapSectionReplace
                                             : CommitKind::CommitReplace;
-  op.reserve_placeholder_first = true;
+  op.reserve_placeholder_first = ReserveFirst;
   op.reserve_base = ph_base;
   op.reserve_bytes = ph_size;
   op.base = reinterpret_cast<void *>(i.range.lo());
@@ -811,6 +857,22 @@ int build_plan_acquire(const CommitIntent &i, Arena *arena,
   op.new_node_hi = i.range.hi();
   plan.has_inside_commit = true;
   return 0;
+}
+
+int build_plan_acquire(const CommitIntent &i, Arena *arena,
+                        const LockedSet & /*locked*/, CommitPlan &plan) {
+  return build_acquire_plan_body</*ReserveFirst=*/true>(i, arena, plan);
+}
+
+// Variant for `OpKind::AcquireAtReserved`: the caller has already
+// reserved the placeholder at `range.start`, so the envelope skips
+// `nt_pal::reserve_placeholder` and goes straight to commit_replace.
+// Failure cleanup is the caller's responsibility; on success the
+// placeholder identity transfers to the new backing's lifetime.
+int build_plan_acquire_at_reserved(const CommitIntent &i, Arena *arena,
+                                    const LockedSet & /*locked*/,
+                                    CommitPlan &plan) {
+  return build_acquire_plan_body</*ReserveFirst=*/false>(i, arena, plan);
 }
 
 // Locate the desc in the locked set whose `lo == target_lo` and return its
@@ -1232,7 +1294,18 @@ int build_plan_mutate(const CommitIntent &i, Arena *arena,
   if (locked.count == 0)
     return -ENOENT;
 
-  if (locked_has_straddler(locked, i.range.lo(), i.range.hi()))
+  // Plain mutate (no commit-on-uncommitted) requires the caller to
+  // pre-split via `split()` because the clone phase mutates the
+  // whole desc and a straddler would extend the mutation past the
+  // caller's range. The commit-on-uncommitted path tolerates
+  // straddlers: per-chunk kernel work is scoped to `range`, and the
+  // clone phase sets `PROT_DIVERGED` on partial-cover succs so the
+  // desc's `view_prot` stays a valid "best guess for untouched
+  // pages" while the fault handler consults MBI on hit. This is
+  // what makes page-granular mprotect on 64 KiB descs work without
+  // a sub-granularity desc split.
+  if (!i.commit_if_uncommitted_accessible &&
+      locked_has_straddler(locked, i.range.lo(), i.range.hi()))
     return -EINVAL;
 
   plan.arena = arena;
@@ -1241,6 +1314,20 @@ int build_plan_mutate(const CommitIntent &i, Arena *arena,
   plan.clone_mode = CommitPlan::CloneMode::AllSuccsWithMutator;
   plan.mutator = i.mutator;
   plan.mutator_ctx = i.mutator_ctx;
+
+  // Per-chunk dispatch path: the slow-path mprotect equivalent. The
+  // post-Swap phase walks the kernel VAD chain per locked succ and
+  // dispatches each chunk (committed → `nt_pal::protect`;
+  // uncommitted + accessible → commit_in_reservation or
+  // commit_replace[_numa]). The clone-phase coverage check below
+  // writes view_prot / PROT_DIVERGED on the new clones. Replaces the
+  // standard post_swap_protect — `issue_protect` stays false.
+  if (i.commit_if_uncommitted_accessible) {
+    plan.dispatch_per_chunk = true;
+    plan.numa_node = i.numa_node;
+    plan.protect_value = i.prot_change;
+    return 0;
+  }
 
   // `NtProtectVirtualMemory` is per-VAD atomic; a range spanning multiple
   // split placeholders needs per-VAD calls iterated in the post-Swap
@@ -1739,6 +1826,38 @@ int execute_plan(CommitPlan &plan, const LockedSet &locked,
         return -ENOMEM;
       if (plan.mutator != nullptr)
         plan.mutator(clone, plan.mutator_ctx);
+
+      // Mutate-with-commit-on-uncommitted: substrate-side view_prot /
+      // PROT_DIVERGED update. Runs after the caller's mutator so a
+      // caller-side mutator that wanted to write `view_prot` directly
+      // (none currently) would be overridden — the commit-on-
+      // uncommitted contract is the substrate's, not the caller's.
+      //
+      // Full-cover (the input range contains the whole succ): the
+      // succ's protection is uniformly `plan.protect_value` after
+      // this envelope, so `view_prot` becomes the new value and the
+      // diverged bit clears.
+      //
+      // Partial-cover (the input range touches only part of the
+      // succ): mixed kernel state per page; the desc keeps its
+      // existing `view_prot` (a reader's best guess for untouched
+      // pages) and the diverged bit is set so the fault handler
+      // re-queries MBI on demand-commit.
+      if (plan.dispatch_per_chunk) {
+        const bool full_cover =
+            (plan.range.lo() <= src_node->lo) &&
+            (plan.range.hi() >= src_node->hi);
+        uint16_t flag_bits = clone->flags.load(cpp::MemoryOrder::RELAXED);
+        if (full_cover) {
+          clone->view_prot = static_cast<uint32_t>(plan.protect_value);
+          flag_bits &=
+              static_cast<uint16_t>(~region_flag::PROT_DIVERGED);
+        } else {
+          flag_bits |= region_flag::PROT_DIVERGED;
+        }
+        clone->flags.store(flag_bits, cpp::MemoryOrder::RELEASE);
+      }
+
       int rc = append_node_for_desc(new_nodes, plan.arena, src_node->lo,
                                      src_node->hi, clone,
                                      /*cleanup_value_on_abort=*/true);
@@ -1858,6 +1977,134 @@ int execute_plan(CommitPlan &plan, const LockedSet &locked,
                          static_cast<size_t>(old_node->hi - old_node->lo),
                          static_cast<ULONG>(plan.protect_value), &old_prot))
       return -EFAULT;
+  }
+  return 0;
+}
+
+// Apply COW translation to a base `PAGE_*` value when the OLD desc
+// has `region_flag::COW`. Source of truth is the desc flag stamped
+// at acquire time; MBI's `AllocationProtect` is the fallback for
+// foreign mappings (untracked MEM_MAPPED with `PAGE_WRITECOPY` /
+// `PAGE_EXECUTE_WRITECOPY` allocation prot). The substrate sees
+// only tracked VAs inside its locked succs, so the desc check is the
+// authoritative path; the MBI fallback runs once per chunk on the
+// committed path for foreign-leaning shapes.
+[[nodiscard]] LIBC_INLINE DWORD cow_translate_prot(DWORD new_prot,
+                                                    bool desc_is_cow,
+                                                    DWORD mbi_alloc_prot,
+                                                    DWORD mbi_type) {
+  bool needs_cow = desc_is_cow;
+  if (!needs_cow && mbi_type == MEM_MAPPED) {
+    DWORD ap = mbi_alloc_prot & 0xFFu;
+    needs_cow = (ap == PAGE_WRITECOPY || ap == PAGE_EXECUTE_WRITECOPY);
+  }
+  if (!needs_cow)
+    return new_prot;
+  if (new_prot == PAGE_READWRITE)
+    return PAGE_WRITECOPY;
+  if (new_prot == PAGE_EXECUTE_READWRITE)
+    return PAGE_EXECUTE_WRITECOPY;
+  return new_prot;
+}
+
+// Per-chunk dispatch for the mutate-with-commit-on-uncommitted path.
+// Walks each locked succ's intersection with `plan.range` via the
+// kernel VAD chain (`nt_pal::RegionWalker`) and dispatches the three-
+// way state machine the legacy mprotect slow path encoded:
+//
+//   MEM_FREE chunk                            → `-ENOMEM`
+//   MEM_COMMIT chunk                           → `nt_pal::protect`
+//   uncommitted + PROT_NONE target             → no-op
+//   uncommitted + accessible + MEM_MAPPED      → `nt_pal::commit_in_reservation_no_writewatch`
+//   uncommitted + accessible + MEM_PRIVATE     → `nt_pal::commit_replace_numa` (or `commit_replace`)
+//
+// COW translation per succ via the OLD desc's `region_flag::COW`;
+// foreign-mapping fallback via MBI `AllocationProtect`. CFG-secured
+// ranges are retried inside `nt_pal::protect` itself, so this phase
+// stays single-call per chunk.
+//
+// Runs after Swap has published the new clones (with view_prot /
+// PROT_DIVERGED already updated by the clone phase) so any
+// concurrent reader pinning the new chain sees a desc consistent
+// with the kernel state this phase establishes. Per-chunk MBI walks
+// under the LOCKED hold are bounded by VAD count inside the succ;
+// disjoint mutators on other descs proceed in parallel.
+[[nodiscard]] int post_swap_per_chunk_dispatch(const CommitPlan &plan,
+                                                const LockedSet &locked) {
+  if (!plan.dispatch_per_chunk)
+    return 0;
+
+  auto ws = ::LIBC_NAMESPACE::windows::byte_scratch(4096);
+  if (!ws)
+    return -ENOMEM;
+
+  const DWORD base_prot = static_cast<DWORD>(plan.protect_value);
+
+  for (uint32_t k = 0; k < locked.count; ++k) {
+    SkiplistNodeBase *old_node = locked.at(k);
+    if (old_node == nullptr)
+      continue;
+    RegionDesc *old_desc =
+        old_node->value.load(cpp::MemoryOrder::ACQUIRE);
+    const bool desc_is_cow =
+        old_desc != nullptr && old_desc->has_flag(region_flag::COW);
+
+    const uintptr_t lo = old_node->lo > plan.range.lo()
+                             ? old_node->lo
+                             : plan.range.lo();
+    const uintptr_t hi = old_node->hi < plan.range.hi()
+                             ? old_node->hi
+                             : plan.range.hi();
+    if (lo >= hi)
+      continue;
+
+    nt_pal::RegionWalker walk(reinterpret_cast<void *>(lo),
+                               static_cast<SIZE_T>(hi - lo), ws.data(),
+                               ws.size());
+    while (walk.next()) {
+      if (walk.entry->State == MEM_FREE)
+        return -ENOMEM;
+
+      const DWORD eff_prot = cow_translate_prot(
+          base_prot, desc_is_cow, walk.entry->AllocationProtect,
+          walk.entry->Type);
+
+      if (walk.entry->State == MEM_COMMIT) {
+        ULONG old_prot_out = 0;
+        if (!nt_pal::protect(walk.chunk, walk.chunk_size, eff_prot,
+                             &old_prot_out))
+          return -EFAULT;
+        continue;
+      }
+
+      // Uncommitted + PROT_NONE: leave as-is; NtProtect on
+      // uncommitted pages returns STATUS_NOT_COMMITTED.
+      if (eff_prot == PAGE_NOACCESS)
+        continue;
+
+      if (walk.entry->Type == MEM_MAPPED) {
+        NTSTATUS st = nt_pal::commit_in_reservation_no_writewatch(
+            walk.chunk, walk.chunk_size, eff_prot);
+        if (NT_ERROR(st))
+          return -ENOMEM;
+        continue;
+      }
+
+      // MEM_PRIVATE + uncommitted + accessible: bare-placeholder
+      // demand-map. NUMA hint via `plan.numa_node` from the caller;
+      // unhinted commit on `<0` or kernel rejection of the NUMA
+      // path.
+      NTSTATUS st = STATUS_INVALID_PARAMETER;
+      if (plan.numa_node >= 0) {
+        st = nt_pal::commit_replace_numa(
+            walk.chunk, walk.chunk_size, eff_prot,
+            static_cast<ULONG>(plan.numa_node));
+      }
+      if (NT_ERROR(st))
+        st = nt_pal::commit_replace(walk.chunk, walk.chunk_size, eff_prot);
+      if (NT_ERROR(st))
+        return -ENOMEM;
+    }
   }
   return 0;
 }
@@ -2060,11 +2307,12 @@ using BuildPlanFn = int (*)(const CommitIntent &, Arena *, const LockedSet &,
 
 [[nodiscard]] LIBC_INLINE BuildPlanFn build_plan_for_op(OpKind op) {
   switch (op) {
-  case OpKind::Acquire: return &build_plan_acquire;
-  case OpKind::Release: return &build_plan_release;
-  case OpKind::Replace: return &build_plan_replace;
-  case OpKind::Mutate:  return &build_plan_mutate;
-  case OpKind::Split:   return &build_plan_split;
+  case OpKind::Acquire:           return &build_plan_acquire;
+  case OpKind::Release:           return &build_plan_release;
+  case OpKind::Replace:           return &build_plan_replace;
+  case OpKind::Mutate:            return &build_plan_mutate;
+  case OpKind::Split:             return &build_plan_split;
+  case OpKind::AcquireAtReserved: return &build_plan_acquire_at_reserved;
   }
   return nullptr;
 }
@@ -2201,8 +2449,14 @@ int run_envelope(const CommitIntent &intent) {
     // Post-linearisation: NewNodes are published.
 
     // Kernel-side protect (mutate path). `NtProtectVirtualMemory` is
-    // per-VAD atomic; iterate `locked.succ`.
-    int prot_err = post_swap_protect(plan, locked);
+    // per-VAD atomic; iterate `locked.succ`. The per-chunk dispatch
+    // variant replaces this with a `RegionWalker`-driven walk that
+    // also handles uncommitted-accessible chunks via
+    // `commit_in_reservation` / `commit_replace[_numa]`; the two
+    // phases are mutually exclusive (per `build_plan_mutate`).
+    int prot_err = plan.dispatch_per_chunk
+                       ? post_swap_per_chunk_dispatch(plan, locked)
+                       : post_swap_protect(plan, locked);
     if (prot_err != 0) {
       // The chain is already published. Surface the error; the caller
       // sees that the protect side-effect failed even though the desc
@@ -2287,6 +2541,73 @@ acquire(VaRange range, RegionKind kind, const AcquireMeta &meta) {
   return resolve(range.start);
 }
 
+// Shared tail of every kernel-chosen acquire variant. The caller has
+// already scouted a placeholder at `base` (any sub-2-GiB / unconstrained /
+// future NUMA-affined scout dispatches here); this routine drives the
+// AcquireAtReserved envelope and owns the placeholder cleanup on
+// envelope failure.
+//
+// Kept in an anonymous namespace so the two public entries below stay
+// the only escape hatches. The early bail on `base == nullptr` lets
+// the callers funnel a failed scout through here without duplicating
+// the ENOMEM return.
+namespace {
+[[nodiscard]] LIBC_INLINE ::LIBC_NAMESPACE::ErrorOr<void *>
+finish_acquire_at_reserved(void *base, size_t bytes, RegionKind kind,
+                           const AcquireMeta &meta) {
+  if (base == nullptr)
+    return ::LIBC_NAMESPACE::Error{ENOMEM};
+
+  CommitIntent intent;
+  intent.op = OpKind::AcquireAtReserved;
+  intent.range = VaRange{base, bytes};
+  intent.kind = kind;
+  intent.meta = meta;
+
+  int rc = dispatch_per_arena_op(intent);
+  if (rc != 0) {
+    // Envelope failed. The Acquire-at-reserved plan never frees the
+    // placeholder on its own — that contract belongs to the caller
+    // (us). Free silently; if a later phase already tore it down via
+    // Stage 2, NT returns STATUS_INVALID_ADDRESS and we treat the
+    // double-free as a no-op.
+    (void)nt_pal::free_placeholder(base);
+    return ::LIBC_NAMESPACE::Error{rc < 0 ? -rc : rc};
+  }
+
+  return base;
+}
+} // namespace
+
+::LIBC_NAMESPACE::ErrorOr<void *>
+acquire_kernel_chosen(size_t bytes, RegionKind kind,
+                      const AcquireMeta &meta) {
+  if (LIBC_UNLIKELY(bytes == 0 ||
+                    (bytes & (kAllocGranularity - 1)) != 0))
+    return ::LIBC_NAMESPACE::Error{EINVAL};
+
+  // Unconstrained scout — kernel picks any MEM_FREE base across the
+  // full user VA. The placeholder stays in our hands across the
+  // envelope so no other POSIX-layer consumer can race the VA.
+  return finish_acquire_at_reserved(
+      nt_pal::reserve_placeholder(nullptr, bytes), bytes, kind, meta);
+}
+
+::LIBC_NAMESPACE::ErrorOr<void *>
+acquire_kernel_chosen_32bit(size_t bytes, RegionKind kind,
+                            const AcquireMeta &meta) {
+  if (LIBC_UNLIKELY(bytes == 0 ||
+                    (bytes & (kAllocGranularity - 1)) != 0))
+    return ::LIBC_NAMESPACE::Error{EINVAL};
+
+  // Low-2-GiB-constrained scout for `MAP_32BIT`. Same envelope
+  // contract as the unconstrained sibling — the placeholder is
+  // never visible as MEM_FREE between the scout and the commit, so
+  // a concurrent MAP_32BIT request cannot win the same VA.
+  return finish_acquire_at_reserved(
+      nt_pal::reserve_placeholder_32bit(bytes), bytes, kind, meta);
+}
+
 int release(VaRange range) {
   CommitIntent intent;
   intent.op = OpKind::Release;
@@ -2305,8 +2626,15 @@ int replace(VaRange range, RegionKind kind, const AcquireMeta &meta) {
   return rc < 0 ? -rc : rc;
 }
 
-int mutate(VaRange range, DescMutator mutator, void *ctx, DWORD prot_change) {
-  if (LIBC_UNLIKELY(mutator == nullptr))
+int mutate(VaRange range, DescMutator mutator, void *ctx, DWORD prot_change,
+           bool commit_if_uncommitted_accessible, int numa_node) {
+  // The substrate-owned view_prot / PROT_DIVERGED logic on the
+  // commit-on-uncommitted path makes a null mutator legal — the
+  // caller has nothing to add beyond the substrate's coverage
+  // bookkeeping. On the plain-mutate path the mutator is still
+  // required (every locked desc must have a mutator-applied clone
+  // for Swap publish).
+  if (LIBC_UNLIKELY(mutator == nullptr && !commit_if_uncommitted_accessible))
     return EINVAL;
   CommitIntent intent;
   intent.op = OpKind::Mutate;
@@ -2314,6 +2642,8 @@ int mutate(VaRange range, DescMutator mutator, void *ctx, DWORD prot_change) {
   intent.mutator = mutator;
   intent.mutator_ctx = ctx;
   intent.prot_change = prot_change;
+  intent.commit_if_uncommitted_accessible = commit_if_uncommitted_accessible;
+  intent.numa_node = numa_node;
   int rc = dispatch_per_arena_op(intent);
   return rc < 0 ? -rc : rc;
 }

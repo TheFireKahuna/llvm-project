@@ -181,6 +181,28 @@ inline constexpr uint16_t DUMP_EXCLUDE = 0x400;
 /// substrate replays each region freshly in the child.
 inline constexpr uint16_t LOCK_ONFAULT = 0x800;
 
+/// PROT_DIVERGED: the desc's `view_prot` is the original (acquire-
+/// time) protection, but kernel-side per-page protection has been
+/// changed by a sub-region mprotect since then and may differ from
+/// `view_prot` on any subset of pages.
+///
+/// Set by `va_tracker::mutate(commit_if_uncommitted_accessible=true)`
+/// on any locked succ the input range covers only partially (range
+/// edge falls inside the desc). The mprotect entry is the only
+/// current writer; the bit clears on the next full-cover prot change
+/// of the same desc.
+///
+/// Read by the demand-commit fault handler: on hit, the handler
+/// re-queries the per-page protection via MBI before issuing
+/// `commit_replace`, so a fault on an uncommitted page in a NORESERVE
+/// region that has been sub-region mprotected commits with the
+/// kernel's authoritative protection rather than the desc's stale
+/// `view_prot`.
+///
+/// Survives fork via the substrate's standard desc serialization —
+/// the property is durable until the next full-cover prot change.
+inline constexpr uint16_t PROT_DIVERGED = 0x1000;
+
 } // namespace region_flag
 
 /// Per-region leaf descriptor for the va_tracker's interval skiplist.

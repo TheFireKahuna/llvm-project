@@ -7,23 +7,27 @@
 //===----------------------------------------------------------------------===//
 //
 // Anonymous-private (`mmap(MAP_ANONYMOUS|MAP_PRIVATE, ...)`) lands here
-// as one `va_tracker::acquire` call after the meta builder converts
-// POSIX flags into substrate shape.
+// as one `va_tracker` call after the meta builder converts POSIX flags
+// into substrate shape.
 //
-// The substrate's `acquire` reserves a placeholder at a specific VA
-// and refuses any non-MEM_FREE base. POSIX accepts a soft hint, so a
-// caller-supplied address may collide with existing VA — the kernel
-// is asked to pick a base via `nt_pal::reserve_placeholder` first,
-// the placeholder is released to recover MEM_FREE state, and the
-// substrate's `acquire` re-reserves at that base. A brief race window
-// between the release and the re-reserve can lose to a concurrent
-// allocator; the loop retries a bounded number of times before
-// surfacing `ENOMEM`.
+// Three paths, each a single substrate entry:
+//   * Caller-supplied hint, alloc-aligned and likely MEM_FREE:
+//     `va_tracker::acquire(VaRange{hint, len}, ...)` honours the hint
+//     and fails fast with `EEXIST` on collision so the caller can
+//     retry without a hint. Honouring the hint matters for
+//     stack-grow-adjacent placement where the caller knows more
+//     about the desired layout than the kernel does.
+//   * `MAP_32BIT`: `va_tracker::acquire_kernel_chosen_32bit(len, ...)`
+//     scouts a low-2-GiB base inside the substrate's LOCKED hold —
+//     the placeholder is never observable as MEM_FREE between
+//     reserve and commit.
+//   * No hint, sub-granularity hint, or hint-collision retry:
+//     `va_tracker::acquire_kernel_chosen(len, ...)` reserves at a
+//     kernel-chosen MEM_FREE base under the same LOCKED hold.
 //
-// `MAP_32BIT` keeps the hint in the low 2 GiB by switching the
-// scout reservation to `reserve_placeholder_32bit`; the
-// `region_flag::LOW_32BIT` bit on the desc carries the constraint
-// so a future mremap-grow preserves placement.
+// No `reserve_placeholder` / `free_placeholder` call appears here:
+// every scout sits inside the substrate, so there is no
+// reserve / release / re-reserve race window for any path.
 //
 //===----------------------------------------------------------------------===//
 
@@ -35,7 +39,6 @@
 #include "src/__support/OSUtil/windows/memory/posix/posix_meta.h"
 #include "src/__support/OSUtil/windows/memory/posix/posix_validation.h"
 #include "src/__support/OSUtil/windows/memory/va_tracker.h"
-#include "src/__support/OSUtil/windows/nt_pal/placeholder.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
 #include "src/__support/error_or.h"
 #include "src/__support/macros/config.h"
@@ -47,32 +50,6 @@ namespace {
 
 namespace mp = ::LIBC_NAMESPACE::windows::memory_posix;
 namespace vt = ::LIBC_NAMESPACE::windows::va_tracker;
-
-// Bounded retry budget for the scout-reserve / release / acquire
-// race. Three attempts is the same budget the legacy mlock retry
-// loop uses for transient kernel-quota contention — large enough to
-// absorb concurrent allocator chatter, small enough that pathological
-// VA pressure surfaces ENOMEM rather than spinning forever.
-constexpr int kScoutRetryBudget = 3;
-
-// Pick a MEM_FREE base for an anonymous-private mapping.
-//
-// The substrate's `acquire` op reserves a placeholder at the address
-// it is handed and refuses non-MEM_FREE bases. The caller-supplied
-// `hint` is page-aligned per POSIX but may collide with existing VA;
-// `nt_pal::reserve_placeholder(hint, size)` lets the kernel choose a
-// nearby free base when the hint is occupied. `MAP_32BIT` constrains
-// the search to the low 2 GiB. Returns nullptr on exhaustion.
-LIBC_INLINE void *scout_anon_base(void *hint, size_t size, int flags) {
-  if (flags & MAP_32BIT) {
-    // 32-bit reservation ignores the caller hint — the kernel must
-    // pick a base below 4 GiB, and an out-of-range hint forces a
-    // fallback that would silently widen the placement.
-    (void)hint;
-    return ::LIBC_NAMESPACE::nt_pal::reserve_placeholder_32bit(size);
-  }
-  return ::LIBC_NAMESPACE::nt_pal::reserve_placeholder(hint, size);
-}
 
 } // namespace
 
@@ -96,45 +73,41 @@ intptr_t mmap_anon_private(void *addr, size_t size, int prot, int flags) {
     return -ENOMEM;
   const size_t kernel_bytes = static_cast<size_t>(kernel_bytes_raw);
 
-  // Caller hint, soft. The substrate refuses anything sub-granularity,
-  // so non-64KiB hints align down here. Null in stays null.
-  void *aligned_hint = addr;
-  if (aligned_hint != nullptr && !mp::is_alloc_aligned(aligned_hint)) {
-    uintptr_t down = ::LIBC_NAMESPACE::windows::align_down_to_granularity(
-        reinterpret_cast<uintptr_t>(aligned_hint));
-    aligned_hint = reinterpret_cast<void *>(down);
-  }
-
   const vt::AcquireMeta meta = mp::anon_private_meta(prot, flags);
 
-  for (int attempt = 0; attempt < kScoutRetryBudget; ++attempt) {
-    void *scout = scout_anon_base(aligned_hint, kernel_bytes, flags);
-    if (scout == nullptr)
-      return -ENOMEM;
+  if (flags & MAP_32BIT) {
+    auto chosen = vt::acquire_kernel_chosen_32bit(
+        kernel_bytes, vt::RegionKind::AnonPrivate, meta);
+    if (!chosen.has_value())
+      return -chosen.error();
+    return reinterpret_cast<intptr_t>(chosen.value());
+  }
 
-    if (LIBC_UNLIKELY(!::LIBC_NAMESPACE::nt_pal::free_placeholder(scout))) {
-      // The scout placeholder MUST release cleanly — failure means a
-      // kernel-side bug or a different allocator stole the VAD out
-      // from under us. Either way the only safe move is to surface
-      // ENOMEM; retrying would compound the leak.
-      return -ENOMEM;
-    }
-
-    vt::VaRange range = mp::make_range(scout, kernel_bytes);
+  // Hint path: honour an alloc-granularity-aligned caller hint via the
+  // regular `acquire`. A collision returns `EEXIST` and we fall
+  // through to the kernel-chosen path. Sub-granularity hints skip
+  // the honour attempt because the substrate refuses them and the
+  // kernel-chosen path will pick a clean base.
+  if (addr != nullptr && mp::is_alloc_aligned(addr)) {
+    vt::VaRange range = mp::make_range(addr, kernel_bytes);
     auto ref = vt::acquire(range, vt::RegionKind::AnonPrivate, meta);
     if (ref.has_value())
-      return reinterpret_cast<intptr_t>(scout);
-
+      return reinterpret_cast<intptr_t>(addr);
     int e = ref.error();
     if (e != EEXIST)
       return -e;
-    // A concurrent allocator claimed the scouted VA between the
-    // release and the acquire. Retry; the next scout call will find
-    // a different MEM_FREE base.
-    aligned_hint = nullptr;
   }
 
-  return -ENOMEM;
+  // No hint (or hint collision): let the substrate scout under its
+  // own LOCKED hold so no other POSIX-layer consumer can race the
+  // reservation. Single envelope, single substrate-side reserve, no
+  // retry loop. The chosen base is returned directly.
+  auto chosen =
+      vt::acquire_kernel_chosen(kernel_bytes, vt::RegionKind::AnonPrivate,
+                                meta);
+  if (!chosen.has_value())
+    return -chosen.error();
+  return reinterpret_cast<intptr_t>(chosen.value());
 }
 
 } // namespace internal

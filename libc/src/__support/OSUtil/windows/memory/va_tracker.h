@@ -193,6 +193,47 @@ using WalkVisitor = void (*)(VaRange covered, RegionDesc *desc, void *ctx);
 [[nodiscard]] ::LIBC_NAMESPACE::ErrorOr<RegionRef>
 acquire(VaRange range, RegionKind kind, const AcquireMeta &meta);
 
+/// Acquire fresh VA at a kernel-chosen MEM_FREE base.
+///
+/// The engine asks `nt_pal::reserve_placeholder(nullptr, bytes)` for a
+/// MEM_FREE address before running the per-arena envelope; the
+/// envelope skips its own pre-commit reserve step because the
+/// placeholder already exists at the chosen base. The chosen base is
+/// returned directly so the caller does not need a follow-up
+/// `resolve()` to recover it.
+///
+/// Use this when the caller has no hint — typically `mmap(NULL, len,
+/// ...)`. A hint-respecting acquire whose hint is known MEM_FREE
+/// should use `acquire(VaRange{hint, len}, ...)` to honour the hint
+/// instead of letting the kernel pick.
+///
+/// On any failure of the envelope the placeholder is released before
+/// the errno is returned, so the caller observes a fully-rolled-back
+/// state. The brief window between reservation and the envelope's
+/// LOCKED hold is invisible to other POSIX-layer consumers (the VA
+/// is MEM_RESERVE during it, not MEM_FREE), eliminating the
+/// release / re-reserve race a POSIX-side scout loop would otherwise
+/// have to retry through.
+///
+/// \pre `bytes > 0` and `bytes % 64 KiB == 0`.
+/// \returns The chosen base on success. `Error(EINVAL)` for an
+///          invalid size, `Error(ENOMEM)` for VA exhaustion,
+///          otherwise the envelope's errno.
+[[nodiscard]] ::LIBC_NAMESPACE::ErrorOr<void *>
+acquire_kernel_chosen(size_t bytes, RegionKind kind,
+                      const AcquireMeta &meta);
+
+/// `MAP_32BIT` variant of `acquire_kernel_chosen`: the scout uses
+/// `nt_pal::reserve_placeholder_32bit` so the chosen base lands in
+/// the low 2 GiB. Same race-free envelope contract — the placeholder
+/// is never visible as MEM_FREE between the scout and the commit, so
+/// a concurrent MAP_32BIT consumer cannot win the same VA.
+///
+/// \pre `bytes > 0` and `bytes % 64 KiB == 0`.
+[[nodiscard]] ::LIBC_NAMESPACE::ErrorOr<void *>
+acquire_kernel_chosen_32bit(size_t bytes, RegionKind kind,
+                            const AcquireMeta &meta);
+
 /// Drop every desc whose extent is fully inside `range`.
 ///
 /// The post-Swap survivor walk plus per-backing state CAS owns
@@ -246,13 +287,30 @@ acquire(VaRange range, RegionKind kind, const AcquireMeta &meta);
 /// kernel-side protection matches the new desc state. Pure metadata
 /// mutators (NUMA rebind) pass 0.
 ///
+/// When `commit_if_uncommitted_accessible` is true, the post-Swap
+/// phase replaces the per-VAD `nt_pal::protect` with a per-chunk
+/// dispatch over each locked succ's intersection with `range`
+/// (`nt_pal::RegionWalker` + three-way state machine: committed →
+/// protect, uncommitted + accessible + MEM_MAPPED →
+/// `commit_in_reservation`, uncommitted + accessible + MEM_PRIVATE →
+/// `commit_replace[_numa]` using `numa_node`, uncommitted + PROT_NONE
+/// → no-op). `MEM_FREE` mid-range aborts with `ENOMEM`. COW
+/// translation is applied per-succ from the OLD desc's
+/// `region_flag::COW`. The substrate also writes view_prot
+/// (full-cover) or sets `region_flag::PROT_DIVERGED` (partial-cover)
+/// on each clone — `mutator` MAY be null on this path because the
+/// caller-side field updates collapse into the substrate's coverage
+/// logic. CFG-secured retries are absorbed by `nt_pal::protect`.
+///
 /// \pre No desc in `range` straddles a `range` boundary — POSIX
 ///      `mprotect(addr, len, prot)` requires the mutation to touch only
 ///      `[addr, addr + len)`, so mutating a straddler would alter
 ///      regions outside the caller's range. Caller pre-splits via
 ///      `split()` for the straddle case.
 [[nodiscard]] int mutate(VaRange range, DescMutator mutator, void *ctx,
-                         DWORD prot_change = 0);
+                         DWORD prot_change = 0,
+                         bool commit_if_uncommitted_accessible = false,
+                         int numa_node = -1);
 
 /// Split the single desc covering `boundary` into two clones sharing the
 /// source's `BackingRef`.
