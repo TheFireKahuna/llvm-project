@@ -468,13 +468,20 @@ inline constexpr ULONG MAP_SYSTEM = 0x0002;
 // NextValidAddress: resume cursor. Enumeration is complete when this
 // value >= the highest user-mode address (typically 0x7FFFFFFF0000).
 //
-// On partial fill (buffer too small), returns STATUS_BUFFER_OVERFLOW
-// (0x00000105) with NumberOfEntries set to the entries that fit and
-// NextValidAddress set to resume from.
+// On partial fill, returns STATUS_MORE_ENTRIES (0x00000105 — NT_SUCCESS
+// positive) with NumberOfEntries set to the entries that fit and
+// NextValidAddress set to resume from. Buffers smaller than the 16-byte
+// header return STATUS_INFO_LENGTH_MISMATCH; the smallest useful buffer
+// is 64 bytes (header + one MBI slot). The kernel truncates at MBI
+// boundaries — trailing bytes that don't form a complete slot are
+// ignored.
 //
-// QueryFlags: must be non-zero. Currently only MEMORY_BULK_INFORMATION_FLAG_BASIC
-// (0x1) is defined. Values 0x2 and 0x3 are accepted but produce identical
-// output. Value 0x0 returns STATUS_INVALID_PARAMETER.
+// QueryFlags: must be non-zero. MEMORY_BULK_INFORMATION_FLAG_BASIC
+// (0x1) is the only documented value. The RESERVED bit (0x2) is
+// validated by the kernel against VALID_MASK (0x3) and accepted but
+// currently produces identical output. Values outside the mask return
+// STATUS_NOT_SUPPORTED (0xC00000BB); QueryFlags == 0 returns
+// STATUS_INVALID_PARAMETER.
 //
 // Reference: System Informer phnt/include/ntpsapi.h
 inline constexpr ULONG MEMORY_BULK_INFORMATION_FLAG_BASIC = 0x1;

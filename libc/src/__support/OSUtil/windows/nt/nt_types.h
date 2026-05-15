@@ -125,6 +125,13 @@ using FARPROC = decltype(&__farproc_type_source);
 inline constexpr NTSTATUS STATUS_SUCCESS = 0x00000000;
 inline constexpr NTSTATUS STATUS_ALERTED = 0x00000101;
 inline constexpr NTSTATUS STATUS_TIMEOUT = 0x00000102;
+// NT_SUCCESS-positive partial-fill warning. Some enumeration APIs
+// (notably NtPssCaptureVaSpaceBulk) return this when the caller's
+// buffer did not hold every remaining entry; the resume cursor sits
+// in the API's output header. STATUS_BUFFER_OVERFLOW (0x80000005) is
+// often confused with this code but is a distinct, NT_SUCCESS-negative
+// warning used by file/named-pipe APIs.
+inline constexpr NTSTATUS STATUS_MORE_ENTRIES = 0x00000105;
 inline constexpr NTSTATUS STATUS_CANCELLED = static_cast<NTSTATUS>(0xC0000120);
 inline constexpr NTSTATUS STATUS_BUFFER_OVERFLOW =
     static_cast<NTSTATUS>(0x80000005);
