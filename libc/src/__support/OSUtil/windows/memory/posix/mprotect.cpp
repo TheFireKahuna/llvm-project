@@ -16,22 +16,19 @@
 //     range only on success; registration failure does NOT roll back
 //     the protection change. Matches Linux.
 //
-// Dispatch is pre-split + one substrate call. The POSIX layer pre-
-// splits the descs at the protect range's edges so the mutate
-// envelope sees only full-cover succs — every clone gets an accurate
-// `view_prot` update and `region_flag::PROT_DIVERGED` is never
-// stamped. The accurate-view_prot invariant matters for fork replay
-// (`replay_emit` in `va_tracker.cpp` passes `desc->view_prot` to the
-// child's `acquire` meta) and for any future mremap that preserves
-// protection across the move; PROT_DIVERGED would leak the original
-// protection into the new mapping.
-//
-// The mutate envelope still handles per-chunk dispatch under the
-// full-cover succs (committed → protect, uncommitted + accessible
+// Dispatch is one substrate call. The va_tracker's
+// `mutate(commit_if_uncommitted_accessible=true)` envelope handles
+// per-chunk dispatch (committed → protect, uncommitted + accessible
 // + MEM_MAPPED → commit_in_reservation, uncommitted + accessible +
 // MEM_PRIVATE → commit_replace[_numa]), MEM_FREE rejection, and
 // per-succ COW translation — all under the per-succ LOCKED hold so
 // a concurrent va_tracker mutator cannot race the demand-map step.
+// The envelope does NOT update the desc's `view_prot`: the kernel
+// holds the authoritative per-page protection state, and consumers
+// (fork replay, replace's sibling-preserve, future mremap) query
+// MBI when they need it. Mprotect is a pure kernel-state operation
+// with no desc-state side effect, so descs never fragment from
+// mprotect calls.
 //
 // The POSIX layer keeps three responsibilities the substrate has no
 // reason to learn: entry validation, NUMA-node selection from the
@@ -92,17 +89,6 @@ intptr_t mprotect(void *addr, size_t size, int prot) {
 
   const DWORD new_prot = mp::posix_prot_to_page(prot);
   const int numa_node = ::LIBC_NAMESPACE::windows::select_numa_node();
-
-  // Pre-split at the protect range's edges so the mutate envelope
-  // sees only fully-covered succs. A boundary that lands on an
-  // existing desc edge or inside a MEM_FREE hole returns ENOENT /
-  // EINVAL from `split` — both mean "no straddle here, nothing to
-  // do" and are silently tolerated. Only a strict-interior boundary
-  // triggers an actual split. Same idiom as `munmap.cpp`.
-  const uintptr_t addr_lo = addr_val;
-  const uintptr_t addr_hi = addr_val + rounded;
-  (void)vt::split(reinterpret_cast<void *>(addr_lo));
-  (void)vt::split(reinterpret_cast<void *>(addr_hi));
 
   const vt::VaRange range = mp::make_range(addr, rounded);
   const int rc = vt::mutate(range,

@@ -302,11 +302,14 @@ acquire_kernel_chosen_32bit(size_t bytes, RegionKind kind,
 /// `commit_replace[_numa]` using `numa_node`, uncommitted + PROT_NONE
 /// → no-op). `MEM_FREE` mid-range aborts with `ENOMEM`. COW
 /// translation is applied per-succ from the OLD desc's
-/// `region_flag::COW`. The substrate also writes view_prot
-/// (full-cover) or sets `region_flag::PROT_DIVERGED` (partial-cover)
-/// on each clone — `mutator` MAY be null on this path because the
-/// caller-side field updates collapse into the substrate's coverage
-/// logic. CFG-secured retries are absorbed by `nt_pal::protect`.
+/// `region_flag::COW`. The kernel-side protection write is the only
+/// visible side effect — the substrate does NOT update the clone's
+/// `view_prot` (acquire-time intent is preserved) because the
+/// kernel holds the authoritative current protection and consumers
+/// query MBI when they need it. `mutator` MAY be null on this path
+/// because the protection write collapses into the substrate's
+/// coverage logic. CFG-secured retries are absorbed by
+/// `nt_pal::protect`.
 ///
 /// \pre No desc in `range` straddles a `range` boundary — POSIX
 ///      `mprotect(addr, len, prot)` requires the mutation to touch only
@@ -358,11 +361,50 @@ void walk_range(VaRange range, WalkVisitor visitor, void *ctx);
 // Fork serialization and replay.
 //===----------------------------------------------------------------------===//
 
+/// One protection sub-run within a fork-replay entry's range.
+///
+/// `desc->view_prot` carries acquire-time intent only; the kernel holds
+/// the authoritative per-page protection. The serializer walks MBI runs
+/// across each desc's range and emits one `ProtectionRun` per uniform-
+/// protection sub-run so the child observes the parent's exact
+/// protection layout — including sub-region mprotect divergence —
+/// regardless of whether the desc has default or explicit (brk /
+/// posix_memalign / mremap-headroom) placeholder identity.
+///
+/// The first run's `prot` matches `AcquireMeta::view_prot`; the
+/// child's `acquire` applies it as part of the initial commit. Runs
+/// `[1..protection_count)` are applied post-acquire via
+/// `nt_pal::protect`. When `protection_count == 1`, the range is
+/// protection-uniform and no extra `NtProtect` calls fire.
+///
+/// Bytes are page-aligned. Sub-runs cover the entry's `range` without
+/// gaps or overlap.
+struct ProtectionRun {
+  uint32_t offset_from_range_lo;
+  uint32_t bytes;
+  DWORD    prot;
+  uint32_t reserved_; // padding to 16 bytes
+};
+
+/// Inline cap per Entry. Sized for typical mprotect patterns (one or
+/// two carved sub-regions per desc). On overflow, the serializer
+/// emits a single run with `meta.view_prot` and logs nothing — the
+/// child observes uniform protection, same as the pre-Option-A
+/// degraded path. Real workloads have ≤ 3 runs per desc; 16 is
+/// generous headroom.
+inline constexpr uint32_t kMaxProtectionRunsPerEntry = 16;
+
 /// Sink fed by `serialize_for_fork`. The emit callback receives every
 /// POSIX-visible mapping in ascending VA order.
+///
+/// `runs` and `run_count` describe the entry's per-sub-run protection
+/// map. The callback may copy the runs into snapshot storage (the
+/// pointer is transient — valid only for the duration of the call).
+/// `run_count` is always ≥ 1.
 struct ForkSink {
   using EmitFn = int (*)(void *ctx, VaRange r, RegionKind k,
-                         const AcquireMeta &m);
+                         const AcquireMeta &m,
+                         const ProtectionRun *runs, uint32_t run_count);
   EmitFn emit{nullptr};
   void *ctx{nullptr};
 };
@@ -370,11 +412,19 @@ struct ForkSink {
 /// Replayable snapshot consumed by `replay_in_child`. The child re-
 /// `acquire`s each entry in order; ordering is irrelevant because the
 /// engine treats each entry as an independent atomic envelope.
+///
+/// Each Entry inlines its `ProtectionRun` array (up to
+/// `kMaxProtectionRunsPerEntry`). Replay applies the first run's prot
+/// implicitly through the initial commit (the substrate uses
+/// `meta.view_prot`), then iterates runs `[1..protection_count)` via
+/// `nt_pal::protect` to reproduce the parent's sub-region protection.
 struct ForkSnapshot {
   struct Entry {
     VaRange range;
     RegionKind kind;
     AcquireMeta meta;
+    ProtectionRun protection_runs[kMaxProtectionRunsPerEntry];
+    uint32_t protection_count;
   };
   const Entry *entries{nullptr};
   size_t count{0};

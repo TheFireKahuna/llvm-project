@@ -105,13 +105,20 @@ struct SinkBuffer {
 };
 
 int sink_emit(void *ctx, vt::VaRange r, vt::RegionKind k,
-              const vt::AcquireMeta &m) {
+              const vt::AcquireMeta &m,
+              const vt::ProtectionRun *runs, uint32_t run_count) {
   auto *sb = static_cast<SinkBuffer *>(ctx);
   if (sb->count >= SinkBuffer::kCap)
     return -ENOSPC;
-  sb->entries[sb->count].range = r;
-  sb->entries[sb->count].kind = k;
-  sb->entries[sb->count].meta = m;
+  auto &e = sb->entries[sb->count];
+  e.range = r;
+  e.kind = k;
+  e.meta = m;
+  const uint32_t cap = vt::kMaxProtectionRunsPerEntry;
+  uint32_t n = run_count < cap ? run_count : cap;
+  for (uint32_t i = 0; i < n; ++i)
+    e.protection_runs[i] = runs[i];
+  e.protection_count = n;
   sb->count++;
   return 0;
 }
@@ -365,6 +372,77 @@ TEST(LlvmLibcVaTrackerTest, ReplayInChildReturnsZeroOnSuccess) {
   EXPECT_FALSE(rr.has_error());
 
   EXPECT_EQ(0, vt::release(make_range(base, kAllocGran)));
+}
+
+// --- 11. Fork serialization captures sub-region mprotect divergence -----
+// A desc whose kernel state has been split by `mprotect` emits multiple
+// `ProtectionRun` entries — one per uniform-protection sub-run — so the
+// child reproduces the parent's exact protection layout.
+TEST(LlvmLibcVaTrackerTest, SerializeEmitsProtectionRunsForDivergence) {
+  // Use a 64 KiB anon-private region so we can directly mprotect a
+  // sub-range without going through va_tracker's mprotect path
+  // (which we don't want to test here — just the serialization
+  // behavior given a kernel-side divergent VAD layout).
+  auto chosen = vt::acquire_kernel_chosen(64u * 1024u,
+                                           vt::RegionKind::AnonPrivate,
+                                           make_meta(PAGE_READWRITE));
+  ASSERT_FALSE(chosen.has_error());
+  uintptr_t base = reinterpret_cast<uintptr_t>(chosen.value());
+
+  // Carve a 4 KiB read-only window at offset +4 KiB. After this the
+  // 64 KiB VAD splits into three: [base, +4 KiB) RW, [+4 KiB, +8 KiB) R,
+  // [+8 KiB, +64 KiB) RW.
+  void *ro_addr = reinterpret_cast<void *>(base + 4u * 1024u);
+  ULONG old_prot = 0;
+  PVOID p = ro_addr;
+  SIZE_T sz = 4u * 1024u;
+  ASSERT_TRUE(NT_SUCCESS(::NtProtectVirtualMemory(
+      ::NtCurrentProcess(), &p, &sz, PAGE_READONLY, &old_prot)));
+
+  SinkBuffer sb;
+  vt::ForkSink sink;
+  sink.emit = &sink_emit;
+  sink.ctx = &sb;
+  EXPECT_EQ(0, vt::serialize_for_fork(sink));
+
+  // Find the entry for our region.
+  size_t idx = sb.count;
+  for (size_t i = 0; i < sb.count; ++i) {
+    if (reinterpret_cast<uintptr_t>(sb.entries[i].range.start) == base) {
+      idx = i;
+      break;
+    }
+  }
+  ASSERT_LT(idx, sb.count);
+  const auto &e = sb.entries[idx];
+
+  // Expect 3 runs: RW / R / RW.
+  EXPECT_EQ(static_cast<uint32_t>(3), e.protection_count);
+  EXPECT_EQ(static_cast<uint32_t>(0),
+            e.protection_runs[0].offset_from_range_lo);
+  EXPECT_EQ(static_cast<uint32_t>(4u * 1024u),
+            e.protection_runs[0].bytes);
+  EXPECT_EQ(static_cast<DWORD>(PAGE_READWRITE),
+            e.protection_runs[0].prot);
+
+  EXPECT_EQ(static_cast<uint32_t>(4u * 1024u),
+            e.protection_runs[1].offset_from_range_lo);
+  EXPECT_EQ(static_cast<uint32_t>(4u * 1024u),
+            e.protection_runs[1].bytes);
+  EXPECT_EQ(static_cast<DWORD>(PAGE_READONLY),
+            e.protection_runs[1].prot);
+
+  EXPECT_EQ(static_cast<uint32_t>(8u * 1024u),
+            e.protection_runs[2].offset_from_range_lo);
+  EXPECT_EQ(static_cast<uint32_t>(56u * 1024u),
+            e.protection_runs[2].bytes);
+  EXPECT_EQ(static_cast<DWORD>(PAGE_READWRITE),
+            e.protection_runs[2].prot);
+
+  // First run's prot drives meta.view_prot.
+  EXPECT_EQ(static_cast<DWORD>(PAGE_READWRITE), e.meta.view_prot);
+
+  EXPECT_EQ(0, vt::release(make_range(base, 64u * 1024u)));
 }
 
 // ---------------------------------------------------------------------------

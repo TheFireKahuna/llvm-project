@@ -33,7 +33,10 @@ namespace {
 // survive intact.
 constexpr uint16_t kSeedBits = rf::COMMITTED | rf::COW;
 
-RegionDesc make_seeded_desc() {
+// RegionDesc inherits CrystallineNode whose intrusive atomics delete the
+// copy/move ctors; the factory returns a reference into static
+// thread-local storage that placement-new reseeds on every call.
+RegionDesc &make_seeded_desc() {
   alignas(64) static thread_local unsigned char storage[sizeof(RegionDesc)];
   RegionDesc *d = new (storage) RegionDesc{};
   d->flags.store(kSeedBits, MemoryOrder::RELAXED);
@@ -44,34 +47,29 @@ RegionDesc make_seeded_desc() {
 
 } // namespace
 
-TEST(LlvmLibcMemoryPosixMutatorsTest, ProtMutatorRewritesViewProt) {
-  RegionDesc d = make_seeded_desc();
-  DWORD new_prot = PAGE_READWRITE;
-  mp::prot_mutator(&d, &new_prot);
-  EXPECT_EQ(d.view_prot, static_cast<DWORD>(PAGE_READWRITE));
-  EXPECT_EQ(d.flags.load(MemoryOrder::ACQUIRE), kSeedBits);
-}
-
 TEST(LlvmLibcMemoryPosixMutatorsTest, LockMutatorIsNoopForFlags) {
-  RegionDesc d = make_seeded_desc();
+  RegionDesc &d = make_seeded_desc();
   bool locked = true;
   mp::lock_mutator(&d, &locked);
-  EXPECT_EQ(d.flags.load(MemoryOrder::ACQUIRE), kSeedBits);
-  EXPECT_EQ(d.view_prot, static_cast<DWORD>(PAGE_READONLY));
+  EXPECT_EQ(static_cast<uint16_t>(d.flags.load(MemoryOrder::ACQUIRE)),
+            kSeedBits);
+  EXPECT_EQ(static_cast<uint32_t>(d.view_prot),
+            static_cast<uint32_t>(PAGE_READONLY));
 }
 
 TEST(LlvmLibcMemoryPosixMutatorsTest, BrkExtendMutatorWritesCursor) {
-  RegionDesc d = make_seeded_desc();
+  RegionDesc &d = make_seeded_desc();
   void *cursor = reinterpret_cast<void *>(uintptr_t(0x1234'5000));
   mp::BrkExtendCtx ctx{cursor};
   mp::brk_extend_mutator(&d, &ctx);
   EXPECT_EQ(d.section_offset.QuadPart,
             static_cast<LONGLONG>(reinterpret_cast<uintptr_t>(cursor)));
-  EXPECT_EQ(d.flags.load(MemoryOrder::ACQUIRE), kSeedBits);
+  EXPECT_EQ(static_cast<uint16_t>(d.flags.load(MemoryOrder::ACQUIRE)),
+            kSeedBits);
 }
 
 TEST(LlvmLibcMemoryPosixMutatorsTest, NumaRebindSetsFlagAndMask) {
-  RegionDesc d = make_seeded_desc();
+  RegionDesc &d = make_seeded_desc();
   mp::NumaRebindCtx ctx{true, 0xF};
   mp::numa_rebind_mutator(&d, &ctx);
   EXPECT_EQ(d.numa_interleave_mask, uint32_t(0xF));
@@ -82,7 +80,7 @@ TEST(LlvmLibcMemoryPosixMutatorsTest, NumaRebindSetsFlagAndMask) {
 }
 
 TEST(LlvmLibcMemoryPosixMutatorsTest, NumaRebindClearsFlagOnDefault) {
-  RegionDesc d = make_seeded_desc();
+  RegionDesc &d = make_seeded_desc();
   d.flags.store(kSeedBits | rf::NUMA_INTERLEAVE, MemoryOrder::RELAXED);
   d.numa_interleave_mask = 0xFF;
   mp::NumaRebindCtx ctx{false, 0};
@@ -95,7 +93,7 @@ TEST(LlvmLibcMemoryPosixMutatorsTest, NumaRebindClearsFlagOnDefault) {
 }
 
 TEST(LlvmLibcMemoryPosixMutatorsTest, DumpSetSetsExcludeBit) {
-  RegionDesc d = make_seeded_desc();
+  RegionDesc &d = make_seeded_desc();
   mp::dump_set_mutator(&d, nullptr);
   uint16_t f = d.flags.load(MemoryOrder::ACQUIRE);
   EXPECT_TRUE((f & rf::DUMP_EXCLUDE) != 0);
@@ -104,7 +102,7 @@ TEST(LlvmLibcMemoryPosixMutatorsTest, DumpSetSetsExcludeBit) {
 }
 
 TEST(LlvmLibcMemoryPosixMutatorsTest, DumpClearClearsExcludeBit) {
-  RegionDesc d = make_seeded_desc();
+  RegionDesc &d = make_seeded_desc();
   d.flags.store(kSeedBits | rf::DUMP_EXCLUDE, MemoryOrder::RELAXED);
   mp::dump_clear_mutator(&d, nullptr);
   uint16_t f = d.flags.load(MemoryOrder::ACQUIRE);
@@ -113,15 +111,15 @@ TEST(LlvmLibcMemoryPosixMutatorsTest, DumpClearClearsExcludeBit) {
 }
 
 TEST(LlvmLibcMemoryPosixMutatorsTest, GuardSetSetsProtGuard) {
-  RegionDesc d = make_seeded_desc();
+  RegionDesc &d = make_seeded_desc();
   mp::guard_set_mutator(&d, nullptr);
   uint16_t f = d.flags.load(MemoryOrder::ACQUIRE);
   EXPECT_TRUE((f & rf::PROT_GUARD) != 0);
-  EXPECT_EQ(f & kSeedBits, kSeedBits);
+  EXPECT_EQ(static_cast<uint16_t>(f & kSeedBits), kSeedBits);
 }
 
 TEST(LlvmLibcMemoryPosixMutatorsTest, GuardClearClearsProtGuard) {
-  RegionDesc d = make_seeded_desc();
+  RegionDesc &d = make_seeded_desc();
   d.flags.store(kSeedBits | rf::PROT_GUARD, MemoryOrder::RELAXED);
   mp::guard_clear_mutator(&d, nullptr);
   uint16_t f = d.flags.load(MemoryOrder::ACQUIRE);
@@ -130,15 +128,15 @@ TEST(LlvmLibcMemoryPosixMutatorsTest, GuardClearClearsProtGuard) {
 }
 
 TEST(LlvmLibcMemoryPosixMutatorsTest, ForkSetDontforkSetsBit) {
-  RegionDesc d = make_seeded_desc();
+  RegionDesc &d = make_seeded_desc();
   mp::fork_set_dontfork_mutator(&d, nullptr);
   uint16_t f = d.flags.load(MemoryOrder::ACQUIRE);
   EXPECT_TRUE((f & rf::DONTFORK) != 0);
-  EXPECT_EQ(f & kSeedBits, kSeedBits);
+  EXPECT_EQ(static_cast<uint16_t>(f & kSeedBits), kSeedBits);
 }
 
 TEST(LlvmLibcMemoryPosixMutatorsTest, ForkClearDontforkClearsBit) {
-  RegionDesc d = make_seeded_desc();
+  RegionDesc &d = make_seeded_desc();
   d.flags.store(kSeedBits | rf::DONTFORK, MemoryOrder::RELAXED);
   mp::fork_clear_dontfork_mutator(&d, nullptr);
   uint16_t f = d.flags.load(MemoryOrder::ACQUIRE);
@@ -147,15 +145,15 @@ TEST(LlvmLibcMemoryPosixMutatorsTest, ForkClearDontforkClearsBit) {
 }
 
 TEST(LlvmLibcMemoryPosixMutatorsTest, ForkSetWipeOnForkSetsBit) {
-  RegionDesc d = make_seeded_desc();
+  RegionDesc &d = make_seeded_desc();
   mp::fork_set_wipeonfork_mutator(&d, nullptr);
   uint16_t f = d.flags.load(MemoryOrder::ACQUIRE);
   EXPECT_TRUE((f & rf::WIPEONFORK) != 0);
-  EXPECT_EQ(f & kSeedBits, kSeedBits);
+  EXPECT_EQ(static_cast<uint16_t>(f & kSeedBits), kSeedBits);
 }
 
 TEST(LlvmLibcMemoryPosixMutatorsTest, ForkClearWipeOnForkClearsBit) {
-  RegionDesc d = make_seeded_desc();
+  RegionDesc &d = make_seeded_desc();
   d.flags.store(kSeedBits | rf::WIPEONFORK, MemoryOrder::RELAXED);
   mp::fork_clear_wipeonfork_mutator(&d, nullptr);
   uint16_t f = d.flags.load(MemoryOrder::ACQUIRE);
@@ -171,14 +169,22 @@ TEST(LlvmLibcMemoryPosixMutatorsTest, MutatorsPreserveUnrelatedFlagBits) {
       rf::COW | rf::SHARED | rf::HUGE_PAGES | rf::NORESERVE |
       rf::NUMA_INTERLEAVE | rf::COMMITTED | rf::LOW_32BIT;
 
-  RegionDesc d = make_seeded_desc();
+  RegionDesc &d = make_seeded_desc();
   d.flags.store(kAllSeed, MemoryOrder::RELAXED);
   mp::dump_set_mutator(&d, nullptr);
-  EXPECT_EQ(d.flags.load(MemoryOrder::ACQUIRE) & kAllSeed, kAllSeed);
+  EXPECT_EQ(
+      static_cast<uint16_t>(d.flags.load(MemoryOrder::ACQUIRE) & kAllSeed),
+      kAllSeed);
   mp::guard_set_mutator(&d, nullptr);
-  EXPECT_EQ(d.flags.load(MemoryOrder::ACQUIRE) & kAllSeed, kAllSeed);
+  EXPECT_EQ(
+      static_cast<uint16_t>(d.flags.load(MemoryOrder::ACQUIRE) & kAllSeed),
+      kAllSeed);
   mp::fork_set_dontfork_mutator(&d, nullptr);
-  EXPECT_EQ(d.flags.load(MemoryOrder::ACQUIRE) & kAllSeed, kAllSeed);
+  EXPECT_EQ(
+      static_cast<uint16_t>(d.flags.load(MemoryOrder::ACQUIRE) & kAllSeed),
+      kAllSeed);
   mp::fork_set_wipeonfork_mutator(&d, nullptr);
-  EXPECT_EQ(d.flags.load(MemoryOrder::ACQUIRE) & kAllSeed, kAllSeed);
+  EXPECT_EQ(
+      static_cast<uint16_t>(d.flags.load(MemoryOrder::ACQUIRE) & kAllSeed),
+      kAllSeed);
 }

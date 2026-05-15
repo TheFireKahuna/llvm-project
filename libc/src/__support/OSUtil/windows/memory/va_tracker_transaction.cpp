@@ -615,10 +615,9 @@ struct CommitIntent {
   // accessible + MEM_MAPPED → commit_in_reservation, uncommitted +
   // accessible + MEM_PRIVATE → commit_replace[_numa]). Replaces the
   // post_swap_protect per-VAD nt_pal::protect with a per-chunk
-  // dispatch. Per locked succ, the substrate also writes
-  // `region_flag::PROT_DIVERGED` (partial coverage) or updates
-  // `view_prot` (full coverage) on the new clone, so the desc stays
-  // consistent with kernel state after a sub-region mprotect.
+  // dispatch. The clone phase does NOT update view_prot — the kernel
+  // is the source of truth for current per-page protection, and
+  // consumers that need it (fork replay) query MBI directly.
   bool          commit_if_uncommitted_accessible{false};
 
   // NUMA node hint for commit_replace_numa on the demand-map path.
@@ -1348,12 +1347,16 @@ int build_plan_mutate(const CommitIntent &i, Arena *arena,
   // pre-split via `split()` because the clone phase mutates the
   // whole desc and a straddler would extend the mutation past the
   // caller's range. The commit-on-uncommitted path tolerates
-  // straddlers: per-chunk kernel work is scoped to `range`, and the
-  // clone phase sets `PROT_DIVERGED` on partial-cover succs so the
-  // desc's `view_prot` stays a valid "best guess for untouched
-  // pages" while the fault handler consults MBI on hit. This is
-  // what makes page-granular mprotect on 64 KiB descs work without
-  // a sub-granularity desc split.
+  // straddlers: per-chunk kernel work in `post_swap_per_chunk_dispatch`
+  // is scoped strictly to `[plan.range.lo(), plan.range.hi())` via
+  // the `RegionWalker(lo, hi-lo)` window — untouched pages inside a
+  // partial-cover desc keep their existing kernel protection,
+  // exactly matching POSIX `mprotect(addr, len, prot)` semantics.
+  // The clone phase does NOT update view_prot (acquire-time intent
+  // is preserved), so page-granular mprotect on a 64 KiB desc
+  // produces no desc fragmentation. Consumers that need current
+  // protection query the kernel via MBI (`fork`'s `replay_emit`,
+  // future precision mremap).
   if (!i.commit_if_uncommitted_accessible &&
       locked_has_straddler(locked, i.range.lo(), i.range.hi()))
     return -EINVAL;
@@ -1369,9 +1372,11 @@ int build_plan_mutate(const CommitIntent &i, Arena *arena,
   // post-Swap phase walks the kernel VAD chain per locked succ and
   // dispatches each chunk (committed → `nt_pal::protect`;
   // uncommitted + accessible → commit_in_reservation or
-  // commit_replace[_numa]). The clone-phase coverage check below
-  // writes view_prot / PROT_DIVERGED on the new clones. Replaces the
-  // standard post_swap_protect — `issue_protect` stays false.
+  // commit_replace[_numa]). The clone phase intentionally does NOT
+  // write `view_prot` on the new clones — the kernel is the source
+  // of truth for current per-page protection, so the clone carries
+  // forward the acquire-time intent unchanged. Replaces the standard
+  // post_swap_protect — `issue_protect` stays false.
   if (i.commit_if_uncommitted_accessible) {
     plan.dispatch_per_chunk = true;
     plan.numa_node = i.numa_node;
@@ -1908,30 +1913,12 @@ int execute_plan(CommitPlan &plan, const LockedSet &locked,
       // (none currently) would be overridden — the commit-on-
       // uncommitted contract is the substrate's, not the caller's.
       //
-      // Full-cover (the input range contains the whole succ): the
-      // succ's protection is uniformly `plan.protect_value` after
-      // this envelope, so `view_prot` becomes the new value and the
-      // diverged bit clears.
-      //
-      // Partial-cover (the input range touches only part of the
-      // succ): mixed kernel state per page; the desc keeps its
-      // existing `view_prot` (a reader's best guess for untouched
-      // pages) and the diverged bit is set so the fault handler
-      // re-queries MBI on demand-commit.
-      if (plan.dispatch_per_chunk) {
-        const bool full_cover =
-            (plan.range.lo() <= src_node->lo) &&
-            (plan.range.hi() >= src_node->hi);
-        uint16_t flag_bits = clone->flags.load(cpp::MemoryOrder::RELAXED);
-        if (full_cover) {
-          clone->view_prot = static_cast<uint32_t>(plan.protect_value);
-          flag_bits &=
-              static_cast<uint16_t>(~region_flag::PROT_DIVERGED);
-        } else {
-          flag_bits |= region_flag::PROT_DIVERGED;
-        }
-        clone->flags.store(flag_bits, cpp::MemoryOrder::RELEASE);
-      }
+      // The desc's `view_prot` is acquire-time intent, never updated
+      // by mprotect — consumers that need current protection query
+      // the kernel via `nt_pal::query_region`. The mutate envelope
+      // therefore does not touch `view_prot` or `PROT_DIVERGED` on
+      // the clone; the kernel-side protection write is the only
+      // visible side effect.
 
       int rc = append_node_for_desc(new_nodes, plan.arena, src_node->lo,
                                      src_node->hi, clone,

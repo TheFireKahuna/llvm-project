@@ -79,15 +79,6 @@ struct NumaRebindCtx {
 //   void (*)(RegionDesc *new_desc, void *ctx)
 //===----------------------------------------------------------------------===//
 
-/// `mprotect` / `pkey_mprotect` view-prot update.
-///
-/// `ctx` points at the new `DWORD` page protection. The substrate
-/// issues `nt_pal::protect` after the mutator runs when the enclosing
-/// `mutate` call's `prot_change` arg is non-zero. Unrelated `flags` bits
-/// are not touched; the mutator writes `view_prot` only.
-void prot_mutator(::LIBC_NAMESPACE::windows::va_tracker::RegionDesc *new_desc,
-                  void *ctx);
-
 /// `mlock` / `munlock` immediate-lock case — no per-desc state change.
 ///
 /// Immediate locking is tracked entirely by the kernel's per-page lock

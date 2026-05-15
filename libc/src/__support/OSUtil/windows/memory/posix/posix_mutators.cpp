@@ -50,10 +50,6 @@ LIBC_INLINE void clear_flag_bits(RegionDesc *d, uint16_t bits) {
 
 } // namespace
 
-void prot_mutator(RegionDesc *new_desc, void *ctx) {
-  new_desc->view_prot = *static_cast<DWORD *>(ctx);
-}
-
 void lock_mutator(RegionDesc *new_desc, void *ctx) {
   (void)new_desc;
   (void)ctx;

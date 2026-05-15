@@ -31,6 +31,8 @@
 #include "src/__support/OSUtil/windows/memory/legacy/memory_primitives_bootstrap.h"
 #include "src/__support/OSUtil/windows/memory/skiplist_link_traits.h"
 #include "src/__support/OSUtil/windows/memory/va_region_desc.h"
+#include "src/__support/OSUtil/windows/nt_pal/protect.h"
+#include "src/__support/OSUtil/windows/nt_pal/query.h"
 #include "src/__support/OSUtil/windows/nt/nt_process_types.h"
 #include "src/__support/error_or.h"
 #include "src/__support/libc_assert.h"
@@ -309,7 +311,6 @@ struct SerializeIntervalVisitor {
         }
         meta.section_offset =
             static_cast<uint64_t>(rd->section_offset.QuadPart);
-        meta.view_prot = rd->view_prot;
         // POSIX requires that memory locks not be inherited across
         // fork(). Strip lock-arming bits so the child replay produces
         // descs with no lock-on-fault state armed; a child that
@@ -318,7 +319,70 @@ struct SerializeIntervalVisitor {
         meta.flags = static_cast<uint16_t>(
             cur_flags & ~region_flag::LOCK_ONFAULT);
 
-        last_err = sink->emit(sink->ctx, r, kind, meta);
+        // Walk MBI runs across the desc's range and build a
+        // protection map. The first run's protection becomes the
+        // entry's `meta.view_prot` (used by `acquire`'s initial
+        // commit); subsequent runs are applied post-acquire via
+        // `nt_pal::protect`. This handles both default-identity and
+        // explicit-identity (brk / posix_memalign / mremap-headroom)
+        // descs uniformly — the wider placeholder is reserved once
+        // by the single `acquire` call, and per-page protection
+        // divergence is reproduced exactly via the run array.
+        //
+        // On `RegionWalker` scratch-alloc failure: fall back to one
+        // run carrying `desc->view_prot` (acquire-intent). On run-
+        // count overflow: collapse to one run with the first run's
+        // protection. Both paths preserve the structural invariant
+        // (every entry has ≥ 1 run; first run's prot equals
+        // meta.view_prot).
+        const uintptr_t desc_lo = node->lo;
+        const size_t desc_bytes = static_cast<size_t>(node->hi - node->lo);
+        ProtectionRun runs[kMaxProtectionRunsPerEntry];
+        uint32_t run_count = 0;
+        bool overflow = false;
+        {
+            nt_pal::RegionWalker walker(
+                reinterpret_cast<void *>(desc_lo),
+                static_cast<SIZE_T>(desc_bytes));
+            if (walker) {
+                while (walker.next()) {
+                    if (run_count >= kMaxProtectionRunsPerEntry) {
+                        overflow = true;
+                        break;
+                    }
+                    const uintptr_t run_lo =
+                        reinterpret_cast<uintptr_t>(walker.chunk);
+                    runs[run_count].offset_from_range_lo =
+                        static_cast<uint32_t>(run_lo - desc_lo);
+                    runs[run_count].bytes =
+                        static_cast<uint32_t>(walker.chunk_size);
+                    runs[run_count].prot = walker.entry->Protect;
+                    runs[run_count].reserved_ = 0;
+                    ++run_count;
+                }
+            }
+        }
+        if (run_count == 0) {
+            // Either RegionWalker scratch failure or zero entries
+            // returned. Emit one uniform run with acquire-intent.
+            runs[0].offset_from_range_lo = 0;
+            runs[0].bytes = static_cast<uint32_t>(desc_bytes);
+            runs[0].prot = rd->view_prot;
+            runs[0].reserved_ = 0;
+            run_count = 1;
+        } else if (overflow) {
+            // Truncate to one run with the first run's protection so
+            // the child observes uniform protection rather than a
+            // partially-populated map.
+            runs[0].bytes = static_cast<uint32_t>(desc_bytes);
+            run_count = 1;
+        }
+
+        // First run's protection drives the initial commit during
+        // replay's `acquire` call.
+        meta.view_prot = runs[0].prot;
+
+        last_err = sink->emit(sink->ctx, r, kind, meta, runs, run_count);
     }
 };
 
@@ -376,6 +440,21 @@ int replay_in_child(const ForkSnapshot &snap) {
         auto r = acquire(e.range, e.kind, e.meta);
         if (!r.has_value())
             return r.error();
+        // Reproduce the parent's per-page protection. `acquire`
+        // committed the entry's range with `meta.view_prot` (= the
+        // first run's protection); apply any remaining runs via
+        // `nt_pal::protect`. When the range is protection-uniform
+        // (`protection_count <= 1`), no extra syscalls fire.
+        if (e.protection_count > 1) {
+            const uintptr_t base = e.range.lo();
+            for (uint32_t k = 1; k < e.protection_count; ++k) {
+                void *p = reinterpret_cast<void *>(
+                    base + e.protection_runs[k].offset_from_range_lo);
+                if (!nt_pal::protect(p, e.protection_runs[k].bytes,
+                                     e.protection_runs[k].prot))
+                    return EFAULT;
+            }
+        }
     }
     return 0;
 }

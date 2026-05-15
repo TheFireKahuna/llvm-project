@@ -181,27 +181,10 @@ inline constexpr uint16_t DUMP_EXCLUDE = 0x400;
 /// substrate replays each region freshly in the child.
 inline constexpr uint16_t LOCK_ONFAULT = 0x800;
 
-/// PROT_DIVERGED: the desc's `view_prot` is the original (acquire-
-/// time) protection, but kernel-side per-page protection has been
-/// changed by a sub-region mprotect since then and may differ from
-/// `view_prot` on any subset of pages.
-///
-/// Set by `va_tracker::mutate(commit_if_uncommitted_accessible=true)`
-/// on any locked succ the input range covers only partially (range
-/// edge falls inside the desc). The mprotect entry is the only
-/// current writer; the bit clears on the next full-cover prot change
-/// of the same desc.
-///
-/// Read by the demand-commit fault handler: on hit, the handler
-/// re-queries the per-page protection via MBI before issuing
-/// `commit_replace`, so a fault on an uncommitted page in a NORESERVE
-/// region that has been sub-region mprotected commits with the
-/// kernel's authoritative protection rather than the desc's stale
-/// `view_prot`.
-///
-/// Survives fork via the substrate's standard desc serialization —
-/// the property is durable until the next full-cover prot change.
-inline constexpr uint16_t PROT_DIVERGED = 0x1000;
+// Bit 0x1000 (formerly PROT_DIVERGED) is unused. The substrate no
+// longer caches current protection on the desc — consumers query
+// MBI when they need it, and mprotect leaves desc state untouched —
+// so a divergence signal has no purpose.
 
 } // namespace region_flag
 
@@ -269,12 +252,18 @@ struct alignas(64) RegionDesc
   // keeps `offsetof` unconditionally supported per [support.types.layout]/1.
   LIBC_CRYSTALLINE_NODE_FIELDS(RegionDesc);
 
-  /// Base NT page protection for the section view at this range — the value
-  /// last passed as the \c Protect argument to \c NtMapViewOfSectionEx for
-  /// this descriptor. Set at Transaction commit time from
-  /// \c AcquireMeta::view_prot and never mutated post-publish; mprotect
-  /// changes route through clone-and-Swap, which produces a fresh desc with
-  /// the new view_prot.
+  /// Acquire-time protection intent — the value passed as
+  /// \c AcquireMeta::view_prot at the original \c acquire / \c replace
+  /// commit. \b Never updated post-publish. \c mprotect changes affect
+  /// only kernel-side per-page protection; the substrate treats the
+  /// kernel as the source of truth for current protection and reads
+  /// it via MBI when a consumer (fork replay, future precision
+  /// mremap) needs the up-to-date value. The field's role is
+  /// reduced to (a) a "what was asked for at acquire time" hint —
+  /// used by replace's outside-survivor uniformity check, which
+  /// only needs to know that all descs from one acquire family
+  /// agree — and (b) an MBI-query fallback when the kernel query
+  /// fails for some reason.
   ///
   /// Full 32-bit DWORD width matches NT's \c Protect argument exactly. Lives
   /// at offset 20 as a tail-pad-reuse slot under the Itanium / MSVC ABI's
