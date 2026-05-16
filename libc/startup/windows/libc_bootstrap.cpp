@@ -44,7 +44,7 @@
 #include "src/__support/CPP/atomic.h"
 #include "src/__support/OSUtil/windows/alloc/sealed_va_publisher.h"
 #include "src/__support/OSUtil/windows/libc_subsystem_init.h"
-#include "src/__support/OSUtil/windows/memory/legacy/memory_primitives_bootstrap.h"
+#include "src/__support/OSUtil/windows/memory/memory_primitives_bootstrap.h"
 #include "src/__support/OSUtil/windows/nt/nt_capabilities.h"
 #include "src/__support/OSUtil/windows/nt/shared_user_data.h"
 #include "src/__support/OSUtil/windows/ntdll.h"

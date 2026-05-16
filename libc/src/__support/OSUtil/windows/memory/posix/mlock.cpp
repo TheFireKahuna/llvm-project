@@ -11,6 +11,8 @@
 #include "hdr/errno_macros.h"
 #include "include/llvm-libc-macros/sys-mman-macros.h"
 #include "src/__support/OSUtil/windows/alloc/page_size.h"
+// TODO: byte_scratch becomes a thin RAII facade over alloc::malloc / alloc::free
+// once Layer 4 (bucket_dispatch + thread_heap) lands; the include drops then.
 #include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/nt_pal/working_set.h"
 #include "src/__support/OSUtil/windows/memory/posix/posix_errno.h"

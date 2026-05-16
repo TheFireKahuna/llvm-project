@@ -24,7 +24,7 @@
 #include "src/__support/OSUtil/windows/memory/art_node_alloc.h"
 #include "src/__support/OSUtil/windows/memory/desc_backing.h"
 #include "src/__support/OSUtil/windows/memory/interval_skiplist.h"
-#include "src/__support/OSUtil/windows/memory/legacy/memory_primitives_bootstrap.h"
+#include "src/__support/OSUtil/windows/memory/memory_primitives_bootstrap.h"
 #include "src/__support/OSUtil/windows/memory/skiplist_link_traits.h"
 #include "src/__support/OSUtil/windows/memory/va_region_desc.h"
 #include "src/__support/OSUtil/windows/nt_pal/protect.h"

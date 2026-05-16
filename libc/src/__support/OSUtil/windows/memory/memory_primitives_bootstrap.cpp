@@ -11,7 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "src/__support/OSUtil/windows/memory/legacy/memory_primitives_bootstrap.h"
+#include "src/__support/OSUtil/windows/memory/memory_primitives_bootstrap.h"
 
 #include "src/__support/OSUtil/windows/memory/legacy/mapping_table.h"
 #include "src/__support/OSUtil/windows/memory/va_inventory.h"

@@ -28,6 +28,7 @@
 
 #include "hdr/errno_macros.h"
 #include "hdr/stdint_proxy.h"
+#include "include/llvm-libc-macros/windows/fcntl-macros.h"
 #include "include/llvm-libc-macros/windows/sys-mman-macros.h"
 #include "src/__support/OSUtil/windows/alloc/page_size.h"
 #include "src/__support/OSUtil/windows/nt_pal/large_pages.h"
@@ -150,6 +151,58 @@ namespace memory_posix {
 // MAP_PRIVATE per POSIX.1-2017 mmap §3 forbids propagation back to the file.
 [[nodiscard]] LIBC_INLINE DWORD posix_prot_to_page_cow(int prot) {
   return ::LIBC_NAMESPACE::windows::prot_to_page_flags_cow(prot);
+}
+
+// File-fd prot/flag compatibility gate for mmap. Returns 0 on success,
+// positive POSIX errno on reject. Rules (legacy mmap_engine §validators):
+//   * MAP_SHARED + PROT_WRITE on O_RDONLY → EACCES. POSIX-2024 mmap §3
+//     ("a writable view requires a writable file descriptor").
+//   * O_WRONLY fd → EACCES unconditionally. NtCreateSectionEx requires
+//     FILE_READ_DATA on the file handle; without it the kernel returns
+//     STATUS_ACCESS_DENIED. Windows-specific surface invariant.
+[[nodiscard]] LIBC_INLINE int validate_file_prot(int prot, int flags,
+                                                  int open_flags) {
+  const int accmode = open_flags & O_ACCMODE;
+  const bool wants_write = (prot & PROT_WRITE) != 0;
+  const bool is_shared = (flags & MAP_SHARED) != 0;
+  if (is_shared && wants_write && accmode == O_RDONLY)
+    return EACCES;
+  if (accmode == O_WRONLY)
+    return EACCES;
+  return 0;
+}
+
+// Derive the NT section access mask from the fd's access mode for
+// NtCreateSectionEx. SECTION_MAP_EXECUTE is never granted at section-
+// create time — file handles from internal::open() lack FILE_EXECUTE,
+// so PAGE_EXECUTE_* on the section would fail with
+// STATUS_ACCESS_DENIED; omitting the bit also blocks later mprotect-
+// to-executable for file mappings (W^X). The O_WRONLY → SECTION_MAP_WRITE
+// branch is unreachable in normal flow because validate_file_prot rejects
+// O_WRONLY upstream; preserved verbatim per port-not-improve discipline.
+// Callers OR in SECTION_QUERY and SECTION_EXTEND_SIZE at the call site —
+// SECTION_EXTEND_SIZE is mandatory for future NtExtendSection growth,
+// and cannot be added retroactively to a live section.
+[[nodiscard]] LIBC_INLINE ULONG section_access_from_fd(int open_flags) {
+  const int accmode = open_flags & O_ACCMODE;
+  if (accmode == O_RDWR)
+    return SECTION_MAP_READ | SECTION_MAP_WRITE;
+  if (accmode == O_WRONLY)
+    return SECTION_MAP_WRITE;
+  return SECTION_MAP_READ;
+}
+
+// Derive the section's max page protection from the fd's access mode.
+// Must be compatible with the file handle's grants: O_RDONLY fds cannot
+// back PAGE_READWRITE sections. PAGE_EXECUTE_* is never granted — same
+// W^X reasoning as section_access_from_fd. The fallthrough into
+// PAGE_READONLY covers both O_RDONLY (the expected case) and O_WRONLY
+// (unreachable via validate_file_prot's upstream reject).
+[[nodiscard]] LIBC_INLINE DWORD section_page_prot_from_fd(int open_flags) {
+  const int accmode = open_flags & O_ACCMODE;
+  if (accmode == O_RDWR)
+    return PAGE_READWRITE;
+  return PAGE_READONLY;
 }
 
 //===----------------------------------------------------------------------===//

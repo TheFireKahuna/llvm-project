@@ -56,7 +56,7 @@ int identity_startup_init();
 
 // Phase 0c.5 (Tier A): Mapping table + substrate + future memory
 // primitives are now brought up declaratively via the `.libcmem`
-// walker — see memory/legacy/memory_primitives_bootstrap.h. The individual
+// walker — see memory/memory_primitives_bootstrap.h. The individual
 // subsystem entry points are no longer called directly from
 // libc_bootstrap; their init_fn handlers run under the walker.
 

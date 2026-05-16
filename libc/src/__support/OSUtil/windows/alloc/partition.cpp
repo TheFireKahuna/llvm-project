@@ -23,7 +23,7 @@
 #include "src/__support/OSUtil/windows/alloc/sealed_va_publisher.h"
 #include "src/__support/OSUtil/windows/concurrent/crystalline_domain.h"
 #include "src/__support/OSUtil/windows/libc_fork_registry.h"
-#include "src/__support/OSUtil/windows/memory/legacy/memory_primitives_bootstrap.h"
+#include "src/__support/OSUtil/windows/memory/memory_primitives_bootstrap.h"
 #include "src/__support/OSUtil/windows/nt_pal/pal_state.h"
 #include "src/__support/OSUtil/windows/nt_pal/placeholder.h"
 #include "src/__support/OSUtil/windows/nt_pal/protect.h"

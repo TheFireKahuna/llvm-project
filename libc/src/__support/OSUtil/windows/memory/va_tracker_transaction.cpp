@@ -484,11 +484,14 @@ int replace(VaRange range, RegionKind kind, const AcquireMeta &meta) {
 }
 
 int mutate(VaRange range, DescMutator mutator, void *ctx, DWORD prot_change,
-           bool commit_if_uncommitted_accessible, int numa_node) {
+           bool commit_if_uncommitted_accessible, int numa_node,
+           MutateChunkFilter chunk_filter) {
   // Plain-mutate requires a mutator (every locked desc must produce a
-  // mutator-applied clone). The commit-if-uncommitted path makes a
-  // null mutator legal — the substrate-side coverage logic covers it.
-  if (LIBC_UNLIKELY(mutator == nullptr && !commit_if_uncommitted_accessible))
+  // mutator-applied clone). The commit-if-uncommitted path and the
+  // filtered-protect path both make a null mutator legal — the
+  // substrate-side coverage logic covers it.
+  if (LIBC_UNLIKELY(mutator == nullptr && !commit_if_uncommitted_accessible &&
+                    chunk_filter == nullptr))
     return EINVAL;
   CommitIntent intent;
   intent.op = OpKind::Mutate;
@@ -498,6 +501,7 @@ int mutate(VaRange range, DescMutator mutator, void *ctx, DWORD prot_change,
   intent.prot_change = prot_change;
   intent.commit_if_uncommitted_accessible = commit_if_uncommitted_accessible;
   intent.numa_node = numa_node;
+  intent.chunk_filter = chunk_filter;
   int rc = dispatch_per_arena_op(intent);
   return rc < 0 ? -rc : rc;
 }

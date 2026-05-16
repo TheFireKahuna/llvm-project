@@ -44,7 +44,7 @@
 // NUMA policy inheritance. Linux clone() inherits the parent's mempolicy;
 // Windows thread_local reinitializes to MPOL_DEFAULT. We snapshot the
 // parent's policy in StartArgs and apply it in thread_entry().
-#include "src/__support/OSUtil/windows/memory/legacy/numa_policy.h"
+#include "src/__support/OSUtil/windows/memory/numa_policy.h"
 
 // Process identity — impersonation token inheritance for POSIX setuid.
 // Linux clone() inherits the parent's credentials; Windows CreateThread

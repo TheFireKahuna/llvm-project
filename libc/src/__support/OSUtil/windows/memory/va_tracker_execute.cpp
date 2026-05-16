@@ -42,6 +42,7 @@ using internal::EdgeSet;
 using internal::kAllocGranularity;
 using internal::kPageGranularity;
 using internal::kSideCount;
+using internal::kSides;
 using internal::ProvisionalList;
 using internal::Side;
 using internal::side_index;
@@ -959,6 +960,50 @@ cow_translate_prot(DWORD new_prot, bool desc_is_cow, DWORD mbi_alloc_prot,
   return 0;
 }
 
+// `prot_change` values valid only on a subset of pages (notably
+// `PAGE_REVERT_TO_FILE_MAP`, accepted only on file-backed CoW pages)
+// cannot use `post_swap_protect_basic` — the per-VAD protect would hit
+// the kernel's `STATUS_INVALID_PARAMETER` on the first ineligible chunk
+// and the op would return `-EFAULT`. Per-chunk walk asks `chunk_filter`
+// to decide; skips are silent (no errno), matches the legacy
+// `revert_cow_pages` shape.
+[[nodiscard]] int post_swap_filtered_protect(const CommitIntent &i,
+                                              const LockedSet &locked) {
+  auto ws = ::LIBC_NAMESPACE::windows::byte_scratch(4096);
+  if (!ws)
+    return -ENOMEM;
+  const ULONG new_prot = static_cast<ULONG>(i.prot_change);
+
+  for (uint32_t k = 0; k < locked.count; ++k) {
+    SkiplistNodeBase *old_node = locked.at(k);
+    if (old_node == nullptr)
+      continue;
+    RegionDesc *old_desc = old_node->value.load(cpp::MemoryOrder::ACQUIRE);
+    if (old_desc == nullptr)
+      continue;
+
+    const uintptr_t lo =
+        old_node->lo > i.range.lo() ? old_node->lo : i.range.lo();
+    const uintptr_t hi =
+        old_node->hi < i.range.hi() ? old_node->hi : i.range.hi();
+    if (lo >= hi)
+      continue;
+
+    nt_pal::RegionWalker walk(reinterpret_cast<void *>(lo),
+                              static_cast<SIZE_T>(hi - lo), ws.data(),
+                              ws.size());
+    while (walk.next()) {
+      if (!i.chunk_filter(walk.entry, old_desc))
+        continue;
+      ULONG old_prot_out = 0;
+      if (!nt_pal::protect(walk.chunk, walk.chunk_size, new_prot,
+                           &old_prot_out))
+        return -EFAULT;
+    }
+  }
+  return 0;
+}
+
 } // anonymous namespace
 
 namespace internal {
@@ -966,6 +1011,8 @@ namespace internal {
 int post_swap_mutate(const CommitIntent &i, const LockedSet &locked) {
   if (i.commit_if_uncommitted_accessible)
     return post_swap_per_chunk_dispatch(i, locked);
+  if (i.chunk_filter != nullptr && i.prot_change != 0)
+    return post_swap_filtered_protect(i, locked);
   if (i.prot_change != 0)
     return post_swap_protect_basic(i, locked);
   return 0;

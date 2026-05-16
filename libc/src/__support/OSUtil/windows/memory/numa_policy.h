@@ -11,8 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_NUMA_POLICY_H
-#define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_NUMA_POLICY_H
+#ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEMORY_NUMA_POLICY_H
+#define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEMORY_NUMA_POLICY_H
 
 #include "hdr/stdint_proxy.h"
 #include "include/llvm-libc-macros/sys-mman-macros.h"
@@ -95,4 +95,4 @@ LIBC_INLINE int select_numa_node() {
 } // namespace windows
 } // namespace LIBC_NAMESPACE_DECL
 
-#endif // LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_NUMA_POLICY_H
+#endif // LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEMORY_NUMA_POLICY_H

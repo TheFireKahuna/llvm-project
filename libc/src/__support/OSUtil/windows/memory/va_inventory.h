@@ -25,7 +25,6 @@
 #ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_VA_INVENTORY_H
 #define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_VA_INVENTORY_H
 
-#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/OSUtil/windows/alloc/pagemap_cordon.h"
 #include "src/__support/OSUtil/windows/nt_pal/nt_pal.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
@@ -176,12 +175,23 @@ LIBC_INLINE void publish_pending_foreign(void *base, SIZE_T size, DWORD type) {
 // coalesce into a single stamp using the first entry's Type (stable across
 // protection bands of one allocation).
 LIBC_INLINE void discover_foreign_regions() {
-  // Runs before the thread scratch allocator is wired in; a dedicated
-  // bulk buffer keeps the sweep independent of scratch lifetime.
+  // Runs as the final step of the Tier A bootstrap walker, after every
+  // memory-primitive phase has dispatched, so the partition layer is up
+  // and a `Bootstrap`-class reservation would be technically feasible.
+  // We skip it because the buffer is a one-shot 64 KiB transient on the
+  // main thread with no other threads alive — adding a dedicated 4 GiB
+  // partition class for one VAD-walk's lifetime is not worth the pagemap
+  // tag. Placeholder + commit_replace is the Layer 0 PAL surface;
+  // commit_replace deliberately omits MEM_WRITE_WATCH because this
+  // bookkeeping buffer has no dirty-tracking consumer.
   constexpr SIZE_T BULK_BYTES = 0x10000;
-  void *buf = LIBC_NAMESPACE::internal::page_alloc(BULK_BYTES);
+  void *buf = nt_pal::reserve_placeholder(BULK_BYTES);
   if (buf == nullptr)
     return;
+  if (!NT_SUCCESS(nt_pal::commit_replace(buf, BULK_BYTES, PAGE_READWRITE))) {
+    nt_pal::free_placeholder(buf);
+    return;
+  }
 
   auto walk = nt_pal::RegionWalker::whole_process(buf, BULK_BYTES);
 
@@ -210,7 +220,7 @@ LIBC_INLINE void discover_foreign_regions() {
   }
 
   publish_pending_foreign(pending_base, pending_size, pending_type);
-  LIBC_NAMESPACE::internal::page_free(buf);
+  nt_pal::free_placeholder(buf);
 }
 
 //===----------------------------------------------------------------------===//

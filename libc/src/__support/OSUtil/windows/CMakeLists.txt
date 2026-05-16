@@ -1972,7 +1972,7 @@ add_object_library(
 add_header_library(
   memory_primitives_registry
   HDRS
-    memory/legacy/memory_primitives_bootstrap.h
+    memory/memory_primitives_bootstrap.h
   DEPENDS
     .section_registry
     libc.hdr.stdint_proxy
@@ -1986,7 +1986,7 @@ add_header_library(
 add_object_library(
   memory_primitives_bootstrap
   SRCS
-    memory/legacy/memory_primitives_bootstrap.cpp
+    memory/memory_primitives_bootstrap.cpp
   DEPENDS
     .mapping_table
     .memory_primitives_registry
@@ -3432,6 +3432,22 @@ add_object_library(
     .slab_pool
     .slab_registry
     .fork_reinit
+    libc.src.__support.macros.config
+)
+
+add_object_library(
+  section_cache
+  SRCS
+    fd/section_cache.cpp
+  HDRS
+    fd/section_cache.h
+  DEPENDS
+    .fd_table
+    .nt_pal
+    .ntdll
+    libc.src.__support.CPP.atomic
+    libc.src.__support.error_or
+    libc.src.__support.libc_assert
     libc.src.__support.macros.config
 )
 
@@ -5490,6 +5506,7 @@ add_object_library(
     .fd_table
     .itimer_ops
     .lazy_init_reset
+    .mmap_engine
     .nt_pal
     .ntdll
     .nt_path

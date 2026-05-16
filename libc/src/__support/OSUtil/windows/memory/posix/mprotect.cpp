@@ -11,7 +11,7 @@
 #include "hdr/errno_macros.h"
 #include "include/llvm-libc-macros/sys-mman-macros.h"
 #include "src/__support/CPP/atomic.h"
-#include "src/__support/OSUtil/windows/memory/legacy/numa_policy.h"
+#include "src/__support/OSUtil/windows/memory/numa_policy.h"
 #include "src/__support/OSUtil/windows/memory/posix/posix_meta.h"
 #include "src/__support/OSUtil/windows/memory/posix/posix_validation.h"
 #include "src/__support/OSUtil/windows/memory/va_tracker.h"

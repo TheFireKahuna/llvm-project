@@ -42,6 +42,9 @@
 #define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_PRIMITIVES_GUARDED_REGION_H
 
 #include "hdr/stdint_proxy.h"
+// TODO: migrate page_reserve / page_commit / page_free to direct nt_pal::
+// (reserve_placeholder / commit_replace / free_placeholder); scheduled with
+// the Layer 4 cutover that retires the legacy/ tree.
 #include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/common.h"
 #include "src/__support/libc_assert.h"

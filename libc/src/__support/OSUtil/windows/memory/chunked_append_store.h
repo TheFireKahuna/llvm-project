@@ -10,6 +10,9 @@
 #define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEMORY_CHUNKED_APPEND_STORE_H
 
 #include "hdr/stdint_proxy.h"
+// TODO: migrate the page_alloc/page_free pair on the Block overflow path to
+// alloc::acquire_slot(sizeof(Block), ConsumerTag::TransientInternal) once
+// Layer 4 (bucket_dispatch + thread_heap) lands; drop this include then.
 #include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/libc_assert.h"
 #include "src/__support/macros/attributes.h"

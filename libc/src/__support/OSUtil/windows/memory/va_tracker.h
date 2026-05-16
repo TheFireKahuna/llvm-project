@@ -113,6 +113,17 @@ struct AcquireMeta {
 // reader-visible descs are never mutated in place.
 using DescMutator = void (*)(RegionDesc *new_desc, void *ctx);
 
+// Per-chunk gate for `mutate`'s `prot_change` path. Returns true to apply
+// `prot_change` to the chunk, false to skip it. Invoked once per MBI chunk
+// inside the LOCKED envelope; the substrate guarantees both pointers are
+// non-null at call time. The filter must not block, must not re-enter any
+// `va_tracker` op, and must not store the `desc` pointer past return — it
+// is valid for the call duration only. `mbi` carries MBI State / Type /
+// AllocationProtect for the chunk; `desc` is the OLD desc covering the
+// chunk's VA (read under the LOCKED hold).
+using MutateChunkFilter = bool (*)(const MEMORY_BASIC_INFORMATION *mbi,
+                                   RegionDesc *desc);
+
 // Invoked by `walk_range` for each intersecting desc, in ascending VA order.
 using WalkVisitor = void (*)(VaRange covered, RegionDesc *desc, void *ctx);
 
@@ -236,10 +247,22 @@ acquire_kernel_chosen_32bit(size_t bytes, RegionKind kind,
 // kernel holds authoritative current protection and consumers query MBI;
 // acquire-time intent stays preserved. `mutator` MAY be null on this
 // path because the protection write absorbs the substrate's coverage.
+//
+// When `chunk_filter != nullptr` and `prot_change != 0`, the post-Swap
+// phase walks each locked succ per-MBI-chunk and applies `prot_change`
+// only to chunks for which `chunk_filter(&mbi, desc)` returns true.
+// Restrictive protections valid on a subset of pages (notably
+// `PAGE_REVERT_TO_FILE_MAP`, accepted only on file-backed CoW pages)
+// require this path — otherwise the kernel rejects the per-VAD protect
+// with `STATUS_INVALID_PARAMETER` on the first ineligible chunk and the
+// op returns `-EFAULT`. `mutator` MAY be null on this path. Mutually
+// exclusive with `commit_if_uncommitted_accessible` — if both are set,
+// `commit_if_uncommitted_accessible` wins.
 [[nodiscard]] int mutate(VaRange range, DescMutator mutator, void *ctx,
                          DWORD prot_change = 0,
                          bool commit_if_uncommitted_accessible = false,
-                         int numa_node = -1);
+                         int numa_node = -1,
+                         MutateChunkFilter chunk_filter = nullptr);
 
 // Splits the single covering desc into two clones sharing the source's
 // `BackingRef`. No kernel work. Returns -ENOENT for no covering desc and

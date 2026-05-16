@@ -39,7 +39,7 @@
 #include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/libc_fini_registry.h"
 #include "src/__support/OSUtil/windows/libc_subsystem_init.h"
-#include "src/__support/OSUtil/windows/memory/legacy/memory_primitives_bootstrap.h"
+#include "src/__support/OSUtil/windows/memory/memory_primitives_bootstrap.h"
 #include "src/__support/macros/optimization.h"
 #include "src/__support/OSUtil/windows/libc_fork_registry.h"
 

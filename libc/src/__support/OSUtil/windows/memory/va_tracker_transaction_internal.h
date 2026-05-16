@@ -71,6 +71,13 @@ struct CommitIntent {
   // `-1` selects unhinted commit_replace. Honoured only on the
   // commit-if-uncommitted path.
   int           numa_node{-1};
+  // Set on the mutate path when the caller wants per-chunk gating of
+  // `prot_change`. Used by `post_swap_filtered_protect` so restrictive
+  // protections (e.g. `PAGE_REVERT_TO_FILE_MAP`, valid only on file-
+  // backed CoW pages) skip ineligible chunks instead of failing the
+  // per-VAD protect. Honoured only when `commit_if_uncommitted_accessible`
+  // is false and `prot_change != 0`.
+  MutateChunkFilter chunk_filter{nullptr};
 };
 
 enum class Side : uint8_t { Left = 0, Right = 1 };

@@ -1249,9 +1249,10 @@ bool Swap(LockedSet &set, NewNodes &new_nodes) {
 
     // CAS failure is a substrate-invariant violation; see the Swap
     // banner for the no-concurrent-writer audit.
-    if (LIBC_UNLIKELY(!link_cas_snap_relink<SkiplistNodeState::LIVE,
-                                              SkiplistLinkTraits>(
-            set.pred->next[0], pred_now, new_head_enc))) {
+    const bool cas_ok =
+        link_cas_snap_relink<SkiplistNodeState::LIVE, SkiplistLinkTraits>(
+            set.pred->next[0], pred_now, new_head_enc);
+    if (LIBC_UNLIKELY(!cas_ok)) {
         __builtin_trap();
     }
     // Release CAS fired ALERT_FIRED via the traits hook; pair with the

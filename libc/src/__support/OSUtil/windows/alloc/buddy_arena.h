@@ -46,7 +46,7 @@
 #include "src/__support/CPP/atomic.h"
 #include "src/__support/OSUtil/windows/alloc/pagemap.h"
 #include "src/__support/OSUtil/windows/concurrent/crystalline_domain.h"
-#include "src/__support/OSUtil/windows/memory/legacy/memory_primitives_bootstrap.h"
+#include "src/__support/OSUtil/windows/memory/memory_primitives_bootstrap.h"
 #include "src/__support/OSUtil/windows/process_control_block.h"
 #include "src/__support/macros/attributes.h"
 #include "src/__support/macros/config.h"

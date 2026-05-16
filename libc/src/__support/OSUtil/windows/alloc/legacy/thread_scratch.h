@@ -66,7 +66,7 @@
 #include "src/__support/OSUtil/windows/alloc/primitives/guarded_region.h"
 #include "src/__support/OSUtil/windows/bcryptprimitives.h"
 #include "src/__support/OSUtil/windows/concurrent/crystalline_local_state.h"
-#include "src/__support/OSUtil/windows/memory/legacy/memory_primitives_bootstrap.h"
+#include "src/__support/OSUtil/windows/memory/memory_primitives_bootstrap.h"
 #include "src/__support/OSUtil/windows/tls/teb_tls.h"
 #include "src/__support/OSUtil/windows/tls/tls_cleanup.h"
 #include "src/__support/libc_assert.h"

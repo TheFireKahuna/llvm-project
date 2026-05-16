@@ -35,7 +35,7 @@
 #include "src/__support/OSUtil/windows/memory/legacy/region_reconcile.h"
 #include "src/__support/OSUtil/windows/alloc/legacy/placeholder_range.h"
 #include "src/__support/OSUtil/windows/nt_pal/nt_pal.h"
-#include "src/__support/OSUtil/windows/memory/legacy/numa_policy.h"
+#include "src/__support/OSUtil/windows/memory/numa_policy.h"
 #include "src/__support/OSUtil/windows/nt/handle_attributes.h"
 #include "src/__support/OSUtil/windows/alloc/page_size.h"
 #include "src/__support/macros/config.h"

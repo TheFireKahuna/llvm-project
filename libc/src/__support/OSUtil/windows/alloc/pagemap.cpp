@@ -20,7 +20,7 @@
 #include "src/__support/CPP/atomic.h"
 #include "src/__support/OSUtil/windows/bcryptprimitives.h"
 #include "src/__support/OSUtil/windows/libc_fork_registry.h"
-#include "src/__support/OSUtil/windows/memory/legacy/memory_primitives_bootstrap.h"
+#include "src/__support/OSUtil/windows/memory/memory_primitives_bootstrap.h"
 #include "src/__support/OSUtil/windows/nt_pal/placeholder.h"
 #include "src/__support/OSUtil/windows/nt_pal/protect.h"
 #include "src/__support/OSUtil/windows/pcb_init_access.h"

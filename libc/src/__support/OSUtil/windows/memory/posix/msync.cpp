@@ -11,6 +11,8 @@
 #include "hdr/errno_macros.h"
 #include "include/llvm-libc-macros/sys-mman-macros.h"
 #include "src/__support/OSUtil/windows/alloc/page_size.h"
+// TODO: byte_scratch becomes a thin RAII facade over alloc::malloc / alloc::free
+// once Layer 4 (bucket_dispatch + thread_heap) lands; the include drops then.
 #include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/memory/desc_backing.h"
 #include "src/__support/OSUtil/windows/memory/posix/posix_validation.h"
@@ -83,37 +85,16 @@ void flush_untracked_mapping(void *addr) {
   ::NtFlushBuffersFile(fh.get(), &flush_iosb);
 }
 
-// MS_INVALIDATE pre-pass: `PAGE_REVERT_TO_FILE_MAP` drops the private
-// CoW copy and re-faults from the section — POSIX's "subsequent
-// references obtain data consistent with permanent storage" for
-// MAP_PRIVATE. Revert failures stay silent (nothing to revert if every
-// page is already shared).
-void revert_cow_pages(char *start, char *end) {
-  ::LIBC_NAMESPACE::nt_pal::RegionWalker walk(
-      start, static_cast<SIZE_T>(end - start));
-  if (!walk)
-    return;
-
-  // No backing pin: only desc shape + COW flag are read, both covered
-  // by the resolve-side skiplist pin for the local read window.
-  while (walk.next()) {
-    if (walk.entry->State != MEM_COMMIT || walk.entry->Type != MEM_PRIVATE)
-      continue;
-
-    // A CoW'd page is MEM_PRIVATE by current MBI but belongs to a
-    // tracked file-backed view; only descs flagged COW are eligible.
-    vt::RegionDesc *desc = resolve_desc_or_null(walk.entry->AllocationBase);
-    if (desc == nullptr)
-      continue;
-    if (!desc->is_file_backed() || !desc->is_cow())
-      continue;
-
-    PVOID base = walk.chunk;
-    SIZE_T sz = walk.chunk_size;
-    ULONG old_prot = 0;
-    (void)::NtProtectVirtualMemory(NtCurrentProcess(), &base, &sz,
-                                    PAGE_REVERT_TO_FILE_MAP, &old_prot);
-  }
+// Per-chunk filter for the MS_INVALIDATE substrate path.
+// `PAGE_REVERT_TO_FILE_MAP` is accepted by the kernel only on file-backed
+// CoW pages: MEM_PRIVATE selects the CoW'd shadow (post-write private
+// copy), COW flag selects FilePrivate descs. Anon-private chunks (no
+// COW flag) and MAP_SHARED chunks (MEM_MAPPED, not MEM_PRIVATE) are
+// silently skipped — matches the legacy revert_cow_pages gate.
+bool revert_cow_filter(const MEMORY_BASIC_INFORMATION *mbi,
+                       vt::RegionDesc *desc) {
+  return mbi->State == MEM_COMMIT && mbi->Type == MEM_PRIVATE &&
+         desc->has_flag(vt::region_flag::COW);
 }
 
 } // namespace
@@ -154,9 +135,17 @@ intptr_t msync(void *addr, size_t len, int flags) {
   const bool has_sync = (flags & MS_SYNC) != 0;
 
   // Invalidate before flush: a flush-first ordering would write the
-  // CoW copy to the cache the revert was about to discard.
-  if (has_invalidate)
-    revert_cow_pages(cur, range_end);
+  // CoW copy to the cache the revert was about to discard. Best-effort
+  // — failures to revert are silent (matches legacy NtProtect shape;
+  // every page may already be shared / outside any tracked desc).
+  if (has_invalidate) {
+    vt::VaRange invalidate_range{cur, static_cast<size_t>(range_end - cur)};
+    (void)vt::mutate(invalidate_range, /*mutator=*/nullptr, /*ctx=*/nullptr,
+                     /*prot_change=*/PAGE_REVERT_TO_FILE_MAP,
+                     /*commit_if_uncommitted_accessible=*/false,
+                     /*numa_node=*/-1,
+                     /*chunk_filter=*/&revert_cow_filter);
+  }
 
   ::LIBC_NAMESPACE::nt_pal::RegionWalker walk(cur, rounded_len);
   if (!walk)

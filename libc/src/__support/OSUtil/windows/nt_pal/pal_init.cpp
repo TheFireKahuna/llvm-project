@@ -17,7 +17,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "src/__support/OSUtil/windows/memory/legacy/memory_primitives_bootstrap.h"
+#include "src/__support/OSUtil/windows/memory/memory_primitives_bootstrap.h"
 #include "src/__support/OSUtil/windows/nt_pal/large_pages.h"
 #include "src/__support/OSUtil/windows/nt_pal/numa_topology.h"
 #include "src/__support/OSUtil/windows/nt_pal/pal_state.h"

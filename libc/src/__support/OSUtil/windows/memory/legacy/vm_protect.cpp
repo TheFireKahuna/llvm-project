@@ -60,7 +60,7 @@
 #include "src/__support/OSUtil/windows/memory/legacy/remap_transaction.h"
 #include "src/__support/OSUtil/windows/memory/legacy/memory_region.h"
 #include "src/__support/OSUtil/windows/memory/legacy/mmap_lock.h"
-#include "src/__support/OSUtil/windows/memory/legacy/numa_policy.h"
+#include "src/__support/OSUtil/windows/memory/numa_policy.h"
 #include "src/__support/OSUtil/windows/memory/legacy/region_pool.h"
 #include "src/__support/OSUtil/windows/memory/legacy/region_snapshot.h"
 #include "src/__support/OSUtil/windows/alloc/page_size.h"
