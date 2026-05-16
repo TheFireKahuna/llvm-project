@@ -154,15 +154,16 @@ LIBC_INLINE NTSTATUS unmap_view(void *addr) {
 
 // Tear down a view but keep the VA reserved as a placeholder. Use
 // during split / rollback paths where the placeholder will be reused
-// or coalesced. Mirrors the kernel's MEM_PRESERVE_PLACEHOLDER
-// convention.
+// or coalesced. Returns `STATUS_NOT_MAPPED_VIEW` on an already-unmapped
+// address — rollback callers operating on partial state treat that as
+// success.
 LIBC_INLINE NTSTATUS unmap_view_preserve(void *addr) {
   return ::NtUnmapViewOfSectionEx(NtCurrentProcess(), addr,
                                    MEM_PRESERVE_PLACEHOLDER_ON_UNMAP);
 }
 
-// As above, with the kernel's transient priority boost (deferred-IO
-// hint). Use on hot paths where unmap dominates the cycle.
+// As `unmap_view_preserve`, with the kernel's transient priority boost
+// (deferred-IO hint). Same `STATUS_NOT_MAPPED_VIEW` idempotence.
 LIBC_INLINE NTSTATUS unmap_view_preserve_transient(void *addr) {
   return ::NtUnmapViewOfSectionEx(
       NtCurrentProcess(), addr,

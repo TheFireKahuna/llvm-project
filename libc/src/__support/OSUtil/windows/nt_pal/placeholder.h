@@ -286,9 +286,12 @@ LIBC_INLINE bool split_placeholder(void *addr, size_t split_offset) {
       MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER));
 }
 
-// Coalesce adjacent placeholders covering [addr, addr+total_size) into a
-// single placeholder. Span must be entirely placeholders; the kernel
-// verifies and fails atomically otherwise.
+// Coalesce ≥2 adjacent placeholders spanning [addr, addr+total_size)
+// into one. Span must be exactly placeholders and align to actual VAD
+// boundaries — single-VAD range or any subset of a wider VAD returns
+// `STATUS_CONFLICTING_ADDRESSES`. Origins and section identities along
+// the run are unconstrained: any mix of preserve-produced placeholders
+// coalesces.
 LIBC_INLINE NTSTATUS coalesce_placeholders(void *addr, size_t total_size) {
   PVOID base = addr;
   SIZE_T sz = total_size;
