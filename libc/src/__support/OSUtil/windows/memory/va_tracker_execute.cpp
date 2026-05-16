@@ -17,7 +17,6 @@
 #include "hdr/errno_macros.h"
 #include "src/__support/CPP/atomic.h"
 #include "src/__support/OSUtil/windows/alloc/pagemap.h"
-#include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/OSUtil/windows/concurrent/crystalline_domain.h"
 #include "src/__support/OSUtil/windows/memory/desc_backing.h"
 #include "src/__support/OSUtil/windows/memory/interval_skiplist.h"

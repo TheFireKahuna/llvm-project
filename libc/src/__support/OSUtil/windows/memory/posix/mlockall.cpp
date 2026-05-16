@@ -22,7 +22,6 @@
 #include "include/llvm-libc-macros/sys-mman-macros.h"
 #include "src/__support/CPP/atomic.h"
 #include "src/__support/OSUtil/windows/alloc/page_size.h"
-#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/libc_fork_registry.h"
 #include "src/__support/OSUtil/windows/nt_pal/working_set.h"
 #include "src/__support/OSUtil/windows/memory/posix/mlock_process_state.h"
