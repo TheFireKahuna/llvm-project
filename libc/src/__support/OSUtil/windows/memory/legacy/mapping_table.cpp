@@ -36,7 +36,7 @@
 
 #include "src/__support/OSUtil/windows/memory/legacy/mapping_table.h"
 
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/libc_fini_registry.h"
 #include "src/__support/OSUtil/windows/libc_subsystem_init.h"
 #include "src/__support/OSUtil/windows/memory/legacy/memory_primitives_bootstrap.h"

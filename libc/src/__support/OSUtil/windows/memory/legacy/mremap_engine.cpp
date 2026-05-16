@@ -81,7 +81,7 @@
 #include "src/__support/OSUtil/windows/nt/handle_attributes.h"
 #include "src/__support/OSUtil/windows/nt/nt_memory_helpers.h"
 #include "src/__support/OSUtil/windows/alloc/page_size.h"
-#include "src/__support/OSUtil/windows/alloc/placeholder_range.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/placeholder_range.h"
 #include "src/__support/OSUtil/windows/memory/legacy/region_snapshot.h"
 #include "src/__support/common.h"
 #include "src/__support/macros/config.h"

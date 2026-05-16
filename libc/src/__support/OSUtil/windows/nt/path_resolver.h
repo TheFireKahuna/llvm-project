@@ -27,7 +27,7 @@
 
 #include "hdr/errno_macros.h"
 #include "src/__support/CPP/string_view.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/nt/nt_wchar_converter.h"
 #include "src/__support/OSUtil/windows/nt/nt_wstringstream.h"
 #include "src/__support/OSUtil/windows/nt/shared_user_data.h"

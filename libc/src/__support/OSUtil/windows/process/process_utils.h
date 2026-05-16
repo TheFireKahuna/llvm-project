@@ -18,7 +18,7 @@
 #include "hdr/errno_macros.h"
 #include "hdr/types/size_t.h"
 #include "include/llvm-libc-macros/sys-mman-macros.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/io/env_ops.h"
 #include "src/__support/OSUtil/windows/nt/unicode_string_utils.h"
 #include "src/__support/OSUtil/windows/process/console_handle_utils.h"

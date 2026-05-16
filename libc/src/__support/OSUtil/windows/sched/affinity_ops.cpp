@@ -18,7 +18,7 @@
 #include "hdr/types/cpu_set_t.h"
 #include "hdr/types/pid_t.h"
 #include "hdr/types/size_t.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/nt/scoped_nt_handle.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
 #include "src/__support/common.h"

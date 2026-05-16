@@ -8,7 +8,7 @@
 
 #include "src/__support/OSUtil/windows/memory/legacy/region_reconcile.h"
 
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/memory/legacy/mapping_table.h"
 #include "src/__support/OSUtil/windows/nt_pal/nt_pal.h"
 #include "src/__support/OSUtil/windows/memory/legacy/mmap_lock.h"

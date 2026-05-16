@@ -18,7 +18,7 @@
 #include "src/__support/OSUtil/windows/nt/scoped_nt_handle.h"
 #include "hdr/fcntl_macros.h"
 #include "hdr/types/mode_t.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/fd/fd_table.h"
 #include "src/__support/OSUtil/windows/ipc/fifo.h"
 #include "src/__support/OSUtil/windows/ntdll.h"

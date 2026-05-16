@@ -25,7 +25,7 @@
 #include "src/__support/OSUtil/windows/nt/scoped_nt_handle.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
 #include "src/__support/OSUtil/windows/process_control_block.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/error_or.h"
 #include "src/__support/macros/attributes.h"
 #include "src/__support/macros/config.h"

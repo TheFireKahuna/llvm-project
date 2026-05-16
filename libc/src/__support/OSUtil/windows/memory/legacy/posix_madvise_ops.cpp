@@ -30,7 +30,7 @@
 #include "src/__support/OSUtil/windows/nt_pal/nt_pal.h"
 #include "src/__support/OSUtil/windows/memory/legacy/memory_region.h"
 #include "src/__support/OSUtil/windows/alloc/page_size.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/common.h"
 #include "src/__support/macros/config.h"
 #include "src/__support/macros/optimization.h"

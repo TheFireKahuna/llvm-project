@@ -19,7 +19,7 @@
 #define LLVM_LIBC_SRC_SIGNAL_WINDOWS_SIGNAL_INTERNAL_H
 
 #include "src/__support/OSUtil/windows/signal/signal.h"
-#include "src/__support/OSUtil/windows/alloc/section_region.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/section_region.h"
 #include "hdr/types/struct_sigaction.h"
 #include "src/__support/macros/config.h"
 

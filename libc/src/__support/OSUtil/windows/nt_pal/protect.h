@@ -36,7 +36,7 @@
 #ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_NT_PAL_PROTECT_H
 #define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_NT_PAL_PROTECT_H
 
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/nt_pal/query.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
 #include "src/__support/macros/attributes.h"

@@ -18,7 +18,7 @@
 #include "src/__support/CPP/span.h"
 #include "src/__support/threads/windows/spin_wait.h"
 #include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
-#include "src/__support/OSUtil/windows/alloc/section_view.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/section_view.h"
 #include "src/__support/OSUtil/windows/nt/nt_error.h"
 #include "src/__support/OSUtil/windows/nt/handle_attributes.h"
 #include "src/__support/OSUtil/windows/nt/nt_ipc.h"

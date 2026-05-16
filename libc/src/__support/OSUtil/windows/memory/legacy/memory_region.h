@@ -33,7 +33,7 @@
 #include "src/__support/OSUtil/windows/memory/legacy/region_desc.h"
 #include "src/__support/OSUtil/windows/memory/legacy/region_pool.h"
 #include "src/__support/OSUtil/windows/memory/legacy/region_reconcile.h"
-#include "src/__support/OSUtil/windows/alloc/placeholder_range.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/placeholder_range.h"
 #include "src/__support/OSUtil/windows/nt_pal/nt_pal.h"
 #include "src/__support/OSUtil/windows/memory/legacy/numa_policy.h"
 #include "src/__support/OSUtil/windows/nt/handle_attributes.h"

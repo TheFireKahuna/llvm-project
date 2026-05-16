@@ -118,7 +118,7 @@
 #include "hdr/stdint_proxy.h"
 #include "src/__support/CPP/atomic.h"
 #include "src/__support/CPP/type_traits.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/concurrent/crystalline_domain_registry.h"
 #include "src/__support/OSUtil/windows/concurrent/crystalline_local_state.h"
 #include "src/__support/OSUtil/windows/concurrent/crystalline_slot_pool.h"

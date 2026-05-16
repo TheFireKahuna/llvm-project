@@ -31,7 +31,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/OSUtil/windows/concurrent/crystalline_domain_registry.h"
 #include "src/__support/OSUtil/windows/libc_fini_registry.h"

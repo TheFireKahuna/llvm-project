@@ -17,7 +17,7 @@
 //     per-thread inline slots[] / batches[] arrays that live in the
 //     Crystalline region of every ThreadScratch arena — see
 //     concurrent/crystalline_local_state.h for the contract and
-//     alloc/thread_scratch.h for the arena layout).
+//     alloc/legacy/thread_scratch.h for the arena layout).
 //
 // No backing pool, no TLS allocation — Crystalline local state is inline
 // in the ThreadScratch arena, eager-committed at thread creation. That's

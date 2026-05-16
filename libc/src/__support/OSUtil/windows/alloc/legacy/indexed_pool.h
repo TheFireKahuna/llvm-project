@@ -36,8 +36,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_INDEXED_POOL_H
-#define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_INDEXED_POOL_H
+#ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_LEGACY_INDEXED_POOL_H
+#define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_LEGACY_INDEXED_POOL_H
 
 #include "src/__support/CPP/array.h"
 #include "src/__support/CPP/atomic.h"
@@ -1111,4 +1111,4 @@ public:
 } // namespace internal
 } // namespace LIBC_NAMESPACE_DECL
 
-#endif // LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_INDEXED_POOL_H
+#endif // LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_LEGACY_INDEXED_POOL_H

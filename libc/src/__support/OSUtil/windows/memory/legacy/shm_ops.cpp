@@ -27,7 +27,7 @@
 #include "src/__support/OSUtil/windows/nt/nt_path.h"
 #include "src/__support/OSUtil/windows/nt/section_handle.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/security/security.h"
 #include "src/__support/macros/config.h"
 #include "src/__support/macros/optimization.h"

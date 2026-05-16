@@ -40,7 +40,7 @@
 #define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_FD_TABLE_H
 
 #include "src/__support/CPP/atomic.h"
-#include "src/__support/OSUtil/windows/alloc/indexed_pool.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/indexed_pool.h"
 #include "src/__support/error_or.h"
 #include "src/__support/macros/config.h"
 #include "src/__support/macros/optimization.h"

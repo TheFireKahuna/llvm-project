@@ -29,7 +29,7 @@
 #include "src/__support/CPP/stringstream.h"
 #include "src/__support/OSUtil/windows/nt/nt_wstringstream.h"
 #include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/fd/fd_table.h"
 #include "src/__support/OSUtil/windows/fd/file_ops_table.h"
 #include "src/__support/OSUtil/windows/io/string_utils.h"

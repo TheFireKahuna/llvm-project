@@ -28,7 +28,7 @@
 #include "src/__support/CPP/new.h"
 #include "src/__support/File/file.h"
 #include "src/__support/File/windows/file.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/fd/fd_table.h"
 #include "src/__support/OSUtil/windows/fd/file_ops_table.h"
 #include "src/__support/OSUtil/windows/fd/file_pool.h"

@@ -29,7 +29,7 @@
 #define LLVM_LIBC_SRC___SUPPORT_PROCESS_WINDOWS_CHILD_TABLE_H
 
 #include "src/__support/CPP/atomic.h"
-#include "src/__support/OSUtil/windows/alloc/section_view.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/section_view.h"
 #include "src/__support/OSUtil/windows/alloc/legacy/slab_pool.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
 #include "src/__support/OSUtil/windows/nt/section_handle.h"

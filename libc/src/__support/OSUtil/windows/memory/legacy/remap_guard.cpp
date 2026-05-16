@@ -10,7 +10,7 @@
 
 #include "src/__support/CPP/atomic.h"
 #include "src/__support/CPP/utility.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/nt_pal/nt_pal.h"
 #include "src/__support/OSUtil/windows/memory/legacy/region_pool.h"
 #include "src/__support/OSUtil/windows/memory/legacy/region_snapshot.h"

@@ -33,7 +33,7 @@
 #include "hdr/types/ssize_t.h"
 #include "src/__support/OSUtil/windows/device_path.h"
 #include "src/__support/OSUtil/windows/fd/fd_table.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/nt/scoped_nt_handle.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
 #include "src/__support/OSUtil/windows/nt/handle_attributes.h"

@@ -19,7 +19,7 @@
 
 #include "hdr/errno_macros.h"
 #include "src/__support/OSUtil/windows/alloc/page_size.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/memory/posix/posix_validation.h"
 #include "src/__support/OSUtil/windows/nt_pal/query.h"
 #include "src/__support/OSUtil/windows/ntdll.h"

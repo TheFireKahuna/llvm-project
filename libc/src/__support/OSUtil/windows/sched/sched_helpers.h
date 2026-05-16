@@ -10,7 +10,7 @@
 #define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_SCHED_SCHED_HELPERS_H
 
 #include "hdr/sched_macros.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
 #include "src/__support/OSUtil/windows/process_control_block.h"
 #include "src/__support/threads/windows/futex_addr.h"

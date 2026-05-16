@@ -18,7 +18,7 @@
 #include "src/__support/CPP/atomic.h"
 #include "src/__support/CPP/string_view.h"
 #include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/threads/windows/futex_utils.h"
 #include "src/__support/threads/windows/spin_wait.h"
 #include "src/__support/OSUtil/windows/nt/nt_error.h"

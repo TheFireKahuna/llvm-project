@@ -38,7 +38,7 @@
 #ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEMORY_REMAP_GUARD_H
 #define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEMORY_REMAP_GUARD_H
 
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/memory/legacy/mapping_table.h"
 #include "src/__support/OSUtil/windows/memory/legacy/region_desc.h"
 #include "src/__support/OSUtil/windows/memory/legacy/region_pool.h"

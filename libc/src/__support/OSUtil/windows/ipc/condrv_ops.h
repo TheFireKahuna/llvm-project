@@ -15,7 +15,7 @@
 #ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_CONDRV_OPS_H
 #define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_CONDRV_OPS_H
 
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/ipc/condrv_types.h"
 #include "src/__support/OSUtil/windows/nt/handle_attributes.h"
 #include "src/__support/OSUtil/windows/nt/nt_file.h"

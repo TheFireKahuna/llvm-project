@@ -36,7 +36,7 @@
 #include "src/__support/OSUtil/windows/nt/scoped_nt_handle.h"
 #include "src/__support/OSUtil/windows/nt_pal/nt_pal.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/process/process_identity.h"
 #include "src/__support/OSUtil/windows/process/process_utils.h"
 #include "src/__support/OSUtil/windows/process/shebang.h"

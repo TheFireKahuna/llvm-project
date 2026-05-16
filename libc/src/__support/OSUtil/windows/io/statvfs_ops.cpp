@@ -15,7 +15,7 @@
 
 #include "hdr/errno_macros.h"
 #include "include/llvm-libc-types/struct_statvfs.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/fd/fd_table.h"
 #include "src/__support/OSUtil/windows/nt/nt_path.h"
 #include "src/__support/OSUtil/windows/ntdll.h"

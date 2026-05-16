@@ -20,7 +20,7 @@
 #include "hdr/sys_stat_macros.h"
 #include "hdr/types/struct_timespec.h"
 #include "hdr/types/struct_timeval.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/fd/fd_table.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
 #include "src/__support/error_or.h"

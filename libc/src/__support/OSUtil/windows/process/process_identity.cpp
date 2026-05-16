@@ -24,7 +24,7 @@
 #include "hdr/errno_macros.h"
 #include "src/__support/CPP/atomic.h"
 #include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/libc_subsystem_init.h"
 #include "src/__support/OSUtil/windows/process/sid_utils.h"
 #include "src/__support/OSUtil/windows/pcb_init_access.h"

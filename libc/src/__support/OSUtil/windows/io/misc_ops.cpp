@@ -20,7 +20,7 @@
 #include "hdr/limits_macros.h"
 #include "hdr/unistd_macros.h"
 #include "src/__support/CPP/atomic.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/bcryptprimitives.h"
 #include "src/__support/OSUtil/windows/fd/fd_table.h"
 #include "src/__support/OSUtil/windows/nt/nt_error.h"

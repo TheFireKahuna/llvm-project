@@ -48,9 +48,9 @@
 #include "src/__support/OSUtil/windows/nt_pal/nt_pal.h"
 #include "src/__support/OSUtil/windows/memory/legacy/memory_region.h"
 #include "src/__support/OSUtil/windows/memory/legacy/view_spec.h"
-#include "src/__support/OSUtil/windows/alloc/section_region.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/section_region.h"
 #include "src/__support/OSUtil/windows/alloc/page_size.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/macros/config.h"
 #include "src/__support/macros/optimization.h"
 

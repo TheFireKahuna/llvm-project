@@ -32,7 +32,7 @@
 #include "hdr/errno_macros.h"
 #include "hdr/fcntl_macros.h"
 #include "hdr/types/mode_t.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/fd/fd_table.h"
 #include "src/__support/OSUtil/windows/ipc/fifo_channel.h"
 #include "src/__support/CPP/span.h"

@@ -56,8 +56,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_THREAD_SCRATCH_H
-#define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_THREAD_SCRATCH_H
+#ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_LEGACY_THREAD_SCRATCH_H
+#define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_LEGACY_THREAD_SCRATCH_H
 
 #include "src/__support/CPP/atomic.h"
 #include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
@@ -1373,4 +1373,4 @@ template <typename S> LIBC_INLINE internal::ScratchAlloc<char> info_scratch() {
 } // namespace windows
 } // namespace LIBC_NAMESPACE_DECL
 
-#endif // LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_THREAD_SCRATCH_H
+#endif // LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_LEGACY_THREAD_SCRATCH_H

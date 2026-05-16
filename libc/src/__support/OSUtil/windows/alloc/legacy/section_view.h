@@ -25,10 +25,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_SECTION_VIEW_H
-#define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_SECTION_VIEW_H
+#ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_LEGACY_SECTION_VIEW_H
+#define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_LEGACY_SECTION_VIEW_H
 
-#include "src/__support/OSUtil/windows/alloc/placeholder_range.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/placeholder_range.h"
 #include "src/__support/OSUtil/windows/nt/nt_memory_api.h"
 #include "src/__support/OSUtil/windows/nt/nt_memory_types.h"
 #include "src/__support/OSUtil/windows/nt/nt_process_types.h"
@@ -181,4 +181,4 @@ private:
 } // namespace windows
 } // namespace LIBC_NAMESPACE_DECL
 
-#endif // LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_SECTION_VIEW_H
+#endif // LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_LEGACY_SECTION_VIEW_H

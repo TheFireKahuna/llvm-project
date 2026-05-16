@@ -41,7 +41,7 @@
 #define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEMORY_REGION_POOL_H
 
 #include "src/__support/CPP/atomic.h"
-#include "src/__support/OSUtil/windows/alloc/indexed_pool.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/indexed_pool.h"
 #include "src/__support/OSUtil/windows/memory/legacy/mmap_lock.h"
 #include "src/__support/OSUtil/windows/memory/legacy/region_desc.h"
 #include "src/__support/OSUtil/windows/ntdll.h"

@@ -11,7 +11,7 @@
 #include "hdr/errno_macros.h"
 #include "include/llvm-libc-macros/sys-mman-macros.h"
 #include "src/__support/OSUtil/windows/alloc/page_size.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/nt_pal/working_set.h"
 #include "src/__support/OSUtil/windows/memory/posix/posix_errno.h"
 #include "src/__support/OSUtil/windows/memory/posix/posix_mutators.h"

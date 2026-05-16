@@ -15,7 +15,7 @@
 #define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_PROCESS_SHEBANG_H
 
 #include "hdr/errno_macros.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/nt/nt_wstring_view.h"
 #include "src/__support/OSUtil/windows/nt/scoped_nt_handle.h"
 #include "src/__support/OSUtil/windows/ntdll.h"

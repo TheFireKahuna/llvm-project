@@ -31,8 +31,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_PLACEHOLDER_RANGE_H
-#define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_PLACEHOLDER_RANGE_H
+#ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_LEGACY_PLACEHOLDER_RANGE_H
+#define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_LEGACY_PLACEHOLDER_RANGE_H
 
 #include "src/__support/OSUtil/windows/nt_pal/nt_pal.h"
 #include "src/__support/OSUtil/windows/memory/legacy/view_spec.h"
@@ -306,4 +306,4 @@ private:
 } // namespace windows
 } // namespace LIBC_NAMESPACE_DECL
 
-#endif // LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_PLACEHOLDER_RANGE_H
+#endif // LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_LEGACY_PLACEHOLDER_RANGE_H

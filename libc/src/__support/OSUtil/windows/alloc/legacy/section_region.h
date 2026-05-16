@@ -23,12 +23,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_SECTION_REGION_H
-#define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_SECTION_REGION_H
+#ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_LEGACY_SECTION_REGION_H
+#define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_LEGACY_SECTION_REGION_H
 
 #include "src/__support/CPP/utility/move.h"
-#include "src/__support/OSUtil/windows/alloc/placeholder_range.h"
-#include "src/__support/OSUtil/windows/alloc/section_view.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/placeholder_range.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/section_view.h"
 #include "src/__support/OSUtil/windows/nt/section_handle.h"
 #include "src/__support/macros/attributes.h"
 #include "src/__support/macros/config.h"
@@ -257,4 +257,4 @@ public:
 } // namespace windows
 } // namespace LIBC_NAMESPACE_DECL
 
-#endif // LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_SECTION_REGION_H
+#endif // LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_ALLOC_LEGACY_SECTION_REGION_H

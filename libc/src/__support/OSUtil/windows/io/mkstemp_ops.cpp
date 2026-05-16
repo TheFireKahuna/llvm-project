@@ -17,7 +17,7 @@
 
 #include "hdr/errno_macros.h"
 #include "hdr/fcntl_macros.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/fd/fd_table.h"
 #include "src/__support/OSUtil/windows/io/io_ring_helpers.h"
 #include "src/__support/OSUtil/windows/nt/nt_path.h"

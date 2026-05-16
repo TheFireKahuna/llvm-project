@@ -34,7 +34,7 @@
 #ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEMORY_REMAP_TRANSACTION_H
 #define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEMORY_REMAP_TRANSACTION_H
 
-#include "src/__support/OSUtil/windows/alloc/placeholder_range.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/placeholder_range.h"
 #include "src/__support/OSUtil/windows/memory/legacy/region_desc.h"
 #include "src/__support/OSUtil/windows/memory/legacy/remap_guard.h"
 #include "src/__support/macros/config.h"

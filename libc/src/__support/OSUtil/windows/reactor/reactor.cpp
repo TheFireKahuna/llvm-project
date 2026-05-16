@@ -59,7 +59,7 @@
 #include "src/__support/OSUtil/windows/libc_subsystem_init.h"
 
 #include "src/__support/CPP/atomic.h"
-#include "src/__support/OSUtil/windows/alloc/indexed_pool.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/indexed_pool.h"
 #include "src/__support/OSUtil/windows/nt/nt_file_api.h"
 #include "src/__support/OSUtil/windows/nt/handle_attributes.h"
 #include "src/__support/OSUtil/windows/nt/nt_ipc_api.h"

@@ -45,7 +45,7 @@
 #include "src/__support/OSUtil/windows/ntdll.h"
 #include "src/__support/OSUtil/windows/security/security.h"
 #include "src/__support/OSUtil/windows/alloc/legacy/slab_pool.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/lazy_init.h"
 #include "src/__support/OSUtil/windows/lazy_init_reset.h"
 #include "src/__support/OSUtil/windows/libc_fini_registry.h"

@@ -17,7 +17,7 @@
 #include "sched_helpers.h"
 #include "hdr/errno_macros.h"
 #include "hdr/sched_macros.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/nt/scoped_nt_handle.h"
 #include "src/__support/OSUtil/windows/nt_pal/numa_topology.h"
 #include "src/__support/OSUtil/windows/nt_pal/pal_state.h"

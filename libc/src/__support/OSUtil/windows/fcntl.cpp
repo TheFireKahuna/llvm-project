@@ -23,7 +23,7 @@
 #include "hdr/types/mode_t.h"
 #include "hdr/types/off_t.h"
 #include "hdr/types/struct_flock.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/fd/fd_table.h"
 #include "src/__support/OSUtil/windows/ipc/fifo.h"
 #include "src/__support/OSUtil/windows/io/io_ring_helpers.h"

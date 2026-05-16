@@ -22,7 +22,7 @@
 #include "include/llvm-libc-macros/sys-select-macros.h"
 #include "src/__support/OSUtil/windows/fd/fd_table.h"
 #include "src/__support/OSUtil/windows/ipc/poll_ops.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/macros/config.h"
 
 #include "hdr/errno_macros.h"

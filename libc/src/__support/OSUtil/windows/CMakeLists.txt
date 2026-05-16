@@ -344,7 +344,7 @@ add_header_library(
 add_header_library(
   section_region
   HDRS
-    alloc/section_region.h
+    alloc/legacy/section_region.h
   DEPENDS
     .page_alloc
     .ntdll
@@ -441,9 +441,9 @@ add_header_library(
 add_object_library(
   thread_scratch
   SRCS
-    alloc/thread_scratch.cpp
+    alloc/legacy/thread_scratch.cpp
   HDRS
-    alloc/thread_scratch.h
+    alloc/legacy/thread_scratch.h
   DEPENDS
     .alloc_canary_seed
     .alloc_guarded_region

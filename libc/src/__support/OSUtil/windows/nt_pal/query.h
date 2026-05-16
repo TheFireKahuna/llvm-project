@@ -38,7 +38,7 @@
 #include "src/__support/OSUtil/windows/ntdll.h"
 #include "src/__support/OSUtil/windows/nt/nt_memory_helpers.h"
 #include "src/__support/OSUtil/windows/alloc/page_size.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/nt_pal/placeholder.h"  // to_nt_ulong
 #include "src/__support/OSUtil/windows/nt_pal/write_watch.h"  // write_watch_reset
 #include "src/__support/common.h"

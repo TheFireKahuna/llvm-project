@@ -47,7 +47,7 @@
 #include "src/__support/CPP/atomic.h"
 #include "src/__support/CPP/new.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
-#include "src/__support/OSUtil/windows/alloc/section_region.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/section_region.h"
 #include "src/__support/OSUtil/windows/process_control_block.h"
 #include "src/__support/macros/config.h"
 #include "src/__support/threads/windows/futex_addr.h"

@@ -32,7 +32,7 @@
 #include "src/__support/CPP/atomic.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
 #include "src/__support/OSUtil/windows/nt/scoped_nt_handle.h"
-#include "src/__support/OSUtil/windows/alloc/indexed_pool.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/indexed_pool.h"
 #include "src/__support/OSUtil/windows/process_control_block.h"
 #include "src/__support/OSUtil/windows/reactor/reactor.h"
 #include "src/__support/OSUtil/windows/signal/dispatch/dispatch_engine.h"

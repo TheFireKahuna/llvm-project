@@ -18,7 +18,7 @@
 #include "hdr/types/size_t.h"
 #include "hdr/types/uid_t.h"
 #include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/nt/nt_string_types.h"
 #include "src/__support/OSUtil/windows/nt/scoped_nt_handle.h"
 #include "src/__support/OSUtil/windows/ntdll.h"

@@ -10,7 +10,7 @@
 
 #include "src/__support/OSUtil/windows/alloc/legacy/page_alloc.h"
 #include "src/__support/OSUtil/windows/alloc/page_size.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/concurrent/crystalline_domain.h"
 #include "src/__support/OSUtil/windows/libc_fini_registry.h"
 #include "src/__support/OSUtil/windows/memory/legacy/mapping_table.h"

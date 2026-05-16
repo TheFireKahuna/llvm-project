@@ -22,7 +22,7 @@
 #include "src/__support/CPP/string_view.h"
 #include "src/__support/CPP/scope_guard.h"
 #include "src/__support/File/file_io_result.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/OSUtil/windows/fd/fd_table.h"
 #include "src/__support/OSUtil/windows/io/alertable_io.h"
 #include "src/__support/OSUtil/windows/io/batch_engine.h"

@@ -64,7 +64,7 @@
 #include "src/__support/OSUtil/windows/memory/legacy/region_pool.h"
 #include "src/__support/OSUtil/windows/memory/legacy/region_snapshot.h"
 #include "src/__support/OSUtil/windows/alloc/page_size.h"
-#include "src/__support/OSUtil/windows/alloc/thread_scratch.h"
+#include "src/__support/OSUtil/windows/alloc/legacy/thread_scratch.h"
 #include "src/__support/common.h"
 #include "src/__support/macros/config.h"
 #include "src/__support/macros/optimization.h"

@@ -24,7 +24,7 @@ ENTRIES = [
      "va_substrate", "kForkPrioVaSubstrate", "va_substrate_fork_reinit"),
     ("libc/src/__support/OSUtil/windows/memory/mapping_table.cpp",
      "mapping_table", "kForkPrioMappingTable", "mapping_table_fork_reinit"),
-    ("libc/src/__support/OSUtil/windows/alloc/thread_scratch.cpp",
+    ("libc/src/__support/OSUtil/windows/alloc/legacy/thread_scratch.cpp",
      "scratch", "kForkPrioScratch", "scratch_fork_reinit"),
     ("libc/src/__support/OSUtil/windows/security/pkey_ops.cpp",
      "pkey", "kForkPrioPkey", "pkey_fork_reinit"),
