@@ -58,7 +58,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "src/__support/CPP/atomic.h"
+#include "src/__support/OSUtil/windows/alloc/primitives/init_latch.h"
 #include "src/__support/OSUtil/windows/memory/art_index.h"
+#include "src/__support/OSUtil/windows/memory/art_node.h"
+#include "src/__support/OSUtil/windows/memory/art_node_alloc.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
 #include "src/pthread/pthread_create.h"
 #include "src/pthread/pthread_join.h"
@@ -72,14 +75,13 @@ namespace {
 using LIBC_NAMESPACE::cpp::Atomic;
 using LIBC_NAMESPACE::cpp::MemoryOrder;
 using LIBC_NAMESPACE::windows::va_tracker::Arena;
-using LIBC_NAMESPACE::windows::va_tracker::art_decode_leaf;
-using LIBC_NAMESPACE::windows::va_tracker::art_encode_leaf;
+using LIBC_NAMESPACE::windows::va_tracker::art_get_leaf;
 using LIBC_NAMESPACE::windows::va_tracker::art_index_init;
 using LIBC_NAMESPACE::windows::va_tracker::art_index_stats;
 using LIBC_NAMESPACE::windows::va_tracker::art_insert;
 using LIBC_NAMESPACE::windows::va_tracker::art_is_leaf;
 using LIBC_NAMESPACE::windows::va_tracker::art_lookup;
-using LIBC_NAMESPACE::windows::va_tracker::art_remove;
+using LIBC_NAMESPACE::windows::va_tracker::art_set_leaf;
 using LIBC_NAMESPACE::windows::va_tracker::art_walk_range;
 using LIBC_NAMESPACE::windows::va_tracker::ArtLoadKeyFn;
 using LIBC_NAMESPACE::windows::va_tracker::ArtNode16;
@@ -215,7 +217,8 @@ TEST(LlvmLibcArtIndexTest, LayoutPins) {
   EXPECT_EQ(sizeof(ArtNodeBase), size_t{64});
   EXPECT_EQ(sizeof(ArtNode4), size_t{128});
   EXPECT_EQ(sizeof(ArtNode16), size_t{256});
-  EXPECT_EQ(sizeof(ArtNode48), size_t{768});
+  // 64 (header) + 256 (child_index) + 48 * 8 (children) = 704
+  EXPECT_EQ(sizeof(ArtNode48), size_t{704});
   EXPECT_EQ(sizeof(ArtNode256), size_t{64 + 256 * 8});
   EXPECT_EQ(alignof(ArtNodeBase), size_t{64});
   EXPECT_EQ(kArtMaxStoredPrefixLength, uint32_t{4});
@@ -227,9 +230,9 @@ TEST(LlvmLibcArtIndexTest, LayoutPins) {
 // =========================================================================
 
 TEST(LlvmLibcArtIndexTest, LeafTagRoundTrip) {
-  ArtNodeBase *encoded = art_encode_leaf(&g_arena_a);
+  ArtNodeBase *encoded = art_set_leaf(&g_arena_a);
   EXPECT_TRUE(art_is_leaf(encoded));
-  EXPECT_EQ(art_decode_leaf(encoded), &g_arena_a);
+  EXPECT_EQ(art_get_leaf(encoded), &g_arena_a);
   EXPECT_NE(reinterpret_cast<uintptr_t>(encoded) & kArtLeafTagBit,
             uint64_t{0});
 }
@@ -362,15 +365,12 @@ TEST(LlvmLibcArtIndexTest, InsertLookupSingle) {
 // =========================================================================
 
 TEST(LlvmLibcArtIndexTest, Node4InsertOrderAppendOnly) {
-  ArtNode4 n4;
-  n4.set_type(ArtNodeType::N4);
-  ArtPrefix p{};
-  n4.prefix.store(p, MemoryOrder::RELAXED);
+  ArtNode4 n4{0, nullptr, 0};
 
-  ArtNodeBase *leaf_a = art_encode_leaf(&g_arena_a);
-  ArtNodeBase *leaf_b = art_encode_leaf(&g_arena_b);
-  EXPECT_TRUE(n4.insert_unlocked(0x05, leaf_a));
-  EXPECT_TRUE(n4.insert_unlocked(0x02, leaf_b));
+  ArtNodeBase *leaf_a = art_set_leaf(&g_arena_a);
+  ArtNodeBase *leaf_b = art_set_leaf(&g_arena_b);
+  EXPECT_TRUE(n4.insert(0x05, leaf_a));
+  EXPECT_TRUE(n4.insert(0x02, leaf_b));
   EXPECT_EQ(n4.compact_count.load(MemoryOrder::ACQUIRE), uint16_t{2});
   EXPECT_EQ(n4.count.load(MemoryOrder::ACQUIRE), uint16_t{2});
 
@@ -385,23 +385,21 @@ TEST(LlvmLibcArtIndexTest, Node4InsertOrderAppendOnly) {
 }
 
 TEST(LlvmLibcArtIndexTest, Node4InsertFullReturnsFalse) {
-  ArtNode4 n4;
-  n4.set_type(ArtNodeType::N4);
+  ArtNode4 n4{0, nullptr, 0};
   for (uint8_t i = 0; i < 4; ++i) {
-    EXPECT_TRUE(n4.insert_unlocked(i, art_encode_leaf(&g_arena_a)));
+    EXPECT_TRUE(n4.insert(i, art_set_leaf(&g_arena_a)));
   }
-  EXPECT_FALSE(n4.insert_unlocked(4, art_encode_leaf(&g_arena_b)));
+  EXPECT_FALSE(n4.insert(4, art_set_leaf(&g_arena_b)));
 }
 
 TEST(LlvmLibcArtIndexTest, Node16SseLookupHit) {
-  ArtNode16 n16;
-  n16.set_type(ArtNodeType::N16);
+  ArtNode16 n16{0, nullptr, 0};
   ArtNodeBase *leaves[16];
   for (uint8_t i = 0; i < 16; ++i) {
     static LIBC_NAMESPACE::windows::va_tracker::Arena fake_arena[16] = {};
     fake_arena[i].test_id = i + 100;
-    leaves[i] = art_encode_leaf(&fake_arena[i]);
-    EXPECT_TRUE(n16.insert_unlocked(i * 7, leaves[i]));
+    leaves[i] = art_set_leaf(&fake_arena[i]);
+    EXPECT_TRUE(n16.insert(i * 7, leaves[i]));
   }
   for (uint8_t i = 0; i < 16; ++i) {
     EXPECT_EQ(n16.get_child(static_cast<uint8_t>(i * 7)), leaves[i]);
@@ -431,19 +429,18 @@ TEST(LlvmLibcArtIndexTest, Node16SseLookupHit) {
 // =========================================================================
 
 TEST(LlvmLibcArtIndexTest, Node16NullChildFilterRowex) {
-  ArtNode16 n16;
-  n16.set_type(ArtNodeType::N16);
+  ArtNode16 n16{0, nullptr, 0};
 
   static LIBC_NAMESPACE::windows::va_tracker::Arena phantom_arena[16] = {};
   ArtNodeBase *leaves[16];
   for (uint8_t i = 0; i < 16; ++i) {
     phantom_arena[i].test_id = i + 200;
-    leaves[i] = art_encode_leaf(&phantom_arena[i]);
-    EXPECT_TRUE(n16.insert_unlocked(static_cast<uint8_t>(i * 11), leaves[i]));
+    leaves[i] = art_set_leaf(&phantom_arena[i]);
+    EXPECT_TRUE(n16.insert(static_cast<uint8_t>(i * 11), leaves[i]));
   }
   // Erase slot 5 (key byte = 5*11 = 55). The slot's children[5] becomes
   // null but keys[5] = flip_sign(55) stays.
-  EXPECT_TRUE(n16.remove_unlocked(static_cast<uint8_t>(55), false));
+  EXPECT_TRUE(n16.remove(static_cast<uint8_t>(55), false));
 
   // Reader path: lookup for byte 55 must NOT return a phantom — the
   // null-child filter rejects the SSE bitmap match against the now-
@@ -466,51 +463,48 @@ TEST(LlvmLibcArtIndexTest, Node16NullChildFilterRowex) {
 // =========================================================================
 
 TEST(LlvmLibcArtIndexTest, Node256ShrinkBoundary37) {
-  ArtNode256 n256;
-  n256.set_type(ArtNodeType::N256);
+  ArtNode256 n256{0, nullptr, 0};
   for (uint32_t i = 0; i < 50; ++i) {
     static LIBC_NAMESPACE::windows::va_tracker::Arena boundary_arena[50] = {};
     boundary_arena[i].test_id = i + 300;
-    EXPECT_TRUE(n256.insert_unlocked(static_cast<uint8_t>(i),
-                                       art_encode_leaf(&boundary_arena[i])));
+    EXPECT_TRUE(n256.insert(static_cast<uint8_t>(i),
+                                       art_set_leaf(&boundary_arena[i])));
   }
   EXPECT_EQ(n256.count.load(MemoryOrder::ACQUIRE), uint16_t{50});
   // Erase 12 entries — count drops to 38 (still above 37).
   for (uint8_t i = 0; i < 12; ++i)
-    EXPECT_TRUE(n256.remove_unlocked(i, true));
+    EXPECT_TRUE(n256.remove(i, true));
   EXPECT_EQ(n256.count.load(MemoryOrder::ACQUIRE), uint16_t{38});
   // Erase one more — now count is 37, shrink threshold reached.
-  EXPECT_TRUE(n256.remove_unlocked(12, true));
+  EXPECT_TRUE(n256.remove(12, true));
   EXPECT_EQ(n256.count.load(MemoryOrder::ACQUIRE), uint16_t{37});
 }
 
 TEST(LlvmLibcArtIndexTest, Node48ShrinkBoundary12) {
-  ArtNode48 n48;
-  n48.set_type(ArtNodeType::N48);
+  ArtNode48 n48{0, nullptr, 0};
   for (uint32_t i = 0; i < 20; ++i) {
     static LIBC_NAMESPACE::windows::va_tracker::Arena boundary48_arena[20] = {};
     boundary48_arena[i].test_id = i + 400;
-    EXPECT_TRUE(n48.insert_unlocked(static_cast<uint8_t>(i * 13),
-                                      art_encode_leaf(&boundary48_arena[i])));
+    EXPECT_TRUE(n48.insert(static_cast<uint8_t>(i * 13),
+                                      art_set_leaf(&boundary48_arena[i])));
   }
   EXPECT_EQ(n48.count.load(MemoryOrder::ACQUIRE), uint16_t{20});
   // Erase 8 entries — count drops to 12.
   for (uint32_t i = 0; i < 8; ++i)
-    EXPECT_TRUE(n48.remove_unlocked(static_cast<uint8_t>(i * 13), true));
+    EXPECT_TRUE(n48.remove(static_cast<uint8_t>(i * 13), true));
   EXPECT_EQ(n48.count.load(MemoryOrder::ACQUIRE), uint16_t{12});
 }
 
 TEST(LlvmLibcArtIndexTest, Node16ShrinkBoundary3) {
-  ArtNode16 n16;
-  n16.set_type(ArtNodeType::N16);
+  ArtNode16 n16{0, nullptr, 0};
   static LIBC_NAMESPACE::windows::va_tracker::Arena boundary16_arena[16] = {};
   for (uint8_t i = 0; i < 16; ++i) {
     boundary16_arena[i].test_id = i + 500;
-    EXPECT_TRUE(n16.insert_unlocked(i,
-                                      art_encode_leaf(&boundary16_arena[i])));
+    EXPECT_TRUE(n16.insert(i,
+                                      art_set_leaf(&boundary16_arena[i])));
   }
   for (uint8_t i = 0; i < 13; ++i)
-    EXPECT_TRUE(n16.remove_unlocked(i, true));
+    EXPECT_TRUE(n16.remove(i, true));
   EXPECT_EQ(n16.count.load(MemoryOrder::ACQUIRE), uint16_t{3});
 }
 
@@ -519,17 +513,11 @@ TEST(LlvmLibcArtIndexTest, Node16ShrinkBoundary3) {
 // =========================================================================
 
 TEST(LlvmLibcArtIndexTest, AddPrefixBeforeFusePrefixes) {
-  ArtNode4 outer; // current node about to be retired
-  outer.set_type(ArtNodeType::N4);
-  ArtNode4 inner; // surviving sibling — internal node
-  inner.set_type(ArtNodeType::N16);
-
-  // outer has prefix "AB" (2 bytes).
+  // outer has prefix "AB" (2 bytes); inner has prefix "CD" (2 bytes).
   uint8_t outer_bytes[2] = {0x41, 0x42};
-  outer.set_prefix(outer_bytes, 2);
-  // inner has prefix "CD" (2 bytes).
   uint8_t inner_bytes[2] = {0x43, 0x44};
-  inner.set_prefix(inner_bytes, 2);
+  ArtNode4 outer{0, outer_bytes, 2};   // current node about to be retired
+  ArtNode16 inner{1, inner_bytes, 2};  // surviving sibling — internal node
 
   // Fuse outer's prefix + key='Z' + inner's prefix into inner.
   inner.add_prefix_before(&outer, 0x5A);
@@ -546,11 +534,9 @@ TEST(LlvmLibcArtIndexTest, AddPrefixBeforeFusePrefixes) {
 // =========================================================================
 
 TEST(LlvmLibcArtIndexTest, OptimisticPrefixPath) {
-  ArtNode4 n;
-  n.set_type(ArtNodeType::N4);
   // Set a long prefix (8 bytes) — beyond kArtMaxStoredPrefixLength=4.
   uint8_t long_prefix[8] = {1, 2, 3, 4, 5, 6, 7, 8};
-  n.set_prefix(long_prefix, 8);
+  ArtNode4 n{0, long_prefix, 8};
   ArtPrefix p = n.get_prefix();
   EXPECT_EQ(p.prefix_count, uint32_t{8});
   // Only first 4 bytes are stored verbatim.
@@ -559,10 +545,8 @@ TEST(LlvmLibcArtIndexTest, OptimisticPrefixPath) {
 }
 
 TEST(LlvmLibcArtIndexTest, MaxStoredPrefixLengthBoundary) {
-  ArtNode4 n;
-  n.set_type(ArtNodeType::N4);
   uint8_t exact[4] = {0xA, 0xB, 0xC, 0xD};
-  n.set_prefix(exact, 4);
+  ArtNode4 n{0, exact, 4};
   ArtPrefix p = n.get_prefix();
   EXPECT_EQ(p.prefix_count, uint32_t{4});
   EXPECT_EQ(p.prefix[0], uint8_t{0xA});
@@ -598,7 +582,7 @@ void *reader_thread(void *arg) {
         ctx->seen_torn->fetch_add(1, MemoryOrder::ACQ_REL);
         continue;
       }
-      Arena *arena = art_decode_leaf(child);
+      Arena *arena = art_get_leaf(child);
       // Verify the arena pointer falls in our pool.
       if (arena < &ctx->arenas[0] || arena >= &ctx->arenas[16]) {
         ctx->seen_torn->fetch_add(1, MemoryOrder::ACQ_REL);
@@ -611,8 +595,7 @@ void *reader_thread(void *arg) {
 } // namespace
 
 TEST(LlvmLibcArtIndexTest, AppendOnlyReadConcurrentWrite) {
-  ArtNode16 target;
-  target.set_type(ArtNodeType::N16);
+  ArtNode16 target{0, nullptr, 0};
 
   static LIBC_NAMESPACE::windows::va_tracker::Arena arenas[16] = {};
   for (uint32_t i = 0; i < 16; ++i)
@@ -629,7 +612,7 @@ TEST(LlvmLibcArtIndexTest, AppendOnlyReadConcurrentWrite) {
 
   // Writer thread: insert all 16 entries with brief stalls.
   for (uint8_t i = 0; i < 16; ++i) {
-    EXPECT_TRUE(target.insert_unlocked(i, art_encode_leaf(&arenas[i])));
+    EXPECT_TRUE(target.insert(i, art_set_leaf(&arenas[i])));
     for (volatile int s = 0; s < 100; ++s)
       ; // brief spin
   }
@@ -666,23 +649,16 @@ void walk_visitor(const uint8_t * /*key*/, uint32_t /*key_len*/,
 
 TEST(LlvmLibcArtIndexTest, WalkRangeOrderedTraversal) {
   // Build a Node256 with 5 children at bytes 0x10, 0x20, 0x30, 0x40,
-  // 0x50 — walk_range must visit them in lex order. Static storage so
-  // the alignas(64) of ArtNode256 is honoured by the loader.
-  static ArtNode256 root_storage;
+  // 0x50 — walk_range must visit them in lex order.
+  ArtNode256 root_storage{0, nullptr, 0};
   ArtNode256 *root = &root_storage;
-  // Reset state for repeatable test (in case of prior test setting it).
-  root->count.store(0, MemoryOrder::RELAXED);
-  for (uint32_t i = 0; i < 256; ++i)
-    root->children[i].store(nullptr, MemoryOrder::RELAXED);
-  root->typeVersionLockObsolete.store(0, MemoryOrder::RELAXED);
-  root->set_type(ArtNodeType::N256);
 
   static LIBC_NAMESPACE::windows::va_tracker::Arena walk_arenas[5] = {};
   uint8_t key_bytes[5] = {0x50, 0x10, 0x40, 0x20, 0x30};
   for (uint32_t i = 0; i < 5; ++i) {
     walk_arenas[i].test_id = key_bytes[i];
-    EXPECT_TRUE(root->insert_unlocked(key_bytes[i],
-                                        art_encode_leaf(&walk_arenas[i])));
+    EXPECT_TRUE(root->insert(key_bytes[i],
+                                        art_set_leaf(&walk_arenas[i])));
   }
 
   ArtTree tree;
@@ -704,21 +680,15 @@ TEST(LlvmLibcArtIndexTest, WalkRangeOrderedTraversal) {
 }
 
 TEST(LlvmLibcArtIndexTest, WalkRangeBoundsHonored) {
-  static ArtNode256 root_storage;
+  ArtNode256 root_storage{0, nullptr, 0};
   ArtNode256 *root = &root_storage;
-  root->count.store(0, MemoryOrder::RELAXED);
-  for (uint32_t i = 0; i < 256; ++i)
-    root->children[i].store(nullptr, MemoryOrder::RELAXED);
-  // Reset typeVersionLockObsolete to a known state then re-tag.
-  root->typeVersionLockObsolete.store(0, MemoryOrder::RELAXED);
-  root->set_type(ArtNodeType::N256);
 
   static LIBC_NAMESPACE::windows::va_tracker::Arena walk2_arenas[5] = {};
   uint8_t key_bytes[5] = {0x10, 0x20, 0x30, 0x40, 0x50};
   for (uint32_t i = 0; i < 5; ++i) {
     walk2_arenas[i].test_id = key_bytes[i];
-    EXPECT_TRUE(root->insert_unlocked(key_bytes[i],
-                                        art_encode_leaf(&walk2_arenas[i])));
+    EXPECT_TRUE(root->insert(key_bytes[i],
+                                        art_set_leaf(&walk2_arenas[i])));
   }
 
   ArtTree tree;
@@ -763,75 +733,69 @@ TEST(LlvmLibcArtIndexTest, StatsSnapshotAfterInit) {
 TEST(LlvmLibcArtIndexTest, GrowPathNode4ToNode16Direct) {
   // Build an N4, fill it, simulate the grow path's copy_to into a fresh
   // N16, verify the N16 contains all four entries plus the new one.
-  ArtNode4 n4;
-  n4.set_type(ArtNodeType::N4);
+  ArtNode4 n4{0, nullptr, 0};
   static LIBC_NAMESPACE::windows::va_tracker::Arena growpath_arena[5] = {};
   for (uint8_t i = 0; i < 4; ++i) {
     growpath_arena[i].test_id = i + 700;
-    EXPECT_TRUE(n4.insert_unlocked(i, art_encode_leaf(&growpath_arena[i])));
+    EXPECT_TRUE(n4.insert(i, art_set_leaf(&growpath_arena[i])));
   }
-  EXPECT_FALSE(n4.insert_unlocked(4, art_encode_leaf(&growpath_arena[4])));
+  EXPECT_FALSE(n4.insert(4, art_set_leaf(&growpath_arena[4])));
 
   // Simulate grow-time copy_to.
-  ArtNode16 n16;
-  n16.set_type(ArtNodeType::N16);
+  ArtNode16 n16{0, nullptr, 0};
   n4.copy_to(&n16);
   growpath_arena[4].test_id = 704;
-  EXPECT_TRUE(n16.insert_unlocked(4, art_encode_leaf(&growpath_arena[4])));
+  EXPECT_TRUE(n16.insert(4, art_set_leaf(&growpath_arena[4])));
 
   // Verify all 5 entries lookup correctly.
   for (uint8_t i = 0; i < 5; ++i) {
     ArtNodeBase *c = n16.get_child(i);
     ASSERT_TRUE(art_is_leaf(c));
-    EXPECT_EQ(art_decode_leaf(c)->test_id, uintptr_t{700u + i});
+    EXPECT_EQ(art_get_leaf(c)->test_id, uintptr_t{700u + i});
   }
 }
 
 TEST(LlvmLibcArtIndexTest, GrowPathNode16ToNode48Direct) {
-  ArtNode16 n16;
-  n16.set_type(ArtNodeType::N16);
+  ArtNode16 n16{0, nullptr, 0};
   static LIBC_NAMESPACE::windows::va_tracker::Arena growpath16_arena[17] = {};
   for (uint8_t i = 0; i < 16; ++i) {
     growpath16_arena[i].test_id = i + 800;
-    EXPECT_TRUE(n16.insert_unlocked(i,
-                                      art_encode_leaf(&growpath16_arena[i])));
+    EXPECT_TRUE(n16.insert(i,
+                                      art_set_leaf(&growpath16_arena[i])));
   }
-  EXPECT_FALSE(n16.insert_unlocked(16, art_encode_leaf(&growpath16_arena[16])));
+  EXPECT_FALSE(n16.insert(16, art_set_leaf(&growpath16_arena[16])));
 
-  ArtNode48 n48;
-  n48.set_type(ArtNodeType::N48);
+  ArtNode48 n48{0, nullptr, 0};
   n16.copy_to(&n48);
   growpath16_arena[16].test_id = 816;
-  EXPECT_TRUE(n48.insert_unlocked(16, art_encode_leaf(&growpath16_arena[16])));
+  EXPECT_TRUE(n48.insert(16, art_set_leaf(&growpath16_arena[16])));
 
   for (uint8_t i = 0; i < 17; ++i) {
     ArtNodeBase *c = n48.get_child(i);
     ASSERT_TRUE(art_is_leaf(c));
-    EXPECT_EQ(art_decode_leaf(c)->test_id, uintptr_t{800u + i});
+    EXPECT_EQ(art_get_leaf(c)->test_id, uintptr_t{800u + i});
   }
 }
 
 TEST(LlvmLibcArtIndexTest, GrowPathNode48ToNode256Direct) {
-  ArtNode48 n48;
-  n48.set_type(ArtNodeType::N48);
+  ArtNode48 n48{0, nullptr, 0};
   static LIBC_NAMESPACE::windows::va_tracker::Arena growpath48_arena[49] = {};
   for (uint8_t i = 0; i < 48; ++i) {
     growpath48_arena[i].test_id = i + 900;
-    EXPECT_TRUE(n48.insert_unlocked(i,
-                                      art_encode_leaf(&growpath48_arena[i])));
+    EXPECT_TRUE(n48.insert(i,
+                                      art_set_leaf(&growpath48_arena[i])));
   }
-  EXPECT_FALSE(n48.insert_unlocked(48, art_encode_leaf(&growpath48_arena[48])));
+  EXPECT_FALSE(n48.insert(48, art_set_leaf(&growpath48_arena[48])));
 
-  ArtNode256 n256;
-  n256.set_type(ArtNodeType::N256);
+  ArtNode256 n256{0, nullptr, 0};
   n48.copy_to(&n256);
   growpath48_arena[48].test_id = 948;
-  EXPECT_TRUE(n256.insert_unlocked(48, art_encode_leaf(&growpath48_arena[48])));
+  EXPECT_TRUE(n256.insert(48, art_set_leaf(&growpath48_arena[48])));
 
   for (uint8_t i = 0; i < 49; ++i) {
     ArtNodeBase *c = n256.get_child(i);
     ASSERT_TRUE(art_is_leaf(c));
-    EXPECT_EQ(art_decode_leaf(c)->test_id, uintptr_t{900u + i});
+    EXPECT_EQ(art_get_leaf(c)->test_id, uintptr_t{900u + i});
   }
 }
 
@@ -840,8 +804,7 @@ TEST(LlvmLibcArtIndexTest, GrowPathNode48ToNode256Direct) {
 // =========================================================================
 
 TEST(LlvmLibcArtIndexTest, WriteLockObsoleteAndUnlock) {
-  ArtNode4 n;
-  n.set_type(ArtNodeType::N4);
+  ArtNode4 n{0, nullptr, 0};
   uint64_t v_before = n.read_version();
   EXPECT_FALSE(ArtNodeBase::is_locked(v_before));
   EXPECT_FALSE(ArtNodeBase::is_obsolete(v_before));

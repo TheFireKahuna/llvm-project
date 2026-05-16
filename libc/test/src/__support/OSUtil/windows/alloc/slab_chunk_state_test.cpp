@@ -238,7 +238,10 @@ LIBC_MSABI DWORD cr_writer(void *arg) {
   while (ctx->start.load(LIBC_NAMESPACE::cpp::MemoryOrder::ACQUIRE) == 0u) {
   }
   for (uint64_t g = 1; g <= kCrIters; ++g) {
-    ctx->sentinel.store(0u, LIBC_NAMESPACE::cpp::MemoryOrder::RELAXED);
+    // Clear the bit first; only THEN may the sentinel be reset.
+    // Writing sentinel=0 while the bit is still set from the previous
+    // iteration would expose a `bit_set && sentinel==0` window to
+    // readers, falsely flagging an ordering violation in the substrate.
     mark_subpage_decommitted(ctx->mask, kCrIdx);
     ctx->sentinel.store(g, LIBC_NAMESPACE::cpp::MemoryOrder::RELAXED);
     mark_subpage_committed(ctx->mask, kCrIdx);

@@ -208,7 +208,8 @@ TEST(LlvmLibcNtPalTest, EvictWorkingSetRangesIsBenign) {
 
   // Page should still be readable — the kernel paged it out, not freed
   // it. Fault back in via a load.
-  EXPECT_EQ(static_cast<unsigned char>(bytes[3 * kPage]), 0x5Au);
+  EXPECT_EQ(static_cast<unsigned char>(bytes[3 * kPage]),
+            static_cast<unsigned char>(0x5A));
 
   EXPECT_TRUE(nt_pal::decommit_preserve(p, kRegionSize));
   EXPECT_TRUE(nt_pal::free_placeholder(p));
@@ -247,8 +248,11 @@ TEST(LlvmLibcNtPalTest, FlushVirtualMemoryOnSection) {
   void *base = nullptr;
   size_t size = kRegionSize;
   LARGE_INTEGER off{};
+  // alloc_type=0 for kernel-chosen mapping. NtMapViewOfSectionEx
+  // commits according to the section's SEC_COMMIT attribute; the
+  // legacy `MEM_RESERVE | MEM_COMMIT` combo is invalid here.
   ASSERT_TRUE(NT_SUCCESS(nt_pal::map_section_anywhere(
-      section, off, PAGE_READWRITE, MEM_RESERVE | MEM_COMMIT, &base, &size)));
+      section, off, PAGE_READWRITE, 0, &base, &size)));
   ASSERT_NE(base, static_cast<void *>(nullptr));
 
   // Dirty one page so flush has something to consider.
@@ -273,20 +277,20 @@ TEST(LlvmLibcNtPalTest, CreateNamedSectionRoundTrip) {
   uint32_t pid = static_cast<uint32_t>(
       reinterpret_cast<uintptr_t>(pbi.UniqueProcessId));
 
-  wchar_t name[64];
-  // Hand-format `\BaseNamedObjects\NtPalTest-<pid>` — avoids depending
-  // on a libc-internal swprintf surface in this PAL-level test.
-  static constexpr wchar_t kPrefix[] =
-      L"\\BaseNamedObjects\\NtPalTest-";
+  // NTPOSIX uses 32-bit wchar_t but Windows expects 16-bit WCHAR
+  // (== char16_t). Build the section path in the native Windows
+  // encoding directly via `u""` literals.
+  WCHAR name[64];
+  static constexpr WCHAR kPrefix[] = u"\\BaseNamedObjects\\NtPalTest-";
   size_t i = 0;
-  for (; kPrefix[i] != L'\0'; ++i)
+  for (; kPrefix[i] != u'\0'; ++i)
     name[i] = kPrefix[i];
   // Hex-encode pid into 8 chars.
   for (int shift = 28; shift >= 0; shift -= 4) {
     unsigned nyb = (pid >> shift) & 0xFu;
-    name[i++] = static_cast<wchar_t>(nyb < 10 ? L'0' + nyb : L'A' + nyb - 10);
+    name[i++] = static_cast<WCHAR>(nyb < 10 ? u'0' + nyb : u'A' + nyb - 10);
   }
-  name[i] = L'\0';
+  name[i] = u'\0';
   size_t name_len = i;
 
   HANDLE section = nullptr;
@@ -306,8 +310,9 @@ TEST(LlvmLibcNtPalTest, MapSectionAnywhereYieldsVA) {
   void *base = nullptr;
   size_t size = 0; // request full section
   LARGE_INTEGER off{};
+  // alloc_type=0 for kernel-chosen mapping (see FlushVirtualMemoryOnSection).
   NTSTATUS st = nt_pal::map_section_anywhere(
-      section, off, PAGE_READWRITE, MEM_RESERVE | MEM_COMMIT, &base, &size);
+      section, off, PAGE_READWRITE, 0, &base, &size);
   ASSERT_TRUE(NT_SUCCESS(st));
   ASSERT_NE(base, static_cast<void *>(nullptr));
   EXPECT_GE(size, static_cast<size_t>(kRegionSize));
@@ -316,8 +321,10 @@ TEST(LlvmLibcNtPalTest, MapSectionAnywhereYieldsVA) {
   auto *bytes = static_cast<volatile unsigned char *>(base);
   bytes[0] = 0xDE;
   bytes[kPage] = 0xAD;
-  EXPECT_EQ(static_cast<unsigned char>(bytes[0]), 0xDEu);
-  EXPECT_EQ(static_cast<unsigned char>(bytes[kPage]), 0xADu);
+  EXPECT_EQ(static_cast<unsigned char>(bytes[0]),
+            static_cast<unsigned char>(0xDE));
+  EXPECT_EQ(static_cast<unsigned char>(bytes[kPage]),
+            static_cast<unsigned char>(0xAD));
 
   EXPECT_TRUE(NT_SUCCESS(nt_pal::unmap_view(base)));
   EXPECT_TRUE(nt_pal::close_section(section));
@@ -338,13 +345,15 @@ TEST(LlvmLibcNtPalTest, QueryWorkingSetExSeesResidency) {
   // untouched is allowed to be either Valid (kernel pre-faulted) or
   // not.
   MEMORY_WORKING_SET_EX_INFORMATION entries[2] = {};
-  entries[0].VirtualAddress = static_cast<PVOID>(&bytes[5 * kPage]);
-  entries[1].VirtualAddress = static_cast<PVOID>(&bytes[10 * kPage]);
+  entries[0].VirtualAddress =
+      const_cast<PVOID>(static_cast<volatile void *>(&bytes[5 * kPage]));
+  entries[1].VirtualAddress =
+      const_cast<PVOID>(static_cast<volatile void *>(&bytes[10 * kPage]));
   ASSERT_TRUE(nt_pal::query_working_set_ex(entries, 2));
 
   // The MEMORY_WORKING_SET_EX_BLOCK Valid bit is bit 0 of the union
   // word. We just touched entries[0]'s page, so it must be valid.
-  EXPECT_NE(entries[0].VirtualAttributes.Valid, 0u);
+  EXPECT_NE(entries[0].VirtualAttributes.Valid, ULONG_PTR{0});
 
   EXPECT_TRUE(nt_pal::decommit_preserve(p, kRegionSize));
   EXPECT_TRUE(nt_pal::free_placeholder(p));

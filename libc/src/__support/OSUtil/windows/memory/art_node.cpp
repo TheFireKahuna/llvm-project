@@ -609,6 +609,15 @@ void ArtNode256::get_children(uint8_t start, uint8_t end, KV *out_kv,
   }
 }
 
+// Explicit instantiations for the next-larger grow boundaries the
+// dispatcher actually uses. Without these the compiler folds copy_to
+// entirely into `insert_grow<>` and emits no standalone symbol, which
+// breaks any external caller (notably the per-node-type direct-grow
+// tests in art_index_test.cpp).
+template void ArtNode4::copy_to<ArtNode16>(ArtNode16 *);
+template void ArtNode16::copy_to<ArtNode48>(ArtNode48 *);
+template void ArtNode48::copy_to<ArtNode256>(ArtNode256 *);
+
 //===----------------------------------------------------------------------===//
 //  Section 6 - Dispatch helpers (runtime type switch)
 //===----------------------------------------------------------------------===//

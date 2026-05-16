@@ -130,10 +130,10 @@ TEST(LlvmLibcVaTrackerTest, AcquireResolveRoundTrip) {
   uintptr_t base = kTestBase + 1 * kSpacing;
   auto ar = vt::acquire(make_range(base, kAllocGran),
                         vt::RegionKind::AnonPrivate, make_meta());
-  ASSERT_FALSE(ar.has_error());
+  ASSERT_FALSE(ar.has_value() == false);
 
   auto rr = vt::resolve(reinterpret_cast<void *>(base + 0x1000));
-  ASSERT_FALSE(rr.has_error());
+  ASSERT_FALSE(rr.has_value() == false);
   EXPECT_NE(rr.value().desc, static_cast<vt::RegionDesc *>(nullptr));
 
   EXPECT_EQ(0, vt::release(make_range(base, kAllocGran)));
@@ -144,11 +144,11 @@ TEST(LlvmLibcVaTrackerTest, AcquireOverlappingFailsWithEEXIST) {
   uintptr_t base = kTestBase + 2 * kSpacing;
   auto first = vt::acquire(make_range(base, kAllocGran),
                            vt::RegionKind::AnonPrivate, make_meta());
-  ASSERT_FALSE(first.has_error());
+  ASSERT_FALSE(first.has_value() == false);
 
   auto second = vt::acquire(make_range(base, kAllocGran),
                             vt::RegionKind::AnonPrivate, make_meta());
-  ASSERT_TRUE(second.has_error());
+  ASSERT_TRUE(second.has_value() == false);
   EXPECT_EQ(EEXIST, second.error());
 
   EXPECT_EQ(0, vt::release(make_range(base, kAllocGran)));
@@ -159,12 +159,12 @@ TEST(LlvmLibcVaTrackerTest, ReleaseFreesBackingState) {
   uintptr_t base = kTestBase + 3 * kSpacing;
   ASSERT_FALSE(vt::acquire(make_range(base, kAllocGran),
                            vt::RegionKind::AnonShared, make_meta())
-                   .has_error());
+                   .has_value() == false);
 
   EXPECT_EQ(0, vt::release(make_range(base, kAllocGran)));
 
   auto rr = vt::resolve(reinterpret_cast<void *>(base + 0x1000));
-  ASSERT_TRUE(rr.has_error());
+  ASSERT_TRUE(rr.has_value() == false);
   EXPECT_EQ(ENOENT, rr.error());
 }
 
@@ -174,16 +174,17 @@ TEST(LlvmLibcVaTrackerTest, ReplaceUpdatesBackingState) {
   ASSERT_FALSE(vt::acquire(make_range(base, kAllocGran),
                            vt::RegionKind::AnonPrivate,
                            make_meta(PAGE_READWRITE))
-                   .has_error());
+                   .has_value() == false);
 
   EXPECT_EQ(0, vt::replace(make_range(base, kAllocGran),
                            vt::RegionKind::AnonPrivate,
                            make_meta(PAGE_READONLY)));
 
   auto rr = vt::resolve(reinterpret_cast<void *>(base));
-  ASSERT_FALSE(rr.has_error());
+  ASSERT_FALSE(rr.has_value() == false);
   ASSERT_NE(rr.value().desc, static_cast<vt::RegionDesc *>(nullptr));
-  EXPECT_EQ(static_cast<DWORD>(PAGE_READONLY), rr.value().desc->view_prot);
+  EXPECT_EQ(static_cast<uint32_t>(PAGE_READONLY),
+            rr.value().desc->view_prot);
 
   EXPECT_EQ(0, vt::release(make_range(base, kAllocGran)));
 }
@@ -193,13 +194,13 @@ TEST(LlvmLibcVaTrackerTest, MutateUpdatesFlagsViaDescMutator) {
   uintptr_t base = kTestBase + 5 * kSpacing;
   ASSERT_FALSE(vt::acquire(make_range(base, kAllocGran),
                            vt::RegionKind::AnonPrivate, make_meta())
-                   .has_error());
+                   .has_value() == false);
 
   EXPECT_EQ(0, vt::mutate(make_range(base, kAllocGran),
                           &set_committed_and_shared, nullptr));
 
   auto rr = vt::resolve(reinterpret_cast<void *>(base));
-  ASSERT_FALSE(rr.has_error());
+  ASSERT_FALSE(rr.has_value() == false);
   ASSERT_NE(rr.value().desc, static_cast<vt::RegionDesc *>(nullptr));
   uint16_t flags = rr.value().desc->flags_load();
   EXPECT_NE(0u,
@@ -218,7 +219,7 @@ TEST(LlvmLibcVaTrackerTest, SplitFragmentsRegion) {
   size_t total = 4 * kAllocGran;
   ASSERT_FALSE(vt::acquire(make_range(base, total),
                            vt::RegionKind::AnonPrivate, make_meta())
-                   .has_error());
+                   .has_value() == false);
 
   uintptr_t boundary = base + 2 * kAllocGran;
   EXPECT_EQ(0, vt::split(reinterpret_cast<void *>(boundary)));
@@ -246,13 +247,13 @@ TEST(LlvmLibcVaTrackerTest, WalkRangeYieldsOrderedFragments) {
   // Non-monotonic acquire order. walk_range must still emit ascending.
   ASSERT_FALSE(vt::acquire(make_range(b2, kAllocGran),
                            vt::RegionKind::AnonPrivate, make_meta())
-                   .has_error());
+                   .has_value() == false);
   ASSERT_FALSE(vt::acquire(make_range(b1, kAllocGran),
                            vt::RegionKind::AnonPrivate, make_meta())
-                   .has_error());
+                   .has_value() == false);
   ASSERT_FALSE(vt::acquire(make_range(b3, kAllocGran),
                            vt::RegionKind::AnonPrivate, make_meta())
-                   .has_error());
+                   .has_value() == false);
 
   WalkBuffer wb;
   vt::walk_range(make_range(b1, b3 + kAllocGran - b1), &walk_collect, &wb);
@@ -271,11 +272,11 @@ TEST(LlvmLibcVaTrackerTest, ResolveAcrossMutateProducesUpdatedView) {
   uintptr_t base = kTestBase + 8 * kSpacing;
   ASSERT_FALSE(vt::acquire(make_range(base, kAllocGran),
                            vt::RegionKind::AnonPrivate, make_meta())
-                   .has_error());
+                   .has_value() == false);
 
   // Pre-mutate: COMMITTED must not yet be set.
   auto rr_pre = vt::resolve(reinterpret_cast<void *>(base));
-  ASSERT_FALSE(rr_pre.has_error());
+  ASSERT_FALSE(rr_pre.has_value() == false);
   ASSERT_NE(rr_pre.value().desc, static_cast<vt::RegionDesc *>(nullptr));
   EXPECT_EQ(0u, static_cast<uint32_t>(
                     rr_pre.value().desc->flags_load() &
@@ -286,7 +287,7 @@ TEST(LlvmLibcVaTrackerTest, ResolveAcrossMutateProducesUpdatedView) {
 
   // Post-mutate: a fresh resolve sees the Swap-published clone.
   auto rr_post = vt::resolve(reinterpret_cast<void *>(base));
-  ASSERT_FALSE(rr_post.has_error());
+  ASSERT_FALSE(rr_post.has_value() == false);
   ASSERT_NE(rr_post.value().desc, static_cast<vt::RegionDesc *>(nullptr));
   EXPECT_NE(0u, static_cast<uint32_t>(
                     rr_post.value().desc->flags_load() &
@@ -302,10 +303,10 @@ TEST(LlvmLibcVaTrackerTest, SerializeForForkEmitsAcquiredEntries) {
 
   ASSERT_FALSE(vt::acquire(make_range(b1, kAllocGran),
                            vt::RegionKind::AnonPrivate, make_meta())
-                   .has_error());
+                   .has_value() == false);
   ASSERT_FALSE(vt::acquire(make_range(b2, 2 * kAllocGran),
                            vt::RegionKind::AnonShared, make_meta())
-                   .has_error());
+                   .has_value() == false);
 
   SinkBuffer sb;
   vt::ForkSink sink;
@@ -338,7 +339,7 @@ TEST(LlvmLibcVaTrackerTest, ReplayInChildReturnsZeroOnSuccess) {
 
   ASSERT_FALSE(vt::acquire(make_range(base, kAllocGran),
                            vt::RegionKind::AnonPrivate, make_meta())
-                   .has_error());
+                   .has_value() == false);
 
   // Serialize, then build a single-entry snapshot containing just our
   // region so replay does not try to reinstall libc-bootstrap state on
@@ -369,7 +370,7 @@ TEST(LlvmLibcVaTrackerTest, ReplayInChildReturnsZeroOnSuccess) {
   EXPECT_EQ(0, vt::replay_in_child(snap));
 
   auto rr = vt::resolve(reinterpret_cast<void *>(base));
-  EXPECT_FALSE(rr.has_error());
+  EXPECT_FALSE(rr.has_value() == false);
 
   EXPECT_EQ(0, vt::release(make_range(base, kAllocGran)));
 }
@@ -386,7 +387,7 @@ TEST(LlvmLibcVaTrackerTest, SerializeEmitsProtectionRunsForDivergence) {
   auto chosen = vt::acquire_kernel_chosen(64u * 1024u,
                                            vt::RegionKind::AnonPrivate,
                                            make_meta(PAGE_READWRITE));
-  ASSERT_FALSE(chosen.has_error());
+  ASSERT_FALSE(chosen.has_value() == false);
   uintptr_t base = reinterpret_cast<uintptr_t>(chosen.value());
 
   // Carve a 4 KiB read-only window at offset +4 KiB. After this the
@@ -465,7 +466,7 @@ TEST(LlvmLibcVaTrackerTest, SplitAtPageBoundaryFragmentsRegion) {
   uintptr_t base = kTestBase + 11 * kSpacing;
   ASSERT_FALSE(vt::acquire(make_range(base, kAllocGran),
                            vt::RegionKind::AnonPrivate, make_meta())
-                   .has_error());
+                   .has_value() == false);
 
   uintptr_t boundary = base + kPage;
   EXPECT_EQ(0, vt::split(reinterpret_cast<void *>(boundary)));
@@ -486,7 +487,7 @@ TEST(LlvmLibcVaTrackerTest, SplitNearEndPageBoundary) {
   uintptr_t base = kTestBase + 12 * kSpacing;
   ASSERT_FALSE(vt::acquire(make_range(base, kAllocGran),
                            vt::RegionKind::AnonPrivate, make_meta())
-                   .has_error());
+                   .has_value() == false);
 
   uintptr_t boundary = base + (kAllocGran - kPage);
   EXPECT_EQ(0, vt::split(reinterpret_cast<void *>(boundary)));
@@ -505,7 +506,7 @@ TEST(LlvmLibcVaTrackerTest, ThreeWaySplitReleasesMiddle) {
   uintptr_t base = kTestBase + 13 * kSpacing;
   ASSERT_FALSE(vt::acquire(make_range(base, kAllocGran),
                            vt::RegionKind::AnonPrivate, make_meta())
-                   .has_error());
+                   .has_value() == false);
 
   uintptr_t mid_lo = base + (16u * 1024u);
   uintptr_t mid_hi = base + (48u * 1024u);
@@ -528,7 +529,7 @@ TEST(LlvmLibcVaTrackerTest, ThreeWaySplitReleasesMiddle) {
 
   // The middle hole resolves to ENOENT.
   auto rr = vt::resolve(reinterpret_cast<void *>(base + (24u * 1024u)));
-  ASSERT_TRUE(rr.has_error());
+  ASSERT_TRUE(rr.has_value() == false);
   EXPECT_EQ(ENOENT, rr.error());
 
   // Cleanup: release surviving head and tail. Each is 16 KiB (page-
@@ -542,7 +543,7 @@ TEST(LlvmLibcVaTrackerTest, SplitRejectsSubPageBoundary) {
   uintptr_t base = kTestBase + 14 * kSpacing;
   ASSERT_FALSE(vt::acquire(make_range(base, kAllocGran),
                            vt::RegionKind::AnonPrivate, make_meta())
-                   .has_error());
+                   .has_value() == false);
 
   // Sub-page boundaries are rejected by `range_valid_interior`.
   EXPECT_EQ(EINVAL, vt::split(reinterpret_cast<void *>(base + 1)));
@@ -556,7 +557,7 @@ TEST(LlvmLibcVaTrackerTest, ReleaseRejectsSubPageRange) {
   uintptr_t base = kTestBase + 15 * kSpacing;
   ASSERT_FALSE(vt::acquire(make_range(base, kAllocGran),
                            vt::RegionKind::AnonPrivate, make_meta())
-                   .has_error());
+                   .has_value() == false);
 
   // Page-aligned base but sub-page length.
   EXPECT_EQ(EINVAL, vt::release(make_range(base, 1024)));
@@ -601,13 +602,13 @@ namespace {
 TEST(LlvmLibcVaTrackerTest, AcquireKernelChosenShrinksSubGranule) {
   auto chosen = vt::acquire_kernel_chosen(kPage, vt::RegionKind::AnonPrivate,
                                           make_meta());
-  ASSERT_FALSE(chosen.has_error());
+  ASSERT_FALSE(chosen.has_value() == false);
   void *base = chosen.value();
   ASSERT_NE(base, static_cast<void *>(nullptr));
 
   // The user's 4 KiB is tracked and resolvable.
   auto rr = vt::resolve(base);
-  ASSERT_FALSE(rr.has_error());
+  ASSERT_FALSE(rr.has_value() == false);
   EXPECT_NE(rr.value().desc, static_cast<vt::RegionDesc *>(nullptr));
 
   // The pad at base + 4 KiB through base + 64 KiB is MEM_FREE — the
@@ -624,14 +625,14 @@ TEST(LlvmLibcVaTrackerTest, AcquireKernelChosenExactGranuleSkipsShrink) {
   auto chosen = vt::acquire_kernel_chosen(kAllocGran,
                                            vt::RegionKind::AnonPrivate,
                                            make_meta());
-  ASSERT_FALSE(chosen.has_error());
+  ASSERT_FALSE(chosen.has_value() == false);
   void *base = chosen.value();
   ASSERT_NE(base, static_cast<void *>(nullptr));
 
   // No shrink needed: bytes == kAllocGranularity. The placeholder
   // covers the full request; no MEM_FREE region adjacent.
   auto rr = vt::resolve(static_cast<char *>(base) + kPage);
-  ASSERT_FALSE(rr.has_error());
+  ASSERT_FALSE(rr.has_value() == false);
   EXPECT_NE(rr.value().desc, static_cast<vt::RegionDesc *>(nullptr));
 
   EXPECT_EQ(0, vt::release(make_range(reinterpret_cast<uintptr_t>(base),
@@ -642,7 +643,7 @@ TEST(LlvmLibcVaTrackerTest, AcquireKernelChosenExactGranuleSkipsShrink) {
 TEST(LlvmLibcVaTrackerTest, AcquireKernelChosenRejectsSubPageBytes) {
   auto chosen = vt::acquire_kernel_chosen(1024, vt::RegionKind::AnonPrivate,
                                            make_meta());
-  ASSERT_TRUE(chosen.has_error());
+  ASSERT_TRUE(chosen.has_value() == false);
   EXPECT_EQ(EINVAL, chosen.error());
 }
 
@@ -651,7 +652,7 @@ TEST(LlvmLibcVaTrackerTest, AcquireHintShrinksSubGranule) {
   uintptr_t base = kTestBase + 19 * kSpacing;
   auto ref = vt::acquire(make_range(base, kPage),
                          vt::RegionKind::AnonPrivate, make_meta());
-  ASSERT_FALSE(ref.has_error());
+  ASSERT_FALSE(ref.has_value() == false);
   EXPECT_NE(ref.value().desc, static_cast<vt::RegionDesc *>(nullptr));
 
   // Pad at base + kPage through base + kAllocGran returned to MEM_FREE
@@ -670,12 +671,12 @@ TEST(LlvmLibcVaTrackerTest, AcquireHintShrinksOverGranuleTail) {
   const size_t user_bytes = kAllocGran + kPage;
   auto ref = vt::acquire(make_range(base, user_bytes),
                          vt::RegionKind::AnonPrivate, make_meta());
-  ASSERT_FALSE(ref.has_error());
+  ASSERT_FALSE(ref.has_value() == false);
 
   // The user's full range is committed and tracked.
   void *interior_hi = reinterpret_cast<void *>(base + user_bytes - kPage);
   auto rr = vt::resolve(interior_hi);
-  ASSERT_FALSE(rr.has_error());
+  ASSERT_FALSE(rr.has_value() == false);
   EXPECT_NE(rr.value().desc, static_cast<vt::RegionDesc *>(nullptr));
 
   // Pad just past the user bytes is MEM_FREE.
@@ -691,7 +692,7 @@ TEST(LlvmLibcVaTrackerTest, AcquireHintRejectsSubPageSize) {
   // Page-aligned base but sub-page length.
   auto bad_size = vt::acquire(make_range(base, 1024),
                               vt::RegionKind::AnonPrivate, make_meta());
-  ASSERT_TRUE(bad_size.has_error());
+  ASSERT_TRUE(bad_size.has_value() == false);
   EXPECT_EQ(EINVAL, bad_size.error());
 }
 
@@ -706,11 +707,11 @@ TEST(LlvmLibcVaTrackerTest, AcquireHintHonoursPageAlignedNonGranule) {
 
   auto ref = vt::acquire(make_range(hint, kPage),
                          vt::RegionKind::AnonPrivate, make_meta());
-  ASSERT_FALSE(ref.has_error());
+  ASSERT_FALSE(ref.has_value() == false);
 
   // The desc covers exactly the user's hint range.
   auto rr = vt::resolve(reinterpret_cast<void *>(hint));
-  ASSERT_FALSE(rr.has_error());
+  ASSERT_FALSE(rr.has_value() == false);
   EXPECT_NE(rr.value().desc, static_cast<vt::RegionDesc *>(nullptr));
 
   // The prefix (alloc_base..hint) was shaved to MEM_FREE.
@@ -731,10 +732,10 @@ TEST(LlvmLibcVaTrackerTest, AcquireHintHonoursLastPageOfGranule) {
 
   auto ref = vt::acquire(make_range(hint, kPage),
                          vt::RegionKind::AnonPrivate, make_meta());
-  ASSERT_FALSE(ref.has_error());
+  ASSERT_FALSE(ref.has_value() == false);
 
   auto rr = vt::resolve(reinterpret_cast<void *>(hint));
-  ASSERT_FALSE(rr.has_error());
+  ASSERT_FALSE(rr.has_value() == false);
 
   // The prefix (alloc_base..hint, 60 KiB) is MEM_FREE.
   EXPECT_TRUE(va_is_free(reinterpret_cast<void *>(alloc_base)));

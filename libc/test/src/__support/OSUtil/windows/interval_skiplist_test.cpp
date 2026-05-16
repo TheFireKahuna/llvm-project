@@ -507,7 +507,7 @@ TEST(LlvmLibcIntervalSkiplistTest, AllocOnFullRangeReturnsZero) {
   ASSERT_EQ(0, va::is_insert(a, base + 0x10000, base + 0x11000, rd));
   uintptr_t addr =
       va::Alloc(a, base + 0x10000, base + 0x11000, 0x1000, rd);
-  EXPECT_EQ(addr, 0u);
+  EXPECT_EQ(addr, uintptr_t{0});
 }
 
 // ===========================================================================
@@ -522,9 +522,9 @@ TEST(LlvmLibcIntervalSkiplistTest, BucketAllocNodeHeightRespected) {
   ASSERT_NE(n2, static_cast<va::SkiplistNodeBase *>(nullptr));
   ASSERT_NE(n8, static_cast<va::SkiplistNodeBase *>(nullptr));
   ASSERT_NE(n16, static_cast<va::SkiplistNodeBase *>(nullptr));
-  EXPECT_EQ(n2->bucket, 0u);  // h=2 → bucket 0
-  EXPECT_EQ(n8->bucket, 2u);  // h=8 → bucket 2
-  EXPECT_EQ(n16->bucket, 3u); // h=16 → bucket 3
+  EXPECT_EQ(n2->bucket, uint8_t{0});  // h=2 → bucket 0
+  EXPECT_EQ(n8->bucket, uint8_t{2});  // h=8 → bucket 2
+  EXPECT_EQ(n16->bucket, uint8_t{3}); // h=16 → bucket 3
   // Retire so we don't leak.
   va::g_va_tracker_skiplist_domain.retire(n2);
   va::g_va_tracker_skiplist_domain.retire(n8);
@@ -831,13 +831,13 @@ TEST(LlvmLibcIntervalSkiplistTest, FourThreadInterleavedFuzzSmoke) {
 // the header itself uses.
 // ===========================================================================
 TEST(LlvmLibcIntervalSkiplistTest, LayoutInvariants) {
-  EXPECT_EQ(sizeof(va::SkiplistNodeBase), 80u);
-  EXPECT_EQ(alignof(va::SkiplistNodeBase), 16u);
+  EXPECT_EQ(sizeof(va::SkiplistNodeBase), size_t{80});
+  EXPECT_EQ(alignof(va::SkiplistNodeBase), size_t{16});
   EXPECT_EQ(sizeof(va::SkiplistNodeBase) -
                 sizeof(LIBC_NAMESPACE::cpp::Atomic<linkage::Link>),
-            72u);
+            size_t{72});
   EXPECT_EQ(va::kArenaCount, 128u);
-  EXPECT_EQ(va::kMaxHeight, 16u);
+  EXPECT_EQ(va::kMaxHeight, uint8_t{16});
   EXPECT_EQ(va::kBucketCount, 4u);
   EXPECT_EQ(va::kSlotsPerChunk, 256u);
   EXPECT_EQ(va::kChunksPerBucket, 256u);
