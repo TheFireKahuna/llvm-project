@@ -124,13 +124,13 @@ enum class BackingShape : uint8_t {
 ///   [27]     shape             — PrivateCommit / SectionView.
 ///   [28..31] placeholder_pages — placeholder size in 4 KiB (NT page) units.
 ///   [32..39] node_canary       — per-slot canary, triple-validated.
-///   [40..47] placeholder_base  — atomic; nulled at Stage 2 teardown.
-///   [48..55] section_handle    — atomic; nulled at Stage 2 teardown.
-///   [56..63] file_handle       — atomic; nulled at Stage 2 teardown.
+///   [40..47] placeholder_base  — atomic; nulled at synchronous teardown.
+///   [48..55] section_handle    — atomic; nulled at synchronous teardown.
+///   [56..63] file_handle       — atomic; nulled at synchronous teardown.
 /// \endcode
 ///
 /// The kernel-state atomics at offsets 40, 48 and 56 are
-/// RELEASE-stored to nullptr at Stage 2 before the matching kernel
+/// RELEASE-stored to nullptr by `backing_kill_and_retire` before the matching kernel
 /// primitive runs. A reader that captures a handle between the
 /// null-store and the close holds a still-valid handle until the
 /// close completes, after which subsequent NT calls return
@@ -204,7 +204,7 @@ struct alignas(64) DescBacking
     /// ProcessPrng-derived, and is never observable to user code.
     uint64_t node_canary{0};
 
-    /// Placeholder base VA. Atomic so Stage 2 can RELEASE-store
+    /// Placeholder base VA. Atomic so the reaper can RELEASE-store
     /// nullptr before the matching `nt_pal::free_placeholder` runs.
     /// A reader that loads this between the null-store and the free
     /// observes a still-kernel-valid VA; a reader that loads after
@@ -212,13 +212,13 @@ struct alignas(64) DescBacking
     cpp::Atomic<void *> placeholder_base{nullptr};
 
     /// Section handle (or nullptr for anonymous-private mappings
-    /// where no section exists). Same Stage 2 ordering as
-    /// `placeholder_base`. Stage 2 teardown skips the close on any
+    /// where no section exists). Same teardown ordering as
+    /// `placeholder_base`. The reaper skips the close on any
     /// handle field whose RELEASE-loaded prior value is nullptr.
     cpp::Atomic<HANDLE> section_handle{nullptr};
 
     /// File handle (or nullptr for pagefile-backed sections, where
-    /// no file underlies the section). Same Stage 2 ordering.
+    /// no file underlies the section). Same teardown ordering.
     cpp::Atomic<HANDLE> file_handle{nullptr};
 };
 
@@ -303,8 +303,8 @@ make_backing_ref(uint16_t chunk_id, uint16_t slot_idx, uint32_t generation) {
 /// Crystalline-W FreeFn for `DescBacking`.
 ///
 /// Body cleanup only — never calls `nt_pal::*`, never calls
-/// `NtClose`. The kernel state was already torn down at Stage 2
-/// inside `backing_kill_and_retire` on the synchronous mutator path.
+/// `NtClose`. The kernel state was already torn down synchronously
+/// inside `backing_kill_and_retire` on the mutator path.
 /// A CI grep gate enforces this. The rationale is structural:
 /// Crystalline-W is asynchronous (Nikolaev and Ravindran, PLDI 2024,
 /// §1) and provides no synchronous grace primitive, so kernel
@@ -368,7 +368,7 @@ void backing_set_kernel_state(DescBacking *backing,
                               HANDLE section_handle,
                               HANDLE file_handle);
 
-/// Stage 2 synchronous kernel-state teardown.
+/// Synchronous kernel-state teardown.
 ///
 /// Invoked from `Transaction::commit`'s post-Swap survivor walk after
 /// the caller has won the `state` CAS Live -> Killed (or RELAXED-
@@ -411,8 +411,8 @@ void backing_kill_and_retire(DescBacking *backing);
 //
 // Two access disciplines exist:
 //
-// **Engine path (`run_envelope` and the build_plan_* / execute_plan /
-// Stage 2 helpers it calls).** Anchors `BackingPinSlot::kEngineAnchor`
+// **Engine path (`run_envelope` and the per-op execute / reaper
+// helpers it calls).** Anchors `BackingPinSlot::kEngineAnchor`
 // once at envelope entry via `anchor_backing_engine_pin()`. Inside the
 // envelope, `LockedSet` holds locks on every descriptor in the working
 // range; a peer envelope cannot kill a backing whose descriptor is
@@ -458,8 +458,8 @@ static_assert(kEngineAnchor != kReaderPin,
 } // namespace BackingPinSlot
 
 /// Engine-path anchor pin on `BackingPinSlot::kEngineAnchor`. Called
-/// once at `run_envelope` entry; covers every build_plan / execute /
-/// Stage 2 raw deref through the entire retry loop. Sibling va_tracker
+/// once at `run_envelope` entry; covers every per-op execute and reaper
+/// raw deref through the entire retry loop. Sibling va_tracker
 /// calls inside the envelope do not rotate this slot.
 void anchor_backing_engine_pin();
 

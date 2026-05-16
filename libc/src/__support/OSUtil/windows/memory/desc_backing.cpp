@@ -1,4 +1,4 @@
-//===- desc_backing.cpp - Backing allocator + Stage 3 FreeFn --------------===//
+//===- desc_backing.cpp - Backing allocator + metadata FreeFn -------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -270,7 +270,7 @@ void backing_set_kernel_state(DescBacking *backing,
     // time any reader observes a non-null `placeholder_base` the
     // shape store is also visible.
     backing->shape = shape;
-    // Handles first, base last. Stage 2's null-store follows the
+    // Handles first, base last. The reaper's null-store follows the
     // same order so a "load handle, close handle" sequence never
     // observes a closed handle paired with a non-null base.
     backing->section_handle.store(section_handle, cpp::MemoryOrder::RELEASE);
@@ -374,14 +374,14 @@ void anchor_backing_reader_pin() {
 }
 
 //===----------------------------------------------------------------------===//
-// Stage 3 metadata FreeFn
+// Metadata FreeFn
 //===----------------------------------------------------------------------===//
 
 // Body cleanup only — no `nt_pal::*` and no `NtClose` may appear in
-// this function. Every byte of kernel resource was torn down at
-// Stage 2 (`backing_kill_and_retire` in
-// `va_tracker_transaction.cpp`) before Crystalline grace expired
-// and this FreeFn fired. The `partition_secret()` reads are pure
+// this function. Every byte of kernel resource was torn down
+// synchronously by `backing_kill_and_retire` (in
+// `va_tracker_execute.cpp`) before Crystalline grace expired and
+// this FreeFn fired. The `partition_secret()` reads are pure
 // math; they do not reach into NT. A CI grep gate enforces the
 // invariant on this translation unit.
 //

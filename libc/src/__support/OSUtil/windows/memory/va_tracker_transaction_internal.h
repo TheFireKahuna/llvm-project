@@ -1,0 +1,173 @@
+//===- va_tracker_transaction_internal.h -- engine-private types *- C++ -*===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// Shared between `va_tracker_transaction.cpp` (frame driver) and
+// `va_tracker_execute.cpp` (per-op execute functions). Not exposed
+// outside the engine.
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEMORY_VA_TRACKER_TRANSACTION_INTERNAL_H
+#define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEMORY_VA_TRACKER_TRANSACTION_INTERNAL_H
+
+#include "hdr/stdint_proxy.h"
+#include "src/__support/OSUtil/windows/memory/desc_backing.h"
+#include "src/__support/OSUtil/windows/memory/interval_skiplist.h"
+#include "src/__support/OSUtil/windows/memory/va_region_desc.h"
+#include "src/__support/OSUtil/windows/memory/va_tracker.h"
+#include "src/__support/OSUtil/windows/ntdll.h"
+#include "src/__support/libc_assert.h"
+#include "src/__support/macros/attributes.h"
+#include "src/__support/macros/config.h"
+
+#include <stddef.h>
+
+namespace LIBC_NAMESPACE_DECL {
+namespace windows {
+namespace va_tracker {
+namespace internal {
+
+// NT `MEM_RESERVE_PLACEHOLDER` base-placement granularity. Interior
+// placeholder ops (split/release/replace/mutate) accept page granularity.
+inline constexpr uintptr_t kAllocGranularity = 64u * 1024u;
+inline constexpr uintptr_t kPageGranularity = 4u * 1024u;
+
+// Past this count of consecutive Swap-CAS losses, surface `-EAGAIN`.
+inline constexpr uint32_t kCommitRetryCap = 8;
+
+// `AcquireAtReserved` is `Acquire` over a caller-pre-reserved placeholder;
+// the engine skips its own pre-commit reserve. Used by `acquire_kernel_chosen`
+// so the POSIX layer can let the kernel pick a base without a release /
+// re-reserve race window.
+enum class OpKind : uint8_t {
+  Acquire           = 0,
+  Release           = 1,
+  Replace           = 2,
+  Mutate            = 3,
+  Split             = 4,
+  AcquireAtReserved = 5,
+};
+inline constexpr uint32_t kOpKindCount = 6;
+
+struct CommitIntent {
+  OpKind        op{OpKind::Acquire};
+  VaRange       range{};
+  RegionKind    kind{RegionKind::AnonPrivate};
+  AcquireMeta   meta{};
+  DescMutator   mutator{nullptr};
+  void *        mutator_ctx{nullptr};
+  DWORD         prot_change{0};
+  void *        boundary{nullptr};
+  // When set, mutate's post-Swap walks each succ's intent intersection via
+  // `nt_pal::RegionWalker` and dispatches per-chunk (committed → protect,
+  // uncommitted+accessible → commit_in_reservation or commit_replace[_numa],
+  // uncommitted+PROT_NONE → no-op).
+  bool          commit_if_uncommitted_accessible{false};
+  // `-1` selects unhinted commit_replace. Honoured only on the
+  // commit-if-uncommitted path.
+  int           numa_node{-1};
+};
+
+enum class Side : uint8_t { Left = 0, Right = 1 };
+inline constexpr size_t kSideCount = 2;
+inline constexpr Side kSides[kSideCount] = {Side::Left, Side::Right};
+
+[[nodiscard]] LIBC_INLINE constexpr uint32_t side_index(Side s) {
+  return static_cast<uint32_t>(s);
+}
+
+// OLD identity for one edge-extending backing, snapshotted once under
+// LOCKED. Captured on replace/release when a shared backing extends
+// past the intent edge. Consumers (edge_split, edge_remap, outside-
+// survivor clone, ownership transfer) read the snapshot — they MUST
+// NOT re-load `E.backing->placeholder_base` etc., that would
+// re-introduce a TOCTOU against a peer envelope's reaper.
+struct EdgeIdentity {
+  bool present{false};
+  DescBacking *backing{nullptr};
+  // OLD backing's full extent at capture time.
+  uintptr_t backing_lo{0};
+  uintptr_t backing_hi{0};
+  // Surviving sibling slice — the portion of the OLD extent outside
+  // `intent.range` on this edge.
+  //   Left:  (backing_lo, intent.range.lo).
+  //   Right: (intent.range.hi, backing_hi).
+  uintptr_t sibling_lo{0};
+  uintptr_t sibling_hi{0};
+  BackingShape old_shape{BackingShape::PrivateCommit};
+  HANDLE old_section_handle{nullptr};
+  // Right edge: anchor.section_offset + (intent.hi - backing_lo).
+  LARGE_INTEGER old_section_offset_at_sibling_lo{};
+  DWORD old_prot{0};
+  // Rejected as `-ENOTSUP` if heterogeneous across the descs sharing
+  // the OLD backing — multi-prot sibling re-map would need multiple
+  // views per edge.
+  RegionKind kind_for_desc{RegionKind::AnonPrivate};
+  uint16_t flags_for_desc{0};
+};
+using EdgeSet = EdgeIdentity[kSideCount];
+
+// Cap = max backings allocated per execute pass: inside_commit + 2 edge
+// siblings. Interior succs cannot have backings extending past edges by
+// VA contiguity, so this bound is structural.
+struct ProvisionalList {
+  static constexpr uint32_t kCap = 3;
+  DescBacking *items[kCap]{};
+  uint32_t count{0};
+
+  LIBC_INLINE void push(DescBacking *b) {
+    LIBC_ASSERT(count < kCap && "provisional list overflow");
+    items[count++] = b;
+  }
+  LIBC_INLINE void clear() {
+    for (uint32_t i = 0; i < count; ++i)
+      items[i] = nullptr;
+    count = 0;
+  }
+};
+
+using ExecuteFn = int (*)(const CommitIntent &intent, Arena *arena,
+                          const LockedSet &locked, NewNodes &new_nodes,
+                          ProvisionalList &prov);
+using PostSwapFn = int (*)(const CommitIntent &intent,
+                           const LockedSet &locked);
+using ValidateRangeFn = bool (*)(VaRange r);
+
+[[nodiscard]] int execute_acquire(const CommitIntent &, Arena *,
+                                   const LockedSet &, NewNodes &,
+                                   ProvisionalList &);
+[[nodiscard]] int execute_acquire_at_reserved(const CommitIntent &, Arena *,
+                                               const LockedSet &, NewNodes &,
+                                               ProvisionalList &);
+[[nodiscard]] int execute_release(const CommitIntent &, Arena *,
+                                   const LockedSet &, NewNodes &,
+                                   ProvisionalList &);
+[[nodiscard]] int execute_replace(const CommitIntent &, Arena *,
+                                   const LockedSet &, NewNodes &,
+                                   ProvisionalList &);
+[[nodiscard]] int execute_mutate(const CommitIntent &, Arena *,
+                                  const LockedSet &, NewNodes &,
+                                  ProvisionalList &);
+[[nodiscard]] int execute_split(const CommitIntent &, Arena *,
+                                 const LockedSet &, NewNodes &,
+                                 ProvisionalList &);
+
+[[nodiscard]] int post_swap_mutate(const CommitIntent &, const LockedSet &);
+void post_swap_ownership_transfer(const LockedSet &, const NewNodes &);
+void reap_old_backings(Arena *, VaRange, const LockedSet &, const NewNodes &);
+void rollback_provisional(ProvisionalList &);
+
+[[nodiscard]] bool range_valid_acquire(VaRange r);
+[[nodiscard]] bool range_valid_interior(VaRange r);
+
+} // namespace internal
+} // namespace va_tracker
+} // namespace windows
+} // namespace LIBC_NAMESPACE_DECL
+
+#endif // LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEMORY_VA_TRACKER_TRANSACTION_INTERNAL_H

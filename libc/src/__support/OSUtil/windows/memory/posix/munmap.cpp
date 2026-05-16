@@ -14,7 +14,7 @@
 //      answer in one place.
 //   2) `va_tracker::release` over the page-aligned range. The
 //      substrate iterates the locked set, releases each desc, and
-//      runs the Stage-2 teardown (unmap section view, free
+//      runs the synchronous teardown (unmap section view, free
 //      placeholder, close handles) synchronously per the substrate's
 //      mutator-owns-kernel-state discipline. Holes inside the range
 //      are skipped silently — Linux contract. Edge-straddler split
@@ -23,7 +23,7 @@
 //      concurrent peer mutation between split and release could turn
 //      a benign no-op into a phantom errno.
 //
-// Stage-2 ordering is substrate-owned; the POSIX layer trusts the
+// Teardown ordering is substrate-owned; the POSIX layer trusts the
 // typed op. Likewise, the ANON_PLACEHOLDER state-preserving rollback,
 // the per-fragment fresh-region-ID assignment, the partial-section
 // view re-map, and the `release_if_isolated` decision are all

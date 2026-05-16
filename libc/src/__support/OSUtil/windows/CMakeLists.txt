@@ -868,8 +868,10 @@ add_object_library(
   SRCS
     memory/va_tracker.cpp
     memory/va_tracker_transaction.cpp
+    memory/va_tracker_execute.cpp
   HDRS
     memory/va_tracker.h
+    memory/va_tracker_transaction_internal.h
   DEPENDS
     .alloc_partition_class
     .art_index

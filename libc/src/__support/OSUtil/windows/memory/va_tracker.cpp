@@ -11,8 +11,9 @@
 // per-arena interval skiplist (`interval_skiplist.{h,cpp}`). This TU holds
 // the read-side machinery (`resolve`, `walk_range`), the arena-resolve
 // helper, fork hooks, and bootstrap. The mutating public surface
-// (`acquire`, `release`, `Transaction`) lives in `va_tracker_acquire.cpp`
-// and `va_tracker_transaction.cpp`.
+// (`acquire`, `release`, `replace`, `mutate`, `split`) lives in
+// `va_tracker_transaction.cpp` (frame + public ops) and
+// `va_tracker_execute.cpp` (per-op kernel programs + reaper).
 //
 //===----------------------------------------------------------------------===//
 
@@ -283,7 +284,7 @@ struct SerializeIntervalVisitor {
         }
 
         AcquireMeta meta;
-        // ACQUIRE-load backing fields: a Stage-2 RELEASE-stored null is
+        // ACQUIRE-load backing fields: the reaper's RELEASE-stored null is
         // observable as null here. The fork serializer captures
         // whatever the kernel state currently is; the child re-acquires
         // fresh handles anyway, so a torn-down backing produces a no-op

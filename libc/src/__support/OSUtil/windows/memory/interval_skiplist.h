@@ -893,7 +893,7 @@ template <class Visitor>
 /// chunk-state-machine drain path. The desc carries no kernel
 /// handles; the kernel-state lifecycle for the underlying mapping is
 /// owned by the Transaction whose commit retired the desc, via the
-/// backing's Stage 2 teardown (synchronous, inside the commit body).
+/// backing's synchronous teardown inside the commit body.
 ///
 /// \pre No concurrent reader holds a stale pointer past their pin —
 ///      skiplist-domain grace covers this via the parent node retire
@@ -1038,8 +1038,8 @@ int Map(Arena *arena, uintptr_t lo, uintptr_t hi, Visitor &&visitor) {
             // walk, so clear the locked set immediately to preserve the
             // destructor's empty-store invariant. The transaction
             // engine in `run_envelope` keeps the set populated past
-            // Swap for `run_stage2` to walk, then clears via the
-            // post-stage-2 `Unlock`.
+            // Swap for `reap_old_backings` to walk, then clears via
+            // the post-reap `Unlock`.
             locked.clear();
             return 0;
         }

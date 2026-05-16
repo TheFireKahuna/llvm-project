@@ -1421,8 +1421,8 @@ bool Swap(LockedSet &set, NewNodes &new_nodes) {
 
     // Step 5b. Retire old node descriptors through Crystalline grace.
     // The kernel-state lifecycle for any underlying mapping is closed
-    // synchronously by the enclosing Transaction's post-Swap survivor
-    // walk (`run_stage2` → `backing_kill_and_retire` on Live → Killed
+    // synchronously by the enclosing transaction's post-Swap reaper
+    // (`reap_old_backings` → `backing_kill_and_retire` on Live → Killed
     // CAS winners), so this retire is metadata-only — the FreeFn
     // touches no kernel handles and makes no `nt_pal::*` call.
     //

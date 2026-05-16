@@ -15,7 +15,7 @@
 /// skiplist (Kim, Kwon, Kang - SOSP 2025) holding the per-region descs.
 ///
 /// Mutations execute as a single atomic envelope per arena:
-/// Lock + nt_pal phase + Swap + Stage-2-decide + Unlock. Multi-arena ranges
+/// Lock + nt_pal phase + Swap + reap + Unlock. Multi-arena ranges
 /// are auto-decomposed into per-arena envelopes; the multi-arena composite
 /// is observable as N independent atomic ops, not a transactional N-tuple.
 ///
@@ -250,7 +250,7 @@ acquire_kernel_chosen_32bit(size_t bytes, RegionKind kind,
 /// and release.
 ///
 /// The post-Swap survivor walk plus per-backing state CAS owns
-/// synchronous Stage 2 kernel teardown for any backing whose extent has
+/// synchronous kernel teardown for any backing whose extent has
 /// no LIVE referencer. The VA is `MEM_FREE` on return for the fully-
 /// released portion.
 [[nodiscard]] int release(VaRange range);
@@ -266,7 +266,7 @@ acquire_kernel_chosen_32bit(size_t bytes, RegionKind kind,
 /// syscall on the contiguous-placeholder common case), then
 /// `commit_replace` / `map_section_replace` installs the new mapping
 /// into the placeholder. Old-backing placeholder ownership is
-/// transferred to the new backing so Stage 2 cannot double-free. The VA
+/// transferred to the new backing so the reaper cannot double-free. The VA
 /// never crosses `MEM_FREE` — no freeze bracket needed.
 ///
 /// Edge-straddler split is performed atomically inside the per-arena
@@ -309,7 +309,7 @@ acquire_kernel_chosen_32bit(size_t bytes, RegionKind kind,
 ///
 /// Clones share the source's `BackingRef` verbatim — pure metadata
 /// mutation. The post-Swap survivor walk sees the clones and skips
-/// Stage 2. When `prot_change` is non-zero, the engine also issues
+/// reaping. When `prot_change` is non-zero, the engine also issues
 /// `nt_pal::protect(inside_slice, prot_change)` inside the locked
 /// envelope so kernel-side protection matches the new desc state.
 /// Pure metadata mutators (NUMA rebind) pass 0.
