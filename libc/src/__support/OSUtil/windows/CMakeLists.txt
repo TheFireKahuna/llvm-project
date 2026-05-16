@@ -2801,8 +2801,10 @@ add_object_library(
   SRCS
     memory/posix/mmap/mmap_entry.cpp
     memory/posix/mmap/mmap_anon_private.cpp
+    memory/posix/mmap/mmap_fixed.cpp
   HDRS
     memory/posix/mmap/mmap.h
+    memory/posix/mmap/mmap_fixed.h
   DEPENDS
     .memory_posix_errno
     .memory_posix_meta
@@ -2813,6 +2815,7 @@ add_object_library(
     .ntdll
     .page_size
     .mapping_table
+    .va_region_desc
     .va_tracker
     libc.hdr.errno_macros
     libc.hdr.types.off_t

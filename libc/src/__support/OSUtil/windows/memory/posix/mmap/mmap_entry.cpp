@@ -34,7 +34,10 @@
 #include "src/__support/OSUtil/windows/alloc/pagemap_classifier.h"
 #include "src/__support/OSUtil/windows/memory/legacy/mmap_engine.h"
 #include "src/__support/OSUtil/windows/memory/posix/mlock_policy.h"
+#include "src/__support/OSUtil/windows/memory/posix/mmap/mmap_fixed.h"
+#include "src/__support/OSUtil/windows/memory/posix/posix_meta.h"
 #include "src/__support/OSUtil/windows/memory/posix/posix_validation.h"
+#include "src/__support/OSUtil/windows/memory/va_tracker.h"
 #include "src/__support/OSUtil/windows/nt_pal/query.h"
 #include "src/__support/OSUtil/windows/ntdll.h"
 #include "src/__support/macros/config.h"
@@ -45,6 +48,7 @@ namespace LIBC_NAMESPACE_DECL {
 namespace {
 
 namespace mp = ::LIBC_NAMESPACE::windows::memory_posix;
+namespace vt = ::LIBC_NAMESPACE::windows::va_tracker;
 
 // Returns 0 if `(addr, size, prot, flags)` passes the entry-validation
 // table that applies to every mmap shape (size, sharing exact-one, W+X
@@ -78,6 +82,20 @@ LIBC_INLINE bool is_anon_private_shape(int flags) {
   if (!(flags & MAP_PRIVATE))
     return false;
   if (flags & (MAP_FIXED | MAP_FIXED_NOREPLACE | MAP_HUGETLB))
+    return false;
+  return true;
+}
+
+// MAP_FIXED variant of the above: HUGETLB still routes to the legacy
+// engine pending P4, file-backed and anon-shared FIXED do likewise.
+// Anon-private FIXED (with or without NOREPLACE) is the only shape P3
+// handles on the new path.
+LIBC_INLINE bool is_fixed_anon_private_shape(int flags) {
+  if (!(flags & MAP_ANONYMOUS))
+    return false;
+  if (!(flags & MAP_PRIVATE))
+    return false;
+  if (flags & MAP_HUGETLB)
     return false;
   return true;
 }
@@ -120,19 +138,38 @@ intptr_t mmap(void *addr, size_t size, int prot, int flags, int fd,
   if (int e = mp::validate_fixed_noreplace_addr(flags, addr); e != 0)
     return -e;
 
-  // MAP_FIXED / MAP_FIXED_NOREPLACE: P3 owns the dispatch. The
-  // anti-data-loss invariant runs here so a destructive request that
-  // straddles a cordoned chunk receives `EINVAL` instead of routing
-  // to the legacy engine — the cordon answer never gets weaker as
-  // later phases land.
+  // MAP_FIXED / MAP_FIXED_NOREPLACE: P3 owns the anon-private dispatch.
+  // The anti-data-loss invariant runs here once so a destructive
+  // request straddling a cordoned chunk receives `EINVAL` (image /
+  // kernel / libc-internal) or `ENOMEM` (foreign). File-backed /
+  // anon-shared / hugetlb FIXED return `ENOSYS` until P4 — the
+  // rebuild has no consumers yet, so preserving the legacy path for
+  // unfinished shapes only adds drift.
   if (flags & (MAP_FIXED | MAP_FIXED_NOREPLACE)) {
     if (int e = ::LIBC_NAMESPACE::windows::alloc::pagemap::
             validate_map_fixed_target(addr,
                                       static_cast<size_t>(rounded_size));
         e != 0)
       return -e;
-    return ::LIBC_NAMESPACE::internal::legacy_mmap_engine(addr, size, prot,
-                                                          flags, fd, offset);
+    if (!is_fixed_anon_private_shape(flags))
+      return -ENOSYS;
+
+    const vt::AcquireMeta meta = mp::anon_private_meta(prot, flags);
+    const vt::VaRange range = mp::make_range(addr, rounded_size);
+    const intptr_t result =
+        (flags & MAP_FIXED_NOREPLACE)
+            ? ::LIBC_NAMESPACE::internal::mmap_fixed_noreplace_claim(
+                  range, vt::RegionKind::AnonPrivate, meta)
+            : ::LIBC_NAMESPACE::internal::mmap_fixed_replace(
+                  range, vt::RegionKind::AnonPrivate, meta);
+    if (result < 0)
+      return result;
+
+    post_acquire_hooks(reinterpret_cast<void *>(result),
+                       static_cast<size_t>(rounded_size), prot, flags);
+    (void)fd;
+    (void)offset;
+    return result;
   }
 
   // Every remaining shape that is not P2's anon-private routes to the

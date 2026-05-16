@@ -62,6 +62,27 @@ add_libc_unittest(
     libc.test.UnitTest.ErrnoSetterMatcher
 )
 
+# P3 — MAP_FIXED / MAP_FIXED_NOREPLACE anti-data-loss + atomicity coverage
+# for the rebuilt posix/mmap/mmap_fixed.cpp on the va_tracker substrate.
+add_libc_unittest(
+  mmap_fixed_test
+  SUITE
+    libc_sys_mman_unittests
+  SRCS
+    mmap_fixed_test.cpp
+  DEPENDS
+    libc.include.llvm-libc-macros.sys_mman_macros
+    libc.src.__support.CPP.atomic
+    libc.src.__support.OSUtil.windows.ntdll
+    libc.src.errno.errno
+    libc.src.stdlib.free
+    libc.src.stdlib.malloc
+    libc.src.sys.mman.mmap
+    libc.src.sys.mman.munmap
+    libc.test.UnitTest.ErrnoCheckingTest
+    libc.test.UnitTest.ErrnoSetterMatcher
+)
+
 add_libc_unittest(
   pkey_mprotect_test
   SUITE
