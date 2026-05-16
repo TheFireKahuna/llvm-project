@@ -32,7 +32,6 @@
 #include "include/llvm-libc-macros/sys-mman-macros.h"
 #include "include/llvm-libc-macros/windows/sys-mman-macros.h"
 #include "src/__support/OSUtil/windows/alloc/pagemap_classifier.h"
-#include "src/__support/OSUtil/windows/memory/legacy/mmap_engine.h"
 #include "src/__support/OSUtil/windows/memory/posix/mlock_policy.h"
 #include "src/__support/OSUtil/windows/memory/posix/mmap/mmap_fixed.h"
 #include "src/__support/OSUtil/windows/memory/posix/posix_meta.h"
@@ -172,12 +171,13 @@ intptr_t mmap(void *addr, size_t size, int prot, int flags, int fd,
     return result;
   }
 
-  // Every remaining shape that is not P2's anon-private routes to the
-  // legacy engine until its own phase. MAP_HUGETLB / MAP_ANON|SHARED /
-  // fd-backed (file private / file shared) all live there for now.
+  // Every remaining shape that is not P2's anon-private returns
+  // -ENOSYS until its own phase lands. MAP_HUGETLB / MAP_ANON|SHARED /
+  // fd-backed (file private / file shared) are all P4. The rebuild
+  // has no consumers yet, so preserving a legacy fallthrough for
+  // unfinished shapes only adds drift.
   if (!is_anon_private_shape(flags))
-    return ::LIBC_NAMESPACE::internal::legacy_mmap_engine(addr, size, prot,
-                                                          flags, fd, offset);
+    return -ENOSYS;
 
   intptr_t result = mmap_anon_private(addr, rounded_size, prot, flags);
   if (result < 0)

@@ -533,32 +533,19 @@ RegionDesc *build_acquire_desc_from_meta(RegionKind kind, DWORD view_prot,
 //  Straddle precondition checks
 //===----------------------------------------------------------------------===//
 
-// Return true iff any locked succ partially overlaps `[lo, hi)`. release /
-// replace / mutate reject straddlers with `-EINVAL`: pre-splitting via the
-// public `split()` op (pure metadata, no kernel work) is the documented
-// caller contract. Refusing straddlers here keeps every kernel-state
-// transition aligned to whole desc extents and avoids per-fragment
-// `NtDuplicateObject` of section handles, an O(N) syscall blow-up that
-// would violate the per-fragment O(1) NT-call budget.
-[[nodiscard]] LIBC_INLINE bool locked_has_straddler(const LockedSet &locked,
-                                                     uintptr_t lo,
-                                                     uintptr_t hi) {
-  for (uint32_t i = 0; i < locked.count; ++i) {
-    SkiplistNodeBase *n = locked.at(i);
-    if (n == nullptr)
-      continue;
-    if (n->lo < lo || n->hi > hi)
-      return true;
-  }
-  return false;
-}
-
-// Edge-straddler check for replace's preflight-expanded locked range. A
-// straddler here is a desc that crosses one of `[edge_lo, edge_hi)`'s edges
-// without being fully inside or fully outside. Replace tolerates fully-
-// outside descs in the locked set (they are sibling-rebind targets) but
-// must reject partial overlaps at the intent edges, since the caller's
-// pre-split contract is what guarantees uniform per-desc kernel work.
+// Edge-straddler check for the preflight-expanded locked range's outer
+// edges. A straddler here is a desc that crosses one of `[edge_lo,
+// edge_hi)`'s edges without being fully inside or fully outside. Replace
+// uses this to detect cross-chain abutment at the union of all
+// preflight-expanded backings: a desc straddling that outer edge breaks
+// the one-iteration convergence of locked-range widening (a second
+// chain pulled in by widening could itself extend the bound further),
+// so we surface `-ENOTSUP` rather than iterate.
+//
+// Edge-straddlers at the intent edges themselves are handled by the
+// plan builders' auto-split paths (clone phase emits survivor clones
+// for outside portions, demote phase clips to inside portions); they
+// do NOT use this helper.
 [[nodiscard]] LIBC_INLINE bool
 locked_has_edge_straddler(const LockedSet &locked, uintptr_t edge_lo,
                            uintptr_t edge_hi) {
@@ -1019,18 +1006,19 @@ locked_uniform_for_backing(const LockedSet &locked, DescBacking *target_b,
 //     referencer post-Swap and a nulled `placeholder_base` from
 //     `post_swap_ownership_transfer`, is freed metadata-only by Stage 2.
 //
-// Like replace, the edge-only straddle check is required: preflight
-// widening can pull fully-outside descs into the locked set, and the
-// standard `locked_has_straddler` would falsely reject them.
+// Auto-split for edge-straddlers: a locked desc whose extent crosses
+// an intent edge is no longer rejected. The clone phase emits a
+// survivor clone covering only the outside-intent portion, and the
+// demote phase clips its kernel work to the inside-intent portion.
+// The OLD backing's edge-extending detection (left_b / right_b) is
+// driven by backing extent and so captures straddlers automatically:
+// the straddler desc's backing extent equals or exceeds the desc
+// extent, and crosses the intent edge by construction. Closes the
+// posix-compliance race window where a concurrent peer mutation
+// between a caller's `split()` and this op turned a benign no-op into
+// a phantom EINVAL.
 int build_plan_release(const CommitIntent &i, Arena *arena,
                         const LockedSet &locked, CommitPlan &plan) {
-  // Edge-only straddle check: same reasoning as build_plan_replace.
-  // The widened lock may include outside-range descs (sibling-rebind
-  // targets); only descs that partially overlap an intent edge are a
-  // pre-split-contract violation.
-  if (locked_has_edge_straddler(locked, i.range.lo(), i.range.hi()))
-    return -EINVAL;
-
   plan.arena = arena;
   plan.range = i.range;
   plan.release_inside_slice = true;
@@ -1160,17 +1148,16 @@ int build_plan_release(const CommitIntent &i, Arena *arena,
 
 int build_plan_replace(const CommitIntent &i, Arena *arena,
                         const LockedSet &locked, CommitPlan &plan) {
-  // Edge-only straddle check: under preflight expansion the locked set
-  // may contain fully-outside descs (sibling rebind targets), which the
-  // standard straddler check would falsely reject. Pre-split via `split()`
-  // at the intent edges ensures no in-locked desc partially overlaps
-  // `intent.range`.
-  if (locked_has_edge_straddler(locked, i.range.lo(), i.range.hi()))
-    return -EINVAL;
-  // Cross-chain abutment guard: if a desc straddles the EXTENDED locked
-  // range edges (a different chain happens to overlap our extended lock
-  // window), preflight convergence (one iteration sufficient by VA
-  // contiguity) breaks. Caller pre-splits that chain too.
+  // Auto-split for edge-straddlers at the intent edges: see
+  // `build_plan_release` for the rationale. The clone phase emits
+  // survivor clones for the outside-intent portion of each straddler;
+  // the demote phase clips its kernel work to the inside portion.
+  //
+  // The EXTENDED-lock-edge straddler guard remains: if a desc straddles
+  // the union of all preflight-expanded backings' extents, the locked
+  // set no longer converges by VA contiguity. That case still requires
+  // the caller to pre-split the abutting chain (rare; raised as
+  // -ENOTSUP from the substrate).
   if (locked_has_edge_straddler(locked, locked.lo, locked.hi))
     return -ENOTSUP;
 
@@ -1223,17 +1210,37 @@ int build_plan_replace(const CommitIntent &i, Arena *arena,
   // committed — decommit would lose their data).
   plan.demote_mode = CommitPlan::DemoteMode::AutoFromShape;
 
-  // Coalesce span: always needed for replace. The earlier heuristic
-  // (skip when locked has one succ AND no siblings) is unsound once
-  // `execute_plan` may fill MEM_FREE gaps inside `range` with fresh
-  // placeholders: those gap placeholders are distinct VADs from the
-  // demoted-succ placeholder, and the subsequent `commit_replace` requires
-  // a single contiguous placeholder span. Coalesce is a no-op (single
-  // syscall, kernel-side merge of one VAD into itself) when the demoted
-  // span is already contiguous, so the unconditional path costs at most
-  // one extra syscall in the previously-skipped case while making the
-  // gap-fill phase below correct.
-  plan.coalesce_needed = true;
+  // Coalesce span — required whenever the post-demote VA inside the
+  // intent contains more than one placeholder VAD. Two sources of
+  // multi-VAD topology:
+  //
+  //   * Gap-fill: a MEM_FREE region inside the intent is filled with a
+  //     fresh placeholder by `execute_plan`, distinct from the
+  //     demoted-succ placeholder. Detected here by the "single succ
+  //     does not fully tile intent" condition (any inside-VA the
+  //     succ doesn't cover is gap-fill territory).
+  //
+  //   * Multi-desc demote: each locked succ (private-commit) demotes
+  //     to its own placeholder VAD, even when the succs tile intent
+  //     without MEM_FREE gaps. Section-view succs sharing a wider
+  //     backing dedupe to a single whole-view unmap, but private
+  //     commits don't — every locked succ contributes its own VAD.
+  //
+  // Both collapse into one cheap test: skip coalesce ONLY when
+  // `locked.count == 1` AND that single succ's extent fully covers
+  // `[intent.lo, intent.hi)` (so no gap-fill fires AND no second
+  // VAD exists). All other shapes — multiple succs, partial coverage,
+  // pure MEM_FREE intent — need coalesce to merge into the single
+  // contiguous placeholder that `commit_replace`'s exact-match
+  // constraint requires.
+  bool needs_coalesce = true;
+  if (locked.count == 1) {
+    SkiplistNodeBase *only = locked.at(0);
+    if (only != nullptr && only->lo <= i.range.lo() &&
+        only->hi >= i.range.hi())
+      needs_coalesce = false;
+  }
+  plan.coalesce_needed = needs_coalesce;
   plan.coalesce_base = reinterpret_cast<void *>(i.range.lo());
   plan.coalesce_bytes = i.range.bytes;
 
@@ -1336,30 +1343,17 @@ int build_plan_replace(const CommitIntent &i, Arena *arena,
 }
 
 // Apply a `DescMutator` to clones of every locked desc, optionally with a
-// kernel-side `NtProtectVirtualMemory` per VAD. POSIX `mprotect(addr, len,
-// prot)` only touches `[addr, addr+len)` — straddlers must be pre-split.
+// kernel-side `NtProtectVirtualMemory` per VAD scoped to the intent
+// range. POSIX `mprotect(addr, len, prot)` only touches `[addr, addr+
+// len)` — edge-straddler desc fragmentation happens atomically inside
+// the envelope's clone phase: the source desc is split into up to three
+// clones (left-outside, inside-mutated, right-outside), with the
+// mutator applied only to the inside slice. Per-VAD `NtProtect` in the
+// post-Swap phase is clipped to the inside slice for the same reason.
 int build_plan_mutate(const CommitIntent &i, Arena *arena,
                        const LockedSet &locked, CommitPlan &plan) {
   if (locked.count == 0)
     return -ENOENT;
-
-  // Plain mutate (no commit-on-uncommitted) requires the caller to
-  // pre-split via `split()` because the clone phase mutates the
-  // whole desc and a straddler would extend the mutation past the
-  // caller's range. The commit-on-uncommitted path tolerates
-  // straddlers: per-chunk kernel work in `post_swap_per_chunk_dispatch`
-  // is scoped strictly to `[plan.range.lo(), plan.range.hi())` via
-  // the `RegionWalker(lo, hi-lo)` window — untouched pages inside a
-  // partial-cover desc keep their existing kernel protection,
-  // exactly matching POSIX `mprotect(addr, len, prot)` semantics.
-  // The clone phase does NOT update view_prot (acquire-time intent
-  // is preserved), so page-granular mprotect on a 64 KiB desc
-  // produces no desc fragmentation. Consumers that need current
-  // protection query the kernel via MBI (`fork`'s `replay_emit`,
-  // future precision mremap).
-  if (!i.commit_if_uncommitted_accessible &&
-      locked_has_straddler(locked, i.range.lo(), i.range.hi()))
-    return -EINVAL;
 
   plan.arena = arena;
   plan.range = i.range;
@@ -1501,15 +1495,29 @@ int execute_plan(CommitPlan &plan, const LockedSet &locked,
         break;
       }
       case RegionShape::ANON_PLACEHOLDER: {
-        if (!succ_is_inside_intent(old_node, plan.range)) {
-          // Outside-range survivor on a private-commit shared backing —
-          // leave its commit alone so the rebound clone observes
-          // preserved data.
+        // Demote only the intersection of the locked node with the
+        // intent range. Three cases collapse into one clip:
+        //   * Fully outside (demote window empty) — leave commit alone
+        //     so the rebound clone observes preserved data.
+        //   * Fully inside — demote the entire node extent (matches the
+        //     previous behaviour exactly when `succ_is_inside_intent`).
+        //   * Edge-straddler — demote only the inside portion; the
+        //     outside portion stays committed and is published as a
+        //     fresh survivor desc in the clone phase.
+        // Decommit-preserve is page-granular on NT and auto-splits the
+        // backing VAD into committed-left, decommitted-middle,
+        // committed-right pieces — the survivor sees its data
+        // preserved across the envelope.
+        const uintptr_t demote_lo =
+            old_node->lo > plan.range.lo() ? old_node->lo : plan.range.lo();
+        const uintptr_t demote_hi =
+            old_node->hi < plan.range.hi() ? old_node->hi : plan.range.hi();
+        if (demote_lo >= demote_hi) {
           st = STATUS_SUCCESS;
           break;
         }
-        void *base = reinterpret_cast<void *>(old_node->lo);
-        size_t bytes = static_cast<size_t>(old_node->hi - old_node->lo);
+        void *base = reinterpret_cast<void *>(demote_lo);
+        size_t bytes = static_cast<size_t>(demote_hi - demote_lo);
         st = nt_pal::preserve_to_placeholder(base, bytes);
         break;
       }
@@ -1891,7 +1899,28 @@ int execute_plan(CommitPlan &plan, const LockedSet &locked,
   case CommitPlan::CloneMode::None:
     break;
 
-  case CommitPlan::CloneMode::AllSuccsWithMutator:
+  case CommitPlan::CloneMode::AllSuccsWithMutator: {
+    // Emit up to three clones per locked succ:
+    //   * left-outside slice  [src.lo, intent.lo) — non-mutated; emitted
+    //                          only when src.lo < intent.lo.
+    //   * inside slice        [max(src.lo, intent.lo),
+    //                          min(src.hi, intent.hi)) — mutator
+    //                          applied; emitted whenever the
+    //                          intersection is non-empty.
+    //   * right-outside slice [intent.hi, src.hi) — non-mutated;
+    //                          emitted only when src.hi > intent.hi.
+    //
+    // All clones inherit the source's `backing_ref` — mutate does not
+    // change backings. Section_offset shifts via
+    // `clone_region_desc_for_fragment(src, src.lo, frag_lo)` for any
+    // slice whose `frag_lo > src.lo` (the inside slice of a left-edge
+    // straddler and the right-outside slice of any right-edge
+    // straddler).
+    //
+    // The clone phase does NOT update view_prot — acquire-time intent
+    // is preserved. The kernel-side protection write in the post-Swap
+    // phase is clipped to the inside slice and is the only visible
+    // side effect.
     for (uint32_t k = 0; k < locked.count; ++k) {
       SkiplistNodeBase *src_node = locked.at(k);
       if (src_node == nullptr)
@@ -1899,34 +1928,54 @@ int execute_plan(CommitPlan &plan, const LockedSet &locked,
       RegionDesc *src = src_node->value.load(cpp::MemoryOrder::ACQUIRE);
       if (src == nullptr)
         continue;
-      // Whole-node clone: `frag_lo == src_lo`, no section_offset shift.
-      RegionDesc *clone =
-          clone_region_desc_for_fragment(src, src_node->lo, src_node->lo);
-      if (clone == nullptr)
-        return -ENOMEM;
-      if (plan.mutator != nullptr)
-        plan.mutator(clone, plan.mutator_ctx);
 
-      // Mutate-with-commit-on-uncommitted: substrate-side view_prot /
-      // PROT_DIVERGED update. Runs after the caller's mutator so a
-      // caller-side mutator that wanted to write `view_prot` directly
-      // (none currently) would be overridden — the commit-on-
-      // uncommitted contract is the substrate's, not the caller's.
-      //
-      // The desc's `view_prot` is acquire-time intent, never updated
-      // by mprotect — consumers that need current protection query
-      // the kernel via `nt_pal::query_region`. The mutate envelope
-      // therefore does not touch `view_prot` or `PROT_DIVERGED` on
-      // the clone; the kernel-side protection write is the only
-      // visible side effect.
+      const uintptr_t inside_lo =
+          src_node->lo > plan.range.lo() ? src_node->lo : plan.range.lo();
+      const uintptr_t inside_hi =
+          src_node->hi < plan.range.hi() ? src_node->hi : plan.range.hi();
+      const bool has_left_outside = src_node->lo < plan.range.lo();
+      const bool has_right_outside = src_node->hi > plan.range.hi();
 
-      int rc = append_node_for_desc(new_nodes, plan.arena, src_node->lo,
-                                     src_node->hi, clone,
-                                     /*cleanup_value_on_abort=*/true);
-      if (rc != 0)
-        return rc;
+      if (has_left_outside) {
+        RegionDesc *clone = clone_region_desc_for_fragment(src, src_node->lo,
+                                                            src_node->lo);
+        if (clone == nullptr)
+          return -ENOMEM;
+        int rc = append_node_for_desc(new_nodes, plan.arena, src_node->lo,
+                                       inside_lo, clone,
+                                       /*cleanup_value_on_abort=*/true);
+        if (rc != 0)
+          return rc;
+      }
+
+      if (inside_lo < inside_hi) {
+        RegionDesc *clone =
+            clone_region_desc_for_fragment(src, src_node->lo, inside_lo);
+        if (clone == nullptr)
+          return -ENOMEM;
+        if (plan.mutator != nullptr)
+          plan.mutator(clone, plan.mutator_ctx);
+        int rc = append_node_for_desc(new_nodes, plan.arena, inside_lo,
+                                       inside_hi, clone,
+                                       /*cleanup_value_on_abort=*/true);
+        if (rc != 0)
+          return rc;
+      }
+
+      if (has_right_outside) {
+        RegionDesc *clone =
+            clone_region_desc_for_fragment(src, src_node->lo, inside_hi);
+        if (clone == nullptr)
+          return -ENOMEM;
+        int rc = append_node_for_desc(new_nodes, plan.arena, inside_hi,
+                                       src_node->hi, clone,
+                                       /*cleanup_value_on_abort=*/true);
+        if (rc != 0)
+          return rc;
+      }
     }
     break;
+  }
 
   case CommitPlan::CloneMode::SplitAtBoundary: {
     // Single locked succ guaranteed by build_plan_split's precondition.
@@ -1958,16 +2007,30 @@ int execute_plan(CommitPlan &plan, const LockedSet &locked,
   }
 
   case CommitPlan::CloneMode::OutsideSurvivorRebind: {
-    // For each locked succ outside `intent.range`, clone its desc with
-    // the appropriate sibling backing's BackingRef and append the clone
-    // as a new node at the same VA range. The Swap step removes the OLD
-    // survivor desc from the chain and publishes the clone in its place.
+    // Emit a survivor clone for the outside-intent portion of each
+    // locked succ. The unified geometry handles three input shapes
+    // with one walk:
     //
-    // The clone's section_offset is unchanged from the source: the new
-    // sibling view was created with `section_offset_at_lo` equal to the
-    // OLD view's offset at the same VA, so the section byte at any VA
-    // inside the sibling slice still corresponds to the same section
-    // byte the OLD desc named.
+    //   * Fully-outside-left  : src.hi <= intent.lo. Emit one clone
+    //                            covering the full source extent
+    //                            against the left sibling backing.
+    //   * Fully-outside-right : src.lo >= intent.hi. Symmetric.
+    //   * Edge-straddler      : src extent crosses intent.lo and/or
+    //                            intent.hi. Emit one or two clones
+    //                            covering only the outside slices;
+    //                            the inside slice is consumed by
+    //                            `inside_commit`.
+    //   * Fully-inside        : src.lo >= intent.lo and src.hi <=
+    //                            intent.hi. Skipped — no outside
+    //                            portion, inside is consumed by
+    //                            `inside_commit`.
+    //
+    // The clone's section_offset shifts when the outside slice does
+    // not start at the source's lo (right-edge straddler case): the
+    // right slice begins at `intent.hi`, so the section byte at the
+    // slice's start is `src.section_offset + (intent.hi - src.lo)`.
+    // `clone_region_desc_for_fragment(src, src.lo, frag_lo)` does the
+    // shift when `frag_lo > src.lo`.
     BackingRef left_sibling_ref = kBackingRefNull;
     BackingRef right_sibling_ref = kBackingRefNull;
     if (new_left_sibling_backing != nullptr)
@@ -1979,37 +2042,51 @@ int execute_plan(CommitPlan &plan, const LockedSet &locked,
       SkiplistNodeBase *src_node = locked.at(k);
       if (src_node == nullptr)
         continue;
-      if (succ_is_inside_intent(src_node, plan.range))
-        continue; // inside-intent succs are consumed by inside_commit.
       RegionDesc *src = src_node->value.load(cpp::MemoryOrder::ACQUIRE);
       if (src == nullptr)
         continue;
-      // Determine which sibling backing this survivor binds to.
-      BackingRef target_ref = kBackingRefNull;
-      if (src_node->hi <= plan.range.lo())
-        target_ref = left_sibling_ref;
-      else if (src_node->lo >= plan.range.hi())
-        target_ref = right_sibling_ref;
-      // `build_plan_replace` promises a sibling slot exists for any
-      // outside-intent survivor; absence is structural inconsistency.
-      if (target_ref == kBackingRefNull)
-        return -EFAULT;
 
-      RegionDesc *clone =
-          clone_region_desc_for_fragment(src, src_node->lo, src_node->lo);
-      if (clone == nullptr)
-        return -ENOMEM;
-      // Override the cloned backing_ref to point at the new sibling
-      // backing. section_offset stays as inherited from src; per-VA
-      // section_offset is unchanged because the new sibling view's
-      // `section_offset_at_lo` matches the OLD view's at the sibling
-      // slice's lo.
-      clone->backing_ref = target_ref;
-      int rc = append_node_for_desc(new_nodes, plan.arena, src_node->lo,
-                                     src_node->hi, clone,
-                                     /*cleanup_value_on_abort=*/true);
-      if (rc != 0)
-        return rc;
+      const bool has_left_outside = src_node->lo < plan.range.lo();
+      const bool has_right_outside = src_node->hi > plan.range.hi();
+      if (!has_left_outside && !has_right_outside)
+        continue; // inside-intent succ — consumed by inside_commit.
+
+      if (has_left_outside) {
+        if (left_sibling_ref == kBackingRefNull)
+          return -EFAULT;
+        const uintptr_t lo = src_node->lo;
+        const uintptr_t hi =
+            src_node->hi < plan.range.lo() ? src_node->hi : plan.range.lo();
+        // Left-slice clone starts at the source's lo — no offset shift.
+        RegionDesc *clone =
+            clone_region_desc_for_fragment(src, src_node->lo, src_node->lo);
+        if (clone == nullptr)
+          return -ENOMEM;
+        clone->backing_ref = left_sibling_ref;
+        int rc = append_node_for_desc(new_nodes, plan.arena, lo, hi, clone,
+                                       /*cleanup_value_on_abort=*/true);
+        if (rc != 0)
+          return rc;
+      }
+
+      if (has_right_outside) {
+        if (right_sibling_ref == kBackingRefNull)
+          return -EFAULT;
+        const uintptr_t lo =
+            src_node->lo > plan.range.hi() ? src_node->lo : plan.range.hi();
+        const uintptr_t hi = src_node->hi;
+        // Right-slice clone: section_offset shifts by (frag_lo - src.lo)
+        // when `lo > src_node->lo` (the right-edge straddler case).
+        RegionDesc *clone =
+            clone_region_desc_for_fragment(src, src_node->lo, lo);
+        if (clone == nullptr)
+          return -ENOMEM;
+        clone->backing_ref = right_sibling_ref;
+        int rc = append_node_for_desc(new_nodes, plan.arena, lo, hi, clone,
+                                       /*cleanup_value_on_abort=*/true);
+        if (rc != 0)
+          return rc;
+      }
     }
     break;
   }
@@ -2026,6 +2103,14 @@ int execute_plan(CommitPlan &plan, const LockedSet &locked,
 // atomic; a range spanning multiple split placeholders needs per-VAD calls).
 // Runs after Swap has published the new chain so a concurrent reader cannot
 // observe stale prot.
+//
+// Per-succ protect is clipped to `[max(n.lo, plan.range.lo()),
+// min(n.hi, plan.range.hi()))` — for an edge-straddler the outside
+// survivor portion keeps its existing kernel protection, matching POSIX
+// `mprotect(addr, len, prot)` which only touches `[addr, addr+len)`. The
+// clip never collapses to an empty range here: mutate doesn't run
+// preflight widening, so every locked succ overlaps the intent by
+// construction.
 [[nodiscard]] int post_swap_protect(const CommitPlan &plan,
                                      const LockedSet &locked) {
   if (!plan.issue_protect)
@@ -2034,9 +2119,13 @@ int execute_plan(CommitPlan &plan, const LockedSet &locked,
     SkiplistNodeBase *old_node = locked.at(k);
     if (old_node == nullptr)
       continue;
+    const uintptr_t lo =
+        old_node->lo > plan.range.lo() ? old_node->lo : plan.range.lo();
+    const uintptr_t hi =
+        old_node->hi < plan.range.hi() ? old_node->hi : plan.range.hi();
     ULONG old_prot = 0;
-    if (!nt_pal::protect(reinterpret_cast<void *>(old_node->lo),
-                         static_cast<size_t>(old_node->hi - old_node->lo),
+    if (!nt_pal::protect(reinterpret_cast<void *>(lo),
+                         static_cast<size_t>(hi - lo),
                          static_cast<ULONG>(plan.protect_value), &old_prot))
       return -EFAULT;
   }

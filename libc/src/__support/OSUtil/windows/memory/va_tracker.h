@@ -240,28 +240,41 @@ acquire_kernel_chosen(size_t bytes, RegionKind kind,
 acquire_kernel_chosen_32bit(size_t bytes, RegionKind kind,
                             const AcquireMeta &meta);
 
-/// Drop every desc whose extent is fully inside `range`.
+/// Drop every desc whose extent overlaps `range`.
+///
+/// Edge-straddler split is performed atomically inside the per-arena
+/// envelope: a desc whose extent crosses a `range` boundary is split
+/// in-place under the LOCKED hold, with the outside-`range` portion
+/// preserved as a fresh survivor desc carrying the OLD metadata.
+/// Callers do not pre-split and observe no race window between split
+/// and release.
 ///
 /// The post-Swap survivor walk plus per-backing state CAS owns
 /// synchronous Stage 2 kernel teardown for any backing whose extent has
 /// no LIVE referencer. The VA is `MEM_FREE` on return for the fully-
 /// released portion.
-///
-/// \pre No desc in `range` straddles a `range` boundary. Caller pre-
-///      splits via `split()` for the straddle case; pre-split incurs no
-///      kernel work, so pre-split + release is observably correct.
 [[nodiscard]] int release(VaRange range);
 
 /// Atomic `MAP_FIXED` over `range`.
 ///
-/// For each fully-inside desc, the engine demotes OLD kernel state back
-/// to a placeholder (`unmap_view_preserve` for section-backed,
-/// `decommit_preserve` for anon-placeholder), `coalesce_placeholders`
-/// joins fragments, then `commit_replace` / `map_section_replace`
-/// installs the new mapping into the now-coalesced placeholder. Old-
-/// backing placeholder ownership is transferred to the new backing so
-/// Stage 2 cannot double-free. The VA never crosses `MEM_FREE` — no
-/// freeze bracket needed.
+/// For each inside-`range` desc (or inside-portion of a straddler), the
+/// engine demotes OLD kernel state back to a placeholder
+/// (`unmap_view_preserve` for section-backed, `decommit_preserve`
+/// clipped to the inside extent for anon-placeholder),
+/// `coalesce_placeholders` joins fragments **only when MEM_FREE gaps
+/// were filled by the gap-fill phase** (the optimisation skips a no-op
+/// syscall on the contiguous-placeholder common case), then
+/// `commit_replace` / `map_section_replace` installs the new mapping
+/// into the placeholder. Old-backing placeholder ownership is
+/// transferred to the new backing so Stage 2 cannot double-free. The VA
+/// never crosses `MEM_FREE` — no freeze bracket needed.
+///
+/// Edge-straddler split is performed atomically inside the per-arena
+/// envelope: a desc whose extent crosses a `range` boundary is split
+/// in-place under the LOCKED hold, with the outside-`range` portion
+/// preserved as a fresh survivor desc carrying the OLD metadata.
+/// Callers do not pre-split and observe no race window between split
+/// and replace.
 ///
 /// Partial-replace of a wider shared backing (B2-β): when an OLD desc in
 /// `range` references a backing whose extent extends past either edge to
@@ -274,24 +287,32 @@ acquire_kernel_chosen_32bit(size_t bytes, RegionKind kind,
 /// backings. Per-fragment kernel work stays O(1) regardless of survivor
 /// count.
 ///
-/// \pre No desc in `range` straddles a `range` boundary. Outside-range
-///      descs sharing a wider backing are NOT straddlers in this sense.
-/// \returns 0 on success; `-EINVAL` if a straddler sits on a `range`
-///          edge; `-ENOTSUP` for heterogeneous view_prot / flags / kind
-///          across descs sharing one wider backing, or cross-chain
-///          abutment at the extended lock edges.
+/// \returns 0 on success; `-ENOTSUP` for heterogeneous view_prot /
+///          flags / kind across descs sharing one wider backing, or
+///          cross-chain abutment at the extended lock edges.
 [[nodiscard]] int replace(VaRange range, RegionKind kind,
                           const AcquireMeta &meta);
 
 /// Apply `mutator` to a fresh clone of every desc intersecting `range`,
 /// then publish the clones via Swap.
 ///
+/// Edge-straddler split is performed atomically inside the per-arena
+/// envelope: a desc whose extent crosses a `range` boundary is split
+/// into up to three clones (left-outside non-mutated, inside-mutated,
+/// right-outside non-mutated) under the LOCKED hold. The mutator only
+/// applies to the inside slice, matching POSIX `mprotect(addr, len,
+/// prot)`'s "touch only `[addr, addr + len)`" contract. Per-VAD
+/// `nt_pal::protect` in the post-Swap phase is clipped to the same
+/// inside slice — outside survivors keep their existing kernel
+/// protection. Callers do not pre-split and observe no race window
+/// between split and mutate.
+///
 /// Clones share the source's `BackingRef` verbatim — pure metadata
 /// mutation. The post-Swap survivor walk sees the clones and skips
 /// Stage 2. When `prot_change` is non-zero, the engine also issues
-/// `nt_pal::protect(range, prot_change)` inside the locked envelope so
-/// kernel-side protection matches the new desc state. Pure metadata
-/// mutators (NUMA rebind) pass 0.
+/// `nt_pal::protect(inside_slice, prot_change)` inside the locked
+/// envelope so kernel-side protection matches the new desc state.
+/// Pure metadata mutators (NUMA rebind) pass 0.
 ///
 /// When `commit_if_uncommitted_accessible` is true, the post-Swap
 /// phase replaces the per-VAD `nt_pal::protect` with a per-chunk
@@ -310,12 +331,6 @@ acquire_kernel_chosen_32bit(size_t bytes, RegionKind kind,
 /// because the protection write collapses into the substrate's
 /// coverage logic. CFG-secured retries are absorbed by
 /// `nt_pal::protect`.
-///
-/// \pre No desc in `range` straddles a `range` boundary — POSIX
-///      `mprotect(addr, len, prot)` requires the mutation to touch only
-///      `[addr, addr + len)`, so mutating a straddler would alter
-///      regions outside the caller's range. Caller pre-splits via
-///      `split()` for the straddle case.
 [[nodiscard]] int mutate(VaRange range, DescMutator mutator, void *ctx,
                          DWORD prot_change = 0,
                          bool commit_if_uncommitted_accessible = false,

@@ -2810,7 +2810,6 @@ add_object_library(
     .memory_posix_meta
     .memory_posix_validation
     .mlock_ops
-    .mmap_engine
     .nt_pal
     .ntdll
     .page_size

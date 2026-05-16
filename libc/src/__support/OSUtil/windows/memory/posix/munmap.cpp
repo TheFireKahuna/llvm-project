@@ -6,25 +6,22 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// `internal::munmap(addr, size)` lands as three substrate calls:
+// `internal::munmap(addr, size)` lands as two substrate calls:
 //   1) `validate_map_fixed_target` for the cordon probe — loaded PE
 //      images, kernel mappings (TEB/PEB/stack), and foreign third-
 //      party VAs map to `EINVAL`. The same primitive the MAP_FIXED
 //      path uses; sharing the gate keeps the "what is unmappable"
 //      answer in one place.
-//   2) Two `va_tracker::split` calls at the page-aligned edges of the
-//      requested range. Pure metadata; no kernel work. Catches the
-//      straddler case (a region whose extent crosses one of the edges)
-//      so the subsequent release sees only fully-inside descs. A
-//      boundary that lands in MEM_FREE or on an exact region edge
-//      surfaces a benign `ENOENT` / `EINVAL` from split — both are
-//      "no straddle, nothing to do."
-//   3) `va_tracker::release` over the page-aligned range. The
+//   2) `va_tracker::release` over the page-aligned range. The
 //      substrate iterates the locked set, releases each desc, and
 //      runs the Stage-2 teardown (unmap section view, free
 //      placeholder, close handles) synchronously per the substrate's
 //      mutator-owns-kernel-state discipline. Holes inside the range
-//      are skipped silently — Linux contract.
+//      are skipped silently — Linux contract. Edge-straddler split
+//      happens atomically inside the per-arena LOCKED envelope, so
+//      there is no caller-side pre-split and no race window where a
+//      concurrent peer mutation between split and release could turn
+//      a benign no-op into a phantom errno.
 //
 // Stage-2 ordering is substrate-owned; the POSIX layer trusts the
 // typed op. Likewise, the ANON_PLACEHOLDER state-preserving rollback,
@@ -77,10 +74,9 @@ intptr_t munmap(void *addr, size_t size) {
   // The substrate's typed-op API now accepts page-granular ranges; the
   // POSIX layer no longer rounds outward to NT allocation granularity.
   // `addr` and `addr + rounded` are page-aligned by entry validation,
-  // so a 4 KiB munmap releases exactly 4 KiB. Straddler severance
-  // happens at the same page-aligned edges via `vt::split` below.
+  // so a 4 KiB munmap releases exactly 4 KiB. Edge-straddler severance
+  // happens atomically inside the substrate's release envelope.
   const uintptr_t lo = addr_val;
-  const uintptr_t hi = addr_val + rounded;
   const size_t kernel_bytes = static_cast<size_t>(rounded);
 
   // Cordon probe. Loaded PE images, kernel mappings (TEB / PEB /
@@ -94,14 +90,12 @@ intptr_t munmap(void *addr, size_t size) {
       e != 0)
     return -e;
 
-  // Pre-split at the page-aligned edges. A boundary that lands in
-  // MEM_FREE returns `ENOENT`; a boundary that lands on an exact
-  // region edge returns `EINVAL`. Both mean "no straddle here, no
-  // work to do" — silently tolerated. Only a strict-interior boundary
-  // triggers an actual split.
-  (void)vt::split(reinterpret_cast<void *>(lo));
-  (void)vt::split(reinterpret_cast<void *>(hi));
-
+  // Release directly — the substrate's per-arena envelope absorbs
+  // edge-straddler split atomically alongside the demote / coalesce /
+  // commit work, so no caller-side pre-split is needed. The race
+  // window between a libc-side `split()` and the subsequent `release`
+  // (where a peer mutation could turn a benign no-op into a phantom
+  // EINVAL) is closed at the substrate level.
   vt::VaRange range =
       mp::make_range(reinterpret_cast<void *>(lo), kernel_bytes);
 

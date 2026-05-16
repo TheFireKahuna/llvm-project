@@ -8,10 +8,15 @@
 ///
 /// \file
 /// `internal::mmap` — the top-level POSIX dispatcher. Validates the
-/// flag matrix, then routes by shape to one of the per-shape handlers.
-/// Anonymous-private is the only shape fully implemented in P2; the
-/// remaining shapes return `-ENOSYS` pending P3 (MAP_FIXED) and P4
-/// (file-backed, shared, hugetlb).
+/// flag matrix, then routes by shape:
+///   * MAP_ANONYMOUS | MAP_PRIVATE — handled by `mmap_anon_private`
+///     (P2).
+///   * MAP_FIXED / MAP_FIXED_NOREPLACE on anon-private — handled by
+///     `mmap_fixed_replace` / `mmap_fixed_noreplace_claim` (P3).
+///   * Every other shape (MAP_HUGETLB, MAP_ANON|SHARED, fd-backed
+///     file private / file shared, MAP_FIXED on any of the above)
+///     returns `-ENOSYS` until its phase lands. No legacy
+///     fallthrough.
 ///
 /// `internal::mmap_anon_private` is exposed for direct callers (and
 /// for tests that target the new path without going through the full
