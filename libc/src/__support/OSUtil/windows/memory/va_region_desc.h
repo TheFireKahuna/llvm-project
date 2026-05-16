@@ -5,38 +5,27 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-///
-/// \file
-/// Per-region descriptor (\c RegionDesc) — the leaf payload pointed to by every
-/// interval-skiplist node's \c value atomic in the va_tracker. One cache line
-/// carrying per-desc state (view protection, section offset, shape, flags,
-/// NUMA mask) plus an 8-byte \c BackingRef into the shared \c DescBacking
-/// partition that owns the kernel-resident handles and placeholder identity
-/// for the source mapping.
-///
-/// Multiple descs that share a kernel reservation — fragments produced by
-/// partial unmap, MAP_FIXED carve, mprotect-with-shape-change — all carry the
-/// SAME encoded \c BackingRef. The kernel placeholder is split zero times and
-/// the kernel handles are duplicated zero times: one allocation, one free,
-/// no aliasing.
-///
-/// Body lifetime is governed by Crystalline-W via
-/// \c g_va_tracker_skiplist_domain — the owning skiplist node retires this
-/// descriptor through the same domain it uses for its own retirement, so
-/// there is no separate per-desc domain. Kernel-state teardown is owned by
-/// the synchronous mutator path (the va_tracker Transaction commit), not by
-/// the FreeFn; see Nikolaev & Ravindran, "Crystalline: Fast and Memory
-/// Efficient Wait-Free Reclamation," PLDI 2024, §1, which establishes that
-/// Crystalline-W offers no synchronous grace primitive.
-///
-/// The reader contract is field-reader, not VA-reader. Consumers under a
-/// Crystalline pin observe consistent \c RegionDesc fields throughout their
-/// read window, decide what to do, and dereference the underlying VA only
-/// through a separate kernel call — NT rejects such a call with
-/// \c STATUS_INVALID_HANDLE or \c STATUS_NOT_MAPPED_VIEW if the mutator has
-/// already torn the VA down. Pinned readers never dereference user content
-/// directly.
-///
+//
+// Per-region descriptor (RegionDesc) — the leaf payload pointed to by every
+// interval-skiplist node's value atomic in the va_tracker. Body lifetime is
+// governed by Crystalline-W via g_va_tracker_skiplist_domain; kernel-resident
+// handles and placeholder identity live on a shared DescBacking referenced
+// via an 8-byte encoded BackingRef. Fragment descs produced by partial unmap
+// or MAP_FIXED carve carry the SAME BackingRef value — one kernel allocation,
+// one free, zero aliasing.
+//
+// Kernel-state teardown is synchronous on the mutator path (Transaction
+// commit), never the FreeFn — Crystalline-W is asynchronous by construction
+// and offers no synchronous grace primitive (Nikolaev & Ravindran,
+// "Crystalline: Fast and Memory Efficient Wait-Free Reclamation,"
+// PLDI 2024, §1).
+//
+// The reader contract is field-reader, not VA-reader: pinned readers observe
+// consistent RegionDesc fields, then dereference the underlying VA only via
+// a separate kernel call so that NT rejection (STATUS_INVALID_HANDLE /
+// STATUS_NOT_MAPPED_VIEW) makes synchronous mutator teardown invisible to
+// grace-deferred readers.
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEMORY_VA_REGION_DESC_H
@@ -55,316 +44,206 @@ namespace LIBC_NAMESPACE_DECL {
 namespace windows {
 namespace va_tracker {
 
-/// Syscall-recipe taxonomy picked at region creation time.
-///
-/// The numeric values are wire-stable across the va_tracker and the higher
-/// \c memory::RegionShape consumer. Any new shape must take a fresh number
-/// at the tail of the enum and be added to both surfaces until the consumer
-/// alias is retired.
+// Syscall-recipe taxonomy picked at region creation time. Numeric values are
+// wire-stable across the va_tracker and the higher memory::RegionShape
+// consumer; new shapes append at the tail.
 enum class RegionShape : uint16_t {
-  /// Sentinel for default-constructed slots; never produced by a successful
-  /// acquire path.
-  NONE = 0,
+  NONE = 0, // Default-constructed sentinel; never produced by acquire.
 
   // 1 reserved (was ANON_ONESHOT; retired).
 
-  /// Anonymous private/shared mapping backed by an NT placeholder reservation
-  /// committed via \c NtAllocateVirtualMemoryEx. The canonical
-  /// \c mmap(MAP_ANONYMOUS) shape.
+  // mmap(MAP_ANONYMOUS): NT placeholder committed via
+  // NtAllocateVirtualMemoryEx.
   ANON_PLACEHOLDER = 2,
 
-  /// File-backed mapping with a single contiguous section view spanning the
-  /// region. Produced by \c mmap(fd, ...) when no partial-unmap or carve has
-  /// fragmented the range.
+  // mmap(fd) producing a single contiguous section view.
   FILE_VIEW_MONO = 3,
 
-  /// File-backed mapping split into multiple section views, typically after
-  /// MAP_FIXED carve or partial unmap of a previously MONO region. View
-  /// boundaries live on the owning skiplist nodes; this desc covers a single
-  /// fragment.
+  // File mapping split into multiple section views by MAP_FIXED carve or
+  // partial unmap; each fragment is its own desc.
   FILE_VIEW_CHUNKED = 4,
 
-  /// File-backed mapping carried as a placeholder reservation only — the
-  /// section view is materialised lazily on first fault. Used for
-  /// MAP_NORESERVE and large precommitted file ranges.
+  // File placeholder reservation; section view materialised lazily on first
+  // fault. Used for MAP_NORESERVE and large precommitted file ranges.
   FILE_VIEW_RESERVE = 5,
 
   // 6 reserved (was MIXED; never produced — do not reuse without an owner
   // story).
 
-  /// Foreign VA seen by the resolver but not owned by the libc — third-party
-  /// mappings introduced by direct \c NtMapViewOfSection calls outside the
-  /// tracker. Carried so SIGSEGV classification can distinguish "unknown VA"
-  /// from "known foreign VA."
+  // Third-party mapping introduced by a direct NtMapViewOfSection outside
+  // the tracker; carried so SIGSEGV classification can distinguish "unknown
+  // VA" from "known foreign VA."
   FOREIGN_SENTINEL = 7,
 
-  /// Anonymous mapping backed by a libc-created section (for shared anonymous
-  /// fork survival and \c shm_open). Distinguished from \c ANON_PLACEHOLDER
-  /// because the kernel handle is a section handle, not a raw reservation.
+  // Anonymous mapping backed by a libc-created section (shared anonymous
+  // fork survival, shm_open). Distinguished from ANON_PLACEHOLDER because
+  // the kernel handle is a section, not a raw reservation.
   ANON_RESERVE_SECTION = 8,
 
-  /// Libc-internal arena VA. Tracked so SIGSEGV classification can refuse to
-  /// invoke user handlers on memory the runtime owns.
+  // Libc-internal arena VA. SIGSEGV classification refuses to invoke user
+  // handlers on memory the runtime owns.
   LIBC_INTERNAL = 9,
 
-  /// Loaded PE image regions (the EXE plus mapped DLLs). Read-only in the
-  /// tracker; teardown is owned by the PE loader.
+  // Loaded PE images (EXE + DLLs). Read-only in the tracker; the PE loader
+  // owns teardown.
   IMAGE_REGION = 10,
 
-  /// Kernel-mapped regions (KUSER_SHARED_DATA, PEB, TEBs). Read-only in the
-  /// tracker; the kernel owns lifetime.
+  // Kernel-mapped regions (KUSER_SHARED_DATA, PEB, TEBs). Read-only in the
+  // tracker; the kernel owns lifetime.
   KERNEL_REGION = 11,
 };
 
-/// Static per-region attribute flags, set at acquire time and immutable after
-/// the desc is published. Mutating ops (\c protect(), \c set_numa_interleave()
-/// etc.) clone the descriptor and Swap a fresh skiplist node rather than
-/// rewriting flags in place.
+// Static per-region attribute flags, set at acquire time and immutable after
+// publish. Mutating ops clone the descriptor and Swap a fresh skiplist node
+// rather than rewriting in place.
 namespace region_flag {
 
-inline constexpr uint16_t COW = 0x1;              ///< Copy-on-write.
-inline constexpr uint16_t SHARED = 0x2;           ///< MAP_SHARED visibility.
-inline constexpr uint16_t HUGE_PAGES = 0x4;       ///< Backed by large pages.
-inline constexpr uint16_t NORESERVE = 0x8;        ///< MAP_NORESERVE (lazy).
-inline constexpr uint16_t NUMA_INTERLEAVE = 0x10; ///< NUMA interleave active.
-inline constexpr uint16_t COMMITTED = 0x20;       ///< Fully committed.
+inline constexpr uint16_t COW = 0x1;              // Copy-on-write.
+inline constexpr uint16_t SHARED = 0x2;           // MAP_SHARED visibility.
+inline constexpr uint16_t HUGE_PAGES = 0x4;       // Backed by large pages.
+inline constexpr uint16_t NORESERVE = 0x8;        // MAP_NORESERVE (lazy).
+inline constexpr uint16_t NUMA_INTERLEAVE = 0x10; // NUMA interleave active.
+inline constexpr uint16_t COMMITTED = 0x20;       // Fully committed.
 
-/// Guard pages installed via MADV_GUARD_INSTALL. The fault handler raises
-/// SIGSEGV (or re-arms PAGE_NOACCESS) on first touch; MADV_GUARD_REMOVE
-/// clears the bit and restores baseline protection. Hardware-permanent
-/// guards use PAGE_NOACCESS — PAGE_GUARD is one-shot self-clearing and
-/// would expose every guarded page after a single trip through the fault
-/// handler.
+// MADV_GUARD_INSTALL: hardware-permanent guard via PAGE_NOACCESS, not
+// PAGE_GUARD (PAGE_GUARD is one-shot self-clearing and would expose every
+// guarded page after a single trip through the fault handler).
 inline constexpr uint16_t PROT_GUARD = 0x40;
 
-/// MADV_DONTFORK: the region is omitted from the child's tracker by
-/// `va_tracker_fork_reinit`. The kernel's CoW inheritance of the parent
-/// reservation is released by the drift-detection sweep.
+// MADV_DONTFORK: omitted from the child's tracker by va_tracker_fork_reinit;
+// the kernel's CoW inheritance is released by drift-detection sweep.
 inline constexpr uint16_t DONTFORK = 0x80;
 
-/// MADV_WIPEONFORK: child-side desc is materialised, then the region is
-/// zero-filled (commit_replace recycle) under the LOCKED envelope before
-/// child code runs.
+// MADV_WIPEONFORK: child desc materialised then zero-filled under the
+// LOCKED envelope before child code runs.
 inline constexpr uint16_t WIPEONFORK = 0x100;
 
-/// MAP_32BIT: the reservation is constrained to the low 2 GiB
-/// (`nt_pal::reserve_placeholder_32bit`). Carried so a future mremap-grow
-/// or mremap-move preserves the constraint when re-acquiring.
+// MAP_32BIT: reservation constrained to low 2 GiB via
+// nt_pal::reserve_placeholder_32bit. Carried so future mremap-grow or
+// mremap-move preserves the constraint when re-acquiring.
 inline constexpr uint16_t LOW_32BIT = 0x200;
 
-/// MADV_DONTDUMP: exclude the region from WER crash dumps. The PEB WER
-/// gather-list write is the durable side effect; this bit records the
-/// flag for paired MADV_DODUMP, which clears it before re-including.
+// MADV_DONTDUMP: exclude from WER crash dumps. The PEB WER gather-list
+// write is the durable effect; this bit records the flag for paired
+// MADV_DODUMP to clear before re-including.
 inline constexpr uint16_t DUMP_EXCLUDE = 0x400;
 
-/// LOCK_ONFAULT: arm lock-on-first-touch for this region.
-///
-/// Set by `mlock2(LOCK_ONFAULT)` and the `mlockall(... | MCL_ONFAULT)`
-/// per-tracked-region pass; cleared by `munlock`. The fault handler in
-/// `mem_fault_handler.cpp` reads this bit on every demand-commit and
-/// guard-page violation that resolves to a tracked region; on hit it
-/// calls `nt_pal::lock_range` for the faulting page before returning
-/// `EXCEPTION_CONTINUE_EXECUTION`.
-///
-/// Per-desc rather than a separate global table: one atomic load
-/// already in the resolver fast path, no futex-RW lock, no sorted-
-/// range binary search, no out-of-band dispatch via PAGE_GUARD ↔ VEH
-/// without va_tracker correlation. The PAGE_GUARD bit on each chunk's
-/// protection is still applied at arm time so the kernel raises
-/// `STATUS_GUARD_PAGE_VIOLATION` on first touch — that is what gives
-/// us a fault to react to on already-committed pages — but the
-/// state-of-armed-ness lives here, not in a side table.
-///
-/// POSIX requires that locks not survive `fork()`. The va_tracker's
-/// `serialize_for_fork` strips this bit before emitting each entry to
-/// the child snapshot; the bit cannot survive fork via CoW because the
-/// substrate replays each region freshly in the child.
+// LOCK_ONFAULT: arm lock-on-first-touch. The fault handler reads this
+// bit on every demand-commit and guard-page violation that resolves to a
+// tracked region; on hit it calls nt_pal::lock_range for the faulting
+// page. Per-desc rather than a side table because the resolver fast path
+// already loads the desc — no RW lock, no sorted-range search, no PAGE_GUARD
+// out-of-band dispatch. POSIX forbids lock survival across fork;
+// serialize_for_fork strips this bit before emitting to the child snapshot.
 inline constexpr uint16_t LOCK_ONFAULT = 0x800;
 
-// Bit 0x1000 (formerly PROT_DIVERGED) is unused. The substrate no
-// longer caches current protection on the desc — consumers query
-// MBI when they need it, and mprotect leaves desc state untouched —
-// so a divergence signal has no purpose.
+// 0x1000 unused. Was PROT_DIVERGED; substrate no longer caches current
+// protection on the desc (consumers query MBI; mprotect leaves desc
+// untouched), so a divergence signal has no purpose.
 
 } // namespace region_flag
 
-/// Per-region leaf descriptor for the va_tracker's interval skiplist.
-///
-/// One cache line, owned by the skiplist node whose \c value atomic publishes
-/// it. The class inherits the 24-byte \c CrystallineNode header so the
-/// descriptor rides the SMR substrate's batch-retire protocol without a
-/// per-allocation overhead.
-///
-/// The class carries several invariants worth noting:
-///   * Body lifetime is governed by Crystalline-W via
-///     \c g_va_tracker_skiplist_domain. Pinned readers observe consistent
-///     fields throughout their read window; the FreeFn
-///     (\c region_desc_release) is metadata-only — it validates canaries,
-///     zeroes the slot, and returns it to the partition pool. No \c nt_pal
-///     calls; no \c NtClose.
-///   * Kernel-resident state (placeholder identity, section handle, file
-///     handle) lives on the shared \c DescBacking referenced via
-///     \c backing_ref. Multiple fragment descs that share a single kernel
-///     reservation carry the SAME encoded \c BackingRef value.
-///   * Kernel-state teardown is run synchronously by the Transaction whose
-///     commit retires this desc, never from the FreeFn. Crystalline-W is
-///     asynchronous by construction (Nikolaev & Ravindran, PLDI 2024 §1) and
-///     offers no synchronous grace primitive that could be used to safely
-///     issue kernel calls from a FreeFn.
-///   * Range bounds (low / high VA) live on the owning skiplist node's
-///     \c lo / \c hi fields; the partition tree is itself the range index.
-///     There is no descriptor-side replication of the range.
-///   * Partial unmap splits the interval: each fragment becomes its own
-///     skiplist node pointing at its own \c RegionDesc, with every fragment
-///     carrying the same \c BackingRef into the shared kernel state.
-///   * Published descs are immutable. \c shape and \c flags are atomic only
-///     to give pinned readers a consistent view across the brief window
-///     between Swap-CAS success and the dying desc's \c INVALIDATED stamp;
-///     the race is benign — readers see consistent OLD-desc fields under
-///     their pin's grace.
-///
-/// The reader contract is field-reader, not VA-reader: dereference user
-/// content only via a separate kernel call so that NT rejection
-/// (\c STATUS_INVALID_HANDLE / \c STATUS_NOT_MAPPED_VIEW) makes synchronous
-/// teardown by the mutator invisible to grace-deferred readers.
-///
-/// Memory layout (one cache line, validated by \c static_assert):
-/// \code
-///   offset
-///   [ 0..19]  CrystallineNode body (next/slot/birth_era union, refs/
-///             batch_next union, batch_link u32 at 16..19)
-///   [20..23]  view_prot          — tail-pad-reuse slot, NT-DWORD wide
-///   [24..31]  backing_ref        — encoded (slot_idx | generation)
-///   [32..39]  section_offset     — LARGE_INTEGER, per-desc
-///   [40..41]  shape              — atomic uint16
-///   [42..43]  flags              — atomic uint16
-///   [44..47]  numa_interleave_mask
-///   [48..55]  node_canary        — partition_secret-derived
-///   [56..63]  reserved           — forward-compat headroom
-/// \endcode
-///
-/// \see desc_backing.h for the \c BackingRef encoding and dereference contract.
+// Per-region leaf descriptor for the va_tracker's interval skiplist. One
+// cache line, owned by the skiplist node whose `value` atomic publishes it.
+// Inherits the 24-byte CrystallineNode header so the desc rides the SMR
+// substrate's batch-retire protocol with no per-allocation overhead.
+//
+// Invariants worth flagging:
+//   * Range bounds live on the skiplist node's lo/hi; the partition tree is
+//     the range index. No descriptor-side replication.
+//   * Published descs are immutable. `shape` and `flags` are atomic only to
+//     give pinned readers a consistent view across the brief window between
+//     Swap-CAS success and the dying desc's INVALIDATED stamp — readers see
+//     consistent OLD-desc fields under their pin's grace.
+//   * Partial unmap splits the interval: each fragment becomes its own
+//     skiplist node pointing at its own RegionDesc, all sharing one
+//     BackingRef.
 struct alignas(64) RegionDesc
     : public ::LIBC_NAMESPACE::concurrent::CrystallineNode {
-  // Intrusive Crystalline-W runtime fields (next/slot/birth_era union,
-  // refs/batch_next union, batch_link). Emitted directly via
-  // LIBC_CRYSTALLINE_NODE_FIELDS so RegionDesc remains standard-layout —
-  // keeps `offsetof` unconditionally supported per [support.types.layout]/1.
+  // Intrusive Crystalline-W runtime fields emitted via the macro so RegionDesc
+  // stays standard-layout — keeps offsetof unconditionally supported per
+  // C++23 [support.types.layout]/1.
   LIBC_CRYSTALLINE_NODE_FIELDS(RegionDesc);
 
-  /// Acquire-time protection intent — the value passed as
-  /// \c AcquireMeta::view_prot at the original \c acquire / \c replace
-  /// commit. \b Never updated post-publish. \c mprotect changes affect
-  /// only kernel-side per-page protection; the substrate treats the
-  /// kernel as the source of truth for current protection and reads
-  /// it via MBI when a consumer (fork replay, future precision
-  /// mremap) needs the up-to-date value. The field's role is
-  /// reduced to (a) a "what was asked for at acquire time" hint —
-  /// used by replace's outside-survivor uniformity check, which
-  /// only needs to know that all descs from one acquire family
-  /// agree — and (b) an MBI-query fallback when the kernel query
-  /// fails for some reason.
-  ///
-  /// Full 32-bit DWORD width matches NT's \c Protect argument exactly. Lives
-  /// at offset 20 as a tail-pad-reuse slot under the Itanium / MSVC ABI's
-  /// non-standard-layout tail-padding-reuse rule, packed by natural
-  /// alignment immediately after \c batch_link at offset 16.
+  // Acquire-time protection intent (the value passed as
+  // AcquireMeta::view_prot at the original acquire/replace commit).
+  // Never updated post-publish. mprotect changes affect only kernel-side
+  // per-page protection; the kernel is source of truth and consumers query
+  // MBI for current protection. This field's role is reduced to (a) a
+  // "what was asked for at acquire time" hint used by replace's
+  // outside-survivor uniformity check and (b) an MBI-query fallback when
+  // the kernel query fails.
+  //
+  // Lives at offset 20 as a tail-pad-reuse slot under the Itanium/MSVC ABI's
+  // non-standard-layout tail-padding-reuse rule; 32-bit DWORD width matches
+  // NT's `Protect` argument exactly.
   uint32_t view_prot{0};
 
-  /// Encoded \c (slot_idx | generation) reference into the \c DescBacking
-  /// partition. Zero is the null sentinel. The referenced backing owns this
-  /// desc's section handle, file handle, and placeholder identity; multiple
-  /// descs that share an underlying kernel reservation all carry the same
-  /// \c BackingRef value.
-  ///
-  /// Dereferencing kernel-state fields is a two-step under a Crystalline pin
-  /// on \c g_va_tracker_backing_domain:
-  ///
-  /// \code{.cpp}
-  ///   // Engine path (run_envelope holds anchor + LockedSet):
-  ///   auto *b = deref_backing_raw(desc->backing_ref);
-  ///   HANDLE sec = b->section_handle.load(MemoryOrder::ACQUIRE);
-  ///
-  ///   // Reader path (no LockedSet — wrap in BackingView for
-  ///   // per-load generation re-check):
-  ///   anchor_backing_reader_pin();
-  ///   BackingView v{deref_backing_raw(desc->backing_ref)};
-  ///   HANDLE sec = v.load<&DescBacking::section_handle>(MemoryOrder::ACQUIRE);
-  /// \endcode
-  ///
-  /// The pin on \c g_va_tracker_skiplist_domain that keeps this desc alive
-  /// does \b not extend to the backing — the caller must hold the backing
-  /// pin for the duration of the dereference. See \c desc_backing.h for the
-  /// engine vs reader access discipline.
+  // Encoded (slot_idx | generation) reference into the DescBacking
+  // partition; zero is the null sentinel. The pin on
+  // g_va_tracker_skiplist_domain that keeps this desc alive does NOT extend
+  // to the backing — callers must hold a g_va_tracker_backing_domain pin
+  // for the duration of any kernel-handle dereference. See desc_backing.h
+  // for the engine vs reader access discipline.
   uint64_t backing_ref{0};
 
-  /// Section offset for this view, as an NT \c LARGE_INTEGER. Partial unmaps
-  /// that split a region produce two \c RegionDescs whose \c section_offset
-  /// differs by the bytes the head fragment consumed. Per-desc because the
-  /// offset shift is unique per fragment — it cannot share with the backing.
+  // NT LARGE_INTEGER section offset for this view. Partial unmaps that
+  // split a region produce two descs whose section_offset differs by the
+  // head fragment's byte length. Per-desc rather than on the backing
+  // because the offset shift is unique per fragment.
   LARGE_INTEGER section_offset{};
 
-  /// Region shape tag (\c RegionShape numeric value). Atomic because the
-  /// rare promotion paths (e.g., MONO → CHUNKED on first split) write through
-  /// a published descriptor; readers observe ACQUIRE-fenced.
+  // Region shape tag. Atomic so a pinned reader observing the OLD desc
+  // through the brief Swap-CAS-success-to-INVALIDATED-stamp window sees
+  // a consistent value; never rewritten in place after publish — fresh
+  // shapes ride on freshly-cloned descs through Swap-CAS.
   cpp::Atomic<uint16_t> shape{static_cast<uint16_t>(RegionShape::NONE)};
 
-  /// Flag bitset of \c region_flag::* constants. Written at acquire time via
-  /// the Transaction commit path and never mutated post-publish in place.
-  /// Atomic for the C++ memory model — concurrent readers may pin the desc
-  /// and read flags during the brief window between Swap-CAS success and the
-  /// dying desc's \c INVALIDATED stamp; the race is benign because the
-  /// reader sees consistent OLD-desc fields under its pin.
+  // region_flag::* bitset. Same publish-window discipline as shape;
+  // never rewritten in place post-publish.
   cpp::Atomic<uint16_t> flags{};
 
-  /// NUMA interleave mask for \c set_numa_interleave() / \c mbind() /
-  /// \c set_mempolicy(). One bit per NUMA node (LSB = node 0); zero means
-  /// kernel default policy.
-  ///
-  /// Full 32-bit width covers 32 NUMA nodes, well above every production
-  /// Windows host (highest-NUMA SKUs cap out at 12–16 nodes). POSIX
-  /// \c mbind can express more in principle; the libc-internal representation
-  /// truncates beyond bit 31 at acquire time.
+  // One bit per NUMA node (LSB = node 0); zero means kernel default policy.
+  // 32-bit width covers every production Windows host (highest-NUMA SKUs
+  // cap at 12–16 nodes); POSIX mbind can express more in principle but the
+  // libc-internal representation truncates beyond bit 31 at acquire time.
   uint32_t numa_interleave_mask{0};
 
-  /// Per-slot canary derived from
-  /// \c partition_secret^class_id^chunk_id^slot_idx at allocation time;
-  /// validated in \c region_desc_release before any chunk-descriptor
-  /// dereference. Closes a heap-spray attack surface where an attacker
-  /// writing into a freed-but-not-reused slot crafts a bogus
-  /// \c chunk_id / \c slot_idx to redirect the FreeFn into a victim chunk's
-  /// bitmap. \c partition_secret is \c ProcessPrng-derived and lives in
-  /// sealed PCB Zone 0 — not observable to user code.
+  // Per-slot canary derived from
+  // partition_secret^class_id^chunk_id^slot_idx at allocation time;
+  // validated in region_desc_release before any chunk-descriptor
+  // dereference. Closes a heap-spray attack surface where an attacker
+  // writing into a freed-but-not-reused slot crafts a bogus chunk_id/
+  // slot_idx to redirect the FreeFn into a victim chunk's bitmap.
+  // partition_secret is ProcessPrng-derived and lives in sealed PCB Zone 0.
   uint64_t node_canary{0};
 
-  /// Forward-compat headroom. Reserved for future hardening (quarantine
-  /// epoch, GWP-ASan tag, telemetry counter) without disturbing the
-  /// slot-size invariant.
+  // Forward-compat headroom for future hardening (quarantine epoch,
+  // GWP-ASan tag, telemetry counter) without disturbing the slot-size
+  // invariant.
   uint64_t reserved{0};
 
   // ---- Helpers ---------------------------------------------------------
 
-  /// Returns the current shape under an ACQUIRE fence so the caller can pair
-  /// it with subsequent reads of fields published before the shape was
-  /// stamped (e.g., \c section_offset on a MONO → CHUNKED promotion).
+  // ACQUIRE-loaded so a reader that has only the desc pointer (no
+  // skiplist-load fence in scope) still pairs with the writer-side
+  // RELEASE store performed before publish. Raw `__atomic_load` rather
+  // than `shape.load()` because cpp::Atomic::load is non-const and this
+  // helper is const.
   [[nodiscard]] LIBC_INLINE RegionShape current_shape() const {
     uint16_t v;
     __atomic_load(&shape.val, &v, __ATOMIC_ACQUIRE);
     return static_cast<RegionShape>(v);
   }
 
-  /// Returns the flags bitset with an ACQUIRE fence.
   [[nodiscard]] LIBC_INLINE uint16_t flags_load() {
     return flags.load(cpp::MemoryOrder::ACQUIRE);
   }
 
-  /// Returns true if every bit in \p bit is set in the current flags.
   [[nodiscard]] LIBC_INLINE bool has_flag(uint16_t bit) {
     return (flags_load() & bit) != 0;
   }
 
-  /// Returns true if this region is backed by a file-derived section view in
-  /// any of its three file shapes (MONO, CHUNKED, RESERVE).
   [[nodiscard]] LIBC_INLINE bool is_file_backed() const {
     const RegionShape s = current_shape();
     return s == RegionShape::FILE_VIEW_MONO ||
@@ -372,8 +251,8 @@ struct alignas(64) RegionDesc
            s == RegionShape::FILE_VIEW_RESERVE;
   }
 
-  /// Returns true if this region is backed by an NT section object —
-  /// includes the three file shapes plus the anonymous-section shape.
+  // True for any NT section-backed shape — the three file shapes plus the
+  // anonymous-section shape.
   [[nodiscard]] LIBC_INLINE bool is_section_backed() const {
     const RegionShape s = current_shape();
     return s == RegionShape::FILE_VIEW_MONO ||
@@ -382,74 +261,63 @@ struct alignas(64) RegionDesc
            s == RegionShape::ANON_RESERVE_SECTION;
   }
 
-  /// Returns true if this region is anonymous — either a placeholder commit
-  /// or a libc-owned anonymous section.
+  // True for anonymous shapes — placeholder commit or libc-owned section.
   [[nodiscard]] LIBC_INLINE bool is_anonymous() const {
     const RegionShape s = current_shape();
     return s == RegionShape::ANON_PLACEHOLDER ||
            s == RegionShape::ANON_RESERVE_SECTION;
   }
 
-  /// Returns true if this region is a foreign (libc-unowned) mapping.
   [[nodiscard]] LIBC_INLINE bool is_foreign() const {
     return current_shape() == RegionShape::FOREIGN_SENTINEL;
   }
 
-  /// Returns true if the COW flag is set.
   [[nodiscard]] LIBC_INLINE bool is_cow() {
     return has_flag(region_flag::COW);
   }
 };
 
 // ---- Layout invariants ----------------------------------------------------
+//
+// RegionDesc is the slot type for the VaTrackerRegionDesc partition; slot
+// recovery is by index arithmetic against a fixed slot size, so any size or
+// offset drift desynchronises the FreeFn from the partition's bitmap.
 
 static_assert(sizeof(RegionDesc) == 64,
-              "va_tracker::RegionDesc must be exactly one cache line "
-              "(slot size in PartitionClass::RegionDesc partition)");
+              "RegionDesc must be exactly one cache line");
 static_assert(alignof(RegionDesc) == 64,
-              "va_tracker::RegionDesc must be cache-line aligned");
+              "RegionDesc must be cache-line aligned");
 
+// view_prot at 20 is the Itanium/MSVC tail-pad-reuse slot — packed by natural
+// alignment immediately after batch_link at offset 16 in the non-standard-
+// layout base.
 static_assert(offsetof(RegionDesc, view_prot) == 20,
-              "RegionDesc::view_prot must reuse the CrystallineNode "
-              "tail-pad slot at offset 20 — the Itanium/MSVC ABI's "
-              "tail-padding-reuse rule for non-standard-layout bases");
-static_assert(offsetof(RegionDesc, backing_ref) == 24,
-              "RegionDesc::backing_ref layout pin");
+              "RegionDesc::view_prot must reuse CrystallineNode tail-pad");
+static_assert(offsetof(RegionDesc, backing_ref) == 24, "backing_ref offset");
 static_assert(offsetof(RegionDesc, section_offset) == 32,
-              "RegionDesc::section_offset layout pin");
-static_assert(offsetof(RegionDesc, shape) == 40,
-              "RegionDesc::shape layout pin");
-static_assert(offsetof(RegionDesc, flags) == 42,
-              "RegionDesc::flags layout pin");
+              "section_offset offset");
+static_assert(offsetof(RegionDesc, shape) == 40, "shape offset");
+static_assert(offsetof(RegionDesc, flags) == 42, "flags offset");
 static_assert(offsetof(RegionDesc, numa_interleave_mask) == 44,
-              "RegionDesc::numa_interleave_mask layout pin");
-static_assert(offsetof(RegionDesc, node_canary) == 48,
-              "RegionDesc::node_canary layout pin");
-static_assert(offsetof(RegionDesc, reserved) == 56,
-              "RegionDesc::reserved layout pin");
+              "numa_interleave_mask offset");
+static_assert(offsetof(RegionDesc, node_canary) == 48, "node_canary offset");
+static_assert(offsetof(RegionDesc, reserved) == 56, "reserved offset");
 
-// The Crystalline-W FreeFn explicitly clears the slot via __builtin_memset
-// before returning it to the bitmap, so the type can hold no C++ object
-// state that would need a destructor.
+// FreeFn clears the slot via __builtin_memset before returning it to the
+// bitmap, so the type can hold no C++ state needing a destructor.
 static_assert(__is_trivially_destructible(RegionDesc),
-              "va_tracker::RegionDesc must be trivially destructible "
-              "for partition slot recycling");
+              "RegionDesc must be trivially destructible for slot recycling");
 
 struct VaChunkDesc;
 
-/// Visitor signature for the fork-reinit chunk walk. Invoked once per live
-/// \c VaChunkDesc reachable from the \c RegionDesc class's chunk table.
+// Visitor for region_desc_fork_reinit_phase; invoked once per live
+// VaChunkDesc reachable from the class's chunk table.
 using RegionDescForkChunkVisitor = void (*)(VaChunkDesc *cd, void *ctx);
 
-/// Fork-reinit phase for the \c RegionDesc subsystem.
-///
-/// Walks the per-class chunk table, refreshes per-chunk and per-slot canaries
-/// against the rotated \c partition_secret, and invokes \p visit on every
-/// reachable \c VaChunkDesc (used by the master reinit hook to build its
-/// leaked-descriptor reclaim bitmap).
-///
-/// \param visit Per-chunk visitor; pass \c nullptr to skip the visit step.
-/// \param ctx Opaque context forwarded to \p visit.
+// Walks the per-class chunk table, refreshes per-chunk and per-slot canaries
+// against the rotated partition_secret, and invokes `visit` on every
+// reachable VaChunkDesc. The master reinit hook uses the visit callback to
+// build its leaked-descriptor reclaim bitmap; pass nullptr to skip the visit.
 void region_desc_fork_reinit_phase(RegionDescForkChunkVisitor visit,
                                    void *ctx);
 

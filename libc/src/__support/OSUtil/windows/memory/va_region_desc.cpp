@@ -6,21 +6,14 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Owns the `VaTrackerRegionDesc` partition's per-class chunk table, the
-// allocator path, the FreeFn (`region_desc_release`, metadata-only), the
-// clone-for-fragment helper, and the RegionDesc fork-reinit phase.
-//
-// Crystalline retirement of the descriptor itself rides
-// `g_va_tracker_skiplist_domain`: the owning skiplist node retires the desc
-// through the same domain it uses for its own retirement. There is no
-// separate RegionDesc Crystalline domain.
-//
-// Kernel-state teardown lives elsewhere
-// (`va_tracker_transaction.cpp::backing_kill_and_retire`); the FreeFn in
-// this TU is pure metadata cleanup, per the discipline that Crystalline-W is
+// Owns the RegionDesc partition's chunk table, allocator, metadata-only
+// FreeFn, fragment clone, and fork-reinit phase. Descriptor retirement
+// rides g_va_tracker_skiplist_domain (no separate RegionDesc domain);
+// kernel-state teardown is run synchronously on the mutator path by
+// va_tracker_execute.cpp::backing_kill_and_retire (invoked from
+// reap_old_backings / rollback_provisional) — Crystalline-W is
 // asynchronous by construction and offers no synchronous grace primitive
-// (Nikolaev & Ravindran, "Crystalline: Fast and Memory Efficient Wait-Free
-// Reclamation," PLDI 2024, §1).
+// (Nikolaev & Ravindran, PLDI 2024, §1).
 //
 //===----------------------------------------------------------------------===//
 
@@ -52,8 +45,8 @@ namespace partition_ns = alloc::partition;
 //===----------------------------------------------------------------------===//
 
 // 64 KiB chunk for pagemap alignment; 256 slots × 64 B = 16 KiB used. The
-// trailing 48 KiB is committed-but-unused — bounded commit-charge cost, pages
-// stay zero-backed until first touch.
+// trailing 48 KiB is committed-but-unused — bounded charge, pages stay
+// zero-backed until first touch.
 constexpr uint32_t kRegionDescSlotSize       = sizeof(RegionDesc); // 64
 constexpr uint32_t kRegionDescSlotsPerChunk  = kSlotsPerChunk;     // 256
 constexpr uint32_t kRegionDescChunkBytes     = 64u * 1024u;
@@ -65,10 +58,9 @@ static_assert(kRegionDescSlotSize * kRegionDescSlotsPerChunk <=
               "RegionDesc slot range overflows chunk");
 static_assert(kRegionDescChunkBytes %
                   ::LIBC_NAMESPACE::windows::alloc::kPagemapChunkBytes == 0,
-              "RegionDesc chunk_bytes must be a multiple of pagemap "
-              "stamping granularity");
+              "chunk_bytes must be a multiple of pagemap granularity");
 static_assert(kRegionDescSlotSize >= sizeof(RegionDesc),
-              "RegionDesc slot must hold a full RegionDesc object");
+              "slot must hold a full RegionDesc");
 
 namespace {
 
@@ -83,9 +75,7 @@ LIBC_INLINE uint64_t partition_secret() {
   return ::LIBC_NAMESPACE::g_pcb.zone0b.partition_secret();
 }
 
-// Per-slot initializer invoked from the va_chunk acquire path. Stamps the
-// node canary against the VaTrackerRegionDesc class id; no Crystalline
-// init_node here because the descriptor retires through
+// No Crystalline init_node here: the descriptor retires through
 // g_va_tracker_skiplist_domain with the stamp happening at publish time.
 void region_desc_init_slot(void *slot, VaChunkDesc * /*cd*/,
                            uint32_t chunk_id, uint32_t slot_idx,
@@ -103,10 +93,9 @@ void region_desc_init_slot(void *slot, VaChunkDesc * /*cd*/,
 //  Allocation
 //===----------------------------------------------------------------------===//
 
-// Two-phase acquire: hand the shared va_chunk allocator a spec describing the
-// partition class and slot geometry, then loop — pull a slot from any live
-// chunk if one is available, otherwise commit a fresh chunk and retry. A null
-// return from `commit_new_va_chunk_for` is the only terminal failure.
+// Two-phase acquire: pull a slot from any live chunk, otherwise commit a
+// fresh chunk and retry. A null return from commit_new_va_chunk_for is the
+// only terminal failure.
 RegionDesc *region_desc_alloc() {
   PerRegionDescState &p = g_region_desc_state;
 
@@ -140,16 +129,10 @@ RegionDesc *region_desc_alloc() {
 //  FreeFn — metadata-only descriptor release
 //===----------------------------------------------------------------------===//
 
-// Recover (chunk_id, slot_idx) from the desc VA, triple-validate (bounds →
-// per-slot canary → per-chunk canary), zero the slot, and return it to the
-// pool. The desc carries no kernel handles — those live on the shared
-// `DescBacking` referenced via `desc->backing_ref` and were already torn
-// down synchronously by the Transaction whose commit retired this desc.
-//
-// Canary order matters: the per-slot canary is validated BEFORE the
-// per-chunk canary, because the per-slot canary is the harder target for an
-// attacker (per-slot entropy from `slot_idx`), and we want a forgery attempt
-// to trap on the strongest check first.
+// Canary order: per-slot BEFORE per-chunk. Per-slot has the higher entropy
+// (slot_idx contributes), so a forgery attempt traps on the strongest check
+// first. Kernel handles were torn down at Transaction commit via the
+// backing's synchronous path — this FreeFn touches metadata only.
 void region_desc_release(RegionDesc *desc) {
   if (LIBC_UNLIKELY(desc == nullptr))
     __builtin_trap();
@@ -165,9 +148,6 @@ void region_desc_release(RegionDesc *desc) {
       static_cast<uint8_t>(rec.chunk_id),
       static_cast<uint8_t>(rec.slot_idx), partition_secret());
 
-  // Metadata-only cleanup. Kernel state was torn down at Transaction commit
-  // via the backing's synchronous teardown; here we only zero the slot and
-  // return it to the partition pool.
   __builtin_memset(static_cast<void *>(desc), 0, sizeof(RegionDesc));
 
   release_slot_in_va_chunk(rec.cd, rec.slot_idx, p.chunk_table);
@@ -177,15 +157,12 @@ void region_desc_release(RegionDesc *desc) {
 //  Fragment clone
 //===----------------------------------------------------------------------===//
 
-// Produce a fresh desc for a fragment of `src`. Shape, flags, view_prot, and
-// numa_interleave_mask copy verbatim; section_offset shifts by the byte
-// distance from the source low VA to the fragment low VA. The encoded
-// BackingRef is shared, so the kernel placeholder is split zero times and
-// the kernel handles are duplicated zero times.
-//
-// A failure path that discards this clone before publication leaks no
-// kernel state: the backing FreeFn is metadata-only, and any backing
-// teardown decision is the surviving Transaction's responsibility.
+// Shape, flags, view_prot, numa_interleave_mask copy verbatim; section_offset
+// shifts by (frag_lo - src_lo). The encoded BackingRef is shared — the
+// kernel placeholder is split zero times and the kernel handles are
+// duplicated zero times. A discarded clone leaks no kernel state because
+// the backing FreeFn is metadata-only and any backing teardown decision
+// belongs to the surviving Transaction.
 RegionDesc *clone_region_desc_for_fragment(RegionDesc *src, uintptr_t src_lo,
                                            uintptr_t frag_lo) {
   if (src == nullptr)
@@ -198,6 +175,9 @@ RegionDesc *clone_region_desc_for_fragment(RegionDesc *src, uintptr_t src_lo,
   dst->section_offset = src->section_offset;
   dst->section_offset.QuadPart +=
       static_cast<int64_t>(frag_lo - src_lo);
+  // ACQUIRE on src then RELEASE on dst: dst will be published via the
+  // Transaction's Swap-CAS, and a subsequent reader pinning dst must see
+  // the shape/flags written here.
   dst->shape.store(src->shape.load(cpp::MemoryOrder::ACQUIRE),
                    cpp::MemoryOrder::RELEASE);
   dst->flags.store(src->flags.load(cpp::MemoryOrder::ACQUIRE),
@@ -214,11 +194,7 @@ RegionDesc *clone_region_desc_for_fragment(RegionDesc *src, uintptr_t src_lo,
 
 namespace {
 
-// Per-slot fork canary refresh callback. The shared
-// `refresh_slot_canaries_in_chunk` walks the occupancy bitmap and
-// dispatches here with the slot VA and pre-computed canary. RegionDesc
-// carries no additional per-slot post-fork repair beyond the canary
-// write.
+// RegionDesc has no per-slot post-fork repair beyond the canary write.
 void region_desc_per_slot_canary_refresh(void *slot_va,
                                          uint64_t fresh_canary) {
   auto *rd = static_cast<RegionDesc *>(slot_va);

@@ -6,44 +6,36 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implements the memory-subsystem VEH classifier. The filter record is
-// emitted into the `.libcveh` section via `LIBC_REGISTER_VEH_FILTER`;
-// the master VEH handler picks it up from the registry and calls into
-// `try_demand_commit` for every `EXCEPTION_ACCESS_VIOLATION`.
+// VEH-path discipline (load-bearing across both filters): the handler
+// fires on the faulting thread, so any lock that thread already holds
+// would deadlock against itself. Every read here goes through an atomic
+// projection (pagemap entry, desc RegionShape/flags words); the writer
+// side sits behind a lock the VEH path never touches.
 //
-// VEH path discipline. State read on the VEH path must be lock-free or
-// wait-free. The handler fires on the faulting thread, so any lock the
-// thread might already hold deadlocks against itself - including the
-// mmap-engine write side. The pattern across the subsystem is an
-// atomic projection (the pagemap entry, the desc's `RegionShape` /
-// `flags` words) readable from any context, with the full mutable
-// table sitting behind a separate writer-only lock that the VEH path
-// never touches.
+// Probe order in try_demand_commit is cheapest-and-most-selective first
+// so foreign / cordoned faults bail in one wait-free load and already-
+// committed protection faults bail in one MBI syscall before either
+// touches the tracker:
+//   1. pagemap::classify        wait-free tag read; rejects every
+//                               libc-internal and cordon fault.
+//   2. nt_pal::query_region MBI single NtQueryVirtualMemory; MEM_RESERVE
+//                               gate filters out the dominant "real
+//                               permission fault" case before the
+//                               tracker lookup.
+//   3. va_tracker::resolve      authoritative for POSIX VA, but the
+//                               heaviest of the four — runs last among
+//                               the classifiers.
+//   4. NT-protection compat     read-vs-PAGE_READONLY etc. before any
+//                               commit syscall.
+// Demand-commit dispatch (NUMA-interleave per-page or 256 KiB cluster)
+// only runs once all four have passed.
 //
-// Probe priority:
-//
-//   1. `pagemap::classify`           wait-free, non-faulting; rejects
-//                                    every libc-internal and cordon
-//                                    fault to `CONTINUE_SEARCH`.
-//   2. `nt_pal::query_region` MBI    cheap fast-reject - most ACCESS
-//                                    violations land on committed
-//                                    pages with `State != MEM_RESERVE`.
-//   3. `va_tracker::resolve`         authoritative for POSIX VA;
-//                                    returns a per-pointer Crystalline-W
-//                                    pinned `RegionRef`.
-//   4. NT protection compatibility   reads `AllocationProtect` and
-//                                    rejects mismatched access classes.
-//   5. Demand-commit dispatch        NUMA-interleave per-page, else a
-//                                    256 KiB cluster commit.
-//
-// Pin discipline. `va_tracker::resolve` returns a `RegionRef` pinned on
-// the skiplist domain's `kPinSlotCur`. The pin persists until the next
-// va_tracker call on this thread rotates the slot - no scope-exit drop
-// step. Reading kernel-state fields off the resolved desc requires an
-// additional pin on the backing domain plus a triple-validate via
-// `deref_backing_raw(desc->backing_ref)`. The current implementation only
-// reads `current_shape()`, `flags_load()`, and `numa_interleave_mask`,
-// all of which live on the desc proper.
+// Pin discipline: va_tracker::resolve returns a RegionRef pinned on the
+// skiplist domain's kPinSlotCur and the pin persists until the next
+// va_tracker call on this thread rotates the slot — no scope-exit drop.
+// The fields read off the desc here (current_shape, flags_load,
+// numa_interleave_mask) all live on the desc proper, so no backing-pin
+// dance is needed.
 //
 //===----------------------------------------------------------------------===//
 
@@ -76,22 +68,18 @@ LONG try_demand_commit(EXCEPTION_POINTERS *ep) {
   ULONG access_type = static_cast<ULONG>(
       ep->ExceptionRecord->ExceptionInformation[0]);
 
-  // Cached PCB read populated by pcb_startup_init (Tier A Phase 0). Demand
-  // commits are guarded by `mbi.State == MEM_RESERVE`, which cannot hold
-  // for libc-owned VA before the memory primitives bootstrap publishes
-  // reservations — and that bootstrap runs strictly after the PCB is
-  // populated. A pre-bootstrap AV reaches this handler only via the
-  // pagemap-Empty + non-MEM_RESERVE early exits, never the page-size
-  // arithmetic below.
+  // get_page_size() reads g_pcb (populated in Tier A Phase 0). Pre-Tier-A
+  // AVs are guaranteed to exit through one of the early CONTINUE_SEARCH
+  // branches below (Empty pagemap + non-MEM_RESERVE state) and never
+  // reach this arithmetic — the memory bootstrap that publishes
+  // reservations runs strictly after PCB init.
   const SIZE_T page_size = get_page_size();
   void *fault_page =
       reinterpret_cast<void *>(align_down_to_page(fault_addr));
 
-  // First-line dispatch reads only the atomic pagemap projection - any
-  // non-`Empty` tag is libc-internal or a cordon, both of which the
-  // memory filter declines on. POSIX-tracked mappings deliberately
-  // leave the pagemap entry `Empty` so the tracker is the single
-  // source of truth for them.
+  // POSIX-tracked mappings deliberately leave the pagemap entry Empty
+  // so va_tracker is the single source of truth for them; any non-Empty
+  // tag is libc-internal or a cordon and not ours to handle.
   auto cls = alloc::pagemap::classify(reinterpret_cast<const void *>(fault_addr));
   if (cls.tag != alloc::VaChunkConsumer::Empty)
     return EXCEPTION_CONTINUE_SEARCH;
@@ -100,15 +88,13 @@ LONG try_demand_commit(EXCEPTION_POINTERS *ep) {
   if (LIBC_UNLIKELY(!nt_pal::query_region(fault_page, mbi)))
     return EXCEPTION_CONTINUE_SEARCH;
 
-  // Fast reject: most ACCESS_VIOLATIONs land on already-committed
-  // pages, where the NT-level fault is a genuine permission violation
-  // rather than a demand-commit request.
+  // Most ACCESS_VIOLATIONs land on already-committed pages — a genuine
+  // permission fault, not a demand-commit request.
   if (LIBC_LIKELY(mbi.State != MEM_RESERVE))
     return EXCEPTION_CONTINUE_SEARCH;
 
-  // Authoritative ownership check. `resolve` pins the desc on this
-  // thread's per-pointer Crystalline-W slot; subsequent field reads
-  // remain safe even if the writer side reclaims the desc body.
+  // resolve() pins on the per-thread Crystalline-W slot; the desc body
+  // stays alive for subsequent field reads even if the writer reclaims.
   auto ref_or =
       va_tracker::resolve(reinterpret_cast<void *>(fault_addr));
   if (!ref_or.has_value())
@@ -118,8 +104,6 @@ LONG try_demand_commit(EXCEPTION_POINTERS *ep) {
   if (ref.desc == nullptr)
     return EXCEPTION_CONTINUE_SEARCH;
 
-  // Both shape and flags are atomic projections - reading them on the
-  // VEH path takes no lock.
   const va_tracker::RegionShape shape = ref.desc->current_shape();
   const uint16_t flags = ref.desc->flags_load();
   const bool is_demand_commit_shape =
@@ -130,9 +114,8 @@ LONG try_demand_commit(EXCEPTION_POINTERS *ep) {
   if (!is_demand_commit_shape)
     return EXCEPTION_CONTINUE_SEARCH;
 
-  // Access-vs-protection compatibility. A write to a `PAGE_READONLY`
-  // section view or an execute on a non-executable mapping is a
-  // genuine protection violation; fall through to signal delivery.
+  // Write to PAGE_READONLY / execute on non-X is a genuine protection
+  // violation; let signal delivery have it.
   DWORD prot = mbi.AllocationProtect;
   bool incompatible =
       (access_type == AV_WRITE &&
@@ -143,25 +126,20 @@ LONG try_demand_commit(EXCEPTION_POINTERS *ep) {
   if (incompatible)
     return EXCEPTION_CONTINUE_SEARCH;
 
-  // NUMA-interleave path. The interleave mask is read from the desc
-  // under the same pin established by `resolve`.
   const bool is_interleave =
       (flags & va_tracker::region_flag::NUMA_INTERLEAVE) != 0;
 
   if (is_interleave) {
     uint32_t mask = ref.desc->numa_interleave_mask;
     if (mask) {
-      // Deterministic per-page rotation:
+      // Deterministic per-page rotation matching Linux do_numa_page:
       //   node = nodes[page_index % popcount(mask)]
-      // matching Linux `do_numa_page`'s per-page interleave. One
-      // syscall per fault.
       uintptr_t view_base = reinterpret_cast<uintptr_t>(mbi.AllocationBase);
       SIZE_T page_index = (fault_addr - view_base) / page_size;
       ULONG node_count = static_cast<ULONG>(__builtin_popcount(mask));
       ULONG slot_idx = static_cast<ULONG>(page_index % node_count);
 
-      // Walk to the n-th set bit by clearing the lowest set bit
-      // `slot_idx` times.
+      // Walk to the n-th set bit by clearing the lowest slot_idx bits.
       uint32_t m = mask;
       for (ULONG i = 0; i < slot_idx; ++i)
         m &= m - 1;
@@ -171,11 +149,9 @@ LONG try_demand_commit(EXCEPTION_POINTERS *ep) {
           nt_pal::commit_in_reservation_numa(fault_page, page_size, prot,
                                              node);
       if (NT_SUCCESS(numa_st)) {
-        // MLOCK_ONFAULT trip on the freshly-committed page. The bit is
-        // a property of the desc this fault already resolved against,
-        // so the check is one mask off `flags` — already loaded above
-        // for the demand-commit shape gate. No global table, no
-        // reader lock, no extra resolve.
+        // MLOCK_ONFAULT post-commit lock — `flags` was loaded once above
+        // for the demand-commit shape gate, so no extra resolve and no
+        // global lookup table on the hot path.
         if (flags & va_tracker::region_flag::LOCK_ONFAULT)
           (void)nt_pal::lock_range(fault_page, page_size);
         return EXCEPTION_CONTINUE_EXECUTION;
@@ -184,10 +160,9 @@ LONG try_demand_commit(EXCEPTION_POINTERS *ep) {
     // Fall through to the non-NUMA commit path on failure.
   }
 
-  // Cluster the commit to 256 KiB around the fault, clamped to the
-  // contiguous uncommitted region. Amortises VEH dispatch over 64
-  // pages; `MEM_COMMIT` on already-committed pages in the same view is
-  // a no-op.
+  // 256 KiB cluster around the fault amortises VEH dispatch over 64
+  // pages; MEM_COMMIT on already-committed pages in the same view is a
+  // no-op, so over-cluster is harmless.
   constexpr SIZE_T DEMAND_COMMIT_CLUSTER = 256 * 1024;
   uintptr_t region_start = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
   uintptr_t region_end = region_start + mbi.RegionSize;
@@ -198,16 +173,13 @@ LONG try_demand_commit(EXCEPTION_POINTERS *ep) {
   if (cluster_end > region_end)
     cluster_end = region_end;
 
-  // File MAP_PRIVATE is served by section views with `PAGE_WRITECOPY`
-  // and the kernel commits CoW pages itself, so the only paths that
-  // reach this commit call are anonymous `MAP_NORESERVE` and
-  // `SEC_RESERVE` section views.
+  // File MAP_PRIVATE arrives via PAGE_WRITECOPY section views where the
+  // kernel handles CoW commit itself, so the only shapes that reach
+  // this call are anonymous MAP_NORESERVE and SEC_RESERVE.
   void *base = reinterpret_cast<void *>(cluster_start);
   SIZE_T commit_size = static_cast<SIZE_T>(cluster_end - cluster_start);
   NTSTATUS st = nt_pal::commit_in_reservation_no_writewatch(base, commit_size, prot);
   if (NT_SUCCESS(st)) {
-    // MLOCK_ONFAULT trip on the freshly-committed page. Per-desc flag
-    // already loaded above; one mask, no global table.
     if (flags & va_tracker::region_flag::LOCK_ONFAULT)
       (void)nt_pal::lock_range(fault_page, page_size);
     return EXCEPTION_CONTINUE_EXECUTION;
@@ -217,25 +189,21 @@ LONG try_demand_commit(EXCEPTION_POINTERS *ep) {
 }
 
 //===----------------------------------------------------------------------===//
-// Guard-page filter — the second half of MLOCK_ONFAULT
+// Guard-page filter — second half of MLOCK_ONFAULT
 //===----------------------------------------------------------------------===//
 //
-// Demand-commit faults are EXCEPTION_ACCESS_VIOLATION. MLOCK_ONFAULT
-// also has to fire on already-committed pages — `mlock2(MLOCK_ONFAULT)`
-// can be called on a fully-touched mapping, in which case there is no
-// commit fault to ride. The `mlock2` entry walks the range and ORs
-// `PAGE_GUARD` into each committed chunk's protection; the kernel then
-// raises `STATUS_GUARD_PAGE_VIOLATION` on first touch (and clears
-// PAGE_GUARD as a one-shot). This filter catches that violation,
-// resolves the desc, and locks if the bit is still set. The flag is
-// the source of truth for "should we react"; PAGE_GUARD is just the
-// mechanism that gets us a fault.
-//
-// Lives here rather than in a separate TU so that the two halves of
-// MLOCK_ONFAULT (commit-time and guard-page) sit next to each other
-// and share the same desc-resolution pattern.
+// mlock2(MLOCK_ONFAULT) on a fully-touched mapping has no commit fault
+// to ride, so the entry path ORs PAGE_GUARD into each committed chunk's
+// protection. The kernel then raises STATUS_GUARD_PAGE_VIOLATION on
+// first touch (one-shot — PAGE_GUARD self-clears). The region_flag bit
+// is the source of truth for "should we react"; PAGE_GUARD is just the
+// mechanism that delivers us the fault.
 
 LONG try_mlock_onfault(EXCEPTION_POINTERS *ep) {
+  // Defence-in-depth: the registration mask is exactly VEH_GUARD_PAGE so
+  // master dispatch can only route GUARD_PAGE faults here, but a future
+  // mask change or direct test invocation should still no-op cleanly
+  // rather than reach into ExceptionInformation[1] for the wrong code.
   if (ep->ExceptionRecord->ExceptionCode !=
       static_cast<DWORD>(STATUS_GUARD_PAGE_VIOLATION))
     return EXCEPTION_CONTINUE_SEARCH;
@@ -243,10 +211,10 @@ LONG try_mlock_onfault(EXCEPTION_POINTERS *ep) {
   uintptr_t fault_addr = reinterpret_cast<uintptr_t>(
       ep->ExceptionRecord->ExceptionInformation[1]);
 
-  // Resolve against the va_tracker. A foreign / image / libc-internal
-  // PAGE_GUARD trip is not ours to handle; the master VEH chain falls
-  // through to whoever owns those VAs (the loader's stack-grow handler,
-  // a debugger, etc.).
+  // No MBI fast-reject here: STATUS_GUARD_PAGE_VIOLATION only fires on
+  // committed pages, so an MEM_RESERVE check would always be false.
+  // Foreign / image / libc-internal PAGE_GUARD trips (loader stack-grow,
+  // debugger, ...) are not ours to handle.
   auto ref_or =
       va_tracker::resolve(reinterpret_cast<void *>(fault_addr));
   if (!ref_or.has_value())
@@ -258,8 +226,7 @@ LONG try_mlock_onfault(EXCEPTION_POINTERS *ep) {
   if (!(desc->flags_load() & va_tracker::region_flag::LOCK_ONFAULT))
     return EXCEPTION_CONTINUE_SEARCH;
 
-  // Guard bit already cleared by the CPU; the page is accessible.
-  // Lock it into the working set.
+  // CPU already cleared the guard bit; the page is accessible.
   const SIZE_T page_size = get_page_size();
   uintptr_t page_base = fault_addr & ~(page_size - 1);
   (void)nt_pal::lock_range(reinterpret_cast<void *>(page_base), page_size);
@@ -271,26 +238,34 @@ LONG try_mlock_onfault(EXCEPTION_POINTERS *ep) {
 } // namespace LIBC_NAMESPACE_DECL
 
 //===----------------------------------------------------------------------===//
-// VEH filter callback - registered into the master dispatch table
+// VEH filter registrations
 //===----------------------------------------------------------------------===//
+//
+// Master VEH validates `ep` and the reentry guard before dispatch; the
+// trampolines below do nothing but forward. The split into two records
+// (rather than one handler keyed on ExceptionCode) is what lets master
+// dispatch route by `exception_mask & bit` and skip whichever filter
+// the current fault can't reach.
+//
+// The two priorities serve different ordering invariants:
+//   * VEH_PRIORITY_MEMORY (10) must beat VEH_PRIORITY_SIGNAL (20)
+//     because ACCESS_VIOLATION sits in both `VEH_ACCESS_VIOLATION`
+//     here and the signal filter's `VEH_ALL_SIGNAL` mask — without
+//     memory winning, every demand-commit fault would surface as
+//     SIGSEGV.
+//   * VEH_PRIORITY_MLOCK (15) has no signal contender — GUARD_PAGE is
+//     deliberately absent from `VEH_ALL_SIGNAL` (see veh_core.h) — so
+//     the value is just a stable slot below SIGNAL for future
+//     additions.
 
 static LONG mem_fault_filter(EXCEPTION_POINTERS *ep) {
-  // The master VEH handler already validated `ep` and checked the
-  // reentry guard; no further checks needed here.
   return LIBC_NAMESPACE::windows::try_demand_commit(ep);
 }
 
-// Static filter record picked up by `register_all_static_veh_filters()`
-// during VEH bring-up. The `VEH_PRIORITY_MEMORY` slot fires the memory
-// filter before signal-delivery filters get a look at the exception.
 LIBC_REGISTER_VEH_FILTER(mem_fault,
                          ::LIBC_NAMESPACE::windows::VEH_ACCESS_VIOLATION,
                          &mem_fault_filter,
                          ::LIBC_NAMESPACE::windows::VEH_PRIORITY_MEMORY)
-
-//===----------------------------------------------------------------------===//
-// MLOCK_ONFAULT guard-page filter
-//===----------------------------------------------------------------------===//
 
 static LONG mlock_onfault_filter(EXCEPTION_POINTERS *ep) {
   return LIBC_NAMESPACE::windows::try_mlock_onfault(ep);

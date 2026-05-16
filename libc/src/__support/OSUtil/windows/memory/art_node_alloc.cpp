@@ -6,28 +6,14 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Per-type slab pool implementation. The allocator's two visible
-// entry points (alloc and free) bracket the lifecycle of one ART node:
-//
-//   art_alloc_node_raw  — synchronous mutator path. Reserves a chunk
-//                         (CAS-installs the sentinel, calls
-//                         partition::commit_chunk), bitmap-acquires a
-//                         slot, returns the zeroed slot to the caller.
-//   art_node_free       — Crystalline-W FreeFn. Validates the per-slot
-//                         canary, wipes the slot, clears the bitmap
-//                         bit, decrements the chunk's live count, and
-//                         on full drain publishes the chunk's
-//                         decommit through partition::decommit_chunk.
-//
-// The FreeFn never issues nt_pal::* calls and never closes a handle —
-// all kernel-state lifecycle (placeholder split / commit_replace /
-// decommit / partition counters) is collapsed into the synchronous
-// allocator paths via partition::commit_chunk and decommit_chunk. The
-// FreeFn does pure metadata cleanup. This is the reclamation discipline
-// the Crystalline-W layer requires (Nikolaev & Ravindran, PLDI 2024 §1
-// — the algorithm is asynchronous and exposes no synchronous grace
-// primitive, so reaching for nt_pal inside a FreeFn is structurally
-// unachievable).
+// Per-type slab pool implementation. The two visible entry points
+// bracket one ART node's lifecycle: art_alloc_node_raw is the
+// synchronous mutator path (chunk install + bitmap acquire);
+// art_node_free is the Crystalline-W FreeFn (metadata cleanup +
+// drain-winner decommit). The FreeFn never touches nt_pal — the SMR
+// layer exposes no synchronous grace, so kernel-state lifecycle has
+// to live in the synchronous mutator path (Nikolaev & Ravindran,
+// PLDI 2024).
 //
 //===----------------------------------------------------------------------===//
 
@@ -58,42 +44,19 @@ namespace va_tracker {
 //  Node-type size pins
 //===----------------------------------------------------------------------===//
 
-// Sizes account for the Itanium ABI's tail-padding reuse — a derived
+// Size pins below assume Itanium ABI tail-padding reuse: a derived
 // class's leading members can occupy the unused trailing padding of an
-// alignas(64) base when they fit. ArtNodeBase's tangible data is 56
-// bytes (CrystallineNode 24 + tVLO 8 + prefix 8 + level 4 + count 2 +
-// compact_count 2 + node_canary 8), leaving 8 bytes of trailing
-// alignment pad.
-//
-//   ArtNode4   keys[4] (4 B) fits in the 8 B base tail pad; children[4]
-//              (32 B) extends past → 96, rounded up to 128.
-//   ArtNode16  keys[16] starts at offset 64 (node_canary occupies half
-//              the base tail pad); children[16] (128 B) follows; node
-//              ends at 208, rounded up to 256. Worst-case BSS impact
-//              of heap-spray protection across the 65 K-node Node16
-//              cap is ~4 MiB.
-//   ArtNode48  child_index[256] starts at offset 64 (already past the
-//              base tail pad); children[48] (384 B) follows
-//              → 64 + 256 + 384 = 704.
-//   ArtNode256 children[256] (2048 B) starts at offset 64
-//              → 64 + 2048 = 2112.
+// alignas(64) base when they fit. ArtNodeBase has 56 B of tangible
+// data, leaving 8 B of trailing alignment pad that ArtNode4's keys[4]
+// occupy in place.
 static_assert(sizeof(ArtNode4) == 128,
-              "ArtNode4 size pin: 64 hdr + 4 keys (in 8 B tail pad) + "
-              "32 children + pad → 128");
+              "ArtNode4: 64 hdr + 4 keys (in 8 B tail pad) + 32 children -> 128");
 static_assert(sizeof(ArtNode16) == 256,
-              "ArtNode16 size pin: 64 hdr + 16 keys @ 64 + "
-              "128 children → 208 → alignas(64) round → 256");
+              "ArtNode16: 64 hdr + 16 keys + 128 children -> 208 -> align(64) -> 256");
 static_assert(sizeof(ArtNode48) == 704,
-              "ArtNode48 size pin: 64 hdr + 256 child_index + "
-              "384 children → 704");
+              "ArtNode48: 64 hdr + 256 child_index + 384 children -> 704");
 static_assert(sizeof(ArtNode256) == 64 + 256 * 8,
-              "ArtNode256 size pin: 64 hdr + 2048 children → 2112");
-
-// The g_va_tracker_art_domain definition lives at the bottom of this
-// TU: BatchLinkCodec<ArtNodeBase> needs the anonymous-namespace
-// state_for_type helper, and the domain's instantiation depends on the
-// codec. Ordering is anonymous-namespace state, then codec
-// specialization, then the domain definition.
+              "ArtNode256: 64 hdr + 2048 children -> 2112");
 
 namespace {
 
@@ -101,52 +64,32 @@ namespace {
 //  File-scope state
 //===----------------------------------------------------------------------===//
 
-// Four per-type pools + four flat ArtChunkDesc pools. 4 × 256 = 1024
-// descriptors, 64 KiB BSS. Lifetime equals process lifetime, so the
-// descriptors are CoW-inherited across fork; the only fork-time work
-// is canary refresh (see art_alloc_fork_reinit). Chunk content and
-// chunk_table publishes are CoW-correct in the child without further
-// fixup.
+// Process-lifetime BSS — CoW-inherited across fork, so fork-time work
+// is canary refresh only (see art_alloc_fork_reinit).
 PerNodeTypeState g_state_n4;
 PerNodeTypeState g_state_n16;
 PerNodeTypeState g_state_n48;
 PerNodeTypeState g_state_n256;
 
-// Install-in-progress sentinel for chunk_table entries.
-//
-// chunk_table[cid] carries one of three values:
-//   nullptr             — slot is free.
-//   kArtChunkInstalling — slot is reserved by an installer mid-build;
-//                         concurrent allocators must skip it.
-//   ArtChunkDesc *      — slot holds a fully-published descriptor.
-//
-// The CAS-install of the sentinel is the per-cid mutex acquisition for
-// chunk creation; chunk-id reuse after drain falls out of the same
-// CAS. The skiplist sibling pool uses a process-global lock table to
-// solve the equivalent problem (g_link_chunk_table[256]); ART uses
-// chunk_table itself as the install mutex because each
-// PerNodeTypeState owns its chunk-id namespace independently and the
-// global-table bookkeeping is therefore not load-bearing here.
+// chunk_table[cid] carries one of: nullptr (free), kArtChunkInstalling
+// (installer mid-build; concurrent allocators must skip), or a
+// published ArtChunkDesc*. The CAS-install of the sentinel is the
+// per-cid mutex acquisition for chunk creation, and chunk-id reuse
+// after drain falls out of the same CAS — no separate lock table is
+// needed because each PerNodeTypeState owns its chunk-id namespace.
 // Sentinel value 1 is sub-aligned (every real desc is alignas(64)) so
 // no real pointer can alias it.
 //
-// Fork safety: the sentinel may be CoW-inherited if the parent forks
-// mid-install. art_alloc_fork_reinit walks chunk_table and rolls back
-// any partial commit through fork_reset_sentinel_slot. The
-// discriminators it uses are desc->chunk_base (pages committed?) and
-// desc->partition (registered with partition layer?), written by
-// build_chunk_at in the order that makes the rollback unambiguous.
+// On fork mid-install the sentinel is CoW-inherited; fork-reinit walks
+// chunk_table and rolls back any partial commit using desc->chunk_base
+// (pages committed?) and desc->partition (registered?) — the two
+// discriminators build_chunk_at writes in rollback-unambiguous order.
 ArtChunkDesc *const kArtChunkInstalling =
     reinterpret_cast<ArtChunkDesc *>(static_cast<uintptr_t>(1));
 
-// Scan the occupancy bitmap for any unset bit and try to atomically
-// acquire it.
-//
-// Caller must hold a chunk reservation (\c try_va_chunk_reserve) so the
+// Caller must hold a chunk reservation (try_va_chunk_reserve) so the
 // chunk's pages cannot be decommitted out from under us mid-scan.
-//
-// \returns the acquired slot index on success, or SIZE_MAX on
-//          no-bit-available.
+// Returns SIZE_MAX on no-bit-available.
 [[nodiscard]] LIBC_INLINE size_t
 try_acquire_any_slot(ArtChunkDesc *desc) {
     constexpr size_t WORDS = decltype(desc->occupancy)::word_count;
@@ -205,12 +148,10 @@ LIBC_INLINE ArtChunkDescPool &chunk_pool_for_type(ArtNodeType t) {
   __builtin_trap();
 }
 
-// Each ART node type owns its own 4 GiB partition window. The
-// partition contract — "the chunk owner is the sole writer of any
-// chunk pagemap entry within the partition's range" — is satisfied
-// because every chunk in a given partition is owned by the same
-// PerNodeTypeState. Used by canary derivation and pagemap
-// consumer_tag stamping.
+// Each ART node type owns its own 4 GiB partition window, satisfying
+// the partition contract ("chunk owner is the sole writer of any chunk
+// pagemap entry within the partition's range") trivially — every chunk
+// in a given partition is owned by the same PerNodeTypeState.
 LIBC_INLINE
 ::LIBC_NAMESPACE::windows::alloc::partition::PartitionClass
 partition_class_for_type(ArtNodeType t) {
@@ -228,25 +169,13 @@ partition_class_for_type(ArtNodeType t) {
   __builtin_trap();
 }
 
-// Read the Zone-0b partition secret used by the canary formulas.
-//
-// Shared shape with va_tracker_chunk.cpp and interval_skiplist.cpp so
-// per-slot canary derivation rotates in lockstep with the rest of the
-// va_tracker layer on fork (Zone 0b rotation happens at the libc_fork
-// reinit barrier before art_alloc_fork_reinit runs).
+// Zone 0b rotates the partition secret at the libc_fork reinit
+// barrier before art_alloc_fork_reinit runs, so a fresh read here
+// reflects the post-rotation value.
 LIBC_INLINE uint64_t partition_secret() {
     return ::LIBC_NAMESPACE::g_pcb.zone0b.partition_secret();
 }
 
-// Derive a chunk-level canary from the partition secret and the chunk's
-// (class_id, chunk_id) coordinates.
-//
-//   chunk_canary = secret ^ ((class_id << 8) | chunk_id)
-//
-// Identical formula in va_tracker_chunk.cpp and interval_skiplist.cpp;
-// fork-reinit rotates partition_secret first and then re-derives every
-// live chunk's canary against the rotated value, so the va_tracker
-// layer rotates uniformly.
 [[nodiscard]] uint64_t art_compute_chunk_canary(ArtNodeType node_type,
                                                   uint32_t chunk_id) {
   return ::LIBC_NAMESPACE::windows::va_tracker::compute_va_chunk_canary(
@@ -255,10 +184,9 @@ LIBC_INLINE uint64_t partition_secret() {
       static_cast<uint8_t>(chunk_id));
 }
 
-// Derive a per-slot canary. A heap-spray attacker who scribbles into a
-// freed-but-not-yet-reused slot can craft chunk_id / slot_idx
-// arithmetic but cannot guess partition_secret. art_node_free validates
-// this canary BEFORE dereferencing the chunk descriptor.
+// art_node_free validates this canary BEFORE dereferencing the chunk
+// descriptor: a heap-spray attacker can craft (chunk_id, slot_idx)
+// arithmetic but cannot guess partition_secret.
 [[nodiscard]] uint64_t art_compute_node_canary(ArtNodeType node_type,
                                                  uint32_t chunk_id,
                                                  uint32_t slot_idx) {
@@ -269,34 +197,19 @@ LIBC_INLINE uint64_t partition_secret() {
       static_cast<uint8_t>(slot_idx));
 }
 
-// Build a fresh chunk at \p chunk_id under the caller's exclusive
-// install reservation.
+// Caller must have CAS-installed kArtChunkInstalling in
+// chunk_table[chunk_id] and is responsible for publishing the result:
+// store(desc, RELEASE) on success, store(nullptr, RELEASE) on the
+// nullptr return.
 //
-// Contract:
-//
-//   1. Caller has CAS-installed kArtChunkInstalling in
-//      chunk_table[chunk_id], holding exclusive ownership of the slot
-//      for the duration of the call.
-//   2. On success returns the fully-initialised desc; caller publishes
-//      via chunk_table[chunk_id].store(desc, RELEASE).
-//   3. On failure returns nullptr; caller publishes
-//      chunk_table[chunk_id].store(nullptr, RELEASE) to release.
-//
-// Fork-safety field ordering — load-bearing:
-//
-//   1. Pages first via partition::commit_chunk (split + commit_replace
-//      + partition counter increment + pagemap register + pagemap
-//      publish, with rollback on failure).
-//   2. Stamp desc->chunk_base — fork discriminator "pages committed".
-//   3. Initialise the other desc fields.
-//   4. RELEASE-stamp desc->partition — fork discriminator
-//      "partition registered".
-//
-// art_alloc_fork_reinit reads (chunk_base, partition) to decide which
-// rollback steps to run. The 1-instruction window between
-// commit_chunk returning and desc->partition storing leaves at most
-// one chunk's worth of partition-counter drift on fork — diagnostic
-// only on pinned ART partitions, which never retire.
+// Fork-safety field ordering is load-bearing — art_alloc_fork_reinit
+// reads (chunk_base, partition) to decide rollback. The store order
+// must be: pages via commit_chunk, then desc->chunk_base ("committed"
+// discriminator), then other fields, then RELEASE-store partition
+// ("registered" discriminator). The 1-instruction window between
+// commit_chunk returning and partition storing can leak one chunk's
+// worth of partition-counter inflation on fork — diagnostic only on
+// pinned ART partitions, which never retire.
 [[nodiscard]] ArtChunkDesc *build_chunk_at(PerNodeTypeState &state,
                                               ArtNodeType node_type,
                                               uint32_t chunk_id) {
@@ -312,16 +225,13 @@ LIBC_INLINE uint64_t partition_secret() {
 
   ArtChunkDesc *desc = &chunk_pool_for_type(node_type).descs[chunk_id];
 
-  // Pre-zero the fork discriminators. The desc lives in a fixed BSS
-  // slot; after a previous drain the fields may be stale and
-  // CoW-inherited from a different parent generation.
+  // Pre-zero discriminators — the desc lives in fixed BSS and stale
+  // values may be CoW-inherited from a different parent generation.
   desc->chunk_base = nullptr;
   desc->partition = nullptr;
 
-  // Unified chunk commit: split + commit_replace + partition counter +
-  // pagemap register + pagemap publish, with rollback on failure. The
-  // pagemap slot_idx packs (node_type, chunk_id) — node_type is 0..3,
-  // chunk_id is 0..255, so both fit in 16 bits.
+  // pagemap slot_idx packs node_type (0..3) and chunk_id (0..255) — 16
+  // bits total.
   uint32_t pagemap_slot_idx =
       (static_cast<uint32_t>(node_type) << 8) | chunk_id;
   int rc = ::LIBC_NAMESPACE::windows::alloc::partition::commit_chunk(
@@ -331,22 +241,15 @@ LIBC_INLINE uint64_t partition_secret() {
   if (rc != 0)
     return nullptr;
 
-  // commit_chunk succeeded. Stamp chunk_base first — fork
-  // discriminator. The 1-instruction window between commit_chunk
-  // returning and these stores leaves a chunk's worth of partition
-  // counter inflation if fork hits there; bounded by N
-  // concurrently-installing threads at fork time, diagnostic-only on
-  // pinned ART partitions.
+  // Stamp the "pages committed" discriminator first.
   desc->chunk_base = chunk_base;
   desc->slot_size = state.slot_size;
   desc->slot_capacity = state.chunk_bytes / state.slot_size;
   desc->occupancy.clear_all();
   desc->chunk_canary = art_compute_chunk_canary(node_type, chunk_id);
-  // Composite live_state init: (Live, count=0, gen=0).
   init_live(desc->live_state);
 
-  // RELEASE-publish the partition pointer — fork-reinit's
-  // discriminator load is ACQUIRE.
+  // RELEASE pairs with fork-reinit's ACQUIRE discriminator load.
   desc->partition = partition;
   return desc;
 }
@@ -357,29 +260,16 @@ LIBC_INLINE uint64_t partition_secret() {
 //  Slot allocation — synchronous mutator path
 //===----------------------------------------------------------------------===//
 
-// Two-pass scan over the type's chunk table.
-//
-// Pass 1: walk existing chunks bounded by next_chunk_id (the monotonic
-//         high-water mark). Skip null and sentinel slots; on a
-//         published desc, reserve via try_va_chunk_reserve and
-//         try_acquire a free bit.
-//
-// Pass 2: full-table scan from the hint. CAS-install
-//         kArtChunkInstalling into a null slot; on success build the
-//         chunk via build_chunk_at, publish desc, and monotonically
-//         bump next_chunk_id.
-//
-// next_chunk_id is a "max-installed cid" hint, updated by monotonic
-// CAS every time Pass 2 publishes a fresh chunk. Drained slots inside
-// the high-water window are skipped on Pass 1 via the null check;
-// reuse happens through Pass 2's full-table sentinel CAS.
+// Two-pass scan: Pass 1 walks existing chunks bounded by
+// next_chunk_id; Pass 2 CAS-installs the sentinel and builds a fresh
+// chunk. Pass 1 covers the common path; Pass 2 also handles reuse of
+// drained slots (next_chunk_id stays monotonic, so drained cids
+// inside the horizon are skipped on Pass 1 via the null check).
 void *art_alloc_node_raw(ArtNodeType node_type) {
   PerNodeTypeState &state = state_for_type(node_type);
   uint32_t hint = state.alloc_hint.fetch_add(1, cpp::MemoryOrder::RELAXED) %
                   kArtMaxChunksPerType;
 
-  // Pass 1: existing chunks. Bounded by the high-water mark to avoid
-  // touching the entire 256-entry table when only a few are installed.
   uint32_t horizon = state.next_chunk_id.load(cpp::MemoryOrder::ACQUIRE);
   if (horizon > 0) {
     for (uint32_t i = 0; i < horizon; ++i) {
@@ -391,13 +281,11 @@ void *art_alloc_node_raw(ArtNodeType node_type) {
       if (LIBC_UNLIKELY(desc == kArtChunkInstalling))
         continue;
 
-      // try_va_chunk_reserve atomically establishes
-      // (state == Live ∧ count < cap) and increments count. The
-      // reservation is the count bump; bitmap acquire follows.
-      // Holding the reservation prevents concurrent drain —
-      // release_va_chunk_slot's drain CAS expects count == 0 and
-      // fails while we're reserved, so the chunk's pages cannot be
-      // decommitted under us.
+      // try_va_chunk_reserve atomically asserts (state == Live and
+      // count < cap) and bumps count. Holding the reservation blocks
+      // concurrent drain — release_va_chunk_slot's drain CAS expects
+      // count == 0 and fails while we're reserved — so the chunk's
+      // pages cannot be decommitted out from under our bitmap scan.
       if (!try_va_chunk_reserve(desc->live_state, desc->slot_capacity))
         continue;
 
@@ -406,49 +294,38 @@ void *art_alloc_node_raw(ArtNodeType node_type) {
         return static_cast<char *>(desc->chunk_base) +
                acquired_slot * state.slot_size;
       }
-      // Bitmap raced out (peer allocators won every bit). Release
-      // the reservation; on a drain win, decommit the chunk.
+      // Bitmap raced out — peers won every bit. Release reservation;
+      // on a drain win, decommit. next_chunk_id is intentionally NOT
+      // decremented — monotonicity is bounded above by
+      // kArtMaxChunksPerType and the null slot reopens via Pass 2.
       if (release_va_chunk_slot(desc->live_state)) {
         state.chunk_table[chunk_id].store(nullptr,
                                             cpp::MemoryOrder::RELEASE);
         ::LIBC_NAMESPACE::windows::alloc::partition::decommit_chunk(
             state.partition, desc->chunk_base, state.chunk_bytes);
-        // next_chunk_id is intentionally not decremented. The
-        // high-water mark is monotonic by design — a subsequent
-        // allocation may re-claim the now-null slot via Pass 2's
-        // sentinel CAS — and next_chunk_id is bounded above by
-        // kArtMaxChunksPerType anyway, so monotonicity is free.
       }
     }
   }
 
-  // Pass 2: scan for null slots, CAS-install sentinel, build a fresh
-  // chunk. Bounded by kArtMaxChunksPerType (the BSS-fixed chunk_table
-  // size).
   for (uint32_t i = 0; i < kArtMaxChunksPerType; ++i) {
     uint32_t chunk_id = (hint + i) % kArtMaxChunksPerType;
     ArtChunkDesc *expected = nullptr;
     if (!state.chunk_table[chunk_id].compare_exchange_strong(
             expected, kArtChunkInstalling, cpp::MemoryOrder::ACQ_REL,
             cpp::MemoryOrder::ACQUIRE)) {
-      // Peer owns this slot (sentinel or published desc).
       continue;
     }
 
     ArtChunkDesc *desc = build_chunk_at(state, node_type, chunk_id);
     if (desc == nullptr) {
-      // Build failed (placeholder split / commit_replace / partition
-      // register). Release the slot for peers to retry.
+      // Release the slot for peers to retry.
       state.chunk_table[chunk_id].store(nullptr, cpp::MemoryOrder::RELEASE);
       continue;
     }
     state.chunk_table[chunk_id].store(desc, cpp::MemoryOrder::RELEASE);
 
-    // Monotonic high-water update:
-    //   next_chunk_id := max(prev, chunk_id + 1).
-    // RELAXED on the CAS-failure reload — only the success edge needs
-    // a happens-before on the chunk_table publish above, which is
-    // already RELEASE.
+    // Monotonic max(prev, chunk_id + 1). Only the success edge needs
+    // happens-before on the chunk_table publish above, already RELEASE.
     uint32_t prev = state.next_chunk_id.load(cpp::MemoryOrder::ACQUIRE);
     while (chunk_id + 1 > prev) {
       if (state.next_chunk_id.compare_exchange_weak(
@@ -457,12 +334,10 @@ void *art_alloc_node_raw(ArtNodeType node_type) {
         break;
     }
 
-    // Try slot 0 first (likely free since the chunk is fresh). Peer
-    // allocators may have raced in via the chunk_table publish above
-    // and grabbed slot 0 first — fall through to the bitmap scan if
-    // so.
+    // Try slot 0 — likely free on a fresh chunk; fall through if a
+    // peer raced in via the publish above and grabbed it.
     if (!try_va_chunk_reserve(desc->live_state, desc->slot_capacity))
-      continue; // Chunk already drained back to Draining (extreme race).
+      continue;
     if (desc->occupancy.try_acquire(0))
       return desc->chunk_base;
     size_t acquired_slot = try_acquire_any_slot(desc);
@@ -470,15 +345,9 @@ void *art_alloc_node_raw(ArtNodeType node_type) {
       return static_cast<char *>(desc->chunk_base) +
              acquired_slot * state.slot_size;
     }
-    // No bit available (256 peers grabbed slots 0..255 between our
-    // build_chunk_at and our own try_acquire). Release reservation
-    // and try another slot.
     (void)release_va_chunk_slot(desc->live_state);
   }
 
-  // Saturated: every chunk_table slot is either full of live chunks
-  // with 100% bitmaps or every install attempt collided with peers.
-  // Caller surfaces as -ENOMEM.
   return nullptr;
 }
 
@@ -486,18 +355,13 @@ void *art_alloc_node_raw(ArtNodeType node_type) {
 //  Crystalline-W FreeFn
 //===----------------------------------------------------------------------===//
 
-// Public entry point for g_va_tracker_art_domain. The domain template
-// binds to it by address.
-//
-// Body is pure metadata cleanup: validate canaries, wipe the slot,
-// clear the occupancy bit, decrement live_count, and on full drain
-// publish the chunk's decommit via partition::decommit_chunk. No
-// nt_pal::* calls; no NtClose.
+// FreeFn for g_va_tracker_art_domain — bound by address from the
+// domain template. Pure metadata cleanup; no nt_pal calls, no NtClose
+// (see file banner).
 void art_node_free(ArtNodeBase *node) {
   if (LIBC_UNLIKELY(node == nullptr))
     __builtin_trap();
-  // Leaves are tagged Arena pointers managed by the inner-index
-  // layer; they never reach this FreeFn.
+  // Leaves are tagged Arena pointers owned by the inner-index layer.
   if (LIBC_UNLIKELY(art_is_leaf(node)))
     __builtin_trap();
 
@@ -524,11 +388,9 @@ void art_node_free(ArtNodeBase *node) {
   if (LIBC_UNLIKELY(slot_idx >= kArtSlotsPerChunk))
     __builtin_trap();
 
-  // Validate the per-slot canary BEFORE the chunk-table dereference.
-  // A heap-spray attacker can craft chunk_id / slot_idx arithmetic
-  // but cannot guess partition_secret; doing the check first prevents
-  // a crafted slot from redirecting FreeFn into a victim chunk's
-  // bitmap.
+  // Validate the per-slot canary BEFORE the chunk-table dereference —
+  // a crafted (chunk_id, slot_idx) must not be allowed to redirect us
+  // into a victim chunk's bitmap.
   uint64_t expected_node_canary =
       art_compute_node_canary(node_type, chunk_id, slot_idx);
   if (LIBC_UNLIKELY(node->node_canary != expected_node_canary))
@@ -544,28 +406,23 @@ void art_node_free(ArtNodeBase *node) {
   if (LIBC_UNLIKELY(desc->chunk_canary != expected_chunk_canary))
     __builtin_trap();
 
-  // Wipe slot for the next allocator round. ART nodes are trivially
-  // destructible — memset zeroes everything including the
-  // CrystallineNode header (next / birth_era are written fresh by the
-  // next make_node).
+  // ART nodes are trivially destructible; the next make_node rewrites
+  // the CrystallineNode header (next, birth_era) fresh.
   __builtin_memset(static_cast<void *>(node), 0, state.slot_size);
 
   desc->occupancy.mark_dead(slot_idx);
 
-  // release_va_chunk_slot atomically decrements count and transitions
-  // Live → Draining iff post-decrement count is 0. Returns true only
-  // for the unique drain winner; the single-CAS publish closes the
-  // window where an allocator's fetch_add could race past a
-  // count == 0 check and have its slot pages decommitted under it.
+  // release_va_chunk_slot's single-CAS atomically decrements count and
+  // transitions Live -> Draining iff post-decrement count is 0,
+  // returning true only for the unique drain winner. The single-CAS
+  // closes the window where a peer allocator's fetch_add could race
+  // past a count == 0 check and end up with its pages decommitted.
   if (!release_va_chunk_slot(desc->live_state))
     return;
 
-  // Unique drain winner. Clear chunk_table so new allocators stop
-  // reading desc; concurrent allocators that already loaded desc
-  // bounce off try_va_chunk_reserve (state is now Draining, not
-  // Live). Then decommit via partition::decommit_chunk (pagemap
-  // retire + decommit_preserve + counter unregister, atomic against
-  // partition mutators).
+  // Drain winner. Clear chunk_table so new allocators stop reading
+  // desc; concurrent allocators that already loaded desc bounce off
+  // try_va_chunk_reserve (state is Draining now, not Live).
   state.chunk_table[chunk_id].store(nullptr, cpp::MemoryOrder::RELEASE);
   void *chunk_base = desc->chunk_base;
   size_t chunk_bytes = state.chunk_bytes;
@@ -577,10 +434,6 @@ void art_node_free(ArtNodeBase *node) {
 //  Canary stamping and runtime dispatch
 //===----------------------------------------------------------------------===//
 
-// Decode (chunk_id, slot_idx) from the node address using the same
-// arithmetic art_node_free uses, then write the per-slot canary.
-// Called by make_node after placement-new (the constructor would
-// otherwise overwrite the field).
 void art_stamp_node_canary(ArtNodeBase *node, ArtNodeType node_type) {
   if (LIBC_UNLIKELY(node == nullptr))
     __builtin_trap();
@@ -610,9 +463,6 @@ void art_stamp_node_canary(ArtNodeBase *node, ArtNodeType node_type) {
   node->node_canary = art_compute_node_canary(node_type, chunk_id, slot_idx);
 }
 
-// Runtime dispatch over the node-type tag. Used by the grow / shrink
-// helpers in art_node.cpp where the destination type is computed at
-// runtime from the current type's live count.
 ArtNodeBase *make_node_for_type(ArtNodeType t, uint32_t level,
                                   const ArtPrefix &pfx) {
   switch (t) {
@@ -634,9 +484,8 @@ ArtNodeBase *make_node_for_type(ArtNodeType t, uint32_t level,
 
 namespace {
 
-// Round chunk_bytes up to the pagemap stamp granularity (64 KiB) so
-// chunk_base aligns with pagemap entry boundaries. Required by
-// pagemap_register_range.
+// pagemap_register_range requires chunk_base to align with the 64 KiB
+// pagemap stamp granularity.
 LIBC_INLINE constexpr size_t pagemap_chunk_round_up(size_t n) {
   constexpr size_t GRAN = 64u * 1024u;
   return (n + GRAN - 1) & ~(GRAN - 1);
@@ -658,12 +507,8 @@ void art_alloc_init() {
   using ::LIBC_NAMESPACE::windows::alloc::partition::kNodeAgnostic;
   using ::LIBC_NAMESPACE::windows::alloc::partition::reserve_or_grow;
 
-  // Each ART node type owns its own partition window, so the
-  // partition contract ("chunk owner is the sole writer of any chunk
-  // pagemap entry within the partition's range") holds within ART
-  // trivially. The ART slots in the kCorePartitions table are
-  // eager-reserved during Tier A bring-up; reserve_or_grow here is an
-  // idempotent lookup.
+  // ART partitions are eager-reserved in kCorePartitions during Tier A
+  // bring-up; reserve_or_grow here is an idempotent lookup.
   auto *p4 = reserve_or_grow(PartitionClass::VaTrackerArtNode4, kNodeAgnostic);
   auto *p16 = reserve_or_grow(PartitionClass::VaTrackerArtNode16,
                                 kNodeAgnostic);
@@ -684,63 +529,42 @@ void art_alloc_init() {
   g_state_n48.partition = p48;
   g_state_n256.partition = p256;
 
-  // The Crystalline domain's init_registration is the responsibility
-  // of va_tracker_init_fn — called before art_index_init so the
-  // domain is live by the time our first make_node calls init_node
-  // on the tree root. init_registration is not idempotent; do not
-  // call it from here.
+  // The Crystalline domain's init_registration is owned by
+  // va_tracker_init_fn, which runs before us so the domain is live by
+  // our first make_node. init_registration is NOT idempotent — do
+  // not call it from here.
 }
 
 //===----------------------------------------------------------------------===//
 //  Fork-time leak reclaim
 //===----------------------------------------------------------------------===//
 
-// Pre-fork, dead parent threads' Crystalline cells held retire batches
-// whose art_node_free FreeFn would have cleared bitmap bits and
-// decremented live_state count. In the child those threads are gone,
-// so the FreeFn never runs — the bits stay set, count stays inflated,
-// and the chunk's pages stay committed even when "logically empty."
+// Fork-time leak reclaim. Dead parent threads' Crystalline cells held
+// retire batches whose FreeFn would have cleared bitmap bits and
+// decremented live_state count; in the child those threads are gone,
+// the FreeFn never runs, and bits stay set with count inflated.
 //
-// Discriminator: a node that was retired but whose FreeFn never ran
-// has batch_link != nullptr in its CrystallineNode header (set by
-// Crystalline retire() at batch close). A genuinely live node has
-// batch_link == nullptr. The reclaim walks each Live chunk's bitmap;
-// for each set bit whose node has non-null batch_link it runs the
-// FreeFn body in place (memset + mark_dead + release_va_chunk_slot).
-// Drain on the last decrement is safe because count == 0 implies no
-// remaining set bits in the bitmap, so the loop terminates naturally.
-//
-// Only descriptors reachable via chunk_table are walked. A leaked
-// per-type descriptor would manifest as a chunk_table entry pointing
-// to a desc with state == Draining and non-null chunk_base; those are
-// already drained and not reclaimed here. The repair targets the
-// bitmap-vs-count inconsistency on Live descs.
+// The discriminator is the CrystallineNode header field batch_link:
+// retire() sets it non-null at batch close, so a node with
+// batch_link != 0 was retired but never reaped. The reclaim runs the
+// FreeFn body in place (memset + mark_dead + release_va_chunk_slot)
+// for each such slot. Drain-on-last-decrement terminates the loop
+// safely — count == 0 implies no remaining set bits.
 
 namespace {
 
-// Roll back a partial chunk install left by a now-dead parent thread.
+// Roll back a partial chunk install observed mid-build at fork time
+// (chunk_table[cid] == kArtChunkInstalling, no thread alive to
+// finish). Cleanup obligation reads off the two build_chunk_at
+// discriminators:
+//   * partition != nullptr               — full rollback via decommit_chunk.
+//   * chunk_base != nullptr, partition == nullptr — pages committed
+//     but counters never incremented; decommit_preserve + pagemap retire.
+//   * both nullptr                       — nothing to roll back.
 //
-// Called when fork-reinit observes
-// chunk_table[cid] == kArtChunkInstalling but no thread is alive to
-// publish desc/null. The desc itself is the state machine —
-// build_chunk_at writes:
-//
-//   1. desc->chunk_base = chunk_base  (after pages committed)
-//   2. desc->partition  = partition   (after partition register)
-//
-// in that order; either, both, or neither may be set in the child.
-//
-// Cleanup obligations by parent's progress:
-//   * chunk_base == nullptr               — no decommit, no unregister.
-//   * chunk_base != nullptr, partition == nullptr — decommit_preserve,
-//                                            NO unregister (counters
-//                                            never incremented).
-//   * both != nullptr                     — full rollback.
-//
-// The 1-instruction window between commit_chunk returning and
-// desc->partition storing leaves a chunk's worth of partition-counter
-// inflation if fork hits there; bounded by N concurrently-installing
-// threads, diagnostic-only on pinned ART partitions.
+// The narrow window between commit_chunk returning and partition
+// storing can leak one chunk of counter inflation per concurrently-
+// installing thread; diagnostic-only on pinned ART partitions.
 void fork_reset_sentinel_slot(PerNodeTypeState &state, ArtNodeType node_type,
                                  uint32_t chunk_id) {
   ArtChunkDesc *desc = &chunk_pool_for_type(node_type).descs[chunk_id];
@@ -749,42 +573,28 @@ void fork_reset_sentinel_slot(PerNodeTypeState &state, ArtNodeType node_type,
   ::LIBC_NAMESPACE::windows::alloc::partition::PartitionDescriptor
       *registered_partition = desc->partition;
 
-  // commit_chunk's atomicity collapses the old "pages committed but
-  // partition not registered" intermediate state — either both
-  // chunk_base and partition are stamped (full success → full
-  // rollback) or neither is (commit_chunk failed → nothing to roll
-  // back). The narrow window between commit_chunk returning and
-  // desc->partition being stamped can still leak counter inflation;
-  // the pinned-partition workaround above covers it.
   if (registered_partition != nullptr) {
     ::LIBC_NAMESPACE::windows::alloc::partition::decommit_chunk(
         registered_partition, committed_base, state.chunk_bytes);
   } else if (committed_base != nullptr) {
-    // Defensive path for the narrow race above: pages committed but
-    // partition pointer not yet stamped. Decommit pages + retire the
-    // pagemap entry, no counter unregister (counter increment
-    // accounted via the bounded leak above).
     ::LIBC_NAMESPACE::windows::alloc::pagemap_retire_range(
         committed_base, state.chunk_bytes);
     (void)::LIBC_NAMESPACE::nt_pal::decommit_preserve(committed_base,
                                                         state.chunk_bytes);
   }
 
-  // Zero the discriminators so any future build_chunk_at at this cid
-  // starts clean. The desc lives in fixed BSS; build_chunk_at also
-  // pre-zeros these, but defence-in-depth keeps the slot consistent
-  // for any pre-publish reader.
+  // Zero discriminators — defence-in-depth for any pre-publish reader;
+  // build_chunk_at pre-zeros too.
   desc->chunk_base = nullptr;
   desc->partition = nullptr;
 
   state.chunk_table[chunk_id].store(nullptr, cpp::MemoryOrder::RELEASE);
 }
 
-// Finish an art_node_free teardown that the parent started but didn't
-// complete before fork — release_va_chunk_slot returned true but the
-// parent was scheduled out before chunk_table.store(nullptr) or
-// before decommit. Idempotent against the case where the parent
-// finished chunk_table.store but not decommit.
+// Finish an art_node_free teardown the parent started but didn't
+// complete — release_va_chunk_slot returned true but the parent was
+// scheduled out before chunk_table.store(nullptr) or decommit.
+// Idempotent if chunk_table.store already happened.
 void finish_interrupted_drain(PerNodeTypeState &state, uint32_t chunk_id,
                                 ArtChunkDesc *desc) {
   state.chunk_table[chunk_id].store(nullptr, cpp::MemoryOrder::RELEASE);
@@ -794,16 +604,14 @@ void finish_interrupted_drain(PerNodeTypeState &state, uint32_t chunk_id,
   }
 }
 
-// Walk a Live chunk's bitmap and reclaim any retired-but-not-freed
-// nodes left over from dead parent threads' Crystalline cells. Runs
-// the FreeFn body in place for each such slot (memset + mark_dead +
-// release_va_chunk_slot). See the discipline note above the namespace.
+// Walk a Live chunk's bitmap and run the FreeFn body in place for any
+// retired-but-not-freed slot (memset + mark_dead +
+// release_va_chunk_slot). See block comment above the namespace.
 void fork_reclaim_art_chunk(PerNodeTypeState &state, uint32_t chunk_id,
                               ArtChunkDesc *desc) {
-  // Guard against descs already in a terminal drain state — happens
-  // when a parent thread was mid-art_node_free at fork time. Skip
-  // the bitmap walk (release_va_chunk_slot would trap on count == 0)
-  // and finish the teardown the parent didn't.
+  // Descs already in a terminal drain state (parent was
+  // mid-art_node_free at fork) skip the bitmap walk —
+  // release_va_chunk_slot would trap on count == 0.
   uint64_t snap = desc->live_state.load(cpp::MemoryOrder::ACQUIRE);
   if (state_of(snap) != static_cast<uint8_t>(VaChunkState::Live) ||
       count_of(snap) == 0) {
@@ -832,23 +640,18 @@ void fork_reclaim_art_chunk(PerNodeTypeState &state, uint32_t chunk_id,
       void *slot_ptr = reinterpret_cast<void *>(
           base + static_cast<uintptr_t>(slot) *
                      static_cast<uintptr_t>(state.slot_size));
-      // CrystallineNode is an empty tag base; the intrusive runtime
-      // fields (incl. `batch_link`) live in the derived class via
-      // LIBC_CRYSTALLINE_NODE_FIELDS, so we cast to ArtNodeBase to
-      // reach `batch_link`. All ART variants derive from ArtNodeBase
-      // so the cast is well-defined for any slot in this chunk.
+      // batch_link lives on ArtNodeBase (CrystallineNode is an empty
+      // tag base — intrusive fields are injected via
+      // LIBC_CRYSTALLINE_NODE_FIELDS into the derived class).
       auto *cnode = reinterpret_cast<ArtNodeBase *>(slot_ptr);
       if (cnode->batch_link.load(cpp::MemoryOrder::ACQUIRE) == 0u)
-        continue; // Genuinely live — leave alone.
+        continue;
 
-      // Retired but FreeFn never ran. Mimic art_node_free's body.
       __builtin_memset(slot_ptr, 0, state.slot_size);
       desc->occupancy.mark_dead(slot);
       if (release_va_chunk_slot(desc->live_state)) {
-        // Drain win — same teardown as art_node_free's drain branch.
-        // count == 0 implies no remaining set bits in the bitmap, so
-        // the outer loop terminates without further access to the
-        // now-decommitted chunk_base.
+        // count == 0 implies no remaining set bits, so the outer loop
+        // terminates without further access to the decommitted base.
         state.chunk_table[chunk_id].store(nullptr,
                                             cpp::MemoryOrder::RELEASE);
         ::LIBC_NAMESPACE::windows::alloc::partition::decommit_chunk(
@@ -875,52 +678,42 @@ void art_alloc_fork_reinit() {
           state.chunk_table[i].load(cpp::MemoryOrder::RELAXED);
       if (desc == nullptr)
         continue;
-      // Sentinel cleanup: parent was mid-install at fork time. Roll
-      // back any committed pages / partition register and clear the
-      // sentinel. Must run before canary refresh and before
-      // fork_reclaim_art_chunk — both would otherwise dereference
-      // the sentinel value (ArtChunkDesc *)1 as a real desc.
+      // Sentinel cleanup must precede canary refresh and reclaim —
+      // both would otherwise dereference (ArtChunkDesc *)1 as a real
+      // desc.
       if (desc == kArtChunkInstalling) {
         fork_reset_sentinel_slot(state, nt, i);
         continue;
       }
       desc->chunk_canary = art_compute_chunk_canary(nt, i);
-      // Per-slot bitmap walk doing two repairs in one pass:
+      // Two repairs in one bitmap walk, both must precede
+      // fork_reclaim_art_chunk (whose FreeFn body validates
+      // node_canary):
       //
-      //   (1) Per-slot canary refresh: re-stamp every live node's
-      //       canary against the rotated partition_secret. Retired-
-      //       but-unreaped slots (batch_link non-null) are also
+      //   (1) Per-slot canary refresh against the rotated
+      //       partition_secret. Retired-but-unreaped slots are also
       //       re-stamped; the reclaim path's memset clears the field
       //       afterward.
       //
-      //   (2) ROWEX writer-lock scrub: if a parent thread held an
-      //       ART writer lock at fork time, the lock bit (bit 1) of
-      //       tVLO is set in the child but no thread is alive to
-      //       release it. Child writers calling
-      //       write_lock_or_restart would spin forever on
-      //       is_locked(v). Clear via fetch_add(0b10), the canonical
-      //       writeUnlock sequence — clears bit 1, carries into the
-      //       low bit of the version counter, preserves bit 0
-      //       (obsolete). Filtered to live nodes (batch_link == 0);
-      //       retired slots will be memset by fork_reclaim_art_chunk
-      //       so their lock state is moot.
+      //   (2) ROWEX writer-lock scrub. A parent thread that held an
+      //       ART writer lock at fork left bit 1 of tVLO set in the
+      //       child with no live releaser; child writers would spin
+      //       forever in write_lock_or_restart. fetch_add(0b10) is
+      //       the canonical writeUnlock — clears bit 1, carries into
+      //       version[0], preserves bit 0 (obsolete). The forking
+      //       thread cannot itself be the lock holder (its stack is
+      //       inside libc_fork_dispatch, not any ART op), so every
+      //       locked tVLO observed here is owned by a dead thread.
+      //       Filtered to live nodes — retired slots get memset
+      //       below.
       //
-      //       The forking thread cannot be the lock holder — its
-      //       stack at fork-reinit time is inside libc_fork_dispatch,
-      //       not inside any ART operation. Every locked tVLO
-      //       observed here is owned by a dead thread.
-      //
-      // FIXME: if the dead thread was mid-write under lock, the
-      // node's children/keys may carry partial state. After unlock +
-      // version-bump, readers won't restart and may observe the
-      // partial state. ART writes hold the lock for ~µs and fork
-      // mid-write is rare; the alternative (fetch_add(0b11) → mark
-      // obsolete) would force readers to restart from a parent that
-      // may no longer exist. Upgrade to obsolete-marking if soak
-      // reveals correctness fallout.
-      //
-      // Both repairs must run BEFORE fork_reclaim_art_chunk — that
-      // helper invokes the FreeFn body which validates node_canary.
+      // FIXME: if the dead thread was mid-write under lock, the node
+      // may carry partial children/keys; after unlock + version-bump,
+      // readers won't restart and may observe partial state. ART
+      // writes hold for ~µs and fork-mid-write is rare; the
+      // alternative (fetch_add(0b11) -> mark obsolete) forces readers
+      // to restart from a parent that may no longer exist. Upgrade if
+      // soak reveals correctness fallout.
       {
         constexpr uint32_t kBitsPerWord = 64;
         const uint32_t cap_bits = desc->slot_capacity;
@@ -946,21 +739,13 @@ void art_alloc_fork_reinit() {
                            static_cast<uintptr_t>(state.slot_size));
             n->node_canary = art_compute_node_canary(nt, i, slot);
 
-            // Lock-scrub on live nodes only. `batch_link` lives on
-            // ArtNodeBase directly (CrystallineNode is an empty tag);
-            // `n` is already ArtNodeBase* so a separate downcast isn't
-            // needed.
             if (n->batch_link.load(cpp::MemoryOrder::ACQUIRE) == 0u) {
               uint64_t v = n->typeVersionLockObsolete.load(
                   cpp::MemoryOrder::ACQUIRE);
               if (ArtNodeBase::is_locked(v)) {
-                // fetch_add(0b10) is the canonical writeUnlock:
-                // clears bit 1 (lock), carries into bit 2
-                // (version[0]), preserves bit 0 (obsolete).
-                // Single-threaded in the child during fork-reinit so
-                // the load+CAS race window doesn't exist; fetch_add
-                // is used for hardware-ordering parity with normal
-                // write_unlock.
+                // Child is single-threaded so the load+CAS race
+                // doesn't exist; fetch_add is used for
+                // hardware-ordering parity with normal write_unlock.
                 n->typeVersionLockObsolete.fetch_add(
                     0b10ULL, cpp::MemoryOrder::ACQ_REL);
               }
@@ -968,11 +753,6 @@ void art_alloc_fork_reinit() {
           }
         }
       }
-      // Reclaim retired-but-not-freed nodes left over from dead
-      // threads' Crystalline cells. Must run after chunk_canary
-      // refresh — release_va_chunk_slot's drain path doesn't
-      // validate canary, but defence-in-depth keeps the descriptor
-      // consistent for any later observers.
       fork_reclaim_art_chunk(state, i, desc);
     }
   }
@@ -986,7 +766,7 @@ ArtNodeTypeStats art_index_stats(ArtNodeType t) {
     if (desc == nullptr)
       continue;
     if (desc == kArtChunkInstalling)
-      continue; // Mid-install sentinel — not a published chunk.
+      continue;
     ++s.live_chunks;
     s.live_nodes += load_count(desc->live_state);
   }
@@ -1000,10 +780,9 @@ ArtNodeTypeStats art_index_stats(ArtNodeType t) {
 //  BatchLinkCodec<ArtNodeBase>
 //===----------------------------------------------------------------------===//
 
-// Out-of-line bodies for the Crystalline batch-link codec specialised
-// to ArtNodeBase. Declarations live in art_node.h; the bodies need
-// access to the anonymous-namespace state_for_type helper defined
-// above, so they live here.
+// Bodies for the Crystalline batch-link codec specialised to
+// ArtNodeBase. Located here (not in art_node.cpp) because they need
+// the anonymous-namespace state_for_type helper.
 namespace concurrent {
 
 uint32_t
@@ -1046,10 +825,9 @@ BatchLinkCodec<::LIBC_NAMESPACE::windows::va_tracker::ArtNodeBase>::decode(
 namespace windows {
 namespace va_tracker {
 
-// Crystalline domain definition. Declaration is `extern` in art_node.h.
-// Defined here at file-end so the BatchLinkCodec<ArtNodeBase>
-// specialization above (which references state_for_type) is in scope
-// at instantiation time.
+// Defined at file-end so the BatchLinkCodec<ArtNodeBase> specialization
+// above (which the domain instantiation drags in) is already in scope.
+// extern declaration lives in art_node.h.
 ::LIBC_NAMESPACE::concurrent::CrystallineDomain<
     ArtNodeBase, &art_node_free, kArtRetireFreq, kArtMaxIdx>
     g_va_tracker_art_domain;

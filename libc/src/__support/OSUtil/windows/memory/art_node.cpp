@@ -6,21 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Per-variant operations (insert / change / get_child / remove / copy_to /
-// get_children) for the four ROWEX ART node types (Leis et al., ICDE 2013;
-// Leis et al., DaMoN 2016), plus the runtime dispatch helpers and the
-// grow/shrink scaffolding called by the tree-level insert / remove.
-//
-// Sections:
-//   1. ArtNodeBase methods (lock primitives, prefix mgmt).
-//   2. ArtNode4 (no SSE; 4-element scan).
-//   3. ArtNode16 (SSE2 keysearch + null-child filter).
-//   4. ArtNode48 (sparse 256→48 index).
-//   5. ArtNode256 (direct 256-pointer array).
-//   6. Dispatch helpers (runtime type switch).
-//   6.5. Crystalline-W pinned descent helper.
-//   7. insert_grow / insert_compact / art_node_insert_and_unlock.
-//   8. remove_and_shrink / art_node_remove_and_unlock.
+// Per-variant operations for the four ROWEX ART node types, runtime
+// dispatch, the Crystalline-W pinned descent helper, and grow/shrink
+// scaffolding called by the tree-level insert / remove.
 //
 //===----------------------------------------------------------------------===//
 
@@ -43,15 +31,13 @@ namespace windows {
 namespace va_tracker {
 
 //===----------------------------------------------------------------------===//
-//  Section 1 - ArtNodeBase methods
+//  ArtNodeBase
 //===----------------------------------------------------------------------===//
 
 bool ArtNodeBase::write_lock_or_restart() {
-  // ROWEX writer-acquire (Leis et al., DaMoN 2016, §"Writer Protocol").
-  // Spin on the locked bit with PAUSE for hyperthread yield, then CAS
-  // the version+lock word from (v, unlocked) → (v + 0b10, locked). An
-  // OBSOLETE observation aborts upward: caller must restart from the
-  // parent so it picks up the replacement node via the parent pointer.
+  // ROWEX writer-acquire (paper §"Writer Protocol"). Observed OBSOLETE
+  // aborts upward — caller restarts from the parent so it picks up the
+  // replacement node via the parent's child pointer.
   for (;;) {
     uint64_t v = typeVersionLockObsolete.load(cpp::MemoryOrder::ACQUIRE);
     while (is_locked(v)) {
@@ -68,11 +54,7 @@ bool ArtNodeBase::write_lock_or_restart() {
 }
 
 bool ArtNodeBase::lock_version_or_restart(uint64_t &version_inout) {
-  // Promote an existing snapshot into a held lock with one strong CAS.
-  // Used by the descent path that has just read the version
-  // optimistically and wants to convert "I observed version v" into "I
-  // hold the lock at version v + 0b10". A stale snapshot, an observed
-  // lock bit, or an observed obsolete bit all force the caller to
+  // Stale snapshot, observed lock, or observed obsolete all force
   // restart from the parent.
   if (is_locked(version_inout) || is_obsolete(version_inout))
     return false;
@@ -87,10 +69,9 @@ bool ArtNodeBase::lock_version_or_restart(uint64_t &version_inout) {
 }
 
 void ArtNodeBase::set_prefix(const uint8_t *bytes, uint32_t length) {
-  // Build the new prefix on the stack, zero-pad the unstored tail,
-  // then publish via a single 8-byte RELEASE store. A concurrent
-  // ACQUIRE-load observes either the pre-update or the post-update
-  // (prefix_count, bytes) pair — never a torn snapshot.
+  // Build on the stack, zero-pad the unstored tail, publish via one
+  // 8-byte RELEASE store. A concurrent ACQUIRE-load observes either
+  // pre- or post-update — never a torn `(prefix_count, bytes)` pair.
   ArtPrefix p;
   p.prefix_count = length;
   uint32_t copy_len = length < kArtMaxStoredPrefixLength
@@ -104,13 +85,11 @@ void ArtNodeBase::set_prefix(const uint8_t *bytes, uint32_t length) {
 }
 
 void ArtNodeBase::add_prefix_before(ArtNodeBase *node, uint8_t key) {
-  // Path-compression collapse: fuse `node->prefix || key || this->prefix`
-  // and publish into `this->prefix` via one 8-byte RELEASE store.
-  //
-  // The composed prefix has length np_count + 1 + p_count, of which we
-  // can store only kArtMaxStoredPrefixLength bytes inline; bytes
-  // beyond that survive as optimistic-prefix (resolved against a
-  // descendant leaf's key on lookup).
+  // Fuse `node->prefix || key || this->prefix` into `this->prefix` via
+  // one 8-byte RELEASE store. Composed length is `np + 1 + p`; only
+  // `kArtMaxStoredPrefixLength` bytes fit inline, the rest survive as
+  // optimistic-prefix (resolved against a descendant leaf's key on
+  // lookup).
   ArtPrefix p = get_prefix();
   ArtPrefix np = node->get_prefix();
   uint32_t prefix_copy_count =
@@ -118,9 +97,8 @@ void ArtNodeBase::add_prefix_before(ArtNodeBase *node, uint8_t key) {
           ? (np.prefix_count + 1)
           : kArtMaxStoredPrefixLength;
 
-  // Shift `this`'s stored bytes right by `prefix_copy_count` to make
-  // room for `node->prefix` plus the discriminating key byte. The
-  // iteration goes high→low so the move stays in-place safe.
+  // Shift this->prefix right by `prefix_copy_count` to make room.
+  // High→low iteration keeps the move in-place safe.
   uint32_t carry =
       (p.prefix_count < (kArtMaxStoredPrefixLength - prefix_copy_count))
           ? p.prefix_count
@@ -128,16 +106,14 @@ void ArtNodeBase::add_prefix_before(ArtNodeBase *node, uint8_t key) {
   for (int i = static_cast<int>(carry) - 1; i >= 0; --i)
     p.prefix[prefix_copy_count + i] = p.prefix[i];
 
-  // Lay down the head of the new prefix: as much of node->prefix as
-  // fits in the reserved slots.
   uint32_t np_copy =
       (np.prefix_count < prefix_copy_count) ? np.prefix_count : prefix_copy_count;
   for (uint32_t i = 0; i < np_copy; ++i)
     p.prefix[i] = np.prefix[i];
 
-  // The discriminating key byte lives at slot `prefix_copy_count - 1`
-  // only when node->prefix is short enough that the byte still fits
-  // inside the stored prefix window.
+  // The key byte lands at the last reserved slot only when
+  // `node->prefix` is short enough for the byte to still fit inside
+  // the inline window.
   if (np.prefix_count < kArtMaxStoredPrefixLength)
     p.prefix[prefix_copy_count - 1] = key;
 
@@ -146,18 +122,16 @@ void ArtNodeBase::add_prefix_before(ArtNodeBase *node, uint8_t key) {
 }
 
 //===----------------------------------------------------------------------===//
-//  Section 2 - ArtNode4 (no SSE; 4-element scan)
+//  ArtNode4 (no SSE; 4-element scan)
 //===----------------------------------------------------------------------===//
 
 bool ArtNode4::insert(uint8_t key, ArtNodeBase *child) {
   uint16_t cc = compact_count.load(cpp::MemoryOrder::RELAXED);
   if (cc == 4)
     return false;
-  // Append-only publish sequence: RELEASE-store key, RELEASE-store
-  // child, then RELEASE-bump `compact_count`. A reader's scan masked
-  // by `compact_count` sees the new entry only after the bump's
-  // RELEASE synchronises with its ACQUIRE load. ACQ_REL on `count`
-  // pairs with reader-side `count` consumers.
+  // Append-only publish: key, child, then RELEASE-bump compact_count.
+  // A reader's scan masked by compact_count sees the new entry only
+  // after the bump's RELEASE pairs with its ACQUIRE.
   keys[cc].store(key, cpp::MemoryOrder::RELEASE);
   children[cc].store(child, cpp::MemoryOrder::RELEASE);
   compact_count.store(static_cast<uint16_t>(cc + 1),
@@ -175,16 +149,15 @@ void ArtNode4::change(uint8_t key, ArtNodeBase *new_val) {
       return;
     }
   }
-  // Missing key on `change` is a caller-side invariant violation —
-  // every `change` is preceded by a successful `get_child`.
+  // Every `change` is preceded by a successful `get_child` — a miss
+  // here is a caller invariant violation.
   __builtin_trap();
 }
 
 ArtNodeBase *ArtNode4::get_child(uint8_t key) {
-  // Scan all four slots (not just `[0, count)`): `count` decreases on
-  // remove but `compact_count` does not, and the append-only invariant
-  // means a slot with a non-null child carries a stable key byte.
-  // The null-child filter ignores slots that `remove` has cleared.
+  // Scan all 4 slots, not [0, count): `count` decreases on remove but
+  // `compact_count` doesn't, and the append-only invariant guarantees
+  // any non-null child carries a stable key byte.
   for (uint32_t i = 0; i < 4; ++i) {
     ArtNodeBase *c = children[i].load(cpp::MemoryOrder::ACQUIRE);
     if (c != nullptr && keys[i].load(cpp::MemoryOrder::ACQUIRE) == key)
@@ -194,18 +167,13 @@ ArtNodeBase *ArtNode4::get_child(uint8_t key) {
 }
 
 bool ArtNode4::remove(uint8_t key, bool /*force*/) {
-  // N4 ignores the force-shrink flag: it never threshold-shrinks.
-  // Single-child collapse (the N4-specific transition) is decided at
-  // the caller's count==2 site through `get_second_child` plus
-  // `add_prefix_before`, not in `remove`.
   uint16_t cc = compact_count.load(cpp::MemoryOrder::ACQUIRE);
   for (uint16_t i = 0; i < cc; ++i) {
     ArtNodeBase *c = children[i].load(cpp::MemoryOrder::ACQUIRE);
     if (c != nullptr && keys[i].load(cpp::MemoryOrder::ACQUIRE) == key) {
-      // Order: decrement live count first, then null the slot.
-      // Mirroring the reference; readers tolerate both orderings under
-      // the null-child filter, but the chosen order minimises the
-      // window in which `count > live_population`.
+      // Decrement count before nulling the slot: readers tolerate
+      // either order under the null-child filter, but this order
+      // minimises the window where count > live population.
       count.fetch_sub(1, cpp::MemoryOrder::ACQ_REL);
       children[i].store(nullptr, cpp::MemoryOrder::RELEASE);
       return true;
@@ -215,9 +183,8 @@ bool ArtNode4::remove(uint8_t key, bool /*force*/) {
 }
 
 ArtNodeBase *ArtNode4::get_any_child() {
-  // Prefer a leaf child: `art_node_get_any_child_tid` bottoms out as
-  // soon as a leaf is found, so returning the first leaf saves
-  // iterations down the rightmost any-child chain.
+  // Leaf-preference shortens the any-child chain that
+  // `art_node_get_any_child_tid` descends.
   ArtNodeBase *any = nullptr;
   for (uint32_t i = 0; i < 4; ++i) {
     ArtNodeBase *c = children[i].load(cpp::MemoryOrder::ACQUIRE);
@@ -243,6 +210,12 @@ ArtNode4::SecondChild ArtNode4::get_second_child(uint8_t excluded_key) {
   return {nullptr, 0};
 }
 
+// Caller holds `cur`'s writer lock (insert_grow / insert_compact /
+// remove_and_shrink), so no concurrent writer mutates `cur`. The ACQUIRE
+// loads off `cur` pair with the RELEASEs that previously published each
+// (key, child); `bigger` is not yet parent-reachable, so `bigger->insert`'s
+// own RELEASE stores are paid only against the CAS-publish that follows in
+// insert_grow / insert_compact.
 template <class NODE> void ArtNode4::copy_to(NODE *bigger) {
   uint16_t cc = compact_count.load(cpp::MemoryOrder::ACQUIRE);
   for (uint16_t i = 0; i < cc; ++i) {
@@ -268,8 +241,7 @@ void ArtNode4::get_children(uint8_t start, uint8_t end, KV *out_kv,
       ++out_count;
     }
   }
-  // Insertion sort: O(n²) on n ≤ 4 is the obvious choice over any
-  // comparison-based sort with setup cost.
+  // Insertion sort: at n ≤ 4 any comparison-based sort loses on setup.
   for (uint32_t i = 1; i < out_count; ++i) {
     KV cur = out_kv[i];
     uint32_t j = i;
@@ -282,16 +254,15 @@ void ArtNode4::get_children(uint8_t start, uint8_t end, KV *out_kv,
 }
 
 //===----------------------------------------------------------------------===//
-//  Section 3 - ArtNode16 (SSE2 keysearch + null-child filter)
+//  ArtNode16 (SSE2 keysearch + null-child filter)
 //===----------------------------------------------------------------------===//
 
 bool ArtNode16::insert(uint8_t key, ArtNodeBase *child) {
   uint16_t cc = compact_count.load(cpp::MemoryOrder::RELAXED);
   if (cc == 16)
     return false;
-  // Keys are stored sign-flipped (b ^ 0x80) so signed `_mm_cmpeq_epi8`
-  // orders unsigned bytes correctly for range scans (Leis et al.,
-  // ICDE 2013, §3.1).
+  // `flip_sign` re-encodes for the signed SSE compare; see ArtNode16
+  // class doc.
   keys[cc].store(flip_sign(key), cpp::MemoryOrder::RELEASE);
   children[cc].store(child, cpp::MemoryOrder::RELEASE);
   compact_count.store(static_cast<uint16_t>(cc + 1),
@@ -301,26 +272,18 @@ bool ArtNode16::insert(uint8_t key, ArtNodeBase *child) {
 }
 
 cpp::Atomic<ArtNodeBase *> *ArtNode16::get_child_pos(uint8_t k) {
-  // SSE2 keysearch (Leis et al., ICDE 2013, §3.1):
-  //   * `_mm_set1_epi8` broadcasts the lookup byte to all 16 lanes.
-  //   * `_mm_loadu_si128` reads the 16-byte stored-keys vector. The
-  //     unaligned form is correct even though `keys[]` is 16-byte
-  //     aligned (alignas inheritance from ArtNodeBase), because
-  //     other compilers in this libc's matrix may not see the
-  //     alignment carry through `cpp::Atomic<uint8_t>`.
-  //   * `_mm_cmpeq_epi8` produces a per-lane all-ones / all-zeros
-  //     byte mask; `_mm_movemask_epi8` collapses it to a 16-bit hit
-  //     bitmap.
-  //   * Masking by `(1 << compact_count) - 1` excludes slots beyond
-  //     the publish frontier.
+  // Caller holds the writer lock (callers are `change` / `remove`) — the
+  // returned slot handle is safe to mutate.
+  // `_mm_loadu_si128` rather than the aligned variant: `cpp::Atomic`
+  // does not propagate alignment through `Atomic<uint8_t>` on every
+  // compiler in this libc's matrix.
   __m128i cmp = _mm_cmpeq_epi8(
       _mm_set1_epi8(static_cast<char>(flip_sign(k))),
       _mm_loadu_si128(reinterpret_cast<const __m128i *>(&keys[0])));
   uint16_t cc = compact_count.load(cpp::MemoryOrder::ACQUIRE);
+  // Mask out slots beyond the publish frontier.
   unsigned bitfield = static_cast<unsigned>(_mm_movemask_epi8(cmp)) &
                        ((1u << cc) - 1u);
-  // Walk hits in ascending slot order via TZCNT. A null child means
-  // `remove` cleared the slot — skip and continue.
   while (bitfield) {
     unsigned pos = ctz(static_cast<uint16_t>(bitfield));
     if (children[pos].load(cpp::MemoryOrder::ACQUIRE) != nullptr)
@@ -338,16 +301,13 @@ void ArtNode16::change(uint8_t key, ArtNodeBase *new_val) {
 }
 
 ArtNodeBase *ArtNode16::get_child(uint8_t key) {
-  // Reader form of SSE keysearch. Mask by the full 16-bit window
-  // (NOT by `compact_count`): the null-child filter re-validates
-  // every hit, so an in-flight insert's pre-bump write is harmless,
-  // and a post-RELEASE-bump observer sees a fully populated slot
-  // because of the publish ordering in `insert`.
+  // Mask by the full 16-bit window — NOT by compact_count — because
+  // the null-child filter re-validates every hit and the publish
+  // ordering in `insert` guarantees that a hit on a slot ≥ compact_count
+  // is either harmless (pre-bump in-flight insert) or fully populated.
   //
-  // The second `keys[pos]` ACQUIRE compare is load-bearing for ROWEX
-  // correctness (Leis et al., DaMoN 2016, §"ROWEX Node16 SSE phantom
-  // matches"): an SSE compare can latch onto a stale byte if the
-  // slot is mid-write, and the explicit compare catches it.
+  // The second `keys[pos]` ACQUIRE compare catches phantom SSE matches
+  // on a mid-write slot (paper §"ROWEX Node16 SSE phantom matches").
   __m128i cmp = _mm_cmpeq_epi8(
       _mm_set1_epi8(static_cast<char>(flip_sign(key))),
       _mm_loadu_si128(reinterpret_cast<const __m128i *>(&keys[0])));
@@ -365,10 +325,8 @@ ArtNodeBase *ArtNode16::get_child(uint8_t key) {
 }
 
 bool ArtNode16::remove(uint8_t key, bool force) {
-  // Threshold-shrink hysteresis: signal the caller to drop into the
-  // 16→4 shrink path when the post-decrement count would fall to 3.
-  // `force = true` skips the threshold check (used at the root and
-  // mid-shrink to push the entry through unconditionally).
+  // Hysteresis: signal shrink at `live == 3` so post-decrement is 2.
+  // `force` is used at the root (no parent to relock) and mid-shrink.
   uint16_t live = count.load(cpp::MemoryOrder::ACQUIRE);
   if (live == 3 && !force)
     return false;
@@ -431,13 +389,12 @@ void ArtNode16::get_children(uint8_t start, uint8_t end, KV *out_kv,
 }
 
 //===----------------------------------------------------------------------===//
-//  Section 4 - ArtNode48 (sparse 256→48 index)
+//  ArtNode48 (sparse 256→48 index)
 //===----------------------------------------------------------------------===//
 
 ArtNode48::ArtNode48(uint32_t lvl, const uint8_t *pfx, uint32_t pfx_len)
     : ArtNodeBase(ArtNodeType::N48, lvl, pfx, pfx_len) {
-  // Stamp all 256 index entries to the empty marker. RELAXED suffices
-  // because the node is not yet reachable from any reader.
+  // RELAXED is sufficient — the node is not yet reader-reachable.
   for (uint32_t i = 0; i < 256; ++i)
     child_index[i].store(kArtNode48EmptyMarker, cpp::MemoryOrder::RELAXED);
 }
@@ -452,11 +409,8 @@ bool ArtNode48::insert(uint8_t key, ArtNodeBase *child) {
   uint16_t cc = compact_count.load(cpp::MemoryOrder::RELAXED);
   if (cc == 48)
     return false;
-  // Two-store publish (Leis et al., DaMoN 2016, §"Node48"):
-  // populate the child slot first, then RELEASE-store the index byte
-  // pointing at it. The second store is the linearisation point —
-  // any reader that observes a non-empty `child_index[key]` is
-  // guaranteed to observe the populated `children[idx]`.
+  // Populate the child slot then RELEASE-publish via child_index — the
+  // index store is the linearisation point (see ArtNode48 class doc).
   children[cc].store(child, cpp::MemoryOrder::RELEASE);
   child_index[key].store(static_cast<uint8_t>(cc), cpp::MemoryOrder::RELEASE);
   compact_count.store(static_cast<uint16_t>(cc + 1),
@@ -480,20 +434,16 @@ ArtNodeBase *ArtNode48::get_child(uint8_t key) {
 }
 
 bool ArtNode48::remove(uint8_t key, bool force) {
-  // Threshold-shrink hysteresis: drop into the 48→16 shrink path at
-  // count == 12 (one below the threshold so the post-decrement
-  // population is 11).
+  // Hysteresis: shrink at live == 12; post-decrement is 11.
   uint16_t live = count.load(cpp::MemoryOrder::ACQUIRE);
   if (live == 12 && !force)
     return false;
   uint8_t idx = child_index[key].load(cpp::MemoryOrder::ACQUIRE);
   if (LIBC_UNLIKELY(idx == kArtNode48EmptyMarker))
     __builtin_trap();
-  // Order matters: null the child pointer FIRST, then clear the
-  // index byte. A reader that snapped the pre-clear `child_index[key]`
-  // then loads the now-null child pointer and returns null — which is
-  // the pre-state-correct linearised outcome. The subsequent index
-  // store short-circuits later readers.
+  // Null the child pointer before clearing the index byte: a reader
+  // that snapped the pre-clear index then loads the now-null pointer
+  // and returns null — the pre-state-correct linearised outcome.
   children[idx].store(nullptr, cpp::MemoryOrder::RELEASE);
   child_index[key].store(kArtNode48EmptyMarker, cpp::MemoryOrder::RELEASE);
   count.fetch_sub(1, cpp::MemoryOrder::ACQ_REL);
@@ -537,19 +487,17 @@ void ArtNode48::get_children(uint8_t start, uint8_t end, KV *out_kv,
     out_kv[out_count].k = static_cast<uint8_t>(i);
     out_kv[out_count].child = c;
     ++out_count;
-    // Guard against `end == 255` causing `i++` to wrap.
+    // Avoid uint8_t wrap when end == 255.
     if (i == 255)
       break;
   }
 }
 
 //===----------------------------------------------------------------------===//
-//  Section 5 - ArtNode256 (direct 256-pointer array)
+//  ArtNode256 (direct 256-pointer array)
 //===----------------------------------------------------------------------===//
 
 bool ArtNode256::insert(uint8_t key, ArtNodeBase * child) {
-  // Node256 is the terminal variant — single-store insert; no
-  // overflow check. `count` tracks live (non-null) entries.
   children[key].store(child, cpp::MemoryOrder::RELEASE);
   count.fetch_add(1, cpp::MemoryOrder::ACQ_REL);
   return true;
@@ -564,7 +512,7 @@ ArtNodeBase *ArtNode256::get_child(uint8_t key) {
 }
 
 bool ArtNode256::remove(uint8_t key, bool force) {
-  // Threshold-shrink hysteresis: 256→48 at count == 37.
+  // Hysteresis: shrink at live == 37.
   uint16_t live = count.load(cpp::MemoryOrder::ACQUIRE);
   if (live == 37 && !force)
     return false;
@@ -609,17 +557,15 @@ void ArtNode256::get_children(uint8_t start, uint8_t end, KV *out_kv,
   }
 }
 
-// Explicit instantiations for the next-larger grow boundaries the
-// dispatcher actually uses. Without these the compiler folds copy_to
-// entirely into `insert_grow<>` and emits no standalone symbol, which
-// breaks any external caller (notably the per-node-type direct-grow
-// tests in art_index_test.cpp).
+// Without explicit instantiation the compiler folds `copy_to` into
+// `insert_grow<>` and emits no standalone symbol, breaking any external
+// caller (notably the per-node-type direct-grow unit tests).
 template void ArtNode4::copy_to<ArtNode16>(ArtNode16 *);
 template void ArtNode16::copy_to<ArtNode48>(ArtNode48 *);
 template void ArtNode48::copy_to<ArtNode256>(ArtNode256 *);
 
 //===----------------------------------------------------------------------===//
-//  Section 6 - Dispatch helpers (runtime type switch)
+//  Runtime-type-dispatched free functions
 //===----------------------------------------------------------------------===//
 
 ArtNodeBase *art_node_get_child(ArtNodeBase *node, uint8_t key) {
@@ -669,10 +615,6 @@ ArtNodeBase *art_node_get_any_child(ArtNodeBase *node) {
 }
 
 Arena *art_node_get_any_child_tid(ArtNodeBase *node) {
-  // Descend until a tagged leaf is encountered or the chain bottoms
-  // out (transient empty tree). The any-child preference for leaves
-  // in `get_any_child` keeps this loop short — typically one or two
-  // hops to a leaf for a non-trivial tree.
   ArtNodeBase *cur = node;
   while (cur != nullptr) {
     ArtNodeBase *next = art_node_get_any_child(cur);
@@ -687,9 +629,8 @@ Arena *art_node_get_any_child_tid(ArtNodeBase *node) {
 
 ArtNode4::SecondChild art_node_get_second_child(ArtNodeBase *node,
                                                   uint8_t excluded_key) {
-  // `getSecondChild` is a Node4-only operation — it backs the
-  // single-child-collapse path that only fires on N4. Any other type
-  // reaching here is a caller invariant violation.
+  // Single-child-collapse only fires on N4 — anything else is a caller
+  // invariant violation.
   if (LIBC_UNLIKELY(node->node_type() != ArtNodeType::N4))
     __builtin_trap();
   return static_cast<ArtNode4 *>(node)->get_second_child(excluded_key);
@@ -697,9 +638,8 @@ ArtNode4::SecondChild art_node_get_second_child(ArtNodeBase *node,
 
 void art_node_get_children(ArtNodeBase *node, uint8_t start, uint8_t end,
                             ArtKV *out, uint32_t &out_count) {
-  // Each per-type `get_children` populates its own nested `KV` array
-  // with the same `(k, child)` layout as `ArtKV`. Copying field-by-
-  // field avoids reinterpret_cast and keeps the type system happy.
+  // Field-by-field copy from each per-type nested `KV` into `ArtKV`
+  // avoids reinterpret_cast across the unrelated nested types.
   switch (node->node_type()) {
   case ArtNodeType::N4: {
     ArtNode4::KV scratch[4];
@@ -746,16 +686,14 @@ void art_node_get_children(ArtNodeBase *node, uint8_t start, uint8_t end,
 }
 
 //===----------------------------------------------------------------------===//
-//  Section 6.5 - Crystalline-W pinned descent helper
+//  Crystalline-W pinned descent helper
 //===----------------------------------------------------------------------===//
 
 namespace {
 
-// Closure passed through `CrystallineDomain::protect()`'s generalised
-// overload (Nikolaev and Ravindran, PLDI 2024, §4.2 Fig. 10). The
-// thunk is invoked either by the calling thread on the fast path or
-// by a foreign helper thread when the slow path engages; the parent
-// kept alive by the active-chain CAS scan provides the anchor.
+// Closure for `CrystallineDomain::protect()`'s generalised overload
+// (paper §4.2 Fig. 10). May be invoked by the calling thread on the
+// fast path or by a foreign helper thread on slow-path handoff.
 struct ArtChildLoadCtx {
   ArtNodeBase *parent;
   uint8_t      key_byte;
@@ -776,15 +714,15 @@ ArtNodeBase *pinned_get_child(ArtNodeBase *parent, uint8_t key_byte,
 }
 
 //===----------------------------------------------------------------------===//
-//  Section 7 - Insert grow / compact dispatch
+//  Insert grow / compact dispatch
 //===----------------------------------------------------------------------===//
 
 namespace {
 
-// Grow `cur` (CurNode) to the next-larger variant `BiggerNode`. In-
-// place insert is tried first; only on structural fullness do we
-// allocate a fresh bigger node, copy live children, install the new
-// entry, and atomically swap the parent's child pointer.
+// Grow to the next-larger variant. In-place insert is tried first;
+// only on structural fullness do we allocate a fresh bigger node, copy
+// live children, install the new entry, and CAS the parent's child
+// pointer to flip the linearisation point from `cur` to `bigger`.
 template <class CurNode, class BiggerNode, ArtNodeType BiggerTag>
 void insert_grow(CurNode *cur, ArtNodeBase *parent, uint8_t parent_key,
                   uint8_t new_key, ArtNodeBase *new_val,
@@ -796,10 +734,8 @@ void insert_grow(CurNode *cur, ArtNodeBase *parent, uint8_t parent_key,
   auto *bigger =
       make_node<BiggerNode, BiggerTag>(cur->level, cur->get_prefix());
   if (LIBC_UNLIKELY(bigger == nullptr)) {
-    // Chunk-pool OOM is a benign condition: drop the writer lock and
-    // signal the caller to restart from the root. The restart will
-    // eventually surface `-ENOMEM` at the public API boundary if the
-    // pool remains exhausted.
+    // Chunk-pool OOM: restart from root; persistent exhaustion will
+    // surface as `-ENOMEM` at the public API boundary.
     cur->write_unlock();
     need_restart_out = true;
     return;
@@ -807,21 +743,19 @@ void insert_grow(CurNode *cur, ArtNodeBase *parent, uint8_t parent_key,
   cur->copy_to(bigger);
   (void)bigger->insert(new_key, new_val);
 
-  // Acquire the parent lock to publish the new child pointer.
-  // Failing means another writer is restructuring the parent; retire
-  // the freshly built node through Crystalline (it was never reachable
-  // so no grace period is logically required, but routing through the
-  // domain keeps the slot-pool accounting consistent) and restart.
   if (!parent->write_lock_or_restart()) {
+    // Route the unreachable fresh node through Crystalline retire even
+    // though no grace period is logically required — keeps slot-pool
+    // accounting consistent.
     g_va_tracker_art_domain.retire(bigger);
     cur->write_unlock();
     need_restart_out = true;
     return;
   }
 
-  // Linearisation point of the grow: parent's child pointer flips
-  // from `cur` to `bigger`. Concurrent readers either see the old
-  // node (still valid, will be retired) or the new one.
+  // Linearisation point of the grow: the parent's child pointer flips from
+  // `cur` to `bigger`. Pre-flip readers still see `cur` (kept alive by
+  // Crystalline until grace closes); post-flip readers see `bigger`.
   art_node_change(parent, parent_key, bigger);
   parent->write_unlock();
 
@@ -829,9 +763,8 @@ void insert_grow(CurNode *cur, ArtNodeBase *parent, uint8_t parent_key,
   g_va_tracker_art_domain.retire(cur);
 }
 
-// In-place compact when `compact_count` has saturated but live
-// `count` is below capacity (the append-only invariant means cleared
-// slots cannot be reused without rebuilding). Same type in / out.
+// Same type in / out: the append-only invariant means cleared slots
+// can only be reclaimed by rebuilding the node.
 template <class CurNode, ArtNodeType CurTag>
 void insert_compact(CurNode *cur, ArtNodeBase *parent, uint8_t parent_key,
                      uint8_t new_key, ArtNodeBase *new_val,
@@ -851,6 +784,9 @@ void insert_compact(CurNode *cur, ArtNodeBase *parent, uint8_t parent_key,
     need_restart_out = true;
     return;
   }
+  // Linearisation point of the compact: parent's child pointer flips from
+  // `cur` to `fresh`. Pre-flip readers see `cur`; post-flip readers see
+  // `fresh`. `cur` survives the flip via Crystalline grace.
   art_node_change(parent, parent_key, fresh);
   parent->write_unlock();
 
@@ -864,12 +800,9 @@ void art_node_insert_and_unlock(ArtNodeBase *node, ArtNodeBase *parent,
                                   uint8_t parent_key, uint8_t new_key,
                                   ArtNodeBase *new_val,
                                   bool &need_restart_out) {
-  // Per-variant dispatch. Each branch decides between in-place
-  // compact (same type, fresh node) and grow (next-larger type)
-  // based on the (compact_count, live count) pair. The exact
-  // thresholds come from the reference implementation; the compact
-  // path fires when `compact_count` saturates while live `count` has
-  // headroom — i.e., many slots have been cleared by `remove`.
+  // Compact when compact_count has saturated but live count has
+  // headroom (cleared slots can't be reused — see `insert_compact`);
+  // grow otherwise. Thresholds match the reference.
   switch (node->node_type()) {
   case ArtNodeType::N4: {
     auto *n = static_cast<ArtNode4 *>(node);
@@ -913,7 +846,7 @@ void art_node_insert_and_unlock(ArtNodeBase *node, ArtNodeBase *parent,
     return;
   }
   case ArtNodeType::N256: {
-    // Node256 is terminal; in-place insert always succeeds.
+    // Terminal variant: in-place insert always succeeds.
     auto *n = static_cast<ArtNode256 *>(node);
     (void)n->insert(new_key, new_val);
     n->write_unlock();
@@ -924,21 +857,17 @@ void art_node_insert_and_unlock(ArtNodeBase *node, ArtNodeBase *parent,
 }
 
 //===----------------------------------------------------------------------===//
-//  Section 8 - Remove shrink dispatch
+//  Remove shrink dispatch
 //===----------------------------------------------------------------------===//
 
 namespace {
 
-// Try an in-place remove first; on threshold-shrink return false,
-// allocate the next-smaller variant, copy survivors, swap into the
-// parent, and retire the old node through Crystalline.
 template <class CurNode, class SmallerNode, ArtNodeType SmallerTag>
 void remove_and_shrink(CurNode *cur, ArtNodeBase *parent, uint8_t parent_key,
                         uint8_t rm_key, bool &need_restart_out) {
-  // First attempt: in-place remove. At the root, `force = true`
-  // (no parent to lock) so the call always succeeds. Below the root,
-  // `force = false`; a false return means the count hit the per-type
-  // shrink threshold and we must fall through to the shrink path.
+  // At the root `force = true` (no parent to relock); below the root
+  // `force = false`, and `false` return means the per-type shrink
+  // threshold tripped — fall through to the shrink path.
   if (cur->remove(rm_key, parent == nullptr)) {
     cur->write_unlock();
     return;
@@ -959,12 +888,13 @@ void remove_and_shrink(CurNode *cur, ArtNodeBase *parent, uint8_t parent_key,
     return;
   }
 
-  // Apply the erase to `cur` under the held parent lock, then copy
-  // the (now post-erase) survivors into the smaller variant. Order
-  // matters: erase-before-copy ensures the smaller node never carries
+  // Erase from `cur` BEFORE copying so the smaller node never carries
   // the entry being removed.
   (void)cur->remove(rm_key, true);
   cur->copy_to(smaller);
+  // Linearisation point of the shrink: parent's child pointer flips from
+  // `cur` to `smaller`. Pre-flip readers see `cur` (Crystalline-pinned
+  // until grace); post-flip readers see `smaller`.
   art_node_change(parent, parent_key, smaller);
 
   parent->write_unlock();
@@ -979,10 +909,9 @@ void art_node_remove_and_unlock(ArtNodeBase *node, uint8_t rm_key,
                                   bool &need_restart_out) {
   switch (node->node_type()) {
   case ArtNodeType::N4: {
-    // N4 always erases in place. The single-child-collapse decision
-    // (the N4-specific shrink transition) is made at the caller's
-    // count == 2 site via `get_second_child` plus `add_prefix_before`,
-    // not here.
+    // N4 always erases in place; single-child collapse is the caller's
+    // count == 2 responsibility (via `get_second_child` +
+    // `add_prefix_before`).
     auto *n = static_cast<ArtNode4 *>(node);
     (void)n->remove(rm_key, false);
     n->write_unlock();

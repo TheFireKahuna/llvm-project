@@ -5,18 +5,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-///
-/// \file
-/// Append-only growable container built from a fixed inline array plus a
-/// singly-linked chain of page-allocated overflow blocks.
-///
-/// Used by the va_tracker's transactional builders (\c LockedSet,
-/// \c NewNodes) to accumulate records across a single skiplist
-/// transaction. The two consumers want different inline / overflow
-/// budgets, so the geometry is templated on \c kInlineCount and
-/// \c kBlockCapacity.
-///
-//===----------------------------------------------------------------------===//
 
 #ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEMORY_CHUNKED_APPEND_STORE_H
 #define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEMORY_CHUNKED_APPEND_STORE_H
@@ -33,57 +21,11 @@ namespace LIBC_NAMESPACE_DECL {
 namespace windows {
 namespace va_tracker {
 
-/// Append-only container with a small inline buffer and a chain of
-/// page-allocated overflow blocks.
-///
-/// The container is single-threaded by contract: every consumer
-/// (\c LockedSet, \c NewNodes) is private state of a skiplist
-/// transaction owned by exactly one thread. There are no atomic
-/// operations on \c count, \c blocks, or \c tail_block.
-///
-/// Layout:
-///
-/// \code
-///     count <= kInlineCount      stored in inline_data[0..count)
-///                                blocks == tail_block == nullptr
-///                                (no syscall ever issued)
-///
-///     count >  kInlineCount      inline_data[0..kInlineCount) holds the
-///                                first kInlineCount records;
-///                                overflow continues in
-///                                blocks -> block -> ... -> tail_block,
-///                                each carrying its own per-block count
-///                                with the final block partially filled
-/// \endcode
-///
-/// Invariants:
-///   * \c count is the source of truth for "how many records are live";
-///     individual block \c count fields sum (with \c kInlineCount when
-///     overflowed) to the same total.
-///   * \c blocks and \c tail_block are either both null (no overflow
-///     ever allocated) or both non-null with \c tail_block reachable by
-///     walking \c next pointers from \c blocks.
-///   * After \c clear() the chain is retained for reuse but every block
-///     count is zero; the inline array's slots keep their stale bytes
-///     and \c count gates every read.
-///   * \c push() is the only growth point and is the only call site that
-///     may issue \c page_alloc().
-///
-/// The class deliberately has no copy operations, no move-assignment,
-/// and a destructor that frees the entire chain. Move-construction
-/// performs a shallow pointer transfer; the moved-from instance is
-/// left empty and frees nothing.
-///
-/// \tparam T              Record type stored in each slot. Must be
-///                        trivially copyable and trivially destructible
-///                        (no element destructors are run).
-/// \tparam kInlineCount   Number of inline slots before the first
-///                        overflow block is allocated. Picked to cover
-///                        the common-case transaction shape without any
-///                        page-allocator traffic.
-/// \tparam kBlockCapacity Records per overflow block. Larger values
-///                        amortise the per-block \c page_alloc cost but
-///                        round physical use up to the next page.
+// Append-only container for trivially-copyable T with a fixed inline buffer
+// and a singly-linked chain of page-allocated overflow blocks. Single-
+// threaded by contract: every consumer is private state of one skiplist
+// transaction owned by exactly one thread, so count / blocks / tail_block
+// carry no atomics. Element destructors are never run.
 template <typename T, uint32_t kInlineCount, uint32_t kBlockCapacity>
 struct ChunkedAppendStore {
     struct Block {
@@ -93,6 +35,9 @@ struct ChunkedAppendStore {
     };
 
     T inline_data[kInlineCount]{};
+    // blocks and tail_block are both null (no overflow ever allocated) or
+    // both non-null with tail_block reachable from blocks via next. push()
+    // and at() rely on this — neither validates the chain head separately.
     Block *blocks{nullptr};
     Block *tail_block{nullptr};
     uint32_t count{0};
@@ -101,6 +46,9 @@ struct ChunkedAppendStore {
     ChunkedAppendStore(const ChunkedAppendStore &) = delete;
     ChunkedAppendStore &operator=(const ChunkedAppendStore &) = delete;
 
+    // Shallow pointer transfer of the overflow chain; the moved-from store
+    // has blocks / tail_block / count nulled so its destructor's
+    // release_storage() walk frees nothing.
     LIBC_INLINE ChunkedAppendStore(ChunkedAppendStore &&other) noexcept
         : blocks(other.blocks), tail_block(other.tail_block),
           count(other.count) {
@@ -110,44 +58,30 @@ struct ChunkedAppendStore {
         other.count = 0;
     }
 
-    // Move-assignment is deleted: consumers acquire into an existing
-    // pristine slot (LockedSet::acquire) rather than overwriting a live
-    // store. Reassigning a populated store has no sensible semantics
-    // for the per-transaction lifecycle.
+    // Deleted: consumers acquire into a pristine slot rather than overwrite
+    // a live store, so reassigning a populated store has no defined chain-
+    // ownership transfer.
     ChunkedAppendStore &operator=(ChunkedAppendStore &&) = delete;
 
     LIBC_INLINE ~ChunkedAppendStore() { release_storage(); }
 
     [[nodiscard]] LIBC_INLINE bool empty() const { return count == 0; }
 
-    /// Returns true iff this store has never been pushed into.
-    ///
-    /// Stricter than \c empty(): a store that grew past \c kInlineCount
-    /// and was then \c clear()-ed retains its overflow chain for reuse
-    /// and returns \c empty() but not \c is_unused().
+    // Stricter than empty(): a store that grew past kInlineCount and was
+    // then clear()-ed is empty() but not is_unused() — its overflow chain
+    // is still held for reuse.
     [[nodiscard]] LIBC_INLINE bool is_unused() const {
         return count == 0 && blocks == nullptr;
     }
 
-    /// Appends \p value at logical index \c count.
-    ///
-    /// Allocates a fresh overflow \c Block via \c page_alloc on the
-    /// transitions \c count == kInlineCount (first overflow) and on
-    /// every \c kBlockCapacity boundary where the existing chain has no
-    /// pre-allocated successor. Blocks previously allocated and then
-    /// released back via \c clear() are reused without re-allocation.
-    ///
-    /// \returns true on success; false on \c page_alloc failure. The
-    ///          caller treats false as \c -ENOMEM and unwinds the
-    ///          enclosing skiplist transaction via its retire path.
+    // Returns false on page_alloc failure; caller maps that to -ENOMEM and
+    // unwinds the enclosing skiplist transaction via its retire path.
     [[nodiscard]] bool push(const T &value) {
         if (count < kInlineCount) {
             inline_data[count++] = value;
             return true;
         }
         if (tail_block == nullptr) {
-            // First overflow ever: allocate the head block. blocks and
-            // tail_block transition from null to the new block together.
             void *mem = ::LIBC_NAMESPACE::internal::page_alloc(sizeof(Block));
             if (mem == nullptr)
                 return false;
@@ -156,8 +90,7 @@ struct ChunkedAppendStore {
             blocks = tail_block;
         } else if (tail_block->count == kBlockCapacity) {
             if (tail_block->next != nullptr) {
-                // Reuse a previously-allocated successor left over from
-                // an earlier push burst followed by clear().
+                // Reuse a successor left over from a prior burst + clear().
                 tail_block = tail_block->next;
             } else {
                 void *mem =
@@ -175,15 +108,6 @@ struct ChunkedAppendStore {
         return true;
     }
 
-    /// Returns a reference to the record at logical index \p idx.
-    ///
-    /// \pre \p idx < \c count.
-    ///
-    /// Indices in \c [0, kInlineCount) read from \c inline_data; higher
-    /// indices walk the overflow chain decrementing \p idx by each
-    /// block's local count. A mismatch between \c count and the chain
-    /// (the chain ran out before \p idx did) traps as a substrate
-    /// invariant violation.
     [[nodiscard]] T &at(uint32_t idx) {
         LIBC_ASSERT(idx < count);
         if (idx < kInlineCount)
@@ -194,6 +118,8 @@ struct ChunkedAppendStore {
                 return block->records[idx];
             idx -= block->count;
         }
+        // count outran the chain: a block's per-block count is inconsistent
+        // with the total. Substrate invariant — never a caller bug.
         __builtin_trap();
     }
 
@@ -201,17 +127,9 @@ struct ChunkedAppendStore {
         return const_cast<ChunkedAppendStore *>(this)->at(idx);
     }
 
-    /// Resets the live count to zero while retaining the overflow
-    /// chain.
-    ///
-    /// Each block's per-block count is also zeroed so subsequent
-    /// \c push() reuses the head block first and walks forward as it
-    /// fills. The inline array's slots keep their stale bytes; \c count
-    /// is the only thing that bounds a subsequent read.
-    ///
-    /// Use \c release_storage() instead when the consumer is sure the
-    /// store will not be reused — e.g. on transaction commit/abort if
-    /// the LockedSet is about to be destroyed anyway.
+    // Retains the overflow chain for reuse; subsequent push() refills the
+    // head block first. Inline slots keep stale bytes — count gates reads.
+    // Use release_storage() at end-of-life to actually free the chain.
     void clear() {
         count = 0;
         for (Block *block = blocks; block != nullptr; block = block->next)
@@ -219,8 +137,6 @@ struct ChunkedAppendStore {
         tail_block = blocks;
     }
 
-    /// Frees every overflow block via \c page_free and resets the
-    /// store to its as-default-constructed shape.
     void release_storage() {
         Block *block = blocks;
         while (block != nullptr) {

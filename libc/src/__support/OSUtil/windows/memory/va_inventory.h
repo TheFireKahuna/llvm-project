@@ -5,36 +5,21 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-///
-/// \file
-/// Process-startup discovery and classification of VA the libc did not
-/// create.
-///
-/// At entry the user VA space already contains regions owned by the OS or
-/// by code that ran before libc bring-up: PE images (ntdll, c.dll, main
-/// exe, previously-loaded DLLs), the PEB and main-thread TEB, the
-/// main-thread stack reservation, the NT process heap, and anything a
-/// debugger or earlier-initialised library may have allocated. This module
-/// discovers those ranges via `NtQueryVirtualMemory` and stamps them as
-/// *cordons* in the pagemap.
-///
-/// Cordons are a pagemap-only concept; they do not participate in the
-/// `va_tracker` skiplist. Three flavours are stamped (see
-/// `alloc::pagemap::CordonKind`):
-///
-///   * Kernel  - TEB / PEB / main stack.
-///   * Image   - PE module load extents.
-///   * Foreign - everything else (NT process heap, debugger ranges,
-///               third-party `VirtualAllocEx`, ...).
-///
-/// The VEH master's first-line probe (`pagemap::classify`) sees any
-/// cordon-stamped chunk and routes the fault to
-/// `EXCEPTION_CONTINUE_SEARCH` without consulting the tracker; only chunks
-/// that decode to `Empty` reach `va_tracker::resolve` for POSIX VA. This
-/// is what keeps the SIGSEGV classifier wait-free against non-POSIX VA -
-/// the cordon stamp is one atomic load + cookie XOR + range check per
-/// 64 KiB chunk.
-///
+//
+// Process-startup discovery of VA the libc did not create (PE images, PEB,
+// TEB, main stack, NT process heap, debugger / third-party allocations) and
+// classification into *cordons* on the pagemap. Cordons are pagemap-only;
+// they never enter the va_tracker skiplist.
+//
+// Three kinds (see alloc::pagemap::CordonKind): Kernel (TEB / PEB / main
+// stack), Image (PE module extents), Foreign (everything else).
+//
+// The VEH master's first-line probe (pagemap::classify) routes cordoned
+// chunks to EXCEPTION_CONTINUE_SEARCH without consulting the tracker; only
+// chunks decoding to Empty reach va_tracker::resolve. The stamp is one
+// atomic load + cookie XOR + range check per 64 KiB chunk, which is what
+// keeps the SIGSEGV classifier wait-free against non-POSIX VA.
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_VA_INVENTORY_H
@@ -52,9 +37,9 @@ namespace LIBC_NAMESPACE_DECL {
 namespace windows {
 
 namespace va_inventory_detail {
-// Stamp a cordon range, no-op for empty / null inputs. Callers pass
-// kernel- or loader-derived `(base, size)` tuples that may legitimately
-// be zero (e.g. a module entry with `SizeOfImage == 0` mid-tear-down).
+// Callers pass kernel- or loader-derived (base, size) tuples that may
+// legitimately be zero (e.g. a module entry observed with SizeOfImage == 0
+// mid-tear-down); silently drop those instead of stamping a zero range.
 LIBC_INLINE void register_sentinel(void *base, SIZE_T size,
                                     alloc::pagemap::CordonKind kind) {
   if (base == nullptr || size == 0)
@@ -67,23 +52,21 @@ LIBC_INLINE void register_sentinel(void *base, SIZE_T size,
 // Stack bounds
 //===----------------------------------------------------------------------===//
 
-/// Triple of main-thread stack pointers read straight from TEB fields.
-///
-/// Stable ABI since NT 5.1; the three offsets are documented in
-/// phnt-style headers as `Tib.StackBase`, `Tib.StackLimit`,
-/// `DeallocationStack`. `deallocation_stack` is the full reservation
-/// base (lowest address); `base` is the top of the committed range
-/// (highest address); `limit` is the current committed low watermark.
+// Main-thread stack pointers mirrored from the TEB (Tib.StackBase,
+// Tib.StackLimit, DeallocationStack). `deallocation_stack` is the
+// reservation base (lowest address); `base` is the top of the committed
+// range (highest address); `limit` is the current committed low watermark.
 struct StackBounds {
   PVOID base;
   PVOID limit;
   PVOID deallocation_stack;
 };
 
-/// Reads the three stack-bounds TEB fields directly.
-///
-/// One `mov` per field on x86-64 (`gs:`-relative) or one `ldr` per field
-/// on AArch64 (`x18`-relative) - no syscall, no library call.
+// Direct TEB field reads via the segment / platform register: one mov per
+// field on x86-64 (gs:-relative) or one ldr per field on AArch64
+// (x18-relative). The libc deliberately never links Win32 (no
+// GetCurrentTeb / NtQueryInformationThread) and an ntdll round-trip is
+// pointless for fields the TEB already exposes directly.
 LIBC_INLINE StackBounds read_stack_bounds() {
   StackBounds sb;
 #ifdef __x86_64__
@@ -102,15 +85,12 @@ LIBC_INLINE StackBounds read_stack_bounds() {
 // Kernel-region discovery
 //===----------------------------------------------------------------------===//
 
-/// Stamps the main-thread stack reservation, the TEB allocation, and the
-/// PEB allocation as `CordonKind::Kernel`.
-///
-/// Each region is resolved to its full NT allocation extent via MRI
-/// (`nt_pal::find_alloc_range`) rather than MBI. MBI only covers the
-/// contiguous sub-region with identical protection attributes, which on
-/// a multi-band allocation (TEB / PEB carry guard pages with distinct
-/// protection) would omit the guard pages and leave them vulnerable to
-/// MAP_FIXED clobber.
+// Each region resolves to its full NT allocation extent via MRI
+// (nt_pal::find_alloc_range) rather than MBI: MBI only covers the
+// contiguous sub-region with identical protection attributes, so for a
+// multi-band allocation (TEB / PEB carry guard pages with distinct
+// protection) it would omit the guard pages and leave them vulnerable to
+// MAP_FIXED clobber.
 LIBC_INLINE void discover_kernel_regions() {
   const StackBounds sb = read_stack_bounds();
   if (sb.deallocation_stack != nullptr && sb.base != nullptr) {
@@ -123,6 +103,8 @@ LIBC_INLINE void discover_kernel_regions() {
           base, size, alloc::pagemap::CordonKind::Kernel);
   }
 
+  // TEB self-pointer: NT_TIB.Self at TEB+0x30 on x86-64; AArch64 keeps the
+  // TEB pointer live in x18 by ABI, so the register read is the address.
   PVOID teb;
 #ifdef __x86_64__
   __asm__ __volatile__("movq %%gs:0x30, %0" : "=r"(teb));
@@ -153,13 +135,9 @@ LIBC_INLINE void discover_kernel_regions() {
 // Loaded-module discovery
 //===----------------------------------------------------------------------===//
 
-/// Walks the loader's in-memory-order module list and stamps each image's
-/// full NT allocation extent as `CordonKind::Image`.
-///
-/// `InLoadOrderLinks` is at offset 0 of `LDR_DATA_TABLE_ENTRY`, so the
-/// `LIST_ENTRY*` returned by the chain walk reinterpret-casts directly
-/// to the table entry - the convention used elsewhere in libc by dlfcn /
-/// stack_walker / bt_format / exec_ops.
+// InLoadOrderLinks is at offset 0 of LDR_DATA_TABLE_ENTRY, so the
+// LIST_ENTRY* returned by the chain walk reinterpret-casts directly to
+// the table entry.
 LIBC_INLINE void discover_loaded_modules() {
   PEB *peb = NtCurrentPeb();
   if (peb == nullptr || peb->Ldr == nullptr)
@@ -182,9 +160,8 @@ LIBC_INLINE void discover_loaded_modules() {
 // Residual foreign discovery
 //===----------------------------------------------------------------------===//
 
-/// Publishes one accumulated foreign region. `MEM_IMAGE` is promoted to
-/// `Image` (catches modules the Ldr walk missed); `MEM_PRIVATE` and
-/// `MEM_MAPPED` both decode to `Foreign`.
+// MEM_IMAGE is promoted to Image to catch modules the Ldr walk missed;
+// MEM_PRIVATE and MEM_MAPPED both decode to Foreign.
 LIBC_INLINE void publish_pending_foreign(void *base, SIZE_T size, DWORD type) {
   if (base == nullptr || size == 0)
     return;
@@ -194,21 +171,13 @@ LIBC_INLINE void publish_pending_foreign(void *base, SIZE_T size, DWORD type) {
                          : alloc::pagemap::CordonKind::Foreign);
 }
 
-/// Bulk sweep that classifies any residual NT allocation left after the
-/// kernel and loaded-module passes.
-///
-/// Catches NT process heap, debugger-injected ranges, third-party
-/// `VirtualAllocEx` allocations, and any module the in-memory-order
-/// walker missed. Bulk MBI entries arrive in address order, and
-/// sub-regions of one NT allocation are contiguous, so consecutive
-/// entries sharing `AllocationBase` are coalesced into a single stamp
-/// using the first entry's `Type` - which is stable across protection
-/// bands of one allocation.
+// Bulk MBI entries arrive in address order and sub-regions of one NT
+// allocation are contiguous, so consecutive entries sharing AllocationBase
+// coalesce into a single stamp using the first entry's Type (stable across
+// protection bands of one allocation).
 LIBC_INLINE void discover_foreign_regions() {
-  // Whole-process VA discovery runs early in libc bring-up before the
-  // thread scratch allocator is wired in. A dedicated bulk buffer keeps
-  // the sweep independent of scratch lifetime; `page_alloc`'s
-  // registration hooks stamp the buffer as libc-internal automatically.
+  // Runs before the thread scratch allocator is wired in; a dedicated
+  // bulk buffer keeps the sweep independent of scratch lifetime.
   constexpr SIZE_T BULK_BYTES = 0x10000;
   void *buf = LIBC_NAMESPACE::internal::page_alloc(BULK_BYTES);
   if (buf == nullptr)
@@ -229,12 +198,11 @@ LIBC_INLINE void discover_foreign_regions() {
       continue;
 
     if (alloc_base == pending_base) {
-      // Same NT allocation, next protection band - extend.
+      // Same NT allocation, next protection band: extend.
       pending_size += walk.entry->RegionSize;
       continue;
     }
 
-    // New allocation - publish the previous one (if any) and restart.
     publish_pending_foreign(pending_base, pending_size, pending_type);
     pending_base = alloc_base;
     pending_size = walk.entry->RegionSize;
@@ -249,11 +217,7 @@ LIBC_INLINE void discover_foreign_regions() {
 // DLL load/unload notification callback
 //===----------------------------------------------------------------------===//
 
-/// Loader DLL-load / DLL-unload notification trampoline.
-///
-/// Keeps Image cordon coverage current across `LdrLoadDll` /
-/// `LdrUnloadDll`. On load: stamp the new module as `Image`. On unload:
-/// retire the cordon entries covering the range.
+// Keeps Image cordon coverage current across LdrLoadDll / LdrUnloadDll.
 NTAPI LIBC_INLINE void dll_notification_callback(
     ULONG reason, const LDR_DLL_NOTIFICATION_DATA *data, PVOID /*context*/) {
   if (reason == LDR_DLL_NOTIFICATION_REASON_LOADED) {
@@ -267,9 +231,10 @@ NTAPI LIBC_INLINE void dll_notification_callback(
   }
 
   if (reason == LDR_DLL_NOTIFICATION_REASON_UNLOADED) {
-    // Skip late UNLOADs that arrive during `ExitProcess` /
-    // `LdrpShutdownProcess` after the tracker has finalised. Mirrors
-    // the shutdown gate in veh_core's notification callback.
+    // Drop late UNLOADs arriving during ExitProcess / LdrpShutdownProcess
+    // after libc fini: retire_cordon would touch pagemap metadata that may
+    // already be torn down. Same shutdown gate that veh_core's notification
+    // callback uses.
     PEB *peb = NtCurrentPeb();
     if (peb == nullptr || (peb->Ldr && peb->Ldr->ShutdownInProgress))
       return;
@@ -285,26 +250,20 @@ NTAPI LIBC_INLINE void dll_notification_callback(
 // Cookie lifecycle
 //===----------------------------------------------------------------------===//
 
-/// Loader notification cookie. Process-specific; does not survive
-/// `RtlCloneUserProcess`, so the fork child re-registers via
-/// `va_inventory_fork_reinit()`.
+// Process-specific; does not survive RtlCloneUserProcess, so the fork
+// child re-registers via va_inventory_fork_reinit().
 inline PVOID g_dll_notify_cookie = nullptr;
 
-/// Registers the DLL load/unload notification callback with the loader.
-///
-/// Called once during libc bring-up after the initial discovery sweep,
-/// and again in the fork child from `va_inventory_fork_reinit()`.
+// Returns 0 on success, non-zero on LdrRegisterDllNotification failure.
 [[nodiscard]] LIBC_INLINE int register_dll_notification() {
   NTSTATUS st = LdrRegisterDllNotification(0, dll_notification_callback,
                                            nullptr, &g_dll_notify_cookie);
   return NT_SUCCESS(st) ? 0 : 1;
 }
 
-/// Full startup sweep: kernel regions, loaded modules, residual foreign,
-/// loader notification registration.
-///
-/// \returns 0 on success; non-zero if the loader notification
-///          registration failed.
+// Full startup sweep. Returns 0 on success; non-zero only if the loader
+// notification registration failed (the discovery passes themselves cannot
+// fail in a way the caller can act on).
 [[nodiscard]] LIBC_INLINE int va_inventory_startup_discover() {
   discover_kernel_regions();
   discover_loaded_modules();
@@ -312,19 +271,18 @@ inline PVOID g_dll_notify_cookie = nullptr;
   return register_dll_notification();
 }
 
-/// Fork-child reinit hook.
-///
-/// Cordon contents survive fork via CoW, so the pagemap stamps remain
-/// valid. Only the loader notification cookie is process-specific and
-/// must be re-registered.
+// Cordon stamps survive fork via CoW; only the loader notification cookie
+// is process-specific and must be re-registered. Re-registration failure
+// is unrecoverable here (no caller path to surface it), so it is silently
+// swallowed; subsequent DLL loads in the child go uncordoned.
 LIBC_INLINE void va_inventory_fork_reinit() {
   g_dll_notify_cookie = nullptr;
   (void)LdrRegisterDllNotification(0, dll_notification_callback, nullptr,
                                    &g_dll_notify_cookie);
 }
 
-/// Drops the loader notification registration so subsequent
-/// `LdrLoadDll` / `LdrUnloadDll` calls do not enter unmapped code.
+// Drop the registration so post-fini LdrLoadDll / LdrUnloadDll calls do
+// not re-enter through an unmapped trampoline.
 LIBC_INLINE void va_inventory_fini() {
   if (g_dll_notify_cookie != nullptr) {
     LdrUnregisterDllNotification(g_dll_notify_cookie);
