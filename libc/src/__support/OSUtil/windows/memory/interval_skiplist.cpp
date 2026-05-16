@@ -1175,8 +1175,25 @@ void publish_new_upper_levels(Arena *arena, NewLevelRuns &runs,
 // publishes splice in lazily and the old nodes are stamped INVALIDATED
 // and retired.
 //
-// A failure in any step before the linearisation CAS returns false and
-// Map retries from Lock.
+// Returnable soft failures:
+//   * set.pred == nullptr — caller-side invariant violation defence.
+//   * bookmarks.restart   — peer mid-splice / chain integrity issue at
+//                           upper levels; caller's Map retries Lock.
+//
+// The Step-3 linearisation CAS is NOT a returnable failure: pred is
+// LOCKED from Lock-acquire through Step 3, and the substrate has no
+// write site that can modify pred->next[0] between the ACQUIRE load at
+// Step 3 and the matching compare_exchange_strong. Concurrent peer
+// Locks against a LOCKED pred fail their LIVE->LOCKED CAS without
+// modifying the link word; help_unlink_marked at level 0 cannot fire
+// because no caller marks next[0] (mark_upper_level is lvl > 1 only,
+// and no other site in this TU sets a level-0 mark). Steps 1's writes
+// target lvl > 1 only. The Step-3 CAS is therefore guaranteed to
+// succeed, and a failure indicates a substrate-invariant violation —
+// trap-on-failure surfaces it immediately, instead of dropping into
+// the caller's rollback path with kernel state that may not be
+// recoverable for the PrivateCommit OW case. Symmetric with Step 5's
+// already-trapping LOCKED->INVALIDATED CAS on the old set.
 
 bool Swap(LockedSet &set, NewNodes &new_nodes) {
     if (LIBC_UNLIKELY(set.pred == nullptr))
@@ -1232,9 +1249,12 @@ bool Swap(LockedSet &set, NewNodes &new_nodes) {
     LIBC_ASSERT(pred_now.state() ==
                 static_cast<uint8_t>(SkiplistNodeState::LOCKED));
 
-    if (!link_cas_snap_relink<SkiplistNodeState::LIVE, SkiplistLinkTraits>(
-            set.pred->next[0], pred_now, new_head_enc)) {
-        return false;  // peer mutation; caller's Map retries Lock
+    // CAS failure is a substrate-invariant violation; see the Swap
+    // banner for the no-concurrent-writer audit.
+    if (LIBC_UNLIKELY(!link_cas_snap_relink<SkiplistNodeState::LIVE,
+                                              SkiplistLinkTraits>(
+            set.pred->next[0], pred_now, new_head_enc))) {
+        __builtin_trap();
     }
     // Release CAS fired ALERT_FIRED via the traits hook; pair with the
     // kernel wake.

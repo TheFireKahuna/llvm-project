@@ -115,18 +115,37 @@ using EdgeSet = EdgeIdentity[kSideCount];
 // Cap = max backings allocated per execute pass: inside_commit + 2 edge
 // siblings. Interior succs cannot have backings extending past edges by
 // VA contiguity, so this bound is structural.
+//
+// `Kind` selects the rollback dispatch. `Owner` (the inside backing
+// from `commit_inside_range`) owns its newly-created placeholder /
+// view; rollback tears it down via `backing_kill_and_retire`. `Sibling`
+// (from `edge_remap_one`) borrows kernel state from a still-LIVE OLD
+// wider backing; rollback metadata-only-retires it via
+// `backing_retire_metadata_only`. The distinction is kept in `prov`
+// rather than on `DescBacking` itself — see
+// `backing_retire_metadata_only` for the race that an on-backing flag
+// would expose.
 struct ProvisionalList {
+  enum class Kind : uint8_t { Owner, Sibling };
+  struct Entry {
+    DescBacking *backing{nullptr};
+    Kind kind{Kind::Owner};
+  };
   static constexpr uint32_t kCap = 3;
-  DescBacking *items[kCap]{};
+  Entry items[kCap]{};
   uint32_t count{0};
 
-  LIBC_INLINE void push(DescBacking *b) {
+  LIBC_INLINE void push_owner(DescBacking *b) {
     LIBC_ASSERT(count < kCap && "provisional list overflow");
-    items[count++] = b;
+    items[count++] = Entry{b, Kind::Owner};
+  }
+  LIBC_INLINE void push_sibling(DescBacking *b) {
+    LIBC_ASSERT(count < kCap && "provisional list overflow");
+    items[count++] = Entry{b, Kind::Sibling};
   }
   LIBC_INLINE void clear() {
     for (uint32_t i = 0; i < count; ++i)
-      items[i] = nullptr;
+      items[i] = Entry{};
     count = 0;
   }
 };
@@ -160,7 +179,31 @@ using ValidateRangeFn = bool (*)(VaRange r);
 [[nodiscard]] int post_swap_mutate(const CommitIntent &, const LockedSet &);
 void post_swap_ownership_transfer(const LockedSet &, const NewNodes &);
 void reap_old_backings(Arena *, VaRange, const LockedSet &, const NewNodes &);
-void rollback_provisional(ProvisionalList &);
+
+// Inverse of demote+split+commit+republish for SectionView OW. Unmap-
+// preserve each prov entry's kernel state, coalesce the resulting run
+// of L+M+R placeholders, map_section_replace OW.section back over the
+// wider extent. On success caller must metadata-only-retire every prov
+// entry — their kernel state is now part of OW's restored view, and
+// `backing_kill_and_retire` on an Owner would unmap a fragment of it
+// via NT's interior-pointer view-unmap. Returns false on:
+//   * PrivateCommit OW — `coalesce_placeholders` over the auto-split
+//     L_committed / M_placeholder / R_committed mix is rejected with
+//     STATUS_CONFLICTING_ADDRESSES, and `preserve_to_placeholder` on
+//     L/R would discard the caller's outside-survivor content.
+//   * Empty `locked`, null OW handle, or any kernel failure mid-phase.
+// Idempotent on partial prov state: entries with null `placeholder_base`
+// (incomplete backing alloc) are skipped.
+[[nodiscard]] bool try_restore_old_section_view(
+    const LockedSet &locked, VaRange intent,
+    const ProvisionalList &prov);
+
+// `kernel_already_restored == true` forces every entry through
+// metadata-only retire regardless of `Kind`. Pass true when
+// `try_restore_old_section_view` succeeded — kill_and_retire on an
+// Owner would otherwise unmap a fragment of OW's restored view.
+void rollback_provisional(ProvisionalList &prov,
+                           bool kernel_already_restored = false);
 
 [[nodiscard]] bool range_valid_acquire(VaRange r);
 [[nodiscard]] bool range_valid_interior(VaRange r);

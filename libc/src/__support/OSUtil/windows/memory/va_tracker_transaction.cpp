@@ -210,21 +210,35 @@ void compute_widened_lock(const LockedSet &locked, uintptr_t &lock_lo,
 
     int err = op.execute(intent, arena, locked, new_nodes, prov);
     if (err != 0) {
+      // For ops that run `demote_by_shape` (replace / release —
+      // `needs_preflight`), the L+M+R fragmentation must be undone
+      // before retire: OW's eventual `kill_and_retire` only reaches
+      // the b_lo fragment via interior-pointer unmap, so any unrestored
+      // M / R fragment orphans permanently.
       retire_unpublished_nodes(new_nodes);
-      internal::rollback_provisional(prov);
+      const bool restored =
+          op.needs_preflight &&
+          internal::try_restore_old_section_view(locked, intent.range,
+                                                  prov);
+      internal::rollback_provisional(prov, restored);
       Unlock(locked, /*include_pred=*/true);
       return err;
     }
 
     if (!Swap(locked, new_nodes)) {
-      // FIXME: for replace / release, `prov` here contains fully
-      // populated NEW backings whose kernel state has already re-
-      // mapped portions of the OLD wider VA. `rollback_provisional`
-      // tears them down, leaving those VAs MEM_FREE while the OLD
-      // chain — still LIVE because Swap didn't publish — continues
-      // to claim them through its OLD backing references.
+      // Swap returns false only on `bookmarks.restart` (upper-level
+      // peer mid-splice observed during Step 0) or the defensive
+      // `set.pred == nullptr` check; the Step-3 linearisation CAS
+      // traps on failure rather than returning. Same structural
+      // restore as the execute-failure branch — the next iteration's
+      // `demote_by_shape` then operates on a restored wider view
+      // instead of fragmented placeholders.
       retire_unpublished_nodes(new_nodes);
-      internal::rollback_provisional(prov);
+      const bool restored =
+          op.needs_preflight &&
+          internal::try_restore_old_section_view(locked, intent.range,
+                                                  prov);
+      internal::rollback_provisional(prov, restored);
       Unlock(locked, /*include_pred=*/true);
       continue;
     }

@@ -78,23 +78,6 @@ enum class BackingShape : uint8_t {
     SectionView = 1,
 };
 
-// Packed into DescBacking::shape_byte:
-//   bit 0  — BackingShape (PrivateCommit / SectionView)
-//   bit 1  — kBackingFlagBorrowsKernelState: this backing references
-//            VA / handles owned by another (older) backing. Set by
-//            `edge_remap_one` on sibling backings whose VA is a fragment
-//            of a wider OLD backing's still-live kernel state. Cleared
-//            by `post_swap_ownership_transfer` once Swap publishes the
-//            sibling and the OLD parent's claim is dropped. While set,
-//            `backing_kill_and_retire` skips the unmap / free_placeholder
-//            calls — closing them here would destroy state the parent
-//            still owns (pre-Swap rollback) or the freshly-published
-//            sibling fragment still owns (post-Swap retire of a borrowed
-//            backing should not occur, but the skip is correct either way).
-//   bits 2..7 — reserved.
-inline constexpr uint8_t kBackingShapeMask = 0x01;
-inline constexpr uint8_t kBackingFlagBorrowsKernelState = 0x02;
-
 // Exactly one cache line; standard-layout so the static_assert wall below
 // can pin every member offset. Layout:
 //
@@ -103,7 +86,7 @@ inline constexpr uint8_t kBackingFlagBorrowsKernelState = 0x02;
 //   [24]     state             — Live(0) / Killed(1). One-way.
 //   [25]     cached_chunk_id   — chunk_id of this slot.
 //   [26]     cached_slot_idx   — slot index within the chunk.
-//   [27]     shape_byte        — bit 0: BackingShape; bit 1: borrow flag.
+//   [27]     shape             — PrivateCommit / SectionView.
 //   [28..31] placeholder_pages — placeholder size in 4 KiB units.
 //   [32..39] node_canary       — per-slot canary, triple-validated.
 //   [40..47] placeholder_base  — atomic; nulled at teardown.
@@ -121,15 +104,10 @@ inline constexpr uint8_t kBackingFlagBorrowsKernelState = 0x02;
 // Invariants beyond what the types carry:
 //   * Slot is trivially destructible — recycling memsets the bytes.
 //   * state only transitions Live -> Killed.
-//   * cached_chunk_id, cached_slot_idx, placeholder_pages, and node_canary
-//     are write-once; cross-thread happens-before is supplied by the
+//   * cached_chunk_id, cached_slot_idx, placeholder_pages, node_canary, and
+//     shape are write-once; cross-thread happens-before is supplied by the
 //     descriptor publish (Swap CAS on pred->next[0]), not by an atomic store
 //     on these fields.
-//   * shape_byte is written twice — once at `backing_set_kernel_state` and
-//     once at `post_swap_ownership_transfer` (sibling borrow-flag clear).
-//     Atomic to keep the second write race-safe against any reader that
-//     reaches the backing via the freshly-published NEW chain before the
-//     envelope's Unlock RELEASE drains.
 struct alignas(64) DescBacking
     : public ::LIBC_NAMESPACE::concurrent::CrystallineNode {
     // Intrusive Crystalline-W fields at [0..19]; emitted via macro so the
@@ -147,10 +125,7 @@ struct alignas(64) DescBacking
 
     uint8_t cached_chunk_id{0};
     uint8_t cached_slot_idx{0};
-    // Packed: bit 0 = BackingShape, bit 1 = kBackingFlagBorrowsKernelState.
-    // Read via shape() / borrows_kernel_state(); written via
-    // backing_set_kernel_state and clear_borrow_flag().
-    cpp::Atomic<uint8_t> shape_byte{};
+    BackingShape shape{BackingShape::PrivateCommit};
 
     // Placeholder spans [placeholder_base, +placeholder_pages * 4 KiB) and
     // may exceed any single referencing descriptor's (lo, hi) range — brk
@@ -176,30 +151,6 @@ struct alignas(64) DescBacking
 
     // nullptr for pagefile-backed sections (no underlying file).
     cpp::Atomic<HANDLE> file_handle{nullptr};
-
-    // ACQUIRE pairs the read with `backing_set_kernel_state`'s RELEASE on
-    // the placeholder_base publish — that store carries the shape_byte
-    // write along with it, and post-Swap consumers reach this backing
-    // through a chain published RELEASE-after the post-Swap promote.
-    [[nodiscard]] LIBC_INLINE BackingShape shape() const noexcept {
-        return static_cast<BackingShape>(
-            shape_byte.load(cpp::MemoryOrder::ACQUIRE) & kBackingShapeMask);
-    }
-    [[nodiscard]] LIBC_INLINE bool borrows_kernel_state() const noexcept {
-        return (shape_byte.load(cpp::MemoryOrder::ACQUIRE) &
-                kBackingFlagBorrowsKernelState) != 0;
-    }
-
-    // Clears the borrow flag without touching the shape bit. Called by
-    // `post_swap_ownership_transfer` once the Swap-CAS has published the
-    // sibling and we're committing ownership. RELEASE so any subsequent
-    // kill_and_retire ACQUIRE sees the clear; pairs with the chain
-    // publish for cross-envelope readers.
-    LIBC_INLINE void clear_borrow_flag() noexcept {
-        shape_byte.fetch_and(
-            static_cast<uint8_t>(~kBackingFlagBorrowsKernelState),
-            cpp::MemoryOrder::ACQ_REL);
-    }
 };
 
 // Layout pins. The encoded offsets feed BatchLinkCodec and the kill-side
@@ -217,9 +168,8 @@ static_assert(offsetof(DescBacking, cached_chunk_id) == 25,
               "cached_chunk_id @ 25");
 static_assert(offsetof(DescBacking, cached_slot_idx) == 26,
               "cached_slot_idx @ 26");
-static_assert(offsetof(DescBacking, shape_byte) == 27, "shape_byte @ 27");
-static_assert(sizeof(BackingShape) == 1,
-              "BackingShape must round-trip through the byte at offset 27");
+static_assert(offsetof(DescBacking, shape) == 27, "shape @ 27");
+static_assert(sizeof(BackingShape) == 1, "shape must fit one byte");
 static_assert(offsetof(DescBacking, placeholder_pages) == 28,
               "placeholder_pages @ 28");
 static_assert(offsetof(DescBacking, node_canary) == 32, "node_canary @ 32");
@@ -293,39 +243,50 @@ extern ::LIBC_NAMESPACE::concurrent::CrystallineDomain<
 // desc observes the populated fields. Handles first, base last; the
 // teardown null-stores follow the same order so a "load handle, close
 // handle" reader never sees a closed handle with a non-null base.
-//
-// `borrows_kernel_state` stamps the kBackingFlagBorrowsKernelState bit so
-// `backing_kill_and_retire` skips the unmap / free_placeholder calls — used
-// by sibling backings whose VA is a fragment of a wider OLD parent's still-
-// live kernel state (the parent owns the unmap obligation until
-// `post_swap_ownership_transfer` flips the bit at Swap success).
 void backing_set_kernel_state(DescBacking *backing,
                               void *placeholder_base,
                               uint32_t placeholder_pages,
                               BackingShape shape,
                               HANDLE section_handle,
-                              HANDLE file_handle,
-                              bool borrows_kernel_state = false);
+                              HANDLE file_handle);
 
 // Synchronous kernel-state teardown; called by the post-Swap survivor walk
 // after the caller wins the Live -> Killed CAS (or by rollback with a
 // RELAXED Killed store for a never-published backing). In order:
 //
-//   1. RELEASE-store nullptr to section_handle and file_handle, capturing
-//      prior values.
-//   2. NtClose the captured handles if non-null.
-//   3. RELEASE-store nullptr to placeholder_base, capturing prior value.
-//   4. nt_pal::free_placeholder(saved_base) — releases the entire VAD.
-//   5. g_va_tracker_backing_domain.retire(backing).
+//   1. RELEASE-store nullptr to section_handle, file_handle, and
+//      placeholder_base, capturing prior values.
+//   2. Walk the claimed extent [saved_base, saved_base+pages*4K). For
+//      each non-MEM_FREE region whose AllocationBase lies in-range:
+//      unmap_view_preserve (SectionView shape, MEM_MAPPED type) then
+//      free_placeholder(AllocationBase). The walk handles fragmented
+//      extents left behind by a failed-rollback PrivateCommit OW
+//      replace (L_committed + M_FREE + R_committed); the legacy
+//      single-call free at saved_base would orphan R.
+//   3. NtClose the captured section_handle and file_handle if non-null.
+//   4. g_va_tracker_backing_domain.retire(backing).
 //
-// On return the kernel placeholder is MEM_FREE; the slot memory lingers
-// under Crystalline grace until reader pins drain. Entry assert requires
-// state == Killed under ACQUIRE.
+// On return the claimed extent's in-range VADs are MEM_FREE; the slot
+// memory lingers under Crystalline grace until reader pins drain. Entry
+// assert requires state == Killed under ACQUIRE.
 //
-// Implementation lives in va_tracker_transaction.cpp so this file's FreeFn
+// Implementation lives in va_tracker_execute.cpp so this file's FreeFn
 // TU stays free of nt_pal::* / NtClose / split_placeholder — CI grep gate
 // enforces it.
 void backing_kill_and_retire(DescBacking *backing);
+
+// Metadata-only retire — Killed-state store + Crystalline retire,
+// no nt_pal:: calls. For sibling backings created by `edge_remap_one`:
+// their `placeholder_base` names a VA fragment of a wider OLD backing
+// that on a rollback path is still LIVE and still claims the full
+// extent, so the sibling's lifecycle ends without touching the
+// placeholder or any (null-by-construction) handles. Dispatched via
+// `ProvisionalList::Kind::Sibling` in `rollback_provisional` — an
+// on-backing flag cleared after Swap publishes the sibling LIVE races
+// a concurrent envelope reaching the backing through the new chain
+// before the clear synchronizes, so the distinction stays private to
+// the envelope owner thread.
+void backing_retire_metadata_only(DescBacking *backing);
 
 //===----------------------------------------------------------------------===//
 // Cross-domain pin defence — anchor pins / BackingView

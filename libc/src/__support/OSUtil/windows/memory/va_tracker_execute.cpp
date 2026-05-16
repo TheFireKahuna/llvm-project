@@ -453,7 +453,7 @@ template <CommitPath Path>
   DescBacking *backing = backing_alloc();
   if (backing == nullptr)
     return -ENOMEM;
-  prov.push(backing);
+  prov.push_owner(backing);
 
   const bool section_backed = kind_is_section_backed(i.kind);
   void *identity_base = i.meta.placeholder_base != nullptr
@@ -552,20 +552,17 @@ template <CommitPath Path>
 // retains section/file handles and the reaper closes them. The kernel's
 // view-section internal reference keeps the section alive across that
 // close. Private commit needs no kernel work — the surviving slice
-// stayed committed across `demote_by_shape`.
+// stayed committed across `demote_by_shape`. Pushed as Kind::Sibling
+// so a rollback retires this metadata-only without tearing down the
+// L/R kernel state the still-LIVE OLD chain claims.
 [[nodiscard]] int edge_remap_one(const EdgeIdentity &E,
                                   ProvisionalList &prov,
                                   DescBacking *&out_backing) {
   out_backing = nullptr;
-  // FIXME: backing_alloc failure and map_section_replace failure both
-  // leave the sibling placeholder produced by
-  // split_section_view_placeholders_at_edges allocated with no owner —
-  // rollback's backing_kill_and_retire skips it because the new
-  // backing's placeholder_base was never set.
   DescBacking *backing = backing_alloc();
   if (backing == nullptr)
     return -ENOMEM;
-  prov.push(backing);
+  prov.push_sibling(backing);
 
   void *base = reinterpret_cast<void *>(E.sibling_lo);
   size_t bytes = static_cast<size_t>(E.sibling_hi - E.sibling_lo);
@@ -1114,15 +1111,125 @@ void reap_old_backings(Arena *arena, VaRange range, const LockedSet &locked,
   }
 }
 
-void rollback_provisional(ProvisionalList &prov) {
+// Inverse of demote+split+commit+republish for SectionView OW; full
+// contract on the declaration in `va_tracker_transaction_internal.h`.
+bool try_restore_old_section_view(const LockedSet &locked, VaRange intent,
+                                   const ProvisionalList &prov) {
+  if (locked.count == 0)
+    return false;
+  SkiplistNodeBase *leftmost = locked.at(0);
+  if (leftmost == nullptr)
+    return false;
+  RegionDesc *leftmost_desc =
+      leftmost->value.load(cpp::MemoryOrder::ACQUIRE);
+  if (leftmost_desc == nullptr ||
+      leftmost_desc->backing_ref == kBackingRefNull)
+    return false;
+
+  DescBacking *ow_backing = deref_backing_raw(leftmost_desc->backing_ref);
+  if (ow_backing == nullptr ||
+      ow_backing->shape != BackingShape::SectionView)
+    return false;
+
+  HANDLE ow_section =
+      ow_backing->section_handle.load(cpp::MemoryOrder::ACQUIRE);
+  if (ow_section == nullptr)
+    return false;
+
+  void *ow_base_p =
+      ow_backing->placeholder_base.load(cpp::MemoryOrder::ACQUIRE);
+  if (ow_base_p == nullptr)
+    return false;
+  const uintptr_t b_lo = reinterpret_cast<uintptr_t>(ow_base_p);
+  const uintptr_t b_hi =
+      b_lo + static_cast<uintptr_t>(ow_backing->placeholder_pages) *
+                 kPageGranularity;
+
+  // OW's section_offset at b_lo: shift the leftmost desc's section_offset
+  // back by (leftmost->lo - b_lo). Leftmost's lo equals b_lo when the
+  // OW extent's leading edge isn't covered by a separate desc.
+  LARGE_INTEGER ow_offset_at_b_lo = leftmost_desc->section_offset;
+  ow_offset_at_b_lo.QuadPart -=
+      static_cast<int64_t>(leftmost->lo - b_lo);
+
+  const DWORD ow_prot = leftmost_desc->view_prot;
+
+  // Phase 1: unmap each prov entry's kernel state to a placeholder. An
+  // entry whose `placeholder_base` is null was allocated but never had
+  // kernel state populated (e.g. a `commit_inside_range` that errored at
+  // the map syscall before `backing_set_kernel_state`) and is skipped.
+  // `STATUS_NOT_MAPPED_VIEW` is tolerated — a sibling-remap failure path
+  // may have left an unmapped placeholder behind.
   for (uint32_t i = 0; i < prov.count; ++i) {
-    DescBacking *b = prov.items[i];
+    DescBacking *b = prov.items[i].backing;
+    if (b == nullptr)
+      continue;
+    void *base = b->placeholder_base.load(cpp::MemoryOrder::ACQUIRE);
+    if (base == nullptr)
+      continue;
+    if (b->shape == BackingShape::SectionView) {
+      NTSTATUS st = nt_pal::unmap_view_preserve_transient(base);
+      if (!NT_SUCCESS(st) && st != STATUS_NOT_MAPPED_VIEW)
+        return false;
+    } else {
+      // PrivateCommit inside a SectionView OW envelope happens when a
+      // replace targets a section view with an anon-private NEW. The
+      // NEW's commit becomes a placeholder via `decommit_preserve`.
+      uint32_t pages = b->placeholder_pages;
+      if (!nt_pal::decommit_preserve(
+              base, static_cast<size_t>(pages) * kPageGranularity))
+        return false;
+    }
+  }
+
+  // Phase 2: coalesce iff the OW extent is wider than the intent (i.e.
+  // there are ≥2 placeholder fragments after Phase 1). When OW exactly
+  // equals intent, only the inside M placeholder exists and coalesce
+  // would reject the single-VAD range with STATUS_CONFLICTING_ADDRESSES.
+  const bool has_edges = (b_lo < intent.lo()) || (intent.hi() < b_hi);
+  if (has_edges) {
+    NTSTATUS st = nt_pal::coalesce_placeholders(
+        reinterpret_cast<void *>(b_lo),
+        static_cast<size_t>(b_hi - b_lo));
+    if (!NT_SUCCESS(st))
+      return false;
+  }
+
+  // Phase 3: remap OW.section at the wider placeholder. Exact-match size
+  // — coalesce produced a single placeholder of exactly `b_hi - b_lo`.
+  NTSTATUS st = nt_pal::map_section_replace(
+      ow_section, reinterpret_cast<void *>(b_lo),
+      static_cast<size_t>(b_hi - b_lo), ow_offset_at_b_lo, ow_prot);
+  if (!NT_SUCCESS(st))
+    return false;
+
+  return true;
+}
+
+void rollback_provisional(ProvisionalList &prov,
+                           bool kernel_already_restored) {
+  for (uint32_t i = 0; i < prov.count; ++i) {
+    DescBacking *b = prov.items[i].backing;
     if (b == nullptr)
       continue;
     // RELAXED: this thread is the unique owner — the backing was never
     // published to a chain.
     b->state.store(kBackingStateKilled, cpp::MemoryOrder::RELAXED);
-    backing_kill_and_retire(b);
+    // `kernel_already_restored`: `try_restore_old_section_view`
+    // wrapped every prov entry's kernel state up into OW's restored
+    // view — running `backing_kill_and_retire` on an Owner here would
+    // unmap a fragment of that restored view (NT unmaps the entire
+    // view containing the address). Force metadata-only retire.
+    //
+    // Otherwise: Sibling kernel state is borrowed from a still-LIVE OW
+    // (metadata-only retire); Owner kernel state was newly created by
+    // this envelope and is ours to tear down (full teardown).
+    const bool sibling =
+        prov.items[i].kind == ProvisionalList::Kind::Sibling;
+    if (kernel_already_restored || sibling)
+      backing_retire_metadata_only(b);
+    else
+      backing_kill_and_retire(b);
   }
   prov.clear();
 }
@@ -1130,22 +1237,32 @@ void rollback_provisional(ProvisionalList &prov) {
 } // namespace internal
 
 // Order is the contract:
-//   1. Section view: unmap before free. `NtFreeVirtualMemory(MEM_RELEASE)`
-//      on a still-mapped view returns `STATUS_UNABLE_TO_DELETE_SECTION`.
-//      Tolerate `STATUS_NOT_MAPPED_VIEW` (replace's whole-view demote
-//      may have already unmapped).
-//   2. Free placeholder. Skipped on null `placeholder_base` (replace
-//      ownership transfer moved kernel ownership to a new backing).
-//   3. Close section, then file. Either may be null — sibling re-map
+//   1. Walk the claimed extent. For each non-MEM_FREE region whose
+//      AllocationBase lies inside [b_lo, b_hi):
+//        a. SectionView shape + MEM_MAPPED: unmap_view_preserve before
+//           free, else NtFreeVirtualMemory returns STATUS_UNABLE_TO_-
+//           DELETE_SECTION. STATUS_NOT_MAPPED_VIEW tolerated.
+//        b. free_placeholder(AllocationBase) — releases the whole VAD.
+//   2. Close section, then file. Either may be null — sibling re-map
 //      backings carry no handle ownership.
-//   4. Retire metadata to Crystalline-W.
+//   3. Retire metadata to Crystalline-W.
 //
-// Unmap gate is on `shape`, not on `section_handle != nullptr`:
-// sibling re-map backings have `section_handle == nullptr` but are
-// still section-view shape.
+// Walks rather than calling free_placeholder once at saved_base
+// because a `replace` envelope's failed rollback can leave the wider
+// claim as L_committed + M_FREE + R_committed (PrivateCommit OW that
+// hit `bookmarks.restart` — coalesce can't mix committed-with-
+// placeholder, and demote-content of L/R would be a regression). A
+// single-call kill at saved_base would free only the b_lo fragment,
+// orphaning R. Single-VAD case (the common one) is one MBI entry; the
+// walk's overhead is one extra MBI query (~218 ns).
+// `last_freed_alloc_base` collapses the per-AllocationBase walk when a
+// single VAD splits across multiple MBI rows (committed + decommitted
+// sub-regions). The AllocationBase range check rejects foreign
+// allocations whose base lies inside our extent.
 //
 // Caller must have CAS'd `state` to Killed first — that store is the
-// linearisation point declaring teardown ownership.
+// linearisation point declaring teardown ownership. Siblings on the
+// rollback path use `backing_retire_metadata_only` instead.
 void backing_kill_and_retire(DescBacking *backing) {
   if (LIBC_UNLIKELY(backing == nullptr))
     __builtin_trap();
@@ -1156,7 +1273,8 @@ void backing_kill_and_retire(DescBacking *backing) {
   // ACQ_REL on the field exchanges: ACQUIRE so concurrent reader pins
   // see our prior writes when they observe null; RELEASE publishes
   // null to any post-grace observer.
-  BackingShape shape = backing->shape;
+  const BackingShape shape = backing->shape;
+  const uint32_t placeholder_pages = backing->placeholder_pages;
   HANDLE saved_section = backing->section_handle.exchange(
       nullptr, cpp::MemoryOrder::ACQ_REL);
   HANDLE saved_file = backing->file_handle.exchange(
@@ -1164,15 +1282,60 @@ void backing_kill_and_retire(DescBacking *backing) {
   void *saved_base = backing->placeholder_base.exchange(
       nullptr, cpp::MemoryOrder::ACQ_REL);
 
-  if (shape == BackingShape::SectionView && saved_base != nullptr)
-    (void)nt_pal::unmap_view_preserve_transient(saved_base);
-  if (saved_base != nullptr)
-    (void)nt_pal::free_placeholder(saved_base);
+  if (saved_base != nullptr) {
+    const uintptr_t b_lo = reinterpret_cast<uintptr_t>(saved_base);
+    const size_t span =
+        static_cast<size_t>(placeholder_pages) * kPageGranularity;
+    const uintptr_t b_hi = b_lo + span;
+    nt_pal::RegionWalker walk(saved_base, static_cast<SIZE_T>(span));
+    if (LIBC_LIKELY(static_cast<bool>(walk))) {
+      uintptr_t last_freed_alloc_base = 0;
+      while (walk.next()) {
+        if (walk.entry->State == MEM_FREE)
+          continue;
+        const uintptr_t alloc_base_v =
+            reinterpret_cast<uintptr_t>(walk.entry->AllocationBase);
+        if (alloc_base_v < b_lo || alloc_base_v >= b_hi)
+          continue;
+        if (alloc_base_v == last_freed_alloc_base)
+          continue;
+        void *alloc_base = walk.entry->AllocationBase;
+        if (shape == BackingShape::SectionView &&
+            walk.entry->Type == MEM_MAPPED)
+          (void)nt_pal::unmap_view_preserve_transient(alloc_base);
+        (void)nt_pal::free_placeholder(alloc_base);
+        last_freed_alloc_base = alloc_base_v;
+      }
+    } else {
+      // RegionWalker auto-scratch failed (no thread_scratch). Legacy
+      // single-VAD teardown; fragmented extents leak from this branch.
+      if (shape == BackingShape::SectionView)
+        (void)nt_pal::unmap_view_preserve_transient(saved_base);
+      (void)nt_pal::free_placeholder(saved_base);
+    }
+  }
   if (saved_section != nullptr)
     (void)::NtClose(saved_section);
   if (saved_file != nullptr)
     (void)::NtClose(saved_file);
 
+  g_va_tracker_backing_domain.retire(backing);
+}
+
+// `placeholder_base` is RELEASE-nulled defensively to match the
+// `backing_kill_and_retire` discipline — today no reader can resolve a
+// stale BackingRef to this slot (the only descs that held the
+// sibling's ref were in `new_nodes` and were retired by
+// `retire_unpublished_nodes` immediately before this call, and
+// `new_nodes` descs never reach the published chain), so the null
+// store is for future readers if that invariant ever weakens.
+void backing_retire_metadata_only(DescBacking *backing) {
+  if (LIBC_UNLIKELY(backing == nullptr))
+    __builtin_trap();
+  // RELAXED: rollback owner is the unique writer; the backing was
+  // never published past `prov` and cannot race a peer kill.
+  backing->state.store(kBackingStateKilled, cpp::MemoryOrder::RELAXED);
+  backing->placeholder_base.store(nullptr, cpp::MemoryOrder::RELEASE);
   g_va_tracker_backing_domain.retire(backing);
 }
 
