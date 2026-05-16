@@ -6,13 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implements the cordon stamp / retire / toggle surface.
-//
-// Most cordon mutations are one or more pagemap entry stores routed
-// through the pagemap header's owner-publish API. The novelty is the
-// `set_cordon_stale` / `clear_cordon_stale` CAS-and-retry loop, which
-// must coexist with concurrent stamp / retire (single-publisher
-// contract) and concurrent readers (wait-free, non-faulting).
+// Most cordon mutations route through pagemap.h's owner-publish API. The
+// novelty here is the set_cordon_stale / clear_cordon_stale CAS-and-retry
+// loop, which must coexist with concurrent stamp / retire (single-publisher
+// per chunk) and wait-free readers.
 //
 //===----------------------------------------------------------------------===//
 
@@ -35,10 +32,6 @@ namespace pagemap {
 
 namespace {
 
-//===----------------------------------------------------------------------===//
-// Range-shape helpers
-//===----------------------------------------------------------------------===//
-
 LIBC_INLINE bool is_chunk_aligned_size(size_t v) {
   return (v & (kPagemapChunkBytes - 1)) == 0;
 }
@@ -52,9 +45,6 @@ LIBC_INLINE bool range_well_formed(const void *base, size_t bytes) {
          is_chunk_aligned_size(bytes);
 }
 
-/// Map a caller-facing \c CordonKind to its underlying pagemap routing
-/// tag. \c ForeignStale is intentionally absent — it is reachable only
-/// via the toggle entry points, never via \c stamp_cordon.
 LIBC_INLINE VaChunkConsumer kind_to_tag(CordonKind kind) {
   switch (kind) {
   case CordonKind::Image:
@@ -64,31 +54,27 @@ LIBC_INLINE VaChunkConsumer kind_to_tag(CordonKind kind) {
   case CordonKind::Foreign:
     return VaChunkConsumer::Foreign;
   }
-  // Trap rather than silently stamp a wrong band: an unreachable enum
-  // value implies caller-side corruption that we want surfaced.
+  // Unreachable enum value implies caller-side corruption: trap rather
+  // than silently stamping a wrong band, which would survive the cookie
+  // XOR and present as a forged cordon to is_cordon().
   __builtin_trap();
 }
 
-/// Walk `[base, base + bytes)` chunk-by-chunk and CAS-replace any entry
-/// whose decoded tag is \p from_tag with the encoded form of \p to_tag.
-/// Best-effort: a chunk whose CAS loses twice is left alone.
-///
-/// Concurrency contract:
-///   * Readers (wait-free ACQUIRE loads) see either the OLD or NEW
-///     encoded word — never a torn value (single 8 B CAS on x86-64).
-///   * A concurrent \c stamp_cordon or \c retire_cordon may race; on
-///     CAS loss we re-decode and retry only if the entry still carries
-///     \p from_tag. If it transitioned to anything else (retired,
-///     re-stamped to a different kind), we fall through and leave it.
-///   * A concurrent opposite-direction toggle against the same chunk is
-///     allowed; the second toggle either un-does the first or finds the
-///     entry already in its source state and ours bails.
-///
-/// Memory ordering: ACQ_REL on success. ACQUIRE is required because
-/// post-toggle reader logic (region reconciliation signalling a
-/// consumer that may re-probe) depends on the toggle being visible;
-/// RELEASE matches the publish-side ordering used by
-/// \c pagemap_store_encoded.
+// Walk [base, base + bytes) chunk-by-chunk and CAS-replace any entry whose
+// decoded tag is `from_tag` with the encoded form of (slot_idx=0, to_tag).
+//
+// Concurrency: readers see either OLD or NEW (8 B atomic word, torn-free
+// on x86-64 and AArch64). On CAS loss we re-decode and retry only if the
+// entry still carries `from_tag`; any other observed tag means the entry
+// moved on (retired, re-stamped, opposite-toggled) and we drop the chunk
+// (best-effort). Two opposite toggles racing compose to either no-op or
+// one ordered flip; we never deadlock.
+//
+// Memory ordering: ACQ_REL on success — the ACQUIRE half pairs with the
+// RELEASE in pagemap_store / pagemap_store_encoded that originally
+// stamped `from_tag` (cross-TU), and the RELEASE half is consumed by
+// later ACQUIRE readers (pagemap_load_decoded). ACQUIRE on failure
+// refreshes `observed` for the retry decision below.
 void toggle_cordon_band(void *base, size_t bytes, VaChunkConsumer from_tag,
                          VaChunkConsumer to_tag) {
   if (LIBC_UNLIKELY(!range_well_formed(base, bytes)))
@@ -99,35 +85,32 @@ void toggle_cordon_band(void *base, size_t bytes, VaChunkConsumer from_tag,
     void *entry_addr =
         static_cast<char *>(base) + (i * kPagemapChunkBytes);
 
-    // First decoded read. pagemap_load_decoded is bounds-checked and
-    // returns (0, Empty) for out-of-range or unstamped entries — either
-    // case fails the from_tag check below and we skip.
+    // pagemap_load_decoded is bounds-checked and returns (0, Empty) for
+    // out-of-range or unstamped entries — either case fails the
+    // from_tag gate and we skip without touching the slot.
     PagemapDecoded decoded = pagemap_load_decoded(entry_addr);
     if (decoded.tag != from_tag)
       continue;
 
-    // Reconstruct the encoded from/to words by round-tripping through
-    // pagemap_encode. No need to read the raw word again, and we want
-    // a known-good baseline for the CAS even if the ACQUIRE load above
+    // Reconstruct encoded from/to via pagemap_encode rather than a second
+    // raw load — gives the CAS a known-good baseline even if the ACQUIRE
     // caught a transitional state.
     uint64_t observed = pagemap_encode(decoded.slot_idx, from_tag);
     uint64_t desired = pagemap_encode(decoded.slot_idx, to_tag);
 
     PagemapEntry *slot = internal::pagemap_slot_unchecked(entry_addr);
 
-    // First attempt. ACQ_REL on success makes the toggle visible to
-    // post-toggle readers; ACQUIRE on failure refreshes `observed` for
-    // the retry decision below.
     if (slot->encoded.compare_exchange_weak(
             observed, desired, cpp::MemoryOrder::ACQ_REL,
             cpp::MemoryOrder::ACQUIRE))
       continue;
 
-    // First CAS lost. Re-decode the freshly observed value: if it
-    // still carries from_tag, retry once with the fresh (slot_idx,
-    // encoded) pair. Otherwise the entry has moved on (concurrent
-    // stamp / retire / opposite toggle) and we leave it alone — the
-    // best-effort contract.
+    // First CAS lost; the ACQUIRE failure refreshed `observed`. With
+    // compare_exchange_weak the loss may be spurious (no concurrent
+    // writer) — retry once when the freshly decoded tag is still
+    // from_tag. Any other tag means a real concurrent writer flipped
+    // the entry (retire, stamp, opposite toggle); drop the chunk.
+    // Second loss intentionally unhandled.
     decoded = pagemap_decode(observed);
     if (decoded.tag != from_tag)
       continue;
@@ -136,34 +119,23 @@ void toggle_cordon_band(void *base, size_t bytes, VaChunkConsumer from_tag,
     (void)slot->encoded.compare_exchange_weak(
         observed, desired, cpp::MemoryOrder::ACQ_REL,
         cpp::MemoryOrder::ACQUIRE);
-    // Second loss: drop the chunk. Some other writer is in the band;
-    // not our place to fight them.
   }
 }
 
 } // namespace
 
-//===----------------------------------------------------------------------===//
-// Public surface
-//===----------------------------------------------------------------------===//
-
 [[nodiscard]] int stamp_cordon(void *base, size_t bytes, CordonKind kind) {
   if (LIBC_UNLIKELY(!range_well_formed(base, bytes)))
     return -EINVAL;
 
-  // Step 1: upgrade every pagemap OS page covering the range from
-  // PAGE_READONLY shared-zero to PAGE_READWRITE. pagemap_register_range
-  // is idempotent against re-registration (the per-OS-page upgrade-state
-  // byte short-circuits the syscall). On failure NO entries are
-  // observable as stamped — registration runs first, the publish loop
-  // below is unreachable.
+  // Upgrade backing pagemap OS pages from PAGE_READONLY shared-zero to
+  // PAGE_READWRITE. Idempotent. Runs before the publish loop, so failure
+  // leaves no entries observable as stamped.
   int rc = pagemap_register_range(base, bytes);
   if (LIBC_UNLIKELY(rc != 0))
     return -ENOMEM;
 
-  // Step 2: stamp every chunk with the cordon's encoded word.
-  // slot_idx is fixed at 0 — cordons have no per-entry descriptor pool;
-  // the tag alone routes diagnostic dispatch.
+  // slot_idx fixed at 0 — cordons have no descriptor pool.
   pagemap_publish_range(base, bytes, /*slot_idx=*/0u, kind_to_tag(kind));
   return 0;
 }

@@ -6,12 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implementation of the 4 GiB type-isolated VA partition layer. The header
-// states the externally-visible contract (state machine, caller invariants,
-// pin discipline); this file carries the protocol-step rationale --
-// publication ordering between the coarse pagemap and the reserve table,
-// the LIVE/IDLE/DRAINING re-arm CAS, the empty-transition retire path, and
-// the Crystalline-W (Nikolaev / Ravindran, PLDI 2024) free-callback gate.
+// Header carries the externally-visible contract; this file carries the
+// protocol-step rationale: pagemap/reserve-table publication ordering, the
+// IDLE -> LIVE re-arm CAS, the empty-transition retire path, and the
+// Crystalline-W (Nikolaev / Ravindran, PLDI 2024) free-callback gate.
 //
 //===----------------------------------------------------------------------===//
 
@@ -51,31 +49,27 @@ namespace partition {
 
 namespace {
 
-// Occupancy bitmap for the descriptor pool. AtomicBitmap is zero-init valid;
-// the pool's backing VA is sealed in Zone 0 as `partition_desc_pool_base_`.
-// Trap-on-collision is enabled because a double-acquire of the same slot
-// would be a structural bug: every allocation CAS-takes a fresh bit.
+// Trap-on-collision is enabled: a double-acquire of the same slot would be a
+// structural bug (every allocation CAS-takes a fresh bit).
 ::LIBC_NAMESPACE::internal::alloc_primitives::AtomicBitmap<
     kPartitionDescPoolCapacity, /*trap_on_collision=*/true>
     g_desc_pool_occupancy;
 
-// Per-thread randomized starting word reduces CAS contention on the
-// occupancy bitmap when multiple threads allocate descriptors concurrently.
+// Per-thread randomised starting word reduces CAS contention on the
+// occupancy bitmap under concurrent allocation.
 cpp::Atomic<uint32_t> g_desc_pool_hint{0};
 
-// Tier A init latch: `try_begin` in `partition_init_fn`; `publish_ready` at
-// the end of the same function; `fork_reinit` in the fork hook.
+// Tier A init latch: `try_begin` in partition_init_fn, `publish_ready` at the
+// end of the same function, `fork_reinit` in partition_fork_reinit.
 ::LIBC_NAMESPACE::internal::alloc_primitives::InitLatch g_partition_init;
 
 } // namespace
 
-// File-scope reserve table. Sized at `kReserveTableSize` slots of 8 B each;
-// at the default capacity this is 1 KiB / 16 cache lines, fully L1-resident.
-// The table lives in libc.dll BSS so it CoW-inherits across fork (no special
-// fork handling needed beyond the per-descriptor canary refresh). Hot-path
-// callers reach it through the sealed Zone 0 pointer
-// `g_pcb.zone0.partition_reserve_table()` so an attacker with an arbitrary-
-// write primitive cannot redirect reservation deduplication.
+// File-scope reserve table. The table lives in libc.dll BSS so it CoW-
+// inherits across fork (no special fork handling beyond per-descriptor canary
+// refresh). Hot-path callers reach it through the sealed Zone 0 pointer
+// `g_pcb.zone0.partition_reserve_table()` so an attacker with arbitrary-write
+// cannot redirect reservation deduplication.
 ReserveTable g_reserve_table;
 
 // Crystalline-W domain definition (the header declares it extern). Lives at
@@ -90,12 +84,12 @@ ReserveTable g_reserve_table;
 // Descriptor pool
 //===----------------------------------------------------------------------===//
 //
-// The descriptor pool VA is sealed in Zone 0, so an arbitrary-write primitive
-// cannot redirect allocation. The pool storage is never released for the
-// process lifetime: a Crystalline-W retire batch may legitimately carry a
-// stale slot index that re-resolves to a fresh allocation through the same
-// slot. Per-descriptor identity is re-established through the
-// `descriptor_seq` bump on every allocation, not through storage churn.
+// VA is sealed in Zone 0 (arbitrary-write cannot redirect allocation), and
+// storage is never released for process lifetime -- a Crystalline-W retire
+// batch may legitimately carry a stale slot index that re-resolves to a
+// fresh allocation through the same slot. Per-tenancy identity is
+// re-established through the `descriptor_seq` bump on every allocation, not
+// through storage churn.
 
 [[nodiscard]] PartitionDescriptor *desc_pool_alloc() {
   auto *base = static_cast<PartitionDescriptor *>(
@@ -114,7 +108,7 @@ ReserveTable g_reserve_table;
     uint64_t bits = ~g_desc_pool_occupancy
                          .word_at<cpp::MemoryOrder::RELAXED>(w);
     while (bits) {
-      // `bits` is non-zero by the loop guard, so ctzll's result is defined.
+      // `bits` non-zero by the loop guard, so ctzll's result is defined.
       unsigned bit = static_cast<unsigned>(__builtin_ctzll(bits));
       size_t idx = w * 64u + bit;
       if (LIBC_UNLIKELY(idx >= kPartitionDescPoolCapacity)) {
@@ -123,8 +117,7 @@ ReserveTable g_reserve_table;
       }
       if (g_desc_pool_occupancy.try_acquire(idx))
         return &base[idx];
-      // Lost the bit race to another acquirer; clear it from our local
-      // scratch word and try the next one.
+      // Lost the bit race; clear it from the local scratch word and continue.
       bits &= bits - 1;
     }
   }
@@ -140,11 +133,9 @@ void desc_pool_free(PartitionDescriptor *desc) {
   if (LIBC_UNLIKELY(idx >= kPartitionDescPoolCapacity))
     __builtin_trap();
 
-  // Wipe the CrystallineNode header and descriptor body so a stale reader
-  // sees a fresh tombstone rather than the previous owner's data. The
-  // CrystallineNode header in particular must be zeroed: `next` /
-  // `batch_link` / `refs` must be back to fresh state for the next
-  // allocation through this slot to behave correctly as a domain node.
+  // Zero the CrystallineNode header so the next allocation through this slot
+  // behaves as a fresh domain node; zero the body so a stale reader sees a
+  // tombstone rather than the previous owner's data.
   desc->cn_next.store(nullptr, cpp::MemoryOrder::RELAXED);
   desc->batch_link.store(0u, cpp::MemoryOrder::RELAXED);
   desc->refs.store(0, cpp::MemoryOrder::RELAXED);
@@ -170,21 +161,12 @@ void desc_pool_free(PartitionDescriptor *desc) {
 //   canary = process_cookie ^ partition_secret ^ uintptr_t(base)
 //                                              ^ descriptor_seq
 //
-// Inputs:
-//   - process_cookie:   kernel-supplied, re-probed by `pal_fork_reinit`
-//                       after fork. Lives in PCB Zone 0b, sealed
-//                       PAGE_READONLY at runtime so an arbitrary-write
-//                       primitive cannot poison this XOR input.
-//   - partition_secret: ProcessPrng-derived; also in Zone 0b. Re-rolled
-//                       on fork via `partition_fork_reinit` inside the
-//                       Zone 0b unseal window.
-//   - base:             descriptor's partition VA; immutable after publish.
-//   - descriptor_seq:   per-descriptor random seq from ProcessPrng at
-//                       init; immutable for the descriptor's pool tenancy.
-//
-// Tampering with any input produces a canary mismatch that the free
-// callback traps on. `process_cookie` and `partition_secret` rotate on
-// fork, so a parent's canary cannot be replayed against a child.
+// `process_cookie` and `partition_secret` both live in PCB Zone 0b (sealed
+// PAGE_READONLY at runtime), so arbitrary-write cannot poison the XOR
+// inputs. Both rotate on fork: `process_cookie` re-probed by
+// `pal_fork_reinit`; `partition_secret` re-rolled by `partition_fork_reinit`
+// inside the Zone 0b unseal window. Rotation means a parent's canary cannot
+// be replayed against a child.
 
 uint64_t compute_canary(void *base, uint32_t descriptor_seq) {
   uint64_t cookie =
@@ -199,29 +181,17 @@ uint64_t compute_canary(void *base, uint32_t descriptor_seq) {
 // Guard pages
 //===----------------------------------------------------------------------===//
 //
-// Each partition is bracketed by `kPartitionGuardBytes` PAGE_NOACCESS guards
-// at head and tail, implemented by splitting the partition's parent
-// placeholder into three sub-placeholders:
+// Each partition is bracketed by `kPartitionGuardBytes` PAGE_NOACCESS guards,
+// materialised by splitting the parent placeholder into three:
 //
 //   [ leading guard ] [ middle ] [ trailing guard ]
-//   ^ base            ^ +guard   ^ +bytes-guard
 //
-// A placeholder reservation is `MEM_RESERVE | MEM_RESERVE_PLACEHOLDER` with
-// PAGE_NOACCESS protection: no PTE backing, so any access faults. The split
-// gives PAGE_NOACCESS guards for free with zero commit charge.
-//
-// Chunk owners commit chunks within the *middle* placeholder via
-// `commit_replace`, which itself splits the middle further as chunks are
-// committed and decommitted.
-//
-// Release contract: when the free callback runs (after empty-transition
-// retire and Crystalline-W epoch advance), chunk owners must have called
-// `decommit_preserve` -- not bare `MEM_DECOMMIT` -- so every sub-range
-// across `[base, base + bytes)` is a placeholder. `coalesce_placeholders`
-// then unifies the three (or more, after chunk fragmentation) placeholders
-// back into a single 4 GiB placeholder before `free_placeholder`. A
-// coalesce failure is a chunk-owner contract violation; trap so the leak
-// is loud.
+// Placeholders are MEM_RESERVE | MEM_RESERVE_PLACEHOLDER with PAGE_NOACCESS:
+// no PTE backing, any access faults, zero commit charge. Chunk owners commit
+// chunks within the middle via `commit_replace`. At free-callback time, all
+// chunk owners must have used `decommit_preserve` (not bare MEM_DECOMMIT) so
+// the whole span is placeholders; `coalesce_placeholders` unifies them
+// before `free_placeholder`. Coalesce failure traps (chunk-owner contract).
 
 namespace {
 
@@ -229,23 +199,17 @@ namespace {
   if (LIBC_UNLIKELY(bytes < 2 * kPartitionGuardBytes))
     return false;
 
-  // Split off the leading guard: parent placeholder `[base, base + bytes)`
-  // becomes `[base, base + kPartitionGuardBytes)` (leading guard) plus
-  // `[base + kPartitionGuardBytes, base + bytes)` (rest).
+  // Cut the leading guard off the front of the parent placeholder.
   if (!::LIBC_NAMESPACE::nt_pal::split_placeholder(base, kPartitionGuardBytes))
     return false;
 
-  // Split the trailing guard off the rest. The rest begins at
-  // `base + kPartitionGuardBytes`; cutting at offset `bytes - 2 * guard`
-  // yields a middle `[base + guard, base + bytes - guard)` and a trailing
-  // `[base + bytes - guard, base + bytes)`.
+  // Cut the trailing guard off the back of the remaining placeholder; what
+  // is left is the middle.
   void *middle = static_cast<char *>(base) + kPartitionGuardBytes;
   size_t middle_size = bytes - 2 * kPartitionGuardBytes;
   if (!::LIBC_NAMESPACE::nt_pal::split_placeholder(middle, middle_size)) {
-    // Roll back the leading split. Both halves are placeholders, so a
-    // coalesce across `[base, base + bytes)` re-unifies them. A failure
-    // here is unrecoverable (kernel state diverged from our model): trap
-    // so the leak is loud rather than silent.
+    // Roll the leading split back via coalesce. Kernel state diverging from
+    // our model here is unrecoverable: trap so the leak is loud, not silent.
     if (!NT_SUCCESS(::LIBC_NAMESPACE::nt_pal::coalesce_placeholders(
             base, bytes)))
       __builtin_trap();
@@ -254,11 +218,10 @@ namespace {
   return true;
 }
 
-// Coalesces the partition's placeholder fragments back into a single span
-// ahead of `free_placeholder`. Precondition: `bytes_committed == 0` and
-// every chunk owner decommitted via `decommit_preserve` (so the entire
-// span is in placeholder state). Trap on failure -- that's a chunk-owner
-// contract violation, not a recoverable condition here.
+// Coalesce the partition's placeholder fragments back into a single span
+// ahead of `free_placeholder`. Precondition: `bytes_committed == 0` and every
+// chunk owner decommitted via `decommit_preserve`. Trap on failure -- that is
+// a chunk-owner contract violation, not recoverable here.
 void release_partition_guards(void *base, size_t bytes) {
   if (base == nullptr || bytes < 2 * kPartitionGuardBytes)
     return;
@@ -287,9 +250,9 @@ void init_descriptor(PartitionDescriptor *desc, void *base, size_t bytes,
 [[nodiscard]] uint32_t draw_descriptor_seq() {
   ::LIBC_NAMESPACE::internal::alloc_primitives::SingleCanarySeed seed{};
   ::LIBC_NAMESPACE::internal::alloc_primitives::init_seed_or_trap(seed);
-  // The seq is only one component of the canary; the other components
-  // carry the full 64 bits of entropy from `process_cookie` and
-  // `partition_secret`. Truncating here is acceptable.
+  // The seq is one component of the canary; `process_cookie` and
+  // `partition_secret` together carry the full 64 bits of entropy.
+  // Truncating to 32 bits here is acceptable.
   return static_cast<uint32_t>(seed.seed);
 }
 
@@ -323,6 +286,13 @@ namespace {
 //===----------------------------------------------------------------------===//
 // reserve_or_grow
 //===----------------------------------------------------------------------===//
+//
+// Four-phase publish protocol: (1) probe reserve table; (2) optimistic VA
+// reservation (no sentinel claim held across the syscall, so a thread that
+// re-enters the partition layer mid-syscall cannot self-deadlock);
+// (3) RELEASE-publish into the coarse pagemap; (4) CAS-publish into the
+// reserve table -- loser rolls phases 3, 2, and the descriptor allocation
+// back.
 
 PartitionDescriptor *reserve_or_grow(PartitionClass cls, uint16_t numa_node) {
   ReserveTable *table = mutable_reserve_table();
@@ -331,10 +301,10 @@ PartitionDescriptor *reserve_or_grow(PartitionClass cls, uint16_t numa_node) {
   uint32_t key = pack_partition_key(cls, numa_node);
   uint32_t primary = primary_slot(key);
 
-  // Phase 1: probe for an existing entry. Wait-free; ACQUIRE pairs with the
-  // RELEASE CAS in Phase 4 so any non-null descriptor we observe is fully
-  // initialised. A null slot terminates the probe -- linear probing with
-  // open addressing means the cluster ends at the first null.
+  // Phase 1: ACQUIRE pairs with the RELEASE CAS in Phase 4 so any non-null
+  // descriptor we observe is fully initialised. A null slot terminates the
+  // probe -- linear probing with open addressing means the cluster ends at
+  // the first null.
   for (uint32_t i = 0; i < kReserveTableSize; ++i) {
     uint32_t slot = (primary + i) & kReserveTableMask;
     PartitionDescriptor *existing =
@@ -345,19 +315,12 @@ PartitionDescriptor *reserve_or_grow(PartitionClass cls, uint16_t numa_node) {
       return existing;
   }
 
-  // Phase 2: optimistic syscall. No sentinel claim is held on the table
-  // across the syscall, so a thread that re-enters the partition layer
-  // (e.g. via a fault during reservation) cannot self-deadlock on its own
-  // claim. The reservation is forced to `kPartitionBytes` alignment so each
-  // partition occupies exactly one coarse-pagemap entry. For
-  // `kNodeAgnostic` the NumaNode extended parameter is omitted because NT
-  // rejects `(ULONG)-1` as out-of-range and returns STATUS_UNSUCCESSFUL.
-  //
-  // `reservation.status` is captured but not branched on: every failure
-  // mode routes through the same Phase 2.5 fallback because the recovery
-  // strategy ("any same-class replica") does not depend on *why* the
-  // affined reserve failed. The status sits in the returned struct for
-  // free; future diagnostic wiring can read it without re-syscalling.
+  // Phase 2: optimistic syscall. `kNodeAgnostic` skips the NumaNode extended
+  // parameter because NT rejects `(ULONG)-1` as out-of-range and returns
+  // STATUS_UNSUCCESSFUL. `reservation.status` is captured but not branched
+  // on: every failure mode routes through the same Phase 2.5 fallback
+  // because the recovery strategy ("any same-class replica") does not depend
+  // on *why* the affined reserve failed.
   ::LIBC_NAMESPACE::nt_pal::PlaceholderReservation reservation =
       (numa_node == kNodeAgnostic)
           ? ::LIBC_NAMESPACE::nt_pal::reserve_placeholder_aligned(
@@ -367,20 +330,12 @@ PartitionDescriptor *reserve_or_grow(PartitionClass cls, uint16_t numa_node) {
                 static_cast<ULONG>(numa_node));
   void *new_base = reservation.base;
   if (new_base == nullptr) {
-    // Phase 2.5: same-class replica fallback. On `kNodeAgnostic` failure
-    // there is nothing better to fall back to -- that path was already the
-    // kernel-chosen placement. On affined failure a previously-published
-    // peer replica `(cls, *)` is a strictly better answer than ENOMEM:
-    // cross-node free is unaffected and NT first-touch still places
-    // committed pages on the requesting CPU's node regardless of the
-    // partition's reservation hint.
-    //
-    // The scan is read-only and safe without a Crystalline-W pin by the
-    // same argument as Phase 1: a descriptor reused for a different
-    // `(cls, node)` after retire has its `key` field rewritten in
-    // `desc_pool_free` (zeroed) before re-publication, so a stale read
-    // either matches the current owner's class (correct fallback) or does
-    // not (skipped).
+    // Phase 2.5: same-class replica fallback. The scan is read-only and safe
+    // without a Crystalline-W pin by the same argument as Phase 1 -- a
+    // descriptor reused for a different `(cls, node)` after retire has its
+    // `key` field zeroed in `desc_pool_free` before re-publication, so a
+    // stale read either matches the current owner's class (correct fallback)
+    // or does not (skipped).
     if (numa_node != kNodeAgnostic) {
       for (uint32_t i = 0; i < kReserveTableSize; ++i) {
         PartitionDescriptor *cand =
@@ -399,9 +354,7 @@ PartitionDescriptor *reserve_or_grow(PartitionClass cls, uint16_t numa_node) {
 
   PartitionDescriptor *desc = desc_pool_alloc();
   if (desc == nullptr) {
-    // No descriptor pool slot available. Coalesce the guard splits back
-    // into a single placeholder before `free_placeholder` (which requires
-    // the entire span be one placeholder).
+    // `free_placeholder` requires the entire span to be a single placeholder.
     release_partition_guards(new_base, kPartitionBytes);
     (void)::LIBC_NAMESPACE::nt_pal::free_placeholder(new_base);
     return nullptr;
@@ -411,20 +364,17 @@ PartitionDescriptor *reserve_or_grow(PartitionClass cls, uint16_t numa_node) {
   init_descriptor(desc, new_base, kPartitionBytes, cls, numa_node, seq);
   g_partition_domain.init_node(desc);
 
-  // Phase 3: publish the coarse pagemap entry first. If the publishing
-  // thread dies between this store and the Phase 4 reserve-slot CAS, the
-  // orphan partition is still lookup-able -- the fault classifier
-  // correctly skips its VA. The orphan VA leaks for process lifetime (no
-  // event triggers retire for an unreachable partition), but correctness
-  // is preserved. The RELEASE store synchronizes-with every subsequent
-  // ACQUIRE load in `lookup()`.
+  // Phase 3: publish the coarse pagemap entry first. If the publishing thread
+  // dies between this store and the Phase 4 reserve-slot CAS, the orphan
+  // partition stays lookup-able -- the fault classifier correctly skips its
+  // VA. The orphan VA leaks for process lifetime (no event triggers retire
+  // for an unreachable partition), but correctness is preserved. RELEASE
+  // pairs with the ACQUIRE in `lookup()` (see partition.h).
   CoarsePagemap *coarse = mutable_coarse_pagemap();
   size_t coarse_idx = coarse_index_of(new_base);
   if (LIBC_UNLIKELY(coarse_idx >= kCoarseMaxEntries)) {
-    // Partition VA fell outside the coarse pagemap's coverage. Should not
-    // happen on a healthy system: `nt_pal::reserve_placeholder_numa`
-    // returns user-mode VA and `coverage_bytes` spans the full user-VA
-    // range. Abort cleanly rather than corrupt state.
+    // Should not happen on a healthy system: `reserve_placeholder_numa`
+    // returns user-mode VA and `coverage_bytes` spans the full user-VA range.
     desc_pool_free(desc);
     release_partition_guards(new_base, kPartitionBytes);
     (void)::LIBC_NAMESPACE::nt_pal::free_placeholder(new_base);
@@ -432,26 +382,21 @@ PartitionDescriptor *reserve_or_grow(PartitionClass cls, uint16_t numa_node) {
   }
   coarse->entries[coarse_idx].store(desc, cpp::MemoryOrder::RELEASE);
 
-  // Phase 4: CAS-publish into the reserve table. Loser observes the peer's
-  // descriptor and rolls back. Bounded retries (at most `kReserveTableSize`)
-  // because the table is open-addressed and primary-slot probing is linear.
+  // Phase 4: CAS-publish into the reserve table. Loop is bounded by
+  // `kReserveTableSize` (open-addressed, linear primary-slot probing).
   for (uint32_t i = 0; i < kReserveTableSize; ++i) {
     uint32_t slot = (primary + i) & kReserveTableMask;
     PartitionDescriptor *expected = nullptr;
-    // ACQ_REL on success: releases the descriptor we wrote in
-    // `init_descriptor` to any peer that subsequently observes this slot,
-    // and acquires for cross-thread ordering even though `expected` was
-    // nullptr. The ACQUIRE failure ordering pairs with a winning peer's
-    // RELEASE.
+    // ACQ_REL on success releases the descriptor body written in
+    // `init_descriptor` to peers; ACQUIRE on failure pairs with a winning
+    // peer's RELEASE so `expected` reads consistently.
     if (table->slots[slot].descriptor.compare_exchange_strong(
             expected, desc, cpp::MemoryOrder::ACQ_REL,
             cpp::MemoryOrder::ACQUIRE)) {
       return desc;
     }
-    // CAS lost: `expected` now holds the peer's descriptor.
     if (expected != nullptr && expected->key == key) {
-      // Peer published the same `(cls, node)`. Roll back our publish and
-      // adopt the peer's descriptor.
+      // Peer published the same `(cls, node)`. Roll back and adopt the peer.
       coarse->entries[coarse_idx].store(nullptr, cpp::MemoryOrder::RELEASE);
       desc_pool_free(desc);
       release_partition_guards(new_base, kPartitionBytes);
@@ -478,17 +423,15 @@ int commit_chunk_register(PartitionDescriptor *desc, void * /*chunk_base*/,
   if (LIBC_UNLIKELY(desc == nullptr))
     return -EINVAL;
 
-  // State gate. Loop handles IDLE -> LIVE re-arm CAS contention.
+  // State gate. Loop handles the IDLE -> LIVE re-arm CAS losing to a peer.
   for (;;) {
     uint32_t state = desc->retire_state.load(cpp::MemoryOrder::ACQUIRE);
     if (state == kStateLive || state == kStatePinned)
       break;
     if (state == kStateIdle) {
-      // Re-arm IDLE -> LIVE via CAS. If we win, the empty-transition
-      // retire path has not yet acquired the LIVE -> DRAINING CAS for
-      // this descriptor (the retire path requires LIVE, not IDLE; if it
-      // had observed IDLE, it would not have started a retire). Loser
-      // retries.
+      // The retire path requires LIVE, not IDLE; an IDLE observation by
+      // try_retire_inline would not have started a retire. So winning this
+      // CAS is sufficient -- no Phase 2 counter recheck needed here.
       uint32_t expected = kStateIdle;
       if (desc->retire_state.compare_exchange_strong(
               expected, kStateLive, cpp::MemoryOrder::ACQ_REL,
@@ -496,15 +439,14 @@ int commit_chunk_register(PartitionDescriptor *desc, void * /*chunk_base*/,
         break;
       continue;
     }
-    // DRAINING / RETIRED: caller must retry via `reserve_or_grow`.
+    // DRAINING / RETIRED: caller must restart via `reserve_or_grow`.
     return -EAGAIN;
   }
 
-  // ACQ_REL on both counters orders the increments with the state load
-  // above (so a peer observing kStateLive sees the freshly-incremented
-  // counters) and with the matching fetch_sub in
-  // `decommit_chunk_unregister` (so the empty-transition observer reads a
-  // consistent counter pair).
+  // ACQ_REL on both counter increments orders them with the state load above
+  // (a peer observing kStateLive sees the fresh counters) and with the
+  // matching fetch_sub in `decommit_chunk_unregister` (the empty-transition
+  // observer reads a consistent pair).
   desc->bytes_committed.fetch_add(chunk_bytes, cpp::MemoryOrder::ACQ_REL);
   desc->active_chunks.fetch_add(1, cpp::MemoryOrder::ACQ_REL);
   return 0;
@@ -518,19 +460,19 @@ namespace {
 
 void try_retire_inline(PartitionDescriptor *desc) {
   // Phase 1: CAS LIVE -> DRAINING. PINNED partitions never retire (the CAS
-  // requires LIVE). A concurrent commit may have flipped IDLE -> LIVE
-  // before our observation; if so, the peer thread will increment counters
-  // and the Phase 2 re-verify will catch it.
+  // requires LIVE). A concurrent commit may have flipped IDLE -> LIVE before
+  // our observation; if so, the peer thread will increment counters and the
+  // Phase 2 re-verify catches it.
   uint32_t live = kStateLive;
   if (!desc->retire_state.compare_exchange_strong(
           live, kStateDraining, cpp::MemoryOrder::ACQ_REL,
           cpp::MemoryOrder::RELAXED))
     return;
 
-  // Phase 2: re-verify counters. Race window between our empty observation
-  // in `decommit_chunk_unregister` (counters == 0) and the DRAINING flip
-  // here: a concurrent `commit_chunk_register` may have observed LIVE and
-  // incremented counters. Roll DRAINING -> LIVE if so.
+  // Phase 2: re-verify counters. Race window: between the empty observation
+  // in `decommit_chunk_unregister` (both counters == 0) and the DRAINING
+  // flip above, a concurrent `commit_chunk_register` may have observed LIVE
+  // and incremented. Roll back DRAINING -> LIVE if so.
   if (desc->bytes_committed.load(cpp::MemoryOrder::ACQUIRE) != 0 ||
       desc->active_chunks.load(cpp::MemoryOrder::ACQUIRE) != 0) {
     desc->retire_state.store(kStateLive, cpp::MemoryOrder::RELEASE);
@@ -538,8 +480,8 @@ void try_retire_inline(PartitionDescriptor *desc) {
   }
 
   // Phase 3: clear the coarse pagemap entry. Subsequent `lookup()` calls
-  // miss this partition's VA -- correct, since the re-verify proved no
-  // live chunks exist on it.
+  // miss this partition's VA, which is correct given Phase 2 proved no live
+  // chunks remain. RELEASE pairs with the ACQUIRE in `lookup()`.
   CoarsePagemap *coarse = mutable_coarse_pagemap();
   size_t coarse_idx = coarse_index_of(desc->base);
   coarse->entries[coarse_idx].store(nullptr, cpp::MemoryOrder::RELEASE);
@@ -557,9 +499,8 @@ void try_retire_inline(PartitionDescriptor *desc) {
       break;
   }
 
-  // Phase 5: hand to Crystalline-W. The free callback runs only after
-  // every concurrent `lookup()` pin holder has released, so a wait-free
-  // reader can never observe a freed descriptor.
+  // Phase 5: hand to Crystalline-W. The free callback runs only after every
+  // concurrent `lookup()` pin holder has released.
   desc->retire_state.store(kStateRetired, cpp::MemoryOrder::RELEASE);
   g_partition_domain.retire(desc);
 }
@@ -576,8 +517,8 @@ size_t decommit_chunk_unregister(PartitionDescriptor *desc,
     return 0;
 
   // ACQ_REL on the counter pair pairs with the matching fetch_add in
-  // `commit_chunk_register`; this fence-equivalent is what lets the
-  // post-decrement check see a consistent pair.
+  // `commit_chunk_register`; this is what lets the post-decrement check see
+  // a consistent pair.
   uint64_t prev_bytes = desc->bytes_committed.fetch_sub(
       chunk_bytes, cpp::MemoryOrder::ACQ_REL);
   uint64_t after_bytes = prev_bytes - chunk_bytes;
@@ -606,23 +547,23 @@ int commit_chunk(PartitionDescriptor *desc, void *chunk_base,
   if (LIBC_UNLIKELY(desc == nullptr || chunk_base == nullptr ||
                      chunk_bytes == 0))
     return -EINVAL;
-  // Pagemap stamps at `kPagemapChunkBytes` (64 KiB) granularity. The chunk
-  // owner must have picked a chunk geometry that satisfies this.
+  // Pagemap stamps at `kPagemapChunkBytes` (64 KiB); chunk geometry must be
+  // 64 KiB-aligned at both ends.
   LIBC_ASSERT((chunk_bytes & (alloc::kPagemapChunkBytes - 1)) == 0 &&
               "commit_chunk: chunk_bytes must be 64 KiB-aligned");
   LIBC_ASSERT((reinterpret_cast<uintptr_t>(chunk_base) &
                 (alloc::kPagemapChunkBytes - 1)) == 0 &&
               "commit_chunk: chunk_base must be 64 KiB-aligned");
 
-  // Step 1: split a chunk-sized hole out of the partition's middle
-  // placeholder. The kernel serialises racing splits on the same range --
-  // only one thread succeeds; the rest get STATUS_CONFLICTING_ADDRESSES.
+  // Step 1: kernel serialises racing splits on the same range -- only one
+  // thread succeeds; the rest get STATUS_CONFLICTING_ADDRESSES.
   if (!nt_pal::split_placeholder(chunk_base, chunk_bytes))
     return -EIO;
 
-  // Step 2: commit pages, replacing the placeholder. Always passes
-  // MEM_WRITE_WATCH so the hardware dirty bitmap is armed for fork CoW
-  // preservation, quarantine sweep, and telemetry.
+  // Step 2: commit pages, replacing the placeholder. Plain `commit_replace`
+  // (no MEM_WRITE_WATCH) -- WW arming is opt-in via
+  // `commit_replace_writewatch`; pinning a hardware dirty bitmap on every
+  // chunk would block sub-range release at retire time.
   NTSTATUS st = nt_pal::commit_replace(chunk_base, chunk_bytes, page_prot);
   if (!NT_SUCCESS(st)) {
     // Rollback step 1: best-effort coalesce. If coalesce fails the
@@ -640,8 +581,8 @@ int commit_chunk(PartitionDescriptor *desc, void *chunk_base,
     return rc;
   }
 
-  // Step 4: upgrade the pagemap OS pages covering this chunk to
-  // PAGE_READWRITE. Idempotent across overlapping ranges.
+  // Step 4: upgrade pagemap OS pages covering this chunk to PAGE_READWRITE
+  // (idempotent across overlapping ranges).
   int reg_rc = alloc::pagemap_register_range(chunk_base, chunk_bytes);
   if (reg_rc != 0) {
     (void)decommit_chunk_unregister(desc, chunk_base, chunk_bytes);
@@ -650,8 +591,8 @@ int commit_chunk(PartitionDescriptor *desc, void *chunk_base,
     return reg_rc;
   }
 
-  // Step 5: publish the `(slot_idx, tag)` entry across every
-  // `kPagemapChunkBytes` sub-chunk via the bulk-publish helper.
+  // Step 5: publish `(slot_idx, tag)` across every `kPagemapChunkBytes` sub-
+  // chunk via the bulk-publish helper.
   alloc::pagemap_publish_range(chunk_base, chunk_bytes, pagemap_slot_idx,
                                 pagemap_tag);
   return 0;
@@ -667,8 +608,8 @@ void decommit_chunk(PartitionDescriptor *desc, void *chunk_base,
 
   // Pagemap retire fires first so a concurrent fault classifier observes
   // "not tracked" before pages decommit and partition counters drop. The
-  // reverse order would leave a window where a concurrent classifier sees
-  // a still-tagged pagemap entry pointing at decommitted backing.
+  // reverse order would leave a window where a classifier sees a still-
+  // tagged pagemap entry pointing at decommitted backing.
   alloc::pagemap_retire_range(chunk_base, chunk_bytes);
   (void)nt_pal::decommit_preserve(chunk_base, chunk_bytes);
   (void)decommit_chunk_unregister(desc, chunk_base, chunk_bytes);
@@ -682,33 +623,31 @@ void partition_free_descriptor(PartitionDescriptor *desc) {
   if (LIBC_UNLIKELY(desc == nullptr))
     __builtin_trap();
 
-  // Canary mismatch is tamper detection: one of the canary inputs
-  // (`process_cookie`, `partition_secret`, `base`, `descriptor_seq`) has
-  // been corrupted between init and reclamation.
+  // Canary mismatch == tamper: one of the canary inputs (`process_cookie`,
+  // `partition_secret`, `base`, `descriptor_seq`) corrupted between init and
+  // reclamation.
   uint64_t expected_canary = compute_canary(desc->base, desc->descriptor_seq);
   if (LIBC_UNLIKELY(desc->canary != expected_canary))
     __builtin_trap();
 
-  // A non-zero counter at the free-callback point means a chunk is
-  // committed against a retiring partition -- a state-machine violation
-  // that must be loud, not silent.
+  // Non-zero counter at the free-callback point means a chunk is committed
+  // against a retiring partition -- a state-machine violation that must be
+  // loud, not silent.
   if (LIBC_UNLIKELY(
           desc->bytes_committed.load(cpp::MemoryOrder::ACQUIRE) != 0 ||
           desc->active_chunks.load(cpp::MemoryOrder::ACQUIRE) != 0))
     __builtin_trap();
 
-  // Coalesce the leading guard + middle + trailing guard placeholders back
-  // into a single 4 GiB placeholder ahead of the placeholder release.
-  // Precondition: chunk owners decommitted via `decommit_preserve` (not
-  // bare `MEM_DECOMMIT`) so the entire span `[base, base + bytes)` is
-  // placeholders. `release_partition_guards` traps on coalesce failure
-  // (chunk-owner contract violation).
+  // Coalesce leading guard + middle + trailing guard back into one 4 GiB
+  // placeholder. Precondition: chunk owners decommitted via
+  // `decommit_preserve` (not bare MEM_DECOMMIT) so the span is uniformly
+  // placeholders. `release_partition_guards` traps on coalesce failure.
   void *base = desc->base;
   size_t bytes = desc->bytes;
   release_partition_guards(base, bytes);
 
-  // The MEM_RELEASE returning the 4 GiB VA to the OS happens here. This
-  // is the linearization point for "this partition's VA is reusable".
+  // The MEM_RELEASE returning the 4 GiB VA to the OS happens here -- this is
+  // the linearization point for "this partition's VA is reusable".
   if (!::LIBC_NAMESPACE::nt_pal::free_placeholder(base))
     __builtin_trap();
 
@@ -726,17 +665,16 @@ uint32_t partition_init_fn(::LIBC_NAMESPACE::internal::Receipt *out,
     __builtin_trap();
 
   // (1) Seed `partition_secret` via ProcessPrng. Fail-closed on PRNG
-  // unavailability -- the canary needs entropy from a CSPRNG and there is
-  // no acceptable fallback.
+  // unavailability -- the canary needs entropy from a CSPRNG, no acceptable
+  // fallback exists.
   ::LIBC_NAMESPACE::internal::alloc_primitives::SingleCanarySeed seed{};
   ::LIBC_NAMESPACE::internal::alloc_primitives::init_seed_or_trap(seed);
   ::LIBC_NAMESPACE::internal::PcbInitAccess::set_partition_secret(seed.seed);
 
-  // (2) Reserve coarse pagemap backing. `kCoarseBytes`; the OS commits
-  // pages lazily on first store. Plain `reserve_placeholder` plus
-  // `commit_replace` is used (rather than going through a higher-level
-  // allocator) so the header fields can be written from this function's
-  // stack via the returned VA.
+  // (2) Reserve coarse pagemap backing. Plain `reserve_placeholder` +
+  // `commit_replace` (rather than a higher-level allocator) so the header
+  // fields can be written via the returned VA directly. OS commits pages
+  // lazily on first store.
   void *coarse_va =
       ::LIBC_NAMESPACE::nt_pal::reserve_placeholder(kCoarseBytes);
   if (coarse_va == nullptr)
@@ -746,7 +684,7 @@ uint32_t partition_init_fn(::LIBC_NAMESPACE::internal::Receipt *out,
   if (!NT_SUCCESS(st1))
     __builtin_trap();
   auto *coarse = static_cast<CoarsePagemap *>(coarse_va);
-  // Coverage spans from `min_address` rounded up to partition stride to
+  // Coverage spans `min_address` rounded up to partition stride through
   // `max_address` rounded down. `reserve_placeholder_numa` is trusted to
   // return VA inside this range.
   uintptr_t min_va = reinterpret_cast<uintptr_t>(
@@ -768,10 +706,9 @@ uint32_t partition_init_fn(::LIBC_NAMESPACE::internal::Receipt *out,
   publish_sealed_va_range(SealedKind::PartitionCoarsePagemap, coarse_va,
                            kCoarseBytes);
 
-  // (3) Reserve and commit the descriptor pool. `kPartitionDescPoolCapacity`
-  // descriptors at 128 B each, rounded up to NT's 64 KiB allocation
-  // granularity so the placeholder size matches what `commit_replace`
-  // (MEM_REPLACE_PLACEHOLDER) sees.
+  // (3) Descriptor pool: 256 * 128 B rounded up to NT's 64 KiB allocation
+  // granularity so the placeholder size matches what
+  // `commit_replace` (MEM_REPLACE_PLACEHOLDER) requires.
   size_t pool_bytes =
       (kPartitionDescPoolCapacity * sizeof(PartitionDescriptor) + 0xFFFF) &
       ~static_cast<size_t>(0xFFFF);
@@ -824,9 +761,8 @@ uint32_t partition_init_fn(::LIBC_NAMESPACE::internal::Receipt *out,
   };
 
   uint32_t emitted = 0;
-  // Emit receipts for the coarse pagemap reservation, the descriptor pool
-  // reservation, and each core partition. The substrate registry stamps
-  // these as LIBC_INTERNAL so the va_inventory classifier skips them.
+  // Substrate registry stamps these receipts LIBC_INTERNAL so the
+  // va_inventory classifier skips them.
   if (cap > emitted) {
     out[emitted] = {coarse_va, kCoarseBytes,
                     ::LIBC_NAMESPACE::internal::InternalKind::Partition};
@@ -846,14 +782,14 @@ uint32_t partition_init_fn(::LIBC_NAMESPACE::internal::Receipt *out,
       // pointer contract for slab metadata.
       __builtin_trap();
     }
-    // Route the fresh 4 GiB reservation through the sealed-VA publisher.
-    // The publisher validates disjointness against every previously-
-    // published sealed range (pagemap, buddy partition + tree + desc pool,
-    // partition coarse pagemap + desc pool, earlier partitions in this
-    // loop). Trap on overlap or sub-1 MiB gap.
+    // Route the fresh 4 GiB reservation through the sealed-VA publisher: it
+    // validates disjointness against every previously-published sealed range
+    // (pagemap, buddy partition + tree + desc pool, partition coarse pagemap
+    // + desc pool, earlier partitions in this loop) and traps on overlap or
+    // sub-1 MiB gap.
     publish_sealed_va_range(SealedKind::Partition, desc->base, desc->bytes);
 
-    // Stamp PINNED. Plain store because Tier A is single-threaded.
+    // Plain store: Tier A is single-threaded.
     desc->retire_state.store(kStatePinned, cpp::MemoryOrder::RELEASE);
 
     if (cap > emitted) {
@@ -870,30 +806,22 @@ uint32_t partition_init_fn(::LIBC_NAMESPACE::internal::Receipt *out,
 //===----------------------------------------------------------------------===//
 
 void partition_fork_reinit() {
-  // Most partition state is structurally valid in the child: the coarse
-  // pagemap, the reserve table, the descriptor pool, and every partition's
-  // VA are CoW-inherited from the parent. The Crystalline-W
-  // `g_partition_domain` is reset by `crystalline_fork_reinit_all` at an
-  // earlier priority (eras zeroed, retire batches discarded).
-  //
-  // What must be re-derived: every descriptor canary, because the
-  // `process_cookie` has just been re-probed by `pal_fork_reinit` and
-  // `partition_secret` is re-rolled below. Both inputs live in Zone 0b,
-  // which `libc_fork_reinit_impl` holds unsealed across this priority
-  // band; the `set_partition_secret` write below is therefore a hardware-
-  // legal write into the otherwise-sealed page.
-  //
-  // What must be reset: the init latch, in case fork happened mid-init.
+  // Most partition state is structurally valid in the child: coarse pagemap,
+  // reserve table, descriptor pool, and every partition's VA CoW-inherit
+  // from the parent; `g_partition_domain` was already reset by
+  // `crystalline_fork_reinit_all` at an earlier priority. What needs work:
+  // re-derive every descriptor canary against the new `process_cookie`
+  // (re-probed by `pal_fork_reinit`) and the new `partition_secret`
+  // (re-rolled below in the Zone 0b unseal window `libc_fork_reinit_impl`
+  // holds open across this priority band), and reset the init latch in case
+  // fork happened mid-init.
 
   g_partition_init.fork_reinit();
 
-  // Re-roll `partition_secret` in the Zone 0b unseal window.
   ::LIBC_NAMESPACE::internal::alloc_primitives::SingleCanarySeed seed{};
   ::LIBC_NAMESPACE::internal::alloc_primitives::init_seed_or_trap(seed);
   ::LIBC_NAMESPACE::internal::PcbInitAccess::set_partition_secret(seed.seed);
 
-  // Recompute every live descriptor's canary against the new
-  // `process_cookie` and new `partition_secret`.
   ReserveTable *table = mutable_reserve_table();
   if (table == nullptr)
     return;
