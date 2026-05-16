@@ -5,27 +5,25 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-///
-/// \file
-/// `va_tracker::DescMutator` callbacks for every POSIX op that mutates a
-/// `RegionDesc` in place via `va_tracker::mutate`. Each mutator is a
-/// free function with a fixed pointer signature; callers pass a
-/// matching context struct from this header in `void *ctx`.
-///
-/// The mutator runs inside the substrate's `nt_pal` phase on a fresh
-/// clone of the source descriptor (per `va_tracker.h::mutate`), so each
-/// callback writes to `new_desc` directly without atomicity concerns —
-/// the clone is not yet visible to any reader, and the substrate's
-/// Swap-CAS provides the publish-side `release` fence. Existing flag
-/// bits on the clone are preserved by the OR / AND-NOT pattern in every
-/// mutator; that preservation is the cross-cutting invariant the
-/// substrate's mutator-merge logic relies on.
-///
-/// Twelve mutators, each ≤ 10 lines. No dispatch table; no generic
-/// mutator. The repetition is the point: the substrate gets one fixed
-/// pointer per intent, and a future reader can see what each one
-/// touches without indirection.
-///
+//
+// `va_tracker::DescMutator` callbacks for the POSIX mutating ops
+// (mlock / mbind / madvise / brk). Free functions only — no lambdas,
+// no captures, no `std::function`: every callback is a stable C symbol
+// so `va_tracker::mutate` reaches it through a plain function pointer
+// and a grep on the symbol enumerates every site that mutates a given
+// field.
+//
+// Cross-TU contract with `va_tracker::mutate`:
+//   * Runs inside the engine's nt_pal phase with the leaf held LOCKED.
+//   * `new_desc` is a fresh clone already split out for the inside
+//     slice; the mutator writes it, and the Swap-CAS that publishes
+//     the clone carries the release fence (readers never see a
+//     partially-mutated desc).
+//   * Every mutator must preserve flag bits it does not name — clones
+//     inherit the source's bits, and a later mprotect after e.g.
+//     `MADV_DONTFORK` must not lose the DONTFORK bit. The OR / AND-NOT
+//     helpers in the .cpp encode this.
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEMORY_POSIX_POSIX_MUTATORS_H
@@ -48,133 +46,115 @@ namespace memory_posix {
 // Context structs.
 //===----------------------------------------------------------------------===//
 
-/// Context for `brk_extend_mutator`. Tracks the new brk cursor and the
-/// placeholder window the cursor moves through. The substrate fires
-/// `commit_replace` over `[new_cursor - old_cursor)` after the mutator
-/// returns, when `prot_change` on the enclosing `mutate` call is
-/// non-zero.
+// Context for `brk_extend_mutator`. The placeholder window itself lives
+// on the desc (`placeholder_base` / `placeholder_size`) — `new_cursor`
+// only carries the moving end of the data segment.
 struct BrkExtendCtx {
-  /// New end-of-data-segment cursor (page-aligned). Must lie within the
-  /// `[placeholder_base, placeholder_base + placeholder_size)` window
-  /// the originating `brk_meta` reserved.
+  // Page-aligned end-of-data-segment cursor. Must lie within the
+  // existing `[placeholder_base, placeholder_base + placeholder_size)`
+  // window the originating `brk_meta` reserved; outside it, the brk
+  // entry rejects before the envelope ever runs.
   void *new_cursor;
 };
 
-/// Context for `numa_rebind_mutator`. Carries the new policy mode plus
-/// the active-node mask. The fault handler's NUMA-rotating commit path
-/// reads `flags & NUMA_INTERLEAVE` and the desc's `numa_interleave_mask`
-/// to drive per-page commit-from-node selection.
+// Context for `numa_rebind_mutator`. Whole policy in two fields: the
+// fault handler's rotating commit path reads `flags & NUMA_INTERLEAVE`
+// to decide whether to honour `numa_interleave_mask` at all.
 struct NumaRebindCtx {
-  /// `MPOL_INTERLEAVE` enables the bit; other modes clear it.
-  /// `MPOL_DEFAULT` clears the mask and bit together.
+  // True for `MPOL_INTERLEAVE`; false for every other mode (the caller
+  // is expected to pass `nodemask = 0` for `MPOL_DEFAULT` so the mask
+  // and the bit drop together).
   bool interleave;
-  /// Active-node mask. Bit N set ⇔ node N is in the policy's set.
+  // Bit N set iff node N is in the policy's set.
   uint32_t nodemask;
 };
 
 //===----------------------------------------------------------------------===//
 // Mutator declarations.
 //
-// Every mutator matches `va_tracker::DescMutator`:
+// Every entry matches `va_tracker::DescMutator`:
 //   void (*)(RegionDesc *new_desc, void *ctx)
 //===----------------------------------------------------------------------===//
 
-/// `mlock` / `munlock` immediate-lock case — no per-desc state change.
-///
-/// Immediate locking is tracked entirely by the kernel's per-page lock
-/// counter; the desc carries no flag for it. The mutator stays as a
-/// no-op so the substrate's `mutate(...)` envelope can still serve as
-/// the publish-and-protect path when an op needs `prot_change` on the
-/// same range, and as a typed entry point even when no field changes.
-///
-/// `mlock` itself does not currently route through this mutator (it
-/// calls `nt_pal::lock_range` directly inside a kernel-VAD walk —
-/// every page in the range gets locked, including foreign / image VA
-/// the va_tracker does not see). Kept callable in case a future shape
-/// shift wants to attach diagnostics or telemetry to the lock window.
+// `mlock` / `munlock` immediate-lock case — no-op mutator. Immediate
+// locking is tracked by the kernel's per-page lock counter, so no
+// per-desc bit exists. `mlock` itself bypasses this entry and calls
+// `nt_pal::lock_range` directly (it must walk the kernel VAD, including
+// foreign / image VA the va_tracker does not see); the entry is kept so
+// the `mutate` envelope stays available for paired `prot_change` use.
 void lock_mutator(::LIBC_NAMESPACE::windows::va_tracker::RegionDesc *new_desc,
                   void *ctx);
 
-/// `mlock2(MLOCK_ONFAULT)` — set `region_flag::MLOCK_ONFAULT`.
-///
-/// The fault handler in `mem_fault_handler.cpp` reads the bit on every
-/// resolve and locks the faulting page on hit. The bit replaces the
-/// legacy global `OnfaultState` table: per-desc storage lives in the
-/// existing `flags` atomic; lookup is a flag-mask off the already-
-/// pinned desc; teardown is the symmetric `lock_clear_mutator`.
-///
-/// PAGE_GUARD is applied to the range as a side effect of the
-/// `mlock2` entry (not by this mutator — the protection write needs
-/// the kernel-VAD walk, and the substrate's `mutate` already
-/// serialises the publish window for us). On first touch the kernel
-/// raises `STATUS_GUARD_PAGE_VIOLATION`, the fault handler resolves
-/// the desc, sees the flag, and locks.
+// `mlock2(MLOCK_ONFAULT)` and `mlockall(MCL_ONFAULT)` — set
+// `region_flag::LOCK_ONFAULT`. The bit arms lock-on-first-touch; the
+// caller separately installs PAGE_GUARD via `nt_pal::arm_guard_trap`
+// (the protection write needs the kernel-VAD walk this mutator does
+// not own). On first access the kernel raises
+// `STATUS_GUARD_PAGE_VIOLATION`, the fault handler resolves the desc,
+// sees the bit, and locks.
 void lock_set_onfault_mutator(
     ::LIBC_NAMESPACE::windows::va_tracker::RegionDesc *new_desc, void *ctx);
 
-/// `munlock` — clear `region_flag::MLOCK_ONFAULT`.
-///
-/// Pairs with `lock_set_onfault_mutator`. PAGE_GUARD residue on
-/// already-armed pages is harmless: the kernel auto-clears PAGE_GUARD
-/// on the trip through the fault handler, and with the flag now
-/// clear the handler returns `EXCEPTION_CONTINUE_SEARCH` rather than
-/// re-locking.
+// `munlock` — clear `region_flag::LOCK_ONFAULT`. PAGE_GUARD residue on
+// already-armed pages is harmless: the kernel auto-clears PAGE_GUARD
+// on the trip through the fault handler, and with the bit now clear
+// the handler returns `EXCEPTION_CONTINUE_SEARCH` rather than re-locking.
 void lock_clear_mutator(
     ::LIBC_NAMESPACE::windows::va_tracker::RegionDesc *new_desc, void *ctx);
 
-/// `brk` / `sbrk` cursor extension. `ctx` is a `BrkExtendCtx *`. The
-/// mutator runs as the metadata-update step; the substrate handles the
-/// kernel-side `commit_replace` on the new tail.
+// `brk` / `sbrk` cursor extension. `ctx` is a `BrkExtendCtx *`. The
+// mutator is the metadata step only; the caller passes `prot_change`
+// (when non-zero) on the same `mutate` envelope so the engine fires
+// `commit_replace` across the newly-uncovered tail under the same hold.
 void brk_extend_mutator(
     ::LIBC_NAMESPACE::windows::va_tracker::RegionDesc *new_desc, void *ctx);
 
-/// `mbind(MPOL_INTERLEAVE)` / `mbind(MPOL_DEFAULT)`. `ctx` is a
-/// `NumaRebindCtx *`. Toggles `region_flag::NUMA_INTERLEAVE` and writes
-/// the active-node mask. The fault handler's rotating commit path picks
-/// up the new mask on the next demand-commit.
+// `mbind(MPOL_INTERLEAVE)` / `mbind(MPOL_DEFAULT)`. `ctx` is a
+// `NumaRebindCtx *`. Pure-metadata mutator (`prot_change` is 0) — the
+// fault handler picks up the new mask on the next demand-commit; pages
+// already committed under the old policy are not migrated, matching
+// Linux `mbind` without `MPOL_MF_MOVE`.
 void numa_rebind_mutator(
     ::LIBC_NAMESPACE::windows::va_tracker::RegionDesc *new_desc, void *ctx);
 
-/// `MADV_DONTDUMP` — set `region_flag::DUMP_EXCLUDE`. The PEB WER
-/// gather-list write is the durable side effect, performed by the
-/// caller after the mutator returns.
+// `MADV_DONTDUMP` — set `region_flag::DUMP_EXCLUDE`. The desc bit is
+// the libc-visible record; the durable kernel-side effect (PEB WER
+// gather-list update) is the caller's responsibility.
 void dump_set_mutator(
     ::LIBC_NAMESPACE::windows::va_tracker::RegionDesc *new_desc, void *ctx);
 
-/// `MADV_DODUMP` — clear `region_flag::DUMP_EXCLUDE`.
+// `MADV_DODUMP` — clear `region_flag::DUMP_EXCLUDE`.
 void dump_clear_mutator(
     ::LIBC_NAMESPACE::windows::va_tracker::RegionDesc *new_desc, void *ctx);
 
-/// `MADV_GUARD_INSTALL` — set `region_flag::PROT_GUARD`. The caller in
-/// `madvise_guard.cpp` is responsible for the initial
-/// `NtProtect(PAGE_NOACCESS)` call after the mutator publishes the new
-/// desc; this mutator only updates the flag bit so the fault handler
-/// recognises guarded pages on the next access.
+// `MADV_GUARD_INSTALL` — set `region_flag::PROT_GUARD`. The caller in
+// `madvise_guard.cpp` issues `NtProtect(PAGE_NOACCESS)` after publish;
+// PAGE_NOACCESS rather than PAGE_GUARD because PAGE_GUARD self-clears
+// on the first trip through the fault handler.
 void guard_set_mutator(
     ::LIBC_NAMESPACE::windows::va_tracker::RegionDesc *new_desc, void *ctx);
 
-/// `MADV_GUARD_REMOVE` — clear `region_flag::PROT_GUARD`. The caller
-/// restores the baseline page protection after the mutator publishes;
-/// this mutator only clears the flag.
+// `MADV_GUARD_REMOVE` — clear `region_flag::PROT_GUARD`. The caller
+// restores baseline page protection after the mutator publishes.
 void guard_clear_mutator(
     ::LIBC_NAMESPACE::windows::va_tracker::RegionDesc *new_desc, void *ctx);
 
-/// `MADV_DONTFORK` — set `region_flag::DONTFORK`. Consumed by
-/// `va_tracker_fork_reinit` to skip the region in the child.
+// `MADV_DONTFORK` — set `region_flag::DONTFORK`. Consumed by
+// `va_tracker_fork_reinit` to skip the region in the child.
 void fork_set_dontfork_mutator(
     ::LIBC_NAMESPACE::windows::va_tracker::RegionDesc *new_desc, void *ctx);
 
-/// `MADV_DOFORK` — clear `region_flag::DONTFORK`.
+// `MADV_DOFORK` — clear `region_flag::DONTFORK`.
 void fork_clear_dontfork_mutator(
     ::LIBC_NAMESPACE::windows::va_tracker::RegionDesc *new_desc, void *ctx);
 
-/// `MADV_WIPEONFORK` — set `region_flag::WIPEONFORK`. Consumed by
-/// `va_tracker_fork_reinit` to zero the region in the child after
-/// replay.
+// `MADV_WIPEONFORK` — set `region_flag::WIPEONFORK`. Consumed by
+// `va_tracker_fork_reinit` to zero the region in the child after
+// replay.
 void fork_set_wipeonfork_mutator(
     ::LIBC_NAMESPACE::windows::va_tracker::RegionDesc *new_desc, void *ctx);
 
-/// `MADV_KEEPONFORK` — clear `region_flag::WIPEONFORK`.
+// `MADV_KEEPONFORK` — clear `region_flag::WIPEONFORK`.
 void fork_clear_wipeonfork_mutator(
     ::LIBC_NAMESPACE::windows::va_tracker::RegionDesc *new_desc, void *ctx);
 

@@ -5,21 +5,19 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-///
-/// \file
-/// `va_tracker::AcquireMeta` builders, one per POSIX call-shape. Each
-/// builder takes the smallest set of inputs that distinguishes its
-/// shape, translates POSIX-side flag bits into `region_flag::*` bits,
-/// and populates the substrate-bound fields the tracker copies into a
-/// fresh `RegionDesc` plus a fresh `DescBacking`.
-///
-/// The builders are the only place where POSIX flag bits cross into
-/// substrate flag bits. A POSIX flag misread here propagates through
-/// fault dispatch (NORESERVE, NUMA_INTERLEAVE, PROT_GUARD), fork
-/// classification (DONTFORK, WIPEONFORK), and dump exclusion
-/// (DUMP_EXCLUDE) — the §6bis preservation contracts depend on this
-/// translation being exact at one site per shape.
-///
+//
+// `va_tracker::AcquireMeta` builders, one per POSIX call-shape. Each builder
+// takes the smallest set of inputs that distinguishes its shape, translates
+// POSIX-side flag bits into `region_flag::*` bits, and populates the fields
+// `va_tracker::acquire` copies into the freshly-allocated `RegionDesc`.
+//
+// These builders are the only place where POSIX flag bits become
+// substrate-side `region_flag::*` bits. Concentrating the translation at one
+// site per shape keeps the SHARED / NORESERVE / HUGE_PAGES / LOW_32BIT / COW
+// / COMMITTED bit choices auditable; a misread here would silently propagate
+// through fault dispatch, fork classification, and dump exclusion downstream
+// of the tracker.
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEMORY_POSIX_POSIX_META_H
@@ -45,9 +43,9 @@ namespace memory_posix {
 // VaRange builder.
 //===----------------------------------------------------------------------===//
 
-/// Build a `va_tracker::VaRange` from a POSIX `(addr, len)` pair. The
-/// caller is responsible for page-rounding `len` before this call —
-/// `posix_validation.h::rounded_len_or_zero` produces the right value.
+// Build a `va_tracker::VaRange` from a POSIX `(addr, len)` pair. `len` must
+// already be page-rounded — `posix_validation.h::rounded_len_or_zero` is the
+// canonical producer.
 [[nodiscard]] LIBC_INLINE ::LIBC_NAMESPACE::windows::va_tracker::VaRange
 make_range(void *addr, size_t bytes) {
   return ::LIBC_NAMESPACE::windows::va_tracker::VaRange{addr, bytes};
@@ -57,9 +55,11 @@ make_range(void *addr, size_t bytes) {
 // Flag-bit translation helpers.
 //===----------------------------------------------------------------------===//
 
-/// Translate the POSIX flag bits that influence substrate-side dispatch
-/// into the corresponding `region_flag::*` mask. Per-shape builders
-/// then OR in any shape-fixed bits (e.g. `COW` on private file views).
+// Translate the POSIX-side flag bits that influence substrate dispatch into
+// the corresponding `region_flag::*` mask. Per-shape builders OR in
+// shape-fixed bits afterwards (COW on private file views, COMMITTED on
+// non-NORESERVE anon, etc.) so this helper carries only the bits whose
+// presence is purely caller-driven.
 [[nodiscard]] LIBC_INLINE uint16_t common_flag_bits(int posix_flags) {
   uint16_t bits = 0;
   if (posix_flags & MAP_SHARED)
@@ -77,9 +77,13 @@ make_range(void *addr, size_t bytes) {
 // Per-intent AcquireMeta builders.
 //===----------------------------------------------------------------------===//
 
-/// `mmap(MAP_ANONYMOUS | MAP_PRIVATE, ...)` — the canonical anonymous
-/// private path. No section handle, no file handle; the tracker takes
-/// the placeholder identity from the registered range.
+// `mmap(MAP_ANONYMOUS | MAP_PRIVATE, ...)` — the canonical anonymous private
+// path. No section or file handle. `placeholder_base`/`placeholder_size`
+// stay at default zero so the tracker treats the registered range as the
+// placeholder identity (`va_tracker::AcquireMeta`: "Both zero means
+// 'identity equals range'"). `COMMITTED` is forced unless the caller passed
+// `MAP_NORESERVE` — POSIX private-anon defaults to backing store reserved
+// at acquire time.
 [[nodiscard]] LIBC_INLINE ::LIBC_NAMESPACE::windows::va_tracker::AcquireMeta
 anon_private_meta(int prot, int posix_flags) {
   ::LIBC_NAMESPACE::windows::va_tracker::AcquireMeta m;
@@ -90,9 +94,8 @@ anon_private_meta(int prot, int posix_flags) {
   return m;
 }
 
-/// `mmap(MAP_ANONYMOUS | MAP_SHARED, ...)` — pagefile-backed section
-/// view. Caller supplies the section handle from
-/// `nt_pal::create_section_anon`.
+// `mmap(MAP_ANONYMOUS | MAP_SHARED, ...)` — pagefile-backed section view.
+// Caller supplies the section handle from `nt_pal::create_section_anon`.
 [[nodiscard]] LIBC_INLINE ::LIBC_NAMESPACE::windows::va_tracker::AcquireMeta
 anon_shared_meta(int prot, int posix_flags, HANDLE section) {
   ::LIBC_NAMESPACE::windows::va_tracker::AcquireMeta m;
@@ -104,10 +107,10 @@ anon_shared_meta(int prot, int posix_flags, HANDLE section) {
   return m;
 }
 
-/// `mmap(fd, MAP_PRIVATE, ...)` — CoW file view. Caller supplies the
-/// section and file handles plus the page-aligned section offset.
-/// `view_prot` uses the WRITECOPY translation so writes trigger kernel
-/// CoW without requiring section write access.
+// `mmap(fd, MAP_PRIVATE, ...)` — CoW file view. `view_prot` uses the
+// WRITECOPY translation so writes trigger kernel-side CoW without requiring
+// the section to be opened for write access — the same hardening choice the
+// validation layer documents on `prot_to_page_flags_cow`.
 [[nodiscard]] LIBC_INLINE ::LIBC_NAMESPACE::windows::va_tracker::AcquireMeta
 file_private_meta(int prot, int posix_flags, HANDLE section, HANDLE file,
                   uint64_t section_offset) {
@@ -122,7 +125,7 @@ file_private_meta(int prot, int posix_flags, HANDLE section, HANDLE file,
   return m;
 }
 
-/// `mmap(fd, MAP_SHARED, ...)` — write-through file view.
+// `mmap(fd, MAP_SHARED, ...)` — write-through file view.
 [[nodiscard]] LIBC_INLINE ::LIBC_NAMESPACE::windows::va_tracker::AcquireMeta
 file_shared_meta(int prot, int posix_flags, HANDLE section, HANDLE file,
                  uint64_t section_offset) {
@@ -137,9 +140,11 @@ file_shared_meta(int prot, int posix_flags, HANDLE section, HANDLE file,
   return m;
 }
 
-/// `mmap(... | MAP_HUGETLB, ...)` — large-page anonymous section.
-/// Caller supplies the page-kind (decoded from `MAP_HUGE_*` bits) and
-/// the section handle from `nt_pal::commit_replace_large`.
+// `mmap(... | MAP_HUGETLB, ...)` — large-page anonymous section. `kind` is
+// accepted for signature symmetry with the validation/decoding layer
+// (`posix_validation.h::decode_map_huge_shift`); the page size is already
+// fixed inside the section handle by `nt_pal::commit_replace_large`, so
+// this builder has no kind-specific field to set.
 [[nodiscard]] LIBC_INLINE ::LIBC_NAMESPACE::windows::va_tracker::AcquireMeta
 hugetlb_meta(int prot, int posix_flags,
              ::LIBC_NAMESPACE::nt_pal::LargePageKind /*kind*/,
@@ -155,11 +160,11 @@ hugetlb_meta(int prot, int posix_flags,
   return m;
 }
 
-/// `brk` — single-shot anonymous reservation. The placeholder identity
-/// covers a wide reservation (256 MiB by default) while the registered
-/// range is the narrow `[base, cursor)` brk window. `placeholder_base`
-/// and `placeholder_size` are populated explicitly so the substrate
-/// retains the reservation across cursor extensions.
+// `brk` — single-shot anonymous reservation. The placeholder identity covers
+// the full kernel reservation while the registered range is the narrow
+// `[base, cursor)` brk window. `placeholder_base` / `placeholder_size` are
+// populated explicitly so the substrate retains the reservation across
+// cursor extensions without re-acquiring VA on each `sbrk` grow.
 [[nodiscard]] LIBC_INLINE ::LIBC_NAMESPACE::windows::va_tracker::AcquireMeta
 brk_meta(int prot, void *placeholder_base, size_t placeholder_size) {
   ::LIBC_NAMESPACE::windows::va_tracker::AcquireMeta m;
@@ -170,8 +175,8 @@ brk_meta(int prot, void *placeholder_base, size_t placeholder_size) {
   return m;
 }
 
-/// `shm_open` followed by `mmap` — POSIX shm view. Caller supplies the
-/// named section handle from `nt_pal::create_section_named`.
+// `shm_open` followed by `mmap` — POSIX shared-memory view. Caller supplies
+// the named section handle from `nt_pal::create_section_named`.
 [[nodiscard]] LIBC_INLINE ::LIBC_NAMESPACE::windows::va_tracker::AcquireMeta
 shm_posix_meta(int prot, int posix_flags, HANDLE section) {
   ::LIBC_NAMESPACE::windows::va_tracker::AcquireMeta m;
@@ -183,9 +188,11 @@ shm_posix_meta(int prot, int posix_flags, HANDLE section) {
   return m;
 }
 
-/// `shmat` — SysV shm view. Identical to `shm_posix_meta` in
-/// substrate-side metadata; the segment registry lives at the POSIX
-/// layer and is consulted separately.
+// `shmat` — SysV shm view. The substrate metadata is identical to
+// `shm_posix_meta`; the two builders stay separate because the SysV segment
+// registry consulted at attach time lives at the POSIX layer above the
+// tracker, and a future ABI change to one shape (e.g. SHM_HUGETLB lifecycle)
+// must not silently affect the other.
 [[nodiscard]] LIBC_INLINE ::LIBC_NAMESPACE::windows::va_tracker::AcquireMeta
 shm_sysv_meta(int prot, int posix_flags, HANDLE section) {
   ::LIBC_NAMESPACE::windows::va_tracker::AcquireMeta m;

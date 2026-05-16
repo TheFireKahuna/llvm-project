@@ -5,45 +5,15 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-///
-/// \file
-/// `mlockall(flags)` / `munlockall()` on the new substrate.
-///
-/// MCL_CURRENT walks the entire user VA via `nt_pal::RegionWalker`
-/// (the kernel-VAD walker that already powers `va_inventory`'s startup
-/// discovery sweep). The broad scope catches POSIX-tracked mappings,
-/// loader DLLs (`Image` cordon), libc heap (`LIBC_INTERNAL`), and
-/// foreign mappings — matching Linux's "lock all currently mapped
-/// pages" intent rather than narrowing to the va_tracker's POSIX-only
-/// view.
-///
-/// MCL_ONFAULT layers per-desc state on top: for every tracked region
-/// the walk crosses, `va_tracker::mutate(lock_set_onfault_mutator)`
-/// flips `region_flag::MLOCK_ONFAULT`, then `nt_pal::arm_guard_trap`
-/// installs PAGE_GUARD on each committed page so the first touch
-/// raises `STATUS_GUARD_PAGE_VIOLATION`. The memory subsystem's
-/// guard-page filter (`mem_fault_handler.cpp::try_mlock_onfault`)
-/// resolves the desc, sees the flag, and locks the page. Untracked
-/// regions are skipped silently — there's no desc to host the bit and
-/// the loader / heap allocator already manages residency.
-///
-/// MCL_FUTURE merges its bits into `g_pcb.mlock.mcl_flags` (PCB Zone 1).
-/// The P2 mmap rebuild reads the field via `lock_if_future` after every
-/// successful map.
-///
-/// `munlockall` clears `g_pcb.mlock.mcl_flags` BEFORE the walk so a
-/// concurrent mmap on another thread cannot apply MCL_FUTURE to a new
-/// allocation we are about to unlock from. After unlocking it releases
-/// the inflated working-set hard-min via `QUOTA_LIMITS_HARDWS_MIN_DISABLE`
-/// so the OS can trim normally — symmetric teardown of the
-/// `expand_working_set` inflations mlockall and mlock leave behind.
-///
-/// Fork: POSIX requires mlock state not to be inherited.
-/// `g_pcb.mlock.mcl_flags` is reset by the posix-band fork hook
-/// (`mlock_posix_fork_reinit`); per-desc `MLOCK_ONFAULT` bits are
-/// stripped by the va_tracker fork serializer so the child replay
-/// produces clean descs.
-///
+//
+// MCL_CURRENT walks every kernel VAD via `nt_pal::RegionWalker` —
+// broader than the va_tracker's POSIX-only view, matching Linux's
+// "lock all currently mapped pages" intent (loader DLLs, libc heap,
+// foreign mappings all included). MCL_FUTURE state lives in
+// `g_pcb.mlock.mcl_flags`; MCL_ONFAULT layers per-desc
+// `region_flag::LOCK_ONFAULT` on top of the VAD walk so the guard-page
+// filter in `mem_fault_handler.cpp` can lock on first touch.
+//
 //===----------------------------------------------------------------------===//
 
 #include "src/__support/OSUtil/windows/memory/posix/mlockall.h"
@@ -77,17 +47,14 @@ namespace {
 namespace mp = ::LIBC_NAMESPACE::windows::memory_posix;
 namespace vt = ::LIBC_NAMESPACE::windows::va_tracker;
 
-/// Arm MLOCK_ONFAULT on every tracked desc that intersects
-/// `(region_base, region_size)`. Untracked regions silently skip — no
-/// desc to host the bit. PAGE_GUARD arming proceeds regardless of
-/// resolve outcome since the filter rejects unguarded faults via the
-/// flag check.
+// Arm `region_flag::LOCK_ONFAULT` on every tracked desc the VAD region
+// intersects, then OR PAGE_GUARD on its committed pages. Untracked
+// regions silently skip: no desc to host the bit and no observable
+// effect to deliver.
 LIBC_INLINE void arm_onfault_for_region(void *region_base, SIZE_T region_size) {
-  // Resolve at the region base. The kernel-VAD walker emits
-  // protection-band sub-regions of one NT allocation as separate
-  // entries; resolve at the base lands us on whichever desc covers
-  // this VA — single resolve is enough because mutate's range argument
-  // controls the actual overlap set.
+  // Resolve at the base only — `mutate`'s range argument controls the
+  // actual overlap set, so one resolve is enough even when the VAD
+  // walker splits an NT allocation into protection sub-bands.
   auto ref_or = vt::resolve(region_base);
   if (!ref_or.has_value())
     return;
@@ -95,17 +62,15 @@ LIBC_INLINE void arm_onfault_for_region(void *region_base, SIZE_T region_size) {
   vt::VaRange range{region_base, static_cast<size_t>(region_size)};
   int rc = vt::mutate(range, &mp::lock_set_onfault_mutator,
                       /*ctx=*/nullptr, /*prot_change=*/0);
+  // Best-effort: a mutate failure just means this region won't lock-
+  // on-fault. POSIX permits.
   if (rc != 0 && rc != ENOENT)
-    return; // Best-effort: a mutate failure here just means this
-            // region won't lock-on-fault. POSIX permits.
+    return;
 
   ::LIBC_NAMESPACE::nt_pal::arm_guard_trap(region_base,
                                             static_cast<size_t>(region_size));
 }
 
-/// Disarm MLOCK_ONFAULT on every tracked desc intersecting
-/// `(region_base, region_size)`. Best-effort; PAGE_GUARD residue is
-/// self-clearing.
 LIBC_INLINE void disarm_onfault_for_region(void *region_base,
                                            SIZE_T region_size) {
   auto ref_or = vt::resolve(region_base);
@@ -116,13 +81,12 @@ LIBC_INLINE void disarm_onfault_for_region(void *region_base,
                    /*prot_change=*/0);
 }
 
-/// 3-retry quota-expansion lock for one kernel-VAD region. Returns 0
-/// on success, -1 on hard failure (caller maps to `EAGAIN`).
-///
-/// `expand_working_set` still takes the explicit process handle
-/// because it talks to `NtSetInformationProcess(ProcessQuotaLimits)`,
-/// not to a per-VA op — keep the signature wide so the caller controls
-/// the target process when this gets reused for cross-process locking.
+// 3-retry quota-expansion lock for one VAD region. Returns 0 on
+// success or on any non-quota NTSTATUS (STATUS_ACCESS_DENIED,
+// STATUS_NOT_COMMITTED, etc. — POSIX mlockall is best-effort and
+// must not flag these as failures); -1 only on retry-budget
+// exhaustion. `process` flows through from the caller because
+// `expand_working_set` keys on a process handle.
 LIBC_INLINE int lock_region(HANDLE process, void *region_base,
                             SIZE_T region_size) {
   for (int attempt = 0; attempt < 3; ++attempt) {
@@ -135,9 +99,6 @@ LIBC_INLINE int lock_region(HANDLE process, void *region_base,
         return -1;
       continue;
     }
-    // Other statuses (STATUS_ACCESS_DENIED, STATUS_NOT_COMMITTED, etc.)
-    // are silent skip per POSIX best-effort — they don't contribute to
-    // the EAGAIN failure flag.
     return 0;
   }
   return -1;
@@ -147,11 +108,9 @@ LIBC_INLINE int lock_region(HANDLE process, void *region_base,
 
 namespace internal {
 
-/// Posix-band fork-reinit hook: POSIX requires mlock state to be
-/// reset across `fork()`. The PCB-resident `mcl_flags` survives via
-/// CoW by default; explicitly storing zero matches the kernel
-/// semantic. Per-desc `MLOCK_ONFAULT` bits are stripped by the
-/// va_tracker fork serializer separately.
+// PCB-resident `mcl_flags` survives fork via CoW by default; POSIX
+// requires reset. Per-desc `region_flag::LOCK_ONFAULT` bits are
+// stripped by the va_tracker fork serializer separately.
 void mlock_policy_fork_reinit() {
   g_pcb.mlock.mcl_flags.store(0u, ::LIBC_NAMESPACE::cpp::MemoryOrder::RELAXED);
 }
@@ -202,7 +161,12 @@ intptr_t mlockall(int flags) {
     unsigned new_flags = static_cast<unsigned>(MCL_FUTURE);
     if (flags & MCL_ONFAULT)
       new_flags |= static_cast<unsigned>(MCL_ONFAULT);
-    // Atomically merge — preserve any previously-set MCL_CURRENT bit.
+    // RELEASE on the writer side; readers (`mcl_future_enabled` /
+    // `mcl_onfault_enabled`) intentionally load RELAXED — the
+    // mlockall-then-mmap ordering already comes from the syscall-
+    // return edge in caller code, not from this flag word. The
+    // RELEASE store is kept defensively so any future ACQUIRE
+    // reader pairs without needing to revisit this site.
     g_pcb.mlock.mcl_flags.fetch_or(
         new_flags, ::LIBC_NAMESPACE::cpp::MemoryOrder::RELEASE);
   }
@@ -211,20 +175,17 @@ intptr_t mlockall(int flags) {
 }
 
 intptr_t munlockall() {
-  // Clear future-arming flags BEFORE the walk so a concurrent mmap
-  // on another thread does not race-arm a freshly mapped range that
+  // Clear future-arming flags BEFORE the walk — otherwise a concurrent
+  // mmap on another thread could race-arm a freshly mapped range that
   // the unlock loop is about to skip past.
   g_pcb.mlock.mcl_flags.store(
       0u, ::LIBC_NAMESPACE::cpp::MemoryOrder::RELEASE);
 
-  // `process` is needed only for the working-set quota teardown
-  // below; the per-region unlock walk goes through `nt_pal::unlock_range`
-  // which targets the current process implicitly.
   HANDLE process = NtCurrentProcess();
 
-  // Walk: best-effort. Scratch-alloc failure does NOT propagate as an
-  // error — POSIX requires munlockall to clear its flags even if the
-  // walk cannot proceed (the flags clear above already happened).
+  // Walk failure does NOT propagate as an error — POSIX requires
+  // munlockall to clear its flags even when the walk can't proceed
+  // (the clear above already happened).
   auto walk = ::LIBC_NAMESPACE::nt_pal::RegionWalker::whole_process();
   if (walk) {
     while (walk.next()) {
@@ -234,9 +195,8 @@ intptr_t munlockall() {
       void *region_base = walk.entry->BaseAddress;
       SIZE_T region_size = walk.entry->RegionSize;
 
-      // Disarm MLOCK_ONFAULT per tracked desc before the unlock —
-      // otherwise the guard-page filter would re-lock pages on next
-      // access (matches mlock/munlock disarm-before-unlock invariant).
+      // Disarm per-desc LOCK_ONFAULT before the unlock — same
+      // re-lock-races-unlock invariant as `munlock`.
       disarm_onfault_for_region(region_base, region_size);
 
       // STATUS_NOT_LOCKED tolerated — POSIX permits munlock on
@@ -245,9 +205,9 @@ intptr_t munlockall() {
     }
   }
 
-  // Release the inflated hard minimum that mlock / mlockall installed
-  // via expand_working_set. The OS can now trim the working set
-  // normally.
+  // Release the inflated hard-min that mlock / mlockall installed via
+  // `expand_working_set`, so the OS can trim normally. Symmetric
+  // teardown of the quota lift.
   SIZE_T min_ws, max_ws;
   ULONG quota_flags;
   if (::LIBC_NAMESPACE::nt_pal::query_working_set(process, min_ws, max_ws,
@@ -263,11 +223,9 @@ intptr_t munlockall() {
 } // namespace internal
 } // namespace LIBC_NAMESPACE_DECL
 
-// Fork-reinit registration. `kForkPrioMlockPolicy` (51) runs after
-// the substrate fork hooks (kForkPrioCrystalline..kForkPrioVaTracker
-// at 30..39) and the memory-reconcile slot (50), so the va_tracker is
-// fully rebuilt before this hook fires — any future expansion that
-// wants to walk tracked descs from here is safe.
+// `kForkPrioMlockPolicy` (51) runs after the va_tracker fork hooks
+// (30..39) and the memory-reconcile slot (50), so any future expansion
+// of this hook that walks tracked descs is safe.
 LIBC_REGISTER_FORK_REINIT(mlock_policy,
                           ::LIBC_NAMESPACE::internal::kForkPrioMlockPolicy,
                           &::LIBC_NAMESPACE::internal::mlock_policy_fork_reinit)

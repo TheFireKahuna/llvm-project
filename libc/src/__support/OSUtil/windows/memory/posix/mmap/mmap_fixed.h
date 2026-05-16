@@ -5,29 +5,19 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-///
-/// \file
-/// MAP_FIXED and MAP_FIXED_NOREPLACE dispatchers. Both entries share the
-/// `validate_map_fixed_target` cordon gate (the anti-data-loss invariant
-/// runs once before any destructive substrate op); they diverge in the
-/// substrate call that follows.
-///
-///   * `mmap_fixed_replace` (MAP_FIXED) — wait-free straddler discovery
-///     via `va_tracker::walk_range`, pre-split via `va_tracker::split` at
-///     each straddling edge, then one `va_tracker::replace` envelope.
-///     The substrate owns demote / coalesce / commit_replace and the
-///     OLD-backing placeholder-ownership transfer; the POSIX layer does
-///     not orchestrate the kernel transitions.
-///
-///   * `mmap_fixed_noreplace_claim` (MAP_FIXED_NOREPLACE) — one
-///     `va_tracker::acquire` envelope. Collision returns EEXIST via the
-///     substrate's atomic `MEM_RESERVE_PLACEHOLDER` claim; sub-64K-
-///     aligned page-aligned hints take the substrate's prefix-shave
-///     path internally.
-///
-/// Both return the registered base as an `intptr_t` on success and a
-/// Linux-flavoured `-errno` on failure.
-///
+//
+// MAP_FIXED and MAP_FIXED_NOREPLACE dispatchers. Both run the shared
+// `validate_map_fixed_target` cordon gate first (anti-data-loss invariant
+// against image / kernel / libc-internal / foreign overlap), then diverge:
+//   * mmap_fixed_replace          -> va_tracker::replace
+//   * mmap_fixed_noreplace_claim  -> va_tracker::acquire
+// The substrate owns straddler split, demote / coalesce, and the kernel
+// transitions; the POSIX layer only translates errors. Both return the
+// registered base as an `intptr_t` on success and a negative Linux errno on
+// failure; the top-level `internal::mmap` propagates that convention to its
+// own callers (`windows_syscalls::mmap` flips the sign for ErrorOr;
+// `SYS_mmap` returns it raw for syscall(2) semantics).
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEMORY_POSIX_MMAP_MMAP_FIXED_H

@@ -5,39 +5,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-//
-// Two surfaces: `internal::mprotect(addr, len, prot)` for plain
-// protection updates, and `internal::pkey_mprotect(addr, len, prot,
-// pkey)` for the pkey-tagged variant. Linux contract:
-//   - `mprotect(size=0)` is a no-op success regardless of `addr`.
-//   - Cross-VAD failure is first-failure-aborts; no rollback of
-//     already-protected chunks. Matches glibc behaviour.
-//   - `pkey_mprotect` runs the base mprotect first and registers the
-//     range only on success; registration failure does NOT roll back
-//     the protection change. Matches Linux.
-//
-// Dispatch is one substrate call. The va_tracker's
-// `mutate(commit_if_uncommitted_accessible=true)` envelope handles
-// per-chunk dispatch (committed → protect, uncommitted + accessible
-// + MEM_MAPPED → commit_in_reservation, uncommitted + accessible +
-// MEM_PRIVATE → commit_replace[_numa]), MEM_FREE rejection, and
-// per-succ COW translation — all under the per-succ LOCKED hold so
-// a concurrent va_tracker mutator cannot race the demand-map step.
-// The envelope does NOT update the desc's `view_prot`: the kernel
-// holds the authoritative per-page protection state, and consumers
-// (fork replay, replace's sibling-preserve, future mremap) query
-// MBI when they need it. Mprotect is a pure kernel-state operation
-// with no desc-state side effect, so descs never fragment from
-// mprotect calls.
-//
-// The POSIX layer keeps three responsibilities the substrate has no
-// reason to learn: entry validation, NUMA-node selection from the
-// thread's `set_mempolicy` state, and the ARM64 I-cache flush after
-// a successful PROT_EXEC change. CFG-secured retries are absorbed
-// by `nt_pal::protect` itself, so this file has no
-// `RtlFlushSecureMemoryCache` reference either.
-//
-//===----------------------------------------------------------------------===//
 
 #include "src/__support/OSUtil/windows/memory/posix/mprotect.h"
 
@@ -68,9 +35,8 @@ namespace vt = ::LIBC_NAMESPACE::windows::va_tracker;
 namespace internal {
 
 intptr_t mprotect(void *addr, size_t size, int prot) {
-  // size == 0 is a no-op success regardless of `addr` — Linux contract
-  // some glibc tests depend on. Validate first; null + nonzero is
-  // EINVAL.
+  // size == 0 succeeds even with a bogus `addr` — Linux contract that
+  // glibc's mprotect test suite pins.
   if (size == 0)
     return 0;
   if (LIBC_UNLIKELY(addr == nullptr))
@@ -90,6 +56,15 @@ intptr_t mprotect(void *addr, size_t size, int prot) {
   const DWORD new_prot = mp::posix_prot_to_page(prot);
   const int numa_node = ::LIBC_NAMESPACE::windows::select_numa_node();
 
+  // `mutate` with a null mutator + `commit_if_uncommitted_accessible`
+  // drives per-chunk dispatch under the per-succ LOCKED hold: committed
+  // pages get `nt_pal::protect`, uncommitted+accessible chunks get
+  // demand-commit (mapped → commit-in-reservation, private →
+  // commit_replace[_numa]), MEM_FREE mid-range aborts with ENOMEM. The
+  // clone's `view_prot` is NOT updated — the kernel holds authoritative
+  // per-page protection and consumers query MBI when they need it, so
+  // mprotect leaves no desc-state fragmentation behind. First-failure
+  // aborts; already-protected chunks are not rolled back (matches Linux).
   const vt::VaRange range = mp::make_range(addr, rounded);
   const int rc = vt::mutate(range,
                             /*mutator=*/nullptr,
@@ -101,8 +76,9 @@ intptr_t mprotect(void *addr, size_t size, int prot) {
     return -rc;
 
 #ifdef LIBC_TARGET_ARCH_IS_AARCH64
-  // I-cache invalidation after pages become executable. No-op on
-  // x86_64 (the kernel's IPI handles cross-CPU visibility there).
+  // ARM64 needs an explicit I-cache invalidation after pages flip
+  // executable. x86_64 self-snoops on instruction fetch (SDM Vol. 3A
+  // §11.6) so the I/D cache pair stays coherent without software help.
   if (prot & PROT_EXEC)
     ::NtFlushInstructionCache(NtCurrentProcess(), addr,
                                static_cast<SIZE_T>(rounded));
@@ -112,10 +88,8 @@ intptr_t mprotect(void *addr, size_t size, int prot) {
 }
 
 intptr_t pkey_mprotect(void *addr, size_t size, int prot, int pkey) {
-  // addr == NULL + size == 0 → 0; addr == NULL + size > 0 → EINVAL.
-  // The size-zero branch returns before the architecture gate so a
-  // portable app using pkey_mprotect on non-x86_64 with size=0 still
-  // succeeds.
+  // The size-zero short-circuit precedes the x86_64 gate so a portable
+  // app passing size=0 on non-x86_64 still succeeds.
   if (LIBC_UNLIKELY(addr == nullptr)) {
     if (size > 0)
       return -EINVAL;
@@ -124,10 +98,14 @@ intptr_t pkey_mprotect(void *addr, size_t size, int prot, int pkey) {
   if (size == 0)
     return 0;
 
-  // Run the base mprotect first; on failure pkey is not touched.
+  // Base protection change runs first; on failure pkey state is not
+  // touched. Matching Linux, a successful protection change followed by
+  // pkey-registration failure does NOT roll back the protection.
   if (intptr_t rc = mprotect(addr, size, prot); rc != 0)
     return rc;
 
+  // pkey == -1 is the Linux sentinel for "no key tagging" — equivalent
+  // to plain mprotect once the base protection change has landed.
   if (pkey == -1)
     return 0;
 

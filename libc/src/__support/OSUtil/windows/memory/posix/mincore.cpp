@@ -5,21 +5,14 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-///
-/// \file
-/// POSIX `mincore(addr, len, vec)` — per-page residency probe.
-///
-/// NT has no direct equivalent. The body issues batched
-/// `MemoryWorkingSetExInformation` queries (`nt_pal::query_working_set_ex`)
-/// and reports a page as resident when either Valid is set or the page sits
-/// on the standby / modified list (Invalid.Location ==
-/// MemoryLocationResident). That matches the Linux page-cache definition
-/// reasonably closely; programs portable to both systems test `vec[i] & 1`.
-///
-/// The structural test (POSIX_ROADMAP §2.1) for this file: validation
-/// block + `RegionWalker` loop + per-chunk
-/// `nt_pal::query_working_set_ex` + errno return. Nothing else.
-///
+//
+// NT has no direct mincore. The body walks the requested span via
+// `nt_pal::RegionWalker` and, per committed chunk, issues batched
+// `MemoryWorkingSetExInformation` queries — a page counts as resident when
+// the kernel reports Valid OR Invalid.Location == MemoryLocationResident
+// (standby / modified list). That approximates the Linux page-cache
+// definition; portable callers test `vec[i] & 1`.
+//
 //===----------------------------------------------------------------------===//
 
 #include "src/__support/OSUtil/windows/memory/posix/mincore.h"
@@ -42,14 +35,10 @@ namespace internal {
 intptr_t mincore(void *addr, size_t len, unsigned char *vec) {
   namespace mp = ::LIBC_NAMESPACE::windows::memory_posix;
 
-  // POSIX/Linux: vec must be writable. NULL vec is the only path that
-  // returns EFAULT; NULL addr falls through to the MEM_FREE check so
-  // unmapped addresses surface as ENOMEM regardless of `vec`.
+  // EFAULT is reserved for the writable-vec check; null `addr` deliberately
+  // falls through so the RegionWalker's MEM_FREE branch surfaces ENOMEM.
   if (LIBC_UNLIKELY(vec == nullptr))
     return -EFAULT;
-
-  // Unaligned non-null addr is a Linux-defined EINVAL. NULL is allowed
-  // here so the MEM_FREE branch below produces ENOMEM.
   if (LIBC_UNLIKELY(addr != nullptr && !mp::is_page_aligned(addr)))
     return -EINVAL;
 
@@ -63,14 +52,11 @@ intptr_t mincore(void *addr, size_t len, unsigned char *vec) {
           reinterpret_cast<uintptr_t>(addr), rounded_len)))
     return -ENOMEM;
 
-  // 256 entries × MEMORY_WORKING_SET_EX_INFORMATION (16 B) = 4 KiB —
-  // one stack page, no scratch allocation.
+  // 256 * sizeof(MEMORY_WORKING_SET_EX_INFORMATION) = 4 KiB — one stack
+  // page, no scratch allocation.
   constexpr SIZE_T kMaxBatch = 256;
   MEMORY_WORKING_SET_EX_INFORMATION ws_info[kMaxBatch];
 
-  // RegionWalker stitches the kernel's MBI snapshot across the
-  // requested span; a single contiguous `vec_index` accumulates output
-  // across chunks so multi-VAD ranges produce one continuous vector.
   ::LIBC_NAMESPACE::nt_pal::RegionWalker walk(addr, rounded_len);
   if (!walk)
     return -ENOMEM;
@@ -79,22 +65,19 @@ intptr_t mincore(void *addr, size_t len, unsigned char *vec) {
   size_t vec_index = 0;
 
   while (walk.next()) {
-    // Mid-walk MEM_FREE is a hard error per Linux mincore — partial
-    // residency reporting would mislead the caller about the boundary.
+    // Linux mincore rejects ranges containing any unmapped VA — partial
+    // residency reporting would silently mislead the caller about boundaries.
     if (LIBC_UNLIKELY(walk.entry->State == MEM_FREE))
       return -ENOMEM;
 
     const SIZE_T chunk_pages = walk.chunk_size / page_size;
 
-    // MEM_RESERVE cannot have resident pages — uncommitted VA has no
-    // backing PTE.
     if (walk.entry->State == MEM_RESERVE) {
       for (SIZE_T i = 0; i < chunk_pages; ++i)
         vec[vec_index++] = 0;
       continue;
     }
 
-    // MEM_COMMIT: batch-query in 256-page slices.
     SIZE_T pages_done = 0;
     while (pages_done < chunk_pages) {
       SIZE_T batch = chunk_pages - pages_done;
@@ -107,22 +90,21 @@ intptr_t mincore(void *addr, size_t len, unsigned char *vec) {
         ws_info[i].VirtualAttributes.Flags = 0;
       }
 
+      // Any kernel-side query failure collapses to ENOMEM: POSIX mincore
+      // has no errno more specific than "this range is not queryable as
+      // resident memory," and inventing EFAULT/EINVAL here would mislead.
       if (LIBC_UNLIKELY(!::LIBC_NAMESPACE::nt_pal::query_working_set_ex(
-              ws_info, batch))) {
-        // Treat any kernel-side query failure as a generic ENOMEM —
-        // mincore has no errno more specific than "the range is not
-        // queryable as resident memory."
+              ws_info, batch)))
         return -ENOMEM;
-      }
 
       for (SIZE_T i = 0; i < batch; ++i) {
         const auto &attr = ws_info[i].VirtualAttributes;
-        // Bit-0 only assignment. POSIX reserves bits 1..7; OR-ing or
-        // overwriting the whole byte breaks programs that pre-poison
-        // the buffer to detect mincore-skipped entries.
         const bool resident =
             attr.Valid ||
             (attr.Invalid.Location == MemoryLocationResident);
+        // Plain assignment of 0/1: POSIX reserves bits 1..7, and callers
+        // pre-poison `vec` to detect mincore-skipped entries — OR-ing in
+        // bit 0 or overwriting the full byte would defeat that diagnostic.
         vec[vec_index++] = resident ? 1 : 0;
       }
 

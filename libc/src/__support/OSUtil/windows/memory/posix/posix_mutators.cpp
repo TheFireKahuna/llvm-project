@@ -6,16 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Twelve free-function `DescMutator` callbacks for the POSIX layer.
-// Each mutator runs on a fresh `RegionDesc` clone under the substrate's
-// LOCKED hold and writes only the fields its intent names; unrelated
-// `flags` bits are preserved through the OR / AND-NOT pattern so a
-// later mprotect after MADV_DONTFORK keeps the DONTFORK bit intact.
-//
-// Atomic ordering: `flags` is `cpp::Atomic<uint16_t>`. Writes use
-// `RELEASE` so a future reader pinning the clone observes the mutation;
-// reads use `RELAXED` because the clone has no concurrent writer and
-// `RELEASE` on store is sufficient for cross-thread publication.
+// Mutator bodies for the POSIX layer. See posix_mutators.h for the
+// LOCKED-hold / Swap-publish contract and the preserve-unrelated-flags
+// invariant — both are load-bearing here and only the flag-merge
+// pattern is visible locally.
 //
 //===----------------------------------------------------------------------===//
 
@@ -36,13 +30,17 @@ namespace {
 using ::LIBC_NAMESPACE::cpp::MemoryOrder;
 using ::LIBC_NAMESPACE::windows::va_tracker::RegionDesc;
 
-// Set the flag bits in `bits` on `d->flags`, preserving every other bit.
+// Read-modify-write that preserves every bit the caller did not name.
+// The clone has no concurrent reader or writer here — the engine's
+// LOCKED hold pins it and the publishing Swap-CAS carries the cross-
+// thread release fence — so RELAXED would suffice on both sides;
+// RELEASE on the store is defensive against any future path that
+// observes the clone before Swap.
 LIBC_INLINE void set_flag_bits(RegionDesc *d, uint16_t bits) {
   uint16_t cur = d->flags.load(MemoryOrder::RELAXED);
   d->flags.store(static_cast<uint16_t>(cur | bits), MemoryOrder::RELEASE);
 }
 
-// Clear the flag bits in `bits` on `d->flags`, preserving every other bit.
 LIBC_INLINE void clear_flag_bits(RegionDesc *d, uint16_t bits) {
   uint16_t cur = d->flags.load(MemoryOrder::RELAXED);
   d->flags.store(static_cast<uint16_t>(cur & ~bits), MemoryOrder::RELEASE);

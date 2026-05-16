@@ -5,12 +5,10 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-///
-/// \file
-/// `internal::mprotect` and `internal::pkey_mprotect` — change page
-/// protection on a tracked or untracked range. Each returns 0 on
-/// success and a Linux-flavoured `-errno` on failure.
-///
+//
+// Returns 0 on success or `-errno` (Linux internal convention); the
+// `windows_syscalls::` wrapper flips the sign at the public boundary.
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEMORY_POSIX_MPROTECT_H

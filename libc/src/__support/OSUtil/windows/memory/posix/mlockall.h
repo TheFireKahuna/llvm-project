@@ -5,17 +5,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-///
-/// \file
-/// `internal::mlockall` / `internal::munlockall` — process-wide
-/// page-locking entry points. Each returns 0 on success, -errno on
-/// failure (Linux syscall convention).
-///
-/// `MCL_FUTURE` / `MCL_ONFAULT` flag bits live in `g_pcb.mlock.mcl_flags`
-/// (PCB Zone 1, see `mlock_process_state.h`). `mmap` (P2) reads them
-/// via `lock_if_future` to decide whether to lock newly-mapped ranges.
-///
-//===----------------------------------------------------------------------===//
 
 #ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEMORY_POSIX_MLOCKALL_H
 #define LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEMORY_POSIX_MLOCKALL_H
@@ -26,6 +15,10 @@
 namespace LIBC_NAMESPACE_DECL {
 namespace internal {
 
+// Process-wide page-locking entry points. Return 0 on success, negative
+// errno on failure (Linux syscall convention). `MCL_FUTURE` /
+// `MCL_ONFAULT` bits land in `g_pcb.mlock.mcl_flags`; mmap reads them
+// via `windows::lock_if_future` to decide whether to lock new mappings.
 intptr_t mlockall(int flags);
 intptr_t munlockall();
 

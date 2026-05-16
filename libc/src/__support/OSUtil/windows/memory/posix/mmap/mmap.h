@@ -5,26 +5,16 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-///
-/// \file
-/// `internal::mmap` — the top-level POSIX dispatcher. Validates the
-/// flag matrix, then routes by shape:
-///   * MAP_ANONYMOUS | MAP_PRIVATE — handled by `mmap_anon_private`
-///     (P2).
-///   * MAP_FIXED / MAP_FIXED_NOREPLACE on anon-private — handled by
-///     `mmap_fixed_replace` / `mmap_fixed_noreplace_claim` (P3).
-///   * Every other shape (MAP_HUGETLB, MAP_ANON|SHARED, fd-backed
-///     file private / file shared, MAP_FIXED on any of the above)
-///     returns `-ENOSYS` until its phase lands. No legacy
-///     fallthrough.
-///
-/// `internal::mmap_anon_private` is exposed for direct callers (and
-/// for tests that target the new path without going through the full
-/// dispatcher).
-///
-/// Both return the mapped address as an `intptr_t` on success and a
-/// Linux-flavoured `-errno` on failure.
-///
+//
+// Top-level POSIX mmap entry. Both declared functions return the mapped
+// address as an `intptr_t` on success and a negative Linux errno on failure.
+// Two callers consume that convention: `windows_syscalls::mmap`
+// (syscall_wrappers/mmap.h) flips the sign for ErrorOr, while the
+// `SYS_mmap` arm in `syscall.h` returns the raw `intptr_t` to preserve
+// Linux syscall(2) semantics. `mmap_anon_private` is exposed so future
+// per-shape dispatchers and direct tests can bypass the top-level
+// flag-matrix work.
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEMORY_POSIX_MMAP_MMAP_H

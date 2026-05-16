@@ -5,31 +5,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-//
-// MAP_FIXED + MAP_FIXED_NOREPLACE land here as one typed-op envelope each
-// after the shared `validate_map_fixed_target` cordon gate.
-//
-//   MAP_FIXED            va_tracker::replace — the substrate handles edge-
-//                        straddler split atomically inside the per-arena
-//                        envelope (no caller-side pre-split, no race
-//                        window). Demote, coalesce-when-needed, sibling
-//                        re-map, and `commit_replace` / `map_section_replace`
-//                        are all substrate-internal.
-//
-//   MAP_FIXED_NOREPLACE  va_tracker::acquire — atomic claim via
-//                        MEM_RESERVE_PLACEHOLDER; collision returns EEXIST.
-//                        Sub-64K-aligned page-aligned hints take the
-//                        substrate's prefix-shave path internally.
-//
-// `validate_map_fixed_target` is the sole and authoritative anti-data-loss
-// gate. POSIX-visible mappings live in `va_tracker`; cordoned VA (PE
-// images, kernel-loaned ranges, libc-internal allocator chunks, foreign
-// `VirtualAllocEx` tenants) lives in the pagemap and is invisible to the
-// tracker. Image / Kernel / libc-internal hits surface as EINVAL;
-// Foreign / ForeignStale hits surface as ENOMEM so portable apps can
-// fall back to the system-chosen base.
-//
-//===----------------------------------------------------------------------===//
 
 #include "src/__support/OSUtil/windows/memory/posix/mmap/mmap_fixed.h"
 
@@ -46,6 +21,11 @@ namespace {
 
 namespace vt = ::LIBC_NAMESPACE::windows::va_tracker;
 
+// Anti-data-loss cordon. POSIX-visible VA lives in `va_tracker`; cordoned VA
+// (PE images, kernel-loaned ranges, libc-internal allocator chunks, foreign
+// VirtualAllocEx tenants) lives only in the pagemap. Image / Kernel /
+// libc-internal hits return EINVAL; Foreign / ForeignStale return ENOMEM so
+// portable apps can fall back to a system-chosen base.
 LIBC_INLINE int cordon_gate(vt::VaRange range) {
   return ::LIBC_NAMESPACE::windows::alloc::pagemap::validate_map_fixed_target(
       range.start, range.bytes);
@@ -60,13 +40,11 @@ intptr_t mmap_fixed_replace(vt::VaRange range, vt::RegionKind kind,
   if (int e = cordon_gate(range); e != 0)
     return -e;
 
-  // The substrate's `replace` envelope absorbs edge-straddler split
-  // atomically under the per-arena LOCKED hold. POSIX MAP_FIXED
-  // contract — "discard any overlapping mappings; succeed regardless
-  // of straddling pre-existing mappings" — is enforced here in one
-  // typed-op call. B2-β multi-prot sibling re-map is deferred past
-  // P3; the substrate's ENOTSUP for that case is surfaced as ENOMEM
-  // because ENOTSUP is not a POSIX MAP_FIXED errno.
+  // Substrate `replace` absorbs edge-straddler split atomically under its
+  // per-arena LOCKED hold — no caller-side pre-split, no MEM_FREE window.
+  // The B2-β multi-prot sibling re-map path is deferred past P3; the
+  // substrate signals it via ENOTSUP which we surface as ENOMEM (ENOTSUP is
+  // not a POSIX MAP_FIXED errno).
   int rc = vt::replace(range, kind, meta);
   if (rc == ENOTSUP)
     rc = ENOMEM;
@@ -80,12 +58,9 @@ intptr_t mmap_fixed_noreplace_claim(vt::VaRange range, vt::RegionKind kind,
   if (int e = cordon_gate(range); e != 0)
     return -e;
 
-  // `acquire` is the atomic claim primitive: NT places the placeholder
-  // via MEM_RESERVE_PLACEHOLDER inside the envelope, so a concurrent
-  // peer attempting the same range observes STATUS_CONFLICTING_ADDRESSES
-  // and the tracker returns EEXIST. Sub-64K-aligned page-aligned hints
-  // run through the substrate's prefix-shave path internally — the
-  // POSIX layer passes the user's exact bytes through unchanged.
+  // Atomic claim: NT places the placeholder via MEM_RESERVE_PLACEHOLDER
+  // inside the envelope, so a concurrent peer requesting the same range
+  // observes STATUS_CONFLICTING_ADDRESSES and the tracker returns EEXIST.
   auto ref = vt::acquire(range, kind, meta);
   if (!ref.has_value())
     return -ref.error();

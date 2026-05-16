@@ -6,28 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// `internal::munmap(addr, size)` lands as two substrate calls:
-//   1) `validate_map_fixed_target` for the cordon probe — loaded PE
-//      images, kernel mappings (TEB/PEB/stack), and foreign third-
-//      party VAs map to `EINVAL`. The same primitive the MAP_FIXED
-//      path uses; sharing the gate keeps the "what is unmappable"
-//      answer in one place.
-//   2) `va_tracker::release` over the page-aligned range. The
-//      substrate iterates the locked set, releases each desc, and
-//      runs the synchronous teardown (unmap section view, free
-//      placeholder, close handles) synchronously per the substrate's
-//      mutator-owns-kernel-state discipline. Holes inside the range
-//      are skipped silently — Linux contract. Edge-straddler split
-//      happens atomically inside the per-arena LOCKED envelope, so
-//      there is no caller-side pre-split and no race window where a
-//      concurrent peer mutation between split and release could turn
-//      a benign no-op into a phantom errno.
-//
-// Teardown ordering is substrate-owned; the POSIX layer trusts the
-// typed op. Likewise, the ANON_PLACEHOLDER state-preserving rollback,
-// the per-fragment fresh-region-ID assignment, the partial-section
-// view re-map, and the `release_if_isolated` decision are all
-// absorbed into the substrate.
+// Entry validation, cordon probe, then a single `va_tracker::release` call.
+// The substrate owns edge-straddler split (atomic under its per-arena LOCKED
+// envelope), per-desc teardown ordering, placeholder freeing, and
+// hole-tolerant iteration — the POSIX layer adds no orchestration of its own.
 //
 //===----------------------------------------------------------------------===//
 
@@ -55,7 +37,8 @@ namespace vt = ::LIBC_NAMESPACE::windows::va_tracker;
 namespace internal {
 
 intptr_t munmap(void *addr, size_t size) {
-  // Zero length is `EINVAL` (legacy convention; matches glibc).
+  // Zero length is EINVAL, not the success no-op POSIX allows for length-zero
+  // mincore/msync. Matches Linux glibc.
   if (LIBC_UNLIKELY(size == 0))
     return -EINVAL;
   if (LIBC_UNLIKELY(addr == nullptr))
@@ -71,34 +54,21 @@ intptr_t munmap(void *addr, size_t size) {
   if (LIBC_UNLIKELY(mp::addr_plus_len_overflows(addr_val, rounded)))
     return -EINVAL;
 
-  // The substrate's typed-op API now accepts page-granular ranges; the
-  // POSIX layer no longer rounds outward to NT allocation granularity.
-  // `addr` and `addr + rounded` are page-aligned by entry validation,
-  // so a 4 KiB munmap releases exactly 4 KiB. Edge-straddler severance
-  // happens atomically inside the substrate's release envelope.
-  const uintptr_t lo = addr_val;
-  const size_t kernel_bytes = static_cast<size_t>(rounded);
-
-  // Cordon probe. Loaded PE images, kernel mappings (TEB / PEB /
-  // stack), and any foreign third-party VAs surface `EINVAL` before
-  // any destructive substrate call. This is the new home for the
-  // legacy MEM_IMAGE rejection — the cordon decision pre-dates the
-  // walk and is wait-free.
+  // Cordon probe: loaded PE images, kernel-loaned VA (TEB/PEB/stack), and
+  // foreign-injected ranges return positive errno here — flipped to negative
+  // for the internal `-errno` convention. Wait-free; runs before any
+  // destructive substrate call so a rejected range observes no state change.
   if (int e = ::LIBC_NAMESPACE::windows::alloc::pagemap::
-          validate_map_fixed_target(reinterpret_cast<void *>(lo),
-                                    static_cast<size_t>(kernel_bytes));
+          validate_map_fixed_target(addr, rounded);
       e != 0)
     return -e;
 
-  // Release directly — the substrate's per-arena envelope absorbs
-  // edge-straddler split atomically alongside the demote / coalesce /
-  // commit work, so no caller-side pre-split is needed. The race
-  // window between a libc-side `split()` and the subsequent `release`
-  // (where a peer mutation could turn a benign no-op into a phantom
-  // EINVAL) is closed at the substrate level.
-  vt::VaRange range =
-      mp::make_range(reinterpret_cast<void *>(lo), kernel_bytes);
-
+  // `va_tracker::release` accepts page-granular ranges and severs
+  // edge-straddler descs atomically inside its LOCKED envelope; pre-splitting
+  // here would reopen a window where a concurrent peer mutation between the
+  // split and the release turns a benign no-op into a phantom EINVAL.
+  // Returns positive errno; we flip to negative for the internal convention.
+  vt::VaRange range = mp::make_range(addr, rounded);
   int rc = vt::release(range);
   if (LIBC_UNLIKELY(rc != 0))
     return -rc;

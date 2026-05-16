@@ -5,12 +5,10 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-///
-/// \file
-/// `internal::msync` — file-backed mapping flush, optionally with
-/// CoW-revert pre-pass for `MS_INVALIDATE`. Returns 0 on success,
-/// -errno on failure (Linux syscall convention).
-///
+//
+// Returns 0 on success or `-errno` (Linux internal convention); the
+// `windows_syscalls::` wrapper flips the sign at the public boundary.
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_LIBC_SRC___SUPPORT_OSUTIL_WINDOWS_MEMORY_POSIX_MSYNC_H
