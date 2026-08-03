@@ -53,7 +53,7 @@ struct AArch64MCAsmInfoMicrosoftCOFF : public MCAsmInfoMicrosoft {
 };
 
 struct AArch64MCAsmInfoGNUCOFF : public MCAsmInfoGNUCOFF {
-  explicit AArch64MCAsmInfoGNUCOFF();
+  explicit AArch64MCAsmInfoGNUCOFF(const Triple &T);
   void printSpecifierExpr(raw_ostream &OS,
                           const MCSpecifierExpr &Expr) const override;
   bool evaluateAsRelocatableImpl(const MCSpecifierExpr &Expr, MCValue &Res,

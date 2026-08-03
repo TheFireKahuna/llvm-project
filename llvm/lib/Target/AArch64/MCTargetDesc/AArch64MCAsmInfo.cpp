@@ -272,7 +272,17 @@ bool AArch64MCAsmInfoMicrosoftCOFF::evaluateAsRelocatableImpl(
   return evaluate(Expr, Res, Asm);
 }
 
-AArch64MCAsmInfoGNUCOFF::AArch64MCAsmInfoGNUCOFF() {
+AArch64MCAsmInfoGNUCOFF::AArch64MCAsmInfoGNUCOFF(const Triple &T) {
+  // Windows Itanium and NT-POSIX always link with lld-link; the GNU-ld
+  // inability to handle associative COMDATs that MCAsmInfoGNUCOFF works
+  // around does not apply. Without associative COMDATs, the per-function
+  // unwind data for COMDAT text sections (which use MSVC-style unsuffixed
+  // names on these targets, unlike MinGW's ".text$sym") degrades into a
+  // single select-any ".pdata$"/".xdata$" section per TU, and the linker
+  // then keeps exactly one TU's unwind info per image.
+  if (T.isWindowsItaniumOrNTPOSIXEnvironment())
+    HasCOFFAssociativeComdats = true;
+
   PrivateGlobalPrefix = ".L";
   PrivateLabelPrefix = ".L";
 
