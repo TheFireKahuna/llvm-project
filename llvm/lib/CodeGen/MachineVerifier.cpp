@@ -738,13 +738,14 @@ MachineVerifier::visitMachineBasicBlockBefore(const MachineBasicBlock *MBB) {
 
   if (!MF->getProperties().hasNoPHIs() && MRI->tracksLiveness()) {
     // If this block has allocatable physical registers live-in, check that
-    // it is an entry block or landing pad.
+    // it is an entry block, a landing pad or a returns-twice landing.
     for (const auto &LI : MBB->liveins()) {
       if (isAllocatable(LI.PhysReg) && !MBB->isEHPad() &&
           MBB->getIterator() != MBB->getParent()->begin() &&
-          !MBB->isInlineAsmBrIndirectTarget()) {
-        report("MBB has allocatable live-in, but isn't entry, landing-pad, or "
-               "inlineasm-br-indirect-target.",
+          !MBB->isInlineAsmBrIndirectTarget() &&
+          !MBB->isReturnsTwiceLanding()) {
+        report("MBB has allocatable live-in, but isn't entry, landing-pad, "
+               "inlineasm-br-indirect-target or returns-twice-landing.",
                MBB);
         report_context(LI.PhysReg);
       }

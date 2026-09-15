@@ -842,12 +842,13 @@ bool ShrinkWrapImpl::performShrinkWrapping(
                                "EH Funclets are not supported yet.",
                                MBB->front().getDebugLoc(), MBB);
 
-    if (MBB->isEHPad() || MBB->isInlineAsmBrIndirectTarget()) {
+    if (MBB->isEHPad() || MBB->isInlineAsmBrIndirectTarget() ||
+        MBB->isReturnsTwiceLanding()) {
       // Push the prologue and epilogue outside of the region that may throw (or
-      // jump out via inlineasm_br), by making sure that all the landing pads
-      // are at least at the boundary of the save and restore points.  The
-      // problem is that a basic block can jump out from the middle in these
-      // cases, which we do not handle.
+      // jump out via inlineasm_br, or land a second return), by making sure
+      // that all the landing pads are at least at the boundary of the save and
+      // restore points.  The problem is that a basic block can jump out from
+      // the middle in these cases, which we do not handle.
       updateSaveRestorePoints(*MBB, RS);
       if (!ArePointsInteresting()) {
         LLVM_DEBUG(dbgs() << "EHPad/inlineasm_br prevents shrink-wrapping\n");

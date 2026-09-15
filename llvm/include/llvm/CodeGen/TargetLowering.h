@@ -4063,6 +4063,13 @@ protected:
   MachineBasicBlock *emitPatchPoint(MachineInstr &MI,
                                     MachineBasicBlock *MBB) const;
 
+  /// Expand a target's returns-twice landing pseudo, which directly follows
+  /// the call it belongs to: split the block after that call, so that the
+  /// second return lands at the start of a block that preserves no register,
+  /// and erase the pseudo. Returns the landing block.
+  MachineBasicBlock *emitReturnsTwiceLanding(MachineInstr &MI,
+                                             MachineBasicBlock *MBB) const;
+
   bool IsStrictFPEnabled;
 };
 

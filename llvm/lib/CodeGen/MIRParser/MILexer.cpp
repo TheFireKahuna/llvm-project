@@ -278,6 +278,7 @@ static MIToken::TokenKind getIdentifierKind(StringRef Identifier) {
             MIToken::kw_inlineasm_br_indirect_target)
       .Case("ehscope-entry", MIToken::kw_ehscope_entry)
       .Case("ehfunclet-entry", MIToken::kw_ehfunclet_entry)
+      .Case("returns-twice-landing", MIToken::kw_returns_twice_landing)
       .Case("liveins", MIToken::kw_liveins)
       .Case("successors", MIToken::kw_successors)
       .Case("floatpred", MIToken::kw_floatpred)

@@ -20,6 +20,7 @@
 #include "X86GenRegisterInfo.inc"
 
 namespace llvm {
+  class CallBase;
   class Triple;
 
 class X86RegisterInfo final : public X86GenRegisterInfo {
@@ -104,6 +105,14 @@ public:
   const uint32_t *getCallPreservedMask(const MachineFunction &MF,
                                        CallingConv::ID) const override;
   const uint32_t *getNoPreservedMask() const override;
+
+  /// Return true if a call to \p CB lands its second return in a block that
+  /// preserves no register: on the Windows NT-POSIX environment a call that
+  /// may return twice is returned to a second time by the unwinder, which
+  /// restores the callee-saved registers from the frames it unwound rather
+  /// than from their values at this call.
+  bool hasReturnsTwiceLanding(const MachineFunction &MF,
+                              const CallBase *CB) const;
 
   // Calls involved in thread-local variable lookup save more registers than
   // normal calls, so they need a different mask to represent this.

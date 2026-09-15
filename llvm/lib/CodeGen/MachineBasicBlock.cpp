@@ -553,6 +553,11 @@ void MachineBasicBlock::printName(raw_ostream &os, unsigned printNameFlags,
       os << "ehfunclet-entry";
       hasAttributes = true;
     }
+    if (isReturnsTwiceLanding()) {
+      os << (hasAttributes ? ", " : " (");
+      os << "returns-twice-landing";
+      hasAttributes = true;
+    }
     if (isEHScopeEntry()) {
       os << (hasAttributes ? ", " : " (");
       os << "ehscope-entry";
@@ -1793,8 +1798,11 @@ MachineBasicBlock::computeRegisterLiveness(const TargetRegisterInfo *TRI,
 
 const uint32_t *
 MachineBasicBlock::getBeginClobberMask(const TargetRegisterInfo *TRI) const {
-  // EH funclet entry does not preserve any registers.
-  return isEHFuncletEntry() ? TRI->getNoPreservedMask() : nullptr;
+  // EH funclet entry does not preserve any registers, and neither does the
+  // second return of a returns_twice call.
+  return isEHFuncletEntry() || isReturnsTwiceLanding()
+             ? TRI->getNoPreservedMask()
+             : nullptr;
 }
 
 const uint32_t *

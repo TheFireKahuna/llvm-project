@@ -30,6 +30,7 @@
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/InstrTypes.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/TargetParser/Triple.h"
 
@@ -366,6 +367,14 @@ AArch64RegisterInfo::SMEABISupportRoutinesCallPreservedMaskFromX0() const {
 
 const uint32_t *AArch64RegisterInfo::getNoPreservedMask() const {
   return CSR_AArch64_NoRegs_RegMask;
+}
+
+bool AArch64RegisterInfo::hasReturnsTwiceLanding(const MachineFunction &MF,
+                                                 const CallBase *CB) const {
+  return CB && CB->hasFnAttr(Attribute::ReturnsTwice) &&
+         MF.getSubtarget<AArch64Subtarget>()
+             .getTargetTriple()
+             .isWindowsNTPOSIXEnvironment();
 }
 
 const uint32_t *

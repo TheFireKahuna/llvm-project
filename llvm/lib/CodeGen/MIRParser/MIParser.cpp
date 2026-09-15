@@ -750,6 +750,7 @@ bool MIParser::parseBasicBlockDefinition(
   bool IsLandingPad = false;
   bool IsInlineAsmBrIndirectTarget = false;
   bool IsEHFuncletEntry = false;
+  bool IsReturnsTwiceLanding = false;
   bool IsEHScopeEntry = false;
   std::optional<MBBSectionID> SectionID;
   uint64_t Alignment = 0;
@@ -778,6 +779,10 @@ bool MIParser::parseBasicBlockDefinition(
         break;
       case MIToken::kw_ehfunclet_entry:
         IsEHFuncletEntry = true;
+        lex();
+        break;
+      case MIToken::kw_returns_twice_landing:
+        IsReturnsTwiceLanding = true;
         lex();
         break;
       case MIToken::kw_ehscope_entry:
@@ -840,6 +845,7 @@ bool MIParser::parseBasicBlockDefinition(
   MBB->setIsEHPad(IsLandingPad);
   MBB->setIsInlineAsmBrIndirectTarget(IsInlineAsmBrIndirectTarget);
   MBB->setIsEHFuncletEntry(IsEHFuncletEntry);
+  MBB->setIsReturnsTwiceLanding(IsReturnsTwiceLanding);
   MBB->setIsEHScopeEntry(IsEHScopeEntry);
   if (SectionID) {
     MBB->setSectionID(*SectionID);

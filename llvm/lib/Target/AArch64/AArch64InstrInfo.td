@@ -1393,6 +1393,11 @@ def PROBED_STACKALLOC_VAR : Pseudo<(outs),
                                    []>,
                                    Sched<[]>;
 
+// Directly follows a call that may return twice; expanded into a block
+// boundary, so the second return lands where no register is preserved.
+let hasSideEffects = 1, usesCustomInserter = 1 in
+def RETURNS_TWICE_LANDING : Pseudo<(outs), (ins), []>, Sched<[]>;
+
 // Probed stack allocations of a variable size, used for allocas of unknown size
 // when stack-clash protection is enabled.
 let usesCustomInserter = 1 in

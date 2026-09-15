@@ -386,6 +386,8 @@ bool X86CallLowering::lowerCall(MachineIRBuilder &MIRBuilder,
 
   // Now we can add the actual call instruction to the correct basic block.
   MIRBuilder.insertInstr(MIB);
+  if (TRI->hasReturnsTwiceLanding(MF, Info.CB))
+    MIRBuilder.buildInstr(X86::RETURNS_TWICE_LANDING);
 
   // If Callee is a reg, since it is used by a target specific
   // instruction, it must have a register class matching the

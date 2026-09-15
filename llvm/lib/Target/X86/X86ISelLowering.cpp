@@ -38788,6 +38788,9 @@ X86TargetLowering::EmitInstrWithCustomInserter(MachineInstr &MI,
   case X86::VAARG_X32:
     return EmitVAARGWithCustomInserter(MI, BB);
 
+  case X86::RETURNS_TWICE_LANDING:
+    return emitReturnsTwiceLanding(MI, BB);
+
   case X86::EH_SjLj_SetJmp32:
   case X86::EH_SjLj_SetJmp64:
     return emitEHSjLjSetJmp(MI, BB);

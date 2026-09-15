@@ -2760,6 +2760,14 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
     if (MDNode *HeapAlloc = CLI.CB->getMetadata("heapallocsite"))
       DAG.addHeapAllocSite(Chain.getNode(), HeapAlloc);
 
+  // Glue the landing pseudo to the call, so the block splits right after it.
+  if (RegInfo->hasReturnsTwiceLanding(MF, CLI.CB)) {
+    SDNode *Landing = DAG.getMachineNode(X86::RETURNS_TWICE_LANDING, dl,
+                                         NodeTys, {Chain, InGlue});
+    Chain = SDValue(Landing, 0);
+    InGlue = SDValue(Landing, 1);
+  }
+
   // Create the CALLSEQ_END node.
   unsigned NumBytesForCalleeToPop = 0; // Callee pops nothing.
   if (X86::isCalleePop(CallConv, Is64Bit, isVarArg,

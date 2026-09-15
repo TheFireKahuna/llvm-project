@@ -230,6 +230,12 @@ let isBranch = 1, isTerminator = 1, isCodeGenOnly = 1 in {
   def EH_SjLj_Setup : I<0, Pseudo, (outs), (ins brtarget:$dst),
                         "#EH_SjLj_Setup\t$dst", []>;
 }
+
+// Directly follows a call that may return twice; expanded into a block
+// boundary, so the second return lands where no register is preserved.
+let hasSideEffects = 1, isCodeGenOnly = 1, usesCustomInserter = 1 in
+def RETURNS_TWICE_LANDING : I<0, Pseudo, (outs), (ins),
+                              "#RETURNS_TWICE_LANDING", []>;
 } // SchedRW
 
 //===----------------------------------------------------------------------===//

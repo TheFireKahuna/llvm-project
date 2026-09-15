@@ -1481,6 +1481,8 @@ bool AArch64CallLowering::lowerCall(MachineIRBuilder &MIRBuilder,
 
   // Now we can add the actual call instruction to the correct basic block.
   MIRBuilder.insertInstr(MIB);
+  if (TRI->hasReturnsTwiceLanding(MF, Info.CB))
+    MIRBuilder.buildInstr(AArch64::RETURNS_TWICE_LANDING);
 
   uint64_t CalleePopBytes =
       doesCalleeRestoreStack(Info.CallConv,

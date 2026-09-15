@@ -1603,6 +1603,18 @@ bool TargetLoweringBase::isLegalRC(const TargetRegisterInfo &TRI,
 /// Replace/modify any TargetFrameIndex operands with a targte-dependent
 /// sequence of memory operands that is recognized by PrologEpilogInserter.
 MachineBasicBlock *
+TargetLoweringBase::emitReturnsTwiceLanding(MachineInstr &MI,
+                                            MachineBasicBlock *MBB) const {
+  MachineBasicBlock::iterator Call = std::prev(MI.getIterator());
+  assert(Call != MBB->end() && Call->isCall() &&
+         "a returns-twice landing pseudo must directly follow its call");
+  MachineBasicBlock *Landing = MBB->splitAt(*Call, /*UpdateLiveIns=*/true);
+  Landing->setIsReturnsTwiceLanding();
+  MI.eraseFromParent();
+  return Landing;
+}
+
+MachineBasicBlock *
 TargetLoweringBase::emitPatchPoint(MachineInstr &InitialMI,
                                    MachineBasicBlock *MBB) const {
   MachineInstr *MI = &InitialMI;

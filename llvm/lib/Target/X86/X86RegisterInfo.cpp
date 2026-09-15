@@ -28,6 +28,7 @@
 #include "llvm/CodeGen/TileShapeInfo.h"
 #include "llvm/CodeGen/VirtRegMap.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Type.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/Support/CommandLine.h"
@@ -524,6 +525,14 @@ X86RegisterInfo::getCallPreservedMask(const MachineFunction &MF,
 const uint32_t*
 X86RegisterInfo::getNoPreservedMask() const {
   return CSR_NoRegs_RegMask;
+}
+
+bool X86RegisterInfo::hasReturnsTwiceLanding(const MachineFunction &MF,
+                                             const CallBase *CB) const {
+  return CB && CB->hasFnAttr(Attribute::ReturnsTwice) &&
+         MF.getSubtarget<X86Subtarget>()
+             .getTargetTriple()
+             .isWindowsNTPOSIXEnvironment();
 }
 
 const uint32_t *X86RegisterInfo::getDarwinTLSCallPreservedMask() const {

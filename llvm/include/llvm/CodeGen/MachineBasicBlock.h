@@ -209,6 +209,12 @@ private:
   /// Indicate that this basic block is the entry block of a cleanup funclet.
   bool IsCleanupFuncletEntry = false;
 
+  /// Indicate that this basic block is entered by the second return of a
+  /// returns_twice call as well as by its first. The second return arrives
+  /// from an unwinder that restores no register, so no register holds a value
+  /// on entry, and the block's address is what that unwinder resumes at.
+  bool IsReturnsTwiceLanding = false;
+
   /// Fixed unique ID assigned to this basic block upon creation. Used with
   /// basic block sections and basic block labels.
   std::optional<UniqueBBID> BBID;
@@ -283,7 +289,7 @@ public:
   /// more detailed checks that this function aggregates together.
   bool hasAddressTaken() const {
     return MachineBlockAddressTaken || AddressTakenIRBlock ||
-           IsInlineAsmBrIndirectTarget;
+           IsInlineAsmBrIndirectTarget || IsReturnsTwiceLanding;
   }
 
   /// Test whether this block is used as something other than the target of a
@@ -699,6 +705,14 @@ public:
 
   /// Indicates if this is the entry block of a cleanup funclet.
   void setIsCleanupFuncletEntry(bool V = true) { IsCleanupFuncletEntry = V; }
+
+  /// Returns true if this block is entered by the second return of a
+  /// returns_twice call, which preserves no register.
+  bool isReturnsTwiceLanding() const { return IsReturnsTwiceLanding; }
+
+  /// Indicates if this block is entered by the second return of a
+  /// returns_twice call, which preserves no register.
+  void setIsReturnsTwiceLanding(bool V = true) { IsReturnsTwiceLanding = V; }
 
   /// Returns true if this block begins any section.
   bool isBeginSection() const { return IsBeginSection; }

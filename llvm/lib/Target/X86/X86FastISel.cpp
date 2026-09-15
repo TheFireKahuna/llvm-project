@@ -3567,7 +3567,10 @@ bool X86FastISel::fastLowerCall(CallLoweringInfo &CLI) {
 
   // Add a register mask operand representing the call-preserved registers.
   // Proper defs for return values will be added by setPhysRegsDeadExcept().
-  MIB.addRegMask(TRI.getCallPreservedMask(*FuncInfo.MF, CC));
+  MIB.addRegMask(RegInfo->getCallPreservedMask(*FuncInfo.MF, CC));
+  if (RegInfo->hasReturnsTwiceLanding(*FuncInfo.MF, CB))
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD,
+            TII.get(X86::RETURNS_TWICE_LANDING));
 
   // Add an implicit use GOT pointer in EBX.
   if (Subtarget->isPICStyleGOT())
