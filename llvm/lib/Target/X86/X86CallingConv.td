@@ -541,6 +541,13 @@ def CC_X86_64_C : CallingConv<[
   // normal functions don't need to save it somewhere.
   CCIfSwiftAsync<CCIfType<[i64], CCAssignToReg<[R14]>>>,
 
+  // The 'CFGuardTarget' parameter, if any, is passed in RAX. The
+  // __guard_dispatch_icall thunk reads its target from RAX, a Windows ABI
+  // fixed by the loader and independent of the C calling convention, so a
+  // Windows target built with the System V C ABI must pin it here as
+  // CC_X86_Win64_C does.
+  CCIfCFGuardTarget<CCAssignToReg<[RAX]>>,
+
   // For Swift Calling Conventions, pass sret in %rax.
   CCIfCC<"CallingConv::Swift",
     CCIfSRet<CCIfType<[i64], CCAssignToReg<[RAX]>>>>,
