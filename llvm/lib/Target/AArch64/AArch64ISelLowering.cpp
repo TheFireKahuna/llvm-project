@@ -3736,6 +3736,9 @@ MachineBasicBlock *AArch64TargetLowering::EmitInstrWithCustomInserter(
   case AArch64::PROBED_STACKALLOC_DYN:
     return EmitDynamicProbedAlloc(MI, BB);
 
+  case AArch64::RETURNS_TWICE_LANDING:
+    return emitReturnsTwiceLanding(MI, BB);
+
   case AArch64::CHECK_MATCHING_VL_PSEUDO:
     return EmitCheckMatchingVL(MI, BB);
 
@@ -11242,6 +11245,15 @@ AArch64TargetLowering::LowerCall(CallLoweringInfo &CLI,
   if (CalledGlobal &&
       MF.getFunction().getParent()->getModuleFlag("import-call-optimization"))
     DAG.addCalledGlobal(Chain.getNode(), CalledGlobal, OpFlags);
+
+  // Glue the landing pseudo to the call, so the block splits right after it.
+  if (TRI->hasReturnsTwiceLanding(MF, CLI.CB)) {
+    SDNode *Landing =
+        DAG.getMachineNode(AArch64::RETURNS_TWICE_LANDING, DL,
+                           {MVT::Other, MVT::Glue}, {Chain, InGlue});
+    Chain = SDValue(Landing, 0);
+    InGlue = SDValue(Landing, 1);
+  }
 
   uint64_t CalleePopBytes = DoesCalleeRestoreStack(CallConv, TailCallOpt)
                                 ? alignTo(NumBytes, StackAlign)

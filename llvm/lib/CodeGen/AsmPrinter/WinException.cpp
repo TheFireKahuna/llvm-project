@@ -127,6 +127,8 @@ void WinException::markFunctionEnd() {
 /// endFunction - Gather and emit post-function exception information.
 ///
 void WinException::endFunction(const MachineFunction *MF) {
+  // The list covers the whole function, including all of its funclets.
+  llvm::append_range(EHContTargets, MF->getEHContTargets());
   if (!shouldEmitPersonality && !shouldEmitMoves && !shouldEmitLSDA)
     return;
 
@@ -136,11 +138,6 @@ void WinException::endFunction(const MachineFunction *MF) {
     Per = classifyEHPersonality(F.getPersonalityFn()->stripPointerCasts());
 
   endFuncletImpl();
-
-  if (!MF->getEHContTargets().empty()) {
-    // Copy the function's EH Continuation targets to a module-level list.
-    llvm::append_range(EHContTargets, MF->getEHContTargets());
-  }
 
   // endFunclet will emit the necessary .xdata tables for table-based SEH.
   if (Per == EHPersonality::MSVC_TableSEH && MF->hasEHFunclets())

@@ -18,6 +18,7 @@
 
 namespace llvm {
 
+class CallBase;
 class MachineFunction;
 class RegScavenger;
 class MCRegisterClass;
@@ -78,6 +79,14 @@ public:
 
   // Funclets on ARM64 Windows don't preserve any registers.
   const uint32_t *getNoPreservedMask() const override;
+
+  /// Return true if a call to \p CB lands its second return in a block that
+  /// preserves no register: on the Windows NT-POSIX environment a call that
+  /// may return twice is returned to a second time by the unwinder, which
+  /// restores the callee-saved registers from the frames it unwound rather
+  /// than from their values at this call.
+  bool hasReturnsTwiceLanding(const MachineFunction &MF,
+                              const CallBase *CB) const;
 
   // Unwinders may not preserve all Neon and SVE registers.
   const uint32_t *
