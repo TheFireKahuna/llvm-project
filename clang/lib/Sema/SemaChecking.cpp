@@ -3198,6 +3198,14 @@ Sema::CheckBuiltinFunctionCall(FunctionDecl *FDecl, unsigned BuiltinID,
     if (BuiltinSetjmp(TheCall))
       return ExprError();
     break;
+  case Builtin::BI__builtin_experimental_nt_recovery: {
+    const auto &Triple = Context.getTargetInfo().getTriple();
+    if (!Triple.isOSWindows() || Triple.isWindowsArm64EC() ||
+        (Triple.getArch() != llvm::Triple::x86_64 &&
+         Triple.getArch() != llvm::Triple::aarch64))
+      return Diag(TheCall->getBeginLoc(), diag::err_builtin_nt_recovery_unsupported);
+    break;
+  }
   case Builtin::BI__builtin_complex:
     if (BuiltinComplex(TheCall))
       return ExprError();
@@ -6062,7 +6070,9 @@ static bool checkVAStartABI(Sema &S, unsigned BuiltinID, Expr *Fn) {
   bool IsX64 = TT.getArch() == llvm::Triple::x86_64;
   bool IsAArch64 = (TT.getArch() == llvm::Triple::aarch64 ||
                     TT.getArch() == llvm::Triple::aarch64_32);
-  bool IsWindowsOrUEFI = TT.isOSWindows() || TT.isUEFI();
+  bool IsWindowsOrUEFI =
+      (TT.isOSWindows() && !(IsX64 && TT.isWindowsNTPOSIXEnvironment())) ||
+      TT.isUEFI();
   bool IsMSVAStart = BuiltinID == Builtin::BI__builtin_ms_va_start;
   if (IsX64 || IsAArch64) {
     CallingConv CC = CC_C;

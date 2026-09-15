@@ -418,6 +418,7 @@ MachineFunctionInfo *X86TargetMachine::createMachineFunctionInfo(
 }
 
 void X86PassConfig::addIRPasses() {
+  addPass(createNTRecoveryLoweringPass());
   addPass(createAtomicExpandLegacyPass());
 
   // We add both pass anyway and when these two passes run, we skip the pass
@@ -513,6 +514,7 @@ bool X86PassConfig::addPreISel() {
 }
 
 void X86PassConfig::addPreRegAlloc() {
+  addPass(createNTRecoverySpillsPass(X86::RIP));
   if (getOptLevel() != CodeGenOptLevel::None) {
     addPass(&LiveRangeShrinkID);
     addPass(createX86FixupSetCCLegacyPass());

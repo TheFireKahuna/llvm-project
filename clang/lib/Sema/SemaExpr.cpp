@@ -7100,6 +7100,7 @@ ExprResult Sema::BuildResolvedCallExpr(Expr *Fn, NamedDecl *NDecl,
     switch (BuiltinID) {
     case Builtin::BI__builtin_longjmp:
     case Builtin::BI__builtin_setjmp:
+    case Builtin::BI__builtin_experimental_nt_recovery:
     case Builtin::BI__sigsetjmp:
     case Builtin::BI_longjmp:
     case Builtin::BI_setjmp:

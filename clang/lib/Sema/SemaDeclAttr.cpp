@@ -5816,9 +5816,12 @@ bool Sema::CheckCallingConvAttr(const ParsedAttr &Attrs, CallingConv &CC,
     }
   }
 
+  const auto &TargetTriple = Context.getTargetInfo().getTriple();
   bool IsTargetDefaultMSABI =
-      Context.getTargetInfo().getTriple().isOSWindows() ||
-      Context.getTargetInfo().getTriple().isUEFI();
+      (TargetTriple.isOSWindows() &&
+       !(TargetTriple.getArch() == llvm::Triple::x86_64 &&
+         TargetTriple.isWindowsNTPOSIXEnvironment())) ||
+      TargetTriple.isUEFI();
   // TODO: diagnose uses of these conventions on the wrong target.
   switch (Attrs.getKind()) {
   case ParsedAttr::AT_CDecl:

@@ -7002,3 +7002,28 @@ constexpr int x = sizeof(x);
 // diagnostic.
 auto x = x;
 ```
+
+
+## `__builtin_experimental_nt_recovery`
+
+This experimental builtin is available on Windows x86-64 and AArch64 targets:
+
+```c
+int __builtin_experimental_nt_recovery(void **buffer);
+```
+
+It captures a compiler-generated recovery point in the caller's activation,
+returning zero on the initial path and one when an owned NT unwind runtime
+resumes the generated recovery path. The buffer must provide at least three
+writable, pointer-aligned slots and remain valid for every permitted recovery.
+These slots describe the logical frame address, recovery instruction pointer,
+and resume stack pointer; they are not a stable public `jmp_buf` ABI.
+
+The builtin lowers to `llvm.experimental.nt.recovery` with distinct initial
+and recovery successors. Recovery preservation is mandatory in the matching
+backend, including after inlining and LTO; it does not require an experimental
+command-line switch. A matching LTO linker/backend is required. This operation
+is not a separately callable library function or a replacement for a Rust
+ownership-aware recovery scope. Modified non-volatile C locals have no stronger
+guarantee than under the C `setjmp` rules. The surrounding runtime still owns
+frame validation, intervening cleanup, FP policy and the final NT transfer.

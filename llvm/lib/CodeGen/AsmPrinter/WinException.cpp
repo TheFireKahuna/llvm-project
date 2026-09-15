@@ -123,6 +123,8 @@ void WinException::markFunctionEnd() {
 /// endFunction - Gather and emit post-function exception information.
 ///
 void WinException::endFunction(const MachineFunction *MF) {
+  // The list covers the whole function, including all of its funclets.
+  llvm::append_range(EHContTargets, MF->getEHContTargets());
   if (!shouldEmitPersonality && !shouldEmitMoves && !shouldEmitLSDA)
     return;
 
@@ -161,10 +163,6 @@ void WinException::endFunction(const MachineFunction *MF) {
     Asm->OutStreamer->popSection();
   }
 
-  if (!MF->getEHContTargets().empty()) {
-    // Copy the function's EH Continuation targets to a module-level list.
-    llvm::append_range(EHContTargets, MF->getEHContTargets());
-  }
 }
 
 /// Retrieve the MCSymbol for a GlobalValue or MachineBasicBlock.
@@ -288,11 +286,6 @@ void WinException::endFuncletImpl() {
       // No need to emit the EH handler data right here if nothing needs
       // writing to the .xdata section; it will be emitted for all
       // functions that need it in the end anyway.
-    }
-
-    if (!MF->getEHContTargets().empty()) {
-      // Copy the function's EH Continuation targets to a module-level list.
-      llvm::append_range(EHContTargets, MF->getEHContTargets());
     }
 
     // Switch back to the funclet start .text section now that we are done

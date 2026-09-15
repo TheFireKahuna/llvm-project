@@ -827,3 +827,50 @@ to see what has to be done there. For `libunwind`, you have to do the following:
 [libgcc]: https://gcc.gnu.org/onlinedocs/gccint/Libgcc.html
 [libunwind]: https://clang.llvm.org/docs/Toolchain.html#unwind-library
 [libc++]: https://libcxx.llvm.org/
+
+
+## Experimental NT recovery
+
+`llvm.experimental.nt.recovery` is an experimental Windows x86-64/AArch64
+capture operation for an owned NT unwind runtime. It is not a stable runtime
+ABI and does not implement a Rust recovery scope.
+
+```llvm
+declare void @llvm.experimental.nt.recovery(ptr)
+callbr void @llvm.experimental.nt.recovery(ptr %buffer)
+    to label %initial [label %recovery]
+```
+
+The operation must be a `callbr` with exactly one indirect successor and no
+operand bundles. The initial execution publishes the recovery instruction
+pointer and current stack pointer in pointer slots 1 and 2 of the writable,
+pointer-aligned buffer, then takes the default successor. The frontend supplies
+the logical frame address in slot 0. An external runtime may enter the recovery
+successor only while that activation and the capture's initialized recovery
+homes remain valid. It must independently recover coherent frame, stack and
+shadow-stack state. This intrinsic neither walks frames nor restores a context.
+
+The explicit recovery edge remains in IR through optimization and LTO. Target
+code generation lowers it to a capture carrier and mandatorily preserves the
+machine values needed by the recovery successor before publishing the target.
+Recovery reloads precede the successor's PHI copies. The recovery target is
+included in the longjmp target table when Control Flow Guard is enabled.
+The older marked-assembly experiment remains opt-in; it is not the frontend
+operation and cannot substitute for this intrinsic in a qualified toolchain.
+
+The operation does not snapshot memory, repair ownership after an arbitrary
+second return, or guarantee asynchronous cleanup coverage. A frontend must
+supply language-appropriate scope and lifetime rules. Native runtime tests,
+mitigation tests and any final buffer ABI remain separate qualification work.
+
+`llvm.experimental.nt.recovery.scope(ptr)` shares the capture and value
+preservation mechanism but describes a targeted scope whose body executes once
+and whose result returns once. Its target is registered in the EH-continuation
+table when `ehcontguard` is enabled, rather than the longjmp table. An ordinary
+exception must still propagate through the scope to the caller; this operation
+does not install a catch-all personality. The frontend must preserve a body call
+boundary below the selected activation and represent the caller's ordinary
+unwind edge before drop elaboration. A runtime may resume that scope only once,
+after completing the required body cleanup and before the activation expires.
+The experimental Rust frontend keeps its generated capture helper uninlined,
+so target-frame cleanup cannot destroy values owned by an enclosing Rust scope.

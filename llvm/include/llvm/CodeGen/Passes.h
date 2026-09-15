@@ -23,8 +23,10 @@
 #include <string>
 
 namespace llvm {
-
 class FunctionPass;
+/// Preserve values at explicitly marked experimental NT recovery edges.
+FunctionPass *createNTRecoverySpillsPass(unsigned ImmutablePCReg = 0);
+FunctionPass *createNTRecoveryLoweringPass();
 class MachineFunction;
 class MachineFunctionPass;
 class ModulePass;

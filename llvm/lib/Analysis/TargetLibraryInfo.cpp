@@ -221,7 +221,8 @@ static void initializeLibCalls(TargetLibraryInfoImpl &TLI, const Triple &T,
     TLI.setUnavailable(LibFunc_small_fprintf);
   }
 
-  if (T.isOSWindows() && !T.isOSCygMing()) {
+  if (T.isOSWindows() && !T.isOSCygMing() &&
+      !T.isWindowsNTPOSIXEnvironment()) {
     // XXX: The earliest documentation available at the moment is for VS2015/VC19:
     // https://docs.microsoft.com/en-us/cpp/c-runtime-library/floating-point-support?view=vs-2015
     // XXX: In order to use an MSVCRT older than VC19,
@@ -400,7 +401,8 @@ static void initializeLibCalls(TargetLibraryInfoImpl &TLI, const Triple &T,
     TLI.setUnavailable(LibFunc_write);
   }
 
-  if (T.isOSWindows() && !T.isWindowsCygwinEnvironment()) {
+  if (T.isOSWindows() && !T.isWindowsCygwinEnvironment() &&
+      !T.isWindowsNTPOSIXEnvironment()) {
     // These functions aren't available in either MSVC or MinGW environments.
     TLI.setUnavailable(LibFunc_bcmp);
     TLI.setUnavailable(LibFunc_bcopy);

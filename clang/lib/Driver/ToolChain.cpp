@@ -1430,6 +1430,8 @@ ObjCRuntime ToolChain::getDefaultObjCRuntime(bool isNonFragile) const {
 
 llvm::ExceptionHandling
 ToolChain::GetExceptionModel(const llvm::opt::ArgList &Args) const {
+  if (getTriple().isWindowsNTPOSIXEnvironment())
+    return llvm::ExceptionHandling::WinEH;
   return llvm::ExceptionHandling::None;
 }
 

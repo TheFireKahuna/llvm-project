@@ -290,9 +290,11 @@ bool AArch64MCAsmInfoMicrosoftCOFF::evaluateAsRelocatableImpl(
   return evaluate(Expr, Res, Asm);
 }
 
-AArch64MCAsmInfoGNUCOFF::AArch64MCAsmInfoGNUCOFF(const MCTargetOptions &Options)
+AArch64MCAsmInfoGNUCOFF::AArch64MCAsmInfoGNUCOFF(const Triple &T, const MCTargetOptions &Options)
     : MCAsmInfoGNUCOFF(Options) {
   InternalSymbolPrefix = ".L";
+  if (T.isWindowsItaniumOrNTPOSIXEnvironment())
+    HasCOFFAssociativeComdats = true;
 
   Data16bitsDirective = "\t.hword\t";
   Data32bitsDirective = "\t.word\t";

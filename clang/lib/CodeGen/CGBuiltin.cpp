@@ -5412,6 +5412,38 @@ RValue CodeGenFunction::EmitBuiltinExpr(const GlobalDecl GD, unsigned BuiltinID,
     else
       return RValue::get(Builder.CreateZExt(Result, Int64Ty, "extend.zext"));
   }
+  case Builtin::BI__builtin_experimental_nt_recovery: {
+    const auto &Triple = getTarget().getTriple();
+    bool X64 = Triple.getArch() == llvm::Triple::x86_64;
+    if (!Triple.isOSWindows() || Triple.isWindowsArm64EC() ||
+        (!X64 && Triple.getArch() != llvm::Triple::aarch64)) {
+      CGM.ErrorUnsupported(E, "__builtin_experimental_nt_recovery for this target");
+      return RValue::get(llvm::UndefValue::get(Int32Ty));
+    }
+    Address Buf = EmitPointerWithAlignment(E->getArg(0));
+    Value *Frame = Builder.CreateCall(
+        CGM.getIntrinsic(Intrinsic::frameaddress, AllocaInt8PtrTy),
+        ConstantInt::get(Int32Ty, 0));
+    Builder.CreateStore(Frame, Buf);
+
+    // A real recovery successor survives optimization and inlining. The
+    // machine pass must preserve its live values before publishing this target.
+    Value *Pointer = Buf.emitRawPointer(*this);
+    auto *Capture = CGM.getIntrinsic(Intrinsic::experimental_nt_recovery);
+    auto *Normal = createBasicBlock("nt.recovery.normal");
+    auto *Recovery = createBasicBlock("nt.recovery.resume");
+    auto *Done = createBasicBlock("nt.recovery.done");
+    Builder.CreateCallBr(Capture, Normal, {Recovery}, {Pointer});
+    EmitBlock(Normal);
+    Builder.CreateBr(Done);
+    EmitBlock(Recovery);
+    Builder.CreateBr(Done);
+    EmitBlock(Done);
+    auto *Result = Builder.CreatePHI(Int32Ty, 2);
+    Result->addIncoming(ConstantInt::get(Int32Ty, 0), Normal);
+    Result->addIncoming(ConstantInt::get(Int32Ty, 1), Recovery);
+    return RValue::get(Result);
+  }
   case Builtin::BI__builtin_setjmp: {
     // Buffer is a void**.
     Address Buf = EmitPointerWithAlignment(E->getArg(0));

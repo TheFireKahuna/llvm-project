@@ -647,6 +647,7 @@ std::unique_ptr<CSEConfigBase> AArch64PassConfig::getCSEConfig() const {
 }
 
 void AArch64PassConfig::addIRPasses() {
+  addPass(createNTRecoveryLoweringPass());
   // Always expand atomic operations, we don't deal with atomicrmw or cmpxchg
   // ourselves.
   addPass(createAtomicExpandLegacyPass());
@@ -854,6 +855,7 @@ bool AArch64PassConfig::addILPOpts() {
 }
 
 void AArch64PassConfig::addPreRegAlloc() {
+  addPass(createNTRecoverySpillsPass());
   if (TM->getOptLevel() == CodeGenOptLevel::None)
     addPass(createMachineSMEABIPass(CodeGenOptLevel::None));
 

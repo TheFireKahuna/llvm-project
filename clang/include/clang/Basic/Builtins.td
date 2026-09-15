@@ -1166,6 +1166,12 @@ def BuiltinSetjmp : Builtin {
   let Prototype = "int(void**)";
 }
 
+def ExperimentalNTRecovery : Builtin {
+  let Spellings = ["__builtin_experimental_nt_recovery"];
+  let Attributes = [ReturnsTwice];
+  let Prototype = "int(void**)";
+}
+
 def BuiltinLongjmp : Builtin {
   let Spellings = ["__builtin_longjmp"];
   let Attributes = [NoReturn];

@@ -3638,6 +3638,13 @@ void SelectionDAGBuilder::visitLandingPad(const LandingPadInst &LP) {
   assert(FuncInfo.MBB->isEHPad() &&
          "Call to landingpad not in landing pad!");
 
+  // These targets use Itanium landing pads over SEH frame metadata. A
+  // continuation into such a pad needs the same guard entry as a funclet.
+  if (TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+    FuncInfo.MBB->setIsEHContTarget(true);
+    DAG.getMachineFunction().setHasEHContTarget(true);
+  }
+
   // If there aren't registers to copy the values into (e.g., during SjLj
   // exceptions), then don't bother to create these DAG nodes.
   const TargetLowering &TLI = DAG.getTargetLoweringInfo();

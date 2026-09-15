@@ -319,6 +319,17 @@ public:
   CallingConvCheckResult checkCallingConvention(CallingConv CC) const override;
 };
 
+class LLVM_LIBRARY_VISIBILITY NTPOSIXWindowsARM64TargetInfo
+    : public WindowsARM64TargetInfo {
+public:
+  NTPOSIXWindowsARM64TargetInfo(const llvm::Triple &Triple,
+                              const TargetOptions &Opts)
+      : WindowsARM64TargetInfo(Triple, Opts) {
+    TheCXXABI.set(TargetCXXABI::GenericAArch64);
+    WCharType = WIntType = TargetInfo::SignedInt;
+  }
+};
+
 // Windows ARM, MS (C++) ABI
 class LLVM_LIBRARY_VISIBILITY MicrosoftARM64TargetInfo
     : public WindowsARM64TargetInfo {
