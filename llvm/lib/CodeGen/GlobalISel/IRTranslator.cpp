@@ -3157,6 +3157,14 @@ bool IRTranslator::translateCallBr(const User &U,
     MachineBasicBlock &Target = getMBB(*Dest);
     Target.setIsInlineAsmBrIndirectTarget();
     Target.setLabelMustBeEmitted();
+    // On NT-POSIX an indirect target is also where a fault handler may resume
+    // the asm's own frame, so it is an EH continuation target like a landing
+    // pad.
+    if (I.isInlineAsm() &&
+        MF->getTarget().getTargetTriple().isWindowsNTPOSIXEnvironment()) {
+      Target.setIsEHContTarget(true);
+      MF->setHasEHContTarget(true);
+    }
     // Don't add duplicate machine successors.
     if (Dests.insert(Dest).second)
       addSuccessorWithProb(CallBrMBB, &Target, BranchProbability::getZero());

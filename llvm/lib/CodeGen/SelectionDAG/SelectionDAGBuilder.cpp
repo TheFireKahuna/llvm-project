@@ -3611,6 +3611,13 @@ void SelectionDAGBuilder::visitCallBr(const CallBrInst &I) {
     for (BasicBlock *Dest : I.getIndirectDests()) {
       MachineBasicBlock *Target = FuncInfo.getMBB(Dest);
       Target->setIsInlineAsmBrIndirectTarget();
+      // On NT-POSIX an indirect target is also where a fault handler may
+      // resume the asm's own frame, so the kernel's continuation check needs
+      // it in the image's EH continuation table, like a landing pad.
+      if (TM.getTargetTriple().isWindowsNTPOSIXEnvironment()) {
+        Target->setIsEHContTarget(true);
+        DAG.getMachineFunction().setHasEHContTarget(true);
+      }
       // If we introduce a type of asm goto statement that is permitted to use
       // an indirect call instruction to jump to its labels, then we should add
       // a call to Target->setMachineBlockAddressTaken() here, to mark the

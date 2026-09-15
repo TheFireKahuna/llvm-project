@@ -1610,6 +1610,11 @@ TargetLoweringBase::emitReturnsTwiceLanding(MachineInstr &MI,
          "a returns-twice landing pseudo must directly follow its call");
   MachineBasicBlock *Landing = MBB->splitAt(*Call, /*UpdateLiveIns=*/true);
   Landing->setIsReturnsTwiceLanding();
+  // The second return is a continuation the kernel validates against the
+  // image's EH continuation table, so the landing is recorded there as a
+  // landing pad is.
+  Landing->setIsEHContTarget(true);
+  MBB->getParent()->setHasEHContTarget(true);
   MI.eraseFromParent();
   return Landing;
 }
