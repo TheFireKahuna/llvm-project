@@ -3198,14 +3198,6 @@ Sema::CheckBuiltinFunctionCall(FunctionDecl *FDecl, unsigned BuiltinID,
     if (BuiltinSetjmp(TheCall))
       return ExprError();
     break;
-  case Builtin::BI__builtin_experimental_nt_recovery: {
-    const auto &Triple = Context.getTargetInfo().getTriple();
-    if (!Triple.isOSWindows() || Triple.isWindowsArm64EC() ||
-        (Triple.getArch() != llvm::Triple::x86_64 &&
-         Triple.getArch() != llvm::Triple::aarch64))
-      return Diag(TheCall->getBeginLoc(), diag::err_builtin_nt_recovery_unsupported);
-    break;
-  }
   case Builtin::BI__builtin_complex:
     if (BuiltinComplex(TheCall))
       return ExprError();

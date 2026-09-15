@@ -3484,9 +3484,9 @@ void Verifier::visitIndirectBrInst(IndirectBrInst &BI) {
 }
 
 static bool isSupportedCallBrIntrinsic(Intrinsic::ID ID) {
-  return isAMDGPUCallBrIntrinsic(ID) ||
-         ID == Intrinsic::experimental_nt_recovery ||
-         ID == Intrinsic::experimental_nt_recovery_scope;
+  // Currently we only support callbr for amdgcn.kill. Add more checks here as
+  // needed.
+  return isAMDGPUCallBrIntrinsic(ID);
 }
 
 void Verifier::visitCallBrInst(CallBrInst &CBI) {
@@ -6568,12 +6568,6 @@ void Verifier::visitIntrinsicCall(Intrinsic::ID ID, CallBase &Call) {
     break;
   }
 
-  case Intrinsic::experimental_nt_recovery:
-  case Intrinsic::experimental_nt_recovery_scope:
-    Check(isa<CallBrInst>(Call), "NT recovery must use callbr", Call);
-    Check(cast<CallBrInst>(Call).getNumIndirectDests() == 1,
-          "NT recovery requires exactly one recovery successor", Call);
-    break;
   case Intrinsic::experimental_deoptimize: {
     Check(isa<CallInst>(Call), "experimental_deoptimize cannot be invoked",
           Call);
