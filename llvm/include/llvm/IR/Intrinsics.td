@@ -1020,8 +1020,10 @@ def int_eh_recoverfp : DefaultAttrsIntrinsic<[llvm_ptr_ty],
 //   after EH tables are generated
 def int_seh_try_begin : Intrinsic<[], [], [IntrWriteMem, IntrWillReturn]>;
 def int_seh_try_end : Intrinsic<[], [], [IntrWriteMem, IntrWillReturn]>;
-def int_seh_scope_begin : Intrinsic<[], [], [IntrNoMem]>;
-def int_seh_scope_end : Intrinsic<[], [], [IntrNoMem]>;
+// The scope markers clobber memory, so no access moves across a scope
+// boundary and an object is never destroyed twice.
+def int_seh_scope_begin : Intrinsic<[], [], []>;
+def int_seh_scope_end : Intrinsic<[], [], []>;
 
 // Note: we treat stacksave/stackrestore as writemem because we don't otherwise
 // model their dependencies on allocas.

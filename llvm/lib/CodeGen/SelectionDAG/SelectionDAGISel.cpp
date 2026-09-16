@@ -1537,6 +1537,124 @@ void SelectionDAGISel::reportIPToStateForBlocks(MachineFunction *MF) {
   }
 }
 
+// Under a landingpad personality, llvm.seh.scope.begin is a marker whose
+// unwind destination is the landing pad a fault anywhere after it, until the
+// next marker on the path, must reach: the marker sets the pad, a later marker
+// replaces it, llvm.seh.scope.end clears it, and the first visit decides at a
+// merge. Every block that may fault under a pad gets a call-site range naming
+// it, closed before the block's own invoke range so the two never nest. The
+// markers themselves emit no code.
+void SelectionDAGISel::reportFaultScopesForBlocks(MachineFunction *MF) {
+  const Function &Fn = MF->getFunction();
+  if (!Fn.hasPersonalityFn() ||
+      isScopedEHPersonality(classifyEHPersonality(Fn.getPersonalityFn())))
+    return;
+
+  auto MarkerKind = [](const Instruction *TI) -> Intrinsic::ID {
+    if (const auto *II = dyn_cast<InvokeInst>(TI))
+      if (const Function *Callee = II->getCalledFunction())
+        switch (Callee->getIntrinsicID()) {
+        case Intrinsic::seh_scope_begin:
+        case Intrinsic::seh_scope_end:
+          return Callee->getIntrinsicID();
+        default:
+          break;
+        }
+    return Intrinsic::not_intrinsic;
+  };
+
+  bool HasMarker = false;
+  for (const BasicBlock &BB : Fn)
+    if (MarkerKind(BB.getTerminator()) == Intrinsic::seh_scope_begin) {
+      HasMarker = true;
+      break;
+    }
+  if (!HasMarker)
+    return;
+
+  // The pad in effect on entry to each block. An unwind edge carries none: a
+  // fault inside a cleanup already in flight is not recovered, and a range
+  // there would name a pad through blocks a dead pad's chain takes with it.
+  // A block both paths reach keeps the pad the normal path brings.
+  DenseMap<const BasicBlock *, const BasicBlock *> BlockPad;
+  SmallVector<std::pair<const BasicBlock *, const BasicBlock *>, 16> Worklist;
+  Worklist.push_back({&Fn.getEntryBlock(), nullptr});
+  while (!Worklist.empty()) {
+    auto [BB, Pad] = Worklist.pop_back_val();
+    auto [It, Inserted] = BlockPad.try_emplace(BB, Pad);
+    if (!Inserted) {
+      if (It->second || !Pad)
+        continue;
+      It->second = Pad;
+    }
+    const Instruction *TI = BB->getTerminator();
+    const BasicBlock *Next = Pad;
+    switch (MarkerKind(TI)) {
+    case Intrinsic::seh_scope_begin:
+      Next = cast<InvokeInst>(TI)->getUnwindDest();
+      break;
+    case Intrinsic::seh_scope_end:
+      Next = nullptr;
+      break;
+    default:
+      break;
+    }
+    if (const auto *II = dyn_cast<InvokeInst>(TI)) {
+      Worklist.push_back({II->getNormalDest(), Next});
+      Worklist.push_back({II->getUnwindDest(), nullptr});
+      continue;
+    }
+    for (const BasicBlock *Succ : successors(BB))
+      Worklist.push_back({Succ, Next});
+  }
+
+  for (MachineBasicBlock &MBB : *MF) {
+    const BasicBlock *BB = MBB.getBasicBlock();
+    if (!BB || MBB.isEHPad())
+      continue;
+    const BasicBlock *Pad = BlockPad.lookup(BB);
+    if (!Pad || !BB->getFirstMayFaultInst())
+      continue;
+    MachineBasicBlock *PadMBB = FuncInfo->getMBB(Pad);
+    if (!PadMBB || !PadMBB->isEHPad())
+      continue;
+
+    auto Begin = MBB.getFirstNonPHI();
+    if (Begin == MBB.end() || Begin->isTerminator() || Begin->isEHLabel())
+      continue;
+    // Close the range before the block's own invoke labels, else before its
+    // terminators.
+    auto End = Begin;
+    while (End != MBB.end() && !End->isTerminator() && !End->isEHLabel())
+      ++End;
+
+    MCSymbol *BeginLabel = MF->getContext().createTempSymbol();
+    MCSymbol *EndLabel = MF->getContext().createTempSymbol();
+    MF->addInvoke(PadMBB, BeginLabel, EndLabel);
+    BuildMI(MBB, Begin, DebugLoc(), TII->get(TargetOpcode::EH_LABEL))
+        .addSym(BeginLabel);
+    BuildMI(MBB, End, DebugLoc(), TII->get(TargetOpcode::EH_LABEL))
+        .addSym(EndLabel);
+  }
+
+  // A pad only markers reach, which no range came to name, is one nothing can
+  // land in: it is no continuation target, and it loses the marker edges that
+  // kept it alive.
+  for (MachineBasicBlock &MBB : *MF) {
+    const BasicBlock *BB = MBB.getBasicBlock();
+    if (!BB || MarkerKind(BB->getTerminator()) == Intrinsic::not_intrinsic)
+      continue;
+    for (MachineBasicBlock *Succ : llvm::to_vector(MBB.successors())) {
+      if (!Succ->isEHPad() ||
+          !MF->getOrCreateLandingPadInfo(Succ).BeginLabels.empty())
+        continue;
+      Succ->removePHIsIncomingValuesForPredecessor(MBB);
+      MBB.removeSuccessor(Succ);
+      Succ->setIsEHContTarget(false);
+    }
+  }
+}
+
 /// isFoldedOrDeadInstruction - Return true if the specified instruction is
 /// side-effect free and is either dead or folded into a generated instruction.
 /// Return false if it needs to be emitted.
@@ -1958,8 +2076,12 @@ void SelectionDAGISel::SelectAllBasicBlocks(const Function &Fn) {
   }
 
   // AsynchEH: Report Block State under -AsynchEH
-  if (Fn.getParent()->getModuleFlag("eh-asynch"))
-    reportIPToStateForBlocks(MF);
+  if (Fn.getParent()->getModuleFlag("eh-asynch")) {
+    if (MF->getWinEHFuncInfo())
+      reportIPToStateForBlocks(MF);
+    else
+      reportFaultScopesForBlocks(MF);
+  }
 
   SP->copyToMachineFrameInfo(MF->getFrameInfo());
 
