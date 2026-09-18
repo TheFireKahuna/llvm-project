@@ -1,0 +1,172 @@
+# HandleWindowsItaniumDefaults.cmake - Windows Itanium runtime build defaults
+#
+# See: https://llvm.org/docs/HowToBuildWindowsItaniumPrograms.html
+
+include_guard(GLOBAL)
+
+include(DetectWindowsItanium)
+
+option(RUNTIMES_WINDOWS_ITANIUM_DEFAULTS
+  "Apply recommended configuration for Windows Itanium runtimes"
+  ${WIN32_ITANIUM})
+
+if(NOT RUNTIMES_WINDOWS_ITANIUM_DEFAULTS)
+  return()
+endif()
+
+message(STATUS "Applying Windows Itanium defaults (RUNTIMES_WINDOWS_ITANIUM_DEFAULTS=ON)")
+
+# Set cache variable only if not already defined.
+function(set_windows_itanium_default var value type docstring)
+  if(NOT DEFINED ${var})
+    set(${var} ${value} CACHE ${type} "${docstring}")
+  endif()
+endfunction()
+
+#===------------------------------------------------------------------------===#
+# Compiler Definitions
+#===------------------------------------------------------------------------===#
+
+# Suppress MSVC CRT deprecation warnings. The driver provides
+# _CRT_SECURE_NO_WARNINGS; add remaining suppression macros here.
+add_compile_definitions(
+  _CRT_NONSTDC_NO_WARNINGS
+  _SCL_SECURE_NO_WARNINGS
+)
+
+#===------------------------------------------------------------------------===#
+# Linker Configuration
+#===------------------------------------------------------------------------===#
+
+# LLD required for auto-import; MS link.exe lacks support.
+if(NOT DEFINED LLVM_ENABLE_LLD AND NOT DEFINED LLVM_USE_LINKER)
+  set(LLVM_ENABLE_LLD ON CACHE BOOL "Use LLD linker")
+endif()
+
+#===------------------------------------------------------------------------===#
+# libunwind Configuration
+#===------------------------------------------------------------------------===#
+
+set_windows_itanium_default(LIBUNWIND_ENABLE_SHARED ON BOOL
+  "Build libunwind as shared library")
+set_windows_itanium_default(LIBUNWIND_ENABLE_STATIC OFF BOOL
+  "Build libunwind as static library")
+set_windows_itanium_default(LIBUNWIND_USE_COMPILER_RT OFF BOOL
+  "Use compiler-rt instead of libgcc")
+
+#===------------------------------------------------------------------------===#
+# libc++abi Configuration
+#===------------------------------------------------------------------------===#
+
+# Static libc++abi linked into libc++ DLL to break circular dependency.
+set_windows_itanium_default(LIBCXXABI_ENABLE_SHARED OFF BOOL
+  "Build libc++abi as shared library")
+set_windows_itanium_default(LIBCXXABI_ENABLE_STATIC ON BOOL
+  "Build libc++abi as static library")
+set_windows_itanium_default(LIBCXXABI_ENABLE_THREADS ON BOOL
+  "Build with threads enabled")
+set_windows_itanium_default(LIBCXXABI_HAS_WIN32_THREAD_API ON BOOL
+  "Use win32 thread API")
+set_windows_itanium_default(LIBCXXABI_USE_COMPILER_RT OFF BOOL
+  "Use compiler-rt")
+
+#===------------------------------------------------------------------------===#
+# libc++ Configuration
+#===------------------------------------------------------------------------===#
+
+set_windows_itanium_default(LIBCXX_ENABLE_SHARED ON BOOL
+  "Build libc++ as shared library")
+set_windows_itanium_default(LIBCXX_ENABLE_STATIC OFF BOOL
+  "Build libc++ as static library")
+set_windows_itanium_default(LIBCXX_ABI_FORCE_ITANIUM ON BOOL
+  "Force Itanium ABI")
+set_windows_itanium_default(LIBCXX_HAS_WIN32_THREAD_API ON BOOL
+  "Use win32 thread API")
+set_windows_itanium_default(LIBCXX_CXX_ABI "libcxxabi" STRING
+  "C++ ABI library")
+set_windows_itanium_default(LIBCXX_ENABLE_STATIC_ABI_LIBRARY ON BOOL
+  "Use static ABI library")
+# _LIBCPP_NO_VCRUNTIME only changes libc++ under the Microsoft ABI; here its
+# sole effect would be the libcpp-no-vcruntime test feature, which expects
+# sized operator delete not to reach an image's replacement. c++local.lib
+# forwards it, so the expectation does not hold.
+set_windows_itanium_default(LIBCXX_NO_VCRUNTIME OFF BOOL
+  "No VC runtime dependency")
+set_windows_itanium_default(LIBCXX_USE_COMPILER_RT OFF BOOL
+  "Use compiler-rt")
+set_windows_itanium_default(LIBCXX_INSTALL_MODULES ON BOOL
+  "Install C++ module sources for import std")
+  
+#===------------------------------------------------------------------------===#
+# compiler-rt Configuration
+#===------------------------------------------------------------------------===#
+#
+# builtins are needed when *_USE_COMPILER_RT is ON for any runtime.
+# wincrt provides CRT entry points when libc is NOT providing startup.
+
+
+# Check if any runtime wants compiler-rt builtins.
+set(_use_compiler_rt OFF)
+if(LIBUNWIND_USE_COMPILER_RT OR LIBCXXABI_USE_COMPILER_RT OR LIBCXX_USE_COMPILER_RT)
+  set(_use_compiler_rt ON)
+endif()
+
+# wincrt bridges UCRT with Itanium C++ ABI (__cxa_atexit, entry points,
+# security cookie). Required for correct C++ DLL semantics with --rtlib=compiler-rt.
+if(_use_compiler_rt)
+  set_windows_itanium_default(COMPILER_RT_BUILD_WINCRT ON BOOL
+    "Build UCRT bridge for Windows Itanium")
+endif()
+
+#===------------------------------------------------------------------------===#
+# compiler-rt Configuration
+#===------------------------------------------------------------------------===#
+
+set_windows_itanium_default(COMPILER_RT_BUILD_SANITIZERS OFF BOOL
+  "Sanitizers disabled")
+set_windows_itanium_default(COMPILER_RT_BUILD_XRAY OFF BOOL
+  "Unused compiler-rt runtime component")
+set_windows_itanium_default(COMPILER_RT_BUILD_LIBFUZZER OFF BOOL
+  "Unused compiler-rt runtime component")
+set_windows_itanium_default(COMPILER_RT_BUILD_PROFILE OFF BOOL
+  "Unused compiler-rt runtime component")
+set_windows_itanium_default(COMPILER_RT_BUILD_CTX_PROFILE OFF BOOL
+  "Unused compiler-rt runtime component")
+set_windows_itanium_default(COMPILER_RT_BUILD_MEMPROF OFF BOOL
+  "Unused compiler-rt runtime component")
+set_windows_itanium_default(COMPILER_RT_BUILD_ORC OFF BOOL
+  "Unused compiler-rt runtime component")
+set_windows_itanium_default(COMPILER_RT_BUILD_GWP_ASAN OFF BOOL
+  "Unused compiler-rt runtime component")
+
+# Windows Itanium uses c++.lib naming (no 'lib' prefix) to match Clang's
+# -lc++ expectations. Override the static library prefix set in libcxx/src.
+set(CMAKE_STATIC_LIBRARY_PREFIX "" CACHE STRING "No lib prefix on Windows")
+
+#===------------------------------------------------------------------------===#
+# Configuration Validation
+#===------------------------------------------------------------------------===#
+
+if(LIBCXXABI_ENABLE_SHARED AND LIBCXX_ENABLE_SHARED)
+  message(WARNING
+    "Windows Itanium: Building both libc++abi and libc++ as shared libraries "
+    "may cause circular dependency issues. The recommended configuration is "
+    "LIBCXXABI_ENABLE_SHARED=OFF with LIBCXX_ENABLE_STATIC_ABI_LIBRARY=ON.")
+endif()
+
+set(using_lld OFF)
+if(LLVM_ENABLE_LLD)
+  set(using_lld ON)
+elseif(LLVM_USE_LINKER MATCHES "^lld")
+  set(using_lld ON)
+elseif(CMAKE_LINKER MATCHES "(^|/)(ld\\.)?lld(-link)?(\\.exe)?$")
+  set(using_lld ON)
+endif()
+
+if(NOT using_lld)
+  message(WARNING
+    "Windows Itanium: LLD is required for auto-import support. "
+    "Set LLVM_ENABLE_LLD=ON or LLVM_USE_LINKER=lld. "
+    "Current settings: LLVM_ENABLE_LLD=${LLVM_ENABLE_LLD}, "
+    "LLVM_USE_LINKER=${LLVM_USE_LINKER}, CMAKE_LINKER=${CMAKE_LINKER}")
+endif()

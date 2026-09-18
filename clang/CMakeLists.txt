@@ -699,6 +699,20 @@ if (CLANG_ENABLE_BOOTSTRAP)
       set(LTO_LIBRARY -DDARWIN_LTO_LIBRARY=${LLVM_SHLIB_OUTPUT_INTDIR}/libLTO.dylib
         -DDYLD_LIBRARY_PATH=${LLVM_LIBRARY_OUTPUT_INTDIR})
       set(${CLANG_STAGE}_LIBTOOL -DCMAKE_LIBTOOL=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-libtool-darwin)
+    elseif(BOOTSTRAP_CMAKE_AR OR BOOTSTRAP_CMAKE_RANLIB)
+      if(BOOTSTRAP_CMAKE_AR)
+        set(${CLANG_STAGE}_AR -DCMAKE_AR=${BOOTSTRAP_CMAKE_AR})
+      endif()
+      if(BOOTSTRAP_CMAKE_RANLIB)
+        set(${CLANG_STAGE}_RANLIB -DCMAKE_RANLIB=${BOOTSTRAP_CMAKE_RANLIB})
+      endif()
+    elseif(BOOTSTRAP_LLVM_HOST_TRIPLE MATCHES ".*-windows-(itanium|ntposix).*"
+           OR LLVM_DEFAULT_TARGET_TRIPLE MATCHES ".*-windows-(itanium|ntposix).*"
+           OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+      # Windows Itanium and NT POSIX use GNU-style clang on Windows: use llvm-ar
+      add_dependencies(clang-bootstrap-deps llvm-ar llvm-ranlib)
+      set(${CLANG_STAGE}_AR -DCMAKE_AR=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-ar)
+      set(${CLANG_STAGE}_RANLIB -DCMAKE_RANLIB=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-ranlib)
     elseif(MSVC)
       add_dependencies(clang-bootstrap-deps llvm-lib)
       set(${CLANG_STAGE}_AR -DCMAKE_AR=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-lib)
@@ -770,8 +784,17 @@ if (CLANG_ENABLE_BOOTSTRAP)
   set(C_COMPILER "clang")
   set(CXX_COMPILER "clang++")
   if(WIN32)
-    set(C_COMPILER "clang-cl.exe")
-    set(CXX_COMPILER "clang-cl.exe")
+    if(LLVM_HOST_TRIPLE MATCHES ".*-windows-(itanium|ntposix).*"
+            OR LLVM_DEFAULT_TARGET_TRIPLE MATCHES ".*-windows-(itanium|ntposix).*"
+            OR BOOTSTRAP_LLVM_HOST_TRIPLE MATCHES ".*-windows-(itanium|ntposix).*")
+      # Windows Itanium and NT POSIX use GNU-style drivers with .exe extension.
+      set(C_COMPILER "clang.exe")
+      set(CXX_COMPILER "clang++.exe")
+    else()
+      # All other Windows targets use the MSVC-style driver
+      set(C_COMPILER "clang-cl.exe")
+      set(CXX_COMPILER "clang-cl.exe")
+    endif()
   endif()
 
   set(COMPILER_OPTIONS
@@ -788,10 +811,11 @@ if (CLANG_ENABLE_BOOTSTRAP)
     endif()
   endif()
 
-  if(BOOTSTRAP_CMAKE_SYSTEM_NAME)
+  if(BOOTSTRAP_CMAKE_SYSTEM_NAME OR
+     LLVM_DEFAULT_TARGET_TRIPLE MATCHES ".*-windows-ntposix.*")
     set(${CLANG_STAGE}_TABLEGEN
-      -DLLVM_TABLEGEN=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-tblgen
-      -DCLANG_TABLEGEN=${LLVM_RUNTIME_OUTPUT_INTDIR}/clang-tblgen)
+      -DLLVM_TABLEGEN=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-tblgen${CMAKE_EXECUTABLE_SUFFIX}
+      -DCLANG_TABLEGEN=${LLVM_RUNTIME_OUTPUT_INTDIR}/clang-tblgen${CMAKE_EXECUTABLE_SUFFIX})
     if(BOOTSTRAP_CMAKE_SYSTEM_NAME STREQUAL "Linux")
       if(BOOTSTRAP_LLVM_ENABLE_LLD)
         set(${CLANG_STAGE}_LINKER -DCMAKE_LINKER=${LLVM_RUNTIME_OUTPUT_INTDIR}/ld.lld)
@@ -914,6 +938,25 @@ if (CLANG_ENABLE_BOOTSTRAP)
     LIST_SEPARATOR |
     )
 
+  # Windows Itanium / NTPOSIX: PE/COFF has no RPATH, so stage 2 exes need
+  # stage 1's runtime DLLs next to them. ALWAYS ON because the staging dir's
+  # DLLs are rebuilt out-of-band by the stage 1 runtimes sub-build and the
+  # default stamp check doesn't see it; copy_if_different short-circuits.
+  set(_WI_COPY_DLLS_STEP "")
+  if(WIN32 AND BOOTSTRAP_LLVM_HOST_TRIPLE MATCHES ".*-windows-(itanium|ntposix).*")
+    set(_WI_STAGING_DIR "${CMAKE_BINARY_DIR}/runtimes/runtimes-${BOOTSTRAP_LLVM_HOST_TRIPLE}-bins/runtime-staging/bin")
+    ExternalProject_Add_Step(${NEXT_CLANG_STAGE} copy-runtime-dlls
+      COMMAND ${CMAKE_COMMAND}
+        -DSRC_DIR=${_WI_STAGING_DIR}
+        -DDST_DIR=<BINARY_DIR>/bin
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CopyRuntimeDLLs.cmake
+      DEPENDEES configure
+      ALWAYS ON
+      COMMENT "Copying runtime DLLs from ${_WI_STAGING_DIR} to ${NEXT_CLANG_STAGE}"
+    )
+    set(_WI_COPY_DLLS_STEP copy-runtime-dlls)
+  endif()
+
   # exclude really-install from main target
   set_target_properties(${NEXT_CLANG_STAGE} PROPERTIES _EP_really-install_EXCLUDE_FROM_MAIN On)
   ExternalProject_Add_Step(${NEXT_CLANG_STAGE} really-install
@@ -933,7 +976,7 @@ if (CLANG_ENABLE_BOOTSTRAP)
     ExternalProject_Add_Step(${NEXT_CLANG_STAGE} ${target}
       COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --target ${target}
       COMMENT "Performing ${target} for '${NEXT_CLANG_STAGE}'"
-      DEPENDEES configure
+      DEPENDEES configure ${_WI_COPY_DLLS_STEP}
       # We need to set ALWAYS to ON here, otherwise these targets won't be
       # built on a second invocation of ninja.  The targets have their own
       # logic to determine if they should build or not so setting ALWAYS ON

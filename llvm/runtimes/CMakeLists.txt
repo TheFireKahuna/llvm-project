@@ -152,6 +152,8 @@ function(builtin_register_target compiler_rt_path name)
                            ${EXTRA_ARGS} ${ARG_EXTRA_ARGS})
 endfunction()
 
+include(LLVMWinCRT)
+
 # If compiler-rt is present we need to build the builtin libraries first. This
 # is required because the other runtimes need the builtin libraries present
 # before the just-built compiler can pass the configuration tests.
@@ -200,6 +202,74 @@ if(compiler_rt_path)
   # because the next stage will use the same compiler used to build this stage.
   if(NOT LLVM_BUILD_INSTRUMENTED AND CLANG_ENABLE_BOOTSTRAP)
     add_dependencies(clang-bootstrap-deps builtins)
+  endif()
+endif()
+
+# Windows Itanium CRT startup library. Built after builtins but before other
+# runtimes, so libunwind/libc++abi/libc++ DLLs can link against it.
+if(compiler_rt_path AND WIN32)
+  # Build wincrt if targeting Windows Itanium or explicitly requested.
+  set(wincrt_targets ${LLVM_WINCRT_TARGETS})
+  if(NOT wincrt_targets)
+    foreach(name ${LLVM_RUNTIME_TARGETS})
+      # Skip if explicitly disabled for this target.
+      if(DEFINED RUNTIMES_${name}_COMPILER_RT_BUILD_WINCRT
+          AND NOT RUNTIMES_${name}_COMPILER_RT_BUILD_WINCRT)
+        continue()
+      endif()
+      # libc provides its own startup — wincrt is not needed.
+      if("libc" IN_LIST LLVM_ENABLE_RUNTIMES
+          OR "libc" IN_LIST RUNTIMES_${name}_LLVM_ENABLE_RUNTIMES)
+        continue()
+      endif()
+      if(name MATCHES "itanium" OR RUNTIMES_${name}_COMPILER_RT_BUILD_WINCRT)
+        list(APPEND wincrt_targets ${name})
+      endif()
+    endforeach()
+    # Auto-detect the default-triple build if targeting Windows Itanium or
+    # explicitly requested. A named runtime target with the same triple
+    # already covers it — the default and named ExternalProjects would build
+    # the same wincrt and install it into the same per-target directory — so
+    # only register "default" when no named target matches the default triple.
+    if((LLVM_TARGET_TRIPLE MATCHES "itanium" OR COMPILER_RT_BUILD_WINCRT)
+        AND NOT LLVM_TARGET_TRIPLE IN_LIST wincrt_targets)
+      # libc provides its own startup — wincrt is not needed.
+      if(NOT "libc" IN_LIST LLVM_ENABLE_RUNTIMES)
+        list(APPEND wincrt_targets "default")
+      endif()
+    endif()
+  endif()
+
+  if(wincrt_targets)
+    if("default" IN_LIST wincrt_targets)
+      wincrt_default_target(${compiler_rt_path}
+        DEPENDS ${builtins_dep} clang-resource-headers)
+      list(REMOVE_ITEM wincrt_targets "default")
+    else()
+      add_custom_target(wincrt)
+      add_custom_target(install-wincrt)
+      add_custom_target(install-wincrt-stripped)
+      set_target_properties(
+        wincrt install-wincrt install-wincrt-stripped
+        PROPERTIES FOLDER "Compiler-RT"
+      )
+    endif()
+
+    foreach(target ${wincrt_targets})
+      wincrt_register_target(${compiler_rt_path} ${target}
+        DEPENDS ${builtins_dep} clang-resource-headers
+        CMAKE_ARGS -DLLVM_DEFAULT_TARGET_TRIPLE=${target}
+        EXTRA_ARGS TARGET_TRIPLE ${target})
+
+      add_dependencies(wincrt wincrt-${target})
+      add_dependencies(install-wincrt install-wincrt-${target})
+      add_dependencies(install-wincrt-stripped install-wincrt-${target}-stripped)
+    endforeach()
+
+    set(wincrt_dep wincrt)
+    if(NOT LLVM_BUILD_INSTRUMENTED AND CLANG_ENABLE_BOOTSTRAP)
+      add_dependencies(clang-bootstrap-deps wincrt)
+    endif()
   endif()
 endif()
 
@@ -278,6 +348,10 @@ function(runtime_default_target)
     set_property(GLOBAL APPEND PROPERTY LLVM_ALL_LIT_TESTSUITES "@${LLVM_BINARY_DIR}/runtimes/runtimes-bins/lit.tests")
     list(APPEND test_targets runtimes-test-depends check-runtimes check-builtins)
     list(APPEND ARG_CMAKE_ARGS "-DCOMPILER_RT_TEST_EXTERNAL_BUILTINS=ON")
+    if(TARGET wincrt AND LLVM_TARGET_TRIPLE MATCHES "windows-itanium")
+      list(APPEND ARG_CMAKE_ARGS "-DCOMPILER_RT_TEST_EXTERNAL_WINCRT=ON")
+      list(APPEND test_targets check-crt)
+    endif()
   endif()
 
   set_enable_per_target_runtime_dir()
@@ -393,6 +467,12 @@ function(runtime_register_target name)
       set(check-builtins-${name} check-builtins)
       list(APPEND ${name}_test_targets check-builtins-${name})
       list(APPEND test_targets check-builtins-${name})
+    endif()
+    if(TARGET wincrt-${name} AND name MATCHES "windows-itanium")
+      list(APPEND ARG_CMAKE_ARGS "-DCOMPILER_RT_TEST_EXTERNAL_WINCRT=ON")
+      set(check-crt-${name} check-crt)
+      list(APPEND ${name}_test_targets check-crt-${name})
+      list(APPEND test_targets check-crt-${name})
     endif()
     set(test_targets "${test_targets}" PARENT_SCOPE)
   endif()
@@ -537,7 +617,7 @@ if(build_runtimes)
         list(APPEND extra_deps ${dep})
       endif()
     endforeach()
-    if(WIN32)
+    if(WIN32 AND TARGET KillTheDoctor)
       list(APPEND extra_deps KillTheDoctor)
     endif()
   endif()
@@ -545,11 +625,13 @@ if(build_runtimes)
   # Forward user-provived system configuration to runtimes for requirement introspection.
   # CMAKE_PREFIX_PATH is the search path for CMake packages.
   if(CMAKE_PREFIX_PATH)
-    list(APPEND extra_cmake_args "-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}")
+    string(REPLACE ";" "|" runtime_cmake_prefix_path "${CMAKE_PREFIX_PATH}")
+    list(APPEND extra_cmake_args "-DCMAKE_PREFIX_PATH=${runtime_cmake_prefix_path}")
   endif()
   # CMAKE_PROGRAM_PATH is the search path for executables such as python.
   if(CMAKE_PROGRAM_PATH)
-    list(APPEND extra_cmake_args "-DCMAKE_PROGRAM_PATH=${CMAKE_PROGRAM_PATH}")
+    string(REPLACE ";" "|" runtime_cmake_program_path "${CMAKE_PROGRAM_PATH}")
+    list(APPEND extra_cmake_args "-DCMAKE_PROGRAM_PATH=${runtime_cmake_program_path}")
   endif()
 
   # TODO: We need to consider passing it as '-DRUNTIMES_x86_64_LLVM_ENABLE_RUNTIMES'.
@@ -614,7 +696,7 @@ if(build_runtimes)
 
   if(NOT LLVM_RUNTIME_TARGETS)
     runtime_default_target(
-      DEPENDS ${builtins_dep} ${extra_deps}
+      DEPENDS ${builtins_dep} ${wincrt_dep} ${extra_deps}
       CMAKE_ARGS ${extra_cmake_args}
       PREFIXES ${prefixes}
       EXTRA_ARGS ${extra_args})
@@ -622,7 +704,7 @@ if(build_runtimes)
   else()
     if("default" IN_LIST LLVM_RUNTIME_TARGETS)
       runtime_default_target(
-        DEPENDS ${builtins_dep} ${extra_deps}
+        DEPENDS ${builtins_dep} ${wincrt_dep} ${extra_deps}
         CMAKE_ARGS ${extra_cmake_args}
         PREFIXES ${prefixes}
         EXTRA_ARGS ${extra_args})
@@ -677,11 +759,18 @@ if(build_runtimes)
           set(builtins_dep_name ${builtins_dep})
         endif()
       endif()
+      if(wincrt_dep)
+        if (LLVM_WINCRT_TARGETS)
+          set(wincrt_dep_name "${wincrt_dep}-${name}")
+        else()
+          set(wincrt_dep_name ${wincrt_dep})
+        endif()
+      endif()
 
       check_apple_target(${name} runtime)
 
       runtime_register_target(${name}
-        DEPENDS ${builtins_dep_name} ${extra_deps}
+        DEPENDS ${builtins_dep_name} ${wincrt_dep_name} ${extra_deps}
         CMAKE_ARGS -DLLVM_DEFAULT_TARGET_TRIPLE=${name} ${extra_cmake_args}
         EXTRA_ARGS TARGET_TRIPLE ${name} ${extra_args})
     endforeach()
@@ -710,6 +799,13 @@ if(build_runtimes)
     # We need to add the runtimes as a dependency because compiler-rt can be
     # built as part of runtimes and we need the profile runtime for PGO
     add_dependencies(clang-bootstrap-deps runtimes)
+    # The bootstrap build will attempt to configure the offload runtime
+    # before the openmp project which will error out due to failing to
+    # find libomp.so. We must add omp as a dependency before runtimes
+    # are configured.
+    if("openmp" IN_LIST LLVM_ENABLE_PROJECTS AND "offload" IN_LIST LLVM_ENABLE_RUNTIMES)
+      add_dependencies(clang-bootstrap-deps omp)
+    endif()
   endif()
 
   if(LLVM_INCLUDE_TESTS)

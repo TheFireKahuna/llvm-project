@@ -98,13 +98,30 @@ if (LLVM_LIBRARY_DIR AND LLVM_TOOLS_BINARY_DIR AND PACKAGE_VERSION)
   set(LLVM_TREE_AVAILABLE ON)
 endif()
 
+# Windows Itanium ABI support - detect target and apply recommended defaults.
+include(HandleWindowsItaniumDefaults)
+# NTPOSIX (POSIX-on-NT) support - detect target and apply recommended defaults.
+include(HandleNTPOSIXDefaults)
+include(DetectMSVCLike)
+
 if(LLVM_TREE_AVAILABLE)
-  # Setting these variables will allow the sub-build to put their outputs into
-  # the library and bin directories of the top-level build.
-  set(LLVM_LIBRARY_OUTPUT_INTDIR ${LLVM_LIBRARY_DIR})
-  set(LLVM_RUNTIME_OUTPUT_INTDIR ${LLVM_TOOLS_BINARY_DIR})
+  if(WIN32_ITANIUM OR WIN32_NTPOSIX)
+    # Windows Itanium/NTPOSIX: stage only DLLs to avoid file locking during
+    # parallel builds. Keep .lib files in the standard location (LLVM_LIBRARY_DIR)
+    # so the linker can find them - the driver adds ../lib to the library search
+    # path. DLLs go to a staging directory to prevent conflicts when ninja runs
+    # clang.exe (which loads DLLs) while rebuilding them.
+    set(_WI_RUNTIME_STAGING_DIR "${CMAKE_BINARY_DIR}/runtime-staging")
+    set(LLVM_LIBRARY_OUTPUT_INTDIR ${LLVM_LIBRARY_DIR})
+    set(LLVM_RUNTIME_OUTPUT_INTDIR "${_WI_RUNTIME_STAGING_DIR}/bin")
+    message(STATUS "Staging DLLs to ${_WI_RUNTIME_STAGING_DIR}/bin")
+  else()
+    # Standard: output directly to top-level build directories.
+    set(LLVM_LIBRARY_OUTPUT_INTDIR ${LLVM_LIBRARY_DIR})
+    set(LLVM_RUNTIME_OUTPUT_INTDIR ${LLVM_TOOLS_BINARY_DIR})
+  endif()
 else()
-  # Use own build directory for artifact output.
+  # Standalone build: use own build directory for artifact output.
   set(LLVM_LIBRARY_OUTPUT_INTDIR "${CMAKE_BINARY_DIR}/${CMAKE_CFG_INTDIR}/lib${LLVM_LIBDIR_SUFFIX}")
   set(LLVM_RUNTIME_OUTPUT_INTDIR "${CMAKE_BINARY_DIR}/${CMAKE_CFG_INTDIR}/bin")
 endif()
@@ -203,6 +220,13 @@ set(LLVM_COMPILER_CHECKED ON)
 include(AddLLVM)
 include(HandleLLVMOptions)
 
+# Windows Itanium/NTPOSIX: install staged DLLs. Requires GNUInstallDirs from AddLLVM
+if(LLVM_TREE_AVAILABLE AND (WIN32_ITANIUM OR WIN32_NTPOSIX))
+  install(DIRECTORY "${_WI_RUNTIME_STAGING_DIR}/bin/"
+          DESTINATION "${CMAKE_INSTALL_BINDIR}"
+          FILES_MATCHING PATTERN "*.dll")
+endif()
+
 # Loot at the PATH first to avoid a version mismatch between the command-line
 # python and the CMake-found version
 set(Python3_FIND_REGISTRY LAST)
@@ -223,7 +247,7 @@ set(LLVM_TARGET_TRIPLE "${LLVM_DEFAULT_TARGET_TRIPLE}")
 
 if(CMAKE_C_COMPILER_ID MATCHES "Clang")
   set(option_prefix "")
-  if (CMAKE_C_SIMULATE_ID MATCHES "MSVC")
+  if (CMAKE_C_COMPILER_FRONTEND_VARIANT MATCHES "MSVC")
     set(option_prefix "/clang:")
   endif()
   set(print_target_triple ${CMAKE_C_COMPILER} ${option_prefix}--target=${LLVM_DEFAULT_TARGET_TRIPLE} ${option_prefix}-print-target-triple)
