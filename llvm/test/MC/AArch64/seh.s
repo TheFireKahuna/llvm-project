@@ -21,8 +21,8 @@
 // CHECK-NEXT:   }
 // CHECK:        Section {
 // CHECK:          Name: .xdata
-// CHECK:          RawDataSize: 108
-// CHECK:          RelocationCount: 1
+// CHECK:          RawDataSize: 120
+// CHECK:          RelocationCount: 2
 // CHECK:          Characteristics [
 // CHECK-NEXT:       ALIGN_4BYTES
 // CHECK-NEXT:       CNT_INITIALIZED_DATA
@@ -31,7 +31,7 @@
 // CHECK-NEXT:   }
 // CHECK:        Section {
 // CHECK:          Name: .pdata
-// CHECK:          RelocationCount: 4
+// CHECK:          RelocationCount: 6
 // CHECK:          Characteristics [
 // CHECK-NEXT:       ALIGN_4BYTES
 // CHECK-NEXT:       CNT_INITIALIZED_DATA
@@ -43,12 +43,15 @@
 // CHECK-NEXT: Relocations [
 // CHECK-NEXT:   Section (4) .xdata {
 // CHECK-NEXT:     0x54 IMAGE_REL_ARM64_ADDR32NB __C_specific_handler
+// CHECK-NEXT:     0x70 IMAGE_REL_ARM64_ADDR32NB __C_specific_handler
 // CHECK-NEXT:   }
 // CHECK-NEXT:   Section (5) .pdata {
 // CHECK-NEXT:     0x0 IMAGE_REL_ARM64_ADDR32NB .text
 // CHECK-NEXT:     0x4 IMAGE_REL_ARM64_ADDR32NB .xdata
 // CHECK-NEXT:     0x8 IMAGE_REL_ARM64_ADDR32NB .text
 // CHECK-NEXT:     0xC IMAGE_REL_ARM64_ADDR32NB .xdata
+// CHECK-NEXT:     0x10 IMAGE_REL_ARM64_ADDR32NB .text
+// CHECK-NEXT:     0x14 IMAGE_REL_ARM64_ADDR32NB .xdata
 // CHECK-NEXT:   }
 // CHECK-NEXT: ]
 
@@ -125,6 +128,27 @@
 // CHECK-NEXT:         0xe4                ; end
 // CHECK-NEXT:       ]
 // CHECK-NEXT:       EpilogueScopes [
+// CHECK-NEXT:       ]
+// CHECK-NEXT:     }
+// CHECK-NEXT:   }
+// CHECK-NEXT:   RuntimeFunction {
+// CHECK-NEXT:     Function: handlerFunc
+// CHECK-NEXT:     ExceptionRecord: .xdata
+// CHECK-NEXT:     ExceptionData {
+// CHECK-NEXT:       FunctionLength: 4
+// CHECK-NEXT:       Version: 0
+// CHECK-NEXT:       ExceptionData: Yes
+// CHECK-NEXT:       EpiloguePacked: No
+// CHECK-NEXT:       EpilogueScopes: 0
+// CHECK-NEXT:       ByteCodeLength: 4
+// CHECK-NEXT:       Prologue [
+// CHECK-NEXT:         0xe4                ; end
+// CHECK-NEXT:       ]
+// CHECK-NEXT:       EpilogueScopes [
+// CHECK-NEXT:       ]
+// CHECK-NEXT:       ExceptionHandler [
+// CHECK-NEXT:         Routine: __C_specific_handler (0x0)
+// CHECK-NEXT:         Parameter: 0x0
 // CHECK-NEXT:       ]
 // CHECK-NEXT:     }
 // CHECK-NEXT:   }
@@ -250,10 +274,9 @@ smallFunc:
     ret
     .seh_endproc
 
-    // Function with no .seh directives, but with .seh_handlerdata.
-    // No xdata/pdata entries are generated, but the custom handler data
-    // (the .long after .seh_handlerdata) is left orphaned in the xdata
-    // section.
+    // Function with no .seh directives, but with .seh_handlerdata. The
+    // handler is what makes the record necessary: it is emitted with a prolog
+    // of one end opcode, followed by the custom handler data.
     .globl handlerFunc
     .def handlerFunc
     .scl 2

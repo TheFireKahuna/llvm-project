@@ -2199,6 +2199,13 @@ static void ARM64EmitUnwindInfoForSegment(MCStreamer &streamer,
       return;
   }
 
+  // A prolog with no unwind codes — a frameless function that still needs a
+  // record, for its exception handler — is one end opcode, which takes 1
+  // byte.
+  bool EmptyProlog = HasProlog && info->Instructions.empty();
+  if (EmptyProlog)
+    PrologCodeBytes += 1;
+
   // If the prolog is not in this segment, we need to emit an end_c, which takes
   // 1 byte, before prolog unwind ops.
   if (!HasProlog) {
@@ -2279,6 +2286,9 @@ static void ARM64EmitUnwindInfoForSegment(MCStreamer &streamer,
   if (!HasProlog)
     // Emit an end_c.
     streamer.emitInt8((uint8_t)0xE5);
+  else if (EmptyProlog)
+    // Emit an end.
+    streamer.emitInt8((uint8_t)0xE4);
 
   // Emit prolog unwind instructions (in reverse order).
   for (auto Inst : llvm::reverse(info->Instructions))
@@ -2311,10 +2321,12 @@ static void ARM64EmitUnwindInfo(MCStreamer &streamer, WinEH::FrameInfo *info,
   if (info->Symbol)
     return;
   // If there's no unwind info here (not even a terminating UOP_End), the
-  // unwind info is considered bogus and skipped. If this was done in
-  // response to an explicit .seh_handlerdata, the associated trailing
-  // handler data is left orphaned in the xdata section.
-  if (info->empty()) {
+  // unwind info is considered bogus and skipped, unless the function handles
+  // exceptions: a frameless leaf with a landing pad still needs the record
+  // that names its handler. If this was done in response to an explicit
+  // .seh_handlerdata, the associated trailing handler data is left orphaned
+  // in the xdata section.
+  if (info->empty() && !info->HandlesExceptions) {
     info->EmitAttempted = true;
     return;
   }
@@ -3497,7 +3509,7 @@ void llvm::Win64EH::ARM64UnwindEmitter::Emit(MCStreamer &Streamer) const {
   // Emit the unwind info structs first.
   for (const auto &CFI : Streamer.getWinFrameInfos()) {
     WinEH::FrameInfo *Info = CFI.get();
-    if (Info->empty())
+    if (Info->empty() && !Info->HandlesExceptions)
       continue;
     MCSection *XData = Streamer.getAssociatedXDataSection(CFI->TextSection);
     Streamer.switchSection(XData);

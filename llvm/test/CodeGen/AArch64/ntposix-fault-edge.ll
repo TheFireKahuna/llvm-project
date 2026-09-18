@@ -1,6 +1,7 @@
 ; RUN: llc -O2 -verify-machineinstrs -mtriple=aarch64-pc-windows-ntposix < %s | FileCheck %s
 ; RUN: llc -O0 -verify-machineinstrs -mtriple=aarch64-pc-windows-ntposix < %s | FileCheck %s
 ; RUN: llc -O0 -verify-machineinstrs -mtriple=aarch64-pc-windows-ntposix -global-isel=false -fast-isel=false < %s | FileCheck %s
+; RUN: llc -O2 -mtriple=aarch64-pc-windows-ntposix -filetype=obj < %s | llvm-readobj --unwind - | FileCheck %s --check-prefix=UNWIND
 
 ; An invoke of llvm.fault.* is the memory access itself between the invoke's
 ; labels: its call-site range names the landing pad, and the pad is a
@@ -55,3 +56,27 @@ exception:
   call void @cleanup_effect()
   resume { ptr, i32 } %value
 }
+
+; A frameless leaf whose only pad traps still gets an unwind record naming
+; its handler: without one the pad is a continuation target in no described
+; function.
+; CHECK-LABEL: trap_leaf:
+; CHECK: .seh_handler rust_eh_personality, @unwind, @except
+; CHECK: brk #0x1
+; UNWIND: Function: trap_leaf
+; UNWIND: ByteCodeLength: 4
+; UNWIND: 0xe4 ; end
+; UNWIND: ExceptionHandler [
+; UNWIND-NEXT: Routine: rust_eh_personality
+define i64 @trap_leaf(ptr %p) personality ptr @rust_eh_personality {
+entry:
+  %v = invoke i64 @llvm.fault.load.i64.p0(ptr %p, i32 8) to label %normal unwind label %exception
+normal:
+  ret i64 %v
+exception:
+  %value = landingpad { ptr, i32 } filter [0 x ptr] zeroinitializer
+  call void @llvm.trap()
+  unreachable
+}
+
+declare void @llvm.trap()
