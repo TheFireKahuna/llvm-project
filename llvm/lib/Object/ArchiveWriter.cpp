@@ -38,12 +38,6 @@
 #include <cerrno>
 #include <map>
 
-#if !defined(_MSC_VER) && !defined(__MINGW32__)
-#include <unistd.h>
-#else
-#include <io.h>
-#endif
-
 using namespace llvm;
 using namespace llvm::object;
 

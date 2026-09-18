@@ -30,11 +30,6 @@
 #include <new>
 #include <sys/types.h>
 #include <system_error>
-#if !defined(_MSC_VER) && !defined(__MINGW32__)
-#include <unistd.h>
-#else
-#include <io.h>
-#endif
 
 using namespace llvm;
 

@@ -18,12 +18,6 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 
-#if !defined(_MSC_VER) && !defined(__MINGW32__)
-#include <unistd.h>
-#else
-#include <io.h>
-#endif
-
 using namespace llvm;
 
 Expected<FileCache> llvm::localCache(const Twine &CacheNameRef,
