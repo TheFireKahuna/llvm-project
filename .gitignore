@@ -87,3 +87,15 @@ pythonenv*
 /clang/utils/analyzer/projects/*/RefScanBuildResults
 # automodapi puts generated documentation files here.
 /lldb/docs/python_api/
+*.exe
+*.bin
+*.obj
+utils/parallels/prlctl-windows-vm.sh
+/scratch
+/smoke-tests
+*.tmp
+/dual-bench
+*.log
+*.diag
+*.lldb
+/utils/parallels
