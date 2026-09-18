@@ -51,6 +51,8 @@
 #include "ToolChains/UEFI.h"
 #include "ToolChains/VEToolchain.h"
 #include "ToolChains/WebAssembly.h"
+#include "ToolChains/NTPOSIX.h"
+#include "ToolChains/WindowsItanium.h"
 #include "ToolChains/XCore.h"
 #include "ToolChains/ZOS.h"
 #include "clang/Basic/DiagnosticDriver.h"
@@ -113,7 +115,7 @@
 #include <set>
 #include <string>
 #include <utility>
-#if LLVM_ON_UNIX
+#if defined(LLVM_RUNTIME_POSIX)
 #include <unistd.h> // getpid
 #endif
 
@@ -1922,7 +1924,7 @@ bool Driver::getCrashDiagnosticFile(StringRef ReproCrashFilename,
     CrashDiagDir = "/";
   path::append(CrashDiagDir, "Library/Logs/DiagnosticReports");
   int PID =
-#if LLVM_ON_UNIX
+#if defined(LLVM_RUNTIME_POSIX)
       getpid();
 #else
       0;
@@ -7109,8 +7111,11 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
         TC = std::make_unique<toolchains::Cygwin>(*this, Target, Args);
         break;
       case llvm::Triple::Itanium:
-        TC = std::make_unique<toolchains::CrossWindowsToolChain>(*this, Target,
-                                                                  Args);
+        TC = std::make_unique<toolchains::WindowsItaniumToolChain>(*this, Target,
+                                                                   Args);
+        break;
+      case llvm::Triple::NTPOSIX:
+        TC = std::make_unique<toolchains::NTPOSIXToolChain>(*this, Target, Args);
         break;
       case llvm::Triple::MSVC:
       case llvm::Triple::UnknownEnvironment:

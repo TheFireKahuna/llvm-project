@@ -145,6 +145,14 @@ private:
   LazyDetector<SYCLInstallationDetector> SYCLInstallation;
 };
 
+/// Expands the clang-cl arguments whose meaning does not depend on the
+/// toolchain: /O..., /permissive, /permissive- and -Dname#value. Shared by
+/// every Windows toolchain that accepts clang-cl arguments.
+llvm::opt::DerivedArgList *
+translateMSVCCompatibleArgs(const ToolChain &TC,
+                            const llvm::opt::DerivedArgList &Args,
+                            Action::OffloadKind OFK);
+
 } // end namespace toolchains
 } // end namespace driver
 } // end namespace clang

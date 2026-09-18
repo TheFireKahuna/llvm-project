@@ -6556,6 +6556,10 @@ def start_no_unused_arguments : Flag<["--"], "start-no-unused-arguments">,
   Visibility<[ClangOption, CLOption, DXCOption]>,
   HelpText<"Don't emit warnings about unused arguments for the following arguments">;
 def static_libgcc : Flag<["-"], "static-libgcc">;
+def static_libc : Flag<["-"], "static-libc">,
+  HelpText<"Statically link llvm-libc instead of linking against the c.dll "
+           "import library. Strips the default -D_LIBC_DLL consumer-side "
+           "annotation.">;
 def static_libstdcxx : Flag<["-"], "static-libstdc++">;
 def static_libclosure : Flag<["-"], "static-libclosure">,
     Visibility<[ClangOption, CC1Option]>,

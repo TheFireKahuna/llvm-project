@@ -1,0 +1,2 @@
+// Placeholder header for target-specific libc++ path testing.
+// This file exists to make the directory detectable by the VFS.
