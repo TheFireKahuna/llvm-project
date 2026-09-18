@@ -653,7 +653,11 @@ void X86FrameLowering::emitStackProbe(
 }
 
 bool X86FrameLowering::stackProbeFunctionModifiesSP() const {
-  return STI.isOSWindows() && !STI.isTargetWin64();
+  // On x86 Windows, the probe helpers adjust the stack pointer themselves.
+  // On x86_64, the standard probing helpers only touch intervening pages and
+  // leave the final stack pointer adjustment to the caller. NTPOSIX uses the
+  // x86_64 probing contract as well, even though it is not the Win64 ABI.
+  return STI.isOSWindows() && !Is64Bit;
 }
 
 void X86FrameLowering::inlineStackProbe(MachineFunction &MF,
@@ -1209,7 +1213,9 @@ void X86FrameLowering::emitStackProbeCall(
   MachineBasicBlock::iterator ExpansionMBBI = std::prev(MBBI);
 
   // All current stack probes take AX and SP as input, clobber flags, and
-  // preserve all registers. x86_64 probes leave RSP unmodified.
+  // preserve all registers. Whether the helper adjusts SP itself is target-
+  // specific; the x86_64 helpers we use leave the final SP update to the
+  // caller.
   if (Is64Bit && MF.getTarget().getCodeModel() == CodeModel::Large) {
     // For the large code model, we have to call through a register. Use R11,
     // as it is scratch in all supported calling conventions.
@@ -1230,13 +1236,12 @@ void X86FrameLowering::emitStackProbeCall(
       .addReg(X86::EFLAGS, RegState::Define | RegState::Implicit);
 
   MachineInstr *ModInst = CI;
-  if (STI.isTargetWin64() || !STI.isOSWindows()) {
-    // MSVC x32's _chkstk and cygwin/mingw's _alloca adjust %esp themselves.
-    // MSVC x64's __chkstk and cygwin/mingw's ___chkstk_ms do not adjust %rsp
-    // themselves. They also does not clobber %rax so we can reuse it when
-    // adjusting %rsp.
-    // All other platforms do not specify a particular ABI for the stack probe
-    // function, so we arbitrarily define it to not adjust %esp/%rsp itself.
+  if (!stackProbeFunctionModifiesSP()) {
+    // Windows x86 probe helpers adjust %esp themselves.
+    // The x86_64 helpers used by Win64, mingw/cygwin, and NTPOSIX only probe
+    // intervening pages and do not adjust %rsp. They also preserve %rax, so we
+    // can reuse it for the final stack adjustment.
+    // All non-Windows platforms likewise use the caller-adjusts-SP contract.
     ModInst =
         BuildMI(MBB, MBBI, DL, TII.get(getSUBrrOpcode(Uses64BitFramePtr)), SP)
             .addReg(SP)
@@ -1247,7 +1252,7 @@ void X86FrameLowering::emitStackProbeCall(
   // allocation (i.e., DYN_ALLOC_*), substitute it for the instruction that
   // modifies SP.
   if (InstrNum) {
-    if (STI.isTargetWin64() || !STI.isOSWindows()) {
+    if (!stackProbeFunctionModifiesSP()) {
       // Label destination operand of the subtract.
       MF.makeDebugValueSubstitution(*InstrNum,
                                     {ModInst->getDebugInstrNum(), 0});
