@@ -12,6 +12,7 @@
 
 // XFAIL: msvc
 // XFAIL: target={{.+}}-windows-gnu
+// XFAIL: target={{.+}}-windows-itanium
 // XFAIL: availability-fp_to_chars-missing
 
 // fmemopen is available starting in Android M (API 23)

@@ -43,8 +43,9 @@
 #include <stdlib.h>
 #include <string.h>
 // The clang-shipped tgmath.h header doesn't work with MSVC/UCRT's complex
-// headers in C mode, see PR46207.
-#ifndef _MSC_VER
+// headers in C mode, see PR46207. UCRT's <complex.h>, included above,
+// identifies itself with _C_COMPLEX_T whichever compiler consumes it.
+#if !defined(_MSC_VER) && !defined(_C_COMPLEX_T)
 #  include <tgmath.h>
 #endif
 #if _LIBCPP_HAS_WIDE_CHARACTERS
