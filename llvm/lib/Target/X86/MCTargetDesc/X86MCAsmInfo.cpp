@@ -195,6 +195,16 @@ X86MCAsmInfoGNUCOFF::X86MCAsmInfoGNUCOFF(const Triple &Triple) {
     ExceptionsType = ExceptionHandling::DwarfCFI;
   }
 
+  // Windows Itanium and NT-POSIX always link with lld-link; the GNU-ld
+  // inability to handle associative COMDATs that MCAsmInfoGNUCOFF works
+  // around does not apply. Without associative COMDATs, the per-function
+  // unwind data for COMDAT text sections (which use MSVC-style unsuffixed
+  // names on these targets, unlike MinGW's ".text$sym") degrades into a
+  // single select-any ".pdata$"/".xdata$" section per TU, and the linker
+  // then keeps exactly one TU's unwind info per image.
+  if (Triple.isWindowsItaniumOrNTPOSIXEnvironment())
+    HasCOFFAssociativeComdats = true;
+
   AssemblerDialect = X86AsmSyntax;
 
   AllowAtInName = true;
