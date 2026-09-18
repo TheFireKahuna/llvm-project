@@ -37,4 +37,8 @@ DEFINE_COMPILERRT_FUNCTION(___chkstk_ms)
         ret
 END_COMPILERRT_FUNCTION(___chkstk_ms)
 
+// MSVC uses __chkstk, Clang/mingw uses ___chkstk_ms. Provide both.
+// On x64, both have identical behavior: probe stack without adjusting RSP.
+DEFINE_COMPILERRT_FUNCTION_ALIAS(__chkstk, ___chkstk_ms)
+
 #endif // __x86_64__

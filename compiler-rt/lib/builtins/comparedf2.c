@@ -67,7 +67,7 @@ COMPILER_RT_ALIAS(__unorddf2, __aeabi_dcmpun)
 #endif
 #endif
 
-#if defined(_WIN32) && !defined(__MINGW32__)
+#if defined(LLVM_RUNTIME_WIN32) && !defined(__MINGW32__)
 // The alias mechanism doesn't work on Windows except for MinGW, so emit
 // wrapper functions.
 int __eqdf2(fp_t a, fp_t b) { return __ledf2(a, b); }
