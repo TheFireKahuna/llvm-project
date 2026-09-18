@@ -36,8 +36,9 @@ else()
   )
 endif()
 
-if (LIBCXXABI_ENABLE_THREADS AND (UNIX OR FUCHSIA) AND NOT (APPLE OR CYGWIN)
-    AND NOT ("${CMAKE_SYSTEM_NAME}" MATCHES "AIX"))
+if (LIBCXXABI_ENABLE_THREADS AND
+    (((UNIX OR FUCHSIA) AND NOT (APPLE OR CYGWIN) AND NOT ("${CMAKE_SYSTEM_NAME}" MATCHES "AIX"))
+     OR WIN32_ITANIUM OR WIN32_NTPOSIX))
   list(APPEND LIBCXXABI_SOURCES
     cxa_thread_atexit.cpp
   )
@@ -195,29 +196,32 @@ target_compile_options(cxxabi_shared_objects PRIVATE "${LIBCXXABI_ADDITIONAL_COM
 # TODO(LLVM 21): This can be dropped once we only support Clang >= 19.
 target_add_compile_flags_if_supported(cxxabi_shared_objects PRIVATE -fsized-deallocation)
 
-add_library(cxxabi_shared SHARED)
-set_target_properties(cxxabi_shared
-  PROPERTIES
-    EXCLUDE_FROM_ALL "$<IF:$<BOOL:${LIBCXXABI_ENABLE_SHARED}>,FALSE,TRUE>"
-    LINK_FLAGS "${LIBCXXABI_LINK_FLAGS}"
-    OUTPUT_NAME "${LIBCXXABI_SHARED_OUTPUT_NAME}"
-    SOVERSION "1"
-    VERSION "${LIBCXXABI_LIBRARY_VERSION}"
-)
-
-if (ZOS)
-  add_custom_command(TARGET cxxabi_shared POST_BUILD
-    COMMAND
-      ${LIBCXXABI_LIBCXX_PATH}/utils/zos_rename_dll_side_deck.sh
-      $<TARGET_LINKER_FILE_NAME:cxxabi_shared> $<TARGET_FILE_NAME:cxxabi_shared> "${LIBCXXABI_DLL_NAME}"
-    COMMENT "Rename dll name inside the side deck file"
-    WORKING_DIRECTORY $<TARGET_FILE_DIR:cxxabi_shared>
+# On Windows, skip target when disabled to avoid import lib / static lib name collision.
+if (NOT WIN32 OR LIBCXXABI_ENABLE_SHARED)
+  add_library(cxxabi_shared SHARED)
+  set_target_properties(cxxabi_shared
+    PROPERTIES
+      EXCLUDE_FROM_ALL "$<IF:$<BOOL:${LIBCXXABI_ENABLE_SHARED}>,FALSE,TRUE>"
+      LINK_FLAGS "${LIBCXXABI_LINK_FLAGS}"
+      OUTPUT_NAME "${LIBCXXABI_SHARED_OUTPUT_NAME}"
+      SOVERSION "1"
+      VERSION "${LIBCXXABI_LIBRARY_VERSION}"
   )
-endif ()
 
-target_link_libraries(cxxabi_shared
-  PUBLIC cxxabi_shared_objects runtimes-libc-shared
-  PRIVATE ${LIBCXXABI_LIBRARIES})
+  if (ZOS)
+    add_custom_command(TARGET cxxabi_shared POST_BUILD
+      COMMAND
+        ${LIBCXXABI_LIBCXX_PATH}/utils/zos_rename_dll_side_deck.sh
+        $<TARGET_LINKER_FILE_NAME:cxxabi_shared> $<TARGET_FILE_NAME:cxxabi_shared> "${LIBCXXABI_DLL_NAME}"
+      COMMENT "Rename dll name inside the side deck file"
+      WORKING_DIRECTORY $<TARGET_FILE_DIR:cxxabi_shared>
+    )
+  endif ()
+
+  target_link_libraries(cxxabi_shared
+    PUBLIC cxxabi_shared_objects runtimes-libc-shared
+    PRIVATE ${LIBCXXABI_LIBRARIES})
+endif()
 
 # TODO: Move this to libc++'s HandleLibCXXABI.cmake since this is effectively trying to control
 #       what libc++ re-exports.
@@ -304,19 +308,22 @@ if(LIBCXXABI_HERMETIC_STATIC_LIBRARY)
       _LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS=)
 endif()
 
-add_library(cxxabi_static STATIC)
-if (LIBCXXABI_USE_LLVM_UNWINDER AND NOT LIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY)
-  target_link_libraries(cxxabi_static PUBLIC unwind_static runtimes-libc-static)
+# On Windows, skip target when disabled to avoid output file name collision.
+if (NOT WIN32 OR LIBCXXABI_ENABLE_STATIC)
+  add_library(cxxabi_static STATIC)
+  if (LIBCXXABI_USE_LLVM_UNWINDER AND NOT LIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY)
+    target_link_libraries(cxxabi_static PUBLIC unwind_static runtimes-libc-static)
+  endif()
+  set_target_properties(cxxabi_static
+    PROPERTIES
+      EXCLUDE_FROM_ALL "$<IF:$<BOOL:${LIBCXXABI_ENABLE_STATIC}>,FALSE,TRUE>"
+      LINK_FLAGS "${LIBCXXABI_LINK_FLAGS}"
+      OUTPUT_NAME "${LIBCXXABI_STATIC_OUTPUT_NAME}"
+    )
+  target_link_libraries(cxxabi_static
+    PUBLIC cxxabi_static_objects
+    PRIVATE ${LIBCXXABI_STATIC_LIBRARIES} ${LIBCXXABI_LIBRARIES})
 endif()
-set_target_properties(cxxabi_static
-  PROPERTIES
-    EXCLUDE_FROM_ALL "$<IF:$<BOOL:${LIBCXXABI_ENABLE_STATIC}>,FALSE,TRUE>"
-    LINK_FLAGS "${LIBCXXABI_LINK_FLAGS}"
-    OUTPUT_NAME "${LIBCXXABI_STATIC_OUTPUT_NAME}"
-  )
-target_link_libraries(cxxabi_static
-  PUBLIC cxxabi_static_objects
-  PRIVATE ${LIBCXXABI_STATIC_LIBRARIES} ${LIBCXXABI_LIBRARIES})
 
 # Add a meta-target for both libraries.
 add_custom_target(cxxabi)
@@ -325,6 +332,30 @@ if (LIBCXXABI_ENABLE_SHARED)
 endif()
 if (LIBCXXABI_ENABLE_STATIC)
   add_dependencies(cxxabi cxxabi_static)
+endif()
+
+# Windows Itanium and NTPOSIX: the type_info classes, their vtables and
+# __dynamic_cast are part of every image, which makes RTTI constant data with
+# no cross-DLL pointers and keeps virtual calls on type_info inside the image;
+# the compiler treats those vtables as image-local and the shared library
+# does not export them. libc++ adds the members of this build-only archive to
+# its import library, so nothing extra is ever linked or installed.
+if (WIN32_ITANIUM OR WIN32_NTPOSIX)
+  add_library(cxxabi_local STATIC private_typeinfo.cpp abort_message.cpp)
+  cxx_add_warning_flags(cxxabi_local ${LIBCXXABI_ENABLE_WERROR} ${LIBCXXABI_ENABLE_PEDANTIC})
+  target_link_libraries(cxxabi_local PRIVATE cxxabi-headers cxx-headers runtimes-libc-headers)
+  set_target_properties(cxxabi_local
+    PROPERTIES
+      CXX_EXTENSIONS OFF
+      CXX_STANDARD 23
+      CXX_STANDARD_REQUIRED OFF
+      COMPILE_FLAGS "${LIBCXXABI_COMPILE_FLAGS}"
+  )
+  # Plain definitions: not exported from the image, and libc++ itself is
+  # imported as in any other user translation unit.
+  target_compile_definitions(cxxabi_local PRIVATE _LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS)
+  target_compile_options(cxxabi_local PRIVATE -U_LIBCPP_BUILDING_LIBRARY "${LIBCXXABI_ADDITIONAL_COMPILE_FLAGS}")
+  target_add_compile_flags_if_supported(cxxabi_local PRIVATE -fsized-deallocation)
 endif()
 
 if (LIBCXXABI_INSTALL_SHARED_LIBRARY)

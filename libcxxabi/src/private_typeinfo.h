@@ -14,9 +14,19 @@
 #include <typeinfo>
 #include <stddef.h>
 
+// On Windows Itanium and NTPOSIX these classes and __dynamic_cast are part of
+// every image rather than exported from the shared library.
+#if defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
+#  define _LIBCXXABI_TYPEINFO_VIS
+#  define _LIBCXXABI_DYNAMIC_CAST_VIS
+#else
+#  define _LIBCXXABI_TYPEINFO_VIS _LIBCXXABI_TYPE_VIS
+#  define _LIBCXXABI_DYNAMIC_CAST_VIS _LIBCXXABI_FUNC_VIS
+#endif
+
 namespace __cxxabiv1 {
 
-class _LIBCXXABI_TYPE_VIS __shim_type_info : public std::type_info {
+class _LIBCXXABI_TYPEINFO_VIS __shim_type_info : public std::type_info {
 public:
   _LIBCXXABI_HIDDEN virtual ~__shim_type_info();
 
@@ -26,28 +36,28 @@ public:
                                            void *&adjustedPtr) const = 0;
 };
 
-class _LIBCXXABI_TYPE_VIS __fundamental_type_info : public __shim_type_info {
+class _LIBCXXABI_TYPEINFO_VIS __fundamental_type_info : public __shim_type_info {
 public:
   _LIBCXXABI_HIDDEN virtual ~__fundamental_type_info();
   _LIBCXXABI_HIDDEN virtual bool can_catch(const __shim_type_info *,
                                            void *&) const;
 };
 
-class _LIBCXXABI_TYPE_VIS __array_type_info : public __shim_type_info {
+class _LIBCXXABI_TYPEINFO_VIS __array_type_info : public __shim_type_info {
 public:
   _LIBCXXABI_HIDDEN virtual ~__array_type_info();
   _LIBCXXABI_HIDDEN virtual bool can_catch(const __shim_type_info *,
                                            void *&) const;
 };
 
-class _LIBCXXABI_TYPE_VIS __function_type_info : public __shim_type_info {
+class _LIBCXXABI_TYPEINFO_VIS __function_type_info : public __shim_type_info {
 public:
   _LIBCXXABI_HIDDEN virtual ~__function_type_info();
   _LIBCXXABI_HIDDEN virtual bool can_catch(const __shim_type_info *,
                                            void *&) const;
 };
 
-class _LIBCXXABI_TYPE_VIS __enum_type_info : public __shim_type_info {
+class _LIBCXXABI_TYPEINFO_VIS __enum_type_info : public __shim_type_info {
 public:
   _LIBCXXABI_HIDDEN virtual ~__enum_type_info();
   _LIBCXXABI_HIDDEN virtual bool can_catch(const __shim_type_info *,
@@ -63,7 +73,7 @@ enum
     no
 };
 
-class _LIBCXXABI_TYPE_VIS __class_type_info;
+class _LIBCXXABI_TYPEINFO_VIS __class_type_info;
 
 struct _LIBCXXABI_HIDDEN __dynamic_cast_info
 {
@@ -120,7 +130,7 @@ struct _LIBCXXABI_HIDDEN __dynamic_cast_info
 };
 
 // Has no base class
-class _LIBCXXABI_TYPE_VIS __class_type_info : public __shim_type_info {
+class _LIBCXXABI_TYPEINFO_VIS __class_type_info : public __shim_type_info {
 public:
   _LIBCXXABI_HIDDEN virtual ~__class_type_info();
 
@@ -143,7 +153,7 @@ public:
 };
 
 // Has one non-virtual public base class at offset zero
-class _LIBCXXABI_TYPE_VIS __si_class_type_info : public __class_type_info {
+class _LIBCXXABI_TYPEINFO_VIS __si_class_type_info : public __class_type_info {
 public:
   _LIBCXXABI_DISABLE_POINTER_FIELD_PROTECTION const __class_type_info* __base_type;
 
@@ -177,7 +187,7 @@ public:
 };
 
 // Has one or more base classes
-class _LIBCXXABI_TYPE_VIS __vmi_class_type_info : public __class_type_info {
+class _LIBCXXABI_TYPEINFO_VIS __vmi_class_type_info : public __class_type_info {
 public:
   unsigned int __flags;
   unsigned int __base_count;
@@ -201,7 +211,7 @@ public:
   has_unambiguous_public_base(__dynamic_cast_info *, void *, int) const;
 };
 
-class _LIBCXXABI_TYPE_VIS __pbase_type_info : public __shim_type_info {
+class _LIBCXXABI_TYPEINFO_VIS __pbase_type_info : public __shim_type_info {
 public:
   unsigned int __flags;
   _LIBCXXABI_DISABLE_POINTER_FIELD_PROTECTION const __shim_type_info* __pointee;
@@ -234,7 +244,7 @@ public:
                                            void *&) const;
 };
 
-class _LIBCXXABI_TYPE_VIS __pointer_type_info : public __pbase_type_info {
+class _LIBCXXABI_TYPEINFO_VIS __pointer_type_info : public __pbase_type_info {
 public:
   _LIBCXXABI_HIDDEN virtual ~__pointer_type_info();
   _LIBCXXABI_HIDDEN virtual bool can_catch(const __shim_type_info *,
@@ -242,7 +252,7 @@ public:
   _LIBCXXABI_HIDDEN bool can_catch_nested(const __shim_type_info *) const;
 };
 
-class _LIBCXXABI_TYPE_VIS __pointer_to_member_type_info
+class _LIBCXXABI_TYPEINFO_VIS __pointer_to_member_type_info
     : public __pbase_type_info {
 public:
   _LIBCXXABI_DISABLE_POINTER_FIELD_PROTECTION const __class_type_info* __context;

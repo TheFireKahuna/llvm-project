@@ -21,6 +21,19 @@ extern "C" void android_set_abort_message(const char* msg);
 #   define _LIBCXXABI_USE_CRASHREPORTER_CLIENT
 #endif
 
+#if defined(_WIN32)
+#  if defined(__NTPOSIX__)
+#    include <sys/ntabi.h>
+#  else
+#    define WIN32_LEAN_AND_MEAN
+#    ifndef NOMINMAX
+#      define NOMINMAX
+#    endif
+#    include <windows.h>
+#  endif
+#  define _LIBCXXABI_USE_WINDOWS_DEBUGGER
+#endif
+
 void __abort_message(const char* format, ...)
 {
     // Write message to stderr. We do this before formatting into a
@@ -61,6 +74,35 @@ void __abort_message(const char* format, ...)
     openlog("libc++abi", 0, 0);
     syslog(LOG_CRIT, "%s", buffer);
     closelog();
+#elif defined(_LIBCXXABI_USE_WINDOWS_DEBUGGER)
+    // Output to debugger for GUI applications where stderr may not be visible.
+    char buffer[1024];
+    va_list list;
+    va_start(list, format);
+#if defined(_LIBCPP_MSVCRT_LIKE)
+    int len = _vsnprintf(buffer, sizeof(buffer) - 1, format, list);
+#else
+    int len = vsnprintf(buffer, sizeof(buffer), format, list);
+#endif
+    va_end(list);
+    if (len < 0 || len >= (int)sizeof(buffer))
+        len = sizeof(buffer) - 1;
+    buffer[len] = '\0';
+
+#if defined(__NTPOSIX__)
+    // Raise DBG_PRINTEXCEPTION_C directly via ntdll — same thing
+    // OutputDebugStringA does internally, without the kernel32 wrapper.
+    EXCEPTION_RECORD rec = {};
+    rec.ExceptionCode = DBG_PRINTEXCEPTION_C;
+    rec.NumberParameters = 2;
+    rec.ExceptionInformation[0] = len + 1;
+    rec.ExceptionInformation[1] = (ULONG_PTR)buffer;
+    RtlRaiseException(&rec);
+#else
+    OutputDebugStringA("libc++abi: ");
+    OutputDebugStringA(buffer);
+    OutputDebugStringA("\n");
+#endif
 #endif // __BIONIC__
 
     abort();

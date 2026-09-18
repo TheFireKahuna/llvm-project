@@ -75,7 +75,7 @@
 #  define _LIBCXXABI_NO_EXCEPTIONS
 #endif
 
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 #define _LIBCXXABI_DTOR_FUNC __thiscall
 #else
 #define _LIBCXXABI_DTOR_FUNC

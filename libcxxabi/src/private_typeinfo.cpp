@@ -69,12 +69,18 @@ static inline
 bool
 is_equal(const std::type_info* x, const std::type_info* y, bool use_strcmp)
 {
+#if _LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION == 4
+    // Identity is the compiler-written hash; a string comparison adds nothing.
+    (void)use_strcmp;
+    return *x == *y;
+#else
     // Use std::type_info's default comparison unless we've explicitly asked
     // for strcmp.
     if (!use_strcmp)
         return *x == *y;
     // Still allow pointer equality to short circut.
     return x == y || strcmp(x->name(), y->name()) == 0;
+#endif
 }
 
 static inline ptrdiff_t update_offset_to_base(const char* vtable,
@@ -910,7 +916,7 @@ bool __pointer_to_member_type_info::can_catch_nested(
 //    (static_ptr, static_type), then return dynamic_ptr.
 // Else return nullptr.
 
-extern "C" _LIBCXXABI_FUNC_VIS void *
+extern "C" _LIBCXXABI_DYNAMIC_CAST_VIS void *
 __dynamic_cast(const void *static_ptr, const __class_type_info *static_type,
                const __class_type_info *dst_type,
                std::ptrdiff_t src2dst_offset) {
