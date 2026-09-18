@@ -64,6 +64,9 @@ public:
 
   void printVerboseInfo(raw_ostream &OS) const override;
 
+  VersionTuple computeMSVCVersion(const Driver *D,
+                                  const llvm::opt::ArgList &Args) const override;
+
   bool useUniversalCRT() const;
 
   bool getWindowsSDKLibraryPath(const llvm::opt::ArgList &Args,

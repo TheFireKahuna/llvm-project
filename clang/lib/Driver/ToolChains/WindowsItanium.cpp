@@ -393,6 +393,23 @@ WindowsItaniumToolChain::WindowsItaniumToolChain(const Driver &D,
     WinSysRoot = A->getValue();
 }
 
+VersionTuple
+WindowsItaniumToolChain::computeMSVCVersion(const Driver *D,
+                                            const ArgList &Args) const {
+  VersionTuple MSVT = ToolChain::computeMSVCVersion(D, Args);
+  // The UCRT and Windows SDK headers need the Microsoft keyword extensions,
+  // which this toolchain enables below. Without a compatibility version clang
+  // treats -fms-extensions as targeting a pre-2015 MSVC and keeps that
+  // compiler's quirks: narrowing in braced initialization only warns, so it
+  // no longer causes substitution failure, and unions accept reference
+  // members. Name the same version the MSVC toolchain defaults to so only the
+  // keyword extensions remain; the identity macros stay off because this is
+  // not a known MSVC environment.
+  if (MSVT.empty() && !Args.hasArg(options::OPT_fno_ms_extensions))
+    MSVT = VersionTuple(19, 33);
+  return MSVT;
+}
+
 void WindowsItaniumToolChain::addClangTargetOptions(
     const ArgList &DriverArgs, ArgStringList &CC1Args,
     Action::OffloadKind /*DeviceOffloadKind*/) const {

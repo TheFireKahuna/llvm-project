@@ -4,16 +4,20 @@
 // for the UCRT and SDK headers, and the clang-cl argument translation is
 // shared with the MSVC toolchain.
 
+// The extensions come with the MSVC toolchain's default compatibility version,
+// so clang applies the keyword extensions without pre-2015 MSVC quirks; the
+// compatibility mode itself stays off.
 // RUN: %clang --target=x86_64-unknown-windows-itanium -c -### %s 2>&1 \
-// RUN:   | FileCheck -check-prefix=DEFAULT %s
+// RUN:   | FileCheck -check-prefix=DEFAULT --implicit-check-not='"-fms-compatibility"' %s
 // DEFAULT: "-cc1"
 // DEFAULT-SAME: "-fms-extensions"
-// DEFAULT-NOT: "-fms-compatibility"
+// DEFAULT-SAME: "-fms-compatibility-version=19.33"
 
 // RUN: %clang --target=x86_64-unknown-windows-itanium -fno-ms-extensions -c -### %s 2>&1 \
 // RUN:   | FileCheck -check-prefix=NO_MS_EXT %s
 // NO_MS_EXT: "-cc1"
 // NO_MS_EXT-NOT: "-fms-extensions"
+// NO_MS_EXT-NOT: "-fms-compatibility-version=
 
 // RUN: %clang --target=x86_64-unknown-windows-itanium -fno-rtti -c -### %s 2>&1 \
 // RUN:   | FileCheck -check-prefix=NO_RTTI %s
@@ -54,12 +58,9 @@
 // DEFINE_HASH: "-cc1"
 // DEFINE_HASH-SAME: "-D" "FOO=BAR"
 
-// No MSVC identity: the compatibility version is not implied.
-// RUN: %clang --target=x86_64-unknown-windows-itanium -c -### %s 2>&1 \
-// RUN:   | FileCheck -check-prefix=MSVC_VERSION %s
-// MSVC_VERSION: "-cc1"
-// MSVC_VERSION-NOT: "-fms-compatibility-version=
+// An explicit compatibility version replaces the default one.
 // RUN: %clang --target=x86_64-unknown-windows-itanium -fms-compatibility-version=19.40 \
-// RUN:   -c -### %s 2>&1 | FileCheck -check-prefix=MSVC_VERSION_EXPLICIT %s
+// RUN:   -c -### %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=MSVC_VERSION_EXPLICIT --implicit-check-not='"-fms-compatibility-version=19.33"' %s
 // MSVC_VERSION_EXPLICIT: "-cc1"
 // MSVC_VERSION_EXPLICIT-SAME: "-fms-compatibility-version=19.40"
