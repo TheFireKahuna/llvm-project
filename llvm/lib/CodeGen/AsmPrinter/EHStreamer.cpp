@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "EHStreamer.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/BinaryFormat/Dwarf.h"
@@ -234,6 +235,12 @@ void EHStreamer::computeCallSiteTable(
   RangeMapType PadMap;
   computePadMap(LandingPads, PadMap);
 
+  // The blocks the landing pads begin: EH pads, and a fault probe's
+  // destination, which is an ordinary block.
+  SmallPtrSet<const MachineBasicBlock *, 8> PadBlocks;
+  for (const LandingPadInfo *LandingPad : LandingPads)
+    PadBlocks.insert(LandingPad->LandingPadBlock);
+
   // The end label of the previous invoke or nounwind try-range.
   MCSymbol *LastLabel = Asm->getFunctionBegin();
 
@@ -260,7 +267,7 @@ void EHStreamer::computeCallSiteTable(
       LastLabel = nullptr;
     }
 
-    if (MBB.isEHPad())
+    if (MBB.isEHPad() || PadBlocks.count(&MBB))
       CallSiteRanges.back().IsLPRange = true;
 
     for (const auto &MI : MBB) {
@@ -312,8 +319,9 @@ void EHStreamer::computeCallSiteTable(
           FirstActions[P.PadIndex]
         };
 
-        // Try to merge with the previous call-site. SJLJ doesn't do this
-        if (PreviousIsInvoke && !IsSJLJ) {
+        // Try to merge with the previous call-site. SJLJ doesn't do this,
+        // and a fault probe's site stays the one instruction it spans.
+        if (PreviousIsInvoke && !IsSJLJ && !LandingPad->IsFaultProbe) {
           CallSiteEntry &Prev = CallSites.back();
           if (Site.LPad == Prev.LPad && Site.Action == Prev.Action) {
             // Extend the range of the previous entry.

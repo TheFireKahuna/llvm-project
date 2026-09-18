@@ -3555,6 +3555,9 @@ bool MIParser::parseMemoryOperandFlag(MachineMemOperand::Flags &Flags) {
   case MIToken::kw_invariant:
     Flags |= MachineMemOperand::MOInvariant;
     break;
+  case MIToken::kw_fault_probe:
+    Flags |= MachineMemOperand::MOFaultProbe;
+    break;
   case MIToken::StringConstant: {
     MachineMemOperand::Flags TF;
     if (PFS.Target.getMMOTargetFlag(Token.stringValue(), TF))

@@ -565,6 +565,7 @@ private:
 
   void visitCallBr(const CallBrInst &I);
   void visitCallBrIntrinsic(const CallBrInst &I);
+  bool visitFaultProbe(const FaultAccessInst &I);
 
   void visitUnary(const User &I, unsigned Opcode);
   void visitFNeg(const User &I) { visitUnary(I, ISD::FNEG); }

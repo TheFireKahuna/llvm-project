@@ -1,6 +1,6 @@
 ; RUN: llc -mtriple=x86_64-w64-mingw32        < %s -o - | FileCheck --check-prefix=MINGW %s
 ; RUN: llc -mtriple=x86_64-pc-cygwin          < %s -o - | FileCheck --check-prefix=MINGW %s
-; RUN: llc -mtriple=x86_64-pc-windows-itanium < %s -o - | FileCheck --check-prefix=ITANIUM %s
+; RUN: llc -mtriple=x86_64-pc-windows-itanium < %s -o - | FileCheck --check-prefix=MSVC  %s
 ; RUN: llc -mtriple=x86_64-pc-windows-msvc    < %s -o - | FileCheck --check-prefix=MSVC  %s
 ; RUN: llc -mtriple=i686-w64-mingw32          < %s -o - | FileCheck --check-prefix=MINGW %s
 ; RUN: llc -mtriple=i686-pc-cygwin            < %s -o - | FileCheck --check-prefix=MINGW %s
@@ -23,16 +23,6 @@ entry:
 ; MSVC: callq other
 ; MSVC: callq __security_check_cookie
 ; MSVC: .seh_endproc
-
-; Windows Itanium data may be auto-imported, so the cookie is reached
-; through a reference-pointer stub as it is on MinGW.
-; ITANIUM-LABEL: func:
-; ITANIUM: mov{{l|q}}  .refptr.__security_cookie{{(\(%rip\))?}}, [[REG:%[a-z]+]]
-; ITANIUM: mov{{l|q}}  ([[REG]])
-; ITANIUM: callq other
-; ITANIUM: mov{{l|q}}  ([[REG]])
-; ITANIUM: callq __security_check_cookie
-; ITANIUM: .seh_endproc
 
   %c = alloca i8, align 1
   call void @llvm.lifetime.start.p0(i64 1, ptr nonnull %c)

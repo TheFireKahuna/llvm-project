@@ -3484,9 +3484,10 @@ void Verifier::visitIndirectBrInst(IndirectBrInst &BI) {
 }
 
 static bool isSupportedCallBrIntrinsic(Intrinsic::ID ID) {
-  // Currently we only support callbr for amdgcn.kill. Add more checks here as
-  // needed.
-  return isAMDGPUCallBrIntrinsic(ID);
+  // Currently we only support callbr for amdgcn.kill and the fault probes.
+  // Add more checks here as needed.
+  return isAMDGPUCallBrIntrinsic(ID) || ID == Intrinsic::fault_probe_load ||
+         ID == Intrinsic::fault_probe_store;
 }
 
 void Verifier::visitCallBrInst(CallBrInst &CBI) {
@@ -6904,6 +6905,30 @@ void Verifier::visitIntrinsicCall(Intrinsic::ID ID, CallBase &Call) {
     Check(cast<ConstantInt>(Call.getArgOperand(2))->getZExtValue() < 2,
           "stream argument to llvm.aarch64.range.prefetch must be 0 or 1",
           Call);
+    break;
+  }
+  case Intrinsic::fault_probe_load:
+  case Intrinsic::fault_probe_store: {
+    const auto *CBR = dyn_cast<CallBrInst>(&Call);
+    Check(CBR, "fault probe must be a callbr", &Call);
+    if (!CBR)
+      break;
+    Check(CBR->getNumIndirectDests() == 1,
+          "fault probe has exactly one fault destination", &Call);
+    Type *Ty = ID == Intrinsic::fault_probe_load
+                   ? Call.getType()
+                   : Call.getArgOperand(0)->getType();
+    Check(!Ty->isAggregateType(), "fault probe accesses a scalar or vector",
+          &Call);
+    // The fault destination is recorded as a landing pad of the access, in
+    // an Itanium-style exception table.
+    const Function *F = Call.getFunction();
+    Check(F->hasPersonalityFn(), "fault probe needs a personality function",
+          &Call);
+    if (F->hasPersonalityFn())
+      Check(!isScopedEHPersonality(
+                classifyEHPersonality(F->getPersonalityFn())),
+            "fault probe needs an Itanium-style personality", &Call);
     break;
   }
   case Intrinsic::callbr_landingpad: {

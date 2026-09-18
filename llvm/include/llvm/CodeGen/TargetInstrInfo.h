@@ -457,6 +457,10 @@ public:
   ///
   /// Targets for different archs need to override this, and different
   /// micro-architectures can also be finely tuned inside.
+  /// Whether the target lowers FAULTING_OP: a memory access that branches to
+  /// a handler block if it faults, recorded in the fault map.
+  virtual bool supportsFaultingOps() const { return false; }
+
   virtual bool isAsCheapAsAMove(const MachineInstr &MI) const {
     return MI.isAsCheapAsAMove();
   }

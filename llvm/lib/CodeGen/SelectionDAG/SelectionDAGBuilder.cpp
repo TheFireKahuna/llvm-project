@@ -98,6 +98,7 @@
 #include "llvm/Support/InstructionCost.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/MC/MCAsmInfo.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/TargetParser/Triple.h"
@@ -3588,8 +3589,44 @@ void SelectionDAGBuilder::visitCallBrIntrinsic(const CallBrInst &I) {
   setValue(&I, Result);
 }
 
+/// A probing access: the load or store, marked so the faulting-op lowering
+/// finds it, or the plain access when the pointer is known to be
+/// dereferenceable and the fault destination cannot be taken. Returns whether
+/// the access may fault.
+bool SelectionDAGBuilder::visitFaultProbe(const FaultAccessInst &I) {
+  SDLoc dl = getCurSDLoc();
+  const DataLayout &DL = DAG.getDataLayout();
+  const Value *Ptr = I.getPointerOperand();
+  Type *Ty = I.isLoad() ? I.getType() : I.getValueOperand()->getType();
+  Align Alignment = I.getAlign();
+  bool Safe = isDereferenceablePointer(
+      Ptr, Ty, SimplifyQuery(DL, LibInfo, nullptr, AC, &I));
+  MachineMemOperand::Flags Flags = MachineMemOperand::MONone;
+  if (!Safe)
+    Flags |= MachineMemOperand::MOVolatile | MachineMemOperand::MOFaultProbe;
+  MachinePointerInfo PtrInfo(Ptr);
+  if (I.isLoad()) {
+    EVT VT = DAG.getTargetLoweringInfo().getValueType(DL, I.getType());
+    SDValue Load = DAG.getLoad(VT, dl, getRoot(), getValue(Ptr), PtrInfo,
+                               Alignment, Flags, I.getAAMetadata());
+    setValue(&I, Load);
+    DAG.setRoot(Load.getValue(1));
+  } else {
+    SDValue Store =
+        DAG.getStore(getRoot(), dl, getValue(I.getValueOperand()),
+                     getValue(Ptr), PtrInfo, Alignment, Flags, I.getAAMetadata());
+    DAG.setRoot(Store);
+  }
+  return !Safe;
+}
+
 void SelectionDAGBuilder::visitCallBr(const CallBrInst &I) {
   MachineBasicBlock *CallBrMBB = FuncInfo.MBB;
+  const auto *Probe = dyn_cast<FaultAccessInst>(&I);
+  if (Probe && !Probe->isProbe())
+    Probe = nullptr;
+  // A probe that cannot fault has no fault destination to reach.
+  bool MayFault = true;
 
   if (I.isInlineAsm()) {
     // Deopt bundles are lowered in LowerCallSiteWithDeoptBundle, and we don't
@@ -3597,6 +3634,8 @@ void SelectionDAGBuilder::visitCallBr(const CallBrInst &I) {
     failForInvalidBundles(I, "callbrs",
                           {LLVMContext::OB_deopt, LLVMContext::OB_funclet});
     visitInlineAsm(I);
+  } else if (Probe) {
+    MayFault = visitFaultProbe(*Probe);
   } else {
     assert(!I.hasOperandBundles() &&
            "Can't have operand bundles for intrinsics");
@@ -3616,17 +3655,10 @@ void SelectionDAGBuilder::visitCallBr(const CallBrInst &I) {
   // this changes, we might need to enhance
   // Target->setIsInlineAsmBrIndirectTarget or add something similar for
   // intrinsic indirect branches.
-  if (I.isInlineAsm()) {
+  if (I.isInlineAsm() || (Probe && MayFault)) {
     for (BasicBlock *Dest : I.getIndirectDests()) {
       MachineBasicBlock *Target = FuncInfo.getMBB(Dest);
       Target->setIsInlineAsmBrIndirectTarget();
-      // On NT-POSIX an indirect target is also where a fault handler may
-      // resume the asm's own frame, so the kernel's continuation check needs
-      // it in the image's EH continuation table, like a landing pad.
-      if (TM.getTargetTriple().isWindowsNTPOSIXEnvironment()) {
-        Target->setIsEHContTarget(true);
-        DAG.getMachineFunction().setHasEHContTarget(true);
-      }
       // If we introduce a type of asm goto statement that is permitted to use
       // an indirect call instruction to jump to its labels, then we should add
       // a call to Target->setMachineBlockAddressTaken() here, to mark the
@@ -3654,9 +3686,12 @@ void SelectionDAGBuilder::visitLandingPad(const LandingPadInst &LP) {
   assert(FuncInfo.MBB->isEHPad() &&
          "Call to landingpad not in landing pad!");
 
-  // These targets use Itanium landing pads over SEH frame metadata. A
-  // continuation into such a pad needs the same guard entry as a funclet.
-  if (TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+  // Under EH continuation guard, a landing pad reached over SEH frame
+  // metadata is a continuation the kernel validates, like a funclet entry.
+  const MachineFunction &MF = DAG.getMachineFunction();
+  if (MF.getFunction().getParent()->getModuleFlag("ehcontguard") &&
+      TM.getMCAsmInfo().getExceptionHandlingType() ==
+          ExceptionHandling::WinEH) {
     FuncInfo.MBB->setIsEHContTarget(true);
     DAG.getMachineFunction().setHasEHContTarget(true);
   }

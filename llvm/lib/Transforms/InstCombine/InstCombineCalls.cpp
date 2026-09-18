@@ -4490,6 +4490,9 @@ Instruction *InstCombinerImpl::visitInvokeInst(InvokeInst &II) {
 // global, a dereferenceable argument) has a dead edge, which nounwind records
 // for SimplifyCFG to remove.
 Instruction *InstCombinerImpl::foldFaultAccess(FaultAccessInst &FA) {
+  // A probe folds at selection, where its fault destination is dropped with it.
+  if (FA.isProbe())
+    return nullptr;
   Value *Ptr = FA.getPointerOperand();
   if (auto *II = dyn_cast<InvokeInst>(&FA)) {
     if (II->doesNotThrow())

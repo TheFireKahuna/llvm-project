@@ -31,6 +31,7 @@
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/RuntimeLibcallUtil.h"
 #include "llvm/CodeGen/StackMaps.h"
+#include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetLowering.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
@@ -1608,7 +1609,19 @@ TargetLoweringBase::emitReturnsTwiceLanding(MachineInstr &MI,
   MachineBasicBlock::iterator Call = std::prev(MI.getIterator());
   assert(Call != MBB->end() && Call->isCall() &&
          "a returns-twice landing pseudo must directly follow its call");
+  // The landing starts at the return address, inside the call sequence: its
+  // entry call-frame size is the one the sequence's setup established.
+  const TargetInstrInfo *TII = MBB->getParent()->getSubtarget().getInstrInfo();
+  unsigned FrameSize = MBB->getCallFrameSize();
+  for (MachineBasicBlock::iterator I = Call; I != MBB->begin();) {
+    --I;
+    if (I->getOpcode() == TII->getCallFrameSetupOpcode()) {
+      FrameSize = TII->getFrameSize(*I);
+      break;
+    }
+  }
   MachineBasicBlock *Landing = MBB->splitAt(*Call, /*UpdateLiveIns=*/true);
+  Landing->setCallFrameSize(FrameSize);
   Landing->setIsReturnsTwiceLanding();
   // The second return is a continuation the kernel validates against the
   // image's EH continuation table, so the landing is recorded there as a

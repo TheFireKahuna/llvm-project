@@ -1198,6 +1198,11 @@ void TargetPassConfig::addMachinePasses() {
   // Run pre-sched2 passes.
   addPreSched2();
 
+  // Wrap each probing access in the faulting op its fault destination names.
+  // After register allocation, as the implicit null checks are: a faulting op
+  // is a terminator, so nothing may be spilled after the value it defines.
+  addPass(&FaultProbeLoweringID);
+
   if (EnableImplicitNullChecks)
     addPass(&ImplicitNullChecksID);
 

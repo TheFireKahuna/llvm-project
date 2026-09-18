@@ -3418,7 +3418,8 @@ bool GVNPass::processInstruction(Instruction *I) {
   // by fast failing them. A fault load is the one terminator with a value
   // another instruction can supply.
   if (isa<AllocaInst>(I) || isa<PHINode>(I) ||
-      (I->isTerminator() && !isa<FaultAccessInst>(I))) {
+      (I->isTerminator() &&
+       (!isa<FaultAccessInst>(I) || cast<FaultAccessInst>(I)->isProbe()))) {
     LeaderTable.insert(Num, I, I->getParent());
     return false;
   }

@@ -1067,6 +1067,22 @@ def int_fault_memset
                  IntrWillReturn, NoCapture<ArgIndex<0>>, WriteOnly<ArgIndex<0>>,
                  ImmArg<ArgIndex<3>>]>;
 
+// A probing access: a load or store issued by a callbr whose one indirect
+// destination is where a fault of the access continues, in the same frame
+// with nothing unwound. The access has the effects of a volatile one, so
+// every probe asks whether its address is mapped now; a pointer the language
+// vouches for is accessed plainly and never takes the destination.
+def int_fault_probe_load
+    : Intrinsic<[llvm_any_ty], [llvm_anyptr_ty, llvm_i32_ty],
+                [IntrArgMemOnly, IntrHasSideEffects, IntrNoSync, IntrNoFree,
+                 IntrNoCallback, IntrWillReturn, NoCapture<ArgIndex<0>>,
+                 ImmArg<ArgIndex<1>>]>;
+def int_fault_probe_store
+    : Intrinsic<[], [llvm_any_ty, llvm_anyptr_ty, llvm_i32_ty],
+                [IntrArgMemOnly, IntrHasSideEffects, IntrNoSync, IntrNoFree,
+                 IntrNoCallback, IntrWillReturn, NoCapture<ArgIndex<1>>,
+                 ImmArg<ArgIndex<2>>]>;
+
 // Note: we treat stacksave/stackrestore as writemem because we don't otherwise
 // model their dependencies on allocas.
 def int_stacksave     : DefaultAttrsIntrinsic<[llvm_anyptr_ty]>,

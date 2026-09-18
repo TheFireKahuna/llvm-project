@@ -225,6 +225,8 @@ inline static bool isMemInstrWithGOTPCREL(const MachineInstr &MI) {
 }
 
 class X86InstrInfo final : public X86GenInstrInfo {
+  bool supportsFaultingOps() const override { return true; }
+
   const X86Subtarget &Subtarget;
   const X86RegisterInfo RI;
 

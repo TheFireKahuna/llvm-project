@@ -372,9 +372,7 @@ const uint32_t *AArch64RegisterInfo::getNoPreservedMask() const {
 bool AArch64RegisterInfo::hasReturnsTwiceLanding(const MachineFunction &MF,
                                                  const CallBase *CB) const {
   return CB && CB->hasFnAttr(Attribute::ReturnsTwice) &&
-         MF.getSubtarget<AArch64Subtarget>()
-             .getTargetTriple()
-             .isWindowsNTPOSIXEnvironment();
+         CB->hasFnAttr("returns-twice-landing");
 }
 
 const uint32_t *

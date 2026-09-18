@@ -155,7 +155,11 @@ public:
     MOTargetFlag3 = 1u << 8,
     MOTargetFlag4 = 1u << 9,
 
-    LLVM_MARK_AS_BITMASK_ENUM(/* LargestFlag = */ MOTargetFlag4)
+    /// The memory access is a probe: a fault continues at the containing
+    /// block's indirect successor.
+    MOFaultProbe = 1u << 10,
+
+    LLVM_MARK_AS_BITMASK_ENUM(/* LargestFlag = */ MOFaultProbe)
   };
 
 private:
@@ -302,6 +306,7 @@ public:
   bool isNonTemporal() const { return FlagVals & MONonTemporal; }
   bool isDereferenceable() const { return FlagVals & MODereferenceable; }
   bool isInvariant() const { return FlagVals & MOInvariant; }
+  bool isFaultProbe() const { return FlagVals & MOFaultProbe; }
 
   /// Returns true if this operation has an atomic ordering requirement of
   /// unordered or higher, false otherwise.

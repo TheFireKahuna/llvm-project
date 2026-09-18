@@ -338,15 +338,12 @@ public:
   bool isOSWindows() const { return TargetTriple.isOSWindows(); }
 
   bool isOSWindowsOrUEFI() const { return TargetTriple.isOSWindowsOrUEFI(); }
-  bool isWindowsMSABIEnvironment() const {
-    return isOSWindows() && !TargetTriple.isWindowsNTPOSIXEnvironment();
-  }
 
   bool isTargetUEFI64() const { return Is64Bit && isUEFI(); }
 
-  bool isTargetWin64() const { return Is64Bit && isWindowsMSABIEnvironment(); }
+  bool isTargetWin64() const { return Is64Bit && isOSWindows(); }
 
-  bool isTargetWin32() const { return !Is64Bit && isWindowsMSABIEnvironment(); }
+  bool isTargetWin32() const { return !Is64Bit && isOSWindows(); }
 
   bool isPICStyleGOT() const { return PICStyle == PICStyles::Style::GOT; }
   bool isPICStyleRIPRel() const { return PICStyle == PICStyles::Style::RIPRel; }

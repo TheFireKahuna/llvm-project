@@ -573,7 +573,6 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
   // FIXME - use subtarget debug flags
   if (!Subtarget.isTargetDarwin() && !Subtarget.isTargetELF() &&
       !Subtarget.isTargetCygMing() && !Subtarget.isTargetWin64() &&
-      !TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
       TM.Options.ExceptionModel != ExceptionHandling::SjLj) {
     setOperationAction(ISD::EH_LABEL, MVT::Other, Expand);
   }

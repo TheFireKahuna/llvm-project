@@ -3139,8 +3139,36 @@ bool IRTranslator::translateCallBr(const User &U,
     // SelectionDAGBuilder::visitCallBr().
     return false;
   }
-  if (!translateIntrinsic(I, IID, MIRBuilder))
+  const auto *Probe = dyn_cast<FaultAccessInst>(&I);
+  if (Probe && !Probe->isProbe())
+    Probe = nullptr;
+  if (Probe) {
+    // A probing access: the load or store, marked for the faulting-op
+    // lowering, or the plain access when the pointer is known to be
+    // dereferenceable and the fault destination cannot be taken.
+    const Value *Ptr = Probe->getPointerOperand();
+    Type *Ty = Probe->isLoad() ? Probe->getType()
+                               : Probe->getValueOperand()->getType();
+    Align Alignment = Probe->getAlign();
+    bool Safe = isDereferenceablePointer(
+        Ptr, Ty, SimplifyQuery(*DL, LibInfo, nullptr, AC, Probe));
+    MachineMemOperand::Flags Flags =
+        Probe->isLoad() ? MachineMemOperand::MOLoad
+                        : MachineMemOperand::MOStore;
+    if (!Safe)
+      Flags |= MachineMemOperand::MOVolatile | MachineMemOperand::MOFaultProbe;
+    MachineMemOperand *MMO = MF->getMachineMemOperand(
+        MachinePointerInfo(Ptr), Flags, getLLTForType(*Ty, *DL), Alignment,
+        Probe->getAAMetadata());
+    Register Addr = getOrCreateVReg(*Ptr);
+    if (Probe->isLoad())
+      MIRBuilder.buildLoad(getOrCreateVReg(I), Addr, *MMO);
+    else
+      MIRBuilder.buildStore(getOrCreateVReg(*Probe->getValueOperand()), Addr,
+                            *MMO);
+  } else if (!translateIntrinsic(I, IID, MIRBuilder)) {
     return false;
+  }
 
   // Retrieve successors.
   SmallPtrSet<BasicBlock *, 8> Dests = {I.getDefaultDest()};
@@ -3153,18 +3181,12 @@ bool IRTranslator::translateCallBr(const User &U,
   // implicit control flow (e.g., the "kill" path for amdgcn.kill). We mark them
   // with setIsInlineAsmBrIndirectTarget so the machine verifier accepts them as
   // valid successors, even though they're not from inline asm.
+  // A probe that cannot fault keeps its destination as a successor, so the
+  // block stays selected, though it is never taken.
   for (BasicBlock *Dest : I.getIndirectDests()) {
     MachineBasicBlock &Target = getMBB(*Dest);
     Target.setIsInlineAsmBrIndirectTarget();
     Target.setLabelMustBeEmitted();
-    // On NT-POSIX an indirect target is also where a fault handler may resume
-    // the asm's own frame, so it is an EH continuation target like a landing
-    // pad.
-    if (I.isInlineAsm() &&
-        MF->getTarget().getTargetTriple().isWindowsNTPOSIXEnvironment()) {
-      Target.setIsEHContTarget(true);
-      MF->setHasEHContTarget(true);
-    }
     // Don't add duplicate machine successors.
     if (Dests.insert(Dest).second)
       addSuccessorWithProb(CallBrMBB, &Target, BranchProbability::getZero());

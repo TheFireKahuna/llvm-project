@@ -49,9 +49,12 @@ void FaultMaps::serializeToFaultMapSection() {
   MCContext &OutContext = AP.OutStreamer->getContext();
   MCStreamer &OS = *AP.OutStreamer;
 
-  // Create the section.
+  // Create the section. An object format without one carries the faulting
+  // ops in its exception tables instead.
   MCSection *FaultMapSection =
       OutContext.getObjectFileInfo()->getFaultMapSection();
+  if (!FaultMapSection)
+    return;
   OS.switchSection(FaultMapSection);
 
   // Emit a dummy symbol to force section inclusion.

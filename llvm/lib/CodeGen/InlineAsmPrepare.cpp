@@ -211,7 +211,11 @@ static SmallVector<CallBrInst *, 2> findCallBrs(Function &F) {
   SmallVector<CallBrInst *, 2> CBRs;
   for (BasicBlock &BB : F)
     if (auto *CBR = dyn_cast<CallBrInst>(BB.getTerminator()))
-      if (!CBR->getType()->isVoidTy() && !CBR->use_empty())
+      // An intrinsic callbr's value is an ordinary virtual register, valid
+      // on every edge; only inline asm defines its outputs in physical
+      // registers the indirect targets must copy out again.
+      if (CBR->isInlineAsm() && !CBR->getType()->isVoidTy() &&
+          !CBR->use_empty())
         CBRs.push_back(CBR);
   return CBRs;
 }

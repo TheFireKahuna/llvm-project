@@ -68,7 +68,7 @@ X86RegisterInfo::X86RegisterInfo(const Triple &TT)
   // Cache some information.
   Is64Bit = TT.isX86_64();
   IsTarget64BitLP64 = Is64Bit && !TT.isX32();
-  IsWin64 = Is64Bit && TT.isOSWindows() && !TT.isWindowsNTPOSIXEnvironment();
+  IsWin64 = Is64Bit && TT.isOSWindows();
   IsUEFI64 = Is64Bit && TT.isUEFI();
 
   // Use a callee-saved register as the base pointer.  These registers must
@@ -530,9 +530,7 @@ X86RegisterInfo::getNoPreservedMask() const {
 bool X86RegisterInfo::hasReturnsTwiceLanding(const MachineFunction &MF,
                                              const CallBase *CB) const {
   return CB && CB->hasFnAttr(Attribute::ReturnsTwice) &&
-         MF.getSubtarget<X86Subtarget>()
-             .getTargetTriple()
-             .isWindowsNTPOSIXEnvironment();
+         CB->hasFnAttr("returns-twice-landing");
 }
 
 const uint32_t *X86RegisterInfo::getDarwinTLSCallPreservedMask() const {

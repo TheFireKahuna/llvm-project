@@ -178,6 +178,8 @@ enum AArch64MachineCombinerPattern : unsigned {
   GATHER_LANE_i8
 };
 class AArch64InstrInfo final : public AArch64GenInstrInfo {
+  bool supportsFaultingOps() const override { return true; }
+
   const AArch64RegisterInfo RI;
   const AArch64Subtarget &Subtarget;
 

@@ -287,6 +287,10 @@ struct LandingPadInfo {
   SmallVector<SEHHandler, 1> SEHHandlers;  // SEH handlers active at this lpad.
   MCSymbol *LandingPadLabel = nullptr;     // Label at beginning of landing pad.
   std::vector<int> TypeIds;                // List of type ids (filters negative).
+  // A fault probe's destination: each of its call sites spans one faulting
+  // instruction, which a runtime resumes at this pad by editing the PC, so
+  // the sites are never coalesced over the code between them.
+  bool IsFaultProbe = false;
 
   explicit LandingPadInfo(MachineBasicBlock *MBB)
       : LandingPadBlock(MBB) {}

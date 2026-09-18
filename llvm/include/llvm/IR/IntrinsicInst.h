@@ -1277,6 +1277,8 @@ public:
     case Intrinsic::fault_memcpy:
     case Intrinsic::fault_memmove:
     case Intrinsic::fault_memset:
+    case Intrinsic::fault_probe_load:
+    case Intrinsic::fault_probe_store:
       return true;
     default:
       return false;
@@ -1288,16 +1290,26 @@ public:
 
   bool isLoad() const {
     return getIntrinsicID() == Intrinsic::fault_load ||
-           getIntrinsicID() == Intrinsic::fault_load_volatile;
+           getIntrinsicID() == Intrinsic::fault_load_volatile ||
+           getIntrinsicID() == Intrinsic::fault_probe_load;
   }
   bool isStore() const {
     return getIntrinsicID() == Intrinsic::fault_store ||
-           getIntrinsicID() == Intrinsic::fault_store_volatile;
+           getIntrinsicID() == Intrinsic::fault_store_volatile ||
+           getIntrinsicID() == Intrinsic::fault_probe_store;
+  }
+  /// A probe: the access a callbr issues, whose fault is its indirect
+  /// destination rather than an unwind.
+  bool isProbe() const {
+    return getIntrinsicID() == Intrinsic::fault_probe_load ||
+           getIntrinsicID() == Intrinsic::fault_probe_store;
   }
   bool isVolatile() const {
     switch (getIntrinsicID()) {
     case Intrinsic::fault_load_volatile:
     case Intrinsic::fault_store_volatile:
+    case Intrinsic::fault_probe_load:
+    case Intrinsic::fault_probe_store:
       return true;
     case Intrinsic::fault_load:
     case Intrinsic::fault_store:

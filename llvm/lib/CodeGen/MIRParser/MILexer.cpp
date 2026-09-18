@@ -261,6 +261,7 @@ static MIToken::TokenKind getIdentifierKind(StringRef Identifier) {
       .Case("volatile", MIToken::kw_volatile)
       .Case("non-temporal", MIToken::kw_non_temporal)
       .Case("dereferenceable", MIToken::kw_dereferenceable)
+      .Case("fault-probe", MIToken::kw_fault_probe)
       .Case("invariant", MIToken::kw_invariant)
       .Case("align", MIToken::kw_align)
       .Case("basealign", MIToken::kw_basealign)

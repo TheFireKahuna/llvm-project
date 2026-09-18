@@ -205,21 +205,21 @@ bool TargetMachine::shouldAssumeDSOLocal(const GlobalValue *GV) const {
     if (GV->hasDLLImportStorageClass())
       return false;
 
-    // On MinGW/Windows Itanium/NTPOSIX, variables that haven't been declared
-    // with DLLImport may still end up automatically imported by the linker.
-    // To make this feasible, don't assume the variables to be DSO local
-    // unless we actually know that for sure. This only has to be done for
-    // variables; for functions the linker can insert thunks for calling
-    // functions from another DLL.
-    if ((TT.isOSCygMing() || TT.isWindowsItaniumOrNTPOSIXEnvironment()) &&
+    // On MinGW and NT-POSIX, variables that haven't been declared with
+    // DLLImport may still end up automatically imported by the linker. To make
+    // this feasible, don't assume the variables to be DSO local unless we
+    // actually know that for sure. This only has to be done for variables; for
+    // functions the linker can insert thunks for calling functions from
+    // another DLL.
+    if ((TT.isOSCygMing() || TT.isWindowsNTPOSIXEnvironment()) &&
         GV->isDeclarationForLinker() && isa<GlobalVariable>(GV))
       return false;
 
-    // On Windows Itanium/NTPOSIX, linkonce_odr and weak_odr data may be
-    // deduplicated across DLL boundaries via COMDAT. Don't assume DSO-local;
-    // the linker resolves .refptr. stubs to __imp_ or direct as needed.
-    if (TT.isWindowsItaniumOrNTPOSIXEnvironment() &&
-        isa<GlobalVariable>(GV) && GV->isWeakForLinker())
+    // On NT-POSIX, linkonce_odr and weak_odr data may be deduplicated across
+    // DLL boundaries via COMDAT. Don't assume DSO-local; the linker resolves
+    // .refptr. stubs to __imp_ or direct as needed.
+    if (TT.isWindowsNTPOSIXEnvironment() && isa<GlobalVariable>(GV) &&
+        GV->isWeakForLinker())
       return false;
 
     // Don't mark 'extern_weak' symbols as DSO local. If these symbols remain

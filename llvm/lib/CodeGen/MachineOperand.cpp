@@ -1239,6 +1239,8 @@ void MachineMemOperand::print(raw_ostream &OS, ModuleSlotTracker &MST,
     OS << "dereferenceable ";
   if (isInvariant())
     OS << "invariant ";
+  if (isFaultProbe())
+    OS << "fault-probe ";
   if (TII) {
     if (getFlags() & MachineMemOperand::MOTargetFlag1)
       OS << '"' << getTargetMMOFlagName(*TII, MachineMemOperand::MOTargetFlag1)
