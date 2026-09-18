@@ -342,6 +342,12 @@ GVNPass::Expression GVNPass::ValueTable::createExpr(Instruction *I) {
     E.VarArgs.push_back(lookupOrAdd(GCR->getOperand(0)));
     E.VarArgs.push_back(lookupOrAdd(GCR->getBasePtr()));
     E.VarArgs.push_back(lookupOrAdd(GCR->getDerivedPtr()));
+  } else if (auto *FA = dyn_cast<FaultAccessInst>(I)) {
+    // A fault load is the read it is: the blocks its invoke names are not
+    // part of its value.
+    for (Value *Arg : FA->args())
+      E.VarArgs.push_back(lookupOrAdd(Arg));
+    E.VarArgs.push_back(lookupOrAdd(FA->getCalledOperand()));
   } else {
     for (Use &Op : I->operands())
       E.VarArgs.push_back(lookupOrAdd(Op));
@@ -480,7 +486,7 @@ void GVNPass::ValueTable::addMemoryStateToExp(Instruction *I, Expression &Exp) {
   Exp.VarArgs.push_back(lookupOrAdd(MA));
 }
 
-uint32_t GVNPass::ValueTable::lookupOrAddCall(CallInst *C) {
+uint32_t GVNPass::ValueTable::lookupOrAddCall(CallBase *C) {
   // FIXME: Currently the calls which may access the thread id may
   // be considered as not accessing the memory. But this is
   // problematic for coroutines, since coroutines may resume in a
@@ -534,7 +540,7 @@ uint32_t GVNPass::ValueTable::lookupOrAddCall(CallInst *C) {
     if (LocalDep.isDef()) {
       // For masked load/store intrinsics, the local_dep may actually be
       // a normal load or store instruction.
-      CallInst *LocalDepCall = dyn_cast<CallInst>(LocalDep.getInst());
+      CallBase *LocalDepCall = dyn_cast<CallBase>(LocalDep.getInst());
 
       if (!LocalDepCall || LocalDepCall->arg_size() != C->arg_size()) {
         ValueNumbering[C] = NextValueNumber;
@@ -559,7 +565,7 @@ uint32_t GVNPass::ValueTable::lookupOrAddCall(CallInst *C) {
     const MemoryDependenceResults::NonLocalDepInfo &Deps =
         MD->getNonLocalCallDependency(C);
     // FIXME: Move the checking logic to MemDep!
-    CallInst *CDep = nullptr;
+    CallBase *CDep = nullptr;
 
     // Check to see if we have a single dominating call instruction that is
     // identical to C.
@@ -574,7 +580,7 @@ uint32_t GVNPass::ValueTable::lookupOrAddCall(CallInst *C) {
         break;
       }
 
-      CallInst *NonLocalDepCall = dyn_cast<CallInst>(I.getResult().getInst());
+      CallBase *NonLocalDepCall = dyn_cast<CallBase>(I.getResult().getInst());
       // FIXME: All duplicated with non-local case.
       if (NonLocalDepCall && DT->properlyDominates(I.getBB(), C->getParent())) {
         CDep = NonLocalDepCall;
@@ -669,6 +675,13 @@ uint32_t GVNPass::ValueTable::lookupOrAdd(Value *V) {
   switch (I->getOpcode()) {
     case Instruction::Call:
       return lookupOrAddCall(cast<CallInst>(I));
+    case Instruction::Invoke:
+      // A fault load is numbered as the read it is; any other invoke is
+      // unique.
+      if (isa<FaultAccessInst>(I) && cast<CallBase>(I)->onlyReadsMemory())
+        return lookupOrAddCall(cast<CallBase>(I));
+      ValueNumbering[V] = NextValueNumber;
+      return NextValueNumber++;
     case Instruction::FNeg:
     case Instruction::Add:
     case Instruction::FAdd:
@@ -3425,8 +3438,10 @@ bool GVNPass::processInstruction(Instruction *I) {
   unsigned Num = VN.lookupOrAdd(I);
 
   // Allocations are always uniquely numbered, so we can save time and memory
-  // by fast failing them.
-  if (isa<AllocaInst>(I) || I->isTerminator() || isa<PHINode>(I)) {
+  // by fast failing them. A fault load is the one terminator with a value
+  // another instruction can supply.
+  if (isa<AllocaInst>(I) || isa<PHINode>(I) ||
+      (I->isTerminator() && !isa<FaultAccessInst>(I))) {
     LeaderTable.insert(Num, I, I->getParent());
     return false;
   }
@@ -3469,6 +3484,17 @@ bool GVNPass::processInstruction(Instruction *I) {
     // If I was the result of a shortcut PRE, it might already be in the table
     // and the best replacement for itself. Nothing to do.
     return false;
+  }
+
+  if (auto *II = dyn_cast<InvokeInst>(I)) {
+    // A redundant fault load stays as its block's terminator with its edge
+    // dead; SimplifyCFG takes the edge and DCE the access. Once retired it
+    // is left alone.
+    if (II->doesNotThrow())
+      return false;
+    patchAndReplaceAllUsesWith(I, Repl);
+    II->setDoesNotThrow();
+    return true;
   }
 
   // Remove it!

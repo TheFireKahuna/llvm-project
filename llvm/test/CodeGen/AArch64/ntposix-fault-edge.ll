@@ -1,0 +1,57 @@
+; RUN: llc -O2 -verify-machineinstrs -mtriple=aarch64-pc-windows-ntposix < %s | FileCheck %s
+; RUN: llc -O0 -verify-machineinstrs -mtriple=aarch64-pc-windows-ntposix < %s | FileCheck %s
+; RUN: llc -O0 -verify-machineinstrs -mtriple=aarch64-pc-windows-ntposix -global-isel=false -fast-isel=false < %s | FileCheck %s
+
+; An invoke of llvm.fault.* is the memory access itself between the invoke's
+; labels: its call-site range names the landing pad, and the pad is a
+; successor of the block.
+
+declare void @cleanup_effect() nounwind
+declare i32 @rust_eh_personality(...)
+declare i64 @llvm.fault.load.i64.p0(ptr, i32)
+declare void @llvm.fault.store.i64.p0(i64, ptr, i32)
+
+; CHECK-LABEL: load:
+; CHECK: .seh_handler rust_eh_personality, @unwind, @except
+; CHECK: [[BEGIN:.Ltmp[0-9]+]]:
+; CHECK-NEXT: ldr x{{[0-9]+}}, [x{{[0-9]+}}]
+; CHECK-NEXT: [[END:.Ltmp[0-9]+]]:
+; CHECK: [[PAD:.Ltmp[0-9]+]]:
+; CHECK: bl cleanup_effect
+; CHECK: GCC_except_table
+; CHECK: .uleb128 [[BEGIN]]-[[FUNC:.Lfunc_begin[0-9]+]]
+; CHECK-NEXT: .uleb128 [[END]]-[[BEGIN]]
+; CHECK-NEXT: .uleb128 [[PAD]]-[[FUNC]]
+define i64 @load(ptr %p) personality ptr @rust_eh_personality {
+entry:
+  %v = invoke i64 @llvm.fault.load.i64.p0(ptr %p, i32 8) to label %normal unwind label %exception
+normal:
+  ret i64 %v
+exception:
+  %value = landingpad { ptr, i32 } cleanup
+  call void @cleanup_effect()
+  resume { ptr, i32 } %value
+}
+
+; CHECK-LABEL: pair:
+; CHECK: [[B1:.Ltmp[0-9]+]]:
+; CHECK-NEXT: ldr x{{[0-9]+}}, [x{{[0-9]+}}]
+; CHECK: str x{{[0-9]+}}, [x{{[0-9]+}}]
+; CHECK-NEXT: [[E2:.Ltmp[0-9]+]]:
+; CHECK: [[PPAD:.Ltmp[0-9]+]]:
+; CHECK: GCC_except_table
+; CHECK: .uleb128 [[B1]]-[[PFUNC:.Lfunc_begin[0-9]+]]
+; CHECK-NEXT: .uleb128 [[E2]]-[[B1]]
+; CHECK-NEXT: .uleb128 [[PPAD]]-[[PFUNC]]
+define void @pair(ptr %p, ptr %q) personality ptr @rust_eh_personality {
+entry:
+  %v = invoke i64 @llvm.fault.load.i64.p0(ptr %p, i32 8) to label %store unwind label %exception
+store:
+  invoke void @llvm.fault.store.i64.p0(i64 %v, ptr %q, i32 8) to label %normal unwind label %exception
+normal:
+  ret void
+exception:
+  %value = landingpad { ptr, i32 } cleanup
+  call void @cleanup_effect()
+  resume { ptr, i32 } %value
+}

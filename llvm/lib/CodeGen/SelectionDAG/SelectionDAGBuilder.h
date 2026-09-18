@@ -559,6 +559,7 @@ public:
 private:
   // These all get lowered before this pass.
   void visitInvoke(const InvokeInst &I);
+  void lowerFaultAccess(const FaultAccessInst &I, const BasicBlock *EHPadBB);
   void visitCallBrLandingPad(const CallInst &I);
   void visitResume(const ResumeInst &I);
 

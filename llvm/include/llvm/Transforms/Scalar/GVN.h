@@ -194,7 +194,7 @@ public:
                              Value *LHS, Value *RHS);
     Expression createExtractValueExpr(ExtractValueInst *EI);
     Expression createGEPExpr(GetElementPtrInst *GEP);
-    uint32_t lookupOrAddCall(CallInst *C);
+    uint32_t lookupOrAddCall(CallBase *C);
     uint32_t computeLoadStoreVN(Instruction *I);
     uint32_t phiTranslateImpl(const BasicBlock *BB, const BasicBlock *PhiBlock,
                               uint32_t Num, GVNPass &GVN);

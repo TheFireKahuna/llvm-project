@@ -202,13 +202,19 @@ static bool matchSelectWithOptionalNotCond(Value *V, Value *&Cond, Value *&A,
   return true;
 }
 
-static unsigned hashCallInst(CallInst *CI) {
+static unsigned hashCallInst(CallBase *CI) {
   // Don't CSE convergent calls in different basic blocks, because they
   // implicitly depend on the set of threads that is currently executing.
   if (CI->isConvergent()) {
     return hash_combine(CI->getOpcode(), CI->getParent(),
                         hash_combine_range(CI->operand_values()));
   }
+  // A fault load is the read it is: its identity is the callee and the
+  // arguments, not the blocks the invoke names.
+  if (isa<FaultAccessInst>(CI))
+    return hash_combine(CI->getCalledOperand(),
+                        hash_combine_range(llvm::map_range(
+                            CI->args(), [](const Use &U) { return U.get(); })));
   return hash_combine(CI->getOpcode(),
                       hash_combine_range(CI->operand_values()));
 }
@@ -466,7 +472,12 @@ struct CallValue {
   }
 
   static bool canHandle(Instruction *Inst) {
-    CallInst *CI = dyn_cast<CallInst>(Inst);
+    CallBase *CI = dyn_cast<CallBase>(Inst);
+    // An invoke is a fault load: redundant once a dominating one read the
+    // same memory, and kept in place with its edge marked dead.
+    if (CI && !isa<CallInst>(CI) &&
+        !(isa<FaultAccessInst>(CI) && CI->onlyReadsMemory()))
+      return false;
     if (!CI || (!CI->onlyReadsMemory() && !CI->onlyWritesMemory()) ||
         // FIXME: Currently the calls which may access the thread id may
         // be considered as not accessing the memory. But this is
@@ -492,18 +503,23 @@ unsigned DenseMapInfo<CallValue>::getHashValue(CallValue Val) {
   Instruction *Inst = Val.Inst;
 
   // Hash all of the operands as pointers and mix in the opcode.
-  return hashCallInst(cast<CallInst>(Inst));
+  return hashCallInst(cast<CallBase>(Inst));
 }
 
 bool DenseMapInfo<CallValue>::isEqual(CallValue LHS, CallValue RHS) {
-  CallInst *LHSI = cast<CallInst>(LHS.Inst);
-  CallInst *RHSI = cast<CallInst>(RHS.Inst);
+  CallBase *LHSI = cast<CallBase>(LHS.Inst);
+  CallBase *RHSI = cast<CallBase>(RHS.Inst);
 
   // Convergent calls implicitly depend on the set of threads that is
   // currently executing, so conservatively return false if they are in
   // different basic blocks.
   if (LHSI->isConvergent() && LHSI->getParent() != RHSI->getParent())
     return false;
+
+  if (isa<FaultAccessInst>(LHSI) || isa<FaultAccessInst>(RHSI))
+    return LHSI->getCalledOperand() == RHSI->getCalledOperand() &&
+           LHSI->getType() == RHSI->getType() &&
+           llvm::equal(LHSI->args(), RHSI->args());
 
   return LHSI->isIdenticalToWhenDefined(RHSI, /*IntersectAttrs=*/true);
 }
@@ -1620,8 +1636,14 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
         if (!Inst.use_empty())
           Inst.replaceAllUsesWith(InVal.first);
         salvageKnowledge(&Inst, &AC);
-        removeMSSA(Inst);
-        Inst.eraseFromParent();
+        if (auto *II = dyn_cast<InvokeInst>(&Inst)) {
+          // A redundant fault load stays as the block's terminator with its
+          // edge dead; SimplifyCFG takes the edge and DCE the access.
+          II->setDoesNotThrow();
+        } else {
+          removeMSSA(Inst);
+          Inst.eraseFromParent();
+        }
         Changed = true;
         ++NumCSECall;
         continue;
