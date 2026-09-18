@@ -57,7 +57,7 @@
 
 #if SANITIZER_WINDOWS && !defined(va_copy)
 #define va_copy(dst, src) ((dst) = (src))
-#endif // LLVM_RUNTIME_WIN32
+#endif // _WIN32
 
 #if SANITIZER_FREEBSD
 #define pthread_setname_np pthread_set_name_np

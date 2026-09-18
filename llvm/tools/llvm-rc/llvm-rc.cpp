@@ -172,11 +172,11 @@ bool isUsableArch(Triple::ArchType Arch) {
   case Triple::thumb:
   case Triple::aarch64:
     // These work properly with the clang driver, setting the expected
-    // defines such as LLVM_RUNTIME_WIN32 etc.
+    // defines such as _WIN32 etc.
     return true;
   default:
     // Other archs aren't set up for use with windows as target OS, (clang
-    // doesn't define e.g. LLVM_RUNTIME_WIN32 etc), so with them we need to set a
+    // doesn't define e.g. _WIN32 etc), so with them we need to set a
     // different default arch.
     return false;
   }

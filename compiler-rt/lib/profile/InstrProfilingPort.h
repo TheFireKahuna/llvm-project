@@ -26,7 +26,7 @@
 #define COMPILER_RT_USED
 #elif __GNUC__
 #ifdef _WIN32
-#ifdef  LLVM_RUNTIME_WIN32
+#if !defined(__NTPOSIX__)
 #define COMPILER_RT_FTRUNCATE(f, l) _chsize(fileno(f), l)
 #define COMPILER_RT_VISIBILITY
 #define COMPILER_RT_WEAK __attribute__((selectany))
@@ -67,7 +67,7 @@
 #endif
 
 #if COMPILER_RT_HAS_ATOMICS == 1
-#ifdef LLVM_RUNTIME_WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #if defined(_MSC_VER) && _MSC_VER < 1900
@@ -116,7 +116,7 @@
   (((ch) == DIR_SEPARATOR) || ((ch) == DIR_SEPARATOR_2))
 #endif /* DIR_SEPARATOR_2 */
 
-#if defined(LLVM_RUNTIME_WIN32)
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 static inline size_t getpagesize(void) {

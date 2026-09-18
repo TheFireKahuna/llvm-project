@@ -1,11 +1,11 @@
 
 CHECK_CXX_SOURCE_COMPILES("
-#ifdef LLVM_RUNTIME_WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 #include <intrin.h> /* Workaround for PR19898. */
 #include <windows.h>
 #endif
 int main() {
-#ifdef LLVM_RUNTIME_WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
         volatile LONG val = 1;
         MemoryBarrier();
         InterlockedCompareExchange(&val, 0, 1);

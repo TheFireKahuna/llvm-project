@@ -36,7 +36,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string>
-#if defined(LLVM_CRT_UCRT)
+#if defined(_LIBCPP_WIN32API)
 #  include <io.h>       // _mktemp_s
 #  include <fcntl.h>    // _O_EXCL, ...
 #  include <sys/stat.h> // _S_IREAD, ...

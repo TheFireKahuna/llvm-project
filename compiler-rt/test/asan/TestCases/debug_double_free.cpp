@@ -6,7 +6,7 @@
 
 // If we use %p with MS CRTs, it comes out all upper case. Use %08x to get
 // lowercase hex.
-#ifdef LLVM_RUNTIME_WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 # ifdef _WIN64
 #  define PTR_FMT "0x%08llx"
 # else

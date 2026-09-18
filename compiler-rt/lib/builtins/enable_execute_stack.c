@@ -8,7 +8,7 @@
 
 #include "int_lib.h"
 
-#if defined(LLVM_RUNTIME_POSIX)
+#if !defined(_WIN32) || defined(__NTPOSIX__)
 #include <sys/mman.h>
 #endif
 
@@ -17,14 +17,14 @@
 // Remove #define HAVE_SYSCONF 1 line.
 #define HAVE_SYSCONF 1
 
-#if defined(LLVM_RUNTIME_WIN32)
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #else
 #ifndef __APPLE__
 #include <unistd.h>
 #endif // __APPLE__
-#endif // LLVM_RUNTIME_WIN32
+#endif // _WIN32
 
 #if __LP64__
 #define TRAMPOLINE_SIZE 48
@@ -40,7 +40,7 @@
 
 COMPILER_RT_ABI void __enable_execute_stack(void *addr) {
 
-#if defined(LLVM_RUNTIME_WIN32)
+#if defined(_WIN32) && !defined(__NTPOSIX__)
   MEMORY_BASIC_INFORMATION mbi;
   if (!VirtualQuery(addr, &mbi, sizeof(mbi)))
     return; // We should probably assert here because there is no return value

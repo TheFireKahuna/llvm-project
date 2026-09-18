@@ -44,7 +44,7 @@
 #include <libkern/OSAtomic.h>
 #endif /* HAVE_LIBKERN_OSATOMIC_H */
 
-#elif defined(LLVM_RUNTIME_WIN32)
+#elif defined(_WIN32) && !defined(__NTPOSIX__)
 #define _CRT_SECURE_NO_WARNINGS 1
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>

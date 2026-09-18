@@ -9,7 +9,7 @@
 #ifndef PROFILE_INSTRPROFILING_WINDOWS_MMAP_H
 #define PROFILE_INSTRPROFILING_WINDOWS_MMAP_H
 
-#if defined(LLVM_RUNTIME_WIN32)
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 
 #include <basetsd.h>
 #include <io.h>
@@ -77,6 +77,6 @@ int madvise(void *addr, size_t length, int advice);
 
 int flock(int fd, int operation);
 
-#endif /* LLVM_RUNTIME_WIN32 */
+#endif /* _WIN32 */
 
 #endif /* PROFILE_INSTRPROFILING_WINDOWS_MMAP_H */

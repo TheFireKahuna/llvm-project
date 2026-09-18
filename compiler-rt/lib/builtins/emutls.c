@@ -45,7 +45,7 @@ typedef struct emutls_address_array {
 
 static void emutls_shutdown(emutls_address_array *array);
 
-#if !defined(LLVM_RUNTIME_WIN32)
+#if !defined(_WIN32) || defined(__NTPOSIX__)
 
 #include <pthread.h>
 

@@ -31,7 +31,7 @@
 #include <algorithm>
 #include <setjmp.h>
 
-#if defined(LLVM_RUNTIME_POSIX)
+#if !defined(_WIN32) || defined(__NTPOSIX__)
 # include <strings.h>
 # include <sys/mman.h>
 #endif

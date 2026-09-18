@@ -51,7 +51,7 @@
 #  include <memory>
 #  include <windows.h>
 
-#elif defined(LLVM_RUNTIME_POSIX)
+#elif defined(__NTPOSIX__)
 
 // LLVM libc on Windows provides futex(2) backed by
 // NtAlertThreadByThreadId with a Treiber-stack wait pool.
@@ -74,7 +74,7 @@ _LIBCPP_BEGIN_NAMESPACE_STD
 
 struct NoTimeout {};
 
-#if defined(__linux__) || (defined(_WIN32) && defined(LLVM_RUNTIME_POSIX))
+#if defined(__linux__) || defined(__NTPOSIX__)
 
 template <std::size_t _Size, class MaybeTimeout>
 static void __platform_wait_on_address(void const* __ptr, void const* __val, MaybeTimeout maybe_timeout_ns) {
@@ -281,7 +281,7 @@ static void __platform_wait_on_address(void const* __ptr, void const* __val, May
 template <std::size_t _Size>
 static void __platform_wake_by_address(void const*, bool) {}
 
-#endif // __linux__ || (_WIN32 && !_LIBCPP_WIN32API)
+#endif // __linux__ || __NTPOSIX__
 
 // =============================
 // Local hidden helper functions

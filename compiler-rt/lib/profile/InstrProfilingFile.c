@@ -22,7 +22,7 @@
 /* For _alloca. */
 #include <malloc.h>
 #endif
-#if defined(LLVM_RUNTIME_WIN32)
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 #include "WindowsMMap.h"
 /* For _chsize_s */
 #include <io.h>
@@ -593,7 +593,7 @@ static void truncateCurrentFile(void) {
   int initialized = getenv(LPROF_INIT_ONCE_ENV) != NULL;
   if (initialized)
     return;
-#if defined(LLVM_RUNTIME_WIN32)
+#if defined(_WIN32) && !defined(__NTPOSIX__)
   _putenv(LPROF_INIT_ONCE_ENV "=" LPROF_INIT_ONCE_ENV);
 #else
   setenv(LPROF_INIT_ONCE_ENV, LPROF_INIT_ONCE_ENV, 1);

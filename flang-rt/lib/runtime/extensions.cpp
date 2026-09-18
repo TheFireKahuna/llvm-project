@@ -29,7 +29,7 @@
 #include <stdlib.h>
 #include <thread>
 
-#ifdef LLVM_RUNTIME_WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 #include "flang/Common/windows-include.h"
 #include <synchapi.h>
 
@@ -53,7 +53,7 @@ inline void CtimeBuffer(char *buffer, size_t bufsize, const time_t cur_time,
 }
 #endif
 
-#ifndef LLVM_RUNTIME_WIN32
+#if !defined(_WIN32) || defined(__NTPOSIX__)
 // posix-compliant and has getlogin_r and F_OK
 #include <unistd.h>
 #else
@@ -100,7 +100,7 @@ template <typename T> T SecndsImpl(T *refTime) {
     // exit with error and hope that the other threads have better luck
     // (or the user retries the call).
     struct tm timeInfo;
-#ifdef LLVM_RUNTIME_WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
     if (localtime_s(&timeInfo, &now)) {
 #else
     if (!localtime_r(&now, &timeInfo)) {
@@ -136,7 +136,7 @@ template <typename T> T SecndsImpl(T *refTime) {
 extern "C" {
 
 gid_t RTNAME(GetGID)() {
-#ifdef LLVM_RUNTIME_WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
   // Group IDs don't exist on Windows, return 1 to avoid errors
   return 1;
 #else
@@ -145,7 +145,7 @@ gid_t RTNAME(GetGID)() {
 }
 
 uid_t RTNAME(GetUID)() {
-#ifdef LLVM_RUNTIME_WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
   // User IDs don't exist on Windows, return 1 to avoid errors
   return 1;
 #else
@@ -228,7 +228,7 @@ void FORTRAN_PROCEDURE_NAME(getlog)(char *arg, std::int64_t length) {
     return;
   }
 #endif
-#if LLVM_RUNTIME_WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
   GetUsernameEnvVar("USERNAME", arg, length);
 #else
   GetUsernameEnvVar("LOGNAME", arg, length);
@@ -257,7 +257,7 @@ void RTNAME(Sleep)(std::int64_t seconds) {
   if (seconds < 1) {
     return;
   }
-#if LLVM_RUNTIME_WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
   Sleep(seconds * 1000);
 #else
   sleep(seconds);
@@ -265,7 +265,7 @@ void RTNAME(Sleep)(std::int64_t seconds) {
 }
 
 // TODO: not supported on Windows
-#ifndef LLVM_RUNTIME_WIN32
+#if !defined(_WIN32) || defined(__NTPOSIX__)
 std::int64_t FORTRAN_PROCEDURE_NAME(access)(const char *name,
     std::int64_t nameLength, const char *mode, std::int64_t modeLength) {
   std::int64_t ret{-1};
@@ -339,7 +339,7 @@ cleanup:
 // CHDIR(DIR)
 int RTNAME(Chdir)(const char *name) {
 // chdir alias seems to be deprecated on Windows.
-#ifndef LLVM_RUNTIME_WIN32
+#if !defined(_WIN32) || defined(__NTPOSIX__)
   return chdir(name);
 #else
   return _chdir(name);
@@ -353,7 +353,7 @@ int FORTRAN_PROCEDURE_NAME(hostnm)(char *hn, int length) {
     return EINVAL;
   }
 
-#ifdef LLVM_RUNTIME_WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
   DWORD dwSize{static_cast<DWORD>(length)};
 
   // Note: Winsock has gethostname(), but use Win32 API GetComputerNameEx(),

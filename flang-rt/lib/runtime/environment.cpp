@@ -15,7 +15,7 @@
 #include <cstring>
 #include <limits>
 
-#ifdef LLVM_RUNTIME_WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 #ifdef _MSC_VER
 extern char **_environ;
 #endif
@@ -62,7 +62,7 @@ static void SetEnvironmentDefaults(const EnvironmentDefaultList *envDefaults) {
   for (int itemIndex = 0; itemIndex < envDefaults->numItems; ++itemIndex) {
     const char *name = envDefaults->item[itemIndex].name;
     const char *value = envDefaults->item[itemIndex].value;
-#ifdef LLVM_RUNTIME_WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
     if (auto *x{std::getenv(name)}) {
       continue;
     }
@@ -111,7 +111,7 @@ void ExecutionEnvironment::Configure(int ac, const char *av[],
     }
   }
 
-#ifdef LLVM_RUNTIME_WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
   envp = _environ;
 #elif defined(__FreeBSD__)
   auto envpp{reinterpret_cast<char ***>(dlsym(RTLD_DEFAULT, "environ"))};
@@ -271,7 +271,7 @@ std::int32_t ExecutionEnvironment::SetEnv(const char *name,
 
   std::int32_t status{0};
 
-#ifdef LLVM_RUNTIME_WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 
   status = _putenv_s(cStyleName.get(), cStyleValue.get());
 
@@ -300,7 +300,7 @@ std::int32_t ExecutionEnvironment::UnsetEnv(
 
   std::int32_t status{0};
 
-#ifdef LLVM_RUNTIME_WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 
   // Passing empty string as value will unset the variable
   status = _putenv_s(cStyleName.get(), "");

@@ -59,7 +59,7 @@ bool ExternalFileUnit::Emit(const char *data, std::size_t bytes,
         header = static_cast<int>(sizeof(std::uint32_t));
         extra = 2 * header;
       } else {
-#ifdef LLVM_RUNTIME_WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
         if (!isWindowsTextFile()) {
           ++extra; // carriage return (CR)
         }
@@ -346,7 +346,7 @@ bool ExternalFileUnit::AdvanceRecord(IoErrorHandler &handler) {
       // Terminate formatted variable length record
       const char *lineEnding{"\n"};
       std::size_t lineEndingBytes{1};
-#ifdef LLVM_RUNTIME_WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
       if (!isWindowsTextFile()) {
         lineEnding = "\r\n";
         lineEndingBytes = 2;

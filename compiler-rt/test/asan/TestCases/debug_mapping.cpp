@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#if LLVM_RUNTIME_WIN32
+#if _WIN64
 #define PTR "%llx"
 #else
 #define PTR "%lx"
