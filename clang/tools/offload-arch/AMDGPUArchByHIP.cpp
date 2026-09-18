@@ -27,7 +27,7 @@
 #include <string>
 #include <vector>
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 #include <windows.h>
 #endif
 
@@ -90,6 +90,15 @@ static std::vector<std::string> getSearchPaths() {
       !MainExe.empty())
     Paths.push_back(sys::path::parent_path(MainExe).str());
 
+#if defined(LLVM_RUNTIME_POSIX)
+  // %SYSTEMROOT%\System32 and %SYSTEMROOT% mirror the DLL search order.
+  if (auto SysRoot = sys::Process::GetEnv("SYSTEMROOT")) {
+    SmallString<128> SysDir(*SysRoot);
+    sys::path::append(SysDir, "System32");
+    Paths.push_back(std::string(SysDir));
+    Paths.push_back(*SysRoot);
+  }
+#else
   // Get the system directory
   wchar_t SystemDirectory[MAX_PATH];
   if (GetSystemDirectoryW(SystemDirectory, MAX_PATH) > 0) {
@@ -111,6 +120,7 @@ static std::vector<std::string> getSearchPaths() {
             Utf8WindowsDir))
       Paths.push_back(Utf8WindowsDir);
   }
+#endif
 
   // Get the current working directory
   SmallVector<char, 256> CWD;

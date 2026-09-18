@@ -37,6 +37,23 @@
 #ifdef HAVE_SYS_IOCTL_H
 #include <sys/ioctl.h>
 #endif
+#if defined(LLVM_RUNTIME_NTPOSIX)
+// Process queries beyond POSIX go to NT directly; the types come from
+// <sys/ntabi.h> through WindowsSupport.h.
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/ConvertUTF.h"
+#include "llvm/Support/StringSaver.h"
+#include "llvm/Support/Windows/WindowsSupport.h"
+#include <memory>
+
+extern "C" __declspec(dllimport) NTSTATUS NTAPI
+    NtQueryInformationProcess(HANDLE, ULONG, void *, ULONG, ULONG *);
+
+static const HANDLE NtCurrentProcessHandle =
+    reinterpret_cast<HANDLE>(static_cast<LONG_PTR>(-1));
+static constexpr ULONG ProcessVmCountersClass = 3;
+static constexpr ULONG ProcessCommandLineInformationClass = 60;
+#endif
 
 //===----------------------------------------------------------------------===//
 //=== WARNING: Implementation here must contain only generic UNIX code that
@@ -87,7 +104,14 @@ Expected<unsigned> Process::getPageSize() {
 }
 
 size_t Process::GetMallocUsage() {
-#if defined(HAVE_MALLINFO2)
+#if defined(LLVM_RUNTIME_NTPOSIX)
+  // The private commit charge is the closest NT answer to heap usage.
+  VM_COUNTERS Counters;
+  if (NtQueryInformationProcess(NtCurrentProcessHandle, ProcessVmCountersClass,
+                                &Counters, sizeof(Counters), nullptr) >= 0)
+    return Counters.PagefileUsage;
+  return 0;
+#elif defined(HAVE_MALLINFO2)
   struct mallinfo2 mi;
   mi = ::mallinfo2();
   return mi.uordblks;
@@ -218,6 +242,11 @@ private:
 } // namespace
 
 std::error_code Process::FixupStandardFileDescriptors() {
+#if defined(LLVM_RUNTIME_NTPOSIX)
+  // The NT libc opens the standard descriptors itself, and there is no
+  // /dev/null to substitute for a closed one.
+  return std::error_code();
+#else
   int NullFD = -1;
   FDCloser FDC(NullFD);
   const int StandardFDs[] = {STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO};
@@ -249,6 +278,7 @@ std::error_code Process::FixupStandardFileDescriptors() {
       return errnoAsErrorCode();
   }
   return std::error_code();
+#endif
 }
 
 std::error_code Process::SafelyCloseFileDescriptor(int FD) {
@@ -343,6 +373,7 @@ unsigned Process::StandardErrColumns() {
   return getColumns(1);
 }
 
+#if !defined(LLVM_RUNTIME_NTPOSIX)
 static bool terminalHasColors() {
   // Check if the current terminal is one of terminals that are known to support
   // ANSI color escape codes.
@@ -364,11 +395,17 @@ static bool terminalHasColors() {
 
   return false;
 }
+#endif
 
 bool Process::FileDescriptorHasColors(int fd) {
+#if defined(LLVM_RUNTIME_NTPOSIX)
+  // The console interprets ANSI escapes on every supported Windows release.
+  return FileDescriptorIsDisplayed(fd);
+#else
   // A file descriptor has colors if it is displayed and the terminal has
   // colors.
   return FileDescriptorIsDisplayed(fd) && terminalHasColors();
+#endif
 }
 
 bool Process::StandardOutHasColors() {
@@ -424,6 +461,12 @@ static unsigned GetRandomNumberSeed() {
 #endif
 
 unsigned llvm::sys::Process::GetRandomNumber() {
+#if defined(LLVM_RUNTIME_NTPOSIX)
+  // getentropy is backed by the system generator.
+  unsigned Result;
+  if (::getentropy(&Result, sizeof(Result)) == 0)
+    return Result;
+#endif
 #if HAVE_DECL_ARC4RANDOM
   return arc4random();
 #else
@@ -434,3 +477,73 @@ unsigned llvm::sys::Process::GetRandomNumber() {
 }
 
 [[noreturn]] void Process::ExitNoCleanup(int RetCode) { _Exit(RetCode); }
+
+#if defined(LLVM_RUNTIME_NTPOSIX)
+// The Windows-side surface that code compiled for _WIN32 still reaches.
+llvm::VersionTuple llvm::GetWindowsOSVersion() {
+  return llvm::VersionTuple(10, 0, 0, 22000);
+}
+
+bool llvm::RunningWindows8OrGreater() { return true; }
+bool llvm::RunningWindows11OrGreater() { return true; }
+
+bool llvm::MakeErrMsg(std::string *ErrMsg, const std::string &prefix) {
+  if (!ErrMsg)
+    return true;
+  *ErrMsg = prefix + ": " + std::string(strerror(errno));
+  return true;
+}
+
+namespace llvm::sys::windows {
+
+std::error_code
+GetCommandLineArguments(SmallVectorImpl<const char *> &Args,
+                        BumpPtrAllocator &Alloc) {
+  // Some tools re-read the command line from the process for wildcard
+  // expansion; NT holds it as a UNICODE_STRING.
+  ULONG BufferLength = 1024;
+  std::unique_ptr<uint8_t[]> Buffer(new uint8_t[BufferLength]);
+  NTSTATUS Status = NtQueryInformationProcess(
+      NtCurrentProcessHandle, ProcessCommandLineInformationClass, Buffer.get(),
+      BufferLength, &BufferLength);
+  if (Status == static_cast<NTSTATUS>(0xC0000004L)) { // INFO_LENGTH_MISMATCH
+    Buffer.reset(new uint8_t[BufferLength]);
+    Status = NtQueryInformationProcess(
+        NtCurrentProcessHandle, ProcessCommandLineInformationClass,
+        Buffer.get(), BufferLength, &BufferLength);
+  }
+  if (Status < 0)
+    return std::make_error_code(std::errc::not_supported);
+
+  auto *CommandLine = reinterpret_cast<UNICODE_STRING *>(Buffer.get());
+  std::string CommandLineUtf8;
+  if (!convertUTF16ToUTF8String(
+          ArrayRef<UTF16>(reinterpret_cast<const UTF16 *>(CommandLine->Buffer),
+                          CommandLine->Length / sizeof(wchar_t)),
+          CommandLineUtf8))
+    return std::make_error_code(std::errc::illegal_byte_sequence);
+
+  StringSaver Saver(Alloc);
+  cl::TokenizeWindowsCommandLineFull(CommandLineUtf8, Saver, Args,
+                                     /*MarkEOLs=*/false);
+  if (Args.empty())
+    return std::make_error_code(std::errc::invalid_argument);
+  return std::error_code();
+}
+
+std::error_code widenPath(const Twine &Path8, SmallVectorImpl<wchar_t> &Path16,
+                          size_t MaxPathLen) {
+  SmallString<256> PathStr;
+  Path8.toVector(PathStr);
+  SmallVector<UTF16, 256> Utf16;
+  if (!convertUTF8ToUTF16String(PathStr, Utf16))
+    return std::make_error_code(std::errc::illegal_byte_sequence);
+  if (Utf16.size() >= MaxPathLen)
+    return std::make_error_code(std::errc::filename_too_long);
+  Path16.assign(reinterpret_cast<const wchar_t *>(Utf16.data()),
+                reinterpret_cast<const wchar_t *>(Utf16.data()) + Utf16.size());
+  return std::error_code();
+}
+
+} // namespace llvm::sys::windows
+#endif // LLVM_RUNTIME_NTPOSIX

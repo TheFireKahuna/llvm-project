@@ -82,6 +82,12 @@
 #include <sys/syscall.h>
 #endif
 
+#if defined(LLVM_RUNTIME_NTPOSIX)
+// The stack is walked through the PE unwind tables; the types come from
+// <sys/ntabi.h> through WindowsSupport.h.
+#include "llvm/Support/Windows/WindowsSupport.h"
+#endif
+
 using namespace llvm;
 
 static void SignalHandler(int Sig, siginfo_t *Info, void *Context);
@@ -744,6 +750,25 @@ static bool printMarkupContext(llvm::raw_ostream &OS,
                                const char *MainExecutableName) {
   return false;
 }
+#elif ENABLE_BACKTRACES && defined(LLVM_RUNTIME_NTPOSIX)
+static bool findModulesAndOffsets(void **StackTrace, int Depth,
+                                  const char **Modules, intptr_t *Offsets,
+                                  const char *MainExecutableName,
+                                  StringSaver &StrPool) {
+  for (int I = 0; I < Depth; ++I) {
+    Dl_info Info;
+    if (dladdr(StackTrace[I], &Info) && Info.dli_fname) {
+      Modules[I] = StrPool.save(Info.dli_fname).data();
+      Offsets[I] = (intptr_t)StackTrace[I] - (intptr_t)Info.dli_fbase;
+    }
+  }
+  return true;
+}
+
+static bool printMarkupContext(llvm::raw_ostream &OS,
+                               const char *MainExecutableName) {
+  return false;
+}
 #else
 /// Backtraces are not enabled or we don't yet know how to find all loaded DSOs
 /// on this platform.
@@ -759,6 +784,40 @@ static bool printMarkupContext(llvm::raw_ostream &OS,
   return false;
 }
 #endif // ENABLE_BACKTRACES && ... (findModulesAndOffsets variants)
+
+#if ENABLE_BACKTRACES && defined(LLVM_RUNTIME_NTPOSIX)
+// Walk the stack with the PE unwind tables, as the system unwinder does.
+static int ntposixBacktrace(void **StackTrace, int MaxEntries) {
+  CONTEXT Context;
+  RtlCaptureContext(&Context);
+  int Entries = 0;
+  while (Entries < MaxEntries) {
+#if defined(__x86_64__)
+    DWORD64 &PC = Context.Rip;
+#elif defined(__aarch64__)
+    DWORD64 &PC = Context.Pc;
+#else
+    break;
+#endif
+#if defined(__x86_64__) || defined(__aarch64__)
+    if (PC == 0)
+      break;
+    DWORD64 ImageBase;
+    RUNTIME_FUNCTION *Function = RtlLookupFunctionEntry(PC, &ImageBase, nullptr);
+    if (!Function)
+      break;
+    void *HandlerData;
+    DWORD64 EstablisherFrame;
+    RtlVirtualUnwind(UNW_FLAG_NHANDLER, ImageBase, PC, Function, &Context,
+                     &HandlerData, &EstablisherFrame, nullptr);
+    if (PC == 0)
+      break;
+    StackTrace[Entries++] = reinterpret_cast<void *>(PC);
+#endif
+  }
+  return Entries;
+}
+#endif
 
 #if ENABLE_BACKTRACES && defined(HAVE__UNWIND_BACKTRACE)
 static int unwindBacktrace(void **StackTrace, int MaxEntries) {
@@ -884,6 +943,11 @@ void llvm::sys::PrintStackTrace(raw_ostream &OS, int Depth) {
   if (!depth)
     depth =
         unwindBacktrace(StackTrace, static_cast<int>(std::size(StackTrace)));
+#endif
+#if defined(LLVM_RUNTIME_NTPOSIX)
+  if (!depth)
+    depth =
+        ntposixBacktrace(StackTrace, static_cast<int>(std::size(StackTrace)));
 #endif
   if (!depth)
     return;

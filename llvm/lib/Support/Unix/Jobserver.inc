@@ -14,6 +14,9 @@
 #include <cassert>
 #include <cerrno>
 #include <fcntl.h>
+#if defined(LLVM_RUNTIME_NTPOSIX)
+#include <semaphore.h>
+#endif
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -77,6 +80,16 @@ JobserverClientImpl::JobserverClientImpl(const JobserverConfig &Config) {
     // The write FD is opened on-demand in release().
     WriteFD = -1;
     break;
+#if defined(LLVM_RUNTIME_NTPOSIX)
+  case JobserverConfig::Win32Semaphore:
+    // GNU make on Windows names a semaphore; the NT libc opens that name.
+    Semaphore = ::sem_open(Config.Path.c_str(), 0);
+    if (Semaphore == SEM_FAILED) {
+      Semaphore = nullptr;
+      return;
+    }
+    break;
+#endif
   default:
     return;
   }
@@ -103,6 +116,10 @@ JobserverClientImpl::~JobserverClientImpl() {
     ::close(ReadFD);
   if (WriteFD >= 0)
     ::close(WriteFD);
+#if defined(LLVM_RUNTIME_NTPOSIX)
+  if (Semaphore)
+    ::sem_close(Semaphore);
+#endif
 }
 
 /// Tries to acquire a job slot. The first call to this function will always
@@ -120,6 +137,14 @@ JobSlot JobserverClientImpl::tryAcquire() {
     LLVM_DEBUG(dbgs() << "Acquired implicit job slot.\n");
     return JobSlot::createImplicit();
   }
+
+#if defined(LLVM_RUNTIME_NTPOSIX)
+  if (Semaphore) {
+    if (::sem_trywait(Semaphore) == 0)
+      return JobSlot::createExplicit(1);
+    return JobSlot();
+  }
+#endif
 
   char Token;
   ssize_t Ret;
@@ -156,6 +181,13 @@ void JobserverClientImpl::release(JobSlot Slot) {
     assert(!was_already_released && "Implicit slot released twice");
     return;
   }
+
+#if defined(LLVM_RUNTIME_NTPOSIX)
+  if (Semaphore) {
+    (void)::sem_post(Semaphore);
+    return;
+  }
+#endif
 
   uint8_t Token = Slot.getExplicitValue();
   LLVM_DEBUG(dbgs() << "Releasing explicit token '" << (char)Token << "' to FD "

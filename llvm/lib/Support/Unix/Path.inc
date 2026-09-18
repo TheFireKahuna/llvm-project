@@ -31,7 +31,9 @@
 #endif
 
 #include <dirent.h>
+#if !defined(LLVM_RUNTIME_NTPOSIX)
 #include <pwd.h>
+#endif
 
 #ifdef __APPLE__
 #include <copyfile.h>
@@ -569,6 +571,9 @@ static bool is_local_impl(struct STATVFS &Vfs) {
   // The file system can have an arbitrary structure on z/OS; must go with the
   // conservative answer.
   return false;
+#elif defined(LLVM_RUNTIME_NTPOSIX)
+  // The NT libc reports no mount flags; every file system counts as local.
+  return true;
 #else
   return !!(STATVFS_F_FLAG(Vfs) & MNT_LOCAL);
 #endif
@@ -659,7 +664,14 @@ std::error_code access(const Twine &Path, AccessMode Mode) {
 bool can_execute(const Twine &Path) {
   sandbox::violationIfEnabled();
 
-  return !access(Path, AccessMode::Execute);
+  if (!access(Path, AccessMode::Execute))
+    return true;
+#if defined(LLVM_RUNTIME_NTPOSIX)
+  // A PE executable is found without its extension, as on Win32.
+  return !access(Path + ".exe", AccessMode::Execute);
+#else
+  return false;
+#endif
 }
 
 bool equivalent(file_status A, file_status B) {
@@ -704,6 +716,10 @@ static void expandTildeExpr(SmallVectorImpl<char> &Path) {
 
   // This is a string of the form ~username/, look up this user's entry in the
   // password database.
+#if defined(LLVM_RUNTIME_NTPOSIX)
+  // There is no password database to consult.
+  (void)Remainder;
+#else
   std::unique_ptr<char[]> Buf;
   long BufSize = sysconf(_SC_GETPW_R_SIZE_MAX);
   if (BufSize <= 0)
@@ -723,6 +739,7 @@ static void expandTildeExpr(SmallVectorImpl<char> &Path) {
   Path.clear();
   Path.append(Entry->pw_dir, Entry->pw_dir + strlen(Entry->pw_dir));
   llvm::sys::path::append(Path, Storage);
+#endif
 }
 
 void expand_tilde(const Twine &path, SmallVectorImpl<char> &dest) {
@@ -783,11 +800,35 @@ static std::error_code fillStatus(int StatRet, const struct stat &Status,
   return std::error_code();
 }
 
+#if defined(LLVM_RUNTIME_NTPOSIX)
+// The console and serial device names resolve in every directory and do not
+// answer stat; report them as the character devices they are.
+static bool isReservedName(StringRef Path) {
+  static const char *const ReservedNames[] = {
+      "nul",  "con",  "prn",  "aux",  "com1", "com2", "com3", "com4",
+      "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3",
+      "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"};
+  if (Path.starts_with("\\\\.\\"))
+    return true;
+  for (const char *Name : ReservedNames)
+    if (Path.equals_insensitive(Name))
+      return true;
+  return false;
+}
+#endif
+
 std::error_code status(const Twine &Path, file_status &Result, bool Follow) {
   sandbox::violationIfEnabled();
 
   SmallString<128> PathStorage;
   StringRef P = Path.toNullTerminatedStringRef(PathStorage);
+
+#if defined(LLVM_RUNTIME_NTPOSIX)
+  if (isReservedName(P)) {
+    Result = file_status(file_type::character_file);
+    return std::error_code();
+  }
+#endif
 
   struct stat Status;
   int StatRet = (Follow ? ::stat : ::lstat)(P.begin(), &Status);
@@ -1295,6 +1336,18 @@ Expected<size_t> readNativeFileSlice(file_t FD, MutableArrayRef<char> Buf,
   return NumRead;
 }
 
+#if defined(LLVM_RUNTIME_NTPOSIX)
+// The NT libc has no fcntl record locks yet; the lock calls report success so
+// the build coordination that uses them proceeds unsynchronized.
+std::error_code tryLockFile(int FD, std::chrono::milliseconds Timeout,
+                            LockKind Kind) {
+  return std::error_code();
+}
+
+std::error_code lockFile(int FD, LockKind Kind) { return std::error_code(); }
+
+std::error_code unlockFile(int FD) { return std::error_code(); }
+#else
 std::error_code tryLockFile(int FD, std::chrono::milliseconds Timeout,
                             LockKind Kind) {
   auto Start = std::chrono::steady_clock::now();
@@ -1354,6 +1407,7 @@ std::error_code unlockFile(int FD) {
     return std::error_code();
   return errnoAsErrorCode();
 }
+#endif
 
 std::error_code closeFile(file_t &F) {
   sandbox::violationIfEnabled();
@@ -1469,6 +1523,44 @@ std::error_code changeFileOwnership(int FD, uint32_t Owner, uint32_t Group) {
 
 namespace path {
 
+#if defined(LLVM_RUNTIME_NTPOSIX)
+// The user directories are the Windows ones, named by the environment.
+static bool directoryFromEnvironment(SmallVectorImpl<char> &Result,
+                                     std::initializer_list<const char *> Vars) {
+  for (const char *Var : Vars) {
+    if (const char *Dir = std::getenv(Var)) {
+      Result.clear();
+      Result.append(Dir, Dir + strlen(Dir));
+      llvm::sys::path::make_preferred(Result);
+      return true;
+    }
+  }
+  return false;
+}
+
+bool home_directory(SmallVectorImpl<char> &result) {
+  return directoryFromEnvironment(result, {"USERPROFILE", "HOME"});
+}
+
+bool user_config_directory(SmallVectorImpl<char> &result) {
+  return directoryFromEnvironment(result, {"LOCALAPPDATA"}) ||
+         home_directory(result);
+}
+
+bool cache_directory(SmallVectorImpl<char> &result) {
+  return user_config_directory(result);
+}
+
+void system_temp_directory(bool ErasedOnReboot, SmallVectorImpl<char> &Result) {
+  if (directoryFromEnvironment(Result, {"TMP", "TEMP", "USERPROFILE"})) {
+    fs::make_absolute(Result);
+    return;
+  }
+  Result.clear();
+  StringRef Default = "C:\\Temp";
+  Result.append(Default.begin(), Default.end());
+}
+#else
 bool home_directory(SmallVectorImpl<char> &result) {
   std::unique_ptr<char[]> Buf;
   char *RequestedDir = getenv("HOME");
@@ -1600,6 +1692,7 @@ void system_temp_directory(bool ErasedOnReboot, SmallVectorImpl<char> &Result) {
   const char *RequestedDir = getDefaultTempDir(ErasedOnReboot);
   Result.append(RequestedDir, RequestedDir + strlen(RequestedDir));
 }
+#endif // LLVM_RUNTIME_NTPOSIX
 
 } // end namespace path
 

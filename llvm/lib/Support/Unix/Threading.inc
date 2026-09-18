@@ -65,6 +65,38 @@
 #include <OS.h> // For B_OS_NAME_LENGTH
 #endif
 
+#if defined(LLVM_RUNTIME_NTPOSIX)
+// Affinity is POSIX (sched_getaffinity); power throttling and the core
+// topology are NT's. The types come from <sys/ntabi.h> through
+// WindowsSupport.h.
+#include "llvm/Support/Windows/WindowsSupport.h"
+#include <memory>
+#include <sched.h>
+#include <sys/mman.h>
+
+extern "C" {
+__declspec(dllimport) NTSTATUS NTAPI NtSetInformationThread(HANDLE, ULONG,
+                                                            void *, ULONG);
+__declspec(dllimport) NTSTATUS NTAPI NtQuerySystemInformation(ULONG, void *,
+                                                              ULONG, ULONG *);
+long get_mempolicy(int *, unsigned long *, unsigned long, void *,
+                   unsigned long);
+}
+
+static const HANDLE NtCurrentThreadHandle =
+    reinterpret_cast<HANDLE>(static_cast<LONG_PTR>(-2));
+static constexpr ULONG ThreadPowerThrottlingStateClass = 49;
+static constexpr ULONG SystemLogicalProcessorInformationExClass = 107;
+
+struct ThreadPowerThrottlingState {
+  ULONG Version;
+  ULONG ControlMask;
+  ULONG StateMask;
+};
+static constexpr ULONG ThreadPowerThrottlingCurrentVersion = 1;
+static constexpr ULONG ThreadPowerThrottlingExecutionSpeed = 1;
+#endif
+
 namespace llvm {
 pthread_t
 llvm_execute_on_thread_impl(void *(*ThreadFunc)(void *), void *Arg,
@@ -167,7 +199,7 @@ static constexpr uint32_t get_max_thread_name_length_impl() {
   return 64;
 #elif defined(__sun__) && defined(__svr4__)
   return 31;
-#elif defined(__linux__) && HAVE_PTHREAD_SETNAME_NP
+#elif (defined(__linux__) || defined(LLVM_RUNTIME_NTPOSIX)) && HAVE_PTHREAD_SETNAME_NP
   return 16;
 #elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__) ||                   \
     defined(__DragonFly__)
@@ -252,7 +284,8 @@ void llvm::get_thread_name(SmallVectorImpl<char> &Name) {
   }
   free(kp);
   return;
-#elif (defined(__linux__) || defined(__CYGWIN__)) && HAVE_PTHREAD_GETNAME_NP
+#elif (defined(__linux__) || defined(__CYGWIN__) || defined(LLVM_RUNTIME_NTPOSIX)) &&   \
+    HAVE_PTHREAD_GETNAME_NP
   constexpr uint32_t len = get_max_thread_name_length_impl();
   char Buffer[len] = {'\0'}; // FIXME: working around MSan false positive.
   if (0 == ::pthread_getname_np(::pthread_self(), Buffer, len))
@@ -275,7 +308,30 @@ void llvm::get_thread_name(SmallVectorImpl<char> &Name) {
 
 llvm::SetThreadPriorityResult
 llvm::set_thread_priority(ThreadPriority Priority) {
-#if (defined(__linux__) || defined(__CYGWIN__)) && defined(SCHED_IDLE)
+#if defined(LLVM_RUNTIME_NTPOSIX)
+  // Background threads are marked for power throttling, so the scheduler may
+  // place them on efficiency cores; the result is best effort.
+  ThreadPowerThrottlingState Throttling{};
+  Throttling.Version = ThreadPowerThrottlingCurrentVersion;
+  if (Priority == ThreadPriority::Background) {
+    Throttling.ControlMask = ThreadPowerThrottlingExecutionSpeed;
+    Throttling.StateMask = ThreadPowerThrottlingExecutionSpeed;
+  }
+  NtSetInformationThread(NtCurrentThreadHandle, ThreadPowerThrottlingStateClass,
+                         &Throttling, sizeof(Throttling));
+
+  // The base priority is POSIX; the NT libc maps it onto the thread's NT base
+  // priority.
+  struct sched_param Param = {};
+  int Policy = SCHED_OTHER;
+  if (Priority == ThreadPriority::Background) {
+    Policy = SCHED_RR;
+    Param.sched_priority = 1;
+  }
+  return !::pthread_setschedparam(::pthread_self(), Policy, &Param)
+             ? SetThreadPriorityResult::SUCCESS
+             : SetThreadPriorityResult::FAILURE;
+#elif (defined(__linux__) || defined(__CYGWIN__)) && defined(SCHED_IDLE)
   // Some *really* old glibcs are missing SCHED_IDLE.
   // http://man7.org/linux/man-pages/man3/pthread_setschedparam.3.html
   // http://man7.org/linux/man-pages/man2/sched_setscheduler.2.html
@@ -328,7 +384,7 @@ static int computeHostNumHardwareThreads() {
   if (cpuset_getaffinity(CPU_LEVEL_WHICH, CPU_WHICH_TID, -1, sizeof(mask),
                          &mask) == 0)
     return CPU_COUNT(&mask);
-#elif (defined(__linux__) || defined(__CYGWIN__))
+#elif (defined(__linux__) || defined(__CYGWIN__) || defined(LLVM_RUNTIME_NTPOSIX))
   cpu_set_t Set;
   CPU_ZERO(&Set);
   if (sched_getaffinity(0, sizeof(Set), &Set) == 0)
@@ -340,6 +396,63 @@ static int computeHostNumHardwareThreads() {
   return 1;
 }
 
+#if defined(LLVM_RUNTIME_NTPOSIX)
+unsigned llvm::get_cpus() {
+  // The NUMA nodes available to the process stand in for processor groups.
+  unsigned long NodeMask[16] = {};
+  if (::get_mempolicy(nullptr, NodeMask, sizeof(NodeMask) * 8, nullptr,
+                      MPOL_F_MEMS_ALLOWED) == 0) {
+    unsigned Count = 0;
+    for (unsigned long Bits : NodeMask)
+      Count += __builtin_popcountl(Bits);
+    if (Count > 0)
+      return Count;
+  }
+  return 1;
+}
+
+llvm::BitVector llvm::get_thread_affinity_mask() {
+  unsigned Total = computeHostNumHardwareThreads();
+  cpu_set_t Set;
+  if (::sched_getaffinity(0, sizeof(Set), &Set) == 0) {
+    llvm::BitVector Mask(Total, false);
+    for (unsigned I = 0; I < CPU_SETSIZE && I < Total; ++I)
+      if (CPU_ISSET_S(I, sizeof(Set), &Set))
+        Mask.set(I);
+    return Mask;
+  }
+  return llvm::BitVector(Total, true);
+}
+
+std::optional<unsigned>
+llvm::ThreadPoolStrategy::compute_cpu_socket(unsigned ThreadPoolNum) const {
+  unsigned NumNodes = get_cpus();
+  if (NumNodes <= 1)
+    return std::nullopt;
+  unsigned ThreadsPerNode = computeHostNumHardwareThreads() / NumNodes;
+  if (compute_thread_count() <= ThreadsPerNode)
+    return std::nullopt;
+  assert(ThreadPoolNum < compute_thread_count());
+  return (ThreadPoolNum * NumNodes) / compute_thread_count();
+}
+
+void llvm::ThreadPoolStrategy::apply_thread_strategy(
+    unsigned ThreadPoolNum) const {
+  // Windows 11 spreads threads across processor groups itself.
+  if (llvm::RunningWindows11OrGreater())
+    return;
+  std::optional<unsigned> Socket = compute_cpu_socket(ThreadPoolNum);
+  if (!Socket)
+    return;
+  // Bits [group * 64, group * 64 + 63] of the CPU set are one processor group.
+  cpu_set_t Set;
+  CPU_ZERO(&Set);
+  unsigned GroupBase = *Socket * (sizeof(KAFFINITY) * 8);
+  for (unsigned I = 0; I < sizeof(KAFFINITY) * 8; ++I)
+    CPU_SET_S(GroupBase + I, sizeof(Set), &Set);
+  ::sched_setaffinity(0, sizeof(Set), &Set);
+}
+#else
 void llvm::ThreadPoolStrategy::apply_thread_strategy(
     unsigned ThreadPoolNum) const {}
 
@@ -349,6 +462,7 @@ llvm::BitVector llvm::get_thread_affinity_mask() {
 }
 
 unsigned llvm::get_cpus() { return 1; }
+#endif
 
 #if (defined(__linux__) || defined(__CYGWIN__)) &&                             \
     (defined(__i386__) || defined(__x86_64__))
@@ -459,6 +573,29 @@ static int computeHostNumPhysicalCores() {
   char *CSD = reinterpret_cast<char *>(
       static_cast<uintptr_t>(reinterpret_cast<unsigned int &>(CVT[CVTCSD])));
   return reinterpret_cast<int &>(CSD[CSD_NUMBER_ONLINE_STANDARD_CPS]);
+}
+#elif defined(LLVM_RUNTIME_NTPOSIX)
+// POSIX cannot tell physical from logical processors; count the processor
+// core relations NT reports.
+static int computeHostNumPhysicalCores() {
+  ULONG Length = 0;
+  NtQuerySystemInformation(SystemLogicalProcessorInformationExClass, nullptr, 0,
+                           &Length);
+  if (Length == 0)
+    return -1;
+  std::unique_ptr<uint8_t[]> Buffer(new uint8_t[Length]);
+  if (NtQuerySystemInformation(SystemLogicalProcessorInformationExClass,
+                               Buffer.get(), Length, &Length) < 0)
+    return -1;
+  int Cores = 0;
+  for (ULONG Offset = 0; Offset < Length;) {
+    auto *Info = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *>(
+        Buffer.get() + Offset);
+    if (Info->Relationship == RelationProcessorCore)
+      ++Cores;
+    Offset += Info->Size;
+  }
+  return Cores > 0 ? Cores : -1;
 }
 #else
 // On other systems, return -1 to indicate unknown.

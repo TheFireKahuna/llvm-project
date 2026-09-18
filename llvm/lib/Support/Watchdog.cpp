@@ -14,9 +14,8 @@
 #include "llvm/Config/llvm-config.h"
 
 // Include the platform-specific parts of this class.
-#ifdef LLVM_ON_UNIX
+#if defined(LLVM_ON_UNIX) || defined(LLVM_RUNTIME_POSIX)
 #include "Unix/Watchdog.inc"
-#endif
-#ifdef _WIN32
+#elif defined(_WIN32)
 #include "Windows/Watchdog.inc"
 #endif

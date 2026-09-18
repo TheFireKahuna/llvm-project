@@ -15,6 +15,32 @@
 //===          is guaranteed to work on *all* UNIX variants.
 //===----------------------------------------------------------------------===//
 
+#if defined(LLVM_RUNTIME_NTPOSIX)
+// combase is present; declare the two entry points so no SDK header is
+// needed. The types come from <sys/ntabi.h> through WindowsSupport.h.
+#include "llvm/Support/Windows/WindowsSupport.h"
+
+extern "C" {
+__declspec(dllimport) HRESULT NTAPI CoInitializeEx(void *, DWORD);
+__declspec(dllimport) void NTAPI CoUninitialize(void);
+}
+
+namespace llvm {
+namespace sys {
+InitializeCOMRAII::InitializeCOMRAII(COMThreadingMode Threading,
+                                     bool SpeedOverMemory) {
+  DWORD Init = Threading == COMThreadingMode::SingleThreaded
+                   ? 0x2   // COINIT_APARTMENTTHREADED
+                   : 0x0;  // COINIT_MULTITHREADED
+  if (SpeedOverMemory)
+    Init |= 0x8; // COINIT_SPEED_OVER_MEMORY
+  ::CoInitializeEx(nullptr, Init);
+}
+
+InitializeCOMRAII::~InitializeCOMRAII() { ::CoUninitialize(); }
+} // namespace sys
+} // namespace llvm
+#else
 namespace llvm {
 namespace sys {
 
@@ -24,3 +50,4 @@ InitializeCOMRAII::InitializeCOMRAII(COMThreadingMode Threading,
 InitializeCOMRAII::~InitializeCOMRAII() = default;
 } // namespace sys
 } // namespace llvm
+#endif

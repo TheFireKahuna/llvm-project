@@ -8,9 +8,13 @@
 
 #include "llvm/Support/Jobserver.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/Config/llvm-config.h"
 #include "llvm/Support/Error.h"
 
 #include <atomic>
+#if defined(LLVM_RUNTIME_NTPOSIX)
+#include <semaphore.h>
+#endif
 #include <memory>
 #include <mutex>
 #include <new>
@@ -118,7 +122,11 @@ Expected<JobserverConfig> parseNativeMakeFlags(StringRef MakeFlags) {
   }
 
 // Perform platform-specific validation.
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_NTPOSIX)
+  // NTPOSIX on Windows must accept both POSIX jobserver auth (pipe/FIFO)
+  // and GNU make's Windows semaphore auth. Validation is performed when each
+  // mode is opened.
+#elif defined(LLVM_RUNTIME_WIN32)
   if (Config.TheMode == JobserverConfig::PosixFifo ||
       Config.TheMode == JobserverConfig::PosixPipe)
     return createStringError(
@@ -155,10 +163,14 @@ public:
   bool isValid() const { return IsInitialized; }
 
 private:
-#if defined(LLVM_ON_UNIX)
+#if defined(LLVM_ON_UNIX) || defined(LLVM_RUNTIME_POSIX)
   int ReadFD = -1;
   int WriteFD = -1;
   std::string FifoPath;
+#if defined(LLVM_RUNTIME_NTPOSIX)
+  // GNU make on Windows may hand out a named semaphore instead of a pipe.
+  sem_t *Semaphore = nullptr;
+#endif
 #elif defined(_WIN32)
   void *Semaphore = nullptr;
 #endif
@@ -166,7 +178,7 @@ private:
 } // namespace llvm
 
 // Include the platform-specific parts of the class.
-#if defined(LLVM_ON_UNIX)
+#if defined(LLVM_ON_UNIX) || defined(LLVM_RUNTIME_POSIX)
 #include "Unix/Jobserver.inc"
 #elif defined(_WIN32)
 #include "Windows/Jobserver.inc"
@@ -222,7 +234,7 @@ JobserverClient *JobserverClient::getInstance() {
     }
 
     if (Config.TheMode == JobserverConfig::PosixPipe) {
-#if defined(LLVM_ON_UNIX)
+#if defined(LLVM_RUNTIME_NTPOSIX) || defined(LLVM_ON_UNIX)
       if (!areFdsValid(Config.PipeFDs.Read, Config.PipeFDs.Write)) {
         errs() << "Warning: failed to create jobserver client due to invalid "
                   "Pipe FDs in MAKEFLAGS environment variable\n";

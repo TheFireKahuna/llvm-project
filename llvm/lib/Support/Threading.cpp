@@ -53,10 +53,9 @@ int llvm::get_physical_cores() { return -1; }
 static int computeHostNumHardwareThreads();
 
 // Include the platform-specific parts of this class.
-#ifdef LLVM_ON_UNIX
+#if defined(LLVM_ON_UNIX) || defined(LLVM_RUNTIME_POSIX)
 #include "Unix/Threading.inc"
-#endif
-#ifdef _WIN32
+#elif defined(_WIN32)
 #include "Windows/Threading.inc"
 #endif
 

@@ -59,6 +59,42 @@ using namespace sys;
 
 ProcessInfo::ProcessInfo() : Pid(0), ReturnCode(0) {}
 
+#if defined(LLVM_RUNTIME_NTPOSIX)
+// Programs are found the Win32 way: PATH is ';'-separated, either separator
+// counts as a path, and PATHEXT supplies the executable extensions.
+ErrorOr<std::string> sys::findProgramByName(StringRef Name,
+                                            ArrayRef<StringRef> Paths) {
+  assert(!Name.empty() && "Must have a name!");
+  if (Name.find_first_of("/\\") != StringRef::npos)
+    return std::string(Name);
+
+  SmallVector<StringRef, 16> EnvironmentPaths;
+  if (Paths.empty())
+    if (const char *PathEnv = std::getenv("PATH")) {
+      SplitString(PathEnv, EnvironmentPaths, ";");
+      Paths = EnvironmentPaths;
+    }
+
+  SmallVector<StringRef, 4> Extensions = {"", ".exe"};
+  if (const char *PathExtEnv = std::getenv("PATHEXT"))
+    SplitString(PathExtEnv, Extensions, ";");
+
+  for (StringRef Path : Paths) {
+    if (Path.empty())
+      continue;
+    for (StringRef Ext : Extensions) {
+      SmallString<128> FilePath(Path);
+      sys::path::append(FilePath, Name);
+      FilePath.append(Ext);
+      if (sys::fs::can_execute(FilePath.c_str())) {
+        sys::path::make_preferred(FilePath);
+        return std::string(FilePath);
+      }
+    }
+  }
+  return errc::no_such_file_or_directory;
+}
+#else
 ErrorOr<std::string> sys::findProgramByName(StringRef Name,
                                             ArrayRef<StringRef> Paths) {
   assert(!Name.empty() && "Must have a name!");
@@ -86,6 +122,7 @@ ErrorOr<std::string> sys::findProgramByName(StringRef Name,
   }
   return errc::no_such_file_or_directory;
 }
+#endif
 
 static bool RedirectIO(std::optional<StringRef> Path, int FD, std::string *ErrMsg) {
   if (!Path) // Noop
@@ -93,7 +130,11 @@ static bool RedirectIO(std::optional<StringRef> Path, int FD, std::string *ErrMs
   std::string File;
   if (Path->empty())
     // Redirect empty paths to /dev/null
+#if defined(LLVM_RUNTIME_NTPOSIX)
+    File = "NUL";
+#else
     File = "/dev/null";
+#endif
   else
     File = std::string(*Path);
 
@@ -123,7 +164,11 @@ static bool RedirectIO_PS(const std::string *Path, int FD, std::string *ErrMsg,
   const char *File;
   if (Path->empty())
     // Redirect empty paths to /dev/null
+#if defined(LLVM_RUNTIME_NTPOSIX)
+    File = "NUL";
+#else
     File = "/dev/null";
+#endif
   else
     File = Path->c_str();
 
@@ -169,6 +214,13 @@ static bool Execute(ProcessInfo &PI, StringRef Program,
                     BitVector *AffinityMask, bool DetachProcess) {
   assert(!AffinityMask && "Starting a process with an affinity mask is "
                           "currently not supported on Unix!");
+
+#if defined(LLVM_RUNTIME_NTPOSIX)
+  // A PE executable is found without its extension, as on Win32.
+  SmallString<64> ProgramStorage;
+  if (!sys::fs::exists(Program))
+    Program = Twine(Program + ".exe").toStringRef(ProgramStorage);
+#endif
 
   BumpPtrAllocator Allocator;
   StringSaver Saver(Allocator);
@@ -547,6 +599,18 @@ llvm::sys::writeFileWithEncoding(StringRef FileName, StringRef Contents,
 
 bool llvm::sys::commandLineFitsWithinSystemLimits(StringRef Program,
                                                   ArrayRef<StringRef> Args) {
+#if defined(LLVM_RUNTIME_NTPOSIX)
+  // The command line reaches the child through NT, whose limit is 32767
+  // characters.
+  static const size_t MaxCommandStringLength = 32000;
+  size_t ArgLength = Program.size() + 1;
+  for (StringRef Arg : Args) {
+    ArgLength += Arg.size() + 1;
+    if (ArgLength > MaxCommandStringLength)
+      return false;
+  }
+  return true;
+#else
   static long ArgMax = sysconf(_SC_ARG_MAX);
   // POSIX requires that _POSIX_ARG_MAX is 4096, which is the lowest possible
   // value for ARG_MAX on a POSIX compliant system.
@@ -584,4 +648,5 @@ bool llvm::sys::commandLineFitsWithinSystemLimits(StringRef Program,
   }
 
   return true;
+#endif
 }

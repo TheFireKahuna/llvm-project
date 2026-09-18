@@ -15,7 +15,7 @@
 #include "llvm/Config/llvm-config.h"
 
 // Include the platform-specific parts of this class.
-#ifdef LLVM_ON_UNIX
+#if defined(LLVM_ON_UNIX) || defined(LLVM_RUNTIME_POSIX)
 #include "Unix/COM.inc"
 #elif defined(_WIN32)
 #include "Windows/COM.inc"
