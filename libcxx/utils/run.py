@@ -14,9 +14,44 @@ program's error code.
 """
 
 import argparse
+import contextlib
 import os
 import platform
 import subprocess
+import tempfile
+
+
+@contextlib.contextmanager
+def shortWorkingDirectory(execdir):
+    """Yields a name for execdir that CreateProcessW accepts as a working directory.
+
+    CreateProcessW rejects a current directory longer than MAX_PATH even when
+    the caller and the system have opted into long paths, and a child that is
+    not itself long-path aware could not resolve relative names against such a
+    directory anyway. When the execution directory is that deep, give it a
+    second, short name: a junction in the temp directory, removed afterwards.
+    Everything the test writes relative to its working directory lands in the
+    real directory.
+    """
+    # Leave room for the names a test creates relative to its working
+    # directory, which the child resolves against the same limit.
+    if platform.system() != "Windows" or len(execdir) + 40 < 260:
+        yield execdir
+        return
+    try:
+        import _winapi
+        createJunction = _winapi.CreateJunction
+    except (ImportError, AttributeError):
+        yield execdir
+        return
+    parent = tempfile.mkdtemp(prefix="lit-")
+    link = os.path.join(parent, "d")
+    createJunction(execdir, link)
+    try:
+        yield link
+    finally:
+        os.rmdir(link)
+        os.rmdir(parent)
 
 
 def main():
@@ -76,9 +111,10 @@ def main():
             executable = program
 
     # Run the command line with the given environment in the execution directory.
-    return subprocess.call(
-        commandLine, executable=executable, cwd=args.execdir, env=env, shell=False
-    )
+    with shortWorkingDirectory(args.execdir) as cwd:
+        return subprocess.call(
+            commandLine, executable=executable, cwd=cwd, env=env, shell=False
+        )
 
 
 if __name__ == "__main__":
