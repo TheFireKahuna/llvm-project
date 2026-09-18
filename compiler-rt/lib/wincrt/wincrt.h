@@ -64,7 +64,11 @@
 #endif
 
 extern "C" {
-// Itanium C++ ABI 3.3.5 termination hooks and their wincrt extensions.
+// Itanium C++ ABI 3.3.5 termination hooks and their wincrt extensions, as
+// every image calls them. In the shared C++ runtime the exported definitions
+// below are the only declarations, so the names are not declared twice with
+// different storage classes.
+#ifndef WINCRT_SHARED_CXX_RUNTIME
 int __cdecl __cxa_atexit(void (*)(void *), void *, void *);
 void __cdecl __cxa_finalize(void *);
 int __cxa_at_quick_exit(void (*)(void), void *);
@@ -75,6 +79,7 @@ void __cxa_thread_finalize(void *);
 // image's registrations may be finalized now.
 void __wincrt_register_executable(void (*)(void));
 int __wincrt_detach_image(void *, int);
+#endif
 // libc++abi: terminate with the given unwind object as the active exception.
 [[noreturn]] void __cxa_call_terminate(void *) noexcept;
 
