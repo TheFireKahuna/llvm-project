@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/Windows/WindowsSupport.h"
+#include "llvm/ADT/SmallVector.h"
 #include <atomic>
 #include <cassert>
 
@@ -21,10 +22,26 @@ namespace llvm {
 /// GNU make in the --jobserver-auth argument. If the semaphore is opened
 /// successfully, the client is marked as initialized.
 JobserverClientImpl::JobserverClientImpl(const JobserverConfig &Config) {
+  if (Config.TheMode != JobserverConfig::Win32Semaphore)
+    return;
+
   Semaphore = (void *)::OpenSemaphoreA(SEMAPHORE_MODIFY_STATE | SYNCHRONIZE,
                                        FALSE, Config.Path.c_str());
-  if (Semaphore != nullptr)
-    IsInitialized = true;
+  if (Semaphore == nullptr)
+    return;
+
+  IsInitialized = true;
+  SmallVector<JobSlot, 8> Slots;
+  while (true) {
+    auto S = tryAcquire();
+    if (!S.isValid())
+      break;
+    Slots.push_back(std::move(S));
+  }
+  NumJobs = Slots.size();
+  assert(NumJobs >= 1 && "Invalid number of jobs");
+  for (auto &S : Slots)
+    release(std::move(S));
 }
 
 /// The destructor closes the handle to the semaphore, releasing the resource.
