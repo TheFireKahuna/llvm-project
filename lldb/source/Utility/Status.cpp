@@ -27,7 +27,7 @@
 #include <mach/mach.h>
 #endif
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 #include <windows.h>
 #endif
 #include <cstdint>
@@ -65,7 +65,7 @@ static llvm::Error ErrorFromEnums(Status::ValueType err, ErrorType type,
     return llvm::make_error<MachKernelError>(
         std::error_code(err, std::system_category()));
   case eErrorTypeWin32:
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
     if (err == NO_ERROR)
       return llvm::Error::success();
 #endif
@@ -139,7 +139,7 @@ llvm::Error Status::ToError() const { return CloneError(m_error); }
 
 Status::~Status() { llvm::consumeError(std::move(m_error)); }
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 static std::string RetrieveWin32ErrorString(uint32_t error_code) {
   char *buffer = nullptr;
   std::string message;
@@ -174,7 +174,7 @@ std::string MachKernelError::message() const {
 }
 
 std::string Win32Error::message() const {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   return RetrieveWin32ErrorString(convertToErrorCode().value());
 #endif
   return "Win32Error";

@@ -16,7 +16,7 @@ set (FILES
   XMLTest.cpp
 )
 
-if (UNIX)
+if (UNIX OR LLVM_RUNTIME_POSIX)
   list(APPEND FILES
     posix/HostTest.cpp
     posix/SupportTest.cpp

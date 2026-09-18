@@ -4,7 +4,7 @@ add_public_tablegen_target(LLDBDAPOptionsTableGen)
 
 set(LLDB_DAP_LINK_LIBS lldbDAP)
 
-if(WIN32)
+if(LLVM_RUNTIME_WIN32)
   list(APPEND LLDB_DAP_LINK_LIBS lldbHostPythonPathSetup)
   list(APPEND LLDB_DAP_LINK_LIBS liblldb)
 endif()

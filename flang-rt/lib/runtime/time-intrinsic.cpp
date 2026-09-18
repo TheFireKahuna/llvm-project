@@ -19,7 +19,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "flang/Common/windows-include.h"
 #else
 #include <sys/time.h> // gettimeofday
@@ -154,7 +154,7 @@ count_t ConvertSecondsNanosecondsToCount(
 
 // Less accurate implementation only accurate to the nearest microsecond
 // (instead of nanosecond) for systems where `struct timespec` is not available.
-#if defined(NO_TIMESPEC) && !defined(_WIN32)
+#if defined(NO_TIMESPEC) && !defined(LLVM_RUNTIME_WIN32)
 // Function converts a struct timeval into the desired count to
 // be returned by the timing functions in accordance with the requested
 // kind at the call site.
@@ -302,7 +302,7 @@ static void DateAndTimeUnavailable(Fortran::runtime::Terminator &terminator,
   }
 }
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 #ifdef _AIX
 // Compute the time difference from GMT/UTC to get around the behavior of
 // strfname on AIX that requires setting an environment variable for numeric
@@ -517,7 +517,7 @@ void RTNAME(Etime)(const Descriptor *values, const Descriptor *time,
 
   double usrTime = -1.0, sysTime = -1.0, realTime = -1.0;
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   FILETIME creationTime;
   FILETIME exitTime;
   FILETIME kernelTime;

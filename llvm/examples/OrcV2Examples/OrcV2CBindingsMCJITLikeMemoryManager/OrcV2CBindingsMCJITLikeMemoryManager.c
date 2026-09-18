@@ -23,7 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include <windows.h>
 #else
 #include <dlfcn.h>
@@ -49,7 +49,7 @@ void *addSection(size_t Size, LLVMBool IsCode) {
     abort();
   }
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   void *Ptr =
       VirtualAlloc(NULL, Size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
   if (!Ptr) {
@@ -100,7 +100,7 @@ LLVMBool memFinalize(void *Opaque, char **Err) {
   for (size_t i = 0; i < SectionCount; ++i) {
     if (Sections[i].IsCode) {
       LLVMBool fail;
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
       DWORD unused;
       fail = VirtualProtect(Sections[i].Ptr, Sections[i].Size,
                             PAGE_EXECUTE_READ, &unused) == 0;
@@ -122,7 +122,7 @@ void memDestroy(void *Opaque) {
   printf("Releasing section memory ..\n");
   for (size_t i = 0; i < SectionCount; ++i) {
     LLVMBool fail;
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
     fail = VirtualFree(Sections[i].Ptr, 0, MEM_RELEASE) == 0;
 #else
     fail = munmap(Sections[i].Ptr, Sections[i].Size) == -1;

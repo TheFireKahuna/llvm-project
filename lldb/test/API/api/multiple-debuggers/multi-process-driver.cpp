@@ -243,7 +243,7 @@ int count_successful_threads(int num_threads) {
 
 int main (int argc, char **argv)
 {
-#if !defined(_MSC_VER)
+#if !defined(LLVM_CRT_UCRT)
   signal(SIGPIPE, SIG_IGN);
 #endif
 

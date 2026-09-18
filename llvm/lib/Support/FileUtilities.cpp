@@ -309,7 +309,7 @@ Error FilePermissionsApplier::apply(
   if (std::error_code EC = sys::fs::status(FD, OStat))
     return createFileError(OutputFilename, EC);
   if (OStat.type() == sys::fs::file_type::regular_file) {
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
     // Keep ownership if llvm-objcopy is called under root.
     if (OutputFilename == InputFilename && OStat.getUser() == 0)
       sys::fs::changeFileOwnership(FD, Status.getUser(), Status.getGroup());
@@ -318,7 +318,7 @@ Error FilePermissionsApplier::apply(
     sys::fs::perms Perm = Status.permissions();
     if (OutputFilename != InputFilename)
       Perm = static_cast<sys::fs::perms>(Perm & ~sys::fs::getUmask() & ~06000);
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     if (std::error_code EC = sys::fs::setPermissions(OutputFilename, Perm))
 #else
     if (std::error_code EC = sys::fs::setPermissions(FD, Perm))

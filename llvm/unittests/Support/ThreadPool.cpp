@@ -19,7 +19,7 @@
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 #include "llvm/Support/Windows/WindowsSupport.h"
 #endif
 
@@ -483,7 +483,8 @@ extern const char *TestMainArgv0;
 // Just a reachable symbol to ease resolving of the executable's path.
 static cl::opt<std::string> ThreadPoolTestStringArg1("thread-pool-string-arg1");
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
+// UCRT lacks setenv; LLVM_RUNTIME_POSIX provides a real one.
 #define setenv(name, var, ignore) _putenv_s(name, var)
 #endif
 

@@ -11,7 +11,7 @@
 #include <cstdio>
 #include <cstring>
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 #include <csignal>
 #include <unistd.h>
 #endif
@@ -44,7 +44,7 @@
 #include "Plugins/Process/FreeBSD/NativeProcessFreeBSD.h"
 #elif defined(__NetBSD__)
 #include "Plugins/Process/NetBSD/NativeProcessNetBSD.h"
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
 #include "Plugins/Process/Windows/Common/NativeProcessWindows.h"
 #endif
 
@@ -69,7 +69,7 @@ typedef process_linux::NativeProcessLinux::Manager NativeProcessManager;
 typedef process_freebsd::NativeProcessFreeBSD::Manager NativeProcessManager;
 #elif defined(__NetBSD__)
 typedef process_netbsd::NativeProcessNetBSD::Manager NativeProcessManager;
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
 typedef NativeProcessWindows::Manager NativeProcessManager;
 #else
 // Dummy implementation to make sure the code compiles
@@ -92,7 +92,7 @@ public:
 #endif
 }
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 // Watch for signals
 static int g_sighup_received_count = 0;
 
@@ -106,7 +106,7 @@ static void sighup_handler(MainLoopBase &mainloop) {
   if (g_sighup_received_count >= 2)
     mainloop.RequestTermination();
 }
-#endif // #ifndef _WIN32
+#endif // #ifndef LLVM_RUNTIME_WIN32
 
 llvm::Error handle_attach_to_pid(GDBRemoteCommunicationServerLLGS &gdb_server,
                                  lldb::pid_t pid) {
@@ -212,7 +212,7 @@ llvm::Error ConnectToRemote(MainLoop &mainloop,
   std::string url;
 
   if (connection_fd != SharedSocket::kInvalidFD) {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     NativeSocket sockfd;
     status = SharedSocket::GetNativeSocket(connection_fd, sockfd);
     if (status.Fail())
@@ -335,7 +335,7 @@ DESCRIPTION
 int main_gdbserver(int argc, char *argv[]) {
   Status status;
   MainLoop mainloop;
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   // Setup signal handlers first thing.
   signal(SIGPIPE, SIG_IGN);
   MainLoop::SignalHandleUP sighup_handle =
@@ -379,7 +379,7 @@ int main_gdbserver(int argc, char *argv[]) {
     return EXIT_SUCCESS;
   }
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   if (Args.hasArg(OPT_setsid)) {
     // Put llgs into a new session. Terminals group processes
     // into sessions and when a special terminal key sequences

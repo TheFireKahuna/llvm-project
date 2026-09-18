@@ -64,7 +64,7 @@ add_host_subdirectory(posix
   posix/ConnectionFileDescriptorPosix.cpp
   )
 
-if (CMAKE_SYSTEM_NAME MATCHES "Windows")
+if (LLVM_RUNTIME_WIN32)
   add_subdirectory(windows/PythonPathSetup)
   add_host_subdirectory(windows
     windows/ConnectionConPTYWindows.cpp
@@ -169,7 +169,7 @@ endif()
 if (LLDB_ENABLE_LZMA)
   list(APPEND EXTRA_LIBS ${LIBLZMA_LIBRARIES})
 endif()
-if (WIN32)
+if (LLVM_RUNTIME_WIN32)
   list(APPEND LLDB_SYSTEM_LIBS psapi)
 endif()
 
@@ -194,4 +194,3 @@ add_lldb_library(lldbHost NO_PLUGIN_DEPENDENCIES
     ${LLDBObjCLibs}
     ${LLDB_LIBEDIT_LIBS}
   )
-

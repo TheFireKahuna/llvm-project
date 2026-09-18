@@ -8,6 +8,7 @@
 
 #include "llvm/IRReader/IRReader.h"
 #include "llvm-c/IRReader.h"
+#include "llvm/Config/config.h"
 #include "llvm/AsmParser/AsmParserContext.h"
 #include "llvm/AsmParser/Parser.h"
 #include "llvm/Bitcode/BitcodeReader.h"

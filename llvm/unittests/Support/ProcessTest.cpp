@@ -13,7 +13,7 @@
 #include "gtest/gtest.h"
 #include <optional>
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 #include <windows.h>
 #endif
 
@@ -25,7 +25,8 @@ using namespace sys;
 TEST(ProcessTest, GetProcessIdTest) {
   const Process::Pid pid = Process::getProcessId();
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
+  // UCRT/Win32: verify against GetCurrentProcessId.
   EXPECT_EQ((DWORD)pid, ::GetCurrentProcessId());
 #else
   EXPECT_EQ(pid, ::getpid());
@@ -58,8 +59,9 @@ TEST(ProcessTest, None) {
 }
 #endif
 
-#ifdef _WIN32
-
+#if defined(LLVM_RUNTIME_WIN32)
+// UCRT-specific: SetEnvironmentVariableA/W set vars in the wide environment
+// which UCRT's getenv() reads via UTF-16 → UTF-8 conversion.
 TEST(ProcessTest, EmptyVal) {
   SetEnvironmentVariableA("__LLVM_TEST_ENVIRON_VAR__", "");
   std::optional<std::string> val(Process::GetEnv("__LLVM_TEST_ENVIRON_VAR__"));

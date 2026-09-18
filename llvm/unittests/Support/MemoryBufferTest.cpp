@@ -26,8 +26,12 @@
 #if LLVM_ON_UNIX
 #include <unistd.h>
 #endif
-#if _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
+// UCRT pipe/write implemented via Win32 handle APIs.
 #include <windows.h>
+#elif defined(LLVM_RUNTIME_POSIX)
+// LLVM_RUNTIME_POSIX on Windows provides POSIX pipe/write.
+#include <unistd.h>
 #endif
 
 using namespace llvm;
@@ -173,6 +177,12 @@ TEST_F(MemoryBufferTest, createFromPipe) {
   sys::fs::file_t pipes[2];
 #if LLVM_ON_UNIX
   ASSERT_EQ(::pipe(pipes), 0) << strerror(errno);
+#elif defined(LLVM_RUNTIME_POSIX)
+  // LLVM_RUNTIME_POSIX: file_t is void* encoding an int fd; use POSIX pipe().
+  int fds[2];
+  ASSERT_EQ(::pipe(fds), 0) << strerror(errno);
+  pipes[0] = sys::fs::convertFDToNativeFile(fds[0]);
+  pipes[1] = sys::fs::convertFDToNativeFile(fds[1]);
 #else
   ASSERT_TRUE(::CreatePipe(&pipes[0], &pipes[1], nullptr, 0))
       << ::GetLastError();
@@ -182,7 +192,7 @@ TEST_F(MemoryBufferTest, createFromPipe) {
     llvm::scope_exit WriteCloser([&] { sys::fs::closeFile(pipes[1]); });
     for (unsigned i = 0; i < 5; ++i) {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
-#if LLVM_ON_UNIX
+#if defined(LLVM_RUNTIME_POSIX)
       ASSERT_EQ(::write(pipes[1], "foo", 3), 3) << strerror(errno);
 #else
       DWORD Written;

@@ -391,7 +391,7 @@ TEST_P(CASTest, BlobsBigParallel) {
 }
 #endif // EXPENSIVE_CHECKS
 
-#ifndef _WIN32 // create_link won't work for directories on Windows
+#ifndef LLVM_RUNTIME_WIN32 // create_link won't work for directories on Windows
 TEST_F(OnDiskCASTest, OnDiskCASBlobsParallelMultiCAS) {
   // This test intentionally uses symlinked paths to the same CAS to subvert the
   // shared memory mappings that would normally be created within a single
@@ -448,7 +448,7 @@ TEST_F(OnDiskCASTest, OnDiskCASBlobsBigParallelMultiCAS) {
   uint64_t Size = 100ULL * 1024;
   ASSERT_NO_FATAL_FAILURE(testBlobsParallel(*CAS1, *CAS2, *CAS3, *CAS4, Size));
 }
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32
 #endif // LLVM_ENABLE_THREADS
 
 TEST_F(OnDiskCASTest, OnDiskCASDiskSize) {

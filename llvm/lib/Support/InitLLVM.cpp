@@ -14,7 +14,7 @@
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/Signals.h"
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 #include "llvm/Support/Windows/WindowsSupport.h"
 #endif
 
@@ -117,7 +117,7 @@ InitLLVM::InitLLVM(int &Argc, const char **&Argv,
   ExitOnErr(errorCodeToError(llvm::enableAutoConversion(STDOUT_FILENO)));
 #endif
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   // We use UTF-8 as the internal character encoding. On Windows,
   // arguments passed to main() may not be encoded in UTF-8. In order
   // to reliably detect encoding of command line arguments, we use an

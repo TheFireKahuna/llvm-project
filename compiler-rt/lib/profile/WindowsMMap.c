@@ -15,7 +15,7 @@
  * UnmapViewOfFile:   http://msdn.microsoft.com/en-us/library/aa366882(VS.85).aspx
  */
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 
 #include "WindowsMMap.h"
 
@@ -184,4 +184,4 @@ int flock(int fd, int operation) {
 #undef DWORD_HI
 #undef DWORD_LO
 
-#endif /* _WIN32 */
+#endif /* LLVM_RUNTIME_WIN32 */

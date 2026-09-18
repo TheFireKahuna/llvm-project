@@ -37,7 +37,7 @@ static std::string ComputeClangResourceDir(std::string lldb_shlib_path,
 }
 
 TEST_F(ClangHostTest, ComputeClangResourceDirectory) {
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
   std::string path_to_liblldb = "/foo/bar/lib/";
 #else
   std::string path_to_liblldb = "C:\\foo\\bar\\lib\\";

@@ -33,7 +33,7 @@
 #include "llvm/Support/WithColor.h"
 #include "llvm/Support/raw_ostream.h"
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 #include "lldb/Host/windows/PythonPathSetup/PythonPathSetup.h"
 #endif
 
@@ -649,7 +649,7 @@ void Driver::UpdateWindowSize() {
       ::ioctl(STDIN_FILENO, TIOCGWINSZ, &window_size) == 0) {
     if (window_size.ws_col > 0)
       m_debugger.SetTerminalWidth(window_size.ws_col);
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
     if (window_size.ws_row > 0)
       m_debugger.SetTerminalHeight(window_size.ws_row);
 #endif
@@ -657,7 +657,7 @@ void Driver::UpdateWindowSize() {
 }
 
 void sigint_handler(int signo) {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   // Restore handler as it is not persistent on Windows.
   signal(SIGINT, sigint_handler);
 #endif
@@ -737,7 +737,7 @@ int main(int argc, char const *argv[]) {
                         "~/Library/Logs/DiagnosticReports/.\n");
 #endif
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
   auto python_path_or_err = SetupPythonRuntimeLibrary();
   if (!python_path_or_err)
     llvm::WithColor::error()
@@ -788,7 +788,7 @@ int main(int argc, char const *argv[]) {
 
   //  FIXME: Migrate the SIGINT handler to be handled by the signal loop below.
   signal(SIGINT, sigint_handler);
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
   signal(SIGPIPE, SIG_IGN);
 
   // Handle signals in a MainLoop running on a separate thread.
@@ -865,7 +865,7 @@ int main(int argc, char const *argv[]) {
     future.wait();
   }
 
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
   // Try to interrupt the signal thread.  If that succeeds, wait for it to exit.
   if (signal_loop.AddPendingCallback(
           [](MainLoopBase &loop) { loop.RequestTermination(); }))

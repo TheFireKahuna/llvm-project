@@ -27,7 +27,7 @@
 #include <cstdio>
 #include <mutex>
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 #include <windows.h>
 #elif defined(_AIX)
 #include <errno.h>
@@ -100,7 +100,7 @@ const std::string &CIndexer::getClangResourcesPath() {
   SmallString<128> LibClangPath;
 
   // Find the location where this library lives (libclang.dylib).
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
   MEMORY_BASIC_INFORMATION mbi;
   char path[MAX_PATH];
   VirtualQuery((void *)(uintptr_t)clang_createTranslationUnit, &mbi,

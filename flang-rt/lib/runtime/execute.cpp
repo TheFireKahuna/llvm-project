@@ -19,7 +19,7 @@
 #include <future>
 #include <limits>
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "flang/Common/windows-include.h"
 #else
 #include <signal.h>
@@ -87,7 +87,7 @@ std::int64_t TerminationCheck(std::int64_t status, const Descriptor *cmdstat,
       // Append the output of strerror*() to the end of msg. Note that upon
       // success, the output of strerror*() is always null-terminated.
       size_t appendIndex = std::strlen(msg);
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
       if (strerror_s(msg + appendIndex, sizeof(msg) - appendIndex, errno) != 0)
 #else
       if (strerror_r(errno, msg + appendIndex, sizeof(msg) - appendIndex) != 0)
@@ -107,7 +107,7 @@ std::int64_t TerminationCheck(std::int64_t status, const Descriptor *cmdstat,
   // On WIN32 API std::system() returns exit status directly. On other OS'es,
   // special status codes are handled below.
   std::int64_t exitStatusVal{status};
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
   if (status == 9009) {
     // cmd.exe returns status code 9009 for "command not found" error
     if (!cmdstat) {
@@ -237,7 +237,7 @@ void RTNAME(ExecuteCommandLine)(const Descriptor &command, bool wait,
     CheckAndStoreIntToDescriptor(exitstat, exitStatusVal, terminator);
   } else {
 // Asynchronous mode
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
     ZeroMemory(&si, sizeof(si));

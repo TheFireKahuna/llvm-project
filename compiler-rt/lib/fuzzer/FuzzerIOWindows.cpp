@@ -19,6 +19,7 @@
 #include <iterator>
 #include <sys/stat.h>
 #include <sys/types.h>
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
 namespace fuzzer {

@@ -39,8 +39,13 @@ else()
   set(gtest_main_src UnitTestMain/TestMain.cpp)
 endif()
 
-if(WIN32)
+if(WIN32 AND NOT WIN32_NTPOSIX)
   add_definitions(-DGTEST_OS_WINDOWS=1)
+elseif(WIN32_NTPOSIX)
+  # NTPOSIX is POSIX-on-PE/COFF — googletest should use POSIX codepaths.
+  # GTEST_OS_WINDOWS is suppressed via gtest-port-arch.h; disable POSIX
+  # regex until llvm-libc provides <regex.h>.
+  add_definitions(-DGTEST_HAS_POSIX_RE=0)
 endif()
 
 # Google Test requires headers which need _ALL_SOURCE to build on AIX

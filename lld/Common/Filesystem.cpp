@@ -18,7 +18,7 @@
 #include "llvm/Support/Parallel.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/TimeProfiler.h"
-#if LLVM_ON_UNIX
+#if defined(LLVM_ON_UNIX) || defined(LLVM_RUNTIME_POSIX)
 #include <unistd.h>
 #endif
 #include <thread>
@@ -46,7 +46,7 @@ void lld::unlinkAsync(StringRef path) {
     return;
 
 // Removing a file is async on windows.
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   // On Windows co-operative programs can be expected to open LLD's
   // output in FILE_SHARE_DELETE mode. This allows us to delete the
   // file (by moving it to a temporary filename and then deleting

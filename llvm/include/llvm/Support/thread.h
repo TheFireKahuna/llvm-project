@@ -22,7 +22,7 @@
 #include <tuple>
 #include <utility>
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 typedef unsigned long DWORD;
 typedef void *PVOID;
 typedef PVOID HANDLE;
@@ -49,7 +49,7 @@ class thread {
   }
 
 public:
-#ifdef LLVM_ON_UNIX
+#if defined(LLVM_RUNTIME_POSIX)
   using native_handle_type = pthread_t;
 #ifdef __MVS__
   using id = unsigned long long;
@@ -62,7 +62,7 @@ public:
     GenericThreadProxy<CalleeTuple>(Ptr);
     return nullptr;
   }
-#elif _WIN32
+#elif defined(LLVM_RUNTIME_WIN32)
   using native_handle_type = HANDLE;
   using id = DWORD;
   using start_routine_type = unsigned(__stdcall *)(void *);
@@ -159,7 +159,7 @@ namespace this_thread {
 inline thread::id get_id() { return llvm_thread_get_current_id_impl(); }
 } // namespace this_thread
 
-#else // !LLVM_ON_UNIX && !_WIN32
+#else // !LLVM_ON_UNIX && !LLVM_RUNTIME_WIN32
 
 /// std::thread backed implementation of llvm::thread interface that ignores the
 /// stack size request.
@@ -212,7 +212,7 @@ namespace this_thread {
 inline thread::id get_id() { return std::this_thread::get_id(); }
 } // namespace this_thread
 
-#endif // LLVM_ON_UNIX || _WIN32
+#endif // LLVM_ON_UNIX || LLVM_RUNTIME_WIN32
 
 } // namespace llvm
 

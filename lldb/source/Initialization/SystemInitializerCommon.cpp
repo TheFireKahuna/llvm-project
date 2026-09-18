@@ -19,11 +19,11 @@
 #include "lldb/Version/Version.h"
 
 #if defined(__linux__) || defined(__FreeBSD__) || defined(__NetBSD__) ||       \
-    defined(__OpenBSD__)
+    defined(__OpenBSD__) || defined(LLVM_RUNTIME_POSIX)
 #include "Plugins/Process/POSIX/ProcessPOSIXLog.h"
 #endif
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include "Plugins/Process/Windows/Common/ProcessWindowsLog.h"
 #include "lldb/Host/windows/windows.h"
 #include <crtdbg.h>
@@ -40,7 +40,7 @@ SystemInitializerCommon::SystemInitializerCommon() = default;
 SystemInitializerCommon::~SystemInitializerCommon() = default;
 
 llvm::Error SystemInitializerCommon::Initialize() {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   const char *disable_crash_dialog_var = getenv("LLDB_DISABLE_CRASH_DIALOG");
   if (disable_crash_dialog_var &&
       llvm::StringRef(disable_crash_dialog_var).equals_insensitive("true")) {
@@ -76,10 +76,10 @@ llvm::Error SystemInitializerCommon::Initialize() {
   process_gdb_remote::ProcessGDBRemoteLog::Initialize();
 
 #if defined(__linux__) || defined(__FreeBSD__) || defined(__NetBSD__) ||       \
-    defined(__OpenBSD__)
+    defined(__OpenBSD__) || defined(LLVM_RUNTIME_POSIX)
   ProcessPOSIXLog::Initialize();
 #endif
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   ProcessWindowsLog::Initialize();
 #endif
 
@@ -90,10 +90,10 @@ void SystemInitializerCommon::Terminate() {
   LLDB_SCOPED_TIMER();
 
 #if defined(__linux__) || defined(__FreeBSD__) || defined(__NetBSD__) ||       \
-    defined(__OpenBSD__)
+    defined(__OpenBSD__) || defined(LLVM_RUNTIME_POSIX)
   ProcessPOSIXLog::Terminate();
 #endif
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   ProcessWindowsLog::Terminate();
 #endif
 

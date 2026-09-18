@@ -81,7 +81,7 @@ TEST_F(MainLoopTest, ReadSocketObject) {
 }
 
 // Flakey, see https://github.com/llvm/llvm-project/issues/152677.
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 TEST_F(MainLoopTest, ReadPipeObject) {
   Pipe pipe;
 
@@ -490,7 +490,7 @@ TEST_F(MainLoopTest, TimedCallbackShortensSleep) {
   EXPECT_FALSE(long_callback_called);
 }
 
-#ifdef LLVM_ON_UNIX
+#if defined(LLVM_RUNTIME_POSIX)
 TEST_F(MainLoopTest, DetectsEOF) {
 
   PseudoTerminal term;

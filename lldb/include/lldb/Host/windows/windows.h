@@ -14,8 +14,9 @@
 #define _WIN32_WINNT _WIN32_WINNT_VISTA
 #define WIN32_LEAN_AND_MEAN
 #define NOGDI
-#undef NOMINMAX // undef a previous definition to avoid warning
-#define NOMINMAX
+#ifndef NOMINMAX
+#  define NOMINMAX
+#endif
 #include <windows.h>
 #undef CreateProcess
 #undef GetMessage

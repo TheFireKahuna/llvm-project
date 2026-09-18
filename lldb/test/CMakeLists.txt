@@ -14,7 +14,7 @@ if(LLDB_ENFORCE_STRICT_TEST_REQUIREMENTS)
   # Lit uses psutil to do per-test timeouts.
   set(useful_python_modules psutil packaging)
 
-  if(NOT WIN32)
+  if(NOT LLVM_RUNTIME_WIN32)
     # We no longer vendor pexpect and it is not used on Windows.
     list(APPEND pexpect)
   endif()

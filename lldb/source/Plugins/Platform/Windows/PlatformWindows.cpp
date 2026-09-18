@@ -10,7 +10,7 @@
 
 #include <cstdio>
 #include <optional>
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include "lldb/Host/windows/windows.h"
 #include <winsock2.h>
 #endif
@@ -521,7 +521,7 @@ ProcessSP PlatformWindows::DebugProcess(ProcessLaunchInfo &launch_info,
   if (!process_sp)
     return nullptr;
   error = process_sp->Launch(launch_info);
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   if (error.Success()) {
     process_sp->SetPseudoConsoleHandle();
   } else {

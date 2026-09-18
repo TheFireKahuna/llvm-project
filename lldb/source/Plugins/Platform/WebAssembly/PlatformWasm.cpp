@@ -220,7 +220,7 @@ lldb::ProcessSP PlatformWasm::DebugProcess(ProcessLaunchInfo &launch_info,
 
     return nullptr;
   }
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   if (launch_info.GetPTY().GetPrimaryFileDescriptor() !=
       PseudoTerminal::invalid_fd)
     process_sp->SetSTDIOFileDescriptor(

@@ -30,7 +30,7 @@ namespace llvm {
 namespace sys {
 namespace fs {
 // Duplicated from FileSystem.h to avoid a dependency.
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 // A Win32 HANDLE is a typedef of void*
 using file_t = void *;
 #else

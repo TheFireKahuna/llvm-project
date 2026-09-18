@@ -13,6 +13,7 @@
 
 #include "llvm-c/Object.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Config/config.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Object/MachOUniversal.h"
@@ -354,4 +355,3 @@ const char *LLVMGetRelocationTypeName(LLVMRelocationIteratorRef RI) {
 const char *LLVMGetRelocationValueString(LLVMRelocationIteratorRef RI) {
   return strdup("");
 }
-

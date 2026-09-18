@@ -13,10 +13,12 @@
 #ifndef FORTRAN_COMMON_WINDOWS_INCLUDE_H_
 #define FORTRAN_COMMON_WINDOWS_INCLUDE_H_
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
 #define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
+#ifndef NOMINMAX
+  #define NOMINMAX
+#endif
 
 // Target Windows 2000 and above. This is needed for newer Windows API
 // functions, e.g. GetComputerNameExA()
@@ -26,6 +28,6 @@
 
 #include <windows.h>
 
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32
 
 #endif // FORTRAN_COMMON_WINDOWS_INCLUDE_H_

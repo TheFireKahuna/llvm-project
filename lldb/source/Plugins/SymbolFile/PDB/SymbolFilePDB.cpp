@@ -58,7 +58,7 @@
 #include "Plugins/Language/CPlusPlus/MSVCUndecoratedNameParser.h"
 #include "Plugins/SymbolFile/NativePDB/SymbolFileNativePDB.h"
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include "llvm/Config/llvm-config.h"
 #include <optional>
 #endif
@@ -127,7 +127,7 @@ public:
   }
 
   bool UseNativeReader() const {
-#if LLVM_ENABLE_DIA_SDK && defined(_WIN32)
+#if LLVM_ENABLE_DIA_SDK && defined(LLVM_RUNTIME_WIN32)
     return IsNativeReaderRequested();
 #else
     if (!IsNativeReaderRequested()) {

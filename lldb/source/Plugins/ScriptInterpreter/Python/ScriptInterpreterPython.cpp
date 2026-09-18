@@ -65,7 +65,7 @@ extern "C" PyObject *PyInit__lldb(void);
 
 #define LLDBSwigPyInit PyInit__lldb
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 // Don't mess with the signal handlers on Windows.
 #define LLDB_USE_PYTHON_SET_INTERRUPT 0
 #else
@@ -204,7 +204,7 @@ void ScriptInterpreterPython::ComputePythonDir(
   llvm::sys::path::remove_filename(path);
   llvm::sys::path::append(path, LLDB_PYTHON_RELATIVE_LIBDIR);
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   // This will be injected directly through FileSpec.SetDirectory(),
   // so we need to normalize manually.
   std::replace(path.begin(), path.end(), '\\', '/');
@@ -264,7 +264,7 @@ void ScriptInterpreterPython::SharedLibraryDirectoryHelper(
     FileSpec &this_file) {
   // When we're loaded from python, this_file will point to the file inside the
   // python package directory. Replace it with the one in the lib directory.
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   // On windows, we need to manually back out of the python tree, and go into
   // the bin directory. This is pretty much the inverse of what ComputePythonDir
   // does.

@@ -243,7 +243,7 @@ bool CrashRecoveryContext::RunSafely(function_ref<void()> Fn) {
 
 #else // !_MSC_VER
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 // This is a non-MSVC compiler, probably mingw gcc or clang without
 // -fms-extensions. Use vectored exception handling (VEH).
 //
@@ -332,7 +332,7 @@ static void uninstallExceptionOrSignalHandlers() {
   }
 }
 
-#else // !_WIN32
+#else // !LLVM_RUNTIME_WIN32
 
 // Generic POSIX implementation.
 //
@@ -419,7 +419,7 @@ static void uninstallExceptionOrSignalHandlers() {
     sigaction(Signals[i], &PrevActions[i], nullptr);
 }
 
-#endif // !_WIN32
+#endif // !LLVM_RUNTIME_WIN32
 
 bool CrashRecoveryContext::RunSafely(function_ref<void()> Fn) {
   // If crash recovery is disabled, do nothing.
@@ -441,7 +441,7 @@ bool CrashRecoveryContext::RunSafely(function_ref<void()> Fn) {
 #endif // !_MSC_VER
 
 [[noreturn]] void CrashRecoveryContext::HandleExit(int RetCode) {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   // Since the exception code is actually of NTSTATUS type, we use the
   // Microsoft-recommended 0xE prefix, to signify that this is a user error.
   // This value is a combination of the customer field (bit 29) and severity
@@ -458,7 +458,7 @@ bool CrashRecoveryContext::RunSafely(function_ref<void()> Fn) {
 }
 
 bool CrashRecoveryContext::isCrash(int RetCode) {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   // On Windows, the code is interpreted as NTSTATUS. The two high bits
   // represent the severity. Values starting with 0x80000000 are reserved for
   // "warnings"; values of 0xC0000000 and up are for "errors". In practice, both
@@ -478,7 +478,7 @@ bool CrashRecoveryContext::isCrash(int RetCode) {
 bool CrashRecoveryContext::throwIfCrash(int RetCode) {
   if (!isCrash(RetCode))
     return false;
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   ::RaiseException(RetCode, 0, 0, NULL);
 #else
   llvm::sys::unregisterHandlers();

@@ -58,7 +58,7 @@ TEST(PathMappingListTest, RelativeTests) {
     {"bar/foo.c", "/tmp/bar/foo.c"},
   };
   ConstString fails[] = {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
       ConstString("C:\\"),
       ConstString("C:\\a"),
 #else
@@ -116,7 +116,7 @@ TEST(PathMappingListTest, RemapRoot) {
   TestPathMappings(map, matches, fails);
 }
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 TEST(PathMappingListTest, CrossPlatformTests) {
   PathMappingList map;
   map.Append(R"(C:\old)", "/new", false);

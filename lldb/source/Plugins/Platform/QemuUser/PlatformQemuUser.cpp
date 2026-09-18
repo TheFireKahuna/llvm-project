@@ -235,7 +235,7 @@ lldb::ProcessSP PlatformQemuUser::DebugProcess(ProcessLaunchInfo &launch_info,
   if (error.Fail())
     return nullptr;
 
-#ifndef _WIN32 // TODO: Implement on Windows
+#ifndef LLVM_RUNTIME_WIN32 // TODO: Implement on Windows
   if (launch_info.GetPTY().GetPrimaryFileDescriptor() !=
       PseudoTerminal::invalid_fd)
     process_sp->SetSTDIOFileDescriptor(

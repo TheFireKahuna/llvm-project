@@ -15,7 +15,7 @@
 #include "gtest/gtest.h"
 #include <memory>
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 #include "llvm/Support/VersionTuple.h"
 #include "llvm/Support/Windows/WindowsSupport.h"
 #endif

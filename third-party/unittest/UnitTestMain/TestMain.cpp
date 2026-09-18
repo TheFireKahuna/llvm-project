@@ -12,7 +12,7 @@
 #include "gtest/gtest.h"
 #include <stdlib.h>
 
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 # include <windows.h>
 # if defined(_MSC_VER)
 #   include <crtdbg.h>
@@ -37,7 +37,7 @@ int main(int argc, char **argv) {
   // Make it easy for a test to re-execute itself by saving argv[0].
   TestMainArgv0 = argv[0];
 
-# if defined(_WIN32)
+# if defined(_WIN32) && !defined(__NTPOSIX__)
   // Disable all of the possible ways Windows conspires to make automated
   // testing impossible.
   ::SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);

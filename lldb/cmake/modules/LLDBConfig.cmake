@@ -368,7 +368,7 @@ if (APPLE)
   find_library(SECURITY_LIBRARY Security)
 endif()
 
-if( WIN32 AND NOT CYGWIN )
+if(LLVM_RUNTIME_WIN32)
   set(PURE_WINDOWS 1)
 endif()
 

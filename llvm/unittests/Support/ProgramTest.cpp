@@ -24,7 +24,7 @@
 extern char **environ;
 #endif
 
-#if defined(LLVM_ON_UNIX)
+#if defined(LLVM_RUNTIME_POSIX)
 #include <unistd.h>
 void sleep_for(unsigned int seconds) {
   sleep(seconds);
@@ -68,7 +68,8 @@ class ProgramEnvTest : public testing::Test {
 protected:
   void SetUp() override {
     auto EnvP = [] {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
+      // UCRT uses a wide environment; populate _wenviron if not yet done.
       _wgetenv(L"TMP"); // Populate _wenviron, initially is null
       return _wenviron;
 #elif defined(__APPLE__)
@@ -80,8 +81,8 @@ protected:
     ASSERT_TRUE(EnvP);
 
     auto prepareEnvVar = [this](decltype(*EnvP) Var) -> StringRef {
-#if defined(_WIN32)
-      // On Windows convert UTF16 encoded variable to UTF8
+#if defined(LLVM_RUNTIME_WIN32)
+      // UCRT environment entries are UTF-16; convert to UTF-8 for LLVM.
       auto Len = wcslen(Var);
       ArrayRef<char> Ref{reinterpret_cast<char const *>(Var),
                          Len * sizeof(*Var)};
@@ -113,7 +114,7 @@ protected:
   ArrayRef<StringRef> getEnviron() const { return EnvTable; }
 };
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 void checkSeparators(StringRef Path) {
   char UndesiredSeparator = sys::path::get_separator()[0] == '/' ? '\\' : '/';
   ASSERT_EQ(Path.find(UndesiredSeparator), StringRef::npos);
@@ -267,7 +268,8 @@ TEST_F(ProgramEnvTest, TestExecuteNoWaitDetached) {
   if (getenv("LLVM_PROGRAM_TEST_EXECUTE_NO_WAIT_DETACHED")) {
     sleep_for(/*seconds=*/5);
     char *Detached = getenv("LLVM_PROGRAM_TEST_EXECUTE_NO_WAIT_DETACHED_TRUE");
-#if _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
+    // UCRT: check console handle presence to detect detach.
     HANDLE StdHandle = GetStdHandle(STD_OUTPUT_HANDLE);
 
     if (Detached && (StdHandle == INVALID_HANDLE_VALUE || StdHandle == NULL))
@@ -298,10 +300,9 @@ TEST_F(ProgramEnvTest, TestExecuteNoWaitDetached) {
       Executable, "--gtest_filter=ProgramEnvTest.TestExecuteNoWaitDetached"};
   addEnvVar("LLVM_PROGRAM_TEST_EXECUTE_NO_WAIT_DETACHED=1");
 
-#if _WIN32
-  // Depending on how the test is run it may already be detached from a
-  // console. Temporarily allocate a new console. If a console already
-  // exists AllocConsole will harmlessly fail and return false
+#if defined(LLVM_RUNTIME_WIN32)
+  // UCRT: allocate a console so we have a handle to detect detach.
+  // AllocConsole fails harmlessly if one already exists.
   BOOL AllocConsoleSuccess = AllocConsole();
 
   // Confirm existence of console
@@ -342,8 +343,7 @@ TEST_F(ProgramEnvTest, TestExecuteNoWaitDetached) {
     ProcessInfo WaitResult = Wait(PI2, std::nullopt, &Error);
     ASSERT_EQ(WaitResult.ReturnCode, 200);
   }
-#if _WIN32
-  // If console was allocated then free the console
+#if defined(LLVM_RUNTIME_WIN32)
   if (AllocConsoleSuccess) {
     BOOL FreeConsoleSuccess = FreeConsole();
     ASSERT_NE(FreeConsoleSuccess, 0);

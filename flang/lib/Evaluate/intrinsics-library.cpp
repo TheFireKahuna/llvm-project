@@ -559,7 +559,7 @@ struct HostRuntimeLibrary<long double, LibraryVersion::LibmExtensions> {
 #endif // HAS_FLOAT80 || HAS_LDBL128
 #endif //_POSIX_C_SOURCE >= 200112L || _XOPEN_SOURCE >= 600
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 template <> struct HostRuntimeLibrary<double, LibraryVersion::LibmExtensions> {
   using F = FuncPointer<double, double>;
   using FN = FuncPointer<double, int, double>;

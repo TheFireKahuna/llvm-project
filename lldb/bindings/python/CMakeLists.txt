@@ -28,7 +28,7 @@ add_custom_target(swig_wrapper_python ALL DEPENDS
   ${CMAKE_CURRENT_BINARY_DIR}/lldb.py
 )
 
-if (NOT WIN32)
+if (NOT LLVM_RUNTIME_WIN32)
 add_custom_command(
   OUTPUT  ${LLVM_RUNTIME_OUTPUT_INTDIR}/lldb-python
   VERBATIM
@@ -150,7 +150,7 @@ function(finish_swig_python swig_target lldb_python_bindings_dir lldb_python_tar
                           ${lldb_python_target_dir}/native/ ${LIBLLDB_SYMLINK_OUTPUT_FILE})
 
 
-  if (NOT WIN32)
+  if (NOT LLVM_RUNTIME_WIN32)
   add_dependencies(${swig_target} lldb-python-wrapper)
   endif()
 
@@ -191,7 +191,7 @@ function(finish_swig_python swig_target lldb_python_bindings_dir lldb_python_tar
 
   # Add a Post-Build Event to copy the custom Python DLL to the lldb binaries dir so that Windows can find it when launching
   # lldb.exe or any other executables that were linked with liblldb.
-  if (WIN32 AND NOT "${PYTHON_DLL}" STREQUAL "")
+  if (LLVM_RUNTIME_WIN32 AND NOT "${PYTHON_DLL}" STREQUAL "")
     # When using the Visual Studio CMake generator the lldb binaries end up in Release/bin, Debug/bin etc.
     file(TO_NATIVE_PATH "${CMAKE_BINARY_DIR}/${CMAKE_CFG_INTDIR}/bin" LLDB_BIN_DIR)
     file(TO_NATIVE_PATH "${PYTHON_DLL}" PYTHON_DLL_NATIVE_PATH)

@@ -11,7 +11,7 @@
 
 #include <cstdint>
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 #include "lldb/Host/windows/windows.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>

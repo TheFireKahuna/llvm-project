@@ -1,6 +1,6 @@
 #include "attach.h"
 #include <stdio.h>
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include <process.h>
 #else
 #include <unistd.h>

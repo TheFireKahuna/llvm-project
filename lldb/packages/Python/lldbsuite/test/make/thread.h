@@ -13,7 +13,7 @@ int pthread_threadid_np(pthread_t, __uint64_t *);
 #include <pthread_np.h>
 #elif defined(__NetBSD__)
 #include <lwp.h>
-#elif defined(__OpenBSD__)
+#elif defined(__OpenBSD__) || (defined(_WIN32) && defined(LLVM_RUNTIME_POSIX))
 #include <unistd.h>
 #elif defined(_WIN32)
 #include <windows.h>
@@ -31,7 +31,7 @@ inline uint64_t get_thread_id() {
 #elif defined(__NetBSD__)
   // Technically lwpid_t is 32-bit signed integer
   return static_cast<uint64_t>(_lwp_self());
-#elif defined(__OpenBSD__)
+#elif defined(__OpenBSD__) ||  (defined(_WIN32) && defined(LLVM_RUNTIME_POSIX))
   return static_cast<uint64_t>(getthrid());
 #elif defined(_WIN32)
   return static_cast<uint64_t>(::GetCurrentThreadId());

@@ -26,7 +26,7 @@ public:
     // Since the functions cannot be zero/unresolved on Windows, the following
     // reference taking would always be non-zero, thus generating a compiler
     // warning otherwise.
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
     if (ORC_RT_UNLIKELY(!&__orc_rt_jit_dispatch_ctx))
       return WrapperFunctionResult::createOutOfBandError(
                  "__orc_rt_jit_dispatch_ctx not set")

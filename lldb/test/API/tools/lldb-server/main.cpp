@@ -10,7 +10,7 @@
 #include <inttypes.h>
 #include <memory>
 #include <mutex>
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
 #include <pthread.h>
 #include <signal.h>
 #include <unistd.h>
@@ -44,7 +44,7 @@ static volatile char g_c1 = '0';
 static volatile char g_c2 = '1';
 
 static void print_pid() {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   fprintf(stderr, "PID: %d\n", ::GetCurrentProcessId());
 #else
   fprintf(stderr, "PID: %d\n", getpid());
@@ -52,7 +52,7 @@ static void print_pid() {
 }
 
 static void signal_handler(int signo) {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   // No signal support on Windows.
 #else
   const char *signal_name = nullptr;
@@ -234,7 +234,7 @@ int main(int argc, char **argv) {
   std::unique_ptr<uint8_t[]> heap_array_up;
   int return_value = 0;
 
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
   bool is_child = false;
 
   // Set the signal handler.
@@ -339,7 +339,7 @@ int main(int argc, char **argv) {
       else if (arg == "swap_chars")
         func_p = swap_chars;
       func_p();
-#if !defined(_WIN32) && !defined(TARGET_OS_WATCH) && !defined(TARGET_OS_TV)
+#if !defined(LLVM_RUNTIME_WIN32) && !defined(TARGET_OS_WATCH) && !defined(TARGET_OS_TV)
     } else if (arg == "fork") {
       pid_t fork_pid = fork();
       assert(fork_pid != -1);
@@ -392,7 +392,7 @@ int main(int argc, char **argv) {
       printf("%s\n", value ? value : "__unset__");
     } else if (consume_front(arg, "trap")) {
       trap();
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
     } else if (arg == "stop") {
       raise(SIGINT);
 #endif

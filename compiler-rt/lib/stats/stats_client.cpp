@@ -14,7 +14,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #else
@@ -31,7 +31,7 @@ using namespace __sanitizer;
 namespace {
 
 void *LookupSymbolFromMain(const char *name) {
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
   return reinterpret_cast<void *>(GetProcAddress(GetModuleHandle(0), name));
 #else
   return dlsym(RTLD_DEFAULT, name);
@@ -71,7 +71,7 @@ extern "C" void __sanitizer_stat_report(StatInfo *s) {
   s->addr = GET_CALLER_PC();
 #if defined(_WIN64) && !defined(__clang__)
   uptr old_data = InterlockedIncrement64(reinterpret_cast<LONG64 *>(&s->data));
-#elif defined(_WIN32) && !defined(__clang__)
+#elif defined(LLVM_RUNTIME_WIN32) && !defined(__clang__)
   uptr old_data = InterlockedIncrement(&s->data);
 #else
   uptr old_data = __sync_fetch_and_add(&s->data, 1);

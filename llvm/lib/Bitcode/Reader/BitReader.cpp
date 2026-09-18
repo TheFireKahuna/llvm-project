@@ -9,6 +9,7 @@
 #include "llvm-c/BitReader.h"
 #include "llvm-c/Core.h"
 #include "llvm/Bitcode/BitcodeReader.h"
+#include "llvm/Config/config.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/MemoryBuffer.h"

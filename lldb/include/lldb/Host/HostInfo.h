@@ -32,7 +32,7 @@
 /// generate a compiler error.
 ///
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include "lldb/Host/windows/HostInfoWindows.h"
 #define HOST_INFO_TYPE HostInfoWindows
 #elif defined(__linux__) || defined(__EMSCRIPTEN__)

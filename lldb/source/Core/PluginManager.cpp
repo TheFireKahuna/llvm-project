@@ -28,7 +28,7 @@
 #include <mutex>
 #include <string>
 #include <utility>
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include "lldb/Host/windows/PosixApi.h"
 #endif
 

@@ -13,7 +13,7 @@
 
 #include <locale.h>
 
-#if defined (_WIN32)
+#if defined (LLVM_RUNTIME_WIN32)
 #define TEST_ENCODING ".932"  // On Windows, test codepage 932
 #else
 #define TEST_ENCODING "C"     // ...otherwise, any widely available uni-byte LC

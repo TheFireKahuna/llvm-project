@@ -497,7 +497,7 @@ public:
   }
 };
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 static_assert(sizeof(InputSection) <= 152, "InputSection is too big");
 #endif
 

@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <thread>
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 #include "llvm/Support/Windows/WindowsSupport.h"
 #endif
 

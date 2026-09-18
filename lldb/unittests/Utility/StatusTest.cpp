@@ -9,7 +9,7 @@
 #include "lldb/Utility/Status.h"
 #include "gtest/gtest.h"
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 #include <windows.h>
 #endif
 
@@ -80,7 +80,7 @@ TEST(StatusTest, ErrorConversion) {
   EXPECT_EQ(list.GetType(), eErrorTypePOSIX);
 }
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 TEST(StatusTest, ErrorWin32) {
   auto success = Status(NO_ERROR, ErrorType::eErrorTypeWin32);
   EXPECT_STREQ(NULL, success.AsCString());

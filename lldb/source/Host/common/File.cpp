@@ -15,7 +15,7 @@
 #include <fcntl.h>
 #include <optional>
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "lldb/Host/windows/windows.h"
 #else
 #include <sys/ioctl.h>
@@ -167,7 +167,7 @@ void File::CalculateInteractiveAndTerminal() {
   }
   m_is_interactive = eLazyBoolNo;
   m_is_real_terminal = eLazyBoolNo;
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   if (_isatty(fd)) {
     m_is_interactive = eLazyBoolYes;
     m_is_real_terminal = eLazyBoolYes;
@@ -251,7 +251,7 @@ NativeFile::NativeFile() = default;
 
 NativeFile::NativeFile(FILE *fh, OpenOptions options, bool transfer_ownership)
     : m_stream(fh), m_options(options), m_own_stream(transfer_ownership) {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   // In order to properly display non ASCII characters in Windows, we need to
   // use Windows APIs to print to the console. This is only required if the
   // stream outputs to a console.
@@ -284,7 +284,7 @@ NativeFile::NativeFile(FILE *fh, OpenOptions options, bool transfer_ownership)
 NativeFile::NativeFile(int fd, OpenOptions options, bool transfer_ownership)
     : m_descriptor(fd), m_own_descriptor(transfer_ownership),
       m_options(options) {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   // In order to properly display non ASCII characters in Windows, we need to
   // use Windows APIs to print to the console. This is only required if the
   // file outputs to a console.
@@ -309,7 +309,7 @@ int NativeFile::GetDescriptor() const {
   // Don't open the file descriptor if we don't need to, just get it from the
   // stream if we have one.
   if (ValueGuard stream_guard = StreamIsValid()) {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
     return _fileno(m_stream);
 #else
     return fileno(m_stream);
@@ -321,7 +321,7 @@ int NativeFile::GetDescriptor() const {
 }
 
 IOObject::WaitableHandle NativeFile::GetWaitableHandle() {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   return (HANDLE)_get_osfhandle(GetDescriptor());
 #else
   return GetDescriptor();
@@ -339,7 +339,7 @@ FILE *NativeFile::GetStream() {
         if (!m_own_descriptor) {
 // We must duplicate the file descriptor if we don't own it because when you
 // call fdopen, the stream will own the fd
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
           m_descriptor = ::_dup(m_descriptor);
 #else
           m_descriptor = dup(m_descriptor);
@@ -548,7 +548,7 @@ Status NativeFile::Flush() {
 Status NativeFile::Sync() {
   Status error;
   if (ValueGuard descriptor_guard = DescriptorIsValid()) {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     int err = FlushFileBuffers((HANDLE)_get_osfhandle(m_descriptor));
     if (err == 0)
       error = Status::FromErrorString("unknown error");
@@ -686,7 +686,7 @@ Status NativeFile::Write(const void *buf, size_t &num_bytes) {
   }
 
   if (ValueGuard stream_guard = StreamIsValid()) {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     if (is_windows_console) {
       llvm::raw_fd_ostream(_fileno(m_stream), false)
           .write((const char *)buf, num_bytes);
@@ -744,7 +744,7 @@ Status NativeFile::Read(void *buf, size_t &num_bytes, off_t &offset) {
   }
 #endif
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   int fd = GetDescriptor();
   if (fd != kInvalidDescriptor) {
     ssize_t bytes_read =
@@ -806,7 +806,7 @@ Status NativeFile::Write(const void *buf, size_t &num_bytes, off_t &offset) {
 
   int fd = GetDescriptor();
   if (fd != kInvalidDescriptor) {
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
     ssize_t bytes_written = llvm::sys::RetryAfterSignal(
         -1, ::pwrite, m_descriptor, buf, num_bytes, offset);
     if (bytes_written < 0) {

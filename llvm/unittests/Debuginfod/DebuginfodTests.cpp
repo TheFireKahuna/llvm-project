@@ -13,7 +13,8 @@
 #include "llvm/Testing/Support/Error.h"
 #include "gtest/gtest.h"
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
+// UCRT lacks setenv; LLVM_RUNTIME_POSIX provides a real one.
 #define setenv(name, var, ignore) _putenv_s(name, var)
 #endif
 

@@ -12,7 +12,7 @@
 #include "llvm/Support/Error.h"
 #include <cstring>
 #include <system_error>
-#if defined(_WIN32)
+#if defined(LLVM_CRT_UCRT)
 #include <fcntl.h>
 #include <io.h>
 #else
@@ -43,7 +43,7 @@ Error OutputRedirector::RedirectTo(std::FILE *file_override,
   assert(m_fd == kInvalidDescriptor && "Output readirector already started.");
   int new_fd[2];
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   if (::_pipe(new_fd, OutputBufferSize, O_TEXT) == -1) {
 #else
   if (::pipe(new_fd) == -1) {

@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 // this file is only relevant for Visual C++
-#if defined(_WIN32)
+#if defined(LLVM_CRT_UCRT)
 
 #include <cassert>
 #include <cstdlib>

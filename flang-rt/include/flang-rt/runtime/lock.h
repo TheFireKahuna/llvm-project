@@ -16,7 +16,7 @@
 
 // Avoid <mutex> if possible to avoid introduction of C++ runtime
 // library dependence.
-#if !defined(_WIN32) && !RT_GPU_TARGET
+#if !defined(LLVM_RUNTIME_WIN32) && !defined(RT_GPU_TARGET)
 #define USE_PTHREADS 1
 #else
 #undef USE_PTHREADS
@@ -24,7 +24,7 @@
 
 #if USE_PTHREADS
 #include <pthread.h>
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
 #include "flang/Common/windows-include.h"
 #else
 #include <mutex>
@@ -68,7 +68,7 @@ public:
     isBusy_ = false;
     pthread_mutex_unlock(&mutex_);
   }
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
   Lock() { InitializeCriticalSection(&cs_); }
   ~Lock() { DeleteCriticalSection(&cs_); }
   void Take() { EnterCriticalSection(&cs_); }
@@ -94,7 +94,7 @@ private:
   pthread_mutex_t mutex_{};
   volatile bool isBusy_{false};
   volatile pthread_t holder_;
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
   CRITICAL_SECTION cs_;
 #else
   std::mutex mutex_;

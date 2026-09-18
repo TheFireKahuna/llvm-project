@@ -33,7 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include "WindowsMMap.h"
@@ -232,7 +232,7 @@ static int map_file(void) {
   if (file_size == 0)
     return -1;
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   HANDLE mmap_fd;
   if (fd == -1)
     mmap_fd = INVALID_HANDLE_VALUE;
@@ -268,7 +268,7 @@ static int map_file(void) {
 }
 
 static void unmap_file(void) {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   if (!UnmapViewOfFile(write_buffer)) {
     fprintf(stderr, "profiling: %s: cannot unmap mapped view: %lu\n", filename,
             GetLastError());
@@ -555,7 +555,7 @@ void llvm_writeout_files(void) {
   }
 }
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 // __attribute__((destructor)) and destructors whose priorities are greater than
 // 100 run before this function and can thus be tracked. The priority is
 // compatible with GCC 7 onwards.

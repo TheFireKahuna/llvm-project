@@ -15,7 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
 #include <sys/wait.h>
 #endif
 #include <fstream>
@@ -131,7 +131,7 @@ EXAMPLES
 #define HIGH_PORT (49151u)
 #endif
 
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
 // Watch for signals
 static void signal_handler(int signo) {
   switch (signo) {
@@ -419,7 +419,7 @@ int main_platform(int argc, char *argv[]) {
   const char *subcommand = argv[1];
   argc--;
   argv++;
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
   signal(SIGPIPE, SIG_IGN);
   signal(SIGHUP, signal_handler);
 #endif

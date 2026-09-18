@@ -11,12 +11,15 @@
 
 #include "lldb/Host/Config.h"
 #include "llvm/Support/Compiler.h"
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
 #error "windows/PosixApi.h being #included on non Windows system!"
 #endif
 
 // va_start, va_end, etc macros.
 #include <cstdarg>
+
+// uint32_t, etc.
+#include <cstdint>
 
 // time_t, timespec, etc.
 #include <ctime>
@@ -63,7 +66,18 @@
 #include <sys/types.h>
 #endif
 
-#ifdef _MSC_VER
+// POSIX types not provided by MSVC headers (MinGW/Cygwin provide their own).
+// NTPOSIX is excluded: it provides real POSIX types via llvm-libc headers.
+#if (defined(_MSC_VER) || defined(_WIN32_ITANIUM)) && !defined(__NTPOSIX__)
+typedef unsigned short mode_t;
+#ifndef NO_PID_T
+typedef uint32_t pid_t;
+#endif
+#endif
+
+// NTPOSIX is excluded: it has real POSIX I/O via llvm-libc (fd-based, not
+// Win32 HANDLE-based), with proper <unistd.h> providing FILENO defines.
+#if (defined(_MSC_VER) || defined(_WIN32_ITANIUM)) && !defined(__NTPOSIX__)
 
 // PRIxxx format macros for printf()
 #include <cinttypes>
@@ -71,20 +85,11 @@
 // open(), close(), creat(), etc.
 #include <io.h>
 
-typedef unsigned short mode_t;
-
-// pyconfig.h typedefs this.  We require python headers to be included before
-// any LLDB headers, but there's no way to prevent python's pid_t definition
-// from leaking, so this is the best option.
-#ifndef NO_PID_T
-typedef uint32_t pid_t;
-#endif
-
 #define STDIN_FILENO 0
 #define STDOUT_FILENO 1
 #define STDERR_FILENO 2
 
-#endif // _MSC_VER
+#endif // (_MSC_VER || _WIN32_ITANIUM) && !__NTPOSIX__
 
 // empty functions
 inline int posix_openpt(int flag) { LLVM_BUILTIN_UNREACHABLE; }

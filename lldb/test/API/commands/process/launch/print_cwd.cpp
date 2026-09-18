@@ -1,6 +1,6 @@
 #include <stdio.h>
 
-#ifdef _MSC_VER
+#if defined(LLVM_CRT_UCRT)
 #define _CRT_NONSTDC_NO_WARNINGS
 #include <direct.h>
 #undef getcwd

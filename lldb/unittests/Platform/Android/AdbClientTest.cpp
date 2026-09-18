@@ -14,7 +14,7 @@
 #include <cstdlib>
 
 static void set_env(const char *var, const char *value) {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   _putenv_s(var, value);
 #else
   setenv(var, value, true);
@@ -97,7 +97,7 @@ TEST_F(AdbClientTest, AdbSyncService_OperationsFailWhenNotConnected) {
   EXPECT_TRUE(push_result.Fail());
 }
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 static uint16_t FindUnusedPort() {
   auto temp_socket = std::make_unique<TCPSocket>(true);
   Status error = temp_socket->Listen("localhost:0", 1);
@@ -140,4 +140,4 @@ TEST_F(AdbClientTest, RealTcpConnection) {
       << "Connection should succeed when server is listening on port "
       << unused_port;
 }
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32

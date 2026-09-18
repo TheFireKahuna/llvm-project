@@ -1,11 +1,11 @@
 
 CHECK_CXX_SOURCE_COMPILES("
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include <intrin.h> /* Workaround for PR19898. */
 #include <windows.h>
 #endif
 int main() {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
         volatile LONG val = 1;
         MemoryBarrier();
         InterlockedCompareExchange(&val, 0, 1);

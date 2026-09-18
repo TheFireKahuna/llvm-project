@@ -37,8 +37,10 @@
 #include <mutex>
 #include <utility>
 
-#if defined(_WIN32)
-#define NOMINMAX
+#if defined(LLVM_RUNTIME_WIN32)
+#ifndef NOMINMAX
+#  define NOMINMAX
+#endif
 #include <windows.h>
 
 #ifndef PATH_MAX

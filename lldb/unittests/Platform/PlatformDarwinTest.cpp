@@ -32,7 +32,7 @@ using namespace lldb_private;
 struct PlatformDarwinLocateTest : public testing::Test {
 protected:
   void SetUp() override {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     GTEST_SKIP() << "PlatformDarwin tests are not supported on Windows";
 #endif
     std::call_once(TestUtilities::g_debugger_initialize_flag,

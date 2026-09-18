@@ -16,7 +16,7 @@
 #include <cstdlib>
 #include <limits>
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "flang/Common/windows-include.h"
 #include <direct.h>
 #define getcwd _getcwd
@@ -278,7 +278,7 @@ std::int32_t RTNAME(Hostnm)(
   // the string of all spaces, which is the original gfortran behavior.
   FillWithSpaces(res);
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
   DWORD dwSize{sizeof(buf)};
 

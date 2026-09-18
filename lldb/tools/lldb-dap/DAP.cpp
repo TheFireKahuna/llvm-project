@@ -66,8 +66,10 @@
 #include <utility>
 #include <variant>
 
-#if defined(_WIN32)
-#define NOMINMAX
+#if defined(LLVM_RUNTIME_WIN32)
+#ifndef NOMINMAX
+#  define NOMINMAX
+#endif
 #include <fcntl.h>
 #include <io.h>
 #include <windows.h>
@@ -80,7 +82,7 @@ using namespace lldb_dap::protocol;
 using namespace lldb_private;
 
 namespace {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 const char DEV_NULL[] = "nul";
 #else
 const char DEV_NULL[] = "/dev/null";

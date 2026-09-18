@@ -9,7 +9,7 @@
 #include "lldb/Target/Thread.h"
 #include "Plugins/Platform/Linux/PlatformLinux.h"
 #include <thread>
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "lldb/Host/windows/HostThreadWindows.h"
 #include "lldb/Host/windows/windows.h"
 
@@ -33,7 +33,7 @@ using namespace lldb;
 
 namespace {
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 using SetThreadDescriptionFunctionPtr =
     HRESULT(WINAPI *)(HANDLE hThread, PCWSTR lpThreadDescription);
 
@@ -45,7 +45,7 @@ public:
   void SetUp() override {
     FileSystem::Initialize();
     HostInfo::Initialize();
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     HMODULE hModule = ::LoadLibraryW(L"Kernel32.dll");
     if (hModule) {
       SetThreadName = reinterpret_cast<SetThreadDescriptionFunctionPtr>(
@@ -56,7 +56,7 @@ public:
     platform_linux::PlatformLinux::Initialize();
   }
   void TearDown() override {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     PlatformWindows::Terminate();
 #endif
     platform_linux::PlatformLinux::Terminate();
@@ -130,7 +130,7 @@ TargetSP CreateTarget(DebuggerSP &debugger_sp, ArchSpec &arch) {
   return target_sp;
 }
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 std::shared_ptr<TargetThreadWindows>
 CreateWindowsThread(const ProcessWindowsSP &process_sp, std::thread &t) {
   HostThread host_thread((lldb::thread_t)t.native_handle());

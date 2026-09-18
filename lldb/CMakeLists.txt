@@ -46,7 +46,7 @@ if(uppercase_CMAKE_BUILD_TYPE STREQUAL "DEBUG" )
   add_definitions(-DLLDB_CONFIGURATION_DEBUG)
 endif()
 
-if (WIN32)
+if (LLVM_RUNTIME_WIN32)
   add_definitions(-D_ENABLE_EXTENDED_ALIGNED_STORAGE)
   if (NOT MSVC)
     # _BSD_SOURCE is required for MinGW's getopt.h to define optreset
@@ -89,7 +89,7 @@ if (LLDB_ENABLE_PYTHON)
     endif()
   endforeach()
   # Make sure lldb extension has "_d" suffix on Windows in Debug mode.
-  if(WIN32 AND CMAKE_BUILD_TYPE STREQUAL Debug)
+  if(LLVM_RUNTIME_WIN32 AND CMAKE_BUILD_TYPE STREQUAL Debug)
     string(SUBSTRING ${LLDB_PYTHON_EXT_SUFFIX} 0 2 FIRST_2_CHARS)
     # Add "_d" manually if LLDB_PYTHON_EXT_SUFFIX lacks it due to release Python configuration.
     if(NOT FIRST_2_CHARS STREQUAL "_d")

@@ -33,7 +33,7 @@
 //  LLDB_INVALID_HOST_THREAD  The value of an invalid lldb::thread_t
 //  LLDB_INVALID_PIPE         The value of an invalid lldb::pipe_t
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
 #include <process.h>
 
@@ -63,7 +63,7 @@ typedef void *thread_result_t;          // Host thread result type
 typedef void *(*thread_func_t)(void *); // Host thread function type
 typedef int pipe_t;                     // Host pipe type
 
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32
 
 #define LLDB_INVALID_PROCESS ((lldb::process_t)-1)
 #define LLDB_INVALID_HOST_THREAD ((lldb::thread_t)NULL)

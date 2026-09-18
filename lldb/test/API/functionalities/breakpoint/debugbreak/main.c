@@ -1,4 +1,4 @@
-#ifdef _MSC_VER
+#if defined(LLVM_CRT_UCRT)
 #include <intrin.h>
 #define BREAKPOINT_INTRINSIC()    __debugbreak()
 #else

@@ -366,7 +366,7 @@ TEST_F(ZeroArguments, ECLNotExecutedCommandErrorSync) {
 
   RTNAME(ExecuteCommandLine)
   (*command.get(), wait, exitStat.get(), cmdStat.get(), cmdMsg.get());
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
   CheckDescriptorEqInt<std::int64_t>(exitStat.get(), 9009);
   CheckDescriptorEqInt<std::int64_t>(cmdStat.get(), 5);
   CheckDescriptorEqStr(
@@ -398,7 +398,7 @@ TEST_F(ZeroArguments, ECLNotFoundCommandErrorSync) {
 
   RTNAME(ExecuteCommandLine)
   (*command.get(), wait, exitStat.get(), cmdStat.get(), cmdMsg.get());
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
   CheckDescriptorEqInt<std::int64_t>(exitStat.get(), 9009);
   CheckDescriptorEqInt<std::int64_t>(cmdStat.get(), 5);
   CheckDescriptorEqStr(
@@ -416,7 +416,7 @@ TEST_F(ZeroArguments, ECLInvalidCommandTerminatedSync) {
   bool wait{true};
   OwningPtr<Descriptor> cmdMsg{CharDescriptor("No Change")};
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
   EXPECT_DEATH(RTNAME(ExecuteCommandLine)(
                    *command.get(), wait, nullptr, nullptr, cmdMsg.get()),
       "Command not found.");
@@ -496,7 +496,7 @@ TEST_F(ZeroArguments, SystemInvalidCommandExitStat) {
 
   RTNAME(ExecuteCommandLine)
   (*command.get(), wait, exitStat.get(), cmdStat.get(), nullptr);
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
   CheckDescriptorEqInt<std::int64_t>(exitStat.get(), 9009);
 #else
   CheckDescriptorEqInt<std::int64_t>(exitStat.get(), 127);
@@ -695,9 +695,11 @@ class EnvironmentVariables : public CommandFixture {
 protected:
   EnvironmentVariables() : CommandFixture(0, nullptr) {
     SetEnv("NAME", "VALUE");
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
+    // UCRT: getlog reads USERNAME (Windows convention).
     SetEnv("USERNAME", "loginName");
 #else
+    // POSIX: getlog reads LOGNAME.
     SetEnv("LOGNAME", "loginName");
 #endif
     SetEnv("EMPTY", "");
@@ -823,7 +825,7 @@ TEST_F(EnvironmentVariables, GetlogPadSpace) {
 }
 #endif
 
-#ifdef _WIN32 // Test ability to get name from environment variable
+#if defined(LLVM_RUNTIME_WIN32) // Test ability to get name from environment variable
 TEST_F(EnvironmentVariables, GetlogEnvGetName) {
   if (EnableFineGrainedTests()) {
     ASSERT_NE(std::getenv("USERNAME"), nullptr)

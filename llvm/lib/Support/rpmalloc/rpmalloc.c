@@ -152,14 +152,6 @@
 #define ENABLE_ADAPTIVE_THREAD_CACHE 0
 #endif
 
-#if defined(_WIN32) || defined(__WIN32__) || defined(_WIN64)
-#define PLATFORM_WINDOWS 1
-#define PLATFORM_POSIX 0
-#else
-#define PLATFORM_WINDOWS 0
-#define PLATFORM_POSIX 1
-#endif
-
 /// Platform and arch specifics
 #if defined(_MSC_VER) && !defined(__clang__)
 #pragma warning(disable : 5105)
@@ -172,7 +164,7 @@
 #define FORCEINLINE inline __attribute__((__always_inline__))
 #endif
 #endif
-#if PLATFORM_WINDOWS
+#if defined(LLVM_RUNTIME_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -209,12 +201,12 @@
 #include <stdint.h>
 #include <string.h>
 
-#if defined(_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
+#if defined(LLVM_RUNTIME_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
 #include <fibersapi.h>
 static DWORD fls_key;
 #endif
 
-#if PLATFORM_POSIX
+#if defined(LLVM_RUNTIME_POSIX)
 #include <sched.h>
 #include <sys/mman.h>
 #ifdef __FreeBSD__
@@ -1091,7 +1083,7 @@ static void *_rpmalloc_mmap_os(size_t size, size_t *offset) {
                        ? _memory_span_size
                        : 0;
   rpmalloc_assert(size >= _memory_page_size, "Invalid mmap size");
-#if PLATFORM_WINDOWS
+#if defined(LLVM_RUNTIME_WIN32)
   // Ok to MEM_COMMIT - according to MSDN, "actual physical pages are not
   // allocated unless/until the virtual addresses are actually accessed"
   void *ptr = VirtualAlloc(0, size + padding,
@@ -1190,7 +1182,7 @@ static void _rpmalloc_unmap_os(void *address, size_t size, size_t offset,
     }
   }
 #if !DISABLE_UNMAP
-#if PLATFORM_WINDOWS
+#if defined(LLVM_RUNTIME_WIN32)
   if (!VirtualFree(address, release ? 0 : size,
                    release ? MEM_RELEASE : MEM_DECOMMIT)) {
     rpmalloc_assert(0, "Failed to unmap virtual memory block");
@@ -3117,7 +3109,7 @@ int rpmalloc_initialize_config(const rpmalloc_config_t *config) {
     _memory_config.memory_unmap = _rpmalloc_unmap_os;
   }
 
-#if PLATFORM_WINDOWS
+#if defined(LLVM_RUNTIME_WIN32)
   SYSTEM_INFO system_info;
   memset(&system_info, 0, sizeof(system_info));
   GetSystemInfo(&system_info);
@@ -3133,7 +3125,7 @@ int rpmalloc_initialize_config(const rpmalloc_config_t *config) {
 #endif
   _memory_huge_pages = 0;
   if (!_memory_page_size) {
-#if PLATFORM_WINDOWS
+#if defined(LLVM_RUNTIME_WIN32)
     _memory_page_size = system_info.dwPageSize;
 #else
     _memory_page_size = _memory_map_granularity;
@@ -3193,7 +3185,7 @@ int rpmalloc_initialize_config(const rpmalloc_config_t *config) {
       _memory_huge_pages = 1;
   }
 
-#if PLATFORM_WINDOWS
+#if defined(LLVM_RUNTIME_WIN32)
   if (_memory_config.enable_huge_pages) {
     HANDLE token = 0;
     size_t large_page_minimum = GetLargePageMinimum();
@@ -3284,7 +3276,7 @@ int rpmalloc_initialize_config(const rpmalloc_config_t *config) {
   if (pthread_key_create(&_memory_thread_heap, _rpmalloc_heap_release_raw_fc))
     return -1;
 #endif
-#if defined(_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
+#if defined(LLVM_RUNTIME_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
   fls_key = FlsAlloc(&_rpmalloc_thread_destructor);
 #endif
 
@@ -3371,7 +3363,7 @@ void rpmalloc_finalize(void) {
 #if (defined(__APPLE__) || defined(__HAIKU__)) && ENABLE_PRELOAD
   pthread_key_delete(_memory_thread_heap);
 #endif
-#if defined(_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
+#if defined(LLVM_RUNTIME_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
   FlsFree(fls_key);
   fls_key = 0;
 #endif
@@ -3393,7 +3385,7 @@ extern inline void rpmalloc_thread_initialize(void) {
     if (heap) {
       _rpmalloc_stat_inc(&_memory_active_heaps);
       set_thread_heap(heap);
-#if defined(_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
+#if defined(LLVM_RUNTIME_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
       FlsSetValue(fls_key, heap);
 #endif
     }
@@ -3406,7 +3398,7 @@ void rpmalloc_thread_finalize(int release_caches) {
   if (heap)
     _rpmalloc_heap_release_raw(heap, release_caches);
   set_thread_heap(0);
-#if defined(_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
+#if defined(LLVM_RUNTIME_WIN32) && (!defined(BUILD_DYNAMIC_LINK) || !BUILD_DYNAMIC_LINK)
   FlsSetValue(fls_key, 0);
 #endif
 }
@@ -3435,7 +3427,7 @@ extern inline void rpfree(void *ptr) { _rpmalloc_deallocate(ptr); }
 extern inline RPMALLOC_ALLOCATOR void *rpcalloc(size_t num, size_t size) {
   size_t total;
 #if ENABLE_VALIDATE_ARGS
-#if PLATFORM_WINDOWS
+#if defined(LLVM_RUNTIME_WIN32)
   int err = SizeTMult(num, size, &total);
   if ((err != S_OK) || (total >= MAX_ALLOC_SIZE)) {
     errno = EINVAL;
@@ -3492,7 +3484,7 @@ extern inline RPMALLOC_ALLOCATOR void *
 rpaligned_calloc(size_t alignment, size_t num, size_t size) {
   size_t total;
 #if ENABLE_VALIDATE_ARGS
-#if PLATFORM_WINDOWS
+#if defined(LLVM_RUNTIME_WIN32)
   int err = SizeTMult(num, size, &total);
   if ((err != S_OK) || (total >= MAX_ALLOC_SIZE)) {
     errno = EINVAL;
@@ -3883,7 +3875,7 @@ rpmalloc_heap_aligned_calloc(rpmalloc_heap_t *heap, size_t alignment,
                              size_t num, size_t size) {
   size_t total;
 #if ENABLE_VALIDATE_ARGS
-#if PLATFORM_WINDOWS
+#if defined(LLVM_RUNTIME_WIN32)
   int err = SizeTMult(num, size, &total);
   if ((err != S_OK) || (total >= MAX_ALLOC_SIZE)) {
     errno = EINVAL;

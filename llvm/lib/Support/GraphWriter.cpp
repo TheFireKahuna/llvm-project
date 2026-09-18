@@ -255,7 +255,7 @@ bool llvm::DisplayGraph(StringRef FilenameRef, bool wait,
     Viewer = VK_Ghostview;
   if (!Viewer && S.TryFindProgram("xdg-open", ViewerPath))
     Viewer = VK_XDGOpen;
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   if (!Viewer && S.TryFindProgram("cmd", ViewerPath)) {
     Viewer = VK_CmdStart;
   }
@@ -327,7 +327,7 @@ bool llvm::DisplayGraph(StringRef FilenameRef, bool wait,
     args.push_back(Filename);
 
 // Dotty spawns another app and doesn't wait until it returns
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     wait = false;
 #endif
     errs() << "Running 'dotty' program... ";

@@ -3,7 +3,7 @@
 
 #include <stdio.h>
 
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
 #include <Windows.h>
 
 #define dylib_get_symbol(handle, name) GetProcAddress((HMODULE)handle, name)
@@ -18,13 +18,13 @@
 
 inline void *dylib_open(const char *name) {
   char dylib_prefix[] =
-#ifdef _WIN32
+#if defined(_WIN32)
     "";
 #else
     "lib";
 #endif
   char dylib_suffix[] =
-#ifdef _WIN32
+#if defined(_WIN32)
     ".dll";
 #elif defined(__APPLE__)
     ".dylib";
@@ -33,7 +33,7 @@ inline void *dylib_open(const char *name) {
 #endif
   char fullname[1024];
   snprintf(fullname, sizeof(fullname), "%s%s%s", dylib_prefix, name, dylib_suffix);
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
   return LoadLibraryA(fullname);
 #else
   return dlopen(fullname, RTLD_NOW);
@@ -41,7 +41,7 @@ inline void *dylib_open(const char *name) {
 }
 
 inline const char *dylib_last_error() {
-#ifndef _WIN32
+#if defined(LLVM_ON_POSIX)
   return dlerror();
 #else
   DWORD err = GetLastError();

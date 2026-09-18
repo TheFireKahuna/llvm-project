@@ -14,11 +14,11 @@
 #include <atomic>
 #include <optional>
 #include <thread>
-#ifdef __USE_POSIX
+#if defined(LLVM_RUNTIME_POSIX)
 #include <pthread.h>
 #elif defined(__APPLE__)
 #include <sys/resource.h>
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
 #include <windows.h>
 #endif
 

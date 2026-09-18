@@ -10,7 +10,7 @@
 #include "lldb/Host/Config.h"
 #include "lldb/Utility/StreamString.h"
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #else
