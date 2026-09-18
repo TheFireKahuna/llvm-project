@@ -2748,7 +2748,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   ctx.forEachSymtab([](SymbolTable &symtab) {
     symtab.hadExplicitExports = !symtab.exports.empty();
   });
-  if (config->mingw) {
+  // An explicit -export-all-symbols is honored on every target.
+  if (config->mingw || args.hasArg(OPT_export_all_symbols)) {
     // In MinGW, all symbols are automatically exported if no symbols
     // are chosen to be exported.
     maybeExportMinGWSymbols(args);
