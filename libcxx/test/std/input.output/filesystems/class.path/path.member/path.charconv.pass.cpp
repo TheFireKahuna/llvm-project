@@ -37,7 +37,7 @@
 
 #include "test_macros.h"
 
-#ifdef _WIN32
+#if defined(_LIBCPP_WIN32API)
 #  include <windows.h> // SetFileApisToANSI & friends
 #endif
 namespace fs = std::filesystem;

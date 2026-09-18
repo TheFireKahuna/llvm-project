@@ -54,7 +54,14 @@
 #    define _LIBCPP_CRT_FUNC
 #  endif
 
-#  if defined(_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS) || (defined(__MINGW32__) && !defined(_LIBCPP_BUILDING_LIBRARY))
+#  if defined(_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS)
+#    define _LIBCPP_EXTERN_TEMPLATE_TYPE_VIS
+#    define _LIBCPP_CLASS_TEMPLATE_INSTANTIATION_VIS
+#    define _LIBCPP_OVERRIDABLE_FUNC_VIS
+#    define _LIBCPP_EXPORTED_FROM_ABI
+#    define _LIBCPP_EXPORTED_DATA_FROM_ABI
+#  elif defined(__MINGW32__) && !defined(_LIBCPP_BUILDING_LIBRARY)
+// MinGW: Use auto-import (LLD -auto-import) to avoid ABI tag mismatches.
 #    define _LIBCPP_EXTERN_TEMPLATE_TYPE_VIS
 #    define _LIBCPP_CLASS_TEMPLATE_INSTANTIATION_VIS
 #    define _LIBCPP_OVERRIDABLE_FUNC_VIS

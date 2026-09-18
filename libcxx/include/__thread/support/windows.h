@@ -20,6 +20,13 @@
 
 _LIBCPP_BEGIN_NAMESPACE_STD
 
+#if _LIBCPP_HAS_SHARED_THREAD_LOCAL_DATA
+class _LIBCPP_EXPORTED_FROM_ABI __thread_struct;
+// The shared C++ runtime destroys this data after language TLS destruction.
+_LIBCPP_EXPORTED_FROM_ABI __thread_struct*& __thread_local_data_ref();
+extern "C" void __cxa_thread_finalize(void*);
+#endif
+
 using __libcpp_timespec_t = ::timespec;
 
 //

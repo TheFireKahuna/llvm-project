@@ -12,11 +12,14 @@
 // used by win32 APIs and reported by GetLastError), and that they are properly
 // translated to generic conditions.
 
-#include <windows.h>
 #include <system_error>
 #include <cassert>
 
 #include "test_macros.h"
+
+#if defined(_LIBCPP_WIN32API)
+#include <windows.h>
+#endif
 
 int main(int, char**) {
   LIBCPP_ASSERT(std::error_code(ERROR_ACCESS_DENIED, std::system_category()) == std::errc::permission_denied);

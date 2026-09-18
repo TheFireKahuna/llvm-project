@@ -12,7 +12,9 @@
 // used by win32 APIs and reported by GetLastError), and that they are properly
 // translated to generic conditions.
 
+#if defined(_LIBCPP_WIN32API)
 #include <windows.h>
+#endif
 #include <system_error>
 #include <cassert>
 

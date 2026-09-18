@@ -25,7 +25,9 @@
 
 #if defined(_LIBCPP_WIN32API)
 #  define WIN32_LEAN_AND_MEAN
-#  define NOMINMAX
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
 #  include <windows.h> // ERROR_* macros
 #endif
 

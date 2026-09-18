@@ -160,13 +160,28 @@ public:
 // a unique RTTI: the RTTI is emitted with linkonce_odr linkage and is assumed
 // to be deduplicated by the linker within the linked image. Across linked image
 // boundaries, such types are thus considered different types.
+// -------------------------------------------------------------------------- //
+//                            HashedIdentity
+//               (_LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION = 4)
+// -------------------------------------------------------------------------- //
+// This implementation is specific to Windows Itanium and NTPOSIX.
+//
+// Every image carries its own copy of a type's RTTI, so addresses cannot
+// identify a type across DLLs and comparing the names would cost a string
+// comparison on every mismatch and every match. Instead the compiler stores a
+// 128-bit hash of the mangled type name in each type_info, directly after the
+// name. Two type_infos are equal if their hashes are equal, hash_code() is the
+// low half, and before() orders by the hash. The name is kept only for name().
 
 // This value can be overriden in the __config_site. When it's not overriden,
 // we pick a default implementation based on the platform here.
 #    ifndef _LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION
 
+#      if defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
+#        define _LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION 4
+
 // Windows and AIX binaries can't merge typeinfos, so use the NonUnique implementation.
-#      if defined(_LIBCPP_OBJECT_FORMAT_COFF) || defined(_LIBCPP_OBJECT_FORMAT_XCOFF)
+#      elif defined(_LIBCPP_OBJECT_FORMAT_COFF) || defined(_LIBCPP_OBJECT_FORMAT_XCOFF)
 #        define _LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION 2
 
 // On arm64 on Apple platforms, use the special NonUniqueARMRTTIBit implementation.
@@ -265,6 +280,8 @@ struct __type_info_implementations {
       __non_unique_impl
 #    elif _LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION == 3
       __non_unique_arm_rtti_bit_impl
+#    elif _LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION == 4
+    __non_unique_impl
 #    else
 #      error invalid configuration for _LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION
 #    endif
@@ -293,18 +310,38 @@ protected:
 
   __impl::__type_name_t __type_name;
 
+#    if _LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION == 4
+  // Written by the compiler: xxh3-128 of the mangled type name, low half first.
+  // A type_info constructed by hand carries no identity.
+  unsigned long long __identity_[2];
+
+  _LIBCPP_HIDE_FROM_ABI explicit type_info(const char* __n)
+      : __type_name(__impl::__string_to_type_name(__n)), __identity_() {}
+#    else
   _LIBCPP_HIDE_FROM_ABI explicit type_info(const char* __n) : __type_name(__impl::__string_to_type_name(__n)) {}
+#    endif
 
 public:
   virtual ~type_info();
 
   _LIBCPP_HIDE_FROM_ABI const char* name() const _NOEXCEPT { return __impl::__type_name_to_string(__type_name); }
 
+#    if _LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION == 4
+  _LIBCPP_HIDE_FROM_ABI bool before(const type_info& __arg) const _NOEXCEPT {
+    return __identity_[1] != __arg.__identity_[1] ? __identity_[1] < __arg.__identity_[1]
+                                                  : __identity_[0] < __arg.__identity_[0];
+  }
+
+  _LIBCPP_HIDE_FROM_ABI size_t hash_code() const _NOEXCEPT {
+    return static_cast<size_t>(__identity_[0]);
+  }
+#    else
   _LIBCPP_HIDE_FROM_ABI bool before(const type_info& __arg) const _NOEXCEPT {
     return __impl::__lt(__type_name, __arg.__type_name);
   }
 
   _LIBCPP_HIDE_FROM_ABI size_t hash_code() const _NOEXCEPT { return __impl::__hash(__type_name); }
+#    endif
 
   _LIBCPP_HIDE_FROM_ABI bool operator==(const type_info& __arg) const _NOEXCEPT {
     // When evaluated in a constant expression, both type infos simply can't come
@@ -312,7 +349,11 @@ public:
     if (__libcpp_is_constant_evaluated()) {
       return this == &__arg;
     }
+#    if _LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION == 4
+    return __builtin_memcmp(__identity_, __arg.__identity_, sizeof(__identity_)) == 0;
+#    else
     return __impl::__eq(__type_name, __arg.__type_name);
+#    endif
   }
 
   _LIBCPP_HIDE_FROM_ABI bool operator!=(const type_info& __arg) const _NOEXCEPT { return !operator==(__arg); }

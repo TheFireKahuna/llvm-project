@@ -13,8 +13,8 @@
 #include <__cxx03/__config>
 #include <__cxx03/cstddef>
 #include <__cxx03/locale.h> // _locale_t
-#include <__cxx03/stdio.h>
 #include <__cxx03/string>
+#include <stdio.h>
 
 #define _X_ALL LC_ALL
 #define _X_COLLATE LC_COLLATE

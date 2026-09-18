@@ -1026,7 +1026,7 @@ public:
   }
 
   ~future();
-  _LIBCPP_HIDE_FROM_ABI shared_future<void> share() _NOEXCEPT;
+  _LIBCPP_HIDE_FROM_ABI _LIBCPP_ALWAYS_INLINE shared_future<void> share() _NOEXCEPT;
 
   // retrieving the value
   void get();
@@ -1923,7 +1923,9 @@ inline shared_future<_Rp&> future<_Rp&>::share() _NOEXCEPT {
   return shared_future<_Rp&>(std::move(*this));
 }
 
-inline shared_future<void> future<void>::share() _NOEXCEPT { return shared_future<void>(std::move(*this)); }
+inline _LIBCPP_HIDE_FROM_ABI _LIBCPP_ALWAYS_INLINE shared_future<void> future<void>::share() _NOEXCEPT {
+  return shared_future<void>(std::move(*this));
+}
 
 _LIBCPP_END_NAMESPACE_STD
 

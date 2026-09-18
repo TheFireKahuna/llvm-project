@@ -88,9 +88,22 @@ public:
   __thread_specific_ptr& operator=(const __thread_specific_ptr&) = delete;
   ~__thread_specific_ptr();
 
-  _LIBCPP_HIDE_FROM_ABI pointer get() const { return static_cast<_Tp*>(__libcpp_tls_get(__key_)); }
+  _LIBCPP_HIDE_FROM_ABI pointer get() const {
+#if _LIBCPP_HAS_SHARED_THREAD_LOCAL_DATA
+    return __thread_local_data_ref();
+#else
+    return static_cast<_Tp*>(__libcpp_tls_get(__key_));
+#endif
+  }
   _LIBCPP_HIDE_FROM_ABI pointer operator*() const { return *get(); }
-  _LIBCPP_HIDE_FROM_ABI pointer operator->() const { return get(); }
+  _LIBCPP_HIDE_FROM_ABI pointer operator->() {
+    pointer __p = get();
+    if (__p == nullptr) {
+      __p = new _Tp;
+      set_pointer(__p);
+    }
+    return __p;
+  }
   void set_pointer(pointer __p);
 };
 
@@ -101,9 +114,11 @@ void _LIBCPP_TLS_DESTRUCTOR_CC __thread_specific_ptr<_Tp>::__at_thread_exit(void
 
 template <class _Tp>
 __thread_specific_ptr<_Tp>::__thread_specific_ptr() {
+#if !_LIBCPP_HAS_SHARED_THREAD_LOCAL_DATA
   int __ec = __libcpp_tls_create(&__key_, &__thread_specific_ptr::__at_thread_exit);
   if (__ec)
     std::__throw_system_error(__ec, "__thread_specific_ptr construction failed");
+#endif
 }
 
 template <class _Tp>
@@ -117,7 +132,15 @@ __thread_specific_ptr<_Tp>::~__thread_specific_ptr() {
 template <class _Tp>
 void __thread_specific_ptr<_Tp>::set_pointer(pointer __p) {
   _LIBCPP_ASSERT_INTERNAL(get() == nullptr, "Attempting to overwrite thread local data");
-  std::__libcpp_tls_set(__key_, __p);
+  unique_ptr<_Tp> __owner(__p);
+#if _LIBCPP_HAS_SHARED_THREAD_LOCAL_DATA
+  __thread_local_data_ref() = __p;
+#else
+  int __ec = std::__libcpp_tls_set(__key_, __p);
+  if (__ec)
+    std::__throw_system_error(__ec, "__thread_specific_ptr initialization failed");
+#endif
+  __owner.release();
 }
 
 template <>

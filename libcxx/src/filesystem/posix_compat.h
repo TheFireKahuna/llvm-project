@@ -33,10 +33,33 @@
 
 #if defined(_LIBCPP_WIN32API)
 #  define WIN32_LEAN_AND_MEAN
-#  define NOMINMAX
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
 #  include <io.h>
 #  include <windows.h>
 #  include <winioctl.h>
+#  include <fcntl.h>
+
+// POSIX compatibility for Windows Itanium (no _MSC_VER in user code).
+// NOTE: NTPOSIX has real POSIX filesystem via llvm-libc, so it does not
+// define _LIBCPP_WIN32API and takes the POSIX code path below instead.
+#  if defined(_WIN32_ITANIUM)
+using off_t = ::int64_t;
+
+#    ifndef O_RDONLY
+#      define O_RDONLY _O_RDONLY
+#    endif
+#    ifndef O_WRONLY
+#      define O_WRONLY _O_WRONLY
+#    endif
+#    ifndef O_CREAT
+#      define O_CREAT _O_CREAT
+#    endif
+#    ifndef O_BINARY
+#      define O_BINARY _O_BINARY
+#    endif
+#  endif // _WIN32_ITANIUM
 #else
 #  include <fcntl.h>
 #  include <sys/stat.h>

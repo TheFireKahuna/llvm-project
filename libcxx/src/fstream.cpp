@@ -12,9 +12,14 @@
 
 #if defined(_LIBCPP_WIN32API)
 #  define WIN32_LEAN_AND_MEAN
-#  define NOMINMAX
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
 #  include <io.h>
 #  include <windows.h>
+#  if defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
+#    define fileno _fileno
+#  endif
 #endif
 
 _LIBCPP_BEGIN_NAMESPACE_STD

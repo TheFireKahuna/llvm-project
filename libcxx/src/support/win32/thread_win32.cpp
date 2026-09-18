@@ -9,7 +9,9 @@
 #include <__thread/support/windows.h>
 #include <chrono>
 
-#define NOMINMAX
+#ifndef NOMINMAX
+#  define NOMINMAX
+#endif
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <process.h>
@@ -145,12 +147,16 @@ struct __libcpp_beginthreadex_thunk_data {
   void* __arg;
 };
 
-static inline _LIBCPP_HIDE_FROM_ABI unsigned WINAPI __libcpp_beginthreadex_thunk(void* __raw_data) {
+static inline _LIBCPP_HIDE_FROM_ABI unsigned WINAPI __libcpp_beginthreadex_thunk(void* __raw_data) noexcept {
   auto* __data = static_cast<__libcpp_beginthreadex_thunk_data*>(__raw_data);
   auto* __func = __data->__func;
   void* __arg  = __data->__arg;
   delete __data;
-  return static_cast<unsigned>(reinterpret_cast<uintptr_t>(__func(__arg)));
+  auto __result = static_cast<unsigned>(reinterpret_cast<uintptr_t>(__func(__arg)));
+#if _LIBCPP_HAS_SHARED_THREAD_LOCAL_DATA
+  __cxa_thread_finalize(nullptr);
+#endif
+  return __result;
 }
 
 bool __libcpp_thread_isnull(const __libcpp_thread_t* __t) { return *__t == 0; }

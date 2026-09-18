@@ -46,10 +46,18 @@
 // OpenBSD has no indirect syscalls
 #  define _LIBCPP_FUTEX(...) futex(__VA_ARGS__)
 
-#elif defined(_WIN32)
+#elif defined(_LIBCPP_WIN32API)
 
 #  include <memory>
 #  include <windows.h>
+
+#elif defined(LLVM_RUNTIME_POSIX)
+
+// LLVM libc on Windows provides futex(2) backed by
+// NtAlertThreadByThreadId with a Treiber-stack wait pool.
+#  include <sys/futex.h>
+// Cast void* to volatile uint32_t* — futex(2) always operates on a uint32_t.
+#  define _LIBCPP_FUTEX(addr, ...) futex(static_cast<volatile uint32_t*>(const_cast<void*>(addr)), __VA_ARGS__)
 
 #else // <- Add other operating systems here
 
@@ -66,7 +74,7 @@ _LIBCPP_BEGIN_NAMESPACE_STD
 
 struct NoTimeout {};
 
-#ifdef __linux__
+#if defined(__linux__) || (defined(_WIN32) && defined(LLVM_RUNTIME_POSIX))
 
 template <std::size_t _Size, class MaybeTimeout>
 static void __platform_wait_on_address(void const* __ptr, void const* __val, MaybeTimeout maybe_timeout_ns) {
@@ -170,7 +178,7 @@ static void __platform_wake_by_address(void const* __ptr, bool __notify_one) {
   _umtx_op(const_cast<void*>(__ptr), UMTX_OP_WAKE, __notify_one ? 1 : INT_MAX, nullptr, nullptr);
 }
 
-#elif defined(_WIN32)
+#elif defined(_LIBCPP_WIN32API)
 
 static void* win32_get_synch_api_function(const char* function_name) {
   // Attempt to load the API set. Note that as per the Microsoft STL implementation, we assume this API is already
@@ -273,7 +281,7 @@ static void __platform_wait_on_address(void const* __ptr, void const* __val, May
 template <std::size_t _Size>
 static void __platform_wake_by_address(void const*, bool) {}
 
-#endif // __linux__
+#endif // __linux__ || (_WIN32 && !_LIBCPP_WIN32API)
 
 // =============================
 // Local hidden helper functions

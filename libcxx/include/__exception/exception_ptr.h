@@ -36,11 +36,11 @@ _LIBCPP_PUSH_MACROS
 namespace __cxxabiv1 {
 
 extern "C" {
-_LIBCPP_OVERRIDABLE_FUNC_VIS void* __cxa_allocate_exception(std::size_t) throw();
-_LIBCPP_OVERRIDABLE_FUNC_VIS void __cxa_free_exception(void*) throw();
+_LIBCPP_EXPORTED_FROM_ABI void* __cxa_allocate_exception(std::size_t) throw();
+_LIBCPP_EXPORTED_FROM_ABI void __cxa_free_exception(void*) throw();
 
 struct __cxa_exception;
-_LIBCPP_OVERRIDABLE_FUNC_VIS __cxa_exception* __cxa_init_primary_exception(
+_LIBCPP_EXPORTED_FROM_ABI __cxa_exception* __cxa_init_primary_exception(
     void*,
     std::type_info*,
 #    if defined(_WIN32)

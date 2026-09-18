@@ -34,7 +34,7 @@
 #include "filesystem_test_helper.h"
 
 #include <fcntl.h>
-#ifdef _WIN32
+#if defined(_LIBCPP_WIN32API)
 #include <windows.h>
 #else
 #include <sys/time.h>
