@@ -55,6 +55,7 @@ def main():
             v = v + os.pathsep + os.environ[k]
         env[k] = v
 
+    executable = None
     if platform.system() == "Windows":
         # Pass some extra variables through on Windows:
         # COMSPEC is needed for running subprocesses via std::system().
@@ -63,9 +64,21 @@ def main():
         # TEMP is needed for placing temp files in a sensible directory.
         if "TEMP" in os.environ:
             env["TEMP"] = os.environ.get("TEMP")
+        # CreateProcessW limits the program name parsed out of the command
+        # line to MAX_PATH even when long paths are enabled, whereas the
+        # program passed as lpApplicationName has no such limit. Test
+        # executables live in deep per-test directories, so name the program
+        # separately when it is given as a full path to an existing file
+        # (lpApplicationName gets neither a PATH search nor a default
+        # extension, so anything else keeps the command-line lookup).
+        program = commandLine[0]
+        if os.path.isabs(program) and os.path.isfile(program):
+            executable = program
 
     # Run the command line with the given environment in the execution directory.
-    return subprocess.call(commandLine, cwd=args.execdir, env=env, shell=False)
+    return subprocess.call(
+        commandLine, executable=executable, cwd=args.execdir, env=env, shell=False
+    )
 
 
 if __name__ == "__main__":
