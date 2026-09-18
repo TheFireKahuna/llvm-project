@@ -34,6 +34,8 @@ endif()
 #===============================================================================
 include(CMakeDependentOption)
 include(HandleCompilerRT)
+include(DetectMSVCLike)
+include(DetectWindowsItanium)
 
 # Define options.
 option(LIBUNWIND_ENABLE_CET "Build libunwind with CET enabled." OFF)
@@ -78,6 +80,8 @@ if(MINGW)
   else()
     set(LIBUNWIND_DEFAULT_TEST_CONFIG "llvm-libunwind-static-mingw.cfg.in")
   endif()
+elseif(WIN32_ITANIUM OR WIN32_NTPOSIX)
+  set(LIBUNWIND_DEFAULT_TEST_CONFIG "llvm-libunwind-windows-itanium.cfg.in")
 elseif (LIBUNWIND_ENABLE_SHARED)
   set(LIBUNWIND_DEFAULT_TEST_CONFIG "llvm-libunwind-shared.cfg.in")
 else()
@@ -163,7 +167,12 @@ endif()
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${LIBUNWIND_LIBRARY_DIR})
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${LIBUNWIND_LIBRARY_DIR})
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${LIBUNWIND_LIBRARY_DIR})
+# On Windows, DLLs go to bin/, not lib/. Use LLVM_RUNTIME_OUTPUT_INTDIR if available.
+if(MSVC_LIKE AND LLVM_RUNTIME_OUTPUT_INTDIR)
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${LLVM_RUNTIME_OUTPUT_INTDIR})
+else()
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${LIBUNWIND_LIBRARY_DIR})
+endif()
 
 set(LIBUNWIND_C_FLAGS "")
 set(LIBUNWIND_CXX_FLAGS "")
@@ -244,15 +253,18 @@ add_cxx_compile_flags_if_supported(-EHsc)
 set(_previous_CMAKE_TRY_COMPILE_TARGET_TYPE ${CMAKE_TRY_COMPILE_TARGET_TYPE})
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 add_compile_flags_if_supported(-funwind-tables)
-set(CMAKE_TRY_COMPILE_TARGET_TYPE ${_previous_CMAKE_TRY_COMPILE_TARGET_TYPE})
 
 if (LIBUNWIND_USES_ARM_EHABI AND NOT CXX_SUPPORTS_FUNWIND_TABLES_FLAG)
   message(SEND_ERROR "The -funwind-tables flag must be supported "
                      "because this target uses ARM Exception Handling ABI")
 endif()
 
+# Use STATIC_LIBRARY for these checks too — on targets bootstrapping their
+# own CRT (e.g. NTPOSIX) no C runtime exists yet, so link-based flag checks
+# would fail with missing crt1.obj.
 add_cxx_compile_flags_if_supported(-fno-exceptions)
 add_cxx_compile_flags_if_supported(-fno-rtti)
+set(CMAKE_TRY_COMPILE_TARGET_TYPE ${_previous_CMAKE_TRY_COMPILE_TARGET_TYPE})
 
 # Ensure that we don't depend on C++ standard library.
 if (CXX_SUPPORTS_NOSTDINCXX_FLAG)
@@ -320,7 +332,8 @@ if(LIBUNWIND_REMEMBER_HEAP_ALLOC)
 endif()
 
 # This is the _ONLY_ place where add_definitions is called.
-if (MSVC)
+# Windows Itanium driver provides _CRT_SECURE_NO_WARNINGS.
+if (MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
   add_definitions(-D_CRT_SECURE_NO_WARNINGS)
 endif()
 

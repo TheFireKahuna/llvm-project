@@ -17,6 +17,9 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#if defined(_WIN32) && !defined(__NTPOSIX__)
+#include <malloc.h> // For _malloca/_freea
+#endif
 
 #include <__libunwind_config.h>
 
@@ -88,6 +91,10 @@
 #define XSTR(a) STR(a)
 #define SYMBOL_NAME(name) XSTR(__USER_LABEL_PREFIX__) #name
 
+#define COFF_LINKER_DIRECTIVE(str_literal) \
+ __attribute__((section(".drectve"), used)) \
+ static const char COFF_UNIQUE(__coff_drectve_)[] = str_literal;
+
 #if defined(__APPLE__)
 #if defined(_LIBUNWIND_HIDE_SYMBOLS)
 #define _LIBUNWIND_ALIAS_VISIBILITY(name) __asm__(".private_extern " name);
@@ -107,6 +114,25 @@
 #define _LIBUNWIND_WEAK_ALIAS(name, aliasname)                                 \
   extern "C" _LIBUNWIND_EXPORT __typeof(name) aliasname                        \
       __attribute__((alias(#name)));
+#elif defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
+// /alternatename resolves references to the alias onto the implementation,
+// but it never creates an export-table entry, and dllexport on a bare
+// declaration emits nothing — so the DLL build must force the export
+// explicitly or the unw_* public API is unreachable through the import lib.
+#if defined(_LIBUNWIND_HIDE_SYMBOLS)
+#define _LIBUNWIND_WEAK_ALIAS(name, aliasname)                                     \
+  __attribute__((section(".drectve"), used))                                       \
+  static const char __coff_drectve_##aliasname[] =                                 \
+      " /alternatename:" SYMBOL_NAME(aliasname) "=" SYMBOL_NAME(name);             \
+  extern "C" _LIBUNWIND_EXPORT __typeof(name) aliasname;
+#else
+#define _LIBUNWIND_WEAK_ALIAS(name, aliasname)                                     \
+  __attribute__((section(".drectve"), used))                                       \
+  static const char __coff_drectve_##aliasname[] =                                 \
+      " /alternatename:" SYMBOL_NAME(aliasname) "=" SYMBOL_NAME(name)              \
+      " /export:" SYMBOL_NAME(aliasname);                                          \
+  extern "C" _LIBUNWIND_EXPORT __typeof(name) aliasname;
+#endif
 #else
 #define _LIBUNWIND_WEAK_ALIAS(name, aliasname)                                 \
   __pragma(comment(linker, "/alternatename:" SYMBOL_NAME(aliasname) "="        \
@@ -135,12 +161,14 @@
 #ifndef _LIBUNWIND_REMEMBER_HEAP_ALLOC
 #if defined(_LIBUNWIND_REMEMBER_STACK_ALLOC) || defined(__APPLE__) ||          \
     defined(__linux__) || defined(__ANDROID__) || defined(__MINGW32__) ||      \
-    defined(_LIBUNWIND_IS_BAREMETAL)
+    defined(_LIBUNWIND_IS_BAREMETAL) || defined(_WIN32_ITANIUM) || defined(__NTPOSIX__) ||            \
+    (defined(_WIN32) && defined(__USING_SJLJ_EXCEPTIONS__))
+// _malloca/_freea require SEH with WIN32; SJLJ builds must use __builtin_alloca.
 #define _LIBUNWIND_REMEMBER_ALLOC(_size) __builtin_alloca(_size)
 #define _LIBUNWIND_REMEMBER_FREE(_ptr)                                         \
   do {                                                                         \
   } while (0)
-#elif defined(_WIN32)
+#elif defined(_WIN32) && !defined(__NTPOSIX__)
 #define _LIBUNWIND_REMEMBER_ALLOC(_size) _malloca(_size)
 #define _LIBUNWIND_REMEMBER_FREE(_ptr) _freea(_ptr)
 #define _LIBUNWIND_REMEMBER_CLEANUP_NEEDED

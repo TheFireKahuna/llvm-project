@@ -70,17 +70,19 @@ set(LIBUNWIND_SOURCES
     ${LIBUNWIND_C_SOURCES}
     ${LIBUNWIND_ASM_SOURCES})
 
-# Generate library list.
-if (NOT APPLE)
-  add_library_flags_if(LIBUNWIND_HAS_DL_LIB dl)
-endif()
+if (NOT MSVC AND NOT CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+  # Generate library list.
+  if (NOT APPLE)
+    add_library_flags_if(LIBUNWIND_HAS_DL_LIB dl)
+  endif()
 
-if (LIBUNWIND_ENABLE_THREADS AND NOT APPLE)
-    add_library_flags_if(LIBUNWIND_HAS_PTHREAD_LIB pthread)
-endif()
+  if (LIBUNWIND_ENABLE_THREADS AND NOT APPLE)
+      add_library_flags_if(LIBUNWIND_HAS_PTHREAD_LIB pthread)
+  endif()
 
-if (LIBUNWIND_ENABLE_THREADS)
-  add_compile_flags_if(LIBUNWIND_WEAK_PTHREAD_LIB -DLIBUNWIND_USE_WEAK_PTHREAD=1)
+  if (LIBUNWIND_ENABLE_THREADS)
+    add_compile_flags_if(LIBUNWIND_WEAK_PTHREAD_LIB -DLIBUNWIND_USE_WEAK_PTHREAD=1)
+  endif()
 endif()
 
 # Setup flags.
@@ -88,6 +90,16 @@ add_link_flags_if(CXX_SUPPORTS_UNWINDLIB_EQ_NONE_FLAG --unwindlib=none)
 
 # MINGW_LIBRARIES is defined in config-ix.cmake
 add_library_flags_if(MINGW "${MINGW_LIBRARIES}")
+
+# NTPOSIX runtimes build passes -nolibc to avoid the not-yet-built c.lib.
+# libunwind uses RtlUnwindEx and other NT kernel functions directly, so it
+# needs ntdll.lib explicitly. bcryptprimitives.lib is needed by the CRT
+# startup objects (crt_gs.obj → ProcessPrng for __security_init_cookie).
+# NTPOSIX_IMPORT_LIBS_DIR is set by HandleNTPOSIXDefaults.cmake.
+if (WIN32_NTPOSIX AND NTPOSIX_IMPORT_LIBS_DIR)
+  add_library_flags("${NTPOSIX_IMPORT_LIBS_DIR}/ntdll.lib")
+  add_library_flags("${NTPOSIX_IMPORT_LIBS_DIR}/bcryptprimitives.lib")
+endif()
 
 if (LIBUNWIND_ENABLE_SHARED AND
     NOT (CXX_SUPPORTS_FNO_EXCEPTIONS_FLAG AND
@@ -147,17 +159,22 @@ if (CMAKE_POSITION_INDEPENDENT_CODE OR NOT DEFINED CMAKE_POSITION_INDEPENDENT_CO
   set_target_properties(unwind_shared_objects PROPERTIES POSITION_INDEPENDENT_CODE ON) # must set manually because it's an object library
 endif()
 
-add_library(unwind_shared SHARED)
-target_link_libraries(unwind_shared PUBLIC unwind_shared_objects runtimes-libc-shared)
-set_target_properties(unwind_shared
-  PROPERTIES
-    EXCLUDE_FROM_ALL "$<IF:$<BOOL:${LIBUNWIND_ENABLE_SHARED}>,FALSE,TRUE>"
-    LINK_FLAGS "${LIBUNWIND_LINK_FLAGS}"
-    LINKER_LANGUAGE C
-    OUTPUT_NAME "${LIBUNWIND_SHARED_OUTPUT_NAME}"
-    VERSION     "${LIBUNWIND_LIBRARY_VERSION}"
-    SOVERSION   "1"
-)
+# On Windows, only create the target when enabled to avoid output file conflicts
+# where both shared (import lib) and static produce the same .lib filename.
+# On other platforms, always create but use EXCLUDE_FROM_ALL when disabled.
+if (NOT WIN32 OR LIBUNWIND_ENABLE_SHARED)
+  add_library(unwind_shared SHARED)
+  target_link_libraries(unwind_shared PUBLIC unwind_shared_objects runtimes-libc-shared)
+  set_target_properties(unwind_shared
+    PROPERTIES
+      EXCLUDE_FROM_ALL "$<IF:$<BOOL:${LIBUNWIND_ENABLE_SHARED}>,FALSE,TRUE>"
+      LINK_FLAGS "${LIBUNWIND_LINK_FLAGS}"
+      LINKER_LANGUAGE C
+      OUTPUT_NAME "${LIBUNWIND_SHARED_OUTPUT_NAME}"
+      VERSION     "${LIBUNWIND_LIBRARY_VERSION}"
+      SOVERSION   "1"
+  )
+endif()
 
 # Build the static library.
 add_library(unwind_static_objects OBJECT EXCLUDE_FROM_ALL ${LIBUNWIND_SOURCES} ${LIBUNWIND_HEADERS})
@@ -188,15 +205,18 @@ if(LIBUNWIND_HIDE_SYMBOLS)
   target_compile_definitions(unwind_static_objects PRIVATE _LIBUNWIND_HIDE_SYMBOLS)
 endif()
 
-add_library(unwind_static STATIC)
-target_link_libraries(unwind_static PUBLIC unwind_static_objects runtimes-libc-static)
-set_target_properties(unwind_static
-  PROPERTIES
-    EXCLUDE_FROM_ALL "$<IF:$<BOOL:${LIBUNWIND_ENABLE_STATIC}>,FALSE,TRUE>"
-    LINK_FLAGS "${LIBUNWIND_LINK_FLAGS}"
-    LINKER_LANGUAGE C
-    OUTPUT_NAME "${LIBUNWIND_STATIC_OUTPUT_NAME}"
-)
+# On Windows, only create the target when enabled to avoid output file conflicts.
+if (NOT WIN32 OR LIBUNWIND_ENABLE_STATIC)
+  add_library(unwind_static STATIC)
+  target_link_libraries(unwind_static PUBLIC unwind_static_objects runtimes-libc-static)
+  set_target_properties(unwind_static
+    PROPERTIES
+      EXCLUDE_FROM_ALL "$<IF:$<BOOL:${LIBUNWIND_ENABLE_STATIC}>,FALSE,TRUE>"
+      LINK_FLAGS "${LIBUNWIND_LINK_FLAGS}"
+      LINKER_LANGUAGE C
+      OUTPUT_NAME "${LIBUNWIND_STATIC_OUTPUT_NAME}"
+  )
+endif()
 
 # Add a meta-target for both libraries.
 add_custom_target(unwind)
