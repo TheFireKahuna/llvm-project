@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include <windows.h>
 
 int spawn_child(char **argv) {

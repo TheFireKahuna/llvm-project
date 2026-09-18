@@ -37,7 +37,7 @@
 #  else
 #    define BYTE_ORDER LITTLE_ENDIAN
 #  endif
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
 #  define BYTE_ORDER 0
 #  define BIG_ENDIAN 1
 #  define LITTLE_ENDIAN 0

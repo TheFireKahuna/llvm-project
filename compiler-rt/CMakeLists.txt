@@ -43,6 +43,8 @@ include(base-config-ix)
 include(CompilerRTUtils)
 include(CMakeDependentOption)
 include(GetDarwinLinkerVersion)
+include(DetectWindowsItanium)
+include(DetectMSVCLike)
 
 include(CheckCXXCompilerFlag)
 
@@ -62,6 +64,11 @@ set(CMAKE_REQUIRED_FLAGS "${OLD_CMAKE_REQUIRED_FLAGS}")
 
 option(COMPILER_RT_BUILD_BUILTINS "Build builtins" ON)
 mark_as_advanced(COMPILER_RT_BUILD_BUILTINS)
+option(COMPILER_RT_BUILD_WINCRT "Build UCRT bridge for Windows Itanium" OFF)
+mark_as_advanced(COMPILER_RT_BUILD_WINCRT)
+option(COMPILER_RT_TEST_EXTERNAL_WINCRT
+  "Test wincrt built by the early runtimes ExternalProject" OFF)
+mark_as_advanced(COMPILER_RT_TEST_EXTERNAL_WINCRT)
 option(COMPILER_RT_DISABLE_AARCH64_FMV "Disable AArch64 Function Multi Versioning support" OFF)
 mark_as_advanced(COMPILER_RT_DISABLE_AARCH64_FMV)
 option(COMPILER_RT_BUILD_SANITIZERS "Build sanitizers" ON)
@@ -795,6 +802,11 @@ if (CMAKE_LINKER MATCHES "link.exe$")
   # individual static libraries, so we enable the suppression flag for
   # the whole compiler-rt project.
   set(CMAKE_STATIC_LINKER_FLAGS "${CMAKE_STATIC_LINKER_FLAGS} ${CMAKE_CXX_LINKER_WRAPPER_FLAG}/IGNORE:4221")
+endif()
+
+if (CMAKE_AR MATCHES "lib\\.exe$")
+  # Same as above
+  set(CMAKE_STATIC_LINKER_FLAGS "${CMAKE_STATIC_LINKER_FLAGS} /IGNORE:4221")
 endif()
 
 add_subdirectory(include)

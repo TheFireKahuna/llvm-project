@@ -1,0 +1,14 @@
+@LIT_SITE_CFG_IN_HEADER@
+
+config.name_suffix = "-windows-itanium"
+config.crt_lit_source_dir = "@CRT_LIT_SOURCE_DIR@"
+config.test_exec_root = "@CMAKE_CURRENT_BINARY_DIR@"
+config.crt_test_libdir = "@CRT_TEST_LIBDIR@"
+config.target_arch = "@CRT_TEST_TARGET_ARCH@"
+config.crt_test_include_dirs = "@CRT_TEST_INCLUDE_DIRS@"
+config.crt_test_link_dirs = "@CRT_TEST_LINK_DIRS@"
+config.crt_test_dll_dirs = "@CRT_TEST_DLL_DIRS@"
+config.test_suite_supports_overriding_runtime_lib_path = True
+
+lit_config.load_config(config, "@COMPILER_RT_BINARY_DIR@/test/lit.common.configured")
+lit_config.load_config(config, "@CRT_LIT_SOURCE_DIR@/lit.cfg.py")

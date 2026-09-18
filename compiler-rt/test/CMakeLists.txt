@@ -79,6 +79,11 @@ if(COMPILER_RT_CAN_EXECUTE_TESTS)
   if(COMPILER_RT_BUILD_BUILTINS OR COMPILER_RT_TEST_EXTERNAL_BUILTINS)
     add_subdirectory(builtins)
   endif()
+  # Windows Itanium startup is provided by wincrt, possibly built in the
+  # early ExternalProject before the C++ runtimes.
+  if(WIN32_ITANIUM AND (COMPILER_RT_BUILD_WINCRT OR COMPILER_RT_TEST_EXTERNAL_WINCRT))
+    add_subdirectory(crt)
+  endif()
   if(COMPILER_RT_BUILD_SANITIZERS)
     compiler_rt_test_runtime(interception)
 
