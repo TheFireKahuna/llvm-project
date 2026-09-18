@@ -181,6 +181,10 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
       switch (Triple.getEnvironment()) {
       case llvm::Triple::GNU:
         return std::make_unique<MinGWARM64TargetInfo>(Triple, Opts);
+      case llvm::Triple::Itanium:
+        return std::make_unique<ItaniumWindowsARM64TargetInfo>(Triple, Opts);
+      case llvm::Triple::NTPOSIX:
+        return std::make_unique<NTPOSIXWindowsARM64TargetInfo>(Triple, Opts);
       case llvm::Triple::MSVC:
       default: // Assume MSVC for unknown environments
         return std::make_unique<MicrosoftARM64TargetInfo>(Triple, Opts);
@@ -242,6 +246,8 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
         return std::make_unique<MinGWARMTargetInfo>(Triple, Opts);
       case llvm::Triple::Itanium:
         return std::make_unique<ItaniumWindowsARMleTargetInfo>(Triple, Opts);
+      case llvm::Triple::NTPOSIX:
+        return std::make_unique<NTPOSIXWindowsARMleTargetInfo>(Triple, Opts);
       case llvm::Triple::MSVC:
       default: // Assume MSVC for unknown environments
         return std::make_unique<MicrosoftARMleTargetInfo>(Triple, Opts);
@@ -586,6 +592,8 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
         return std::make_unique<CygwinX86_32TargetInfo>(Triple, Opts);
       case llvm::Triple::GNU:
         return std::make_unique<MinGWX86_32TargetInfo>(Triple, Opts);
+      case llvm::Triple::NTPOSIX:
+        return std::make_unique<NTPOSIXWindowsX86_32TargetInfo>(Triple, Opts);
       case llvm::Triple::Itanium:
       case llvm::Triple::MSVC:
       default: // Assume MSVC for unknown environments
@@ -648,6 +656,10 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
         return std::make_unique<CygwinX86_64TargetInfo>(Triple, Opts);
       case llvm::Triple::GNU:
         return std::make_unique<MinGWX86_64TargetInfo>(Triple, Opts);
+      case llvm::Triple::Itanium:
+        return std::make_unique<ItaniumWindowsX86_64TargetInfo>(Triple, Opts);
+      case llvm::Triple::NTPOSIX:
+        return std::make_unique<NTPOSIXWindowsX86_64TargetInfo>(Triple, Opts);
       case llvm::Triple::MSVC:
       default: // Assume MSVC for unknown environments
         return std::make_unique<MicrosoftX86_64TargetInfo>(Triple, Opts);

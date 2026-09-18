@@ -1025,6 +1025,8 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
       Builder.defineMacro("_WCHAR_T_DEFINED");
       Builder.defineMacro("_NATIVE_WCHAR_T_DEFINED");
     }
+  } else if (LangOpts.WChar && TI.getTriple().isWindowsItaniumEnvironment()) {
+    Builder.defineMacro("_WCHAR_T_DEFINED");
   }
 
   // Macros to help identify the narrow and wide character sets

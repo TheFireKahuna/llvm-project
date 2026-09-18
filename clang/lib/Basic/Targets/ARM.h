@@ -267,6 +267,17 @@ public:
                         MacroBuilder &Builder) const override;
 };
 
+// Windows ARM + NT-POSIX Target
+class LLVM_LIBRARY_VISIBILITY NTPOSIXWindowsARMleTargetInfo
+    : public WindowsARMTargetInfo {
+public:
+  NTPOSIXWindowsARMleTargetInfo(const llvm::Triple &Triple,
+                                const TargetOptions &Opts);
+
+  void getTargetDefines(const LangOptions &Opts,
+                        MacroBuilder &Builder) const override;
+};
+
 // Windows ARM, MS (C++) ABI
 class LLVM_LIBRARY_VISIBILITY MicrosoftARMleTargetInfo
     : public WindowsARMTargetInfo {
