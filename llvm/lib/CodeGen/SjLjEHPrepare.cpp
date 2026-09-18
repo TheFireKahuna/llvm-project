@@ -20,6 +20,7 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Intrinsics.h"
@@ -496,6 +497,16 @@ bool SjLjEHPrepareImpl::setupEntryBlockAndCallSites(Function &F) {
 }
 
 bool SjLjEHPrepareImpl::runOnFunction(Function &F) {
+  // The exception model is a module-wide choice, but personalities are
+  // per-function: a function using SEH __try carries an MSVC personality and
+  // funclet-based EH (catchswitch/catchpad) regardless of the model. Such
+  // functions have no landing pads for this pass to lower; WinEHPrepare and
+  // the target's Win32 EH state pass handle them. Match the gate WinEHPrepare
+  // applies in the other direction.
+  if (F.hasPersonalityFn() &&
+      isScopedEHPersonality(classifyEHPersonality(F.getPersonalityFn())))
+    return false;
+
   Module &M = *F.getParent();
   RegisterFn = M.getOrInsertFunction(
       "_Unwind_SjLj_Register", Type::getVoidTy(M.getContext()),

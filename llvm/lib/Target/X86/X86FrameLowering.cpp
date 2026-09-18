@@ -3974,7 +3974,9 @@ bool X86FrameLowering::enableShrinkWrapping(const MachineFunction &MF) const {
 MachineBasicBlock::iterator X86FrameLowering::restoreWin32EHStackPointers(
     MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
     const DebugLoc &DL, bool RestoreSP) const {
-  assert(STI.isTargetWindowsMSVC() && "funclets only supported in MSVC env");
+  // Win32 EH funclets are selected by the _except_handler3/4 and MSVC C++
+  // personalities, which MinGW and Windows Itanium code use as well.
+  assert(STI.isOSWindows() && "Win32 EH funclets only supported on Windows");
   assert(STI.isTargetWin32() && "EBP/ESI restoration only required on win32");
   assert(STI.is32Bit() && !Uses64BitFramePtr &&
          "restoring EBP/ESI on non-32-bit target");

@@ -707,6 +707,16 @@ bool AsmPrinter::doInitialization(Module &M) {
   if (ES)
     Handlers.push_back(std::unique_ptr<EHStreamer>(ES));
 
+  // The exception model selects the streamer above module-wide, but a
+  // personality is a per-function property: on Windows, a function using SEH
+  // __try or an MSVC C++ personality needs WinEH tables even when the module's
+  // model is DWARF or SjLj (GNU or Itanium environments on x86-32). Give such
+  // modules a WinException as well; it does nothing for functions with other
+  // personalities.
+  if (MAI->getExceptionHandlingType() != ExceptionHandling::WinEH &&
+      TM.getTargetTriple().isOSWindows())
+    Handlers.push_back(std::make_unique<WinException>(this));
+
   // All CFG modes required the tables emitted.
   if (M.getControlFlowGuardMode() != ControlFlowGuardMode::Disabled)
     EHHandlers.push_back(std::make_unique<WinCFGuard>(this));
