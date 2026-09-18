@@ -377,6 +377,7 @@ StringRef Triple::getEnvironmentTypeName(EnvironmentType Kind) {
   case GNUX32: return "gnux32";
   case GNUILP32: return "gnu_ilp32";
   case Itanium: return "itanium";
+  case NTPOSIX: return "ntposix";
   case MSVC: return "msvc";
   case MacABI: return "macabi";
   case Musl: return "musl";
@@ -796,6 +797,7 @@ static Triple::EnvironmentType parseEnvironment(StringRef EnvironmentName) {
       .StartsWith("muslwali", Triple::MuslWALI)
       .StartsWith("musl", Triple::Musl)
       .StartsWith("msvc", Triple::MSVC)
+      .StartsWith("ntposix", Triple::NTPOSIX)
       .StartsWith("itanium", Triple::Itanium)
       .StartsWith("cygnus", Triple::Cygnus)
       .StartsWith("coreclr", Triple::CoreCLR)
@@ -2170,7 +2172,8 @@ bool Triple::isLittleEndian() const {
 unsigned Triple::getDefaultWCharSize() const {
   if (getArch() == Triple::xcore)
     return 1;
-  if (isOSWindows() || isWindowsCygwinEnvironment() || isPS() || isUEFI())
+  if ((isOSWindows() && !isWindowsNTPOSIXEnvironment()) ||
+      isWindowsCygwinEnvironment() || isPS() || isUEFI())
     return 2;
   if (isOSAIX() && isArch32Bit())
     return 2;

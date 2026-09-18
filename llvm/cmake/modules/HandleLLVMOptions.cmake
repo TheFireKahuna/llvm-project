@@ -16,6 +16,7 @@ include(CheckCXXSourceCompiles)
 include(CheckSymbolExists)
 include(CMakeDependentOption)
 include(LLVMProcessSources)
+include(DetectMSVCLike)
 
 if(CMAKE_LINKER MATCHES ".*lld" OR (LLVM_USE_LINKER STREQUAL "lld" OR LLVM_ENABLE_LLD))
   set(LINKER_IS_LLD TRUE)
@@ -23,7 +24,7 @@ else()
   set(LINKER_IS_LLD FALSE)
 endif()
 
-if(CMAKE_LINKER MATCHES "lld-link" OR (MSVC AND (LLVM_USE_LINKER STREQUAL "lld" OR LLVM_ENABLE_LLD)))
+if(CMAKE_LINKER MATCHES "lld-link" OR (MSVC_LIKE AND (LLVM_USE_LINKER STREQUAL "lld" OR LLVM_ENABLE_LLD)))
   set(LINKER_IS_LLD_LINK TRUE)
 else()
   set(LINKER_IS_LLD_LINK FALSE)
@@ -242,18 +243,85 @@ if( LLVM_REVERSE_ITERATION )
   set( LLVM_ENABLE_REVERSE_ITERATION 1 )
 endif()
 
-if(WIN32)
+include(LLVMTargetTriple)
+llvm_get_effective_target_triple(_llvm_runtime_personality_triple)
+
+if(WIN32 OR CYGWIN)
   set(LLVM_HAVE_LINK_VERSION_SCRIPT 0)
   set(LLVM_ON_UNIX 0)
-elseif(FUCHSIA OR UNIX OR CYGWIN)
+
+  set(LLVM_CRT_UCRT 0)
+
+  # Primary runtime personality — which API surface the code targets:
+  #   LLVM_RUNTIME_WIN32   - Win32/UCRT personality (MSVC, MinGW, Windows Itanium)
+  #   LLVM_RUNTIME_POSIX   - POSIX personality (NTPOSIX on Windows, or Unix/Fuchsia)
+  #   LLVM_RUNTIME_NTPOSIX - NT-POSIX specifically (implies POSIX=1, WIN32=0;
+  #                          set ONLY for windows-ntposix targets)
+  # Use LLVM_RUNTIME_WIN32 where upstream uses WIN32 for "has Win32 APIs."
+  # Use (UNIX OR LLVM_RUNTIME_POSIX) where upstream uses UNIX or NOT WIN32.
+  set(LLVM_RUNTIME_POSIX 0)
+  set(LLVM_RUNTIME_WIN32 1)
+
+  # Toolchain family / driver + linker + headers/libs world.
+  set(LLVM_TOOLCHAIN_MSVC 0)
+  set(LLVM_TOOLCHAIN_GNU 0)
+  set(LLVM_TOOLCHAIN_LLVM 0)
+  set(LLVM_TOOLCHAIN_CYGNUS 0)
+
+  if (_llvm_runtime_personality_triple MATCHES ".*-windows-itanium.*")
+    set(LLVM_TOOLCHAIN_LLVM 1)
+    set(LLVM_CRT_UCRT 1)
+  elseif (_llvm_runtime_personality_triple MATCHES ".*-windows-(posix|ntposix).*")
+    set(LLVM_RUNTIME_POSIX 1)
+    set(LLVM_RUNTIME_WIN32 0)
+    set(LLVM_RUNTIME_NTPOSIX 1)
+    set(LLVM_TOOLCHAIN_LLVM 1)
+  elseif (MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+    set(LLVM_TOOLCHAIN_MSVC 1)
+    set(LLVM_CRT_UCRT 1)
+  elseif (MINGW)
+    set(LLVM_TOOLCHAIN_GNU 1)
+    set(LLVM_CRT_UCRT 1)
+  elseif (CYGWIN)
+    set(LLVM_RUNTIME_POSIX 1)
+    set(LLVM_RUNTIME_WIN32 0)
+    set(LLVM_TOOLCHAIN_CYGNUS 1)
+  else ()
+    # Default unknown Windows personality to native Win32/MSVC-style behavior.
+    set(LLVM_TOOLCHAIN_MSVC 1)
+  endif()
+
+elseif(FUCHSIA OR UNIX)
   set(LLVM_ON_UNIX 1)
-  if(APPLE OR CYGWIN OR "${CMAKE_SYSTEM_NAME}" MATCHES "AIX")
+
+  # Primary runtime personality.
+  set(LLVM_RUNTIME_POSIX 1)
+  set(LLVM_RUNTIME_WIN32 0)
+
+  # Toolchain family / driver + linker + headers/libs world.
+  set(LLVM_TOOLCHAIN_MSVC 0)
+  set(LLVM_TOOLCHAIN_GNU 0)
+  set(LLVM_TOOLCHAIN_LLVM 1)
+  set(LLVM_TOOLCHAIN_CYGNUS 0)
+  
+  if(APPLE OR "${CMAKE_SYSTEM_NAME}" MATCHES "AIX")
     set(LLVM_HAVE_LINK_VERSION_SCRIPT 0)
   else()
     set(LLVM_HAVE_LINK_VERSION_SCRIPT 1)
   endif()
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Generic")
   set(LLVM_ON_UNIX 0)
+
+  # Primary runtime personality.
+  set(LLVM_RUNTIME_POSIX 0)
+  set(LLVM_RUNTIME_WIN32 0)
+
+  # Toolchain family / driver + linker + headers/libs world.
+  set(LLVM_TOOLCHAIN_MSVC 0)
+  set(LLVM_TOOLCHAIN_GNU 0)
+  set(LLVM_TOOLCHAIN_LLVM 1)
+  set(LLVM_TOOLCHAIN_CYGNUS 0)
+
   set(LLVM_HAVE_LINK_VERSION_SCRIPT 0)
 else()
   MESSAGE(SEND_ERROR "Unable to determine platform")
@@ -408,10 +476,9 @@ if( LLVM_ENABLE_LLD )
     message(FATAL_ERROR "LLVM_ENABLE_LLD and LLVM_USE_LINKER can't be set at the same time")
   endif()
 
-  # In case of MSVC cmake always invokes the linker directly, so the linker
-  # should be specified by CMAKE_LINKER cmake variable instead of by -fuse-ld
-  # compiler option.
-  if ( MSVC )
+  # CMake invokes the linker directly for MSVC-like targets; use CMAKE_LINKER
+  # instead of -fuse-ld.
+  if(MSVC_LIKE)
     if(NOT CMAKE_LINKER MATCHES "lld-link")
       get_filename_component(CXX_COMPILER_DIR ${CMAKE_CXX_COMPILER} DIRECTORY)
       get_filename_component(C_COMPILER_DIR ${CMAKE_C_COMPILER} DIRECTORY)
@@ -582,11 +649,9 @@ endif()
 option(LLVM_ENABLE_WARNINGS "Enable compiler warnings." ON)
 option(LLVM_ENABLE_WARNING_SUPPRESSIONS "Suppress compiler warnings." ON)
 
-if( MSVC )
-
-  # Add definitions that make MSVC much less annoying.
+# Suppress deprecation warnings from Windows SDK headers.
+if(MSVC_LIKE)
   add_compile_definitions(
-    # For some reason MS wants to deprecate a bunch of standard functions...
     _CRT_SECURE_NO_DEPRECATE
     _CRT_SECURE_NO_WARNINGS
     _CRT_NONSTDC_NO_DEPRECATE
@@ -601,6 +666,9 @@ if( MSVC )
     _UNICODE
   )
 
+endif()
+
+if(MSVC_LIKE AND MSVC)
   if (LLVM_WINSYSROOT)
     if (NOT CLANG_CL)
       message(ERROR "LLVM_WINSYSROOT requires clang-cl")
@@ -706,7 +774,7 @@ if( MSVC )
   # Enable standards conformance mode.
   # This ensures handling of various C/C++ constructs is more similar to other compilers.
   append("/permissive-" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
-endif( MSVC )
+endif()
 
 # Warnings-as-errors handling for GCC-compatible compilers:
 if ( LLVM_COMPILER_IS_GCC_COMPATIBLE )
@@ -1441,7 +1509,8 @@ if(uppercase_LLVM_ENABLE_LTO STREQUAL "THIN")
     append("-Wl,--plugin-opt,cache-dir=${LLVM_THINLTO_CACHE_PATH}"
            CMAKE_EXE_LINKER_FLAGS CMAKE_SHARED_LINKER_FLAGS)
   elseif(LINKER_IS_LLD_LINK)
-    append("/lldltocache:${LLVM_THINLTO_CACHE_PATH}"
+    llvm_lld_link_flag(_lto_cache_flag "/lldltocache:${LLVM_THINLTO_CACHE_PATH}")
+    append("${_lto_cache_flag}"
            CMAKE_EXE_LINKER_FLAGS CMAKE_SHARED_LINKER_FLAGS)
   endif()
 elseif(uppercase_LLVM_ENABLE_LTO STREQUAL "FULL")
@@ -1596,6 +1665,10 @@ if(LLVM_ENABLE_LLVM_LIBC)
   check_library_exists(llvmlibc printf "" HAVE_LLVM_LIBC)
   if(NOT HAVE_LLVM_LIBC)
     message(WARNING "Unable to link against LLVM libc. LLVM will be built without linking against the LLVM libc overlay.")
+  endif()
+  if(WIN32 AND _llvm_runtime_personality_triple MATCHES ".*-windows-(posix|ntposix).*")
+    set(LLVM_RUNTIME_POSIX ON)
+    set(LLVM_RUNTIME_NTPOSIX ON)
   endif()
 endif()
 
