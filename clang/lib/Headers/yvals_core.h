@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 // Only include this if we are aiming for MSVC compatibility.
-#ifndef _MSC_VER
+#if !defined(LLVM_CRT_UCRT)
 #include_next <yvals_core.h>
 #else
 

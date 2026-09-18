@@ -8,7 +8,7 @@
  */
 
 /* Only include this if we're compiling for the windows platform. */
-#ifndef _MSC_VER
+#if !defined(LLVM_CRT_UCRT)
 #include_next <intrin0.h>
 #else
 

@@ -312,6 +312,37 @@ set(windows_only_files
   yvals_core.h
 )
 
+set(windows_itanium_files
+  basetsd.h
+  conio.h
+  crtdbg.h
+  direct.h
+  excpt.h
+  fcntl.h
+  io.h
+  malloc.h
+  math.h
+  memory.h
+  new.h
+  ntdef.h
+  process.h
+  sal.h
+  search.h
+  setjmp.h
+  specstrings_strict.h
+  stdio.h
+  stdlib.h
+  string.h
+  sys/stat.h
+  sys/types.h
+  vcruntime.h
+  vcruntime_new.h
+  vcruntime_new_debug.h
+  vcruntime_startup.h
+  vcruntime_string.h
+  winnt.h
+)
+
 set(utility_files
   mm_malloc.h
 )
@@ -337,6 +368,7 @@ set(files
   ${gpu_files}
   ${webassembly_files}
   ${windows_only_files}
+  ${windows_itanium_files}
   ${utility_files}
   )
 
@@ -566,6 +598,7 @@ add_dependencies("clang-resource-headers"
                  "openmp-resource-headers"
                  "llvm-libc-resource-headers"
                  "windows-resource-headers"
+                 "windows-itanium-resource-headers"
                  "utility-resource-headers")
 
 # Core/common headers
@@ -597,6 +630,7 @@ add_header_target("llvm-libc-resource-headers" ${llvm_libc_wrapper_files})
 add_header_target("openmp-resource-headers" ${openmp_wrapper_files})
 add_header_target("llvm-offload-resource-headers" ${llvm_libc_wrapper_files})
 add_header_target("windows-resource-headers" ${windows_only_files})
+add_header_target("windows-itanium-resource-headers" ${windows_itanium_files})
 add_header_target("utility-resource-headers" ${utility_files})
 
 get_clang_resource_dir(header_install_dir SUBDIR include)
@@ -849,6 +883,12 @@ install(
   DESTINATION ${header_install_dir}
   EXCLUDE_FROM_ALL
   COMPONENT windows-resource-headers)
+
+install(
+  FILES ${windows_itanium_files}
+  DESTINATION ${header_install_dir}
+  EXCLUDE_FROM_ALL
+  COMPONENT windows-itanium-resource-headers)
 #############################################################
 
 if (NOT LLVM_ENABLE_IDE)

@@ -14,7 +14,7 @@
 #ifndef __XSAVEINTRIN_H
 #define __XSAVEINTRIN_H
 
-#ifdef _MSC_VER
+#if defined(LLVM_CRT_UCRT)
 #define _XCR_XFEATURE_ENABLED_MASK 0
 #endif
 

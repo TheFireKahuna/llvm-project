@@ -16,10 +16,17 @@
  */
 #undef NULL
 
-#ifdef __cplusplus
-#if !defined(__MINGW32__) && !defined(_MSC_VER)
+/* __is_identifier(wchar_t) is the compiler truth: 0 when wchar_t is a keyword
+ * (real C++), 1 in C. The __cplusplus macro alone is not reliable here — the
+ * UCRT wrapper headers hide it around #include_next to present the UCRT as a
+ * plain C library, and a ((void*)0) NULL leaking out of such a region breaks
+ * every later C++ use of NULL. */
+#if defined(__cplusplus) || !__is_identifier(wchar_t)
+#if (!defined(__MINGW32__) && !defined(_MSC_VER)) || defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
+/* Windows Itanium and NTPOSIX preserve __null via sal.h wrapper. */
 #define NULL __null
 #else
+/* MSVC: SDK's sal.h redefines __null as a SAL annotation. */
 #define NULL 0
 #endif
 #else
