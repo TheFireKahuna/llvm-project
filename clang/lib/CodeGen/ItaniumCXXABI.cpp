@@ -30,13 +30,16 @@
 #include "clang/AST/StmtCXX.h"
 #include "clang/AST/Type.h"
 #include "clang/CodeGen/ConstantInitBuilder.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/GlobalValue.h"
+#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Value.h"
 #include "llvm/Support/ConvertEBCDIC.h"
 #include "llvm/Support/ScopedPrinter.h"
+#include "llvm/Support/xxhash.h"
 
 #include <optional>
 
@@ -1515,6 +1518,8 @@ void ItaniumCXXABI::emitThrow(CodeGenFunction &CGF, const CXXThrowExpr *E) {
   CGF.EmitNoreturnRuntimeCallOrInvoke(getThrowFn(CGM), args);
 }
 
+static bool hasSelfContainedRTTI(CodeGenModule &CGM);
+
 static llvm::FunctionCallee getItaniumDynamicCastFn(CodeGenFunction &CGF) {
   // void *__dynamic_cast(const void *sub,
   //                      global_as const abi::__class_type_info *src,
@@ -1538,7 +1543,10 @@ static llvm::FunctionCallee getItaniumDynamicCastFn(CodeGenFunction &CGF) {
   llvm::AttributeList Attrs = llvm::AttributeList::get(
       CGF.getLLVMContext(), llvm::AttributeList::FunctionIndex, FuncAttrs);
 
-  return CGF.CGM.CreateRuntimeFunction(FTy, "__dynamic_cast", Attrs);
+  // Where RTTI is self-contained, __dynamic_cast is part of every image
+  // rather than imported from the shared runtime.
+  return CGF.CGM.CreateRuntimeFunction(FTy, "__dynamic_cast", Attrs,
+                                       /*Local=*/hasSelfContainedRTTI(CGF.CGM));
 }
 
 static llvm::FunctionCallee getBadCastFn(CodeGenFunction &CGF) {
@@ -3853,6 +3861,16 @@ static bool IsStandardLibraryRTTIDescriptor(QualType Ty) {
 /// the given type exists somewhere else, and that we should not emit the type
 /// information in this translation unit.  Assumes that it is not a
 /// standard-library type.
+/// Windows Itanium and NTPOSIX (but not the Sony flavour, which tests the
+/// PS4 dllimport/dllexport rules) keep every type_info local to the image:
+/// descriptors are never imported or exported, the runtime's type_info
+/// classes are linked into every image, and identity is the hash the
+/// type_info carries.
+static bool hasSelfContainedRTTI(CodeGenModule &CGM) {
+  return CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+         !CGM.getTarget().hasPS4DLLImportExport();
+}
+
 static bool ShouldUseExternalRTTIDescriptor(CodeGenModule &CGM,
                                             QualType Ty) {
   ASTContext &Context = CGM.getContext();
@@ -3877,16 +3895,14 @@ static bool ShouldUseExternalRTTIDescriptor(CodeGenModule &CGM,
     bool IsDLLImport = RD->hasAttr<DLLImportAttr>();
 
     // Don't import the RTTI but emit it locally.
-    if (CGM.getTriple().isOSCygMing())
+    if (CGM.getTriple().isOSCygMing() || hasSelfContainedRTTI(CGM))
       return false;
 
     if (CGM.getVTables().isVTableExternal(RD)) {
       if (CGM.getTarget().hasPS4DLLImportExport())
         return true;
 
-      return IsDLLImport && !CGM.getTriple().isWindowsItaniumEnvironment()
-                 ? false
-                 : true;
+      return !IsDLLImport;
     }
     if (IsDLLImport)
       return true;
@@ -4092,7 +4108,12 @@ void ItaniumRTTIBuilder::BuildVTablePointer(const Type *Ty,
     VTable = CGM.getModule().getOrInsertGlobal(VTableName, Ty);
   }
 
-  CGM.setDSOLocal(cast<llvm::GlobalValue>(VTable->stripPointerCasts()));
+  auto *VTableGV = cast<llvm::GlobalValue>(VTable->stripPointerCasts());
+  CGM.setDSOLocal(VTableGV);
+  // Windows Itanium and NTPOSIX link the runtime's type_info classes into
+  // every image, so the vtable address is a link-time constant there.
+  if (hasSelfContainedRTTI(CGM))
+    VTableGV->setDSOLocal(true);
 
   llvm::Type *PtrDiffTy =
       CGM.getTypes().ConvertType(CGM.getContext().getPointerDiffType());
@@ -4157,13 +4178,10 @@ static llvm::GlobalVariable::LinkageTypes getTypeInfoLinkage(CodeGenModule &CGM,
           cast<CXXRecordDecl>(Record->getDecl())->getDefinitionOrSelf();
       if (RD->hasAttr<WeakAttr>())
         return llvm::GlobalValue::WeakODRLinkage;
-      if (CGM.getTriple().isWindowsItaniumEnvironment())
-        if (RD->hasAttr<DLLImportAttr>() &&
-            ShouldUseExternalRTTIDescriptor(CGM, Ty))
-          return llvm::GlobalValue::ExternalLinkage;
-      // MinGW always uses LinkOnceODRLinkage for type info.
-      if (RD->isDynamicClass() &&
-          !CGM.getContext().getTargetInfo().getTriple().isOSCygMing())
+      // MinGW, Windows Itanium and NTPOSIX always use LinkOnceODRLinkage for
+      // type info: every image owns its copy.
+      if (RD->isDynamicClass() && !CGM.getTriple().isOSCygMing() &&
+          !hasSelfContainedRTTI(CGM))
         return CGM.getVTableLinkage(RD);
     }
 
@@ -4191,7 +4209,10 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(QualType Ty) {
   }
 
   // Check if there is already an external RTTI descriptor for this type.
-  if (IsStandardLibraryRTTIDescriptor(Ty) ||
+  // Windows Itanium and NTPOSIX images carry their own copies of even the
+  // standard library's descriptors, so nothing is ever imported.
+  bool SelfContainedRTTI = hasSelfContainedRTTI(CGM);
+  if ((IsStandardLibraryRTTIDescriptor(Ty) && !SelfContainedRTTI) ||
       ShouldUseExternalRTTIDescriptor(CGM, Ty))
     return GetAddrOfExternalRTTIDescriptor(Ty);
 
@@ -4213,14 +4234,32 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(QualType Ty) {
   llvm::GlobalValue::DLLStorageClassTypes DLLStorageClass =
       llvm::GlobalValue::DefaultStorageClass;
   if (auto RD = Ty->getAsCXXRecordDecl()) {
-    if ((CGM.getTriple().isWindowsItaniumEnvironment() &&
-         RD->hasAttr<DLLExportAttr>()) ||
-        (CGM.shouldMapVisibilityToDLLExport(RD) &&
-         !llvm::GlobalValue::isLocalLinkage(Linkage) &&
-         llvmVisibility == llvm::GlobalValue::DefaultVisibility))
+    if (!SelfContainedRTTI && CGM.shouldMapVisibilityToDLLExport(RD) &&
+        !llvm::GlobalValue::isLocalLinkage(Linkage) &&
+        llvmVisibility == llvm::GlobalValue::DefaultVisibility) {
       DLLStorageClass = llvm::GlobalValue::DLLExportStorageClass;
+      // dllexport overrides -fvisibility=hidden for the RTTI and its name.
+      llvmVisibility = llvm::GlobalValue::DefaultVisibility;
+    }
   }
   return BuildTypeInfo(Ty, Linkage, llvmVisibility, DLLStorageClass);
+}
+
+/// Whether a constant holds the address of a global that may be defined in
+/// another DLL. Such an address cannot be stored in initialized COFF data.
+static bool referencesNonDSOLocalGlobal(llvm::Constant *C) {
+  C = C->stripPointerCasts();
+  if (auto *GV = dyn_cast<llvm::GlobalValue>(C))
+    return !GV->isDSOLocal();
+  if (auto *CE = dyn_cast<llvm::ConstantExpr>(C))
+    return llvm::any_of(CE->operands(), [](llvm::Value *Op) {
+      return referencesNonDSOLocalGlobal(cast<llvm::Constant>(Op));
+    });
+  if (auto *CS = dyn_cast<llvm::ConstantStruct>(C))
+    return llvm::any_of(CS->operands(), [](llvm::Value *Op) {
+      return referencesNonDSOLocalGlobal(cast<llvm::Constant>(Op));
+    });
+  return false;
 }
 
 llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(
@@ -4262,6 +4301,20 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(
     TypeNameField = TypeName;
   }
   Fields.push_back(TypeNameField);
+
+  // On Windows Itanium and NTPOSIX every image carries its own copy of a
+  // type's descriptors, so identity cannot be an address. The type_info
+  // stores a 128-bit hash of the mangled type name after the name field and
+  // the library compares that instead of the strings.
+  if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+    SmallString<256> MangledName;
+    llvm::raw_svector_ostream MangledOut(MangledName);
+    CGM.getCXXABI().getMangleContext().mangleCXXRTTIName(Ty, MangledOut);
+    llvm::XXH128_hash_t Identity = llvm::xxh3_128bits(
+        llvm::arrayRefFromStringRef(StringRef(MangledName).substr(4)));
+    Fields.push_back(llvm::ConstantInt::get(CGM.Int64Ty, Identity.low64));
+    Fields.push_back(llvm::ConstantInt::get(CGM.Int64Ty, Identity.high64));
+  }
 
   switch (Ty->getTypeClass()) {
 #define TYPE(Class, Base)
@@ -4416,6 +4469,13 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(
 
   TypeName->setPartition(CGM.getCodeGenOpts().SymbolPartition);
   GV->setPartition(CGM.getCodeGenOpts().SymbolPartition);
+
+  // Every field is a link-time constant of this image on Windows Itanium and
+  // NTPOSIX: descriptors are never imported and the runtime's vtables are
+  // image-local, so no field could need a runtime pseudo-relocation.
+  assert((!hasSelfContainedRTTI(CGM) ||
+          !referencesNonDSOLocalGlobal(GV->getInitializer())) &&
+         "type_info field would need a pseudo-relocation");
 
   return GV;
 }
@@ -4708,6 +4768,14 @@ void ItaniumCXXABI::EmitFundamentalRTTIDescriptors(const CXXRecordDecl *RD) {
       RD->hasAttr<DLLExportAttr>() || CGM.shouldMapVisibilityToDLLExport(RD)
           ? llvm::GlobalValue::DLLExportStorageClass
           : llvm::GlobalValue::DefaultStorageClass;
+  // Every Windows Itanium and NTPOSIX image emits the descriptors it uses,
+  // so the runtime's copies are neither exported nor unique: they are the
+  // same COMDAT copies every other translation unit produces.
+  llvm::GlobalValue::LinkageTypes Linkage = llvm::GlobalValue::ExternalLinkage;
+  if (hasSelfContainedRTTI(CGM)) {
+    DLLStorageClass = llvm::GlobalValue::DefaultStorageClass;
+    Linkage = llvm::GlobalValue::LinkOnceODRLinkage;
+  }
   llvm::GlobalValue::VisibilityTypes Visibility =
       CodeGenModule::GetLLVMVisibility(RD->getVisibility());
   for (const QualType &FundamentalType : FundamentalTypes) {
@@ -4715,9 +4783,8 @@ void ItaniumCXXABI::EmitFundamentalRTTIDescriptors(const CXXRecordDecl *RD) {
     QualType PointerTypeConst = getContext().getPointerType(
         FundamentalType.withConst());
     for (QualType Type : {FundamentalType, PointerType, PointerTypeConst})
-      ItaniumRTTIBuilder(*this).BuildTypeInfo(
-          Type, llvm::GlobalValue::ExternalLinkage,
-          Visibility, DLLStorageClass);
+      ItaniumRTTIBuilder(*this).BuildTypeInfo(Type, Linkage, Visibility,
+                                              DLLStorageClass);
   }
 }
 

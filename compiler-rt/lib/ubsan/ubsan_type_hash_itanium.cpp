@@ -30,6 +30,10 @@ namespace std {
     virtual ~type_info();
 
     const char *__type_name;
+#if defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
+    // 128-bit hash of the mangled name; the type's identity on these targets.
+    unsigned long long __identity[2];
+#endif
 
     __type_name_t name() const {
 #if defined(__APPLE__) && defined(__LP64__) && !defined(__x86_64__)

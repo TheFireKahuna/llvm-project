@@ -10,7 +10,8 @@ void attempt() {
   try { except(); } catch (...) { }
 }
 
-// CHECK: @_ZTIi = external dso_local constant ptr
+// Every image carries its own copy of the standard descriptors.
+// CHECK: @_ZTIi = linkonce_odr dso_local constant { ptr, ptr, i64, i64 } { ptr getelementptr inbounds (ptr, ptr @_ZTVN10__cxxabiv123__fundamental_type_infoE, i32 2), ptr @_ZTSi,
 
 // CHECK: define {{.*}}void @_Z6exceptv() {{.*}} {
 // CHECK:   %exception = call {{.*}}ptr @__cxa_allocate_exception(i32 4)

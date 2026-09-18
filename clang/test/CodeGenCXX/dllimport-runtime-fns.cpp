@@ -52,10 +52,10 @@ T *foo3() { return dynamic_cast<T *>((C *)0); }
 // MSVC: call ptr @__RTDynamicCast({{.*}})
 // MSVC: declare dso_local ptr @__RTDynamicCast(ptr, i32, ptr, ptr, i32)
 
-// Again, imported
+// Part of every image on Windows Itanium: RTTI is self-contained there.
 // ITANIUM-LABEL: define dso_local noundef ptr @_Z4foo3v()
 // ITANIUM: call ptr @__dynamic_cast({{.*}})
-// ITANIUM: declare dllimport ptr @__dynamic_cast({{.*}})
+// ITANIUM: declare dso_local ptr @__dynamic_cast({{.*}})
 
 // Not imported
 // GNU-LABEL: define dso_local noundef ptr @_Z4foo3v()

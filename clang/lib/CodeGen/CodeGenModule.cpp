@@ -1970,10 +1970,13 @@ static bool shouldAssumeDSOLocal(const CodeGenModule &CGM,
 
   const llvm::Triple &TT = CGM.getTriple();
   const auto &CGOpts = CGM.getCodeGenOpts();
-  if (TT.isOSCygMing()) {
-    // In MinGW, variables without DLLImport can still be automatically
-    // imported from a DLL by the linker; don't mark variables that
-    // potentially could come from another DLL as DSO local.
+  if (TT.isOSCygMing() || TT.isWindowsItaniumOrNTPOSIXEnvironment()) {
+    // In MinGW, Windows Itanium and NTPOSIX, variables without DLLImport can
+    // still be automatically imported from a DLL by the linker; don't mark
+    // variables that potentially could come from another DLL as DSO local.
+    // Only declarations can be imported: a definition in this translation
+    // unit, weak or not, is always resolved within the image that links it,
+    // because COMDAT selection never crosses a DLL boundary.
 
     // With EmulatedTLS, TLS variables can be autoimported from other DLLs
     // (and this actually happens in the public interface of libstdc++), so
