@@ -1020,10 +1020,52 @@ def int_eh_recoverfp : DefaultAttrsIntrinsic<[llvm_ptr_ty],
 //   after EH tables are generated
 def int_seh_try_begin : Intrinsic<[], [], [IntrWriteMem, IntrWillReturn]>;
 def int_seh_try_end : Intrinsic<[], [], [IntrWriteMem, IntrWillReturn]>;
-// The scope markers clobber memory, so no access moves across a scope
-// boundary and an object is never destroyed twice.
-def int_seh_scope_begin : Intrinsic<[], [], []>;
-def int_seh_scope_end : Intrinsic<[], [], []>;
+def int_seh_scope_begin : Intrinsic<[], [], [IntrNoMem]>;
+def int_seh_scope_end : Intrinsic<[], [], [IntrNoMem]>;
+
+// A memory access whose hardware fault unwinds. An invoke of one is the
+// access itself between the invoke's labels, so its call-site range names the
+// landing pad and the pad is a successor of the block; a call of one is the
+// plain access. The volatile forms are never merged, moved or removed; the
+// others carry the memory attributes of the access they stand for.
+def int_fault_load
+    : Intrinsic<[llvm_any_ty], [llvm_anyptr_ty, llvm_i32_ty],
+                [Throws, IntrReadMem, IntrArgMemOnly, IntrNoSync, IntrNoFree,
+                 IntrNoCallback, IntrWillReturn, NoCapture<ArgIndex<0>>,
+                 ImmArg<ArgIndex<1>>]>;
+def int_fault_load_volatile
+    : Intrinsic<[llvm_any_ty], [llvm_anyptr_ty, llvm_i32_ty],
+                [Throws, IntrArgMemOnly, IntrHasSideEffects, IntrNoSync,
+                 IntrNoFree, IntrNoCallback, IntrWillReturn,
+                 NoCapture<ArgIndex<0>>, ImmArg<ArgIndex<1>>]>;
+def int_fault_store
+    : Intrinsic<[], [llvm_any_ty, llvm_anyptr_ty, llvm_i32_ty],
+                [Throws, IntrWriteMem, IntrArgMemOnly, IntrNoSync, IntrNoFree,
+                 IntrNoCallback, IntrWillReturn, NoCapture<ArgIndex<1>>,
+                 ImmArg<ArgIndex<2>>]>;
+def int_fault_store_volatile
+    : Intrinsic<[], [llvm_any_ty, llvm_anyptr_ty, llvm_i32_ty],
+                [Throws, IntrArgMemOnly, IntrHasSideEffects, IntrNoSync,
+                 IntrNoFree, IntrNoCallback, IntrWillReturn,
+                 NoCapture<ArgIndex<1>>, ImmArg<ArgIndex<2>>]>;
+def int_fault_memcpy
+    : Intrinsic<[], [llvm_anyptr_ty, llvm_anyptr_ty, llvm_anyint_ty, llvm_i1_ty],
+                [Throws, IntrArgMemOnly, IntrNoSync, IntrNoFree, IntrNoCallback,
+                 IntrWillReturn, NoCapture<ArgIndex<0>>, NoCapture<ArgIndex<1>>,
+                 NoAlias<ArgIndex<0>>, NoAlias<ArgIndex<1>>,
+                 WriteOnly<ArgIndex<0>>, ReadOnly<ArgIndex<1>>,
+                 ImmArg<ArgIndex<3>>]>;
+def int_fault_memmove
+    : Intrinsic<[], [llvm_anyptr_ty, llvm_anyptr_ty, llvm_anyint_ty, llvm_i1_ty],
+                [Throws, IntrArgMemOnly, IntrNoSync, IntrNoFree, IntrNoCallback,
+                 IntrWillReturn, NoCapture<ArgIndex<0>>, NoCapture<ArgIndex<1>>,
+                 WriteOnly<ArgIndex<0>>, ReadOnly<ArgIndex<1>>,
+                 ImmArg<ArgIndex<3>>]>;
+def int_fault_memset
+    : Intrinsic<[], [llvm_anyptr_ty, llvm_i8_ty, llvm_anyint_ty, llvm_i1_ty],
+                [Throws, IntrArgMemOnly, IntrNoSync, IntrNoFree, IntrNoCallback,
+                 IntrWillReturn, NoCapture<ArgIndex<0>>, WriteOnly<ArgIndex<0>>,
+                 ImmArg<ArgIndex<3>>]>;
 
 // Note: we treat stacksave/stackrestore as writemem because we don't otherwise
 // model their dependencies on allocas.

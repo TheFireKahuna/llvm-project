@@ -534,10 +534,6 @@ private:
   // Mark and Report IPToState for each Block under AsynchEH
   void reportIPToStateForBlocks(MachineFunction *Fn);
 
-  // Record a call-site range per block for the landing pad the innermost open
-  // llvm.seh.scope.begin names, in a function under a landingpad personality.
-  void reportFaultScopesForBlocks(MachineFunction *Fn);
-
   /// Perform instruction selection on all basic blocks in the function.
   void SelectAllBasicBlocks(const Function &Fn);
 

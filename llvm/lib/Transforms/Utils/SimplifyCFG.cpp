@@ -5492,7 +5492,10 @@ bool SimplifyCFGOpt::simplifyCommonResume(ResumeInst *RI) {
       continue;
 
     if (isCleanupBlockEmpty(
-            make_range(LandingPad->getNextNode(), IncomingBB->getTerminator())))
+            make_range(LandingPad->getNextNode(), IncomingBB->getTerminator())) &&
+        none_of(predecessors(IncomingBB), [](const BasicBlock *Pred) {
+          return isa<FaultAccessInst>(Pred->getTerminator());
+        }))
       TrivialUnwindBlocks.insert(IncomingBB);
   }
 
@@ -5542,6 +5545,13 @@ bool SimplifyCFGOpt::simplifySingleResume(ResumeInst *RI) {
   // Check that there are no other instructions except for debug intrinsics.
   if (!isCleanupBlockEmpty(
           make_range<Instruction *>(LPInst->getNextNode(), RI)))
+    return false;
+
+  // A fault access keeps its pad: as a call it would be a plain access,
+  // outside every call-site range.
+  if (any_of(predecessors(BB), [](const BasicBlock *Pred) {
+        return isa<FaultAccessInst>(Pred->getTerminator());
+      }))
     return false;
 
   // Turn all invokes that unwind here into calls and delete the basic block.

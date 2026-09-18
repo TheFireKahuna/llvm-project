@@ -163,6 +163,7 @@ public:
   Value *foldReversedIntrinsicOperands(IntrinsicInst *II);
   Instruction *visitCallInst(CallInst &CI);
   Instruction *visitInvokeInst(InvokeInst &II);
+  Instruction *foldFaultAccess(FaultAccessInst &FA);
   Instruction *visitCallBrInst(CallBrInst &CBI);
 
   Instruction *SliceUpIllegalIntegerPHI(PHINode &PN);

@@ -219,8 +219,16 @@ MemDepResult MemoryDependenceResults::getCallDependencyFrom(
     }
 
     if (auto *CallB = dyn_cast<CallBase>(Inst)) {
-      bool IsIdenticalReadOnlyCall = isReadOnlyCall && !isModSet(MR) &&
-                                     Call->isIdenticalToWhenDefined(CallB);
+      // A fault load is identical to another of the same callee and
+      // arguments whichever blocks the two invokes name.
+      bool Identical =
+          isa<FaultAccessInst>(Call) && isa<FaultAccessInst>(CallB)
+              ? Call->getCalledOperand() == CallB->getCalledOperand() &&
+                    Call->getType() == CallB->getType() &&
+                    llvm::equal(Call->args(), CallB->args())
+              : Call->isIdenticalToWhenDefined(CallB);
+      bool IsIdenticalReadOnlyCall =
+          isReadOnlyCall && !isModSet(MR) && Identical;
 
       // An identical earlier invariant load-like call is an available value
       // even if AA sees both calls as reading the same memory.

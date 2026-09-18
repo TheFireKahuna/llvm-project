@@ -3484,6 +3484,15 @@ void SelectionDAGBuilder::visitInvoke(const InvokeInst &I) {
     case Intrinsic::experimental_gc_statepoint:
       LowerStatepoint(cast<GCStatepointInst>(I), EHPadBB);
       break;
+    case Intrinsic::fault_load:
+    case Intrinsic::fault_load_volatile:
+    case Intrinsic::fault_store:
+    case Intrinsic::fault_store_volatile:
+    case Intrinsic::fault_memcpy:
+    case Intrinsic::fault_memmove:
+    case Intrinsic::fault_memset:
+      lowerFaultAccess(cast<FaultAccessInst>(I), EHPadBB);
+      break;
     // wasm_throw, wasm_rethrow: This is usually done in visitTargetIntrinsic,
     // but these intrinsics are special because they can be invoked, so we
     // manually lower it to a DAG node here.
@@ -6860,6 +6869,15 @@ void SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I,
     updateDAGForMaybeTailCall(MM);
     return;
   }
+  case Intrinsic::fault_load:
+  case Intrinsic::fault_load_volatile:
+  case Intrinsic::fault_store:
+  case Intrinsic::fault_store_volatile:
+  case Intrinsic::fault_memcpy:
+  case Intrinsic::fault_memmove:
+  case Intrinsic::fault_memset:
+    lowerFaultAccess(cast<FaultAccessInst>(I), nullptr);
+    return;
   case Intrinsic::memcpy_element_unordered_atomic: {
     auto &MI = cast<AnyMemCpyInst>(I);
     SDValue Dst = getValue(MI.getRawDest());
@@ -9210,6 +9228,135 @@ void SelectionDAGBuilder::visitVectorPredicationIntrinsic(
     break;
   }
   }
+}
+
+// A memory access whose fault unwinds. With a pad the access sits between the
+// invoke's labels, so its call-site range names the pad, which visitInvoke
+// makes a successor of this block; the access is then volatile to the
+// machine, as a call is immovable, so no pass sinks, folds or re-executes it
+// outside its range. Without a pad it is the plain access.
+void SelectionDAGBuilder::lowerFaultAccess(const FaultAccessInst &I,
+                                           const BasicBlock *EHPadBB) {
+  const TargetLowering &TLI = DAG.getTargetLoweringInfo();
+  const DataLayout &DL = DAG.getDataLayout();
+  SDLoc dl = getCurSDLoc();
+  MCSymbol *BeginLabel = nullptr;
+  if (EHPadBB) {
+    // Both PendingLoads and PendingExports must be flushed here; the access
+    // might not complete.
+    (void)getRoot();
+    DAG.setRoot(lowerStartEH(getControlRoot(), EHPadBB, BeginLabel));
+  }
+  bool IsVolatile = I.isVolatile() || EHPadBB;
+  SDValue Root = IsVolatile ? getRoot() : getMemoryRoot();
+  MachineMemOperand::Flags Flags =
+      IsVolatile ? MachineMemOperand::MOVolatile : MachineMemOperand::MONone;
+
+  switch (I.getIntrinsicID()) {
+  default:
+    llvm_unreachable("not a fault access");
+  case Intrinsic::fault_load:
+  case Intrinsic::fault_load_volatile: {
+    const Value *SV = I.getPointerOperand();
+    SDValue Ptr = getValue(SV);
+    SmallVector<EVT, 4> ValueVTs, MemVTs;
+    SmallVector<TypeSize, 4> Offsets;
+    ComputeValueVTs(TLI, DL, I.getType(), ValueVTs, &MemVTs, &Offsets);
+    unsigned NumValues = ValueVTs.size();
+    if (NumValues == 0)
+      break;
+    if (IsVolatile)
+      Root = TLI.prepareVolatileOrAtomicLoad(Root, dl, DAG);
+    Align Alignment = I.getAlign();
+    SmallVector<SDValue, 4> Values(NumValues), Chains(NumValues);
+    for (unsigned i = 0; i != NumValues; ++i) {
+      MachinePointerInfo PtrInfo =
+          !Offsets[i].isScalable() || Offsets[i].isZero()
+              ? MachinePointerInfo(SV, Offsets[i].getKnownMinValue())
+              : MachinePointerInfo();
+      SDValue A = DAG.getObjectPtrOffset(dl, Ptr, Offsets[i]);
+      SDValue L = DAG.getLoad(MemVTs[i], dl, Root, A, PtrInfo, Alignment,
+                              MachineMemOperand::MOLoad | Flags,
+                              I.getAAMetadata());
+      Chains[i] = L.getValue(1);
+      if (MemVTs[i] != ValueVTs[i])
+        L = DAG.getPtrExtOrTrunc(L, dl, ValueVTs[i]);
+      Values[i] = L;
+    }
+    DAG.setRoot(DAG.getNode(ISD::TokenFactor, dl, MVT::Other, Chains));
+    setValue(&I, DAG.getNode(ISD::MERGE_VALUES, dl, DAG.getVTList(ValueVTs),
+                             Values));
+    break;
+  }
+  case Intrinsic::fault_store:
+  case Intrinsic::fault_store_volatile: {
+    const Value *SrcV = I.getValueOperand();
+    const Value *PtrV = I.getPointerOperand();
+    SmallVector<EVT, 4> ValueVTs, MemVTs;
+    SmallVector<TypeSize, 4> Offsets;
+    ComputeValueVTs(TLI, DL, SrcV->getType(), ValueVTs, &MemVTs, &Offsets);
+    unsigned NumValues = ValueVTs.size();
+    if (NumValues == 0)
+      break;
+    SDValue Src = getValue(SrcV);
+    SDValue Ptr = getValue(PtrV);
+    Align Alignment = I.getAlign();
+    SmallVector<SDValue, 4> Chains(NumValues);
+    for (unsigned i = 0; i != NumValues; ++i) {
+      MachinePointerInfo PtrInfo =
+          !Offsets[i].isScalable() || Offsets[i].isZero()
+              ? MachinePointerInfo(PtrV, Offsets[i].getKnownMinValue())
+              : MachinePointerInfo();
+      SDValue Add = DAG.getObjectPtrOffset(dl, Ptr, Offsets[i]);
+      SDValue Val = SDValue(Src.getNode(), Src.getResNo() + i);
+      if (MemVTs[i] != ValueVTs[i])
+        Val = DAG.getPtrExtOrTrunc(Val, dl, MemVTs[i]);
+      Chains[i] = DAG.getStore(Root, dl, Val, Add, PtrInfo, Alignment,
+                               MachineMemOperand::MOStore | Flags,
+                               I.getAAMetadata());
+    }
+    DAG.setRoot(DAG.getNode(ISD::TokenFactor, dl, MVT::Other, Chains));
+    break;
+  }
+  case Intrinsic::fault_memcpy:
+  case Intrinsic::fault_memmove: {
+    SDValue Dst = getValue(I.getArgOperand(0));
+    SDValue Src = getValue(I.getArgOperand(1));
+    SDValue Size = getValue(I.getArgOperand(2));
+    Align DstAlign = I.getParamAlign(0).valueOrOne();
+    Align SrcAlign = I.getParamAlign(1).valueOrOne();
+    SDValue M =
+        I.getIntrinsicID() == Intrinsic::fault_memcpy
+            ? DAG.getMemcpy(Root, dl, Dst, Src, Size, DstAlign, SrcAlign,
+                            IsVolatile, /*AlwaysInline=*/false, nullptr,
+                            /*OverrideTailCall=*/false,
+                            MachinePointerInfo(I.getArgOperand(0)),
+                            MachinePointerInfo(I.getArgOperand(1)),
+                            I.getAAMetadata(), BatchAA)
+            : DAG.getMemmove(Root, dl, Dst, Src, Size, DstAlign, SrcAlign,
+                             IsVolatile, nullptr, /*OverrideTailCall=*/false,
+                             MachinePointerInfo(I.getArgOperand(0)),
+                             MachinePointerInfo(I.getArgOperand(1)),
+                             I.getAAMetadata(), BatchAA);
+    DAG.setRoot(M);
+    break;
+  }
+  case Intrinsic::fault_memset: {
+    SDValue Dst = getValue(I.getArgOperand(0));
+    SDValue Value = getValue(I.getArgOperand(1));
+    SDValue Size = getValue(I.getArgOperand(2));
+    Align DstAlign = I.getParamAlign(0).valueOrOne();
+    DAG.setRoot(DAG.getMemset(Root, dl, Dst, Value, Size, DstAlign, IsVolatile,
+                              /*AlwaysInline=*/false, nullptr,
+                              MachinePointerInfo(I.getArgOperand(0)),
+                              I.getAAMetadata()));
+    break;
+  }
+  }
+
+  if (EHPadBB)
+    DAG.setRoot(
+        lowerEndEH(getRoot(), cast<InvokeInst>(&I), EHPadBB, BeginLabel));
 }
 
 SDValue SelectionDAGBuilder::lowerStartEH(SDValue Chain,

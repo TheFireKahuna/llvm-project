@@ -5748,10 +5748,17 @@ void Verifier::visitInstruction(Instruction &I) {
                 F->getIntrinsicID() == Intrinsic::experimental_gc_statepoint ||
                 F->getIntrinsicID() == Intrinsic::wasm_throw ||
                 F->getIntrinsicID() == Intrinsic::wasm_rethrow ||
+                F->getIntrinsicID() == Intrinsic::fault_load ||
+                F->getIntrinsicID() == Intrinsic::fault_load_volatile ||
+                F->getIntrinsicID() == Intrinsic::fault_store ||
+                F->getIntrinsicID() == Intrinsic::fault_store_volatile ||
+                F->getIntrinsicID() == Intrinsic::fault_memcpy ||
+                F->getIntrinsicID() == Intrinsic::fault_memmove ||
+                F->getIntrinsicID() == Intrinsic::fault_memset ||
                 IsAttachedCallOperand(F, CBI, i),
             "Cannot invoke an intrinsic other than donothing, patchpoint, "
-            "statepoint, coro_resume, coro_destroy, clang.arc.attachedcall or "
-            "wasm.(re)throw",
+            "statepoint, coro_resume, coro_destroy, clang.arc.attachedcall, "
+            "wasm.(re)throw or fault.*",
             &I);
       Check(F->getParent() == &M, "Referencing function in another module!", &I,
             &M, F, F->getParent());

@@ -4485,6 +4485,70 @@ Instruction *InstCombinerImpl::visitInvokeInst(InvokeInst &II) {
   return visitCallBase(II);
 }
 
+// A fault access is the plain access once it cannot fault: a call carries no
+// edge, and an invoke of a pointer the language vouches for (an alloca, a
+// global, a dereferenceable argument) has a dead edge, which nounwind records
+// for SimplifyCFG to remove.
+Instruction *InstCombinerImpl::foldFaultAccess(FaultAccessInst &FA) {
+  Value *Ptr = FA.getPointerOperand();
+  if (auto *II = dyn_cast<InvokeInst>(&FA)) {
+    if (II->doesNotThrow())
+      return nullptr;
+    SimplifyQuery Q = SQ.getWithInstruction(&FA);
+    bool Safe = false;
+    if (FA.isLoad()) {
+      Safe = isDereferenceablePointer(Ptr, FA.getType(), Q);
+    } else if (FA.isStore()) {
+      Safe = isDereferenceablePointer(Ptr, FA.getValueOperand()->getType(), Q);
+    } else if (auto *Len = dyn_cast<ConstantInt>(FA.getArgOperand(2))) {
+      Safe = isDereferenceablePointer(Ptr, Len->getValue(), Q) &&
+             (FA.getIntrinsicID() == Intrinsic::fault_memset ||
+              isDereferenceablePointer(FA.getArgOperand(1), Len->getValue(),
+                                       Q));
+    }
+    if (!Safe)
+      return nullptr;
+    II->setDoesNotThrow();
+    return II;
+  }
+
+  // The call form: the plain operation, handed back for the driver to put in
+  // the call's place.
+  bool IsVolatile = FA.isVolatile();
+  Instruction *Plain;
+  switch (FA.getIntrinsicID()) {
+  default:
+    llvm_unreachable("not a fault access");
+  case Intrinsic::fault_load:
+  case Intrinsic::fault_load_volatile:
+    Plain = new LoadInst(FA.getType(), Ptr, "", IsVolatile, FA.getAlign());
+    break;
+  case Intrinsic::fault_store:
+  case Intrinsic::fault_store_volatile:
+    Plain = new StoreInst(FA.getValueOperand(), Ptr, IsVolatile, FA.getAlign());
+    break;
+  case Intrinsic::fault_memcpy:
+    Plain = Builder.CreateMemCpy(Ptr, FA.getParamAlign(0), FA.getArgOperand(1),
+                                 FA.getParamAlign(1), FA.getArgOperand(2),
+                                 IsVolatile);
+    Plain->removeFromParent();
+    break;
+  case Intrinsic::fault_memmove:
+    Plain = Builder.CreateMemMove(Ptr, FA.getParamAlign(0), FA.getArgOperand(1),
+                                  FA.getParamAlign(1), FA.getArgOperand(2),
+                                  IsVolatile);
+    Plain->removeFromParent();
+    break;
+  case Intrinsic::fault_memset:
+    Plain = Builder.CreateMemSet(Ptr, FA.getArgOperand(1), FA.getArgOperand(2),
+                                 FA.getParamAlign(0), IsVolatile);
+    Plain->removeFromParent();
+    break;
+  }
+  Plain->setAAMetadata(FA.getAAMetadata());
+  return Plain;
+}
+
 // CallBrInst simplification
 Instruction *InstCombinerImpl::visitCallBrInst(CallBrInst &CBI) {
   return visitCallBase(CBI);
@@ -4884,6 +4948,10 @@ bool InstCombinerImpl::annotateAnyAllocSite(CallBase &Call,
 
 /// Improvements for call, callbr and invoke instructions.
 Instruction *InstCombinerImpl::visitCallBase(CallBase &Call) {
+  if (auto *FA = dyn_cast<FaultAccessInst>(&Call))
+    if (Instruction *I = foldFaultAccess(*FA))
+      return I;
+
   bool Changed = annotateAnyAllocSite(Call, &TLI);
 
   // Mark any parameters that are known to be non-null with the nonnull

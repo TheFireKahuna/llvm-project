@@ -1257,6 +1257,71 @@ public:
   }
 };
 
+/// A memory access whose hardware fault unwinds: llvm.fault.*, as a call or
+/// as the invoke that carries the edge.
+class FaultAccessInst : public CallBase {
+public:
+  Intrinsic::ID getIntrinsicID() const {
+    return getCalledFunction()->getIntrinsicID();
+  }
+
+  static bool classof(const CallBase *I) {
+    const Function *Callee = I->getCalledFunction();
+    if (!Callee)
+      return false;
+    switch (Callee->getIntrinsicID()) {
+    case Intrinsic::fault_load:
+    case Intrinsic::fault_load_volatile:
+    case Intrinsic::fault_store:
+    case Intrinsic::fault_store_volatile:
+    case Intrinsic::fault_memcpy:
+    case Intrinsic::fault_memmove:
+    case Intrinsic::fault_memset:
+      return true;
+    default:
+      return false;
+    }
+  }
+  static bool classof(const Value *V) {
+    return isa<CallBase>(V) && classof(cast<CallBase>(V));
+  }
+
+  bool isLoad() const {
+    return getIntrinsicID() == Intrinsic::fault_load ||
+           getIntrinsicID() == Intrinsic::fault_load_volatile;
+  }
+  bool isStore() const {
+    return getIntrinsicID() == Intrinsic::fault_store ||
+           getIntrinsicID() == Intrinsic::fault_store_volatile;
+  }
+  bool isVolatile() const {
+    switch (getIntrinsicID()) {
+    case Intrinsic::fault_load_volatile:
+    case Intrinsic::fault_store_volatile:
+      return true;
+    case Intrinsic::fault_load:
+    case Intrinsic::fault_store:
+      return false;
+    default:
+      return !cast<ConstantInt>(getArgOperand(3))->isZero();
+    }
+  }
+  /// The pointer accessed: the destination of a memory intrinsic.
+  Value *getPointerOperand() const {
+    return getArgOperand(isStore() ? 1 : 0);
+  }
+  /// The value a store writes.
+  Value *getValueOperand() const {
+    assert(isStore() && "not a fault store");
+    return getArgOperand(0);
+  }
+  /// The alignment a load or store declares.
+  Align getAlign() const {
+    assert((isLoad() || isStore()) && "alignment is an immediate on loads and stores");
+    return Align(cast<ConstantInt>(getArgOperand(isStore() ? 2 : 1))->getZExtValue());
+  }
+};
+
 /// This class wraps the llvm.memcpy intrinsic.
 class MemCpyInst : public MemTransferInst {
 public:
