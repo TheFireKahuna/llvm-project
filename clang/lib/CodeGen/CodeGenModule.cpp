@@ -272,6 +272,15 @@ createTargetCodeGenInfo(CodeGenModule &CGM) {
     switch (Triple.getOS()) {
     case llvm::Triple::UEFI:
     case llvm::Triple::Win32:
+      // pc-windows-ntposix carries OS=Win32 but follows the Itanium C++ ABI
+      // and SysV x86_64 calling convention throughout. Kernel / loader /
+      // ntdll boundaries are annotated with `__attribute__((ms_abi))` (see
+      // libc LIBC_MSABI) to preserve MS x64 where the ABI is externally
+      // fixed. windows-itanium is NOT flipped here — it still depends on
+      // "runtime = win32" assumptions elsewhere in clang/llvm that have not
+      // been audited. All other x86_64 Win32 triples keep the MS x64 default.
+      if (Triple.isWindowsNTPOSIXEnvironment())
+        return createX86_64TargetCodeGenInfo(CGM, AVXLevel);
       return createWinX86_64TargetCodeGenInfo(CGM, AVXLevel);
     default:
       return createX86_64TargetCodeGenInfo(CGM, AVXLevel);

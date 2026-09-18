@@ -584,8 +584,9 @@ CodeGenTypes::arrangeObjCMessageSendSignature(const ObjCMethodDecl *MD,
 
   FunctionType::ExtInfo einfo;
   bool IsTargetDefaultMSABI =
-      getContext().getTargetInfo().getTriple().isOSWindows() ||
-      getContext().getTargetInfo().getTriple().isUEFI();
+      (getContext().getTargetInfo().getTriple().isOSWindows() ||
+       getContext().getTargetInfo().getTriple().isUEFI()) &&
+      !getContext().getTargetInfo().getTriple().isWindowsNTPOSIXEnvironment();
   einfo = einfo.withCallingConv(
       getCallingConventionForDecl(MD, IsTargetDefaultMSABI));
 

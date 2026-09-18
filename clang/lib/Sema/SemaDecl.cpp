@@ -12696,9 +12696,16 @@ void Sema::CheckMain(FunctionDecl *FD, const DeclSpec &DS) {
   assert(T->isFunctionType() && "function decl is not of function type");
   const FunctionType* FT = T->castAs<FunctionType>();
 
+  // Keep NT-POSIX x86_64 on its target-default SysV C ABI. All other targets
+  // retain Clang's historical "main is CC_C" rule.
+  CallingConv MainCC = CC_C;
+  if (Context.getTargetInfo().getTriple().isWindowsNTPOSIXEnvironment())
+    MainCC = Context.getTargetInfo().getDefaultCallingConv();
+
   // Set default calling convention for main()
-  if (FT->getCallConv() != CC_C) {
-    FT = Context.adjustFunctionType(FT, FT->getExtInfo().withCallingConv(CC_C));
+  if (FT->getCallConv() != MainCC) {
+    FT = Context.adjustFunctionType(FT,
+                                    FT->getExtInfo().withCallingConv(MainCC));
     FD->setType(QualType(FT, 0));
     T = Context.getCanonicalType(FD->getType());
   }
