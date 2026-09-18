@@ -8,6 +8,7 @@ string(TOUPPER "${CMAKE_BUILD_TYPE}" uppercase_CMAKE_BUILD_TYPE)
 
 include(CheckCompilerVersion)
 include(CheckProblematicConfigurations)
+include(DetectWindowsItanium)
 include(HandleLLVMStdlib)
 include(CheckCCompilerFlag)
 include(CheckCSourceCompiles)
@@ -637,6 +638,10 @@ if(MSVC)
   # value (1 MB) which is not enough for us in tasks such as parsing recursive
   # C++ templates in Clang.
   set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${CMAKE_CXX_LINKER_WRAPPER_FLAG}/STACK:10000000")
+elseif(WIN32_ITANIUM OR WIN32_NTPOSIX)
+  # Windows Itanium and NT-POSIX link with lld-link through the clang driver,
+  # so the executables get the same 1 MB default unless asked otherwise.
+  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,/STACK:10000000")
 elseif(MINGW OR CYGWIN)
   set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--stack,16777216")
 
