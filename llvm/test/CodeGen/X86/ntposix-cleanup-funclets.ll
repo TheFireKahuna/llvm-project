@@ -144,6 +144,48 @@ terminate:
 
 declare void @abort() nounwind
 
+; A cleanup whose chain ends at the terminating funclet: its site names the
+; cleanup funclet and its action chain is the empty filter then the cleanup
+; record, so a search ends at the site before the funclet is called.
+; CHECK-LABEL: aborts_after_cleanup:
+; CHECK: [[CBEGIN:.Ltmp[0-9]+]]:
+; CHECK-NEXT: callq may_throw
+; CHECK: .seh_handlerdata
+; CHECK-NEXT: .p2align 2
+; CHECK-NEXT: .byte 1
+; CHECK-NEXT: .uleb128 .Lcleanup_end{{[0-9]+}}-.Lcleanup_begin{{[0-9]+}}
+; CHECK-NEXT: .Lcleanup_begin{{[0-9]+}}:
+; CHECK-NEXT: .uleb128 [[CBEGIN]]-[[CFUNC:.Lfunc_begin[0-9]+]]
+; CHECK-NEXT: .uleb128 [[CF:.LBB3_[0-9]+]]-[[CFUNC]]
+; CHECK: GCC_except_table3:
+; CHECK: .uleb128 [[CBEGIN]]-[[CFUNC]]
+; CHECK-NEXT: .uleb128 {{.*}}-[[CBEGIN]]
+; CHECK-NEXT: .byte 0
+; CHECK-NEXT: .byte 5
+; CHECK: .byte 0
+; CHECK: .byte 0
+; CHECK: .byte 127
+; CHECK: .byte 125
+; CHECK: [[CF]]:
+; CHECK: callq drop_a
+; CHECK: jmp [[CT:.LBB3_[0-9]+]]
+; CHECK: [[CT]]:
+; CHECK: callq abort
+define void @aborts_after_cleanup() personality ptr @rust_eh_personality {
+entry:
+  invoke void @may_throw() to label %done unwind label %cleanup
+done:
+  ret void
+cleanup:
+  %c = cleanuppad within none []
+  call void @drop_a() [ "funclet"(token %c) ]
+  cleanupret from %c unwind label %terminate
+terminate:
+  %t = cleanuppad within none [i1 true]
+  call void @abort() [ "funclet"(token %t) ]
+  unreachable
+}
+
 ; CHECK: .section .gehcont$y
 ; CHECK-NEXT: .symidx $ehgcr_1_{{[0-9]+}}
 ; CHECK-NOT: .symidx
