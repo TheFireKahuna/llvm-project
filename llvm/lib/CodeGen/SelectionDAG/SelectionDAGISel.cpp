@@ -86,6 +86,7 @@
 #include "llvm/IR/User.h"
 #include "llvm/IR/Value.h"
 #include "llvm/InitializePasses.h"
+#include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCInstrDesc.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/BranchProbability.h"
@@ -1483,6 +1484,14 @@ bool SelectionDAGISel::PrepareEHLandingPad() {
   // Add a label to mark the beginning of the landing pad.  Deletion of the
   // landing pad can thus be detected via the MachineModuleInfo.
   MCSymbol *Label = MF->addLandingPad(MBB);
+
+  // Under Windows EH the unwinder enters a landing pad by setting the
+  // instruction pointer, so EHCont Guard has to list it as a target.
+  if (MF->getTarget().getMCAsmInfo()->getExceptionHandlingType() ==
+      ExceptionHandling::WinEH) {
+    MBB->setIsEHContTarget(true);
+    MF->setHasEHContTarget(true);
+  }
 
   const MCInstrDesc &II = TII->get(TargetOpcode::EH_LABEL);
   BuildMI(*MBB, FuncInfo->InsertPt, SDB->getCurDebugLoc(), II)
