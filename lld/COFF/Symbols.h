@@ -136,6 +136,10 @@ public:
   /// True if we've already added this symbol to the list of GC roots.
   unsigned isGCRoot : 1;
 
+  // True if this is an automatically imported symbol: it resolved to its
+  // import's address-table entry, and references to it want the imported
+  // object itself, through a runtime pseudo relocation or an in-place import
+  // slot (SectionChunk::getImportSlot).
   unsigned isRuntimePseudoReloc : 1;
 
   // True if we want to allow this symbol to be undefined in the early
@@ -408,6 +412,11 @@ public:
   // load this entry instead (see SymbolTable::bindLocalImports), so that the
   // entry belongs in the Control Flow Guard address-taken IAT table.
   bool addressTaken = false;
+
+  // Set when static data holds the imported address in place (see
+  // SymbolTable::bindLocalImports): the loader fills each such word through
+  // an import descriptor of its own (SectionChunk::getImportSlot).
+  bool inPlace = false;
 };
 
 // This class represents a symbol for a jump table entry which jumps

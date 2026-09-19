@@ -107,6 +107,19 @@ private:
   COFFLinkerContext &ctx;
 };
 
+// A chunk that repeats another chunk's contents: the lookup entry of an
+// in-place import slot, which is the value of the import's address-table
+// entry.
+class MirrorChunk : public NonSectionChunk {
+public:
+  explicit MirrorChunk(Chunk *c) : of(c) { setAlignment(c->getAlignment()); }
+  size_t getSize() const override { return of->getSize(); }
+  void writeTo(uint8_t *buf) const override { of->writeTo(buf); }
+
+private:
+  Chunk *of;
+};
+
 // A chunk for the import descriptor table.
 class ImportDirectoryChunk : public NonSectionChunk {
 public:
@@ -119,12 +132,14 @@ public:
     auto *e = (coff_import_directory_table_entry *)(buf);
     e->ImportLookupTableRVA = lookupTab->getRVA();
     e->NameRVA = dllName->getRVA();
-    e->ImportAddressTableRVA = addressTab->getRVA();
+    e->ImportAddressTableRVA = addressTab->getRVA() + addressTabOffset;
   }
 
   Chunk *dllName;
   Chunk *lookupTab;
   Chunk *addressTab;
+  // The address table of an in-place slot run starts inside a section chunk.
+  uint32_t addressTabOffset = 0;
 };
 
 // A chunk representing null terminator in the import table.
@@ -777,6 +792,7 @@ void IdataContents::create(COFFLinkerContext &ctx) {
   }
 
   // Create .idata contents for each DLL.
+  std::vector<Chunk *> slotLookups;
   for (std::vector<DefinedImportData *> &syms : v) {
     // Create lookup and address tables. If they have external names,
     // we need to create hintName chunks to store the names.
@@ -892,7 +908,25 @@ void IdataContents::create(COFFLinkerContext &ctx) {
     dir->lookupTab = lookups[base];
     dir->addressTab = addresses[base];
     dirs.push_back(dir);
+
+    // A descriptor per run of in-place slots of this DLL, after its own so
+    // that the load order stays the command-line order. The lookup tables
+    // follow the DLLs' own, which index lookups and addresses alike.
+    for (SlotRun &run : slotRuns) {
+      if (!run.syms[0]->getDLLName().equals_insensitive(syms[0]->getDLLName()))
+        continue;
+      auto *dir = make<ImportDirectoryChunk>(dllNames.back());
+      dir->lookupTab = make<MirrorChunk>(run.syms[0]->getChunk());
+      slotLookups.push_back(dir->lookupTab);
+      for (DefinedImportData *s : ArrayRef(run.syms).drop_front())
+        slotLookups.push_back(make<MirrorChunk>(s->getChunk()));
+      slotLookups.push_back(make<NullChunk>(ctx));
+      dir->addressTab = run.chunk;
+      dir->addressTabOffset = run.offset;
+      dirs.push_back(dir);
+    }
   }
+  lookups.insert(lookups.end(), slotLookups.begin(), slotLookups.end());
   // Add null terminator.
   dirs.push_back(make<NullChunk>(sizeof(ImportDirectoryTableEntry), 4));
 }

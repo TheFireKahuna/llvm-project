@@ -23,9 +23,18 @@ public:
   void add(DefinedImportData *sym) { imports.push_back(sym); }
   bool empty() { return imports.empty(); }
 
+  // A run of in-place import slots of one DLL, one word apart from the given
+  // location on. It gets an import descriptor whose address table is the run.
+  struct SlotRun {
+    Chunk *chunk;
+    uint32_t offset;
+    std::vector<DefinedImportData *> syms;
+  };
+
   void create(COFFLinkerContext &ctx);
 
   std::vector<DefinedImportData *> imports;
+  std::vector<SlotRun> slotRuns;
   std::vector<Chunk *> dirs;
   std::vector<Chunk *> lookups;
   std::vector<Chunk *> addresses;

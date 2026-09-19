@@ -331,7 +331,7 @@ Defined *SymbolTable::impSymbol(StringRef name) {
 }
 
 bool SymbolTable::isLocalImport(StringRef impName) {
-  if (!ctx.config.autoImport || !impName.consume_front("__imp_"))
+  if (!ctx.config.importSlots || !impName.consume_front("__imp_"))
     return false;
   Symbol *s = find(impName);
   Defined *d = s ? s->getDefined() : nullptr;
@@ -550,6 +550,14 @@ void SymbolTable::bindLocalImports() {
     if (li->isGCRoot)
       readsPointer(li, nullptr);
 
+  // The address of a function in a delay-loaded DLL stays the thunk's: its
+  // import entry holds the loader's stub until the first call, and every
+  // other reference goes through the thunk.
+  auto delayLoaded = [&](DefinedImportData *imp) {
+    return ctx.config.delayLoads.contains(
+        StringRef(imp->file->dllName).lower());
+  };
+
   for (ObjFile *file : ctx.objFileInstances) {
     if (&file->symtab != this)
       continue;
@@ -572,15 +580,20 @@ void SymbolTable::bindLocalImports() {
             li->rewrite = false;
           if (warned.insert(li).second)
             readsPointer(li, file);
+          continue;
+        }
+        // Static data that holds an imported address is a slot the loader
+        // fills in place.
+        if (DefinedImportData *imp = ctx.config.importSlots
+                                         ? sc->getImportSlotTarget(rel)
+                                         : nullptr) {
+          if (!imp->inPlace && !delayLoaded(imp))
+            imp->inPlace = true;
         } else if (auto *thunk = dyn_cast_or_null<DefinedImportThunk>(s)) {
-          // The address of a function in a delay-loaded DLL stays the
-          // thunk's: its import entry holds the loader's stub until the
-          // first call, and every other reference goes through the thunk.
           DefinedImportData *imp = thunk->wrappedSym;
           if (rewrite && !imp->addressTaken &&
               sc->getImportRefForm(rel) == SectionChunk::ImportRefForm::Lea &&
-              !ctx.config.delayLoads.contains(
-                  StringRef(imp->file->dllName).lower()))
+              !delayLoaded(imp))
             imp->addressTaken = true;
         }
       }

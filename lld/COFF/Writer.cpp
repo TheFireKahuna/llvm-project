@@ -240,6 +240,9 @@ private:
   template <typename PEHeaderTy> void writeHeader();
   void createSEHTable();
   void createRuntimePseudoRelocs();
+  bool findImportSlots(SectionChunk *sc, StringRef name);
+  void addImportSlots();
+  void createImportFixups();
   void createECChunks();
   void insertCtorDtorSymbols();
   void insertBssDataStartEndSymbols();
@@ -297,7 +300,12 @@ private:
   Chunk *importTableStart = nullptr;
   uint64_t importTableSize = 0;
   Chunk *iatStart = nullptr;
-  uint64_t iatSize = 0;
+  Chunk *iatEnd = nullptr;
+  // In-place import slots (SectionChunk::getImportSlots), and the read-only
+  // chunks holding them, which are laid out with the import address table,
+  // keyed by the DLL order of their first slot.
+  std::vector<ImportSlot> importSlots;
+  llvm::DenseMap<SectionChunk *, int> iatSlotChunks;
   DelayLoadContents delayIdata;
   bool setNoSEHCharacteristic = false;
   uint32_t tlsAlignment = 0;
@@ -949,6 +957,17 @@ void Writer::addSyntheticIdata() {
   add(".idata$2", idata.dirs);
   add(".idata$4", idata.lookups);
   add(".idata$5", idata.addresses);
+  // Read-only chunks with in-place import slots follow the import address
+  // table, in the order addImportSlots gave their slots, so that the IAT data
+  // directory covers them: the loader makes only that range writable while
+  // it resolves imports, and a slot outside it would fault.
+  if (!iatSlotChunks.empty()) {
+    PartialSection *pSec = createPartialSection(".idata$5", rdata);
+    for (const ImportSlot &s : importSlots)
+      if (iatSlotChunks.contains(s.chunk) &&
+          (pSec->chunks.empty() || pSec->chunks.back() != s.chunk))
+        pSec->chunks.push_back(s.chunk);
+  }
   if (!idata.hints.empty())
     add(".idata$6", idata.hints);
   add(".idata$7", idata.dllNames);
@@ -970,7 +989,6 @@ void Writer::appendECImportTables() {
     if (!rdataSec->chunks.empty())
       rdataSec->chunks.front()->setAlignment(
           std::max(0x1000u, rdataSec->chunks.front()->getAlignment()));
-    iatSize = alignTo(iatSize, 0x1000);
 
     rdataSec->chunks.insert(rdataSec->chunks.begin(),
                             importAddresses->chunks.begin(),
@@ -1009,10 +1027,74 @@ void Writer::locateImportTables() {
   }
 
   if (PartialSection *importAddresses = findPartialSection(".idata$5", rdata)) {
-    if (!importAddresses->chunks.empty())
+    if (!importAddresses->chunks.empty()) {
       iatStart = importAddresses->chunks.front();
-    for (Chunk *c : importAddresses->chunks)
-      iatSize += c->getSize();
+      iatEnd = importAddresses->chunks.back();
+    }
+  }
+}
+
+// Records the in-place import slots of a chunk. A read-only chunk holding one
+// is held back for the import address table region (addSyntheticIdata). Only
+// a chunk from a compiler-named read-only section can move there: a
+// user-named or $-grouped section is iterated by its bounds.
+bool Writer::findImportSlots(SectionChunk *sc, StringRef name) {
+  size_t first = importSlots.size();
+  sc->getImportSlots(importSlots);
+  if (importSlots.size() == first ||
+      (sc->getOutputCharacteristics() & IMAGE_SCN_MEM_WRITE))
+    return false;
+  DefinedImportData *sym = importSlots[first].sym;
+  if (name != ".rdata") {
+    StringRef symName = sym->getName();
+    symName.consume_front("__imp_");
+    Err(ctx) << toString(sc->file) << ": section " << sc->getSectionName()
+             << " holds the address of " << symName << ", imported from "
+             << sym->getDLLName()
+             << ", but is read-only and cannot be laid out with the import "
+                "address table; make the section writable or take the "
+                "address in code";
+    return false;
+  }
+  iatSlotChunks[sc] = ctx.config.dllOrder[sym->getDLLName().lower()];
+  return true;
+}
+
+// Groups the in-place import slots into runs (IdataContents::SlotRun). The
+// read-only slot chunks are ordered by DLL so that single-pointer chunks of
+// one DLL sit next to each other; the other chunks keep their place, and a run
+// never continues past them.
+void Writer::addImportSlots() {
+  if (importSlots.empty())
+    return;
+  auto key = [&](const ImportSlot &s) {
+    auto it = iatSlotChunks.find(s.chunk);
+    return it == iatSlotChunks.end() ? -1 : it->second;
+  };
+  llvm::stable_sort(importSlots, [&](const ImportSlot &a, const ImportSlot &b) {
+    return key(a) < key(b);
+  });
+
+  uint32_t wordsize = ctx.config.wordsize;
+  const ImportSlot *prev = nullptr;
+  for (const ImportSlot &s : importSlots) {
+    bool joins = false;
+    if (prev &&
+        prev->sym->getDLLName().equals_insensitive(s.sym->getDLLName())) {
+      if (s.chunk == prev->chunk)
+        joins = s.offset == prev->offset + wordsize;
+      else
+        // Consecutive chunks of the table region, the second of which needs
+        // no padding after the first.
+        joins = key(s) >= 0 && key(*prev) >= 0 && s.offset == 0 &&
+                prev->offset + wordsize == prev->chunk->getSize() &&
+                s.chunk->getAlignment() <= prev->chunk->getAlignment() &&
+                prev->chunk->getSize() % s.chunk->getAlignment() == 0;
+    }
+    if (!joins)
+      idata.slotRuns.push_back({s.chunk, s.offset, {}});
+    idata.slotRuns.back().syms.push_back(s.sym);
+    prev = &s;
   }
 }
 
@@ -1127,6 +1209,9 @@ void Writer::createSections() {
     if (name.starts_with(".tls"))
       tlsAlignment = std::max(tlsAlignment, c->getAlignment());
 
+    if (sc && ctx.config.importSlots && findImportSlots(sc, name))
+      continue;
+
     PartialSection *pSec = createPartialSection(name,
                                                 c->getOutputCharacteristics());
     pSec->chunks.push_back(c);
@@ -1140,13 +1225,14 @@ void Writer::createSections() {
   if (!idata.empty())
     hasIdata = true;
 
-  if (hasIdata)
-    addSyntheticIdata();
-
   sortSections();
 
-  if (hasIdata)
+  // After sorting: the read-only slot chunks keep the order their runs need.
+  if (hasIdata) {
+    addImportSlots();
+    addSyntheticIdata();
     locateImportTables();
+  }
 
   for (auto thunk : ctx.symtab.sameAddressThunks)
     wowthkSec->addChunk(thunk);
@@ -1306,6 +1392,7 @@ void Writer::createMiscChunks() {
 
   if (config->autoImport)
     createRuntimePseudoRelocs();
+  createImportFixups();
 
   if (config->mingw) {
     insertCtorDtorSymbols();
@@ -1968,7 +2055,9 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
   }
   if (iatStart) {
     dir[IAT].RelativeVirtualAddress = iatStart->getRVA();
-    dir[IAT].Size = iatSize;
+    uint64_t size = iatEnd->getRVA() + iatEnd->getSize() - iatStart->getRVA();
+    dir[IAT].Size =
+        isArm64EC(ctx.config.machine) ? alignTo(size, 0x1000) : size;
   }
   if (rsrcSec->getVirtualSize()) {
     dir[RESOURCE_TABLE].RelativeVirtualAddress = rsrcSec->getRVA();
@@ -2224,10 +2313,14 @@ void Writer::createGuardCFTables() {
   });
 
   // Import entries whose address code takes through a rewritten thunk
-  // reference (SymbolTable::bindLocalImports).
+  // reference (SymbolTable::bindLocalImports), and in-place import slots that
+  // hold a function's address.
   for (ImportFile *file : ctx.importFileInstances)
     if (file->live && file->impSym && file->impSym->addressTaken)
       addSymbolToRVASet(giatsRVASet, file->impSym);
+  for (const ImportSlot &s : importSlots)
+    if (s.sym->file->thunkSym)
+      giatsRVASet.insert({s.chunk, s.offset});
 
   // For each entry in the .giats table, check if it has a corresponding load
   // thunk (e.g. because the DLL that defines it will be delay-loaded) and, if
@@ -2456,11 +2549,19 @@ void Writer::createRuntimePseudoRelocs() {
 
     if (!ctx.config.pseudoRelocs) {
       // Not writing any pseudo relocs; if some were needed, error out and
-      // indicate what required them.
-      for (const RuntimePseudoReloc &rpr : rels)
-        Err(ctx) << "automatic dllimport of " << rpr.sym->getName() << " in "
-                 << toString(rpr.target->file)
-                 << " requires pseudo relocations";
+      // indicate what required them. With in-place import slots, the loader
+      // fills static data and only a reference from code is left over.
+      for (const RuntimePseudoReloc &rpr : rels) {
+        if (ctx.config.importSlots)
+          Err(ctx) << toString(rpr.target->file) << ": " << rpr.sym->getName()
+                   << " is imported, but is referenced as if it were local; "
+                      "mark its declaration as imported, or compile with "
+                      "-fauto-import";
+        else
+          Err(ctx) << "automatic dllimport of " << rpr.sym->getName() << " in "
+                   << toString(rpr.target->file)
+                   << " requires pseudo relocations";
+      }
       return;
     }
 
@@ -2487,6 +2588,42 @@ void Writer::createRuntimePseudoRelocs() {
     replaceSymbol<DefinedSynthetic>(headSym, headSym->getName(), table);
     replaceSymbol<DefinedSynthetic>(endSym, endSym->getName(), endOfList);
   });
+}
+
+// Records the addend of every in-place import slot that has one between
+// __import_fixups_start and __import_fixups_end (ImportFixupChunk), for the
+// startup code of an image that names them. Without records both symbols stay
+// absolute and equal, an empty range.
+void Writer::createImportFixups() {
+  std::vector<ImportSlot> fixups;
+  for (const ImportSlot &s : importSlots)
+    if (s.addend)
+      fixups.push_back(s);
+  if (fixups.empty())
+    return;
+  Symbol *start = ctx.symtab.findUnderscore("__import_fixups_start");
+  Symbol *end = ctx.symtab.findUnderscore("__import_fixups_end");
+  if (llvm::none_of(ctx.objFileInstances, [&](ObjFile *f) {
+        return llvm::is_contained(f->getSymbols(), start);
+      })) {
+    for (const ImportSlot &s : fixups) {
+      StringRef symName = s.sym->getName();
+      symName.consume_front("__imp_");
+      Err(ctx) << toString(s.chunk->file) << ": static data holds the address "
+               << "of " << symName << ", imported from " << s.sym->getDLLName()
+               << ", plus " << s.addend
+               << "; the loader writes the plain address, and the image has "
+                  "no startup code that applies the offset "
+                  "(__import_fixups_start)";
+    }
+    return;
+  }
+  auto *table = make<ImportFixupChunk>(std::move(fixups));
+  rdataSec->addChunk(table);
+  auto *endOfList = make<EmptyChunk>();
+  rdataSec->addChunk(endOfList);
+  replaceSymbol<DefinedSynthetic>(start, start->getName(), table);
+  replaceSymbol<DefinedSynthetic>(end, end->getName(), endOfList);
 }
 
 // MinGW specific.

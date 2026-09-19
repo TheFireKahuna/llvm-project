@@ -2241,6 +2241,11 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
       !config->dll && args.hasFlag(OPT_tsaware, OPT_tsaware_no, true);
   config->autoImport =
       args.hasFlag(OPT_auto_import, OPT_auto_import_no, config->mingw);
+  // An in-place slot is an automatic import that the loader itself fills.
+  config->importSlots =
+      args.hasFlag(OPT_import_slots, OPT_import_slots_no, false);
+  if (config->importSlots)
+    config->autoImport = true;
   config->pseudoRelocs = args.hasFlag(
       OPT_runtime_pseudo_reloc, OPT_runtime_pseudo_reloc_no, config->mingw);
   config->callGraphProfileSort = args.hasFlag(
@@ -2606,6 +2611,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     // Needed for MSVC 2019 16.8 CRT.
     symtab.addAbsolute(symtab.mangle("__guard_eh_cont_count"), 0);
     symtab.addAbsolute(symtab.mangle("__guard_eh_cont_table"), 0);
+    // The addends of in-place import slots, for startup code that applies
+    // them (Writer::createImportFixups).
+    symtab.addAbsolute(symtab.mangle("__import_fixups_start"), 0);
+    symtab.addAbsolute(symtab.mangle("__import_fixups_end"), 0);
 
     if (symtab.isEC()) {
       symtab.addAbsolute("__arm64x_extra_rfe_table", 0);

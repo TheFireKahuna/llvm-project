@@ -38,6 +38,7 @@ class DefinedRegular;
 class ObjFile;
 class OutputSection;
 class RuntimePseudoReloc;
+class ImportSlot;
 class Symbol;
 
 // Mask for permissions (discardable, writable, readable, executable, etc).
@@ -228,6 +229,23 @@ public:
   int flags;
 };
 
+// One word of static data that holds the address of an imported symbol in
+// place: the loader writes the address there through an import descriptor of
+// its own, so the word needs no base relocation and no thunk. The loader adds
+// nothing, so a non-zero addend is recorded for the image's startup code
+// (ImportFixupChunk).
+class ImportSlot {
+public:
+  ImportSlot(SectionChunk *chunk, uint32_t offset, DefinedImportData *sym,
+             int64_t addend)
+      : chunk(chunk), offset(offset), sym(sym), addend(addend) {}
+
+  SectionChunk *chunk;
+  uint32_t offset;
+  DefinedImportData *sym;
+  int64_t addend;
+};
+
 // A chunk corresponding a section of an input file.
 class SectionChunk : public Chunk {
   // Identical COMDAT Folding feature accesses section internal data.
@@ -300,6 +318,12 @@ public:
   ImportRefForm getImportRefForm(const coff_relocation &rel) const;
 
   void getRuntimePseudoRelocs(std::vector<RuntimePseudoReloc> &res);
+
+  // The import whose address an absolute word-sized relocation in data holds,
+  // or null. getImportSlot narrows it to imports the loader fills in place.
+  DefinedImportData *getImportSlotTarget(const coff_relocation &rel) const;
+  DefinedImportData *getImportSlot(const coff_relocation &rel) const;
+  void getImportSlots(std::vector<ImportSlot> &res);
 
   // Called if the garbage collector decides to not include this chunk
   // in a final output. It's supposed to print out a log message to stdout.
@@ -955,6 +979,21 @@ public:
 
 private:
   std::vector<RuntimePseudoReloc> relocs;
+};
+
+// The addends of in-place import slots, as {u32 slot RVA, u32 flags, i64
+// addend} records sorted by RVA. Flag 1 marks a slot in read-only memory. The
+// image's startup code adds each addend to the address the loader wrote.
+class ImportFixupChunk : public NonSectionChunk {
+public:
+  ImportFixupChunk(std::vector<ImportSlot> slots) : slots(std::move(slots)) {
+    setAlignment(8);
+  }
+  size_t getSize() const override { return slots.size() * 16; }
+  void writeTo(uint8_t *buf) const override;
+
+private:
+  std::vector<ImportSlot> slots;
 };
 
 // MinGW specific. A Chunk that contains one pointer-sized absolute value.

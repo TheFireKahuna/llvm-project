@@ -249,6 +249,7 @@ def help_q : Flag<["/??", "-??", "/?", "-?"], "">, Alias<help>;
 
 // LLD extensions
 defm auto_import : B_priv<"auto-import">;
+defm import_slots : B_priv<"import-slots">;
 defm runtime_pseudo_reloc : B_priv<"runtime-pseudo-reloc">;
 def end_lib : F<"end-lib">,
   HelpText<"End group of objects treated as if they were in a library">;

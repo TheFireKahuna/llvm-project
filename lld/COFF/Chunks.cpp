@@ -472,6 +472,13 @@ void SectionChunk::applyRelocation(uint8_t *off,
   uint16_t type = rel.Type;
   int fieldShift = 0;
 
+  // The loader fills an in-place import slot from the lookup entry it finds
+  // there, the same value as the import's address-table entry.
+  if (DefinedImportData *imp = getImportSlot(rel)) {
+    imp->getChunk()->writeTo(off);
+    return;
+  }
+
   // A reference to a locally defined symbol's import pointer is turned into
   // the direct instruction, and an address-taking reference to an import
   // thunk into a load of the true address from the import address table.
@@ -649,6 +656,45 @@ static uint8_t getBaserelType(const coff_relocation &rel,
   }
 }
 
+DefinedImportData *
+SectionChunk::getImportSlotTarget(const coff_relocation &rel) const {
+  // Code is not writable for the loader; debug sections are not mapped.
+  if (header->Characteristics &
+      (IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_DISCARDABLE))
+    return nullptr;
+  Symbol *s = file->getSymbol(rel.SymbolTableIndex);
+  DefinedImportData *imp;
+  if (auto *thunk = dyn_cast_or_null<DefinedImportThunk>(s))
+    imp = thunk->wrappedSym;
+  else if (!(imp = dyn_cast_or_null<DefinedImportData>(s)) ||
+           !imp->isRuntimePseudoReloc)
+    return nullptr;
+  bool is64 = file->symtab.ctx.config.is64();
+  if (getBaserelType(rel, getArch()) !=
+      (is64 ? IMAGE_REL_BASED_DIR64 : IMAGE_REL_BASED_HIGHLOW))
+    return nullptr;
+  return imp;
+}
+
+DefinedImportData *
+SectionChunk::getImportSlot(const coff_relocation &rel) const {
+  DefinedImportData *imp = getImportSlotTarget(rel);
+  return imp && imp->inPlace ? imp : nullptr;
+}
+
+void SectionChunk::getImportSlots(std::vector<ImportSlot> &res) {
+  ArrayRef<uint8_t> data = getContents();
+  bool is64 = file->symtab.ctx.config.is64();
+  for (const coff_relocation &rel : getRelocs()) {
+    DefinedImportData *imp = getImportSlot(rel);
+    if (!imp || rel.VirtualAddress + (is64 ? 8 : 4) > data.size())
+      continue;
+    const uint8_t *p = data.data() + rel.VirtualAddress;
+    int64_t addend = is64 ? read64le(p) : (int32_t)read32le(p);
+    res.emplace_back(this, rel.VirtualAddress, imp, addend);
+  }
+}
+
 // Windows-specific.
 // Collect all locations that contain absolute addresses, which need to be
 // fixed by the loader if load-time relocation is needed.
@@ -660,6 +706,9 @@ void SectionChunk::getBaserels(std::vector<Baserel> *res) {
       continue;
     Symbol *target = file->getSymbol(rel.SymbolTableIndex);
     if (!isa_and_nonnull<Defined>(target) || isa<DefinedAbsolute>(target))
+      continue;
+    // The loader writes an in-place import slot as an absolute address.
+    if (getImportSlot(rel))
       continue;
     res->emplace_back(rva + rel.VirtualAddress, ty);
   }
@@ -769,7 +818,7 @@ void SectionChunk::getRuntimePseudoRelocs(
   for (const coff_relocation &rel : getRelocs()) {
     auto *target =
         dyn_cast_or_null<Defined>(file->getSymbol(rel.SymbolTableIndex));
-    if (!target || !target->isRuntimePseudoReloc)
+    if (!target || !target->isRuntimePseudoReloc || getImportSlot(rel))
       continue;
     // If the target doesn't have a chunk allocated, it may be a
     // DefinedImportData symbol which ended up unnecessary after GC.
@@ -787,7 +836,8 @@ void SectionChunk::getRuntimePseudoRelocs(
       continue;
     }
     int addressSizeInBits = file->symtab.ctx.config.is64() ? 64 : 32;
-    if (sizeInBits < addressSizeInBits) {
+    if (sizeInBits < addressSizeInBits &&
+        file->symtab.ctx.config.pseudoRelocs) {
       warn("runtime pseudo relocation in " + toString(file) + " against " +
            "symbol " + target->getName() + " is too narrow (only " +
            Twine(sizeInBits) + " bits wide); this can fail at runtime " +
@@ -1075,6 +1125,29 @@ void PseudoRelocTableChunk::writeTo(uint8_t *buf) const {
     table[idx + 1] = rpr.target->getRVA() + rpr.targetOffset;
     table[idx + 2] = rpr.flags;
     idx += 3;
+  }
+}
+
+void ImportFixupChunk::writeTo(uint8_t *buf) const {
+  struct Record {
+    uint32_t rva, flags;
+    int64_t addend;
+  };
+  std::vector<Record> records;
+  records.reserve(slots.size());
+  for (const ImportSlot &s : slots) {
+    uint32_t readOnly =
+        (s.chunk->getOutputCharacteristics() & IMAGE_SCN_MEM_WRITE) ? 0 : 1;
+    records.push_back({uint32_t(s.chunk->getRVA() + s.offset), readOnly,
+                       s.addend});
+  }
+  llvm::sort(records,
+             [](const Record &a, const Record &b) { return a.rva < b.rva; });
+  for (const Record &r : records) {
+    write32le(buf, r.rva);
+    write32le(buf + 4, r.flags);
+    write64le(buf + 8, r.addend);
+    buf += 16;
   }
 }
 

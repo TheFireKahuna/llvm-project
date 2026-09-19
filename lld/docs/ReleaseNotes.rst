@@ -58,9 +58,18 @@ COFF Improvements
   AArch64) are rewritten to reference the definition, and the pointer is
   emitted only for references in other forms. An undefined ``__imp_X`` loads
   the archive member that defines ``X``, and takes the ``/alternatename``
-  given to ``X``. With ``-auto-import``, a definition of ``X`` in the link is
-  preferred to an import library's entry for it. LTO treats every definition
-  in the link as final and drops the ``dllimport`` of such references itself.
+  given to ``X``. LTO treats every definition in the link as final and drops
+  the ``dllimport`` of such references itself.
+
+* ``-import-slots`` makes static data that holds the address of an imported
+  symbol an in-place import slot: the loader writes the address there through
+  an import descriptor whose address table is the data itself, so the word
+  needs neither a thunk nor a runtime pseudo relocation, and pointer identity
+  holds across images. Read-only slots are laid out with the import address
+  table, which the IAT data directory covers. A non-zero addend is recorded
+  between ``__import_fixups_start`` and ``__import_fixups_end`` for the
+  image's startup code. The option implies ``-auto-import``; a definition of
+  ``X`` in the link is then preferred to an import library's entry for it.
 
 MinGW Improvements
 ------------------
