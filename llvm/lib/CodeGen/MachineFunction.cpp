@@ -18,6 +18,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
@@ -877,6 +878,41 @@ MCSymbol *MachineFunction::getPICBaseSymbol() const {
 /// \name Exception Handling
 /// \{
 
+/// A terminating cleanup funclet (NT-POSIX): a cleanuppad whose one argument
+/// is `true`, which the front end places under a body that cannot unwind.
+static bool isTerminatingCleanupPad(const CleanupPadInst *CPI) {
+  return CPI->arg_size() == 1 && match(CPI->getArgOperand(0), m_One());
+}
+
+/// Whether a cleanup funclet's unwind chain reaches the terminating one: a
+/// `cleanupret` to it, through any number of cleanups, or to the caller of a
+/// nested pad whose parent chains there.
+static bool chainsToTerminatingCleanupPad(const CleanupPadInst *CPI) {
+  SmallPtrSet<const CleanupPadInst *, 8> Visited;
+  SmallVector<const CleanupPadInst *, 8> Work;
+  Work.push_back(CPI);
+  while (!Work.empty()) {
+    const CleanupPadInst *Pad = Work.pop_back_val();
+    if (!Visited.insert(Pad).second)
+      continue;
+    if (isTerminatingCleanupPad(Pad))
+      return true;
+    for (const User *U : Pad->users()) {
+      const auto *CRI = dyn_cast<CleanupReturnInst>(U);
+      if (!CRI)
+        continue;
+      const Value *Next = nullptr;
+      if (const BasicBlock *Dest = CRI->getUnwindDest())
+        Next = &*Dest->getFirstNonPHIIt();
+      else
+        Next = Pad->getParentPad();
+      if (const auto *NextPad = dyn_cast_or_null<CleanupPadInst>(Next))
+        Work.push_back(NextPad);
+    }
+  }
+  return false;
+}
+
 LandingPadInfo &
 MachineFunction::getOrCreateLandingPadInfo(MachineBasicBlock *LandingPad) {
   unsigned N = LandingPads.size();
@@ -937,15 +973,20 @@ MCSymbol *MachineFunction::addLandingPad(MachineBasicBlock *LandingPad) {
       LP.TypeIds.push_back(getTypeIDFor(TypeInfo));
     }
 
-  } else if (const auto *CPI = dyn_cast<CleanupPadInst>(FirstI);
-             CPI && CPI->arg_size() == 1 &&
-             match(CPI->getArgOperand(0), m_One())) {
-    // A terminating cleanup funclet (NT-POSIX): its call sites carry the
-    // empty filter, the action nothing passes, so a personality ends the
-    // search at them before any pad is landed or funclet called.
-    LP.TypeIds.push_back(getFilterIDFor({}));
+  } else if (const auto *CPI = dyn_cast<CleanupPadInst>(FirstI)) {
+    // A cleanup funclet (NT-POSIX). The terminating one, and every cleanup
+    // whose chain ends at it, gives its call sites the empty filter, the
+    // action nothing passes, so a personality ends the search at them before
+    // any pad is landed or funclet called; a chained cleanup keeps the
+    // cleanup record in front of it.
+    if (isTerminatingCleanupPad(CPI)) {
+      LP.TypeIds.push_back(getFilterIDFor({}));
+    } else if (chainsToTerminatingCleanupPad(CPI)) {
+      LP.TypeIds.push_back(0);
+      LP.TypeIds.push_back(getFilterIDFor({}));
+    }
   } else {
-    assert(isa<CleanupPadInst>(FirstI) && "Invalid landingpad!");
+    llvm_unreachable("Invalid landingpad!");
   }
 
   return LandingPadLabel;
