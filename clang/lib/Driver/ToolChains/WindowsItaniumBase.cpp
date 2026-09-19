@@ -149,9 +149,9 @@ void WindowsItaniumBaseToolChain::AddClangCXXStdlibIncludeArgs(
 
 void WindowsItaniumBaseToolChain::AddCXXStdlibLibArgs(
     const ArgList &Args, ArgStringList &CmdArgs) const {
-  CmdArgs.push_back("c++.lib");
+  CmdArgs.push_back("-defaultlib:c++.lib");
   if (Args.hasArg(options::OPT_fexperimental_library))
-    CmdArgs.push_back("c++experimental.lib");
+    CmdArgs.push_back("-defaultlib:c++experimental.lib");
 }
 
 // ============================================================================

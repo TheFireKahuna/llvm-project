@@ -42,12 +42,12 @@
 // LINK-DAG: "-machine:x64"
 // LINK-DAG: "-subsystem:console"
 // LINK-DAG: "-entry:mainCRTStartup"
-// LINK-DAG: "c++.lib"
-// LINK-DAG: "unwind.lib"
-// LINK-DAG: "{{[^"]*}}clang_rt.builtins{{[^"]*}}.lib"
-// LINK-DAG: "ucrt.lib"
-// LINK-DAG: "kernel32.lib"
-// LINK-DAG: "ntdll.lib"
+// LINK-DAG: "-defaultlib:c++.lib"
+// LINK-DAG: "-defaultlib:unwind.lib"
+// LINK-DAG: "-defaultlib:{{[^"]*}}clang_rt.builtins{{[^"]*}}.lib"
+// LINK-DAG: "-defaultlib:ucrt.lib"
+// LINK-DAG: "-defaultlib:kernel32.lib"
+// LINK-DAG: "-defaultlib:ntdll.lib"
 // LINK-DAG: "-auto-import"
 // LINK-DAG: "-nodefaultlib:msvcrt"
 // LINK-DAG: "-nodefaultlib:vcruntime"
@@ -79,28 +79,28 @@
 // RUN:   | FileCheck --check-prefix=NOSTDLIB %s
 // NOSTDLIB: lld-link
 // NOSTDLIB-NOT: "-entry:"
-// NOSTDLIB-NOT: "c++.lib"
-// NOSTDLIB-NOT: "ucrt.lib"
-// NOSTDLIB-NOT: "kernel32.lib"
+// NOSTDLIB-NOT: "-defaultlib:c++.lib"
+// NOSTDLIB-NOT: "-defaultlib:ucrt.lib"
+// NOSTDLIB-NOT: "-defaultlib:kernel32.lib"
 
 // RUN: %clangxx --target=x86_64-unknown-windows-itanium -nodefaultlibs -### %s 2>&1 \
 // RUN:   | FileCheck --check-prefix=NODEFAULTLIBS %s
 // NODEFAULTLIBS: lld-link
 // NODEFAULTLIBS-DAG: "-entry:mainCRTStartup"
-// NODEFAULTLIBS-NOT: "c++.lib"
-// NODEFAULTLIBS-NOT: "ucrt.lib"
+// NODEFAULTLIBS-NOT: "-defaultlib:c++.lib"
+// NODEFAULTLIBS-NOT: "-defaultlib:ucrt.lib"
 // NODEFAULTLIBS-NOT: "-nodefaultlib:msvcrt"
 
 // RUN: %clangxx --target=x86_64-unknown-windows-itanium -fexperimental-library -### %s 2>&1 \
 // RUN:   | FileCheck --check-prefix=EXPERIMENTAL %s
-// EXPERIMENTAL: "c++.lib"
-// EXPERIMENTAL-SAME: "c++experimental.lib"
+// EXPERIMENTAL: "-defaultlib:c++.lib"
+// EXPERIMENTAL-SAME: "-defaultlib:c++experimental.lib"
 
 // RUN: %clang --target=x86_64-unknown-windows-itanium -### -x c %s 2>&1 \
 // RUN:   | FileCheck --check-prefix=C-LINK %s
 // C-LINK: lld-link
-// C-LINK-SAME: "unwind.lib"
-// C-LINK-NOT: "c++.lib"
+// C-LINK-SAME: "-defaultlib:unwind.lib"
+// C-LINK-NOT: "-defaultlib:c++.lib"
 
 // RUN: %clang --target=x86_64-unknown-windows-itanium -L/foo/bar -L/baz -### %s 2>&1 \
 // RUN:   | FileCheck --check-prefix=LIBPATH %s

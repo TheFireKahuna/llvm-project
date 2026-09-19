@@ -219,6 +219,10 @@ void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   TC.AddRuntimeLibSearchPaths(Args, CmdArgs);
   CmdArgs.push_back("-nologo");
 
+  // The runtime libraries are default libraries: lld searches them after
+  // every positional input, so a definition in the user's objects or
+  // libraries takes precedence over the same symbol in a runtime archive,
+  // as it does with link.exe and the MSVC driver.
   if (LinkDefaultLibs) {
     // C++ standard library. clang-cl has no C-only mode, so it links the
     // library whenever the inputs may be C++; lld pulls members only when
@@ -235,24 +239,25 @@ void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
             << A->getValue() << TC.getTriple().normalize();
       }
     } else if (UNW == ToolChain::UNW_CompilerRT) {
-      CmdArgs.push_back("unwind.lib");
+      CmdArgs.push_back("-defaultlib:unwind.lib");
     }
 
-    CmdArgs.push_back(TC.getCompilerRTArgString(Args, "builtins"));
+    CmdArgs.push_back(Args.MakeArgString(
+        Twine("-defaultlib:") + TC.getCompilerRTArgString(Args, "builtins")));
 
     if (LinkLibC) {
-      CmdArgs.push_back("ucrt.lib");
-      CmdArgs.push_back("kernel32.lib");
+      CmdArgs.push_back("-defaultlib:ucrt.lib");
+      CmdArgs.push_back("-defaultlib:kernel32.lib");
 
       // wincrt provides CRT startup, __cxa_atexit, security cookie, etc.
       std::string WinCRT = TC.getCompilerRT(Args, "wincrt");
       if (TC.getVFS().exists(WinCRT))
-        CmdArgs.push_back(
-            Args.MakeArgString(TC.getCompilerRTBasename(Args, "wincrt")));
+        CmdArgs.push_back(Args.MakeArgString(
+            Twine("-defaultlib:") + TC.getCompilerRTBasename(Args, "wincrt")));
       // wincrt's startup/security/loadconfig code calls ntdll directly
       // (NtProtectVirtualMemory, RtlAllocateHeap, RtlImageNtHeader, ...),
       // so ntdll.lib is required whenever wincrt is linked.
-      CmdArgs.push_back("ntdll.lib");
+      CmdArgs.push_back("-defaultlib:ntdll.lib");
 
       // memcpy/memset/memmove/memcmp/memchr and the SEH personality live in
       // ucrtbase.dll but are absent from ucrt.lib (Microsoft supplies them
@@ -263,7 +268,8 @@ void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
       std::string UcrtMem = TC.getCompilerRT(Args, "ucrt_memory");
       if (TC.getVFS().exists(UcrtMem))
         CmdArgs.push_back(
-            Args.MakeArgString(TC.getCompilerRTBasename(Args, "ucrt_memory")));
+            Args.MakeArgString(Twine("-defaultlib:") +
+                               TC.getCompilerRTBasename(Args, "ucrt_memory")));
     }
   }
 

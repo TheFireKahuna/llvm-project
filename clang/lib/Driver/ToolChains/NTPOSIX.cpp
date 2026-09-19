@@ -178,13 +178,14 @@ void ntposix::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   const bool LinkLibC = LinkDefaultLibs && !NoLibC;
   bool HasExplicitLibC = false;
 
-  auto AddRequiredFile = [&](const char *Name) -> bool {
+  auto AddRequiredFile = [&](const char *Name, bool DefaultLib = false) {
     std::string Path = TC.GetFilePath(Name);
     if (!TC.getVFS().exists(Path)) {
       D.Diag(diag::err_drv_no_such_file) << Name;
       return false;
     }
-    CmdArgs.push_back(Args.MakeArgString(Path));
+    CmdArgs.push_back(
+        Args.MakeArgString(Twine(DefaultLib ? "-defaultlib:" : "") + Path));
     return true;
   };
 
@@ -313,6 +314,9 @@ void ntposix::Linker::ConstructJob(Compilation &C, const JobAction &JA,
       return;
   }
 
+  // The runtime libraries are default libraries: lld searches them after
+  // every positional input, so a definition in the user's objects or
+  // libraries takes precedence over the same symbol in a runtime archive.
   if (LinkDefaultLibs) {
     // C++ standard library.
     if (TC.ShouldLinkCXXStdlib(Args))
@@ -321,10 +325,11 @@ void ntposix::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     // Unwinder.
     ToolChain::UnwindLibType UNW = TC.GetUnwindLibType(Args);
     if (UNW == ToolChain::UNW_CompilerRT)
-      CmdArgs.push_back("unwind.lib");
+      CmdArgs.push_back("-defaultlib:unwind.lib");
 
     // compiler-rt builtins.
-    CmdArgs.push_back(TC.getCompilerRTArgString(Args, "builtins"));
+    CmdArgs.push_back(Args.MakeArgString(
+        Twine("-defaultlib:") + TC.getCompilerRTArgString(Args, "builtins")));
 
     // llvm-libc and NT kernel libraries. Under -static-libc we pull the
     // static archive (libc.lib) and suppress c.dll's import library so the
@@ -335,12 +340,12 @@ void ntposix::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     if (LinkLibC) {
       const bool StaticLibC = Args.hasArg(options::OPT_static_libc);
       if (StaticLibC) {
-        if (!AddRequiredFile("libc.lib"))
+        if (!AddRequiredFile("libc.lib", /*DefaultLib=*/true))
           return;
         CmdArgs.push_back("-nodefaultlib:c");
         CmdArgs.push_back("-nodefaultlib:c.lib");
       } else {
-        if (!AddRequiredFile("c.lib"))
+        if (!AddRequiredFile("c.lib", /*DefaultLib=*/true))
           return;
       }
     }
@@ -449,9 +454,9 @@ void ntposix::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   // dependencies after libc in the final link line so explicit "-lc" probes
   // under -nodefaultlibs behave like ordinary library checks.
   if (LinkLibC || HasExplicitLibC) {
-    if (!AddRequiredFile("ntdll.lib") ||
-        !AddRequiredFile("sspicli.lib") ||
-        !AddRequiredFile("bcryptprimitives.lib"))
+    if (!AddRequiredFile("ntdll.lib", /*DefaultLib=*/true) ||
+        !AddRequiredFile("sspicli.lib", /*DefaultLib=*/true) ||
+        !AddRequiredFile("bcryptprimitives.lib", /*DefaultLib=*/true))
       return;
   }
 
