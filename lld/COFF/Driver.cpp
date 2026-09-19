@@ -2664,6 +2664,11 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
         }
 
         symtab.resolveAlternateNames();
+
+        // An import-form reference to a symbol that only an archive member
+        // defines links as a direct reference would: load the member. It
+        // may reference further such symbols.
+        symtab.loadLocalImportMembers();
       });
 
       ctx.forEachActiveSymtab([&](SymbolTable &symtab) {
@@ -2704,15 +2709,6 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     addWrappedSymbols(symtab, args);
     // Load more object files that might be needed for wrapped symbols.
     if (!symtab.wrapped.empty())
-      while (run())
-        ;
-  });
-
-  // An import-form reference to a symbol that only an archive member defines
-  // links as a direct reference would: load the member. It may reference
-  // further such symbols.
-  ctx.forEachSymtab([&](SymbolTable &symtab) {
-    while (symtab.loadLocalImportMembers())
       while (run())
         ;
   });

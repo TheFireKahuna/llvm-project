@@ -302,7 +302,7 @@ void SymbolTable::loadMinGWSymbols() {
   }
 }
 
-bool SymbolTable::loadLocalImportMembers() {
+void SymbolTable::loadLocalImportMembers() {
   std::vector<Symbol *> lazies;
   for (auto &i : symMap) {
     Symbol *sym = i.second;
@@ -322,13 +322,20 @@ bool SymbolTable::loadLocalImportMembers() {
              << l->getFile()->getName() << " for __imp_" << l->getName();
     forceLazy(l);
   }
-  return !lazies.empty();
 }
 
 Defined *SymbolTable::impSymbol(StringRef name) {
   if (name.starts_with("__imp_"))
     return nullptr;
   return dyn_cast_or_null<Defined>(find(("__imp_" + name).str()));
+}
+
+bool SymbolTable::isLocalImport(StringRef impName) {
+  if (!ctx.config.autoImport || !impName.consume_front("__imp_"))
+    return false;
+  Symbol *s = find(impName);
+  Defined *d = s ? s->getDefined() : nullptr;
+  return d && !isa<DefinedImportData, DefinedImportThunk>(d);
 }
 
 bool SymbolTable::handleMinGWAutomaticImport(Symbol *sym, StringRef name) {
@@ -435,7 +442,7 @@ void SymbolTable::reportUnresolvable() {
     StringRef name = undef->getName();
     if (name.starts_with("__imp_")) {
       Symbol *imp = find(name.substr(strlen("__imp_")));
-      if (Defined *def = dyn_cast_or_null<Defined>(imp)) {
+      if (Defined *def = imp ? imp->getDefined() : nullptr) {
         def->isUsedInRegularObj = true;
         continue;
       }
@@ -751,7 +758,7 @@ void SymbolTable::initializeSameAddressThunks() {
 Symbol *SymbolTable::addUndefined(StringRef name, InputFile *f,
                                   bool overrideLazy) {
   auto [s, wasInserted] = insert(name, f);
-  if (wasInserted || (s->isLazy() && overrideLazy)) {
+  if (wasInserted || (s->isLazy() && (overrideLazy || isLocalImport(name)))) {
     replaceSymbol<Undefined>(s, name);
     return s;
   }
@@ -840,6 +847,11 @@ void SymbolTable::addLazyArchive(ArchiveFile *f, const Archive::Symbol &sym) {
   auto *u = dyn_cast<Undefined>(s);
   if (!u || (u->weakAlias && !u->isECAlias(machine)) || s->pendingArchiveLoad)
     return;
+  // An import-form reference to a symbol the link defines binds to that
+  // definition; an import library's entry for it would only clash with the
+  // definition under the plain name.
+  if (isLocalImport(name))
+    return;
   s->pendingArchiveLoad = true;
   f->addMember(sym);
 }
@@ -869,7 +881,8 @@ void SymbolTable::addLazyDLLSymbol(DLLFile *f, DLLFile::Symbol *sym,
     return;
   }
   auto *u = dyn_cast<Undefined>(s);
-  if (!u || (u->weakAlias && !u->isECAlias(machine)) || s->pendingArchiveLoad)
+  if (!u || (u->weakAlias && !u->isECAlias(machine)) || s->pendingArchiveLoad ||
+      isLocalImport(n))
     return;
   s->pendingArchiveLoad = true;
   f->makeImport(sym);
@@ -1440,8 +1453,15 @@ void SymbolTable::resolveAlternateNames() {
     StringRef from = pair.first;
     StringRef to = pair.second;
     Symbol *sym = find(from);
-    if (!sym)
-      continue;
+    // A name referenced in import form only takes the alias as well: the
+    // import-form reference binds to what the name resolves to.
+    if (!sym) {
+      Symbol *imp = find(("__imp_" + from).str());
+      if (!isa_and_nonnull<Undefined>(imp))
+        continue;
+      sym = addUndefined(from);
+      sym->isUsedInRegularObj = imp->isUsedInRegularObj;
+    }
     if (auto *u = dyn_cast<Undefined>(sym)) {
       if (u->weakAlias) {
         // On ARM64EC, anti-dependency aliases are treated as undefined

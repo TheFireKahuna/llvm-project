@@ -57,8 +57,10 @@ COFF Improvements
   directly: the ``mov``, ``call`` and ``jmp`` forms (``adrp``/``ldr`` on
   AArch64) are rewritten to reference the definition, and the pointer is
   emitted only for references in other forms. An undefined ``__imp_X`` loads
-  the archive member that defines ``X``. LTO treats every definition in the
-  link as final and drops the ``dllimport`` of such references itself.
+  the archive member that defines ``X``, and takes the ``/alternatename``
+  given to ``X``. With ``-auto-import``, a definition of ``X`` in the link is
+  preferred to an import library's entry for it. LTO treats every definition
+  in the link as final and drops the ``dllimport`` of such references itself.
 
 MinGW Improvements
 ------------------

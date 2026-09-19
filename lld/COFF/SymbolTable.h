@@ -72,8 +72,8 @@ public:
   void resolveRemainingUndefines(std::vector<Undefined *> &aliases);
 
   // Load the archive members that define the plain names behind undefined
-  // __imp_ symbols. Returns true if any were loaded.
-  bool loadLocalImportMembers();
+  // __imp_ symbols.
+  void loadLocalImportMembers();
 
   // Decide for each reference to a locally defined symbol's import pointer
   // whether it is rewritten to reach the definition directly, keep the
@@ -220,6 +220,9 @@ private:
   /// Given a name without "__imp_" prefix, returns a defined symbol
   /// with the "__imp_" prefix, if it exists.
   Defined *impSymbol(StringRef name);
+  /// Whether an undefined "__imp_" symbol names a definition in the link;
+  /// with -auto-import that definition is preferred to an import library's.
+  bool isLocalImport(StringRef impName);
   /// Inserts symbol if not already present.
   std::pair<Symbol *, bool> insert(StringRef name);
   /// Same as insert(Name), but also sets isUsedInRegularObj.
