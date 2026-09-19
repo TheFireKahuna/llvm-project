@@ -19,6 +19,7 @@ include or link path.
 | Itanium registries | `__cxa_atexit`, `__cxa_finalize`, `__cxa_at_quick_exit`, `__cxa_thread_atexit_impl`, `__cxa_thread_finalize` | `cxa_atexit.cpp`, `cxa_thread_atexit.cpp` |
 | C registration | `atexit`, `at_quick_exit`, `_onexit`, `__dllonexit` | `atexit.cpp` |
 | Security | `__security_cookie`, `__security_check_cookie`, `__security_init_cookie`, `__report_gsfailure` | `security.cpp` |
+| /GS frame handlers | `__GSHandlerCheck`, `__GSHandlerCheck_SEH`, `__report_rangecheckfailure`: the language handlers MSVC-built `/GS` objects register on frames with `__try` or `alloca` (x86_64) | `gshandler.cpp` |
 | Control Flow Guard | `__guard_*_fptr`, `_guard_icall_checks_enforced`, unchecked x86_64 dispatcher | `cfguard.cpp`, `cfguard_dispatch.S` |
 | Load configuration | `_load_config_used` | `loadconfig.cpp` |
 | Thread-local storage | `_tls_used`, `_tls_index`, `_tls_start`, `_tls_end`, `__xl_a`, `__xl_z` | `tls.cpp` |
@@ -98,7 +99,13 @@ The C++ runtimes are independent: MSVC exceptions do not cross into Itanium
 frames and vice versa, and objects must be destroyed by the runtime that
 created them. MSVC-compiled C static libraries link into Itanium images; the
 vcruntime symbols they reference (`_onexit`, `__dllonexit`, `_CRT_INIT`,
-`_is_c_termination_complete`, `_purecall`) are provided here.
+`_is_c_termination_complete`, `_purecall`, `__GSHandlerCheck`,
+`__GSHandlerCheck_SEH`, `__report_rangecheckfailure`) are provided here.
+MSVC C++ objects do not link: they need `__CxxFrameHandler` and the MSVC
+STL, and their C++ ABI differs. A foreign SEH exception, raised by hardware
+or by `RaiseException` from MSVC-built code, passes through Itanium frames
+without running their cleanups or `catch (...)`, which is what MSVC's default
+`/EHs` does across frames it does not own.
 
 ## Tests
 

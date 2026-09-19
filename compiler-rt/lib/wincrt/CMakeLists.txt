@@ -62,6 +62,7 @@ set(WINCRT_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/cxa_thread_atexit.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/tls.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/security.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/gshandler.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cfguard.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cfguard_dispatch.S
   ${CMAKE_CURRENT_SOURCE_DIR}/loadconfig.cpp

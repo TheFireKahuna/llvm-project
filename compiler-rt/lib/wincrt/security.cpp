@@ -35,7 +35,7 @@ __declspec(selectany) uintptr_t __security_cookie_complement = ~DefaultCookie;
 extern "C" {
 
 // Declared by the SDK; the definitions match its signature.
-void __cdecl __report_gsfailure(uintptr_t) {
+[[noreturn]] void __cdecl __report_gsfailure(uintptr_t) {
   __fastfail(FAST_FAIL_STACK_COOKIE_CHECK_FAILURE);
 }
 
