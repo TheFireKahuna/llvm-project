@@ -1384,6 +1384,25 @@ bool ItaniumCXXABI::classifyReturnType(CGFunctionInfo &FI) const {
   if (!RD)
     return false;
 
+  // The Itanium ABI leaves the placement of a hidden return pointer to the
+  // platform's calling convention. Microsoft's x64 and ARM64 conventions
+  // return a class from a non-static member function through a hidden
+  // pointer that follows 'this'; Windows Itanium follows them so that a COM
+  // interface implemented by MSVC-built code is called correctly through
+  // its vtable. Which classes a free function returns in registers stays
+  // the Itanium rule below. MinGW keeps GCC's placement instead.
+  if (CGM.getTriple().isWindowsItaniumEnvironment() && FI.isInstanceMethod()) {
+    auto Align = CGM.getContext().getTypeAlignInChars(FI.getReturnType());
+    FI.getReturnInfo() = ABIArgInfo::getIndirect(
+        Align, /*AddrSpace=*/CGM.getDataLayout().getAllocaAddrSpace(),
+        /*ByVal=*/false);
+    FI.getReturnInfo().setSRetAfterThis(true);
+    // The ARM64 convention carries this pointer in x1 rather than x8, which
+    // 'inreg' on a second-position sret selects.
+    FI.getReturnInfo().setInReg(CGM.getTarget().getTriple().isAArch64());
+    return true;
+  }
+
   // If C++ prohibits us from making a copy, return by address.
   if (!RD->canPassInRegisters()) {
     auto Align = CGM.getContext().getTypeAlignInChars(FI.getReturnType());
