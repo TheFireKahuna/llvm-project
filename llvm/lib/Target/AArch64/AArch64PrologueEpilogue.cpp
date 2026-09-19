@@ -867,10 +867,12 @@ void AArch64PrologueEmitter::emitPrologue() {
 
   // SEH funclets are passed the frame pointer in X1.  If the parent
   // function uses the base register, then the base register is used
-  // directly, and is not retrieved from X1.
+  // directly, and is not retrieved from X1.  A cleanup funclet on NT-POSIX
+  // is passed it the same way, since its parent's locals are addressed off
+  // the frame pointer and its caller is the unwind driver.
   if (IsFunclet && F.hasPersonalityFn()) {
     EHPersonality Per = classifyEHPersonality(F.getPersonalityFn());
-    if (isAsynchronousEHPersonality(Per)) {
+    if (isAsynchronousEHPersonality(Per) || usesNTPOSIXCleanupFunclets(F)) {
       BuildMI(MBB, AfterSVESavesI, DL, TII->get(TargetOpcode::COPY),
               AArch64::FP)
           .addReg(AArch64::X1)
