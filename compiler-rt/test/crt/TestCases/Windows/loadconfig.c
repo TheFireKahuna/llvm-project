@@ -77,6 +77,10 @@ struct LoadConfigDir {
 
 extern const struct LoadConfigDir _load_config_used;
 extern char __guard_flags[];
+// An absolute symbol is read through a statically initialised pointer that
+// the compiler cannot fold: code cannot address it relative to the
+// instruction pointer.
+static const char *volatile guard_flags = __guard_flags;
 
 int main() {
   printf("Load config test\n");
@@ -98,7 +102,7 @@ int main() {
   printf("cookie pointer valid = %d\n", cookie_ptr_valid);
 
   // CFG flags are linker absolute values, not a hard-coded runtime default.
-  uint32_t flags = (uint32_t)(uintptr_t)__guard_flags;
+  uint32_t flags = (uint32_t)(uintptr_t)guard_flags;
   int guard_flags_valid = (_load_config_used.GuardFlags == flags);
 #ifdef EXPECT_CFG
   guard_flags_valid &= ((flags & 0x500) == 0x500);

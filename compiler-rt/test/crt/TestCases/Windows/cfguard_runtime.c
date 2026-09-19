@@ -21,6 +21,10 @@
 extern int _guard_icall_checks_enforced(void);
 extern char __wincrt_guard_dispatch_icall_nop[];
 extern char __guard_flags[];
+// An absolute symbol is read through a statically initialised pointer that
+// the compiler cannot fold: code cannot address it relative to the
+// instruction pointer.
+static const char *volatile guard_flags = __guard_flags;
 extern int __cxa_atexit(void (*)(void *), void *, void *);
 
 static void check_readonly(uintptr_t address) {
@@ -54,7 +58,7 @@ static void check_metadata(void) {
   assert(lc->CodeIntegrity.Flags == 0 && lc->CodeIntegrity.Catalog == 0);
   assert(lc->CodeIntegrity.CatalogOffset == 0 &&
          lc->CodeIntegrity.Reserved == 0);
-  assert(lc->GuardFlags == (DWORD)(uintptr_t)__guard_flags);
+  assert(lc->GuardFlags == (DWORD)(uintptr_t)guard_flags);
   check_readonly((uintptr_t)lc);
   check_readonly(lc->GuardCFCheckFunctionPointer);
   check_readonly(lc->GuardCFDispatchFunctionPointer);

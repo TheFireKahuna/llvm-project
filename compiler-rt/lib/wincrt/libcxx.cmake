@@ -16,7 +16,8 @@ function(wincrt_configure_libcxx)
     TARGET_DIRECTORY cxx_shared PROPERTIES
     COMPILE_DEFINITIONS WINCRT_SHARED_CXX_RUNTIME=1
     COMPILE_OPTIONS "-mguard=cf")
-  target_link_options(cxx_shared PRIVATE "LINKER:/guard:cf")
+  # The driver turns this into the guard modes the target supports.
+  target_link_options(cxx_shared PRIVATE "-mguard=cf")
   if(CMAKE_CXX_COMPILER_TARGET MATCHES "^i.86-")
     target_link_options(cxx_shared PRIVATE "LINKER:/include:___cxa_thread_atexit_impl" "LINKER:/include:___wincrt_shared_tls_callback")
   else()

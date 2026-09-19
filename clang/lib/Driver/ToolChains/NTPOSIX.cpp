@@ -50,7 +50,9 @@ NTPOSIXToolChain::NTPOSIXToolChain(const Driver &D,
 
 void NTPOSIXToolChain::addClangTargetOptions(
     const ArgList &DriverArgs, ArgStringList &CC1Args,
-    Action::OffloadKind /*DeviceOffloadKind*/) const {
+    Action::OffloadKind DeviceOffloadKind) const {
+  WindowsItaniumBaseToolChain::addClangTargetOptions(DriverArgs, CC1Args,
+                                                     DeviceOffloadKind);
 
   // Dual-mode libc: by default consumer TUs see c.dll-resident symbols as
   // __declspec(dllimport) via LIBC_API / __LIBC_DATA_IMPORT / __LIBC_FUNC_IMPORT
@@ -61,11 +63,6 @@ void NTPOSIXToolChain::addClangTargetOptions(
   if (!DriverArgs.hasArg(options::OPT_static_libc)) {
     CC1Args.push_back("-D_LIBC_DLL");
   }
-
-  // Avoid LTO link errors from available_externally dllimport inlines.
-  if (!DriverArgs.hasFlag(options::OPT__SLASH_Zc_dllexportInlines,
-                          options::OPT_fno_dllexport_inlines, false))
-    CC1Args.push_back("-fno-dllexport-inlines");
 
   // POSIX-compliant wchar_t: 32-bit signed int (UTF-32).
   if (!DriverArgs.hasArg(options::OPT_fshort_wchar,
@@ -89,18 +86,6 @@ void NTPOSIXToolChain::addClangTargetOptions(
   // who understand the constraint can still pass -mred-zone to opt back in.
   if (!DriverArgs.hasArg(options::OPT_mred_zone, options::OPT_mno_red_zone))
     CC1Args.push_back("-disable-red-zone");
-
-  // Control Flow Guard support.
-  if (Arg *A = DriverArgs.getLastArg(options::OPT_mguard_EQ)) {
-    StringRef GuardArgs = A->getValue();
-    if (GuardArgs == "cf")
-      CC1Args.push_back("-cfguard");
-    else if (GuardArgs == "cf-nochecks")
-      CC1Args.push_back("-cfguard-no-checks");
-    else if (GuardArgs != "none")
-      getDriver().Diag(diag::err_drv_unsupported_option_argument)
-          << A->getSpelling() << GuardArgs;
-  }
 
   // Claim linker-only options to suppress warnings.
   for (auto Opt : {options::OPT_mwindows, options::OPT_mconsole}) {
@@ -410,23 +395,7 @@ void ntposix::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   if (Args.hasArg(options::OPT_fms_hotpatch, options::OPT__SLASH_hotpatch))
     CmdArgs.push_back("-functionpadmin");
 
-  // Control Flow Guard.
-  for (const Arg *A :
-       Args.filtered(options::OPT__SLASH_guard, options::OPT_mguard_EQ)) {
-    StringRef GuardArgs = A->getValue();
-    if (GuardArgs.equals_insensitive("cf") ||
-        GuardArgs.equals_insensitive("cf,nochecks"))
-      CmdArgs.push_back("-guard:cf");
-    else if (GuardArgs.equals_insensitive("cf-"))
-      CmdArgs.push_back("-guard:cf-");
-    else if (GuardArgs.equals_insensitive("ehcont"))
-      CmdArgs.push_back("-guard:ehcont");
-    else if (GuardArgs.equals_insensitive("ehcont-"))
-      CmdArgs.push_back("-guard:ehcont-");
-    else
-      D.Diag(diag::err_drv_unsupported_option_argument)
-          << A->getSpelling() << GuardArgs;
-  }
+  TC.addGuardLinkArgs(Args, CmdArgs, isDLL);
 
   if (Args.hasArg(options::OPT_g_Group, options::OPT__SLASH_Z7))
     CmdArgs.push_back("-debug");

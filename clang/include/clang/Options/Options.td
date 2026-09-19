@@ -5392,7 +5392,7 @@ def marm64x : Joined<["-"], "marm64x">, Group<m_Group>,
   HelpText<"Link as a hybrid ARM64X image">;
 def mguard_EQ : Joined<["-"], "mguard=">, Group<m_Group>,
   HelpText<"Enable or disable Control Flow Guard checks and guard tables emission">,
-  Values<"none,cf,cf-nochecks">;
+  Values<"none,cf,cf-nochecks,ehcont">;
 def mmcu_EQ : Joined<["-"], "mmcu=">, Group<m_Group>;
 def msim : Flag<["-"], "msim">, Group<m_Group>;
 def mfix_and_continue : Flag<["-"], "mfix-and-continue">, Group<clang_ignored_m_Group>;

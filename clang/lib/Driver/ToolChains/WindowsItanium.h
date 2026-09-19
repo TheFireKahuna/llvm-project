@@ -64,6 +64,10 @@ public:
 
   void printVerboseInfo(raw_ostream &OS) const override;
 
+  bool isCETCompatible() const override {
+    return getArch() == llvm::Triple::x86_64;
+  }
+
   VersionTuple computeMSVCVersion(const Driver *D,
                                   const llvm::opt::ArgList &Args) const override;
 

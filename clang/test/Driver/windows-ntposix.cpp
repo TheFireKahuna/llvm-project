@@ -10,8 +10,23 @@
 // CC1-DAG: "-fwchar-type=int"
 // CC1-DAG: "-fsigned-wchar"
 // CC1-DAG: "-pthread"
+// CC1-DAG: "-mdefault-visibility-export-mapping=explicit"
+// CC1-DAG: "-fno-auto-import"
+// CC1-DAG: "-fno-plt"
 // CC1: "-exception-model=seh"
 // CC1-NOT: "-fms-extensions"
+// CC1-NOT: "-ehcontguard"
+// CC1-NOT: "-D_DLL"
+
+// --- Control Flow Guard: no shadow stack marking, so no EH continuation ---
+// RUN: %clang --target=x86_64-pc-windows-ntposix -mguard=cf -nostdlib -### %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=GUARD %s
+// GUARD: "-cc1"
+// GUARD-SAME: "-cfguard"
+// GUARD-NOT: "-ehcontguard"
+// GUARD: lld-link
+// GUARD-NOT: "-cetcompat"
+// GUARD-SAME: "-guard:cf,exportsuppress"
 
 // --- Override dllexport-inlines ---
 // RUN: %clang_cl --target=x86_64-pc-windows-ntposix /Zc:dllexportInlines /c -### -- %s 2>&1 \

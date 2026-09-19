@@ -10,7 +10,34 @@
 // CC1-DAG: "-D_CRT_STDIO_ISO_WIDE_SPECIFIERS"
 // CC1-DAG: "-UCLOCK_REALTIME"
 // CC1-DAG: "-fno-dllexport-inlines"
+// CC1-DAG: "-D_DLL"
+// CC1-DAG: "-mdefault-visibility-export-mapping=explicit"
+// CC1-DAG: "-fno-auto-import"
+// CC1-DAG: "-fno-plt"
+// CC1-DAG: "-ehcontguard"
 // CC1: "-exception-model=seh"
+
+// The import model defaults yield to the user's own flags.
+// RUN: %clang --target=x86_64-unknown-windows-itanium -fplt -fauto-import \
+// RUN:   -mdefault-visibility-export-mapping=none -c -### %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CC1-IMPORT-OPTS %s
+// CC1-IMPORT-OPTS-NOT: warning:
+// CC1-IMPORT-OPTS: "-cc1"
+// CC1-IMPORT-OPTS-SAME: "-mdefault-visibility-export-mapping=none"
+// CC1-IMPORT-OPTS-NOT: "-fno-auto-import"
+// CC1-IMPORT-OPTS-NOT: "-fno-plt"
+// CC1-IMPORT-OPTS-NOT: "-mdefault-visibility-export-mapping=explicit"
+
+// AArch64 keeps direct calls by default; -fno-plt is honoured when asked.
+// RUN: %clang --target=aarch64-unknown-windows-itanium -c -### %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CC1-ARM64 %s
+// CC1-ARM64: "-cc1"
+// CC1-ARM64-NOT: "-fno-plt"
+// CC1-ARM64-NOT: "-ehcontguard"
+// RUN: %clang --target=aarch64-unknown-windows-itanium -fno-plt -c -### %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CC1-ARM64-NOPLT %s
+// CC1-ARM64-NOPLT: "-cc1"
+// CC1-ARM64-NOPLT-SAME: "-fno-plt"
 
 // 32-bit x86 has no table-based SEH: SjLj is the model there.
 // RUN: %clang --target=i686-unknown-windows-itanium -c -### %s 2>&1 \
@@ -49,6 +76,7 @@
 // LINK-DAG: "-defaultlib:kernel32.lib"
 // LINK-DAG: "-defaultlib:ntdll.lib"
 // LINK-DAG: "-auto-import"
+// LINK-DAG: "-cetcompat"
 // LINK-DAG: "-nodefaultlib:msvcrt"
 // LINK-DAG: "-nodefaultlib:vcruntime"
 // LINK-DAG: "-nodefaultlib:libcmt"

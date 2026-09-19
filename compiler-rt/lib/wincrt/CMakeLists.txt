@@ -127,6 +127,15 @@ if(COMPILER_RT_WINCRT_STANDALONE_BUILD)
   endforeach()
 endif()
 
+# The sized delete forwarders belong to the image that links them. Global
+# operator new and delete otherwise carry an explicit default visibility,
+# which the visibility-to-DLL-storage mapping would export from the shared C++
+# runtime and so make the forwarders imports everywhere else.
+set_source_files_properties(
+  delete_sized.cpp delete_sized_array.cpp delete_sized_aligned.cpp
+  delete_sized_aligned_array.cpp
+  PROPERTIES COMPILE_OPTIONS -fvisibility-global-new-delete=source)
+
 add_compiler_rt_runtime(clang_rt.wincrt
   STATIC
   ARCHS ${WINCRT_ARCH}

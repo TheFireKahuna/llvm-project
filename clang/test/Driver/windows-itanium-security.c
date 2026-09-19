@@ -76,7 +76,7 @@
 // COMBINED-SAME: "-cfguard"
 // COMBINED: "-stack-protector" "2"
 // COMBINED: lld-link
-// COMBINED-SAME: "-guard:cf"
+// COMBINED-SAME: "-guard:cf,ehcont,exportsuppress"
 
 // Multi-architecture.
 // RUN: %clang --target=i686-unknown-windows-itanium -fstack-protector-strong -c -### %s 2>&1 \

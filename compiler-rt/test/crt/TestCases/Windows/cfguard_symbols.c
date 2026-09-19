@@ -12,6 +12,10 @@ extern void* __guard_check_icall_fptr;
 extern void* __guard_dispatch_icall_fptr;
 // The address of this linker absolute symbol is the flag value.
 extern char __guard_flags[];
+// An absolute symbol is read through a statically initialised pointer that
+// the compiler cannot fold: code cannot address it relative to the
+// instruction pointer.
+static const char *volatile guard_flags = __guard_flags;
 
 int main() {
   printf("CFG symbols test\n");
@@ -20,7 +24,7 @@ int main() {
          (void*)&__guard_check_icall_fptr);
   printf("__guard_dispatch_icall_fptr address = %p\n",
          (void*)&__guard_dispatch_icall_fptr);
-  uint32_t flags = (uint32_t)(uintptr_t)__guard_flags;
+  uint32_t flags = (uint32_t)(uintptr_t)guard_flags;
   printf("__guard_flags = 0x%08x\n", flags);
 
   int check_fptr_exists = (&__guard_check_icall_fptr != NULL);

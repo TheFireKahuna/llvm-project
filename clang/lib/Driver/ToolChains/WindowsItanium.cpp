@@ -345,27 +345,7 @@ void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   if (Args.hasArg(options::OPT_fms_hotpatch, options::OPT__SLASH_hotpatch))
     CmdArgs.push_back("-functionpadmin");
 
-  // Control Flow Guard checks
-  for (const Arg *A : Args.filtered(options::OPT__SLASH_guard, options::OPT_mguard_EQ)) {
-    StringRef GuardArgs = A->getValue();
-    if (GuardArgs.equals_insensitive("cf") ||
-        GuardArgs.equals_insensitive("cf,nochecks") ||
-        GuardArgs.equals_insensitive("cf-nochecks")) {
-      // The linker builds the same tables whether or not checks are emitted.
-      CmdArgs.push_back("-guard:cf");
-    } else if (GuardArgs.equals_insensitive("cf-")) {
-      CmdArgs.push_back("-guard:cf-");
-    } else if (GuardArgs.equals_insensitive("ehcont")) {
-      CmdArgs.push_back("-guard:ehcont");
-    } else if (GuardArgs.equals_insensitive("ehcont-")) {
-      CmdArgs.push_back("-guard:ehcont-");
-    } else if (GuardArgs.equals_insensitive("none")) {
-      // Nothing to pass; the compile step already emitted no guard tables.
-    } else {
-      D.Diag(diag::err_drv_unsupported_option_argument)
-          << A->getSpelling() << GuardArgs;
-    }
-  }
+  TC.addGuardLinkArgs(Args, CmdArgs, isDLL);
 
   if (Args.hasArg(options::OPT_g_Group, options::OPT__SLASH_Z7))
     CmdArgs.push_back("-debug");
@@ -442,11 +422,9 @@ WindowsItaniumToolChain::computeMSVCVersion(const Driver *D,
 
 void WindowsItaniumToolChain::addClangTargetOptions(
     const ArgList &DriverArgs, ArgStringList &CC1Args,
-    Action::OffloadKind /*DeviceOffloadKind*/) const {
-  // Avoid LTO link errors from available_externally dllimport inlines.
-  if (!DriverArgs.hasFlag(options::OPT__SLASH_Zc_dllexportInlines,
-                          options::OPT_fno_dllexport_inlines, false))
-    CC1Args.push_back("-fno-dllexport-inlines");
+    Action::OffloadKind DeviceOffloadKind) const {
+  WindowsItaniumBaseToolChain::addClangTargetOptions(DriverArgs, CC1Args,
+                                                     DeviceOffloadKind);
 
   if (!DriverArgs.hasArg(options::OPT_fno_ms_extensions))
     CC1Args.push_back("-fms-extensions");
@@ -455,6 +433,10 @@ void WindowsItaniumToolChain::addClangTargetOptions(
   // underscore-prefixed functions (_access, _open, _vsnprintf, etc.).
   // Mirrors MinGW's convention.
   CC1Args.push_back("-D__MSVCRT__");
+
+  // The UCRT is always linked dynamically. _DLL makes its headers declare its
+  // functions and data imported, as they are under MSVC's /MD.
+  CC1Args.push_back("-D_DLL");
 
   // Clang's resource headers (intrin.h, xmmintrin.h, yvals_core.h, ...) gate
   // their MSVC-intrinsic emulation on LLVM_CRT_UCRT rather than _MSC_VER,
@@ -476,17 +458,6 @@ void WindowsItaniumToolChain::addClangTargetOptions(
 
   // Windows lacks sys/time.h.
   CC1Args.push_back("-UCLOCK_REALTIME");
-
-  if (Arg *A = DriverArgs.getLastArg(options::OPT_mguard_EQ)) {
-    StringRef GuardArgs = A->getValue();
-    if (GuardArgs == "cf")
-      CC1Args.push_back("-cfguard");
-    else if (GuardArgs == "cf-nochecks")
-      CC1Args.push_back("-cfguard-no-checks");
-    else if (GuardArgs != "none")
-      getDriver().Diag(diag::err_drv_unsupported_option_argument)
-          << A->getSpelling() << GuardArgs;
-  }
 
   // Linker-only options; claim to suppress unused warnings.
   // -mthreads is MinGW's; the UCRT is always thread-safe.

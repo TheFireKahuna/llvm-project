@@ -12,6 +12,7 @@
 #include "clang/Driver/Driver.h"
 #include "clang/Options/Options.h"
 #include "llvm/Option/Arg.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
@@ -106,6 +107,103 @@ WindowsItaniumBaseToolChain::GetCXXStdlibType(const ArgList &Args) const {
     }
   }
   return ToolChain::CST_Libcxx;
+}
+
+void WindowsItaniumBaseToolChain::addClangTargetOptions(
+    const ArgList &DriverArgs, ArgStringList &CC1Args,
+    Action::OffloadKind /*DeviceOffloadKind*/) const {
+  // Avoid LTO link errors from available_externally dllimport inlines.
+  if (!DriverArgs.hasFlag(options::OPT__SLASH_Zc_dllexportInlines,
+                          options::OPT_fno_dllexport_inlines, false))
+    CC1Args.push_back("-fno-dllexport-inlines");
+
+  // An explicit default visibility marks the shared-library boundary in both
+  // directions: a marked definition is exported and a marked declaration is
+  // imported. A function that the translation unit does not define is called
+  // through the import table, which the linker binds directly when the
+  // definition is in the image. Unmarked data is local unless the user asks
+  // for auto-import.
+  if (!DriverArgs.hasArg(options::OPT_mdefault_visibility_export_mapping_EQ))
+    CC1Args.push_back("-mdefault-visibility-export-mapping=explicit");
+  DriverArgs.AddLastArg(CC1Args,
+                        options::OPT_mdefault_visibility_export_mapping_EQ);
+  if (!DriverArgs.hasArg(options::OPT_fauto_import,
+                         options::OPT_fno_auto_import))
+    CC1Args.push_back("-fno-auto-import");
+  if (DriverArgs.hasFlag(options::OPT_fno_plt, options::OPT_fplt,
+                         getArch() == llvm::Triple::x86_64))
+    CC1Args.push_back("-fno-plt");
+
+  // clang-cl translates /guard: together with its other options.
+  if (!getDriver().IsCLMode()) {
+    GuardOptions Guard = getGuardOptions(DriverArgs);
+    if (Guard.Checks)
+      CC1Args.push_back("-cfguard");
+    else if (Guard.Tables)
+      CC1Args.push_back("-cfguard-no-checks");
+    if (Guard.EHCont && !isCETCompatible())
+      CC1Args.push_back("-ehcontguard");
+  }
+  // Every object records its EH continuation targets, so that the table of
+  // an image linked with Control Flow Guard is complete whichever objects it
+  // combines. Only SEH handlers have targets; the others emit nothing.
+  if (isCETCompatible())
+    CC1Args.push_back("-ehcontguard");
+}
+
+WindowsItaniumBaseToolChain::GuardOptions
+WindowsItaniumBaseToolChain::getGuardOptions(const ArgList &Args) const {
+  GuardOptions Guard;
+  for (const Arg *A :
+       Args.filtered(options::OPT_mguard_EQ, options::OPT__SLASH_guard)) {
+    A->claim();
+    StringRef Value = A->getValue();
+    if (Value.equals_insensitive("cf")) {
+      Guard.Tables = Guard.Checks = true;
+    } else if (Value.equals_insensitive("cf-nochecks") ||
+               Value.equals_insensitive("cf,nochecks")) {
+      Guard.Tables = true;
+      Guard.Checks = false;
+    } else if (Value.equals_insensitive("cf-")) {
+      Guard.Tables = Guard.Checks = false;
+    } else if (Value.equals_insensitive("ehcont")) {
+      Guard.EHCont = true;
+    } else if (Value.equals_insensitive("ehcont-")) {
+      Guard.EHCont = false;
+    } else if (Value.equals_insensitive("none")) {
+      Guard = GuardOptions();
+    } else {
+      getDriver().Diag(diag::err_drv_unsupported_option_argument)
+          << A->getSpelling() << Value;
+    }
+  }
+  return Guard;
+}
+
+void WindowsItaniumBaseToolChain::addGuardLinkArgs(const ArgList &Args,
+                                                   ArgStringList &CmdArgs,
+                                                   bool IsDLL) const {
+  if (isCETCompatible())
+    CmdArgs.push_back("-cetcompat");
+
+  GuardOptions Guard = getGuardOptions(Args);
+  if (isCETCompatible())
+    Guard.EHCont |= Guard.Tables;
+  if (!Guard.Tables && !Guard.EHCont)
+    return;
+
+  // lld-link honours the last -guard: argument only, so every mode goes into
+  // one. Export suppression narrows an executable's valid indirect-call
+  // targets to the exports whose addresses are taken.
+  SmallVector<StringRef, 3> Modes;
+  if (Guard.Tables)
+    Modes.push_back("cf");
+  if (Guard.EHCont)
+    Modes.push_back("ehcont");
+  if (Guard.Tables && !IsDLL)
+    Modes.push_back("exportsuppress");
+  CmdArgs.push_back(
+      Args.MakeArgString("-guard:" + llvm::join(Modes, ",")));
 }
 
 void WindowsItaniumBaseToolChain::AddClangCXXStdlibIncludeArgs(

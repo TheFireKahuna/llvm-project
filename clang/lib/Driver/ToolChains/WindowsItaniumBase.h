@@ -74,6 +74,21 @@ public:
 
   const char *getDefaultLinker() const override { return "lld-link"; }
 
+  /// The import model defaults and the guard modes; the derived toolchains
+  /// call this before adding their own options.
+  void addClangTargetOptions(const llvm::opt::ArgList &DriverArgs,
+                             llvm::opt::ArgStringList &CC1Args,
+                             Action::OffloadKind DeviceOffloadKind) const override;
+
+  /// Whether images are marked compatible with the hardware shadow stack.
+  /// The EH continuation table then accompanies Control Flow Guard, so that
+  /// every continuation the loader has to validate is listed.
+  virtual bool isCETCompatible() const { return false; }
+
+  /// Adds -cetcompat and the single -guard: argument that lld-link honours.
+  void addGuardLinkArgs(const llvm::opt::ArgList &Args,
+                        llvm::opt::ArgStringList &CmdArgs, bool IsDLL) const;
+
   void AddClangCXXStdlibIncludeArgs(
       const llvm::opt::ArgList &DriverArgs,
       llvm::opt::ArgStringList &CC1Args) const override;
@@ -96,6 +111,14 @@ public:
   void printVerboseInfo(raw_ostream &OS) const override;
 
 protected:
+  struct GuardOptions {
+    bool Tables = false; ///< address-taken function tables (cf, cf-nochecks)
+    bool Checks = false; ///< instrumented indirect calls (cf)
+    bool EHCont = false; ///< EH continuation table (ehcont)
+  };
+  /// The guard modes selected by -mguard= and /guard:, in command-line order.
+  GuardOptions getGuardOptions(const llvm::opt::ArgList &Args) const;
+
   void AddSystemIncludeWithSubfolder(const llvm::opt::ArgList &DriverArgs,
                                      llvm::opt::ArgStringList &CC1Args,
                                      const std::string &Folder,
