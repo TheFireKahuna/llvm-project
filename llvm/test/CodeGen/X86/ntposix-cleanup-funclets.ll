@@ -23,7 +23,8 @@ declare i32 @rust_eh_personality(...)
 ; CHECK: .seh_handlerdata
 ; CHECK-NEXT: .p2align 2
 ; CHECK-NEXT: .byte 1
-; CHECK-NEXT: .byte 2
+; CHECK-NEXT: .uleb128 .Lcleanup_end{{[0-9]+}}-[[CB:.Lcleanup_begin[0-9]+]]
+; CHECK-NEXT: [[CB]]:
 ; CHECK-NEXT: .uleb128 [[BEGIN1]]-[[FUNC:.Lfunc_begin[0-9]+]]
 ; CHECK-NEXT: .uleb128 [[FA:.LBB0_[0-9]+]]-[[FUNC]]
 ; CHECK-NEXT: .uleb128 [[BEGIN2]]-[[FUNC]]
@@ -77,7 +78,8 @@ cleanup_b:
 ; CHECK: .seh_handlerdata
 ; CHECK-NEXT: .p2align 2
 ; CHECK-NEXT: .byte 1
-; CHECK-NEXT: .byte 1
+; CHECK-NEXT: .uleb128 .Lcleanup_end{{[0-9]+}}-.Lcleanup_begin{{[0-9]+}}
+; CHECK-NEXT: .Lcleanup_begin{{[0-9]+}}:
 ; CHECK-NEXT: .uleb128 [[MBEGIN1]]-[[MFUNC:.Lfunc_begin[0-9]+]]
 ; CHECK-NEXT: .uleb128 [[MF:.LBB1_[0-9]+]]-[[MFUNC]]
 ; CHECK: GCC_except_table1:
@@ -116,7 +118,8 @@ catch:
 ; CHECK: .seh_handlerdata
 ; CHECK-NEXT: .p2align 2
 ; CHECK-NEXT: .byte 1
-; CHECK-NEXT: .byte 1
+; CHECK-NEXT: .uleb128 .Lcleanup_end{{[0-9]+}}-.Lcleanup_begin{{[0-9]+}}
+; CHECK-NEXT: .Lcleanup_begin{{[0-9]+}}:
 ; CHECK-NEXT: .uleb128 [[ABEGIN]]-[[AFUNC:.Lfunc_begin[0-9]+]]
 ; CHECK-NEXT: .uleb128 [[AF:.LBB2_[0-9]+]]-[[AFUNC]]
 ; CHECK: GCC_except_table2:

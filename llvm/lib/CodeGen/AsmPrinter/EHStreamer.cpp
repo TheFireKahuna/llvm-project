@@ -522,14 +522,20 @@ MCSymbol *EHStreamer::emitExceptionTable() {
   // measure.
   if (Asm->TM.getTargetTriple().isWindowsNTPOSIXEnvironment()) {
     MCSymbol *FuncBegin = CallSiteRanges.front().FragmentBeginLabel;
+    MCSymbol *CleanupBegin = Asm->createTempSymbol("cleanup_begin");
+    MCSymbol *CleanupEnd = Asm->createTempSymbol("cleanup_end");
     Asm->OutStreamer->AddComment("Cleanup table version");
     Asm->emitInt8(1);
-    Asm->OutStreamer->AddComment("Cleanup count");
-    Asm->emitULEB128(Cleanups.size());
+    // The entries' own byte length, so a reader reaches the LSDA behind them
+    // without decoding any of them.
+    Asm->OutStreamer->AddComment("Cleanup table length");
+    Asm->emitLabelDifferenceAsULEB128(CleanupEnd, CleanupBegin);
+    Asm->OutStreamer->emitLabel(CleanupBegin);
     for (const auto &[Begin, Funclet] : Cleanups) {
       Asm->emitLabelDifferenceAsULEB128(Begin, FuncBegin);
       Asm->emitLabelDifferenceAsULEB128(Funclet, FuncBegin);
     }
+    Asm->OutStreamer->emitLabel(CleanupEnd);
   }
 
   // Emit the LSDA.

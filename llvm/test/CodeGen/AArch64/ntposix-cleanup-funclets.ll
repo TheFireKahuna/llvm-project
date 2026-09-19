@@ -22,7 +22,8 @@ declare i32 @rust_eh_personality(...)
 ; CHECK: .seh_handlerdata
 ; CHECK-NEXT: .p2align 2
 ; CHECK-NEXT: .byte 1
-; CHECK-NEXT: .byte 2
+; CHECK-NEXT: .uleb128 .Lcleanup_end{{[0-9]+}}-[[CB:.Lcleanup_begin[0-9]+]]
+; CHECK-NEXT: [[CB]]:
 ; CHECK-NEXT: .uleb128 [[BEGIN1]]-[[FUNC:.Lfunc_begin[0-9]+]]
 ; CHECK-NEXT: .uleb128 [[FA:.LBB0_[0-9]+]]-[[FUNC]]
 ; CHECK-NEXT: .uleb128 [[BEGIN2]]-[[FUNC]]
@@ -68,7 +69,10 @@ cleanup_b:
 ; CHECK: .seh_handlerdata
 ; CHECK-NEXT: .p2align 2
 ; CHECK-NEXT: .byte 1
-; CHECK-NEXT: .byte 1
+; CHECK-NEXT: .uleb128 .Lcleanup_end{{[0-9]+}}-[[MCB:.Lcleanup_begin[0-9]+]]
+; CHECK-NEXT: [[MCB]]:
+; CHECK-NEXT: .uleb128 [[MBEGIN:.Ltmp[0-9]+]]-[[MFUNC:.Lfunc_begin[0-9]+]]
+; CHECK-NEXT: .uleb128 .LBB1_{{[0-9]+}}-[[MFUNC]]
 define void @mixed() personality ptr @rust_eh_personality {
 entry:
   invoke void @may_throw() to label %mid unwind label %cleanup
