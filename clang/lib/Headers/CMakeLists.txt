@@ -341,6 +341,7 @@ set(windows_itanium_files
   vcruntime_startup.h
   vcruntime_string.h
   winnt.h
+  wrl/def.h
 )
 
 set(utility_files
