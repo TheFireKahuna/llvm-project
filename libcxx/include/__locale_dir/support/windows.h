@@ -233,9 +233,32 @@ inline _LIBCPP_HIDE_FROM_ABI size_t __wcsxfrm(wchar_t* __dest, const wchar_t* __
 _LIBCPP_EXPORTED_FROM_ABI _LIBCPP_ATTRIBUTE_FORMAT(__strftime__, 3, 0) size_t
     __strftime(char*, size_t, const char*, const struct tm*, __locale_t);
 #  else
+// The C runtime treats a tm field outside its range as an invalid parameter
+// and terminates the process unless a handler returns. C only leaves the
+// stored characters unspecified for such a field, so let the call fail and
+// store nothing instead, as the MSVCRT-based toolchains do.
+inline _LIBCPP_HIDE_FROM_ABI void
+__strftime_invalid_parameter(const wchar_t*, const wchar_t*, const wchar_t*, unsigned, uintptr_t) {}
+
 inline _LIBCPP_HIDE_FROM_ABI _LIBCPP_ATTRIBUTE_FORMAT(__strftime__, 3, 0) size_t
     __strftime(char* __ret, size_t __n, const char* __format, const struct tm* __tm, __locale_t __loc) {
-  return ::_strftime_l(__ret, __n, __format, __tm, __loc);
+  // The eight validated fields lead the struct, so check them in one vector.
+  typedef int __fields __attribute__((__vector_size__(32)));
+  typedef unsigned __ufields __attribute__((__vector_size__(32)));
+  static_assert(offsetof(tm, tm_sec) == 0 && offsetof(tm, tm_yday) == 7 * sizeof(int), "unexpected tm layout");
+  __fields __v;
+  __builtin_memcpy(&__v, __tm, sizeof(__v));
+  const __fields __low   = {0, 0, 0, 1, 0, -1900, 0, 0};
+  const __ufields __span = {60, 59, 23, 30, 11, 9999, 6, 365};
+  __fields __out_of_range = (__ufields)(__v - __low) > __span;
+  if (__builtin_expect((__out_of_range[0] | __out_of_range[1] | __out_of_range[2] | __out_of_range[3] |
+                        __out_of_range[4] | __out_of_range[5] | __out_of_range[6] | __out_of_range[7]) == 0,
+                       1))
+    return ::_strftime_l(__ret, __n, __format, __tm, __loc);
+  _invalid_parameter_handler __previous = ::_set_thread_local_invalid_parameter_handler(&__strftime_invalid_parameter);
+  size_t __result                       = ::_strftime_l(__ret, __n, __format, __tm, __loc);
+  ::_set_thread_local_invalid_parameter_handler(__previous);
+  return __result;
 }
 #  endif
 
