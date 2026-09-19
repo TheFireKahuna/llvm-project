@@ -154,14 +154,14 @@ TEST(rename, ExistingTemp) {
 
     ASSERT_NO_ERROR(fs::rename(SourceFileName, TargetFileName));
 
-#ifdef _WIN32
-    // Make sure that target was temporarily renamed to target.tmp1 on Windows.
-    // This is signified by a permission denied error as opposed to no such file
-    // or directory when trying to open it.
+    // The mapped destination was superseded in place: the mapping still sees
+    // the old contents, the name has the new ones, and no target.tmp1 was
+    // needed to move the old file out of the way.
+    EXPECT_EQ(StringRef(MFR.const_data(), 10), "!!target!!");
+    EXPECT_TRUE(FileHasContent(TargetFileName, "!!source!!"));
     int Tmp1FD;
-    EXPECT_EQ(errc::permission_denied,
+    EXPECT_EQ(errc::no_such_file_or_directory,
               fs::openFileForRead(TargetTmp1FileName, Tmp1FD));
-#endif
   }
 
   EXPECT_TRUE(FileHasContent(TargetTmp0FileName, "!!target.tmp0!!"));
