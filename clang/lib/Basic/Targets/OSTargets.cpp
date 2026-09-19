@@ -167,6 +167,11 @@ static void addWinItaniumDefines(const llvm::Triple &Triple, const LangOptions &
 
   // Enables __declspec(guard(suppress)) within the Windows SDK (winnt.h)
   Builder.defineMacro("_D1VERSIONLKG171_");
+
+  // oaidl.h and oleauto.h name the VARIANT unions (n1.n2.vt) whenever
+  // __STDC__ is set, which clang sets and MSVC does not. This is the SDK's
+  // own override, so VARIANT keeps its MSVC member names.
+  Builder.defineMacro("_FORCENAMELESSUNION");
 }
 
 static void addVisualCDefines(const llvm::Triple &Triple,
@@ -275,10 +280,10 @@ static void addVisualCDefines(const llvm::Triple &Triple,
   }
 
   if (Opts.MicrosoftExt) {
-    // Signals MSVC extension syntax availability, not compiler identity.
-    if (EmitMSVCIdentityMacros) {
-      Builder.defineMacro("_MSC_EXTENSIONS");
-    }
+    // Not an identity macro: the Windows SDK reads it as "nameless unions and
+    // flexible array members are available" and completes PROPVARIANT,
+    // NT_TIB and the activation-context types only when it is set.
+    Builder.defineMacro("_MSC_EXTENSIONS");
 
     if (Opts.CPlusPlus11) {
       Builder.defineMacro("_RVALUE_REFERENCES_V2_SUPPORTED");

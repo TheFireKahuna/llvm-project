@@ -208,12 +208,16 @@
 // Windows Itanium takes the Microsoft keyword extensions and a compatibility
 // version for the UCRT headers, but is not an MSVC environment: the MSVC
 // identity macros stay off so the SDK never selects its MSVC-only paths.
+// _MSC_EXTENSIONS is not an identity macro: the SDK completes PROPVARIANT and
+// NT_TIB only when it is set. _FORCENAMELESSUNION keeps VARIANT's member
+// names, which oaidl.h otherwise changes because clang defines __STDC__.
 // RUN: %clang_cc1 %s -x c++ -E -dM -triple x86_64-unknown-windows-itanium \
 // RUN:     -fms-extensions -fms-compatibility-version=19.33 -std=c++20 -o - \
 // RUN:   | FileCheck -match-full-lines %s --check-prefix=CHECK-ITANIUM \
 // RUN:       --implicit-check-not=_MSC_VER --implicit-check-not=_MSC_FULL_VER \
-// RUN:       --implicit-check-not=_MSC_BUILD --implicit-check-not=_MSVC_LANG \
-// RUN:       --implicit-check-not=_MSC_EXTENSIONS
+// RUN:       --implicit-check-not=_MSC_BUILD --implicit-check-not=_MSVC_LANG
 // CHECK-ITANIUM: #define _CRT_USE_BUILTIN_OFFSETOF 1
+// CHECK-ITANIUM: #define _FORCENAMELESSUNION 1
+// CHECK-ITANIUM: #define _MSC_EXTENSIONS 1
 // CHECK-ITANIUM: #define _WIN32 1
 // CHECK-ITANIUM: #define _WIN32_ITANIUM 1

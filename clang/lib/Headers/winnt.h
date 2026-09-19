@@ -10,31 +10,7 @@
 #ifndef __clang_winnt_h
 #define __clang_winnt_h
 
-//
-// For compilers that don't support nameless unions/structs
-//
 #if defined(_WIN32_ITANIUM)
-    #ifndef DUMMYUNIONNAME
-        #define DUMMYUNIONNAME
-        #define DUMMYUNIONNAME2  
-        #define DUMMYUNIONNAME3  
-        #define DUMMYUNIONNAME4  
-        #define DUMMYUNIONNAME5  
-        #define DUMMYUNIONNAME6  
-        #define DUMMYUNIONNAME7  
-        #define DUMMYUNIONNAME8  
-        #define DUMMYUNIONNAME9  
-    #endif // DUMMYUNIONNAME
-
-    #ifndef DUMMYSTRUCTNAME
-        #define DUMMYSTRUCTNAME  
-        #define DUMMYSTRUCTNAME2 
-        #define DUMMYSTRUCTNAME3 
-        #define DUMMYSTRUCTNAME4 
-        #define DUMMYSTRUCTNAME5 
-        #define DUMMYSTRUCTNAME6 
-    #endif // DUMMYSTRUCTNAME
-
     #ifdef __cplusplus
     #define TYPE_ALIGNMENT( t ) __alignof(t)
     #endif
