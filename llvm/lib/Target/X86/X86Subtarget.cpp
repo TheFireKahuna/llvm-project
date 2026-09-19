@@ -194,12 +194,13 @@ X86Subtarget::classifyGlobalFunctionReference(const GlobalValue *GV,
     return X86II::MO_NO_FLAG;
 
   // Functions on COFF can be non-DSO local for three reasons:
-  // - They are intrinsic functions (!GV)
+  // - They are runtime library calls (!GV), which go through the import
+  //   table under -fno-plt as they go through the GOT on ELF
   // - They are marked dllimport
   // - They are extern_weak, and a stub is needed
   if (isTargetCOFF()) {
     if (!GV)
-      return X86II::MO_NO_FLAG;
+      return M.getRtLibUseGOT() ? X86II::MO_DLLIMPORT : X86II::MO_NO_FLAG;
     if (GV->hasDLLImportStorageClass())
       return X86II::MO_DLLIMPORT;
     return X86II::MO_COFFSTUB;
