@@ -53,6 +53,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/PatternMatch.h"
 #include "llvm/IR/ModuleSlotTracker.h"
 #include "llvm/IR/Value.h"
 #include "llvm/MC/MCContext.h"
@@ -79,6 +80,7 @@
 #include "LiveDebugValues/LiveDebugValues.h"
 
 using namespace llvm;
+using namespace llvm::PatternMatch;
 
 #define DEBUG_TYPE "codegen"
 
@@ -935,6 +937,13 @@ MCSymbol *MachineFunction::addLandingPad(MachineBasicBlock *LandingPad) {
       LP.TypeIds.push_back(getTypeIDFor(TypeInfo));
     }
 
+  } else if (const auto *CPI = dyn_cast<CleanupPadInst>(FirstI);
+             CPI && CPI->arg_size() == 1 &&
+             match(CPI->getArgOperand(0), m_One())) {
+    // A terminating cleanup funclet (NT-POSIX): its call sites carry the
+    // empty filter, the action nothing passes, so a personality ends the
+    // search at them before any pad is landed or funclet called.
+    LP.TypeIds.push_back(getFilterIDFor({}));
   } else {
     assert(isa<CleanupPadInst>(FirstI) && "Invalid landingpad!");
   }
