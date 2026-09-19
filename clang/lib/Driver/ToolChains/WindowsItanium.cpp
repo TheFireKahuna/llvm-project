@@ -273,10 +273,11 @@ void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     }
   }
 
-  // Code references to data that lives in another DLL are redirected through
-  // the import table. A reference from initialised data cannot be, and there
-  // is no startup relocator to patch it: lld reports it as an error.
-  CmdArgs.push_back("-auto-import");
+  // Static data that holds the address of a symbol from another DLL is
+  // filled by the loader through an import descriptor of its own; wincrt
+  // applies the addends the loader cannot. A definition in the link takes
+  // precedence over an import library's entry for the same name.
+  CmdArgs.push_back("-import-slots");
 
   // Block the MSVC CRT libraries that objects may request through
   // /DEFAULTLIB directives.

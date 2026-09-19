@@ -47,7 +47,7 @@
 // NOSTDLIB-DAG: "-machine:x64"
 // NOSTDLIB-DAG: "-subsystem:console"
 // NOSTDLIB-DAG: "-nologo"
-// NOSTDLIB-DAG: "-auto-import"
+// NOSTDLIB-DAG: "-import-slots"
 // NOSTDLIB-NOT: "-entry:mainCRTStartup"
 // NOSTDLIB-NOT: "crt1.obj"
 // NOSTDLIB-NOT: "c++.lib"
@@ -61,7 +61,7 @@
 // NODEFAULTLIBS: lld-link
 // NODEFAULTLIBS-DAG: "-machine:x64"
 // NODEFAULTLIBS-DAG: "-nologo"
-// NODEFAULTLIBS-DAG: "-auto-import"
+// NODEFAULTLIBS-DAG: "-import-slots"
 // NODEFAULTLIBS-NOT: "c++.lib"
 // NODEFAULTLIBS-NOT: "unwind.lib"
 // NODEFAULTLIBS-NOT: "kernel32.lib"

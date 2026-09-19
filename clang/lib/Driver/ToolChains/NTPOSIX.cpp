@@ -336,10 +336,12 @@ void ntposix::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     }
   }
 
-  // Auto-import enables .refptr. stub collapsing in lld for cross-DLL
-  // variable references. No runtime pseudo-reloc table is needed —
-  // RTTI data refs use dynamic init + SEC_NO_CHANGE sealing instead.
-  CmdArgs.push_back("-auto-import");
+  // Static data that holds the address of a symbol from another DLL is
+  // filled by the loader through an import descriptor of its own. A
+  // definition in the link takes precedence over an import library's entry
+  // for the same name. llvm-libc startup does not apply the addend records
+  // yet, so lld rejects an addend for lack of __import_fixups_start.
+  CmdArgs.push_back("-import-slots");
 
   // Block all MSVC CRT libraries — NT-POSIX never uses them.
   if (!NoDefaultLibs) {

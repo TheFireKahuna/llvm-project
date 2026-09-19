@@ -24,6 +24,7 @@ include or link path.
 | Load configuration | `_load_config_used` | `loadconfig.cpp` |
 | Thread-local storage | `_tls_used`, `_tls_index`, `_tls_start`, `_tls_end`, `__xl_a`, `__xl_z` | `tls.cpp` |
 | Delay loading | `__delayLoadHelper2`, `__HrLoadAllImportsForDll`, `delayimp.h` hooks | `delayload.cpp` |
+| Import slots | addends of loader-filled import slots, from the linker's `__import_fixups_start` records, applied before any initializer | `import_fixups.cpp` |
 | MSVC bridges | `_purecall` over UCRT's handler | `purecall.cpp` |
 | Sized deallocation | The four sized `operator delete` forms, each forwarding to the image's unsized one | `delete_sized*.cpp` |
 | UCRT stdio | `__local_stdio_*_options` for C images, ISO wide-specifier marker | `ucrt_stdio_*.c` |

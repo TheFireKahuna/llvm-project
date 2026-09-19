@@ -138,6 +138,9 @@ namespace wincrt {
 enum class RuntimeError : int { SpaceArg = 8, SpaceEnv = 9, CrtNotInit = 30 };
 [[noreturn]] void fatalError(RuntimeError);
 
+// Adds the linker's recorded addends to the import slots the loader filled
+// (import_fixups.cpp). Idempotent.
+void applyImportFixups();
 // Runs the image's C initializers and C++ constructors once. Returns false
 // when a C initializer fails.
 bool initializeImage();

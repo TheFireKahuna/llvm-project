@@ -72,6 +72,7 @@ set(WINCRT_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/delete_sized_aligned.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/delete_sized_aligned_array.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/delayload.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/import_fixups.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/ucrt_stdio_options.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ucrt_stdio_marker.c
 )

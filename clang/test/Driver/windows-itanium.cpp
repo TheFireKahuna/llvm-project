@@ -75,7 +75,7 @@
 // LINK-DAG: "-defaultlib:ucrt.lib"
 // LINK-DAG: "-defaultlib:kernel32.lib"
 // LINK-DAG: "-defaultlib:ntdll.lib"
-// LINK-DAG: "-auto-import"
+// LINK-DAG: "-import-slots"
 // LINK-DAG: "-cetcompat"
 // LINK-DAG: "-nodefaultlib:msvcrt"
 // LINK-DAG: "-nodefaultlib:vcruntime"
