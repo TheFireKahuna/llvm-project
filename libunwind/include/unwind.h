@@ -207,6 +207,20 @@ extern EXCEPTION_DISPOSITION _GCC_specific_handler(EXCEPTION_RECORD *exc,
                                                    void *frame, CONTEXT *ctx,
                                                    DISPATCHER_CONTEXT *disp,
                                                    _Unwind_Personality_Fn pers);
+// A language runtime may register a translator for SEH exceptions. While the
+// system searches for a handler, _GCC_specific_handler calls it once per frame
+// before asking that frame's personality. The translator returns the exception
+// object the frame is to be offered, or NULL to offer a foreign one that only
+// catch (...) accepts. An object the frame declines is deleted with
+// _Unwind_DeleteException. The second function is asked, when such an object
+// is raised again with _Unwind_RaiseException, for the SEH exception record to
+// raise instead; it returns zero to let the object be raised as it is.
+typedef _Unwind_Exception *(*_Unwind_SEH_Translator)(EXCEPTION_RECORD *exc,
+                                                     CONTEXT *ctx);
+typedef int (*_Unwind_SEH_Rethrow)(_Unwind_Exception *exc,
+                                    EXCEPTION_RECORD *record);
+extern void _Unwind_SetSEHTranslator(_Unwind_SEH_Translator translator,
+                                     _Unwind_SEH_Rethrow rethrow);
 #endif
 
 #ifdef __cplusplus

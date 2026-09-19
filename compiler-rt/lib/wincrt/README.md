@@ -102,10 +102,13 @@ vcruntime symbols they reference (`_onexit`, `__dllonexit`, `_CRT_INIT`,
 `_is_c_termination_complete`, `_purecall`, `__GSHandlerCheck`,
 `__GSHandlerCheck_SEH`, `__report_rangecheckfailure`) are provided here.
 MSVC C++ objects do not link: they need `__CxxFrameHandler` and the MSVC
-STL, and their C++ ABI differs. A foreign SEH exception, raised by hardware
-or by `RaiseException` from MSVC-built code, passes through Itanium frames
-without running their cleanups or `catch (...)`, which is what MSVC's default
-`/EHs` does across frames it does not own.
+STL, and their C++ ABI differs. A structured exception, raised by hardware or
+by `RaiseException` from MSVC-built code, is offered to `catch (...)` in the
+Itanium frames it reaches and runs their cleanups on the way, as MSVC `/EHa`
+does; `_set_se_translator` (`<eh.h>`, provided by libc++abi) turns it into a
+C++ exception of a chosen type, and `-fasync-exceptions` extends the coverage
+from calls to every instruction of a try block or an object's lifetime. Those
+live in libunwind and libc++abi, not here.
 
 ## Tests
 

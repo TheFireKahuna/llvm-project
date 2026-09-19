@@ -166,6 +166,12 @@ extern "C" _LIBCXXABI_FUNC_VIS __cxa_eh_globals * __cxa_get_globals_fast ();
 extern "C" _LIBCXXABI_FUNC_VIS void * __cxa_allocate_dependent_exception ();
 extern "C" _LIBCXXABI_FUNC_VIS void __cxa_free_dependent_exception (void * dependent_exception);
 
+#if defined(__SEH__) && !defined(__USING_SJLJ_EXCEPTIONS__) && defined(_WIN32)
+// Registers with libunwind the translation of structured exceptions into
+// C++ exception objects (cxa_seh_translator.cpp).
+_LIBCXXABI_HIDDEN void registerSEHTranslator();
+#endif
+
 }  // namespace __cxxabiv1
 
 #endif // _CXA_EXCEPTION_H

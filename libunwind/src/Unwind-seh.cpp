@@ -56,6 +56,197 @@ using namespace libunwind;
 /// handling.
 #define STATUS_GCC_UNWIND MAKE_GCC_EXCEPTION(1) // 0x21474343
 
+/// Exception class of the object libunwind hands to a C++ frame for an SEH
+/// exception nobody translated. It matches no C++ runtime's class, so the
+/// personality treats it as foreign: only catch (...) accepts it.
+/// ASCII "LLVMSEH\0".
+#define SEH_EXCEPTION_CLASS 0x4C4C564D53454800ULL
+
+/// Value of private_[5] on every exception object that stands for an SEH
+/// exception, translated or not. While such an object unwinds, frames whose
+/// call-site table has no entry for the return address are passed by instead
+/// of being handed to the personality, which would terminate.
+#define SEH_ORIGIN_MARK ((uintptr_t)0x53454831) // "SEH1"
+
+// Fixed NT status values, for header sets that leave them out.
+#ifndef STATUS_UNWIND
+#define STATUS_UNWIND ((NTSTATUS)0xC0000027L)
+#endif
+#ifndef STATUS_LONGJUMP
+#define STATUS_LONGJUMP ((NTSTATUS)0x80000026L)
+#endif
+#ifndef STATUS_UNWIND_CONSOLIDATE
+#define STATUS_UNWIND_CONSOLIDATE ((NTSTATUS)0x80000029L)
+#endif
+#ifndef STATUS_BREAKPOINT
+#define STATUS_BREAKPOINT ((NTSTATUS)0x80000003L)
+#endif
+
+#if defined(__x86_64__)
+#define CONTEXT_PC(ctx) ((ULONG_PTR)(ctx)->Rip)
+#define CONTEXT_RETVAL(ctx) ((ULONG_PTR)(ctx)->Rax)
+#elif defined(__aarch64__)
+#define CONTEXT_PC(ctx) ((ULONG_PTR)(ctx)->Pc)
+#define CONTEXT_RETVAL(ctx) ((ULONG_PTR)(ctx)->X0)
+#elif defined(__arm__)
+#define CONTEXT_PC(ctx) ((ULONG_PTR)(ctx)->Pc)
+#define CONTEXT_RETVAL(ctx) ((ULONG_PTR)(ctx)->R0)
+#endif
+
+namespace {
+/// What libunwind knows about an SEH exception it is carrying through C++
+/// frames. For a catch (...) the object is on the heap and the personality
+/// deletes it through exception_cleanup. For a cleanup during an unwind that
+/// an __except or __finally frame drives, the object is a per-thread slot and
+/// the target fields say where that unwind was going.
+struct SEHExceptionState {
+  _Unwind_Exception unwind;
+  EXCEPTION_RECORD record;
+  ULONG_PTR targetFrame;
+  ULONG_PTR targetIp;
+  ULONG_PTR returnValue;
+  ULONG_PTR lastFrame;
+};
+
+void sehHeapCleanup(_Unwind_Reason_Code, _Unwind_Exception *exc) { free(exc); }
+void sehSlotCleanup(_Unwind_Reason_Code, _Unwind_Exception *) {}
+
+bool isSEHException(const _Unwind_Exception *exc) {
+  return exc->exception_class == SEH_EXCEPTION_CLASS;
+}
+
+bool isSEHOrigin(const _Unwind_Exception *exc) {
+  return exc->private_[5] == SEH_ORIGIN_MARK;
+}
+
+/// Slots for the unwinds an __except or __finally frame drives through C++
+/// cleanups. Depth counts the unwinds on this thread that may still resume;
+/// one nests inside another only when a destructor run by the first raises
+/// an SEH exception that an __except inside that destructor takes.
+struct SEHUnwindStack {
+  SEHExceptionState slot[4];
+  unsigned depth;
+};
+thread_local SEHUnwindStack sehUnwinds;
+
+/// The translator a language runtime registers: builds an exception object
+/// for an SEH exception, or returns null to leave it foreign; and the
+/// function that gives the record to raise again when such an object is
+/// rethrown.
+_Unwind_SEH_Translator sehTranslator = nullptr;
+_Unwind_SEH_Rethrow sehRethrow = nullptr;
+
+/// Whether the frame's call-site table has an entry containing an address:
+/// the byte before the return address, as the personality looks it up, or
+/// the faulting instruction itself in the frame where a hardware exception
+/// occurred. A C++ personality terminates the process when there is none,
+/// because a C++ exception can only get there through a call the compiler
+/// marked as not throwing. An SEH exception can get there through any call
+/// or instruction, so frames without an entry are passed by without
+/// consulting the personality.
+bool callSiteTableCovers(DISPATCHER_CONTEXT *disp, ULONG_PTR address) {
+  typedef LocalAddressSpace::pint_t pint_t;
+  LocalAddressSpace &as = LocalAddressSpace::sThisAddressSpace;
+  pint_t p = (pint_t)disp->HandlerData;
+  if (p == 0)
+    return false;
+  const pint_t noEnd = (pint_t)-1;
+  uint8_t lpStartEncoding = as.get8(p++);
+  if (lpStartEncoding != DW_EH_PE_omit)
+    as.getEncodedP(p, noEnd, lpStartEncoding, 0);
+  uint8_t ttypeEncoding = as.get8(p++);
+  if (ttypeEncoding != DW_EH_PE_omit)
+    as.getULEB128(p, noEnd);
+  uint8_t callSiteEncoding = as.get8(p++);
+  pint_t callSiteLength = (pint_t)as.getULEB128(p, noEnd);
+  pint_t callSiteEnd = p + callSiteLength;
+  pint_t funcStart = disp->ImageBase + disp->FunctionEntry->BeginAddress;
+  pint_t ipOffset = address - funcStart;
+  while (p < callSiteEnd) {
+    pint_t start = as.getEncodedP(p, callSiteEnd, callSiteEncoding, 0);
+    pint_t length = as.getEncodedP(p, callSiteEnd, callSiteEncoding, 0);
+    as.getEncodedP(p, callSiteEnd, callSiteEncoding, 0);
+    as.getULEB128(p, callSiteEnd);
+    if (ipOffset < start)
+      return false;
+    if (ipOffset < start + length)
+      return true;
+  }
+  return false;
+}
+
+/// Start of the function an entry belongs to. On x86-64 an entry may chain
+/// to the one for an earlier part of the same function.
+ULONG_PTR functionStart(const RUNTIME_FUNCTION *fe, ULONG_PTR base) {
+#if defined(__x86_64__)
+  for (unsigned depth = 0; depth < 8; ++depth) {
+    const uint8_t *info = (const uint8_t *)(base + fe->UnwindData);
+    if (((info[0] >> 3) & UNW_FLAG_CHAININFO) == 0)
+      break;
+    fe = (const RUNTIME_FUNCTION *)(info + 4 + ((info[2] + 1u) & ~1u) * 2);
+  }
+#endif
+  return base + fe->BeginAddress;
+}
+
+/// The bounds of the current thread's stack, from the TEB.
+void currentStackBounds(ULONG_PTR &limit, ULONG_PTR &base) {
+#if defined(__NTPOSIX__) && defined(__x86_64__)
+  // NT_TIB: StackBase at +8, StackLimit at +16, addressed through gs.
+  base = __readgsqword(0x08);
+  limit = __readgsqword(0x10);
+#else
+  NT_TIB *tib = (NT_TIB *)NtCurrentTeb();
+  base = (ULONG_PTR)tib->StackBase;
+  limit = (ULONG_PTR)tib->StackLimit;
+#endif
+}
+
+/// The frame an unwind in progress is heading for. The dispatcher context
+/// carries the target's resume address but not its frame, so the frame is
+/// found by walking the callers of the current frame for the activation of
+/// the function that contains that address. If that function has more than
+/// one activation on the stack, the filters that chose the target cannot be
+/// re-asked, and the walk gives up.
+ULONG_PTR findTargetFrame(DISPATCHER_CONTEXT *disp) {
+  DWORD64 base;
+  RUNTIME_FUNCTION *fe =
+      RtlLookupFunctionEntry(disp->TargetIp, &base, disp->HistoryTable);
+  if (!fe)
+    return 0;
+  ULONG_PTR targetFunction = functionStart(fe, (ULONG_PTR)base);
+  ULONG_PTR stackLimit, stackBase;
+  currentStackBounds(stackLimit, stackBase);
+  CONTEXT ctx = *disp->ContextRecord;
+  ULONG_PTR found = 0;
+  ULONG_PTR previousFrame = disp->EstablisherFrame;
+  bool first = true;
+  for (unsigned steps = 0; steps < 4096; ++steps) {
+    ULONG_PTR pc = CONTEXT_PC(&ctx);
+    if (pc == 0)
+      break;
+    fe = RtlLookupFunctionEntry(first ? pc : pc - 1, &base, disp->HistoryTable);
+    if (!fe)
+      break;
+    PVOID handlerData;
+    ULONG_PTR establisher;
+    RtlVirtualUnwind(UNW_FLAG_NHANDLER, base, pc, fe, &ctx, &handlerData,
+                     &establisher, nullptr);
+    if (establisher < stackLimit || establisher >= stackBase ||
+        (!first && establisher <= previousFrame))
+      break;
+    if (!first && functionStart(fe, (ULONG_PTR)base) == targetFunction) {
+      if (found)
+        return 0;
+      found = establisher;
+    }
+    previousFrame = establisher;
+    first = false;
+  }
+  return found;
+}
+} // namespace
+
 static int __unw_init_seh(unw_cursor_t *cursor, CONTEXT *ctx);
 static DISPATCHER_CONTEXT *__unw_seh_get_disp_ctx(unw_cursor_t *cursor);
 static void __unw_seh_set_disp_ctx(unw_cursor_t *cursor,
@@ -86,6 +277,197 @@ union LOCAL_DISPATCHER_CONTEXT_NONVOLREG_ARM {
   };
 };
 #pragma clang diagnostic pop
+
+/// Points the cursor's IP where the personality expects a return address:
+/// in the frame where a hardware exception occurred, one past the faulting
+/// instruction, so that the byte before it is the instruction itself.
+static void setPersonalityIP(unw_cursor_t *cursor, DISPATCHER_CONTEXT *disp,
+                             bool faultFrame) {
+  __unw_set_reg(cursor, UNW_REG_IP, disp->ControlPc + (faultFrame ? 1 : 0));
+}
+
+/// Runs the cleanups of a frame that an unwind driven by an __except or
+/// __finally frame is passing through. The landing pad cannot return into
+/// that unwind, so the frame is entered through a collided unwind and
+/// _Unwind_Resume() starts the original unwind again from where it stopped.
+static EXCEPTION_DISPOSITION
+unwindForeignFrame(PEXCEPTION_RECORD ms_exc, PVOID frame, bool faultFrame,
+                   DISPATCHER_CONTEXT *disp, _Unwind_Personality_Fn pers) {
+  SEHUnwindStack &stack = sehUnwinds;
+  // An unwind reaching a frame at or above the one another unwind stopped
+  // at means that other unwind has finished or was abandoned.
+  while (stack.depth != 0 &&
+         stack.slot[stack.depth - 1].lastFrame <= (ULONG_PTR)frame)
+    --stack.depth;
+  if (stack.depth == sizeof(stack.slot) / sizeof(stack.slot[0]))
+    return ExceptionContinueSearch;
+  ULONG_PTR targetFrame = findTargetFrame(disp);
+  if (targetFrame == 0)
+    return ExceptionContinueSearch;
+
+  SEHExceptionState *state = &stack.slot[stack.depth];
+  memset(&state->unwind, 0, sizeof(state->unwind));
+  state->unwind.exception_class = SEH_EXCEPTION_CLASS;
+  state->unwind.exception_cleanup = sehSlotCleanup;
+  state->unwind.private_[5] = SEH_ORIGIN_MARK;
+  state->record = *ms_exc;
+  state->record.ExceptionRecord = nullptr;
+  state->targetFrame = targetFrame;
+  state->targetIp = disp->TargetIp;
+  // The unwinder places its return value in the frame context before every
+  // handler call; for __C_specific_handler that is the exception code.
+  state->returnValue = CONTEXT_RETVAL(disp->ContextRecord);
+  state->lastFrame = (ULONG_PTR)frame;
+  ++stack.depth;
+
+  unw_cursor_t cursor;
+  __unw_init_seh(&cursor, disp->ContextRecord);
+  __unw_seh_set_disp_ctx(&cursor, disp);
+  setPersonalityIP(&cursor, disp, faultFrame);
+  _LIBUNWIND_TRACE_UNWINDING("_GCC_specific_handler() foreign unwind at %p "
+                             "towards %p", (void *)frame, (void *)targetFrame);
+  _Unwind_Reason_Code urc =
+      pers(1, _UA_CLEANUP_PHASE, SEH_EXCEPTION_CLASS, &state->unwind,
+           (struct _Unwind_Context *)&cursor);
+  if (urc != _URC_INSTALL_CONTEXT) {
+    --stack.depth;
+    return ExceptionContinueSearch;
+  }
+  uintptr_t retval, target;
+#if defined(__x86_64__)
+  __unw_get_reg(&cursor, UNW_X86_64_RAX, &retval);
+  __unw_get_reg(&cursor, UNW_X86_64_RDX, &state->unwind.private_[3]);
+#elif defined(__arm__)
+  __unw_get_reg(&cursor, UNW_ARM_R0, &retval);
+  __unw_get_reg(&cursor, UNW_ARM_R1, &state->unwind.private_[3]);
+#elif defined(__aarch64__)
+  __unw_get_reg(&cursor, UNW_AARCH64_X0, &retval);
+  __unw_get_reg(&cursor, UNW_AARCH64_X1, &state->unwind.private_[3]);
+#endif
+  // A selector other than zero means the personality chose a catch, which
+  // the system's search pass did not offer this frame. The unwind belongs
+  // to the frame that took the exception; only cleanups run here.
+  if (state->unwind.private_[3] != 0) {
+    --stack.depth;
+    return ExceptionContinueSearch;
+  }
+  __unw_get_reg(&cursor, UNW_REG_IP, &target);
+  EXCEPTION_RECORD rec;
+  memset(&rec, 0, sizeof(rec));
+  rec.ExceptionCode = STATUS_GCC_UNWIND;
+  rec.NumberParameters = 4;
+  rec.ExceptionInformation[3] = state->unwind.private_[3];
+  CONTEXT new_ctx;
+  RtlUnwindEx(frame, (PVOID)target, &rec, (PVOID)retval, &new_ctx,
+              disp->HistoryTable);
+  _LIBUNWIND_ABORT("RtlUnwindEx() failed");
+}
+
+/// Asks a frame's personality, while the system is still looking for a
+/// handler, whether the frame would catch the SEH exception. If it would,
+/// takes the exception over: unwinds to the frame as for a C++ exception,
+/// so the frames in between run their cleanups and the landing pad receives
+/// either the object the translator built or a foreign one standing for the
+/// SEH exception.
+static EXCEPTION_DISPOSITION
+searchForeignFrame(PEXCEPTION_RECORD ms_exc, PVOID frame, PCONTEXT ms_ctx,
+                   bool faultFrame, DISPATCHER_CONTEXT *disp,
+                   _Unwind_Personality_Fn pers) {
+  unw_cursor_t cursor;
+  __unw_init_seh(&cursor, disp->ContextRecord);
+  __unw_seh_set_disp_ctx(&cursor, disp);
+  setPersonalityIP(&cursor, disp, faultFrame);
+
+  _Unwind_Exception *exc = nullptr;
+  if (sehTranslator)
+    exc = sehTranslator(ms_exc, ms_ctx);
+  bool translated = exc != nullptr;
+  _Unwind_Exception probe;
+  if (!translated) {
+    memset(&probe, 0, sizeof(probe));
+    probe.exception_class = SEH_EXCEPTION_CLASS;
+    exc = &probe;
+  }
+  _LIBUNWIND_TRACE_UNWINDING("_GCC_specific_handler() probing %p for a "
+                             "handler of SEH exception %#010lx",
+                             (void *)frame, ms_exc->ExceptionCode);
+  _Unwind_Reason_Code urc =
+      pers(1, _UA_SEARCH_PHASE, exc->exception_class, exc,
+           (struct _Unwind_Context *)&cursor);
+  if (urc != _URC_HANDLER_FOUND) {
+    if (translated)
+      _Unwind_DeleteException(exc);
+    return ExceptionContinueSearch;
+  }
+  if (!translated) {
+    SEHExceptionState *state =
+        (SEHExceptionState *)malloc(sizeof(SEHExceptionState));
+    if (!state)
+      return ExceptionContinueSearch;
+    memset(state, 0, sizeof(*state));
+    state->unwind.exception_class = SEH_EXCEPTION_CLASS;
+    state->unwind.exception_cleanup = sehHeapCleanup;
+    state->record = *ms_exc;
+    state->record.ExceptionRecord = nullptr;
+    exc = &state->unwind;
+  }
+  memset(exc->private_, 0, sizeof(exc->private_));
+  exc->private_[1] = (ULONG_PTR)frame;
+  // The unwind that follows meets the faulting frame again and must offer
+  // the personality the same view of it.
+  exc->private_[4] = faultFrame ? disp->ControlPc : 0;
+  exc->private_[5] = SEH_ORIGIN_MARK;
+  EXCEPTION_RECORD rec;
+  memset(&rec, 0, sizeof(rec));
+  rec.ExceptionCode = STATUS_GCC_THROW;
+  rec.NumberParameters = 4;
+  rec.ExceptionInformation[0] = (ULONG_PTR)exc;
+  rec.ExceptionInformation[1] = (ULONG_PTR)frame;
+  RtlUnwindEx(frame, (PVOID)disp->ControlPc, &rec, exc, disp->ContextRecord,
+              disp->HistoryTable);
+  _LIBUNWIND_ABORT("RtlUnwindEx() failed");
+}
+
+_LIBUNWIND_EXPORT void
+_Unwind_SetSEHTranslator(_Unwind_SEH_Translator translator,
+                         _Unwind_SEH_Rethrow rethrow) {
+  sehTranslator = translator;
+  sehRethrow = rethrow;
+}
+
+/// An exception that is not libunwind's own.
+static EXCEPTION_DISPOSITION
+handleForeignException(PEXCEPTION_RECORD ms_exc, PVOID frame, PCONTEXT ms_ctx,
+                       DISPATCHER_CONTEXT *disp, _Unwind_Personality_Fn pers) {
+  switch (ms_exc->ExceptionCode) {
+  // Unwinds that are not exceptions: longjmp, RtlUnwind, and the record an
+  // MSVC C++ frame uses to enter a catch. Their resume point is not the
+  // dispatcher context's target, so they pass through, as they do in MSVC
+  // code built without /EHa.
+  case (DWORD)STATUS_UNWIND:
+  case (DWORD)STATUS_LONGJUMP:
+  case (DWORD)STATUS_UNWIND_CONSOLIDATE:
+  // A breakpoint is for the debugger, never for a handler.
+  case (DWORD)STATUS_BREAKPOINT:
+    return ExceptionContinueSearch;
+  default:
+    break;
+  }
+  // In the frame where a hardware exception occurred, ControlPc is the
+  // faulting instruction rather than a return address. Only a table that
+  // covers that instruction itself, as one built for asynchronous exceptions
+  // does, has anything to say about it.
+  bool faultFrame = (ULONG_PTR)ms_exc->ExceptionAddress == disp->ControlPc;
+  if (!callSiteTableCovers(disp, disp->ControlPc - (faultFrame ? 0 : 1)))
+    return ExceptionContinueSearch;
+  if (IS_UNWINDING(ms_exc->ExceptionFlags)) {
+    // An exit unwind has no target to resume towards.
+    if (ms_exc->ExceptionFlags & EXCEPTION_EXIT_UNWIND)
+      return ExceptionContinueSearch;
+    return unwindForeignFrame(ms_exc, frame, faultFrame, disp, pers);
+  }
+  return searchForeignFrame(ms_exc, frame, ms_ctx, faultFrame, disp, pers);
+}
 
 /// Common implementation of SEH-style handler functions used by Itanium-
 /// style frames.  Depending on how and why it was called, it may do one of:
@@ -131,16 +513,13 @@ _GCC_specific_handler(PEXCEPTION_RECORD ms_exc, PVOID frame, PCONTEXT ms_ctx,
       action = (_Unwind_Action)ms_exc->ExceptionInformation[2];
     }
   } else {
-    // Foreign exception.
-    // We can't interact with them (we don't know the original target frame
-    // that we should pass on to RtlUnwindEx in _Unwind_Resume), so just
-    // pass without calling our destructors here.
-    return ExceptionContinueSearch;
+    return handleForeignException(ms_exc, frame, ms_ctx, disp, pers);
   }
   if (!ctx) {
     __unw_init_seh(&cursor, disp->ContextRecord);
     __unw_seh_set_disp_ctx(&cursor, disp);
-    __unw_set_reg(&cursor, UNW_REG_IP, disp->ControlPc);
+    setPersonalityIP(&cursor, disp,
+                     isSEHOrigin(exc) && exc->private_[4] == disp->ControlPc);
     ctx = (struct _Unwind_Context *)&cursor;
 
     if (!IS_UNWINDING(ms_exc->ExceptionFlags)) {
@@ -156,6 +535,13 @@ _GCC_specific_handler(PEXCEPTION_RECORD ms_exc, PVOID frame, PCONTEXT ms_ctx,
     }
   }
 
+  // An SEH exception being unwound to a catch (...): frames the compiler
+  // did not expect an exception to pass through get no cleanup call.
+  if ((action & (_UA_CLEANUP_PHASE | _UA_HANDLER_FRAME)) == _UA_CLEANUP_PHASE &&
+      isSEHOrigin(exc) &&
+      !callSiteTableCovers(disp, disp->ControlPc -
+                                     (exc->private_[4] == disp->ControlPc ? 0 : 1)))
+    return ExceptionContinueSearch;
   _LIBUNWIND_TRACE_UNWINDING("_GCC_specific_handler() calling personality "
                              "function %p(1, %d, %llx, %p, %p)",
                              (void *)pers, action, exc->exception_class,
@@ -404,13 +790,31 @@ _Unwind_RaiseException(_Unwind_Exception *exception_object) {
   _LIBUNWIND_TRACE_API("_Unwind_RaiseException(ex_obj=%p)",
                        (void *)exception_object);
 
+  EXCEPTION_RECORD rec;
+  if (isSEHException(exception_object)) {
+    // A rethrown SEH exception: raise the original again. The object is not
+    // reused; a handler that takes it gets a new one.
+    SEHExceptionState *state = (SEHExceptionState *)exception_object;
+    rec = state->record;
+    if (state->unwind.exception_cleanup == sehHeapCleanup)
+      free(state);
+    RtlRaiseException(&rec);
+    return _URC_END_OF_STACK;
+  }
+  if (isSEHOrigin(exception_object) && sehRethrow &&
+      sehRethrow(exception_object, &rec)) {
+    // The runtime's own object for an SEH exception, rethrown: the runtime
+    // keeps the object and the structured exception is raised again.
+    RtlRaiseException(&rec);
+    return _URC_END_OF_STACK;
+  }
+
   // Mark that this is a non-forced unwind, so _Unwind_Resume()
   // can do the right thing.
   memset(exception_object->private_, 0, sizeof(exception_object->private_));
 
   // phase 1: the search phase
   // We'll let the system do that for us.
-  EXCEPTION_RECORD rec;
   memset(&rec, 0, sizeof(rec));
   rec.ExceptionCode = STATUS_GCC_THROW;
   rec.NumberParameters = 1;
@@ -444,6 +848,18 @@ _Unwind_Resume(_Unwind_Exception *exception_object) {
     unwind_phase2_forced(&uc, exception_object,
                          (_Unwind_Stop_Fn) exception_object->private_[0],
                          (void *)exception_object->private_[4]);
+  } else if (isSEHException(exception_object) &&
+             ((SEHExceptionState *)exception_object)->targetFrame != 0) {
+    // A cleanup ran during an unwind that an __except or __finally frame
+    // drives. Start that unwind again from this frame, with the same record
+    // and return value, towards the same target.
+    SEHExceptionState *state = (SEHExceptionState *)exception_object;
+    EXCEPTION_RECORD ms_exc = state->record;
+    CONTEXT ms_ctx;
+    UNWIND_HISTORY_TABLE hist;
+    memset(&hist, 0, sizeof(hist));
+    RtlUnwindEx((PVOID)state->targetFrame, (PVOID)state->targetIp, &ms_exc,
+                (PVOID)state->returnValue, &ms_ctx, &hist);
   } else {
     // Recover the parameters for the unwind from the exception object
     // so we can start unwinding again.

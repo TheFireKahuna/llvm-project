@@ -317,6 +317,7 @@ set(windows_itanium_files
   conio.h
   crtdbg.h
   direct.h
+  eh.h
   excpt.h
   fcntl.h
   io.h
