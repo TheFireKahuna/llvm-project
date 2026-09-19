@@ -19,6 +19,7 @@
 #include "llvm/Support/ConvertUTF.h"
 #include "llvm/Support/IOSandbox.h"
 #include "llvm/Support/WindowsError.h"
+#include <atomic>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -598,16 +599,64 @@ static std::error_code realPathFromHandle(HANDLE H,
   return std::error_code();
 }
 
+// Whether the volume behind a handle is a local fixed disk. The answer is
+// asked for every temporary file and every mapped output, and it takes three
+// system calls to compute, so remember it per volume. The key is the NT
+// device name from the handle's final path (\Device\HarddiskVolume3,
+// \Device\Mup, \Device\VBoxMiniRdr, ...): it names the device the I/O
+// actually goes through, so a local volume and a loopback network share of
+// the same volume never share an entry. The cache is a small lock-free set
+// of (hash, answer) words; when it is full, answers are simply not cached.
+static std::error_code is_local_handle(HANDLE Handle, bool &Result) {
+  SmallVector<wchar_t, 128> NtPath;
+  if (std::error_code EC = realPathFromHandle(Handle, NtPath, VOLUME_NAME_NT))
+    return EC;
+
+  // \Device\<name>: the first two components.
+  size_t Components = 0, DeviceLen = NtPath.size();
+  for (size_t I = 1; I != NtPath.size(); ++I)
+    if (NtPath[I] == L'\\' && ++Components == 2) {
+      DeviceLen = I;
+      break;
+    }
+  // Low bit carries the answer; the hash is kept above it and never zero,
+  // as zero marks an empty slot.
+  uint64_t Key = hash_combine_range(NtPath.begin(), NtPath.begin() + DeviceLen);
+  Key = (Key & ~uint64_t(1)) ? (Key & ~uint64_t(1)) : uint64_t(2);
+
+  static std::atomic<uint64_t> Cache[16];
+  for (std::atomic<uint64_t> &Slot : Cache) {
+    uint64_t V = Slot.load(std::memory_order_acquire);
+    if (V == 0)
+      break;
+    if ((V & ~uint64_t(1)) == Key) {
+      Result = V & 1;
+      return std::error_code();
+    }
+  }
+
+  SmallVector<wchar_t, 128> DosPath;
+  if (std::error_code EC = realPathFromHandle(Handle, DosPath))
+    return EC;
+  if (std::error_code EC = is_local_internal(DosPath, Result))
+    return EC;
+
+  uint64_t Entry = Key | (Result ? 1 : 0);
+  for (std::atomic<uint64_t> &Slot : Cache) {
+    uint64_t Expected = 0;
+    if (Slot.compare_exchange_strong(Expected, Entry,
+                                     std::memory_order_acq_rel) ||
+        (Expected & ~uint64_t(1)) == Key)
+      break;
+  }
+  return std::error_code();
+}
+
 std::error_code is_local(int FD, bool &Result) {
   sandbox::violationIfEnabled();
 
-  SmallVector<wchar_t, 128> FinalPath;
   HANDLE Handle = reinterpret_cast<HANDLE>(_get_osfhandle(FD));
-
-  if (std::error_code EC = realPathFromHandle(Handle, FinalPath))
-    return EC;
-
-  return is_local_internal(FinalPath, Result);
+  return is_local_handle(Handle, Result);
 }
 
 static std::error_code setDeleteDisposition(HANDLE Handle, bool Delete) {
@@ -626,12 +675,8 @@ static std::error_code setDeleteDisposition(HANDLE Handle, bool Delete) {
   // Check if the file is on a network (non-local) drive. If so, don't
   // continue when DeleteFile is true, since it prevents opening the file for
   // writes.
-  SmallVector<wchar_t, 128> FinalPath;
-  if (std::error_code EC = realPathFromHandle(Handle, FinalPath))
-    return EC;
-
   bool IsLocal;
-  if (std::error_code EC = is_local_internal(FinalPath, IsLocal))
+  if (std::error_code EC = is_local_handle(Handle, IsLocal))
     return EC;
 
   if (!IsLocal)
@@ -1255,12 +1300,9 @@ void mapped_file_region::unmapImpl() {
         // cases where we do the flushing. Only do the flushing if we aren't
         // sure we are on a local file system.
         bool IsLocal = false;
-        SmallVector<wchar_t, 128> FinalPath;
-        if (!realPathFromHandle(FileHandle, FinalPath)) {
-          // Not checking the return value here - if the check fails, assume the
-          // file isn't local.
-          is_local_internal(FinalPath, IsLocal);
-        }
+        // Not checking the return value here - if the check fails, assume the
+        // file isn't local.
+        is_local_handle(FileHandle, IsLocal);
         DoFlush = !IsLocal;
       }
       if (DoFlush)
