@@ -246,6 +246,13 @@ void EHStreamer::computeCallSiteTable(
 
   bool IsSJLJ = Asm->MAI->getExceptionHandlingType() == ExceptionHandling::SjLj;
 
+  // Under asynchronous exceptions any instruction may raise one, so two
+  // ranges of the same landing pad are only merged when nothing but labels
+  // and branches lies between them; otherwise the instructions in between
+  // would be covered by a pad that is not theirs.
+  bool IsEHa = Asm->MF->getFunction().getParent()->getModuleFlag("eh-asynch");
+  bool SawInstructionInGap = false;
+
   // Visit all instructions in order of address.
   for (const auto &MBB : *Asm->MF) {
     if (&MBB == &Asm->MF->front() || MBB.isBeginSection()) {
@@ -267,13 +274,17 @@ void EHStreamer::computeCallSiteTable(
       if (!MI.isEHLabel()) {
         if (MI.isCall())
           SawPotentiallyThrowing |= !callToNoUnwindFunction(&MI);
+        if (IsEHa && !MI.isMetaInstruction() && !MI.isTerminator())
+          SawInstructionInGap = true;
         continue;
       }
 
       // End of the previous try-range?
       MCSymbol *BeginLabel = MI.getOperand(0).getMCSymbol();
-      if (BeginLabel == LastLabel)
+      if (BeginLabel == LastLabel) {
         SawPotentiallyThrowing = false;
+        SawInstructionInGap = false;
+      }
 
       // Beginning of a new try-range?
       RangeMapType::const_iterator L = PadMap.find(BeginLabel);
@@ -296,6 +307,8 @@ void EHStreamer::computeCallSiteTable(
         CallSites.push_back({LastLabel, BeginLabel, nullptr, 0});
         PreviousIsInvoke = false;
       }
+      if (SawInstructionInGap)
+        PreviousIsInvoke = false;
 
       LastLabel = LandingPad->EndLabels[P.RangeIndex];
       assert(BeginLabel && LastLabel && "Invalid landing pad!");

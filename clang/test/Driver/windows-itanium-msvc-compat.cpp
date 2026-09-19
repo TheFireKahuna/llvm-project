@@ -89,3 +89,19 @@
 // CL_LINK_NOSTDLIBXX: lld-link
 // CL_LINK_NOSTDLIBXX-NOT: "c++.lib"
 
+// Asynchronous exceptions: /EHa and -fasync-exceptions are accepted, as the
+// Itanium call-site table can describe a range of instructions.
+// RUN: %clang_cl --target=x86_64-unknown-windows-itanium /EHa /c -### -- %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=EHA --implicit-check-not=warning: %s
+// EHA: "-cc1"
+// EHA-SAME: "-fcxx-exceptions"
+// EHA-SAME: "-fexceptions"
+// EHA-SAME: "-fasync-exceptions"
+// RUN: %clang --target=x86_64-unknown-windows-itanium -fasync-exceptions -c -### %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=ASYNC --implicit-check-not=warning: %s
+// ASYNC: "-cc1"
+// ASYNC-SAME: "-fasync-exceptions"
+// RUN: %clang --target=x86_64-w64-windows-gnu -fasync-exceptions -c -### %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=ASYNC_GNU %s
+// ASYNC_GNU: "-cc1"
+// ASYNC_GNU-NOT: "-fasync-exceptions"

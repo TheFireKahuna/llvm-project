@@ -41,6 +41,63 @@ using namespace llvm;
 
 #define DEBUG_TYPE "function-lowering-info"
 
+/// The landing pad in effect for each block of a function compiled with
+/// asynchronous exceptions and a landing-pad personality. The front end
+/// brackets the lifetime of an object with invokes of llvm.seh.scope.begin
+/// and llvm.seh.scope.end, and a try block with a catch (...) with
+/// llvm.seh.try.begin and llvm.seh.try.end, each unwinding to the landing pad
+/// that is in effect inside the bracket. Walking the CFG from the entry,
+/// a begin marker enters its unwind destination and an end marker returns
+/// to the pad that was in effect when that destination was entered. A
+/// landing pad's own code runs under the pad that was in effect when its
+/// scope began. A block reached with two different pads gets none: a fault
+/// there passes through, which is what happens without this table.
+static void computeAsynchEHLandingPads(
+    const Function &Fn,
+    DenseMap<const BasicBlock *, const BasicBlock *> &BlockToPad) {
+  DenseMap<const BasicBlock *, const BasicBlock *> ParentOf;
+  SmallVector<std::pair<const BasicBlock *, const BasicBlock *>, 16> Work;
+  Work.push_back({&Fn.getEntryBlock(), nullptr});
+  while (!Work.empty()) {
+    auto [BB, Pad] = Work.pop_back_val();
+    if (BB->isLandingPad())
+      Pad = ParentOf.lookup(BB);
+    auto [It, Inserted] = BlockToPad.try_emplace(BB, Pad);
+    if (!Inserted) {
+      if (It->second == Pad || It->second == nullptr)
+        continue;
+      // Reached with a different pad: settle on none and propagate that.
+      It->second = nullptr;
+      Pad = nullptr;
+    }
+
+    const BasicBlock *NormalPad = Pad;
+    if (const auto *II = dyn_cast<InvokeInst>(BB->getTerminator())) {
+      if (const Function *Callee = II->getCalledFunction()) {
+        switch (Callee->getIntrinsicID()) {
+        case Intrinsic::seh_scope_begin:
+        case Intrinsic::seh_try_begin: {
+          const BasicBlock *Dest = II->getUnwindDest();
+          auto [PIt, PInserted] = ParentOf.try_emplace(Dest, Pad);
+          if (!PInserted && PIt->second != Pad)
+            PIt->second = nullptr;
+          NormalPad = Dest;
+          break;
+        }
+        case Intrinsic::seh_scope_end:
+        case Intrinsic::seh_try_end:
+          NormalPad = ParentOf.lookup(II->getUnwindDest());
+          break;
+        default:
+          break;
+        }
+      }
+    }
+    for (const BasicBlock *Succ : successors(BB))
+      Work.push_back({Succ, Succ->isLandingPad() ? nullptr : NormalPad});
+  }
+}
+
 /// isUsedOutsideOfDefiningBlock - Return true if this instruction is used by
 /// PHI nodes or outside of the basic block that defines it, or used by a
 /// switch or atomic instruction, which may expand to multiple basic blocks.
@@ -106,6 +163,9 @@ void FunctionLoweringInfo::set(const Function &fn, MachineFunction &mf,
   DenseMap<const AllocaInst *, TinyPtrVector<int *>> CatchObjects;
   EHPersonality Personality = classifyEHPersonality(
       Fn->hasPersonalityFn() ? Fn->getPersonalityFn() : nullptr);
+  if (Fn->hasPersonalityFn() && !isFuncletEHPersonality(Personality) &&
+      Fn->getParent()->getModuleFlag("eh-asynch"))
+    computeAsynchEHLandingPads(*Fn, AsynchEHBlockToPad);
   if (isFuncletEHPersonality(Personality)) {
     // Calculate state numbers if we haven't already.
     WinEHFuncInfo &EHInfo = *MF->getWinEHFuncInfo();
@@ -362,6 +422,7 @@ void FunctionLoweringInfo::set(const Function &fn, MachineFunction &mf,
 void FunctionLoweringInfo::clear() {
   MBBMap.clear();
   ValueMap.clear();
+  AsynchEHBlockToPad.clear();
   VirtReg2Value.clear();
   StaticAllocaMap.clear();
   LiveOutRegInfo.clear();

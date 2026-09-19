@@ -94,6 +94,13 @@ public:
   /// Track virtual registers created for exception pointers.
   DenseMap<const Value *, Register> CatchPadExceptionPointers;
 
+  /// Under asynchronous exceptions with a landing-pad personality: for each
+  /// block, the landing pad an exception raised by one of its instructions
+  /// unwinds to, or null where none is in effect. Derived from the
+  /// llvm.seh.scope.* and llvm.seh.try.* markers before selection and turned
+  /// into call-site ranges afterwards.
+  DenseMap<const BasicBlock *, const BasicBlock *> AsynchEHBlockToPad;
+
   /// Helper object to track which of three possible relocation mechanisms are
   /// used for a particular value being relocated over a statepoint.
   struct StatepointRelocationRecord {

@@ -191,7 +191,9 @@ void *EHScopeStack::pushCleanup(CleanupKind Kind, size_t Size) {
   // consistent with MSVC's behavior, except in the presence of -EHa.
   // Check getInvokeDest() to generate llvm.seh.scope.begin() as needed.
   if (CGF->getLangOpts().EHAsynch && IsEHCleanup && !IsLifetimeMarker &&
-      CGF->getTarget().getCXXABI().isMicrosoft() && CGF->getInvokeDest())
+      (CGF->getTarget().getCXXABI().isMicrosoft() ||
+       EHPersonality::get(*CGF).usesCXXAsynchScopes()) &&
+      CGF->getInvokeDest())
     CGF->EmitSehCppScopeBegin();
 
   return Scope->getCleanupBuffer();
@@ -794,7 +796,7 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough,
       // block.
       if (NormalDeactivateOrigIP.isSet())
         Builder.restoreIP(NormalDeactivateOrigIP);
-      if (Personality.isMSVCXXPersonality() && Builder.GetInsertBlock())
+      if (Personality.usesCXXAsynchScopes() && Builder.GetInsertBlock())
         EmitSehCppScopeEnd();
       if (NormalDeactivateOrigIP.isSet())
         NormalDeactivateOrigIP = Builder.saveAndClearIP();
@@ -810,7 +812,7 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough,
 
       // mark SEH scope end for fall-through flow
       if (IsEHa && getInvokeDest()) {
-        if (Personality.isMSVCXXPersonality())
+        if (Personality.usesCXXAsynchScopes())
           EmitSehCppScopeEnd();
         else
           EmitSehTryScopeEnd();
@@ -852,7 +854,7 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough,
 
       // intercept normal cleanup to mark SEH scope end
       if (IsEHa && getInvokeDest()) {
-        if (Personality.isMSVCXXPersonality())
+        if (Personality.usesCXXAsynchScopes())
           EmitSehCppScopeEnd();
         else
           EmitSehTryScopeEnd();

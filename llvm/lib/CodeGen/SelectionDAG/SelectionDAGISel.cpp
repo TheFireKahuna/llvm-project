@@ -1550,6 +1550,90 @@ void SelectionDAGISel::reportIPToStateForBlocks(MachineFunction *MF) {
   }
 }
 
+// Whether a block holds an instruction the hardware can raise an exception
+// for: a memory access, a call, or an integer division.
+static bool blockMayFault(const BasicBlock *BB) {
+  for (const Instruction &I : *BB) {
+    if (I.mayReadOrWriteMemory() || isa<CallBase>(I))
+      return true;
+    switch (I.getOpcode()) {
+    case Instruction::SDiv:
+    case Instruction::UDiv:
+    case Instruction::SRem:
+    case Instruction::URem:
+      return true;
+    default:
+      break;
+    }
+  }
+  return false;
+}
+
+// With a landing-pad personality, an asynchronous exception is described the
+// way a call is: by a call-site range in the LSDA that names the landing pad.
+// Each block whose landing pad is known gets its instructions wrapped in EH
+// labels registered as ranges of that pad. The ranges of the block's own
+// invoke are left as they are, so the new ranges stop before an invoke's
+// begin label and start again after its end label.
+void SelectionDAGISel::reportAsynchEHLandingPadRanges(MachineFunction *MF) {
+  if (FuncInfo->AsynchEHBlockToPad.empty())
+    return;
+  SmallPtrSet<const MCSymbol *, 16> InvokeBegins, InvokeEnds;
+  for (const LandingPadInfo &LP : MF->getLandingPads()) {
+    InvokeBegins.insert_range(LP.BeginLabels);
+    InvokeEnds.insert_range(LP.EndLabels);
+  }
+  for (MachineBasicBlock &MBB : *MF) {
+    const BasicBlock *BB = MBB.getBasicBlock();
+    if (!BB || !blockMayFault(BB))
+      continue;
+    const BasicBlock *PadBB = FuncInfo->AsynchEHBlockToPad.lookup(BB);
+    if (!PadBB)
+      continue;
+    MachineBasicBlock *PadMBB = FuncInfo->getMBB(PadBB);
+    if (!PadMBB || !PadMBB->isEHPad())
+      continue;
+
+    // Runs of ordinary instructions: no labels, no terminators, and nothing
+    // between an invoke's own labels.
+    MachineBasicBlock::iterator RunBegin = MBB.end();
+    bool InsideInvoke = false;
+    auto closeRun = [&](MachineBasicBlock::iterator RunEnd) {
+      if (RunBegin == MBB.end())
+        return;
+      MCSymbol *BeginLabel = MF->getContext().createTempSymbol();
+      MCSymbol *EndLabel = MF->getContext().createTempSymbol();
+      BuildMI(MBB, RunBegin, RunBegin->getDebugLoc(),
+              TII->get(TargetOpcode::EH_LABEL))
+          .addSym(BeginLabel);
+      BuildMI(MBB, RunEnd, DebugLoc(), TII->get(TargetOpcode::EH_LABEL))
+          .addSym(EndLabel);
+      MF->addInvoke(PadMBB, BeginLabel, EndLabel);
+      RunBegin = MBB.end();
+    };
+    for (auto I = MBB.getFirstNonPHI(), E = MBB.end(); I != E; ++I) {
+      if (I->isEHLabel()) {
+        closeRun(I);
+        const MCSymbol *Sym = I->getOperand(0).getMCSymbol();
+        if (InvokeBegins.contains(Sym))
+          InsideInvoke = true;
+        else if (InvokeEnds.contains(Sym))
+          InsideInvoke = false;
+        continue;
+      }
+      if (I->isTerminator()) {
+        closeRun(I);
+        break;
+      }
+      if (InsideInvoke || I->isMetaInstruction())
+        continue;
+      if (RunBegin == MBB.end())
+        RunBegin = I;
+    }
+    closeRun(MBB.end());
+  }
+}
+
 /// isFoldedOrDeadInstruction - Return true if the specified instruction is
 /// side-effect free and is either dead or folded into a generated instruction.
 /// Return false if it needs to be emitted.
@@ -1971,8 +2055,10 @@ void SelectionDAGISel::SelectAllBasicBlocks(const Function &Fn) {
   }
 
   // AsynchEH: Report Block State under -AsynchEH
-  if (Fn.getParent()->getModuleFlag("eh-asynch"))
+  if (Fn.getParent()->getModuleFlag("eh-asynch")) {
     reportIPToStateForBlocks(MF);
+    reportAsynchEHLandingPadRanges(MF);
+  }
 
   SP->copyToMachineFrameInfo(MF->getFrameInfo());
 

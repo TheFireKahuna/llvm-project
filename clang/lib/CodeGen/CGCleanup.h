@@ -701,6 +701,14 @@ struct EHPersonality {
   bool isWasmPersonality() const { return this == &GNU_Wasm_CPlusPlus; }
 
   bool isMSVCXXPersonality() const { return this == &MSVC_CxxFrameHandler3; }
+
+  /// Under -EHa, does this personality's runtime read the C++ scope markers
+  /// (llvm.seh.scope.begin/end around an object's lifetime, llvm.seh.try.*
+  /// around a catch (...))? MSVC's C++ handler does; so does the Itanium C++
+  /// personality on SEH, where the markers become call-site ranges.
+  bool usesCXXAsynchScopes() const {
+    return isMSVCXXPersonality() || this == &GNU_CPlusPlus_SEH;
+  }
 };
 }
 }
