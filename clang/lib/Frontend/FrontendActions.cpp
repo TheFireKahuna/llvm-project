@@ -326,7 +326,8 @@ GenerateReducedModuleInterfaceAction::CreateASTConsumer(CompilerInstance &CI,
     return nullptr;
   return std::make_unique<ReducedBMIGenerator>(
       CI.getPreprocessor(), CI.getModuleCache(),
-      CI.getFrontendOpts().OutputFile, std::move(BMIOS), CI.getCodeGenOpts());
+      CI.getFrontendOpts().OutputFile, std::move(BMIOS), CI.getCodeGenOpts(),
+      +CI.getFrontendOpts().AllowPCMWithCompilerErrors);
 }
 
 bool GenerateHeaderUnitAction::BeginSourceFileAction(CompilerInstance &CI) {
