@@ -12,7 +12,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/AST/ASTContext.h"
-#include "clang/Basic/DiagnosticFrontend.h"
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Lex/HeaderSearchOptions.h"
 #include "clang/Lex/Preprocessor.h"
@@ -97,18 +96,18 @@ ASTDeserializationListener *PCHGenerator::GetASTDeserializationListener() {
 
 void PCHGenerator::anchor() {}
 
-CXX20ModulesGenerator::CXX20ModulesGenerator(Preprocessor &PP,
-                                             ModuleCache &ModCache,
-                                             StringRef OutputFile,
-                                             const CodeGenOptions &CodeGenOpts,
-                                             bool GeneratingReducedBMI,
-                                             bool AllowASTWithErrors)
+CXX20ModulesGenerator::CXX20ModulesGenerator(
+    Preprocessor &PP, ModuleCache &ModCache, StringRef OutputFile,
+    std::unique_ptr<llvm::raw_pwrite_stream> OS,
+    const CodeGenOptions &CodeGenOpts, bool GeneratingReducedBMI,
+    bool AllowASTWithErrors)
     : PCHGenerator(
           PP, ModCache, OutputFile, llvm::StringRef(),
           std::make_shared<PCHBuffer>(), CodeGenOpts,
           /*Extensions=*/ArrayRef<std::shared_ptr<ModuleFileExtension>>(),
           AllowASTWithErrors, /*IncludeTimestamps=*/false,
-          /*BuildingImplicitModule=*/false, GeneratingReducedBMI) {}
+          /*BuildingImplicitModule=*/false, GeneratingReducedBMI),
+      OS(std::move(OS)) {}
 
 Module *CXX20ModulesGenerator::getEmittingModule(ASTContext &Ctx) {
   Module *M = Ctx.getCurrentNamedModule();
@@ -122,14 +121,6 @@ void CXX20ModulesGenerator::HandleTranslationUnit(ASTContext &Ctx) {
 
   if (!isComplete())
     return;
-
-  std::error_code EC;
-  auto OS = std::make_unique<llvm::raw_fd_ostream>(getOutputFile(), EC);
-  if (EC) {
-    getDiagnostics().Report(diag::err_fe_unable_to_open_output)
-        << getOutputFile() << EC.message() << "\n";
-    return;
-  }
 
   *OS << getBufferPtr()->Data;
   OS->flush();

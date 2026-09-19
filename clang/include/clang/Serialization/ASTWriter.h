@@ -1045,18 +1045,27 @@ public:
 class CXX20ModulesGenerator : public PCHGenerator {
   void anchor() override;
 
+  /// The stream the module file is written to, owned by the frontend's output
+  /// file machinery so that the file is written atomically.
+  std::unique_ptr<llvm::raw_pwrite_stream> OS;
+
 protected:
   virtual Module *getEmittingModule(ASTContext &Ctx) override;
 
   CXX20ModulesGenerator(Preprocessor &PP, ModuleCache &ModCache,
-                        StringRef OutputFile, const CodeGenOptions &CodeGenOpts,
+                        StringRef OutputFile,
+                        std::unique_ptr<llvm::raw_pwrite_stream> OS,
+                        const CodeGenOptions &CodeGenOpts,
                         bool GeneratingReducedBMI, bool AllowASTWithErrors);
 
 public:
   CXX20ModulesGenerator(Preprocessor &PP, ModuleCache &ModCache,
-                        StringRef OutputFile, const CodeGenOptions &CodeGenOpts,
+                        StringRef OutputFile,
+                        std::unique_ptr<llvm::raw_pwrite_stream> OS,
+                        const CodeGenOptions &CodeGenOpts,
                         bool AllowASTWithErrors = false)
-      : CXX20ModulesGenerator(PP, ModCache, OutputFile, CodeGenOpts,
+      : CXX20ModulesGenerator(PP, ModCache, OutputFile, std::move(OS),
+                              CodeGenOpts,
                               /*GeneratingReducedBMI=*/false,
                               AllowASTWithErrors) {}
 
@@ -1068,9 +1077,12 @@ class ReducedBMIGenerator : public CXX20ModulesGenerator {
 
 public:
   ReducedBMIGenerator(Preprocessor &PP, ModuleCache &ModCache,
-                      StringRef OutputFile, const CodeGenOptions &CodeGenOpts,
+                      StringRef OutputFile,
+                      std::unique_ptr<llvm::raw_pwrite_stream> OS,
+                      const CodeGenOptions &CodeGenOpts,
                       bool AllowASTWithErrors = false)
-      : CXX20ModulesGenerator(PP, ModCache, OutputFile, CodeGenOpts,
+      : CXX20ModulesGenerator(PP, ModCache, OutputFile, std::move(OS),
+                              CodeGenOpts,
                               /*GeneratingReducedBMI=*/true,
                               AllowASTWithErrors) {}
 };
