@@ -14,7 +14,7 @@ include or link path.
 | Area | Symbols | Source |
 | --- | --- | --- |
 | Entry points | `mainCRTStartup`, `wmainCRTStartup`, `WinMainCRTStartup`, `wWinMainCRTStartup`, `_DllMainCRTStartup`, default `DllMain`, `_CRT_INIT` | `entry_*.cpp`, `init.cpp` |
-| Initialization | `.CRT$XI*` C initializers, `.CRT$XC*` constructors, pseudo-relocations, UCRT argv/environment setup | `init.cpp` |
+| Initialization | `.CRT$XI*` C initializers, `.CRT$XC*` constructors, UCRT argv/environment setup | `init.cpp` |
 | Termination | UCRT exit callback, `.CRT$XP*`/`.CRT$XT*`, `_amsg_exit`, `_is_c_termination_complete` | `init.cpp` |
 | Itanium registries | `__cxa_atexit`, `__cxa_finalize`, `__cxa_at_quick_exit`, `__cxa_thread_atexit_impl`, `__cxa_thread_finalize` | `cxa_atexit.cpp`, `cxa_thread_atexit.cpp` |
 | C registration | `atexit`, `at_quick_exit`, `_onexit`, `__dllonexit` | `atexit.cpp` |
@@ -30,8 +30,7 @@ include or link path.
 | Import library | `clang_rt.ucrt_memory.lib`: `memcpy` and friends, `setjmp`/`longjmp`, `__C_specific_handler`, purecall handler accessors, which `ucrtbase.dll` exports but `ucrt.lib` omits | `ucrt_memory.def` |
 
 The section sentinels (`__xi_a` ... `__xt_z`), `__dso_handle` and `_fltused`
-come from compiler-rt builtins (`crt_begin_windows.c`, `crt_end_windows.c`),
-as does the pseudo-relocation runtime.
+come from compiler-rt builtins (`crt_begin_windows.c`, `crt_end_windows.c`).
 
 ## Lifetime ownership
 

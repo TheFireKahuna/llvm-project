@@ -29,9 +29,6 @@ INIT_ONCE InitializeOnce = INIT_ONCE_STATIC_INIT;
 LONG ExitCleanupRan;
 
 BOOL __stdcall initializeOnce(PINIT_ONCE, void *, void **) {
-  // Auto-imported data references must be patched before any initializer
-  // can observe them.
-  _pei386_runtime_relocator();
   if (_initterm_e(__xi_a, __xi_z) != 0)
     return FALSE;
   _initterm(__xc_a, __xc_z);

@@ -273,10 +273,10 @@ void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     }
   }
 
-  // Auto-import for vtable pseudo-relocations. LLD generates the table;
-  // the CRT runtime patches it (_pei386_runtime_relocator).
+  // Code references to data that lives in another DLL are redirected through
+  // the import table. A reference from initialised data cannot be, and there
+  // is no startup relocator to patch it: lld reports it as an error.
   CmdArgs.push_back("-auto-import");
-  CmdArgs.push_back("-runtime-pseudo-reloc");
 
   // Block the MSVC CRT libraries that objects may request through
   // /DEFAULTLIB directives.

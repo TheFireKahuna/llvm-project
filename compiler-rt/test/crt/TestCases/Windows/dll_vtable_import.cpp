@@ -1,5 +1,5 @@
-// Test vtable pseudo-relocations across DLL boundary.
-// The pseudo-reloc runtime patches vtable pointers after IAT resolution.
+// Virtual dispatch and destruction across a DLL boundary: the executable
+// constructs and uses classes whose vtables live in the DLL.
 //
 // RUN: %clangxx_crt -DBUILD_DLL -shared %s -o %t.dll -Wl,-implib:%t.lib
 // RUN: %clangxx_crt_main %s %t.lib -o %t.exe

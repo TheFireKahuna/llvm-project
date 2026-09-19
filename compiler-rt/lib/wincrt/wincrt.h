@@ -114,8 +114,8 @@ WINCRT_ALTERNATENAME(__cxa_call_terminate, abort)
 #endif
 
 //===----------------------------------------------------------------------===//
-// Image metadata provided by builtins (crt_begin_windows.c, crt_end_windows.c,
-// crt_pseudo_reloc_windows.cpp) and by the compiler
+// Image metadata provided by builtins (crt_begin_windows.c, crt_end_windows.c)
+// and by the compiler
 //===----------------------------------------------------------------------===//
 
 extern "C" {
@@ -124,7 +124,6 @@ extern _PIFV __xi_a[], __xi_z[]; // .CRT$XIA..XIZ: C initializers
 extern _PVFV __xc_a[], __xc_z[]; // .CRT$XCA..XCZ: C++ constructors
 extern _PVFV __xp_a[], __xp_z[]; // .CRT$XPA..XPZ: pre-terminators
 extern _PVFV __xt_a[], __xt_z[]; // .CRT$XTA..XTZ: terminators
-void _pei386_runtime_relocator(void);
 void __cdecl __security_init_cookie(void);
 [[noreturn]] void __cdecl _amsg_exit(int);
 }
