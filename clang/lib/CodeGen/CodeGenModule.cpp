@@ -2076,15 +2076,46 @@ void CodeGenModule::setDLLImportDLLExport(llvm::GlobalValue *GV,
   setDLLImportDLLExport(GV, D);
 }
 
+bool CodeGenModule::shouldMapVisibilityToDLLImport(const NamedDecl *D) const {
+  // Only COFF has an import table for the storage class to name.
+  if (!getTriple().isOSBinFormatCOFF())
+    return false;
+  LinkageInfo LV = D->getLinkageAndVisibility();
+  // An implicit visibility is applied to definitions only, so a declaration
+  // is local when its visibility is explicitly non-default or when the global
+  // visibility applies to declarations too.
+  if (LV.getVisibility() != DefaultVisibility &&
+      (LV.isVisibilityExplicit() || getLangOpts().SetVisibilityForExternDecls))
+    return false;
+  // A native TLS variable cannot be imported.
+  if (const auto *VD = dyn_cast<VarDecl>(D))
+    if (VD->getTLSKind() != VarDecl::TLS_None)
+      return false;
+  if (LV.isVisibilityExplicit() &&
+      getLangOpts().hasDefaultVisibilityExportMapping())
+    return true;
+  return CodeGenOpts.NoPLT && isa<FunctionDecl>(D);
+}
+
 void CodeGenModule::setDLLImportDLLExport(llvm::GlobalValue *GV,
                                           const NamedDecl *D) const {
   if (D && D->isExternallyVisible()) {
     if (D->hasAttr<DLLImportAttr>())
       GV->setDLLStorageClass(llvm::GlobalVariable::DLLImportStorageClass);
     else if ((D->hasAttr<DLLExportAttr>() ||
-              shouldMapVisibilityToDLLExport(D)) &&
+              (shouldMapVisibilityToDLLExport(D) &&
+               // A discardable function exists in a COFF image only if the
+               // image happened to use it, so it is no promise to importers.
+               !(getTriple().isOSBinFormatCOFF() && isa<llvm::Function>(GV) &&
+                 GV->hasLinkOnceLinkage()))) &&
              !GV->isDeclarationForLinker())
       GV->setDLLStorageClass(llvm::GlobalVariable::DLLExportStorageClass);
+    else if (GV->isDeclarationForLinker()) {
+      if (!GV->hasExternalWeakLinkage() && shouldMapVisibilityToDLLImport(D))
+        GV->setDLLStorageClass(llvm::GlobalVariable::DLLImportStorageClass);
+    } else if (GV->hasDLLImportStorageClass())
+      // A mapped import whose definition turned up in this translation unit.
+      GV->setDLLStorageClass(llvm::GlobalVariable::DefaultStorageClass);
   }
 }
 
@@ -5260,7 +5291,8 @@ bool CodeGenModule::shouldDropDLLAttribute(const Decl *D,
     return false;
   const Decl *MRD = D->getMostRecentDecl();
   return (((SC == llvm::GlobalValue::DLLImportStorageClass &&
-            !MRD->hasAttr<DLLImportAttr>()) ||
+            !MRD->hasAttr<DLLImportAttr>() &&
+            !shouldMapVisibilityToDLLImport(cast<NamedDecl>(MRD))) ||
            (SC == llvm::GlobalValue::DLLExportStorageClass &&
             !MRD->hasAttr<DLLExportAttr>())) &&
           !shouldMapVisibilityToDLLExport(cast<NamedDecl>(MRD)));
@@ -5570,12 +5602,21 @@ GetRuntimeFunctionDecl(ASTContext &C, StringRef Name) {
 
 static void setWindowsItaniumDLLImport(CodeGenModule &CGM, bool Local,
                                        llvm::Function *F, StringRef Name) {
+  if (Local)
+    return;
+  // Under -fno-plt on COFF a call to a function this translation unit does
+  // not define goes through the import table, runtime functions included.
+  if (CGM.getCodeGenOpts().NoPLT && CGM.getTriple().isOSBinFormatCOFF() &&
+      !F->hasExternalWeakLinkage()) {
+    F->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
+    return;
+  }
   // In Windows Itanium environments, try to mark runtime functions
   // dllimport. For Mingw and MSVC, don't. We don't really know if the user
   // will link their standard library statically or dynamically. Marking
   // functions imported when they are not imported can cause linker errors
   // and warnings.
-  if (!Local && CGM.getTriple().isWindowsItaniumEnvironment() &&
+  if (CGM.getTriple().isWindowsItaniumEnvironment() &&
       !CGM.getCodeGenOpts().LTOVisibilityPublicStd) {
     const FunctionDecl *FD = GetRuntimeFunctionDecl(CGM.getContext(), Name);
     if (!FD || FD->hasAttr<DLLImportAttr>()) {

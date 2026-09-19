@@ -974,6 +974,13 @@ public:
             (getLangOpts().isExplicitDefaultVisibilityExportMapping() &&
              D->getLinkageAndVisibility().isVisibilityExplicit()));
   }
+  /// Whether a declaration of D that this translation unit does not define
+  /// is emitted with dllimport storage: it carries an explicit default
+  /// visibility under the visibility-to-DLL-storage mapping, or it is a
+  /// function under -fno-plt on COFF, where the import table takes the place
+  /// of the GOT and the linker binds the reference directly when the
+  /// definition is in the image.
+  bool shouldMapVisibilityToDLLImport(const NamedDecl *D) const;
   void setDLLImportDLLExport(llvm::GlobalValue *GV, GlobalDecl D) const;
   void setDLLImportDLLExport(llvm::GlobalValue *GV, const NamedDecl *D) const;
   /// Set visibility, dllimport/dllexport and dso_local.
