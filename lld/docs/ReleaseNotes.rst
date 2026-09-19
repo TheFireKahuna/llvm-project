@@ -46,6 +46,13 @@ Breaking changes
 COFF Improvements
 -----------------
 
+* A ``__imp_`` reference to a symbol defined in the image is now bound
+  directly: the ``mov``, ``call`` and ``jmp`` forms (``adrp``/``ldr`` on
+  AArch64) are rewritten to reference the definition, and the pointer is
+  emitted only for references in other forms. An undefined ``__imp_X`` loads
+  the archive member that defines ``X``. LTO treats every definition in the
+  link as final and drops the ``dllimport`` of such references itself.
+
 MinGW Improvements
 ------------------
 

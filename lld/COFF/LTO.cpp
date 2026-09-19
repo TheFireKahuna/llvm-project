@@ -10,6 +10,7 @@
 #include "COFFLinkerContext.h"
 #include "Config.h"
 #include "InputFiles.h"
+#include "SymbolTable.h"
 #include "Symbols.h"
 #include "lld/Common/Args.h"
 #include "lld/Common/CommonLinkerContext.h"
@@ -163,6 +164,25 @@ BitcodeCompiler::~BitcodeCompiler() = default;
 
 static void undefine(Symbol *s) { replaceSymbol<Undefined>(s, s->getName()); }
 
+static bool isDefinedInImage(Symbol *s) {
+  Defined *d = s ? s->getDefined() : nullptr;
+  return d && !isa<DefinedImportData, DefinedImportThunk>(d);
+}
+
+// COFF has no symbol preemption: a symbol that resolved to a definition in
+// this link is final, and only one that resolved to another image's export
+// is not. LTO may then bind such references directly, and it drops the
+// dllimport of a declaration whose __imp_ reference resolved to a definition
+// in the image instead of leaving an indirection for the linker to remove.
+static bool isFinalInImage(BitcodeFile &f, const lto::InputFile::Symbol &objSym,
+                           Symbol *sym) {
+  StringRef name = sym->getName();
+  if (!objSym.isUndefined() || !name.consume_front("__imp_"))
+    return isDefinedInImage(sym);
+  return !isa<Defined>(sym) && !f.symtab.isEC() &&
+         isDefinedInImage(f.symtab.find(name));
+}
+
 void BitcodeCompiler::add(BitcodeFile &f) {
   lto::InputFile &obj = *f.obj;
   unsigned symNum = 0;
@@ -185,6 +205,7 @@ void BitcodeCompiler::add(BitcodeFile &f) {
     // be removed.
     r.Prevailing = !objSym.isUndefined() && sym->getFile() == &f;
     r.VisibleToRegularObj = sym->isUsedInRegularObj;
+    r.FinalDefinitionInLinkageUnit = isFinalInImage(f, objSym, sym);
     if (r.Prevailing)
       undefine(sym);
 
