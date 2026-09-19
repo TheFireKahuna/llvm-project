@@ -2278,6 +2278,8 @@ void AsmPrinter::emitFunctionBody() {
 
       for (auto &Handler : Handlers)
         Handler->beginInstruction(&MI);
+      for (auto &Handler : EHHandlers)
+        Handler->beginInstruction(&MI);
 
       if (isVerbose())
         emitComments(MI, STI, OutStreamer->getCommentOS());
@@ -2474,6 +2476,8 @@ void AsmPrinter::emitFunctionBody() {
       }
 
       for (auto &Handler : Handlers)
+        Handler->endInstruction();
+      for (auto &Handler : EHHandlers)
         Handler->endInstruction();
     }
     // Emit the remaining prefetch targets for this block. This includes
