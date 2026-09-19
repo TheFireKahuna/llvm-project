@@ -3366,8 +3366,12 @@ void MicrosoftRecordLayoutBuilder::computeVtorDispSet(
 }
 
 bool ASTContext::defaultsToMsStruct() const {
+  // Every Windows environment that consumes Microsoft-built C libraries lays
+  // out bit-fields as MSVC does, so a struct declared in a third-party header
+  // has one layout on both sides of the boundary.
   return getTargetInfo().hasMicrosoftRecordLayout() ||
-         getTargetInfo().getTriple().isWindowsGNUEnvironment();
+         getTargetInfo().getTriple().isWindowsGNUEnvironment() ||
+         getTargetInfo().getTriple().isWindowsItaniumEnvironment();
 }
 
 /// getASTRecordLayout - Get or compute information about the layout of the
