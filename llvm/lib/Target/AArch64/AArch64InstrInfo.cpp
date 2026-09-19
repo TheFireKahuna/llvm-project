@@ -259,6 +259,15 @@ unsigned AArch64InstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
     // 4-byte insn.
     NumBytes = 4;
     break;
+  case AArch64::CLEANUPRET:
+    // On NT-POSIX a cleanup that unwinds to another cleanup funclet continues
+    // there itself: a move of the establisher frame and a branch.
+    NumBytes = MF->getTarget().getTargetTriple().isWindowsNTPOSIXEnvironment() &&
+                       !MBB.succ_empty() &&
+                       (*MBB.succ_begin())->isCleanupFuncletEntry()
+                   ? 8
+                   : 4;
+    break;
   case TargetOpcode::STACKMAP:
     // The upper bound for a stackmap intrinsic is the full length of its shadow
     NumBytes = StackMapOpers(&MI).getNumPatchBytes();

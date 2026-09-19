@@ -41,7 +41,8 @@ static bool runEHContGuardTargets(MachineFunction &MF) {
 
   // Under Windows EH with a landing-pad personality, the unwinder enters each
   // landing pad by setting the instruction pointer, as it enters a catchret
-  // target under a funclet personality.
+  // target under a funclet personality. A cleanup funclet it calls is a pad
+  // but not a continuation.
   bool LandingPads = false;
   if (F.hasPersonalityFn() &&
       !isFuncletEHPersonality(classifyEHPersonality(F.getPersonalityFn()))) {
@@ -58,7 +59,7 @@ static bool runEHContGuardTargets(MachineFunction &MF) {
   bool Result = false;
 
   for (MachineBasicBlock &MBB : MF) {
-    if (LandingPads && MBB.isEHPad()) {
+    if (LandingPads && MBB.isEHPad() && !MBB.isEHFuncletEntry()) {
       MBB.setIsEHContTarget();
       MF.setHasEHContTarget(true);
     }
