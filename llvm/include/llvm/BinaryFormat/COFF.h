@@ -818,6 +818,16 @@ enum class GuardFlags : uint32_t {
   CF_FUNCTION_TABLE_SIZE_19BYTES = 0xF0000000,
 };
 
+/// Flags in the byte that follows each RVA of a guard function table whose
+/// stride is one extra byte.
+enum class GuardFunctionTableFlags : uint8_t {
+  /// The entry is not a valid target; it is listed for other purposes.
+  FID_SUPPRESSED = 0x1,
+  /// The entry is a valid target only because it is exported: it becomes one
+  /// once GetProcAddress hands it out, in a process that suppresses exports.
+  EXPORT_SUPPRESSED = 0x2,
+};
+
 struct ImportHeader {
   uint16_t Sig1; ///< Must be IMAGE_FILE_MACHINE_UNKNOWN (0).
   uint16_t Sig2; ///< Must be 0xFFFF.

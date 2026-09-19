@@ -243,7 +243,8 @@ private:
   void createECChunks();
   void insertCtorDtorSymbols();
   void insertBssDataStartEndSymbols();
-  void markSymbolsWithRelocations(ObjFile *file, SymbolRVASet &usedSymbols);
+  void markSymbolsWithRelocations(ObjFile *file, SymbolRVASet &usedSymbols,
+                                  SymbolRVASet &usedImports);
   void createGuardCFTables();
   void markSymbolsForRVATable(ObjFile *file,
                               ArrayRef<SectionChunk *> symIdxChunks,
@@ -252,7 +253,8 @@ private:
                               ArrayRef<SectionChunk *> symIdxChunks,
                               std::vector<Symbol *> &symbols);
   void maybeAddRVATable(SymbolRVASet tableSymbols, StringRef tableSym,
-                        StringRef countSym, bool hasFlag=false);
+                        StringRef countSym, bool hasFlag = false,
+                        SymbolRVASet exportSuppressed = {});
   void setSectionPermissions();
   void setECSymbols();
   void writeSections();
@@ -2132,7 +2134,8 @@ static void maybeAddAddressTakenFunction(SymbolRVASet &addressTakenSyms,
 // Visit all relocations from all section contributions of this object file and
 // mark the relocation target as address-taken.
 void Writer::markSymbolsWithRelocations(ObjFile *file,
-                                        SymbolRVASet &usedSymbols) {
+                                        SymbolRVASet &usedSymbols,
+                                        SymbolRVASet &usedImports) {
   for (Chunk *c : file->getChunks()) {
     // We only care about live section chunks. Common chunks and other chunks
     // don't generally contain relocations.
@@ -2148,6 +2151,15 @@ void Writer::markSymbolsWithRelocations(ObjFile *file,
         continue;
 
       Symbol *ref = sc->file->getSymbol(reloc.SymbolTableIndex);
+      // An import pointer read by anything but a call or jump through it
+      // hands the imported address to code that may check it.
+      if (auto *imp = dyn_cast_or_null<DefinedImportData>(ref)) {
+        SectionChunk::ImportRefForm form = sc->getImportRefForm(reloc);
+        if (form != SectionChunk::ImportRefForm::Call &&
+            form != SectionChunk::ImportRefForm::Jump)
+          addSymbolToRVASet(usedImports, imp);
+        continue;
+      }
       maybeAddAddressTakenFunction(usedSymbols, ref);
     }
   }
@@ -2192,7 +2204,7 @@ void Writer::createGuardCFTables() {
       getSymbolsFromSections(file, file->getGuardIATChunks(), giatsSymbols);
       markSymbolsForRVATable(file, file->getGuardLJmpChunks(), longJmpTargets);
     } else {
-      markSymbolsWithRelocations(file, addressTakenSyms);
+      markSymbolsWithRelocations(file, addressTakenSyms, giatsRVASet);
     }
     // If the object was compiled with /guard:ehcont, the ehcont targets are in
     // .gehcont$y sections.
@@ -2201,13 +2213,14 @@ void Writer::createGuardCFTables() {
   }
 
   // Mark the image entry as address-taken.
+  SymbolRVASet exportedSyms;
   ctx.forEachSymtab([&](SymbolTable &symtab) {
     if (symtab.entry)
       maybeAddAddressTakenFunction(addressTakenSyms, symtab.entry);
 
     // Mark exported symbols in executable sections as address-taken.
     for (Export &e : symtab.exports)
-      maybeAddAddressTakenFunction(addressTakenSyms, e.sym);
+      maybeAddAddressTakenFunction(exportedSyms, e.sym);
   });
 
   // Import entries whose address code takes through a rewritten thunk
@@ -2227,38 +2240,59 @@ void Writer::createGuardCFTables() {
   }
 
   // Ensure sections referenced in the gfid table are 16-byte aligned.
-  for (const ChunkAndOffset &c : addressTakenSyms)
-    if (c.inputChunk->getAlignment() < 16)
-      c.inputChunk->setAlignment(16);
+  for (const SymbolRVASet *set : {&addressTakenSyms, &exportedSyms})
+    for (const ChunkAndOffset &c : *set)
+      if (c.inputChunk->getAlignment() < 16)
+        c.inputChunk->setAlignment(16);
+
+  // A function that is a target only because it is exported is marked as
+  // export-suppressed: a process that enables the suppression accepts it once
+  // GetProcAddress has handed it out. The mark needs a 16-byte aligned entry.
+  SymbolRVASet exportSuppressed;
+  for (const ChunkAndOffset &c : exportedSyms)
+    if (!addressTakenSyms.contains(c))
+      (c.offset % 16 == 0 ? exportSuppressed : addressTakenSyms).insert(c);
 
   maybeAddRVATable(std::move(addressTakenSyms), "__guard_fids_table",
-                   "__guard_fids_count");
+                   "__guard_fids_count", true, std::move(exportSuppressed));
 
   // Add the Guard Address Taken IAT Entry Table (.giats).
   maybeAddRVATable(std::move(giatsRVASet), "__guard_iat_table",
-                   "__guard_iat_count");
+                   "__guard_iat_count", true);
 
   // Add the longjmp target table unless the user told us not to.
   if (config->guardCF & GuardCFLevel::LongJmp)
     maybeAddRVATable(std::move(longJmpTargets), "__guard_longjmp_table",
-                     "__guard_longjmp_count");
+                     "__guard_longjmp_count", true);
 
   // Add the ehcont target table unless the user told us not to.
   if (config->guardCF & GuardCFLevel::EHCont)
     maybeAddRVATable(std::move(ehContTargets), "__guard_eh_cont_table",
-                     "__guard_eh_cont_count");
+                     "__guard_eh_cont_count", true);
 
   // Set __guard_flags, which will be used in the load config to indicate that
-  // /guard:cf was enabled.
+  // /guard:cf was enabled. Every table has a flag byte per entry.
   uint32_t guardFlags = uint32_t(GuardFlags::CF_INSTRUMENTED) |
-                        uint32_t(GuardFlags::CF_FUNCTION_TABLE_PRESENT);
+                        uint32_t(GuardFlags::CF_FUNCTION_TABLE_PRESENT) |
+                        uint32_t(GuardFlags::CF_FUNCTION_TABLE_SIZE_5BYTES);
   if (config->guardCF & GuardCFLevel::LongJmp)
     guardFlags |= uint32_t(GuardFlags::CF_LONGJUMP_TABLE_PRESENT);
   if (config->guardCF & GuardCFLevel::EHCont)
     guardFlags |= uint32_t(GuardFlags::EH_CONTINUATION_TABLE_PRESENT);
-  ctx.forEachSymtab([guardFlags](SymbolTable &symtab) {
+  if (config->guardCF & GuardCFLevel::ExportSuppress)
+    guardFlags |= uint32_t(GuardFlags::CF_ENABLE_EXPORT_SUPPRESSION);
+  // The export marks and the address-taken IAT table are complete, which
+  // matters only where the load configuration reaches that table.
+  size_t giatsEnd =
+      config->is64()
+          ? offsetof(coff_load_configuration64, GuardLongJumpTargetTable)
+          : offsetof(coff_load_configuration32, GuardLongJumpTargetTable);
+  ctx.forEachSymtab([&](SymbolTable &symtab) {
+    uint32_t flags = guardFlags;
+    if (symtab.loadConfigSize >= giatsEnd)
+      flags |= uint32_t(GuardFlags::CF_EXPORT_SUPPRESSION_INFO_PRESENT);
     Symbol *flagSym = symtab.findUnderscore("__guard_flags");
-    cast<DefinedAbsolute>(flagSym)->setVA(guardFlags);
+    cast<DefinedAbsolute>(flagSym)->setVA(flags);
   });
 }
 
@@ -2319,13 +2353,15 @@ void Writer::markSymbolsForRVATable(ObjFile *file,
 // tableChunk so that we can emit base relocations for it and resolve section
 // relative relocations.
 void Writer::maybeAddRVATable(SymbolRVASet tableSymbols, StringRef tableSym,
-                              StringRef countSym, bool hasFlag) {
-  if (tableSymbols.empty())
+                              StringRef countSym, bool hasFlag,
+                              SymbolRVASet exportSuppressed) {
+  if (tableSymbols.empty() && exportSuppressed.empty())
     return;
 
   NonSectionChunk *tableChunk;
   if (hasFlag)
-    tableChunk = make<RVAFlagTableChunk>(std::move(tableSymbols));
+    tableChunk = make<RVAFlagTableChunk>(std::move(tableSymbols),
+                                         std::move(exportSuppressed));
   else
     tableChunk = make<RVATableChunk>(std::move(tableSymbols));
   rdataSec->addChunk(tableChunk);

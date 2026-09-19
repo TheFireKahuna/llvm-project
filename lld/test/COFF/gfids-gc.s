@@ -29,7 +29,7 @@
 # CHECK-NOGC:   GuardCFCheckDispatch: 0x0
 # CHECK-NOGC:   GuardCFFunctionTable: 0x14000{{.*}}
 # CHECK-NOGC:   GuardCFFunctionCount: 3
-# CHECK-NOGC:   GuardFlags [ (0x500)
+# CHECK-NOGC:   GuardFlags [ (0x10004500)
 # CHECK-NOGC:     CF_FUNCTION_TABLE_PRESENT (0x400)
 # CHECK-NOGC:     CF_INSTRUMENTED (0x100)
 # CHECK-NOGC:   ]
@@ -55,7 +55,7 @@
 # CHECK-GC:   GuardCFCheckDispatch: 0x0
 # CHECK-GC:   GuardCFFunctionTable: 0x14000{{.*}}
 # CHECK-GC:   GuardCFFunctionCount: 2
-# CHECK-GC:   GuardFlags [ (0x500)
+# CHECK-GC:   GuardFlags [ (0x10004500)
 # CHECK-GC:     CF_FUNCTION_TABLE_PRESENT (0x400)
 # CHECK-GC:     CF_INSTRUMENTED (0x100)
 # CHECK-GC:   ]

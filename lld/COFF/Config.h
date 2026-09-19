@@ -94,7 +94,8 @@ enum GuardCFLevel {
   CF      = 0x1, /// Emit gfids tables
   LongJmp = 0x2, /// Emit longjmp tables
   EHCont  = 0x4, /// Emit ehcont tables
-  All     = 0x7  /// Enable all protections
+  All     = 0x7, /// Enable all protections
+  ExportSuppress = 0x8, /// Enable export suppression in the process
 };
 
 enum class ICFLevel {

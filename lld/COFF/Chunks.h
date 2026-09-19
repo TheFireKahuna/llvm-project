@@ -768,15 +768,20 @@ private:
   SymbolRVASet syms;
 };
 
-// Table which contains symbol RVAs with flags. Used for /guard:ehcont.
+// Table which contains symbol RVAs with a flag byte each. Used for the
+// /guard:cf tables; the export-suppressed entries carry that flag.
 class RVAFlagTableChunk : public NonSectionChunk {
 public:
-  explicit RVAFlagTableChunk(SymbolRVASet s) : syms(std::move(s)) {}
-  size_t getSize() const override { return syms.size() * 5; }
+  RVAFlagTableChunk(SymbolRVASet s, SymbolRVASet exportSuppressed = {})
+      : syms(std::move(s)), exportSuppressed(std::move(exportSuppressed)) {}
+  size_t getSize() const override {
+    return (syms.size() + exportSuppressed.size()) * 5;
+  }
   void writeTo(uint8_t *buf) const override;
 
 private:
   SymbolRVASet syms;
+  SymbolRVASet exportSuppressed;
 };
 
 // Windows-specific.

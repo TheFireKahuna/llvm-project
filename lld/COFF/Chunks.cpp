@@ -1017,13 +1017,16 @@ void RVAFlagTableChunk::writeTo(uint8_t *buf) const {
     ulittle32_t rva;
     uint8_t flag;
   };
-  auto flags =
-      MutableArrayRef(reinterpret_cast<RVAFlag *>(buf), syms.size());
-  for (auto t : zip(syms, flags)) {
-    const auto &sym = std::get<0>(t);
-    auto &flag = std::get<1>(t);
-    flag.rva = sym.inputChunk->getRVA() + sym.offset;
-    flag.flag = 0;
+  auto flags = MutableArrayRef(reinterpret_cast<RVAFlag *>(buf),
+                               syms.size() + exportSuppressed.size());
+  size_t i = 0;
+  for (const ChunkAndOffset &sym : syms) {
+    flags[i].rva = sym.inputChunk->getRVA() + sym.offset;
+    flags[i++].flag = 0;
+  }
+  for (const ChunkAndOffset &sym : exportSuppressed) {
+    flags[i].rva = sym.inputChunk->getRVA() + sym.offset;
+    flags[i++].flag = uint8_t(GuardFunctionTableFlags::EXPORT_SUPPRESSED);
   }
   llvm::sort(flags,
              [](const RVAFlag &a, const RVAFlag &b) { return a.rva < b.rva; });

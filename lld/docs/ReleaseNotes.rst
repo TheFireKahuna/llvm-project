@@ -46,6 +46,13 @@ Breaking changes
 COFF Improvements
 -----------------
 
+* ``/guard:cf`` images carry Control Flow Guard export suppression metadata:
+  the guard tables use 5-byte entries, an exported function that is a valid
+  target only because it is exported is marked export-suppressed, and an
+  object without guard metadata that reads an import pointer lists that entry
+  in the address-taken IAT table. ``/guard:exportsuppress`` enables the mode
+  for the process; ``/guard:noexportsuppress`` clears it.
+
 * A ``__imp_`` reference to a symbol defined in the image is now bound
   directly: the ``mov``, ``call`` and ``jmp`` forms (``adrp``/``ldr`` on
   AArch64) are rewritten to reference the definition, and the pointer is

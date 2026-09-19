@@ -15,12 +15,12 @@
 # CHECK: LoadConfig [
 # CHECK:   GuardCFFunctionTable: 0x140002114
 # CHECK:   GuardCFFunctionCount: 1
-# CHECK:   GuardFlags [ (0x10500)
+# CHECK:   GuardFlags [ (0x10014500)
 # CHECK:     CF_FUNCTION_TABLE_PRESENT (0x400)
 # CHECK:     CF_INSTRUMENTED (0x100)
 # CHECK:     CF_LONGJUMP_TABLE_PRESENT (0x10000)
 # CHECK:   ]
-# CHECK:   GuardAddressTakenIatEntryTable: 0x140002118
+# CHECK:   GuardAddressTakenIatEntryTable: 0x140002119
 # CHECK:   GuardAddressTakenIatEntryCount: 1
 # CHECK: ]
 # CHECK:      GuardFidTable [
@@ -39,12 +39,12 @@
 # DELAY-CHECK: LoadConfig [
 # DELAY-CHECK:   GuardCFFunctionTable: 0x14000211C
 # DELAY-CHECK:   GuardCFFunctionCount: 2
-# DELAY-CHECK:   GuardFlags [ (0x10500)
+# DELAY-CHECK:   GuardFlags [ (0x10014500)
 # DELAY-CHECK:     CF_FUNCTION_TABLE_PRESENT (0x400)
 # DELAY-CHECK:     CF_INSTRUMENTED (0x100)
 # DELAY-CHECK:     CF_LONGJUMP_TABLE_PRESENT (0x10000)
 # DELAY-CHECK:   ]
-# DELAY-CHECK:   GuardAddressTakenIatEntryTable: 0x140002124
+# DELAY-CHECK:   GuardAddressTakenIatEntryTable: 0x140002126
 # DELAY-CHECK:   GuardAddressTakenIatEntryCount: 1
 # DELAY-CHECK: ]
 # DELAY-CHECK:      GuardFidTable [
