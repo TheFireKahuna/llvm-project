@@ -3528,6 +3528,23 @@ void AArch64AsmPrinter::emitInstruction(const MachineInstr *MI) {
     EmitToStreamer(*OutStreamer, TmpInst);
     return;
   }
+  case AArch64::CLEANUPRET: {
+    // As on x86-64: a cleanup funclet on NT-POSIX that unwinds to another
+    // cleanup funclet continues there itself after its epilogue, with the
+    // establisher frame, which its caller placed in the frame pointer as
+    // well, back in x1.
+    const MachineBasicBlock *MBB = MI->getParent();
+    if (TM.getTargetTriple().isWindowsNTPOSIXEnvironment() &&
+        !MBB->succ_empty() && (*MBB->succ_begin())->isCleanupFuncletEntry()) {
+      const MachineBasicBlock *Next = *MBB->succ_begin();
+      emitMovXReg(AArch64::X1, AArch64::FP);
+      EmitToStreamer(*OutStreamer,
+                     MCInstBuilder(AArch64::B).addExpr(MCSymbolRefExpr::create(
+                         Next->getSymbol(), OutContext)));
+      return;
+    }
+    break;
+  }
   case AArch64::TCRETURNdi: {
     emitPtrauthTailCallHardening(MI);
 

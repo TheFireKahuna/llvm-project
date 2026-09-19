@@ -768,13 +768,15 @@ llvm::getEHScopeMembership(const MachineFunction &MF) {
   const TargetInstrInfo *TII = MF.getSubtarget().getInstrInfo();
   SmallVector<const MachineBasicBlock *, 16> EHScopeBlocks;
   SmallVector<const MachineBasicBlock *, 16> UnreachableBlocks;
-  SmallVector<const MachineBasicBlock *, 16> SEHCatchPads;
+  SmallVector<const MachineBasicBlock *, 16> ParentPads;
   SmallVector<std::pair<const MachineBasicBlock *, int>, 16> CatchRetSuccessors;
   for (const MachineBasicBlock &MBB : MF) {
     if (MBB.isEHScopeEntry()) {
       EHScopeBlocks.push_back(&MBB);
-    } else if (IsSEH && MBB.isEHPad()) {
-      SEHCatchPads.push_back(&MBB);
+    } else if (MBB.isEHPad()) {
+      // An EH pad that starts no scope belongs to the parent function: an SEH
+      // catchpad, or a landing pad in a function whose cleanups are funclets.
+      ParentPads.push_back(&MBB);
     } else if (MBB.pred_empty()) {
       UnreachableBlocks.push_back(&MBB);
     }
@@ -806,8 +808,8 @@ llvm::getEHScopeMembership(const MachineFunction &MF) {
   // Next, identify all the blocks inside the scopes.
   for (const MachineBasicBlock *MBB : EHScopeBlocks)
     collectEHScopeMembers(EHScopeMembership, MBB->getNumber(), MBB);
-  // SEH CatchPads aren't really scopes, handle them separately.
-  for (const MachineBasicBlock *MBB : SEHCatchPads)
+  // The pads that start no scope are the parent's; handle them separately.
+  for (const MachineBasicBlock *MBB : ParentPads)
     collectEHScopeMembers(EHScopeMembership, EntryBBNumber, MBB);
   // Finally, identify all the targets of a catchret.
   for (std::pair<const MachineBasicBlock *, int> CatchRetPair :

@@ -63,6 +63,7 @@ void WinException::endModule() {
 
 void WinException::beginFunction(const MachineFunction *MF) {
   shouldEmitMoves = shouldEmitPersonality = shouldEmitLSDA = false;
+  ExceptionTableEmitted = false;
 
   // If any landing pads survive, we need an EH table.
   bool hasLandingPads = !MF->getLandingPads().empty();
@@ -135,8 +136,10 @@ void WinException::endFunction(const MachineFunction *MF) {
 
   endFuncletImpl();
 
-  // endFunclet will emit the necessary .xdata tables for table-based SEH.
-  if (Per == EHPersonality::MSVC_TableSEH && MF->hasEHFunclets())
+  // endFunclet will emit the necessary .xdata tables for table-based SEH,
+  // and has emitted the exception table of an NT-POSIX function with funclets.
+  if ((Per == EHPersonality::MSVC_TableSEH && MF->hasEHFunclets()) ||
+      ExceptionTableEmitted)
     return;
 
   if (shouldEmitPersonality || shouldEmitLSDA) {
@@ -279,9 +282,15 @@ void WinException::endFuncletImpl() {
     } else if (shouldEmitPersonality || shouldEmitLSDA) {
       // Emit an UNWIND_INFO struct describing the prologue.
       Asm->OutStreamer->emitWinEHHandlerData();
-      // In these cases, no further info is written to the .xdata section
-      // right here, but is written by e.g. emitExceptionTable in endFunction()
-      // above.
+      // On NT-POSIX a function's funclets share its .xdata, so the parent's
+      // exception table, which its handler data is, is written here, behind
+      // its own UNWIND_INFO and before the first funclet's. Otherwise nothing
+      // more is written right here and endFunction() writes the table.
+      if (CurrentFuncletEntry == &MF->front() && MF->hasEHFunclets() &&
+          Asm->TM.getTargetTriple().isWindowsNTPOSIXEnvironment()) {
+        emitExceptionTable();
+        ExceptionTableEmitted = true;
+      }
     } else {
       // No need to emit the EH handler data right here if nothing needs
       // writing to the .xdata section; it will be emitted for all
