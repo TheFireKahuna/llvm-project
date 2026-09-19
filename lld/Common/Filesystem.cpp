@@ -47,26 +47,19 @@ void lld::unlinkAsync(StringRef path) {
 
 // Removing a file is async on windows.
 #if defined(LLVM_RUNTIME_WIN32)
-  // On Windows co-operative programs can be expected to open LLD's
-  // output in FILE_SHARE_DELETE mode. This allows us to delete the
-  // file (by moving it to a temporary filename and then deleting
-  // it) so that we can link another output file that overwrites
-  // the existing file, even if the current file is in use.
+  // sys::fs::remove is a POSIX-semantics unlink on Windows 10: the name is
+  // released at once even while another process still has the old output
+  // open or mapped as data, so the new output can be created under it. The
+  // one file that cannot be unlinked is a mapped image, i.e. the previous
+  // output is still running or loaded; it can be renamed, so move it aside
+  // to a temporary name (which stays behind until it is no longer mapped
+  // and something removes it) so that the new output can take the name.
   //
   // This is done on a best effort basis - we do not error if the
   // operation fails. The consequence is merely that the user
   // experiences an inconvenient work-flow.
-  //
-  // The code here allows LLD to work on all versions of Windows.
-  // However, at Windows 10 1903 it seems that the behavior of
-  // Windows has changed, so that we could simply delete the output
-  // file. This code should be simplified once support for older
-  // versions of Windows is dropped.
-  //
-  // Warning: It seems that the WINVER and _WIN32_WINNT preprocessor
-  // defines affect the behavior of the Windows versions of the calls
-  // we are using here. If this code stops working this is worth
-  // bearing in mind.
+  if (!sys::fs::remove(path))
+    return;
   SmallString<128> tmpName;
   if (!sys::fs::createUniqueFile(path + "%%%%%%%%.tmp", tmpName)) {
     if (!sys::fs::rename(path, tmpName))
