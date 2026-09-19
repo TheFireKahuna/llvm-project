@@ -256,9 +256,13 @@ void EHStreamer::computeCallSiteTable(
 
   // On NT-POSIX the funclets follow the function's own code and are called,
   // never landed: the call sites are the function's, and its range ends where
-  // the first funclet begins.
+  // the first funclet begins. A call outside every invoke's range is a
+  // nounwind one, and the region around it is left undescribed: the
+  // personality ends an unwind that reaches such a gap, so no entry that
+  // would let it pass is written for the region.
+  const bool IsNTPOSIX = Asm->TM.getTargetTriple().isWindowsNTPOSIXEnvironment();
   const MachineBasicBlock *FirstFunclet = nullptr;
-  if (Asm->TM.getTargetTriple().isWindowsNTPOSIXEnvironment())
+  if (IsNTPOSIX)
     for (const auto &MBB : *Asm->MF)
       if (MBB.isEHFuncletEntry()) {
         FirstFunclet = &MBB;
@@ -312,9 +316,13 @@ void EHStreamer::computeCallSiteTable(
       // If some instruction between the previous try-range and this one may
       // throw, create a call-site entry with no landing pad for the region
       // between the try-ranges.
-      if (SawPotentiallyThrowing &&
-          (Asm->MAI.usesCFIForEH() ||
-           Asm->MAI.getExceptionHandlingType() == ExceptionHandling::AIX)) {
+      if (SawPotentiallyThrowing && IsNTPOSIX) {
+        // The region stays undescribed, and the ranges either side of it
+        // stay two sites.
+        PreviousIsInvoke = false;
+      } else if (SawPotentiallyThrowing &&
+                 (Asm->MAI.usesCFIForEH() ||
+                  Asm->MAI.getExceptionHandlingType() == ExceptionHandling::AIX)) {
         CallSites.push_back({LastLabel, BeginLabel, nullptr, 0});
         PreviousIsInvoke = false;
       }
@@ -367,7 +375,7 @@ void EHStreamer::computeCallSiteTable(
       // If some instruction between the previous try-range and the end of the
       // function may throw, create a call-site entry with no landing pad for
       // the region following the try-range.
-      if (SawPotentiallyThrowing && !IsSJLJ) {
+      if (SawPotentiallyThrowing && !IsSJLJ && !IsNTPOSIX) {
         CallSiteEntry Site = {LastLabel, CallSiteRanges.back().FragmentEndLabel,
                               nullptr, 0};
         CallSites.push_back(Site);
