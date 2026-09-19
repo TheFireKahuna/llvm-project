@@ -762,8 +762,13 @@ llvm::getEHScopeMembership(const MachineFunction &MF) {
     return EHScopeMembership;
 
   int EntryBBNumber = MF.front().getNumber();
-  bool IsSEH = isAsynchronousEHPersonality(
-      classifyEHPersonality(MF.getFunction().getPersonalityFn()));
+  EHPersonality Personality =
+      classifyEHPersonality(MF.getFunction().getPersonalityFn());
+  bool IsSEH = isAsynchronousEHPersonality(Personality);
+  // Under a personality that is not scope-based (NT-POSIX cleanup funclets),
+  // a landing pad starts no scope and belongs to whichever scope the invoke
+  // that reaches it is in.
+  bool PadsByPredecessor = !isScopedEHPersonality(Personality);
 
   const TargetInstrInfo *TII = MF.getSubtarget().getInstrInfo();
   SmallVector<const MachineBasicBlock *, 16> EHScopeBlocks;
@@ -773,9 +778,9 @@ llvm::getEHScopeMembership(const MachineFunction &MF) {
   for (const MachineBasicBlock &MBB : MF) {
     if (MBB.isEHScopeEntry()) {
       EHScopeBlocks.push_back(&MBB);
-    } else if (MBB.isEHPad()) {
-      // An EH pad that starts no scope belongs to the parent function: an SEH
-      // catchpad, or a landing pad in a function whose cleanups are funclets.
+    } else if (MBB.isEHPad() && (IsSEH || PadsByPredecessor)) {
+      // An EH pad that starts no scope: an SEH catchpad, or a landing pad in
+      // a function whose cleanups are funclets.
       ParentPads.push_back(&MBB);
     } else if (MBB.pred_empty()) {
       UnreachableBlocks.push_back(&MBB);
@@ -808,9 +813,20 @@ llvm::getEHScopeMembership(const MachineFunction &MF) {
   // Next, identify all the blocks inside the scopes.
   for (const MachineBasicBlock *MBB : EHScopeBlocks)
     collectEHScopeMembers(EHScopeMembership, MBB->getNumber(), MBB);
-  // The pads that start no scope are the parent's; handle them separately.
-  for (const MachineBasicBlock *MBB : ParentPads)
-    collectEHScopeMembers(EHScopeMembership, EntryBBNumber, MBB);
+  // The pads that start no scope belong to the scope their predecessors are
+  // in: an SEH catchpad's the parent, a landing pad's whichever the invoke
+  // that reaches it is in.
+  for (const MachineBasicBlock *MBB : ParentPads) {
+    int Scope = EntryBBNumber;
+    if (PadsByPredecessor)
+      for (const MachineBasicBlock *Pred : MBB->predecessors())
+        if (auto It = EHScopeMembership.find(Pred);
+            It != EHScopeMembership.end()) {
+          Scope = It->second;
+          break;
+        }
+    collectEHScopeMembers(EHScopeMembership, Scope, MBB);
+  }
   // Finally, identify all the targets of a catchret.
   for (std::pair<const MachineBasicBlock *, int> CatchRetPair :
        CatchRetSuccessors)

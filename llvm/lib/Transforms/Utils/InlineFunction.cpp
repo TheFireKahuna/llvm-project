@@ -2671,15 +2671,16 @@ llvm::InlineResult llvm::CanInlineCallSite(const CallBase &CB,
   }
 
   // We need to figure out which funclet the callsite was in so that we may
-  // properly nest the callee.
+  // properly nest the callee. A call site's funclet bundle names it under any
+  // personality: on NT-POSIX a cleanup funclet is called under an
+  // Itanium-style one, and an inlinee left without the bundle would be
+  // truncated by WinEHPrepare.
+  if (std::optional<OperandBundleUse> ParentFunclet =
+          CB.getOperandBundle(LLVMContext::OB_funclet))
+    IFI.CallSiteEHPad = cast<FuncletPadInst>(ParentFunclet->Inputs.front());
   if (CallerPersonality) {
     EHPersonality Personality = classifyEHPersonality(CallerPersonality);
     if (isScopedEHPersonality(Personality)) {
-      std::optional<OperandBundleUse> ParentFunclet =
-          CB.getOperandBundle(LLVMContext::OB_funclet);
-      if (ParentFunclet)
-        IFI.CallSiteEHPad = cast<FuncletPadInst>(ParentFunclet->Inputs.front());
-
       // OK, the inlining site is legal.  What about the target function?
 
       if (IFI.CallSiteEHPad) {

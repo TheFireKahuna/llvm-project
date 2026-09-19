@@ -108,6 +108,39 @@ catch:
   ret void
 }
 
+; A terminating funclet, marked by its one true argument: its site names no
+; pad and carries the empty filter, the action nothing passes.
+; CHECK-LABEL: aborts:
+; CHECK: [[ABEGIN:.Ltmp[0-9]+]]:
+; CHECK-NEXT: callq may_throw
+; CHECK: .seh_handlerdata
+; CHECK-NEXT: .p2align 2
+; CHECK-NEXT: .byte 1
+; CHECK-NEXT: .byte 1
+; CHECK-NEXT: .uleb128 [[ABEGIN]]-[[AFUNC:.Lfunc_begin[0-9]+]]
+; CHECK-NEXT: .uleb128 [[AF:.LBB2_[0-9]+]]-[[AFUNC]]
+; CHECK: GCC_except_table2:
+; CHECK: .uleb128 [[ABEGIN]]-[[AFUNC]]
+; CHECK-NEXT: .uleb128 {{.*}}-[[ABEGIN]]
+; CHECK-NEXT: .byte 0
+; CHECK-NEXT: .byte 1
+; CHECK: .byte 127
+; CHECK: .byte 0
+; CHECK: [[AF]]:
+; CHECK: callq abort
+define void @aborts() personality ptr @rust_eh_personality {
+entry:
+  invoke void @may_throw() to label %done unwind label %terminate
+done:
+  ret void
+terminate:
+  %t = cleanuppad within none [i1 true]
+  call void @abort() [ "funclet"(token %t) ]
+  unreachable
+}
+
+declare void @abort() nounwind
+
 ; CHECK: .section .gehcont$y
 ; CHECK-NEXT: .symidx $ehgcr_1_{{[0-9]+}}
 ; CHECK-NOT: .symidx
