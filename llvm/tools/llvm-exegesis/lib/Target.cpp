@@ -53,7 +53,7 @@ ExegesisTarget::getIgnoredOpcodeReasonOrNull(const LLVMState &State,
 Expected<std::unique_ptr<pfm::CounterGroup>>
 ExegesisTarget::createCounter(StringRef CounterName, const LLVMState &,
                               ArrayRef<const char *> ValidationCounters,
-                              const pid_t ProcessID) const {
+                              const sys::procid_t ProcessID) const {
   pfm::PerfEvent Event(CounterName);
   if (!Event.valid())
     return make_error<Failure>(Twine("Unable to create counter with name '")

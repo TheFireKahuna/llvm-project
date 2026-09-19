@@ -114,7 +114,8 @@ ConfiguredEvent::ConfiguredEvent(PerfEvent &&EventToConfigure)
 }
 
 #ifdef HAVE_LIBPFM
-void ConfiguredEvent::initRealEvent(const pid_t ProcessID, const int GroupFD) {
+void ConfiguredEvent::initRealEvent(const sys::procid_t ProcessID,
+                                    const int GroupFD) {
   const int CPU = -1;
   const uint32_t Flags = 0;
   perf_event_attr AttrCopy = *Event.attribute();
@@ -154,7 +155,8 @@ ConfiguredEvent::readOrError(StringRef /*unused*/) const {
 
 ConfiguredEvent::~ConfiguredEvent() { close(FileDescriptor); }
 #else
-void ConfiguredEvent::initRealEvent(pid_t ProcessID, const int GroupFD) {}
+void ConfiguredEvent::initRealEvent(sys::procid_t ProcessID,
+                                    const int GroupFD) {}
 
 Expected<SmallVector<int64_t>>
 ConfiguredEvent::readOrError(StringRef /*unused*/) const {
@@ -166,7 +168,7 @@ ConfiguredEvent::~ConfiguredEvent() = default;
 #endif // HAVE_LIBPFM
 
 CounterGroup::CounterGroup(PerfEvent &&E, std::vector<PerfEvent> &&ValEvents,
-                           pid_t ProcessID)
+                           sys::procid_t ProcessID)
     : EventCounter(std::move(E)) {
   IsDummyEvent = EventCounter.isDummyEvent();
 
@@ -178,7 +180,7 @@ CounterGroup::CounterGroup(PerfEvent &&E, std::vector<PerfEvent> &&ValEvents,
 }
 
 #ifdef HAVE_LIBPFM
-void CounterGroup::initRealEvent(pid_t ProcessID) {
+void CounterGroup::initRealEvent(sys::procid_t ProcessID) {
   EventCounter.initRealEvent(ProcessID);
 
   for (auto &ValCounter : ValidationEventCounters)
@@ -225,7 +227,7 @@ CounterGroup::readValidationCountersOrError() const {
 int CounterGroup::numValues() const { return 1; }
 #else
 
-void CounterGroup::initRealEvent(pid_t ProcessID) {}
+void CounterGroup::initRealEvent(sys::procid_t ProcessID) {}
 
 void CounterGroup::start() {}
 

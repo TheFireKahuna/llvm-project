@@ -84,7 +84,7 @@ public:
   virtual Expected<std::unique_ptr<pfm::CounterGroup>>
   createCounter(StringRef CounterName, const LLVMState &State,
                 ArrayRef<const char *> ValidationCounters,
-                const pid_t ProcessID = 0) const;
+                const sys::procid_t ProcessID = 0) const;
 
   // Targets can use this to add target-specific passes in assembleToStream();
   virtual void addTargetSpecificPasses(PassManagerBase &PM) const {}
