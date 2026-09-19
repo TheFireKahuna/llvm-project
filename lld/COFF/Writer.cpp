@@ -2210,6 +2210,12 @@ void Writer::createGuardCFTables() {
       maybeAddAddressTakenFunction(addressTakenSyms, e.sym);
   });
 
+  // Import entries whose address code takes through a rewritten thunk
+  // reference (SymbolTable::bindLocalImports).
+  for (ImportFile *file : ctx.importFileInstances)
+    if (file->live && file->impSym && file->impSym->addressTaken)
+      addSymbolToRVASet(giatsRVASet, file->impSym);
+
   // For each entry in the .giats table, check if it has a corresponding load
   // thunk (e.g. because the DLL that defines it will be delay-loaded) and, if
   // so, add the load thunk to the address taken (.gfids) table.

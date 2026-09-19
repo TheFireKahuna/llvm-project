@@ -28,6 +28,7 @@ class CommonChunk;
 class COFFLinkerContext;
 class Defined;
 class DefinedAbsolute;
+class DefinedLocalImport;
 class DefinedRegular;
 class ImportThunkChunk;
 class LazyArchive;
@@ -67,8 +68,18 @@ public:
 
   // Try to resolve any undefined symbols and update the symbol table
   // accordingly, then print an error message for any remaining undefined
-  // symbols and warn about imported local symbols.
+  // symbols.
   void resolveRemainingUndefines(std::vector<Undefined *> &aliases);
+
+  // Load the archive members that define the plain names behind undefined
+  // __imp_ symbols. Returns true if any were loaded.
+  bool loadLocalImportMembers();
+
+  // Decide for each reference to a locally defined symbol's import pointer
+  // whether it is rewritten to reach the definition directly, keep the
+  // pointers the remaining references need and warn about them, and mark the
+  // import address table entries whose address code takes.
+  void bindLocalImports();
 
   // Try to resolve undefined symbols with alternate names.
   void resolveAlternateNames();
@@ -155,7 +166,9 @@ public:
   // An entry point symbol.
   Symbol *entry = nullptr;
 
-  // A list of chunks which to be added to .rdata.
+  // Import pointers to locally defined symbols, and the chunks of those
+  // among them that some reference still reads.
+  std::vector<DefinedLocalImport *> localImports;
   std::vector<Chunk *> localImportChunks;
 
   // A list of EC EXP+ symbols.
@@ -220,10 +233,8 @@ private:
   std::vector<std::pair<Symbol *, Symbol *>> entryThunks;
   llvm::DenseMap<Symbol *, Symbol *> exitThunks;
 
-  void
-  reportProblemSymbols(const llvm::SmallPtrSetImpl<Symbol *> &undefs,
-                       const llvm::DenseMap<Symbol *, Symbol *> *localImports,
-                       bool needBitcodeFiles);
+  void reportProblemSymbols(const llvm::SmallPtrSetImpl<Symbol *> &undefs,
+                            bool needBitcodeFiles);
   void reportUndefinedSymbol(const UndefinedDiag &undefDiag);
 };
 

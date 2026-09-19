@@ -284,6 +284,21 @@ public:
   void applyRelARM64(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
                      uint64_t p, uint64_t imageBase) const;
 
+  // The instruction forms in which code refers to an import pointer, or takes
+  // the address of an imported function through its thunk. The linker
+  // rewrites these in place when the symbol turns out to be defined in the
+  // image, or when the true address of an imported function is wanted.
+  enum class ImportRefForm {
+    None,
+    Load,       // x86-64: mov r64, [rip+__imp_X]
+    Call,       // x86-64: call *[rip+__imp_X]
+    Jump,       // x86-64: jmp *[rip+__imp_X]
+    Lea,        // x86-64: lea r64, [rip+X], X being an import thunk
+    PageBase,   // AArch64: adrp x, __imp_X
+    PageOffset, // AArch64: ldr x, [x, :lo12:__imp_X]
+  };
+  ImportRefForm getImportRefForm(const coff_relocation &rel) const;
+
   void getRuntimePseudoRelocs(std::vector<RuntimePseudoReloc> &res);
 
   // Called if the garbage collector decides to not include this chunk
@@ -707,6 +722,9 @@ public:
   size_t getSize() const override;
   void getBaserels(std::vector<Baserel> *res) override;
   void writeTo(uint8_t *buf) const override;
+
+  // Set once some reference is found to read the pointer.
+  bool live = false;
 
 private:
   Defined *sym;

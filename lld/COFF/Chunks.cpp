@@ -424,9 +424,103 @@ void SectionChunk::writeTo(uint8_t *buf) const {
   }
 }
 
+SectionChunk::ImportRefForm
+SectionChunk::getImportRefForm(const coff_relocation &rel) const {
+  ArrayRef<uint8_t> data = getContents();
+  uint32_t o = rel.VirtualAddress;
+  if (o + 4 > data.size())
+    return ImportRefForm::None;
+  uint32_t field = read32le(data.data() + o);
+  switch (getArch()) {
+  case Triple::x86_64:
+    // Only a zero displacement names the pointer itself.
+    if (rel.Type != IMAGE_REL_AMD64_REL32 || field != 0)
+      return ImportRefForm::None;
+    if (o >= 2 && data[o - 2] == 0xFF) {
+      if (data[o - 1] == 0x15)
+        return ImportRefForm::Call;
+      if (data[o - 1] == 0x25)
+        return ImportRefForm::Jump;
+    }
+    // REX.W with or without REX.R, then the opcode, then ModRM with mod=00
+    // rm=101 (RIP-relative).
+    if (o >= 3 && (data[o - 3] == 0x48 || data[o - 3] == 0x4C) &&
+        (data[o - 1] & 0xC7) == 0x05) {
+      if (data[o - 2] == 0x8B)
+        return ImportRefForm::Load;
+      if (data[o - 2] == 0x8D)
+        return ImportRefForm::Lea;
+    }
+    return ImportRefForm::None;
+  case Triple::aarch64:
+    // adrp with a zero immediate; ldr x, [x, #0] (64-bit, unsigned offset).
+    if (rel.Type == IMAGE_REL_ARM64_PAGEBASE_REL21 &&
+        (field & 0xFF000000) == 0x90000000 && (field & 0x60FFFFE0) == 0)
+      return ImportRefForm::PageBase;
+    if (rel.Type == IMAGE_REL_ARM64_PAGEOFFSET_12L &&
+        (field & 0xFFFFFC00) == 0xF9400000)
+      return ImportRefForm::PageOffset;
+    return ImportRefForm::None;
+  default:
+    return ImportRefForm::None;
+  }
+}
+
 void SectionChunk::applyRelocation(uint8_t *off,
                                    const coff_relocation &rel) const {
   auto *sym = dyn_cast_or_null<Defined>(file->getSymbol(rel.SymbolTableIndex));
+  uint16_t type = rel.Type;
+  int fieldShift = 0;
+
+  // A reference to a locally defined symbol's import pointer is turned into
+  // the direct instruction, and an address-taking reference to an import
+  // thunk into a load of the true address from the import address table.
+  // The instruction is the same length in every case but the jump, which
+  // gains a trailing nop. See SymbolTable::bindLocalImports.
+  if (sym) {
+    ImportRefForm form = ImportRefForm::None;
+    if (auto *li = dyn_cast<DefinedLocalImport>(sym)) {
+      if (li->rewrite) {
+        form = getImportRefForm(rel);
+        if (form != ImportRefForm::None && form != ImportRefForm::Lea)
+          sym = li->wrappedSym;
+        else
+          form = ImportRefForm::None;
+      }
+    } else if (auto *thunk = dyn_cast<DefinedImportThunk>(sym)) {
+      if (thunk->wrappedSym->addressTaken &&
+          getImportRefForm(rel) == ImportRefForm::Lea) {
+        form = ImportRefForm::Lea;
+        sym = thunk->wrappedSym;
+      }
+    }
+    switch (form) {
+    case ImportRefForm::None:
+      break;
+    case ImportRefForm::Load:
+      off[-2] = 0x8D; // lea
+      break;
+    case ImportRefForm::Lea:
+      off[-2] = 0x8B; // mov
+      break;
+    case ImportRefForm::Call:
+      off[-2] = 0x67; // addr32 prefix keeps the length
+      off[-1] = 0xE8; // call rel32
+      break;
+    case ImportRefForm::Jump:
+      off[-2] = 0xE9; // jmp rel32, the field one byte earlier, then a nop
+      off[-1] = 0;
+      off[3] = 0x90;
+      fieldShift = -1;
+      break;
+    case ImportRefForm::PageBase:
+      break;
+    case ImportRefForm::PageOffset:
+      write32le(off, 0x91000000 | (read32le(off) & 0x3FF)); // add x, x, #lo12
+      type = IMAGE_REL_ARM64_PAGEOFFSET_12A;
+      break;
+    }
+  }
 
   // Get the output section of the symbol for this relocation.  The output
   // section is needed to compute SECREL and SECTION relocations used in debug
@@ -448,20 +542,21 @@ void SectionChunk::applyRelocation(uint8_t *off,
   uint64_t s = sym->getRVA();
 
   // Compute the RVA of the relocation for relative relocations.
-  uint64_t p = rva + rel.VirtualAddress;
+  uint64_t p = rva + rel.VirtualAddress + fieldShift;
+  off += fieldShift;
   uint64_t imageBase = ctx.config.imageBase;
   switch (getArch()) {
   case Triple::x86_64:
-    applyRelX64(off, rel.Type, os, s, p, imageBase);
+    applyRelX64(off, type, os, s, p, imageBase);
     break;
   case Triple::x86:
-    applyRelX86(off, rel.Type, os, s, p, imageBase);
+    applyRelX86(off, type, os, s, p, imageBase);
     break;
   case Triple::thumb:
-    applyRelARM(off, rel.Type, os, s, p, imageBase);
+    applyRelARM(off, type, os, s, p, imageBase);
     break;
   case Triple::aarch64:
-    applyRelARM64(off, rel.Type, os, s, p, imageBase);
+    applyRelARM64(off, type, os, s, p, imageBase);
     break;
   default:
     llvm_unreachable("unknown machine type");

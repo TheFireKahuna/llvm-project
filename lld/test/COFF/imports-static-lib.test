@@ -1,14 +1,18 @@
 # REQUIRES: x86
 
-# Ensure that we don't import dllimport symbols from static (non-import) libraries
+# A dllimport reference to a symbol that a static (non-import) library defines
+# loads the member and binds to it directly.
 # RUN: split-file %s %t.dir
 # RUN: llvm-mc --filetype=obj -triple=x86_64-windows-msvc %t.dir/foo.s -o %t.foo.obj
 # RUN: llvm-mc --filetype=obj -triple=x86_64-windows-msvc %t.dir/main.s -o %t.main.obj
 # RUN: llvm-lib %t.foo.obj -out:%t.foo.lib
-# RUN: not lld-link %t.foo.lib %t.main.obj -out:%t.dll -dll 2>&1 | FileCheck %s
+# RUN: lld-link %t.foo.lib %t.main.obj -out:%t.dll -dll -debug:symtab 2>&1 | FileCheck --allow-empty --check-prefix=QUIET %s
+# RUN: llvm-objdump -d --no-show-raw-insn %t.dll | FileCheck %s
 
-CHECK: error: undefined symbol: __declspec(dllimport) foo
-CHECK: NOTE: a relevant symbol 'foo' is available in {{.*}}.foo.lib but cannot be used because it is not an import library.
+QUIET-NOT: {{.}}
+
+CHECK:      <_DllMainCRTStartup>:
+CHECK-NEXT:   addr32 callq 0x{{[0-9a-f]+}} <foo>
 
 # Now do the same thing, but import the symbol from a import library.
 # RUN: llvm-mc --filetype=obj -triple=x86_64-windows-msvc %t.dir/foo_dll_main.s -o %t.foo_dll_main.obj

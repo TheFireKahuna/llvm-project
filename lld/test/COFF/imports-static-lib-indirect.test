@@ -1,13 +1,20 @@
 # REQUIRES: x86
 
-# Pulling in on both a dllimport symbol and a static symbol should only warn.
+# A member pulled in for one symbol also satisfies a dllimport reference to
+# another of its symbols; the indirect call is rewritten to a direct one, so
+# there is nothing to warn about.
 # RUN: split-file %s %t.dir
 # RUN: llvm-mc --filetype=obj -triple=x86_64-windows-msvc %t.dir/other.s -o %t.other.obj
 # RUN: llvm-mc --filetype=obj -triple=x86_64-windows-msvc %t.dir/main.s -o %t.main.obj
 # RUN: llvm-lib %t.other.obj -out:%t.other.lib
-# RUN: lld-link %t.other.lib %t.main.obj -out:%t.dll -dll 2>&1 | FileCheck %s
+# RUN: lld-link %t.other.lib %t.main.obj -out:%t.dll -dll -debug:symtab 2>&1 | FileCheck --allow-empty --check-prefix=QUIET %s
+# RUN: llvm-objdump -d --no-show-raw-insn %t.dll | FileCheck %s
 
-CHECK: warning: {{.*}} locally defined symbol imported: foo {{.*}} [LNK4217]
+QUIET-NOT: {{.}}
+
+CHECK:      <_DllMainCRTStartup>:
+CHECK-NEXT:   callq *0x{{[0-9a-f]+}}(%rip)
+CHECK-NEXT:   addr32 callq 0x{{[0-9a-f]+}} <foo>
 
 #--- other.s
 .text

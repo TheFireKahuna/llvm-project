@@ -276,7 +276,7 @@ void lld::coff::wrapSymbols(SymbolTable &symtab) {
         } else {
           DefinedLocalImport *localwrapimp = make<DefinedLocalImport>(
               symtab.ctx, saver().save("__imp_" + w.wrap->getName()), d);
-          symtab.localImportChunks.push_back(localwrapimp->getChunk());
+          symtab.localImports.push_back(localwrapimp);
           map[imp] = localwrapimp;
         }
       }

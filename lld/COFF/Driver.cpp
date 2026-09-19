@@ -2708,6 +2708,15 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
         ;
   });
 
+  // An import-form reference to a symbol that only an archive member defines
+  // links as a direct reference would: load the member. It may reference
+  // further such symbols.
+  ctx.forEachSymtab([&](SymbolTable &symtab) {
+    while (symtab.loadLocalImportMembers())
+      while (run())
+        ;
+  });
+
   if (config->autoImport || config->stdcallFixup) {
     // MinGW specific.
     // Load any further object files that might be needed for doing automatic
@@ -2821,6 +2830,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
 
     markLive(ctx);
   }
+
+  ctx.forEachSymtab([](SymbolTable &symtab) { symtab.bindLocalImports(); });
 
   ctx.symtab.initializeSameAddressThunks();
   for (auto alias : aliases) {

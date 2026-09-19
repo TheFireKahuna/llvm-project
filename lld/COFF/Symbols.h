@@ -403,6 +403,11 @@ public:
   // valid call target, the corresponding load thunk must also be marked as a
   // valid call target.
   DefinedSynthetic *loadThunkSym = nullptr;
+
+  // Set when an address-taking reference to the import thunk was rewritten to
+  // load this entry instead (see SymbolTable::bindLocalImports), so that the
+  // entry belongs in the Control Flow Guard address-taken IAT table.
+  bool addressTaken = false;
 };
 
 // This class represents a symbol for a jump table entry which jumps
@@ -436,7 +441,7 @@ private:
 class DefinedLocalImport : public Defined {
 public:
   DefinedLocalImport(COFFLinkerContext &ctx, StringRef n, Defined *s)
-      : Defined(DefinedLocalImportKind, n),
+      : Defined(DefinedLocalImportKind, n), wrappedSym(s),
         data(make<LocalImportChunk>(ctx, s)) {}
 
   static bool classof(const Symbol *s) {
@@ -444,7 +449,16 @@ public:
   }
 
   uint64_t getRVA() { return data->getRVA(); }
-  Chunk *getChunk() { return data; }
+  LocalImportChunk *getChunk() const { return data; }
+
+  Defined *wrappedSym;
+
+  // References in the instruction forms the compiler emits for an import are
+  // rewritten to reach wrappedSym directly, and only the remaining ones read
+  // the pointer (see SymbolTable::bindLocalImports). Cleared on AArch64 when
+  // any reference cannot be rewritten, because the adrp and the ldr of a pair
+  // are separate relocations that must agree.
+  bool rewrite = true;
 
 private:
   LocalImportChunk *data;

@@ -231,17 +231,6 @@ void SymbolTable::reportUndefinedSymbol(const UndefinedDiag &undefDiag) {
   }
   if (numDisplayedRefs < numRefs)
     diag << "\n>>> referenced " << numRefs - numDisplayedRefs << " more times";
-
-  // Hints
-  StringRef name = undefDiag.sym->getName();
-  if (name.consume_front("__imp_")) {
-    Symbol *imp = find(name);
-    if (imp && imp->isLazy()) {
-      diag << "\nNOTE: a relevant symbol '" << imp->getName()
-           << "' is available in " << toString(imp->getFile())
-           << " but cannot be used because it is not an import library.";
-    }
-  }
 }
 
 void SymbolTable::loadMinGWSymbols() {
@@ -313,6 +302,29 @@ void SymbolTable::loadMinGWSymbols() {
   }
 }
 
+bool SymbolTable::loadLocalImportMembers() {
+  std::vector<Symbol *> lazies;
+  for (auto &i : symMap) {
+    Symbol *sym = i.second;
+    auto *undef = dyn_cast<Undefined>(sym);
+    if (!undef || undef->getWeakAlias())
+      continue;
+    StringRef name = sym->getName();
+    if (!name.consume_front("__imp_"))
+      continue;
+    Symbol *l = find(name);
+    if (!l || l->pendingArchiveLoad || !l->isLazy())
+      continue;
+    lazies.push_back(l);
+  }
+  for (Symbol *l : lazies) {
+    Log(ctx) << "Loading lazy " << l->getName() << " from "
+             << l->getFile()->getName() << " for __imp_" << l->getName();
+    forceLazy(l);
+  }
+  return !lazies.empty();
+}
+
 Defined *SymbolTable::impSymbol(StringRef name) {
   if (name.starts_with("__imp_"))
     return nullptr;
@@ -368,27 +380,18 @@ bool SymbolTable::handleMinGWAutomaticImport(Symbol *sym, StringRef name) {
 
 /// Helper function for reportUnresolvable and resolveRemainingUndefines.
 /// This function emits an "undefined symbol" diagnostic for each symbol in
-/// undefs. If localImports is not nullptr, it also emits a "locally
-/// defined symbol imported" diagnostic for symbols in localImports.
-/// objFiles and bitcodeFiles (if not nullptr) are used to report where
-/// undefined symbols are referenced.
+/// undefs. objFiles and bitcodeFiles (if not nullptr) are used to report
+/// where undefined symbols are referenced.
 void SymbolTable::reportProblemSymbols(
-    const SmallPtrSetImpl<Symbol *> &undefs,
-    const DenseMap<Symbol *, Symbol *> *localImports, bool needBitcodeFiles) {
+    const SmallPtrSetImpl<Symbol *> &undefs, bool needBitcodeFiles) {
   // Return early if there is nothing to report (which should be
   // the common case).
-  if (undefs.empty() && (!localImports || localImports->empty()))
+  if (undefs.empty())
     return;
 
-  for (Symbol *b : ctx.config.gcroot) {
+  for (Symbol *b : ctx.config.gcroot)
     if (undefs.contains(b))
       errorOrWarn(ctx) << "<root>: undefined symbol: " << printSymbol(b);
-    if (localImports)
-      if (Symbol *imp = localImports->lookup(b))
-        Warn(ctx) << "<root>: locally defined symbol imported: "
-                  << printSymbol(imp) << " (defined in "
-                  << toString(imp->getFile()) << ") [LNK4217]";
-  }
 
   std::vector<UndefinedDiag> undefDiags;
   DenseMap<Symbol *, int> firstDiag;
@@ -406,11 +409,6 @@ void SymbolTable::reportProblemSymbols(
         else
           undefDiags[it->second].files.push_back({file, symIndex});
       }
-      if (localImports)
-        if (Symbol *imp = localImports->lookup(sym))
-          Warn(ctx) << file
-                    << ": locally defined symbol imported: " << printSymbol(imp)
-                    << " (defined in " << imp->getFile() << ") [LNK4217]";
     }
   };
 
@@ -449,13 +447,12 @@ void SymbolTable::reportUnresolvable() {
     undefs.insert(sym);
   }
 
-  reportProblemSymbols(undefs, /*localImports=*/nullptr, true);
+  reportProblemSymbols(undefs, true);
 }
 
 void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
   llvm::TimeTraceScope timeScope("Resolve remaining undefined symbols");
   SmallPtrSet<Symbol *, 8> undefs;
-  DenseMap<Symbol *, Symbol *> localImports;
 
   for (auto &i : symMap) {
     Symbol *sym = i.second;
@@ -498,8 +495,7 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
       }
       if (imp) {
         replaceSymbol<DefinedLocalImport>(sym, ctx, name, imp);
-        localImportChunks.push_back(cast<DefinedLocalImport>(sym)->getChunk());
-        localImports[sym] = imp;
+        localImports.push_back(cast<DefinedLocalImport>(sym));
         continue;
       }
     }
@@ -519,9 +515,77 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
     undefs.insert(sym);
   }
 
-  reportProblemSymbols(
-      undefs, ctx.config.warnLocallyDefinedImported ? &localImports : nullptr,
-      false);
+  reportProblemSymbols(undefs, false);
+}
+
+void SymbolTable::bindLocalImports() {
+  llvm::TimeTraceScope timeScope("Bind local imports");
+  // On ARM64EC an import pointer has two forms with distinct meanings; every
+  // reference reads the pointer there, as before.
+  bool rewrite = !isEC();
+  SmallPtrSet<DefinedLocalImport *, 8> needPointer;
+  auto readsPointer = [&](DefinedLocalImport *li, InputFile *file) {
+    needPointer.insert(li);
+    if (!ctx.config.warnLocallyDefinedImported)
+      return;
+    Symbol *imp = li->wrappedSym;
+    if (file)
+      Warn(ctx) << file << ": locally defined symbol imported: "
+                << printSymbol(imp) << " (defined in " << imp->getFile()
+                << ") [LNK4217]";
+    else
+      Warn(ctx) << "<root>: locally defined symbol imported: "
+                << printSymbol(imp) << " (defined in "
+                << toString(imp->getFile()) << ") [LNK4217]";
+  };
+
+  for (DefinedLocalImport *li : localImports)
+    if (li->isGCRoot)
+      readsPointer(li, nullptr);
+
+  for (ObjFile *file : ctx.objFileInstances) {
+    if (&file->symtab != this)
+      continue;
+    // One warning per file and symbol, as before.
+    SmallPtrSet<DefinedLocalImport *, 4> warned;
+    for (Chunk *c : file->getChunks()) {
+      auto *sc = dyn_cast_or_null<SectionChunk>(c);
+      if (!sc || !sc->live)
+        continue;
+      for (const coff_relocation &rel : sc->getRelocs()) {
+        Symbol *s = file->getSymbol(rel.SymbolTableIndex);
+        if (auto *li = dyn_cast_or_null<DefinedLocalImport>(s)) {
+          SectionChunk::ImportRefForm form =
+              rewrite ? sc->getImportRefForm(rel)
+                      : SectionChunk::ImportRefForm::None;
+          if (form != SectionChunk::ImportRefForm::None &&
+              form != SectionChunk::ImportRefForm::Lea)
+            continue;
+          if (machine == ARM64)
+            li->rewrite = false;
+          if (warned.insert(li).second)
+            readsPointer(li, file);
+        } else if (auto *thunk = dyn_cast_or_null<DefinedImportThunk>(s)) {
+          // The address of a function in a delay-loaded DLL stays the
+          // thunk's: its import entry holds the loader's stub until the
+          // first call, and every other reference goes through the thunk.
+          DefinedImportData *imp = thunk->wrappedSym;
+          if (rewrite && !imp->addressTaken &&
+              sc->getImportRefForm(rel) == SectionChunk::ImportRefForm::Lea &&
+              !ctx.config.delayLoads.contains(
+                  StringRef(imp->file->dllName).lower()))
+            imp->addressTaken = true;
+        }
+      }
+    }
+  }
+
+  for (DefinedLocalImport *li : localImports) {
+    if (!needPointer.contains(li))
+      continue;
+    li->getChunk()->live = true;
+    localImportChunks.push_back(li->getChunk());
+  }
 }
 
 std::pair<Symbol *, bool> SymbolTable::insert(StringRef name) {
