@@ -2,9 +2,9 @@
 ; RUN: llc -O0 -verify-machineinstrs -mtriple=aarch64-pc-windows-ntposix < %s | FileCheck %s
 
 ; The AArch64 twin of the x86-64 test: a cleanup is a funclet the unwinder
-; calls with the establisher frame in x1 and in the frame pointer, and a
-; cleanupret to another cleanup funclet continues there after the epilogue
-; with x1 reloaded from the frame pointer.
+; calls with its frame's pointer in x1, which the funclet's own prologue
+; copies into x29 to reach that frame's locals, and a cleanupret to another
+; cleanup funclet continues there after the epilogue with x1 restored.
 
 declare void @may_throw()
 declare void @drop_a() nounwind
@@ -38,9 +38,11 @@ declare i32 @rust_eh_personality(...)
 ; CHECK-NEXT: .byte 0
 ; CHECK: .seh_endproc
 ; CHECK: [[FA]]:
+; CHECK: mov x29, x1
 ; CHECK: bl drop_a
 ; CHECK: ret
 ; CHECK: [[FB]]:
+; CHECK: mov x29, x1
 ; CHECK: bl drop_b
 ; CHECK: mov x1, x29
 ; CHECK-NEXT: b [[FA]]
