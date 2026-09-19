@@ -16,6 +16,7 @@
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/Process.h"
 #include "llvm/Support/Windows/WindowsSupport.h"
 #include "llvm/Support/WindowsError.h"
 #include "llvm/Support/raw_ostream.h"
@@ -41,25 +42,19 @@ ErrorOr<std::string> sys::findProgramByName(StringRef Name,
   if (Name.find_first_of("/\\") != StringRef::npos)
     return std::string(Name);
 
-  const wchar_t *Path = nullptr;
-  std::wstring PathStorage;
-  if (!Paths.empty()) {
-    PathStorage.reserve(Paths.size() * MAX_PATH);
-    for (unsigned i = 0; i < Paths.size(); ++i) {
-      if (i)
-        PathStorage.push_back(L';');
-      StringRef P = Paths[i];
-      SmallVector<wchar_t, MAX_PATH> TmpPath;
-      if (std::error_code EC = windows::UTF8ToUTF16(P, TmpPath))
-        return EC;
-      PathStorage.append(TmpPath.begin(), TmpPath.end());
-    }
-    Path = PathStorage.c_str();
+  // Walk the directories ourselves rather than calling SearchPathW: its
+  // default order (SafeProcessSearchMode = 0) tries the current directory
+  // before PATH, and it only handles directories longer than MAX_PATH when
+  // the process opts in through its manifest. can_execute goes through
+  // widenPath, so this walk has neither limitation.
+  std::optional<std::string> PathEnv;
+  SmallVector<StringRef, 16> EnvironmentPaths;
+  if (Paths.empty()) {
+    PathEnv = Process::GetEnv("PATH");
+    if (PathEnv)
+      SplitString(*PathEnv, EnvironmentPaths, ";");
+    Paths = EnvironmentPaths;
   }
-
-  SmallVector<wchar_t, MAX_PATH> U16Name;
-  if (std::error_code EC = windows::UTF8ToUTF16(Name, U16Name))
-    return EC;
 
   SmallVector<StringRef, 12> PathExts;
   PathExts.push_back("");
@@ -67,44 +62,20 @@ ErrorOr<std::string> sys::findProgramByName(StringRef Name,
   if (const char *PathExtEnv = std::getenv("PATHEXT"))
     SplitString(PathExtEnv, PathExts, ";");
 
-  SmallVector<char, MAX_PATH> U8Result;
-  for (StringRef Ext : PathExts) {
-    SmallVector<wchar_t, MAX_PATH> U16Result;
-    DWORD Len = MAX_PATH;
-    do {
-      U16Result.resize_for_overwrite(Len);
-      // Lets attach the extension manually. That is needed for files
-      // with a point in name like aaa.bbb. SearchPathW will not add extension
-      // from its argument to such files because it thinks they already had one.
-      SmallVector<wchar_t, MAX_PATH> U16NameExt;
-      if (std::error_code EC =
-              windows::UTF8ToUTF16(Twine(Name + Ext).str(), U16NameExt))
-        return EC;
-
-      Len = ::SearchPathW(Path, c_str(U16NameExt), nullptr, U16Result.size(),
-                          U16Result.data(), nullptr);
-    } while (Len > U16Result.size());
-
-    if (Len == 0)
+  for (StringRef Path : Paths) {
+    if (Path.empty())
       continue;
-
-    U16Result.truncate(Len);
-
-    if (std::error_code EC =
-            windows::UTF16ToUTF8(U16Result.data(), U16Result.size(), U8Result))
-      return EC;
-
-    if (sys::fs::can_execute(U8Result))
-      break; // Found it.
-
-    U8Result.clear();
+    for (StringRef Ext : PathExts) {
+      SmallString<MAX_PATH> FilePath(Path);
+      sys::path::append(FilePath, Name);
+      FilePath.append(Ext);
+      if (sys::fs::can_execute(FilePath)) {
+        sys::path::make_preferred(FilePath);
+        return std::string(FilePath);
+      }
+    }
   }
-
-  if (U8Result.empty())
-    return mapWindowsError(::GetLastError());
-
-  llvm::sys::path::make_preferred(U8Result);
-  return std::string(U8Result.begin(), U8Result.end());
+  return errc::no_such_file_or_directory;
 }
 
 bool MakeErrMsg(std::string *ErrMsg, const std::string &prefix) {

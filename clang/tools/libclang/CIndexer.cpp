@@ -19,6 +19,7 @@
 #include "clang/Options/OptionUtils.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/Support/ConvertUTF.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MD5.h"
 #include "llvm/Support/Path.h"
@@ -102,12 +103,26 @@ const std::string &CIndexer::getClangResourcesPath() {
   // Find the location where this library lives (libclang.dylib).
 #if defined(LLVM_RUNTIME_WIN32)
   MEMORY_BASIC_INFORMATION mbi;
-  char path[MAX_PATH];
   VirtualQuery((void *)(uintptr_t)clang_createTranslationUnit, &mbi,
                sizeof(mbi));
-  GetModuleFileNameA((HINSTANCE)mbi.AllocationBase, path, MAX_PATH);
-
-  LibClangPath += path;
+  // GetModuleFileNameW truncates silently and returns the buffer size when
+  // the path does not fit; grow until it does.
+  SmallVector<wchar_t, MAX_PATH> PathW(MAX_PATH);
+  for (;;) {
+    DWORD Len = GetModuleFileNameW((HMODULE)mbi.AllocationBase, PathW.data(),
+                                   PathW.size());
+    if (Len < PathW.size()) {
+      PathW.truncate(Len);
+      break;
+    }
+    PathW.resize_for_overwrite(PathW.size() * 2);
+  }
+  std::string Path8;
+  llvm::convertUTF16ToUTF8String(
+      llvm::ArrayRef<llvm::UTF16>(
+          reinterpret_cast<const llvm::UTF16 *>(PathW.data()), PathW.size()),
+      Path8);
+  LibClangPath += Path8;
 #elif defined(_AIX)
   getClangResourcesPathImplAIX(LibClangPath);
 #else

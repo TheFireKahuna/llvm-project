@@ -38,7 +38,7 @@ void *DynamicLibrary::HandleSet::DLOpen(const char *File, std::string *Err) {
     return &getGlobals().OpenedHandles;
 
   SmallVector<wchar_t, MAX_PATH> FileUnicode;
-  if (std::error_code ec = windows::UTF8ToUTF16(File, FileUnicode)) {
+  if (std::error_code ec = windows::widenPath(File, FileUnicode)) {
     SetLastError(ec.value());
     MakeErrMsg(Err, std::string(File) + ": Can't convert to UTF-16");
     return &DynamicLibrary::Invalid;

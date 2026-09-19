@@ -1150,6 +1150,14 @@ macro(add_llvm_executable name)
     ${ARGN})
   generate_llvm_objects(${name} ${ARG_UNPARSED_ARGUMENTS})
   add_windows_version_resource_file(ALL_FILES ${ALL_FILES})
+  if (CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows" AND
+      (MSVC OR CMAKE_CXX_COMPILER_TARGET MATCHES "windows-(itanium|ntposix)"))
+    # Declare the executable long-path aware so the Win32 APIs that do not
+    # accept a long-path prefix work past MAX_PATH (Windows 10 1607+, subject
+    # to the LongPathsEnabled policy). CMake embeds .manifest sources.
+    list(APPEND ALL_FILES
+      ${LLVM_SOURCE_DIR}/resources/windows_long_paths.manifest)
+  endif()
 
   if(XCODE)
     # Note: the dummy.cpp source file provides no definitions. However,
