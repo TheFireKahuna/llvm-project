@@ -34,25 +34,37 @@ pad:
   resume { ptr, i32 } %e
 }
 
-; A call outside every invoke's range is a nounwind one and its region is
-; left undescribed on NT-POSIX: the table has the two invokes' sites and no
-; entry for the call between them, where an Itanium triple writes one with
-; no landing pad.
+; A call outside every invoke's range whose callee may unwind gets, on
+; NT-POSIX, an entry with no landing pad spanning that one instruction, and
+; the rest of the region between the invokes stays undescribed; a call to a
+; nounwind callee gets nothing. An Itanium triple writes one entry with no
+; landing pad for the whole region.
 declare void @plain_call()
+declare void @quiet_call() nounwind
 
 ; NTPOSIX-LABEL: gap:
+; NTPOSIX: [[PB:.Lplaincall_begin[0-9]+]]:
+; NTPOSIX-NEXT: callq plain_call
+; NTPOSIX-NEXT: [[PE:.Lplaincall_end[0-9]+]]:
+; NTPOSIX-NEXT: callq quiet_call
+; NTPOSIX-NEXT: .Ltmp{{[0-9]+}}:
 ; NTPOSIX: GCC_except_table1:
 ; NTPOSIX: .Lcst_begin1:
 ; NTPOSIX-NEXT: .uleb128 [[G1:.Ltmp[0-9]+]]-.Lfunc_begin1
 ; NTPOSIX-NEXT: .uleb128 {{.*}}-[[G1]]
 ; NTPOSIX-NEXT: .uleb128 {{.*}}-.Lfunc_begin1
 ; NTPOSIX-NEXT: .byte 0
+; NTPOSIX-NEXT: .uleb128 [[PB]]-.Lfunc_begin1
+; NTPOSIX-NEXT: .uleb128 [[PE]]-[[PB]]
+; NTPOSIX-NEXT: .byte 0
+; NTPOSIX-NEXT: .byte 0
 ; NTPOSIX-NEXT: .uleb128 [[G2:.Ltmp[0-9]+]]-.Lfunc_begin1
 ; NTPOSIX-NEXT: .uleb128 {{.*}}-[[G2]]
 ; NTPOSIX-NEXT: .uleb128 {{.*}}-.Lfunc_begin1
 ; NTPOSIX-NEXT: .byte 0
-; NTPOSIX-NEXT: .Lcst_end1:
+; NTPOSIX: .Lcst_end1:
 ; ITANIUM-LABEL: gap:
+; ITANIUM-NOT: .Lplaincall_begin
 ; ITANIUM: .Lcst_begin1:
 ; ITANIUM: .byte 0
 ; ITANIUM: .byte 0
@@ -63,6 +75,7 @@ entry:
   invoke void @may_throw() to label %mid unwind label %pad
 mid:
   call void @plain_call()
+  call void @quiet_call()
   invoke void @may_throw() to label %done unwind label %pad
 done:
   ret void

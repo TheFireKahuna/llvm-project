@@ -153,6 +153,62 @@ void EHStreamer::computeActionsTable(
   }
 }
 
+bool EHStreamer::labelsPlainCalls() const {
+  return Asm->TM.getTargetTriple().isWindowsNTPOSIXEnvironment();
+}
+
+void EHStreamer::beginPlainCallSites(const MachineFunction *MF) {
+  PlainCallSites.clear();
+  RangeBeginLabels.clear();
+  RangeEndLabels.clear();
+  InInvokeRange = false;
+  InFunclet = false;
+  PendingCallEnd = nullptr;
+  if (!labelsPlainCalls())
+    return;
+  for (const LandingPadInfo &LPI : MF->getLandingPads()) {
+    RangeBeginLabels.insert_range(LPI.BeginLabels);
+    RangeEndLabels.insert_range(LPI.EndLabels);
+  }
+}
+
+void EHStreamer::trackBodyPosition(const MachineInstr *MI) {
+  const MachineBasicBlock *MBB = MI->getParent();
+  if (MBB->isEHFuncletEntry() && MI == &MBB->front())
+    InFunclet = true;
+  if (!MI->isEHLabel())
+    return;
+  const MCSymbol *Label = MI->getOperand(0).getMCSymbol();
+  if (RangeBeginLabels.count(Label))
+    InInvokeRange = true;
+  else if (RangeEndLabels.count(Label))
+    InInvokeRange = false;
+}
+
+bool EHStreamer::isPlainCallSite(const MachineInstr *MI) const {
+  return !InFunclet && !InInvokeRange && MI->isCall() &&
+         !callToNoUnwindFunction(MI);
+}
+
+void EHStreamer::beginInstruction(const MachineInstr *MI) {
+  if (!labelsPlainCalls())
+    return;
+  trackBodyPosition(MI);
+  if (!isPlainCallSite(MI))
+    return;
+  MCSymbol *Begin = Asm->createTempSymbol("plaincall_begin");
+  Asm->OutStreamer->emitLabel(Begin);
+  PendingCallEnd = Asm->createTempSymbol("plaincall_end");
+  PlainCallSites[MI] = {Begin, PendingCallEnd};
+}
+
+void EHStreamer::endInstruction() {
+  if (!PendingCallEnd)
+    return;
+  Asm->OutStreamer->emitLabel(PendingCallEnd);
+  PendingCallEnd = nullptr;
+}
+
 /// Return `true' if this is a call to a function marked `nounwind'. Return
 /// `false' otherwise.
 bool EHStreamer::callToNoUnwindFunction(const MachineInstr *MI) {
@@ -256,11 +312,12 @@ void EHStreamer::computeCallSiteTable(
 
   // On NT-POSIX the funclets follow the function's own code and are called,
   // never landed: the call sites are the function's, and its range ends where
-  // the first funclet begins. A call outside every invoke's range is a
-  // nounwind one, and the region around it is left undescribed: the
-  // personality ends an unwind that reaches such a gap, so no entry that
-  // would let it pass is written for the region.
-  const bool IsNTPOSIX = Asm->TM.getTargetTriple().isWindowsNTPOSIXEnvironment();
+  // the first funclet begins. A call outside every invoke's range whose
+  // callee may unwind gets an entry with no landing pad spanning that
+  // instruction alone, and the rest of the region stays undescribed: the
+  // personality passes the call and ends an unwind that reaches anything
+  // else there.
+  const bool IsNTPOSIX = labelsPlainCalls();
   const MachineBasicBlock *FirstFunclet = nullptr;
   if (IsNTPOSIX)
     for (const auto &MBB : *Asm->MF)
@@ -293,6 +350,14 @@ void EHStreamer::computeCallSiteTable(
       if (!MI.isEHLabel()) {
         if (MI.isCall())
           SawPotentiallyThrowing |= !callToNoUnwindFunction(&MI);
+        if (IsNTPOSIX) {
+          auto Site = PlainCallSites.find(&MI);
+          if (Site != PlainCallSites.end()) {
+            CallSites.push_back({Site->second.first, Site->second.second,
+                                 nullptr, 0});
+            PreviousIsInvoke = false;
+          }
+        }
         continue;
       }
 
@@ -317,8 +382,8 @@ void EHStreamer::computeCallSiteTable(
       // throw, create a call-site entry with no landing pad for the region
       // between the try-ranges.
       if (SawPotentiallyThrowing && IsNTPOSIX) {
-        // The region stays undescribed, and the ranges either side of it
-        // stay two sites.
+        // The region stays undescribed but for its calls' own entries, and
+        // the ranges either side of it stay two sites.
         PreviousIsInvoke = false;
       } else if (SawPotentiallyThrowing &&
                  (Asm->MAI.usesCFIForEH() ||

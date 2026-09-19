@@ -64,6 +64,7 @@ void WinException::endModule() {
 void WinException::beginFunction(const MachineFunction *MF) {
   shouldEmitMoves = shouldEmitPersonality = shouldEmitLSDA = false;
   ExceptionTableEmitted = false;
+  beginPlainCallSites(MF);
 
   // If any landing pads survive, we need an EH table.
   bool hasLandingPads = !MF->getLandingPads().empty();

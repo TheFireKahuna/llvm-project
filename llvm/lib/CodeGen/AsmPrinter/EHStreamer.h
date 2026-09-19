@@ -14,6 +14,7 @@
 #define LLVM_LIB_CODEGEN_ASMPRINTER_EHSTREAMER_H
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/CodeGen/AsmPrinterHandler.h"
 #include "llvm/Support/Compiler.h"
 
@@ -90,6 +91,28 @@ protected:
     bool IsLPRange = false;
   };
 
+  /// NT-POSIX: the labels around each call outside every invoke range whose
+  /// callee may unwind, keyed by the call; the call-site table gives each one
+  /// an entry with no landing pad spanning that instruction alone, so an
+  /// unwind passes the call and ends at any other instruction outside the
+  /// ranges. Written while the body is emitted, read when the table is.
+  DenseMap<const MachineInstr *, std::pair<MCSymbol *, MCSymbol *>> PlainCallSites;
+  /// The invoke ranges' begin and end labels, and where the body's emission
+  /// stands: inside a range, or past the first funclet.
+  SmallPtrSet<const MCSymbol *, 16> RangeBeginLabels, RangeEndLabels;
+  bool InInvokeRange = false;
+  bool InFunclet = false;
+  /// The end label owed to the call being emitted, if any.
+  MCSymbol *PendingCallEnd = nullptr;
+
+  /// Whether a call outside every invoke range gets a call-site entry of its
+  /// own on this target.
+  bool labelsPlainCalls() const;
+  /// Whether `MI` is such a call at the point emission has reached.
+  bool isPlainCallSite(const MachineInstr *MI) const;
+  /// Advances the range and funclet state past `MI`.
+  void trackBodyPosition(const MachineInstr *MI);
+
   /// Compute the actions table and gather the first action index for each
   /// landing pad site.
   void computeActionsTable(
@@ -153,6 +176,12 @@ public:
   /// Return `true' if this is a call to a function marked `nounwind'. Return
   /// `false' otherwise.
   static bool callToNoUnwindFunction(const MachineInstr *MI);
+
+  void beginInstruction(const MachineInstr *MI) override;
+  void endInstruction() override;
+  /// Resets the plain-call state for a function whose body is about to be
+  /// emitted; a subclass's `beginFunction` calls it.
+  void beginPlainCallSites(const MachineFunction *MF);
 };
 
 } // end namespace llvm
