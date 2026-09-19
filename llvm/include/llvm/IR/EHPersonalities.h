@@ -107,6 +107,13 @@ inline bool isNoOpWithoutInvoke(EHPersonality Pers) {
 
 LLVM_ABI bool canSimplifyInvokeNoUnwind(const Function *F);
 
+/// Whether \p F's cleanups are funclets under an Itanium-style personality:
+/// on the NT-POSIX environment a cleanuppad is an outlined routine the
+/// unwinder calls with the establisher frame, while a landingpad in the same
+/// function is landed as usual. Such a function is prepared and laid out as a
+/// funclet function without its personality being one.
+LLVM_ABI bool usesNTPOSIXCleanupFunclets(const Function &F);
+
 typedef TinyPtrVector<BasicBlock *> ColorVector;
 
 /// If an EH funclet personality is in use (see isFuncletEHPersonality),

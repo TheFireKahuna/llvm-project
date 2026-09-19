@@ -5594,6 +5594,13 @@ static bool removeEmptyCleanup(CleanupReturnInst *RI, DomTreeUpdater *DTU) {
   // set UnwindDest to nullptr.
   BasicBlock *UnwindDest = RI->getUnwindDest();
 
+  // A fault access keeps its unwind edge: as a call it would be a plain
+  // access, outside every call-site range.
+  if (!UnwindDest && any_of(predecessors(BB), [](const BasicBlock *Pred) {
+        return isa<FaultAccessInst>(Pred->getTerminator());
+      }))
+    return false;
+
   // We're about to remove BB from the control flow.  Before we do, sink any
   // PHINodes into the unwind destination.  Doing this before changing the
   // control flow avoids some potentially slow checks, since we can currently

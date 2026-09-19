@@ -26,6 +26,7 @@
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/LEB128.h"
+#include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetLoweringObjectFile.h"
 #include <algorithm>
 #include <cassert>
@@ -253,15 +254,29 @@ void EHStreamer::computeCallSiteTable(
 
   bool IsSJLJ = Asm->MAI.getExceptionHandlingType() == ExceptionHandling::SjLj;
 
+  // On NT-POSIX the funclets follow the function's own code and are called,
+  // never landed: the call sites are the function's, and its range ends where
+  // the first funclet begins.
+  const MachineBasicBlock *FirstFunclet = nullptr;
+  if (Asm->TM.getTargetTriple().isWindowsNTPOSIXEnvironment())
+    for (const auto &MBB : *Asm->MF)
+      if (MBB.isEHFuncletEntry()) {
+        FirstFunclet = &MBB;
+        break;
+      }
+
   // Visit all instructions in order of address.
   for (const auto &MBB : *Asm->MF) {
+    if (&MBB == FirstFunclet)
+      break;
     if (&MBB == &Asm->MF->front() || MBB.isBeginSection()) {
       // We start a call-site range upon function entry and at the beginning of
       // every basic block section.
       auto &Range = Asm->MBBSectionRanges[MBB.getSectionID()];
-      CallSiteRanges.push_back({Range.BeginLabel, Range.EndLabel,
-                                Asm->getMBBExceptionSym(MBB),
-                                CallSites.size()});
+      CallSiteRanges.push_back(
+          {Range.BeginLabel,
+           FirstFunclet ? FirstFunclet->getSymbol() : Range.EndLabel,
+           Asm->getMBBExceptionSym(MBB), CallSites.size()});
       PreviousIsInvoke = false;
       SawPotentiallyThrowing = false;
       LastLabel = nullptr;
@@ -347,7 +362,8 @@ void EHStreamer::computeCallSiteTable(
 
     // We end the call-site range upon function exit and at the end of every
     // basic block section.
-    if (&MBB == &Asm->MF->back() || MBB.isEndSection()) {
+    if (&MBB == &Asm->MF->back() || MBB.isEndSection() ||
+        (FirstFunclet && MBB.getNextNode() == FirstFunclet)) {
       // If some instruction between the previous try-range and the end of the
       // function may throw, create a call-site entry with no landing pad for
       // the region following the try-range.
@@ -395,11 +411,23 @@ MCSymbol *EHStreamer::emitExceptionTable() {
   SmallVector<const LandingPadInfo *, 64> LandingPads;
   LandingPads.reserve(PadInfos.size());
 
+  // The cleanup funclets of an NT-POSIX function: each is called by the
+  // unwinder at its call site's cleanup-table entry and never landed, so its
+  // sites name no pad. The function's table is written before the funclets
+  // are, so their labels are not yet defined; the block pointers are compared
+  // and never dereferenced for a pad whose block may be gone.
+  SmallPtrSet<const MachineBasicBlock *, 8> CleanupFunclets;
+  if (Asm->TM.getTargetTriple().isWindowsNTPOSIXEnvironment())
+    for (const auto &MBB : *MF)
+      if (MBB.isCleanupFuncletEntry())
+        CleanupFunclets.insert(&MBB);
+
   for (const LandingPadInfo &LPI : PadInfos) {
     // If a landing-pad has an associated label, but the label wasn't ever
     // emitted, then skip it.  (This can occur if the landingpad's MBB was
     // deleted).
-    if (LPI.LandingPadLabel && !LPI.LandingPadLabel->isDefined())
+    if (LPI.LandingPadLabel && !LPI.LandingPadLabel->isDefined() &&
+        !CleanupFunclets.count(LPI.LandingPadBlock))
       continue;
     LandingPads.push_back(&LPI);
   }
@@ -422,6 +450,16 @@ MCSymbol *EHStreamer::emitExceptionTable() {
   SmallVector<CallSiteEntry, 64> CallSites;
   SmallVector<CallSiteRange, 4> CallSiteRanges;
   computeCallSiteTable(CallSites, CallSiteRanges, LandingPads, FirstActions);
+
+  // The cleanup table: for each call site whose pad is a cleanup funclet, the
+  // site's start and the funclet's entry, both function-relative, in site
+  // order.
+  SmallVector<std::pair<MCSymbol *, MCSymbol *>, 8> Cleanups;
+  for (const CallSiteEntry &S : CallSites)
+    if (S.LPad && CleanupFunclets.count(S.LPad->LandingPadBlock))
+      Cleanups.push_back({S.BeginLabel ? S.BeginLabel
+                                       : CallSiteRanges.front().FragmentBeginLabel,
+                          S.LPad->LandingPadBlock->getSymbol()});
 
   bool IsSJLJ = Asm->MAI.getExceptionHandlingType() == ExceptionHandling::SjLj;
   bool IsWasm = Asm->MAI.getExceptionHandlingType() == ExceptionHandling::Wasm;
@@ -477,6 +515,22 @@ MCSymbol *EHStreamer::emitExceptionTable() {
   if (LSDASection)
     Asm->OutStreamer->switchSection(LSDASection);
   Asm->emitAlignment(Align(4));
+
+  // On NT-POSIX the handler data is the cleanup table, then the LSDA: a
+  // version byte, the entry count, and one (site start, funclet) pair per
+  // entry, ULEB128, so a personality is handed the LSDA past a prefix it can
+  // measure.
+  if (Asm->TM.getTargetTriple().isWindowsNTPOSIXEnvironment()) {
+    MCSymbol *FuncBegin = CallSiteRanges.front().FragmentBeginLabel;
+    Asm->OutStreamer->AddComment("Cleanup table version");
+    Asm->emitInt8(1);
+    Asm->OutStreamer->AddComment("Cleanup count");
+    Asm->emitULEB128(Cleanups.size());
+    for (const auto &[Begin, Funclet] : Cleanups) {
+      Asm->emitLabelDifferenceAsULEB128(Begin, FuncBegin);
+      Asm->emitLabelDifferenceAsULEB128(Funclet, FuncBegin);
+    }
+  }
 
   // Emit the LSDA.
   MCSymbol *GCCETSym =
@@ -742,6 +796,12 @@ MCSymbol *EHStreamer::emitExceptionTable() {
         if (!S.LPad) {
           if (VerboseAsm)
             Asm->OutStreamer->AddComment("    has no landing pad");
+          Asm->emitCallSiteValue(0, CallSiteEncoding);
+        } else if (CleanupFunclets.count(S.LPad->LandingPadBlock)) {
+          // The unwinder calls the funclet the cleanup table names for this
+          // site; nothing is landed here.
+          if (VerboseAsm)
+            Asm->OutStreamer->AddComment("    cleanup funclet, called");
           Asm->emitCallSiteValue(0, CallSiteEncoding);
         } else {
           if (VerboseAsm)

@@ -135,8 +135,10 @@ bool WinEHPrepareImpl::runOnFunction(Function &Fn) {
   // Classify the personality to see what kind of preparation we need.
   Personality = classifyEHPersonality(Fn.getPersonalityFn());
 
-  // Do nothing if this is not a scope-based personality.
-  if (!isScopedEHPersonality(Personality))
+  // Do nothing if this is not a scope-based personality, unless the
+  // function's cleanups are funclets under an Itanium-style one (NT-POSIX),
+  // which are prepared the same way.
+  if (!isScopedEHPersonality(Personality) && !usesNTPOSIXCleanupFunclets(Fn))
     return false;
 
   DL = &Fn.getDataLayout();

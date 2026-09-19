@@ -1475,6 +1475,13 @@ bool SelectionDAGISel::PrepareEHLandingPad() {
   BuildMI(*MBB, FuncInfo->InsertPt, SDB->getCurDebugLoc(), II)
     .addSym(Label);
 
+  // A cleanup funclet under an Itanium-style personality (NT-POSIX) is called
+  // with its establisher frame rather than landed with an exception value, so
+  // there are no exception registers to copy in.
+  if (BasicBlock::const_iterator It = LLVMBB->getFirstNonPHIIt();
+      It != LLVMBB->end() && isa<CleanupPadInst>(*It))
+    return true;
+
   // If the unwinder does not preserve all registers, ensure that the
   // function marks the clobbered registers as used.
   const TargetRegisterInfo &TRI = *MF->getSubtarget().getRegisterInfo();

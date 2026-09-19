@@ -242,7 +242,8 @@ void MachineFunction::init() {
   JumpTableInfo = nullptr;
 
   if (isFuncletEHPersonality(classifyEHPersonality(
-          F.hasPersonalityFn() ? F.getPersonalityFn() : nullptr))) {
+          F.hasPersonalityFn() ? F.getPersonalityFn() : nullptr)) ||
+      usesNTPOSIXCleanupFunclets(F)) {
     WinEHInfo = new (Allocator) WinEHFuncInfo();
   }
 

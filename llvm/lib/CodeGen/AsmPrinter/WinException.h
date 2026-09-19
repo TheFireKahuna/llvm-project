@@ -33,6 +33,10 @@ class LLVM_LIBRARY_VISIBILITY WinException : public EHStreamer {
   /// Per-function flag to indicate if frame moves info should be emitted.
   bool shouldEmitMoves = false;
 
+  /// Whether the function's exception table was written behind its own
+  /// UNWIND_INFO, ahead of its funclets, as an NT-POSIX function's is.
+  bool ExceptionTableEmitted = false;
+
   /// True if this is a 64-bit target and we should use image relative offsets.
   bool useImageRel32 = false;
 

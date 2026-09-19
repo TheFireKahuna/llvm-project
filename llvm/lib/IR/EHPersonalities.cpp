@@ -171,3 +171,19 @@ DenseMap<BasicBlock *, ColorVector> llvm::colorEHFunclets(Function &F) {
   }
   return BlockColors;
 }
+
+bool llvm::usesNTPOSIXCleanupFunclets(const Function &F) {
+  if (!F.hasPersonalityFn() ||
+      !F.getParent()->getTargetTriple().isWindowsNTPOSIXEnvironment())
+    return false;
+  if (isScopedEHPersonality(classifyEHPersonality(F.getPersonalityFn())))
+    return false;
+  for (const BasicBlock &BB : F) {
+    if (!BB.isEHPad())
+      continue;
+    BasicBlock::const_iterator It = BB.getFirstNonPHIIt();
+    if (It != BB.end() && isa<FuncletPadInst>(*It))
+      return true;
+  }
+  return false;
+}

@@ -2318,6 +2318,27 @@ void X86AsmPrinter::emitInstruction(const MachineInstr *MI) {
     break;
   }
   case X86::CLEANUPRET: {
+    // A cleanup funclet on NT-POSIX that unwinds to another cleanup funclet
+    // continues there itself: its epilogue has run, so the establisher frame
+    // is reloaded from the home slot the prologue spilled it to and the next
+    // funclet is entered by a jump, whose target is named by symbol so that
+    // no layout decides it. The last funclet of the chain returns to the
+    // unwinder, as does one that unwinds to the caller.
+    const MachineBasicBlock *MBB = MI->getParent();
+    if (TM.getTargetTriple().isWindowsNTPOSIXEnvironment() &&
+        !MBB->succ_empty() && (*MBB->succ_begin())->isCleanupFuncletEntry()) {
+      const MachineBasicBlock *Next = *MBB->succ_begin();
+      EmitAndCountInstruction(MCInstBuilder(X86::MOV64rm)
+                                  .addReg(X86::RDX)
+                                  .addReg(X86::RSP)
+                                  .addImm(1)
+                                  .addReg(0)
+                                  .addImm(16)
+                                  .addReg(0));
+      EmitAndCountInstruction(MCInstBuilder(X86::JMP_1).addExpr(
+          MCSymbolRefExpr::create(Next->getSymbol(), OutContext)));
+      return;
+    }
     // Lower these as normal, but add some comments.
     OutStreamer->AddComment("CLEANUPRET");
     break;
