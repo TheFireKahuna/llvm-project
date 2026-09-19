@@ -38,6 +38,25 @@
 typedef int errno_t;
 #endif
 
+// The SDK declares the POSIX-semantics rename and delete (Windows 10 1607)
+// only above the _WIN32_WINNT floor set in WindowsSupport.h. The values are
+// ABI-stable.
+#ifndef FILE_RENAME_FLAG_REPLACE_IF_EXISTS
+#define FILE_RENAME_FLAG_REPLACE_IF_EXISTS 0x00000001
+#define FILE_RENAME_FLAG_POSIX_SEMANTICS 0x00000002
+#endif
+#ifndef FILE_DISPOSITION_FLAG_DELETE
+#define FILE_DISPOSITION_FLAG_DELETE 0x00000001
+#define FILE_DISPOSITION_FLAG_POSIX_SEMANTICS 0x00000002
+#endif
+#ifndef FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE
+#define FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE 0x00000010
+#endif
+static const FILE_INFO_BY_HANDLE_CLASS FileDispositionInfoExClass =
+    static_cast<FILE_INFO_BY_HANDLE_CLASS>(21); // FileDispositionInfoEx
+static const FILE_INFO_BY_HANDLE_CLASS FileRenameInfoExClass =
+    static_cast<FILE_INFO_BY_HANDLE_CLASS>(22); // FileRenameInfoEx
+
 #ifdef _MSC_VER
 #pragma comment(lib, "advapi32.lib") // This provides CryptAcquireContextW.
 #pragma comment(lib, "ole32.lib")    // This provides CoTaskMemFree
@@ -430,9 +449,8 @@ std::error_code remove(const Twine &path, bool IgnoreNonExisting) {
   // the DeleteFile or RemoveDirectory functions, but that requires you to know
   // which one it is. We could stat() the file to determine that, but that would
   // cost us additional system calls, which can be slow in a directory
-  // containing a large number of files. So instead we call CreateFile directly.
-  // The important part is the FILE_FLAG_DELETE_ON_CLOSE flag, which causes the
-  // file to be deleted once it is closed. We also use the flags
+  // containing a large number of files. So instead we call CreateFile directly
+  // and set the delete disposition on the handle. We use the flags
   // FILE_FLAG_BACKUP_SEMANTICS (which allows us to open directories), and
   // FILE_FLAG_OPEN_REPARSE_POINT (don't follow symlinks).
   ScopedFileHandle h(::CreateFileW(
@@ -440,14 +458,45 @@ std::error_code remove(const Twine &path, bool IgnoreNonExisting) {
       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
       OPEN_EXISTING,
       FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS |
-          FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_DELETE_ON_CLOSE,
+          FILE_FLAG_OPEN_REPARSE_POINT,
       NULL));
   if (!h) {
     std::error_code EC = mapWindowsError(::GetLastError());
     if (EC != errc::no_such_file_or_directory || !IgnoreNonExisting)
       return EC;
+    return std::error_code();
   }
 
+  // Prefer a POSIX-semantics delete (Windows 10 1607+ on NTFS/ReFS), which
+  // behaves like unlink(2): the name is released immediately even while
+  // another process still has the file open or mapped, so the caller may
+  // recreate it at once, and the read-only attribute does not prevent
+  // deletion. A file that cannot be deleted (a non-empty directory, a loaded
+  // image) is reported here instead of being silently kept the way
+  // FILE_FLAG_DELETE_ON_CLOSE would.
+  DWORD Flags = FILE_DISPOSITION_FLAG_DELETE |
+                FILE_DISPOSITION_FLAG_POSIX_SEMANTICS |
+                FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE;
+  if (::SetFileInformationByHandle(h, FileDispositionInfoExClass, &Flags,
+                                   sizeof(Flags)))
+    return std::error_code();
+  // Volumes without POSIX delete (FAT, exFAT, some SMB servers) and kernels
+  // that predate the information class reject the request itself, not the
+  // delete; anything else is a real answer.
+  switch (::GetLastError()) {
+  case ERROR_INVALID_PARAMETER:
+  case ERROR_INVALID_FUNCTION:
+  case ERROR_NOT_SUPPORTED:
+    break;
+  default:
+    return mapWindowsError(::GetLastError());
+  }
+
+  FILE_DISPOSITION_INFO Disposition;
+  Disposition.DeleteFile = TRUE;
+  if (!::SetFileInformationByHandle(h, FileDispositionInfo, &Disposition,
+                                    sizeof(Disposition)))
+    return mapWindowsError(::GetLastError());
   return std::error_code();
 }
 
@@ -607,11 +656,41 @@ static std::error_code rename_internal(HANDLE FromHandle, const Twine &To,
                                   (ToWide.size() * sizeof(wchar_t)));
   FILE_RENAME_INFO &RenameInfo =
       *reinterpret_cast<FILE_RENAME_INFO *>(RenameInfoBuf.data());
-  RenameInfo.ReplaceIfExists = ReplaceIfExists;
   RenameInfo.RootDirectory = 0;
   RenameInfo.FileNameLength = ToWide.size() * sizeof(wchar_t);
   std::copy(ToWide.begin(), ToWide.end(), &RenameInfo.FileName[0]);
 
+  // Prefer a POSIX-semantics rename (Windows 10 1607+ on NTFS/ReFS). It swaps
+  // the destination name atomically even while another process still has the
+  // old destination open or memory-mapped; the old stream stays intact for
+  // that process. A classic rename over a mapped destination fails, and the
+  // mapped file can never be truncated in place (ERROR_USER_MAPPED_FILE), so
+  // this is the only way to replace an output that a language server or a
+  // linker is currently reading. FileRenameInfoEx reads a DWORD of flags in
+  // the bytes FileRenameInfo uses for the BOOLEAN ReplaceIfExists.
+  DWORD Flags = FILE_RENAME_FLAG_POSIX_SEMANTICS |
+                (ReplaceIfExists ? FILE_RENAME_FLAG_REPLACE_IF_EXISTS : 0);
+  memcpy(&RenameInfo, &Flags, sizeof(Flags));
+  SetLastError(ERROR_SUCCESS);
+  if (SetFileInformationByHandle(FromHandle, FileRenameInfoExClass, &RenameInfo,
+                                 RenameInfoBuf.size()))
+    return std::error_code();
+  // Volumes without POSIX rename (FAT, exFAT, some SMB servers) and kernels
+  // that predate the information class reject the request itself, not the
+  // rename; anything else is a real answer.
+  switch (GetLastError()) {
+  case ERROR_SUCCESS: // Wine doesn't always set error code.
+  case ERROR_INVALID_PARAMETER:
+  case ERROR_INVALID_FUNCTION:
+  case ERROR_NOT_SUPPORTED:
+    break;
+  default:
+    return mapWindowsError(GetLastError());
+  }
+
+  Flags = 0;
+  memcpy(&RenameInfo, &Flags, sizeof(Flags));
+  RenameInfo.ReplaceIfExists = ReplaceIfExists;
   SetLastError(ERROR_SUCCESS);
   if (!SetFileInformationByHandle(FromHandle, FileRenameInfo, &RenameInfo,
                                   RenameInfoBuf.size())) {
@@ -652,11 +731,12 @@ static std::error_code rename_handle(HANDLE FromHandle, const Twine &To) {
       return EC;
 
     // The destination file probably exists and is currently open in another
-    // process, either because the file was opened without FILE_SHARE_DELETE or
-    // it is mapped into memory (e.g. using MemoryBuffer). Rename it in order to
-    // move it out of the way of the source file. Use FILE_FLAG_DELETE_ON_CLOSE
-    // to arrange for the destination file to be deleted when the other process
-    // closes it.
+    // process, either because the file was opened without FILE_SHARE_DELETE,
+    // or it is a mapped image (a running executable or loaded DLL), or the
+    // volume has no POSIX rename and the file is mapped into memory (e.g.
+    // using MemoryBuffer). Rename it in order to move it out of the way of
+    // the source file. Use FILE_FLAG_DELETE_ON_CLOSE to arrange for the
+    // destination file to be deleted when the other process closes it.
     ScopedFileHandle ToHandle(
         ::CreateFileW(WideTo.begin(), GENERIC_READ | DELETE,
                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,

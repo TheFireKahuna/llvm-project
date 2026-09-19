@@ -1445,6 +1445,20 @@ TEST_F(FileSystemTest, UTF8ToUTF16DirectoryIteration) {
 }
 #endif
 
+// unlink(2) removes a file regardless of the file's own permissions; on
+// Windows the read-only attribute must not prevent removal either.
+TEST_F(FileSystemTest, RemoveReadOnlyFile) {
+  SmallString<128> Path(TestDirectory);
+  path::append(Path, "readonly.txt");
+  int FD;
+  ASSERT_NO_ERROR(fs::openFileForWrite(Path, FD, fs::CD_CreateNew));
+  ASSERT_EQ(close(FD), 0);
+  ASSERT_NO_ERROR(fs::setPermissions(Path, fs::all_read));
+
+  ASSERT_NO_ERROR(fs::remove(Path));
+  EXPECT_FALSE(fs::exists(Path));
+}
+
 TEST_F(FileSystemTest, Remove) {
   SmallString<64> BaseDir;
   SmallString<64> Paths[4];
@@ -1985,6 +1999,46 @@ static void verifyFileContents(const Twine &Path, StringRef Contents) {
   ASSERT_TRUE((bool)Buffer);
   StringRef Data = Buffer.get()->getBuffer();
   ASSERT_EQ(Data, Contents);
+}
+
+// Replacing a file by rename must succeed while another handle still has the
+// old file memory-mapped, and the mapping must keep seeing the old contents.
+// This is how a compiler replaces an output that a language server or a
+// linker is reading.
+TEST_F(FileSystemTest, RenameOverMappedFile) {
+  SmallString<128> Dest(TestDirectory);
+  path::append(Dest, "mapped.out");
+  SmallString<128> Src(TestDirectory);
+  path::append(Src, "replacement.out");
+
+  const unsigned Size = 4096;
+  createFileWithData(Dest, /*ShouldExistBefore=*/false, fs::CD_CreateNew,
+                     std::string(Size, 'o'));
+  createFileWithData(Src, /*ShouldExistBefore=*/false, fs::CD_CreateNew,
+                     std::string(Size, 'n'));
+
+  int FD;
+  ASSERT_NO_ERROR(fs::openFileForRead(Dest, FD));
+  std::error_code EC;
+  fs::mapped_file_region MFR(fs::convertFDToNativeFile(FD),
+                             fs::mapped_file_region::readonly, Size, 0, EC);
+  ASSERT_NO_ERROR(EC);
+  EXPECT_EQ('o', MFR.const_data()[0]);
+
+  ASSERT_NO_ERROR(fs::rename(Src, Dest));
+
+  // The mapping is unaffected; the name now refers to the new contents.
+  EXPECT_EQ('o', MFR.const_data()[Size - 1]);
+  EXPECT_FALSE(fs::exists(Src));
+  verifyFileContents(Dest, std::string(Size, 'n'));
+#ifdef _WIN32
+  // The mapped destination was superseded in place, not moved aside.
+  EXPECT_FALSE(fs::exists(Dest + ".tmp0"));
+#endif
+
+  MFR.unmap();
+  ASSERT_EQ(close(FD), 0);
+  ASSERT_NO_ERROR(fs::remove(Dest));
 }
 
 TEST_F(FileSystemTest, CreateNew) {
