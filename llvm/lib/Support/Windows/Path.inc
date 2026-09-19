@@ -54,6 +54,10 @@ typedef int errno_t;
 #ifndef FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE
 #define FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE 0x00000010
 #endif
+#ifndef FILE_DISPOSITION_FLAG_ON_CLOSE
+#define FILE_DISPOSITION_FLAG_DO_NOT_DELETE 0x00000000
+#define FILE_DISPOSITION_FLAG_ON_CLOSE 0x00000008
+#endif
 static const FILE_INFO_BY_HANDLE_CLASS FileDispositionInfoExClass =
     static_cast<FILE_INFO_BY_HANDLE_CLASS>(21); // FileDispositionInfoEx
 static const FILE_INFO_BY_HANDLE_CLASS FileRenameInfoExClass =
@@ -713,7 +717,41 @@ std::error_code is_local(int FD, bool &Result) {
   return is_local_handle(Handle, Result);
 }
 
+// Windows 10 1607 can withdraw a delete-on-close requested at open
+// (FileDispositionInfoEx with FILE_DISPOSITION_FLAG_ON_CLOSE). Before that,
+// deletion of a temporary has to be arranged after the fact with
+// FileDispositionInfo, which marks the file delete-pending and so refuses
+// every other open of it by name until it is closed.
+static bool haveDispositionEx() {
+  static const bool Ret =
+      GetWindowsOSVersion() >= llvm::VersionTuple(10, 0, 0, 14393);
+  return Ret;
+}
+
+// Manages the deletion of a temporary that was opened with OF_DeleteOnClose
+// (or, on kernels without FileDispositionInfoEx, arranges it here). Delete ==
+// true confirms the arrangement for this file's volume and reports
+// not_supported where the caller must remove the file by name instead;
+// Delete == false withdraws it so the file can be kept.
 static std::error_code setDeleteDisposition(HANDLE Handle, bool Delete) {
+  if (haveDispositionEx()) {
+    DWORD Flags =
+        FILE_DISPOSITION_FLAG_DO_NOT_DELETE | FILE_DISPOSITION_FLAG_ON_CLOSE;
+    if (Delete) {
+      // Check if the file is on a network (non-local) drive. If so, don't
+      // keep delete-on-close, since it prevents opening the file for writes.
+      bool IsLocal;
+      if (std::error_code EC = is_local_handle(Handle, IsLocal))
+        return EC;
+      if (IsLocal)
+        return std::error_code();
+    }
+    if (!SetFileInformationByHandle(Handle, FileDispositionInfoExClass, &Flags,
+                                    sizeof(Flags)))
+      return mapWindowsError(::GetLastError());
+    return Delete ? make_error_code(errc::not_supported) : std::error_code();
+  }
+
   // Clear the FILE_DISPOSITION_INFO flag first, before checking if it's a
   // network file. On Windows 7 the function realPathFromHandle() below fails
   // if the FILE_DISPOSITION_INFO flag was already set to 'DeleteFile = true' by
@@ -1684,7 +1722,7 @@ static DWORD nativeAccess(FileAccess Access, OpenFlags Flags) {
     Result |= GENERIC_READ;
   if (Access & FA_Write)
     Result |= GENERIC_WRITE;
-  if (Flags & OF_Delete)
+  if (Flags & (OF_Delete | OF_DeleteOnClose))
     Result |= DELETE;
   if (Flags & OF_UpdateAtime)
     Result |= FILE_WRITE_ATTRIBUTES;
@@ -1740,9 +1778,14 @@ Expected<file_t> openNativeFile(const Twine &Name, CreationDisposition Disp,
   if (Flags & OF_ChildInherit)
     Inherit = true;
 
+  DWORD NativeFlags = FILE_ATTRIBUTE_NORMAL;
+  // Only where it can be withdrawn again; see setDeleteDisposition.
+  if ((Flags & OF_DeleteOnClose) && haveDispositionEx())
+    NativeFlags |= FILE_FLAG_DELETE_ON_CLOSE;
+
   file_t Result;
-  std::error_code EC = openNativeFileInternal(
-      Name, Result, NativeDisp, NativeAccess, FILE_ATTRIBUTE_NORMAL, Inherit);
+  std::error_code EC = openNativeFileInternal(Name, Result, NativeDisp,
+                                              NativeAccess, NativeFlags, Inherit);
   if (EC)
     return errorCodeToError(EC);
 

@@ -799,6 +799,14 @@ enum OpenFlags : unsigned {
   /// Force files Atime to be updated on access. Only makes a difference on
   /// Windows.
   OF_UpdateAtime = 32,
+
+  /// The file is deleted when its last handle is closed. Only makes a
+  /// difference on Windows, where it maps to FILE_FLAG_DELETE_ON_CLOSE (and
+  /// implies OF_Delete): unlike a file marked for deletion after the fact,
+  /// the file can still be opened by others and queried by name while it
+  /// lives, and the arrangement can be withdrawn with
+  /// FileDispositionInfoEx before the file is kept.
+  OF_DeleteOnClose = 64,
 };
 
 /// Create a potentially unique file name but does not create it.

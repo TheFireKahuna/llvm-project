@@ -1336,15 +1336,13 @@ Error TempFile::keep(const Twine &Name) {
     }
   }
 
-  // If we can't rename or copy, discard the temporary file.
+  // If we can't rename or copy, discard the temporary file. Delete-on-close
+  // was withdrawn above and cannot be requested again on an open handle, so
+  // unlink by name; the open handle keeps the data alive until it closes.
   if (RenameEC)
     ShouldDelete = true;
-  if (ShouldDelete) {
-    if (!RemoveOnClose)
-      setDeleteDisposition(H, true);
-    else
-      remove(TmpName);
-  }
+  if (ShouldDelete)
+    remove(TmpName);
 #else
   std::error_code RenameEC = fs::rename(TmpName, Name);
   if (RenameEC) {
@@ -1391,8 +1389,9 @@ Expected<TempFile> TempFile::create(const Twine &Model, unsigned Mode,
                                     OpenFlags ExtraFlags) {
   int FD;
   SmallString<128> ResultPath;
-  if (std::error_code EC =
-          createUniqueFile(Model, FD, ResultPath, OF_Delete | ExtraFlags, Mode))
+  if (std::error_code EC = createUniqueFile(
+          Model, FD, ResultPath, OF_Delete | OF_DeleteOnClose | ExtraFlags,
+          Mode))
     return errorCodeToError(EC);
 
   TempFile Ret(ResultPath, FD);
