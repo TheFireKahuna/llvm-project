@@ -64,3 +64,28 @@
 // RUN:   | FileCheck -check-prefix=MSVC_VERSION_EXPLICIT --implicit-check-not='"-fms-compatibility-version=19.33"' %s
 // MSVC_VERSION_EXPLICIT: "-cc1"
 // MSVC_VERSION_EXPLICIT-SAME: "-fms-compatibility-version=19.40"
+
+// clang-cl /std: names a standard with MSVC's spellings; without it the target
+// keeps clang's own default rather than MSVC's.
+// RUN: %clang_cl --target=x86_64-unknown-windows-itanium /std:c++20 /c -### -- %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=STD_CXX20 %s
+// STD_CXX20: "-cc1"
+// STD_CXX20-SAME: "-std=c++20"
+// RUN: %clang_cl --target=x86_64-unknown-windows-itanium /std:c++latest /c -### -- %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=STD_LATEST %s
+// STD_LATEST: "-cc1"
+// STD_LATEST-SAME: "-std=c++26"
+// RUN: %clang_cl --target=x86_64-unknown-windows-itanium /c -### -- %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=STD_DEFAULT --implicit-check-not='"-std=c++14"' %s
+// STD_DEFAULT: "-cc1"
+
+// clang-cl links the C++ standard library, as the clang++ driver does.
+// RUN: %clang_cl --target=x86_64-unknown-windows-itanium -### -- %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=CL_LINK %s
+// CL_LINK: lld-link
+// CL_LINK-SAME: "c++.lib"
+// RUN: %clang_cl --target=x86_64-unknown-windows-itanium /clang:-nostdlib++ -### -- %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=CL_LINK_NOSTDLIBXX %s
+// CL_LINK_NOSTDLIBXX: lld-link
+// CL_LINK_NOSTDLIBXX-NOT: "c++.lib"
+

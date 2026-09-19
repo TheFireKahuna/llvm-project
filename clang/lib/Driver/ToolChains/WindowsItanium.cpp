@@ -15,6 +15,7 @@
 #include "clang/Driver/Driver.h"
 #include "clang/Driver/SanitizerArgs.h"
 #include "clang/Options/Options.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/Option/Arg.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Support/FileSystem.h"
@@ -38,6 +39,26 @@ WindowsItaniumToolChain::TranslateArgs(const DerivedArgList &Args,
                                        StringRef BoundArch,
                                        Action::OffloadKind OFK) const {
   DerivedArgList *DAL = translateMSVCCompatibleArgs(*this, Args, OFK);
+  // clang-cl's /std: names a language standard with MSVC's spellings. Only
+  // the spelling is translated; without /std: the target keeps clang's own
+  // default standard rather than MSVC's.
+  if (Arg *A = Args.getLastArg(options::OPT__SLASH_std)) {
+    StringRef Std = llvm::StringSwitch<StringRef>(A->getValue())
+                        .Case("c11", "c11")
+                        .Case("c17", "c17")
+                        .Case("clatest", "c23")
+                        .Case("c++14", "c++14")
+                        .Case("c++17", "c++17")
+                        .Case("c++20", "c++20")
+                        .Case("c++23preview", "c++23")
+                        .Case("c++latest", "c++26")
+                        .Default("");
+    if (!Std.empty()) {
+      DAL->eraseArg(options::OPT__SLASH_std);
+      DAL->AddJoinedArg(A, getDriver().getOpts().getOption(options::OPT_std_EQ),
+                        Std);
+    }
+  }
   // Only the SEH and SjLj exception models exist on this target.
   for (Arg *A : Args.filtered(options::OPT_fdwarf_exceptions,
                               options::OPT_fwasm_exceptions)) {
@@ -199,8 +220,11 @@ void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   CmdArgs.push_back("-nologo");
 
   if (LinkDefaultLibs) {
-    // C++ standard library.
-    if (TC.ShouldLinkCXXStdlib(Args))
+    // C++ standard library. clang-cl has no C-only mode, so it links the
+    // library whenever the inputs may be C++; lld pulls members only when
+    // they are referenced, so a C program gains no dependency on c++.dll.
+    if (TC.ShouldLinkCXXStdlib(Args) ||
+        (D.IsCLMode() && !Args.hasArg(options::OPT_nostdlibxx)))
       TC.AddCXXStdlibLibArgs(Args, CmdArgs);
 
     // Unwinder - SEH-based libunwind for both runtime modes.
