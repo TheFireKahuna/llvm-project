@@ -32,6 +32,7 @@
 #include "clang/CodeGen/ConstantInitBuilder.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/GlobalAlias.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
@@ -2096,6 +2097,85 @@ static bool CXXRecordNonInlineHasAttr(const CXXRecordDecl *RD) {
   return false;
 }
 
+// A vtable that lives in another image is reached through a pointer the
+// loader fills, and static data can hold that pointer's value but not an
+// offset from it. Giving every address point of an exported vtable a name of
+// its own keeps each reference to one a plain imported address, so that a
+// constant-initialised object of the class needs nothing at start-up. '$'
+// cannot occur in an Itanium mangled name, so these names cannot collide.
+//
+// The byte offset of an address point from the start of the vtable group.
+static unsigned getVTableAddressPointOffset(CodeGenModule &CGM,
+                                            const VTableLayout &Layout,
+                                            unsigned VTableIndex,
+                                            unsigned AddressPointIndex) {
+  unsigned ComponentSize =
+      CGM.getDataLayout().getTypeAllocSize(CGM.getVTableComponentType());
+  return ComponentSize *
+         (Layout.getVTableOffset(VTableIndex) + AddressPointIndex);
+}
+
+static void getVTableAddressPointName(StringRef VTable, unsigned Offset,
+                                      SmallVectorImpl<char> &Name) {
+  Name.assign(VTable.begin(), VTable.end());
+  llvm::raw_svector_ostream(Name) << "$ap" << Offset;
+}
+
+// Called for a vtable this image defines and exports: one alias per address
+// point, exported with the vtable.
+static void emitVTableAddressPointNames(CodeGenModule &CGM,
+                                        llvm::GlobalVariable *VTable,
+                                        const VTableLayout &Layout) {
+  if (VTable->isDeclarationForLinker())
+    return;
+
+  SmallString<256> Name;
+  for (unsigned I = 0, N = Layout.getNumVTables(); I != N; ++I) {
+    unsigned Offset = getVTableAddressPointOffset(
+        CGM, Layout, I, Layout.getAddressPointIndices()[I]);
+    getVTableAddressPointName(VTable->getName(), Offset, Name);
+    if (CGM.getModule().getNamedValue(Name))
+      continue;
+    // An alias takes the COMDAT of the object it points into, which is where
+    // a vtable emitted in several translation units gets its one-of-many
+    // selection from. External linkage then keeps the name a plain symbol
+    // inside that COMDAT: a weak one would need a per-object companion
+    // symbol, which the address point's offset makes impossible to name the
+    // same way twice.
+    auto *Alias = llvm::GlobalAlias::create(
+        CGM.Int8Ty, VTable->getAddressSpace(),
+        llvm::GlobalValue::ExternalLinkage, Name,
+        llvm::ConstantExpr::getGetElementPtr(
+            CGM.Int8Ty, VTable, llvm::ConstantInt::get(CGM.Int32Ty, Offset),
+            /*InBounds=*/true),
+        &CGM.getModule());
+    Alias->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
+    Alias->setVisibility(VTable->getVisibility());
+    Alias->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+  }
+}
+
+// Called for a vtable another image defines: a declaration of the name that
+// image exports for this address point.
+static llvm::Constant *getVTableAddressPointDecl(CodeGenModule &CGM,
+                                                 llvm::GlobalVariable *VTable,
+                                                 unsigned Offset) {
+  SmallString<256> Name;
+  getVTableAddressPointName(VTable->getName(), Offset, Name);
+  if (llvm::GlobalValue *GV = CGM.getModule().getNamedValue(Name))
+    return GV;
+
+  auto *AddressPoint = new llvm::GlobalVariable(
+      CGM.getModule(), CGM.Int8Ty, /*isConstant=*/true,
+      llvm::GlobalValue::ExternalLinkage, /*Initializer=*/nullptr, Name,
+      /*InsertBefore=*/nullptr, llvm::GlobalValue::NotThreadLocal,
+      VTable->getAddressSpace());
+  AddressPoint->setDLLStorageClass(VTable->getDLLStorageClass());
+  AddressPoint->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+  AddressPoint->setAlignment(VTable->getAlign());
+  return AddressPoint;
+}
+
 static void setVTableSelectiveDLLImportExport(CodeGenModule &CGM,
                                               llvm::GlobalVariable *VTable,
                                               const CXXRecordDecl *RD) {
@@ -2141,6 +2221,10 @@ void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
 
   // Set the right visibility.
   CGM.setGVProperties(VTable, RD);
+
+  if (VTable->hasDLLExportStorageClass() &&
+      CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    emitVTableAddressPointNames(CGM, VTable, VTLayout);
 
   // If this is the magic class __cxxabiv1::__fundamental_type_info,
   // we will emit the typeinfo for the fundamental types. This is the
@@ -2214,6 +2298,14 @@ ItaniumCXXABI::getVTableAddressPoint(BaseSubobject Base,
       CGM.getItaniumVTableContext().getVTableLayout(VTableClass);
   VTableLayout::AddressPointLocation AddressPoint =
       Layout.getAddressPoint(Base);
+
+  if (VTable->hasDLLImportStorageClass() &&
+      CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    return getVTableAddressPointDecl(
+        CGM, cast<llvm::GlobalVariable>(VTable),
+        getVTableAddressPointOffset(CGM, Layout, AddressPoint.VTableIndex,
+                                    AddressPoint.AddressPointIndex));
+
   llvm::Value *Indices[] = {
     llvm::ConstantInt::get(CGM.Int32Ty, 0),
     llvm::ConstantInt::get(CGM.Int32Ty, AddressPoint.VTableIndex),
