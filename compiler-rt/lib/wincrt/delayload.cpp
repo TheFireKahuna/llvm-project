@@ -23,6 +23,15 @@
 // itself, opening the page around the store when the table is a protected
 // one. The failure hook is consulted on both paths.
 //
+// __FUnloadDelayLoadedDLL2 needs more than the copy of the address table that
+// /delay:unload puts in the image. A library the loader loads for a delayed
+// import becomes a dependency of this image rather than a reference this image
+// holds, and FreeLibrary does not undo a dependency -- it reports success and
+// the library stays. So a descriptor that carries an unload table is resolved
+// by this file, which loads the library itself and owns the reference that
+// frees it. That is the bargain /delay:unload makes, and it is why MSVC loads
+// in the image too.
+//
 // The hook types below are the delayimp.h ABI. That header ships only with
 // the MSVC tools, so it is not included; the Windows SDK's own delay-load
 // callback declarations use a different signature and are not used either.
@@ -30,6 +39,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "wincrt.h"
+
+#include <string.h>
 
 // delayimp.h ABI.
 struct DelayLoadProc {
@@ -74,7 +85,7 @@ __declspec(dllimport) LONG __stdcall ResolveDelayLoadsFromDll(void *, LPCSTR,
                                                               DWORD);
 __declspec(dllimport) void *__stdcall DelayLoadFailureHook(LPCSTR, LPCSTR);
 
-extern const char __ImageBase;
+extern IMAGE_DOS_HEADER __ImageBase;
 extern char __guard_flags[];
 
 // loadconfig.cpp
@@ -111,7 +122,8 @@ bool delayIatIsProtected() {
 }
 
 template <typename T> T *fromRva(DWORD Rva) {
-  return Rva ? reinterpret_cast<T *>(const_cast<char *>(&__ImageBase) + Rva)
+  return Rva ? reinterpret_cast<T *>(reinterpret_cast<char *>(&__ImageBase) +
+                                     Rva)
              : nullptr;
 }
 
@@ -125,6 +137,22 @@ void storeSlot(IMAGE_THUNK_DATA *Entry, void *Value) {
   Entry->u1.Function = reinterpret_cast<ULONG_PTR>(Value);
   if (Protected)
     VirtualProtect(Entry, sizeof(*Entry), PAGE_READONLY, &Old);
+}
+
+// The loader reads the module handle slot before it takes the load path, and
+// writes it only while the table is unprotected. Recording it spares every
+// later descriptor naming the same library that path, and the dependency it
+// would add. The handle carries no reference of its own.
+void cacheModule(const IMAGE_DELAYLOAD_DESCRIPTOR *Descriptor) {
+  auto *Slot = fromRva<HMODULE>(Descriptor->ModuleHandleRVA);
+  if (!Slot || *Slot)
+    return;
+  HMODULE Module = GetModuleHandleA(fromRva<const char>(Descriptor->DllNameRVA));
+  if (!Module)
+    return;
+  HMODULE Expected = nullptr;
+  __atomic_compare_exchange_n(Slot, &Expected, Module, false, __ATOMIC_ACQ_REL,
+                              __ATOMIC_ACQUIRE);
 }
 
 // The descriptor's two tables are parallel, so a slot's index in the import
@@ -147,6 +175,27 @@ void describeImport(const IMAGE_DELAYLOAD_DESCRIPTOR *Descriptor,
         fromRva<IMAGE_IMPORT_BY_NAME>(static_cast<DWORD>(Name.u1.AddressOfData))
             ->Name;
   }
+}
+
+void *notify(unsigned Reason, DelayLoadInfo &Dli) {
+  return __pfnDliNotifyHook2 ? __pfnDliNotifyHook2(Reason, &Dli) : nullptr;
+}
+
+// This image's own delay-load directory, searched by the name the import
+// library wrote. The comparison ignores case, as the loader's own descriptor
+// lookup does.
+const IMAGE_DELAYLOAD_DESCRIPTOR *findDescriptor(LPCSTR DllName) {
+  auto *Nt =
+      fromRva<IMAGE_NT_HEADERS>(static_cast<DWORD>(__ImageBase.e_lfanew));
+  DWORD Rva = Nt->OptionalHeader
+                  .DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT]
+                  .VirtualAddress;
+  if (!Rva)
+    return nullptr;
+  for (auto *D = fromRva<IMAGE_DELAYLOAD_DESCRIPTOR>(Rva); D->DllNameRVA; ++D)
+    if (!_stricmp(fromRva<const char>(D->DllNameRVA), DllName))
+      return D;
+  return nullptr;
 }
 
 LPCSTR procNameOrOrdinal(const DelayLoadInfo &Dli) {
@@ -204,12 +253,14 @@ void *reportFailure(const IMAGE_DELAYLOAD_DESCRIPTOR *Descriptor,
   return raiseFailure(ERROR_PROC_NOT_FOUND, Dli);
 }
 
-void *resolveWithHooks(const IMAGE_DELAYLOAD_DESCRIPTOR *Descriptor,
-                       IMAGE_THUNK_DATA *Entry) {
+// Loading and resolving in the image, which a notify hook needs in order to
+// see every stage and an unloadable library needs in order to be freed.
+void *resolveInImage(const IMAGE_DELAYLOAD_DESCRIPTOR *Descriptor,
+                     IMAGE_THUNK_DATA *Entry) {
   DelayLoadInfo Dli = {};
   describeImport(Descriptor, Entry, Dli);
 
-  if (void *Result = __pfnDliNotifyHook2(dliStartProcessing, &Dli)) {
+  if (void *Result = notify(dliStartProcessing, Dli)) {
     storeSlot(Entry, Result);
     return Result;
   }
@@ -217,8 +268,7 @@ void *resolveWithHooks(const IMAGE_DELAYLOAD_DESCRIPTOR *Descriptor,
   auto *ModuleSlot = fromRva<HMODULE>(Descriptor->ModuleHandleRVA);
   HMODULE Module = ModuleSlot ? *ModuleSlot : nullptr;
   if (!Module) {
-    Module =
-        static_cast<HMODULE>(__pfnDliNotifyHook2(dliNotePreLoadLibrary, &Dli));
+    Module = static_cast<HMODULE>(notify(dliNotePreLoadLibrary, Dli));
     if (!Module)
       Module = LoadLibraryExA(Dli.szDll, nullptr,
                               __wincrt_dependent_load_flags() & SearchPathFlags);
@@ -236,7 +286,7 @@ void *resolveWithHooks(const IMAGE_DELAYLOAD_DESCRIPTOR *Descriptor,
   }
   Dli.hmodCur = Module;
 
-  void *Function = __pfnDliNotifyHook2(dliNotePreGetProcAddress, &Dli);
+  void *Function = notify(dliNotePreGetProcAddress, Dli);
   if (!Function)
     Function =
         reinterpret_cast<void *>(GetProcAddress(Module, procNameOrOrdinal(Dli)));
@@ -245,7 +295,7 @@ void *resolveWithHooks(const IMAGE_DELAYLOAD_DESCRIPTOR *Descriptor,
 
   Dli.pfnCur = Function;
   storeSlot(Entry, Function);
-  __pfnDliNotifyHook2(dliNoteEndProcessing, &Dli);
+  notify(dliNoteEndProcessing, Dli);
   return Function;
 }
 
@@ -264,13 +314,13 @@ void *__stdcall __delayLoadHelper2(const IMAGE_DELAYLOAD_DESCRIPTOR *Descriptor,
     return raiseFailure(ERROR_INVALID_PARAMETER, Dli);
   }
 
-  if (__pfnDliNotifyHook2)
-    return resolveWithHooks(Descriptor, Thunk);
+  if (__pfnDliNotifyHook2 || Descriptor->UnloadInformationTableRVA)
+    return resolveInImage(Descriptor, Thunk);
 
   void *Proc = nullptr;
   __try {
     Proc = ResolveDelayLoadedAPI(
-        const_cast<char *>(&__ImageBase), Descriptor, nullptr,
+        &__ImageBase, Descriptor, nullptr,
         DelayLoadFailureHook, Thunk,
         __wincrt_dependent_load_flags() & SearchPathFlags);
   } __except (GetExceptionCode() == ERROR_DELAY_LOAD_FAILED
@@ -278,14 +328,70 @@ void *__stdcall __delayLoadHelper2(const IMAGE_DELAYLOAD_DESCRIPTOR *Descriptor,
                   : EXCEPTION_CONTINUE_SEARCH) {
     Proc = nullptr;
   }
-  return Proc ? Proc : reportFailure(Descriptor, Thunk);
+  if (!Proc)
+    return reportFailure(Descriptor, Thunk);
+  cacheModule(Descriptor);
+  return Proc;
+}
+
+// Restores the address table this image started with and frees the library, so
+// that a later call loads it again. FALSE if the DLL is not delay-loaded by
+// this image, if it was never loaded, or if the image was linked without
+// /delay:unload and so carries no copy of the table to restore.
+//
+// The name is compared without regard to case, as the loader compares it in
+// its own descriptor lookup.
+BOOL __stdcall __FUnloadDelayLoadedDLL2(LPCSTR DllName) {
+  const IMAGE_DELAYLOAD_DESCRIPTOR *Descriptor = findDescriptor(DllName);
+  if (!Descriptor || !Descriptor->UnloadInformationTableRVA)
+    return FALSE;
+  auto *Slot = fromRva<HMODULE>(Descriptor->ModuleHandleRVA);
+  HMODULE Module = Slot ? *Slot : nullptr;
+  if (!Module)
+    return FALSE;
+
+  auto *Iat = fromRva<IMAGE_THUNK_DATA>(Descriptor->ImportAddressTableRVA);
+  auto *Saved =
+      fromRva<IMAGE_THUNK_DATA>(Descriptor->UnloadInformationTableRVA);
+  SIZE_T Count = 0;
+  while (Saved[Count].u1.Function)
+    ++Count;
+
+  // The stubs go back before the library does, so a call racing this one
+  // reaches the helper rather than a freed page.
+  DWORD Old;
+  SIZE_T Bytes = Count * sizeof(*Iat);
+  bool Protected = delayIatIsProtected();
+  if (Protected && !VirtualProtect(Iat, Bytes, PAGE_READWRITE, &Old))
+    return FALSE;
+  for (SIZE_T I = 0; I != Count; ++I)
+    Iat[I].u1.Function = Saved[I].u1.Function;
+  if (Protected)
+    VirtualProtect(Iat, Bytes, PAGE_READONLY, &Old);
+
+  *Slot = nullptr;
+  FreeLibrary(Module);
+  return TRUE;
 }
 
 // Loads every delayed import of one DLL now. Hooks are not consulted, as with
 // vcruntime: the loader resolves the whole descriptor with none installed.
 HRESULT __stdcall __HrLoadAllImportsForDll(LPCSTR DllName) {
+  // An unloadable library has to be loaded by this image, so that the handle
+  // __FUnloadDelayLoadedDLL2 frees is the one that holds it.
+  if (const IMAGE_DELAYLOAD_DESCRIPTOR *Descriptor = findDescriptor(DllName)) {
+    if (Descriptor->UnloadInformationTableRVA) {
+      auto *Iat = fromRva<IMAGE_THUNK_DATA>(Descriptor->ImportAddressTableRVA);
+      for (SIZE_T I = 0; Iat[I].u1.Function; ++I)
+        if (!__delayLoadHelper2(Descriptor,
+                                reinterpret_cast<void **>(&Iat[I])))
+          return HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
+      return S_OK;
+    }
+  }
+
   LONG Status =
-      ResolveDelayLoadsFromDll(const_cast<char *>(&__ImageBase), DllName, 0);
+      ResolveDelayLoadsFromDll(&__ImageBase, DllName, 0);
   if (Status >= 0)
     return S_OK;
   // The DLL not being a delay-load dependency of this image is reported apart
