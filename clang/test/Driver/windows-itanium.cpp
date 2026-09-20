@@ -76,6 +76,7 @@
 // LINK-DAG: "-defaultlib:kernel32.lib"
 // LINK-DAG: "-defaultlib:ntdll.lib"
 // LINK-DAG: "-import-slots"
+// LINK-DAG: "-delayload-protect"
 // LINK-DAG: "-cetcompat"
 // LINK-DAG: "-nodefaultlib:msvcrt"
 // LINK-DAG: "-nodefaultlib:vcruntime"

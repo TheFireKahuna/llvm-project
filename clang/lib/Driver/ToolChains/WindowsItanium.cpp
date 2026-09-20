@@ -279,6 +279,11 @@ void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   // precedence over an import library's entry for the same name.
   CmdArgs.push_back("-import-slots");
 
+  // A delay-loaded import is called through a table the loader writes, which
+  // no indirect-call check covers. Giving that table a section of its own
+  // lets the loader keep it read-only except while it resolves an import.
+  CmdArgs.push_back("-delayload-protect");
+
   // Block the MSVC CRT libraries that objects may request through
   // /DEFAULTLIB directives.
   if (!NoDefaultLibs) {

@@ -7,6 +7,7 @@
 // DEFAULT_LINKER: lld-link
 // DEFAULT_LINKER-SAME: "-nologo"
 // DEFAULT_LINKER-SAME: "-import-slots"
+// DEFAULT_LINKER-SAME: "-delayload-protect"
 // DEFAULT_LINKER-SAME: "-lldignoreenv"
 // DEFAULT_LINKER-NOT: link.exe"
 // The loader fills static data that holds imported addresses; there is no
