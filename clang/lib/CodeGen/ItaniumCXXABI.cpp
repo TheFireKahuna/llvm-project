@@ -2139,8 +2139,13 @@ static void emitVTableAddressPointNames(CodeGenModule &CGM,
     unsigned Offset = getVTableAddressPointOffset(
         CGM, Layout, I, Layout.getAddressPointIndices()[I]);
     getVTableAddressPointName(VTable->getName(), Offset, Name);
-    if (CGM.getModule().getNamedValue(Name))
+    // A constant initialiser earlier in this unit may have asked for the name
+    // while the vtable was still a declaration, in which case the definition
+    // replaces what it left behind.
+    llvm::GlobalValue *Old = CGM.getModule().getNamedValue(Name);
+    if (Old && !isa<llvm::GlobalVariable>(Old))
       continue;
+
     // An alias takes the COMDAT of the object it points into, which is where
     // a vtable emitted in several translation units gets its one-of-many
     // selection from. External linkage then keeps the name a plain symbol
@@ -2149,7 +2154,7 @@ static void emitVTableAddressPointNames(CodeGenModule &CGM,
     // same way twice.
     auto *Alias = llvm::GlobalAlias::create(
         CGM.Int8Ty, VTable->getAddressSpace(),
-        llvm::GlobalValue::ExternalLinkage, Name,
+        llvm::GlobalValue::ExternalLinkage, Old ? StringRef() : StringRef(Name),
         llvm::ConstantExpr::getGetElementPtr(
             CGM.Int8Ty, VTable, llvm::ConstantInt::get(CGM.Int32Ty, Offset),
             /*InBounds=*/true),
@@ -2157,6 +2162,11 @@ static void emitVTableAddressPointNames(CodeGenModule &CGM,
     Alias->setDLLStorageClass(VTable->getDLLStorageClass());
     Alias->setVisibility(VTable->getVisibility());
     Alias->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+    if (Old) {
+      Old->replaceAllUsesWith(Alias);
+      Old->eraseFromParent();
+      Alias->setName(Name);
+    }
   }
 }
 

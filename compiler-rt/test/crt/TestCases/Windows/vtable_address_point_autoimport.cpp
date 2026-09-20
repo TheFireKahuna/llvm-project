@@ -27,6 +27,16 @@ Plain *makePlain() { return new Plain(); }
 
 Plain *makePlain();
 
+// A class of this image whose key function is defined after an object of it:
+// the initialiser asks for the address point while the vtable is still a
+// declaration, and the definition that follows has to replace what the
+// reference left behind rather than skip a name that is already taken.
+struct Late {
+  virtual int value() const;
+};
+const Late LateObject;
+int Late::value() const { return 9; }
+
 const Plain RoObject;
 Plain RwObject;
 
@@ -48,6 +58,9 @@ int main() {
   // CHECK-NEXT: one vtable: 1 1
   printf("one vtable: %d %d\n", vptrOf(&RoObject) == vptrOf(&RwObject),
          vptrOf(&RoObject) == vptrOf(FromDll));
+  // CHECK-NEXT: defined here: 9
+  printf("defined here: %d\n", LateObject.value());
+
   // CHECK-NEXT: fixups: 0
   printf("fixups: %d\n", (int)(__import_fixups_end - __import_fixups_start));
   return 0;
