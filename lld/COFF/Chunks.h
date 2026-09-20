@@ -317,6 +317,15 @@ public:
   };
   ImportRefForm getImportRefForm(const coff_relocation &rel) const;
 
+  // The size of the entry a weak definition carries in front of its body
+  // (WindowsWeakInterposition), when this relocation is the one inside it: a
+  // load of the interposition pointer, a test of it, and a branch. Zero when
+  // the bytes are anything else, which is what keeps the entry in place
+  // rather than half-rewritten. bodyIsBranchTarget says which way round the
+  // branch is, since where the body is a tail call it becomes the branch.
+  uint32_t getWeakInterposeEntrySize(const coff_relocation &rel,
+                                     bool &bodyIsBranchTarget) const;
+
   void getRuntimePseudoRelocs(std::vector<RuntimePseudoReloc> &res);
 
   // The import whose address an absolute word-sized relocation in data holds,
@@ -994,6 +1003,30 @@ public:
 
 private:
   std::vector<ImportSlot> slots;
+};
+
+// One export of an executable, by the 128-bit hash of the name it carries in
+// the export directory.
+struct WeakPublish {
+  uint64_t low, high;
+  Defined *sym;
+};
+
+// What a program publishes for the libraries it loads: the hashed names of its
+// exports, sorted, and their RVAs in a parallel array that a search does not
+// touch. A library reaches its own weak definition directly and forwards to
+// the program's when this table names it, which is how a definition the
+// program replaced reaches the whole program, as a dynamic symbol table does
+// on ELF. Names are not stored; an image has no symbol table to compare them
+// against, and the export directory already holds the ones the hashes are of.
+class WeakPublishChunk : public NonSectionChunk {
+public:
+  WeakPublishChunk(std::vector<WeakPublish> entries);
+  size_t getSize() const override { return 8 + entries.size() * 20; }
+  void writeTo(uint8_t *buf) const override;
+
+private:
+  std::vector<WeakPublish> entries;
 };
 
 // MinGW specific. A Chunk that contains one pointer-sized absolute value.

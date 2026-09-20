@@ -72,8 +72,12 @@ void applyImportFixups() {
 namespace {
 
 void NTAPI tlsCallback(void *, DWORD Reason, void *) {
-  if (Reason == DLL_PROCESS_ATTACH)
+  if (Reason == DLL_PROCESS_ATTACH) {
     applyImportFixups();
+    // Before any code of this image can allocate through a weak definition
+    // the program replaced and release through one it did not.
+    bindWeakDefinitions();
+  }
 }
 
 } // namespace

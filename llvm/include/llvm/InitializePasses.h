@@ -343,6 +343,7 @@ LLVM_ABI void initializeVirtRegMapWrapperLegacyPass(PassRegistry &);
 LLVM_ABI void initializeVirtRegRewriterLegacyPass(PassRegistry &);
 LLVM_ABI void initializeWasmEHPreparePass(PassRegistry &);
 LLVM_ABI void initializeWindowsSecureHotPatchingPass(PassRegistry &);
+LLVM_ABI void initializeWindowsWeakInterpositionPass(PassRegistry &);
 LLVM_ABI void initializeWinEHPreparePass(PassRegistry &);
 LLVM_ABI void initializeWriteBitcodePassPass(PassRegistry &);
 LLVM_ABI void initializeXRayInstrumentationLegacyPass(PassRegistry &);

@@ -243,6 +243,9 @@ private:
   bool findImportSlots(SectionChunk *sc, StringRef name);
   void addImportSlots();
   void createImportFixups();
+  void createWeakPublishTable();
+  void dropWeakInterposition();
+  void padWeakInterposition(uint8_t *buf);
   void createECChunks();
   void insertCtorDtorSymbols();
   void insertBssDataStartEndSymbols();
@@ -344,6 +347,17 @@ private:
   OutputSection *edataSec;
   OutputSection *didatSec;
   OutputSection *a64xrmSec;
+  OutputSection *wkpubSec;
+
+  // The entries this link replaces with padding (dropWeakInterposition), as
+  // the chunk each one begins and its size.
+  struct DeadInterposeEntry {
+    SectionChunk *chunk;
+    uint32_t offset;
+    uint32_t size;
+    bool bodyIsBranchTarget;
+  };
+  std::vector<DeadInterposeEntry> deadInterposeEntries;
   OutputSection *rsrcSec;
   OutputSection *relocSec;
   OutputSection *ctorsSec;
@@ -1188,6 +1202,7 @@ void Writer::createSections() {
   didatSec = createSection(".didat", data | r | (protectDelayIat() ? w : 0));
   if (isArm64EC(ctx.config.machine))
     a64xrmSec = createSection(".a64xrm", data | r);
+  wkpubSec = createSection(".wkpub", data | r);
   rsrcSec = createSection(".rsrc", data | r);
   relocSec = createSection(".reloc", data | discardable | r);
   ctorsSec = createSection(".ctors", data | r | w);
@@ -1396,6 +1411,8 @@ void Writer::createMiscChunks() {
   if (config->autoImport)
     createRuntimePseudoRelocs();
   createImportFixups();
+  createWeakPublishTable();
+  dropWeakInterposition();
 
   if (config->mingw) {
     insertCtorDtorSymbols();
@@ -2656,6 +2673,144 @@ void Writer::createImportFixups() {
   replaceSymbol<DefinedSynthetic>(end, end->getName(), endOfList);
 }
 
+// The table a program publishes for the libraries it loads (WeakPublishChunk).
+// A library reaches its own weak definition of a name directly and forwards to
+// the program's when this table holds it, so a definition the program replaced
+// is the one the whole program uses. The set is the image's exports, which is
+// where a definition makes itself reachable to another image, and a program
+// that replaced nothing exports nothing and publishes nothing. The C runtime
+// contributes the bookends of the record section, so an image linked by other
+// tools carries no table and no library binds anything to it.
+void Writer::createWeakPublishTable() {
+  // The startup code that binds the records is what names these, so an image
+  // linked by other tools takes no part. Both stay absolute and equal when
+  // the image has no records, an empty range.
+  Symbol *start = ctx.symtab.findUnderscore("__wkintp_start");
+  Symbol *end = ctx.symtab.findUnderscore("__wkintp_end");
+  if (llvm::none_of(ctx.objFileInstances, [&](ObjFile *f) {
+        return llvm::is_contained(f->getSymbols(), start);
+      }))
+    return;
+
+  if (OutputSection *records = findSection(".wkintp")) {
+    auto *first = make<EmptyChunk>();
+    auto *last = make<EmptyChunk>();
+    records->insertChunkAtStart(first);
+    records->addChunk(last);
+    replaceSymbol<DefinedSynthetic>(start, start->getName(), first);
+    replaceSymbol<DefinedSynthetic>(end, end->getName(), last);
+  }
+
+  // Only a program interposes, so only a program publishes.
+  if (ctx.config.dll)
+    return;
+
+  std::vector<WeakPublish> entries;
+  for (const Export &e : ctx.symtab.exports) {
+    // A forwarder names a symbol of another image, which this one cannot
+    // publish an address for.
+    if (!e.forwardTo.empty())
+      continue;
+    auto *def = dyn_cast_or_null<Defined>(e.sym);
+    if (!def)
+      continue;
+    // The name the export directory carries, which is the name a weak
+    // definition elsewhere in the program was written with.
+    XXH128_hash_t hash = xxh3_128bits(arrayRefFromStringRef(e.exportName));
+    entries.push_back({hash.low64, hash.high64, def});
+  }
+  if (entries.empty())
+    return;
+
+  wkpubSec->addChunk(make<WeakPublishChunk>(std::move(entries)));
+}
+
+// Canonical multi-byte no-ops, by length.
+static void writeNops(uint8_t *buf, uint32_t size) {
+  static const uint8_t Nops[11][11] = {
+      {0x90},
+      {0x66, 0x90},
+      {0x0F, 0x1F, 0x00},
+      {0x0F, 0x1F, 0x40, 0x00},
+      {0x0F, 0x1F, 0x44, 0x00, 0x00},
+      {0x66, 0x0F, 0x1F, 0x44, 0x00, 0x00},
+      {0x0F, 0x1F, 0x80, 0x00, 0x00, 0x00, 0x00},
+      {0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00},
+      {0x66, 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00},
+      {0x66, 0x66, 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00},
+      {0x66, 0x66, 0x66, 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00}};
+  while (size) {
+    uint32_t n = std::min<uint32_t>(size, 11);
+    memcpy(buf, Nops[n - 1], n);
+    buf += n;
+    size -= n;
+  }
+}
+
+// An executable is final: nothing it loads supersedes a definition it holds,
+// so the entry every weak definition carries in front of its body can never
+// take its branch, and an ordinary program pays for it on every allocation.
+// Where every one of them is the entry the compiler emits, they are replaced
+// with padding. One that is not -- another architecture, another producer --
+// leaves all of them alone, because a definition whose entry was removed and
+// one whose entry was not would not agree on which allocator a block came
+// from.
+void Writer::dropWeakInterposition() {
+  if (ctx.config.dll || !findSection(".wkintp"))
+    return;
+
+  std::vector<DeadInterposeEntry> entries;
+  for (Chunk *c : ctx.driver.getChunks()) {
+    auto *sc = dyn_cast<SectionChunk>(c);
+    if (!sc || !sc->live ||
+        !(sc->getOutputCharacteristics() & IMAGE_SCN_CNT_CODE))
+      continue;
+    for (const coff_relocation &rel : sc->getRelocs()) {
+      auto *sym =
+          dyn_cast_or_null<Defined>(sc->file->getSymbol(rel.SymbolTableIndex));
+      auto *target =
+          sym ? dyn_cast_or_null<SectionChunk>(sym->getChunk()) : nullptr;
+      if (!target || target->getSectionName() != ".wkintp")
+        continue;
+      bool bodyIsBranchTarget = false;
+      uint32_t size = sc->getWeakInterposeEntrySize(rel, bodyIsBranchTarget);
+      if (!size)
+        return;
+      entries.push_back(
+          {sc, rel.VirtualAddress - 3, size, bodyIsBranchTarget});
+    }
+  }
+  deadInterposeEntries = std::move(entries);
+}
+
+// Done once the chunks are written, because the relocation inside the entry
+// has been applied over the bytes by then.
+void Writer::padWeakInterposition(uint8_t *buf) {
+  for (auto &entry : deadInterposeEntries) {
+    OutputSection *os = ctx.getOutputSection(entry.chunk);
+    if (!os)
+      continue;
+    uint8_t *at = buf + os->getFileOff() + entry.chunk->getRVA() -
+                  os->getRVA() + entry.offset;
+    if (!entry.bodyIsBranchTarget) {
+      // The body falls through, so the whole entry is padding.
+      writeNops(at, entry.size);
+      continue;
+    }
+    // The body is the branch's target, so the branch stays and becomes
+    // unconditional. An unconditional jump that ends where the conditional
+    // one ended takes the same displacement, which leaves the relocated
+    // field where it was written.
+    if (entry.size == 12) {
+      writeNops(at, 10);
+      at[10] = 0xEB; // jmp rel8
+    } else {
+      writeNops(at, 11);
+      at[11] = 0xE9; // jmp rel32
+    }
+  }
+}
+
 // MinGW specific.
 // The MinGW .ctors and .dtors lists have sentinels at each end;
 // a (uintptr_t)-1 at the start and a (uintptr_t)0 at the end.
@@ -2853,6 +3008,8 @@ void Writer::writeSections() {
                   entryThunk->getRVA() - c->getRVA() + 1);
     });
   }
+
+  padWeakInterposition(buf);
 }
 
 void Writer::writeBuildId() {

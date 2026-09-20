@@ -6739,6 +6739,12 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
           options::OPT_fvisibility_global_new_delete_hidden));
       CmdArgs.push_back("-fvisibility-global-new-delete=force-hidden");
     }
+  } else if (Triple.isWindowsItaniumOrNTPOSIXEnvironment()) {
+    // The replaceable allocation functions belong to the image that links
+    // them here, and an image reaches its own through a pointer start-up
+    // fills. The forced default visibility would make the visibility mapping
+    // export a program's replacement and import it everywhere else.
+    CmdArgs.push_back("-fvisibility-global-new-delete=source");
   }
 
   Args.AddLastArg(CmdArgs, options::OPT_ftlsmodel_EQ);

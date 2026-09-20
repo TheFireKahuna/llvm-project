@@ -2620,6 +2620,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     // them (Writer::createImportFixups).
     symtab.addAbsolute(symtab.mangle("__import_fixups_start"), 0);
     symtab.addAbsolute(symtab.mangle("__import_fixups_end"), 0);
+    // The weak definitions a program may supersede, for the startup code that
+    // binds them (Writer::createWeakPublishTable).
+    symtab.addAbsolute(symtab.mangle("__wkintp_start"), 0);
+    symtab.addAbsolute(symtab.mangle("__wkintp_end"), 0);
 
     if (symtab.isEC()) {
       symtab.addAbsolute("__arm64x_extra_rfe_table", 0);

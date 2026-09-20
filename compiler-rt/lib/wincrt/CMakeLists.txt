@@ -67,12 +67,9 @@ set(WINCRT_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/cfguard_dispatch.S
   ${CMAKE_CURRENT_SOURCE_DIR}/loadconfig.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/purecall.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/delete_sized.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/delete_sized_array.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/delete_sized_aligned.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/delete_sized_aligned_array.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/delayload.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/import_fixups.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/weak_interposition.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/ucrt_stdio_options.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ucrt_stdio_marker.c
 )
@@ -127,15 +124,6 @@ if(COMPILER_RT_WINCRT_STANDALONE_BUILD)
     add_default_target_arch(${arch})
   endforeach()
 endif()
-
-# The sized delete forwarders belong to the image that links them. Global
-# operator new and delete otherwise carry an explicit default visibility,
-# which the visibility-to-DLL-storage mapping would export from the shared C++
-# runtime and so make the forwarders imports everywhere else.
-set_source_files_properties(
-  delete_sized.cpp delete_sized_array.cpp delete_sized_aligned.cpp
-  delete_sized_aligned_array.cpp
-  PROPERTIES COMPILE_OPTIONS -fvisibility-global-new-delete=source)
 
 add_compiler_rt_runtime(clang_rt.wincrt
   STATIC

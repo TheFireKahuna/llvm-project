@@ -349,10 +349,14 @@ endif()
 # __dynamic_cast are part of every image, which makes RTTI constant data with
 # no cross-DLL pointers and keeps virtual calls on type_info inside the image;
 # the compiler treats those vtables as image-local and the shared library
-# does not export them. libc++ adds the members of this build-only archive to
-# its import library, so nothing extra is ever linked or installed.
+# does not export them. The replaceable allocation functions are here for the
+# same reason: an image reaches its own directly and forwards to the
+# program's only where the program replaced one. libc++ adds the members of
+# this build-only archive to its import library, so nothing extra is ever
+# linked or installed.
 if (WIN32_ITANIUM OR WIN32_NTPOSIX)
-  add_library(cxxabi_local STATIC private_typeinfo.cpp abort_message.cpp)
+  add_library(cxxabi_local STATIC private_typeinfo.cpp abort_message.cpp
+                                  stdlib_new_delete.cpp)
   cxx_add_warning_flags(cxxabi_local ${LIBCXXABI_ENABLE_WERROR} ${LIBCXXABI_ENABLE_PEDANTIC})
   target_link_libraries(cxxabi_local PRIVATE cxxabi-headers cxx-headers runtimes-libc-headers)
   set_target_properties(cxxabi_local
@@ -363,8 +367,12 @@ if (WIN32_ITANIUM OR WIN32_NTPOSIX)
       COMPILE_FLAGS "${LIBCXXABI_COMPILE_FLAGS}"
   )
   # Plain definitions: not exported from the image, and libc++ itself is
-  # imported as in any other user translation unit.
-  target_compile_definitions(cxxabi_local PRIVATE _LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS)
+  # reached as in any other user translation unit. libc++'s annotations are
+  # off too, because a program's own definition of a replaceable allocation
+  # function is what gets exported and these are the defaults it supersedes.
+  target_compile_definitions(cxxabi_local PRIVATE
+    _LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS
+    _LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS)
   target_compile_options(cxxabi_local PRIVATE -U_LIBCPP_BUILDING_LIBRARY "${LIBCXXABI_ADDITIONAL_COMPILE_FLAGS}")
   target_add_compile_flags_if_supported(cxxabi_local PRIVATE -fsized-deallocation)
 endif()

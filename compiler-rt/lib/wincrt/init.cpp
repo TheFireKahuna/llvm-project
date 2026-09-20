@@ -30,6 +30,7 @@ LONG ExitCleanupRan;
 
 BOOL __stdcall initializeOnce(PINIT_ONCE, void *, void **) {
   applyImportFixups();
+  bindWeakDefinitions();
   if (_initterm_e(__xi_a, __xi_z) != 0)
     return FALSE;
   _initterm(__xc_a, __xc_z);

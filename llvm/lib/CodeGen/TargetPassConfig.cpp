@@ -907,6 +907,11 @@ void TargetPassConfig::addIRPasses() {
 
   if (TM->getTargetTriple().isOSWindows())
     addPass(createWindowsSecureHotPatchingPass());
+
+  // A weak definition is program-wide on these targets, as it is on ELF.
+  if (TM->getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      !TM->getTargetTriple().isWindowsArm64EC())
+    addPass(createWindowsWeakInterpositionPass());
 }
 
 /// Turn exception handling constructs into something the code generators can

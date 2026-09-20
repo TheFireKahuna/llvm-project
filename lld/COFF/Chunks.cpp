@@ -466,6 +466,48 @@ SectionChunk::getImportRefForm(const coff_relocation &rel) const {
   }
 }
 
+uint32_t
+SectionChunk::getWeakInterposeEntrySize(const coff_relocation &rel,
+                                       bool &bodyIsBranchTarget) const {
+  if (getArch() != Triple::x86_64 || rel.Type != IMAGE_REL_AMD64_REL32)
+    return 0;
+  ArrayRef<uint8_t> data = getContents();
+  // The load is seven bytes with the displacement three in, so the entry
+  // begins three bytes before the relocation; what precedes it is whatever
+  // frame the function sets up.
+  uint32_t o = rel.VirtualAddress;
+  if (o < 3 || o + 9 > data.size())
+    return 0;
+  const uint8_t *p = data.data() + o - 3;
+
+  // REX.W, with REX.R for the upper eight registers; mov r64, [rip + disp32],
+  // which is mod=00 rm=101.
+  uint8_t rex = p[0], modrm = p[2];
+  if ((rex & 0xFB) != 0x48 || p[1] != 0x8B || (modrm & 0xC7) != 0x05)
+    return 0;
+  unsigned reg = ((modrm >> 3) & 7) | (rex & 0x04 ? 8 : 0);
+
+  // test r64, r64 on that same register.
+  uint8_t testRex = 0x48 | (reg & 8 ? 0x05 : 0);
+  uint8_t testModRM = 0xC0 | ((reg & 7) << 3) | (reg & 7);
+  if (p[7] != testRex || p[8] != 0x85 || p[9] != testModRM)
+    return 0;
+
+  // The branch, either way round: jne to the forward, past a body that falls
+  // through, or je to a body that is itself a tail call and so became the
+  // branch's target.
+  if (o + 10 <= data.size() && (p[10] == 0x75 || p[10] == 0x74)) {
+    bodyIsBranchTarget = p[10] == 0x74;
+    return 12;
+  }
+  if (o + 14 <= data.size() && p[10] == 0x0F &&
+      (p[11] == 0x85 || p[11] == 0x84)) {
+    bodyIsBranchTarget = p[11] == 0x84;
+    return 16;
+  }
+  return 0;
+}
+
 void SectionChunk::applyRelocation(uint8_t *off,
                                    const coff_relocation &rel) const {
   auto *sym = dyn_cast_or_null<Defined>(file->getSymbol(rel.SymbolTableIndex));
@@ -1147,6 +1189,30 @@ void PseudoRelocTableChunk::writeTo(uint8_t *buf) const {
     table[idx + 1] = rpr.target->getRVA() + rpr.targetOffset;
     table[idx + 2] = rpr.flags;
     idx += 3;
+  }
+}
+
+WeakPublishChunk::WeakPublishChunk(std::vector<WeakPublish> entries)
+    : entries(std::move(entries)) {
+  setAlignment(8);
+  // Sorted on the low half first, which is the order the record in a library
+  // holds the two halves in and the order a search compares them in.
+  llvm::sort(this->entries, [](const WeakPublish &a, const WeakPublish &b) {
+    return std::tie(a.low, a.high) < std::tie(b.low, b.high);
+  });
+}
+
+void WeakPublishChunk::writeTo(uint8_t *buf) const {
+  write32le(buf, entries.size());
+  write32le(buf + 4, 0);
+  uint8_t *hash = buf + 8;
+  uint8_t *rva = hash + entries.size() * 16;
+  for (const WeakPublish &e : entries) {
+    write64le(hash, e.low);
+    write64le(hash + 8, e.high);
+    write32le(rva, e.sym->getRVA());
+    hash += 16;
+    rva += 4;
   }
 }
 

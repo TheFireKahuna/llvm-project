@@ -120,20 +120,13 @@ OVERRIDABLE_FUNCTION void* operator new[](size_t size) _THROW_BAD_ALLOC { return
 
 [[gnu::weak]] void operator delete(void* ptr, const std::nothrow_t&) noexcept { ::operator delete(ptr); }
 
-// On Windows Itanium the sized forms are the C runtime's (compiler-rt
-// wincrt), one per image, so that an image's replacement of the unsized
-// operator is what they forward to.
-#if !defined(_WIN32_ITANIUM)
 [[gnu::weak]] void operator delete(void* ptr, size_t) noexcept { ::operator delete(ptr); }
-#endif
 
 [[gnu::weak]] void operator delete[](void* ptr) noexcept { ::operator delete(ptr); }
 
 [[gnu::weak]] void operator delete[](void* ptr, const std::nothrow_t&) noexcept { ::operator delete[](ptr); }
 
-#if !defined(_WIN32_ITANIUM)
 [[gnu::weak]] void operator delete[](void* ptr, size_t) noexcept { ::operator delete[](ptr); }
-#endif
 
 #if _LIBCPP_HAS_LIBRARY_ALIGNED_ALLOCATION
 
@@ -222,11 +215,9 @@ OVERRIDABLE_FUNCTION void* operator new[](size_t size, std::align_val_t alignmen
   ::operator delete(ptr, alignment);
 }
 
-#  if !defined(_WIN32_ITANIUM)
 [[gnu::weak]] void operator delete(void* ptr, size_t, std::align_val_t alignment) noexcept {
   ::operator delete(ptr, alignment);
 }
-#  endif
 
 [[gnu::weak]] void operator delete[](void* ptr, std::align_val_t alignment) noexcept {
   ::operator delete(ptr, alignment);
@@ -236,11 +227,9 @@ OVERRIDABLE_FUNCTION void* operator new[](size_t size, std::align_val_t alignmen
   ::operator delete[](ptr, alignment);
 }
 
-#  if !defined(_WIN32_ITANIUM)
 [[gnu::weak]] void operator delete[](void* ptr, size_t, std::align_val_t alignment) noexcept {
   ::operator delete[](ptr, alignment);
 }
-#  endif
 
 #endif // _LIBCPP_HAS_LIBRARY_ALIGNED_ALLOCATION
 // ------------------ END COPY ------------------

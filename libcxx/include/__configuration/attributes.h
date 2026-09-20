@@ -74,12 +74,27 @@
 #      define _LIBCPP_EXTERN_TEMPLATE_TYPE_VIS
 #      define _LIBCPP_CLASS_TEMPLATE_INSTANTIATION_VIS __declspec(dllexport)
 #    endif
-#    define _LIBCPP_OVERRIDABLE_FUNC_VIS __declspec(dllexport)
+// A replaceable allocation function belongs to the image that links it on
+// Windows Itanium, where every image keeps its own and reaches it directly,
+// so the library exports none of them.
+#    if defined(_WIN32_ITANIUM)
+#      define _LIBCPP_OVERRIDABLE_FUNC_VIS
+#    else
+#      define _LIBCPP_OVERRIDABLE_FUNC_VIS __declspec(dllexport)
+#    endif
 #    define _LIBCPP_EXPORTED_FROM_ABI __declspec(dllexport)
 #  else
 #    define _LIBCPP_EXTERN_TEMPLATE_TYPE_VIS __declspec(dllimport)
 #    define _LIBCPP_CLASS_TEMPLATE_INSTANTIATION_VIS
-#    define _LIBCPP_OVERRIDABLE_FUNC_VIS
+// A program replacing one of these publishes it, so that the copy every other
+// image of the program links forwards to it rather than allocating from a
+// second heap. Only a definition is exported; a translation unit that merely
+// includes this header and calls new exports nothing.
+#    if defined(_WIN32_ITANIUM)
+#      define _LIBCPP_OVERRIDABLE_FUNC_VIS __declspec(dllexport)
+#    else
+#      define _LIBCPP_OVERRIDABLE_FUNC_VIS
+#    endif
 #    define _LIBCPP_EXPORTED_FROM_ABI __declspec(dllimport)
 #  endif
 

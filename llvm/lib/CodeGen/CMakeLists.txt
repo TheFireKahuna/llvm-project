@@ -255,6 +255,7 @@ add_llvm_component_library(LLVMCodeGen
   WasmEHPrepare.cpp
   WindowScheduler.cpp
   WindowsSecureHotPatching.cpp
+  WindowsWeakInterposition.cpp
   WinEHPrepare.cpp
   XRayInstrumentation.cpp
   ${GeneratedMLSources}

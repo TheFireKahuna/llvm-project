@@ -165,6 +165,7 @@ void llvm::initializeCodeGen(PassRegistry &Registry) {
   initializeVirtRegMapWrapperLegacyPass(Registry);
   initializeVirtRegRewriterLegacyPass(Registry);
   initializeWasmEHPreparePass(Registry);
+  initializeWindowsWeakInterpositionPass(Registry);
   initializeWinEHPreparePass(Registry);
   initializeWindowsSecureHotPatchingPass(Registry);
   initializeXRayInstrumentationLegacyPass(Registry);
