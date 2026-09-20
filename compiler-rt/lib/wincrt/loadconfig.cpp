@@ -180,3 +180,13 @@ __declspec(allocate(".rdata$T")) extern "C" const LoadConfig
 // clang-format on
 
 WINCRT_INCLUDE(_load_config_used)
+
+// The search-path restriction the image asks for through /dependentloadflag.
+// The loader applies it to the statically linked imports itself and leaves the
+// delayed ones to the image, so delayload.cpp passes it on. The read is
+// volatile because the linker patches the field after this translation unit is
+// compiled, and the initializer here is zero.
+extern "C" WORD __wincrt_dependent_load_flags(void) {
+  return static_cast<const volatile LoadConfig &>(_load_config_used)
+      .DependentLoadFlags;
+}
