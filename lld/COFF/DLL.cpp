@@ -943,7 +943,6 @@ std::vector<Chunk *> DelayLoadContents::getChunks() {
 std::vector<Chunk *> DelayLoadContents::getDataChunks() {
   std::vector<Chunk *> v;
   v.insert(v.end(), moduleHandles.begin(), moduleHandles.end());
-  v.insert(v.end(), addresses.begin(), addresses.end());
   return v;
 }
 

@@ -74,6 +74,17 @@ COFF Improvements
   a definition of ``X`` in the link is then preferred to an import library's
   entry for it.
 
+* ``-delayload-protect`` gives the delay-load import address table a section
+  of its own, as link.exe does, and marks the image
+  ``IMAGE_GUARD_PROTECT_DELAYLOAD_IAT`` and
+  ``IMAGE_GUARD_DELAYLOAD_IAT_IN_ITS_OWN_SECTION``. The loader then keeps that
+  table read-only and opens it only while it resolves an import, so a table
+  that indirect calls reach without a Control Flow Guard check is not writable
+  for the life of the process. The descriptors and the import name table move
+  to ``.rdata`` and the module handles stay in ``.data``, since the loader
+  writes neither while the table is protected. The delay-load helper has to
+  reach the table through the loader, or open the page around its own store.
+
 MinGW Improvements
 ------------------
 

@@ -2246,6 +2246,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
       args.hasFlag(OPT_import_slots, OPT_import_slots_no, false);
   if (config->importSlots)
     config->autoImport = true;
+  // The loader keeps a protected delay-load import address table read-only.
+  config->delayLoadProtect =
+      args.hasFlag(OPT_delayload_protect, OPT_delayload_protect_no, false);
   config->pseudoRelocs = args.hasFlag(
       OPT_runtime_pseudo_reloc, OPT_runtime_pseudo_reloc_no, config->mingw);
   config->callGraphProfileSort = args.hasFlag(

@@ -249,6 +249,9 @@ private:
   void markSymbolsWithRelocations(ObjFile *file, SymbolRVASet &usedSymbols,
                                   SymbolRVASet &usedImports);
   void createGuardCFTables();
+  bool protectDelayIat() {
+    return ctx.config.delayLoadProtect && !delayIdata.empty();
+  }
   void markSymbolsForRVATable(ObjFile *file,
                               ArrayRef<SectionChunk *> symIdxChunks,
                               SymbolRVASet &tableSymbols);
@@ -1182,7 +1185,7 @@ void Writer::createSections() {
   pdataSec = createSection(".pdata", data | r);
   idataSec = createSection(".idata", data | r);
   edataSec = createSection(".edata", data | r);
-  didatSec = createSection(".didat", data | r);
+  didatSec = createSection(".didat", data | r | (protectDelayIat() ? w : 0));
   if (isArm64EC(ctx.config.machine))
     a64xrmSec = createSection(".a64xrm", data | r);
   rsrcSec = createSection(".rsrc", data | r);
@@ -1464,10 +1467,27 @@ void Writer::appendImportThunks() {
 
   if (!delayIdata.empty()) {
     delayIdata.create();
+    // A protected image lays the tables out as link.exe does: the import
+    // address table is alone in .didat, which the loader makes read-only and
+    // writable again only while it resolves an import, so nothing else may
+    // share a page with it. The descriptors and the name table are never
+    // written and belong with the rest of the read-only data; the module
+    // handles are written on the unprotected path and cannot go in .didat.
+    OutputSection *tableSec = didatSec;
+    OutputSection *iatSec = dataSec;
+    if (protectDelayIat()) {
+      if (!didatSec->chunks.empty())
+        Err(ctx) << "-delayload-protect: .didat holds input sections";
+      ctx.config.merge.erase(".didat");
+      tableSec = rdataSec;
+      iatSec = didatSec;
+    }
     for (Chunk *c : delayIdata.getChunks())
-      didatSec->addChunk(c);
+      tableSec->addChunk(c);
     for (Chunk *c : delayIdata.getDataChunks())
       dataSec->addChunk(c);
+    for (Chunk *c : delayIdata.getIat())
+      iatSec->addChunk(c);
     for (Chunk *c : delayIdata.getCodeChunks())
       textSec->addChunk(c);
     for (Chunk *c : delayIdata.getCodePData())
@@ -2260,19 +2280,29 @@ void Writer::markSymbolsWithRelocations(ObjFile *file,
 void Writer::createGuardCFTables() {
   Configuration *config = &ctx.config;
 
+  // The delay-load import address table is alone in a section, so the loader
+  // can keep it read-only and open it only while it resolves an import. Both
+  // flags are needed: the first alone leaves the table writable until the
+  // first resolution, which then makes its pages read-only for good.
+  uint32_t guardFlags = 0;
+  if (protectDelayIat())
+    guardFlags = uint32_t(GuardFlags::PROTECT_DELAYLOAD_IAT) |
+                 uint32_t(GuardFlags::DELAYLOAD_IAT_IN_ITS_OWN_SECTION);
+
   if (config->guardCF == GuardCFLevel::Off) {
     // MSVC marks the entire image as instrumented if any input object was built
     // with /guard:cf.
     for (ObjFile *file : ctx.objFileInstances) {
       if (file->hasGuardCF()) {
-        ctx.forEachSymtab([&](SymbolTable &symtab) {
-          Symbol *flagSym = symtab.findUnderscore("__guard_flags");
-          cast<DefinedAbsolute>(flagSym)->setVA(
-              uint32_t(GuardFlags::CF_INSTRUMENTED));
-        });
+        guardFlags |= uint32_t(GuardFlags::CF_INSTRUMENTED);
         break;
       }
     }
+    if (guardFlags)
+      ctx.forEachSymtab([&](SymbolTable &symtab) {
+        Symbol *flagSym = symtab.findUnderscore("__guard_flags");
+        cast<DefinedAbsolute>(flagSym)->setVA(guardFlags);
+      });
     return;
   }
 
@@ -2365,9 +2395,9 @@ void Writer::createGuardCFTables() {
 
   // Set __guard_flags, which will be used in the load config to indicate that
   // /guard:cf was enabled. Every table has a flag byte per entry.
-  uint32_t guardFlags = uint32_t(GuardFlags::CF_INSTRUMENTED) |
-                        uint32_t(GuardFlags::CF_FUNCTION_TABLE_PRESENT) |
-                        uint32_t(GuardFlags::CF_FUNCTION_TABLE_SIZE_5BYTES);
+  guardFlags |= uint32_t(GuardFlags::CF_INSTRUMENTED) |
+                uint32_t(GuardFlags::CF_FUNCTION_TABLE_PRESENT) |
+                uint32_t(GuardFlags::CF_FUNCTION_TABLE_SIZE_5BYTES);
   if (config->guardCF & GuardCFLevel::LongJmp)
     guardFlags |= uint32_t(GuardFlags::CF_LONGJUMP_TABLE_PRESENT);
   if (config->guardCF & GuardCFLevel::EHCont)
