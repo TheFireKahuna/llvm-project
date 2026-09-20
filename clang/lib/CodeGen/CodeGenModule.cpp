@@ -1957,7 +1957,7 @@ void CodeGenModule::setGlobalVisibility(llvm::GlobalValue *GV,
 }
 
 static bool shouldAssumeDSOLocal(const CodeGenModule &CGM,
-                                 llvm::GlobalValue *GV) {
+                                 llvm::GlobalValue *GV, const NamedDecl *D) {
   if (GV->hasLocalLinkage())
     return true;
 
@@ -1984,19 +1984,21 @@ static bool shouldAssumeDSOLocal(const CodeGenModule &CGM,
         CGOpts.AutoImport)
       return false;
 
-    // A mutable COMDAT variable -- an inline variable, a template static data
-    // member, a static local of an inline function, or the guard of one of
-    // those -- gets one copy per image here, where a shared library on ELF
-    // gets one per process. Reaching the definition through a pointer the
-    // linker fills lets one image's copy stand for all of them. That is what
-    // the mark exporting it across the shared-library boundary asks for, and
-    // what -fauto-import asks for without marks. Read-only COMDAT data holds
-    // no state to share, so it keeps its copy rather than pay for the
-    // pointer, and a native thread-local symbol cannot be imported at all.
+    // A COMDAT variable -- an inline variable, a template static data member,
+    // a static local of an inline function, or the guard of one of those --
+    // gets one copy per image here, where a shared library on ELF gets one
+    // per process. Reaching the definition through a pointer the linker fills
+    // lets one image's copy stand for all of them. The mark that carries the
+    // variable across the shared-library boundary asks for that, and
+    // -fauto-import asks for it without marks. A native thread-local symbol
+    // cannot be imported at all. Only a variable the source declared takes
+    // this rule: a vtable is reached by the name of its address point, and a
+    // type_info descriptor is identified by the hash it carries.
     const auto *Var = dyn_cast<llvm::GlobalVariable>(GV);
     if (TT.isWindowsItaniumOrNTPOSIXEnvironment() && Var &&
-        (CGOpts.AutoImport || GV->hasDLLExportStorageClass()) &&
-        !Var->isConstant() && !Var->isThreadLocal() && Var->isWeakForLinker())
+        isa_and_nonnull<VarDecl>(D) && !Var->isThreadLocal() &&
+        Var->isWeakForLinker() &&
+        (CGOpts.AutoImport || CGM.shouldMapVisibilityToDLLExport(D)))
       return false;
   }
 
@@ -2073,8 +2075,9 @@ static bool shouldAssumeDSOLocal(const CodeGenModule &CGM,
   return false;
 }
 
-void CodeGenModule::setDSOLocal(llvm::GlobalValue *GV) const {
-  GV->setDSOLocal(shouldAssumeDSOLocal(*this, GV));
+void CodeGenModule::setDSOLocal(llvm::GlobalValue *GV,
+                                const NamedDecl *D) const {
+  GV->setDSOLocal(shouldAssumeDSOLocal(*this, GV, D));
 }
 
 void CodeGenModule::setDLLImportDLLExport(llvm::GlobalValue *GV,
@@ -2146,7 +2149,7 @@ void CodeGenModule::setGVProperties(llvm::GlobalValue *GV,
 void CodeGenModule::setGVPropertiesAux(llvm::GlobalValue *GV,
                                        const NamedDecl *D) const {
   setGlobalVisibility(GV, D);
-  setDSOLocal(GV);
+  setDSOLocal(GV, D);
   GV->setPartition(CodeGenOpts.SymbolPartition);
 }
 

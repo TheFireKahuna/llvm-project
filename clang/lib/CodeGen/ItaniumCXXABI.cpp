@@ -2126,7 +2126,12 @@ static void getVTableAddressPointName(StringRef VTable, unsigned Offset,
 static void emitVTableAddressPointNames(CodeGenModule &CGM,
                                         llvm::GlobalVariable *VTable,
                                         const VTableLayout &Layout) {
-  if (VTable->isDeclarationForLinker())
+  // Every vtable another image could reach gets the names, not only one the
+  // visibility mapping exports: a module definition file or an
+  // export-everything link can export a vtable that carries no dllexport
+  // storage, and the image that imports it asks for these names.
+  if (VTable->isDeclarationForLinker() || VTable->hasLocalLinkage() ||
+      !VTable->hasDefaultVisibility())
     return;
 
   SmallString<256> Name;
@@ -2149,7 +2154,7 @@ static void emitVTableAddressPointNames(CodeGenModule &CGM,
             CGM.Int8Ty, VTable, llvm::ConstantInt::get(CGM.Int32Ty, Offset),
             /*InBounds=*/true),
         &CGM.getModule());
-    Alias->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
+    Alias->setDLLStorageClass(VTable->getDLLStorageClass());
     Alias->setVisibility(VTable->getVisibility());
     Alias->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
   }
@@ -2222,8 +2227,7 @@ void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
   // Set the right visibility.
   CGM.setGVProperties(VTable, RD);
 
-  if (VTable->hasDLLExportStorageClass() &&
-      CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+  if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
     emitVTableAddressPointNames(CGM, VTable, VTLayout);
 
   // If this is the magic class __cxxabiv1::__fundamental_type_info,
@@ -2299,7 +2303,12 @@ ItaniumCXXABI::getVTableAddressPoint(BaseSubobject Base,
   VTableLayout::AddressPointLocation AddressPoint =
       Layout.getAddressPoint(Base);
 
-  if (VTable->hasDLLImportStorageClass() &&
+  // A vtable this image defines is reached directly. Asking the class rather
+  // than the global matters, because the global is still a declaration when a
+  // constant initialiser in the same unit needs its address point.
+  if (!VTable->isDSOLocal() &&
+      (VTable->hasDLLImportStorageClass() ||
+       CGM.getVTables().isVTableExternal(VTableClass)) &&
       CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
     return getVTableAddressPointDecl(
         CGM, cast<llvm::GlobalVariable>(VTable),

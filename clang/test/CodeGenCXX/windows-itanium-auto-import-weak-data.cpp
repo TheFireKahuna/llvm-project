@@ -5,10 +5,10 @@
 // RUN: %clang_cc1 -triple x86_64-w64-windows-gnu -emit-llvm -o - %s | FileCheck %s --check-prefix=MINGW
 
 // A COMDAT variable gets one copy per image here, where a shared library on
-// ELF gets one per process. Under -fauto-import a mutable one is left
+// ELF gets one per process. Under -fauto-import the definition is left
 // preemptable, so that the copy the linker picks can stand for all of them;
-// the default keeps each image's own. Read-only COMDAT data and a native
-// thread-local symbol keep their copy either way.
+// the default keeps each image's own. A native thread-local symbol cannot be
+// imported and keeps its copy either way.
 
 extern int ExternalData;
 
@@ -55,8 +55,7 @@ int read() {
 // SHARED-DAG: @ThreadLocal = linkonce_odr dso_local thread_local global i32 5, comdat
 // SHARED-DAG: @_ZZ8instancevE3One = linkonce_odr global %struct.Counted zeroinitializer, comdat
 // SHARED-DAG: @_ZGVZ8instancevE3One = linkonce_odr global i64 0, comdat
-// Read-only COMDAT data holds no state to share and keeps its copy.
-// SHARED-DAG: @InlineConstant = linkonce_odr dso_local constant
+// SHARED-DAG: @InlineConstant = linkonce_odr constant
 
 // MinGW auto-imports declarations only, as before.
 // MINGW-DAG: @ExternalData = external global i32

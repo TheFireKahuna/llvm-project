@@ -31,6 +31,10 @@ struct Counted {
 
 API inline int InlineVariable = 7;
 
+// Read-only COMDAT data shares too: its address is one address for the
+// program, as it is on ELF.
+API inline constexpr int Table[4] = {10, 20, 30, 40};
+
 template <class T> struct API Holder {
   static Counted Value;
 };
@@ -45,6 +49,7 @@ API int *inlineVariableAddress();
 API int holderValue();
 API int instanceValue();
 API int constructions();
+API const int *tableAddress();
 
 #ifdef BUILD_DLL
 
@@ -54,6 +59,7 @@ int *inlineVariableAddress() { return &InlineVariable; }
 int holderValue() { return Holder<int>::Value.Value; }
 int instanceValue() { return instance().Value; }
 int constructions() { return Constructions; }
+const int *tableAddress() { return Table; }
 
 #else
 
@@ -65,6 +71,10 @@ int main() {
   InlineVariable = 42;
   // CHECK-NEXT: write is seen: 1
   printf("write is seen: %d\n", *inlineVariableAddress() == 42);
+
+  // CHECK-NEXT: read-only: shared 1, value 30
+  printf("read-only: shared %d, value %d\n",
+         Table == tableAddress(), Table[2]);
 
   // CHECK-NEXT: shared instances: 1 1
   printf("shared instances: %d %d\n",

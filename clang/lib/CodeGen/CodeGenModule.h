@@ -964,7 +964,10 @@ public:
   /// Set the visibility for the given LLVM GlobalValue.
   void setGlobalVisibility(llvm::GlobalValue *GV, const NamedDecl *D) const;
 
-  void setDSOLocal(llvm::GlobalValue *GV) const;
+  /// D, where the caller has it, is the declaration GV was emitted for.
+  /// Compiler-generated globals such as a vtable or a type_info descriptor
+  /// pass none.
+  void setDSOLocal(llvm::GlobalValue *GV, const NamedDecl *D = nullptr) const;
 
   bool shouldMapVisibilityToDLLExport(const NamedDecl *D) const {
     return getLangOpts().hasDefaultVisibilityExportMapping() && D &&
