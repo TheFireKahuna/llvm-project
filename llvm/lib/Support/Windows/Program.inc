@@ -45,7 +45,7 @@ ErrorOr<std::string> sys::findProgramByName(StringRef Name,
   // Walk the directories ourselves rather than calling SearchPathW: its
   // default order (SafeProcessSearchMode = 0) tries the current directory
   // before PATH, and it only handles directories longer than MAX_PATH when
-  // the process opts in through its manifest. can_execute goes through
+  // the process opts in through its manifest. is_regular_file goes through
   // widenPath, so this walk has neither limitation.
   std::optional<std::string> PathEnv;
   SmallVector<StringRef, 16> EnvironmentPaths;
@@ -69,7 +69,9 @@ ErrorOr<std::string> sys::findProgramByName(StringRef Name,
       SmallString<MAX_PATH> FilePath(Path);
       sys::path::append(FilePath, Name);
       FilePath.append(Ext);
-      if (sys::fs::can_execute(FilePath)) {
+      // Not can_execute: it also accepts Name for Name.exe, and the result
+      // must be the file that exists.
+      if (sys::fs::is_regular_file(FilePath)) {
         sys::path::make_preferred(FilePath);
         return std::string(FilePath);
       }
