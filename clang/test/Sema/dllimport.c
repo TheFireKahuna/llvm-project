@@ -37,8 +37,13 @@ __declspec(dllimport) int GlobalDecl;
 int **__attribute__((dllimport))* GlobalDeclChunkAttr;
 int GlobalDeclAttr __attribute__((dllimport));
 
-// Address of variables can't be used for initialization in C language modes.
+// Address of variables can't be used for initialization in C language modes,
+// except where the loader fills such data in place.
+#ifdef _WIN32_ITANIUM
+int *VarForInit = &GlobalDecl;
+#else
 int *VarForInit = &GlobalDecl; // expected-error{{initializer element is not a compile-time constant}}
+#endif
 
 // Not allowed on definitions.
 __declspec(dllimport) extern int ExternGlobalInit = 1; // expected-error{{definition of dllimport data}}

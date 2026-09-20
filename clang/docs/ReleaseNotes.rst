@@ -500,6 +500,14 @@ Windows Support
 - Clang now defines the ``_MSVC_TRADITIONAL`` macro as ``1`` when emulating MSVC
   19.15 (Visual Studio 2017 version 15.8) and later. (#GH47114)
 
+- On Windows Itanium and NT-POSIX targets the address of a ``__declspec(dllimport)``
+  variable or function, and a pointer to a non-virtual ``dllimport`` member
+  function, are constant expressions. Static data so initialized is emitted as
+  a constant with a relocation against the imported symbol, which lld
+  (``-import-slots``) turns into an import table entry the loader fills in
+  place; no dynamic initializer is generated. MSVC and MinGW targets are
+  unchanged.
+
 LoongArch Support
 ^^^^^^^^^^^^^^^^^
 

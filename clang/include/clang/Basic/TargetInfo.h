@@ -1364,6 +1364,14 @@ public:
            getTriple().isWindowsNTPOSIXEnvironment() || getTriple().isPS();
   }
 
+  /// Is the address of a dllimport entity a constant expression? On these
+  /// targets the linker leaves static data that holds an imported address as
+  /// an import table entry the loader fills in place, so a constant
+  /// initializer needs neither a thunk address nor dynamic initialization.
+  virtual bool hasConstantDLLImportAddresses() const {
+    return getTriple().isWindowsItaniumOrNTPOSIXEnvironment();
+  }
+
   // Does this target have PS4 specific dllimport/export handling?
   virtual bool hasPS4DLLImportExport() const {
     return getTriple().isPS() ||

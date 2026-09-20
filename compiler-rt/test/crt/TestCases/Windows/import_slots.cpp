@@ -3,8 +3,8 @@
 // pointer into the middle of an imported array receives its addend from the
 // startup code, which leaves read-only data read-only, and a vtable entry
 // for an inherited imported virtual function holds the function's address.
-// The declarations are marked as on ELF; a __declspec(dllimport) address is
-// not a constant to the front end and would be initialised at run time.
+// Declarations marked as on ELF and __declspec(dllimport) ones behave alike:
+// both addresses are constants to the front end.
 //
 // RUN: %clangxx_crt -DBUILD_DLL -shared %s -o %t.dll -Wl,-implib:%t.lib
 // RUN: %clangxx_crt_main_cfg %s %t.lib -o %t.exe
@@ -17,12 +17,19 @@
 #include <windows.h>
 
 #define DLL_API __attribute__((visibility("default")))
+#ifdef BUILD_DLL
+#define DLL_SPEC __declspec(dllexport)
+#else
+#define DLL_SPEC __declspec(dllimport)
+#endif
 
 extern "C" {
 extern DLL_API int dll_array[8];
 DLL_API int dll_func(int);
 DLL_API int *dll_array_address();
 DLL_API int (*dll_func_address())(int);
+extern DLL_SPEC int spec_array[8];
+DLL_SPEC int spec_func(int);
 }
 
 class DLL_API Base {
@@ -38,6 +45,8 @@ int dll_array[8] = {0, 10, 20, 30, 40, 50, 60, 70};
 int dll_func(int X) { return X * 2; }
 int *dll_array_address() { return dll_array; }
 int (*dll_func_address())(int) { return dll_func; }
+int spec_array[8] = {0, 11, 22, 33, 44, 55, 66, 77};
+int spec_func(int X) { return X * 3; }
 
 Base::~Base() = default;
 int Base::value() const { return 100; }
@@ -51,6 +60,11 @@ int (*const ro_func)(int) = dll_func;
 // Writable slots.
 int *rw_element = &dll_array[5];
 int (*rw_func)(int) = dll_func;
+// The same through __declspec(dllimport); external linkage keeps the
+// read-only slot from being folded into its only use.
+int *spec_element = &spec_array[3];
+extern int (*const spec_func_ptr)(int);
+int (*const spec_func_ptr)(int) = spec_func;
 
 // Local's vtable, in this image's read-only data, holds Base::inherited.
 class Local : public Base {
@@ -67,6 +81,9 @@ int main() {
   // CHECK: values: 30 50 4 6
   printf("values: %d %d %d %d\n", *ro_element, *rw_element, ro_func(2),
          rw_func(3));
+  // CHECK: dllimport: 33 6 1
+  printf("dllimport: %d %d %d\n", *spec_element, spec_func_ptr(2),
+         spec_element == spec_array + 3 && spec_func_ptr == spec_func);
 
   Local L;
   Base *B = &L;
@@ -83,8 +100,8 @@ int main() {
 
 #endif
 
-// The DLL's own descriptor, then one per run of slots: the two writable
-// slots that are adjacent, and the read-only ones.
+// The DLL's own descriptor, then one per run of slots: the adjacent writable
+// slots form one, the read-only ones follow.
 // IMPORTS:     Name: import_slots.cpp.tmp.dll
 // IMPORTS:     Name: import_slots.cpp.tmp.dll
 // IMPORTS:     Name: import_slots.cpp.tmp.dll
