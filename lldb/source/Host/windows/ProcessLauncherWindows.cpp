@@ -11,6 +11,7 @@
 #include "lldb/Host/windows/PseudoConsole.h"
 #include "lldb/Host/windows/WindowsFileAction.h"
 #include "lldb/Host/windows/windows.h"
+#include "llvm/Support/Windows/WindowsSupport.h"
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/ConvertUTF.h"
@@ -222,16 +223,20 @@ ProcessLauncherWindows::LaunchProcess(const ProcessLaunchInfo &launch_info,
   // command line is not empty, its contents may be modified by CreateProcessW.
   WCHAR *pwcommandLine = wcommandLine.empty() ? nullptr : &wcommandLine[0];
 
-  std::wstring wexecutable, wworkingDirectory;
-  llvm::ConvertUTF8toWide(launch_info.GetExecutableFile().GetPath(),
-                          wexecutable);
+  llvm::SmallVector<wchar_t, 128> wexecutable;
+  std::wstring wworkingDirectory;
+  if (std::error_code ec = llvm::sys::windows::widenPath(
+          launch_info.GetExecutableFile().GetPath(), wexecutable)) {
+    error = Status(ec);
+    return HostProcess();
+  }
   llvm::ConvertUTF8toWide(launch_info.GetWorkingDirectory().GetPath(),
                           wworkingDirectory);
 
   PROCESS_INFORMATION pi = {};
 
   BOOL result = ::CreateProcessW(
-      wexecutable.c_str(), pwcommandLine, NULL, NULL,
+      wexecutable.data(), pwcommandLine, NULL, NULL,
       /*bInheritHandles=*/!inherited_handles.empty() ||
           pty_mode != PseudoConsole::Mode::None,
       flags, environment.data(),
@@ -348,9 +353,10 @@ HANDLE ProcessLauncherWindows::GetStdioHandle(const llvm::StringRef path,
     break;
   }
 
-  std::wstring wpath;
-  llvm::ConvertUTF8toWide(path, wpath);
-  HANDLE result = ::CreateFileW(wpath.c_str(), access, share, &secattr, create,
+  llvm::SmallVector<wchar_t, 128> wpath;
+  if (llvm::sys::windows::widenPath(path, wpath))
+    return NULL;
+  HANDLE result = ::CreateFileW(wpath.data(), access, share, &secattr, create,
                                 flags, NULL);
   return (result == INVALID_HANDLE_VALUE) ? NULL : result;
 }

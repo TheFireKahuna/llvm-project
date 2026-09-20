@@ -61,7 +61,7 @@ struct timeval {
   long tv_usec;
 };
 typedef long pid_t;
-#define PATH_MAX MAX_PATH
+#define PATH_MAX 32768
 #endif
 
 #define STDIN_FILENO 0

@@ -272,13 +272,11 @@ uint32_t PlatformWindows::DoLoadImage(Process *process,
   }
 
   /* Inject wszModulePath into inferior */
-  // FIXME(compnerd) should do something better for the length?
-  // GetModuleFileNameA is likely limited to PATH_MAX rather than the NT path
-  // limit.
-  unsigned injected_length = 261;
+  // The NT path limit, in UTF-16 code units, including the terminator.
+  unsigned injected_length = 32768;
 
   lldb::addr_t injected_module_path =
-      process->AllocateMemory(injected_length + 1,
+      process->AllocateMemory(injected_length * sizeof(llvm::UTF16),
                               ePermissionsReadable | ePermissionsWritable,
                               status);
   if (injected_module_path == LLDB_INVALID_ADDRESS) {
@@ -414,9 +412,17 @@ uint32_t PlatformWindows::DoLoadImage(Process *process,
     return LLDB_INVALID_IMAGE_TOKEN;
   }
 
+  // XXX(compnerd) should we use the compiler to get the sizeof(unsigned)?
+  uint64_t module_path_length = process->ReadUnsignedIntegerFromMemory(
+      injected_result + 2 * word_size, sizeof(unsigned), 0, status);
+  std::vector<llvm::UTF16> module_path_utf16(
+      std::min<uint64_t>(module_path_length, injected_length));
+  if (status.Success())
+    process->ReadMemory(injected_module_path, module_path_utf16.data(),
+                        module_path_utf16.size() * sizeof(llvm::UTF16), status);
   std::string module_path;
-  process->ReadCStringFromMemory(injected_module_path, module_path, status);
-  if (status.Fail()) {
+  if (status.Fail() ||
+      !llvm::convertUTF16ToUTF8String(module_path_utf16, module_path)) {
     error = Status::FromErrorStringWithFormat(
         "LoadLibrary error: could not read module path: %s",
         status.AsCString());
@@ -656,8 +662,8 @@ extern "C" {
 // WINBASEAPI BOOL WINAPI FreeModule(HMODULE);
 /* __declspec(dllimport) */ int __stdcall FreeModule(void *hLibModule);
 
-// WINBASEAPI DWORD WINAPI GetModuleFileNameA(HMODULE hModule, LPSTR lpFilename, DWORD nSize);
-/* __declspec(dllimport) */ uint32_t GetModuleFileNameA(void *, char *, uint32_t);
+// WINBASEAPI DWORD WINAPI GetModuleFileNameW(HMODULE hModule, LPWSTR lpFilename, DWORD nSize);
+/* __declspec(dllimport) */ uint32_t GetModuleFileNameW(void *, wchar_t *, uint32_t);
 
 // WINBASEAPI HMODULE WINAPI LoadLibraryExW(LPCWSTR, HANDLE, DWORD);
 /* __declspec(dllimport) */ void * __stdcall LoadLibraryExW(const wchar_t *, void *, uint32_t);
@@ -671,7 +677,7 @@ extern "C" {
 
 struct __lldb_LoadLibraryResult {
   void *ImageBase;
-  char *ModulePath;
+  wchar_t *ModulePath;
   unsigned Length;
   unsigned ErrorCode;
 };
@@ -691,7 +697,7 @@ void * __lldb_LoadLibraryHelper(const wchar_t *name, const wchar_t *paths,
   if (result->ImageBase == nullptr)
     result->ErrorCode = GetLastError();
   else
-    result->Length = GetModuleFileNameA(result->ImageBase, result->ModulePath,
+    result->Length = GetModuleFileNameW(result->ImageBase, result->ModulePath,
                                         result->Length);
 
   return result->ImageBase;
@@ -771,8 +777,8 @@ extern "C" {
 // WINBASEAPI BOOL WINAPI FreeModule(HMODULE);
 /* __declspec(dllimport) */ int __stdcall FreeModule(void *);
 
-// WINBASEAPI DWORD WINAPI GetModuleFileNameA(HMODULE, LPSTR, DWORD);
-/* __declspec(dllimport) */ uint32_t GetModuleFileNameA(void *, char *, uint32_t);
+// WINBASEAPI DWORD WINAPI GetModuleFileNameW(HMODULE, LPWSTR, DWORD);
+/* __declspec(dllimport) */ uint32_t GetModuleFileNameW(void *, wchar_t *, uint32_t);
 
 // WINBASEAPI HMODULE WINAPI LoadLibraryExW(LPCWSTR, HANDLE, DWORD);
 /* __declspec(dllimport) */ void * __stdcall LoadLibraryExW(const wchar_t *, void *, uint32_t);

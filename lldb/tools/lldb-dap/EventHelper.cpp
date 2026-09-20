@@ -27,6 +27,7 @@
 #include "lldb/API/SBPlatform.h"
 #include "lldb/API/SBStream.h"
 #include "lldb/API/SBThread.h"
+#include "lldb/Host/PosixApi.h" // Adds PATH_MAX for windows
 #include "lldb/lldb-defines.h"
 #include "lldb/lldb-types.h"
 #include "llvm/Support/Error.h"
@@ -36,17 +37,6 @@
 #include "llvm/Support/raw_ostream.h"
 #include <mutex>
 #include <utility>
-
-#if defined(LLVM_RUNTIME_WIN32)
-#ifndef NOMINMAX
-#  define NOMINMAX
-#endif
-#include <windows.h>
-
-#ifndef PATH_MAX
-#define PATH_MAX MAX_PATH
-#endif
-#endif
 
 using namespace llvm;
 

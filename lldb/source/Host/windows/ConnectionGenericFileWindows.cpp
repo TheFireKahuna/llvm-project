@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "lldb/Host/windows/ConnectionGenericFileWindows.h"
+#include "llvm/Support/Windows/WindowsSupport.h"
 #include "lldb/Utility/LLDBLog.h"
 #include "lldb/Utility/Log.h"
 #include "lldb/Utility/Status.h"
@@ -81,13 +82,13 @@ lldb::ConnectionStatus ConnectionGenericFile::Connect(llvm::StringRef path,
   // open it overlapped so that we can issue asynchronous reads and then use
   // WaitForMultipleObjects to allow the read to be interrupted by an event
   // object.
-  std::wstring wpath;
-  if (!llvm::ConvertUTF8toWide(path, wpath)) {
+  llvm::SmallVector<wchar_t, 128> wpath;
+  if (llvm::sys::windows::widenPath(path, wpath)) {
     if (error_ptr)
       *error_ptr = Status(1, eErrorTypeGeneric);
     return eConnectionStatusError;
   }
-  m_file = ::CreateFileW(wpath.c_str(), GENERIC_READ | GENERIC_WRITE,
+  m_file = ::CreateFileW(wpath.data(), GENERIC_READ | GENERIC_WRITE,
                          FILE_SHARE_READ, NULL, OPEN_ALWAYS,
                          FILE_FLAG_OVERLAPPED, NULL);
   if (m_file == INVALID_HANDLE_VALUE) {

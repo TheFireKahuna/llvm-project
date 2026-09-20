@@ -245,18 +245,22 @@ llvm::Error PseudoConsole::DrainInitSequences() {
 
   PROCESS_INFORMATION pi = {};
 
-  wchar_t comspec[MAX_PATH];
-  DWORD comspecLen = GetEnvironmentVariableW(L"COMSPEC", comspec, MAX_PATH);
-  if (comspecLen == 0 || comspecLen >= MAX_PATH)
+  std::wstring comspec(GetEnvironmentVariableW(L"COMSPEC", nullptr, 0), L'\0');
+  DWORD comspecLen =
+      comspec.empty() ? 0
+                      : GetEnvironmentVariableW(L"COMSPEC", comspec.data(),
+                                                comspec.size());
+  if (comspecLen == 0 || comspecLen >= comspec.size())
     return llvm::createStringError(
         std::error_code(GetLastError(), std::system_category()),
         "Failed to get the 'COMSPEC' environment variable");
+  comspec.resize(comspecLen);
 
-  std::wstring cmdline_str = std::wstring(comspec) + L" /c cls";
+  std::wstring cmdline_str = comspec + L" /c cls";
   std::vector<wchar_t> cmdline(cmdline_str.begin(), cmdline_str.end());
   cmdline.push_back(L'\0');
 
-  if (!CreateProcessW(/*lpApplicationName=*/comspec, cmdline.data(),
+  if (!CreateProcessW(/*lpApplicationName=*/comspec.c_str(), cmdline.data(),
                       /*lpProcessAttributes=*/NULL, /*lpThreadAttributes=*/NULL,
                       /*bInheritHandles=*/TRUE,
                       /*dwCreationFlags=*/EXTENDED_STARTUPINFO_PRESENT |
