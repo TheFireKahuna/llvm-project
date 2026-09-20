@@ -43,6 +43,7 @@ def color_diagnostics_eq: Joined<["--"], "color-diagnostics=">,
     HelpText<"Use colors in diagnostics (default: auto)">,
     MetaVarName<"[auto,always,never]">;
 def defaultlib : P<"defaultlib", "Add the library to the list of input files">;
+def delay : P<"delay", "Delay-load settings: unload, nobind">;
 def delayload : P<"delayload", "Delay loaded DLL name">;
 def diasdkdir : P<"diasdkdir", "Set the location of the DIA SDK">;
 def dwodir : P<"dwodir",
@@ -392,7 +393,6 @@ def nocoffgrpinfo: F<"nocoffgrpinfo">;
 def noexp : F<"noexp">;
 def novcfeature: F<"novcfeature">;
 
-def delay : P_priv<"delay">;
 def errorreport : P_priv<"errorreport">;
 def idlout : P_priv<"idlout">;
 def ilk : P_priv<"ilk">;

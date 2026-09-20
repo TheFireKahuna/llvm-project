@@ -242,6 +242,7 @@ private:
   void parseManifestUAC(StringRef arg);
 
   // Parses a string in the form of "cd|net[,(cd|net)]*"
+  void parseDelay(StringRef arg);
   void parseSwaprun(StringRef arg);
 
   // Create a resource file containing a manifest XML.

@@ -351,6 +351,23 @@ void LinkerDriver::parseManifestUAC(StringRef arg) {
 
 // Parses a string in the form of "cd|net[,(cd|net)]*"
 // Results are directly written to Config.
+// Parses /delay option argument.
+void LinkerDriver::parseDelay(StringRef arg) {
+  do {
+    auto [delay, newArg] = arg.split(',');
+    if (delay.equals_insensitive("unload"))
+      ctx.config.delayLoadUnload = true;
+    else if (delay.equals_insensitive("nobind"))
+      // An image this linker writes is never bindable.
+      ;
+    else if (delay.empty())
+      Err(ctx) << "/delay: missing argument";
+    else
+      Err(ctx) << "/delay: invalid argument: " << delay;
+    arg = newArg;
+  } while (!arg.empty());
+}
+
 void LinkerDriver::parseSwaprun(StringRef arg) {
   do {
     auto [swaprun, newArg] = arg.split(',');

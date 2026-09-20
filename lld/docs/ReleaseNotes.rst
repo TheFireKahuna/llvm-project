@@ -85,6 +85,12 @@ COFF Improvements
   writes neither while the table is protected. The delay-load helper has to
   reach the table through the loader, or open the page around its own store.
 
+* ``/delay:unload`` is honored rather than ignored: the image gets a copy of
+  the delay-load address table in ``UnloadDelayImportTable``, which is what
+  ``__FUnloadDelayLoadedDLL2`` restores before it frees the library.
+  ``/delay:nobind`` is accepted and is already the behaviour, since no image
+  this linker writes carries a bindable table; any other argument is an error.
+
 MinGW Improvements
 ------------------
 

@@ -241,12 +241,15 @@ public:
     e->ModuleHandle = moduleHandle->getRVA();
     e->DelayImportAddressTable = addressTab->getRVA();
     e->DelayImportNameTable = nameTab->getRVA();
+    if (unloadTab)
+      e->UnloadDelayImportTable = unloadTab->getRVA();
   }
 
   Chunk *dllName;
   Chunk *moduleHandle;
   Chunk *addressTab;
   Chunk *nameTab;
+  Chunk *unloadTab = nullptr;
 };
 
 // Initial contents for delay-loaded functions.
@@ -934,6 +937,7 @@ void IdataContents::create(COFFLinkerContext &ctx) {
 std::vector<Chunk *> DelayLoadContents::getChunks() {
   std::vector<Chunk *> v;
   v.insert(v.end(), dirs.begin(), dirs.end());
+  v.insert(v.end(), unloadInfo.begin(), unloadInfo.end());
   v.insert(v.end(), names.begin(), names.end());
   v.insert(v.end(), hintNames.begin(), hintNames.end());
   v.insert(v.end(), dllNames.begin(), dllNames.end());
@@ -999,6 +1003,8 @@ void DelayLoadContents::create() {
         Chunk *t = newThunkChunk(s, tm);
         auto *a = make<DelayAddressChunk>(ctx, t);
         addresses.push_back(a);
+        if (ctx.config.delayLoadUnload)
+          unloadInfo.push_back(make<DelayAddressChunk>(ctx, t));
         s->setLocation(a);
         thunks.push_back(t);
         StringRef extName = s->getExternalName();
@@ -1044,6 +1050,8 @@ void DelayLoadContents::create() {
 
       // Terminate with null values.
       addresses.push_back(make<NullChunk>(ctx, 8));
+      if (ctx.config.delayLoadUnload)
+        unloadInfo.push_back(make<NullChunk>(ctx, 8));
       names.push_back(make<NullChunk>(ctx, 8));
       if (ctx.symtab.isEC()) {
         auxIat.push_back(make<NullChunk>(ctx, 8));
@@ -1058,6 +1066,8 @@ void DelayLoadContents::create() {
     dir->moduleHandle = mh;
     dir->addressTab = addresses[base];
     dir->nameTab = names[base];
+    if (ctx.config.delayLoadUnload)
+      dir->unloadTab = unloadInfo[base];
     dirs.push_back(dir);
   }
 

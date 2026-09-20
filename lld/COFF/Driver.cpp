@@ -2235,6 +2235,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   config->hotpatchCompat =
       args.hasFlag(OPT_hotpatchcompatible, OPT_hotpatchcompatible_no, false);
   config->nxCompat = args.hasFlag(OPT_nxcompat, OPT_nxcompat_no, true);
+  for (auto *arg : args.filtered(OPT_delay))
+    parseDelay(arg->getValue());
   for (auto *arg : args.filtered(OPT_swaprun))
     parseSwaprun(arg->getValue());
   config->terminalServerAware =

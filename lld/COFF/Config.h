@@ -349,6 +349,7 @@ struct Configuration {
   bool autoImport = false;
   bool importSlots = false;
   bool delayLoadProtect = false;
+  bool delayLoadUnload = false;
   bool pseudoRelocs = false;
   bool stdcallFixup = false;
   bool writeCheckSum = false;
