@@ -1974,9 +1974,6 @@ static bool shouldAssumeDSOLocal(const CodeGenModule &CGM,
     // In MinGW, Windows Itanium and NTPOSIX, variables without DLLImport can
     // still be automatically imported from a DLL by the linker; don't mark
     // variables that potentially could come from another DLL as DSO local.
-    // Only declarations can be imported: a definition in this translation
-    // unit, weak or not, is always resolved within the image that links it,
-    // because COMDAT selection never crosses a DLL boundary.
 
     // With EmulatedTLS, TLS variables can be autoimported from other DLLs
     // (and this actually happens in the public interface of libstdc++), so
@@ -1985,6 +1982,19 @@ static bool shouldAssumeDSOLocal(const CodeGenModule &CGM,
     if (GV->isDeclarationForLinker() && isa<llvm::GlobalVariable>(GV) &&
         (!GV->isThreadLocal() || CGM.getCodeGenOpts().EmulatedTLS) &&
         CGOpts.AutoImport)
+      return false;
+
+    // A mutable COMDAT variable -- an inline variable, a template static data
+    // member, a static local of an inline function, or the guard of one of
+    // those -- gets one copy per image here, where a shared library on ELF
+    // gets one per process. Reaching the definition through a pointer the
+    // linker fills lets one image's copy stand for all of them, which is what
+    // the caller asked for. Read-only COMDAT data holds no state to share, so
+    // it keeps its copy rather than pay for the pointer, and a native
+    // thread-local symbol cannot be imported at all.
+    const auto *Var = dyn_cast<llvm::GlobalVariable>(GV);
+    if (TT.isWindowsItaniumOrNTPOSIXEnvironment() && CGOpts.AutoImport && Var &&
+        !Var->isConstant() && !Var->isThreadLocal() && Var->isWeakForLinker())
       return false;
   }
 

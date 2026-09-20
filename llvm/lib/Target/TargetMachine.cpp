@@ -231,9 +231,10 @@ bool TargetMachine::shouldAssumeDSOLocal(const GlobalValue *GV) const {
         GV->isDeclarationForLinker() && isa<GlobalVariable>(GV))
       return false;
 
-    // On Windows Itanium/NTPOSIX, linkonce_odr and weak_odr data may be
-    // deduplicated across DLL boundaries via COMDAT. Don't assume DSO-local;
-    // the linker resolves .refptr. stubs to __imp_ or direct as needed.
+    // On Windows Itanium/NTPOSIX, a COMDAT variable the producer left
+    // preemptable is reached through a pointer, so that one image's copy can
+    // stand for every image's. The linker binds that pointer to an import
+    // when a DLL offers one and rewrites it to the local copy otherwise.
     if (TT.isWindowsItaniumOrNTPOSIXEnvironment() &&
         isa<GlobalVariable>(GV) && GV->isWeakForLinker())
       return false;
