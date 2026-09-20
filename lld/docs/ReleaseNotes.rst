@@ -68,8 +68,11 @@ COFF Improvements
   holds across images. Read-only slots are laid out with the import address
   table, which the IAT data directory covers. A non-zero addend is recorded
   between ``__import_fixups_start`` and ``__import_fixups_end`` for the
-  image's startup code. The option implies ``-auto-import``; a definition of
-  ``X`` in the link is then preferred to an import library's entry for it.
+  image's startup code. A vtable entry keeps the import thunk, as it does on
+  MSVC: it is only ever called through, and a vtable cannot be reordered to
+  bring the entries of one DLL together. The option implies ``-auto-import``;
+  a definition of ``X`` in the link is then preferred to an import library's
+  entry for it.
 
 MinGW Improvements
 ------------------

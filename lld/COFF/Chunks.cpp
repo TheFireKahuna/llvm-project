@@ -656,6 +656,21 @@ static uint8_t getBaserelType(const coff_relocation &rel,
   }
 }
 
+// Vtables, in the Itanium and the MSVC mangling. ICF recognizes the same
+// names.
+static bool isVtable(const SectionChunk *sc, MachineTypes machine) {
+  if (!sc->sym)
+    return false;
+  StringRef name = sc->sym->getName();
+  if (name.starts_with("??_7"))
+    return true;
+  // _ZTV is a vtable, _ZTC a construction vtable; i386 prefixes an
+  // underscore.
+  if (!name.consume_front(machine == I386 ? "__ZT" : "_ZT"))
+    return false;
+  return name.starts_with("V") || name.starts_with("C");
+}
+
 DefinedImportData *
 SectionChunk::getImportSlotTarget(const coff_relocation &rel) const {
   // Code is not writable for the loader; debug sections are not mapped.
@@ -664,10 +679,17 @@ SectionChunk::getImportSlotTarget(const coff_relocation &rel) const {
     return nullptr;
   Symbol *s = file->getSymbol(rel.SymbolTableIndex);
   DefinedImportData *imp;
-  if (auto *thunk = dyn_cast_or_null<DefinedImportThunk>(s))
+  if (auto *thunk = dyn_cast_or_null<DefinedImportThunk>(s)) {
+    // A vtable entry is only ever called through, so it holds the thunk's
+    // address, as it does on MSVC. A vtable cannot be reordered to bring the
+    // entries of one DLL together, so a slot there costs an import descriptor
+    // per vtable, and the vtable would have to move into the import address
+    // table region, away from the rest of the read-only data.
+    if (isVtable(this, file->symtab.ctx.config.machine))
+      return nullptr;
     imp = thunk->wrappedSym;
-  else if (!(imp = dyn_cast_or_null<DefinedImportData>(s)) ||
-           !imp->isRuntimePseudoReloc)
+  } else if (!(imp = dyn_cast_or_null<DefinedImportData>(s)) ||
+             !imp->isRuntimePseudoReloc)
     return nullptr;
   bool is64 = file->symtab.ctx.config.is64();
   if (getBaserelType(rel, getArch()) !=
