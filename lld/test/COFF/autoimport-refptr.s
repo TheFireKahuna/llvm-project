@@ -20,27 +20,27 @@
 
 # IMPORTS: Import {
 # IMPORTS-NEXT: Name: autoimport-refptr.s.tmp-lib.dll
-# IMPORTS-NEXT: ImportLookupTableRVA: 0x2050
-# IMPORTS-NEXT: ImportAddressTableRVA: 0x2060
+# IMPORTS-NEXT: ImportLookupTableRVA: 0x2048
+# IMPORTS-NEXT: ImportAddressTableRVA: 0x2058
 # IMPORTS-NEXT: Symbol: variable (0)
 # IMPORTS-NEXT: }
 
 # DISASM: Disassembly of section .text:
 # DISASM-EMPTY:
 # DISASM: <.text>:
-# Relative offset at 0x1002 pointing at the IAT at 0x2060
-# DISASM: 140001000:      48 8b 05 59 10 00 00    movq    4185(%rip), %rax
+# Relative offset at 0x1002 pointing at the IAT at 0x2058
+# DISASM: 140001000:      48 8b 05 51 10 00 00    movq    4177(%rip), %rax
 # DISASM: 140001007:      8b 00   movl    (%rax), %eax
-# Relative offset at 0x100b pointing at the .refptr.localvar stub at
-# 0x2000
-# DISASM: 140001009:      48 8b 0d f0 0f 00 00    movq    4080(%rip), %rcx
+# localvar is in this image, so its stub is not kept and the load of it
+# becomes the address itself, pointing at localvar at 0x3010.
+# DISASM: 140001009:      48 8d 0d 00 20 00 00    leaq    8192(%rip), %rcx
 # DISASM: 140001010:      03 01   addl    (%rcx), %eax
 # DISASM: 140001012:      c3      retq
 
 # relocs: pointing at an empty list of runtime pseudo relocs.
 # localvar: 42
 # CONTENTS: Contents of section .data:
-# CONTENTS:  140003000 08200040 01000000 08200040 01000000
+# CONTENTS:  140003000 00200040 01000000 00200040 01000000
 # CONTENTS:  140003010 2a000000
 
 # NO-AUTOIMPORT: error: undefined symbol: variable

@@ -79,6 +79,7 @@ public:
   // whether it is rewritten to reach the definition directly, keep the
   // pointers the remaining references need and warn about them, and mark the
   // import address table entries whose address code takes.
+  void bindLocalStubs();
   void bindLocalImports();
 
   // Try to resolve undefined symbols with alternate names.

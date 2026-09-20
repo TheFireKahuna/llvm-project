@@ -525,6 +525,45 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
   reportProblemSymbols(undefs, false);
 }
 
+// A .refptr.X stub is a word-sized pointer to X that the compiler emits when
+// it cannot tell whether X lives in this image. When X turns out to be here,
+// the stub is an import pointer that happens to be filled at link time, so
+// treating it as one lets the same rewrite reach X directly and the pointer
+// disappear along with the references that read it.
+void SymbolTable::bindLocalStubs() {
+  SmallVector<Symbol *, 0> stubs;
+  forEachSymbol([&](Symbol *sym) {
+    auto *d = dyn_cast<DefinedRegular>(sym);
+    if (!d || !d->getName().starts_with(".refptr."))
+      return;
+    auto *sc = dyn_cast_or_null<SectionChunk>(d->getChunk());
+    if (!sc || !sc->live || d->getValue() != 0 ||
+        sc->getSize() != ctx.config.wordsize || sc->getRelocs().size() != 1)
+      return;
+    // Reaching the target directly needs an address this image computes.
+    auto *target = dyn_cast_or_null<Defined>(*sc->symbols().begin());
+    if (!target || !isa<DefinedRegular, DefinedCommon>(target))
+      return;
+    stubs.push_back(sym);
+  });
+
+  // The pointers that survive are laid out in the order they are recorded,
+  // and the symbol table is not ordered.
+  llvm::sort(stubs, [](Symbol *a, Symbol *b) {
+    return a->getName() < b->getName();
+  });
+  for (Symbol *sym : stubs) {
+    auto *sc = cast<SectionChunk>(cast<DefinedRegular>(sym)->getChunk());
+    auto *target = cast<Defined>(*sc->symbols().begin());
+    StringRef name = sym->getName();
+    bool isGCRoot = sym->isGCRoot;
+    sc->live = false;
+    replaceSymbol<DefinedLocalImport>(sym, ctx, name, target);
+    sym->isGCRoot = isGCRoot;
+    localImports.push_back(cast<DefinedLocalImport>(sym));
+  }
+}
+
 void SymbolTable::bindLocalImports() {
   llvm::TimeTraceScope timeScope("Bind local imports");
   // On ARM64EC an import pointer has two forms with distinct meanings; every
@@ -533,7 +572,8 @@ void SymbolTable::bindLocalImports() {
   SmallPtrSet<DefinedLocalImport *, 8> needPointer;
   auto readsPointer = [&](DefinedLocalImport *li, InputFile *file) {
     needPointer.insert(li);
-    if (!ctx.config.warnLocallyDefinedImported)
+    if (!ctx.config.warnLocallyDefinedImported ||
+        li->getName().starts_with(".refptr."))
       return;
     Symbol *imp = li->wrappedSym;
     if (file)

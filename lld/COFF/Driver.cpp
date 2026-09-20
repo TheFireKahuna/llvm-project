@@ -2841,7 +2841,13 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     markLive(ctx);
   }
 
-  ctx.forEachSymtab([](SymbolTable &symtab) { symtab.bindLocalImports(); });
+  ctx.forEachSymtab([](SymbolTable &symtab) {
+    // An import pointer has two forms with distinct meanings on ARM64EC, so
+    // every reference there reads the pointer as before.
+    if (!symtab.isEC())
+      symtab.bindLocalStubs();
+    symtab.bindLocalImports();
+  });
 
   ctx.symtab.initializeSameAddressThunks();
   for (auto alias : aliases) {
