@@ -2683,6 +2683,11 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
         // defines links as a direct reference would: load the member. It
         // may reference further such symbols.
         symtab.loadLocalImportMembers();
+
+        // A COMDAT variable this image defines may also be offered by a DLL
+        // in the link; the member that holds it has to be present before the
+        // choice between the copies can be made.
+        symtab.loadSharedWeakImports();
       });
 
       ctx.forEachActiveSymtab([&](SymbolTable &symtab) {
@@ -2844,8 +2849,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   ctx.forEachSymtab([](SymbolTable &symtab) {
     // An import pointer has two forms with distinct meanings on ARM64EC, so
     // every reference there reads the pointer as before.
-    if (!symtab.isEC())
+    if (!symtab.isEC()) {
+      symtab.bindSharedWeakData();
       symtab.bindLocalStubs();
+    }
     symtab.bindLocalImports();
   });
 

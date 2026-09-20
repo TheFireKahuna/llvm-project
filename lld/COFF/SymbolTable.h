@@ -79,6 +79,8 @@ public:
   // whether it is rewritten to reach the definition directly, keep the
   // pointers the remaining references need and warn about them, and mark the
   // import address table entries whose address code takes.
+  void loadSharedWeakImports();
+  void bindSharedWeakData();
   void bindLocalStubs();
   void bindLocalImports();
 

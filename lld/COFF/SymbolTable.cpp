@@ -525,6 +525,145 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
   reportProblemSymbols(undefs, false);
 }
 
+// A stub is a candidate for binding to another image's copy of the variable
+// when it is the only thing that reaches a COMDAT definition here.
+static DefinedRegular *stubTarget(SymbolTable &symtab, Symbol *sym) {
+  auto *d = dyn_cast<DefinedRegular>(sym);
+  if (!d || !d->getName().starts_with(".refptr."))
+    return nullptr;
+  auto *sc = dyn_cast_or_null<SectionChunk>(d->getChunk());
+  if (!sc || !sc->live || d->getValue() != 0 ||
+      sc->getSize() != symtab.ctx.config.wordsize ||
+      sc->getRelocs().size() != 1)
+    return nullptr;
+  return dyn_cast_or_null<DefinedRegular>(*sc->symbols().begin());
+}
+
+// A COMDAT variable the compiler left preemptable -- an inline variable, a
+// template static data member, a static local of an inline function, or the
+// guard of one of those -- is reached through a stub, so that one image's copy
+// can stand for every image's. Choosing a DLL's copy needs the import library
+// member that holds it to be in the link first.
+void SymbolTable::loadSharedWeakImports() {
+  std::vector<Symbol *> lazies;
+  forEachSymbol([&](Symbol *sym) {
+    StringRef name = sym->getName();
+    if (!name.consume_front(".refptr.") || !isa<DefinedRegular>(sym))
+      return;
+    Symbol *imp = find(("__imp_" + name).str());
+    if (imp && !imp->pendingArchiveLoad && imp->isLazy())
+      lazies.push_back(imp);
+  });
+  llvm::sort(lazies,
+             [](Symbol *a, Symbol *b) { return a->getName() < b->getName(); });
+  for (Symbol *l : lazies) {
+    Log(ctx) << "Loading lazy " << l->getName() << " from "
+             << l->getFile()->getName() << " for a shared COMDAT variable";
+    forceLazy(l);
+  }
+}
+
+// Binds such a stub to a DLL's copy when one is offered and nothing in this
+// image needs the local one, so that the program holds a single instance of
+// the variable, as it would on ELF. The local copy goes away with its
+// initializer, which the compiler put in the same COMDAT, and an export of it
+// from this image becomes a forwarder, so that anything importing it from here
+// reaches the same instance.
+void SymbolTable::bindSharedWeakData() {
+  struct Candidate {
+    Defined *stub;
+    DefinedRegular *var;
+    DefinedImportData *imp;
+    bool keep = false;
+  };
+  SmallVector<Candidate, 0> candidates;
+  forEachSymbol([&](Symbol *sym) {
+    DefinedRegular *var = stubTarget(*this, sym);
+    if (!var)
+      return;
+    auto *sc = dyn_cast_or_null<SectionChunk>(var->getChunk());
+    if (!sc || !sc->live || !sc->isCOMDAT())
+      return;
+    auto *imp = dyn_cast_or_null<DefinedImportData>(
+        find(("__imp_" + var->getName()).str()));
+    if (imp)
+      candidates.push_back({cast<Defined>(sym), var, imp});
+  });
+  if (candidates.empty())
+    return;
+
+  // The order decides nothing but diagnostics, and the symbol table is not
+  // ordered.
+  llvm::sort(candidates, [](const Candidate &a, const Candidate &b) {
+    return a.var->getName() < b.var->getName();
+  });
+
+  // The variable's own COMDAT reaches it, and so does the stub; every other
+  // reference is one this image cannot redirect, and keeps the local copy.
+  DenseMap<SectionChunk *, unsigned> group;
+  std::function<void(SectionChunk *, unsigned)> claim = [&](SectionChunk *sc,
+                                                            unsigned i) {
+    if (!group.insert({sc, i}).second)
+      return;
+    for (SectionChunk &c : sc->children())
+      claim(&c, i);
+  };
+  for (auto [i, c] : llvm::enumerate(candidates)) {
+    claim(cast<SectionChunk>(c.var->getChunk()), i);
+    claim(cast<SectionChunk>(c.stub->getChunk()), i);
+  }
+
+  DenseMap<Symbol *, unsigned> vars;
+  for (auto [i, c] : llvm::enumerate(candidates))
+    vars.insert({c.var, i});
+  for (ObjFile *file : ctx.objFileInstances) {
+    if (&file->symtab != this)
+      continue;
+    for (Chunk *c : file->getChunks()) {
+      auto *sc = dyn_cast_or_null<SectionChunk>(c);
+      if (!sc || !sc->live || sc->isDWARF() || sc->isCodeView())
+        continue;
+      auto owner = group.find(sc);
+      for (Symbol *b : sc->symbols()) {
+        auto it = b ? vars.find(b) : vars.end();
+        if (it != vars.end() &&
+            (owner == group.end() || owner->second != it->second))
+          candidates[it->second].keep = true;
+      }
+    }
+  }
+
+  std::function<void(SectionChunk *)> drop = [&](SectionChunk *sc) {
+    if (!sc->live)
+      return;
+    sc->live = false;
+    for (SectionChunk &c : sc->children())
+      drop(&c);
+  };
+
+  for (Candidate &c : candidates) {
+    Export *exp = nullptr;
+    for (Export &e : exports)
+      if (e.sym == c.var && e.forwardTo.empty())
+        exp = &e;
+    // Anything else that asked for the variable by name wants this copy.
+    if (c.keep || (llvm::is_contained(ctx.config.gcroot, c.var) && !exp))
+      continue;
+
+    Log(ctx) << "Binding " << c.var->getName() << " to the copy in "
+             << c.imp->getDLLName();
+    c.imp->file->live = true;
+    cast<SectionChunk>(c.stub->getChunk())->live = false;
+    c.stub->replaceKeepingName(c.imp, sizeof(DefinedImportData));
+    drop(cast<SectionChunk>(c.var->getChunk()));
+    if (exp) {
+      StringRef dll = c.imp->getDLLName();
+      dll.consume_back_insensitive(".dll");
+      exp->forwardTo = saver().save(dll + "." + c.imp->getExternalName());
+    }
+  }
+}
+
 // A .refptr.X stub is a word-sized pointer to X that the compiler emits when
 // it cannot tell whether X lives in this image. When X turns out to be here,
 // the stub is an import pointer that happens to be filled at link time, so

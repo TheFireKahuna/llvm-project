@@ -1988,12 +1988,14 @@ static bool shouldAssumeDSOLocal(const CodeGenModule &CGM,
     // member, a static local of an inline function, or the guard of one of
     // those -- gets one copy per image here, where a shared library on ELF
     // gets one per process. Reaching the definition through a pointer the
-    // linker fills lets one image's copy stand for all of them, which is what
-    // the caller asked for. Read-only COMDAT data holds no state to share, so
-    // it keeps its copy rather than pay for the pointer, and a native
-    // thread-local symbol cannot be imported at all.
+    // linker fills lets one image's copy stand for all of them. That is what
+    // the mark exporting it across the shared-library boundary asks for, and
+    // what -fauto-import asks for without marks. Read-only COMDAT data holds
+    // no state to share, so it keeps its copy rather than pay for the
+    // pointer, and a native thread-local symbol cannot be imported at all.
     const auto *Var = dyn_cast<llvm::GlobalVariable>(GV);
-    if (TT.isWindowsItaniumOrNTPOSIXEnvironment() && CGOpts.AutoImport && Var &&
+    if (TT.isWindowsItaniumOrNTPOSIXEnvironment() && Var &&
+        (CGOpts.AutoImport || GV->hasDLLExportStorageClass()) &&
         !Var->isConstant() && !Var->isThreadLocal() && Var->isWeakForLinker())
       return false;
   }
