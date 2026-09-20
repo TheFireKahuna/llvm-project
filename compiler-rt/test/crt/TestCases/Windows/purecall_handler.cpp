@@ -14,6 +14,17 @@ extern "C" int _purecall(void);
 extern "C" _purecall_handler _get_purecall_handler(void);
 extern "C" _purecall_handler _set_purecall_handler(_purecall_handler);
 
+struct Base {
+  Base() { call_pure(); }
+  virtual void pure_func() = 0;
+  void call_pure() { pure_func(); }
+  virtual ~Base() {}
+};
+
+struct Derived : Base {
+  void pure_func() override {}
+};
+
 static int g_handler_called = 0;
 
 void custom_purecall_handler() {
@@ -46,9 +57,10 @@ int main() {
   // CHECK: About to trigger purecall
   fprintf(stderr, "About to trigger purecall\n");
 
-  // Itanium virtual calls use __cxa_pure_virtual directly. Exercise the
-  // Windows compatibility entry point that owns this handler.
-  _purecall();
+  // A vtable's pure entry names the entry point that owns this handler, so
+  // a real pure virtual call reaches it as it does with code built by MSVC.
+  Derived d;
+  (void)d;
 
   // Should not reach here.
   fprintf(stderr, "Should not reach here\n");

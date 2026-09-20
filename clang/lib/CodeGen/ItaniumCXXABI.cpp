@@ -366,7 +366,16 @@ public:
     return Args.size() - 1;
   }
 
-  StringRef GetPureVirtualCallName() override { return "__cxa_pure_virtual"; }
+  StringRef GetPureVirtualCallName() override {
+    // UCRT owns the pure-call handler on Windows Itanium, and only the entry
+    // point it knows consults the one an SDK program installs with
+    // _set_purecall_handler. That entry point reports through
+    // __cxa_pure_virtual when no handler is set, so the diagnostic is the
+    // same; it is defined in every image, so a vtable slot needs no import.
+    if (CGM.getTriple().isWindowsItaniumEnvironment())
+      return "_purecall";
+    return "__cxa_pure_virtual";
+  }
   StringRef GetDeletedVirtualCallName() override
     { return "__cxa_deleted_virtual"; }
 

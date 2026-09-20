@@ -5604,6 +5604,10 @@ static void setWindowsItaniumDLLImport(CodeGenModule &CGM, bool Local,
                                        llvm::Function *F, StringRef Name) {
   if (Local)
     return;
+  // The pure-call entry point belongs to the image's own startup code, which
+  // owns the handler a program installs, not to the C++ runtime library.
+  if (Name == CGM.getCXXABI().GetPureVirtualCallName())
+    return;
   // Under -fno-plt on COFF a call to a function this translation unit does
   // not define goes through the import table, runtime functions included.
   if (CGM.getCodeGenOpts().NoPLT && CGM.getTriple().isOSBinFormatCOFF() &&

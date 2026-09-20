@@ -13,7 +13,8 @@ extern "C" int _purecall();
 
 struct Base {
   Base() {
-    // The Itanium ABI vtable invokes __cxa_pure_virtual directly.
+    // The vtable's pure entry reports through __cxa_pure_virtual when no
+    // handler is installed.
     call_pure();
   }
 
