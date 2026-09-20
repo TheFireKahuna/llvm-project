@@ -128,15 +128,43 @@ template <typename T> T *fromRva(DWORD Rva) {
 }
 
 // A protected table is read-only except while the loader resolves into it, so
-// a substitute this image supplies has to open the page itself.
-void storeSlot(IMAGE_THUNK_DATA *Entry, void *Value) {
-  DWORD Old;
-  bool Protected = delayIatIsProtected();
-  if (Protected && !VirtualProtect(Entry, sizeof(*Entry), PAGE_READWRITE, &Old))
+// a write this image makes has to open the page itself. Two such writes may
+// land on one page, and the second must not restore the protection while the
+// first is still storing, so the image serializes its own. The loader holds a
+// lock of its own over the table it writes, and never writes a table this
+// image resolves: an image either resolves every descriptor here or none.
+long PageLock = 0;
+
+void lockPages() {
+  while (__atomic_exchange_n(&PageLock, 1L, __ATOMIC_ACQUIRE))
+    YieldProcessor();
+}
+
+void unlockPages() { __atomic_store_n(&PageLock, 0L, __ATOMIC_RELEASE); }
+
+// Writes Count entries, restoring the protection afterwards.
+void writeSlots(IMAGE_THUNK_DATA *Iat, const IMAGE_THUNK_DATA *Values,
+                SIZE_T Count) {
+  SIZE_T Bytes = Count * sizeof(*Iat);
+  if (!delayIatIsProtected()) {
+    for (SIZE_T I = 0; I != Count; ++I)
+      Iat[I].u1.Function = Values[I].u1.Function;
     return;
-  Entry->u1.Function = reinterpret_cast<ULONG_PTR>(Value);
-  if (Protected)
-    VirtualProtect(Entry, sizeof(*Entry), PAGE_READONLY, &Old);
+  }
+  lockPages();
+  DWORD Old;
+  if (VirtualProtect(Iat, Bytes, PAGE_READWRITE, &Old)) {
+    for (SIZE_T I = 0; I != Count; ++I)
+      Iat[I].u1.Function = Values[I].u1.Function;
+    VirtualProtect(Iat, Bytes, PAGE_READONLY, &Old);
+  }
+  unlockPages();
+}
+
+void storeSlot(IMAGE_THUNK_DATA *Entry, void *Value) {
+  IMAGE_THUNK_DATA Resolved;
+  Resolved.u1.Function = reinterpret_cast<ULONG_PTR>(Value);
+  writeSlots(Entry, &Resolved, 1);
 }
 
 // The loader reads the module handle slot before it takes the load path, and
@@ -359,15 +387,7 @@ BOOL __stdcall __FUnloadDelayLoadedDLL2(LPCSTR DllName) {
 
   // The stubs go back before the library does, so a call racing this one
   // reaches the helper rather than a freed page.
-  DWORD Old;
-  SIZE_T Bytes = Count * sizeof(*Iat);
-  bool Protected = delayIatIsProtected();
-  if (Protected && !VirtualProtect(Iat, Bytes, PAGE_READWRITE, &Old))
-    return FALSE;
-  for (SIZE_T I = 0; I != Count; ++I)
-    Iat[I].u1.Function = Saved[I].u1.Function;
-  if (Protected)
-    VirtualProtect(Iat, Bytes, PAGE_READONLY, &Old);
+  writeSlots(Iat, Saved, Count);
 
   *Slot = nullptr;
   FreeLibrary(Module);
