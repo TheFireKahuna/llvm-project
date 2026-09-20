@@ -5,10 +5,16 @@
 // and drops its own, along with the initializer the compiler put in the same
 // COMDAT, and forwards its own export of the name to the DLL.
 //
-// RUN: %clangxx_crt -DBUILD_DLL -shared %s -o %t.dll -Wl,-implib:%t.lib
-// RUN: %clangxx_crt_main %s %t.lib -o %t.exe
+// RUN: %clangxx_crt -DBUILD_DLL -shared %s -o %t.dll -Wl,-implib:%t.import.lib
+// RUN: %clangxx_crt_main %s %t.import.lib -o %t.exe
 // RUN: %run %t.exe | FileCheck %s
 // RUN: llvm-readobj --coff-exports %t.exe | FileCheck %s --check-prefix=FORWARD
+//
+// The same holds when the image is built with link-time optimization, where
+// the definition has to stay preemptable through the LTO step as well.
+// RUN: %clangxx_crt_main -flto %s %t.import.lib -o %t.lto.exe
+// RUN: %run %t.lto.exe | FileCheck %s
+// RUN: llvm-readobj --coff-exports %t.lto.exe | FileCheck %s --check-prefix=FORWARD
 //
 // REQUIRES: windows, crt
 
@@ -78,4 +84,4 @@ int main() {
 // The executable exports the names it compiled, and each one names the DLL
 // that holds the instance.
 // FORWARD: Name: InlineVariable
-// FORWARD-NEXT: ForwardedTo: shared_weak_data.cpp.tmp.InlineVariable
+// FORWARD-NEXT: ForwardedTo: {{.*}}.InlineVariable

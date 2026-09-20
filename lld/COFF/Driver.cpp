@@ -2683,11 +2683,6 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
         // defines links as a direct reference would: load the member. It
         // may reference further such symbols.
         symtab.loadLocalImportMembers();
-
-        // A COMDAT variable this image defines may also be offered by a DLL
-        // in the link; the member that holds it has to be present before the
-        // choice between the copies can be made.
-        symtab.loadSharedWeakImports();
       });
 
       ctx.forEachActiveSymtab([&](SymbolTable &symtab) {
@@ -2795,6 +2790,12 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // Likewise, don't emit object files for other /lldemit options.
   if (config->emit != EmitKind::Obj || config->thinLTOIndexOnly)
     return;
+
+  // A COMDAT variable this image defines may also be offered by a DLL in the
+  // link; the member that holds it has to be present before the choice
+  // between the copies can be made. Objects the LTO step produced carry such
+  // variables as the ones that were always native do.
+  ctx.forEachSymtab([](SymbolTable &symtab) { symtab.loadSharedWeakImports(); });
 
   // If we generated native object files from bitcode files, this resolves
   // references to the symbols we use from them.

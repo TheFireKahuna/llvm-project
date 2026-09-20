@@ -177,8 +177,15 @@ static bool isDefinedInImage(Symbol *s) {
 static bool isFinalInImage(BitcodeFile &f, const lto::InputFile::Symbol &objSym,
                            Symbol *sym) {
   StringRef name = sym->getName();
-  if (!objSym.isUndefined() || !name.consume_front("__imp_"))
+  if (!objSym.isUndefined() || !name.consume_front("__imp_")) {
+    // The one definition that is not final: a COMDAT variable a DLL in the
+    // link also offers is bound to that copy, so that the program holds one
+    // instance of it (SymbolTable::bindSharedWeakData).
+    if (objSym.isWeak() && !objSym.isExecutable() &&
+        f.symtab.find(("__imp_" + name).str()))
+      return false;
     return isDefinedInImage(sym);
+  }
   return !isa<Defined>(sym) && !f.symtab.isEC() &&
          isDefinedInImage(f.symtab.find(name));
 }

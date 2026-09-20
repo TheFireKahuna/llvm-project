@@ -644,7 +644,8 @@ void SymbolTable::bindSharedWeakData() {
   for (Candidate &c : candidates) {
     Export *exp = nullptr;
     for (Export &e : exports)
-      if (e.sym == c.var && e.forwardTo.empty())
+      if (e.forwardTo.empty() &&
+          (e.sym == c.var || e.name == c.var->getName()))
         exp = &e;
     // Anything else that asked for the variable by name wants this copy.
     if (c.keep || (llvm::is_contained(ctx.config.gcroot, c.var) && !exp))
