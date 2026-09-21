@@ -48,7 +48,10 @@ VIS void defined_later() {}
 // MAPPED-DAG: @marked_data = external dllimport global i32
 // NONE-DAG:   @marked_data = external dso_local global i32
 // CHECK-DAG:  @plain_data = external dso_local global i32
-// CHECK-DAG:  @marked_tls = external dso_local thread_local global i32
+// A thread-local variable is never imported; a marked one is reached through
+// the record its image exports.
+// MAPPED-DAG: @"marked_tls$tls" = external dllimport constant { ptr, i32, i32 }
+// NONE-DAG:   @marked_tls = external dso_local thread_local global i32
 // MAPPED-DAG: @_ZTV4Poly = external dllimport unnamed_addr constant
 // NONE-DAG:   @_ZTV4Poly = external dso_local unnamed_addr constant
 // MAPPED-DAG: @_ZTV6Inline = linkonce_odr dso_local dllexport unnamed_addr constant

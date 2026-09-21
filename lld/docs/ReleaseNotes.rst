@@ -75,6 +75,12 @@ COFF Improvements
   implies ``-auto-import``; a definition of ``X`` in the link is then
   preferred to an import library's entry for it.
 
+* An object that reaches a thread-local variable of another image by its
+  section-relative offset gets a diagnostic that says so: the undefined-symbol
+  error names the record ``X$tls`` a DLL exports in place of the variable,
+  and under ``-import-slots`` a DLL that exports the variable itself gets an
+  error explaining that the offset cannot reach it.
+
 * ``-delayload-protect`` gives the delay-load import address table a section
   of its own, as link.exe does, and marks the image
   ``IMAGE_GUARD_PROTECT_DELAYLOAD_IAT`` and

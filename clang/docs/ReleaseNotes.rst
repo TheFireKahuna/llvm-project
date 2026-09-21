@@ -508,6 +508,14 @@ Windows Support
   place; no dynamic initializer is generated. MSVC and MinGW targets are
   unchanged.
 
+- On Windows Itanium and NT-POSIX targets a ``thread_local`` variable with an
+  explicit default visibility can be used from another image. The defining
+  image exports, in place of the variable, a record ``<name>$tls`` holding
+  the address of its ``_tls_index``, the variable's offset in its TLS
+  template and the offset of its initialization guard, and exports the init
+  function; a declaration with the same visibility reads the record in the
+  thread wrapper and runs the initialization on each thread's first use.
+
 LoongArch Support
 ^^^^^^^^^^^^^^^^^
 

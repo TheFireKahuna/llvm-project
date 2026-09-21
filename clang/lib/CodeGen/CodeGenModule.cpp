@@ -2123,7 +2123,11 @@ void CodeGenModule::setDLLImportDLLExport(llvm::GlobalValue *GV,
                // A discardable function exists in a COFF image only if the
                // image happened to use it, so it is no promise to importers.
                !(getTriple().isOSBinFormatCOFF() && isa<llvm::Function>(GV) &&
-                 GV->hasLinkOnceLinkage()))) &&
+                 GV->hasLinkOnceLinkage()) &&
+               // Nor can another image use a native thread-local variable;
+               // the C++ ABI exports a record of it instead.
+               !(getTriple().isOSBinFormatCOFF() && isa<VarDecl>(D) &&
+                 cast<VarDecl>(D)->getTLSKind() != VarDecl::TLS_None))) &&
              !GV->isDeclarationForLinker())
       GV->setDLLStorageClass(llvm::GlobalVariable::DLLExportStorageClass);
     else if (GV->isDeclarationForLinker()) {

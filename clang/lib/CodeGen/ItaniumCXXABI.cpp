@@ -37,6 +37,7 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/Value.h"
 #include "llvm/Support/ConvertEBCDIC.h"
 #include "llvm/Support/ScopedPrinter.h"
@@ -407,7 +408,7 @@ public:
 
   bool usesThreadWrapperFunction(const VarDecl *VD) const override {
     return !isEmittedWithConstantInitializer(VD) ||
-           mayNeedDestruction(VD);
+           mayNeedDestruction(VD) || isImportedThreadLocal(VD);
   }
   LValue EmitThreadLocalVarDeclLValue(CodeGenFunction &CGF, const VarDecl *VD,
                                       QualType LValType) override;
@@ -416,6 +417,18 @@ public:
 
   llvm::Constant *
   getOrCreateVirtualFunctionPointerThunk(const CXXMethodDecl *MD);
+
+private:
+  bool hasThreadLocalRecords() const;
+  bool isImportedThreadLocal(const VarDecl *VD) const;
+  void emitThreadLocalRecord(const VarDecl *VD, llvm::GlobalVariable *Var,
+                             llvm::GlobalVariable *Guard,
+                             llvm::GlobalValue *&Init);
+  llvm::Value *emitImportedThreadLocalAddress(CGBuilderTy &Builder,
+                                              llvm::Function *Wrapper,
+                                              const VarDecl *VD);
+
+public:
 
   /**************************** RTTI Uniqueness ******************************/
 
@@ -3365,11 +3378,192 @@ ItaniumCXXABI::getOrCreateThreadLocalWrapper(const VarDecl *VD,
   return Wrapper;
 }
 
+// A native thread-local variable on PE is its image's TLS index plus an offset
+// in that image's TLS template, and another image can know neither. So an
+// image that defines a thread-local another image may use exports, instead of
+// the variable, a record of its three inputs to the wrapper: the address of
+// the image's _tls_index, the variable's offset and the offset of the byte
+// that guards its initialization. The importer's wrapper reads the record and
+// does what the defining image's wrapper does.
+bool ItaniumCXXABI::hasThreadLocalRecords() const {
+  const llvm::Triple &T = CGM.getTriple();
+  return T.isWindowsItaniumOrNTPOSIXEnvironment() &&
+         (T.getArch() == llvm::Triple::x86_64 ||
+          T.getArch() == llvm::Triple::aarch64) &&
+         CGM.getLangOpts().hasDefaultVisibilityExportMapping();
+}
+
+// A declaration takes the record when an explicit default visibility marks it
+// as another image's, as a declaration of any other variable is imported.
+bool ItaniumCXXABI::isImportedThreadLocal(const VarDecl *VD) const {
+  if (!hasThreadLocalRecords() || VD->getTLSKind() != VarDecl::TLS_Dynamic ||
+      VD->hasDefinition() || !VD->isExternallyVisible())
+    return false;
+  LinkageInfo LV = VD->getLinkageAndVisibility();
+  return LV.getVisibility() == DefaultVisibility && LV.isVisibilityExplicit();
+}
+
+// Emits and exports VAR$tls for a definition the visibility mapping exports,
+// and exports the init function beside it. A variable with no initialization
+// to run is guarded by a byte that is always set, and its init function does
+// nothing; an importer cannot tell the two cases apart and needs neither.
+void ItaniumCXXABI::emitThreadLocalRecord(const VarDecl *VD,
+                                          llvm::GlobalVariable *Var,
+                                          llvm::GlobalVariable *Guard,
+                                          llvm::GlobalValue *&Init) {
+  if (!hasThreadLocalRecords() || !CGM.shouldMapVisibilityToDLLExport(VD) ||
+      Var->isDeclaration() || Var->hasLocalLinkage() ||
+      Var->hasLinkOnceLinkage())
+    return;
+  llvm::Module &M = CGM.getModule();
+
+  if (Init && !Guard)
+    return;
+  if (!Init) {
+    Guard = M.getNamedGlobal("__tls_set");
+    if (!Guard) {
+      Guard = new llvm::GlobalVariable(
+          M, CGM.Int8Ty, /*isConstant=*/true,
+          llvm::GlobalValue::LinkOnceODRLinkage,
+          llvm::ConstantInt::get(CGM.Int8Ty, 1), "__tls_set");
+      Guard->setVisibility(llvm::GlobalValue::HiddenVisibility);
+      Guard->setThreadLocalMode(CGM.GetDefaultLLVMTLSModel());
+      Guard->setComdat(M.getOrInsertComdat(Guard->getName()));
+    }
+    SmallString<256> InitFnName;
+    llvm::raw_svector_ostream Out(InitFnName);
+    getMangleContext().mangleItaniumThreadLocalInit(VD, Out);
+    auto *Empty = llvm::Function::Create(
+        llvm::FunctionType::get(CGM.VoidTy, false), Var->getLinkage(),
+        InitFnName.str(), &M);
+    CGM.SetLLVMFunctionAttributes(GlobalDecl(),
+                                  CGM.getTypes().arrangeNullaryFunction(),
+                                  Empty, /*IsThunk=*/false);
+    CGM.SetLLVMFunctionAttributesForDefinition(nullptr, Empty);
+    Empty->setComdat(Var->getComdat());
+    CGBuilderTy(CGM, llvm::BasicBlock::Create(CGM.getLLVMContext(), "", Empty))
+        .CreateRetVoid();
+    Init = Empty;
+  }
+  Init->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
+
+  llvm::Constant *Fields[] = {
+      M.getOrInsertGlobal("_tls_index", CGM.Int32Ty),
+      llvm::ConstantExpr::getPtrToInt(Var, CGM.Int32Ty),
+      llvm::ConstantExpr::getPtrToInt(Guard, CGM.Int32Ty)};
+  llvm::Constant *Contents = llvm::ConstantStruct::getAnon(Fields);
+  auto *Record = new llvm::GlobalVariable(M, Contents->getType(),
+                                         /*isConstant=*/true,
+                                         Var->getLinkage(), Contents,
+                                         Var->getName() + "$tls");
+  Record->setAlignment(llvm::Align(8));
+  Record->setComdat(Var->getComdat());
+  Record->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
+}
+
+// The wrapper of another image's thread-local: the variable is at the record's
+// offset in the block the thread's TLS array holds for the record's index.
+// Both are fixed before any code of the importer runs, so each load of the
+// record is invariant.
+llvm::Value *ItaniumCXXABI::emitImportedThreadLocalAddress(
+    CGBuilderTy &Builder, llvm::Function *Wrapper, const VarDecl *VD) {
+  llvm::LLVMContext &Context = CGM.getLLVMContext();
+  llvm::Module &M = CGM.getModule();
+  llvm::StructType *RecordTy =
+      llvm::StructType::get(CGM.DefaultPtrTy, CGM.Int32Ty, CGM.Int32Ty);
+  auto *Record = cast<llvm::GlobalVariable>(
+      M.getOrInsertGlobal((CGM.getMangledName(VD) + "$tls").str(), RecordTy));
+  Record->setConstant(true);
+  Record->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
+
+  llvm::MDNode *Invariant = llvm::MDNode::get(Context, {});
+  llvm::LoadInst *IndexAddr = Builder.CreateAlignedLoad(
+      CGM.DefaultPtrTy, Record, CharUnits::fromQuantity(8));
+  IndexAddr->setMetadata(llvm::LLVMContext::MD_invariant_load, Invariant);
+  llvm::LoadInst *Index = Builder.CreateAlignedLoad(
+      CGM.Int32Ty, IndexAddr, CharUnits::fromQuantity(4));
+  Index->setMetadata(llvm::LLVMContext::MD_invariant_load, Invariant);
+  llvm::LoadInst *Offset = Builder.CreateAlignedLoad(
+      CGM.Int32Ty, Builder.CreateConstInBoundsGEP2_32(RecordTy, Record, 0, 1),
+      CharUnits::fromQuantity(8));
+  Offset->setMetadata(llvm::LLVMContext::MD_invariant_load, Invariant);
+
+  // The thread's TLS array is at offset 0x58 of its TEB, which is at GS on
+  // x86-64 and in x18 on AArch64.
+  llvm::Value *Array;
+  if (CGM.getTriple().getArch() == llvm::Triple::x86_64) {
+    Array = Builder.CreateAlignedLoad(
+        CGM.DefaultPtrTy,
+        llvm::ConstantExpr::getIntToPtr(
+            llvm::ConstantInt::get(CGM.Int64Ty, 0x58),
+            llvm::PointerType::get(Context, 256)),
+        CharUnits::fromQuantity(8));
+  } else {
+    llvm::Metadata *Reg[] = {llvm::MDString::get(Context, "x18")};
+    llvm::Value *TEB = Builder.CreateIntToPtr(
+        Builder.CreateCall(
+            CGM.getIntrinsic(llvm::Intrinsic::read_register, {CGM.Int64Ty}),
+            llvm::MetadataAsValue::get(Context,
+                                       llvm::MDNode::get(Context, Reg))),
+        CGM.DefaultPtrTy);
+    Array = Builder.CreateAlignedLoad(
+        CGM.DefaultPtrTy,
+        Builder.CreateConstInBoundsGEP1_64(CGM.Int8Ty, TEB, 0x58),
+        CharUnits::fromQuantity(8));
+  }
+  llvm::Value *Block = Builder.CreateAlignedLoad(
+      CGM.DefaultPtrTy,
+      Builder.CreateInBoundsGEP(CGM.DefaultPtrTy, Array,
+                                Builder.CreateZExt(Index, CGM.Int64Ty)),
+      CharUnits::fromQuantity(8));
+
+  // As the defining image's wrapper does, run the initialization unless the
+  // guard says it has run on this thread. A declaration that promises constant
+  // initialization and a trivial destructor needs no check.
+  if (!isEmittedWithConstantInitializer(VD) || mayNeedDestruction(VD)) {
+    llvm::LoadInst *GuardOffset = Builder.CreateAlignedLoad(
+        CGM.Int32Ty, Builder.CreateConstInBoundsGEP2_32(RecordTy, Record, 0, 2),
+        CharUnits::fromQuantity(4));
+    GuardOffset->setMetadata(llvm::LLVMContext::MD_invariant_load, Invariant);
+    llvm::Value *Guard = Builder.CreateAlignedLoad(
+        CGM.Int8Ty,
+        Builder.CreateInBoundsGEP(CGM.Int8Ty, Block,
+                                  Builder.CreateZExt(GuardOffset, CGM.Int64Ty)),
+        CharUnits::One());
+
+    SmallString<256> InitFnName;
+    llvm::raw_svector_ostream Out(InitFnName);
+    getMangleContext().mangleItaniumThreadLocalInit(VD, Out);
+    llvm::FunctionType *InitFnTy = llvm::FunctionType::get(CGM.VoidTy, false);
+    auto *Init = cast<llvm::Function>(
+        M.getOrInsertFunction(InitFnName, InitFnTy).getCallee());
+    if (Init->isDeclaration()) {
+      CGM.SetLLVMFunctionAttributes(GlobalDecl(),
+                                    CGM.getTypes().arrangeNullaryFunction(),
+                                    Init, /*IsThunk=*/false);
+      Init->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
+    }
+
+    llvm::BasicBlock *InitBB = llvm::BasicBlock::Create(Context, "", Wrapper);
+    llvm::BasicBlock *ExitBB = llvm::BasicBlock::Create(Context, "", Wrapper);
+    Builder.CreateCondBr(Builder.CreateIsNull(Guard), InitBB, ExitBB,
+                         llvm::MDBuilder(Context).createUnlikelyBranchWeights());
+    Builder.SetInsertPoint(InitBB);
+    Builder.CreateCall(InitFnTy, Init);
+    Builder.CreateBr(ExitBB);
+    Builder.SetInsertPoint(ExitBB);
+  }
+
+  return Builder.CreateInBoundsGEP(CGM.Int8Ty, Block,
+                                   Builder.CreateZExt(Offset, CGM.Int64Ty));
+}
+
 void ItaniumCXXABI::EmitThreadLocalInitFuncs(
     CodeGenModule &CGM, ArrayRef<const VarDecl *> CXXThreadLocals,
     ArrayRef<llvm::Function *> CXXThreadLocalInits,
     ArrayRef<const VarDecl *> CXXThreadLocalInitVars) {
   llvm::Function *InitFunc = nullptr;
+  llvm::GlobalVariable *InitGuard = nullptr;
 
   // Separate initializers into those with ordered (or partially-ordered)
   // initialization and those with unordered initialization.
@@ -3398,6 +3592,7 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
         llvm::ConstantInt::get(CGM.Int8Ty, 0), "__tls_guard");
     Guard->setThreadLocal(true);
     Guard->setThreadLocalMode(CGM.GetDefaultLLVMTLSModel());
+    InitGuard = Guard;
 
     CharUnits GuardAlign = CharUnits::One();
     Guard->setAlignment(GuardAlign.getAsAlign());
@@ -3445,6 +3640,22 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
 
     CGM.SetLLVMFunctionAttributesForDefinition(nullptr, Wrapper);
 
+    if (isImportedThreadLocal(VD)) {
+      CGBuilderTy Builder(
+          CGM, llvm::BasicBlock::Create(CGM.getLLVMContext(), "", Wrapper));
+      llvm::Value *Val = emitImportedThreadLocalAddress(Builder, Wrapper, VD);
+      if (VD->getType()->isReferenceType())
+        Val = Builder.CreateAlignedLoad(CGM.DefaultPtrTy, Val,
+                                        CGM.getContext().getDeclAlign(VD));
+      Builder.CreateRet(
+          Builder.CreateAddrSpaceCast(Val, Wrapper->getReturnType()));
+      // Nothing names the variable now, and a declaration left in the module
+      // would be an undefined symbol of its bitcode.
+      if (Var->use_empty())
+        Var->eraseFromParent();
+      continue;
+    }
+
     // Mangle the name for the thread_local initialization function.
     SmallString<256> InitFnName;
     {
@@ -3488,6 +3699,17 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
       // Don't mark an extern_weak function DSO local on windows.
       if (!CGM.getTriple().isOSWindows() || !Init->hasExternalWeakLinkage())
         Init->setDSOLocal(Var->isDSOLocal());
+    }
+
+    if (VD->hasDefinition()) {
+      llvm::GlobalVariable *Guard = InitGuard;
+      if (isTemplateInstantiation(VD->getTemplateSpecializationKind())) {
+        SmallString<256> GuardName;
+        llvm::raw_svector_ostream Out(GuardName);
+        getMangleContext().mangleStaticGuardVariable(VD, Out);
+        Guard = CGM.getModule().getNamedGlobal(GuardName);
+      }
+      emitThreadLocalRecord(VD, Var, Guard, Init);
     }
 
     llvm::LLVMContext &Context = CGM.getModule().getContext();

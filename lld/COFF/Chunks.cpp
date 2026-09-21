@@ -902,10 +902,18 @@ void SectionChunk::getRuntimePseudoRelocs(
       continue;
     int sizeInBits = getRuntimePseudoRelocSize(rel.Type, getArch());
     if (sizeInBits == 0) {
-      error("unable to automatically import from " + target->getName() +
-            " with relocation type " +
-            file->getCOFFObj()->getRelocationTypeName(rel.Type) + " in " +
-            toString(file));
+      if (file->symtab.ctx.config.importSlots)
+        error(toString(file) + ": " + target->getName() +
+              " is imported, but is referenced with relocation type " +
+              file->getCOFFObj()->getRelocationTypeName(rel.Type) +
+              ", which cannot reach another image; a thread-local variable "
+              "is reached through the record its image exports, which a "
+              "declaration with default visibility uses");
+      else
+        error("unable to automatically import from " + target->getName() +
+              " with relocation type " +
+              file->getCOFFObj()->getRelocationTypeName(rel.Type) + " in " +
+              toString(file));
       continue;
     }
     int addressSizeInBits = file->symtab.ctx.config.is64() ? 64 : 32;

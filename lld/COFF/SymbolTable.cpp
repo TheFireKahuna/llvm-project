@@ -231,6 +231,17 @@ void SymbolTable::reportUndefinedSymbol(const UndefinedDiag &undefDiag) {
   }
   if (numDisplayedRefs < numRefs)
     diag << "\n>>> referenced " << numRefs - numDisplayedRefs << " more times";
+
+  // A DLL exports a record of a thread-local variable in place of the
+  // variable, which another image cannot reach by name.
+  StringRef name = undefDiag.sym->getName();
+  if (find(("__imp_" + name + "$tls").str()))
+    diag << "\n>>> " << name
+         << " is a thread-local variable of another image, which exports "
+            "its record "
+         << name
+         << "$tls in its place; mark the declaration with default "
+            "visibility so that the record is used";
 }
 
 void SymbolTable::loadMinGWSymbols() {

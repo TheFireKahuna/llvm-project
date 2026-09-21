@@ -4559,6 +4559,16 @@ static void emitGlobalConstantImpl(const DataLayout &DL, const Constant *CV,
     if (CE->getOpcode() == Instruction::BitCast)
       return emitGlobalConstantImpl(DL, CE->getOperand(0), AP);
 
+    // On COFF the only value of a thread-local variable that is fixed at link
+    // time is its offset in the image's TLS template.
+    if (CE->getOpcode() == Instruction::PtrToInt && Size == 4 &&
+        AP.TM.getTargetTriple().isOSBinFormatCOFF())
+      if (const auto *GV = dyn_cast<GlobalVariable>(CE->getOperand(0)))
+        if (GV->isThreadLocal()) {
+          AP.OutStreamer->emitCOFFSecRel32(AP.getSymbol(GV), /*Offset=*/0);
+          return;
+        }
+
     if (Size > 8) {
       // If the constant expression's size is greater than 64-bits, then we have
       // to emit the value in chunks. Try to constant fold the value and emit it
