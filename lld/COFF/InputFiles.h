@@ -147,6 +147,9 @@ public:
   ArrayRef<SectionChunk *> getDebugChunks() { return debugChunks; }
   ArrayRef<SectionChunk *> getSXDataChunks() { return sxDataChunks; }
   ArrayRef<SectionChunk *> getGuardFidChunks() { return guardFidChunks; }
+  ArrayRef<SectionChunk *> getImportFuseChunks() { return impFuseChunks; }
+  ArrayRef<SectionChunk *> getImportLoadChunks() { return impLoadChunks; }
+  ArrayRef<SectionChunk *> getWeakInterposeNextChunks() { return wkintpnChunks; }
   ArrayRef<SectionChunk *> getGuardIATChunks() { return guardIATChunks; }
   ArrayRef<SectionChunk *> getGuardLJmpChunks() { return guardLJmpChunks; }
   ArrayRef<SectionChunk *> getGuardEHContChunks() { return guardEHContChunks; }
@@ -298,6 +301,9 @@ private:
   // taken IAT entries, longjmp and ehcont targets. These are not linked into
   // the final binary when /guard:cf is set.
   std::vector<SectionChunk *> guardFidChunks;
+  std::vector<SectionChunk *> impFuseChunks;
+  std::vector<SectionChunk *> impLoadChunks;
+  std::vector<SectionChunk *> wkintpnChunks;
   std::vector<SectionChunk *> guardIATChunks;
   std::vector<SectionChunk *> guardLJmpChunks;
   std::vector<SectionChunk *> guardEHContChunks;

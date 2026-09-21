@@ -58,6 +58,42 @@ private:
   DenseMap<MCSection *, std::vector<ImportCallInfo>>
       SectionToImportedFunctionCalls;
 
+  // A call that X86WindowsImportFusion folded onto its import pointer, having
+  // undone a read of that pointer lifted out of a loop. The linker turns the
+  // call back into the register call where the symbol really is in another
+  // image, so the read it replaced is not wasted; where the symbol is in this
+  // image the call becomes direct and the read is what is wasted, once, on
+  // entry to the loop.
+  struct ImportFuseInfo {
+    MCSymbol *CallSite;
+    MCSymbol *Function;
+    MCSymbol *Imp;
+    unsigned Reg;
+  };
+  std::vector<ImportFuseInfo> ImportFuseCalls;
+
+  // A read whose every reader became such a call, with the end of the
+  // instruction after it: the linker writes segment overrides over a read
+  // that turned out to be worth nothing, and they are decoded as part of that
+  // instruction, so nothing is left to execute and nothing moves.
+  struct ImportFuseLoadInfo {
+    MCSymbol *Load;
+    MCSymbol *After;
+    MCSymbol *End;
+    MCSymbol *Function;
+    MCSymbol *Imp;         // null for the entry a weak definition carries
+    bool ControlTransfer;
+    bool WeakEntry;
+  };
+  std::vector<ImportFuseLoadInfo> ImportFuseLoads;
+  size_t PendingImportFuseIndex = 0;
+  unsigned PendingImportFuseCountdown = 0;
+
+  void recordImportFuseCall(const MachineInstr *MI);
+  void recordImportFuseLoad(const MachineInstr *MI);
+  void emitImportFuseSection();
+  void emitBasicBlockStart(const MachineBasicBlock &MBB) override;
+
   // This utility class tracks the length of a stackmap instruction's 'shadow'.
   // It is used by the X86AsmPrinter to ensure that the stackmap shadow
   // invariants (i.e. no other stackmaps, patchpoints, or control flow within

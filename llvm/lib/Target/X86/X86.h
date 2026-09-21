@@ -227,6 +227,11 @@ public:
 
 FunctionPass *createX86AvoidTrailingCallLegacyPass();
 
+/// Return a pass that folds a hoisted read of an import pointer back into the
+/// calls that use it, so that the call names the import and the linker can
+/// make it direct when the function is defined in the image.
+FunctionPass *createX86WindowsImportFusionPass();
+
 /// Return a pass that optimizes the code-size of x86 call sequences. This is
 /// done by replacing esp-relative movs with pushes.
 class X86CallFrameOptimizationPass
@@ -456,6 +461,7 @@ void initializeX86FixupVectorConstantsLegacyPass(PassRegistry &);
 void initializeWinEHStateLegacyPass(PassRegistry &);
 void initializeX86AvoidSFBLegacyPass(PassRegistry &);
 void initializeX86AvoidTrailingCallLegacyPassPass(PassRegistry &);
+void initializeX86WindowsImportFusionPass(PassRegistry &);
 void initializeX86CallFrameOptimizationLegacyPass(PassRegistry &);
 void initializeX86CmovConversionLegacyPass(PassRegistry &);
 void initializeX86DAGToDAGISelLegacyPass(PassRegistry &);

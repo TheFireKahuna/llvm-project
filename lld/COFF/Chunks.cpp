@@ -514,6 +514,15 @@ void SectionChunk::applyRelocation(uint8_t *off,
   uint16_t type = rel.Type;
   int fieldShift = 0;
 
+  // A record of an interposable definition that this link dropped, which it
+  // does only when the entry reading it is about to become padding. There is
+  // nothing left to write here and nothing to report.
+  if (sym) {
+    auto *target = dyn_cast_or_null<SectionChunk>(sym->getChunk());
+    if (target && !target->live && target->getSectionName() == ".wkintp")
+      return;
+  }
+
   // The loader fills an in-place import slot from the lookup entry it finds
   // there, the same value as the import's address-table entry.
   if (DefinedImportData *imp = getImportSlot(rel)) {
@@ -524,8 +533,8 @@ void SectionChunk::applyRelocation(uint8_t *off,
   // A reference to a locally defined symbol's import pointer is turned into
   // the direct instruction, and an address-taking reference to an import
   // thunk into a load of the true address from the import address table.
-  // The instruction is the same length in every case but the jump, which
-  // gains a trailing nop. See SymbolTable::bindLocalImports.
+  // Every one is the same length as what it replaces, and begins and ends
+  // where it did. See SymbolTable::bindLocalImports.
   if (sym) {
     ImportRefForm form = ImportRefForm::None;
     if (auto *li = dyn_cast<DefinedLocalImport>(sym)) {
@@ -557,10 +566,12 @@ void SectionChunk::applyRelocation(uint8_t *off,
       off[-1] = 0xE8; // call rel32
       break;
     case ImportRefForm::Jump:
-      off[-2] = 0xE9; // jmp rel32, the field one byte earlier, then a nop
-      off[-1] = 0;
-      off[3] = 0x90;
-      fieldShift = -1;
+      // A segment override the processor ignores, then jmp rel32. Six bytes
+      // either way, so the field stays where it was and the jump begins and
+      // ends where it did; nothing is left over for the decoder to read, and
+      // nothing has to be said about where the jump now falls.
+      off[-2] = 0x2E;
+      off[-1] = 0xE9;
       break;
     case ImportRefForm::PageBase:
       break;

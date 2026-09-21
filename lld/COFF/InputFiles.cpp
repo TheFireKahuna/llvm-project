@@ -434,6 +434,12 @@ SectionChunk *ObjFile::readSection(uint32_t sectionNumber,
     debugChunks.push_back(c);
   else if (name == ".gfids$y")
     guardFidChunks.push_back(c);
+  else if (name == ".impfuse$y")
+    impFuseChunks.push_back(c);
+  else if (name == ".impload$y")
+    impLoadChunks.push_back(c);
+  else if (name == ".wkintpn$y")
+    wkintpnChunks.push_back(c);
   else if (name == ".giats$y")
     guardIATChunks.push_back(c);
   else if (name == ".gljmp$y")

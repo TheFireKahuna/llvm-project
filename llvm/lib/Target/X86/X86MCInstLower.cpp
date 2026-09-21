@@ -26,6 +26,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/CodeGen/MachineBranchProbabilityInfo.h"
 #include "llvm/CodeGen/MachineConstantPool.h"
 #include "llvm/CodeGen/MachineFunction.h"
@@ -44,6 +45,7 @@
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstBuilder.h"
 #include "llvm/MC/MCSection.h"
+#include "llvm/MC/MCSectionCOFF.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/TargetRegistry.h"
@@ -2258,6 +2260,9 @@ void X86AsmPrinter::emitInstruction(const MachineInstr *MI) {
   if (OutStreamer->isVerboseAsm())
     addConstantComments(MI, *OutStreamer);
 
+  recordImportFuseCall(MI);
+  recordImportFuseLoad(MI);
+
   // Add a comment about EVEX compression
   if (TM.Options.MCOptions.ShowMCEncoding) {
     if (MI->getAsmPrinterFlags() & X86::AC_EVEX_2_LEGACY)
@@ -2831,6 +2836,205 @@ void X86AsmPrinter::maybeEmitNopAfterCallForWindowsEH(const MachineInstr *MI) {
     const MachineBasicBlock *NextMBB = &*MFI;
     MBBI = NextMBB->instr_begin();
     MBBE = NextMBB->instr_end();
+  }
+}
+
+// A call X86WindowsImportFusion folded onto an import pointer is marked, and
+// carries an implicit use of the register the read it replaced had loaded.
+// Recording where it is and what that register was is all the linker needs to
+// put the register call back, should the symbol turn out to be in another
+// image after all. Nothing is added to the call itself.
+// The read at the head of the entry a weak definition carries, which names
+// the record that says whether the program superseded it. An executable
+// supersedes nothing, so the linker makes the whole entry padding, and
+// knowing what follows it is what lets that padding cost nothing.
+static bool isWeakInterposeLoad(const MachineInstr *MI) {
+  if (MI->getOpcode() != X86::MOV64rm)
+    return false;
+  const MachineOperand &Disp = MI->getOperand(1 + X86::AddrDisp);
+  return Disp.isGlobal() && Disp.getGlobal()->hasSection() &&
+         Disp.getGlobal()->getSection() == ".wkintp";
+}
+
+static bool isImportFuseCall(const MachineInstr *MI) {
+  return MI->getAsmPrinterFlags() & X86::AC_IMPORT_FUSE_CALL;
+}
+
+void X86AsmPrinter::recordImportFuseCall(const MachineInstr *MI) {
+  if (!isImportFuseCall(MI))
+    return;
+
+  const MachineOperand &Disp = MI->getOperand(X86::AddrDisp);
+  if (!Disp.isGlobal() || Disp.getTargetFlags() != X86II::MO_DLLIMPORT)
+    return;
+
+  // The register rides last, where the pass appended it. Anything else means
+  // the mark is not the one this reads, and the call is left as it is, which
+  // is the instruction every other Windows compiler emits.
+  const MachineOperand &Reg = MI->getOperand(MI->getNumOperands() - 1);
+  if (!Reg.isReg() || !Reg.isImplicit() || Reg.isDef())
+    return;
+
+  MCSymbol *Imp = OutContext.getOrCreateSymbol(
+      Twine("__imp_") + getSymbolPreferLocal(*Disp.getGlobal())->getName());
+  // Where the call is, said as a distance from the function that contains it,
+  // so that the record needs no symbol of its own: one named for a call site
+  // would be in the symbol table of every object and could be picked over the
+  // function's own name for an address inside it.
+  MCSymbol *CallSite = OutContext.createTempSymbol();
+  OutStreamer->emitLabel(CallSite);
+  ImportFuseCalls.push_back(
+      {CallSite, CurrentFnSym, Imp,
+       MF->getSubtarget<X86Subtarget>().getRegisterInfo()->getEncodingValue(
+           Reg.getReg())});
+}
+
+// The read the calls above were folded out of, when every one of its readers
+// became such a call. Where they all turn out to be direct the read is worth
+// nothing, and the linker writes segment overrides over it: they belong to
+// the instruction that follows, which is why its end is recorded too and why
+// nothing has to move for the read to stop executing.
+void X86AsmPrinter::recordImportFuseLoad(const MachineInstr *MI) {
+  if (MI->isMetaInstruction())
+    return;
+
+  // One instruction on from the read, which is where it ends unless something
+  // was aligned in between, and two on, which is where the instruction that
+  // would carry the overrides ends.
+  // Only the last two of the run are wanted, so only those get a label: one
+  // where the dead bytes end and one where the instruction that could carry
+  // them ends.
+  if (PendingImportFuseCountdown && --PendingImportFuseCountdown <= 1) {
+    ImportFuseLoadInfo &Rec = ImportFuseLoads[PendingImportFuseIndex];
+    MCSymbol *Label = OutContext.createTempSymbol();
+    OutStreamer->emitLabel(Label);
+    if (PendingImportFuseCountdown) {
+      Rec.After = Label;
+      // Overrides make the instruction they belong to that many bytes longer,
+      // and a transfer of control that crosses a thirty-two byte boundary is
+      // what a Skylake-derived processor pays for. Whether they would carry
+      // it across one depends on where it lands.
+      Rec.ControlTransfer = MI->isBranch() || MI->isCall() || MI->isReturn();
+    } else {
+      Rec.End = Label;
+    }
+  }
+
+  bool Fused = MI->getAsmPrinterFlags() & X86::AC_IMPORT_FUSE_LOAD;
+  bool Weak = !Fused && isWeakInterposeLoad(MI);
+  if (!Fused && !Weak)
+    return;
+
+  // Two of them in a row would put fourteen overrides in front of whatever
+  // follows the second, which is more than a processor will decode. The first
+  // is left without a successor, so it becomes a no-operation, and the second
+  // takes the overrides.
+  if (PendingImportFuseCountdown) {
+    ImportFuseLoads[PendingImportFuseIndex].After = nullptr;
+    ImportFuseLoads[PendingImportFuseIndex].End = nullptr;
+    PendingImportFuseCountdown = 0;
+  }
+
+  const MachineOperand &Disp = MI->getOperand(1 + X86::AddrDisp);
+  MCSymbol *Imp = nullptr;
+  if (Fused) {
+    if (!Disp.isGlobal() || Disp.getTargetFlags() != X86II::MO_DLLIMPORT)
+      return;
+    Imp = OutContext.getOrCreateSymbol(
+        Twine("__imp_") + getSymbolPreferLocal(*Disp.getGlobal())->getName());
+  }
+  // Recorded as soon as it is seen, because the read is worth nothing
+  // whether or not anything is found to carry its bytes; what the two labels
+  // measure only decides which way it is disposed of. A weak definition's
+  // entry is three instructions rather than one, so what follows it is three
+  // further on.
+  MCSymbol *Load = OutContext.createTempSymbol();
+  OutStreamer->emitLabel(Load);
+  PendingImportFuseIndex = ImportFuseLoads.size();
+  ImportFuseLoads.push_back(
+      {Load, nullptr, nullptr, CurrentFnSym, Imp, false, Weak});
+  PendingImportFuseCountdown = Weak ? 4 : 2;
+}
+
+// A block begins by aligning itself, and the instruction being measured ends
+// before that padding rather than after it. Nothing records how long padding
+// is, so a measurement that spans it is one the linker has to refuse.
+void X86AsmPrinter::emitBasicBlockStart(const MachineBasicBlock &MBB) {
+  if (PendingImportFuseCountdown == 1) {
+    MCSymbol *End = OutContext.createTempSymbol();
+    OutStreamer->emitLabel(End);
+    ImportFuseLoads[PendingImportFuseIndex].End = End;
+    PendingImportFuseCountdown = 0;
+  }
+  AsmPrinter::emitBasicBlockStart(MBB);
+}
+
+void X86AsmPrinter::emitImportFuseSection() {
+  auto section = [&](const char *Name) {
+    OutStreamer->switchSection(OutContext.getCOFFSection(
+        Name, COFF::IMAGE_SCN_CNT_INITIALIZED_DATA | COFF::IMAGE_SCN_MEM_READ));
+  };
+
+  // Four words a call: the function it is in, the pointer it reads, the
+  // register that held that pointer, and how far into the function it is.
+  if (!ImportFuseCalls.empty()) {
+    section(".impfuse$y");
+    for (const ImportFuseInfo &Call : ImportFuseCalls) {
+      OutStreamer->emitCOFFSymbolIndex(Call.Function);
+      OutStreamer->emitCOFFSymbolIndex(Call.Imp);
+      OutStreamer->emitInt32(Call.Reg);
+      OutStreamer->emitAbsoluteSymbolDiff(Call.CallSite, Call.Function, 4);
+    }
+  }
+
+  if (ImportFuseLoads.empty())
+    return;
+  // Six words a read: the function it is in, the pointer it reads, how far
+  // into the function it is, how far from there to the instruction that could
+  // carry the overrides, how long that instruction is, and whether it is a
+  // transfer of control. The fourth is seven unless something was aligned in
+  // between; a zero fifth means nothing was found to carry them. Either way
+  // the read goes, as a no-operation rather than as prefixes.
+  auto measure = [&](const ImportFuseLoadInfo &L) {
+    if (L.After && L.End) {
+      OutStreamer->emitAbsoluteSymbolDiff(L.After, L.Load, 4);
+      OutStreamer->emitAbsoluteSymbolDiff(L.End, L.After, 4);
+    } else {
+      OutStreamer->emitInt32(0);
+      OutStreamer->emitInt32(0);
+    }
+    OutStreamer->emitInt32(L.ControlTransfer);
+  };
+
+  bool anyOf = [&](bool Weak) {
+    return llvm::any_of(ImportFuseLoads, [&](const ImportFuseLoadInfo &L) {
+      return L.WeakEntry == Weak;
+    });
+  }(false);
+  if (anyOf) {
+    section(".impload$y");
+    for (const ImportFuseLoadInfo &Load : ImportFuseLoads) {
+      if (Load.WeakEntry)
+        continue;
+      OutStreamer->emitCOFFSymbolIndex(Load.Function);
+      OutStreamer->emitCOFFSymbolIndex(Load.Imp);
+      OutStreamer->emitAbsoluteSymbolDiff(Load.Load, Load.Function, 4);
+      measure(Load);
+    }
+  }
+
+  // The same measurement for the entry a weak definition carries, which the
+  // linker finds for itself and has only to be told what follows it.
+  if (llvm::any_of(ImportFuseLoads,
+                   [](const ImportFuseLoadInfo &L) { return L.WeakEntry; })) {
+    section(".wkintpn$y");
+    for (const ImportFuseLoadInfo &Load : ImportFuseLoads) {
+      if (!Load.WeakEntry)
+        continue;
+      OutStreamer->emitCOFFSymbolIndex(Load.Function);
+      OutStreamer->emitAbsoluteSymbolDiff(Load.Load, Load.Function, 4);
+      measure(Load);
+    }
   }
 }
 

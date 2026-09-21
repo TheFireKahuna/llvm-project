@@ -246,6 +246,9 @@ private:
   void createWeakPublishTable();
   void dropWeakInterposition();
   void padWeakInterposition(uint8_t *buf);
+  void collectImportFuseCalls();
+  void unfuseImportCalls(uint8_t *buf);
+  void disposeOfDeadBytes(uint8_t *buf);
   void createECChunks();
   void insertCtorDtorSymbols();
   void insertBssDataStartEndSymbols();
@@ -356,8 +359,36 @@ private:
     uint32_t offset;
     uint32_t size;
     bool bodyIsBranchTarget;
+    uint32_t nextSize;  // zero when nothing was found that could carry it
+    bool nextTransfers;
   };
   std::vector<DeadInterposeEntry> deadInterposeEntries;
+
+  // The calls this link turns back into a call through a register
+  // (collectImportFuseCalls), as the chunk each one is in, where it begins,
+  // the register the compiler left the pointer in, and whether it is a jump.
+  struct ImportFuseCall {
+    SectionChunk *chunk;
+    uint32_t offset;
+    uint8_t reg;
+    bool isJump;
+  };
+  std::vector<ImportFuseCall> importFuseCalls;
+
+  // A run of bytes this link has learned nothing executes, with what is
+  // known of the instruction that follows it. Where that instruction can take
+  // the run as prefixes it costs nothing at all, since prefixes are decoded
+  // as part of it; where it cannot, the run becomes a single no-operation,
+  // which is one instruction however long the run is and a quarter of the
+  // cost of the instruction it replaced. Nothing moves either way.
+  struct DeadBytes {
+    SectionChunk *chunk;
+    uint32_t offset;
+    uint32_t size;
+    uint32_t nextSize;  // zero when nothing was found that could carry it
+    bool nextTransfers; // that instruction is a branch, call or return
+  };
+  std::vector<DeadBytes> deadBytes;
   OutputSection *rsrcSec;
   OutputSection *relocSec;
   OutputSection *ctorsSec;
@@ -805,6 +836,7 @@ void Writer::run() {
     if (ctx.config.machine == ARM64X)
       ctx.dynamicRelocs = make<DynamicRelocsChunk>();
     createImportTables();
+    dropWeakInterposition();
     createSections();
     appendImportThunks();
     // Import thunks must be added before the Control Flow Guard tables are
@@ -1412,7 +1444,7 @@ void Writer::createMiscChunks() {
     createRuntimePseudoRelocs();
   createImportFixups();
   createWeakPublishTable();
-  dropWeakInterposition();
+  collectImportFuseCalls();
 
   if (config->mingw) {
     insertCtorDtorSymbols();
@@ -2726,8 +2758,12 @@ void Writer::createWeakPublishTable() {
 }
 
 // Canonical multi-byte no-ops, by length.
+// The sequences the assembler uses, and above ten bytes its rule for reaching
+// fifteen: operand-size prefixes in front of the ten-byte form. One of them
+// is one instruction however long it is, where a run of shorter ones is one
+// apiece, and fifteen is what the tuning for this baseline calls fast.
 static void writeNops(uint8_t *buf, uint32_t size) {
-  static const uint8_t Nops[11][11] = {
+  static const uint8_t Nops[10][10] = {
       {0x90},
       {0x66, 0x90},
       {0x0F, 0x1F, 0x00},
@@ -2737,11 +2773,12 @@ static void writeNops(uint8_t *buf, uint32_t size) {
       {0x0F, 0x1F, 0x80, 0x00, 0x00, 0x00, 0x00},
       {0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00},
       {0x66, 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00},
-      {0x66, 0x66, 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00},
-      {0x66, 0x66, 0x66, 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00}};
+      {0x66, 0x2E, 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00}};
   while (size) {
-    uint32_t n = std::min<uint32_t>(size, 11);
-    memcpy(buf, Nops[n - 1], n);
+    uint32_t n = std::min<uint32_t>(size, 15);
+    uint32_t prefixes = n > 10 ? n - 10 : 0;
+    memset(buf, 0x66, prefixes);
+    memcpy(buf + prefixes, Nops[n - prefixes - 1], n - prefixes);
     buf += n;
     size -= n;
   }
@@ -2755,15 +2792,25 @@ static void writeNops(uint8_t *buf, uint32_t size) {
 // leaves all of them alone, because a definition whose entry was removed and
 // one whose entry was not would not agree on which allocator a block came
 // from.
+// Done before the sections are made, because a program that drops every
+// entry has no use for the records they read either: nothing reaches them,
+// and the startup code returns before it would look. Dropping them takes a
+// section, and with it a page of the image, out of every program.
 void Writer::dropWeakInterposition() {
-  if (ctx.config.dll || !findSection(".wkintp"))
+  if (ctx.config.dll)
     return;
 
   std::vector<DeadInterposeEntry> entries;
+  std::vector<SectionChunk *> records;
   for (Chunk *c : ctx.driver.getChunks()) {
     auto *sc = dyn_cast<SectionChunk>(c);
-    if (!sc || !sc->live ||
-        !(sc->getOutputCharacteristics() & IMAGE_SCN_CNT_CODE))
+    if (!sc || !sc->live)
+      continue;
+    if (sc->getSectionName() == ".wkintp") {
+      records.push_back(sc);
+      continue;
+    }
+    if (!(sc->getOutputCharacteristics() & IMAGE_SCN_CNT_CODE))
       continue;
     for (const coff_relocation &rel : sc->getRelocs()) {
       auto *sym =
@@ -2777,10 +2824,234 @@ void Writer::dropWeakInterposition() {
       if (!size)
         return;
       entries.push_back(
-          {sc, rel.VirtualAddress - 3, size, bodyIsBranchTarget});
+          {sc, rel.VirtualAddress - 3, size, bodyIsBranchTarget, 0, false});
     }
   }
+  if (records.empty())
+    return;
+
+  // What follows each entry, as the compiler measured it. Padding an entry
+  // out costs nothing where the instruction after it can carry the bytes, and
+  // one instruction where it cannot, so this only ever improves the result.
+  DenseMap<std::pair<SectionChunk *, uint32_t>, std::array<uint32_t, 3>> after;
+  for (ObjFile *file : ctx.objFileInstances) {
+    ArrayRef<Symbol *> syms = file->getSymbols();
+    for (SectionChunk *c : file->getWeakInterposeNextChunks()) {
+      ArrayRef<uint8_t> data = c->getContents();
+      if (data.size() % 20)
+        continue;
+      for (size_t i = 0; i + 20 <= data.size(); i += 20) {
+        uint32_t funcIndex = read32le(data.data() + i);
+        if (funcIndex >= syms.size())
+          continue;
+        auto *at = dyn_cast_or_null<DefinedRegular>(syms[funcIndex]);
+        auto *chunk = at ? dyn_cast_or_null<SectionChunk>(at->getChunk())
+                         : nullptr;
+        if (!chunk)
+          continue;
+        uint32_t off = at->getValue() + read32le(data.data() + i + 4);
+        after[{chunk, off}] = {read32le(data.data() + i + 8),
+                               read32le(data.data() + i + 12),
+                               read32le(data.data() + i + 16)};
+      }
+    }
+  }
+  for (DeadInterposeEntry &entry : entries) {
+    auto it = after.find({entry.chunk, entry.offset});
+    // The distance has to be the entry itself, or something was aligned in
+    // between and what follows the entry is padding of an unknown length.
+    if (it == after.end() || it->second[0] != entry.size)
+      continue;
+    entry.nextSize = it->second[1];
+    entry.nextTransfers = it->second[2] & 1;
+  }
   deadInterposeEntries = std::move(entries);
+  for (SectionChunk *sc : records)
+    sc->live = false;
+}
+
+// The compiler folds a call that reads an import pointer back onto the
+// pointer, having undone the lift of that read out of a loop, and records
+// where it did so. Where the function really is in another image, reading the
+// table once and calling through a register is cheaper than reading it at
+// every call, so the fold is undone again here; where the function is in this
+// image the call becomes a direct one instead (SectionChunk::applyRelocation)
+// and the read that is left costs a single instruction on entry to the loop.
+void Writer::collectImportFuseCalls() {
+  for (ObjFile *file : ctx.objFileInstances) {
+    ArrayRef<Symbol *> syms = file->getSymbols();
+    for (SectionChunk *c : file->getImportFuseChunks()) {
+      ArrayRef<uint8_t> data = c->getContents();
+      if (data.size() % 16) {
+        Warn(ctx) << "ignoring malformed " << c->getSectionName()
+                  << " in object " << file;
+        continue;
+      }
+      for (size_t i = 0; i + 16 <= data.size(); i += 16) {
+        uint32_t funcIndex = read32le(data.data() + i);
+        uint32_t impIndex = read32le(data.data() + i + 4);
+        uint32_t reg = read32le(data.data() + i + 8);
+        uint32_t inFunction = read32le(data.data() + i + 12);
+        if (funcIndex >= syms.size() || impIndex >= syms.size() || reg > 15)
+          continue;
+
+        // Only a pointer the loader fills is worth reading once; a pointer
+        // this image writes is the address of something in it, and the call
+        // to it is about to become direct.
+        auto *imp = dyn_cast_or_null<DefinedImportData>(syms[impIndex]);
+        if (!imp)
+          continue;
+        // A delay-loaded entry holds the loader's stub until the first call,
+        // so a copy of it taken beforehand would go on reaching the stub.
+        if (ctx.config.delayLoads.contains(
+                StringRef(imp->file->dllName).lower()))
+          continue;
+
+        auto *at = dyn_cast_or_null<DefinedRegular>(syms[funcIndex]);
+        if (!at)
+          continue;
+        auto *chunk = dyn_cast_or_null<SectionChunk>(at->getChunk());
+        if (!chunk || !chunk->live)
+          continue;
+
+        // The bytes have to be the ones the record describes, a call or a
+        // jump through the pointer. Anything else and the record does not
+        // describe this code, so the call stays as it is, which is correct
+        // and is what MSVC emits.
+        uint64_t off = uint64_t(at->getValue()) + inFunction;
+        ArrayRef<uint8_t> code = chunk->getContents();
+        if (off + 6 > code.size() || code[off] != 0xFF)
+          continue;
+        if (code[off + 1] != 0x15 && code[off + 1] != 0x25)
+          continue;
+        importFuseCalls.push_back({chunk, static_cast<uint32_t>(off),
+                                   static_cast<uint8_t>(reg),
+                                   code[off + 1] == 0x25});
+      }
+    }
+
+    // The read the calls were folded out of. Where every one of them became a
+    // direct call nothing reads it, and seven segment overrides put in its
+    // place are decoded as part of the instruction that follows, so nothing
+    // is left to execute and no address in the image moves.
+    for (SectionChunk *c : file->getImportLoadChunks()) {
+      ArrayRef<uint8_t> data = c->getContents();
+      if (data.size() % 24) {
+        Warn(ctx) << "ignoring malformed " << c->getSectionName()
+                  << " in object " << file;
+        continue;
+      }
+      for (size_t i = 0; i + 24 <= data.size(); i += 24) {
+        uint32_t funcIndex = read32le(data.data() + i);
+        uint32_t impIndex = read32le(data.data() + i + 4);
+        uint32_t inFunction = read32le(data.data() + i + 8);
+        uint32_t toNext = read32le(data.data() + i + 12);
+        uint32_t nextLen = read32le(data.data() + i + 16);
+        bool intoControlTransfer = read32le(data.data() + i + 20) & 1;
+        if (funcIndex >= syms.size() || impIndex >= syms.size())
+          continue;
+
+        // A pointer the loader fills is still read, because the call that
+        // reads it is still a call through a register.
+        if (isa_and_nonnull<DefinedImportData>(syms[impIndex]))
+          continue;
+        // The overrides and the instruction they belong to are one
+        // instruction, and a processor decodes fifteen bytes of it at most.
+        // Anything between the read and that instruction is padding whose
+        // length nothing here knows. Failing either, the read goes as a
+        // no-operation, which needs nothing of what follows it.
+        bool couldAbsorb = toNext == 7 && nextLen && nextLen <= 8;
+
+        auto *at = dyn_cast_or_null<DefinedRegular>(syms[funcIndex]);
+        if (!at)
+          continue;
+        auto *chunk = dyn_cast_or_null<SectionChunk>(at->getChunk());
+        if (!chunk || !chunk->live)
+          continue;
+
+        // mov r64, [rip + disp32]: REX.W with or without REX.R, then the
+        // opcode, then ModRM with mod=00 rm=101.
+        uint64_t off = uint64_t(at->getValue()) + inFunction;
+        ArrayRef<uint8_t> code = chunk->getContents();
+        if (off + 7 > code.size() || (code[off] & 0xFB) != 0x48 ||
+            code[off + 1] != 0x8B || (code[off + 2] & 0xC7) != 0x05)
+          continue;
+        deadBytes.push_back({chunk, static_cast<uint32_t>(off), 7,
+                             couldAbsorb ? nextLen : 0, intoControlTransfer});
+      }
+    }
+  }
+
+}
+
+// Done once the chunks are written, because the relocation the call carries
+// has been applied over these bytes by then.
+void Writer::unfuseImportCalls(uint8_t *buf) {
+  for (const ImportFuseCall &call : importFuseCalls) {
+    OutputSection *os = ctx.getOutputSection(call.chunk);
+    if (!os)
+      continue;
+    uint8_t *at = buf + os->getFileOff() + call.chunk->getRVA() - os->getRVA() +
+                  call.offset;
+
+    // Six bytes either way, so the call ends where it ended and the address
+    // it returns to, the entry the unwinder holds for it and every other
+    // address in the image are the ones they were. What is spare in front is
+    // segment overrides, which this processor ignores and which cost nothing
+    // to decode; landing on one of them decodes the same instruction as
+    // landing on the first.
+    uint8_t reg = call.reg;
+    uint8_t modrm = 0xC0 | ((call.isJump ? 4 : 2) << 3) | (reg & 7);
+    if (reg & 8) {
+      memset(at, 0x2E, 3);
+      at[3] = 0x41; // REX.B
+      at[4] = 0xFF;
+      at[5] = modrm;
+    } else {
+      memset(at, 0x2E, 4);
+      at[4] = 0xFF;
+      at[5] = modrm;
+    }
+  }
+
+}
+
+// Bytes nothing executes are made to cost as little as a processor allows:
+// nothing, where the instruction after them can take them as prefixes, and
+// one instruction otherwise. Done once the chunks are written, because the
+// relocations over these bytes have been applied by then.
+void Writer::disposeOfDeadBytes(uint8_t *buf) {
+  llvm::sort(deadBytes, [](const DeadBytes &a, const DeadBytes &b) {
+    return std::tie(a.chunk, a.offset) < std::tie(b.chunk, b.offset);
+  });
+
+  for (size_t i = 0; i != deadBytes.size(); ++i) {
+    const DeadBytes &run = deadBytes[i];
+    OutputSection *os = ctx.getOutputSection(run.chunk);
+    if (!os)
+      continue;
+    uint8_t *at = buf + os->getFileOff() + run.chunk->getRVA() - os->getRVA() +
+                  run.offset;
+
+    // A run whose own successor is another dead run would put its prefixes in
+    // front of whatever that one leaves, and two of them stacked can pass the
+    // fifteen bytes a processor decodes. The first takes the no-operation.
+    bool runFollows = i + 1 != deadBytes.size() &&
+                      deadBytes[i + 1].chunk == run.chunk &&
+                      deadBytes[i + 1].offset == run.offset + run.size;
+
+    // Prefixes and the instruction they belong to are one instruction, and a
+    // processor decodes fifteen bytes of it. They leave it ending where it
+    // ended and beginning where the run began, so a transfer of control can
+    // only be carried across a thirty-two byte boundary it was not already
+    // crossing, and only when the run itself straddles one.
+    uint64_t rva = run.chunk->getRVA() + run.offset;
+    if (!runFollows && run.nextSize && run.size + run.nextSize <= 15 &&
+        (!run.nextTransfers || (rva & 31) + run.size <= 31))
+      memset(at, 0x2E, run.size);
+    else
+      writeNops(at, run.size);
+  }
 }
 
 // Done once the chunks are written, because the relocation inside the entry
@@ -2793,21 +3064,21 @@ void Writer::padWeakInterposition(uint8_t *buf) {
     uint8_t *at = buf + os->getFileOff() + entry.chunk->getRVA() -
                   os->getRVA() + entry.offset;
     if (!entry.bodyIsBranchTarget) {
-      // The body falls through, so the whole entry is padding.
-      writeNops(at, entry.size);
+      // The body falls through, so the whole entry is bytes nothing runs, and
+      // the instruction after it is the body's first.
+      deadBytes.push_back({entry.chunk, entry.offset, entry.size,
+                           entry.nextSize, entry.nextTransfers});
       continue;
     }
     // The body is the branch's target, so the branch stays and becomes
     // unconditional. An unconditional jump that ends where the conditional
     // one ended takes the same displacement, which leaves the relocated
-    // field where it was written.
-    if (entry.size == 12) {
-      writeNops(at, 10);
-      at[10] = 0xEB; // jmp rel8
-    } else {
-      writeNops(at, 11);
-      at[11] = 0xE9; // jmp rel32
-    }
+    // field where it was written, and what precedes it is the dead run: the
+    // jump can carry it, since prefixes leave it ending where it ends.
+    uint32_t jump = entry.size == 12 ? 2 : 5;
+    at[entry.size - jump] = entry.size == 12 ? 0xEB : 0xE9;
+    deadBytes.push_back(
+        {entry.chunk, entry.offset, entry.size - jump, jump, true});
   }
 }
 
@@ -3010,6 +3281,8 @@ void Writer::writeSections() {
   }
 
   padWeakInterposition(buf);
+  unfuseImportCalls(buf);
+  disposeOfDeadBytes(buf);
 }
 
 void Writer::writeBuildId() {

@@ -16,22 +16,27 @@
 # RUN: lld-link -entry:main -subsystem:console -debug:symtab -out:%t.exe %t.main.obj -export:zzz -export:aaa
 # RUN: llvm-readobj --section-headers %t.exe | FileCheck --check-prefix=SECTION %s
 # RUN: llvm-objdump -s -j .wkpub %t.exe | FileCheck --check-prefix=TABLE %s
-# The bounds are the record, with nothing else between them.
-# RUN: llvm-nm --numeric-sort %t.exe | FileCheck --check-prefix=BOUNDS %s
+# An executable supersedes nothing, so the entries are padding and the records
+# they read go with them, taking a section and a page of the image with them.
+# RUN: llvm-readobj --section-headers %t.exe | FileCheck --check-prefix=NORECORDS %s
 
 # An image whose startup code does not name the bounds takes no part.
 # RUN: lld-link -entry:main -subsystem:console -out:%t.plain.exe %t.plain.obj -export:zzz -export:aaa
 # RUN: llvm-readobj --section-headers %t.plain.exe | FileCheck --check-prefix=NONE %s
 
 # A library does not interpose, so it publishes nothing.
-# RUN: lld-link -dll -noentry -out:%t.dll %t.main.obj -export:zzz -export:aaa
+# RUN: lld-link -dll -noentry -debug:symtab -out:%t.dll %t.main.obj -export:zzz -export:aaa
 # RUN: llvm-readobj --section-headers %t.dll | FileCheck --check-prefix=NONE %s
+# A library keeps them, and the bounds are the record with nothing between.
+# RUN: llvm-nm --numeric-sort %t.dll | FileCheck --check-prefix=BOUNDS %s
 
 # Two exports: an 8-byte header, two 16-byte hashes and two 4-byte RVAs.
 # SECTION:      Name: .wkpub
 # SECTION-NEXT: VirtualSize: 0x30
 
 # NONE-NOT: Name: .wkpub
+
+# NORECORDS-NOT: Name: .wkintp
 
 # BOUNDS:      [[#%x,START:]] {{.}} __wkintp_start
 # BOUNDS-NEXT: [[#%x,START+0x20]] {{.}} __wkintp_end

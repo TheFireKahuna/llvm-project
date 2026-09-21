@@ -1070,6 +1070,8 @@ void X86AsmPrinter::emitEndOfAsmFile(Module &M) {
     // safe to set.
     OutStreamer->emitSubsectionsViaSymbols();
   } else if (TT.isOSBinFormatCOFF()) {
+    emitImportFuseSection();
+
     // If import call optimization is enabled, emit the appropriate section.
     // We do this whether or not we recorded any items.
     if (EnableImportCallOptimization) {

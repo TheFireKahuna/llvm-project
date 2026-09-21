@@ -3,7 +3,7 @@
 # A reference to the import pointer of a symbol that is defined in the image
 # is rewritten to the direct instruction of the same length: the load of the
 # pointer becomes a lea, the indirect call an addr32-prefixed direct call, and
-# the indirect jump a direct jump followed by a nop. No pointer is emitted for
+# the indirect jump a direct jump of the same six bytes. No pointer is emitted for
 # a symbol whose references were all rewritten, so there is nothing to warn
 # about; a reference in any other form keeps the pointer and the warning.
 
@@ -22,7 +22,6 @@
 # DISASM:      <main>:
 # DISASM-NEXT:   addr32 callq 0x{{[0-9a-f]+}} <f>
 # DISASM-NEXT:   jmp 0x{{[0-9a-f]+}} <f>
-# DISASM-NEXT:   nop
 # DISASM-NEXT:   leaq 0x{{[0-9a-f]+}}(%rip), %rax
 # DISASM-NEXT:   leaq 0x{{[0-9a-f]+}}(%rip), %r9
 # DISASM-NEXT:   movq (%rax), %rax
@@ -32,8 +31,7 @@
 
 # BYTES:      <main>:
 # BYTES-NEXT:   67 e8 {{.*}} addr32 callq
-# BYTES-NEXT:   e9 {{.*}} jmp
-# BYTES-NEXT:   90{{ +}}nop
+# BYTES-NEXT:   2e e9 {{.*}} jmp
 # BYTES-NEXT:   48 8d 05 {{.*}} leaq
 # BYTES-NEXT:   4c 8d 0d {{.*}} leaq
 

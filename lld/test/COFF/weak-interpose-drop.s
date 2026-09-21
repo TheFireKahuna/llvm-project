@@ -18,10 +18,10 @@
 # RUN: lld-link -dll -noentry -out:%t.dll %t.obj -export:fallthrough -export:tailcall
 # RUN: llvm-objdump -d %t.dll | FileCheck --check-prefix=DLL %s
 
-# The body falls through, so the whole entry is padding.
+# The body falls through, so the whole entry is padding: one instruction of
+# it, not a run of them, since one no-operation is one however long it is.
 # EXE-LABEL: <fallthrough>:
-# EXE-NEXT:    nopw
-# EXE-NEXT:    nop
+# EXE-NEXT:    66 66 66 2e 0f 1f 84 00 00 00 00 00 {{.*}}nopw
 # EXE-NEXT:    retq
 # The forward is left where it was, unreachable.
 # EXE-NEXT:    jmpq *%rax

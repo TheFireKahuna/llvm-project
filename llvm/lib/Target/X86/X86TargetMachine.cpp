@@ -91,6 +91,7 @@ extern "C" LLVM_C_ABI void LLVMInitializeX86Target() {
   initializeX86DomainReassignmentLegacyPass(PR);
   initializeX86AvoidSFBLegacyPass(PR);
   initializeX86AvoidTrailingCallLegacyPassPass(PR);
+  initializeX86WindowsImportFusionPass(PR);
   initializeX86SpeculativeLoadHardeningLegacyPass(PR);
   initializeX86SpeculativeExecutionSideEffectSuppressionLegacyPass(PR);
   initializeX86FlagsCopyLoweringLegacyPass(PR);
@@ -585,6 +586,11 @@ void X86PassConfig::addPreEmitPass() {
 void X86PassConfig::addPreEmitPass2() {
   const Triple &TT = TM->getTargetTriple();
   const MCAsmInfo *MAI = TM->getMCAsmInfo();
+
+  // Late enough that a tail call is a jump through a register rather than one
+  // of the pseudo-instructions that becomes one.
+  if (getOptLevel() != CodeGenOptLevel::None)
+    addPass(createX86WindowsImportFusionPass());
 
   // The X86 Speculative Execution Pass must run after all control
   // flow graph modifying passes. As a result it was listed to run right before

@@ -40,7 +40,14 @@ enum AsmComments : MachineInstr::AsmPrinterFlagTy {
   // For instr that was compressed from EVEX to VEX.
   AC_EVEX_2_VEX = AC_EVEX_2_LEGACY << 1,
   // For instr that was compressed from EVEX to EVEX.
-  AC_EVEX_2_EVEX = AC_EVEX_2_VEX << 1
+  AC_EVEX_2_EVEX = AC_EVEX_2_VEX << 1,
+  // For a read of an import pointer whose every reader became a call that
+  // names the pointer itself, so that the read is worth nothing once the
+  // linker has made those calls direct (X86WindowsImportFusion).
+  AC_IMPORT_FUSE_LOAD = AC_EVEX_2_EVEX << 1,
+  // For a call folded onto an import pointer, which the linker may turn back
+  // into a call through the register the read it replaced had loaded.
+  AC_IMPORT_FUSE_CALL = AC_IMPORT_FUSE_LOAD << 1
 };
 
 /// Return a pair of condition code for the given predicate and whether
