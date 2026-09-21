@@ -215,12 +215,6 @@ if (NOT WIN32 OR LIBCXX_ENABLE_SHARED)
       message(FATAL_ERROR "llvm-lib is required to add libc++abi's per-image objects to the import library")
     endif()
     add_dependencies(cxx_shared cxxabi_local)
-    # Clang marks the Itanium runtime functions (__cxa_*, std::terminate)
-    # dllimport on this target unless told that the standard library itself
-    # is being built; inside c++.dll they are local definitions.
-    if (WIN32_ITANIUM)
-      target_compile_options(cxx_shared PRIVATE -Xclang -flto-visibility-public-std)
-    endif()
     add_custom_command(TARGET cxx_shared POST_BUILD
       COMMAND "${LIBCXX_LLVM_LIB_TOOL}" /nologo "/out:$<TARGET_LINKER_FILE:cxx_shared>.tmp"
               "$<TARGET_FILE:cxxabi_local>" "$<TARGET_LINKER_FILE:cxx_shared>"

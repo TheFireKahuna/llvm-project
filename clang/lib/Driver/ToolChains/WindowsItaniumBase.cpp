@@ -276,10 +276,11 @@ void WindowsItaniumBaseToolChain::AddRuntimeLibSearchPaths(
 
 void WindowsItaniumBaseToolChain::NormalizeLLDLinkArgs(
     const ArgList &Args, ArgStringList &CmdArgs) const {
-  // -rdynamic: export all symbols from the executable, equivalent to
-  // -export-dynamic on ELF. lld-link uses /export-all-symbols.
-  if (Args.hasArg(options::OPT_rdynamic))
-    CmdArgs.push_back("-export-all-symbols");
+  // -rdynamic exports every default-visibility definition on ELF. An image
+  // here exports the definitions its sources mark with default visibility
+  // without it, and an unmarked one when compiled with
+  // -mdefault-visibility-export-mapping=all, so the linker needs nothing.
+  Args.ClaimAllArgs(options::OPT_rdynamic);
 
   for (auto It = CmdArgs.begin(); It != CmdArgs.end();) {
     StringRef Value(*It);

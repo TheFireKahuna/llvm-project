@@ -2120,10 +2120,12 @@ void CodeGenModule::setDLLImportDLLExport(llvm::GlobalValue *GV,
       GV->setDLLStorageClass(llvm::GlobalVariable::DLLImportStorageClass);
     else if ((D->hasAttr<DLLExportAttr>() ||
               (shouldMapVisibilityToDLLExport(D) &&
-               // A discardable function exists in a COFF image only if the
+               // A discardable definition exists in a COFF image only if the
                // image happened to use it, so it is no promise to importers.
-               !(getTriple().isOSBinFormatCOFF() && isa<llvm::Function>(GV) &&
-                 GV->hasLinkOnceLinkage()) &&
+               // Weak data the source declared is the exception, being shared
+               // along import edges; a vtable or a VTT is not.
+               !(getTriple().isOSBinFormatCOFF() && GV->hasLinkOnceLinkage() &&
+                 !isa<VarDecl>(D)) &&
                // Nor can another image use a native thread-local variable;
                // the C++ ABI exports a record of it instead.
                !(getTriple().isOSBinFormatCOFF() && isa<VarDecl>(D) &&

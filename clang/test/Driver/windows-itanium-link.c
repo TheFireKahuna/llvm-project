@@ -64,3 +64,11 @@
 // RUN:   | FileCheck -check-prefix=LINK_X86 %s
 // LINK_X86: lld-link
 // LINK_X86-SAME: "-machine:x86"
+
+// An image exports the definitions its sources mark with default visibility,
+// so -rdynamic asks the linker for nothing more.
+// RUN: %clang --target=x86_64-unknown-windows-itanium -rdynamic -### %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=RDYNAMIC %s
+// RDYNAMIC-NOT: warning:
+// RDYNAMIC: lld-link
+// RDYNAMIC-NOT: "-export-all-symbols"

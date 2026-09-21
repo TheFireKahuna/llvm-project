@@ -200,11 +200,10 @@ target_compile_options(cxxabi_shared_objects PRIVATE "${LIBCXXABI_ADDITIONAL_COM
 # Build with -fsized-deallocation, which is default in recent versions of Clang.
 # TODO(LLVM 21): This can be dropped once we only support Clang >= 19.
 target_add_compile_flags_if_supported(cxxabi_shared_objects PRIVATE -fsized-deallocation)
-# These objects are folded into c++.dll on Windows Itanium, where clang would
-# otherwise mark the runtime functions they call (__cxa_*, std::terminate)
-# dllimport although the same image defines them.
+# On Windows Itanium every image links its own replaceable allocation
+# functions and reaches them directly, so the shared library exports none.
 if (WIN32_ITANIUM)
-  target_compile_options(cxxabi_shared_objects PRIVATE -Xclang -flto-visibility-public-std)
+  target_compile_definitions(cxxabi_shared_objects PRIVATE _LIBCPP_OVERRIDABLE_FUNC_VIS=)
 endif()
 
 # On Windows, skip target when disabled to avoid import lib / static lib name collision.

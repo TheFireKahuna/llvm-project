@@ -1,7 +1,7 @@
 // The visibility-to-DLL-storage mapping in both directions: an explicit
 // default visibility exports a definition and imports a declaration. An
 // implicit visibility says nothing about a declaration. On COFF a discardable
-// function is not exported by the mapping; weak data is.
+// definition is not exported by the mapping, except weak data.
 
 // RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -mdefault-visibility-export-mapping=explicit -fno-auto-import -emit-llvm -o - %s | FileCheck %s -check-prefixes=CHECK,MAPPED
 // RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -mdefault-visibility-export-mapping=all -fno-auto-import -emit-llvm -o - %s | FileCheck %s -check-prefixes=CHECK,MAPPED
@@ -54,8 +54,8 @@ VIS void defined_later() {}
 // NONE-DAG:   @marked_tls = external dso_local thread_local global i32
 // MAPPED-DAG: @_ZTV4Poly = external dllimport unnamed_addr constant
 // NONE-DAG:   @_ZTV4Poly = external dso_local unnamed_addr constant
-// MAPPED-DAG: @_ZTV6Inline = linkonce_odr dso_local dllexport unnamed_addr constant
-// NONE-DAG:   @_ZTV6Inline = linkonce_odr dso_local unnamed_addr constant
+// A vtable every image emits for itself is not exported.
+// CHECK-DAG:  @_ZTV6Inline = linkonce_odr dso_local unnamed_addr constant
 
 // MAPPED-DAG: declare dllimport void @_Z9marked_fnv()
 // NONE-DAG:   declare dso_local void @_Z9marked_fnv()
