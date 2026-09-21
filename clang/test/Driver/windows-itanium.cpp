@@ -6,7 +6,6 @@
 // RUN:   | FileCheck --check-prefix=CC1 %s
 // CC1: "-triple" "x86_64-unknown-windows-itanium"
 // CC1-DAG: "-D__MSVCRT__"
-// CC1-DAG: "-DLLVM_CRT_UCRT"
 // CC1-DAG: "-D_CRT_STDIO_ISO_WIDE_SPECIFIERS"
 // CC1-DAG: "-UCLOCK_REALTIME"
 // CC1-DAG: "-fno-dllexport-inlines"

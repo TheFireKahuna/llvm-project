@@ -450,14 +450,6 @@ void WindowsItaniumToolChain::addClangTargetOptions(
   // functions and data imported, as they are under MSVC's /MD.
   CC1Args.push_back("-D_DLL");
 
-  // Clang's resource headers (intrin.h, xmmintrin.h, yvals_core.h, ...) gate
-  // their MSVC-intrinsic emulation on LLVM_CRT_UCRT rather than _MSC_VER,
-  // which this target deliberately does not define. Inside the LLVM build the
-  // macro comes from llvm-config.h; every other consumer of UCRT headers
-  // (runtimes, user code) needs the driver to provide it, otherwise intrin.h
-  // falls through to the raw MSVC header and clashes with clang's builtins.
-  CC1Args.push_back("-DLLVM_CRT_UCRT");
-
   // ISO-conforming wide specifiers for wprintf/wscanf (%s = char*, %ls = wchar_t*).
   // Auto-links iso_stdio_wide_specifiers.lib via #pragma comment(lib, ...).
   CC1Args.push_back("-D_CRT_STDIO_ISO_WIDE_SPECIFIERS");
@@ -491,6 +483,15 @@ void WindowsItaniumToolChain::AddClangSystemIncludeArgs(
   if (!DriverArgs.hasArg(options::OPT_nobuiltininc)) {
     AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, getDriver().ResourceDir,
                                   "include", "", "");
+    // The UCRT and the Windows SDK assume the Visual C compiler and its
+    // vcruntime. This target's wrappers over their headers, and its
+    // replacements for the vcruntime ones, sit ahead of them and chain
+    // through #include_next. They are C-library headers, so -nostdlibinc
+    // hides them with the UCRT.
+    if (!DriverArgs.hasArg(options::OPT_nostdlibinc))
+      AddSystemIncludeWithSubfolder(DriverArgs, CC1Args,
+                                    getDriver().ResourceDir, "include",
+                                    "win32_itanium_wrappers", "");
   }
 
   // Explicit /imsvc paths are user-specified. You may choose to hard-reject these

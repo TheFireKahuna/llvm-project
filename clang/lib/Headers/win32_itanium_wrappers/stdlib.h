@@ -12,7 +12,7 @@
 
 #if __STDC_HOSTED__ && __has_include_next(<stdlib.h>)
 
-#if defined(__cplusplus) && defined(LLVM_CRT_UCRT) && !defined(_MSC_VER)
+#if defined(__cplusplus) && defined(_WIN32_ITANIUM)
 /*
  * Present the UCRT as a plain C library: libc++ owns every C++-visible
  * declaration. UCRT's __cplusplus blocks declare inline abs/div overloads

@@ -10,7 +10,7 @@
 #ifndef __clang_vcruntime_new_debug_h
 #define __clang_vcruntime_new_debug_h
 
-#if !defined(LLVM_CRT_UCRT)
+#if !defined(_WIN32_ITANIUM)
 /* Plain clang-cl / MSVC-compat build: defer to the real VCRuntime header. */
 #if __has_include_next(<vcruntime_new_debug.h>)
 #include_next <vcruntime_new_debug.h>
@@ -63,6 +63,6 @@ inline void operator delete[](void *_Block, int /*_BlockUse*/,
 
 #endif /* __cplusplus */
 
-#endif /* LLVM_CRT_UCRT */
+#endif /* _WIN32_ITANIUM */
 
 #endif /* __clang_vcruntime_new_debug_h */

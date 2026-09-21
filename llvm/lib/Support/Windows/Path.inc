@@ -1185,7 +1185,10 @@ static bool status_by_name(StringRef Path8, bool Follow, file_status &Result,
   // slashes, "." and ".." components must be applied here; its stripping of
   // trailing dots and spaces, and device paths, are left to the handle path.
   // A drive-relative path ("C:foo") resolves against that drive's own
-  // current directory, which only the Win32 layer tracks.
+  // current directory, which only the Win32 layer tracks. An empty name is
+  // not the current directory, though make_absolute would say so.
+  if (Path8.empty())
+    return false;
   if (Path8.size() >= 2 && Path8[1] == ':' &&
       (Path8.size() == 2 || !path::is_separator(Path8[2])))
     return false;

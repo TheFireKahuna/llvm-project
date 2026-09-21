@@ -10,6 +10,7 @@
 #include "clang-c/Documentation.h"
 #include "clang-c/Index.h"
 #include "clang/Config/config.h"
+#include "llvm/Config/llvm-config.h"
 #include "llvm/Support/AutoConvert.h"
 #include <assert.h>
 #include <ctype.h>

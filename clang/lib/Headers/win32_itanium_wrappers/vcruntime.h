@@ -161,10 +161,7 @@ extern "C" {
     #endif
 #endif
 
-// For backwards compatibility
-#ifndef _WConst_return
-    #define _WConst_return const
-#endif
+#define _WConst_return _CONST_RETURN // For backwards compatibility
 
 // Definitions of common __declspecs
 #define _VCRT_NOALIAS __attribute__((noalias))

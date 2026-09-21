@@ -18,6 +18,7 @@
 #include "llvm-c/OrcEE.h"
 #include "llvm-c/Support.h"
 #include "llvm-c/Target.h"
+#include "llvm/Config/llvm-config.h"
 
 #include <assert.h>
 #include <stdio.h>

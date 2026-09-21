@@ -8,7 +8,7 @@
  */
 
 /* Only include this if we're compiling for the windows platform. */
-#if !defined(LLVM_CRT_UCRT)
+#if !defined(_MSC_VER) && !defined(_WIN32_ITANIUM)
 #include_next <armintr.h>
 #else
 

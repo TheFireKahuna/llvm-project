@@ -688,7 +688,7 @@ __rorq(unsigned long long __X, int __C) {
 }
 #endif /* __x86_64__ */
 
-#if !defined(LLVM_CRT_UCRT)
+#if !defined(_MSC_VER) && !defined(_WIN32_ITANIUM)
 /* Provided as builtins for MSVC and Windows Itanium. */
 /* Select the correct function based on the size of long. */
 #ifdef __LP64__
@@ -812,7 +812,7 @@ __rorq(unsigned long long __X, int __C) {
 /// \returns The rotated value.
 /// \see __rord
 #define _rotr(a,b) __rord((a), (b))
-#endif // !defined(LLVM_CRT_UCRT)
+#endif // !defined(_MSC_VER) && !defined(_WIN32_ITANIUM)
 
 /* These are not builtins so need to be provided in all modes. */
 /// Rotates a 16-bit value to the left by the specified number of bits.

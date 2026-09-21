@@ -931,6 +931,14 @@ TEST_F(FileSystemTest, ReadlinkNonExistent) {
             errc::no_such_file_or_directory);
 }
 
+TEST_F(FileSystemTest, StatusEmptyPath) {
+  // An empty name is not the current directory.
+  fs::file_status Status;
+  EXPECT_EQ(fs::status("", Status), errc::no_such_file_or_directory);
+  EXPECT_FALSE(fs::exists(""));
+  EXPECT_FALSE(fs::is_directory(""));
+}
+
 TEST_F(FileSystemTest, ExpandTilde) {
   SmallString<64> Expected;
   SmallString<64> Actual;

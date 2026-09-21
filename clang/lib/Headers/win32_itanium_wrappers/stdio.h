@@ -19,7 +19,7 @@
  * collide at link time. Pin the definitions to internal linkage. C++ inline
  * semantics (COMDAT) are already correct, so C only.
  */
-#if defined(LLVM_CRT_UCRT) && !defined(_MSC_VER) && !defined(__cplusplus) &&   \
+#if defined(_WIN32_ITANIUM) && !defined(__cplusplus) &&                         \
     !defined(_CRT_STDIO_INLINE)
 #define _CRT_STDIO_INLINE static __inline
 #endif

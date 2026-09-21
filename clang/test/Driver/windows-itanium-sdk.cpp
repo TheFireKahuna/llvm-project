@@ -8,7 +8,7 @@
 // RUN:   | FileCheck -check-prefix=DEFINES %s
 // DEFINES: "-cc1"
 // DEFINES-SAME: "-D__MSVCRT__"
-// DEFINES-SAME: "-DLLVM_CRT_UCRT"
+// DEFINES-NOT: "-DLLVM_CRT_UCRT"
 // DEFINES-SAME: "-D_CRT_STDIO_ISO_WIDE_SPECIFIERS"
 // DEFINES-SAME: "-D_CRT_SECURE_NO_WARNINGS"
 // DEFINES-SAME: "-UCLOCK_REALTIME"
@@ -30,11 +30,27 @@
 // RUN:   | FileCheck -check-prefix=NOSTDINCXX %s
 // NOSTDINCXX-NOT: "{{.*}}c++{{.*}}v1"
 
-// -nostdlibinc keeps the resource headers.
+// The wrappers over the UCRT and SDK headers follow the resource headers and
+// precede the UCRT, so that #include_next reaches it.
+// RUN: %clang --target=x86_64-unknown-windows-itanium -c -### %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=WRAPPERS %s
+// WRAPPERS: "-internal-isystem" "[[RESOURCE:[^"]*]]include"
+// WRAPPERS-SAME: "-internal-isystem" "[[RESOURCE]]include{{[/\\]+}}win32_itanium_wrappers"
+// WRAPPERS-SAME: "-internal-isystem" "{{.*}}ucrt"
+
+// -nostdlibinc keeps the resource headers and drops the wrappers with the UCRT.
 // RUN: %clang --target=x86_64-unknown-windows-itanium -nostdlibinc -c -### %s 2>&1 \
 // RUN:   | FileCheck -check-prefix=NOSTDLIBINC %s
 // NOSTDLIBINC: "-internal-isystem" "{{.*}}lib{{.*}}clang{{.*}}include"
+// NOSTDLIBINC-NOT: "{{.*}}win32_itanium_wrappers"
 // NOSTDLIBINC-NOT: "{{.*}}ucrt"
+
+// -nobuiltininc drops the resource headers and the wrappers with them.
+// RUN: %clang --target=x86_64-unknown-windows-itanium -nobuiltininc -c -### %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=NOBUILTININC %s
+// NOBUILTININC: "-cc1"
+// NOBUILTININC-NOT: "{{.*}}lib{{.*}}clang{{.*}}include"
+// NOBUILTININC-NOT: "{{.*}}win32_itanium_wrappers"
 
 // /imsvc adds explicit system include directories.
 // RUN: %clang_cl --target=x86_64-unknown-windows-itanium \
