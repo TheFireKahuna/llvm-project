@@ -90,6 +90,18 @@ int main() {
   // CHECK: virtual: 7 200
   printf("virtual: %d %d\n", B->value(), B->inherited());
 
+  // The inherited entry, after the two destructors and value, is the
+  // exported function itself, not a thunk in this image.
+  HMODULE Dll;
+  GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                         GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                     reinterpret_cast<LPCSTR>(dll_func_address()), &Dll);
+  void *const *Vtable = *reinterpret_cast<void *const *const *>(B);
+  // CHECK: vtable entry: exported function 1
+  printf("vtable entry: exported function %d\n",
+         Vtable[3] == reinterpret_cast<void *>(
+                          GetProcAddress(Dll, "_ZNK4Base9inheritedEv")));
+
   MEMORY_BASIC_INFORMATION Info;
   VirtualQuery(&ro_element, &Info, sizeof(Info));
   // CHECK: read-only slots: read-only
@@ -101,7 +113,13 @@ int main() {
 #endif
 
 // The DLL's own descriptor, then one per run of slots: the adjacent writable
-// slots form one, the read-only ones follow.
+// slots form one, the read-only ones follow, and Local's vtable entry is a run
+// of its own.
 // IMPORTS:     Name: import_slots.cpp.tmp.dll
 // IMPORTS:     Name: import_slots.cpp.tmp.dll
 // IMPORTS:     Name: import_slots.cpp.tmp.dll
+// IMPORTS:     Name: import_slots.cpp.tmp.dll
+// IMPORTS:     Name: import_slots.cpp.tmp.dll
+// IMPORTS-NEXT: ImportLookupTableRVA:
+// IMPORTS-NEXT: ImportAddressTableRVA:
+// IMPORTS-NEXT: Symbol: _ZNK4Base9inheritedEv (0)

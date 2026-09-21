@@ -738,6 +738,11 @@ void SymbolTable::bindLocalImports() {
         StringRef(imp->file->dllName).lower());
   };
 
+  // An import thunk that every reference bypasses, because each one is an
+  // in-place slot or an address-taking load rewritten to read the import
+  // entry, is left out of the image, and with it out of the Control Flow Guard
+  // address-taken table.
+  SmallPtrSet<DefinedImportThunk *, 8> thunksNamed, thunksReached;
   for (ObjFile *file : ctx.objFileInstances) {
     if (&file->symtab != this)
       continue;
@@ -749,6 +754,16 @@ void SymbolTable::bindLocalImports() {
         continue;
       for (const coff_relocation &rel : sc->getRelocs()) {
         Symbol *s = file->getSymbol(rel.SymbolTableIndex);
+        auto *thunk = dyn_cast_or_null<DefinedImportThunk>(s);
+        if (thunk && rewrite && ctx.config.importSlots) {
+          thunksNamed.insert(thunk);
+          bool bypassed =
+              !delayLoaded(thunk->wrappedSym) &&
+              (sc->getImportSlotTarget(rel) ||
+               sc->getImportRefForm(rel) == SectionChunk::ImportRefForm::Lea);
+          if (!bypassed && !sc->isDWARF())
+            thunksReached.insert(thunk);
+        }
         if (auto *li = dyn_cast_or_null<DefinedLocalImport>(s)) {
           SectionChunk::ImportRefForm form =
               rewrite ? sc->getImportRefForm(rel)
@@ -779,6 +794,10 @@ void SymbolTable::bindLocalImports() {
       }
     }
   }
+
+  for (DefinedImportThunk *thunk : thunksNamed)
+    if (!thunksReached.contains(thunk) && !thunk->isGCRoot)
+      thunk->getChunk()->live = false;
 
   for (DefinedLocalImport *li : localImports) {
     if (!needPointer.contains(li))
