@@ -129,7 +129,10 @@ size_t wcsrtombs(char* restrict dst, const wchar_t** restrict src, size_t len,
 #      if __GLIBC_PREREQ(2, 10)
 #        define _LIBCPP_WCHAR_H_HAS_CONST_OVERLOADS 1
 #      endif
-#    elif defined(_LIBCPP_MSVCRT)
+#    elif defined(_LIBCPP_MSVCRT_LIKE)
+// The UCRT declares the const-correct overloads for every C++ compiler and
+// advertises them with this macro, so the same applies whenever its headers
+// are in use, not only when the compiler is MSVC.
 #      if defined(_CRT_CONST_CORRECT_OVERLOADS)
 #        define _LIBCPP_WCHAR_H_HAS_CONST_OVERLOADS 1
 #      endif
