@@ -960,6 +960,25 @@ _LIBCPP_HIDE_FROM_ABI inline _OutputIterator num_put<_CharT, _OutputIterator>::_
     __nbh.reset(__nb);
   }
   _LIBCPP_DIAGNOSTIC_POP
+#if defined(_WIN32)
+  // The Windows C library prints every hexadecimal digit of the mantissa for "%a", where other
+  // C libraries print the shortest exact form; trim the trailing zeros of the fraction, and the
+  // point when nothing follows it unless showpoint asks for it.
+  if (!__specify_precision) {
+    char* __p = std::find(__nb, __nb + __nc, (__iob.flags() & ios_base::uppercase) ? 'P' : 'p');
+    if (__p != __nb + __nc) {
+      char* __e = __p;
+      while (__e[-1] == '0')
+        --__e;
+      if (__e[-1] == '.' && !(__iob.flags() & ios_base::showpoint))
+        --__e;
+      if (__e != __p) {
+        std::copy(__p, __nb + __nc, __e);
+        __nc -= static_cast<int>(__p - __e);
+      }
+    }
+  }
+#endif
   char* __ne = __nb + __nc;
   char* __np = this->__identify_padding(__nb, __ne, __iob);
   // Stage 2 - Widen __nar while adding thousands separators
