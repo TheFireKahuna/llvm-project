@@ -45,8 +45,9 @@ void __cdecl __security_check_cookie(uintptr_t Value) {
 }
 
 // Called at every image entry. A cookie that is already set is kept, so a
-// nested entry cannot invalidate frames that are already protected.
-void __cdecl __security_init_cookie(void) {
+// nested entry cannot invalidate frames that are already protected. The
+// function changes the cookie its own epilogue would check, so it has none.
+__attribute__((no_stack_protector)) void __cdecl __security_init_cookie(void) {
   if (__security_cookie != DefaultCookie) {
     __security_cookie_complement = ~__security_cookie;
     return;

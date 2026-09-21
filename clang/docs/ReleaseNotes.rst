@@ -516,6 +516,11 @@ Windows Support
   function; a declaration with the same visibility reads the record in the
   thread wrapper and runs the initialization on each thread's first use.
 
+- On Windows Itanium and NT-POSIX targets the stack protector defaults to
+  ``-fstack-protector-strong``, as ``/GS`` is on by default for MSVC and as
+  clang-cl already did for these targets; ``-fno-stack-protector`` and
+  ``/GS-`` turn it off.
+
 LoongArch Support
 ^^^^^^^^^^^^^^^^^
 

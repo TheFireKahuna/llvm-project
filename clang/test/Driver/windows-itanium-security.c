@@ -2,11 +2,31 @@
 
 // Test security flags for Windows Itanium (stack protection, ASLR, DEP, CFG).
 
-// Stack protection levels.
+// Stack protection is strong by default, as /GS is for MSVC, on both targets
+// and with either driver; -fno-stack-protector and /GS- turn it off.
+// RUN: %clang --target=x86_64-unknown-windows-itanium -c -### %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=STACK_DEFAULT %s
+// RUN: %clang --target=aarch64-unknown-windows-itanium -c -### %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=STACK_DEFAULT %s
+// RUN: %clang --target=x86_64-pc-windows-ntposix -c -### %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=STACK_DEFAULT %s
+// RUN: %clang_cl --target=x86_64-unknown-windows-itanium /c -### -- %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=STACK_DEFAULT %s
+// STACK_DEFAULT: "-cc1"
+// STACK_DEFAULT-SAME: "-stack-protector" "2"
+
+// RUN: %clang --target=x86_64-unknown-windows-itanium -fno-stack-protector -c -### %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=STACK_OFF %s
+// RUN: %clang --target=x86_64-pc-windows-ntposix -fno-stack-protector -c -### %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=STACK_OFF %s
+// STACK_OFF: "-cc1"
+// STACK_OFF-NOT: "-stack-protector"
+
+// -fstack-protector never lowers the default.
 // RUN: %clang --target=x86_64-unknown-windows-itanium -fstack-protector -c -### %s 2>&1 \
 // RUN:   | FileCheck -check-prefix=STACK_PROTECTOR %s
 // STACK_PROTECTOR: "-cc1"
-// STACK_PROTECTOR-SAME: "-stack-protector" "1"
+// STACK_PROTECTOR-SAME: "-stack-protector" "2"
 
 // RUN: %clang --target=x86_64-unknown-windows-itanium -fstack-protector-strong -c -### %s 2>&1 \
 // RUN:   | FileCheck -check-prefix=STACK_STRONG %s

@@ -56,6 +56,14 @@ public:
 
   unsigned GetDefaultDwarfVersion() const override { return 4; }
 
+  // MSVC builds with /GS unless told otherwise, and so does clang-cl on this
+  // target; the GNU-style driver matches, so that a translation unit gets the
+  // same cookie whichever driver compiles it.
+  LangOptions::StackProtectorMode
+  GetDefaultStackProtectorLevel(bool KernelOrKext) const override {
+    return LangOptions::SSPStrong;
+  }
+
   llvm::ExceptionHandling
   GetExceptionModel(const llvm::opt::ArgList &Args) const override;
 

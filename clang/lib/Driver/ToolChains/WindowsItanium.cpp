@@ -39,6 +39,12 @@ WindowsItaniumToolChain::TranslateArgs(const DerivedArgList &Args,
                                        StringRef BoundArch,
                                        Action::OffloadKind OFK) const {
   DerivedArgList *DAL = translateMSVCCompatibleArgs(*this, Args, OFK);
+  // The stack protector is on by default; /GS- has to reach the option that
+  // turns it off, which clang-cl's own handling of /GS never emits.
+  if (Arg *A = Args.getLastArg(options::OPT__SLASH_GS, options::OPT__SLASH_GS_))
+    if (A->getOption().matches(options::OPT__SLASH_GS_))
+      DAL->AddFlagArg(A, getDriver().getOpts().getOption(
+                             options::OPT_fno_stack_protector));
   // clang-cl's /std: names a language standard with MSVC's spellings. Only
   // the spelling is translated; without /std: the target keeps clang's own
   // default standard rather than MSVC's.
