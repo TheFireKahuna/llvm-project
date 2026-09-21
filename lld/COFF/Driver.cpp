@@ -2800,6 +2800,17 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // references to the symbols we use from them.
   run();
 
+  // The LTO step may have added import-form references to library functions
+  // that only an archive member defines, which input resolution could not
+  // have seen; a member loaded for one may reference another.
+  for (bool loaded = true; loaded;) {
+    loaded = false;
+    ctx.forEachSymtab([&](SymbolTable &symtab) {
+      loaded |= symtab.loadLocalImportMembers();
+    });
+    run();
+  }
+
   // Apply symbol renames for -wrap.
   ctx.forEachSymtab([](SymbolTable &symtab) {
     if (!symtab.wrapped.empty())

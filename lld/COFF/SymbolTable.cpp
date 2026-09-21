@@ -313,7 +313,7 @@ void SymbolTable::loadMinGWSymbols() {
   }
 }
 
-void SymbolTable::loadLocalImportMembers() {
+bool SymbolTable::loadLocalImportMembers() {
   std::vector<Symbol *> lazies;
   for (auto &i : symMap) {
     Symbol *sym = i.second;
@@ -333,6 +333,7 @@ void SymbolTable::loadLocalImportMembers() {
              << l->getFile()->getName() << " for __imp_" << l->getName();
     forceLazy(l);
   }
+  return !lazies.empty();
 }
 
 Defined *SymbolTable::impSymbol(StringRef name) {

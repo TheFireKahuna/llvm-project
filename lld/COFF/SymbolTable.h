@@ -72,8 +72,8 @@ public:
   void resolveRemainingUndefines(std::vector<Undefined *> &aliases);
 
   // Load the archive members that define the plain names behind undefined
-  // __imp_ symbols.
-  void loadLocalImportMembers();
+  // __imp_ symbols. Returns whether any member was loaded.
+  bool loadLocalImportMembers();
 
   // Decide for each reference to a locally defined symbol's import pointer
   // whether it is rewritten to reach the definition directly, keep the
