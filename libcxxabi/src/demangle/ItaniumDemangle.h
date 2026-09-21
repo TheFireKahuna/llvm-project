@@ -2624,6 +2624,19 @@ public:
 #endif
       char num[FloatData<Float>::max_demangled_size] = {0};
       int n = snprintf(num, sizeof(num), FloatData<Float>::spec, value);
+#ifdef _WIN32
+      // The Windows C library prints every hexadecimal digit of the mantissa
+      // for "%a"; print the shortest exact form, as other C libraries do.
+      if (char *p = static_cast<char *>(memchr(num, 'p', n))) {
+        char *q = p;
+        while (q[-1] == '0')
+          --q;
+        if (q[-1] == '.')
+          --q;
+        memmove(q, p, n - (p - num));
+        n -= static_cast<int>(p - q);
+      }
+#endif
       OB += std::string_view(num, n);
     }
   }
