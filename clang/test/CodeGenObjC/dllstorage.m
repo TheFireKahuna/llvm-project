@@ -1,6 +1,6 @@
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-msvc -fdeclspec -fobjc-runtime=ios -fobjc-exceptions -emit-llvm -o - %s | FileCheck -allow-deprecated-dag-overlap -check-prefix CHECK-IR %s
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-msvc -fdeclspec -fobjc-runtime=ios -fobjc-exceptions -emit-llvm -o - %s | FileCheck -allow-deprecated-dag-overlap -check-prefixes CHECK-IR,CHECK-IR-MSVC %s
 // RUN: %clang_cc1 -triple x86_64-unknown-windows-msvc -fdeclspec -fobjc-runtime=gnustep-2.0 -fobjc-exceptions -emit-llvm -o - %s | FileCheck -allow-deprecated-dag-overlap -check-prefix CHECK-NF %s
-// RUN: %clang_cc1 -triple i686-windows-itanium -fms-extensions -fobjc-runtime=macosx -fdeclspec -fobjc-exceptions -emit-llvm -o - %s | FileCheck -allow-deprecated-dag-overlap -check-prefix CHECK-IR %s
+// RUN: %clang_cc1 -triple i686-windows-itanium -fms-extensions -fobjc-runtime=macosx -fdeclspec -fobjc-exceptions -emit-llvm -o - %s | FileCheck -allow-deprecated-dag-overlap -check-prefixes CHECK-IR,CHECK-IR-ITANIUM %s
 // RUN: %clang_cc1 -triple i686-windows-itanium -fms-extensions -fobjc-runtime=objfw -fdeclspec -fobjc-exceptions -emit-llvm -o - %s | FileCheck -allow-deprecated-dag-overlap -check-prefix CHECK-FW %s
 
 // CHECK-IR-DAG: @_objc_empty_cache = external dllimport global %struct._objc_cache
@@ -140,7 +140,10 @@ __attribute__((__objc_exception__))
 @interface P : I
 @end
 
-// CHECK-IR-DAG: @"OBJC_EHTYPE_$_P" = external dso_local global %struct._objc_typeinfo
+// A declaration without dllimport may still be imported from another DLL
+// by the linker on Windows Itanium, so it is not dso_local there.
+// CHECK-IR-MSVC-DAG: @"OBJC_EHTYPE_$_P" = external dso_local global %struct._objc_typeinfo
+// CHECK-IR-ITANIUM-DAG: @"OBJC_EHTYPE_$_P" = external global %struct._objc_typeinfo
 
 @interface Q : M
 @end
