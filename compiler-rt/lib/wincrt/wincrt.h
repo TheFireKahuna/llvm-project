@@ -120,6 +120,9 @@ WINCRT_ALTERNATENAME(__cxa_call_terminate, abort)
 
 extern "C" {
 extern void *__dso_handle;
+// The filter ntdll runs for an exception no frame of a thread handled. The
+// SDK's ntdll.lib exports it; no SDK header declares it.
+void NTAPI RtlSetUnhandledExceptionFilter(PTOP_LEVEL_EXCEPTION_FILTER);
 extern _PIFV __xi_a[], __xi_z[]; // .CRT$XIA..XIZ: C initializers
 extern _PVFV __xc_a[], __xc_z[]; // .CRT$XCA..XCZ: C++ constructors
 extern _PVFV __xp_a[], __xp_z[]; // .CRT$XPA..XPZ: pre-terminators
@@ -156,9 +159,11 @@ void detachImage(bool Terminating);
                                 int(__cdecl *InitializeEnvironment)(void),
                                 int (*Invoke)(void));
 
-// STATUS_GCC_THROW: an Itanium exception with no handler reached a CRT frame.
-// Hand the unwind object to libc++abi so std::terminate sees the active
-// exception. Every other SEH exception continues to the next handler.
+// STATUS_GCC_THROW: an Itanium exception is searching for a handler and has
+// reached a frame that must not let it pass. Hand the unwind object to
+// libc++abi while nothing has been unwound, so std::terminate sees the
+// active exception with the thrower's frames intact. Every other SEH
+// exception continues to the next handler.
 inline int terminateFilter(EXCEPTION_POINTERS *Exception) {
   const EXCEPTION_RECORD *Record = Exception->ExceptionRecord;
   if (Record->ExceptionCode == 0x20474343 && Record->NumberParameters == 1 &&
@@ -168,10 +173,8 @@ inline int terminateFilter(EXCEPTION_POINTERS *Exception) {
   return EXCEPTION_CONTINUE_SEARCH;
 }
 
-#ifndef WINCRT_SHARED_CXX_RUNTIME
-// Callback boundary for the local registries. The shared runtime calls its
-// callbacks from noexcept functions instead, so libc++abi's terminate handler
-// runs with the escaping exception active.
+// A registered callback that exits by an exception terminates the program
+// ([basic.start.term], [support.start.term]).
 inline void invokeCallback(void (*Function)(void *), void *Object) {
   __try {
     Function(Object);
@@ -179,7 +182,6 @@ inline void invokeCallback(void (*Function)(void *), void *Object) {
     abort();
   }
 }
-#endif
 
 //===----------------------------------------------------------------------===//
 // Thread-local registry storage

@@ -147,7 +147,7 @@ struct __libcpp_beginthreadex_thunk_data {
   void* __arg;
 };
 
-static inline _LIBCPP_HIDE_FROM_ABI unsigned WINAPI __libcpp_beginthreadex_thunk(void* __raw_data) noexcept {
+static inline _LIBCPP_HIDE_FROM_ABI unsigned WINAPI __libcpp_beginthreadex_thunk(void* __raw_data) {
   auto* __data = static_cast<__libcpp_beginthreadex_thunk_data*>(__raw_data);
   auto* __func = __data->__func;
   void* __arg  = __data->__arg;

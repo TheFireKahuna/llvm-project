@@ -51,9 +51,46 @@ void runTerminators() {
 }
 
 int entryFilter(EXCEPTION_POINTERS *Exception) {
-  terminateFilter(Exception);
   // UCRT converts hardware exceptions into signal() dispatch for the program.
   return _seh_filter_exe(Exception->ExceptionRecord->ExceptionCode, Exception);
+}
+
+// Whether Address is a return address inside one of the two functions of
+// the image containing it that begin an Itanium exception's search for a
+// handler. _Unwind_RaiseException may be inlined into the rethrow entry.
+bool raisedByUnwinder(const void *Address) {
+  void *Base;
+  if (!RtlPcToFileHeader(const_cast<void *>(Address), &Base))
+    return false;
+  DWORD64 ImageBase;
+  const RUNTIME_FUNCTION *Entry = RtlLookupFunctionEntry(
+      reinterpret_cast<DWORD64>(Address), &ImageBase, nullptr);
+  if (!Entry)
+    return false;
+  DWORD64 Function = ImageBase + Entry->BeginAddress;
+  static const char *const Names[] = {"_Unwind_RaiseException",
+                                      "_Unwind_Resume_or_Rethrow"};
+  for (const char *Name : Names)
+    if (Function == reinterpret_cast<DWORD64>(
+                        GetProcAddress(static_cast<HMODULE>(Base), Name)))
+      return true;
+  return false;
+}
+
+// The filter ntdll runs for an exception no frame of a thread handled: the
+// thread start, the thread pool and the fiber start all consult the same
+// slot. An Itanium exception that gets here has no handler in the thread;
+// resuming the raise makes _Unwind_RaiseException return, and __cxa_throw
+// calls std::terminate with nothing unwound, as the ABI requires. Any other
+// exception goes where it went before: kernelbase runs the program's
+// SetUnhandledExceptionFilter filter, then Windows Error Reporting.
+LONG __stdcall rootFilter(EXCEPTION_POINTERS *Exception) {
+  const EXCEPTION_RECORD *Record = Exception->ExceptionRecord;
+  if (Record->ExceptionCode == 0x20474343 && Record->NumberParameters == 1 &&
+      Record->ExceptionInformation[0] &&
+      raisedByUnwinder(Record->ExceptionAddress))
+    return EXCEPTION_CONTINUE_EXECUTION;
+  return UnhandledExceptionFilter(Exception);
 }
 
 void writeStderr(const char *Text, size_t Length) {
@@ -71,6 +108,9 @@ bool initializeImage() {
 }
 
 void executableInit() {
+  // The executable is never unmapped, so the slot cannot come to point at
+  // unloaded code, as it could if a DLL's copy of this runtime installed it.
+  RtlSetUnhandledExceptionFilter(rootFilter);
   // UCRT accepts one callback per process. Register it before constructors,
   // which may call exit themselves.
   _register_thread_local_exe_atexit_callback(exitCallback);

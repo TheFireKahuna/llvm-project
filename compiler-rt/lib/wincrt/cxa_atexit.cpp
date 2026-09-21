@@ -266,12 +266,8 @@ HMODULE reference(const void *Address) {
   return Module;
 }
 
-void invoke(void (*Function)(void *), void *Object) noexcept {
-#ifdef WINCRT_SHARED_CXX_RUNTIME
-  Function(Object);
-#else
+void invoke(void (*Function)(void *), void *Object) {
   wincrt::invokeCallback(Function, Object);
-#endif
 }
 
 void quickInvoke(void *Function) {

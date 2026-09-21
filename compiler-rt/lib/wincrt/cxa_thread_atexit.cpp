@@ -112,12 +112,8 @@ void retain(const void *Address) {
   Modules = M;
 }
 
-void invoke(void (*Function)(void *), void *Object) noexcept {
-#ifdef WINCRT_SHARED_CXX_RUNTIME
-  Function(Object);
-#else
+void invoke(void (*Function)(void *), void *Object) {
   wincrt::invokeCallback(Function, Object);
-#endif
 }
 
 // Pops and runs every entry. Callbacks may register more; those run too.

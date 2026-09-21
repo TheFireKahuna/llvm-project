@@ -521,6 +521,15 @@ Windows Support
   clang-cl already did for these targets; ``-fno-stack-protector`` and
   ``/GS-`` turn it off.
 
+- On Windows Itanium targets an exception that no handler catches now reaches
+  ``std::terminate`` before any frame is unwound, with the exception active,
+  on every thread of the program, as on ELF targets. The C runtime installs
+  the filter the system consults when no frame of a thread handled an
+  exception; a filter installed with ``SetUnhandledExceptionFilter`` still
+  receives every other unhandled exception. ``_Unwind_ForcedUnwind`` now
+  runs ``__finally`` blocks and MSVC destructors in the frames it passes and
+  reaches the end of the thread's stack.
+
 LoongArch Support
 ^^^^^^^^^^^^^^^^^
 

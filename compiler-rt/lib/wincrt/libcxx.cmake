@@ -15,7 +15,7 @@ function(wincrt_configure_libcxx)
   set_source_files_properties(${wincrt_lifetime_sources}
     TARGET_DIRECTORY cxx_shared PROPERTIES
     COMPILE_DEFINITIONS WINCRT_SHARED_CXX_RUNTIME=1
-    COMPILE_OPTIONS "-mguard=cf")
+    COMPILE_OPTIONS "-mguard=cf;-fms-extensions")
   # The driver turns this into the guard modes the target supports.
   target_link_options(cxx_shared PRIVATE "-mguard=cf")
   if(CMAKE_CXX_COMPILER_TARGET MATCHES "^i.86-")
