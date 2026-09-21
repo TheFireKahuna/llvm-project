@@ -3,8 +3,9 @@
 # The loader fills in-place import slots in static data only. A reference
 # from code to imported data that the compiler took for local is an error, as
 # is a read-only slot in a section that cannot be laid out with the import
-# address table, and an addend in an image without startup code that applies
-# it. Without -import-slots the symbol is simply undefined.
+# address table, and a slot holding an offset in an image with no C
+# initializer table for the linker's code that writes it. Without
+# -import-slots the symbol is simply undefined.
 
 # RUN: split-file %s %t.dir
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-msvc %t.dir/lib.s -o %t.lib.obj
@@ -20,7 +21,7 @@
 
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-msvc %t.dir/addend.s -o %t.addend.obj
 # RUN: not lld-link -import-slots -entry:main -subsystem:console -out:%t.addend.exe %t.addend.obj %t.lib.lib 2>&1 | FileCheck --check-prefix=ADDEND %s
-# ADDEND: error: {{.*}}addend.obj: static data holds the address of variable, imported from import-slots-errors.s.tmp.lib.dll, plus 8; the loader writes the plain address, and the image has no startup code that applies the offset (__import_fixups_start)
+# ADDEND: error: {{.*}}addend.obj: static data holds the address of variable, imported from import-slots-errors.s.tmp.lib.dll, plus 8; the loader writes only the plain address, and the image has no C initializer table (__xi_a) to write it from
 
 # RUN: not lld-link -entry:main -subsystem:console -out:%t.plain.exe %t.addend.obj %t.lib.lib 2>&1 | FileCheck --check-prefix=PLAIN %s
 # PLAIN: error: undefined symbol: variable

@@ -138,9 +138,6 @@ namespace wincrt {
 enum class RuntimeError : int { SpaceArg = 8, SpaceEnv = 9, CrtNotInit = 30 };
 [[noreturn]] void fatalError(RuntimeError);
 
-// Adds the linker's recorded addends to the import slots the loader filled
-// (import_fixups.cpp). Idempotent.
-void applyImportFixups();
 // Points this image's weak definitions at the program's, where it replaced
 // any of them (weak_interposition.cpp). Idempotent.
 void bindWeakDefinitions();

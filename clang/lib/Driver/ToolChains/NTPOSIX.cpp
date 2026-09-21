@@ -339,8 +339,8 @@ void ntposix::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   // Static data that holds the address of a symbol from another DLL is
   // filled by the loader through an import descriptor of its own. A
   // definition in the link takes precedence over an import library's entry
-  // for the same name. llvm-libc startup does not apply the addend records
-  // yet, so lld rejects an addend for lack of __import_fixups_start.
+  // for the same name. A word holding an offset as well is written by lld's
+  // code from the C initializer table, which startup must run.
   CmdArgs.push_back("-import-slots");
 
   // Block all MSVC CRT libraries — NT-POSIX never uses them.

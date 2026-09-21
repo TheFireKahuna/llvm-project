@@ -29,7 +29,6 @@ INIT_ONCE InitializeOnce = INIT_ONCE_STATIC_INIT;
 LONG ExitCleanupRan;
 
 BOOL __stdcall initializeOnce(PINIT_ONCE, void *, void **) {
-  applyImportFixups();
   bindWeakDefinitions();
   if (_initterm_e(__xi_a, __xi_z) != 0)
     return FALSE;

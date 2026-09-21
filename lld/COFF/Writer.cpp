@@ -242,7 +242,7 @@ private:
   void createRuntimePseudoRelocs();
   bool findImportSlots(SectionChunk *sc, StringRef name);
   void addImportSlots();
-  void createImportFixups();
+  void createImportFill();
   void createWeakPublishTable();
   void dropWeakInterposition();
   void padWeakInterposition(uint8_t *buf);
@@ -315,6 +315,9 @@ private:
   // keyed by the DLL order of their first slot.
   std::vector<ImportSlot> importSlots;
   llvm::DenseMap<SectionChunk *, int> iatSlotChunks;
+  // Slots whose word holds an offset, which ImportFillChunk writes.
+  std::vector<ImportSlot> filledSlots;
+  ImportFillChunk *importFill = nullptr;
   DelayLoadContents delayIdata;
   bool setNoSEHCharacteristic = false;
   uint32_t tlsAlignment = 0;
@@ -1084,16 +1087,24 @@ void Writer::locateImportTables() {
 }
 
 // Records the in-place import slots of a chunk. A read-only chunk holding one
-// is held back for the import address table region (addSyntheticIdata). Only
-// a chunk from a compiler-named read-only section can move there: a
+// is held back for the import address table region (addSyntheticIdata), or,
+// if one of its slots holds an offset, moved to .data for ImportFillChunk to
+// write. Only a chunk from a compiler-named read-only section can move: a
 // user-named or $-grouped section is iterated by its bounds.
 bool Writer::findImportSlots(SectionChunk *sc, StringRef name) {
   size_t first = importSlots.size();
   sc->getImportSlots(importSlots);
-  if (importSlots.size() == first ||
-      (sc->getOutputCharacteristics() & IMAGE_SCN_MEM_WRITE))
+  if (importSlots.size() == first)
     return false;
   DefinedImportData *sym = importSlots[first].sym;
+  auto withOffset =
+      std::stable_partition(importSlots.begin() + first, importSlots.end(),
+                            [](const ImportSlot &s) { return s.addend == 0; });
+  bool filled = withOffset != importSlots.end();
+  filledSlots.insert(filledSlots.end(), withOffset, importSlots.end());
+  importSlots.erase(withOffset, importSlots.end());
+  if (sc->getOutputCharacteristics() & IMAGE_SCN_MEM_WRITE)
+    return false;
   if (name != ".rdata") {
     StringRef symName = sym->getName();
     symName.consume_front("__imp_");
@@ -1105,8 +1116,41 @@ bool Writer::findImportSlots(SectionChunk *sc, StringRef name) {
                 "address in code";
     return false;
   }
-  iatSlotChunks[sc] = ctx.config.dllOrder[sym->getDLLName().lower()];
+  if (filled)
+    createPartialSection(".data", IMAGE_SCN_CNT_INITIALIZED_DATA |
+                                      IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE)
+        ->chunks.push_back(sc);
+  else
+    iatSlotChunks[sc] = ctx.config.dllOrder[sym->getDLLName().lower()];
   return true;
+}
+
+// Creates the code that writes the slots holding an offset (ImportFillChunk)
+// and its C initializer table entry.
+void Writer::createImportFill() {
+  if (filledSlots.empty())
+    return;
+  auto fail = [&](StringRef why) {
+    for (const ImportSlot &s : filledSlots) {
+      StringRef symName = s.sym->getName();
+      symName.consume_front("__imp_");
+      Err(ctx) << toString(s.chunk->file) << ": static data holds the address "
+               << "of " << symName << ", imported from " << s.sym->getDLLName()
+               << ", plus " << s.addend << "; the loader writes only the plain "
+               << "address, and " << why;
+    }
+  };
+  if (ctx.config.machine != AMD64)
+    return fail("the linker writes the offset only on x86-64");
+  Symbol *xi = ctx.symtab.findUnderscore("__xi_a");
+  if (!xi || !isa<Defined>(xi))
+    return fail("the image has no C initializer table (__xi_a) to write it "
+                "from");
+  importFill = make<ImportFillChunk>(filledSlots);
+  // After .CRT$XIA, where the table begins, and before every C initializer.
+  createPartialSection(".CRT$XIB",
+                       IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ)
+      ->chunks.push_back(make<ImportFillEntryChunk>(ctx, importFill));
 }
 
 // Groups the in-place import slots into runs (IdataContents::SlotRun). The
@@ -1267,6 +1311,8 @@ void Writer::createSections() {
     pSec->chunks.push_back(c);
   }
 
+  createImportFill();
+
   fixPartialSectionChars(".rsrc", data | r);
   fixPartialSectionChars(".edata", data | r);
   // Even in non MinGW cases, we might need to link against GNU import
@@ -1286,6 +1332,9 @@ void Writer::createSections() {
 
   for (auto thunk : ctx.symtab.sameAddressThunks)
     wowthkSec->addChunk(thunk);
+
+  if (importFill)
+    textSec->addChunk(importFill);
 
   // Then create an OutputSection for each section.
   // '$' and all following characters in input section names are
@@ -1442,7 +1491,6 @@ void Writer::createMiscChunks() {
 
   if (config->autoImport)
     createRuntimePseudoRelocs();
-  createImportFixups();
   createWeakPublishTable();
   collectImportFuseCalls();
 
@@ -2400,6 +2448,9 @@ void Writer::createGuardCFTables() {
   for (const ImportSlot &s : importSlots)
     if (s.sym->file->thunkSym)
       giatsRVASet.insert({s.chunk, s.offset});
+  // The C runtime calls ImportFillChunk through its initializer table.
+  if (importFill)
+    addressTakenSyms.insert({importFill, 0});
 
   // For each entry in the .giats table, check if it has a corresponding load
   // thunk (e.g. because the DLL that defines it will be delay-loaded) and, if
@@ -2667,42 +2718,6 @@ void Writer::createRuntimePseudoRelocs() {
     replaceSymbol<DefinedSynthetic>(headSym, headSym->getName(), table);
     replaceSymbol<DefinedSynthetic>(endSym, endSym->getName(), endOfList);
   });
-}
-
-// Records the addend of every in-place import slot that has one between
-// __import_fixups_start and __import_fixups_end (ImportFixupChunk), for the
-// startup code of an image that names them. Without records both symbols stay
-// absolute and equal, an empty range.
-void Writer::createImportFixups() {
-  std::vector<ImportSlot> fixups;
-  for (const ImportSlot &s : importSlots)
-    if (s.addend)
-      fixups.push_back(s);
-  if (fixups.empty())
-    return;
-  Symbol *start = ctx.symtab.findUnderscore("__import_fixups_start");
-  Symbol *end = ctx.symtab.findUnderscore("__import_fixups_end");
-  if (llvm::none_of(ctx.objFileInstances, [&](ObjFile *f) {
-        return llvm::is_contained(f->getSymbols(), start);
-      })) {
-    for (const ImportSlot &s : fixups) {
-      StringRef symName = s.sym->getName();
-      symName.consume_front("__imp_");
-      Err(ctx) << toString(s.chunk->file) << ": static data holds the address "
-               << "of " << symName << ", imported from " << s.sym->getDLLName()
-               << ", plus " << s.addend
-               << "; the loader writes the plain address, and the image has "
-                  "no startup code that applies the offset "
-                  "(__import_fixups_start)";
-    }
-    return;
-  }
-  auto *table = make<ImportFixupChunk>(std::move(fixups));
-  rdataSec->addChunk(table);
-  auto *endOfList = make<EmptyChunk>();
-  rdataSec->addChunk(endOfList);
-  replaceSymbol<DefinedSynthetic>(start, start->getName(), table);
-  replaceSymbol<DefinedSynthetic>(end, end->getName(), endOfList);
 }
 
 // The table a program publishes for the libraries it loads (WeakPublishChunk).

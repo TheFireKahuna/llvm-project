@@ -9,9 +9,8 @@
 # grouped by DLL so that they form runs, and the IAT data directory covers
 # them, since the loader makes only that range writable while it resolves
 # imports. A slot that holds a function's address is listed in the Control
-# Flow Guard address-taken IAT table. An addend is recorded between
-# __import_fixups_start and __import_fixups_end for the image's startup code.
-# A function from a delay-loaded DLL keeps its thunk.
+# Flow Guard address-taken IAT table. A function from a delay-loaded DLL keeps
+# its thunk. A slot that holds an offset as well is import-slots-fill.s.
 
 # RUN: split-file %s %t.dir
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-msvc %t.dir/lib.s -o %t.lib.obj
@@ -27,15 +26,15 @@
 # RUN: llvm-nm %t.exe | FileCheck --check-prefix=NM %s
 
 # The address tables of the three DLLs (3 + 1, 1 + 1 and 1 + 1 words), then
-# the read-only slot chunks: ro_run and ro_addend of lib.dll, one run across
-# their chunk boundary (2 + 1 words), then ro_other (1 word).
-# CHECK:      IATRVA: 0x22B8
-# CHECK-NEXT: IATSize: 0x60
+# the read-only slot chunks: ro_run of lib.dll (2 + 1 words), then ro_other
+# (1 word).
+# CHECK:      IATRVA: 0x2270
+# CHECK-NEXT: IATSize: 0x58
 
 # CHECK:      Import {
 # CHECK-NEXT:   Name: import-slots.s.tmp.lib.dll
 # CHECK-NEXT:   ImportLookupTableRVA:
-# CHECK-NEXT:   ImportAddressTableRVA: 0x22B8
+# CHECK-NEXT:   ImportAddressTableRVA: 0x2270
 # CHECK-NEXT:   Symbol: func (0)
 # CHECK-NEXT:   Symbol: func2 (0)
 # CHECK-NEXT:   Symbol: variable (0)
@@ -50,50 +49,43 @@
 # CHECK-NEXT: Import {
 # CHECK-NEXT:   Name: import-slots.s.tmp.lib.dll
 # CHECK-NEXT:   ImportLookupTableRVA:
-# CHECK-NEXT:   ImportAddressTableRVA: 0x3018
-# CHECK-NEXT:   Symbol: variable (0)
-# CHECK-NEXT: }
-# CHECK-NEXT: Import {
-# CHECK-NEXT:   Name: import-slots.s.tmp.lib.dll
-# CHECK-NEXT:   ImportLookupTableRVA:
-# CHECK-NEXT:   ImportAddressTableRVA: 0x22F8
+# CHECK-NEXT:   ImportAddressTableRVA: 0x22B0
 # CHECK-NEXT:   Symbol: func (0)
 # CHECK-NEXT:   Symbol: variable (0)
-# CHECK-NEXT:   Symbol: variable (0)
 # CHECK-NEXT: }
 # CHECK-NEXT: Import {
 # CHECK-NEXT:   Name: import-slots.s.tmp.delay.dll
 # CHECK-NEXT:   ImportLookupTableRVA:
-# CHECK-NEXT:   ImportAddressTableRVA: 0x22D8
+# CHECK-NEXT:   ImportAddressTableRVA: 0x2290
 # CHECK-NEXT:   Symbol: delayfn (0)
 # CHECK-NEXT: }
 # CHECK-NEXT: Import {
 # CHECK-NEXT:   Name: import-slots.s.tmp.delay.dll
-# CHECK-NEXT:   ImportLookupTableRVA:
-# CHECK-NEXT:   ImportAddressTableRVA: 0x3028
-# CHECK-NEXT:   Symbol: delayfn (0)
-# CHECK-NEXT: }
-# CHECK-NEXT: Import {
-# CHECK-NEXT:   Name: import-slots.s.tmp.other.dll
-# CHECK-NEXT:   ImportLookupTableRVA:
-# CHECK-NEXT:   ImportAddressTableRVA: 0x22E8
-# CHECK-NEXT:   Symbol: other (0)
-# CHECK-NEXT: }
-# CHECK-NEXT: Import {
-# CHECK-NEXT:   Name: import-slots.s.tmp.other.dll
 # CHECK-NEXT:   ImportLookupTableRVA:
 # CHECK-NEXT:   ImportAddressTableRVA: 0x3020
+# CHECK-NEXT:   Symbol: delayfn (0)
+# CHECK-NEXT: }
+# CHECK-NEXT: Import {
+# CHECK-NEXT:   Name: import-slots.s.tmp.other.dll
+# CHECK-NEXT:   ImportLookupTableRVA:
+# CHECK-NEXT:   ImportAddressTableRVA: 0x22A0
 # CHECK-NEXT:   Symbol: other (0)
 # CHECK-NEXT: }
 # CHECK-NEXT: Import {
 # CHECK-NEXT:   Name: import-slots.s.tmp.other.dll
 # CHECK-NEXT:   ImportLookupTableRVA:
-# CHECK-NEXT:   ImportAddressTableRVA: 0x2310
+# CHECK-NEXT:   ImportAddressTableRVA: 0x3018
+# CHECK-NEXT:   Symbol: other (0)
+# CHECK-NEXT: }
+# CHECK-NEXT: Import {
+# CHECK-NEXT:   Name: import-slots.s.tmp.other.dll
+# CHECK-NEXT:   ImportLookupTableRVA:
+# CHECK-NEXT:   ImportAddressTableRVA: 0x22C0
 # CHECK-NEXT:   Symbol: other (0)
 # CHECK-NEXT: }
 
-# Base relocations: the table pointer in the load configuration and the two
-# words of `fixups`; none for a slot.
+# Base relocations: only the table pointer in the load configuration; none
+# for a slot.
 # CHECK:      BaseReloc [
 # CHECK-NEXT:   Entry {
 # CHECK-NEXT:     Type: DIR64
@@ -103,47 +95,31 @@
 # CHECK-NEXT:     Type: ABSOLUTE
 # CHECK-NEXT:     Address: 0x2000
 # CHECK-NEXT:   }
-# CHECK-NEXT:   Entry {
-# CHECK-NEXT:     Type: DIR64
-# CHECK-NEXT:     Address: 0x3030
-# CHECK-NEXT:   }
-# CHECK-NEXT:   Entry {
-# CHECK-NEXT:     Type: DIR64
-# CHECK-NEXT:     Address: 0x3038
-# CHECK-NEXT:   }
 # CHECK-NEXT: ]
 
 # The four slots that hold a function's address.
 # CHECK:      GuardAddressTakenIatEntryCount: 4
 # CHECK:      GuardIatTable [
-# CHECK-NEXT:   0x1400022F8
+# CHECK-NEXT:   0x1400022B0
 # CHECK-NEXT:   0x140003000
 # CHECK-NEXT:   0x140003008
-# CHECK-NEXT:   0x140003028
+# CHECK-NEXT:   0x140003020
 # CHECK-NEXT: ]
 
-# The fixup records: the read-only slot ro_addend, flagged 1, then the
-# writable rw_addend, each with the addend 8. Every slot holds its import's
-# lookup entry, the RVA of the hint/name record: func 0x2318, func2 0x2320,
-# variable 0x2328, delayfn 0x2334, other 0x233E.
+# Every slot holds its import's lookup entry, the RVA of the hint/name
+# record: func 0x22C8, func2 0x22D0, variable 0x22D8, delayfn 0x22E4, other
+# 0x22EE.
 # CONTENTS:      Contents of section .rdata:
-# CONTENTS:      140002110 {{[0-9a-f]+}} {{[0-9a-f]+}} 08230000 01000000
-# CONTENTS-NEXT: 140002120 08000000 00000000 18300000 00000000
-# CONTENTS-NEXT: 140002130 08000000 00000000
-# CONTENTS:      1400022f0 00000000 00000000 18230000 00000000
-# CONTENTS-NEXT: 140002300 28230000 00000000 28230000 00000000
-# CONTENTS-NEXT: 140002310 3e230000 00000000 00006675 6e630000
+# CONTENTS:      1400022a0 ee220000 00000000 00000000 00000000
+# CONTENTS-NEXT: 1400022b0 c8220000 00000000 d8220000 00000000
+# CONTENTS-NEXT: 1400022c0 ee220000 00000000
 # CONTENTS:      Contents of section .data:
-# CONTENTS-NEXT: 140003000 20230000 00000000 18230000 00000000
-# CONTENTS-NEXT: 140003010 00000000 00000000 28230000 00000000
-# CONTENTS-NEXT: 140003020 3e230000 00000000 34230000 00000000
-# CONTENTS-NEXT: 140003030 18210040 01000000 38210040 01000000
+# CONTENTS-NEXT: 140003000 d0220000 00000000 c8220000 00000000
+# CONTENTS-NEXT: 140003010 00000000 00000000 ee220000 00000000
+# CONTENTS-NEXT: 140003020 e4220000 00000000
 
-# NM-DAG: 140002118 R __import_fixups_start
-# NM-DAG: 140002138 R __import_fixups_end
-# NM-DAG: 1400022f8 R ro_run
-# NM-DAG: 140002308 R ro_addend
-# NM-DAG: 140002310 R ro_other
+# NM-DAG: 1400022b0 R ro_run
+# NM-DAG: 1400022c0 R ro_other
 
 # RUN: lld-link -import-slots -entry:main -subsystem:console -debug:symtab -out:%t.delayed.exe %t.main.obj %t.lib.lib %t.other.lib %t.delay.lib -delayload:%basename_t.tmp.delay.dll -alternatename:__delayLoadHelper2=main
 # RUN: llvm-readobj --coff-imports --coff-basereloc %t.delayed.exe | FileCheck --check-prefix=DELAY %s
@@ -156,7 +132,7 @@
 # DELAY:      BaseReloc [
 # DELAY-NEXT:   Entry {
 # DELAY-NEXT:     Type: DIR64
-# DELAY-NEXT:     Address: 0x3028
+# DELAY-NEXT:     Address: 0x3020
 
 #--- lib.s
 .text
@@ -230,23 +206,14 @@ ro_run:
 ro_other:
   .quad other
 
-.section .rdata,"dr",one_only,ro_addend
-.p2align 3
-.globl ro_addend
-ro_addend:
-  .quad variable+8
-
-# Writable slots: a run of two, a plain word that ends it, a slot with an
-# addend, and one of each other DLL.
+# Writable slots: a run of two, a plain word that ends it, and one of each
+# other DLL.
 .data
 .globl rw_run
 rw_run:
   .quad func2
   .quad func
   .quad 0
-.globl rw_addend
-rw_addend:
-  .quad variable+8
 .globl rw_other
 rw_other:
   .quad other
@@ -254,7 +221,3 @@ rw_other:
 rw_delay:
   .quad delayfn
 
-.globl fixups
-fixups:
-  .quad __import_fixups_start
-  .quad __import_fixups_end

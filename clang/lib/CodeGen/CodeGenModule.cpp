@@ -6333,6 +6333,41 @@ static void emitSubobjectNames(CodeGenModule &CGM, const VarDecl *D,
   }
 }
 
+// Whether an initializer holds the address of a variable another image may
+// define plus an offset that is not one of its subobjects.
+static bool holdsImportedOffset(const llvm::DataLayout &DL,
+                                const llvm::Constant *C) {
+  if (isa<llvm::GlobalValue>(C))
+    return false;
+  if (const auto *GEP = dyn_cast<llvm::GEPOperator>(C)) {
+    const auto *GV = dyn_cast<llvm::GlobalVariable>(
+        GEP->getPointerOperand()->stripPointerCasts());
+    llvm::APInt Offset(DL.getIndexTypeSizeInBits(GEP->getType()), 0);
+    if (GV && !GV->isDSOLocal() && GEP->accumulateConstantOffset(DL, Offset) &&
+        !Offset.isZero())
+      return true;
+  }
+  for (const llvm::Use &Op : C->operands())
+    if (holdsImportedOffset(DL, cast<llvm::Constant>(Op)))
+      return true;
+  return false;
+}
+
+// If that variable is in another image, the loader cannot write such a word,
+// and the linker writes it from code before any initializer, moving the
+// section holding it to writable data. A section of its own keeps that to the
+// one constant, as MSVC's compiler, which initializes it at startup, makes
+// only it writable.
+static void placeImportedOffsetApart(CodeGenModule &CGM,
+                                     llvm::GlobalVariable *GV) {
+  if (!GV->isConstant() || GV->hasComdat() || GV->hasSection() ||
+      !holdsImportedOffset(CGM.getDataLayout(), GV->getInitializer()))
+    return;
+  llvm::Comdat *C = CGM.getModule().getOrInsertComdat(GV->getName());
+  C->setSelectionKind(llvm::Comdat::NoDeduplicate);
+  GV->setComdat(C);
+}
+
 llvm::Constant *CodeGenModule::getSubobjectName(const VarDecl *D,
                                                 llvm::Constant *Addr,
                                                 CharUnits Offset) {
@@ -6652,8 +6687,10 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D,
 
   SanitizerMD->reportGlobal(GV, *D, NeedsGlobalCtor);
 
-  if (getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+  if (getTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
     emitSubobjectNames(*this, D, GV);
+    placeImportedOffsetApart(*this, GV);
+  }
 
   // Emit global variable debug information.
   if (CGDebugInfo *DI = getModuleDebugInfo())

@@ -11,6 +11,7 @@
 // REQUIRES: windows, crt
 
 #include <stdio.h>
+#include <windows.h>
 
 // No visibility attribute and no __declspec anywhere.
 class Plain {
@@ -40,12 +41,6 @@ int Late::value() const { return 9; }
 const Plain RoObject;
 Plain RwObject;
 
-struct ImportFixup {
-  unsigned Rva, Flags;
-  long long Addend;
-};
-extern "C" const ImportFixup __import_fixups_start[], __import_fixups_end[];
-
 static const void *vptrOf(const void *Object) {
   return *reinterpret_cast<const void *const *>(Object);
 }
@@ -61,8 +56,13 @@ int main() {
   // CHECK-NEXT: defined here: 9
   printf("defined here: %d\n", LateObject.value());
 
-  // CHECK-NEXT: fixups: 0
-  printf("fixups: %d\n", (int)(__import_fixups_end - __import_fixups_start));
+  // Nothing is written at start-up, which would move the object to writable
+  // data.
+  MEMORY_BASIC_INFORMATION Info;
+  VirtualQuery(&RoObject, &Info, sizeof(Info));
+  // CHECK-NEXT: const object: read-only
+  printf("const object: %s\n",
+         Info.Protect == PAGE_READONLY ? "read-only" : "writable");
   return 0;
 }
 

@@ -34,6 +34,11 @@ extern W wobj;
 extern D objs[2];
 extern __attribute__((visibility("hidden"))) D hidden_obj;
 
+// The section of its own for cpelem, below; none for cpm or cphidden.
+// CHECK:     $cpelem = comdat nodeduplicate
+// CHECK-NOT: $cpm = comdat
+// CHECK-NOT: $cphidden = comdat
+
 // A base, a member, a member of a member, an array member itself, and a
 // virtual base in the complete object.
 // CHECK: @pb = dso_local global ptr @"obj$so4"
@@ -56,6 +61,20 @@ int *pelem = &obj.arr[2];
 int *pinelem = &obj.inarr[1].y;
 B *parray = &objs[1];
 B *phidden = &hidden_obj;
+
+// If the variable is in another image, the linker writes a constant holding
+// an offset from code and moves its section to writable data, so the constant
+// gets a section of its own. One naming a subobject, or reaching a variable
+// directly, stays with the rest.
+// CHECK: @cpelem = dso_local constant ptr getelementptr (i8, ptr @obj, i64 28), comdat, align 8
+// CHECK: @cpm = dso_local constant ptr @"obj$so8", align 8
+// CHECK: @cphidden = dso_local constant ptr getelementptr (i8, ptr @hidden_obj, i64 4), align 8
+extern int *const cpelem;
+int *const cpelem = &obj.arr[2];
+extern int *const cpm;
+int *const cpm = &obj.m;
+extern B *const cphidden;
+B *const cphidden = &hidden_obj;
 
 // The definitions come after the uses, so each name replaces the declaration
 // the uses left behind. Every distinct non-zero offset gets one, whether or

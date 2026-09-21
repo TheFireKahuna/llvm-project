@@ -201,4 +201,20 @@ void bindWeakDefinitions() {
       __fastfail(FAST_FAIL_MRDATA_MODIFIED);
 }
 
+namespace {
+
+void NTAPI tlsCallback(void *, DWORD Reason, void *) {
+  // Before any code of this image can allocate through a weak definition the
+  // program replaced and release through one it did not.
+  if (Reason == DLL_PROCESS_ATTACH)
+    bindWeakDefinitions();
+}
+
+} // namespace
 } // namespace wincrt
+
+// A TLS callback of a DLL runs before its entry point, ahead of any user
+// callback that could allocate.
+#pragma section(".CRT$XLB", long, read)
+extern "C" __declspec(allocate(".CRT$XLB"))
+    PIMAGE_TLS_CALLBACK __wincrt_weak_definitions_callback = wincrt::tlsCallback;

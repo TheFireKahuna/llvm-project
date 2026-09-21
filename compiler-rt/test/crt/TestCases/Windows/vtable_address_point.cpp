@@ -52,14 +52,6 @@ Derived RwDerived;
 extern "C" const void *baseAddressPoint();
 extern "C" const void *derivedAddressPoint();
 
-// The linker records a slot whose value needs an addend added to it. A vtable
-// address point needs none, so a program that holds only those has no records.
-struct ImportFixup {
-  DWORD Rva, Flags;
-  LONGLONG Addend;
-};
-extern "C" const ImportFixup __import_fixups_start[], __import_fixups_end[];
-
 int main() {
   // CHECK: address points: base 1, derived 1
   printf("address points: base %d, derived %d\n",
@@ -70,9 +62,8 @@ int main() {
   // CHECK: virtual: 1 2
   printf("virtual: %d %d\n", Objects[0]->value(), Objects[1]->value());
 
-  // CHECK: fixups: 0
-  printf("fixups: %d\n", (int)(__import_fixups_end - __import_fixups_start));
-
+  // A slot needing an offset would be written at start-up and move the object
+  // to writable data; an address point needs none.
   MEMORY_BASIC_INFORMATION Info;
   VirtualQuery(&RoBase, &Info, sizeof(Info));
   // CHECK: const object: read-only

@@ -68,7 +68,6 @@ set(WINCRT_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/loadconfig.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/purecall.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/delayload.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/import_fixups.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/weak_interposition.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/ucrt_stdio_options.c
   ${CMAKE_CURRENT_SOURCE_DIR}/ucrt_stdio_marker.c

@@ -2616,10 +2616,6 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     // Needed for MSVC 2019 16.8 CRT.
     symtab.addAbsolute(symtab.mangle("__guard_eh_cont_count"), 0);
     symtab.addAbsolute(symtab.mangle("__guard_eh_cont_table"), 0);
-    // The addends of in-place import slots, for startup code that applies
-    // them (Writer::createImportFixups).
-    symtab.addAbsolute(symtab.mangle("__import_fixups_start"), 0);
-    symtab.addAbsolute(symtab.mangle("__import_fixups_end"), 0);
     // The weak definitions a program may supersede, for the startup code that
     // binds them (Writer::createWeakPublishTable).
     symtab.addAbsolute(symtab.mangle("__wkintp_start"), 0);

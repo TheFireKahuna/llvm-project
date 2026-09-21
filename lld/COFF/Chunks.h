@@ -232,8 +232,8 @@ public:
 // One word of static data that holds the address of an imported symbol in
 // place: the loader writes the address there through an import descriptor of
 // its own, so the word needs no base relocation and no thunk. The loader adds
-// nothing, so a non-zero addend is recorded for the image's startup code
-// (ImportFixupChunk).
+// nothing, so a word with a non-zero addend is written by the image's own
+// code instead (ImportFillChunk).
 class ImportSlot {
 public:
   ImportSlot(SectionChunk *chunk, uint32_t offset, DefinedImportData *sym,
@@ -329,9 +329,12 @@ public:
   void getRuntimePseudoRelocs(std::vector<RuntimePseudoReloc> &res);
 
   // The import whose address an absolute word-sized relocation in data holds,
-  // or null. getImportSlot narrows it to imports the loader fills in place.
+  // or null. getImportSlot narrows it to imports the loader fills in place;
+  // getFilledImportSlot to those whose word also holds an offset, which the
+  // image's own code writes (ImportFillChunk).
   DefinedImportData *getImportSlotTarget(const coff_relocation &rel) const;
   DefinedImportData *getImportSlot(const coff_relocation &rel) const;
+  DefinedImportData *getFilledImportSlot(const coff_relocation &rel) const;
   void getImportSlots(std::vector<ImportSlot> &res);
 
   // Called if the garbage collector decides to not include this chunk
@@ -990,19 +993,38 @@ private:
   std::vector<RuntimePseudoReloc> relocs;
 };
 
-// The addends of in-place import slots, as {u32 slot RVA, u32 flags, i64
-// addend} records sorted by RVA. Flag 1 marks a slot in read-only memory. The
-// image's startup code adds each addend to the address the loader wrote.
-class ImportFixupChunk : public NonSectionChunk {
+// Writes each import slot whose word holds an imported address plus an offset,
+// which the loader cannot write: it reads the address from the import's entry
+// in the import address table, adds the offset and stores the sum. The image
+// calls it as a C initializer, before any other. A slot it writes lives in
+// writable data, as the one MSVC's compiler initializes at startup does.
+// x86-64 only; a leaf that needs no unwind information.
+class ImportFillChunk : public NonSectionCodeChunk {
 public:
-  ImportFixupChunk(std::vector<ImportSlot> slots) : slots(std::move(slots)) {
-    setAlignment(8);
-  }
-  size_t getSize() const override { return slots.size() * 16; }
+  ImportFillChunk(std::vector<ImportSlot> slots);
+  size_t getSize() const override { return size; }
+  MachineTypes getMachine() const override { return AMD64; }
   void writeTo(uint8_t *buf) const override;
 
 private:
   std::vector<ImportSlot> slots;
+  size_t size;
+};
+
+// The C initializer table entry that calls ImportFillChunk.
+class ImportFillEntryChunk : public NonSectionChunk {
+public:
+  ImportFillEntryChunk(COFFLinkerContext &ctx, Chunk *code)
+      : code(code), ctx(ctx) {
+    setAlignment(8);
+  }
+  size_t getSize() const override { return 8; }
+  void writeTo(uint8_t *buf) const override;
+  void getBaserels(std::vector<Baserel> *res) override;
+
+private:
+  Chunk *code;
+  COFFLinkerContext &ctx;
 };
 
 // One export of an executable, by the 128-bit hash of the name it carries in

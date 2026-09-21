@@ -66,13 +66,14 @@ COFF Improvements
   an import descriptor whose address table is the data itself, so the word
   needs neither a thunk nor a runtime pseudo relocation, and pointer identity
   holds across images. Read-only slots are laid out with the import address
-  table, which the IAT data directory covers. A non-zero addend is recorded
-  between ``__import_fixups_start`` and ``__import_fixups_end`` for the
-  image's startup code. A vtable entry keeps the import thunk, as it does on
-  MSVC: it is only ever called through, and a vtable cannot be reordered to
-  bring the entries of one DLL together. The option implies ``-auto-import``;
-  a definition of ``X`` in the link is then preferred to an import library's
-  entry for it.
+  table, which the IAT data directory covers. A vtable entry is a slot like
+  any other, so it holds the function's own address; an import thunk that
+  only slots name is left out. A word holding an offset as well, which the
+  loader cannot write, is written on x86-64 by a function the linker adds as
+  the first C initializer, and a read-only one moves to ``.data``, as the
+  pointer MSVC's compiler initializes at startup is writable. The option
+  implies ``-auto-import``; a definition of ``X`` in the link is then
+  preferred to an import library's entry for it.
 
 * ``-delayload-protect`` gives the delay-load import address table a section
   of its own, as link.exe does, and marks the image
