@@ -2293,8 +2293,14 @@ ConstantLValueEmitter::tryEmitBase(const APValue::LValueBase &base) {
     if (const auto *VD = dyn_cast<VarDecl>(D)) {
       // We can never refer to a variable with local storage.
       if (!VD->hasLocalStorage()) {
-        if (VD->isFileVarDecl() || VD->hasExternalStorage())
-          return CGM.GetAddrOfGlobalVar(VD);
+        if (VD->isFileVarDecl() || VD->hasExternalStorage()) {
+          llvm::Constant *Addr = CGM.GetAddrOfGlobalVar(VD);
+          if (hasNonZeroOffset() && !DestType.getPointerAuth())
+            if (llvm::Constant *C =
+                    CGM.getSubobjectName(VD, Addr, Value.getLValueOffset()))
+              return ConstantLValue(C, /*applied offset*/ true);
+          return Addr;
+        }
 
         if (VD->isLocalVarDecl()) {
           return CGM.getOrCreateStaticVarDecl(

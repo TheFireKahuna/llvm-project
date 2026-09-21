@@ -1056,6 +1056,11 @@ public:
                                      ForDefinition_t IsForDefinition
                                        = NotForDefinition);
 
+  /// Return the name another image exports for the subobject of D at Offset,
+  /// or null if the address is reached as Addr plus Offset.
+  llvm::Constant *getSubobjectName(const VarDecl *D, llvm::Constant *Addr,
+                                   CharUnits Offset);
+
   /// Return the address of the given function. If Ty is non-null, then this
   /// function will use the specified type if it has to create it.
   llvm::Constant *GetAddrOfFunction(GlobalDecl GD, llvm::Type *Ty = nullptr,

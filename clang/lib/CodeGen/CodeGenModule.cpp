@@ -35,6 +35,7 @@
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/Mangle.h"
+#include "clang/AST/RecordLayout.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/StmtVisitor.h"
 #include "clang/Basic/Builtins.h"
@@ -6222,6 +6223,142 @@ const ABIInfo &CodeGenModule::getABIInfo() {
 }
 
 /// Pass IsTentative as true if you want to create a tentative definition.
+// A variable in another image is reached through an address the loader
+// fills, and static data can hold that address but not an offset from it. So
+// every definition another image could reach names each subobject whose
+// offset its type fixes: base-class subobjects, virtual bases included, and
+// data members, recursively, but nothing inside an array, whose elements a
+// consumer indexes freely. A constant pointer to one is then a plain imported
+// address. '$' cannot occur in a mangled name, so the names cannot collide.
+//
+// The offsets, from the start of the variable, of the subobjects of RD placed
+// at Offset. A member is a complete object and carries its virtual bases; a
+// base-class subobject does not.
+static void collectSubobjectOffsets(const ASTContext &Ctx, const RecordDecl *RD,
+                                    CharUnits Offset, bool Complete,
+                                    SmallVectorImpl<int64_t> &Offsets) {
+  RD = RD->getDefinition();
+  if (!RD || RD->isInvalidDecl())
+    return;
+  const ASTRecordLayout &Layout = Ctx.getASTRecordLayout(RD);
+  for (const FieldDecl *F : RD->fields()) {
+    if (F->isBitField())
+      continue;
+    CharUnits FieldOffset =
+        Offset +
+        Ctx.toCharUnitsFromBits(Layout.getFieldOffset(F->getFieldIndex()));
+    Offsets.push_back(FieldOffset.getQuantity());
+    if (const RecordDecl *Member = F->getType()->getAsRecordDecl())
+      collectSubobjectOffsets(Ctx, Member, FieldOffset, true, Offsets);
+  }
+  const auto *CRD = dyn_cast<CXXRecordDecl>(RD);
+  if (!CRD)
+    return;
+  for (const CXXBaseSpecifier &B : CRD->bases()) {
+    if (B.isVirtual())
+      continue;
+    const CXXRecordDecl *Base = B.getType()->getAsCXXRecordDecl();
+    CharUnits BaseOffset = Offset + Layout.getBaseClassOffset(Base);
+    Offsets.push_back(BaseOffset.getQuantity());
+    collectSubobjectOffsets(Ctx, Base, BaseOffset, false, Offsets);
+  }
+  if (!Complete)
+    return;
+  for (const CXXBaseSpecifier &B : CRD->vbases()) {
+    const CXXRecordDecl *Base = B.getType()->getAsCXXRecordDecl();
+    CharUnits BaseOffset = Offset + Layout.getVBaseClassOffset(Base);
+    Offsets.push_back(BaseOffset.getQuantity());
+    collectSubobjectOffsets(Ctx, Base, BaseOffset, false, Offsets);
+  }
+}
+
+// The distinct non-zero subobject offsets of a variable of type T, in
+// ascending order; none unless T is a complete class type.
+static SmallVector<int64_t, 8> getSubobjectOffsets(const ASTContext &Ctx,
+                                                   QualType T) {
+  SmallVector<int64_t, 8> Offsets;
+  if (const RecordDecl *RD = T->getAsRecordDecl())
+    collectSubobjectOffsets(Ctx, RD, CharUnits::Zero(), true, Offsets);
+  llvm::sort(Offsets);
+  Offsets.erase(llvm::unique(Offsets), Offsets.end());
+  if (!Offsets.empty() && Offsets.front() == 0)
+    Offsets.erase(Offsets.begin());
+  return Offsets;
+}
+
+static void makeSubobjectName(StringRef Var, int64_t Offset,
+                              SmallVectorImpl<char> &Name) {
+  Name.assign(Var.begin(), Var.end());
+  llvm::raw_svector_ostream(Name) << "$so" << Offset;
+}
+
+// Called for a variable this image defines: one alias per subobject.
+static void emitSubobjectNames(CodeGenModule &CGM, const VarDecl *D,
+                               llvm::GlobalVariable *GV) {
+  // Every definition another image could reach gets the names, not only one
+  // the visibility mapping exports: a module definition file or an
+  // export-everything link can export a variable that carries no dllexport
+  // storage, and the image that imports it asks for these names.
+  if (GV->isDeclarationForLinker() || GV->hasLocalLinkage() ||
+      GV->hasCommonLinkage() || !GV->hasDefaultVisibility() ||
+      GV->isThreadLocal())
+    return;
+
+  SmallString<256> Name;
+  for (int64_t Offset : getSubobjectOffsets(CGM.getContext(), D->getType())) {
+    makeSubobjectName(GV->getName(), Offset, Name);
+    // A constant initialiser earlier in this unit may have asked for the name
+    // while the variable was still a declaration, in which case the
+    // definition replaces what it left behind.
+    llvm::GlobalValue *Old = CGM.getModule().getNamedValue(Name);
+    if (Old && !isa<llvm::GlobalVariable>(Old))
+      continue;
+
+    // The alias takes the COMDAT of the variable it points into; external
+    // linkage keeps it a plain symbol there, as for a vtable's address points.
+    auto *Alias = llvm::GlobalAlias::create(
+        CGM.Int8Ty, GV->getAddressSpace(), llvm::GlobalValue::ExternalLinkage,
+        Old ? StringRef() : StringRef(Name),
+        llvm::ConstantExpr::getGetElementPtr(
+            CGM.Int8Ty, GV, llvm::ConstantInt::get(CGM.Int64Ty, Offset),
+            /*InBounds=*/true),
+        &CGM.getModule());
+    Alias->setDLLStorageClass(GV->getDLLStorageClass());
+    Alias->setVisibility(GV->getVisibility());
+    if (Old) {
+      Old->replaceAllUsesWith(Alias);
+      Old->eraseFromParent();
+      Alias->setName(Name);
+    }
+  }
+}
+
+llvm::Constant *CodeGenModule::getSubobjectName(const VarDecl *D,
+                                                llvm::Constant *Addr,
+                                                CharUnits Offset) {
+  // A variable this image defines, or one of this thread, is reached
+  // directly.
+  auto *GV = dyn_cast<llvm::GlobalVariable>(Addr->stripPointerCasts());
+  if (!getTriple().isWindowsItaniumOrNTPOSIXEnvironment() || !GV ||
+      GV->isDSOLocal() || GV->isThreadLocal() || Offset.isZero())
+    return nullptr;
+  SmallVector<int64_t, 8> Offsets =
+      getSubobjectOffsets(getContext(), D->getType());
+  if (!llvm::binary_search(Offsets, Offset.getQuantity()))
+    return nullptr;
+
+  SmallString<256> Name;
+  makeSubobjectName(GV->getName(), Offset.getQuantity(), Name);
+  if (llvm::GlobalValue *Existing = getModule().getNamedValue(Name))
+    return Existing;
+  auto *Subobject = new llvm::GlobalVariable(
+      getModule(), Int8Ty, GV->isConstant(), llvm::GlobalValue::ExternalLinkage,
+      /*Initializer=*/nullptr, Name, /*InsertBefore=*/nullptr,
+      llvm::GlobalValue::NotThreadLocal, GV->getAddressSpace());
+  Subobject->setDLLStorageClass(GV->getDLLStorageClass());
+  return Subobject;
+}
+
 void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D,
                                             bool IsTentative) {
   // OpenCL global variables of sampler type are translated to function calls,
@@ -6514,6 +6651,9 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D,
     EmitCXXGlobalVarDeclInitFunc(D, GV, NeedsGlobalCtor);
 
   SanitizerMD->reportGlobal(GV, *D, NeedsGlobalCtor);
+
+  if (getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    emitSubobjectNames(*this, D, GV);
 
   // Emit global variable debug information.
   if (CGDebugInfo *DI = getModuleDebugInfo())
