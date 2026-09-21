@@ -29,8 +29,23 @@ define void @calls() {
   ret void
 }
 
+; A declaration no front end decided about -- what an optimization or a
+; lowering creates -- takes the import form rather than a linker thunk. An
+; extern_weak one keeps its stub, since it may resolve to zero.
+
+define void @unmarked_calls() {
+; CHECK-LABEL: unmarked_calls:
+; CHECK: callq *__imp_unmarked(%rip)
+; CHECK: .refptr.weakly(%rip)
+  call void @unmarked()
+  call void @weakly()
+  ret void
+}
+
 declare dso_local void @local() nonlazybind
 declare dllimport void @imported()
+declare void @unmarked()
+declare extern_weak void @weakly()
 declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)
 
 !llvm.module.flags = !{!0}

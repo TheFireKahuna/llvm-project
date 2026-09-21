@@ -190,6 +190,21 @@ X86Subtarget::classifyGlobalFunctionReference(const GlobalValue *GV) const {
 unsigned char
 X86Subtarget::classifyGlobalFunctionReference(const GlobalValue *GV,
                                               const Module &M) const {
+  const Function *F = dyn_cast_or_null<Function>(GV);
+
+  // Under -fno-plt a call on COFF goes through the import table as it goes
+  // through the GOT on ELF. The front end decides that for every declaration
+  // it creates, marking one dllimport or dso_local. A declaration created by
+  // an optimization or by a lowering carries neither, and COFF would assume
+  // it is defined in this image: the call then reaches a linker thunk, a call
+  // and a jump where the table takes one call, and the address in the table
+  // is the thunk's rather than the function's. The linker rewrites the
+  // reference to a direct call where the function really is here.
+  if (isTargetCOFF() && M.getRtLibUseGOT() && F && !F->isDSOLocal() &&
+      !F->isIntrinsic() && F->isDeclarationForLinker() &&
+      !F->hasExternalWeakLinkage())
+    return X86II::MO_DLLIMPORT;
+
   if (TM.shouldAssumeDSOLocal(GV))
     return X86II::MO_NO_FLAG;
 
@@ -205,8 +220,6 @@ X86Subtarget::classifyGlobalFunctionReference(const GlobalValue *GV,
       return X86II::MO_DLLIMPORT;
     return X86II::MO_COFFSTUB;
   }
-
-  const Function *F = dyn_cast_or_null<Function>(GV);
 
   if (isTargetELF()) {
     if (is64Bit() && F && (CallingConv::X86_RegCall == F->getCallingConv()))
