@@ -32,8 +32,9 @@
 // We use UNSUPPORTED instead of XFAIL because the test might not fail reliably.
 // UNSUPPORTED: using-built-library-before-llvm-14
 
-// Windows doesn't support the necessary APIs to mitigate this issue.
-// XFAIL: target={{.+}}-windows-{{.+}}
+// Win32 has no way to open a name relative to a directory handle; the Windows Itanium
+// implementation of remove_all opens entries relative to their directory with NtOpenFile.
+// XFAIL: target={{.+}}-windows-{{.+}} && !target={{.+}}-windows-itanium
 
 #include <cstdio>
 #include <filesystem>
@@ -79,8 +80,9 @@ int main(int, char**) {
       continue;
     }
 
-    fs::remove(victim_del_path);
-    fs::create_directory_symlink(attack_dest_dir, victim_del_path);
+    // On Windows a removed name stays until the victim closes its handle, so either step can fail.
+    fs::remove(victim_del_path, ec);
+    fs::create_directory_symlink(attack_dest_dir, victim_del_path, ec);
   }
   stop = true;
   t.join();

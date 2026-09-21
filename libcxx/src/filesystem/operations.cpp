@@ -32,6 +32,9 @@
 #    define NOMINMAX
 #  endif
 #  include <windows.h>
+#  if defined(_WIN32_ITANIUM)
+#    include <winternl.h>
+#  endif
 #else
 #  include <dirent.h>
 #  include <sys/stat.h>
@@ -820,7 +823,13 @@ bool __remove(const path& p, error_code* ec) {
 //
 // The second implementation is used on platforms where `openat()` & friends are available,
 // and it threads file descriptors through recursive calls to avoid such race conditions.
-#if defined(_LIBCPP_WIN32API) || defined(__MVS__)
+//
+// The third implementation does the same on Windows with directory handles: Win32 cannot open
+// a name relative to a directory, but the NT open it is built on can, and every other step
+// already works on handles.
+#if defined(_LIBCPP_WIN32API) && defined(_WIN32_ITANIUM)
+#  define REMOVE_ALL_USE_DIRECTORY_HANDLES
+#elif defined(_LIBCPP_WIN32API) || defined(__MVS__)
 #  define REMOVE_ALL_USE_DIRECTORY_ITERATOR
 #endif
 
@@ -864,7 +873,134 @@ uintmax_t __remove_all(const path& p, error_code* ec) {
   return count;
 }
 
-#else // !REMOVE_ALL_USE_DIRECTORY_ITERATOR
+#elif defined(REMOVE_ALL_USE_DIRECTORY_HANDLES)
+
+namespace {
+
+// The entry `name` of the directory `dir` opened without following a link at that entry;
+// `dir` itself when `name` is empty. Returns the NT status and, on success, the handle in `h`.
+// The handle is the same kind of file object CreateFileW returns, and is synchronous like one
+// opened without FILE_FLAG_OVERLAPPED, so the by-handle Win32 calls below apply to it.
+NTSTATUS open_relative(HANDLE dir, const wchar_t* name, size_t length, DWORD access, ULONG options, HANDLE& h) {
+  UNICODE_STRING uname;
+  uname.Buffer        = const_cast<wchar_t*>(name);
+  uname.Length        = static_cast<USHORT>(length * sizeof(wchar_t));
+  uname.MaximumLength = uname.Length;
+  OBJECT_ATTRIBUTES attrs;
+  InitializeObjectAttributes(&attrs, &uname, OBJ_DONT_REPARSE, dir, nullptr);
+  IO_STATUS_BLOCK iosb;
+  return ::NtOpenFile(
+      &h,
+      access | SYNCHRONIZE,
+      &attrs,
+      &iosb,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      options | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_FOR_BACKUP_INTENT | FILE_OPEN_REPARSE_POINT);
+}
+
+const NTSTATUS status_not_a_directory = static_cast<NTSTATUS>(0xC0000103);
+
+error_code make_nt_error(NTSTATUS status) {
+  return error_code(static_cast<int>(::RtlNtStatusToDosError(status)), system_category());
+}
+
+bool set_delete_disposition(HANDLE h, error_code& ec) {
+  FILE_DISPOSITION_INFO info;
+  info.DeleteFile = TRUE;
+  if (::SetFileInformationByHandle(h, FileDispositionInfo, &info, sizeof(info)))
+    return true;
+  ec = detail::get_last_error();
+  return false;
+}
+
+uintmax_t remove_all_impl(HANDLE dir, const wchar_t* name, size_t length, error_code& ec);
+
+// Removes the contents of the directory `dir`, recursively.
+uintmax_t remove_contents(HANDLE dir, error_code& ec) {
+  const size_t buffer_size = 8192;
+  unique_ptr<char[]> buffer(new char[buffer_size]);
+  FILE_INFO_BY_HANDLE_CLASS info_class = FileFullDirectoryRestartInfo;
+  uintmax_t count                      = 0;
+  while (true) {
+    if (!::GetFileInformationByHandleEx(dir, info_class, buffer.get(), buffer_size)) {
+      if (::GetLastError() != ERROR_NO_MORE_FILES)
+        ec = detail::get_last_error();
+      return count;
+    }
+    info_class = FileFullDirectoryInfo;
+    for (const char* p = buffer.get();;) {
+      const FILE_FULL_DIR_INFO* entry = reinterpret_cast<const FILE_FULL_DIR_INFO*>(p);
+      const size_t name_length        = entry->FileNameLength / sizeof(wchar_t);
+      const bool dot = name_length == 1 && entry->FileName[0] == L'.';
+      const bool dotdot = name_length == 2 && entry->FileName[0] == L'.' && entry->FileName[1] == L'.';
+      if (!dot && !dotdot) {
+        count += remove_all_impl(dir, entry->FileName, name_length, ec);
+        if (ec)
+          return count;
+      }
+      if (entry->NextEntryOffset == 0)
+        break;
+      p += entry->NextEntryOffset;
+    }
+  }
+}
+
+uintmax_t remove_all_impl(HANDLE dir, const wchar_t* name, size_t length, error_code& ec) {
+  // First, try to open the entry as a directory. A link to a directory opens as the link
+  // itself, whose listing is empty, so only the link is removed.
+  HANDLE h;
+  NTSTATUS status = open_relative(dir, name, length, FILE_LIST_DIRECTORY | DELETE, FILE_DIRECTORY_FILE, h);
+  if (NT_SUCCESS(status)) {
+    // If that worked, remove everything in it, then the now-empty directory itself.
+    uintmax_t count = remove_contents(h, ec);
+    if (!ec && set_delete_disposition(h, ec))
+      ++count;
+    ::CloseHandle(h);
+    return count;
+  }
+
+  // If opening the entry failed because it wasn't a directory, remove it as a file instead.
+  if (status == status_not_a_directory) {
+    status = open_relative(dir, name, length, DELETE, FILE_NON_DIRECTORY_FILE, h);
+    if (NT_SUCCESS(status)) {
+      uintmax_t count = set_delete_disposition(h, ec) ? 1 : 0;
+      ::CloseHandle(h);
+      return count;
+    }
+  }
+
+  ec = make_nt_error(status);
+
+  // If we failed to open the entry because it didn't exist, it's not an
+  // error -- it might have moved or have been deleted already.
+  if (ec == errc::no_such_file_or_directory)
+    ec.clear();
+
+  // Otherwise, it's a real error -- we don't remove anything.
+  return 0;
+}
+
+} // namespace
+
+uintmax_t __remove_all(const path& p, error_code* ec) {
+  ErrorHandler<uintmax_t> err("remove_all", ec, &p);
+  error_code mec;
+  // The path names the root of the removal; a link there is removed, not followed. The open by
+  // path only reaches the object, and the removal reopens it by handle like any other entry.
+  detail::WinHandle root(p.c_str(), FILE_READ_ATTRIBUTES, FILE_FLAG_OPEN_REPARSE_POINT);
+  if (!root) {
+    mec = detail::get_last_error();
+    if (mec == errc::no_such_file_or_directory)
+      return 0;
+    return err.report(mec);
+  }
+  uintmax_t count = remove_all_impl(root, L"", 0, mec);
+  if (mec)
+    return err.report(mec);
+  return count;
+}
+
+#else // !REMOVE_ALL_USE_DIRECTORY_ITERATOR && !REMOVE_ALL_USE_DIRECTORY_HANDLES
 
 namespace {
 
@@ -955,7 +1091,7 @@ uintmax_t __remove_all(const path& p, error_code* ec) {
   return count;
 }
 
-#endif // REMOVE_ALL_USE_DIRECTORY_ITERATOR
+#endif // REMOVE_ALL_USE_DIRECTORY_ITERATOR / REMOVE_ALL_USE_DIRECTORY_HANDLES
 
 void __rename(const path& from, const path& to, error_code* ec) {
   ErrorHandler<void> err("rename", ec, &from, &to);
