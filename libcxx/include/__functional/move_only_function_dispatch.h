@@ -10,6 +10,8 @@
 #define _LIBCPP___FUNCTIONAL_MOVE_ONLY_FUNCTION_DISPATCH_H
 
 #include <__config>
+#include <__functional/fast_forward.h>
+#include <__type_traits/conditional.h>
 #include <__type_traits/is_same.h>
 #include <__utility/forward.h>
 
@@ -85,11 +87,21 @@ private:
   }
 
 public:
-  _LIBCPP_HIDE_FROM_ABI static _Rp __call(const __dispatch_base* __table, _Args... __args) noexcept(_Noexcept) {
+  // Select argument materialization at compile time. A consumer without
+  // relocation information must check the table before copying class arguments.
+  template <bool _CanCopy = true>
+  _LIBCPP_HIDE_FROM_ABI static _Rp
+  __call(const __dispatch_base* __table,
+         __conditional_t<_CanCopy, _Args, std::__function::__fast_forward<_Args>>... __args) noexcept(_Noexcept) {
     using _ValueInvoker = _Rp(_Args...) noexcept(_Noexcept);
     if constexpr (!is_same_v<_ReferenceInvoker, _ValueInvoker>) {
-      if (__table->__arguments_ == __argument_passing::__reference)
-        return __call_reference(std::forward<_Args>(__args)..., __table);
+      if (__table->__arguments_ == __argument_passing::__reference) {
+        if constexpr (_CanCopy)
+          return __call_reference(std::forward<_Args>(__args)..., __table);
+        else
+          return static_cast<const __dispatch_view<_ReferenceInvoker>*>(__table)->__invoke_(
+              std::forward<_Args>(__args)...);
+      }
     }
     return static_cast<const __dispatch_view<_ValueInvoker>*>(__table)->__invoke_(std::forward<_Args>(__args)...);
   }

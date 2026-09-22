@@ -100,7 +100,9 @@ export namespace std {
   using std::operator==;
 
   // [func.wrap.move], move only wrapper
-  // using std::move_only_function;
+#if _LIBCPP_STD_VER >= 23
+  using std::move_only_function;
+#endif
 
   // [func.search], searchers
   using std::default_searcher;

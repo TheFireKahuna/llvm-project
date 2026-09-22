@@ -30,6 +30,11 @@ struct hash;
 template <class>
 class reference_wrapper;
 
+#if _LIBCPP_STD_VER >= 23
+template <class...>
+class move_only_function;
+#endif
+
 _LIBCPP_END_NAMESPACE_STD
 
 #endif // _LIBCPP___FWD_FUNCTIONAL_H

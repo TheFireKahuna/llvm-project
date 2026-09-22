@@ -431,6 +431,7 @@ set(files
   __functional/boyer_moore_searcher.h
   __functional/compose.h
   __functional/default_searcher.h
+  __functional/fast_forward.h
   __functional/function.h
   __functional/hash.h
   __functional/identity.h
@@ -438,6 +439,7 @@ set(files
   __functional/is_transparent.h
   __functional/mem_fn.h
   __functional/mem_fun_ref.h
+  __functional/move_only_function.h
   __functional/move_only_function_dispatch.h
   __functional/not_fn.h
   __functional/operations.h

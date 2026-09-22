@@ -97,6 +97,8 @@ void test() {
   auto& result = static_cast<const decltype(reference_table)*>(base)->__invoke_(nullptr, std::move(arg));
   assert(&result == &arg);
   assert(arg.moves == 0);
+  using ReferenceCall = Call<NonTrivial&(void*, NonTrivial&&) noexcept, NonTrivial&(void*, NonTrivial) noexcept>;
+  assert(&ReferenceCall::__call<false>(base, nullptr, std::move(arg)) == &arg);
 
   using ReferenceInvoker = NonTrivial&(void*, Small&&, NonTrivial&&) noexcept;
   using ValueInvoker     = NonTrivial&(void*, Small, NonTrivial&&) noexcept;
@@ -113,6 +115,8 @@ void test() {
   using MixedCall = Call<ReferenceInvoker, ValueInvoker>;
   assert(&MixedCall::__call(&mixed_reference, nullptr, Small{42}, std::move(arg)) == &arg);
   assert(&MixedCall::__call(&mixed_value, nullptr, Small{42}, std::move(arg)) == &arg);
+  assert(&MixedCall::__call<false>(&mixed_reference, nullptr, Small{42}, std::move(arg)) == &arg);
+  assert(&MixedCall::__call<false>(&mixed_value, nullptr, Small{42}, std::move(arg)) == &arg);
   assert(arg.moves == 0);
 
   // Reference parameters and results require no definition of the referred-to type.
@@ -145,6 +149,8 @@ void test_result_elision() {
   using Dispatch = Call<ReferenceInvoker, ValueInvoker>;
   assert(Dispatch::__call(&reference, nullptr, Small{42}).value == 42);
   assert(Dispatch::__call(&value, nullptr, Small{43}).value == 43);
+  assert(Dispatch::__call<false>(&reference, nullptr, Small{42}).value == 42);
+  assert(Dispatch::__call<false>(&value, nullptr, Small{43}).value == 43);
 }
 
 #ifndef TEST_HAS_NO_EXCEPTIONS

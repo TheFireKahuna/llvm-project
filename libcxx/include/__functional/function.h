@@ -15,12 +15,12 @@
 #include <__cstddef/nullptr_t.h>
 #include <__exception/exception.h>
 #include <__functional/binary_function.h>
+#include <__functional/fast_forward.h>
 #include <__functional/unary_function.h>
 #include <__memory/addressof.h>
 #include <__type_traits/aligned_storage.h>
 #include <__type_traits/decay.h>
 #include <__type_traits/invoke.h>
-#include <__type_traits/is_scalar.h>
 #include <__type_traits/is_trivially_constructible.h>
 #include <__type_traits/is_trivially_destructible.h>
 #include <__type_traits/strip_signature.h>
@@ -408,11 +408,6 @@ private:
     delete static_cast<_Fun*>(__s);
   }
 };
-
-// Used to choose between perfect forwarding or pass-by-value. Pass-by-value is
-// faster for types that can be passed in registers.
-template <typename _Tp>
-using __fast_forward _LIBCPP_NODEBUG = __conditional_t<is_scalar<_Tp>::value, _Tp, _Tp&&>;
 
 // __policy_func uses a __policy to create a type-erased, copyable functor.
 

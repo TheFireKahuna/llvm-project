@@ -36,6 +36,13 @@
 
 #define _LIBCPP_PACKED __attribute__((__packed__))
 
+// Relocation permission does not change the calling convention or ordinary moves.
+#if __has_builtin(__builtin_is_bitwise_relocatable)
+#  define _LIBCPP_TRIVIALLY_RELOCATABLE(...) __attribute__((__trivially_relocatable__(__VA_ARGS__)))
+#else
+#  define _LIBCPP_TRIVIALLY_RELOCATABLE(...)
+#endif
+
 // Attributes affecting overload resolution
 // ----------------------------------------
 

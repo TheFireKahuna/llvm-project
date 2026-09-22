@@ -485,6 +485,35 @@ template <class  R, class ... ArgTypes>
 template <class  R, class ... ArgTypes>
   void swap(function<R(ArgTypes...)>&, function<R(ArgTypes...)>&) noexcept;
 
+// [func.wrap.move], move-only wrapper (since C++23)
+template<class... S> class move_only_function; // not defined
+
+template<class R, class... ArgTypes>
+class move_only_function<R(ArgTypes...) cv ref noexcept(noex)> {
+public:
+  using result_type = R;
+
+  move_only_function() noexcept;
+  move_only_function(nullptr_t) noexcept;
+  move_only_function(move_only_function&&) noexcept;
+  template<class F> move_only_function(F&&);
+  template<class T, class... Args>
+    explicit move_only_function(in_place_type_t<T>, Args&&...);
+  template<class T, class U, class... Args>
+    explicit move_only_function(in_place_type_t<T>, initializer_list<U>, Args&&...);
+  move_only_function& operator=(move_only_function&&);
+  move_only_function& operator=(nullptr_t) noexcept;
+  template<class F> move_only_function& operator=(F&&);
+  ~move_only_function();
+
+  explicit operator bool() const noexcept;
+  R operator()(ArgTypes...) cv ref noexcept(noex);
+
+  void swap(move_only_function&) noexcept;
+  friend void swap(move_only_function&, move_only_function&) noexcept;
+  friend bool operator==(const move_only_function&, nullptr_t) noexcept;
+};
+
 template <class T> struct hash;
 
 template <> struct hash<bool>;
@@ -567,6 +596,10 @@ POLICY:  For non-variadic implementations, the number of arguments is limited
 #    include <__functional/ranges_operations.h>
 #    include <__type_traits/common_reference.h>
 #    include <__type_traits/unwrap_ref.h>
+#  endif
+
+#  if _LIBCPP_STD_VER >= 23
+#    include <__functional/move_only_function.h>
 #  endif
 
 #  include <version>
