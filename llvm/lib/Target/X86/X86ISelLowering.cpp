@@ -3385,6 +3385,12 @@ bool X86TargetLowering::isFPImmLegal(const APFloat &Imm, EVT VT,
   return false;
 }
 
+bool X86TargetLowering::shouldForwardPartialStoreIntoLoad(EVT LoadVT,
+                                                          EVT StoreVT) const {
+  // Two independent i64 values can be stored without building an XMM value.
+  return Subtarget.is64Bit() && LoadVT.is128BitVector() && StoreVT == MVT::i64;
+}
+
 bool X86TargetLowering::shouldReduceLoadWidth(
     SDNode *Load, ISD::LoadExtType ExtTy, EVT NewVT,
     std::optional<unsigned> ByteOffset) const {
@@ -54321,6 +54327,19 @@ static SDValue combineStore(SDNode *N, SelectionDAG &DAG,
   SDValue StoredVal = St->getValue();
   EVT VT = StoredVal.getValueType();
   const TargetLowering &TLI = DAG.getTargetLoweringInfo();
+
+  // Store independent scalar integers directly instead of constructing a
+  // vector only to write it back to memory.
+  if (DCI.isBeforeLegalize() && !St->isNonTemporal() && VT == MVT::v2i64 &&
+      StVT == VT && StoredVal.hasOneUse() &&
+      StoredVal.getOpcode() == ISD::BUILD_VECTOR && Subtarget.is64Bit() &&
+      StoredVal.getOperand(0) != StoredVal.getOperand(1) &&
+      !ISD::isBuildVectorOfConstantSDNodes(StoredVal.getNode()) &&
+      llvm::all_of(StoredVal->ops(), [](SDValue V) {
+        return V.getValueType() == MVT::i64 && V.getOpcode() != ISD::BITCAST &&
+               V.getOpcode() != ISD::EXTRACT_VECTOR_ELT && !V.isUndef();
+      }))
+    return scalarizeVectorStore(St, MVT::v2i64, DAG);
 
   // Pattern: store(trunc(load vXiY) to vXiZ) optimization
   SDValue Src;

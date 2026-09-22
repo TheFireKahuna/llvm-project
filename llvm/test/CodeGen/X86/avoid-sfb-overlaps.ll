@@ -123,66 +123,56 @@ define dso_local void @test_overlap_2(ptr nocapture %A, i32 %x) local_unnamed_ad
 ; CHECK:       # %bb.0: # %entry
 ; CHECK-NEXT:    movslq %esi, %rax
 ; CHECK-NEXT:    movq %rax, -16(%rdi)
-; CHECK-NEXT:    movq -16(%rdi), %rcx
-; CHECK-NEXT:    movq %rcx, (%rdi)
 ; CHECK-NEXT:    movq -8(%rdi), %rcx
 ; CHECK-NEXT:    movq %rcx, 8(%rdi)
+; CHECK-NEXT:    movq %rax, (%rdi)
 ; CHECK-NEXT:    movq %rax, -8(%rdi)
 ; CHECK-NEXT:    movl $7, -12(%rdi)
-; CHECK-NEXT:    movl -16(%rdi), %eax
-; CHECK-NEXT:    movl %eax, 16(%rdi)
-; CHECK-NEXT:    movl -12(%rdi), %eax
-; CHECK-NEXT:    movl %eax, 20(%rdi)
-; CHECK-NEXT:    movq -8(%rdi), %rax
 ; CHECK-NEXT:    movq %rax, 24(%rdi)
+; CHECK-NEXT:    movq -16(%rdi), %rax
+; CHECK-NEXT:    movq %rax, 16(%rdi)
 ; CHECK-NEXT:    retq
 ;
 ; DISABLED-LABEL: test_overlap_2:
 ; DISABLED:       # %bb.0: # %entry
 ; DISABLED-NEXT:    movslq %esi, %rax
 ; DISABLED-NEXT:    movq %rax, -16(%rdi)
-; DISABLED-NEXT:    movups -16(%rdi), %xmm0
-; DISABLED-NEXT:    movups %xmm0, (%rdi)
+; DISABLED-NEXT:    movq -8(%rdi), %rcx
+; DISABLED-NEXT:    movq %rcx, 8(%rdi)
+; DISABLED-NEXT:    movq %rax, (%rdi)
 ; DISABLED-NEXT:    movq %rax, -8(%rdi)
 ; DISABLED-NEXT:    movl $7, -12(%rdi)
-; DISABLED-NEXT:    movups -16(%rdi), %xmm0
-; DISABLED-NEXT:    movups %xmm0, 16(%rdi)
+; DISABLED-NEXT:    movq %rax, 24(%rdi)
+; DISABLED-NEXT:    movq -16(%rdi), %rax
+; DISABLED-NEXT:    movq %rax, 16(%rdi)
 ; DISABLED-NEXT:    retq
 ;
 ; CHECK-AVX2-LABEL: test_overlap_2:
 ; CHECK-AVX2:       # %bb.0: # %entry
 ; CHECK-AVX2-NEXT:    movslq %esi, %rax
 ; CHECK-AVX2-NEXT:    movq %rax, -16(%rdi)
-; CHECK-AVX2-NEXT:    movq -16(%rdi), %rcx
-; CHECK-AVX2-NEXT:    movq %rcx, (%rdi)
 ; CHECK-AVX2-NEXT:    movq -8(%rdi), %rcx
 ; CHECK-AVX2-NEXT:    movq %rcx, 8(%rdi)
+; CHECK-AVX2-NEXT:    movq %rax, (%rdi)
 ; CHECK-AVX2-NEXT:    movq %rax, -8(%rdi)
 ; CHECK-AVX2-NEXT:    movl $7, -12(%rdi)
-; CHECK-AVX2-NEXT:    movl -16(%rdi), %eax
-; CHECK-AVX2-NEXT:    movl %eax, 16(%rdi)
-; CHECK-AVX2-NEXT:    movl -12(%rdi), %eax
-; CHECK-AVX2-NEXT:    movl %eax, 20(%rdi)
-; CHECK-AVX2-NEXT:    movq -8(%rdi), %rax
 ; CHECK-AVX2-NEXT:    movq %rax, 24(%rdi)
+; CHECK-AVX2-NEXT:    movq -16(%rdi), %rax
+; CHECK-AVX2-NEXT:    movq %rax, 16(%rdi)
 ; CHECK-AVX2-NEXT:    retq
 ;
 ; CHECK-AVX512-LABEL: test_overlap_2:
 ; CHECK-AVX512:       # %bb.0: # %entry
 ; CHECK-AVX512-NEXT:    movslq %esi, %rax
 ; CHECK-AVX512-NEXT:    movq %rax, -16(%rdi)
-; CHECK-AVX512-NEXT:    movq -16(%rdi), %rcx
-; CHECK-AVX512-NEXT:    movq %rcx, (%rdi)
 ; CHECK-AVX512-NEXT:    movq -8(%rdi), %rcx
 ; CHECK-AVX512-NEXT:    movq %rcx, 8(%rdi)
+; CHECK-AVX512-NEXT:    movq %rax, (%rdi)
 ; CHECK-AVX512-NEXT:    movq %rax, -8(%rdi)
 ; CHECK-AVX512-NEXT:    movl $7, -12(%rdi)
-; CHECK-AVX512-NEXT:    movl -16(%rdi), %eax
-; CHECK-AVX512-NEXT:    movl %eax, 16(%rdi)
-; CHECK-AVX512-NEXT:    movl -12(%rdi), %eax
-; CHECK-AVX512-NEXT:    movl %eax, 20(%rdi)
-; CHECK-AVX512-NEXT:    movq -8(%rdi), %rax
 ; CHECK-AVX512-NEXT:    movq %rax, 24(%rdi)
+; CHECK-AVX512-NEXT:    movq -16(%rdi), %rax
+; CHECK-AVX512-NEXT:    movq %rax, 16(%rdi)
 ; CHECK-AVX512-NEXT:    retq
 entry:
   %add.ptr = getelementptr inbounds i8, ptr %A, i64 -16

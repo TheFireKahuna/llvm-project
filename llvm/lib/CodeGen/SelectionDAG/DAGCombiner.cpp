@@ -20973,8 +20973,46 @@ SDValue DAGCombiner::ForwardStoreValueToDirectLoad(LoadSDNode *LD) {
     return CombineTo(LD, Val, Chain);
   };
 
-  if (!STCoversLD)
-    return SDValue();
+  if (!STCoversLD) {
+    // Forward a scalar store covering either half of a fixed-width load. Only
+    // the other half needs to be read; the original chain keeps that read
+    // ordered after all memory operations feeding the original load. Form the
+    // BUILD_VECTOR before legalization so target lowering can choose how to
+    // assemble or store its elements.
+    if (LegalTypes || ForCodeSize || !LDMemType.isVector() || LdStScalable ||
+        LD->isIndexed() || LD->isNonTemporal() ||
+        LD->getExtensionType() != ISD::NON_EXTLOAD || ST->isTruncatingStore() ||
+        STMemType.isVector() || !TLI.isTypeLegal(STMemType) ||
+        LdMemSize.getFixedValue() != 2 * StMemSize.getFixedValue() ||
+        STMemType.getStoreSizeInBits() != StMemSize ||
+        (OrigOffset != 0 && OrigOffset != -(int64_t)STMemType.getStoreSize()) ||
+        LD->getBasePtr().isUndef())
+      return SDValue();
+
+    EVT VecVT = EVT::getVectorVT(*DAG.getContext(), STMemType, 2);
+    unsigned LoadOffset = OrigOffset == 0 ? STMemType.getStoreSize() : 0;
+    Align Alignment = commonAlignment(LD->getAlign(), LoadOffset);
+    if (!TLI.shouldForwardPartialStoreIntoLoad(LDMemType, STMemType) ||
+        !TLI.isTypeLegal(VecVT) ||
+        !TLI.isOperationLegalOrCustom(ISD::BUILD_VECTOR, VecVT) ||
+        !TLI.isLoadLegalOrCustom(STMemType, STMemType, Alignment,
+                                 LD->getAddressSpace(), ISD::NON_EXTLOAD,
+                                 false) ||
+        !TLI.shouldReduceLoadWidth(LD, ISD::NON_EXTLOAD, STMemType, LoadOffset))
+      return SDValue();
+
+    SDLoc DL(LD);
+    SDValue Ptr = DAG.getMemBasePlusOffset(LD->getBasePtr(),
+                                           TypeSize::getFixed(LoadOffset), DL);
+    SDValue Other =
+        DAG.getLoad(STMemType, DL, Chain, Ptr,
+                    LD->getPointerInfo().getWithOffset(LoadOffset), Alignment,
+                    LD->getMemOperand()->getFlags(), LD->getAAInfo());
+    SDValue Lo = OrigOffset == 0 ? ST->getValue() : Other;
+    SDValue Hi = OrigOffset == 0 ? Other : ST->getValue();
+    SDValue Val = DAG.getBuildVector(VecVT, DL, {Lo, Hi});
+    return ReplaceLd(LD, DAG.getBitcast(LDType, Val), Other.getValue(1));
+  }
 
   // Memory as copy space (potentially masked).
   if (Offset == 0 && LDType == STType && STMemType == LDMemType) {

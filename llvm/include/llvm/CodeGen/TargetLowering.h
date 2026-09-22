@@ -1925,6 +1925,15 @@ public:
     return true;
   }
 
+  /// Return true if forwarding a scalar store into part of a vector load is
+  /// profitable. The remaining bytes are loaded separately and combined with
+  /// the stored value. Legal narrowing alone does not account for the cost of
+  /// reconstructing the vector or transferring values between register banks.
+  virtual bool shouldForwardPartialStoreIntoLoad(EVT LoadVT,
+                                                 EVT StoreVT) const {
+    return false;
+  }
+
   /// Return true (the default) if it is profitable to remove a sext_inreg(x)
   /// where the sext is redundant, and use x directly.
   virtual bool shouldRemoveRedundantExtend(SDValue Op) const { return true; }
