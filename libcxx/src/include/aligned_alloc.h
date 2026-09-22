@@ -27,11 +27,12 @@ _LIBCPP_BEGIN_NAMESPACE_STD
 //
 // Returns the allocated memory, or `nullptr` on failure.
 inline _LIBCPP_HIDE_FROM_ABI void* __libcpp_aligned_alloc(std::size_t __alignment, std::size_t __size) {
-#  if defined(_LIBCPP_MSVCRT_LIKE)
+#  if defined(_LIBCPP_MSVCRT_LIKE) && !defined(_WIN32_ITANIUM)
   return ::_aligned_malloc(__size, __alignment);
 
 // Android only provides aligned_alloc when targeting API 28 or higher.
-#  elif !defined(__ANDROID__) || __ANDROID_API__ >= 28
+// Windows Itanium provides posix_memalign, which needs no size rounding.
+#  elif !defined(_WIN32_ITANIUM) && (!defined(__ANDROID__) || __ANDROID_API__ >= 28)
   // aligned_alloc() requires that __size is a multiple of __alignment,
   // but for C++ [new.delete.general], only states "if the value of an
   // alignment argument passed to any of these functions is not a valid
@@ -51,7 +52,7 @@ inline _LIBCPP_HIDE_FROM_ABI void* __libcpp_aligned_alloc(std::size_t __alignmen
 }
 
 inline _LIBCPP_HIDE_FROM_ABI void __libcpp_aligned_free(void* __ptr) {
-#  if defined(_LIBCPP_MSVCRT_LIKE)
+#  if defined(_LIBCPP_MSVCRT_LIKE) && !defined(_WIN32_ITANIUM)
   ::_aligned_free(__ptr);
 #  else
   ::free(__ptr);

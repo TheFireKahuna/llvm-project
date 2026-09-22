@@ -210,7 +210,7 @@ typedef basic_fstream<wchar_t> wfstream;
 _LIBCPP_PUSH_MACROS
 #include <__cxx03/__undef_macros>
 
-#if defined(_LIBCPP_MSVCRT) || _LIBCPP_LIBC_NEWLIB
+#if _LIBCPP_LIBC_NEWLIB
 #  define _LIBCPP_HAS_NO_OFF_T_FUNCTIONS
 #endif
 
@@ -873,7 +873,11 @@ basic_filebuf<_CharT, _Traits>::seekoff(off_type __off, ios_base::seekdir __way,
   default:
     return pos_type(off_type(-1));
   }
-#  if defined(_LIBCPP_HAS_NO_OFF_T_FUNCTIONS)
+#  if defined(_LIBCPP_MSVCRT_LIKE)
+  if (_fseeki64(__file_, __width > 0 ? __width * __off : 0, __whence))
+    return pos_type(off_type(-1));
+  pos_type __r = _ftelli64(__file_);
+#  elif defined(_LIBCPP_HAS_NO_OFF_T_FUNCTIONS)
   if (fseek(__file_, __width > 0 ? __width * __off : 0, __whence))
     return pos_type(off_type(-1));
   pos_type __r = ftell(__file_);
@@ -891,7 +895,10 @@ typename basic_filebuf<_CharT, _Traits>::pos_type
 basic_filebuf<_CharT, _Traits>::seekpos(pos_type __sp, ios_base::openmode) {
   if (__file_ == nullptr || sync())
     return pos_type(off_type(-1));
-#  if defined(_LIBCPP_HAS_NO_OFF_T_FUNCTIONS)
+#  if defined(_LIBCPP_MSVCRT_LIKE)
+  if (_fseeki64(__file_, __sp, SEEK_SET))
+    return pos_type(off_type(-1));
+#  elif defined(_LIBCPP_HAS_NO_OFF_T_FUNCTIONS)
   if (fseek(__file_, __sp, SEEK_SET))
     return pos_type(off_type(-1));
 #  else
@@ -944,7 +951,10 @@ int basic_filebuf<_CharT, _Traits>::sync() {
         }
       }
     }
-#  if defined(_LIBCPP_HAS_NO_OFF_T_FUNCTIONS)
+#  if defined(_LIBCPP_MSVCRT_LIKE)
+    if (_fseeki64(__file_, -__c, SEEK_CUR))
+      return -1;
+#  elif defined(_LIBCPP_HAS_NO_OFF_T_FUNCTIONS)
     if (fseek(__file_, -__c, SEEK_CUR))
       return -1;
 #  else

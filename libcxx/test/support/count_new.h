@@ -450,7 +450,7 @@ void operator delete[](void* p, std::nothrow_t const&) TEST_NOEXCEPT {
 }
 
 #  ifndef TEST_HAS_NO_ALIGNED_ALLOCATION
-#    if defined(_LIBCPP_MSVCRT_LIKE) || (!defined(_LIBCPP_VERSION) && defined(_WIN32))
+#    if !defined(_WIN32_ITANIUM) && (defined(_LIBCPP_MSVCRT_LIKE) || (!defined(_LIBCPP_VERSION) && defined(_WIN32)))
 #      define USE_ALIGNED_ALLOC
 #    endif
 
@@ -468,7 +468,7 @@ inline void* allocate_aligned_impl(std::size_t size, std::align_val_t align) {
   void* ret                   = nullptr;
 #    ifdef USE_ALIGNED_ALLOC
   ret = _aligned_malloc(size, alignment);
-#    elif TEST_STD_VER >= 17 && !defined(TEST_HAS_NO_C11_ALIGNED_ALLOC)
+#    elif !defined(_WIN32_ITANIUM) && TEST_STD_VER >= 17 && !defined(TEST_HAS_NO_C11_ALIGNED_ALLOC)
   size_t rounded_size = (size + alignment - 1) & ~(alignment - 1);
   ret                 = aligned_alloc(alignment, size > rounded_size ? size : rounded_size);
 #    else

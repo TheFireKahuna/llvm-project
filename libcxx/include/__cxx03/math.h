@@ -414,8 +414,8 @@ _LIBCPP_END_NAMESPACE_STD
 using std::__math::fpclassify;
 using std::__math::signbit;
 
-// The MSVC runtime already provides these functions as templates
-#    ifndef _LIBCPP_MSVCRT
+// Unadapted Microsoft headers already provide these functions as templates.
+#    if !defined(_LIBCPP_MSVCRT_LIKE) || defined(__MINGW32__) || defined(_WIN32_ITANIUM)
 using std::__math::isfinite;
 using std::__math::isgreater;
 using std::__math::isgreaterequal;
@@ -426,7 +426,7 @@ using std::__math::islessgreater;
 using std::__math::isnan;
 using std::__math::isnormal;
 using std::__math::isunordered;
-#    endif // _LIBCPP_MSVCRT
+#    endif // Microsoft C++ overloads
 
 // abs
 //
@@ -513,7 +513,7 @@ using std::__math::trunc;
 //
 // and receive the definitions of mathematical constants, even if <math.h>
 // has previously been included.
-#  if defined(_LIBCPP_MSVCRT) && defined(_USE_MATH_DEFINES)
+#  if defined(_LIBCPP_MSVCRT_LIKE) && !defined(__MINGW32__) && !defined(_WIN32_ITANIUM) && defined(_USE_MATH_DEFINES)
 #    include_next <math.h>
 #  endif
 

@@ -39,7 +39,9 @@
 // No _LIBCPP_ELAST needed on Apple
 #elif defined(__MVS__)
 #  define _LIBCPP_ELAST 1160
-#elif defined(_LIBCPP_MSVCRT_LIKE)
+#elif defined(_LIBCPP_UCRT)
+// UCRT handles unknown values and has POSIX errors beyond _sys_nerr.
+#elif defined(_LIBCPP_MSVCRT)
 #  define _LIBCPP_ELAST (_sys_nerr - 1)
 #elif defined(_AIX)
 #  define _LIBCPP_ELAST 127

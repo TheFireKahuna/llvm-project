@@ -188,7 +188,7 @@ template <class _A1, class _A2, __enable_if_t<is_arithmetic<_A1>::value && is_ar
 // TODO: Remove the workaround once UCRT fixes these functions. Note that this doesn't seem planned as of 2025-07 per
 // https://developercommunity.visualstudio.com/t/10294165.
 
-#if defined(_LIBCPP_MSVCRT) && _LIBCPP_STD_VER >= 20
+#if defined(_LIBCPP_MSVCRT_LIKE) && !defined(__MINGW32__) && !defined(_WIN32_ITANIUM) && _LIBCPP_STD_VER >= 20
 namespace __ucrt {
 template <class _A1>
   requires is_integral_v<_A1>

@@ -37,7 +37,7 @@ __lconv_t* __localeconv(__locale_t& loc) {
 //
 // Strtonum functions
 //
-#if !defined(_LIBCPP_MSVCRT)
+#if !defined(_LIBCPP_MSVCRT_LIKE) || defined(__MINGW32__)
 float __strtof(const char* nptr, char** endptr, __locale_t loc) {
   __locale_guard __current(loc);
   return std::strtof(nptr, endptr);
@@ -63,7 +63,7 @@ size_t __strftime(char* ret, size_t n, const char* format, const struct tm* tm, 
 // Other functions
 //
 decltype(MB_CUR_MAX) __mb_len_max(__locale_t __l) {
-#if defined(_LIBCPP_MSVCRT)
+#if defined(_LIBCPP_MSVCRT_LIKE) && !defined(__MINGW32__)
   return ::___mb_cur_max_l_func(__l);
 #else
   __locale_guard __current(__l);
@@ -126,7 +126,7 @@ size_t __mbsrtowcs(
 int __snprintf(char* ret, size_t n, __locale_t loc, const char* format, ...) {
   va_list ap;
   va_start(ap, format);
-#if defined(_LIBCPP_MSVCRT)
+#if defined(_LIBCPP_MSVCRT_LIKE) && !defined(__MINGW32__)
   // FIXME: Remove usage of internal CRT function and globals.
   int result = ::__stdio_common_vsprintf(
       _CRT_INTERNAL_LOCAL_PRINTF_OPTIONS | _CRT_INTERNAL_PRINTF_STANDARD_SNPRINTF_BEHAVIOR, ret, n, format, loc, ap);

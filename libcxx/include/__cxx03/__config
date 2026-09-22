@@ -222,11 +222,23 @@ _LIBCPP_HARDENING_MODE_DEBUG
 #  if defined(_WIN32) && !defined(__NTPOSIX__)
 #    define _LIBCPP_WIN32API
 #    define _LIBCPP_SHORT_WCHAR 1
-// Both MinGW and native MSVC provide a "MSVC"-like environment
-#    define _LIBCPP_MSVCRT_LIKE
-// Microsoft's C++ declarations require the Microsoft compiler environment.
-#    if defined(_MSC_VER) && !defined(__MINGW32__)
-#      define _LIBCPP_MSVCRT // Using Microsoft's C Runtime library
+// _LIBCPP_MSVCRT_LIKE covers the Microsoft CRT family; _LIBCPP_MSVCRT and
+// _LIBCPP_UCRT distinguish its pre-UCRT and UCRT interfaces, not the C++ ABI.
+// Load the CRT's identity before classifying it: _UCRT is a header macro,
+// and MinGW can target either UCRT or a pre-UCRT Microsoft runtime.
+#    if !defined(__NTPOSIX__) && defined(__MINGW32__)
+#      include <_mingw.h>
+#    elif defined(_MSC_VER) && !defined(_WIN32_ITANIUM) && !defined(__NTPOSIX__) && __has_include(<vcruntime.h>)
+#      include <vcruntime.h>
+#    endif
+#    if !defined(__NTPOSIX__) &&                                                                                       \
+        (defined(_MSC_VER) || defined(__MINGW32__) || defined(__MSVCRT__) || defined(_WIN32_ITANIUM))
+#      define _LIBCPP_MSVCRT_LIKE
+#      if defined(_UCRT) || defined(_WIN32_ITANIUM)
+#        define _LIBCPP_UCRT
+#      else
+#        define _LIBCPP_MSVCRT
+#      endif
 #    endif
 #    if (defined(_M_AMD64) || defined(__x86_64__)) || (defined(_M_ARM) || defined(__arm__))
 #      define _LIBCPP_HAS_BITSCAN64
@@ -603,7 +615,7 @@ typedef __char32_t char32_t;
 
 // If we are getting operator new from the MSVC CRT, then allocation overloads
 // for align_val_t were added in 19.12, aka VS 2017 version 15.3.
-#  if defined(_LIBCPP_MSVCRT) && defined(_MSC_VER) && _MSC_VER < 1912
+#  if defined(_LIBCPP_ABI_VCRUNTIME) && defined(_MSC_VER) && _MSC_VER < 1912
 #    define _LIBCPP_HAS_NO_LIBRARY_ALIGNED_ALLOCATION
 #  elif defined(_LIBCPP_ABI_VCRUNTIME) && !defined(__cpp_aligned_new)
 // We're deferring to Microsoft's STL to provide aligned new et al. We don't

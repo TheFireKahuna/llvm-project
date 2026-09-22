@@ -16,6 +16,7 @@
 #include <cassert>
 #include <string>
 #include <cerrno>
+#include <cstring>
 
 #include "test_macros.h"
 
@@ -66,6 +67,17 @@ int main(int, char**)
         std::string m2 = foo.ec->name();
         assert(m2 == "generic");
     }
+
+#if defined(_UCRT)
+    // UCRT's POSIX errors live outside the historical _sys_nerr table.
+    {
+      char expected[128];
+      assert(strerror_s(expected, sizeof(expected), EADDRINUSE) == 0);
+      assert(std::generic_category().message(EADDRINUSE) == expected);
+      assert(strerror_s(expected, sizeof(expected), EWOULDBLOCK) == 0);
+      assert(std::generic_category().message(EWOULDBLOCK) == expected);
+    }
+#endif
 
     return 0;
 }

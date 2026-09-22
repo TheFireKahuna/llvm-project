@@ -12,6 +12,10 @@
 
 #ifdef __cplusplus
 #  include <__config>
+#  if !defined(_LIBCPP_UCRT) || !defined(_LIBCPP_MSVCRT_LIKE) ||               \
+      defined(_LIBCPP_MSVCRT)
+#    error Windows Itanium must identify UCRT before including CRT headers.
+#  endif
 #  ifndef _LIBCPP_WIN32API
 #    error Windows Itanium must select Win32 before including CRT headers.
 #  endif

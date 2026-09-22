@@ -415,8 +415,8 @@ _LIBCPP_END_NAMESPACE_STD
 using std::__math::fpclassify;
 using std::__math::signbit;
 
-// The MSVC runtime already provides these functions as templates
-#      ifndef _LIBCPP_MSVCRT
+// Unadapted Microsoft headers already provide these functions as templates.
+#      if !defined(_LIBCPP_MSVCRT_LIKE) || defined(__MINGW32__) || defined(_WIN32_ITANIUM)
 using std::__math::isfinite;
 using std::__math::isgreater;
 using std::__math::isgreaterequal;
@@ -427,9 +427,9 @@ using std::__math::islessgreater;
 using std::__math::isnan;
 using std::__math::isnormal;
 using std::__math::isunordered;
-#      endif // _LIBCPP_MSVCRT
+#      endif // Microsoft C++ overloads
 
-#      if defined(_LIBCPP_MSVCRT) && _LIBCPP_STD_VER >= 20
+#      if defined(_LIBCPP_MSVCRT_LIKE) && !defined(__MINGW32__) && !defined(_WIN32_ITANIUM) && _LIBCPP_STD_VER >= 20
 // MS UCRT incorrectly defines some functions in a way not working with integer types. Until C++20, this was worked
 // around by -fdelayed-template-parsing. Since C++20, we can use standard feature "requires" instead.
 
@@ -446,7 +446,7 @@ using std::__math::__ucrt::islessgreater;
 using std::__math::__ucrt::isnan;
 using std::__math::__ucrt::isnormal;
 using std::__math::__ucrt::isunordered;
-#      endif // defined(_LIBCPP_MSVCRT) && _LIBCPP_STD_VER >= 20
+#      endif // Microsoft C++ math overloads in C++20
 
 // We have to provide double overloads for <math.h> to work on platforms that don't provide the full set of math
 // functions. To make the overload set work with multiple functions that take the same arguments, we make our overloads
@@ -527,7 +527,7 @@ using std::__math::trunc;
 //
 // and receive the definitions of mathematical constants, even if <math.h>
 // has previously been included.
-#  if defined(_LIBCPP_MSVCRT) && defined(_USE_MATH_DEFINES)
+#  if defined(_LIBCPP_MSVCRT_LIKE) && !defined(__MINGW32__) && !defined(_WIN32_ITANIUM) && defined(_USE_MATH_DEFINES)
 #    include_next <math.h>
 #  endif
 

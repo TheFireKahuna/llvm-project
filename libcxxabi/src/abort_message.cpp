@@ -79,17 +79,17 @@ void __abort_message(const char* format, ...)
     char buffer[1024];
     va_list list;
     va_start(list, format);
-#if defined(_LIBCPP_MSVCRT_LIKE)
+#  if defined(_LIBCPP_MSVCRT)
     int len = _vsnprintf(buffer, sizeof(buffer) - 1, format, list);
-#else
+#  else
     int len = vsnprintf(buffer, sizeof(buffer), format, list);
-#endif
+#  endif
     va_end(list);
     if (len < 0 || len >= (int)sizeof(buffer))
         len = sizeof(buffer) - 1;
     buffer[len] = '\0';
 
-#if defined(__NTPOSIX__)
+#  if defined(__NTPOSIX__)
     // Raise DBG_PRINTEXCEPTION_C directly via ntdll — same thing
     // OutputDebugStringA does internally, without the kernel32 wrapper.
     EXCEPTION_RECORD rec = {};
@@ -98,11 +98,11 @@ void __abort_message(const char* format, ...)
     rec.ExceptionInformation[0] = len + 1;
     rec.ExceptionInformation[1] = (ULONG_PTR)buffer;
     RtlRaiseException(&rec);
-#else
+#  else
     OutputDebugStringA("libc++abi: ");
     OutputDebugStringA(buffer);
     OutputDebugStringA("\n");
-#endif
+#  endif
 #endif // __BIONIC__
 
     abort();

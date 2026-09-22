@@ -121,13 +121,13 @@ using std::__math::abs;
 #        undef lldiv
 #      endif
 
-// MSVCRT already has the correct prototype in <stdlib.h> if __cplusplus is defined
-#      if !defined(_LIBCPP_MSVCRT)
+// Unadapted Microsoft headers already provide these C++ overloads.
+#      if !defined(_LIBCPP_MSVCRT_LIKE) || defined(__MINGW32__) || defined(_WIN32_ITANIUM)
 inline _LIBCPP_HIDE_FROM_ABI ldiv_t div(long __x, long __y) _NOEXCEPT { return ::ldiv(__x, __y); }
 #        if !(defined(__FreeBSD__) && !defined(__LONG_LONG_SUPPORTED))
 inline _LIBCPP_HIDE_FROM_ABI lldiv_t div(long long __x, long long __y) _NOEXCEPT { return ::lldiv(__x, __y); }
 #        endif
-#      endif // _LIBCPP_MSVCRT
+#      endif // Microsoft C++ overloads
 } // extern "C++"
 #    endif   // __cplusplus
 #  endif     // _LIBCPP_STDLIB_H

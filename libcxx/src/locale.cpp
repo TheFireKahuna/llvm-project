@@ -30,10 +30,6 @@
 #  include <sys/localedef.h> // for __lc_ctype_ptr
 #endif
 
-#if defined(_LIBCPP_MSVCRT)
-#  define _CTYPE_DISABLE_MACROS
-#endif
-
 #include "include/atomic_support.h"
 #include "include/sso_allocator.h"
 
@@ -5361,17 +5357,17 @@ void moneypunct_byname<char, true>::init(const char* nm) {
     __frac_digits_ = base::do_frac_digits();
 #if defined(_LIBCPP_MSVCRT_LIKE)
   if (lc->p_sign_posn == 0)
-#else  // _LIBCPP_MSVCRT
+#else  // _LIBCPP_MSVCRT_LIKE
   if (lc->int_p_sign_posn == 0)
-#endif // !_LIBCPP_MSVCRT
+#endif // !_LIBCPP_MSVCRT_LIKE
     __positive_sign_ = "()";
   else
     __positive_sign_ = lc->positive_sign;
 #if defined(_LIBCPP_MSVCRT_LIKE)
   if (lc->n_sign_posn == 0)
-#else  // _LIBCPP_MSVCRT
+#else  // _LIBCPP_MSVCRT_LIKE
   if (lc->int_n_sign_posn == 0)
-#endif // !_LIBCPP_MSVCRT
+#endif // !_LIBCPP_MSVCRT_LIKE
     __negative_sign_ = "()";
   else
     __negative_sign_ = lc->negative_sign;
@@ -5382,7 +5378,7 @@ void moneypunct_byname<char, true>::init(const char* nm) {
 #if defined(_LIBCPP_MSVCRT_LIKE)
   __init_pat(__pos_format_, __dummy_curr_symbol, true, lc->p_cs_precedes, lc->p_sep_by_space, lc->p_sign_posn, ' ');
   __init_pat(__neg_format_, __curr_symbol_, true, lc->n_cs_precedes, lc->n_sep_by_space, lc->n_sign_posn, ' ');
-#else  // _LIBCPP_MSVCRT
+#else  // _LIBCPP_MSVCRT_LIKE
   __init_pat(
       __pos_format_,
       __dummy_curr_symbol,
@@ -5393,7 +5389,7 @@ void moneypunct_byname<char, true>::init(const char* nm) {
       ' ');
   __init_pat(
       __neg_format_, __curr_symbol_, true, lc->int_n_cs_precedes, lc->int_n_sep_by_space, lc->int_n_sign_posn, ' ');
-#endif // !_LIBCPP_MSVCRT
+#endif // !_LIBCPP_MSVCRT_LIKE
 }
 
 #if _LIBCPP_HAS_WIDE_CHARACTERS
@@ -5478,9 +5474,9 @@ void moneypunct_byname<wchar_t, true>::init(const char* nm) {
     __frac_digits_ = base::do_frac_digits();
 #  if defined(_LIBCPP_MSVCRT_LIKE)
   if (lc->p_sign_posn == 0)
-#  else  // _LIBCPP_MSVCRT
+#  else  // _LIBCPP_MSVCRT_LIKE
   if (lc->int_p_sign_posn == 0)
-#  endif // !_LIBCPP_MSVCRT
+#  endif // !_LIBCPP_MSVCRT_LIKE
     __positive_sign_ = L"()";
   else {
     mb = mbstate_t();
@@ -5493,9 +5489,9 @@ void moneypunct_byname<wchar_t, true>::init(const char* nm) {
   }
 #  if defined(_LIBCPP_MSVCRT_LIKE)
   if (lc->n_sign_posn == 0)
-#  else  // _LIBCPP_MSVCRT
+#  else  // _LIBCPP_MSVCRT_LIKE
   if (lc->int_n_sign_posn == 0)
-#  endif // !_LIBCPP_MSVCRT
+#  endif // !_LIBCPP_MSVCRT_LIKE
     __negative_sign_ = L"()";
   else {
     mb = mbstate_t();
@@ -5513,7 +5509,7 @@ void moneypunct_byname<wchar_t, true>::init(const char* nm) {
 #  if defined(_LIBCPP_MSVCRT_LIKE)
   __init_pat(__pos_format_, __dummy_curr_symbol, true, lc->p_cs_precedes, lc->p_sep_by_space, lc->p_sign_posn, L' ');
   __init_pat(__neg_format_, __curr_symbol_, true, lc->n_cs_precedes, lc->n_sep_by_space, lc->n_sign_posn, L' ');
-#  else  // _LIBCPP_MSVCRT
+#  else  // _LIBCPP_MSVCRT_LIKE
   __init_pat(
       __pos_format_,
       __dummy_curr_symbol,
@@ -5524,7 +5520,7 @@ void moneypunct_byname<wchar_t, true>::init(const char* nm) {
       L' ');
   __init_pat(
       __neg_format_, __curr_symbol_, true, lc->int_n_cs_precedes, lc->int_n_sep_by_space, lc->int_n_sign_posn, L' ');
-#  endif // !_LIBCPP_MSVCRT
+#  endif // !_LIBCPP_MSVCRT_LIKE
 }
 #endif // _LIBCPP_HAS_WIDE_CHARACTERS
 

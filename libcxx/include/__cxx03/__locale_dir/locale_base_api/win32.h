@@ -189,7 +189,7 @@ decltype(MB_CUR_MAX) MB_CUR_MAX_L(locale_t __l);
 #define strtoll_l _strtoi64_l
 #define strtoull_l _strtoui64_l
 #define strtod_l _strtod_l
-#if defined(_LIBCPP_MSVCRT)
+#if defined(_LIBCPP_MSVCRT_LIKE) && !defined(__MINGW32__)
 #  define strtof_l _strtof_l
 #  define strtold_l _strtold_l
 #else

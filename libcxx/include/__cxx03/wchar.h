@@ -136,7 +136,7 @@ size_t wcsrtombs(char* restrict dst, const wchar_t** restrict src, size_t len,
 #    if __GLIBC_PREREQ(2, 10)
 #      define _LIBCPP_WCHAR_H_HAS_CONST_OVERLOADS 1
 #    endif
-#  elif defined(_LIBCPP_MSVCRT)
+#  elif defined(_LIBCPP_MSVCRT_LIKE)
 #    if defined(_CRT_CONST_CORRECT_OVERLOADS)
 #      define _LIBCPP_WCHAR_H_HAS_CONST_OVERLOADS 1
 #    endif
@@ -206,6 +206,6 @@ size_t mbsnrtowcs(
 size_t wcsnrtombs(
     char* __restrict __dst, const wchar_t** __restrict __src, size_t __nwc, size_t __len, mbstate_t* __restrict __ps);
 } // extern "C"
-#  endif // __cplusplus && (_LIBCPP_MSVCRT || __MVS__)
+#  endif // __cplusplus && (_LIBCPP_MSVCRT_LIKE || __MVS__)
 
 #endif // _LIBCPP___CXX03_WCHAR_H

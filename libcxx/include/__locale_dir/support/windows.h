@@ -170,7 +170,7 @@ _LIBCPP_EXPORTED_FROM_ABI __lconv_t* __localeconv(__locale_t& __loc);
 //
 
 // the *_l functions are prefixed on Windows, only available for msvcr80+, VS2005+
-#if defined(_LIBCPP_MSVCRT)
+#if defined(_LIBCPP_MSVCRT_LIKE) && !defined(__MINGW32__)
 inline _LIBCPP_HIDE_FROM_ABI float __strtof(const char* __nptr, char** __endptr, __locale_t __loc) {
   return ::_strtof_l(__nptr, __endptr, __loc);
 }
