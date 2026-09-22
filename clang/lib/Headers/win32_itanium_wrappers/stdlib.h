@@ -56,6 +56,25 @@
 #include_next <stdlib.h>
 #endif
 
+/*
+ * aligned_alloc: C11 7.22.3.1. The UCRT neither declares nor exports it, and
+ * Microsoft documents it as unlikely to ever exist; wincrt implements it over
+ * malloc bases for every alignment malloc guarantees (see
+ * compiler-rt/lib/wincrt/aligned_alloc.cpp). Declared here so libc++'s
+ * <cstdlib> using_if_exists resolves std::aligned_alloc and C code sees the
+ * C11 name. Larger alignments fail with a null pointer; callers needing them
+ * use _aligned_malloc/_aligned_free or aligned operator new.
+ */
+#if defined(__MSVCRT__)
+#ifdef __cplusplus
+extern "C" {
+#endif
+void *__cdecl aligned_alloc(size_t alignment, size_t size);
+#ifdef __cplusplus
+}
+#endif
+#endif
+
 #endif
 
 /*

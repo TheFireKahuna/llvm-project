@@ -48,7 +48,7 @@ int main(void) {
   printf("str = %s\n", str);
   free(str);
 
-  // Test aligned allocation (C11 aligned_alloc via UCRT).
+  // Test Microsoft's aligned allocation pair (distinct from C aligned_alloc).
   void *aligned = _aligned_malloc(1024, 64);
   // CHECK: aligned_malloc succeeded = 1
   printf("aligned_malloc succeeded = %d\n", aligned != NULL);

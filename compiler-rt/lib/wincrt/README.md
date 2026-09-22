@@ -32,6 +32,39 @@ include or link path.
 The section sentinels (`__xi_a` ... `__xt_z`), `__dso_handle` and `_fltused`
 come from compiler-rt builtins (`crt_begin_windows.c`, `crt_end_windows.c`).
 
+## C aligned allocation
+
+`aligned_alloc` supports alignments 1, 2, 4, 8 and 16 using UCRT `malloc`.
+Every successful result can be passed to ordinary UCRT `free`, including
+across DLL boundaries. No allocation metadata or `free` interception is used.
+Extended alignments are unsupported by this function; use the paired
+`_aligned_malloc`/`_aligned_free` or aligned C++ new/delete for those.
+
+The contract follows C17 7.22.3.1 and C23 7.24.3.1, including the final
+[WG14 DR 460 correction](https://www.open-std.org/jtc1/sc22/wg14/issues/c11c17/issue0460.html):
+unsupported alignments return null, and sizes need not be multiples of the
+alignment. These corrected semantics apply in C11 mode as well. Zero-size
+requests with a supported alignment return null without changing `errno`.
+Wincrt sets `EINVAL` for unsupported alignments and `ENOMEM` for sizes above
+UCRT's allocation ceiling; ordinary allocation failures follow UCRT `malloc`.
+These `errno` choices are implementation policy, not ISO C requirements.
+
+The deallocation family is determined by the allocating function, not by the
+pointer's alignment. Microsoft `_aligned_malloc` returns an interior pointer
+even at alignments 8 and 16. Such pointers require `_aligned_free`; passing
+them to `free` can corrupt the heap. Conversely, wincrt `aligned_alloc`
+results require ordinary `free`, not `_aligned_free`. Microsoft offset-aligned
+allocations also require `_aligned_free`. Null pointers are valid for both
+deallocators. Neither API makes double frees or damaged/interior pointers valid.
+
+The cross-image guarantee above assumes the images share the release UCRT
+allocation domain used by this target; it does not promise compatibility with
+unrelated custom allocators or a different CRT/debug-heap allocation domain.
+`aligned_alloc_free.c` checks UCRT heap-block validity, deallocation errors,
+cross-thread release, and release after unloading the allocating DLL. It also
+checks the Microsoft allocation/deallocation pair independently. Invalid
+cross-family frees are undefined behavior and are not regression-test oracles.
+
 ## Lifetime ownership
 
 `cxa_atexit.cpp` and `cxa_thread_atexit.cpp` are compiled twice. Compiled
