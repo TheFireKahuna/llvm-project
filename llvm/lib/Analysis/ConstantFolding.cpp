@@ -2132,19 +2132,32 @@ static APFloat FlushWithDenormKind(const APFloat &V,
   }
 }
 
-// The C library of NT-POSIX hosts (llvm-libc) has no double sinh, cosh, tanh or
-// erf. Leave those calls unfolded there rather than approximate them.
 namespace host {
 #ifdef LLVM_RUNTIME_NTPOSIX
-constexpr double (*sinh)(double) = nullptr;
-constexpr double (*cosh)(double) = nullptr;
-constexpr double (*tanh)(double) = nullptr;
+// The C library of NT-POSIX hosts (llvm-libc) has no double sinh, cosh, tanh
+// or erf. Evaluate the hyperbolic functions through expm1, which does not
+// cancel near zero, and float erf through erff. Double erf is not folded.
+double sinh(double X) {
+  double T = expm1(fabs(X));
+  return copysign(0.5 * (T + T / (T + 1)), X);
+}
+double cosh(double X) {
+  double E = exp(fabs(X));
+  return 0.5 * E + 0.5 / E;
+}
+double tanh(double X) {
+  double T = expm1(-2 * fabs(X));
+  return copysign(-T / (T + 2), X);
+}
 constexpr double (*erf)(double) = nullptr;
+// A float argument and erff's result are both exact as doubles.
+double erfForFloat(double X) { return erff(static_cast<float>(X)); }
 #else
 using ::cosh;
 using ::erf;
 using ::sinh;
 using ::tanh;
+double erfForFloat(double X) { return ::erf(X); }
 #endif
 } // namespace host
 
@@ -3014,8 +3027,11 @@ static Constant *ConstantFoldScalarCall1(StringRef Name,
       return nullptr;
     case LibFunc_erf:
     case LibFunc_erff:
-      if (TLI->has(Func))
+      if (TLI->has(Func)) {
+        if (Ty->isFloatTy())
+          return ConstantFoldFP(host::erfForFloat, APF, Ty);
         return ConstantFoldFP(host::erf, APF, Ty);
+      }
       break;
     case LibFunc_nearbyint:
     case LibFunc_nearbyintf:
