@@ -40,8 +40,10 @@ set(_WI_TOOLCHAIN_TOOLS
 set(_WI_DISTRIBUTION_COMPONENTS
   clang
   clang-format
+  clang-scan-deps
   clang-resource-headers
   builtins
+  wincrt
   clang-tidy
   clangd
   lld
