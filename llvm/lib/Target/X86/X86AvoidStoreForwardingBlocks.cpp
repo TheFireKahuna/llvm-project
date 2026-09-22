@@ -22,8 +22,8 @@
 //
 // The pass currently only handles cases where memcpy is lowered to
 // XMM/YMM registers, it tries to break the memcpy into smaller copies.
-// breaking the memcpy should be possible since there is no atomicity
-// guarantee for loads and stores to XMM/YMM.
+// Only non-atomic, non-volatile accesses may be split. Potentially overlapping
+// copies keep all loads before the stores and require register headroom.
 //
 // It could be better for performance to solve the problem by loading
 // to XMM/YMM then inserting the partial store before storing back from XMM/YMM
@@ -37,6 +37,8 @@
 #include "X86InstrInfo.h"
 #include "X86Subtarget.h"
 #include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/CodeGen/LivePhysRegs.h"
+#include "llvm/CodeGen/LiveVariables.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
@@ -44,10 +46,13 @@
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineOperand.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/CodeGen/RegisterClassInfo.h"
+#include "llvm/CodeGen/RegisterPressure.h"
 #include "llvm/IR/DebugLoc.h"
 #include "llvm/IR/Function.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/MC/MCInstrDesc.h"
+#include <memory>
 
 using namespace llvm;
 
@@ -78,26 +83,33 @@ private:
   const X86RegisterInfo *TRI = nullptr;
   SmallVector<std::pair<MachineInstr *, MachineInstr *>, 2>
       BlockedLoadsStoresPairs;
-  SmallVector<MachineInstr *, 2> ForRemoval;
   AliasAnalysis *AA = nullptr;
+  std::unique_ptr<LiveVariables> LV;
+  RegisterClassInfo RCI;
+  RegionPressure Pressure;
+  RegPressureTracker Tracker{Pressure};
+  const MachineBasicBlock *PressureMBB = nullptr;
+  struct CopyPiece {
+    unsigned LoadOpcode, StoreOpcode;
+    unsigned Size;
+    int64_t Offset;
+  };
+  struct CopyPlan {
+    MachineInstr *Load, *Store;
+    bool IsDisjoint;
+    SmallVector<CopyPiece, 4> Pieces;
+  };
+
+  bool hasRegisterHeadroom(const CopyPlan &Plan);
+  void emitCopy(const CopyPlan &Plan, const CopyPiece &Piece);
 
   /// Returns couples of Load then Store to memory which look
   ///  like a memcpy.
   void findPotentiallylBlockedCopies(MachineFunction &MF);
-  /// Break the memcpy's load and store into smaller copies
-  /// such that each memory load that was blocked by a smaller store
-  /// would now be copied separately.
-  void breakBlockedCopies(MachineInstr *LoadInst, MachineInstr *StoreInst,
-                          const DisplacementSizeMap &BlockingStoresDispSizeMap);
-  /// Break a copy of size Size to smaller copies.
-  void buildCopies(int Size, MachineInstr *LoadInst, int64_t LdDispImm,
-                   MachineInstr *StoreInst, int64_t StDispImm,
-                   int64_t LMMOffset, int64_t SMMOffset);
-
-  void buildCopy(MachineInstr *LoadInst, unsigned NLoadOpcode, int64_t LoadDisp,
-                 MachineInstr *StoreInst, unsigned NStoreOpcode,
-                 int64_t StoreDisp, unsigned Size, int64_t LMMOffset,
-                 int64_t SMMOffset);
+  /// Plan smaller copies that do not straddle the blocking stores.
+  void planCopies(CopyPlan &Plan,
+                  const DisplacementSizeMap &BlockingStoresDispSizeMap);
+  void addCopyPieces(CopyPlan &Plan, unsigned Size, int64_t Offset);
 
   bool alias(const MachineMemOperand &Op1, const MachineMemOperand &Op2) const;
 
@@ -382,11 +394,9 @@ findPotentialBlockers(MachineInstr *LoadInst) {
   return PotentialBlockers;
 }
 
-void X86AvoidSFBImpl::buildCopy(MachineInstr *LoadInst, unsigned NLoadOpcode,
-                                int64_t LoadDisp, MachineInstr *StoreInst,
-                                unsigned NStoreOpcode, int64_t StoreDisp,
-                                unsigned Size, int64_t LMMOffset,
-                                int64_t SMMOffset) {
+void X86AvoidSFBImpl::emitCopy(const CopyPlan &Plan, const CopyPiece &Piece) {
+  MachineInstr *LoadInst = Plan.Load, *StoreInst = Plan.Store;
+  auto [NLoadOpcode, NStoreOpcode, Size, Offset] = Piece;
   MachineOperand &LoadBase = getBaseOperand(LoadInst);
   MachineOperand &StoreBase = getBaseOperand(StoreInst);
   MachineBasicBlock *MBB = LoadInst->getParent();
@@ -401,30 +411,30 @@ void X86AvoidSFBImpl::buildCopy(MachineInstr *LoadInst, unsigned NLoadOpcode,
           .add(LoadBase)
           .addImm(1)
           .addReg(X86::NoRegister)
-          .addImm(LoadDisp)
+          .addImm(getDispOperand(LoadInst).getImm() + Offset)
           .addReg(X86::NoRegister)
           .addMemOperand(
-              MBB->getParent()->getMachineMemOperand(LMMO, LMMOffset, Size));
+              MBB->getParent()->getMachineMemOperand(LMMO, Offset, Size));
   if (LoadBase.isReg())
     getBaseOperand(NewLoad).setIsKill(false);
   LLVM_DEBUG(NewLoad->dump());
-  // If the load and store are consecutive, use the loadInst location to
-  // reduce register pressure.
+  // For disjoint consecutive accesses, interleave the copies to reduce
+  // register pressure.
   MachineInstr *StInst = StoreInst;
   auto PrevInstrIt = prev_nodbg(MachineBasicBlock::instr_iterator(StoreInst),
                                 MBB->instr_begin());
-  if (PrevInstrIt.getNodePtr() == LoadInst)
+  if (Plan.IsDisjoint && PrevInstrIt.getNodePtr() == LoadInst)
     StInst = LoadInst;
   MachineInstr *NewStore =
       BuildMI(*MBB, StInst, StInst->getDebugLoc(), TII->get(NStoreOpcode))
           .add(StoreBase)
           .addImm(1)
           .addReg(X86::NoRegister)
-          .addImm(StoreDisp)
+          .addImm(getDispOperand(StoreInst).getImm() + Offset)
           .addReg(X86::NoRegister)
           .addReg(Reg1)
           .addMemOperand(
-              MBB->getParent()->getMachineMemOperand(SMMO, SMMOffset, Size));
+              MBB->getParent()->getMachineMemOperand(SMMO, Offset, Size));
   if (StoreBase.isReg())
     getBaseOperand(NewStore).setIsKill(false);
   MachineOperand &StoreSrcVReg = StoreInst->getOperand(X86::AddrNumOperands);
@@ -433,69 +443,40 @@ void X86AvoidSFBImpl::buildCopy(MachineInstr *LoadInst, unsigned NLoadOpcode,
   LLVM_DEBUG(NewStore->dump());
 }
 
-void X86AvoidSFBImpl::buildCopies(int Size, MachineInstr *LoadInst,
-                                  int64_t LdDispImm, MachineInstr *StoreInst,
-                                  int64_t StDispImm, int64_t LMMOffset,
-                                  int64_t SMMOffset) {
-  int LdDisp = LdDispImm;
-  int StDisp = StDispImm;
-  while (Size > 0) {
-    if ((Size - MOV128SZ >= 0) && isYMMLoadOpcode(LoadInst->getOpcode())) {
-      Size = Size - MOV128SZ;
-      buildCopy(LoadInst, getYMMtoXMMLoadOpcode(LoadInst->getOpcode()), LdDisp,
-                StoreInst, getYMMtoXMMStoreOpcode(StoreInst->getOpcode()),
-                StDisp, MOV128SZ, LMMOffset, SMMOffset);
-      LdDisp += MOV128SZ;
-      StDisp += MOV128SZ;
-      LMMOffset += MOV128SZ;
-      SMMOffset += MOV128SZ;
-      continue;
+// Use the same fragment plan for the pressure check and instruction emission.
+void X86AvoidSFBImpl::addCopyPieces(CopyPlan &Plan, unsigned Size,
+                                    int64_t Offset) {
+  while (Size) {
+    unsigned LoadOpcode, StoreOpcode, PieceSize;
+    if (Size >= MOV128SZ && isYMMLoadOpcode(Plan.Load->getOpcode())) {
+      LoadOpcode = getYMMtoXMMLoadOpcode(Plan.Load->getOpcode());
+      StoreOpcode = getYMMtoXMMStoreOpcode(Plan.Store->getOpcode());
+      PieceSize = MOV128SZ;
+    } else if (Size >= MOV64SZ) {
+      LoadOpcode = X86::MOV64rm;
+      StoreOpcode = X86::MOV64mr;
+      PieceSize = MOV64SZ;
+    } else if (Size >= MOV32SZ) {
+      LoadOpcode = X86::MOV32rm;
+      StoreOpcode = X86::MOV32mr;
+      PieceSize = MOV32SZ;
+    } else if (Size >= MOV16SZ) {
+      LoadOpcode = X86::MOV16rm;
+      StoreOpcode = X86::MOV16mr;
+      PieceSize = MOV16SZ;
+    } else {
+      LoadOpcode = X86::MOV8rm;
+      StoreOpcode = X86::MOV8mr;
+      PieceSize = MOV8SZ;
     }
-    if (Size - MOV64SZ >= 0) {
-      Size = Size - MOV64SZ;
-      buildCopy(LoadInst, X86::MOV64rm, LdDisp, StoreInst, X86::MOV64mr, StDisp,
-                MOV64SZ, LMMOffset, SMMOffset);
-      LdDisp += MOV64SZ;
-      StDisp += MOV64SZ;
-      LMMOffset += MOV64SZ;
-      SMMOffset += MOV64SZ;
-      continue;
-    }
-    if (Size - MOV32SZ >= 0) {
-      Size = Size - MOV32SZ;
-      buildCopy(LoadInst, X86::MOV32rm, LdDisp, StoreInst, X86::MOV32mr, StDisp,
-                MOV32SZ, LMMOffset, SMMOffset);
-      LdDisp += MOV32SZ;
-      StDisp += MOV32SZ;
-      LMMOffset += MOV32SZ;
-      SMMOffset += MOV32SZ;
-      continue;
-    }
-    if (Size - MOV16SZ >= 0) {
-      Size = Size - MOV16SZ;
-      buildCopy(LoadInst, X86::MOV16rm, LdDisp, StoreInst, X86::MOV16mr, StDisp,
-                MOV16SZ, LMMOffset, SMMOffset);
-      LdDisp += MOV16SZ;
-      StDisp += MOV16SZ;
-      LMMOffset += MOV16SZ;
-      SMMOffset += MOV16SZ;
-      continue;
-    }
-    if (Size - MOV8SZ >= 0) {
-      Size = Size - MOV8SZ;
-      buildCopy(LoadInst, X86::MOV8rm, LdDisp, StoreInst, X86::MOV8mr, StDisp,
-                MOV8SZ, LMMOffset, SMMOffset);
-      LdDisp += MOV8SZ;
-      StDisp += MOV8SZ;
-      LMMOffset += MOV8SZ;
-      SMMOffset += MOV8SZ;
-      continue;
-    }
+    Plan.Pieces.push_back({LoadOpcode, StoreOpcode, PieceSize, Offset});
+    Size -= PieceSize;
+    Offset += PieceSize;
   }
-  assert(Size == 0 && "Wrong size division");
 }
 
-static void updateKillStatus(MachineInstr *LoadInst, MachineInstr *StoreInst) {
+static void updateKillStatus(MachineInstr *LoadInst, MachineInstr *StoreInst,
+                             bool IsDisjoint) {
   MachineOperand &LoadBase = getBaseOperand(LoadInst);
   MachineOperand &StoreBase = getBaseOperand(StoreInst);
   auto *StorePrevNonDbgInstr =
@@ -504,17 +485,17 @@ static void updateKillStatus(MachineInstr *LoadInst, MachineInstr *StoreInst) {
           .getNodePtr();
   if (LoadBase.isReg()) {
     MachineInstr *LastLoad = LoadInst->getPrevNode();
-    // If the original load and store to xmm/ymm were consecutive
+    // If the original disjoint load and store were consecutive,
     // then the partial copies were also created in
     // a consecutive order to reduce register pressure,
     // and the location of the last load is before the last store.
-    if (StorePrevNonDbgInstr == LoadInst)
+    if (IsDisjoint && StorePrevNonDbgInstr == LoadInst)
       LastLoad = LoadInst->getPrevNode()->getPrevNode();
     getBaseOperand(LastLoad).setIsKill(LoadBase.isKill());
   }
   if (StoreBase.isReg()) {
     MachineInstr *StInst = StoreInst;
-    if (StorePrevNonDbgInstr == LoadInst)
+    if (IsDisjoint && StorePrevNonDbgInstr == LoadInst)
       StInst = LoadInst;
     getBaseOperand(StInst->getPrevNode()).setIsKill(StoreBase.isKill());
   }
@@ -545,13 +526,16 @@ void X86AvoidSFBImpl::findPotentiallylBlockedCopies(MachineFunction &MF) {
       for (MachineOperand &StoreMO :
            llvm::make_early_inc_range(MRI->use_nodbg_operands(DefVR))) {
         MachineInstr &StoreMI = *StoreMO.getParent();
-        // Skip cases where the memcpy may overlap.
+        // Splitting ordered accesses would change their observable accesses.
         if (StoreMI.getParent() == MI.getParent() &&
             isPotentialBlockedMemCpyPair(MI.getOpcode(), StoreMI.getOpcode()) &&
             isRelevantAddressingMode(&MI) &&
             isRelevantAddressingMode(&StoreMI) &&
             MI.hasOneMemOperand() && StoreMI.hasOneMemOperand()) {
-          if (!alias(**MI.memoperands_begin(), **StoreMI.memoperands_begin()))
+          if ((*MI.memoperands_begin())->isUnordered() &&
+              !(*MI.memoperands_begin())->isAtomic() &&
+              (*StoreMI.memoperands_begin())->isUnordered() &&
+              !(*StoreMI.memoperands_begin())->isAtomic())
             BlockedLoadsStoresPairs.push_back(std::make_pair(&MI, &StoreMI));
         }
       }
@@ -563,50 +547,20 @@ unsigned X86AvoidSFBImpl::getRegSizeInBytes(MachineInstr *LoadInst) {
   return TRI->getRegSizeInBits(*TRC) / 8;
 }
 
-void X86AvoidSFBImpl::breakBlockedCopies(
-    MachineInstr *LoadInst, MachineInstr *StoreInst,
-    const DisplacementSizeMap &BlockingStoresDispSizeMap) {
-  int64_t LdDispImm = getDispOperand(LoadInst).getImm();
-  int64_t StDispImm = getDispOperand(StoreInst).getImm();
-  int64_t LMMOffset = 0;
-  int64_t SMMOffset = 0;
-
-  int64_t LdDisp1 = LdDispImm;
-  int64_t LdDisp2 = 0;
-  int64_t StDisp1 = StDispImm;
-  int64_t StDisp2 = 0;
-  unsigned Size1 = 0;
-  unsigned Size2 = 0;
-  int64_t LdStDelta = StDispImm - LdDispImm;
-
-  for (auto DispSizePair : BlockingStoresDispSizeMap) {
-    LdDisp2 = DispSizePair.first;
-    StDisp2 = DispSizePair.first + LdStDelta;
-    Size2 = DispSizePair.second;
-    // Avoid copying overlapping areas.
-    if (LdDisp2 < LdDisp1) {
-      int OverlapDelta = LdDisp1 - LdDisp2;
-      LdDisp2 += OverlapDelta;
-      StDisp2 += OverlapDelta;
-      Size2 -= OverlapDelta;
-    }
-    Size1 = LdDisp2 - LdDisp1;
-
-    // Build a copy for the point until the current blocking store's
-    // displacement.
-    buildCopies(Size1, LoadInst, LdDisp1, StoreInst, StDisp1, LMMOffset,
-                SMMOffset);
-    // Build a copy for the current blocking store.
-    buildCopies(Size2, LoadInst, LdDisp2, StoreInst, StDisp2, LMMOffset + Size1,
-                SMMOffset + Size1);
-    LdDisp1 = LdDisp2 + Size2;
-    StDisp1 = StDisp2 + Size2;
-    LMMOffset += Size1 + Size2;
-    SMMOffset += Size1 + Size2;
+void X86AvoidSFBImpl::planCopies(
+    CopyPlan &Plan, const DisplacementSizeMap &BlockingStoresDispSizeMap) {
+  int64_t LoadDisp = getDispOperand(Plan.Load).getImm();
+  int64_t Offset = 0;
+  for (auto [Disp, Size] : BlockingStoresDispSizeMap) {
+    int64_t Begin = Disp - LoadDisp;
+    int64_t End = Begin + Size;
+    // Do not copy an overlapping part of a blocker twice.
+    Begin = std::max(Begin, Offset);
+    addCopyPieces(Plan, Begin - Offset, Offset);
+    addCopyPieces(Plan, End - Begin, Begin);
+    Offset = End;
   }
-  unsigned Size3 = (LdDispImm + getRegSizeInBytes(LoadInst)) - LdDisp1;
-  buildCopies(Size3, LoadInst, LdDisp1, StoreInst, StDisp1, LMMOffset,
-              LMMOffset);
+  addCopyPieces(Plan, getRegSizeInBytes(Plan.Load) - Offset, Offset);
 }
 
 static bool hasSameBaseOpValue(MachineInstr *LoadInst,
@@ -660,9 +614,88 @@ removeRedundantBlockingStores(DisplacementSizeMap &BlockingStoresDispSizeMap) {
     BlockingStoresDispSizeMap.insert(Disp);
 }
 
-bool X86AvoidSFBImpl::runOnMachineFunction(MachineFunction &MF) {
-  bool Changed = false;
+// Seed the existing pressure tracker with live-outs, including PHI edge uses,
+// then walk back to the adjacent copy. Compute liveness only if the new path
+// needs it; disjoint copies retain their existing analysis requirements.
+bool X86AvoidSFBImpl::hasRegisterHeadroom(const CopyPlan &Plan) {
+  MachineBasicBlock &MBB = *Plan.Load->getParent();
+  MachineFunction &MF = *MBB.getParent();
+  if (!LV) {
+    LV = std::make_unique<LiveVariables>(MF);
+    RCI.runOnMachineFunction(MF);
+  }
+  SmallVector<VRegMaskOrUnit, 16> LiveRegs;
+  auto AddReg = [&](Register Reg) {
+    if (Reg.isVirtual())
+      LiveRegs.emplace_back(VirtRegOrUnit(Reg), LaneBitmask::getAll());
+    else if (Reg && MRI->isAllocatable(Reg))
+      for (MCRegUnit Unit : TRI->regunits(Reg.asMCReg()))
+        LiveRegs.emplace_back(VirtRegOrUnit(Unit), LaneBitmask::getAll());
+  };
+  if (PressureMBB != &MBB) {
+    PressureMBB = &MBB;
+    // isLiveOut also counts values defined and killed in a successor. Query
+    // live-ins instead, then add the PHI uses on this block's outgoing edges.
+    for (unsigned I = 0; I != MRI->getNumVirtRegs(); ++I) {
+      Register Reg = Register::index2VirtReg(I);
+      if (!MRI->reg_nodbg_empty(Reg) &&
+          llvm::any_of(MBB.successors(), [&](const MachineBasicBlock *Succ) {
+            return LV->isLiveIn(Reg, *Succ);
+          }))
+        AddReg(Reg);
+    }
+    for (const MachineBasicBlock *Succ : MBB.successors())
+      for (const MachineInstr &Phi : Succ->phis())
+        for (unsigned I = 1; I != Phi.getNumOperands(); I += 2)
+          if (Phi.getOperand(I + 1).getMBB() == &MBB &&
+              !Phi.getOperand(I).isUndef())
+            AddReg(Phi.getOperand(I).getReg());
+    LivePhysRegs PhysRegs(*TRI);
+    PhysRegs.addLiveOutsNoPristines(MBB);
+    for (MCPhysReg Reg : PhysRegs)
+      AddReg(Reg);
 
+    Tracker.init(&MF, &RCI, nullptr, &MBB, MBB.end(), false, false);
+    Tracker.addLiveRegs(LiveRegs);
+  }
+  do {
+    Tracker.recede();
+  } while (&*Tracker.getPos() != Plan.Store);
+  // The source address must survive all split loads even if the original
+  // vector load killed it. Full-register masks conservatively include subregs.
+  LiveRegs.clear();
+  if (getBaseOperand(Plan.Load).isReg())
+    AddReg(getBaseOperand(Plan.Load).getReg());
+  Tracker.addLiveRegs(LiveRegs);
+  auto SetPressure = Tracker.getRegSetPressureAtPos();
+  for (auto PS = MRI->getPressureSets(
+           VirtRegOrUnit(Plan.Load->getOperand(0).getReg()));
+       PS.isValid(); ++PS)
+    SetPressure[*PS] -= PS.getWeight();
+
+  SmallVector<unsigned, 8> Limits(SetPressure.size(), ~0U);
+  for (const CopyPiece &Piece : Plan.Pieces) {
+    const TargetRegisterClass *RC =
+        TII->getRegClass(TII->get(Piece.LoadOpcode), 0);
+    unsigned Weight = TRI->getRegClassWeight(RC).RegWeight;
+    // Do not spend callee-saved registers to make this new transformation fit.
+    unsigned Available = llvm::count_if(RCI.getOrder(RC), [&](MCPhysReg Reg) {
+      return !RCI.getLastCalleeSavedAlias(Reg);
+    });
+    for (const int *PS = TRI->getRegClassPressureSets(RC); *PS != -1; ++PS) {
+      SetPressure[*PS] += Weight;
+      Limits[*PS] = std::min(
+          {Limits[*PS], RCI.getRegPressureSetLimit(*PS), Available * Weight});
+    }
+  }
+  // Leave headroom rather than filling a pressure set to its limit.
+  for (unsigned I = 0; I != SetPressure.size(); ++I)
+    if (SetPressure[I] >= Limits[I])
+      return false;
+  return true;
+}
+
+bool X86AvoidSFBImpl::runOnMachineFunction(MachineFunction &MF) {
   if (DisableX86AvoidStoreForwardBlocks ||
       !MF.getSubtarget<X86Subtarget>().is64Bit())
     return false;
@@ -671,18 +704,33 @@ bool X86AvoidSFBImpl::runOnMachineFunction(MachineFunction &MF) {
   assert(MRI->isSSA() && "Expected MIR to be in SSA form");
   TII = MF.getSubtarget<X86Subtarget>().getInstrInfo();
   TRI = MF.getSubtarget<X86Subtarget>().getRegisterInfo();
+  SmallVector<CopyPlan, 2> Plans;
   LLVM_DEBUG(dbgs() << "Start X86AvoidStoreForwardBlocks\n";);
   // Look for a load then a store to XMM/YMM which look like a memcpy
   findPotentiallylBlockedCopies(MF);
 
-  for (auto LoadStoreInstPair : BlockedLoadsStoresPairs) {
-    MachineInstr *LoadInst = LoadStoreInstPair.first;
+  // Analyze candidates backwards so pressure tracking scans each block once.
+  // Retain only profitable plans; do not change instructions until all queries
+  // against the original liveness information are complete.
+  for (auto [LoadInst, StoreInst] : llvm::reverse(BlockedLoadsStoresPairs)) {
+    bool IsDisjoint = !alias(**LoadInst->memoperands_begin(),
+                             **StoreInst->memoperands_begin());
+    // Newly admitted copies must have a short live range and a guaranteed
+    // blocker. Leave the existing disjoint-copy policy unchanged.
+    if (!IsDisjoint && (MF.getFunction().hasOptSize() ||
+                        next_nodbg(MachineBasicBlock::instr_iterator(LoadInst),
+                                   LoadInst->getParent()->instr_end())
+                                .getNodePtr() != StoreInst))
+      continue;
     int64_t LdDispImm = getDispOperand(LoadInst).getImm();
     DisplacementSizeMap BlockingStoresDispSizeMap;
+    bool HasImmediateBlocker = false;
 
     SmallVector<MachineInstr *, 2> PotentialBlockers =
         findPotentialBlockers(LoadInst);
     for (auto *PBInst : PotentialBlockers) {
+      if (!IsDisjoint && PBInst->getParent() != LoadInst->getParent())
+        continue;
       if (!isPotentialBlockingStoreInst(PBInst->getOpcode(),
                                         LoadInst->getOpcode()) ||
           !isRelevantAddressingMode(PBInst) || !PBInst->hasOneMemOperand())
@@ -695,36 +743,43 @@ bool X86AvoidSFBImpl::runOnMachineFunction(MachineFunction &MF) {
       // performance.
       if (hasSameBaseOpValue(LoadInst, PBInst) &&
           isBlockingStore(LdDispImm, getRegSizeInBytes(LoadInst), PBstDispImm,
-                          PBstSize))
+                          PBstSize)) {
+        HasImmediateBlocker |=
+            prev_nodbg(MachineBasicBlock::instr_iterator(LoadInst),
+                       LoadInst->getParent()->instr_begin())
+                .getNodePtr() == PBInst;
         updateBlockingStoresDispSizeMap(BlockingStoresDispSizeMap, PBstDispImm,
                                         PBstSize);
+      }
     }
 
-    if (BlockingStoresDispSizeMap.empty())
+    if (BlockingStoresDispSizeMap.empty() ||
+        (!IsDisjoint && !HasImmediateBlocker))
       continue;
 
-    // We found a store forward block, break the memcpy's load and store
-    // into smaller copies such that each smaller store that was causing
-    // a store block would now be copied separately.
-    MachineInstr *StoreInst = LoadStoreInstPair.second;
-    LLVM_DEBUG(dbgs() << "Blocked load and store instructions: \n");
-    LLVM_DEBUG(LoadInst->dump());
-    LLVM_DEBUG(StoreInst->dump());
-    LLVM_DEBUG(dbgs() << "Replaced with:\n");
     removeRedundantBlockingStores(BlockingStoresDispSizeMap);
-    breakBlockedCopies(LoadInst, StoreInst, BlockingStoresDispSizeMap);
-    updateKillStatus(LoadInst, StoreInst);
-    ForRemoval.push_back(LoadInst);
-    ForRemoval.push_back(StoreInst);
+    CopyPlan Plan{LoadInst, StoreInst, IsDisjoint, {}};
+    planCopies(Plan, BlockingStoresDispSizeMap);
+    if (!IsDisjoint && !hasRegisterHeadroom(Plan))
+      continue;
+    Plans.push_back(std::move(Plan));
   }
-  for (auto *RemovedInst : ForRemoval) {
-    RemovedInst->eraseFromParent();
+
+  // Emit in program order, preserving the order of virtual register creation.
+  for (const CopyPlan &Plan : llvm::reverse(Plans)) {
+    LLVM_DEBUG(dbgs() << "Blocked load and store instructions:\n";
+               Plan.Load->dump(); Plan.Store->dump();
+               dbgs() << "Replaced with:\n");
+    for (const CopyPiece &Piece : Plan.Pieces)
+      emitCopy(Plan, Piece);
+    updateKillStatus(Plan.Load, Plan.Store, Plan.IsDisjoint);
+    Plan.Load->eraseFromParent();
+    Plan.Store->eraseFromParent();
   }
-  ForRemoval.clear();
   BlockedLoadsStoresPairs.clear();
   LLVM_DEBUG(dbgs() << "End X86AvoidStoreForwardBlocks\n";);
 
-  return Changed;
+  return !Plans.empty();
 }
 
 bool X86AvoidSFBLegacy::runOnMachineFunction(MachineFunction &MF) {
