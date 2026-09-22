@@ -10,6 +10,7 @@
   define void @fixed_gprs(ptr %src, ptr %dst) { ret void }
   define void @partial_gpr(ptr %src, ptr %dst) { ret void }
   define void @loop_pressure(ptr %src, ptr %dst) { ret void }
+  define void @both_banks_full(ptr %src, ptr %dst) { ret void }
 ...
 ---
 name: mixed_copy
@@ -43,49 +44,29 @@ tracksRegLiveness: true
 body: |
   bb.0:
     liveins: $rdi, $rsi
-    ; SYSV-LABEL: name: simd_live
-    ; SYSV: liveins: $rdi, $rsi
-    ; SYSV-NEXT: {{  $}}
-    ; SYSV-NEXT: [[COPY:%[0-9]+]]:gr64 = COPY killed $rdi
-    ; SYSV-NEXT: [[COPY1:%[0-9]+]]:gr64 = COPY killed $rsi
-    ; SYSV-NEXT: [[VMOVUPSrm:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 112, $noreg :: (load (s128) from %ir.src + 112)
-    ; SYSV-NEXT: [[VMOVUPSrm1:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 128, $noreg :: (load (s128) from %ir.src + 128)
-    ; SYSV-NEXT: [[VMOVUPSrm2:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 144, $noreg :: (load (s128) from %ir.src + 144)
-    ; SYSV-NEXT: [[VMOVUPSrm3:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 160, $noreg :: (load (s128) from %ir.src + 160)
-    ; SYSV-NEXT: [[VMOVUPSrm4:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 176, $noreg :: (load (s128) from %ir.src + 176)
-    ; SYSV-NEXT: MOV64mi32 [[COPY]], 1, $noreg, 0, $noreg, 0 :: (store (s64) into %ir.src)
-    ; SYSV-NEXT: [[MOV64rm:%[0-9]+]]:gr64 = MOV64rm [[COPY]], 1, $noreg, 0, $noreg :: (load (s64) from %ir.src, align 32)
-    ; SYSV-NEXT: [[VMOVUPSrm5:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 8, $noreg :: (load (s128) from %ir.src + 8, align 8, basealign 32)
-    ; SYSV-NEXT: [[MOV64rm1:%[0-9]+]]:gr64 = MOV64rm killed [[COPY]], 1, $noreg, 24, $noreg :: (load (s64) from %ir.src + 24, basealign 32)
-    ; SYSV-NEXT: MOV64mr [[COPY1]], 1, $noreg, 0, $noreg, killed [[MOV64rm]] :: (store (s64) into %ir.dst, align 32)
-    ; SYSV-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 8, $noreg, killed [[VMOVUPSrm5]] :: (store (s128) into %ir.dst + 8, align 8, basealign 32)
-    ; SYSV-NEXT: MOV64mr [[COPY1]], 1, $noreg, 24, $noreg, killed [[MOV64rm1]] :: (store (s64) into %ir.dst + 24, basealign 32)
-    ; SYSV-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 112, $noreg, killed [[VMOVUPSrm]] :: (store (s128) into %ir.dst + 112)
-    ; SYSV-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 128, $noreg, killed [[VMOVUPSrm1]] :: (store (s128) into %ir.dst + 128)
-    ; SYSV-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 144, $noreg, killed [[VMOVUPSrm2]] :: (store (s128) into %ir.dst + 144)
-    ; SYSV-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 160, $noreg, killed [[VMOVUPSrm3]] :: (store (s128) into %ir.dst + 160)
-    ; SYSV-NEXT: VMOVUPSmr killed [[COPY1]], 1, $noreg, 176, $noreg, killed [[VMOVUPSrm4]] :: (store (s128) into %ir.dst + 176)
-    ; SYSV-NEXT: RET 0
-    ;
-    ; WIN-LABEL: name: simd_live
-    ; WIN: liveins: $rdi, $rsi
-    ; WIN-NEXT: {{  $}}
-    ; WIN-NEXT: [[COPY:%[0-9]+]]:gr64 = COPY killed $rdi
-    ; WIN-NEXT: [[COPY1:%[0-9]+]]:gr64 = COPY killed $rsi
-    ; WIN-NEXT: [[VMOVUPSrm:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 112, $noreg :: (load (s128) from %ir.src + 112)
-    ; WIN-NEXT: [[VMOVUPSrm1:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 128, $noreg :: (load (s128) from %ir.src + 128)
-    ; WIN-NEXT: [[VMOVUPSrm2:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 144, $noreg :: (load (s128) from %ir.src + 144)
-    ; WIN-NEXT: [[VMOVUPSrm3:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 160, $noreg :: (load (s128) from %ir.src + 160)
-    ; WIN-NEXT: [[VMOVUPSrm4:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 176, $noreg :: (load (s128) from %ir.src + 176)
-    ; WIN-NEXT: MOV64mi32 [[COPY]], 1, $noreg, 0, $noreg, 0 :: (store (s64) into %ir.src)
-    ; WIN-NEXT: [[VMOVUPSYrm:%[0-9]+]]:vr256 = VMOVUPSYrm killed [[COPY]], 1, $noreg, 0, $noreg :: (load (s256) from %ir.src)
-    ; WIN-NEXT: VMOVUPSYmr [[COPY1]], 1, $noreg, 0, $noreg, killed [[VMOVUPSYrm]] :: (store (s256) into %ir.dst)
-    ; WIN-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 112, $noreg, killed [[VMOVUPSrm]] :: (store (s128) into %ir.dst + 112)
-    ; WIN-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 128, $noreg, killed [[VMOVUPSrm1]] :: (store (s128) into %ir.dst + 128)
-    ; WIN-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 144, $noreg, killed [[VMOVUPSrm2]] :: (store (s128) into %ir.dst + 144)
-    ; WIN-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 160, $noreg, killed [[VMOVUPSrm3]] :: (store (s128) into %ir.dst + 160)
-    ; WIN-NEXT: VMOVUPSmr killed [[COPY1]], 1, $noreg, 176, $noreg, killed [[VMOVUPSrm4]] :: (store (s128) into %ir.dst + 176)
-    ; WIN-NEXT: RET 0
+    ; CHECK-LABEL: name: simd_live
+    ; CHECK: liveins: $rdi, $rsi
+    ; CHECK-NEXT: {{  $}}
+    ; CHECK-NEXT: [[COPY:%[0-9]+]]:gr64 = COPY killed $rdi
+    ; CHECK-NEXT: [[COPY1:%[0-9]+]]:gr64 = COPY killed $rsi
+    ; CHECK-NEXT: [[VMOVUPSrm:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 112, $noreg :: (load (s128) from %ir.src + 112)
+    ; CHECK-NEXT: [[VMOVUPSrm1:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 128, $noreg :: (load (s128) from %ir.src + 128)
+    ; CHECK-NEXT: [[VMOVUPSrm2:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 144, $noreg :: (load (s128) from %ir.src + 144)
+    ; CHECK-NEXT: [[VMOVUPSrm3:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 160, $noreg :: (load (s128) from %ir.src + 160)
+    ; CHECK-NEXT: [[VMOVUPSrm4:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 176, $noreg :: (load (s128) from %ir.src + 176)
+    ; CHECK-NEXT: MOV64mi32 [[COPY]], 1, $noreg, 0, $noreg, 0 :: (store (s64) into %ir.src)
+    ; CHECK-NEXT: [[MOV64rm:%[0-9]+]]:gr64 = MOV64rm [[COPY]], 1, $noreg, 0, $noreg :: (load (s64) from %ir.src, align 32)
+    ; CHECK-NEXT: [[VMOVUPSrm5:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 8, $noreg :: (load (s128) from %ir.src + 8, align 8, basealign 32)
+    ; CHECK-NEXT: [[MOV64rm1:%[0-9]+]]:gr64 = MOV64rm killed [[COPY]], 1, $noreg, 24, $noreg :: (load (s64) from %ir.src + 24, basealign 32)
+    ; CHECK-NEXT: MOV64mr [[COPY1]], 1, $noreg, 0, $noreg, killed [[MOV64rm]] :: (store (s64) into %ir.dst, align 32)
+    ; CHECK-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 8, $noreg, killed [[VMOVUPSrm5]] :: (store (s128) into %ir.dst + 8, align 8, basealign 32)
+    ; CHECK-NEXT: MOV64mr [[COPY1]], 1, $noreg, 24, $noreg, killed [[MOV64rm1]] :: (store (s64) into %ir.dst + 24, basealign 32)
+    ; CHECK-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 112, $noreg, killed [[VMOVUPSrm]] :: (store (s128) into %ir.dst + 112)
+    ; CHECK-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 128, $noreg, killed [[VMOVUPSrm1]] :: (store (s128) into %ir.dst + 128)
+    ; CHECK-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 144, $noreg, killed [[VMOVUPSrm2]] :: (store (s128) into %ir.dst + 144)
+    ; CHECK-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 160, $noreg, killed [[VMOVUPSrm3]] :: (store (s128) into %ir.dst + 160)
+    ; CHECK-NEXT: VMOVUPSmr killed [[COPY1]], 1, $noreg, 176, $noreg, killed [[VMOVUPSrm4]] :: (store (s128) into %ir.dst + 176)
+    ; CHECK-NEXT: RET 0
     %0:gr64 = COPY $rdi
     %1:gr64 = COPY $rsi
     %3:vr128 = VMOVUPSrm %0, 1, $noreg, 112, $noreg :: (load (s128) from %ir.src + 112)
@@ -132,8 +113,10 @@ body: |
     ; WIN-NEXT: [[COPY:%[0-9]+]]:gr64 = COPY killed $rdi
     ; WIN-NEXT: [[COPY1:%[0-9]+]]:gr64 = COPY killed $rsi
     ; WIN-NEXT: MOV64mi32 [[COPY]], 1, $noreg, 0, $noreg, 0 :: (store (s64) into %ir.src)
-    ; WIN-NEXT: [[MOVUPSrm:%[0-9]+]]:vr128 = MOVUPSrm killed [[COPY]], 1, $noreg, 0, $noreg :: (load (s128) from %ir.src)
-    ; WIN-NEXT: MOVUPSmr [[COPY1]], 1, $noreg, 0, $noreg, killed [[MOVUPSrm]] :: (store (s128) into %ir.dst)
+    ; WIN-NEXT: [[MOV64rm:%[0-9]+]]:gr64 = MOV64rm [[COPY]], 1, $noreg, 0, $noreg :: (load (s64) from %ir.src, align 16)
+    ; WIN-NEXT: [[VMOVQI2PQIrm:%[0-9]+]]:vr128 = VMOVQI2PQIrm killed [[COPY]], 1, $noreg, 8, $noreg :: (load (s64) from %ir.src + 8, basealign 16)
+    ; WIN-NEXT: MOV64mr [[COPY1]], 1, $noreg, 0, $noreg, killed [[MOV64rm]] :: (store (s64) into %ir.dst, align 16)
+    ; WIN-NEXT: VMOVPQI2QImr [[COPY1]], 1, $noreg, 8, $noreg, killed [[VMOVQI2PQIrm]] :: (store (s64) into %ir.dst + 8, basealign 16)
     ; WIN-NEXT: MOV64mr [[COPY1]], 1, $noreg, 64, $noreg, killed $rax :: (store (s64) into %ir.dst + 64)
     ; WIN-NEXT: MOV64mr [[COPY1]], 1, $noreg, 72, $noreg, killed $r8 :: (store (s64) into %ir.dst + 72)
     ; WIN-NEXT: MOV64mr [[COPY1]], 1, $noreg, 80, $noreg, killed $r9 :: (store (s64) into %ir.dst + 80)
@@ -211,8 +194,10 @@ body: |
   ; CHECK-NEXT:   [[PHI4:%[0-9]+]]:gr64 = PHI [[MOV64rm4]], %bb.0, %17, %bb.1
   ; CHECK-NEXT:   [[PHI5:%[0-9]+]]:gr64 = PHI [[MOV64rm5]], %bb.0, %19, %bb.1
   ; CHECK-NEXT:   MOV64mi32 [[COPY]], 1, $noreg, 0, $noreg, 0 :: (store (s64) into %ir.src)
-  ; CHECK-NEXT:   [[MOVUPSrm:%[0-9]+]]:vr128 = MOVUPSrm [[COPY]], 1, $noreg, 0, $noreg :: (load (s128) from %ir.src)
-  ; CHECK-NEXT:   MOVUPSmr [[COPY1]], 1, $noreg, 0, $noreg, killed [[MOVUPSrm]] :: (store (s128) into %ir.dst)
+  ; CHECK-NEXT:   [[VMOVQI2PQIrm:%[0-9]+]]:vr128 = VMOVQI2PQIrm [[COPY]], 1, $noreg, 0, $noreg :: (load (s64) from %ir.src, align 16)
+  ; CHECK-NEXT:   [[VMOVQI2PQIrm1:%[0-9]+]]:vr128 = VMOVQI2PQIrm [[COPY]], 1, $noreg, 8, $noreg :: (load (s64) from %ir.src + 8, basealign 16)
+  ; CHECK-NEXT:   VMOVPQI2QImr [[COPY1]], 1, $noreg, 0, $noreg, killed [[VMOVQI2PQIrm]] :: (store (s64) into %ir.dst, align 16)
+  ; CHECK-NEXT:   VMOVPQI2QImr [[COPY1]], 1, $noreg, 8, $noreg, killed [[VMOVQI2PQIrm1]] :: (store (s64) into %ir.dst + 8, basealign 16)
   ; CHECK-NEXT:   [[ADD64ri8_:%[0-9]+]]:gr64 = ADD64ri8 killed [[PHI]], 1, implicit-def dead $eflags
   ; CHECK-NEXT:   [[ADD64ri8_1:%[0-9]+]]:gr64 = ADD64ri8 killed [[PHI1]], 1, implicit-def dead $eflags
   ; CHECK-NEXT:   [[ADD64ri8_2:%[0-9]+]]:gr64 = ADD64ri8 killed [[PHI2]], 1, implicit-def dead $eflags
@@ -270,5 +255,121 @@ body: |
     MOV64mr %1, 1, $noreg, 88, $noreg, %23 :: (store (s64) into %ir.dst + 88)
     MOV64mr %1, 1, $noreg, 96, $noreg, %24 :: (store (s64) into %ir.dst + 96)
     MOV64mr %1, 1, $noreg, 104, $noreg, %25 :: (store (s64) into %ir.dst + 104)
+    RET 0
+...
+
+# Neither bank can hold the two fragments without raising its existing peak.
+---
+name: both_banks_full
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $rdi, $rsi
+    ; CHECK-LABEL: name: both_banks_full
+    ; CHECK: liveins: $rdi, $rsi
+    ; CHECK-NEXT: {{  $}}
+    ; CHECK-NEXT: [[COPY:%[0-9]+]]:gr64 = COPY killed $rdi
+    ; CHECK-NEXT: [[COPY1:%[0-9]+]]:gr64 = COPY killed $rsi
+    ; CHECK-NEXT: [[MOV64rm:%[0-9]+]]:gr64 = MOV64rm [[COPY]], 1, $noreg, 64, $noreg :: (load (s64) from %ir.src + 64)
+    ; CHECK-NEXT: [[MOV64rm1:%[0-9]+]]:gr64 = MOV64rm [[COPY]], 1, $noreg, 72, $noreg :: (load (s64) from %ir.src + 72)
+    ; CHECK-NEXT: [[MOV64rm2:%[0-9]+]]:gr64 = MOV64rm [[COPY]], 1, $noreg, 80, $noreg :: (load (s64) from %ir.src + 80)
+    ; CHECK-NEXT: [[MOV64rm3:%[0-9]+]]:gr64 = MOV64rm [[COPY]], 1, $noreg, 88, $noreg :: (load (s64) from %ir.src + 88)
+    ; CHECK-NEXT: [[MOV64rm4:%[0-9]+]]:gr64 = MOV64rm [[COPY]], 1, $noreg, 96, $noreg :: (load (s64) from %ir.src + 96)
+    ; CHECK-NEXT: [[MOV64rm5:%[0-9]+]]:gr64 = MOV64rm [[COPY]], 1, $noreg, 104, $noreg :: (load (s64) from %ir.src + 104)
+    ; CHECK-NEXT: [[MOV64rm6:%[0-9]+]]:gr64 = MOV64rm [[COPY]], 1, $noreg, 112, $noreg :: (load (s64) from %ir.src + 112)
+    ; CHECK-NEXT: [[MOV64rm7:%[0-9]+]]:gr64 = MOV64rm [[COPY]], 1, $noreg, 120, $noreg :: (load (s64) from %ir.src + 120)
+    ; CHECK-NEXT: [[VMOVUPSrm:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 128, $noreg :: (load (s128) from %ir.src + 128)
+    ; CHECK-NEXT: [[VMOVUPSrm1:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 144, $noreg :: (load (s128) from %ir.src + 144)
+    ; CHECK-NEXT: [[VMOVUPSrm2:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 160, $noreg :: (load (s128) from %ir.src + 160)
+    ; CHECK-NEXT: [[VMOVUPSrm3:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 176, $noreg :: (load (s128) from %ir.src + 176)
+    ; CHECK-NEXT: [[VMOVUPSrm4:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 192, $noreg :: (load (s128) from %ir.src + 192)
+    ; CHECK-NEXT: [[VMOVUPSrm5:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 208, $noreg :: (load (s128) from %ir.src + 208)
+    ; CHECK-NEXT: [[VMOVUPSrm6:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 224, $noreg :: (load (s128) from %ir.src + 224)
+    ; CHECK-NEXT: [[VMOVUPSrm7:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 240, $noreg :: (load (s128) from %ir.src + 240)
+    ; CHECK-NEXT: [[VMOVUPSrm8:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 256, $noreg :: (load (s128) from %ir.src + 256)
+    ; CHECK-NEXT: [[VMOVUPSrm9:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 272, $noreg :: (load (s128) from %ir.src + 272)
+    ; CHECK-NEXT: [[VMOVUPSrm10:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 288, $noreg :: (load (s128) from %ir.src + 288)
+    ; CHECK-NEXT: [[VMOVUPSrm11:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 304, $noreg :: (load (s128) from %ir.src + 304)
+    ; CHECK-NEXT: [[VMOVUPSrm12:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 320, $noreg :: (load (s128) from %ir.src + 320)
+    ; CHECK-NEXT: [[VMOVUPSrm13:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 336, $noreg :: (load (s128) from %ir.src + 336)
+    ; CHECK-NEXT: [[VMOVUPSrm14:%[0-9]+]]:vr128 = VMOVUPSrm [[COPY]], 1, $noreg, 352, $noreg :: (load (s128) from %ir.src + 352)
+    ; CHECK-NEXT: MOV64mi32 [[COPY]], 1, $noreg, 0, $noreg, 0 :: (store (s64) into %ir.src)
+    ; CHECK-NEXT: [[VMOVUPSrm15:%[0-9]+]]:vr128 = VMOVUPSrm killed [[COPY]], 1, $noreg, 0, $noreg :: (load (s128) from %ir.src)
+    ; CHECK-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 0, $noreg, killed [[VMOVUPSrm15]] :: (store (s128) into %ir.dst)
+    ; CHECK-NEXT: MOV64mr [[COPY1]], 1, $noreg, 64, $noreg, killed [[MOV64rm]] :: (store (s64) into %ir.dst + 64)
+    ; CHECK-NEXT: MOV64mr [[COPY1]], 1, $noreg, 72, $noreg, killed [[MOV64rm1]] :: (store (s64) into %ir.dst + 72)
+    ; CHECK-NEXT: MOV64mr [[COPY1]], 1, $noreg, 80, $noreg, killed [[MOV64rm2]] :: (store (s64) into %ir.dst + 80)
+    ; CHECK-NEXT: MOV64mr [[COPY1]], 1, $noreg, 88, $noreg, killed [[MOV64rm3]] :: (store (s64) into %ir.dst + 88)
+    ; CHECK-NEXT: MOV64mr [[COPY1]], 1, $noreg, 96, $noreg, killed [[MOV64rm4]] :: (store (s64) into %ir.dst + 96)
+    ; CHECK-NEXT: MOV64mr [[COPY1]], 1, $noreg, 104, $noreg, killed [[MOV64rm5]] :: (store (s64) into %ir.dst + 104)
+    ; CHECK-NEXT: MOV64mr [[COPY1]], 1, $noreg, 112, $noreg, killed [[MOV64rm6]] :: (store (s64) into %ir.dst + 112)
+    ; CHECK-NEXT: MOV64mr [[COPY1]], 1, $noreg, 120, $noreg, killed [[MOV64rm7]] :: (store (s64) into %ir.dst + 120)
+    ; CHECK-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 128, $noreg, killed [[VMOVUPSrm]] :: (store (s128) into %ir.dst + 128)
+    ; CHECK-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 144, $noreg, killed [[VMOVUPSrm1]] :: (store (s128) into %ir.dst + 144)
+    ; CHECK-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 160, $noreg, killed [[VMOVUPSrm2]] :: (store (s128) into %ir.dst + 160)
+    ; CHECK-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 176, $noreg, killed [[VMOVUPSrm3]] :: (store (s128) into %ir.dst + 176)
+    ; CHECK-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 192, $noreg, killed [[VMOVUPSrm4]] :: (store (s128) into %ir.dst + 192)
+    ; CHECK-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 208, $noreg, killed [[VMOVUPSrm5]] :: (store (s128) into %ir.dst + 208)
+    ; CHECK-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 224, $noreg, killed [[VMOVUPSrm6]] :: (store (s128) into %ir.dst + 224)
+    ; CHECK-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 240, $noreg, killed [[VMOVUPSrm7]] :: (store (s128) into %ir.dst + 240)
+    ; CHECK-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 256, $noreg, killed [[VMOVUPSrm8]] :: (store (s128) into %ir.dst + 256)
+    ; CHECK-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 272, $noreg, killed [[VMOVUPSrm9]] :: (store (s128) into %ir.dst + 272)
+    ; CHECK-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 288, $noreg, killed [[VMOVUPSrm10]] :: (store (s128) into %ir.dst + 288)
+    ; CHECK-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 304, $noreg, killed [[VMOVUPSrm11]] :: (store (s128) into %ir.dst + 304)
+    ; CHECK-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 320, $noreg, killed [[VMOVUPSrm12]] :: (store (s128) into %ir.dst + 320)
+    ; CHECK-NEXT: VMOVUPSmr [[COPY1]], 1, $noreg, 336, $noreg, killed [[VMOVUPSrm13]] :: (store (s128) into %ir.dst + 336)
+    ; CHECK-NEXT: VMOVUPSmr killed [[COPY1]], 1, $noreg, 352, $noreg, killed [[VMOVUPSrm14]] :: (store (s128) into %ir.dst + 352)
+    ; CHECK-NEXT: RET 0
+    %0:gr64 = COPY $rdi
+    %1:gr64 = COPY $rsi
+    %3:gr64 = MOV64rm %0, 1, $noreg, 64, $noreg :: (load (s64) from %ir.src + 64)
+    %4:gr64 = MOV64rm %0, 1, $noreg, 72, $noreg :: (load (s64) from %ir.src + 72)
+    %5:gr64 = MOV64rm %0, 1, $noreg, 80, $noreg :: (load (s64) from %ir.src + 80)
+    %6:gr64 = MOV64rm %0, 1, $noreg, 88, $noreg :: (load (s64) from %ir.src + 88)
+    %7:gr64 = MOV64rm %0, 1, $noreg, 96, $noreg :: (load (s64) from %ir.src + 96)
+    %8:gr64 = MOV64rm %0, 1, $noreg, 104, $noreg :: (load (s64) from %ir.src + 104)
+    %9:gr64 = MOV64rm %0, 1, $noreg, 112, $noreg :: (load (s64) from %ir.src + 112)
+    %10:gr64 = MOV64rm %0, 1, $noreg, 120, $noreg :: (load (s64) from %ir.src + 120)
+    %11:vr128 = VMOVUPSrm %0, 1, $noreg, 128, $noreg :: (load (s128) from %ir.src + 128)
+    %12:vr128 = VMOVUPSrm %0, 1, $noreg, 144, $noreg :: (load (s128) from %ir.src + 144)
+    %13:vr128 = VMOVUPSrm %0, 1, $noreg, 160, $noreg :: (load (s128) from %ir.src + 160)
+    %14:vr128 = VMOVUPSrm %0, 1, $noreg, 176, $noreg :: (load (s128) from %ir.src + 176)
+    %15:vr128 = VMOVUPSrm %0, 1, $noreg, 192, $noreg :: (load (s128) from %ir.src + 192)
+    %16:vr128 = VMOVUPSrm %0, 1, $noreg, 208, $noreg :: (load (s128) from %ir.src + 208)
+    %17:vr128 = VMOVUPSrm %0, 1, $noreg, 224, $noreg :: (load (s128) from %ir.src + 224)
+    %18:vr128 = VMOVUPSrm %0, 1, $noreg, 240, $noreg :: (load (s128) from %ir.src + 240)
+    %19:vr128 = VMOVUPSrm %0, 1, $noreg, 256, $noreg :: (load (s128) from %ir.src + 256)
+    %20:vr128 = VMOVUPSrm %0, 1, $noreg, 272, $noreg :: (load (s128) from %ir.src + 272)
+    %21:vr128 = VMOVUPSrm %0, 1, $noreg, 288, $noreg :: (load (s128) from %ir.src + 288)
+    %22:vr128 = VMOVUPSrm %0, 1, $noreg, 304, $noreg :: (load (s128) from %ir.src + 304)
+    %23:vr128 = VMOVUPSrm %0, 1, $noreg, 320, $noreg :: (load (s128) from %ir.src + 320)
+    %24:vr128 = VMOVUPSrm %0, 1, $noreg, 336, $noreg :: (load (s128) from %ir.src + 336)
+    %25:vr128 = VMOVUPSrm %0, 1, $noreg, 352, $noreg :: (load (s128) from %ir.src + 352)
+    MOV64mi32 %0, 1, $noreg, 0, $noreg, 0 :: (store (s64) into %ir.src)
+    %2:vr128 = VMOVUPSrm %0, 1, $noreg, 0, $noreg :: (load (s128) from %ir.src)
+    VMOVUPSmr %1, 1, $noreg, 0, $noreg, %2 :: (store (s128) into %ir.dst)
+    MOV64mr %1, 1, $noreg, 64, $noreg, %3 :: (store (s64) into %ir.dst + 64)
+    MOV64mr %1, 1, $noreg, 72, $noreg, %4 :: (store (s64) into %ir.dst + 72)
+    MOV64mr %1, 1, $noreg, 80, $noreg, %5 :: (store (s64) into %ir.dst + 80)
+    MOV64mr %1, 1, $noreg, 88, $noreg, %6 :: (store (s64) into %ir.dst + 88)
+    MOV64mr %1, 1, $noreg, 96, $noreg, %7 :: (store (s64) into %ir.dst + 96)
+    MOV64mr %1, 1, $noreg, 104, $noreg, %8 :: (store (s64) into %ir.dst + 104)
+    MOV64mr %1, 1, $noreg, 112, $noreg, %9 :: (store (s64) into %ir.dst + 112)
+    MOV64mr %1, 1, $noreg, 120, $noreg, %10 :: (store (s64) into %ir.dst + 120)
+    VMOVUPSmr %1, 1, $noreg, 128, $noreg, %11 :: (store (s128) into %ir.dst + 128)
+    VMOVUPSmr %1, 1, $noreg, 144, $noreg, %12 :: (store (s128) into %ir.dst + 144)
+    VMOVUPSmr %1, 1, $noreg, 160, $noreg, %13 :: (store (s128) into %ir.dst + 160)
+    VMOVUPSmr %1, 1, $noreg, 176, $noreg, %14 :: (store (s128) into %ir.dst + 176)
+    VMOVUPSmr %1, 1, $noreg, 192, $noreg, %15 :: (store (s128) into %ir.dst + 192)
+    VMOVUPSmr %1, 1, $noreg, 208, $noreg, %16 :: (store (s128) into %ir.dst + 208)
+    VMOVUPSmr %1, 1, $noreg, 224, $noreg, %17 :: (store (s128) into %ir.dst + 224)
+    VMOVUPSmr %1, 1, $noreg, 240, $noreg, %18 :: (store (s128) into %ir.dst + 240)
+    VMOVUPSmr %1, 1, $noreg, 256, $noreg, %19 :: (store (s128) into %ir.dst + 256)
+    VMOVUPSmr %1, 1, $noreg, 272, $noreg, %20 :: (store (s128) into %ir.dst + 272)
+    VMOVUPSmr %1, 1, $noreg, 288, $noreg, %21 :: (store (s128) into %ir.dst + 288)
+    VMOVUPSmr %1, 1, $noreg, 304, $noreg, %22 :: (store (s128) into %ir.dst + 304)
+    VMOVUPSmr %1, 1, $noreg, 320, $noreg, %23 :: (store (s128) into %ir.dst + 320)
+    VMOVUPSmr %1, 1, $noreg, 336, $noreg, %24 :: (store (s128) into %ir.dst + 336)
+    VMOVUPSmr %1, 1, $noreg, 352, $noreg, %25 :: (store (s128) into %ir.dst + 352)
     RET 0
 ...

@@ -52,6 +52,7 @@
 #include "llvm/IR/Function.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/MC/MCInstrDesc.h"
+#include "llvm/Support/MathExtras.h"
 #include <memory>
 
 using namespace llvm;
@@ -93,6 +94,7 @@ private:
     unsigned LoadOpcode, StoreOpcode;
     unsigned Size;
     int64_t Offset;
+    Register ForwardedReg = 0;
   };
   struct CopyPlan {
     MachineInstr *Load, *Store;
@@ -100,8 +102,9 @@ private:
     SmallVector<CopyPiece, 4> Pieces;
   };
 
-  bool hasRegisterHeadroom(const CopyPlan &Plan);
-  void emitCopy(const CopyPlan &Plan, const CopyPiece &Piece);
+  bool selectCopyRegisters(CopyPlan &Plan);
+  void emitCopy(const CopyPlan &Plan, const CopyPiece &Piece,
+                MachineInstr *&LastLoad, MachineInstr *&LastStore);
 
   /// Returns couples of Load then Store to memory which look
   ///  like a memcpy.
@@ -109,7 +112,6 @@ private:
   /// Plan smaller copies that do not straddle the blocking stores.
   void planCopies(CopyPlan &Plan,
                   const DisplacementSizeMap &BlockingStoresDispSizeMap);
-  void addCopyPieces(CopyPlan &Plan, unsigned Size, int64_t Offset);
 
   bool alias(const MachineMemOperand &Op1, const MachineMemOperand &Op2) const;
 
@@ -394,30 +396,37 @@ findPotentialBlockers(MachineInstr *LoadInst) {
   return PotentialBlockers;
 }
 
-void X86AvoidSFBImpl::emitCopy(const CopyPlan &Plan, const CopyPiece &Piece) {
+void X86AvoidSFBImpl::emitCopy(const CopyPlan &Plan, const CopyPiece &Piece,
+                               MachineInstr *&LastLoad,
+                               MachineInstr *&LastStore) {
   MachineInstr *LoadInst = Plan.Load, *StoreInst = Plan.Store;
-  auto [NLoadOpcode, NStoreOpcode, Size, Offset] = Piece;
+  auto [NLoadOpcode, NStoreOpcode, Size, Offset, ForwardedReg] = Piece;
   MachineOperand &LoadBase = getBaseOperand(LoadInst);
   MachineOperand &StoreBase = getBaseOperand(StoreInst);
   MachineBasicBlock *MBB = LoadInst->getParent();
   MachineMemOperand *LMMO = *LoadInst->memoperands_begin();
   MachineMemOperand *SMMO = *StoreInst->memoperands_begin();
 
-  Register Reg1 =
-      MRI->createVirtualRegister(TII->getRegClass(TII->get(NLoadOpcode), 0));
-  MachineInstr *NewLoad =
-      BuildMI(*MBB, LoadInst, LoadInst->getDebugLoc(), TII->get(NLoadOpcode),
-              Reg1)
-          .add(LoadBase)
-          .addImm(1)
-          .addReg(X86::NoRegister)
-          .addImm(getDispOperand(LoadInst).getImm() + Offset)
-          .addReg(X86::NoRegister)
-          .addMemOperand(
-              MBB->getParent()->getMachineMemOperand(LMMO, Offset, Size));
-  if (LoadBase.isReg())
-    getBaseOperand(NewLoad).setIsKill(false);
-  LLVM_DEBUG(NewLoad->dump());
+  Register Reg1 = ForwardedReg;
+  if (!Reg1) {
+    Reg1 =
+        MRI->createVirtualRegister(TII->getRegClass(TII->get(NLoadOpcode), 0));
+    LastLoad = BuildMI(*MBB, LoadInst, LoadInst->getDebugLoc(),
+                       TII->get(NLoadOpcode), Reg1)
+                   .add(LoadBase)
+                   .addImm(1)
+                   .addReg(X86::NoRegister)
+                   .addImm(getDispOperand(LoadInst).getImm() + Offset)
+                   .addReg(X86::NoRegister)
+                   .addMemOperand(MBB->getParent()->getMachineMemOperand(
+                       LMMO, Offset, Size));
+    if (LoadBase.isReg())
+      getBaseOperand(LastLoad).setIsKill(false);
+    LLVM_DEBUG(LastLoad->dump());
+  } else {
+    // The blocking store may have been the last use before forwarding.
+    MRI->clearKillFlags(Reg1);
+  }
   // For disjoint consecutive accesses, interleave the copies to reduce
   // register pressure.
   MachineInstr *StInst = StoreInst;
@@ -439,66 +448,10 @@ void X86AvoidSFBImpl::emitCopy(const CopyPlan &Plan, const CopyPiece &Piece) {
     getBaseOperand(NewStore).setIsKill(false);
   MachineOperand &StoreSrcVReg = StoreInst->getOperand(X86::AddrNumOperands);
   assert(StoreSrcVReg.isReg() && "Expected virtual register");
-  NewStore->getOperand(X86::AddrNumOperands).setIsKill(StoreSrcVReg.isKill());
+  NewStore->getOperand(X86::AddrNumOperands)
+      .setIsKill(!ForwardedReg && StoreSrcVReg.isKill());
+  LastStore = NewStore;
   LLVM_DEBUG(NewStore->dump());
-}
-
-// Use the same fragment plan for the pressure check and instruction emission.
-void X86AvoidSFBImpl::addCopyPieces(CopyPlan &Plan, unsigned Size,
-                                    int64_t Offset) {
-  while (Size) {
-    unsigned LoadOpcode, StoreOpcode, PieceSize;
-    if (Size >= MOV128SZ && isYMMLoadOpcode(Plan.Load->getOpcode())) {
-      LoadOpcode = getYMMtoXMMLoadOpcode(Plan.Load->getOpcode());
-      StoreOpcode = getYMMtoXMMStoreOpcode(Plan.Store->getOpcode());
-      PieceSize = MOV128SZ;
-    } else if (Size >= MOV64SZ) {
-      LoadOpcode = X86::MOV64rm;
-      StoreOpcode = X86::MOV64mr;
-      PieceSize = MOV64SZ;
-    } else if (Size >= MOV32SZ) {
-      LoadOpcode = X86::MOV32rm;
-      StoreOpcode = X86::MOV32mr;
-      PieceSize = MOV32SZ;
-    } else if (Size >= MOV16SZ) {
-      LoadOpcode = X86::MOV16rm;
-      StoreOpcode = X86::MOV16mr;
-      PieceSize = MOV16SZ;
-    } else {
-      LoadOpcode = X86::MOV8rm;
-      StoreOpcode = X86::MOV8mr;
-      PieceSize = MOV8SZ;
-    }
-    Plan.Pieces.push_back({LoadOpcode, StoreOpcode, PieceSize, Offset});
-    Size -= PieceSize;
-    Offset += PieceSize;
-  }
-}
-
-static void updateKillStatus(MachineInstr *LoadInst, MachineInstr *StoreInst,
-                             bool IsDisjoint) {
-  MachineOperand &LoadBase = getBaseOperand(LoadInst);
-  MachineOperand &StoreBase = getBaseOperand(StoreInst);
-  auto *StorePrevNonDbgInstr =
-      prev_nodbg(MachineBasicBlock::instr_iterator(StoreInst),
-                 LoadInst->getParent()->instr_begin())
-          .getNodePtr();
-  if (LoadBase.isReg()) {
-    MachineInstr *LastLoad = LoadInst->getPrevNode();
-    // If the original disjoint load and store were consecutive,
-    // then the partial copies were also created in
-    // a consecutive order to reduce register pressure,
-    // and the location of the last load is before the last store.
-    if (IsDisjoint && StorePrevNonDbgInstr == LoadInst)
-      LastLoad = LoadInst->getPrevNode()->getPrevNode();
-    getBaseOperand(LastLoad).setIsKill(LoadBase.isKill());
-  }
-  if (StoreBase.isReg()) {
-    MachineInstr *StInst = StoreInst;
-    if (IsDisjoint && StorePrevNonDbgInstr == LoadInst)
-      StInst = LoadInst;
-    getBaseOperand(StInst->getPrevNode()).setIsKill(StoreBase.isKill());
-  }
 }
 
 bool X86AvoidSFBImpl::alias(const MachineMemOperand &Op1,
@@ -549,6 +502,26 @@ unsigned X86AvoidSFBImpl::getRegSizeInBytes(MachineInstr *LoadInst) {
 
 void X86AvoidSFBImpl::planCopies(
     CopyPlan &Plan, const DisplacementSizeMap &BlockingStoresDispSizeMap) {
+  auto AddPieces = [&](unsigned Size, int64_t Offset) {
+    static constexpr std::pair<unsigned, unsigned> Opcodes[] = {
+        {X86::MOV8rm, X86::MOV8mr},
+        {X86::MOV16rm, X86::MOV16mr},
+        {X86::MOV32rm, X86::MOV32mr},
+        {X86::MOV64rm, X86::MOV64mr}};
+    while (Size) {
+      unsigned LogSize = Log2_32(std::min(Size, unsigned(MOV64SZ)));
+      auto [LoadOpcode, StoreOpcode] = Opcodes[LogSize];
+      unsigned PieceSize = 1U << LogSize;
+      if (Size >= MOV128SZ && isYMMLoadOpcode(Plan.Load->getOpcode())) {
+        LoadOpcode = getYMMtoXMMLoadOpcode(Plan.Load->getOpcode());
+        StoreOpcode = getYMMtoXMMStoreOpcode(Plan.Store->getOpcode());
+        PieceSize = MOV128SZ;
+      }
+      Plan.Pieces.push_back({LoadOpcode, StoreOpcode, PieceSize, Offset});
+      Size -= PieceSize;
+      Offset += PieceSize;
+    }
+  };
   int64_t LoadDisp = getDispOperand(Plan.Load).getImm();
   int64_t Offset = 0;
   for (auto [Disp, Size] : BlockingStoresDispSizeMap) {
@@ -556,11 +529,11 @@ void X86AvoidSFBImpl::planCopies(
     int64_t End = Begin + Size;
     // Do not copy an overlapping part of a blocker twice.
     Begin = std::max(Begin, Offset);
-    addCopyPieces(Plan, Begin - Offset, Offset);
-    addCopyPieces(Plan, End - Begin, Begin);
+    AddPieces(Begin - Offset, Offset);
+    AddPieces(End - Begin, Begin);
     Offset = End;
   }
-  addCopyPieces(Plan, getRegSizeInBytes(Plan.Load) - Offset, Offset);
+  AddPieces(getRegSizeInBytes(Plan.Load) - Offset, Offset);
 }
 
 static bool hasSameBaseOpValue(MachineInstr *LoadInst,
@@ -617,7 +590,7 @@ removeRedundantBlockingStores(DisplacementSizeMap &BlockingStoresDispSizeMap) {
 // Seed the existing pressure tracker with live-outs, including PHI edge uses,
 // then walk back to the adjacent copy. Compute liveness only if the new path
 // needs it; disjoint copies retain their existing analysis requirements.
-bool X86AvoidSFBImpl::hasRegisterHeadroom(const CopyPlan &Plan) {
+bool X86AvoidSFBImpl::selectCopyRegisters(CopyPlan &Plan) {
   MachineBasicBlock &MBB = *Plan.Load->getParent();
   MachineFunction &MF = *MBB.getParent();
   if (!LV) {
@@ -634,22 +607,18 @@ bool X86AvoidSFBImpl::hasRegisterHeadroom(const CopyPlan &Plan) {
   };
   if (PressureMBB != &MBB) {
     PressureMBB = &MBB;
-    // isLiveOut also counts values defined and killed in a successor. Query
-    // live-ins instead, then add the PHI uses on this block's outgoing edges.
+    // AliveBlocks includes PHI edge uses but excludes the defining block.
+    // A value defined here is live out exactly when it has no local kill
+    // (a dead definition is itself recorded as a kill).
     for (unsigned I = 0; I != MRI->getNumVirtRegs(); ++I) {
       Register Reg = Register::index2VirtReg(I);
-      if (!MRI->reg_nodbg_empty(Reg) &&
-          llvm::any_of(MBB.successors(), [&](const MachineBasicBlock *Succ) {
-            return LV->isLiveIn(Reg, *Succ);
-          }))
-        AddReg(Reg);
+      if (MachineInstr *Def = MRI->getVRegDef(Reg)) {
+        LiveVariables::VarInfo &VI = LV->getVarInfo(Reg);
+        if (VI.AliveBlocks.test(MBB.getNumber()) ||
+            (Def->getParent() == &MBB && !VI.findKill(&MBB)))
+          AddReg(Reg);
+      }
     }
-    for (const MachineBasicBlock *Succ : MBB.successors())
-      for (const MachineInstr &Phi : Succ->phis())
-        for (unsigned I = 1; I != Phi.getNumOperands(); I += 2)
-          if (Phi.getOperand(I + 1).getMBB() == &MBB &&
-              !Phi.getOperand(I).isUndef())
-            AddReg(Phi.getOperand(I).getReg());
     LivePhysRegs PhysRegs(*TRI);
     PhysRegs.addLiveOutsNoPristines(MBB);
     for (MCPhysReg Reg : PhysRegs)
@@ -666,32 +635,51 @@ bool X86AvoidSFBImpl::hasRegisterHeadroom(const CopyPlan &Plan) {
   LiveRegs.clear();
   if (getBaseOperand(Plan.Load).isReg())
     AddReg(getBaseOperand(Plan.Load).getReg());
+  // Forwarding extends the stored value to the copy. Let the tracker account
+  // for it once, including when it was already live through the copy.
+  for (const CopyPiece &Piece : Plan.Pieces)
+    if (Piece.ForwardedReg)
+      AddReg(Piece.ForwardedReg);
   Tracker.addLiveRegs(LiveRegs);
-  auto SetPressure = Tracker.getRegSetPressureAtPos();
+  const auto OriginalPressure = Tracker.getRegSetPressureAtPos();
+  auto SetPressure = OriginalPressure;
   for (auto PS = MRI->getPressureSets(
            VirtRegOrUnit(Plan.Load->getOperand(0).getReg()));
        PS.isValid(); ++PS)
     SetPressure[*PS] -= PS.getWeight();
 
-  SmallVector<unsigned, 8> Limits(SetPressure.size(), ~0U);
-  for (const CopyPiece &Piece : Plan.Pieces) {
-    const TargetRegisterClass *RC =
-        TII->getRegClass(TII->get(Piece.LoadOpcode), 0);
+  auto TryRegisterClass = [&](unsigned Opcode) {
+    const TargetRegisterClass *RC = TII->getRegClass(TII->get(Opcode), 0);
     unsigned Weight = TRI->getRegClassWeight(RC).RegWeight;
-    // Do not spend callee-saved registers to make this new transformation fit.
     unsigned Available = llvm::count_if(RCI.getOrder(RC), [&](MCPhysReg Reg) {
       return !RCI.getLastCalleeSavedAlias(Reg);
     });
     for (const int *PS = TRI->getRegClassPressureSets(RC); *PS != -1; ++PS) {
-      SetPressure[*PS] += Weight;
-      Limits[*PS] = std::min(
-          {Limits[*PS], RCI.getRegPressureSetLimit(*PS), Available * Weight});
+      unsigned Limit =
+          std::min(RCI.getRegPressureSetLimit(*PS), Available * Weight);
+      // Leave headroom when adding pressure, but allow replacing a register
+      // already needed by the original copy in a full pressure set.
+      if (SetPressure[*PS] + Weight > OriginalPressure[*PS] &&
+          SetPressure[*PS] + Weight >= Limit)
+        return false;
     }
-  }
-  // Leave headroom rather than filling a pressure set to its limit.
-  for (unsigned I = 0; I != SetPressure.size(); ++I)
-    if (SetPressure[I] >= Limits[I])
+    for (const int *PS = TRI->getRegClassPressureSets(RC); *PS != -1; ++PS)
+      SetPressure[*PS] += Weight;
+    return true;
+  };
+  const X86Subtarget &ST = MF.getSubtarget<X86Subtarget>();
+  for (CopyPiece &Piece : Plan.Pieces) {
+    if (Piece.ForwardedReg || TryRegisterClass(Piece.LoadOpcode))
+      continue;
+    // A qword can also travel through an XMM register without a shuffle or a
+    // register-bank transfer. Keep the GPR form when it has headroom.
+    unsigned LoadOpcode = ST.hasAVX() ? X86::VMOVQI2PQIrm : X86::MOVQI2PQIrm;
+    if (Piece.LoadOpcode != X86::MOV64rm || !ST.hasSSE2() ||
+        !TryRegisterClass(LoadOpcode))
       return false;
+    Piece.LoadOpcode = LoadOpcode;
+    Piece.StoreOpcode = ST.hasAVX() ? X86::VMOVPQI2QImr : X86::MOVPQI2QImr;
+  }
   return true;
 }
 
@@ -715,16 +703,16 @@ bool X86AvoidSFBImpl::runOnMachineFunction(MachineFunction &MF) {
   for (auto [LoadInst, StoreInst] : llvm::reverse(BlockedLoadsStoresPairs)) {
     bool IsDisjoint = !alias(**LoadInst->memoperands_begin(),
                              **StoreInst->memoperands_begin());
+    bool IsAdjacent = next_nodbg(MachineBasicBlock::instr_iterator(LoadInst),
+                                 LoadInst->getParent()->instr_end())
+                          .getNodePtr() == StoreInst;
     // Newly admitted copies must have a short live range and a guaranteed
     // blocker. Leave the existing disjoint-copy policy unchanged.
-    if (!IsDisjoint && (MF.getFunction().hasOptSize() ||
-                        next_nodbg(MachineBasicBlock::instr_iterator(LoadInst),
-                                   LoadInst->getParent()->instr_end())
-                                .getNodePtr() != StoreInst))
+    if (!IsDisjoint && (MF.getFunction().hasOptSize() || !IsAdjacent))
       continue;
     int64_t LdDispImm = getDispOperand(LoadInst).getImm();
     DisplacementSizeMap BlockingStoresDispSizeMap;
-    bool HasImmediateBlocker = false;
+    MachineInstr *ImmediateBlocker = nullptr;
 
     SmallVector<MachineInstr *, 2> PotentialBlockers =
         findPotentialBlockers(LoadInst);
@@ -744,24 +732,48 @@ bool X86AvoidSFBImpl::runOnMachineFunction(MachineFunction &MF) {
       if (hasSameBaseOpValue(LoadInst, PBInst) &&
           isBlockingStore(LdDispImm, getRegSizeInBytes(LoadInst), PBstDispImm,
                           PBstSize)) {
-        HasImmediateBlocker |=
-            prev_nodbg(MachineBasicBlock::instr_iterator(LoadInst),
+        if (prev_nodbg(MachineBasicBlock::instr_iterator(LoadInst),
                        LoadInst->getParent()->instr_begin())
-                .getNodePtr() == PBInst;
+                .getNodePtr() == PBInst)
+          ImmediateBlocker = PBInst;
         updateBlockingStoresDispSizeMap(BlockingStoresDispSizeMap, PBstDispImm,
                                         PBstSize);
       }
     }
 
-    if (BlockingStoresDispSizeMap.empty() ||
-        (!IsDisjoint && !HasImmediateBlocker))
+    if (BlockingStoresDispSizeMap.empty() || (!IsDisjoint && !ImmediateBlocker))
       continue;
 
     removeRedundantBlockingStores(BlockingStoresDispSizeMap);
     CopyPlan Plan{LoadInst, StoreInst, IsDisjoint, {}};
     planCopies(Plan, BlockingStoresDispSizeMap);
-    if (!IsDisjoint && !hasRegisterHeadroom(Plan))
-      continue;
+    // Keep the value of an adjacent store, not just its displacement and size.
+    // Requiring an adjacent copy also avoids extending it across instructions
+    // that are not covered by the copy's pressure check.
+    if (ImmediateBlocker && IsAdjacent &&
+        (*ImmediateBlocker->memoperands_begin())->isUnordered() &&
+        !(*ImmediateBlocker->memoperands_begin())->isAtomic()) {
+      const MachineOperand &Src =
+          ImmediateBlocker->getOperand(X86::AddrNumOperands);
+      if (Src.isReg() && Src.getReg().isVirtual() && !Src.getSubReg() &&
+          !Src.isUndef())
+        for (CopyPiece &Piece : Plan.Pieces)
+          if (Piece.StoreOpcode == ImmediateBlocker->getOpcode() &&
+              getDispOperand(ImmediateBlocker).getImm() ==
+                  LdDispImm + Piece.Offset)
+            Piece.ForwardedReg = Src.getReg();
+    }
+    bool HasForwardedReg =
+        llvm::any_of(Plan.Pieces, [](const CopyPiece &Piece) {
+          return bool(Piece.ForwardedReg);
+        });
+    if ((!IsDisjoint || HasForwardedReg) && !selectCopyRegisters(Plan)) {
+      if (!IsDisjoint)
+        continue;
+      // Preserve the existing disjoint split without extending a live range.
+      Plan.Pieces.clear();
+      planCopies(Plan, BlockingStoresDispSizeMap);
+    }
     Plans.push_back(std::move(Plan));
   }
 
@@ -770,9 +782,13 @@ bool X86AvoidSFBImpl::runOnMachineFunction(MachineFunction &MF) {
     LLVM_DEBUG(dbgs() << "Blocked load and store instructions:\n";
                Plan.Load->dump(); Plan.Store->dump();
                dbgs() << "Replaced with:\n");
+    MachineInstr *LastLoad = nullptr, *LastStore = nullptr;
     for (const CopyPiece &Piece : Plan.Pieces)
-      emitCopy(Plan, Piece);
-    updateKillStatus(Plan.Load, Plan.Store, Plan.IsDisjoint);
+      emitCopy(Plan, Piece, LastLoad, LastStore);
+    if (LastLoad && getBaseOperand(Plan.Load).isReg())
+      getBaseOperand(LastLoad).setIsKill(getBaseOperand(Plan.Load).isKill());
+    if (getBaseOperand(Plan.Store).isReg())
+      getBaseOperand(LastStore).setIsKill(getBaseOperand(Plan.Store).isKill());
     Plan.Load->eraseFromParent();
     Plan.Store->eraseFromParent();
   }

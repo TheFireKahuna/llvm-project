@@ -10,19 +10,17 @@ define void @unknown(ptr %src, ptr %out, i64 %value) {
 ; SSE-LABEL: unknown:
 ; SSE:       # %bb.0:
 ; SSE-NEXT:    movq %rdx, (%rdi)
-; SSE-NEXT:    movq (%rdi), %rax
-; SSE-NEXT:    movq 8(%rdi), %rcx
-; SSE-NEXT:    movq %rax, (%rsi)
-; SSE-NEXT:    movq %rcx, 8(%rsi)
+; SSE-NEXT:    movq 8(%rdi), %rax
+; SSE-NEXT:    movq %rdx, (%rsi)
+; SSE-NEXT:    movq %rax, 8(%rsi)
 ; SSE-NEXT:    retq
 ;
 ; AVX-LABEL: unknown:
 ; AVX:       # %bb.0:
+; AVX-NEXT:    movq 8(%rdi), %rax
 ; AVX-NEXT:    movq %rdx, (%rdi)
-; AVX-NEXT:    movq 8(%rdi), %rcx
-; AVX-NEXT:    movq (%rdi), %rax
-; AVX-NEXT:    movq %rcx, 8(%rsi)
-; AVX-NEXT:    movq %rax, (%rsi)
+; AVX-NEXT:    movq %rdx, (%rsi)
+; AVX-NEXT:    movq %rax, 8(%rsi)
 ; AVX-NEXT:    retq
   store i64 %value, ptr %src, align 8
   call void @llvm.memmove.p0.p0.i64(ptr align 1 %out, ptr align 8 %src, i64 16, i1 false)
@@ -42,11 +40,10 @@ define void @wide(ptr %src, ptr %out, i64 %value) {
 ; AVX-LABEL: wide:
 ; AVX:       # %bb.0:
 ; AVX-NEXT:    vmovups 8(%rdi), %xmm0
+; AVX-NEXT:    movq 24(%rdi), %rax
 ; AVX-NEXT:    movq %rdx, (%rdi)
-; AVX-NEXT:    movq 24(%rdi), %rcx
-; AVX-NEXT:    movq (%rdi), %rax
-; AVX-NEXT:    movq %rcx, 24(%rsi)
-; AVX-NEXT:    movq %rax, (%rsi)
+; AVX-NEXT:    movq %rdx, (%rsi)
+; AVX-NEXT:    movq %rax, 24(%rsi)
 ; AVX-NEXT:    vmovups %xmm0, 8(%rsi)
 ; AVX-NEXT:    retq
   store i64 %value, ptr %src, align 8
@@ -58,19 +55,17 @@ define void @forward(ptr %src, ptr %out, i64 %value) {
 ; SSE-LABEL: forward:
 ; SSE:       # %bb.0:
 ; SSE-NEXT:    movq %rdx, (%rdi)
-; SSE-NEXT:    movq (%rdi), %rax
-; SSE-NEXT:    movq 8(%rdi), %rcx
-; SSE-NEXT:    movq %rax, 3(%rdi)
-; SSE-NEXT:    movq %rcx, 11(%rdi)
+; SSE-NEXT:    movq 8(%rdi), %rax
+; SSE-NEXT:    movq %rdx, 3(%rdi)
+; SSE-NEXT:    movq %rax, 11(%rdi)
 ; SSE-NEXT:    retq
 ;
 ; AVX-LABEL: forward:
 ; AVX:       # %bb.0:
+; AVX-NEXT:    movq 8(%rdi), %rax
 ; AVX-NEXT:    movq %rdx, (%rdi)
-; AVX-NEXT:    movq 8(%rdi), %rcx
-; AVX-NEXT:    movq (%rdi), %rax
-; AVX-NEXT:    movq %rcx, 11(%rdi)
-; AVX-NEXT:    movq %rax, 3(%rdi)
+; AVX-NEXT:    movq %rdx, 3(%rdi)
+; AVX-NEXT:    movq %rax, 11(%rdi)
 ; AVX-NEXT:    retq
   store i64 %value, ptr %src, align 8
   %dst = getelementptr i8, ptr %src, i64 3
@@ -82,19 +77,17 @@ define void @backward(ptr %src, ptr %out, i64 %value) {
 ; SSE-LABEL: backward:
 ; SSE:       # %bb.0:
 ; SSE-NEXT:    movq %rdx, (%rdi)
-; SSE-NEXT:    movq (%rdi), %rax
-; SSE-NEXT:    movq 8(%rdi), %rcx
-; SSE-NEXT:    movq %rax, -3(%rdi)
-; SSE-NEXT:    movq %rcx, 5(%rdi)
+; SSE-NEXT:    movq 8(%rdi), %rax
+; SSE-NEXT:    movq %rdx, -3(%rdi)
+; SSE-NEXT:    movq %rax, 5(%rdi)
 ; SSE-NEXT:    retq
 ;
 ; AVX-LABEL: backward:
 ; AVX:       # %bb.0:
+; AVX-NEXT:    movq 8(%rdi), %rax
 ; AVX-NEXT:    movq %rdx, (%rdi)
-; AVX-NEXT:    movq 8(%rdi), %rcx
-; AVX-NEXT:    movq (%rdi), %rax
-; AVX-NEXT:    movq %rcx, 5(%rdi)
-; AVX-NEXT:    movq %rax, -3(%rdi)
+; AVX-NEXT:    movq %rdx, -3(%rdi)
+; AVX-NEXT:    movq %rax, 5(%rdi)
 ; AVX-NEXT:    retq
   store i64 %value, ptr %src, align 8
   %dst = getelementptr i8, ptr %src, i64 -3

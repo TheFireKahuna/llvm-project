@@ -2,8 +2,8 @@
 # RUN: llc -mtriple=x86_64-linux -run-pass=x86-avoid-sfb -verify-machineinstrs -o - %s | FileCheck %s --check-prefixes=CHECK,SYSV
 # RUN: llc -mtriple=x86_64-linux -passes=x86-avoid-sfb -verify-machineinstrs -o - %s | FileCheck %s --check-prefixes=CHECK,SYSV
 # RUN: llc -mtriple=x86_64-windows-itanium -run-pass=x86-avoid-sfb -verify-machineinstrs -o - %s | FileCheck %s --check-prefixes=CHECK,WIN
-# The same copy is profitable with free registers, but not with values live
-# through it into a successor or through a PHI edge.
+# Values live into successors and through PHI edges constrain the register
+# bank selected for the copy fragments.
 --- |
   define void @low_pressure(ptr %src, ptr %dst) { ret void }
   define void @successor_pressure(ptr %src, ptr %dst) { ret void }
@@ -54,8 +54,10 @@ body: |
   ; CHECK-NEXT:   [[MOV64rm4:%[0-9]+]]:gr64 = MOV64rm [[COPY]], 1, $noreg, 120, $noreg :: (load (s64) from %ir.src + 120)
   ; CHECK-NEXT:   [[MOV64rm5:%[0-9]+]]:gr64 = MOV64rm [[COPY]], 1, $noreg, 128, $noreg :: (load (s64) from %ir.src + 128)
   ; CHECK-NEXT:   MOV64mi32 [[COPY]], 1, $noreg, 0, $noreg, 0 :: (store (s64) into %ir.src)
-  ; CHECK-NEXT:   [[MOVUPSrm:%[0-9]+]]:vr128 = MOVUPSrm killed [[COPY]], 1, $noreg, 0, $noreg :: (load (s128) from %ir.src)
-  ; CHECK-NEXT:   MOVUPSmr killed [[COPY1]], 1, $noreg, 0, $noreg, killed [[MOVUPSrm]] :: (store (s128) into %ir.dst)
+  ; CHECK-NEXT:   [[MOVQI2PQIrm:%[0-9]+]]:vr128 = MOVQI2PQIrm [[COPY]], 1, $noreg, 0, $noreg :: (load (s64) from %ir.src, align 16)
+  ; CHECK-NEXT:   [[MOVQI2PQIrm1:%[0-9]+]]:vr128 = MOVQI2PQIrm killed [[COPY]], 1, $noreg, 8, $noreg :: (load (s64) from %ir.src + 8, basealign 16)
+  ; CHECK-NEXT:   MOVPQI2QImr [[COPY1]], 1, $noreg, 0, $noreg, killed [[MOVQI2PQIrm]] :: (store (s64) into %ir.dst, align 16)
+  ; CHECK-NEXT:   MOVPQI2QImr killed [[COPY1]], 1, $noreg, 8, $noreg, killed [[MOVQI2PQIrm1]] :: (store (s64) into %ir.dst + 8, basealign 16)
   ; CHECK-NEXT:   JMP_1 %bb.1
   ; CHECK-NEXT: {{  $}}
   ; CHECK-NEXT: bb.1:
@@ -108,8 +110,10 @@ body: |
   ; CHECK-NEXT:   [[MOV64rm4:%[0-9]+]]:gr64 = MOV64rm [[COPY]], 1, $noreg, 120, $noreg :: (load (s64) from %ir.src + 120)
   ; CHECK-NEXT:   [[MOV64rm5:%[0-9]+]]:gr64 = MOV64rm [[COPY]], 1, $noreg, 128, $noreg :: (load (s64) from %ir.src + 128)
   ; CHECK-NEXT:   MOV64mi32 [[COPY]], 1, $noreg, 0, $noreg, 0 :: (store (s64) into %ir.src)
-  ; CHECK-NEXT:   [[MOVUPSrm:%[0-9]+]]:vr128 = MOVUPSrm [[COPY]], 1, $noreg, 0, $noreg :: (load (s128) from %ir.src)
-  ; CHECK-NEXT:   MOVUPSmr killed [[COPY1]], 1, $noreg, 0, $noreg, killed [[MOVUPSrm]] :: (store (s128) into %ir.dst)
+  ; CHECK-NEXT:   [[MOVQI2PQIrm:%[0-9]+]]:vr128 = MOVQI2PQIrm [[COPY]], 1, $noreg, 0, $noreg :: (load (s64) from %ir.src, align 16)
+  ; CHECK-NEXT:   [[MOVQI2PQIrm1:%[0-9]+]]:vr128 = MOVQI2PQIrm [[COPY]], 1, $noreg, 8, $noreg :: (load (s64) from %ir.src + 8, basealign 16)
+  ; CHECK-NEXT:   MOVPQI2QImr [[COPY1]], 1, $noreg, 0, $noreg, killed [[MOVQI2PQIrm]] :: (store (s64) into %ir.dst, align 16)
+  ; CHECK-NEXT:   MOVPQI2QImr killed [[COPY1]], 1, $noreg, 8, $noreg, killed [[MOVQI2PQIrm1]] :: (store (s64) into %ir.dst + 8, basealign 16)
   ; CHECK-NEXT:   TEST64rr killed [[COPY]], [[COPY]], implicit-def $eflags
   ; CHECK-NEXT:   JCC_1 %bb.2, 4, implicit killed $eflags
   ; CHECK-NEXT:   JMP_1 %bb.1
@@ -250,8 +254,10 @@ body: |
   ; WIN-NEXT:   [[MOV64rm1:%[0-9]+]]:gr64 = MOV64rm [[COPY]], 1, $noreg, 72, $noreg :: (load (s64) from %ir.src + 72)
   ; WIN-NEXT:   [[MOV64rm2:%[0-9]+]]:gr64 = MOV64rm [[COPY]], 1, $noreg, 80, $noreg :: (load (s64) from %ir.src + 80)
   ; WIN-NEXT:   MOV64mi32 [[COPY]], 1, $noreg, 0, $noreg, 0 :: (store (s64) into %ir.src)
-  ; WIN-NEXT:   [[MOVUPSrm:%[0-9]+]]:vr128 = MOVUPSrm killed [[COPY]], 1, $noreg, 0, $noreg :: (load (s128) from %ir.src)
-  ; WIN-NEXT:   MOVUPSmr killed [[COPY1]], 1, $noreg, 0, $noreg, killed [[MOVUPSrm]] :: (store (s128) into %ir.dst)
+  ; WIN-NEXT:   [[MOV64rm3:%[0-9]+]]:gr64 = MOV64rm [[COPY]], 1, $noreg, 0, $noreg :: (load (s64) from %ir.src, align 16)
+  ; WIN-NEXT:   [[MOVQI2PQIrm:%[0-9]+]]:vr128 = MOVQI2PQIrm killed [[COPY]], 1, $noreg, 8, $noreg :: (load (s64) from %ir.src + 8, basealign 16)
+  ; WIN-NEXT:   MOV64mr [[COPY1]], 1, $noreg, 0, $noreg, killed [[MOV64rm3]] :: (store (s64) into %ir.dst, align 16)
+  ; WIN-NEXT:   MOVPQI2QImr killed [[COPY1]], 1, $noreg, 8, $noreg, killed [[MOVQI2PQIrm]] :: (store (s64) into %ir.dst + 8, basealign 16)
   ; WIN-NEXT:   JMP_1 %bb.1
   ; WIN-NEXT: {{  $}}
   ; WIN-NEXT: bb.1:

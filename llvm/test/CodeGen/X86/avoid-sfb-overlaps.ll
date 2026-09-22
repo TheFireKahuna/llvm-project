@@ -123,8 +123,7 @@ define dso_local void @test_overlap_2(ptr nocapture %A, i32 %x) local_unnamed_ad
 ; CHECK:       # %bb.0: # %entry
 ; CHECK-NEXT:    movslq %esi, %rax
 ; CHECK-NEXT:    movq %rax, -16(%rdi)
-; CHECK-NEXT:    movq -16(%rdi), %rcx
-; CHECK-NEXT:    movq %rcx, (%rdi)
+; CHECK-NEXT:    movq %rax, (%rdi)
 ; CHECK-NEXT:    movq -8(%rdi), %rcx
 ; CHECK-NEXT:    movq %rcx, 8(%rdi)
 ; CHECK-NEXT:    movq %rax, -8(%rdi)
@@ -153,8 +152,7 @@ define dso_local void @test_overlap_2(ptr nocapture %A, i32 %x) local_unnamed_ad
 ; CHECK-AVX2:       # %bb.0: # %entry
 ; CHECK-AVX2-NEXT:    movslq %esi, %rax
 ; CHECK-AVX2-NEXT:    movq %rax, -16(%rdi)
-; CHECK-AVX2-NEXT:    movq -16(%rdi), %rcx
-; CHECK-AVX2-NEXT:    movq %rcx, (%rdi)
+; CHECK-AVX2-NEXT:    movq %rax, (%rdi)
 ; CHECK-AVX2-NEXT:    movq -8(%rdi), %rcx
 ; CHECK-AVX2-NEXT:    movq %rcx, 8(%rdi)
 ; CHECK-AVX2-NEXT:    movq %rax, -8(%rdi)
@@ -171,8 +169,7 @@ define dso_local void @test_overlap_2(ptr nocapture %A, i32 %x) local_unnamed_ad
 ; CHECK-AVX512:       # %bb.0: # %entry
 ; CHECK-AVX512-NEXT:    movslq %esi, %rax
 ; CHECK-AVX512-NEXT:    movq %rax, -16(%rdi)
-; CHECK-AVX512-NEXT:    movq -16(%rdi), %rcx
-; CHECK-AVX512-NEXT:    movq %rcx, (%rdi)
+; CHECK-AVX512-NEXT:    movq %rax, (%rdi)
 ; CHECK-AVX512-NEXT:    movq -8(%rdi), %rcx
 ; CHECK-AVX512-NEXT:    movq %rcx, 8(%rdi)
 ; CHECK-AVX512-NEXT:    movq %rax, -8(%rdi)
