@@ -438,6 +438,7 @@ set(files
   __functional/is_transparent.h
   __functional/mem_fn.h
   __functional/mem_fun_ref.h
+  __functional/move_only_function_dispatch.h
   __functional/not_fn.h
   __functional/operations.h
   __functional/perfect_forward.h
