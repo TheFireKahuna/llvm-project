@@ -161,7 +161,8 @@ static bool addExceptionArgs(const ArgList &Args, types::ID InputType,
   // Async exceptions are for the Windows targets whose exception tables can
   // describe a range of instructions rather than a call: MSVC's, and the
   // Itanium C++ ABI on SEH.
-  if (Triple.isWindowsMSVCEnvironment() || Triple.isWindowsItaniumEnvironment()) {
+  if (Triple.isWindowsMSVCEnvironment() ||
+      Triple.isWindowsItaniumEnvironment()) {
     bool EHa = Args.hasFlag(options::OPT_fasync_exceptions,
                             options::OPT_fno_async_exceptions, false);
     if (EHa) {

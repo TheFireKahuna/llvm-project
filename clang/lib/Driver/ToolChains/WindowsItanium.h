@@ -5,44 +5,19 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-///
-/// \file
-/// Windows Itanium toolchain: Itanium C++ ABI on Windows with UCRT/Win32.
-/// Uses lld-link.
-///
-//===----------------------------------------------------------------------===//
 
 #ifndef LLVM_CLANG_LIB_DRIVER_TOOLCHAINS_WINDOWSITANIUM_H
 #define LLVM_CLANG_LIB_DRIVER_TOOLCHAINS_WINDOWSITANIUM_H
 
 #include "WindowsItaniumBase.h"
-#include "llvm/WindowsDriver/MSVCPaths.h"
 #include <optional>
 
 namespace clang {
 namespace driver {
-namespace tools {
-namespace windowsitanium {
-
-class LLVM_LIBRARY_VISIBILITY Linker final : public Tool {
-public:
-  Linker(const ToolChain &TC)
-      : Tool("windowsitanium::Linker", "lld-link", TC) {}
-
-  bool hasIntegratedCPP() const override { return false; }
-  bool isLinkJob() const override { return true; }
-
-  void ConstructJob(Compilation &C, const JobAction &JA,
-                    const InputInfo &Output, const InputInfoList &Inputs,
-                    const llvm::opt::ArgList &Args,
-                    const char *LinkingOutput) const override;
-};
-
-} // namespace windowsitanium
-} // namespace tools
-
 namespace toolchains {
 
+/// Windows Itanium: the Itanium C++ ABI with the UCRT and Win32. Only the
+/// Windows SDK and the UCRT are located; Visual C++ is never used.
 class LLVM_LIBRARY_VISIBILITY WindowsItaniumToolChain
     : public WindowsItaniumBaseToolChain {
 public:
@@ -53,36 +28,39 @@ public:
   TranslateArgs(const llvm::opt::DerivedArgList &Args, StringRef BoundArch,
                 Action::OffloadKind DeviceOffloadKind) const override;
 
-  RuntimeLibType GetDefaultRuntimeLibType() const override;
+  void
+  AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs,
+                            llvm::opt::ArgStringList &CC1Args) const override;
 
-  void AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs,
-                                 llvm::opt::ArgStringList &CC1Args) const override;
-
-  void addClangTargetOptions(const llvm::opt::ArgList &DriverArgs,
-                             llvm::opt::ArgStringList &CC1Args,
-                             Action::OffloadKind DeviceOffloadKind) const override;
-
-  void printVerboseInfo(raw_ostream &OS) const override;
+  void
+  addClangTargetOptions(const llvm::opt::ArgList &DriverArgs,
+                        llvm::opt::ArgStringList &CC1Args,
+                        Action::OffloadKind DeviceOffloadKind) const override;
 
   bool isCETCompatible() const override {
     return getArch() == llvm::Triple::x86_64;
   }
 
-  VersionTuple computeMSVCVersion(const Driver *D,
-                                  const llvm::opt::ArgList &Args) const override;
+  VersionTuple
+  computeMSVCVersion(const Driver *D,
+                     const llvm::opt::ArgList &Args) const override;
 
-  bool useUniversalCRT() const;
+  StringRef
+  getExecutableEntryPoint(const llvm::opt::ArgList &Args) const override;
+  void addSystemLinkArgs(const llvm::opt::ArgList &Args,
+                         llvm::opt::ArgStringList &CmdArgs,
+                         bool IsDLL) const override;
+  bool addLibCArgs(const llvm::opt::ArgList &Args,
+                   llvm::opt::ArgStringList &CmdArgs) const override;
+  void addNoDefaultLibArgs(const llvm::opt::ArgList &Args,
+                           llvm::opt::ArgStringList &CmdArgs) const override;
 
+private:
   bool getWindowsSDKLibraryPath(const llvm::opt::ArgList &Args,
                                 std::string &Path) const;
-
   bool getUniversalCRTLibraryPath(const llvm::opt::ArgList &Args,
                                   std::string &Path) const;
 
-protected:
-  Tool *buildLinker() const override;
-
-private:
   std::optional<llvm::StringRef> WinSdkDir;
   std::optional<llvm::StringRef> WinSdkVersion;
   std::optional<llvm::StringRef> WinSysRoot;

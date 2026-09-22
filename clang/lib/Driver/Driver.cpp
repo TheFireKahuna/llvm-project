@@ -37,6 +37,7 @@
 #include "ToolChains/Managarm.h"
 #include "ToolChains/MinGW.h"
 #include "ToolChains/MipsLinux.h"
+#include "ToolChains/NTPOSIX.h"
 #include "ToolChains/NetBSD.h"
 #include "ToolChains/OHOS.h"
 #include "ToolChains/OpenBSD.h"
@@ -51,7 +52,6 @@
 #include "ToolChains/UEFI.h"
 #include "ToolChains/VEToolchain.h"
 #include "ToolChains/WebAssembly.h"
-#include "ToolChains/NTPOSIX.h"
 #include "ToolChains/WindowsItanium.h"
 #include "ToolChains/XCore.h"
 #include "ToolChains/ZOS.h"
@@ -6864,17 +6864,12 @@ std::string Driver::GetStdModuleManifestPath(const Compilation &C,
     if (std::optional<std::string> result = evaluate("libc++.so"); result)
       return *result;
 
-    // Windows Itanium uses a distinct suffix for import libraries. Other
-    // Windows targets retain c++.lib; the static archive is libc++.lib.
-    const char *ImportLib =
-        TC.getTriple().isWindowsItaniumOrNTPOSIXEnvironment()
-            ? "libc++.dll.lib"
-            : "c++.lib";
-    if (std::optional<std::string> result = evaluate(ImportLib); result)
-      return *result;
-
-    if (std::optional<std::string> result = evaluate("libc++.lib"); result)
-      return *result;
+    // The import library and the static archive on Windows Itanium and
+    // NT-POSIX.
+    if (TC.getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+      for (const char *Lib : {"libc++.dll.lib", "libc++.lib"})
+        if (std::optional<std::string> result = evaluate(Lib); result)
+          return *result;
 
     return evaluate("libc++.a").value_or(error);
   }
@@ -7123,11 +7118,12 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
         TC = std::make_unique<toolchains::Cygwin>(*this, Target, Args);
         break;
       case llvm::Triple::Itanium:
-        TC = std::make_unique<toolchains::WindowsItaniumToolChain>(*this, Target,
-                                                                   Args);
+        TC = std::make_unique<toolchains::WindowsItaniumToolChain>(
+            *this, Target, Args);
         break;
       case llvm::Triple::NTPOSIX:
-        TC = std::make_unique<toolchains::NTPOSIXToolChain>(*this, Target, Args);
+        TC =
+            std::make_unique<toolchains::NTPOSIXToolChain>(*this, Target, Args);
         break;
       case llvm::Triple::MSVC:
       case llvm::Triple::UnknownEnvironment:

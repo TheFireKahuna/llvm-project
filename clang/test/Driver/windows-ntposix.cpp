@@ -145,7 +145,7 @@
 // --- Reject non-lld linker ---
 // RUN: not %clang --target=x86_64-pc-windows-ntposix -fuse-ld=link -### %s 2>&1 \
 // RUN:   | FileCheck --check-prefix=REJECT-LD %s
-// REJECT-LD: error: unsupported option '-fuse-ld=link (NT-POSIX requires lld-link)'
+// REJECT-LD: error: unsupported option '-fuse-ld=link' for target 'x86_64-pc-windows-ntposix'
 
 // --- Accept -fuse-ld=lld ---
 // RUN: %clang --target=x86_64-pc-windows-ntposix -nostdlib -fuse-ld=lld -### %s 2>&1 \

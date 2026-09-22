@@ -7,12 +7,9 @@
 //===----------------------------------------------------------------------===//
 ///
 /// \file
-/// Shared base class for Windows toolchains that use the Itanium C++ ABI,
-/// lld-link, COFF/PE, and compiler-rt/libunwind/libc++.
-///
-/// Concrete personalities:
-///   WindowsItaniumToolChain  — UCRT/Win32, optional llvm-libc
-///   NTPOSIXToolChain         — NT-POSIX, always llvm-libc
+/// The base of the Windows toolchains that use the Itanium C++ ABI, lld-link,
+/// compiler-rt, libunwind and libc++: Windows Itanium, with the UCRT, and
+/// NT-POSIX, with llvm-libc.
 ///
 //===----------------------------------------------------------------------===//
 
@@ -20,6 +17,7 @@
 #define LLVM_CLANG_LIB_DRIVER_TOOLCHAINS_WINDOWSITANIUMBASE_H
 
 #include "clang/Driver/CudaInstallationDetector.h"
+#include "clang/Driver/InputInfo.h"
 #include "clang/Driver/LazyDetector.h"
 #include "clang/Driver/RocmInstallationDetector.h"
 #include "clang/Driver/SyclInstallationDetector.h"
@@ -30,6 +28,27 @@
 
 namespace clang {
 namespace driver {
+namespace tools {
+namespace windowsitanium {
+
+/// Links with lld-link. The toolchain supplies the C runtime.
+class LLVM_LIBRARY_VISIBILITY Linker final : public Tool {
+public:
+  Linker(const ToolChain &TC)
+      : Tool("windowsitanium::Linker", "lld-link", TC) {}
+
+  bool hasIntegratedCPP() const override { return false; }
+  bool isLinkJob() const override { return true; }
+
+  void ConstructJob(Compilation &C, const JobAction &JA,
+                    const InputInfo &Output, const InputInfoList &Inputs,
+                    const llvm::opt::ArgList &Args,
+                    const char *LinkingOutput) const override;
+};
+
+} // namespace windowsitanium
+} // namespace tools
+
 namespace toolchains {
 
 class LLVM_LIBRARY_VISIBILITY WindowsItaniumBaseToolChain : public ToolChain {
@@ -73,8 +92,11 @@ public:
     return ToolChain::CST_Libcxx;
   }
 
-  CXXStdlibType
-  GetCXXStdlibType(const llvm::opt::ArgList &Args) const override;
+  CXXStdlibType GetCXXStdlibType(const llvm::opt::ArgList &Args) const override;
+
+  RuntimeLibType GetDefaultRuntimeLibType() const override {
+    return ToolChain::RLT_CompilerRT;
+  }
 
   UnwindLibType GetDefaultUnwindLibType() const override {
     return ToolChain::UNW_CompilerRT;
@@ -84,9 +106,10 @@ public:
 
   /// The import model defaults and the guard modes; the derived toolchains
   /// call this before adding their own options.
-  void addClangTargetOptions(const llvm::opt::ArgList &DriverArgs,
-                             llvm::opt::ArgStringList &CC1Args,
-                             Action::OffloadKind DeviceOffloadKind) const override;
+  void
+  addClangTargetOptions(const llvm::opt::ArgList &DriverArgs,
+                        llvm::opt::ArgStringList &CC1Args,
+                        Action::OffloadKind DeviceOffloadKind) const override;
 
   /// Whether images are marked compatible with the hardware shadow stack.
   /// The EH continuation table then accompanies Control Flow Guard, so that
@@ -102,6 +125,38 @@ public:
       llvm::opt::ArgStringList &CC1Args) const override;
   void AddCXXStdlibLibArgs(const llvm::opt::ArgList &Args,
                            llvm::opt::ArgStringList &CmdArgs) const override;
+
+  // The C runtime's part of a link, which the linker adds in this order
+  // around the arguments that do not depend on the C runtime. The functions
+  // that return bool diagnose a missing file and return false.
+
+  /// The entry point of an executable.
+  virtual StringRef
+  getExecutableEntryPoint(const llvm::opt::ArgList &Args) const {
+    return "mainCRTStartup";
+  }
+  /// Arguments ahead of the -L library paths.
+  virtual void addSystemLinkArgs(const llvm::opt::ArgList &Args,
+                                 llvm::opt::ArgStringList &CmdArgs,
+                                 bool IsDLL) const {}
+  /// The start-up objects, unless -nostartfiles.
+  virtual bool addStartFiles(const llvm::opt::ArgList &Args,
+                             llvm::opt::ArgStringList &CmdArgs,
+                             bool IsDLL) const {
+    return true;
+  }
+  /// The C library, unless -nolibc.
+  virtual bool addLibCArgs(const llvm::opt::ArgList &Args,
+                           llvm::opt::ArgStringList &CmdArgs) const = 0;
+  /// The default libraries that objects must not pull in.
+  virtual void addNoDefaultLibArgs(const llvm::opt::ArgList &Args,
+                                   llvm::opt::ArgStringList &CmdArgs) const = 0;
+  /// Libraries that follow the inputs.
+  virtual bool addPostInputLibs(const llvm::opt::ArgList &Args,
+                                const InputInfoList &Inputs,
+                                llvm::opt::ArgStringList &CmdArgs) const {
+    return true;
+  }
 
   void AddCudaIncludeArgs(const llvm::opt::ArgList &DriverArgs,
                           llvm::opt::ArgStringList &CC1Args) const override;
@@ -119,9 +174,11 @@ public:
   void printVerboseInfo(raw_ostream &OS) const override;
 
 protected:
+  Tool *buildLinker() const override;
+
   const char *GetLibraryArg(const llvm::opt::ArgList &Args,
-                           const llvm::opt::ArgStringList &CmdArgs,
-                           StringRef Name) const;
+                            const llvm::opt::ArgStringList &CmdArgs,
+                            StringRef Name) const;
 
   struct GuardOptions {
     bool Tables = false; ///< address-taken function tables (cf, cf-nochecks)

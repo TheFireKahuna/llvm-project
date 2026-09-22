@@ -25,7 +25,7 @@
 // lld-link is the only linker.
 // RUN: not %clang --target=x86_64-unknown-windows-itanium -fuse-ld=link -### %s 2>&1 \
 // RUN:   | FileCheck -check-prefix=LINK_EXE %s
-// LINK_EXE: error: unsupported option '-fuse-ld=link (Windows-Itanium requires lld-link)'
+// LINK_EXE: error: unsupported option '-fuse-ld=link' for target 'x86_64-unknown-windows-itanium'
 
 // RUN: not %clang --target=x86_64-unknown-windows-itanium -mguard=foo -### %s 2>&1 \
 // RUN:   | FileCheck -check-prefix=MGUARD_INVALID %s

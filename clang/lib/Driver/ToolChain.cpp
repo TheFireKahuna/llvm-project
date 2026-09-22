@@ -757,8 +757,8 @@ std::string ToolChain::buildCompilerRTBasename(const llvm::opt::ArgList &Args,
                                                FileType Type, bool AddArch,
                                                bool IsFortran) const {
   const llvm::Triple &TT = getTriple();
-  bool IsITANMSVCWindows =
-      TT.isWindowsMSVCEnvironment() || TT.isWindowsItaniumOrNTPOSIXEnvironment();
+  bool IsITANMSVCWindows = TT.isWindowsMSVCEnvironment() ||
+                           TT.isWindowsItaniumOrNTPOSIXEnvironment();
 
   const char *Prefix =
       IsITANMSVCWindows || Type == ToolChain::FT_Object ? "" : "lib";

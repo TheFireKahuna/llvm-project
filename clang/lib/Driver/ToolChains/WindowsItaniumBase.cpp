@@ -8,11 +8,13 @@
 
 #include "WindowsItaniumBase.h"
 #include "clang/Basic/DiagnosticDriver.h"
+#include "clang/Driver/CommonArgs.h"
 #include "clang/Driver/Compilation.h"
 #include "clang/Driver/Driver.h"
+#include "clang/Driver/SanitizerArgs.h"
 #include "clang/Options/Options.h"
-#include "llvm/Option/Arg.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/Option/Arg.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
@@ -20,12 +22,205 @@
 
 using namespace clang::driver;
 using namespace clang::driver::toolchains;
+using namespace clang::driver::tools;
 using namespace clang;
 using namespace llvm::opt;
 
-// ============================================================================
-// Constructor
-// ============================================================================
+void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
+                                          const InputInfo &Output,
+                                          const InputInfoList &Inputs,
+                                          const ArgList &Args,
+                                          const char *LinkingOutput) const {
+  const auto &TC =
+      static_cast<const WindowsItaniumBaseToolChain &>(getToolChain());
+  const Driver &D = C.getDriver();
+  const bool NoStdLib = Args.hasArg(options::OPT_nostdlib);
+  const bool NoDefaultLibs = Args.hasArg(options::OPT_nodefaultlibs);
+  const bool LinkStartFiles =
+      !NoStdLib && !Args.hasArg(options::OPT_nostartfiles);
+  const bool LinkDefaultLibs = !NoStdLib && !NoDefaultLibs;
+  const bool LinkLibC = LinkDefaultLibs && !Args.hasArg(options::OPT_nolibc);
+  ArgStringList CmdArgs;
+
+  // Silence warnings for compiler options on a link-only command line.
+  Args.ClaimAllArgs(options::OPT_g_Group);
+  Args.ClaimAllArgs(options::OPT_emit_llvm);
+  Args.ClaimAllArgs(options::OPT_w);
+  Args.ClaimAllArgs(options::OPT_stdlib_EQ);
+
+  // lld-link is the only linker that implements the import model.
+  if (const Arg *A = Args.getLastArg(options::OPT_fuse_ld_EQ)) {
+    StringRef Linker = A->getValue();
+    if (!Linker.equals_insensitive("lld") &&
+        !Linker.equals_insensitive("lld-link")) {
+      D.Diag(diag::err_drv_unsupported_opt_for_target)
+          << A->getAsString(Args) << TC.getTriple().str();
+      return;
+    }
+  }
+
+  assert((Output.isFilename() || Output.isNothing()) && "invalid output");
+  if (Output.isFilename())
+    CmdArgs.push_back(
+        Args.MakeArgString(std::string("-out:") + Output.getFilename()));
+
+  if (Args.hasArg(options::OPT_marm64x))
+    CmdArgs.push_back("-machine:arm64x");
+  else if (TC.getTriple().isWindowsArm64EC())
+    CmdArgs.push_back("-machine:arm64ec");
+  else if (TC.getArch() == llvm::Triple::x86)
+    CmdArgs.push_back("-machine:x86");
+  else if (TC.getArch() == llvm::Triple::aarch64)
+    CmdArgs.push_back("-machine:arm64");
+  else
+    CmdArgs.push_back("-machine:x64");
+
+  bool IsDLL = Args.hasArg(options::OPT__SLASH_LD, options::OPT__SLASH_LDd,
+                           options::OPT_shared);
+  if (IsDLL) {
+    CmdArgs.push_back("-dll");
+
+    SmallString<128> ImplibName(Output.getFilename());
+    llvm::sys::path::replace_extension(ImplibName, "dll.lib");
+    CmdArgs.push_back(Args.MakeArgString("-implib:" + ImplibName));
+
+    // The x86 entry point is decorated as __stdcall.
+    CmdArgs.push_back(TC.getArch() == llvm::Triple::x86
+                          ? "-entry:_DllMainCRTStartup@12"
+                          : "-entry:_DllMainCRTStartup");
+  } else {
+    const Arg *A =
+        Args.getLastArg(options::OPT_mwindows, options::OPT_mconsole);
+    if (A && A->getOption().matches(options::OPT_mwindows))
+      CmdArgs.push_back("-subsystem:windows");
+    else
+      CmdArgs.push_back("-subsystem:console");
+    if (LinkStartFiles)
+      CmdArgs.push_back(
+          Args.MakeArgString("-entry:" + TC.getExecutableEntryPoint(Args)));
+  }
+
+  if (const Arg *A = Args.getLastArg(options::OPT_fveclib))
+    if (StringRef(A->getValue()) == "ArmPL")
+      CmdArgs.push_back(Args.MakeArgString("--dependent-lib=amath"));
+
+  TC.addSystemLinkArgs(Args, CmdArgs, IsDLL);
+
+  for (const auto &LibPath : Args.getAllArgValues(options::OPT_L))
+    CmdArgs.push_back(Args.MakeArgString(Twine("-libpath:") + LibPath));
+  TC.AddRuntimeLibSearchPaths(Args, CmdArgs);
+  CmdArgs.push_back("-nologo");
+
+  if (LinkStartFiles && !TC.addStartFiles(Args, CmdArgs, IsDLL))
+    return;
+
+  // The runtime libraries are default libraries: lld searches them after
+  // every positional input, so a definition in the user's objects or
+  // libraries takes precedence over the same symbol in a runtime archive,
+  // as it does with link.exe and the MSVC driver.
+  if (LinkDefaultLibs) {
+    // clang-cl has no C-only mode, so it links the C++ standard library
+    // whenever the inputs may be C++. lld pulls members only when they are
+    // referenced, so a C program gains no dependency on it.
+    if (TC.ShouldLinkCXXStdlib(Args) ||
+        (D.IsCLMode() && !Args.hasArg(options::OPT_nostdlibxx)))
+      TC.AddCXXStdlibLibArgs(Args, CmdArgs);
+
+    if (TC.GetUnwindLibType(Args) == ToolChain::UNW_CompilerRT)
+      CmdArgs.push_back("-defaultlib:libunwind.dll.lib");
+    else if (const Arg *A = Args.getLastArg(options::OPT_unwindlib_EQ))
+      D.Diag(diag::err_drv_unsupported_unwind_for_platform)
+          << A->getValue() << TC.getTriple().normalize();
+
+    CmdArgs.push_back(Args.MakeArgString(
+        Twine("-defaultlib:") + TC.getCompilerRTArgString(Args, "builtins")));
+
+    if (LinkLibC && !TC.addLibCArgs(Args, CmdArgs))
+      return;
+  }
+
+  // Static data that holds the address of a symbol from another DLL is
+  // filled by the loader through an import descriptor of its own. A
+  // definition in the link takes precedence over an import library's entry
+  // for the same name.
+  CmdArgs.push_back("-import-slots");
+
+  if (!NoDefaultLibs)
+    TC.addNoDefaultLibArgs(Args, CmdArgs);
+
+  const SanitizerArgs &Sanitize = TC.getSanitizerArgs(Args);
+  if (Sanitize.needsFuzzer()) {
+    if (!Args.hasArg(options::OPT_shared))
+      CmdArgs.push_back(Args.MakeArgString(
+          Twine("-wholearchive:") + TC.getCompilerRTArgString(Args, "fuzzer")));
+    CmdArgs.push_back("-debug");
+    CmdArgs.push_back("-incremental:no");
+  }
+  if (Sanitize.needsAsanRt()) {
+    CmdArgs.push_back("-debug");
+    CmdArgs.push_back("-incremental:no");
+    CmdArgs.push_back(TC.getCompilerRTArgString(Args, "asan_dynamic"));
+    CmdArgs.push_back(Args.MakeArgString(
+        Twine("-wholearchive:") +
+        TC.getCompilerRT(Args, "asan_dynamic_runtime_thunk")));
+    // Prevent the ASan SEH interceptor from being discarded.
+    CmdArgs.push_back(TC.getArch() == llvm::Triple::x86
+                          ? "-include:___asan_seh_interceptor"
+                          : "-include:__asan_seh_interceptor");
+  }
+
+  if (D.isUsingLTO()) {
+    if (Arg *A = tools::getLastProfileSampleUseArg(Args))
+      CmdArgs.push_back(
+          Args.MakeArgString(Twine("-lto-sample-profile:") + A->getValue()));
+    if (Args.hasFlag(options::OPT_gsplit_dwarf, options::OPT_gno_split_dwarf,
+                     false))
+      CmdArgs.push_back(Args.MakeArgString(Twine("-dwodir:") +
+                                           Output.getFilename() + "_dwo"));
+  }
+
+  if (!Args.hasFlag(options::OPT_mincremental_linker_compatible,
+                    options::OPT_mno_incremental_linker_compatible, true))
+    CmdArgs.push_back("-Brepro");
+
+  if (Args.hasArg(options::OPT_fms_hotpatch, options::OPT__SLASH_hotpatch))
+    CmdArgs.push_back("-functionpadmin");
+
+  TC.addGuardLinkArgs(Args, CmdArgs, IsDLL);
+
+  if (Args.hasArg(options::OPT_g_Group, options::OPT__SLASH_Z7))
+    CmdArgs.push_back("-debug");
+
+  Args.AddAllArgValues(CmdArgs, options::OPT__SLASH_link);
+
+  // lld-link has no -l; NormalizeLLDLinkArgs resolves each library once every
+  // search path is known.
+  for (const auto &Input : Inputs) {
+    if (Input.isFilename()) {
+      CmdArgs.push_back(Input.getFilename());
+      continue;
+    }
+    const Arg &A = Input.getInputArg();
+    if (A.getOption().matches(options::OPT_l)) {
+      CmdArgs.push_back("-l");
+      CmdArgs.push_back(A.getValue());
+      continue;
+    }
+    A.renderAsInput(Args, CmdArgs);
+  }
+
+  if (!TC.addPostInputLibs(Args, Inputs, CmdArgs))
+    return;
+
+  TC.addOffloadRTLibs(C.getActiveOffloadKinds(), Args, CmdArgs);
+  TC.addProfileRTLibs(Args, CmdArgs);
+  TC.NormalizeLLDLinkArgs(Args, CmdArgs);
+
+  C.addCommand(std::make_unique<Command>(
+      JA, *this, ResponseFileSupport::AtFileUTF16(),
+      Args.MakeArgString(TC.GetProgramPath("lld-link")), CmdArgs, Inputs,
+      Output));
+}
 
 WindowsItaniumBaseToolChain::WindowsItaniumBaseToolChain(
     const Driver &D, const llvm::Triple &Triple, const ArgList &Args)
@@ -43,10 +238,6 @@ WindowsItaniumBaseToolChain::WindowsItaniumBaseToolChain(
   if (getVFS().exists(TargetLibPath))
     getFilePaths().push_back(std::string(TargetLibPath));
 }
-
-// ============================================================================
-// Platform defaults
-// ============================================================================
 
 ToolChain::UnwindTableLevel
 WindowsItaniumBaseToolChain::getDefaultUnwindTableLevel(
@@ -92,10 +283,6 @@ WindowsItaniumBaseToolChain::GetExceptionModel(const ArgList &Args) const {
     return llvm::ExceptionHandling::WinEH;
   return llvm::ExceptionHandling::SjLj;
 }
-
-// ============================================================================
-// C++ standard library
-// ============================================================================
 
 ToolChain::CXXStdlibType
 WindowsItaniumBaseToolChain::GetCXXStdlibType(const ArgList &Args) const {
@@ -202,8 +389,11 @@ void WindowsItaniumBaseToolChain::addGuardLinkArgs(const ArgList &Args,
     Modes.push_back("ehcont");
   if (Guard.Tables && !IsDLL)
     Modes.push_back("exportsuppress");
-  CmdArgs.push_back(
-      Args.MakeArgString("-guard:" + llvm::join(Modes, ",")));
+  CmdArgs.push_back(Args.MakeArgString("-guard:" + llvm::join(Modes, ",")));
+}
+
+Tool *WindowsItaniumBaseToolChain::buildLinker() const {
+  return new tools::windowsitanium::Linker(*this);
 }
 
 void WindowsItaniumBaseToolChain::AddClangCXXStdlibIncludeArgs(
@@ -252,10 +442,6 @@ void WindowsItaniumBaseToolChain::AddCXXStdlibLibArgs(
     CmdArgs.push_back("-defaultlib:libc++experimental.lib");
 }
 
-// ============================================================================
-// Utilities
-// ============================================================================
-
 const char *WindowsItaniumBaseToolChain::GetLibraryArg(
     const ArgList &Args, const ArgStringList &CmdArgs, StringRef Name) const {
   // Exact filenames bypass the platform's prefix/suffix search.
@@ -268,8 +454,8 @@ const char *WindowsItaniumBaseToolChain::GetLibraryArg(
   // order, preferring an import library over a static archive. Unprefixed
   // libraries remain available for Windows SDK and other native libraries.
   const std::string Names[] = {("lib" + Name + ".dll.lib").str(),
-                              ("lib" + Name + ".lib").str(),
-                              (Name + ".lib").str()};
+                               ("lib" + Name + ".lib").str(),
+                               (Name + ".lib").str()};
   for (const auto &File : Names) {
     if (getVFS().exists(File))
       return Args.MakeArgString(File);
@@ -324,23 +510,16 @@ void WindowsItaniumBaseToolChain::NormalizeLLDLinkArgs(
       It = CmdArgs.erase(It + 1);
       continue;
     }
-    // PE image-version flags are currently unstable with the custom
-    // Windows-Itanium/NTPOSIX lld-link path and can crash the linker during
-    // try-link probes. Drop them until lld grows reliable support here.
-    if (Value.starts_with_insensitive("/version:") ||
-        Value.starts_with_insensitive("-version:")) {
+    // PE has no run-time library search path. Drop the ELF options that
+    // build systems written for ELF pass, with their separate values.
+    if (Value == "-rpath" || Value == "-rpath-link") {
       It = CmdArgs.erase(It);
+      if (It != CmdArgs.end())
+        It = CmdArgs.erase(It);
       continue;
     }
-    // -rpath is an ELF concept with no PE/COFF equivalent. Windows DLL
-    // search uses the exe directory, system dirs, and PATH instead.
-    // Strip silently so POSIX-oriented build systems don't produce warnings.
-    // Handles both "-rpath=VALUE" and "-rpath VALUE" (two separate args).
-    if (Value.starts_with_insensitive("-rpath")) {
-      bool is_separate = (Value == "-rpath") && (It + 1) != CmdArgs.end();
+    if (Value.starts_with("-rpath=") || Value.starts_with("-rpath-link=")) {
       It = CmdArgs.erase(It);
-      if (is_separate && It != CmdArgs.end())
-        It = CmdArgs.erase(It); // consume the path argument
       continue;
     }
     ++It;
@@ -355,10 +534,6 @@ void WindowsItaniumBaseToolChain::AddSystemIncludeWithSubfolder(
   llvm::sys::path::append(P, Sub1, Sub2, Sub3);
   addSystemInclude(DriverArgs, CC1Args, P);
 }
-
-// ============================================================================
-// Offload / GPU forwarding
-// ============================================================================
 
 void WindowsItaniumBaseToolChain::AddCudaIncludeArgs(
     const ArgList &DriverArgs, ArgStringList &CC1Args) const {
