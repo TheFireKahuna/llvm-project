@@ -627,7 +627,7 @@ LLVM_ABI ModulePass *createWindowsSecureHotPatchingPass();
 /// Gives a weak function definition an entry that forwards to the program's
 /// definition of the same name, so that a weak definition is program-wide on
 /// PE as it is on ELF.
-ModulePass *createWindowsWeakInterpositionPass();
+LLVM_ABI ModulePass *createWindowsWeakInterpositionPass();
 
 /// Lowers KCFI operand bundles for indirect calls.
 LLVM_ABI FunctionPass *createKCFIPass();
