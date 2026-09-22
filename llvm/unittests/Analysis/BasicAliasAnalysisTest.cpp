@@ -70,6 +70,39 @@ public:
         TLI(TLII), F(nullptr) {}
 };
 
+TEST_F(BasicAATest, MemcpySourceModRef) {
+  F = Function::Create(
+      FunctionType::get(B.getVoidTy(), {B.getPtrTy(), B.getPtrTy()}, false),
+      GlobalValue::ExternalLinkage, "F", &M);
+  B.SetInsertPoint(BasicBlock::Create(C, "entry", F));
+  Value *Dst = F->getArg(0);
+  Value *Src = F->getArg(1);
+  CallInst *Copy = B.CreateMemCpy(Dst, Align(1), Src, Align(1), 16);
+  B.CreateRetVoid();
+
+  auto &A = setupAnalyses();
+  MemoryLocation Prefix(Src, LocationSize::precise(8));
+  EXPECT_EQ(A.BAA.getModRefInfo(Copy, Prefix, A.AAQI), ModRefInfo::Ref);
+  EXPECT_EQ(A.BAA.getModRefInfo(
+                Copy, MemoryLocation(Src, LocationSize::upperBound(8)), A.AAQI),
+            ModRefInfo::Ref);
+  EXPECT_EQ(A.BAA.getModRefInfo(
+                Copy, MemoryLocation(Src, LocationSize::precise(17)), A.AAQI),
+            ModRefInfo::ModRef);
+  EXPECT_EQ(
+      A.BAA.getModRefInfo(Copy, MemoryLocation::getBeforeOrAfter(Src), A.AAQI),
+      ModRefInfo::ModRef);
+  EXPECT_EQ(
+      A.BAA.getModRefInfo(
+          Copy,
+          MemoryLocation(Src, LocationSize::precise(TypeSize::getScalable(8))),
+          A.AAQI),
+      ModRefInfo::ModRef);
+
+  A.AAQI.MayBeCrossIteration = true;
+  EXPECT_EQ(A.BAA.getModRefInfo(Copy, Prefix, A.AAQI), ModRefInfo::ModRef);
+}
+
 // Check that a function arg can't trivially alias a global when we're accessing
 // >sizeof(global) bytes through that arg, unless the access size is just an
 // upper-bound.

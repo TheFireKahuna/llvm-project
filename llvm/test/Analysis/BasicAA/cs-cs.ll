@@ -20,9 +20,9 @@ define void @test2(ptr %P, ptr %Q) #3 {
 
 ; CHECK:   MayAlias:     i8* %P, i8* %Q
 ; CHECK:   Both ModRef:  Ptr: i8* %P     <->  tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 12, i1 false)
-; CHECK:   Both ModRef:  Ptr: i8* %Q     <->  tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 12, i1 false)
+; CHECK:   Just Ref:  Ptr: i8* %Q     <->  tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 12, i1 false)
 ; CHECK:   Both ModRef:  Ptr: i8* %P     <->  tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 12, i1 false)
-; CHECK:   Both ModRef:  Ptr: i8* %Q     <->  tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 12, i1 false)
+; CHECK:   Just Ref:  Ptr: i8* %Q     <->  tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 12, i1 false)
 ; CHECK:   Both ModRef:   tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 12, i1 false) <->   tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 12, i1 false)
 ; CHECK:   Both ModRef:   tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 12, i1 false) <->   tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 12, i1 false)
 }
@@ -170,9 +170,9 @@ define void @test3(ptr %P, ptr %Q) #3 {
 
 ; CHECK: MayAlias:     i8* %P, i8* %Q
 ; CHECK: Both ModRef:  Ptr: i8* %P     <->  tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 8, i1 false)
-; CHECK: Both ModRef:  Ptr: i8* %Q     <->  tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 8, i1 false)
+; CHECK: Just Ref:  Ptr: i8* %Q     <->  tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 8, i1 false)
 ; CHECK: Both ModRef:  Ptr: i8* %P     <->  tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 12, i1 false)
-; CHECK: Both ModRef:  Ptr: i8* %Q     <->  tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 12, i1 false)
+; CHECK: Just Ref:  Ptr: i8* %Q     <->  tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 12, i1 false)
 ; CHECK: Both ModRef:   tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 8, i1 false) <->   tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 12, i1 false)
 ; CHECK: Both ModRef:   tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 12, i1 false) <->   tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 8, i1 false)
 }
@@ -227,11 +227,11 @@ define void @test5(ptr %P, ptr %Q, ptr %R) #3 {
 ; CHECK: MayAlias:     i8* %P, i8* %R
 ; CHECK: MayAlias:     i8* %Q, i8* %R
 ; CHECK: Both ModRef:  Ptr: i8* %P     <->  tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 12, i1 false)
-; CHECK: Both ModRef:  Ptr: i8* %Q     <->  tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 12, i1 false)
+; CHECK: Just Ref:  Ptr: i8* %Q     <->  tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 12, i1 false)
 ; CHECK: Both ModRef:  Ptr: i8* %R     <->  tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 12, i1 false)
 ; CHECK: Both ModRef:  Ptr: i8* %P     <->  tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %R, i64 12, i1 false)
 ; CHECK: Both ModRef:  Ptr: i8* %Q     <->  tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %R, i64 12, i1 false)
-; CHECK: Both ModRef:  Ptr: i8* %R     <->  tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %R, i64 12, i1 false)
+; CHECK: Just Ref:  Ptr: i8* %R     <->  tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %R, i64 12, i1 false)
 ; CHECK: Both ModRef:   tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 12, i1 false) <->   tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %R, i64 12, i1 false)
 ; CHECK: Both ModRef:   tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %R, i64 12, i1 false) <->   tail call void @llvm.memcpy.p0.p0.i64(ptr %P, ptr %Q, i64 12, i1 false)
 }

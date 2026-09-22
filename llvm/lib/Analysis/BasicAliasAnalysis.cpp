@@ -959,6 +959,19 @@ ModRefInfo BasicAAResult::getModRefInfo(const CallBase *Call,
   ModRefInfo ErrnoMR = ME.getModRef(IRMemLocation::ErrnoMem);
   ModRefInfo OtherMR = ME.getModRef(IRMemLocation::Other);
 
+  // A non-volatile memcpy leaves its source unchanged, including the self-copy
+  // permitted by the intrinsic. Refine accesses contained in the source range.
+  if (const auto *MCI = dyn_cast<MemCpyInst>(Call);
+      MCI && !MCI->isVolatile() && !Call->hasOperandBundles() &&
+      !AAQI.MayBeCrossIteration && Loc.Size.hasValue() &&
+      !Loc.Size.isScalable()) {
+    MemoryLocation SrcLoc = MemoryLocation::getForSource(MCI);
+    if (SrcLoc.Size.isPrecise() && !SrcLoc.Size.isScalable() &&
+        Loc.Size.getValue() <= SrcLoc.Size.getValue() &&
+        AAQI.AAR.alias(SrcLoc, Loc, AAQI, Call) == AliasResult::MustAlias)
+      ArgMR &= ModRefInfo::Ref;
+  }
+
   // An identified function-local object that does not escape can only be
   // accessed via call arguments. Reduce OtherMR (which includes accesses to
   // escaped memory) based on that.
