@@ -19,7 +19,7 @@
  * UCRT defines _ino_t etc. but only defines ino_t when !__STDC__.
  * We want __STDC__ for compliance, so provide the aliases here.
  */
-#if defined(__MSVCRT__)
+#if defined(__MSVCRT__) || defined(_UCRT)
 /* _ino_t defined by UCRT, we just add the POSIX alias */
 #  ifndef __CLANG_INO_T_DEFINED
 #    define __CLANG_INO_T_DEFINED
@@ -47,6 +47,6 @@
        typedef long ssize_t;
 #    endif
 #  endif
-#endif /* __MSVCRT__ */
+#endif /* __MSVCRT__ || _UCRT */
 
 #endif /* __CLANG_SYS_TYPES_H */

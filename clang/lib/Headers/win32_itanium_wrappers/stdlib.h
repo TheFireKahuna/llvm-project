@@ -65,7 +65,7 @@
  * std::aligned_alloc and C code sees the C11 name. Unsupported alignments
  * return a null pointer.
  */
-#if defined(__MSVCRT__)
+#if defined(_WIN32_ITANIUM)
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -88,7 +88,7 @@ int __cdecl posix_memalign(void **memptr, size_t alignment, size_t size);
  * __STDC__ for standards compliance. Provide the mappings when targeting
  * MSVCRT/UCRT.
  */
-#if defined(__MSVCRT__)
+#if defined(__MSVCRT__) || defined(_UCRT)
 /* Environment */
 #  ifndef putenv
 #    define putenv _putenv
@@ -116,6 +116,6 @@ int __cdecl posix_memalign(void **memptr, size_t alignment, size_t size);
 #  ifndef swab
 #    define swab _swab
 #  endif
-#endif /* __MSVCRT__ */
+#endif /* __MSVCRT__ || _UCRT */
 
 #endif /* __CLANG_STDLIB_H */

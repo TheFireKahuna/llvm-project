@@ -58,7 +58,7 @@
  * but we want __STDC__ for standards compliance. Provide the mappings when
  * targeting MSVCRT/UCRT.
  */
-#if defined(__MSVCRT__)
+#if defined(__MSVCRT__) || defined(_UCRT)
 /* Bessel functions of the first kind */
 #  ifndef j0
 #    define j0 _j0
@@ -79,6 +79,6 @@
 #  ifndef yn
 #    define yn _yn
 #  endif
-#endif /* __MSVCRT__ */
+#endif /* __MSVCRT__ || _UCRT */
 
 #endif /* __CLANG_MATH_H */

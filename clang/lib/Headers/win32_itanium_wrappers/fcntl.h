@@ -20,7 +20,7 @@
  * The UCRT only exposes O_RDONLY etc. when !__STDC__, but we want __STDC__
  * for standards compliance. Provide the mappings when targeting MSVCRT/UCRT.
  */
-#if defined(__MSVCRT__)
+#if defined(__MSVCRT__) || defined(_UCRT)
 #  ifndef O_RDONLY
 #    define O_RDONLY _O_RDONLY
 #  endif
@@ -108,6 +108,6 @@
 #    define _O_NOINHERIT O_CLOEXEC
 #  endif
 
-#endif /* __MSVCRT__ / _WIN32_ITANIUM */
+#endif /* __MSVCRT__ || _UCRT / _WIN32_ITANIUM */
 
 #endif /* __CLANG_FCNTL_H */

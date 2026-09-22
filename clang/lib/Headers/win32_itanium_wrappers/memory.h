@@ -20,13 +20,13 @@
  * The UCRT only exposes memccpy/memicmp when !__STDC__, but we want __STDC__
  * for standards compliance. Provide the mappings when targeting MSVCRT/UCRT.
  */
-#if defined(__MSVCRT__)
+#if defined(__MSVCRT__) || defined(_UCRT)
 #  ifndef memccpy
 #    define memccpy _memccpy
 #  endif
 #  ifndef memicmp
 #    define memicmp _memicmp
 #  endif
-#endif /* __MSVCRT__ */
+#endif /* __MSVCRT__ || _UCRT */
 
 #endif /* __CLANG_MEMORY_H */

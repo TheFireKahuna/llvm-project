@@ -17,36 +17,17 @@
 #ifndef __CLANG_UCRT_NEW_H
 #define __CLANG_UCRT_NEW_H
 
-#include <corecrt.h>
-#include <vcruntime_new_debug.h>
-
-
-#if defined(_MSC_VER) && !defined(_WIN32_ITANIUM)
-/* Non-Itanium MSVC/clang-cl: pass through to the real header. */
+/* The SDK owns the C new-handler and allocation-mode declarations. Keep its
+ * optional Microsoft C++ declarations out of the Itanium ABI. */
+#if defined(_WIN32_ITANIUM)
+#pragma push_macro("_MSC_EXTENSIONS")
+#undef _MSC_EXTENSIONS
+#endif
 #if __has_include_next(<new.h>)
 #include_next <new.h>
 #endif
-#else
-
-#ifndef _INC_NEW // include guard for 3rd party interop
-#define _INC_NEW
-#ifdef __cplusplus
-    #include <new>
+#if defined(_WIN32_ITANIUM)
+#pragma pop_macro("_MSC_EXTENSIONS")
 #endif
 
-_CRT_BEGIN_C_HEADER
-
-typedef int (__CRTDECL* _PNH)(size_t);
-
-_PNH __cdecl _query_new_handler(void);
-_PNH __cdecl _set_new_handler(_In_opt_ _PNH _NewHandler);
-
-// new mode flag -- when set, makes malloc() behave like new()
-_ACRTIMP int __cdecl _query_new_mode(void);
-_ACRTIMP int __cdecl _set_new_mode(_In_ int _NewMode);
-
-
-_CRT_END_C_HEADER
-#endif
-#endif
 #endif /* __CLANG_UCRT_NEW_H */

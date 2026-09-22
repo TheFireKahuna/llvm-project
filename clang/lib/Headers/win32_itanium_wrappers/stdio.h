@@ -17,14 +17,20 @@
  * In clang's C mode __inline takes GNU89 semantics: every TU that includes
  * <stdio.h> emits a strong external definition, and any two such objects
  * collide at link time. Pin the definitions to internal linkage. C++ inline
- * semantics (COMDAT) are already correct, so C only.
+ * semantics (COMDAT) are already correct, so C only. Another UCRT header may
+ * already have defined _CRT_STDIO_INLINE; override it only for this include.
  */
-#if defined(_WIN32_ITANIUM) && !defined(__cplusplus) &&                         \
-    !defined(_CRT_STDIO_INLINE)
+#if defined(_WIN32_ITANIUM) && !defined(__cplusplus)
+#include <corecrt_stdio_config.h>
+#pragma push_macro("_CRT_STDIO_INLINE")
+#undef _CRT_STDIO_INLINE
 #define _CRT_STDIO_INLINE static __inline
 #endif
 
 #include_next <stdio.h>
+#if defined(_WIN32_ITANIUM) && !defined(__cplusplus)
+#pragma pop_macro("_CRT_STDIO_INLINE")
+#endif
 #endif
 
 /*
@@ -34,7 +40,7 @@
  * but we want __STDC__ for standards compliance. Provide the mappings when
  * _WIN32_ITANIUM is defined (set by clang for windows-itanium targets).
  */
-#if defined(__MSVCRT__)
+#if defined(__MSVCRT__) || defined(_UCRT)
 
 #  ifndef _VA_LIST
 #    define _VA_LIST
@@ -93,6 +99,6 @@
 #define _snprintf  snprintf
 #define _vsnprintf vsnprintf
 
-#endif /* __MSVCRT__ / _WIN32_ITANIUM */
+#endif /* __MSVCRT__ || _UCRT / _WIN32_ITANIUM */
 
 #endif /* __CLANG_STDIO_H */

@@ -21,7 +21,7 @@
  * want __STDC__ for standards compliance. Provide the mappings when
  * targeting MSVCRT/UCRT.
  */
-#if defined(__MSVCRT__)
+#if defined(__MSVCRT__) || defined(_UCRT)
 /* String duplication and comparison */
 #  ifndef strdup
 #    define strdup _strdup
@@ -86,6 +86,6 @@
 #  ifndef wcsnset
 #    define wcsnset _wcsnset
 #  endif
-#endif /* __MSVCRT__ */
+#endif /* __MSVCRT__ || _UCRT */
 
 #endif /* __CLANG_STRING_H */

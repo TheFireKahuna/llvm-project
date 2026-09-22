@@ -17,7 +17,7 @@
 /*
  * Windows Itanium: Map POSIX function names to UCRT underscore-prefixed names.
  */
-#if defined(__MSVCRT__)
+#if defined(__MSVCRT__) || defined(_UCRT)
 #  ifndef getcwd
 #    define getcwd _getcwd
 #  endif
@@ -48,6 +48,6 @@ static __inline int _mkdir(const char *path) {
   return mkdir(path, 0777);
 }
 
-#endif /* __MSVCRT__ / _WIN32_ITANIUM */
+#endif /* __MSVCRT__ || _UCRT / _WIN32_ITANIUM */
 
 #endif /* __CLANG_DIRECT_H */

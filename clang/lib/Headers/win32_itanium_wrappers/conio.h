@@ -21,7 +21,7 @@
  * __STDC__ for standards compliance. Provide the mappings when targeting
  * MSVCRT/UCRT.
  */
-#if defined(__MSVCRT__)
+#if defined(__MSVCRT__) || defined(_UCRT)
 /* Character I/O */
 #  ifndef getch
 #    define getch _getch
@@ -52,6 +52,6 @@
 #  ifndef cscanf
 #    define cscanf _cscanf
 #  endif
-#endif /* __MSVCRT__ */
+#endif /* __MSVCRT__ || _UCRT */
 
 #endif /* __CLANG_CONIO_H */

@@ -21,7 +21,7 @@
  * __STDC__ for standards compliance. Provide the mappings when targeting
  * MSVCRT/UCRT.
  */
-#if defined(__MSVCRT__)
+#if defined(__MSVCRT__) || defined(_UCRT)
 #  ifndef getpid
 #    define getpid _getpid
 #  endif
@@ -121,6 +121,6 @@ static __inline void _endthreadex(unsigned retval) {
   pthread_exit((void *)(unsigned long long)retval);
 }
 
-#endif /* __MSVCRT__ / _WIN32_ITANIUM */
+#endif /* __MSVCRT__ || _UCRT / _WIN32_ITANIUM */
 
 #endif /* __CLANG_PROCESS_H */

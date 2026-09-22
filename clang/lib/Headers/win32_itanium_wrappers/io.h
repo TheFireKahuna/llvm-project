@@ -21,7 +21,7 @@
  *
  * With llvm-libc (LIBC_FULL_BUILD), POSIX names are provided natively — skip.
  */
-#if defined(__MSVCRT__)
+#if defined(__MSVCRT__) || defined(_UCRT)
 /* These names are safe as macros - unlikely to conflict with C++ identifiers */
 #  ifndef chmod
 #    define chmod _chmod
@@ -287,6 +287,6 @@ static __inline FILE *_wfopen(const wchar_t *path, const wchar_t *mode) {
   return f;
 }
 
-#endif /* __MSVCRT__ / _WIN32_ITANIUM */
+#endif /* __MSVCRT__ || _UCRT / _WIN32_ITANIUM */
 
 #endif /* __CLANG_IO_H */

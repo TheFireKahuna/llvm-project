@@ -20,13 +20,13 @@
  * The UCRT only exposes lfind/lsearch when !__STDC__, but we want __STDC__
  * for standards compliance. Provide the mappings when targeting MSVCRT/UCRT.
  */
-#if defined(__MSVCRT__)
+#if defined(__MSVCRT__) || defined(_UCRT)
 #  ifndef lfind
 #    define lfind _lfind
 #  endif
 #  ifndef lsearch
 #    define lsearch _lsearch
 #  endif
-#endif /* __MSVCRT__ */
+#endif /* __MSVCRT__ || _UCRT */
 
 #endif /* __CLANG_SEARCH_H */

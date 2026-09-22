@@ -19,7 +19,7 @@
  * and provide S_IS* macros not present in UCRT.
  * Matches libc++ posix_compat.h.
  */
-#if defined(__MSVCRT__)
+#if defined(__MSVCRT__) || defined(_UCRT)
 /* File type flags - map to UCRT */
 #  ifndef S_IFMT
 #    define S_IFMT _S_IFMT
@@ -98,6 +98,6 @@
 #  ifndef fstat
 #    define fstat _fstat
 #  endif
-#endif /* __MSVCRT__ */
+#endif /* __MSVCRT__ || _UCRT */
 
 #endif /* __CLANG_SYS_STAT_H */
