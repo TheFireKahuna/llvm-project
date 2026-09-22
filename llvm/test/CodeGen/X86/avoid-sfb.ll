@@ -1039,23 +1039,38 @@ if.end:                                           ; preds = %if.then, %entry
 }
 
 define dso_local void @test_alias(ptr nocapture %A, i32 %x) local_unnamed_addr #0 {
-; SSE-LABEL: test_alias:
-; SSE:       # %bb.0: # %entry
-; SSE-NEXT:    movl %esi, (%rdi)
-; SSE-NEXT:    movups (%rdi), %xmm0
-; SSE-NEXT:    movups %xmm0, 4(%rdi)
-; SSE-NEXT:    retq
+; CHECK-LABEL: test_alias:
+; CHECK:       # %bb.0: # %entry
+; CHECK-NEXT:    movl %esi, (%rdi)
+; CHECK-NEXT:    movl (%rdi), %eax
+; CHECK-NEXT:    movq 4(%rdi), %rcx
+; CHECK-NEXT:    movl 12(%rdi), %edx
+; CHECK-NEXT:    movl %eax, 4(%rdi)
+; CHECK-NEXT:    movq %rcx, 8(%rdi)
+; CHECK-NEXT:    movl %edx, 16(%rdi)
+; CHECK-NEXT:    retq
+;
+; DISABLED-LABEL: test_alias:
+; DISABLED:       # %bb.0: # %entry
+; DISABLED-NEXT:    movl %esi, (%rdi)
+; DISABLED-NEXT:    movups (%rdi), %xmm0
+; DISABLED-NEXT:    movups %xmm0, 4(%rdi)
+; DISABLED-NEXT:    retq
 ;
 ; AVX-LABEL: test_alias:
 ; AVX:       # %bb.0: # %entry
 ; AVX-NEXT:    movl %esi, (%rdi)
-; AVX-NEXT:    vmovups (%rdi), %xmm0
-; AVX-NEXT:    vmovups %xmm0, 4(%rdi)
+; AVX-NEXT:    movl (%rdi), %eax
+; AVX-NEXT:    movq 4(%rdi), %rcx
+; AVX-NEXT:    movl 12(%rdi), %edx
+; AVX-NEXT:    movl %eax, 4(%rdi)
+; AVX-NEXT:    movq %rcx, 8(%rdi)
+; AVX-NEXT:    movl %edx, 16(%rdi)
 ; AVX-NEXT:    retq
 entry:
   store i32 %x, ptr %A, align 4
   %add.ptr = getelementptr inbounds i8, ptr %A, i64 4
-  tail call void @llvm.memcpy.p0.p0.i64(ptr nonnull align 4 %add.ptr, ptr align 4 %A, i64 16, i32 4, i1 false)
+  tail call void @llvm.memmove.p0.p0.i64(ptr nonnull align 4 %add.ptr, ptr align 4 %A, i64 16, i1 false)
   ret void
 }
 
@@ -1100,3 +1115,5 @@ entry:
 declare void @llvm.memcpy.p0.p0.i64(ptr nocapture writeonly, ptr nocapture readonly, i64, i32, i1) #1
 
 attributes #0 = { nounwind uwtable }
+
+declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)
