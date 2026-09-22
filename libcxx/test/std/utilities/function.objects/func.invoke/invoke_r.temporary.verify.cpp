@@ -17,15 +17,30 @@
 // Make sure that we diagnose when std::invoke_r is used with a return type that
 // would yield a dangling reference to a temporary.
 
-// TODO: We currently can't diagnose because we don't implement reference_converts_from_temporary.
-// XFAIL: *
-
 #include <functional>
-#include <cassert>
 
-#include "test_macros.h"
+struct ReturnsValue {
+  int operator()() const;
+};
+
+struct ReturnsReference {
+  int& operator()() const;
+};
+
+struct ConvertsToValue {
+  operator int() const;
+};
+
+struct ReturnsConvertible {
+  ConvertsToValue operator()() const;
+};
 
 void f() {
-    auto func = []() -> int { return 0; };
-    std::invoke_r<int&&>(func); // expected-error {{Returning from invoke_r would bind a temporary object}}
+  std::invoke_r<int&&>(ReturnsValue{}); // expected-error@* {{Returning from invoke_r would bind a temporary object}}
+  std::invoke_r<const int&>(
+      ReturnsValue{}); // expected-error@* {{Returning from invoke_r would bind a temporary object}}
+  std::invoke_r<const long&>(
+      ReturnsReference{}); // expected-error@* {{Returning from invoke_r would bind a temporary object}}
+  std::invoke_r<const int&>(
+      ReturnsConvertible{}); // expected-error@* {{Returning from invoke_r would bind a temporary object}}
 }

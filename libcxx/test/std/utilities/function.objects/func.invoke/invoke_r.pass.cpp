@@ -126,6 +126,32 @@ constexpr bool test() {
         assert(result == 42);
     }
 
+    // Reference results may bind directly or use a conversion that returns a reference.
+    {
+        int value = 42;
+        auto lvalue = [&]() -> int& { return value; };
+        auto rvalue = [&]() -> int&& { return std::move(value); };
+        assert(&std::invoke_r<int&>(lvalue) == &value);
+        assert(&std::invoke_r<const int&>(lvalue) == &value);
+        int&& result = std::invoke_r<int&&>(rvalue);
+        assert(&result == &value);
+
+        struct ReferenceConversion {
+            int& value;
+            constexpr operator int&() const { return value; }
+        };
+        auto convertible = [&] { return ReferenceConversion{value}; };
+        assert(&std::invoke_r<int&>(convertible) == &value);
+        assert(&std::invoke_r<const int&>(convertible) == &value);
+    }
+
+    // A dangling-reference result violates a mandate, not an overload constraint.
+    {
+        auto by_value = [] { return 42; };
+        static_assert(std::is_invocable_r_v<const int&, decltype(by_value)>);
+        static_assert(can_invoke_r<const int&, decltype(by_value)>);
+    }
+
     // Note: We don't test that `std::invoke_r` works with all kinds of callable types here,
     //       since that is extensively tested in the `std::invoke` tests.
 
