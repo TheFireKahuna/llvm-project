@@ -102,6 +102,16 @@ Extensions
 LLD flags
 ---------
 
+* ``/manifest:embed,heap=segment``: Embed an executable application manifest
+  requesting the Windows segment heap. This requires resource ID 1 and rejects
+  conflicting manifest options, heap settings, and replacement application
+  resources, including with ``/force:multipleres``. Supply custom application
+  manifests through ``/manifestinput``; identical heap settings are coalesced.
+  Custom XML requires an LLD build with libxml2 so that the setting can be
+  validated by namespace and element location. The fixed default manifest does
+  not require libxml2. This option requests heap selection; Windows policy may
+  override the request, so applications requiring that heap must check at runtime.
+
 * ``/build-id``: Always generate GUID hash. When PDB is generated, LLD uses PDB
   content hash for GUID. Otherwise, LLD uses output binary content hash for GUID.
   LLD also provides ``__buildid`` symbol pointing to the 16 bytes GUID hash if

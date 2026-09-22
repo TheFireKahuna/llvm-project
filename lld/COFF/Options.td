@@ -131,7 +131,7 @@ def disallowlib : Joined<["/", "-", "/?", "-?"], "disallowlib:">,
 def manifest : F<"manifest">, HelpText<"Create .manifest file">;
 def manifest_colon : P<
     "manifest",
-    "NO disables manifest output; EMBED[,ID=#] embeds manifest as resource in the image">;
+    "NO disables manifest output; EMBED[,ID=#][,HEAP=SEGMENT] embeds manifest as resource in the image">;
 def manifestuac : P<"manifestuac", "User access control">;
 def manifestfile : P<"manifestfile", "Manifest output path, with /manifest">;
 def manifestdependency : P<

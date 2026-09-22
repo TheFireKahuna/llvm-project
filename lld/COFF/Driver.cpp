@@ -2147,11 +2147,32 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     config->manifestDependencies.insert(arg->getValue());
 
   // Handle /manifest and /manifest:
+  // A heap requirement must survive later /manifest options. Other manifest
+  // uses retain their existing last-option-wins behavior.
+  for (auto *arg : args.filtered(OPT_manifest_colon)) {
+    SmallVector<StringRef, 4> parts;
+    StringRef(arg->getValue()).split(parts, ',');
+    for (StringRef part : parts)
+      if (part.equals_insensitive("heap=segment"))
+        config->manifestSegmentHeap = true;
+  }
   if (auto *arg = args.getLastArg(OPT_manifest, OPT_manifest_colon)) {
     if (arg->getOption().getID() == OPT_manifest)
       config->manifest = Configuration::SideBySide;
     else
       parseManifest(arg->getValue());
+  }
+  if (config->manifestSegmentHeap) {
+    for (auto *arg : args.filtered(OPT_manifest, OPT_manifest_colon)) {
+      if (arg->getOption().getID() == OPT_manifest ||
+          !StringRef(arg->getValue()).starts_with_insensitive("embed"))
+        Fatal(ctx) << "segment heap requires /manifest:embed";
+      parseManifest(arg->getValue());
+      if (config->manifestID != 1)
+        Fatal(ctx) << "segment heap requires manifest resource ID 1";
+    }
+    if (config->dll)
+      Fatal(ctx) << "segment heap selection requires an executable";
   }
 
   // Handle /manifestuac

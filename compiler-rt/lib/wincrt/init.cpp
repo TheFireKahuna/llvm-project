@@ -18,6 +18,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "wincrt.h"
+#include "heap.h"
 
 #include <process.h>
 
@@ -100,6 +101,15 @@ void writeStderr(const char *Text, size_t Length) {
     WriteFile(Handle, Text, static_cast<DWORD>(Length), &Written, nullptr);
 }
 
+[[gnu::cold, gnu::noinline, noreturn]] void reportHeapMismatch() {
+  static constexpr char Message[] =
+      "wincrt: executable requires the Windows segment heap; "
+      "the process heap is not a segment heap\n";
+  OutputDebugStringA(Message);
+  writeStderr(Message, sizeof(Message) - 1);
+  _exit(255);
+}
+
 } // namespace
 
 bool initializeImage() {
@@ -115,6 +125,11 @@ void executableInit() {
   // which may call exit themselves.
   _register_thread_local_exe_atexit_callback(exitCallback);
   __wincrt_register_executable(runTerminators);
+
+  // Enforce EXE heap policy after installing exception and lifetime hooks,
+  // before running user initializers. DLL initialization has no such policy.
+  if (!isSegmentHeap(processHeap()))
+    reportHeapMismatch();
   if (!initializeImage())
     fatalError(RuntimeError::CrtNotInit);
 }

@@ -1,0 +1,77 @@
+# REQUIRES: libxml2
+# RUN: split-file %s %t
+# RUN: yaml2obj %p/Inputs/ret42.yaml -o %t/main.obj
+# RUN: lld-link /entry:main %t/main.obj /out:%t/a.exe /manifest:embed,heap=segment
+# RUN: FileCheck %s --check-prefix=XML < %t/a.exe
+# RUN: llvm-readobj --coff-resources %t/a.exe | FileCheck %s --check-prefix=RESOURCE
+# RUN: lld-link /entry:main %t/main.obj /out:%t/a.exe /manifest:embed,heap=segment /manifestinput:%t/same.xml /manifestinput:%t/same.xml
+# RUN: FileCheck %s --check-prefix=XML < %t/a.exe
+# RUN: env LLD_IN_TEST=1 not lld-link /entry:main %t/main.obj /out:%t/a.exe /manifest:embed,heap=segment /manifestinput:%t/conflict.xml 2>&1 | FileCheck %s --check-prefix=CONFLICT
+# RUN: lld-link /entry:main %t/main.obj /out:%t/a.exe /manifest:embed,heap=segment /manifestinput:%t/prefixed.xml
+# RUN: FileCheck %s --check-prefix=XML < %t/a.exe
+# RUN: env LLD_IN_TEST=1 not lld-link /entry:main %t/main.obj /out:%t/a.exe /manifest:embed,heap=segment /manifestinput:%t/dtd.xml 2>&1 | FileCheck %s --check-prefix=DTD
+# RUN: env LLD_IN_TEST=1 not lld-link /entry:main %t/main.obj /out:%t/a.exe /manifest:embed,heap=segment /manifestinput:%t/wrong-namespace.xml 2>&1 | FileCheck %s --check-prefix=NAMESPACE
+# RUN: env LLD_IN_TEST=1 not lld-link /entry:main %t/main.obj /out:%t/a.exe /manifest:embed,heap=segment /manifest:no 2>&1 | FileCheck %s --check-prefix=EMBED
+# RUN: env LLD_IN_TEST=1 not lld-link /entry:main %t/main.obj /out:%t/a.exe /manifest:no /manifest:embed,heap=segment 2>&1 | FileCheck %s --check-prefix=EMBED
+# RUN: env LLD_IN_TEST=1 not lld-link /entry:main %t/main.obj /out:%t/a.exe /manifest:embed,heap=segment /manifest 2>&1 | FileCheck %s --check-prefix=EMBED
+# RUN: env LLD_IN_TEST=1 not lld-link /entry:main %t/main.obj /out:%t/a.exe /manifest:embed,heap=segment /manifest:embed,id=2 2>&1 | FileCheck %s --check-prefix=ID
+# RUN: env LLD_IN_TEST=1 not lld-link /dll /noentry %t/main.obj /out:%t/a.dll /manifest:embed,id=1,heap=segment 2>&1 | FileCheck %s --check-prefix=DLL
+# RUN: env LLD_IN_TEST=1 not lld-link /entry:main %t/main.obj %p/Inputs/manifest-lang1.res /out:%t/a.exe /manifest:embed,heap=segment /force:multipleres 2>&1 | FileCheck %s --check-prefix=LANG
+# RUN: yaml2obj %p/Inputs/manifest-lang1.yaml -o %t/resource.obj
+# RUN: env LLD_IN_TEST=1 not lld-link /entry:main %t/main.obj %t/resource.obj /out:%t/a.exe /manifest:embed,heap=segment /lldmingw 2>&1 | FileCheck %s --check-prefix=LANG
+# RUN: llvm-lib /out:%t/resource.lib %t/resource.obj
+# RUN: env LLD_IN_TEST=1 not lld-link /entry:main %t/main.obj /wholearchive:%t/resource.lib /out:%t/a.exe /manifest:embed,heap=segment /lldmingw 2>&1 | FileCheck %s --check-prefix=LANG
+
+# XML: <heapType xmlns="http://schemas.microsoft.com/SMI/2020/WindowsSettings">SegmentHeap</heapType>
+# XML-NOT: <heapType
+# RESOURCE: Total Number of Resources: 1
+# RESOURCE: Type: MANIFEST (ID 24)
+# RESOURCE: Name: (ID 1)
+# CONFLICT: conflicting application heapType: expected SegmentHeap
+# NAMESPACE: invalid application heapType element or namespace
+# DTD: DTD is not supported with a required application heapType
+# EMBED: segment heap requires /manifest:embed
+# ID: segment heap requires manifest resource ID 1
+# DLL: segment heap selection requires an executable
+# LANG: multiple application manifest languages with segment heap
+
+#--- same.xml
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <heapType xmlns="http://schemas.microsoft.com/SMI/2020/WindowsSettings">SegmentHeap</heapType>
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </windowsSettings>
+  </application>
+</assembly>
+#--- conflict.xml
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <heapType xmlns="http://schemas.microsoft.com/SMI/2020/WindowsSettings">win32Compatible</heapType>
+    </windowsSettings>
+  </application>
+</assembly>
+#--- wrong-namespace.xml
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings><heapType>SegmentHeap</heapType></windowsSettings>
+  </application>
+</assembly>
+#--- prefixed.xml
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <a:application xmlns:a="urn:schemas-microsoft-com:asm.v3">
+    <a:windowsSettings>
+      <h:heapType xmlns:h="http://schemas.microsoft.com/SMI/2020/WindowsSettings">SegmentHeap</h:heapType>
+    </a:windowsSettings>
+  </a:application>
+</assembly>
+#--- dtd.xml
+<!DOCTYPE assembly [<!ENTITY heap "SegmentHeap">]>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <heapType xmlns="http://schemas.microsoft.com/SMI/2020/WindowsSettings">&heap;</heapType>
+    </windowsSettings>
+  </application>
+</assembly>

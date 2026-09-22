@@ -32,10 +32,13 @@ void WindowsManifestError::log(raw_ostream &OS) const { OS << Msg; }
 
 class WindowsManifestMerger::WindowsManifestMergerImpl {
 public:
+  explicit WindowsManifestMergerImpl(bool RejectDTD) : RejectDTD(RejectDTD) {}
   Error merge(MemoryBufferRef Manifest);
+  Error checkHeapType(StringRef Expected);
   std::unique_ptr<MemoryBuffer> getMergedManifest();
 
 private:
+  const bool RejectDTD;
   static void errorCallback(void *Ctx, const char *Format, ...);
   Error getParseError();
 #if LLVM_ENABLE_LIBXML2
@@ -73,7 +76,8 @@ static bool xmlStringsEqual(const unsigned char *A, const unsigned char *B) {
 static bool isMergeableElement(const unsigned char *ElementName) {
   for (StringRef S : {"application", "assembly", "assemblyIdentity",
                       "compatibility", "noInherit", "requestedExecutionLevel",
-                      "requestedPrivileges", "security", "trustInfo"}) {
+                      "requestedPrivileges", "security", "trustInfo",
+                      "windowsSettings"}) {
     if (S == FROM_XML_CHAR(ElementName)) {
       return true;
     }
@@ -82,9 +86,13 @@ static bool isMergeableElement(const unsigned char *ElementName) {
 }
 
 static xmlNodePtr getChildWithName(xmlNodePtr Parent,
-                                   const unsigned char *ElementName) {
+                                   const unsigned char *ElementName,
+                                   xmlNsPtr Namespace) {
   for (xmlNodePtr Child = Parent->children; Child; Child = Child->next) {
-    if (xmlStringsEqual(Child->name, ElementName)) {
+    if (xmlStringsEqual(Child->name, ElementName) &&
+        (StringRef(FROM_XML_CHAR(ElementName)) != "windowsSettings" ||
+         (Child->ns && Namespace &&
+          xmlStringsEqual(Child->ns->href, Namespace->href)))) {
       return Child;
     }
   }
@@ -515,7 +523,7 @@ static Error treeMerge(xmlNodePtr OriginalRoot, xmlNodePtr AdditionalRoot) {
     xmlNodePtr OriginalChildWithName;
     if (!isMergeableElement(Child->name) ||
         !(OriginalChildWithName =
-              getChildWithName(OriginalRoot, Child->name)) ||
+              getChildWithName(OriginalRoot, Child->name, Child->ns)) ||
         !hasRecognizedNamespace(Child)) {
       StoreNext.next = Child->next;
       xmlUnlinkNode(Child);
@@ -531,6 +539,68 @@ static Error treeMerge(xmlNodePtr OriginalRoot, xmlNodePtr AdditionalRoot) {
       return E;
     }
   }
+  return Error::success();
+}
+
+static bool isElement(xmlNodePtr Node, StringRef Name, StringRef Namespace) {
+  return Node && Node->type == XML_ELEMENT_NODE && Node->ns &&
+         Name == FROM_XML_CHAR(Node->name) &&
+         Namespace == FROM_XML_CHAR(Node->ns->href);
+}
+
+static Error checkHeapTypeNode(xmlNodePtr Node, StringRef Expected,
+                               xmlNodePtr &First) {
+  constexpr StringLiteral Assembly = "urn:schemas-microsoft-com:asm.v3";
+  for (xmlNodePtr Child = Node->children, Next; Child; Child = Next) {
+    Next = Child->next;
+    if (Child->type != XML_ELEMENT_NODE)
+      continue;
+    if (StringRef(FROM_XML_CHAR(Child->name)) != "heapType") {
+      if (auto E = checkHeapTypeNode(Child, Expected, First))
+        return E;
+      continue;
+    }
+    if (!isElement(Child, "heapType",
+                   "http://schemas.microsoft.com/SMI/2020/WindowsSettings") ||
+        !isElement(Node, "windowsSettings", Assembly) ||
+        !isElement(Node->parent, "application", Assembly) ||
+        Node->parent->parent != xmlDocGetRootElement(Node->doc) ||
+        Child->properties)
+      return make_error<WindowsManifestError>(
+          "invalid application heapType element or namespace");
+    // A leaf value only: accepting nested elements or entity references would
+    // let the validator and the Windows activation-context parser disagree.
+    if (!Child->children || Child->children->type != XML_TEXT_NODE ||
+        Child->children->next ||
+        StringRef(FROM_XML_CHAR(Child->children->content)).trim() != Expected)
+      return make_error<WindowsManifestError>(
+          Twine("conflicting application heapType: expected ") + Expected);
+    if (!First) {
+      First = Child;
+    } else {
+      xmlUnlinkNode(Child);
+      xmlFreeNode(Child);
+    }
+  }
+  return Error::success();
+}
+
+Error WindowsManifestMerger::WindowsManifestMergerImpl::checkHeapType(
+    StringRef Expected) {
+  if (Merged || !CombinedDoc)
+    return make_error<WindowsManifestError>("no mutable manifest to validate");
+  for (const auto &Doc : MergedDocs)
+    if (Doc->intSubset || Doc->extSubset)
+      return make_error<WindowsManifestError>(
+          "DTD is not supported with a required application heapType");
+  xmlNodePtr Root = xmlDocGetRootElement(CombinedDoc);
+  if (!isElement(Root, "assembly", "urn:schemas-microsoft-com:asm.v1"))
+    return make_error<WindowsManifestError>("invalid application assembly");
+  xmlNodePtr First = nullptr;
+  if (auto E = checkHeapTypeNode(Root, Expected, First))
+    return E;
+  if (!First)
+    return make_error<WindowsManifestError>("missing application heapType");
   return Error::success();
 }
 
@@ -626,7 +696,16 @@ Error WindowsManifestMerger::WindowsManifestMergerImpl::merge(
   xmlSetGenericErrorFunc(nullptr, nullptr);
   if (auto E = getParseError())
     return E;
+  if (!ManifestXML)
+    return make_error<WindowsManifestError>("invalid xml document");
+  // Reject before traversing or merging: entity references have a different
+  // libxml node layout and must not enter the ordinary element-tree walker.
+  if (RejectDTD && (ManifestXML->intSubset || ManifestXML->extSubset))
+    return make_error<WindowsManifestError>(
+        "DTD is not supported with a required application heapType");
   xmlNodePtr AdditionalRoot = xmlDocGetRootElement(ManifestXML.get());
+  if (!AdditionalRoot)
+    return make_error<WindowsManifestError>("missing manifest root element");
   stripComments(AdditionalRoot);
   setAttributeNamespaces(AdditionalRoot);
   if (CombinedDoc == nullptr) {
@@ -676,6 +755,11 @@ bool windows_manifest::isAvailable() { return true; }
 
 #else
 
+Error WindowsManifestMerger::WindowsManifestMergerImpl::checkHeapType(
+    StringRef Expected) {
+  return make_error<WindowsManifestError>("no libxml2");
+}
+
 Error WindowsManifestMerger::WindowsManifestMergerImpl::merge(
     MemoryBufferRef Manifest) {
   return make_error<WindowsManifestError>("no libxml2");
@@ -690,13 +774,17 @@ bool windows_manifest::isAvailable() { return false; }
 
 #endif
 
-WindowsManifestMerger::WindowsManifestMerger()
-    : Impl(std::make_unique<WindowsManifestMergerImpl>()) {}
+WindowsManifestMerger::WindowsManifestMerger(bool RejectDTD)
+    : Impl(std::make_unique<WindowsManifestMergerImpl>(RejectDTD)) {}
 
 WindowsManifestMerger::~WindowsManifestMerger() = default;
 
 Error WindowsManifestMerger::merge(MemoryBufferRef Manifest) {
   return Impl->merge(Manifest);
+}
+
+Error WindowsManifestMerger::checkHeapType(StringRef Expected) {
+  return Impl->checkHeapType(Expected);
 }
 
 std::unique_ptr<MemoryBuffer> WindowsManifestMerger::getMergedManifest() {

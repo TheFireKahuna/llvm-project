@@ -305,7 +305,7 @@ void LinkerDriver::parseDependentLoadFlags(llvm::opt::Arg *a) {
   Err(ctx) << "/dependentloadflag: no argument specified";
 }
 
-// Parses a string in the form of "EMBED[,=<integer>]|NO".
+// Parses a string in the form of "EMBED[,ID=<integer>][,HEAP=SEGMENT]|NO".
 // Results are directly written to
 // Config.
 void LinkerDriver::parseManifest(StringRef arg) {
@@ -313,17 +313,22 @@ void LinkerDriver::parseManifest(StringRef arg) {
     ctx.config.manifest = Configuration::No;
     return;
   }
-  if (!arg.starts_with_insensitive("embed"))
+  auto [kind, options] = arg.split(',');
+  if (!kind.equals_insensitive("embed"))
     Fatal(ctx) << "invalid option " << arg;
   ctx.config.manifest = Configuration::Embed;
-  arg = arg.substr(strlen("embed"));
-  if (arg.empty())
-    return;
-  if (!arg.starts_with_insensitive(",id="))
-    Fatal(ctx) << "invalid option " << arg;
-  arg = arg.substr(strlen(",id="));
-  if (arg.getAsInteger(0, ctx.config.manifestID))
-    Fatal(ctx) << "invalid option " << arg;
+  while (!options.empty()) {
+    auto [option, rest] = options.split(',');
+    if (option.consume_front_insensitive("id=")) {
+      if (option.getAsInteger(0, ctx.config.manifestID))
+        Fatal(ctx) << "invalid manifest resource ID: " << option;
+    } else if (option.equals_insensitive("heap=segment")) {
+      ctx.config.manifestSegmentHeap = true;
+    } else {
+      Fatal(ctx) << "invalid manifest option: " << option;
+    }
+    options = rest;
+  }
 }
 
 // Parses a string in the form of "level=<string>|uiAccess=<string>|NO".
@@ -477,6 +482,12 @@ std::string LinkerDriver::createDefaultXml() {
        << "    </dependentAssembly>\n"
        << "  </dependency>\n";
   }
+  if (ctx.config.manifestSegmentHeap)
+    os << "  <application xmlns=\"urn:schemas-microsoft-com:asm.v3\">\n"
+          "    <windowsSettings>\n"
+          "      <heapType xmlns=\"http://schemas.microsoft.com/SMI/2020/WindowsSettings\">SegmentHeap</heapType>\n"
+          "    </windowsSettings>\n"
+          "  </application>\n";
   os << "</assembly>\n";
   return ret;
 }
@@ -486,7 +497,8 @@ LinkerDriver::createManifestXmlWithInternalMt(StringRef defaultXml) {
   std::unique_ptr<MemoryBuffer> defaultXmlCopy =
       MemoryBuffer::getMemBufferCopy(defaultXml);
 
-  windows_manifest::WindowsManifestMerger merger;
+  windows_manifest::WindowsManifestMerger merger(
+      /*RejectDTD=*/ctx.config.manifestSegmentHeap);
   if (auto e = merger.merge(*defaultXmlCopy))
     Fatal(ctx) << "internal manifest tool failed on default xml: "
                << toString(std::move(e));
@@ -500,6 +512,9 @@ LinkerDriver::createManifestXmlWithInternalMt(StringRef defaultXml) {
                  << toString(std::move(e));
   }
 
+  if (ctx.config.manifestSegmentHeap)
+    if (auto e = merger.checkHeapType("SegmentHeap"))
+      Fatal(ctx) << toString(std::move(e));
   return std::string(merger.getMergedManifest()->getBuffer());
 }
 
@@ -542,6 +557,19 @@ LinkerDriver::createManifestXmlWithExternalMt(StringRef defaultXml) {
 
 std::string LinkerDriver::createManifestXml() {
   std::string defaultXml = createDefaultXml();
+  if (ctx.config.manifestSegmentHeap) {
+    if (windows_manifest::isAvailable())
+      return createManifestXmlWithInternalMt(defaultXml);
+    // The default XML also contains verbatim option values. Without an XML
+    // parser only the fixed template can establish the required heap setting.
+    if (!ctx.config.manifestInput.empty() ||
+        !ctx.config.manifestDependencies.empty() ||
+        ctx.config.manifestLevel != "'asInvoker'" ||
+        ctx.config.manifestUIAccess != "'false'")
+      Fatal(ctx) << "/manifest:embed,heap=segment with custom XML requires "
+                    "lld built with libxml2";
+    return defaultXml;
+  }
   if (ctx.config.manifestInput.empty())
     return defaultXml;
 
@@ -598,6 +626,8 @@ static void writeResEntryHeader(char *&buf, size_t manifestSize,
 // Create a resource file containing a manifest XML.
 std::unique_ptr<MemoryBuffer> LinkerDriver::createManifestRes() {
   std::string manifest = createManifestXml();
+  if (ctx.config.manifestSegmentHeap)
+    ctx.config.manifestContents = manifest;
 
   std::unique_ptr<WritableMemoryBuffer> res =
       createMemoryBufferForManifestRes(manifest.size());
@@ -743,6 +773,31 @@ MemoryBufferRef LinkerDriver::convertResToCOFF(ArrayRef<MemoryBufferRef> mbs,
 
     if (auto ec = parser.parse(rsf, f->getName(), duplicates))
       Fatal(ctx) << toString(std::move(ec));
+  }
+
+  if (ctx.config.manifestSegmentHeap) {
+    // Inspect the resource tree before MinGW duplicate cleanup or /force can
+    // select a different application manifest. Prebuilt manifests must be
+    // supplied as XML through /manifestinput so they participate in merging.
+    const auto &types = parser.getTree().getIDChildren();
+    auto type = types.find(RT_MANIFEST);
+    if (type == types.end())
+      Fatal(ctx) << "missing segment heap application manifest";
+    const auto &names = type->second->getIDChildren();
+    auto name = names.find(1);
+    if (name == names.end() || !duplicates.empty())
+      Fatal(ctx) << "conflicting application resources with segment heap; "
+                    "use /manifestinput for application manifests";
+    const auto &languages = name->second->getIDChildren();
+    if (languages.size() != 1 ||
+        !name->second->getStringChildren().empty())
+      Fatal(ctx) << "multiple application manifest languages with segment heap";
+    const auto &data = parser.getData()[
+        languages.begin()->second->getDataIndex()];
+    StringRef xml(reinterpret_cast<const char *>(data.data()), data.size());
+    if (xml != ctx.config.manifestContents)
+      Fatal(ctx) << "application resource overrides segment heap manifest; "
+                    "use /manifestinput";
   }
 
   if (ctx.config.mingw)

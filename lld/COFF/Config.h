@@ -225,6 +225,8 @@ struct Configuration {
   // Options for manifest files.
   ManifestKind manifest = Default;
   int manifestID = 1;
+  bool manifestSegmentHeap = false;
+  std::string manifestContents;
   llvm::SetVector<StringRef> manifestDependencies;
   bool manifestUAC = true;
   std::vector<std::string> manifestInput;

@@ -155,6 +155,9 @@ void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   bool isDLL = Args.hasArg(options::OPT__SLASH_LD, options::OPT__SLASH_LDd,
                          options::OPT_shared);
   if (!isDLL) {
+    // This also applies to custom-startup and -nostdlib executables. lld checks
+    // the final manifest against conflicting options and input resources.
+    CmdArgs.push_back("-manifest:embed,heap=segment");
     Arg *SubsysArg =
         Args.getLastArg(options::OPT_mwindows, options::OPT_mconsole);
     if (SubsysArg && SubsysArg->getOption().matches(options::OPT_mwindows))

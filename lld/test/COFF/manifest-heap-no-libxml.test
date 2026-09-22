@@ -1,0 +1,7 @@
+# UNSUPPORTED: libxml2
+# RUN: yaml2obj %p/Inputs/ret42.yaml -o %t.obj
+# RUN: lld-link /entry:main %t.obj /out:%t.exe /manifest:embed,heap=segment
+# RUN: FileCheck %s --check-prefix=XML < %t.exe
+# RUN: env LLD_IN_TEST=1 not lld-link /entry:main %t.obj /out:%t.exe /manifest:embed,heap=segment /manifestinput:%p/Inputs/manifestinput.test 2>&1 | FileCheck %s
+# CHECK: /manifest:embed,heap=segment with custom XML requires lld built with libxml2
+# XML: <heapType xmlns="http://schemas.microsoft.com/SMI/2020/WindowsSettings">SegmentHeap</heapType>

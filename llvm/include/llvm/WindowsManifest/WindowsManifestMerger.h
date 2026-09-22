@@ -32,6 +32,7 @@ namespace llvm {
 
 class MemoryBuffer;
 class MemoryBufferRef;
+class StringRef;
 
 namespace windows_manifest {
 
@@ -50,9 +51,14 @@ private:
 
 class WindowsManifestMerger {
 public:
-  LLVM_ABI WindowsManifestMerger();
+  LLVM_ABI explicit WindowsManifestMerger(bool RejectDTD = false);
   LLVM_ABI ~WindowsManifestMerger();
   LLVM_ABI Error merge(MemoryBufferRef Manifest);
+
+  // Require a single, namespace-qualified application heapType. Equal settings
+  // are coalesced; conflicting or malformed settings are errors. Call before
+  // getMergedManifest().
+  LLVM_ABI Error checkHeapType(StringRef Expected);
 
   // Returns vector containing merged xml manifest, or uninitialized vector for
   // empty manifest.
