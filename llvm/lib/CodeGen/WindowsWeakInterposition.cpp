@@ -35,9 +35,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/CodeGen/Passes.h"
-#include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
-#include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/MDBuilder.h"
@@ -50,17 +48,11 @@ using namespace llvm;
 
 #define DEBUG_TYPE "windows-weak-interposition"
 
+// The linker bounds the records with __wkintp_start and __wkintp_end. The name
+// fits in a PE section header without a string table.
+static constexpr char RecordSection[] = ".wkintp";
+
 namespace {
-
-// The linker bounds the run with __wkintp_start and __wkintp_end, which is how
-// start-up finds it without a symbol per record. Eight characters, which is
-// what a PE section header holds without a string table.
-constexpr char RecordSection[] = ".wkintp";
-
-// What __builtin_expect gives a branch nothing else knows the shape of.
-constexpr uint32_t LikelyWeight = 2000;
-constexpr uint32_t UnlikelyWeight = 1;
-
 class WindowsWeakInterposition : public ModulePass {
 public:
   static char ID;
@@ -72,17 +64,7 @@ public:
   }
 
   bool runOnModule(Module &M) override;
-
-private:
-  // The record a linker and the C runtime read. The layout is fixed.
-  StructType *getRecordType(Module &M);
-  // Returns the record for F, creating it, or null when F cannot forward.
-  GlobalVariable *createRecord(Module &M, Function &F);
-  void addForwardingEntry(Function &F, GlobalVariable *Record);
-
-  StructType *RecordTy = nullptr;
 };
-
 } // namespace
 
 char WindowsWeakInterposition::ID = 0;
@@ -94,41 +76,24 @@ ModulePass *llvm::createWindowsWeakInterpositionPass() {
   return new WindowsWeakInterposition();
 }
 
-StructType *WindowsWeakInterposition::getRecordType(Module &M) {
-  if (!RecordTy) {
-    Type *Int64 = Type::getInt64Ty(M.getContext());
-    PointerType *Ptr = PointerType::getUnqual(M.getContext());
-    RecordTy = StructType::create({Int64, Int64, Ptr, Ptr},
-                                  "windows.interposition.record");
-  }
-  return RecordTy;
-}
-
-GlobalVariable *WindowsWeakInterposition::createRecord(Module &M, Function &F) {
-  // The forwarding entry passes the arguments on unchanged, which a variadic
-  // function cannot do, and a naked function has no entry to add one to.
-  if (F.isVarArg() || F.hasFnAttribute(Attribute::Naked))
-    return nullptr;
-
-  StructType *Ty = getRecordType(M);
+/// Create the record start-up reads for \p F: { i64 hash.low, i64 hash.high,
+/// ptr target, ptr self }. The layout is fixed by the C runtime.
+static GlobalVariable *createRecord(Function &F) {
+  Module &M = *F.getParent();
+  LLVMContext &Ctx = M.getContext();
+  Type *Int64Ty = Type::getInt64Ty(Ctx);
+  PointerType *PtrTy = PointerType::getUnqual(Ctx);
   XXH128_hash_t Hash = xxh3_128bits(arrayRefFromStringRef(F.getName()));
-  Type *Int64 = Type::getInt64Ty(M.getContext());
-  Constant *Init = ConstantStruct::get(
-      Ty, {ConstantInt::get(Int64, Hash.low64),
-           ConstantInt::get(Int64, Hash.high64),
-           ConstantPointerNull::get(PointerType::getUnqual(M.getContext())),
-           &F});
+  Constant *Init = ConstantStruct::getAnon(
+      {ConstantInt::get(Int64Ty, Hash.low64),
+       ConstantInt::get(Int64Ty, Hash.high64),
+       ConstantPointerNull::get(PtrTy), &F});
 
-  // Constant so that the record lands in read-only memory: start-up opens the
-  // page for the one store and closes it again, which is the standing an
-  // import address has. Every read of the pointer is volatile, so none of them
-  // is folded into the null the initializer holds.
-  //
-  // Private, because the forwarding entry is the only thing that names it and
-  // start-up reaches it by walking the section. An external symbol here would
-  // collide when two objects define the same weak function, and would also be
-  // picked as the name that makes their weak defaults unique.
-  auto *Record = new GlobalVariable(M, Ty, /*isConstant=*/true,
+  // Constant, so the record is read-only in the image; start-up opens the page
+  // for its one store. Private, because start-up finds it by walking the
+  // section, and an external name would collide between objects that define
+  // the same weak function.
+  auto *Record = new GlobalVariable(M, Init->getType(), /*isConstant=*/true,
                                     GlobalValue::PrivateLinkage, Init,
                                     "__interpose." + F.getName());
   Record->setSection(RecordSection);
@@ -136,41 +101,29 @@ GlobalVariable *WindowsWeakInterposition::createRecord(Module &M, Function &F) {
   return Record;
 }
 
-void WindowsWeakInterposition::addForwardingEntry(Function &F,
-                                                  GlobalVariable *Record) {
-  LLVMContext &Context = F.getContext();
-  BasicBlock &Original = F.getEntryBlock();
-  BasicBlock *Entry = BasicBlock::Create(Context, "interpose.entry", &F,
-                                         &Original);
-  BasicBlock *Forward = BasicBlock::Create(Context, "interpose.forward", &F,
-                                           &Original);
+/// Prepend an entry to \p F that tail calls the target in \p Record when
+/// start-up has filled it in.
+static void addForwardingEntry(Function &F, GlobalVariable *Record) {
+  LLVMContext &Ctx = F.getContext();
+  BasicBlock *Body = &F.getEntryBlock();
+  BasicBlock *Entry = BasicBlock::Create(Ctx, "interpose.entry", &F, Body);
+  BasicBlock *Forward = BasicBlock::Create(Ctx, "interpose.forward", &F, Body);
 
-  PointerType *Ptr = PointerType::getUnqual(Context);
   IRBuilder<> Builder(Entry);
-  // Volatile: start-up writes this from outside anything the optimizer can
-  // see, and the initializer says null.
+  // Volatile: start-up writes the slot, but the initializer says null.
   Value *Slot = Builder.CreateStructGEP(Record->getValueType(), Record, 2);
-  LoadInst *Target = Builder.CreateLoad(Ptr, Slot, /*isVolatile=*/true);
-  Target->setAlignment(Align(8));
-  // An image whose program replaced nothing runs this on every call, so the
-  // body is the edge that falls through and the forward is laid out away from
-  // it. Nothing here can know the answer, so it has to be said.
-  BranchInst *Branch =
-      Builder.CreateCondBr(Builder.CreateIsNull(Target), &Original, Forward);
-  Branch->setMetadata(LLVMContext::MD_prof,
-                      MDBuilder(Context).createBranchWeights(LikelyWeight,
-                                                             UnlikelyWeight));
+  LoadInst *Target = Builder.CreateAlignedLoad(
+      Builder.getPtrTy(), Slot, Align(8), /*isVolatile=*/true);
+  // Most images replace nothing, so keep the body on the fall-through path.
+  Builder.CreateCondBr(Builder.CreateIsNull(Target), Body, Forward,
+                       MDBuilder(Ctx).createLikelyBranchWeights());
 
   Builder.SetInsertPoint(Forward);
-  SmallVector<Value *, 8> Args;
-  for (Argument &Arg : F.args())
-    Args.push_back(&Arg);
+  SmallVector<Value *, 8> Args(make_pointer_range(F.args()));
   CallInst *Call = Builder.CreateCall(F.getFunctionType(), Target, Args);
   Call->setCallingConv(F.getCallingConv());
   Call->setAttributes(F.getAttributes());
-  // A tail call keeps a body that needed no frame from growing one: the
-  // arguments and the signature are the ones this function was entered with.
-  Call->setTailCallKind(CallInst::TCK_Tail);
+  Call->setTailCall();
   if (F.getReturnType()->isVoidTy())
     Builder.CreateRetVoid();
   else
@@ -180,12 +133,16 @@ void WindowsWeakInterposition::addForwardingEntry(Function &F,
 bool WindowsWeakInterposition::runOnModule(Module &M) {
   bool Changed = false;
   for (Function &F : M) {
-    if (F.isDeclaration() || !F.hasWeakAnyLinkage())
+    // Forwarding passes the arguments on unchanged, which a variadic function
+    // or one with in-memory argument blocks cannot do, and a naked function has
+    // no entry to add to.
+    if (F.isDeclaration() || !F.hasWeakAnyLinkage() || F.isVarArg() ||
+        F.hasFnAttribute(Attribute::Naked) ||
+        F.getAttributes().hasAttrSomewhere(Attribute::InAlloca) ||
+        F.getAttributes().hasAttrSomewhere(Attribute::Preallocated))
       continue;
-    if (GlobalVariable *Record = createRecord(M, F)) {
-      addForwardingEntry(F, Record);
-      Changed = true;
-    }
+    addForwardingEntry(F, createRecord(F));
+    Changed = true;
   }
   return Changed;
 }

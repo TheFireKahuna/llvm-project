@@ -311,8 +311,6 @@ static Function *doPromotion(
       auto *NewCall =
           CallInst::Create(NF, Args, OpBundles, "", CB.getIterator());
       NewCall->setTailCallKind(cast<CallInst>(&CB)->getTailCallKind());
-      if (Output && NewCall->isTailCall())
-        NewCall->setTailCallKind(CallInst::TCK_None);
       NewCS = NewCall;
     }
     NewCS->setCallingConv(CB.getCallingConv());
@@ -378,7 +376,6 @@ static Function *doPromotion(
   for (Argument &Arg : F->args()) {
     if (Output && &Arg == Output->Arg) {
       assert(Arg.use_empty() && "Output argument still used");
-      Arg.replaceAllUsesWith(PoisonValue::get(Arg.getType()));
       continue;
     }
     if (!ArgsToPromote.count(&Arg)) {

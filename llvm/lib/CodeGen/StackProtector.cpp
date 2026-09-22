@@ -34,6 +34,7 @@
 #include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
@@ -609,6 +610,29 @@ static bool CreatePrologue(Function *F, Module *M, Instruction *CheckLoc,
   return SupportsSelectionDAGSP;
 }
 
+// Returns true if F has stack objects and each is a static alloca addressed
+// only outside Entry and Early.
+static bool stackObjectsAvoid(Function &F, const BasicBlock *Entry,
+                              const BasicBlock *Early) {
+  bool HasStackObjects = false;
+  for (Instruction &I : instructions(F)) {
+    auto *AI = dyn_cast<AllocaInst>(&I);
+    if (!AI)
+      continue;
+    if (!AI->isStaticAlloca())
+      return false;
+    // Once an address is formed in the protected region, every path to a use
+    // has initialized the guard and cannot reach the early return.
+    for (const User *U : AI->users()) {
+      auto *UI = dyn_cast<Instruction>(U);
+      if (!UI || UI->getParent() == Entry || UI->getParent() == Early)
+        return false;
+    }
+    HasStackObjects = true;
+  }
+  return HasStackObjects;
+}
+
 // Avoid guard traffic on an early exit when only the other entry successor uses
 // stack objects. Both successors must have a single predecessor: the guard must
 // not be reinitialized by a backedge, nor may protected code reach the
@@ -617,24 +641,23 @@ static BasicBlock *
 findStackProtectorPrologue(Function &F, const BasicBlock *&UnprotectedReturn) {
   BasicBlock &Entry = F.getEntryBlock();
   auto *BI = dyn_cast<CondBrInst>(Entry.getTerminator());
-  if (F.hasFnAttribute(Attribute::StackProtectReq) || F.hasOptNone() ||
-      F.hasPersonalityFn() || !BI)
+  if (!BI || F.hasFnAttribute(Attribute::StackProtectReq) || F.hasOptNone() ||
+      F.hasPersonalityFn())
     return &Entry;
 
-  // ABI-created stack copies are not represented by the allocas checked below.
+  // ABI-created stack copies are not represented by allocas.
   if (any_of(F.args(), [](const Argument &A) {
         return A.hasPassPointeeByValueCopyAttr();
       }))
     return &Entry;
 
-  for (Instruction &I : Entry) {
-    if (isa<AllocaInst>(I) || isa<DbgInfoIntrinsic>(I))
-      continue;
-    // Loads of incoming state may select the path, but no call or side effect
-    // may precede initialization of the guard.
-    if (I.mayHaveSideEffects() || isa<CallBase>(I))
-      return &Entry;
-  }
+  // Loads of incoming state may select the path, but no call or side effect
+  // may precede initialization of the guard.
+  if (any_of(Entry, [](const Instruction &I) {
+        return !isa<AllocaInst>(I) &&
+               (I.mayHaveSideEffects() || isa<CallBase>(I));
+      }))
+    return &Entry;
 
   for (unsigned N = 0; N != 2; ++N) {
     BasicBlock *Early = BI->getSuccessor(N);
@@ -652,35 +675,7 @@ findStackProtectorPrologue(Function &F, const BasicBlock *&UnprotectedReturn) {
         }))
       continue;
 
-    bool UsesStack = false;
-    bool Safe = true;
-    for (BasicBlock &BB : F) {
-      for (Instruction &I : BB) {
-        auto *AI = dyn_cast<AllocaInst>(&I);
-        if (!AI)
-          continue;
-        UsesStack = true;
-        if (!AI->isStaticAlloca()) {
-          Safe = false;
-          break;
-        }
-        // Reject even address formation outside the protected region. Once an
-        // address is formed there, every path to a use has initialized the
-        // guard and cannot reach the early return.
-        for (const User *U : AI->users()) {
-          auto *Use = dyn_cast<Instruction>(U);
-          if (!Use || Use->getParent() == &Entry || Use->getParent() == Early) {
-            Safe = false;
-            break;
-          }
-        }
-        if (!Safe)
-          break;
-      }
-      if (!Safe)
-        break;
-    }
-    if (Safe && UsesStack) {
+    if (stackObjectsAvoid(F, &Entry, Early)) {
       UnprotectedReturn = Early;
       return Protected;
     }

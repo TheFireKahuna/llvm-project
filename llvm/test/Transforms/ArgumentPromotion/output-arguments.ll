@@ -23,7 +23,7 @@ define internal void @computed(ptr %out, i32 %x) noinline {
 define void @call_computed(ptr %out, i32 %x) {
 ; CHECK-LABEL: define {{[^@]+}}@call_computed
 ; CHECK-SAME: (ptr [[OUT:%.*]], i32 [[X:%.*]]) {
-; CHECK-NEXT:    [[TMP1:%.*]] = call i32 @computed(i32 [[X]])
+; CHECK-NEXT:    [[TMP1:%.*]] = tail call i32 @computed(i32 [[X]])
 ; CHECK-NEXT:    store i32 [[TMP1]], ptr [[OUT]], align 1
 ; CHECK-NEXT:    ret void
 ;

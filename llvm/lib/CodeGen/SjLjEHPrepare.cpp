@@ -497,12 +497,9 @@ bool SjLjEHPrepareImpl::setupEntryBlockAndCallSites(Function &F) {
 }
 
 bool SjLjEHPrepareImpl::runOnFunction(Function &F) {
-  // The exception model is a module-wide choice, but personalities are
-  // per-function: a function using SEH __try carries an MSVC personality and
-  // funclet-based EH (catchswitch/catchpad) regardless of the model. Such
-  // functions have no landing pads for this pass to lower; WinEHPrepare and
-  // the target's Win32 EH state pass handle them. Match the gate WinEHPrepare
-  // applies in the other direction.
+  // A function with a scoped EH personality, such as one using SEH __try,
+  // uses funclets whatever the module's exception model; WinEHPrepare handles
+  // it.
   if (F.hasPersonalityFn() &&
       isScopedEHPersonality(classifyEHPersonality(F.getPersonalityFn())))
     return false;
