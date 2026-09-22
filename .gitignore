@@ -99,3 +99,4 @@ utils/parallels/prlctl-windows-vm.sh
 *.diag
 *.lldb
 /utils/parallels
+/docs/WindowsItanium
