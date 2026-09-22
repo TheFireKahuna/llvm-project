@@ -4687,6 +4687,10 @@ public:
   void EmitPointerAuthCopy(PointerAuthQualifier Qualifier, QualType Type,
                            Address DestField, Address SrcField);
 
+  /// Relocate a range, re-signing address-discriminated pointer fields.
+  void EmitPointerAuthRelocation(QualType Type, Address Dest, Address Src,
+                                 llvm::Value *Count);
+
   std::pair<llvm::Value *, CGPointerAuthInfo>
   EmitOrigPointerRValue(const Expr *E);
 

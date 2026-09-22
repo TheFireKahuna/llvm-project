@@ -10,6 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "clang/AST/Attr.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/TemplateBase.h"
 #include "clang/AST/Type.h"
@@ -287,6 +288,69 @@ bool Sema::IsCXXTriviallyRelocatableType(QualType Type) {
   return false;
 }
 
+bool Sema::IsRelocatableType(QualType T, bool AllowPointerAuth) {
+  if (!T->isObjectType() || T->isIncompleteType() || T.isVolatileQualified() ||
+      !T.isBitwiseCloneableType(Context,
+                                /*IgnorePointerAuth=*/AllowPointerAuth))
+    return false;
+
+  if (const auto *AT = Context.getAsConstantArrayType(T))
+    return IsRelocatableType(AT->getElementType(), AllowPointerAuth);
+  if (T->isScalarType() || T->isVectorType())
+    return true;
+
+  const auto *RD = T->getAsCXXRecordDecl();
+  if (!RD || RD->isInvalidDecl() || RD->isPolymorphic() || RD->getNumVBases() ||
+      RD->hasDeletedDestructor() || getLangOpts().PointerFieldProtectionTagged)
+    return false;
+
+  // A union does not identify which member's signing schema is active.
+  // An outer relocation permission cannot supply that missing information.
+  if (RD->isUnion() && Context.containsAddressDiscriminatedPointerAuth(T))
+    return false;
+
+  // Moving a const subobject can select a copy, even when its mutable type has
+  // a relocation permission. Do not infer transfer semantics for that copy.
+  if (T.isConstQualified() && !T.isTriviallyCopyableType(Context))
+    return false;
+
+  for (const CXXBaseSpecifier &Base : RD->bases())
+    if (!IsRelocatableType(Base.getType(), AllowPointerAuth))
+      return false;
+  for (const FieldDecl *Field : RD->fields())
+    if (!Field->getType()->isReferenceType() &&
+        !IsRelocatableType(Field->getType(), AllowPointerAuth))
+      return false;
+
+  // A false condition is an opt-out, including when another declaration of
+  // the same class supplies a permission. Do not depend on attribute order.
+  bool HasPermission = false;
+  for (const auto *A : RD->specific_attrs<TriviallyRelocatableAttr>()) {
+    HasPermission = true;
+    if (A->getCond()->isValueDependent() ||
+        A->getCond()->EvaluateKnownConstInt(Context) == 0)
+      return false;
+  }
+  if (HasPermission)
+    return true;
+
+  // A union's active member is unknown. Only its trivial representation may
+  // be inferred; nontrivial union transfer requires an explicit permission.
+  if (RD->isUnion() && !T.isTriviallyCopyableType(Context))
+    return false;
+
+  // Assignment is irrelevant to constructing in uninitialized storage. Resolve
+  // the actual constructor instead of accepting any trivial copy constructor
+  // when overload resolution would select a user-provided move.
+  LookupConstructors(const_cast<CXXRecordDecl *>(RD));
+  const CXXMethodDecl *Ctor =
+      LookupSpecialMemberFromXValue(*this, RD, /*Assign=*/false);
+  const CXXDestructorDecl *Dtor =
+      LookupDestructor(const_cast<CXXRecordDecl *>(RD));
+  return Ctor && !Ctor->isDeleted() && !Ctor->isUserProvided() &&
+         (!Dtor || (!Dtor->isDeleted() && !Dtor->isUserProvided()));
+}
+
 /// Checks that type T is not a VLA.
 ///
 /// @returns @c true if @p T is VLA and a diagnostic was emitted,
@@ -440,6 +504,7 @@ static bool CheckUnaryTypeTraitTypeCompleteness(Sema &S, TypeTrait UTT,
   case UTT_IsTriviallyEqualityComparable:
   case UTT_IsCppTriviallyRelocatable:
   case UTT_CanPassInRegs:
+  case UTT_IsBitwiseRelocatable:
   // Per the GCC type traits documentation, T shall be a complete type, cv void,
   // or an array of unknown bound. But GCC actually imposes the same constraints
   // as above.
@@ -1057,6 +1122,8 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
     return T.isBitwiseCloneableType(C);
   case UTT_IsCppTriviallyRelocatable:
     return Self.IsCXXTriviallyRelocatableType(T);
+  case UTT_IsBitwiseRelocatable:
+    return Self.IsRelocatableType(T, /*AllowPointerAuth=*/false);
   case UTT_CanPassInRegs:
     if (CXXRecordDecl *RD = T->getAsCXXRecordDecl(); RD && !T.hasQualifiers())
       return RD->canPassInRegisters();

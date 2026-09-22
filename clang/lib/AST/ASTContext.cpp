@@ -1680,7 +1680,7 @@ ASTContext::PointerAuthContent
 ASTContext::findPointerAuthContent(QualType T) const {
   assert(isPointerAuthenticationAvailable());
 
-  T = T.getCanonicalType();
+  T = getBaseElementType(T).getCanonicalType();
   if (T->isDependentType())
     return PointerAuthContent::None;
 

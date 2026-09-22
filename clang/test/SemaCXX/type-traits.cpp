@@ -4476,10 +4476,15 @@ union D {
   int x;
 };
 
-static_assert(__can_pass_in_regs(A));
+struct Large {
+  int data[1024];
+};
+
 static_assert(__can_pass_in_regs(A));
 static_assert(!__can_pass_in_regs(B));
 static_assert(__can_pass_in_regs(D));
+// The trait checks C++ ABI eligibility, not the target's argument size limits.
+static_assert(__can_pass_in_regs(Large));
 
 void test_errors() {
   (void)__can_pass_in_regs(const A); // expected-error {{not an unqualified class type}}

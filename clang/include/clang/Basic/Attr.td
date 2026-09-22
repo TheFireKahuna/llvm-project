@@ -2145,6 +2145,16 @@ public:
 }];
 }
 
+def TriviallyRelocatable : InheritableAttr {
+  let Spellings = [Clang<"trivially_relocatable", 0>];
+  let Subjects = SubjectList<[CXXRecord], ErrorDiag>;
+  let Args = [ExprArgument<"Cond">];
+  let TemplateDependent = 1;
+  let InheritEvenIfAlreadyPresent = 1;
+  let Documentation = [TriviallyRelocatableDocs];
+  let LangOpts = [CPlusPlus];
+}
+
 def TrivialABI : InheritableAttr {
   // This attribute does not have a C [[]] spelling because it requires the
   // CPlusPlus language option.

@@ -878,6 +878,16 @@ void Sema::InstantiateAttrs(const MultiLevelTemplateArgumentList &TemplateArgs,
       continue;
     }
 
+    if (const auto *Relocatable =
+            dyn_cast<TriviallyRelocatableAttr>(TmplAttr)) {
+      EnterExpressionEvaluationContext ConstantContext(
+          *this, Sema::ExpressionEvaluationContext::ConstantEvaluated);
+      ExprResult Cond = SubstExpr(Relocatable->getCond(), TemplateArgs);
+      if (!Cond.isInvalid())
+        AddTriviallyRelocatableAttr(New, *Relocatable, Cond.get());
+      continue;
+    }
+
     if (const auto *AssumeAligned = dyn_cast<AssumeAlignedAttr>(TmplAttr)) {
       instantiateDependentAssumeAlignedAttr(*this, TemplateArgs, AssumeAligned, New);
       continue;

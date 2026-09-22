@@ -14,6 +14,7 @@
 #include "CGCXXABI.h"
 #include "CodeGenFunction.h"
 #include "CodeGenModule.h"
+#include "clang/AST/RecordLayout.h"
 #include "clang/CodeGen/CodeGenABITypes.h"
 #include "clang/CodeGen/ConstantInitBuilder.h"
 #include "llvm/Analysis/ValueTracking.h"
@@ -433,6 +434,177 @@ void CodeGenFunction::EmitPointerAuthCopy(PointerAuthQualifier Qual, QualType T,
   }
 
   Builder.CreateStore(Value, DestAddress);
+}
+
+namespace {
+
+// Keep authenticated pointers out of the byte copies: each is loaded,
+// re-signed, and stored exactly once. Arrays remain loops rather than expanding
+// the plan for every element. Traversing both the objects and their fields in
+// address order (or reverse address order) preserves unread sources when ranges
+// overlap.
+class PointerAuthRelocationEmitter {
+  CodeGenFunction &CGF;
+  QualType Type;
+  struct Field {
+    CharUnits Offset;
+    QualType Type;
+  };
+  SmallVector<Field, 4> Fields;
+
+  void collectFields(QualType T, CharUnits Offset) {
+    ASTContext &Ctx = CGF.getContext();
+    if (!Ctx.containsAddressDiscriminatedPointerAuth(T))
+      return;
+    if (const auto *AT = Ctx.getAsConstantArrayType(T);
+        AT && AT->getSize().isZero())
+      return;
+    if (T->isArrayType() || T.hasAddressDiscriminatedPointerAuth()) {
+      Fields.push_back({Offset, T});
+      return;
+    }
+    const auto *RD = T->getAsCXXRecordDecl();
+    assert(RD && !RD->isUnion() && !RD->isPolymorphic() && !RD->getNumVBases());
+    const ASTRecordLayout &Layout = Ctx.getASTRecordLayout(RD);
+    for (const CXXBaseSpecifier &Base : RD->bases())
+      collectFields(Base.getType(),
+                    Offset + Layout.getBaseClassOffset(
+                                 Base.getType()->getAsCXXRecordDecl()));
+    for (const FieldDecl *FD : RD->fields())
+      collectFields(FD->getType(),
+                    Offset + Ctx.toCharUnitsFromBits(
+                                 Layout.getFieldOffset(FD->getFieldIndex())));
+  }
+
+  Address atOffset(Address Base, CharUnits Offset, QualType T) {
+    return CGF.Builder
+        .CreateConstByteGEP(Base.withElementType(CGF.Int8Ty), Offset)
+        .withElementType(CGF.ConvertTypeForMem(T));
+  }
+
+  void emitObject(Address Dest, Address Src, bool Reverse) {
+    CharUnits Cursor =
+        Reverse ? CGF.getContext().getTypeSizeInChars(Type) : CharUnits::Zero();
+    auto CopyBytes = [&](CharUnits Begin, CharUnits End) {
+      assert(Begin <= End && "overlapping pointer authentication fields");
+      if (Begin == End)
+        return;
+      auto D = CGF.Builder.CreateConstByteGEP(Dest.withElementType(CGF.Int8Ty),
+                                              Begin);
+      auto S = CGF.Builder.CreateConstByteGEP(Src.withElementType(CGF.Int8Ty),
+                                              Begin);
+      CGF.Builder.CreateMemMove(
+          D, S, CGF.Builder.getSize((End - Begin).getQuantity()), false);
+    };
+    auto EmitField = [&](const Field &F) {
+      CharUnits End = F.Offset + CGF.getContext().getTypeSizeInChars(F.Type);
+      if (Reverse)
+        CopyBytes(End, Cursor);
+      else
+        CopyBytes(Cursor, F.Offset);
+      Address D = atOffset(Dest, F.Offset, F.Type);
+      Address S = atOffset(Src, F.Offset, F.Type);
+      if (const auto *AT = CGF.getContext().getAsConstantArrayType(F.Type)) {
+        QualType Element = AT->getElementType();
+        PointerAuthRelocationEmitter(CGF, Element)
+            .emitRange(D, S, CGF.Builder.getSize(AT->getSize().getZExtValue()),
+                       Reverse);
+      } else {
+        CGF.EmitPointerAuthCopy(F.Type.getPointerAuth().withoutKeyNone(),
+                                F.Type, D, S);
+      }
+      Cursor = Reverse ? F.Offset : End;
+    };
+    if (Reverse) {
+      for (const Field &F : llvm::reverse(Fields))
+        EmitField(F);
+      CopyBytes(CharUnits::Zero(), Cursor);
+    } else {
+      for (const Field &F : Fields)
+        EmitField(F);
+      CopyBytes(Cursor, CGF.getContext().getTypeSizeInChars(Type));
+    }
+  }
+
+public:
+  PointerAuthRelocationEmitter(CodeGenFunction &CGF, QualType T)
+      : CGF(CGF), Type(T) {
+    collectFields(T, CharUnits::Zero());
+    llvm::sort(Fields, [](const Field &L, const Field &R) {
+      return L.Offset < R.Offset;
+    });
+  }
+
+  bool isSinglePointer() const {
+    return Fields.size() == 1 && !Fields.front().Type->isArrayType() &&
+           Fields.front().Offset.isZero() &&
+           CGF.getContext().getTypeSizeInChars(Fields.front().Type) ==
+               CGF.getContext().getTypeSizeInChars(Type);
+  }
+
+  // Count must be nonzero unless it is a constant (e.g. a zero-length member
+  // array). The caller shares the dynamic zero check between both directions.
+  void emitRange(Address Dest, Address Src, llvm::Value *Count, bool Reverse) {
+    if (auto *C = dyn_cast<llvm::ConstantInt>(Count)) {
+      if (C->isZero())
+        return;
+      if (C->isOne()) {
+        emitObject(Dest, Src, Reverse);
+        return;
+      }
+    }
+    Dest = Dest.withElementType(CGF.ConvertTypeForMem(Type));
+    Src = Src.withElementType(CGF.ConvertTypeForMem(Type));
+    llvm::Value *One = llvm::ConstantInt::get(Count->getType(), 1);
+    llvm::Value *Start = Reverse ? CGF.Builder.CreateSub(Count, One)
+                                 : llvm::ConstantInt::get(Count->getType(), 0);
+    llvm::BasicBlock *Entry = CGF.Builder.GetInsertBlock();
+    auto *Loop = CGF.createBasicBlock("relocate.loop");
+    auto *Done = CGF.createBasicBlock("relocate.end");
+    CGF.EmitBlock(Loop);
+    auto *Index = CGF.Builder.CreatePHI(Count->getType(), 2, "relocate.index");
+    Index->addIncoming(Start, Entry);
+    emitObject(CGF.Builder.CreateGEP(CGF, Dest, Index),
+               CGF.Builder.CreateGEP(CGF, Src, Index), Reverse);
+    llvm::Value *Next = Reverse ? CGF.Builder.CreateSub(Index, One)
+                                : CGF.Builder.CreateAdd(Index, One);
+    Index->addIncoming(Next, CGF.Builder.GetInsertBlock());
+    auto *Finished = Reverse ? CGF.Builder.CreateIsNull(Index)
+                             : CGF.Builder.CreateICmpEQ(Next, Count);
+    CGF.Builder.CreateCondBr(Finished, Done, Loop);
+    CGF.EmitBlock(Done);
+  }
+};
+
+} // namespace
+
+void CodeGenFunction::EmitPointerAuthRelocation(QualType Type, Address Dest,
+                                                Address Src,
+                                                llvm::Value *Count) {
+  if (auto *C = dyn_cast<llvm::ConstantInt>(Count); C && C->isZero())
+    return;
+  PointerAuthRelocationEmitter Emitter(*this, Type);
+  if (auto *C = dyn_cast<llvm::ConstantInt>(Count);
+      C && C->isOne() && Emitter.isSinglePointer()) {
+    Emitter.emitRange(Dest, Src, Count, /*Reverse=*/false);
+    return;
+  }
+  auto *Select = createBasicBlock("relocate.select");
+  auto *Forward = createBasicBlock("relocate.forward");
+  auto *Backward = createBasicBlock("relocate.backward");
+  auto *Done = createBasicBlock("relocate.done");
+  Builder.CreateCondBr(Builder.CreateIsNull(Count), Done, Select);
+  EmitBlock(Select);
+  Builder.CreateCondBr(Builder.CreateICmpUGT(Dest.emitRawPointer(*this),
+                                             Src.emitRawPointer(*this)),
+                       Backward, Forward);
+  EmitBlock(Forward);
+  Emitter.emitRange(Dest, Src, Count, /*Reverse=*/false);
+  EmitBranch(Done);
+  EmitBlock(Backward);
+  Emitter.emitRange(Dest, Src, Count, /*Reverse=*/true);
+  EmitBranch(Done);
+  EmitBlock(Done);
 }
 
 llvm::Constant *

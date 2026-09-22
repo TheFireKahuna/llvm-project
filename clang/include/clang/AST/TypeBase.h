@@ -1129,7 +1129,10 @@ public:
   ///    which can cause issues if those poisoned padding bits are accessed.
   ///  - Types with Objective-C lifetimes, where specific runtime
   ///    semantics may not be preserved during a bitwise copy.
-  bool isBitwiseCloneableType(const ASTContext &Context) const;
+  /// IgnorePointerAuth is only for callers that re-sign address-discriminated
+  /// pointers instead of copying their representations unchanged.
+  bool isBitwiseCloneableType(const ASTContext &Context,
+                             bool IgnorePointerAuth = false) const;
 
   /// Return true if this is a trivially copyable type
   bool isTriviallyCopyConstructibleType(const ASTContext &Context) const;

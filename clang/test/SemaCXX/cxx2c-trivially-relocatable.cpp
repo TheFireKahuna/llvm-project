@@ -213,7 +213,7 @@ void test__builtin_trivially_relocate() {
     struct S{ ~S();};
     struct R {};
     __builtin_trivially_relocate(); //expected-error {{too few arguments to function call, expected 3, have 0}}
-    __builtin_trivially_relocate(0, 0, 0, 0); //expected-error {{too many arguments to function call, expected 3, have 4}}
+    __builtin_trivially_relocate(0, 0, 0, 0, 0); //expected-error {{too many arguments to function call, expected at most 4, have 5}}
     __builtin_trivially_relocate(0, 0, 0); //expected-error {{argument to '__builtin_trivially_relocate' must be a pointer}}
     __builtin_trivially_relocate((const int*)0, 0, 0); //expected-error {{argument to '__builtin_trivially_relocate' must be non-const}}
     __builtin_trivially_relocate((S*)0, 0, 0); //expected-error {{argument to '__builtin_trivially_relocate' must be relocatable}}
@@ -222,6 +222,11 @@ void test__builtin_trivially_relocate() {
     __builtin_trivially_relocate((int*)0, (int*)0, (int*)0); // expected-error-re {{cannot initialize a value of type '__size_t' (aka '{{.*}}') with an rvalue of type 'int *'}}
     __builtin_trivially_relocate((int*)0, (int*)0, 0);
     __builtin_trivially_relocate((R*)0, (R*)0, 0);
+    R objects[2];
+    R* const dest = &objects[0];
+    R* const src = &objects[1];
+    __builtin_trivially_relocate(dest, src, 0);
+    __builtin_trivially_relocate(objects, src, 0);
 }
 
 void test__builtin_trivially_relocate(auto&& src, auto&&dest, auto size) {

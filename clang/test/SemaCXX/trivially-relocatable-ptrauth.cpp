@@ -18,6 +18,12 @@ struct AddressDiscPtrauth {
 
 static_assert(!__builtin_is_cpp_trivially_relocatable(AddressDiscPtrauth));
 
+struct ArrayOfAddressDiscPtrauth {
+  AddressDiscPtrauth pointers[2];
+};
+static_assert(!__builtin_is_cpp_trivially_relocatable(ArrayOfAddressDiscPtrauth));
+static_assert(!__is_bitwise_cloneable(ArrayOfAddressDiscPtrauth));
+
 struct MultipleBaseClasses : NonAddressDiscPtrauth, AddressDiscPtrauth {
 
 };

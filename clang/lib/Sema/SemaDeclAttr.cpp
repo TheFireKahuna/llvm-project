@@ -7094,6 +7094,17 @@ EnforceTCBLeafAttr *Sema::mergeEnforceTCBLeafAttr(
       *this, D, AL);
 }
 
+void Sema::AddTriviallyRelocatableAttr(Decl *D, const AttributeCommonInfo &CI,
+                                       Expr *Cond) {
+  if (!Cond->isValueDependent()) {
+    ExprResult Result = VerifyIntegerConstantExpression(Cond, nullptr);
+    if (Result.isInvalid())
+      return;
+    Cond = Result.get();
+  }
+  D->addAttr(::new (Context) TriviallyRelocatableAttr(Context, CI, Cond));
+}
+
 static void handleVTablePointerAuthentication(Sema &S, Decl *D,
                                               const ParsedAttr &AL) {
   CXXRecordDecl *Decl = cast<CXXRecordDecl>(D);
@@ -8279,6 +8290,9 @@ ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D, const ParsedAttr &AL,
     handleGCCStructAttr(S, D, AL);
     break;
 
+  case ParsedAttr::AT_TriviallyRelocatable:
+    S.AddTriviallyRelocatableAttr(D, AL, AL.getArgAsExpr(0));
+    break;
   case ParsedAttr::AT_PointerFieldProtection:
     if (!S.getLangOpts().PointerFieldProtectionAttr)
       S.Diag(AL.getLoc(),

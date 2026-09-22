@@ -4666,6 +4666,55 @@ annotated parameter.
   }];
 }
 
+def TriviallyRelocatableDocs : Documentation {
+  let Category = DocCatType;
+  let Content = [{
+``clang::trivially_relocatable(condition)`` supplies a conditional permission for
+``__builtin_trivially_relocate``. The argument must be an integer constant
+expression, possibly dependent on template arguments. A nonzero condition
+permits transferring an object's representation into uninitialized storage and
+ending its source lifetime without invoking its constructors or source
+destructor. The destination must subsequently behave as the transferred object,
+including ownership of its resources. The class author is responsible for this
+contract; address-sensitive invariants and required transfer side effects must
+not be bypassed. A zero condition disables the permission, including inference.
+If multiple conditions occur on the class or its redeclarations, every condition
+must be nonzero. As with other semantic attributes, declarations in different
+translation units must agree.
+
+The attribute does not change layout, argument or return calling conventions,
+ordinary move/copy/destruction, or the existing relocation and standard type
+traits. Query the permission with ``__builtin_is_bitwise_relocatable``. Even an
+annotated class must satisfy that query's structural and target restrictions;
+the attribute does not override protection of pointer fields or subobjects.
+
+The overlap-safe form of ``__builtin_trivially_relocate`` can also honor this
+permission for address-discriminated ``__ptrauth`` fields by authenticating and
+re-signing them for their new addresses. Such a type is not bitwise relocatable.
+Unions with address-discriminated members remain unsupported because the active
+member's signing schema is unknown.
+
+The permission propagates through classes with suitable compiler-generated
+construction and destruction, including lambda captures, without requiring
+assignment. It does not propagate through arbitrary user-provided special
+members. For example:
+
+.. code-block:: c++
+
+  template<class Deleter>
+  struct [[clang::trivially_relocatable(
+      __builtin_is_bitwise_relocatable(Deleter))]] Owner {
+    int *pointer;
+    Deleter deleter;
+    // The author must ensure that relocating these fields transfers ownership.
+    Owner(Owner&&);
+    ~Owner();
+  };
+
+This is a Clang extension, independent of standardization of trivial relocation.
+}];
+}
+
 def TrivialABIDocs : Documentation {
   let Category = DocCatDecl;
   let Content = [{

@@ -8829,6 +8829,11 @@ public:
   // FIXME: This is in Sema because it requires
   // overload resolution, can we move to ASTContext?
   bool IsCXXTriviallyRelocatableType(QualType T);
+  /// Check ABI-neutral relocation permission, optionally allowing pointer
+  /// authentication fixups. The bitwise query never permits these fixups.
+  bool IsRelocatableType(QualType T, bool AllowPointerAuth);
+  void AddTriviallyRelocatableAttr(Decl *D, const AttributeCommonInfo &CI,
+                                   Expr *Cond);
   bool IsCXXTriviallyRelocatableType(const CXXRecordDecl &RD);
 
   /// Check the operands of ?: under C++ semantics.

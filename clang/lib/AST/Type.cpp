@@ -2917,20 +2917,22 @@ bool QualType::isTriviallyCopyableType(const ASTContext &Context) const {
 }
 
 // FIXME: each call will trigger a full computation, cache the result.
-bool QualType::isBitwiseCloneableType(const ASTContext &Context) const {
+bool QualType::isBitwiseCloneableType(const ASTContext &Context,
+                                    bool IgnorePointerAuth) const {
   auto CanonicalType = getCanonicalType();
   if (CanonicalType.hasNonTrivialObjCLifetime())
     return false;
   if (CanonicalType->isArrayType())
     return Context.getBaseElementType(CanonicalType)
-        .isBitwiseCloneableType(Context);
+        .isBitwiseCloneableType(Context, IgnorePointerAuth);
 
   if (CanonicalType->isIncompleteType())
     return false;
 
-  // Any type that is, or contains, address discriminated data is never
-  // bitwise clonable.
-  if (Context.containsAddressDiscriminatedPointerAuth(CanonicalType))
+  // Address-discriminated pointers cannot be copied unchanged. A caller that
+  // re-signs them must still satisfy all the other representation checks.
+  if (!IgnorePointerAuth &&
+      Context.containsAddressDiscriminatedPointerAuth(CanonicalType))
     return false;
 
   const auto *RD = CanonicalType->getAsRecordDecl(); // struct/union/class
@@ -2947,16 +2949,16 @@ bool QualType::isBitwiseCloneableType(const ASTContext &Context) const {
     return false;
 
   for (auto *const Field : RD->fields()) {
-    if (!Field->getType().isBitwiseCloneableType(Context))
+    if (!Field->getType().isBitwiseCloneableType(Context, IgnorePointerAuth))
       return false;
   }
 
   if (const auto *CXXRD = dyn_cast<CXXRecordDecl>(RD)) {
     for (auto Base : CXXRD->bases())
-      if (!Base.getType().isBitwiseCloneableType(Context))
+      if (!Base.getType().isBitwiseCloneableType(Context, IgnorePointerAuth))
         return false;
     for (auto VBase : CXXRD->vbases())
-      if (!VBase.getType().isBitwiseCloneableType(Context))
+      if (!VBase.getType().isBitwiseCloneableType(Context, IgnorePointerAuth))
         return false;
   }
   return true;

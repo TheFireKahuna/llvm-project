@@ -2118,9 +2118,11 @@ The following type trait primitives are supported by Clang. Those traits marked
 * ``__builtin_is_implicit_lifetime`` (C++, GNU, Microsoft)
 * ``__builtin_is_virtual_base_of`` (C++, GNU, Microsoft)
 * ``__can_pass_in_regs`` (C++)
-  Returns whether a class can be passed in registers under the current
-  ABI. This type can only be applied to unqualified class types.
-  This is not a portable type trait.
+  Returns whether a class's special members permit it to be passed in registers
+  under the current C++ ABI. This does not determine how a particular argument
+  is passed: the target calling convention, class size and available argument
+  registers can still require passing it in memory. The trait requires a
+  complete, unqualified class type and is not portable.
 * ``__has_nothrow_assign`` (GNU, Microsoft, Embarcadero):
   Deprecated, use ``__is_nothrow_assignable`` instead.
 * ``__has_nothrow_move_assign`` (GNU, Microsoft):
@@ -4280,7 +4282,95 @@ Query for this feature with ``__has_builtin(__builtin_operator_new)`` or
 
 Trivially relocates ``count`` objects of relocatable, complete type ``T``
 from ``src`` to ``dest`` and returns ``dest``.
-This builtin is used to implement ``std::trivially_relocate``.
+This builtin is a compiler extension.
+
+In addition to its original eligibility rules, the builtin accepts types for
+which ``__builtin_is_bitwise_relocatable(T)`` is true. The three-argument form
+supports overlapping ranges. An optional fourth argument selects disjoint
+bitwise relocation:
+
+.. code-block:: c++
+
+  T* __builtin_trivially_relocate(T* dest, T* src, size_t count, bool disjoint);
+
+The fourth argument is evaluated at compile time and must be an integer constant
+expression equal to zero or one. Zero has the same meaning as omitting the
+argument. One requires disjoint source
+and destination ranges and a type satisfying ``__builtin_is_bitwise_relocatable``;
+this permits lowering directly to a byte copy without an overlap check or
+representation fixups. The argument does not introduce a runtime branch.
+Without that promise, ordinary optimization can still use a byte copy when it
+proves the ranges do not overlap; the fourth argument is not required to obtain
+that optimization.
+The presence of ``__builtin_is_bitwise_relocatable`` detects both the additional
+eligibility and the optional fourth argument.
+
+The three-argument form (and a false fourth argument) also supports
+address-discriminated ``__ptrauth`` pointer fields when the type otherwise
+satisfies the extension's relocation requirements below. It authenticates each
+pointer using its source storage address and re-signs it for its destination
+storage address, preserving null pointers. This is not bitwise relocation:
+``__builtin_is_bitwise_relocatable`` remains false and a true fourth argument
+is rejected. Constructors and source destructors are not called. Arrays and
+non-virtual bases are supported; unions containing address-discriminated data
+are rejected because their active signing schema cannot be determined.
+The source and destination storage requirements below still apply, including
+overlap support. Authentication and the remaining representation protections
+are not bypassed.
+
+``__builtin_is_bitwise_relocatable``
+----------------------------------
+
+This Clang extension describes bitwise relocation independently of assignment
+and the calling convention:
+
+.. code-block:: c++
+
+  bool __builtin_is_bitwise_relocatable(T);
+
+The query requires a complete object type (or ``void``, which returns false).
+It recognizes scalars, vectors, fixed-size arrays of eligible elements, and
+eligible classes. Class inference requires a non-deleted, non-user-provided
+constructor selected from an xvalue and a non-deleted, non-user-provided
+destructor. Assignment is not required. A class author may instead supply the
+conditional ``clang::trivially_relocatable`` attribute. A false attribute
+disables inference. Every base and non-reference field must independently
+qualify. Reference fields retain their bindings. Unannotated unions must also
+be trivially copyable.
+
+Volatile objects or fields, Objective-C ownership, virtual bases, polymorphic
+classes, deleted destructors, address-discriminated or non-relocatable pointer
+authentication, sanitizer-inserted field padding, and classes under tagged
+pointer-field protection are rejected. Const class types which are not trivially
+copyable are also rejected, including
+when they occur as subobjects. The attribute cannot override these restrictions.
+
+For these types, ``__builtin_trivially_relocate`` requires identical pointer
+types to non-const eligible ``T``. The source range must contain ``count`` live
+complete objects, and the
+destination must provide suitably aligned storage for that many objects.
+Destination storage outside the source range must not contain live objects.
+``count * sizeof(T)`` must be representable in ``size_t``.
+Potentially-overlapping subobjects are not supported.
+For a zero count, no objects are accessed or lifetimes changed; null pointers
+are permitted. Violating these requirements is undefined behavior.
+
+The operation transfers the original representations as if through temporary
+storage, ends source element lifetimes without destruction, starts destination
+lifetimes (including an enclosing array lifetime when needed for the destination
+range), and returns ``dest``. Overlapping locations contain live destination objects
+after the operation; source-only locations no longer contain live objects.
+It does not invoke constructors or source destructors. The caller must ensure
+that ended source lifetimes are respected, including by preventing automatic
+scope-exit destruction of source-only objects. Destination objects retain their
+ordinary destruction obligations. A true fourth argument additionally requires
+disjoint ranges, allowing the temporary-storage step to be omitted.
+The relocation operation is not supported in constant evaluation. Neither the attribute
+nor the builtins change ordinary move/copy expressions, public calling
+conventions, or the existing relocation and standard type traits.
+
+Use ``__has_builtin`` and ``__has_cpp_attribute(clang::trivially_relocatable)``
+to detect these extensions. They do not advertise standard C++ relocation support.
 
 ``__builtin_invoke``
 --------------------

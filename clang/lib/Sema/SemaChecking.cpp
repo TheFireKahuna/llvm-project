@@ -2022,8 +2022,32 @@ static ExprResult BuiltinIsWithinLifetime(Sema &S, CallExpr *TheCall) {
 }
 
 static ExprResult BuiltinTriviallyRelocate(Sema &S, CallExpr *TheCall) {
-  if (S.checkArgCount(TheCall, 3))
+  if (S.checkArgCountRange(TheCall, 3, 4))
     return ExprError();
+
+  // Keep the three-argument operation overlap-safe. The optional constant
+  // requests disjoint bitwise relocation without a runtime dispatch.
+  bool Disjoint = false;
+  if (TheCall->getNumArgs() == 4 && !TheCall->getArg(3)->isValueDependent()) {
+    llvm::APSInt Value;
+    if (S.BuiltinConstantArg(TheCall, 3, Value))
+      return ExprError();
+    if (Value != 0 && Value != 1)
+      return S.Diag(TheCall->getArg(3)->getExprLoc(),
+                    diag::err_argument_invalid_range)
+             << toString(Value, 10) << 0 << 1;
+    Disjoint = Value != 0;
+  }
+
+  // These are pointer values, not references to the pointer expressions. Apply
+  // the usual conversions before comparing their types (including for arrays
+  // and const-qualified pointer variables).
+  for (unsigned I = 0; I != 2; ++I) {
+    ExprResult Arg = S.DefaultFunctionArrayLvalueConversion(TheCall->getArg(I));
+    if (Arg.isInvalid())
+      return ExprError();
+    TheCall->setArg(I, Arg.get());
+  }
 
   QualType Dest = TheCall->getArg(0)->getType();
   if (!Dest->isPointerType() || Dest.getCVRQualifiers() != 0) {
@@ -2038,7 +2062,9 @@ static ExprResult BuiltinTriviallyRelocate(Sema &S, CallExpr *TheCall) {
                             diag::err_incomplete_type))
     return ExprError();
 
-  if (T.isConstQualified() || !S.IsCXXTriviallyRelocatableType(T) ||
+  if (T.isConstQualified() ||
+      !((!Disjoint && S.IsCXXTriviallyRelocatableType(T)) ||
+        S.IsRelocatableType(T, /*AllowPointerAuth=*/!Disjoint)) ||
       T->isIncompleteArrayType()) {
     S.Diag(TheCall->getArg(0)->getExprLoc(),
            diag::err_builtin_trivially_relocate_invalid_arg_type)
