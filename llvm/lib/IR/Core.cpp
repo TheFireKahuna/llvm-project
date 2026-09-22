@@ -13,7 +13,6 @@
 
 #include "llvm-c/Core.h"
 #include "llvm-c/Types.h"
-#include "llvm/Config/config.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/ConstantRange.h"

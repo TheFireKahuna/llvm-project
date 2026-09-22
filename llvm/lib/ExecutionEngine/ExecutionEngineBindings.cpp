@@ -11,7 +11,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm-c/ExecutionEngine.h"
-#include "llvm/Config/config.h"
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
 #include "llvm/ExecutionEngine/GenericValue.h"
 #include "llvm/ExecutionEngine/RTDyldMemoryManager.h"
