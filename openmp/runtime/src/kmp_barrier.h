@@ -31,14 +31,12 @@ static inline void *KMP_ALIGNED_ALLOCATE(size_t size, size_t alignment) {
   void *ptr;
   int n = posix_memalign(&ptr, alignment, size);
   if (n != 0) {
-    if (ptr)
-      free(ptr);
     return nullptr;
   }
   return ptr;
 }
 #define KMP_ALIGNED_FREE(ptr) free(ptr)
-#elif KMP_HAVE__ALIGNED_MALLOC
+#elif KMP_HAVE__ALIGNED_MALLOC && !defined(_WIN32_ITANIUM)
 #include <malloc.h>
 #define KMP_ALIGNED_ALLOCATE(size, alignment) _aligned_malloc(size, alignment)
 #define KMP_ALIGNED_FREE(ptr) _aligned_free(ptr)

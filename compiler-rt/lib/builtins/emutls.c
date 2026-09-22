@@ -173,18 +173,30 @@ static __inline void win_abort(DWORD last_err, const char *hint) {
 }
 
 static __inline void *emutls_memalign_alloc(size_t align, size_t size) {
+#if !defined(_WIN32_ITANIUM)
   void *base = _aligned_malloc(size, align);
   if (!base)
     win_abort(GetLastError(), "_aligned_malloc");
+#else
+  void *base = aligned_alloc(align, size);
+  if (!base)
+    abort();
+#endif
   return base;
 }
 
-static __inline void emutls_memalign_free(void *base) { _aligned_free(base); }
+static __inline void emutls_memalign_free(void *base) {
+#if !defined(_WIN32_ITANIUM)
+  _aligned_free(base);
+#else
+  free(base);
+#endif
+}
 
 static void emutls_exit(void) {
   if (emutls_mutex) {
     DeleteCriticalSection(emutls_mutex);
-    _aligned_free(emutls_mutex);
+    emutls_memalign_free(emutls_mutex);
     emutls_mutex = NULL;
   }
   if (emutls_tls_index != TLS_OUT_OF_INDEXES) {
@@ -198,12 +210,18 @@ static BOOL CALLBACK emutls_init(PINIT_ONCE p0, PVOID p1, PVOID *p2) {
   (void)p0;
   (void)p1;
   (void)p2;
+#if !defined(_WIN32_ITANIUM)
   emutls_mutex =
       (LPCRITICAL_SECTION)_aligned_malloc(sizeof(CRITICAL_SECTION), 16);
   if (!emutls_mutex) {
     win_error(GetLastError(), "_aligned_malloc");
     return FALSE;
   }
+#else
+  emutls_mutex = aligned_alloc(16, sizeof(CRITICAL_SECTION));
+  if (!emutls_mutex)
+    return FALSE;
+#endif
   InitializeCriticalSection(emutls_mutex);
 
   emutls_tls_index = TlsAlloc();

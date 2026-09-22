@@ -102,8 +102,8 @@ Alignment 8 needs no extra padding: both Win64 heap families already provide
 at least 16-byte alignment. The minimum alignment is an argument constraint,
 not a minimum allocation size. `posix_memalign` adds an output-slot store and
 returns status instead of a pointer; no relative latency claim is made.
-Neither API change switches libc++'s existing internal `_aligned_malloc` /
-`_aligned_free` pair.
+Windows Itanium's libc++ uses `posix_memalign` / `free` for its internal
+aligned allocations, including the helpers used by libc++abi.
 
 Cold qualification checks the loaded image identity and shared UCRT heap
 owner and registers exact CFG entries through the SDK's `onecore.lib` import

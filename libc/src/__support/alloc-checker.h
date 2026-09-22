@@ -16,6 +16,11 @@
 #include "src/__support/macros/config.h"
 #include "src/__support/macros/properties/os.h"
 
+#if defined(LIBC_TARGET_OS_IS_WINDOWS) && !defined(_WIN32_ITANIUM) &&          \
+    !defined(LIBC_FULL_BUILD)
+#include <malloc.h>
+#endif
+
 namespace LIBC_NAMESPACE_DECL {
 
 class AllocChecker {
@@ -39,12 +44,10 @@ public:
 
   LIBC_INLINE static void *aligned_alloc(size_t s, std::align_val_t align,
                                          AllocChecker &ac) {
-#ifdef LIBC_TARGET_OS_IS_WINDOWS
-    // std::aligned_alloc is not available on Windows because std::free on
-    // Windows cannot deallocate any over-aligned memory. Microsoft provides an
-    // alternative for std::aligned_alloc named _aligned_malloc, but it must be
-    // paired with _aligned_free instead of std::free.
-    void *mem = ::_aligned_malloc(static_cast<size_t>(align), s);
+#if defined(LIBC_TARGET_OS_IS_WINDOWS) && !defined(_WIN32_ITANIUM) &&          \
+    !defined(LIBC_FULL_BUILD)
+    // Microsoft's hosted CRT requires a separate allocation/free pair.
+    void *mem = ::_aligned_malloc(s, static_cast<size_t>(align));
 #else
     void *mem = ::aligned_alloc(static_cast<size_t>(align), s);
 #endif

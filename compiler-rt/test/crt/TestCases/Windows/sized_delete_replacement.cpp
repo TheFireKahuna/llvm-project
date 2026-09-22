@@ -6,7 +6,6 @@
 // REQUIRES: windows, crt
 
 #include <assert.h>
-#include <malloc.h>
 #include <new>
 #include <stdlib.h>
 
@@ -15,10 +14,10 @@ static int Replaced;
 void *operator new(size_t Size) { return malloc(Size); }
 void *operator new[](size_t Size) { return malloc(Size); }
 void *operator new(size_t Size, std::align_val_t Align) {
-  return _aligned_malloc(Size, static_cast<size_t>(Align));
+  return aligned_alloc(static_cast<size_t>(Align), Size);
 }
 void *operator new[](size_t Size, std::align_val_t Align) {
-  return _aligned_malloc(Size, static_cast<size_t>(Align));
+  return aligned_alloc(static_cast<size_t>(Align), Size);
 }
 void operator delete(void *Pointer) noexcept {
   ++Replaced;
@@ -30,11 +29,11 @@ void operator delete[](void *Pointer) noexcept {
 }
 void operator delete(void *Pointer, std::align_val_t) noexcept {
   ++Replaced;
-  _aligned_free(Pointer);
+  free(Pointer);
 }
 void operator delete[](void *Pointer, std::align_val_t) noexcept {
   ++Replaced;
-  _aligned_free(Pointer);
+  free(Pointer);
 }
 
 // Non-trivial destructors give the arrays a cookie, so the compiler calls

@@ -53,4 +53,7 @@ static __inline int _heapwalk(_HEAPINFO *info) {
 #if !defined(__cplusplus)
 #pragma pop_macro("__inline")
 #endif
+/* Let Clang's <mm_malloc.h> provide the free-compatible intrinsic pair. */
+#undef _mm_malloc
+#undef _mm_free
 #endif // _WIN32_ITANIUM / __LLVM_LIBC__ / UCRT

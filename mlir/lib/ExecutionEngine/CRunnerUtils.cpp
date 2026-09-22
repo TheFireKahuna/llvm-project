@@ -150,7 +150,7 @@ extern "C" double rtclock() {
 extern "C" void *mlirAlloc(uint64_t size) { return malloc(size); }
 
 extern "C" void *mlirAlignedAlloc(uint64_t alignment, uint64_t size) {
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(_WIN32_ITANIUM)
   return _aligned_malloc(size, alignment);
 #elif defined(__APPLE__)
   // aligned_alloc was added in MacOS 10.15. Fall back to posix_memalign to also
@@ -166,7 +166,7 @@ extern "C" void *mlirAlignedAlloc(uint64_t alignment, uint64_t size) {
 extern "C" void mlirFree(void *ptr) { free(ptr); }
 
 extern "C" void mlirAlignedFree(void *ptr) {
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(_WIN32_ITANIUM)
   _aligned_free(ptr);
 #else
   free(ptr);

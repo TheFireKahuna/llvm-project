@@ -8,15 +8,29 @@
 
 #include "new.h"
 #include "hdr/func/free.h"
+#include "src/__support/macros/properties/os.h"
+
+#if defined(LIBC_TARGET_OS_IS_WINDOWS) && !defined(_WIN32_ITANIUM) &&          \
+    !defined(LIBC_FULL_BUILD)
+#include <malloc.h>
+#endif
 
 void operator delete(void *mem) noexcept { ::free(mem); }
 
-void operator delete(void *mem, std::align_val_t) noexcept { ::free(mem); }
+void operator delete(void *mem, std::align_val_t) noexcept {
+#if defined(LIBC_TARGET_OS_IS_WINDOWS) && !defined(_WIN32_ITANIUM) &&          \
+    !defined(LIBC_FULL_BUILD)
+  ::_aligned_free(mem);
+#else
+  ::free(mem);
+#endif
+}
 
 void operator delete(void *mem, size_t) noexcept { ::free(mem); }
 
 void operator delete(void *mem, size_t, std::align_val_t) noexcept {
-#ifdef LIBC_TARGET_OS_IS_WINDOWS
+#if defined(LIBC_TARGET_OS_IS_WINDOWS) && !defined(_WIN32_ITANIUM) &&          \
+    !defined(LIBC_FULL_BUILD)
   ::_aligned_free(mem);
 #else
   ::free(mem);
@@ -26,7 +40,8 @@ void operator delete(void *mem, size_t, std::align_val_t) noexcept {
 void operator delete[](void *mem) noexcept { ::free(mem); }
 
 void operator delete[](void *mem, std::align_val_t) noexcept {
-#ifdef LIBC_TARGET_OS_IS_WINDOWS
+#if defined(LIBC_TARGET_OS_IS_WINDOWS) && !defined(_WIN32_ITANIUM) &&          \
+    !defined(LIBC_FULL_BUILD)
   ::_aligned_free(mem);
 #else
   ::free(mem);
@@ -36,7 +51,8 @@ void operator delete[](void *mem, std::align_val_t) noexcept {
 void operator delete[](void *mem, size_t) noexcept { ::free(mem); }
 
 void operator delete[](void *mem, size_t, std::align_val_t) noexcept {
-#ifdef LIBC_TARGET_OS_IS_WINDOWS
+#if defined(LIBC_TARGET_OS_IS_WINDOWS) && !defined(_WIN32_ITANIUM) &&          \
+    !defined(LIBC_FULL_BUILD)
   ::_aligned_free(mem);
 #else
   ::free(mem);
