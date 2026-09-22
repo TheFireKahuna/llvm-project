@@ -147,23 +147,23 @@ static void addMinGWDefines(const llvm::Triple &Triple, const LangOptions &Opts,
   addCygMingDefines(Opts, Builder);
 }
 
-static void addWinItaniumDefines(const llvm::Triple &Triple, const LangOptions &Opts,
-                            MacroBuilder &Builder) {
-  
+static void addWinItaniumDefines(const llvm::Triple &Triple,
+                                 const LangOptions &Opts,
+                                 MacroBuilder &Builder) {
   Builder.defineMacro("_WIN32_ITANIUM");
-  
   DefineStd(Builder, "WIN32", Opts);
-  Builder.defineMacro("WINVER", "0x0A00"); // Windows 10
-  Builder.defineMacro("_WIN32_WINNT", "0x0A00"); // Windows 10
   DefineStd(Builder, "WINNT", Opts);
-  if (Triple.isArch64Bit()) {
+  if (Triple.isArch64Bit())
     DefineStd(Builder, "WIN64", Opts);
-  }
+  Builder.defineMacro("WINVER", "0x0A00");
+  Builder.defineMacro("_WIN32_WINNT", "0x0A00");
   Builder.defineMacro("STRICT");
   Builder.defineMacro("ENABLE_RESTRICTED");
   Builder.defineMacro("UNICODE");
   Builder.defineMacro("_UNICODE");
   Builder.defineMacro("WINDOWS_ENABLE_CPLUSPLUS");
+  // The Windows SDK tests _MSC_VER or this macro before using __stdcall.
+  Builder.defineMacro("_STDCALL_SUPPORTED");
 
   // Enables __declspec(guard(suppress)) within the Windows SDK (winnt.h)
   Builder.defineMacro("_D1VERSIONLKG171_");
@@ -298,11 +298,11 @@ static void addVisualCDefines(const llvm::Triple &Triple,
   if (Opts.Kernel)
     Builder.defineMacro("_KERNEL_MODE");
 
-  Builder.defineMacro("_STDCALL_SUPPORTED");
   Builder.defineMacro("_INTEGRAL_MAX_BITS", "64");
   // Define __STDC_NO_THREADS__ based on MSVC version, threads.h availability,
   // and language standard.
-  if (!(Opts.isCompatibleWithMSVC(LangOptions::MSVC2022_9) && Opts.C11) && !Triple.isWindowsItaniumEnvironment())
+  if (!(Opts.isCompatibleWithMSVC(LangOptions::MSVC2022_9) && Opts.C11) &&
+      !Triple.isWindowsItaniumEnvironment())
     Builder.defineMacro("__STDC_NO_THREADS__");
   // Starting with VS 2022 17.1, MSVC predefines the below macro to inform
   // users of the execution character set defined at compile time.
@@ -322,36 +322,17 @@ static void addVisualCDefines(const llvm::Triple &Triple,
     Builder.defineMacro("_MSVC_TRADITIONAL", "1");
 }
 
-static void addNTPOSIXDefines(const llvm::Triple &Triple,
-                              const LangOptions &Opts,
-                              MacroBuilder &Builder) {
-  // NT-POSIX: Windows NT kernel with a POSIX C runtime (llvm-libc).
-  // _WIN32/_WIN64 are already defined by addWindowsDefines — those signal
-  // PE/COFF ABI and Windows calling conventions, which are correct.
-  //
-  // We define kernel identity and version targeting macros — we ARE NT,
-  // and code needs to know which NT version to target.
-  //
-  // We do NOT define:
-  //   __unix__ / __unix       — this is NT, not a Unix kernel
-  //   WIN32                   — implies Win32 API surface
-  //   UNICODE / _UNICODE      — Win32 wide-char API convention
-  //   STRICT                  — Win32 type-safety macro
-  //   _MSC_VER et al.         — MSVC compiler identity
-  //   __MSVCRT__              — no MSVCRT/UCRT runtime
-  //   __MINGW32/64__          — not MinGW
-  //
-  // Code detects this environment via __NTPOSIX__.
+// NT-POSIX is the NT kernel with a POSIX C library. It is neither Win32 nor
+// Unix: it defines _WIN32 for the PE/COFF ABI and the NT version macros, but
+// not WIN32, UNICODE, __unix__ or the MSVC and MinGW identity macros.
+static void addNTPOSIXDefines(const LangOptions &Opts, MacroBuilder &Builder) {
   Builder.defineMacro("__NTPOSIX__");
-
-  // Kernel identity and version targeting.
   DefineStd(Builder, "WINNT", Opts);
   Builder.defineMacro("WINVER", "0x0A00");
   Builder.defineMacro("_WIN32_WINNT", "0x0A00");
-
   if (Opts.POSIXThreads)
     Builder.defineMacro("_REENTRANT");
-  // libc++ locale support requires _GNU_SOURCE in C++ mode.
+  // Required by the libc++ locale support.
   if (Opts.CPlusPlus)
     Builder.defineMacro("_GNU_SOURCE");
 }
@@ -363,14 +344,13 @@ void addWindowsDefines(const llvm::Triple &Triple, const LangOptions &Opts,
     Builder.defineMacro("_WIN64");
   if (Triple.isWindowsGNUEnvironment())
     addMinGWDefines(Triple, Opts, Builder);
-  else if (Triple.isWindowsNTPOSIXEnvironment()) {
-    addNTPOSIXDefines(Triple, Opts, Builder);
-  } else if (Triple.isWindowsItaniumEnvironment()) {
+  else if (Triple.isWindowsNTPOSIXEnvironment())
+    addNTPOSIXDefines(Opts, Builder);
+  else if (Triple.isWindowsItaniumEnvironment()) {
     addWinItaniumDefines(Triple, Opts, Builder);
     addVisualCDefines(Triple, Opts, Builder);
-  } else if (Triple.isKnownWindowsMSVCEnvironment()) {
+  } else if (Triple.isKnownWindowsMSVCEnvironment())
     addVisualCDefines(Triple, Opts, Builder);
-  }
 }
 
 } // namespace targets

@@ -883,8 +883,11 @@ protected:
 public:
   WindowsTargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
       : OSTargetInfo<Target>(Triple, Opts) {
-    this->WCharType = TargetInfo::UnsignedShort;
-    this->WIntType = TargetInfo::UnsignedShort;
+    // The C library of NT-POSIX is POSIX, with a 32-bit wchar_t.
+    this->WCharType = Triple.isWindowsNTPOSIXEnvironment()
+                          ? TargetInfo::SignedInt
+                          : TargetInfo::UnsignedShort;
+    this->WIntType = this->WCharType;
     this->UseMicrosoftManglingForC = true;
   }
 };

@@ -333,22 +333,11 @@ public:
                              bool HasNonWeakDef) const override;
 };
 
-// ARM64 Windows + Itanium C++ ABI Target
+// ARM64 Windows + Itanium C++ ABI Target, also used by NT-POSIX
 class LLVM_LIBRARY_VISIBILITY ItaniumWindowsARM64TargetInfo
     : public WindowsARM64TargetInfo {
 public:
   ItaniumWindowsARM64TargetInfo(const llvm::Triple &Triple,
-                                const TargetOptions &Opts);
-
-  void getTargetDefines(const LangOptions &Opts,
-                        MacroBuilder &Builder) const override;
-};
-
-// ARM64 Windows NT-POSIX Target
-class LLVM_LIBRARY_VISIBILITY NTPOSIXWindowsARM64TargetInfo
-    : public WindowsARM64TargetInfo {
-public:
-  NTPOSIXWindowsARM64TargetInfo(const llvm::Triple &Triple,
                                 const TargetOptions &Opts);
 
   void getTargetDefines(const LangOptions &Opts,

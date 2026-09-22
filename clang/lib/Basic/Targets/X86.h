@@ -632,23 +632,14 @@ public:
 
 // x86-32 Windows NT-POSIX Target
 class LLVM_LIBRARY_VISIBILITY NTPOSIXWindowsX86_32TargetInfo
-    : public WindowsX86_32TargetInfo {
+    : public MicrosoftX86_32TargetInfo {
 public:
-  NTPOSIXWindowsX86_32TargetInfo(const llvm::Triple &Triple,
-                                 const TargetOptions &Opts)
-      : WindowsX86_32TargetInfo(Triple, Opts) {
-    TheCXXABI.set(TargetCXXABI::GenericItanium);
-    LongDoubleWidth = LongDoubleAlign = 64;
-    LongDoubleFormat = &llvm::APFloat::IEEEdouble();
-    WCharType = TargetInfo::SignedInt;
-    WIntType = TargetInfo::SignedInt;
-  }
+  using MicrosoftX86_32TargetInfo::MicrosoftX86_32TargetInfo;
 
   void getTargetDefines(const LangOptions &Opts,
                         MacroBuilder &Builder) const override {
-    WindowsX86_32TargetInfo::getTargetDefines(Opts, Builder);
+    MicrosoftX86_32TargetInfo::getTargetDefines(Opts, Builder);
     Builder.defineMacro("_X86_");
-    Builder.defineMacro("_M_IX86", "600");
   }
 };
 
@@ -1012,7 +1003,6 @@ public:
   ItaniumWindowsX86_64TargetInfo(const llvm::Triple &Triple,
                                  const TargetOptions &Opts)
       : WindowsX86_64TargetInfo(Triple, Opts) {
-    TheCXXABI.set(TargetCXXABI::GenericItanium);
     LongDoubleWidth = LongDoubleAlign = 64;
     LongDoubleFormat = &llvm::APFloat::IEEEdouble();
   }
@@ -1021,29 +1011,19 @@ public:
                         MacroBuilder &Builder) const override {
     WindowsX86_64TargetInfo::getTargetDefines(Opts, Builder);
     Builder.defineMacro("_AMD64_");
-    Builder.defineMacro("__x86_64__");
     Builder.defineMacro("_M_X64", "100");
     Builder.defineMacro("_M_AMD64", "100");
   }
 };
 
-// x86-64 Windows NT-POSIX Target
+// x86-64 Windows NT-POSIX Target, which uses the System V calling convention
+// and va_list by default.
 class LLVM_LIBRARY_VISIBILITY NTPOSIXWindowsX86_64TargetInfo
-    : public WindowsX86_64TargetInfo {
+    : public ItaniumWindowsX86_64TargetInfo {
 public:
-  NTPOSIXWindowsX86_64TargetInfo(const llvm::Triple &Triple,
-                                 const TargetOptions &Opts)
-      : WindowsX86_64TargetInfo(Triple, Opts) {
-    TheCXXABI.set(TargetCXXABI::GenericItanium);
-    LongDoubleWidth = LongDoubleAlign = 64;
-    LongDoubleFormat = &llvm::APFloat::IEEEdouble();
-    WCharType = TargetInfo::SignedInt;
-    WIntType = TargetInfo::SignedInt;
-  }
+  using ItaniumWindowsX86_64TargetInfo::ItaniumWindowsX86_64TargetInfo;
 
   BuiltinVaListKind getBuiltinVaListKind() const override {
-    // NT-POSIX uses the SysV x86_64 C ABI, so va_list must match the
-    // AMD64 register-save-area layout rather than the Win64 char* model.
     return TargetInfo::X86_64ABIBuiltinVaList;
   }
 
@@ -1067,18 +1047,7 @@ public:
     }
   }
 
-  CallingConv getDefaultCallingConv() const override {
-    return CC_X86_64SysV;
-  }
-
-  void getTargetDefines(const LangOptions &Opts,
-                        MacroBuilder &Builder) const override {
-    WindowsX86_64TargetInfo::getTargetDefines(Opts, Builder);
-    Builder.defineMacro("_AMD64_");
-    Builder.defineMacro("__x86_64__");
-    Builder.defineMacro("_M_X64", "100");
-    Builder.defineMacro("_M_AMD64", "100");
-  }
+  CallingConv getDefaultCallingConv() const override { return CC_X86_64SysV; }
 };
 
 // x86-64 MinGW target

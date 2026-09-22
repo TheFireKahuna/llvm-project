@@ -1472,7 +1472,6 @@ ItaniumWindowsARMleTargetInfo::ItaniumWindowsARMleTargetInfo(
 void ItaniumWindowsARMleTargetInfo::getTargetDefines(
     const LangOptions &Opts, MacroBuilder &Builder) const {
   WindowsARMTargetInfo::getTargetDefines(Opts, Builder);
-  Builder.defineMacro("_WIN32_ITANIUM");
   Builder.defineMacro("NOMINMAX");
 
   if (Opts.MSVCCompat) {
@@ -1491,8 +1490,6 @@ NTPOSIXWindowsARMleTargetInfo::NTPOSIXWindowsARMleTargetInfo(
     const llvm::Triple &Triple, const TargetOptions &Opts)
     : WindowsARMTargetInfo(Triple, Opts) {
   TheCXXABI.set(TargetCXXABI::GenericARM);
-  WCharType = TargetInfo::SignedInt;
-  WIntType = TargetInfo::SignedInt;
 }
 
 void NTPOSIXWindowsARMleTargetInfo::getTargetDefines(
