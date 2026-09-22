@@ -22,8 +22,7 @@ extern int posix_memalign(void **__memptr, size_t __alignment, size_t __size);
 // exception specifier. Via an "egregious workaround" in
 // Sema::CheckEquivalentExceptionSpec, Clang accepts the following as a valid
 // redeclaration of glibc's declaration.
-extern "C" int posix_memalign(void **__memptr, size_t __alignment,
-                              size_t __size);
+extern "C" int posix_memalign(void **__memptr, size_t __alignment, size_t __size);
 #endif
 #endif
 
@@ -53,7 +52,8 @@ _mm_malloc(size_t __size, size_t __align) {
 }
 
 static __inline__ void __attribute__((__always_inline__, __nodebug__))
-_mm_free(void *__p) {
+_mm_free(void *__p)
+{
 #if defined(__MINGW32__)
   __mingw_aligned_free(__p);
 #elif defined(_WIN32) && !defined(__NTPOSIX__) && !defined(_WIN32_ITANIUM)
