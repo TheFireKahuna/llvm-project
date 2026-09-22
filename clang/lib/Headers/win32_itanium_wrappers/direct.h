@@ -35,19 +35,6 @@
  * Windows Itanium with LLVM libc: Map UCRT underscore-prefixed directory
  * functions to POSIX equivalents.
  */
-#elif defined(_WIN32_ITANIUM)
-#include <unistd.h>
-#include <sys/stat.h>
-
-#define _getcwd getcwd
-#define _chdir  chdir
-#define _rmdir  rmdir
-
-/* _mkdir takes one arg (no mode); POSIX mkdir takes two. */
-static __inline int _mkdir(const char *path) {
-  return mkdir(path, 0777);
-}
-
-#endif /* __MSVCRT__ || _UCRT / _WIN32_ITANIUM */
+#endif
 
 #endif /* __CLANG_DIRECT_H */

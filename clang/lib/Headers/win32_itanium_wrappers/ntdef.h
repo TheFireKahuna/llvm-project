@@ -19,13 +19,7 @@
 #if defined(_WIN32_ITANIUM)
 
 #ifndef TYPE_ALIGNMENT
-#if defined(__cplusplus)
-#define TYPE_ALIGNMENT(t) alignof(t)
-#elif __STDC_VERSION__ >= 201112L
-#define TYPE_ALIGNMENT(t) _Alignof(t)
-#else
-#define TYPE_ALIGNMENT(t) __alignof(t)  /* Clang/GCC extension */
-#endif
+#define TYPE_ALIGNMENT(t) __alignof(t)
 #endif
 
 #ifndef DECLSPEC_NORETURN
@@ -102,7 +96,11 @@
 
 #ifdef __cplusplus
 #undef WIN_NOEXCEPT
+#if __cplusplus >= 201103L
 #define WIN_NOEXCEPT noexcept
+#else
+#define WIN_NOEXCEPT throw()
+#endif
 #else
 #define WIN_NOEXCEPT
 #endif
@@ -110,7 +108,7 @@
 #undef DEFAULT_UNREACHABLE
 #define DEFAULT_UNREACHABLE default: __builtin_unreachable()
 
-#ifdef __cplusplus
+#if defined(__cplusplus) && __cplusplus >= 201103L
 #undef _ENUM_FLAG_CONSTEXPR
 #define _ENUM_FLAG_CONSTEXPR constexpr
 #else
@@ -119,21 +117,6 @@
 
 #undef DECLSPEC_ALIGN
 #define DECLSPEC_ALIGN(x) __attribute__((aligned(x)))
-#endif
-
-/*
- * Redirect wchar_t → __CHAR16_TYPE__ during the SDK include so WCHAR and
- * all derived types are 16-bit (see winnt.h wrapper for rationale).
- */
-#if defined(_WIN32_ITANIUM) && __SIZEOF_WCHAR_T__ == 4
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wkeyword-macro"
-#ifdef __cplusplus
-#define wchar_t char16_t
-#else
-#define wchar_t unsigned short
-#endif
-#pragma clang diagnostic pop
 #endif
 
 #pragma push_macro("WIN_NOEXCEPT")
@@ -150,10 +133,5 @@
 #pragma pop_macro("DEFAULT_UNREACHABLE")
 #pragma pop_macro("_ENUM_FLAG_CONSTEXPR")
 
-#if defined(_WIN32_ITANIUM) && __SIZEOF_WCHAR_T__ == 4
-#undef wchar_t
-#endif
-
-#endif /* _WIN32_ITANIUM */
 
 #endif /* __CLANG_NTDEF_H */

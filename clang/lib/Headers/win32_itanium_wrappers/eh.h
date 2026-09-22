@@ -10,12 +10,6 @@
 #ifndef __clang_eh_h
 #define __clang_eh_h
 
-#if !defined(_WIN32_ITANIUM)
-/* Elsewhere the header belongs to the Visual C++ runtime. */
-#if __has_include_next(<eh.h>)
-#include_next <eh.h>
-#endif
-#else
 
 #ifndef __cplusplus
 #error "eh.h is only for C++"
@@ -46,6 +40,5 @@ using std::set_terminate;
 using std::terminate;
 using std::terminate_handler;
 
-#endif /* _WIN32_ITANIUM */
 
 #endif /* __clang_eh_h */

@@ -10,12 +10,6 @@
 #ifndef __clang_vcruntime_startup_h
 #define __clang_vcruntime_startup_h
 
-#if !defined(_WIN32_ITANIUM)
-/* Plain clang-cl / MSVC-compat build: defer to the real VCRuntime header. */
-#if __has_include_next(<vcruntime_startup.h>)
-#include_next <vcruntime_startup.h>
-#endif
-#else
 
 /*
  * Zero-Visual-Studio-headers targets (Windows Itanium): the VCRuntime is not
@@ -57,6 +51,5 @@ _crt_argv_mode __CRTDECL _get_startup_argv_mode(void);
 
 _CRT_END_C_HEADER
 
-#endif /* _WIN32_ITANIUM */
 
 #endif /* __clang_vcruntime_startup_h */

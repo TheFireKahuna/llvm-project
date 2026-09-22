@@ -72,42 +72,6 @@
  * Windows Itanium with LLVM libc: Map UCRT _O_* flags to POSIX O_* flags.
  * Third-party code uses _O_BINARY, _O_RDONLY etc. under _WIN32 guards.
  */
-#elif defined(_WIN32_ITANIUM)
-#  ifndef _O_RDONLY
-#    define _O_RDONLY   O_RDONLY
-#  endif
-#  ifndef _O_WRONLY
-#    define _O_WRONLY   O_WRONLY
-#  endif
-#  ifndef _O_RDWR
-#    define _O_RDWR     O_RDWR
-#  endif
-#  ifndef _O_APPEND
-#    define _O_APPEND   O_APPEND
-#  endif
-#  ifndef _O_CREAT
-#    define _O_CREAT    O_CREAT
-#  endif
-#  ifndef _O_TRUNC
-#    define _O_TRUNC    O_TRUNC
-#  endif
-#  ifndef _O_EXCL
-#    define _O_EXCL     O_EXCL
-#  endif
-/* Binary/text mode — LLVM libc is always binary, but define for compat. */
-#  ifndef _O_BINARY
-#    define _O_BINARY   0x8000
-#  endif
-#  ifndef _O_TEXT
-#    define _O_TEXT      0x4000
-#  endif
-#  ifndef O_BINARY
-#    define O_BINARY     _O_BINARY
-#  endif
-#  ifndef _O_NOINHERIT
-#    define _O_NOINHERIT O_CLOEXEC
-#  endif
-
-#endif /* __MSVCRT__ || _UCRT / _WIN32_ITANIUM */
+#endif
 
 #endif /* __CLANG_FCNTL_H */

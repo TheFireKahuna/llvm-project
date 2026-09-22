@@ -10,9 +10,6 @@
 #ifndef __clang_basetsd_h
 #define __clang_basetsd_h
 
-#if !defined(_WIN32_ITANIUM)
-#include_next <basetsd.h>
-#else
 /*++
 
 Copyright (c) Microsoft Corporation.  All rights reserved.
@@ -77,7 +74,14 @@ Revision History:
 #define SPOINTER_32 POINTER_SIGNED POINTER_32
 #define UPOINTER_32 POINTER_UNSIGNED POINTER_32
 
-_CRT_BEGIN_C_HEADER       
+#ifdef __cplusplus
+extern "C" {
+#define __CLANG_BASETSD_INLINE inline
+#else
+/* A C99 inline definition provides no external one, so a call that is not
+ * inlined would need a definition no library has. */
+#define __CLANG_BASETSD_INLINE static __inline
+#endif
 
 typedef signed char INT8, *PINT8;
 typedef signed short INT16, *PINT16;
@@ -101,13 +105,6 @@ typedef signed int LONG32, *PLONG32;
 typedef unsigned int ULONG32, *PULONG32;
 typedef unsigned int DWORD32, *PDWORD32;
 
-#if !defined(_W64)
-#if ((defined(_X86_) || defined(_M_IX86) || defined(_ARM_) || defined(_M_ARM))) && defined(_MSC_VER)
-#define _W64 __w64
-#else
-#define _W64
-#endif
-#endif
 
 //
 // The INT_PTR is guaranteed to be the same size as a pointer.  Its
@@ -166,55 +163,55 @@ typedef uint64_t HANDLE_PTR;
 typedef unsigned int UHALF_PTR, *PUHALF_PTR;
 typedef int HALF_PTR, *PHALF_PTR;
 
-inline  unsigned long HandleToULong(const void *h) {
+__CLANG_BASETSD_INLINE unsigned long HandleToULong(const void *h) {
   return ((unsigned long)(ULONG_PTR)h);
 }
 
-inline  long HandleToLong(const void *h) { return ((long)(LONG_PTR)h); }
+__CLANG_BASETSD_INLINE long HandleToLong(const void *h) { return ((long)(LONG_PTR)h); }
 
-inline  void *ULongToHandle(const unsigned long h) {
+__CLANG_BASETSD_INLINE void *ULongToHandle(const unsigned long h) {
   return ((void *)(UINT_PTR)h);
 }
 
-inline  void *LongToHandle(const long h) { return ((void *)(INT_PTR)h); }
+__CLANG_BASETSD_INLINE void *LongToHandle(const long h) { return ((void *)(INT_PTR)h); }
 
-inline  unsigned long PtrToUlong(const void *p) {
+__CLANG_BASETSD_INLINE unsigned long PtrToUlong(const void *p) {
   return ((unsigned long)(ULONG_PTR)p);
 }
 
-inline  unsigned int PtrToUint(const void *p) {
+__CLANG_BASETSD_INLINE unsigned int PtrToUint(const void *p) {
   return ((unsigned int)(UINT_PTR)p);
 }
 
-inline  unsigned short PtrToUshort(const void *p) {
+__CLANG_BASETSD_INLINE unsigned short PtrToUshort(const void *p) {
   return ((unsigned short)(unsigned long)(ULONG_PTR)p);
 }
 
-inline  long PtrToLong(const void *p) { return ((long)(LONG_PTR)p); }
+__CLANG_BASETSD_INLINE long PtrToLong(const void *p) { return ((long)(LONG_PTR)p); }
 
-inline  int PtrToInt(const void *p) { return ((int)(INT_PTR)p); }
+__CLANG_BASETSD_INLINE int PtrToInt(const void *p) { return ((int)(INT_PTR)p); }
 
-inline  short PtrToShort(const void *p) { return ((short)(long)(LONG_PTR)p); }
+__CLANG_BASETSD_INLINE short PtrToShort(const void *p) { return ((short)(long)(LONG_PTR)p); }
 
-inline  void *IntToPtr(const int i)
+__CLANG_BASETSD_INLINE void *IntToPtr(const int i)
 // Caution: IntToPtr() sign-extends the int value.
 {
   return ((void *)(INT_PTR)i);
 }
 
-inline  void *UIntToPtr(const unsigned int ui)
+__CLANG_BASETSD_INLINE void *UIntToPtr(const unsigned int ui)
 // Caution: UIntToPtr() zero-extends the unsigned int value.
 {
   return ((void *)(UINT_PTR)ui);
 }
 
-inline  void *LongToPtr(const long l)
+__CLANG_BASETSD_INLINE void *LongToPtr(const long l)
 // Caution: LongToPtr() sign-extends the long value.
 {
   return ((void *)(LONG_PTR)l);
 }
 
-inline  void *ULongToPtr(const unsigned long ul)
+__CLANG_BASETSD_INLINE void *ULongToPtr(const unsigned long ul)
 // Caution: ULongToPtr() zero-extends the unsigned long value.
 {
   return ((void *)(ULONG_PTR)ul);
@@ -225,15 +222,15 @@ inline  void *ULongToPtr(const unsigned long ul)
 #define HandleToHandle64(h) (PtrToPtr64(h))
 #define Handle64ToHandle(h) (Ptr64ToPtr(h))
 
-inline  void *Ptr32ToPtr(const void *POINTER_32 p) {
+__CLANG_BASETSD_INLINE void *Ptr32ToPtr(const void *POINTER_32 p) {
   return ((void *)(ULONG_PTR)(unsigned long)p);
 }
 
-inline  void *Handle32ToHandle(const void *POINTER_32 h) {
+__CLANG_BASETSD_INLINE void *Handle32ToHandle(const void *POINTER_32 h) {
   return ((void *)(LONG_PTR)(long)h);
 }
 
-inline  void *POINTER_32 PtrToPtr32(const void *p) {
+__CLANG_BASETSD_INLINE void *POINTER_32 PtrToPtr32(const void *p) {
   return ((void *POINTER_32)(unsigned long)(ULONG_PTR)p);
 }
 
@@ -263,19 +260,19 @@ typedef _W64 unsigned long HANDLE_PTR;
 #define LongToPtr(l) ((VOID *)(LONG_PTR)((long)l))
 #define ULongToPtr(ul) ((VOID *)(ULONG_PTR)((unsigned long)ul))
 
-inline  void *POINTER_64 PtrToPtr64(const void *p) {
+__CLANG_BASETSD_INLINE void *POINTER_64 PtrToPtr64(const void *p) {
   return ((void *POINTER_64)(uint64_t)(ULONG_PTR)p);
 }
 
-inline  void *Ptr64ToPtr(const void *POINTER_64 p) {
+__CLANG_BASETSD_INLINE void *Ptr64ToPtr(const void *POINTER_64 p) {
   return ((void *)(ULONG_PTR)(uint64_t)p);
 }
 
-inline  HANDLE64 HandleToHandle64(const void *h) {
+__CLANG_BASETSD_INLINE HANDLE64 HandleToHandle64(const void *h) {
   return ((HANDLE64)(int64_t)(LONG_PTR)h);
 }
 
-inline  void *Handle64ToHandle(const HANDLE64 h) {
+__CLANG_BASETSD_INLINE void *Handle64ToHandle(const HANDLE64 h) {
   return ((void *)(ULONG_PTR)(uint64_t)h);
 }
 
@@ -384,10 +381,13 @@ typedef KAFFINITY *PKAFFINITY;
 
 // end_wudfpwdm
 
-_CRT_END_C_HEADER   
+#undef __CLANG_BASETSD_INLINE
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // _BASETSD_H_
 
 
-#endif
 #endif /* __clang_basetsd_h */

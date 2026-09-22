@@ -76,51 +76,6 @@
 #  ifndef cwait
 #    define cwait _cwait
 #  endif
-#elif defined(_WIN32_ITANIUM)
-#include <unistd.h>
-#include <pthread.h>
-
-#define _getpid getpid
-#define _execl  execl
-#define _execle execle
-#define _execlp execlp
-#define _execv  execv
-#define _execve execve
-#define _execvp execvp
-
-/* _beginthreadex/_endthreadex: MSVC CRT thread creation wrappers.
-   With LLVM libc, pthread_create is the native API. Provide compat shims
-   for third-party code (zstd, etc.) that uses the MSVC threading API. */
-typedef unsigned (__attribute__((__stdcall__)) *_beginthreadex_proc_type)(void *);
-
-static __inline unsigned long _beginthreadex(
-    void *security, unsigned stack_size,
-    _beginthreadex_proc_type start_address,
-    void *arglist, unsigned initflag, unsigned *thrdaddr) {
-  (void)security; (void)initflag;
-  pthread_t tid;
-  pthread_attr_t attr;
-  pthread_attr_init(&attr);
-  if (stack_size)
-    pthread_attr_setstacksize(&attr, stack_size);
-  /* Adapt calling conventions: _beginthreadex uses __stdcall unsigned(void*),
-     pthread uses __cdecl void*(void*). Cast through void* — both are
-     pointer-to-function with one void* arg, only return type differs. */
-  typedef void *(*pthread_start_t)(void *);
-  int rc = pthread_create(&tid, &attr, (pthread_start_t)(void *)start_address, arglist);
-  pthread_attr_destroy(&attr);
-  if (rc != 0) return 0;
-  if (thrdaddr)
-    *thrdaddr = (unsigned)(unsigned long long)tid;
-  /* Return a pseudo-handle. Caller expects a HANDLE (closeable via CloseHandle).
-     pthread_t on Windows Itanium is the thread HANDLE. */
-  return (unsigned long)tid;
-}
-
-static __inline void _endthreadex(unsigned retval) {
-  pthread_exit((void *)(unsigned long long)retval);
-}
-
-#endif /* __MSVCRT__ || _UCRT / _WIN32_ITANIUM */
+#endif
 
 #endif /* __CLANG_PROCESS_H */

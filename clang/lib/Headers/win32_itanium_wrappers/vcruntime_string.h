@@ -10,12 +10,6 @@
 #ifndef __clang_vcruntime_string_h
 #define __clang_vcruntime_string_h
 
-#if !defined(_WIN32_ITANIUM)
-/* Plain clang-cl / MSVC-compat build: defer to the real VCRuntime header. */
-#if __has_include_next(<vcruntime_string.h>)
-#include_next <vcruntime_string.h>
-#endif
-#else
 
 /*
  * Zero-Visual-Studio-headers targets (Windows Itanium): the VCRuntime is not
@@ -50,6 +44,5 @@ _VCRTIMP wchar_t _CONST_RETURN *__cdecl wcsstr(wchar_t const *_Str,
 
 _CRT_END_C_HEADER
 
-#endif /* _WIN32_ITANIUM */
 
 #endif /* __clang_vcruntime_string_h */

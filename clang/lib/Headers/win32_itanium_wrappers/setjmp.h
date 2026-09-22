@@ -11,7 +11,7 @@
 #define __clang_setjmp_h
 
 /* Only include this if we are aiming for MSVC compatibility. */
-#if (!defined(_MSC_VER) && !defined(_WIN32_ITANIUM)) || defined(__LLVM_LIBC__)
+#if !defined(_WIN32_ITANIUM)
 #include_next <setjmp.h>
 #else
 
@@ -118,36 +118,18 @@ extern "C" {
 #endif
 
 /* Function prototypes */
-#if defined(__LLVM_LIBC__)
-/* llvm-libc on Windows: setjmp is a two-arg function that captures the
-   caller's establisher frame for RtlUnwindEx (used by longjmp).
-   The public setjmp(buf) macro inserts __builtin_frame_address(0). */
-int __cdecl __llvm_libc_setjmp(
-    _Out_ jmp_buf _Buf,
-    void *_Frame
-    );
-#define setjmp(buf) __llvm_libc_setjmp((buf), __builtin_frame_address(0))
-#else
 /* UCRT: setjmp is aliased to _setjmp on Windows */
 #ifndef _INC_SETJMPEX
     #define setjmp _setjmp
-#endif
 int __cdecl _setjmp(
     _Out_ jmp_buf _Buf
     );
 #endif
 
-#if defined(__cplusplus) && __cplusplus >= 201103L
-__declspec(noreturn) void __cdecl longjmp(
-    _In_reads_(_JBLEN) jmp_buf _Buf,
-    _In_ int _Value
-    ) noexcept(false);
-#else
 __declspec(noreturn) void __cdecl longjmp(
     _In_reads_(_JBLEN) jmp_buf _Buf,
     _In_ int _Value
     );
-#endif
 
 #ifdef __cplusplus
 }

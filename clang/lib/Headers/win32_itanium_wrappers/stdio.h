@@ -42,10 +42,6 @@
  */
 #if defined(__MSVCRT__) || defined(_UCRT)
 
-#  ifndef _VA_LIST
-#    define _VA_LIST
-     typedef __builtin_va_list va_list;
-#  endif
 #  ifndef fileno
 #    define fileno _fileno
 #  endif
@@ -86,19 +82,6 @@
  * Windows Itanium with LLVM libc: Map UCRT underscore-prefixed stdio
  * functions to POSIX/C99 equivalents.
  */
-#elif defined(_WIN32_ITANIUM)
-
-#define _fileno  fileno
-#define _fdopen  fdopen
-#define _popen   popen
-#define _pclose  pclose
-#define _tempnam tempnam
-
-/* _snprintf/_vsnprintf: UCRT versions don't null-terminate on overflow.
-   C99 snprintf/vsnprintf do. Close enough for third-party compat. */
-#define _snprintf  snprintf
-#define _vsnprintf vsnprintf
-
-#endif /* __MSVCRT__ || _UCRT / _WIN32_ITANIUM */
+#endif
 
 #endif /* __CLANG_STDIO_H */

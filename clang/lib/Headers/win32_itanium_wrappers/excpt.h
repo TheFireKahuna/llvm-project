@@ -13,11 +13,6 @@
 /* On MSVC or when VC Tools headers are available, defer to the system header.
  * On Windows Itanium without VC Tools, provide minimal SEH declarations
  * required by Windows SDK headers (windows.h). */
-#if defined(_MSC_VER) && !defined(_WIN32_ITANIUM)
-#  if __has_include_next(<excpt.h>)
-#    include_next <excpt.h>
-#  endif
-#else
 #define _INC_EXCPT
 
 #include <vcruntime.h>
@@ -84,6 +79,5 @@ int           __cdecl _abnormal_termination(void);
 
 _CRT_END_C_HEADER
 
-#endif /* !_MSC_VER || _WIN32_ITANIUM */
 
 #endif /* __EXCPT_H */

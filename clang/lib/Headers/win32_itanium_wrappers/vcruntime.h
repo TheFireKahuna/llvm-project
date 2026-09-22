@@ -130,23 +130,9 @@ extern "C" {
     #endif
 #endif
 
-#if defined(_M_CEE_PURE) || defined(MRTDLL)
-    #ifndef __CLRCALL_OR_CDECL
-        #define __CLRCALL_OR_CDECL __clrcall
-    #ifndef __CLR_OR_THIS_CALL
-    #endif
-        #define __CLR_OR_THIS_CALL __clrcall
-    #endif
-#else
-    #define __CLRCALL_OR_CDECL __cdecl
-    #define __CLR_OR_THIS_CALL
-#endif
-
-#ifdef _M_CEE_PURE
-    #define __CLRCALL_PURE_OR_CDECL __clrcall
-#else
-    #define __CLRCALL_PURE_OR_CDECL __cdecl
-#endif
+#define __CLRCALL_OR_CDECL __cdecl
+#define __CLR_OR_THIS_CALL
+#define __CLRCALL_PURE_OR_CDECL __cdecl
 
 #ifndef __CRTDECL
 #define __CRTDECL __CLRCALL_PURE_OR_CDECL
@@ -277,30 +263,6 @@ extern "C" {
 #endif
 #endif
 
-/* libc++ in use or vcruntime explicitly disabled - skip vcruntime.h */
-#if __has_include_next(<vcruntime.h>)
-#include_next <vcruntime.h>
-#endif
-
-// Definitions of common __declspecs
-#undef _VCRT_NOALIAS
-#undef _VCRT_RESTRICT
-#undef _VCRT_ALLOCATOR
-#undef _VCRT_JIT_INTRINSIC
-#undef _VCRT_ALIGN
-#define _VCRT_NOALIAS __attribute__((noalias))
-#define _VCRT_RESTRICT __declspec(restrict)
-#define _VCRT_ALLOCATOR __attribute__((malloc))
-#if defined _M_CEE && defined _M_X64
-    #define _VCRT_JIT_INTRINSIC __declspec(jitintrinsic)
-#else
-    #define _VCRT_JIT_INTRINSIC
-#endif
-#ifdef __midl
-    #define _VCRT_ALIGN(x)
-#else
-    #define _VCRT_ALIGN(x) __attribute__((aligned(x)))
-#endif
 
 extern uintptr_t __security_cookie;
 
