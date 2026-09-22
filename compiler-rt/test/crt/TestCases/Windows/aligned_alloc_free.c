@@ -12,7 +12,7 @@
 // RUN: %run %t.opt.exe %t.opt.dll
 // REQUIRES: windows, crt
 
-#define WIN32_LEAN_AND_MEAN
+#include "Inputs/aligned_alloc.h"
 #include <assert.h>
 #include <errno.h>
 #include <malloc.h>
@@ -75,9 +75,10 @@ int main(int argc, char **argv) {
 
   static const size_t sizes[] = {1,    7,    8,    15,    16,     17,
                                  4095, 4096, 4097, 65537, 1048577};
-  struct block blocks[5 * (sizeof(sizes) / sizeof(sizes[0]))];
+  struct block blocks[27 * (sizeof(sizes) / sizeof(sizes[0]))];
   size_t count = 0;
-  for (size_t alignment = 1; alignment <= 16; alignment <<= 1) {
+  for (size_t alignment = 1; alignment <= test_max_alignment();
+       alignment <<= 1) {
     for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); ++i) {
       struct block b = {allocate_in_c(alignment, sizes[i]), sizes[i]};
       assert(b.ptr);
@@ -114,7 +115,7 @@ int main(int argc, char **argv) {
   // Cleanup is valid even if allocation returned null. Check the result
   // before release so an implementation returning storage here cannot pass.
   const size_t requests[][2] = {
-      {16, 0}, {0, 16}, {3, 16}, {32, 64}, {16, SIZE_MAX - 15}};
+      {16, 0}, {0, 16}, {3, 16}, {((size_t)1 << 63), 64}, {16, SIZE_MAX - 15}};
   for (size_t i = 0; i < sizeof(requests) / sizeof(requests[0]); ++i) {
     void *p = aligned_alloc(requests[i][0], requests[i][1]);
     assert(p == NULL);

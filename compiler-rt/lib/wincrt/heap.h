@@ -14,28 +14,28 @@
 
 namespace wincrt {
 
-// Windows creates this heap before running image initializers. The shared UCRT
-// retains this same handle; a DLL observes its host's heap, not its own
-// manifest. Use byte copies for private OS storage, without imposing C++ object
-// types on it. Clang folds each copy into a single load.
-inline void *processHeap() {
-  const unsigned char *Peb;
+// Observe the heap selected before image initialization. DLLs see their host's
+// heap. Callers needing ownership must compare this observation with UCRT's
+// retained handle; the PEB alone does not establish allocator ownership.
+[[nodiscard]] inline void *processHeap() noexcept {
 #if defined(__x86_64__)
-  Peb = reinterpret_cast<const unsigned char *>(__readgsqword(0x60));
+  const auto *PEB =
+      reinterpret_cast<const unsigned char *>(__readgsqword(0x60));
 #elif defined(__aarch64__)
-  const auto *Teb = reinterpret_cast<const unsigned char *>(__getReg(18));
-  __builtin_memcpy(&Peb, Teb + 0x60, sizeof(Peb));
+  const auto *TEB = reinterpret_cast<const unsigned char *>(__getReg(18));
+  const unsigned char *PEB;
+  __builtin_memcpy(&PEB, TEB + 0x60, sizeof(PEB));
 #else
 #error "wincrt supports x86_64 and aarch64"
 #endif
   void *Heap;
-  __builtin_memcpy(&Heap, Peb + 0x30, sizeof(Heap));
+  __builtin_memcpy(&Heap, PEB + 0x30, sizeof(Heap));
   return Heap;
 }
 
-// This is the native family discriminator used by RtlAllocateHeap, not a
-// qualification of private allocation routines or their metadata layouts.
-inline bool isSegmentHeap(const void *Heap) {
+// Requires a valid heap header. This is RTL's family discriminator; it neither
+// authenticates the pointer nor qualifies a private metadata layout.
+[[nodiscard]] inline bool isSegmentHeap(const void *Heap) noexcept {
   uint32_t Signature;
   __builtin_memcpy(&Signature, static_cast<const unsigned char *>(Heap) + 0x10,
                    sizeof(Signature));

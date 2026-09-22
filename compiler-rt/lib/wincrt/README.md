@@ -34,36 +34,131 @@ come from compiler-rt builtins (`crt_begin_windows.c`, `crt_end_windows.c`).
 
 ## C aligned allocation
 
-`aligned_alloc` supports alignments 1, 2, 4, 8 and 16 using UCRT `malloc`.
-Every successful result can be passed to ordinary UCRT `free`, including
-across DLL boundaries. No allocation metadata or `free` interception is used.
-Extended alignments are unsupported by this function; use the paired
-`_aligned_malloc`/`_aligned_free` or aligned C++ new/delete for those.
+`aligned_alloc` and `posix_memalign` share native allocation for every alignment.
+For `aligned_alloc`, alignments 1, 2,
+4, 8 and 16 use `HeapAlloc` on either heap family; its Kernel32 import forwards
+directly to `RtlAllocateHeap`. Extended power-of-two alignments use compact
+native size classes, segment-heap page ranges or large allocations. Every successful result works
+with ordinary release-UCRT `free` and `realloc`, across threads and DLLs and
+after the allocating DLL unloads. No allocation record points into wincrt;
+there is no allocation registry, interior user pointer, or `free` interception.
 
-The contract follows C17 7.22.3.1 and C23 7.24.3.1, including the final
+Every nonzero, representable request checks heap identity before either native
+path. On first use, the public entry retains the handle returned by UCRT's
+`_get_heap_handle`, independently of the PEB. Each call compares the current
+PEB handle against that owner and rejects null/mismatch,
+before dereferencing heap metadata. The backend receives the verified handle
+instead of reloading the PEB. A forged segment signature on another pointer is
+therefore insufficient. The retained handle is process memory too: this catches
+handle substitution but is not authentication against arbitrary process writes.
+
+The private adapter in `aligned_alloc.cpp` is qualified for **x64 ntdll
+10.0.26100.9539**, CodeView **0D5BBF21-0A19-B691-5591-A9BB852F417A**, age 1.
+Other revisions, AArch64 and non-segment hosts reject nonzero extended requests
+with `EINVAL` from `aligned_alloc` or `ENOMEM` from `posix_memalign`.
+The private page/large paths also reject unsupported heap
+environments and diagnostic/tagging modes.
+Segment-heap selection alone does not qualify these private entry points.
+Updating Windows may therefore disable extended allocation until another
+revision is reviewed and qualified. This is an intentional compatibility limit,
+not a stable Windows ABI or a claim of general upstream readiness.
+
+There is no fixed alignment ceiling such as 64 MiB. Arithmetic that cannot be
+represented safely by native RTL is rejected before acquiring resources;
+otherwise native address-space/commit exhaustion returns null with `ENOMEM`.
+Large alignment can reserve at least that much address space. Padding is not
+committed. Requests whose size and alignment are at most 2048 first select the
+next power-of-two native size class. LFH aligns both the first block and the
+stride to that size. An actual-address check also covers cold/disabled buckets
+served by VS: an unsuitable block is freed and the page path supplies alignment.
+There is one candidate allocation, no retry-until-aligned loop. Native usable
+size can exceed the requested size. The implementation is not
+claimed to be faster than Microsoft's separately paired aligned allocator.
+
+The C17/C23 contract includes the final
 [WG14 DR 460 correction](https://www.open-std.org/jtc1/sc22/wg14/issues/c11c17/issue0460.html):
-unsupported alignments return null, and sizes need not be multiples of the
-alignment. These corrected semantics apply in C11 mode as well. Zero-size
-requests with a supported alignment return null without changing `errno`.
-Wincrt sets `EINVAL` for unsupported alignments and `ENOMEM` for sizes above
-UCRT's allocation ceiling; ordinary allocation failures follow UCRT `malloc`.
-These `errno` choices are implementation policy, not ISO C requirements.
+sizes need not be alignment multiples. Wincrt accepts these semantics in C11
+mode too. Invalid (zero or non-power-of-two) alignments return null with
+`EINVAL`. Zero-sized requests return null with `EINVAL` before backend setup.
+This is the zero-size rejection permitted by
+[POSIX.1-2024](https://pubs.opengroup.org/onlinepubs/9799919799/functions/aligned_alloc.html);
+leaving errno unchanged on that null result would not satisfy POSIX. Excessive
+sizes and allocation failures report `ENOMEM`. No alignment invokes UCRT's
+invalid-parameter handler or its optional Microsoft malloc/new-handler retry
+mode. That retry-mode change also applies to alignments at most 16.
 
-The deallocation family is determined by the allocating function, not by the
-pointer's alignment. Microsoft `_aligned_malloc` returns an interior pointer
-even at alignments 8 and 16. Such pointers require `_aligned_free`; passing
-them to `free` can corrupt the heap. Conversely, wincrt `aligned_alloc`
-results require ordinary `free`, not `_aligned_free`. Microsoft offset-aligned
-allocations also require `_aligned_free`. Null pointers are valid for both
-deallocators. Neither API makes double frees or damaged/interior pointers valid.
+`posix_memalign` requires a power-of-two alignment that is a multiple of
+`sizeof(void *)` (8 on this target). It returns `EINVAL` for invalid alignment,
+`ENOMEM` for an unavailable allocation capability or allocation failure, and
+zero on success. It never changes `errno` and writes the caller's output slot
+only on success. Valid zero-size requests succeed with a null pointer before
+backend setup. Sizes need not be alignment multiples. Internally, invalid
+alignment, unavailable capability and exhaustion remain distinct; the POSIX
+interface does not misreport unsupported heap policy as invalid alignment.
+The revision-dependent availability limit above still applies.
 
-The cross-image guarantee above assumes the images share the release UCRT
-allocation domain used by this target; it does not promise compatibility with
-unrelated custom allocators or a different CRT/debug-heap allocation domain.
-`aligned_alloc_free.c` checks UCRT heap-block validity, deallocation errors,
-cross-thread release, and release after unloading the allocating DLL. It also
-checks the Microsoft allocation/deallocation pair independently. Invalid
-cross-family frees are undefined behavior and are not regression-test oracles.
+For the same valid nonzero inputs, both APIs request the same native storage.
+Alignment 8 needs no extra padding: both Win64 heap families already provide
+at least 16-byte alignment. The minimum alignment is an argument constraint,
+not a minimum allocation size. `posix_memalign` adds an output-slot store and
+returns status instead of a pointer; no relative latency claim is made.
+Neither API change switches libc++'s existing internal `_aligned_malloc` /
+`_aligned_free` pair.
+
+Cold qualification checks the loaded image identity and shared UCRT heap
+owner and registers exact CFG entries through the SDK's `onecore.lib` import
+of `SetProcessValidCallTargets`. Indirect calls retain CFG instrumentation.
+Publication uses a single atomic word with no waiting initialization state;
+concurrent callers may perform identical registrations. No loader-dependent
+initialization lock, constructor, TLS cache or per-allocation lookup is needed.
+
+Before private allocation, the adapter publishes `TEB.HeapWalkContext` and
+checks current heap modes in the same order as RTL. RTL's exclusive side
+sets its lock bit, flushes process write buffers, and waits for these markers.
+The adapter drops its marker before waiting through the exported
+`RtlWaitOnAddress`, then republishes and rechecks the flags on each wake. The
+exclusive owner may allocate without waiting. Ordinary contention is not an
+allocation failure. Nested marked entry and unsupported private modes return
+`EINVAL` from `aligned_alloc` or `ENOMEM` from `posix_memalign`. SEH cleanup clears
+its marker on unwind; corruption exceptions are not swallowed. Large-path
+rollback releases native metadata and reservations at each failure boundary.
+
+The Microsoft family remains separate: `_aligned_malloc` and
+`_aligned_offset_malloc` still require `_aligned_free`. They are not made
+compatible with `free`, and wincrt results must not go to `_aligned_free`.
+The cross-image guarantee assumes the shared release UCRT domain used by this
+target, not unrelated custom allocators or a different debug CRT.
+
+Tests cover exact alignment, disjoint writable storage, non-multiple and
+zero sizes, failures, ordinary free/realloc, DLL and thread lifetime, early
+initialization, concurrent first use and heap walking, foreign-host fallback,
+CFG refusal, POSIX error/output/errno semantics, compact size classes,
+lock-owner allocation, another thread's
+blocked allocation, and deterministic rollback. Production integration exercises
+alignments through **16 GiB**, which is a test range rather than an API cap.
+The ordinary page-range path has one CFG-protected native allocation call;
+fixed-size header reads and entry-address arithmetic emit no helper calls.
+These code-generation checks do not establish an optimal latency bound.
+
+The allocator is one translation unit. `heap.h` retains only the inline heap
+identity operations shared with startup. The public entries share a local
+allocator with explicit failure classification and no errno access. Its
+extended backend keeps its SEH frame off the fundamental path; the larger
+reservation routine and cold qualification/wait routines remain out of line.
+Scalar native-storage copies and entry-address helpers inline without calls.
+`PendingLargeAllocation` owns metadata and reservation resources until tree
+insertion transfers them to RTL. Ordinary failure returns release acquired
+resources in reverse order using the same native in/out slots. The scope owner
+is non-copyable and needs neither the C++ standard library nor exception support;
+the enclosing SEH guard remains responsible for marker cleanup during native
+exceptions. Shared owner and qualification state use lock-free Clang atomics;
+the large tree uses RTL's SRW
+lock, and its independent counters use relaxed atomic updates. These boundaries
+preserve CFG on private ntdll calls without introducing virtual dispatch.
+
+Executable startup still checks the target's segment-heap policy after security
+initialization and before application constructors. Allocation-time ownership
+and private-revision checks serve a separate purpose and remain in place.
 
 ## Lifetime ownership
 

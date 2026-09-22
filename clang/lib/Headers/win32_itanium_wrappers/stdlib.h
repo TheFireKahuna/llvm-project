@@ -58,18 +58,22 @@
 
 /*
  * aligned_alloc: C11 7.22.3.1. The UCRT neither declares nor exports it, and
- * Microsoft documents it as unlikely to ever exist; wincrt implements it over
- * malloc bases for every alignment malloc guarantees (see
- * compiler-rt/lib/wincrt/aligned_alloc.cpp). Declared here so libc++'s
- * <cstdlib> using_if_exists resolves std::aligned_alloc and C code sees the
- * C11 name. Larger alignments fail with a null pointer; callers needing them
- * use _aligned_malloc/_aligned_free or aligned operator new.
+ * wincrt supplies allocations compatible with ordinary UCRT free/realloc.
+ * Fundamental alignments use native allocation; extended ones require a
+ * qualified native segment heap (see compiler-rt/lib/wincrt/README.md).
+ * Declared here so libc++'s <cstdlib> using_if_exists resolves
+ * std::aligned_alloc and C code sees the C11 name. Unsupported alignments
+ * return a null pointer.
  */
 #if defined(__MSVCRT__)
 #ifdef __cplusplus
 extern "C" {
 #endif
 void *__cdecl aligned_alloc(size_t alignment, size_t size);
+/* POSIX aligned allocation: returns an error number without changing errno.
+ * Alignment must be a power of two and a multiple of sizeof(void *).
+ * On failure *memptr is unchanged; on zero-size success it is null. */
+int __cdecl posix_memalign(void **memptr, size_t alignment, size_t size);
 #ifdef __cplusplus
 }
 #endif

@@ -9,6 +9,7 @@
 // RUN: %run %t.opt.exe
 // REQUIRES: windows, crt
 
+#include "Inputs/aligned_alloc.h"
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -35,7 +36,8 @@ static void check(void *p, size_t alignment, size_t size) {
 
 int main() {
   assert(&std::aligned_alloc == &::aligned_alloc);
-  for (size_t alignment = 1; alignment <= 16; alignment <<= 1) {
+  for (size_t alignment = 1; alignment <= test_max_alignment();
+       alignment <<= 1) {
     void *p = std::aligned_alloc(alignment, 256);
     check(p, alignment, 256);
     std::free(p);
@@ -48,7 +50,7 @@ int main() {
     check(p, alignment, 256);
     std::free(p);
   }
-  assert(std::aligned_alloc(32, 64) == nullptr);
+  assert(std::aligned_alloc(24, 64) == nullptr);
   std::free(std::aligned_alloc(16, 0));
   return 0;
 }

@@ -5,7 +5,8 @@ import struct
 import subprocess
 import sys
 
-source, destination, dll = sys.argv[1:]
+source, destination, dll = sys.argv[1:4]
+require_success = sys.argv[4:] == ["--require-success"]
 image = bytearray(pathlib.Path(source).read_bytes())
 pe = struct.unpack_from("<I", image, 0x3C)[0]
 assert image[pe : pe + 4] == b"PE\0\0"
@@ -19,6 +20,8 @@ result = subprocess.run([destination, dll], capture_output=True, timeout=30)
 # Windows policy may select segment heap even without a manifest. In that case
 # main itself verifies segment heap and the EXE/DLL/UCRT identity. Otherwise the
 # production startup gate must diagnose and terminate before main runs.
+if require_success:
+    assert result.returncode == 0, result
 if result.returncode:
     assert result.returncode == 255, result
     assert b"wincrt: executable requires the Windows segment heap; " in result.stderr
