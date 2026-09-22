@@ -26,6 +26,7 @@
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/CFG.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -72,7 +73,8 @@ static cl::opt<bool> DisableCheckNoReturn("disable-check-noreturn-call",
 static bool InsertStackProtectors(const TargetLowering &TLI,
                                   const LibcallLoweringInfo &Libcalls,
                                   Function *F, DomTreeUpdater *DTU,
-                                  bool &HasPrologue, bool &HasIRCheck);
+                                  bool &HasPrologue, bool &HasIRCheck,
+                                  const BasicBlock *&UnprotectedReturn);
 
 /// CreateFailBB - Create a basic block to jump to when the stack protector
 /// check fails.
@@ -80,7 +82,8 @@ static BasicBlock *CreateFailBB(Function *F,
                                 const LibcallLoweringInfo &Libcalls);
 
 bool SSPLayoutInfo::shouldEmitSDCheck(const BasicBlock &BB) const {
-  return HasPrologue && !HasIRCheck && isa<ReturnInst>(BB.getTerminator());
+  return HasPrologue && !HasIRCheck && &BB != UnprotectedReturn &&
+         isa<ReturnInst>(BB.getTerminator());
 }
 
 void SSPLayoutInfo::copyToMachineFrameInfo(MachineFrameInfo &MFI) const {
@@ -150,7 +153,8 @@ PreservedAnalyses StackProtectorPass::run(Function &F,
 
   ++NumFunProtected;
   bool Changed = InsertStackProtectors(*TLI, Libcalls, &F, DT ? &DTU : nullptr,
-                                       Info.HasPrologue, Info.HasIRCheck);
+                                       Info.HasPrologue, Info.HasIRCheck,
+                                       Info.UnprotectedReturn);
 #ifdef EXPENSIVE_CHECKS
   assert((!DT ||
           DTU.getDomTree().verify(DominatorTree::VerificationLevel::Full)) &&
@@ -193,6 +197,7 @@ bool StackProtector::runOnFunction(Function &Fn) {
   TM = &getAnalysis<TargetPassConfig>().getTM<TargetMachine>();
   LayoutInfo.HasPrologue = false;
   LayoutInfo.HasIRCheck = false;
+  LayoutInfo.UnprotectedReturn = nullptr;
 
   LayoutInfo.SSPBufferSize = Fn.getFnAttributeAsParsedInteger(
       "stack-protector-buffer-size", SSPLayoutInfo::DefaultSSPBufferSize);
@@ -215,9 +220,9 @@ bool StackProtector::runOnFunction(Function &Fn) {
   const TargetLowering *TLI = Subtarget->getTargetLowering();
 
   ++NumFunProtected;
-  bool Changed =
-      InsertStackProtectors(*TLI, Libcalls, F, DTU ? &*DTU : nullptr,
-                            LayoutInfo.HasPrologue, LayoutInfo.HasIRCheck);
+  bool Changed = InsertStackProtectors(
+      *TLI, Libcalls, F, DTU ? &*DTU : nullptr, LayoutInfo.HasPrologue,
+      LayoutInfo.HasIRCheck, LayoutInfo.UnprotectedReturn);
 #ifdef EXPENSIVE_CHECKS
   assert((!DTU ||
           DTU->getDomTree().verify(DominatorTree::VerificationLevel::Full)) &&
@@ -575,11 +580,12 @@ static Value *getStackGuard(const TargetLoweringBase &TLI,
   return B.CreateIntrinsic(Intrinsic::stackguard, {});
 }
 
-/// Insert code into the entry block that stores the stack guard
+/// Insert code into PrologueBB that stores the stack guard
 /// variable onto the stack:
 ///
 ///   entry:
 ///     StackGuardSlot = alloca i8*
+///   PrologueBB:
 ///     StackGuard = <stack guard>
 ///     call void @llvm.stackprotector(StackGuard, StackGuardSlot)
 ///
@@ -587,12 +593,15 @@ static Value *getStackGuard(const TargetLoweringBase &TLI,
 /// node.
 static bool CreatePrologue(Function *F, Module *M, Instruction *CheckLoc,
                            const TargetLoweringBase *TLI,
-                           const LibcallLoweringInfo &Libcalls,
-                           AllocaInst *&AI) {
+                           const LibcallLoweringInfo &Libcalls, AllocaInst *&AI,
+                           BasicBlock *PrologueBB) {
   bool SupportsSelectionDAGSP = false;
   IRBuilder<> B(&F->getEntryBlock().front());
   PointerType *PtrTy = PointerType::getUnqual(CheckLoc->getContext());
   AI = B.CreateAlloca(PtrTy, nullptr, "StackGuardSlot");
+
+  if (PrologueBB != &F->getEntryBlock())
+    B.SetInsertPoint(&*PrologueBB->getFirstInsertionPt());
 
   Value *GuardSlot =
       getStackGuard(*TLI, Libcalls, M, B, &SupportsSelectionDAGSP);
@@ -600,11 +609,92 @@ static bool CreatePrologue(Function *F, Module *M, Instruction *CheckLoc,
   return SupportsSelectionDAGSP;
 }
 
+// Avoid guard traffic on an early exit when only the other entry successor uses
+// stack objects. Both successors must have a single predecessor: the guard must
+// not be reinitialized by a backedge, nor may protected code reach the
+// unchecked return. More general control flow retains entry instrumentation.
+static BasicBlock *
+findStackProtectorPrologue(Function &F, const BasicBlock *&UnprotectedReturn) {
+  BasicBlock &Entry = F.getEntryBlock();
+  auto *BI = dyn_cast<CondBrInst>(Entry.getTerminator());
+  if (F.hasFnAttribute(Attribute::StackProtectReq) || F.hasOptNone() ||
+      F.hasPersonalityFn() || !BI)
+    return &Entry;
+
+  // ABI-created stack copies are not represented by the allocas checked below.
+  if (any_of(F.args(), [](const Argument &A) {
+        return A.hasPassPointeeByValueCopyAttr();
+      }))
+    return &Entry;
+
+  for (Instruction &I : Entry) {
+    if (isa<AllocaInst>(I) || isa<DbgInfoIntrinsic>(I))
+      continue;
+    // Loads of incoming state may select the path, but no call or side effect
+    // may precede initialization of the guard.
+    if (I.mayHaveSideEffects() || isa<CallBase>(I))
+      return &Entry;
+  }
+
+  for (unsigned N = 0; N != 2; ++N) {
+    BasicBlock *Early = BI->getSuccessor(N);
+    BasicBlock *Protected = BI->getSuccessor(1 - N);
+    if (!isa<ReturnInst>(Early->getTerminator()) ||
+        Early->getSinglePredecessor() != &Entry ||
+        Protected->getSinglePredecessor() != &Entry)
+      continue;
+
+    if (any_of(*Early, [](const Instruction &I) {
+          if (const auto *CI = dyn_cast<CallInst>(&I))
+            return !CI->isTailCall() || CI->isInlineAsm() ||
+                   isa<IntrinsicInst>(CI) || CI->canReturnTwice();
+          return !isa<ReturnInst>(I) && I.mayHaveSideEffects();
+        }))
+      continue;
+
+    bool UsesStack = false;
+    bool Safe = true;
+    for (BasicBlock &BB : F) {
+      for (Instruction &I : BB) {
+        auto *AI = dyn_cast<AllocaInst>(&I);
+        if (!AI)
+          continue;
+        UsesStack = true;
+        if (!AI->isStaticAlloca()) {
+          Safe = false;
+          break;
+        }
+        // Reject even address formation outside the protected region. Once an
+        // address is formed there, every path to a use has initialized the
+        // guard and cannot reach the early return.
+        for (const User *U : AI->users()) {
+          auto *Use = dyn_cast<Instruction>(U);
+          if (!Use || Use->getParent() == &Entry || Use->getParent() == Early) {
+            Safe = false;
+            break;
+          }
+        }
+        if (!Safe)
+          break;
+      }
+      if (!Safe)
+        break;
+    }
+    if (Safe && UsesStack) {
+      UnprotectedReturn = Early;
+      return Protected;
+    }
+  }
+  return &Entry;
+}
+
 bool InsertStackProtectors(const TargetLowering &TLI,
                            const LibcallLoweringInfo &Libcalls, Function *F,
                            DomTreeUpdater *DTU, bool &HasPrologue,
-                           bool &HasIRCheck) {
+                           bool &HasIRCheck,
+                           const BasicBlock *&UnprotectedReturn) {
   auto *M = F->getParent();
+  BasicBlock *PrologueBB = findStackProtectorPrologue(*F, UnprotectedReturn);
 
   // If the target wants to XOR the frame pointer into the guard value, it's
   // impossible to emit the check in IR, so the target *must* support stack
@@ -616,6 +706,8 @@ bool InsertStackProtectors(const TargetLowering &TLI,
   BasicBlock *FailBB = nullptr;
 
   for (BasicBlock &BB : llvm::make_early_inc_range(*F)) {
+    if (&BB == UnprotectedReturn)
+      continue;
     // This is stack protector auto generated check BB, skip it.
     if (&BB == FailBB)
       continue;
@@ -645,7 +737,7 @@ bool InsertStackProtectors(const TargetLowering &TLI,
     if (!HasPrologue) {
       HasPrologue = true;
       SupportsSelectionDAGSP &=
-          CreatePrologue(F, M, CheckLoc, &TLI, Libcalls, AI);
+          CreatePrologue(F, M, CheckLoc, &TLI, Libcalls, AI, PrologueBB);
     }
 
     // SelectionDAG based code generation. Nothing else needs to be done here.

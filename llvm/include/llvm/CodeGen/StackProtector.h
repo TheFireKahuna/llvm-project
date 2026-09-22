@@ -58,6 +58,9 @@ class SSPLayoutInfo {
   // IR checking code is generated.
   bool HasIRCheck = false;
 
+  // An early return which cannot access this function's stack objects.
+  const BasicBlock *UnprotectedReturn = nullptr;
+
 public:
   // Return true if StackProtector is supposed to be handled by SelectionDAG.
   bool shouldEmitSDCheck(const BasicBlock &BB) const;
