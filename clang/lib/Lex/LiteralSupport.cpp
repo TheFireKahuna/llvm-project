@@ -1752,10 +1752,9 @@ CharLiteralParser::CharLiteralParser(const char *begin, const char *end,
 
   Kind = kind;
 
-  // -fwide-char16-literals: L'x' → char16_t in system headers only.
-  // User code keeps L'x' as wchar_t so libc++/application code works with
-  // 32-bit wchar_t. System headers (Windows SDK) need 16-bit L'x' to match
-  // the Win32 WCHAR ABI.
+  // With -fwide-char16-literals, a wide literal in a system header, such as
+  // a Windows SDK header written for a 16-bit WCHAR, is a char16_t literal.
+  // User code keeps its wchar_t literals.
   if (Kind == tok::wide_char_constant && PP.getLangOpts().WideChar16Literals &&
       PP.getSourceManager().isInSystemHeader(Loc))
     Kind = tok::utf16_char_constant;
@@ -2069,17 +2068,14 @@ void StringLiteralParser::init(ArrayRef<Token> StringToks){
     }
   }
 
-  // -fwide-char16-literals: L"..." → char16_t[] in system headers only.
-  // See comment in CharLiteralParser above.
+  // As for a character literal, with -fwide-char16-literals, judged by the
+  // token that has the wide prefix.
   if (Kind == tok::wide_string_literal && Features.WideChar16Literals) {
-    // Find the token that contributed the wide prefix.
-    for (const Token &Tok : StringToks) {
-      if (Tok.getKind() == tok::wide_string_literal) {
-        if (SM.isInSystemHeader(Tok.getLocation()))
-          Kind = tok::utf16_string_literal;
-        break;
-      }
-    }
+    auto It = llvm::find_if(StringToks, [](const Token &Tok) {
+      return Tok.is(tok::wide_string_literal);
+    });
+    if (SM.isInSystemHeader(It->getLocation()))
+      Kind = tok::utf16_string_literal;
   }
 
   // Include space for the null terminator.
