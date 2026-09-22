@@ -75,32 +75,6 @@ namespace {
 // Constant Folding internal helper functions
 //===----------------------------------------------------------------------===//
 
-#if defined(LLVM_RUNTIME_NTPOSIX)
-static double foldSinhForHost(double X) {
-  double AbsX = fabs(X);
-  double ExpAbsX = exp(AbsX);
-  return copysign(0.5 * ExpAbsX - 0.5 / ExpAbsX, X);
-}
-
-static double foldCoshForHost(double X) {
-  double ExpAbsX = exp(fabs(X));
-  return 0.5 * ExpAbsX + 0.5 / ExpAbsX;
-}
-
-static double foldTanhForHost(double X) {
-  double ExpNeg2AbsX = exp(-2.0 * fabs(X));
-  double Result = (1.0 - ExpNeg2AbsX) / (1.0 + ExpNeg2AbsX);
-  return copysign(Result, X);
-}
-
-static constexpr bool HostHasFoldableErf = false;
-#else
-static double foldSinhForHost(double X) { return sinh(X); }
-static double foldCoshForHost(double X) { return cosh(X); }
-static double foldTanhForHost(double X) { return tanh(X); }
-static constexpr bool HostHasFoldableErf = true;
-#endif
-
 static Constant *foldConstVectorToAPInt(APInt &Result, Type *DestTy,
                                         Constant *C, Type *SrcEltTy,
                                         unsigned NumSrcElts,
@@ -2158,9 +2132,25 @@ static APFloat FlushWithDenormKind(const APFloat &V,
   }
 }
 
+// The C library of NT-POSIX hosts (llvm-libc) has no double sinh, cosh, tanh or
+// erf. Leave those calls unfolded there rather than approximate them.
+namespace host {
+#ifdef LLVM_RUNTIME_NTPOSIX
+constexpr double (*sinh)(double) = nullptr;
+constexpr double (*cosh)(double) = nullptr;
+constexpr double (*tanh)(double) = nullptr;
+constexpr double (*erf)(double) = nullptr;
+#else
+using ::cosh;
+using ::erf;
+using ::sinh;
+using ::tanh;
+#endif
+} // namespace host
+
 Constant *ConstantFoldFP(double (*NativeFP)(double), const APFloat &V, Type *Ty,
                          DenormalMode DenormMode = DenormalMode::getIEEE()) {
-  if (!DenormMode.isValid() ||
+  if (!NativeFP || !DenormMode.isValid() ||
       DenormMode.Input == DenormalMode::DenormalModeKind::Dynamic ||
       DenormMode.Output == DenormalMode::DenormalModeKind::Dynamic)
     return nullptr;
@@ -2168,30 +2158,6 @@ Constant *ConstantFoldFP(double (*NativeFP)(double), const APFloat &V, Type *Ty,
   llvm_fenv_clearexcept();
   auto Input = FlushWithDenormKind(V, DenormMode.Input);
   double Result = NativeFP(Input.convertToDouble());
-  if (llvm_fenv_testexcept()) {
-    llvm_fenv_clearexcept();
-    return nullptr;
-  }
-
-  Constant *Output = GetConstantFoldFPValue(Result, Ty);
-  if (DenormMode.Output == DenormalMode::DenormalModeKind::IEEE)
-    return Output;
-  const auto *CFP = static_cast<ConstantFP *>(Output);
-  const auto Res = FlushWithDenormKind(CFP->getValueAPF(), DenormMode.Output);
-  return ConstantFP::get(Ty->getContext(), Res);
-}
-
-Constant *ConstantFoldFPFloat(float (*NativeFP)(float), const APFloat &V,
-                              Type *Ty,
-                              DenormalMode DenormMode = DenormalMode::getIEEE()) {
-  if (!DenormMode.isValid() ||
-      DenormMode.Input == DenormalMode::DenormalModeKind::Dynamic ||
-      DenormMode.Output == DenormalMode::DenormalModeKind::Dynamic)
-    return nullptr;
-
-  llvm_fenv_clearexcept();
-  auto Input = FlushWithDenormKind(V, DenormMode.Input);
-  float Result = NativeFP(Input.convertToFloat());
   if (llvm_fenv_testexcept()) {
     llvm_fenv_clearexcept();
     return nullptr;
@@ -2800,9 +2766,9 @@ static Constant *ConstantFoldScalarCall1(StringRef Name,
       case Intrinsic::cos:
         return ConstantFoldFP(cos, APF, Ty);
       case Intrinsic::sinh:
-        return ConstantFoldFP(foldSinhForHost, APF, Ty);
+        return ConstantFoldFP(host::sinh, APF, Ty);
       case Intrinsic::cosh:
-        return ConstantFoldFP(foldCoshForHost, APF, Ty);
+        return ConstantFoldFP(host::cosh, APF, Ty);
       case Intrinsic::atan:
         // Implement optional behavior from C's Annex F for +/-0.0.
         if (U.isZero())
@@ -2972,7 +2938,7 @@ static Constant *ConstantFoldScalarCall1(StringRef Name,
     case LibFunc_cosh_finite:
     case LibFunc_coshf_finite:
       if (TLI->has(Func))
-        return ConstantFoldFP(foldCoshForHost, APF, Ty);
+        return ConstantFoldFP(host::cosh, APF, Ty);
       break;
     case LibFunc_exp:
     case LibFunc_expf:
@@ -3048,12 +3014,8 @@ static Constant *ConstantFoldScalarCall1(StringRef Name,
       return nullptr;
     case LibFunc_erf:
     case LibFunc_erff:
-      if constexpr (HostHasFoldableErf) {
-        if (TLI->has(Func))
-          return ConstantFoldFP(erf, APF, Ty);
-      }
-      if (TLI->has(Func) && Ty->isFloatTy())
-        return ConstantFoldFPFloat(erff, APF, Ty);
+      if (TLI->has(Func))
+        return ConstantFoldFP(host::erf, APF, Ty);
       break;
     case LibFunc_nearbyint:
     case LibFunc_nearbyintf:
@@ -3083,7 +3045,7 @@ static Constant *ConstantFoldScalarCall1(StringRef Name,
     case LibFunc_sinh_finite:
     case LibFunc_sinhf_finite:
       if (TLI->has(Func))
-        return ConstantFoldFP(foldSinhForHost, APF, Ty);
+        return ConstantFoldFP(host::sinh, APF, Ty);
       break;
     case LibFunc_sqrt:
     case LibFunc_sqrtf:
@@ -3098,7 +3060,7 @@ static Constant *ConstantFoldScalarCall1(StringRef Name,
     case LibFunc_tanh:
     case LibFunc_tanhf:
       if (TLI->has(Func))
-        return ConstantFoldFP(foldTanhForHost, APF, Ty);
+        return ConstantFoldFP(host::tanh, APF, Ty);
       break;
     case LibFunc_trunc:
     case LibFunc_truncf:
