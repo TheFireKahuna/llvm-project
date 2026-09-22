@@ -21,10 +21,8 @@
 // operands for a large array or structure is unprofitable! This limit can be
 // configured or disabled, however.
 //
-// Note that this transformation could also be done for arguments that are only
-// stored to (returning the value instead), but does not currently.  This case
-// would be best handled when and if LLVM begins supporting multiple return
-// values from functions.
+// A final store through an otherwise unused argument of a void function can
+// also be promoted, by returning the value and storing it in the caller.
 //
 //===----------------------------------------------------------------------===//
 
@@ -59,6 +57,7 @@
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/NoFolder.h"
@@ -84,6 +83,7 @@ using namespace llvm;
 
 STATISTIC(NumArgumentsPromoted, "Number of pointer arguments promoted");
 STATISTIC(NumArgumentsDead, "Number of dead pointer args eliminated");
+STATISTIC(NumOutputArgumentsPromoted, "Number of output arguments promoted");
 
 namespace {
 
@@ -96,6 +96,13 @@ struct ArgPart {
 };
 
 using OffsetAndArgPart = std::pair<int64_t, ArgPart>;
+
+struct OutputArg {
+  Argument *Arg;
+  Instruction *Write;
+  Type *Ty;
+  Align Alignment;
+};
 
 } // end anonymous namespace
 
@@ -112,10 +119,10 @@ static Value *createByteGEP(IRBuilderBase &IRB, const DataLayout &DL,
 /// DoPromotion - This method actually performs the promotion of the specified
 /// arguments, and returns the new function.  At this point, we know that it's
 /// safe to do so.
-static Function *
-doPromotion(Function *F, FunctionAnalysisManager &FAM,
-            const DenseMap<Argument *, SmallVector<OffsetAndArgPart, 4>>
-                &ArgsToPromote) {
+static Function *doPromotion(
+    Function *F, FunctionAnalysisManager &FAM,
+    const DenseMap<Argument *, SmallVector<OffsetAndArgPart, 4>> &ArgsToPromote,
+    std::optional<OutputArg> Output) {
   // Start by computing a new prototype for the function, which is the same as
   // the old function, but has modified arguments.
   FunctionType *FTy = F->getFunctionType();
@@ -135,6 +142,17 @@ doPromotion(Function *F, FunctionAnalysisManager &FAM,
   unsigned ArgNo = 0, NewArgNo = 0;
   for (Function::arg_iterator I = F->arg_begin(), E = F->arg_end(); I != E;
        ++I, ++ArgNo) {
+    if (Output && &*I == Output->Arg) {
+      NewArgIndices.push_back((unsigned)-1);
+      ++NumOutputArgumentsPromoted;
+      ORE.emit([&]() {
+        return OptimizationRemark(DEBUG_TYPE, "OutputArgumentPromoted", F)
+               << "promoting output argument "
+               << ore::NV("ArgName", I->getName()) << "("
+               << ore::NV("ArgIndex", ArgNo) << ") to return by value";
+      });
+      continue;
+    }
     auto It = ArgsToPromote.find(&*I);
     if (It == ArgsToPromote.end()) {
       // Unchanged argument
@@ -170,7 +188,7 @@ doPromotion(Function *F, FunctionAnalysisManager &FAM,
     }
   }
 
-  Type *RetTy = FTy->getReturnType();
+  Type *RetTy = Output ? Output->Ty : FTy->getReturnType();
 
   // Construct the new function type using the new arguments.
   FunctionType *NFTy = FunctionType::get(RetTy, Params, FTy->isVarArg());
@@ -190,6 +208,9 @@ doPromotion(Function *F, FunctionAnalysisManager &FAM,
                     << "From: " << *F);
 
   uint64_t LargestVectorWidth = 0;
+  if (Output && Output->Ty->isVectorTy())
+    LargestVectorWidth =
+        Output->Ty->getPrimitiveSizeInBits().getKnownMinValue();
   for (auto *I : Params)
     if (auto *VT = dyn_cast<llvm::VectorType>(I))
       LargestVectorWidth = std::max(
@@ -236,6 +257,8 @@ doPromotion(Function *F, FunctionAnalysisManager &FAM,
     ArgNo = 0;
     for (Function::arg_iterator I = F->arg_begin(), E = F->arg_end(); I != E;
          ++I, ++AI, ++ArgNo) {
+      if (Output && &*I == Output->Arg)
+        continue;
       auto ArgIt = ArgsToPromote.find(&*I);
       if (ArgIt == ArgsToPromote.end()) {
         Args.push_back(*AI); // Unmodified argument
@@ -288,6 +311,8 @@ doPromotion(Function *F, FunctionAnalysisManager &FAM,
       auto *NewCall =
           CallInst::Create(NF, Args, OpBundles, "", CB.getIterator());
       NewCall->setTailCallKind(cast<CallInst>(&CB)->getTailCallKind());
+      if (Output && NewCall->isTailCall())
+        NewCall->setTailCallKind(CallInst::TCK_None);
       NewCS = NewCall;
     }
     NewCS->setCallingConv(CB.getCallingConv());
@@ -295,6 +320,11 @@ doPromotion(Function *F, FunctionAnalysisManager &FAM,
                                             CallPAL.getFnAttrs(),
                                             CallPAL.getRetAttrs(), ArgAttrVec));
     NewCS->copyMetadata(CB, {LLVMContext::MD_prof, LLVMContext::MD_dbg});
+    if (Output) {
+      auto *SI = IRB.CreateAlignedStore(
+          NewCS, CB.getArgOperand(Output->Arg->getArgNo()), Output->Alignment);
+      SI->copyMetadata(*Output->Write, LLVMContext::MD_nontemporal);
+    }
     Args.clear();
     ArgAttrVec.clear();
 
@@ -318,6 +348,26 @@ doPromotion(Function *F, FunctionAnalysisManager &FAM,
   // function empty.
   NF->splice(NF->begin(), F);
 
+  if (Output) {
+    IRBuilder<> IRB(Output->Write);
+    Value *RetVal;
+    if (auto *SI = dyn_cast<StoreInst>(Output->Write)) {
+      RetVal = SI->getValueOperand();
+    } else {
+      auto *MT = cast<MemTransferInst>(Output->Write);
+      auto *LI = IRB.CreateAlignedLoad(Output->Ty, MT->getRawSource(),
+                                       MT->getSourceAlign().valueOrOne());
+      LI->setAAMetadata(MT->getAAMetadata().adjustForAccess(
+          DL.getTypeStoreSize(Output->Ty).getFixedValue()));
+      RetVal = LI;
+    }
+    auto *RI = cast<ReturnInst>(Output->Write->getNextNode());
+    IRB.SetInsertPoint(RI);
+    IRB.CreateRet(RetVal);
+    RI->eraseFromParent();
+    Output->Write->eraseFromParent();
+  }
+
   // We will collect all the new created allocas to promote them into registers
   // after the following loop
   SmallVector<AllocaInst *, 4> Allocas;
@@ -326,6 +376,11 @@ doPromotion(Function *F, FunctionAnalysisManager &FAM,
   // the new arguments, also transferring over the names as well.
   Function::arg_iterator I2 = NF->arg_begin();
   for (Argument &Arg : F->args()) {
+    if (Output && &Arg == Output->Arg) {
+      assert(Arg.use_empty() && "Output argument still used");
+      Arg.replaceAllUsesWith(PoisonValue::get(Arg.getType()));
+      continue;
+    }
     if (!ArgsToPromote.count(&Arg)) {
       // If this is an unmodified argument, move the name and users over to the
       // new version.
@@ -798,6 +853,74 @@ static bool areTypesABICompatible(ArrayRef<Type *> Types, const Function &F,
   });
 }
 
+/// Move a final write to the caller without moving it across any other memory
+/// access or observable operation. The pointer must not otherwise be used, and
+/// every normal return must execute the write.
+static std::optional<OutputArg> findOutputArg(Function &F,
+                                              const TargetTransformInfo &TTI,
+                                              unsigned MaxElements) {
+  if (!F.getReturnType()->isVoidTy() || F.hasOptNone())
+    return std::nullopt;
+
+  ReturnInst *Ret = nullptr;
+  for (BasicBlock &BB : F) {
+    if (auto *RI = dyn_cast<ReturnInst>(BB.getTerminator())) {
+      if (Ret)
+        return std::nullopt;
+      Ret = RI;
+    }
+  }
+  if (!Ret)
+    return std::nullopt;
+
+  Instruction *Write = Ret->getPrevNode();
+  Value *Ptr;
+  Type *Ty;
+  Align Alignment;
+  if (auto *SI = dyn_cast_or_null<StoreInst>(Write)) {
+    if (!SI->isSimple())
+      return std::nullopt;
+    Ptr = SI->getPointerOperand();
+    Ty = SI->getValueOperand()->getType();
+    Alignment = SI->getAlign();
+  } else if (auto *MT = dyn_cast_or_null<MemTransferInst>(Write)) {
+    // Integer loads do not preserve external pointer state.
+    if (MT->isVolatile() ||
+        !F.getDataLayout().getNonStandardAddressSpaces().empty())
+      return std::nullopt;
+    auto *Length = dyn_cast<ConstantInt>(MT->getLength());
+    if (!Length || Length->isZero() ||
+        Length->getValue().ugt(IntegerType::MAX_INT_BITS / 8))
+      return std::nullopt;
+    Ptr = MT->getRawDest();
+    Ty = IntegerType::get(F.getContext(), Length->getZExtValue() * 8);
+    Alignment = MT->getDestAlign().valueOrOne();
+  } else {
+    return std::nullopt;
+  }
+
+  auto *Arg = dyn_cast<Argument>(Ptr);
+  if (!Arg || !Arg->hasOneUse() || Arg->hasByValAttr() ||
+      Arg->hasAttribute(Attribute::Preallocated) || Ty->isAggregateType() ||
+      Ty->isScalableTy())
+    return std::nullopt;
+
+  unsigned NumParts = TTI.getNumberOfParts(Ty);
+  if (!NumParts || (MaxElements && NumParts > MaxElements) ||
+      !areTypesABICompatible({Ty}, F, TTI))
+    return std::nullopt;
+
+  // A store after an invoke needs an edge split. Operand bundles may impose
+  // additional requirements on values live across the call (e.g. GC pointers).
+  if (any_of(F.users(), [](User *U) {
+        auto *CI = dyn_cast<CallInst>(U);
+        return !CI || CI->hasOperandBundles();
+      }))
+    return std::nullopt;
+
+  return OutputArg{Arg, Write, Ty, Alignment};
+}
+
 /// PromoteArguments - This method checks the specified function to see if there
 /// are any promotable arguments and if it is safe to promote the function (for
 /// example, all callers are direct).  If safe to promote some arguments, it
@@ -863,11 +986,15 @@ static Function *promoteArguments(Function *F, FunctionAnalysisManager &FAM,
   auto &AAR = FAM.getResult<AAManager>(*F);
   const auto &TTI = FAM.getResult<TargetIRAnalysis>(*F);
 
+  std::optional<OutputArg> Output = findOutputArg(*F, TTI, MaxElements);
+
   // Check to see which arguments are promotable.  If an argument is promotable,
   // add it to ArgsToPromote.
   DenseMap<Argument *, SmallVector<OffsetAndArgPart, 4>> ArgsToPromote;
-  unsigned NumArgsAfterPromote = F->getFunctionType()->getNumParams();
+  unsigned NumArgsAfterPromote = F->arg_size() - bool(Output);
   for (Argument *PtrArg : PointerArgs) {
+    if (Output && PtrArg == Output->Arg)
+      continue;
     // Replace sret attribute with noalias. This reduces register pressure by
     // avoiding a register copy.
     if (PtrArg->hasStructRetAttr()) {
@@ -898,13 +1025,13 @@ static Function *promoteArguments(Function *F, FunctionAnalysisManager &FAM,
   }
 
   // No promotable pointer arguments.
-  if (ArgsToPromote.empty())
+  if (ArgsToPromote.empty() && !Output)
     return nullptr;
 
   if (NumArgsAfterPromote > TTI.getMaxNumArgs())
     return nullptr;
 
-  return doPromotion(F, FAM, ArgsToPromote);
+  return doPromotion(F, FAM, ArgsToPromote, Output);
 }
 
 PreservedAnalyses ArgumentPromotionPass::run(LazyCallGraph::SCC &C,

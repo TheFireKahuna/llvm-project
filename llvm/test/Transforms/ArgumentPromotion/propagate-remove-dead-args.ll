@@ -4,11 +4,10 @@
 %ptr.struct = type { ptr, ptr, ptr }
 
 define internal void @child(ptr %this, ptr %y, ptr %x) {
-; CHECK-LABEL: define internal void @child
-; CHECK-SAME: (ptr [[Y:%.*]], half [[X_0_VAL:%.*]]) {
+; CHECK-LABEL: define internal half @child
+; CHECK-SAME: (half [[X_0_VAL:%.*]]) {
 ; CHECK-NEXT:  entry:
-; CHECK-NEXT:    store half [[X_0_VAL]], ptr [[Y]], align 2
-; CHECK-NEXT:    ret void
+; CHECK-NEXT:    ret half [[X_0_VAL]]
 ;
 entry:
   %0 = load half, ptr %x
@@ -21,11 +20,14 @@ define internal void @parent(ptr %this, ptr %p1, ptr %p2) {
 ; CHECK-SAME: (ptr [[P1:%.*]], ptr [[P2:%.*]]) {
 ; CHECK-NEXT:  entry:
 ; CHECK-NEXT:    [[P2_VAL2:%.*]] = load half, ptr [[P2]], align 2
-; CHECK-NEXT:    call void @child(ptr [[P1]], half [[P2_VAL2]])
+; CHECK-NEXT:    [[TMP0:%.*]] = call half @child(half [[P2_VAL2]])
+; CHECK-NEXT:    store half [[TMP0]], ptr [[P1]], align 2
 ; CHECK-NEXT:    [[P2_VAL1:%.*]] = load half, ptr [[P2]], align 2
-; CHECK-NEXT:    call void @child(ptr [[P1]], half [[P2_VAL1]])
+; CHECK-NEXT:    [[TMP1:%.*]] = call half @child(half [[P2_VAL1]])
+; CHECK-NEXT:    store half [[TMP1]], ptr [[P1]], align 2
 ; CHECK-NEXT:    [[P2_VAL:%.*]] = load half, ptr [[P2]], align 2
-; CHECK-NEXT:    call void @child(ptr [[P1]], half [[P2_VAL]])
+; CHECK-NEXT:    [[TMP2:%.*]] = call half @child(half [[P2_VAL]])
+; CHECK-NEXT:    store half [[TMP2]], ptr [[P1]], align 2
 ; CHECK-NEXT:    ret void
 ;
 entry:
