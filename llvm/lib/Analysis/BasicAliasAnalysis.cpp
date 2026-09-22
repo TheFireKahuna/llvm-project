@@ -959,15 +959,14 @@ ModRefInfo BasicAAResult::getModRefInfo(const CallBase *Call,
   ModRefInfo ErrnoMR = ME.getModRef(IRMemLocation::ErrnoMem);
   ModRefInfo OtherMR = ME.getModRef(IRMemLocation::Other);
 
-  // A non-volatile memcpy leaves its source unchanged, including the self-copy
-  // permitted by the intrinsic. Refine accesses contained in the source range.
+  // The operands of memcpy are either equal or disjoint, so a non-volatile
+  // memcpy does not change its source.
   if (const auto *MCI = dyn_cast<MemCpyInst>(Call);
       MCI && !MCI->isVolatile() && !Call->hasOperandBundles() &&
-      !AAQI.MayBeCrossIteration && Loc.Size.hasValue() &&
-      !Loc.Size.isScalable()) {
+      !AAQI.MayBeCrossIteration && Loc.Size.hasValue()) {
     MemoryLocation SrcLoc = MemoryLocation::getForSource(MCI);
-    if (SrcLoc.Size.isPrecise() && !SrcLoc.Size.isScalable() &&
-        Loc.Size.getValue() <= SrcLoc.Size.getValue() &&
+    if (SrcLoc.Size.isPrecise() &&
+        TypeSize::isKnownLE(Loc.Size.getValue(), SrcLoc.Size.getValue()) &&
         AAQI.AAR.alias(SrcLoc, Loc, AAQI, Call) == AliasResult::MustAlias)
       ArgMR &= ModRefInfo::Ref;
   }
