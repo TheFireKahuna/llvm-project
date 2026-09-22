@@ -37,10 +37,10 @@ come from compiler-rt builtins (`crt_begin_windows.c`, `crt_end_windows.c`).
 `cxa_atexit.cpp` and `cxa_thread_atexit.cpp` are compiled twice. Compiled
 into the shared libc++ with `WINCRT_SHARED_CXX_RUNTIME` (`libcxx.cmake`,
 selected by the cache files through `CMAKE_PROJECT_Runtimes_INCLUDE`), they
-export the process-wide registries from `c++.dll`. Compiled into
+export the process-wide registries from `libc++.dll`. Compiled into
 `clang_rt.wincrt.lib` they define the same code as `__wincrt_local_*`, and
 `/alternatename` directives select that copy only in images that do not link
-`c++.lib`: C programs and the runtime DLLs themselves during bootstrap. C++
+`libc++.dll.lib`: C programs and the runtime DLLs themselves during bootstrap. C++
 images therefore share one registry across every EXE and DLL, so destruction
 interleaves in reverse registration order across modules and a DLL's
 registrations are removed when it unloads.
@@ -114,5 +114,5 @@ live in libunwind and libc++abi, not here.
 `compiler-rt/test/crt` (`check-crt`) covers startup, termination ordering,
 DLL and thread lifetimes, foreign-host behaviour, CFG, the load configuration,
 signals and UCRT integration. After changing wincrt in a runtimes build,
-rebuild the archive and relink `c++.dll` and `unwind.dll`; the runtime build
+rebuild the archive and relink `libc++.dll` and `libunwind.dll`; the runtime build
 graph does not track the archive as a dependency.

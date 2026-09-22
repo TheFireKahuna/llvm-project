@@ -6,7 +6,7 @@
 // RUN: %clang --target=x86_64-unknown-windows-itanium -### %s 2>&1 \
 // RUN:   | FileCheck -check-prefix=DEFAULT_RUNTIME %s
 // DEFAULT_RUNTIME: lld-link
-// DEFAULT_RUNTIME-SAME: "-defaultlib:unwind.lib"
+// DEFAULT_RUNTIME-SAME: "-defaultlib:libunwind.dll.lib"
 // DEFAULT_RUNTIME-SAME: "-defaultlib:{{[^"]*}}clang_rt.builtins{{[^"]*}}.lib"
 // DEFAULT_RUNTIME-SAME: "-defaultlib:ucrt.lib"
 // DEFAULT_RUNTIME-SAME: "-defaultlib:kernel32.lib"

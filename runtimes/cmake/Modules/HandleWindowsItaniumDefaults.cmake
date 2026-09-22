@@ -139,10 +139,6 @@ set_windows_itanium_default(COMPILER_RT_BUILD_ORC OFF BOOL
 set_windows_itanium_default(COMPILER_RT_BUILD_GWP_ASAN OFF BOOL
   "Unused compiler-rt runtime component")
 
-# Windows Itanium uses c++.lib naming (no 'lib' prefix) to match Clang's
-# -lc++ expectations. Override the static library prefix set in libcxx/src.
-set(CMAKE_STATIC_LIBRARY_PREFIX "" CACHE STRING "No lib prefix on Windows")
-
 #===------------------------------------------------------------------------===#
 # Configuration Validation
 #===------------------------------------------------------------------------===#

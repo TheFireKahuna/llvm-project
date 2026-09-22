@@ -9,8 +9,8 @@
 // RUN: %clangxx --target=x86_64-unknown-windows-itanium -### %s 2>&1 \
 // RUN:   | FileCheck -check-prefix=CXX_LIBS %s
 // CXX_LIBS: lld-link
-// CXX_LIBS-SAME: "-defaultlib:c++.lib"
-// CXX_LIBS-SAME: "-defaultlib:unwind.lib"
+// CXX_LIBS-SAME: "-defaultlib:libc++.dll.lib"
+// CXX_LIBS-SAME: "-defaultlib:libunwind.dll.lib"
 // CXX_LIBS-SAME: "-defaultlib:{{[^"]*}}clang_rt.builtins{{[^"]*}}.lib"
 // CXX_LIBS-SAME: "-defaultlib:ucrt.lib"
 // CXX_LIBS-SAME: "-defaultlib:kernel32.lib"
@@ -33,15 +33,15 @@
 // RUN: %clang --target=x86_64-unknown-windows-itanium -### -x c %s 2>&1 \
 // RUN:   | FileCheck -check-prefix=C_LIBS %s
 // C_LIBS: lld-link
-// C_LIBS-SAME: "-defaultlib:unwind.lib"
+// C_LIBS-SAME: "-defaultlib:libunwind.dll.lib"
 // C_LIBS-SAME: "-defaultlib:ucrt.lib"
-// C_LIBS-NOT: "-defaultlib:c++.lib"
+// C_LIBS-NOT: "-defaultlib:libc++.dll.lib"
 
 // RUN: %clangxx --target=x86_64-unknown-windows-itanium -nostdlib -### %s 2>&1 \
 // RUN:   | FileCheck -check-prefix=NOSTDLIB %s
 // NOSTDLIB: lld-link
-// NOSTDLIB-NOT: "-defaultlib:c++.lib"
-// NOSTDLIB-NOT: "-defaultlib:unwind.lib"
+// NOSTDLIB-NOT: "-defaultlib:libc++.dll.lib"
+// NOSTDLIB-NOT: "-defaultlib:libunwind.dll.lib"
 // NOSTDLIB-NOT: "-defaultlib:ucrt.lib"
 // NOSTDLIB-NOT: "-defaultlib:kernel32.lib"
 // NOSTDLIB-NOT: "-nodefaultlib:"
@@ -49,25 +49,27 @@
 // RUN: %clangxx --target=x86_64-unknown-windows-itanium -nodefaultlibs -### %s 2>&1 \
 // RUN:   | FileCheck -check-prefix=NODEFAULTLIBS %s
 // NODEFAULTLIBS: lld-link
-// NODEFAULTLIBS-NOT: "-defaultlib:c++.lib"
+// NODEFAULTLIBS-NOT: "-defaultlib:libc++.dll.lib"
 // NODEFAULTLIBS-NOT: "-defaultlib:ucrt.lib"
 // NODEFAULTLIBS-NOT: "-nodefaultlib:"
 
 // RUN: %clangxx --target=x86_64-unknown-windows-itanium -nolibc -### %s 2>&1 \
 // RUN:   | FileCheck -check-prefix=NOLIBC %s
 // NOLIBC: lld-link
-// NOLIBC-SAME: "-defaultlib:c++.lib"
+// NOLIBC-SAME: "-defaultlib:libc++.dll.lib"
 // NOLIBC-NOT: "-defaultlib:ucrt.lib"
 // NOLIBC-NOT: "-defaultlib:kernel32.lib"
 
+// Both libraries use the "lib" prefix; the experimental static archive uses
+// .lib and the shared runtime's import library uses .dll.lib.
 // RUN: %clangxx --target=x86_64-unknown-windows-itanium -fexperimental-library \
 // RUN:   -### %s 2>&1 | FileCheck -check-prefix=EXPERIMENTAL %s
-// EXPERIMENTAL: "-defaultlib:c++.lib"
-// EXPERIMENTAL-SAME: "-defaultlib:c++experimental.lib"
+// EXPERIMENTAL: "-defaultlib:libc++.dll.lib"
+// EXPERIMENTAL-SAME: "-defaultlib:libc++experimental.lib"
 
 // RUN: %clangxx --target=x86_64-unknown-windows-itanium -stdlib=libc++ -### %s 2>&1 \
 // RUN:   | FileCheck -check-prefix=STDLIB_LIBCXX %s
-// STDLIB_LIBCXX: "-defaultlib:c++.lib"
+// STDLIB_LIBCXX: "-defaultlib:libc++.dll.lib"
 // STDLIB_LIBCXX-NOT: "stdc++"
 // STDLIB_LIBCXX-NOT: "msvcprt"
 
@@ -81,6 +83,6 @@
 
 // RUN: %clangxx --target=aarch64-unknown-windows-itanium -### %s 2>&1 \
 // RUN:   | FileCheck -check-prefix=LIBS_ARM64 %s
-// LIBS_ARM64: "-defaultlib:c++.lib"
-// LIBS_ARM64-SAME: "-defaultlib:unwind.lib"
+// LIBS_ARM64: "-defaultlib:libc++.dll.lib"
+// LIBS_ARM64-SAME: "-defaultlib:libunwind.dll.lib"
 // LIBS_ARM64-SAME: "-defaultlib:ucrt.lib"

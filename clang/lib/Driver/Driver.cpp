@@ -6864,6 +6864,18 @@ std::string Driver::GetStdModuleManifestPath(const Compilation &C,
     if (std::optional<std::string> result = evaluate("libc++.so"); result)
       return *result;
 
+    // Windows Itanium uses a distinct suffix for import libraries. Other
+    // Windows targets retain c++.lib; the static archive is libc++.lib.
+    const char *ImportLib =
+        TC.getTriple().isWindowsItaniumOrNTPOSIXEnvironment()
+            ? "libc++.dll.lib"
+            : "c++.lib";
+    if (std::optional<std::string> result = evaluate(ImportLib); result)
+      return *result;
+
+    if (std::optional<std::string> result = evaluate("libc++.lib"); result)
+      return *result;
+
     return evaluate("libc++.a").value_or(error);
   }
 

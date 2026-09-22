@@ -68,8 +68,8 @@
 // LINK-DAG: "-machine:x64"
 // LINK-DAG: "-subsystem:console"
 // LINK-DAG: "-entry:mainCRTStartup"
-// LINK-DAG: "-defaultlib:c++.lib"
-// LINK-DAG: "-defaultlib:unwind.lib"
+// LINK-DAG: "-defaultlib:libc++.dll.lib"
+// LINK-DAG: "-defaultlib:libunwind.dll.lib"
 // LINK-DAG: "-defaultlib:{{[^"]*}}clang_rt.builtins{{[^"]*}}.lib"
 // LINK-DAG: "-defaultlib:ucrt.lib"
 // LINK-DAG: "-defaultlib:kernel32.lib"
@@ -99,7 +99,7 @@
 // RUN:   | FileCheck --check-prefix=DLL %s
 // DLL: lld-link
 // DLL-DAG: "-dll"
-// DLL-DAG: "-implib:{{[^"]*}}.lib"
+// DLL-DAG: "-implib:{{[^"]*}}.dll.lib"
 // DLL-DAG: "-entry:_DllMainCRTStartup"
 // DLL-NOT: "-subsystem:"
 
@@ -107,7 +107,7 @@
 // RUN:   | FileCheck --check-prefix=NOSTDLIB %s
 // NOSTDLIB: lld-link
 // NOSTDLIB-NOT: "-entry:"
-// NOSTDLIB-NOT: "-defaultlib:c++.lib"
+// NOSTDLIB-NOT: "-defaultlib:libc++.dll.lib"
 // NOSTDLIB-NOT: "-defaultlib:ucrt.lib"
 // NOSTDLIB-NOT: "-defaultlib:kernel32.lib"
 
@@ -115,20 +115,20 @@
 // RUN:   | FileCheck --check-prefix=NODEFAULTLIBS %s
 // NODEFAULTLIBS: lld-link
 // NODEFAULTLIBS-DAG: "-entry:mainCRTStartup"
-// NODEFAULTLIBS-NOT: "-defaultlib:c++.lib"
+// NODEFAULTLIBS-NOT: "-defaultlib:libc++.dll.lib"
 // NODEFAULTLIBS-NOT: "-defaultlib:ucrt.lib"
 // NODEFAULTLIBS-NOT: "-nodefaultlib:msvcrt"
 
 // RUN: %clangxx --target=x86_64-unknown-windows-itanium -fexperimental-library -### %s 2>&1 \
 // RUN:   | FileCheck --check-prefix=EXPERIMENTAL %s
-// EXPERIMENTAL: "-defaultlib:c++.lib"
-// EXPERIMENTAL-SAME: "-defaultlib:c++experimental.lib"
+// EXPERIMENTAL: "-defaultlib:libc++.dll.lib"
+// EXPERIMENTAL-SAME: "-defaultlib:libc++experimental.lib"
 
 // RUN: %clang --target=x86_64-unknown-windows-itanium -### -x c %s 2>&1 \
 // RUN:   | FileCheck --check-prefix=C-LINK %s
 // C-LINK: lld-link
-// C-LINK-SAME: "-defaultlib:unwind.lib"
-// C-LINK-NOT: "-defaultlib:c++.lib"
+// C-LINK-SAME: "-defaultlib:libunwind.dll.lib"
+// C-LINK-NOT: "-defaultlib:libc++.dll.lib"
 
 // RUN: %clang --target=x86_64-unknown-windows-itanium -L/foo/bar -L/baz -### %s 2>&1 \
 // RUN:   | FileCheck --check-prefix=LIBPATH %s
@@ -141,7 +141,7 @@
 // DLL-OUTPUT: lld-link
 // DLL-OUTPUT-DAG: "-out:mylib.dll"
 // DLL-OUTPUT-DAG: "-dll"
-// DLL-OUTPUT-DAG: "-implib:mylib.lib"
+// DLL-OUTPUT-DAG: "-implib:mylib.dll.lib"
 
 // RUN: %clang --target=x86_64-scei-windows-itanium -c -### %s 2>&1 \
 // RUN:   | FileCheck --check-prefix=SCEI %s

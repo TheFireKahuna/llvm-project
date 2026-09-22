@@ -48,8 +48,8 @@
 // RUN: %clangxx -x c++ --target=x86_64-unknown-windows-itanium -stdlib=libc++ -### %s 2>&1 \
 // RUN:   | FileCheck -check-prefix=LIBCXX %s
 // LIBCXX-NOT: warning:
-// LIBCXX: "-defaultlib:c++.lib"
+// LIBCXX: "-defaultlib:libc++.dll.lib"
 // RUN: %clangxx -x c++ --target=x86_64-unknown-windows-itanium -stdlib=libstdc++ -### %s 2>&1 \
 // RUN:   | FileCheck -check-prefix=LIBSTDCXX %s
-// LIBSTDCXX: "-defaultlib:c++.lib"
+// LIBSTDCXX: "-defaultlib:libc++.dll.lib"
 // LIBSTDCXX-NOT: stdc++

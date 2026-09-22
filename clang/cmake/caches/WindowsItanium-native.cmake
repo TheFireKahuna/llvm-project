@@ -155,15 +155,15 @@ set(CMAKE_C_FLAGS "-Wno-language-extension-token -Wno-microsoft-enum-value" CACH
 set(CMAKE_CXX_FLAGS "-Wno-language-extension-token -Wno-microsoft-enum-value" CACHE STRING "")
 
 # Add library path and libraries for stage 1 runtimes.
-# CMake's try_compile tests need to find and link c++.lib and unwind.lib.
+# CMake's try_compile tests need to find and link libc++.dll.lib and libunwind.dll.lib.
 # Use -L (GNU-style) which the WindowsItanium toolchain converts to -libpath:.
 # Also explicitly add libraries since CMake may pass -nostdlib which suppresses
 # the toolchain's automatic -defaultlib: additions.
-if(EXISTS "${_WI_PHASE1_LIB}/c++.lib")
+if(EXISTS "${_WI_PHASE1_LIB}/libc++.dll.lib")
   set(CMAKE_EXE_LINKER_FLAGS "-L\"${_WI_PHASE1_LIB}\" -lc++ -lunwind" CACHE STRING "" FORCE)
   set(CMAKE_SHARED_LINKER_FLAGS "-L\"${_WI_PHASE1_LIB}\" -lc++ -lunwind" CACHE STRING "" FORCE)
 else()
-  message(WARNING "Stage 1 runtimes not found at ${_WI_PHASE1_LIB}/c++.lib; "
+  message(WARNING "Stage 1 runtimes not found at ${_WI_PHASE1_LIB}/libc++.dll.lib; "
     "CMake try_compile may fail. Set CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY as workaround.")
 endif()
 

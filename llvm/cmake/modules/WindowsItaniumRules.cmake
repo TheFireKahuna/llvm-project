@@ -78,19 +78,19 @@ set(MINGW FALSE)
 set(CMAKE_PLATFORM_NO_VERSIONED_SONAME 1)
 set(CMAKE_PLATFORM_HAS_INSTALLNAME 0)
 
-# Library Naming - Match Windows-Clang.cmake __windows_compiler_clang_gnu
-set(CMAKE_IMPORT_LIBRARY_PREFIX "")
-set(CMAKE_SHARED_LIBRARY_PREFIX "")
-set(CMAKE_SHARED_MODULE_PREFIX "")
-set(CMAKE_STATIC_LIBRARY_PREFIX "")
+# Keep a common library stem, with distinct import and static archive suffixes.
+set(CMAKE_IMPORT_LIBRARY_PREFIX "lib")
+set(CMAKE_SHARED_LIBRARY_PREFIX "lib")
+set(CMAKE_SHARED_MODULE_PREFIX "lib")
+set(CMAKE_STATIC_LIBRARY_PREFIX "lib")
 set(CMAKE_EXECUTABLE_SUFFIX ".exe")
-set(CMAKE_IMPORT_LIBRARY_SUFFIX ".lib")
+set(CMAKE_IMPORT_LIBRARY_SUFFIX ".dll.lib")
 set(CMAKE_SHARED_LIBRARY_SUFFIX ".dll")
 set(CMAKE_SHARED_MODULE_SUFFIX ".dll")
 set(CMAKE_STATIC_LIBRARY_SUFFIX ".lib")
 
 set(CMAKE_FIND_LIBRARY_PREFIXES "lib" "")
-set(CMAKE_FIND_LIBRARY_SUFFIXES ".dll.a" ".a" ".lib")
+set(CMAKE_FIND_LIBRARY_SUFFIXES ".dll.lib" ".lib" ".dll.a" ".a")
 
 # Library Path/Link Flags
 set(CMAKE_LIBRARY_PATH_FLAG "-L")

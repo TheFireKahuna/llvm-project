@@ -123,7 +123,7 @@ set(WINCRT_x86_64-unknown-windows-itanium_CMAKE_TOOLCHAIN_FILE
   "${_WI_TOOLCHAIN}" CACHE FILEPATH "")
 # The shared libc++ hosts wincrt's process-wide __cxa_atexit and thread-local
 # registries, so every wincrt EXE and DLL in a process finalizes through one
-# owner. Without this include c++.dll exports none of them and each image
+# owner. Without this include libc++.dll exports none of them and each image
 # falls back to a private registry.
 get_filename_component(_WI_WINCRT_LIBCXX
   "${CMAKE_CURRENT_LIST_DIR}/../../../compiler-rt/lib/wincrt/libcxx.cmake"
@@ -181,11 +181,11 @@ set(RUNTIMES_x86_64-unknown-windows-itanium_CMAKE_BUILD_TYPE Release CACHE STRIN
 # their own *_USE_COMPILER_RT flags, and enabling those would redundantly build
 # wincrt a second time inside the runtimes sub-build.
 
-# Bootstrap: the runtimes (CRT startup, unwind.lib) don't exist yet while the
+# Bootstrap: the runtimes (CRT startup, libunwind.dll.lib) don't exist yet while the
 # runtimes themselves configure, so configure-time feature checks must not
 # link executables — e.g. the --unwindlib=none probe would otherwise fail on
-# the missing CRT entry point, and libunwind would then link unwind.dll with
-# unwind.lib injected into its own link line.
+# the missing CRT entry point, and libunwind would then link libunwind.dll with
+# libunwind.dll.lib injected into its own link line.
 set(RUNTIMES_x86_64-unknown-windows-itanium_CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY CACHE STRING "")
 
 # ---
@@ -220,8 +220,8 @@ set(CLANG_BOOTSTRAP_PASSTHROUGH
 # ---
 # These settings apply only to the native Windows Itanium build.
 
-# Build LLVM/Clang using libc++. The resulting binaries depend on c++.dll
-# and unwind.dll at runtime (distributed with the toolchain).
+# Build LLVM/Clang using libc++. The resulting binaries depend on libc++.dll
+# and libunwind.dll at runtime (distributed with the toolchain).
 set(BOOTSTRAP_LLVM_ENABLE_LIBCXX ON CACHE BOOL "")
 
 # Optimizations for stage2.

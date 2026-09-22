@@ -244,7 +244,7 @@ void ntposix::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-dll");
 
     SmallString<128> ImplibName(Output.getFilename());
-    llvm::sys::path::replace_extension(ImplibName, "lib");
+    llvm::sys::path::replace_extension(ImplibName, "dll.lib");
     CmdArgs.push_back(Args.MakeArgString("-implib:" + ImplibName));
 
     StringRef EntryPoint;
@@ -310,7 +310,7 @@ void ntposix::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     // Unwinder.
     ToolChain::UnwindLibType UNW = TC.GetUnwindLibType(Args);
     if (UNW == ToolChain::UNW_CompilerRT)
-      CmdArgs.push_back("-defaultlib:unwind.lib");
+      CmdArgs.push_back("-defaultlib:libunwind.dll.lib");
 
     // compiler-rt builtins.
     CmdArgs.push_back(Args.MakeArgString(
@@ -413,9 +413,8 @@ void ntposix::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     }
     const Arg &A = Input.getInputArg();
     if (A.getOption().matches(options::OPT_l)) {
-      StringRef Lib = A.getValue();
-      CmdArgs.push_back(
-          Args.MakeArgString(Lib.ends_with(".lib") ? Lib : (Lib + ".lib")));
+      CmdArgs.push_back("-l");
+      CmdArgs.push_back(A.getValue());
       continue;
     }
     A.renderAsInput(Args, CmdArgs);

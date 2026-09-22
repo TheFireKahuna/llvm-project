@@ -205,8 +205,8 @@ set(CLANG_BOOTSTRAP_PASSTHROUGH
 # ---
 # These settings apply only to the native NTPOSIX build.
 
-# Build LLVM/Clang using libc++. The resulting binaries depend on c++.dll
-# and unwind.dll at runtime (distributed with the toolchain).
+# Build LLVM/Clang using libc++. The resulting binaries depend on libc++.dll
+# and libunwind.dll at runtime (distributed with the toolchain).
 set(BOOTSTRAP_LLVM_ENABLE_LIBCXX ON CACHE BOOL "")
 
 # Optimizations for stage2.

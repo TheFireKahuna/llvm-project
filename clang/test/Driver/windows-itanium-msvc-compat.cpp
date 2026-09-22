@@ -83,11 +83,11 @@
 // RUN: %clang_cl --target=x86_64-unknown-windows-itanium -### -- %s 2>&1 \
 // RUN:   | FileCheck -check-prefix=CL_LINK %s
 // CL_LINK: lld-link
-// CL_LINK-SAME: "-defaultlib:c++.lib"
+// CL_LINK-SAME: "-defaultlib:libc++.dll.lib"
 // RUN: %clang_cl --target=x86_64-unknown-windows-itanium /clang:-nostdlib++ -### -- %s 2>&1 \
 // RUN:   | FileCheck -check-prefix=CL_LINK_NOSTDLIBXX %s
 // CL_LINK_NOSTDLIBXX: lld-link
-// CL_LINK_NOSTDLIBXX-NOT: "-defaultlib:c++.lib"
+// CL_LINK_NOSTDLIBXX-NOT: "-defaultlib:libc++.dll.lib"
 
 // Asynchronous exceptions: /EHa and -fasync-exceptions are accepted, as the
 // Itanium call-site table can describe a range of instructions.

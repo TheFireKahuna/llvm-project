@@ -195,10 +195,6 @@ set_ntposix_default(COMPILER_RT_BUILD_ORC OFF BOOL
 set_ntposix_default(COMPILER_RT_BUILD_GWP_ASAN OFF BOOL
   "Unused compiler-rt runtime component")
 
-# NTPOSIX uses c++.lib naming (no 'lib' prefix) to match Clang's
-# -lc++ expectations.
-set(CMAKE_STATIC_LIBRARY_PREFIX "" CACHE STRING "No lib prefix on Windows")
-
 #===------------------------------------------------------------------------===#
 # Configuration Validation
 #===------------------------------------------------------------------------===#
@@ -231,7 +227,7 @@ endif()
 # Test Runtime DLL Path
 #===------------------------------------------------------------------------===#
 # __unit__ and C_TEST unit tests dynamically load c.dll (and transitively
-# c++.dll / unwind.dll where applicable) at runtime. Those DLLs land in the
+# libc++.dll / libunwind.dll where applicable) at runtime. Those DLLs land in the
 # runtime-staging directory that runtimes/CMakeLists.txt later assigns to
 # LLVM_RUNTIME_OUTPUT_INTDIR, but each test exe lives in its own
 # ${CMAKE_CURRENT_BINARY_DIR}, so Windows' EXE-dir-first DLL search never

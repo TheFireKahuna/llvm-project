@@ -119,6 +119,10 @@ public:
   void printVerboseInfo(raw_ostream &OS) const override;
 
 protected:
+  const char *GetLibraryArg(const llvm::opt::ArgList &Args,
+                           const llvm::opt::ArgStringList &CmdArgs,
+                           StringRef Name) const;
+
   struct GuardOptions {
     bool Tables = false; ///< address-taken function tables (cf, cf-nochecks)
     bool Checks = false; ///< instrumented indirect calls (cf)

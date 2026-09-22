@@ -1,6 +1,6 @@
 // An Itanium C++ DLL inside a host that does not use the shared C++ runtime
 // finalizes its own registrations at process detach, as vcruntime DLLs do. A
-// C-only wincrt executable never registers with c++.dll's registry, so it
+// C-only wincrt executable never registers with libc++.dll's registry, so it
 // stands in for an MSVC or non-CRT host here.
 // RUN: %clangxx_crt_dll -std=c++17 -O2 -DBUILD_DLL %s -o %t.dll
 // RUN: %clang_crt_main -x c -O2 -UNDEBUG -DBUILD_C_HOST %s -o %t.exe

@@ -2,6 +2,14 @@
 
 // Test NT-POSIX toolchain driver behavior.
 
+// The C++ runtimes share Windows Itanium's library naming convention.
+// RUN: %clangxx --target=x86_64-pc-windows-ntposix -nostartfiles -nolibc \
+// RUN:   -fexperimental-library -### %s 2>&1 | FileCheck --check-prefix=LIBS %s
+// LIBS: lld-link
+// LIBS-SAME: "-defaultlib:libc++.dll.lib"
+// LIBS-SAME: "-defaultlib:libc++experimental.lib"
+// LIBS-SAME: "-defaultlib:libunwind.dll.lib"
+
 // --- CC1 flags ---
 // RUN: %clang --target=x86_64-pc-windows-ntposix -c -### %s 2>&1 \
 // RUN:   | FileCheck --check-prefix=CC1 %s
@@ -50,8 +58,8 @@
 // NOSTDLIB-DAG: "-import-slots"
 // NOSTDLIB-NOT: "-entry:mainCRTStartup"
 // NOSTDLIB-NOT: "crt1.obj"
-// NOSTDLIB-NOT: "c++.lib"
-// NOSTDLIB-NOT: "unwind.lib"
+// NOSTDLIB-NOT: "libc++.dll.lib"
+// NOSTDLIB-NOT: "libunwind.dll.lib"
 // NOSTDLIB-NOT: "c.lib"
 // NOSTDLIB-NOT: "kernel32.lib"
 
@@ -62,8 +70,8 @@
 // NODEFAULTLIBS-DAG: "-machine:x64"
 // NODEFAULTLIBS-DAG: "-nologo"
 // NODEFAULTLIBS-DAG: "-import-slots"
-// NODEFAULTLIBS-NOT: "c++.lib"
-// NODEFAULTLIBS-NOT: "unwind.lib"
+// NODEFAULTLIBS-NOT: "libc++.dll.lib"
+// NODEFAULTLIBS-NOT: "libunwind.dll.lib"
 // NODEFAULTLIBS-NOT: "kernel32.lib"
 // NODEFAULTLIBS-NOT: "-nodefaultlib:msvcrt"
 
@@ -86,7 +94,7 @@
 // RUN:   | FileCheck --check-prefix=DLL %s
 // DLL: lld-link
 // DLL-DAG: "-dll"
-// DLL-DAG: "-implib:{{.*}}.lib"
+// DLL-DAG: "-implib:{{.*}}.dll.lib"
 // DLL-DAG: "-machine:x64"
 // DLL-NOT: "-subsystem:"
 // DLL-NOT: "-entry:mainCRTStartup"
@@ -155,4 +163,4 @@
 // RUN: %clang --target=x86_64-pc-windows-ntposix -nostdlib -### -x c %s 2>&1 \
 // RUN:   | FileCheck --check-prefix=C-LINK %s
 // C-LINK: lld-link
-// C-LINK-NOT: "c++.lib"
+// C-LINK-NOT: "libc++.dll.lib"

@@ -167,7 +167,7 @@ void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-dll");
 
     SmallString<128> ImplibName(Output.getFilename());
-    llvm::sys::path::replace_extension(ImplibName, "lib");
+    llvm::sys::path::replace_extension(ImplibName, "dll.lib");
     CmdArgs.push_back(Args.MakeArgString("-implib:" + ImplibName));
 
     // x86 uses @12 decoration for stdcall parameters.
@@ -232,7 +232,7 @@ void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   if (LinkDefaultLibs) {
     // C++ standard library. clang-cl has no C-only mode, so it links the
     // library whenever the inputs may be C++; lld pulls members only when
-    // they are referenced, so a C program gains no dependency on c++.dll.
+    // they are referenced, so a C program gains no dependency on libc++.dll.
     if (TC.ShouldLinkCXXStdlib(Args) ||
         (D.IsCLMode() && !Args.hasArg(options::OPT_nostdlibxx)))
       TC.AddCXXStdlibLibArgs(Args, CmdArgs);
@@ -245,7 +245,7 @@ void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
             << A->getValue() << TC.getTriple().normalize();
       }
     } else if (UNW == ToolChain::UNW_CompilerRT) {
-      CmdArgs.push_back("-defaultlib:unwind.lib");
+      CmdArgs.push_back("-defaultlib:libunwind.dll.lib");
     }
 
     CmdArgs.push_back(Args.MakeArgString(
@@ -374,11 +374,9 @@ void windowsitanium::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
     const Arg &A = Input.getInputArg();
 
-    // Render -l => foo.lib for link-like drivers
     if (A.getOption().matches(options::OPT_l)) {
-      StringRef Lib = A.getValue();
-      CmdArgs.push_back(Args.MakeArgString(Lib.ends_with(".lib") ? Lib
-                                                                : (Lib + ".lib")));
+      CmdArgs.push_back("-l");
+      CmdArgs.push_back(A.getValue());
       continue;
     }
 

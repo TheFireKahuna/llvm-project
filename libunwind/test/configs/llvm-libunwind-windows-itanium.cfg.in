@@ -1,6 +1,6 @@
 #
 # Configuration file for running the libunwind tests against the shared
-# library (unwind.dll) on Windows Itanium / NT-POSIX.
+# library (libunwind.dll) on Windows Itanium / NT-POSIX.
 #
 # Same shape as llvm-libunwind-shared.cfg.in, minus the ELF-isms (rpath,
 # -ldl, --export-dynamic). PE has no rpath, so the DLL directory of the

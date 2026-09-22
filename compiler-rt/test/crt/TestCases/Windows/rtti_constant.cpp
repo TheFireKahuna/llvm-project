@@ -74,7 +74,7 @@ int main() {
 
   // dynamic_cast is a direct call into this image, not the shared runtime.
   assert(reinterpret_cast<void *>(
-             GetProcAddress(GetModuleHandleA("c++.dll"), "__dynamic_cast")) !=
+             GetProcAddress(GetModuleHandleA("libc++.dll"), "__dynamic_cast")) !=
          reinterpret_cast<void *>(&__dynamic_cast));
 
   // Identity across images: the executable and the DLL agree on both of

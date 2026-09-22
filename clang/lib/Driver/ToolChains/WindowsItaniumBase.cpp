@@ -247,14 +247,47 @@ void WindowsItaniumBaseToolChain::AddClangCXXStdlibIncludeArgs(
 
 void WindowsItaniumBaseToolChain::AddCXXStdlibLibArgs(
     const ArgList &Args, ArgStringList &CmdArgs) const {
-  CmdArgs.push_back("-defaultlib:c++.lib");
+  CmdArgs.push_back("-defaultlib:libc++.dll.lib");
   if (Args.hasArg(options::OPT_fexperimental_library))
-    CmdArgs.push_back("-defaultlib:c++experimental.lib");
+    CmdArgs.push_back("-defaultlib:libc++experimental.lib");
 }
 
 // ============================================================================
 // Utilities
 // ============================================================================
+
+const char *WindowsItaniumBaseToolChain::GetLibraryArg(
+    const ArgList &Args, const ArgStringList &CmdArgs, StringRef Name) const {
+  // Exact filenames bypass the platform's prefix/suffix search.
+  if (Name.consume_front(":"))
+    return Args.MakeArgString(Name);
+  if (Name.ends_with_insensitive(".lib") || Name.ends_with_insensitive(".a"))
+    return Args.MakeArgString(Name);
+
+  // lld-link does not implement -l lookup. Search each linker directory in
+  // order, preferring an import library over a static archive. Unprefixed
+  // libraries remain available for Windows SDK and other native libraries.
+  const std::string Names[] = {("lib" + Name + ".dll.lib").str(),
+                              ("lib" + Name + ".lib").str(),
+                              (Name + ".lib").str()};
+  for (const auto &File : Names) {
+    if (getVFS().exists(File))
+      return Args.MakeArgString(File);
+  }
+  for (StringRef Arg : CmdArgs) {
+    if (!Arg.consume_front_insensitive("-libpath:") &&
+        !Arg.consume_front_insensitive("/libpath:"))
+      continue;
+    for (const auto &File : Names) {
+      SmallString<128> Path(Arg);
+      llvm::sys::path::append(Path, File);
+      if (getVFS().exists(Path))
+        return Args.MakeArgString(Path);
+    }
+  }
+  // Preserve lld-link's diagnostic and native library search on a miss.
+  return Args.MakeArgString(Names[2]);
+}
 
 void WindowsItaniumBaseToolChain::AddRuntimeLibSearchPaths(
     const ArgList &Args, ArgStringList &CmdArgs) const {
@@ -284,6 +317,13 @@ void WindowsItaniumBaseToolChain::NormalizeLLDLinkArgs(
 
   for (auto It = CmdArgs.begin(); It != CmdArgs.end();) {
     StringRef Value(*It);
+    // Resolve -l only after collecting every linker argument, including a
+    // -Wl,/libpath: that follows the library on the command line.
+    if (Value == "-l" && It + 1 != CmdArgs.end()) {
+      *It = GetLibraryArg(Args, CmdArgs, *(It + 1));
+      It = CmdArgs.erase(It + 1);
+      continue;
+    }
     // PE image-version flags are currently unstable with the custom
     // Windows-Itanium/NTPOSIX lld-link path and can crash the linker during
     // try-link probes. Drop them until lld grows reliable support here.

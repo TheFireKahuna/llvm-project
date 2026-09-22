@@ -46,7 +46,7 @@
 // DLL_OUTPUT: lld-link
 // DLL_OUTPUT-SAME: "-out:mylib.dll"
 // DLL_OUTPUT-SAME: "-dll"
-// DLL_OUTPUT-SAME: "-implib:mylib.lib"
+// DLL_OUTPUT-SAME: "-implib:mylib.dll.lib"
 
 // RUN: %clang --target=x86_64-unknown-windows-itanium -Wl,/DEBUG -Wl,/LTCG -### %s 2>&1 \
 // RUN:   | FileCheck -check-prefix=LINK_PASSTHROUGH %s
