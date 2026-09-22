@@ -138,9 +138,9 @@ static llvm::Expected<
 launchExecutor(llvm::StringRef ExecutablePath, bool UseSharedMemory,
                unsigned SlabAllocateSize, std::function<void()> CustomizeFork) {
 #if !defined(LLVM_RUNTIME_POSIX)
-  // FIXME: Add support for non-POSIX runtimes.
+  // FIXME: Add support for Windows.
   return llvm::make_error<llvm::StringError>(
-      "-" + ExecutablePath + " not supported on non-POSIX runtimes",
+      "-" + ExecutablePath + " not supported on non-unix platforms",
       llvm::inconvertibleErrorCode());
 #elif !LLVM_ENABLE_THREADS
   // Out of process mode using SimpleRemoteEPC depends on threads.
@@ -278,9 +278,9 @@ static llvm::Expected<std::unique_ptr<llvm::orc::SimpleRemoteEPC>>
 connectTCPSocket(llvm::StringRef NetworkAddress, bool UseSharedMemory,
                  unsigned SlabAllocateSize) {
 #if !defined(LLVM_RUNTIME_POSIX)
-  // FIXME: Add TCP support for non-POSIX runtimes.
+  // FIXME: Add TCP support for Windows.
   return llvm::make_error<llvm::StringError>(
-      "-" + NetworkAddress + " not supported on non-POSIX runtimes",
+      "-" + NetworkAddress + " not supported on non-unix platforms",
       llvm::inconvertibleErrorCode());
 #elif !LLVM_ENABLE_THREADS
   // Out of process mode using SimpleRemoteEPC depends on threads.
