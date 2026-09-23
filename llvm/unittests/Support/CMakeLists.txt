@@ -4,6 +4,7 @@ set(LLVM_LINK_COMPONENTS
   )
 
 add_llvm_unittest(SupportTests
+  ABIContractTest.cpp
   AddressRangeTest.cpp
   AlignmentTest.cpp
   AlignOfTest.cpp

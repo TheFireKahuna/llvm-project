@@ -22,6 +22,7 @@
 #include "llvm/LTO/LTO.h"
 #include "llvm/Plugins/PassPlugin.h"
 #include "llvm/Remarks/HotnessThresholdParser.h"
+#include "llvm/Support/ABIContract.h"
 #include "llvm/Support/Caching.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
@@ -615,7 +616,15 @@ static int dumpSymtab(int argc, char **argv) {
 
       if (!Sym.getSectionName().empty())
         outs() << "         section " << Sym.getSectionName() << "\n";
+      if (unsigned Binding = Sym.getCOFFBindingFlags())
+        outs() << "         coff binding " << Binding << '\n';
+      if (!Sym.getPartition().empty())
+        outs() << "         partition " << Sym.getPartition() << '\n';
     }
+    for (const auto &Requirement : Input->getCOFFABIRequirements())
+      outs() << "coff abi requirement "
+             << Input->symbols()[Requirement.SymbolIndex].getName() << ' '
+             << abi::contractDigest(Requirement.Contract) << '\n';
 
     outs() << '\n';
   }

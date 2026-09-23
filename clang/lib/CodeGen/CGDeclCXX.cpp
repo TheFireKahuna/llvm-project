@@ -439,6 +439,7 @@ llvm::Function *CodeGenModule::CreateGlobalInitOrCleanUpFunction(
     llvm::FunctionType *FTy, const Twine &Name, const CGFunctionInfo &FI,
     SourceLocation Loc, bool TLS, llvm::GlobalVariable::LinkageTypes Linkage) {
   llvm::Function *Fn = llvm::Function::Create(FTy, Linkage, Name, &getModule());
+  Fn->setPartition(getCodeGenOpts().SymbolPartition);
 
   if (!getLangOpts().AppleKext && !TLS) {
     // Set the section if needed.
@@ -650,7 +651,8 @@ CodeGenModule::EmitCXXGlobalVarDeclInitFunc(const VarDecl *D,
     llvm::Comdat *C = Addr->getComdat();
     if (COMDATKey && C &&
         (getTarget().getTriple().isOSBinFormatELF() ||
-         getTarget().getTriple().isOSBinFormatWasm())) {
+         getTarget().getTriple().isOSBinFormatWasm() ||
+         getTriple().isWindowsItaniumOrNTPOSIXEnvironment())) {
       Fn->setComdat(C);
     }
   } else {

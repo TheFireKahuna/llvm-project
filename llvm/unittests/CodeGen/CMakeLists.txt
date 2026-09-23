@@ -23,6 +23,7 @@ add_llvm_unittest(CodeGenTests
   AllocationOrderTest.cpp
   AMDGPUMetadataTest.cpp
   AsmPrinterDwarfTest.cpp
+  BasicTTIImplTest.cpp
   CCStateTest.cpp
   DIEHashTest.cpp
   DIETest.cpp
@@ -45,6 +46,7 @@ add_llvm_unittest(CodeGenTests
   RematerializerTest.cpp
   ScalableVectorMVTsTest.cpp
   SchedBoundary.cpp
+  ScheduleDAGInstrsTest.cpp
   SelectionDAGAddressAnalysisTest.cpp
   SelectionDAGNodeConstructionTest.cpp
   SelectionDAGPatternMatchTest.cpp

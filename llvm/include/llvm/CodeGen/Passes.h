@@ -126,6 +126,9 @@ createResetMachineFunctionPass(bool EmitFallbackDiag, bool AbortOnFailedISel);
 /// matching during instruction selection.
 LLVM_ABI FunctionPass *createCodeGenPrepareLegacyPass();
 
+/// Lower linker-resolved references across independent COFF output images.
+LLVM_ABI ModulePass *createCOFFOutputLocalityPass();
+
 /// This pass implements generation of target-specific intrinsics to support
 /// handling of complex number arithmetic
 LLVM_ABI FunctionPass *createComplexDeinterleavingPass(const TargetMachine *TM);

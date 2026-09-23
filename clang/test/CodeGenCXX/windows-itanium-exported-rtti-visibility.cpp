@@ -9,10 +9,10 @@ public:
 };
 Exported::~Exported() {}
 
-// RTTI is never exported: every image carries its own constant copy, and
-// -fvisibility=hidden simply applies to it.
-// CHECK-DAG: @_ZTS8Exported = linkonce_odr hidden constant
-// CHECK-DAG: @_ZTI8Exported = linkonce_odr hidden constant
+// An explicit published owner exports both canonical identities, including
+// under -fvisibility=hidden.
+// CHECK-DAG: @_ZTS8Exported = dso_local dllexport constant
+// CHECK-DAG: @_ZTI8Exported = dso_local dllexport constant
 
 // Export class metadata even when no member needs an out-of-line definition.
 // This also applies when inline members are excluded from DLL export.
@@ -22,8 +22,8 @@ public:
 };
 
 // CHECK-DAG: @_ZTV14InlineExported = weak_odr {{.*}}dllexport
-// CHECK-DAG: @_ZTS14InlineExported = linkonce_odr hidden constant
-// CHECK-DAG: @_ZTI14InlineExported = linkonce_odr hidden constant
+// CHECK-DAG: @_ZTS14InlineExported = weak_odr dllexport constant
+// CHECK-DAG: @_ZTI14InlineExported = weak_odr dllexport constant
 // NO-RTTI: @_ZTV14InlineExported = weak_odr {{.*}}dllexport
 
 class __declspec(dllimport) InlineImported {

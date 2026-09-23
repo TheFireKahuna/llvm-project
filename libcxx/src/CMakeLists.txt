@@ -205,16 +205,20 @@ if (NOT WIN32 OR LIBCXX_ENABLE_SHARED)
   cxx_add_common_build_flags(cxx_shared)
 
   if (WIN32_ITANIUM OR WIN32_NTPOSIX)
-    # libc++abi's per-image objects (the type_info classes and __dynamic_cast)
-    # become members of the import library, as msvcprt.lib carries its own
-    # per-image objects: nothing extra to link, and the shared library does
-    # not export those names, so each has exactly one definition.
+    # Keep the link-library spelling, but never load a runtime implementing
+    # the former extended type_info representation under the new ABI.
+    set_target_properties(cxx_shared PROPERTIES
+      RUNTIME_OUTPUT_NAME "${LIBCXX_SHARED_OUTPUT_NAME}-rtti2")
+    # Carry the image-local allocation defaults in the import library. RTTI
+    # support is imported from the shared runtime like the other ABI services.
     find_program(LIBCXX_LLVM_LIB_TOOL NAMES llvm-lib
       HINTS ${LLVM_TOOLS_BINARY_DIR} ${LLVM_RUNTIME_OUTPUT_INTDIR})
     if (NOT LIBCXX_LLVM_LIB_TOOL)
       message(FATAL_ERROR "llvm-lib is required to add libc++abi's per-image objects to the import library")
     endif()
     add_dependencies(cxx_shared cxxabi_local)
+    set_property(TARGET cxx_shared APPEND PROPERTY LINK_DEPENDS
+      "$<TARGET_FILE:cxxabi_local>")
     add_custom_command(TARGET cxx_shared POST_BUILD
       COMMAND "${LIBCXX_LLVM_LIB_TOOL}" /nologo "/out:$<TARGET_LINKER_FILE:cxx_shared>.tmp"
               "$<TARGET_FILE:cxxabi_local>" "$<TARGET_LINKER_FILE:cxx_shared>"

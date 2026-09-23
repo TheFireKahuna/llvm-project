@@ -314,7 +314,7 @@ define void @maskedgather(<16 x ptr> %va, <16 x i1> %vb, <16 x float> %vc) {
 ; THRU-NEXT:  Cost Model: Found an estimated cost of 0 for instruction: ret void
 ;
 ; LATE-LABEL: 'maskedgather'
-; LATE-NEXT:  Cost Model: Found an estimated cost of 77 for instruction: %v = call <16 x float> @llvm.masked.gather.v16f32.v16p0(<16 x ptr> align 1 %va, <16 x i1> %vb, <16 x float> %vc)
+; LATE-NEXT:  Cost Model: Found an estimated cost of 125 for instruction: %v = call <16 x float> @llvm.masked.gather.v16f32.v16p0(<16 x ptr> align 1 %va, <16 x i1> %vb, <16 x float> %vc)
 ; LATE-NEXT:  Cost Model: Found an estimated cost of 1 for instruction: ret void
 ;
 ; SIZE-LABEL: 'maskedgather'
@@ -415,19 +415,19 @@ define void @reduce_fadd_fast(<16 x float> %va) {
 
 define void @memcpy(ptr %a, ptr %b, i32 %c) {
 ; THRU-LABEL: 'memcpy'
-; THRU-NEXT:  Cost Model: Found an estimated cost of 4 for instruction: call void @llvm.memcpy.p0.p0.i32(ptr align 1 %a, ptr align 1 %b, i32 32, i1 false)
+; THRU-NEXT:  Cost Model: Found an estimated cost of 8 for instruction: call void @llvm.memcpy.p0.p0.i32(ptr align 1 %a, ptr align 1 %b, i32 32, i1 false)
 ; THRU-NEXT:  Cost Model: Found an estimated cost of 0 for instruction: ret void
 ;
 ; LATE-LABEL: 'memcpy'
-; LATE-NEXT:  Cost Model: Found an estimated cost of 4 for instruction: call void @llvm.memcpy.p0.p0.i32(ptr align 1 %a, ptr align 1 %b, i32 32, i1 false)
+; LATE-NEXT:  Cost Model: Found an estimated cost of 20 for instruction: call void @llvm.memcpy.p0.p0.i32(ptr align 1 %a, ptr align 1 %b, i32 32, i1 false)
 ; LATE-NEXT:  Cost Model: Found an estimated cost of 1 for instruction: ret void
 ;
 ; SIZE-LABEL: 'memcpy'
-; SIZE-NEXT:  Cost Model: Found an estimated cost of 4 for instruction: call void @llvm.memcpy.p0.p0.i32(ptr align 1 %a, ptr align 1 %b, i32 32, i1 false)
+; SIZE-NEXT:  Cost Model: Found an estimated cost of 8 for instruction: call void @llvm.memcpy.p0.p0.i32(ptr align 1 %a, ptr align 1 %b, i32 32, i1 false)
 ; SIZE-NEXT:  Cost Model: Found an estimated cost of 1 for instruction: ret void
 ;
 ; SIZE_LATE-LABEL: 'memcpy'
-; SIZE_LATE-NEXT:  Cost Model: Found an estimated cost of 4 for instruction: call void @llvm.memcpy.p0.p0.i32(ptr align 1 %a, ptr align 1 %b, i32 32, i1 false)
+; SIZE_LATE-NEXT:  Cost Model: Found an estimated cost of 8 for instruction: call void @llvm.memcpy.p0.p0.i32(ptr align 1 %a, ptr align 1 %b, i32 32, i1 false)
 ; SIZE_LATE-NEXT:  Cost Model: Found an estimated cost of 1 for instruction: ret void
 ;
   call void @llvm.memcpy.p0.p0.i32(ptr align 1 %a, ptr align 1 %b, i32 32, i1 false)

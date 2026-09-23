@@ -30,6 +30,7 @@
 #include "llvm/Pass.h"
 #include "llvm/Passes/OptimizationLevel.h"
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/Transforms/Utils/COFFABIRequirements.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/PGOOptions.h"
@@ -1704,6 +1705,12 @@ PassBuilder::buildModuleOptimizationPipeline(OptimizationLevel Level,
   return MPM;
 }
 
+static void addCOFFABIRequirements(ModulePassManager &MPM, TargetMachine *TM,
+                                   bool Prune = false) {
+  if (TM && TM->getTargetTriple().isOSBinFormatCOFF())
+    MPM.addPass(COFFABIRequirementsPass(Prune));
+}
+
 ModulePassManager
 PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
                                            ThinOrFullLTOPhase Phase) {
@@ -1711,6 +1718,7 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
     return buildO0DefaultPipeline(Level, Phase);
 
   ModulePassManager MPM;
+  addCOFFABIRequirements(MPM, TM);
 
   // Currently this pipeline is only invoked in an LTO pre link pass or when we
   // are not running LTO. If that changes the below checks may need updating.
@@ -1749,6 +1757,7 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
 
   if (isLTOPreLink(Phase))
     addRequiredLTOPreLinkPasses(MPM);
+  addCOFFABIRequirements(MPM, TM, /*Prune=*/true);
   return MPM;
 }
 
@@ -1807,6 +1816,7 @@ PassBuilder::buildThinLTOPreLinkDefaultPipeline(OptimizationLevel Level) {
     return buildO0DefaultPipeline(Level, ThinOrFullLTOPhase::ThinLTOPreLink);
 
   ModulePassManager MPM;
+  addCOFFABIRequirements(MPM, TM);
 
   // Convert @llvm.global.annotations to !annotation metadata.
   MPM.addPass(Annotation2MetadataPass());
@@ -1830,6 +1840,7 @@ PassBuilder::buildThinLTOPreLinkDefaultPipeline(OptimizationLevel Level) {
   // profile in the post-thinlink phase.
   if (!UseCtxProfile.empty()) {
     addRequiredLTOPreLinkPasses(MPM);
+    addCOFFABIRequirements(MPM, TM, /*Prune=*/true);
     return MPM;
   }
 
@@ -1860,12 +1871,14 @@ PassBuilder::buildThinLTOPreLinkDefaultPipeline(OptimizationLevel Level) {
 
   addRequiredLTOPreLinkPasses(MPM);
 
+  addCOFFABIRequirements(MPM, TM, /*Prune=*/true);
   return MPM;
 }
 
 ModulePassManager PassBuilder::buildThinLTODefaultPipeline(
     OptimizationLevel Level, const ModuleSummaryIndex *ImportSummary) {
   ModulePassManager MPM;
+  addCOFFABIRequirements(MPM, TM);
 
   // If we are invoking this without a summary index noting that we are linking
   // with a library containing the necessary APIs, remove any MemProf related
@@ -1915,6 +1928,7 @@ ModulePassManager PassBuilder::buildThinLTODefaultPipeline(
     // globals in the object file.
     MPM.addPass(EliminateAvailableExternallyPass());
     MPM.addPass(GlobalDCEPass());
+    addCOFFABIRequirements(MPM, TM, /*Prune=*/true);
     return MPM;
   }
   if (!UseCtxProfile.empty()) {
@@ -1932,6 +1946,7 @@ ModulePassManager PassBuilder::buildThinLTODefaultPipeline(
   // Emit annotation remarks.
   addAnnotationRemarksPass(MPM);
 
+  addCOFFABIRequirements(MPM, TM, /*Prune=*/true);
   return MPM;
 }
 
@@ -1946,6 +1961,7 @@ ModulePassManager
 PassBuilder::buildLTODefaultPipeline(OptimizationLevel Level,
                                      ModuleSummaryIndex *ExportSummary) {
   ModulePassManager MPM;
+  addCOFFABIRequirements(MPM, TM);
 
   invokeFullLinkTimeOptimizationEarlyEPCallbacks(MPM, Level);
 
@@ -1980,6 +1996,7 @@ PassBuilder::buildLTODefaultPipeline(OptimizationLevel Level,
     // Emit annotation remarks.
     addAnnotationRemarksPass(MPM);
 
+    addCOFFABIRequirements(MPM, TM, /*Prune=*/true);
     return MPM;
   }
 
@@ -2069,6 +2086,7 @@ PassBuilder::buildLTODefaultPipeline(OptimizationLevel Level,
     // Emit annotation remarks.
     addAnnotationRemarksPass(MPM);
 
+    addCOFFABIRequirements(MPM, TM, /*Prune=*/true);
     return MPM;
   }
 
@@ -2307,6 +2325,7 @@ PassBuilder::buildLTODefaultPipeline(OptimizationLevel Level,
   // Emit annotation remarks.
   addAnnotationRemarksPass(MPM);
 
+  addCOFFABIRequirements(MPM, TM, /*Prune=*/true);
   return MPM;
 }
 
@@ -2317,6 +2336,7 @@ PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
          "buildO0DefaultPipeline should only be used with O0");
 
   ModulePassManager MPM;
+  addCOFFABIRequirements(MPM, TM);
 
   // Perform pseudo probe instrumentation in O0 mode. This is for the
   // consistency between different build modes. For example, a LTO build can be
@@ -2431,6 +2451,7 @@ PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
   // Emit annotation remarks.
   addAnnotationRemarksPass(MPM);
 
+  addCOFFABIRequirements(MPM, TM, /*Prune=*/true);
   return MPM;
 }
 

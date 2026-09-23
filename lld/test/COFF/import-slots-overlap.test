@@ -1,0 +1,70 @@
+# REQUIRES: x86
+
+# Native imports and ordinary relocations must not write overlapping fields.
+# Reject even identical duplicate slots rather than give one destination two
+# loader writes. Touching fields are valid, and unsorted relocations still form
+# a single run after the existing relocation sorter orders them.
+
+# RUN: split-file %s %t
+# RUN: llvm-dlltool -m i386:x86-64 -d %t/lib.def -l %t/lib.lib
+# RUN: yaml2obj %t/slots.yaml -o %t/imports.obj
+# RUN: env LLD_IN_TEST=1 not lld-link -dll -noentry -import-slots -out:%t/imports.dll %t/imports.obj %t/lib.lib 2>&1 | FileCheck %s --check-prefix=PARTIAL
+# RUN: yaml2obj %t/slots.yaml -DOFFSET2=0 -o %t/duplicate.obj
+# RUN: env LLD_IN_TEST=1 not lld-link -dll -noentry -import-slots -out:%t/duplicate.dll %t/duplicate.obj %t/lib.lib 2>&1 | FileCheck %s --check-prefix=DUPLICATE
+# RUN: yaml2obj %t/slots.yaml -DFIRST=local -o %t/local-first.obj
+# RUN: env LLD_IN_TEST=1 not lld-link -dll -noentry -import-slots -out:%t/local-first.dll %t/local-first.obj %t/lib.lib 2>&1 | FileCheck %s --check-prefix=PARTIAL
+# RUN: yaml2obj %t/slots.yaml -DSECOND=local -o %t/local-last.obj
+# RUN: env LLD_IN_TEST=1 not lld-link -dll -noentry -import-slots -out:%t/local-last.dll %t/local-last.obj %t/lib.lib 2>&1 | FileCheck %s --check-prefix=PARTIAL
+# RUN: yaml2obj %t/slots.yaml -DFIRST=local -DTYPE1=IMAGE_REL_AMD64_ADDR32NB -DOFFSET2=2 -o %t/partial-rva.obj
+# RUN: env LLD_IN_TEST=1 not lld-link -dll -noentry -import-slots -out:%t/partial-rva.dll %t/partial-rva.obj %t/lib.lib 2>&1 | FileCheck %s --check-prefix=RVA
+# RUN: yaml2obj %t/slots.yaml -DFIRST=local -DTYPE1=IMAGE_REL_AMD64_ADDR32NB -o %t/touching.obj
+# RUN: lld-link -dll -noentry -import-slots -out:%t/touching.dll %t/touching.obj %t/lib.lib
+# RUN: yaml2obj %t/slots.yaml -DOFFSET1=8 -DOFFSET2=0 -o %t/unsorted.obj
+# RUN: lld-link -dll -noentry -import-slots -out:%t/unsorted.dll %t/unsorted.obj %t/lib.lib 2>&1 | FileCheck %s --check-prefix=UNSORTED
+# RUN: llvm-readobj --coff-imports %t/unsorted.dll | FileCheck %s --check-prefix=ORDER
+
+# PARTIAL: error: {{.*}}: overlapping import slot and relocation at offsets 0 and 4 in section .rdata
+# DUPLICATE: error: {{.*}}: overlapping import slot and relocation at offsets 0 and 0 in section .rdata
+# RVA: error: {{.*}}: overlapping import slot and relocation at offsets 0 and 2 in section .rdata
+# UNSORTED: warning: some relocations in {{.*}}unsorted.obj are not sorted
+# ORDER:      Import {
+# ORDER:        Symbol: variable (0)
+# ORDER-NEXT:   Symbol: variable (0)
+# ORDER-NEXT: }
+# ORDER-NOT: Import {
+
+#--- lib.def
+LIBRARY slots.dll
+EXPORTS
+variable DATA
+
+#--- slots.yaml
+--- !COFF
+header:
+  Machine: IMAGE_FILE_MACHINE_AMD64
+sections:
+  - Name: .rdata
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ ]
+    Alignment: 8
+    SectionData: '00000000000000000000000000000000'
+    Relocations:
+      - VirtualAddress: '[[OFFSET1=0]]'
+        SymbolName: '[[FIRST=variable]]'
+        Type: '[[TYPE1=IMAGE_REL_AMD64_ADDR64]]'
+      - VirtualAddress: '[[OFFSET2=4]]'
+        SymbolName: '[[SECOND=variable]]'
+        Type: IMAGE_REL_AMD64_ADDR64
+symbols:
+  - Name: variable
+    Value: 0
+    SectionNumber: 0
+    SimpleType: IMAGE_SYM_TYPE_NULL
+    ComplexType: IMAGE_SYM_DTYPE_NULL
+    StorageClass: IMAGE_SYM_CLASS_EXTERNAL
+  - Name: local
+    SectionNumber: 1
+    Value: 0
+    SimpleType: IMAGE_SYM_TYPE_NULL
+    ComplexType: IMAGE_SYM_DTYPE_NULL
+    StorageClass: IMAGE_SYM_CLASS_EXTERNAL
+...

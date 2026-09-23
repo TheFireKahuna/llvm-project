@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "SymbolTable.h"
+#include "Binding.h"
 #include "COFFLinkerContext.h"
 #include "Config.h"
 #include "Driver.h"
@@ -16,6 +17,8 @@
 #include "lld/Common/ErrorHandler.h"
 #include "lld/Common/Memory.h"
 #include "lld/Common/Timer.h"
+#include "llvm/BinaryFormat/COFFBinding.h"
+#include "llvm/ADT/BitVector.h"
 #include "llvm/DebugInfo/DIContext.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Mangler.h"
@@ -379,6 +382,11 @@ bool SymbolTable::handleMinGWAutomaticImport(Symbol *sym, StringRef name) {
   sym->replaceKeepingName(imp, impSize);
   sym->isRuntimePseudoReloc = true;
 
+  // Native import slots let an observable compiler cell keep its own address.
+  // Classify the uses before coalescing it with the IAT.
+  if (ctx.config.importSlots && isa<DefinedImportData>(imp))
+    return true;
+
   // There may exist symbols named .refptr.<name> which only consist
   // of a single pointer to <name>. If it turns out <name> is
   // automatically imported, we don't need to keep the .refptr.<name>
@@ -537,9 +545,291 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
   reportProblemSymbols(undefs, false);
 }
 
+static bool compareBindingSymbols(Symbol *a, Symbol *b) {
+  return a->getName() < b->getName();
+}
+
+static void collectCanonicalImports(SymbolTable &symtab,
+                                    ArrayRef<BindingRequirement> bindings,
+                                    SmallVectorImpl<Symbol *> &lazies) {
+  for (const auto &binding : bindings) {
+    if (!(binding.flags & COFF::BindingCanonical))
+      continue;
+    auto *def = dyn_cast<DefinedRegular>(getBindingTarget(binding.symbol));
+    if (!def || !isReplaceableBinding(def))
+      continue;
+    for (Symbol *candidate : {static_cast<Symbol *>(def), binding.symbol}) {
+      Symbol *imp = symtab.find(("__imp_" + candidate->getName()).str());
+      if (imp && !imp->pendingArchiveLoad && imp->isLazy())
+        lazies.push_back(imp);
+    }
+  }
+}
+
+bool SymbolTable::loadCanonicalImports() {
+  SmallVector<Symbol *, 0> lazies;
+  for (ObjFile *file : ctx.objFileInstances)
+    if (&file->symtab == this)
+      collectCanonicalImports(*this, file->getBindingRequirements(), lazies);
+  for (BitcodeFile *file : bitcodeFileInstances)
+    collectCanonicalImports(*this, file->getBindingRequirements(), lazies);
+  llvm::sort(lazies, compareBindingSymbols);
+  lazies.erase(std::unique(lazies.begin(), lazies.end()), lazies.end());
+  for (Symbol *sym : lazies)
+    forceLazy(sym);
+  return !lazies.empty();
+}
+
+// External symbols have SymbolUnion storage; object-local symbols do not.
+// Allocate only the local aliases that actually change kind, rather than
+// growing every input symbol to accommodate an import. Pointer cells and
+// references to their pointees retain distinct relocation semantics.
+Symbol *makeImportAlias(DefinedRegular *symbol, DefinedImportData *import,
+                        bool pointee) {
+  bool root = symbol->isGCRoot;
+  bool used = symbol->isUsedInRegularObj;
+  Symbol *result = symbol;
+  if (!symbol->getCOFFSymbol().isExternal())
+    result = make<DefinedImportData>(symbol->getName(), import->file,
+                                     import->location);
+  result->replaceKeepingName(import, sizeof(DefinedImportData));
+  result->isGCRoot = root;
+  result->isUsedInRegularObj = used;
+  result->isRuntimePseudoReloc = pointee;
+  return result;
+}
+
+void SymbolTable::redirectSymbols(
+    const DenseMap<Symbol *, Symbol *> &redirects) {
+  if (redirects.empty())
+    return;
+  for (ObjFile *file : ctx.objFileInstances)
+    if (owns(file))
+      file->redirectSymbols(redirects);
+  for (Symbol *&root : ctx.config.gcroot)
+    if (Symbol *replacement = redirects.lookup(root))
+      root = replacement;
+  for (Export &exp : exports)
+    if (Symbol *replacement = redirects.lookup(exp.sym))
+      exp.sym = replacement;
+  for (DefinedLocalImport *local : localImports)
+    if (Symbol *replacement = redirects.lookup(local->wrappedSym))
+      local->wrappedSym = cast<Defined>(replacement);
+  for (const auto &entry : symMap)
+    if (auto *undefined = dyn_cast<Undefined>(entry.second))
+      if (Symbol *replacement = redirects.lookup(undefined->weakAlias))
+        undefined->weakAlias = replacement;
+  DenseMap<Symbol *, BindingEntity *> entities;
+  for (const auto &entry : bindingEntities) {
+    BindingEntity *entity = entry.second;
+    if (Symbol *replacement = redirects.lookup(entity->symbol))
+      entity->symbol = replacement;
+    if (Symbol *replacement = redirects.lookup(entity->requirement))
+      entity->requirement = replacement;
+    for (Symbol *&requirement : entity->requirements)
+      if (Symbol *replacement = redirects.lookup(requirement))
+        requirement = replacement;
+    entities.try_emplace(entity->symbol, entity);
+  }
+  bindingEntities = std::move(entities);
+  DenseMap<Symbol *, BindingEntity *> requirements;
+  for (const auto &entry : bindingRequirements) {
+    Symbol *replacement = redirects.lookup(entry.first);
+    requirements.try_emplace(replacement ? replacement : entry.first,
+                             entry.second);
+  }
+  bindingRequirements = std::move(requirements);
+}
+
+// Canonical requirements use the ordinary symbol nodes, including conditional
+// weak aliases. Unlike shared mutable COMDAT data, an immutable losing RTTI
+// contribution may remain as dormant bytes. Its active references must all be
+// redirected; a direct reference is never permission to keep a second identity.
+void SymbolTable::bindCanonicalSymbols() {
+  bool hasRTTIABI = false;
+  for (ObjFile *file : ctx.objFileInstances)
+    if (&file->symtab == this && file->hasRTTIABI()) {
+      hasRTTIABI = true;
+      break;
+    }
+  if (!hasRTTIABI)
+    return;
+
+  // The former extended representation carried no ABI marker. Reject its
+  // unversioned descriptor definitions, including losing COMDAT definitions,
+  // so selection or /force cannot hide a layout mismatch. C and MS ABI inputs
+  // do not define Itanium RTTI names and need no new marker.
+  for (ObjFile *file : ctx.objFileInstances) {
+    if (&file->symtab != this || file->hasRTTIABI())
+      continue;
+    COFFObjectFile *obj = file->getCOFFObj();
+    for (const SymbolRef &sym : obj->symbols()) {
+      if (obj->getCOFFSymbol(sym).getSectionNumber() <= 0)
+        continue;
+      StringRef name = cantFail(sym.getName());
+      if (machine == I386)
+        name.consume_front("_");
+      if (name.starts_with("_ZTI"))
+        Fatal(ctx) << toString(file) << ": unversioned RTTI definition " << name
+                   << "; rebuild for the canonical RTTI ABI";
+    }
+  }
+
+  SmallPtrSet<Symbol *, 32> required;
+  DenseMap<Symbol *, uint32_t> kinds;
+  for (ObjFile *file : ctx.objFileInstances) {
+    if (&file->symtab != this)
+      continue;
+    for (const auto &binding : file->getBindingRequirements()) {
+      Defined *def = binding.symbol->getDefined();
+      if (binding.flags & COFF::BindingCanonical) {
+        if (!def || isa<DefinedAbsolute>(def))
+          Fatal(ctx) << toString(file) << ": canonical binding "
+                     << binding.symbol->getName()
+                     << " requires a real definition; /force cannot supply its "
+                        "identity";
+        required.insert(def);
+      }
+      if (!def)
+        continue;
+      uint32_t kind = binding.flags & (COFF::BindingRTTI | COFF::BindingName);
+      auto [it, inserted] = kinds.try_emplace(def, kind);
+      if (!inserted && it->second != kind)
+        Fatal(ctx) << toString(file) << ": conflicting binding kinds for "
+                   << binding.symbol->getName();
+    }
+  }
+
+  SmallVector<Symbol *, 0> ordered(required.begin(), required.end());
+  llvm::sort(ordered, compareBindingSymbols);
+  DenseMap<ChunkAndOffset, SmallPtrSet<Symbol *, 4>> addressAliases;
+  for (Symbol *sym : ordered)
+    if (auto *def = dyn_cast<DefinedRegular>(sym))
+      if (isReplaceableBinding(def) && def->getChunk()->live)
+        addressAliases.try_emplace({def->getChunk(), def->getValue()});
+  for (ObjFile *file : ctx.objFileInstances) {
+    if (&file->symtab != this)
+      continue;
+    for (Symbol *sym : file->getSymbols()) {
+      auto *def = dyn_cast_or_null<DefinedRegular>(sym);
+      if (!def)
+        continue;
+      auto it = addressAliases.find({def->getChunk(), def->getValue()});
+      if (it != addressAliases.end())
+        it->second.insert(sym);
+    }
+  }
+  DenseMap<Symbol *, Symbol *> redirects;
+  for (Symbol *sym : ordered) {
+    auto *def = dyn_cast<DefinedRegular>(sym);
+    if (!def || !isReplaceableBinding(def) || !def->getChunk()->live)
+      continue;
+    auto *imp = getBindingImport(sym);
+    if (!imp)
+      continue;
+    if (isEC() || ctx.hybridSymtab || !ctx.config.importSlots)
+      Fatal(ctx) << "canonical binding of " << sym->getName()
+                 << " requires native import slots on a supported architecture";
+    if (ctx.config.delayLoads.count(imp->getDLLName()))
+      Fatal(ctx) << "canonical provider " << imp->getDLLName()
+                 << " cannot be delay loaded";
+
+    // Preserve auto-import's distinction between a pointer cell and its
+    // pointee. Requirements follow local aliases that need a larger node.
+    Log(ctx) << "Binding canonical " << sym->getName() << " to "
+             << imp->getDLLName();
+    imp->file->live = true;
+    // COFF permits additional names (including section symbols) at the same
+    // address. They are address aliases, not independent identities. Preserve
+    // the canonical target through those names before replacing the leader.
+    auto &aliases =
+        addressAliases.find({def->getChunk(), def->getValue()})->second;
+    aliases.erase(sym);
+    canonicalResiduals.try_emplace(def->getChunk(), imp);
+    for (Symbol *alias : aliases) {
+      BindingEntity *entity = bindingRequirements.lookup(alias);
+      if (!entity)
+        entity = bindingEntities.lookup(alias);
+      if (!entity || !(entity->flags & BindingCanonical))
+        continue;
+      DefinedImportData *other = getBindingImport(alias);
+      if (!other || !sameImportedTarget(imp, other))
+        Fatal(ctx) << "canonical address alias " << alias->getName()
+                   << " has a different owner from " << sym->getName()
+                   << "; the alias cannot discard either binding requirement";
+    }
+    for (Export &exp : exports) {
+      if (!exp.forwardTo.empty() ||
+          (exp.sym != sym && exp.name != sym->getName() &&
+           (!exp.sym || exp.sym->getDefined() != sym) &&
+           !aliases.contains(exp.sym)))
+        continue;
+      StringRef dll = imp->getDLLName();
+      dll.consume_back_insensitive(".dll");
+      exp.forwardTo = saver().save(dll + "." + imp->getExternalName());
+    }
+    redirects[sym] = makeImportAlias(def, imp, /*pointee=*/true);
+    for (Symbol *alias : aliases)
+      redirects[alias] = makeImportAlias(cast<DefinedRegular>(alias), imp,
+                                         /*pointee=*/true);
+  }
+  redirectSymbols(redirects);
+}
+
+void SymbolTable::validateCanonicalResiduals() {
+  if (canonicalResiduals.empty())
+    return;
+  // A symbol at an interior offset is not a same-address alias. Without an
+  // exact export it cannot continue to expose the discarded local identity.
+  // Perform this walk after all alias copies have resolved, and ignore debug
+  // descriptions: dormant bytes are permitted, active bindings are not.
+  for (ObjFile *file : ctx.objFileInstances) {
+    if (!owns(file))
+      continue;
+    for (Chunk *chunk : file->getChunks()) {
+      auto *sc = dyn_cast<SectionChunk>(chunk);
+      if (!sc || !sc->live || sc->isCodeView() || sc->isDWARF())
+        continue;
+      // An entirely transferred immutable contribution is itself dormant.
+      if (canonicalResiduals.contains(sc))
+        continue;
+      for (const coff_relocation &rel : sc->getRelocs()) {
+        Symbol *symbol = file->getSymbol(rel.SymbolTableIndex);
+        auto *def = symbol
+                        ? dyn_cast_or_null<DefinedRegular>(symbol->getDefined())
+                        : nullptr;
+        if (!def || !def->data)
+          continue;
+        DefinedImportData *import = canonicalResiduals.lookup(def->getChunk());
+        if (!import)
+          continue;
+        Fatal(ctx) << toString(file) << ": canonical reference through "
+                   << symbol->getName() << " at offset " << rel.VirtualAddress
+                   << " in " << sc->getSectionName()
+                   << " still reaches local contribution offset "
+                   << def->getValue() << "; selected provider is "
+                   << import->getDLLName() << ":" << import->getExternalName()
+                   << "; an exact native binding is required";
+      }
+    }
+  }
+  for (const Export &exp : exports) {
+    if (!exp.forwardTo.empty())
+      continue;
+    Symbol *symbol = exp.sym ? exp.sym : find(exp.name);
+    auto *def = symbol ? dyn_cast_or_null<DefinedRegular>(symbol->getDefined())
+                       : nullptr;
+    if (def && def->data && canonicalResiduals.contains(def->getChunk()))
+      Fatal(ctx) << "export " << exp.name
+                 << " exposes residual canonical storage through "
+                 << symbol->getName()
+                 << "; an exact native binding is required";
+  }
+}
+
 // A stub is a candidate for binding to another image's copy of the variable
 // when it is the only thing that reaches a COMDAT definition here.
-static DefinedRegular *stubTarget(SymbolTable &symtab, Symbol *sym) {
+DefinedRegular *getCompilerStubTarget(SymbolTable &symtab, Symbol *sym) {
   auto *d = dyn_cast<DefinedRegular>(sym);
   if (!d || !d->getName().starts_with(".refptr."))
     return nullptr;
@@ -548,7 +838,8 @@ static DefinedRegular *stubTarget(SymbolTable &symtab, Symbol *sym) {
       sc->getSize() != symtab.ctx.config.wordsize ||
       sc->getRelocs().size() != 1)
     return nullptr;
-  return dyn_cast_or_null<DefinedRegular>(*sc->symbols().begin());
+  Symbol *target = *sc->symbols().begin();
+  return target ? dyn_cast<DefinedRegular>(getBindingTarget(target)) : nullptr;
 }
 
 // A COMDAT variable the compiler left preemptable -- an inline variable, a
@@ -556,7 +847,7 @@ static DefinedRegular *stubTarget(SymbolTable &symtab, Symbol *sym) {
 // guard of one of those -- is reached through a stub, so that one image's copy
 // can stand for every image's. Choosing a DLL's copy needs the import library
 // member that holds it to be in the link first.
-void SymbolTable::loadSharedWeakImports() {
+bool SymbolTable::loadSharedWeakImports() {
   std::vector<Symbol *> lazies;
   forEachSymbol([&](Symbol *sym) {
     StringRef name = sym->getName();
@@ -566,13 +857,32 @@ void SymbolTable::loadSharedWeakImports() {
     if (imp && !imp->pendingArchiveLoad && imp->isLazy())
       lazies.push_back(imp);
   });
-  llvm::sort(lazies,
-             [](Symbol *a, Symbol *b) { return a->getName() < b->getName(); });
+  for (BitcodeFile *file : bitcodeFileInstances) {
+    if (!file->obj)
+      continue;
+    unsigned index = 0;
+    for (const lto::InputFile::Symbol &symbol : file->obj->symbols()) {
+      Symbol *requirement = file->getSymbols()[index++];
+      if (!symbol.isCOFFImportCandidate())
+        continue;
+      auto *target = dyn_cast<DefinedRegular>(getBindingTarget(requirement));
+      if (!target || !target->isCOMDAT)
+        continue;
+      for (Symbol *name : {static_cast<Symbol *>(target), requirement}) {
+        Symbol *import = find(("__imp_" + name->getName()).str());
+        if (import && !import->pendingArchiveLoad && import->isLazy())
+          lazies.push_back(import);
+      }
+    }
+  }
+  llvm::sort(lazies, compareBindingSymbols);
+  lazies.erase(std::unique(lazies.begin(), lazies.end()), lazies.end());
   for (Symbol *l : lazies) {
     Log(ctx) << "Loading lazy " << l->getName() << " from "
              << l->getFile()->getName() << " for a shared COMDAT variable";
     forceLazy(l);
   }
+  return !lazies.empty();
 }
 
 // Binds such a stub to a DLL's copy when one is offered and nothing in this
@@ -582,6 +892,7 @@ void SymbolTable::loadSharedWeakImports() {
 // from this image becomes a forwarder, so that anything importing it from here
 // reaches the same instance.
 void SymbolTable::bindSharedWeakData() {
+  bindSharedWeakDataGroups();
   struct Candidate {
     Defined *stub;
     DefinedRegular *var;
@@ -590,9 +901,17 @@ void SymbolTable::bindSharedWeakData() {
   };
   SmallVector<Candidate, 0> candidates;
   forEachSymbol([&](Symbol *sym) {
-    DefinedRegular *var = stubTarget(*this, sym);
+    DefinedRegular *var = getCompilerStubTarget(*this, sym);
     if (!var)
       return;
+    // The marked ABI binds the entire lifetime group above. Retain the
+    // established conservative policy for other COFF inputs.
+    if (auto *file = dyn_cast_or_null<ObjFile>(var->getFile()))
+      if (file->hasRTTIABI())
+        return;
+    if (BindingEntity *entity = bindingEntities.lookup(var))
+      if (entity->flags & BindingCanonical)
+        return;
     auto *sc = dyn_cast_or_null<SectionChunk>(var->getChunk());
     if (!sc || !sc->live || !sc->isCOMDAT())
       return;
@@ -677,43 +996,147 @@ void SymbolTable::bindSharedWeakData() {
   }
 }
 
-// A .refptr.X stub is a word-sized pointer to X that the compiler emits when
-// it cannot tell whether X lives in this image. When X turns out to be here,
-// the stub is an import pointer that happens to be filled at link time, so
-// treating it as one lets the same rewrite reach X directly and the pointer
-// disappear along with the references that read it.
-void SymbolTable::bindLocalStubs() {
-  SmallVector<Symbol *, 0> stubs;
-  forEachSymbol([&](Symbol *sym) {
-    auto *d = dyn_cast<DefinedRegular>(sym);
-    if (!d || !d->getName().starts_with(".refptr."))
-      return;
-    auto *sc = dyn_cast_or_null<SectionChunk>(d->getChunk());
-    if (!sc || !sc->live || d->getValue() != 0 ||
-        sc->getSize() != ctx.config.wordsize || sc->getRelocs().size() != 1)
-      return;
-    // Reaching the target directly needs an address this image computes.
-    auto *target = dyn_cast_or_null<Defined>(*sc->symbols().begin());
-    if (!target || !isa<DefinedRegular, DefinedCommon>(target))
-      return;
-    stubs.push_back(sym);
-  });
-
-  // The pointers that survive are laid out in the order they are recorded,
-  // and the symbol table is not ordered.
-  llvm::sort(stubs, [](Symbol *a, Symbol *b) {
-    return a->getName() < b->getName();
-  });
-  for (Symbol *sym : stubs) {
-    auto *sc = cast<SectionChunk>(cast<DefinedRegular>(sym)->getChunk());
-    auto *target = cast<Defined>(*sc->symbols().begin());
-    StringRef name = sym->getName();
-    bool isGCRoot = sym->isGCRoot;
-    sc->live = false;
-    replaceSymbol<DefinedLocalImport>(sym, ctx, name, target);
-    sym->isGCRoot = isGCRoot;
-    localImports.push_back(cast<DefinedLocalImport>(sym));
+// Classify compiler cells separately from their pointees. Only recognized
+// reads are redirected: exported addresses, section aliases and interior uses
+// still name the original cell. This also permits local reads to become direct
+// addresses when another use requires the cell to remain in the output.
+void SymbolTable::bindCompilerStubs() {
+  struct Cell {
+    SectionChunk *chunk;
+    Symbol *symbol;
+    Defined *target;
+    bool observable;
+  };
+  struct Use {
+    SectionChunk *chunk;
+    uint32_t relocation;
+    unsigned cell;
+  };
+  SmallVector<Cell, 0> cells;
+  DenseMap<SectionChunk *, unsigned> indices;
+  for (const auto &entry : symMap) {
+    auto *symbol = dyn_cast<DefinedRegular>(entry.second);
+    if (!symbol || !symbol->data || symbol->getValue() ||
+        !symbol->getName().starts_with(".refptr."))
+      continue;
+    SectionChunk *chunk = symbol->getChunk();
+    if (!chunk->live || chunk->getSize() != ctx.config.wordsize ||
+        chunk->getRelocs().size() != 1 || !chunk->children().empty() ||
+        (chunk->getOutputCharacteristics() & permMask) != IMAGE_SCN_MEM_READ)
+      continue;
+    const coff_relocation &rel = chunk->getRelocs().front();
+    if (rel.VirtualAddress ||
+        chunk->getPointerAddend(rel) != std::optional<int64_t>(0))
+      continue;
+    Symbol *reference = chunk->file->getSymbol(rel.SymbolTableIndex);
+    Defined *target = reference ? reference->getDefined() : nullptr;
+    if (!isa_and_nonnull<DefinedRegular, DefinedCommon>(target)) {
+      // An __imp_ reference names a pointer cell, not the imported object.
+      // Only an auto-imported pointee can replace the value of this cell.
+      auto *import = dyn_cast_or_null<DefinedImportData>(target);
+      if (!import || !import->isRuntimePseudoReloc ||
+          ctx.config.delayLoads.contains(import->getDLLName().lower()))
+        continue;
+    }
+    auto [it, inserted] = indices.try_emplace(chunk, cells.size());
+    if (inserted)
+      cells.push_back({chunk, symbol, target, bool(symbol->isGCRoot)});
+    else
+      cells[it->second].observable |= symbol->isGCRoot;
   }
+  if (cells.empty())
+    return;
+
+  for (const Export &exp : exports) {
+    if (!exp.forwardTo.empty())
+      continue;
+    Symbol *symbol = exp.sym ? exp.sym : find(exp.name);
+    auto *def = symbol ? dyn_cast_or_null<DefinedRegular>(symbol->getDefined())
+                       : nullptr;
+    if (def && def->data)
+      if (auto it = indices.find(def->getChunk()); it != indices.end())
+        cells[it->second].observable = true;
+  }
+  SmallVector<Use, 0> uses;
+  for (ObjFile *file : ctx.objFileInstances) {
+    if (!owns(file))
+      continue;
+    for (Symbol *symbol : file->getSymbols()) {
+      auto *def = dyn_cast_or_null<DefinedRegular>(symbol);
+      if (def && def->data && def->isGCRoot)
+        if (auto it = indices.find(def->getChunk()); it != indices.end())
+          cells[it->second].observable = true;
+    }
+    for (Chunk *chunk : file->getChunks()) {
+      auto *sc = dyn_cast<SectionChunk>(chunk);
+      if (!sc || !sc->live || sc->isCodeView() || sc->isDWARF())
+        continue;
+      for (auto [i, rel] : enumerate(sc->getRelocs())) {
+        Symbol *symbol = file->getSymbol(rel.SymbolTableIndex);
+        auto *def = symbol
+                        ? dyn_cast_or_null<DefinedRegular>(symbol->getDefined())
+                        : nullptr;
+        if (!def || !def->data)
+          continue;
+        auto it = indices.find(def->getChunk());
+        if (it == indices.end())
+          continue;
+        SectionChunk::ImportRefForm form = sc->getImportRefForm(rel);
+        bool pointerRead = form == SectionChunk::ImportRefForm::Load ||
+                           form == SectionChunk::ImportRefForm::Call ||
+                           form == SectionChunk::ImportRefForm::Jump ||
+                           form == SectionChunk::ImportRefForm::PageBase ||
+                           form == SectionChunk::ImportRefForm::PageOffset;
+        if (def->getValue() || !pointerRead ||
+            !(sc->getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE))
+          cells[it->second].observable = true;
+        else
+          uses.push_back({sc, uint32_t(i), it->second});
+      }
+    }
+  }
+
+  // Reuse range-thunk relocation rewriting: input symbols, addends, debug
+  // coordinates and instruction sizes remain intact. Allocate a new symbol
+  // index once per object/target, and copy only relocation arrays we change.
+  DenseMap<Defined *, Symbol *> targets;
+  DenseMap<std::pair<ObjFile *, Symbol *>, uint32_t> symbols;
+  DenseMap<SectionChunk *, MutableArrayRef<coff_relocation>> replacements;
+  for (const Use &use : uses) {
+    Cell &cell = cells[use.cell];
+    // ARM page-base and page-offset relocations must describe the same cell.
+    // Keep the whole pair if an opaque use prevents proving that equivalence.
+    if (machine == ARM64 && cell.observable)
+      continue;
+    Symbol *&target = targets[cell.target];
+    if (!target) {
+      if (auto *import = dyn_cast<DefinedImportData>(cell.target)) {
+        target = import->file->impSym;
+      } else {
+        auto *local =
+            make<DefinedLocalImport>(ctx, cell.symbol->getName(), cell.target);
+        localImports.push_back(local);
+        target = local;
+      }
+    }
+    ObjFile *file = use.chunk->file;
+    auto [it, inserted] = symbols.try_emplace({file, target}, 0);
+    if (inserted)
+      it->second = file->addSyntheticSymbol(target);
+    MutableArrayRef<coff_relocation> &relocs = replacements[use.chunk];
+    if (relocs.empty()) {
+      ArrayRef<coff_relocation> original = use.chunk->getRelocs();
+      relocs = MutableArrayRef<coff_relocation>(
+          bAlloc().Allocate<coff_relocation>(original.size()), original.size());
+      std::copy(original.begin(), original.end(), relocs.begin());
+    }
+    relocs[use.relocation].SymbolTableIndex = it->second;
+  }
+  for (const auto &entry : replacements)
+    entry.first->setRelocs(entry.second);
+  for (const Cell &cell : cells)
+    if (!cell.observable)
+      cell.chunk->live = false;
 }
 
 void SymbolTable::bindLocalImports() {
@@ -756,7 +1179,7 @@ void SymbolTable::bindLocalImports() {
   // address-taken table.
   SmallPtrSet<DefinedImportThunk *, 8> thunksNamed, thunksReached;
   for (ObjFile *file : ctx.objFileInstances) {
-    if (&file->symtab != this)
+    if (!owns(file))
       continue;
     // One warning per file and symbol, as before.
     SmallPtrSet<DefinedLocalImport *, 4> warned;
@@ -1249,7 +1672,7 @@ Symbol *SymbolTable::addCommon(InputFile *f, StringRef n, uint64_t size,
 }
 
 DefinedImportData *SymbolTable::addImportData(StringRef n, ImportFile *f,
-                                              Chunk *&location) {
+                                              ChunkAndOffset &location) {
   auto [s, wasInserted] = insert(n, nullptr);
   s->isUsedInRegularObj = true;
   if (wasInserted || isa<Undefined>(s) || s->isLazy()) {
@@ -1491,6 +1914,8 @@ static StringRef exportSourceName(ExportSource s) {
     return "/export";
   case ExportSource::ModuleDefinition:
     return "/def";
+  case ExportSource::Linker:
+    return "linker-generated interface";
   default:
     llvm_unreachable("unknown ExportSource");
   }
@@ -1585,7 +2010,28 @@ void SymbolTable::fixupExports() {
   });
 }
 
-void SymbolTable::assignExportOrdinals() {
+void SymbolTable::assignExportOrdinals(bool fillGaps) {
+  if (fillGaps) {
+    // A jointly finalized output set can allocate private ordinals densely
+    // around explicitly fixed public ordinals, including ordinal 65535.
+    BitVector used(1U << 16);
+    used.set(0);
+    for (const Export &e : exports)
+      if (e.ordinal)
+        used.set(e.ordinal);
+    unsigned next = 1;
+    for (Export &e : exports) {
+      if (e.ordinal)
+        continue;
+      while (next < used.size() && used.test(next))
+        ++next;
+      if (next == used.size())
+        Fatal(ctx) << "too many exported symbols (max 65535)";
+      e.ordinal = next;
+      used.set(next++);
+    }
+    return;
+  }
   // Assign unique ordinals if default (= 0).
   uint32_t max = 0;
   for (Export &e : exports)
@@ -1670,7 +2116,8 @@ void SymbolTable::parseAlternateName(StringRef s) {
   alternateNames.insert(it, std::make_pair(from, to));
 }
 
-void SymbolTable::resolveAlternateNames() {
+bool SymbolTable::resolveAlternateNames() {
+  bool changed = false;
   // Add weak aliases. Weak aliases is a mechanism to give remaining
   // undefined symbols final chance to be resolved successfully.
   for (auto pair : alternateNames) {
@@ -1710,9 +2157,11 @@ void SymbolTable::resolveAlternateNames() {
       toSym->isUsedInRegularObj = true;
       if (toSym->isLazy())
         forceLazy(toSym);
+      changed |= u->weakAlias != toSym;
       u->setWeakAlias(toSym);
     }
   }
+  return changed;
 }
 
 // Parses /aligncomm option argument.
@@ -1741,16 +2190,34 @@ std::string SymbolTable::printSymbol(Symbol *sym) const {
   return name;
 }
 
+void SymbolTable::prepareLTOBindings() {
+  for (BitcodeFile *file : bitcodeFileInstances) {
+    size_t index = 0;
+    for (const lto::InputFile::Symbol &objSym : file->obj->symbols()) {
+      Symbol *sym = file->getSymbols()[index++];
+      Defined *target = dyn_cast<Defined>(getBindingTarget(sym));
+      auto *regular = dyn_cast_or_null<DefinedRegular>(target);
+      if (objSym.isExecutable() ||
+          (!objSym.isWeak() && (!regular || !regular->isCOMDAT)))
+        continue;
+      StringRef name = target ? target->getName() : sym->getName();
+      if (target ? getBindingImport(target) != nullptr
+                 : find(("__imp_" + name).str()) != nullptr)
+        ltoImportAlternatives.insert(sym);
+    }
+  }
+}
+
 void SymbolTable::compileBitcodeFiles() {
   if (bitcodeFileInstances.empty())
     return;
 
+  prepareLTOBindings();
   ScopedTimer t(ctx.ltoTimer);
   lto.reset(new BitcodeCompiler(ctx));
   {
     llvm::TimeTraceScope addScope("Add bitcode file instances");
-    for (BitcodeFile *f : bitcodeFileInstances)
-      lto->add(*f);
+    lto->add(bitcodeFileInstances);
   }
   for (InputFile *newObj : lto->compile()) {
     ObjFile *obj = cast<ObjFile>(newObj);

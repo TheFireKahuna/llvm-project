@@ -24,6 +24,9 @@ struct LTOCodeGenerator;
 namespace lld::coff {
 
 class Chunk;
+struct BindingEntity;
+struct ABIContract;
+class BindingProvider;
 class CommonChunk;
 class COFFLinkerContext;
 class Defined;
@@ -59,6 +62,7 @@ struct UndefinedDiag;
 // There is one add* function per symbol type.
 class SymbolTable {
 public:
+  friend class Partitioning;
   SymbolTable(COFFLinkerContext &c,
               llvm::COFF::MachineTypes machine = IMAGE_FILE_MACHINE_UNKNOWN)
       : ctx(c), machine(machine) {}
@@ -79,13 +83,38 @@ public:
   // whether it is rewritten to reach the definition directly, keep the
   // pointers the remaining references need and warn about them, and mark the
   // import address table entries whose address code takes.
-  void loadSharedWeakImports();
+  bool loadSharedWeakImports();
+  bool loadCanonicalImports();
+  void prepareBindingOwners();
+  void collectABIRequirements(InputFile *file,
+                              ArrayRef<ABIRequirement> requirements);
+  void validateABIContracts();
+  DefinedImportData *getBindingImport(Symbol *symbol) const;
+  bool hasCanonicalBinding(Symbol *symbol) const;
+  std::string getBindingContextHash() const;
+  void materializeBindingProviders();
+  void normalizeBindingReferences();
+  bool retireBindingContributions();
+  llvm::DenseMap<Symbol *, BindingEntity *> bindingEntities;
+  llvm::DenseMap<Symbol *, BindingEntity *> bindingRequirements;
+  std::vector<BindingProvider *> bindingProviders;
+  llvm::DenseMap<Symbol *, ABIContract *> abiContracts;
+  llvm::DenseMap<Symbol *, ABIContract *> offeredABIContracts;
+  llvm::StringMap<ABIContract *> internedABIContracts;
+  void bindCanonicalSymbols();
+  void validateCanonicalResiduals();
   void bindSharedWeakData();
-  void bindLocalStubs();
+  void bindSharedWeakDataGroups();
+  void bindCompilerStubs();
+  void redirectSymbols(const llvm::DenseMap<Symbol *, Symbol *> &redirects);
   void bindLocalImports();
 
+  bool hasLTOImportAlternative(Symbol *sym) const {
+    return ltoImportAlternatives.contains(sym);
+  }
+
   // Try to resolve undefined symbols with alternate names.
-  void resolveAlternateNames();
+  bool resolveAlternateNames();
 
   // Load lazy objects that are needed for MinGW automatic import and for
   // doing stdcall fixups.
@@ -148,7 +177,7 @@ public:
                     const llvm::object::coff_symbol_generic *s = nullptr,
                     CommonChunk *c = nullptr);
   DefinedImportData *addImportData(StringRef n, ImportFile *f,
-                                   Chunk *&location);
+                                   ChunkAndOffset &location);
   Defined *addImportThunk(StringRef name, DefinedImportData *s,
                           ImportThunkChunk *chunk);
   void addLibcall(StringRef name);
@@ -162,6 +191,11 @@ public:
                        uint32_t newSectionOffset = 0);
 
   COFFLinkerContext &ctx;
+  // Non-null only on a final-output view of this already resolved table.
+  SymbolTable *resolutionSource = nullptr;
+  bool owns(const InputFile *file) const {
+    return &file->symtab == this || &file->symtab == resolutionSource;
+  }
   llvm::COFF::MachineTypes machine;
 
   bool isEC() const { return machine == ARM64EC; }
@@ -200,7 +234,7 @@ public:
   std::map<std::string, int> alignComm;
 
   void fixupExports();
-  void assignExportOrdinals();
+  void assignExportOrdinals(bool fillGaps = false);
   void parseModuleDefs(StringRef path);
   void parseAlternateName(StringRef);
   void parseAligncomm(StringRef);
@@ -213,7 +247,7 @@ public:
 
   std::vector<BitcodeFile *> bitcodeFileInstances;
 
-  DefinedRegular *loadConfigSym = nullptr;
+  Defined *loadConfigSym = nullptr;
   uint32_t loadConfigSize = 0;
   void initializeLoadConfig();
 
@@ -236,6 +270,12 @@ private:
 
   llvm::DenseMap<llvm::CachedHashStringRef, Symbol *> symMap;
   std::unique_ptr<BitcodeCompiler> lto;
+  // Frozen before LTO replaces prevailing symbol bodies with undefined ones.
+  llvm::DenseSet<Symbol *> ltoImportAlternatives;
+  void prepareLTOBindings();
+  void collectBindingEntities(InputFile *file,
+                              ArrayRef<BindingRequirement> requirements);
+  llvm::DenseMap<SectionChunk *, DefinedImportData *> canonicalResiduals;
   std::vector<std::pair<Symbol *, Symbol *>> entryThunks;
   llvm::DenseMap<Symbol *, Symbol *> exitThunks;
 

@@ -1202,7 +1202,7 @@ void PDBLinker::addPublicsToPDB() {
   // Compute the public symbols.
   auto &gsiBuilder = builder.getGsiBuilder();
   std::vector<pdb::BulkPublic> publics;
-  ctx.symtab.forEachSymbol([&publics, this](Symbol *s) {
+  ctx.getOutputSymtab().forEachSymbol([&publics, this](Symbol *s) {
     // Only emit external, defined, live symbols that have a chunk. Static,
     // non-external symbols do not appear in the symbol table.
     auto *def = dyn_cast<Defined>(s);
@@ -1604,6 +1604,9 @@ void lld::coff::createPDB(COFFLinkerContext &ctx,
                           llvm::codeview::DebugInfo *buildId) {
   llvm::TimeTraceScope timeScope("PDB file");
   ScopedTimer t1(ctx.totalPdbLinkTimer);
+  if (ctx.outputPartition)
+    for (TpiSource *source : ctx.tpiSourceList)
+      source->resetForOutput();
   {
     PDBLinker pdb(ctx);
 
@@ -1713,7 +1716,7 @@ void PDBLinker::commit(codeview::GUID *guid) {
   // Print an error and continue if PDB writing fails. This is done mainly so
   // the user can see the output of /time and /summary, which is very helpful
   // when trying to figure out why a PDB file is too large.
-  if (Error e = builder.commit(ctx.config.pdbPath, guid)) {
+  if (Error e = builder.commit(ctx.outputFiles.stage(ctx.config.pdbPath), guid)) {
     e = handleErrors(std::move(e), [&](const llvm::msf::MSFError &me) {
       Err(ctx) << me.message();
       if (me.isPageOverflow())

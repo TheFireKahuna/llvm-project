@@ -44,6 +44,7 @@ add_llvm_component_library(LLVMCodeGen
   CodeGen.cpp
   CodeGenCommonISel.cpp
   CodeGenPrepare.cpp
+  COFFOutputLocality.cpp
   CommandFlags.cpp
   ComplexDeinterleavingPass.cpp
   CriticalAntiDepBreaker.cpp

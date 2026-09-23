@@ -646,7 +646,7 @@ void LinkerDriver::createSideBySideManifest() {
   if (path == "")
     path = ctx.config.outputFile + ".manifest";
   std::error_code ec;
-  raw_fd_ostream out(path, ec, sys::fs::OF_TextWithCRLF);
+  raw_fd_ostream out(ctx.outputFiles.stage(path), ec, sys::fs::OF_TextWithCRLF);
   if (ec)
     Fatal(ctx) << "failed to create manifest: " << ec.message();
   out << createManifestXml();

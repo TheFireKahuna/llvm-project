@@ -3,6 +3,7 @@ tablegen(LLVM Options.inc -gen-opt-parser-defs)
 add_public_tablegen_target(COFFOptionsTableGen)
 
 add_lld_library(lldCOFF
+  Binding.cpp
   CallGraphSort.cpp
   Chunks.cpp
   COFFLinkerContext.cpp
@@ -11,13 +12,17 @@ add_lld_library(lldCOFF
   Driver.cpp
   DriverUtils.cpp
   ICF.cpp
+  ImportInstructions.cpp
   InputFiles.cpp
   LLDMapFile.cpp
   LTO.cpp
+  LTOPartitions.cpp
   MapFile.cpp
   MarkLive.cpp
   MinGW.cpp
+  OutputFiles.cpp
   PDB.cpp
+  Partitions.cpp
   SymbolTable.cpp
   Symbols.cpp
   Writer.cpp
@@ -36,6 +41,7 @@ add_lld_library(lldCOFF
   LibDriver
   LTO
   MC
+  MCDisassembler
   Object
   Option
   Passes

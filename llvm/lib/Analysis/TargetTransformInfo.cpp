@@ -1303,8 +1303,10 @@ InstructionCost TargetTransformInfo::getAddressComputationCost(
   return Cost;
 }
 
-InstructionCost TargetTransformInfo::getMemcpyCost(const Instruction *I) const {
-  InstructionCost Cost = TTIImpl->getMemcpyCost(I);
+InstructionCost
+TargetTransformInfo::getMemcpyCost(const Instruction *I,
+                                   TargetCostKind CostKind) const {
+  InstructionCost Cost = TTIImpl->getMemcpyCost(I, CostKind);
   assert(Cost >= 0 && "TTI should not produce negative costs!");
   return Cost;
 }

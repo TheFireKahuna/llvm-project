@@ -14,6 +14,7 @@
 #include "lld/Common/LLVM.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/PointerIntPair.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/iterator.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/MC/StringTableBuilder.h"
@@ -60,6 +61,7 @@ public:
     SectionKind,
     SectionECKind,
     OtherKind,
+    CommonKind,
     ImportThunkKind,
     ECExportThunkKind
   };
@@ -315,7 +317,17 @@ public:
     PageBase,   // AArch64: adrp x, __imp_X
     PageOffset, // AArch64: ldr x, [x, :lo12:__imp_X]
   };
-  ImportRefForm getImportRefForm(const coff_relocation &rel) const;
+  // ignoreAddend permits x64 instruction-shape recognition before coordinate
+  // normalization. Actual binding still requires a zero-addend reference.
+  ImportRefForm getImportRefForm(const coff_relocation &rel,
+                                bool ignoreAddend = false) const;
+  bool isImportAddressLoad(const coff_relocation &rel) const;
+
+  // A whole native pointer in data, with its input addend. Unsupported forms
+  // and truncated destinations have no value; callers must not treat them as
+  // zero. This is shared by ownership, placement and import-slot construction.
+  std::optional<int64_t> getPointerAddend(const coff_relocation &rel) const;
+  unsigned getRelocationWidth(const coff_relocation &rel) const;
 
   // The size of the entry a weak definition carries in front of its body
   // (WindowsWeakInterposition), when this relocation is the one inside it: a
@@ -362,6 +374,18 @@ public:
   llvm::iterator_range<symbol_iterator> symbols() const {
     return llvm::make_range(symbol_iterator(file, relocsData),
                             symbol_iterator(file, relocsData + relocsSize));
+  }
+
+  struct SymbolIndexLookup {
+    ObjFile *file;
+    Symbol *operator()(uint32_t index) const { return file->getSymbol(index); }
+  };
+
+  // Liveness/placement edges include link-only ABI uses. Relocation processing
+  // continues to use symbols(), which describes only fields in the bytes.
+  auto dependencies() const {
+    return llvm::concat<Symbol *>(
+        symbols(), llvm::map_range(file->getABIUses(this), SymbolIndexLookup{file}));
   }
 
   ArrayRef<coff_relocation> getRelocs() const {
@@ -569,6 +593,7 @@ private:
 class CommonChunk : public NonSectionChunk {
 public:
   CommonChunk(const COFFSymbolRef sym);
+  static bool classof(const Chunk *c) { return c->kind() == CommonKind; }
   size_t getSize() const override { return sym.getValue(); }
   uint32_t getOutputCharacteristics() const override;
   StringRef getSectionName() const override { return ".bss"; }
@@ -767,30 +792,8 @@ private:
   COFFLinkerContext &ctx;
 };
 
-// Duplicate RVAs are not allowed in RVA tables, so unique symbols by chunk and
-// offset into the chunk. Order does not matter as the RVA table will be sorted
-// later.
-struct ChunkAndOffset {
-  Chunk *inputChunk;
-  uint32_t offset;
-
-  struct DenseMapInfo {
-    static ChunkAndOffset getEmptyKey() {
-      return {llvm::DenseMapInfo<Chunk *>::getEmptyKey(), 0};
-    }
-    static ChunkAndOffset getTombstoneKey() {
-      return {llvm::DenseMapInfo<Chunk *>::getTombstoneKey(), 0};
-    }
-    static unsigned getHashValue(const ChunkAndOffset &co) {
-      return llvm::DenseMapInfo<std::pair<Chunk *, uint32_t>>::getHashValue(
-          {co.inputChunk, co.offset});
-    }
-    static bool isEqual(const ChunkAndOffset &lhs, const ChunkAndOffset &rhs) {
-      return lhs.inputChunk == rhs.inputChunk && lhs.offset == rhs.offset;
-    }
-  };
-};
-
+// Duplicate RVAs are not allowed in RVA tables. Order does not matter here;
+// the table is sorted after layout.
 using SymbolRVASet = llvm::DenseSet<ChunkAndOffset>;
 
 // Table which contains symbol RVAs. Used for /safeseh and /guard:cf.

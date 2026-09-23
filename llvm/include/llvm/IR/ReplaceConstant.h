@@ -14,6 +14,7 @@
 #ifndef LLVM_IR_REPLACECONSTANT_H
 #define LLVM_IR_REPLACECONSTANT_H
 
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/Support/Compiler.h"
 
 namespace llvm {
@@ -21,6 +22,7 @@ namespace llvm {
 template <typename T> class ArrayRef;
 class Constant;
 class Function;
+class Instruction;
 
 /// Replace constant expressions users of the given constants with
 /// instructions. Return whether anything was changed.
@@ -35,9 +37,12 @@ class Function;
 ///
 /// If \p IncludeSelf is enabled, also convert the passed constants themselves
 /// to instructions, rather than only their users.
+/// When supplied, ShouldConvert selects instruction users; other users retain
+/// constant operands, for example EH clauses consumed as static metadata.
 LLVM_ABI bool convertUsersOfConstantsToInstructions(
     ArrayRef<Constant *> Consts, Function *RestrictToFunc = nullptr,
-    bool RemoveDeadConstants = true, bool IncludeSelf = false);
+    bool RemoveDeadConstants = true, bool IncludeSelf = false,
+    function_ref<bool(const Instruction &)> ShouldConvert = nullptr);
 
 } // end namespace llvm
 

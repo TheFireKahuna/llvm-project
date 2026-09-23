@@ -21,6 +21,7 @@
 #include "COFFLinkerContext.h"
 #include "Chunks.h"
 #include "SymbolTable.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Object/COFF.h"
 #include "llvm/Support/Endian.h"
@@ -107,17 +108,91 @@ private:
   COFFLinkerContext &ctx;
 };
 
-// A chunk that repeats another chunk's contents: the lookup entry of an
-// in-place import slot, which is the value of the import's address-table
-// entry.
-class MirrorChunk : public NonSectionChunk {
+// A terminated lookup sequence. Keep its words together instead of allocating
+// a synthetic chunk for each repeated entry and terminator.
+class ImportLookupTableChunk : public NonSectionChunk {
 public:
-  explicit MirrorChunk(Chunk *c) : of(c) { setAlignment(c->getAlignment()); }
-  size_t getSize() const override { return of->getSize(); }
-  void writeTo(uint8_t *buf) const override { of->writeTo(buf); }
+  ImportLookupTableChunk(std::vector<Chunk *> entries, unsigned wordsize)
+      : entries(std::move(entries)), wordsize(wordsize) {
+    setAlignment(wordsize);
+  }
+  size_t getSize() const override { return (entries.size() + 1) * wordsize; }
+  void writeTo(uint8_t *buf) const override {
+    for (Chunk *entry : entries) {
+      entry->writeTo(buf);
+      buf += wordsize;
+    }
+    memset(buf, 0, wordsize);
+  }
 
 private:
-  Chunk *of;
+  std::vector<Chunk *> entries;
+  unsigned wordsize;
+};
+
+// Intern sequences from their terminating end, so equal sequences and suffixes
+// share storage but unterminated prefixes cannot. Node IDs avoid copying or
+// hashing every suffix; construction is linear in the number of input words.
+// Pointer keys identify lookup encodings only. Emission follows insertion order
+// and never depends on pointer values or DenseMap iteration order.
+class ImportLookupTablePool {
+public:
+  explicit ImportLookupTablePool(unsigned wordsize) : wordsize(wordsize) {}
+
+  size_t add(ArrayRef<DefinedImportData *> syms,
+             ArrayRef<Chunk *> existing = {}) {
+    size_t tail = 0;
+    for (size_t i = syms.size(); i != 0; --i) {
+      DefinedImportData *sym = syms[i - 1];
+      Chunk *entry = sym->file->lookup;
+      auto [it, inserted] = ids.try_emplace({entry, tail}, nodes.size());
+      if (inserted) {
+        nodes[tail].hasPrefix = true;
+        nodes.push_back({entry, tail});
+      }
+      tail = it->second;
+      if (!existing.empty())
+        nodes[tail].chunk = existing[i - 1];
+    }
+    return tail;
+  }
+
+  void emit(std::vector<Chunk *> &chunks) {
+    for (Node &head : nodes) {
+      if (!head.entry || head.hasPrefix || head.chunk)
+        continue;
+      std::vector<Chunk *> entries;
+      for (Node *n = &head; n->entry; n = &nodes[n->tail])
+        entries.push_back(n->entry);
+      auto *chunk = make<ImportLookupTableChunk>(std::move(entries), wordsize);
+      chunks.push_back(chunk);
+      size_t offset = 0;
+      for (Node *n = &head; n->entry; n = &nodes[n->tail]) {
+        if (!n->chunk) {
+          n->chunk = chunk;
+          n->offset = offset;
+        }
+        offset += wordsize;
+      }
+    }
+  }
+
+  std::pair<Chunk *, size_t> getLocation(size_t id) const {
+    assert(nodes[id].chunk && "lookup tables have not been emitted");
+    return {nodes[id].chunk, nodes[id].offset};
+  }
+
+private:
+  struct Node {
+    Chunk *entry = nullptr;
+    size_t tail = 0;
+    Chunk *chunk = nullptr;
+    size_t offset = 0;
+    bool hasPrefix = false;
+  };
+  DenseMap<std::pair<Chunk *, size_t>, size_t> ids;
+  std::vector<Node> nodes{1}; // Node zero is the shared terminator.
+  unsigned wordsize;
 };
 
 // A chunk for the import descriptor table.
@@ -130,13 +205,14 @@ public:
     memset(buf, 0, getSize());
 
     auto *e = (coff_import_directory_table_entry *)(buf);
-    e->ImportLookupTableRVA = lookupTab->getRVA();
+    e->ImportLookupTableRVA = lookupTab->getRVA() + lookupTabOffset;
     e->NameRVA = dllName->getRVA();
     e->ImportAddressTableRVA = addressTab->getRVA() + addressTabOffset;
   }
 
   Chunk *dllName;
   Chunk *lookupTab;
+  size_t lookupTabOffset = 0;
   Chunk *addressTab;
   // The address table of an in-place slot run starts inside a section chunk.
   uint32_t addressTabOffset = 0;
@@ -679,9 +755,18 @@ public:
       if (e.forwardChunk) {
         write32le(p, e.forwardChunk->getRVA() | bit);
       } else {
-        assert(cast<Defined>(e.sym)->getRVA() != 0 &&
-               "Exported symbol unmapped");
-        write32le(p, cast<Defined>(e.sym)->getRVA() | bit);
+        uint64_t rva = cast<Defined>(e.sym)->getRVA() | bit;
+        assert(rva != 0 && "Exported symbol unmapped");
+        uint64_t directoryStart = symtab.edataStart->getRVA();
+        uint64_t directoryEnd =
+            uint64_t(symtab.edataEnd->getRVA()) + symtab.edataEnd->getSize();
+        // The loader interprets every RVA in this range as a forwarder string,
+        // even if the symbol actually denotes ordinary data or a code address.
+        if (rva > UINT32_MAX ||
+            (rva >= directoryStart && rva < directoryEnd))
+          Fatal(symtab.ctx) << "direct export " << e.name
+                           << " has no representable PE export address";
+        write32le(p, rva);
       }
     }
   }
@@ -794,30 +879,47 @@ void IdataContents::create(COFFLinkerContext &ctx) {
     }
   }
 
+  // Bucket runs once, retaining the established DLL and destination order.
+  // No run participates in the tables of a different provider.
+  StringMap<SmallVector<SlotRun *, 0>> runsByDLL;
+  for (SlotRun &run : slotRuns)
+    runsByDLL[run.syms.front()->getDLLName().lower()].push_back(&run);
+
   // Create .idata contents for each DLL.
-  std::vector<Chunk *> slotLookups;
+  ImportLookupTablePool slotPool(ctx.config.wordsize);
+  SmallVector<std::pair<ImportDirectoryChunk *, size_t>, 0> slotDirectories;
   for (std::vector<DefinedImportData *> &syms : v) {
+    auto runs = runsByDLL.find(syms[0]->getDLLName().lower());
     // Create lookup and address tables. If they have external names,
     // we need to create hintName chunks to store the names.
     // If they don't (if they are import-by-ordinals), we store only
     // ordinal values to the table.
     size_t base = lookups.size();
+    SmallVector<DefinedImportData *, 0> ordinarySyms;
     Chunk *lookupsTerminator = nullptr, *addressesTerminator = nullptr;
     uint32_t nativeOnly = 0;
     for (DefinedImportData *s : syms) {
       uint16_t ord = s->getOrdinal();
       HintNameChunk *hintChunk = nullptr;
-      Chunk *lookupsChunk, *addressesChunk;
+      Chunk *lookupsChunk;
 
       if (s->getExternalName().empty()) {
         lookupsChunk = make<OrdinalOnlyChunk>(ctx, ord);
-        addressesChunk = make<OrdinalOnlyChunk>(ctx, ord);
       } else {
         hintChunk = make<HintNameChunk>(s->getExternalName(), ord);
         lookupsChunk = make<LookupChunk>(ctx, hintChunk);
-        addressesChunk = make<LookupChunk>(ctx, hintChunk);
         hints.push_back(hintChunk);
       }
+      s->file->lookup = lookupsChunk;
+      if (s->file->hybridFile)
+        s->file->hybridFile->lookup = lookupsChunk;
+      if (!s->file->needsIAT)
+        continue;
+      Chunk *addressesChunk =
+          hintChunk ? static_cast<Chunk *>(make<LookupChunk>(ctx, hintChunk))
+                    : make<OrdinalOnlyChunk>(ctx, ord);
+      if (runs != runsByDLL.end() && !ctx.hybridSymtab)
+        ordinarySyms.push_back(s);
 
       // Detect the first EC-only import in the hybrid IAT. Emit null chunk
       // as a terminator for the native view, and add an ARM64X relocation to
@@ -851,6 +953,9 @@ void IdataContents::create(COFFLinkerContext &ctx) {
 
       lookups.push_back(lookupsChunk);
       addresses.push_back(addressesChunk);
+      s->setLocation(addressesChunk);
+      if (s->file->hybridFile)
+        s->file->hybridFile->impSym->setLocation(addressesChunk);
 
       if (s->file->isEC()) {
         auto chunk = make<AuxImportChunk>(s->file);
@@ -867,69 +972,71 @@ void IdataContents::create(COFFLinkerContext &ctx) {
         ++nativeOnly;
       }
     }
-    // Terminate with null values.
-    lookups.push_back(lookupsTerminator ? lookupsTerminator
-                                        : make<NullChunk>(ctx));
-    addresses.push_back(addressesTerminator ? addressesTerminator
-                                            : make<NullChunk>(ctx));
-    if (ctx.symtab.isEC()) {
-      auxIat.push_back(make<NullChunk>(ctx));
-      auxIatCopy.push_back(make<NullChunk>(ctx));
-    }
-
-    for (int i = 0, e = syms.size(); i < e; ++i) {
-      syms[i]->setLocation(addresses[base + i]);
-      if (syms[i]->file->hybridFile)
-        syms[i]->file->hybridFile->impSym->setLocation(addresses[base + i]);
-    }
-
-    // Create the import table header.
     dllNames.push_back(make<StringChunk>(syms[0]->getDLLName()));
-    auto *dir = make<ImportDirectoryChunk>(dllNames.back());
-
-    if (ctx.hybridSymtab && nativeOnly) {
-      if (ctx.config.machine != ARM64X)
-        // On pure ARM64EC targets, skip native-only imports in the import
-        // directory.
-        base += nativeOnly;
-      else if (nativeOnly) {
-        // If native-only imports exist, they will appear as a prefix to all
-        // imports. Emit ARM64X relocations to skip them in the EC view.
-        ctx.dynamicRelocs->add(
-            IMAGE_DVRT_ARM64X_FIXUP_TYPE_DELTA, 0,
-            Arm64XRelocVal(
-                dir, offsetof(ImportDirectoryTableEntry, ImportLookupTableRVA)),
-            nativeOnly * sizeof(uint64_t));
-        ctx.dynamicRelocs->add(
-            IMAGE_DVRT_ARM64X_FIXUP_TYPE_DELTA, 0,
-            Arm64XRelocVal(dir, offsetof(ImportDirectoryTableEntry,
-                                         ImportAddressTableRVA)),
-            nativeOnly * sizeof(uint64_t));
+    // In-place runs alone already represent the provider. An empty ordinary
+    // descriptor would add two terminators and another loader walk.
+    if (lookups.size() != base) {
+      // Terminate with null values.
+      lookups.push_back(lookupsTerminator ? lookupsTerminator
+                                          : make<NullChunk>(ctx));
+      addresses.push_back(addressesTerminator ? addressesTerminator
+                                              : make<NullChunk>(ctx));
+      if (ctx.symtab.isEC()) {
+        auxIat.push_back(make<NullChunk>(ctx));
+        auxIatCopy.push_back(make<NullChunk>(ctx));
       }
+
+      // Ordinary immutable lookups are also available as terminated suffixes.
+      // Hybrid tables have view-dependent terminators patched by the loader;
+      // do not treat those mutable encodings as a shared immutable sequence.
+      if (runs != runsByDLL.end() && !ctx.hybridSymtab)
+        slotPool.add(ordinarySyms,
+                     ArrayRef(lookups).slice(base, ordinarySyms.size()));
+
+      // Create the import table header.
+      auto *dir = make<ImportDirectoryChunk>(dllNames.back());
+
+      if (ctx.hybridSymtab && nativeOnly) {
+        if (ctx.config.machine != ARM64X)
+          // On pure ARM64EC targets, skip native-only imports in the import
+          // directory.
+          base += nativeOnly;
+        else if (nativeOnly) {
+          // If native-only imports exist, they will appear as a prefix to all
+          // imports. Emit ARM64X relocations to skip them in the EC view.
+          ctx.dynamicRelocs->add(
+              IMAGE_DVRT_ARM64X_FIXUP_TYPE_DELTA, 0,
+              Arm64XRelocVal(dir, offsetof(ImportDirectoryTableEntry,
+                                           ImportLookupTableRVA)),
+              nativeOnly * sizeof(uint64_t));
+          ctx.dynamicRelocs->add(
+              IMAGE_DVRT_ARM64X_FIXUP_TYPE_DELTA, 0,
+              Arm64XRelocVal(dir, offsetof(ImportDirectoryTableEntry,
+                                           ImportAddressTableRVA)),
+              nativeOnly * sizeof(uint64_t));
+        }
+      }
+
+      dir->lookupTab = lookups[base];
+      dir->addressTab = addresses[base];
+      dirs.push_back(dir);
     }
 
-    dir->lookupTab = lookups[base];
-    dir->addressTab = addresses[base];
-    dirs.push_back(dir);
-
-    // A descriptor per run of in-place slots of this DLL, after its own so
-    // that the load order stays the command-line order. The lookup tables
-    // follow the DLLs' own, which index lookups and addresses alike.
-    for (SlotRun &run : slotRuns) {
-      if (!run.syms[0]->getDLLName().equals_insensitive(syms[0]->getDLLName()))
-        continue;
+    // Destinations retain independent descriptors, even when their immutable
+    // lookup sequences can be shared. Keep the DLL's existing load order.
+    if (runs == runsByDLL.end())
+      continue;
+    for (SlotRun *run : runs->second) {
       auto *dir = make<ImportDirectoryChunk>(dllNames.back());
-      dir->lookupTab = make<MirrorChunk>(run.syms[0]->getChunk());
-      slotLookups.push_back(dir->lookupTab);
-      for (DefinedImportData *s : ArrayRef(run.syms).drop_front())
-        slotLookups.push_back(make<MirrorChunk>(s->getChunk()));
-      slotLookups.push_back(make<NullChunk>(ctx));
-      dir->addressTab = run.chunk;
-      dir->addressTabOffset = run.offset;
+      slotDirectories.emplace_back(dir, slotPool.add(run->syms));
+      dir->addressTab = run->chunk;
+      dir->addressTabOffset = run->offset;
       dirs.push_back(dir);
     }
   }
-  lookups.insert(lookups.end(), slotLookups.begin(), slotLookups.end());
+  slotPool.emit(lookups);
+  for (auto [dir, id] : slotDirectories)
+    std::tie(dir->lookupTab, dir->lookupTabOffset) = slotPool.getLocation(id);
   // Add null terminator.
   dirs.push_back(make<NullChunk>(sizeof(ImportDirectoryTableEntry), 4));
 }

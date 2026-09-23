@@ -574,6 +574,7 @@ void ScheduleDAGInstrs::addChainDependency (SUnit *SUa, SUnit *SUb,
   if (SUa->getInstr()->mayAlias(getAAForDep(), *SUb->getInstr(), UseTBAA)) {
     SDep Dep(SUa, SDep::MayAliasMem);
     Dep.setLatency(Latency);
+    MF.getSubtarget().adjustSchedDependency(SUa, -1, SUb, -1, Dep, &SchedModel);
     SUb->addPred(Dep);
   }
 }

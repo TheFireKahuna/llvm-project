@@ -51,12 +51,14 @@
 #include "X86TargetTransformInfo.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/CodeGen/BasicTTIImpl.h"
 #include "llvm/CodeGen/CostTable.h"
 #include "llvm/CodeGen/TargetLowering.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include <optional>
+#include <vector>
 
 using namespace llvm;
 
@@ -5266,12 +5268,100 @@ X86TTIImpl::getReplicationShuffleCost(Type *EltTy, int ReplicationFactor,
   return NumDstVectorsDemanded * SingleShuffleCost;
 }
 
+InstructionCost X86TTIImpl::getMemcpyCost(const Instruction *I,
+                                          TTI::TargetCostKind CostKind) const {
+  const auto *MC = dyn_cast_or_null<MemCpyInst>(I);
+  if (!MC)
+    return BaseT::getMemcpyCost(I, CostKind);
+  const auto *Length = dyn_cast<ConstantInt>(MC->getLength());
+  if (!Length || Length->getValue().getActiveBits() > 64)
+    return BaseT::getMemcpyCost(I, CostKind);
+  uint64_t Size = Length->getZExtValue();
+  if (!Size)
+    return 0;
+
+  // Volatile accesses need separate costs. Constant sources may lower to
+  // immediate stores or a memset instead.
+  ConstantDataArraySlice Slice;
+  if (MC->isVolatile() || getConstantDataArrayInfo(MC->getSource(), Slice, 8))
+    return BaseT::getMemcpyCost(I, CostKind);
+
+  const Function &F = *MC->getFunction();
+  Align DstAlign = MC->getDestAlign().valueOrOne();
+  Align SrcAlign = MC->getSourceAlign().valueOrOne();
+  bool OptSize =
+      ST->getTargetTriple().isOSDarwin() ? F.hasMinSize() : F.hasOptSize();
+  std::vector<EVT> MemOps;
+  // Reuse the bounded load/store expansion tried before target-specific
+  // lowering or a libcall. Do not assume stack alignment can be increased.
+  if (!TLI->findOptimalMemOpLowering(
+          F.getContext(), MemOps, TLI->getMaxStoresPerMemcpy(OptSize),
+          MemOp::Copy(Size, /*DstAlignCanChange=*/false,
+                      std::min(DstAlign, SrcAlign), SrcAlign,
+                      /*IsVolatile=*/false),
+          MC->getDestAddressSpace(), MC->getSourceAddressSpace(),
+          F.getAttributes()))
+    return BaseT::getMemcpyCost(I, CostKind);
+
+  // Sum instruction costs, as for other expanded operations. In particular,
+  // this does not estimate the critical path or store-to-load forwarding.
+  InstructionCost Cost = 0;
+  uint64_t Offset = 0;
+  for (EVT VT : MemOps) {
+    uint64_t Bytes = VT.getStoreSize().getFixedValue();
+    // The last access may overlap the preceding one to cover the tail.
+    Offset = std::min(Offset, Size - Bytes);
+    Align LoadAlign = commonAlignment(SrcAlign, Offset);
+    Align StoreAlign = commonAlignment(DstAlign, Offset);
+    // Legalization and slow unaligned accesses can split the planned access.
+    if (!TLI->isTypeLegal(VT) || !TLI->isMemoryAccessFast(VT, LoadAlign) ||
+        !TLI->isMemoryAccessFast(VT, StoreAlign))
+      return BaseT::getMemcpyCost(I, CostKind);
+    Type *Ty = VT.getTypeForEVT(F.getContext());
+    Cost += getMemoryOpCost(Instruction::Load, Ty, LoadAlign,
+                            MC->getSourceAddressSpace(), CostKind);
+    Cost += getMemoryOpCost(Instruction::Store, Ty, StoreAlign,
+                            MC->getDestAddressSpace(), CostKind);
+    Offset += Bytes;
+  }
+  return Cost;
+}
+
 InstructionCost X86TTIImpl::getMemoryOpCost(unsigned Opcode, Type *Src,
                                             Align Alignment,
                                             unsigned AddressSpace,
                                             TTI::TargetCostKind CostKind,
                                             TTI::OperandValueInfo OpInfo,
                                             const Instruction *I) const {
+  if (CostKind == TTI::TCK_Latency) {
+    const MCSchedModel &Model = ST->getSchedModel();
+    EVT VT = TLI->getValueType(DL, Src, true);
+    // Spill opcodes describe a single full-register access. Do not use them
+    // for legalized multi-instruction accesses or packed predicate vectors.
+    const auto *LI = dyn_cast_or_null<LoadInst>(I);
+    const auto *SI = dyn_cast_or_null<StoreInst>(I);
+    bool Simple = (!LI || LI->isSimple()) && (!SI || SI->isSimple());
+    if (Simple && Model.hasInstrSchedModel() && VT.isSimple() &&
+        TLI->isTypeLegal(VT) &&
+        TLI->isOperationLegal(Opcode == Instruction::Load ? ISD::LOAD : ISD::STORE,
+                             VT) &&
+        !(VT.isVector() && VT.getVectorElementType() == MVT::i1)) {
+      const TargetRegisterClass *RC = TLI->getRegClassFor(VT.getSimpleVT());
+      if (ST->getRegisterInfo()->getSpillSize(*RC) == VT.getStoreSize()) {
+        unsigned MemOpcode = X86InstrInfo::getLoadStoreRegOpcode(
+            0, RC, Alignment >= VT.getStoreSize(), *ST,
+            Opcode == Instruction::Load);
+        unsigned SC = ST->getInstrInfo()->get(MemOpcode).getSchedClass();
+        const MCSchedClassDesc *Desc = Model.getSchedClassDesc(SC);
+        if (Desc->isValid() && !Desc->isVariant()) {
+          int Latency = MCSchedModel::computeInstrLatency(*ST, *Desc);
+          if (Latency >= 0)
+            return Latency;
+        }
+      }
+    }
+    return Opcode == Instruction::Load ? 4 : 1;
+  }
   // TODO: Handle other cost kinds.
   if (CostKind != TTI::TCK_RecipThroughput) {
     if (auto *SI = dyn_cast_or_null<StoreInst>(I)) {

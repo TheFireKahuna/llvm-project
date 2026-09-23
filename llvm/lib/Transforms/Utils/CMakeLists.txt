@@ -14,6 +14,7 @@ add_llvm_component_library(LLVMTransformUtils
   CloneFunction.cpp
   CloneModule.cpp
   CodeExtractor.cpp
+  COFFABIRequirements.cpp
   CodeLayout.cpp
   CodeMoverUtils.cpp
   ControlFlowUtils.cpp

@@ -48,10 +48,10 @@ static void expandUser(BasicBlock::iterator InsertPt, Constant *C,
   }
 }
 
-bool llvm::convertUsersOfConstantsToInstructions(ArrayRef<Constant *> Consts,
-                                                 Function *RestrictToFunc,
-                                                 bool RemoveDeadConstants,
-                                                 bool IncludeSelf) {
+bool llvm::convertUsersOfConstantsToInstructions(
+    ArrayRef<Constant *> Consts, Function *RestrictToFunc,
+    bool RemoveDeadConstants, bool IncludeSelf,
+    function_ref<bool(const Instruction &)> ShouldConvert) {
   // Find all expandable direct users of Consts.
   SmallVector<Constant *> Stack;
   for (Constant *C : Consts) {
@@ -85,7 +85,8 @@ bool llvm::convertUsersOfConstantsToInstructions(ArrayRef<Constant *> Consts,
   for (Constant *C : ExpandableUsers)
     for (User *U : C->users())
       if (auto *I = dyn_cast<Instruction>(U))
-        if (!RestrictToFunc || I->getFunction() == RestrictToFunc)
+        if ((!RestrictToFunc || I->getFunction() == RestrictToFunc) &&
+            (!ShouldConvert || ShouldConvert(*I)))
           InstructionWorklist.insert(I);
 
   // Replace those expandable operands with instructions

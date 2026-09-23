@@ -124,6 +124,7 @@ private:
   std::vector<BitcodeModule> Mods;
   SmallVector<char, 0> Strtab;
   std::vector<Symbol> Symbols;
+  std::vector<irsymtab::COFFABIRequirement> COFFABIRequirements;
 
   // [begin, end) for each module
   std::vector<std::pair<size_t, size_t>> ModuleSymIndices;
@@ -158,22 +159,26 @@ public:
   public:
     Symbol(const irsymtab::Symbol &S) : irsymtab::Symbol(S) {}
 
-    using irsymtab::Symbol::isUndefined;
-    using irsymtab::Symbol::isCommon;
-    using irsymtab::Symbol::isWeak;
-    using irsymtab::Symbol::isIndirect;
-    using irsymtab::Symbol::getName;
-    using irsymtab::Symbol::getIRName;
-    using irsymtab::Symbol::getVisibility;
     using irsymtab::Symbol::canBeOmittedFromSymbolTable;
-    using irsymtab::Symbol::isTLS;
-    using irsymtab::Symbol::getComdatIndex;
-    using irsymtab::Symbol::getCommonSize;
-    using irsymtab::Symbol::getCommonAlignment;
+    using irsymtab::Symbol::getCOFFABIContract;
+    using irsymtab::Symbol::getCOFFBindingFlags;
     using irsymtab::Symbol::getCOFFWeakExternalFallback;
+    using irsymtab::Symbol::getComdatIndex;
+    using irsymtab::Symbol::getCommonAlignment;
+    using irsymtab::Symbol::getCommonSize;
+    using irsymtab::Symbol::getIRName;
+    using irsymtab::Symbol::getName;
+    using irsymtab::Symbol::getPartition;
     using irsymtab::Symbol::getSectionName;
+    using irsymtab::Symbol::getVisibility;
+    using irsymtab::Symbol::isCOFFImportCandidate;
+    using irsymtab::Symbol::isCommon;
     using irsymtab::Symbol::isExecutable;
+    using irsymtab::Symbol::isIndirect;
+    using irsymtab::Symbol::isTLS;
+    using irsymtab::Symbol::isUndefined;
     using irsymtab::Symbol::isUsed;
+    using irsymtab::Symbol::isWeak;
 
     // Returns whether this symbol is a library call that LTO code generation
     // may emit references to. Such symbols must be considered external, as
@@ -184,6 +189,11 @@ public:
 
   /// A range over the symbols in this InputFile.
   ArrayRef<Symbol> symbols() const { return Symbols; }
+
+  /// Requirements use indices in symbols(), after filtering the IR symtab.
+  ArrayRef<irsymtab::COFFABIRequirement> getCOFFABIRequirements() const {
+    return COFFABIRequirements;
+  }
 
   /// Returns linker options specified in the input file.
   StringRef getCOFFLinkerOpts() const { return COFFLinkerOpts; }

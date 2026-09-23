@@ -986,6 +986,13 @@ CodeGenModule::StackProtectorAttribute(const Decl *D) const {
 }
 
 void CodeGenModule::Release() {
+  if (getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      LangOpts.CPlusPlus && !getTarget().hasPS4DLLImportExport()) {
+    // This is a hard ABI boundary: the former representation appended two
+    // identity words to std::type_info. Preserve the check through LTO too.
+    getModule().addModuleFlag(llvm::Module::Error, "coff.rtti_abi", 2);
+    AddDetectMismatch("coff.rtti_abi", "2");
+  }
   Module *Primary = getContext().getCurrentNamedModule();
   if (CXX20ModuleInits && Primary && !Primary->isHeaderLikeModule())
     EmitModuleInitializers(Primary);
@@ -1988,8 +1995,8 @@ static bool shouldAssumeDSOLocal(const CodeGenModule &CGM,
     // variable across the shared-library boundary asks for that, and
     // -fauto-import asks for it without marks. A native thread-local symbol
     // cannot be imported at all. Only a variable the source declared takes
-    // this rule: a vtable is reached by the name of its address point, and a
-    // type_info descriptor is identified by the hash it carries.
+    // this rule: vtables use their exact address-point names, and RTTI carries
+    // its canonical-binding policy on the compiler-generated global itself.
     const auto *Var = dyn_cast<llvm::GlobalVariable>(GV);
     if (TT.isWindowsItaniumOrNTPOSIXEnvironment() && Var &&
         isa_and_nonnull<VarDecl>(D) && !Var->isThreadLocal() &&

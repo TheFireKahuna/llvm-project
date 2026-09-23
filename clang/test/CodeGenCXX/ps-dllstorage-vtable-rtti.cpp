@@ -24,7 +24,7 @@
 /// the vtable will not be referenced, and so does not need to be imported.
 
 // PS-DAG: @_ZTI10FullImport = {{.*}}dllimport
-// WI-DAG: @_ZTI10FullImport = linkonce_odr dso_local constant { ptr, ptr, i64, i64 } {
+// WI-DAG: @_ZTI10FullImport = external dllimport constant ptr
 struct __declspec(dllimport) FullImport {
   virtual void inlineFunc() const {}
   virtual void key();
@@ -43,7 +43,7 @@ void FullImportTest() { typeid(FullImport).name(); }
 // PS-DAG: @_ZTV10FullExport = {{.*}}dllexport
 // WI-DAG: @_ZTV10FullExport = {{.*}}dllexport
 // PS-DAG: @_ZTI10FullExport = {{.*}}dllexport
-// WI-DAG: @_ZTI10FullExport = linkonce_odr dso_local constant { ptr, ptr, i64, i64 } {
+// WI-DAG: @_ZTI10FullExport = dso_local dllexport constant {
 struct __declspec(dllexport) FullExport {
   virtual void inlineFunc() const {}
   virtual void key();
@@ -62,7 +62,7 @@ void FullExport::key() { typeid(FullExport).name(); }
 // PS-DAG: @_ZTV10PartImport = {{.*}}dllimport
 // WI-DAG: @_ZTV10PartImport = external unnamed_addr constant {
 // PS-DAG: @_ZTI10PartImport = {{.*}}dllimport
-// WI-DAG: @_ZTI10PartImport = linkonce_odr dso_local constant { ptr, ptr, i64, i64 } {
+// WI-DAG: @_ZTI10PartImport = external constant ptr
 struct PartImport {
   virtual void inlineFunc() const {}
   virtual void key();
@@ -85,7 +85,7 @@ void PartImportTest() {
 // PS-DAG: @_ZTV10PartExport = {{.*}}dllexport
 // WI-DAG: @_ZTV10PartExport = dso_local unnamed_addr constant {
 // PS-DAG: @_ZTI10PartExport = {{.*}}dllexport
-// WI-DAG: @_ZTI10PartExport = linkonce_odr dso_local constant { ptr, ptr, i64, i64 } {
+// WI-DAG: @_ZTI10PartExport = dso_local constant {
 struct PartExport {
   virtual void inlineFunc() const {}
   virtual void key();
@@ -104,7 +104,7 @@ void PartExport::key() { typeid(PartExport).name(); }
 // PS-DAG: @_ZTV10ConsExport = {{.*}}dllexport
 // WI-DAG: @_ZTV10ConsExport = dso_local unnamed_addr constant {
 // PS-DAG: @_ZTI10ConsExport = {{.*}}dllexport
-// WI-DAG: @_ZTI10ConsExport = linkonce_odr dso_local constant { ptr, ptr, i64, i64 } {
+// WI-DAG: @_ZTI10ConsExport = dso_local constant {
 struct ConsExport {
   __declspec(dllexport) ConsExport();
   virtual void key();

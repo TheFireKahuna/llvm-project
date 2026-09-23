@@ -1,0 +1,53 @@
+# REQUIRES: x86
+# RUN: split-file %s %t
+# RUN: %python %t/input.py %t
+# RUN: llc -filetype=obj %t/a.ll -o %t/a.obj
+# RUN: llc -filetype=obj %t/b.ll -o %t/b.obj
+# RUN: lld-link /dll /noentry /import-slots /out:%t/a.dll %t/a.obj
+# RUN: llvm-as %t/a.ll -o %t/a.bc
+# RUN: opt -module-summary %t/a.ll -o %t/a.thin.bc
+# RUN: lld-link /dll /noentry /import-slots /out:%t/full.dll %t/a.bc
+# RUN: lld-link /dll /noentry /import-slots /out:%t/thin.dll %t/a.thin.bc
+# RUN: %python %t/check.py %t
+# RUN: env LLD_IN_TEST=1 not lld-link /dll /noentry /import-slots /out:%t/bad.dll %t/a.obj %t/b.obj 2>&1 | FileCheck %s
+# RUN: env LLD_IN_TEST=1 not lld-link /dll /noentry /import-slots /out:%t/bad.dll %t/a.bc %t/b.obj 2>&1 | FileCheck %s
+# CHECK: incompatible physical ABI for entity
+
+#--- input.py
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+for name, size in [('a', 8), ('b', 16)]:
+    # Schema 1, one scalar node: kind, qualifiers, identity, size/alignment,
+    # no dependencies. This models a same-name incompatible ABI definition.
+    contract = bytes([1, 1, 2, 0, 1, ord('T'), 2, size, 8, 0])
+    escaped = ''.join('\\%02X' % byte for byte in contract)
+    (root / (name + '.contract')).write_bytes(contract)
+    (root / (name + '.ll')).write_text('''
+target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-unknown-windows-itanium"
+$entity = comdat any
+@entity = linkonce_odr constant [2 x ptr] zeroinitializer, comdat, !coff.binding !1, !coff.abi !2
+@slot_''' + name + ''' = dllexport constant ptr @entity
+!llvm.module.flags = !{!0}
+!0 = !{i32 1, !"coff.rtti_abi", i32 2}
+!1 = !{i32 3}
+!2 = !{!"''' + escaped + '''"}
+''')
+
+#--- check.py
+import base64
+import hashlib
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+digest = base64.urlsafe_b64encode(hashlib.sha256(
+    (root / 'a.contract').read_bytes()).digest()).rstrip(b'=')
+qualified = b'entity$abi$1$' + digest + b'\0'
+for name in ['a', 'full', 'thin']:
+    assert qualified in (root / (name + '.dll')).read_bytes()
+providers = list(root.glob('rtti2-*.dll'))
+assert len(providers) == 1
+assert qualified in providers[0].read_bytes()

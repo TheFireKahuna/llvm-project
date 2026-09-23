@@ -316,7 +316,8 @@ public:
     return isLegalMaskedGather(Ty, Alignment);
   }
 
-  InstructionCost getMemcpyCost(const Instruction *I) const override;
+  InstructionCost getMemcpyCost(const Instruction *I,
+                                TTI::TargetCostKind CostKind) const override;
 
   uint64_t getMaxMemIntrinsicInlineSizeThreshold() const override {
     return ST->getMaxInlineSizeThreshold();

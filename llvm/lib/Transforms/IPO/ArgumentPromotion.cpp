@@ -69,6 +69,7 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/Utils/COFFABIRequirements.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/PromoteMemToReg.h"
 #include <algorithm>
@@ -250,6 +251,10 @@ static Function *doPromotion(
     assert(CB.getCalledFunction() == F);
     const AttributeList &CallPAL = CB.getAttributes();
     IRBuilder<NoFolder> IRB(&CB);
+
+    // Promoted loads and result stores execute in the caller. Preserve their
+    // original assumptions even if the rewritten call subsequently disappears.
+    mergeCOFFABIRequirements(*CB.getCaller(), *F);
 
     // Loop over the operands, inserting GEP and loads in the caller as
     // appropriate.

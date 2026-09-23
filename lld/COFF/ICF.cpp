@@ -20,6 +20,7 @@
 #include "ICF.h"
 #include "COFFLinkerContext.h"
 #include "Chunks.h"
+#include "Partitions.h"
 #include "Symbols.h"
 #include "lld/Common/Timer.h"
 #include "llvm/Support/Parallel.h"
@@ -146,6 +147,11 @@ bool ICF::assocEquals(const SectionChunk *a, const SectionChunk *b) {
 // Compare "non-moving" part of two sections, namely everything
 // except relocation targets.
 bool ICF::equalsConstant(const SectionChunk *a, const SectionChunk *b) {
+  if (ctx.partitions && ctx.partitions->owner(a) != ctx.partitions->owner(b))
+    return false;
+  if (ctx.partitions &&
+      ctx.partitions->isImageLocal(a) != ctx.partitions->isImageLocal(b))
+    return false;
   if (a->relocsSize != b->relocsSize)
     return false;
 
@@ -323,6 +329,24 @@ void ICF::run() {
       chunks[begin]->replace(chunks[i]);
     }
   });
+  // Code folding does not fold away the ABI assumptions of a live consumer.
+  // Transfer these sparse edges after the parallel section walk: extending
+  // an object's synthetic symbol table is deliberately single-threaded.
+  for (SectionChunk *chunk : chunks) {
+    SectionChunk *kept = chunk->repl;
+    if (kept == chunk || chunk->file->getABIUses(chunk).empty())
+      continue;
+    SmallVector<uint32_t, 2> uses(chunk->file->getABIUses(chunk));
+    auto &merged = kept->file->abiUses[kept];
+    SmallPtrSet<Symbol *, 8> seen;
+    for (uint32_t index : merged)
+      seen.insert(kept->file->getSymbol(index));
+    for (uint32_t index : uses) {
+      Symbol *symbol = chunk->file->getSymbol(index);
+      if (seen.insert(symbol).second)
+        merged.push_back(kept->file->addSyntheticSymbol(symbol));
+    }
+  }
 }
 
 // Entry point to ICF.

@@ -70,6 +70,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Transforms/Utils/AssumeBundleBuilder.h"
 #include "llvm/Transforms/Utils/Cloning.h"
+#include "llvm/Transforms/Utils/COFFABIRequirements.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/ValueMapper.h"
 #include <algorithm>
@@ -2654,6 +2655,7 @@ void llvm::InlineFunctionImpl(CallBase &CB, InlineFunctionInfo &IFI,
   Function *CalledFunc = CB.getCalledFunction();
   assert(CalledFunc && !CalledFunc->isDeclaration() &&
          "CanInlineCallSite should have verified direct call to definition");
+  mergeCOFFABIRequirements(*Caller, *CalledFunc);
 
   // Determine if we are dealing with a call in an EHPad which does not unwind
   // to caller.

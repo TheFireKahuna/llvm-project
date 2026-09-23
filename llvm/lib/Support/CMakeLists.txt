@@ -153,6 +153,7 @@ add_subdirectory(HTTP)
 
 add_llvm_component_library(LLVMSupport
   ABIBreak.cpp
+  ABIContract.cpp
   AMDGPUMetadata.cpp
   APFixedPoint.cpp
   APFloat.cpp

@@ -51,6 +51,10 @@ struct Config {
   TargetOptions Options;
   std::vector<std::string> MAttrs;
   std::vector<std::string> MllvmArgs;
+  /// Client resolution/placement facts used by optimization that are not
+  /// represented in an input module or its summary. Empty for ordinary LTO.
+  /// The client supplies a deterministic digest, never process-local IDs.
+  std::string LinkerContextHash;
   // LTO will register both lists of plugins, but
   // if an LTO client has already loaded a set of plugins,
   // they should register them via LoadedPassPlugins.

@@ -173,6 +173,7 @@ std::string llvm::computeLTOCacheKey(
     Hasher.update(ArrayRef<uint8_t>(&I, 1));
   };
   AddString(Conf.CPU);
+  AddString(Conf.LinkerContextHash);
   // FIXME: Hash more of Options. For now all clients initialize Options from
   // command-line flags (which is unsupported in production), but may set
   // X86RelaxRelocations. The clang driver can also pass FunctionSections,
@@ -636,14 +637,29 @@ Expected<std::unique_ptr<InputFile>> InputFile::create(MemoryBufferRef Object) {
   File->MbRef =
       Object; // Save a memory buffer reference to an input file object.
 
+  auto Requirements = FOrErr->TheReader.getCOFFABIRequirements();
+  if (!Requirements)
+    return Requirements.takeError();
+  auto Requirement = Requirements->begin();
+  unsigned SymbolIndex = 0;
   for (unsigned I = 0; I != FOrErr->Mods.size(); ++I) {
     size_t Begin = File->Symbols.size();
     for (const irsymtab::Reader::SymbolRef &Sym :
-         FOrErr->TheReader.module_symbols(I))
+         FOrErr->TheReader.module_symbols(I)) {
       // Skip symbols that are irrelevant to LTO. Note that this condition needs
       // to match the one in Skip() in LTO::addRegularLTO().
-      if (Sym.isGlobal() && !Sym.isFormatSpecific())
+      bool Keep = Sym.isGlobal() && !Sym.isFormatSpecific();
+      while (Requirement != Requirements->end() &&
+             Requirement->SymbolIndex == SymbolIndex) {
+        if (Keep)
+          File->COFFABIRequirements.push_back(
+              {uint32_t(File->Symbols.size()), Requirement->Contract});
+        ++Requirement;
+      }
+      if (Keep)
         File->Symbols.push_back(Sym);
+      ++SymbolIndex;
+    }
     File->ModuleSymIndices.push_back({Begin, File->Symbols.size()});
   }
 

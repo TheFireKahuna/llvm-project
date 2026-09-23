@@ -14,6 +14,7 @@
 #include "DebugTypes.h"
 #include "Driver.h"
 #include "InputFiles.h"
+#include "OutputFiles.h"
 #include "PDB.h"
 #include "SymbolTable.h"
 #include "Writer.h"
@@ -22,15 +23,26 @@
 
 namespace lld::coff {
 
+class Partitioning;
+class ImportInstructionDecoder;
+struct OutputPartition;
+
 class COFFLinkerContext : public CommonLinkerContext {
 public:
   COFFLinkerContext();
   COFFLinkerContext(const COFFLinkerContext &) = delete;
   COFFLinkerContext &operator=(const COFFLinkerContext &) = delete;
-  ~COFFLinkerContext() = default;
+  ~COFFLinkerContext();
 
   LinkerDriver driver;
   SymbolTable symtab;
+  std::unique_ptr<Partitioning> partitions;
+  std::unique_ptr<ImportInstructionDecoder> importInstructionDecoder;
+  SymbolTable *outputSymtab = nullptr;
+  OutputPartition *outputPartition = nullptr;
+  SymbolTable &getOutputSymtab() {
+    return outputSymtab ? *outputSymtab : symtab;
+  }
   COFFOptTable optTable;
 
   // A native ARM64 symbol table on ARM64X target.
@@ -45,6 +57,10 @@ public:
 
   // Invoke the specified callback for each symbol table.
   void forEachSymtab(std::function<void(SymbolTable &symtab)> f) {
+    if (outputSymtab) {
+      f(*outputSymtab);
+      return;
+    }
     // If present, process the native symbol table first.
     if (hybridSymtab)
       f(*hybridSymtab);
@@ -54,6 +70,10 @@ public:
   // Invoke the specified callback for each active symbol table,
   // skipping the native symbol table on pure ARM64EC targets.
   void forEachActiveSymtab(std::function<void(SymbolTable &symtab)> f) {
+    if (outputSymtab) {
+      f(*outputSymtab);
+      return;
+    }
     if (symtab.ctx.config.machine == ARM64X)
       f(*hybridSymtab);
     f(symtab);
@@ -77,6 +97,11 @@ public:
   /// List of all output sections. After output sections are finalized, this
   /// can be indexed by getOutputSection.
   std::vector<OutputSection *> outputSections;
+
+  // Context-owned so fatal diagnostics also discard staged output buffers
+  // when LLD is invoked as a library or runs multiple test passes.
+  std::vector<std::unique_ptr<llvm::FileOutputBuffer>> pendingOutputs;
+  OutputFiles outputFiles;
 
   OutputSection *getOutputSection(const Chunk *c) const {
     return c->osidx == 0 ? nullptr : outputSections[c->osidx - 1];

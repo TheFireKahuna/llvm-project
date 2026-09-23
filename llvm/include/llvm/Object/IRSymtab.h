@@ -115,6 +115,8 @@ struct Symbol {
     FB_format_specific,
     FB_unnamed_addr,
     FB_executable,
+    FB_coff_binding, // 3 bits, COFF::BindingFlags; zero means no requirement.
+    FB_coff_import_candidate = FB_coff_binding + 3,
   };
 };
 
@@ -129,15 +131,26 @@ struct Uncommon {
 
   /// Specified section name, if any.
   Str SectionName;
+
+  /// Final-image partition root. This is not an LTO work partition.
+  Str Partition;
+  Str COFFABIContract;
 };
 
+/// Consumer-owned requirements, separate from a target's offered contract.
+/// Identical requirements on the same target share one early-resolution row;
+/// IR metadata retains the individual consumers for optimization and native GC.
+struct COFFABIRequirement {
+  Word SymbolIndex;
+  Str Contract;
+};
 
 struct Header {
   /// Version number of the symtab format. This number should be incremented
   /// when the format changes, but it does not need to be incremented if a
   /// change to LLVM would cause it to create a different symbol table.
   Word Version;
-  enum { kCurrentVersion = 3 };
+  enum { kCurrentVersion = 7 };
 
   /// The producer's version string (LLVM_VERSION_STRING " " LLVM_REVISION).
   /// Consumers should rebuild the symbol table from IR if the producer's
@@ -157,9 +170,15 @@ struct Header {
 
   /// Dependent Library Specifiers
   Range<Str> DependentLibraries;
+  Range<COFFABIRequirement> COFFABIRequirements;
 };
 
 } // end namespace storage
+
+struct COFFABIRequirement {
+  uint32_t SymbolIndex;
+  StringRef Contract;
+};
 
 /// Fills in Symtab and StrtabBuilder with a valid symbol and string table for
 /// Mods.
@@ -180,6 +199,8 @@ struct Symbol {
   uint32_t CommonSize, CommonAlign;
   StringRef COFFWeakExternFallbackName;
   StringRef SectionName;
+  StringRef Partition;
+  StringRef COFFABIContract;
 
   /// Returns the mangled symbol name.
   StringRef getName() const { return Name; }
@@ -214,6 +235,14 @@ struct Symbol {
   bool isUnnamedAddr() const { return (Flags >> S::FB_unnamed_addr) & 1; }
   bool isExecutable() const { return (Flags >> S::FB_executable) & 1; }
 
+  /// COFF semantic binding policy, available before native code generation.
+  unsigned getCOFFBindingFlags() const {
+    return (Flags >> S::FB_coff_binding) & 7;
+  }
+  bool isCOFFImportCandidate() const {
+    return (Flags >> S::FB_coff_import_candidate) & 1;
+  }
+
   uint64_t getCommonSize() const {
     assert(isCommon());
     return CommonSize;
@@ -232,6 +261,8 @@ struct Symbol {
   }
 
   StringRef getSectionName() const { return SectionName; }
+  StringRef getPartition() const { return Partition; }
+  StringRef getCOFFABIContract() const { return COFFABIContract; }
 };
 
 /// This class can be used to read a Symtab and Strtab produced by
@@ -309,6 +340,9 @@ public:
     }
     return Specifiers;
   }
+
+  LLVM_ABI Expected<std::vector<COFFABIRequirement>>
+  getCOFFABIRequirements() const;
 };
 
 /// Ephemeral symbols produced by Reader::symbols() and
@@ -332,9 +366,14 @@ class Reader::SymbolRef : public Symbol {
       CommonAlign = UncI->CommonAlign;
       COFFWeakExternFallbackName = R->str(UncI->COFFWeakExternFallbackName);
       SectionName = R->str(UncI->SectionName);
-    } else
+      Partition = R->str(UncI->Partition);
+      COFFABIContract = R->str(UncI->COFFABIContract);
+    } else {
       // Reset this field so it can be queried unconditionally for all symbols.
       SectionName = "";
+      Partition = "";
+      COFFABIContract = "";
+    }
   }
 
 public:

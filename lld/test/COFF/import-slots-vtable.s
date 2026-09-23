@@ -22,28 +22,22 @@
 # RUN: llvm-nm %t.exe | FileCheck --check-prefix=NM %s
 
 # The import address table directory covers both vtables and the slot.
-# CHECK:      IATRVA: 0x21A0
-# CHECK-NEXT: IATSize: 0x38
+# CHECK:      IATRVA: 0x2168
+# CHECK-NEXT: IATSize: 0x28
 
-# The DLL's own descriptor, then one for each vtable. The entry of the
+# No ordinary cell is needed. Each vtable gets a descriptor. The entry of the
 # construction vtable is the last word of its chunk, and the slot's chunk
 # follows it directly, so the two share a descriptor.
 # CHECK:      Import {
 # CHECK-NEXT:   Name: import-slots-vtable.s.tmp.lib.dll
-# CHECK-NEXT:   ImportLookupTableRVA: 0x2168
-# CHECK-NEXT:   ImportAddressTableRVA: 0x21A0
+# CHECK-NEXT:   ImportLookupTableRVA: 0x2158
+# CHECK-NEXT:   ImportAddressTableRVA: 0x2170
 # CHECK-NEXT:   Symbol: func (0)
 # CHECK-NEXT: }
 # CHECK-NEXT: Import {
 # CHECK-NEXT:   Name: import-slots-vtable.s.tmp.lib.dll
-# CHECK-NEXT:   ImportLookupTableRVA: 0x2178
-# CHECK-NEXT:   ImportAddressTableRVA: 0x21B8
-# CHECK-NEXT:   Symbol: func (0)
-# CHECK-NEXT: }
-# CHECK-NEXT: Import {
-# CHECK-NEXT:   Name: import-slots-vtable.s.tmp.lib.dll
-# CHECK-NEXT:   ImportLookupTableRVA: 0x2188
-# CHECK-NEXT:   ImportAddressTableRVA: 0x21C8
+# CHECK-NEXT:   ImportLookupTableRVA: 0x2150
+# CHECK-NEXT:   ImportAddressTableRVA: 0x2180
 # CHECK-NEXT:   Symbol: func (0)
 # CHECK-NEXT:   Symbol: func (0)
 # CHECK-NEXT: }
@@ -65,22 +59,22 @@
 # CHECK:      GuardCFFunctionCount: 0
 # CHECK:      GuardAddressTakenIatEntryCount: 3
 # CHECK:      GuardIatTable [
-# CHECK-NEXT:   0x1400021B8
-# CHECK-NEXT:   0x1400021C8
-# CHECK-NEXT:   0x1400021D0
+# CHECK-NEXT:   0x140002170
+# CHECK-NEXT:   0x140002180
+# CHECK-NEXT:   0x140002188
 # CHECK-NEXT: ]
 
 # Every entry holds func's lookup entry, the RVA of its hint/name record.
 # CONTENTS:      Contents of section .rdata:
-# CONTENTS:      1400021b0 00000000 00000000 d8210000 00000000
-# CONTENTS-NEXT: 1400021c0 00000000 00000000 d8210000 00000000
-# CONTENTS-NEXT: 1400021d0 d8210000 00000000
+# CONTENTS:      140002160 00000000 00000000 00000000 00000000
+# CONTENTS-NEXT: 140002170 90210000 00000000 00000000 00000000
+# CONTENTS-NEXT: 140002180 90210000 00000000 90210000 00000000
 
 # The thunk is gone, so main is all of .text.
 # NM-NOT: {{ }}func
-# NM-DAG: 1400021b0 R _ZTV3Foo
-# NM-DAG: 1400021c0 R _ZTC3Bar
-# NM-DAG: 1400021d0 R ro_slot
+# NM-DAG: 140002168 R _ZTV3Foo
+# NM-DAG: 140002178 R _ZTC3Bar
+# NM-DAG: 140002188 R ro_slot
 # NM-DAG: 140001000 T main
 
 # RUN: lld-link -import-slots -entry:main -subsystem:console -debug:symtab -out:%t.delayed.exe %t.main.obj %t.delayvt.obj %t.lib.lib %t.delay.lib -delayload:%basename_t.tmp.delay.dll -alternatename:__delayLoadHelper2=main

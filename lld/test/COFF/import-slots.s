@@ -25,21 +25,12 @@
 # RUN: llvm-objdump -s -j .rdata -j .data %t.exe | FileCheck --check-prefix=CONTENTS %s
 # RUN: llvm-nm %t.exe | FileCheck --check-prefix=NM %s
 
-# The address tables of the three DLLs (3 + 1, 1 + 1 and 1 + 1 words), then
-# the read-only slot chunks: ro_run of lib.dll (2 + 1 words), then ro_other
-# (1 word).
-# CHECK:      IATRVA: 0x2270
-# CHECK-NEXT: IATSize: 0x58
+# All imports are used only by in-place destinations. Only the read-only slot
+# chunks occupy the IAT span: ro_run (2 words), then ro_other (1 word).
+# CHECK:      IATRVA: 0x21E0
+# CHECK-NEXT: IATSize: 0x18
 
 # CHECK:      Import {
-# CHECK-NEXT:   Name: import-slots.s.tmp.lib.dll
-# CHECK-NEXT:   ImportLookupTableRVA:
-# CHECK-NEXT:   ImportAddressTableRVA: 0x2270
-# CHECK-NEXT:   Symbol: func (0)
-# CHECK-NEXT:   Symbol: func2 (0)
-# CHECK-NEXT:   Symbol: variable (0)
-# CHECK-NEXT: }
-# CHECK-NEXT: Import {
 # CHECK-NEXT:   Name: import-slots.s.tmp.lib.dll
 # CHECK-NEXT:   ImportLookupTableRVA:
 # CHECK-NEXT:   ImportAddressTableRVA: 0x3000
@@ -49,15 +40,9 @@
 # CHECK-NEXT: Import {
 # CHECK-NEXT:   Name: import-slots.s.tmp.lib.dll
 # CHECK-NEXT:   ImportLookupTableRVA:
-# CHECK-NEXT:   ImportAddressTableRVA: 0x22B0
+# CHECK-NEXT:   ImportAddressTableRVA: 0x21E0
 # CHECK-NEXT:   Symbol: func (0)
 # CHECK-NEXT:   Symbol: variable (0)
-# CHECK-NEXT: }
-# CHECK-NEXT: Import {
-# CHECK-NEXT:   Name: import-slots.s.tmp.delay.dll
-# CHECK-NEXT:   ImportLookupTableRVA:
-# CHECK-NEXT:   ImportAddressTableRVA: 0x2290
-# CHECK-NEXT:   Symbol: delayfn (0)
 # CHECK-NEXT: }
 # CHECK-NEXT: Import {
 # CHECK-NEXT:   Name: import-slots.s.tmp.delay.dll
@@ -68,19 +53,13 @@
 # CHECK-NEXT: Import {
 # CHECK-NEXT:   Name: import-slots.s.tmp.other.dll
 # CHECK-NEXT:   ImportLookupTableRVA:
-# CHECK-NEXT:   ImportAddressTableRVA: 0x22A0
-# CHECK-NEXT:   Symbol: other (0)
-# CHECK-NEXT: }
-# CHECK-NEXT: Import {
-# CHECK-NEXT:   Name: import-slots.s.tmp.other.dll
-# CHECK-NEXT:   ImportLookupTableRVA:
 # CHECK-NEXT:   ImportAddressTableRVA: 0x3018
 # CHECK-NEXT:   Symbol: other (0)
 # CHECK-NEXT: }
 # CHECK-NEXT: Import {
 # CHECK-NEXT:   Name: import-slots.s.tmp.other.dll
 # CHECK-NEXT:   ImportLookupTableRVA:
-# CHECK-NEXT:   ImportAddressTableRVA: 0x22C0
+# CHECK-NEXT:   ImportAddressTableRVA: 0x21F0
 # CHECK-NEXT:   Symbol: other (0)
 # CHECK-NEXT: }
 
@@ -100,26 +79,25 @@
 # The four slots that hold a function's address.
 # CHECK:      GuardAddressTakenIatEntryCount: 4
 # CHECK:      GuardIatTable [
-# CHECK-NEXT:   0x1400022B0
+# CHECK-NEXT:   0x1400021E0
 # CHECK-NEXT:   0x140003000
 # CHECK-NEXT:   0x140003008
 # CHECK-NEXT:   0x140003020
 # CHECK-NEXT: ]
 
 # Every slot holds its import's lookup entry, the RVA of the hint/name
-# record: func 0x22C8, func2 0x22D0, variable 0x22D8, delayfn 0x22E4, other
-# 0x22EE.
+# record: func 0x21F8, func2 0x2200, variable 0x2208, delayfn 0x2214, other
+# 0x221E. No ordinary address cells or empty ordinary descriptors remain.
 # CONTENTS:      Contents of section .rdata:
-# CONTENTS:      1400022a0 ee220000 00000000 00000000 00000000
-# CONTENTS-NEXT: 1400022b0 c8220000 00000000 d8220000 00000000
-# CONTENTS-NEXT: 1400022c0 ee220000 00000000
+# CONTENTS:      1400021e0 f8210000 00000000 08220000 00000000
+# CONTENTS-NEXT: 1400021f0 1e220000 00000000
 # CONTENTS:      Contents of section .data:
-# CONTENTS-NEXT: 140003000 d0220000 00000000 c8220000 00000000
-# CONTENTS-NEXT: 140003010 00000000 00000000 ee220000 00000000
-# CONTENTS-NEXT: 140003020 e4220000 00000000
+# CONTENTS-NEXT: 140003000 00220000 00000000 f8210000 00000000
+# CONTENTS-NEXT: 140003010 00000000 00000000 1e220000 00000000
+# CONTENTS-NEXT: 140003020 14220000 00000000
 
-# NM-DAG: 1400022b0 R ro_run
-# NM-DAG: 1400022c0 R ro_other
+# NM-DAG: 1400021e0 R ro_run
+# NM-DAG: 1400021f0 R ro_other
 
 # RUN: lld-link -import-slots -entry:main -subsystem:console -debug:symtab -out:%t.delayed.exe %t.main.obj %t.lib.lib %t.other.lib %t.delay.lib -delayload:%basename_t.tmp.delay.dll -alternatename:__delayLoadHelper2=main
 # RUN: llvm-readobj --coff-imports --coff-basereloc %t.delayed.exe | FileCheck --check-prefix=DELAY %s
@@ -220,4 +198,3 @@ rw_other:
 .globl rw_delay
 rw_delay:
   .quad delayfn
-

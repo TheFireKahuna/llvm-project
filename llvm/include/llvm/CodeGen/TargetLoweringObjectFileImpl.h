@@ -182,11 +182,18 @@ public:
 };
 
 class TargetLoweringObjectFileCOFF : public TargetLoweringObjectFile {
-  mutable unsigned NextUniqueID = 0;
+  // Zero is reserved for the ordinary constructor/destructor contributions.
+  mutable unsigned NextUniqueID = 1;
+  mutable DenseMap<std::pair<MCSection *, StringRef>, MCSection *>
+      OutputSections;
   const TargetMachine *TM = nullptr;
 
 public:
   ~TargetLoweringObjectFileCOFF() override = default;
+
+  /// Split non-associative registration storage by final PE owner while
+  /// preserving the ordinary section name and its initialization ordering.
+  MCSection *getSectionForOutput(MCSection *Section, StringRef Output) const;
 
   void Initialize(MCContext &Ctx, const TargetMachine &TM) override;
   MCSection *getExplicitSectionGlobal(const GlobalObject *GO, SectionKind Kind,

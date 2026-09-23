@@ -10,6 +10,7 @@
 #include "COFFLinkerContext.h"
 #include "Config.h"
 #include "InputFiles.h"
+#include "Partitions.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
 #include "lld/Common/Args.h"
@@ -57,6 +58,7 @@ std::string BitcodeCompiler::getThinLTOOutputFile(StringRef path) {
 
 lto::Config BitcodeCompiler::createConfig() {
   lto::Config c;
+  c.LinkerContextHash = ctx.symtab.getBindingContextHash();
   c.Options = initTargetOptionsFromCodeGenFlags();
   c.Options.EmitAddrsig = true;
   for (StringRef C : ctx.config.mllvmOpts)
@@ -176,13 +178,16 @@ static bool isDefinedInImage(Symbol *s) {
 // in the image instead of leaving an indirection for the linker to remove.
 static bool isFinalInImage(BitcodeFile &f, const lto::InputFile::Symbol &objSym,
                            Symbol *sym) {
+  // A deployment partition is not an LTO worker partition. GlobalValue's
+  // partition carries the finer decision through inlining to address lowering.
+  if (f.symtab.ctx.partitions && !f.symtab.ctx.partitions->empty())
+    return false;
   StringRef name = sym->getName();
   if (!objSym.isUndefined() || !name.consume_front("__imp_")) {
     // The one definition that is not final: a COMDAT variable a DLL in the
     // link also offers is bound to that copy, so that the program holds one
     // instance of it (SymbolTable::bindSharedWeakData).
-    if (objSym.isWeak() && !objSym.isExecutable() &&
-        f.symtab.find(("__imp_" + name).str()))
+    if (f.symtab.hasLTOImportAlternative(sym))
       return false;
     return isDefinedInImage(sym);
   }
@@ -190,10 +195,10 @@ static bool isFinalInImage(BitcodeFile &f, const lto::InputFile::Symbol &objSym,
          isDefinedInImage(f.symtab.find(name));
 }
 
-void BitcodeCompiler::add(BitcodeFile &f) {
+std::vector<lto::SymbolResolution> BitcodeCompiler::resolve(BitcodeFile &f) {
   lto::InputFile &obj = *f.obj;
   unsigned symNum = 0;
-  std::vector<Symbol *> symBodies = f.getSymbols();
+  ArrayRef<Symbol *> symBodies = f.getSymbols();
   std::vector<lto::SymbolResolution> resols(symBodies.size());
 
   if (ctx.config.thinLTOIndexOnly)
@@ -211,17 +216,38 @@ void BitcodeCompiler::add(BitcodeFile &f) {
     // Once IRObjectFile is fixed to report only one symbol this hack can
     // be removed.
     r.Prevailing = !objSym.isUndefined() && sym->getFile() == &f;
-    r.VisibleToRegularObj = sym->isUsedInRegularObj;
+    // A native import alternative must remain a linker choice. Merely clearing
+    // FinalDefinitionInLinkageUnit still permits LTO to internalize the weak
+    // definition, after which neither ordinary shared-data binding nor
+    // canonical RTTI binding can redirect its references. Native GC still
+    // removes unused contributions; this does not add a linker GC root.
+    r.VisibleToRegularObj = sym->isUsedInRegularObj ||
+                            f.symtab.hasLTOImportAlternative(sym) ||
+                            f.symtab.hasCanonicalBinding(sym);
     r.FinalDefinitionInLinkageUnit = isFinalInImage(f, objSym, sym);
-    if (r.Prevailing)
-      undefine(sym);
 
     // We tell LTO to not apply interprocedural optimization for wrapped
     // (with -wrap) symbols because otherwise LTO would inline them while
     // their values are still not final.
     r.LinkerRedefined = !sym->canInline;
   }
-  checkError(ltoObj->add(std::move(f.obj), resols));
+  return resols;
+}
+
+void BitcodeCompiler::add(ArrayRef<BitcodeFile *> inputs) {
+  // Finality belongs to the resolved graph, not the transient state after a
+  // preceding module's prevailing definitions have been made undefined.
+  // Freeze all resolutions first, including selected weak/alternate aliases.
+  SmallVector<std::vector<lto::SymbolResolution>, 0> resolutions;
+  resolutions.reserve(inputs.size());
+  for (BitcodeFile *file : inputs)
+    resolutions.push_back(resolve(*file));
+  for (auto [file, resolution] : zip(inputs, resolutions)) {
+    for (auto [symbol, decision] : zip(file->getSymbols(), resolution))
+      if (decision.Prevailing)
+        undefine(symbol);
+    checkError(ltoObj->add(std::move(file->obj), resolution));
+  }
 }
 
 // Merge all the bitcode files we have seen, codegen the result

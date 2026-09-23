@@ -452,8 +452,10 @@ public:
   LLVM_ABI int getInlinerVectorBonusPercent() const;
 
   /// \return the expected cost of a memcpy, which could e.g. depend on the
-  /// source/destination type and alignment and the number of bytes copied.
-  LLVM_ABI InstructionCost getMemcpyCost(const Instruction *I) const;
+  /// source/destination type and alignment, the number of bytes copied, and
+  /// the requested cost kind.
+  LLVM_ABI InstructionCost getMemcpyCost(const Instruction *I,
+                                         TargetCostKind CostKind) const;
 
   /// Returns the maximum memset / memcpy size in bytes that still makes it
   /// profitable to inline the call.

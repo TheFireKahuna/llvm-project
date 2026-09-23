@@ -66,6 +66,47 @@ class SymbolTable;
 class Undefined;
 class TpiSource;
 
+// A position within a chunk. Import aliases share one such location; RVA tables
+// use the same representation to identify and deduplicate native addresses.
+struct ChunkAndOffset {
+  Chunk *inputChunk;
+  uint32_t offset;
+
+  struct DenseMapInfo {
+    static ChunkAndOffset getEmptyKey() {
+      return {llvm::DenseMapInfo<Chunk *>::getEmptyKey(), 0};
+    }
+    static ChunkAndOffset getTombstoneKey() {
+      return {llvm::DenseMapInfo<Chunk *>::getTombstoneKey(), 0};
+    }
+    static unsigned getHashValue(const ChunkAndOffset &co) {
+      return llvm::DenseMapInfo<std::pair<Chunk *, uint32_t>>::getHashValue(
+          {co.inputChunk, co.offset});
+    }
+    static bool isEqual(const ChunkAndOffset &lhs, const ChunkAndOffset &rhs) {
+      return lhs.inputChunk == rhs.inputChunk && lhs.offset == rhs.offset;
+    }
+  };
+};
+
+// Side information on ordinary symbol nodes. Requirements do not create
+// liveness edges or change conditional weak-external resolution.
+struct BindingRequirement {
+  Symbol *symbol;
+  uint32_t flags;
+};
+
+struct ABIRequirement {
+  Symbol *symbol;
+  StringRef contract;
+  bool definition;
+};
+
+struct PartitionRoot {
+  Symbol *symbol;
+  StringRef name;
+};
+
 // The root class of input files.
 class InputFile {
 public:
@@ -100,6 +141,13 @@ public:
   StringRef getDirectives() { return directives; }
 
   SymbolTable &symtab;
+
+  // Final-output roots survive COMDAT selection and LTO symbol replacement.
+  SmallVector<PartitionRoot, 0> partitionRoots;
+  SmallVector<PartitionRoot, 0> placements;
+  // A runtime-supplied contract, not an inference from a filename or section.
+  // Such startup code/state already has one instance per ordinary PE link.
+  bool imageLocal = false;
 
 protected:
   InputFile(SymbolTable &s, Kind k, MemoryBufferRef m, bool lazy = false)
@@ -155,7 +203,16 @@ public:
   ArrayRef<SectionChunk *> getGuardEHContChunks() { return guardEHContChunks; }
   ArrayRef<Symbol *> getSymbols() { return symbols; }
 
+  ArrayRef<BindingRequirement> getBindingRequirements() const {
+    return bindingRequirements;
+  }
+  bool hasRTTIABI() const { return bindingSec != nullptr; }
+  ArrayRef<ABIRequirement> getABIRequirements() const {
+    return abiRequirements;
+  }
+
   MutableArrayRef<Symbol *> getMutableSymbols() { return symbols; }
+  void redirectSymbols(const llvm::DenseMap<Symbol *, Symbol *> &redirects);
 
   ArrayRef<uint8_t> getDebugSection(StringRef secName);
 
@@ -168,10 +225,27 @@ public:
   // Returns the underlying COFF file.
   COFFObjectFile *getCOFFObj() { return coffObj.get(); }
 
-  // Add a symbol for a range extension thunk. Return the new symbol table
-  // index. This index can be used to modify a relocation.
-  uint32_t addRangeThunkSymbol(Symbol *thunk) {
-    symbols.push_back(thunk);
+  // Sparse copy-on-write storage for relocation normalization. Keeping this
+  // off SectionChunk avoids growing every input contribution for a rare edit.
+  llvm::DenseMap<const coff_section *, MutableArrayRef<uint8_t>> rewrittenContents;
+  using ObjectExtent = std::pair<uint32_t, uint32_t>;
+  llvm::DenseMap<const SectionChunk *, SmallVector<ObjectExtent, 1>> objectExtents;
+  std::optional<ObjectExtent> getObjectExtent(const SectionChunk *chunk,
+                                             uint32_t offset) const;
+  bool isImportInstruction(const SectionChunk *chunk, uint32_t offset) const;
+
+  // Index-based edges follow the same per-output symbol projection as native
+  // relocations. They retain checks, never machine instructions or data words.
+  llvm::DenseMap<const SectionChunk *, SmallVector<uint32_t, 2>> abiUses;
+  ArrayRef<uint32_t> getABIUses(const SectionChunk *chunk) const {
+    auto it = abiUses.find(chunk);
+    return it == abiUses.end() ? ArrayRef<uint32_t>() : it->second;
+  }
+
+  // Add a linker-created symbol for relocation rewriting, such as a range
+  // thunk or a direct binding. Original object symbol indices stay intact.
+  uint32_t addSyntheticSymbol(Symbol *symbol) {
+    symbols.push_back(symbol);
     return symbols.size() - 1;
   }
 
@@ -237,6 +311,20 @@ private:
 
   void initializeChunks();
   void initializeSymbols();
+  void initializeBindings();
+  void initializeObjectExtents();
+  void initializeImportInstructions();
+  void initializeABIContracts();
+  void initializePartitions(const coff_section *section,
+                            llvm::SmallVectorImpl<PartitionRoot> &result,
+                            bool allowMain);
+  const coff_section *partitionSec = nullptr;
+  const coff_section *placementSec = nullptr;
+  const coff_section *bindingSec = nullptr;
+  const coff_section *extentSec = nullptr;
+  const coff_section *abiSec = nullptr;
+  std::vector<ABIRequirement> abiRequirements;
+  std::vector<BindingRequirement> bindingRequirements;
   void initializeFlags();
   void initializeDependencies();
   void initializeECThunks();
@@ -355,11 +443,18 @@ public:
 class ImportFile : public InputFile {
 public:
   explicit ImportFile(COFFLinkerContext &ctx, MemoryBufferRef m);
+  static ImportFile *create(COFFLinkerContext &ctx, StringRef name,
+                            StringRef dllName, StringRef externalName,
+                            llvm::COFF::ImportType type,
+                            bool registerSymbols = true);
 
   static bool classof(const InputFile *f) { return f->kind() == ImportKind; }
   MachineTypes getMachineType() const override { return getMachineType(mb); }
   static MachineTypes getMachineType(MemoryBufferRef m);
   bool isSameImport(const ImportFile *other) const;
+  ImportFile *createView();
+  void requireABIContract(StringRef name);
+  void setPrivateOrdinal(uint16_t ordinal);
   bool isEC() const { return impECSym != nullptr; }
 
   DefinedImportData *impSym = nullptr;
@@ -370,19 +465,29 @@ public:
 
 private:
   void parse() override;
+
+public:
   ImportThunkChunk *makeImportThunk();
 
 public:
   StringRef externalName;
   const coff_import_header *hdr;
-  Chunk *location = nullptr;
+  ChunkAndOffset location = {};
+
+  // Immutable lookup encoding, independent of the storage the loader fills.
+  // In-place destinations write this single word, never the containing object.
+  Chunk *lookup = nullptr;
 
   // Auxiliary IAT symbols and chunks on ARM64EC.
   DefinedImportData *impECSym = nullptr;
-  Chunk *auxLocation = nullptr;
+  ChunkAndOffset auxLocation = {};
   Defined *auxThunkSym = nullptr;
   DefinedImportData *auxImpCopySym = nullptr;
-  Chunk *auxCopyLocation = nullptr;
+  ChunkAndOffset auxCopyLocation = {};
+
+  // Recomputed from surviving uses before emitting import tables. Native
+  // destinations alone do not require a separate ordinary address-table cell.
+  bool needsIAT = true;
 
   // We want to eliminate dllimported symbols if no one actually refers to them.
   // These "Live" bits are used to keep track of which import library members
@@ -405,17 +510,26 @@ public:
                              bool lazy);
   static bool classof(const InputFile *f) { return f->kind() == BitcodeKind; }
   ArrayRef<Symbol *> getSymbols() { return symbols; }
+  ArrayRef<BindingRequirement> getBindingRequirements() const {
+    return bindingRequirements;
+  }
+  ArrayRef<ABIRequirement> getABIRequirements() const {
+    return abiRequirements;
+  }
   MachineTypes getMachineType() const override {
     return getMachineType(obj.get());
   }
   static MachineTypes getMachineType(const llvm::lto::InputFile *obj);
   void parseLazy();
   std::unique_ptr<llvm::lto::InputFile> obj;
+  void replaceLTOObject(std::unique_ptr<llvm::lto::InputFile> replacement);
 
 private:
   void parse() override;
 
   std::vector<Symbol *> symbols;
+  std::vector<BindingRequirement> bindingRequirements;
+  std::vector<ABIRequirement> abiRequirements;
 };
 
 // .dll file. MinGW only.

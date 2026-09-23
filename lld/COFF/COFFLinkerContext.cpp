@@ -10,12 +10,17 @@
 //===----------------------------------------------------------------------===//
 
 #include "COFFLinkerContext.h"
+#include "ImportInstructions.h"
+#include "Partitions.h"
 #include "Symbols.h"
 #include "llvm/BinaryFormat/COFF.h"
+#include "llvm/Support/FileOutputBuffer.h"
 
 namespace lld::coff {
+COFFLinkerContext::~COFFLinkerContext() = default;
+
 COFFLinkerContext::COFFLinkerContext()
-    : driver(*this), symtab(*this),
+    : driver(*this), symtab(*this), outputFiles(*this),
       ltoTextSection(llvm::COFF::IMAGE_SCN_MEM_EXECUTE),
       ltoDataSection(llvm::COFF::IMAGE_SCN_CNT_INITIALIZED_DATA),
       ltoTextSectionChunk(&ltoTextSection.section),

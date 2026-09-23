@@ -1092,6 +1092,8 @@ bool TargetPassConfig::addISelPasses() {
   addPass(createPreISelIntrinsicLoweringPass());
   addPass(createExpandIRInstsPass(getOptLevel()));
   addIRPasses();
+  if (TM->getTargetTriple().isOSBinFormatCOFF())
+    addPass(createCOFFOutputLocalityPass());
   addCodeGenPrepare();
   addPassesToHandleExceptions();
   addISelPrepare();

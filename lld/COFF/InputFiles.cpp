@@ -12,12 +12,14 @@
 #include "Config.h"
 #include "DebugTypes.h"
 #include "Driver.h"
+#include "ImportInstructions.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
 #include "lld/Common/DWARF.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/BinaryFormat/COFF.h"
+#include "llvm/BinaryFormat/COFFBinding.h"
 #include "llvm/DebugInfo/CodeView/DebugSubsectionRecord.h"
 #include "llvm/DebugInfo/CodeView/SymbolDeserializer.h"
 #include "llvm/DebugInfo/CodeView/SymbolRecord.h"
@@ -30,10 +32,12 @@
 #include "llvm/Object/Binary.h"
 #include "llvm/Object/COFF.h"
 #include "llvm/Object/COFFImportFile.h"
+#include "llvm/Support/ABIContract.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/LEB128.h"
 #include "llvm/Support/Path.h"
 #include "llvm/TargetParser/Triple.h"
 #include <cstring>
@@ -286,6 +290,24 @@ ObjFile *ObjFile::create(COFFLinkerContext &ctx, MemoryBufferRef m, bool lazy) {
                        lazy);
 }
 
+void ObjFile::redirectSymbols(const DenseMap<Symbol *, Symbol *> &redirects) {
+  for (Symbol *&symbol : symbols)
+    if (Symbol *replacement = redirects.lookup(symbol))
+      symbol = replacement;
+  for (BindingRequirement &requirement : bindingRequirements)
+    if (Symbol *replacement = redirects.lookup(requirement.symbol))
+      requirement.symbol = replacement;
+  for (ABIRequirement &requirement : abiRequirements)
+    if (Symbol *replacement = redirects.lookup(requirement.symbol))
+      requirement.symbol = replacement;
+  for (PartitionRoot &root : partitionRoots)
+    if (Symbol *replacement = redirects.lookup(root.symbol))
+      root.symbol = replacement;
+  for (PartitionRoot &placement : placements)
+    if (Symbol *replacement = redirects.lookup(placement.symbol))
+      placement.symbol = replacement;
+}
+
 void ObjFile::parseLazy() {
   // Native object file.
   uint32_t numSymbols = coffObj->getNumberOfSymbols();
@@ -343,9 +365,232 @@ void ObjFile::parse() {
   // Read section and symbol tables.
   initializeChunks();
   initializeSymbols();
+  initializeBindings();
+  initializeObjectExtents();
+  initializeABIContracts();
+  initializePartitions(partitionSec, partitionRoots, false);
+  initializePartitions(placementSec, placements, true);
   initializeFlags();
   initializeDependencies();
   initializeECThunks();
+  initializeImportInstructions();
+}
+
+void ObjFile::initializeImportInstructions() {
+  if (getMachineType() != AMD64)
+    return;
+  for (Chunk *chunk : chunks) {
+    auto *sc = dyn_cast<SectionChunk>(chunk);
+    if (!sc || !(sc->getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE))
+      continue;
+    ArrayRef<uint8_t> bytes = sc->getContents();
+    SmallVector<uint32_t, 0> offsets;
+    for (const coff_relocation &rel : sc->getRelocs())
+      if (rel.Type == IMAGE_REL_AMD64_REL32 &&
+          ImportInstructionDecoder::isCandidate(bytes, rel.VirtualAddress))
+        offsets.push_back(rel.VirtualAddress);
+    if (offsets.empty())
+      continue;
+    auto &decoder = symtab.ctx.importInstructionDecoder;
+    if (!decoder)
+      decoder = std::make_unique<ImportInstructionDecoder>();
+    decoder->add(*sc, std::move(offsets));
+  }
+}
+
+bool ObjFile::isImportInstruction(const SectionChunk *chunk,
+                                  uint32_t offset) const {
+  const auto &decoder = symtab.ctx.importInstructionDecoder;
+  return decoder && decoder->contains(chunk->header, offset);
+}
+
+void ObjFile::initializeObjectExtents() {
+  if (!extentSec)
+    return;
+  ArrayRef<uint8_t> bytes;
+  cantFail(coffObj->getSectionContents(extentSec, bytes));
+  if (bytes.size() < 4 || extentSec->NumberOfRelocations ||
+      read32le(bytes.data()) != COFF::ObjectExtentVersion)
+    Fatal(symtab.ctx) << toString(this) << ": invalid .llvm.extent header";
+  bytes = bytes.drop_front(4);
+  while (!bytes.empty()) {
+    if (bytes.size() < 5)
+      Fatal(symtab.ctx) << toString(this) << ": truncated object extent";
+    uint32_t index = read32le(bytes.data());
+    bytes = bytes.drop_front(4);
+    unsigned count = 0;
+    const char *error = nullptr;
+    uint64_t size = decodeULEB128(bytes.data(), &count,
+                                 bytes.data() + bytes.size(), &error);
+    if (error || count != getULEB128Size(size) || !size ||
+        index >= symbols.size() || !symbols[index])
+      Fatal(symtab.ctx) << toString(this) << ": invalid object extent";
+    bytes = bytes.drop_front(count);
+    COFFSymbolRef source = check(coffObj->getSymbol(index));
+    if (source.getSectionNumber() <= 0 && !source.isWeakExternal())
+      Fatal(symtab.ctx) << toString(this) << ": object extent requires a definition";
+    // Losing COMDAT copies do not describe the selected producer's storage.
+    auto *def = dyn_cast_or_null<DefinedRegular>(symbols[index]->getDefined());
+    if (!def || def->getFile() != this)
+      continue;
+    SectionChunk *chunk = def->getChunk();
+    if ((chunk->getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE) ||
+        def->getValue() > chunk->getSize() ||
+        size > chunk->getSize() - def->getValue())
+      Fatal(symtab.ctx) << toString(this) << ": object extent exceeds data storage";
+    uint64_t end = uint64_t(def->getValue()) + size;
+    if (end > UINT32_MAX)
+      Fatal(symtab.ctx) << toString(this) << ": object extent is not representable";
+    objectExtents[chunk].emplace_back(def->getValue(), uint32_t(end));
+  }
+  for (auto &[chunk, extents] : objectExtents) {
+    llvm::sort(extents);
+    extents.erase(std::unique(extents.begin(), extents.end()), extents.end());
+    for (size_t i = 1; i != extents.size(); ++i)
+      if (extents[i].first < extents[i - 1].second)
+        Fatal(symtab.ctx) << toString(this) << ": conflicting object extents";
+  }
+}
+
+std::optional<ObjFile::ObjectExtent>
+ObjFile::getObjectExtent(const SectionChunk *chunk, uint32_t offset) const {
+  auto found = objectExtents.find(chunk);
+  if (found == objectExtents.end())
+    return std::nullopt;
+  const auto &extents = found->second;
+  auto end = llvm::upper_bound(extents, ObjectExtent(offset, UINT32_MAX));
+  if (end == extents.begin())
+    return std::nullopt;
+  ObjectExtent extent = *std::prev(end);
+  return offset < extent.second ? std::optional(extent) : std::nullopt;
+}
+
+void ObjFile::initializeBindings() {
+  if (!bindingSec)
+    return;
+  ArrayRef<uint8_t> data;
+  cantFail(coffObj->getSectionContents(bindingSec, data));
+  if (data.size() < COFF::BindingHeaderSize ||
+      (data.size() - COFF::BindingHeaderSize) % COFF::BindingRecordSize ||
+      bindingSec->NumberOfRelocations)
+    Fatal(symtab.ctx) << toString(this)
+                      << ": invalid .llvm.bind size or relocations";
+  if (read32le(data.data()) != COFF::BindingVersion ||
+      read32le(data.data() + 4) != COFF::RTTIABI)
+    Fatal(symtab.ctx) << toString(this)
+                      << ": unsupported COFF binding or RTTI ABI version";
+  SmallPtrSet<Symbol *, 16> seen;
+  for (size_t offset = COFF::BindingHeaderSize; offset < data.size();
+       offset += COFF::BindingRecordSize) {
+    uint32_t index = read32le(data.data() + offset);
+    uint8_t flags = data[offset + 4];
+    if (index >= symbols.size() || !symbols[index] ||
+        !COFF::isValidBindingFlags(flags))
+      Fatal(symtab.ctx) << toString(this)
+                        << ": invalid .llvm.bind record at offset " << offset;
+    Symbol *sym = symbols[index];
+    if (!seen.insert(sym).second)
+      Fatal(symtab.ctx) << toString(this)
+                        << ": duplicate binding requirement for "
+                        << sym->getName();
+    bindingRequirements.push_back({sym, flags});
+  }
+}
+
+void ObjFile::initializeABIContracts() {
+  if (!abiSec)
+    return;
+  ArrayRef<uint8_t> data;
+  cantFail(coffObj->getSectionContents(abiSec, data));
+  if (data.size() < 4 || abiSec->NumberOfRelocations ||
+      read32le(data.data()) != COFF::ABIContractSectionVersion)
+    Fatal(symtab.ctx) << toString(this) << ": invalid .llvm.abi header";
+  const uint8_t *p = data.data() + 4;
+  const uint8_t *end = data.end();
+  SmallPtrSet<Symbol *, 16> seen;
+  while (p != end) {
+    unsigned length;
+    const char *error = nullptr;
+    uint64_t size = decodeULEB128(p, &length, end, &error);
+    if (error || length != getULEB128Size(size) ||
+        size > uint64_t(end - p - length))
+      Fatal(symtab.ctx) << toString(this)
+                        << ": invalid .llvm.abi contract size";
+    p += length;
+    StringRef bytes(reinterpret_cast<const char *>(p), size);
+    p += size;
+    uint64_t count = decodeULEB128(p, &length, end, &error);
+    if (error || length != getULEB128Size(count) || !count ||
+        count > uint64_t(end - p - length) / 5)
+      Fatal(symtab.ctx) << toString(this) << ": invalid .llvm.abi symbol count";
+    p += length;
+    for (uint64_t i = 0; i != count; ++i) {
+      if (end - p < 5)
+        Fatal(symtab.ctx) << toString(this) << ": truncated .llvm.abi symbol";
+      uint32_t index = read32le(p);
+      uint8_t kind = p[4];
+      p += 5;
+      if (index >= symbols.size() || !symbols[index] || kind > 2 ||
+          (kind != 2 && !seen.insert(symbols[index]).second))
+        Fatal(symtab.ctx) << toString(this) << ": invalid .llvm.abi symbol";
+      abiRequirements.push_back({symbols[index], bytes, kind == 1});
+      if (kind != 2)
+        continue;
+      if (end - p < 4)
+        Fatal(symtab.ctx) << toString(this) << ": truncated .llvm.abi consumer";
+      uint32_t owner = read32le(p);
+      p += 4;
+      auto *def = owner < symbols.size()
+                      ? dyn_cast_or_null<DefinedRegular>(symbols[owner])
+                      : nullptr;
+      if (!def || !def->data)
+        Fatal(symtab.ctx) << toString(this) << ": invalid .llvm.abi consumer";
+      // A losing COMDAT's assumptions remain available for validation, but
+      // must not add liveness edges to another object's selected contribution.
+      if (def->getFile() == this) {
+        auto &uses = abiUses[def->getChunk()];
+        if (!llvm::is_contained(uses, index))
+          uses.push_back(index);
+      }
+    }
+  }
+}
+
+void ObjFile::initializePartitions(const coff_section *section,
+                                   SmallVectorImpl<PartitionRoot> &result,
+                                   bool allowMain) {
+  if (!section)
+    return;
+  ArrayRef<uint8_t> data;
+  cantFail(coffObj->getSectionContents(section, data));
+  if (data.size() < 4 || read32le(data.data()) != COFF::PartitionVersion ||
+      section->NumberOfRelocations)
+    Fatal(symtab.ctx) << toString(this) << ": invalid .llvm.part header";
+  const uint8_t *p = data.data() + 4;
+  const uint8_t *end = data.end();
+  SmallPtrSet<Symbol *, 16> seen;
+  while (p != end) {
+    const auto *terminator =
+        static_cast<const uint8_t *>(memchr(p, 0, end - p));
+    if (!terminator || (!allowMain && terminator == p))
+      Fatal(symtab.ctx) << toString(this) << ": invalid .llvm.part name";
+    StringRef name(reinterpret_cast<const char *>(p), terminator - p);
+    p = terminator + 1;
+    unsigned length;
+    const char *error = nullptr;
+    uint64_t count = decodeULEB128(p, &length, end, &error);
+    if (error || length != getULEB128Size(count) || !count ||
+        count > uint64_t(end - p - length) / 4)
+      Fatal(symtab.ctx) << toString(this) << ": invalid .llvm.part root count";
+    p += length;
+    for (uint64_t i = 0; i != count; ++i, p += 4) {
+      uint32_t index = read32le(p);
+      if (index >= symbols.size() || !symbols[index] ||
+          !seen.insert(symbols[index]).second)
+        Fatal(symtab.ctx) << toString(this) << ": invalid .llvm.part root";
+      result.push_back({symbols[index], name});
+    }
+  }
 }
 
 const coff_section *ObjFile::getSection(uint32_t i) {
@@ -391,6 +636,41 @@ SectionChunk *ObjFile::readSection(uint32_t sectionNumber,
     ArrayRef<uint8_t> data;
     cantFail(coffObj->getSectionContents(sec, data));
     directives = StringRef((const char *)data.data(), data.size());
+    return nullptr;
+  }
+
+  if (name == ".llvm.bind") {
+    if (bindingSec)
+      Fatal(symtab.ctx) << toString(this) << ": duplicate .llvm.bind section";
+    bindingSec = sec;
+    return nullptr;
+  }
+
+  if (name == ".llvm.extent") {
+    if (extentSec)
+      Fatal(symtab.ctx) << toString(this) << ": duplicate .llvm.extent section";
+    extentSec = sec;
+    return nullptr;
+  }
+
+  if (name == ".llvm.part") {
+    if (partitionSec)
+      Fatal(symtab.ctx) << toString(this) << ": duplicate .llvm.part section";
+    partitionSec = sec;
+    return nullptr;
+  }
+
+  if (name == ".llvm.place") {
+    if (placementSec)
+      Fatal(symtab.ctx) << toString(this) << ": duplicate .llvm.place section";
+    placementSec = sec;
+    return nullptr;
+  }
+
+  if (name == ".llvm.abi") {
+    if (abiSec)
+      Fatal(symtab.ctx) << toString(this) << ": duplicate .llvm.abi section";
+    abiSec = sec;
     return nullptr;
   }
 
@@ -1221,6 +1501,39 @@ ImportFile::ImportFile(COFFLinkerContext &ctx, MemoryBufferRef m)
     : InputFile(ctx.getSymtab(getMachineType(m)), ImportKind, m),
       live(!ctx.config.doGC) {}
 
+ImportFile *ImportFile::create(COFFLinkerContext &ctx, StringRef name,
+                               StringRef dllName, StringRef externalName,
+                               COFF::ImportType type, bool registerSymbols) {
+  // Use the ordinary short-import parser, including export-as handling. This
+  // also keeps generated imports on the same symbol nodes as archive imports.
+  size_t payloadSize = name.size() + dllName.size() + externalName.size() + 3;
+  size_t size = sizeof(coff_import_header) + payloadSize;
+  char *buf = bAlloc().Allocate<char>(size);
+  memset(buf, 0, size);
+  auto *hdr = reinterpret_cast<coff_import_header *>(buf);
+  hdr->Sig2 = 0xffff;
+  hdr->Machine = ctx.config.machine;
+  hdr->SizeOfData = payloadSize;
+  hdr->TypeInfo = (COFF::IMPORT_NAME_EXPORTAS << 2) | type;
+  char *p = buf + sizeof(*hdr);
+  for (StringRef s : {name, dllName, externalName}) {
+    memcpy(p, s.data(), s.size());
+    p += s.size() + 1;
+  }
+  auto *file =
+      make<ImportFile>(ctx, MemoryBufferRef(StringRef(buf, size), dllName));
+  if (registerSymbols) {
+    ctx.driver.addFile(file);
+  } else {
+    file->hdr = hdr;
+    file->dllName = dllName;
+    file->externalName = externalName;
+    file->impSym = make<DefinedImportData>(saver().save("__imp_" + name), file,
+                                           file->location);
+  }
+  return file;
+}
+
 MachineTypes ImportFile::getMachineType(MemoryBufferRef m) {
   uint16_t machine =
       reinterpret_cast<const coff_import_header *>(m.getBufferStart())->Machine;
@@ -1231,6 +1544,42 @@ bool ImportFile::isSameImport(const ImportFile *other) const {
   if (!externalName.empty())
     return other->externalName == externalName;
   return hdr->OrdinalHint == other->hdr->OrdinalHint;
+}
+
+ImportFile *ImportFile::createView() {
+  auto *view = make<ImportFile>(symtab.ctx, mb);
+  view->hdr = hdr;
+  view->dllName = dllName;
+  view->externalName = externalName;
+  view->live = false;
+  view->impSym =
+      make<DefinedImportData>(impSym->getName(), view, view->location);
+  view->impSym->addressTaken = impSym->addressTaken;
+  view->impSym->isUsedInRegularObj = impSym->isUsedInRegularObj;
+  if (thunkSym)
+    view->thunkSym = make<DefinedImportThunk>(
+        symtab.ctx, thunkSym->getName(), view->impSym, view->makeImportThunk());
+  return view;
+}
+
+void ImportFile::requireABIContract(StringRef name) {
+  // The consumer supplies this name. In particular, do not trust an import
+  // library's EXPORTAS digest as the consumer's physical ABI requirement.
+  if (externalName == name && hdr->getNameType() != IMPORT_ORDINAL)
+    return;
+  auto *header = make<coff_import_header>(*hdr);
+  header->TypeInfo = (COFF::IMPORT_NAME_EXPORTAS << 2) | hdr->getType();
+  hdr = header;
+  externalName = name;
+}
+
+void ImportFile::setPrivateOrdinal(uint16_t ordinal) {
+  assert(ordinal);
+  auto *header = make<coff_import_header>(*hdr);
+  header->TypeInfo = (COFF::IMPORT_ORDINAL << 2) | hdr->getType();
+  header->OrdinalHint = ordinal;
+  hdr = header;
+  externalName = {};
 }
 
 ImportThunkChunk *ImportFile::makeImportThunk() {
@@ -1410,7 +1759,11 @@ void BitcodeFile::parse() {
       fakeSC = &symtab.ctx.ltoDataSectionChunk.chunk;
     if (objSym.isUndefined()) {
       sym = symtab.addUndefined(symName, this, false);
-      if (objSym.isWeak())
+      // A contract target may be present only to preserve an optimizer-time
+      // witness. Diagnose it after native emission, when dead consumers and
+      // their temporary retention have been removed. Surviving references
+      // still go through ordinary unresolved-symbol checking.
+      if (objSym.isWeak() || !objSym.getCOFFABIContract().empty())
         sym->deferUndefined = true;
       // If one LTO object file references (i.e. has an undefined reference to)
       // a symbol with an __imp_ prefix, the LTO compilation itself sees it
@@ -1448,10 +1801,61 @@ void BitcodeFile::parse() {
           symtab.addRegular(this, symName, nullptr, fakeSC, 0, objSym.isWeak());
     }
     symbols.push_back(sym);
+    if (!objSym.getCOFFABIContract().empty()) {
+      StringRef bytes = objSym.getCOFFABIContract();
+      abiRequirements.push_back(
+          {sym, saver.save(bytes), !objSym.isUndefined()});
+    }
+    if (!objSym.getPartition().empty())
+      partitionRoots.push_back({sym, saver.save(objSym.getPartition())});
+    if (unsigned flags = objSym.getCOFFBindingFlags()) {
+      if (!COFF::isValidBindingFlags(flags))
+        Fatal(symtab.ctx) << toString(this)
+                          << ": invalid COFF binding flags for " << symName;
+      bindingRequirements.push_back({sym, flags});
+    }
     if (objSym.isUsed() || objSym.isLibcall(libcalls))
       symtab.ctx.config.gcroot.push_back(sym);
   }
+  for (const auto &requirement : obj->getCOFFABIRequirements()) {
+    Symbol *symbol = symbols[requirement.SymbolIndex];
+    abiRequirements.push_back(
+        {symbol, saver.save(requirement.Contract), false});
+    // A use-only witness can disappear during LTO just like a target carrying
+    // coff.abi. It is a requirement, never an offered definition contract.
+    symbol->deferUndefined = true;
+  }
   directives = saver.save(obj->getCOFFLinkerOpts());
+}
+
+void BitcodeFile::replaceLTOObject(
+    std::unique_ptr<lto::InputFile> replacement) {
+  // Re-encoding ownership metadata must not redo symbol resolution or replace
+  // original requirements. Only newly promoted, formerly local definitions
+  // enter the shared symbol table here.
+  StringMap<Symbol *> original;
+  for (auto [record, symbol] : zip(obj->symbols(), symbols))
+    original.try_emplace(record.getName(), symbol);
+  std::vector<Symbol *> updated;
+  for (const lto::InputFile::Symbol &record : replacement->symbols()) {
+    Symbol *symbol = original.lookup(record.getName());
+    if (!symbol) {
+      if (record.isUndefined() || record.isCommon() || record.isWeak() ||
+          !record.getName().contains("__llvm_part_"))
+        Fatal(symtab.ctx) << toString(this)
+                          << ": unexpected symbol introduced by PE placement: "
+                          << record.getName();
+      SectionChunk *chunk = record.isExecutable()
+                                ? &symtab.ctx.ltoTextSectionChunk.chunk
+                                : &symtab.ctx.ltoDataSectionChunk.chunk;
+      symbol = symtab.addRegular(this, saver().save(record.getName()), nullptr,
+                                 chunk);
+      symbol->isUsedInRegularObj = true;
+    }
+    updated.push_back(symbol);
+  }
+  symbols = std::move(updated);
+  obj = std::move(replacement);
 }
 
 void BitcodeFile::parseLazy() {

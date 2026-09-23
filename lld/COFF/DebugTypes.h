@@ -43,6 +43,10 @@ public:
   TpiSource(COFFLinkerContext &ctx, TpiKind k, ObjFile *f);
   virtual ~TpiSource();
 
+  // Input records and dependency objects are shared; output type indices and
+  // rewritten records belong to one PDB builder.
+  void resetForOutput();
+
   /// Produce a mapping from the type and item indices used in the object
   /// file to those in the destination PDB.
   ///

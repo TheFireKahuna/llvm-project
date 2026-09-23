@@ -86,6 +86,8 @@ void lld::exitLld(int val) {
     // Delete any temporary file, while keeping the memory mapping open.
     if (e.outputBuffer)
       e.outputBuffer->discard();
+    if (e.discardOutputs)
+      e.discardOutputs();
   }
 
   // Re-throw a possible signal or exception once/if it was caught by

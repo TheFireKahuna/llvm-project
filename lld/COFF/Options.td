@@ -56,6 +56,8 @@ def exclude_symbols  : P<"exclude-symbols", "Exclude symbols from automatic expo
 def export  : P<"export", "Export a function">;
 // No help text because /failifmismatch is not intended to be used by the user.
 def failifmismatch : P<"failifmismatch", "">;
+def lldimagelocal : F<"lldimagelocal">,
+  HelpText<"Mark a runtime input as per-image startup code and state">;
 def filealign : P<"filealign", "Section alignment in the output file">;
 def functionpadmin : F<"functionpadmin">;
 def functionpadmin_opt : P<"functionpadmin",
@@ -83,6 +85,8 @@ def lldignoreenv : F<"lldignoreenv">,
     HelpText<"Ignore environment variables like %LIB%">;
 def lldltocache : P<"lldltocache",
     "Path to ThinLTO cached object file directory">;
+def lldrttiprivate : P<"lldrttiprivate",
+    "Declare a canonical RTTI symbol private to this inseparable output set">;
 def lldltocachepolicy : P<"lldltocachepolicy",
     "Pruning policy for the ThinLTO cache">;
 def lldsavetemps : F<"lldsavetemps">,

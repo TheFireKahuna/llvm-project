@@ -1553,6 +1553,8 @@ public:
       TTI::TargetCostKind CostKind,
       TTI::OperandValueInfo OpInfo = {TTI::OK_AnyValue, TTI::OP_None},
       const Instruction *I = nullptr) const override {
+    if (CostKind == TTI::TCK_Latency && Opcode == Instruction::Load)
+      return 4;
     assert(!Src->isVoidTy() && "Invalid type");
     // Assume types, such as structs, are expensive.
     if (getTLI()->getValueType(DL, Src,  true) == MVT::Other)
@@ -1949,7 +1951,7 @@ public:
       break;
 
     case Intrinsic::memcpy:
-      return thisT()->getMemcpyCost(ICA.getInst());
+      return thisT()->getMemcpyCost(ICA.getInst(), CostKind);
 
     case Intrinsic::masked_scatter: {
       const Value *Mask = Args[2];

@@ -29,6 +29,7 @@
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/IPO/FunctionSpecialization.h"
 #include "llvm/Transforms/Scalar/SCCP.h"
+#include "llvm/Transforms/Utils/COFFABIRequirements.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/SCCPSolver.h"
 
@@ -105,6 +106,58 @@ static void findReturnsToZap(Function &F,
   }
 }
 
+// Constant pointer arguments and devirtualized calls can expose dependencies
+// absent from the original reference graph. Capture them before folding erases
+// the evidence, then use the same fixed point as ordinary ABI propagation.
+static bool propagateInferredABIRequirements(Module &M, SCCPSolver &Solver) {
+  if (!M.getTargetTriple().isOSBinFormatCOFF())
+    return false;
+  bool HasRequirements = false;
+  for (GlobalObject &GO : M.global_objects())
+    if (GO.getMetadata("coff.abi") || GO.getMetadata("coff.abi.uses")) {
+      HasRequirements = true;
+      break;
+    }
+  if (!HasRequirements)
+    return false;
+
+  SmallVector<COFFABIRequirementEdge, 16> Dependencies;
+  for (Function &F : M) {
+    if (F.isDeclaration() || !Solver.isBlockExecutable(&F.front()))
+      continue;
+    SmallVector<Constant *, 16> Pending;
+    for (Argument &Arg : F.args())
+      if (Arg.getType()->isPointerTy() && !Arg.use_empty())
+        if (Constant *C = Solver.getConstantOrNull(&Arg))
+          Pending.push_back(C);
+    for (BasicBlock &BB : F) {
+      if (!Solver.isBlockExecutable(&BB))
+        continue;
+      for (Instruction &I : BB)
+        if (I.getType()->isPointerTy() && !I.use_empty())
+          if (Constant *C = Solver.getConstantOrNull(&I))
+            Pending.push_back(C);
+    }
+    SmallPtrSet<Constant *, 16> Seen;
+    while (!Pending.empty()) {
+      Constant *C = Pending.pop_back_val();
+      if (!Seen.insert(C).second)
+        continue;
+      if (auto *GO = dyn_cast<GlobalObject>(C)) {
+        Dependencies.push_back({GO, &F});
+        continue;
+      }
+      // Preserve the source behind aliases and constant interior addresses;
+      // constants supply a reference, never a replacement offered contract.
+      for (Value *V : C->operand_values())
+        if (auto *Operand = dyn_cast<Constant>(V))
+          Pending.push_back(Operand);
+    }
+  }
+  return !Dependencies.empty() &&
+         propagateCOFFABIRequirements(M, Dependencies);
+}
+
 static bool runIPSCCP(
     Module &M, const DataLayout &DL, FunctionAnalysisManager *FAM,
     std::function<const TargetLibraryInfo &(Function &)> GetTLI,
@@ -165,7 +218,7 @@ static bool runIPSCCP(
 
   // Iterate over all of the instructions in the module, replacing them with
   // constants if we have found them to be of constant values.
-  bool MadeChanges = false;
+  bool MadeChanges = propagateInferredABIRequirements(M, Solver);
   for (Function &F : M) {
     if (F.isDeclaration())
       continue;

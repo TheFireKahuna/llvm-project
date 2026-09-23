@@ -336,6 +336,11 @@ if (NOT WIN32 OR LIBCXXABI_ENABLE_STATIC)
 endif()
 
 # Add a meta-target for both libraries.
+if ((WIN32_ITANIUM OR WIN32_NTPOSIX) AND LIBCXXABI_ENABLE_SHARED)
+  set_target_properties(cxxabi_shared PROPERTIES
+    RUNTIME_OUTPUT_NAME "${LIBCXXABI_SHARED_OUTPUT_NAME}-rtti2")
+endif()
+
 add_custom_target(cxxabi)
 if (LIBCXXABI_ENABLE_SHARED)
   add_dependencies(cxxabi cxxabi_shared)
@@ -344,18 +349,11 @@ if (LIBCXXABI_ENABLE_STATIC)
   add_dependencies(cxxabi cxxabi_static)
 endif()
 
-# Windows Itanium and NTPOSIX: the type_info classes, their vtables and
-# __dynamic_cast are part of every image, which makes RTTI constant data with
-# no cross-DLL pointers and keeps virtual calls on type_info inside the image;
-# the compiler treats those vtables as image-local and the shared library
-# does not export them. The replaceable allocation functions are here for the
-# same reason: an image reaches its own directly and forwards to the
-# program's only where the program replaced one. libc++ adds the members of
-# this build-only archive to its import library, so nothing extra is ever
-# linked or installed.
+# Replaceable allocation defaults remain image-local. RTTI support belongs to
+# the shared ABI runtime; linking its vtables into consumers would create a
+# second active identity under libc++'s unique-name comparison policy.
 if (WIN32_ITANIUM OR WIN32_NTPOSIX)
-  add_library(cxxabi_local STATIC private_typeinfo.cpp abort_message.cpp
-                                  stdlib_new_delete.cpp)
+  add_library(cxxabi_local STATIC stdlib_new_delete.cpp)
   cxx_add_warning_flags(cxxabi_local ${LIBCXXABI_ENABLE_WERROR} ${LIBCXXABI_ENABLE_PEDANTIC})
   target_link_libraries(cxxabi_local PRIVATE cxxabi-headers cxx-headers runtimes-libc-headers)
   set_target_properties(cxxabi_local

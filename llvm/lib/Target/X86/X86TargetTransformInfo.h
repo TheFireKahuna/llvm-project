@@ -181,6 +181,9 @@ public:
   getReplicationShuffleCost(Type *EltTy, int ReplicationFactor, int VF,
                             const APInt &DemandedDstElts,
                             TTI::TargetCostKind CostKind) const override;
+  InstructionCost getMemcpyCost(const Instruction *I,
+                                TTI::TargetCostKind CostKind) const override;
+
   InstructionCost getMemoryOpCost(
       unsigned Opcode, Type *Src, Align Alignment, unsigned AddressSpace,
       TTI::TargetCostKind CostKind,

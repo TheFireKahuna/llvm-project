@@ -80,11 +80,25 @@ set(WINCRT_CFLAGS
   -fno-exceptions
   -fno-rtti
   -fms-extensions
+  -ffunction-sections
+  -fdata-sections
   -O2
   -D_WIN32_WINNT=0x0A00
   -DWINVER=0x0A00
   -DNTDDI_VERSION=0x0A000005
 )
+
+# Describe the existing per-image startup boundary to a multi-output link.
+# Keep the process-wide C++ registries and allocation interfaces outside it.
+set(WINCRT_IMAGE_LOCAL_SOURCES
+  entry_main.cpp entry_wmain.cpp entry_winmain.cpp entry_wwinmain.cpp
+  entry_dll.cpp init.cpp atexit.cpp tls.cpp security.cpp gshandler.cpp
+  cfguard.cpp loadconfig.cpp delayload.cpp weak_interposition.cpp
+  ucrt_stdio_options.c ucrt_stdio_marker.c)
+foreach(source IN LISTS WINCRT_IMAGE_LOCAL_SOURCES)
+  set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/${source}" APPEND PROPERTY
+    COMPILE_OPTIONS "-include;${CMAKE_CURRENT_SOURCE_DIR}/image_local.h")
+endforeach()
 
 # Runtime callbacks are indirect calls; instrument them like application code.
 include(CheckCXXCompilerFlag)

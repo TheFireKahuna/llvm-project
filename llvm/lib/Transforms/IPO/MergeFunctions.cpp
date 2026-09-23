@@ -116,6 +116,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IPO.h"
+#include "llvm/Transforms/Utils/COFFABIRequirements.h"
 #include "llvm/Transforms/Utils/FunctionComparator.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <algorithm>
@@ -497,9 +498,15 @@ MergeFunctions::runOnFunctions(ArrayRef<Function *> F) {
 
 // Replace direct callers of Old with New.
 void MergeFunctions::replaceDirectCallers(Function *Old, Function *New) {
+  bool MergedRequirements = false;
   for (Use &U : make_early_inc_range(Old->uses())) {
     CallBase *CB = dyn_cast<CallBase>(U.getUser());
     if (CB && CB->isCallee(&U)) {
+      if (!MergedRequirements) {
+        mergeCOFFABIRequirements(*New, *Old);
+        MergedRequirements = true;
+      }
+      mergeCOFFABIRequirements(*CB->getCaller(), *New);
       // Do not copy attributes from the called function to the call-site.
       // Function comparison ensures that the attributes are the same up to
       // type congruences in byval(), in which case we need to keep the byval
@@ -730,6 +737,7 @@ static void copyMetadataIfPresent(Function *From, Function *To,
 // For better debugability, under MergeFunctionsPDI, we do not modify G's
 // call sites to point to F even when within the same translation unit.
 void MergeFunctions::writeThunk(Function *F, Function *G) {
+  mergeCOFFABIRequirements(*F, *G);
   BasicBlock *GEntryBlock = nullptr;
   std::vector<Instruction *> PDIUnrelatedWL;
   std::vector<DbgVariableRecord *> PDVRUnrelatedWL;
@@ -756,6 +764,9 @@ void MergeFunctions::writeThunk(Function *F, Function *G) {
 
   IRBuilder<> Builder(BB);
   Function *H = MergeFunctionsPDI ? G : NewG;
+  // The thunk now executes the shared body's computation. Keep its combined
+  // requirements on the thunk too, before another pass can fold the tail call.
+  mergeCOFFABIRequirements(*H, *F);
   SmallVector<Value *, 16> Args;
   unsigned i = 0;
   FunctionType *FFTy = F->getFunctionType();
@@ -825,6 +836,7 @@ static bool canCreateAliasFor(Function *F) {
 
 // Replace G with an alias to F (deleting function G)
 void MergeFunctions::writeAlias(Function *F, Function *G) {
+  mergeCOFFABIRequirements(*F, *G);
   PointerType *PtrType = G->getType();
   auto *GA =
       GlobalAlias::create(G->getFunctionType(), PtrType->getAddressSpace(),
@@ -900,6 +912,7 @@ void MergeFunctions::mergeTwoFunctions(Function *F, Function *G) {
     // Ensure CFI type metadata is propagated to the new function.
     copyMetadataIfPresent(F, NewF, "type");
     copyMetadataIfPresent(F, NewF, "kcfi_type");
+    copyMetadataIfPresent(F, NewF, "coff.abi.uses");
     removeUsers(F);
     F->replaceAllUsesWith(NewF);
 
@@ -937,6 +950,8 @@ void MergeFunctions::mergeTwoFunctions(Function *F, Function *G) {
         // to replace a key in ValueMap<GlobalValue *> with a non-global.
         GlobalNumbers.erase(G);
         // If G's address is not significant, replace it entirely.
+        if (!G->use_empty())
+          mergeCOFFABIRequirements(*F, *G);
         removeUsers(G);
         G->replaceAllUsesWith(F);
       } else {

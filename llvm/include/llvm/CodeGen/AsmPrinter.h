@@ -557,6 +557,9 @@ public:
     Structor() = default;
   };
 
+  // Link-only placement records for synthesized COFF registration sections.
+  SmallVector<std::pair<MCSymbol *, StringRef>, 4> COFFStructorPlacements;
+
   /// This method gathers an array of Structors and then sorts them out by
   /// Priority.
   /// @param List The initializer of `llvm.global_ctors` or `llvm.global_dtors`

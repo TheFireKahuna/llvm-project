@@ -182,6 +182,19 @@ TpiSource::~TpiSource() {
   consumeError(std::move(typeMergingError));
 }
 
+void TpiSource::resetForOutput() {
+  consumeError(std::move(typeMergingError));
+  typeMergingError = Error::success();
+  indexMapStorage.clear();
+  tpiMap = {};
+  ipiMap = {};
+  funcIdToType.clear();
+  uniqueTypes.clear();
+  mergedTpi = {};
+  mergedIpi = {};
+  nbTypeRecords = nbTypeRecordsBytes = 0;
+}
+
 TpiSource *lld::coff::makeTpiSource(COFFLinkerContext &ctx, ObjFile *file) {
   return make<TpiSource>(ctx, TpiSource::Regular, file);
 }

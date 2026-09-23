@@ -25,6 +25,7 @@
 #include "llvm/Analysis/TypeBasedAliasAnalysis.h"
 #include "llvm/CodeGen/BranchFoldingPass.h"
 #include "llvm/CodeGen/CodeGenPrepare.h"
+#include "llvm/CodeGen/COFFOutputLocality.h"
 #include "llvm/CodeGen/DeadMachineInstructionElim.h"
 #include "llvm/CodeGen/DetectDeadLanes.h"
 #include "llvm/CodeGen/DwarfEHPrepare.h"
@@ -707,6 +708,8 @@ void CodeGenPassBuilder<Derived, TargetMachineT>::addISelPasses(
   addFunctionPass(ExpandIRInstsPass(TM, getOptLevel()), PMW);
 
   derived().addIRPasses(PMW);
+  if (TM.getTargetTriple().isOSBinFormatCOFF())
+    addModulePass(COFFOutputLocalityPass(), PMW);
   derived().addCodeGenPrepare(PMW);
   addPassesToHandleExceptions(PMW);
   derived().addISelPrepare(PMW);

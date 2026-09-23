@@ -29,8 +29,9 @@
 
 namespace llvm::lto {
 struct Config;
+struct SymbolResolution;
 class LTO;
-}
+} // namespace llvm::lto
 
 namespace lld::coff {
 
@@ -43,7 +44,7 @@ public:
   BitcodeCompiler(COFFLinkerContext &ctx);
   ~BitcodeCompiler();
 
-  void add(BitcodeFile &f);
+  void add(ArrayRef<BitcodeFile *> files);
   std::vector<InputFile *> compile();
 
 private:
@@ -56,9 +57,10 @@ private:
 
   std::string getThinLTOOutputFile(StringRef path);
   llvm::lto::Config createConfig();
+  std::vector<llvm::lto::SymbolResolution> resolve(BitcodeFile &file);
 
   COFFLinkerContext &ctx;
 };
-}
+} // namespace lld::coff
 
 #endif

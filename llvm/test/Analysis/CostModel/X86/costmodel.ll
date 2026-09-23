@@ -13,7 +13,7 @@ define i64 @foo(i64 %arg) {
 ; LATENCY-NEXT:  Cost Model: Found an estimated cost of 0 for instruction: %A1 = alloca i32, align 8
 ; LATENCY-NEXT:  Cost Model: Found an estimated cost of 1 for instruction: %A2 = alloca i64, i64 undef, align 8
 ; LATENCY-NEXT:  Cost Model: Found an estimated cost of 1 for instruction: %I64 = add i64 undef, undef
-; LATENCY-NEXT:  Cost Model: Found an estimated cost of 4 for instruction: %1 = load i64, ptr undef, align 4
+; LATENCY-NEXT:  Cost Model: Found an estimated cost of 5 for instruction: %1 = load i64, ptr undef, align 4
 ; LATENCY-NEXT:  Cost Model: Found an estimated cost of 0 for instruction: %I2P = inttoptr i64 undef to ptr
 ; LATENCY-NEXT:  Cost Model: Found an estimated cost of 0 for instruction: %P2I = ptrtoint ptr undef to i64
 ; LATENCY-NEXT:  Cost Model: Found an estimated cost of 0 for instruction: %TC = trunc i64 undef to i32

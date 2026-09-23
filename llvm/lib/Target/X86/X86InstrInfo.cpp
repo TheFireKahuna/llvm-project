@@ -4410,7 +4410,7 @@ static unsigned getLoadStoreOpcodeForFP16(bool Load, const X86Subtarget &STI) {
   return X86::MOVSHPmr;
 }
 
-static unsigned getLoadStoreRegOpcode(Register Reg,
+unsigned X86InstrInfo::getLoadStoreRegOpcode(Register Reg,
                                       const TargetRegisterClass *RC,
                                       bool IsStackAligned,
                                       const X86Subtarget &STI, bool Load) {
@@ -4718,13 +4718,13 @@ static unsigned getStoreRegOpcode(Register SrcReg,
                                   const TargetRegisterClass *RC,
                                   bool IsStackAligned,
                                   const X86Subtarget &STI) {
-  return getLoadStoreRegOpcode(SrcReg, RC, IsStackAligned, STI, false);
+  return X86InstrInfo::getLoadStoreRegOpcode(SrcReg, RC, IsStackAligned, STI, false);
 }
 
 static unsigned getLoadRegOpcode(Register DestReg,
                                  const TargetRegisterClass *RC,
                                  bool IsStackAligned, const X86Subtarget &STI) {
-  return getLoadStoreRegOpcode(DestReg, RC, IsStackAligned, STI, true);
+  return X86InstrInfo::getLoadStoreRegOpcode(DestReg, RC, IsStackAligned, STI, true);
 }
 
 static bool isAMXOpcode(unsigned Opc) {

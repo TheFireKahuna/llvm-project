@@ -560,6 +560,7 @@ bool GlobalMergeImpl::doMerge(const SmallVectorImpl<GlobalVariable *> &Globals,
     MergedGV->setAlignment(MaxAlign);
     MergedGV->setSection(Globals[i]->getSection());
     MergedGV->setComdat(Globals[i]->getComdat());
+    MergedGV->setPartition(Globals[i]->getPartition());
 
     LLVM_DEBUG(dbgs() << "MergedGV:  " << *MergedGV << "\n");
 
@@ -601,6 +602,7 @@ bool GlobalMergeImpl::doMerge(const SmallVectorImpl<GlobalVariable *> &Globals,
                                               Linkage, Name, GEP, &M);
         GA->setVisibility(Visibility);
         GA->setDLLStorageClass(DLLStorage);
+        GA->setPartition(MergedGV->getPartition());
       }
 
       NumMerged++;
@@ -675,7 +677,7 @@ bool GlobalMergeImpl::run(Module &M) {
   IsMachO = M.getTargetTriple().isOSBinFormatMachO();
 
   auto &DL = M.getDataLayout();
-  MapVector<std::tuple<unsigned, StringRef, Comdat *>,
+  MapVector<std::tuple<unsigned, StringRef, Comdat *, StringRef>,
             SmallVector<GlobalVariable *, 0>>
       Globals, ConstGlobals, BSSGlobals;
   bool Changed = false;
@@ -742,11 +744,14 @@ bool GlobalMergeImpl::run(Module &M) {
     if (CanMerge) {
       if (TM &&
           TargetLoweringObjectFile::getKindForGlobal(&GV, *TM).isBSS())
-        BSSGlobals[{AddressSpace, Section, GV.getComdat()}].push_back(&GV);
+        BSSGlobals[{AddressSpace, Section, GV.getComdat(), GV.getPartition()}]
+            .push_back(&GV);
       else if (GV.isConstant())
-        ConstGlobals[{AddressSpace, Section, GV.getComdat()}].push_back(&GV);
+        ConstGlobals[{AddressSpace, Section, GV.getComdat(), GV.getPartition()}]
+            .push_back(&GV);
       else
-        Globals[{AddressSpace, Section, GV.getComdat()}].push_back(&GV);
+        Globals[{AddressSpace, Section, GV.getComdat(), GV.getPartition()}]
+            .push_back(&GV);
     }
     LLVM_DEBUG(dbgs() << "GV " << (CanMerge ? "" : "not ") << "to merge: " << GV
                       << "\n");

@@ -1280,7 +1280,8 @@ int ARMTTIImpl::getNumMemOps(const IntrinsicInst *I) const {
   return -1;
 }
 
-InstructionCost ARMTTIImpl::getMemcpyCost(const Instruction *I) const {
+InstructionCost ARMTTIImpl::getMemcpyCost(const Instruction *I,
+                                          TTI::TargetCostKind CostKind) const {
   int NumOps = getNumMemOps(cast<IntrinsicInst>(I));
 
   // To model the cost of a library call, we assume 1 for the call, and

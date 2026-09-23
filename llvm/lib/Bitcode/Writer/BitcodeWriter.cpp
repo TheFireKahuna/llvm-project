@@ -423,7 +423,7 @@ private:
   void writeFunctionMetadata(const Function &F);
   void writeFunctionMetadataAttachment(const Function &F);
   void pushGlobalMetadataAttachment(SmallVectorImpl<uint64_t> &Record,
-                                    const GlobalObject &GO);
+                                    const GlobalObject &GO, bool ModuleLevel);
   void writeModuleMetadataKinds();
   void writeOperandBundleTags();
   void writeSyncScopeNames();
@@ -2647,11 +2647,13 @@ void ModuleBitcodeWriter::writeModuleMetadata() {
   auto AddDeclAttachedMetadata = [&](const GlobalObject &GO) {
     SmallVector<uint64_t, 4> Record;
     Record.push_back(VE.getValueID(&GO));
-    pushGlobalMetadataAttachment(Record, GO);
-    Stream.EmitRecord(bitc::METADATA_GLOBAL_DECL_ATTACHMENT, Record);
+    pushGlobalMetadataAttachment(Record, GO, /*ModuleLevel=*/true);
+    if (Record.size() != 1)
+      Stream.EmitRecord(bitc::METADATA_GLOBAL_DECL_ATTACHMENT, Record);
   };
   for (const Function &F : M)
-    if (F.isDeclaration() && F.hasMetadata())
+    if ((F.isDeclaration() || VE.hasModuleLevelFunctionMetadata()) &&
+        F.hasMetadata())
       AddDeclAttachedMetadata(F);
   for (const GlobalIFunc &GI : M.ifuncs())
     if (GI.hasMetadata())
@@ -2677,11 +2679,14 @@ void ModuleBitcodeWriter::writeFunctionMetadata(const Function &F) {
 }
 
 void ModuleBitcodeWriter::pushGlobalMetadataAttachment(
-    SmallVectorImpl<uint64_t> &Record, const GlobalObject &GO) {
+    SmallVectorImpl<uint64_t> &Record, const GlobalObject &GO, bool ModuleLevel) {
   // [n x [id, mdnode]]
   SmallVector<std::pair<unsigned, MDNode *>, 4> MDs;
   GO.getAllMetadata(MDs);
   for (const auto &I : MDs) {
+    if (const auto *F = dyn_cast<Function>(&GO))
+      if (VE.isModuleLevelFunctionMetadata(I.first, *F) != ModuleLevel)
+        continue;
     Record.push_back(I.first);
     Record.push_back(VE.getMetadataID(I.second));
   }
@@ -2693,8 +2698,9 @@ void ModuleBitcodeWriter::writeFunctionMetadataAttachment(const Function &F) {
   SmallVector<uint64_t, 64> Record;
 
   if (F.hasMetadata()) {
-    pushGlobalMetadataAttachment(Record, F);
-    Stream.EmitRecord(bitc::METADATA_ATTACHMENT, Record, 0);
+    pushGlobalMetadataAttachment(Record, F, /*ModuleLevel=*/false);
+    if (!Record.empty())
+      Stream.EmitRecord(bitc::METADATA_ATTACHMENT, Record, 0);
     Record.clear();
   }
 

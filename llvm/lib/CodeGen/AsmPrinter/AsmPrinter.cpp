@@ -34,6 +34,7 @@
 #include "llvm/Analysis/MemoryLocation.h"
 #include "llvm/Analysis/OptimizationRemarkEmitter.h"
 #include "llvm/BinaryFormat/COFF.h"
+#include "llvm/BinaryFormat/COFFBinding.h"
 #include "llvm/BinaryFormat/Dwarf.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/CodeGen/BasicBlockSectionsProfileReader.h"
@@ -60,6 +61,7 @@
 #include "llvm/CodeGen/TargetFrameLowering.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetLowering.h"
+#include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
@@ -111,6 +113,7 @@
 #include "llvm/Object/ELFTypes.h"
 #include "llvm/Pass.h"
 #include "llvm/Remarks/RemarkStreamer.h"
+#include "llvm/Support/ABIContract.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Compiler.h"
@@ -3143,7 +3146,172 @@ bool AsmPrinter::doFinalization(Module &M) {
     }
   }
 
-  // Emit symbol partition specifications (ELF only).
+  if (Target.isOSBinFormatCOFF() && M.getModuleFlag("coff.rtti_abi")) {
+    const auto *ABI =
+        mdconst::dyn_extract<ConstantInt>(M.getModuleFlag("coff.rtti_abi"));
+    if (!ABI || ABI->getBitWidth() != 32 ||
+        ABI->getZExtValue() != COFF::RTTIABI)
+      reportFatalUsageError("unsupported COFF RTTI ABI module flag");
+    bool HasExtents = false;
+    for (const GlobalVariable &GV : M.globals()) {
+      if (GV.isDeclarationForLinker() || GV.isThreadLocal() ||
+          GV.getName().starts_with("llvm.") || GV.hasDLLImportStorageClass())
+        continue;
+      MCSymbol *Symbol = getSymbol(&GV);
+      TypeSize Size = getDataLayout().getTypeAllocSize(GV.getValueType());
+      if (!Symbol->isDefined() || Symbol->isCommon() || Size.isScalable() ||
+          !Size.getFixedValue())
+        continue;
+      if (!Symbol->isInSection() ||
+          (cast<MCSectionCOFF>(Symbol->getSection()).getCharacteristics() &
+           COFF::IMAGE_SCN_MEM_EXECUTE))
+        continue;
+      if (!HasExtents) {
+        OutStreamer->switchSection(OutContext.getCOFFSection(
+            ".llvm.extent", COFF::IMAGE_SCN_LNK_INFO | COFF::IMAGE_SCN_LNK_REMOVE));
+        OutStreamer->emitInt32(COFF::ObjectExtentVersion);
+        HasExtents = true;
+      }
+      OutStreamer->emitCOFFSymbolIndex(Symbol);
+      OutStreamer->emitULEB128IntValue(Size.getFixedValue());
+    }
+    OutStreamer->switchSection(OutContext.getCOFFSection(
+        ".llvm.bind", COFF::IMAGE_SCN_LNK_INFO | COFF::IMAGE_SCN_LNK_REMOVE));
+    OutStreamer->emitInt32(COFF::BindingVersion);
+    OutStreamer->emitInt32(ABI->getZExtValue());
+    for (const GlobalVariable &GV : M.globals()) {
+      const MDNode *MD = GV.getMetadata("coff.binding");
+      if (!MD || GV.hasAvailableExternallyLinkage())
+        continue;
+      // Unused declarations need no binding, and may have no object symbol.
+      if (GV.isDeclaration() && GV.use_empty())
+        continue;
+      const auto *Flags =
+          MD->getNumOperands() == 1
+              ? mdconst::dyn_extract<ConstantInt>(MD->getOperand(0))
+              : nullptr;
+      if (!Flags || Flags->getBitWidth() != 32 ||
+          !COFF::isValidBindingFlags(Flags->getZExtValue()))
+        reportFatalUsageError("invalid COFF binding metadata for " +
+                              GV.getName());
+      OutStreamer->emitCOFFSymbolIndex(getSymbol(&GV));
+      OutStreamer->emitInt8(Flags->getZExtValue());
+    }
+  }
+
+  if (Target.isOSBinFormatCOFF()) {
+    struct ContractUse {
+      const GlobalValue *Target;
+      const GlobalObject *Consumer;
+      uint8_t Kind;
+    };
+    MapVector<StringRef, SmallVector<ContractUse, 2>> Contracts;
+    for (const GlobalObject &GO : M.global_objects()) {
+      if (!GO.isDeclarationForLinker())
+        if (const MDNode *Uses = GO.getMetadata("coff.abi.uses"))
+          for (const MDOperand &Operand : Uses->operands()) {
+            const auto *Use = dyn_cast_or_null<MDNode>(Operand);
+            const auto *Target = Use && Use->getNumOperands() == 2
+                                     ? dyn_cast_or_null<ValueAsMetadata>(Use->getOperand(0))
+                                     : nullptr;
+            const auto *GV = Target ? dyn_cast<GlobalValue>(Target->getValue()) : nullptr;
+            const auto *Bytes = Use && Use->getNumOperands() == 2
+                                    ? dyn_cast_or_null<MDString>(Use->getOperand(1))
+                                    : nullptr;
+            if (!GV || !Bytes)
+              reportFatalUsageError("invalid COFF ABI use metadata for " + GO.getName());
+            Contracts[Bytes->getString()].push_back({GV, &GO, 2});
+          }
+      const MDNode *MD = GO.getMetadata("coff.abi");
+      if (!MD || GO.hasAvailableExternallyLinkage() ||
+          (GO.isDeclarationForLinker() && GO.use_empty()))
+        continue;
+      const auto *Bytes = MD->getNumOperands() == 1
+                              ? dyn_cast<MDString>(MD->getOperand(0))
+                              : nullptr;
+      if (!Bytes)
+        reportFatalUsageError("invalid COFF ABI metadata for " + GO.getName());
+      Contracts[Bytes->getString()].push_back(
+          {&GO, nullptr, uint8_t(!GO.isDeclarationForLinker())});
+    }
+    if (!Contracts.empty()) {
+      OutStreamer->switchSection(OutContext.getCOFFSection(
+          ".llvm.abi", COFF::IMAGE_SCN_LNK_INFO | COFF::IMAGE_SCN_LNK_REMOVE));
+      OutStreamer->emitInt32(COFF::ABIContractSectionVersion);
+      for (const auto &[Bytes, Objects] : Contracts) {
+        auto Contract = abi::Contract::decode(Bytes);
+        if (!Contract)
+          reportFatalUsageError(Twine(toString(Contract.takeError())));
+        OutStreamer->emitULEB128IntValue(Bytes.size());
+        OutStreamer->emitBytes(Bytes);
+        OutStreamer->emitULEB128IntValue(Objects.size());
+        for (const ContractUse &Use : Objects) {
+          OutStreamer->emitCOFFSymbolIndex(getSymbol(Use.Target));
+          OutStreamer->emitInt8(Use.Kind);
+          if (Use.Consumer)
+            OutStreamer->emitCOFFSymbolIndex(getSymbol(Use.Consumer));
+        }
+      }
+    }
+    MapVector<StringRef, SmallVector<const GlobalValue *, 4>> Partitions;
+    for (const GlobalValue &GV : M.global_values())
+      if (!M.getModuleFlag("coff.output-set") && GV.hasPartition() &&
+          !GV.isDeclarationForLinker() && !GV.hasLocalLinkage() &&
+          GV.getVisibility() == GlobalValue::DefaultVisibility) {
+        if (GV.getPartition().contains('\0'))
+          reportFatalUsageError("invalid COFF partition name");
+        Partitions[GV.getPartition()].push_back(&GV);
+      }
+    if (!Partitions.empty()) {
+      OutStreamer->switchSection(OutContext.getCOFFSection(
+          ".llvm.part", COFF::IMAGE_SCN_LNK_INFO | COFF::IMAGE_SCN_LNK_REMOVE));
+      OutStreamer->emitInt32(COFF::PartitionVersion);
+      for (const auto &Entry : Partitions) {
+        OutStreamer->emitBytes(Entry.first);
+        OutStreamer->emitInt8(0);
+        OutStreamer->emitULEB128IntValue(Entry.second.size());
+        for (const GlobalValue *GV : Entry.second)
+          OutStreamer->emitCOFFSymbolIndex(getSymbol(GV));
+      }
+    }
+    MapVector<StringRef, SmallVector<MCSymbol *, 4>> Placements;
+    for (const auto &[Symbol, Owner] : COFFStructorPlacements)
+      Placements[Owner].push_back(Symbol);
+    COFFStructorPlacements.clear();
+    for (const GlobalObject &GO : M.global_objects()) {
+      if (GO.isDeclarationForLinker() || GO.getName().starts_with("llvm."))
+        continue;
+      if (!M.getModuleFlag("coff.output-set")) {
+        if (GO.hasLocalLinkage() && GO.hasPartition())
+          Placements[GO.getPartition()].push_back(getSymbol(&GO));
+        continue;
+      }
+      if (GO.getPartition().contains('\0'))
+        reportFatalUsageError("invalid frozen COFF output owner");
+      // Imported canonical bodies remain available to optimization, then the
+      // linker transfers their surviving storage to the selected provider.
+      StringRef Owner = GO.getPartition();
+      if (Owner == "image:" || Owner.consume_front("pe:"))
+        Placements[Owner].push_back(getSymbol(&GO));
+      else if (!Owner.empty() && !Owner.starts_with("dll:"))
+        reportFatalUsageError("invalid frozen COFF output owner");
+    }
+    if (!Placements.empty()) {
+      OutStreamer->switchSection(OutContext.getCOFFSection(
+          ".llvm.place",
+          COFF::IMAGE_SCN_LNK_INFO | COFF::IMAGE_SCN_LNK_REMOVE));
+      OutStreamer->emitInt32(COFF::PartitionVersion);
+      for (const auto &[Name, Objects] : Placements) {
+        OutStreamer->emitBytes(Name);
+        OutStreamer->emitInt8(0);
+        OutStreamer->emitULEB128IntValue(Objects.size());
+        for (MCSymbol *Symbol : Objects)
+          OutStreamer->emitCOFFSymbolIndex(Symbol);
+      }
+    }
+  }
+
+  // Emit symbol partition specifications for ELF's reserved-address loader.
   if (Target.isOSBinFormatELF()) {
     unsigned UniqueID = 0;
     for (const GlobalValue &GV : M.global_values()) {
@@ -3718,6 +3886,27 @@ void AsmPrinter::emitXXStructorList(const DataLayout &DL, const Constant *List,
     MCSection *OutputSection =
         (IsCtor ? Obj.getStaticCtorSection(S.Priority, KeySym)
                 : Obj.getStaticDtorSection(S.Priority, KeySym));
+    auto *Function = dyn_cast<GlobalValue>(S.Func->stripPointerCasts());
+    StringRef Owner = Function ? Function->getPartition() : StringRef();
+    bool HasOwner = Function && Function->hasPartition();
+    if (HasOwner && TM.getTargetTriple().isOSBinFormatCOFF()) {
+      if (Function->getParent()->getModuleFlag("coff.output-set")) {
+        if (Owner != "image:" && !Owner.consume_front("pe:"))
+          reportFatalUsageError("initializer has no final PE owner");
+      }
+      if (!KeySym)
+        OutputSection = static_cast<const TargetLoweringObjectFileCOFF &>(Obj)
+                            .getSectionForOutput(OutputSection, Owner);
+      auto *Section = cast<MCSectionCOFF>(OutputSection);
+      // The section symbol already exists in COFF. Its index is sufficient;
+      // no extra relocation or per-initializer object symbol is necessary.
+      MCSymbol *Symbol = Section->getBeginSymbol();
+      bool Recorded = false;
+      for (const auto &Placement : COFFStructorPlacements)
+        Recorded |= Placement.first == Symbol;
+      if (!Recorded)
+        COFFStructorPlacements.emplace_back(Symbol, Owner);
+    }
     OutStreamer->switchSection(OutputSection);
     if (OutStreamer->getCurrentSection() != OutStreamer->getPreviousSection())
       emitAlignment(Align);

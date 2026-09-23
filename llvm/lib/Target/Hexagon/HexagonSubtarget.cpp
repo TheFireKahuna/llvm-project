@@ -434,7 +434,7 @@ bool HexagonSubtarget::useAA() const {
 void HexagonSubtarget::adjustSchedDependency(
     SUnit *Src, int SrcOpIdx, SUnit *Dst, int DstOpIdx, SDep &Dep,
     const TargetSchedModel *SchedModel) const {
-  if (!Src->isInstr() || !Dst->isInstr())
+  if (Dep.isNormalMemory() || !Src->isInstr() || !Dst->isInstr())
     return;
 
   MachineInstr *SrcInst = Src->getInstr();

@@ -15,6 +15,7 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/UniqueVector.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/UseListOrder.h"
@@ -54,6 +55,8 @@ public:
   UseListOrderStack UseListOrders;
 
 private:
+  SmallVector<unsigned, 2> ModuleLevelFunctionMetadataKinds;
+
   using TypeMapType = DenseMap<Type *, unsigned>;
   TypeMapType TypeMap;
   TypeList Types;
@@ -138,6 +141,11 @@ private:
   unsigned FirstInstID;
 
 public:
+  // Linker-visible function metadata must be available without loading bodies.
+  bool isModuleLevelFunctionMetadata(unsigned Kind, const Function &F) const;
+  bool hasModuleLevelFunctionMetadata() const {
+    return !ModuleLevelFunctionMetadataKinds.empty();
+  }
   ValueEnumerator(const Module &M, bool ShouldPreserveUseListOrder);
   ValueEnumerator(const ValueEnumerator &) = delete;
   ValueEnumerator &operator=(const ValueEnumerator &) = delete;

@@ -425,16 +425,19 @@ void SectionChunk::writeTo(uint8_t *buf) const {
 }
 
 SectionChunk::ImportRefForm
-SectionChunk::getImportRefForm(const coff_relocation &rel) const {
+SectionChunk::getImportRefForm(const coff_relocation &rel,
+                             bool ignoreAddend) const {
   ArrayRef<uint8_t> data = getContents();
   uint32_t o = rel.VirtualAddress;
-  if (o + 4 > data.size())
+  if (o > data.size() || data.size() - o < 4)
     return ImportRefForm::None;
   uint32_t field = read32le(data.data() + o);
   switch (getArch()) {
   case Triple::x86_64:
-    // Only a zero displacement names the pointer itself.
-    if (rel.Type != IMAGE_REL_AMD64_REL32 || field != 0)
+    // A nonzero displacement needs coordinate normalization before binding.
+    if (rel.Type != IMAGE_REL_AMD64_REL32 || (!ignoreAddend && field != 0))
+      return ImportRefForm::None;
+    if (!file->isImportInstruction(this, o))
       return ImportRefForm::None;
     if (o >= 2 && data[o - 2] == 0xFF) {
       if (data[o - 1] == 0x15)
@@ -466,10 +469,20 @@ SectionChunk::getImportRefForm(const coff_relocation &rel) const {
   }
 }
 
+bool SectionChunk::isImportAddressLoad(const coff_relocation &rel) const {
+  auto *imp = dyn_cast_or_null<DefinedImportData>(
+      file->getSymbol(rel.SymbolTableIndex));
+  return imp && imp->isRuntimePseudoReloc &&
+         (getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE) &&
+         getImportRefForm(rel) == ImportRefForm::Lea;
+}
+
 uint32_t
 SectionChunk::getWeakInterposeEntrySize(const coff_relocation &rel,
                                        bool &bodyIsBranchTarget) const {
   if (getArch() != Triple::x86_64 || rel.Type != IMAGE_REL_AMD64_REL32)
+    return 0;
+  if (!file->isImportInstruction(this, rel.VirtualAddress))
     return 0;
   ArrayRef<uint8_t> data = getContents();
   // The load is seven bytes with the displacement three in, so the entry
@@ -527,7 +540,7 @@ void SectionChunk::applyRelocation(uint8_t *off,
   // there, the same value as the import's address-table entry. A slot with an
   // offset is written by ImportFillChunk and holds zero until then.
   if (DefinedImportData *imp = getImportSlot(rel)) {
-    imp->getChunk()->writeTo(off);
+    imp->file->lookup->writeTo(off);
     return;
   }
   if (getFilledImportSlot(rel)) {
@@ -550,6 +563,8 @@ void SectionChunk::applyRelocation(uint8_t *off,
         else
           form = ImportRefForm::None;
       }
+    } else if (isImportAddressLoad(rel)) {
+      form = ImportRefForm::Lea;
     } else if (auto *thunk = dyn_cast<DefinedImportThunk>(sym)) {
       if (thunk->wrappedSym->addressTaken &&
           getImportRefForm(rel) == ImportRefForm::Lea) {
@@ -714,6 +729,21 @@ static uint8_t getBaserelType(const coff_relocation &rel,
   }
 }
 
+std::optional<int64_t>
+SectionChunk::getPointerAddend(const coff_relocation &rel) const {
+  bool is64 = file->symtab.ctx.config.is64();
+  if (getBaserelType(rel, getArch()) !=
+      (is64 ? IMAGE_REL_BASED_DIR64 : IMAGE_REL_BASED_HIGHLOW))
+    return std::nullopt;
+  ArrayRef<uint8_t> bytes = getContents();
+  unsigned width = is64 ? 8 : 4;
+  if (rel.VirtualAddress > bytes.size() ||
+      width > bytes.size() - rel.VirtualAddress)
+    return std::nullopt;
+  const uint8_t *p = bytes.data() + rel.VirtualAddress;
+  return is64 ? int64_t(read64le(p)) : int64_t(int32_t(read32le(p)));
+}
+
 DefinedImportData *
 SectionChunk::getImportSlotTarget(const coff_relocation &rel) const {
   // Code is not writable for the loader; debug sections are not mapped.
@@ -739,10 +769,17 @@ static int64_t getImportSlotAddend(const SectionChunk *sc,
                                    const coff_relocation &rel) {
   ArrayRef<uint8_t> data = sc->getContents();
   bool is64 = sc->file->symtab.ctx.config.is64();
-  if (rel.VirtualAddress + (is64 ? 8 : 4) > data.size())
-    return 0;
-  const uint8_t *p = data.data() + rel.VirtualAddress;
-  return is64 ? read64le(p) : (int32_t)read32le(p);
+  unsigned width = is64 ? 8 : 4;
+  // Validate the whole destination before reading its addend or constructing
+  // an import descriptor. A truncated word is not a zero-addend import, and
+  // the loader must never write beyond the contribution that owns the slot.
+  if (rel.VirtualAddress > data.size() ||
+      width > data.size() - rel.VirtualAddress)
+    Fatal(sc->file->symtab.ctx)
+        << toString(sc->file) << ": " << width << "-byte import slot at offset "
+        << rel.VirtualAddress << " extends beyond section "
+        << sc->getSectionName() << " of size " << data.size();
+  return *sc->getPointerAddend(rel);
 }
 
 DefinedImportData *
@@ -757,10 +794,82 @@ SectionChunk::getFilledImportSlot(const coff_relocation &rel) const {
   return imp && imp->inPlace && getImportSlotAddend(this, rel) ? imp : nullptr;
 }
 
+// Widths written by applyRelX64/X86/ARM/ARM64. All other supported relocations
+// write one four-byte word. Unsupported types are diagnosed by those emitters.
+static unsigned getRelocationWidth(uint16_t type, Triple::ArchType arch) {
+  switch (arch) {
+  case Triple::x86_64:
+    if (type == IMAGE_REL_AMD64_ADDR64)
+      return 8;
+    if (type == IMAGE_REL_AMD64_SECTION)
+      return 2;
+    break;
+  case Triple::x86:
+    if (type == IMAGE_REL_I386_ABSOLUTE)
+      return 0;
+    if (type == IMAGE_REL_I386_SECTION)
+      return 2;
+    break;
+  case Triple::thumb:
+    if (type == IMAGE_REL_ARM_MOV32T)
+      return 8;
+    if (type == IMAGE_REL_ARM_SECTION)
+      return 2;
+    break;
+  case Triple::aarch64:
+    if (type == IMAGE_REL_ARM64_ADDR64)
+      return 8;
+    if (type == IMAGE_REL_ARM64_SECTION)
+      return 2;
+    break;
+  default:
+    llvm_unreachable("unknown machine type");
+  }
+  return 4;
+}
+
+unsigned SectionChunk::getRelocationWidth(const coff_relocation &rel) const {
+  return lld::coff::getRelocationWidth(rel.Type, getArch());
+}
+
 void SectionChunk::getImportSlots(std::vector<ImportSlot> &res) {
+  bool hasSlots = false;
   for (const coff_relocation &rel : getRelocs()) {
     DefinedImportData *imp = getImportSlotTarget(rel);
-    if (imp && imp->inPlace)
+    if (imp && imp->inPlace) {
+      hasSlots = true;
+      break;
+    }
+  }
+  if (!hasSlots)
+    return;
+
+  // Run formation and overlap checking require address order, which malformed
+  // or hand-written objects need not provide. Reuse the existing COFF sorter.
+  sortRelocations();
+  uint64_t end = 0;
+  uint32_t start = 0;
+  bool previousImport = false;
+  for (const coff_relocation &rel : getRelocs()) {
+    DefinedImportData *imp = getImportSlotTarget(rel);
+    bool isImport = imp && imp->inPlace;
+    unsigned width = getRelocationWidth(rel);
+    if (!width)
+      continue;
+    // Include ordinary relocations: an import cannot share storage with a
+    // base relocation or a partial local write, even when its own word fits.
+    if (rel.VirtualAddress < end && (isImport || previousImport))
+      Fatal(file->symtab.ctx)
+          << toString(file) << ": overlapping import slot and relocation at "
+          << "offsets " << start << " and " << rel.VirtualAddress
+          << " in section " << getSectionName();
+    uint64_t nextEnd = uint64_t(rel.VirtualAddress) + width;
+    if (nextEnd > end) {
+      end = nextEnd;
+      start = rel.VirtualAddress;
+      previousImport = isImport;
+    }
+    if (isImport)
       res.emplace_back(this, rel.VirtualAddress, imp,
                        getImportSlotAddend(this, rel));
   }
@@ -891,7 +1000,7 @@ void SectionChunk::getRuntimePseudoRelocs(
     auto *target =
         dyn_cast_or_null<Defined>(file->getSymbol(rel.SymbolTableIndex));
     if (!target || !target->isRuntimePseudoReloc || getImportSlot(rel) ||
-        getFilledImportSlot(rel))
+        isImportAddressLoad(rel) || getFilledImportSlot(rel))
       continue;
     // If the target doesn't have a chunk allocated, it may be a
     // DefinedImportData symbol which ended up unnecessary after GC.
@@ -948,6 +1057,9 @@ StringRef SectionChunk::getDebugName() const {
 }
 
 ArrayRef<uint8_t> SectionChunk::getContents() const {
+  auto it = file->rewrittenContents.find(header);
+  if (it != file->rewrittenContents.end())
+    return it->second;
   ArrayRef<uint8_t> a;
   cantFail(file->getCOFFObj()->getSectionContents(header, a));
   return a;
@@ -1003,7 +1115,8 @@ uint32_t SectionChunk::getSectionNumber() const {
   return s.getIndex() + 1;
 }
 
-CommonChunk::CommonChunk(const COFFSymbolRef s) : live(false), sym(s) {
+CommonChunk::CommonChunk(const COFFSymbolRef s)
+    : NonSectionChunk(CommonKind), live(false), sym(s) {
   // The value of a common symbol is its size. Align all common symbols smaller
   // than 32 bytes naturally, i.e. round the size up to the next power of two.
   // This is what MSVC link.exe does.

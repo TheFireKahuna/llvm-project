@@ -8,14 +8,17 @@
 
 #include "llvm/Object/IRSymtab.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/BinaryFormat/COFFBinding.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/IR/Comdat.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/GlobalAlias.h"
 #include "llvm/IR/GlobalObject.h"
@@ -25,6 +28,7 @@
 #include "llvm/MC/StringTableBuilder.h"
 #include "llvm/Object/ModuleSymbolTable.h"
 #include "llvm/Object/SymbolicFile.h"
+#include "llvm/Support/ABIContract.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
@@ -83,6 +87,9 @@ struct Builder {
   std::vector<storage::Module> Mods;
   std::vector<storage::Symbol> Syms;
   std::vector<storage::Uncommon> Uncommons;
+  std::vector<storage::COFFABIRequirement> COFFABIRequirements;
+  DenseMap<const GlobalValue *, SmallSetVector<StringRef, 4>> COFFABIUses;
+  StringSet<> CheckedABIContracts;
 
   std::string COFFLinkerOpts;
   raw_string_ostream COFFLinkerOptsOS{COFFLinkerOpts};
@@ -103,6 +110,15 @@ struct Builder {
   }
 
   Expected<int> getComdatIndex(const Comdat *C, const Module *M);
+
+  Error checkABIContract(StringRef Bytes) {
+    if (!CheckedABIContracts.insert(Bytes).second)
+      return Error::success();
+    auto Contract = abi::Contract::decode(Bytes);
+    if (!Contract)
+      return Contract.takeError();
+    return Error::success();
+  }
 
   Error addModule(Module *M);
   Error addSymbol(const ModuleSymbolTable &Msymtab,
@@ -145,6 +161,30 @@ Error Builder::addModule(Module *M) {
   if (TT.isOSBinFormatCOFF()) {
     if (auto E = M->materializeMetadata())
       return E;
+    COFFABIUses.clear();
+    for (GlobalObject &GO : M->global_objects()) {
+      if (GO.isDeclaration() || GO.getName().starts_with("llvm."))
+        continue;
+      if (MDNode *Uses = GO.getMetadata("coff.abi.uses"))
+        for (const MDOperand &Operand : Uses->operands()) {
+          auto *Use = dyn_cast_or_null<MDNode>(Operand);
+          auto *Value =
+              Use && Use->getNumOperands() == 2
+                  ? dyn_cast_or_null<ValueAsMetadata>(Use->getOperand(0))
+                  : nullptr;
+          auto *Target =
+              Value ? dyn_cast<GlobalValue>(Value->getValue()) : nullptr;
+          auto *Bytes = Use && Use->getNumOperands() == 2
+                            ? dyn_cast_or_null<MDString>(Use->getOperand(1))
+                            : nullptr;
+          if (!Target || Target->getParent() != M || !Bytes)
+            return createStringError("invalid COFF ABI use metadata for " +
+                                     GO.getName());
+          if (Error E = checkABIContract(Bytes->getString()))
+            return E;
+          COFFABIUses[Target].insert(Bytes->getString());
+        }
+    }
     if (NamedMDNode *LinkerOptions =
             M->getNamedMetadata("llvm.linker.options")) {
       for (MDNode *MDOptions : LinkerOptions->operands())
@@ -221,6 +261,8 @@ Error Builder::addSymbol(const ModuleSymbolTable &Msymtab,
     *Unc = {};
     setStr(Unc->COFFWeakExternFallbackName, "");
     setStr(Unc->SectionName, "");
+    setStr(Unc->Partition, "");
+    setStr(Unc->COFFABIContract, "");
     return *Unc;
   };
 
@@ -260,6 +302,10 @@ Error Builder::addSymbol(const ModuleSymbolTable &Msymtab,
   StringRef GVName = GV->getName();
   setStr(Sym.IRName, GVName);
 
+  if (GV->hasPartition() && !GV->isDeclarationForLinker() &&
+      GV->getVisibility() == GlobalValue::DefaultVisibility)
+    setStr(Uncommon().Partition, Saver.save(GV->getPartition()));
+
   if (Used.count(GV))
     Sym.Flags |= 1 << storage::Symbol::FB_used;
   if (GV->isThreadLocal())
@@ -296,6 +342,64 @@ Error Builder::addSymbol(const ModuleSymbolTable &Msymtab,
 
   if (TT.isOSBinFormatCOFF()) {
     emitLinkerFlagsForGlobalCOFF(COFFLinkerOptsOS, GV, TT, Mang);
+
+    StringRef OwnContract;
+    if (const auto *Object = dyn_cast<GlobalObject>(GV))
+      if (const MDNode *MD = Object->getMetadata("coff.abi")) {
+        const auto *Bytes = MD->getNumOperands() == 1
+                                ? dyn_cast<MDString>(MD->getOperand(0))
+                                : nullptr;
+        if (!Bytes)
+          return createStringError("invalid COFF ABI metadata for " + GVName);
+        if (Error E = checkABIContract(Bytes->getString()))
+          return E;
+        OwnContract = Bytes->getString();
+        setStr(Uncommon().COFFABIContract, Saver.save(Bytes->getString()));
+      }
+    auto Uses = COFFABIUses.find(GV);
+    if (Uses != COFFABIUses.end())
+      for (StringRef Bytes : Uses->second) {
+        // The ordinary symbol record already carries this exact requirement.
+        // Do not duplicate it merely because several consumers need it.
+        if (Bytes == OwnContract)
+          continue;
+        storage::COFFABIRequirement Requirement;
+        Requirement.SymbolIndex = Syms.size() - 1;
+        setStr(Requirement.Contract, Saver.save(Bytes));
+        COFFABIRequirements.push_back(Requirement);
+      }
+
+    // Keep binding policy in spare symbol flag bits. The linker needs it before
+    // LTO finality decisions, without materializing a second copy of the IR.
+    // An alias follows conditional symbol resolution; it does not inherit the
+    // aliasee's semantic requirements simply by sharing its GlobalObject.
+    if (auto *GVar = dyn_cast<GlobalVariable>(GV)) {
+      // Native code exposes these demands through .refptr cells. Preserve the
+      // same demand before LTO without eagerly loading every weak definition.
+      if (GVar->isWeakForLinker() && !GVar->isDSOLocal() &&
+          (!GVar->use_empty() || COFFABIUses.count(GVar)))
+        Sym.Flags |= 1 << storage::Symbol::FB_coff_import_candidate;
+      if (const MDNode *MD = GVar->getMetadata("coff.binding")) {
+        const auto *Binding =
+            MD->getNumOperands() == 1
+                ? mdconst::dyn_extract<ConstantInt>(MD->getOperand(0))
+                : nullptr;
+        const auto *ABI = mdconst::dyn_extract_or_null<ConstantInt>(
+            GV->getParent()->getModuleFlag("coff.rtti_abi"));
+        if (!ABI || ABI->getBitWidth() != 32 ||
+            ABI->getZExtValue() != COFF::RTTIABI)
+          return make_error<StringError>(
+              "unsupported COFF RTTI ABI module flag",
+              inconvertibleErrorCode());
+        if (!Binding || Binding->getBitWidth() != 32 ||
+            !COFF::isValidBindingFlags(Binding->getZExtValue()))
+          return make_error<StringError>("invalid COFF binding metadata for " +
+                                             GVName,
+                                         inconvertibleErrorCode());
+        Sym.Flags |= Binding->getZExtValue()
+                     << storage::Symbol::FB_coff_binding;
+      }
+    }
 
     if ((Flags & object::BasicSymbolRef::SF_Weak) &&
         (Flags & object::BasicSymbolRef::SF_Indirect)) {
@@ -340,11 +444,35 @@ Error Builder::build(ArrayRef<Module *> IRMods) {
   writeRange(Hdr.Symbols, Syms);
   writeRange(Hdr.Uncommons, Uncommons);
   writeRange(Hdr.DependentLibraries, DependentLibraries);
+  writeRange(Hdr.COFFABIRequirements, COFFABIRequirements);
   *reinterpret_cast<storage::Header *>(Symtab.data()) = Hdr;
   return Error::success();
 }
 
 } // end anonymous namespace
+
+Expected<std::vector<COFFABIRequirement>>
+Reader::getCOFFABIRequirements() const {
+  const auto &Table = header().COFFABIRequirements;
+  uint64_t Offset = Table.Offset;
+  uint64_t Count = Table.Size;
+  if (Offset > Symtab.size() ||
+      Count > (Symtab.size() - Offset) / sizeof(storage::COFFABIRequirement))
+    return createStringError("invalid COFF ABI requirement table");
+  std::vector<COFFABIRequirement> Result;
+  uint32_t Previous = 0;
+  for (const auto &Requirement : range(Table)) {
+    uint32_t Index = Requirement.SymbolIndex;
+    uint64_t Start = Requirement.Contract.Offset;
+    uint64_t Size = Requirement.Contract.Size;
+    if (Index < Previous || Index >= Symbols.size() || Start > Strtab.size() ||
+        Size > Strtab.size() - Start || !Size)
+      return createStringError("invalid COFF ABI requirement record");
+    Result.push_back({Index, str(Requirement.Contract)});
+    Previous = Index;
+  }
+  return Result;
+}
 
 Error irsymtab::build(ArrayRef<Module *> Mods, SmallVector<char, 0> &Symtab,
                       StringTableBuilder &StrtabBuilder,
@@ -355,7 +483,8 @@ Error irsymtab::build(ArrayRef<Module *> Mods, SmallVector<char, 0> &Symtab,
 
 // Upgrade a vector of bitcode modules created by an old version of LLVM by
 // creating an irsymtab for them in the current format.
-static Expected<FileContents> upgrade(ArrayRef<BitcodeModule> BMs) {
+static Expected<FileContents> upgrade(ArrayRef<BitcodeModule> BMs,
+                                     bool HasModuleLevelABI = false) {
   FileContents FC;
 
   LLVMContext Ctx;
@@ -367,6 +496,14 @@ static Expected<FileContents> upgrade(ArrayRef<BitcodeModule> BMs) {
                          /*IsImporting*/ false);
     if (!MOrErr)
       return MOrErr.takeError();
+
+    // Older COFF writers kept function-owned ABI requirements inside bodies.
+    // An upgrade must recover them rather than silently weaken resolution.
+    // Current writers expose those attachments at module scope, so ordinary
+    // producer-version upgrades can keep function bodies lazy.
+    if (!HasModuleLevelABI && (*MOrErr)->getTargetTriple().isOSBinFormatCOFF())
+      if (Error E = (*MOrErr)->materializeAll())
+        return std::move(E);
 
     Mods.push_back(MOrErr->get());
     OwnedMods.push_back(std::move(*MOrErr));
@@ -405,7 +542,9 @@ Expected<FileContents> irsymtab::readBitcode(const BitcodeFileContents &BFC) {
     StringRef Producer = Hdr->Producer.get(BFC.StrtabForSymtab);
     if (Version != storage::Header::kCurrentVersion ||
         Producer != kExpectedProducerName)
-      return upgrade(BFC.Mods);
+      return upgrade(
+          BFC.Mods,
+          /*HasModuleLevelABI=*/Version == storage::Header::kCurrentVersion);
   }
 
   FileContents FC;

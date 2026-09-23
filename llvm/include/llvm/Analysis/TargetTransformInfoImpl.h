@@ -110,7 +110,8 @@ public:
 
   virtual int getInlinerVectorBonusPercent() const { return 150; }
 
-  virtual InstructionCost getMemcpyCost(const Instruction *I) const {
+  virtual InstructionCost getMemcpyCost(const Instruction *I,
+                                        TTI::TargetCostKind CostKind) const {
     return TTI::TCC_Expensive;
   }
 
@@ -905,6 +906,8 @@ public:
   getMemoryOpCost(unsigned Opcode, Type *Src, Align Alignment,
                   unsigned AddressSpace, TTI::TargetCostKind CostKind,
                   TTI::OperandValueInfo OpInfo, const Instruction *I) const {
+    if (CostKind == TTI::TCK_Latency && Opcode == Instruction::Load)
+      return 4;
     return 1;
   }
 
@@ -1553,9 +1556,6 @@ public:
                                         OpInfo, I);
     }
     case Instruction::Load: {
-      // FIXME: Arbitary cost which could come from the backend.
-      if (CostKind == TTI::TCK_Latency)
-        return 4;
       auto *LI = cast<LoadInst>(U);
       Type *LoadType = U->getType();
       // If there is a non-register sized type, the cost estimation may expand

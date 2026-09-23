@@ -7,6 +7,8 @@
 //===----------------------------------------------------------------------===//
 
 #if defined(__x86_64__) && !defined(__arm64ec__)
+        .section .drectve,"yn"
+        .ascii " /lldimagelocal"
         .text
         .p2align 4
         // Deliberately a data symbol: this unchecked dispatcher must not become

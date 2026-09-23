@@ -978,6 +978,8 @@ int FunctionComparator::cmpBasicBlocks(const BasicBlock *BBL,
 }
 
 int FunctionComparator::compareSignature() const {
+  if (int Res = cmpMem(FnL->getPartition(), FnR->getPartition()))
+    return Res;
   if (int Res = cmpAttrs(FnL->getAttributes(), FnR->getAttributes()))
     return Res;
 

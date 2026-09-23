@@ -129,7 +129,7 @@ static bool mergeConstants(Module &M) {
   FindUsedValues(M.getGlobalVariable("llvm.compiler.used"), UsedGlobals);
 
   // Map unique constants to globals.
-  DenseMap<Constant *, GlobalVariable *> CMap;
+  DenseMap<std::pair<Constant *, StringRef>, GlobalVariable *> CMap;
 
   SmallVector<std::pair<GlobalVariable *, GlobalVariable *>, 32>
       SameContentReplacements;
@@ -169,7 +169,7 @@ static bool mergeConstants(Module &M) {
       Constant *Init = GV.getInitializer();
 
       // Check to see if the initializer is already known.
-      GlobalVariable *&Slot = CMap[Init];
+      GlobalVariable *&Slot = CMap[{Init, GV.getPartition()}];
 
       // If this is the first constant we find or if the old one is local,
       // replace with the current one. If the current is externally visible
@@ -197,7 +197,7 @@ static bool mergeConstants(Module &M) {
       Constant *Init = GV.getInitializer();
 
       // Check to see if the initializer is already known.
-      auto Found = CMap.find(Init);
+      auto Found = CMap.find({Init, GV.getPartition()});
       if (Found == CMap.end())
         continue;
 

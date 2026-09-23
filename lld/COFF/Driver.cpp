@@ -14,6 +14,7 @@
 #include "InputFiles.h"
 #include "MarkLive.h"
 #include "MinGW.h"
+#include "Partitions.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
 #include "Writer.h"
@@ -179,6 +180,8 @@ llvm::Triple::ArchType LinkerDriver::getArch() {
 }
 
 std::vector<Chunk *> LinkerDriver::getChunks() const {
+  if (ctx.outputPartition)
+    return ctx.outputPartition->chunks;
   std::vector<Chunk *> res;
   for (ObjFile *file : ctx.objFileInstances) {
     ArrayRef<Chunk *> v = file->getChunks();
@@ -579,6 +582,9 @@ void LinkerDriver::parseDirectives(InputFile *file) {
       break;
     case OPT_failifmismatch:
       checkFailIfMismatch(arg->getValue(), file);
+      break;
+    case OPT_lldimagelocal:
+      file->imageLocal = true;
       break;
     case OPT_incl:
       file->symtab.addGCRoot(arg->getValue());
@@ -1057,12 +1063,19 @@ void LinkerDriver::createImportLibrary(bool asLib) {
     }
   };
 
-  getExports(ctx.symtab, exports);
+  getExports(ctx.getOutputSymtab(), exports);
   if (ctx.config.machine == ARM64X)
     getExports(*ctx.hybridSymtab, nativeExports);
 
   std::string libName = getImportName(asLib);
   std::string path = getImplibPath();
+
+  if (ctx.outputFiles.enabled && !asLib) {
+    checkError(writeImportLibrary(libName, ctx.outputFiles.stage(path), exports,
+                                  ctx.config.machine, ctx.config.mingw,
+                                  nativeExports));
+    return;
+  }
 
   if (!ctx.config.incremental) {
     checkError(writeImportLibrary(libName, path, exports, ctx.config.machine,
@@ -1985,6 +1998,13 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   for (auto *arg : args.filtered(OPT_alternatename))
     ctx.symtab.parseAlternateName(arg->getValue());
 
+  for (auto *arg : args.filtered(OPT_lldrttiprivate)) {
+    if (StringRef(arg->getValue()).empty())
+      Err(ctx) << "/lldrttiprivate requires a semantic symbol name";
+    else
+      config->privateRTTI.insert(arg->getValue());
+  }
+
   // Handle /include
   for (auto *arg : args.filtered(OPT_incl))
     ctx.symtab.addGCRoot(arg->getValue());
@@ -2682,7 +2702,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // converge.
   {
     llvm::TimeTraceScope timeScope("Add unresolved symbols");
+    bool aliasesChanged;
     do {
+      aliasesChanged = false;
       ctx.forEachSymtab([&](SymbolTable &symtab) {
         // Windows specific -- if entry point is not found,
         // search for its mangled names.
@@ -2698,7 +2720,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
             e.symbolName = symtab.mangleMaybe(e.sym);
         }
 
-        symtab.resolveAlternateNames();
+        aliasesChanged |= symtab.resolveAlternateNames();
+        symtab.loadCanonicalImports();
 
         // An import-form reference to a symbol that only an archive member
         // defines links as a direct reference would: load the member. It
@@ -2731,7 +2754,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
               symtab.addGCRoot(arg->getValue());
         }
       });
-    } while (run());
+    } while (run() || aliasesChanged);
   }
 
   // Handle /includeglob
@@ -2773,6 +2796,33 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     run();
   }
 
+  // Auto-import and wrapped-symbol discovery may have added inputs. Settle
+  // conditional aliases and canonical provider demands before LTO decides
+  // finality, even when an alias-only pass enqueues no archive load.
+  bool bindingChanged;
+  do {
+    // Resolve the existing DLL startup before LTO freezes its input set. The
+    // runtime marks which of its contributions can be instantiated per PE.
+    bool hasPartitions = false;
+    for (ObjFile *file : ctx.objFileInstances)
+      hasPartitions |= !file->partitionRoots.empty();
+    for (BitcodeFile *file : ctx.symtab.bitcodeFileInstances)
+      hasPartitions |= !file->partitionRoots.empty();
+    if (hasPartitions && !config->noEntry) {
+      Symbol *entry = ctx.symtab.findUnderscore("_DllMainCRTStartup");
+      if (entry && !entry->isGCRoot)
+        ctx.symtab.addGCRoot(ctx.symtab.mangle("_DllMainCRTStartup"));
+    }
+    bindingChanged = ctx.symtab.resolveAlternateNames();
+    bindingChanged |= ctx.symtab.loadCanonicalImports();
+    bindingChanged |= ctx.symtab.loadSharedWeakImports();
+    if (ctx.hybridSymtab) {
+      bindingChanged |= ctx.hybridSymtab->resolveAlternateNames();
+      bindingChanged |= ctx.hybridSymtab->loadCanonicalImports();
+      bindingChanged |= ctx.hybridSymtab->loadSharedWeakImports();
+    }
+  } while (run() || bindingChanged);
+
   // At this point, we should not have any symbols that cannot be resolved.
   // If we are going to do codegen for link-time optimization, check for
   // unresolvable symbols first, so we don't spend time generating code that
@@ -2797,6 +2847,12 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // Do LTO by compiling bitcode input files to a set of native COFF files then
   // link those files (unless -thinlto-index-only was given, in which case we
   // resolve symbols and write indices, but don't generate native code or link).
+  ctx.forEachSymtab(std::mem_fn(&SymbolTable::prepareBindingOwners));
+  ctx.partitions = std::make_unique<Partitioning>(ctx);
+  ctx.partitions->prepare();
+  ctx.partitions->prepareLTO();
+  ctx.outputFiles.enabled =
+      !ctx.partitions->empty() || !ctx.symtab.bindingProviders.empty();
   ltoCompilationDone = true;
   ctx.forEachSymtab([](SymbolTable &symtab) { symtab.compileBitcodeFiles(); });
 
@@ -2827,7 +2883,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   for (bool loaded = true; loaded;) {
     loaded = false;
     ctx.forEachSymtab([&](SymbolTable &symtab) {
+      loaded |= symtab.resolveAlternateNames();
       loaded |= symtab.loadLocalImportMembers();
+      loaded |= symtab.loadCanonicalImports();
+      loaded |= symtab.loadSharedWeakImports();
     });
     run();
   }
@@ -2854,6 +2913,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     symtab.initializeLoadConfig();
   });
 
+  // Resolve contract coverage before GC follows consumer-owned ABI edges.
+  ctx.forEachSymtab(std::mem_fn(&SymbolTable::prepareBindingOwners));
+
   // Identify unreferenced COMDAT sections.
   if (config->doGC) {
     if (config->mingw) {
@@ -2878,21 +2940,34 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     markLive(ctx);
   }
 
+  ctx.forEachSymtab(std::mem_fn(&SymbolTable::normalizeBindingReferences));
+  ctx.forEachSymtab(std::mem_fn(&SymbolTable::materializeBindingProviders));
+  ctx.outputFiles.enabled |= !ctx.symtab.bindingProviders.empty();
   ctx.forEachSymtab([](SymbolTable &symtab) {
     // An import pointer has two forms with distinct meanings on ARM64EC, so
     // every reference there reads the pointer as before.
     if (!symtab.isEC()) {
+      symtab.bindCanonicalSymbols();
       symtab.bindSharedWeakData();
-      symtab.bindLocalStubs();
+      symtab.bindCompilerStubs();
     }
-    symtab.bindLocalImports();
   });
 
-  ctx.symtab.initializeSameAddressThunks();
   for (auto alias : aliases) {
     assert(alias->kind() == Symbol::UndefinedKind);
     alias->resolveWeakAlias();
   }
+  ctx.forEachSymtab(std::mem_fn(&SymbolTable::validateCanonicalResiduals));
+  ctx.forEachSymtab(std::mem_fn(&SymbolTable::bindLocalImports));
+  if (ctx.symtab.retireBindingContributions() && config->doGC) {
+    // Provider dependencies belong to their own output views. Recompute main
+    // image import liveness after removing the transferred contributions, so
+    // it does not retain their otherwise-unused imports and IAT storage.
+    for (ImportFile *file : ctx.importFileInstances)
+      file->live = false;
+    markLive(ctx);
+  }
+  ctx.symtab.initializeSameAddressThunks();
 
   if (config->mingw) {
     // Make sure the crtend.o object is the last object file. This object
@@ -2919,15 +2994,18 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
       (ctx.config.machine == ARM64X && !ctx.hybridSymtab->exports.empty())) {
     llvm::TimeTraceScope timeScope("Create .lib exports");
     ctx.forEachActiveSymtab([](SymbolTable &symtab) { symtab.fixupExports(); });
-    if (!config->noimplib && (!config->mingw || !config->implib.empty()))
+    if (ctx.partitions->empty() && !config->noimplib &&
+        (!config->mingw || !config->implib.empty()))
       createImportLibrary(/*asLib=*/false);
-    ctx.forEachActiveSymtab(
-        [](SymbolTable &symtab) { symtab.assignExportOrdinals(); });
+    ctx.forEachActiveSymtab([](SymbolTable &symtab) {
+      symtab.assignExportOrdinals(!symtab.ctx.partitions->empty());
+    });
   }
 
   // Handle /output-def (MinGW specific).
-  if (auto *arg = args.getLastArg(OPT_output_def))
-    writeDefFile(ctx, arg->getValue(), ctx.symtab.exports);
+  if (ctx.partitions->empty())
+    if (auto *arg = args.getLastArg(OPT_output_def))
+      writeDefFile(ctx, arg->getValue(), ctx.symtab.exports);
 
   // Set extra alignment for .comm symbols
   ctx.forEachSymtab([&](SymbolTable &symtab) {
@@ -2989,6 +3067,20 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   convertResources();
 
   // Identify identical COMDAT sections to merge them.
+  ctx.partitions->assign();
+  if (!ctx.partitions->empty()) {
+    // Public roots exported by a child are part of the main image's native
+    // forwarder interface. Construct its import library from that final view.
+    SymbolTable &main = ctx.partitions->outputs.front()->symbols;
+    main.fixupExports();
+    main.assignExportOrdinals();
+    ctx.outputSymtab = &main;
+    if (!config->noimplib && (!config->mingw || !config->implib.empty()))
+      createImportLibrary(/*asLib=*/false);
+    if (auto *arg = args.getLastArg(OPT_output_def))
+      writeDefFile(ctx, arg->getValue(), main.exports);
+    ctx.outputSymtab = nullptr;
+  }
   if (config->doICF != ICFLevel::None) {
     findKeepUniqueSections(ctx);
     doICF(ctx);

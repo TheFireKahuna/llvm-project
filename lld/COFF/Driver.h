@@ -98,6 +98,14 @@ public:
 
   // Returns a list of chunks of selected symbols.
   std::vector<Chunk *> getChunks() const;
+  // The import name is calculated as follows:
+  //
+  //        | LIBRARY w/ ext |   LIBRARY w/o ext   | no LIBRARY
+  //   -----+----------------+---------------------+------------------
+  //   LINK | {value}        | {value}.{.dll/.exe} | {output name}
+  //    LIB | {value}        | {value}.dll         | {output name}.dll
+  //
+  std::string getImportName(bool asLib);
 
   std::unique_ptr<llvm::TarWriter> tar; // for /linkrepro
 
@@ -130,15 +138,6 @@ private:
                          llvm::opt::OptSpecifier osFile);
 
   std::string getImplibPath();
-
-  // The import name is calculated as follows:
-  //
-  //        | LIBRARY w/ ext |   LIBRARY w/o ext   | no LIBRARY
-  //   -----+----------------+---------------------+------------------
-  //   LINK | {value}        | {value}.{.dll/.exe} | {output name}
-  //    LIB | {value}        | {value}.dll         | {output name}.dll
-  //
-  std::string getImportName(bool asLib);
 
   // Write fullly resolved path to repro file if /linkreprofullpathrsp
   // is specified.

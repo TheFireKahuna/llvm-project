@@ -74,7 +74,7 @@ void markLive(COFFLinkerContext &ctx) {
     assert(sc->live && "We mark as live when pushing onto the worklist!");
 
     // Mark all symbols listed in the relocation table for this section.
-    for (Symbol *b : sc->symbols())
+    for (Symbol *b : sc->dependencies())
       if (b)
         addSym(b);
 

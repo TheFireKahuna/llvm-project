@@ -46,6 +46,12 @@
 
 using namespace llvm;
 
+bool ValueEnumerator::isModuleLevelFunctionMetadata(unsigned Kind,
+                                                   const Function &F) const {
+  return F.isDeclaration() ||
+         llvm::is_contained(ModuleLevelFunctionMetadataKinds, Kind);
+}
+
 namespace {
 
 struct OrderMap {
@@ -343,6 +349,15 @@ static bool isIntOrIntVectorValue(const std::pair<const Value*, unsigned> &V) {
 ValueEnumerator::ValueEnumerator(const Module &M,
                                  bool ShouldPreserveUseListOrder)
     : ShouldPreserveUseListOrder(ShouldPreserveUseListOrder) {
+  if (M.getTargetTriple().isOSBinFormatCOFF()) {
+    // Look up existing kinds once, without creating new kind names in modules
+    // that have no ABI requirements. Most function metadata stays body-local.
+    SmallVector<StringRef, 32> Names;
+    M.getMDKindNames(Names);
+    for (auto [Kind, Name] : enumerate(Names))
+      if (Name == "coff.abi" || Name == "coff.abi.uses")
+        ModuleLevelFunctionMetadataKinds.push_back(Kind);
+  }
   if (ShouldPreserveUseListOrder)
     UseListOrders = predictUseListOrder(M);
 
@@ -426,7 +441,8 @@ ValueEnumerator::ValueEnumerator(const Module &M,
     MDs.clear();
     F.getAllMetadata(MDs);
     for (const auto &I : MDs)
-      EnumerateMetadata(F.isDeclaration() ? nullptr : &F, I.second);
+      EnumerateMetadata(isModuleLevelFunctionMetadata(I.first, F) ? nullptr : &F,
+                        I.second);
 
     for (const BasicBlock &BB : F)
       for (const Instruction &I : BB) {

@@ -21,12 +21,12 @@
 # RUN: llvm-objdump -s -j .data -j .CRT %t.exe | FileCheck --check-prefix=CONTENTS %s
 # RUN: llvm-nm %t.exe | FileCheck --check-prefix=NM %s
 
-# The DLL's descriptor, and one for the plain slot in ro_mixed, now in .data.
+# The fill code retains variable's ordinary cell. func only needs its plain
+# native destination in ro_mixed, now in .data.
 # CHECK:      Import {
 # CHECK-NEXT:   Name: import-slots-fill.s.tmp.lib.dll
 # CHECK-NEXT:   ImportLookupTableRVA:
-# CHECK-NEXT:   ImportAddressTableRVA: 0x2178
-# CHECK-NEXT:   Symbol: func (0)
+# CHECK-NEXT:   ImportAddressTableRVA: 0x2170
 # CHECK-NEXT:   Symbol: variable (0)
 # CHECK-NEXT: }
 # CHECK-NEXT: Import {
@@ -68,11 +68,11 @@
 
 # Each slot: variable's address from the import address table, the offset,
 # the store; then success.
-# CODE:      140001000: movq 0x1179(%rip), %rax # 0x140002180
+# CODE:      140001000: movq 0x1169(%rip), %rax # 0x140002170
 # CODE-NEXT: 140001007: movabsq $0x100000000, %rcx
 # CODE-NEXT: 140001011: addq %rcx, %rax
 # CODE-NEXT: 140001014: movq %rax, 0x1fe5(%rip) # 0x140003000 <rw_far>
-# CODE-NEXT: 14000101b: movq 0x115e(%rip), %rax # 0x140002180
+# CODE-NEXT: 14000101b: movq 0x114e(%rip), %rax # 0x140002170
 # CODE-NEXT: 140001022: addq $0x8, %rax
 # CODE-NEXT: 140001028: movq %rax, 0x1fd9(%rip) # 0x140003008 <ro_mixed>
 # CODE-NEXT: 14000102f: xorl %eax, %eax
@@ -82,7 +82,7 @@
 # The initializer table: __xi_a, the fill function, user_init, __xi_z.
 # CONTENTS:      Contents of section .data:
 # CONTENTS-NEXT: 140003000 00000000 00000000 00000000 00000000
-# CONTENTS-NEXT: 140003010 90210000 00000000
+# CONTENTS-NEXT: 140003010 80210000 00000000
 # CONTENTS:      Contents of section .CRT:
 # CONTENTS-NEXT: 140004000 00000000 00000000 00100040 01000000
 # CONTENTS-NEXT: 140004010 41100040 01000000 00000000 00000000

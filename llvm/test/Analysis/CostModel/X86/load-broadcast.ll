@@ -8,9 +8,9 @@
 ; RUN: opt < %s -mtriple=x86_64-unknown-linux-gnu -passes="print<cost-model>" 2>&1 -disable-output -cost-kind=all -mattr=+avx512f,+avx512bw | FileCheck %s --check-prefixes=AVX,AVX512
 ; RUN: opt < %s -mtriple=x86_64-unknown-linux-gnu -passes="print<cost-model>" 2>&1 -disable-output -cost-kind=all -mattr=+avx512f,+avx512bw,+avx512vbmi | FileCheck %s --check-prefixes=AVX,AVX512
 ;
-; RUN: opt < %s -mtriple=x86_64-unknown-linux-gnu -passes="print<cost-model>" 2>&1 -disable-output -cost-kind=all -mcpu=slm | FileCheck %s --check-prefixes=SSE,SSE42
-; RUN: opt < %s -mtriple=x86_64-unknown-linux-gnu -passes="print<cost-model>" 2>&1 -disable-output -cost-kind=all -mcpu=goldmont | FileCheck %s --check-prefixes=SSE,SSE42
-; RUN: opt < %s -mtriple=x86_64-unknown-linux-gnu -passes="print<cost-model>" 2>&1 -disable-output -cost-kind=all -mcpu=btver2 | FileCheck %s --check-prefixes=AVX,AVX1
+; RUN: opt < %s -mtriple=x86_64-unknown-linux-gnu -passes="print<cost-model>" 2>&1 -disable-output -cost-kind=all -mcpu=slm | FileCheck %s --check-prefixes=SSE,SLM
+; RUN: opt < %s -mtriple=x86_64-unknown-linux-gnu -passes="print<cost-model>" 2>&1 -disable-output -cost-kind=all -mcpu=goldmont | FileCheck %s --check-prefixes=SSE,GLM
+; RUN: opt < %s -mtriple=x86_64-unknown-linux-gnu -passes="print<cost-model>" 2>&1 -disable-output -cost-kind=all -mcpu=btver2 | FileCheck %s --check-prefixes=AVX,BTVER2
 
 ;
 ; vXf64
@@ -32,10 +32,35 @@ define <2 x double> @broadcast_load_v2f64_v2f64(ptr %src) {
 ; SSE42-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x double> %load, <2 x double> poison, <2 x i32> zeroinitializer
 ; SSE42-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x double> %bcst
 ;
-; AVX-LABEL: 'broadcast_load_v2f64_v2f64'
-; AVX-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x double>, ptr %src, align 16
-; AVX-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x double> %load, <2 x double> poison, <2 x i32> zeroinitializer
-; AVX-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x double> %bcst
+; AVX1-LABEL: 'broadcast_load_v2f64_v2f64'
+; AVX1-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x double>, ptr %src, align 16
+; AVX1-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x double> %load, <2 x double> poison, <2 x i32> zeroinitializer
+; AVX1-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x double> %bcst
+;
+; AVX2-LABEL: 'broadcast_load_v2f64_v2f64'
+; AVX2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x double>, ptr %src, align 16
+; AVX2-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x double> %load, <2 x double> poison, <2 x i32> zeroinitializer
+; AVX2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x double> %bcst
+;
+; AVX512-LABEL: 'broadcast_load_v2f64_v2f64'
+; AVX512-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x double>, ptr %src, align 16
+; AVX512-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x double> %load, <2 x double> poison, <2 x i32> zeroinitializer
+; AVX512-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x double> %bcst
+;
+; SLM-LABEL: 'broadcast_load_v2f64_v2f64'
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <2 x double>, ptr %src, align 16
+; SLM-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x double> %load, <2 x double> poison, <2 x i32> zeroinitializer
+; SLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x double> %bcst
+;
+; GLM-LABEL: 'broadcast_load_v2f64_v2f64'
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <2 x double>, ptr %src, align 16
+; GLM-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x double> %load, <2 x double> poison, <2 x i32> zeroinitializer
+; GLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x double> %bcst
+;
+; BTVER2-LABEL: 'broadcast_load_v2f64_v2f64'
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:5 SizeLat:1 for: %load = load <2 x double>, ptr %src, align 16
+; BTVER2-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x double> %load, <2 x double> poison, <2 x i32> zeroinitializer
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x double> %bcst
 ;
   %load = load <2 x double>, ptr %src
   %bcst = shufflevector <2 x double> %load, <2 x double> poison, <2 x i32> zeroinitializer
@@ -58,10 +83,35 @@ define <4 x double> @broadcast_load_v2f64_v4f64(ptr %src) {
 ; SSE42-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x double> %load, <2 x double> poison, <4 x i32> zeroinitializer
 ; SSE42-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x double> %bcst
 ;
-; AVX-LABEL: 'broadcast_load_v2f64_v4f64'
-; AVX-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x double>, ptr %src, align 16
-; AVX-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x double> %load, <2 x double> poison, <4 x i32> zeroinitializer
-; AVX-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x double> %bcst
+; AVX1-LABEL: 'broadcast_load_v2f64_v4f64'
+; AVX1-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x double>, ptr %src, align 16
+; AVX1-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x double> %load, <2 x double> poison, <4 x i32> zeroinitializer
+; AVX1-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x double> %bcst
+;
+; AVX2-LABEL: 'broadcast_load_v2f64_v4f64'
+; AVX2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x double>, ptr %src, align 16
+; AVX2-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x double> %load, <2 x double> poison, <4 x i32> zeroinitializer
+; AVX2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x double> %bcst
+;
+; AVX512-LABEL: 'broadcast_load_v2f64_v4f64'
+; AVX512-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x double>, ptr %src, align 16
+; AVX512-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x double> %load, <2 x double> poison, <4 x i32> zeroinitializer
+; AVX512-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x double> %bcst
+;
+; SLM-LABEL: 'broadcast_load_v2f64_v4f64'
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <2 x double>, ptr %src, align 16
+; SLM-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x double> %load, <2 x double> poison, <4 x i32> zeroinitializer
+; SLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x double> %bcst
+;
+; GLM-LABEL: 'broadcast_load_v2f64_v4f64'
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <2 x double>, ptr %src, align 16
+; GLM-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x double> %load, <2 x double> poison, <4 x i32> zeroinitializer
+; GLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x double> %bcst
+;
+; BTVER2-LABEL: 'broadcast_load_v2f64_v4f64'
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:5 SizeLat:1 for: %load = load <2 x double>, ptr %src, align 16
+; BTVER2-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x double> %load, <2 x double> poison, <4 x i32> zeroinitializer
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x double> %bcst
 ;
   %load = load <2 x double>, ptr %src
   %bcst = shufflevector <2 x double> %load, <2 x double> poison, <4 x i32> zeroinitializer
@@ -84,10 +134,35 @@ define <8 x double> @broadcast_load_v2f64_v8f64(ptr %src) {
 ; SSE42-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x double> %load, <2 x double> poison, <8 x i32> zeroinitializer
 ; SSE42-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x double> %bcst
 ;
-; AVX-LABEL: 'broadcast_load_v2f64_v8f64'
-; AVX-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x double>, ptr %src, align 16
-; AVX-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x double> %load, <2 x double> poison, <8 x i32> zeroinitializer
-; AVX-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x double> %bcst
+; AVX1-LABEL: 'broadcast_load_v2f64_v8f64'
+; AVX1-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x double>, ptr %src, align 16
+; AVX1-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x double> %load, <2 x double> poison, <8 x i32> zeroinitializer
+; AVX1-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x double> %bcst
+;
+; AVX2-LABEL: 'broadcast_load_v2f64_v8f64'
+; AVX2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x double>, ptr %src, align 16
+; AVX2-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x double> %load, <2 x double> poison, <8 x i32> zeroinitializer
+; AVX2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x double> %bcst
+;
+; AVX512-LABEL: 'broadcast_load_v2f64_v8f64'
+; AVX512-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x double>, ptr %src, align 16
+; AVX512-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x double> %load, <2 x double> poison, <8 x i32> zeroinitializer
+; AVX512-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x double> %bcst
+;
+; SLM-LABEL: 'broadcast_load_v2f64_v8f64'
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <2 x double>, ptr %src, align 16
+; SLM-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x double> %load, <2 x double> poison, <8 x i32> zeroinitializer
+; SLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x double> %bcst
+;
+; GLM-LABEL: 'broadcast_load_v2f64_v8f64'
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <2 x double>, ptr %src, align 16
+; GLM-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x double> %load, <2 x double> poison, <8 x i32> zeroinitializer
+; GLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x double> %bcst
+;
+; BTVER2-LABEL: 'broadcast_load_v2f64_v8f64'
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:5 SizeLat:1 for: %load = load <2 x double>, ptr %src, align 16
+; BTVER2-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x double> %load, <2 x double> poison, <8 x i32> zeroinitializer
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x double> %bcst
 ;
   %load = load <2 x double>, ptr %src
   %bcst = shufflevector <2 x double> %load, <2 x double> poison, <8 x i32> zeroinitializer
@@ -95,17 +170,59 @@ define <8 x double> @broadcast_load_v2f64_v8f64(ptr %src) {
 }
 
 define <2 x double> @broadcast_load_f64_v2f64(ptr %src) {
-; SSE-LABEL: 'broadcast_load_f64_v2f64'
-; SSE-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load double, ptr %src, align 8
-; SSE-NEXT:  Cost Model: Found costs of 0 for: %insert = insertelement <2 x double> poison, double %load, i32 0
-; SSE-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x double> %insert, <2 x double> poison, <2 x i32> zeroinitializer
-; SSE-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x double> %bcst
+; SSE2-LABEL: 'broadcast_load_f64_v2f64'
+; SSE2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load double, ptr %src, align 8
+; SSE2-NEXT:  Cost Model: Found costs of 0 for: %insert = insertelement <2 x double> poison, double %load, i32 0
+; SSE2-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x double> %insert, <2 x double> poison, <2 x i32> zeroinitializer
+; SSE2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x double> %bcst
 ;
-; AVX-LABEL: 'broadcast_load_f64_v2f64'
-; AVX-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load double, ptr %src, align 8
-; AVX-NEXT:  Cost Model: Found costs of 0 for: %insert = insertelement <2 x double> poison, double %load, i32 0
-; AVX-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x double> %insert, <2 x double> poison, <2 x i32> zeroinitializer
-; AVX-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x double> %bcst
+; SSSE3-LABEL: 'broadcast_load_f64_v2f64'
+; SSSE3-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load double, ptr %src, align 8
+; SSSE3-NEXT:  Cost Model: Found costs of 0 for: %insert = insertelement <2 x double> poison, double %load, i32 0
+; SSSE3-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x double> %insert, <2 x double> poison, <2 x i32> zeroinitializer
+; SSSE3-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x double> %bcst
+;
+; SSE42-LABEL: 'broadcast_load_f64_v2f64'
+; SSE42-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load double, ptr %src, align 8
+; SSE42-NEXT:  Cost Model: Found costs of 0 for: %insert = insertelement <2 x double> poison, double %load, i32 0
+; SSE42-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x double> %insert, <2 x double> poison, <2 x i32> zeroinitializer
+; SSE42-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x double> %bcst
+;
+; AVX1-LABEL: 'broadcast_load_f64_v2f64'
+; AVX1-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load double, ptr %src, align 8
+; AVX1-NEXT:  Cost Model: Found costs of 0 for: %insert = insertelement <2 x double> poison, double %load, i32 0
+; AVX1-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x double> %insert, <2 x double> poison, <2 x i32> zeroinitializer
+; AVX1-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x double> %bcst
+;
+; AVX2-LABEL: 'broadcast_load_f64_v2f64'
+; AVX2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load double, ptr %src, align 8
+; AVX2-NEXT:  Cost Model: Found costs of 0 for: %insert = insertelement <2 x double> poison, double %load, i32 0
+; AVX2-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x double> %insert, <2 x double> poison, <2 x i32> zeroinitializer
+; AVX2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x double> %bcst
+;
+; AVX512-LABEL: 'broadcast_load_f64_v2f64'
+; AVX512-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load double, ptr %src, align 8
+; AVX512-NEXT:  Cost Model: Found costs of 0 for: %insert = insertelement <2 x double> poison, double %load, i32 0
+; AVX512-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x double> %insert, <2 x double> poison, <2 x i32> zeroinitializer
+; AVX512-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x double> %bcst
+;
+; SLM-LABEL: 'broadcast_load_f64_v2f64'
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load double, ptr %src, align 8
+; SLM-NEXT:  Cost Model: Found costs of 0 for: %insert = insertelement <2 x double> poison, double %load, i32 0
+; SLM-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x double> %insert, <2 x double> poison, <2 x i32> zeroinitializer
+; SLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x double> %bcst
+;
+; GLM-LABEL: 'broadcast_load_f64_v2f64'
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load double, ptr %src, align 8
+; GLM-NEXT:  Cost Model: Found costs of 0 for: %insert = insertelement <2 x double> poison, double %load, i32 0
+; GLM-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x double> %insert, <2 x double> poison, <2 x i32> zeroinitializer
+; GLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x double> %bcst
+;
+; BTVER2-LABEL: 'broadcast_load_f64_v2f64'
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:5 SizeLat:1 for: %load = load double, ptr %src, align 8
+; BTVER2-NEXT:  Cost Model: Found costs of 0 for: %insert = insertelement <2 x double> poison, double %load, i32 0
+; BTVER2-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x double> %insert, <2 x double> poison, <2 x i32> zeroinitializer
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x double> %bcst
 ;
   %load = load double, ptr %src
   %insert = insertelement <2 x double> poison, double %load, i32 0
@@ -114,11 +231,23 @@ define <2 x double> @broadcast_load_f64_v2f64(ptr %src) {
 }
 
 define <4 x double> @broadcast_load_f64_v4f64(ptr %src) {
-; SSE-LABEL: 'broadcast_load_f64_v4f64'
-; SSE-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load double, ptr %src, align 8
-; SSE-NEXT:  Cost Model: Found costs of 0 for: %insert = insertelement <4 x double> poison, double %load, i32 0
-; SSE-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x double> %insert, <4 x double> poison, <4 x i32> zeroinitializer
-; SSE-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x double> %bcst
+; SSE2-LABEL: 'broadcast_load_f64_v4f64'
+; SSE2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load double, ptr %src, align 8
+; SSE2-NEXT:  Cost Model: Found costs of 0 for: %insert = insertelement <4 x double> poison, double %load, i32 0
+; SSE2-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x double> %insert, <4 x double> poison, <4 x i32> zeroinitializer
+; SSE2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x double> %bcst
+;
+; SSSE3-LABEL: 'broadcast_load_f64_v4f64'
+; SSSE3-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load double, ptr %src, align 8
+; SSSE3-NEXT:  Cost Model: Found costs of 0 for: %insert = insertelement <4 x double> poison, double %load, i32 0
+; SSSE3-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x double> %insert, <4 x double> poison, <4 x i32> zeroinitializer
+; SSSE3-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x double> %bcst
+;
+; SSE42-LABEL: 'broadcast_load_f64_v4f64'
+; SSE42-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load double, ptr %src, align 8
+; SSE42-NEXT:  Cost Model: Found costs of 0 for: %insert = insertelement <4 x double> poison, double %load, i32 0
+; SSE42-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x double> %insert, <4 x double> poison, <4 x i32> zeroinitializer
+; SSE42-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x double> %bcst
 ;
 ; AVX1-LABEL: 'broadcast_load_f64_v4f64'
 ; AVX1-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load double, ptr %src, align 8
@@ -138,6 +267,24 @@ define <4 x double> @broadcast_load_f64_v4f64(ptr %src) {
 ; AVX512-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %bcst = shufflevector <4 x double> %insert, <4 x double> poison, <4 x i32> zeroinitializer
 ; AVX512-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x double> %bcst
 ;
+; SLM-LABEL: 'broadcast_load_f64_v4f64'
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load double, ptr %src, align 8
+; SLM-NEXT:  Cost Model: Found costs of 0 for: %insert = insertelement <4 x double> poison, double %load, i32 0
+; SLM-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x double> %insert, <4 x double> poison, <4 x i32> zeroinitializer
+; SLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x double> %bcst
+;
+; GLM-LABEL: 'broadcast_load_f64_v4f64'
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load double, ptr %src, align 8
+; GLM-NEXT:  Cost Model: Found costs of 0 for: %insert = insertelement <4 x double> poison, double %load, i32 0
+; GLM-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x double> %insert, <4 x double> poison, <4 x i32> zeroinitializer
+; GLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x double> %bcst
+;
+; BTVER2-LABEL: 'broadcast_load_f64_v4f64'
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:5 SizeLat:1 for: %load = load double, ptr %src, align 8
+; BTVER2-NEXT:  Cost Model: Found costs of 0 for: %insert = insertelement <4 x double> poison, double %load, i32 0
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:2 CodeSize:2 Lat:3 SizeLat:3 for: %bcst = shufflevector <4 x double> %insert, <4 x double> poison, <4 x i32> zeroinitializer
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x double> %bcst
+;
   %load = load double, ptr %src
   %insert = insertelement <4 x double> poison, double %load, i32 0
   %bcst = shufflevector <4 x double> %insert, <4 x double> poison, <4 x i32> zeroinitializer
@@ -145,11 +292,23 @@ define <4 x double> @broadcast_load_f64_v4f64(ptr %src) {
 }
 
 define <8 x double> @broadcast_load_f64_v8f64(ptr %src) {
-; SSE-LABEL: 'broadcast_load_f64_v8f64'
-; SSE-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load double, ptr %src, align 8
-; SSE-NEXT:  Cost Model: Found costs of 0 for: %insert = insertelement <8 x double> poison, double %load, i32 0
-; SSE-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <8 x double> %insert, <8 x double> poison, <8 x i32> zeroinitializer
-; SSE-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x double> %bcst
+; SSE2-LABEL: 'broadcast_load_f64_v8f64'
+; SSE2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load double, ptr %src, align 8
+; SSE2-NEXT:  Cost Model: Found costs of 0 for: %insert = insertelement <8 x double> poison, double %load, i32 0
+; SSE2-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <8 x double> %insert, <8 x double> poison, <8 x i32> zeroinitializer
+; SSE2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x double> %bcst
+;
+; SSSE3-LABEL: 'broadcast_load_f64_v8f64'
+; SSSE3-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load double, ptr %src, align 8
+; SSSE3-NEXT:  Cost Model: Found costs of 0 for: %insert = insertelement <8 x double> poison, double %load, i32 0
+; SSSE3-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <8 x double> %insert, <8 x double> poison, <8 x i32> zeroinitializer
+; SSSE3-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x double> %bcst
+;
+; SSE42-LABEL: 'broadcast_load_f64_v8f64'
+; SSE42-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load double, ptr %src, align 8
+; SSE42-NEXT:  Cost Model: Found costs of 0 for: %insert = insertelement <8 x double> poison, double %load, i32 0
+; SSE42-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <8 x double> %insert, <8 x double> poison, <8 x i32> zeroinitializer
+; SSE42-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x double> %bcst
 ;
 ; AVX1-LABEL: 'broadcast_load_f64_v8f64'
 ; AVX1-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load double, ptr %src, align 8
@@ -169,6 +328,24 @@ define <8 x double> @broadcast_load_f64_v8f64(ptr %src) {
 ; AVX512-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %bcst = shufflevector <8 x double> %insert, <8 x double> poison, <8 x i32> zeroinitializer
 ; AVX512-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x double> %bcst
 ;
+; SLM-LABEL: 'broadcast_load_f64_v8f64'
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load double, ptr %src, align 8
+; SLM-NEXT:  Cost Model: Found costs of 0 for: %insert = insertelement <8 x double> poison, double %load, i32 0
+; SLM-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <8 x double> %insert, <8 x double> poison, <8 x i32> zeroinitializer
+; SLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x double> %bcst
+;
+; GLM-LABEL: 'broadcast_load_f64_v8f64'
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load double, ptr %src, align 8
+; GLM-NEXT:  Cost Model: Found costs of 0 for: %insert = insertelement <8 x double> poison, double %load, i32 0
+; GLM-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <8 x double> %insert, <8 x double> poison, <8 x i32> zeroinitializer
+; GLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x double> %bcst
+;
+; BTVER2-LABEL: 'broadcast_load_f64_v8f64'
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:5 SizeLat:1 for: %load = load double, ptr %src, align 8
+; BTVER2-NEXT:  Cost Model: Found costs of 0 for: %insert = insertelement <8 x double> poison, double %load, i32 0
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:2 CodeSize:2 Lat:3 SizeLat:3 for: %bcst = shufflevector <8 x double> %insert, <8 x double> poison, <8 x i32> zeroinitializer
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x double> %bcst
+;
   %load = load double, ptr %src
   %insert = insertelement <8 x double> poison, double %load, i32 0
   %bcst = shufflevector <8 x double> %insert, <8 x double> poison, <8 x i32> zeroinitializer
@@ -180,15 +357,50 @@ define <8 x double> @broadcast_load_f64_v8f64(ptr %src) {
 ;
 
 define <4 x float> @broadcast_load_v4f32_v4f32(ptr %src) {
-; SSE-LABEL: 'broadcast_load_v4f32_v4f32'
-; SSE-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
-; SSE-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <4 x i32> zeroinitializer
-; SSE-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x float> %bcst
+; SSE2-LABEL: 'broadcast_load_v4f32_v4f32'
+; SSE2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; SSE2-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <4 x i32> zeroinitializer
+; SSE2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x float> %bcst
 ;
-; AVX-LABEL: 'broadcast_load_v4f32_v4f32'
-; AVX-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
-; AVX-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <4 x i32> zeroinitializer
-; AVX-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x float> %bcst
+; SSSE3-LABEL: 'broadcast_load_v4f32_v4f32'
+; SSSE3-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; SSSE3-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <4 x i32> zeroinitializer
+; SSSE3-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x float> %bcst
+;
+; SSE42-LABEL: 'broadcast_load_v4f32_v4f32'
+; SSE42-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; SSE42-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <4 x i32> zeroinitializer
+; SSE42-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x float> %bcst
+;
+; AVX1-LABEL: 'broadcast_load_v4f32_v4f32'
+; AVX1-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; AVX1-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <4 x i32> zeroinitializer
+; AVX1-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x float> %bcst
+;
+; AVX2-LABEL: 'broadcast_load_v4f32_v4f32'
+; AVX2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; AVX2-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <4 x i32> zeroinitializer
+; AVX2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x float> %bcst
+;
+; AVX512-LABEL: 'broadcast_load_v4f32_v4f32'
+; AVX512-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; AVX512-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <4 x i32> zeroinitializer
+; AVX512-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x float> %bcst
+;
+; SLM-LABEL: 'broadcast_load_v4f32_v4f32'
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; SLM-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <4 x i32> zeroinitializer
+; SLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x float> %bcst
+;
+; GLM-LABEL: 'broadcast_load_v4f32_v4f32'
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; GLM-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <4 x i32> zeroinitializer
+; GLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x float> %bcst
+;
+; BTVER2-LABEL: 'broadcast_load_v4f32_v4f32'
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:5 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; BTVER2-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <4 x i32> zeroinitializer
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x float> %bcst
 ;
   %load = load <4 x float>, ptr %src
   %bcst = shufflevector <4 x float> %load, <4 x float> poison, <4 x i32> zeroinitializer
@@ -196,15 +408,50 @@ define <4 x float> @broadcast_load_v4f32_v4f32(ptr %src) {
 }
 
 define <8 x float> @broadcast_load_v4f32_v8f32(ptr %src) {
-; SSE-LABEL: 'broadcast_load_v4f32_v8f32'
-; SSE-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
-; SSE-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <8 x i32> zeroinitializer
-; SSE-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x float> %bcst
+; SSE2-LABEL: 'broadcast_load_v4f32_v8f32'
+; SSE2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; SSE2-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <8 x i32> zeroinitializer
+; SSE2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x float> %bcst
 ;
-; AVX-LABEL: 'broadcast_load_v4f32_v8f32'
-; AVX-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
-; AVX-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <8 x i32> zeroinitializer
-; AVX-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x float> %bcst
+; SSSE3-LABEL: 'broadcast_load_v4f32_v8f32'
+; SSSE3-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; SSSE3-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <8 x i32> zeroinitializer
+; SSSE3-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x float> %bcst
+;
+; SSE42-LABEL: 'broadcast_load_v4f32_v8f32'
+; SSE42-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; SSE42-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <8 x i32> zeroinitializer
+; SSE42-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x float> %bcst
+;
+; AVX1-LABEL: 'broadcast_load_v4f32_v8f32'
+; AVX1-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; AVX1-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <8 x i32> zeroinitializer
+; AVX1-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x float> %bcst
+;
+; AVX2-LABEL: 'broadcast_load_v4f32_v8f32'
+; AVX2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; AVX2-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <8 x i32> zeroinitializer
+; AVX2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x float> %bcst
+;
+; AVX512-LABEL: 'broadcast_load_v4f32_v8f32'
+; AVX512-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; AVX512-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <8 x i32> zeroinitializer
+; AVX512-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x float> %bcst
+;
+; SLM-LABEL: 'broadcast_load_v4f32_v8f32'
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; SLM-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <8 x i32> zeroinitializer
+; SLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x float> %bcst
+;
+; GLM-LABEL: 'broadcast_load_v4f32_v8f32'
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; GLM-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <8 x i32> zeroinitializer
+; GLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x float> %bcst
+;
+; BTVER2-LABEL: 'broadcast_load_v4f32_v8f32'
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:5 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; BTVER2-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <8 x i32> zeroinitializer
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x float> %bcst
 ;
   %load = load <4 x float>, ptr %src
   %bcst = shufflevector <4 x float> %load, <4 x float> poison, <8 x i32> zeroinitializer
@@ -212,15 +459,50 @@ define <8 x float> @broadcast_load_v4f32_v8f32(ptr %src) {
 }
 
 define <16 x float> @broadcast_load_v4f32_v16f32(ptr %src) {
-; SSE-LABEL: 'broadcast_load_v4f32_v16f32'
-; SSE-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
-; SSE-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <16 x i32> zeroinitializer
-; SSE-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x float> %bcst
+; SSE2-LABEL: 'broadcast_load_v4f32_v16f32'
+; SSE2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; SSE2-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <16 x i32> zeroinitializer
+; SSE2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x float> %bcst
 ;
-; AVX-LABEL: 'broadcast_load_v4f32_v16f32'
-; AVX-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
-; AVX-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <16 x i32> zeroinitializer
-; AVX-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x float> %bcst
+; SSSE3-LABEL: 'broadcast_load_v4f32_v16f32'
+; SSSE3-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; SSSE3-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <16 x i32> zeroinitializer
+; SSSE3-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x float> %bcst
+;
+; SSE42-LABEL: 'broadcast_load_v4f32_v16f32'
+; SSE42-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; SSE42-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <16 x i32> zeroinitializer
+; SSE42-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x float> %bcst
+;
+; AVX1-LABEL: 'broadcast_load_v4f32_v16f32'
+; AVX1-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; AVX1-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <16 x i32> zeroinitializer
+; AVX1-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x float> %bcst
+;
+; AVX2-LABEL: 'broadcast_load_v4f32_v16f32'
+; AVX2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; AVX2-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <16 x i32> zeroinitializer
+; AVX2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x float> %bcst
+;
+; AVX512-LABEL: 'broadcast_load_v4f32_v16f32'
+; AVX512-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; AVX512-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <16 x i32> zeroinitializer
+; AVX512-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x float> %bcst
+;
+; SLM-LABEL: 'broadcast_load_v4f32_v16f32'
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; SLM-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <16 x i32> zeroinitializer
+; SLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x float> %bcst
+;
+; GLM-LABEL: 'broadcast_load_v4f32_v16f32'
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; GLM-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <16 x i32> zeroinitializer
+; GLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x float> %bcst
+;
+; BTVER2-LABEL: 'broadcast_load_v4f32_v16f32'
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:5 SizeLat:1 for: %load = load <4 x float>, ptr %src, align 16
+; BTVER2-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x float> %load, <4 x float> poison, <16 x i32> zeroinitializer
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x float> %bcst
 ;
   %load = load <4 x float>, ptr %src
   %bcst = shufflevector <4 x float> %load, <4 x float> poison, <16 x i32> zeroinitializer
@@ -228,15 +510,50 @@ define <16 x float> @broadcast_load_v4f32_v16f32(ptr %src) {
 }
 
 define <2 x i64> @broadcast_load_v2i64_v2i64(ptr %src) {
-; SSE-LABEL: 'broadcast_load_v2i64_v2i64'
-; SSE-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
-; SSE-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <2 x i32> zeroinitializer
-; SSE-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x i64> %bcst
+; SSE2-LABEL: 'broadcast_load_v2i64_v2i64'
+; SSE2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; SSE2-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <2 x i32> zeroinitializer
+; SSE2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x i64> %bcst
 ;
-; AVX-LABEL: 'broadcast_load_v2i64_v2i64'
-; AVX-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
-; AVX-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <2 x i32> zeroinitializer
-; AVX-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x i64> %bcst
+; SSSE3-LABEL: 'broadcast_load_v2i64_v2i64'
+; SSSE3-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; SSSE3-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <2 x i32> zeroinitializer
+; SSSE3-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x i64> %bcst
+;
+; SSE42-LABEL: 'broadcast_load_v2i64_v2i64'
+; SSE42-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; SSE42-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <2 x i32> zeroinitializer
+; SSE42-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x i64> %bcst
+;
+; AVX1-LABEL: 'broadcast_load_v2i64_v2i64'
+; AVX1-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; AVX1-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <2 x i32> zeroinitializer
+; AVX1-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x i64> %bcst
+;
+; AVX2-LABEL: 'broadcast_load_v2i64_v2i64'
+; AVX2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; AVX2-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <2 x i32> zeroinitializer
+; AVX2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x i64> %bcst
+;
+; AVX512-LABEL: 'broadcast_load_v2i64_v2i64'
+; AVX512-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; AVX512-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <2 x i32> zeroinitializer
+; AVX512-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x i64> %bcst
+;
+; SLM-LABEL: 'broadcast_load_v2i64_v2i64'
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; SLM-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <2 x i32> zeroinitializer
+; SLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x i64> %bcst
+;
+; GLM-LABEL: 'broadcast_load_v2i64_v2i64'
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; GLM-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <2 x i32> zeroinitializer
+; GLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x i64> %bcst
+;
+; BTVER2-LABEL: 'broadcast_load_v2i64_v2i64'
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:5 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; BTVER2-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <2 x i32> zeroinitializer
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <2 x i64> %bcst
 ;
   %load = load <2 x i64>, ptr %src
   %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <2 x i32> zeroinitializer
@@ -248,15 +565,50 @@ define <2 x i64> @broadcast_load_v2i64_v2i64(ptr %src) {
 ;
 
 define <4 x i64> @broadcast_load_v2i64_v4i64(ptr %src) {
-; SSE-LABEL: 'broadcast_load_v2i64_v4i64'
-; SSE-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
-; SSE-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <4 x i32> zeroinitializer
-; SSE-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x i64> %bcst
+; SSE2-LABEL: 'broadcast_load_v2i64_v4i64'
+; SSE2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; SSE2-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <4 x i32> zeroinitializer
+; SSE2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x i64> %bcst
 ;
-; AVX-LABEL: 'broadcast_load_v2i64_v4i64'
-; AVX-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
-; AVX-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <4 x i32> zeroinitializer
-; AVX-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x i64> %bcst
+; SSSE3-LABEL: 'broadcast_load_v2i64_v4i64'
+; SSSE3-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; SSSE3-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <4 x i32> zeroinitializer
+; SSSE3-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x i64> %bcst
+;
+; SSE42-LABEL: 'broadcast_load_v2i64_v4i64'
+; SSE42-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; SSE42-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <4 x i32> zeroinitializer
+; SSE42-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x i64> %bcst
+;
+; AVX1-LABEL: 'broadcast_load_v2i64_v4i64'
+; AVX1-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; AVX1-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <4 x i32> zeroinitializer
+; AVX1-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x i64> %bcst
+;
+; AVX2-LABEL: 'broadcast_load_v2i64_v4i64'
+; AVX2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; AVX2-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <4 x i32> zeroinitializer
+; AVX2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x i64> %bcst
+;
+; AVX512-LABEL: 'broadcast_load_v2i64_v4i64'
+; AVX512-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; AVX512-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <4 x i32> zeroinitializer
+; AVX512-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x i64> %bcst
+;
+; SLM-LABEL: 'broadcast_load_v2i64_v4i64'
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; SLM-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <4 x i32> zeroinitializer
+; SLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x i64> %bcst
+;
+; GLM-LABEL: 'broadcast_load_v2i64_v4i64'
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; GLM-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <4 x i32> zeroinitializer
+; GLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x i64> %bcst
+;
+; BTVER2-LABEL: 'broadcast_load_v2i64_v4i64'
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:5 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; BTVER2-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <4 x i32> zeroinitializer
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x i64> %bcst
 ;
   %load = load <2 x i64>, ptr %src
   %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <4 x i32> zeroinitializer
@@ -264,15 +616,50 @@ define <4 x i64> @broadcast_load_v2i64_v4i64(ptr %src) {
 }
 
 define <8 x i64> @broadcast_load_v2i64_v8i64(ptr %src) {
-; SSE-LABEL: 'broadcast_load_v2i64_v8i64'
-; SSE-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
-; SSE-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <8 x i32> zeroinitializer
-; SSE-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i64> %bcst
+; SSE2-LABEL: 'broadcast_load_v2i64_v8i64'
+; SSE2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; SSE2-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <8 x i32> zeroinitializer
+; SSE2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i64> %bcst
 ;
-; AVX-LABEL: 'broadcast_load_v2i64_v8i64'
-; AVX-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
-; AVX-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <8 x i32> zeroinitializer
-; AVX-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i64> %bcst
+; SSSE3-LABEL: 'broadcast_load_v2i64_v8i64'
+; SSSE3-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; SSSE3-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <8 x i32> zeroinitializer
+; SSSE3-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i64> %bcst
+;
+; SSE42-LABEL: 'broadcast_load_v2i64_v8i64'
+; SSE42-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; SSE42-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <8 x i32> zeroinitializer
+; SSE42-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i64> %bcst
+;
+; AVX1-LABEL: 'broadcast_load_v2i64_v8i64'
+; AVX1-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; AVX1-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <8 x i32> zeroinitializer
+; AVX1-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i64> %bcst
+;
+; AVX2-LABEL: 'broadcast_load_v2i64_v8i64'
+; AVX2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; AVX2-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <8 x i32> zeroinitializer
+; AVX2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i64> %bcst
+;
+; AVX512-LABEL: 'broadcast_load_v2i64_v8i64'
+; AVX512-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; AVX512-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <8 x i32> zeroinitializer
+; AVX512-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i64> %bcst
+;
+; SLM-LABEL: 'broadcast_load_v2i64_v8i64'
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; SLM-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <8 x i32> zeroinitializer
+; SLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i64> %bcst
+;
+; GLM-LABEL: 'broadcast_load_v2i64_v8i64'
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; GLM-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <8 x i32> zeroinitializer
+; GLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i64> %bcst
+;
+; BTVER2-LABEL: 'broadcast_load_v2i64_v8i64'
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:5 SizeLat:1 for: %load = load <2 x i64>, ptr %src, align 16
+; BTVER2-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <8 x i32> zeroinitializer
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i64> %bcst
 ;
   %load = load <2 x i64>, ptr %src
   %bcst = shufflevector <2 x i64> %load, <2 x i64> poison, <8 x i32> zeroinitializer
@@ -284,15 +671,50 @@ define <8 x i64> @broadcast_load_v2i64_v8i64(ptr %src) {
 ;
 
 define <4 x i32> @broadcast_load_v4i32_v4i32(ptr %src) {
-; SSE-LABEL: 'broadcast_load_v4i32_v4i32'
-; SSE-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
-; SSE-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <4 x i32> zeroinitializer
-; SSE-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x i32> %bcst
+; SSE2-LABEL: 'broadcast_load_v4i32_v4i32'
+; SSE2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; SSE2-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <4 x i32> zeroinitializer
+; SSE2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x i32> %bcst
 ;
-; AVX-LABEL: 'broadcast_load_v4i32_v4i32'
-; AVX-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
-; AVX-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <4 x i32> zeroinitializer
-; AVX-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x i32> %bcst
+; SSSE3-LABEL: 'broadcast_load_v4i32_v4i32'
+; SSSE3-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; SSSE3-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <4 x i32> zeroinitializer
+; SSSE3-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x i32> %bcst
+;
+; SSE42-LABEL: 'broadcast_load_v4i32_v4i32'
+; SSE42-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; SSE42-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <4 x i32> zeroinitializer
+; SSE42-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x i32> %bcst
+;
+; AVX1-LABEL: 'broadcast_load_v4i32_v4i32'
+; AVX1-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; AVX1-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <4 x i32> zeroinitializer
+; AVX1-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x i32> %bcst
+;
+; AVX2-LABEL: 'broadcast_load_v4i32_v4i32'
+; AVX2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; AVX2-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <4 x i32> zeroinitializer
+; AVX2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x i32> %bcst
+;
+; AVX512-LABEL: 'broadcast_load_v4i32_v4i32'
+; AVX512-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; AVX512-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <4 x i32> zeroinitializer
+; AVX512-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x i32> %bcst
+;
+; SLM-LABEL: 'broadcast_load_v4i32_v4i32'
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; SLM-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <4 x i32> zeroinitializer
+; SLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x i32> %bcst
+;
+; GLM-LABEL: 'broadcast_load_v4i32_v4i32'
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; GLM-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <4 x i32> zeroinitializer
+; GLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x i32> %bcst
+;
+; BTVER2-LABEL: 'broadcast_load_v4i32_v4i32'
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:5 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; BTVER2-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <4 x i32> zeroinitializer
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <4 x i32> %bcst
 ;
   %load = load <4 x i32>, ptr %src
   %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <4 x i32> zeroinitializer
@@ -300,15 +722,50 @@ define <4 x i32> @broadcast_load_v4i32_v4i32(ptr %src) {
 }
 
 define <8 x i32> @broadcast_load_v4i32_v8i32(ptr %src) {
-; SSE-LABEL: 'broadcast_load_v4i32_v8i32'
-; SSE-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
-; SSE-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <8 x i32> zeroinitializer
-; SSE-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i32> %bcst
+; SSE2-LABEL: 'broadcast_load_v4i32_v8i32'
+; SSE2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; SSE2-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <8 x i32> zeroinitializer
+; SSE2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i32> %bcst
 ;
-; AVX-LABEL: 'broadcast_load_v4i32_v8i32'
-; AVX-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
-; AVX-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <8 x i32> zeroinitializer
-; AVX-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i32> %bcst
+; SSSE3-LABEL: 'broadcast_load_v4i32_v8i32'
+; SSSE3-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; SSSE3-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <8 x i32> zeroinitializer
+; SSSE3-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i32> %bcst
+;
+; SSE42-LABEL: 'broadcast_load_v4i32_v8i32'
+; SSE42-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; SSE42-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <8 x i32> zeroinitializer
+; SSE42-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i32> %bcst
+;
+; AVX1-LABEL: 'broadcast_load_v4i32_v8i32'
+; AVX1-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; AVX1-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <8 x i32> zeroinitializer
+; AVX1-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i32> %bcst
+;
+; AVX2-LABEL: 'broadcast_load_v4i32_v8i32'
+; AVX2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; AVX2-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <8 x i32> zeroinitializer
+; AVX2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i32> %bcst
+;
+; AVX512-LABEL: 'broadcast_load_v4i32_v8i32'
+; AVX512-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; AVX512-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <8 x i32> zeroinitializer
+; AVX512-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i32> %bcst
+;
+; SLM-LABEL: 'broadcast_load_v4i32_v8i32'
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; SLM-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <8 x i32> zeroinitializer
+; SLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i32> %bcst
+;
+; GLM-LABEL: 'broadcast_load_v4i32_v8i32'
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; GLM-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <8 x i32> zeroinitializer
+; GLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i32> %bcst
+;
+; BTVER2-LABEL: 'broadcast_load_v4i32_v8i32'
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:5 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; BTVER2-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <8 x i32> zeroinitializer
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i32> %bcst
 ;
   %load = load <4 x i32>, ptr %src
   %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <8 x i32> zeroinitializer
@@ -316,15 +773,50 @@ define <8 x i32> @broadcast_load_v4i32_v8i32(ptr %src) {
 }
 
 define <16 x i32> @broadcast_load_v4i32_v16i32(ptr %src) {
-; SSE-LABEL: 'broadcast_load_v4i32_v16i32'
-; SSE-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
-; SSE-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <16 x i32> zeroinitializer
-; SSE-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x i32> %bcst
+; SSE2-LABEL: 'broadcast_load_v4i32_v16i32'
+; SSE2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; SSE2-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <16 x i32> zeroinitializer
+; SSE2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x i32> %bcst
 ;
-; AVX-LABEL: 'broadcast_load_v4i32_v16i32'
-; AVX-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
-; AVX-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <16 x i32> zeroinitializer
-; AVX-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x i32> %bcst
+; SSSE3-LABEL: 'broadcast_load_v4i32_v16i32'
+; SSSE3-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; SSSE3-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <16 x i32> zeroinitializer
+; SSSE3-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x i32> %bcst
+;
+; SSE42-LABEL: 'broadcast_load_v4i32_v16i32'
+; SSE42-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; SSE42-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <16 x i32> zeroinitializer
+; SSE42-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x i32> %bcst
+;
+; AVX1-LABEL: 'broadcast_load_v4i32_v16i32'
+; AVX1-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; AVX1-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <16 x i32> zeroinitializer
+; AVX1-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x i32> %bcst
+;
+; AVX2-LABEL: 'broadcast_load_v4i32_v16i32'
+; AVX2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; AVX2-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <16 x i32> zeroinitializer
+; AVX2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x i32> %bcst
+;
+; AVX512-LABEL: 'broadcast_load_v4i32_v16i32'
+; AVX512-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; AVX512-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <16 x i32> zeroinitializer
+; AVX512-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x i32> %bcst
+;
+; SLM-LABEL: 'broadcast_load_v4i32_v16i32'
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; SLM-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <16 x i32> zeroinitializer
+; SLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x i32> %bcst
+;
+; GLM-LABEL: 'broadcast_load_v4i32_v16i32'
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; GLM-NEXT:  Cost Model: Found costs of 1 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <16 x i32> zeroinitializer
+; GLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x i32> %bcst
+;
+; BTVER2-LABEL: 'broadcast_load_v4i32_v16i32'
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:5 SizeLat:1 for: %load = load <4 x i32>, ptr %src, align 16
+; BTVER2-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <16 x i32> zeroinitializer
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x i32> %bcst
 ;
   %load = load <4 x i32>, ptr %src
   %bcst = shufflevector <4 x i32> %load, <4 x i32> poison, <16 x i32> zeroinitializer
@@ -366,6 +858,21 @@ define <8 x i16> @broadcast_load_v8i16_v8i16(ptr %src) {
 ; AVX512-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <8 x i16> %load, <8 x i16> poison, <8 x i32> zeroinitializer
 ; AVX512-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i16> %bcst
 ;
+; SLM-LABEL: 'broadcast_load_v8i16_v8i16'
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <8 x i16>, ptr %src, align 16
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:2 Lat:3 SizeLat:2 for: %bcst = shufflevector <8 x i16> %load, <8 x i16> poison, <8 x i32> zeroinitializer
+; SLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i16> %bcst
+;
+; GLM-LABEL: 'broadcast_load_v8i16_v8i16'
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <8 x i16>, ptr %src, align 16
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:2 Lat:3 SizeLat:2 for: %bcst = shufflevector <8 x i16> %load, <8 x i16> poison, <8 x i32> zeroinitializer
+; GLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i16> %bcst
+;
+; BTVER2-LABEL: 'broadcast_load_v8i16_v8i16'
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:5 SizeLat:1 for: %load = load <8 x i16>, ptr %src, align 16
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:2 Lat:3 SizeLat:2 for: %bcst = shufflevector <8 x i16> %load, <8 x i16> poison, <8 x i32> zeroinitializer
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <8 x i16> %bcst
+;
   %load = load <8 x i16>, ptr %src
   %bcst = shufflevector <8 x i16> %load, <8 x i16> poison, <8 x i32> zeroinitializer
   ret <8 x i16> %bcst
@@ -402,6 +909,21 @@ define <16 x i16> @broadcast_load_v8i16_v16i16(ptr %src) {
 ; AVX512-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <8 x i16> %load, <8 x i16> poison, <16 x i32> zeroinitializer
 ; AVX512-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x i16> %bcst
 ;
+; SLM-LABEL: 'broadcast_load_v8i16_v16i16'
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <8 x i16>, ptr %src, align 16
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:2 Lat:3 SizeLat:2 for: %bcst = shufflevector <8 x i16> %load, <8 x i16> poison, <16 x i32> zeroinitializer
+; SLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x i16> %bcst
+;
+; GLM-LABEL: 'broadcast_load_v8i16_v16i16'
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <8 x i16>, ptr %src, align 16
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:2 Lat:3 SizeLat:2 for: %bcst = shufflevector <8 x i16> %load, <8 x i16> poison, <16 x i32> zeroinitializer
+; GLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x i16> %bcst
+;
+; BTVER2-LABEL: 'broadcast_load_v8i16_v16i16'
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:5 SizeLat:1 for: %load = load <8 x i16>, ptr %src, align 16
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:2 CodeSize:3 Lat:3 SizeLat:4 for: %bcst = shufflevector <8 x i16> %load, <8 x i16> poison, <16 x i32> zeroinitializer
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x i16> %bcst
+;
   %load = load <8 x i16>, ptr %src
   %bcst = shufflevector <8 x i16> %load, <8 x i16> poison, <16 x i32> zeroinitializer
   ret <16 x i16> %bcst
@@ -437,6 +959,21 @@ define <32 x i16> @broadcast_load_v8i16_v32i16(ptr %src) {
 ; AVX512-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <8 x i16>, ptr %src, align 16
 ; AVX512-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <8 x i16> %load, <8 x i16> poison, <32 x i32> zeroinitializer
 ; AVX512-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <32 x i16> %bcst
+;
+; SLM-LABEL: 'broadcast_load_v8i16_v32i16'
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <8 x i16>, ptr %src, align 16
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:2 Lat:3 SizeLat:2 for: %bcst = shufflevector <8 x i16> %load, <8 x i16> poison, <32 x i32> zeroinitializer
+; SLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <32 x i16> %bcst
+;
+; GLM-LABEL: 'broadcast_load_v8i16_v32i16'
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <8 x i16>, ptr %src, align 16
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:2 Lat:3 SizeLat:2 for: %bcst = shufflevector <8 x i16> %load, <8 x i16> poison, <32 x i32> zeroinitializer
+; GLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <32 x i16> %bcst
+;
+; BTVER2-LABEL: 'broadcast_load_v8i16_v32i16'
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:5 SizeLat:1 for: %load = load <8 x i16>, ptr %src, align 16
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:2 CodeSize:3 Lat:3 SizeLat:4 for: %bcst = shufflevector <8 x i16> %load, <8 x i16> poison, <32 x i32> zeroinitializer
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <32 x i16> %bcst
 ;
   %load = load <8 x i16>, ptr %src
   %bcst = shufflevector <8 x i16> %load, <8 x i16> poison, <32 x i32> zeroinitializer
@@ -478,6 +1015,21 @@ define <16 x i8> @broadcast_load_v16i8_v16i8(ptr %src) {
 ; AVX512-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <16 x i8> %load, <16 x i8> poison, <16 x i32> zeroinitializer
 ; AVX512-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x i8> %bcst
 ;
+; SLM-LABEL: 'broadcast_load_v16i8_v16i8'
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <16 x i8>, ptr %src, align 16
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:2 Lat:3 SizeLat:2 for: %bcst = shufflevector <16 x i8> %load, <16 x i8> poison, <16 x i32> zeroinitializer
+; SLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x i8> %bcst
+;
+; GLM-LABEL: 'broadcast_load_v16i8_v16i8'
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <16 x i8>, ptr %src, align 16
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:2 Lat:3 SizeLat:2 for: %bcst = shufflevector <16 x i8> %load, <16 x i8> poison, <16 x i32> zeroinitializer
+; GLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x i8> %bcst
+;
+; BTVER2-LABEL: 'broadcast_load_v16i8_v16i8'
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:5 SizeLat:1 for: %load = load <16 x i8>, ptr %src, align 16
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:2 Lat:3 SizeLat:2 for: %bcst = shufflevector <16 x i8> %load, <16 x i8> poison, <16 x i32> zeroinitializer
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <16 x i8> %bcst
+;
   %load = load <16 x i8>, ptr %src
   %bcst = shufflevector <16 x i8> %load, <16 x i8> poison, <16 x i32> zeroinitializer
   ret <16 x i8> %bcst
@@ -513,6 +1065,21 @@ define <32 x i8> @broadcast_load_v16i8_v32i8(ptr %src) {
 ; AVX512-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:4 SizeLat:1 for: %load = load <16 x i8>, ptr %src, align 16
 ; AVX512-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <16 x i8> %load, <16 x i8> poison, <32 x i32> zeroinitializer
 ; AVX512-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <32 x i8> %bcst
+;
+; SLM-LABEL: 'broadcast_load_v16i8_v32i8'
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <16 x i8>, ptr %src, align 16
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:2 Lat:3 SizeLat:2 for: %bcst = shufflevector <16 x i8> %load, <16 x i8> poison, <32 x i32> zeroinitializer
+; SLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <32 x i8> %bcst
+;
+; GLM-LABEL: 'broadcast_load_v16i8_v32i8'
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <16 x i8>, ptr %src, align 16
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:2 Lat:3 SizeLat:2 for: %bcst = shufflevector <16 x i8> %load, <16 x i8> poison, <32 x i32> zeroinitializer
+; GLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <32 x i8> %bcst
+;
+; BTVER2-LABEL: 'broadcast_load_v16i8_v32i8'
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:5 SizeLat:1 for: %load = load <16 x i8>, ptr %src, align 16
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:3 CodeSize:3 Lat:4 SizeLat:6 for: %bcst = shufflevector <16 x i8> %load, <16 x i8> poison, <32 x i32> zeroinitializer
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <32 x i8> %bcst
 ;
   %load = load <16 x i8>, ptr %src
   %bcst = shufflevector <16 x i8> %load, <16 x i8> poison, <32 x i32> zeroinitializer
@@ -550,7 +1117,25 @@ define <64 x i8> @broadcast_load_v16i8_v64i8(ptr %src) {
 ; AVX512-NEXT:  Cost Model: Found costs of 0 for: %bcst = shufflevector <16 x i8> %load, <16 x i8> poison, <64 x i32> zeroinitializer
 ; AVX512-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <64 x i8> %bcst
 ;
+; SLM-LABEL: 'broadcast_load_v16i8_v64i8'
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <16 x i8>, ptr %src, align 16
+; SLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:2 Lat:3 SizeLat:2 for: %bcst = shufflevector <16 x i8> %load, <16 x i8> poison, <64 x i32> zeroinitializer
+; SLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <64 x i8> %bcst
+;
+; GLM-LABEL: 'broadcast_load_v16i8_v64i8'
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:3 SizeLat:1 for: %load = load <16 x i8>, ptr %src, align 16
+; GLM-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:2 Lat:3 SizeLat:2 for: %bcst = shufflevector <16 x i8> %load, <16 x i8> poison, <64 x i32> zeroinitializer
+; GLM-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <64 x i8> %bcst
+;
+; BTVER2-LABEL: 'broadcast_load_v16i8_v64i8'
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:1 Lat:5 SizeLat:1 for: %load = load <16 x i8>, ptr %src, align 16
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:3 CodeSize:3 Lat:4 SizeLat:6 for: %bcst = shufflevector <16 x i8> %load, <16 x i8> poison, <64 x i32> zeroinitializer
+; BTVER2-NEXT:  Cost Model: Found costs of RThru:0 CodeSize:1 Lat:1 SizeLat:1 for: ret <64 x i8> %bcst
+;
   %load = load <16 x i8>, ptr %src
   %bcst = shufflevector <16 x i8> %load, <16 x i8> poison, <64 x i32> zeroinitializer
   ret <64 x i8> %bcst
 }
+;; NOTE: These prefixes are unused and the list is autogenerated. Do not add tests below this line:
+; AVX: {{.*}}
+; SSE: {{.*}}

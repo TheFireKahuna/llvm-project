@@ -1996,6 +1996,8 @@ void TargetLoweringObjectFileCOFF::emitLinkerDirectives(
 void TargetLoweringObjectFileCOFF::Initialize(MCContext &Ctx,
                                               const TargetMachine &TM) {
   TargetLoweringObjectFile::Initialize(Ctx, TM);
+  OutputSections.clear();
+  NextUniqueID = 1;
   this->TM = &TM;
   const Triple &T = TM.getTargetTriple();
   if (T.isWindowsMSVCEnvironment() || T.isWindowsItaniumEnvironment() ||
@@ -2069,6 +2071,16 @@ static MCSectionCOFF *getCOFFStaticStructorSection(MCContext &Ctx,
                                    COFF::IMAGE_SCN_MEM_READ |
                                    COFF::IMAGE_SCN_MEM_WRITE),
       KeySym, 0);
+}
+
+MCSection *
+TargetLoweringObjectFileCOFF::getSectionForOutput(MCSection *Section,
+                                                  StringRef Output) const {
+  MCSection *&Result = OutputSections[{Section, Output}];
+  if (!Result)
+    Result = getContext().getAssociativeCOFFSection(
+        cast<MCSectionCOFF>(Section), nullptr, NextUniqueID++);
+  return Result;
 }
 
 MCSection *TargetLoweringObjectFileCOFF::getStaticCtorSection(

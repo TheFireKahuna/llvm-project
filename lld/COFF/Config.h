@@ -48,6 +48,7 @@ enum class ExportSource {
   Directives,
   Export,
   ModuleDefinition,
+  Linker,
 };
 
 enum class EmitKind { Obj, LLVM, ASM };
@@ -125,6 +126,7 @@ struct Configuration {
   bool noEntry = false;
   std::string outputFile;
   std::string importName;
+  llvm::StringSet<> privateRTTI;
   bool demangle = true;
   bool doGC = true;
   ICFLevel doICF = ICFLevel::None;

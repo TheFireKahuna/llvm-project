@@ -106,6 +106,9 @@ public:
   bool vsDiagnostics = false;
   bool disableOutput = false;
   std::function<void()> cleanupCallback;
+  // Multi-output writers must also discard staging on exitEarly, which skips
+  // context destruction. This callback must be idempotent and non-throwing.
+  std::function<void()> discardOutputs;
 
   void error(const Twine &msg);
   void error(const Twine &msg, ErrorTag tag, ArrayRef<StringRef> args);

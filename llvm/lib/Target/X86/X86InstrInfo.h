@@ -473,6 +473,12 @@ public:
                    const DebugLoc &DL, Register DestReg, Register SrcReg,
                    bool KillSrc, bool RenamableDest = false,
                    bool RenamableSrc = false) const override;
+  /// Select a register load or store, aligned to its spill size if requested.
+  static unsigned getLoadStoreRegOpcode(Register Reg,
+                                        const TargetRegisterClass *RC,
+                                        bool IsStackAligned,
+                                        const X86Subtarget &STI, bool Load);
+
   void storeRegToStackSlot(
       MachineBasicBlock &MBB, MachineBasicBlock::iterator MI, Register SrcReg,
       bool isKill, int FrameIndex, const TargetRegisterClass *RC, Register VReg,

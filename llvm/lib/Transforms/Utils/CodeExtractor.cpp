@@ -13,6 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/Utils/CodeExtractor.h"
+#include "llvm/Transforms/Utils/COFFABIRequirements.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
@@ -892,6 +893,8 @@ Function *CodeExtractor::constructFunctionDeclaration(
   Function *newFunction =
       Function::Create(funcType, GlobalValue::InternalLinkage,
                        oldFunction->getAddressSpace(), Name, M);
+  newFunction->setPartition(oldFunction->getPartition());
+  mergeCOFFABIRequirements(*newFunction, *oldFunction);
 
   // Propagate personality info to the new function if there is one.
   if (oldFunction->hasPersonalityFn())
