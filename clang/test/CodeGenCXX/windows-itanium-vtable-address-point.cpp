@@ -33,9 +33,9 @@ int Plain::value() { return 4; }
 
 // PRODUCER: @_ZTV4Base = dso_local dllexport unnamed_addr constant
 // PRODUCER: @_ZTV7Virtual = dso_local dllexport unnamed_addr constant
-// PRODUCER: @"_ZTV4Base$ap16" = dllexport unnamed_addr alias i8, getelementptr inbounds (i8, ptr @_ZTV4Base, i32 16)
-// PRODUCER: @"_ZTV7Virtual$ap32" = dllexport unnamed_addr alias i8, getelementptr inbounds (i8, ptr @_ZTV7Virtual, i32 32)
-// PRODUCER: @"_ZTV5Plain$ap16" = unnamed_addr alias i8, getelementptr inbounds (i8, ptr @_ZTV5Plain, i32 16)
+// PRODUCER: @"_ZTV4Base$ap16" = dllexport unnamed_addr alias i8, getelementptr inbounds (i8, ptr @_ZTV4Base, i64 16)
+// PRODUCER: @"_ZTV7Virtual$ap32" = dllexport unnamed_addr alias i8, getelementptr inbounds (i8, ptr @_ZTV7Virtual, i64 32)
+// PRODUCER: @"_ZTV5Plain$ap16" = unnamed_addr alias i8, getelementptr inbounds (i8, ptr @_ZTV5Plain, i64 16)
 
 #else
 

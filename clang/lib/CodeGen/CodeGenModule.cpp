@@ -273,13 +273,8 @@ createTargetCodeGenInfo(CodeGenModule &CGM) {
     switch (Triple.getOS()) {
     case llvm::Triple::UEFI:
     case llvm::Triple::Win32:
-      // pc-windows-ntposix carries OS=Win32 but follows the Itanium C++ ABI
-      // and SysV x86_64 calling convention throughout. Kernel / loader /
-      // ntdll boundaries are annotated with `__attribute__((ms_abi))` (see
-      // libc LIBC_MSABI) to preserve MS x64 where the ABI is externally
-      // fixed. windows-itanium is NOT flipped here — it still depends on
-      // "runtime = win32" assumptions elsewhere in clang/llvm that have not
-      // been audited. All other x86_64 Win32 triples keep the MS x64 default.
+      // NT-POSIX uses the System V convention; functions called across the
+      // boundary with NT are declared ms_abi.
       if (Triple.isWindowsNTPOSIXEnvironment())
         return createX86_64TargetCodeGenInfo(CGM, AVXLevel);
       return createWinX86_64TargetCodeGenInfo(CGM, AVXLevel);
@@ -2092,6 +2087,24 @@ void CodeGenModule::setDLLImportDLLExport(llvm::GlobalValue *GV,
   setDLLImportDLLExport(GV, D);
 }
 
+bool CodeGenModule::shouldMapVisibilityToDLLExport(const llvm::GlobalValue *GV,
+                                                   const NamedDecl *D) const {
+  if (!shouldMapVisibilityToDLLExport(D))
+    return false;
+  if (!getTriple().isOSBinFormatCOFF())
+    return true;
+  const auto *VD = dyn_cast<VarDecl>(D);
+  // A discardable definition exists in a COFF image only if the image
+  // happened to use it, so it is no promise to importers. Weak data the source
+  // declared is the exception, being shared along import edges; a vtable or a
+  // VTT is not.
+  if (GV->hasLinkOnceLinkage() && !VD)
+    return false;
+  // Nor can another image use a native thread-local variable; the C++ ABI
+  // exports a record of it instead.
+  return !VD || VD->getTLSKind() == VarDecl::TLS_None;
+}
+
 bool CodeGenModule::shouldMapVisibilityToDLLImport(const NamedDecl *D) const {
   // Only COFF has an import table for the storage class to name.
   if (!getTriple().isOSBinFormatCOFF())
@@ -2119,17 +2132,7 @@ void CodeGenModule::setDLLImportDLLExport(llvm::GlobalValue *GV,
     if (D->hasAttr<DLLImportAttr>())
       GV->setDLLStorageClass(llvm::GlobalVariable::DLLImportStorageClass);
     else if ((D->hasAttr<DLLExportAttr>() ||
-              (shouldMapVisibilityToDLLExport(D) &&
-               // A discardable definition exists in a COFF image only if the
-               // image happened to use it, so it is no promise to importers.
-               // Weak data the source declared is the exception, being shared
-               // along import edges; a vtable or a VTT is not.
-               !(getTriple().isOSBinFormatCOFF() && GV->hasLinkOnceLinkage() &&
-                 !isa<VarDecl>(D)) &&
-               // Nor can another image use a native thread-local variable;
-               // the C++ ABI exports a record of it instead.
-               !(getTriple().isOSBinFormatCOFF() && isa<VarDecl>(D) &&
-                 cast<VarDecl>(D)->getTLSKind() != VarDecl::TLS_None))) &&
+              shouldMapVisibilityToDLLExport(GV, D)) &&
              !GV->isDeclarationForLinker())
       GV->setDLLStorageClass(llvm::GlobalVariable::DLLExportStorageClass);
     else if (GV->isDeclarationForLinker()) {
@@ -6228,7 +6231,6 @@ const ABIInfo &CodeGenModule::getABIInfo() {
   return getTargetCodeGenInfo().getABIInfo();
 }
 
-/// Pass IsTentative as true if you want to create a tentative definition.
 // A variable in another image is reached through an address the loader
 // fills, and static data can hold that address but not an offset from it. So
 // every definition another image could reach names each subobject whose
@@ -6292,10 +6294,62 @@ static SmallVector<int64_t, 8> getSubobjectOffsets(const ASTContext &Ctx,
   return Offsets;
 }
 
-static void makeSubobjectName(StringRef Var, int64_t Offset,
-                              SmallVectorImpl<char> &Name) {
-  Name.assign(Var.begin(), Var.end());
-  llvm::raw_svector_ostream(Name) << "$so" << Offset;
+static void getInteriorName(const llvm::GlobalVariable *GV, StringRef Kind,
+                            uint64_t Offset, SmallVectorImpl<char> &Name) {
+  Name.assign(GV->getName().begin(), GV->getName().end());
+  llvm::raw_svector_ostream(Name) << Kind << Offset;
+}
+
+void CodeGenModule::emitInteriorAlias(llvm::GlobalVariable *GV, StringRef Kind,
+                                      uint64_t Offset, bool IsVTable) {
+  SmallString<256> Name;
+  getInteriorName(GV, Kind, Offset, Name);
+  // A constant initializer earlier in this unit may have asked for the name
+  // while GV was still a declaration, in which case the definition replaces
+  // what it left behind.
+  llvm::GlobalValue *Old = getModule().getNamedValue(Name);
+  if (Old && !isa<llvm::GlobalVariable>(Old))
+    return;
+
+  // The alias takes the COMDAT of the object it points into. External linkage
+  // keeps it a plain symbol there: a weak one would need a per-object
+  // companion symbol, which the offset makes impossible to name the same way
+  // twice.
+  auto *Alias = llvm::GlobalAlias::create(
+      Int8Ty, GV->getAddressSpace(), llvm::GlobalValue::ExternalLinkage,
+      Old ? StringRef() : StringRef(Name),
+      llvm::ConstantExpr::getInBoundsGetElementPtr(
+          Int8Ty, GV, llvm::ConstantInt::get(Int64Ty, Offset)),
+      &getModule());
+  Alias->setDLLStorageClass(GV->getDLLStorageClass());
+  Alias->setVisibility(GV->getVisibility());
+  if (IsVTable)
+    Alias->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+  if (Old) {
+    Old->replaceAllUsesWith(Alias);
+    Old->eraseFromParent();
+    Alias->setName(Name);
+  }
+}
+
+llvm::GlobalValue *
+CodeGenModule::getInteriorAliasDecl(llvm::GlobalVariable *GV, StringRef Kind,
+                                    uint64_t Offset, bool IsVTable) {
+  SmallString<256> Name;
+  getInteriorName(GV, Kind, Offset, Name);
+  if (llvm::GlobalValue *Existing = getModule().getNamedValue(Name))
+    return Existing;
+  auto *Decl = new llvm::GlobalVariable(
+      getModule(), Int8Ty, IsVTable || GV->isConstant(),
+      llvm::GlobalValue::ExternalLinkage,
+      /*Initializer=*/nullptr, Name, /*InsertBefore=*/nullptr,
+      llvm::GlobalValue::NotThreadLocal, GV->getAddressSpace());
+  Decl->setDLLStorageClass(GV->getDLLStorageClass());
+  if (IsVTable) {
+    Decl->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+    Decl->setAlignment(GV->getAlign());
+  }
+  return Decl;
 }
 
 // Called for a variable this image defines: one alias per subobject.
@@ -6310,33 +6364,8 @@ static void emitSubobjectNames(CodeGenModule &CGM, const VarDecl *D,
       GV->isThreadLocal())
     return;
 
-  SmallString<256> Name;
-  for (int64_t Offset : getSubobjectOffsets(CGM.getContext(), D->getType())) {
-    makeSubobjectName(GV->getName(), Offset, Name);
-    // A constant initialiser earlier in this unit may have asked for the name
-    // while the variable was still a declaration, in which case the
-    // definition replaces what it left behind.
-    llvm::GlobalValue *Old = CGM.getModule().getNamedValue(Name);
-    if (Old && !isa<llvm::GlobalVariable>(Old))
-      continue;
-
-    // The alias takes the COMDAT of the variable it points into; external
-    // linkage keeps it a plain symbol there, as for a vtable's address points.
-    auto *Alias = llvm::GlobalAlias::create(
-        CGM.Int8Ty, GV->getAddressSpace(), llvm::GlobalValue::ExternalLinkage,
-        Old ? StringRef() : StringRef(Name),
-        llvm::ConstantExpr::getGetElementPtr(
-            CGM.Int8Ty, GV, llvm::ConstantInt::get(CGM.Int64Ty, Offset),
-            /*InBounds=*/true),
-        &CGM.getModule());
-    Alias->setDLLStorageClass(GV->getDLLStorageClass());
-    Alias->setVisibility(GV->getVisibility());
-    if (Old) {
-      Old->replaceAllUsesWith(Alias);
-      Old->eraseFromParent();
-      Alias->setName(Name);
-    }
-  }
+  for (int64_t Offset : getSubobjectOffsets(CGM.getContext(), D->getType()))
+    CGM.emitInteriorAlias(GV, "$so", Offset, /*IsVTable=*/false);
 }
 
 // Whether an initializer holds the address of a variable another image may
@@ -6388,18 +6417,11 @@ llvm::Constant *CodeGenModule::getSubobjectName(const VarDecl *D,
   if (!llvm::binary_search(Offsets, Offset.getQuantity()))
     return nullptr;
 
-  SmallString<256> Name;
-  makeSubobjectName(GV->getName(), Offset.getQuantity(), Name);
-  if (llvm::GlobalValue *Existing = getModule().getNamedValue(Name))
-    return Existing;
-  auto *Subobject = new llvm::GlobalVariable(
-      getModule(), Int8Ty, GV->isConstant(), llvm::GlobalValue::ExternalLinkage,
-      /*Initializer=*/nullptr, Name, /*InsertBefore=*/nullptr,
-      llvm::GlobalValue::NotThreadLocal, GV->getAddressSpace());
-  Subobject->setDLLStorageClass(GV->getDLLStorageClass());
-  return Subobject;
+  return getInteriorAliasDecl(GV, "$so", Offset.getQuantity(),
+                              /*IsVTable=*/false);
 }
 
+/// Pass IsTentative as true if you want to create a tentative definition.
 void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D,
                                             bool IsTentative) {
   // OpenCL global variables of sampler type are translated to function calls,

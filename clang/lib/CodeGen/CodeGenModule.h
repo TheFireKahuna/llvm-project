@@ -977,6 +977,10 @@ public:
             (getLangOpts().isExplicitDefaultVisibilityExportMapping() &&
              D->getLinkageAndVisibility().isVisibilityExplicit()));
   }
+  /// Whether the definition GV of D is exported under the visibility mapping:
+  /// on COFF, it must also be one that an importing image can rely on.
+  bool shouldMapVisibilityToDLLExport(const llvm::GlobalValue *GV,
+                                      const NamedDecl *D) const;
   /// Whether a declaration of D that this translation unit does not define
   /// is emitted with dllimport storage: it carries an explicit default
   /// visibility under the visibility-to-DLL-storage mapping, or it is a
@@ -1055,6 +1059,20 @@ public:
                                      llvm::Type *Ty = nullptr,
                                      ForDefinition_t IsForDefinition
                                        = NotForDefinition);
+
+  /// Windows Itanium and NT-POSIX name each interior address another image
+  /// may need as a constant, a vtable's address points ("$ap") and a
+  /// variable's subobjects ("$so"), because static data can hold an imported
+  /// address but not an offset from it. '$' cannot occur in a mangled name.
+  /// Emit the alias for the definition GV. A vtable address point is
+  /// unnamed_addr, constant and as aligned as the vtable.
+  void emitInteriorAlias(llvm::GlobalVariable *GV, StringRef Kind,
+                         uint64_t Offset, bool IsVTable);
+  /// Declare the name of an interior address of GV, which another image
+  /// defines.
+  llvm::GlobalValue *getInteriorAliasDecl(llvm::GlobalVariable *GV,
+                                          StringRef Kind, uint64_t Offset,
+                                          bool IsVTable);
 
   /// Return the name another image exports for the subobject of D at Offset,
   /// or null if the address is reached as Addr plus Offset.

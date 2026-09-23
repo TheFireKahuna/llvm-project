@@ -428,8 +428,6 @@ private:
                                               llvm::Function *Wrapper,
                                               const VarDecl *VD);
 
-public:
-
   /**************************** RTTI Uniqueness ******************************/
 
 protected:
@@ -2110,13 +2108,6 @@ static bool CXXRecordNonInlineHasAttr(const CXXRecordDecl *RD) {
   return false;
 }
 
-// A vtable that lives in another image is reached through a pointer the
-// loader fills, and static data can hold that pointer's value but not an
-// offset from it. Giving every address point of an exported vtable a name of
-// its own keeps each reference to one a plain imported address, so that a
-// constant-initialised object of the class needs nothing at start-up. '$'
-// cannot occur in an Itanium mangled name, so these names cannot collide.
-//
 // The byte offset of an address point from the start of the vtable group.
 static unsigned getVTableAddressPointOffset(CodeGenModule &CGM,
                                             const VTableLayout &Layout,
@@ -2128,80 +2119,21 @@ static unsigned getVTableAddressPointOffset(CodeGenModule &CGM,
          (Layout.getVTableOffset(VTableIndex) + AddressPointIndex);
 }
 
-static void getVTableAddressPointName(StringRef VTable, unsigned Offset,
-                                      SmallVectorImpl<char> &Name) {
-  Name.assign(VTable.begin(), VTable.end());
-  llvm::raw_svector_ostream(Name) << "$ap" << Offset;
-}
-
-// Called for a vtable this image defines and exports: one alias per address
-// point, exported with the vtable.
+// Name every address point of a vtable another image could reach, so that a
+// constant-initialized object of the class needs nothing at start-up. Not
+// only a vtable the visibility mapping exports: a module definition file or an
+// export-everything link can export one that carries no dllexport storage.
 static void emitVTableAddressPointNames(CodeGenModule &CGM,
                                         llvm::GlobalVariable *VTable,
                                         const VTableLayout &Layout) {
-  // Every vtable another image could reach gets the names, not only one the
-  // visibility mapping exports: a module definition file or an
-  // export-everything link can export a vtable that carries no dllexport
-  // storage, and the image that imports it asks for these names.
   if (VTable->isDeclarationForLinker() || VTable->hasLocalLinkage() ||
       !VTable->hasDefaultVisibility())
     return;
-
-  SmallString<256> Name;
-  for (unsigned I = 0, N = Layout.getNumVTables(); I != N; ++I) {
-    unsigned Offset = getVTableAddressPointOffset(
-        CGM, Layout, I, Layout.getAddressPointIndices()[I]);
-    getVTableAddressPointName(VTable->getName(), Offset, Name);
-    // A constant initialiser earlier in this unit may have asked for the name
-    // while the vtable was still a declaration, in which case the definition
-    // replaces what it left behind.
-    llvm::GlobalValue *Old = CGM.getModule().getNamedValue(Name);
-    if (Old && !isa<llvm::GlobalVariable>(Old))
-      continue;
-
-    // An alias takes the COMDAT of the object it points into, which is where
-    // a vtable emitted in several translation units gets its one-of-many
-    // selection from. External linkage then keeps the name a plain symbol
-    // inside that COMDAT: a weak one would need a per-object companion
-    // symbol, which the address point's offset makes impossible to name the
-    // same way twice.
-    auto *Alias = llvm::GlobalAlias::create(
-        CGM.Int8Ty, VTable->getAddressSpace(),
-        llvm::GlobalValue::ExternalLinkage, Old ? StringRef() : StringRef(Name),
-        llvm::ConstantExpr::getGetElementPtr(
-            CGM.Int8Ty, VTable, llvm::ConstantInt::get(CGM.Int32Ty, Offset),
-            /*InBounds=*/true),
-        &CGM.getModule());
-    Alias->setDLLStorageClass(VTable->getDLLStorageClass());
-    Alias->setVisibility(VTable->getVisibility());
-    Alias->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
-    if (Old) {
-      Old->replaceAllUsesWith(Alias);
-      Old->eraseFromParent();
-      Alias->setName(Name);
-    }
-  }
-}
-
-// Called for a vtable another image defines: a declaration of the name that
-// image exports for this address point.
-static llvm::Constant *getVTableAddressPointDecl(CodeGenModule &CGM,
-                                                 llvm::GlobalVariable *VTable,
-                                                 unsigned Offset) {
-  SmallString<256> Name;
-  getVTableAddressPointName(VTable->getName(), Offset, Name);
-  if (llvm::GlobalValue *GV = CGM.getModule().getNamedValue(Name))
-    return GV;
-
-  auto *AddressPoint = new llvm::GlobalVariable(
-      CGM.getModule(), CGM.Int8Ty, /*isConstant=*/true,
-      llvm::GlobalValue::ExternalLinkage, /*Initializer=*/nullptr, Name,
-      /*InsertBefore=*/nullptr, llvm::GlobalValue::NotThreadLocal,
-      VTable->getAddressSpace());
-  AddressPoint->setDLLStorageClass(VTable->getDLLStorageClass());
-  AddressPoint->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
-  AddressPoint->setAlignment(VTable->getAlign());
-  return AddressPoint;
+  for (unsigned I = 0, N = Layout.getNumVTables(); I != N; ++I)
+    CGM.emitInteriorAlias(VTable, "$ap",
+                          getVTableAddressPointOffset(
+                              CGM, Layout, I, Layout.getAddressPointIndices()[I]),
+                          /*IsVTable=*/true);
 }
 
 static void setVTableSelectiveDLLImportExport(CodeGenModule &CGM,
@@ -2333,10 +2265,11 @@ ItaniumCXXABI::getVTableAddressPoint(BaseSubobject Base,
       (VTable->hasDLLImportStorageClass() ||
        CGM.getVTables().isVTableExternal(VTableClass)) &&
       CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
-    return getVTableAddressPointDecl(
-        CGM, cast<llvm::GlobalVariable>(VTable),
+    return CGM.getInteriorAliasDecl(
+        cast<llvm::GlobalVariable>(VTable), "$ap",
         getVTableAddressPointOffset(CGM, Layout, AddressPoint.VTableIndex,
-                                    AddressPoint.AddressPointIndex));
+                                    AddressPoint.AddressPointIndex),
+        /*IsVTable=*/true);
 
   llvm::Value *Indices[] = {
     llvm::ConstantInt::get(CGM.Int32Ty, 0),
