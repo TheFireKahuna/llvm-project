@@ -35,6 +35,8 @@ _mm_malloc(size_t __size, size_t __align) {
     return malloc(__size);
   }
 
+  // An alignment of zero is invalid, as with GCC and _aligned_malloc; leave it
+  // for the allocator to reject rather than rounding it up.
   if (__align && !(__align & (__align - 1)) && __align < sizeof(void *))
     __align = sizeof(void *);
 

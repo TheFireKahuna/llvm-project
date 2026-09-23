@@ -692,9 +692,9 @@ if (CLANG_ENABLE_BOOTSTRAP)
         set(${CLANG_STAGE}_RANLIB -DCMAKE_RANLIB=${BOOTSTRAP_CMAKE_RANLIB})
       endif()
     elseif(BOOTSTRAP_LLVM_HOST_TRIPLE MATCHES ".*-windows-(itanium|ntposix).*"
-           OR LLVM_DEFAULT_TARGET_TRIPLE MATCHES ".*-windows-(itanium|ntposix).*"
-           OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
-      # Windows Itanium and NT POSIX use GNU-style clang on Windows: use llvm-ar
+           OR LLVM_DEFAULT_TARGET_TRIPLE MATCHES ".*-windows-(itanium|ntposix).*")
+      # The next stage builds Windows Itanium or NT-POSIX with the GNU-style
+      # driver, for which CMake expects an ar-style archiver.
       add_dependencies(clang-bootstrap-deps llvm-ar llvm-ranlib)
       set(${CLANG_STAGE}_AR -DCMAKE_AR=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-ar)
       set(${CLANG_STAGE}_RANLIB -DCMAKE_RANLIB=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-ranlib)
