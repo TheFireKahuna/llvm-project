@@ -140,9 +140,9 @@ TEST(rename, ExistingTemp) {
 
   {
     // Use mapped_file_region to make sure that the destination file is mmap'ed.
-    // This will cause SetInformationByHandle to fail when renaming to the
-    // destination, and we will follow the code path that tries to give target
-    // a temporary name.
+    // On a file system without POSIX-semantics rename this makes renaming to
+    // the destination fail, and we follow the code path that tries to give
+    // target a temporary name.
     int TargetFD;
     std::error_code EC;
     ASSERT_NO_ERROR(fs::openFileForRead(TargetFileName, TargetFD));
@@ -154,14 +154,12 @@ TEST(rename, ExistingTemp) {
 
     ASSERT_NO_ERROR(fs::rename(SourceFileName, TargetFileName));
 
-#ifdef _WIN32
-    // Make sure that target was temporarily renamed to target.tmp1 on Windows.
-    // This is signified by a permission denied error as opposed to no such file
-    // or directory when trying to open it.
-    int Tmp1FD;
-    EXPECT_EQ(errc::permission_denied,
-              fs::openFileForRead(TargetTmp1FileName, Tmp1FD));
-#endif
+    // The mapped target was replaced in place: the mapping keeps the old
+    // contents, the name has the new ones, and nothing was moved aside to
+    // target.tmp1.
+    EXPECT_EQ(StringRef(MFR.const_data(), 10), "!!target!!");
+    EXPECT_TRUE(FileHasContent(TargetFileName, "!!source!!"));
+    EXPECT_FALSE(fs::exists(TargetTmp1FileName));
   }
 
   EXPECT_TRUE(FileHasContent(TargetTmp0FileName, "!!target.tmp0!!"));

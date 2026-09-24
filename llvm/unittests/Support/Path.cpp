@@ -2077,6 +2077,63 @@ static void verifyFileContents(const Twine &Path, StringRef Contents) {
   ASSERT_EQ(Data, Contents);
 }
 
+// Like unlink(2), remove() deletes a file whatever its permissions.
+TEST_F(FileSystemTest, RemoveReadOnlyFile) {
+  SmallString<128> Path(TestDirectory);
+  path::append(Path, "readonly.txt");
+  createFileWithData(Path, false, fs::CD_CreateNew, "x");
+  ASSERT_NO_ERROR(fs::setPermissions(Path, fs::all_read));
+
+  ASSERT_NO_ERROR(fs::remove(Path));
+  EXPECT_FALSE(fs::exists(Path));
+}
+
+// Like rmdir(2), remove() refuses a non-empty directory and says so.
+TEST_F(FileSystemTest, RemoveNonEmptyDirectory) {
+  SmallString<128> Dir(TestDirectory);
+  path::append(Dir, "nonempty");
+  ASSERT_NO_ERROR(fs::create_directory(Dir));
+  SmallString<128> File(Dir);
+  path::append(File, "file");
+  createFileWithData(File, false, fs::CD_CreateNew, "x");
+
+  EXPECT_EQ(fs::remove(Dir), errc::directory_not_empty);
+  EXPECT_TRUE(fs::exists(File));
+  ASSERT_NO_ERROR(fs::remove(File));
+  ASSERT_NO_ERROR(fs::remove(Dir));
+}
+
+// A rename replaces a destination that another handle has mapped, and the
+// mapping keeps the old contents: this is how a compiler replaces an output
+// that a debugger or a language server is reading.
+TEST_F(FileSystemTest, RenameOverMappedFile) {
+  SmallString<128> Dest(TestDirectory);
+  path::append(Dest, "mapped.out");
+  SmallString<128> Src(TestDirectory);
+  path::append(Src, "replacement.out");
+  const size_t Size = 4096;
+  createFileWithData(Dest, false, fs::CD_CreateNew, std::string(Size, 'o'));
+  createFileWithData(Src, false, fs::CD_CreateNew, std::string(Size, 'n'));
+
+  int FD;
+  ASSERT_NO_ERROR(fs::openFileForRead(Dest, FD));
+  FileDescriptorCloser Closer(FD);
+  std::error_code EC;
+  fs::mapped_file_region MFR(fs::convertFDToNativeFile(FD),
+                             fs::mapped_file_region::readonly, Size, 0, EC);
+  ASSERT_NO_ERROR(EC);
+
+  ASSERT_NO_ERROR(fs::rename(Src, Dest));
+  EXPECT_EQ(MFR.const_data()[Size - 1], 'o');
+  EXPECT_FALSE(fs::exists(Src));
+  verifyFileContents(Dest, std::string(Size, 'n'));
+  // The destination was replaced, not moved aside.
+  EXPECT_FALSE(fs::exists(Dest + ".tmp0"));
+
+  MFR.unmap();
+  ASSERT_NO_ERROR(fs::remove(Dest));
+}
+
 TEST_F(FileSystemTest, CreateNew) {
   int FD;
   std::optional<FileDescriptorCloser> Closer;

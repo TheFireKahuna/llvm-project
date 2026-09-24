@@ -73,6 +73,34 @@ static constexpr DWORD LongPathPrefix16Len =
 static constexpr DWORD LongPathUNCPrefix16Len =
     static_cast<DWORD>(std::size(LongPathUNCPrefix16) - 1);
 
+// FileRenameInfoEx and FileDispositionInfoEx (Windows 10 1607) and their
+// flags. The SDK declares them only above the _WIN32_WINNT that
+// WindowsSupport.h selects.
+static constexpr auto FileDispositionInfoExClass =
+    static_cast<FILE_INFO_BY_HANDLE_CLASS>(21);
+static constexpr auto FileRenameInfoExClass =
+    static_cast<FILE_INFO_BY_HANDLE_CLASS>(22);
+static constexpr DWORD RenameReplaceIfExists = 0x1;
+static constexpr DWORD RenamePosixSemantics = 0x2;
+static constexpr DWORD DispositionDelete = 0x1;
+static constexpr DWORD DispositionPosixSemantics = 0x2;
+static constexpr DWORD DispositionIgnoreReadOnly = 0x10;
+
+// Whether SetFileInformationByHandle failed because the kernel or the file
+// system does not implement the information class (older Windows, FAT, some
+// SMB servers, Wine), rather than refusing the operation itself.
+static bool isInfoClassUnsupported(DWORD Error) {
+  switch (Error) {
+  case ERROR_SUCCESS: // Wine does not always set an error code.
+  case ERROR_INVALID_PARAMETER:
+  case ERROR_INVALID_FUNCTION:
+  case ERROR_NOT_SUPPORTED:
+    return true;
+  default:
+    return false;
+  }
+}
+
 static void stripLongPathPrefix(wchar_t *&Data, DWORD &CountChars) {
   if (CountChars >= LongPathUNCPrefix16Len &&
       ::wmemcmp(Data, LongPathUNCPrefix16, LongPathUNCPrefix16Len) == 0) {
@@ -419,6 +447,28 @@ std::error_code create_hard_link(const Twine &to, const Twine &from) {
   return std::error_code();
 }
 
+// Deletes the file or directory behind \p H. A POSIX-semantics delete behaves
+// like unlink(2): the name is released at once, even while other processes
+// still have the file open or mapped as data, and the read-only attribute does
+// not prevent it. File systems without it take the classic delete, which
+// releases the name when the last handle closes.
+static std::error_code deleteByHandle(HANDLE H) {
+  DWORD Flags = DispositionDelete | DispositionPosixSemantics |
+                DispositionIgnoreReadOnly;
+  SetLastError(ERROR_SUCCESS);
+  if (::SetFileInformationByHandle(H, FileDispositionInfoExClass, &Flags,
+                                   sizeof(Flags)))
+    return std::error_code();
+  if (!isInfoClassUnsupported(::GetLastError()))
+    return mapWindowsError(::GetLastError());
+
+  FILE_DISPOSITION_INFO Disposition = {TRUE};
+  if (!::SetFileInformationByHandle(H, FileDispositionInfo, &Disposition,
+                                    sizeof(Disposition)))
+    return mapWindowsError(::GetLastError());
+  return std::error_code();
+}
+
 std::error_code remove(const Twine &path, bool IgnoreNonExisting) {
   SmallVector<wchar_t, 128> path_utf16;
 
@@ -430,25 +480,26 @@ std::error_code remove(const Twine &path, bool IgnoreNonExisting) {
   // the DeleteFile or RemoveDirectory functions, but that requires you to know
   // which one it is. We could stat() the file to determine that, but that would
   // cost us additional system calls, which can be slow in a directory
-  // containing a large number of files. So instead we call CreateFile directly.
-  // The important part is the FILE_FLAG_DELETE_ON_CLOSE flag, which causes the
-  // file to be deleted once it is closed. We also use the flags
-  // FILE_FLAG_BACKUP_SEMANTICS (which allows us to open directories), and
-  // FILE_FLAG_OPEN_REPARSE_POINT (don't follow symlinks).
+  // containing a large number of files. So instead we call CreateFile directly
+  // with FILE_FLAG_BACKUP_SEMANTICS (which allows us to open directories) and
+  // FILE_FLAG_OPEN_REPARSE_POINT (don't follow symlinks), and delete through
+  // the handle, which also reports a file that cannot be deleted, such as a
+  // non-empty directory.
   ScopedFileHandle h(::CreateFileW(
       c_str(path_utf16), DELETE,
       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
       OPEN_EXISTING,
       FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS |
-          FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_DELETE_ON_CLOSE,
+          FILE_FLAG_OPEN_REPARSE_POINT,
       NULL));
   if (!h) {
     std::error_code EC = mapWindowsError(::GetLastError());
     if (EC != errc::no_such_file_or_directory || !IgnoreNonExisting)
       return EC;
+    return std::error_code();
   }
 
-  return std::error_code();
+  return deleteByHandle(h);
 }
 
 static std::error_code is_local_internal(SmallVectorImpl<wchar_t> &Path,
@@ -607,11 +658,29 @@ static std::error_code rename_internal(HANDLE FromHandle, const Twine &To,
                                   (ToWide.size() * sizeof(wchar_t)));
   FILE_RENAME_INFO &RenameInfo =
       *reinterpret_cast<FILE_RENAME_INFO *>(RenameInfoBuf.data());
-  RenameInfo.ReplaceIfExists = ReplaceIfExists;
   RenameInfo.RootDirectory = 0;
   RenameInfo.FileNameLength = ToWide.size() * sizeof(wchar_t);
   std::copy(ToWide.begin(), ToWide.end(), &RenameInfo.FileName[0]);
 
+  // A POSIX-semantics rename replaces a destination that other processes
+  // still have open or mapped as data; they keep the old file. The classic
+  // rename is refused there, and a mapped file cannot be truncated either.
+  // FileRenameInfoEx reads a DWORD of flags where FileRenameInfo has the
+  // BOOLEAN ReplaceIfExists.
+  static_assert(offsetof(FILE_RENAME_INFO, RootDirectory) >= sizeof(DWORD));
+  DWORD Flags = RenamePosixSemantics |
+                (ReplaceIfExists ? RenameReplaceIfExists : DWORD(0));
+  memcpy(&RenameInfo, &Flags, sizeof(Flags));
+  SetLastError(ERROR_SUCCESS);
+  if (SetFileInformationByHandle(FromHandle, FileRenameInfoExClass, &RenameInfo,
+                                 RenameInfoBuf.size()))
+    return std::error_code();
+  if (!isInfoClassUnsupported(GetLastError()))
+    return mapWindowsError(GetLastError());
+
+  Flags = 0;
+  memcpy(&RenameInfo, &Flags, sizeof(Flags));
+  RenameInfo.ReplaceIfExists = ReplaceIfExists;
   SetLastError(ERROR_SUCCESS);
   if (!SetFileInformationByHandle(FromHandle, FileRenameInfo, &RenameInfo,
                                   RenameInfoBuf.size())) {
@@ -651,12 +720,18 @@ static std::error_code rename_handle(HANDLE FromHandle, const Twine &To) {
     if (!EC || EC != errc::permission_denied)
       return EC;
 
+    // NTFS transiently refuses a POSIX-semantics rename while another rename
+    // onto the same name is in flight. Try once more before moving the
+    // destination aside, which leaves the name briefly absent.
+    if (Retry == 0)
+      continue;
+
     // The destination file probably exists and is currently open in another
-    // process, either because the file was opened without FILE_SHARE_DELETE or
-    // it is mapped into memory (e.g. using MemoryBuffer). Rename it in order to
-    // move it out of the way of the source file. Use FILE_FLAG_DELETE_ON_CLOSE
-    // to arrange for the destination file to be deleted when the other process
-    // closes it.
+    // process, either because the file was opened without FILE_SHARE_DELETE
+    // or the file system has no POSIX-semantics rename and the file is mapped
+    // into memory (e.g. using MemoryBuffer). Rename it in order to move it out
+    // of the way of the source file. Use FILE_FLAG_DELETE_ON_CLOSE to arrange
+    // for the destination file to be deleted when the other process closes it.
     ScopedFileHandle ToHandle(
         ::CreateFileW(WideTo.begin(), GENERIC_READ | DELETE,
                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -706,6 +781,9 @@ static std::error_code rename_handle(HANDLE FromHandle, const Twine &To) {
         }
         return EC;
       }
+      // Delete-on-close is skipped if the file is still mapped when the last
+      // handle closes; unlink the moved file now where the file system can.
+      (void)deleteByHandle(ToHandle);
       break;
     }
 
