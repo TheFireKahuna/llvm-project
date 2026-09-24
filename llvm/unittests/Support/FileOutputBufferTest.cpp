@@ -155,6 +155,36 @@ TEST(FileOutputBuffer, Test) {
   ASSERT_EQ(File6Size, 0ULL);
   ASSERT_NO_ERROR(fs::remove(File6.str()));
 
+  // TEST 7: An empty output replaces a file that is mapped; the mapping keeps
+  // the old contents.
+  SmallString<128> File7(TestDirectory);
+  File7.append("/file7");
+  {
+    std::error_code EC;
+    raw_fd_ostream OS(File7, EC);
+    ASSERT_NO_ERROR(EC);
+    OS << "old";
+  }
+  {
+    Expected<fs::file_t> File = fs::openNativeFileForRead(File7);
+    ASSERT_NO_ERROR(errorToErrorCode(File.takeError()));
+    std::error_code EC;
+    fs::mapped_file_region Mapping(*File, fs::mapped_file_region::readonly, 3,
+                                   0, EC);
+    ASSERT_NO_ERROR(EC);
+    Expected<std::unique_ptr<FileOutputBuffer>> BufferOrErr =
+        FileOutputBuffer::create(File7, 0);
+    ASSERT_NO_ERROR(errorToErrorCode(BufferOrErr.takeError()));
+    ASSERT_NO_ERROR(errorToErrorCode((*BufferOrErr)->commit()));
+    EXPECT_EQ(StringRef(Mapping.const_data(), 3), "old");
+    Mapping.unmap();
+    ASSERT_NO_ERROR(fs::closeFile(*File));
+  }
+  uint64_t File7Size;
+  ASSERT_NO_ERROR(fs::file_size(Twine(File7), File7Size));
+  ASSERT_EQ(File7Size, 0ULL);
+  ASSERT_NO_ERROR(fs::remove(File7.str()));
+
   // Clean up.
   ASSERT_NO_ERROR(fs::remove(TestDirectory.str()));
 }

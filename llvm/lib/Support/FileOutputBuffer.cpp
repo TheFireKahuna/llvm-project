@@ -76,9 +76,9 @@ private:
 class InMemoryBuffer : public FileOutputBuffer {
 public:
   InMemoryBuffer(StringRef Path, MemoryBlock Buf, std::size_t BufSize,
-                 unsigned Mode)
-      : FileOutputBuffer(Path), Buffer(Buf), BufferSize(BufSize),
-        Mode(Mode) {}
+                 unsigned Mode, bool Atomic)
+      : FileOutputBuffer(Path), Buffer(Buf), BufferSize(BufSize), Mode(Mode),
+        Atomic(Atomic) {}
 
   uint8_t *getBufferStart() const override { return (uint8_t *)Buffer.base(); }
 
@@ -96,13 +96,29 @@ public:
     }
 
     using namespace sys::fs;
+    StringRef Data((const char *)Buffer.base(), BufferSize);
+    if (Atomic) {
+      // Replace a regular file as OnDiskBuffer does, through a temporary
+      // renamed into place, so no reader sees it truncated or half written.
+      Expected<TempFile> Temp = TempFile::create(FinalPath + ".tmp%%%%%%%", Mode);
+      if (!Temp)
+        return Temp.takeError();
+      raw_fd_ostream OS(Temp->FD, /*shouldClose=*/false, /*unbuffered=*/true);
+      OS << Data;
+      if (std::error_code EC = OS.error()) {
+        OS.clear_error();
+        consumeError(Temp->discard());
+        return errorCodeToError(EC);
+      }
+      return Temp->keep(FinalPath);
+    }
+
     int FD;
-    std::error_code EC;
     if (auto EC =
             openFileForWrite(FinalPath, FD, CD_CreateAlways, OF_Delete, Mode))
       return errorCodeToError(EC);
     raw_fd_ostream OS(FD, /*shouldClose=*/true, /*unbuffered=*/true);
-    OS << StringRef((const char *)Buffer.base(), BufferSize);
+    OS << Data;
     return Error::success();
   }
 
@@ -111,17 +127,19 @@ private:
   OwningMemoryBlock Buffer;
   size_t BufferSize;
   unsigned Mode;
+  bool Atomic;
 };
 } // namespace
 
 static Expected<std::unique_ptr<InMemoryBuffer>>
-createInMemoryBuffer(StringRef Path, size_t Size, unsigned Mode) {
+createInMemoryBuffer(StringRef Path, size_t Size, unsigned Mode,
+                     bool Atomic) {
   std::error_code EC;
   MemoryBlock MB = Memory::allocateMappedMemory(
       Size, nullptr, sys::Memory::MF_READ | sys::Memory::MF_WRITE, EC);
   if (EC)
     return errorCodeToError(EC);
-  return std::make_unique<InMemoryBuffer>(Path, MB, Size, Mode);
+  return std::make_unique<InMemoryBuffer>(Path, MB, Size, Mode, Atomic);
 }
 
 static Expected<std::unique_ptr<FileOutputBuffer>>
@@ -147,7 +165,7 @@ createOnDiskBuffer(StringRef Path, size_t Size, unsigned Mode) {
   // If that happens, we fall back to in-memory buffer as the last resort.
   if (EC) {
     consumeError(File.discard());
-    return createInMemoryBuffer(Path, Size, Mode);
+    return createInMemoryBuffer(Path, Size, Mode, /*Atomic=*/true);
   }
 
   return std::make_unique<OnDiskBuffer>(Path, std::move(File),
@@ -159,15 +177,11 @@ Expected<std::unique_ptr<FileOutputBuffer>>
 FileOutputBuffer::create(StringRef Path, size_t Size, unsigned Flags) {
   // Handle "-" as stdout just like llvm::raw_ostream does.
   if (Path == "-")
-    return createInMemoryBuffer("-", Size, /*Mode=*/0);
+    return createInMemoryBuffer("-", Size, /*Mode=*/0, /*Atomic=*/false);
 
   unsigned Mode = fs::all_read | fs::all_write;
   if (Flags & F_executable)
     Mode |= fs::all_exe;
-
-  // If Size is zero, don't use mmap which will fail with EINVAL.
-  if (Size == 0)
-    return createInMemoryBuffer(Path, Size, Mode);
 
   fs::file_status Stat;
   fs::status(Path, Stat);
@@ -186,11 +200,13 @@ FileOutputBuffer::create(StringRef Path, size_t Size, unsigned Flags) {
   case fs::file_type::regular_file:
   case fs::file_type::file_not_found:
   case fs::file_type::status_error:
+    // If Size is zero, don't use mmap which will fail with EINVAL.
+    if (Size == 0)
+      return createInMemoryBuffer(Path, Size, Mode, /*Atomic=*/true);
     if (Flags & F_mmap)
-      return createInMemoryBuffer(Path, Size, Mode);
-    else
-      return createOnDiskBuffer(Path, Size, Mode);
+      return createInMemoryBuffer(Path, Size, Mode, /*Atomic=*/false);
+    return createOnDiskBuffer(Path, Size, Mode);
   default:
-    return createInMemoryBuffer(Path, Size, Mode);
+    return createInMemoryBuffer(Path, Size, Mode, /*Atomic=*/false);
   }
 }
