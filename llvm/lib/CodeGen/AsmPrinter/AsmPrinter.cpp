@@ -1952,7 +1952,7 @@ void AsmPrinter::emitPCSections(const MachineFunction &MF) {
 /// Returns true if function begin and end labels should be emitted.
 static bool needFuncLabels(const MachineFunction &MF, const AsmPrinter &Asm) {
   if (Asm.hasDebugInfo() || !MF.getLandingPads().empty() ||
-      MF.hasEHFunclets() ||
+      MF.hasEHFunclets() || MF.hasNTPOSIXExceptionTable() ||
       MF.getFunction().hasMetadata(LLVMContext::MD_pcsections))
     return true;
 

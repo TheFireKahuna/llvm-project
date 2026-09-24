@@ -187,3 +187,64 @@ bool llvm::usesNTPOSIXCleanupFunclets(const Function &F) {
   }
   return false;
 }
+
+std::optional<NTPOSIXPhaseOne>
+llvm::getNTPOSIXPhaseOne(const CleanupPadInst &Pad) {
+  if (Pad.arg_size() != 1)
+    return std::nullopt;
+  const auto *Arg = dyn_cast<ConstantInt>(Pad.getArgOperand(0));
+  if (!Arg || Arg->getBitWidth() != 8)
+    return std::nullopt;
+  switch (Arg->getZExtValue()) {
+  case uint8_t(NTPOSIXPhaseOne::Pass):
+    return NTPOSIXPhaseOne::Pass;
+  case uint8_t(NTPOSIXPhaseOne::Boundary):
+    return NTPOSIXPhaseOne::Boundary;
+  case uint8_t(NTPOSIXPhaseOne::Terminate):
+    return NTPOSIXPhaseOne::Terminate;
+  default:
+    return std::nullopt;
+  }
+}
+
+void llvm::setNTPOSIXPhaseOne(CleanupPadInst &Pad, NTPOSIXPhaseOne Clause) {
+  assert(Pad.arg_size() == 1 && "an NT-POSIX cleanuppad carries one clause");
+  Pad.setArgOperand(
+      0, ConstantInt::get(Type::getInt8Ty(Pad.getContext()), uint8_t(Clause)));
+}
+
+const Instruction *llvm::findNTPOSIXPhaseOneViolation(const Function &F) {
+  if (!usesNTPOSIXCleanupFunclets(F))
+    return nullptr;
+  for (const BasicBlock &BB : F) {
+    for (const Instruction &I : BB) {
+      if (const auto *Pad = dyn_cast<CleanupPadInst>(&I)) {
+        if (!getNTPOSIXPhaseOne(*Pad))
+          return Pad;
+        continue;
+      }
+      const auto *Ret = dyn_cast<CleanupReturnInst>(&I);
+      if (!Ret)
+        continue;
+      const CleanupPadInst *From = Ret->getCleanupPad();
+      if (!isa<ConstantTokenNone>(From->getParentPad()))
+        continue;
+      std::optional<NTPOSIXPhaseOne> Clause = getNTPOSIXPhaseOne(*From);
+      if (!Clause)
+        return From;
+      if (Ret->unwindsToCaller()) {
+        if (!passesNTPOSIXSearch(*Clause))
+          return Ret;
+        continue;
+      }
+      const auto *To =
+          dyn_cast<CleanupPadInst>(&*Ret->getUnwindDest()->getFirstNonPHIIt());
+      if (!To)
+        return Ret;
+      std::optional<NTPOSIXPhaseOne> Next = getNTPOSIXPhaseOne(*To);
+      if (!Next || passesNTPOSIXSearch(*Clause) != passesNTPOSIXSearch(*Next))
+        return Ret;
+    }
+  }
+  return nullptr;
+}

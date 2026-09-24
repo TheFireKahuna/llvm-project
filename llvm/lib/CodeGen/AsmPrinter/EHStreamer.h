@@ -102,6 +102,9 @@ protected:
   SmallPtrSet<const MCSymbol *, 16> RangeBeginLabels, RangeEndLabels;
   bool InInvokeRange = false;
   bool InFunclet = false;
+  /// The function is `nounwind`: no call in it gets an entry, so an unwind
+  /// that reaches one ends at the gap under every class.
+  bool BodyCannotUnwind = false;
   /// The end label owed to the call being emitted, if any.
   MCSymbol *PendingCallEnd = nullptr;
 

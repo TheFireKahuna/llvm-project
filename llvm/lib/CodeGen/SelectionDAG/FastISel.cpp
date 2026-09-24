@@ -1153,8 +1153,10 @@ bool FastISel::selectCall(const User *I) {
 
   // Handle simple inline asms.
   if (const InlineAsm *IA = dyn_cast<InlineAsm>(Call->getCalledOperand())) {
-    // Don't attempt to handle constraints.
-    if (!IA->getConstraintString().empty())
+    // Don't attempt to handle constraints, or an NT-POSIX asm that may unwind,
+    // whose call site the selection DAG labels.
+    if (!IA->getConstraintString().empty() ||
+        (IA->canThrow() && TM.getTargetTriple().isWindowsNTPOSIXEnvironment()))
       return false;
 
     unsigned ExtraInfo = 0;

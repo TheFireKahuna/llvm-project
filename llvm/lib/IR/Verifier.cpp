@@ -261,6 +261,8 @@ public:
     // FIXME: We strip const here because the inst visitor strips const.
     visit(const_cast<Function &>(F));
     verifySiblingFuncletUnwinds();
+    if (const Instruction *I = findNTPOSIXPhaseOneViolation(F))
+      CheckFailed("NT-POSIX cleanup funclet breaks its phase-one clause", I);
 
     if (ConvergenceVerifyHelper.sawTokens())
       ConvergenceVerifyHelper.verify(DT);
