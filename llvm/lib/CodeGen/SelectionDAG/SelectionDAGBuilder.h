@@ -741,6 +741,13 @@ public:
   SDValue lowerStartEH(SDValue Chain, const BasicBlock *EHPadBB,
                        MCSymbol *&BeginLabel);
 
+  /// NT-POSIX: whether \p Call, outside every invoke, unwinds to the caller:
+  /// the labels around it are then a call site of its own with no landing
+  /// pad, and the operation stays between them.
+  bool unwindsToCaller(const CallBase &Call) const;
+  SDValue lowerStartUnwindToCaller(SDValue Chain, MCSymbol *&BeginLabel);
+  SDValue lowerEndUnwindToCaller(SDValue Chain, MCSymbol *BeginLabel);
+
 private:
   SDValue lowerEndEH(SDValue Chain, const InvokeInst *II,
                      const BasicBlock *EHPadBB, MCSymbol *BeginLabel);

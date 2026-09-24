@@ -55,11 +55,11 @@ mid:
 done:
   ret void
 cleanup_a:
-  %a = cleanuppad within none []
+  %a = cleanuppad within none [i8 0]
   call void @drop_a() [ "funclet"(token %a) ]
   cleanupret from %a unwind to caller
 cleanup_b:
-  %b = cleanuppad within none []
+  %b = cleanuppad within none [i8 0]
   call void @drop_b() [ "funclet"(token %b) ]
   cleanupret from %b unwind label %cleanup_a
 }
@@ -81,13 +81,41 @@ mid:
 done:
   ret void
 cleanup:
-  %c = cleanuppad within none []
+  %c = cleanuppad within none [i8 0]
   call void @drop_a() [ "funclet"(token %c) ]
   cleanupret from %c unwind to caller
 catch:
   %e = landingpad { ptr, i32 } catch ptr null
   ret void
 }
+
+; A cleanup that never returns in a body that cannot unwind: its clause, 1,
+; puts the empty filter behind the cleanup record with no chain to follow.
+; CHECK-LABEL: boundary_never_returns:
+; CHECK: [[NBEGIN:.Ltmp[0-9]+]]:
+; CHECK-NEXT: bl may_throw
+; CHECK: GCC_except_table2:
+; CHECK: .uleb128 [[NBEGIN]]-[[NFUNC:.Lfunc_begin[0-9]+]]
+; CHECK-NEXT: .uleb128 {{.*}}-[[NBEGIN]]
+; CHECK-NEXT: .byte 0
+; CHECK-NEXT: .byte {{[1-9][0-9]*}}
+; CHECK: .Lcst_end{{[0-9]+}}:
+; CHECK-NEXT: .byte 0
+; CHECK-NEXT: // Cleanup
+; CHECK-NEXT: .byte 0
+; CHECK-NEXT: .byte 127
+define void @boundary_never_returns() nounwind personality ptr @rust_eh_personality {
+entry:
+  invoke void @may_throw() to label %done unwind label %cleanup
+done:
+  ret void
+cleanup:
+  %c = cleanuppad within none [i8 1]
+  call void @abort() [ "funclet"(token %c) ]
+  unreachable
+}
+
+declare void @abort() nounwind
 
 ; CHECK: .section .gehcont$y
 ; CHECK-NEXT: .symidx $ehgcr_1_{{[0-9]+}}

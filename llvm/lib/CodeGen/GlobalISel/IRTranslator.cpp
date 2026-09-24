@@ -2864,6 +2864,14 @@ bool IRTranslator::translateCall(const User &U, MachineIRBuilder &MIRBuilder) {
   if (isa<GCStatepointInst, GCRelocateInst, GCResultInst>(U))
     return false;
 
+  // A fault access, and on NT-POSIX an asm that may unwind, are lowered with
+  // the labels their call sites need by the selection DAG.
+  if (isa<FaultAccessInst>(CI) ||
+      (CI.isInlineAsm() &&
+       cast<InlineAsm>(CI.getCalledOperand())->canThrow() &&
+       MF->getTarget().getTargetTriple().isWindowsNTPOSIXEnvironment()))
+    return false;
+
   if (CI.isInlineAsm())
     return translateInlineAsm(CI, MIRBuilder);
 

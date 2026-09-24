@@ -9267,22 +9267,27 @@ void SelectionDAGBuilder::visitVectorPredicationIntrinsic(
 
 // A memory access whose fault unwinds. With a pad the access sits between the
 // invoke's labels, so its call-site range names the pad, which visitInvoke
-// makes a successor of this block; the access is then volatile to the
-// machine, as a call is immovable, so no pass sinks, folds or re-executes it
-// outside its range. Without a pad it is the plain access.
+// makes a successor of this block. A call that may unwind sits between labels
+// of its own, whose site names no pad: the fault leaves the function. Either
+// way the access is volatile to the machine, as a call is immovable, so no
+// pass sinks, folds or re-executes it outside its range. A call that cannot
+// unwind is the plain access.
 void SelectionDAGBuilder::lowerFaultAccess(const FaultAccessInst &I,
                                            const BasicBlock *EHPadBB) {
   const TargetLowering &TLI = DAG.getTargetLoweringInfo();
   const DataLayout &DL = DAG.getDataLayout();
   SDLoc dl = getCurSDLoc();
   MCSymbol *BeginLabel = nullptr;
-  if (EHPadBB) {
+  bool ToCaller = !EHPadBB && unwindsToCaller(I);
+  if (EHPadBB || ToCaller) {
     // Both PendingLoads and PendingExports must be flushed here; the access
     // might not complete.
     (void)getRoot();
-    DAG.setRoot(lowerStartEH(getControlRoot(), EHPadBB, BeginLabel));
+    DAG.setRoot(EHPadBB
+                    ? lowerStartEH(getControlRoot(), EHPadBB, BeginLabel)
+                    : lowerStartUnwindToCaller(getControlRoot(), BeginLabel));
   }
-  bool IsVolatile = I.isVolatile() || EHPadBB;
+  bool IsVolatile = I.isVolatile() || EHPadBB || ToCaller;
   SDValue Root = IsVolatile ? getRoot() : getMemoryRoot();
   MachineMemOperand::Flags Flags =
       IsVolatile ? MachineMemOperand::MOVolatile : MachineMemOperand::MONone;
@@ -9392,6 +9397,35 @@ void SelectionDAGBuilder::lowerFaultAccess(const FaultAccessInst &I,
   if (EHPadBB)
     DAG.setRoot(
         lowerEndEH(getRoot(), cast<InvokeInst>(&I), EHPadBB, BeginLabel));
+  else if (ToCaller)
+    DAG.setRoot(lowerEndUnwindToCaller(getRoot(), BeginLabel));
+}
+
+bool SelectionDAGBuilder::unwindsToCaller(const CallBase &Call) const {
+  if (!isa<CallInst>(Call) || Call.doesNotThrow() ||
+      !FuncInfo.Fn->hasPersonalityFn())
+    return false;
+  // A fault access is labelled on any target, since its range is what keeps
+  // it immovable; an asm, only where the table gives the range a site.
+  if (const auto *IA = dyn_cast<InlineAsm>(Call.getCalledOperand()))
+    return IA->canThrow() &&
+           DAG.getTarget().getTargetTriple().isWindowsNTPOSIXEnvironment();
+  return isa<FaultAccessInst>(Call);
+}
+
+SDValue SelectionDAGBuilder::lowerStartUnwindToCaller(SDValue Chain,
+                                                      MCSymbol *&BeginLabel) {
+  BeginLabel = DAG.getMachineFunction().getContext().createTempSymbol();
+  return DAG.getEHLabel(getCurSDLoc(), Chain, BeginLabel);
+}
+
+SDValue SelectionDAGBuilder::lowerEndUnwindToCaller(SDValue Chain,
+                                                    MCSymbol *BeginLabel) {
+  MachineFunction &MF = DAG.getMachineFunction();
+  MCSymbol *EndLabel = MF.getContext().createTempSymbol();
+  Chain = DAG.getEHLabel(getCurSDLoc(), Chain, EndLabel);
+  MF.addUnwindToCallerRange(BeginLabel, EndLabel);
+  return Chain;
 }
 
 SDValue SelectionDAGBuilder::lowerStartEH(SDValue Chain,
@@ -10963,7 +10997,11 @@ determineConstraints(ConstraintDecisionInfo &Info,
 
   bool IsCallBr = isa<CallBrInst>(Call);
   bool EmitEHLabels = isa<InvokeInst>(Call);
-  if (IsCallBr || EmitEHLabels)
+  // An asm that may unwind, called outside every invoke on NT-POSIX, gets
+  // labels of its own: its site names no pad, and the unwind leaves the
+  // function.
+  bool ToCaller = !IsCallBr && !EmitEHLabels && Builder.unwindsToCaller(Call);
+  if (IsCallBr || EmitEHLabels || ToCaller)
     // If this is a callbr or invoke we need to flush pending exports since
     // inlineasm_br and invoke are terminators.
     // We need to do this before nodes are glued to the inlineasm_br node.
@@ -10971,6 +11009,8 @@ determineConstraints(ConstraintDecisionInfo &Info,
 
   if (EmitEHLabels)
     Info.Chain = Builder.lowerStartEH(Info.Chain, EHPadBB, Info.BeginLabel);
+  else if (ToCaller)
+    Info.Chain = Builder.lowerStartUnwindToCaller(Info.Chain, Info.BeginLabel);
 
   // Second pass: Compute which constraint option to use.
   computeConstraintToUse(Info, Call, TargetConstraints, Builder, TLI, TM, DAG);
@@ -11134,10 +11174,12 @@ void SelectionDAGBuilder::visitInlineAsm(const CallBase &Call,
 
   if (const auto *II = dyn_cast<InvokeInst>(&Call))
     Chain = lowerEndEH(Chain, II, EHPadBB, Info.BeginLabel);
+  else if (Info.BeginLabel)
+    Chain = lowerEndUnwindToCaller(Chain, Info.BeginLabel);
 
   // Only Update Root if inline assembly has a memory effect.
   if (ResultValues.empty() || Info.HasSideEffect || !OutChains.empty() ||
-      IsCallBr || isa<InvokeInst>(Call))
+      IsCallBr || isa<InvokeInst>(Call) || Info.BeginLabel)
     DAG.setRoot(Chain);
 }
 

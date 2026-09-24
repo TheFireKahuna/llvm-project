@@ -80,3 +80,46 @@ exception:
 }
 
 declare void @llvm.trap()
+
+; A call that may unwind: the access between labels of its own, a site with
+; no pad, in a frameless leaf that still declares its handler.
+; CHECK-LABEL: to_caller:
+; CHECK: .seh_handler rust_eh_personality, @unwind, @except
+; CHECK: [[TB:.Ltmp[0-9]+]]:
+; CHECK-NEXT: ldr x0, [x0]
+; CHECK-NEXT: [[TE:.Ltmp[0-9]+]]:
+; CHECK: .uleb128 [[TB]]-.Lfunc_begin{{[0-9]+}}
+; CHECK-NEXT: .uleb128 [[TE]]-[[TB]]
+; CHECK-NEXT: .byte 0
+; CHECK-NEXT: .byte 0
+; UNWIND-LABEL: Function: to_caller
+; UNWIND: ExceptionHandler [
+define i64 @to_caller(ptr %p) personality ptr @rust_eh_personality {
+entry:
+  %v = call i64 @llvm.fault.load.i64.p0(ptr %p, i32 8)
+  ret i64 %v
+}
+
+; A function that cannot unwind and calls nothing keeps its table.
+; CHECK-LABEL: sealed:
+; CHECK: .seh_handler rust_eh_personality, @unwind, @except
+; UNWIND-LABEL: Function: sealed
+; UNWIND: ExceptionHandler [
+define void @sealed() nounwind personality ptr @rust_eh_personality {
+entry:
+  ret void
+}
+
+; An asm window that may unwind, outside every invoke: a site of its own.
+; CHECK-LABEL: asm_to_caller:
+; CHECK: [[AB:.Ltmp[0-9]+]]:
+; CHECK: [[AE:.Ltmp[0-9]+]]:
+; CHECK: .uleb128 [[AB]]-.Lfunc_begin{{[0-9]+}}
+; CHECK-NEXT: .uleb128 [[AE]]-[[AB]]
+; CHECK-NEXT: .byte 0
+; CHECK-NEXT: .byte 0
+define i64 @asm_to_caller(ptr %p) personality ptr @rust_eh_personality {
+entry:
+  %v = call i64 asm sideeffect unwind "ldr $0, [$1]", "=r,r,~{memory}"(ptr %p)
+  ret i64 %v
+}

@@ -84,9 +84,14 @@ void WinException::beginFunction(const MachineFunction *MF) {
     Per = classifyEHPersonality(PerFn);
   }
 
-  bool forceEmitPersonality = F.hasPersonalityFn() &&
-                              !isNoOpWithoutInvoke(Per) &&
-                              F.needsUnwindTableEntry();
+  // On NT-POSIX a function that cannot unwind keeps its table with no invoke
+  // in it, and so does one whose only sites unwind to the caller: a search
+  // that reaches the frame meets a site or a gap there, never a frame that
+  // declares no handler.
+  bool forceEmitPersonality = (F.hasPersonalityFn() &&
+                               !isNoOpWithoutInvoke(Per) &&
+                               F.needsUnwindTableEntry()) ||
+                              MF->hasNTPOSIXExceptionTable();
 
   shouldEmitPersonality =
       forceEmitPersonality || ((hasLandingPads || hasEHFunclets) &&

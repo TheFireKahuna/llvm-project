@@ -399,6 +399,11 @@ class LLVM_ABI MachineFunction {
   /// List of LandingPadInfo describing the landing pad information.
   std::vector<LandingPadInfo> LandingPads;
 
+  /// NT-POSIX: the begin label of each operation outside every invoke whose
+  /// unwind leaves the function, mapped to its end label. Its call site names
+  /// no landing pad, so a search passes it where the function may unwind.
+  DenseMap<MCSymbol *, MCSymbol *> UnwindToCallerRanges;
+
   /// Map a landing pad's EH symbol to the call site indexes.
   DenseMap<MCSymbol*, SmallVector<unsigned, 4>> LPadToCallSiteMap;
 
@@ -1343,6 +1348,23 @@ public:
   /// with a try landing pad block.
   void addInvoke(MachineBasicBlock *LandingPad,
                  MCSymbol *BeginLabel, MCSymbol *EndLabel);
+
+  /// NT-POSIX: records the labels around an operation, outside every invoke,
+  /// whose unwind leaves the function.
+  void addUnwindToCallerRange(MCSymbol *BeginLabel, MCSymbol *EndLabel) {
+    UnwindToCallerRanges[BeginLabel] = EndLabel;
+  }
+
+  /// The ranges \ref addUnwindToCallerRange recorded, by begin label.
+  const DenseMap<MCSymbol *, MCSymbol *> &getUnwindToCallerRanges() const {
+    return UnwindToCallerRanges;
+  }
+
+  /// NT-POSIX: whether this function's frame declares a language handler
+  /// with a table: it has a site the table names, or it cannot unwind, when
+  /// the table makes every instruction in it a gap. Such a frame has an
+  /// unwind record even with an empty prologue.
+  bool hasNTPOSIXExceptionTable() const;
 
   /// Add a new panding pad, and extract the exception handling information from
   /// the landingpad instruction. Returns the label ID for the landing pad

@@ -1025,8 +1025,9 @@ def int_seh_scope_end : Intrinsic<[], [], [IntrNoMem]>;
 
 // A memory access whose hardware fault unwinds. An invoke of one is the
 // access itself between the invoke's labels, so its call-site range names the
-// landing pad and the pad is a successor of the block; a call of one is the
-// plain access. The volatile forms are never merged, moved or removed; the
+// landing pad and the pad is a successor of the block; a call of one that may
+// unwind is the access between labels of its own, whose site names no pad;
+// a call of one that cannot is the plain access. The volatile forms are never merged, moved or removed; the
 // others carry the memory attributes of the access they stand for.
 def int_fault_load
     : Intrinsic<[llvm_any_ty], [llvm_anyptr_ty, llvm_i32_ty],

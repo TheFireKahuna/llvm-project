@@ -706,6 +706,14 @@ static void HandleInlinedEHPad(InvokeInst *II, BasicBlock *FirstNewBlock,
     }
   };
 
+  // An NT-POSIX call site's clause joins every top-level cleanup inlined
+  // there, whatever that cleanup's body does: a site a search does not pass
+  // is not passed at any site the inlinee brings.
+  std::optional<NTPOSIXPhaseOne> SiteClause;
+  if (const auto *SitePad =
+          dyn_cast<CleanupPadInst>(&*UnwindDest->getFirstNonPHIIt()))
+    SiteClause = getNTPOSIXPhaseOne(*SitePad);
+
   // This connects all the instructions which 'unwind to caller' to the invoke
   // destination.
   UnwindDestMemoTy FuncletUnwindMap;
@@ -772,6 +780,10 @@ static void HandleInlinedEHPad(InvokeInst *II, BasicBlock *FirstNewBlock,
         FuncletUnwindMap[NewCatchSwitch] = UnwindDestToken;
         Replacement = NewCatchSwitch;
       }
+    } else if (auto *Pad = dyn_cast<CleanupPadInst>(I)) {
+      if (SiteClause && isa<ConstantTokenNone>(Pad->getParentPad()))
+        if (std::optional<NTPOSIXPhaseOne> Clause = getNTPOSIXPhaseOne(*Pad))
+          setNTPOSIXPhaseOne(*Pad, joinNTPOSIXPhaseOne(*Clause, *SiteClause));
     } else if (!isa<FuncletPadInst>(I)) {
       llvm_unreachable("unexpected EHPad!");
     }

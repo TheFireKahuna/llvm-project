@@ -2277,6 +2277,11 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
     ++MBBI;
   }
 
+  // An NT-POSIX frame with an exception table has an unwind record to carry
+  // its handler, even when its prologue has nothing to describe.
+  if (NeedsWinCFI && !IsFunclet && MF.hasNTPOSIXExceptionTable())
+    HasWinCFI = true;
+
   if (NeedsWinCFI && HasWinCFI) {
     BuildMI(MBB, MBBI, DL, TII.get(X86::SEH_EndPrologue))
         .setMIFlag(MachineInstr::FrameSetup);

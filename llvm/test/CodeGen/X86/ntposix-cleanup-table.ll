@@ -84,3 +84,29 @@ pad:
   call void @drop_a()
   resume { ptr, i32 } %e
 }
+
+; In a nounwind function the same call gets no entry: an unwind reaching it
+; ends at the gap under every class, the answer of a body that cannot unwind.
+; NTPOSIX-LABEL: sealed:
+; NTPOSIX-NOT: .Lplaincall_begin
+; NTPOSIX: callq plain_call
+; NTPOSIX: .Lcst_begin{{[0-9]+}}:
+; NTPOSIX-NEXT: .uleb128 [[S1:.Ltmp[0-9]+]]-.Lfunc_begin{{[0-9]+}}
+; NTPOSIX-NEXT: .uleb128 {{.*}}-[[S1]]
+; NTPOSIX-NEXT: .uleb128 {{.*}}-.Lfunc_begin{{[0-9]+}}
+; NTPOSIX-NEXT: .byte 0
+; NTPOSIX-NEXT: .uleb128 [[S2:.Ltmp[0-9]+]]-.Lfunc_begin{{[0-9]+}}
+; NTPOSIX: .Lcst_end{{[0-9]+}}:
+define void @sealed() nounwind personality ptr @rust_eh_personality {
+entry:
+  invoke void @may_throw() to label %mid unwind label %pad
+mid:
+  call void @plain_call()
+  invoke void @may_throw() to label %done unwind label %pad
+done:
+  ret void
+pad:
+  %e = landingpad { ptr, i32 } cleanup
+  call void @drop_a()
+  resume { ptr, i32 } %e
+}
