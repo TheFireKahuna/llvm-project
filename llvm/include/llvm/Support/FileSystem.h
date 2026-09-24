@@ -827,6 +827,13 @@ enum OpenFlags : unsigned {
   /// adds FILE_FLAG_BACKUP_SEMANTICS to the open flags so a handle to a
   /// directory can be obtained.
   OF_OpenDirectory = 128,
+
+  /// Delete the file when its last handle closes, unless the deletion is
+  /// withdrawn first. Only makes a difference on Windows 10 1607 and later,
+  /// where it adds FILE_FLAG_DELETE_ON_CLOSE and DELETE access; unlike a
+  /// deletion arranged after opening, it leaves the file openable by others
+  /// (with FILE_SHARE_DELETE) while it lives.
+  OF_DeleteOnClose = 256,
 };
 
 /// Create a potentially unique file name but does not create it.

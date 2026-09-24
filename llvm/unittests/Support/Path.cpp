@@ -1006,6 +1006,30 @@ TEST_F(FileSystemTest, TempFileKeepDiscard) {
   ASSERT_NO_ERROR(fs::remove(TestDirectory + "/keep"));
 }
 
+TEST_F(FileSystemTest, TempFileOpenableWhileLive) {
+  // Others can open and stat a temporary while it is being written, and it is
+  // still removed when discarded.
+  Expected<fs::TempFile> File =
+      fs::TempFile::create(TestDirectory + "/live-%%%%");
+  ASSERT_THAT_EXPECTED(File, Succeeded());
+  std::string Name = File->TmpName;
+  int FD;
+  ASSERT_NO_ERROR(fs::openFileForRead(Name, FD));
+  ::close(FD);
+  EXPECT_TRUE(fs::is_regular_file(Name));
+  ASSERT_THAT_ERROR(File->discard(), Succeeded());
+  EXPECT_FALSE(fs::exists(Name));
+}
+
+TEST_F(FileSystemTest, TempFileKeepFailureRemovesTemporary) {
+  Expected<fs::TempFile> File =
+      fs::TempFile::create(TestDirectory + "/orphan-%%%%");
+  ASSERT_THAT_EXPECTED(File, Succeeded());
+  std::string Name = File->TmpName;
+  EXPECT_THAT_ERROR(File->keep(TestDirectory + "/missing/out"), Failed());
+  EXPECT_FALSE(fs::exists(Name));
+}
+
 TEST_F(FileSystemTest, TempFileDiscardDiscard) {
   // We can discard twice.
   auto TempFileOrError = fs::TempFile::create(TestDirectory + "/test-%%%%");
