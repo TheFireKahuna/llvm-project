@@ -87,6 +87,36 @@ static constexpr DWORD DispositionPosixSemantics = 0x2;
 static constexpr DWORD DispositionOnClose = 0x8;
 static constexpr DWORD DispositionIgnoreReadOnly = 0x10;
 
+// FILE_ID_INFO (Windows 8): the volume serial number and the 128-bit file ID,
+// which identifies a file the way st_ino does (NTFS uses the low 64 bits).
+struct FileIdInfo {
+  ULONGLONG VolumeSerialNumber;
+  BYTE FileId[16];
+};
+static constexpr auto FileIdInfoClass =
+    static_cast<FILE_INFO_BY_HANDLE_CLASS>(18);
+
+// FILE_STAT_BASIC_INFORMATION, which GetFileInformationByName returns for
+// FileStatBasicByNameInfo (Windows 11 24H2).
+static constexpr int FileStatBasicByNameInfo = 3;
+struct FileStatBasicInformation {
+  LARGE_INTEGER FileId;
+  LARGE_INTEGER CreationTime;
+  LARGE_INTEGER LastAccessTime;
+  LARGE_INTEGER LastWriteTime;
+  LARGE_INTEGER ChangeTime;
+  LARGE_INTEGER AllocationSize;
+  LARGE_INTEGER EndOfFile;
+  ULONG FileAttributes;
+  ULONG ReparseTag;
+  ULONG NumberOfLinks;
+  ULONG DeviceType;
+  ULONG DeviceCharacteristics;
+  ULONG Reserved;
+  LARGE_INTEGER VolumeSerialNumber;
+  BYTE FileId128[16];
+};
+
 // Whether SetFileInformationByHandle failed because the kernel or the file
 // system does not implement the information class (older Windows, FAT, some
 // SMB servers, Wine), rather than refusing the operation itself.
@@ -986,7 +1016,9 @@ static bool isReservedName(StringRef path) {
   static const char *const sReservedNames[] = {
       "nul",  "con",  "prn",  "aux",  "com1", "com2", "com3", "com4",
       "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3",
-      "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"};
+      "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+      // The console buffers, which CreateFile opens by these names.
+      "conin$", "conout$"};
 
   // First, check to see if this is a device namespace, which always
   // starts with \\.\, since device namespaces are not legal file paths.
@@ -1012,8 +1044,19 @@ static perms perms_from_attrs(DWORD Attrs) {
   return (Attrs & FILE_ATTRIBUTE_READONLY) ? (all_read | all_exe) : all_all;
 }
 
+// Folds a 128-bit file ID to the 64 bits UniqueID holds. File systems with
+// 64-bit IDs (NTFS) leave the high half zero and keep their ID unchanged.
+static uint64_t fileIdToUniqueID(const BYTE (&Id)[16]) {
+  uint64_t Low, High;
+  memcpy(&Low, Id, sizeof(Low));
+  memcpy(&High, Id + sizeof(Low), sizeof(High));
+  return High ? uint64_t(hash_combine(Low, High)) : Low;
+}
+
 static std::error_code getStatus(HANDLE FileHandle, file_status &Result) {
-  SmallVector<wchar_t, MAX_PATH> ntPath;
+  uint32_t VolumeSerial;
+  uint64_t FileID;
+  FileIdInfo IdInfo;
   if (FileHandle == INVALID_HANDLE_VALUE)
     goto handle_status_error;
 
@@ -1041,28 +1084,17 @@ static std::error_code getStatus(HANDLE FileHandle, file_status &Result) {
   if (!::GetFileInformationByHandle(FileHandle, &Info))
     goto handle_status_error;
 
-  // File indices aren't necessarily stable after closing the file handle;
-  // instead hash a canonicalized path.
-  //
-  // For getting a canonical path to the file, call GetFinalPathNameByHandleW
-  // with VOLUME_NAME_NT. We don't really care exactly what the path looks
-  // like here, as long as it is canonical (e.g. doesn't differentiate between
-  // whether a file was referred to with upper/lower case names originally).
-  // The default format with VOLUME_NAME_DOS doesn't work with all file system
-  // drivers, such as ImDisk. (See
-  // https://github.com/rust-lang/rust/pull/86447.)
-  uint64_t PathHash;
-  if (std::error_code EC =
-          realPathFromHandle(FileHandle, ntPath, VOLUME_NAME_NT)) {
-    // If realPathFromHandle failed, fall back on the fields
-    // nFileIndex{High,Low} instead. They're not necessarily stable on all file
-    // systems as they're only documented as being unique/stable as long as the
-    // file handle is open - but they're a decent fallback if we couldn't get
-    // the canonical path.
-    PathHash = (static_cast<uint64_t>(Info.nFileIndexHigh) << 32ULL) |
-               static_cast<uint64_t>(Info.nFileIndexLow);
-  } else {
-    PathHash = hash_combine_range(ntPath);
+  // The file ID identifies the file like st_ino, so two names for one file,
+  // such as hard links, compare equal. A file system that reports no 128-bit
+  // ID keeps the 64-bit index, which is what the 128-bit ID extends.
+  VolumeSerial = Info.dwVolumeSerialNumber;
+  FileID = (uint64_t(Info.nFileIndexHigh) << 32) | Info.nFileIndexLow;
+  if (::GetFileInformationByHandleEx(FileHandle, FileIdInfoClass, &IdInfo,
+                                     sizeof(IdInfo))) {
+    if (uint64_t ID = fileIdToUniqueID(IdInfo.FileId)) {
+      VolumeSerial = uint32_t(IdInfo.VolumeSerialNumber);
+      FileID = ID;
+    }
   }
 
   Result = file_status(
@@ -1070,8 +1102,7 @@ static std::error_code getStatus(HANDLE FileHandle, file_status &Result) {
       perms_from_attrs(Info.dwFileAttributes), Info.nNumberOfLinks,
       Info.ftLastAccessTime.dwHighDateTime, Info.ftLastAccessTime.dwLowDateTime,
       Info.ftLastWriteTime.dwHighDateTime, Info.ftLastWriteTime.dwLowDateTime,
-      Info.dwVolumeSerialNumber, Info.nFileSizeHigh, Info.nFileSizeLow,
-      PathHash);
+      VolumeSerial, Info.nFileSizeHigh, Info.nFileSizeLow, FileID);
   return std::error_code();
 
 handle_status_error:
@@ -1083,6 +1114,47 @@ handle_status_error:
   else
     Result = file_status(file_type::status_error);
   return Err;
+}
+
+// Answers status() with one GetFileInformationByName (Windows 11 24H2), which
+// opens no handle. Returns false when the caller must open the file instead:
+// an older kernel, a file system without the query or without file IDs, a
+// link to follow (the query describes the link itself), or any failure but
+// "not found", so that the handle path reports the precise error.
+static bool statusByName(const wchar_t *Path, bool Follow, file_status &Result,
+                         std::error_code &EC) {
+  using QueryFn = BOOL(WINAPI *)(PCWSTR, int, PVOID, ULONG);
+  static const QueryFn Query = reinterpret_cast<QueryFn>(
+      reinterpret_cast<void *>(::GetProcAddress(
+          ::GetModuleHandleW(L"kernel32.dll"), "GetFileInformationByName")));
+  if (!Query)
+    return false;
+
+  FileStatBasicInformation Info;
+  if (!Query(Path, FileStatBasicByNameInfo, &Info, sizeof(Info))) {
+    DWORD Error = ::GetLastError();
+    if (Error != ERROR_FILE_NOT_FOUND && Error != ERROR_PATH_NOT_FOUND)
+      return false;
+    Result = file_status(file_type::file_not_found);
+    EC = mapWindowsError(Error);
+    return true;
+  }
+  if (Follow && (Info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
+      IsReparseTagNameSurrogate(Info.ReparseTag))
+    return false;
+  uint64_t FileID = fileIdToUniqueID(Info.FileId128);
+  if (!FileID)
+    return false;
+
+  Result = file_status(
+      file_type_from_attrs(Info.FileAttributes),
+      perms_from_attrs(Info.FileAttributes), Info.NumberOfLinks,
+      uint32_t(Info.LastAccessTime.HighPart), Info.LastAccessTime.LowPart,
+      uint32_t(Info.LastWriteTime.HighPart), Info.LastWriteTime.LowPart,
+      uint32_t(Info.VolumeSerialNumber.QuadPart),
+      uint32_t(Info.EndOfFile.HighPart), Info.EndOfFile.LowPart, FileID);
+  EC = std::error_code();
+  return true;
 }
 
 std::error_code status(const Twine &path, file_status &result, bool Follow) {
@@ -1099,6 +1171,10 @@ std::error_code status(const Twine &path, file_status &result, bool Follow) {
 
   if (std::error_code ec = widenPath(path8, path_utf16))
     return ec;
+
+  std::error_code ByNameEC;
+  if (statusByName(path_utf16.begin(), Follow, result, ByNameEC))
+    return ByNameEC;
 
   DWORD Flags = FILE_FLAG_BACKUP_SEMANTICS;
   if (!Follow) {

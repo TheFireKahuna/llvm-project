@@ -713,16 +713,23 @@ TEST_F(FileSystemTest, Unique) {
 
   ASSERT_NO_ERROR(fs::remove(Twine(TempPath2)));
 
-#ifndef _WIN32
   // Two paths representing the same file on disk should still provide the
   // same unique id.  We can test this by making a hard link.
-  // FIXME: Our implementation of getUniqueID on Windows doesn't consider hard
-  // links to be the same file.
   ASSERT_NO_ERROR(fs::create_link(Twine(TempPath), Twine(TempPath2)));
   fs::UniqueID D2;
   ASSERT_NO_ERROR(fs::getUniqueID(Twine(TempPath2), D2));
   ASSERT_EQ(D2, F1);
-#endif
+
+  // A status by name and a status through the open file agree.
+  fs::file_status ByName, ByHandle;
+  ASSERT_NO_ERROR(fs::status(Twine(TempPath), ByName));
+  ASSERT_NO_ERROR(fs::status(FileDescriptor, ByHandle));
+  EXPECT_EQ(ByName.getUniqueID(), ByHandle.getUniqueID());
+  EXPECT_EQ(ByName.type(), ByHandle.type());
+  EXPECT_EQ(ByName.getSize(), ByHandle.getSize());
+  EXPECT_EQ(ByName.getLinkCount(), ByHandle.getLinkCount());
+  EXPECT_EQ(ByName.getLastModificationTime(),
+            ByHandle.getLastModificationTime());
 
   ::close(FileDescriptor);
 
