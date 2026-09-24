@@ -162,6 +162,7 @@ void EHStreamer::beginPlainCallSites(const MachineFunction *MF) {
   InInvokeRange = false;
   InFunclet = false;
   PendingCallEnd = nullptr;
+  BodyCannotUnwind = MF->getFunction().doesNotThrow();
   LabelsPlainCalls =
       Asm->TM.getTargetTriple().isWindowsNTPOSIXEnvironment() &&
       MF->getFunction().hasPersonalityFn();
@@ -170,6 +171,12 @@ void EHStreamer::beginPlainCallSites(const MachineFunction *MF) {
   for (const LandingPadInfo &LPI : MF->getLandingPads()) {
     RangeBeginLabels.insert_range(LPI.BeginLabels);
     RangeEndLabels.insert_range(LPI.EndLabels);
+  }
+  // A call that unwinds to the caller has a site of its own, so nothing
+  // inside its labels, a libcall its expansion makes included, gets another.
+  for (const auto &[Begin, End] : MF->getUnwindToCallerRanges()) {
+    RangeBeginLabels.insert(Begin);
+    RangeEndLabels.insert(End);
   }
 }
 
@@ -187,7 +194,7 @@ void EHStreamer::trackBodyPosition(const MachineInstr *MI) {
 }
 
 bool EHStreamer::isPlainCallSite(const MachineInstr *MI) const {
-  return !InFunclet && !InInvokeRange && MI->isCall() &&
+  return !BodyCannotUnwind && !InFunclet && !InInvokeRange && MI->isCall() &&
          !callToNoUnwindFunction(MI);
 }
 
@@ -325,10 +332,10 @@ void EHStreamer::computeCallSiteTable(
   // On NT-POSIX the funclets follow the function's own code and are called,
   // never landed: the call sites are the function's, and its range ends where
   // the first funclet begins. A call outside every invoke's range whose
-  // callee may unwind gets an entry with no landing pad spanning that
-  // instruction alone, and the rest of the region stays undescribed: the
-  // personality passes the call and ends an unwind that reaches anything
-  // else there.
+  // callee may unwind, in a function that may, gets an entry with no landing
+  // pad spanning that instruction alone, and the rest of the region stays
+  // undescribed: the personality passes the call and ends an unwind that
+  // reaches anything else there.
   const bool IsNTPOSIX = labelsPlainCalls();
   const MachineBasicBlock *FirstFunclet = nullptr;
   if (IsNTPOSIX)
@@ -379,6 +386,22 @@ void EHStreamer::computeCallSiteTable(
       MCSymbol *BeginLabel = MI.getOperand(0).getMCSymbol();
       if (BeginLabel == LastLabel)
         SawPotentiallyThrowing = false;
+
+      // An operation whose unwind leaves the function. On NT-POSIX its site
+      // names no pad, which a search passes, in a function that may unwind;
+      // in one that cannot, it is the gap that ends the search. Elsewhere it
+      // is a throwing instruction the region's entry with no pad covers.
+      auto ToCaller = Asm->MF->getUnwindToCallerRanges().find(BeginLabel);
+      if (ToCaller != Asm->MF->getUnwindToCallerRanges().end()) {
+        if (!IsNTPOSIX) {
+          SawPotentiallyThrowing = true;
+        } else {
+          if (!BodyCannotUnwind)
+            CallSites.push_back({BeginLabel, ToCaller->second, nullptr, 0});
+          PreviousIsInvoke = false;
+        }
+        continue;
+      }
 
       // Beginning of a new try-range?
       RangeMapType::const_iterator L = PadMap.find(BeginLabel);

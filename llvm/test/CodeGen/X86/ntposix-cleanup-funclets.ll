@@ -5,7 +5,9 @@
 ; frame, and a catch is a landing pad it lands. The function's handler data
 ; is the cleanup table, then the LSDA, whose site for a called funclet names
 ; no pad. A cleanupret to another cleanup funclet continues there after the
-; epilogue, with the establisher back in rdx.
+; epilogue, with the establisher back in rdx. Each cleanuppad's one `i8`
+; is its sites' phase-one clause: 0 passes, 1 is the cleanup then the empty
+; filter, 2 the empty filter alone.
 
 declare void @may_throw()
 declare void @drop_a() nounwind
@@ -56,11 +58,11 @@ mid:
 done:
   ret void
 cleanup_a:
-  %a = cleanuppad within none []
+  %a = cleanuppad within none [i8 0]
   call void @drop_a() [ "funclet"(token %a) ]
   cleanupret from %a unwind to caller
 cleanup_b:
-  %b = cleanuppad within none []
+  %b = cleanuppad within none [i8 0]
   call void @drop_b() [ "funclet"(token %b) ]
   cleanupret from %b unwind label %cleanup_a
 }
@@ -102,7 +104,7 @@ mid:
 done:
   ret void
 cleanup:
-  %c = cleanuppad within none []
+  %c = cleanuppad within none [i8 0]
   call void @drop_a() [ "funclet"(token %c) ]
   cleanupret from %c unwind to caller
 catch:
@@ -110,7 +112,7 @@ catch:
   ret void
 }
 
-; A terminating funclet, marked by its one true argument: its site names no
+; The abort funclet of a body that cannot unwind, clause 2: its site names no
 ; pad and carries the empty filter, the action nothing passes.
 ; CHECK-LABEL: aborts:
 ; CHECK: [[ABEGIN:.Ltmp[0-9]+]]:
@@ -137,14 +139,14 @@ entry:
 done:
   ret void
 terminate:
-  %t = cleanuppad within none [i1 true]
+  %t = cleanuppad within none [i8 2]
   call void @abort() [ "funclet"(token %t) ]
   unreachable
 }
 
 declare void @abort() nounwind
 
-; A cleanup whose chain ends at the terminating funclet: its site names the
+; A cleanup in a body that cannot unwind, clause 1: its site names the
 ; cleanup funclet and its action chain is the empty filter then the cleanup
 ; record, so a search ends at the site before the funclet is called.
 ; CHECK-LABEL: aborts_after_cleanup:
@@ -177,12 +179,59 @@ entry:
 done:
   ret void
 cleanup:
-  %c = cleanuppad within none []
+  %c = cleanuppad within none [i8 1]
   call void @drop_a() [ "funclet"(token %c) ]
   cleanupret from %c unwind label %terminate
 terminate:
-  %t = cleanuppad within none [i1 true]
+  %t = cleanuppad within none [i8 2]
   call void @abort() [ "funclet"(token %t) ]
+  unreachable
+}
+
+; The same clause on a cleanup that never returns: no cleanupret names the
+; abort funclet, and the site's answer is the clause's, not its chain's.
+; CHECK-LABEL: boundary_never_returns:
+; CHECK: [[NBEGIN:.Ltmp[0-9]+]]:
+; CHECK-NEXT: callq may_throw
+; CHECK: GCC_except_table4:
+; CHECK: .uleb128 [[NBEGIN]]-[[NFUNC:.Lfunc_begin[0-9]+]]
+; CHECK-NEXT: .uleb128 {{.*}}-[[NBEGIN]]
+; CHECK-NEXT: .byte 0
+; CHECK-NEXT: .byte {{[1-9][0-9]*}}
+; CHECK: .Lcst_end{{[0-9]+}}:
+; CHECK-NEXT: .byte 0
+; CHECK-NEXT: # Cleanup
+; CHECK-NEXT: .byte 0
+; CHECK-NEXT: .byte 127
+define void @boundary_never_returns() nounwind personality ptr @rust_eh_personality {
+entry:
+  invoke void @may_throw() to label %done unwind label %cleanup
+done:
+  ret void
+cleanup:
+  %c = cleanuppad within none [i8 1]
+  call void @abort() [ "funclet"(token %c) ]
+  unreachable
+}
+
+; And a cleanup that never returns in a body that may unwind keeps clause 0:
+; a search passes its site, and the funclet runs when the unwind reaches it.
+; CHECK-LABEL: pass_never_returns:
+; CHECK: [[PBEGIN:.Ltmp[0-9]+]]:
+; CHECK-NEXT: callq may_throw
+; CHECK: GCC_except_table5:
+; CHECK: .uleb128 [[PBEGIN]]-[[PFUNC:.Lfunc_begin[0-9]+]]
+; CHECK-NEXT: .uleb128 {{.*}}-[[PBEGIN]]
+; CHECK-NEXT: .byte 0
+; CHECK-NEXT: .byte 0
+define void @pass_never_returns() personality ptr @rust_eh_personality {
+entry:
+  invoke void @may_throw() to label %done unwind label %cleanup
+done:
+  ret void
+cleanup:
+  %c = cleanuppad within none [i8 0]
+  call void @abort() [ "funclet"(token %c) ]
   unreachable
 }
 

@@ -31,6 +31,7 @@
 #include "llvm/Pass.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
@@ -135,6 +136,16 @@ bool WinEHPrepareImpl::runOnFunction(Function &Fn) {
   // catchswitch dispatch PHIs demoted.
   DemoteCatchSwitchPHIOnly =
       !isFuncletEHPersonality(Personality) && !usesNTPOSIXCleanupFunclets(Fn);
+
+  // Every cleanup funclet's clause decides its sites' phase-one answer, so a
+  // missing or inconsistent one is refused before any table is written.
+  if (const Instruction *I = findNTPOSIXPhaseOneViolation(Fn)) {
+    std::string Where;
+    raw_string_ostream(Where) << *I;
+    reportFatalUsageError(Twine("NT-POSIX cleanup funclet in '") +
+                          Fn.getName() + "' breaks its phase-one clause:" +
+                          Where);
+  }
 
   DL = &Fn.getDataLayout();
   return prepareExplicitEH(Fn);

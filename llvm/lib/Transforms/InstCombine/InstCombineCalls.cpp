@@ -4624,15 +4624,14 @@ Instruction *InstCombinerImpl::visitInvokeInst(InvokeInst &II) {
   return visitCallBase(II);
 }
 
-// A fault access is the plain access once it cannot fault: a call carries no
-// edge, and an invoke of a pointer the language vouches for (an alloca, a
-// global, a dereferenceable argument) has a dead edge, which nounwind records
-// for SimplifyCFG to remove.
+// A fault access is the plain access once it cannot fault. An access of a
+// pointer the language vouches for (an alloca, a global, a dereferenceable
+// argument) has a dead edge, which nounwind records: SimplifyCFG then removes
+// an invoke's, and a call that cannot unwind is the plain access. A call that
+// may unwind keeps its edge to the caller.
 Instruction *InstCombinerImpl::foldFaultAccess(FaultAccessInst &FA) {
   Value *Ptr = FA.getPointerOperand();
-  if (auto *II = dyn_cast<InvokeInst>(&FA)) {
-    if (II->doesNotThrow())
-      return nullptr;
+  if (!FA.doesNotThrow()) {
     SimplifyQuery Q = SQ.getWithInstruction(&FA);
     bool Safe = false;
     if (FA.isLoad()) {
@@ -4647,12 +4646,14 @@ Instruction *InstCombinerImpl::foldFaultAccess(FaultAccessInst &FA) {
     }
     if (!Safe)
       return nullptr;
-    II->setDoesNotThrow();
-    return II;
+    FA.setDoesNotThrow();
+    return &FA;
   }
+  if (isa<InvokeInst>(FA))
+    return nullptr;
 
-  // The call form: the plain operation, handed back for the driver to put in
-  // the call's place.
+  // A call that cannot unwind: the plain operation, handed back for the
+  // driver to put in the call's place.
   bool IsVolatile = FA.isVolatile();
   Instruction *Plain;
   switch (FA.getIntrinsicID()) {
