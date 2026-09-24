@@ -55,7 +55,6 @@
 #include "llvm/Support/Program.h"
 #include "llvm/Support/TimeProfiler.h"
 #include "llvm/Support/Timer.h"
-#include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/VirtualFileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
@@ -173,30 +172,27 @@ class EmitAssemblyHelper {
   /// the requested target.
   void CreateTargetMachine(bool MustCreateTM);
 
-  std::unique_ptr<llvm::ToolOutputFile> openOutputFile(StringRef Path) {
-    std::error_code EC;
-    auto F = std::make_unique<llvm::ToolOutputFile>(Path, EC,
-                                                     llvm::sys::fs::OF_None);
-    if (EC) {
-      Diags.Report(diag::err_fe_unable_to_open_output) << Path << EC.message();
-      F.reset();
-    }
-    return F;
+  // Side outputs are written like the main output: through a temporary that
+  // is renamed into place when the output files are committed.
+  std::unique_ptr<raw_pwrite_stream> openOutputFile(StringRef Path) {
+    return CI.createOutputFile(Path, /*Binary=*/true,
+                               /*RemoveFileOnSignal=*/true,
+                               CI.getFrontendOpts().UseTemporary);
   }
 
   void RunOptimizationPipeline(
       BackendAction Action, std::unique_ptr<raw_pwrite_stream> &OS,
-      std::unique_ptr<llvm::ToolOutputFile> &ThinLinkOS, BackendConsumer *BC);
+      std::unique_ptr<raw_pwrite_stream> &ThinLinkOS, BackendConsumer *BC);
   void RunCodegenPipeline(BackendAction Action,
                           std::unique_ptr<raw_pwrite_stream> &OS,
-                          std::unique_ptr<llvm::ToolOutputFile> &DwoOS);
+                          std::unique_ptr<raw_pwrite_stream> &DwoOS);
   void RunCodegenPipelineLegacy(BackendAction Action,
                                 std::unique_ptr<raw_pwrite_stream> &OS,
-                                std::unique_ptr<llvm::ToolOutputFile> &DwoOS,
+                                std::unique_ptr<raw_pwrite_stream> &DwoOS,
                                 CodeGenFileType CGFT);
   void RunCodegenPipelineNewPM(BackendAction Action,
                                std::unique_ptr<raw_pwrite_stream> &OS,
-                               std::unique_ptr<llvm::ToolOutputFile> &DwoOS,
+                               std::unique_ptr<raw_pwrite_stream> &DwoOS,
                                CodeGenFileType CGFT);
   void TimeCodegenPasses(llvm::function_ref<void()> RunPasses);
 
@@ -840,7 +836,7 @@ void addLowerAllowCheckPass(const CodeGenOptions &CodeGenOpts,
 
 void EmitAssemblyHelper::RunOptimizationPipeline(
     BackendAction Action, std::unique_ptr<raw_pwrite_stream> &OS,
-    std::unique_ptr<llvm::ToolOutputFile> &ThinLinkOS, BackendConsumer *BC) {
+    std::unique_ptr<raw_pwrite_stream> &ThinLinkOS, BackendConsumer *BC) {
   std::optional<PGOOptions> PGOOpt;
 
   if (CodeGenOpts.hasProfileIRInstr())
@@ -1168,7 +1164,7 @@ void EmitAssemblyHelper::RunOptimizationPipeline(
             return;
         }
         MPM.addPass(ThinLTOBitcodeWriterPass(
-            *OS, ThinLinkOS ? &ThinLinkOS->os() : nullptr));
+            *OS, ThinLinkOS.get()));
       } else if (Action == Backend_EmitLL) {
         MPM.addPass(PrintModulePass(*OS, "", CodeGenOpts.EmitLLVMUseLists,
                                     /*EmitLTOSummary=*/true));
@@ -1228,7 +1224,7 @@ void EmitAssemblyHelper::RunOptimizationPipeline(
 
 void EmitAssemblyHelper::RunCodegenPipeline(
     BackendAction Action, std::unique_ptr<raw_pwrite_stream> &OS,
-    std::unique_ptr<llvm::ToolOutputFile> &DwoOS) {
+    std::unique_ptr<raw_pwrite_stream> &DwoOS) {
   if (!actionRequiresCodeGen(Action))
     return;
 
@@ -1258,7 +1254,7 @@ void EmitAssemblyHelper::RunCodegenPipeline(
 
 void EmitAssemblyHelper::RunCodegenPipelineLegacy(
     BackendAction Action, std::unique_ptr<raw_pwrite_stream> &OS,
-    std::unique_ptr<llvm::ToolOutputFile> &DwoOS, CodeGenFileType CGFT) {
+    std::unique_ptr<raw_pwrite_stream> &DwoOS, CodeGenFileType CGFT) {
   // We still use the legacy PM to run the codegen pipeline since the new PM
   // does not work with the codegen pipeline.
   // FIXME: make the new PM work with the codegen pipeline.
@@ -1277,7 +1273,7 @@ void EmitAssemblyHelper::RunCodegenPipelineLegacy(
       Options.EABIVersion, Options.MCOptions.ABIName, Options.VecLib));
 
   if (TM->addPassesToEmitFile(CodeGenPasses, *OS,
-                              DwoOS ? &DwoOS->os() : nullptr, CGFT,
+                              DwoOS.get(), CGFT,
                               /*DisableVerify=*/!CodeGenOpts.VerifyModule)) {
     Diags.Report(diag::err_fe_unable_to_interface_with_target);
     return;
@@ -1295,7 +1291,7 @@ void EmitAssemblyHelper::RunCodegenPipelineLegacy(
 
 void EmitAssemblyHelper::RunCodegenPipelineNewPM(
     BackendAction Action, std::unique_ptr<raw_pwrite_stream> &OS,
-    std::unique_ptr<llvm::ToolOutputFile> &DwoOS, CodeGenFileType CGFT) {
+    std::unique_ptr<raw_pwrite_stream> &DwoOS, CodeGenFileType CGFT) {
   ModulePassManager MPM;
   MachineFunctionAnalysisManager MFAM;
   LoopAnalysisManager LAM;
@@ -1320,7 +1316,7 @@ void EmitAssemblyHelper::RunCodegenPipelineNewPM(
   MAM.registerPass([&] { return MachineModuleAnalysis(MMI); });
 
   Error BuildPipelineError =
-      TM->buildCodeGenPipeline(MPM, MAM, *OS, DwoOS ? &DwoOS->os() : nullptr,
+      TM->buildCodeGenPipeline(MPM, MAM, *OS, DwoOS.get(),
                                CGFT, Opt, MMI.getContext(), &PIC);
   if (BuildPipelineError) {
     Diags.Report(diag::err_fe_unable_to_interface_with_target);
@@ -1360,14 +1356,9 @@ void EmitAssemblyHelper::emitAssembly(BackendAction Action,
   // Before executing passes, print the final values of the LLVM options.
   cl::PrintOptionValues();
 
-  std::unique_ptr<llvm::ToolOutputFile> ThinLinkOS, DwoOS;
+  std::unique_ptr<raw_pwrite_stream> ThinLinkOS, DwoOS;
   RunOptimizationPipeline(Action, OS, ThinLinkOS, BC);
   RunCodegenPipeline(Action, OS, DwoOS);
-
-  if (ThinLinkOS)
-    ThinLinkOS->keep();
-  if (DwoOS)
-    DwoOS->keep();
 }
 
 static void
