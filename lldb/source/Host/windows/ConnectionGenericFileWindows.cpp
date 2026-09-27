@@ -14,7 +14,7 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/Support/ConvertUTF.h"
+#include "llvm/Support/Windows/WindowsSupport.h"
 
 using namespace lldb;
 using namespace lldb_private;
@@ -82,15 +82,15 @@ lldb::ConnectionStatus ConnectionGenericFile::Connect(llvm::StringRef path,
   // open it overlapped so that we can issue asynchronous reads and then use
   // WaitForMultipleObjects to allow the read to be interrupted by an event
   // object.
-  std::wstring wpath;
-  if (!llvm::ConvertUTF8toWide(path, wpath)) {
+  llvm::SmallVector<wchar_t, MAX_PATH> wpath;
+  if (llvm::sys::windows::widenPath(path, wpath)) {
     if (error_ptr)
       *error_ptr = Status(1, eErrorTypeGeneric);
     return eConnectionStatusError;
   }
-  m_file = ::CreateFileW(wpath.c_str(), GENERIC_READ | GENERIC_WRITE,
-                         FILE_SHARE_READ, nullptr, OPEN_ALWAYS,
-                         FILE_FLAG_OVERLAPPED, nullptr);
+  m_file =
+      ::CreateFileW(wpath.data(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ,
+                    nullptr, OPEN_ALWAYS, FILE_FLAG_OVERLAPPED, nullptr);
   if (m_file == INVALID_HANDLE_VALUE) {
     if (error_ptr)
       *error_ptr = Status(::GetLastError(), eErrorTypeWin32);

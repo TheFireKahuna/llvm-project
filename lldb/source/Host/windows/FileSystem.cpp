@@ -19,6 +19,7 @@
 
 #include "llvm/Support/ConvertUTF.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Windows/WindowsSupport.h"
 
 using namespace lldb_private;
 
@@ -29,20 +30,20 @@ const char *FileSystem::PATH_CONVERSION_ERROR =
 
 Status FileSystem::Symlink(const FileSpec &src, const FileSpec &dst) {
   Status error;
-  std::wstring wsrc, wdst;
-  if (!llvm::ConvertUTF8toWide(src.GetPath(), wsrc) ||
-      !llvm::ConvertUTF8toWide(dst.GetPath(), wdst))
+  llvm::SmallVector<wchar_t, MAX_PATH> wsrc, wdst;
+  if (llvm::sys::windows::widenPath(src.GetPath(), wsrc) ||
+      llvm::sys::windows::widenPath(dst.GetPath(), wdst))
     error = Status::FromErrorString(PATH_CONVERSION_ERROR);
   if (error.Fail())
     return error;
-  DWORD attrib = ::GetFileAttributesW(wdst.c_str());
+  DWORD attrib = ::GetFileAttributesW(wdst.data());
   if (attrib == INVALID_FILE_ATTRIBUTES) {
     error = Status(::GetLastError(), lldb::eErrorTypeWin32);
     return error;
   }
   bool is_directory = !!(attrib & FILE_ATTRIBUTE_DIRECTORY);
   DWORD flag = is_directory ? SYMBOLIC_LINK_FLAG_DIRECTORY : 0;
-  BOOL result = ::CreateSymbolicLinkW(wsrc.c_str(), wdst.c_str(), flag);
+  BOOL result = ::CreateSymbolicLinkW(wsrc.data(), wdst.data(), flag);
   if (!result)
     error = Status(::GetLastError(), lldb::eErrorTypeWin32);
   return error;
@@ -50,14 +51,14 @@ Status FileSystem::Symlink(const FileSpec &src, const FileSpec &dst) {
 
 Status FileSystem::Readlink(const FileSpec &src, FileSpec &dst) {
   Status error;
-  std::wstring wsrc;
-  if (!llvm::ConvertUTF8toWide(src.GetPath(), wsrc)) {
+  llvm::SmallVector<wchar_t, MAX_PATH> wsrc;
+  if (llvm::sys::windows::widenPath(src.GetPath(), wsrc)) {
     error = Status::FromErrorString(PATH_CONVERSION_ERROR);
     return error;
   }
 
   HANDLE h = ::CreateFileW(
-      wsrc.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+      wsrc.data(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
       OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
   if (h == INVALID_HANDLE_VALUE) {
     error = Status(::GetLastError(), lldb::eErrorTypeWin32);
@@ -87,24 +88,25 @@ Status FileSystem::ResolveSymbolicLink(const FileSpec &src, FileSpec &dst) {
 }
 
 FILE *FileSystem::Fopen(const char *path, const char *mode) {
-  std::wstring wpath, wmode;
-  if (!llvm::ConvertUTF8toWide(path, wpath))
+  llvm::SmallVector<wchar_t, MAX_PATH> wpath;
+  std::wstring wmode;
+  if (llvm::sys::windows::widenPath(path, wpath))
     return nullptr;
   if (!llvm::ConvertUTF8toWide(mode, wmode))
     return nullptr;
   FILE *file;
-  if (_wfopen_s(&file, wpath.c_str(), wmode.c_str()) != 0)
+  if (_wfopen_s(&file, wpath.data(), wmode.c_str()) != 0)
     return nullptr;
   return file;
 }
 
 int FileSystem::Open(const char *path, int flags, int mode) {
-  std::wstring wpath;
-  if (!llvm::ConvertUTF8toWide(path, wpath))
+  llvm::SmallVector<wchar_t, MAX_PATH> wpath;
+  if (llvm::sys::windows::widenPath(path, wpath))
     return -1;
   // All other bits are rejected by _wsopen_s
   mode = mode & (_S_IREAD | _S_IWRITE);
   int result;
-  ::_wsopen_s(&result, wpath.c_str(), flags, _SH_DENYNO, mode);
+  ::_wsopen_s(&result, wpath.data(), flags, _SH_DENYNO, mode);
   return result;
 }
