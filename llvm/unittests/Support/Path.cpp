@@ -1018,6 +1018,52 @@ TEST_F(FileSystemTest, TempFileDiscardDiscard) {
   ASSERT_FALSE(fs::exists(TestDirectory + "/keep"));
 }
 
+TEST_F(FileSystemTest, TempFileOpenByName) {
+  // A temporary can be opened and queried by name while it is in use.
+  auto TempFileOrError = fs::TempFile::create(TestDirectory + "/test-%%%%");
+  ASSERT_TRUE((bool)TempFileOrError);
+  fs::TempFile File = std::move(*TempFileOrError);
+  std::string TmpName = File.TmpName;
+  fs::file_status Status;
+  ASSERT_NO_ERROR(fs::status(TmpName, Status));
+  EXPECT_TRUE(fs::is_regular_file(Status));
+  int FD;
+  ASSERT_NO_ERROR(fs::openFileForRead(TmpName, FD));
+  ::close(FD);
+  ASSERT_FALSE((bool)File.discard());
+  ASSERT_FALSE(fs::exists(TmpName));
+}
+
+#ifdef _WIN32
+TEST_F(FileSystemTest, TempFileOnNetworkShare) {
+  // Reach the test directory over SMB through its drive's administrative
+  // share, where that is available. Windows' SMB server cannot withdraw a
+  // delete-on-close, so a temporary there must still be kept when asked.
+  if (TestDirectory.size() < 3 || TestDirectory[1] != ':')
+    GTEST_SKIP() << "test directory is not on a drive";
+  SmallString<128> Share("\\\\localhost\\");
+  Share += TestDirectory[0];
+  Share += "$";
+  Share += StringRef(TestDirectory).drop_front(2);
+  if (!fs::is_directory(Share))
+    GTEST_SKIP() << "administrative share is not reachable";
+
+  auto Kept = fs::TempFile::create(Share + "/test-%%%%");
+  ASSERT_TRUE((bool)Kept);
+  SmallString<128> KeptName(Share);
+  path::append(KeptName, "kept");
+  ASSERT_FALSE((bool)Kept->keep(KeptName));
+  EXPECT_TRUE(fs::exists(KeptName));
+  ASSERT_NO_ERROR(fs::remove(KeptName));
+
+  auto Discarded = fs::TempFile::create(Share + "/test-%%%%");
+  ASSERT_TRUE((bool)Discarded);
+  std::string TmpName = Discarded->TmpName;
+  ASSERT_FALSE((bool)Discarded->discard());
+  EXPECT_FALSE(fs::exists(TmpName));
+}
+#endif
+
 TEST_F(FileSystemTest, TempFiles) {
   // Create a temp file.
   int FileDescriptor;
