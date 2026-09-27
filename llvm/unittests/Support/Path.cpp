@@ -701,6 +701,11 @@ TEST_F(FileSystemTest, Unique) {
   ASSERT_NO_ERROR(fs::getUniqueID(Twine(TempPath), F2));
   ASSERT_EQ(F1, F2);
 
+  // Querying the file through a descriptor gives the same unique id.
+  fs::file_status FDStatus;
+  ASSERT_NO_ERROR(fs::status(FileDescriptor, FDStatus));
+  ASSERT_EQ(FDStatus.getUniqueID(), F1);
+
   // Different files should return different unique ids.
   int FileDescriptor2;
   SmallString<64> TempPath2;
@@ -714,16 +719,12 @@ TEST_F(FileSystemTest, Unique) {
 
   ASSERT_NO_ERROR(fs::remove(Twine(TempPath2)));
 
-#ifndef _WIN32
   // Two paths representing the same file on disk should still provide the
   // same unique id.  We can test this by making a hard link.
-  // FIXME: Our implementation of getUniqueID on Windows doesn't consider hard
-  // links to be the same file.
   ASSERT_NO_ERROR(fs::create_link(Twine(TempPath), Twine(TempPath2)));
   fs::UniqueID D2;
   ASSERT_NO_ERROR(fs::getUniqueID(Twine(TempPath2), D2));
   ASSERT_EQ(D2, F1);
-#endif
 
   ::close(FileDescriptor);
 
@@ -930,6 +931,34 @@ TEST_F(FileSystemTest, ReadlinkNonExistent) {
   SmallString<128> Result;
   EXPECT_EQ(fs::readlink(TestDirectory + "/does_not_exist", Result),
             errc::no_such_file_or_directory);
+}
+
+TEST_F(FileSystemTest, StatusEmptyPath) {
+  // An empty name is not the current directory.
+  fs::file_status Status;
+  EXPECT_EQ(fs::status("", Status), errc::no_such_file_or_directory);
+  EXPECT_FALSE(fs::exists(""));
+  EXPECT_FALSE(fs::is_directory(""));
+}
+
+TEST_F(FileSystemTest, StatusTrailingSeparator) {
+  // A name followed by a separator must be a directory, as in POSIX.
+  SmallString<128> FilePath(TestDirectory);
+  path::append(FilePath, "file");
+  int FD;
+  ASSERT_NO_ERROR(fs::openFileForWrite(FilePath, FD));
+  ::close(FD);
+
+  fs::file_status Status;
+  EXPECT_TRUE(fs::status(FilePath + "/", Status));
+  EXPECT_FALSE(fs::is_regular_file(FilePath + "/"));
+#ifdef _WIN32
+  EXPECT_TRUE(fs::status(FilePath + "\\", Status));
+#endif
+  ASSERT_NO_ERROR(fs::status(TestDirectory + "/", Status));
+  EXPECT_TRUE(fs::is_directory(Status));
+
+  ASSERT_NO_ERROR(fs::remove(FilePath));
 }
 
 TEST_F(FileSystemTest, ExpandTilde) {
