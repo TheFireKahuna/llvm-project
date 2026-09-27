@@ -36,9 +36,11 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/ConvertUTF.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/PrettyStackTrace.h"
+#include "llvm/Support/Program.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/WindowsError.h"
 #include "llvm/Support/raw_ostream.h"
@@ -50,10 +52,8 @@
 #include <system_error>
 
 // These includes must be last.
-#include <windows.h>
-#include <winerror.h>
+#include "llvm/Support/Windows/WindowsSupport.h"
 #include <dbghelp.h>
-#include <psapi.h>
 
 using namespace llvm;
 
@@ -124,45 +124,11 @@ namespace {
     }
   };
 
-  struct FileMappingHandle {
-    typedef HANDLE handle_type;
-
-    static handle_type GetInvalidHandle() {
-      return NULL;
-    }
-
-    static void Destruct(handle_type Handle) {
-      ::CloseHandle(Handle);
-    }
-
-    static bool isValid(handle_type Handle) {
-      return Handle != GetInvalidHandle();
-    }
-  };
-
-  struct MappedViewOfFileHandle {
-    typedef LPVOID handle_type;
-
-    static handle_type GetInvalidHandle() {
-      return NULL;
-    }
-
-    static void Destruct(handle_type Handle) {
-      ::UnmapViewOfFile(Handle);
-    }
-
-    static bool isValid(handle_type Handle) {
-      return Handle != GetInvalidHandle();
-    }
-  };
-
   struct ProcessHandle : CommonHandle {};
   struct ThreadHandle  : CommonHandle {};
   struct TokenHandle   : CommonHandle {};
   struct FileHandle    : CommonHandle {};
 
-  typedef ScopedHandle<FileMappingHandle>       FileMappingScopedHandle;
-  typedef ScopedHandle<MappedViewOfFileHandle>  MappedViewOfFileScopedHandle;
   typedef ScopedHandle<ProcessHandle>           ProcessScopedHandle;
   typedef ScopedHandle<ThreadHandle>            ThreadScopedHandle;
   typedef ScopedHandle<TokenHandle>             TokenScopedHandle;
@@ -173,87 +139,26 @@ static std::error_code windows_error(DWORD E) { return mapWindowsError(E); }
 
 static std::error_code GetFileNameFromHandle(HANDLE FileHandle,
                                              std::string &Name) {
-  char Filename[MAX_PATH+1];
-  bool Success = false;
-  Name.clear();
-
-  // Get the file size.
-  LARGE_INTEGER FileSize;
-  Success = ::GetFileSizeEx(FileHandle, &FileSize);
-
-  if (!Success)
-    return windows_error(::GetLastError());
-
-  // Create a file mapping object.
-  FileMappingScopedHandle FileMapping(
-    ::CreateFileMappingA(FileHandle,
-                         NULL,
-                         PAGE_READONLY,
-                         0,
-                         1,
-                         NULL));
-
-  if (!FileMapping)
-    return windows_error(::GetLastError());
-
-  // Create a file mapping to get the file name.
-  MappedViewOfFileScopedHandle MappedFile(
-    ::MapViewOfFile(FileMapping, FILE_MAP_READ, 0, 0, 1));
-
-  if (!MappedFile)
-    return windows_error(::GetLastError());
-
-  Success = ::GetMappedFileNameA(::GetCurrentProcess(), MappedFile, Filename,
-                                 std::size(Filename) - 1);
-
-  if (!Success)
-    return windows_error(::GetLastError());
-  else {
-    Name = Filename;
-    return std::error_code();
-  }
-}
-
-/// Find program using shell lookup rules.
-/// @param Program This is either an absolute path, relative path, or simple a
-///        program name. Look in PATH for any programs that match. If no
-///        extension is present, try all extensions in PATHEXT.
-/// @return If ec == errc::success, The absolute path to the program. Otherwise
-///         the return value is undefined.
-static std::string FindProgram(const std::string &Program,
-                               std::error_code &ec) {
-  char PathName[MAX_PATH + 1];
-  typedef SmallVector<StringRef, 12> pathext_t;
-  pathext_t pathext;
-  // Check for the program without an extension (in case it already has one).
-  pathext.push_back("");
-  SplitString(std::getenv("PATHEXT"), pathext, ";");
-
-  for (pathext_t::iterator i = pathext.begin(), e = pathext.end(); i != e; ++i){
-    SmallString<5> ext;
-    for (std::size_t ii = 0, e = i->size(); ii != e; ++ii)
-      ext.push_back(::tolower((*i)[ii]));
-    LPCSTR Extension = NULL;
-    if (ext.size() && ext[0] == '.')
-      Extension = ext.c_str();
-    DWORD length = ::SearchPathA(NULL, Program.c_str(), Extension,
-                                 std::size(PathName), PathName, NULL);
-    if (length == 0)
-      ec = windows_error(::GetLastError());
-    else if (length > std::size(PathName)) {
-      // This may have been the file, return with error.
-      ec = windows_error(ERROR_BUFFER_OVERFLOW);
-      break;
-    } else {
-      // We found the path! Return it.
-      ec = std::error_code();
+  SmallVector<wchar_t, MAX_PATH> Buffer(MAX_PATH);
+  for (;;) {
+    DWORD Len = ::GetFinalPathNameByHandleW(
+        FileHandle, Buffer.data(), Buffer.size(), FILE_NAME_NORMALIZED);
+    if (Len == 0)
+      return windows_error(::GetLastError());
+    // On success the length excludes the terminator; otherwise it is the size
+    // the buffer must have.
+    if (Len < Buffer.size()) {
+      Buffer.truncate(Len);
       break;
     }
+    Buffer.resize_for_overwrite(Len);
   }
-
-  // Make sure PathName is valid.
-  PathName[MAX_PATH] = 0;
-  return PathName;
+  if (!convertUTF16ToUTF8String(
+          ArrayRef<UTF16>(reinterpret_cast<const UTF16 *>(Buffer.data()),
+                          Buffer.size()),
+          Name))
+    return std::make_error_code(std::errc::illegal_byte_sequence);
+  return std::error_code();
 }
 
 static StringRef ExceptionCodeToString(DWORD ExceptionCode) {
@@ -310,10 +215,11 @@ int main(int argc, char **argv) {
   std::string CommandLine(ProgramToRun);
 
   std::error_code ec;
-  ProgramToRun = FindProgram(ProgramToRun, ec);
-  if (ec) {
+  if (ErrorOr<std::string> Found = sys::findProgramByName(ProgramToRun)) {
+    ProgramToRun = *Found;
+  } else {
     errs() << ToolName << ": Failed to find program: '" << CommandLine
-           << "': " << ec.message() << '\n';
+           << "': " << Found.getError().message() << '\n';
     return -1;
   }
 
@@ -329,7 +235,17 @@ int main(int argc, char **argv) {
     errs() << ToolName << ": Program Image Path: " << ProgramToRun << '\n'
            << ToolName << ": Command Line: " << CommandLine << '\n';
 
-  STARTUPINFOA StartupInfo;
+  SmallVector<wchar_t, MAX_PATH> ProgramUTF16;
+  SmallVector<wchar_t, MAX_PATH> CommandLineUTF16;
+  if ((ec = sys::windows::widenPath(ProgramToRun, ProgramUTF16)) ||
+      (ec = sys::windows::UTF8ToUTF16(CommandLine, CommandLineUTF16))) {
+    errs() << ToolName
+           << ": Failed to convert command line to UTF-16: " << ec.message()
+           << '\n';
+    return -1;
+  }
+
+  STARTUPINFOW StartupInfo;
   PROCESS_INFORMATION ProcessInfo;
   std::memset(&StartupInfo, 0, sizeof(StartupInfo));
   StartupInfo.cb = sizeof(StartupInfo);
@@ -340,16 +256,9 @@ int main(int argc, char **argv) {
   ::SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
   ::_set_error_mode(_OUT_TO_STDERR);
 
-  BOOL success = ::CreateProcessA(ProgramToRun.c_str(),
-                                  const_cast<LPSTR>(CommandLine.c_str()),
-                                  NULL,
-                                  NULL,
-                                  FALSE,
-                                  DEBUG_PROCESS,
-                                  NULL,
-                                  NULL,
-                                  &StartupInfo,
-                                  &ProcessInfo);
+  BOOL success = ::CreateProcessW(ProgramUTF16.data(), CommandLineUTF16.data(),
+                                  NULL, NULL, FALSE, DEBUG_PROCESS, NULL, NULL,
+                                  &StartupInfo, &ProcessInfo);
   if (!success) {
     errs() << ToolName << ": Failed to run program: '" << ProgramToRun << "': "
            << std::error_code(windows_error(::GetLastError())).message()
