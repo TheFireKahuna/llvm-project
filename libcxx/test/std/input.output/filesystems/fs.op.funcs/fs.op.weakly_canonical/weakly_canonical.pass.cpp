@@ -30,21 +30,27 @@ namespace fs = std::filesystem;
 int main(int, char**) {
   static_test_env static_env;
 
+  // weakly_canonical resolves the current directory, so the expected results
+  // for relative names must be built from its canonical form: on Windows
+  // current_path() reports the directory as it was entered, which may pass
+  // through a junction or a symlink. A root-relative name stays on the drive
+  // of the current directory as entered.
+  fs::path cwd  = fs::canonical(fs::current_path());
   fs::path root = fs::current_path().root_path();
   // clang-format off
   struct {
     fs::path input;
     fs::path expect;
   } TestCases[] = {
-      {"", fs::current_path()},
-      {".", fs::current_path()},
+      {"", cwd},
+      {".", cwd},
       {"/", root},
       {"/foo", root / "foo"},
       {"/.", root},
       {"/./", root},
-      {"a/b", fs::current_path() / "a/b"},
-      {"a", fs::current_path() / "a"},
-      {"a/b/", fs::current_path() / "a/b/"},
+      {"a/b", cwd / "a/b"},
+      {"a", cwd / "a"},
+      {"a/b/", cwd / "a/b/"},
       {static_env.File, static_env.File},
       {static_env.Dir, static_env.Dir},
       {static_env.SymlinkToDir, static_env.Dir},
