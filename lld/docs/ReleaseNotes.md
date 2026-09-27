@@ -33,6 +33,11 @@ from the [LLVM releases web site](https://llvm.org/releases/).
 
 ### COFF Improvements
 
+* In an import library LLD writes, a member that imports by name carries the
+  export's index in the DLL's export name table as its hint, as link.exe
+  writes it, so the loader finds the import without a binary search. Before,
+  the hint was the export's ordinal, or 0 without an explicit one.
+
 * `/delay:unload` is honored rather than ignored: the image gets a copy of the
   delay-load import address table in `UnloadDelayImportTable`, which
   `__FUnloadDelayLoadedDLL2` restores before it frees the library.
