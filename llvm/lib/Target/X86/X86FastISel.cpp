@@ -3539,8 +3539,10 @@ bool X86FastISel::fastLowerCall(CallLoweringInfo &CLI) {
   } else {
     // Direct call.
     assert(GV && "Not a direct call");
-    // See if we need any target-specific flags on the GV operand.
-    unsigned char OpFlags = Subtarget->classifyGlobalFunctionReference(GV);
+    // See if we need any target-specific flags on the GV operand. A library
+    // call is named by its symbol and is classified as one.
+    unsigned char OpFlags = Subtarget->classifyGlobalFunctionReference(
+        Symbol ? nullptr : GV, *FuncInfo.MF->getFunction().getParent());
     if (OpFlags == X86II::MO_PLT && !Is64Bit &&
         TM.getRelocationModel() == Reloc::Static && isa<Function>(GV) &&
         cast<Function>(GV)->isIntrinsic())
@@ -3555,6 +3557,13 @@ bool X86FastISel::fastLowerCall(CallLoweringInfo &CLI) {
     unsigned CallOpc = NeedLoad
                            ? (Is64Bit ? X86::CALL64m : X86::CALL32m)
                            : (Is64Bit ? X86::CALL64pcrel32 : X86::CALLpcrel32);
+
+    // The import table entry of a library call is a symbol of its own.
+    if (Symbol && OpFlags == X86II::MO_DLLIMPORT) {
+      Symbol = FuncInfo.MF->getContext().getOrCreateSymbol(Twine("__imp_") +
+                                                           Symbol->getName());
+      OpFlags = X86II::MO_NO_FLAG;
+    }
 
     MIB = BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(CallOpc));
     if (NeedLoad)

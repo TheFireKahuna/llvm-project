@@ -190,22 +190,34 @@ X86Subtarget::classifyGlobalFunctionReference(const GlobalValue *GV) const {
 unsigned char
 X86Subtarget::classifyGlobalFunctionReference(const GlobalValue *GV,
                                               const Module &M) const {
+  const Function *F = dyn_cast_or_null<Function>(GV);
+
+  // Under -fno-plt a call on COFF goes through the import table as it goes
+  // through the GOT on ELF. The front end decides that for every declaration
+  // it creates, marking it dllimport or dso_local. A declaration created by an
+  // optimization or a lowering carries neither, and would otherwise reach a
+  // linker thunk: a call and a jump where the table takes one call. Where the
+  // function is in the image, the linker gives the reference a local pointer.
+  if (isTargetCOFF() && M.getRtLibUseGOT() && F && !F->isDSOLocal() &&
+      !F->isIntrinsic() && F->isDeclarationForLinker() &&
+      !F->hasExternalWeakLinkage())
+    return X86II::MO_DLLIMPORT;
+
   if (TM.shouldAssumeDSOLocal(GV))
     return X86II::MO_NO_FLAG;
 
   // Functions on COFF can be non-DSO local for three reasons:
-  // - They are intrinsic functions (!GV)
+  // - They are runtime library calls (!GV), which go through the import
+  //   table under -fno-plt as they go through the GOT on ELF
   // - They are marked dllimport
   // - They are extern_weak, and a stub is needed
   if (isTargetCOFF()) {
     if (!GV)
-      return X86II::MO_NO_FLAG;
+      return M.getRtLibUseGOT() ? X86II::MO_DLLIMPORT : X86II::MO_NO_FLAG;
     if (GV->hasDLLImportStorageClass())
       return X86II::MO_DLLIMPORT;
     return X86II::MO_COFFSTUB;
   }
-
-  const Function *F = dyn_cast_or_null<Function>(GV);
 
   if (isTargetELF()) {
     if (is64Bit() && F && (CallingConv::X86_RegCall == F->getCallingConv()))
