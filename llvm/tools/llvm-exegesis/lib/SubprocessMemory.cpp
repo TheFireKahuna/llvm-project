@@ -43,7 +43,7 @@ long SubprocessMemory::getCurrentTID() {
 
 #if !defined(__ANDROID__)
 
-Error SubprocessMemory::initializeSubprocessMemory(pid_t ProcessID) {
+Error SubprocessMemory::initializeSubprocessMemory(sys::procid_t ProcessID) {
   // Add the PID to the shared memory name so that if we're running multiple
   // processes at the same time, they won't interfere with each other.
   // This comes up particularly often when running the exegesis tests with
@@ -68,7 +68,7 @@ Error SubprocessMemory::initializeSubprocessMemory(pid_t ProcessID) {
 }
 
 Error SubprocessMemory::addMemoryDefinition(
-    StringMap<MemoryValue> MemoryDefinitions, pid_t ProcessPID) {
+    StringMap<MemoryValue> MemoryDefinitions, sys::procid_t ProcessPID) {
   SharedMemoryNames.reserve(MemoryDefinitions.size());
   for (const auto &E : MemoryDefinitions) {
     const MemoryValue &MemVal = E.second;
@@ -112,8 +112,8 @@ Error SubprocessMemory::addMemoryDefinition(
 }
 
 Expected<int> SubprocessMemory::setupAuxiliaryMemoryInSubprocess(
-    StringMap<MemoryValue> MemoryDefinitions, pid_t ParentPID, long ParentTID,
-    int CounterFileDescriptor) {
+    StringMap<MemoryValue> MemoryDefinitions, sys::procid_t ParentPID,
+    long ParentTID, int CounterFileDescriptor) {
   std::string AuxiliaryMemoryName =
       formatv("/{0}auxmem{1}", ParentTID, ParentPID);
   int AuxiliaryMemoryFileDescriptor =
@@ -154,19 +154,19 @@ SubprocessMemory::~SubprocessMemory() {
 
 #else
 
-Error SubprocessMemory::initializeSubprocessMemory(pid_t ProcessPID) {
+Error SubprocessMemory::initializeSubprocessMemory(sys::procid_t ProcessPID) {
   return make_error<Failure>(
       "initializeSubprocessMemory is only supported on Linux");
 }
 
 Error SubprocessMemory::addMemoryDefinition(
-    StringMap<MemoryValue> MemoryDefinitions, pid_t ProcessPID) {
+    StringMap<MemoryValue> MemoryDefinitions, sys::procid_t ProcessPID) {
   return make_error<Failure>("addMemoryDefinitions is only supported on Linux");
 }
 
 Expected<int> SubprocessMemory::setupAuxiliaryMemoryInSubprocess(
-    StringMap<MemoryValue> MemoryDefinitions, pid_t ParentPID, long ParentTID,
-    int CounterFileDescriptor) {
+    StringMap<MemoryValue> MemoryDefinitions, sys::procid_t ParentPID,
+    long ParentTID, int CounterFileDescriptor) {
   return make_error<Failure>(
       "setupAuxiliaryMemoryInSubprocess is only supported on Linux");
 }

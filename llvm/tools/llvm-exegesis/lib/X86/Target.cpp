@@ -696,7 +696,7 @@ public:
   Expected<std::unique_ptr<pfm::CounterGroup>>
   createCounter(StringRef CounterName, const LLVMState &State,
                 ArrayRef<const char *> ValidationCounters,
-                const pid_t ProcessID) const override {
+                const sys::procid_t ProcessID) const override {
     // If LbrSamplingPeriod was provided, then ignore the
     // CounterName because we only have one for LBR.
     if (LbrSamplingPeriod > 0) {
