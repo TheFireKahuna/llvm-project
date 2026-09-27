@@ -21,6 +21,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
@@ -1408,7 +1409,65 @@ TEST_F(FileSystemTest, BrokenSymlinkDirectoryIteration) {
 }
 #endif
 
+TEST_F(FileSystemTest, RemoveDirectoriesReadOnlyFile) {
+  // A read-only file does not keep its directory from being removed.
+  SmallString<128> Tree(TestDirectory);
+  path::append(Tree, "tree");
+  ASSERT_NO_ERROR(fs::create_directories(Tree));
+  SmallString<128> File(Tree);
+  path::append(File, "readonly.txt");
+  int FD;
+  ASSERT_NO_ERROR(fs::openFileForWrite(File, FD, fs::CD_CreateNew));
+  ASSERT_EQ(close(FD), 0);
+  ASSERT_NO_ERROR(fs::setPermissions(File, fs::all_read));
+
+  ASSERT_NO_ERROR(fs::remove_directories(Tree));
+  EXPECT_FALSE(fs::exists(Tree));
+}
+
 #ifdef _WIN32
+TEST_F(FileSystemTest, RemoveDirectoriesJunction) {
+  // A directory junction is a link like a symlink, and removing a tree that
+  // holds one must remove the link and leave the target's contents alone.
+  // Unlike a symlink, a junction can be created without privileges.
+  SmallString<128> Target(TestDirectory);
+  path::append(Target, "target");
+  ASSERT_NO_ERROR(fs::create_directories(Target));
+  SmallString<128> File(Target);
+  path::append(File, "file");
+  {
+    std::error_code EC;
+    raw_fd_ostream OS(File, EC);
+    ASSERT_NO_ERROR(EC);
+  }
+
+  SmallString<128> Tree(TestDirectory);
+  path::append(Tree, "tree");
+  ASSERT_NO_ERROR(fs::create_directories(Tree));
+  SmallString<128> Junction(Tree);
+  path::append(Junction, "junction");
+
+  ErrorOr<std::string> Cmd = sys::findProgramByName("cmd");
+  ASSERT_TRUE(bool(Cmd));
+  StringRef Args[] = {*Cmd, "/c", "mklink", "/j", Junction, Target};
+  std::optional<StringRef> Redirects[] = {std::nullopt, StringRef(),
+                                          StringRef()};
+  ASSERT_EQ(sys::ExecuteAndWait(*Cmd, Args, std::nullopt, Redirects), 0);
+
+  fs::file_status Status;
+  ASSERT_NO_ERROR(fs::status(Junction, Status, /*Follow=*/false));
+  EXPECT_EQ(Status.type(), fs::file_type::symlink_file);
+  ASSERT_NO_ERROR(fs::status(Junction, Status, /*Follow=*/true));
+  EXPECT_EQ(Status.type(), fs::file_type::directory_file);
+
+  ASSERT_NO_ERROR(fs::remove_directories(Tree));
+  EXPECT_FALSE(fs::exists(Tree));
+  EXPECT_TRUE(fs::exists(File));
+
+  ASSERT_NO_ERROR(fs::remove(File));
+  ASSERT_NO_ERROR(fs::remove(Target));
+}
+
 TEST_F(FileSystemTest, UTF8ToUTF16DirectoryIteration) {
   // The Windows filesystem support uses UTF-16 and converts paths from the
   // input UTF-8. The UTF-16 equivalent of the input path can be shorter in
