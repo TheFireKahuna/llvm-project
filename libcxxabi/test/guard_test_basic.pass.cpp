@@ -137,7 +137,7 @@ int main(int, char**) {
 #endif
   }
   {
-#if (defined(__APPLE__) || defined(__linux__))  && !defined(TEST_HAS_NO_THREADS)
+#if (defined(__APPLE__) || defined(__linux__) || defined(_WIN32)) && !defined(TEST_HAS_NO_THREADS)
     assert(PlatformThreadID);
 #endif
     if (PlatformThreadID != nullptr) {
