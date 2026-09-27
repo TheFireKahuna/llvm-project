@@ -11,6 +11,7 @@
 #include "llvm/Support/BLAKE3.h"
 #include "llvm/Support/HashingOutputBackend.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Signals.h"
 #include "llvm/Support/ThreadPool.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Testing/Support/Error.h"
@@ -880,6 +881,50 @@ TEST(OnDiskBackendTest, Append) {
   OnDiskFile File3(*Provider.D, FilePath);
   EXPECT_TRUE(File3.equalsCurrentContent("some data\nmore data\nmore more\n"));
 }
+
+TEST(OnDiskBackendTest, DiscardAfterWriteError) {
+  OnDiskOutputBackendProvider Provider;
+  auto Backend = Provider.createBackend();
+  std::string FilePath = Provider.getFilePathToCreate();
+  OnDiskFile File(*Provider.D, FilePath);
+
+  OutputFile O;
+  EXPECT_THAT_ERROR(Backend->createFile(FilePath).moveInto(O), Succeeded());
+  ASSERT_TRUE(File.findTemp());
+
+  // Put the stream in the error state a failed write leaves it in. A regular
+  // file is written directly through its raw_fd_ostream.
+  auto &OS = static_cast<raw_fd_ostream &>(O.getOS());
+  OS.seek(UINT64_MAX);
+  ASSERT_TRUE(OS.has_error());
+
+  // Discarding reports the error and still removes the temporary.
+  EXPECT_THAT_ERROR(O.discard(), Failed());
+  EXPECT_FALSE(File.findTemp());
+  EXPECT_FALSE(sys::fs::exists(File.Path));
+}
+
+// On Windows, RunInterruptHandlers also runs the signal handlers, and only
+// once per process.
+#ifndef _WIN32
+TEST(OnDiskBackendTest, NoDiscardOnSignal) {
+  OnDiskOutputBackendProvider Provider;
+  auto Backend = Provider.createBackend();
+  std::string FilePath = Provider.getFilePathToCreate();
+  OutputConfig Config = OutputConfig().setNoDiscardOnSignal();
+
+  // The temporary survives the removal of files on a signal.
+  OutputFile O;
+  EXPECT_THAT_ERROR(Backend->createFile(FilePath, Config).moveInto(O),
+                    Succeeded());
+  O << "some data";
+  sys::RunInterruptHandlers();
+  EXPECT_THAT_ERROR(O.keep(), Succeeded());
+
+  OnDiskFile File(*Provider.D, FilePath);
+  EXPECT_TRUE(File.equalsCurrentContent("some data"));
+}
+#endif
 
 TEST(HashingBackendTest, HashOutput) {
   HashingOutputBackend<BLAKE3> Backend;
