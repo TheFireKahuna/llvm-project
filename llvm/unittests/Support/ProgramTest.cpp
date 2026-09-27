@@ -164,6 +164,34 @@ TEST_F(ProgramEnvTest, CreateProcessLongPath) {
   ASSERT_NO_ERROR(fs::remove(Twine(LongPath)));
   ASSERT_NO_ERROR(fs::remove(Twine(TestDirectory)));
 }
+
+TEST(ProgramTest, FindProgramByName) {
+  // A directory named like the program is skipped, and a directory longer
+  // than MAX_PATH is searched.
+  SmallString<128> TestDirectory;
+  ASSERT_NO_ERROR(
+      fs::createUniqueDirectory("find-program-test", TestDirectory));
+  SmallString<128> First(TestDirectory);
+  path::append(First, "first");
+  ASSERT_NO_ERROR(fs::create_directories(First + "\\tool"));
+  SmallString<512> Second(TestDirectory);
+  path::append(Second, std::string(150, 'a'), std::string(150, 'b'));
+  ASSERT_NO_ERROR(fs::create_directories(Second));
+  SmallString<512> Tool(Second);
+  path::append(Tool, "tool.exe");
+  {
+    std::error_code EC;
+    raw_fd_ostream OS(Tool, EC);
+    ASSERT_NO_ERROR(EC);
+  }
+
+  StringRef Paths[] = {First, Second};
+  ErrorOr<std::string> Found = findProgramByName("tool", Paths);
+  ASSERT_TRUE(bool(Found));
+  EXPECT_EQ(*Found, Tool);
+
+  ASSERT_NO_ERROR(fs::remove_directories(TestDirectory));
+}
 #endif
 
 TEST_F(ProgramEnvTest, CreateProcessTrailingSlash) {
