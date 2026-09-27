@@ -645,16 +645,19 @@ static std::error_code realPathFromHandle(HANDLE H,
   return std::error_code();
 }
 
-std::error_code is_local(int FD, bool &Result) {
-  sandbox::violationIfEnabled();
-
+static std::error_code is_local_handle(HANDLE Handle, bool &Result) {
   SmallVector<wchar_t, 128> FinalPath;
-  HANDLE Handle = reinterpret_cast<HANDLE>(_get_osfhandle(FD));
-
   if (std::error_code EC = realPathFromHandle(Handle, FinalPath))
     return EC;
 
   return is_local_internal(FinalPath, Result);
+}
+
+std::error_code is_local(int FD, bool &Result) {
+  sandbox::violationIfEnabled();
+
+  HANDLE Handle = reinterpret_cast<HANDLE>(_get_osfhandle(FD));
+  return is_local_handle(Handle, Result);
 }
 
 static std::error_code setDeleteDisposition(HANDLE Handle, bool Delete) {
@@ -673,12 +676,8 @@ static std::error_code setDeleteDisposition(HANDLE Handle, bool Delete) {
   // Check if the file is on a network (non-local) drive. If so, don't
   // continue when DeleteFile is true, since it prevents opening the file for
   // writes.
-  SmallVector<wchar_t, 128> FinalPath;
-  if (std::error_code EC = realPathFromHandle(Handle, FinalPath))
-    return EC;
-
   bool IsLocal;
-  if (std::error_code EC = is_local_internal(FinalPath, IsLocal))
+  if (std::error_code EC = is_local_handle(Handle, IsLocal))
     return EC;
 
   if (!IsLocal)
@@ -1303,12 +1302,9 @@ void mapped_file_region::unmapImpl() {
         // cases where we do the flushing. Only do the flushing if we aren't
         // sure we are on a local file system.
         bool IsLocal = false;
-        SmallVector<wchar_t, 128> FinalPath;
-        if (!realPathFromHandle(FileHandle.get(), FinalPath)) {
-          // Not checking the return value here - if the check fails, assume the
-          // file isn't local.
-          is_local_internal(FinalPath, IsLocal);
-        }
+        // Not checking the return value here - if the check fails, assume the
+        // file isn't local.
+        is_local_handle(FileHandle.get(), IsLocal);
         DoFlush = !IsLocal;
       }
       if (DoFlush)
