@@ -160,7 +160,7 @@ static std::error_code WildcardExpand(StringRef Arg,
 
   // Convert back to UTF-16 so we can call FindFirstFileW.
   SmallVector<wchar_t, MAX_PATH> ArgW;
-  EC = windows::UTF8ToUTF16(Arg, ArgW);
+  EC = windows::widenPath(Arg, ArgW);
   if (EC)
     return EC;
 
@@ -200,31 +200,35 @@ static std::error_code WildcardExpand(StringRef Arg,
 static std::error_code GetExecutableName(SmallVectorImpl<char> &Filename) {
   // The first argument may contain just the name of the executable (e.g.,
   // "clang") rather than the full path, so swap it with the full path.
-  wchar_t ModuleName[MAX_PATH];
-  size_t Length = ::GetModuleFileNameW(NULL, ModuleName, MAX_PATH);
-  if (Length == 0 || Length == MAX_PATH) {
-    return mapWindowsError(GetLastError());
+  // A return value equal to the size of the buffer means the name was
+  // truncated; grow the buffer and retry.
+  SmallVector<wchar_t, MAX_PATH> ModuleName;
+  ModuleName.resize_for_overwrite(ModuleName.capacity());
+  for (;;) {
+    DWORD Length =
+        ::GetModuleFileNameW(NULL, ModuleName.data(), ModuleName.size());
+    if (Length == 0)
+      return mapWindowsError(GetLastError());
+    if (Length < ModuleName.size()) {
+      ModuleName.truncate(Length);
+      break;
+    }
+    ModuleName.resize_for_overwrite(ModuleName.size() * 2);
   }
+
+  SmallString<MAX_PATH> ModuleNameUTF8;
+  if (std::error_code EC = windows::UTF16ToUTF8(
+          ModuleName.data(), ModuleName.size(), ModuleNameUTF8))
+    return EC;
 
   // If the first argument is a shortened (8.3) name (which is possible even
   // if we got the module name), the driver will have trouble distinguishing it
   // (e.g., clang.exe v. clang++.exe), so expand it now.
-  Length = GetLongPathNameW(ModuleName, ModuleName, MAX_PATH);
-  if (Length == 0)
-    return mapWindowsError(GetLastError());
-  if (Length > MAX_PATH) {
-    // We're not going to try to deal with paths longer than MAX_PATH, so we'll
-    // treat this as an error.  GetLastError() returns ERROR_SUCCESS, which
-    // isn't useful, so we'll hardcode an appropriate error value.
-    return mapWindowsError(ERROR_INSUFFICIENT_BUFFER);
-  }
-
-  std::error_code EC = windows::UTF16ToUTF8(ModuleName, Length, Filename);
-  if (EC)
+  SmallString<MAX_PATH> LongName;
+  if (std::error_code EC = windows::makeLongFormPath(ModuleNameUTF8, LongName))
     return EC;
 
-  // Make a copy of the filename since assign makes the StringRef invalid.
-  std::string Base = sys::path::filename(Filename.data()).str();
+  StringRef Base = sys::path::filename(LongName);
   Filename.assign(Base.begin(), Base.end());
   return std::error_code();
 }

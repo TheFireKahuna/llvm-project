@@ -209,20 +209,22 @@ std::string getMainExecutable(const char *argv0, void *MainExecAddr) {
 
   SmallVector<wchar_t, MAX_PATH> PathName;
   PathName.resize_for_overwrite(PathName.capacity());
-  DWORD Size = ::GetModuleFileNameW(NULL, PathName.data(), PathName.size());
+  for (;;) {
+    DWORD Size = ::GetModuleFileNameW(NULL, PathName.data(), PathName.size());
 
-  // A zero return value indicates a failure other than insufficient space.
-  if (Size == 0)
-    return "";
+    // A zero return value indicates a failure other than insufficient space.
+    if (Size == 0)
+      return "";
 
-  // Insufficient space is determined by a return value equal to the size of
-  // the buffer passed in.
-  if (Size == PathName.capacity())
-    return "";
-
-  // On success, GetModuleFileNameW returns the number of characters written to
-  // the buffer not including the NULL terminator.
-  PathName.truncate(Size);
+    // On success, GetModuleFileNameW returns the number of characters written
+    // to the buffer not including the NULL terminator. A return value equal to
+    // the size of the buffer means the path was truncated; grow and retry.
+    if (Size < PathName.size()) {
+      PathName.truncate(Size);
+      break;
+    }
+    PathName.resize_for_overwrite(PathName.size() * 2);
+  }
 
   // Convert the result from UTF-16 to UTF-8.
   SmallVector<char, MAX_PATH> PathNameUTF8;
