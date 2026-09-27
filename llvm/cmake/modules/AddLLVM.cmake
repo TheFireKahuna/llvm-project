@@ -1158,6 +1158,18 @@ macro(add_llvm_executable name)
     ${ARGN})
   generate_llvm_objects(${name} ${ARG_UNPARSED_ARGUMENTS})
   add_windows_version_resource_file(ALL_FILES ${ALL_FILES})
+  # Declare the executable long-path aware, so that the Win32 APIs that cannot
+  # take a long path prefix work past MAX_PATH where the system allows it.
+  # CMake embeds .manifest sources only with an MSVC-style linker, not with
+  # MinGW's. Embedding needs a manifest tool (mt.exe, or lld-link built with
+  # libxml2), which a cross build from another host most likely lacks, so the
+  # manifest is added only when building on Windows.
+  set(llvm_long_paths_manifest
+    ${LLVM_SOURCE_DIR}/resources/windows_long_paths.manifest)
+  if(WIN32 AND NOT MINGW AND CMAKE_HOST_WIN32 AND
+     EXISTS ${llvm_long_paths_manifest})
+    list(APPEND ALL_FILES ${llvm_long_paths_manifest})
+  endif()
 
   if(XCODE)
     # Note: the dummy.cpp source file provides no definitions. However,
