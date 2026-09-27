@@ -35,7 +35,14 @@ _mm_malloc(size_t __size, size_t __align) {
     return malloc(__size);
   }
 
+  // An alignment of 0 goes to posix_memalign, which rejects it, as with GCC's
+  // _mm_malloc. _aligned_malloc would invoke the invalid parameter handler
+  // instead, so the Windows paths round it up like other small alignments.
+#ifdef _WIN32
   if (!(__align & (__align - 1)) && __align < sizeof(void *))
+#else
+  if (__align && !(__align & (__align - 1)) && __align < sizeof(void *))
+#endif
     __align = sizeof(void *);
 
   void *__mallocedMemory;
