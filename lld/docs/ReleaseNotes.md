@@ -33,6 +33,12 @@ from the [LLVM releases web site](https://llvm.org/releases/).
 
 ### COFF Improvements
 
+* `/delay:unload` is honored rather than ignored: the image gets a copy of the
+  delay-load import address table in `UnloadDelayImportTable`, which
+  `__FUnloadDelayLoadedDLL2` restores before it frees the library.
+  `/delay:nobind` is accepted; no image LLD writes has a bound delay-load
+  import table. Any other argument is an error.
+
 ### MinGW Improvements
 
 ### MachO Improvements

@@ -1,0 +1,35 @@
+# REQUIRES: x86
+
+# /delay:unload puts a copy of the delay-load address table in the image, so
+# that __FUnloadDelayLoadedDLL2 can restore it before freeing the library.
+# RUN: lld-link /out:%t.exe /entry:main /subsystem:console \
+# RUN:   %p/Inputs/hello64.obj %p/Inputs/std64.lib /delayload:STD64.DLL \
+# RUN:   /delay:unload /alternatename:__delayLoadHelper2=main
+# RUN: llvm-readobj --coff-imports --coff-basereloc %t.exe | \
+# RUN:   FileCheck --check-prefix=UNLOAD %s
+
+# UNLOAD:      ImportAddressTable: 0x3020
+# UNLOAD-NEXT: ImportNameTable: 0x2068
+# UNLOAD-NEXT: BoundDelayImportTable: 0x0
+# UNLOAD-NEXT: UnloadDelayImportTable: 0x2048
+# The copy holds addresses, so it is relocated with the table it copies.
+# UNLOAD:      Address: 0x2048
+# UNLOAD:      Address: 0x2050
+# UNLOAD:      Address: 0x2058
+# UNLOAD:      Address: 0x3020
+
+# Without it the field stays zero, as it does in every image link.exe writes.
+# RUN: lld-link /out:%t.nounload.exe /entry:main /subsystem:console \
+# RUN:   %p/Inputs/hello64.obj %p/Inputs/std64.lib /delayload:STD64.DLL \
+# RUN:   /delay:nobind /alternatename:__delayLoadHelper2=main
+# RUN: llvm-readobj --coff-imports %t.nounload.exe | \
+# RUN:   FileCheck --check-prefix=NOUNLOAD %s
+
+# NOUNLOAD: UnloadDelayImportTable: 0x0
+
+# RUN: not lld-link /out:%t.err.exe /entry:main /subsystem:console \
+# RUN:   %p/Inputs/hello64.obj %p/Inputs/std64.lib /delayload:STD64.DLL \
+# RUN:   /delay:bogus /alternatename:__delayLoadHelper2=main 2>&1 | \
+# RUN:   FileCheck --check-prefix=ERR %s
+
+# ERR: /delay: invalid argument: bogus
