@@ -204,6 +204,11 @@ X86MCAsmInfoGNUCOFF::X86MCAsmInfoGNUCOFF(const Triple &Triple,
     ExceptionsType = ExceptionHandling::DwarfCFI;
   }
 
+  // Windows Itanium names COMDAT sections like MSVC, so its unwind data needs
+  // associative COMDATs, which it links with lld-link, not GNU ld.
+  if (Triple.isWindowsItaniumEnvironment())
+    HasCOFFAssociativeComdats = true;
+
   AssemblerDialect = X86AsmSyntax;
 
   AllowAtInName = true;
