@@ -19,7 +19,6 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/Error.h"
-#include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/CGPassBuilderOption.h"
 
@@ -33,9 +32,9 @@ static cl::opt<cl::boolOrDefault>
 
 static Error
 runCodeGenPipelineLegacy(TargetMachine &TM, Module &M, raw_pwrite_stream &OS,
-                         std::unique_ptr<ToolOutputFile> &DwoOS,
-                         CodeGenFileType CGFT, bool PrintPipelinePasses,
-                         bool DisableVerify, bool DisableSimplifyLibCalls) {
+                         raw_pwrite_stream *DwoOS, CodeGenFileType CGFT,
+                         bool PrintPipelinePasses, bool DisableVerify,
+                         bool DisableSimplifyLibCalls) {
   legacy::PassManager CodeGenPasses;
   CodeGenPasses.add(
       createTargetTransformInfoWrapperPass(TM.getTargetIRAnalysis()));
@@ -49,8 +48,7 @@ runCodeGenPipelineLegacy(TargetMachine &TM, Module &M, raw_pwrite_stream &OS,
   CodeGenPasses.add(
       new RuntimeLibraryInfoWrapper(Options.MCOptions.ABIName, Options.VecLib));
 
-  if (TM.addPassesToEmitFile(CodeGenPasses, OS, DwoOS ? &DwoOS->os() : nullptr,
-                             CGFT, DisableVerify))
+  if (TM.addPassesToEmitFile(CodeGenPasses, OS, DwoOS, CGFT, DisableVerify))
     return createStringError("Failed to construct CodeGen pipeline");
   CodeGenPasses.run(M);
 
@@ -59,7 +57,7 @@ runCodeGenPipelineLegacy(TargetMachine &TM, Module &M, raw_pwrite_stream &OS,
 
 static Error runCodeGenPipelineNewPM(TargetMachine &TM, Module &M,
                                      raw_pwrite_stream &OS,
-                                     std::unique_ptr<ToolOutputFile> &DwoOS,
+                                     raw_pwrite_stream *DwoOS,
                                      CodeGenFileType CGFT, bool DisableVerify,
                                      IntrusiveRefCntPtr<vfs::FileSystem> VFS) {
   ModulePassManager MPM;
@@ -84,9 +82,8 @@ static Error runCodeGenPipelineNewPM(TargetMachine &TM, Module &M,
 
   MAM.registerPass([&] { return MachineModuleAnalysis(MMI); });
 
-  Error BuildPipelineError =
-      TM.buildCodeGenPipeline(MPM, MAM, OS, DwoOS ? &DwoOS->os() : nullptr,
-                              CGFT, Opt, MMI.getContext(), &PIC);
+  Error BuildPipelineError = TM.buildCodeGenPipeline(
+      MPM, MAM, OS, DwoOS, CGFT, Opt, MMI.getContext(), &PIC);
   if (BuildPipelineError)
     return BuildPipelineError;
 
@@ -95,8 +92,7 @@ static Error runCodeGenPipelineNewPM(TargetMachine &TM, Module &M,
 }
 
 Error llvm::runCodeGenPipeline(TargetMachine &TM, Module &M,
-                               raw_pwrite_stream &OS,
-                               std::unique_ptr<ToolOutputFile> &DwoOS,
+                               raw_pwrite_stream &OS, raw_pwrite_stream *DwoOS,
                                CodeGenFileType CGFT, bool PrintPipelinePasses,
                                bool DisableVerify, bool DisableSimplifyLibCalls,
                                IntrusiveRefCntPtr<vfs::FileSystem> VFS) {
