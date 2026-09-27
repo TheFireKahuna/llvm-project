@@ -155,6 +155,8 @@ public:
   bool isValid() const { return IsInitialized; }
 
 private:
+  void initNumJobs();
+
 #if defined(LLVM_ON_UNIX)
   int ReadFD = -1;
   int WriteFD = -1;
@@ -180,6 +182,22 @@ void JobserverClientImpl::release(JobSlot Slot) {}
 
 namespace llvm {
 JobserverClient::~JobserverClient() = default;
+
+/// Determines the total number of jobs by acquiring all available slots and
+/// then immediately releasing them.
+void JobserverClientImpl::initNumJobs() {
+  SmallVector<JobSlot, 8> Slots;
+  while (true) {
+    auto S = tryAcquire();
+    if (!S.isValid())
+      break;
+    Slots.push_back(std::move(S));
+  }
+  NumJobs = Slots.size();
+  assert(NumJobs >= 1 && "Invalid number of jobs");
+  for (auto &S : Slots)
+    release(std::move(S));
+}
 
 uint8_t JobSlot::getExplicitValue() const {
   assert(isExplicit() && "Cannot get value of implicit or invalid slot");
