@@ -65,6 +65,18 @@
 #include <OS.h> // For B_OS_NAME_LENGTH
 #endif
 
+#if defined(LLVM_RUNTIME_NTPOSIX)
+#include <memory>
+#include <sched.h>     // For sched_getaffinity
+#include <sys/ntabi.h> // For the NT information types
+
+// Power throttling and the processor topology have no POSIX interface.
+extern "C" NTAPI [[gnu::dllimport]] NTSTATUS
+NtSetInformationThread(HANDLE, ULONG, void *, ULONG);
+extern "C" NTAPI [[gnu::dllimport]] NTSTATUS
+NtQuerySystemInformationEx(ULONG, void *, ULONG, void *, ULONG, ULONG *);
+#endif
+
 namespace llvm {
 pthread_t
 llvm_execute_on_thread_impl(void *(*ThreadFunc)(void *), void *Arg,
@@ -187,6 +199,8 @@ static constexpr uint32_t get_max_thread_name_length_impl() {
   return 24;
 #elif defined(__CYGWIN__)
   return 16;
+#elif defined(LLVM_RUNTIME_NTPOSIX)
+  return 256;
 #else
   return 0;
 #endif
@@ -286,7 +300,27 @@ void llvm::get_thread_name(SmallVectorImpl<char> &Name) {
 
 llvm::SetThreadPriorityResult
 llvm::set_thread_priority(ThreadPriority Priority) {
-#if (defined(__linux__) || defined(__CYGWIN__)) && defined(SCHED_IDLE)
+#if defined(LLVM_RUNTIME_NTPOSIX)
+  // Background threads run under EcoQoS, as on Win32, which prefers efficient
+  // cores and frequencies. The C library has no policy below SCHED_OTHER, and
+  // its real-time policies would raise the priority instead.
+  struct {
+    ULONG Version;
+    ULONG ControlMask;
+    ULONG StateMask;
+  } State = {};
+  constexpr ULONG ThreadPowerThrottlingState = 49;
+  constexpr ULONG PowerThrottlingThreadCurrentVersion = 1;
+  constexpr ULONG PowerThrottlingThreadExecutionSpeed = 1;
+  const HANDLE CurrentThread = reinterpret_cast<HANDLE>(-2);
+  State.Version = PowerThrottlingThreadCurrentVersion;
+  if (Priority == ThreadPriority::Background)
+    State.ControlMask = State.StateMask = PowerThrottlingThreadExecutionSpeed;
+  return NtSetInformationThread(CurrentThread, ThreadPowerThrottlingState,
+                                &State, sizeof(State)) >= 0
+             ? SetThreadPriorityResult::SUCCESS
+             : SetThreadPriorityResult::FAILURE;
+#elif (defined(__linux__) || defined(__CYGWIN__)) && defined(SCHED_IDLE)
   // Some *really* old glibcs are missing SCHED_IDLE.
   // http://man7.org/linux/man-pages/man3/pthread_setschedparam.3.html
   // http://man7.org/linux/man-pages/man2/sched_setscheduler.2.html
@@ -339,7 +373,8 @@ static int computeHostNumHardwareThreads() {
   if (cpuset_getaffinity(CPU_LEVEL_WHICH, CPU_WHICH_TID, -1, sizeof(mask),
                          &mask) == 0)
     return CPU_COUNT(&mask);
-#elif (defined(__linux__) || defined(__CYGWIN__))
+#elif (defined(__linux__) || defined(__CYGWIN__) ||                            \
+       defined(LLVM_RUNTIME_NTPOSIX))
   cpu_set_t Set;
   CPU_ZERO(&Set);
   if (sched_getaffinity(0, sizeof(Set), &Set) == 0)
@@ -470,6 +505,32 @@ static int computeHostNumPhysicalCores() {
   char *CSD = reinterpret_cast<char *>(
       static_cast<uintptr_t>(reinterpret_cast<unsigned int &>(CVT[CVTCSD])));
   return reinterpret_cast<int &>(CSD[CSD_NUMBER_ONLINE_STANDARD_CPS]);
+}
+#elif defined(LLVM_RUNTIME_NTPOSIX)
+// Count the processor cores NT reports, as the Win32 implementation does.
+static int computeHostNumPhysicalCores() {
+  constexpr ULONG SystemLogicalProcessorAndGroupInformation = 107;
+  LOGICAL_PROCESSOR_RELATIONSHIP Relationship = RelationProcessorCore;
+  ULONG Length = 0;
+  NtQuerySystemInformationEx(SystemLogicalProcessorAndGroupInformation,
+                             &Relationship, sizeof(Relationship), nullptr, 0,
+                             &Length);
+  if (Length == 0)
+    return -1;
+  auto Buffer = std::make_unique<uint8_t[]>(Length);
+  if (NtQuerySystemInformationEx(SystemLogicalProcessorAndGroupInformation,
+                                 &Relationship, sizeof(Relationship),
+                                 Buffer.get(), Length, &Length) < 0)
+    return -1;
+  int Cores = 0;
+  for (ULONG Offset = 0; Offset < Length;) {
+    auto *Info = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *>(
+        Buffer.get() + Offset);
+    if (Info->Relationship == RelationProcessorCore)
+      ++Cores;
+    Offset += Info->Size;
+  }
+  return Cores > 0 ? Cores : -1;
 }
 #else
 // On other systems, return -1 to indicate unknown.
