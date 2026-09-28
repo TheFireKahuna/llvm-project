@@ -5135,13 +5135,16 @@ static void ProcessVSRuntimeLibrary(const ToolChain &TC, const ArgList &Args,
     if (Args.hasArg(options::OPT__SLASH_LDd))
       CmdArgs.push_back("-D_DEBUG");
     CmdArgs.push_back("-D_MT");
-    CmdArgs.push_back("-flto-visibility-public-std");
+    // Windows Itanium links libc++ dynamically with either CRT.
+    if (!TC.getTriple().isWindowsItaniumEnvironment())
+      CmdArgs.push_back("-flto-visibility-public-std");
     FlagForCRT = "--dependent-lib=libcmt";
     break;
   case options::OPT__SLASH_MTd:
     CmdArgs.push_back("-D_DEBUG");
     CmdArgs.push_back("-D_MT");
-    CmdArgs.push_back("-flto-visibility-public-std");
+    if (!TC.getTriple().isWindowsItaniumEnvironment())
+      CmdArgs.push_back("-flto-visibility-public-std");
     FlagForCRT = "--dependent-lib=libcmtd";
     break;
   default:

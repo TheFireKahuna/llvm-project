@@ -199,6 +199,13 @@ void addWindowsSDKIncludeArgs(llvm::vfs::FileSystem &VFS,
                               const llvm::opt::ArgList &DriverArgs,
                               llvm::opt::ArgStringList &CC1Args);
 
+/// Expands the clang-cl arguments whose meaning does not depend on the
+/// toolchain: /O..., /permissive, /permissive- and -Dname#value.
+llvm::opt::DerivedArgList *
+translateMSVCCompatibleArgs(const ToolChain &TC,
+                            const llvm::opt::DerivedArgList &Args,
+                            Action::OffloadKind OFK);
+
 void AddSystemIncludeWithSubfolder(const llvm::opt::ArgList &DriverArgs,
                                    llvm::opt::ArgStringList &CC1Args,
                                    const std::string &folder,

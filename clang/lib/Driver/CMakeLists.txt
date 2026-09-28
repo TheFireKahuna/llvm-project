@@ -94,6 +94,8 @@ add_clang_library(clangDriver
   ToolChains/UEFI.cpp
   ToolChains/VEToolchain.cpp
   ToolChains/WebAssembly.cpp
+  ToolChains/WindowsItanium.cpp
+  ToolChains/WindowsItaniumBase.cpp
   ToolChains/XCore.cpp
   ToolChains/PPCLinux.cpp
   ToolChains/PPCFreeBSD.cpp

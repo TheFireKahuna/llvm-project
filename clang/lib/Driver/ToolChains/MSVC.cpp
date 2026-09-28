@@ -1156,13 +1156,14 @@ static void TranslatePermissiveMinus(Arg *A, llvm::opt::DerivedArgList &DAL,
 }
 
 llvm::opt::DerivedArgList *
-MSVCToolChain::TranslateArgs(const llvm::opt::DerivedArgList &Args,
-                             BoundArch BA, Action::OffloadKind OFK) const {
+clang::driver::toolchains::translateMSVCCompatibleArgs(
+    const ToolChain &TC, const llvm::opt::DerivedArgList &Args,
+    Action::OffloadKind OFK) {
   DerivedArgList *DAL = new DerivedArgList(Args.getBaseArgs());
-  const OptTable &Opts = getDriver().getOpts();
+  const OptTable &Opts = TC.getDriver().getOpts();
 
   // /Oy and /Oy- don't have an effect on X86-64
-  bool SupportsForcingFramePointer = getArch() != llvm::Triple::x86_64;
+  bool SupportsForcingFramePointer = TC.getArch() != llvm::Triple::x86_64;
 
   // The -O[12xd] flag actually expands to several flags.  We must desugar the
   // flags so that options embedded can be negated.  For example, the '-O2' flag
@@ -1209,6 +1210,12 @@ MSVCToolChain::TranslateArgs(const llvm::opt::DerivedArgList &Args,
   }
 
   return DAL;
+}
+
+llvm::opt::DerivedArgList *
+MSVCToolChain::TranslateArgs(const llvm::opt::DerivedArgList &Args,
+                             BoundArch BA, Action::OffloadKind OFK) const {
+  return translateMSVCCompatibleArgs(*this, Args, OFK);
 }
 
 void MSVCToolChain::addClangTargetOptions(

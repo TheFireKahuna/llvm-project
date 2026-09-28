@@ -2,7 +2,7 @@
 // command-line option, e.g. on Mac where %s is commonly under /Users.
 
 // First check that regular clang doesn't do any of this stuff.
-// RUN: %clang -### %s 2>&1 | FileCheck -check-prefix=CHECK-CLANG %s
+// RUN: %clang -### --target=x86_64-windows-msvc %s 2>&1 | FileCheck -check-prefix=CHECK-CLANG %s
 // CHECK-CLANG-NOT: "-D_DEBUG"
 // CHECK-CLANG-NOT: "-D_MT"
 // CHECK-CLANG-NOT: "-D_DLL"
