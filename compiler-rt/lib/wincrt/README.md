@@ -22,6 +22,7 @@ The builtins define the bounds of the `.CRT$X??` tables, `__dso_handle` and
 | C registration | `atexit`, `_onexit`, `at_quick_exit` | `atexit.cpp` |
 | Pure virtual calls | `_purecall`, over the Universal CRT's handler | `purecall.cpp` |
 | Stack protector | `__security_cookie`, `__security_init_cookie`, `__security_check_cookie`, `__report_gsfailure` | `security.cpp` |
+| MSVC `/GS` objects | `__GSHandlerCheck`, `__GSHandlerCheck_SEH`, `__report_rangecheckfailure`, and on AArch64 `__security_push_cookie`, `__security_pop_cookie` | `gshandler.cpp`, `gs_cookie.S` |
 | Load configuration | `_load_config_used` | `loadconfig.cpp` |
 | Control Flow Guard | `__guard_check_icall_fptr`, `__guard_dispatch_icall_fptr`, `_guard_icall_checks_enforced` | `cfguard.cpp`, `cfguard_dispatch.S` |
 | Thread-local storage | `_tls_used`, `_tls_index`, `_tls_start`, `_tls_end`, `__xl_a`, `__xl_z` | `tls.cpp` |

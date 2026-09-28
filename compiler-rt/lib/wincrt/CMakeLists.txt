@@ -17,6 +17,8 @@ set(WINCRT_SOURCES
   entry_wwinmain.cpp
   cfguard.cpp
   cfguard_dispatch.S
+  gs_cookie.S
+  gshandler.cpp
   init.cpp
   loadconfig.cpp
   purecall.cpp
