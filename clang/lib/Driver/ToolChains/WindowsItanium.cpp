@@ -116,12 +116,16 @@ void WindowsItaniumToolChain::addSystemLibArgs(const ArgList &Args,
   // wincrt provides the start-up code and bridges the Universal CRT to the
   // Itanium C++ ABI. ucrtbase.dll exports memcpy, memset and the other
   // functions that Microsoft ships in vcruntime.lib rather than ucrt.lib, and
-  // clang_rt.ucrt_memory.lib imports them. oldnames.lib maps the POSIX names
-  // to the Universal CRT's underscored ones, as it does for MSVC.
+  // clang_rt.ucrt_memory.lib imports them. clang_rt.aligned_alloc, built
+  // beside wincrt, provides aligned_alloc and posix_memalign, which the
+  // Universal CRT lacks. oldnames.lib maps the POSIX names to the Universal
+  // CRT's underscored ones, as it does for MSVC.
   CmdArgs.push_back(Args.MakeArgString("-defaultlib:" +
                                        getCompilerRTBasename(Args, "wincrt")));
   CmdArgs.push_back(Args.MakeArgString(
       "-defaultlib:" + getCompilerRTBasename(Args, "ucrt_memory")));
+  CmdArgs.push_back(Args.MakeArgString(
+      "-defaultlib:" + getCompilerRTBasename(Args, "aligned_alloc")));
   for (const char *Lib :
        {"ucrt.lib", "kernel32.lib", "ntdll.lib", "oldnames.lib", "user32.lib",
         "advapi32.lib", "shell32.lib"})

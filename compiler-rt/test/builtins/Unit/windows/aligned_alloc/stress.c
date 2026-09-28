@@ -1,4 +1,4 @@
-// RUN: %clang_wincrt %s %aligned_alloc -o %t.exe
+// RUN: %clang_wincrt %s -o %t.exe
 // RUN: %run %t.exe | FileCheck %s
 
 // Threads allocate at random alignments up to 2 MiB and random sizes, while

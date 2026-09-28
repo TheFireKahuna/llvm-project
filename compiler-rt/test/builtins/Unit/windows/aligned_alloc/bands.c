@@ -1,4 +1,4 @@
-// RUN: %clang_wincrt %s %aligned_alloc -o %t.exe
+// RUN: %clang_wincrt %s -o %t.exe
 // RUN: %run %t.exe | FileCheck %s
 
 // On the segment heap, every alignment up to 2 MiB gets an aligned block, of

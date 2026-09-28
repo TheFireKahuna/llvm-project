@@ -1,4 +1,4 @@
-// RUN: %clang_wincrt %s %aligned_alloc -o %t.exe
+// RUN: %clang_wincrt %s -o %t.exe
 // RUN: %run %t.exe | FileCheck %s
 
 // An alignment up to 4 KiB with a small size is served by the

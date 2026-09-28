@@ -1,4 +1,4 @@
-// RUN: %clang_wincrt %s %aligned_alloc -o %t.exe
+// RUN: %clang_wincrt %s -o %t.exe
 // RUN: %run %t.exe | FileCheck %s
 
 // A request for no bytes gets a unique, aligned block that free takes, as

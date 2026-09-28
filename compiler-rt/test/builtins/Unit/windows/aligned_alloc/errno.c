@@ -1,4 +1,4 @@
-// RUN: %clang_wincrt %s %aligned_alloc -o %t.exe
+// RUN: %clang_wincrt %s -o %t.exe
 // RUN: %run %t.exe | FileCheck %s
 
 // aligned_alloc sets errno to EINVAL for an alignment that is not a power of

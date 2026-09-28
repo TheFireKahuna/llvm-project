@@ -20,6 +20,7 @@
 // C-SAME: "-defaultlib:clang_rt.builtins{{[^"]*}}.lib"
 // C-SAME: "-defaultlib:clang_rt.wincrt{{[^"]*}}.lib"
 // C-SAME: "-defaultlib:clang_rt.ucrt_memory{{[^"]*}}.lib"
+// C-SAME: "-defaultlib:clang_rt.aligned_alloc{{[^"]*}}.lib"
 // C-SAME: "-defaultlib:ucrt.lib" "-defaultlib:kernel32.lib"
 // C-SAME: "-defaultlib:ntdll.lib" "-defaultlib:oldnames.lib"
 // C-SAME: "-defaultlib:user32.lib" "-defaultlib:advapi32.lib"
@@ -83,6 +84,7 @@
 // RUN: %clangxx -### --target=x86_64-unknown-windows-itanium %s -nolibc 2>&1 \
 // RUN:   | FileCheck --check-prefix=NOLIBC %s \
 // RUN:       --implicit-check-not=wincrt \
+// RUN:       --implicit-check-not=aligned_alloc \
 // RUN:       --implicit-check-not=ucrt.lib
 // NOLIBC: "-defaultlib:libc++.dll.lib"
 // NOLIBC-SAME: "-nodefaultlib:msvcrt"
