@@ -987,6 +987,16 @@ public:
     LongDoubleWidth = LongDoubleAlign = 64;
     LongDoubleFormat = &llvm::APFloat::IEEEdouble();
   }
+
+  // The default convention is System V, so va_list and the conventions that
+  // attributes may name are those of the System V target.
+  BuiltinVaListKind getBuiltinVaListKind() const override {
+    return X86_64TargetInfo::getBuiltinVaListKind();
+  }
+
+  CallingConvCheckResult checkCallingConvention(CallingConv CC) const override {
+    return X86_64TargetInfo::checkCallingConvention(CC);
+  }
 };
 
 // x86-64 MinGW target

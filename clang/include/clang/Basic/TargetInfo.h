@@ -1763,6 +1763,15 @@ public:
     return CC_C;
   }
 
+  /// Is the Microsoft x64 or ARM64 convention the default, so that ms_abi
+  /// names the default convention and va_start follows the Windows rules?
+  /// NT-POSIX on x86-64 is a Windows target whose default is System V.
+  bool hasMicrosoftDefaultCallingConv() const {
+    return getTriple().isOSWindowsOrUEFI() &&
+           !(getTriple().isX86_64() &&
+             getTriple().isWindowsNTPOSIXEnvironment());
+  }
+
   /// Get the default atomic options.
   AtomicOptions getAtomicOpts() const { return AtomicOpts; }
 

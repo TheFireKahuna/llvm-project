@@ -283,6 +283,8 @@ createTargetCodeGenInfo(CodeGenModule &CGM) {
     switch (Triple.getOS()) {
     case llvm::Triple::UEFI:
     case llvm::Triple::Win32:
+      if (!Target.hasMicrosoftDefaultCallingConv())
+        return createNTPOSIXX86_64TargetCodeGenInfo(CGM, AVXLevel);
       return createWinX86_64TargetCodeGenInfo(CGM, AVXLevel);
     default:
       return createX86_64TargetCodeGenInfo(CGM, AVXLevel);
