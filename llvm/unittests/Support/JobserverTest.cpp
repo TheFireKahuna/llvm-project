@@ -25,7 +25,7 @@
 #include <random>
 #include <stdlib.h>
 
-#if defined(LLVM_ON_UNIX)
+#if defined(LLVM_RUNTIME_POSIX)
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/FileSystem.h"
 #include <atomic>
@@ -56,7 +56,7 @@ class ScopedEnvironment {
 
 public:
   ScopedEnvironment(const char *Name, const char *Value) : Name(Name) {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
     char *Old = nullptr;
     size_t OldLen;
     errno_t err = _dupenv_s(&Old, &OldLen, Name);
@@ -81,7 +81,7 @@ public:
   }
 
   ~ScopedEnvironment() {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
     if (HadOldValue)
       _putenv_s(Name.c_str(), OldValue.c_str());
     else
@@ -139,7 +139,7 @@ TEST_F(JobserverParsingTest, NoMakeflags) {
   // On Unix, setting an env var to "" makes getenv() return an empty
   // string, not NULL. We must call unsetenv() to test the case where
   // the variable is truly not present.
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
   unsetenv("MAKEFLAGS");
 #endif
   EXPECT_EQ(JobserverClient::getInstance(), nullptr);
@@ -160,7 +160,7 @@ TEST_F(JobserverParsingTest, DryRunFlag) {
 // Separate fixture for non-threaded client tests.
 class JobserverClientTest : public JobserverParsingTest {};
 
-#if defined(LLVM_ON_UNIX)
+#if defined(LLVM_RUNTIME_POSIX)
 // RAII helper to create and clean up a temporary FIFO file.
 class ScopedFifo {
   SmallString<128> Path;
@@ -586,6 +586,6 @@ TEST_F(JobserverClientTest, Semaphore) {
   Client->release(std::move(S1));
 }
 
-#endif // defined(LLVM_ON_UNIX)
+#endif // defined(LLVM_RUNTIME_POSIX)
 
 } // end anonymous namespace
