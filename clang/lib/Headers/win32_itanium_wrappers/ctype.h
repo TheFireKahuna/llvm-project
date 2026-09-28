@@ -10,6 +10,14 @@
 #ifndef __CLANG_CTYPE_H
 #define __CLANG_CTYPE_H
 
+/* The UCRT's POSIX and other non-standard names are declared unless the mode
+ * is strict ISO C; see corecrt.h. */
+#include <corecrt.h>
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wbuiltin-macro-redefined"
+#pragma push_macro("__STDC__")
+#undef __STDC__
+#define __STDC__ (!__CLANG_UCRT_NONSTDC_NAMES)
 #ifndef __cplusplus
 /* The UCRT defines _chvalidchk_l, _ischartype_l and the helpers they use, which
  * the _is*_l macros expand to, __inline without extern, and does not export
@@ -19,7 +27,6 @@
  * are __forceinline, which under GNU89 inline semantics, before C99 or with
  * -fgnu89-inline, would be defined in every unit; extern makes them inline
  * definitions there too. */
-#include <corecrt.h>
 #pragma push_macro("__inline")
 #pragma push_macro("__forceinline")
 #define __inline static __inline
@@ -33,5 +40,7 @@
 #else
 #include_next <ctype.h>
 #endif
+#pragma pop_macro("__STDC__")
+#pragma clang diagnostic pop
 
 #endif /* __CLANG_CTYPE_H */

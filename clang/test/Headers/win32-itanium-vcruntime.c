@@ -81,5 +81,5 @@ size_t call(const wchar_t *s, va_list ap) {
 
 void deprecated(void) {
   __ucrt_deprecated(); // expected-warning {{is deprecated: deprecated}}
-  // expected-note@corecrt.h:* {{marked deprecated here}}
+  // expected-note@Inputs/win32_itanium/ucrt/corecrt.h:* {{deprecated here}}
 }

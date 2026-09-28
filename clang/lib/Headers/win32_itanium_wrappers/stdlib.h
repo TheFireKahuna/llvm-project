@@ -10,19 +10,28 @@
 #ifndef __CLANG_STDLIB_H
 #define __CLANG_STDLIB_H
 
+/* The UCRT's POSIX and other non-standard names are declared unless the mode
+ * is strict ISO C; see corecrt.h. glibc's stdlib.h defines none of the UCRT's
+ * min, max, environ, sys_errlist and sys_nerr macros, and min and max are not
+ * C++ names, so these stay undefined. */
+#pragma push_macro("min")
+#pragma push_macro("max")
+#pragma push_macro("environ")
+#pragma push_macro("sys_errlist")
+#pragma push_macro("sys_nerr")
+#include <corecrt.h>
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wbuiltin-macro-redefined"
+#pragma push_macro("__STDC__")
+#undef __STDC__
+#define __STDC__ (!__CLANG_UCRT_NONSTDC_NAMES)
 #ifdef __cplusplus
 /* The C++ library owns every C++ declaration of the C library's names, and
  * the UCRT's stdlib.h declares abs and div overloads for C++ that collide with
  * its own. Include the UCRT header as a C header: with __cplusplus hidden, and
  * after corecrt.h, so that _CRT_BEGIN_C_HEADER keeps its extern "C" form.
  * Headers first reached from inside see C17, the C dialect whose macros match
- * C++'s, rather than no dialect at all. Hiding __cplusplus can define min and
- * max, which are not C++ names. */
-#pragma push_macro("min")
-#pragma push_macro("max")
-#include <corecrt.h>
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wbuiltin-macro-redefined"
+ * C++'s, rather than no dialect at all. */
 #pragma push_macro("__cplusplus")
 #undef __cplusplus
 #pragma push_macro("__STDC_VERSION__")
@@ -30,12 +39,16 @@
 #include_next <stdlib.h>
 #pragma pop_macro("__STDC_VERSION__")
 #pragma pop_macro("__cplusplus")
-#pragma clang diagnostic pop
-#pragma pop_macro("max")
-#pragma pop_macro("min")
 #else
 #include_next <stdlib.h>
 #endif
+#pragma pop_macro("__STDC__")
+#pragma clang diagnostic pop
+#pragma pop_macro("sys_nerr")
+#pragma pop_macro("sys_errlist")
+#pragma pop_macro("environ")
+#pragma pop_macro("max")
+#pragma pop_macro("min")
 
 /* C11's aligned_alloc and POSIX's posix_memalign, which the UCRT neither
  * declares nor exports. The Windows Itanium runtime provides both. Their

@@ -1,5 +1,6 @@
 // A stand-in for the UCRT's stdio.h, which defines the formatted output
-// functions _CRT_STDIO_INLINE.
+// functions _CRT_STDIO_INLINE and, as recent UCRTs do, declares its
+// non-standard names as corecrt.h decided.
 #pragma once
 #include <corecrt.h>
 #include <corecrt_stdio_config.h>
@@ -13,4 +14,7 @@ _CRT_STDIO_INLINE int __CRTDECL sprintf(char *_Buffer, char const *_Format,
   __crt_va_end(_ArgList);
   return _Result;
 }
+#if defined(_CRT_INTERNAL_NONSTDC_NAMES) && _CRT_INTERNAL_NONSTDC_NAMES
+_CRT_NONSTDC_DEPRECATE(_fileno) int __cdecl fileno(void *);
+#endif
 _CRT_END_C_HEADER
