@@ -2,7 +2,12 @@
 # Invokes config.guess
 
 function( get_host_triple var )
-  if( MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+  include(DetectWindowsItanium)
+  if( WIN32_ITANIUM OR WIN32_NTPOSIX )
+    # These compilers neither simulate MSVC nor are MinGW; the triple they
+    # were given names the architecture, vendor and environment.
+    set( value "${WIN32_ITANIUM_TRIPLE}" )
+  elseif( MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
     if( CMAKE_C_COMPILER_ARCHITECTURE_ID MATCHES "ARM64.*" )
       set( value "aarch64-pc-windows-msvc" )
     elseif( CMAKE_C_COMPILER_ARCHITECTURE_ID MATCHES "ARM.*" )
