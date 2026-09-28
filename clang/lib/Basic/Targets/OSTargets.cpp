@@ -147,7 +147,31 @@ static void addMinGWDefines(const llvm::Triple &Triple, const LangOptions &Opts,
   addCygMingDefines(Opts, Builder);
 }
 
-static void addVisualCDefines(const LangOptions &Opts, MacroBuilder &Builder) {
+static void addWinItaniumDefines(const llvm::Triple &Triple,
+                                 const LangOptions &Opts,
+                                 MacroBuilder &Builder) {
+  Builder.defineMacro("_WIN32_ITANIUM");
+  DefineStd(Builder, "WIN32", Opts);
+  DefineStd(Builder, "WINNT", Opts);
+  if (Triple.isArch64Bit())
+    DefineStd(Builder, "WIN64", Opts);
+  Builder.defineMacro("WINVER", "0x0A00");
+  Builder.defineMacro("_WIN32_WINNT", "0x0A00");
+  // Windows SDK headers included without windows.h need the architecture.
+  if (Triple.getArch() == llvm::Triple::x86_64)
+    Builder.defineMacro("_AMD64_");
+  else if (Triple.isAArch64() && !Triple.isWindowsArm64EC())
+    Builder.defineMacro("_ARM64_");
+  // The Windows SDK tests _MSC_VER or this macro before using __stdcall.
+  Builder.defineMacro("_STDCALL_SUPPORTED");
+  // oaidl.h and oleauto.h name the VARIANT unions (n1.n2.vt) whenever
+  // __STDC__ is set, which clang sets and MSVC does not. This is the SDK's
+  // own override, so VARIANT keeps its MSVC member names.
+  Builder.defineMacro("_FORCENAMELESSUNION");
+}
+
+static void addVisualCDefines(const LangOptions &Opts, MacroBuilder &Builder,
+                              bool IdentifyAsMSVC) {
   if (Opts.CPlusPlus) {
     if (Opts.RTTIData)
       Builder.defineMacro("_CPPRTTI");
@@ -216,18 +240,20 @@ static void addVisualCDefines(const LangOptions &Opts, MacroBuilder &Builder) {
     Builder.defineMacro("_MT");
 
   if (Opts.MSCompatibilityVersion) {
-    Builder.defineMacro("_MSC_VER",
-                        Twine(Opts.MSCompatibilityVersion / 100000));
-    Builder.defineMacro("_MSC_FULL_VER", Twine(Opts.MSCompatibilityVersion));
-    // FIXME We cannot encode the revision information into 32-bits
-    Builder.defineMacro("_MSC_BUILD", Twine(1));
+    if (IdentifyAsMSVC) {
+      Builder.defineMacro("_MSC_VER",
+                          Twine(Opts.MSCompatibilityVersion / 100000));
+      Builder.defineMacro("_MSC_FULL_VER", Twine(Opts.MSCompatibilityVersion));
+      // FIXME We cannot encode the revision information into 32-bits
+      Builder.defineMacro("_MSC_BUILD", Twine(1));
+    }
     // Exposed by MSVC, used in their stddef.h.
     Builder.defineMacro("_CRT_USE_BUILTIN_OFFSETOF", Twine(1));
 
     if (Opts.CPlusPlus11 && Opts.isCompatibleWithMSVC(LangOptions::MSVC2015))
       Builder.defineMacro("_HAS_CHAR16_T_LANGUAGE_SUPPORT", Twine(1));
 
-    if (Opts.isCompatibleWithMSVC(LangOptions::MSVC2015)) {
+    if (Opts.isCompatibleWithMSVC(LangOptions::MSVC2015) && IdentifyAsMSVC) {
       if (Opts.CPlusPlus29)
         // TODO update to the proper value.
         Builder.defineMacro("_MSVC_LANG", "202700L");
@@ -244,11 +270,13 @@ static void addVisualCDefines(const LangOptions &Opts, MacroBuilder &Builder) {
         Builder.defineMacro("_MSVC_LANG", "201402L");
     }
 
-    if (Opts.isCompatibleWithMSVC(LangOptions::MSVC2022_3))
+    if (Opts.isCompatibleWithMSVC(LangOptions::MSVC2022_3) && IdentifyAsMSVC)
       Builder.defineMacro("_MSVC_CONSTEXPR_ATTRIBUTE");
   }
 
   if (Opts.MicrosoftExt) {
+    // Not an identity macro: the Windows SDK completes PROPVARIANT, NT_TIB and
+    // the activation-context types only when it is set.
     Builder.defineMacro("_MSC_EXTENSIONS");
 
     if (Opts.CPlusPlus11) {
@@ -275,13 +303,14 @@ static void addVisualCDefines(const LangOptions &Opts, MacroBuilder &Builder) {
   // https://docs.microsoft.com/en-us/windows/win32/intl/code-page-identifiers
   //
   // Clang currently only supports UTF-8, so we'll use 65001
-  Builder.defineMacro("_MSVC_EXECUTION_CHARACTER_SET", "65001");
+  if (IdentifyAsMSVC)
+    Builder.defineMacro("_MSVC_EXECUTION_CHARACTER_SET", "65001");
 
   // As of version 19.15 (VS 2017 15.8), MSVC predefines this macro to indicate
   // whether the traditional or standards-conforming preprocessor is in use.
   // Currently, MSVC compatibility mode only attempts to be compatible with the
   // traditional preprocessor.
-  if (Opts.isCompatibleWithMSVC(LangOptions::MSVC2017_8))
+  if (Opts.isCompatibleWithMSVC(LangOptions::MSVC2017_8) && IdentifyAsMSVC)
     Builder.defineMacro("_MSVC_TRADITIONAL", "1");
 }
 
@@ -292,9 +321,19 @@ void addWindowsDefines(const llvm::Triple &Triple, const LangOptions &Opts,
     Builder.defineMacro("_WIN64");
   if (Triple.isWindowsGNUEnvironment())
     addMinGWDefines(Triple, Opts, Builder);
-  else if (Triple.isKnownWindowsMSVCEnvironment() ||
-           (Triple.isWindowsItaniumEnvironment() && Opts.MSVCCompat))
-    addVisualCDefines(Opts, Builder);
+  else if (Triple.isWindowsItaniumEnvironment()) {
+    // Windows Itanium takes the MSVC environment's defines, but is not MSVC
+    // and must not identify as it, so that headers never select MSVC-only
+    // paths. 32-bit Windows Itanium keeps the MSVC defines, _MSC_VER
+    // included, under -fms-compatibility alone.
+    if (Triple.isX86_64() || Triple.isAArch64()) {
+      addWinItaniumDefines(Triple, Opts, Builder);
+      addVisualCDefines(Opts, Builder, /*IdentifyAsMSVC=*/false);
+    } else if (Opts.MSVCCompat) {
+      addVisualCDefines(Opts, Builder, /*IdentifyAsMSVC=*/true);
+    }
+  } else if (Triple.isKnownWindowsMSVCEnvironment())
+    addVisualCDefines(Opts, Builder, /*IdentifyAsMSVC=*/true);
 }
 
 void getFuchsiaDefines(MacroBuilder &Builder, const LangOptions &Opts,

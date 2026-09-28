@@ -204,3 +204,87 @@
 // CHECK-MIPSEL-MINGW: #define _WIN32 1
 // CHECK-MIPSEL-MINGW: #define __mips 32
 // CHECK-MIPSEL-MINGW: #define __mips__ 1
+
+// Windows Itanium takes the MSVC environment's defines with or without
+// -fms-compatibility, but not the macros that identify the compiler as MSVC,
+// and no build-policy macros such as UNICODE or NOMINMAX.
+// RUN: %clang_cc1 %s -x c++ -E -dM -triple x86_64-unknown-windows-itanium \
+// RUN:     -fms-extensions -fms-compatibility-version=19.33 -o - \
+// RUN:   | FileCheck -match-full-lines %s \
+// RUN:       --check-prefixes=CHECK-ITANIUM,CHECK-AMD64-ITANIUM \
+// RUN:       --implicit-check-not="#define _MSC_VER" \
+// RUN:       --implicit-check-not="#define _MSC_FULL_VER" \
+// RUN:       --implicit-check-not="#define _MSC_BUILD" \
+// RUN:       --implicit-check-not="#define _MSVC_" \
+// RUN:       --implicit-check-not="#define UNICODE" \
+// RUN:       --implicit-check-not="#define _UNICODE" \
+// RUN:       --implicit-check-not="#define STRICT" \
+// RUN:       --implicit-check-not="#define NOMINMAX" \
+// RUN:       --implicit-check-not="#define ENABLE_RESTRICTED" \
+// RUN:       --implicit-check-not="#define WINDOWS_ENABLE_CPLUSPLUS" \
+// RUN:       --implicit-check-not="#define _D1VERSIONLKG171_"
+// RUN: %clang_cc1 %s -x c++ -E -dM -triple x86_64-unknown-windows-itanium \
+// RUN:     -fms-extensions -fms-compatibility \
+// RUN:     -fms-compatibility-version=19.33 -o - \
+// RUN:   | FileCheck -match-full-lines %s \
+// RUN:       --check-prefixes=CHECK-ITANIUM,CHECK-AMD64-ITANIUM \
+// RUN:       --implicit-check-not="#define _MSC_VER" \
+// RUN:       --implicit-check-not="#define _MSVC_"
+// RUN: %clang_cc1 %s -x c++ -E -dM -triple aarch64-unknown-windows-itanium \
+// RUN:     -fms-extensions -fms-compatibility-version=19.33 -o - \
+// RUN:   | FileCheck -match-full-lines %s \
+// RUN:       --check-prefixes=CHECK-ITANIUM,CHECK-ARM64-ITANIUM \
+// RUN:       --implicit-check-not="#define _MSC_VER" \
+// RUN:       --implicit-check-not="#define _MSVC_" \
+// RUN:       --implicit-check-not="#define _AMD64_"
+
+// 32-bit Windows Itanium takes the MSVC defines, _MSC_VER included, only with
+// -fms-compatibility, and none of the Windows SDK macros.
+// RUN: %clang_cc1 %s -E -dM -triple i686-unknown-windows-itanium \
+// RUN:     -fms-extensions -o - \
+// RUN:   | FileCheck -match-full-lines %s --check-prefix=CHECK-ITANIUM32 \
+// RUN:       --implicit-check-not="#define _MSC_" \
+// RUN:       --implicit-check-not="#define _WIN32_ITANIUM" \
+// RUN:       --implicit-check-not="#define WIN32"
+// RUN: %clang_cc1 %s -E -dM -triple thumbv7-unknown-windows-itanium \
+// RUN:     -fms-extensions -o - \
+// RUN:   | FileCheck -match-full-lines %s --check-prefix=CHECK-ITANIUM32 \
+// RUN:       --implicit-check-not="#define _MSC_" \
+// RUN:       --implicit-check-not="#define _WIN32_ITANIUM" \
+// RUN:       --implicit-check-not="#define WIN32"
+// RUN: %clang_cc1 %s -E -dM -triple i686-unknown-windows-itanium \
+// RUN:     -fms-extensions -fms-compatibility \
+// RUN:     -fms-compatibility-version=19.33 -o - \
+// RUN:   | FileCheck -match-full-lines %s --check-prefix=CHECK-ITANIUM32-MSVC \
+// RUN:       --implicit-check-not="#define _WIN32_ITANIUM" \
+// RUN:       --implicit-check-not="#define WIN32"
+// RUN: %clang_cc1 %s -E -dM -triple thumbv7-unknown-windows-itanium \
+// RUN:     -fms-extensions -fms-compatibility \
+// RUN:     -fms-compatibility-version=19.33 -o - \
+// RUN:   | FileCheck -match-full-lines %s --check-prefix=CHECK-ITANIUM32-MSVC \
+// RUN:       --implicit-check-not="#define _WIN32_ITANIUM" \
+// RUN:       --implicit-check-not="#define WIN32"
+
+// CHECK-ITANIUM32: #define _WIN32 1
+// CHECK-ITANIUM32-MSVC: #define _MSC_EXTENSIONS 1
+// CHECK-ITANIUM32-MSVC: #define _MSC_VER 1933
+// CHECK-ITANIUM32-MSVC: #define _WIN32 1
+
+// CHECK-ITANIUM: #define WIN32 1
+// CHECK-ITANIUM: #define WIN64 1
+// CHECK-ITANIUM: #define WINNT 1
+// CHECK-ITANIUM: #define WINVER 0x0A00
+// CHECK-AMD64-ITANIUM: #define _AMD64_ 1
+// CHECK-ARM64-ITANIUM: #define _ARM64_ 1
+// CHECK-ITANIUM: #define _CRT_USE_BUILTIN_OFFSETOF 1
+// CHECK-ITANIUM: #define _FORCENAMELESSUNION 1
+// CHECK-ITANIUM: #define _MSC_EXTENSIONS 1
+// CHECK-AMD64-ITANIUM: #define _M_AMD64 100
+// CHECK-ARM64-ITANIUM: #define _M_ARM64 1
+// CHECK-AMD64-ITANIUM: #define _M_X64 100
+// CHECK-ITANIUM: #define _STDCALL_SUPPORTED 1
+// CHECK-ITANIUM: #define _WIN32 1
+// CHECK-ITANIUM: #define _WIN32_ITANIUM 1
+// CHECK-ITANIUM: #define _WIN32_WINNT 0x0A00
+// CHECK-ITANIUM: #define _WIN64 1
+// CHECK-ITANIUM: #define __STDC_NO_THREADS__ 1

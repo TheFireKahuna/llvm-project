@@ -1,6 +1,8 @@
 // RUN: %clang_cc1 -triple x86_64-pc-windows-msvc -fms-extensions \
 // RUN:     -fms-compatibility-version=19.33 -ffreestanding -fsyntax-only \
 // RUN:     -verify %s
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fms-extensions \
+// RUN:     -ffreestanding -fsyntax-only -verify %s
 // RUN: %clang_cc1 -triple x86_64-unknown-linux-gnu -ffreestanding \
 // RUN:     -fsyntax-only -verify %s
 // expected-no-diagnostics

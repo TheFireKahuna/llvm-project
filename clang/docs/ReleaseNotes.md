@@ -864,6 +864,16 @@ features cannot lower the translation-unit ABI level;
   ``_try``, ``_finally``, and ``_leave`` aliases. ``_except`` remains an ordinary
   identifier outside that context.
 
+- The x86-64 and AArch64 ``windows-itanium`` targets now predefine the macros
+  the Windows SDK expects, whether or not ``-fms-compatibility`` is on: the
+  MSVC environment's defines, ``WIN32``, ``WINNT``, ``WIN64``, ``WINVER`` and
+  ``_WIN32_WINNT`` for Windows 10, ``_AMD64_`` or ``_ARM64_``,
+  ``_STDCALL_SUPPORTED``, ``_FORCENAMELESSUNION``, and ``_WIN32_ITANIUM``, which
+  names the environment. They no longer define ``_MSC_VER``, ``_MSC_FULL_VER``,
+  ``_MSVC_LANG`` or the other macros that identify the compiler as MSVC, even
+  with ``-fms-compatibility``. 32-bit ``windows-itanium`` targets are
+  unchanged.
+
 - Fixed ``setjmp`` on 32-bit Arm passing the frame pointer, rather than the
   stack pointer as it was on entry to the function, as the frame value the CRT
   stores in the ``jmp_buf``. Clang now uses ``llvm.sponentry`` there, as it
