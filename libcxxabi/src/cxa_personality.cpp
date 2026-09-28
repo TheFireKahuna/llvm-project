@@ -68,8 +68,12 @@
 #endif
 
 #if defined(__SEH__) && !defined(__USING_SJLJ_EXCEPTIONS__)
+#if defined(__NTPOSIX__)
+#include <sys/ntabi.h>
+#else
 #include <windows.h>
 #include <winnt.h>
+#endif
 
 extern "C" EXCEPTION_DISPOSITION _GCC_specific_handler(PEXCEPTION_RECORD,
                                                        void *, PCONTEXT,
@@ -1103,7 +1107,14 @@ __gxx_personality_v0
 }
 
 #if defined(__SEH__) && !defined(__USING_SJLJ_EXCEPTIONS__)
-extern "C" _LIBCXXABI_FUNC_VIS EXCEPTION_DISPOSITION
+// The system's exception dispatcher calls the personality with the Microsoft
+// x64 convention, which is not NT-POSIX's default.
+#if defined(__NTPOSIX__) && defined(__x86_64__)
+#define _LIBCXXABI_SEH_ABI __attribute__((ms_abi))
+#else
+#define _LIBCXXABI_SEH_ABI
+#endif
+extern "C" _LIBCXXABI_FUNC_VIS EXCEPTION_DISPOSITION _LIBCXXABI_SEH_ABI
 __gxx_personality_seh0(PEXCEPTION_RECORD ms_exc, void *this_frame,
                        PCONTEXT ms_orig_context, PDISPATCHER_CONTEXT ms_disp)
 {
