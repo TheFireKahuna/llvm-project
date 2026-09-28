@@ -11,7 +11,7 @@
 
 #include "lldb/Host/Config.h"
 #include "llvm/Support/Compiler.h"
-#if !defined(_WIN32)
+#if !defined(_WIN32) || defined(__NTPOSIX__)
 #error "windows/PosixApi.h being #included on non Windows system!"
 #endif
 
