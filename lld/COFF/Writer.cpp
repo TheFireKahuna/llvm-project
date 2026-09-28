@@ -244,7 +244,8 @@ private:
   void createECChunks();
   void insertCtorDtorSymbols();
   void insertBssDataStartEndSymbols();
-  void markSymbolsWithRelocations(ObjFile *file, SymbolRVASet &usedSymbols);
+  void markSymbolsWithRelocations(ObjFile *file, SymbolRVASet &usedSymbols,
+                                  SymbolRVASet &usedImports);
   void createGuardCFTables();
   void markSymbolsForRVATable(ObjFile *file,
                               ArrayRef<SectionChunk *> symIdxChunks,
@@ -2151,7 +2152,8 @@ static void maybeAddAddressTakenFunction(SymbolRVASet &addressTakenSyms,
 // Visit all relocations from all section contributions of this object file and
 // mark the relocation target as address-taken.
 void Writer::markSymbolsWithRelocations(ObjFile *file,
-                                        SymbolRVASet &usedSymbols) {
+                                        SymbolRVASet &usedSymbols,
+                                        SymbolRVASet &usedImports) {
   for (Chunk *c : file->getChunks()) {
     // We only care about live section chunks. Common chunks and other chunks
     // don't generally contain relocations.
@@ -2167,6 +2169,14 @@ void Writer::markSymbolsWithRelocations(ObjFile *file,
         continue;
 
       Symbol *ref = sc->file->getSymbol(reloc.SymbolTableIndex);
+      // An object without guard metadata does not say which import address
+      // table entries it passes the value of, so every entry it references is
+      // listed, with the delay-load thunk the entry holds until resolved.
+      if (auto *imp = dyn_cast_or_null<DefinedImportData>(ref)) {
+        addSymbolToRVASet(usedImports, imp);
+        if (imp->loadThunkSym)
+          addSymbolToRVASet(usedSymbols, imp->loadThunkSym);
+      }
       maybeAddAddressTakenFunction(usedSymbols, ref);
     }
   }
@@ -2211,7 +2221,7 @@ void Writer::createGuardCFTables() {
       getSymbolsFromSections(file, file->getGuardIATChunks(), giatsSymbols);
       markSymbolsForRVATable(file, file->getGuardLJmpChunks(), longJmpTargets);
     } else {
-      markSymbolsWithRelocations(file, addressTakenSyms);
+      markSymbolsWithRelocations(file, addressTakenSyms, giatsRVASet);
     }
     // If the object was compiled with /guard:ehcont, the ehcont targets are in
     // .gehcont$y sections.
