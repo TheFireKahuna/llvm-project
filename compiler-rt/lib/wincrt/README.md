@@ -32,6 +32,11 @@ extracts only that entry point's file from the archive.
 `setjmp` and `longjmp`, `__C_specific_handler`, and the pure virtual call
 handler accessors. The driver links it with wincrt.
 
+`oldnames.lib`, generated from `oldnames.def`, maps the POSIX and other
+traditional names of Universal CRT functions (`open`, `strdup` and so on) to
+the underscored names `ucrtbase.dll` exports, as Visual C++'s library of that
+name does. Each is an import, with no wrapper code.
+
 ## Uncaught exceptions
 
 The executable's start-up installs the filter ntdll runs for an exception that

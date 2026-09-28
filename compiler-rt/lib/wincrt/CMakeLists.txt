@@ -64,4 +64,7 @@ foreach(arch ${BUILTIN_SUPPORTED_ARCH})
   # Visual C++ imports them through vcruntime.lib.
   set_output_name(ucrt_memory_name clang_rt.ucrt_memory ${arch})
   add_wincrt_import_library(${arch} ${ucrt_memory_name} ucrt_memory.def)
+  # The POSIX names of Universal CRT functions, under the name Visual C++
+  # gives the library.
+  add_wincrt_import_library(${arch} oldnames oldnames.def)
 endforeach()
