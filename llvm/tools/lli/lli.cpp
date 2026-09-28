@@ -72,7 +72,7 @@
 #include <cerrno>
 #include <optional>
 
-#if !defined(_MSC_VER) && !defined(__MINGW32__)
+#if !defined(LLVM_RUNTIME_WIN32)
 #include <unistd.h>
 #else
 #include <io.h>

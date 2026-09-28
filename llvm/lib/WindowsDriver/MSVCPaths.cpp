@@ -22,11 +22,11 @@
 #include <optional>
 #include <string>
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "llvm/Support/ConvertUTF.h"
 #endif
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -132,7 +132,7 @@ static bool getWindowsSDKDirViaCommandLine(
   return false;
 }
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 static bool readFullStringValue(HKEY hkey, const char *valueName,
                                 std::string &value) {
   std::wstring WideValueName;
@@ -176,7 +176,7 @@ static bool readFullStringValue(HKEY hkey, const char *valueName,
 /// characters are compared.  This function only searches HKLM.
 static bool getSystemRegistryString(const char *keyPath, const char *valueName,
                                     std::string &value, std::string *phValue) {
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   return false;
 #else
   HKEY hRootKey = HKEY_LOCAL_MACHINE;
@@ -258,7 +258,7 @@ static bool getSystemRegistryString(const char *keyPath, const char *valueName,
     }
   }
   return returnValue;
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32
 }
 
 const char *llvm::archToWindowsSDKArch(Triple::ArchType Arch) {

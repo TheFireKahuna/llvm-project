@@ -13,7 +13,7 @@
 #include "llvm/Testing/Support/Error.h"
 #include "gtest/gtest.h"
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #define setenv(name, var, ignore) _putenv_s(name, var)
 #endif
 

@@ -15,12 +15,12 @@
 #include "llvm/Config/llvm-config.h" // for LLVM_ENABLE_THREADS
 #include "llvm/Support/Endian.h"
 
-#if !defined(_MSC_VER) && !defined(__MINGW32__)
+#if !defined(LLVM_RUNTIME_WIN32)
 #include <unistd.h>
 #else
 #include <io.h>
 #endif
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 #include <sys/socket.h>
 #endif
 
@@ -190,7 +190,7 @@ void FDSimpleRemoteEPCTransport::disconnect() {
   Disconnected = true;
   bool CloseOutFD = InFD != OutFD;
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   // We need to shutdown the socket to wake up (and terminate) any ongoing
   // blocking read on this FD. If the FD is not a socket, shutdown will just
   // complain through errno (instead of crashing).
@@ -205,7 +205,7 @@ void FDSimpleRemoteEPCTransport::disconnect() {
 
   // Close OutFD.
   if (CloseOutFD) {
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
     // FIXME: what about Windows?
     ::shutdown(OutFD, SHUT_WR);
 #endif

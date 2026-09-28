@@ -23,10 +23,10 @@
 #if LLVM_ENABLE_THREADS
 #include <thread>
 #endif
-#if LLVM_ON_UNIX
+#if LLVM_RUNTIME_POSIX
 #include <unistd.h>
 #endif
-#if _WIN32
+#if LLVM_RUNTIME_WIN32
 #include <windows.h>
 #endif
 
@@ -170,7 +170,7 @@ TEST_F(MemoryBufferTest, copy) {
 
 #if LLVM_ENABLE_THREADS
 TEST_F(MemoryBufferTest, createFromPipe) {
-#if LLVM_ON_UNIX
+#if LLVM_RUNTIME_POSIX
   int pipes[2];
   ASSERT_EQ(::pipe(pipes), 0) << strerror(errno);
 #else
@@ -189,7 +189,7 @@ TEST_F(MemoryBufferTest, createFromPipe) {
     });
     for (unsigned i = 0; i < 5; ++i) {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
-#if LLVM_ON_UNIX
+#if LLVM_RUNTIME_POSIX
       ASSERT_EQ(::write(pipes[1], "foo", 3), 3) << strerror(errno);
 #else
       DWORD Written;
