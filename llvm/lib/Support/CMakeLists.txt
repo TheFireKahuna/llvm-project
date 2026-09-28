@@ -42,7 +42,11 @@ if(LLVM_ENABLE_LZMA)
   list(APPEND imported_libs LibLZMA::LibLZMA)
 endif()
 
-if( WIN32 )
+if( LLVM_RUNTIME_NTPOSIX )
+  # ntdll required for the NT thread and system information calls in
+  # lib/Support/Unix/Threading.inc.
+  set(system_libs ${system_libs} ntdll)
+elseif( WIN32 )
   # libuuid required for FOLDERID_Profile usage in lib/Support/Windows/Path.inc.
   # advapi32 required for CryptAcquireContextW in lib/Support/Windows/Path.inc.
   # ntdll required for RtlGetLastNtStatus in lib/Support/ErrorHandling.cpp.
@@ -86,7 +90,7 @@ elseif( CMAKE_HOST_UNIX )
     add_compile_definitions(_BSD_SOURCE)
     set(system_libs ${system_libs} bsd network)
   endif()
-endif( WIN32 )
+endif()
 
 set(WL "")
 if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.25"
