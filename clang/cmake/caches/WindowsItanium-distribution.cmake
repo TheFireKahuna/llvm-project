@@ -1,6 +1,7 @@
-# This file sets up a CMakeCache for a toolchain that runs on Windows Itanium,
-# built with a clang that targets it and links its runtimes. It precedes the
-# runtimes cache, and is the second stage of WindowsItanium-toolchain.cmake.
+# This file sets up a CMakeCache for a toolchain that runs on Windows Itanium or
+# NT-POSIX, built with a clang that targets it and links its runtimes. It
+# precedes the environment's runtimes cache, and is the second stage of
+# WindowsItanium-toolchain.cmake.
 # From the llvm-project directory:
 #
 #   cmake -G Ninja \

@@ -36,8 +36,11 @@ foreach(target IN LISTS LLVM_RUNTIME_TARGETS)
     set(RUNTIMES_${target}_CMAKE_SYSTEM_NAME Windows CACHE STRING "")
   endif()
 
-  # The builtins build makes the start-up library; this enables its tests.
-  set(RUNTIMES_${target}_COMPILER_RT_BUILD_CRT ON CACHE BOOL "")
+  # The builtins build makes Windows Itanium's start-up library; this enables
+  # its tests.
+  if(target MATCHES "-windows-itanium")
+    set(RUNTIMES_${target}_COMPILER_RT_BUILD_CRT ON CACHE BOOL "")
+  endif()
   # The driver supports no sanitizer for these targets.
   set(RUNTIMES_${target}_COMPILER_RT_BUILD_SANITIZERS OFF CACHE BOOL "")
   set(RUNTIMES_${target}_COMPILER_RT_BUILD_LIBFUZZER OFF CACHE BOOL "")

@@ -1,6 +1,7 @@
 # This file sets up a CMakeCache for a two-stage build of a toolchain that runs
-# on Windows Itanium. It follows the runtimes cache, whose first runtime target
-# is the triple the toolchain runs on. From the llvm-project directory:
+# on Windows Itanium or NT-POSIX. It follows the environment's runtimes cache,
+# whose first runtime target is the triple the toolchain runs on. From the
+# llvm-project directory:
 #
 #   cmake -G Ninja \
 #     -C clang/cmake/caches/WindowsItanium-runtimes.cmake \
@@ -22,6 +23,11 @@ set(LLVM_ENABLE_LIBXML2 FORCE_ON CACHE STRING "")
 set(LLVM_USE_STATIC_LIBXML2 ON CACHE BOOL "")
 
 list(GET LLVM_RUNTIME_TARGETS 0 host_triple)
+if(host_triple MATCHES "-windows-ntposix")
+  set(runtimes_cache ${CMAKE_CURRENT_LIST_DIR}/NTPOSIX-runtimes.cmake)
+else()
+  set(runtimes_cache ${CMAKE_CURRENT_LIST_DIR}/WindowsItanium-runtimes.cmake)
+endif()
 set(BOOTSTRAP_LLVM_HOST_TRIPLE "${host_triple}" CACHE STRING "")
 set(BOOTSTRAP_LLVM_ENABLE_PROJECTS "clang;clang-tools-extra;lld"
     CACHE STRING "")
@@ -29,7 +35,7 @@ set(BOOTSTRAP_LLVM_ENABLE_PROJECTS "clang;clang-tools-extra;lld"
 set(CLANG_ENABLE_BOOTSTRAP ON CACHE BOOL "")
 set(CLANG_BOOTSTRAP_CMAKE_ARGS
   -C ${CMAKE_CURRENT_LIST_DIR}/WindowsItanium-distribution.cmake
-  -C ${CMAKE_CURRENT_LIST_DIR}/WindowsItanium-runtimes.cmake
+  -C ${runtimes_cache}
   CACHE STRING "")
 set(CLANG_BOOTSTRAP_TARGETS
   check-all
