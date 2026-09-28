@@ -67,4 +67,12 @@ foreach(arch ${BUILTIN_SUPPORTED_ARCH})
   # The POSIX names of Universal CRT functions, under the name Visual C++
   # gives the library.
   add_wincrt_import_library(${arch} oldnames oldnames.def)
+
+  # An empty math library: the Universal CRT provides the math functions, and
+  # POSIX build systems link them with -lm.
+  get_compiler_rt_output_dir(${arch} output_dir)
+  get_compiler_rt_install_dir(${arch} install_dir)
+  file(CONFIGURE OUTPUT ${output_dir}/m.lib CONTENT "!<arch>\n"
+       NEWLINE_STYLE LF)
+  install(FILES ${output_dir}/m.lib DESTINATION ${install_dir} COMPONENT crt)
 endforeach()
