@@ -695,10 +695,6 @@ bool clang::driver::toolchains::getWindowsSDKLibraryPath(
 
   llvm::SmallString<128> libPath(sdkPath);
   llvm::sys::path::append(libPath, "Lib");
-  if (sdkMajor >= 10)
-    if (!(WinSdkDir.has_value() || WinSysRoot.has_value()) &&
-        WinSdkVersion.has_value())
-      windowsSDKLibVersion = *WinSdkVersion;
   if (sdkMajor >= 8)
     llvm::sys::path::append(libPath, windowsSDKLibVersion, "um");
   return llvm::appendArchToWindowsSDKLibPath(sdkMajor, libPath, Arch, path);
@@ -725,10 +721,6 @@ bool clang::driver::toolchains::getUniversalCRTLibraryPath(
   if (!llvm::getUniversalCRTSdkDir(VFS, WinSdkDir, WinSdkVersion, WinSysRoot,
                                    UniversalCRTSdkPath, UCRTVersion))
     return false;
-
-  if (!(WinSdkDir.has_value() || WinSysRoot.has_value()) &&
-      WinSdkVersion.has_value())
-    UCRTVersion = *WinSdkVersion;
 
   StringRef ArchName = llvm::archToWindowsSDKArch(Arch);
   if (ArchName.empty())
@@ -799,13 +791,9 @@ void clang::driver::toolchains::addUniversalCRTIncludeArgs(
   std::string UniversalCRTSdkPath;
   std::string UCRTVersion;
   if (llvm::getUniversalCRTSdkDir(VFS, WinSdkDir, WinSdkVersion, WinSysRoot,
-                                  UniversalCRTSdkPath, UCRTVersion)) {
-    if (!(WinSdkDir.has_value() || WinSysRoot.has_value()) &&
-        WinSdkVersion.has_value())
-      UCRTVersion = *WinSdkVersion;
+                                  UniversalCRTSdkPath, UCRTVersion))
     AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, UniversalCRTSdkPath,
                                   "Include", UCRTVersion, "ucrt");
-  }
 }
 
 void clang::driver::toolchains::addWindowsSDKIncludeArgs(
@@ -820,10 +808,6 @@ void clang::driver::toolchains::addWindowsSDKIncludeArgs(
                               WindowsSDKDir, major, windowsSDKIncludeVersion,
                               windowsSDKLibVersion))
     return;
-  if (major >= 10)
-    if (!(WinSdkDir.has_value() || WinSysRoot.has_value()) &&
-        WinSdkVersion.has_value())
-      windowsSDKIncludeVersion = windowsSDKLibVersion = *WinSdkVersion;
   if (major >= 8) {
     // Note: windowsSDKIncludeVersion is empty for SDKs prior to v10.
     // Anyway, llvm::sys::path::append is able to manage it.
