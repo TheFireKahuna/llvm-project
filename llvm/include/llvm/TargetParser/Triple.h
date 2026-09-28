@@ -387,6 +387,7 @@ public:
     Itanium,
     Cygnus,
     CoreCLR,
+    NTPOSIX,
     Simulator, // Simulator variants of other systems, e.g., Apple's iOS
     MacABI,    // Mac Catalyst variant of Apple's iOS deployment target.
 
@@ -809,6 +810,14 @@ public:
 
   bool isWindowsCygwinEnvironment() const {
     return isOSWindows() && getEnvironment() == Triple::Cygnus;
+  }
+
+  bool isWindowsNTPOSIXEnvironment() const {
+    return isOSWindows() && getEnvironment() == Triple::NTPOSIX;
+  }
+
+  bool isWindowsItaniumOrNTPOSIXEnvironment() const {
+    return isWindowsItaniumEnvironment() || isWindowsNTPOSIXEnvironment();
   }
 
   bool isWindowsGNUEnvironment() const {

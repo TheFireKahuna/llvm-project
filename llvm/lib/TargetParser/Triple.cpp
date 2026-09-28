@@ -2264,7 +2264,7 @@ bool Triple::isLittleEndian() const {
 unsigned Triple::getDefaultWCharSize() const {
   if (getArch() == Triple::xcore)
     return 1;
-  if (isOSWindowsOrUEFI() || isPS())
+  if ((isOSWindowsOrUEFI() && !isWindowsNTPOSIXEnvironment()) || isPS())
     return 2;
   if (isOSAIX() && isArch32Bit())
     return 2;
