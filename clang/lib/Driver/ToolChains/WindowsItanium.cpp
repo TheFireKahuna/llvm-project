@@ -11,6 +11,8 @@
 #include "clang/Driver/Driver.h"
 #include "clang/Options/Options.h"
 #include "llvm/Option/ArgList.h"
+#include "llvm/Support/Path.h"
+#include "llvm/Support/VirtualFileSystem.h"
 
 using namespace clang::driver;
 using namespace clang::driver::toolchains;
@@ -124,6 +126,20 @@ void WindowsItaniumToolChain::addSystemLibArgs(const ArgList &Args,
        {"ucrt.lib", "kernel32.lib", "ntdll.lib", "oldnames.lib", "user32.lib",
         "advapi32.lib", "shell32.lib"})
     CmdArgs.push_back(Args.MakeArgString("-defaultlib:" + Twine(Lib)));
+
+  // wincrt's executable start-up checks that the process heap is the segment
+  // heap, which only the manifest can request, so an executable embeds the
+  // manifest shipped beside wincrt.
+  if (Args.hasArg(options::OPT_shared, options::OPT__SLASH_LD,
+                  options::OPT__SLASH_LDd))
+    return;
+  SmallString<128> Manifest(
+      llvm::sys::path::parent_path(getCompilerRT(Args, "wincrt")));
+  llvm::sys::path::append(Manifest, "segment_heap.manifest");
+  if (getVFS().exists(Manifest)) {
+    CmdArgs.push_back("-manifest:embed");
+    CmdArgs.push_back(Args.MakeArgString("-manifestinput:" + Manifest));
+  }
 }
 
 void WindowsItaniumToolChain::addNoDefaultLibArgs(
