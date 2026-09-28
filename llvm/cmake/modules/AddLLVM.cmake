@@ -200,8 +200,10 @@ function(add_llvm_symbol_exports target_name export_file)
     if(MSVC)
       # cl.exe or clang-cl, i.e. MSVC style command line interface
       set(export_file_linker_flag "LINKER:/DEF:${export_file_linker_flag}")
-    elseif(CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
-      # clang in msvc mode, calling a link.exe/lld-link style linker
+    elseif(CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC" OR WIN32_ITANIUM OR
+           WIN32_NTPOSIX)
+      # clang in msvc mode, or targeting Windows Itanium or NT-POSIX, calling
+      # a link.exe/lld-link style linker
       set(export_file_linker_flag "-Wl,/DEF:${export_file_linker_flag}")
     elseif(MINGW OR CYGWIN)
       # ${export_file_linker_flag}, which is the plain file name, works as is
@@ -393,7 +395,9 @@ function(add_link_opts target_name)
           set_property(TARGET ${target_name} APPEND_STRING PROPERTY
                        LINK_FLAGS " -Wl,-z,discard-unused=sections")
         endif()
-      elseif(NOT MSVC AND NOT CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC" AND NOT CMAKE_SYSTEM_NAME MATCHES "AIX|OS390")
+      elseif(NOT MSVC AND NOT CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC" AND
+             NOT WIN32_ITANIUM AND NOT WIN32_NTPOSIX AND
+             NOT CMAKE_SYSTEM_NAME MATCHES "AIX|OS390")
         # TODO Revisit this later on z/OS.
         set_property(TARGET ${target_name} APPEND_STRING PROPERTY
                      LINK_FLAGS " -Wl,--gc-sections")

@@ -16,6 +16,10 @@ include(CheckCXXSourceCompiles)
 include(CheckSymbolExists)
 include(CMakeDependentOption)
 include(LLVMProcessSources)
+# From the top-level cmake/Modules, which is not installed with LLVM's CMake
+# modules: a project configured against an installed LLVM sees neither
+# environment.
+include(DetectWindowsItanium OPTIONAL)
 
 if(CMAKE_LINKER MATCHES ".*lld" OR (LLVM_USE_LINKER STREQUAL "lld" OR LLVM_ENABLE_LLD))
   set(LINKER_IS_LLD TRUE)
@@ -23,7 +27,9 @@ else()
   set(LINKER_IS_LLD FALSE)
 endif()
 
-if(CMAKE_LINKER MATCHES "lld-link" OR (MSVC AND (LLVM_USE_LINKER STREQUAL "lld" OR LLVM_ENABLE_LLD)))
+# Windows Itanium and NT-POSIX images are always linked by lld-link.
+if(CMAKE_LINKER MATCHES "lld-link" OR WIN32_ITANIUM OR WIN32_NTPOSIX OR
+   (MSVC AND (LLVM_USE_LINKER STREQUAL "lld" OR LLVM_ENABLE_LLD)))
   set(LINKER_IS_LLD_LINK TRUE)
 else()
   set(LINKER_IS_LLD_LINK FALSE)
@@ -581,7 +587,8 @@ endif()
 
 # set stack reserved size to ~10MB
 set(_is_exe "$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>")
-if(MSVC OR (CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC"))
+if(MSVC OR (CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC") OR WIN32_ITANIUM OR
+   WIN32_NTPOSIX)
   # CMake previously automatically set this value for MSVC builds, but the
   # behavior was changed in CMake 2.8.11 (Issue 12437) to use the MSVC default
   # value (1 MB) which is not enough for us in tasks such as parsing recursive
@@ -612,11 +619,21 @@ if( MSVC )
     _SCL_SECURE_NO_WARNINGS
     )
 
+endif()
+
+# Windows Itanium uses the Windows SDK and UCRT headers as well, but its own
+# headers already leave the standard and POSIX functions undeprecated.
+if( MSVC OR WIN32_ITANIUM )
+
   # Tell MSVC to use the Unicode version of the Win32 APIs instead of ANSI.
   add_compile_definitions(
     UNICODE
     _UNICODE
   )
+
+endif()
+
+if( MSVC )
 
   if (LLVM_WINSYSROOT)
     if (NOT CLANG_CL)
