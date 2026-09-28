@@ -10,6 +10,7 @@
 #include "clang-c/Documentation.h"
 #include "clang-c/Index.h"
 #include "clang/Config/config.h"
+#include "llvm/Config/llvm-config.h"
 #include "llvm/Support/AutoConvert.h"
 #include <assert.h>
 #include <ctype.h>
@@ -23,7 +24,7 @@
 #include <libxml/xmlerror.h>
 #endif
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #  include <direct.h>
 #else
 #  include <unistd.h>
@@ -36,7 +37,7 @@ extern int indextest_perform_shell_execution(const char *command_line);
 /* Utility functions.                                                         */
 /******************************************************************************/
 
-#ifdef _MSC_VER
+#if defined(_MSC_VER) || defined(_WIN32_ITANIUM)
 char *basename(const char* path)
 {
     char* base1 = (char*)strrchr(path, '/');

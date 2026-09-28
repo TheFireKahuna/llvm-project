@@ -56,7 +56,7 @@
 #include "llvm/TextAPI/Architecture.h"
 #include "llvm/TextAPI/PackedVersion.h"
 
-#if !_WIN32
+#if !LLVM_RUNTIME_WIN32
 #include <sys/mman.h>
 #endif
 
@@ -356,7 +356,7 @@ void multiThreadedPageInBackground(DeferredFiles &deferred) {
     totalBytes += buff.size();
     numDeferedFilesAdvised += 1;
 #endif
-#if _WIN32
+#if LLVM_RUNTIME_WIN32
     // Reference all file's mmap'd pages to load them into memory.
     for (const char *page = buff.data(), *end = page + buff.size();
          page < end && !pageInQueue.stopAllWork; page += pageSize) {

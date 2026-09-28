@@ -55,7 +55,7 @@
 #include <optional>
 #include <set>
 #include <system_error>
-#if LLVM_ON_UNIX
+#if LLVM_RUNTIME_POSIX
 #include <signal.h>
 #endif
 
@@ -429,10 +429,10 @@ int clang_main(int Argc, char **Argv, const llvm::ToolContext &ToolContext) {
       // On Windows, abort will return an exit code of 3.  In these cases,
       // generate additional diagnostic information if possible.
       IsCrash = CommandRes < 0 || CommandRes == 70;
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
       IsCrash |= CommandRes == 3;
 #endif
-#if LLVM_ON_UNIX
+#if LLVM_RUNTIME_POSIX
       // When running in integrated-cc1 mode, the CrashRecoveryContext returns
       // the same codes as if the program crashed. See section "Exit Status for
       // Commands":
@@ -466,7 +466,7 @@ int clang_main(int Argc, char **Argv, const llvm::ToolContext &ToolContext) {
     llvm::TimerGroup::clearAll();
   }
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   // Exit status should not be negative on Win32, unless abnormal termination.
   // Once abnormal termination was caught, negative status should not be
   // propagated.
@@ -474,7 +474,7 @@ int clang_main(int Argc, char **Argv, const llvm::ToolContext &ToolContext) {
     Res = 1;
 #endif
 
-#if LLVM_ON_UNIX
+#if LLVM_RUNTIME_POSIX
   // On Unix, signals are represented by return codes of 128 plus the signal
   // number. If the return code indicates it was from a signal handler, raise
   // the signal so that the exit code includes the signal number, as required

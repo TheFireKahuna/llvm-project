@@ -103,7 +103,7 @@ llvm::raw_fd_ostream Ctx::openAuxiliaryFile(llvm::StringRef filename,
   OpenFlags flags =
       auxiliaryFiles.insert(filename).second ? OF_None : OF_Append;
   if (e.disableOutput && filename == "-") {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     filename = "NUL";
 #else
     filename = "/dev/null";

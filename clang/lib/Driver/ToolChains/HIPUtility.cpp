@@ -18,7 +18,7 @@ using namespace clang::driver;
 using namespace clang::driver::tools;
 using namespace llvm::opt;
 
-#if defined(_WIN32) || defined(_WIN64)
+#if defined(LLVM_RUNTIME_WIN32)
 #define NULL_FILE "nul"
 #else
 #define NULL_FILE "/dev/null"

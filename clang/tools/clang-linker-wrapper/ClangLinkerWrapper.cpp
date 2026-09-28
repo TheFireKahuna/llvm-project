@@ -464,7 +464,7 @@ fatbinary(ArrayRef<std::tuple<StringRef, StringRef, StringRef>> InputFiles,
   }
   CmdArgs.push_back(Saver.save(llvm::join(Targets, ",")));
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   CmdArgs.push_back("-input=NUL");
 #else
   CmdArgs.push_back("-input=/dev/null");
