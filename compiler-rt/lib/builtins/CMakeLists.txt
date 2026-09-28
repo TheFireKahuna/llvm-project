@@ -1303,6 +1303,8 @@ cmake_dependent_option(COMPILER_RT_BUILD_CRT "Build crtbegin.o/crtend.o" ON "COM
 if (COMPILER_RT_BUILD_CRT AND WIN32_ITANIUM)
   add_subdirectory(${COMPILER_RT_SOURCE_DIR}/lib/wincrt
                    ${CMAKE_CURRENT_BINARY_DIR}/wincrt)
+  add_subdirectory(${COMPILER_RT_SOURCE_DIR}/lib/aligned_alloc
+                   ${CMAKE_CURRENT_BINARY_DIR}/aligned_alloc)
 elseif (COMPILER_RT_BUILD_CRT)
   add_compiler_rt_component(crt)
 
