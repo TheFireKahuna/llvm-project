@@ -1,0 +1,23 @@
+## NT-POSIX's C library is POSIX, not the Microsoft C runtime: the functions
+## TLI withholds from the MSVC and MinGW environments are available.
+
+# RUN: llvm-tli-checker --triple x86_64-pc-windows-ntposix --dump-tli | \
+# RUN:   FileCheck %s --check-prefix=NTPOSIX
+# RUN: llvm-tli-checker --triple aarch64-pc-windows-ntposix --dump-tli | \
+# RUN:   FileCheck %s --check-prefix=NTPOSIX
+# RUN: llvm-tli-checker --triple x86_64-pc-windows-msvc --dump-tli | \
+# RUN:   FileCheck %s --check-prefix=MSVC
+
+# NTPOSIX: {{^ +}}available: 'bzero'
+# NTPOSIX: {{^ +}}available: 'frexpf'
+# NTPOSIX: {{^ +}}available: 'getpwnam'
+# NTPOSIX: {{^ +}}available: 'ldexpf'
+# NTPOSIX: {{^ +}}available: 'sinl'
+# NTPOSIX: {{^ +}}available: 'write'
+
+# MSVC: not available: 'bzero'
+# MSVC: not available: 'frexpf'
+# MSVC: not available: 'getpwnam'
+# MSVC: not available: 'ldexpf'
+# MSVC: not available: 'sinl'
+# MSVC: not available: 'write'

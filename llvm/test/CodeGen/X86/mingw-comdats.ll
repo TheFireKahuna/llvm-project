@@ -1,5 +1,6 @@
 ; RUN: llc -function-sections -mtriple=x86_64-windows-itanium < %s | FileCheck %s
 ; RUN: llc -function-sections -mtriple=x86_64-windows-msvc < %s | FileCheck %s
+; RUN: llc -function-sections -mtriple=x86_64-pc-windows-ntposix < %s | FileCheck %s
 ; RUN: llc -function-sections -mtriple=x86_64-w64-windows-gnu < %s | FileCheck %s --check-prefix=GNU
 ; RUN: llc -function-sections -mtriple=x86_64-pc-cygwin < %s | FileCheck %s --check-prefix=GNU
 ; RUN: llc -function-sections -mtriple=i686-w64-windows-gnu < %s | FileCheck %s --check-prefix=GNU32
@@ -7,6 +8,7 @@
 ; RUN: llc -function-sections -mtriple=x86_64-w64-windows-gnu < %s -filetype=obj | llvm-objdump - --headers | FileCheck %s --check-prefix=GNUOBJ
 ; RUN: llc -function-sections -mtriple=x86_64-pc-cygwin < %s -filetype=obj | llvm-objdump - --headers | FileCheck %s --check-prefix=GNUOBJ
 ; RUN: llc -function-sections -mtriple=x86_64-windows-itanium < %s -filetype=obj | llvm-readobj --symbols - | FileCheck %s --check-prefix=ITANIUMOBJ
+; RUN: llc -function-sections -mtriple=x86_64-pc-windows-ntposix < %s -filetype=obj | llvm-readobj --symbols - | FileCheck %s --check-prefix=ITANIUMOBJ
 
 ; GCC and MSVC handle comdats completely differently. Make sure we do the right
 ; thing for each.
@@ -96,8 +98,9 @@ entry:
 ; GNUOBJ: .pdata$_Z3fooi
 ; GNUOBJ: .pdata$unlikely$_Z3fooj
 
-; Windows Itanium names COMDAT text sections like MSVC, so the unwind data of
-; each function goes in an associative COMDAT rather than a shared .pdata$.
+; Windows Itanium and NT-POSIX name COMDAT text sections like MSVC, so the
+; unwind data of each function goes in an associative COMDAT rather than a
+; shared .pdata$.
 ; ITANIUMOBJ:     Name: .xdata
 ; ITANIUMOBJ:       Selection: Associative (0x5)
 ; ITANIUMOBJ:     Name: .pdata

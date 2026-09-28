@@ -74,6 +74,10 @@ unsigned X86_MC::getDwarfRegFlavour(const Triple &TT, bool isEH) {
   return DWARFFlavour::X86_32_Generic;
 }
 
+bool X86_MC::isWin64DefaultCC(const Triple &TT) {
+  return TT.isX86_64() && TT.isOSWindows() && !TT.isWindowsNTPOSIXEnvironment();
+}
+
 bool X86_MC::hasLockPrefix(const MCInst &MI) {
   return MI.getFlags() & X86::IP_HAS_LOCK;
 }
@@ -530,7 +534,7 @@ static MCAsmInfo *createX86MCAsmInfo(const MCRegisterInfo &MRI,
     else
       MAI = new X86MCAsmInfoMicrosoft(TheTriple, Options);
   } else if (TheTriple.isOSCygMing() ||
-             TheTriple.isWindowsItaniumEnvironment()) {
+             TheTriple.isWindowsItaniumOrNTPOSIXEnvironment()) {
     MAI = new X86MCAsmInfoGNUCOFF(TheTriple, Options);
   } else {
     // The default is ELF.

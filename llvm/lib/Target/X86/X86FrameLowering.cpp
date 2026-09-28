@@ -743,7 +743,9 @@ void X86FrameLowering::emitStackProbe(
 }
 
 bool X86FrameLowering::stackProbeFunctionModifiesSP() const {
-  return STI.isOSWindows() && !STI.isTargetWin64();
+  // Only the 32-bit Windows probe helpers adjust the stack pointer; every
+  // x86-64 Windows helper leaves it to the caller, whatever the convention.
+  return STI.isOSWindows() && !Is64Bit;
 }
 
 void X86FrameLowering::inlineStackProbe(MachineFunction &MF,
@@ -1320,7 +1322,7 @@ void X86FrameLowering::emitStackProbeCall(
       .addReg(X86::EFLAGS, RegState::Define | RegState::Implicit);
 
   MachineInstr *ModInst = CI;
-  if (STI.isTargetWin64() || !STI.isOSWindows()) {
+  if (!stackProbeFunctionModifiesSP()) {
     // MSVC x32's _chkstk and cygwin/mingw's _alloca adjust %esp themselves.
     // MSVC x64's __chkstk and cygwin/mingw's ___chkstk_ms do not adjust %rsp
     // themselves. They also does not clobber %rax so we can reuse it when
@@ -1337,7 +1339,7 @@ void X86FrameLowering::emitStackProbeCall(
   // allocation (i.e., DYN_ALLOC_*), substitute it for the instruction that
   // modifies SP.
   if (InstrNum) {
-    if (STI.isTargetWin64() || !STI.isOSWindows()) {
+    if (!stackProbeFunctionModifiesSP()) {
       // Label destination operand of the subtract.
       MF.makeDebugValueSubstitution(*InstrNum,
                                     {ModInst->getDebugInstrNum(), 0});
@@ -4173,7 +4175,7 @@ bool X86FrameLowering::canUseAsEpilogue(const MachineBasicBlock &MBB) const {
   // not taking a chance at messing with them.
   // I.e., unless this block is already an exit block, we can't use
   // it as an epilogue.
-  if (STI.isTargetWin64() && !MBB.succ_empty() && !MBB.isReturnBlock())
+  if (STI.isTargetWindowsX64() && !MBB.succ_empty() && !MBB.isReturnBlock())
     return false;
 
   // Swift async context epilogue has a BTR instruction that clobbers parts of

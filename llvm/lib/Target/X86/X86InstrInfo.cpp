@@ -3772,7 +3772,7 @@ bool X86InstrInfo::canMakeTailCallConditional(
     return false;
   }
 
-  if (Subtarget.isTargetWin64() && MF->hasWinCFI()) {
+  if (Subtarget.isTargetWindowsX64() && MF->hasWinCFI()) {
     // Conditional tail calls confuse the Win64 unwinder.
     return false;
   }

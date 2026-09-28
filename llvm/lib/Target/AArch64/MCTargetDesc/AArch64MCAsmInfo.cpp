@@ -297,9 +297,9 @@ bool AArch64MCAsmInfoMicrosoftCOFF::evaluateAsRelocatableImpl(
 AArch64MCAsmInfoGNUCOFF::AArch64MCAsmInfoGNUCOFF(const Triple &T,
                                                  const MCTargetOptions &Options)
     : MCAsmInfoGNUCOFF(Options) {
-  // Windows Itanium names COMDAT sections like MSVC, so its unwind data needs
-  // associative COMDATs, which it links with lld-link, not GNU ld.
-  if (T.isWindowsItaniumEnvironment())
+  // Windows Itanium and NT-POSIX name COMDAT sections like MSVC, so their
+  // unwind data needs associative COMDATs; they link with lld-link, not GNU ld.
+  if (T.isWindowsItaniumOrNTPOSIXEnvironment())
     HasCOFFAssociativeComdats = true;
 
   InternalSymbolPrefix = ".L";
