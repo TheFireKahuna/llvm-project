@@ -1166,14 +1166,15 @@ static std::string GetCapturedStream(CapturedStream** captured_stream) {
   return content;
 }
 
-#if defined(_MSC_VER) || defined(__BORLANDC__)
-// MSVC and C++Builder do not provide a definition of STDERR_FILENO.
+#if defined(_MSC_VER) || defined(_WIN32_ITANIUM) || defined(__BORLANDC__)
+// MSVC, Windows Itanium and C++Builder do not provide a definition of
+// STDERR_FILENO.
 const int kStdOutFileno = 1;
 const int kStdErrFileno = 2;
 #else
 const int kStdOutFileno = STDOUT_FILENO;
 const int kStdErrFileno = STDERR_FILENO;
-#endif  // defined(_MSC_VER) || defined(__BORLANDC__)
+#endif  // _MSC_VER || _WIN32_ITANIUM || __BORLANDC__
 
 // Starts capturing stdout.
 void CaptureStdout() {

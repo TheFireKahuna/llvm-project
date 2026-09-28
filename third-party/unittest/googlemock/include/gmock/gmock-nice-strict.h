@@ -99,7 +99,7 @@ constexpr bool HasStrictnessModifier() {
 // run with the same level of strictness as its instance methods.
 
 #if defined(GTEST_OS_WINDOWS) && !defined(GTEST_OS_WINDOWS_MINGW) && \
-    (defined(_MSC_VER) || defined(__clang__))
+    !defined(_WIN32_ITANIUM) && (defined(_MSC_VER) || defined(__clang__))
 // We need to mark these classes with this declspec to ensure that
 // the empty base class optimization is performed.
 #define GTEST_INTERNAL_EMPTY_BASE_CLASS __declspec(empty_bases)

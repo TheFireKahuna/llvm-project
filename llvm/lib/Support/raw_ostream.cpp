@@ -41,7 +41,7 @@
 #include <io.h>
 #endif
 
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) || defined(_WIN32_ITANIUM)
 #include <io.h>
 #ifndef STDIN_FILENO
 # define STDIN_FILENO 0
