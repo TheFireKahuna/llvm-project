@@ -110,6 +110,10 @@ void LinkerDriver::parseGuard(StringRef fullArg) {
       ctx.config.guardCF |= GuardCFLevel::CF | GuardCFLevel::LongJmp;
     else if (arg.equals_insensitive("ehcont"))
       ctx.config.guardCF |= GuardCFLevel::CF | GuardCFLevel::EHCont;
+    else if (arg.equals_insensitive("exportsuppress"))
+      ctx.config.guardCF |= GuardCFLevel::CF | GuardCFLevel::ExportSuppress;
+    else if (arg.equals_insensitive("noexportsuppress"))
+      ctx.config.guardCF &= ~GuardCFLevel::ExportSuppress;
     else
       Fatal(ctx) << "invalid argument to /guard: " << arg;
   }

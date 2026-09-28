@@ -254,7 +254,8 @@ private:
                               ArrayRef<SectionChunk *> symIdxChunks,
                               std::vector<Symbol *> &symbols);
   void maybeAddRVATable(SymbolRVASet tableSymbols, StringRef tableSym,
-                        StringRef countSym, bool hasFlag=false);
+                        StringRef countSym, bool hasFlag = false,
+                        SymbolRVASet exportSuppressed = {});
   void setSectionPermissions();
   void setECSymbols();
   void writeSections();
@@ -2230,13 +2231,14 @@ void Writer::createGuardCFTables() {
   }
 
   // Mark the image entry as address-taken.
+  SymbolRVASet exportedSyms;
   ctx.forEachSymtab([&](SymbolTable &symtab) {
     if (symtab.entry)
       maybeAddAddressTakenFunction(addressTakenSyms, symtab.entry);
 
     // Mark exported symbols in executable sections as address-taken.
     for (Export &e : symtab.exports)
-      maybeAddAddressTakenFunction(addressTakenSyms, e.sym);
+      maybeAddAddressTakenFunction(exportedSyms, e.sym);
   });
 
   // For each entry in the .giats table, check if it has a corresponding load
@@ -2249,39 +2251,66 @@ void Writer::createGuardCFTables() {
     }
   }
 
+  // An exported function that is a target for no other reason is marked
+  // export-suppressed: in a process that suppresses exports, it becomes a valid
+  // target only once GetProcAddress returns it. The loader can record that
+  // only for a 16-byte aligned entry.
+  SymbolRVASet exportSuppressed;
+  for (const ChunkAndOffset &c : exportedSyms)
+    if (addressTakenSyms.insert(c).second && c.offset % 16 == 0)
+      exportSuppressed.insert(c);
+
   // Ensure sections referenced in the gfid table are 16-byte aligned.
   for (const ChunkAndOffset &c : addressTakenSyms)
     if (c.inputChunk->getAlignment() < 16)
       c.inputChunk->setAlignment(16);
 
+  // Every table has a flag byte after each RVA if an entry of any of them has
+  // a flag, as link.exe writes them, and none otherwise.
+  bool hasFlag = !exportSuppressed.empty();
+
   maybeAddRVATable(std::move(addressTakenSyms), "__guard_fids_table",
-                   "__guard_fids_count");
+                   "__guard_fids_count", hasFlag, std::move(exportSuppressed));
 
   // Add the Guard Address Taken IAT Entry Table (.giats).
   maybeAddRVATable(std::move(giatsRVASet), "__guard_iat_table",
-                   "__guard_iat_count");
+                   "__guard_iat_count", hasFlag);
 
   // Add the longjmp target table unless the user told us not to.
   if (config->guardCF & GuardCFLevel::LongJmp)
     maybeAddRVATable(std::move(longJmpTargets), "__guard_longjmp_table",
-                     "__guard_longjmp_count");
+                     "__guard_longjmp_count", hasFlag);
 
   // Add the ehcont target table unless the user told us not to.
   if (config->guardCF & GuardCFLevel::EHCont)
     maybeAddRVATable(std::move(ehContTargets), "__guard_eh_cont_table",
-                     "__guard_eh_cont_count");
+                     "__guard_eh_cont_count", hasFlag);
 
   // Set __guard_flags, which will be used in the load config to indicate that
   // /guard:cf was enabled.
   uint32_t guardFlags = uint32_t(GuardFlags::CF_INSTRUMENTED) |
                         uint32_t(GuardFlags::CF_FUNCTION_TABLE_PRESENT);
+  if (hasFlag)
+    guardFlags |= uint32_t(GuardFlags::CF_FUNCTION_TABLE_SIZE_5BYTES);
   if (config->guardCF & GuardCFLevel::LongJmp)
     guardFlags |= uint32_t(GuardFlags::CF_LONGJUMP_TABLE_PRESENT);
   if (config->guardCF & GuardCFLevel::EHCont)
     guardFlags |= uint32_t(GuardFlags::EH_CONTINUATION_TABLE_PRESENT);
-  ctx.forEachSymtab([guardFlags](SymbolTable &symtab) {
+  if (config->guardCF & GuardCFLevel::ExportSuppress)
+    guardFlags |= uint32_t(GuardFlags::CF_ENABLE_EXPORT_SUPPRESSION);
+  // The export-suppressed marks and the address-taken IAT table are complete,
+  // but the loader can rely on that only where the load configuration reaches
+  // the table.
+  size_t giatsEnd =
+      config->is64()
+          ? offsetof(coff_load_configuration64, GuardLongJumpTargetTable)
+          : offsetof(coff_load_configuration32, GuardLongJumpTargetTable);
+  ctx.forEachSymtab([&](SymbolTable &symtab) {
+    uint32_t flags = guardFlags;
+    if (symtab.loadConfigSize >= giatsEnd)
+      flags |= uint32_t(GuardFlags::CF_EXPORT_SUPPRESSION_INFO_PRESENT);
     Symbol *flagSym = symtab.findUnderscore("__guard_flags");
-    cast<DefinedAbsolute>(flagSym)->setVA(guardFlags);
+    cast<DefinedAbsolute>(flagSym)->setVA(flags);
   });
 }
 
@@ -2342,13 +2371,15 @@ void Writer::markSymbolsForRVATable(ObjFile *file,
 // tableChunk so that we can emit base relocations for it and resolve section
 // relative relocations.
 void Writer::maybeAddRVATable(SymbolRVASet tableSymbols, StringRef tableSym,
-                              StringRef countSym, bool hasFlag) {
+                              StringRef countSym, bool hasFlag,
+                              SymbolRVASet exportSuppressed) {
   if (tableSymbols.empty())
     return;
 
   NonSectionChunk *tableChunk;
   if (hasFlag)
-    tableChunk = make<RVAFlagTableChunk>(std::move(tableSymbols));
+    tableChunk = make<RVAFlagTableChunk>(std::move(tableSymbols),
+                                         std::move(exportSuppressed));
   else
     tableChunk = make<RVATableChunk>(std::move(tableSymbols));
   rdataSec->addChunk(tableChunk);

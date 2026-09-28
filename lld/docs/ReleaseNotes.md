@@ -44,6 +44,14 @@ from the [LLVM releases web site](https://llvm.org/releases/).
   `/delay:nobind` is accepted; no image LLD writes has a bound delay-load
   import table. Any other argument is an error.
 
+* `/guard:cf` images carry Control Flow Guard export suppression metadata. An
+  exported function that is a valid call target only because it is exported
+  is marked export-suppressed, and the image declares the information
+  complete with `IMAGE_GUARD_CF_EXPORT_SUPPRESSION_INFO_PRESENT`. The guard
+  tables get a flag byte per entry when some entry has a flag.
+  `/guard:exportsuppress` enables suppression for the process an executable
+  starts, and `/guard:noexportsuppress` clears it.
+
 ### MinGW Improvements
 
 ### MachO Improvements

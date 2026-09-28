@@ -92,11 +92,12 @@ enum class DebugType {
 };
 
 enum GuardCFLevel {
-  Off     = 0x0,
-  CF      = 0x1, /// Emit gfids tables
-  LongJmp = 0x2, /// Emit longjmp tables
-  EHCont  = 0x4, /// Emit ehcont tables
-  All     = 0x7  /// Enable all protections
+  Off            = 0x0,
+  CF             = 0x1, /// Emit gfids tables
+  LongJmp        = 0x2, /// Emit longjmp tables
+  EHCont         = 0x4, /// Emit ehcont tables
+  All            = 0x7, /// Emit all tables
+  ExportSuppress = 0x8, /// Suppress exports as call targets in the process
 };
 
 enum class ICFLevel {

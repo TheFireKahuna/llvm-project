@@ -12,7 +12,7 @@
 # CHECK:   GuardCFCheckDispatch: 0x0
 # CHECK:   GuardCFFunctionTable: 0x14000{{.*}}
 # CHECK:   GuardCFFunctionCount: 3
-# CHECK:   GuardFlags [ (0x500)
+# CHECK:   GuardFlags [ (0x4500)
 # CHECK:     CF_FUNCTION_TABLE_PRESENT (0x400)
 # CHECK:     CF_INSTRUMENTED (0x100)
 # CHECK:   ]
