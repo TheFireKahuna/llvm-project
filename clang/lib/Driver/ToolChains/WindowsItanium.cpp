@@ -97,3 +97,39 @@ void WindowsItaniumToolChain::AddClangSystemIncludeArgs(
   addWindowsSDKIncludeArgs(getVFS(), WinSdkDir, WinSdkVersion, WinSysRoot,
                            DriverArgs, CC1Args);
 }
+
+void WindowsItaniumToolChain::addSystemLibraryDirs(
+    const ArgList &Args, std::vector<std::string> &LibDirs) const {
+  std::string Path;
+  if (getUniversalCRTLibraryPath(getVFS(), WinSdkDir, WinSdkVersion, WinSysRoot,
+                                 getArch(), Path))
+    LibDirs.push_back(Path);
+  if (getWindowsSDKLibraryPath(getVFS(), WinSdkDir, WinSdkVersion, WinSysRoot,
+                               getArch(), Path))
+    LibDirs.push_back(Path);
+}
+
+void WindowsItaniumToolChain::addSystemLibArgs(const ArgList &Args,
+                                               ArgStringList &CmdArgs) const {
+  // wincrt provides the start-up code and bridges the Universal CRT to the
+  // Itanium C++ ABI. ucrtbase.dll exports memcpy, memset and the other
+  // functions that Microsoft ships in vcruntime.lib rather than ucrt.lib, and
+  // clang_rt.ucrt_memory.lib imports them. oldnames.lib maps the POSIX names
+  // to the Universal CRT's underscored ones, as it does for MSVC.
+  CmdArgs.push_back(Args.MakeArgString("-defaultlib:" +
+                                       getCompilerRTBasename(Args, "wincrt")));
+  CmdArgs.push_back(Args.MakeArgString(
+      "-defaultlib:" + getCompilerRTBasename(Args, "ucrt_memory")));
+  for (const char *Lib :
+       {"ucrt.lib", "kernel32.lib", "ntdll.lib", "oldnames.lib", "user32.lib",
+        "advapi32.lib", "shell32.lib"})
+    CmdArgs.push_back(Args.MakeArgString("-defaultlib:" + Twine(Lib)));
+}
+
+void WindowsItaniumToolChain::addNoDefaultLibArgs(
+    const ArgList &Args, ArgStringList &CmdArgs) const {
+  WindowsItaniumBaseToolChain::addNoDefaultLibArgs(Args, CmdArgs);
+  // Objects compiled with _CRT_STDIO_ISO_WIDE_SPECIFIERS name this library of
+  // Visual C++, whose one symbol wincrt defines.
+  CmdArgs.push_back("-nodefaultlib:iso_stdio_wide_specifiers");
+}

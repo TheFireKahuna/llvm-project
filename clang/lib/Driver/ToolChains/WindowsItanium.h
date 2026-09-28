@@ -40,6 +40,13 @@ public:
   AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs,
                             llvm::opt::ArgStringList &CC1Args) const override;
 
+  void addSystemLibraryDirs(const llvm::opt::ArgList &Args,
+                            std::vector<std::string> &LibDirs) const override;
+  void addSystemLibArgs(const llvm::opt::ArgList &Args,
+                        llvm::opt::ArgStringList &CmdArgs) const override;
+  void addNoDefaultLibArgs(const llvm::opt::ArgList &Args,
+                           llvm::opt::ArgStringList &CmdArgs) const override;
+
 private:
   std::optional<llvm::StringRef> WinSdkDir, WinSdkVersion, WinSysRoot;
 };

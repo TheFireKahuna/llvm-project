@@ -72,6 +72,7 @@ public:
   RuntimeLibType GetDefaultRuntimeLibType() const override {
     return ToolChain::RLT_CompilerRT;
   }
+  UnwindLibType GetUnwindLibType(const llvm::opt::ArgList &Args) const override;
   CXXStdlibType GetDefaultCXXStdlibType() const override {
     return ToolChain::CST_Libcxx;
   }
@@ -84,6 +85,19 @@ public:
   void AddClangCXXStdlibIncludeArgs(
       const llvm::opt::ArgList &DriverArgs,
       llvm::opt::ArgStringList &CC1Args) const override;
+  void AddCXXStdlibLibArgs(const llvm::opt::ArgList &Args,
+                           llvm::opt::ArgStringList &CmdArgs) const override;
+
+  /// Adds the directories of the system libraries to the library search path.
+  virtual void addSystemLibraryDirs(const llvm::opt::ArgList &Args,
+                                    std::vector<std::string> &LibDirs) const {}
+  /// Adds the C library and the system libraries, unless -nolibc.
+  virtual void addSystemLibArgs(const llvm::opt::ArgList &Args,
+                                llvm::opt::ArgStringList &CmdArgs) const = 0;
+  /// Removes the default libraries that objects name but these targets never
+  /// link.
+  virtual void addNoDefaultLibArgs(const llvm::opt::ArgList &Args,
+                                   llvm::opt::ArgStringList &CmdArgs) const;
 
 protected:
   Tool *buildLinker() const override;

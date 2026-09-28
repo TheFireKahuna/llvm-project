@@ -6003,6 +6003,12 @@ std::string Driver::GetStdModuleManifestPath(const Compilation &C,
     if (std::optional<std::string> result = evaluate("libc++.so"); result)
       return *result;
 
+    // The import library and the static archive on Windows Itanium.
+    if (TC.getTriple().isWindowsItaniumEnvironment())
+      for (const char *Lib : {"libc++.dll.lib", "libc++.lib"})
+        if (std::optional<std::string> result = evaluate(Lib); result)
+          return *result;
+
     return evaluate("libc++.a").value_or(error);
   }
 

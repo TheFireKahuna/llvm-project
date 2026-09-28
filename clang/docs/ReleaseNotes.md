@@ -890,8 +890,12 @@ features cannot lower the translation-unit ABI level;
   compiles against the Universal CRT and the Windows SDK, located as the MSVC
   toolchain locates them, without Visual C++, and defaults to
   ``-fms-extensions``, ``-fdeclspec``, ``-fuse-cxa-atexit``, SEH exceptions and
-  ``-mdefault-visibility-export-mapping=explicit``. 32-bit x86 and Arm
-  ``windows-itanium`` targets keep the cross-compiling toolchain.
+  ``-mdefault-visibility-export-mapping=explicit``. It links with lld-link,
+  passing libc++, libunwind, compiler-rt, the Universal CRT and the system
+  import libraries as default libraries, names a DLL's import library
+  ``name.dll.lib``, and resolves ``-lname`` to ``libname.dll.lib`` or
+  ``libname.lib`` before ``name.lib``. 32-bit x86 and Arm ``windows-itanium``
+  targets keep the cross-compiling toolchain.
 
 #### LoongArch Support
 
