@@ -58,6 +58,17 @@ from the [LLVM releases web site](https://llvm.org/releases/).
   LNK2046 and LNK2047: its continuation targets would be missing from the
   table.
 
+* With `/guard:cf`, the delay-load import address table gets a section of its
+  own, `.didat`, as link.exe lays it out, and the image is marked
+  `IMAGE_GUARD_PROTECT_DELAYLOAD_IAT` and
+  `IMAGE_GUARD_DELAYLOAD_IAT_IN_ITS_OWN_SECTION`. The loader then keeps the
+  table read-only and makes it writable only while it resolves an import, so
+  a table that calls go through without a Control Flow Guard check is not
+  writable for the life of the process. The descriptors and name table move to
+  `.rdata`. Input sections named `.didat` and merges into or out of `.didat`
+  are errors in such an image. MinGW images, whose delay-load helper stores to
+  the table directly, are unchanged.
+
 ### MinGW Improvements
 
 ### MachO Improvements

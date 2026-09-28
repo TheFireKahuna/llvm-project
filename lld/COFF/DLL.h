@@ -45,6 +45,7 @@ public:
   void create();
   std::vector<Chunk *> getChunks();
   std::vector<Chunk *> getDataChunks();
+  ArrayRef<Chunk *> getIat() { return addresses; }
   ArrayRef<Chunk *> getCodeChunks() { return thunks; }
   ArrayRef<Chunk *> getCodePData() { return pdata; }
   ArrayRef<Chunk *> getCodeUnwindInfo() { return unwindinfo; }

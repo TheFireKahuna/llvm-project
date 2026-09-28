@@ -248,6 +248,7 @@ private:
   void markSymbolsWithRelocations(ObjFile *file, SymbolRVASet &usedSymbols,
                                   SymbolRVASet &usedImports);
   void createGuardCFTables();
+  bool protectDelayIat();
   void markSymbolsForRVATable(ObjFile *file,
                               ArrayRef<SectionChunk *> symIdxChunks,
                               SymbolRVASet &tableSymbols);
@@ -1104,7 +1105,7 @@ void Writer::createSections() {
   pdataSec = createSection(".pdata", data | r);
   idataSec = createSection(".idata", data | r);
   edataSec = createSection(".edata", data | r);
-  didatSec = createSection(".didat", data | r);
+  didatSec = createSection(".didat", data | r | (protectDelayIat() ? w : 0));
   if (isArm64EC(ctx.config.machine))
     a64xrmSec = createSection(".a64xrm", data | r);
   rsrcSec = createSection(".rsrc", data | r);
@@ -1381,10 +1382,39 @@ void Writer::appendImportThunks() {
 
   if (!delayIdata.empty()) {
     delayIdata.create();
+    // A protected delay-load import address table is alone in .didat, as
+    // link.exe lays it out: the loader keeps the section read-only and makes
+    // it writable only while it resolves an import. The descriptors and the
+    // name table are never written and go with the other read-only data.
+    OutputSection *tableSec = didatSec;
+    OutputSection *iatSec = dataSec;
+    if (protectDelayIat()) {
+      if (!didatSec->chunks.empty())
+        Err(ctx) << "/guard:cf: input sections named .didat cannot share the "
+                    "protected delay-load import address table's section";
+      // .didat=.rdata is the default merge rule.
+      auto it = ctx.config.merge.find(".didat");
+      if (it != ctx.config.merge.end()) {
+        if (it->second != ".rdata")
+          Err(ctx) << "/merge:.didat=" << it->second
+                   << ": .didat holds the protected delay-load import address "
+                      "table and cannot be merged";
+        ctx.config.merge.erase(it);
+      }
+      for (auto &p : ctx.config.merge)
+        if (getMergeDestination(p.first, p.second) == ".didat")
+          Err(ctx) << "/merge:" << p.first << "=" << p.second
+                   << ": .didat holds the protected delay-load import address "
+                      "table and cannot be merged into";
+      tableSec = rdataSec;
+      iatSec = didatSec;
+    }
     for (Chunk *c : delayIdata.getChunks())
-      didatSec->addChunk(c);
+      tableSec->addChunk(c);
     for (Chunk *c : delayIdata.getDataChunks())
       dataSec->addChunk(c);
+    for (Chunk *c : delayIdata.getIat())
+      iatSec->addChunk(c);
     for (Chunk *c : delayIdata.getCodeChunks())
       textSec->addChunk(c);
     for (Chunk *c : delayIdata.getCodePData())
@@ -2184,6 +2214,15 @@ void Writer::markSymbolsWithRelocations(ObjFile *file,
   }
 }
 
+// Whether the delay-load import address table gets a section of its own,
+// which the loader keeps read-only. A call through the table is not checked by
+// Control Flow Guard, so it must not stay writable. mingw-w64's delay-load
+// helper stores to the table directly, so MinGW images keep the old layout.
+bool Writer::protectDelayIat() {
+  return (ctx.config.guardCF & GuardCFLevel::CF) && !ctx.config.mingw &&
+         !delayIdata.empty();
+}
+
 // Returns the offset in data of the language handler RVA of the unwind record
 // at off, if the record names a handler. A chained record is not followed.
 static std::optional<uint32_t>
@@ -2392,6 +2431,12 @@ void Writer::createGuardCFTables() {
     guardFlags |= uint32_t(GuardFlags::EH_CONTINUATION_TABLE_PRESENT);
   if (config->guardCF & GuardCFLevel::ExportSuppress)
     guardFlags |= uint32_t(GuardFlags::CF_ENABLE_EXPORT_SUPPRESSION);
+  // The loader resolves a protected table's imports in a buffer and copies
+  // them in under one reprotection, restoring read-only whether or not the
+  // section was protected at load, so the two flags go together.
+  if (protectDelayIat())
+    guardFlags |= uint32_t(GuardFlags::PROTECT_DELAYLOAD_IAT) |
+                  uint32_t(GuardFlags::DELAYLOAD_IAT_IN_ITS_OWN_SECTION);
   // The export-suppressed marks and the address-taken IAT table are complete,
   // but the loader can rely on that only where the load configuration reaches
   // the table.
