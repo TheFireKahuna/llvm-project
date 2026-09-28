@@ -74,6 +74,7 @@ include(builtin-config-ix)
 include(CMakeDependentOption)
 include(CMakePushCheckState)
 include(CheckAssemblerFlag)
+include(DetectWindowsItanium)
 
 option(COMPILER_RT_BUILTINS_HIDE_SYMBOLS
   "Do not export any symbols from the static library." ON)
@@ -387,6 +388,15 @@ if (NOT FUCHSIA)
   set(GENERIC_SOURCES
     ${GENERIC_SOURCES}
     clear_cache.c
+  )
+endif()
+
+# These targets link no MSVC startup objects, which would otherwise define the
+# CRT table bounds, __dso_handle and _fltused.
+if(WIN32_ITANIUM OR WIN32_NTPOSIX)
+  set(GENERIC_SOURCES
+    ${GENERIC_SOURCES}
+    crt_windows.c
   )
 endif()
 
