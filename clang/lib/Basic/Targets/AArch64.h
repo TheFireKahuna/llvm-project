@@ -326,6 +326,14 @@ public:
                              bool HasNonWeakDef) const override;
 };
 
+// ARM64 NT-POSIX target
+class LLVM_LIBRARY_VISIBILITY NTPOSIXWindowsARM64TargetInfo
+    : public WindowsARM64TargetInfo {
+public:
+  NTPOSIXWindowsARM64TargetInfo(const llvm::Triple &Triple,
+                                const TargetOptions &Opts);
+};
+
 // ARM64 MinGW target
 class LLVM_LIBRARY_VISIBILITY MinGWARM64TargetInfo
     : public WindowsARM64TargetInfo {

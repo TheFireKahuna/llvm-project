@@ -1881,6 +1881,12 @@ ItaniumWindowsARM64TargetInfo::getMinGlobalAlign(uint64_t TypeSize,
   return std::max(Align, Microsoft64BitMinGlobalAlign(TypeSize));
 }
 
+NTPOSIXWindowsARM64TargetInfo::NTPOSIXWindowsARM64TargetInfo(
+    const llvm::Triple &Triple, const TargetOptions &Opts)
+    : WindowsARM64TargetInfo(Triple, Opts) {
+  TheCXXABI.set(TargetCXXABI::GenericAArch64);
+}
+
 MinGWARM64TargetInfo::MinGWARM64TargetInfo(const llvm::Triple &Triple,
                                            const TargetOptions &Opts)
     : WindowsARM64TargetInfo(Triple, Opts) {

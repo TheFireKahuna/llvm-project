@@ -910,6 +910,11 @@ public:
       : OSTargetInfo<Target>(Triple, Opts) {
     this->WCharType = TargetInfo::UnsignedShort;
     this->WIntType = TargetInfo::UnsignedShort;
+    // NT-POSIX has a POSIX C library, with glibc's 32-bit wchar_t and wint_t.
+    if (Triple.isWindowsNTPOSIXEnvironment()) {
+      this->WCharType = TargetInfo::SignedInt;
+      this->WIntType = TargetInfo::UnsignedInt;
+    }
     this->UseMicrosoftManglingForC = true;
   }
 };

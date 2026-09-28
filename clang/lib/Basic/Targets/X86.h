@@ -977,6 +977,18 @@ private:
   bool UseMSVCCallingConvKind = false;
 };
 
+// x86-64 NT-POSIX target
+class LLVM_LIBRARY_VISIBILITY NTPOSIXWindowsX86_64TargetInfo
+    : public WindowsX86_64TargetInfo {
+public:
+  NTPOSIXWindowsX86_64TargetInfo(const llvm::Triple &Triple,
+                                 const TargetOptions &Opts)
+      : WindowsX86_64TargetInfo(Triple, Opts) {
+    LongDoubleWidth = LongDoubleAlign = 64;
+    LongDoubleFormat = &llvm::APFloat::IEEEdouble();
+  }
+};
+
 // x86-64 MinGW target
 class LLVM_LIBRARY_VISIBILITY MinGWX86_64TargetInfo
     : public WindowsX86_64TargetInfo {

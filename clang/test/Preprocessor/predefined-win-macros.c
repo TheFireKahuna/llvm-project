@@ -288,3 +288,39 @@
 // CHECK-ITANIUM: #define _WIN32_WINNT 0x0A00
 // CHECK-ITANIUM: #define _WIN64 1
 // CHECK-ITANIUM: #define __STDC_NO_THREADS__ 1
+
+// NT-POSIX is a POSIX C library on NT: _WIN32 for the PE/COFF ABI and the NT
+// version macros, a 32-bit wchar_t and a 64-bit long double, and none of the
+// Win32, MSVC, MinGW or Unix identity macros.
+// RUN: %clang_cc1 %s -x c++ -E -dM -triple x86_64-pc-windows-ntposix \
+// RUN:     -pthread -o - \
+// RUN:   | FileCheck -match-full-lines %s --check-prefix=CHECK-NTPOSIX \
+// RUN:       --implicit-check-not="#define WIN32" \
+// RUN:       --implicit-check-not="#define __WIN32" \
+// RUN:       --implicit-check-not="#define _WIN32_ITANIUM" \
+// RUN:       --implicit-check-not="#define _M_" \
+// RUN:       --implicit-check-not="#define _MSC_" \
+// RUN:       --implicit-check-not="#define __MSVCRT__" \
+// RUN:       --implicit-check-not="#define __MINGW" \
+// RUN:       --implicit-check-not="#define __unix" \
+// RUN:       --implicit-check-not="#define UNICODE"
+// RUN: %clang_cc1 %s -x c++ -E -dM -triple aarch64-pc-windows-ntposix \
+// RUN:     -pthread -o - \
+// RUN:   | FileCheck -match-full-lines %s --check-prefix=CHECK-NTPOSIX \
+// RUN:       --implicit-check-not="#define WIN32" \
+// RUN:       --implicit-check-not="#define _M_" \
+// RUN:       --implicit-check-not="#define _MSC_"
+
+// CHECK-NTPOSIX: #define WINNT 1
+// CHECK-NTPOSIX: #define WINVER 0x0A00
+// CHECK-NTPOSIX: #define _GNU_SOURCE 1
+// CHECK-NTPOSIX: #define _REENTRANT 1
+// CHECK-NTPOSIX: #define _WIN32 1
+// CHECK-NTPOSIX: #define _WIN32_WINNT 0x0A00
+// CHECK-NTPOSIX: #define _WIN64 1
+// CHECK-NTPOSIX: #define __NTPOSIX__ 1
+// CHECK-NTPOSIX: #define __SIZEOF_LONG_DOUBLE__ 8
+// CHECK-NTPOSIX: #define __SIZEOF_WCHAR_T__ 4
+// CHECK-NTPOSIX: #define __WCHAR_TYPE__ int
+// CHECK-NTPOSIX: #define __WINT_TYPE__ unsigned int
+// CHECK-NTPOSIX: #define __WINT_UNSIGNED__ 1
