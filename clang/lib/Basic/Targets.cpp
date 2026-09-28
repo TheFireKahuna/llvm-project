@@ -186,6 +186,8 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
       switch (Triple.getEnvironment()) {
       case llvm::Triple::GNU:
         return std::make_unique<MinGWARM64TargetInfo>(Triple, Opts);
+      case llvm::Triple::Itanium:
+        return std::make_unique<ItaniumWindowsARM64TargetInfo>(Triple, Opts);
       case llvm::Triple::MSVC:
       default: // Assume MSVC for unknown environments
         return std::make_unique<MicrosoftARM64TargetInfo>(Triple, Opts);

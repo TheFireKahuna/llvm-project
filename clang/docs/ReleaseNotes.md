@@ -120,6 +120,9 @@ features cannot lower the translation-unit ABI level;
   one with a deleted copy constructor and a trivial move constructor in a
   register. `-fclang-abi-compat=23` restores the previous behavior.
 
+- `aarch64-windows-itanium` now uses the Itanium C++ ABI, as the other Windows
+  Itanium targets do, instead of the Microsoft C++ ABI.
+
 ### AST Dumping Potentially Breaking Changes
 
 ### Clang Frontend Potentially Breaking Changes

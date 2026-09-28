@@ -1821,15 +1821,8 @@ WindowsARM64TargetInfo::checkCallingConvention(CallingConv CC) const {
   }
 }
 
-MicrosoftARM64TargetInfo::MicrosoftARM64TargetInfo(const llvm::Triple &Triple,
-                                                   const TargetOptions &Opts)
-    : WindowsARM64TargetInfo(Triple, Opts) {
-  TheCXXABI.set(TargetCXXABI::Microsoft);
-}
-
-void MicrosoftARM64TargetInfo::getTargetDefines(const LangOptions &Opts,
-                                                MacroBuilder &Builder) const {
-  WindowsARM64TargetInfo::getTargetDefines(Opts, Builder);
+void WindowsARM64TargetInfo::getVisualStudioDefines(
+    const LangOptions &Opts, MacroBuilder &Builder) const {
   if (getTriple().isWindowsArm64EC()) {
     Builder.defineMacro("_M_X64", "100");
     Builder.defineMacro("_M_AMD64", "100");
@@ -1839,6 +1832,18 @@ void MicrosoftARM64TargetInfo::getTargetDefines(const LangOptions &Opts,
   }
 }
 
+MicrosoftARM64TargetInfo::MicrosoftARM64TargetInfo(const llvm::Triple &Triple,
+                                                   const TargetOptions &Opts)
+    : WindowsARM64TargetInfo(Triple, Opts) {
+  TheCXXABI.set(TargetCXXABI::Microsoft);
+}
+
+void MicrosoftARM64TargetInfo::getTargetDefines(const LangOptions &Opts,
+                                                MacroBuilder &Builder) const {
+  WindowsARM64TargetInfo::getTargetDefines(Opts, Builder);
+  WindowsARM64TargetInfo::getVisualStudioDefines(Opts, Builder);
+}
+
 TargetInfo::CallingConvKind
 MicrosoftARM64TargetInfo::getCallingConvKind(bool ClangABICompat4) const {
   return CCK_MicrosoftWin64;
@@ -1846,6 +1851,30 @@ MicrosoftARM64TargetInfo::getCallingConvKind(bool ClangABICompat4) const {
 
 unsigned MicrosoftARM64TargetInfo::getMinGlobalAlign(uint64_t TypeSize,
                                                      bool HasNonWeakDef) const {
+  unsigned Align =
+      WindowsARM64TargetInfo::getMinGlobalAlign(TypeSize, HasNonWeakDef);
+
+  return std::max(Align, Microsoft64BitMinGlobalAlign(TypeSize));
+}
+
+ItaniumWindowsARM64TargetInfo::ItaniumWindowsARM64TargetInfo(
+    const llvm::Triple &Triple, const TargetOptions &Opts)
+    : WindowsARM64TargetInfo(Triple, Opts) {
+  TheCXXABI.set(TargetCXXABI::GenericAArch64);
+}
+
+void ItaniumWindowsARM64TargetInfo::getTargetDefines(
+    const LangOptions &Opts, MacroBuilder &Builder) const {
+  WindowsARM64TargetInfo::getTargetDefines(Opts, Builder);
+  WindowsARM64TargetInfo::getVisualStudioDefines(Opts, Builder);
+}
+
+// Windows Itanium shares the C ABI of the MSVC environment, including its
+// size-based alignment of globals, so that objects built by MSVC that refer
+// to them assume no more alignment than they have.
+unsigned
+ItaniumWindowsARM64TargetInfo::getMinGlobalAlign(uint64_t TypeSize,
+                                                 bool HasNonWeakDef) const {
   unsigned Align =
       WindowsARM64TargetInfo::getMinGlobalAlign(TypeSize, HasNonWeakDef);
 

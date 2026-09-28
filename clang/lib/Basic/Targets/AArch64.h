@@ -291,6 +291,9 @@ public:
   BuiltinVaListKind getBuiltinVaListKind() const override;
 
   CallingConvCheckResult checkCallingConvention(CallingConv CC) const override;
+
+  void getVisualStudioDefines(const LangOptions &Opts,
+                              MacroBuilder &Builder) const;
 };
 
 // Windows ARM, MS (C++) ABI
@@ -304,6 +307,20 @@ public:
                         MacroBuilder &Builder) const override;
   TargetInfo::CallingConvKind
   getCallingConvKind(bool ClangABICompat4) const override;
+
+  unsigned getMinGlobalAlign(uint64_t TypeSize,
+                             bool HasNonWeakDef) const override;
+};
+
+// ARM64 Windows Itanium target
+class LLVM_LIBRARY_VISIBILITY ItaniumWindowsARM64TargetInfo
+    : public WindowsARM64TargetInfo {
+public:
+  ItaniumWindowsARM64TargetInfo(const llvm::Triple &Triple,
+                                const TargetOptions &Opts);
+
+  void getTargetDefines(const LangOptions &Opts,
+                        MacroBuilder &Builder) const override;
 
   unsigned getMinGlobalAlign(uint64_t TypeSize,
                              bool HasNonWeakDef) const override;
