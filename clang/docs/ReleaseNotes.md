@@ -897,6 +897,13 @@ features cannot lower the translation-unit ABI level;
   ``libname.lib`` before ``name.lib``. 32-bit x86 and Arm ``windows-itanium``
   targets keep the cross-compiling toolchain.
 
+- Added a toolchain for the x86-64 and AArch64 ``windows-ntposix`` targets:
+  POSIX on the NT kernel with llvm-libc as the C library, sharing the
+  ``windows-itanium`` toolchain's base. llvm-libc is linked as
+  ``libc.dll.lib``, or with ``-static`` as ``libc.lib`` together with the
+  static libc++ and libunwind; ``-pthread`` is always on, and ``-fshort-wchar``
+  is rejected.
+
 #### LoongArch Support
 
 - `loongarch32-*-none-elf` and `loongarch64-*-none-elf` targets now use the

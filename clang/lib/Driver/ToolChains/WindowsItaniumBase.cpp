@@ -73,8 +73,9 @@ void tools::windowsitanium::Linker::ConstructJob(
   // targets never link.
   CmdArgs.push_back("-lldignoreenv");
 
-  if (Args.hasArg(options::OPT_shared, options::OPT__SLASH_LD,
-                  options::OPT__SLASH_LDd)) {
+  bool IsDLL = Args.hasArg(options::OPT_shared, options::OPT__SLASH_LD,
+                           options::OPT__SLASH_LDd);
+  if (IsDLL) {
     CmdArgs.push_back("-dll");
     // name.dll.lib, so that the import library of name.dll and the static
     // archive name.lib can sit in one directory.
@@ -113,6 +114,9 @@ void tools::windowsitanium::Linker::ConstructJob(
   for (const std::string &Dir : LibDirs)
     CmdArgs.push_back(Args.MakeArgString("-libpath:" + Dir));
 
+  if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nostartfiles))
+    TC.addStartFiles(Args, CmdArgs, IsDLL);
+
   for (const auto &Input : Inputs) {
     if (Input.isFilename()) {
       CmdArgs.push_back(Input.getFilename());
@@ -136,7 +140,7 @@ void tools::windowsitanium::Linker::ConstructJob(
         (D.IsCLMode() && !Args.hasArg(options::OPT_nostdlibxx)))
       TC.AddCXXStdlibLibArgs(Args, CmdArgs);
     if (TC.GetUnwindLibType(Args) == ToolChain::UNW_CompilerRT)
-      CmdArgs.push_back("-defaultlib:libunwind.dll.lib");
+      TC.addUnwindLibArgs(Args, CmdArgs);
     CmdArgs.push_back(Args.MakeArgString(
         "-defaultlib:" + TC.getCompilerRTBasename(Args, "builtins")));
     if (!Args.hasArg(options::OPT_nolibc))
@@ -217,6 +221,11 @@ void WindowsItaniumBaseToolChain::AddCXXStdlibLibArgs(
   CmdArgs.push_back("-defaultlib:libc++.dll.lib");
   if (Args.hasArg(options::OPT_fexperimental_library))
     CmdArgs.push_back("-defaultlib:libc++experimental.lib");
+}
+
+void WindowsItaniumBaseToolChain::addUnwindLibArgs(
+    const ArgList &Args, ArgStringList &CmdArgs) const {
+  CmdArgs.push_back("-defaultlib:libunwind.dll.lib");
 }
 
 void WindowsItaniumBaseToolChain::addNoDefaultLibArgs(

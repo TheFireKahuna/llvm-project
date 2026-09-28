@@ -88,6 +88,13 @@ public:
   void AddCXXStdlibLibArgs(const llvm::opt::ArgList &Args,
                            llvm::opt::ArgStringList &CmdArgs) const override;
 
+  /// Adds the start-up objects, unless -nostartfiles.
+  virtual void addStartFiles(const llvm::opt::ArgList &Args,
+                             llvm::opt::ArgStringList &CmdArgs,
+                             bool IsDLL) const {}
+  /// Adds the unwind library.
+  virtual void addUnwindLibArgs(const llvm::opt::ArgList &Args,
+                                llvm::opt::ArgStringList &CmdArgs) const;
   /// Adds the directories of the system libraries to the library search path.
   virtual void addSystemLibraryDirs(const llvm::opt::ArgList &Args,
                                     std::vector<std::string> &LibDirs) const {}

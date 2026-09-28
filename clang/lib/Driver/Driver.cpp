@@ -36,6 +36,7 @@
 #include "ToolChains/Managarm.h"
 #include "ToolChains/MinGW.h"
 #include "ToolChains/MipsLinux.h"
+#include "ToolChains/NTPOSIX.h"
 #include "ToolChains/NetBSD.h"
 #include "ToolChains/OHOS.h"
 #include "ToolChains/OpenBSD.h"
@@ -6003,8 +6004,9 @@ std::string Driver::GetStdModuleManifestPath(const Compilation &C,
     if (std::optional<std::string> result = evaluate("libc++.so"); result)
       return *result;
 
-    // The import library and the static archive on Windows Itanium.
-    if (TC.getTriple().isWindowsItaniumEnvironment())
+    // The import library and the static archive on Windows Itanium and
+    // NT-POSIX.
+    if (TC.getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
       for (const char *Lib : {"libc++.dll.lib", "libc++.lib"})
         if (std::optional<std::string> result = evaluate(Lib); result)
           return *result;
@@ -6272,6 +6274,10 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
         else
           TC = std::make_unique<toolchains::CrossWindowsToolChain>(
               *this, Target, Args);
+        break;
+      case llvm::Triple::NTPOSIX:
+        TC =
+            std::make_unique<toolchains::NTPOSIXToolChain>(*this, Target, Args);
         break;
       case llvm::Triple::MSVC:
       case llvm::Triple::UnknownEnvironment:
