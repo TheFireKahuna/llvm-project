@@ -1,0 +1,8 @@
+// A stand-in for the C++ library's <exception>.
+#pragma once
+namespace std {
+typedef void (*terminate_handler)();
+terminate_handler get_terminate() throw();
+terminate_handler set_terminate(terminate_handler) throw();
+__attribute__((noreturn)) void terminate() throw();
+} // namespace std

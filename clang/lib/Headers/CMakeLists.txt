@@ -431,7 +431,17 @@ set(zos_wrapper_files
 )
 
 set(win32_itanium_wrapper_files
+  win32_itanium_wrappers/eh.h
+  win32_itanium_wrappers/excpt.h
+  win32_itanium_wrappers/new.h
+  win32_itanium_wrappers/sal.h
+  win32_itanium_wrappers/setjmp.h
+  win32_itanium_wrappers/specstrings_strict.h
   win32_itanium_wrappers/vcruntime.h
+  win32_itanium_wrappers/vcruntime_new.h
+  win32_itanium_wrappers/vcruntime_new_debug.h
+  win32_itanium_wrappers/vcruntime_startup.h
+  win32_itanium_wrappers/vcruntime_string.h
 )
 
 include(GetClangResourceDir)
