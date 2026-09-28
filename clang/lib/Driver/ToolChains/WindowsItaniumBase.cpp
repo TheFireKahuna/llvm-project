@@ -128,7 +128,8 @@ void WindowsItaniumBaseToolChain::translateCommonArgs(
                           options::OPT_fno_use_cxa_atexit))
     DAL.AddFlagArg(nullptr, Opts.getOption(options::OPT_fuse_cxa_atexit));
 
-  for (Arg *A : Args.filtered(options::OPT_fdwarf_exceptions,
+  for (Arg *A : Args.filtered(options::OPT_fsjlj_exceptions,
+                              options::OPT_fdwarf_exceptions,
                               options::OPT_fwasm_exceptions)) {
     getDriver().Diag(diag::warn_drv_unsupported_option_for_target)
         << A->getAsString(Args) << getTriple().str();
