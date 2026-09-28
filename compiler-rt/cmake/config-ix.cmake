@@ -317,6 +317,14 @@ macro(get_test_cc_for_arch arch cc_out cflags_out)
     set(${cflags_out} ${COMPILER_RT_TEST_COMPILER_CFLAGS})
   else()
     get_target_flags_for_arch(${arch} ${cflags_out})
+    # A build for one target names it to the compiler only through
+    # CMAKE_C_COMPILER_TARGET, which the tests do not see. Name it to the test
+    # compiler too when it is not the compiler's default.
+    if(COMPILER_RT_DEFAULT_TARGET_ONLY AND
+       COMPILER_RT_HAS_EXPLICIT_DEFAULT_TARGET_TRIPLE AND
+       COMPILER_RT_TEST_COMPILER_ID STREQUAL "Clang")
+      list(APPEND ${cflags_out} "--target=${COMPILER_RT_DEFAULT_TARGET_TRIPLE}")
+    endif()
     if(APPLE)
       list(APPEND ${cflags_out} ${DARWIN_osx_CFLAGS})
     endif()
