@@ -151,13 +151,6 @@ protected:
   void AddMSVCStdlibIncludeArgs(const llvm::opt::ArgList &DriverArgs,
                                 llvm::opt::ArgStringList &CC1Args) const;
 
-  void AddSystemIncludeWithSubfolder(const llvm::opt::ArgList &DriverArgs,
-                                     llvm::opt::ArgStringList &CC1Args,
-                                     const std::string &folder,
-                                     const Twine &subfolder1,
-                                     const Twine &subfolder2 = "",
-                                     const Twine &subfolder3 = "") const;
-
   Tool *getTool(Action::ActionClass AC) const override;
   Tool *buildLinker() const override;
   Tool *buildAssembler() const override;
@@ -171,6 +164,47 @@ private:
   LazyDetector<SYCLInstallationDetector> SYCLInstallation;
   mutable std::unique_ptr<tools::ARM64XObjcopy> Objcopy;
 };
+
+// The Windows SDK and Universal CRT lookup, shared by the toolchains that use
+// them. WinSdkDir, WinSdkVersion and WinSysRoot are the values of /winsdkdir,
+// /winsdkversion and /winsysroot.
+
+/// Gets the library path required to link against the Windows SDK.
+bool getWindowsSDKLibraryPath(llvm::vfs::FileSystem &VFS,
+                              std::optional<llvm::StringRef> WinSdkDir,
+                              std::optional<llvm::StringRef> WinSdkVersion,
+                              std::optional<llvm::StringRef> WinSysRoot,
+                              llvm::Triple::ArchType Arch, std::string &Path);
+
+/// Gets the library path required to link against the Universal CRT.
+bool getUniversalCRTLibraryPath(llvm::vfs::FileSystem &VFS,
+                                std::optional<llvm::StringRef> WinSdkDir,
+                                std::optional<llvm::StringRef> WinSdkVersion,
+                                std::optional<llvm::StringRef> WinSysRoot,
+                                llvm::Triple::ArchType Arch, std::string &Path);
+
+/// Adds the Universal CRT's include directory.
+void addUniversalCRTIncludeArgs(llvm::vfs::FileSystem &VFS,
+                                std::optional<llvm::StringRef> WinSdkDir,
+                                std::optional<llvm::StringRef> WinSdkVersion,
+                                std::optional<llvm::StringRef> WinSysRoot,
+                                const llvm::opt::ArgList &DriverArgs,
+                                llvm::opt::ArgStringList &CC1Args);
+
+/// Adds the Windows SDK's include directories.
+void addWindowsSDKIncludeArgs(llvm::vfs::FileSystem &VFS,
+                              std::optional<llvm::StringRef> WinSdkDir,
+                              std::optional<llvm::StringRef> WinSdkVersion,
+                              std::optional<llvm::StringRef> WinSysRoot,
+                              const llvm::opt::ArgList &DriverArgs,
+                              llvm::opt::ArgStringList &CC1Args);
+
+void AddSystemIncludeWithSubfolder(const llvm::opt::ArgList &DriverArgs,
+                                   llvm::opt::ArgStringList &CC1Args,
+                                   const std::string &folder,
+                                   const Twine &subfolder1,
+                                   const Twine &subfolder2 = "",
+                                   const Twine &subfolder3 = "");
 
 } // end namespace toolchains
 } // end namespace driver
