@@ -20,6 +20,16 @@ int __cdecl _matherr(struct _exception *) __attribute__((weak));
 
 namespace {
 
+LONG TerminationComplete;
+
+// The image's pre-terminators and terminators, which run after its
+// registrations.
+void __cdecl runTerminators() {
+  _initterm(const_cast<_PVFV *>(__xp_a), const_cast<_PVFV *>(__xp_z));
+  _initterm(const_cast<_PVFV *>(__xt_a), const_cast<_PVFV *>(__xt_z));
+  __atomic_store_n(&TerminationComplete, 1, __ATOMIC_RELEASE);
+}
+
 // Whether Address is a return address in one of the two functions that begin
 // an Itanium exception's search for a handler, in the image that contains
 // it. _Unwind_RaiseException may be inlined into the rethrow entry.
@@ -71,10 +81,17 @@ void initializeExecutable() {
   // Only the executable installs the filter: a DLL could be unloaded while
   // the process-wide slot still pointed into it.
   RtlSetUnhandledExceptionFilter(unhandledExceptionFilter);
+  // Before any constructor, which may call exit.
+  __wincrt_register_executable(runTerminators);
   if (_matherr)
     __setusermatherr(_matherr);
   if (!initializeImage())
     fatal("a C initializer failed");
+}
+
+void finalizeImage(bool Terminating) {
+  if (__wincrt_detach_image(&__dso_handle, Terminating))
+    runTerminators();
 }
 
 void fatal(const char *Message) {
@@ -91,3 +108,7 @@ void fatal(const char *Message) {
 }
 
 } // namespace wincrt
+
+extern "C" int __cdecl _is_c_termination_complete(void) {
+  return __atomic_load_n(&TerminationComplete, __ATOMIC_ACQUIRE);
+}

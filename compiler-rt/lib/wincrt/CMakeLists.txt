@@ -5,6 +5,8 @@
 add_compiler_rt_component(crt)
 
 set(WINCRT_SOURCES
+  atexit.cpp
+  cxa_atexit.cpp
   # One entry point per file, so that the linker extracts only the one the
   # program's main function selects.
   entry_dll.cpp

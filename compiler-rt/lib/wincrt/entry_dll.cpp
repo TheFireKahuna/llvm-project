@@ -31,15 +31,18 @@ BOOL attach(HINSTANCE Instance, LPVOID Reserved) {
     return TRUE;
   DllMain(Instance, DLL_PROCESS_DETACH, Reserved);
   Attached = false;
+  wincrt::finalizeImage(Reserved != nullptr);
   return FALSE;
 }
 
 BOOL detach(HINSTANCE Instance, LPVOID Reserved) {
   if (!Attached)
     return FALSE;
-  // The user's DllMain may still use the image's static objects.
+  // The user's DllMain may still use the image's static objects. Reserved is
+  // null for FreeLibrary and not null while the process terminates.
   BOOL Result = DllMain(Instance, DLL_PROCESS_DETACH, Reserved);
   Attached = false;
+  wincrt::finalizeImage(Reserved != nullptr);
   return Result;
 }
 
@@ -66,7 +69,7 @@ extern "C" BOOL WINAPI _DllMainCRTStartup(HINSTANCE Instance, DWORD Reason,
 }
 
 // For a DLL whose own entry point initializes the runtime, as with vcruntime.
-extern "C" BOOL WINAPI _CRT_INIT(HINSTANCE, DWORD Reason, LPVOID) {
+extern "C" BOOL WINAPI _CRT_INIT(HINSTANCE, DWORD Reason, LPVOID Reserved) {
   switch (Reason) {
   case DLL_PROCESS_ATTACH:
     Attached = wincrt::initializeImage();
@@ -75,6 +78,7 @@ extern "C" BOOL WINAPI _CRT_INIT(HINSTANCE, DWORD Reason, LPVOID) {
     if (!Attached)
       return FALSE;
     Attached = false;
+    wincrt::finalizeImage(Reserved != nullptr);
     return TRUE;
   default:
     return TRUE;
