@@ -32,6 +32,7 @@
 #include "llvm/Support/Parallel.h"
 #include "llvm/Support/RandomNumberGenerator.h"
 #include "llvm/Support/TimeProfiler.h"
+#include "llvm/Support/Win64EH.h"
 #include "llvm/Support/xxhash.h"
 #include <algorithm>
 #include <cstdio>
@@ -2183,6 +2184,97 @@ void Writer::markSymbolsWithRelocations(ObjFile *file,
   }
 }
 
+// Returns the offset in data of the language handler RVA of the unwind record
+// at off, if the record names a handler. A chained record is not followed.
+static std::optional<uint32_t>
+getUnwindHandlerOffset(bool isArm64, ArrayRef<uint8_t> data, uint32_t off) {
+  if (off + 4 > data.size())
+    return std::nullopt;
+  if (!isArm64) {
+    uint8_t flags = data[off] >> 3;
+    if (!(flags &
+          (Win64EH::UNW_ExceptionHandler | Win64EH::UNW_TerminateHandler)))
+      return std::nullopt;
+    return off + 4 + alignTo(data[off + 2], 2) * 2;
+  }
+  uint32_t header = read32le(&data[off]);
+  if (!(header & (1u << 20)))
+    return std::nullopt;
+  uint32_t size = 4;
+  uint32_t epilogCount = (header >> 22) & 0x1f;
+  uint32_t codeWords = header >> 27;
+  if (epilogCount == 0 && codeWords == 0) {
+    if (off + 8 > data.size())
+      return std::nullopt;
+    uint32_t ext = read32le(&data[off + 4]);
+    epilogCount = ext & 0xffff;
+    codeWords = (ext >> 16) & 0xff;
+    size = 8;
+  }
+  // With the E bit, the only epilog scope is packed into the header.
+  if (header & (1u << 21))
+    epilogCount = 0;
+  return off + size + epilogCount * 4 + codeWords * 4;
+}
+
+// Reports an object without EH continuation metadata that has continuation
+// targets no table would list, where link.exe fails with LNK2046 or LNK2047:
+// an unwind record naming a language handler other than __GSHandlerCheck,
+// which only checks the stack cookie, or a reference to _local_unwind.
+static void checkEHContMetadata(COFFLinkerContext &ctx, ObjFile *file) {
+  MachineTypes machine = file->getMachineType();
+  bool isArm64 = isAnyArm64(machine);
+  if (machine != AMD64 && !isArm64)
+    return;
+  for (Chunk *c : file->getChunks()) {
+    auto *sc = dyn_cast<SectionChunk>(c);
+    if (!sc || !sc->live)
+      continue;
+    for (const coff_relocation &rel : sc->getRelocs()) {
+      Symbol *sym = file->getSymbol(rel.SymbolTableIndex);
+      if (sym && sym->getName() == "_local_unwind") {
+        Err(ctx) << "/guard:ehcont: " << file
+                 << " has no EH continuation metadata but references "
+                    "_local_unwind";
+        return;
+      }
+    }
+    if (sc->getSectionName() != ".pdata")
+      continue;
+    // The object carries no records, so its unwind data is read as link.exe
+    // reads it: through the unwind data field of each function table entry.
+    uint32_t entrySize = isArm64 ? 8 : 12;
+    ArrayRef<uint8_t> pdata = sc->getContents();
+    for (const coff_relocation &rel : sc->getRelocs()) {
+      if (rel.VirtualAddress % entrySize != entrySize - 4 ||
+          rel.VirtualAddress + 4 > pdata.size())
+        continue;
+      auto *unwind = dyn_cast_or_null<DefinedRegular>(
+          file->getSymbol(rel.SymbolTableIndex));
+      if (!unwind || !unwind->getChunk())
+        continue;
+      SectionChunk *xdata = unwind->getChunk();
+      std::optional<uint32_t> handlerOff = getUnwindHandlerOffset(
+          isArm64, xdata->getContents(),
+          unwind->getValue() + read32le(&pdata[rel.VirtualAddress]));
+      if (!handlerOff)
+        continue;
+      for (const coff_relocation &hrel : xdata->getRelocs()) {
+        if (hrel.VirtualAddress != *handlerOff)
+          continue;
+        Symbol *handler = file->getSymbol(hrel.SymbolTableIndex);
+        if (handler && handler->getName() != "__GSHandlerCheck") {
+          Err(ctx) << "/guard:ehcont: " << file
+                   << " has no EH continuation metadata but its unwind data "
+                      "names exception handler "
+                   << handler->getName();
+          return;
+        }
+      }
+    }
+  }
+}
+
 // Create the guard function id table. This is a table of RVAs of all
 // address-taken functions. It is sorted and uniqued, just like the safe SEH
 // table.
@@ -2228,6 +2320,8 @@ void Writer::createGuardCFTables() {
     // .gehcont$y sections.
     if (file->hasGuardEHCont())
       markSymbolsForRVATable(file, file->getGuardEHContChunks(), ehContTargets);
+    else if (config->guardCF & GuardCFLevel::EHCont)
+      checkEHContMetadata(ctx, file);
   }
 
   // Mark the image entry as address-taken.

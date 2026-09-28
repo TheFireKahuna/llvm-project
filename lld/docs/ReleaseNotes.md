@@ -52,6 +52,12 @@ from the [LLVM releases web site](https://llvm.org/releases/).
   `/guard:exportsuppress` enables suppression for the process an executable
   starts, and `/guard:noexportsuppress` clears it.
 
+* With `/guard:ehcont`, an object compiled without EH continuation metadata is
+  an error when its unwind data names a language handler other than
+  `__GSHandlerCheck`, or when it references `_local_unwind`, as with link.exe's
+  LNK2046 and LNK2047: its continuation targets would be missing from the
+  table.
+
 ### MinGW Improvements
 
 ### MachO Improvements
