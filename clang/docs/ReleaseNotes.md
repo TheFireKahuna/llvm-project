@@ -128,6 +128,14 @@ features cannot lower the translation-unit ABI level;
   so that a handler installed with `_set_purecall_handler` applies.
   `-fclang-abi-compat=23` restores the previous behavior.
 
+- On `*-windows-itanium` targets, a non-static member function now returns
+  every class through a hidden pointer passed after `this` (in `x1` on
+  AArch64), as Microsoft's calling convention does, so that a COM method
+  implemented by MSVC-built code can be called through its vtable. Before, the
+  pointer came first, and a class that a free function returns in registers
+  was returned in registers. `-fclang-abi-compat=23` restores the previous
+  behavior.
+
 ### AST Dumping Potentially Breaking Changes
 
 ### Clang Frontend Potentially Breaking Changes

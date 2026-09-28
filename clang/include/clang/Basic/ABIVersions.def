@@ -172,6 +172,9 @@ ABI_VER_MAJOR(22)
 ///     registers.
 ///   - On Windows Itanium, name `__cxa_pure_virtual` rather than `_purecall`
 ///     in the vtable slot of a pure virtual function.
+///   - On Windows Itanium, return a class from a non-static member function
+///     by the Itanium C++ ABI's rules, with the hidden return pointer before
+///     `this`, instead of always through a pointer after `this`.
 ABI_VER_MAJOR(23)
 
 /// Conform to the underlying platform's C and C++ ABIs as closely as we can.

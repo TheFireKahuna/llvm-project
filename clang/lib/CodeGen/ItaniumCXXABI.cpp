@@ -1396,14 +1396,30 @@ bool ItaniumCXXABI::classifyReturnType(CGFunctionInfo &FI) const {
   if (!RD)
     return false;
 
+  // The Itanium ABI leaves the placement of the hidden return pointer to the
+  // platform's calling convention. On Windows that convention returns every
+  // class from a non-static member function through a pointer that follows
+  // 'this', which a COM interface implemented by MSVC-built code relies on.
+  // Which classes a free function returns in registers stays the Itanium
+  // rule. MinGW keeps GCC's placement, as does -fclang-abi-compat<=23.
+  bool IsWindowsItaniumMethod =
+      CGM.getTriple().isWindowsItaniumEnvironment() && FI.isInstanceMethod() &&
+      !CGM.getLangOpts().isCompatibleWith(LangOptions::ClangABI::Ver23);
+
   // If C++ prohibits us from making a copy, return by address using the target
   // hook getSRetAddrSpace to decide the AS.
-  if (!RD->canPassInRegisters()) {
+  if (!RD->canPassInRegisters() || IsWindowsItaniumMethod) {
     auto Align = CGM.getContext().getTypeAlignInChars(FI.getReturnType());
     LangAS SRetAS = CGM.getTargetCodeGenInfo().getSRetAddrSpace(RD);
     unsigned AS = CGM.getContext().getTargetAddressSpace(SRetAS);
     FI.getReturnInfo() =
         ABIArgInfo::getIndirect(Align, /*AddrSpace=*/AS, /*ByVal=*/false);
+    if (IsWindowsItaniumMethod) {
+      FI.getReturnInfo().setSRetAfterThis(true);
+      // The ARM64 convention passes this pointer in x1, which 'inreg' on a
+      // second-position sret selects.
+      FI.getReturnInfo().setInReg(CGM.getTriple().isAArch64());
+    }
     return true;
   }
   return false;
