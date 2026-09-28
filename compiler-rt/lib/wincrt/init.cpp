@@ -30,6 +30,15 @@ void __cdecl runTerminators() {
   __atomic_store_n(&TerminationComplete, 1, __ATOMIC_RELEASE);
 }
 
+// The heap's signature, which the Windows heap manager keeps at offset 0x10
+// of every heap and which tells a segment heap from an NT heap.
+bool isSegmentHeap(HANDLE Heap) {
+  uint32_t Signature;
+  __builtin_memcpy(&Signature, reinterpret_cast<const char *>(Heap) + 0x10,
+                   sizeof(Signature));
+  return Signature == 0xDDEEDDEE;
+}
+
 // Whether Address is a return address in one of the two functions that begin
 // an Itanium exception's search for a handler, in the image that contains
 // it. _Unwind_RaiseException may be inlined into the rethrow entry.
@@ -85,6 +94,12 @@ void initializeExecutable() {
   __wincrt_register_executable(runTerminators);
   if (_matherr)
     __setusermatherr(_matherr);
+  // Only the executable's manifest selects the segment heap, so a process
+  // started without the executable's activation context would silently run
+  // on the NT heap.
+  if (!isSegmentHeap(GetProcessHeap()))
+    fatal("the executable requires the segment heap, which its manifest "
+          "selects");
   if (!initializeImage())
     fatal("a C initializer failed");
 }

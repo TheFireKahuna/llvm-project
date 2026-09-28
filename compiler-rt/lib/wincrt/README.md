@@ -59,6 +59,14 @@ its image loaded. Compiled into the shared C++ runtime with
 compiled into wincrt, they have local names that alternate names select only
 in an image that does not import the shared ones.
 
+## The segment heap
+
+A Windows Itanium executable runs on the segment heap. The driver embeds
+`segment_heap.manifest`, installed beside wincrt, in every executable, and the
+executable's start-up fails with an error if the process heap is not a
+segment heap, as it is not when the process was started without the
+executable's activation context.
+
 ## Uncaught exceptions
 
 The executable's start-up installs the filter ntdll runs for an exception that
