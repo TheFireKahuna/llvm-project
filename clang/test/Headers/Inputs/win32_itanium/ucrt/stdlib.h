@@ -6,6 +6,8 @@
 #include <stddef.h>
 _CRT_BEGIN_C_HEADER
 int __cdecl __ucrt_stdlib_function(void) _CRT_NOEXCEPT;
+void *__cdecl malloc(size_t);
+void __cdecl free(void *);
 _CRT_END_C_HEADER
 #ifdef __cplusplus
 #error "the UCRT's C++ declarations must stay hidden"

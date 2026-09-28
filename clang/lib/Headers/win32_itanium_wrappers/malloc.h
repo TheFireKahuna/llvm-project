@@ -24,4 +24,9 @@
 #include_next <malloc.h>
 #endif
 
+/* The UCRT defines these as macros for _aligned_malloc and _aligned_free.
+ * Clang's mm_malloc.h defines them with posix_memalign and free instead. */
+#undef _mm_malloc
+#undef _mm_free
+
 #endif /* __CLANG_MALLOC_H */
