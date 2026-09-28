@@ -23,6 +23,7 @@ The builtins define the bounds of the `.CRT$X??` tables, `__dso_handle` and
 | Pure virtual calls | `_purecall`, over the Universal CRT's handler | `purecall.cpp` |
 | Stack protector | `__security_cookie`, `__security_init_cookie`, `__security_check_cookie`, `__report_gsfailure` | `security.cpp` |
 | Load configuration | `_load_config_used` | `loadconfig.cpp` |
+| Control Flow Guard | `__guard_check_icall_fptr`, `__guard_dispatch_icall_fptr`, `_guard_icall_checks_enforced` | `cfguard.cpp`, `cfguard_dispatch.S` |
 | Thread-local storage | `_tls_used`, `_tls_index`, `_tls_start`, `_tls_end`, `__xl_a`, `__xl_z` | `tls.cpp` |
 | Universal CRT stdio | `__local_stdio_printf_options`, `__local_stdio_scanf_options` for C images, and the ISO wide-specifier marker | `ucrt_stdio.c` |
 

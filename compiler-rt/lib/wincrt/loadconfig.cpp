@@ -6,10 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// _load_config_used tells the loader where the security cookie and the
-// Control Flow Guard and EH continuation tables are. The linker defines the
-// tables, their counts and the guard flags as absolute symbols, zero when a
-// feature is off, so the directory is constant data.
+// _load_config_used tells the loader where the security cookie, the Control
+// Flow Guard pointers and the guard and EH continuation tables are. The
+// linker defines the tables, their counts and the guard flags as absolute
+// symbols, zero when a feature is off, so the directory is constant data.
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,6 +20,8 @@
 
 extern "C" {
 extern uintptr_t __security_cookie;
+extern void *volatile __guard_check_icall_fptr;
+extern void *volatile __guard_dispatch_icall_fptr;
 
 // Defined by the linker.
 extern char __guard_flags[];
@@ -131,8 +133,8 @@ extern "C" __declspec(allocate(".rdata$T")) const LoadConfig
         0,                                    // EditList
         WINCRT_ADDRESS(__security_cookie),
         0, 0,                                 // SEHandlerTable, SEHandlerCount
-        0,                                    // GuardCFCheckFunctionPointer
-        0,                                    // GuardCFDispatchFunctionPointer
+        WINCRT_ADDRESS(__guard_check_icall_fptr),
+        WINCRT_ADDRESS(__guard_dispatch_icall_fptr),
         WINCRT_ADDRESS(__guard_fids_table),
         WINCRT_ADDRESS(__guard_fids_count),
         WINCRT_ADDRESS(__guard_flags),

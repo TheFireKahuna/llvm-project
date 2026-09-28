@@ -15,6 +15,8 @@ set(WINCRT_SOURCES
   entry_winmain.cpp
   entry_wmain.cpp
   entry_wwinmain.cpp
+  cfguard.cpp
+  cfguard_dispatch.S
   init.cpp
   loadconfig.cpp
   purecall.cpp
@@ -23,7 +25,9 @@ set(WINCRT_SOURCES
   ucrt_stdio.c
   )
 
-set(WINCRT_CFLAGS -fno-exceptions -fno-rtti)
+# wincrt's own indirect calls are guarded, and its objects list the functions
+# whose address they take, so that a guarded image grants only those.
+set(WINCRT_CFLAGS -fno-exceptions -fno-rtti -mguard=cf)
 
 find_program(WINCRT_LLVM_LIB NAMES llvm-lib
   HINTS ${LLVM_RUNTIME_OUTPUT_INTDIR} ${LLVM_TOOLS_BINARY_DIR})
