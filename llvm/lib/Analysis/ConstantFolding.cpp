@@ -2315,6 +2315,22 @@ Constant *ConstantFoldFP(double (*NativeFP)(double), const APFloat &V, Type *Ty,
   return ConstantFP::get(Ty->getContext(), Res);
 }
 
+#if defined(LLVM_RUNTIME_NTPOSIX)
+// The host C library has only the float forms of sinh, cosh, tanh and erf.
+// Calls to these are folded for float only, and otherwise computed at run
+// time.
+template <float (*NativeFP)(float)> double evalFloatForm(double X) {
+  return NativeFP(static_cast<float>(X));
+}
+
+template <float (*NativeFP)(float)>
+Constant *ConstantFoldFloatFormFP(const APFloat &V, Type *Ty) {
+  if (!Ty->isFloatTy())
+    return nullptr;
+  return ConstantFoldFP(evalFloatForm<NativeFP>, V, Ty);
+}
+#endif
+
 #if defined(HAS_IEE754_FLOAT128) && defined(HAS_LOGF128)
 Constant *ConstantFoldFP128(float128 (*NativeFP)(float128), const APFloat &V,
                             Type *Ty) {
@@ -2950,9 +2966,17 @@ static Constant *ConstantFoldScalarCall1(StringRef Name,
       case Intrinsic::cos:
         return ConstantFoldFP(cos, APF, Ty);
       case Intrinsic::sinh:
+#if defined(LLVM_RUNTIME_NTPOSIX)
+        return ConstantFoldFloatFormFP<sinhf>(APF, Ty);
+#else
         return ConstantFoldFP(sinh, APF, Ty);
+#endif
       case Intrinsic::cosh:
+#if defined(LLVM_RUNTIME_NTPOSIX)
+        return ConstantFoldFloatFormFP<coshf>(APF, Ty);
+#else
         return ConstantFoldFP(cosh, APF, Ty);
+#endif
       case Intrinsic::atan:
         // Implement optional behavior from C's Annex F for +/-0.0.
         if (U.isZero())
@@ -3122,7 +3146,11 @@ static Constant *ConstantFoldScalarCall1(StringRef Name,
     case LibFunc_cosh_finite:
     case LibFunc_coshf_finite:
       if (TLI->has(Func))
+#if defined(LLVM_RUNTIME_NTPOSIX)
+        return ConstantFoldFloatFormFP<coshf>(APF, Ty);
+#else
         return ConstantFoldFP(cosh, APF, Ty);
+#endif
       break;
     case LibFunc_exp:
     case LibFunc_expf:
@@ -3199,7 +3227,11 @@ static Constant *ConstantFoldScalarCall1(StringRef Name,
     case LibFunc_erf:
     case LibFunc_erff:
       if (TLI->has(Func))
+#if defined(LLVM_RUNTIME_NTPOSIX)
+        return ConstantFoldFloatFormFP<erff>(APF, Ty);
+#else
         return ConstantFoldFP(erf, APF, Ty);
+#endif
       break;
     case LibFunc_nearbyint:
     case LibFunc_nearbyintf:
@@ -3229,7 +3261,11 @@ static Constant *ConstantFoldScalarCall1(StringRef Name,
     case LibFunc_sinh_finite:
     case LibFunc_sinhf_finite:
       if (TLI->has(Func))
+#if defined(LLVM_RUNTIME_NTPOSIX)
+        return ConstantFoldFloatFormFP<sinhf>(APF, Ty);
+#else
         return ConstantFoldFP(sinh, APF, Ty);
+#endif
       break;
     case LibFunc_sqrt:
     case LibFunc_sqrtf:
@@ -3244,7 +3280,11 @@ static Constant *ConstantFoldScalarCall1(StringRef Name,
     case LibFunc_tanh:
     case LibFunc_tanhf:
       if (TLI->has(Func))
+#if defined(LLVM_RUNTIME_NTPOSIX)
+        return ConstantFoldFloatFormFP<tanhf>(APF, Ty);
+#else
         return ConstantFoldFP(tanh, APF, Ty);
+#endif
       break;
     case LibFunc_trunc:
     case LibFunc_truncf:

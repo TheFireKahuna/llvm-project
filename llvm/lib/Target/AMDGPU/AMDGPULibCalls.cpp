@@ -1903,7 +1903,14 @@ bool AMDGPULibCalls::evaluateScalarMathFunc(const FuncInfo &FInfo,
     return true;
 
   case AMDGPULibFunc::EI_COSH:
+#if defined(LLVM_RUNTIME_NTPOSIX)
+    // The host C library has only the float form.
+    if (getArgType(FInfo) != AMDGPULibFunc::F32)
+      return false;
+    Res0 = APFloat{double(coshf(opr0))};
+#else
     Res0 = APFloat{cosh(opr0)};
+#endif
     return true;
 
   case AMDGPULibFunc::EI_COSPI:
@@ -1943,7 +1950,14 @@ bool AMDGPULibCalls::evaluateScalarMathFunc(const FuncInfo &FInfo,
     return true;
 
   case AMDGPULibFunc::EI_SINH:
+#if defined(LLVM_RUNTIME_NTPOSIX)
+    // The host C library has only the float form.
+    if (getArgType(FInfo) != AMDGPULibFunc::F32)
+      return false;
+    Res0 = APFloat{double(sinhf(opr0))};
+#else
     Res0 = APFloat{sinh(opr0)};
+#endif
     return true;
 
   case AMDGPULibFunc::EI_SINPI:
@@ -1955,7 +1969,14 @@ bool AMDGPULibCalls::evaluateScalarMathFunc(const FuncInfo &FInfo,
     return true;
 
   case AMDGPULibFunc::EI_TANH:
+#if defined(LLVM_RUNTIME_NTPOSIX)
+    // The host C library has only the float form.
+    if (getArgType(FInfo) != AMDGPULibFunc::F32)
+      return false;
+    Res0 = APFloat{double(tanhf(opr0))};
+#else
     Res0 = APFloat{tanh(opr0)};
+#endif
     return true;
 
   case AMDGPULibFunc::EI_TANPI:
