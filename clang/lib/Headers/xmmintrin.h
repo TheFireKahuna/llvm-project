@@ -2168,8 +2168,8 @@ _mm_storer_ps(float *__p, __m128 __a)
 #define _MM_HINT_T2  1
 #define _MM_HINT_NTA 0
 
-#ifndef _MSC_VER
-// If _MSC_VER is defined, we use the builtin variant of _mm_prefetch.
+#ifndef _MSC_EXTENSIONS
+// If _MSC_EXTENSIONS is defined, we use the builtin variant of _mm_prefetch.
 // Otherwise, we provide this macro, which includes a cast, allowing the user
 // to pass a pointer of any time. The _mm_prefetch accepts char to match MSVC.
 
