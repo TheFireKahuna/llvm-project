@@ -11,6 +11,9 @@ include(CMakePushCheckState)
 include(CheckCompilerVersion)
 include(CheckProblematicConfigurations)
 include(HandleLLVMStdlib)
+include(LLVMTargetTriple)
+
+llvm_set_runtime_personality()
 
 if (ANDROID OR CYGWIN OR CMAKE_SYSTEM_NAME MATCHES "AIX|DragonFly|FreeBSD|Haiku|Linux|NetBSD|OpenBSD|SunOS")
   set(HAVE_MACH_MACH_H 0)
@@ -28,7 +31,9 @@ elseif (APPLE)
   set(HAVE_SYSEXITS_H 1)
   set(HAVE_UNISTD_H 1)
   set(HAVE_SYS_IOCTL_H 1)
-elseif (WIN32)
+# NT-POSIX is a Windows target with a POSIX C library; its headers are probed
+# below like those of other platforms.
+elseif (LLVM_RUNTIME_WIN32)
   set(HAVE_MACH_MACH_H 0)
   set(HAVE_MALLOC_MALLOC_H 0)
   set(HAVE_PTHREAD_H 0)
@@ -119,7 +124,7 @@ if(APPLE)
 endif()
 
 # library checks
-if(NOT WIN32)
+if(NOT LLVM_RUNTIME_WIN32)
   check_library_exists(pthread pthread_create "" HAVE_LIBPTHREAD)
   if (HAVE_LIBPTHREAD)
     check_library_exists(pthread pthread_rwlock_init "" HAVE_PTHREAD_RWLOCK_INIT)
@@ -148,7 +153,7 @@ endif()
 # Keep the dlopen and rt library checks after FindThreads so that
 # CMAKE_REQUIRED_LIBRARIES includes pthread. glibc versions before 2.34 may
 # need pthread to satisfy librt dependencies.
-if(NOT WIN32)
+if(NOT LLVM_RUNTIME_WIN32)
   check_library_exists(dl dlopen "" HAVE_LIBDL)
   check_library_exists(rt shm_open "" HAVE_LIBRT)
 endif()
@@ -458,7 +463,7 @@ else()
       "sys/types.h;sys/stat.h" HAVE_STRUCT_STAT_ST_MTIM_TV_NSEC)
 endif()
 
-if (NOT WIN32)
+if (NOT LLVM_RUNTIME_WIN32)
   check_symbol_exists(pthread_getname_np pthread.h HAVE_PTHREAD_GETNAME_NP)
   check_symbol_exists(pthread_setname_np pthread.h HAVE_PTHREAD_SETNAME_NP)
   check_symbol_exists(pthread_get_name_np "pthread.h;pthread_np.h" HAVE_PTHREAD_GET_NAME_NP)

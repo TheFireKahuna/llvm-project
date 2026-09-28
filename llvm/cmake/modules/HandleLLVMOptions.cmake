@@ -242,6 +242,9 @@ if( LLVM_REVERSE_ITERATION )
   set( LLVM_ENABLE_REVERSE_ITERATION 1 )
 endif()
 
+include(LLVMTargetTriple)
+llvm_set_runtime_personality()
+
 if(WIN32)
   set(LLVM_HAVE_LINK_VERSION_SCRIPT 0)
   set(LLVM_ON_UNIX 0)
