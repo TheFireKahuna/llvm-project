@@ -485,3 +485,26 @@
 //
 // ERROR: unsupported argument 'foo' to option '-mapx-features='
 // ERROR: unsupported argument 'bar' to option '-mapx-features='
+
+// Windows Itanium and NT-POSIX default to x86-64-v3, plus features outside
+// that level that every x86-64-v3 processor Windows 11 supports has. An
+// explicit -march= replaces both.
+// RUN: %clang --target=x86_64-unknown-windows-itanium -### -S %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=WIN-V3 %s
+// RUN: %clang --target=x86_64-pc-windows-ntposix -### -S %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=WIN-V3 %s
+// WIN-V3: "-target-cpu" "x86-64-v3"
+// WIN-V3-SAME: "-target-feature" "+aes"
+// WIN-V3-SAME: "-target-feature" "+pclmul"
+// WIN-V3-SAME: "-target-feature" "+fsgsbase"
+// WIN-V3-SAME: "-target-feature" "+adx"
+// WIN-V3-SAME: "-target-feature" "+rdrnd"
+// WIN-V3-SAME: "-target-feature" "+rdseed"
+// WIN-V3-SAME: "-target-feature" "+clflushopt"
+// WIN-V3-SAME: "-target-feature" "+xsavec"
+// WIN-V3-NOT: "+xsaves"
+
+// RUN: %clang --target=x86_64-unknown-windows-itanium -march=x86-64 -### -S \
+// RUN:   %s 2>&1 | FileCheck --check-prefix=WIN-MARCH %s
+// WIN-MARCH: "-target-cpu" "x86-64"
+// WIN-MARCH-NOT: "+aes"
