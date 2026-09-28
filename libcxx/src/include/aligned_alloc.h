@@ -27,7 +27,10 @@ _LIBCPP_BEGIN_NAMESPACE_STD
 //
 // Returns the allocated memory, or `nullptr` on failure.
 inline _LIBCPP_HIDE_FROM_ABI void* __libcpp_aligned_alloc(std::size_t __alignment, std::size_t __size) {
-#  ifdef _WIN32
+// The Microsoft C runtime has no aligned_alloc, and its free cannot release an
+// over-aligned block. The Windows Itanium and NT-POSIX C runtimes have
+// aligned_alloc, and their free releases its blocks.
+#  if defined(_WIN32) && !defined(_WIN32_ITANIUM) && !defined(__NTPOSIX__)
   return ::_aligned_malloc(__size, __alignment);
 
 // Android only provides aligned_alloc when targeting API 28 or higher.
@@ -51,7 +54,7 @@ inline _LIBCPP_HIDE_FROM_ABI void* __libcpp_aligned_alloc(std::size_t __alignmen
 }
 
 inline _LIBCPP_HIDE_FROM_ABI void __libcpp_aligned_free(void* __ptr) {
-#  ifdef _WIN32
+#  if defined(_WIN32) && !defined(_WIN32_ITANIUM) && !defined(__NTPOSIX__)
   ::_aligned_free(__ptr);
 #  else
   ::free(__ptr);
