@@ -431,6 +431,7 @@ set(zos_wrapper_files
 )
 
 set(win32_itanium_wrapper_files
+  win32_itanium_wrappers/basetsd.h
   win32_itanium_wrappers/eh.h
   win32_itanium_wrappers/excpt.h
   win32_itanium_wrappers/new.h
