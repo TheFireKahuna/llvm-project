@@ -350,6 +350,16 @@ if(NOT FUCHSIA AND NOT COMPILER_RT_BAREMETAL_BUILD AND NOT COMPILER_RT_GPU_BUILD
   )
 endif()
 
+# Windows Itanium and NT-POSIX leave out:
+# - emutls.c: their thread-local variables are native, so nothing calls
+#   __emutls_get_address.
+# - enable_execute_stack.c: their images never make stack memory executable.
+# - eprintf.c: only the assert.h of GCC before 4.0 calls __eprintf, and it
+#   would tie the builtins to stdio.
+if(WIN32_ITANIUM OR WIN32_NTPOSIX)
+  list(REMOVE_ITEM GENERIC_SOURCES emutls.c enable_execute_stack.c eprintf.c)
+endif()
+
 option(COMPILER_RT_LIBATOMIC_USE_PTHREAD
   "Whether libatomic should use pthreads if available."
   Off)
