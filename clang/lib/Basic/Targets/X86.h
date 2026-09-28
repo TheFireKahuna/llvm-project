@@ -953,7 +953,11 @@ public:
 
   TargetInfo::CallingConvKind
   getCallingConvKind(bool ClangABICompat4) const override {
-    return CCK_MicrosoftWin64;
+    // MSVC's rules for passing classes in registers belong to the Microsoft
+    // C++ ABI. Other C++ ABIs, such as Windows Itanium's, keep their own.
+    if (getCXXABI().isMicrosoft() || UseMSVCCallingConvKind)
+      return CCK_MicrosoftWin64;
+    return WindowsX86_64TargetInfo::getCallingConvKind(ClangABICompat4);
   }
 
   unsigned getMinGlobalAlign(uint64_t TypeSize,
@@ -966,6 +970,11 @@ private:
   // Whether to apply the MSVC size-based global-alignment scheme. Disabled by
   // -fclang-abi-compat<=22 to restore prior x86_64-windows-msvc behavior.
   bool UseMSVCCompatGlobalAlign = true;
+
+  // Whether to use MSVC's rules for passing classes in registers with a
+  // non-Microsoft C++ ABI. Enabled by -fclang-abi-compat<=23 to restore prior
+  // behavior.
+  bool UseMSVCCallingConvKind = false;
 };
 
 // x86-64 MinGW target

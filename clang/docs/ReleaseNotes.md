@@ -112,6 +112,14 @@ features cannot lower the translation-unit ABI level;
   for homogeneous aggregate classification.
   `-fclang-abi-compat=23` restores the previous behavior. (#GH218799)
 
+- On x86-64 Windows with a non-Microsoft C++ ABI, such as
+  `x86_64-windows-itanium`, a class is now passed and returned in registers
+  under the Itanium C++ ABI's rules, as on other Itanium targets, instead of
+  MSVC's. A small class with a trivial copy constructor and a non-trivial
+  destructor or move constructor is now passed and returned indirectly, and
+  one with a deleted copy constructor and a trivial move constructor in a
+  register. `-fclang-abi-compat=23` restores the previous behavior.
+
 ### AST Dumping Potentially Breaking Changes
 
 ### Clang Frontend Potentially Breaking Changes

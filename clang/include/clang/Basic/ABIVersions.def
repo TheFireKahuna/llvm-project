@@ -167,6 +167,9 @@ ABI_VER_MAJOR(22)
 ///     faithfully reproduces Clang 23, including its crash on aggregates such
 ///     as a run of `__int128` bit-fields, where skipping the unnamed field
 ///     leaves part of a wider access unit unclassified.)
+///   - On x86_64 Windows with a non-Microsoft C++ ABI, such as Windows
+///     Itanium, use MSVC's rules for passing and returning classes in
+///     registers.
 ABI_VER_MAJOR(23)
 
 /// Conform to the underlying platform's C and C++ ABIs as closely as we can.
