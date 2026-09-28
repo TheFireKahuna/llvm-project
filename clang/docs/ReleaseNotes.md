@@ -123,6 +123,11 @@ features cannot lower the translation-unit ABI level;
 - `aarch64-windows-itanium` now uses the Itanium C++ ABI, as the other Windows
   Itanium targets do, instead of the Microsoft C++ ABI.
 
+- On `*-windows-itanium` targets, the vtable slot of a pure virtual function
+  now names `_purecall`, as MSVC's vtables do, instead of `__cxa_pure_virtual`,
+  so that a handler installed with `_set_purecall_handler` applies.
+  `-fclang-abi-compat=23` restores the previous behavior.
+
 ### AST Dumping Potentially Breaking Changes
 
 ### Clang Frontend Potentially Breaking Changes

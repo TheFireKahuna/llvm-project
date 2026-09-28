@@ -369,7 +369,16 @@ public:
     return Args.size() - 1;
   }
 
-  StringRef GetPureVirtualCallName() override { return "__cxa_pure_virtual"; }
+  StringRef GetPureVirtualCallName() override {
+    // On Windows Itanium the C runtime owns the pure-call handler that a
+    // program installs with _set_purecall_handler, and only _purecall, the
+    // entry point MSVC-built vtables name, consults it. -fclang-abi-compat<=23
+    // keeps the Itanium entry point.
+    if (CGM.getTriple().isWindowsItaniumEnvironment() &&
+        !CGM.getLangOpts().isCompatibleWith(LangOptions::ClangABI::Ver23))
+      return "_purecall";
+    return "__cxa_pure_virtual";
+  }
   StringRef GetDeletedVirtualCallName() override
     { return "__cxa_deleted_virtual"; }
 

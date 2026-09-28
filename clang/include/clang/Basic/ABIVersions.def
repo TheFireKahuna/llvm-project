@@ -170,6 +170,8 @@ ABI_VER_MAJOR(22)
 ///   - On x86_64 Windows with a non-Microsoft C++ ABI, such as Windows
 ///     Itanium, use MSVC's rules for passing and returning classes in
 ///     registers.
+///   - On Windows Itanium, name `__cxa_pure_virtual` rather than `_purecall`
+///     in the vtable slot of a pure virtual function.
 ABI_VER_MAJOR(23)
 
 /// Conform to the underlying platform's C and C++ ABIs as closely as we can.
