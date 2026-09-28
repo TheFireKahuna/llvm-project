@@ -136,6 +136,11 @@ features cannot lower the translation-unit ABI level;
   was returned in registers. `-fclang-abi-compat=23` restores the previous
   behavior.
 
+- On `*-windows-itanium` targets, records are now laid out as with
+  `-mms-bitfields`, as on MinGW, so that a struct with bit-fields has the same
+  size and field offsets as with MSVC. `-mno-ms-bitfields`, the `gcc_struct`
+  attribute and `-fclang-abi-compat=23` restore GCC's layout.
+
 ### AST Dumping Potentially Breaking Changes
 
 ### Clang Frontend Potentially Breaking Changes

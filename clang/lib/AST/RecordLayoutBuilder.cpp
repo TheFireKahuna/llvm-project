@@ -3419,8 +3419,14 @@ void MicrosoftRecordLayoutBuilder::computeVtorDispSet(
 }
 
 bool ASTContext::defaultsToMsStruct() const {
+  // The Windows environments that share C headers and libraries with MSVC
+  // lay out bit-fields as MSVC does, so that a struct has one layout on both
+  // sides of the boundary. -fclang-abi-compat<=23 keeps GCC's layout for
+  // Windows Itanium.
   return getTargetInfo().hasMicrosoftRecordLayout() ||
-         getTargetInfo().getTriple().isWindowsGNUEnvironment();
+         getTargetInfo().getTriple().isWindowsGNUEnvironment() ||
+         (getTargetInfo().getTriple().isWindowsItaniumEnvironment() &&
+          !getLangOpts().isCompatibleWith(LangOptions::ClangABI::Ver23));
 }
 
 const ASTRecordLayout &
