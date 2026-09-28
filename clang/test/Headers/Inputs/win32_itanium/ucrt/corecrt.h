@@ -9,6 +9,22 @@
 #define _CONST_RETURN
 #endif
 
+#ifndef _ACRTIMP
+#ifdef _DLL
+#define _ACRTIMP __declspec(dllimport)
+#else
+#define _ACRTIMP
+#endif
+#endif
+
+#ifndef _CRT_NOEXCEPT
+#ifdef __cplusplus
+#define _CRT_NOEXCEPT noexcept
+#else
+#define _CRT_NOEXCEPT
+#endif
+#endif
+
 _CRT_BEGIN_C_HEADER
 struct __ucrt_packed {
   char c;

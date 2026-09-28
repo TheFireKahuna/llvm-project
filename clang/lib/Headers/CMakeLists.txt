@@ -433,18 +433,27 @@ set(zos_wrapper_files
 set(win32_itanium_wrapper_files
   win32_itanium_wrappers/__winnt_declspec.h
   win32_itanium_wrappers/basetsd.h
+  win32_itanium_wrappers/complex.h
+  win32_itanium_wrappers/corecrt_stdio_config.h
+  win32_itanium_wrappers/ctype.h
   win32_itanium_wrappers/eh.h
   win32_itanium_wrappers/excpt.h
+  win32_itanium_wrappers/fenv.h
+  win32_itanium_wrappers/malloc.h
+  win32_itanium_wrappers/math.h
   win32_itanium_wrappers/new.h
   win32_itanium_wrappers/ntdef.h
   win32_itanium_wrappers/sal.h
   win32_itanium_wrappers/setjmp.h
   win32_itanium_wrappers/specstrings_strict.h
+  win32_itanium_wrappers/stdlib.h
+  win32_itanium_wrappers/tchar.h
   win32_itanium_wrappers/vcruntime.h
   win32_itanium_wrappers/vcruntime_new.h
   win32_itanium_wrappers/vcruntime_new_debug.h
   win32_itanium_wrappers/vcruntime_startup.h
   win32_itanium_wrappers/vcruntime_string.h
+  win32_itanium_wrappers/wchar.h
   win32_itanium_wrappers/winnt.h
 )
 
