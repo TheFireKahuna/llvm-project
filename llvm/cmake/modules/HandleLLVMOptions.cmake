@@ -1556,8 +1556,8 @@ if(uppercase_LLVM_ENABLE_LTO STREQUAL "THIN")
     append("-Wl,--plugin-opt,cache-dir=${LLVM_THINLTO_CACHE_PATH}"
            CMAKE_EXE_LINKER_FLAGS CMAKE_SHARED_LINKER_FLAGS)
   elseif(LINKER_IS_LLD_LINK)
-    append("/lldltocache:${LLVM_THINLTO_CACHE_PATH}"
-           CMAKE_EXE_LINKER_FLAGS CMAKE_SHARED_LINKER_FLAGS)
+    # A GNU-style compiler driver needs the flag wrapped for the linker.
+    add_link_options("LINKER:/lldltocache:${LLVM_THINLTO_CACHE_PATH}")
   endif()
 elseif(uppercase_LLVM_ENABLE_LTO STREQUAL "FULL")
   append("-flto=full" CMAKE_CXX_FLAGS CMAKE_C_FLAGS)
