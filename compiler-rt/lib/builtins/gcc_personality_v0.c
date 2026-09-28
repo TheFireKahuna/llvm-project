@@ -22,8 +22,25 @@
 #endif
 
 #if defined(__SEH__) && !defined(__USING_SJLJ_EXCEPTIONS__)
+#if defined(__NTPOSIX__)
+// NT-POSIX has no <windows.h>. The SEH personality only passes these on to
+// _GCC_specific_handler.
+typedef int EXCEPTION_DISPOSITION;
+typedef struct _EXCEPTION_RECORD *PEXCEPTION_RECORD;
+typedef struct _CONTEXT *PCONTEXT;
+typedef struct _DISPATCHER_CONTEXT *PDISPATCHER_CONTEXT;
+#else
 #define WIN32_LEAN_AND_MEAN 1
 #include <windows.h>
+#endif
+
+// The system's exception dispatcher calls the personality with the Microsoft
+// x64 convention, which is not NT-POSIX's default.
+#if defined(__NTPOSIX__) && defined(__x86_64__)
+#define SEH_PERSONALITY_ABI __attribute__((ms_abi))
+#else
+#define SEH_PERSONALITY_ABI
+#endif
 
 EXCEPTION_DISPOSITION _GCC_specific_handler(PEXCEPTION_RECORD, void *, PCONTEXT,
                                             PDISPATCHER_CONTEXT,
@@ -321,7 +338,7 @@ COMPILER_RT_ABI _Unwind_Reason_Code __gcc_personality_v0(
 }
 
 #if defined(__SEH__) && !defined(__USING_SJLJ_EXCEPTIONS__)
-COMPILER_RT_ABI EXCEPTION_DISPOSITION
+COMPILER_RT_ABI EXCEPTION_DISPOSITION SEH_PERSONALITY_ABI
 __gcc_personality_seh0(PEXCEPTION_RECORD ms_exc, void *this_frame,
                        PCONTEXT ms_orig_context, PDISPATCHER_CONTEXT ms_disp) {
   return _GCC_specific_handler(ms_exc, this_frame, ms_orig_context, ms_disp,

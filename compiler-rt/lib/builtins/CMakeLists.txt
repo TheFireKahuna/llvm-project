@@ -884,7 +884,7 @@ foreach(pat cas swp ldadd ldclr ldeor ldset)
   endforeach(size)
 endforeach(pat)
 
-if (MINGW)
+if (MINGW OR WIN32_ITANIUM OR WIN32_NTPOSIX)
   set(aarch64_SOURCES
     ${aarch64_SOURCES}
     aarch64/chkstk.S
@@ -1107,6 +1107,11 @@ else ()
     if(NOT COMPILER_RT_DEBUG)
       append_list_if(COMPILER_RT_HAS_OMIT_FRAME_POINTER_FLAG -fomit-frame-pointer BUILTIN_CFLAGS)
     endif()
+  endif()
+
+  # NT-POSIX's C library headers are not installed when the builtins are built.
+  if(WIN32_NTPOSIX)
+    append_list_if(COMPILER_RT_HAS_FFREESTANDING_FLAG -ffreestanding BUILTIN_CFLAGS)
   endif()
 
   # Directly targeting the GPU requires a few extra flags.
