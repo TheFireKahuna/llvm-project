@@ -89,6 +89,11 @@ add_link_flags_if(CXX_SUPPORTS_UNWINDLIB_EQ_NONE_FLAG --unwindlib=none)
 # MINGW_LIBRARIES is defined in config-ix.cmake
 add_library_flags_if(MINGW "${MINGW_LIBRARIES}")
 
+# The NT-POSIX runtimes link their DLLs with -nolibc, which also leaves out
+# the system import libraries the driver adds with libc; the SEH unwinder
+# calls ntdll directly.
+add_library_flags_if(WIN32_NTPOSIX ntdll)
+
 if (LIBUNWIND_ENABLE_SHARED AND LIBUNWIND_SUPPORTS_SHARED_LIBRARY AND
     NOT (CXX_SUPPORTS_FNO_EXCEPTIONS_FLAG AND
          CXX_SUPPORTS_FUNWIND_TABLES_FLAG))

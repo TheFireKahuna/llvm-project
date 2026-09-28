@@ -20,10 +20,14 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
+#if defined(__NTPOSIX__)
+#include <sys/ntabi.h>
+#else
 #include <windef.h>
 #include <excpt.h>
 #include <winnt.h>
 #include <ntstatus.h>
+#endif
 
 #include "libunwind_ext.h"
 #include "UnwindCursor.hpp"
