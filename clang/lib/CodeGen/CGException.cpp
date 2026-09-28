@@ -1248,6 +1248,17 @@ void CodeGenFunction::ExitCXXTryStmt(const CXXTryStmt &S, bool IsFnTryBlock) {
   SmallVector<EHCatchScope::Handler, 8> Handlers(
       CatchScope.begin(), CatchScope.begin() + NumHandlers);
 
+  // Under async exceptions with landing pads, close the scope that
+  // EnterCXXTryStmt opened for a catch (...): the fall-through leaves the try
+  // block, and only the marker tells the backend so. Funclet personalities
+  // take the extent of the try from the funclets instead.
+  if (getLangOpts().EHAsynch && HaveInsertPoint() &&
+      !EHPersonality::get(*this).usesFuncletPads() &&
+      llvm::any_of(Handlers, [](const EHCatchScope::Handler &H) {
+        return H.isCatchAll();
+      }))
+    EmitSehTryScopeEnd();
+
   EHStack.popCatch();
 
   // The fall-through block.

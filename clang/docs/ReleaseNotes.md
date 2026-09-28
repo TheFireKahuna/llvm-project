@@ -309,6 +309,11 @@ features cannot lower the translation-unit ABI level;
 
 - All options of the `-fzero-call-used-regs` compiler flag are now allowed on RISC-V.
 
+- `-fasync-exceptions`, and `/EHa` in clang-cl mode, are now accepted for the
+  x86-64 and AArch64 `windows-itanium` targets, so that a hardware exception
+  raised by any instruction in a `try` block or during an object's lifetime
+  reaches that scope's handler under the Itanium C++ personality.
+
 ### Removed Compiler Flags
 
 ### Attribute Changes in Clang

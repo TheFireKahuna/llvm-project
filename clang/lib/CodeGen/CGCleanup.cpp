@@ -196,9 +196,11 @@ void *EHScopeStack::pushCleanup(CleanupKind Kind, size_t Size) {
   // this means that C++ destructors and other EH cleanups don't run, which is
   // consistent with MSVC's behavior, except in the presence of -EHa.
   // Check getInvokeDest() to generate llvm.seh.scope.begin() as needed.
+  // PopCleanupBlock ends the scope under every personality, so it begins under
+  // every personality too; the Itanium C++ personality on SEH reads the
+  // markers as call-site ranges.
   if (CGF->getLangOpts().EHAsynch && IsEHCleanup && !IsLifetimeMarker &&
-      !IsSEHFinallyCleanup && CGF->getTarget().getCXXABI().isMicrosoft() &&
-      CGF->getInvokeDest())
+      !IsSEHFinallyCleanup && CGF->getInvokeDest())
     CGF->EmitSehCppScopeBegin();
 
   return Scope->getCleanupBuffer();
