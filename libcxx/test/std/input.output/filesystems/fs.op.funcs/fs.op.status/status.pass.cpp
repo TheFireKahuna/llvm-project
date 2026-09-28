@@ -121,13 +121,13 @@ static void status_file_types_test()
         {static_env.Dir, file_type::directory},
         {static_env.SymlinkToDir, file_type::directory},
         // file_type::block files tested elsewhere
-#ifndef _WIN32
+#if !defined(_WIN32) || defined(__NTPOSIX__)
         {static_env.CharFile, file_type::character},
 #endif
 #if !defined(__APPLE__) && !defined(__FreeBSD__) && !defined(_WIN32) // No support for domain sockets
         {env.create_socket("socket"), file_type::socket},
 #endif
-#ifndef _WIN32
+#if !defined(_WIN32) || defined(__NTPOSIX__)
         {env.create_fifo("fifo"), file_type::fifo}
 #endif
     };

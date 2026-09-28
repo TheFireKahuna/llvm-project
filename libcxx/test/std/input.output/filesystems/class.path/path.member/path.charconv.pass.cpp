@@ -37,7 +37,7 @@
 
 #include "test_macros.h"
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 #  include <windows.h> // SetFileApisToANSI & friends
 #endif
 namespace fs = std::filesystem;
@@ -131,7 +131,7 @@ static void test_latin_unicode()
     assert(p.string<wchar_t>() == wstr);
   }
 #endif // TEST_HAS_NO_WIDE_CHARACTERS
-#ifndef _WIN32
+#if !defined(_WIN32) || defined(__NTPOSIX__)
   // Test conversion to/from regular char-based string. On POSIX, this
   // is implied to convert to/from UTF-8.
   {
@@ -347,7 +347,7 @@ static void test_append_concat_narrow()
     assert(p.u32string() == u32ref_concat);
   }
 #endif
-#ifndef _WIN32
+#if !defined(_WIN32) || defined(__NTPOSIX__)
   // Test appending a regular char-based string. On POSIX, this
   // is implied to convert to/from UTF-8.
   {

@@ -34,7 +34,7 @@
 #include "filesystem_test_helper.h"
 
 #include <fcntl.h>
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 #include <windows.h>
 #else
 #include <sys/time.h>
@@ -51,7 +51,7 @@ using MicroSec = std::chrono::duration<file_time_type::rep, std::micro>;
 using NanoSec = std::chrono::duration<file_time_type::rep, std::nano>;
 using std::chrono::duration_cast;
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 struct TimeSpec {
   std::int64_t tv_sec;
   std::int64_t tv_nsec;

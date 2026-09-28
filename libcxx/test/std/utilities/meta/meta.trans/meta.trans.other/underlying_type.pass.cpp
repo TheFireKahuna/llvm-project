@@ -20,7 +20,7 @@
 
 
 //  MSVC's ABI doesn't follow the standard
-#if !defined(_WIN32) || defined(__MINGW32__)
+#if !defined(_MSC_VER)
     #define TEST_UNSIGNED_UNDERLYING_TYPE 1
 #endif
 
