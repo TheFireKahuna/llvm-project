@@ -26,6 +26,16 @@
 #include <sys/time.h>
 #endif
 
+// The Microsoft C runtime's free cannot release an over-aligned block, so on
+// Windows every block comes from the _aligned_malloc family and goes back to
+// _aligned_free. The C runtimes of Windows Itanium and NT-POSIX provide
+// posix_memalign, whose blocks free releases.
+#if KMP_OS_WINDOWS && !defined(_WIN32_ITANIUM) && !defined(__NTPOSIX__)
+#define KMP_STUB_USE_ALIGNED_MALLOC 1
+#else
+#define KMP_STUB_USE_ALIGNED_MALLOC 0
+#endif
+
 // Moved from omp.h
 #define omp_set_max_active_levels ompc_set_max_active_levels
 #define omp_set_schedule ompc_set_schedule
@@ -149,7 +159,7 @@ void kmp_set_disp_num_buffers(omp_int_t arg) { i; }
 void *kmp_malloc(size_t size) {
   i;
   void *res;
-#if KMP_OS_WINDOWS
+#if KMP_STUB_USE_ALIGNED_MALLOC
   // If successful returns a pointer to the memory block, otherwise returns
   // NULL.
   // Sets errno to ENOMEM or EINVAL if memory allocation failed or parameter
@@ -163,7 +173,7 @@ void *kmp_malloc(size_t size) {
 void *kmp_aligned_malloc(size_t sz, size_t a) {
   i;
   void *res;
-#if KMP_OS_WINDOWS
+#if KMP_STUB_USE_ALIGNED_MALLOC
   res = _aligned_malloc(sz, a);
 #else
   // posix_memalign rejects a power of two below the pointer size.
@@ -180,7 +190,7 @@ void *kmp_aligned_malloc(size_t sz, size_t a) {
 void *kmp_calloc(size_t nelem, size_t elsize) {
   i;
   void *res;
-#if KMP_OS_WINDOWS
+#if KMP_STUB_USE_ALIGNED_MALLOC
   res = _aligned_recalloc(NULL, nelem, elsize, 1);
 #else
   res = calloc(nelem, elsize);
@@ -190,7 +200,7 @@ void *kmp_calloc(size_t nelem, size_t elsize) {
 void *kmp_realloc(void *ptr, size_t size) {
   i;
   void *res;
-#if KMP_OS_WINDOWS
+#if KMP_STUB_USE_ALIGNED_MALLOC
   res = _aligned_realloc(ptr, size, 1);
 #else
   res = realloc(ptr, size);
@@ -199,7 +209,7 @@ void *kmp_realloc(void *ptr, size_t size) {
 }
 void kmp_free(void *ptr) {
   i;
-#if KMP_OS_WINDOWS
+#if KMP_STUB_USE_ALIGNED_MALLOC
   _aligned_free(ptr);
 #else
   free(ptr);
@@ -387,7 +397,7 @@ omp_memspace_handle_t const llvm_omp_target_device_mem_space =
 void *omp_alloc(size_t size, omp_allocator_handle_t allocator) {
   i;
   void *res;
-#if KMP_OS_WINDOWS
+#if KMP_STUB_USE_ALIGNED_MALLOC
   // Returns a pointer to the memory block, or NULL if failed.
   // Sets errno to ENOMEM or EINVAL if memory allocation failed or parameter
   // validation failed.
@@ -401,7 +411,7 @@ void *omp_alloc(size_t size, omp_allocator_handle_t allocator) {
 void *omp_aligned_alloc(size_t a, size_t size, omp_allocator_handle_t al) {
   i;
   void *res;
-#if KMP_OS_WINDOWS
+#if KMP_STUB_USE_ALIGNED_MALLOC
   res = _aligned_malloc(size, a);
 #else
   // posix_memalign rejects a power of two below the pointer size.
@@ -419,7 +429,7 @@ void *omp_aligned_alloc(size_t a, size_t size, omp_allocator_handle_t al) {
 void *omp_calloc(size_t nmemb, size_t size, omp_allocator_handle_t al) {
   i;
   void *res;
-#if KMP_OS_WINDOWS
+#if KMP_STUB_USE_ALIGNED_MALLOC
   res = _aligned_recalloc(NULL, nmemb, size, 1);
 #else
   res = calloc(nmemb, size);
@@ -431,7 +441,7 @@ void *omp_aligned_calloc(size_t a, size_t nmemb, size_t size,
                          omp_allocator_handle_t al) {
   i;
   void *res;
-#if KMP_OS_WINDOWS
+#if KMP_STUB_USE_ALIGNED_MALLOC
   res = _aligned_recalloc(NULL, nmemb, size, a);
 #else
   if (nmemb && size > SIZE_MAX / nmemb) {
@@ -449,7 +459,7 @@ void *omp_realloc(void *ptr, size_t size, omp_allocator_handle_t al,
                   omp_allocator_handle_t free_al) {
   i;
   void *res;
-#if KMP_OS_WINDOWS
+#if KMP_STUB_USE_ALIGNED_MALLOC
   res = _aligned_realloc(ptr, size, 1);
 #else
   res = realloc(ptr, size);
@@ -459,7 +469,7 @@ void *omp_realloc(void *ptr, size_t size, omp_allocator_handle_t al,
 
 void omp_free(void *ptr, omp_allocator_handle_t allocator) {
   i;
-#if KMP_OS_WINDOWS
+#if KMP_STUB_USE_ALIGNED_MALLOC
   _aligned_free(ptr);
 #else
   free(ptr);
