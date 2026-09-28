@@ -18,6 +18,7 @@ The builtins define the bounds of the `.CRT$X??` tables, `__dso_handle` and
 | Entry points | `mainCRTStartup`, `wmainCRTStartup`, `WinMainCRTStartup`, `wWinMainCRTStartup`, `_DllMainCRTStartup`, a default `DllMain`, `_CRT_INIT` | `entry_*.cpp` |
 | Start-up | `.CRT$XI*` C initializers and `.CRT$XC*` constructors, the Universal CRT's arguments and environment, a program's `_matherr`, the unhandled-exception filter | `init.cpp` |
 | Termination | `__cxa_atexit`, `__cxa_finalize`, `__cxa_at_quick_exit`, the `.CRT$XP*` pre-terminators and `.CRT$XT*` terminators, `_is_c_termination_complete` | `cxa_atexit.cpp`, `init.cpp` |
+| Thread-local destructors | `__cxa_thread_atexit_impl`, `__cxa_thread_finalize`, a TLS callback | `cxa_thread_atexit.cpp` |
 | C registration | `atexit`, `_onexit`, `at_quick_exit` | `atexit.cpp` |
 | Stack protector | `__security_cookie`, `__security_init_cookie`, `__security_check_cookie`, `__report_gsfailure` | `security.cpp` |
 | Load configuration | `_load_config_used` | `loadconfig.cpp` |
@@ -47,7 +48,9 @@ each registering image has a record of entries, every entry a global
 sequence number, and exit merges the records by it. A registry that lives as
 long as the process posts one `_crt_atexit` token, which orders it among other
 runtimes' `atexit` functions; a DLL runs its own registrations at its detach,
-after its `DllMain`. Compiled into the shared C++ runtime with
+after its `DllMain`. A thread's thread-local destructors run when it exits,
+and the exiting thread's run before any static destructor; a pending one keeps
+its image loaded. Compiled into the shared C++ runtime with
 `WINCRT_SHARED_CXX_RUNTIME`, the registries serve every image of the process;
 compiled into wincrt, they have local names that alternate names select only
 in an image that does not import the shared ones.

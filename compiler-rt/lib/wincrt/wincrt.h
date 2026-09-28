@@ -66,6 +66,10 @@ void __cdecl __security_init_cookie(void);
 #ifndef WINCRT_SHARED_CXX_RUNTIME
 int __cdecl __cxa_atexit(void (*)(void *), void *, void *);
 int __cxa_at_quick_exit(void (*)(void), void *);
+int __cxa_thread_atexit_impl(void (*)(void *), void *, void *);
+// Runs the calling thread's thread-local destructors: those of one image,
+// or all of them, completing the thread, if the argument is null.
+void __cxa_thread_finalize(void *);
 // The executable's start-up makes the registry live for the whole process
 // and hands it the executable's terminators, which run after its drain.
 void __wincrt_register_executable(void (*)(void));
@@ -79,6 +83,9 @@ WINCRT_LIFETIME_API int __cdecl WINCRT_LIFETIME(__cxa_atexit)(void (*)(void *),
 WINCRT_LIFETIME_API void __cdecl WINCRT_LIFETIME(__cxa_finalize)(void *);
 WINCRT_LIFETIME_API int WINCRT_LIFETIME(__cxa_at_quick_exit)(void (*)(void),
                                                              void *);
+WINCRT_LIFETIME_API int
+    WINCRT_LIFETIME(__cxa_thread_atexit_impl)(void (*)(void *), void *, void *);
+WINCRT_LIFETIME_API void WINCRT_LIFETIME(__cxa_thread_finalize)(void *);
 WINCRT_LIFETIME_API void
     WINCRT_LIFETIME(__wincrt_register_executable)(void (*)(void));
 WINCRT_LIFETIME_API int WINCRT_LIFETIME(__wincrt_detach_image)(void *, int);
@@ -88,6 +95,10 @@ WINCRT_LIFETIME_API int WINCRT_LIFETIME(__wincrt_detach_image)(void *, int);
 WINCRT_ALTERNATENAME(__cxa_atexit, __wincrt_local___cxa_atexit)
 WINCRT_ALTERNATENAME(__cxa_finalize, __wincrt_local___cxa_finalize)
 WINCRT_ALTERNATENAME(__cxa_at_quick_exit, __wincrt_local___cxa_at_quick_exit)
+WINCRT_ALTERNATENAME(__cxa_thread_atexit_impl,
+                     __wincrt_local___cxa_thread_atexit_impl)
+WINCRT_ALTERNATENAME(__cxa_thread_finalize,
+                     __wincrt_local___cxa_thread_finalize)
 WINCRT_ALTERNATENAME(__wincrt_register_executable,
                      __wincrt_local___wincrt_register_executable)
 WINCRT_ALTERNATENAME(__wincrt_detach_image,
