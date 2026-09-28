@@ -5968,11 +5968,13 @@ static void setWindowsItaniumDLLImport(CodeGenModule &CGM, bool Local,
   // dllimport. For Mingw and MSVC, don't. We don't really know if the user
   // will link their standard library statically or dynamically. Marking
   // functions imported when they are not imported can cause linker errors
-  // and warnings. The pure-call entry point is defined in every image by its
-  // startup code, not by the C++ runtime library.
+  // and warnings. The pure-call entry point and the functions that register
+  // destructors at exit are defined in every image by its startup code, not by
+  // the C++ runtime library.
   if (!Local && CGM.getTriple().isWindowsItaniumEnvironment() &&
       !CGM.getCodeGenOpts().LTOVisibilityPublicStd &&
-      Name != CGM.getCXXABI().GetPureVirtualCallName()) {
+      Name != CGM.getCXXABI().GetPureVirtualCallName() &&
+      Name != "__cxa_atexit" && Name != "atexit") {
     const FunctionDecl *FD = GetRuntimeFunctionDecl(CGM.getContext(), Name);
     if (!FD || FD->hasAttr<DLLImportAttr>()) {
       F->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
