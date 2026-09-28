@@ -81,7 +81,7 @@ struct __can_convert_char<char32_t> {
 
 template <class _ECharT, __enable_if_t<__can_convert_char<_ECharT>::value, int> = 0>
 _LIBCPP_HIDE_FROM_ABI bool __is_separator(_ECharT __e) {
-#  ifdef _WIN32
+#  if defined(_WIN32) && !defined(__NTPOSIX__)
   return __e == _ECharT('/') || __e == _ECharT('\\');
 #  else
   return __e == _ECharT('/');
@@ -182,7 +182,7 @@ struct __is_pathable<_Tp, false, true, false> : __is_pathable_char_array<_Tp> {}
 template <class _Tp>
 struct __is_pathable<_Tp, false, false, true> : __is_pathable_iter<_Tp> {};
 
-#  ifdef _WIN32
+#  if defined(_WIN32) && !defined(__NTPOSIX__)
 typedef wstring __path_string;
 typedef wchar_t __path_value;
 #  else
@@ -190,7 +190,7 @@ typedef string __path_string;
 typedef char __path_value;
 #  endif
 
-#  ifdef _WIN32
+#  if defined(_WIN32) && !defined(__NTPOSIX__)
 _LIBCPP_EXPORTED_FROM_ABI size_t __wide_to_char(const wstring&, char*, size_t);
 _LIBCPP_EXPORTED_FROM_ABI size_t __char_to_wide(const string&, wchar_t*, size_t);
 #  endif
@@ -204,12 +204,12 @@ struct _PathCVT {
   static_assert(__can_convert_char<_ECharT>::value, "Char type not convertible");
 
   typedef __narrow_to_utf8<sizeof(_ECharT) * __CHAR_BIT__> _Narrower;
-#    ifdef _WIN32
+#    if defined(_WIN32) && !defined(__NTPOSIX__)
   typedef __widen_from_utf8<sizeof(wchar_t) * __CHAR_BIT__> _Widener;
 #    endif
 
   _LIBCPP_HIDE_FROM_ABI static void __append_range(__path_string& __dest, _ECharT const* __b, _ECharT const* __e) {
-#    ifdef _WIN32
+#    if defined(_WIN32) && !defined(__NTPOSIX__)
     string __utf8;
     _Narrower()(back_inserter(__utf8), __b, __e);
     _Widener()(back_inserter(__dest), __utf8.data(), __utf8.data() + __utf8.size());
@@ -224,7 +224,7 @@ struct _PathCVT {
     if (__b == __e)
       return;
     basic_string<_ECharT> __tmp(__b, __e);
-#    ifdef _WIN32
+#    if defined(_WIN32) && !defined(__NTPOSIX__)
     string __utf8;
     _Narrower()(back_inserter(__utf8), __tmp.data(), __tmp.data() + __tmp.length());
     _Widener()(back_inserter(__dest), __utf8.data(), __utf8.data() + __utf8.size());
@@ -242,7 +242,7 @@ struct _PathCVT {
     basic_string<_ECharT> __tmp;
     for (; *__b != __sentinel; ++__b)
       __tmp.push_back(*__b);
-#    ifdef _WIN32
+#    if defined(_WIN32) && !defined(__NTPOSIX__)
     string __utf8;
     _Narrower()(back_inserter(__utf8), __tmp.data(), __tmp.data() + __tmp.length());
     _Widener()(back_inserter(__dest), __utf8.data(), __utf8.data() + __utf8.size());
@@ -285,7 +285,7 @@ struct _PathCVT<__path_value> {
   }
 };
 
-#  ifdef _WIN32
+#  if defined(_WIN32) && !defined(__NTPOSIX__)
 template <>
 struct _PathCVT<char> {
   _LIBCPP_HIDE_FROM_ABI static void __append_string(__path_string& __dest, const basic_string<char>& __str) {
@@ -383,7 +383,7 @@ class _LIBCPP_EXPORTED_FROM_ABI path {
   using _SourceCVT _LIBCPP_NODEBUG = _PathCVT<_SourceChar<_Tp> >;
 
 public:
-#  ifdef _WIN32
+#  if defined(_WIN32) && !defined(__NTPOSIX__)
   typedef wchar_t value_type;
   static constexpr value_type preferred_separator = L'\\';
 #  else
@@ -469,7 +469,7 @@ public:
 
 public:
   // appends
-#  ifdef _WIN32
+#  if defined(_WIN32) && !defined(__NTPOSIX__)
   _LIBCPP_HIDE_FROM_ABI path& operator/=(const path& __p) {
     auto __p_root_name      = __p.__root_name();
     auto __p_root_name_size = __p_root_name.size();
@@ -603,7 +603,7 @@ public:
   _LIBCPP_HIDE_FROM_ABI void clear() noexcept { __pn_.clear(); }
 
   _LIBCPP_HIDE_FROM_ABI path& make_preferred() _LIBCPP_LIFETIMEBOUND {
-#  ifdef _WIN32
+#  if defined(_WIN32) && !defined(__NTPOSIX__)
     std::replace(__pn_.begin(), __pn_.end(), L'/', L'\\');
 #  endif
     return *this;
@@ -668,7 +668,7 @@ public:
 
   _LIBCPP_HIDE_FROM_ABI operator string_type() const { return __pn_; }
 
-#  ifdef _WIN32
+#  if defined(_WIN32) && !defined(__NTPOSIX__)
   [[nodiscard]] _LIBCPP_HIDE_FROM_ABI std::wstring wstring() const { return __pn_; }
 
   [[nodiscard]] _LIBCPP_HIDE_FROM_ABI std::wstring generic_wstring() const {
@@ -800,7 +800,7 @@ public:
   [[nodiscard]] _LIBCPP_HIDE_FROM_ABI path root_name() const { return string_type(__root_name()); }
   [[nodiscard]] _LIBCPP_HIDE_FROM_ABI path root_directory() const { return string_type(__root_directory()); }
   [[nodiscard]] _LIBCPP_HIDE_FROM_ABI path root_path() const {
-#  ifdef _WIN32
+#  if defined(_WIN32) && !defined(__NTPOSIX__)
     return string_type(__root_path_raw());
 #  else
     return root_name().append(string_type(__root_directory()));
@@ -825,7 +825,7 @@ public:
   [[nodiscard]] _LIBCPP_HIDE_FROM_ABI bool has_extension() const { return !__extension().empty(); }
 
   [[nodiscard]] _LIBCPP_HIDE_FROM_ABI bool is_absolute() const {
-#  ifdef _WIN32
+#  if defined(_WIN32) && !defined(__NTPOSIX__)
     __string_view __root_name_str = __root_name();
     __string_view __root_dir      = __root_directory();
     if (__root_name_str.size() == 2 && __root_name_str[1] == ':') {

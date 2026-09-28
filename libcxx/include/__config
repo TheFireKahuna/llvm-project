@@ -42,7 +42,7 @@
 #    define _LIBCPP_ABI_VCRUNTIME
 #  endif
 
-#  if defined(_WIN32)
+#  if defined(_WIN32) && !defined(__NTPOSIX__)
 #    if defined(_MSC_VER) && !defined(__MINGW32__)
 #      define _LIBCPP_MSVCRT // Using Microsoft's C Runtime library
 #    endif
@@ -89,7 +89,7 @@
 #    define _LIBCPP_USING_GETENTROPY
 #  elif defined(__Fuchsia__)
 #    define _LIBCPP_USING_FUCHSIA_CPRNG
-#  elif defined(_WIN32)
+#  elif defined(_WIN32) && !defined(__NTPOSIX__)
 #    define _LIBCPP_USING_WIN32_RANDOM
 #  else
 #    define _LIBCPP_USING_DEV_RANDOM
@@ -194,7 +194,8 @@ typedef __char32_t char32_t;
         defined(__APPLE__) ||                                                                                          \
         defined(__MVS__) ||                                                                                            \
         defined(_AIX) ||                                                                                               \
-        defined(__EMSCRIPTEN__)
+        defined(__EMSCRIPTEN__) ||                                                                                     \
+        defined(__NTPOSIX__)
 // clang-format on
 #      undef _LIBCPP_HAS_THREAD_API_PTHREAD
 #      define _LIBCPP_HAS_THREAD_API_PTHREAD 1
@@ -202,7 +203,7 @@ typedef __char32_t char32_t;
 // TODO(44575): Switch to C11 thread API when possible.
 #      undef _LIBCPP_HAS_THREAD_API_PTHREAD
 #      define _LIBCPP_HAS_THREAD_API_PTHREAD 1
-#    elif defined(_WIN32)
+#    elif defined(_WIN32) && !defined(__NTPOSIX__)
 #      undef _LIBCPP_HAS_THREAD_API_WIN32
 #      define _LIBCPP_HAS_THREAD_API_WIN32 1
 #    else

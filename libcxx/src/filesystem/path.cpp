@@ -417,7 +417,7 @@ path::iterator& path::iterator::__decrement() {
   return *this;
 }
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 ////////////////////////////////////////////////////////////////////////////
 // Windows path conversions
 size_t __wide_to_char(const wstring& str, char* out, size_t outlen) {

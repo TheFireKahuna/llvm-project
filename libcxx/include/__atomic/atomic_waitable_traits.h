@@ -57,7 +57,7 @@ concept __atomic_waitable = requires(const _Tp __t, memory_order __order) {
       _APPLY(8)
 #  elif defined(__FreeBSD__) && __SIZEOF_LONG__ == 8
 #    define _LIBCPP_NATIVE_PLATFORM_WAIT_SIZES(_APPLY) _APPLY(8)
-#  elif defined(_WIN32)
+#  elif defined(_WIN32) && !defined(__NTPOSIX__)
 #    define _LIBCPP_NATIVE_PLATFORM_WAIT_SIZES(_APPLY) _APPLY(8)
 #  else
 #    define _LIBCPP_NATIVE_PLATFORM_WAIT_SIZES(_APPLY) _APPLY(sizeof(__cxx_contention_t))

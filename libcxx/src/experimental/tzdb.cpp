@@ -706,7 +706,7 @@ void __init_tzdb(tzdb& __tzdb, __tz::__rules_storage_type& __rules) {
   chrono::__parse_leap_seconds(__tzdb.leap_seconds, ifstream{__root / "leap-seconds.list"});
 }
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 [[nodiscard]] static const time_zone* __current_zone_windows(const tzdb& tzdb) {
   // TODO TZDB Implement this on Windows.
   std::__throw_runtime_error("unknown time zone");
@@ -803,7 +803,7 @@ _LIBCPP_AVAILABILITY_TZDB _LIBCPP_EXPORTED_FROM_ABI tzdb_list& get_tzdb_list() {
 }
 
 [[nodiscard]] _LIBCPP_AVAILABILITY_TZDB _LIBCPP_EXPORTED_FROM_ABI const time_zone* tzdb::__current_zone() const {
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
   return chrono::__current_zone_windows(*this);
 #else
   return chrono::__current_zone_posix(*this);

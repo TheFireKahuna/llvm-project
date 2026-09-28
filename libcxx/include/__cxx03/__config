@@ -219,7 +219,7 @@ _LIBCPP_HARDENING_MODE_DEBUG
 #    include <features.h> // for __NATIVE_ASCII_F
 #  endif
 
-#  if defined(_WIN32)
+#  if defined(_WIN32) && !defined(__NTPOSIX__)
 #    define _LIBCPP_WIN32API
 // Both MinGW and native MSVC provide a "MSVC"-like environment
 #    define _LIBCPP_MSVCRT_LIKE
@@ -662,7 +662,8 @@ typedef __char32_t char32_t;
         defined(__APPLE__) ||                                                                                          \
         defined(__MVS__) ||                                                                                            \
         defined(_AIX) ||                                                                                               \
-        defined(__EMSCRIPTEN__)
+        defined(__EMSCRIPTEN__) ||                                                                                     \
+        defined(__NTPOSIX__)
 // clang-format on
 #      define _LIBCPP_HAS_THREAD_API_PTHREAD
 #    elif defined(__Fuchsia__)

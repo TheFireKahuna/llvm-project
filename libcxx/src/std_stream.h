@@ -59,7 +59,7 @@ private:
   bool __last_consumed_is_next_;
   bool __always_noconv_;
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
   static constexpr bool __is_win32api_wide_char = !is_same_v<_CharT, char>;
 #else
   static constexpr bool __is_win32api_wide_char = false;
@@ -284,7 +284,7 @@ private:
   state_type* __st_;
   bool __always_noconv_;
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
   static constexpr bool __is_win32api_wide_char = !is_same_v<_CharT, char>;
 #else
   static constexpr bool __is_win32api_wide_char = false;

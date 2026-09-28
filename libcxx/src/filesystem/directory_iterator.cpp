@@ -17,7 +17,7 @@
 #include "error.h"
 #include "file_descriptor.h"
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 #  define WIN32_LEAN_AND_MEAN
 #  define NOMINMAX
 #  include <windows.h>
@@ -30,7 +30,7 @@ _LIBCPP_BEGIN_EXPLICIT_ABI_ANNOTATIONS
 
 using detail::ErrorHandler;
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 class __dir_stream {
 public:
   __dir_stream()                               = delete;

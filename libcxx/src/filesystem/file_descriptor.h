@@ -20,7 +20,7 @@
 #include "posix_compat.h"
 #include "time_utils.h"
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 #  define WIN32_LEAN_AND_MEAN
 #  define NOMINMAX
 #  include <windows.h>
@@ -36,7 +36,7 @@ _LIBCPP_BEGIN_NAMESPACE_FILESYSTEM
 
 namespace detail {
 
-#ifndef _WIN32
+#if !defined(_WIN32) || defined(__NTPOSIX__)
 
 #  if defined(DT_BLK)
 template <class DirEntT, class = decltype(DirEntT::d_type)>
@@ -128,7 +128,7 @@ struct FileDescriptor {
   static FileDescriptor create(const path* p, error_code& ec, Args... args) {
     ec.clear();
     int fd;
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
     // TODO: most of the filesystem implementation uses native Win32 calls
     // (mostly via posix_compat.h). However, here we use the C-runtime APIs to
     // open a file, because we subsequently pass the C-runtime fd to
@@ -171,7 +171,7 @@ struct FileDescriptor {
 
   void close() noexcept {
     if (fd != -1) {
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
       ::_close(fd);
 #else
       ::close(fd);

@@ -58,6 +58,14 @@
 // OpenBSD has no indirect syscalls
 #  define _LIBCPP_FUTEX(...) futex(__VA_ARGS__)
 
+#elif defined(__NTPOSIX__)
+
+// NT-POSIX's C library provides futex(2) on 32-bit words, with Linux's
+// operations.
+#  include <sys/futex.h>
+
+#  define _LIBCPP_FUTEX(__addr, ...) futex(static_cast<volatile uint32_t*>(const_cast<void*>(__addr)), __VA_ARGS__)
+
 #elif defined(_WIN32)
 
 #  include <memory>
@@ -89,7 +97,7 @@ _LIBCPP_BEGIN_EXPLICIT_ABI_ANNOTATIONS
 
 struct NoTimeout {};
 
-#ifdef __linux__
+#if defined(__linux__) || defined(__NTPOSIX__)
 
 template <std::size_t _Size, class MaybeTimeout>
 static void __platform_wait_on_address(void const* __ptr, void const* __val, MaybeTimeout maybe_timeout_ns) {

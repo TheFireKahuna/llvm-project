@@ -18,7 +18,7 @@
 #include <cstdio>
 #include <string>
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 #  define PATHSTR(x) (L##x)
 #  define PATH_CSTR_FMT "\"%ls\""
 #else

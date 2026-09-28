@@ -11,7 +11,7 @@
 
 #include <__config>
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 #  include <stdlib.h>
 #else
 #  include <errno.h>

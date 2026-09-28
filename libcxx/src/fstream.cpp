@@ -10,7 +10,7 @@
 #include <cstdio>
 #include <fstream>
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 #  define WIN32_LEAN_AND_MEAN
 #  define NOMINMAX
 #  include <io.h>
@@ -20,7 +20,7 @@
 _LIBCPP_BEGIN_NAMESPACE_STD
 _LIBCPP_BEGIN_EXPLICIT_ABI_ANNOTATIONS
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 
 // Confirm that `HANDLE` is `void*` as implemented in `basic_filebuf`
 static_assert(std::same_as<HANDLE, void*>);

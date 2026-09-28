@@ -67,7 +67,7 @@ public:
 #    else
   static const mask __regex_word = 0x80;
 #    endif
-#  elif defined(_WIN32)
+#  elif defined(_WIN32) && !defined(__NTPOSIX__)
   typedef unsigned short mask;
   static const mask space        = _SPACE;
   static const mask print        = _BLANK | _PUNCT | _ALPHA | _DIGIT;

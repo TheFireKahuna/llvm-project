@@ -96,11 +96,21 @@ if (LIBCXX_ENABLE_LOCALIZATION)
 endif()
 
 if(WIN32)
-  list(APPEND LIBCXX_SOURCES
-    support/win32/compiler_rt_shims.cpp
-    support/win32/locale_win32.cpp
-    support/win32/support.cpp
-    )
+  # Windows Itanium and NT-POSIX always link compiler-rt's builtins, which
+  # define these; libc++ would otherwise export its own copies.
+  if(NOT WIN32_ITANIUM AND NOT WIN32_NTPOSIX)
+    list(APPEND LIBCXX_SOURCES
+      support/win32/compiler_rt_shims.cpp
+      )
+  endif()
+  # NT-POSIX's C library is POSIX: libc++ takes its POSIX locale support, and
+  # the Microsoft C runtime functions these sources call do not exist there.
+  if(NOT WIN32_NTPOSIX)
+    list(APPEND LIBCXX_SOURCES
+      support/win32/locale_win32.cpp
+      support/win32/support.cpp
+      )
+  endif()
 
   if (NOT LIBCXX_HAS_PTHREAD_API)
     list(APPEND LIBCXX_SOURCES

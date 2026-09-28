@@ -24,7 +24,7 @@
 
 _LIBCPP_BEGIN_NAMESPACE_FILESYSTEM
 
-#  if !defined(_WIN32) || _LIBCPP_HAS_LOCALIZATION
+#  if !defined(_WIN32) || defined(__NTPOSIX__) || _LIBCPP_HAS_LOCALIZATION
 template <class _InputIt, __enable_if_t<__is_pathable<_InputIt>::value, int> = 0>
 [[nodiscard]] _LIBCPP_HIDE_FROM_ABI _LIBCPP_DEPRECATED_WITH_CHAR8_T path u8path(_InputIt __f, _InputIt __l) {
   static_assert(
@@ -34,7 +34,7 @@ template <class _InputIt, __enable_if_t<__is_pathable<_InputIt>::value, int> = 0
           is_same<typename __is_pathable<_InputIt>::__char_type, char>::value,
       "u8path(Iter, Iter) requires Iter have a value_type of type 'char'"
       " or 'char8_t'");
-#    if defined(_WIN32)
+#    if defined(_WIN32) && !defined(__NTPOSIX__)
   string __tmp(__f, __l);
   using _CVT = __widen_from_utf8<sizeof(wchar_t) * __CHAR_BIT__>;
   std::wstring __w;
@@ -47,7 +47,7 @@ template <class _InputIt, __enable_if_t<__is_pathable<_InputIt>::value, int> = 0
 }
 #  endif // !defined(_WIN32) || _LIBCPP_HAS_LOCALIZATION
 
-#  if defined(_WIN32) && _LIBCPP_HAS_LOCALIZATION
+#  if defined(_WIN32) && !defined(__NTPOSIX__) && _LIBCPP_HAS_LOCALIZATION
 template <class _InputIt, __enable_if_t<__is_pathable<_InputIt>::value, int> = 0>
 [[nodiscard]] _LIBCPP_HIDE_FROM_ABI _LIBCPP_DEPRECATED_WITH_CHAR8_T path u8path(_InputIt __f, _NullSentinel) {
   static_assert(
@@ -78,7 +78,7 @@ template <class _Source, __enable_if_t<__is_pathable<_Source>::value, int> = 0>
           is_same<typename __is_pathable<_Source>::__char_type, char>::value,
       "u8path(Source const&) requires Source have a character type of type "
       "'char' or 'char8_t'");
-#  if defined(_WIN32)
+#  if defined(_WIN32) && !defined(__NTPOSIX__)
   using _Traits = __is_pathable<_Source>;
   return u8path(std::__unwrap_iter(_Traits::__range_begin(__s)), std::__unwrap_iter(_Traits::__range_end(__s)));
 #  else

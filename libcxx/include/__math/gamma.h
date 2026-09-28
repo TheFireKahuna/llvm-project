@@ -62,7 +62,7 @@ inline _LIBCPP_HIDE_FROM_ABI double tgamma(_A1 __x) _NOEXCEPT {
 // declare it differently in the first place: instead use `asm` to get the compiler to call the right
 // function.
 
-#ifdef _WIN32 // reentrant version is not available on Windows
+#if defined(_WIN32) && !defined(__NTPOSIX__) // reentrant version is not available on Windows
 
 inline _LIBCPP_HIDE_FROM_ABI double __lgamma_r(double __d) _NOEXCEPT { return __builtin_lgamma(__d); }
 

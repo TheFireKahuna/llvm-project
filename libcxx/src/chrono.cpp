@@ -41,7 +41,7 @@
 #  define _LIBCPP_HAS_CLOCK_GETTIME
 #endif
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 #  define WIN32_LEAN_AND_MEAN
 #  define VC_EXTRA_LEAN
 #  include <windows.h>
@@ -71,7 +71,7 @@ namespace chrono {
 // system_clock
 //
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 
 #  if _WIN32_WINNT < _WIN32_WINNT_WIN8
 
@@ -184,7 +184,7 @@ static steady_clock::time_point __libcpp_steady_clock_now() {
   return steady_clock::time_point(seconds(tp.tv_sec) + nanoseconds(tp.tv_nsec));
 }
 
-#  elif defined(_WIN32)
+#  elif defined(_WIN32) && !defined(__NTPOSIX__)
 
 // https://msdn.microsoft.com/en-us/library/windows/desktop/ms644905(v=vs.85).aspx says:
 //    If the function fails, the return value is zero. <snip>

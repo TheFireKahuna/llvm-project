@@ -89,7 +89,7 @@ _LIBCPP_END_EXPLICIT_ABI_ANNOTATIONS
 #    if _LIBCPP_HAS_UNICODE
 template <class = void> // TODO PRINT template or availability markup fires too eagerly (http://llvm.org/PR61563).
 _LIBCPP_HIDE_FROM_ABI void __vprint_unicode(ostream& __os, string_view __fmt, format_args __args, bool __write_nl) {
-#      ifndef _WIN32
+#      if !defined(_WIN32) || defined(__NTPOSIX__)
   return std::__vprint_nonunicode(__os, __fmt, __args, __write_nl);
 #      else
   FILE* __file = std::__get_ostream_file(__os);

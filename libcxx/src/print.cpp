@@ -15,7 +15,7 @@
 
 #include "filesystem/error.h"
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 #  define WIN32_LEAN_AND_MEAN
 #  define NOMINMAX
 #  include <io.h>
@@ -35,7 +35,7 @@
 _LIBCPP_BEGIN_NAMESPACE_STD
 _LIBCPP_BEGIN_EXPLICIT_ABI_ANNOTATIONS
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 
 _LIBCPP_EXPORTED_FROM_ABI bool __is_windows_terminal(FILE* __stream) {
   // Note the Standard does this in one call, but it's unclear whether
