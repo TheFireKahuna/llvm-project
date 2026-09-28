@@ -23,7 +23,7 @@
 #ifdef LLVM_ENABLE_CURL
 #include <curl/curl.h>
 #endif
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "llvm/Support/ConvertUTF.h"
 #endif
 
@@ -144,7 +144,7 @@ unsigned HTTPClient::responseCode() {
 
 #else
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
 // We cannot sort these headers alphabetically.
 // clang-format off
@@ -452,7 +452,7 @@ unsigned HTTPClient::responseCode() {
   return Session ? Session->ResponseCode : 0;
 }
 
-#else // _WIN32
+#else // LLVM_RUNTIME_WIN32
 
 // Non-Windows, non-libcurl stub implementations
 HTTPClient::HTTPClient() = default;
@@ -476,6 +476,6 @@ unsigned HTTPClient::responseCode() {
   llvm_unreachable("No HTTP Client implementation available.");
 }
 
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32
 
 #endif

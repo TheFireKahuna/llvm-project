@@ -18,7 +18,7 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "llvm/Support/Windows/WindowsSupport.h"
 #endif
 
@@ -168,7 +168,7 @@ Expected<FileCache> llvm::localCache(const Twine &CacheNameRef,
         // Rename/move native object file into cache directory, if they are
         // located the same device/logical drive, otherwise we use a copy.
         std::error_code EC = sys::fs::rename(FilePath, ObjectPathName);
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
         if (EC ==
             std::error_code(ERROR_NOT_SAME_DEVICE, std::system_category()))
 #else

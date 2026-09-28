@@ -27,12 +27,12 @@ static inline struct tm getStructTM(TimePoint<> TP) {
   struct tm Storage;
   std::time_t OurTime = toTimeT(TP);
 
-#if defined(LLVM_ON_UNIX)
+#if defined(LLVM_RUNTIME_POSIX)
   struct tm *LT = ::localtime_r(&OurTime, &Storage);
   assert(LT);
   (void)LT;
 #endif
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   int Error = ::localtime_s(&Storage, &OurTime);
   assert(!Error);
   (void)Error;
@@ -45,12 +45,12 @@ static inline struct tm getStructTMUtc(UtcTime<> TP) {
   struct tm Storage;
   std::time_t OurTime = toTimeT(TP);
 
-#if defined(LLVM_ON_UNIX)
+#if defined(LLVM_RUNTIME_POSIX)
   struct tm *LT = ::gmtime_r(&OurTime, &Storage);
   assert(LT);
   (void)LT;
 #endif
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   int Error = ::gmtime_s(&Storage, &OurTime);
   assert(!Error);
   (void)Error;
