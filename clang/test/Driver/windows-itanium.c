@@ -109,6 +109,41 @@
 // LINK-A64-SAME: "-machine:arm64"
 // LINK-A64-SAME: "-dll"
 
+// -mguard= as for MinGW; Control Flow Guard is off by default.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=NO-CF %s
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium %s \
+// RUN:     -mguard=none 2>&1 \
+// RUN:   | FileCheck --check-prefix=NO-CF %s
+// NO-CF:      "-cc1"
+// NO-CF-NOT:  "-cfguard"
+// NO-CF-NOT:  "-cfguard-no-checks"
+// NO-CF-NEXT: lld-link{{(.exe)?}}"
+// NO-CF-NOT:  "-guard:
+
+// RUN: %clang -### --target=aarch64-unknown-windows-itanium %s \
+// RUN:     -mguard=cf 2>&1 \
+// RUN:   | FileCheck --check-prefix=CF %s
+// CF:      "-cc1"
+// CF-SAME: "-cfguard"
+// CF-NEXT: lld-link{{(.exe)?}}"
+// CF-SAME: "-guard:cf"
+
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium %s \
+// RUN:     -mguard=cf-nochecks 2>&1 \
+// RUN:   | FileCheck --check-prefix=CF-NOCHECKS %s
+// CF-NOCHECKS:      "-cc1"
+// CF-NOCHECKS-NOT:  "-cfguard"
+// CF-NOCHECKS-SAME: "-cfguard-no-checks"
+// CF-NOCHECKS-NOT:  "-cfguard"
+// CF-NOCHECKS-NEXT: lld-link{{(.exe)?}}"
+// CF-NOCHECKS-SAME: "-guard:cf"
+
+// RUN: not %clang -### --target=x86_64-unknown-windows-itanium %s \
+// RUN:     -mguard=ehcont 2>&1 \
+// RUN:   | FileCheck --check-prefix=CF-UNKNOWN %s
+// CF-UNKNOWN: error: unsupported argument 'ehcont' to option '-mguard='
+
 //--- Windows Kits/10/Include/10.0.26100.0/ucrt/stdio.h
 int puts(const char *);
 //--- include/c++/v1/__config

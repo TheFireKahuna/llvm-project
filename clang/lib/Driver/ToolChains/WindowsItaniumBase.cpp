@@ -43,6 +43,15 @@ void tools::windowsitanium::Linker::ConstructJob(
   if (Args.hasArg(options::OPT_shared))
     CmdArgs.push_back("-dll");
 
+  if (Arg *A = Args.getLastArg(options::OPT_mguard_EQ)) {
+    StringRef GuardArgs = A->getValue();
+    if (GuardArgs == "cf" || GuardArgs == "cf-nochecks")
+      CmdArgs.push_back("-guard:cf");
+    else if (GuardArgs != "none")
+      TC.getDriver().Diag(diag::err_drv_unsupported_option_argument)
+          << A->getSpelling() << GuardArgs;
+  }
+
   for (const auto &LibPath : Args.getAllArgValues(options::OPT_L))
     CmdArgs.push_back(Args.MakeArgString("-libpath:" + LibPath));
 
@@ -89,6 +98,22 @@ void WindowsItaniumBaseToolChain::addClangTargetOptions(
     A->render(DriverArgs, CC1Args);
   else
     CC1Args.push_back("-mdefault-visibility-export-mapping=explicit");
+
+  if (Arg *A = DriverArgs.getLastArg(options::OPT_mguard_EQ)) {
+    StringRef GuardArgs = A->getValue();
+    if (GuardArgs == "none") {
+      // Do nothing.
+    } else if (GuardArgs == "cf") {
+      // Emit CFG instrumentation and the table of address-taken functions.
+      CC1Args.push_back("-cfguard");
+    } else if (GuardArgs == "cf-nochecks") {
+      // Emit only the table of address-taken functions.
+      CC1Args.push_back("-cfguard-no-checks");
+    } else {
+      getDriver().Diag(diag::err_drv_unsupported_option_argument)
+          << A->getSpelling() << GuardArgs;
+    }
+  }
 }
 
 void WindowsItaniumBaseToolChain::AddClangCXXStdlibIncludeArgs(
