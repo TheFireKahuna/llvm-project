@@ -17,6 +17,7 @@ set(WINCRT_SOURCES
   entry_wwinmain.cpp
   cfguard.cpp
   cfguard_dispatch.S
+  delayload.cpp
   gs_cookie.S
   gshandler.cpp
   init.cpp

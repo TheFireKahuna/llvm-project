@@ -20,6 +20,7 @@
 #include <windows.h>
 
 #include <corecrt_startup.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -107,6 +108,87 @@ WINCRT_ALTERNATENAME(__wincrt_detach_image,
 
 // An image without libc++abi has no active exception to report.
 WINCRT_ALTERNATENAME(__cxa_call_terminate, abort)
+
+// IMAGE_LOAD_CONFIG_DIRECTORY64, but with GuardFlags and the CodeIntegrity
+// flags and catalog, which are zero, as one 64-bit field. The guard flags are
+// the value of an absolute symbol, and only a pointer-sized field can hold a
+// symbol's value in a constant initializer. The linker applies no base
+// relocation to an absolute symbol, and the flags fit in the low 32 bits.
+struct LoadConfig {
+  DWORD Size;
+  DWORD TimeDateStamp;
+  WORD MajorVersion;
+  WORD MinorVersion;
+  DWORD GlobalFlagsClear;
+  DWORD GlobalFlagsSet;
+  DWORD CriticalSectionDefaultTimeout;
+  ULONGLONG DeCommitFreeBlockThreshold;
+  ULONGLONG DeCommitTotalFreeThreshold;
+  ULONGLONG LockPrefixTable;
+  ULONGLONG MaximumAllocationSize;
+  ULONGLONG VirtualMemoryThreshold;
+  ULONGLONG ProcessAffinityMask;
+  DWORD ProcessHeapFlags;
+  WORD CSDVersion;
+  WORD DependentLoadFlags;
+  ULONGLONG EditList;
+  ULONGLONG SecurityCookie;
+  ULONGLONG SEHandlerTable;
+  ULONGLONG SEHandlerCount;
+  ULONGLONG GuardCFCheckFunctionPointer;
+  ULONGLONG GuardCFDispatchFunctionPointer;
+  ULONGLONG GuardCFFunctionTable;
+  ULONGLONG GuardCFFunctionCount;
+  ULONGLONG GuardFlagsAndCodeIntegrity;
+  DWORD CodeIntegrityCatalogOffset;
+  DWORD CodeIntegrityReserved;
+  ULONGLONG GuardAddressTakenIatEntryTable;
+  ULONGLONG GuardAddressTakenIatEntryCount;
+  ULONGLONG GuardLongJumpTargetTable;
+  ULONGLONG GuardLongJumpTargetCount;
+  ULONGLONG DynamicValueRelocTable;
+  ULONGLONG CHPEMetadataPointer;
+  ULONGLONG GuardRFFailureRoutine;
+  ULONGLONG GuardRFFailureRoutineFunctionPointer;
+  DWORD DynamicValueRelocTableOffset;
+  WORD DynamicValueRelocTableSection;
+  WORD Reserved2;
+  ULONGLONG GuardRFVerifyStackPointerFunctionPointer;
+  DWORD HotPatchTableOffset;
+  DWORD Reserved3;
+  ULONGLONG EnclaveConfigurationPointer;
+  ULONGLONG VolatileMetadataPointer;
+  ULONGLONG GuardEHContinuationTable;
+  ULONGLONG GuardEHContinuationCount;
+  ULONGLONG GuardXFGCheckFunctionPointer;
+  ULONGLONG GuardXFGDispatchFunctionPointer;
+  ULONGLONG GuardXFGTableDispatchFunctionPointer;
+  ULONGLONG CastGuardOsDeterminedFailureMode;
+  ULONGLONG GuardMemcpyFunctionPointer;
+  ULONGLONG UmaFunctionPointers;
+};
+
+static_assert(sizeof(LoadConfig) == sizeof(IMAGE_LOAD_CONFIG_DIRECTORY64));
+static_assert(offsetof(LoadConfig, DependentLoadFlags) ==
+              offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, DependentLoadFlags));
+static_assert(offsetof(LoadConfig, SecurityCookie) ==
+              offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, SecurityCookie));
+static_assert(offsetof(LoadConfig, GuardFlagsAndCodeIntegrity) ==
+              offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags));
+static_assert(offsetof(LoadConfig, EnclaveConfigurationPointer) ==
+              offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64,
+                       EnclaveConfigurationPointer));
+static_assert(offsetof(LoadConfig, GuardXFGCheckFunctionPointer) ==
+              offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64,
+                       GuardXFGCheckFunctionPointer));
+static_assert(offsetof(LoadConfig, UmaFunctionPointers) ==
+              offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, UmaFunctionPointers));
+
+// The image's load configuration, defined in loadconfig.cpp. The linker writes
+// some of its fields after compilation, so code reads them through a volatile
+// glvalue.
+#pragma section(".rdata$T", read)
+extern "C" __declspec(allocate(".rdata$T")) const LoadConfig _load_config_used;
 
 namespace wincrt {
 
