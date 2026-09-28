@@ -17,6 +17,7 @@ set(WINCRT_SOURCES
   entry_wwinmain.cpp
   init.cpp
   loadconfig.cpp
+  purecall.cpp
   security.cpp
   tls.cpp
   ucrt_stdio.c
