@@ -715,7 +715,9 @@ endfunction()
 
 # Windows-related flags =======================================================
 function(cxx_add_windows_flags target)
-  if(WIN32 AND NOT MINGW)
+  # NT-POSIX's C library is llvm-libc, not the Microsoft CRT these macros
+  # configure.
+  if(WIN32 AND NOT MINGW AND NOT WIN32_NTPOSIX)
     target_compile_definitions(${target} PRIVATE
                                  # Ignore the -MSC_VER mismatch, as we may build
                                  # with a different compatibility version.
