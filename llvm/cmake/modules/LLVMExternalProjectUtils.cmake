@@ -406,6 +406,13 @@ function(llvm_ExternalProject_Add name source_dir)
     set(verbose -DCMAKE_VERBOSE_MAKEFILE=ON)
   endif()
 
+  # CMake 4.4 deprecates --no-warn-unused-cli, which earlier versions need.
+  if(CMAKE_VERSION VERSION_LESS 4.4)
+    set(no_warn_unused_cli --no-warn-unused-cli)
+  else()
+    set(no_warn_unused_cli -Wno-unused-cli)
+  endif()
+
   if(CMAKE_GENERATOR MATCHES "Make")
     # Use the same FileLock for Unix Makefiles to serialize the main build with
     # EXTRA_TARGETS. This prevents concurrent make invocations from corrupting
@@ -423,7 +430,7 @@ function(llvm_ExternalProject_Add name source_dir)
     BINARY_DIR ${BINARY_DIR}
     ${exclude}
     CMAKE_ARGS ${${nameCanon}_CMAKE_ARGS}
-               --no-warn-unused-cli
+               ${no_warn_unused_cli}
                ${compiler_args}
                ${verbose}
                -DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
