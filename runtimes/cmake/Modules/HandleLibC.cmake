@@ -52,4 +52,21 @@ elseif (RUNTIMES_USE_LIBC STREQUAL "llvm-libc")
 
   # TODO: There's no support for building LLVM libc as a shared library yet.
   add_library(runtimes-libc-shared INTERFACE)
+
+  # NT-POSIX links every image against LLVM libc, as a DLL by default, and
+  # its driver adds libc's start-up objects to each link. Build them first,
+  # and link the shared runtimes against the libc DLL being built instead of
+  # the one the driver would otherwise look for.
+  if (WIN32_NTPOSIX)
+    if (TARGET libc-startup)
+      add_dependencies(runtimes-libc-static libc-startup)
+      add_dependencies(runtimes-libc-shared libc-startup)
+    endif()
+    if (TARGET libc_shared)
+      target_link_libraries(runtimes-libc-shared INTERFACE libc_shared)
+    endif()
+    if (CXX_SUPPORTS_NOLIBC_FLAG)
+      target_link_options(runtimes-libc-shared INTERFACE "-nolibc")
+    endif()
+  endif()
 endif()
