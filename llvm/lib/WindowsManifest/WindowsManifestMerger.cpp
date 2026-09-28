@@ -71,9 +71,10 @@ static bool xmlStringsEqual(const unsigned char *A, const unsigned char *B) {
 }
 
 static bool isMergeableElement(const unsigned char *ElementName) {
-  for (StringRef S : {"application", "assembly", "assemblyIdentity",
-                      "compatibility", "noInherit", "requestedExecutionLevel",
-                      "requestedPrivileges", "security", "trustInfo"}) {
+  for (StringRef S :
+       {"application", "assembly", "assemblyIdentity", "compatibility",
+        "noInherit", "requestedExecutionLevel", "requestedPrivileges",
+        "security", "trustInfo", "windowsSettings"}) {
     if (S == FROM_XML_CHAR(ElementName)) {
       return true;
     }
@@ -81,10 +82,29 @@ static bool isMergeableElement(const unsigned char *ElementName) {
   return false;
 }
 
+// Whether two element namespaces are the same for merging: the same URI, or
+// two versions of the assembly schema, which the merger treats as one
+// namespace and ranks by priority.
+static bool namespacesEquivalent(xmlNsPtr A, xmlNsPtr B) {
+  const unsigned char *HRefA = A ? A->href : nullptr;
+  const unsigned char *HRefB = B ? B->href : nullptr;
+  if (xmlStringsEqual(HRefA, HRefB))
+    return true;
+  auto IsAssembly = [](const unsigned char *HRef) {
+    return HRef && is_contained({"urn:schemas-microsoft-com:asm.v1",
+                                 "urn:schemas-microsoft-com:asm.v2",
+                                 "urn:schemas-microsoft-com:asm.v3"},
+                                StringRef(FROM_XML_CHAR(HRef)));
+  };
+  return IsAssembly(HRefA) && IsAssembly(HRefB);
+}
+
 static xmlNodePtr getChildWithName(xmlNodePtr Parent,
-                                   const unsigned char *ElementName) {
+                                   const unsigned char *ElementName,
+                                   xmlNsPtr Namespace) {
   for (xmlNodePtr Child = Parent->children; Child; Child = Child->next) {
-    if (xmlStringsEqual(Child->name, ElementName)) {
+    if (xmlStringsEqual(Child->name, ElementName) &&
+        namespacesEquivalent(Child->ns, Namespace)) {
       return Child;
     }
   }
@@ -515,7 +535,7 @@ static Error treeMerge(xmlNodePtr OriginalRoot, xmlNodePtr AdditionalRoot) {
     xmlNodePtr OriginalChildWithName;
     if (!isMergeableElement(Child->name) ||
         !(OriginalChildWithName =
-              getChildWithName(OriginalRoot, Child->name)) ||
+              getChildWithName(OriginalRoot, Child->name, Child->ns)) ||
         !hasRecognizedNamespace(Child)) {
       StoreNext.next = Child->next;
       xmlUnlinkNode(Child);
@@ -626,7 +646,11 @@ Error WindowsManifestMerger::WindowsManifestMergerImpl::merge(
   xmlSetGenericErrorFunc(nullptr, nullptr);
   if (auto E = getParseError())
     return E;
+  if (!ManifestXML)
+    return make_error<WindowsManifestError>("invalid xml document");
   xmlNodePtr AdditionalRoot = xmlDocGetRootElement(ManifestXML.get());
+  if (!AdditionalRoot)
+    return make_error<WindowsManifestError>("manifest has no root element");
   stripComments(AdditionalRoot);
   setAttributeNamespaces(AdditionalRoot);
   if (CombinedDoc == nullptr) {
