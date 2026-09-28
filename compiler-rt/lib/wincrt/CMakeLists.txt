@@ -25,6 +25,7 @@ set(WINCRT_SOURCES
   purecall.cpp
   security.cpp
   tls.cpp
+  ucrt_math.c
   ucrt_stdio.c
   )
 

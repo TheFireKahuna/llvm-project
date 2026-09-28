@@ -49,6 +49,13 @@ _onexit_t __cdecl _onexit(_onexit_t Function) {
   return Function;
 }
 
+// The traditional name, which Visual C++'s oldnames.lib maps to _onexit. The
+// Universal CRT does not export _onexit, so oldnames.lib here cannot import it
+// under this name. Weak, so that a program's own onexit takes precedence.
+__attribute__((weak)) _onexit_t __cdecl onexit(_onexit_t Function) {
+  return _onexit(Function);
+}
+
 int __cdecl at_quick_exit(void(__cdecl *Function)(void)) {
   return __cxa_at_quick_exit(Function, &__dso_handle);
 }
