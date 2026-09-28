@@ -36,7 +36,7 @@ TEST_F(PipeTest, CreateWithUniqueName) {
 }
 
 // Test broken
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 TEST_F(PipeTest, OpenAsReader) {
   Pipe pipe;
   llvm::SmallString<0> name;
@@ -55,7 +55,7 @@ TEST_F(PipeTest, OpenAsReader) {
 #endif
 
 // Tests flaky on Windows
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 TEST_F(PipeTest, WriteWithTimeout) {
   Pipe pipe;
   ASSERT_THAT_ERROR(pipe.CreateNew().ToError(), llvm::Succeeded());
@@ -69,7 +69,7 @@ TEST_F(PipeTest, WriteWithTimeout) {
   // can be queried and set using the fcntl(2) F_GETPIPE_SZ and F_SETPIPE_SZ
   // operations:
 
-#if !defined(_WIN32) && defined(F_SETPIPE_SZ)
+#if !defined(LLVM_RUNTIME_WIN32) && defined(F_SETPIPE_SZ)
   ::fcntl(pipe.GetWriteFileDescriptor(), F_SETPIPE_SZ, 4096);
 #endif
 
@@ -194,4 +194,4 @@ TEST_F(PipeTest, ReadWithTimeout) {
                        llvm::HasValue(hello_world.size()));
   EXPECT_EQ(llvm::StringRef(buf, hello_world.size()), hello_world);
 }
-#endif /*ifndef _WIN32*/
+#endif /*ifndef LLVM_RUNTIME_WIN32*/

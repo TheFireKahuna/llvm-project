@@ -15,7 +15,7 @@
 #include <memory>
 #include <optional>
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include "lldb/Host/windows/FileWindows.h"
 #else
 #include "lldb/Host/posix/FilePosix.h"
@@ -23,7 +23,7 @@
 
 namespace lldb_private {
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 typedef NativeFileWindows NativeFile;
 #else
 typedef NativeFilePosix NativeFile;

@@ -16,7 +16,7 @@
 
 namespace lldb_private {
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 
 ProcessRunLock::ProcessRunLock() {
   int err = ::pthread_rwlock_init(&m_rwlock, nullptr);
@@ -58,7 +58,7 @@ bool ProcessRunLock::SetStopped() {
   return was_running;
 }
 
-#endif // !_WIN32
+#endif // !LLVM_RUNTIME_WIN32
 
 ProcessRunLock::ProcessRunLocker::ProcessRunLocker(ProcessRunLocker &&other) {
   if (other.m_lock && other.m_thread != llvm::get_threadid())

@@ -49,7 +49,7 @@
 #include "lldb/Utility/StreamString.h"
 #include "lldb/Utility/Timer.h"
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include "lldb/Host/windows/PosixApi.h"
 #endif
 

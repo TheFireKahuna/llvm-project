@@ -72,7 +72,7 @@ UDPSocket::CreateConnected(llvm::StringRef name) {
                           &service_info_list);
   if (err != 0) {
     error = Status::FromErrorStringWithFormat(
-#if defined(_WIN32) && defined(UNICODE)
+#if defined(LLVM_RUNTIME_WIN32) && defined(UNICODE)
         "getaddrinfo(%s, %d, &hints, &info) returned error %i (%S)",
 #else
         "getaddrinfo(%s, %d, &hints, &info) returned error %i (%s)",

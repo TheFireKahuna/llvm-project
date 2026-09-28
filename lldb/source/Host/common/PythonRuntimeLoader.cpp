@@ -21,7 +21,7 @@
 #include <cstdlib>
 #include <string>
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include "lldb/Host/windows/windows.h"
 #else
 #include <dlfcn.h>
@@ -36,7 +36,7 @@ namespace {
 /// pair an old symbol with one introduced in 3.8 to bound the version on
 /// both ends.
 bool IsPythonAlreadyLoaded() {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   HMODULE main = ::GetModuleHandleW(nullptr);
   return ::GetProcAddress(main, "Py_IsInitialized") != nullptr &&
          ::GetProcAddress(main, "Py_InitializeFromConfig") != nullptr;
@@ -132,7 +132,7 @@ private:
         m_path = std::move(*result);
         if (m_path.empty())
           return;
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
         // liblldb.dll may link against (lib)python3.dll (stable ABI). Ensure
         // it is loaded from the same directory as the version-specific runtime
         // so the delay-load resolver can find it.

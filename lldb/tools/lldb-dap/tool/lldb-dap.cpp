@@ -64,7 +64,7 @@
 #include <utility>
 #include <vector>
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 // We need to #define NOMINMAX in order to skip `min()` and `max()` macro
 // definitions that conflict with other system headers.
 // We also need to #undef GetObject (which is defined to GetObjectW) because
@@ -271,7 +271,7 @@ notifyError(RunInTerminalLauncherCommChannel &comm_channel, std::string message,
   comm_channel.NotifyError(message);
 
   std::error_code ec = error_code.value_or(
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
       std::error_code(GetLastError(), std::system_category())
 #else
       llvm::inconvertibleErrorCode()
@@ -281,7 +281,7 @@ notifyError(RunInTerminalLauncherCommChannel &comm_channel, std::string message,
   return llvm::createStringError(ec, std::move(message));
 }
 
-#if not defined(_WIN32)
+#if not defined(LLVM_RUNTIME_WIN32)
 struct FDGroup {
   int GetFlags() const {
     if (read && write)
@@ -388,7 +388,7 @@ static llvm::Expected<int> LaunchRunInTerminalTarget(llvm::opt::Arg &target_arg,
 
   lldb_private::FileSystem::Initialize();
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   RunInTerminalLauncherCommChannel comm_channel(comm_file);
 
   llvm::ArrayRef<const char *> args_arr = llvm::ArrayRef(argv, argc);
@@ -502,7 +502,13 @@ static llvm::Expected<int> LaunchRunInTerminalTarget(llvm::opt::Arg &target_arg,
   if (!stdio.empty()) {
     constexpr size_t num_of_stdio = 3;
     llvm::SmallVector<llvm::StringRef, num_of_stdio> stdio_files;
+#ifdef _WIN32
+    // NT-POSIX paths are DOS paths, so the list is ';'-separated as on
+    // Windows.
+    stdio.split(stdio_files, ';');
+#else
     stdio.split(stdio_files, ':');
+#endif
     stdio_files.resize(std::max(num_of_stdio, stdio_files.size()));
     if (llvm::Error err = SetupIORedirection(stdio_files))
       return err;
@@ -768,7 +774,7 @@ int main(int argc, char *argv[]) {
     return EXIT_SUCCESS;
   }
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   if (input_args.hasArg(OPT_check_python)) {
 #ifndef LLDB_ENABLE_PYTHON
     llvm::errs() << "lldb-dap was not built with Python support" << '\n';
@@ -906,7 +912,7 @@ int main(int argc, char *argv[]) {
     }
   }
 
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
   if (input_args.hasArg(OPT_wait_for_debugger)) {
     printf("Paused waiting for debugger to attach (pid = %i)...\n", getpid());
     pause();
@@ -986,7 +992,7 @@ int main(int argc, char *argv[]) {
     return EXIT_SUCCESS;
   }
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   // Windows opens stdout and stdin in text mode which converts \n to 13,10
   // while the value is just 10 on Darwin/Linux. Setting the file mode to
   // binary fixes this.

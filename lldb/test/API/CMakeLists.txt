@@ -99,7 +99,7 @@ if ("${LLDB_TEST_COMPILER}" STREQUAL "")
   message(FATAL_ERROR "LLDB test compiler not specified. Tests will not run.")
 endif()
 
-if ( CMAKE_SYSTEM_NAME MATCHES "Windows" )
+if ( LLVM_RUNTIME_WIN32 )
   set(LLDB_TEST_DEBUG_TEST_CRASHES
     0
     CACHE BOOL "(Windows only) Enables debugging of tests in the test suite by showing the crash dialog when lldb crashes")

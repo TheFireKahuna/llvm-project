@@ -23,7 +23,7 @@ if (LLDB_ENABLE_PYTHON)
   )
 endif()
 
-if (UNIX)
+if (LLVM_RUNTIME_POSIX)
   list(APPEND FILES
     posix/HostTest.cpp
     posix/SupportTest.cpp
@@ -36,7 +36,7 @@ if (LLDB_ENABLE_TERMIOS)
   )
 endif()
 
-if (CMAKE_SYSTEM_NAME MATCHES "Windows")
+if (LLVM_RUNTIME_WIN32)
   list(APPEND FILES
     windows/StripConPTYSequencesTest.cpp
   )

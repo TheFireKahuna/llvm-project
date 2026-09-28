@@ -35,7 +35,7 @@
 #include "llvm/Support/WithColor.h"
 #include <memory>
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include <fcntl.h>
 #endif
 
@@ -150,7 +150,7 @@ int main(int argc, char *argv[]) {
                         "~/Library/Logs/DiagnosticReports/.\n");
 #endif
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   // Windows opens stdout and stdin in text mode which converts \n to 13,10
   // while the value is just 10 on Darwin/Linux. Setting the file mode to
   // binary fixes this.

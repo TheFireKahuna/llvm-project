@@ -49,7 +49,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormatAdapters.h"
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include "lldb/Host/windows/ConnectionGenericFileWindows.h"
 #endif
 
@@ -72,7 +72,7 @@ extern "C" PyObject *PyInit__lldb(void);
 
 #define LLDBSwigPyInit PyInit__lldb
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 // Don't mess with the signal handlers on Windows.
 #define LLDB_USE_PYTHON_SET_INTERRUPT 0
 #else
@@ -856,7 +856,7 @@ public:
     std::unique_ptr<SessionIORedirect> redirect(
         new SessionIORedirect(debugger_id, is_stdout));
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
     lldb::file_t read_handle = pipe.GetReadNativeHandle();
     pipe.ReleaseReadFileDescriptor();
     std::unique_ptr<Connection> conn =

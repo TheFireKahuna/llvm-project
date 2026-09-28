@@ -9,7 +9,7 @@
 #include "RunInTerminal.h"
 #include "JSONUtils.h"
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "lldb/Host/windows/windows.h"
 #else
 #include <sys/stat.h>
@@ -169,7 +169,7 @@ std::string RunInTerminalDebugAdapterCommChannel::GetLauncherError() {
 
 Expected<std::shared_ptr<FifoFile>> CreateRunInTerminalCommFile() {
   SmallString<256> comm_file;
-#if _WIN32
+#if defined(LLVM_RUNTIME_WIN32)
   char pipe_name[MAX_PATH];
   sprintf(pipe_name, "\\\\.\\pipe\\lldb-dap-run-in-terminal-comm-%lu",
           GetCurrentProcessId());
