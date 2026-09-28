@@ -279,6 +279,12 @@ features cannot lower the translation-unit ABI level;
   path share one module cache, and is only sound when no module needs the path
   -- a lookup that would have resolved through an ignored path simply fails.
 
+- Added `-fwide-char16-literals` for code built with a 32-bit `wchar_t` that
+  includes headers written for a 16-bit `WCHAR`, such as the Windows SDK's.
+  Under it, a wide character or string literal that a system header writes,
+  or that a macro defined in a system header forms by token pasting, is a
+  `char16_t` literal; a wide literal written in user code keeps `wchar_t`.
+
 ### Deprecated Compiler Flags
 
 ### Modified Compiler Flags

@@ -4364,6 +4364,9 @@ static void RenderCharacterOptions(const ArgList &Args, const llvm::Triple &T,
     }
   } else if (T.isOSzOS())
     CmdArgs.push_back("-fno-signed-wchar");
+
+  Args.addOptInFlag(CmdArgs, options::OPT_fwide_char16_literals,
+                    options::OPT_fno_wide_char16_literals);
 }
 
 static void RenderObjCOptions(const ToolChain &TC, const Driver &D,

@@ -78,6 +78,13 @@ static unsigned getEncodingPrefixLen(tok::TokenKind kind) {
   }
 }
 
+/// Whether a literal token at \p Loc was written by a system header: spelled
+/// in one, or, for a token formed by pasting, pasted by a macro defined in one.
+static bool isSpelledInSystemHeader(const SourceManager &SM,
+                                    SourceLocation Loc) {
+  return Loc.isMacroID() ? SM.isInSystemMacro(Loc) : SM.isInSystemHeader(Loc);
+}
+
 static CharSourceRange MakeCharSourceRange(const LangOptions &Features,
                                            FullSourceLoc TokLoc,
                                            const char *TokBegin,
@@ -1829,6 +1836,14 @@ CharLiteralParser::CharLiteralParser(const char *begin, const char *end,
 
   Kind = kind;
 
+  // With -fwide-char16-literals, a wide literal spelled in a system header,
+  // such as a Windows SDK header written for a 16-bit WCHAR, is a char16_t
+  // literal, including where user code expands the macro that spells or
+  // pastes it. User code keeps its wchar_t literals.
+  if (Kind == tok::wide_char_constant && PP.getLangOpts().WideChar16Literals &&
+      isSpelledInSystemHeader(PP.getSourceManager(), Loc))
+    Kind = tok::utf16_char_constant;
+
   const char *TokBegin = begin;
 
   // Skip over wide character determinant.
@@ -2172,6 +2187,16 @@ void StringLiteralParser::init(ArrayRef<Token> StringToks,
         hadError = true;
       }
     }
+  }
+
+  // As for a character literal, with -fwide-char16-literals, judged by where
+  // the first token with the wide prefix is spelled.
+  if (Kind == tok::wide_string_literal && Features.WideChar16Literals) {
+    const Token *Wide = llvm::find_if(StringToks, [](const Token &Tok) {
+      return Tok.is(tok::wide_string_literal);
+    });
+    if (isSpelledInSystemHeader(SM, Wide->getLocation()))
+      Kind = tok::utf16_string_literal;
   }
 
   // Include space for the null terminator.

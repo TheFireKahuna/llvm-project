@@ -510,6 +510,12 @@
 // CHECK-WINDOWS-ISO10646: "-fwchar-type=int"
 // CHECK-WINDOWS-ISO10646: "-fsigned-wchar"
 
+// RUN: %clang -### -S -fwide-char16-literals %s 2>&1 | FileCheck -check-prefix=CHECK-WIDE-CHAR16 %s
+// RUN: %clang -### -S -fwide-char16-literals -fno-wide-char16-literals %s 2>&1 | FileCheck -check-prefix=CHECK-NO-WIDE-CHAR16 %s
+// RUN: %clang -### -S %s 2>&1 | FileCheck -check-prefix=CHECK-NO-WIDE-CHAR16 %s
+// CHECK-WIDE-CHAR16: "-fwide-char16-literals"
+// CHECK-NO-WIDE-CHAR16-NOT: "-fwide-char16-literals"
+
 // RUN: %clang -### -S -fcf-protection %s 2>&1 | FileCheck -check-prefix=CHECK-CF-PROTECTION-FULL %s
 // RUN: %clang -### -S %s 2>&1 | FileCheck -check-prefix=CHECK-NO-CF-PROTECTION-FULL %s
 // RUN: %clang -### -S -fcf-protection=full %s 2>&1 | FileCheck -check-prefix=CHECK-CF-PROTECTION-FULL %s
