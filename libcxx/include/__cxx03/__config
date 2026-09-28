@@ -314,7 +314,7 @@ typedef __char32_t char32_t;
 
 #  define _LIBCPP_DISABLE_EXTENSION_WARNING __extension__
 
-#  if defined(_LIBCPP_OBJECT_FORMAT_COFF)
+#  if defined(_LIBCPP_OBJECT_FORMAT_COFF) && !defined(_WIN32_ITANIUM) && !defined(__NTPOSIX__)
 
 #    ifdef _DLL
 #      define _LIBCPP_CRT_FUNC __declspec(dllimport)
@@ -392,7 +392,7 @@ typedef __char32_t char32_t;
 #      define _LIBCPP_TYPE_VISIBILITY_DEFAULT
 #    endif
 
-#  endif // defined(_LIBCPP_OBJECT_FORMAT_COFF)
+#  endif // defined(_LIBCPP_OBJECT_FORMAT_COFF) && !defined(_WIN32_ITANIUM) && !defined(__NTPOSIX__)
 
 #  if __has_attribute(exclude_from_explicit_instantiation)
 #    define _LIBCPP_EXCLUDE_FROM_EXPLICIT_INSTANTIATION __attribute__((__exclude_from_explicit_instantiation__))

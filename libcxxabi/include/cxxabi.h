@@ -25,7 +25,7 @@
 #ifdef __cplusplus
 
 namespace std {
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(_WIN32_ITANIUM) && !defined(__NTPOSIX__)
 class _LIBCXXABI_TYPE_VIS type_info; // forward declaration
 #else
 class type_info; // forward declaration

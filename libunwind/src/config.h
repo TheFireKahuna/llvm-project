@@ -80,7 +80,9 @@
   #define _LIBUNWIND_EXPORT
   #define _LIBUNWIND_HIDDEN
 #else
-  #if !defined(__ELF__) && !defined(__MACH__) && !defined(_AIX)
+  // Windows Itanium and NT-POSIX export by visibility, as ELF does.
+  #if !defined(__ELF__) && !defined(__MACH__) && !defined(_AIX) &&             \
+      !defined(_WIN32_ITANIUM) && !defined(__NTPOSIX__)
     #define _LIBUNWIND_EXPORT __declspec(dllexport)
     #define _LIBUNWIND_HIDDEN
   #else
@@ -108,7 +110,7 @@
   extern "C" _LIBUNWIND_EXPORT __typeof(name) aliasname                        \
       __attribute__((weak, alias(#name)));
 #elif defined(_WIN32)
-#if defined(__MINGW32__)
+#if defined(__MINGW32__) || defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
 #define _LIBUNWIND_WEAK_ALIAS(name, aliasname)                                 \
   extern "C" _LIBUNWIND_EXPORT __typeof(name) aliasname                        \
       __attribute__((alias(#name)));

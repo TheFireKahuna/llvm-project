@@ -47,7 +47,10 @@
 // Visibility attributes
 // ---------------------
 
-#if defined(_LIBCPP_OBJECT_FORMAT_COFF)
+// Windows Itanium and NT-POSIX export by visibility, as ELF does: the compiler
+// turns explicit default visibility into an export on a definition and into an
+// import on a declaration.
+#if defined(_LIBCPP_OBJECT_FORMAT_COFF) && !defined(_WIN32_ITANIUM) && !defined(__NTPOSIX__)
 
 #  ifdef _DLL
 #    define _LIBCPP_CRT_FUNC __declspec(dllimport)
@@ -108,7 +111,7 @@
 #    define _LIBCPP_NAMESPACE_VISIBILITY
 #  endif
 
-#endif // defined(_LIBCPP_OBJECT_FORMAT_COFF)
+#endif // defined(_LIBCPP_OBJECT_FORMAT_COFF) && !defined(_WIN32_ITANIUM) && !defined(__NTPOSIX__)
 
 // hide_from_abi
 // -------------
