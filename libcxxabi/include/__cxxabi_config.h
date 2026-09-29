@@ -82,6 +82,16 @@
 #define _LIBCXXABI_DTOR_FUNC
 #endif
 
+// Under the KCFI marker scheme, a destructor that the runtime calls carries
+// the type void(void *) salted "__cxa_dtor", and the runtime calls it through
+// that type. The attribute is accepted only in C, but clang applies it in C++
+// too, with a -Wignored-attributes warning.
+#if defined(_LIBCXXABI_COMPILER_CLANG) && __has_feature(kcfi_marker)
+#  define _LIBCXXABI_KCFI_DTOR __attribute__((__cfi_salt__("__cxa_dtor")))
+#else
+#  define _LIBCXXABI_KCFI_DTOR
+#endif
+
 #if __has_include(<ptrauth.h>)
 #  include <ptrauth.h>
 #endif

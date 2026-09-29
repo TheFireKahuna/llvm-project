@@ -21,6 +21,16 @@ namespace __cxxabiv1 {
 
   using Dtor = void(*)(void*);
 
+  // The type the runtime calls a destructor through.
+#if defined(_LIBCXXABI_COMPILER_CLANG)
+#  pragma clang diagnostic push
+#  pragma clang diagnostic ignored "-Wignored-attributes"
+#endif
+  typedef void (*KCFIDtor)(void*) _LIBCXXABI_KCFI_DTOR;
+#if defined(_LIBCXXABI_COMPILER_CLANG)
+#  pragma clang diagnostic pop
+#endif
+
   extern "C"
 #ifndef HAVE___CXA_THREAD_ATEXIT_IMPL
   // A weak symbol is used to detect this function's presence in the C library
@@ -76,7 +86,7 @@ namespace {
   void run_dtors(void*) {
     while (auto head = dtors) {
       dtors = head->next;
-      head->dtor(head->obj);
+      reinterpret_cast<KCFIDtor>(head->dtor)(head->obj);
       ::free(head);
     }
 
