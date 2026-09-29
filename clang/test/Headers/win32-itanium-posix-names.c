@@ -83,9 +83,15 @@ int (*open_pointer)(char const *, int, ...) = open;
 void *(*memccpy_pointer)(void *, void const *, int, size_t) = memccpy;
 int share_mode = SH_DENYNO;
 off_t offset;
+ssize_t signed_size = -1;
+_Static_assert(sizeof(ssize_t) == sizeof(size_t), "");
 struct stat status;
 #else
 int open;
+int ssize_t;
+#ifdef _SSIZE_T_DEFINED
+#error "_SSIZE_T_DEFINED is not defined"
+#endif
 #ifdef SH_DENYNO
 #error "SH_DENYNO is not declared"
 #endif

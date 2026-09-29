@@ -22,4 +22,11 @@
 #pragma pop_macro("__STDC__")
 #pragma clang diagnostic pop
 
+/* The UCRT's off_t has no ssize_t beside it. _SSIZE_T_DEFINED is MinGW-w64's
+ * name for the typedef, which portable code tests before defining its own. */
+#if __CLANG_UCRT_POSIX_HEADER_NAMES && !defined(_SSIZE_T_DEFINED)
+#define _SSIZE_T_DEFINED
+typedef __PTRDIFF_TYPE__ ssize_t;
+#endif
+
 #endif /* __CLANG_SYS_TYPES_H */
