@@ -97,18 +97,32 @@ _LIBCPP_HIDE_FROM_ABI exception_ptr make_exception_ptr(_Ep __e) _NOEXCEPT {
   using _Ep2 = __decay_t<_Ep>;
 
   void* __ex = __cxxabiv1::__cxa_allocate_exception(sizeof(_Ep));
-#      ifdef __wasm__
+#      if __has_feature(kcfi_marker) && !defined(__wasm__)
+  // Under the KCFI marker scheme, the runtime calls the cleanup as it calls a
+  // destructor, through void(void *) salted "__cxa_dtor". The attribute is
+  // accepted only in C, but clang applies it in C++ too.
+  _LIBCPP_DIAGNOSTIC_PUSH
+  _LIBCPP_CLANG_DIAGNOSTIC_IGNORED("-Wignored-attributes")
+  auto __salted_cleanup = [](void* __p) __attribute__((__cfi_salt__("__cxa_dtor"))) {
+    std::__destroy_at(static_cast<_Ep2*>(__p));
+  };
+  _LIBCPP_DIAGNOSTIC_POP
+  (void)__cxxabiv1::__cxa_init_primary_exception(
+      __ex, const_cast<std::type_info*>(&typeid(_Ep)), reinterpret_cast<void (*)(void*)>(+__salted_cleanup));
+#      else
+#        ifdef __wasm__
   // In Wasm, a destructor returns its argument
   (void)__cxxabiv1::__cxa_init_primary_exception(
       __ex, const_cast<std::type_info*>(&typeid(_Ep)), [](void* __p) -> void* {
-#      else
+#        else
   (void)__cxxabiv1::__cxa_init_primary_exception(__ex, const_cast<std::type_info*>(&typeid(_Ep)), [](void* __p) {
-#      endif
+#        endif
         std::__destroy_at(static_cast<_Ep2*>(__p));
-#      ifdef __wasm__
+#        ifdef __wasm__
         return __p;
-#      endif
+#        endif
       });
+#      endif
 
   try {
     ::new (__ex) _Ep2(__e);

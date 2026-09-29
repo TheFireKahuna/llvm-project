@@ -126,6 +126,17 @@ _LIBCPP_HIDE_FROM_ABI exception_ptr __make_exception_ptr_explicit(_Ep& __e) _NOE
     std::__destroy_at(static_cast<_Ep2*>(__p));
     return __p;
   };
+#      elif __has_feature(kcfi_marker)
+  // Under the KCFI marker scheme, the runtime calls the cleanup as it calls a
+  // destructor, through void(void *) salted "__cxa_dtor". The attribute is
+  // accepted only in C, but clang applies it in C++ too.
+  _LIBCPP_DIAGNOSTIC_PUSH
+  _LIBCPP_CLANG_DIAGNOSTIC_IGNORED("-Wignored-attributes")
+  auto __salted_cleanup = [](void* __p) __attribute__((__cfi_salt__("__cxa_dtor"))) {
+    std::__destroy_at(static_cast<_Ep2*>(__p));
+  };
+  _LIBCPP_DIAGNOSTIC_POP
+  auto __cleanup = reinterpret_cast<void (*)(void*)>(+__salted_cleanup);
 #      else
   auto __cleanup = [](void* __p) { std::__destroy_at(static_cast<_Ep2*>(__p)); };
 #      endif
