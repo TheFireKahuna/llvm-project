@@ -78,7 +78,9 @@ from the [LLVM releases web site](https://llvm.org/releases/).
   to library functions under `-fno-plt`. The delay-load import address table
   is protected as under `/guard:cf`, with or without that flag. MinGW mode
   no longer turns on `-runtime-pseudo-reloc` under it, and asking for pseudo
-  relocations with it is an error.
+  relocations with it is an error. An image linked with both `-import-slots`
+  and `-cetcompat` gets the EH continuation table, as `/guard:ehcont` gives,
+  with or without `/guard:cf`.
 
 ### MinGW Improvements
 

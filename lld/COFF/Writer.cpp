@@ -248,6 +248,7 @@ private:
   void markSymbolsWithRelocations(ObjFile *file, SymbolRVASet &usedSymbols,
                                   SymbolRVASet &usedImports);
   void createGuardCFTables();
+  SymbolRVASet getEHContTargets();
   bool protectDelayIat();
   void markSymbolsForRVATable(ObjFile *file,
                               ArrayRef<SectionChunk *> symIdxChunks,
@@ -1985,7 +1986,7 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
     pe->DLLCharacteristics |= IMAGE_DLL_CHARACTERISTICS_NX_COMPAT;
   if (!config->allowIsolation)
     pe->DLLCharacteristics |= IMAGE_DLL_CHARACTERISTICS_NO_ISOLATION;
-  if (config->guardCF != GuardCFLevel::Off)
+  if (config->guardCF & GuardCFLevel::CF)
     pe->DLLCharacteristics |= IMAGE_DLL_CHARACTERISTICS_GUARD_CF;
   if (config->integrityCheck)
     pe->DLLCharacteristics |= IMAGE_DLL_CHARACTERISTICS_FORCE_INTEGRITY;
@@ -2267,6 +2268,10 @@ static void checkEHContMetadata(COFFLinkerContext &ctx, ObjFile *file) {
   bool isArm64 = isAnyArm64(machine);
   if (machine != AMD64 && !isArm64)
     return;
+  // Name the option that asked for the table.
+  StringRef option = (ctx.config.importSlots && ctx.config.cetCompat)
+                         ? "-cetcompat"
+                         : "/guard:ehcont";
   for (Chunk *c : file->getChunks()) {
     auto *sc = dyn_cast<SectionChunk>(c);
     if (!sc || !sc->live)
@@ -2274,7 +2279,7 @@ static void checkEHContMetadata(COFFLinkerContext &ctx, ObjFile *file) {
     for (const coff_relocation &rel : sc->getRelocs()) {
       Symbol *sym = file->getSymbol(rel.SymbolTableIndex);
       if (sym && sym->getName() == "_local_unwind") {
-        Err(ctx) << "/guard:ehcont: " << file
+        Err(ctx) << option << ": " << file
                  << " has no EH continuation metadata but references "
                     "_local_unwind";
         return;
@@ -2305,7 +2310,7 @@ static void checkEHContMetadata(COFFLinkerContext &ctx, ObjFile *file) {
           continue;
         Symbol *handler = file->getSymbol(hrel.SymbolTableIndex);
         if (handler && handler->getName() != "__GSHandlerCheck") {
-          Err(ctx) << "/guard:ehcont: " << file
+          Err(ctx) << option << ": " << file
                    << " has no EH continuation metadata but its unwind data "
                       "names exception handler "
                    << handler->getName();
@@ -2316,19 +2321,39 @@ static void checkEHContMetadata(COFFLinkerContext &ctx, ObjFile *file) {
   }
 }
 
+// Returns the EH continuation targets, which objects compiled with
+// /guard:ehcont list in .gehcont$y sections, and reports each object without
+// that metadata whose continuation targets would be missing.
+SymbolRVASet Writer::getEHContTargets() {
+  SymbolRVASet ehContTargets;
+  for (ObjFile *file : ctx.objFileInstances) {
+    if (file->hasGuardEHCont())
+      markSymbolsForRVATable(file, file->getGuardEHContChunks(), ehContTargets);
+    else
+      checkEHContMetadata(ctx, file);
+  }
+  return ehContTargets;
+}
+
 // Create the guard function id table. This is a table of RVAs of all
 // address-taken functions. It is sorted and uniqued, just like the safe SEH
 // table.
 void Writer::createGuardCFTables() {
   Configuration *config = &ctx.config;
 
-  if (config->guardCF == GuardCFLevel::Off) {
+  if (!(config->guardCF & GuardCFLevel::CF)) {
     // MSVC marks the entire image as instrumented if any input object was built
     // with /guard:cf.
     uint32_t guardFlags = 0;
     if (llvm::any_of(ctx.objFileInstances,
                      [](ObjFile *file) { return file->hasGuardCF(); }))
       guardFlags |= uint32_t(GuardFlags::CF_INSTRUMENTED);
+    // The EH continuation table can be asked for without /guard:cf.
+    if (config->guardCF & GuardCFLevel::EHCont) {
+      maybeAddRVATable(getEHContTargets(), "__guard_eh_cont_table",
+                       "__guard_eh_cont_count");
+      guardFlags |= uint32_t(GuardFlags::EH_CONTINUATION_TABLE_PRESENT);
+    }
     if (protectDelayIat())
       guardFlags |= uint32_t(GuardFlags::PROTECT_DELAYLOAD_IAT) |
                     uint32_t(GuardFlags::DELAYLOAD_IAT_IN_ITS_OWN_SECTION);
@@ -2343,7 +2368,6 @@ void Writer::createGuardCFTables() {
   SymbolRVASet giatsRVASet;
   std::vector<Symbol *> giatsSymbols;
   SymbolRVASet longJmpTargets;
-  SymbolRVASet ehContTargets;
   for (ObjFile *file : ctx.objFileInstances) {
     // If the object was compiled with /guard:cf, the address taken symbols
     // are in .gfids$y sections, and the longjmp targets are in .gljmp$y
@@ -2358,12 +2382,6 @@ void Writer::createGuardCFTables() {
     } else {
       markSymbolsWithRelocations(file, addressTakenSyms, giatsRVASet);
     }
-    // If the object was compiled with /guard:ehcont, the ehcont targets are in
-    // .gehcont$y sections.
-    if (file->hasGuardEHCont())
-      markSymbolsForRVATable(file, file->getGuardEHContChunks(), ehContTargets);
-    else if (config->guardCF & GuardCFLevel::EHCont)
-      checkEHContMetadata(ctx, file);
   }
 
   // Mark the image entry as address-taken.
@@ -2419,7 +2437,7 @@ void Writer::createGuardCFTables() {
 
   // Add the ehcont target table unless the user told us not to.
   if (config->guardCF & GuardCFLevel::EHCont)
-    maybeAddRVATable(std::move(ehContTargets), "__guard_eh_cont_table",
+    maybeAddRVATable(getEHContTargets(), "__guard_eh_cont_table",
                      "__guard_eh_cont_count", hasFlag);
 
   // Set __guard_flags, which will be used in the load config to indicate that

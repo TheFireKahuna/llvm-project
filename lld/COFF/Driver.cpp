@@ -2315,6 +2315,11 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
                    config->mingw && !config->importSlots);
   if (config->importSlots && config->pseudoRelocs)
     Err(ctx) << "-runtime-pseudo-reloc is not compatible with -import-slots";
+  // Under -import-slots, the EH continuation table follows -cetcompat rather
+  // than /guard:cf: the loader checks a continuation against it when the
+  // shadow stack is on, whether or not Control Flow Guard is.
+  if (config->importSlots && config->cetCompat)
+    config->guardCF |= GuardCFLevel::EHCont;
   config->callGraphProfileSort = args.hasFlag(
       OPT_call_graph_profile_sort, OPT_call_graph_profile_sort_no, true);
   config->stdcallFixup =

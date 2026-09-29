@@ -27,6 +27,12 @@
 # RUN:   | FileCheck %s --check-prefix=SEH
 # SEH: error: /guard:ehcont: seh.obj has no EH continuation metadata but its unwind data names exception handler __C_specific_handler
 
+# RUN: not lld-link -import-slots -cetcompat -dll -noentry defs.obj seh.obj \
+# RUN:   -out:seh.dll 2>&1 | FileCheck %s --check-prefix=SEH-CET
+# RUN: not lld-link -guard:cf -import-slots -cetcompat -dll -noentry defs.obj \
+# RUN:   seh.obj -out:seh.dll 2>&1 | FileCheck %s --check-prefix=SEH-CET
+# SEH-CET: error: -cetcompat: seh.obj has no EH continuation metadata but its unwind data names exception handler __C_specific_handler
+
 # RUN: not lld-link -guard:ehcont -dll -noentry defs.obj cxx.obj -out:cxx.dll 2>&1 \
 # RUN:   | FileCheck %s --check-prefix=CXX
 # CXX: error: /guard:ehcont: cxx.obj has no EH continuation metadata but its unwind data names exception handler __CxxFrameHandler4
