@@ -9,11 +9,10 @@
 // RUN:       --implicit-check-not=-entry: \
 // RUN:       --implicit-check-not=-subsystem: \
 // RUN:       --implicit-check-not=-delayload-protect \
-// RUN:       --implicit-check-not=-cetcompat \
 // RUN:       --implicit-check-not=-nodefaultlib:oldnames \
 // RUN:       --implicit-check-not=heap=segment
 // C:      lld-link{{(.exe)?}}" "-out:a.exe" "-machine:x64" "-nologo" "-lldignoreenv"
-// C-SAME: "-import-slots" "-guard:cf,exportsuppress"
+// C-SAME: "-import-slots" "-cetcompat" "-guard:cf,exportsuppress"
 // C-SAME: "{{[^"]*}}.o"
 // C-SAME: "-defaultlib:libunwind.dll.lib"
 // C-SAME: "-defaultlib:clang_rt.builtins{{[^"]*}}.lib"
@@ -29,10 +28,11 @@
 // C-SAME: "-nodefaultlib:libcmt" "-nodefaultlib:libcmtd"
 // C-SAME: "-nodefaultlib:ucrtd" "-nodefaultlib:iso_stdio_wide_specifiers"
 
+// AArch64 has no shadow stack, so its images are not marked for one.
 // RUN: %clangxx -### --target=aarch64-unknown-windows-itanium %s 2>&1 \
-// RUN:   | FileCheck --check-prefix=CXX %s
+// RUN:   | FileCheck --check-prefix=CXX %s --implicit-check-not=-cetcompat
 // RUN: %clang_cl -### --target=aarch64-unknown-windows-itanium -- %s 2>&1 \
-// RUN:   | FileCheck --check-prefix=CXX %s
+// RUN:   | FileCheck --check-prefix=CXX %s --implicit-check-not=-cetcompat
 // CXX:      lld-link{{(.exe)?}}"
 // CXX-SAME: "-machine:arm64"
 // CXX-SAME: "-defaultlib:libc++.dll.lib" "-defaultlib:libunwind.dll.lib"
@@ -56,14 +56,14 @@
 // RUN:     /Tc%s 2>&1 \
 // RUN:   | FileCheck --check-prefix=DLL %s
 // DLL: "-out:foo.dll" "-machine:x64" "-nologo" "-lldignoreenv" "-import-slots"
-// DLL-SAME: "-dll" "-implib:foo.dll.lib"
+// DLL-SAME: "-cetcompat" "-dll" "-implib:foo.dll.lib"
 
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium %s -mwindows 2>&1 \
 // RUN:   | FileCheck --check-prefix=WINDOWS %s
-// WINDOWS: "-lldignoreenv" "-import-slots" "-subsystem:windows"
+// WINDOWS: "-lldignoreenv" "-import-slots" "-cetcompat" "-subsystem:windows"
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium %s -mconsole 2>&1 \
 // RUN:   | FileCheck --check-prefix=CONSOLE %s
-// CONSOLE: "-lldignoreenv" "-import-slots" "-subsystem:console"
+// CONSOLE: "-lldignoreenv" "-import-slots" "-cetcompat" "-subsystem:console"
 
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium %s -g 2>&1 \
 // RUN:   | FileCheck --check-prefix=DEBUG %s

@@ -10,7 +10,8 @@
 // RUN:       --implicit-check-not=oldnames \
 // RUN:       --implicit-check-not=dllcrt.obj \
 // RUN:       --implicit-check-not=-defaultlib:ucrt \
-// RUN:       --implicit-check-not=libc.lib
+// RUN:       --implicit-check-not=libc.lib \
+// RUN:       --implicit-check-not=-cetcompat
 // EXE:      lld-link{{(.exe)?}}" "-out:a.exe" "-machine:x64" "-nologo" "-lldignoreenv"
 // EXE-SAME: "-import-slots" "-guard:cf,exportsuppress"
 // EXE-SAME: "[[LIB:[^"]*]]{{/|\\\\}}crt1.obj" "[[LIB]]{{/|\\\\}}crt_do_start.obj"

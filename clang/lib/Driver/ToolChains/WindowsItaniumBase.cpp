@@ -76,6 +76,12 @@ void tools::windowsitanium::Linker::ConstructJob(
   // The import binding model of these targets.
   CmdArgs.push_back("-import-slots");
 
+  // On x86-64 Windows Itanium, the image runs with the hardware shadow stack,
+  // and lld-link then gives it the table of EH continuation targets.
+  if (TC.getTriple().isWindowsItaniumEnvironment() &&
+      TC.getArch() == llvm::Triple::x86_64)
+    CmdArgs.push_back("-cetcompat");
+
   bool IsDLL = Args.hasArg(options::OPT_shared, options::OPT__SLASH_LD,
                            options::OPT__SLASH_LDd);
   if (IsDLL) {

@@ -3,7 +3,8 @@
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s 2>&1 \
 // RUN:   | FileCheck --check-prefixes=CC1,CC1-X64 %s
 // RUN: %clang -### --target=aarch64-unknown-windows-itanium -c %s 2>&1 \
-// RUN:   | FileCheck --check-prefixes=CC1,CC1-A64 %s
+// RUN:   | FileCheck --check-prefixes=CC1,CC1-A64 %s \
+// RUN:       --implicit-check-not=-ehcontguard
 // CC1-X64:    "-cc1" "-triple" "x86_64-unknown-windows-itanium"
 // CC1-A64:    "-cc1" "-triple" "aarch64-unknown-windows-itanium"
 // CC1-DAG:    "-mdefault-visibility-export-mapping=explicit"
@@ -12,6 +13,7 @@
 // CC1-DAG:    "-fms-compatibility-version=19.33"
 // CC1-DAG:    "-fdeclspec"
 // CC1-DAG:    "-exception-model=seh"
+// CC1-X64-DAG: "-ehcontguard"
 
 // Flags the toolchain never passes by default. The Universal CRT's
 // configuration is left to the wrapper headers and the project.
