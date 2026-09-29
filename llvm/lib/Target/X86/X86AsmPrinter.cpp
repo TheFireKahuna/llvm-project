@@ -152,17 +152,15 @@ uint32_t X86AsmPrinter::MaskKCFIType(uint32_t Value) {
 }
 
 void X86AsmPrinter::EmitKCFITypePadding(const MachineFunction &MF,
-                                        bool HasType) {
+                                        unsigned TypeBytes) {
   // Keep the function entry aligned, taking patchable-function-prefix into
   // account if set.
   int64_t PrefixBytes = MF.getFunction().getFnAttributeAsParsedInteger(
       "patchable-function-prefix");
 
   // Also take the type identifier into account if we're emitting
-  // one. Otherwise, just pad with nops. The X86::MOV32ri instruction emitted
-  // in X86AsmPrinter::emitKCFITypeId is 5 bytes long.
-  if (HasType)
-    PrefixBytes += 5;
+  // one. Otherwise, just pad with nops.
+  PrefixBytes += TypeBytes;
 
   emitNops(offsetToAlignment(PrefixBytes, MF.getPreferredAlignment()));
 }
@@ -171,7 +169,11 @@ void X86AsmPrinter::EmitKCFITypePadding(const MachineFunction &MF,
 /// format.
 void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
   const Function &F = MF.getFunction();
-  if (!F.getParent()->getModuleFlag("kcfi"))
+  // A module with a marker gives every typed function a prefix, whether or
+  // not it checks its own indirect calls.
+  const ConstantInt *Marker = mdconst::extract_or_null<ConstantInt>(
+      F.getParent()->getModuleFlag("kcfi-marker"));
+  if (!F.getParent()->getModuleFlag("kcfi") && !Marker)
     return;
 
   ConstantInt *Type = nullptr;
@@ -181,7 +183,7 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
   // If we don't have a type to emit, just emit padding if needed to maintain
   // the same alignment for all functions.
   if (!Type) {
-    EmitKCFITypePadding(MF, /*HasType=*/false);
+    EmitKCFITypePadding(MF, /*TypeBytes=*/0);
     return;
   }
 
@@ -199,8 +201,24 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
   OutStreamer->emitLabel(FnSym);
 
   // Embed the type hash in the X86::MOV32ri instruction to avoid special
-  // casing object file parsers.
-  EmitKCFITypePadding(MF);
+  // casing object file parsers. The instruction is 5 bytes long.
+  unsigned TypeBytes = 5;
+  // The marker is the displacement of a 7-byte nopl, so that the 8 bytes
+  // before the hash are a fixed pattern: 0F 1F 80, the marker, and the B8 of
+  // the move.
+  if (Marker)
+    TypeBytes += 7;
+  EmitKCFITypePadding(MF, TypeBytes);
+  if (Marker) {
+    MCInst Nop = MCInstBuilder(X86::NOOPL)
+                     .addReg(X86::RAX)
+                     .addImm(1)
+                     .addReg(X86::NoRegister)
+                     .addImm(static_cast<int32_t>(Marker->getZExtValue()))
+                     .addReg(X86::NoRegister);
+    Nop.setFlags(X86::IP_USE_DISP32);
+    EmitAndCountInstruction(Nop);
+  }
   unsigned DestReg = X86::EAX;
 
   if (F.getParent()->getModuleFlag("kcfi-arity")) {

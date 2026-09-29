@@ -1695,9 +1695,29 @@ void AsmPrinter::emitKCFITrapEntry(const MachineFunction &MF,
 
 void AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
   const Function &F = MF.getFunction();
-  if (const MDNode *MD = F.getMetadata(LLVMContext::MD_kcfi_type))
-    emitGlobalConstant(F.getDataLayout(),
-                       mdconst::extract<ConstantInt>(MD->getOperand(0)));
+  const MDNode *MD = F.getMetadata(LLVMContext::MD_kcfi_type);
+  if (!MD)
+    return;
+  auto *Type = mdconst::extract<ConstantInt>(MD->getOperand(0));
+  const ConstantInt *Marker = mdconst::extract_or_null<ConstantInt>(
+      F.getParent()->getModuleFlag("kcfi-marker"));
+  if (!Marker) {
+    emitGlobalConstant(F.getDataLayout(), Type);
+    return;
+  }
+
+  // With a marker, the 8 bytes before the type are the pattern x86 encodes
+  // as a nopl and the opcode of a move: 0F 1F 80, the marker, B8. A __cfi_
+  // symbol marks the prefix, as on x86, with the function's linkage except on
+  // COFF, where it is local.
+  MCSymbol *FnSym = OutContext.getOrCreateSymbol("__cfi_" + MF.getName());
+  if (!TM.getTargetTriple().isOSBinFormatCOFF())
+    emitLinkage(&F, FnSym);
+  OutStreamer->emitLabel(FnSym);
+  OutStreamer->emitBytes(StringRef("\x0f\x1f\x80", 3));
+  OutStreamer->emitIntValue(Marker->getZExtValue(), 4);
+  OutStreamer->emitBytes(StringRef("\xb8", 1));
+  OutStreamer->emitIntValue(Type->getZExtValue(), 4);
 }
 
 void AsmPrinter::emitPseudoProbe(const MachineInstr &MI) {

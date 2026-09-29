@@ -1,0 +1,42 @@
+; RUN: llc -mtriple=x86_64-unknown-windows-itanium < %s | FileCheck %s --check-prefix=ASM
+; RUN: llc -mtriple=x86_64-unknown-windows-itanium -filetype=obj < %s \
+; RUN:   | llvm-objdump -d - | FileCheck %s --check-prefix=OBJ
+
+;; With the kcfi-marker module flag, every typed function gets a prefix whose
+;; 8 bytes before the type are 0F 1F 80, the marker, and B8, whether or not
+;; the module has the kcfi flag. The marker is always a 32-bit displacement.
+
+; ASM:       .p2align 4
+; ASM-LABEL: __cfi_f1:
+; ASM-COUNT-4: nop
+; ASM-NEXT:    {disp32} nopl 16(%rax)
+; ASM-NEXT:    movl $12345678, %eax
+; ASM-LABEL: f1:
+
+; OBJ:      <__cfi_f1>:
+; OBJ-NEXT:   90 nop
+; OBJ-NEXT:   90 nop
+; OBJ-NEXT:   90 nop
+; OBJ-NEXT:   90 nop
+; OBJ-NEXT:   0f 1f 80 10 00 00 00 nopl 0x10(%rax)
+; OBJ-NEXT:   b8 4e 61 bc 00       movl $0xbc614e, %eax
+; OBJ-EMPTY:
+; OBJ-NEXT: <f1>:
+define void @f1() !kcfi_type !1 {
+  ret void
+}
+
+;; An untyped function has no prefix.
+; ASM-NOT:   __cfi_f2:
+; ASM:       .p2align 4
+; ASM-NOT:   nop
+; ASM-LABEL: f2:
+; OBJ-NOT:  <__cfi_f2>:
+; OBJ:      <f2>:
+define void @f2() {
+  ret void
+}
+
+!llvm.module.flags = !{!0}
+!0 = !{i32 4, !"kcfi-marker", i32 16}
+!1 = !{i32 12345678}
