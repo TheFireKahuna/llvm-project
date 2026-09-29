@@ -29,7 +29,7 @@ def cabs : TargetLibCall< "cabs", ? /* Checked manually. */>;
 // CHECK:      #ifdef GET_TARGET_LIBRARY_INFO_STRING_TABLE
 // CHECK-NEXT: #undef GET_TARGET_LIBRARY_INFO_STRING_TABLE
 
-// CHECK:      #ifdef __GNUC__
+// CHECK:      #if defined(__GNUC__) || defined(__clang__)
 // CHECK-NEXT: #pragma GCC diagnostic push
 // CHECK-NEXT: #pragma GCC diagnostic ignored "-Woverlength-strings"
 // CHECK-NEXT: #endif
@@ -41,7 +41,7 @@ def cabs : TargetLibCall< "cabs", ? /* Checked manually. */>;
 // CHECK-NEXT:   "printf\0"
 // CHECK-NEXT:   "cabs\0"
 // CHECK-NEXT:   ;
-// CHECK-NEXT: #ifdef __GNUC__
+// CHECK-NEXT: #if defined(__GNUC__) || defined(__clang__)
 // CHECK-NEXT: #pragma GCC diagnostic pop
 // CHECK-NEXT: #endif
 

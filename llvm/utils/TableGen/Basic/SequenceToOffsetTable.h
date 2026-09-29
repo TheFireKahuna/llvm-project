@@ -141,7 +141,7 @@ public:
       return;
     }
 
-    OS << "\n#ifdef __GNUC__\n"
+    OS << "\n#if defined(__GNUC__) || defined(__clang__)\n"
        << "#pragma GCC diagnostic push\n"
        << "#pragma GCC diagnostic ignored \"-Woverlength-strings\"\n"
        << "#endif\n"
@@ -154,7 +154,7 @@ public:
       OS << "\"\n";
     }
     OS << "};\n"
-       << "#ifdef __GNUC__\n"
+       << "#if defined(__GNUC__) || defined(__clang__)\n"
        << "#pragma GCC diagnostic pop\n"
        << "#endif\n\n";
   }

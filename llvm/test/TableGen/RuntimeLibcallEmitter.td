@@ -118,7 +118,7 @@ def BlahLibrary : SystemRuntimeLibrary<isBlahArch, (add calloc, LibraryWithCondi
 // CHECK-NEXT: #undef GET_INIT_RUNTIME_LIBCALL_NAMES
 // CHECK-EMPTY:
 // CHECK-EMPTY:
-// CHECK-NEXT: #ifdef __GNUC__
+// CHECK-NEXT: #if defined(__GNUC__) || defined(__clang__)
 // CHECK-NEXT: #pragma GCC diagnostic push
 // CHECK-NEXT: #pragma GCC diagnostic ignored "-Woverlength-strings"
 // CHECK-NEXT: #endif
@@ -132,7 +132,7 @@ def BlahLibrary : SystemRuntimeLibrary<isBlahArch, (add calloc, LibraryWithCondi
 // CHECK-NEXT:   "calloc\0"
 // CHECK-NEXT:   "sqrtl\0"
 // CHECK-NEXT:   ;
-// CHECK-NEXT: #ifdef __GNUC__
+// CHECK-NEXT: #if defined(__GNUC__) || defined(__clang__)
 // CHECK-NEXT: #pragma GCC diagnostic pop
 // CHECK-NEXT: #endif
 // CHECK-EMPTY:
