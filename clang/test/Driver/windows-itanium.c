@@ -109,11 +109,35 @@
 // LINK-A64-SAME: "-machine:arm64"
 // LINK-A64-SAME: "-dll"
 
-// -mguard= as for MinGW; Control Flow Guard is off by default.
+// Control Flow Guard is on by default, and an executable suppresses its
+// exports as call targets.
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium %s 2>&1 \
-// RUN:   | FileCheck --check-prefix=NO-CF %s
+// RUN:   | FileCheck --check-prefix=CF %s
+// RUN: %clang -### --target=aarch64-unknown-windows-itanium %s \
+// RUN:     -mguard=cf 2>&1 \
+// RUN:   | FileCheck --check-prefix=CF %s
+// RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium /guard:cf- \
+// RUN:     /guard:cf -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CF %s
+// CF:      "-cc1"
+// CF-SAME: "-cfguard"
+// CF-NEXT: lld-link{{(.exe)?}}"
+// CF-SAME: "-guard:cf,exportsuppress"
+
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium %s -shared 2>&1 \
+// RUN:   | FileCheck --check-prefix=CF-DLL %s
+// CF-DLL:      "-cc1"
+// CF-DLL-SAME: "-cfguard"
+// CF-DLL-NEXT: lld-link{{(.exe)?}}"
+// CF-DLL-SAME: "-guard:cf"
+// CF-DLL-NOT:  "-guard:
+
+// -mguard=none and /guard:cf- turn it off.
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium %s \
 // RUN:     -mguard=none 2>&1 \
+// RUN:   | FileCheck --check-prefix=NO-CF %s
+// RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium /guard:cf- \
+// RUN:     -- %s 2>&1 \
 // RUN:   | FileCheck --check-prefix=NO-CF %s
 // NO-CF:      "-cc1"
 // NO-CF-NOT:  "-cfguard"
@@ -121,28 +145,37 @@
 // NO-CF-NEXT: lld-link{{(.exe)?}}"
 // NO-CF-NOT:  "-guard:
 
-// RUN: %clang -### --target=aarch64-unknown-windows-itanium %s \
-// RUN:     -mguard=cf 2>&1 \
-// RUN:   | FileCheck --check-prefix=CF %s
-// CF:      "-cc1"
-// CF-SAME: "-cfguard"
-// CF-NEXT: lld-link{{(.exe)?}}"
-// CF-SAME: "-guard:cf"
-
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium %s \
 // RUN:     -mguard=cf-nochecks 2>&1 \
+// RUN:   | FileCheck --check-prefix=CF-NOCHECKS %s
+// RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium \
+// RUN:     /guard:cf,nochecks -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CF-NOCHECKS %s
+// RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium /guard:cf \
+// RUN:     /d2guardnochecks -- %s 2>&1 \
 // RUN:   | FileCheck --check-prefix=CF-NOCHECKS %s
 // CF-NOCHECKS:      "-cc1"
 // CF-NOCHECKS-NOT:  "-cfguard"
 // CF-NOCHECKS-SAME: "-cfguard-no-checks"
 // CF-NOCHECKS-NOT:  "-cfguard"
 // CF-NOCHECKS-NEXT: lld-link{{(.exe)?}}"
-// CF-NOCHECKS-SAME: "-guard:cf"
+// CF-NOCHECKS-SAME: "-guard:cf,exportsuppress"
+
+// /guard:ehcont and /guard:ehcont- leave the mode alone.
+// RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium /guard:ehcont- \
+// RUN:     /c -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CL-EHCONT %s
+// CL-EHCONT: "-cc1"
+// CL-EHCONT-SAME: "-cfguard"
 
 // RUN: not %clang -### --target=x86_64-unknown-windows-itanium %s \
 // RUN:     -mguard=ehcont 2>&1 \
 // RUN:   | FileCheck --check-prefix=CF-UNKNOWN %s
 // CF-UNKNOWN: error: unsupported argument 'ehcont' to option '-mguard='
+// RUN: not %clang_cl -### --target=x86_64-unknown-windows-itanium \
+// RUN:     /guard:foo /c -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CL-UNKNOWN %s
+// CL-UNKNOWN: error: invalid value 'foo' in '/guard:'
 
 //--- Windows Kits/10/Include/10.0.26100.0/ucrt/stdio.h
 int puts(const char *);

@@ -95,14 +95,11 @@ void tools::windowsitanium::Linker::ConstructJob(
   if (Args.hasArg(options::OPT_g_Group, options::OPT__SLASH_Z7))
     CmdArgs.push_back("-debug");
 
-  if (Arg *A = Args.getLastArg(options::OPT_mguard_EQ)) {
-    StringRef GuardArgs = A->getValue();
-    if (GuardArgs == "cf" || GuardArgs == "cf-nochecks")
-      CmdArgs.push_back("-guard:cf");
-    else if (GuardArgs != "none")
-      D.Diag(diag::err_drv_unsupported_option_argument)
-          << A->getSpelling() << GuardArgs;
-  }
+  // Control Flow Guard is on unless -mguard=none, and an executable suppresses
+  // its exports as call targets until GetProcAddress returns them. lld-link
+  // honors only the last -guard: option, so the two go together.
+  if (TC.getGuardMode(Args) != "none")
+    CmdArgs.push_back(IsDLL ? "-guard:cf" : "-guard:cf,exportsuppress");
 
   std::vector<std::string> LibDirs = Args.getAllArgValues(options::OPT_L);
   TC.addSystemLibraryDirs(Args, LibDirs);
@@ -202,21 +199,27 @@ void WindowsItaniumBaseToolChain::addClangTargetOptions(
     if (Arg *A = DriverArgs.getLastArgNoClaim(Opt))
       A->ignoreTargetSpecific();
 
-  if (Arg *A = DriverArgs.getLastArg(options::OPT_mguard_EQ)) {
-    StringRef GuardArgs = A->getValue();
-    if (GuardArgs == "none") {
-      // Do nothing.
-    } else if (GuardArgs == "cf") {
-      // Emit CFG instrumentation and the table of address-taken functions.
-      CC1Args.push_back("-cfguard");
-    } else if (GuardArgs == "cf-nochecks") {
-      // Emit only the table of address-taken functions.
-      CC1Args.push_back("-cfguard-no-checks");
-    } else {
-      getDriver().Diag(diag::err_drv_unsupported_option_argument)
-          << A->getSpelling() << GuardArgs;
-    }
+  StringRef GuardArgs = getGuardMode(DriverArgs);
+  if (GuardArgs == "cf") {
+    // Emit CFG instrumentation and the table of address-taken functions.
+    CC1Args.push_back("-cfguard");
+  } else if (GuardArgs == "cf-nochecks") {
+    // Emit only the table of address-taken functions.
+    CC1Args.push_back("-cfguard-no-checks");
   }
+}
+
+StringRef WindowsItaniumBaseToolChain::getGuardMode(const ArgList &Args) const {
+  const Arg *A = Args.getLastArg(options::OPT_mguard_EQ);
+  if (!A)
+    return "cf";
+  StringRef GuardArgs = A->getValue();
+  if (GuardArgs != "none" && GuardArgs != "cf" && GuardArgs != "cf-nochecks") {
+    getDriver().Diag(diag::err_drv_unsupported_option_argument)
+        << A->getSpelling() << GuardArgs;
+    return "none";
+  }
+  return GuardArgs;
 }
 
 void WindowsItaniumBaseToolChain::AddCXXStdlibLibArgs(
@@ -276,6 +279,39 @@ void WindowsItaniumBaseToolChain::translateCommonArgs(
   if (!Args.hasArgNoClaim(options::OPT_fuse_cxa_atexit,
                           options::OPT_fno_use_cxa_atexit))
     DAL.AddFlagArg(nullptr, Opts.getOption(options::OPT_fuse_cxa_atexit));
+
+  // clang-cl's /guard: spellings select the -mguard= mode, which is otherwise
+  // on by default: /guard:cf- turns Control Flow Guard off. /guard:ehcont and
+  // /guard:ehcont- change nothing, since whether objects carry EH continuation
+  // metadata is the target's choice.
+  const Arg *GuardArg = nullptr;
+  StringRef GuardMode;
+  for (Arg *A : Args.filtered(options::OPT__SLASH_guard)) {
+    StringRef Value = A->getValue();
+    if (Value.equals_insensitive("cf")) {
+      GuardArg = A;
+      GuardMode = "cf";
+    } else if (Value.equals_insensitive("cf,nochecks")) {
+      GuardArg = A;
+      GuardMode = "cf-nochecks";
+    } else if (Value.equals_insensitive("cf-")) {
+      GuardArg = A;
+      GuardMode = "none";
+    } else if (!Value.equals_insensitive("ehcont") &&
+               !Value.equals_insensitive("ehcont-")) {
+      getDriver().Diag(diag::err_drv_invalid_value)
+          << A->getSpelling() << Value;
+    }
+    A->claim();
+  }
+  DAL.eraseArg(options::OPT__SLASH_guard);
+  if (GuardArg) {
+    // /d2guardnochecks keeps only the table of address-taken functions.
+    if (GuardMode == "cf" && Args.hasArg(options::OPT__SLASH_d2guardnochecks))
+      GuardMode = "cf-nochecks";
+    DAL.AddJoinedArg(GuardArg, Opts.getOption(options::OPT_mguard_EQ),
+                     GuardMode);
+  }
 
   for (Arg *A : Args.filtered(options::OPT_fsjlj_exceptions,
                               options::OPT_fdwarf_exceptions,

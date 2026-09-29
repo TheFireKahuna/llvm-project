@@ -10,11 +10,10 @@
 // RUN:       --implicit-check-not=-subsystem: \
 // RUN:       --implicit-check-not=-delayload-protect \
 // RUN:       --implicit-check-not=-cetcompat \
-// RUN:       --implicit-check-not=-guard: \
 // RUN:       --implicit-check-not=-nodefaultlib:oldnames \
 // RUN:       --implicit-check-not=heap=segment
 // C:      lld-link{{(.exe)?}}" "-out:a.exe" "-machine:x64" "-nologo" "-lldignoreenv"
-// C-SAME: "-import-slots"
+// C-SAME: "-import-slots" "-guard:cf,exportsuppress"
 // C-SAME: "{{[^"]*}}.o"
 // C-SAME: "-defaultlib:libunwind.dll.lib"
 // C-SAME: "-defaultlib:clang_rt.builtins{{[^"]*}}.lib"
