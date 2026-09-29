@@ -61,6 +61,7 @@
 #include "llvm/Support/KnownBits.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Target/TargetOptions.h"
+#include "llvm/Transforms/CFGuard.h"
 #include <algorithm>
 #include <bitset>
 #include <cctype>
@@ -65466,6 +65467,15 @@ X86TargetLowering::EmitKCFICheck(MachineBasicBlock &MBB,
   case X86::CALL64m_NT:
   case X86::TAILJMPm64:
   case X86::TAILJMPm64_REX: {
+    // A call through the Control Flow Guard dispatch function passes the
+    // real target in RAX. Check that, and keep the call through the dispatch.
+    const MachineOperand &Disp = MBBI->getOperand(X86::AddrDisp);
+    if (Disp.isGlobal() && isCFGuardFunction(Disp.getGlobal()))
+      return BuildMI(MBB, MBBI, MIMetadata(*MBBI), TII->get(X86::KCFI_CHECK))
+          .addReg(X86::RAX)
+          .addImm(MBBI->getCFIType())
+          .getInstr();
+
     MachineBasicBlock::instr_iterator OrigCall = MBBI;
     SmallVector<MachineInstr *, 2> NewMIs;
     if (!TII->unfoldMemoryOperand(MF, *OrigCall, X86::R11, /*UnfoldLoad=*/true,

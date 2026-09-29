@@ -2590,6 +2590,12 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
     // through a register, since the call instruction's 32-bit
     // pc-relative offset may not be large enough to hold the whole
     // address.
+    // The KCFI check of a call through the Control Flow Guard dispatch
+    // function tests RAX, which it finds from the call's memory operand.
+    if (IsCFICall && CB && isCFGuardCall(CB))
+      reportFatalUsageError("KCFI checks of calls through the Control Flow "
+                            "Guard dispatch function are not supported in "
+                            "the large code model");
   } else if (Callee->getOpcode() == ISD::GlobalAddress ||
              Callee->getOpcode() == ISD::ExternalSymbol) {
     // Lower direct calls to global addresses and external symbols. Setting
