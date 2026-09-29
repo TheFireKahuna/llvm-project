@@ -377,6 +377,9 @@ public:
     // This convention allows using the Win64 convention on other targets.
     case CallingConv::Win64:
       return true;
+    // The x86-64 guard check function is a Win64 function on every target.
+    case CallingConv::CFGuard_Check:
+      return is64Bit();
     // This convention allows using the SysV convention on Windows targets.
     case CallingConv::X86_64_SysV:
       return false;

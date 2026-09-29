@@ -1240,12 +1240,12 @@ def CSR_Win64_RegCall       : CalleeSavedRegs<(add CSR_Win64_RegCall_NoSSE,
                                               (sequence "XMM%u", 8, 15))>;
 def CSR_Win64_APX_RegCall   : CalleeSavedRegs<(add CSR_Win64_RegCall_NoSSE, R30, R31,
                                               (sequence "XMM%u", 8, 15))>;
-def CSR_Win64_CFGuard_Check_NoSSE : CalleeSavedRegs<(add CSR_Win64_RegCall_NoSSE, RCX)>;
-def CSR_Win64_CFGuard_Check       : CalleeSavedRegs<(add CSR_Win64_RegCall, RCX)>;
-def CSR_Win64_APX_CFGuard_Check   : CalleeSavedRegs<(add CSR_Win64_RegCall_NoSSE,
-                                                     (sequence "R%u", 16, 31),
-                                                     (sequence "XMM%u", 8, 15),
-                                                     RCX)>;
+// The x86-64 guard check function is a Win64 function that also preserves its
+// argument; it uses RAX, R10 and R11 as scratch.
+def CSR_Win64_CFGuard_Check_NoSSE : CalleeSavedRegs<(add CSR_Win64_NoSSE, RCX)>;
+def CSR_Win64_CFGuard_Check       : CalleeSavedRegs<(add CSR_Win64, RCX)>;
+def CSR_Win64_APX_CFGuard_Check   : CalleeSavedRegs<(add CSR_Win64, RCX,
+                                                     (sequence "R%u", 16, 31))>;
 def CSR_SysV64_RegCall_NoSSE : CalleeSavedRegs<(add RBX, RBP,
                                                (sequence "R%u", 12, 15))>;
 def CSR_SysV64_RegCall       : CalleeSavedRegs<(add CSR_SysV64_RegCall_NoSSE,               
