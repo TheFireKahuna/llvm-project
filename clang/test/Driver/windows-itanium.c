@@ -14,6 +14,8 @@
 // CC1-DAG:    "-fdeclspec"
 // CC1-DAG:    "-exception-model=seh"
 // CC1-X64-DAG: "-ehcontguard"
+// CC1-DAG:    "-ffunction-sections"
+// CC1-DAG:    "-fdata-sections"
 
 // Flags the toolchain never passes by default. The Universal CRT's
 // configuration is left to the wrapper headers and the project.
@@ -68,6 +70,23 @@
 // RUN:       --implicit-check-not=-exception-model=dwarf
 // DWARF: warning: ignoring '-fdwarf-exceptions' option as it is not currently supported for target 'x86_64-unknown-windows-itanium'
 // DWARF: "-exception-model=seh"
+
+// Every function and every data item has a section of its own.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fno-function-sections -fno-data-sections 2>&1 \
+// RUN:   | FileCheck --check-prefixes=SECTIONS,SECTIONS-ALL %s
+// RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium /c /Gy- /Gw- \
+// RUN:     -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefixes=SECTIONS-CL,SECTIONS-ALL %s
+// SECTIONS-NOT:    warning: argument unused
+// SECTIONS:        warning: ignoring '-fno-function-sections' option as it is not currently supported for target 'x86_64-unknown-windows-itanium'
+// SECTIONS-NEXT:   warning: ignoring '-fno-data-sections' option as it is not currently supported for target 'x86_64-unknown-windows-itanium'
+// SECTIONS-NOT:    warning: argument unused
+// SECTIONS-CL:     warning: ignoring '/Gy-' option as it is not currently supported for target 'x86_64-unknown-windows-itanium'
+// SECTIONS-CL-NEXT: warning: ignoring '/Gw-' option as it is not currently supported for target 'x86_64-unknown-windows-itanium'
+// SECTIONS-ALL:      "-cc1"
+// SECTIONS-ALL-SAME: "-ffunction-sections"
+// SECTIONS-ALL-SAME: "-fdata-sections"
 
 // The resource headers, the wrappers over the Universal CRT and Windows SDK
 // headers, then those headers, found as the MSVC toolchain finds them.

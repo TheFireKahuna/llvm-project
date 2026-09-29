@@ -319,6 +319,17 @@ void WindowsItaniumBaseToolChain::translateCommonArgs(
                      GuardMode);
   }
 
+  // Every function and every data item has a section of its own, from which
+  // the linker takes its extent, so the -fno- forms, and clang-cl's /Gy- and
+  // /Gw-, are ignored.
+  for (Arg *A : Args.filtered(options::OPT_fno_function_sections,
+                              options::OPT_fno_data_sections)) {
+    getDriver().Diag(diag::warn_drv_unsupported_option_for_target)
+        << A->getAsString(Args) << getTriple().str();
+    A->claim();
+    DAL.eraseArg(A->getOption().getID());
+  }
+
   for (Arg *A : Args.filtered(options::OPT_fsjlj_exceptions,
                               options::OPT_fdwarf_exceptions,
                               options::OPT_fwasm_exceptions)) {
