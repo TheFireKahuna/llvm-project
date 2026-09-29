@@ -547,6 +547,9 @@ def CC_X86_64_C : CallingConv<[
   CCIfCC<"CallingConv::SwiftTail",
     CCIfSRet<CCIfType<[i64], CCAssignToReg<[RAX]>>>>,
 
+  // The 'CFGuardTarget' parameter, if any, is passed in RAX, as on Win64.
+  CCIfCFGuardTarget<CCAssignToReg<[RAX]>>,
+
   // Pointers are always passed in full 64-bit registers.
   CCIfPtr<CCCustom<"CC_X86_64_Pointer">>,
 
