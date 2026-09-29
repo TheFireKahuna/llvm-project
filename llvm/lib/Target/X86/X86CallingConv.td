@@ -985,6 +985,12 @@ def CC_X86_Win32_CFGuard_Check : CallingConv<[
   CCIfType<[i32], CCAssignToReg<[ECX]>>
 ]>;
 
+def CC_X86_Win64_CFGuard_Check : CallingConv<[
+  // The CFGuard check call takes exactly one integer argument
+  // (i.e. the target function address), which is passed in RCX.
+  CCIfType<[i64], CCAssignToReg<[RCX]>>
+]>;
+
 def CC_X86_32_GHC : CallingConv<[
   // Promote i8/i16 arguments to i32.
   CCIfType<[i8, i16], CCPromoteToType<i32>>,
@@ -1101,6 +1107,8 @@ def CC_X86_64 : CallingConv<[
   CCIfCC<"CallingConv::X86_RegCall", CCDelegateTo<CC_X86_SysV64_RegCall>>,
   CCIfCC<"CallingConv::PreserveNone", CCDelegateTo<CC_X86_64_Preserve_None>>,
   CCIfCC<"CallingConv::X86_INTR", CCCustom<"CC_X86_Intr">>,
+  CCIfCC<"CallingConv::CFGuard_Check",
+    CCDelegateTo<CC_X86_Win64_CFGuard_Check>>,
 
   // Mingw64 and native Win64 use Win64 CC
   CCIfSubtarget<"isTargetWin64()", CCDelegateTo<CC_X86_Win64_C>>,
