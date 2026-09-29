@@ -51,6 +51,9 @@ class WinCOFFObjectWriter final : public MCObjectWriter {
   std::unique_ptr<MCWinCOFFObjectTargetWriter> TargetObjectWriter;
   std::unique_ptr<WinCOFFWriter> ObjWriter, DwoWriter;
   bool IncrementalLinkerCompatible = false;
+  // The capabilities field of the object's link-only records. A nonzero
+  // value gives the object a .llvm_link_records section.
+  uint64_t LinkRecordCapabilities = 0;
 
 public:
   WinCOFFObjectWriter(std::unique_ptr<MCWinCOFFObjectTargetWriter> MOTW,
@@ -64,6 +67,10 @@ public:
   void setIncrementalLinkerCompatible(bool Value) {
     IncrementalLinkerCompatible = Value;
   }
+  void setLinkRecordCapabilities(uint64_t Value) {
+    LinkRecordCapabilities = Value;
+  }
+  bool hasLinkRecords() const { return LinkRecordCapabilities != 0; }
   void executePostLayoutBinding() override;
   bool isSymbolRefDifferenceFullyResolvedImpl(const MCSymbol &SymA,
                                               const MCFragment &FB, bool InSet,

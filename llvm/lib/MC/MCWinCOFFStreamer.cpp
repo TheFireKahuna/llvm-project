@@ -430,6 +430,9 @@ void MCWinCOFFStreamer::finishImpl() {
     switchSection(Asm.getContext().getCOFFSection(".llvm.call-graph-profile",
                                                   COFF::IMAGE_SCN_LNK_REMOVE));
   }
+  if (getWriter().hasLinkRecords())
+    switchSection(Asm.getContext().getCOFFSection(".llvm_link_records",
+                                                  COFF::IMAGE_SCN_LNK_REMOVE));
 
   MCObjectStreamer::finishImpl();
 }
