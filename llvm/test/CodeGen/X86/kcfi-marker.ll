@@ -37,6 +37,26 @@ define void @f2() {
   ret void
 }
 
+;; A function with a second type carries it 16 bytes before its entry.
+; ASM:       .p2align 4
+; ASM-LABEL: __cfi_f3:
+; ASM-NEXT:    .long 305419896
+; ASM-NEXT:    {disp32} nopl 16(%rax)
+; ASM-NEXT:    movl $12345678, %eax
+; ASM-LABEL: f3:
+
+; OBJ:      <__cfi_f3>:
+; OBJ-NEXT:   78 56
+; OBJ-NEXT:   34 12
+; OBJ-NEXT:   0f 1f 80 10 00 00 00 nopl 0x10(%rax)
+; OBJ-NEXT:   b8 4e 61 bc 00       movl $0xbc614e, %eax
+; OBJ-EMPTY:
+; OBJ-NEXT: <f3>:
+define void @f3() !kcfi_type !1 !kcfi_vfn_type !2 {
+  ret void
+}
+
 !llvm.module.flags = !{!0}
 !0 = !{i32 4, !"kcfi-marker", i32 16}
 !1 = !{i32 12345678}
+!2 = !{i32 305419896}

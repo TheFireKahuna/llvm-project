@@ -206,10 +206,19 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
   unsigned TypeBytes = 5;
   // The marker is the displacement of a 7-byte nopl, so that the 8 bytes
   // before the hash are a fixed pattern: 0F 1F 80, the marker, and the B8 of
-  // the move.
-  if (Marker)
+  // the move. A second type the function carries, which a call through a
+  // member function pointer checks, precedes it.
+  ConstantInt *VfnType = nullptr;
+  if (Marker) {
     TypeBytes += 7;
+    if (const MDNode *MD = F.getMetadata("kcfi_vfn_type")) {
+      VfnType = mdconst::extract<ConstantInt>(MD->getOperand(0));
+      TypeBytes += 4;
+    }
+  }
   EmitKCFITypePadding(MF, TypeBytes);
+  if (VfnType)
+    OutStreamer->emitInt32(VfnType->getZExtValue());
   if (Marker) {
     MCInst Nop = MCInstBuilder(X86::NOOPL)
                      .addReg(X86::RAX)
