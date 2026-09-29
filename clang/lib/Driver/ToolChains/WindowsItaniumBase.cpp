@@ -330,6 +330,19 @@ void WindowsItaniumBaseToolChain::translateCommonArgs(
     DAL.eraseArg(A->getOption().getID());
   }
 
+  // Without an unwind table, the unwinder takes a function for a leaf, so an
+  // exception, a longjmp or a stack walk through it would go wrong. The tables
+  // are always emitted, even with -ffreestanding.
+  for (Arg *A : Args.filtered(options::OPT_fno_asynchronous_unwind_tables,
+                              options::OPT_fno_unwind_tables)) {
+    getDriver().Diag(diag::warn_drv_unsupported_option_for_target)
+        << A->getAsString(Args) << getTriple().str();
+    A->claim();
+    DAL.eraseArg(A->getOption().getID());
+  }
+  DAL.AddFlagArg(nullptr,
+                 Opts.getOption(options::OPT_fasynchronous_unwind_tables));
+
   for (Arg *A : Args.filtered(options::OPT_fsjlj_exceptions,
                               options::OPT_fdwarf_exceptions,
                               options::OPT_fwasm_exceptions)) {

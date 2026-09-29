@@ -16,6 +16,7 @@
 // CC1-X64-DAG: "-ehcontguard"
 // CC1-DAG:    "-ffunction-sections"
 // CC1-DAG:    "-fdata-sections"
+// CC1-DAG:    "-funwind-tables=2"
 
 // Flags the toolchain never passes by default. The Universal CRT's
 // configuration is left to the wrapper headers and the project.
@@ -87,6 +88,20 @@
 // SECTIONS-ALL:      "-cc1"
 // SECTIONS-ALL-SAME: "-ffunction-sections"
 // SECTIONS-ALL-SAME: "-fdata-sections"
+
+// Unwind tables are always emitted.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fno-asynchronous-unwind-tables -fno-unwind-tables 2>&1 \
+// RUN:   | FileCheck --check-prefix=UNWIND %s
+// RUN: %clang -### --target=aarch64-unknown-windows-itanium -c %s \
+// RUN:     -ffreestanding 2>&1 \
+// RUN:   | FileCheck --check-prefix=UNWIND-FREESTANDING %s
+// UNWIND-NOT:  warning: argument unused
+// UNWIND:      warning: ignoring '-fno-asynchronous-unwind-tables' option as it is not currently supported for target 'x86_64-unknown-windows-itanium'
+// UNWIND-NEXT: warning: ignoring '-fno-unwind-tables' option as it is not currently supported for target 'x86_64-unknown-windows-itanium'
+// UNWIND-NOT:  warning: argument unused
+// UNWIND:      "-funwind-tables=2"
+// UNWIND-FREESTANDING: "-funwind-tables=2"
 
 // The resource headers, the wrappers over the Universal CRT and Windows SDK
 // headers, then those headers, found as the MSVC toolchain finds them.
