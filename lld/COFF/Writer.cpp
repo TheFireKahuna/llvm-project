@@ -1390,8 +1390,8 @@ void Writer::appendImportThunks() {
     OutputSection *iatSec = dataSec;
     if (protectDelayIat()) {
       if (!didatSec->chunks.empty())
-        Err(ctx) << "/guard:cf: input sections named .didat cannot share the "
-                    "protected delay-load import address table's section";
+        Err(ctx) << "input sections named .didat cannot share the protected "
+                    "delay-load import address table's section";
       // .didat=.rdata is the default merge rule.
       auto it = ctx.config.merge.find(".didat");
       if (it != ctx.config.merge.end()) {
@@ -2216,11 +2216,13 @@ void Writer::markSymbolsWithRelocations(ObjFile *file,
 
 // Whether the delay-load import address table gets a section of its own,
 // which the loader keeps read-only. A call through the table is not checked by
-// Control Flow Guard, so it must not stay writable. mingw-w64's delay-load
+// Control Flow Guard, so it must not stay writable. A writable table is a
+// target for overwriting whether or not other calls are checked, so
+// -import-slots asks for it with or without /guard:cf. mingw-w64's delay-load
 // helper stores to the table directly, so MinGW images keep the old layout.
 bool Writer::protectDelayIat() {
-  return (ctx.config.guardCF & GuardCFLevel::CF) && !ctx.config.mingw &&
-         !delayIdata.empty();
+  return ((ctx.config.guardCF & GuardCFLevel::CF) || ctx.config.importSlots) &&
+         !ctx.config.mingw && !delayIdata.empty();
 }
 
 // Returns the offset in data of the language handler RVA of the unwind record
@@ -2323,16 +2325,17 @@ void Writer::createGuardCFTables() {
   if (config->guardCF == GuardCFLevel::Off) {
     // MSVC marks the entire image as instrumented if any input object was built
     // with /guard:cf.
-    for (ObjFile *file : ctx.objFileInstances) {
-      if (file->hasGuardCF()) {
-        ctx.forEachSymtab([&](SymbolTable &symtab) {
-          Symbol *flagSym = symtab.findUnderscore("__guard_flags");
-          cast<DefinedAbsolute>(flagSym)->setVA(
-              uint32_t(GuardFlags::CF_INSTRUMENTED));
-        });
-        break;
-      }
-    }
+    uint32_t guardFlags = 0;
+    if (llvm::any_of(ctx.objFileInstances,
+                     [](ObjFile *file) { return file->hasGuardCF(); }))
+      guardFlags |= uint32_t(GuardFlags::CF_INSTRUMENTED);
+    if (protectDelayIat())
+      guardFlags |= uint32_t(GuardFlags::PROTECT_DELAYLOAD_IAT) |
+                    uint32_t(GuardFlags::DELAYLOAD_IAT_IN_ITS_OWN_SECTION);
+    ctx.forEachSymtab([&](SymbolTable &symtab) {
+      Symbol *flagSym = symtab.findUnderscore("__guard_flags");
+      cast<DefinedAbsolute>(flagSym)->setVA(guardFlags);
+    });
     return;
   }
 

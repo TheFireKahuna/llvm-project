@@ -46,6 +46,21 @@
 # PROT-NEXT:   PROTECT_DELAYLOAD_IAT (0x1000)
 # PROT-NEXT: ]
 
+# -import-slots asks for the same layout and flags without /guard:cf.
+# RUN: lld-link %basename_t.obj -entry:main -out:%basename_t-slots.exe \
+# RUN:   %basename_t-exp.lib -alternatename:__delayLoadHelper2=main \
+# RUN:   -delayload:%basename_t-exp.dll -import-slots
+# RUN: llvm-readobj --sections --coff-imports --coff-load-config \
+# RUN:   %basename_t-slots.exe | FileCheck --check-prefix=SLOTS %s
+
+# SLOTS:      Name: .didat
+# SLOTS:      IMAGE_SCN_MEM_WRITE
+# SLOTS:      ImportAddressTable: 0x5000
+# SLOTS:      GuardFlags [ (0x3000)
+# SLOTS-NEXT:   DELAYLOAD_IAT_IN_ITS_OWN_SECTION (0x2000)
+# SLOTS-NEXT:   PROTECT_DELAYLOAD_IAT (0x1000)
+# SLOTS-NEXT: ]
+
 # MinGW's delay-load helper stores to the table directly, so a MinGW image
 # keeps the unprotected layout.
 # RUN: lld-link -lldmingw %basename_t.obj -entry:main -out:%basename_t-mingw.exe \
@@ -75,7 +90,7 @@
 # RUN:   -delayload:%basename_t-exp.dll -guard:cf -merge:.didat=.data 2>&1 \
 # RUN:   | FileCheck --check-prefix=ERR-FROM %s
 
-# ERR-INPUT: error: /guard:cf: input sections named .didat cannot share the protected delay-load import address table's section
+# ERR-INPUT: error: input sections named .didat cannot share the protected delay-load import address table's section
 # ERR-INTO-DAG: error: /merge:.bar=.didat: .didat holds the protected delay-load import address table and cannot be merged into
 # ERR-INTO-DAG: error: /merge:.foo=.bar: .didat holds the protected delay-load import address table and cannot be merged into
 # ERR-FROM: error: /merge:.didat=.data: .didat holds the protected delay-load import address table and cannot be merged
