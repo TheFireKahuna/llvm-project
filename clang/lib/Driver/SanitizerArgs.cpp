@@ -1018,6 +1018,13 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
       D.Diag(diag::err_drv_argument_not_allowed_with)
           << "-fsanitize=kcfi"
           << lastArgumentForMask(D, Args, SanitizerKind::CFI);
+
+    // A hot patch writes a jump into the bytes before a function's entry,
+    // which hold the type hash of the function's KCFI prefix.
+    if (const Arg *A = Args.getLastArg(options::OPT_fms_hotpatch);
+        A && (Kinds & SanitizerKind::KCFI) && DiagnoseErrors)
+      D.Diag(diag::err_drv_argument_not_allowed_with)
+          << "-fsanitize=kcfi" << A->getAsString(Args);
   }
 
   Stats = Args.hasFlag(options::OPT_fsanitize_stats,
