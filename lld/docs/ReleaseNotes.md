@@ -76,7 +76,9 @@ from the [LLVM releases web site](https://llvm.org/releases/).
   link.exe and LLD otherwise report an undefined symbol. The member is also
   loaded after LTO, for the calls through `__imp_` that code generation adds
   to library functions under `-fno-plt`. The delay-load import address table
-  is protected as under `/guard:cf`, with or without that flag.
+  is protected as under `/guard:cf`, with or without that flag. MinGW mode
+  no longer turns on `-runtime-pseudo-reloc` under it, and asking for pseudo
+  relocations with it is an error.
 
 ### MinGW Improvements
 

@@ -2308,8 +2308,13 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   config->autoImport =
       args.hasFlag(OPT_auto_import, OPT_auto_import_no, config->mingw);
   config->importSlots = args.hasArg(OPT_import_slots);
-  config->pseudoRelocs = args.hasFlag(
-      OPT_runtime_pseudo_reloc, OPT_runtime_pseudo_reloc_no, config->mingw);
+  // -import-slots binds imports where the image is laid out, so no runtime
+  // fixup is left for pseudo relocations to make.
+  config->pseudoRelocs =
+      args.hasFlag(OPT_runtime_pseudo_reloc, OPT_runtime_pseudo_reloc_no,
+                   config->mingw && !config->importSlots);
+  if (config->importSlots && config->pseudoRelocs)
+    Err(ctx) << "-runtime-pseudo-reloc is not compatible with -import-slots";
   config->callGraphProfileSort = args.hasFlag(
       OPT_call_graph_profile_sort, OPT_call_graph_profile_sort_no, true);
   config->stdcallFixup =
