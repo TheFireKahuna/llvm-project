@@ -20,6 +20,7 @@
 #include "clang/Basic/CodeGenOptions.h"
 #include "clang/CodeGen/CGFunctionInfo.h"
 #include "clang/CodeGen/ConstantInitBuilder.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Intrinsics.h"
@@ -44,6 +45,44 @@ llvm::GlobalVariable *CodeGenVTables::GetAddrOfVTable(const CXXRecordDecl *RD) {
   llvm::GlobalVariable *VTable =
       CGM.getCXXABI().getAddrOfVTable(RD, CharUnits());
   return VTable;
+}
+
+/// Returns a stub for the runtime's pure or deleted virtual function Fn that
+/// carries the KCFI type of the vtable slot Slot occupies, so that a call
+/// through the slot reaches the runtime's report rather than a KCFI failure.
+/// Slots of one type share a stub.
+static llvm::Function *getKCFIVirtualStub(CodeGenModule &CGM,
+                                          llvm::Function *Fn, GlobalDecl Slot) {
+  llvm::ConstantInt *TypeId = CGM.CreateKCFIVTableSlotTypeId(Slot);
+  std::string Name = (Fn->getName() + ".kcfi." +
+                      llvm::utohexstr(TypeId->getZExtValue(),
+                                      /*LowerCase=*/true, /*Width=*/8))
+                         .str();
+  if (llvm::Function *Stub = CGM.getModule().getFunction(Name))
+    return Stub;
+
+  llvm::Function *Stub = llvm::Function::Create(
+      Fn->getFunctionType(), llvm::GlobalValue::LinkOnceODRLinkage, Name,
+      &CGM.getModule());
+  Stub->setVisibility(llvm::GlobalValue::HiddenVisibility);
+  Stub->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+  Stub->setDSOLocal(true);
+  if (CGM.supportsCOMDAT())
+    Stub->setComdat(CGM.getModule().getOrInsertComdat(Name));
+
+  CodeGenFunction CGF(CGM);
+  CGF.StartFunction(GlobalDecl(), CGM.getContext().VoidTy, Stub,
+                    CGM.getTypes().arrangeNullaryFunction(), FunctionArgList());
+  llvm::CallInst *Call = CGF.EmitNounwindRuntimeCall(Fn);
+  Call->setDoesNotReturn();
+  CGF.Builder.CreateUnreachable();
+  CGF.Builder.ClearInsertionPoint();
+  CGF.FinishFunction();
+
+  Stub->setMetadata(llvm::LLVMContext::MD_kcfi_type,
+                    llvm::MDNode::get(CGM.getLLVMContext(),
+                                      llvm::ConstantAsMetadata::get(TypeId)));
+  return Stub;
 }
 
 static void setThunkProperties(CodeGenModule &CGM, const ThunkInfo &Thunk,
@@ -899,6 +938,14 @@ void CodeGenVTables::addVTableComponent(ConstantArrayBuilder &builder,
       if (CGM.getCodeGenOpts().PointerAuth.CXXVirtualFunctionPointers)
         GD = getItaniumVTableContext().findOriginalMethod(GD);
     }
+
+    // Under the KCFI marker scheme, the runtime's pure and deleted virtual
+    // functions are reached through stubs of the slot's type.
+    if ((fnPtr == PureVirtualFn || fnPtr == DeletedVirtualFn) &&
+        CGM.hasKCFIVTableSlotTypes())
+      fnPtr =
+          getKCFIVirtualStub(CGM, cast<llvm::Function>(fnPtr),
+                             getItaniumVTableContext().findOriginalMethod(GD));
 
     if (RelativeCXXABIVTables) {
       return addRelativeComponent(
