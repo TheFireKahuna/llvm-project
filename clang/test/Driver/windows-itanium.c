@@ -17,6 +17,7 @@
 // CC1-DAG:    "-ffunction-sections"
 // CC1-DAG:    "-fdata-sections"
 // CC1-DAG:    "-funwind-tables=2"
+// CC1-DAG:    "-stack-protector" "2"
 
 // Flags the toolchain never passes by default. The Universal CRT's
 // configuration is left to the wrapper headers and the project.
@@ -102,6 +103,21 @@
 // UNWIND-NOT:  warning: argument unused
 // UNWIND:      "-funwind-tables=2"
 // UNWIND-FREESTANDING: "-funwind-tables=2"
+
+// -fstack-protector-strong by default, which -fno-stack-protector and
+// clang-cl's /GS- turn off.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fno-stack-protector 2>&1 \
+// RUN:   | FileCheck --check-prefix=NO-SSP %s
+// RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium /c /GS- \
+// RUN:     -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=NO-SSP %s
+// NO-SSP:     "-cc1"
+// NO-SSP-NOT: "-stack-protector"
+// RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium /c /GS- /GS \
+// RUN:     -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CL-SSP %s
+// CL-SSP: "-stack-protector" "2"
 
 // The resource headers, the wrappers over the Universal CRT and Windows SDK
 // headers, then those headers, found as the MSVC toolchain finds them.

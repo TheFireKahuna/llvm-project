@@ -319,6 +319,15 @@ void WindowsItaniumBaseToolChain::translateCommonArgs(
                      GuardMode);
   }
 
+  // clang-cl's /GS- only leaves out the stack protector clang-cl asks for,
+  // which would leave the toolchain's default in place.
+  if (const Arg *A = Args.getLastArgNoClaim(
+          options::OPT__SLASH_GS, options::OPT__SLASH_GS_,
+          options::OPT_fstack_protector, options::OPT_fstack_protector_strong,
+          options::OPT_fstack_protector_all, options::OPT_fno_stack_protector);
+      A && A->getOption().matches(options::OPT__SLASH_GS_))
+    DAL.AddFlagArg(A, Opts.getOption(options::OPT_fno_stack_protector));
+
   // Every function and every data item has a section of its own, from which
   // the linker takes its extent, so the -fno- forms, and clang-cl's /Gy- and
   // /Gw-, are ignored.

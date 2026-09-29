@@ -23,6 +23,7 @@
 // CC1-DAG:     "-ffunction-sections"
 // CC1-DAG:     "-fdata-sections"
 // CC1-DAG:     "-funwind-tables=2"
+// CC1-DAG:     "-stack-protector" "2"
 
 // A statically linked libc is not imported.
 // RUN: %clang -### --target=x86_64-pc-windows-ntposix -c %s -static 2>&1 \

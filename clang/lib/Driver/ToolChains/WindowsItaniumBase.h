@@ -56,6 +56,12 @@ public:
   }
   bool isPICDefaultForced() const override { return true; }
 
+  /// -fstack-protector-strong, as /GS gives for MSVC.
+  LangOptions::StackProtectorMode
+  GetDefaultStackProtectorLevel(bool KernelOrKext) const override {
+    return LangOptions::SSPStrong;
+  }
+
   llvm::codegenoptions::DebugInfoFormat getDefaultDebugFormat() const override {
     return llvm::codegenoptions::DIF_CodeView;
   }
