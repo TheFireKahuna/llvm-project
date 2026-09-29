@@ -18,6 +18,9 @@
 // CC1-DAG:    "-fdata-sections"
 // CC1-DAG:    "-funwind-tables=2"
 // CC1-DAG:    "-stack-protector" "2"
+// CC1-DAG:    "-fsanitize=kcfi"
+// CC1-DAG:    "-fsanitize-kcfi-marker"
+// CC1-DAG:    "-fsanitize-cfi-icall-generalize-pointers"
 
 // Flags the toolchain never passes by default. The Universal CRT's
 // configuration is left to the wrapper headers and the project.
@@ -118,6 +121,46 @@
 // RUN:     -- %s 2>&1 \
 // RUN:   | FileCheck --check-prefix=CL-SSP %s
 // CL-SSP: "-stack-protector" "2"
+
+// -fno-sanitize=kcfi removes the checks, but every function keeps its prefix,
+// typed as with the checks.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fno-sanitize=kcfi 2>&1 \
+// RUN:   | FileCheck --check-prefix=NO-KCFI %s --implicit-check-not=-fsanitize=kcfi
+// NO-KCFI:     "-cc1"
+// NO-KCFI-DAG: "-fsanitize-kcfi-marker"
+// NO-KCFI-DAG: "-fsanitize-cfi-icall-generalize-pointers"
+
+// A hot patch would overwrite the prefix, with or without the checks.
+// RUN: not %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fms-hotpatch 2>&1 \
+// RUN:   | FileCheck --check-prefix=HOTPATCH %s
+// RUN: not %clang_cl -### --target=x86_64-unknown-windows-itanium /c /hotpatch \
+// RUN:     -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=HOTPATCH-CL %s
+// RUN: not %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fno-sanitize=kcfi -fms-hotpatch 2>&1 \
+// RUN:   | FileCheck --check-prefix=HOTPATCH-NO-KCFI %s
+// HOTPATCH: error: invalid argument '-fsanitize=kcfi' not allowed with '-fms-hotpatch'
+// HOTPATCH-CL: error: invalid argument '-fsanitize=kcfi' not allowed with '/hotpatch'
+// HOTPATCH-NO-KCFI: error: unsupported option '-fms-hotpatch' for target 'x86_64-unknown-windows-itanium'
+
+// The KCFI options apply to the default KCFI too, with or without the checks,
+// since they change the types.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fsanitize-kcfi-hash=FNV-1a 2>&1 \
+// RUN:   | FileCheck --check-prefix=KCFI-HASH %s
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fno-sanitize=kcfi -fsanitize-kcfi-hash=FNV-1a \
+// RUN:     -fsanitize-cfi-icall-generalize-pointers \
+// RUN:     -fsanitize-cfi-icall-experimental-normalize-integers 2>&1 \
+// RUN:   | FileCheck --check-prefix=KCFI-OPTS %s \
+// RUN:       --implicit-check-not=warning:
+// KCFI-HASH: "-fsanitize-kcfi-hash=FNV-1a"
+// KCFI-OPTS:     "-cc1"
+// KCFI-OPTS-DAG: "-fsanitize-cfi-icall-generalize-pointers"
+// KCFI-OPTS-DAG: "-fsanitize-cfi-icall-experimental-normalize-integers"
+// KCFI-OPTS-DAG: "-fsanitize-kcfi-hash=FNV-1a"
 
 // The resource headers, the wrappers over the Universal CRT and Windows SDK
 // headers, then those headers, found as the MSVC toolchain finds them.

@@ -56,6 +56,11 @@ public:
   }
   bool isPICDefaultForced() const override { return true; }
 
+  /// KCFI checks indirect calls unless -fno-sanitize=kcfi.
+  SanitizerMask getDefaultSanitizers() const override {
+    return SanitizerKind::KCFI;
+  }
+
   /// -fstack-protector-strong, as /GS gives for MSVC.
   LangOptions::StackProtectorMode
   GetDefaultStackProtectorLevel(bool KernelOrKext) const override {

@@ -9,6 +9,7 @@
 #include "WindowsItaniumBase.h"
 #include "clang/Driver/Compilation.h"
 #include "clang/Driver/Driver.h"
+#include "clang/Driver/SanitizerArgs.h"
 #include "clang/Options/Options.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Support/Path.h"
@@ -204,6 +205,34 @@ void WindowsItaniumBaseToolChain::addClangTargetOptions(
   for (auto Opt : {options::OPT_mwindows, options::OPT_mconsole})
     if (Arg *A = DriverArgs.getLastArgNoClaim(Opt))
       A->ignoreTargetSpecific();
+
+  // Every function carries a KCFI prefix with the marker, whether or not
+  // KCFI checks calls, and its type ignores pointee types, so that units
+  // built with -fno-sanitize=kcfi can be called from units that check.
+  // SanitizerArgs passes the options that change the type only with the
+  // checks.
+  CC1Args.push_back("-fsanitize-kcfi-marker");
+  bool HasKCFI = getSanitizerArgs(DriverArgs).hasKCFI();
+  bool Generalize =
+      DriverArgs.hasArg(options::OPT_fsanitize_cfi_icall_generalize_pointers);
+  if (!HasKCFI || !Generalize)
+    CC1Args.push_back("-fsanitize-cfi-icall-generalize-pointers");
+  if (!HasKCFI) {
+    if (DriverArgs.hasArg(options::OPT_fsanitize_cfi_icall_normalize_integers))
+      CC1Args.push_back("-fsanitize-cfi-icall-experimental-normalize-integers");
+    if (const Arg *A =
+            DriverArgs.getLastArg(options::OPT_fsanitize_kcfi_hash_EQ))
+      CC1Args.push_back(DriverArgs.MakeArgString(
+          Twine("-fsanitize-kcfi-hash=") + A->getValue()));
+  }
+
+  // A hot patch writes a jump into the bytes before a function's entry,
+  // which hold its KCFI prefix. Without KCFI checks, SanitizerArgs does not
+  // reject it.
+  if (const Arg *A = DriverArgs.getLastArg(options::OPT_fms_hotpatch);
+      A && !HasKCFI)
+    getDriver().Diag(diag::err_drv_unsupported_opt_for_target)
+        << A->getAsString(DriverArgs) << getTriple().str();
 
   StringRef GuardArgs = getGuardMode(DriverArgs);
   if (GuardArgs == "cf") {

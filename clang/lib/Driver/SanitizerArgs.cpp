@@ -1003,7 +1003,8 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
                      options::OPT_fno_sanitize_cfi_canonical_jump_tables, true);
   }
 
-  if (AllAddedKinds & SanitizerKind::KCFI) {
+  // KCFI may also be a toolchain default.
+  if ((AllAddedKinds | Kinds) & SanitizerKind::KCFI) {
     CfiICallGeneralizePointers =
         Args.hasArg(options::OPT_fsanitize_cfi_icall_generalize_pointers);
     CfiICallNormalizeIntegers =

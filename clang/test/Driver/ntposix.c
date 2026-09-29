@@ -24,6 +24,9 @@
 // CC1-DAG:     "-fdata-sections"
 // CC1-DAG:     "-funwind-tables=2"
 // CC1-DAG:     "-stack-protector" "2"
+// CC1-DAG:     "-fsanitize=kcfi"
+// CC1-DAG:     "-fsanitize-kcfi-marker"
+// CC1-DAG:     "-fsanitize-cfi-icall-generalize-pointers"
 
 // A statically linked libc is not imported.
 // RUN: %clang -### --target=x86_64-pc-windows-ntposix -c %s -static 2>&1 \
