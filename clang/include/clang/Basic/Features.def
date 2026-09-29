@@ -319,6 +319,7 @@ FEATURE(cfi_nvcall_sanitizer, LangOpts.Sanitize.has(SanitizerKind::CFINVCall))
 FEATURE(cfi_vcall_sanitizer, LangOpts.Sanitize.has(SanitizerKind::CFIVCall))
 FEATURE(kcfi, LangOpts.Sanitize.has(SanitizerKind::KCFI))
 FEATURE(kcfi_arity, LangOpts.Sanitize.has(SanitizerKind::KCFI))
+FEATURE(kcfi_marker, LangOpts.SanitizeKcfiMarker)
 FEATURE(modules, LangOpts.ClangModules)
 FEATURE(safe_stack, LangOpts.Sanitize.has(SanitizerKind::SafeStack))
 FEATURE(shadow_call_stack,

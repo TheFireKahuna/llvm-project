@@ -1752,6 +1752,13 @@ public:
   /// Generate a KCFI type identifier for T.
   llvm::ConstantInt *CreateKCFITypeId(QualType T, StringRef Salt);
 
+  /// Whether functions carry KCFI types: when KCFI checks calls, or when every
+  /// function carries a KCFI prefix with a marker.
+  bool hasKCFITypes() const {
+    return LangOpts.Sanitize.has(SanitizerKind::KCFI) ||
+           LangOpts.SanitizeKcfiMarker;
+  }
+
   /// Create a metadata identifier for the given function type.
   llvm::Metadata *CreateMetadataIdentifierForFnType(QualType T);
 

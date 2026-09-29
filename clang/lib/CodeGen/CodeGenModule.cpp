@@ -1252,7 +1252,7 @@ void CodeGenModule::Release() {
     CodeGenFunction(*this).EmitCfiCheckFail();
     CodeGenFunction(*this).EmitCfiCheckStub();
   }
-  if (LangOpts.Sanitize.has(SanitizerKind::KCFI))
+  if (hasKCFITypes())
     finalizeKCFITypes();
   emitAtAvailableLinkGuard();
   if (Context.getTargetInfo().getTriple().isWasm())
@@ -1612,6 +1612,21 @@ void CodeGenModule::Release() {
         llvm::MDString::get(
             getLLVMContext(),
             llvm::stringifyKCFIHashAlgorithm(CodeGenOpts.SanitizeKcfiHash)));
+  }
+
+  if (LangOpts.SanitizeKcfiMarker) {
+    // The marker tells prefixes of this scheme from any other, so it folds in
+    // every option that changes the type identifiers.
+    std::string Variant = "kcfi-marker.1";
+    if (CodeGenOpts.SanitizeCfiICallNormalizeIntegers)
+      Variant += ".normalized";
+    if (CodeGenOpts.SanitizeCfiICallGeneralizePointers)
+      Variant += ".generalized";
+    Variant += ".";
+    Variant += llvm::stringifyKCFIHashAlgorithm(CodeGenOpts.SanitizeKcfiHash);
+    getModule().addModuleFlag(
+        llvm::Module::Override, "kcfi-marker",
+        llvm::getKCFITypeID(Variant, llvm::KCFIHashAlgorithm::xxHash64));
   }
 
   if (CodeGenOpts.CFProtectionReturn &&
@@ -3842,7 +3857,7 @@ void CodeGenModule::SetFunctionAttributes(GlobalDecl GD, llvm::Function *F,
   if (CodeGenOpts.CallGraphSection)
     createIndirectFunctionTypeMD(FD, F);
 
-  if (LangOpts.Sanitize.has(SanitizerKind::KCFI))
+  if (hasKCFITypes())
     setKCFIType(FD, F);
 
   if (getLangOpts().OpenMP && FD->hasAttr<OMPDeclareSimdDeclAttr>())

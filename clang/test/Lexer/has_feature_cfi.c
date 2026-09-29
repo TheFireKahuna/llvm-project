@@ -11,6 +11,11 @@
 // RUN: %clang -E -fsanitize=kcfi -c %s -o - | FileCheck %s --check-prefixes=CHECK-KCFI,CHECK-NO-CFI
 // CHECK-KCFI: KCFISanitizerEnabled
 
+// RUN: %clang_cc1 -E -fsanitize-kcfi-marker %s -o - | FileCheck %s --check-prefixes=CHECK-KCFI-MARKER,CHECK-NO-CFI
+// RUN: %clang_cc1 -E %s -o - | FileCheck %s --check-prefix=CHECK-NO-KCFI-MARKER
+// CHECK-KCFI-MARKER: KCFIMarkerEnabled
+// CHECK-NO-KCFI-MARKER: KCFIMarkerDisabled
+
 // RUN: %clang -E -fsanitize=cfi-cast-strict -c %s -o - | FileCheck %s --check-prefix=CHECK-CFI-CAST-STRICT
 // CHECK-CFI-CAST-STRICT: CFICastStrictSanitizerEnabled
 
@@ -42,6 +47,12 @@ int CFISanitizerDisabled();
 int KCFISanitizerEnabled();
 #else
 int KCFISanitizerDisabled();
+#endif
+
+#if __has_feature(kcfi_marker)
+int KCFIMarkerEnabled();
+#else
+int KCFIMarkerDisabled();
 #endif
 
 #if __has_feature(cfi_cast_strict_sanitizer)

@@ -3001,6 +3001,11 @@ def fsanitize_kcfi_arity : Flag<["-"], "fsanitize-kcfi-arity">,
                            Group<f_clang_Group>,
                            HelpText<"Embed function arity information into the KCFI patchable function prefix">,
                            MarshallingInfoFlag<CodeGenOpts<"SanitizeKcfiArity">>;
+def fsanitize_kcfi_marker : Flag<["-"], "fsanitize-kcfi-marker">,
+  Visibility<[CC1Option]>,
+  HelpText<"Give every function a KCFI prefix with a marker, whether or not "
+           "KCFI checks calls, and check calls in per-type thunks">,
+  MarshallingInfoFlag<LangOpts<"SanitizeKcfiMarker">>;
 def fsanitize_kcfi_hash_EQ
     : Joined<["-"], "fsanitize-kcfi-hash=">,
       HelpText<"Select hash algorithm for KCFI type IDs (xxHash64, FNV-1a)">,
