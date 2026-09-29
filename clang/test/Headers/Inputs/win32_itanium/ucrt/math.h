@@ -1,6 +1,7 @@
 // A stand-in for the UCRT's math.h, which has declarations for C++ that
 // collide with the C++ library's, defines some functions __inline, and
-// declares its non-standard names unless __STDC__ is true.
+// declares its non-standard names unless __STDC__ is true. Its constants
+// follow _USE_MATH_DEFINES outside its include guard.
 #pragma once
 #include <corecrt.h>
 _CRT_BEGIN_C_HEADER
@@ -20,4 +21,8 @@ _CRT_END_C_HEADER
 #endif
 #ifdef __cplusplus
 #error "the UCRT's C++ declarations must stay hidden"
+#endif
+#if defined _USE_MATH_DEFINES && !defined _MATH_DEFINES_DEFINED
+#define _MATH_DEFINES_DEFINED
+#define M_PI 3.14159265358979323846
 #endif

@@ -43,7 +43,7 @@
 // other non-standard names unless the mode is strict ISO C without a feature
 // test macro, and any other header declares them in every mode. A program's own
 // _CRT_DECLARE_NONSTDC_NAMES decides for every header. The names are not
-// deprecated.
+// deprecated, and math.h defines M_PI and the other constants with them.
 
 // The ISO C headers first, so that the headers they share with io.h, memory.h
 // and sys/stat.h are first reached from them.
@@ -59,6 +59,7 @@
 #include <sys/types.h>
 
 #if ISO_NAMES
+double pi = M_PI;
 int (*fileno_pointer)(void *) = fileno;
 char *(*itoa_pointer)(int, char *, int) = itoa;
 char *(*strdup_pointer)(char const *) = strdup;
@@ -66,6 +67,9 @@ double (*j0_pointer)(double) = j0;
 #else
 // A strict ISO C program may use the names itself.
 int fileno, itoa, j0;
+#ifdef M_PI
+#error "M_PI is not defined"
+#endif
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 202311L
 // C23 adds strdup and memccpy to string.h.
 char *(*strdup_pointer)(char const *) = strdup;
@@ -85,6 +89,10 @@ int open;
 #ifdef SH_DENYNO
 #error "SH_DENYNO is not declared"
 #endif
+#endif
+
+#ifdef _USE_MATH_DEFINES
+#error "_USE_MATH_DEFINES stays undefined"
 #endif
 
 // glibc defines none of these, and complex would break complex.h.

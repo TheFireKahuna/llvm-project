@@ -23,6 +23,12 @@
 #pragma push_macro("TLOSS")
 #pragma push_macro("PLOSS")
 #include <corecrt.h>
+/* glibc's math.h defines M_PI and the other constants in the same modes, and
+ * the UCRT's defines them for _USE_MATH_DEFINES. */
+#pragma push_macro("_USE_MATH_DEFINES")
+#if __CLANG_UCRT_NONSTDC_NAMES && !defined(_USE_MATH_DEFINES)
+#define _USE_MATH_DEFINES
+#endif
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wbuiltin-macro-redefined"
 #pragma push_macro("__STDC__")
@@ -57,6 +63,7 @@
 #endif
 #pragma pop_macro("__STDC__")
 #pragma clang diagnostic pop
+#pragma pop_macro("_USE_MATH_DEFINES")
 #pragma pop_macro("PLOSS")
 #pragma pop_macro("TLOSS")
 #pragma pop_macro("UNDERFLOW")
