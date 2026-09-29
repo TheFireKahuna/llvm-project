@@ -66,8 +66,7 @@ static void setThunkProperties(CodeGenModule &CGM, const ThunkInfo &Thunk,
 
   // A thunk carries the KCFI type of the vtable slot it occupies, which the
   // vtable builder records, rather than that of the function it calls.
-  if (CGM.hasKCFITypes() && CGM.hasKCFIVTableSlotTypes() &&
-      !isa<CXXDestructorDecl>(GD.getDecl())) {
+  if (CGM.hasKCFIVTableSlotTypes()) {
     assert(Thunk.Method && "Method not set");
     ThunkFn->setMetadata(
         llvm::LLVMContext::MD_kcfi_type,

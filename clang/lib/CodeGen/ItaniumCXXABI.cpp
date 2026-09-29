@@ -2333,7 +2333,7 @@ CGCallee ItaniumCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
 
   // The call checks the KCFI type of the slot, which every function that can
   // occupy it carries.
-  if (CGM.hasKCFIVTableSlotTypes() && !isa<CXXDestructorDecl>(MethodDecl))
+  if (CGM.hasKCFIVTableSlotTypes())
     Callee.setKCFITypeId(CGM.CreateKCFIVTableSlotTypeId(
         CGM.getItaniumVTableContext().findOriginalMethod(
             GD.getCanonicalDecl())));

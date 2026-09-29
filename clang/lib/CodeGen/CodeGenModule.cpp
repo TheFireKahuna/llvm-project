@@ -3723,7 +3723,27 @@ bool CodeGenModule::hasKCFIVTableSlotTypes() const {
          getTarget().getCXXABI().isItaniumFamily();
 }
 
+llvm::ConstantInt *
+CodeGenModule::CreateKCFIDestructorTypeId(const CXXRecordDecl *DeletingClass) {
+  std::string Salt = "__cxa_dtor";
+  if (DeletingClass) {
+    llvm::raw_string_ostream Out(Salt);
+    Out << '.';
+    getCXXABI().getMangleContext().mangleCanonicalTypeName(
+        getContext().getCanonicalTagType(DeletingClass), Out);
+  }
+  ASTContext &Ctx = getContext();
+  return CreateKCFITypeId(
+      Ctx.getFunctionType(Ctx.VoidTy, {Ctx.VoidPtrTy},
+                          FunctionProtoType::ExtProtoInfo()),
+      Salt);
+}
+
 llvm::ConstantInt *CodeGenModule::CreateKCFIVTableSlotTypeId(GlobalDecl Slot) {
+  if (const auto *DD = dyn_cast<CXXDestructorDecl>(Slot.getDecl()))
+    return CreateKCFIDestructorTypeId(
+        Slot.getDtorType() == Dtor_Deleting ? DD->getParent() : nullptr);
+
   const auto *MD = cast<CXXMethodDecl>(Slot.getDecl());
   std::string Salt;
   if (const auto *FP = MD->getType()->getAs<FunctionProtoType>())
@@ -3742,12 +3762,16 @@ void CodeGenModule::setKCFIType(GlobalDecl GD, llvm::Function *F) {
   llvm::ConstantInt *TypeId;
 
   // A virtual member function carries the type of the vtable slot it
-  // occupies in the vtables of its class.
+  // occupies in the vtables of its class, and a destructor, which the runtime
+  // calls, the type the runtime calls it through.
   const auto *MD = dyn_cast<CXXMethodDecl>(FD);
-  if (MD && MD->isVirtual() && !isa<CXXDestructorDecl>(MD) &&
-      hasKCFIVTableSlotTypes()) {
-    TypeId = CreateKCFIVTableSlotTypeId(
-        getItaniumVTableContext().findOriginalMethod(GD.getCanonicalDecl()));
+  if (MD && hasKCFIVTableSlotTypes() &&
+      (MD->isVirtual() || isa<CXXDestructorDecl>(MD))) {
+    if (isa<CXXDestructorDecl>(MD) && GD.getDtorType() != Dtor_Deleting)
+      TypeId = CreateKCFIDestructorTypeId();
+    else
+      TypeId = CreateKCFIVTableSlotTypeId(
+          getItaniumVTableContext().findOriginalMethod(GD.getCanonicalDecl()));
   } else {
     llvm::StringRef Salt;
     if (const auto *FP = FD->getType()->getAs<FunctionProtoType>())

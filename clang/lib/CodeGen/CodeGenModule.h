@@ -1761,12 +1761,21 @@ public:
 
   /// Whether a virtual call checks a KCFI type salted by the class that
   /// introduces the vtable slot, which every function that can occupy the
-  /// slot carries: under the KCFI marker scheme, with the Itanium C++ ABI.
+  /// slot carries, and destructors carry the type the runtime calls them
+  /// through: under the KCFI marker scheme, with the Itanium C++ ABI.
   bool hasKCFIVTableSlotTypes() const;
 
   /// Generate the KCFI type identifier of the functions that can occupy the
-  /// vtable slot that Slot, a virtual member function, introduces.
+  /// vtable slot that Slot, a virtual member function or a variant of a
+  /// virtual destructor, introduces.
   llvm::ConstantInt *CreateKCFIVTableSlotTypeId(GlobalDecl Slot);
+
+  /// Generate the KCFI type identifier of a destructor under the KCFI marker
+  /// scheme: void(void *) salted "__cxa_dtor", the type the runtime calls a
+  /// destructor through, and further salted by DeletingClass, the class that
+  /// introduces the vtable slot, for a deleting destructor.
+  llvm::ConstantInt *
+  CreateKCFIDestructorTypeId(const CXXRecordDecl *DeletingClass = nullptr);
 
   /// Create a metadata identifier for the given function type.
   llvm::Metadata *CreateMetadataIdentifierForFnType(QualType T);
