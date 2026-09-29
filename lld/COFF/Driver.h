@@ -189,6 +189,7 @@ private:
 
   void enqueueTask(std::function<void()> task);
   bool run();
+  void loadLocalImportMembers();
 
   std::list<std::function<void()>> taskQueue;
   std::vector<MemoryBufferRef> resources;

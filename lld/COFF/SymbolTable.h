@@ -73,6 +73,11 @@ public:
   // Try to resolve undefined symbols with alternate names.
   void resolveAlternateNames();
 
+  // Under -import-slots, load the archive member behind each undefined __imp_X
+  // that no input defines under that name and whose X is lazy, as a direct
+  // reference to X would. Returns whether any member was loaded.
+  bool loadLocalImportMembers();
+
   // Load lazy objects that are needed for MinGW automatic import and for
   // doing stdcall fixups.
   void loadMinGWSymbols();
@@ -218,6 +223,9 @@ private:
   std::vector<Symbol *> getSymsWithPrefix(StringRef prefix);
 
   llvm::DenseMap<llvm::CachedHashStringRef, Symbol *> symMap;
+  // Symbols created undefined with the __imp_ prefix under -import-slots,
+  // which loadLocalImportMembers visits instead of the whole table.
+  std::vector<Symbol *> impUndefs;
   std::unique_ptr<BitcodeCompiler> lto;
   std::vector<std::pair<Symbol *, Symbol *>> entryThunks;
   llvm::DenseMap<Symbol *, Symbol *> exitThunks;

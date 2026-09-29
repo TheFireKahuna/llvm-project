@@ -69,6 +69,14 @@ from the [LLVM releases web site](https://llvm.org/releases/).
   are errors in such an image. MinGW images, whose delay-load helper stores to
   the table directly, are unchanged.
 
+* `-import-slots` selects the import binding model of Windows Itanium and
+  NT-POSIX. Under it, an undefined `__imp_X` that no input provides under that
+  name loads the archive member that defines `X`, as a reference to `X` would,
+  and binds to it through a local pointer with warning LNK4217, where
+  link.exe and LLD otherwise report an undefined symbol. The member is also
+  loaded after LTO, for the calls through `__imp_` that code generation adds
+  to library functions under `-fno-plt`.
+
 ### MinGW Improvements
 
 ### MachO Improvements

@@ -313,6 +313,35 @@ void SymbolTable::loadMinGWSymbols() {
   }
 }
 
+bool SymbolTable::loadLocalImportMembers() {
+  std::vector<Symbol *> lazies;
+  llvm::erase_if(impUndefs, [&](Symbol *sym) {
+    auto *u = dyn_cast<Undefined>(sym);
+    if (!u)
+      return true;
+    // An archive offering __imp_X itself, such as an import library, takes
+    // precedence; its member was requested when the reference was added.
+    if (u->pendingArchiveLoad || u->getWeakAlias())
+      return false;
+    Symbol *l = find(sym->getName().substr(strlen("__imp_")));
+    if (l && l->isLazy() && !l->pendingArchiveLoad)
+      lazies.push_back(l);
+    return false;
+  });
+  // Loading a lazy object parses it at once, which may add to impUndefs or
+  // define a symbol that is still to be loaded.
+  bool loaded = false;
+  for (Symbol *l : lazies) {
+    if (!l->isLazy() || l->pendingArchiveLoad)
+      continue;
+    Log(ctx) << "Loading lazy " << l->getName() << " from "
+             << l->getFile()->getName() << " for __imp_" << l->getName();
+    forceLazy(l);
+    loaded = true;
+  }
+  return loaded;
+}
+
 Defined *SymbolTable::impSymbol(StringRef name) {
   if (name.starts_with("__imp_"))
     return nullptr;
@@ -689,6 +718,8 @@ Symbol *SymbolTable::addUndefined(StringRef name, InputFile *f,
   auto [s, wasInserted] = insert(name, f);
   if (wasInserted || (s->isLazy() && overrideLazy)) {
     replaceSymbol<Undefined>(s, name);
+    if (ctx.config.importSlots && name.starts_with("__imp_"))
+      impUndefs.push_back(s);
     return s;
   }
   if (s->isLazy())

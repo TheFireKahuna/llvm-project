@@ -353,6 +353,7 @@ struct Configuration {
   bool thinLTOIndexOnly;
   bool timeTraceEnabled = false;
   bool autoImport = false;
+  bool importSlots = false;
   bool pseudoRelocs = false;
   bool stdcallFixup = false;
   bool writeCheckSum = false;
