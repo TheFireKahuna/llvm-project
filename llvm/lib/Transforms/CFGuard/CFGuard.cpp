@@ -15,6 +15,7 @@
 #include "llvm/Transforms/CFGuard.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/CallingConv.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instruction.h"
@@ -33,6 +34,8 @@ STATISTIC(CFGuardCounter, "Number of Control Flow Guard checks added");
 
 constexpr StringRef GuardCheckFunctionName = "__guard_check_icall_fptr";
 constexpr StringRef GuardDispatchFunctionName = "__guard_dispatch_icall_fptr";
+constexpr StringRef KCFICheckThunkPrefix = "__llvm_kcfi_check_";
+constexpr StringRef KCFIDispatchThunkPrefix = "__llvm_kcfi_dispatch_";
 
 namespace {
 
@@ -137,8 +140,16 @@ private:
   /// declaring it in M if it is not already declared.
   Constant *getGuardFnGlobal(Module &M, StringRef Name);
 
+  /// Returns the per-type KCFI thunk that checks the type of the target of an
+  /// indirect call with the kcfi bundle of CB and continues into the guard
+  /// function, or null if CB is checked where it calls.
+  Function *getKCFIThunk(CallBase &CB, StringRef Prefix);
+
   // Only add checks if the module has them enabled.
   ControlFlowGuardMode CFGuardModuleFlag = ControlFlowGuardMode::Disabled;
+  // Whether calls with a kcfi bundle go through a per-type thunk, which the
+  // backend emits, whether or not the module has checks enabled.
+  bool UseKCFIThunks = false;
   Mechanism GuardMechanism = Mechanism::Check;
   FunctionType *GuardFnType = nullptr;
   PointerType *GuardFnPtrType = nullptr;
@@ -174,19 +185,31 @@ void CFGuardImpl::insertCFGuardCheck(CallBase *CB) {
   if (auto Bundle = CB->getOperandBundle(LLVMContext::OB_funclet))
     Bundles.push_back(OperandBundleDef(*Bundle));
 
-  // Load the global symbol as a pointer to the check function.
-  LoadInst *GuardCheckLoad =
-      B.CreateLoad(GuardFnPtrType,
-                   getGuardFnGlobal(*CB->getModule(), GuardCheckFunctionName));
+  // Load the global symbol as a pointer to the check function, unless a
+  // KCFI thunk checks the type and then continues into the check function.
+  Function *KCFIThunk = getKCFIThunk(*CB, KCFICheckThunkPrefix);
+  Value *GuardCheckFn = KCFIThunk;
+  if (!KCFIThunk)
+    GuardCheckFn =
+        B.CreateLoad(GuardFnPtrType, getGuardFnGlobal(*CB->getModule(),
+                                                      GuardCheckFunctionName));
 
   // Create new call instruction. The CFGuard check should always be a call,
   // even if the original CallBase is an Invoke or CallBr instruction.
   CallInst *GuardCheck =
-      B.CreateCall(GuardFnType, GuardCheckLoad, {CalledOperand}, Bundles);
+      B.CreateCall(GuardFnType, GuardCheckFn, {CalledOperand}, Bundles);
 
   // Ensure that the first argument is passed in the correct register
   // (e.g. ECX on 32-bit X86 targets).
   GuardCheck->setCallingConv(CallingConv::CFGuard_Check);
+
+  // The thunk checked the type, so the call itself is not checked again.
+  if (!KCFIThunk)
+    return;
+  CallBase *NewCB = CallBase::removeOperandBundle(CB, LLVMContext::OB_kcfi,
+                                                  CB->getIterator());
+  CB->replaceAllUsesWith(NewCB);
+  CB->eraseFromParent();
 }
 
 void CFGuardImpl::insertCFGuardDispatch(CallBase *CB) {
@@ -199,14 +222,24 @@ void CFGuardImpl::insertCFGuardDispatch(CallBase *CB) {
   Value *CalledOperand = CB->getCalledOperand();
   Type *CalledOperandType = CalledOperand->getType();
 
-  // Load the global as a pointer to a function of the same type.
-  LoadInst *GuardDispatchLoad = B.CreateLoad(
-      CalledOperandType,
-      getGuardFnGlobal(*CB->getModule(), GuardDispatchFunctionName));
+  // Load the global as a pointer to a function of the same type, unless a
+  // KCFI thunk checks the type of the target and then continues into the
+  // dispatch function.
+  Function *KCFIThunk = getKCFIThunk(*CB, KCFIDispatchThunkPrefix);
+  Value *GuardDispatchFn = KCFIThunk;
+  if (!KCFIThunk)
+    GuardDispatchFn = B.CreateLoad(
+        CalledOperandType,
+        getGuardFnGlobal(*CB->getModule(), GuardDispatchFunctionName));
 
-  // Add the original call target as a cfguardtarget operand bundle.
+  // Add the original call target as a cfguardtarget operand bundle. A thunk
+  // checks the type, so the call keeps no kcfi bundle.
   SmallVector<llvm::OperandBundleDef, 1> Bundles;
   CB->getOperandBundlesAsDefs(Bundles);
+  if (KCFIThunk)
+    llvm::erase_if(Bundles, [](const OperandBundleDef &Bundle) {
+      return Bundle.getTag() == "kcfi";
+    });
   Bundles.emplace_back("cfguardtarget", CalledOperand);
 
   // Create a copy of the call/invoke instruction and add the new bundle.
@@ -215,7 +248,7 @@ void CFGuardImpl::insertCFGuardDispatch(CallBase *CB) {
   CallBase *NewCB = CallBase::Create(CB, Bundles, CB->getIterator());
 
   // Change the target of the call to be the guard dispatch function.
-  NewCB->setCalledOperand(GuardDispatchLoad);
+  NewCB->setCalledOperand(GuardDispatchFn);
 
   // Replace the original call/invoke with the new instruction.
   CB->replaceAllUsesWith(NewCB);
@@ -228,8 +261,17 @@ bool CFGuardImpl::doInitialization(Module &M) {
   // Check if this module has the cfguard flag and read its value.
   CFGuardModuleFlag = M.getControlFlowGuardMode();
 
+  // A module whose KCFI prefixes carry a marker checks each indirect call's
+  // type in a per-type thunk, which continues into the guard function the
+  // image defines, whether or not it has checks enabled. X86-64 emits the
+  // thunks for both mechanisms, and AArch64 for the check mechanism.
+  const Triple &TT = M.getTargetTriple();
+  bool HasKCFIMarker =
+      M.getModuleFlag("kcfi-marker") && TT.isOSBinFormatCOFF() &&
+      (TT.isX86_64() || TT.isAArch64()) && !TT.isWindowsArm64EC();
+
   // Skip modules for which CFGuard checks have been disabled.
-  if (CFGuardModuleFlag != ControlFlowGuardMode::Enabled)
+  if (CFGuardModuleFlag != ControlFlowGuardMode::Enabled && !HasKCFIMarker)
     return false;
 
   // Determine the guard mechanism to use.
@@ -252,6 +294,8 @@ bool CFGuardImpl::doInitialization(Module &M) {
         M.getTargetTriple().isX86_64() ? Mechanism::Dispatch : Mechanism::Check;
     break;
   }
+  UseKCFIThunks =
+      HasKCFIMarker && (TT.isX86_64() || GuardMechanism == Mechanism::Check);
 
   // Set up prototypes for the guard check and dispatch functions.
   GuardFnType =
@@ -259,9 +303,10 @@ bool CFGuardImpl::doInitialization(Module &M) {
                         {PointerType::getUnqual(M.getContext())}, false);
   GuardFnPtrType = PointerType::get(M.getContext(), 0);
 
-  getGuardFnGlobal(M, GuardMechanism == Mechanism::Check
-                          ? GuardCheckFunctionName
-                          : GuardDispatchFunctionName);
+  if (CFGuardModuleFlag == ControlFlowGuardMode::Enabled)
+    getGuardFnGlobal(M, GuardMechanism == Mechanism::Check
+                            ? GuardCheckFunctionName
+                            : GuardDispatchFunctionName);
 
   return true;
 }
@@ -274,6 +319,26 @@ Constant *CFGuardImpl::getGuardFnGlobal(Module &M, StringRef Name) {
     Var->setDSOLocal(true);
     return Var;
   });
+}
+
+Function *CFGuardImpl::getKCFIThunk(CallBase &CB, StringRef Prefix) {
+  if (!UseKCFIThunks)
+    return nullptr;
+  std::optional<OperandBundleUse> Bundle =
+      CB.getOperandBundle(LLVMContext::OB_kcfi);
+  if (!Bundle)
+    return nullptr;
+  auto *TypeId = cast<ConstantInt>(Bundle->Inputs[0]);
+  Module &M = *CB.getModule();
+  std::string Name =
+      (Prefix + utohexstr(TypeId->getZExtValue(), /*LowerCase=*/true,
+                          /*Width=*/8))
+          .str();
+  auto *Thunk = cast<Function>(
+      M.getOrInsertFunction(Name, Type::getVoidTy(M.getContext())).getCallee());
+  Thunk->setVisibility(GlobalValue::HiddenVisibility);
+  Thunk->setDSOLocal(true);
+  return Thunk;
 }
 
 // Returns true if the dispatch mechanism can guard CB. On x86-64 it takes the
@@ -325,7 +390,8 @@ static bool canUseDispatch(const CallBase &CB) {
 
 bool CFGuardImpl::runOnFunction(Function &F) {
   // Skip modules for which CFGuard checks have been disabled.
-  if (CFGuardModuleFlag != ControlFlowGuardMode::Enabled)
+  bool CheckAll = CFGuardModuleFlag == ControlFlowGuardMode::Enabled;
+  if (!CheckAll && !UseKCFIThunks)
     return false;
 
   SmallVector<CallBase *, 8> IndirectCalls;
@@ -337,7 +403,8 @@ bool CFGuardImpl::runOnFunction(Function &F) {
   for (BasicBlock &BB : F) {
     for (Instruction &I : BB) {
       auto *CB = dyn_cast<CallBase>(&I);
-      if (CB && CB->isIndirectCall() && !CB->hasFnAttr("guard_nocf")) {
+      if (CB && CB->isIndirectCall() && !CB->hasFnAttr("guard_nocf") &&
+          (CheckAll || CB->getOperandBundle(LLVMContext::OB_kcfi))) {
         IndirectCalls.push_back(CB);
         CFGuardCounter++;
       }

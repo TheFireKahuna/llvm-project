@@ -56,6 +56,7 @@
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstBuilder.h"
+#include "llvm/MC/MCSectionCOFF.h"
 #include "llvm/MC/MCSectionELF.h"
 #include "llvm/MC/MCSectionMachO.h"
 #include "llvm/MC/MCStreamer.h"
@@ -70,6 +71,7 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/Instrumentation/HWAddressSanitizer.h"
+#include "llvm/Transforms/Utils/KCFIHash.h"
 #include <cassert>
 #include <cstdint>
 #include <map>
@@ -166,6 +168,7 @@ public:
   void LowerKCFI_CHECK(const MachineInstr &MI);
   void LowerHWASAN_CHECK_MEMACCESS(const MachineInstr &MI);
   void emitHwasanMemaccessSymbols(Module &M);
+  void emitKCFIThunks(Module &M);
 
   void emitSled(const MachineInstr &MI, SledKind Kind);
 
@@ -1042,8 +1045,144 @@ static void emitAuthenticatedPointer(MCStreamer &OutStreamer,
   OutStreamer.emitValue(StubAuthPtrRef, /*size=*/8);
 }
 
+// Emits the per-type thunks that the CFGuard pass routes indirect calls with a
+// KCFI type through when the prefixes carry a marker. Each is a COMDAT, kept
+// once per image, called with the target in X15 as the guard check function
+// is. It compares the type before the target with the call's and continues
+// into the guard check function the image defines on a match, or into the
+// type's mismatch routine otherwise. That is a weak alias whose default, shared
+// by every type, fails fast if the target carries the marker, since the target
+// is then a function of another type, and continues into the guard check
+// function otherwise, since the target was built without KCFI. Both clobber
+// only X16, X17 and the flags, which the guard check function may clobber too.
+void AArch64AsmPrinter::emitKCFIThunks(Module &M) {
+  const ConstantInt *Marker =
+      mdconst::extract_or_null<ConstantInt>(M.getModuleFlag("kcfi-marker"));
+  if (!Marker)
+    return;
+  int64_t PrefixBytes = 0;
+  if (auto *MD =
+          mdconst::extract_or_null<ConstantInt>(M.getModuleFlag("kcfi-offset")))
+    PrefixBytes = MD->getZExtValue() * 4;
+
+  const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
+  auto Emit = [&](const MCInst &Inst) {
+    OutStreamer->emitInstruction(Inst, STI);
+  };
+  auto EmitFunctionStart = [&](MCSymbol *Sym) {
+    OutStreamer->switchSection(OutContext.getCOFFSection(
+        ".text",
+        COFF::IMAGE_SCN_CNT_CODE | COFF::IMAGE_SCN_MEM_EXECUTE |
+            COFF::IMAGE_SCN_MEM_READ | COFF::IMAGE_SCN_LNK_COMDAT,
+        Sym->getName(), COFF::IMAGE_COMDAT_SELECT_ANY));
+    OutStreamer->beginCOFFSymbolDef(Sym);
+    OutStreamer->emitCOFFSymbolStorageClass(COFF::IMAGE_SYM_CLASS_EXTERNAL);
+    OutStreamer->emitCOFFSymbolType(COFF::IMAGE_SYM_DTYPE_FUNCTION
+                                    << COFF::SCT_COMPLEX_TYPE_SHIFT);
+    OutStreamer->endCOFFSymbolDef();
+    OutStreamer->emitSymbolAttribute(Sym, MCSA_Global);
+    OutStreamer->emitCodeAlignment(Align(16), STI);
+    OutStreamer->emitLabel(Sym);
+  };
+  // adrp x16, guard; ldr x16, [x16, :lo12:guard]; br x16
+  auto EmitGuardJump = [&] {
+    const MCExpr *Guard = MCSymbolRefExpr::create(
+        OutContext.getOrCreateSymbol("__guard_check_icall_fptr"), OutContext);
+    Emit(MCInstBuilder(AArch64::ADRP)
+             .addReg(AArch64::X16)
+             .addExpr(MCSpecifierExpr::create(Guard, AArch64::S_ABS_PAGE,
+                                              OutContext)));
+    Emit(MCInstBuilder(AArch64::LDRXui)
+             .addReg(AArch64::X16)
+             .addReg(AArch64::X16)
+             .addExpr(
+                 MCSpecifierExpr::create(Guard, AArch64::S_LO12, OutContext)));
+    Emit(MCInstBuilder(AArch64::BR).addReg(AArch64::X16));
+  };
+
+  MCSymbol *Open = nullptr;
+  for (const Function &F : M) {
+    StringRef TypeName = F.getName();
+    uint32_t Type;
+    if (!F.isDeclaration() || F.use_empty() ||
+        !TypeName.consume_front("__llvm_kcfi_check_") || TypeName.size() != 8 ||
+        TypeName.getAsInteger(16, Type))
+      continue;
+    if (!Open)
+      Open = OutContext.getOrCreateSymbol("__llvm_kcfi_check_open");
+
+    MCSymbol *Mismatch =
+        OutContext.getOrCreateSymbol("__llvm_kcfi_check_mismatch_" + TypeName);
+    OutStreamer->emitSymbolAttribute(Mismatch, MCSA_Weak);
+    OutStreamer->emitAssignment(Mismatch,
+                                MCSymbolRefExpr::create(Open, OutContext));
+
+    // ldur w16, [x15, #-4]; mov w17, #type; cmp w16, w17; b.ne mismatch
+    EmitFunctionStart(getSymbol(&F));
+    Emit(MCInstBuilder(AArch64::LDURWi)
+             .addReg(AArch64::W16)
+             .addReg(AArch64::X15)
+             .addImm(-(PrefixBytes + 4)));
+    Emit(MCInstBuilder(AArch64::MOVZWi)
+             .addReg(AArch64::W17)
+             .addImm(Type & 0xFFFF)
+             .addImm(0));
+    Emit(MCInstBuilder(AArch64::MOVKWi)
+             .addReg(AArch64::W17)
+             .addReg(AArch64::W17)
+             .addImm(Type >> 16)
+             .addImm(16));
+    Emit(MCInstBuilder(AArch64::SUBSWrs)
+             .addReg(AArch64::WZR)
+             .addReg(AArch64::W16)
+             .addReg(AArch64::W17)
+             .addImm(0));
+    Emit(MCInstBuilder(AArch64::Bcc)
+             .addImm(AArch64CC::NE)
+             .addExpr(MCSymbolRefExpr::create(Mismatch, OutContext)));
+    EmitGuardJump();
+  }
+  if (!Open)
+    return;
+
+  // ldur x16, [x15, #-12]; mov x17, #pattern; cmp x16, x17; b.eq 1f; ...
+  // 1: mov w0, #FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG; brk #0xf003
+  uint64_t Pattern = getKCFIMarkerPattern(Marker->getZExtValue());
+  EmitFunctionStart(Open);
+  Emit(MCInstBuilder(AArch64::LDURXi)
+           .addReg(AArch64::X16)
+           .addReg(AArch64::X15)
+           .addImm(-(PrefixBytes + 12)));
+  Emit(MCInstBuilder(AArch64::MOVZXi)
+           .addReg(AArch64::X17)
+           .addImm(Pattern & 0xFFFF)
+           .addImm(0));
+  for (unsigned Shift = 16; Shift != 64; Shift += 16)
+    Emit(MCInstBuilder(AArch64::MOVKXi)
+             .addReg(AArch64::X17)
+             .addReg(AArch64::X17)
+             .addImm((Pattern >> Shift) & 0xFFFF)
+             .addImm(Shift));
+  Emit(MCInstBuilder(AArch64::SUBSXrs)
+           .addReg(AArch64::XZR)
+           .addReg(AArch64::X16)
+           .addReg(AArch64::X17)
+           .addImm(0));
+  MCSymbol *Trap = OutContext.createTempSymbol();
+  Emit(MCInstBuilder(AArch64::Bcc)
+           .addImm(AArch64CC::EQ)
+           .addExpr(MCSymbolRefExpr::create(Trap, OutContext)));
+  EmitGuardJump();
+  OutStreamer->emitLabel(Trap);
+  Emit(MCInstBuilder(AArch64::MOVZWi).addReg(AArch64::W0).addImm(64).addImm(0));
+  Emit(MCInstBuilder(AArch64::BRK).addImm(0xF003));
+}
+
 void AArch64AsmPrinter::emitEndOfAsmFile(Module &M) {
   emitHwasanMemaccessSymbols(M);
+
+  if (TM.getTargetTriple().isOSBinFormatCOFF())
+    emitKCFIThunks(M);
 
   const Triple &TT = TM.getTargetTriple();
   if (TT.isOSBinFormatMachO()) {

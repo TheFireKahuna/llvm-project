@@ -52,6 +52,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/Transforms/Utils/KCFIHash.h"
 
 using namespace llvm;
 
@@ -265,6 +266,132 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
         MCSymbolRefExpr::create(EndSym, OutContext),
         MCSymbolRefExpr::create(FnSym, OutContext), OutContext);
     OutStreamer->emitELFSize(FnSym, SizeExp);
+  }
+}
+
+/// emitKCFIThunks - Emit the per-type thunks that the CFGuard pass routes
+/// indirect calls with a KCFI type through when the prefixes carry a marker.
+/// Each is a COMDAT, kept once per image, that compares the type before the
+/// target with the call's and continues into the guard function the image
+/// defines on a match, or into the type's mismatch routine otherwise. That is
+/// a weak alias whose default, shared by every type, fails fast if the target
+/// carries the marker, since the target is then a function of another type,
+/// and continues into the guard function otherwise, since the target was built
+/// without KCFI. A dispatch thunk takes the target in RAX, and a check thunk in
+/// RCX; both may clobber R10 and R11, as the guard functions do.
+void X86AsmPrinter::emitKCFIThunks(Module &M) {
+  const ConstantInt *Marker =
+      mdconst::extract_or_null<ConstantInt>(M.getModuleFlag("kcfi-marker"));
+  if (!Marker)
+    return;
+  int64_t PrefixNops = 0;
+  if (auto *MD =
+          mdconst::extract_or_null<ConstantInt>(M.getModuleFlag("kcfi-offset")))
+    PrefixNops = MD->getZExtValue();
+
+  const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
+  auto EmitFunctionStart = [&](MCSymbol *Sym) {
+    OutStreamer->switchSection(OutContext.getCOFFSection(
+        ".text",
+        COFF::IMAGE_SCN_CNT_CODE | COFF::IMAGE_SCN_MEM_EXECUTE |
+            COFF::IMAGE_SCN_MEM_READ | COFF::IMAGE_SCN_LNK_COMDAT,
+        Sym->getName(), COFF::IMAGE_COMDAT_SELECT_ANY));
+    OutStreamer->beginCOFFSymbolDef(Sym);
+    OutStreamer->emitCOFFSymbolStorageClass(COFF::IMAGE_SYM_CLASS_EXTERNAL);
+    OutStreamer->emitCOFFSymbolType(COFF::IMAGE_SYM_DTYPE_FUNCTION
+                                    << COFF::SCT_COMPLEX_TYPE_SHIFT);
+    OutStreamer->endCOFFSymbolDef();
+    OutStreamer->emitSymbolAttribute(Sym, MCSA_Global);
+    OutStreamer->emitCodeAlignment(Align(16), STI);
+    OutStreamer->emitLabel(Sym);
+  };
+  auto EmitGuardJump = [&](StringRef GuardFn) {
+    OutStreamer->emitInstruction(
+        MCInstBuilder(X86::JMP64m)
+            .addReg(X86::RIP)
+            .addImm(1)
+            .addReg(X86::NoRegister)
+            .addExpr(MCSymbolRefExpr::create(
+                OutContext.getOrCreateSymbol(GuardFn), OutContext))
+            .addReg(X86::NoRegister),
+        STI);
+  };
+
+  struct ThunkKind {
+    StringRef Prefix;
+    StringRef MismatchPrefix;
+    StringRef Open;
+    StringRef GuardFn;
+    unsigned TargetReg;
+  };
+  const ThunkKind Kinds[] = {
+      {"__llvm_kcfi_dispatch_", "__llvm_kcfi_mismatch_", "__llvm_kcfi_open",
+       "__guard_dispatch_icall_fptr", X86::RAX},
+      {"__llvm_kcfi_check_", "__llvm_kcfi_check_mismatch_",
+       "__llvm_kcfi_check_open", "__guard_check_icall_fptr", X86::RCX}};
+  for (const ThunkKind &Kind : Kinds) {
+    MCSymbol *Open = nullptr;
+    for (const Function &F : M) {
+      StringRef TypeName = F.getName();
+      uint32_t Type;
+      if (!F.isDeclaration() || F.use_empty() ||
+          !TypeName.consume_front(Kind.Prefix) || TypeName.size() != 8 ||
+          TypeName.getAsInteger(16, Type))
+        continue;
+      if (!Open)
+        Open = OutContext.getOrCreateSymbol(Kind.Open);
+
+      MCSymbol *Mismatch =
+          OutContext.getOrCreateSymbol(Kind.MismatchPrefix + TypeName);
+      OutStreamer->emitSymbolAttribute(Mismatch, MCSA_Weak);
+      OutStreamer->emitAssignment(Mismatch,
+                                  MCSymbolRefExpr::create(Open, OutContext));
+
+      // cmpl $type, -4(%reg); jne mismatch; jmpq *guard(%rip)
+      EmitFunctionStart(getSymbol(&F));
+      OutStreamer->emitInstruction(MCInstBuilder(X86::CMP32mi)
+                                       .addReg(Kind.TargetReg)
+                                       .addImm(1)
+                                       .addReg(X86::NoRegister)
+                                       .addImm(-(PrefixNops + 4))
+                                       .addReg(X86::NoRegister)
+                                       .addImm(MaskKCFIType(Type)),
+                                   STI);
+      OutStreamer->emitInstruction(
+          MCInstBuilder(X86::JCC_1)
+              .addExpr(MCSymbolRefExpr::create(Mismatch, OutContext))
+              .addImm(X86::COND_NE),
+          STI);
+      EmitGuardJump(Kind.GuardFn);
+    }
+    if (!Open)
+      continue;
+
+    // movabsq $pattern, %r11; cmpq %r11, -12(%reg); je 1f; jmpq *guard(%rip)
+    // 1: movl $FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG, %ecx; int $0x29
+    uint64_t Pattern = getKCFIMarkerPattern(Marker->getZExtValue());
+    EmitFunctionStart(Open);
+    OutStreamer->emitInstruction(
+        MCInstBuilder(X86::MOV64ri).addReg(X86::R11).addImm(Pattern), STI);
+    OutStreamer->emitInstruction(MCInstBuilder(X86::CMP64mr)
+                                     .addReg(Kind.TargetReg)
+                                     .addImm(1)
+                                     .addReg(X86::NoRegister)
+                                     .addImm(-(PrefixNops + 12))
+                                     .addReg(X86::NoRegister)
+                                     .addReg(X86::R11),
+                                 STI);
+    MCSymbol *Trap = OutContext.createTempSymbol();
+    OutStreamer->emitInstruction(
+        MCInstBuilder(X86::JCC_1)
+            .addExpr(MCSymbolRefExpr::create(Trap, OutContext))
+            .addImm(X86::COND_E),
+        STI);
+    EmitGuardJump(Kind.GuardFn);
+    OutStreamer->emitLabel(Trap);
+    OutStreamer->emitInstruction(
+        MCInstBuilder(X86::MOV32ri).addReg(X86::ECX).addImm(64), STI);
+    OutStreamer->emitInstruction(MCInstBuilder(X86::INT).addImm(0x29), STI);
   }
 }
 
@@ -1100,6 +1227,8 @@ void X86AsmPrinter::emitEndOfAsmFile(Module &M) {
     // safe to set.
     OutStreamer->emitSubsectionsViaSymbols();
   } else if (TT.isOSBinFormatCOFF()) {
+    emitKCFIThunks(M);
+
     // If import call optimization is enabled, emit the appropriate section.
     // We do this whether or not we recorded any items.
     if (EnableImportCallOptimization) {
