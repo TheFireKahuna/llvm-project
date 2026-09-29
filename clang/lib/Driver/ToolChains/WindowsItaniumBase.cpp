@@ -73,6 +73,9 @@ void tools::windowsitanium::Linker::ConstructJob(
   // targets never link.
   CmdArgs.push_back("-lldignoreenv");
 
+  // The import binding model of these targets.
+  CmdArgs.push_back("-import-slots");
+
   bool IsDLL = Args.hasArg(options::OPT_shared, options::OPT__SLASH_LD,
                            options::OPT__SLASH_LDd);
   if (IsDLL) {
