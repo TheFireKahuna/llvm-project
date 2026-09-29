@@ -1759,6 +1759,15 @@ public:
            LangOpts.SanitizeKcfiMarker;
   }
 
+  /// Whether a virtual call checks a KCFI type salted by the class that
+  /// introduces the vtable slot, which every function that can occupy the
+  /// slot carries: under the KCFI marker scheme, with the Itanium C++ ABI.
+  bool hasKCFIVTableSlotTypes() const;
+
+  /// Generate the KCFI type identifier of the functions that can occupy the
+  /// vtable slot that Slot, a virtual member function, introduces.
+  llvm::ConstantInt *CreateKCFIVTableSlotTypeId(GlobalDecl Slot);
+
   /// Create a metadata identifier for the given function type.
   llvm::Metadata *CreateMetadataIdentifierForFnType(QualType T);
 
@@ -1804,7 +1813,7 @@ public:
   void createCalleeTypeMetadataForIcall(const QualType &QT, llvm::CallBase *CB);
 
   /// Set type metadata to the given function.
-  void setKCFIType(const FunctionDecl *FD, llvm::Function *F);
+  void setKCFIType(GlobalDecl GD, llvm::Function *F);
 
   /// Emit KCFI type identifier constants and remove unused identifiers.
   void finalizeKCFITypes();

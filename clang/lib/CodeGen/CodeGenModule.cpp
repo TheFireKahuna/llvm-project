@@ -3718,18 +3718,46 @@ void CodeGenModule::createCalleeTypeMetadataForIcall(const QualType &QT,
   CB->setMetadata(llvm::LLVMContext::MD_callee_type, MDN);
 }
 
-void CodeGenModule::setKCFIType(const FunctionDecl *FD, llvm::Function *F) {
+bool CodeGenModule::hasKCFIVTableSlotTypes() const {
+  return LangOpts.SanitizeKcfiMarker &&
+         getTarget().getCXXABI().isItaniumFamily();
+}
+
+llvm::ConstantInt *CodeGenModule::CreateKCFIVTableSlotTypeId(GlobalDecl Slot) {
+  const auto *MD = cast<CXXMethodDecl>(Slot.getDecl());
+  std::string Salt;
+  if (const auto *FP = MD->getType()->getAs<FunctionProtoType>())
+    if (const auto &Info = FP->getExtraAttributeInfo())
+      Salt = (Info.CFISalt + ".").str();
+  llvm::raw_string_ostream Out(Salt);
+  getCXXABI().getMangleContext().mangleCanonicalTypeName(
+      getContext().getCanonicalTagType(MD->getParent()), Out);
+  return CreateKCFITypeId(MD->getType(), Salt);
+}
+
+void CodeGenModule::setKCFIType(GlobalDecl GD, llvm::Function *F) {
+  const auto *FD = cast<FunctionDecl>(GD.getDecl());
   llvm::LLVMContext &Ctx = F->getContext();
   llvm::MDBuilder MDB(Ctx);
-  llvm::StringRef Salt;
+  llvm::ConstantInt *TypeId;
 
-  if (const auto *FP = FD->getType()->getAs<FunctionProtoType>())
-    if (const auto &Info = FP->getExtraAttributeInfo())
-      Salt = Info.CFISalt;
+  // A virtual member function carries the type of the vtable slot it
+  // occupies in the vtables of its class.
+  const auto *MD = dyn_cast<CXXMethodDecl>(FD);
+  if (MD && MD->isVirtual() && !isa<CXXDestructorDecl>(MD) &&
+      hasKCFIVTableSlotTypes()) {
+    TypeId = CreateKCFIVTableSlotTypeId(
+        getItaniumVTableContext().findOriginalMethod(GD.getCanonicalDecl()));
+  } else {
+    llvm::StringRef Salt;
+    if (const auto *FP = FD->getType()->getAs<FunctionProtoType>())
+      if (const auto &Info = FP->getExtraAttributeInfo())
+        Salt = Info.CFISalt;
+    TypeId = CreateKCFITypeId(FD->getType(), Salt);
+  }
 
   F->setMetadata(llvm::LLVMContext::MD_kcfi_type,
-                 llvm::MDNode::get(Ctx, MDB.createConstant(CreateKCFITypeId(
-                                            FD->getType(), Salt))));
+                 llvm::MDNode::get(Ctx, MDB.createConstant(TypeId)));
 }
 
 static bool allowKCFIIdentifier(StringRef Name) {
@@ -3858,7 +3886,7 @@ void CodeGenModule::SetFunctionAttributes(GlobalDecl GD, llvm::Function *F,
     createIndirectFunctionTypeMD(FD, F);
 
   if (hasKCFITypes())
-    setKCFIType(FD, F);
+    setKCFIType(GD, F);
 
   if (getLangOpts().OpenMP && FD->hasAttr<OMPDeclareSimdDeclAttr>())
     getOpenMPRuntime().emitDeclareSimdFunction(FD, F);

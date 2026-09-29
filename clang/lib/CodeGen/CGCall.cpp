@@ -6350,9 +6350,12 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
   SmallVector<llvm::OperandBundleDef, 1> BundleList =
       getBundlesForFunclet(CalleePtr);
 
-  if (SanOpts.has(SanitizerKind::KCFI) &&
-      !isa_and_nonnull<FunctionDecl>(TargetDecl))
-    EmitKCFIOperandBundle(ConcreteCallee, BundleList);
+  if (SanOpts.has(SanitizerKind::KCFI)) {
+    if (llvm::ConstantInt *TypeId = ConcreteCallee.getKCFITypeId())
+      BundleList.emplace_back("kcfi", TypeId);
+    else if (!isa_and_nonnull<FunctionDecl>(TargetDecl))
+      EmitKCFIOperandBundle(ConcreteCallee, BundleList);
+  }
 
   // Add the pointer-authentication bundle.
   EmitPointerAuthOperandBundle(ConcreteCallee.getPointerAuthInfo(), BundleList);

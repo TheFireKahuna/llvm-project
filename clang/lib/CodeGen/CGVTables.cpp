@@ -63,6 +63,19 @@ static void setThunkProperties(CodeGenModule &CGM, const ThunkInfo &Thunk,
 
   if (CGM.supportsCOMDAT() && ThunkFn->isWeakForLinker())
     ThunkFn->setComdat(CGM.getModule().getOrInsertComdat(ThunkFn->getName()));
+
+  // A thunk carries the KCFI type of the vtable slot it occupies, which the
+  // vtable builder records, rather than that of the function it calls.
+  if (CGM.hasKCFITypes() && CGM.hasKCFIVTableSlotTypes() &&
+      !isa<CXXDestructorDecl>(GD.getDecl())) {
+    assert(Thunk.Method && "Method not set");
+    ThunkFn->setMetadata(
+        llvm::LLVMContext::MD_kcfi_type,
+        llvm::MDNode::get(
+            CGM.getLLVMContext(),
+            llvm::ConstantAsMetadata::get(
+                CGM.CreateKCFIVTableSlotTypeId(GD.getWithDecl(Thunk.Method)))));
+  }
 }
 
 #ifndef NDEBUG
@@ -554,6 +567,14 @@ llvm::Constant *CodeGenVTables::maybeEmitThunk(GlobalDecl GD,
     else
       MCtx.mangleThunk(MD, TI, /* elideOverrideInfo */ true, Out);
   }
+
+  // One thunk can occupy slots that different classes introduce, which have
+  // different KCFI types, so a thunk is named after the type of its slot.
+  if (CGM.hasKCFIVTableSlotTypes())
+    Out << ".kcfi."
+        << llvm::utohexstr(CGM.CreateKCFIVTableSlotTypeId(GD.getWithDecl(TI.Method))
+                               ->getZExtValue(),
+                           /*LowerCase=*/true, /*Width=*/8);
 
   llvm::Type *ThunkVTableTy = CGM.getTypes().GetFunctionTypeForVTable(GD);
   llvm::Constant *Thunk = CGM.GetAddrOfThunk(Name, ThunkVTableTy, GD);

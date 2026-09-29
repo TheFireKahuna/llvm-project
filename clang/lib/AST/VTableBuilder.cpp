@@ -1575,10 +1575,13 @@ void ItaniumVTableBuilder::AddMethods(
             ReturnAdjustment ReturnAdjustment =
               ComputeReturnAdjustment(ReturnAdjustmentOffset);
 
-            // This is a virtual thunk for the most derived class, add it.
+            // This is a virtual thunk for the most derived class, add it,
+            // with the method that created the vtable entry, as for the
+            // other thunks.
             AddThunk(Overrider.Method,
                      ThunkInfo(ThisAdjustment, ReturnAdjustment,
-                               OverriddenMD->getThisType().getTypePtr()));
+                               OverriddenMD->getThisType().getTypePtr(),
+                               VTables.findOriginalMethodInMap(OverriddenMD)));
           }
         }
 

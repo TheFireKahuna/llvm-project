@@ -2330,6 +2330,13 @@ CGCallee ItaniumCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
     PointerAuth = CGF.EmitPointerAuthInfo(Schema, VTableSlotPtr, GD, QualType());
   }
   CGCallee Callee(GD, VFunc, PointerAuth);
+
+  // The call checks the KCFI type of the slot, which every function that can
+  // occupy it carries.
+  if (CGM.hasKCFIVTableSlotTypes() && !isa<CXXDestructorDecl>(MethodDecl))
+    Callee.setKCFITypeId(CGM.CreateKCFIVTableSlotTypeId(
+        CGM.getItaniumVTableContext().findOriginalMethod(
+            GD.getCanonicalDecl())));
   return Callee;
 }
 
