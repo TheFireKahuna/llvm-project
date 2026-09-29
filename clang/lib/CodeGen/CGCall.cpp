@@ -6350,7 +6350,7 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
   SmallVector<llvm::OperandBundleDef, 1> BundleList =
       getBundlesForFunclet(CalleePtr);
 
-  if (SanOpts.has(SanitizerKind::KCFI)) {
+  if (SanOpts.has(SanitizerKind::KCFI) && !ConcreteCallee.isKCFIChecked()) {
     if (llvm::ConstantInt *TypeId = ConcreteCallee.getKCFITypeId())
       BundleList.emplace_back("kcfi", TypeId);
     else if (!isa_and_nonnull<FunctionDecl>(TargetDecl))

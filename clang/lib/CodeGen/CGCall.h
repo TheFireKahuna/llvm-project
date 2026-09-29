@@ -79,6 +79,9 @@ class CGCallee {
     /// The KCFI type identifier a call through the pointer checks, when it is
     /// not that of the callee's function type.
     llvm::ConstantInt *KCFITypeId;
+    /// Whether the pointer's KCFI type was checked where it was loaded, so
+    /// that a call through it checks nothing more.
+    bool KCFIChecked;
   };
   struct BuiltinInfoStorage {
     const FunctionDecl *Decl;
@@ -123,6 +126,7 @@ public:
     OrdinaryInfo.AbstractInfo = abstractInfo;
     OrdinaryInfo.PointerAuthInfo = pointerAuthInfo;
     OrdinaryInfo.KCFITypeId = nullptr;
+    OrdinaryInfo.KCFIChecked = false;
     assert(functionPtr && "configuring callee without function pointer");
     assert(functionPtr->getType()->isPointerTy());
   }
@@ -214,6 +218,14 @@ public:
   void setKCFITypeId(llvm::ConstantInt *TypeId) {
     assert(isOrdinary());
     OrdinaryInfo.KCFITypeId = TypeId;
+  }
+  bool isKCFIChecked() const {
+    assert(isOrdinary());
+    return OrdinaryInfo.KCFIChecked;
+  }
+  void setKCFIChecked() {
+    assert(isOrdinary());
+    OrdinaryInfo.KCFIChecked = true;
   }
 
   bool isVirtual() const {

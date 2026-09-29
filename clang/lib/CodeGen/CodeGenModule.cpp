@@ -1614,20 +1614,9 @@ void CodeGenModule::Release() {
             llvm::stringifyKCFIHashAlgorithm(CodeGenOpts.SanitizeKcfiHash)));
   }
 
-  if (LangOpts.SanitizeKcfiMarker) {
-    // The marker tells prefixes of this scheme from any other, so it folds in
-    // every option that changes the type identifiers.
-    std::string Variant = "kcfi-marker.1";
-    if (CodeGenOpts.SanitizeCfiICallNormalizeIntegers)
-      Variant += ".normalized";
-    if (CodeGenOpts.SanitizeCfiICallGeneralizePointers)
-      Variant += ".generalized";
-    Variant += ".";
-    Variant += llvm::stringifyKCFIHashAlgorithm(CodeGenOpts.SanitizeKcfiHash);
-    getModule().addModuleFlag(
-        llvm::Module::Override, "kcfi-marker",
-        llvm::getKCFITypeID(Variant, llvm::KCFIHashAlgorithm::xxHash64));
-  }
+  if (LangOpts.SanitizeKcfiMarker)
+    getModule().addModuleFlag(llvm::Module::Override, "kcfi-marker",
+                              getKCFIMarker());
 
   if (CodeGenOpts.CFProtectionReturn &&
       Target.checkCFProtectionReturnSupported(getDiags())) {
@@ -3718,6 +3707,34 @@ void CodeGenModule::createCalleeTypeMetadataForIcall(const QualType &QT,
   CB->setMetadata(llvm::LLVMContext::MD_callee_type, MDN);
 }
 
+uint32_t CodeGenModule::getKCFIMarker() const {
+  // The marker tells prefixes of this scheme from any other, so it folds in
+  // every option that changes the type identifiers.
+  std::string Variant = "kcfi-marker.1";
+  if (CodeGenOpts.SanitizeCfiICallNormalizeIntegers)
+    Variant += ".normalized";
+  if (CodeGenOpts.SanitizeCfiICallGeneralizePointers)
+    Variant += ".generalized";
+  Variant += ".";
+  Variant += llvm::stringifyKCFIHashAlgorithm(CodeGenOpts.SanitizeKcfiHash);
+  return llvm::getKCFITypeID(Variant, llvm::KCFIHashAlgorithm::xxHash64);
+}
+
+llvm::ConstantInt *CodeGenModule::CreateKCFIVfnTypeId(QualType FnType) {
+  std::string Salt = "__vfn";
+  if (const auto *FP = FnType->getAs<FunctionProtoType>())
+    if (const auto &Info = FP->getExtraAttributeInfo())
+      Salt = (Info.CFISalt + "." + Salt).str();
+  return CreateKCFITypeId(FnType, Salt);
+}
+
+void CodeGenModule::setKCFIVfnType(llvm::Function *F, QualType FnType) {
+  F->setMetadata(
+      "kcfi_vfn_type",
+      llvm::MDNode::get(getLLVMContext(), llvm::ConstantAsMetadata::get(
+                                              CreateKCFIVfnTypeId(FnType))));
+}
+
 bool CodeGenModule::hasKCFIVTableSlotTypes() const {
   return LangOpts.SanitizeKcfiMarker &&
          getTarget().getCXXABI().isItaniumFamily();
@@ -3772,6 +3789,8 @@ void CodeGenModule::setKCFIType(GlobalDecl GD, llvm::Function *F) {
     else
       TypeId = CreateKCFIVTableSlotTypeId(
           getItaniumVTableContext().findOriginalMethod(GD.getCanonicalDecl()));
+    if (!isa<CXXDestructorDecl>(MD))
+      setKCFIVfnType(F, MD->getType());
   } else {
     llvm::StringRef Salt;
     if (const auto *FP = FD->getType()->getAs<FunctionProtoType>())

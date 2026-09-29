@@ -1770,6 +1770,20 @@ public:
   /// virtual destructor, introduces.
   llvm::ConstantInt *CreateKCFIVTableSlotTypeId(GlobalDecl Slot);
 
+  /// Generate the KCFI type identifier that a function of type FnType that
+  /// can occupy a vtable slot carries besides its own, and that a call through
+  /// a member function pointer to a virtual function checks: FnType salted
+  /// "__vfn", which does not depend on the class that introduces the slot.
+  llvm::ConstantInt *CreateKCFIVfnTypeId(QualType FnType);
+
+  /// Attach to F, which can occupy a vtable slot of type FnType, the type a
+  /// call through a member function pointer checks.
+  void setKCFIVfnType(llvm::Function *F, QualType FnType);
+
+  /// Returns the KCFI marker, which tells prefixes of the KCFI marker scheme
+  /// with the type identifiers of this module's options from any other.
+  uint32_t getKCFIMarker() const;
+
   /// Generate the KCFI type identifier of a destructor under the KCFI marker
   /// scheme: void(void *) salted "__cxa_dtor", the type the runtime calls a
   /// destructor through, and further salted by DeletingClass, the class that

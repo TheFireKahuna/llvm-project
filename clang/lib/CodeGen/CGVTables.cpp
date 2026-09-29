@@ -82,6 +82,8 @@ static llvm::Function *getKCFIVirtualStub(CodeGenModule &CGM,
   Stub->setMetadata(llvm::LLVMContext::MD_kcfi_type,
                     llvm::MDNode::get(CGM.getLLVMContext(),
                                       llvm::ConstantAsMetadata::get(TypeId)));
+  if (!isa<CXXDestructorDecl>(Slot.getDecl()))
+    CGM.setKCFIVfnType(Stub, cast<CXXMethodDecl>(Slot.getDecl())->getType());
   return Stub;
 }
 
@@ -113,6 +115,8 @@ static void setThunkProperties(CodeGenModule &CGM, const ThunkInfo &Thunk,
             CGM.getLLVMContext(),
             llvm::ConstantAsMetadata::get(
                 CGM.CreateKCFIVTableSlotTypeId(GD.getWithDecl(Thunk.Method)))));
+    if (!isa<CXXDestructorDecl>(Thunk.Method))
+      CGM.setKCFIVfnType(ThunkFn, Thunk.Method->getType());
   }
 }
 

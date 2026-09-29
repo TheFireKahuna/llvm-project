@@ -5455,6 +5455,14 @@ public:
   void EmitKCFIOperandBundle(const CGCallee &Callee,
                              SmallVectorImpl<llvm::OperandBundleDef> &Bundles);
 
+  /// Under the KCFI marker scheme, check that the function Fn carries TypeId
+  /// in the word Offset bytes before its entry. On a mismatch, a function that
+  /// carries the marker, and so has another type, fails fast, and one that
+  /// does not, which was built without KCFI, is called at the strength of
+  /// Control Flow Guard.
+  void EmitKCFIMarkerCheck(llvm::Value *Fn, llvm::ConstantInt *TypeId,
+                           int64_t Offset);
+
   /// Create a basic block that will either trap or call a handler function in
   /// the UBSan runtime with the provided arguments, and create a conditional
   /// branch to it.

@@ -26,10 +26,10 @@ void Der::f() {}
 // CHECK:         call void %{{.*}} [ "kcfi"(i32 667726977) ]
 void call(Base *p) { p->f(); }
 
-// CHECK:      define linkonce_odr hidden void @_purecall.kcfi.27ccb481() {{.*}}comdat !kcfi_type ![[#TYPE:]] {
+// CHECK:      define linkonce_odr hidden void @_purecall.kcfi.27ccb481() {{.*}}comdat !kcfi_type ![[#TYPE:]] {{.*}}{
 // CHECK:        call void @_purecall()
 // CHECK-NEXT:   unreachable
-// CHECK:      define linkonce_odr hidden void @__cxa_deleted_virtual.kcfi.27ccb481() {{.*}}comdat !kcfi_type ![[#TYPE]] {
+// CHECK:      define linkonce_odr hidden void @__cxa_deleted_virtual.kcfi.27ccb481() {{.*}}comdat !kcfi_type ![[#TYPE]] {{.*}}{
 // CHECK:        call void @__cxa_deleted_virtual()
 // CHECK-NEXT:   unreachable
 // CHECK:      ![[#TYPE]] = !{i32 667726977}

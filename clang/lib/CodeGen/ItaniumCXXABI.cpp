@@ -833,6 +833,19 @@ CGCallee ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
     }
   } // End of sanitizer scope
 
+  // Under the KCFI marker scheme, a virtual function carries the type of its
+  // vtable slot, salted by a class this call cannot know, and every function
+  // that can occupy a slot carries a second type, salted "__vfn" alone, which
+  // the call checks instead. The non-virtual path checks the ordinary type,
+  // and the call itself checks nothing more.
+  bool ShouldEmitKCFICheck =
+      CGF.SanOpts.has(SanitizerKind::KCFI) && CGM.hasKCFIVTableSlotTypes();
+  if (ShouldEmitKCFICheck) {
+    CGF.EmitKCFIMarkerCheck(VirtualFn,
+                            CGM.CreateKCFIVfnTypeId(MPT->getPointeeType()), 16);
+    FnVirtual = Builder.GetInsertBlock();
+  }
+
   CGF.EmitBranch(FnEnd);
 
   // In the non-virtual path, the function pointer is actually a
@@ -877,6 +890,15 @@ CGCallee ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
     }
   }
 
+  if (ShouldEmitKCFICheck) {
+    llvm::StringRef Salt;
+    if (const auto &Info = FPT->getExtraAttributeInfo())
+      Salt = Info.CFISalt;
+    CGF.EmitKCFIMarkerCheck(
+        NonVirtualFn, CGM.CreateKCFITypeId(MPT->getPointeeType(), Salt), 4);
+    FnNonVirtual = Builder.GetInsertBlock();
+  }
+
   // We're done.
   CGF.EmitBlock(FnEnd);
   llvm::PHINode *CalleePtr = Builder.CreatePHI(CGF.DefaultPtrTy, 2);
@@ -902,6 +924,8 @@ CGCallee ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
   }
 
   CGCallee Callee(FPT, CalleePtr, PointerAuth);
+  if (ShouldEmitKCFICheck)
+    Callee.setKCFIChecked();
   return Callee;
 }
 
