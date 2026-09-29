@@ -188,9 +188,12 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
   // Emit a function symbol for the type data to avoid unreachable instruction
   // warnings from binary validation tools, and use the same linkage as the
   // parent function. Note that using local linkage would result in duplicate
-  // symbols for weak parent functions.
+  // symbols for weak parent functions. On COFF, however, a linker treats an
+  // external symbol that only a discarded COMDAT copy defines as undefined, so
+  // keep the symbol local there, which lets a copy without type data prevail.
   MCSymbol *FnSym = OutContext.getOrCreateSymbol("__cfi_" + MF.getName());
-  emitLinkage(&MF.getFunction(), FnSym);
+  if (!TM.getTargetTriple().isOSBinFormatCOFF())
+    emitLinkage(&MF.getFunction(), FnSym);
   if (MAI.hasDotTypeDotSizeDirective())
     OutStreamer->emitSymbolAttribute(FnSym, MCSA_ELF_TypeFunction);
   OutStreamer->emitLabel(FnSym);
