@@ -1,0 +1,81 @@
+## The link-only records: a group of a kind the linker does not know is
+## skipped unless the kind is critical, and a container the linker cannot read
+## in full is an error, since it may hold a critical record.
+
+## "LLRC", version 1, no capabilities, and a group of the non-critical kind 2
+## with a two-byte payload.
+# RUN: yaml2obj -DDATA=4C4C524301000202AABB %s -o %t.skip.obj
+# RUN: lld-link -entry:main -subsystem:console -out:%t.exe %t.skip.obj
+# RUN: llvm-readobj --sections %t.exe | FileCheck --check-prefix=REMOVED %s
+
+# REMOVED-NOT: .llvm_link_records
+
+## No groups, and unknown capabilities.
+# RUN: yaml2obj -DDATA=4C4C52430180807F %s -o %t.empty.obj
+# RUN: lld-link -entry:main -subsystem:console -out:%t.exe %t.empty.obj
+
+## A group of the critical kind 3.
+# RUN: yaml2obj -DDATA=4C4C5243010002010003020001 %s -o %t.critical.obj
+# RUN: not lld-link -entry:main -subsystem:console -out:%t.exe \
+# RUN:   %t.critical.obj 2>&1 | FileCheck --check-prefix=CRITICAL %s
+
+## The records of an archive member that is not loaded are not read.
+# RUN: rm -f %t.critical.lib
+# RUN: llvm-lib %t.critical.obj -out:%t.critical.lib
+# RUN: lld-link -entry:main -subsystem:console -out:%t.exe %t.skip.obj \
+# RUN:   %t.critical.lib
+
+# CRITICAL: error: {{.*}}.critical.obj: .llvm_link_records has a record of critical kind 3, which this linker does not support; link the object with a newer linker
+
+## Version 2.
+# RUN: yaml2obj -DDATA=4C4C52430200 %s -o %t.version.obj
+# RUN: not lld-link -entry:main -subsystem:console -out:%t.exe \
+# RUN:   %t.version.obj 2>&1 | FileCheck --check-prefix=VERSION %s
+
+# VERSION: error: {{.*}}.version.obj: .llvm_link_records has version 2, which this linker does not support; link the object with a newer linker
+
+## A wrong signature, and a group longer than the section.
+# RUN: yaml2obj -DDATA=4C4C52420100 %s -o %t.magic.obj
+# RUN: yaml2obj -DDATA=4C4C52430100020301 %s -o %t.size.obj
+# RUN: yaml2obj -DDATA=4C4C52 %s -o %t.short.obj
+# RUN: not lld-link -entry:main -subsystem:console -out:%t.exe \
+# RUN:   %t.magic.obj %t.size.obj %t.short.obj 2>&1 | \
+# RUN:   FileCheck --check-prefix=MALFORMED %s
+
+# MALFORMED: error: {{.*}}.magic.obj: .llvm_link_records is malformed: invalid signature
+# MALFORMED: error: {{.*}}.size.obj: .llvm_link_records is malformed: unexpected end of data at offset 0x9 while reading [0x8, 0xb)
+# MALFORMED: error: {{.*}}.short.obj: .llvm_link_records is malformed: unexpected end of data at offset 0x3 while reading [0x0, 0x4)
+
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_AMD64
+  Characteristics: []
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       16
+    SectionData:     C3
+  - Name:            .llvm_link_records
+    Characteristics: [ IMAGE_SCN_LNK_REMOVE ]
+    Alignment:       1
+    SectionData:     [[DATA]]
+symbols:
+  - Name:            .text
+    Value:           0
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_STATIC
+    SectionDefinition:
+      Length:          1
+      NumberOfRelocations: 0
+      NumberOfLinenumbers: 0
+      CheckSum:        0
+      Number:          1
+  - Name:            main
+    Value:           0
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+...
