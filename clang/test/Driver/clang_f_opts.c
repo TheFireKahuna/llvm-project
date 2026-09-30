@@ -577,7 +577,8 @@
 
 // RUN: %clang -### -S -ftrivial-auto-var-init=pattern -ftrivial-auto-var-init-stop-after=1 %s 2>&1 | FileCheck -check-prefix=CHECK-TRIVIAL-PATTERN-STOP-AFTER %s
 // RUN: %clang -### -S -ftrivial-auto-var-init=zero -ftrivial-auto-var-init-stop-after=1 %s 2>&1 | FileCheck -check-prefix=CHECK-TRIVIAL-ZERO-STOP-AFTER %s
-// RUN: not %clang -### -S -ftrivial-auto-var-init-stop-after=0 %s 2>&1 | FileCheck -check-prefix=CHECK-TRIVIAL-STOP-AFTER-MISSING-DEPENDENCY %s
+// RUN: not %clang -### -S --target=x86_64-unknown-linux-gnu -ftrivial-auto-var-init-stop-after=0 %s 2>&1 | FileCheck -check-prefix=CHECK-TRIVIAL-STOP-AFTER-MISSING-DEPENDENCY %s
+// RUN: not %clang -### -S -ftrivial-auto-var-init=uninitialized -ftrivial-auto-var-init-stop-after=1 %s 2>&1 | FileCheck -check-prefix=CHECK-TRIVIAL-STOP-AFTER-MISSING-DEPENDENCY %s
 // RUN: not %clang -### -S -ftrivial-auto-var-init=pattern -ftrivial-auto-var-init-stop-after=0 %s 2>&1 | FileCheck -check-prefix=CHECK-TRIVIAL-PATTERN-STOP-AFTER-INVALID-VALUE %s
 // RUN: not %clang -### -S -ftrivial-auto-var-init=zero -ftrivial-auto-var-init-stop-after=0 %s 2>&1 | FileCheck -check-prefix=CHECK-TRIVIAL-ZERO-STOP-AFTER-INVALID-VALUE %s
 // CHECK-TRIVIAL-PATTERN-STOP-AFTER-NOT: is used without '-ftrivial-auto-var-init'
@@ -590,7 +591,8 @@
 
 // RUN: %clang -### -S -ftrivial-auto-var-init=pattern -ftrivial-auto-var-init-max-size=1024 %s 2>&1 | FileCheck -check-prefix=CHECK-TRIVIAL-PATTERN-MAX-SIZE %s
 // RUN: %clang -### -S -ftrivial-auto-var-init=zero -ftrivial-auto-var-init-max-size=1024 %s 2>&1 | FileCheck -check-prefix=CHECK-TRIVIAL-ZERO-MAX-SIZE %s
-// RUN: not %clang -### -S -ftrivial-auto-var-init-max-size=1024 %s 2>&1 | FileCheck -check-prefix=CHECK-TRIVIAL-MAX-SIZE-MISSING-DEPENDENCY %s
+// RUN: not %clang -### -S --target=x86_64-unknown-linux-gnu -ftrivial-auto-var-init-max-size=1024 %s 2>&1 | FileCheck -check-prefix=CHECK-TRIVIAL-MAX-SIZE-MISSING-DEPENDENCY %s
+// RUN: not %clang -### -S -ftrivial-auto-var-init=uninitialized -ftrivial-auto-var-init-max-size=1024 %s 2>&1 | FileCheck -check-prefix=CHECK-TRIVIAL-MAX-SIZE-MISSING-DEPENDENCY %s
 // RUN: not %clang -### -S -ftrivial-auto-var-init=pattern -ftrivial-auto-var-init-max-size=0 %s 2>&1 | FileCheck -check-prefix=CHECK-TRIVIAL-PATTERN-MAX-SIZE-INVALID-VALUE %s
 // RUN: not %clang -### -S -ftrivial-auto-var-init=zero -ftrivial-auto-var-init-max-size=0 %s 2>&1 | FileCheck -check-prefix=CHECK-TRIVIAL-ZERO-MAX-SIZE-INVALID-VALUE %s
 // CHECK-TRIVIAL-PATTERN-MAX-SIZE-NOT: is used without '-ftrivial-auto-var-init'
