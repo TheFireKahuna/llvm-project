@@ -201,6 +201,20 @@ struct ChunkRange {
   Chunk *first = nullptr, *last;
 };
 
+// The KCFI prefix, with a marker, of a function the link keeps. From its
+// __cfi_ symbol it holds an optional second type word, then 0F 1F 80, the
+// marker and B8, then the type, before any patchable prefix and the entry.
+struct KCFIPrefix {
+  SectionChunk *chunk;
+  // The offset in chunk of the __cfi_ symbol, and the size of the type words
+  // and the marker from there, 12 or 16 bytes.
+  uint32_t offset;
+  uint32_t size;
+  // Whether the guard function table omits the function, whose type words
+  // are then overwritten.
+  bool sealed;
+};
+
 // The writer writes a SymbolTable result to a file.
 class Writer {
 public:
@@ -248,6 +262,8 @@ private:
   void markSymbolsWithRelocations(ObjFile *file, SymbolRVASet &usedSymbols,
                                   SymbolRVASet &usedImports);
   void createGuardCFTables();
+  void findKCFIPrefixes(const SymbolRVASet &addressTakenSyms);
+  void sealKCFIPrefixes();
   SymbolRVASet getEHContTargets();
   bool protectDelayIat();
   void markSymbolsForRVATable(ObjFile *file,
@@ -313,6 +329,9 @@ private:
 
   // List of Arm64EC export thunks.
   std::vector<std::pair<Chunk *, Defined *>> exportThunks;
+
+  // The KCFI prefixes with a marker, found when the image is sealed.
+  std::vector<KCFIPrefix> kcfiPrefixes;
 
   uint64_t fileSize;
   uint32_t pointerToSymbolTable = 0;
@@ -814,6 +833,7 @@ void Writer::run() {
       writeHeader<pe32_header>();
     }
     writeSections();
+    sealKCFIPrefixes();
     prepareLoadConfig();
     sortExceptionTables();
 
@@ -2414,6 +2434,12 @@ void Writer::createGuardCFTables() {
     if (addressTakenSyms.insert(c).second && c.offset % 16 == 0)
       exportSuppressed.insert(c);
 
+  // Under -import-slots, the image is sealed: a function the table omits has
+  // its KCFI type overwritten, so that a KCFI check never accepts a function
+  // that Control Flow Guard would reject.
+  if (config->importSlots)
+    findKCFIPrefixes(addressTakenSyms);
+
   // Ensure sections referenced in the gfid table are 16-byte aligned.
   for (const ChunkAndOffset &c : addressTakenSyms)
     if (c.inputChunk->getAlignment() < 16)
@@ -2472,6 +2498,86 @@ void Writer::createGuardCFTables() {
     Symbol *flagSym = symtab.findUnderscore("__guard_flags");
     cast<DefinedAbsolute>(flagSym)->setVA(flags);
   });
+}
+
+// Finds the KCFI prefix with a marker of every function the link keeps, which
+// clang labels with a static __cfi_ symbol, and decides which to seal: those
+// of functions the guard function table does not list. Identical code folding
+// can make one chunk the definition of several functions, and the table and
+// the prefixes are both keyed by the chunk that remains, so a folded function
+// stays unsealed if any function folded into it is listed.
+void Writer::findKCFIPrefixes(const SymbolRVASet &addressTakenSyms) {
+  DenseSet<std::pair<SectionChunk *, uint32_t>> seen;
+  for (ObjFile *file : ctx.objFileInstances) {
+    SmallVector<DefinedRegular *, 0> labels, entries;
+    for (Symbol *s : file->getSymbols()) {
+      auto *d = dyn_cast_or_null<DefinedRegular>(s);
+      if (!d || d->file != file)
+        continue;
+      SectionChunk *sc = d->getChunk();
+      if (!sc || !sc->live ||
+          !(sc->getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE))
+        continue;
+      if (d->getCOFFSymbol().getComplexType() == IMAGE_SYM_DTYPE_FUNCTION)
+        entries.push_back(d);
+      else if (!d->getCOFFSymbol().isExternal() &&
+               d->getName().starts_with("__cfi_"))
+        labels.push_back(d);
+    }
+    if (labels.empty())
+      continue;
+
+    // The function a prefix belongs to is the first that follows it in its
+    // chunk.
+    auto byLocation = [](DefinedRegular *a, DefinedRegular *b) {
+      return std::make_pair(a->getChunk(), a->getValue()) <
+             std::make_pair(b->getChunk(), b->getValue());
+    };
+    llvm::sort(entries, byLocation);
+    for (DefinedRegular *label : labels) {
+      SectionChunk *sc = label->getChunk();
+      uint32_t off = label->getValue();
+      auto it = llvm::upper_bound(entries, label, byLocation);
+      ArrayRef<uint8_t> data = sc->getContents();
+      auto hasMarker = [&](uint32_t at) {
+        return at + 12 <= data.size() && data[at] == 0x0F &&
+               data[at + 1] == 0x1F && data[at + 2] == 0x80 &&
+               data[at + 7] == 0xB8;
+      };
+      // A prefix without the marker, such as upstream KCFI's, can never pass
+      // the thunks' check, so there is nothing to seal. One with the marker
+      // that no function follows is malformed.
+      uint32_t size = hasMarker(off) ? 12 : hasMarker(off + 4) ? 16 : 0;
+      if (size == 0)
+        continue;
+      if (it == entries.end() || (*it)->getChunk() != sc ||
+          (*it)->getValue() < off + size) {
+        Err(ctx) << file << ": no function follows the KCFI prefix at "
+                 << label->getName();
+        continue;
+      }
+      if (!seen.insert({sc, off}).second)
+        continue;
+      bool sealed = !addressTakenSyms.contains({sc, (*it)->getValue()});
+      kcfiPrefixes.push_back({sc, off, size, sealed});
+    }
+  }
+}
+
+// Overwrites the type words of each sealed KCFI prefix with the type that no
+// call expects.
+void Writer::sealKCFIPrefixes() {
+  uint8_t *buf = buffer->getBufferStart();
+  for (const KCFIPrefix &p : kcfiPrefixes) {
+    if (!p.sealed)
+      continue;
+    OutputSection *sec = ctx.getOutputSection(p.chunk);
+    uint8_t *loc =
+        buf + sec->getFileOff() + p.chunk->getRVA() - sec->getRVA() + p.offset;
+    if (p.size == 16)
+      write32le(loc, COFF::KCFISealedType);
+    write32le(loc + p.size - 4, COFF::KCFISealedType);
+  }
 }
 
 // Take a list of input sections containing symbol table indices and add those
