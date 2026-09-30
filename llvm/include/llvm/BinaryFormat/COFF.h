@@ -66,6 +66,12 @@ static const char LinkRecordsMagic[] = {'L', 'L', 'R', 'C'};
 const uint64_t LinkRecordsVersion = 1;
 const uint64_t LinkRecordKindCritical = 1;
 
+// The KCFI type that a linker writes over the type words of a function's
+// marked KCFI prefix when no indirect call may reach the function, so that a
+// call through a pointer to it fails its type check. A compiler that emits
+// marked prefixes never assigns this type to a function or a call.
+const uint32_t KCFISealedType = 0;
+
 // Sizes in bytes of various things in the COFF format.
 enum {
   Header16Size = 20,

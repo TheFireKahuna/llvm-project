@@ -57,6 +57,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/IR/AttributeMask.h"
 #include "llvm/IR/CallingConv.h"
@@ -2915,8 +2916,13 @@ llvm::ConstantInt *CodeGenModule::CreateKCFITypeId(QualType T, StringRef Salt) {
   if (getCodeGenOpts().SanitizeCfiICallGeneralizePointers)
     Out << ".generalized";
 
-  return llvm::ConstantInt::get(
-      Int32Ty, llvm::getKCFITypeID(OutName, getCodeGenOpts().SanitizeKcfiHash));
+  uint32_t TypeId =
+      llvm::getKCFITypeID(OutName, getCodeGenOpts().SanitizeKcfiHash);
+  // A linker overwrites the type of a function that no pointer may reach with
+  // the sealed type, which a call must therefore never expect.
+  if (LangOpts.SanitizeKcfiMarker && TypeId == llvm::COFF::KCFISealedType)
+    ++TypeId;
+  return llvm::ConstantInt::get(Int32Ty, TypeId);
 }
 
 void CodeGenModule::SetLLVMFunctionAttributes(GlobalDecl GD,

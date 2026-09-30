@@ -13,6 +13,7 @@
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Analysis/VectorUtils.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
@@ -214,10 +215,14 @@ void llvm::setKCFIType(Module &M, Function &F, StringRef MangledType) {
   KCFIHashAlgorithm Algorithm =
       parseKCFIHashAlgorithm(MD ? MD->getString() : "");
 
+  uint32_t TypeId = getKCFITypeID(Type, Algorithm);
+  // Matches the remapping of the sealed type in Clang, which a linker writes
+  // over the type of a function that no pointer may reach.
+  if (M.getModuleFlag("kcfi-marker") && TypeId == COFF::KCFISealedType)
+    ++TypeId;
   F.setMetadata(LLVMContext::MD_kcfi_type,
                 MDNode::get(Ctx, MDB.createConstant(ConstantInt::get(
-                                     Type::getInt32Ty(Ctx),
-                                     getKCFITypeID(Type, Algorithm)))));
+                                     Type::getInt32Ty(Ctx), TypeId))));
   // If the module was compiled with -fpatchable-function-entry, ensure
   // we use the same patchable-function-prefix.
   if (auto *MD = mdconst::extract_or_null<ConstantInt>(

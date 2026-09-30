@@ -33,6 +33,28 @@ static int getListSize(Module &M, StringRef Name) {
   return T->getNumElements();
 }
 
+// A type that hashes to the sealed KCFI type, 0, takes 1 instead in a module
+// whose prefixes carry a marker. "_ZTSFvvE.j92a9il" hashes to 0 under FNV-1a.
+TEST(ModuleUtils, SetKCFITypeAvoidsSealedType) {
+  LLVMContext C;
+  for (bool Marker : {false, true}) {
+    std::string IR = R"(
+      define void @f() { ret void }
+      !llvm.module.flags = !{!0, !1)" +
+                     std::string(Marker ? ", !2}" : "}") + R"(
+      !0 = !{i32 4, !"kcfi", i32 1}
+      !1 = !{i32 4, !"kcfi-hash", !"FNV-1a"}
+      !2 = !{i32 4, !"kcfi-marker", i32 16}
+    )";
+    std::unique_ptr<Module> M = parseIR(C, IR);
+    Function *F = M->getFunction("f");
+    setKCFIType(*M, *F, "_ZTSFvvE.j92a9il");
+    auto *Type = mdconst::extract<ConstantInt>(
+        F->getMetadata(LLVMContext::MD_kcfi_type)->getOperand(0));
+    EXPECT_EQ(Marker ? 1u : 0u, Type->getZExtValue());
+  }
+}
+
 TEST(ModuleUtils, AppendToUsedList1) {
   LLVMContext C;
 
