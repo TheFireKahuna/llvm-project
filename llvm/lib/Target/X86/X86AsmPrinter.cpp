@@ -199,7 +199,8 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
     emitLinkage(&MF.getFunction(), FnSym);
   if (MAI.hasDotTypeDotSizeDirective())
     OutStreamer->emitSymbolAttribute(FnSym, MCSA_ELF_TypeFunction);
-  OutStreamer->emitLabel(FnSym);
+  if (!Marker)
+    OutStreamer->emitLabel(FnSym);
 
   // Embed the type hash in the X86::MOV32ri instruction to avoid special
   // casing object file parsers. The instruction is 5 bytes long.
@@ -217,6 +218,11 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
     }
   }
   EmitKCFITypePadding(MF, TypeBytes);
+  // With a marker, the symbol follows the padding and marks the first type
+  // word, as on targets that emit the type as data, so that the layout after
+  // it tells a linker whether the prefix has a second type.
+  if (Marker)
+    OutStreamer->emitLabel(FnSym);
   if (VfnType)
     OutStreamer->emitInt32(VfnType->getZExtValue());
   if (Marker) {

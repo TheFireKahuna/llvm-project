@@ -5,19 +5,21 @@
 ;; With the kcfi-marker module flag, every typed function gets a prefix whose
 ;; 8 bytes before the type are 0F 1F 80, the marker, and B8, whether or not
 ;; the module has the kcfi flag. The marker is always a 32-bit displacement.
+;; The __cfi_ symbol follows the padding, at the first type word.
 
 ; ASM:       .p2align 4
-; ASM-LABEL: __cfi_f1:
 ; ASM-COUNT-4: nop
+; ASM-NEXT:  __cfi_f1:
 ; ASM-NEXT:    {disp32} nopl 16(%rax)
 ; ASM-NEXT:    movl $12345678, %eax
-; ASM-LABEL: f1:
+; ASM-LABEL: {{^}}f1:
 
-; OBJ:      <__cfi_f1>:
+; OBJ:        90 nop
 ; OBJ-NEXT:   90 nop
 ; OBJ-NEXT:   90 nop
 ; OBJ-NEXT:   90 nop
-; OBJ-NEXT:   90 nop
+; OBJ-EMPTY:
+; OBJ-NEXT: <__cfi_f1>:
 ; OBJ-NEXT:   0f 1f 80 10 00 00 00 nopl 0x10(%rax)
 ; OBJ-NEXT:   b8 4e 61 bc 00       movl $0xbc614e, %eax
 ; OBJ-EMPTY:
