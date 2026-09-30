@@ -183,7 +183,9 @@ __asm__(
     // A one-entry scope table, then the cookie word with bit 0 set, so the
     // handler goes on to __C_specific_handler while dispatching. The __except
     // body returns 1. The nop keeps the call's return address inside the
-    // scope, as compilers do.
+    // scope, as compilers do. The __except body is listed as an EH
+    // continuation target, as MSVC lists it, since the image's table is
+    // enforced and unwinding to an unlisted target fails fast.
     ".globl gs_frame_seh\n"
     ".def gs_frame_seh; .scl 2; .type 32; .endef\n"
     ".seh_proc gs_frame_seh\n"
@@ -204,7 +206,7 @@ __asm__(
     ".Lseh_end:\n"
     "  xorl %eax, %eax\n"
     "  jmp 2f\n"
-    ".Lseh_except:\n"
+    "gs_frame_seh_except:\n"
     "  movl $1, %eax\n"
     "2:\n"
     "  movl %eax, 0x28(%rsp)\n"
@@ -217,10 +219,13 @@ __asm__(
     "  .seh_handler __GSHandlerCheck_SEH, @except\n"
     "  .seh_handlerdata\n"
     "  .long 1\n"
-    "  .rva .Lseh_begin, .Lseh_end, gs_filter, .Lseh_except\n"
+    "  .rva .Lseh_begin, .Lseh_end, gs_filter, gs_frame_seh_except\n"
     "  .long 0x21\n"
     "  .text\n"
     ".seh_endproc\n"
+    ".section .gehcont$y, \"dr\"\n"
+    ".symidx gs_frame_seh_except\n"
+    ".text\n"
 
     // The same frame with bit 0 clear: the filter is never consulted, and
     // the exception reaches the caller.
