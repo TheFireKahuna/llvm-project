@@ -6066,7 +6066,8 @@ static void setWindowsItaniumDLLImport(CodeGenModule &CGM, bool Local,
   if (!Local && CGM.getTriple().isWindowsItaniumEnvironment() &&
       !CGM.getCodeGenOpts().LTOVisibilityPublicStd &&
       Name != CGM.getCXXABI().GetPureVirtualCallName() &&
-      Name != "__cxa_atexit" && Name != "atexit") {
+      Name != "__cxa_atexit" && Name != "__llvm_kcfi_cxa_atexit" &&
+      Name != "atexit") {
     const FunctionDecl *FD = GetRuntimeFunctionDecl(CGM.getContext(), Name);
     if (!FD || FD->hasAttr<DLLImportAttr>()) {
       F->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
