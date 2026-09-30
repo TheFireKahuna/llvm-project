@@ -36,6 +36,9 @@ constexpr StringRef GuardCheckFunctionName = "__guard_check_icall_fptr";
 constexpr StringRef GuardDispatchFunctionName = "__guard_dispatch_icall_fptr";
 constexpr StringRef KCFICheckThunkPrefix = "__llvm_kcfi_check_";
 constexpr StringRef KCFIDispatchThunkPrefix = "__llvm_kcfi_dispatch_";
+constexpr StringRef KCFILocalCheckThunkPrefix = "__llvm_kcfi_local_check_";
+constexpr StringRef KCFILocalDispatchThunkPrefix =
+    "__llvm_kcfi_local_dispatch_";
 
 namespace {
 
@@ -329,6 +332,11 @@ Function *CFGuardImpl::getKCFIThunk(CallBase &CB, StringRef Prefix) {
   if (!Bundle)
     return nullptr;
   auto *TypeId = cast<ConstantInt>(Bundle->Inputs[0]);
+  // Every target of a call marked kcfi_local is in this image, so its thunk
+  // may fail fast on a target outside it.
+  if (CB.getMetadata("kcfi_local"))
+    Prefix = Prefix == KCFIDispatchThunkPrefix ? KCFILocalDispatchThunkPrefix
+                                               : KCFILocalCheckThunkPrefix;
   Module &M = *CB.getModule();
   std::string Name =
       (Prefix + utohexstr(TypeId->getZExtValue(), /*LowerCase=*/true,

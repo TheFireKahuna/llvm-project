@@ -1048,13 +1048,22 @@ static void emitAuthenticatedPointer(MCStreamer &OutStreamer,
 // Emits the per-type thunks that the CFGuard pass routes indirect calls with a
 // KCFI type through when the prefixes carry a marker. Each is a COMDAT, kept
 // once per image, called with the target in X15 as the guard check function
-// is. It compares the type before the target with the call's and continues
-// into the guard check function the image defines on a match, or into the
-// type's mismatch routine otherwise. That is a weak alias whose default, shared
-// by every type, fails fast if the target carries the marker, since the target
-// is then a function of another type, and continues into the guard check
-// function otherwise, since the target was built without KCFI. Both clobber
-// only X16, X17 and the flags, which the guard check function may clobber too.
+// is. It compares the 8 bytes before the target, the end of the marker, the
+// byte after it and the type, with the call's, so that a type that occurs in
+// code by chance does not pass. On a mismatch it continues into the type's
+// mismatch routine, a weak alias whose default, shared by every type, fails
+// fast if the target carries the marker, since the target is then a function
+// of another type, and continues into the guard check function otherwise,
+// since the target was built without KCFI.
+//
+// On a match, a thunk returns if the target is inside [__llvm_code_start,
+// __llvm_code_end) and continues into the guard check function the image
+// defines otherwise. A linker defines the range only for an image in which
+// every function that no pointer may reach has had its type overwritten, so
+// that a match inside the image proves what the guard check function would.
+// Each object references the bounds as weak aliases of one byte in a COMDAT,
+// which leaves the range empty otherwise. Both routines clobber only X16, X17
+// and the flags, which the guard check function may clobber too.
 void AArch64AsmPrinter::emitKCFIThunks(Module &M) {
   const ConstantInt *Marker =
       mdconst::extract_or_null<ConstantInt>(M.getModuleFlag("kcfi-marker"));
@@ -1084,6 +1093,19 @@ void AArch64AsmPrinter::emitKCFIThunks(Module &M) {
     OutStreamer->emitCodeAlignment(Align(16), STI);
     OutStreamer->emitLabel(Sym);
   };
+  // mov x17, #value, as a fixed sequence of four instructions.
+  auto EmitMovX17 = [&](uint64_t Value) {
+    Emit(MCInstBuilder(AArch64::MOVZXi)
+             .addReg(AArch64::X17)
+             .addImm(Value & 0xFFFF)
+             .addImm(0));
+    for (unsigned Shift = 16; Shift != 64; Shift += 16)
+      Emit(MCInstBuilder(AArch64::MOVKXi)
+               .addReg(AArch64::X17)
+               .addReg(AArch64::X17)
+               .addImm((Value >> Shift) & 0xFFFF)
+               .addImm(Shift));
+  };
   // adrp x16, guard; ldr x16, [x16, :lo12:guard]; br x16
   auto EmitGuardJump = [&] {
     const MCExpr *Guard = MCSymbolRefExpr::create(
@@ -1100,47 +1122,145 @@ void AArch64AsmPrinter::emitKCFIThunks(Module &M) {
     Emit(MCInstBuilder(AArch64::BR).addReg(AArch64::X16));
   };
 
-  MCSymbol *Open = nullptr;
-  for (const Function &F : M) {
-    StringRef TypeName = F.getName();
-    uint32_t Type;
-    if (!F.isDeclaration() || F.use_empty() ||
-        !TypeName.consume_front("__llvm_kcfi_check_") || TypeName.size() != 8 ||
-        TypeName.getAsInteger(16, Type))
-      continue;
-    if (!Open)
-      Open = OutContext.getOrCreateSymbol("__llvm_kcfi_check_open");
-
-    MCSymbol *Mismatch =
-        OutContext.getOrCreateSymbol("__llvm_kcfi_check_mismatch_" + TypeName);
-    OutStreamer->emitSymbolAttribute(Mismatch, MCSA_Weak);
-    OutStreamer->emitAssignment(Mismatch,
-                                MCSymbolRefExpr::create(Open, OutContext));
-
-    // ldur w16, [x15, #-4]; mov w17, #type; cmp w16, w17; b.ne mismatch
-    EmitFunctionStart(getSymbol(&F));
-    Emit(MCInstBuilder(AArch64::LDURWi)
-             .addReg(AArch64::W16)
-             .addReg(AArch64::X15)
-             .addImm(-(PrefixBytes + 4)));
-    Emit(MCInstBuilder(AArch64::MOVZWi)
-             .addReg(AArch64::W17)
-             .addImm(Type & 0xFFFF)
+  // adrp reg, sym; add reg, reg, :lo12:sym
+  auto EmitAddr = [&](unsigned Reg, MCSymbol *Sym) {
+    const MCExpr *Ref = MCSymbolRefExpr::create(Sym, OutContext);
+    Emit(MCInstBuilder(AArch64::ADRP)
+             .addReg(Reg)
+             .addExpr(MCSpecifierExpr::create(Ref, AArch64::S_ABS_PAGE,
+                                              OutContext)));
+    Emit(MCInstBuilder(AArch64::ADDXri)
+             .addReg(Reg)
+             .addReg(Reg)
+             .addExpr(MCSpecifierExpr::create(Ref, AArch64::S_LO12, OutContext))
              .addImm(0));
-    Emit(MCInstBuilder(AArch64::MOVKWi)
-             .addReg(AArch64::W17)
-             .addReg(AArch64::W17)
-             .addImm(Type >> 16)
-             .addImm(16));
-    Emit(MCInstBuilder(AArch64::SUBSWrs)
-             .addReg(AArch64::WZR)
-             .addReg(AArch64::W16)
-             .addReg(AArch64::W17)
+  };
+  auto EmitCmp = [&](unsigned LHS, unsigned RHS) {
+    Emit(MCInstBuilder(AArch64::SUBSXrs)
+             .addReg(AArch64::XZR)
+             .addReg(LHS)
+             .addReg(RHS)
              .addImm(0));
+  };
+  auto EmitBcc = [&](AArch64CC::CondCode Cond, MCSymbol *Target) {
     Emit(MCInstBuilder(AArch64::Bcc)
-             .addImm(AArch64CC::NE)
-             .addExpr(MCSymbolRefExpr::create(Mismatch, OutContext)));
-    EmitGuardJump();
+             .addImm(Cond)
+             .addExpr(MCSymbolRefExpr::create(Target, OutContext)));
+  };
+  // Makes both range bounds weak aliases of __llvm_code_empty, a byte of
+  // read-only data in a COMDAT, so that an image whose linker does not define
+  // them has an empty range. The default is defined in a section, so that
+  // references stay against the bounds, which a linker can then define; those
+  // to an alias of an undefined symbol are relocated against that symbol.
+  auto EmitCodeRangeDefault = [&](MCSymbol *Start, MCSymbol *End) {
+    MCSymbol *Empty = OutContext.getOrCreateSymbol("__llvm_code_empty");
+    for (MCSymbol *Sym : {Start, End}) {
+      OutStreamer->emitSymbolAttribute(Sym, MCSA_Weak);
+      OutStreamer->emitAssignment(Sym,
+                                  MCSymbolRefExpr::create(Empty, OutContext));
+    }
+    OutStreamer->switchSection(OutContext.getCOFFSection(
+        ".rdata",
+        COFF::IMAGE_SCN_CNT_INITIALIZED_DATA | COFF::IMAGE_SCN_MEM_READ |
+            COFF::IMAGE_SCN_LNK_COMDAT,
+        Empty->getName(), COFF::IMAGE_COMDAT_SELECT_ANY));
+    OutStreamer->emitSymbolAttribute(Empty, MCSA_Global);
+    OutStreamer->emitLabel(Empty);
+    OutStreamer->emitIntValue(0, 1);
+  };
+  // mov w0, #FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG; brk #0xf003
+  auto EmitFastFail = [&] {
+    Emit(MCInstBuilder(AArch64::MOVZWi)
+             .addReg(AArch64::W0)
+             .addImm(64)
+             .addImm(0));
+    Emit(MCInstBuilder(AArch64::BRK).addImm(0xF003));
+  };
+
+  MCSymbol *Open = nullptr;
+  MCSymbol *CodeStart = nullptr;
+  MCSymbol *CodeEnd = nullptr;
+  // A local thunk serves a type salted by a class with internal linkage,
+  // whose functions are all in this image: a matching target outside the
+  // range fails fast, unless the range is empty because the image was not
+  // sealed.
+  for (bool Local : {false, true}) {
+    StringRef Prefix =
+        Local ? "__llvm_kcfi_local_check_" : "__llvm_kcfi_check_";
+    for (const Function &F : M) {
+      StringRef TypeName = F.getName();
+      uint32_t Type;
+      if (!F.isDeclaration() || F.use_empty() ||
+          !TypeName.consume_front(Prefix) || TypeName.size() != 8 ||
+          TypeName.getAsInteger(16, Type))
+        continue;
+      if (!Open) {
+        Open = OutContext.getOrCreateSymbol("__llvm_kcfi_check_open");
+        CodeStart = OutContext.getOrCreateSymbol("__llvm_code_start");
+        CodeEnd = OutContext.getOrCreateSymbol("__llvm_code_end");
+        EmitCodeRangeDefault(CodeStart, CodeEnd);
+      }
+
+      // A type's local and ordinary thunks share its mismatch routine.
+      MCSymbol *Mismatch = OutContext.getOrCreateSymbol(
+          "__llvm_kcfi_check_mismatch_" + TypeName);
+      if (!Mismatch->isVariable()) {
+        OutStreamer->emitSymbolAttribute(Mismatch, MCSA_Weak);
+        OutStreamer->emitAssignment(Mismatch,
+                                    MCSymbolRefExpr::create(Open, OutContext));
+      }
+
+      // ldur x16, [x15, #-8]; mov x17, #expected; cmp x16, x17; b.ne mismatch
+      // adrp x16, __llvm_code_start; add x16, x16, :lo12:__llvm_code_start
+      // cmp x15, x16; b.lo 1f
+      // adrp x16, __llvm_code_end; add x16, x16, :lo12:__llvm_code_end
+      // cmp x15, x16; b.hs 1f
+      // ret
+      // 1: adrp x16, guard; ldr x16, [x16, :lo12:guard]; br x16
+      //
+      // A local thunk takes both bounds first, into X16 and X17, and at 1:
+      // cmp x16, x17; b.ne 2f; adrp/ldr/br guard; 2: fails fast.
+      uint64_t Expected = getKCFIMarkerPattern(Marker->getZExtValue()) >> 32 |
+                          uint64_t(Type) << 32;
+      EmitFunctionStart(getSymbol(&F));
+      Emit(MCInstBuilder(AArch64::LDURXi)
+               .addReg(AArch64::X16)
+               .addReg(AArch64::X15)
+               .addImm(-(PrefixBytes + 8)));
+      EmitMovX17(Expected);
+      EmitCmp(AArch64::X16, AArch64::X17);
+      EmitBcc(AArch64CC::NE, Mismatch);
+      MCSymbol *Guard = OutContext.createTempSymbol();
+      if (Local) {
+        EmitAddr(AArch64::X16, CodeStart);
+        EmitAddr(AArch64::X17, CodeEnd);
+        EmitCmp(AArch64::X15, AArch64::X16);
+        EmitBcc(AArch64CC::LO, Guard);
+        EmitCmp(AArch64::X15, AArch64::X17);
+        EmitBcc(AArch64CC::HS, Guard);
+      } else {
+        EmitAddr(AArch64::X16, CodeStart);
+        EmitCmp(AArch64::X15, AArch64::X16);
+        EmitBcc(AArch64CC::LO, Guard);
+        EmitAddr(AArch64::X16, CodeEnd);
+        EmitCmp(AArch64::X15, AArch64::X16);
+        EmitBcc(AArch64CC::HS, Guard);
+      }
+      Emit(MCInstBuilder(AArch64::RET).addReg(AArch64::LR));
+      OutStreamer->emitLabel(Guard);
+      if (Local) {
+        // The bounds are equal in an image that was not sealed, where no
+        // target is in the range and the guard check function decides.
+        MCSymbol *Trap = OutContext.createTempSymbol();
+        EmitCmp(AArch64::X16, AArch64::X17);
+        EmitBcc(AArch64CC::NE, Trap);
+        EmitGuardJump();
+        OutStreamer->emitLabel(Trap);
+        EmitFastFail();
+      } else {
+        EmitGuardJump();
+      }
+    }
   }
   if (!Open)
     return;
@@ -1153,29 +1273,13 @@ void AArch64AsmPrinter::emitKCFIThunks(Module &M) {
            .addReg(AArch64::X16)
            .addReg(AArch64::X15)
            .addImm(-(PrefixBytes + 12)));
-  Emit(MCInstBuilder(AArch64::MOVZXi)
-           .addReg(AArch64::X17)
-           .addImm(Pattern & 0xFFFF)
-           .addImm(0));
-  for (unsigned Shift = 16; Shift != 64; Shift += 16)
-    Emit(MCInstBuilder(AArch64::MOVKXi)
-             .addReg(AArch64::X17)
-             .addReg(AArch64::X17)
-             .addImm((Pattern >> Shift) & 0xFFFF)
-             .addImm(Shift));
-  Emit(MCInstBuilder(AArch64::SUBSXrs)
-           .addReg(AArch64::XZR)
-           .addReg(AArch64::X16)
-           .addReg(AArch64::X17)
-           .addImm(0));
+  EmitMovX17(Pattern);
+  EmitCmp(AArch64::X16, AArch64::X17);
   MCSymbol *Trap = OutContext.createTempSymbol();
-  Emit(MCInstBuilder(AArch64::Bcc)
-           .addImm(AArch64CC::EQ)
-           .addExpr(MCSymbolRefExpr::create(Trap, OutContext)));
+  EmitBcc(AArch64CC::EQ, Trap);
   EmitGuardJump();
   OutStreamer->emitLabel(Trap);
-  Emit(MCInstBuilder(AArch64::MOVZWi).addReg(AArch64::W0).addImm(64).addImm(0));
-  Emit(MCInstBuilder(AArch64::BRK).addImm(0xF003));
+  EmitFastFail();
 }
 
 void AArch64AsmPrinter::emitEndOfAsmFile(Module &M) {

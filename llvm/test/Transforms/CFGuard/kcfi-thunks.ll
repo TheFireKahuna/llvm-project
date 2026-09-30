@@ -35,15 +35,25 @@
 ; CF:            [[FN:%.*]] = load ptr, ptr @__guard_dispatch_icall_fptr
 ; CF-NEXT:       call void [[FN]]() [ "cfguardtarget"(ptr %p) ]
 
+;; A call marked kcfi_local, whose every target is in this image, takes the
+;; local thunk of its mechanism.
+; CHECK-LABEL: define i32 @local(
+; CHECK:         call i32 @__llvm_kcfi_local_dispatch_12345678(i32 %x) [ "cfguardtarget"(ptr %p) ]
+
 ; CHECK: declare hidden void @__llvm_kcfi_dispatch_12345678()
 ; CHECK: declare hidden void @__llvm_kcfi_dispatch_00000007()
 ; CHECK: declare hidden void @__llvm_kcfi_check_00000010()
+; CHECK: declare hidden void @__llvm_kcfi_local_dispatch_12345678()
 
 ;; AArch64 takes the check thunk.
 ; ARM64-LABEL: define i32 @dispatch(
 ; ARM64:         call cfguard_checkcc void @__llvm_kcfi_check_12345678(ptr %p)
 ; ARM64-NEXT:    call i32 %p(i32 %x){{$}}
+; ARM64-LABEL: define i32 @local(
+; ARM64:         call cfguard_checkcc void @__llvm_kcfi_local_check_12345678(ptr %p)
+; ARM64-NEXT:    call i32 %p(i32 %x)
 ; ARM64: declare hidden void @__llvm_kcfi_check_12345678()
+; ARM64: declare hidden void @__llvm_kcfi_local_check_12345678()
 
 ;--- nocf.ll
 target triple = "x86_64-unknown-windows-itanium"
@@ -72,6 +82,11 @@ define void @check(ptr %p) {
 define void @unchecked(ptr %p) {
   call void %p()
   ret void
+}
+
+define i32 @local(ptr %p, i32 %x) {
+  %r = call i32 %p(i32 %x) [ "kcfi"(i32 305419896) ], !kcfi_local !{}
+  ret i32 %r
 }
 
 !llvm.module.flags = !{!0, !1}
@@ -107,6 +122,11 @@ define void @unchecked(ptr %p) {
   ret void
 }
 
+define i32 @local(ptr %p, i32 %x) {
+  %r = call i32 %p(i32 %x) [ "kcfi"(i32 305419896) ], !kcfi_local !{}
+  ret i32 %r
+}
+
 !llvm.module.flags = !{!0, !1, !2}
 !0 = !{i32 4, !"kcfi", i32 1}
 !1 = !{i32 4, !"kcfi-marker", i32 -559038737}
@@ -117,6 +137,11 @@ target triple = "aarch64-unknown-windows-itanium"
 
 define i32 @dispatch(ptr %p, i32 %x) {
   %r = call i32 %p(i32 %x) [ "kcfi"(i32 305419896) ]
+  ret i32 %r
+}
+
+define i32 @local(ptr %p, i32 %x) {
+  %r = call i32 %p(i32 %x) [ "kcfi"(i32 305419896) ], !kcfi_local !{}
   ret i32 %r
 }
 
