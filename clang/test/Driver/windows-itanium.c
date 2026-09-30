@@ -18,6 +18,7 @@
 // CC1-DAG:    "-fdata-sections"
 // CC1-DAG:    "-funwind-tables=2"
 // CC1-DAG:    "-stack-protector" "2"
+// CC1-DAG:    "-ftrivial-auto-var-init=zero"
 // CC1-DAG:    "-fsanitize=kcfi"
 // CC1-DAG:    "-fsanitize-kcfi-marker"
 // CC1-DAG:    "-fsanitize-cfi-icall-generalize-pointers"
@@ -121,6 +122,37 @@
 // RUN:     -- %s 2>&1 \
 // RUN:   | FileCheck --check-prefix=CL-SSP %s
 // CL-SSP: "-stack-protector" "2"
+
+// Automatic variables start zeroed by default, in both drivers; a user's
+// -ftrivial-auto-var-init= wins, uninitialized included.
+// RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium /c -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=AUTO-INIT-ZERO %s
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -ftrivial-auto-var-init=uninitialized 2>&1 \
+// RUN:   | FileCheck --check-prefix=AUTO-INIT-UNINIT %s \
+// RUN:       --implicit-check-not=-ftrivial-auto-var-init=zero
+// RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium /c \
+// RUN:     -ftrivial-auto-var-init=uninitialized -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=AUTO-INIT-UNINIT %s \
+// RUN:       --implicit-check-not=-ftrivial-auto-var-init=zero
+// RUN: %clang -### --target=aarch64-unknown-windows-itanium -c %s \
+// RUN:     -ftrivial-auto-var-init=pattern 2>&1 \
+// RUN:   | FileCheck --check-prefix=AUTO-INIT-PATTERN %s \
+// RUN:       --implicit-check-not=-ftrivial-auto-var-init=zero
+// AUTO-INIT-ZERO:    "-ftrivial-auto-var-init=zero"
+// AUTO-INIT-UNINIT:  "-ftrivial-auto-var-init=uninitialized"
+// AUTO-INIT-PATTERN: "-ftrivial-auto-var-init=pattern"
+
+// The zero default satisfies the options that need an initialization kind.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -ftrivial-auto-var-init-stop-after=1 \
+// RUN:     -ftrivial-auto-var-init-max-size=1024 2>&1 \
+// RUN:   | FileCheck --check-prefix=AUTO-INIT-LIMITS %s \
+// RUN:       --implicit-check-not=error:
+// AUTO-INIT-LIMITS:     "-cc1"
+// AUTO-INIT-LIMITS-DAG: "-ftrivial-auto-var-init=zero"
+// AUTO-INIT-LIMITS-DAG: "-ftrivial-auto-var-init-stop-after=1"
+// AUTO-INIT-LIMITS-DAG: "-ftrivial-auto-var-init-max-size=1024"
 
 // -fno-sanitize=kcfi removes the checks, but every function keeps its prefix,
 // typed as with the checks.

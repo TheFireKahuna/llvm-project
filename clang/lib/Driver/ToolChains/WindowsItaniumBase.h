@@ -67,6 +67,13 @@ public:
     return LangOptions::SSPStrong;
   }
 
+  /// -ftrivial-auto-var-init=zero, so that reading an automatic variable
+  /// before it is set yields zero, not stale stack contents.
+  LangOptions::TrivialAutoVarInitKind
+  GetDefaultTrivialAutoVarInit() const override {
+    return LangOptions::TrivialAutoVarInitKind::Zero;
+  }
+
   llvm::codegenoptions::DebugInfoFormat getDefaultDebugFormat() const override {
     return llvm::codegenoptions::DIF_CodeView;
   }

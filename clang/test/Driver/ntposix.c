@@ -24,6 +24,7 @@
 // CC1-DAG:     "-fdata-sections"
 // CC1-DAG:     "-funwind-tables=2"
 // CC1-DAG:     "-stack-protector" "2"
+// CC1-DAG:     "-ftrivial-auto-var-init=zero"
 // CC1-DAG:     "-fsanitize=kcfi"
 // CC1-DAG:     "-fsanitize-kcfi-marker"
 // CC1-DAG:     "-fsanitize-cfi-icall-generalize-pointers"
@@ -60,6 +61,18 @@
 // RUN: %clang -### --target=x86_64-pc-windows-ntposix -c %s -mguard=cf 2>&1 \
 // RUN:   | FileCheck --check-prefix=CF %s
 // CF: "-cfguard"
+
+// A user's -ftrivial-auto-var-init= replaces the zero default.
+// RUN: %clang -### --target=x86_64-pc-windows-ntposix -c %s \
+// RUN:     -ftrivial-auto-var-init=uninitialized 2>&1 \
+// RUN:   | FileCheck --check-prefix=AUTO-INIT-UNINIT %s \
+// RUN:       --implicit-check-not=-ftrivial-auto-var-init=zero
+// RUN: %clang -### --target=aarch64-pc-windows-ntposix -c %s \
+// RUN:     -ftrivial-auto-var-init=pattern 2>&1 \
+// RUN:   | FileCheck --check-prefix=AUTO-INIT-PATTERN %s \
+// RUN:       --implicit-check-not=-ftrivial-auto-var-init=zero
+// AUTO-INIT-UNINIT:  "-ftrivial-auto-var-init=uninitialized"
+// AUTO-INIT-PATTERN: "-ftrivial-auto-var-init=pattern"
 
 // The resource headers, then llvm-libc's.
 // RUN: %clang -### --target=x86_64-pc-windows-ntposix -c %s --sysroot=%t 2>&1 \
