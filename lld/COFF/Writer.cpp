@@ -264,6 +264,7 @@ private:
   void createGuardCFTables();
   void findKCFIPrefixes(const SymbolRVASet &addressTakenSyms);
   void sealKCFIPrefixes();
+  void defineKCFICodeRange();
   SymbolRVASet getEHContTargets();
   bool protectDelayIat();
   void markSymbolsForRVATable(ObjFile *file,
@@ -818,6 +819,7 @@ void Writer::run() {
     finalizeAddresses();
     removeEmptySections();
     assignOutputSectionIndices();
+    defineKCFICodeRange();
     setSectionPermissions();
     setECSymbols();
     createSymbolAndStringTable();
@@ -2578,6 +2580,34 @@ void Writer::sealKCFIPrefixes() {
       write32le(loc, COFF::KCFISealedType);
     write32le(loc + p.size - 4, COFF::KCFISealedType);
   }
+}
+
+// Defines __llvm_code_start and __llvm_code_end, which clang's KCFI thunks test
+// to take a target inside the image directly, as the bounds of the output
+// section that holds the KCFI prefixes of a sealed image. They keep clang's
+// weak default, __llvm_code_empty, a byte in a COMDAT, and so an empty range,
+// unless every prefix is in one output section.
+void Writer::defineKCFICodeRange() {
+  if (kcfiPrefixes.empty())
+    return;
+  OutputSection *sec = ctx.getOutputSection(kcfiPrefixes.front().chunk);
+  for (const KCFIPrefix &p : kcfiPrefixes)
+    if (ctx.getOutputSection(p.chunk) != sec)
+      return;
+  // Each bound is replaced only while it is the weak alias resolved to that
+  // default, the leader of its COMDAT.
+  auto isEmptyDefault = [](Symbol *s) {
+    auto *d = dyn_cast_or_null<DefinedRegular>(s);
+    return d && d->getValue() == 0 && d->getChunk()->sym &&
+           d->getChunk()->sym->getName() == "__llvm_code_empty";
+  };
+  Symbol *start = ctx.symtab.find("__llvm_code_start");
+  Symbol *end = ctx.symtab.find("__llvm_code_end");
+  if (!isEmptyDefault(start) || !isEmptyDefault(end))
+    return;
+  Chunk *last = sec->chunks.back();
+  replaceSymbol<DefinedSynthetic>(start, start->getName(), sec->chunks.front());
+  replaceSymbol<DefinedSynthetic>(end, end->getName(), last, last->getSize());
 }
 
 // Take a list of input sections containing symbol table indices and add those
