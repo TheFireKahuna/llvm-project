@@ -79,6 +79,8 @@ class CGCallee {
     /// The KCFI type identifier a call through the pointer checks, when it is
     /// not that of the callee's function type.
     llvm::ConstantInt *KCFITypeId;
+    /// Whether every function of that type is in this translation unit.
+    bool KCFITypeLocal;
     /// Whether the pointer's KCFI type was checked where it was loaded, so
     /// that a call through it checks nothing more.
     bool KCFIChecked;
@@ -126,6 +128,7 @@ public:
     OrdinaryInfo.AbstractInfo = abstractInfo;
     OrdinaryInfo.PointerAuthInfo = pointerAuthInfo;
     OrdinaryInfo.KCFITypeId = nullptr;
+    OrdinaryInfo.KCFITypeLocal = false;
     OrdinaryInfo.KCFIChecked = false;
     assert(functionPtr && "configuring callee without function pointer");
     assert(functionPtr->getType()->isPointerTy());
@@ -215,9 +218,14 @@ public:
     assert(isOrdinary());
     return OrdinaryInfo.KCFITypeId;
   }
-  void setKCFITypeId(llvm::ConstantInt *TypeId) {
+  void setKCFITypeId(llvm::ConstantInt *TypeId, bool Local = false) {
     assert(isOrdinary());
     OrdinaryInfo.KCFITypeId = TypeId;
+    OrdinaryInfo.KCFITypeLocal = Local;
+  }
+  bool isKCFITypeLocal() const {
+    assert(isOrdinary());
+    return OrdinaryInfo.KCFITypeLocal;
   }
   bool isKCFIChecked() const {
     assert(isOrdinary());

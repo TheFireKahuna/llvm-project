@@ -6381,6 +6381,11 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
                               BundleList);
     EmitBlock(Cont);
   }
+  // Every target of the call is in this image, which lets its KCFI check fail
+  // fast for a target outside the image.
+  if (SanOpts.has(SanitizerKind::KCFI) && ConcreteCallee.isOrdinary() &&
+      ConcreteCallee.isKCFITypeLocal())
+    CI->setMetadata("kcfi_local", llvm::MDNode::get(getLLVMContext(), {}));
   if (CI->getCalledFunction() && CI->getCalledFunction()->hasName() &&
       CI->getCalledFunction()->getName().starts_with("_Z4sqrt")) {
     SetSqrtFPAccuracy(CI);

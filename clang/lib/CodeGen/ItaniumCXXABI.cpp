@@ -2356,11 +2356,18 @@ CGCallee ItaniumCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
   CGCallee Callee(GD, VFunc, PointerAuth);
 
   // The call checks the KCFI type of the slot, which every function that can
-  // occupy it carries.
-  if (CGM.hasKCFIVTableSlotTypes())
-    Callee.setKCFITypeId(CGM.CreateKCFIVTableSlotTypeId(
-        CGM.getItaniumVTableContext().findOriginalMethod(
-            GD.getCanonicalDecl())));
+  // occupy it carries. The type is salted by the class that introduces the
+  // slot, except for a destructor that does not delete; when that class has
+  // internal linkage, only this translation unit can implement the slot.
+  if (CGM.hasKCFIVTableSlotTypes()) {
+    GlobalDecl Slot =
+        CGM.getItaniumVTableContext().findOriginalMethod(GD.getCanonicalDecl());
+    const auto *SlotMD = cast<CXXMethodDecl>(Slot.getDecl());
+    bool Local = !SlotMD->getParent()->isExternallyVisible() &&
+                 (!isa<CXXDestructorDecl>(SlotMD) ||
+                  Slot.getDtorType() == Dtor_Deleting);
+    Callee.setKCFITypeId(CGM.CreateKCFIVTableSlotTypeId(Slot), Local);
+  }
   return Callee;
 }
 
