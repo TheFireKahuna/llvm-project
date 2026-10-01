@@ -32,6 +32,11 @@ LLVM_ABI StringRef stringifyKCFIHashAlgorithm(KCFIHashAlgorithm Algorithm);
 LLVM_ABI uint32_t getKCFITypeID(StringRef MangledTypeName,
                                 KCFIHashAlgorithm Algorithm);
 
+/// Returns a KCFI type as x86 stores it in a function's prefix. A type that
+/// would spell an ENDBR64 or ENDBR32 instruction, as the immediate of the
+/// prefix's move or, negated, of a check's compare, is stored plus one.
+LLVM_ABI uint32_t getX86KCFIType(uint32_t Type);
+
 /// Returns the 8 bytes that precede the type ID in a KCFI prefix with a
 /// marker, read as a little-endian integer: 0F 1F 80, the marker, and B8, which
 /// x86 decodes as a nopl whose displacement is the marker and the opcode of a

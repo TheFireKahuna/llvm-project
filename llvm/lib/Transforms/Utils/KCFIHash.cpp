@@ -140,3 +140,18 @@ uint32_t llvm::getKCFITypeID(StringRef MangledTypeName,
   }
   llvm_unreachable("Unknown KCFI hash algorithm");
 }
+
+uint32_t llvm::getX86KCFIType(uint32_t Type) {
+  // If the type hash matches an invalid pattern, mask the value.
+  const uint32_t InvalidValues[] = {
+      0xFA1E0FF3, /* ENDBR64 */
+      0xFB1E0FF3, /* ENDBR32 */
+  };
+  for (uint32_t N : InvalidValues) {
+    // LowerKCFI_CHECK emits -Value for indirect call checks, so we must also
+    // mask that. Note that -(Value + 1) == ~Value.
+    if (N == Type || -N == Type)
+      return Type + 1;
+  }
+  return Type;
+}
