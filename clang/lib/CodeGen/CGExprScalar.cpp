@@ -2642,6 +2642,7 @@ Value *ScalarExprEmitter::VisitCastExpr(CastExpr *CE) {
 
   case CK_LValueBitCast:
   case CK_ObjCObjectLValueCast: {
+    CGF.CGM.addKCFIConversionType(E->getType(), DestTy, /*LValue=*/true);
     Address Addr = EmitLValue(E).getAddress();
     Addr = Addr.withElementType(CGF.ConvertTypeForMem(DestTy));
     LValue LV = CGF.MakeAddrLValue(Addr, DestTy);
@@ -2649,6 +2650,7 @@ Value *ScalarExprEmitter::VisitCastExpr(CastExpr *CE) {
   }
 
   case CK_LValueToRValueBitCast: {
+    CGF.CGM.addKCFIConversionType(E->getType(), DestTy);
     LValue SourceLVal = CGF.EmitLValue(E);
     Address Addr =
         SourceLVal.getAddress().withElementType(CGF.ConvertTypeForMem(DestTy));
@@ -2661,6 +2663,7 @@ Value *ScalarExprEmitter::VisitCastExpr(CastExpr *CE) {
   case CK_BlockPointerToObjCPointerCast:
   case CK_AnyPointerToBlockPointerCast:
   case CK_BitCast: {
+    CGF.CGM.addKCFIConversionType(E->getType(), DestTy);
     Value *Src = Visit(E);
     llvm::Type *SrcTy = Src->getType();
     llvm::Type *DstTy = ConvertType(DestTy);
@@ -2976,6 +2979,7 @@ Value *ScalarExprEmitter::VisitCastExpr(CastExpr *CE) {
     return Visit(E);
 
   case CK_IntegralToPointer: {
+    CGF.CGM.addKCFIConversionType(E->getType(), DestTy);
     Value *Src = Visit(E);
 
     // First, convert to the correct width so that we control the kind of
