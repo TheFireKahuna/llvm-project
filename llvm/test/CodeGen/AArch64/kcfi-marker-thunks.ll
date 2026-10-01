@@ -6,14 +6,12 @@
 ;; per-type check thunk, called with the target in X15 as the guard check
 ;; function is, a COMDAT that compares the 8 bytes before the target, the end
 ;; of the marker, the byte after it and the type, and on a mismatch continues
-;; into a weak alias of the routine that fails fast if the target carries the
-;; marker. The thunk tests the code range, whose bounds are weak aliases of one
+;; into a weak alias of the trap, which fails fast, as no object opens the
+;; type. The thunk tests the code range, whose bounds are weak aliases of one
 ;; byte in a COMDAT, first: on a match it returns for a target inside it. A
 ;; target outside it is compared only at page offset 16 or more, and goes to
 ;; the mismatch routine unread otherwise, since the bytes before it may be
-;; unmapped; a matching one continues into the guard check function. The
-;; default routine takes the same test before reading the marker, and treats a
-;; target in a page's first 16 bytes as foreign.
+;; unmapped; a matching one continues into the guard check function.
 ;; The module has no cfguard flag, as under -mguard=none, and the thunks are
 ;; the same as with one. A call marked kcfi_local, whose every target is in
 ;; the image, goes through a local thunk, which fails fast for a target outside
@@ -48,7 +46,7 @@ define void @f2(ptr %p) {
 ; CHECK-NEXT:  __llvm_code_empty:
 ; CHECK-NEXT:  .byte 0
 ; CHECK-NEXT:  .weak __llvm_kcfi_check_mismatch_12345678
-; CHECK-NEXT:  __llvm_kcfi_check_mismatch_12345678 = __llvm_kcfi_check_default
+; CHECK-NEXT:  __llvm_kcfi_check_mismatch_12345678 = __llvm_kcfi_trap
 ; CHECK-NEXT:  .section .text,"xr",discard,__llvm_kcfi_check_12345678
 ; CHECK:       .globl __llvm_kcfi_check_12345678
 ; CHECK-NEXT:  .p2align 4
@@ -121,31 +119,16 @@ define void @f2(ptr %p) {
 ; CHECK-NEXT:    mov w0, #64
 ; CHECK-NEXT:    brk #0xf003
 ; CHECK-NOT:   __llvm_kcfi_check_mismatch_12345678 =
-;; The default of the mismatch routine, and the scanners and the trap, which
-;; every object with a thunk emits.
-; CHECK:       .section .text,"xr",discard,__llvm_kcfi_check_default
-; CHECK:       .globl __llvm_kcfi_check_default
-; CHECK-NEXT:  .p2align 4
-; CHECK-NEXT:  __llvm_kcfi_check_default:
-; CHECK-NEXT:    tst x15, #0xff0
-; CHECK-NEXT:    b.eq [[FOREIGN:.Ltmp[0-9]+]]
-; CHECK-NEXT:    ldur x16, [x15, #-12]
-; CHECK-NEXT:    mov x17, #7951
-; CHECK-NEXT:    movk x17, #61312, lsl #16
-; CHECK-NEXT:    movk x17, #44478, lsl #32
-; CHECK-NEXT:    movk x17, #47326, lsl #48
-; CHECK-NEXT:    cmp x16, x17
-; CHECK-NEXT:    b.eq [[TRAP:.Ltmp[0-9]+]]
-; CHECK-NEXT:  [[FOREIGN]]:
-; CHECK-NEXT:    adrp x16, __guard_check_icall_fptr
-; CHECK-NEXT:    ldr x16, [x16, :lo12:__guard_check_icall_fptr]
-; CHECK-NEXT:    br x16
-; CHECK-NEXT:  [[TRAP]]:
-; CHECK-NEXT:    mov w0, #64
-; CHECK-NEXT:    brk #0xf003
+;; The scanners and the trap, the default of the mismatch routine, which every
+;; object with a thunk emits.
 ; CHECK:       .globl __llvm_kcfi_check_open
 ; CHECK:       .globl __llvm_kcfi_check_open_dynamic
 ; CHECK:       .section .text,"xr",discard,__llvm_kcfi_trap
+; CHECK:       .globl __llvm_kcfi_trap
+; CHECK-NEXT:  .p2align 4
+; CHECK-NEXT:  __llvm_kcfi_trap:
+; CHECK-NEXT:    mov w0, #64
+; CHECK-NEXT:    brk #0xf003
 
 !llvm.module.flags = !{!0, !1}
 !0 = !{i32 4, !"kcfi", i32 1}

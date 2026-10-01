@@ -1052,9 +1052,8 @@ static void emitAuthenticatedPointer(MCStreamer &OutStreamer,
 // byte after it and the type, with the call's, so that a type that occurs in
 // code by chance does not pass. On a mismatch it continues into the type's
 // mismatch routine, a weak alias whose default, shared by every type, fails
-// fast if the target carries the marker, since the target is then a function
-// of another type, and continues into the guard check function otherwise,
-// since the target was built without KCFI.
+// fast: no object in the image opened the type, so no target that does not
+// carry it is valid.
 //
 // A module that opens a type defines the type's mismatch routine instead, in
 // a COMDAT of which the linker keeps the largest. It passes the type's list to
@@ -1217,8 +1216,7 @@ void AArch64AsmPrinter::emitKCFIThunks(Module &M) {
   // types' open routines.
   MapVector<uint32_t, KCFIOpenType> OpenTypes = getKCFIOpenTypes(M);
   bool UsesRoutine = !OpenTypes.empty();
-  bool UsesDefault = false;
-  MCSymbol *Default = OutContext.getOrCreateSymbol("__llvm_kcfi_check_default");
+  MCSymbol *TrapFn = OutContext.getOrCreateSymbol("__llvm_kcfi_trap");
   MCSymbol *CodeStart = nullptr;
   MCSymbol *CodeEnd = nullptr;
   // A local thunk serves a type salted by a class with internal linkage,
@@ -1258,10 +1256,9 @@ void AArch64AsmPrinter::emitKCFIThunks(Module &M) {
       MCSymbol *Mismatch = OutContext.getOrCreateSymbol(
           "__llvm_kcfi_check_mismatch_" + TypeName);
       if (!Mismatch->isVariable() && !OpenTypes.count(Type)) {
-        UsesDefault = true;
         OutStreamer->emitSymbolAttribute(Mismatch, MCSA_Weak);
         OutStreamer->emitAssignment(
-            Mismatch, MCSymbolRefExpr::create(Default, OutContext));
+            Mismatch, MCSymbolRefExpr::create(TrapFn, OutContext));
       }
 
       // adrp x16, __llvm_code_start; add x16, x16, :lo12:__llvm_code_start
@@ -1331,30 +1328,6 @@ void AArch64AsmPrinter::emitKCFIThunks(Module &M) {
         EmitFastFail();
       }
     }
-  }
-  if (UsesDefault) {
-    // tst x15, #mask; b.eq 1f
-    // ldur x16, [x15, #-12]; mov x17, #pattern; cmp x16, x17; b.eq 2f
-    // 1: adrp x16, guard; ldr x16, [x16, :lo12:guard]; br x16
-    // 2: mov w0, #FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG; brk #0xf003
-    //
-    // A target in a page's first bytes has no prefix that can be read, so it
-    // is foreign.
-    EmitFunctionStart(Default);
-    MCSymbol *Foreign = OutContext.createTempSymbol();
-    EmitPageTest(Foreign);
-    Emit(MCInstBuilder(AArch64::LDURXi)
-             .addReg(AArch64::X16)
-             .addReg(AArch64::X15)
-             .addImm(-(PrefixBytes + 12)));
-    EmitMovX17(Pattern);
-    EmitCmp(AArch64::X16, AArch64::X17);
-    MCSymbol *Trap = OutContext.createTempSymbol();
-    EmitBcc(AArch64CC::EQ, Trap);
-    OutStreamer->emitLabel(Foreign);
-    EmitGuardJump();
-    OutStreamer->emitLabel(Trap);
-    EmitFastFail();
   }
   if (!UsesRoutine)
     return;
@@ -1446,7 +1419,7 @@ void AArch64AsmPrinter::emitKCFIThunks(Module &M) {
   }
 
   // mov w0, #FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG; brk #0xf003
-  EmitFunctionStart(OutContext.getOrCreateSymbol("__llvm_kcfi_trap"));
+  EmitFunctionStart(TrapFn);
   EmitFastFail();
 
   for (const auto &[Type, Open] : OpenTypes) {

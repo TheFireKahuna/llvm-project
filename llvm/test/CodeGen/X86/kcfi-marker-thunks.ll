@@ -9,16 +9,14 @@
 ;; With the kcfi-marker module flag, a call with a KCFI type goes through a
 ;; per-type thunk, a COMDAT that compares the 8 bytes before the target, the
 ;; end of the marker, the opcode of the move and the type, and on a mismatch
-;; continues into a weak alias of the routine that fails fast if the target
-;; carries the marker. The thunk tests the code range, whose bounds are weak
+;; continues into a weak alias of the trap, which fails fast, as no object
+;; opens the type. The thunk tests the code range, whose bounds are weak
 ;; aliases of one byte in a COMDAT, first: a matching target inside it is taken
 ;; directly. A target outside it is compared only at page offset 16 or more,
 ;; and goes to the mismatch routine unread otherwise, since the bytes before
 ;; it may be unmapped; a matching one continues into the guard function. The
-;; default routines take the same test before reading the marker, and treat a
-;; target in a page's first 16 bytes as foreign. The dispatch thunk takes the
-;; target in RAX and jumps to it, and the check thunk takes it in RCX and
-;; returns.
+;; dispatch thunk takes the target in RAX and jumps to it, and the check thunk
+;; takes it in RCX and returns.
 ;; The module has no cfguard flag, as under -mguard=none, and the thunks are
 ;; the same as with one. A call marked kcfi_local, whose every target is in
 ;; the image, goes through a local thunk, which fails fast for a target outside
@@ -74,7 +72,7 @@ define x86_64_sysvcc void @f5(ptr %p) nounwind {
 ; CHECK-NEXT:  __llvm_code_empty:
 ; CHECK-NEXT:  .byte 0
 ; CHECK-NEXT:  .weak __llvm_kcfi_mismatch_12345678
-; CHECK-NEXT:  __llvm_kcfi_mismatch_12345678 = __llvm_kcfi_default
+; CHECK-NEXT:  __llvm_kcfi_mismatch_12345678 = __llvm_kcfi_trap
 ; CHECK-NEXT:  .section .text,"xr",discard,__llvm_kcfi_dispatch_12345678
 ; CHECK:       .globl __llvm_kcfi_dispatch_12345678
 ; CHECK-NEXT:  .p2align 4
@@ -97,7 +95,7 @@ define x86_64_sysvcc void @f5(ptr %p) nounwind {
 ; CHECK-NEXT:    jne __llvm_kcfi_mismatch_12345678
 ; CHECK-NEXT:    jmpq *__guard_dispatch_icall_fptr(%rip)
 ; CHECK:       .weak __llvm_kcfi_check_mismatch_00000010
-; CHECK-NEXT:  __llvm_kcfi_check_mismatch_00000010 = __llvm_kcfi_check_default
+; CHECK-NEXT:  __llvm_kcfi_check_mismatch_00000010 = __llvm_kcfi_trap
 ; CHECK-NEXT:  .section .text,"xr",discard,__llvm_kcfi_check_00000010
 ; CHECK:       .p2align 4
 ; CHECK-NEXT:  __llvm_kcfi_check_00000010:
@@ -170,42 +168,18 @@ define x86_64_sysvcc void @f5(ptr %p) nounwind {
 ; CHECK-NEXT:    int $41
 ; CHECK-NOT:   __llvm_kcfi_mismatch_12345678 =
 
-;; The default of the mismatch routines, and the scanners and the trap, which
+;; The scanners and the trap, the default of the mismatch routines, which
 ;; every object with a thunk of their kind emits.
-; CHECK:       .section .text,"xr",discard,__llvm_kcfi_default
-; CHECK:       .globl __llvm_kcfi_default
-; CHECK-NEXT:  .p2align 4
-; CHECK-NEXT:  __llvm_kcfi_default:
-; CHECK-NEXT:    testl $4080, %eax
-; CHECK-NEXT:    je [[FOREIGN:.Ltmp[0-9]+]]
-; CHECK-NEXT:    movabsq $-5125468290327503089, %r11 # imm = 0xB8DEADBEEF801F0F
-; CHECK-NEXT:    cmpq %r11, -12(%rax)
-; CHECK-NEXT:    je [[TRAP:.Ltmp[0-9]+]]
-; CHECK-NEXT:  [[FOREIGN]]:
-; CHECK-NEXT:    jmpq *__guard_dispatch_icall_fptr(%rip)
-; CHECK-NEXT:  [[TRAP]]:
-; CHECK-NEXT:    movl $64, %ecx
-; CHECK-NEXT:    int $41
 ; CHECK:       .globl __llvm_kcfi_open
 ; CHECK:       .globl __llvm_kcfi_open_dynamic
-; CHECK:       .globl __llvm_kcfi_check_default
-; CHECK-NEXT:  .p2align 4
-; CHECK-NEXT:  __llvm_kcfi_check_default:
-; CHECK-NEXT:    testl $4080, %ecx
-; CHECK-NEXT:    je [[FOREIGN:.Ltmp[0-9]+]]
-; CHECK-NEXT:    movabsq $-5125468290327503089, %r11 # imm = 0xB8DEADBEEF801F0F
-; CHECK-NEXT:    cmpq %r11, -12(%rcx)
-; CHECK-NEXT:    je [[TRAP:.Ltmp[0-9]+]]
-; CHECK-NEXT:  [[FOREIGN]]:
-; CHECK-NEXT:    jmpq *__guard_check_icall_fptr(%rip)
-; CHECK-NEXT:  [[TRAP]]:
-; CHECK-NEXT:    movl $64, %ecx
-; CHECK-NEXT:    int $41
 ; CHECK:       .globl __llvm_kcfi_check_open
 ; CHECK:       .globl __llvm_kcfi_check_open_dynamic
 ; CHECK:       .section .text,"xr",discard,__llvm_kcfi_trap
-; CHECK-NOT:   __llvm_kcfi_default:
-; CHECK-NOT:   __llvm_kcfi_check_default:
+; CHECK:       .globl __llvm_kcfi_trap
+; CHECK-NEXT:  .p2align 4
+; CHECK-NEXT:  __llvm_kcfi_trap:
+; CHECK-NEXT:    movl $64, %ecx
+; CHECK-NEXT:    int $41
 
 ;; The page test takes the short form for EAX.
 ; BYTES-LABEL: <__llvm_kcfi_dispatch_12345678>:
@@ -217,7 +191,7 @@ define x86_64_sysvcc void @f5(ptr %p) nounwind {
 ; SYMS-NEXT: Value: 0
 ; SYMS-NEXT: Section: IMAGE_SYM_UNDEFINED (0)
 ; SYMS:      StorageClass: WeakExternal (0x69)
-; SYMS:      Linked: __llvm_kcfi_default
+; SYMS:      Linked: __llvm_kcfi_trap
 
 ;; The range bounds are weak externals whose default, __llvm_code_empty, is
 ;; defined in a COMDAT, so that references relocate against the bounds and
