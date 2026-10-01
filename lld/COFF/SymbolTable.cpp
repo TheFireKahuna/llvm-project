@@ -435,10 +435,12 @@ void SymbolTable::reportProblemSymbols(
         else
           undefDiags[it->second].files.push_back({file, symIndex});
       }
-      // An object that describes its instruction sites is reported for
-      // each reference that still reads the pointer, by bindLocalImports.
+      // References whose instructions may be rewritten are reported only if
+      // they still read the pointer, by bindLocalImports.
       auto *obj = dyn_cast<ObjFile>(file);
-      if (localImports && !(obj && obj->describesSites))
+      bool deferred = obj && (obj->describesSites ||
+                              (machine == ARM64 && !ctx.hybridSymtab));
+      if (localImports && !deferred)
         if (Symbol *imp = localImports->lookup(sym))
           Warn(ctx) << file
                     << ": locally defined symbol imported: " << printSymbol(imp)
@@ -556,29 +558,42 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
       false);
 }
 
-// A call, jump or pointer load through a local import pointer, in an object
-// that describes its instruction sites, is rewritten to reach the symbol
-// directly, so a pointer that only such references read is left out of the
-// image. Every other reference reads the pointer: a reference that is not a
-// described instruction, any reference from an object that does not describe
-// its sites, and a GC root. Only the objects that refer to a local import are
-// scanned, and only when the link has one.
+// A reference to a local import pointer is rewritten to reach the pointer's
+// symbol directly where the linker knows the instruction holding it, and a
+// pointer that only rewritten references read is left out of the image.
+// On x86-64 that is a described call, jump or pointer load, in an object
+// that describes its instruction sites, decided per reference. On ARM64 it
+// is every adrp and 64-bit ldr of a pointer, known from the relocation types,
+// decided per symbol, since an adrp may serve several loads: one other
+// reference keeps them all. Every other reference reads the pointer, as do
+// a GC root and any reference from an x86-64 object that does not describe
+// its sites. Only the objects that refer to a local import are scanned, and
+// only when the link has one.
 void SymbolTable::bindLocalImports() {
   if (localImportChunks.empty())
     return;
   llvm::TimeTraceScope timeScope("Bind local imports");
+  bool arm64 = machine == ARM64 && !ctx.hybridSymtab;
   SmallPtrSet<DefinedLocalImport *, 8> bypassed, read;
   for (Symbol *b : ctx.config.gcroot)
     if (auto *li = dyn_cast<DefinedLocalImport>(b))
       read.insert(li);
 
+  // The references to report if they still read the pointer, once per file
+  // and symbol, with whether they can be rewritten.
+  struct Ref {
+    ObjFile *file;
+    DefinedLocalImport *li;
+    bool rewritable;
+  };
+  std::vector<Ref> refs;
   for (ObjFile *file : ctx.objFileInstances) {
     if (&file->symtab != this)
       continue;
     auto isLocalImport = [](Symbol *s) {
       return isa_and_nonnull<DefinedLocalImport>(s);
     };
-    if (!file->describesSites) {
+    if (!file->describesSites && !arm64) {
       for (Symbol *s : file->getSymbols())
         if (isLocalImport(s))
           read.insert(cast<DefinedLocalImport>(s));
@@ -587,7 +602,7 @@ void SymbolTable::bindLocalImports() {
     if (llvm::none_of(file->getSymbols(), isLocalImport))
       continue;
 
-    SmallPtrSet<DefinedLocalImport *, 4> warned;
+    MapVector<DefinedLocalImport *, bool> seen;
     for (Chunk *c : file->getChunks()) {
       auto *sc = dyn_cast_or_null<SectionChunk>(c);
       if (!sc || !sc->live)
@@ -598,22 +613,24 @@ void SymbolTable::bindLocalImports() {
           continue;
         auto *li = cast<DefinedLocalImport>(s);
         bool mismatch = false;
-        if (sc->getLocalImportRewrite(rel, &mismatch)) {
-          bypassed.insert(li);
-          continue;
-        }
+        bool rewritable = arm64 ? sc->isArm64LocalImportPageRef(rel)
+                                : sc->getLocalImportRewrite(rel, &mismatch)
+                                      .has_value();
         if (mismatch)
           Err(ctx) << file << ": the instruction at offset 0x"
                    << Twine::utohexstr(rel.VirtualAddress) << " in "
                    << sc->getSectionName()
                    << " is not the one its link-only record describes";
-        read.insert(li);
-        if (ctx.config.warnLocallyDefinedImported && warned.insert(li).second)
-          Warn(ctx) << file << ": locally defined symbol imported: "
-                    << printSymbol(li->getTarget()) << " (defined in "
-                    << li->getTarget()->getFile() << ") [LNK4217]";
+        if (rewritable)
+          bypassed.insert(li);
+        else
+          read.insert(li);
+        auto [it, inserted] = seen.try_emplace(li, rewritable);
+        it->second &= rewritable;
       }
     }
+    for (auto [li, rewritable] : seen)
+      refs.push_back({file, li, rewritable});
   }
 
   for (DefinedLocalImport *li : bypassed)
@@ -622,6 +639,14 @@ void SymbolTable::bindLocalImports() {
   llvm::erase_if(localImportChunks, [](Chunk *c) {
     return !cast<LocalImportChunk>(c)->live;
   });
+
+  if (!ctx.config.warnLocallyDefinedImported)
+    return;
+  for (const Ref &r : refs)
+    if (!r.rewritable || (arm64 && r.li->getChunk()->live))
+      Warn(ctx) << r.file << ": locally defined symbol imported: "
+                << printSymbol(r.li->getTarget()) << " (defined in "
+                << r.li->getTarget()->getFile() << ") [LNK4217]";
 }
 
 std::pair<Symbol *, bool> SymbolTable::insert(StringRef name) {

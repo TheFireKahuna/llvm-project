@@ -12,10 +12,12 @@
 # RUN: lld-link -import-slots -machine:arm64 -entry:main -subsystem:console \
 # RUN:   -out:main.exe main.obj fg.lib -verbose 2>&1 | FileCheck %s
 
+## Each pointer is only loaded by adrp and ldr, which become adrp and add of
+## its symbol, so neither is imported in the end.
+# CHECK-NOT: locally defined symbol imported
 # CHECK-DAG: Loading lazy f from fg.lib for __imp_f
 # CHECK-DAG: Loading lazy g from fg.lib for __imp_g
-# CHECK-DAG: warning: main.obj: locally defined symbol imported: f (defined in fg.lib(f.obj)) [LNK4217]
-# CHECK-DAG: warning: fg.lib(f.obj): locally defined symbol imported: g (defined in fg.lib(g.obj)) [LNK4217]
+# CHECK-NOT: locally defined symbol imported
 
 #--- main.s
 .text

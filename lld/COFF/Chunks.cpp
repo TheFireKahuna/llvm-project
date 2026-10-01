@@ -526,6 +526,23 @@ SectionChunk::getLocalImportRewrite(const coff_relocation &rel,
   return form;
 }
 
+bool SectionChunk::isArm64LocalImportPageRef(const coff_relocation &rel) const {
+  ArrayRef<uint8_t> data = getContents();
+  if (rel.VirtualAddress + 4 > data.size() || !canBypass(file, rel))
+    return false;
+  uint32_t insn = read32le(&data[rel.VirtualAddress]);
+  switch (rel.Type) {
+  case IMAGE_REL_ARM64_PAGEBASE_REL21:
+    // adrp with no addend.
+    return (insn & 0x9F000000) == 0x90000000 && (insn & 0x60FFFFE0) == 0;
+  case IMAGE_REL_ARM64_PAGEOFFSET_12L:
+    // ldr x, [x, #0], with an unsigned offset.
+    return (insn & 0xFFFFFC00) == 0xF9400000;
+  default:
+    return false;
+  }
+}
+
 // Rewrites the described instruction whose REL32 field is at off, a reference
 // through the import pointer of a symbol in the image at s, to reach the
 // symbol directly, keeping the instruction's length and the address of the
@@ -565,10 +582,22 @@ void SectionChunk::applyRelocation(uint8_t *off,
   // A described call, jump or pointer load through the import pointer of a
   // symbol in the image reaches the symbol directly. Its bytes were verified
   // when local imports were bound.
+  // On ARM64, every adrp and ldr of a pointer that no other reference reads
+  // becomes adrp and add of its symbol.
   std::optional<LinkSiteForm> rewrite;
+  uint16_t type = rel.Type;
   if (auto *li = dyn_cast_or_null<DefinedLocalImport>(sym)) {
-    if ((rewrite = getLocalImportRewrite(rel)))
+    if (getArch() == Triple::aarch64) {
+      if (!li->getChunk()->live) {
+        sym = li->getTarget();
+        if (type == IMAGE_REL_ARM64_PAGEOFFSET_12L) {
+          write32le(off, 0x91000000 | (read32le(off) & 0x3FF));
+          type = IMAGE_REL_ARM64_PAGEOFFSET_12A;
+        }
+      }
+    } else if ((rewrite = getLocalImportRewrite(rel))) {
       sym = li->getTarget();
+    }
   }
 
   // Get the output section of the symbol for this relocation.  The output
@@ -606,7 +635,7 @@ void SectionChunk::applyRelocation(uint8_t *off,
     applyRelARM(off, rel.Type, os, s, p, imageBase);
     break;
   case Triple::aarch64:
-    applyRelARM64(off, rel.Type, os, s, p, imageBase);
+    applyRelARM64(off, type, os, s, p, imageBase);
     break;
   case Triple::mipsel:
     applyRelMIPS(off, rel.Type, os, s, p, imageBase);

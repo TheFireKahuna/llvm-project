@@ -284,6 +284,11 @@ public:
   std::optional<llvm::COFF::LinkSiteForm>
   getLocalImportRewrite(const coff_relocation &rel,
                         bool *mismatch = nullptr) const;
+
+  // Whether rel, an ARM64 relocation against a local import pointer, is the
+  // adrp or the 64-bit ldr of a load of the pointer, which becomes adrp and
+  // add of its symbol when every reference to the pointer is one.
+  bool isArm64LocalImportPageRef(const coff_relocation &rel) const;
   void applyRelX64(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
                    uint64_t p, uint64_t imageBase) const;
   void applyRelX86(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
