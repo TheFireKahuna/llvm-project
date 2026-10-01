@@ -1028,6 +1028,9 @@ public:
             (getLangOpts().isExplicitDefaultVisibilityExportMapping() &&
              D->getLinkageAndVisibility().isVisibilityExplicit()));
   }
+  /// Whether a declaration of D that this translation unit does not define
+  /// is given dllimport storage without a dllimport attribute.
+  bool shouldMapVisibilityToDLLImport(const NamedDecl *D) const;
   void setDLLImportDLLExport(llvm::GlobalValue *GV, GlobalDecl D) const;
   void setDLLImportDLLExport(llvm::GlobalValue *GV, const NamedDecl *D) const;
   /// Set visibility, dllimport/dllexport and dso_local.
