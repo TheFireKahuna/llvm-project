@@ -315,6 +315,7 @@ void SymbolTable::loadMinGWSymbols() {
 
 bool SymbolTable::loadLocalImportMembers() {
   std::vector<Symbol *> lazies;
+  bool referenced = false;
   llvm::erase_if(impUndefs, [&](Symbol *sym) {
     auto *u = dyn_cast<Undefined>(sym);
     if (!u)
@@ -323,14 +324,34 @@ bool SymbolTable::loadLocalImportMembers() {
     // precedence; its member was requested when the reference was added.
     if (u->pendingArchiveLoad || u->getWeakAlias())
       return false;
-    Symbol *l = find(sym->getName().substr(strlen("__imp_")));
+    StringRef name = sym->getName().substr(strlen("__imp_"));
+    Symbol *l = find(name);
     if (l && l->isLazy() && !l->pendingArchiveLoad)
       lazies.push_back(l);
+    // /alternatename defines X only when something references X, so
+    // __imp_X references it, as a direct reference would; when the alternate
+    // is an import, __imp_X is that import's pointer.
+    if (!l) {
+      auto it = alternateNames.find(name);
+      if (it == alternateNames.end())
+        return false;
+      Symbol *impTo = find(("__imp_" + it->second).str());
+      if (impTo && !isa<Undefined>(impTo)) {
+        impTo->isUsedInRegularObj = true;
+        if (impTo->isLazy())
+          forceLazy(impTo);
+        u->setWeakAlias(impTo);
+        referenced = true;
+      } else if (Symbol *to = find(it->second); to && !isa<Undefined>(to)) {
+        addUndefined(name);
+        referenced = true;
+      }
+    }
     return false;
   });
   // Loading a lazy object parses it at once, which may add to impUndefs or
   // define a symbol that is still to be loaded.
-  bool loaded = false;
+  bool loaded = referenced;
   for (Symbol *l : lazies) {
     if (!l->isLazy() || l->pendingArchiveLoad)
       continue;

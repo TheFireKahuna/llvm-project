@@ -78,8 +78,9 @@ public:
   void resolveAlternateNames();
 
   // Under -import-slots, load the archive member behind each undefined __imp_X
-  // that no input defines under that name and whose X is lazy, as a direct
-  // reference to X would. Returns whether any member was loaded.
+  // that no input defines under that name and whose X is lazy, and reference
+  // an X that /alternatename defines, as a direct reference to X would.
+  // Returns whether any member was loaded or X referenced.
   bool loadLocalImportMembers();
 
   // Load lazy objects that are needed for MinGW automatic import and for
