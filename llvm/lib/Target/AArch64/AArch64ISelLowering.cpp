@@ -33595,9 +33595,17 @@ void AArch64TargetLowering::insertSSPDeclarations(
       Libcalls.getLibcallImpl(RTLIB::STACK_CHECK_GUARD);
   if (SecurityCheckCookieLibcall != RTLIB::Unsupported &&
       SecurityCookieVar != RTLIB::Unsupported) {
-    // MSVC CRT has a global variable holding security cookie.
-    M.getOrInsertGlobal(getLibcallImplName(SecurityCookieVar),
-                        PointerType::getUnqual(M.getContext()));
+    // MSVC CRT has a global variable holding security cookie, which it
+    // defines in every image.
+    StringRef CookieName = getLibcallImplName(SecurityCookieVar);
+    M.getOrInsertGlobal(
+        CookieName, PointerType::getUnqual(M.getContext()), [&] {
+          auto *GV = new GlobalVariable(
+              M, PointerType::getUnqual(M.getContext()), false,
+              GlobalVariable::ExternalLinkage, nullptr, CookieName);
+          GV->setDSOLocal(true);
+          return GV;
+        });
 
     // MSVC CRT has a function to validate security cookie.
     FunctionCallee SecurityCheckCookie =

@@ -149,6 +149,12 @@ unsigned char X86Subtarget::classifyGlobalReference(const GlobalValue *GV,
       return X86II::MO_NO_FLAG;
     if (GV->hasDLLImportStorageClass())
       return X86II::MO_DLLIMPORT;
+    // Windows Itanium and NT-POSIX use the import pointer, not a stub, which
+    // the linker binds to the import or replaces with the direct address.
+    // An extern_weak symbol keeps the stub, since it may resolve to zero.
+    if (TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment() &&
+        !GV->hasExternalWeakLinkage())
+      return X86II::MO_DLLIMPORT;
     return X86II::MO_COFFSTUB;
   }
   // Some JIT users use *-win32-elf triples; these shouldn't use GOT tables.

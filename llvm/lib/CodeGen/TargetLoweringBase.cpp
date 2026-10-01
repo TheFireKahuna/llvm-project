@@ -2218,6 +2218,10 @@ void TargetLoweringBase::insertSSPDeclarations(
                                       false, GlobalVariable::ExternalLinkage,
                                       nullptr, StackGuardVarName);
 
+        // Every Windows Itanium and NT-POSIX image defines its own guard.
+        if (TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+          GV->setDSOLocal(true);
+
         // FreeBSD has "__stack_chk_guard" defined externally on libc.so
         if (M.getDirectAccessExternalData() &&
             !TM.getTargetTriple().isOSCygMing() &&

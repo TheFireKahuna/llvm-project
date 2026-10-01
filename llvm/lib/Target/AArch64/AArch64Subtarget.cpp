@@ -452,6 +452,12 @@ AArch64Subtarget::ClassifyGlobalReference(const GlobalValue *GV,
     if (GV->hasDLLImportStorageClass()) {
       return AArch64II::MO_GOT | AArch64II::MO_DLLIMPORT;
     }
+    // Windows Itanium and NT-POSIX use the import pointer, not a stub, which
+    // the linker binds to the import or replaces with the direct address.
+    // An extern_weak symbol keeps the stub, since it may resolve to zero.
+    if (getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+        !GV->hasExternalWeakLinkage())
+      return AArch64II::MO_GOT | AArch64II::MO_DLLIMPORT;
     if (getTargetTriple().isOSWindows())
       return AArch64II::MO_GOT | AArch64II::MO_COFFSTUB;
     return AArch64II::MO_GOT;
