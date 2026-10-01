@@ -278,7 +278,7 @@ void applyArm64Imm(uint8_t *off, uint64_t imm, uint32_t rangeLimit) {
 // Even if larger loads/stores have a larger range, limit the
 // effective offset to 12 bit, since it is intended to be a
 // page offset.
-void applyArm64Ldr(uint8_t *off, uint64_t imm) {
+static void applyArm64Ldr(uint8_t *off, uint64_t imm) {
   uint32_t orig = read32le(off);
   uint32_t size = orig >> 30;
   // 0x04000000 indicates SIMD/FP registers

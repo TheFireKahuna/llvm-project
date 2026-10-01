@@ -210,60 +210,95 @@ struct KCFIThunkReloc {
   uint8_t target;
 };
 
-// What follows the type check in clang's KCFI thunks: the range test with the
-// two bounds, then the guard function. Relocated fields are zero.
-static const uint8_t kcfiDispatchTailX64[] = {
-    0x4C, 0x8D, 0x15, 0, 0, 0, 0, // lea r10, [rip + __llvm_code_start]
-    0x4C, 0x39, 0xD0,             // cmp rax, r10
-    0x72, 0x0E,                   // jb 1f
-    0x4C, 0x8D, 0x15, 0, 0, 0, 0, // lea r10, [rip + __llvm_code_end]
-    0x4C, 0x39, 0xD0,             // cmp rax, r10
-    0x73, 0x02,                   // jae 1f
-    0xFF, 0xE0,                   // jmp rax
-    0xFF, 0x25, 0,    0, 0, 0,    // 1: jmp [rip + guard]
+// Clang's current KCFI thunks: the range test, the type check and a direct
+// jump or return for a target inside the range, then the page test, the type
+// check and the guard function for one outside it. On x86-64, -1 marks a
+// byte that varies with the type and the options; relocated fields are zero.
+static const int16_t kcfiDispatchX64[] = {
+    0x4C, 0x8D, 0x15, 0,  0,  0,  0, // lea r10, [rip + __llvm_code_start]
+    0x4C, 0x39, 0xD0,                // cmp rax, r10
+    0x72, 0x22,                      // jb 1f
+    0x4C, 0x8D, 0x15, 0,  0,  0,  0, // lea r10, [rip + __llvm_code_end]
+    0x4C, 0x39, 0xD0,                // cmp rax, r10
+    0x73, 0x16,                      // jae 1f
+    0x49, 0xBB, -1,   -1, -1, -1, -1, -1, -1, -1, // mov r11, expected
+    0x4C, 0x39, 0x58, -1,                         // cmp [rax - 8], r11
+    0x0F, 0x85, 0,    0,  0,  0,                  // jne mismatch
+    0xFF, 0xE0,                                   // jmp rax
+    0xA9, -1,   -1,   -1, -1,                     // 1: test eax, mask
+    0x0F, 0x84, 0,    0,  0,  0,                  // je mismatch
+    0x49, 0xBB, -1,   -1, -1, -1, -1, -1, -1, -1, // mov r11, expected
+    0x4C, 0x39, 0x58, -1,                         // cmp [rax - 8], r11
+    0x0F, 0x85, 0,    0,  0,  0,                  // jne mismatch
+    0xFF, 0x25, 0,    0,  0,  0,                  // jmp [rip + guard]
 };
-static const uint8_t kcfiCheckTailX64[] = {
-    0x4C, 0x8D, 0x15, 0, 0, 0, 0, // lea r10, [rip + __llvm_code_start]
-    0x4C, 0x39, 0xD1,             // cmp rcx, r10
-    0x72, 0x0D,                   // jb 1f
-    0x4C, 0x8D, 0x15, 0, 0, 0, 0, // lea r10, [rip + __llvm_code_end]
-    0x4C, 0x39, 0xD1,             // cmp rcx, r10
-    0x73, 0x01,                   // jae 1f
-    0xC3,                         // ret
-    0xFF, 0x25, 0,    0, 0, 0,    // 1: jmp [rip + guard]
+static const int16_t kcfiCheckX64[] = {
+    0x4C, 0x8D, 0x15, 0,  0,  0,  0, // lea r10, [rip + __llvm_code_start]
+    0x4C, 0x39, 0xD1,                // cmp rcx, r10
+    0x72, 0x21,                      // jb 1f
+    0x4C, 0x8D, 0x15, 0,  0,  0,  0, // lea r10, [rip + __llvm_code_end]
+    0x4C, 0x39, 0xD1,                // cmp rcx, r10
+    0x73, 0x15,                      // jae 1f
+    0x49, 0xBB, -1,   -1, -1, -1, -1, -1, -1, -1, // mov r11, expected
+    0x4C, 0x39, 0x59, -1,                         // cmp [rcx - 8], r11
+    0x0F, 0x85, 0,    0,  0,  0,                  // jne mismatch
+    0xC3,                                         // ret
+    0xF7, 0xC1, -1,   -1, -1, -1,                 // 1: test ecx, mask
+    0x0F, 0x84, 0,    0,  0,  0,                  // je mismatch
+    0x49, 0xBB, -1,   -1, -1, -1, -1, -1, -1, -1, // mov r11, expected
+    0x4C, 0x39, 0x59, -1,                         // cmp [rcx - 8], r11
+    0x0F, 0x85, 0,    0,  0,  0,                  // jne mismatch
+    0xFF, 0x25, 0,    0,  0,  0,                  // jmp [rip + guard]
 };
-static const uint8_t kcfiCheckTailARM64[] = {
-    0x10, 0x00, 0x00, 0x90, // adrp x16, __llvm_code_start
-    0x10, 0x02, 0x00, 0x91, // add x16, x16, :lo12:__llvm_code_start
-    0xFF, 0x01, 0x10, 0xEB, // cmp x15, x16
-    0xC3, 0x00, 0x00, 0x54, // b.lo 1f
-    0x10, 0x00, 0x00, 0x90, // adrp x16, __llvm_code_end
-    0x10, 0x02, 0x00, 0x91, // add x16, x16, :lo12:__llvm_code_end
-    0xFF, 0x01, 0x10, 0xEB, // cmp x15, x16
-    0x42, 0x00, 0x00, 0x54, // b.hs 1f
-    0xC0, 0x03, 0x5F, 0xD6, // ret
-    0x10, 0x00, 0x00, 0x90, // 1: adrp x16, guard
-    0x10, 0x02, 0x40, 0xF9, // ldr x16, [x16, :lo12:guard]
-    0x00, 0x02, 0x1F, 0xD6, // br x16
+// On ARM64, each instruction with the bits that vary with the type and the
+// options.
+static const struct {
+  uint32_t insn;
+  uint32_t varying;
+} kcfiCheckARM64[] = {
+    {0x90000010, 0x00000000}, // adrp x16, __llvm_code_start
+    {0x91000210, 0x00000000}, // add x16, x16, :lo12:__llvm_code_start
+    {0xEB1001FF, 0x00000000}, // cmp x15, x16
+    {0x540001A3, 0x00000000}, // b.lo 1f
+    {0x90000010, 0x00000000}, // adrp x16, __llvm_code_end
+    {0x91000210, 0x00000000}, // add x16, x16, :lo12:__llvm_code_end
+    {0xEB1001FF, 0x00000000}, // cmp x15, x16
+    {0x54000122, 0x00000000}, // b.hs 1f
+    {0xF84001F0, 0x001FF000}, // ldur x16, [x15, #-8]
+    {0xD2800011, 0x001FFFE0}, // mov x17, #expected
+    {0xF2A00011, 0x001FFFE0}, // movk x17, #expected, lsl #16
+    {0xF2C00011, 0x001FFFE0}, // movk x17, #expected, lsl #32
+    {0xF2E00011, 0x001FFFE0}, // movk x17, #expected, lsl #48
+    {0xEB11021F, 0x00000000}, // cmp x16, x17
+    {0x54000001, 0x00000000}, // b.ne mismatch
+    {0xD65F03C0, 0x00000000}, // ret
+    {0xF20001FF, 0x007FFC00}, // 1: tst x15, #mask
+    {0x54000000, 0x00000000}, // b.eq mismatch
+    {0xF84001F0, 0x001FF000}, // ldur x16, [x15, #-8]
+    {0xD2800011, 0x001FFFE0}, // mov x17, #expected
+    {0xF2A00011, 0x001FFFE0}, // movk x17, #expected, lsl #16
+    {0xF2C00011, 0x001FFFE0}, // movk x17, #expected, lsl #32
+    {0xF2E00011, 0x001FFFE0}, // movk x17, #expected, lsl #48
+    {0xEB11021F, 0x00000000}, // cmp x16, x17
+    {0x54000001, 0x00000000}, // b.ne mismatch
+    {0x90000010, 0x00000000}, // adrp x16, guard
+    {0xF9400210, 0x00000000}, // ldr x16, [x16, :lo12:guard]
+    {0xD61F0200, 0x00000000}, // br x16
 };
-static const KCFIThunkReloc kcfiDispatchRelocsX64[] = {
-    {16, IMAGE_REL_AMD64_REL32, 0},
-    {23, IMAGE_REL_AMD64_REL32, 1},
-    {35, IMAGE_REL_AMD64_REL32, 2},
-    {48, IMAGE_REL_AMD64_REL32, 3}};
-static const KCFIThunkReloc kcfiCheckRelocsX64[] = {
-    {16, IMAGE_REL_AMD64_REL32, 0},
-    {23, IMAGE_REL_AMD64_REL32, 1},
-    {35, IMAGE_REL_AMD64_REL32, 2},
-    {47, IMAGE_REL_AMD64_REL32, 3}};
+static const KCFIThunkReloc kcfiRelocsX64[] = {
+    {3, IMAGE_REL_AMD64_REL32, 1},  {15, IMAGE_REL_AMD64_REL32, 2},
+    {40, IMAGE_REL_AMD64_REL32, 0}, {53, IMAGE_REL_AMD64_REL32, 0},
+    {73, IMAGE_REL_AMD64_REL32, 0}, {79, IMAGE_REL_AMD64_REL32, 3}};
 static const KCFIThunkReloc kcfiCheckRelocsARM64[] = {
-    {24, IMAGE_REL_ARM64_BRANCH19, 0},
-    {28, IMAGE_REL_ARM64_PAGEBASE_REL21, 1},
-    {32, IMAGE_REL_ARM64_PAGEOFFSET_12A, 1},
-    {44, IMAGE_REL_ARM64_PAGEBASE_REL21, 2},
-    {48, IMAGE_REL_ARM64_PAGEOFFSET_12A, 2},
-    {64, IMAGE_REL_ARM64_PAGEBASE_REL21, 3},
-    {68, IMAGE_REL_ARM64_PAGEOFFSET_12L, 3}};
+    {0, IMAGE_REL_ARM64_PAGEBASE_REL21, 1},
+    {4, IMAGE_REL_ARM64_PAGEOFFSET_12A, 1},
+    {16, IMAGE_REL_ARM64_PAGEBASE_REL21, 2},
+    {20, IMAGE_REL_ARM64_PAGEOFFSET_12A, 2},
+    {56, IMAGE_REL_ARM64_BRANCH19, 0},
+    {68, IMAGE_REL_ARM64_BRANCH19, 0},
+    {96, IMAGE_REL_ARM64_BRANCH19, 0},
+    {100, IMAGE_REL_ARM64_PAGEBASE_REL21, 3},
+    {104, IMAGE_REL_ARM64_PAGEOFFSET_12L, 3}};
 
 // The KCFI prefix, with a marker, of a function the link keeps. From its
 // __cfi_ symbol it holds an optional second type word, then 0F 1F 80, the
@@ -2679,16 +2714,17 @@ void Writer::defineKCFICodeRange() {
   kcfiCodeSec = sec;
 }
 
-// Rewrites, in place, what follows the type check in each of clang's KCFI
+// Rewrites, in place, the range test at the start of each of clang's KCFI
 // thunks the image keeps, __llvm_kcfi_dispatch_<type> with the target in RAX
 // and __llvm_kcfi_check_<type> with it in RCX or X15, once the code range is
-// defined. The range test becomes one comparison of the target's offset from
-// the start of the range with its size, which the linker knows. A thunk for a
-// type that no unsealed prefix in the image has cannot match a target in the
-// image, so it continues into the guard function without the test. The type
-// check is kept as clang wrote it, since only clang knows the marker, the
-// prefix offset and the form of the type it compares. The new form is never
-// longer than clang's, and the rest is filled with int3 or brk #0xf000.
+// defined. It becomes one comparison of the target's offset from the start of
+// the range with its size, which the linker knows. A thunk for a type that no
+// unsealed prefix in the image has cannot match a target in the image, so it
+// goes straight to the page test and the guard function. The type checks are
+// kept as clang wrote them, since only clang knows the marker, the prefix
+// offset and the form of the type they compare, and so are the page test and
+// the branches, with their relocations. The new range test is never longer
+// than clang's, and the rest is filled with int3 or brk #0xf000.
 void Writer::rewriteKCFIThunks() {
   if (!kcfiCodeSec)
     return;
@@ -2719,9 +2755,10 @@ void Writer::rewriteKCFIThunks() {
         continue;
 
       // Only clang's form is rewritten, which the chunk must match exactly:
-      // its size, every relocation with its type and target, and the bytes
-      // after the type check. Anything else, such as a thunk of another
-      // compiler or version, is legitimate and left as it is.
+      // its size, every relocation with its type and target, every byte but
+      // those that vary with the type and the options, and two identical type
+      // checks. Anything else, such as a thunk of another compiler or
+      // version, is legitimate and left as it is.
       if (dispatch && !isX64)
         continue;
       StringRef mismatchPrefix =
@@ -2732,94 +2769,88 @@ void Writer::rewriteKCFIThunks() {
       StringRef targets[] = {mismatch, "__llvm_code_start", "__llvm_code_end",
                              guardName};
       ArrayRef<KCFIThunkReloc> expectedRelocs =
-          isX64 ? (dispatch ? ArrayRef(kcfiDispatchRelocsX64)
-                            : ArrayRef(kcfiCheckRelocsX64))
-                : ArrayRef(kcfiCheckRelocsARM64);
-      ArrayRef<uint8_t> expectedTail =
-          isX64 ? (dispatch ? ArrayRef(kcfiDispatchTailX64)
-                            : ArrayRef(kcfiCheckTailX64))
-                : ArrayRef(kcfiCheckTailARM64);
-      size_t headSize = isX64 ? 20 : 28;
+          isX64 ? ArrayRef(kcfiRelocsX64) : ArrayRef(kcfiCheckRelocsARM64);
       ArrayRef<uint8_t> contents = sc->getContents();
       ArrayRef<coff_relocation> relocs = sc->getRelocs();
-      if (contents.size() != headSize + expectedTail.size() ||
-          contents.drop_front(headSize) != expectedTail ||
-          relocs.size() != expectedRelocs.size())
-        continue;
-      bool matches = true;
-      for (auto [r, e] : llvm::zip_equal(relocs, expectedRelocs)) {
-        Symbol *target = sc->file->getSymbol(r.SymbolTableIndex);
-        if (r.VirtualAddress != e.offset || r.Type != e.type || !target ||
-            target->getName() != targets[e.target])
-          matches = false;
+      bool matches = relocs.size() == expectedRelocs.size();
+      if (isX64) {
+        ArrayRef<int16_t> form =
+            dispatch ? ArrayRef(kcfiDispatchX64) : ArrayRef(kcfiCheckX64);
+        matches &= contents.size() == form.size() &&
+                   contents.slice(24, 14) == contents.slice(57, 14);
+        for (size_t i = 0; matches && i != form.size(); ++i)
+          matches = form[i] < 0 || contents[i] == form[i];
+      } else {
+        matches &= contents.size() == std::size(kcfiCheckARM64) * 4 &&
+                   contents.slice(32, 24) == contents.slice(72, 24);
+        for (size_t i = 0; matches && i != std::size(kcfiCheckARM64); ++i)
+          matches = (read32le(contents.data() + i * 4) &
+                     ~kcfiCheckARM64[i].varying) == kcfiCheckARM64[i].insn;
       }
-      auto *guard =
-          dyn_cast_or_null<Defined>(ctx.symtab.findUnderscore(guardName));
-      if (!matches || !guard)
+      for (size_t i = 0; matches && i != relocs.size(); ++i) {
+        const coff_relocation &r = relocs[i];
+        Symbol *target = sc->file->getSymbol(r.SymbolTableIndex);
+        matches = r.VirtualAddress == expectedRelocs[i].offset &&
+                  r.Type == expectedRelocs[i].type && target &&
+                  target->getName() == targets[expectedRelocs[i].target];
+      }
+      if (!matches)
         continue;
-      size_t thunkSize = contents.size();
 
+      // Only the range test, before the first type check, is replaced. The
+      // label 1: of the page test follows the first type check.
       OutputSection *sec = ctx.getOutputSection(sc);
       uint8_t *loc = buf + sec->getFileOff() + sc->getRVA() - sec->getRVA();
       uint64_t rva = sc->getRVA();
       bool testRange = types.contains(type);
       if (isX64) {
         // lea r10, [rip + start]; mov r11, rax (or rcx); sub r11, r10
-        // cmp r11, size; jb 1f; jmp [rip + guard]; 1: jmp rax (or ret)
-        static const uint8_t rangeTest[] = {
-            0x4C, 0x8D, 0x15, 0, 0, 0, 0, // lea r10, [rip + start]
-            0x49, 0x89, 0xC3,             // mov r11, rax
-            0x4D, 0x29, 0xD3,             // sub r11, r10
-            0x49, 0x81, 0xFB, 0, 0, 0, 0, // cmp r11, size
-            0x72, 0x06,                   // jb 1f
-        };
-        memset(loc + headSize, 0xCC, thunkSize - headSize);
-        uint8_t *p = loc + headSize;
+        // cmp r11, size; jae 1f; nop
+        //
+        // or, with no unsealed function of the type, jmp 1f.
+        uint8_t outside = dispatch ? 46 : 45;
+        memset(loc, 0xCC, 24);
         if (testRange) {
-          memcpy(p, rangeTest, sizeof(rangeTest));
-          write32le(p + 3, codeStart - (rva + headSize + 7));
+          static const uint8_t rangeTest[] = {
+              0x4C, 0x8D, 0x15, 0, 0, 0, 0, // lea r10, [rip + start]
+              0x49, 0x89, 0xC3,             // mov r11, rax
+              0x4D, 0x29, 0xD3,             // sub r11, r10
+              0x49, 0x81, 0xFB, 0, 0, 0, 0, // cmp r11, size
+              0x73, 0,                      // jae 1f
+              0x66, 0x90,                   // nop
+          };
+          memcpy(loc, rangeTest, sizeof(rangeTest));
+          write32le(loc + 3, codeStart - (rva + 7));
           if (!dispatch)
-            p[9] = 0xCB; // mov r11, rcx
-          write32le(p + 16, codeSize);
-          p += sizeof(rangeTest);
-        }
-        p[0] = 0xFF; // jmp [rip + guard]
-        p[1] = 0x25;
-        write32le(p + 2, guard->getRVA() - (rva + (p - loc) + 6));
-        if (testRange) {
-          if (dispatch) {
-            p[6] = 0xFF; // jmp rax
-            p[7] = 0xE0;
-          } else {
-            p[6] = 0xC3; // ret
-          }
+            loc[9] = 0xCB; // mov r11, rcx
+          write32le(loc + 16, codeSize);
+          loc[21] = outside - 22;
+        } else {
+          loc[0] = 0xEB; // jmp 1f
+          loc[1] = outside - 2;
         }
       } else {
         // adrp x16, start; add x16, x16, :lo12:start; sub x16, x15, x16
-        // movz x17, #size; movk x17, #size, lsl #16; cmp x16, x17; b.lo 1f
-        // adrp x16, guard; ldr x16, [x16, :lo12:guard]; br x16; 1: ret
-        uint8_t *p = loc + headSize;
-        for (size_t i = headSize; i != thunkSize; i += 4)
+        // movz x17, #size; movk x17, #size, lsl #16; cmp x16, x17; b.hs 1f
+        // nop
+        //
+        // or, with no unsealed function of the type, b 1f.
+        for (size_t i = 0; i != 32; i += 4)
           write32le(loc + i, 0xD43E0000); // brk #0xf000
         if (testRange) {
-          write32le(p, 0x90000010);     // adrp x16, start
-          write32le(p + 4, 0x91000210); // add x16, x16, :lo12:start
-          write32le(p + 8, 0xCB1001F0); // sub x16, x15, x16
-          write32le(p + 12, 0xD2800011 | (codeSize & 0xFFFF) << 5);
-          write32le(p + 16, 0xF2A00011 | (codeSize >> 16) << 5);
-          write32le(p + 20, 0xEB11021F); // cmp x16, x17
-          write32le(p + 24, 0x54000083); // b.lo 1f
-          applyArm64Addr(p, codeStart, rva + headSize, 12);
-          applyArm64Imm(p + 4, codeStart & 0xfff, 0);
-          p += 28;
+          write32le(loc, 0x90000010);     // adrp x16, start
+          write32le(loc + 4, 0x91000210); // add x16, x16, :lo12:start
+          write32le(loc + 8, 0xCB1001F0); // sub x16, x15, x16
+          write32le(loc + 12, 0xD2800011 | (codeSize & 0xFFFF) << 5);
+          write32le(loc + 16, 0xF2A00011 | (codeSize >> 16) << 5);
+          write32le(loc + 20, 0xEB11021F); // cmp x16, x17
+          write32le(loc + 24, 0x54000142); // b.hs 1f
+          write32le(loc + 28, 0xD503201F); // nop
+          applyArm64Addr(loc, codeStart, rva, 12);
+          applyArm64Imm(loc + 4, codeStart & 0xfff, 0);
+        } else {
+          write32le(loc, 0x14000010); // b 1f
         }
-        write32le(p, 0x90000010);     // adrp x16, guard
-        write32le(p + 4, 0xF9400210); // ldr x16, [x16, :lo12:guard]
-        write32le(p + 8, 0xD61F0200); // br x16
-        applyArm64Addr(p, guard->getRVA(), rva + (p - loc), 12);
-        applyArm64Ldr(p + 4, guard->getRVA() & 0xfff);
-        if (testRange)
-          write32le(p + 12, 0xD65F03C0); // ret
       }
     }
   }

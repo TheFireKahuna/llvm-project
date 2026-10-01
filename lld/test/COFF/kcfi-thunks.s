@@ -1,10 +1,11 @@
 # REQUIRES: x86
 
-## Under -import-slots, in an image it seals, the linker rewrites what follows
-## the type check in clang's KCFI thunks: the range test becomes one
-## comparison of the target's offset from the start of .text with its size.
-## A type that no unsealed function in the image has continues into the guard
-## function without the test. Without -import-slots, clang's form stays.
+## Under -import-slots, in an image it seals, the linker rewrites the range test
+## at the start of clang's KCFI thunks: it becomes one comparison of the
+## target's offset from the start of .text with its size, followed by a nop to
+## clang's length. A type that no unsealed function in the image has jumps
+## straight to the page test. Clang's type checks, page test and guard jump
+## stay. Without -import-slots, clang's form stays.
 
 # RUN: llvm-mc -triple x86_64-windows-msvc %s -filetype=obj -o %t.obj
 # RUN: lld-link %t.obj -guard:cf -import-slots -entry:main -debug:symtab \
@@ -19,81 +20,76 @@
 ## listed is in the guard function table, so type 0x11111111 has an unsealed
 ## function and tests the range.
 # CHECK:      <__llvm_kcfi_dispatch_11111111>:
-# CHECK-NEXT:   movabsq $0x11111111b8071c5a, %r11
-# CHECK-NEXT:   cmpq %r11, -0x8(%rax)
-# CHECK-NEXT:   jne
 # CHECK-NEXT:   leaq {{.*}}(%rip), %r10 {{.*}}0x140001000
 # CHECK-NEXT:   movq %rax, %r11
 # CHECK-NEXT:   subq %r10, %r11
 # CHECK-NEXT:   cmpq $0x[[#%x,SIZE]], %r11
-# CHECK-NEXT:   jb
-# CHECK-NEXT:   jmpq *{{.*}}(%rip) {{.*}}<__guard_dispatch_icall_fptr>
+# CHECK-NEXT:   jae {{.*}}<__llvm_kcfi_dispatch_11111111+0x2e>
+# CHECK-NEXT:   nop
+# CHECK-NEXT:   movabsq $0x11111111b8071c5a, %r11
+# CHECK-NEXT:   cmpq %r11, -0x8(%rax)
+# CHECK-NEXT:   jne
 # CHECK-NEXT:   jmpq *%rax
-# CHECK-NEXT:   int3
-# CHECK-NEXT:   int3
+# CHECK-NEXT:   testl $0xff0, %eax
+# CHECK-NEXT:   je
+# CHECK-NEXT:   movabsq $0x11111111b8071c5a, %r11
+# CHECK-NEXT:   cmpq %r11, -0x8(%rax)
+# CHECK-NEXT:   jne
+# CHECK-NEXT:   jmpq *{{.*}}(%rip) {{.*}}<__guard_dispatch_icall_fptr>
 
 ## sealed is only called directly, so type 0x22222222 has no unsealed function
-## in the image.
+## in the image and goes straight to the page test.
 # CHECK:      <__llvm_kcfi_dispatch_22222222>:
+# CHECK-NEXT:   jmp {{.*}}<__llvm_kcfi_dispatch_22222222+0x2e>
+# CHECK-COUNT-22: int3
+# CHECK-NEXT:   movabsq $0x22222222b8071c5a, %r11
+# CHECK-NEXT:   cmpq %r11, -0x8(%rax)
+# CHECK-NEXT:   jne
+# CHECK-NEXT:   jmpq *%rax
+# CHECK-NEXT:   testl $0xff0, %eax
+# CHECK-NEXT:   je
 # CHECK-NEXT:   movabsq $0x22222222b8071c5a, %r11
 # CHECK-NEXT:   cmpq %r11, -0x8(%rax)
 # CHECK-NEXT:   jne
 # CHECK-NEXT:   jmpq *{{.*}}(%rip) {{.*}}<__guard_dispatch_icall_fptr>
-# CHECK-NEXT:   int3
 
 ## The check thunk takes the target in RCX and returns in range.
 # CHECK:      <__llvm_kcfi_check_11111111>:
-# CHECK-NEXT:   movabsq $0x11111111b8071c5a, %r11
-# CHECK-NEXT:   cmpq %r11, -0x8(%rcx)
-# CHECK-NEXT:   jne
 # CHECK-NEXT:   leaq {{.*}}(%rip), %r10 {{.*}}0x140001000
 # CHECK-NEXT:   movq %rcx, %r11
 # CHECK-NEXT:   subq %r10, %r11
 # CHECK-NEXT:   cmpq $0x[[#%x,SIZE]], %r11
-# CHECK-NEXT:   jb
-# CHECK-NEXT:   jmpq *{{.*}}(%rip) {{.*}}<__guard_check_icall_fptr>
-# CHECK-NEXT:   retq
-# CHECK-NEXT:   int3
-# CHECK-NEXT:   int3
-
-## A thunk that differs from clang's current form in one byte after the type
-## check or in one relocation's target, one of an older form, and a local
-## thunk, which fails fast outside
-## the range, are left as they are. In the sealed image the local thunk's
-## bounds are .text's; in one that is not sealed both are clang's weak
-## default, so its out-of-range path sees an empty range and dispatches.
-# CHECK:      <__llvm_kcfi_dispatch_33333333>:
-# CHECK-NEXT:   movabsq $0x33333333b8071c5a, %r11
-# CHECK-NEXT:   cmpq %r11, -0x8(%rax)
+# CHECK-NEXT:   jae {{.*}}<__llvm_kcfi_check_11111111+0x2d>
+# CHECK-NEXT:   nop
+# CHECK-NEXT:   movabsq $0x11111111b8071c5a, %r11
+# CHECK-NEXT:   cmpq %r11, -0x8(%rcx)
 # CHECK-NEXT:   jne
+# CHECK-NEXT:   retq
+# CHECK-NEXT:   testl $0xff0, %ecx
+# CHECK-NEXT:   je
+# CHECK-NEXT:   movabsq $0x11111111b8071c5a, %r11
+# CHECK-NEXT:   cmpq %r11, -0x8(%rcx)
+# CHECK-NEXT:   jne
+# CHECK-NEXT:   jmpq *{{.*}}(%rip) {{.*}}<__guard_check_icall_fptr>
+
+## A thunk that differs from clang's current form in one byte or in one
+## relocation's target, one of an older form, and a local thunk, which fails
+## fast outside the range, are left as they are. In the sealed image the local
+## thunk's bounds are .text's; in one that is not sealed both are clang's weak
+## default, so its out-of-range path sees an empty range.
+# CHECK:      <__llvm_kcfi_dispatch_33333333>:
 # CHECK-NEXT:   leaq {{.*}}(%rip), %r10
 # CHECK-NEXT:   cmpq %r10, %rax
 # CHECK-NEXT:   jb
-# CHECK-NEXT:   leaq {{.*}}(%rip), %r10
-# CHECK-NEXT:   cmpq %r10, %rax
-# CHECK-NEXT:   jae
-# CHECK-NEXT:   jmpq *%rcx
-# CHECK-NEXT:   jmpq *{{.*}}(%rip)
 # CHECK:      <__llvm_kcfi_dispatch_44444444>:
 # CHECK-NEXT:   cmpl $0x44444444, -0x4(%rax)
 # CHECK-NEXT:   jne
 # CHECK-NEXT:   jmpq *{{.*}}(%rip)
 # CHECK:      <__llvm_kcfi_dispatch_55555555>:
-# CHECK-NEXT:   movabsq $0x55555555b8071c5a, %r11
-# CHECK-NEXT:   cmpq %r11, -0x8(%rax)
-# CHECK-NEXT:   jne
 # CHECK-NEXT:   leaq {{.*}}(%rip), %r10
 # CHECK-NEXT:   cmpq %r10, %rax
 # CHECK-NEXT:   jb
-# CHECK-NEXT:   leaq {{.*}}(%rip), %r10
-# CHECK-NEXT:   cmpq %r10, %rax
-# CHECK-NEXT:   jae
-# CHECK-NEXT:   jmpq *%rax
-# CHECK-NEXT:   jmpq *{{.*}}(%rip) {{.*}}<__guard_check_icall_fptr>
 # CHECK:      <__llvm_kcfi_local_dispatch_11111111>:
-# CHECK-NEXT:   movabsq $0x11111111b8071c5a, %r11
-# CHECK-NEXT:   cmpq %r11, -0x8(%rax)
-# CHECK-NEXT:   jne
 # CHECK-NEXT:   leaq {{.*}}(%rip), %r10 {{.*}}0x140001000
 # CHECK-NEXT:   leaq {{.*}}(%rip), %r11 {{.*}}0x[[#%x,5368713216+SIZE]]
 # CHECK-NEXT:   cmpq %r10, %rax
@@ -102,21 +98,13 @@
 # RUN: llvm-objdump -d %t.clang.exe | FileCheck %s --check-prefix=CLANG
 
 # CLANG:      <__llvm_kcfi_dispatch_22222222>:
-# CLANG-NEXT:   movabsq $0x22222222b8071c5a, %r11
-# CLANG-NEXT:   cmpq %r11, -0x8(%rax)
-# CLANG-NEXT:   jne
 # CLANG-NEXT:   leaq {{.*}}(%rip), %r10
 # CLANG-NEXT:   cmpq %r10, %rax
 # CLANG-NEXT:   jb
 # CLANG-NEXT:   leaq {{.*}}(%rip), %r10
 # CLANG-NEXT:   cmpq %r10, %rax
 # CLANG-NEXT:   jae
-# CLANG-NEXT:   jmpq *%rax
-# CLANG-NEXT:   jmpq *{{.*}}(%rip)
 # CLANG:      <__llvm_kcfi_local_dispatch_11111111>:
-# CLANG-NEXT:   movabsq
-# CLANG-NEXT:   cmpq %r11, -0x8(%rax)
-# CLANG-NEXT:   jne
 # CLANG-NEXT:   leaq {{.*}}(%rip), %r10 {{.*}}0x[[ADDR:[0-9a-f]+]]
 # CLANG-NEXT:   leaq {{.*}}(%rip), %r11 {{.*}}0x[[ADDR]]
 
@@ -177,6 +165,12 @@ __llvm_code_empty:
 __llvm_kcfi_mismatch_11111111 = __llvm_kcfi_open
         .weak __llvm_kcfi_mismatch_22222222
 __llvm_kcfi_mismatch_22222222 = __llvm_kcfi_open
+        .weak __llvm_kcfi_mismatch_33333333
+__llvm_kcfi_mismatch_33333333 = __llvm_kcfi_open
+        .weak __llvm_kcfi_mismatch_44444444
+__llvm_kcfi_mismatch_44444444 = __llvm_kcfi_open
+        .weak __llvm_kcfi_mismatch_55555555
+__llvm_kcfi_mismatch_55555555 = __llvm_kcfi_open
         .weak __llvm_kcfi_check_mismatch_11111111
 __llvm_kcfi_check_mismatch_11111111 = __llvm_kcfi_open
 
@@ -184,70 +178,85 @@ __llvm_kcfi_check_mismatch_11111111 = __llvm_kcfi_open
         .globl __llvm_kcfi_dispatch_11111111
         .p2align 4
 __llvm_kcfi_dispatch_11111111:
-        movabsq $0x11111111b8071c5a, %r11
-        cmpq %r11, -8(%rax)
-        jne __llvm_kcfi_mismatch_11111111
         leaq __llvm_code_start(%rip), %r10
         cmpq %r10, %rax
         jb 1f
         leaq __llvm_code_end(%rip), %r10
         cmpq %r10, %rax
         jae 1f
+        movabsq $0x11111111b8071c5a, %r11
+        cmpq %r11, -8(%rax)
+        jne __llvm_kcfi_mismatch_11111111
         jmpq *%rax
-1:      jmpq *__guard_dispatch_icall_fptr(%rip)
+1:      testl $0xff0, %eax
+        je __llvm_kcfi_mismatch_11111111
+        movabsq $0x11111111b8071c5a, %r11
+        cmpq %r11, -8(%rax)
+        jne __llvm_kcfi_mismatch_11111111
+        jmpq *__guard_dispatch_icall_fptr(%rip)
 
         .section .text,"xr",discard,__llvm_kcfi_dispatch_22222222
         .globl __llvm_kcfi_dispatch_22222222
         .p2align 4
 __llvm_kcfi_dispatch_22222222:
-        movabsq $0x22222222b8071c5a, %r11
-        cmpq %r11, -8(%rax)
-        jne __llvm_kcfi_mismatch_22222222
         leaq __llvm_code_start(%rip), %r10
         cmpq %r10, %rax
         jb 1f
         leaq __llvm_code_end(%rip), %r10
         cmpq %r10, %rax
         jae 1f
+        movabsq $0x22222222b8071c5a, %r11
+        cmpq %r11, -8(%rax)
+        jne __llvm_kcfi_mismatch_22222222
         jmpq *%rax
-1:      jmpq *__guard_dispatch_icall_fptr(%rip)
+1:      testl $0xff0, %eax
+        je __llvm_kcfi_mismatch_22222222
+        movabsq $0x22222222b8071c5a, %r11
+        cmpq %r11, -8(%rax)
+        jne __llvm_kcfi_mismatch_22222222
+        jmpq *__guard_dispatch_icall_fptr(%rip)
 
         .section .text,"xr",discard,__llvm_kcfi_check_11111111
         .globl __llvm_kcfi_check_11111111
         .p2align 4
 __llvm_kcfi_check_11111111:
-        movabsq $0x11111111b8071c5a, %r11
-        cmpq %r11, -8(%rcx)
-        jne __llvm_kcfi_check_mismatch_11111111
         leaq __llvm_code_start(%rip), %r10
         cmpq %r10, %rcx
         jb 1f
         leaq __llvm_code_end(%rip), %r10
         cmpq %r10, %rcx
         jae 1f
+        movabsq $0x11111111b8071c5a, %r11
+        cmpq %r11, -8(%rcx)
+        jne __llvm_kcfi_check_mismatch_11111111
         retq
-1:      jmpq *__guard_check_icall_fptr(%rip)
-
-        .weak __llvm_kcfi_mismatch_33333333
-__llvm_kcfi_mismatch_33333333 = __llvm_kcfi_open
-        .weak __llvm_kcfi_mismatch_44444444
-__llvm_kcfi_mismatch_44444444 = __llvm_kcfi_open
+1:      testl $0xff0, %ecx
+        je __llvm_kcfi_check_mismatch_11111111
+        movabsq $0x11111111b8071c5a, %r11
+        cmpq %r11, -8(%rcx)
+        jne __llvm_kcfi_check_mismatch_11111111
+        jmpq *__guard_check_icall_fptr(%rip)
 
         .section .text,"xr",discard,__llvm_kcfi_dispatch_33333333
         .globl __llvm_kcfi_dispatch_33333333
         .p2align 4
 __llvm_kcfi_dispatch_33333333:
-        movabsq $0x33333333b8071c5a, %r11
-        cmpq %r11, -8(%rax)
-        jne __llvm_kcfi_mismatch_33333333
         leaq __llvm_code_start(%rip), %r10
         cmpq %r10, %rax
         jb 1f
         leaq __llvm_code_end(%rip), %r10
         cmpq %r10, %rax
         jae 1f
+        movabsq $0x33333333b8071c5a, %r11
+        cmpq %r11, -8(%rax)
+        jne __llvm_kcfi_mismatch_33333333
         jmpq *%rcx
-1:      jmpq *__guard_dispatch_icall_fptr(%rip)
+1:      testl $0xff0, %eax
+        je __llvm_kcfi_mismatch_33333333
+        movabsq $0x33333333b8071c5a, %r11
+        cmpq %r11, -8(%rax)
+        jne __llvm_kcfi_mismatch_33333333
+        jmpq *__guard_dispatch_icall_fptr(%rip)
 
         .section .text,"xr",discard,__llvm_kcfi_dispatch_44444444
         .globl __llvm_kcfi_dispatch_44444444
@@ -257,41 +266,48 @@ __llvm_kcfi_dispatch_44444444:
         jne __llvm_kcfi_mismatch_44444444
         jmpq *__guard_dispatch_icall_fptr(%rip)
 
-        .weak __llvm_kcfi_mismatch_55555555
-__llvm_kcfi_mismatch_55555555 = __llvm_kcfi_open
-
         .section .text,"xr",discard,__llvm_kcfi_dispatch_55555555
         .globl __llvm_kcfi_dispatch_55555555
         .p2align 4
 __llvm_kcfi_dispatch_55555555:
-        movabsq $0x55555555b8071c5a, %r11
-        cmpq %r11, -8(%rax)
-        jne __llvm_kcfi_mismatch_55555555
         leaq __llvm_code_start(%rip), %r10
         cmpq %r10, %rax
         jb 1f
         leaq __llvm_code_end(%rip), %r10
         cmpq %r10, %rax
         jae 1f
+        movabsq $0x55555555b8071c5a, %r11
+        cmpq %r11, -8(%rax)
+        jne __llvm_kcfi_mismatch_55555555
         jmpq *%rax
-1:      jmpq *__guard_check_icall_fptr(%rip)
+1:      testl $0xff0, %eax
+        je __llvm_kcfi_mismatch_55555555
+        movabsq $0x55555555b8071c5a, %r11
+        cmpq %r11, -8(%rax)
+        jne __llvm_kcfi_mismatch_55555555
+        jmpq *__guard_check_icall_fptr(%rip)
 
         .section .text,"xr",discard,__llvm_kcfi_local_dispatch_11111111
         .globl __llvm_kcfi_local_dispatch_11111111
         .p2align 4
 __llvm_kcfi_local_dispatch_11111111:
-        movabsq $0x11111111b8071c5a, %r11
-        cmpq %r11, -8(%rax)
-        jne __llvm_kcfi_mismatch_11111111
         leaq __llvm_code_start(%rip), %r10
         leaq __llvm_code_end(%rip), %r11
         cmpq %r10, %rax
         jb 1f
         cmpq %r11, %rax
         jae 1f
+        movabsq $0x11111111b8071c5a, %r11
+        cmpq %r11, -8(%rax)
+        jne __llvm_kcfi_mismatch_11111111
         jmpq *%rax
 1:      cmpq %r11, %r10
         jne 2f
+        testl $0xff0, %eax
+        je __llvm_kcfi_mismatch_11111111
+        movabsq $0x11111111b8071c5a, %r11
+        cmpq %r11, -8(%rax)
+        jne __llvm_kcfi_mismatch_11111111
         jmpq *__guard_dispatch_icall_fptr(%rip)
 2:      movl $64, %ecx
         int $0x29
