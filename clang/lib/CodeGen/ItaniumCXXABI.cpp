@@ -835,9 +835,11 @@ CGCallee ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
 
   // Under the KCFI marker scheme, a virtual function carries the type of its
   // vtable slot, salted by a class this call cannot know, and every function
-  // that can occupy a slot carries a second type, salted "__vfn" alone, which
-  // the call checks instead. The non-virtual path checks the ordinary type,
-  // and the call itself checks nothing more.
+  // that can occupy a slot carries a second type, salted "__vfn" alone, 16
+  // bytes before its entry, which the call checks instead. The non-virtual
+  // path checks the ordinary type, 4 bytes before the entry. Each check hands
+  // a target outside the image to Control Flow Guard, so the call itself
+  // checks nothing more.
   llvm::ConstantInt *KCFIVfnTypeId = nullptr;
   llvm::ConstantInt *KCFITypeId = nullptr;
   if (CGM.hasKCFIVTableSlotTypes()) {
@@ -853,10 +855,9 @@ CGCallee ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
   }
   bool ShouldEmitKCFICheck =
       CGF.SanOpts.has(SanitizerKind::KCFI) && CGM.hasKCFIVTableSlotTypes();
-  if (ShouldEmitKCFICheck) {
-    CGF.EmitKCFIMarkerCheck(VirtualFn, KCFIVfnTypeId, 16);
-    FnVirtual = Builder.GetInsertBlock();
-  }
+  if (ShouldEmitKCFICheck)
+    Builder.CreateCall(CGM.getIntrinsic(llvm::Intrinsic::kcfi_check),
+                       {VirtualFn, KCFIVfnTypeId, Builder.getInt32(16)});
 
   CGF.EmitBranch(FnEnd);
 
@@ -902,10 +903,9 @@ CGCallee ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
     }
   }
 
-  if (ShouldEmitKCFICheck) {
-    CGF.EmitKCFIMarkerCheck(NonVirtualFn, KCFITypeId, 4);
-    FnNonVirtual = Builder.GetInsertBlock();
-  }
+  if (ShouldEmitKCFICheck)
+    Builder.CreateCall(CGM.getIntrinsic(llvm::Intrinsic::kcfi_check),
+                       {NonVirtualFn, KCFITypeId, Builder.getInt32(4)});
 
   // We're done.
   CGF.EmitBlock(FnEnd);

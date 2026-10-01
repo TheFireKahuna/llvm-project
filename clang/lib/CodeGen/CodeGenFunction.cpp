@@ -44,7 +44,6 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/FPEnv.h"
-#include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Intrinsics.h"
@@ -55,7 +54,6 @@
 #include "llvm/Support/SipHash.h"
 #include "llvm/Support/xxhash.h"
 #include "llvm/Transforms/Scalar/LowerExpectIntrinsic.h"
-#include "llvm/Transforms/Utils/KCFIHash.h"
 #include "llvm/Transforms/Utils/PromoteMemToReg.h"
 #include <optional>
 
@@ -2905,56 +2903,6 @@ void CodeGenFunction::EmitKCFIOperandBundle(
     Salt = Info.CFISalt;
 
   Bundles.emplace_back("kcfi", CGM.CreateKCFITypeId(FP->desugar(), Salt));
-}
-
-void CodeGenFunction::EmitKCFIMarkerCheck(llvm::Value *Fn,
-                                          llvm::ConstantInt *TypeId,
-                                          int64_t Offset) {
-  // Patchable function entry nops come after the prefix.
-  const llvm::Triple &TT = getTarget().getTriple();
-  int64_t PrefixBytes = CGM.getCodeGenOpts().PatchableFunctionEntryOffset *
-                        (TT.isAArch64() ? 4 : 1);
-
-  llvm::BasicBlock *Mismatch = createBasicBlock("kcfi.mismatch");
-  llvm::BasicBlock *Fail = createBasicBlock("kcfi.fail");
-  llvm::BasicBlock *Cont = createBasicBlock("kcfi.cont");
-  llvm::MDBuilder MDHelper(getLLVMContext());
-
-  llvm::Value *Word = Builder.CreateAlignedLoad(
-      Int32Ty, Builder.CreateConstGEP1_64(Int8Ty, Fn, -(Offset + PrefixBytes)),
-      llvm::Align(1), "kcfi.type");
-  Builder.CreateCondBr(Builder.CreateICmpEQ(Word, TypeId), Cont, Mismatch,
-                       MDHelper.createLikelyBranchWeights());
-
-  // The 8 bytes before the type are 0F 1F 80, the marker and B8.
-  EmitBlock(Mismatch);
-  uint64_t Pattern = llvm::getKCFIMarkerPattern(CGM.getKCFIMarker());
-  llvm::Value *Marker = Builder.CreateAlignedLoad(
-      Int64Ty, Builder.CreateConstGEP1_64(Int8Ty, Fn, -(12 + PrefixBytes)),
-      llvm::Align(1), "kcfi.marker");
-  Builder.CreateCondBr(
-      Builder.CreateICmpEQ(Marker, llvm::ConstantInt::get(Int64Ty, Pattern)),
-      Fail, Cont);
-
-  // __fastfail(FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG), as the per-type
-  // thunks fail.
-  EmitBlock(Fail);
-  if (TT.getArch() == llvm::Triple::x86_64 || TT.isAArch64()) {
-    bool IsX86 = TT.getArch() == llvm::Triple::x86_64;
-    llvm::InlineAsm *FastFail = llvm::InlineAsm::get(
-        llvm::FunctionType::get(VoidTy, {Int32Ty}, false),
-        IsX86 ? "int $$0x29" : "brk #0xF003", IsX86 ? "{cx}" : "{w0}",
-        /*hasSideEffects=*/true);
-    llvm::CallInst *Call =
-        Builder.CreateCall(FastFail, llvm::ConstantInt::get(Int32Ty, 64));
-    Call->setDoesNotReturn();
-    Call->setDoesNotThrow();
-    Builder.CreateUnreachable();
-  } else {
-    EmitTrapCallAndMakeUnreachable();
-  }
-
-  EmitBlock(Cont);
 }
 
 llvm::Value *
