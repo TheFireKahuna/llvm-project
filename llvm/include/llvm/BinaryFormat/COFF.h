@@ -66,6 +66,41 @@ static const char LinkRecordsMagic[] = {'L', 'L', 'R', 'C'};
 const uint64_t LinkRecordsVersion = 1;
 const uint64_t LinkRecordKindCritical = 1;
 
+// The capability that says an x86-64 object describes, in a LinkRecordSites
+// group, every instruction site its records must describe, so that a linker
+// may take a site with no record as a branch.
+const uint64_t LinkRecordsX86_64Sites = 1;
+
+enum LinkRecordKind : uint64_t {
+  // How instructions use the address a relocation gives them, for a linker
+  // that rewrites an instruction whose target it finds in the image. Each
+  // code section's REL32 relocations that are not branches and refer to a
+  // symbol the object leaves undefined, or defines as weak or in a COMDAT
+  // that another section can be linked in place of, have a site:
+  //
+  //   payload := (section:ULEB128 count:ULEB128 site{count})*
+  //   site    := (delta << 4 | attribute << 3 | form):ULEB128
+  //              [size:ULEB128 data{size}, if attribute]
+  //
+  // section is the symbol index of the section's symbol, and each section
+  // appears once. delta is the site's offset from the previous site of the
+  // section, or from the section's start for the first, so offsets increase.
+  // form is a LinkSiteForm. The attribute introduces data about the site,
+  // which a linker that does not use it skips.
+  LinkRecordSites = 2,
+};
+
+// The form of an instruction site, which a linker verifies against the
+// instruction's bytes before rewriting it.
+enum LinkSiteForm : uint8_t {
+  LinkSiteOther,          // None of the forms below.
+  LinkSiteCall,           // call [rip+X], with any prefixes
+  LinkSiteJump,           // jmp [rip+X], with no prefix
+  LinkSiteLoad,           // mov r64, [rip+X], with any prefixes
+  LinkSiteAddress,        // lea r64, [rip+X], with any prefixes
+  LinkSiteJumpOnePrefix,  // jmp [rip+X] after one prefix byte, such as REX.W
+};
+
 // The KCFI type that a linker writes over the type words of a function's
 // marked KCFI prefix when no indirect call may reach the function, so that a
 // call through a pointer to it fails its type check. A compiler that emits

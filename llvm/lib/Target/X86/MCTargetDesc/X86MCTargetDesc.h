@@ -146,9 +146,10 @@ createX86MachObjectWriter(bool Is64Bit, uint32_t CPUType, uint32_t CPUSubtype);
 /// Construct an X86 ELF object writer.
 std::unique_ptr<MCObjectTargetWriter>
 createX86ELFObjectWriter(bool IsELF64, uint8_t OSABI, uint16_t EMachine);
-/// Construct an X86 Win COFF object writer.
+/// Construct an X86 Win COFF object writer. With \p DescribeSites, a 64-bit
+/// object describes its instruction sites in its link-only records.
 std::unique_ptr<MCObjectTargetWriter>
-createX86WinCOFFObjectWriter(bool Is64Bit);
+createX86WinCOFFObjectWriter(bool Is64Bit, bool DescribeSites = false);
 
 /// \param Reg speicifed register.
 /// \param Size the bit size of returned register.

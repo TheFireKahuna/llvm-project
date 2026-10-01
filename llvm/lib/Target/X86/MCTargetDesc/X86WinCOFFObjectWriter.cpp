@@ -23,9 +23,17 @@ using namespace llvm;
 namespace {
 
 class X86WinCOFFObjectWriter : public MCWinCOFFObjectTargetWriter {
+  bool DescribeSites;
+
 public:
-  X86WinCOFFObjectWriter(bool Is64Bit);
+  X86WinCOFFObjectWriter(bool Is64Bit, bool DescribeSites);
   ~X86WinCOFFObjectWriter() override = default;
+
+  uint64_t getLinkRecordCapabilities() const override {
+    return DescribeSites ? COFF::LinkRecordsX86_64Sites : 0;
+  }
+  std::optional<unsigned> getLinkSiteForm(const MCFixup &Fixup,
+                                          unsigned Type) const override;
 
   unsigned getRelocType(MCContext &Ctx, const MCValue &Target,
                         const MCFixup &Fixup, bool IsCrossSection,
@@ -34,9 +42,46 @@ public:
 
 } // end anonymous namespace
 
-X86WinCOFFObjectWriter::X86WinCOFFObjectWriter(bool Is64Bit)
+X86WinCOFFObjectWriter::X86WinCOFFObjectWriter(bool Is64Bit,
+                                               bool DescribeSites)
     : MCWinCOFFObjectTargetWriter(Is64Bit ? COFF::IMAGE_FILE_MACHINE_AMD64
-                                          : COFF::IMAGE_FILE_MACHINE_I386) {}
+                                          : COFF::IMAGE_FILE_MACHINE_I386),
+      DescribeSites(Is64Bit && DescribeSites) {}
+
+// Every REL32 that is not a branch has a site, since a linker takes a
+// qualifying relocation without one as a branch. The fixup kind says whether
+// the instruction is a branch, and the code emitter how it uses the address.
+// A jump's prefixes are part of its form: a linker that makes it a direct jump
+// rewrites it from its first byte, so that the Windows unwinder, which finds
+// an epilogue by decoding its last instruction, still recognises it.
+std::optional<unsigned>
+X86WinCOFFObjectWriter::getLinkSiteForm(const MCFixup &Fixup,
+                                        unsigned Type) const {
+  if (!DescribeSites || Type != COFF::IMAGE_REL_AMD64_REL32 ||
+      Fixup.getKind() == X86::reloc_branch_4byte_pcrel)
+    return std::nullopt;
+  switch (Fixup.getUse()) {
+  case MCFixupUse::Unknown:
+    return COFF::LinkSiteOther;
+  case MCFixupUse::Call:
+    return COFF::LinkSiteCall;
+  case MCFixupUse::Jump:
+    // The opcode and the ModRM byte precede the displacement.
+    switch (Fixup.getInstOffset()) {
+    case 2:
+      return COFF::LinkSiteJump;
+    case 3:
+      return COFF::LinkSiteJumpOnePrefix;
+    default:
+      return COFF::LinkSiteOther;
+    }
+  case MCFixupUse::Load:
+    return COFF::LinkSiteLoad;
+  case MCFixupUse::Address:
+    return COFF::LinkSiteAddress;
+  }
+  llvm_unreachable("unknown fixup use");
+}
 
 unsigned X86WinCOFFObjectWriter::getRelocType(MCContext &Ctx,
                                               const MCValue &Target,
@@ -124,6 +169,6 @@ unsigned X86WinCOFFObjectWriter::getRelocType(MCContext &Ctx,
 }
 
 std::unique_ptr<MCObjectTargetWriter>
-llvm::createX86WinCOFFObjectWriter(bool Is64Bit) {
-  return std::make_unique<X86WinCOFFObjectWriter>(Is64Bit);
+llvm::createX86WinCOFFObjectWriter(bool Is64Bit, bool DescribeSites) {
+  return std::make_unique<X86WinCOFFObjectWriter>(Is64Bit, DescribeSites);
 }

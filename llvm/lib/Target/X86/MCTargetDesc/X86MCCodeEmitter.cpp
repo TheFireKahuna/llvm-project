@@ -668,8 +668,37 @@ void X86MCCodeEmitter::emitMemModRMByte(
                       ? X86II::getSizeOfImm(TSFlags)
                       : 0;
 
+    size_t NumFixups = Fixups.size();
     emitImmediate(Disp, MI.getLoc(), FixupKind, true, StartByte, CB, Fixups,
                   -ImmSize);
+    // Say how the instruction uses the address of a symbol, which the fixup
+    // kind does not tell apart, for object writers that pass it on to the
+    // linker. An address with an offset is not the symbol's.
+    if (Fixups.size() != NumFixups && Disp.isExpr() &&
+        isa<MCSymbolRefExpr>(Disp.getExpr())) {
+      MCFixupUse Use = MCFixupUse::Unknown;
+      switch (Opcode) {
+      case X86::CALL64m:
+      case X86::CALL64m_NT:
+        Use = MCFixupUse::Call;
+        break;
+      case X86::JMP64m:
+      case X86::JMP64m_NT:
+      case X86::JMP64m_REX:
+      case X86::TAILJMPm64:
+      case X86::TAILJMPm64_REX:
+        Use = MCFixupUse::Jump;
+        break;
+      case X86::MOV64rm:
+        Use = MCFixupUse::Load;
+        break;
+      case X86::LEA64r:
+        Use = MCFixupUse::Address;
+        break;
+      }
+      // The fixup's offset still counts from the start of the instruction.
+      Fixups.back().setUse(Use, Fixups.back().getOffset());
+    }
     return;
   }
 

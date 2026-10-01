@@ -1285,13 +1285,17 @@ public:
 
 class WindowsX86AsmBackend : public X86AsmBackend {
   bool Is64Bit;
+  // Whether objects describe their instruction sites to the linker, which
+  // the Windows Itanium and NT-POSIX linkers rely on.
+  bool DescribeSites;
 
 public:
   WindowsX86AsmBackend(const Target &T, bool is64Bit,
                        const MCSubtargetInfo &STI)
-    : X86AsmBackend(T, STI)
-    , Is64Bit(is64Bit) {
-  }
+      : X86AsmBackend(T, STI), Is64Bit(is64Bit),
+        DescribeSites(
+            is64Bit &&
+            STI.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {}
 
   std::optional<MCFixupKind> getFixupKind(StringRef Name) const override {
     return StringSwitch<std::optional<MCFixupKind>>(Name)
@@ -1303,7 +1307,7 @@ public:
 
   std::unique_ptr<MCObjectTargetWriter>
   createObjectTargetWriter() const override {
-    return createX86WinCOFFObjectWriter(Is64Bit);
+    return createX86WinCOFFObjectWriter(Is64Bit, DescribeSites);
   }
 };
 
