@@ -1433,7 +1433,11 @@ bool CodeGenModule::HasHiddenLTOVisibility(const CXXRecordDecl *RD) {
   if (!isExternallyVisible(LV.getLinkage()))
     return true;
 
-  if (!getTriple().isOSBinFormatCOFF() &&
+  // On COFF a class is usually in the linkage unit unless it is dllimport or
+  // dllexport, but on Windows Itanium and NT-POSIX visibility is the image's
+  // boundary, as it is on ELF.
+  if ((!getTriple().isOSBinFormatCOFF() ||
+       getTriple().isWindowsItaniumOrNTPOSIXEnvironment()) &&
       LV.getVisibility() != HiddenVisibility)
     return false;
 
