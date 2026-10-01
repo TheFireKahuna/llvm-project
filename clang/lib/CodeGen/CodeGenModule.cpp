@@ -4022,6 +4022,25 @@ void CodeGenModule::finalizeKCFITypes() {
   }
 }
 
+/// Emit, for each type in TypeIds, the constant <Prefix><type>_<Name>, whose
+/// value is the type, as a weak symbol, as the __kcfi_typeid_ constants are.
+/// The type in the name keeps the symbols of two objects from disagreeing.
+static void emitKCFILinkFacts(llvm::Module &M, StringRef Prefix, StringRef Name,
+                              ArrayRef<llvm::ConstantInt *> TypeIds) {
+  if (!allowKCFIIdentifier(Name))
+    return;
+  for (const llvm::ConstantInt *TypeId : TypeIds) {
+    uint64_t Type = TypeId->getZExtValue();
+    std::string Symbol =
+        (Twine(Prefix) +
+         llvm::utohexstr(Type, /*LowerCase=*/true, /*Width=*/8) + "_" + Name)
+            .str();
+    M.appendModuleInlineAsm((".weak " + Twine(Symbol) + "\n.set " + Symbol +
+                             ", " + Twine(Type) + "\n")
+                                .str());
+  }
+}
+
 void CodeGenModule::emitKCFIFacts() {
   llvm::Module &M = getModule();
   for (llvm::Function &F : M.functions()) {
@@ -4033,21 +4052,36 @@ void CodeGenModule::emitKCFIFacts() {
       continue;
     FD = FD->getMostRecentDecl();
 
+    llvm::SetVector<llvm::ConstantInt *> TypeIds;
     if (F.isDeclarationForLinker()) {
+      if (F.use_empty())
+        continue;
       // A known import, dllimport or marked with an explicit default
       // visibility, is in another image, which also defines the functions
       // whose pointers a call to it hands back. A declaration that only
       // -fno-plt imports may be in this image.
-      if (F.use_empty() || !F.hasDLLImportStorageClass() ||
-          !(FD->hasAttr<DLLImportAttr>() ||
-            isMappedImportVisibility(FD->getLinkageAndVisibility(), LangOpts)))
-        continue;
-      F.setMetadata("kcfi_import", llvm::MDNode::get(VMContext, {}));
-      collectKCFIInflowTypes(FD, /*Params=*/false, KCFIDynamicTypes);
+      if (F.hasDLLImportStorageClass() &&
+          (FD->hasAttr<DLLImportAttr>() ||
+           isMappedImportVisibility(FD->getLinkageAndVisibility(), LangOpts))) {
+        F.setMetadata("kcfi_import", llvm::MDNode::get(VMContext, {}));
+        collectKCFIInflowTypes(FD, /*Params=*/false, KCFIDynamicTypes);
+      } else if (FD->isExternC()) {
+        // A C function may be foreign code that the linker brings into the
+        // image, which then opens these types.
+        collectKCFIInflowTypes(FD, /*Params=*/false, TypeIds);
+        emitKCFILinkFacts(M, "__kcfi_inflow_", F.getName(),
+                          TypeIds.getArrayRef());
+      }
     } else if (F.hasDLLExportStorageClass()) {
       // Another image may call an exported function with pointers to its own
       // functions.
       collectKCFIInflowTypes(FD, /*Params=*/true, KCFIDynamicTypes);
+    } else if (FD->isExternC()) {
+      // Foreign code that the linker brings into the image may call a C
+      // function with pointers to its own functions, and the linker then
+      // opens these types.
+      collectKCFIInflowTypes(FD, /*Params=*/true, TypeIds);
+      emitKCFILinkFacts(M, "__kcfi_param_", F.getName(), TypeIds.getArrayRef());
     }
   }
 
