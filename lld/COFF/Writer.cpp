@@ -309,9 +309,11 @@ struct KCFIPrefix {
   // and the marker from there, 12 or 16 bytes.
   uint32_t offset;
   uint32_t size;
+  // The offset in chunk of the function's entry.
+  uint32_t entry;
   // Whether the guard function table omits the function, whose type words
   // are then overwritten.
-  bool sealed;
+  bool sealed = false;
 };
 
 // The writer writes a SymbolTable result to a file.
@@ -361,7 +363,7 @@ private:
   void markSymbolsWithRelocations(ObjFile *file, SymbolRVASet &usedSymbols,
                                   SymbolRVASet &usedImports);
   void createGuardCFTables();
-  void findKCFIPrefixes(const SymbolRVASet &addressTakenSyms);
+  void findKCFIPrefixes();
   void sealKCFIPrefixes();
   void defineKCFICodeRange();
   void rewriteKCFIThunks();
@@ -431,9 +433,14 @@ private:
   // List of Arm64EC export thunks.
   std::vector<std::pair<Chunk *, Defined *>> exportThunks;
 
-  // The KCFI prefixes with a marker, found when the image is sealed, and the
-  // output section that holds them all, if there is one.
+  // The KCFI prefixes with a marker, found under -import-slots; by chunk, the
+  // entries they precede, each with the bytes at a page's start it must stay
+  // out of; whether the image is sealed; and the output section that holds
+  // them all, if there is one.
   std::vector<KCFIPrefix> kcfiPrefixes;
+  DenseMap<const Chunk *, SmallVector<std::pair<uint32_t, uint32_t>, 1>>
+      kcfiEntries;
+  bool kcfiSealed = false;
   OutputSection *kcfiCodeSec = nullptr;
 
   uint64_t fileSize;
@@ -1430,6 +1437,9 @@ void Writer::createMiscChunks() {
   if (config->safeSEH)
     createSEHTable();
 
+  if (config->importSlots)
+    findKCFIPrefixes();
+
   // Create /guard:cf tables if requested.
   createGuardCFTables();
 
@@ -1968,6 +1978,20 @@ void Writer::assignAddresses() {
       if (c->getEntryThunk())
         virtualSize += sizeof(uint32_t);
       virtualSize = alignTo(virtualSize, c->getAlignment());
+      // A KCFI check outside the code range reads no prefix before a target
+      // in a page's first bytes, which may follow an unmapped page, and treats
+      // it as foreign, so no entry of a prefixed function goes there. Padding
+      // by less than a page tries every place the alignment allows.
+      if (auto it = kcfiEntries.find(c); it != kcfiEntries.end()) {
+        auto inPageStart = [&] {
+          return llvm::any_of(it->second, [&](auto entry) {
+            return (rva + virtualSize + entry.first) % 4096 < entry.second;
+          });
+        };
+        for (uint32_t pad = c->getAlignment(); pad < 4096 && inPageStart();
+             pad += c->getAlignment())
+          virtualSize += c->getAlignment();
+      }
       c->setRVA(rva + virtualSize);
       virtualSize += c->getSize();
       if (c->hasData)
@@ -2541,9 +2565,15 @@ void Writer::createGuardCFTables() {
 
   // Under -import-slots, the image is sealed: a function the table omits has
   // its KCFI type overwritten, so that a KCFI check never accepts a function
-  // that Control Flow Guard would reject.
-  if (config->importSlots)
-    findKCFIPrefixes(addressTakenSyms);
+  // that Control Flow Guard would reject. Identical code folding can make one
+  // chunk the definition of several functions, and the table and the prefixes
+  // are both keyed by the chunk that remains, so a folded function stays
+  // unsealed if any function folded into it is listed.
+  if (config->importSlots) {
+    for (KCFIPrefix &p : kcfiPrefixes)
+      p.sealed = !addressTakenSyms.contains({p.chunk, p.entry});
+    kcfiSealed = true;
+  }
 
   // Ensure sections referenced in the gfid table are 16-byte aligned.
   for (const ChunkAndOffset &c : addressTakenSyms)
@@ -2606,12 +2636,9 @@ void Writer::createGuardCFTables() {
 }
 
 // Finds the KCFI prefix with a marker of every function the link keeps, which
-// clang labels with a static __cfi_ symbol, and decides which to seal: those
-// of functions the guard function table does not list. Identical code folding
-// can make one chunk the definition of several functions, and the table and
-// the prefixes are both keyed by the chunk that remains, so a folded function
-// stays unsealed if any function folded into it is listed.
-void Writer::findKCFIPrefixes(const SymbolRVASet &addressTakenSyms) {
+// clang labels with a static __cfi_ symbol, keyed by the chunk that remains
+// after identical code folding.
+void Writer::findKCFIPrefixes() {
   DenseSet<std::pair<SectionChunk *, uint32_t>> seen;
   for (ObjFile *file : ctx.objFileInstances) {
     SmallVector<DefinedRegular *, 0> labels, entries;
@@ -2663,8 +2690,14 @@ void Writer::findKCFIPrefixes(const SymbolRVASet &addressTakenSyms) {
       }
       if (!seen.insert({sc, off}).second)
         continue;
-      bool sealed = !addressTakenSyms.contains({sc, (*it)->getValue()});
-      kcfiPrefixes.push_back({sc, off, size, sealed});
+      // A check outside the code range reads up to 12 bytes before the end of
+      // the marker pattern, which a patchable prefix moves further from the
+      // entry, and reads nothing before a target in the page's first
+      // PowerOf2Ceil of that many bytes.
+      uint32_t entry = (*it)->getValue();
+      uint32_t patchable = entry - off - size;
+      kcfiPrefixes.push_back({sc, off, size, entry});
+      kcfiEntries[sc].push_back({entry, PowerOf2Ceil(patchable + 12)});
     }
   }
 }
@@ -2691,7 +2724,7 @@ void Writer::sealKCFIPrefixes() {
 // weak default, __llvm_code_empty, a byte in a COMDAT, and so an empty range,
 // unless every prefix is in one output section.
 void Writer::defineKCFICodeRange() {
-  if (kcfiPrefixes.empty())
+  if (!kcfiSealed || kcfiPrefixes.empty())
     return;
   OutputSection *sec = ctx.getOutputSection(kcfiPrefixes.front().chunk);
   for (const KCFIPrefix &p : kcfiPrefixes)

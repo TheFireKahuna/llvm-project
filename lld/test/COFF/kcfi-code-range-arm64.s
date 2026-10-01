@@ -2,14 +2,15 @@
 
 ## On ARM64, as on x86-64, the linker bounds the output section that holds the
 ## KCFI prefixes of an image it seals with __llvm_code_start and
-## __llvm_code_end: .text holds f's chunk at 0x1000 and main's, 8 bytes, at
-## 0x1010.
+## __llvm_code_end: f's chunk is at 0x1010, since its entry may not be in a
+## page's first 16 bytes, and main's, 8 bytes, at 0x1020. The range starts at
+## .text's first chunk, the object's empty .text section, at 0x1000.
 
 # RUN: llvm-mc -triple aarch64-windows-msvc %s -filetype=obj -o %t.obj
 # RUN: lld-link %t.obj -machine:arm64 -guard:cf -import-slots -entry:main \
 # RUN:   -out:%t.exe
 # RUN: llvm-objdump -s --section=.data %t.exe | FileCheck %s --check-prefix=SEALED
-# SEALED: {{^ [0-9a-f]+}} 00100040 01000000 18100040 01000000
+# SEALED: {{^ [0-9a-f]+}} 00100040 01000000 28100040 01000000
 
 # RUN: lld-link %t.obj -machine:arm64 -guard:cf -entry:main -out:%t.noslots.exe
 # RUN: llvm-objdump -s --section=.data %t.noslots.exe | FileCheck %s --check-prefix=EMPTY

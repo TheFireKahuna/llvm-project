@@ -18,7 +18,7 @@
 # CHECK-NEXT: VirtualSize: 0x[[#%X,SIZE:]]
 
 ## listed is in the guard function table, so type 0x11111111 has an unsealed
-## function and tests the range.
+## function and tests the range, all of .text.
 # CHECK:      <__llvm_kcfi_check_11111111>:
 # CHECK-NEXT:   adrp x16, 0x140001000
 # CHECK-NEXT:   add x16, x16, #0x0

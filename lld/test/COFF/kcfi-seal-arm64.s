@@ -11,9 +11,12 @@
 
 ## direct, called only directly, is sealed; listed, in the table, keeps both
 ## of its type words.
-# CHECK:      140001000 0f1f8006 5a1c07b8 00000000 c0035fd6
-# CHECK-NEXT: 140001010 0f1f4000 0f1f8006 5a1c07b8 22222222
-# CHECK-NEXT: 140001020 c0035fd6
+## direct's entry would be at page offset 12, where a KCFI check reads no
+## prefix, so its chunk starts 16 bytes later.
+# CHECK:      140001000
+# CHECK-NEXT: 140001010 0f1f8006 5a1c07b8 00000000 c0035fd6
+# CHECK-NEXT: 140001020 0f1f4000 0f1f8006 5a1c07b8 22222222
+# CHECK-NEXT: 140001030 c0035fd6
 
         .globl @feat.00
 @feat.00 = 0x800
