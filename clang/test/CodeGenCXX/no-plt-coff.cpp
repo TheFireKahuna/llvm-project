@@ -1,18 +1,19 @@
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fno-plt \
-// RUN:   -fcxx-exceptions -fexceptions -emit-llvm -o - %s \
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fno-auto-import \
+// RUN:   -fno-plt -fcxx-exceptions -fexceptions -emit-llvm -o - %s \
 // RUN:   | FileCheck --check-prefixes=CHECK,ITANIUM %s
-// RUN: %clang_cc1 -triple aarch64-pc-windows-ntposix -fno-plt \
-// RUN:   -fcxx-exceptions -fexceptions -emit-llvm -o - %s \
+// RUN: %clang_cc1 -triple aarch64-pc-windows-ntposix -fno-auto-import \
+// RUN:   -fno-plt -fcxx-exceptions -fexceptions -emit-llvm -o - %s \
 // RUN:   | FileCheck --check-prefixes=CHECK,NTPOSIX %s
 // RUN: %clang_cc1 -triple x86_64-pc-windows-msvc -fno-plt -emit-llvm -o - %s \
 // RUN:   -DNO_ITANIUM | FileCheck %s
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fcxx-exceptions \
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fno-auto-import \
+// RUN:   -fcxx-exceptions \
 // RUN:   -fexceptions -emit-llvm -o - %s | FileCheck --check-prefix=PLT %s
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fno-plt \
-// RUN:   -fvisibility=hidden -emit-llvm -o - %s -DNO_ITANIUM \
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fno-auto-import \
+// RUN:   -fno-plt -fvisibility=hidden -emit-llvm -o - %s -DNO_ITANIUM \
 // RUN:   | FileCheck %s
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fno-plt \
-// RUN:   -fvisibility=hidden -fapply-global-visibility-to-externs \
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fno-auto-import \
+// RUN:   -fno-plt -fvisibility=hidden -fapply-global-visibility-to-externs \
 // RUN:   -emit-llvm -o - %s -DNO_ITANIUM | FileCheck --check-prefix=EXTERNS %s
 
 // Under -fno-plt on COFF a call to a function the translation unit does not

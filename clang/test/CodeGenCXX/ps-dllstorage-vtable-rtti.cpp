@@ -8,7 +8,7 @@
 /// are defined (the TU containing the definition of the Itanium C++ ABI "key
 /// function") and must import them in other modules where they are referenced.
 
-// RUN: %clang_cc1 -I%S -fdeclspec -triple x86_64-unknown-windows-itanium -emit-llvm -o - %s -fhalf-no-semantic-interposition \
+// RUN: %clang_cc1 -I%S -fdeclspec -triple x86_64-unknown-windows-itanium -fno-auto-import -emit-llvm -o - %s -fhalf-no-semantic-interposition \
 // RUN:   | FileCheck %s -check-prefix=WI
 // RUN: %clang_cc1 -I%S -fdeclspec -triple x86_64-scei-windows-itanium    -emit-llvm -o - %s -fhalf-no-semantic-interposition \
 // RUN:   | FileCheck %s --check-prefixes=PS
