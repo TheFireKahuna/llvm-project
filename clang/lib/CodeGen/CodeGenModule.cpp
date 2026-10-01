@@ -2434,6 +2434,26 @@ void CodeGenModule::setDLLImportDLLExport(llvm::GlobalValue *GV,
   setDLLImportDLLExport(GV, D);
 }
 
+bool CodeGenModule::shouldMapVisibilityToDLLImport(const NamedDecl *D) const {
+  // Only COFF has an import table for the storage class to name. A vtable or
+  // a type_info object, named by its class, follows rules of its own, and a
+  // declaration marked dllexport is defined in this image.
+  if (!getTriple().isOSBinFormatCOFF() || !isa<FunctionDecl, VarDecl>(D) ||
+      D->hasAttr<DLLExportAttr>())
+    return false;
+  // A native thread-local variable cannot be imported.
+  if (const auto *VD = dyn_cast<VarDecl>(D))
+    if (VD->getTLSKind() != VarDecl::TLS_None)
+      return false;
+  // An explicit default visibility says that the entity lives in a shared
+  // library, as it says on a definition that the mapping exports. An implicit
+  // visibility says nothing about a declaration, since every plain
+  // declaration has it.
+  LinkageInfo LV = D->getLinkageAndVisibility();
+  return getLangOpts().hasDefaultVisibilityExportMapping() &&
+         LV.getVisibility() == DefaultVisibility && LV.isVisibilityExplicit();
+}
+
 void CodeGenModule::setDLLImportDLLExport(llvm::GlobalValue *GV,
                                           const NamedDecl *D) const {
   if (D && D->isExternallyVisible()) {
@@ -2443,6 +2463,14 @@ void CodeGenModule::setDLLImportDLLExport(llvm::GlobalValue *GV,
               shouldMapVisibilityToDLLExport(D)) &&
              !GV->isDeclarationForLinker())
       GV->setDLLStorageClass(llvm::GlobalVariable::DLLExportStorageClass);
+    else if (shouldMapVisibilityToDLLImport(D)) {
+      // An extern_weak declaration may resolve to zero, which an import
+      // cannot, and a definition may turn up after the declaration.
+      if (!GV->isDeclarationForLinker())
+        GV->setDLLStorageClass(llvm::GlobalVariable::DefaultStorageClass);
+      else if (!GV->hasExternalWeakLinkage())
+        GV->setDLLStorageClass(llvm::GlobalVariable::DLLImportStorageClass);
+    }
   }
 }
 
@@ -5746,7 +5774,8 @@ bool CodeGenModule::shouldDropDLLAttribute(const Decl *D,
     return false;
   const Decl *MRD = D->getMostRecentDecl();
   return (((SC == llvm::GlobalValue::DLLImportStorageClass &&
-            !MRD->hasAttr<DLLImportAttr>()) ||
+            !MRD->hasAttr<DLLImportAttr>() &&
+            !shouldMapVisibilityToDLLImport(cast<NamedDecl>(MRD))) ||
            (SC == llvm::GlobalValue::DLLExportStorageClass &&
             !MRD->hasAttr<DLLExportAttr>())) &&
           !shouldMapVisibilityToDLLExport(cast<NamedDecl>(MRD)));
