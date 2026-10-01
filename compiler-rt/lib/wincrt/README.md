@@ -17,8 +17,8 @@ The builtins define the bounds of the `.CRT$X??` tables, `__dso_handle` and
 | --- | --- | --- |
 | Entry points | `mainCRTStartup`, `wmainCRTStartup`, `WinMainCRTStartup`, `wWinMainCRTStartup`, `_DllMainCRTStartup`, a default `DllMain`, `_CRT_INIT` | `entry_*.cpp` |
 | Start-up | `.CRT$XI*` C initializers and `.CRT$XC*` constructors, the Universal CRT's arguments and environment, a program's `_matherr`, the unhandled-exception filter | `init.cpp` |
-| Termination | `__cxa_atexit`, `__cxa_finalize`, `__cxa_at_quick_exit`, the `.CRT$XP*` pre-terminators and `.CRT$XT*` terminators, `_is_c_termination_complete` | `cxa_atexit.cpp`, `init.cpp` |
-| Thread-local destructors | `__cxa_thread_atexit_impl`, `__cxa_thread_finalize`, a TLS callback | `cxa_thread_atexit.cpp` |
+| Termination | `__cxa_atexit`, `__llvm_kcfi_cxa_atexit`, `__cxa_finalize`, `__cxa_at_quick_exit`, the `.CRT$XP*` pre-terminators and `.CRT$XT*` terminators, `_is_c_termination_complete` | `cxa_atexit.cpp`, `init.cpp` |
+| Thread-local destructors | `__cxa_thread_atexit_impl`, `__llvm_kcfi_cxa_thread_atexit_impl`, `__cxa_thread_finalize`, a TLS callback | `cxa_thread_atexit.cpp` |
 | C registration | `atexit`, `_onexit`, `onexit`, `at_quick_exit` | `atexit.cpp` |
 | Pure virtual calls | `_purecall`, over the Universal CRT's handler | `purecall.cpp` |
 | Stack protector | `__security_cookie`, `__security_init_cookie`, `__security_check_cookie`, `__report_gsfailure` | `security.cpp` |
@@ -61,6 +61,12 @@ its image loaded. Compiled into the shared C++ runtime with
 `WINCRT_SHARED_CXX_RUNTIME`, the registries serve every image of the process;
 compiled into wincrt, they have local names that alternate names select only
 in an image that does not import the shared ones.
+
+Under kcfi, clang's destructors carry the type `void(void *)` salted
+`"__cxa_dtor"`, while a function that any other caller passes to
+`__cxa_atexit` has the plain type. Clang registers its destructors through the
+`__llvm_kcfi_` entry points instead, which take the same arguments, and each
+entry is called through the type of the entry point that registered it.
 
 ## The segment heap
 

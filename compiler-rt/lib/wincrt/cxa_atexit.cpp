@@ -54,6 +54,8 @@ constexpr unsigned MaxChunks = 26;
 struct Entry {
   uintptr_t Dtor; // encoded
   void *Obj;
+  // Twice the global sequence number, plus one if Dtor was registered as
+  // carrying the salted destructor type.
   uint64_t Seq;
   uint32_t Slot;
   uint32_t Next;
@@ -366,6 +368,7 @@ void drain(Registry &R, void *Dso, bool Execute, bool Reference) {
       continue;
     Destructor Dtor = wincrt::decodePointer(E->Dtor);
     void *Obj = E->Obj;
+    bool Salted = E->Seq & 1;
     void *Key = load(&Best->Dso);
     pushHead(&Best->Free, E);
     if (!Execute)
@@ -374,7 +377,7 @@ void drain(Registry &R, void *Dso, bool Execute, bool Reference) {
       Code.hold(&R == &Quick ? Obj : reinterpret_cast<void *>(Dtor));
       Data.hold(Key == &NoDso ? nullptr : Key);
     }
-    wincrt::invokeCallback(Dtor, Obj);
+    wincrt::invokeCallback(Dtor, Obj, Salted);
   }
 }
 
@@ -435,7 +438,8 @@ bool postToken(Registry &R) {
   return true;
 }
 
-int append(Registry &R, Destructor Function, void *Object, void *Dso) {
+int append(Registry &R, Destructor Function, void *Object, void *Dso,
+           bool Salted) {
   if (!Function || !postToken(R))
     return -1;
   Image *I = claimImage(R, Dso ? Dso : &NoDso);
@@ -446,7 +450,8 @@ int append(Registry &R, Destructor Function, void *Object, void *Dso) {
     return -1;
   E->Dtor = wincrt::encodePointer(Function);
   E->Obj = Object;
-  __atomic_store_n(&E->Seq, __atomic_add_fetch(&Sequence, 1, __ATOMIC_RELAXED),
+  __atomic_store_n(&E->Seq,
+                   __atomic_add_fetch(&Sequence, 2, __ATOMIC_RELAXED) | Salted,
                    __ATOMIC_RELAXED);
   pushHead(&I->Live, E);
   return 0;
@@ -458,7 +463,13 @@ extern "C" {
 
 int __cdecl WINCRT_LIFETIME(__cxa_atexit)(void (*Function)(void *),
                                           void *Object, void *Dso) {
-  return append(Normal, Function, Object, Dso);
+  return append(Normal, Function, Object, Dso, false);
+}
+
+// Clang registers its destructors here, since they carry the salted type.
+int __cdecl WINCRT_LIFETIME(__llvm_kcfi_cxa_atexit)(void (*Function)(void *),
+                                                    void *Object, void *Dso) {
+  return append(Normal, Function, Object, Dso, true);
 }
 
 void __cdecl WINCRT_LIFETIME(__cxa_finalize)(void *Dso) {
@@ -476,7 +487,7 @@ int WINCRT_LIFETIME(__cxa_at_quick_exit)(void (*Function)(void), void *Dso) {
   if (!Function)
     return -1;
   return append(Quick, reinterpret_cast<Destructor>(callFunction),
-                reinterpret_cast<void *>(Function), Dso);
+                reinterpret_cast<void *>(Function), Dso, true);
 }
 
 // Called by the executable's start-up only, and before any constructor,

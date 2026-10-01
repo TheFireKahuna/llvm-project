@@ -32,13 +32,19 @@ struct DtorEntry {
   void *Dso;
 };
 
-constexpr size_t BlockEntries = 32;
+constexpr uint32_t BlockEntries = 32;
 
 struct DtorBlock {
   DtorEntry Entries[BlockEntries];
   DtorBlock *Next;
-  size_t Count;
+  uint32_t Count;
+  // Bit I is set if Entries[I] was registered as carrying the salted
+  // destructor type. A bit beside the count, rather than a field in every
+  // entry, keeps the block's size.
+  uint32_t Salted;
 };
+
+static_assert(BlockEntries <= 32, "DtorBlock::Salted has a bit per entry");
 
 // A reference to an image, which a thread holds while it has a destructor
 // in that image or registered by it. The executable, which is never
@@ -124,9 +130,11 @@ void drainAll() {
       wincrt::crtFree(Block);
       continue;
     }
-    DtorEntry Entry = Block->Entries[--Block->Count];
+    uint32_t I = --Block->Count;
+    DtorEntry Entry = Block->Entries[I];
     if (Entry.Dtor)
-      wincrt::invokeCallback(wincrt::decodePointer(Entry.Dtor), Entry.Obj);
+      wincrt::invokeCallback(wincrt::decodePointer(Entry.Dtor), Entry.Obj,
+                             Block->Salted >> I & 1);
   }
 }
 
@@ -135,18 +143,21 @@ void drainAll() {
 void drainImage(void *Dso) {
   for (;;) {
     DtorEntry Entry = {};
+    bool Salted = false;
     for (DtorBlock *Block = Blocks; Block && !Entry.Dtor; Block = Block->Next) {
-      for (size_t I = Block->Count; I && !Entry.Dtor; --I) {
+      for (uint32_t I = Block->Count; I && !Entry.Dtor; --I) {
         DtorEntry &Candidate = Block->Entries[I - 1];
         if (Candidate.Dtor && Candidate.Dso == Dso) {
           Entry = Candidate;
+          Salted = Block->Salted >> (I - 1) & 1;
           Candidate.Dtor = 0;
         }
       }
     }
     if (!Entry.Dtor)
       return;
-    wincrt::invokeCallback(wincrt::decodePointer(Entry.Dtor), Entry.Obj);
+    wincrt::invokeCallback(wincrt::decodePointer(Entry.Dtor), Entry.Obj,
+                           Salted);
   }
 }
 
@@ -179,6 +190,26 @@ void NTAPI tlsCallback(void *, DWORD Reason, void *) {
     finalizeThread(true);
 }
 
+int append(Destructor Function, void *Object, void *Dso, bool Salted) {
+  if (!Function)
+    return -1;
+  retain(reinterpret_cast<void *>(Function));
+  retain(Dso);
+  DtorBlock *Block = Blocks;
+  if (!Block || Block->Count == BlockEntries) {
+    auto *Fresh = static_cast<DtorBlock *>(allocate(sizeof(DtorBlock)));
+    Fresh->Next = Block;
+    Blocks = Block = Fresh;
+  }
+  // A slot that drainAll emptied can be filled again, so the bit is written
+  // either way.
+  uint32_t Bit = uint32_t(1) << Block->Count;
+  Block->Salted = Salted ? Block->Salted | Bit : Block->Salted & ~Bit;
+  Block->Entries[Block->Count++] = {wincrt::encodePointer(Function), Object,
+                                    Dso};
+  return 0;
+}
+
 } // namespace
 
 // Not the first callback of the directory, which is left to the program.
@@ -190,19 +221,14 @@ extern "C" {
 
 int WINCRT_LIFETIME(__cxa_thread_atexit_impl)(void (*Function)(void *),
                                               void *Object, void *Dso) {
-  if (!Function)
-    return -1;
-  retain(reinterpret_cast<void *>(Function));
-  retain(Dso);
-  DtorBlock *Block = Blocks;
-  if (!Block || Block->Count == BlockEntries) {
-    auto *Fresh = static_cast<DtorBlock *>(allocate(sizeof(DtorBlock)));
-    Fresh->Next = Block;
-    Blocks = Block = Fresh;
-  }
-  Block->Entries[Block->Count++] = {wincrt::encodePointer(Function), Object,
-                                    Dso};
-  return 0;
+  return append(Function, Object, Dso, false);
+}
+
+// The C++ runtime's __llvm_kcfi_cxa_thread_atexit, which clang registers its
+// destructors with, since they carry the salted type.
+int WINCRT_LIFETIME(__llvm_kcfi_cxa_thread_atexit_impl)(
+    void (*Function)(void *), void *Object, void *Dso) {
+  return append(Function, Object, Dso, true);
 }
 
 void WINCRT_LIFETIME(__cxa_thread_finalize)(void *Dso) {

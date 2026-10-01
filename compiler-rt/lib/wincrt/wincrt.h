@@ -66,6 +66,7 @@ void __cdecl __security_init_cookie(void);
 
 #ifndef WINCRT_SHARED_CXX_RUNTIME
 int __cdecl __cxa_atexit(void (*)(void *), void *, void *);
+int __cdecl __llvm_kcfi_cxa_atexit(void (*)(void *), void *, void *);
 int __cxa_at_quick_exit(void (*)(void), void *);
 int __cxa_thread_atexit_impl(void (*)(void *), void *, void *);
 // Runs the calling thread's thread-local destructors: those of one image,
@@ -81,11 +82,16 @@ int __wincrt_detach_image(void *, int);
 
 WINCRT_LIFETIME_API int __cdecl WINCRT_LIFETIME(__cxa_atexit)(void (*)(void *),
                                                               void *, void *);
+WINCRT_LIFETIME_API int __cdecl
+WINCRT_LIFETIME(__llvm_kcfi_cxa_atexit)(void (*)(void *), void *, void *);
 WINCRT_LIFETIME_API void __cdecl WINCRT_LIFETIME(__cxa_finalize)(void *);
 WINCRT_LIFETIME_API int WINCRT_LIFETIME(__cxa_at_quick_exit)(void (*)(void),
                                                              void *);
 WINCRT_LIFETIME_API int
     WINCRT_LIFETIME(__cxa_thread_atexit_impl)(void (*)(void *), void *, void *);
+WINCRT_LIFETIME_API int
+    WINCRT_LIFETIME(__llvm_kcfi_cxa_thread_atexit_impl)(void (*)(void *),
+                                                        void *, void *);
 WINCRT_LIFETIME_API void WINCRT_LIFETIME(__cxa_thread_finalize)(void *);
 WINCRT_LIFETIME_API void
     WINCRT_LIFETIME(__wincrt_register_executable)(void (*)(void));
@@ -94,10 +100,14 @@ WINCRT_LIFETIME_API int WINCRT_LIFETIME(__wincrt_detach_image)(void *, int);
 
 #ifndef WINCRT_SHARED_CXX_RUNTIME
 WINCRT_ALTERNATENAME(__cxa_atexit, __wincrt_local___cxa_atexit)
+WINCRT_ALTERNATENAME(__llvm_kcfi_cxa_atexit,
+                     __wincrt_local___llvm_kcfi_cxa_atexit)
 WINCRT_ALTERNATENAME(__cxa_finalize, __wincrt_local___cxa_finalize)
 WINCRT_ALTERNATENAME(__cxa_at_quick_exit, __wincrt_local___cxa_at_quick_exit)
 WINCRT_ALTERNATENAME(__cxa_thread_atexit_impl,
                      __wincrt_local___cxa_thread_atexit_impl)
+WINCRT_ALTERNATENAME(__llvm_kcfi_cxa_thread_atexit_impl,
+                     __wincrt_local___llvm_kcfi_cxa_thread_atexit_impl)
 WINCRT_ALTERNATENAME(__cxa_thread_finalize,
                      __wincrt_local___cxa_thread_finalize)
 WINCRT_ALTERNATENAME(__wincrt_register_executable,
@@ -245,10 +255,11 @@ inline Destructor decodePointer(uintptr_t Value) {
       __builtin_rotateleft64(Value, Cookie & 63) ^ Cookie);
 }
 
-// Under kcfi, the destructors that reach the registries carry the type
-// void(void *) salted "__cxa_dtor", and a call to one must use the same
-// type. The attribute is accepted only in C, but clang applies it in C++
-// too.
+// Under kcfi, the destructors that clang registers, through the
+// __llvm_kcfi_ entry points, carry the type void(void *) salted
+// "__cxa_dtor", and a call to one must use the same type. A function
+// registered through the Itanium ABI's entry points has the plain type. The
+// attribute is accepted only in C, but clang applies it in C++ too.
 #if __has_feature(kcfi)
 #define WINCRT_DTOR_SALT __attribute__((cfi_salt("__cxa_dtor")))
 #else
@@ -260,10 +271,14 @@ typedef void (*SaltedDestructor)(void *) WINCRT_DTOR_SALT;
 #pragma clang diagnostic pop
 
 // A registered destructor that exits by an exception terminates the program
-// ([basic.start.term], [support.start.term]).
-inline void invokeCallback(Destructor Function, void *Object) {
+// ([basic.start.term], [support.start.term]). Salted says whether Function
+// was registered as carrying the salted type.
+inline void invokeCallback(Destructor Function, void *Object, bool Salted) {
   __try {
-    reinterpret_cast<SaltedDestructor>(Function)(Object);
+    if (Salted)
+      reinterpret_cast<SaltedDestructor>(Function)(Object);
+    else
+      Function(Object);
   } __except (terminateFilter(GetExceptionInformation())) {
     // The filter never selects this handler.
     __builtin_unreachable();

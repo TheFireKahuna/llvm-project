@@ -7,9 +7,11 @@
 //===----------------------------------------------------------------------===//
 //
 // vcruntime defines these; the Universal CRT exports only the table
-// primitives. Registering through __cxa_atexit keeps C functions in one order
-// with C++ static destructors, and ties each to the image that registered it,
-// so that the image's unloading runs it.
+// primitives. Registering through __cxa_atexit's registry keeps C functions in
+// one order with C++ static destructors, and ties each to the image that
+// registered it, so that the image's unloading runs it. The adaptors carry the
+// salted destructor type, as clang's destructors do, and are registered as
+// clang registers those.
 //
 //===----------------------------------------------------------------------===//
 
@@ -37,14 +39,15 @@ extern "C" {
 int __cdecl atexit(void(__cdecl *Function)(void)) {
   if (!Function)
     return -1;
-  return __cxa_atexit(reinterpret_cast<Destructor>(callFunction),
-                      reinterpret_cast<void *>(Function), &__dso_handle);
+  return __llvm_kcfi_cxa_atexit(reinterpret_cast<Destructor>(callFunction),
+                                reinterpret_cast<void *>(Function),
+                                &__dso_handle);
 }
 
 _onexit_t __cdecl _onexit(_onexit_t Function) {
   if (!Function ||
-      __cxa_atexit(reinterpret_cast<Destructor>(callOnexit),
-                   reinterpret_cast<void *>(Function), &__dso_handle))
+      __llvm_kcfi_cxa_atexit(reinterpret_cast<Destructor>(callOnexit),
+                             reinterpret_cast<void *>(Function), &__dso_handle))
     return nullptr;
   return Function;
 }
