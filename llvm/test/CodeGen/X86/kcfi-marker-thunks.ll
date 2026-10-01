@@ -3,15 +3,22 @@
 ; RUN:   | llvm-readobj --symbols - | FileCheck %s --check-prefix=SYMS
 ; RUN: llc -mtriple=x86_64-unknown-windows-itanium -filetype=obj < %s \
 ; RUN:   | llvm-readobj -r --symbols - | FileCheck %s --check-prefix=RANGE
+; RUN: llc -mtriple=x86_64-unknown-windows-itanium -filetype=obj < %s \
+; RUN:   | llvm-objdump -d - | FileCheck %s --check-prefix=BYTES
 
 ;; With the kcfi-marker module flag, a call with a KCFI type goes through a
 ;; per-type thunk, a COMDAT that compares the 8 bytes before the target, the
 ;; end of the marker, the opcode of the move and the type, and on a mismatch
 ;; continues into a weak alias of the routine that fails fast if the target
-;; carries the marker. On a match, a target inside the code range, whose bounds
-;; are weak aliases of one byte in a COMDAT, is taken directly, and any other continues
-;; into the guard function. The dispatch thunk takes the target in RAX and
-;; jumps to it, and the check thunk takes it in RCX and returns.
+;; carries the marker. The thunk tests the code range, whose bounds are weak
+;; aliases of one byte in a COMDAT, first: a matching target inside it is taken
+;; directly. A target outside it is compared only at page offset 16 or more,
+;; and goes to the mismatch routine unread otherwise, since the bytes before
+;; it may be unmapped; a matching one continues into the guard function. The
+;; open routines take the same test before reading the marker, and treat a
+;; target in a page's first 16 bytes as foreign. The dispatch thunk takes the
+;; target in RAX and jumps to it, and the check thunk takes it in RCX and
+;; returns.
 ;; The module has no cfguard flag, as under -mguard=none, and the thunks are
 ;; the same as with one. A call marked kcfi_local, whose every target is in
 ;; the image, goes through a local thunk, which fails fast for a target outside
@@ -72,25 +79,33 @@ define x86_64_sysvcc void @f5(ptr %p) nounwind {
 ; CHECK:       .globl __llvm_kcfi_dispatch_12345678
 ; CHECK-NEXT:  .p2align 4
 ; CHECK-NEXT:  __llvm_kcfi_dispatch_12345678:
+; CHECK-NEXT:    leaq __llvm_code_start(%rip), %r10
+; CHECK-NEXT:    cmpq %r10, %rax
+; CHECK-NEXT:    jb [[OUT:.Ltmp[0-9]+]]
+; CHECK-NEXT:    leaq __llvm_code_end(%rip), %r10
+; CHECK-NEXT:    cmpq %r10, %rax
+; CHECK-NEXT:    jae [[OUT]]
 ; CHECK-NEXT:    movabsq $1311768467969322430, %r11 # imm = 0x12345678B8DEADBE
 ; CHECK-NEXT:    cmpq %r11, -8(%rax)
 ; CHECK-NEXT:    jne __llvm_kcfi_mismatch_12345678
-; CHECK-NEXT:    leaq __llvm_code_start(%rip), %r10
-; CHECK-NEXT:    cmpq %r10, %rax
-; CHECK-NEXT:    jb [[GUARD:.Ltmp[0-9]+]]
-; CHECK-NEXT:    leaq __llvm_code_end(%rip), %r10
-; CHECK-NEXT:    cmpq %r10, %rax
-; CHECK-NEXT:    jae [[GUARD]]
 ; CHECK-NEXT:    jmpq *%rax
-; CHECK-NEXT:  [[GUARD]]:
+; CHECK-NEXT:  [[OUT]]:
+; CHECK-NEXT:    testl $4080, %eax
+; CHECK-NEXT:    je __llvm_kcfi_mismatch_12345678
+; CHECK-NEXT:    movabsq $1311768467969322430, %r11 # imm = 0x12345678B8DEADBE
+; CHECK-NEXT:    cmpq %r11, -8(%rax)
+; CHECK-NEXT:    jne __llvm_kcfi_mismatch_12345678
 ; CHECK-NEXT:    jmpq *__guard_dispatch_icall_fptr(%rip)
 ; CHECK-NEXT:  .section .text,"xr",discard,__llvm_kcfi_open
 ; CHECK:       .globl __llvm_kcfi_open
 ; CHECK-NEXT:  .p2align 4
 ; CHECK-NEXT:  __llvm_kcfi_open:
+; CHECK-NEXT:    testl $4080, %eax
+; CHECK-NEXT:    je [[FOREIGN:.Ltmp[0-9]+]]
 ; CHECK-NEXT:    movabsq $-5125468290327503089, %r11 # imm = 0xB8DEADBEEF801F0F
 ; CHECK-NEXT:    cmpq %r11, -12(%rax)
 ; CHECK-NEXT:    je [[TRAP:.Ltmp[0-9]+]]
+; CHECK-NEXT:  [[FOREIGN]]:
 ; CHECK-NEXT:    jmpq *__guard_dispatch_icall_fptr(%rip)
 ; CHECK-NEXT:  [[TRAP]]:
 ; CHECK-NEXT:    movl $64, %ecx
@@ -99,23 +114,33 @@ define x86_64_sysvcc void @f5(ptr %p) nounwind {
 ; CHECK:       .weak __llvm_kcfi_check_mismatch_00000010
 ; CHECK-NEXT:  __llvm_kcfi_check_mismatch_00000010 = __llvm_kcfi_check_open
 ; CHECK-NEXT:  .section .text,"xr",discard,__llvm_kcfi_check_00000010
-; CHECK:       __llvm_kcfi_check_00000010:
+; CHECK:       .p2align 4
+; CHECK-NEXT:  __llvm_kcfi_check_00000010:
+; CHECK-NEXT:    leaq __llvm_code_start(%rip), %r10
+; CHECK-NEXT:    cmpq %r10, %rcx
+; CHECK-NEXT:    jb [[OUT:.Ltmp[0-9]+]]
+; CHECK-NEXT:    leaq __llvm_code_end(%rip), %r10
+; CHECK-NEXT:    cmpq %r10, %rcx
+; CHECK-NEXT:    jae [[OUT]]
 ; CHECK-NEXT:    movabsq $71821077950, %r11 # imm = 0x10B8DEADBE
 ; CHECK-NEXT:    cmpq %r11, -8(%rcx)
 ; CHECK-NEXT:    jne __llvm_kcfi_check_mismatch_00000010
-; CHECK-NEXT:    leaq __llvm_code_start(%rip), %r10
-; CHECK-NEXT:    cmpq %r10, %rcx
-; CHECK-NEXT:    jb [[GUARD:.Ltmp[0-9]+]]
-; CHECK-NEXT:    leaq __llvm_code_end(%rip), %r10
-; CHECK-NEXT:    cmpq %r10, %rcx
-; CHECK-NEXT:    jae [[GUARD]]
 ; CHECK-NEXT:    retq
-; CHECK-NEXT:  [[GUARD]]:
+; CHECK-NEXT:  [[OUT]]:
+; CHECK-NEXT:    testl $4080, %ecx
+; CHECK-NEXT:    je __llvm_kcfi_check_mismatch_00000010
+; CHECK-NEXT:    movabsq $71821077950, %r11 # imm = 0x10B8DEADBE
+; CHECK-NEXT:    cmpq %r11, -8(%rcx)
+; CHECK-NEXT:    jne __llvm_kcfi_check_mismatch_00000010
 ; CHECK-NEXT:    jmpq *__guard_check_icall_fptr(%rip)
-; CHECK:       __llvm_kcfi_check_open:
+; CHECK:       .p2align 4
+; CHECK-NEXT:  __llvm_kcfi_check_open:
+; CHECK-NEXT:    testl $4080, %ecx
+; CHECK-NEXT:    je [[FOREIGN:.Ltmp[0-9]+]]
 ; CHECK-NEXT:    movabsq $-5125468290327503089, %r11 # imm = 0xB8DEADBEEF801F0F
 ; CHECK-NEXT:    cmpq %r11, -12(%rcx)
 ; CHECK-NEXT:    je [[TRAP:.Ltmp[0-9]+]]
+; CHECK-NEXT:  [[FOREIGN]]:
 ; CHECK-NEXT:    jmpq *__guard_check_icall_fptr(%rip)
 ; CHECK-NEXT:  [[TRAP]]:
 ; CHECK-NEXT:    movl $64, %ecx
@@ -123,38 +148,50 @@ define x86_64_sysvcc void @f5(ptr %p) nounwind {
 
 ;; The local thunks share the types' mismatch routines and open routines.
 ; CHECK:       .section .text,"xr",discard,__llvm_kcfi_local_dispatch_12345678
-; CHECK:       __llvm_kcfi_local_dispatch_12345678:
-; CHECK-NEXT:    movabsq $1311768467969322430, %r11 # imm = 0x12345678B8DEADBE
-; CHECK-NEXT:    cmpq %r11, -8(%rax)
-; CHECK-NEXT:    jne __llvm_kcfi_mismatch_12345678
+; CHECK:       .p2align 4
+; CHECK-NEXT:  __llvm_kcfi_local_dispatch_12345678:
 ; CHECK-NEXT:    leaq __llvm_code_start(%rip), %r10
 ; CHECK-NEXT:    leaq __llvm_code_end(%rip), %r11
 ; CHECK-NEXT:    cmpq %r10, %rax
-; CHECK-NEXT:    jb [[GUARD:.Ltmp[0-9]+]]
+; CHECK-NEXT:    jb [[OUT:.Ltmp[0-9]+]]
 ; CHECK-NEXT:    cmpq %r11, %rax
-; CHECK-NEXT:    jae [[GUARD]]
+; CHECK-NEXT:    jae [[OUT]]
+; CHECK-NEXT:    movabsq $1311768467969322430, %r11 # imm = 0x12345678B8DEADBE
+; CHECK-NEXT:    cmpq %r11, -8(%rax)
+; CHECK-NEXT:    jne __llvm_kcfi_mismatch_12345678
 ; CHECK-NEXT:    jmpq *%rax
-; CHECK-NEXT:  [[GUARD]]:
+; CHECK-NEXT:  [[OUT]]:
 ; CHECK-NEXT:    cmpq %r11, %r10
 ; CHECK-NEXT:    jne [[TRAP:.Ltmp[0-9]+]]
+; CHECK-NEXT:    testl $4080, %eax
+; CHECK-NEXT:    je __llvm_kcfi_mismatch_12345678
+; CHECK-NEXT:    movabsq $1311768467969322430, %r11 # imm = 0x12345678B8DEADBE
+; CHECK-NEXT:    cmpq %r11, -8(%rax)
+; CHECK-NEXT:    jne __llvm_kcfi_mismatch_12345678
 ; CHECK-NEXT:    jmpq *__guard_dispatch_icall_fptr(%rip)
 ; CHECK-NEXT:  [[TRAP]]:
 ; CHECK-NEXT:    movl $64, %ecx
 ; CHECK-NEXT:    int $41
-; CHECK:       __llvm_kcfi_local_check_00000010:
-; CHECK-NEXT:    movabsq $71821077950, %r11 # imm = 0x10B8DEADBE
-; CHECK-NEXT:    cmpq %r11, -8(%rcx)
-; CHECK-NEXT:    jne __llvm_kcfi_check_mismatch_00000010
+; CHECK:       .p2align 4
+; CHECK-NEXT:  __llvm_kcfi_local_check_00000010:
 ; CHECK-NEXT:    leaq __llvm_code_start(%rip), %r10
 ; CHECK-NEXT:    leaq __llvm_code_end(%rip), %r11
 ; CHECK-NEXT:    cmpq %r10, %rcx
-; CHECK-NEXT:    jb [[GUARD:.Ltmp[0-9]+]]
+; CHECK-NEXT:    jb [[OUT:.Ltmp[0-9]+]]
 ; CHECK-NEXT:    cmpq %r11, %rcx
-; CHECK-NEXT:    jae [[GUARD]]
+; CHECK-NEXT:    jae [[OUT]]
+; CHECK-NEXT:    movabsq $71821077950, %r11 # imm = 0x10B8DEADBE
+; CHECK-NEXT:    cmpq %r11, -8(%rcx)
+; CHECK-NEXT:    jne __llvm_kcfi_check_mismatch_00000010
 ; CHECK-NEXT:    retq
-; CHECK-NEXT:  [[GUARD]]:
+; CHECK-NEXT:  [[OUT]]:
 ; CHECK-NEXT:    cmpq %r11, %r10
 ; CHECK-NEXT:    jne [[TRAP:.Ltmp[0-9]+]]
+; CHECK-NEXT:    testl $4080, %ecx
+; CHECK-NEXT:    je __llvm_kcfi_check_mismatch_00000010
+; CHECK-NEXT:    movabsq $71821077950, %r11 # imm = 0x10B8DEADBE
+; CHECK-NEXT:    cmpq %r11, -8(%rcx)
+; CHECK-NEXT:    jne __llvm_kcfi_check_mismatch_00000010
 ; CHECK-NEXT:    jmpq *__guard_check_icall_fptr(%rip)
 ; CHECK-NEXT:  [[TRAP]]:
 ; CHECK-NEXT:    movl $64, %ecx
@@ -162,6 +199,12 @@ define x86_64_sysvcc void @f5(ptr %p) nounwind {
 ; CHECK-NOT:   __llvm_kcfi_mismatch_12345678 =
 ; CHECK-NOT:   __llvm_kcfi_open:
 ; CHECK-NOT:   __llvm_kcfi_check_open:
+
+;; The page test takes the short form for EAX.
+; BYTES-LABEL: <__llvm_kcfi_dispatch_12345678>:
+; BYTES:         a9 f0 0f 00 00 testl $0xff0, %eax
+; BYTES-LABEL: <__llvm_kcfi_check_00000010>:
+; BYTES:         f7 c1 f0 0f 00 00 testl $0xff0, %ecx
 
 ; SYMS:      Name: __llvm_kcfi_mismatch_12345678
 ; SYMS-NEXT: Value: 0

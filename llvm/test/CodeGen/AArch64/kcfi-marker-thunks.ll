@@ -7,9 +7,13 @@
 ;; function is, a COMDAT that compares the 8 bytes before the target, the end
 ;; of the marker, the byte after it and the type, and on a mismatch continues
 ;; into a weak alias of the routine that fails fast if the target carries the
-;; marker. On a match, it returns for a target inside the code range, whose
-;; bounds are weak aliases of one byte in a COMDAT, and continues into the guard check
-;; function for any other.
+;; marker. The thunk tests the code range, whose bounds are weak aliases of one
+;; byte in a COMDAT, first: on a match it returns for a target inside it. A
+;; target outside it is compared only at page offset 16 or more, and goes to
+;; the mismatch routine unread otherwise, since the bytes before it may be
+;; unmapped; a matching one continues into the guard check function. The open
+;; routine takes the same test before reading the marker, and treats a target
+;; in a page's first 16 bytes as foreign.
 ;; The module has no cfguard flag, as under -mguard=none, and the thunks are
 ;; the same as with one. A call marked kcfi_local, whose every target is in
 ;; the image, goes through a local thunk, which fails fast for a target outside
@@ -49,6 +53,14 @@ define void @f2(ptr %p) {
 ; CHECK:       .globl __llvm_kcfi_check_12345678
 ; CHECK-NEXT:  .p2align 4
 ; CHECK-NEXT:  __llvm_kcfi_check_12345678:
+; CHECK-NEXT:    adrp x16, __llvm_code_start
+; CHECK-NEXT:    add x16, x16, :lo12:__llvm_code_start
+; CHECK-NEXT:    cmp x15, x16
+; CHECK-NEXT:    b.lo [[OUT:.Ltmp[0-9]+]]
+; CHECK-NEXT:    adrp x16, __llvm_code_end
+; CHECK-NEXT:    add x16, x16, :lo12:__llvm_code_end
+; CHECK-NEXT:    cmp x15, x16
+; CHECK-NEXT:    b.hs [[OUT]]
 ; CHECK-NEXT:    ldur x16, [x15, #-8]
 ; CHECK-NEXT:    mov x17, #44478
 ; CHECK-NEXT:    movk x17, #47326, lsl #16
@@ -56,16 +68,17 @@ define void @f2(ptr %p) {
 ; CHECK-NEXT:    movk x17, #4660, lsl #48
 ; CHECK-NEXT:    cmp x16, x17
 ; CHECK-NEXT:    b.ne __llvm_kcfi_check_mismatch_12345678
-; CHECK-NEXT:    adrp x16, __llvm_code_start
-; CHECK-NEXT:    add x16, x16, :lo12:__llvm_code_start
-; CHECK-NEXT:    cmp x15, x16
-; CHECK-NEXT:    b.lo [[GUARD:.Ltmp[0-9]+]]
-; CHECK-NEXT:    adrp x16, __llvm_code_end
-; CHECK-NEXT:    add x16, x16, :lo12:__llvm_code_end
-; CHECK-NEXT:    cmp x15, x16
-; CHECK-NEXT:    b.hs [[GUARD]]
 ; CHECK-NEXT:    ret
-; CHECK-NEXT:  [[GUARD]]:
+; CHECK-NEXT:  [[OUT]]:
+; CHECK-NEXT:    tst x15, #0xff0
+; CHECK-NEXT:    b.eq __llvm_kcfi_check_mismatch_12345678
+; CHECK-NEXT:    ldur x16, [x15, #-8]
+; CHECK-NEXT:    mov x17, #44478
+; CHECK-NEXT:    movk x17, #47326, lsl #16
+; CHECK-NEXT:    movk x17, #22136, lsl #32
+; CHECK-NEXT:    movk x17, #4660, lsl #48
+; CHECK-NEXT:    cmp x16, x17
+; CHECK-NEXT:    b.ne __llvm_kcfi_check_mismatch_12345678
 ; CHECK-NEXT:    adrp x16, __guard_check_icall_fptr
 ; CHECK-NEXT:    ldr x16, [x16, :lo12:__guard_check_icall_fptr]
 ; CHECK-NEXT:    br x16
@@ -73,6 +86,14 @@ define void @f2(ptr %p) {
 ;; The local thunk shares the type's mismatch routine and the open routine.
 ; CHECK:       .section .text,"xr",discard,__llvm_kcfi_local_check_12345678
 ; CHECK:       __llvm_kcfi_local_check_12345678:
+; CHECK-NEXT:    adrp x16, __llvm_code_start
+; CHECK-NEXT:    add x16, x16, :lo12:__llvm_code_start
+; CHECK-NEXT:    adrp x17, __llvm_code_end
+; CHECK-NEXT:    add x17, x17, :lo12:__llvm_code_end
+; CHECK-NEXT:    cmp x15, x16
+; CHECK-NEXT:    b.lo [[OUT:.Ltmp[0-9]+]]
+; CHECK-NEXT:    cmp x15, x17
+; CHECK-NEXT:    b.hs [[OUT]]
 ; CHECK-NEXT:    ldur x16, [x15, #-8]
 ; CHECK-NEXT:    mov x17, #44478
 ; CHECK-NEXT:    movk x17, #47326, lsl #16
@@ -80,18 +101,19 @@ define void @f2(ptr %p) {
 ; CHECK-NEXT:    movk x17, #4660, lsl #48
 ; CHECK-NEXT:    cmp x16, x17
 ; CHECK-NEXT:    b.ne __llvm_kcfi_check_mismatch_12345678
-; CHECK-NEXT:    adrp x16, __llvm_code_start
-; CHECK-NEXT:    add x16, x16, :lo12:__llvm_code_start
-; CHECK-NEXT:    adrp x17, __llvm_code_end
-; CHECK-NEXT:    add x17, x17, :lo12:__llvm_code_end
-; CHECK-NEXT:    cmp x15, x16
-; CHECK-NEXT:    b.lo [[GUARD:.Ltmp[0-9]+]]
-; CHECK-NEXT:    cmp x15, x17
-; CHECK-NEXT:    b.hs [[GUARD]]
 ; CHECK-NEXT:    ret
-; CHECK-NEXT:  [[GUARD]]:
+; CHECK-NEXT:  [[OUT]]:
 ; CHECK-NEXT:    cmp x16, x17
 ; CHECK-NEXT:    b.ne [[TRAP:.Ltmp[0-9]+]]
+; CHECK-NEXT:    tst x15, #0xff0
+; CHECK-NEXT:    b.eq __llvm_kcfi_check_mismatch_12345678
+; CHECK-NEXT:    ldur x16, [x15, #-8]
+; CHECK-NEXT:    mov x17, #44478
+; CHECK-NEXT:    movk x17, #47326, lsl #16
+; CHECK-NEXT:    movk x17, #22136, lsl #32
+; CHECK-NEXT:    movk x17, #4660, lsl #48
+; CHECK-NEXT:    cmp x16, x17
+; CHECK-NEXT:    b.ne __llvm_kcfi_check_mismatch_12345678
 ; CHECK-NEXT:    adrp x16, __guard_check_icall_fptr
 ; CHECK-NEXT:    ldr x16, [x16, :lo12:__guard_check_icall_fptr]
 ; CHECK-NEXT:    br x16
@@ -103,6 +125,8 @@ define void @f2(ptr %p) {
 ; CHECK:       .globl __llvm_kcfi_check_open
 ; CHECK-NEXT:  .p2align 4
 ; CHECK-NEXT:  __llvm_kcfi_check_open:
+; CHECK-NEXT:    tst x15, #0xff0
+; CHECK-NEXT:    b.eq [[FOREIGN:.Ltmp[0-9]+]]
 ; CHECK-NEXT:    ldur x16, [x15, #-12]
 ; CHECK-NEXT:    mov x17, #7951
 ; CHECK-NEXT:    movk x17, #61312, lsl #16
@@ -110,6 +134,7 @@ define void @f2(ptr %p) {
 ; CHECK-NEXT:    movk x17, #47326, lsl #48
 ; CHECK-NEXT:    cmp x16, x17
 ; CHECK-NEXT:    b.eq [[TRAP:.Ltmp[0-9]+]]
+; CHECK-NEXT:  [[FOREIGN]]:
 ; CHECK-NEXT:    adrp x16, __guard_check_icall_fptr
 ; CHECK-NEXT:    ldr x16, [x16, :lo12:__guard_check_icall_fptr]
 ; CHECK-NEXT:    br x16

@@ -1056,14 +1056,20 @@ static void emitAuthenticatedPointer(MCStreamer &OutStreamer,
 // of another type, and continues into the guard check function otherwise,
 // since the target was built without KCFI.
 //
-// On a match, a thunk returns if the target is inside [__llvm_code_start,
-// __llvm_code_end) and continues into the guard check function the image
-// defines otherwise. A linker defines the range only for an image in which
-// every function that no pointer may reach has had its type overwritten, so
-// that a match inside the image proves what the guard check function would.
-// Each object references the bounds as weak aliases of one byte in a COMDAT,
-// which leaves the range empty otherwise. Both routines clobber only X16, X17
-// and the flags, which the guard check function may clobber too.
+// A thunk tests the target against [__llvm_code_start, __llvm_code_end)
+// first. On a match it returns for a target inside it, and continues into the
+// guard check function the image defines for one outside it. A linker defines
+// the range only for an image in which every function that no pointer may
+// reach has had its type overwritten, so that a match inside the image proves
+// what the guard check function would. Each object references the bounds as
+// weak aliases of one byte in a COMDAT, which leaves the range empty
+// otherwise. A target outside the range is compared only when its prefix lies
+// on the target's own page: code at the start of an allocation, such as JIT
+// code, may follow an unmapped page, so a target in a page's first bytes is
+// treated as having no prefix and goes to the mismatch routine unread. A
+// target inside the range is in this image's mapped code, so it takes no such
+// test. Both routines clobber only X16, X17 and the flags, which the guard
+// check function may clobber too.
 void AArch64AsmPrinter::emitKCFIThunks(Module &M) {
   const ConstantInt *Marker =
       mdconst::extract_or_null<ConstantInt>(M.getModuleFlag("kcfi-marker"));
@@ -1168,6 +1174,23 @@ void AArch64AsmPrinter::emitKCFIThunks(Module &M) {
     OutStreamer->emitLabel(Empty);
     OutStreamer->emitIntValue(0, 1);
   };
+  // The bits of a target's page offset that are zero when the prefix read
+  // before it, at most PrefixBytes + 12 bytes, could start on the page before.
+  uint64_t PageTestMask = 0xFFF & ~(PowerOf2Ceil(PrefixBytes + 12) - 1);
+  // tst x15, #mask; b.eq target
+  auto EmitPageTest = [&](MCSymbol *Target) {
+    // No target has a readable prefix of that size.
+    if (!PageTestMask) {
+      Emit(MCInstBuilder(AArch64::B)
+               .addExpr(MCSymbolRefExpr::create(Target, OutContext)));
+      return;
+    }
+    Emit(MCInstBuilder(AArch64::ANDSXri)
+             .addReg(AArch64::XZR)
+             .addReg(AArch64::X15)
+             .addImm(AArch64_AM::encodeLogicalImmediate(PageTestMask, 64)));
+    EmitBcc(AArch64CC::EQ, Target);
+  };
   // mov w0, #FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG; brk #0xf003
   auto EmitFastFail = [&] {
     Emit(MCInstBuilder(AArch64::MOVZWi)
@@ -1210,65 +1233,80 @@ void AArch64AsmPrinter::emitKCFIThunks(Module &M) {
                                     MCSymbolRefExpr::create(Open, OutContext));
       }
 
-      // ldur x16, [x15, #-8]; mov x17, #expected; cmp x16, x17; b.ne mismatch
       // adrp x16, __llvm_code_start; add x16, x16, :lo12:__llvm_code_start
       // cmp x15, x16; b.lo 1f
       // adrp x16, __llvm_code_end; add x16, x16, :lo12:__llvm_code_end
       // cmp x15, x16; b.hs 1f
+      // ldur x16, [x15, #-8]; mov x17, #expected; cmp x16, x17; b.ne mismatch
       // ret
-      // 1: adrp x16, guard; ldr x16, [x16, :lo12:guard]; br x16
+      // 1: tst x15, #mask; b.eq mismatch
+      // ldur x16, [x15, #-8]; mov x17, #expected; cmp x16, x17; b.ne mismatch
+      // adrp x16, guard; ldr x16, [x16, :lo12:guard]; br x16
       //
       // A local thunk takes both bounds first, into X16 and X17, and at 1:
-      // cmp x16, x17; b.ne 2f; adrp/ldr/br guard; 2: fails fast.
+      // cmp x16, x17; b.ne 2f before the page test, where 2: fails fast.
       uint64_t Expected = getKCFIMarkerPattern(Marker->getZExtValue()) >> 32 |
                           uint64_t(Type) << 32;
+      auto EmitCompare = [&] {
+        Emit(MCInstBuilder(AArch64::LDURXi)
+                 .addReg(AArch64::X16)
+                 .addReg(AArch64::X15)
+                 .addImm(-(PrefixBytes + 8)));
+        EmitMovX17(Expected);
+        EmitCmp(AArch64::X16, AArch64::X17);
+        EmitBcc(AArch64CC::NE, Mismatch);
+      };
       EmitFunctionStart(getSymbol(&F));
-      Emit(MCInstBuilder(AArch64::LDURXi)
-               .addReg(AArch64::X16)
-               .addReg(AArch64::X15)
-               .addImm(-(PrefixBytes + 8)));
-      EmitMovX17(Expected);
-      EmitCmp(AArch64::X16, AArch64::X17);
-      EmitBcc(AArch64CC::NE, Mismatch);
-      MCSymbol *Guard = OutContext.createTempSymbol();
+      MCSymbol *Outside = OutContext.createTempSymbol();
       if (Local) {
         EmitAddr(AArch64::X16, CodeStart);
         EmitAddr(AArch64::X17, CodeEnd);
         EmitCmp(AArch64::X15, AArch64::X16);
-        EmitBcc(AArch64CC::LO, Guard);
+        EmitBcc(AArch64CC::LO, Outside);
         EmitCmp(AArch64::X15, AArch64::X17);
-        EmitBcc(AArch64CC::HS, Guard);
+        EmitBcc(AArch64CC::HS, Outside);
       } else {
         EmitAddr(AArch64::X16, CodeStart);
         EmitCmp(AArch64::X15, AArch64::X16);
-        EmitBcc(AArch64CC::LO, Guard);
+        EmitBcc(AArch64CC::LO, Outside);
         EmitAddr(AArch64::X16, CodeEnd);
         EmitCmp(AArch64::X15, AArch64::X16);
-        EmitBcc(AArch64CC::HS, Guard);
+        EmitBcc(AArch64CC::HS, Outside);
       }
+      EmitCompare();
       Emit(MCInstBuilder(AArch64::RET).addReg(AArch64::LR));
-      OutStreamer->emitLabel(Guard);
+      OutStreamer->emitLabel(Outside);
+      MCSymbol *Trap = nullptr;
       if (Local) {
         // The bounds are equal in an image that was not sealed, where no
         // target is in the range and the guard check function decides.
-        MCSymbol *Trap = OutContext.createTempSymbol();
+        Trap = OutContext.createTempSymbol();
         EmitCmp(AArch64::X16, AArch64::X17);
         EmitBcc(AArch64CC::NE, Trap);
-        EmitGuardJump();
+      }
+      EmitPageTest(Mismatch);
+      EmitCompare();
+      EmitGuardJump();
+      if (Trap) {
         OutStreamer->emitLabel(Trap);
         EmitFastFail();
-      } else {
-        EmitGuardJump();
       }
     }
   }
   if (!Open)
     return;
 
-  // ldur x16, [x15, #-12]; mov x17, #pattern; cmp x16, x17; b.eq 1f; ...
-  // 1: mov w0, #FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG; brk #0xf003
+  // tst x15, #mask; b.eq 1f
+  // ldur x16, [x15, #-12]; mov x17, #pattern; cmp x16, x17; b.eq 2f
+  // 1: adrp x16, guard; ldr x16, [x16, :lo12:guard]; br x16
+  // 2: mov w0, #FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG; brk #0xf003
+  //
+  // A target in a page's first bytes has no prefix that can be read, so it is
+  // foreign.
   uint64_t Pattern = getKCFIMarkerPattern(Marker->getZExtValue());
   EmitFunctionStart(Open);
+  MCSymbol *Foreign = OutContext.createTempSymbol();
+  EmitPageTest(Foreign);
   Emit(MCInstBuilder(AArch64::LDURXi)
            .addReg(AArch64::X16)
            .addReg(AArch64::X15)
@@ -1277,6 +1315,7 @@ void AArch64AsmPrinter::emitKCFIThunks(Module &M) {
   EmitCmp(AArch64::X16, AArch64::X17);
   MCSymbol *Trap = OutContext.createTempSymbol();
   EmitBcc(AArch64CC::EQ, Trap);
+  OutStreamer->emitLabel(Foreign);
   EmitGuardJump();
   OutStreamer->emitLabel(Trap);
   EmitFastFail();

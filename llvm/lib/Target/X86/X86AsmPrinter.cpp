@@ -294,13 +294,19 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
 /// since the target is then a function of another type, and continues into
 /// the guard function otherwise, since the target was built without KCFI.
 ///
-/// On a match, a target inside [__llvm_code_start, __llvm_code_end) is taken
-/// directly, and any other continues into the guard function the image
-/// defines. A linker defines the range only for an image in which every
-/// function that no pointer may reach has had its type overwritten, so that a
-/// match inside the image proves what the guard function would. Each object
-/// references the bounds as weak aliases of one byte in a COMDAT, which leaves
-/// the range empty otherwise. A dispatch thunk takes the target in RAX and
+/// A thunk tests the target against [__llvm_code_start, __llvm_code_end)
+/// first. A matching target inside it is taken directly, and a matching
+/// target outside it continues into the guard function the image defines. A
+/// linker defines the range only for an image in which every function that no
+/// pointer may reach has had its type overwritten, so that a match inside the
+/// image proves what the guard function would. Each object references the
+/// bounds as weak aliases of one byte in a COMDAT, which leaves the range
+/// empty otherwise. A target outside the range is compared only when its
+/// prefix lies on the target's own page: code at the start of an allocation,
+/// such as JIT code, may follow an unmapped page, so a target in a page's
+/// first bytes is treated as having no prefix and goes to the mismatch
+/// routine unread. A target inside the range is in this image's mapped code,
+/// so it takes no such test. A dispatch thunk takes the target in RAX and
 /// jumps to it, and a check thunk takes it in RCX and returns; both may clobber
 /// R10 and R11, as the guard functions do.
 void X86AsmPrinter::emitKCFIThunks(Module &M) {
@@ -384,6 +390,21 @@ void X86AsmPrinter::emitKCFIThunks(Module &M) {
     OutStreamer->emitLabel(Empty);
     OutStreamer->emitIntValue(0, 1);
   };
+  // The bits of a target's page offset that are zero when the prefix read
+  // before it, at most PrefixNops + 12 bytes, could start on the page before.
+  uint32_t PageTestMask = 0xFFF & ~(PowerOf2Ceil(PrefixNops + 12) - 1);
+  // testl $mask, %reg32; jz target
+  auto EmitPageTest = [&](unsigned Reg, MCSymbol *Target) {
+    if (Reg == X86::RAX)
+      OutStreamer->emitInstruction(
+          MCInstBuilder(X86::TEST32i32).addImm(PageTestMask), STI);
+    else
+      OutStreamer->emitInstruction(MCInstBuilder(X86::TEST32ri)
+                                       .addReg(getX86SubSuperRegister(Reg, 32))
+                                       .addImm(PageTestMask),
+                                   STI);
+    EmitJcc(Target, X86::COND_E);
+  };
   // movl $FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG, %ecx; int $0x29
   auto EmitFastFail = [&] {
     OutStreamer->emitInstruction(
@@ -441,74 +462,85 @@ void X86AsmPrinter::emitKCFIThunks(Module &M) {
                                     MCSymbolRefExpr::create(Open, OutContext));
       }
 
-      // movabsq $expected, %r11; cmpq %r11, -8(%reg); jne mismatch
       // leaq __llvm_code_start(%rip), %r10; cmpq %r10, %reg; jb 1f
       // leaq __llvm_code_end(%rip), %r10; cmpq %r10, %reg; jae 1f
+      // movabsq $expected, %r11; cmpq %r11, -8(%reg); jne mismatch
       // jmpq *%reg (dispatch) or retq (check)
-      // 1: jmpq *guard(%rip)
+      // 1: testl $mask, %reg32; jz mismatch
+      // movabsq $expected, %r11; cmpq %r11, -8(%reg); jne mismatch
+      // jmpq *guard(%rip)
       //
       // A local thunk loads both bounds first, into R10 and R11, and at 1:
-      // cmpq %r11, %r10; jne 2f; jmpq *guard(%rip); 2: fails fast.
+      // cmpq %r11, %r10; jne 2f before the page test, where 2: fails fast.
       uint64_t Expected = getKCFIMarkerPattern(Marker->getZExtValue()) >> 32 |
                           uint64_t(MaskKCFIType(Type)) << 32;
+      auto EmitCompare = [&] {
+        OutStreamer->emitInstruction(
+            MCInstBuilder(X86::MOV64ri).addReg(X86::R11).addImm(Expected), STI);
+        OutStreamer->emitInstruction(MCInstBuilder(X86::CMP64mr)
+                                         .addReg(Kind.TargetReg)
+                                         .addImm(1)
+                                         .addReg(X86::NoRegister)
+                                         .addImm(-(PrefixNops + 8))
+                                         .addReg(X86::NoRegister)
+                                         .addReg(X86::R11),
+                                     STI);
+        EmitJcc(Mismatch, X86::COND_NE);
+      };
       EmitFunctionStart(getSymbol(&F));
-      OutStreamer->emitInstruction(
-          MCInstBuilder(X86::MOV64ri).addReg(X86::R11).addImm(Expected), STI);
-      OutStreamer->emitInstruction(MCInstBuilder(X86::CMP64mr)
-                                       .addReg(Kind.TargetReg)
-                                       .addImm(1)
-                                       .addReg(X86::NoRegister)
-                                       .addImm(-(PrefixNops + 8))
-                                       .addReg(X86::NoRegister)
-                                       .addReg(X86::R11),
-                                   STI);
-      OutStreamer->emitInstruction(
-          MCInstBuilder(X86::JCC_1)
-              .addExpr(MCSymbolRefExpr::create(Mismatch, OutContext))
-              .addImm(X86::COND_NE),
-          STI);
-      MCSymbol *Guard = OutContext.createTempSymbol();
+      MCSymbol *Outside = OutContext.createTempSymbol();
       if (Kind.Local) {
         EmitLea(X86::R10, CodeStart);
         EmitLea(X86::R11, CodeEnd);
         EmitCmp(Kind.TargetReg, X86::R10);
-        EmitJcc(Guard, X86::COND_B);
+        EmitJcc(Outside, X86::COND_B);
         EmitCmp(Kind.TargetReg, X86::R11);
-        EmitJcc(Guard, X86::COND_AE);
+        EmitJcc(Outside, X86::COND_AE);
       } else {
         EmitLea(X86::R10, CodeStart);
         EmitCmp(Kind.TargetReg, X86::R10);
-        EmitJcc(Guard, X86::COND_B);
+        EmitJcc(Outside, X86::COND_B);
         EmitLea(X86::R10, CodeEnd);
         EmitCmp(Kind.TargetReg, X86::R10);
-        EmitJcc(Guard, X86::COND_AE);
+        EmitJcc(Outside, X86::COND_AE);
       }
+      EmitCompare();
       if (Kind.TargetReg == X86::RAX)
         OutStreamer->emitInstruction(
             MCInstBuilder(X86::JMP64r).addReg(X86::RAX), STI);
       else
         OutStreamer->emitInstruction(MCInstBuilder(X86::RET64), STI);
-      OutStreamer->emitLabel(Guard);
+      OutStreamer->emitLabel(Outside);
+      MCSymbol *Trap = nullptr;
       if (Kind.Local) {
         // The bounds are equal in an image that was not sealed, where no
         // target is in the range and the guard function decides.
-        MCSymbol *Trap = OutContext.createTempSymbol();
+        Trap = OutContext.createTempSymbol();
         EmitCmp(X86::R10, X86::R11);
         EmitJcc(Trap, X86::COND_NE);
-        EmitGuardJump(Kind.GuardFn);
+      }
+      EmitPageTest(Kind.TargetReg, Mismatch);
+      EmitCompare();
+      EmitGuardJump(Kind.GuardFn);
+      if (Trap) {
         OutStreamer->emitLabel(Trap);
         EmitFastFail();
-      } else {
-        EmitGuardJump(Kind.GuardFn);
       }
     }
     if (!Open || !EmittedOpens.insert(Open).second)
       continue;
 
-    // movabsq $pattern, %r11; cmpq %r11, -12(%reg); je 1f; jmpq *guard(%rip)
-    // 1: movl $FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG, %ecx; int $0x29
+    // testl $mask, %reg32; jz 1f
+    // movabsq $pattern, %r11; cmpq %r11, -12(%reg); je 2f
+    // 1: jmpq *guard(%rip)
+    // 2: movl $FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG, %ecx; int $0x29
+    //
+    // A target in a page's first bytes has no prefix that can be read, so it
+    // is foreign.
     uint64_t Pattern = getKCFIMarkerPattern(Marker->getZExtValue());
     EmitFunctionStart(Open);
+    MCSymbol *Foreign = OutContext.createTempSymbol();
+    EmitPageTest(Kind.TargetReg, Foreign);
     OutStreamer->emitInstruction(
         MCInstBuilder(X86::MOV64ri).addReg(X86::R11).addImm(Pattern), STI);
     OutStreamer->emitInstruction(MCInstBuilder(X86::CMP64mr)
@@ -525,6 +557,7 @@ void X86AsmPrinter::emitKCFIThunks(Module &M) {
             .addExpr(MCSymbolRefExpr::create(Trap, OutContext))
             .addImm(X86::COND_E),
         STI);
+    OutStreamer->emitLabel(Foreign);
     EmitGuardJump(Kind.GuardFn);
     OutStreamer->emitLabel(Trap);
     EmitFastFail();
