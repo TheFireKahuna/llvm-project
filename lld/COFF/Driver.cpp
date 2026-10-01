@@ -2891,6 +2891,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   if (isArm64EC(config->machine))
     createECExportThunks();
 
+  if (config->importSlots)
+    ctx.symtab.openKCFITypes();
+
   // Resolve remaining undefined symbols and warn about imported locals.
   std::vector<Undefined *> aliases;
   ctx.forEachSymtab(

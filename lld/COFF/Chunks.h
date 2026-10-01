@@ -735,6 +735,56 @@ private:
   COFFLinkerContext &ctx;
 };
 
+// The routine that a KCFI type check reaches on a mismatch when the linker
+// opens the type: it points R10 or X16 at the type's list and jumps to the
+// compiled scanner, which fails fast on a target the list does not hold for a
+// statically open type, and continues into the guard function for a
+// dynamically open one. On x86-64 the latter ends in a trap, as the compiler
+// emits it.
+class KCFIOpenChunk : public NonSectionCodeChunk {
+public:
+  KCFIOpenChunk(COFFLinkerContext &ctx, Defined *list, Defined *scanner,
+                bool dynamic);
+  size_t getSize() const override;
+  void writeTo(uint8_t *buf) const override;
+  uint32_t getOutputCharacteristics() const override {
+    return llvm::COFF::IMAGE_SCN_CNT_CODE |
+           NonSectionCodeChunk::getOutputCharacteristics();
+  }
+  StringRef getSectionName() const override { return ".text"; }
+  MachineTypes getMachine() const override;
+
+private:
+  Defined *list;
+  Defined *scanner;
+  bool dynamic;
+  COFFLinkerContext &ctx;
+};
+
+// A word of a KCFI type's list, in the section that sorts it among the
+// compiler's pieces of the list, or a cell that an entry points to. It holds
+// a value, or the address of a symbol, which is zero if the symbol is not in
+// the image.
+class KCFIListChunk : public NonSectionChunk {
+public:
+  KCFIListChunk(COFFLinkerContext &ctx, StringRef sectionName, Defined *sym,
+                uint64_t value = 0);
+  size_t getSize() const override { return 8; }
+  void getBaserels(std::vector<Baserel> *res) override;
+  void writeTo(uint8_t *buf) const override;
+  uint32_t getOutputCharacteristics() const override {
+    return llvm::COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
+           llvm::COFF::IMAGE_SCN_MEM_READ;
+  }
+  StringRef getSectionName() const override { return sectionName; }
+
+private:
+  StringRef sectionName;
+  Defined *sym;
+  uint64_t value;
+  COFFLinkerContext &ctx;
+};
+
 // Duplicate RVAs are not allowed in RVA tables, so unique symbols by chunk and
 // offset into the chunk. Order does not matter as the RVA table will be sorted
 // later.
