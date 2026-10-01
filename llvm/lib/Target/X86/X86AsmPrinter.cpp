@@ -138,18 +138,7 @@ void X86AsmPrinter::emitFunctionBodyEnd() {
 }
 
 uint32_t X86AsmPrinter::MaskKCFIType(uint32_t Value) {
-  // If the type hash matches an invalid pattern, mask the value.
-  const uint32_t InvalidValues[] = {
-      0xFA1E0FF3, /* ENDBR64 */
-      0xFB1E0FF3, /* ENDBR32 */
-  };
-  for (uint32_t N : InvalidValues) {
-    // LowerKCFI_CHECK emits -Value for indirect call checks, so we must also
-    // mask that. Note that -(Value + 1) == ~Value.
-    if (N == Value || -N == Value)
-      return Value + 1;
-  }
-  return Value;
+  return getX86KCFIType(Value);
 }
 
 void X86AsmPrinter::EmitKCFITypePadding(const MachineFunction &MF,

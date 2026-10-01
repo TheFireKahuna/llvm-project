@@ -2081,6 +2081,13 @@ def int_ubsantrap : Intrinsic<[], [llvm_i8_ty],
 def int_looptrap : Intrinsic<[], [], [IntrNoReturn, IntrCold,
                                       IntrInaccessibleMemOnly, IntrWriteMem]>;
 
+// Traps unless the KCFI type word at the given offset before a function's
+// entry equals the given type.
+def int_kcfi_check : Intrinsic<[], [llvm_ptr_ty, llvm_i32_ty, llvm_i32_ty],
+                               [IntrInaccessibleMemOrArgMemOnly,
+                                ReadOnly<ArgIndex<0>>, NoCapture<ArgIndex<0>>,
+                                ImmArg<ArgIndex<1>>, ImmArg<ArgIndex<2>>]>;
+
 // Return true if ubsan check is allowed.
 def int_allow_ubsan_check : DefaultAttrsIntrinsic<[llvm_i1_ty], [llvm_i8_ty],
     [IntrInaccessibleMemOnly, ImmArg<ArgIndex<0>>, NoUndef<RetIndex>]>;

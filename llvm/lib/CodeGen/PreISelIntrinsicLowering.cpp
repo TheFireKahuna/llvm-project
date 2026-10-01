@@ -28,6 +28,7 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/ProfDataUtils.h"
@@ -41,6 +42,7 @@
 #include "llvm/Transforms/Scalar/LowerConstantIntrinsics.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/BuildLibCalls.h"
+#include "llvm/Transforms/Utils/KCFIHash.h"
 #include "llvm/Transforms/Utils/LowerMemIntrinsics.h"
 #include "llvm/Transforms/Utils/LowerVectorIntrinsics.h"
 
@@ -680,6 +682,45 @@ static bool expandLoopTrap(Function &Intr) {
   return true;
 }
 
+static bool expandKCFICheck(Function &Intr) {
+  Module &M = *Intr.getParent();
+  const Triple &TT = M.getTargetTriple();
+  LLVMContext &Ctx = M.getContext();
+  // The size of a patchable-function prefix between the type and the entry is
+  // not known here.
+  if (M.getModuleFlag("kcfi-offset") && !Intr.use_empty())
+    Ctx.emitError("a patchable-function prefix is not compatible with "
+                  "llvm.kcfi.check on this target");
+
+  Type *Int32Ty = Type::getInt32Ty(Ctx);
+  for (User *U : make_early_inc_range(Intr.users())) {
+    auto *Call = cast<CallInst>(U);
+    IRBuilder<> B(Call);
+    Value *Target = Call->getArgOperand(0);
+    // The least significant bit of an ARM function pointer selects Thumb.
+    if (TT.isARM() || TT.isThumb())
+      Target =
+          B.CreateIntrinsic(Intrinsic::ptrmask, {Target->getType(), Int32Ty},
+                            {Target, B.getInt32(-2)});
+    int64_t Offset = cast<ConstantInt>(Call->getArgOperand(2))->getSExtValue();
+    Value *Word = B.CreateAlignedLoad(
+        Int32Ty, B.CreateConstGEP1_64(B.getInt8Ty(), Target, -Offset),
+        Align(1));
+    // x86 stores the type at the entry as the immediate of a move.
+    uint32_t Type = cast<ConstantInt>(Call->getArgOperand(1))->getZExtValue();
+    if (TT.isX86() && Offset == 4)
+      Type = getX86KCFIType(Type);
+    Value *Mismatch = B.CreateICmpNE(Word, B.getInt32(Type));
+    Instruction *Trap =
+        SplitBlockAndInsertIfThen(Mismatch, Call, /*Unreachable=*/true,
+                                  MDBuilder(Ctx).createUnlikelyBranchWeights());
+    B.SetInsertPoint(Trap);
+    B.CreateIntrinsic(Intrinsic::trap, {});
+    Call->eraseFromParent();
+  }
+  return true;
+}
+
 bool PreISelIntrinsicLowering::lowerIntrinsics(Module &M) const {
   // Map unique constants to globals.
   DenseMap<Constant *, GlobalVariable *> CMap;
@@ -698,6 +739,9 @@ bool PreISelIntrinsicLowering::lowerIntrinsics(Module &M) const {
       break;
     case Intrinsic::load_relative:
       Changed |= lowerLoadRelative(F);
+      break;
+    case Intrinsic::kcfi_check:
+      Changed |= expandKCFICheck(F);
       break;
     case Intrinsic::can_load_speculatively:
       Changed |= lowerCanLoadSpeculatively(F, TM);
