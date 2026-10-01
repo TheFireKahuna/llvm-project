@@ -1693,6 +1693,98 @@ void AsmPrinter::emitKCFITrapEntry(const MachineFunction &MF,
   OutStreamer->popSection();
 }
 
+MapVector<uint32_t, AsmPrinter::KCFIOpenType>
+AsmPrinter::getKCFIOpenTypes(const Module &M) const {
+  // A module opens a type statically by taking the address of a known import
+  // of the type, which is then the only kind of foreign target the image can
+  // hold for it, and dynamically where a pointer of the type may come from
+  // foreign code.
+  MapVector<uint32_t, KCFIOpenType> OpenTypes;
+  for (const Function &F : M)
+    if (const MDNode *MD = F.getMetadata(LLVMContext::MD_kcfi_type))
+      if (F.isDeclaration() && F.hasDLLImportStorageClass() &&
+          F.hasMetadata("kcfi_import") && F.hasAddressTaken())
+        OpenTypes[mdconst::extract<ConstantInt>(MD->getOperand(0))
+                      ->getZExtValue()]
+            .Imports.push_back(&F);
+  if (const NamedMDNode *Dynamic = M.getNamedMetadata("kcfi.dynamic"))
+    for (const MDNode *MD : Dynamic->operands())
+      OpenTypes[mdconst::extract<ConstantInt>(MD->getOperand(0))
+                    ->getZExtValue()]
+          .Dynamic = true;
+  return OpenTypes;
+}
+
+// Returns true if the initializer of a global variable refers to F.
+static bool isReferencedFromData(const Function &F) {
+  SmallVector<const User *, 8> Worklist(F.users());
+  SmallPtrSet<const User *, 8> Visited;
+  while (!Worklist.empty()) {
+    const User *U = Worklist.pop_back_val();
+    if (!Visited.insert(U).second)
+      continue;
+    if (auto *GV = dyn_cast<GlobalVariable>(U)) {
+      if (GV->getSection() != "llvm.metadata")
+        return true;
+    } else if (isa<Constant>(U)) {
+      append_range(Worklist, U->users());
+    }
+  }
+  return false;
+}
+
+void AsmPrinter::emitKCFIList(MCSymbol *List, uint32_t Type,
+                              ArrayRef<const Function *> Imports) {
+  // The pieces of a type's list are in sections that the linker merges in the
+  // order of their names: the head, in a COMDAT, which the type's open routine
+  // refers to past its first word; each object's entries; and the trailer,
+  // kept with the head, whose odd word ends the list. Both hold a word unique
+  // to the type, so that no two types' pieces are folded, and the entries are
+  // in no COMDAT, so that none is.
+  std::string Prefix = ".rdata$llvm_kcfi_" +
+                       utohexstr(Type, /*LowerCase=*/true, /*Width=*/8) + "_";
+  unsigned Characteristics =
+      COFF::IMAGE_SCN_CNT_INITIALIZED_DATA | COFF::IMAGE_SCN_MEM_READ;
+  OutStreamer->switchSection(OutContext.getCOFFSection(
+      Prefix + "a", Characteristics | COFF::IMAGE_SCN_LNK_COMDAT,
+      List->getName(), COFF::IMAGE_COMDAT_SELECT_ANY));
+  OutStreamer->emitValueToAlignment(Align(8));
+  OutStreamer->emitSymbolAttribute(List, MCSA_Global);
+  OutStreamer->emitLabel(List);
+  OutStreamer->emitInt64(Type);
+
+  // An entry is the address of a cell holding a valid target. An import's is
+  // its import address table slot, which holds the address the loader bound,
+  // and, when static data refers to it, a cell holding its thunk too, which
+  // such a reference resolves to.
+  SmallVector<MCSymbol *, 2> Cells;
+  for (const Function *F : Imports) {
+    MCSymbol *Sym = getSymbol(F);
+    Cells.push_back(OutContext.getOrCreateSymbol("__imp_" + Sym->getName()));
+    if (!isReferencedFromData(*F))
+      continue;
+    Cells.push_back(OutContext.createTempSymbol());
+    OutStreamer->switchSection(
+        OutContext.getCOFFSection(".rdata", Characteristics));
+    OutStreamer->emitValueToAlignment(Align(8));
+    OutStreamer->emitLabel(Cells.back());
+    OutStreamer->emitValue(MCSymbolRefExpr::create(Sym, OutContext), 8);
+  }
+  if (!Cells.empty()) {
+    OutStreamer->switchSection(
+        OutContext.getCOFFSection(Prefix + "m", Characteristics));
+    OutStreamer->emitValueToAlignment(Align(8));
+    for (MCSymbol *Cell : Cells)
+      OutStreamer->emitValue(MCSymbolRefExpr::create(Cell, OutContext), 8);
+  }
+
+  OutStreamer->switchSection(OutContext.getCOFFSection(
+      Prefix + "z", Characteristics | COFF::IMAGE_SCN_LNK_COMDAT,
+      List->getName(), COFF::IMAGE_COMDAT_SELECT_ASSOCIATIVE));
+  OutStreamer->emitValueToAlignment(Align(8));
+  OutStreamer->emitInt64(uint64_t(Type) << 1 | 1);
+}
+
 void AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
   const Function &F = MF.getFunction();
   const MDNode *MD = F.getMetadata(LLVMContext::MD_kcfi_type);
