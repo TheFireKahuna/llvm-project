@@ -10,7 +10,7 @@ void attempt() {
   try { except(); } catch (...) { }
 }
 
-// CHECK: @_ZTIi = external dso_local constant ptr
+// CHECK: @_ZTIi = external constant ptr
 
 // CHECK: define {{.*}}void @_Z6exceptv() {{.*}} {
 // CHECK:   %exception = call {{.*}}ptr @__cxa_allocate_exception(i32 4)

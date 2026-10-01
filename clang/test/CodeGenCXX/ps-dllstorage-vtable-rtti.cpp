@@ -62,7 +62,7 @@ void FullExport::key() { typeid(FullExport).name(); }
 // PS-DAG: @_ZTV10PartImport = {{.*}}dllimport
 // WI-DAG: @_ZTV10PartImport = external dso_local constant {
 // PS-DAG: @_ZTI10PartImport = {{.*}}dllimport
-// WI-DAG: @_ZTI10PartImport = external dso_local constant ptr
+// WI-DAG: @_ZTI10PartImport = external constant ptr
 struct PartImport {
   virtual void inlineFunc() const {}
   virtual void key();

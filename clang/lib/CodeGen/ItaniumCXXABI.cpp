@@ -3709,6 +3709,20 @@ llvm::GlobalVariable *ItaniumRTTIBuilder::GetAddrOfTypeName(
   return GV;
 }
 
+/// Sets whether a type_info object or its name can be assumed DSO local. On
+/// Windows Itanium and NT-POSIX the image that owns one with default visibility
+/// is decided when the program is linked, so unless this translation unit
+/// defines it strongly, a reference to it may resolve to another image's. The
+/// reference then takes the import form, which the linker makes direct when
+/// the owner is in the image.
+static void setRTTIDSOLocal(CodeGenModule &CGM, llvm::GlobalValue *GV) {
+  CGM.setDSOLocal(GV);
+  if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      GV->hasDefaultVisibility() && !GV->hasLocalLinkage() &&
+      !GV->isStrongDefinitionForLinker())
+    GV->setDSOLocal(false);
+}
+
 llvm::Constant *
 ItaniumRTTIBuilder::GetAddrOfExternalRTTIDescriptor(QualType Ty) {
   // Mangle the RTTI name.
@@ -3729,6 +3743,7 @@ ItaniumRTTIBuilder::GetAddrOfExternalRTTIDescriptor(QualType Ty) {
         /*isConstant=*/true, llvm::GlobalValue::ExternalLinkage, nullptr, Name);
     const CXXRecordDecl *RD = Ty->getAsCXXRecordDecl();
     CGM.setGVProperties(GV, RD);
+    setRTTIDSOLocal(CGM, GV);
     // Import the typeinfo symbol when all non-inline virtual methods are
     // imported.
     if (CGM.getTarget().hasPS4DLLImportExport()) {
@@ -4466,10 +4481,10 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(
   // object and the type_info name be uniqued when weakly emitted.
 
   TypeName->setVisibility(Visibility);
-  CGM.setDSOLocal(TypeName);
+  setRTTIDSOLocal(CGM, TypeName);
 
   GV->setVisibility(TypeInfoVisibility);
-  CGM.setDSOLocal(GV);
+  setRTTIDSOLocal(CGM, GV);
 
   TypeName->setDLLStorageClass(DLLStorageClass);
   GV->setDLLStorageClass(TypeInfoDLLStorageClass);
