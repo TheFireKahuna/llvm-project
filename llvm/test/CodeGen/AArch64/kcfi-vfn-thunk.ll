@@ -19,7 +19,7 @@
 ; CHECK-NEXT:    blr x0
 
 ; CHECK:       .weak __llvm_kcfi_check_mismatch_89abcdef
-; CHECK-NEXT:  __llvm_kcfi_check_mismatch_89abcdef = __llvm_kcfi_check_default
+; CHECK-NEXT:  __llvm_kcfi_check_mismatch_89abcdef = __llvm_kcfi_trap
 ; CHECK-NEXT:  .section .text,"xr",discard,__llvm_kcfi_vfn_check_89abcdef
 ; CHECK:       __llvm_kcfi_vfn_check_89abcdef:
 ; CHECK-NEXT:    adrp x16, __llvm_code_start

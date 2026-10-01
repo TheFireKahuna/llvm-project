@@ -279,9 +279,8 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
 /// target, the end of the marker, the opcode byte and the type, with the
 /// call's, so that a type that occurs in code by chance does not pass. On a
 /// mismatch it continues into the type's mismatch routine, a weak alias whose
-/// default, shared by every type, fails fast if the target carries the marker,
-/// since the target is then a function of another type, and continues into
-/// the guard function otherwise, since the target was built without KCFI.
+/// default, shared by every type, fails fast: no object in the image opened
+/// the type, so no target that does not carry it is valid.
 ///
 /// A module that opens a type defines the type's mismatch routines instead,
 /// in COMDATs of which the linker keeps the largest. Each passes the type's
@@ -426,20 +425,18 @@ void X86AsmPrinter::emitKCFIThunks(Module &M) {
     StringRef MismatchPrefix;
     StringRef Scanner;
     StringRef DynamicScanner;
-    StringRef Default;
     StringRef GuardFn;
     unsigned TargetReg;
   };
   const RoutineKind Routines[] = {
       {"__llvm_kcfi_mismatch_", "__llvm_kcfi_open", "__llvm_kcfi_open_dynamic",
-       "__llvm_kcfi_default", "__guard_dispatch_icall_fptr", X86::RAX},
+       "__guard_dispatch_icall_fptr", X86::RAX},
       {"__llvm_kcfi_check_mismatch_", "__llvm_kcfi_check_open",
-       "__llvm_kcfi_check_open_dynamic", "__llvm_kcfi_check_default",
-       "__guard_check_icall_fptr", X86::RCX}};
+       "__llvm_kcfi_check_open_dynamic", "__guard_check_icall_fptr", X86::RCX}};
   // An opener defines the routines of both kinds, each kept only where a
   // thunk of its kind refers to it.
   bool UsesRoutine[] = {!OpenTypes.empty(), !OpenTypes.empty()};
-  bool UsesDefault[] = {false, false};
+  MCSymbol *TrapFn = OutContext.getOrCreateSymbol("__llvm_kcfi_trap");
 
   // A local thunk serves a type salted by a class with internal linkage,
   // whose functions are all in this image: a matching target outside the
@@ -483,12 +480,9 @@ void X86AsmPrinter::emitKCFIThunks(Module &M) {
       MCSymbol *Mismatch =
           OutContext.getOrCreateSymbol(Routine.MismatchPrefix + TypeName);
       if (!Mismatch->isVariable() && !OpenTypes.count(Type)) {
-        UsesDefault[Kind.Routine] = true;
         OutStreamer->emitSymbolAttribute(Mismatch, MCSA_Weak);
         OutStreamer->emitAssignment(
-            Mismatch,
-            MCSymbolRefExpr::create(
-                OutContext.getOrCreateSymbol(Routine.Default), OutContext));
+            Mismatch, MCSymbolRefExpr::create(TrapFn, OutContext));
       }
 
       // leaq __llvm_code_start(%rip), %r10; cmpq %r10, %reg; jb 1f
@@ -567,42 +561,10 @@ void X86AsmPrinter::emitKCFIThunks(Module &M) {
   }
 
   for (unsigned I = 0; I != std::size(Routines); ++I) {
-    const RoutineKind &Routine = Routines[I];
-    unsigned Reg = Routine.TargetReg;
-    // movabsq $pattern, %r11; cmpq %r11, -12(%reg)
-    auto EmitMarkerCompare = [&] {
-      OutStreamer->emitInstruction(
-          MCInstBuilder(X86::MOV64ri).addReg(X86::R11).addImm(Pattern), STI);
-      OutStreamer->emitInstruction(MCInstBuilder(X86::CMP64mr)
-                                       .addReg(Reg)
-                                       .addImm(1)
-                                       .addReg(X86::NoRegister)
-                                       .addImm(-(PrefixNops + 12))
-                                       .addReg(X86::NoRegister)
-                                       .addReg(X86::R11),
-                                   STI);
-    };
-    if (UsesDefault[I]) {
-      // testl $mask, %reg32; jz 1f
-      // movabsq $pattern, %r11; cmpq %r11, -12(%reg); je 2f
-      // 1: jmpq *guard(%rip)
-      // 2: movl $FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG, %ecx; int $0x29
-      //
-      // A target in a page's first bytes has no prefix that can be read, so
-      // it is foreign.
-      EmitFunctionStart(OutContext.getOrCreateSymbol(Routine.Default));
-      MCSymbol *Foreign = OutContext.createTempSymbol();
-      EmitPageTest(Reg, Foreign);
-      EmitMarkerCompare();
-      MCSymbol *Trap = OutContext.createTempSymbol();
-      EmitJcc(Trap, X86::COND_E);
-      OutStreamer->emitLabel(Foreign);
-      EmitGuardJump(Routine.GuardFn);
-      OutStreamer->emitLabel(Trap);
-      EmitFastFail();
-    }
     if (!UsesRoutine[I])
       continue;
+    const RoutineKind &Routine = Routines[I];
+    unsigned Reg = Routine.TargetReg;
 
     // testl $mask, %reg32; jz 1f
     // movabsq $pattern, %r11; cmpq %r11, -12(%reg); je 3f
@@ -628,7 +590,16 @@ void X86AsmPrinter::emitKCFIThunks(Module &M) {
       MCSymbol *Trap = OutContext.createTempSymbol();
       MCSymbol *Miss = Dynamic ? OutContext.createTempSymbol() : Trap;
       EmitPageTest(Reg, Walk);
-      EmitMarkerCompare();
+      OutStreamer->emitInstruction(
+          MCInstBuilder(X86::MOV64ri).addReg(X86::R11).addImm(Pattern), STI);
+      OutStreamer->emitInstruction(MCInstBuilder(X86::CMP64mr)
+                                       .addReg(Reg)
+                                       .addImm(1)
+                                       .addReg(X86::NoRegister)
+                                       .addImm(-(PrefixNops + 12))
+                                       .addReg(X86::NoRegister)
+                                       .addReg(X86::R11),
+                                   STI);
       EmitJcc(Trap, X86::COND_E);
       OutStreamer->emitLabel(Walk);
       OutStreamer->emitInstruction(MCInstBuilder(X86::MOV64rm)
@@ -676,7 +647,7 @@ void X86AsmPrinter::emitKCFIThunks(Module &M) {
     return;
 
   // movl $FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG, %ecx; int $0x29
-  EmitFunctionStart(OutContext.getOrCreateSymbol("__llvm_kcfi_trap"));
+  EmitFunctionStart(TrapFn);
   EmitFastFail();
 
   for (const auto &[Type, Open] : OpenTypes) {
