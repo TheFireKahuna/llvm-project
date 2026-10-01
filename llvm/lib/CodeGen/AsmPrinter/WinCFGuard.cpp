@@ -92,9 +92,10 @@ void WinCFGuard::endModule() {
   std::vector<const MCSymbol *> GIATsEntries;
   for (const Function &F : *M) {
     if (isPossibleIndirectCallTarget(&F)) {
-      // If F is a dllimport and has an "__imp_" symbol already defined, add the
-      // "__imp_" symbol to the .giats section.
-      if (F.hasDLLImportStorageClass()) {
+      // If F has an "__imp_" symbol already defined, add the "__imp_" symbol
+      // to the .giats section. A target may load the address of a function
+      // that is not dllimport from its import pointer too.
+      if (F.isDeclarationForLinker()) {
         if (MCSymbol *impSym = lookupImpSymbol(Asm->getSymbol(&F))) {
           GIATsEntries.push_back(impSym);
         }

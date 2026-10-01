@@ -140,6 +140,18 @@ unsigned char X86Subtarget::classifyGlobalReference(const GlobalValue *GV,
     }
   }
 
+  // On Windows Itanium and NT-POSIX the address of a function the module does
+  // not define is loaded from its import pointer, as ELF's -fPIE form loads it
+  // from the GOT, even where calls to it are direct, so that code sees the
+  // address static data sees. The linker replaces the load with the direct
+  // address when the function is in the image.
+  if (TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment()) {
+    const auto *F = dyn_cast_or_null<Function>(GV);
+    if (F && F->isDeclarationForLinker() && !F->isIntrinsic() &&
+        F->hasDefaultVisibility() && !F->hasExternalWeakLinkage())
+      return X86II::MO_DLLIMPORT;
+  }
+
   if (TM.shouldAssumeDSOLocal(GV))
     return classifyLocalReference(GV);
 

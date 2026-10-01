@@ -448,6 +448,18 @@ AArch64Subtarget::ClassifyGlobalReference(const GlobalValue *GV,
   if (GV->isTagged())
     return AArch64II::MO_GOT;
 
+  // On Windows Itanium and NT-POSIX the address of a function the module does
+  // not define is loaded from its import pointer, as ELF's -fPIE form loads it
+  // from the GOT, even where calls to it are direct, so that code sees the
+  // address static data sees. The linker replaces the load with the direct
+  // address when the function is in the image.
+  if (getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+    const auto *F = dyn_cast<Function>(GV);
+    if (F && F->isDeclarationForLinker() && !F->isIntrinsic() &&
+        F->hasDefaultVisibility() && !F->hasExternalWeakLinkage())
+      return AArch64II::MO_GOT | AArch64II::MO_DLLIMPORT;
+  }
+
   if (!TM.shouldAssumeDSOLocal(GV)) {
     if (GV->hasDLLImportStorageClass()) {
       return AArch64II::MO_GOT | AArch64II::MO_DLLIMPORT;
@@ -508,6 +520,11 @@ unsigned AArch64Subtarget::classifyGlobalFunctionReference(
         return AArch64II::MO_ARM64EC_CALLMANGLE;
       }
     }
+
+    // A call to a DSO-local function is direct, though its address may be
+    // loaded from its import pointer.
+    if (TM.shouldAssumeDSOLocal(GV))
+      return AArch64II::MO_NO_FLAG;
 
     // Use ClassifyGlobalReference for setting MO_DLLIMPORT/MO_COFFSTUB.
     return ClassifyGlobalReference(GV, TM);
