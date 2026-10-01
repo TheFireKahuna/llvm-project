@@ -151,6 +151,19 @@ extern "C" {
     }
 #endif // HAVE___CXA_THREAD_ATEXIT_IMPL
   }
+
+#if defined(HAVE___CXA_THREAD_ATEXIT_IMPL) && (defined(_WIN32_ITANIUM) || defined(__NTPOSIX__))
+  // Under -fsanitize-kcfi-marker, clang registers its destructors here, since
+  // they carry the salted destructor type, which a function passed to
+  // __cxa_thread_atexit need not carry. The C library's entry point records
+  // which type to call each function through.
+  int __llvm_kcfi_cxa_thread_atexit_impl(Dtor, void*, void*);
+  _LIBCXXABI_FUNC_VIS int __llvm_kcfi_cxa_thread_atexit(Dtor, void*, void*) throw();
+
+  _LIBCXXABI_FUNC_VIS int __llvm_kcfi_cxa_thread_atexit(Dtor dtor, void* obj, void* dso_symbol) throw() {
+    return __llvm_kcfi_cxa_thread_atexit_impl(dtor, obj, dso_symbol);
+  }
+#endif
 } // extern "C"
 #endif // defined(__linux__) || defined(__Fuchsia__) || defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
 } // namespace __cxxabiv1
