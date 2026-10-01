@@ -1078,6 +1078,66 @@ void LocalImportChunk::getBaserels(std::vector<Baserel> *res) {
 
 size_t LocalImportChunk::getSize() const { return ctx.config.wordsize; }
 
+KCFIOpenChunk::KCFIOpenChunk(COFFLinkerContext &ctx, Defined *list,
+                             Defined *scanner, bool dynamic)
+    : list(list), scanner(scanner), dynamic(dynamic), ctx(ctx) {
+  setAlignment(ctx.config.machine == ARM64 ? 4 : 1);
+}
+
+size_t KCFIOpenChunk::getSize() const {
+  if (ctx.config.machine == ARM64)
+    return 20;
+  return dynamic ? 13 : 12;
+}
+
+MachineTypes KCFIOpenChunk::getMachine() const { return ctx.config.machine; }
+
+void KCFIOpenChunk::writeTo(uint8_t *buf) const {
+  // The scanner reads the list from its first word after the head.
+  uint64_t first = list->getRVA() + 8;
+  if (ctx.config.machine == ARM64) {
+    // The scanner is reached through X17, at any distance, since the linker
+    // adds no range extension thunk for a chunk of its own.
+    uint64_t target = scanner->getRVA();
+    write32le(buf, 0x90000010);      // adrp x16, first
+    write32le(buf + 4, 0x91000210);  // add x16, x16, :lo12:first
+    write32le(buf + 8, 0x90000011);  // adrp x17, scanner
+    write32le(buf + 12, 0x91000231); // add x17, x17, :lo12:scanner
+    write32le(buf + 16, 0xD61F0220); // br x17
+    applyArm64Addr(buf, first, rva, 12);
+    applyArm64Imm(buf + 4, first & 0xfff, 0);
+    applyArm64Addr(buf + 8, target, rva + 8, 12);
+    applyArm64Imm(buf + 12, target & 0xfff, 0);
+    return;
+  }
+  static const uint8_t routine[] = {
+      0x4C, 0x8D, 0x15, 0, 0, 0, 0, // lea r10, [rip + first]
+      0xE9, 0,    0,    0, 0,       // jmp scanner
+      0xCC,                         // int3
+  };
+  memcpy(buf, routine, getSize());
+  write32le(buf + 3, first - (rva + 7));
+  write32le(buf + 8, scanner->getRVA() - (rva + 12));
+}
+
+KCFIListChunk::KCFIListChunk(COFFLinkerContext &ctx, StringRef sectionName,
+                             Defined *sym, uint64_t value)
+    : sectionName(sectionName), sym(sym), value(value), ctx(ctx) {
+  setAlignment(8);
+}
+
+void KCFIListChunk::getBaserels(std::vector<Baserel> *res) {
+  if (sym && sym->isLive())
+    res->emplace_back(getRVA(), ctx.config.machine);
+}
+
+void KCFIListChunk::writeTo(uint8_t *buf) const {
+  uint64_t v = value;
+  if (sym)
+    v = sym->isLive() ? sym->getRVA() + ctx.config.imageBase : 0;
+  write64le(buf, v);
+}
+
 void LocalImportChunk::writeTo(uint8_t *buf) const {
   if (ctx.config.is64()) {
     write64le(buf, sym->getRVA() + ctx.config.imageBase);

@@ -83,6 +83,10 @@ public:
   // Returns whether any member was loaded or X referenced.
   bool loadLocalImportMembers();
 
+  // Under -import-slots, opens the KCFI types through which code without a
+  // KCFI prefix, which the link brings in, can be reached.
+  void openKCFITypes();
+
   // Load lazy objects that are needed for MinGW automatic import and for
   // doing stdcall fixups.
   void loadMinGWSymbols();
@@ -174,6 +178,10 @@ public:
   std::vector<Symbol *> expSymbols;
 
   std::vector<SameAddressThunkARM64EC *> sameAddressThunks;
+
+  // The routines and list words of the KCFI types that openKCFITypes opened,
+  // each to be placed in its section.
+  std::vector<Chunk *> kcfiChunks;
 
   // A list of DLL exports.
   std::vector<Export> exports;

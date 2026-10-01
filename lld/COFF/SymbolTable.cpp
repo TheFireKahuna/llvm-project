@@ -16,6 +16,7 @@
 #include "lld/Common/ErrorHandler.h"
 #include "lld/Common/Memory.h"
 #include "lld/Common/Timer.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/DebugInfo/DIContext.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Mangler.h"
@@ -26,6 +27,7 @@
 #include "llvm/Support/Parallel.h"
 #include "llvm/Support/TimeProfiler.h"
 #include "llvm/Support/raw_ostream.h"
+#include <map>
 #include <utility>
 
 using namespace llvm;
@@ -361,6 +363,257 @@ bool SymbolTable::loadLocalImportMembers() {
     loaded = true;
   }
   return loaded;
+}
+
+// Opens a KCFI type where the compiler could not see that code without a KCFI
+// prefix of ours reaches it, because the link brings that code in. Clang
+// gives the facts as weak externals that name the type, in 8 lowercase hex
+// digits, and a function:
+//
+// - __kcfi_typeid_<f> = <type>, for a declaration f whose address an object
+//   takes. If f resolves to an import or to a definition without a prefix,
+//   the type is open statically and f is added to its list of targets.
+// - __kcfi_inflow_<type>_<g>, for a declaration g through which a pointer of
+//   the type can come back. If g resolves so, the type is open dynamically.
+// - __kcfi_param_<type>_<g>, for a definition g that can receive a pointer of
+//   the type. If an object with code and no prefix references g, the type is
+//   open dynamically.
+//
+// A type is opened only where a KCFI thunk refers to its mismatch routine,
+// __llvm_kcfi_mismatch_<type> or __llvm_kcfi_check_mismatch_<type>. While the
+// routine is the weak default that fails fast, it becomes one that points at
+// the type's list and jumps to the compiled scanner of the type's kind, and a
+// dynamic opening replaces a static routine too. The lists' words go in the
+// sections that sort them among the compiler's. This runs after LTO, whose
+// objects carry the facts, and before the garbage collector, so that what the
+// routines refer to is kept.
+void SymbolTable::openKCFITypes() {
+  bool isX64 = ctx.config.machine == AMD64;
+  if (!isX64 && ctx.config.machine != ARM64)
+    return;
+  // Every object with a KCFI thunk defines the scanners of the thunk's kind.
+  if (!find("__llvm_kcfi_open_dynamic") &&
+      !find("__llvm_kcfi_check_open_dynamic"))
+    return;
+  llvm::TimeTraceScope timeScope("Open KCFI types");
+
+  // Whether each object defines code and whether a function in it has a KCFI
+  // prefix with a marker: the one whose static __cfi_ label it is the first
+  // function to follow in its chunk.
+  DenseSet<std::pair<SectionChunk *, uint32_t>> prefixed;
+  DenseMap<ObjFile *, std::pair<bool, bool>> objInfo;
+  auto scan = [&](ObjFile *file) {
+    auto [it, inserted] = objInfo.try_emplace(file);
+    if (!inserted)
+      return it->second;
+    SmallVector<DefinedRegular *, 0> labels, entries;
+    bool definesCode = false, hasPrefix = false;
+    for (Symbol *s : file->getSymbols()) {
+      auto *d = dyn_cast_or_null<DefinedRegular>(s);
+      if (!d || d->file != file || !d->getChunk() ||
+          !(d->getChunk()->getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE))
+        continue;
+      // An empty section, such as the .text an assembler always emits, holds
+      // no code.
+      definesCode |= d->getChunk()->getSize() != 0;
+      if (d->getCOFFSymbol().getComplexType() == IMAGE_SYM_DTYPE_FUNCTION)
+        entries.push_back(d);
+      else if (!d->getCOFFSymbol().isExternal() &&
+               d->getName().starts_with("__cfi_"))
+        labels.push_back(d);
+    }
+    auto byLocation = [](DefinedRegular *a, DefinedRegular *b) {
+      return std::make_pair(a->getChunk(), a->getValue()) <
+             std::make_pair(b->getChunk(), b->getValue());
+    };
+    llvm::sort(entries, byLocation);
+    for (DefinedRegular *label : labels) {
+      ArrayRef<uint8_t> data = label->getChunk()->getContents();
+      auto hasMarker = [&](uint32_t at) {
+        return at + 12 <= data.size() && data[at] == 0x0F &&
+               data[at + 1] == 0x1F && data[at + 2] == 0x80 &&
+               data[at + 7] == 0xB8;
+      };
+      uint32_t off = label->getValue();
+      auto e = llvm::upper_bound(entries, label, byLocation);
+      if ((hasMarker(off) || hasMarker(off + 4)) && e != entries.end() &&
+          (*e)->getChunk() == label->getChunk()) {
+        prefixed.insert({(*e)->getChunk(), (*e)->getValue()});
+        hasPrefix = true;
+      }
+    }
+    return it->second = {definesCode, hasPrefix};
+  };
+  auto isForeign = [&](Symbol *s) {
+    Defined *d = s ? s->getDefined() : nullptr;
+    if (isa_and_nonnull<DefinedImportThunk, DefinedImportData>(d))
+      return true;
+    auto *r = dyn_cast_or_null<DefinedRegular>(d);
+    auto *file = r ? dyn_cast_or_null<ObjFile>(r->file) : nullptr;
+    if (!file)
+      return false;
+    scan(file);
+    return !prefixed.contains({r->getChunk(), r->getValue()});
+  };
+
+  // For each type, whether it is open dynamically, and the symbols to add to
+  // its list, each with whether the entry points at a cell holding it rather
+  // than at the symbol itself.
+  struct Opening {
+    bool dynamic = false;
+    SmallVector<std::pair<Defined *, bool>, 0> entries;
+  };
+  std::map<uint32_t, Opening> openings;
+  std::vector<Symbol *> typeids;
+  DenseMap<Symbol *, SmallVector<uint32_t, 1>> params;
+  auto parseFact = [&](StringRef rest, uint32_t &type) -> Symbol * {
+    if (rest.size() < 10 || rest[8] != '_' ||
+        rest.take_front(8).getAsInteger(16, type))
+      return nullptr;
+    return find(rest.drop_front(9));
+  };
+  forEachSymbol([&](Symbol *s) {
+    StringRef name = s->getName();
+    uint32_t type = 0;
+    if (!name.consume_front("__kcfi_"))
+      return;
+    if (name.starts_with("typeid_")) {
+      typeids.push_back(s);
+    } else if (name.consume_front("inflow_")) {
+      if (isForeign(parseFact(name, type)))
+        openings[type].dynamic = true;
+    } else if (name.consume_front("param_")) {
+      if (Symbol *g = parseFact(name, type))
+        params[g].push_back(type);
+    }
+  });
+
+  // An import is listed by its import address table slot, and by a cell
+  // holding its thunk, which static data refers to; a definition without a
+  // prefix by a cell holding its address.
+  llvm::sort(typeids,
+             [](Symbol *a, Symbol *b) { return a->getName() < b->getName(); });
+  for (Symbol *s : typeids) {
+    auto *id = dyn_cast_or_null<DefinedAbsolute>(s->getDefined());
+    Symbol *f = find(s->getName().substr(strlen("__kcfi_typeid_")));
+    if (!id || !isForeign(f))
+      continue;
+    auto &entries = openings[uint32_t(id->getVA())].entries;
+    Defined *d = f->getDefined();
+    if (auto *thunk = dyn_cast<DefinedImportThunk>(d)) {
+      entries.push_back({thunk->wrappedSym, false});
+      entries.push_back({thunk, true});
+    } else {
+      entries.push_back({d, !isa<DefinedImportData>(d)});
+    }
+  }
+
+  // An object with code and no prefix is foreign.
+  if (!params.empty()) {
+    for (ObjFile *file : ctx.objFileInstances) {
+      for (Symbol *s : file->getSymbols()) {
+        auto it = params.find(s);
+        if (it == params.end())
+          continue;
+        auto *r = dyn_cast_or_null<DefinedRegular>(s->getDefined());
+        if (r && r->file == file)
+          continue;
+        auto [definesCode, hasPrefix] = scan(file);
+        if (!definesCode || hasPrefix)
+          break;
+        for (uint32_t type : it->second)
+          openings[type].dynamic = true;
+      }
+    }
+  }
+
+  auto keep = [&](Defined *d) {
+    if (!d->isGCRoot) {
+      d->isGCRoot = true;
+      ctx.config.gcroot.push_back(d);
+    }
+  };
+  struct Kind {
+    StringRef mismatch, staticScanner, dynamicScanner;
+  };
+  static const Kind kinds[] = {
+      {"__llvm_kcfi_mismatch_", "__llvm_kcfi_open", "__llvm_kcfi_open_dynamic"},
+      {"__llvm_kcfi_check_mismatch_", "__llvm_kcfi_check_open",
+       "__llvm_kcfi_check_open_dynamic"}};
+  for (auto &kv : openings) {
+    uint32_t type = kv.first;
+    Opening &opening = kv.second;
+    std::string hex = utohexstr(type, /*LowerCase=*/true, /*Width=*/8);
+    Defined *head = dyn_cast_or_null<Defined>(find("__llvm_kcfi_list_" + hex));
+    auto addHead = [&] {
+      auto *c = make<KCFIListChunk>(
+          ctx, saver().save(".rdata$llvm_kcfi_" + hex + "_a"), nullptr, type);
+      kcfiChunks.push_back(c);
+      kcfiChunks.push_back(make<KCFIListChunk>(
+          ctx, saver().save(".rdata$llvm_kcfi_" + hex + "_z"), nullptr,
+          uint64_t(type) << 1 | 1));
+      head = cast<Defined>(
+          addSynthetic(saver().save("__llvm_kcfi_list_" + hex), c));
+    };
+
+    // The mismatch routine is the weak default, the trap, or a compiled
+    // routine, which jumps to one of the scanners. Anything else, such as a
+    // routine of another form, is left as it is.
+    bool opened = false;
+    for (const Kind &k : ArrayRef(kinds).drop_front(isX64 ? 0 : 1)) {
+      Symbol *m = find((Twine(k.mismatch) + hex).str());
+      bool replace;
+      if (auto *u = dyn_cast_or_null<Undefined>(m)) {
+        Defined *d = u->getDefinedWeakAlias();
+        if (!d || d->getName() != "__llvm_kcfi_trap")
+          continue;
+        replace = true;
+      } else if (auto *r = dyn_cast_or_null<DefinedRegular>(m)) {
+        auto refs = r->getChunk()->symbols();
+        Symbol *staticScanner = find(k.staticScanner);
+        Symbol *dynamicScanner = find(k.dynamicScanner);
+        bool isStatic = staticScanner && is_contained(refs, staticScanner);
+        if (!isStatic &&
+            !(dynamicScanner && is_contained(refs, dynamicScanner)))
+          continue;
+        replace = isStatic && opening.dynamic;
+      } else {
+        continue;
+      }
+      opened = true;
+      if (!replace)
+        continue;
+      StringRef name = opening.dynamic ? k.dynamicScanner : k.staticScanner;
+      auto *scanner = dyn_cast_or_null<Defined>(find(name));
+      if (!scanner) {
+        Err(ctx) << "cannot open KCFI type " << hex << ": " << name
+                 << " is not defined";
+        continue;
+      }
+      if (!head)
+        addHead();
+      keep(scanner);
+      keep(head);
+      auto *routine = make<KCFIOpenChunk>(ctx, head, scanner, opening.dynamic);
+      kcfiChunks.push_back(routine);
+      replaceSymbol<DefinedSynthetic>(m, m->getName(), routine);
+    }
+    if (!opened || opening.entries.empty())
+      continue;
+
+    if (!head)
+      addHead();
+    StringRef section = saver().save(".rdata$llvm_kcfi_" + hex + "_m");
+    for (auto [target, viaCell] : opening.entries) {
+      Defined *entry = target;
+      if (viaCell) {
+        auto *cell = make<KCFIListChunk>(ctx, ".rdata", target);
+        kcfiChunks.push_back(cell);
+        entry = make<DefinedSynthetic>(target->getName(), cell);
+      }
+      kcfiChunks.push_back(make<KCFIListChunk>(ctx, section, entry));
+    }
+  }
 }
 
 Defined *SymbolTable::impSymbol(StringRef name) {

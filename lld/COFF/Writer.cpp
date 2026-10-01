@@ -1174,6 +1174,9 @@ static bool shouldStripSectionSuffix(SectionChunk *sc, StringRef name,
     return false;
   if (!sc || !sc->isCOMDAT())
     return false;
+  // The pieces of a KCFI type's list are kept in order by their suffix.
+  if (name.starts_with(".rdata$llvm_kcfi_"))
+    return false;
   return name.starts_with(".text$") || name.starts_with(".data$") ||
          name.starts_with(".rdata$") || name.starts_with(".pdata$") ||
          name.starts_with(".xdata$") || name.starts_with(".eh_frame$");
@@ -1271,6 +1274,9 @@ void Writer::createSections() {
                                                 c->getOutputCharacteristics());
     pSec->chunks.push_back(c);
   }
+  for (Chunk *c : ctx.symtab.kcfiChunks)
+    createPartialSection(c->getSectionName(), c->getOutputCharacteristics())
+        ->chunks.push_back(c);
 
   fixPartialSectionChars(".rsrc", data | r);
   fixPartialSectionChars(".edata", data | r);
@@ -2784,13 +2790,13 @@ void Writer::findKCFIPrefixes() {
       if (!seen.insert({sc, off}).second)
         continue;
       // A check outside the code range reads up to 12 bytes before the end of
-      // the marker pattern, which a patchable prefix moves further from the
-      // entry, and reads nothing before a target in the page's first
-      // PowerOf2Ceil of that many bytes.
+      // the marker pattern, or 16 with a second type word, which a patchable
+      // prefix moves further from the entry, and reads nothing before a
+      // target in the page's first PowerOf2Ceil of that many bytes.
       uint32_t entry = (*it)->getValue();
       uint32_t patchable = entry - off - size;
       kcfiPrefixes.push_back({sc, off, size, entry});
-      kcfiEntries[sc].push_back({entry, PowerOf2Ceil(patchable + 12)});
+      kcfiEntries[sc].push_back({entry, PowerOf2Ceil(patchable + size)});
     }
   }
 }
