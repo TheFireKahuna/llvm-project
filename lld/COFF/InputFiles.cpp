@@ -420,11 +420,17 @@ void ObjFile::readLinkRecords() {
                        "object with a newer linker";
     return;
   }
-  data.getULEB128(cur); // The capabilities.
+  uint64_t capabilities = data.getULEB128(cur);
   while (cur && !data.eof(cur)) {
     uint64_t kind = data.getULEB128(cur);
     uint64_t size = data.getULEB128(cur);
+    uint64_t start = cur.tell();
     data.skip(cur, size);
+    if (cur && kind == LinkRecordSites && getMachineType() == AMD64) {
+      if (!readLinkSites(contents.slice(start, size)))
+        return;
+      continue;
+    }
     if (cur && (kind & LinkRecordKindCritical)) {
       consumeError(cur.takeError());
       Err(symtab.ctx) << this
@@ -435,9 +441,100 @@ void ObjFile::readLinkRecords() {
       return;
     }
   }
-  if (Error e = cur.takeError())
+  if (Error e = cur.takeError()) {
     Err(symtab.ctx) << this
                     << ": .llvm_link_records is malformed: " << std::move(e);
+    return;
+  }
+  describesSites = (capabilities & LinkRecordsX86_64Sites) &&
+                   getMachineType() == AMD64;
+  if (!describesSites)
+    linkSites.clear();
+}
+
+// Reads a group of instruction sites. Sites are found from relocations, so a
+// site at an offset with no relocation is never used.
+bool ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
+  auto malformed = [&](const Twine &msg) {
+    Err(symtab.ctx) << this << ": .llvm_link_records is malformed: " << msg;
+    linkSites.clear();
+    return false;
+  };
+  DataExtractor data(payload, /*IsLittleEndian=*/true);
+  DataExtractor::Cursor cur(0);
+  while (cur && !data.eof(cur)) {
+    uint64_t symIndex = data.getULEB128(cur);
+    uint64_t count = data.getULEB128(cur);
+    if (!cur)
+      break;
+    Expected<COFFSymbolRef> sym = coffObj->getSymbol(symIndex);
+    Expected<const coff_section *> sec =
+        sym && sym->isSectionDefinition() && sym->getSectionNumber() > 0
+            ? coffObj->getSection(sym->getSectionNumber())
+            : Expected<const coff_section *>(nullptr);
+    if (!sym || !sec || !*sec) {
+      consumeError(sym.takeError());
+      consumeError(sec.takeError());
+      return malformed("site group of symbol " + Twine(symIndex) +
+                       ", which is not a section's symbol");
+    }
+    uint32_t section = sym->getSectionNumber();
+    uint64_t size = (*sec)->SizeOfRawData;
+    uint64_t offset = 0;
+    for (uint64_t i = 0; cur && i != count; ++i) {
+      uint64_t site = data.getULEB128(cur);
+      if (site & 8)
+        data.skip(cur, data.getULEB128(cur));
+      if (!cur)
+        break;
+      if (i != 0 && site >> 4 == 0)
+        return malformed("sites out of order in section " + Twine(section));
+      offset += site >> 4;
+      unsigned form = site & 7;
+      if (form > LinkSiteJumpOnePrefix)
+        return malformed("site of unknown form " + Twine(form));
+      if (offset + 4 > size)
+        return malformed("site past the end of section " + Twine(section));
+      linkSites.push_back(
+          {section, uint32_t(offset), static_cast<LinkSiteForm>(form)});
+    }
+  }
+  if (Error e = cur.takeError()) {
+    linkSites.clear();
+    Err(symtab.ctx) << this
+                    << ": .llvm_link_records is malformed: " << std::move(e);
+    return false;
+  }
+  // Each section appears once, so sorting by section keeps each section's
+  // sites in order.
+  llvm::stable_sort(linkSites, [](const LinkSite &a, const LinkSite &b) {
+    return a.section < b.section;
+  });
+  for (size_t i = 1; i < linkSites.size(); ++i)
+    if (linkSites[i - 1].section == linkSites[i].section &&
+        linkSites[i - 1].offset >= linkSites[i].offset)
+      return malformed("sites out of order in section " +
+                       Twine(linkSites[i].section));
+  return true;
+}
+
+ArrayRef<ObjFile::LinkSite>
+ObjFile::getLinkSites(const SectionChunk *sc) const {
+  uint32_t section = sc->getSectionNumber();
+  auto [b, e] = std::equal_range(
+      linkSites.begin(), linkSites.end(), LinkSite{section, 0, {}},
+      [](const LinkSite &a, const LinkSite &b) { return a.section < b.section; });
+  return ArrayRef(linkSites).slice(b - linkSites.begin(), e - b);
+}
+
+std::optional<LinkSiteForm>
+ObjFile::getLinkSiteForm(const SectionChunk *sc, uint32_t offset) const {
+  ArrayRef<LinkSite> sites = getLinkSites(sc);
+  auto it = llvm::partition_point(
+      sites, [&](const LinkSite &s) { return s.offset < offset; });
+  if (it == sites.end() || it->offset != offset)
+    return std::nullopt;
+  return it->form;
 }
 
 SectionChunk *ObjFile::readSection(uint32_t sectionNumber,

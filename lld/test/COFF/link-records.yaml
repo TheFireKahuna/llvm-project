@@ -2,9 +2,9 @@
 ## skipped unless the kind is critical, and a container the linker cannot read
 ## in full is an error, since it may hold a critical record.
 
-## "LLRC", version 1, no capabilities, and a group of the non-critical kind 2
+## "LLRC", version 1, no capabilities, and a group of the non-critical kind 4
 ## with a two-byte payload.
-# RUN: yaml2obj -DDATA=4C4C524301000202AABB %s -o %t.skip.obj
+# RUN: yaml2obj -DDATA=4C4C524301000402AABB %s -o %t.skip.obj
 # RUN: lld-link -entry:main -subsystem:console -out:%t.exe %t.skip.obj
 # RUN: llvm-readobj --sections %t.exe | FileCheck --check-prefix=REMOVED %s
 
@@ -15,7 +15,7 @@
 # RUN: lld-link -entry:main -subsystem:console -out:%t.exe %t.empty.obj
 
 ## A group of the critical kind 3.
-# RUN: yaml2obj -DDATA=4C4C5243010002010003020001 %s -o %t.critical.obj
+# RUN: yaml2obj -DDATA=4C4C5243010004010003020001 %s -o %t.critical.obj
 # RUN: not lld-link -entry:main -subsystem:console -out:%t.exe \
 # RUN:   %t.critical.obj 2>&1 | FileCheck --check-prefix=CRITICAL %s
 
@@ -46,6 +46,28 @@
 # MALFORMED: error: {{.*}}.size.obj: .llvm_link_records is malformed: unexpected end of data at offset 0x9 while reading [0x8, 0xb)
 # MALFORMED: error: {{.*}}.short.obj: .llvm_link_records is malformed: unexpected end of data at offset 0x3 while reading [0x0, 0x4)
 
+## Instruction sites, kind 2: a site with data the linker skips, then a group
+## that is cut short, a group of a symbol that is not a section's, a site of
+## a form that does not exist, a site whose instruction would end past its
+## section, and two sites at one offset.
+# RUN: yaml2obj -DDATA=4C4C5243010102060001180200AA %s -o %t.sites.obj
+# RUN: lld-link -entry:main -subsystem:console -out:%t.exe %t.sites.obj
+# RUN: yaml2obj -DDATA=4C4C524301010203000221 %s -o %t.sites-short.obj
+# RUN: yaml2obj -DDATA=4C4C524301010203020121 %s -o %t.sites-sym.obj
+# RUN: yaml2obj -DDATA=4C4C524301010203000106 %s -o %t.sites-form.obj
+# RUN: yaml2obj -DDATA=4C4C524301010203000150 %s -o %t.sites-end.obj
+# RUN: yaml2obj -DDATA=4C4C52430101020400021000 %s -o %t.sites-order.obj
+# RUN: not lld-link -entry:main -subsystem:console -out:%t.exe \
+# RUN:   %t.sites-short.obj %t.sites-sym.obj %t.sites-form.obj \
+# RUN:   %t.sites-end.obj %t.sites-order.obj 2>&1 | \
+# RUN:   FileCheck --check-prefix=SITES %s
+
+# SITES: error: {{.*}}.sites-short.obj: .llvm_link_records is malformed: unable to decode LEB128 at offset 0x00000003: malformed uleb128, extends past end
+# SITES: error: {{.*}}.sites-sym.obj: .llvm_link_records is malformed: site group of symbol 2, which is not a section's symbol
+# SITES: error: {{.*}}.sites-form.obj: .llvm_link_records is malformed: site of unknown form 6
+# SITES: error: {{.*}}.sites-end.obj: .llvm_link_records is malformed: site past the end of section 1
+# SITES: error: {{.*}}.sites-order.obj: .llvm_link_records is malformed: sites out of order in section 1
+
 --- !COFF
 header:
   Machine:         IMAGE_FILE_MACHINE_AMD64
@@ -54,7 +76,7 @@ sections:
   - Name:            .text
     Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
     Alignment:       16
-    SectionData:     C3
+    SectionData:     C3CCCCCCCCCCCCCC
   - Name:            .llvm_link_records
     Characteristics: [ IMAGE_SCN_LNK_REMOVE ]
     Alignment:       1
@@ -67,7 +89,7 @@ symbols:
     ComplexType:     IMAGE_SYM_DTYPE_NULL
     StorageClass:    IMAGE_SYM_CLASS_STATIC
     SectionDefinition:
-      Length:          1
+      Length:          8
       NumberOfRelocations: 0
       NumberOfLinenumbers: 0
       CheckSum:        0
