@@ -2450,8 +2450,18 @@ bool CodeGenModule::shouldMapVisibilityToDLLImport(const NamedDecl *D) const {
   // visibility says nothing about a declaration, since every plain
   // declaration has it.
   LinkageInfo LV = D->getLinkageAndVisibility();
-  return getLangOpts().hasDefaultVisibilityExportMapping() &&
-         LV.getVisibility() == DefaultVisibility && LV.isVisibilityExplicit();
+  if (LV.getVisibility() == DefaultVisibility && LV.isVisibilityExplicit() &&
+      getLangOpts().hasDefaultVisibilityExportMapping())
+    return true;
+  // Under -fno-plt a call to a function the translation unit does not define
+  // goes through the import table, which takes the place of the GOT, and the
+  // linker makes it direct when the function is in the image. A declaration
+  // is local when its visibility is explicitly not default, or when the
+  // global visibility applies to declarations too.
+  return CodeGenOpts.NoPLT && isa<FunctionDecl>(D) &&
+         (LV.getVisibility() == DefaultVisibility ||
+          (!LV.isVisibilityExplicit() &&
+           !getLangOpts().SetVisibilityForExternDecls));
 }
 
 void CodeGenModule::setDLLImportDLLExport(llvm::GlobalValue *GV,
@@ -6090,19 +6100,26 @@ GetRuntimeFunctionDecl(ASTContext &C, StringRef Name) {
 static void setWindowsItaniumDLLImport(CodeGenModule &CGM, bool Local,
                                        llvm::Function *F, StringRef Name) {
   // In Windows Itanium environments, try to mark runtime functions
-  // dllimport. For Mingw and MSVC, don't. We don't really know if the user
-  // will link their standard library statically or dynamically. Marking
-  // functions imported when they are not imported can cause linker errors
-  // and warnings. The pure-call entry point and the functions that register
-  // destructors at exit are defined in every image by its startup code, not by
-  // the C++ runtime library.
-  if (!Local && CGM.getTriple().isWindowsItaniumEnvironment() &&
-      !CGM.getCodeGenOpts().LTOVisibilityPublicStd &&
-      Name != CGM.getCXXABI().GetPureVirtualCallName() &&
-      Name != "__cxa_atexit" && Name != "__llvm_kcfi_cxa_atexit" &&
-      Name != "atexit") {
+  // dllimport. For Mingw and MSVC, don't, unless -fno-plt sends every call to
+  // a function the translation unit does not define through the import
+  // table. We don't really know if the user will link their standard library
+  // statically or dynamically. Marking functions imported when they are not
+  // imported can cause linker errors and warnings. The pure-call entry point
+  // and the functions that register destructors at exit are defined in every
+  // Windows Itanium image by its startup code, not by the C++ runtime library.
+  const llvm::Triple &TT = CGM.getTriple();
+  bool NoPLT = CGM.getCodeGenOpts().NoPLT && TT.isOSBinFormatCOFF();
+  if (!Local &&
+      (NoPLT || (TT.isWindowsItaniumEnvironment() &&
+                 !CGM.getCodeGenOpts().LTOVisibilityPublicStd)) &&
+      !(TT.isWindowsItaniumEnvironment() &&
+        (Name == CGM.getCXXABI().GetPureVirtualCallName() ||
+         Name == "__cxa_atexit" || Name == "__llvm_kcfi_cxa_atexit" ||
+         Name == "atexit"))) {
     const FunctionDecl *FD = GetRuntimeFunctionDecl(CGM.getContext(), Name);
-    if (!FD || FD->hasAttr<DLLImportAttr>()) {
+    if (!FD || FD->hasAttr<DLLImportAttr>() ||
+        (NoPLT && !F->hasExternalWeakLinkage() &&
+         CGM.shouldMapVisibilityToDLLImport(FD))) {
       F->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
       F->setLinkage(llvm::GlobalValue::ExternalLinkage);
     }
