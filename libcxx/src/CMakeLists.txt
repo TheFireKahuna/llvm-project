@@ -211,6 +211,22 @@ if (LIBCXX_SUPPORTS_SHARED_LIBRARY)
     )
   endif()
 
+  # On Windows Itanium, the start-up library's termination registries are
+  # built into the shared library too, under the names the Itanium ABI gives
+  # them. Every image that imports libc++ then registers with one registry
+  # for the process, so destructors run in the order [basic.start.term]
+  # requires across those images, thread-locals before statics; an image that
+  # does not import libc++ keeps the start-up library's own copy.
+  if (WIN32_ITANIUM)
+    set(wincrt_registries
+      "${LIBCXX_SOURCE_DIR}/../compiler-rt/lib/wincrt/cxa_atexit.cpp"
+      "${LIBCXX_SOURCE_DIR}/../compiler-rt/lib/wincrt/cxa_thread_atexit.cpp")
+    target_sources(cxx_shared PRIVATE ${wincrt_registries})
+    set_source_files_properties(${wincrt_registries} PROPERTIES
+      COMPILE_DEFINITIONS WINCRT_SHARED_CXX_RUNTIME
+      COMPILE_OPTIONS "-fno-exceptions;-fno-rtti")
+  endif()
+
   # Link against libc++abi
   if (LIBCXX_STATICALLY_LINK_ABI_IN_SHARED_LIBRARY)
     target_link_libraries(cxx_shared PRIVATE libcxx-abi-shared-objects)
