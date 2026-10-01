@@ -501,6 +501,10 @@ private:
   llvm::MapVector<GlobalDecl, StringRef> MangledDeclNames;
   llvm::StringMap<GlobalDecl, llvm::BumpPtrAllocator> Manglings;
 
+  /// The KCFI types of the functions that may reach this module from code
+  /// that carries no KCFI prefix of ours.
+  llvm::SetVector<llvm::ConstantInt *> KCFIDynamicTypes;
+
   /// Global annotations.
   std::vector<llvm::Constant*> Annotations;
 
@@ -1762,6 +1766,13 @@ public:
            LangOpts.SanitizeKcfiMarker;
   }
 
+  /// Whether the module records which KCFI types it opens to functions
+  /// without a prefix of ours, for the per-type routines of the KCFI marker
+  /// scheme on COFF.
+  bool hasKCFIFacts() const {
+    return LangOpts.SanitizeKcfiMarker && getTriple().isOSBinFormatCOFF();
+  }
+
   /// Whether a virtual call checks a KCFI type salted by the class that
   /// introduces the vtable slot, which every function that can occupy the
   /// slot carries, and destructors carry the type the runtime calls them
@@ -1782,6 +1793,42 @@ public:
   /// Attach to F, which can occupy a vtable slot of type FnType, the type a
   /// call through a member function pointer checks.
   void setKCFIVfnType(llvm::Function *F, QualType FnType);
+
+  /// Generate the KCFI type identifier that a call through a pointer to a
+  /// function of type FnType checks: FnType salted by its cfi_salt.
+  llvm::ConstantInt *CreateKCFICallTypeId(QualType FnType);
+
+  /// Record that a function of KCFI type TypeId may reach this module from
+  /// code that carries no KCFI prefix of ours, so that a call of that type to
+  /// a target without the marker proceeds at the strength of Control Flow
+  /// Guard.
+  void addKCFIDynamicType(llvm::ConstantInt *TypeId) {
+    KCFIDynamicTypes.insert(TypeId);
+  }
+
+  /// Under the KCFI marker scheme on COFF, record the type of the function
+  /// pointer that a conversion of a value of type From to type To creates,
+  /// unless From already pointed to a function of that type, or that the
+  /// conversion lets code store into or load from untyped, when it converts a
+  /// pointer to a function pointer to or from another pointer type. With
+  /// LValue, the conversion reinterprets an object of type From as one of type
+  /// To.
+  void addKCFIConversionType(QualType From, QualType To, bool LValue = false);
+
+  /// Whether a call through a vtable of RD may reach a function that carries
+  /// no KCFI prefix of ours: when RD does not have hidden LTO visibility, so
+  /// that another image may create its objects, or derives from a class with
+  /// a uuid, which COM objects implement.
+  bool isKCFIVTableOpen(const CXXRecordDecl *RD);
+
+  /// Collect into TypeIds the KCFI types of the function pointers that a call
+  /// to FD hands back to its caller, through its return type and through the
+  /// objects that its pointer parameters to non-const types point to, when
+  /// Params is false; or that a caller hands to FD, through every parameter,
+  /// when Params is true. The walk follows pointers and the fields and bases
+  /// of records, and a polymorphic class adds the types of its vtable slots.
+  void collectKCFIInflowTypes(const FunctionDecl *FD, bool Params,
+                              llvm::SetVector<llvm::ConstantInt *> &TypeIds);
 
   /// Returns the KCFI marker, which tells prefixes of the KCFI marker scheme
   /// with the type identifiers of this module's options from any other.
@@ -1843,6 +1890,11 @@ public:
 
   /// Emit KCFI type identifier constants and remove unused identifiers.
   void finalizeKCFITypes();
+
+  /// Under the KCFI marker scheme on COFF, mark the function declarations
+  /// that are known imports and record the KCFI types that this module opens
+  /// to functions without a prefix of ours.
+  void emitKCFIFacts();
 
   /// Whether this function's return type has no side effects, and thus may
   /// be trivially discarded if it is unused.

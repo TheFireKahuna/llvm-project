@@ -1489,6 +1489,8 @@ static Address EmitPointerWithAlignment(const Expr *E, LValueBaseInfo *BaseInfo,
   if (const CastExpr *CE = dyn_cast<CastExpr>(E)) {
     if (const auto *ECE = dyn_cast<ExplicitCastExpr>(CE))
       CGF.CGM.EmitExplicitCastExprType(ECE, &CGF);
+    if (CE->getCastKind() == CK_BitCast)
+      CGF.CGM.addKCFIConversionType(CE->getSubExpr()->getType(), E->getType());
 
     switch (CE->getCastKind()) {
     // Non-converting casts (but not C's implicit conversion from void*).
@@ -6495,6 +6497,8 @@ LValue CodeGenFunction::EmitCastLValue(const CastExpr *E) {
     const auto *CE = cast<ExplicitCastExpr>(E);
 
     CGM.EmitExplicitCastExprType(CE, this);
+    CGM.addKCFIConversionType(E->getSubExpr()->getType(), E->getType(),
+                              /*LValue=*/true);
     LValue LV = EmitLValue(E->getSubExpr());
     Address V = LV.getAddress().withElementType(
         ConvertTypeForMem(CE->getTypeAsWritten()->getPointeeType()));

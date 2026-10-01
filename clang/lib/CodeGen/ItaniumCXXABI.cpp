@@ -838,11 +838,23 @@ CGCallee ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
   // that can occupy a slot carries a second type, salted "__vfn" alone, which
   // the call checks instead. The non-virtual path checks the ordinary type,
   // and the call itself checks nothing more.
+  llvm::ConstantInt *KCFIVfnTypeId = nullptr;
+  llvm::ConstantInt *KCFITypeId = nullptr;
+  if (CGM.hasKCFIVTableSlotTypes()) {
+    KCFIVfnTypeId = CGM.CreateKCFIVfnTypeId(MPT->getPointeeType());
+    KCFITypeId = CGM.CreateKCFICallTypeId(MPT->getPointeeType());
+    // Either path may reach a function of another image, which need not
+    // carry a prefix of ours, when that image may create objects of the
+    // class.
+    if (CGM.hasKCFIFacts() && CGM.isKCFIVTableOpen(RD)) {
+      CGM.addKCFIDynamicType(KCFIVfnTypeId);
+      CGM.addKCFIDynamicType(KCFITypeId);
+    }
+  }
   bool ShouldEmitKCFICheck =
       CGF.SanOpts.has(SanitizerKind::KCFI) && CGM.hasKCFIVTableSlotTypes();
   if (ShouldEmitKCFICheck) {
-    CGF.EmitKCFIMarkerCheck(VirtualFn,
-                            CGM.CreateKCFIVfnTypeId(MPT->getPointeeType()), 16);
+    CGF.EmitKCFIMarkerCheck(VirtualFn, KCFIVfnTypeId, 16);
     FnVirtual = Builder.GetInsertBlock();
   }
 
@@ -891,11 +903,7 @@ CGCallee ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
   }
 
   if (ShouldEmitKCFICheck) {
-    llvm::StringRef Salt;
-    if (const auto &Info = FPT->getExtraAttributeInfo())
-      Salt = Info.CFISalt;
-    CGF.EmitKCFIMarkerCheck(
-        NonVirtualFn, CGM.CreateKCFITypeId(MPT->getPointeeType(), Salt), 4);
+    CGF.EmitKCFIMarkerCheck(NonVirtualFn, KCFITypeId, 4);
     FnNonVirtual = Builder.GetInsertBlock();
   }
 
@@ -2366,7 +2374,13 @@ CGCallee ItaniumCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
     bool Local = !SlotMD->getParent()->isExternallyVisible() &&
                  (!isa<CXXDestructorDecl>(SlotMD) ||
                   Slot.getDtorType() == Dtor_Deleting);
-    Callee.setKCFITypeId(CGM.CreateKCFIVTableSlotTypeId(Slot), Local);
+    llvm::ConstantInt *TypeId = CGM.CreateKCFIVTableSlotTypeId(Slot);
+    Callee.setKCFITypeId(TypeId, Local);
+    // The object may come from another image, whose functions in the slot
+    // need not carry a prefix of ours.
+    if (!Local && CGM.hasKCFIFacts() &&
+        CGM.isKCFIVTableOpen(MethodDecl->getParent()))
+      CGM.addKCFIDynamicType(TypeId);
   }
   return Callee;
 }

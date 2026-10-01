@@ -2219,6 +2219,16 @@ llvm::Constant *ConstantLValueEmitter::tryEmit() {
   auto destTy = CGM.getTypes().ConvertTypeForMem(DestType);
   assert(isa<llvm::IntegerType>(destTy) || isa<llvm::PointerType>(destTy));
 
+  // A function pointer that does not designate a function was converted from
+  // another value.
+  if (DestType->isFunctionPointerType() && !Value.isNullPointer()) {
+    QualType From = CGM.getContext().VoidPtrTy;
+    if (const ValueDecl *D = base.dyn_cast<const ValueDecl *>())
+      if (isa<FunctionDecl>(D) && !hasNonZeroOffset())
+        From = D->getType();
+    CGM.addKCFIConversionType(From, DestType);
+  }
+
   // If there's no base at all, this is a null or absolute pointer,
   // possibly cast back to an integer type.
   if (!base) {

@@ -1255,6 +1255,8 @@ void CodeGenModule::Release() {
   }
   if (hasKCFITypes())
     finalizeKCFITypes();
+  if (hasKCFIFacts())
+    emitKCFIFacts();
   emitAtAvailableLinkGuard();
   if (Context.getTargetInfo().getTriple().isWasm())
     EmitMainVoidAlias();
@@ -2435,6 +2437,16 @@ void CodeGenModule::setDLLImportDLLExport(llvm::GlobalValue *GV,
   setDLLImportDLLExport(GV, D);
 }
 
+/// Whether LV, the linkage and visibility of a declaration, says that the
+/// entity lives in a shared library: an explicit default visibility under the
+/// visibility mapping. An implicit visibility says nothing about a
+/// declaration, since every plain declaration has it.
+static bool isMappedImportVisibility(const LinkageInfo &LV,
+                                     const LangOptions &LangOpts) {
+  return LV.getVisibility() == DefaultVisibility && LV.isVisibilityExplicit() &&
+         LangOpts.hasDefaultVisibilityExportMapping();
+}
+
 bool CodeGenModule::shouldMapVisibilityToDLLImport(const NamedDecl *D) const {
   // Only COFF has an import table for the storage class to name. A vtable or
   // a type_info object, named by its class, follows rules of its own, and a
@@ -2447,12 +2459,9 @@ bool CodeGenModule::shouldMapVisibilityToDLLImport(const NamedDecl *D) const {
     if (VD->getTLSKind() != VarDecl::TLS_None)
       return false;
   // An explicit default visibility says that the entity lives in a shared
-  // library, as it says on a definition that the mapping exports. An implicit
-  // visibility says nothing about a declaration, since every plain
-  // declaration has it.
+  // library, as it says on a definition that the mapping exports.
   LinkageInfo LV = D->getLinkageAndVisibility();
-  if (LV.getVisibility() == DefaultVisibility && LV.isVisibilityExplicit() &&
-      getLangOpts().hasDefaultVisibilityExportMapping())
+  if (isMappedImportVisibility(LV, getLangOpts()))
     return true;
   // Under -fno-plt a call to a function the translation unit does not define
   // goes through the import table, which takes the place of the GOT, and the
@@ -3780,6 +3789,130 @@ void CodeGenModule::setKCFIVfnType(llvm::Function *F, QualType FnType) {
                                               CreateKCFIVfnTypeId(FnType))));
 }
 
+llvm::ConstantInt *CodeGenModule::CreateKCFICallTypeId(QualType FnType) {
+  StringRef Salt;
+  if (const auto *FP = FnType->getAs<FunctionProtoType>())
+    if (const auto &Info = FP->getExtraAttributeInfo())
+      Salt = Info.CFISalt;
+  return CreateKCFITypeId(FnType, Salt);
+}
+
+void CodeGenModule::addKCFIConversionType(QualType From, QualType To,
+                                          bool LValue) {
+  if (!hasKCFIFacts())
+    return;
+  // A function pointer that an object of another type is reinterpreted as,
+  // or that is reinterpreted as an object of another type, can be read or
+  // written untyped, as *(void **)&fp = dlsym(...) or memcpy(&fp, ...) do.
+  if (LValue) {
+    if (From->isFunctionPointerType())
+      addKCFIConversionType(To, From);
+    if (To->isFunctionPointerType())
+      addKCFIConversionType(From, To);
+    return;
+  }
+  if (!To->isFunctionPointerType()) {
+    if (From->isPointerType() && To->isPointerType())
+      addKCFIConversionType(From->getPointeeType(), To->getPointeeType(),
+                            /*LValue=*/true);
+    return;
+  }
+  QualType FnType = To->getPointeeType();
+  if (From->isFunctionPointerType())
+    From = From->getPointeeType();
+  if (From->isFunctionType() && getContext().hasSameType(From, FnType))
+    return;
+  llvm::ConstantInt *TypeId = CreateKCFICallTypeId(FnType);
+  if (From->isFunctionType() && CreateKCFICallTypeId(From) == TypeId)
+    return;
+  // Anything else, an integer, an object pointer or a pointer to a function
+  // of another type, may hold the address of a function without a prefix of
+  // ours, such as one that GetProcAddress returned.
+  KCFIDynamicTypes.insert(TypeId);
+}
+
+bool CodeGenModule::isKCFIVTableOpen(const CXXRecordDecl *RD) {
+  if (!HasHiddenLTOVisibility(RD))
+    return true;
+  const CXXRecordDecl *Def = RD->getDefinition();
+  return !Def || !Def->forallBases([](const CXXRecordDecl *Base) {
+    return !Base->hasAttr<UuidAttr>();
+  });
+}
+
+/// Collect into TypeIds the KCFI types of the function pointers that a value
+/// of type T holds or reaches through pointers and the fields and bases of
+/// records, and of the vtable slots of the polymorphic classes it reaches.
+static void
+collectKCFIReachableTypes(CodeGenModule &CGM, QualType T,
+                          llvm::SmallPtrSetImpl<const RecordDecl *> &Visited,
+                          llvm::SetVector<llvm::ConstantInt *> &TypeIds) {
+  T = CGM.getContext().getBaseElementType(T.getCanonicalType());
+  if (T->isPointerType() || T->isReferenceType()) {
+    QualType Pointee = T->getPointeeType();
+    if (Pointee->isFunctionType())
+      TypeIds.insert(CGM.CreateKCFICallTypeId(Pointee));
+    else
+      collectKCFIReachableTypes(CGM, Pointee, Visited, TypeIds);
+    return;
+  }
+
+  const RecordDecl *RD = T->getAsRecordDecl();
+  if (RD)
+    RD = RD->getDefinition();
+  if (!RD || !Visited.insert(RD).second)
+    return;
+  for (const FieldDecl *Field : RD->fields())
+    collectKCFIReachableTypes(CGM, Field->getType(), Visited, TypeIds);
+
+  const auto *CXXRD = dyn_cast<CXXRecordDecl>(RD);
+  if (!CXXRD)
+    return;
+  for (const CXXBaseSpecifier &Base : CXXRD->bases())
+    collectKCFIReachableTypes(CGM, Base.getType(), Visited, TypeIds);
+
+  // An object of a polymorphic class that another image created may reach
+  // that image's functions through any of its vtable slots.
+  if (!CXXRD->isDynamicClass() || !CGM.hasKCFIVTableSlotTypes())
+    return;
+  ItaniumVTableContext &VTContext = CGM.getItaniumVTableContext();
+  for (const CXXMethodDecl *MD : CXXRD->methods()) {
+    if (!MD->isVirtual())
+      continue;
+    MD = MD->getCanonicalDecl();
+    if (const auto *DD = dyn_cast<CXXDestructorDecl>(MD)) {
+      TypeIds.insert(CGM.CreateKCFIDestructorTypeId());
+      TypeIds.insert(CGM.CreateKCFIVTableSlotTypeId(
+          VTContext.findOriginalMethod(GlobalDecl(DD, Dtor_Deleting))));
+    } else {
+      TypeIds.insert(CGM.CreateKCFIVTableSlotTypeId(
+          VTContext.findOriginalMethod(GlobalDecl(MD))));
+    }
+  }
+}
+
+void CodeGenModule::collectKCFIInflowTypes(
+    const FunctionDecl *FD, bool Params,
+    llvm::SetVector<llvm::ConstantInt *> &TypeIds) {
+  llvm::SmallPtrSet<const RecordDecl *, 16> Visited;
+  if (Params) {
+    for (const ParmVarDecl *Param : FD->parameters())
+      collectKCFIReachableTypes(*this, Param->getType(), Visited, TypeIds);
+    return;
+  }
+
+  collectKCFIReachableTypes(*this, FD->getReturnType(), Visited, TypeIds);
+  // A function pointer passed by value flows to the callee, but the callee
+  // can store one into an object that a pointer to a non-const type points
+  // to.
+  for (const ParmVarDecl *Param : FD->parameters()) {
+    QualType T = Param->getType().getCanonicalType();
+    if ((T->isPointerType() || T->isReferenceType()) &&
+        !T->getPointeeType().isConstQualified())
+      collectKCFIReachableTypes(*this, T->getPointeeType(), Visited, TypeIds);
+  }
+}
+
 bool CodeGenModule::hasKCFIVTableSlotTypes() const {
   return LangOpts.SanitizeKcfiMarker &&
          getTarget().getCXXABI().isItaniumFamily();
@@ -3887,6 +4020,43 @@ void CodeGenModule::finalizeKCFITypes() {
                           .str();
     M.appendModuleInlineAsm(Asm);
   }
+}
+
+void CodeGenModule::emitKCFIFacts() {
+  llvm::Module &M = getModule();
+  for (llvm::Function &F : M.functions()) {
+    GlobalDecl GD;
+    if (F.hasLocalLinkage() || !lookupRepresentativeDecl(F.getName(), GD))
+      continue;
+    const auto *FD = dyn_cast<FunctionDecl>(GD.getDecl());
+    if (!FD)
+      continue;
+    FD = FD->getMostRecentDecl();
+
+    if (F.isDeclarationForLinker()) {
+      // A known import, dllimport or marked with an explicit default
+      // visibility, is in another image, which also defines the functions
+      // whose pointers a call to it hands back. A declaration that only
+      // -fno-plt imports may be in this image.
+      if (F.use_empty() || !F.hasDLLImportStorageClass() ||
+          !(FD->hasAttr<DLLImportAttr>() ||
+            isMappedImportVisibility(FD->getLinkageAndVisibility(), LangOpts)))
+        continue;
+      F.setMetadata("kcfi_import", llvm::MDNode::get(VMContext, {}));
+      collectKCFIInflowTypes(FD, /*Params=*/false, KCFIDynamicTypes);
+    } else if (F.hasDLLExportStorageClass()) {
+      // Another image may call an exported function with pointers to its own
+      // functions.
+      collectKCFIInflowTypes(FD, /*Params=*/true, KCFIDynamicTypes);
+    }
+  }
+
+  if (KCFIDynamicTypes.empty())
+    return;
+  llvm::NamedMDNode *Dynamic = M.getOrInsertNamedMetadata("kcfi.dynamic");
+  for (llvm::ConstantInt *TypeId : KCFIDynamicTypes)
+    Dynamic->addOperand(
+        llvm::MDNode::get(VMContext, llvm::ConstantAsMetadata::get(TypeId)));
 }
 
 void CodeGenModule::SetFunctionAttributes(GlobalDecl GD, llvm::Function *F,

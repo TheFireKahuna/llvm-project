@@ -62,5 +62,5 @@ int call(Base *p, int (Base::*f)(int)) { return (p->*f)(1); }
 /// A pure slot's stub carries the second type too.
 // CHECK: define linkonce_odr hidden void @_purecall.kcfi.{{[0-9a-f]+}}() {{.*}}!kcfi_vfn_type ![[#VFN]] {
 
-// CHECKS: ![[#NV]] = !{i32 [[#NV_ID]]}
 // CHECKS: ![[#VFN]] = !{i32 [[#VFN_ID]]}
+// CHECKS: ![[#NV]] = !{i32 [[#NV_ID]]}
