@@ -60,6 +60,9 @@ void markLive(COFFLinkerContext &ctx) {
     } else if (auto *sym = dyn_cast<DefinedImportThunk>(b)) {
       addImportFile(sym->wrappedSym->file);
       sym->getChunk()->live = true;
+    } else if (auto *sym = dyn_cast<DefinedLocalImport>(b)) {
+      // The pointer holds the symbol's address.
+      addSym(sym->getTarget());
     }
   };
 

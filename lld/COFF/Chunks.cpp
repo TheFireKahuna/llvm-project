@@ -467,9 +467,109 @@ void SectionChunk::writeTo(uint8_t *buf) const {
   }
 }
 
+// Whether the bytes around a REL32 field at off are those of the form an
+// object describes there. They verify the description, which is the only
+// means of finding the instruction.
+static bool isSiteForm(ArrayRef<uint8_t> data, uint32_t off,
+                       LinkSiteForm form) {
+  // A displacement that names the pointer itself has no addend.
+  if (off < 2 || off + 4 > data.size() || read32le(&data[off]) != 0)
+    return false;
+  uint8_t opcode = data[off - 2], modrm = data[off - 1];
+  uint8_t prefix = off >= 3 ? data[off - 3] : 0;
+  switch (form) {
+  case LinkSiteCall:
+    return opcode == 0xFF && modrm == 0x15;
+  case LinkSiteJump:
+    return opcode == 0xFF && modrm == 0x25;
+  case LinkSiteJumpOnePrefix:
+    // A REX prefix, or a legacy prefix.
+    return off >= 3 && opcode == 0xFF && modrm == 0x25 &&
+           ((prefix & 0xF0) == 0x40 ||
+            is_contained({0x26, 0x2E, 0x36, 0x3E, 0x64, 0x65, 0x66, 0x67, 0xF2,
+                          0xF3},
+                         prefix));
+  case LinkSiteLoad:
+    // mov r64, [rip+d], with REX.W, or with REX2 and its W bit.
+    return off >= 3 && opcode == 0x8B && (modrm & 0xC7) == 0x05 &&
+           ((prefix & 0xF8) == 0x48 ||
+            (off >= 4 && data[off - 4] == 0xD5 && (prefix & 0x88) == 0x08));
+  default:
+    return false;
+  }
+}
+
+// Whether a reference to a local import pointer can reach the pointer's
+// symbol directly instead. An absolute symbol is not at an address relative to
+// the image.
+static bool canBypass(ObjFile *file, const coff_relocation &rel) {
+  auto *li = dyn_cast_or_null<DefinedLocalImport>(
+      file->getSymbol(rel.SymbolTableIndex));
+  return li && !isa<DefinedAbsolute>(li->getTarget());
+}
+
+std::optional<LinkSiteForm>
+SectionChunk::getLocalImportRewrite(const coff_relocation &rel,
+                                    bool *mismatch) const {
+  if (!file->describesSites || rel.Type != IMAGE_REL_AMD64_REL32 ||
+      !canBypass(file, rel))
+    return std::nullopt;
+  std::optional<LinkSiteForm> form =
+      file->getLinkSiteForm(this, rel.VirtualAddress);
+  if (!form || *form == LinkSiteOther || *form == LinkSiteAddress)
+    return std::nullopt;
+  if (!isSiteForm(getContents(), rel.VirtualAddress, *form)) {
+    if (mismatch)
+      *mismatch = true;
+    return std::nullopt;
+  }
+  return form;
+}
+
+// Rewrites the described instruction whose REL32 field is at off, a reference
+// through the import pointer of a symbol in the image at s, to reach the
+// symbol directly, keeping the instruction's length and the address of the
+// instruction after it. A load becomes `lea` and a call `addr32 call rel32`.
+// A jump becomes `jmp rel32` at its first byte, followed by int3: the Windows
+// unwinder recognises an epilogue only by the instruction that ends it, and
+// accepts no prefix but BND before a direct jump. Returns whether the field
+// is left for the relocation to fill.
+static bool rewriteLocalImportSite(uint8_t *off, LinkSiteForm form,
+                                   uint64_t s, uint64_t p) {
+  switch (form) {
+  case LinkSiteLoad:
+    off[-2] = 0x8D;
+    return true;
+  case LinkSiteCall:
+    off[-2] = 0x67;
+    off[-1] = 0xE8;
+    return true;
+  case LinkSiteJump:
+  case LinkSiteJumpOnePrefix: {
+    uint8_t *start = off - (form == LinkSiteJump ? 2 : 3);
+    uint64_t end = p - (off - start) + 5;
+    start[0] = 0xE9;
+    write32le(start + 1, s - end);
+    memset(start + 5, 0xCC, off + 4 - (start + 5));
+    return false;
+  }
+  default:
+    llvm_unreachable("not a rewritten form");
+  }
+}
+
 void SectionChunk::applyRelocation(uint8_t *off,
                                    const coff_relocation &rel) const {
   auto *sym = dyn_cast_or_null<Defined>(file->getSymbol(rel.SymbolTableIndex));
+
+  // A described call, jump or pointer load through the import pointer of a
+  // symbol in the image reaches the symbol directly. Its bytes were verified
+  // when local imports were bound.
+  std::optional<LinkSiteForm> rewrite;
+  if (auto *li = dyn_cast_or_null<DefinedLocalImport>(sym)) {
+    if ((rewrite = getLocalImportRewrite(rel)))
+      sym = li->getTarget();
+  }
 
   // Get the output section of the symbol for this relocation.  The output
   // section is needed to compute SECREL and SECTION relocations used in debug
@@ -492,6 +592,8 @@ void SectionChunk::applyRelocation(uint8_t *off,
 
   // Compute the RVA of the relocation for relative relocations.
   uint64_t p = rva + rel.VirtualAddress;
+  if (rewrite && !rewriteLocalImportSite(off, *rewrite, s, p))
+    return;
   uint64_t imageBase = ctx.config.imageBase;
   switch (getArch()) {
   case Triple::x86_64:

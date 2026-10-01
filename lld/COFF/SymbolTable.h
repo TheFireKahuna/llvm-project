@@ -70,6 +70,10 @@ public:
   // symbols and warn about imported local symbols.
   void resolveRemainingUndefines(std::vector<Undefined *> &aliases);
 
+  // Decides, after mark-live, which local import pointers a reference still
+  // reads.
+  void bindLocalImports();
+
   // Try to resolve undefined symbols with alternate names.
   void resolveAlternateNames();
 

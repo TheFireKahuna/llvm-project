@@ -446,8 +446,9 @@ void ObjFile::readLinkRecords() {
                     << ": .llvm_link_records is malformed: " << std::move(e);
     return;
   }
+  // ARM64EC gives an import two pointers, which the sites do not describe.
   describesSites = (capabilities & LinkRecordsX86_64Sites) &&
-                   getMachineType() == AMD64;
+                   getMachineType() == AMD64 && !symtab.isEC();
   if (!describesSites)
     linkSites.clear();
 }

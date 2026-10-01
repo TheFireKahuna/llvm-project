@@ -87,6 +87,8 @@ bool Symbol::isLive() const {
     return imp->file->live;
   if (auto *imp = dyn_cast<DefinedImportThunk>(this))
     return imp->getChunk()->live;
+  if (auto *imp = dyn_cast<DefinedLocalImport>(this))
+    return imp->getChunk()->live;
   // Assume any other kind of symbol is live.
   return true;
 }

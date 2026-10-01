@@ -275,6 +275,15 @@ public:
   void getBaserels(std::vector<Baserel> *res);
   bool isCOMDAT() const;
   void applyRelocation(uint8_t *off, const coff_relocation &rel) const;
+
+  // The form of the instruction at rel, a REL32 relocation against a local
+  // import pointer, if the object describes it as a call, jump or pointer
+  // load, which the linker rewrites to reach the pointer's symbol directly.
+  // A site whose bytes are not its form's sets *mismatch, if given, and is not
+  // rewritten.
+  std::optional<llvm::COFF::LinkSiteForm>
+  getLocalImportRewrite(const coff_relocation &rel,
+                        bool *mismatch = nullptr) const;
   void applyRelX64(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
                    uint64_t p, uint64_t imageBase) const;
   void applyRelX86(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
@@ -710,6 +719,11 @@ public:
   size_t getSize() const override;
   void getBaserels(std::vector<Baserel> *res) override;
   void writeTo(uint8_t *buf) const override;
+  Defined *getTarget() const { return sym; }
+
+  // False if every reference to the pointer was rewritten to reach the
+  // symbol directly, which leaves the pointer out of the image.
+  bool live = true;
 
 private:
   Defined *sym;

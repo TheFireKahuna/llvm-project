@@ -2944,6 +2944,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     markLive(ctx);
   }
 
+  ctx.forEachSymtab([](SymbolTable &symtab) { symtab.bindLocalImports(); });
+
   ctx.symtab.initializeSameAddressThunks();
   for (auto alias : aliases) {
     assert(alias->kind() == Symbol::UndefinedKind);

@@ -444,7 +444,8 @@ public:
   }
 
   uint64_t getRVA() { return data->getRVA(); }
-  Chunk *getChunk() { return data; }
+  LocalImportChunk *getChunk() const { return data; }
+  Defined *getTarget() const { return data->getTarget(); }
 
 private:
   LocalImportChunk *data;
