@@ -13,7 +13,7 @@
 // definitions included, so that a program that does not replace them links
 // them from the library.
 
-// RUN: llvm-readobj --coff-exports "%{lib-dir}/libc++.dll" | FileCheck %s
+// RUN: llvm-readobj --coff-exports "%{install-prefix}/bin/libc++.dll" | FileCheck %s
 
 // CHECK-DAG: Name: _ZdlPv{{$}}
 // CHECK-DAG: Name: _Znwy{{$}}

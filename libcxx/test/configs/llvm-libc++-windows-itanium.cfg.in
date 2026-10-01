@@ -2,8 +2,6 @@
 # using either a DLL or a static library, with Clang targeting Windows Itanium or
 # NT-POSIX.
 
-lit_config.load_config(config, '@CMAKE_CURRENT_BINARY_DIR@/cmake-bridge.cfg')
-
 config.substitutions.append(('%{flags}', ''))
 config.substitutions.append(('%{compile_flags}',
     '-nostdinc++ -I %{target-include-dir} -I %{include-dir} -I %{libcxx-dir}/test/support -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_WARNINGS -DNOMINMAX'
