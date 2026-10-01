@@ -6475,6 +6475,11 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
         Attrs = Attrs.addFnAttribute(getLLVMContext(), "guard_nocf");
     }
   }
+  // A KCFI check where the pointer was loaded already handed any target
+  // outside the image to Control Flow Guard.
+  if (ConcreteCallee.isOrdinary() && ConcreteCallee.isKCFIChecked() &&
+      !CI->getCalledFunction())
+    Attrs = Attrs.addFnAttribute(getLLVMContext(), "guard_nocf");
 
   // Apply the attributes and calling convention.
   CI->setAttributes(Attrs);

@@ -1,13 +1,14 @@
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -std=c++20 -emit-llvm -fsanitize=kcfi -fsanitize-kcfi-marker -fsanitize-cfi-icall-generalize-pointers -o - %s | FileCheck %s --check-prefixes=CHECK,CHECKS,X64
-// RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -std=c++20 -emit-llvm -fsanitize=kcfi -fsanitize-kcfi-marker -fsanitize-cfi-icall-generalize-pointers -o - %s | FileCheck %s --check-prefixes=CHECK,CHECKS,A64
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -std=c++20 -emit-llvm -fsanitize=kcfi -fsanitize-kcfi-marker -fsanitize-cfi-icall-generalize-pointers -o - %s | FileCheck %s --check-prefixes=CHECK,CHECKS
+// RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -std=c++20 -emit-llvm -fsanitize=kcfi -fsanitize-kcfi-marker -fsanitize-cfi-icall-generalize-pointers -o - %s | FileCheck %s --check-prefixes=CHECK,CHECKS
 // RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -std=c++20 -emit-llvm -fsanitize-kcfi-marker -fsanitize-cfi-icall-generalize-pointers -o - %s | FileCheck %s --check-prefixes=CHECK,NOCHECKS
 
 /// Under the KCFI marker scheme, every function that can occupy a vtable slot
 /// carries a second type, its function type salted "__vfn", which does not
 /// depend on the class that introduces the slot. A call through a member
-/// function pointer checks it on the virtual path, and the ordinary type on
-/// the non-virtual path; on a mismatch, a target that carries the marker
-/// fails fast. The call itself checks nothing more.
+/// function pointer checks it 16 bytes before the entry on the virtual path,
+/// and the ordinary type 4 bytes before the entry on the non-virtual path,
+/// with llvm.kcfi.check. Each check hands a target outside the image to
+/// Control Flow Guard, so the call carries no bundle and no guard check.
 
 struct Base {
   int nv(int);
@@ -34,33 +35,24 @@ int Der::v(int x) { return x + 1; }
 int Der::p(int x) { return x + 2; }
 
 // CHECK-LABEL: define {{.*}} @_Z4callP4BaseMS_FiiE(
-// CHECKS:      memptr.virtual:
-// CHECKS:        %memptr.virtualfn = load ptr
-// CHECKS-NEXT:   [[W:%.*]] = getelementptr i8, ptr %memptr.virtualfn, i64 -16
-// CHECKS-NEXT:   %kcfi.type = load i32, ptr [[W]], align 1
-// CHECKS-NEXT:   [[OK:%.*]] = icmp eq i32 %kcfi.type, [[#%d,VFN_ID:]]
-// CHECKS-NEXT:   br i1 [[OK]], label %kcfi.cont, label %kcfi.mismatch
-// CHECKS:      kcfi.mismatch:
-// CHECKS-NEXT:   [[M:%.*]] = getelementptr i8, ptr %memptr.virtualfn, i64 -12
-// CHECKS-NEXT:   %kcfi.marker = load i64, ptr [[M]], align 1
-// CHECKS-NEXT:   [[OURS:%.*]] = icmp eq i64 %kcfi.marker, [[#%d,PATTERN:]]
-// CHECKS-NEXT:   br i1 [[OURS]], label %kcfi.fail, label %kcfi.cont
-// CHECKS:      kcfi.fail:
-// X64-NEXT:      call void asm sideeffect "int $$0x29", "{cx}"(i32 64)
-// A64-NEXT:      call void asm sideeffect "brk #0xF003", "{w0}"(i32 64)
-// CHECKS-NEXT:   unreachable
-// CHECKS:      memptr.nonvirtual:
-// CHECKS-NEXT:   %memptr.nonvirtualfn = inttoptr
-// CHECKS-NEXT:   [[W:%.*]] = getelementptr i8, ptr %memptr.nonvirtualfn, i64 -4
-// CHECKS-NEXT:   %kcfi.type{{[0-9]+}} = load i32, ptr [[W]], align 1
-// CHECKS-NEXT:   {{%.*}} = icmp eq i32 %kcfi.type{{[0-9]+}}, [[#%d,NV_ID:]]
-// CHECKS:      memptr.end:
-// CHECK:         call noundef i32 %{{[0-9]+}}(ptr {{.*}}, i32 noundef 1){{$}}
-// NOCHECKS-NOT:  kcfi.type
+// CHECK:       memptr.virtual:
+// CHECK:         %memptr.virtualfn = load ptr
+// CHECKS-NEXT:   call void @llvm.kcfi.check(ptr %memptr.virtualfn, i32 [[#%d,VFN_ID:]], i32 16)
+// CHECK-NEXT:    br label %memptr.end
+// CHECK:       memptr.nonvirtual:
+// CHECK-NEXT:    %memptr.nonvirtualfn = inttoptr
+// CHECKS-NEXT:   call void @llvm.kcfi.check(ptr %memptr.nonvirtualfn, i32 [[#%d,NV_ID:]], i32 4)
+// CHECK-NEXT:    br label %memptr.end
+// CHECK:       memptr.end:
+// CHECKS:        call noundef i32 %{{[0-9]+}}(ptr {{.*}}, i32 noundef 1) #[[#NOCF:]]{{$}}
+// NOCHECKS:      call noundef i32 %{{[0-9]+}}(ptr {{.*}}, i32 noundef 1){{$}}
+// NOCHECKS-NOT:  @llvm.kcfi.check
 int call(Base *p, int (Base::*f)(int)) { return (p->*f)(1); }
 
 /// A pure slot's stub carries the second type too.
 // CHECK: define linkonce_odr hidden void @_purecall.kcfi.{{[0-9a-f]+}}() {{.*}}!kcfi_vfn_type ![[#VFN]] {
+
+// CHECKS: attributes #[[#NOCF]] = { {{.*}}"guard_nocf"{{.*}} }
 
 // CHECKS: ![[#VFN]] = !{i32 [[#VFN_ID]]}
 // CHECKS: ![[#NV]] = !{i32 [[#NV_ID]]}
