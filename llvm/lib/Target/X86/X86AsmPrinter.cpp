@@ -283,6 +283,14 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
 /// since the target is then a function of another type, and continues into
 /// the guard function otherwise, since the target was built without KCFI.
 ///
+/// A module that opens a type defines the type's mismatch routines instead,
+/// in COMDATs of which the linker keeps the largest. Each passes the type's
+/// list to a scanner, which fails fast if the target carries the marker, and
+/// takes a target the list holds. For any other target, a static opener's
+/// scanner fails fast, since every foreign target of the type that the image
+/// can hold is listed, and a dynamic opener's, which the linker prefers,
+/// continues into the guard function.
+///
 /// A thunk tests the target against [__llvm_code_start, __llvm_code_end)
 /// first. A matching target inside it is taken directly, and a matching
 /// target outside it continues into the guard function the image defines. A
@@ -309,19 +317,21 @@ void X86AsmPrinter::emitKCFIThunks(Module &M) {
     PrefixNops = MD->getZExtValue();
 
   const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
-  auto EmitFunctionStart = [&](MCSymbol *Sym) {
+  auto EmitFunctionStart = [&](MCSymbol *Sym,
+                               int Selection = COFF::IMAGE_COMDAT_SELECT_ANY,
+                               Align Alignment = Align(16)) {
     OutStreamer->switchSection(OutContext.getCOFFSection(
         ".text",
         COFF::IMAGE_SCN_CNT_CODE | COFF::IMAGE_SCN_MEM_EXECUTE |
             COFF::IMAGE_SCN_MEM_READ | COFF::IMAGE_SCN_LNK_COMDAT,
-        Sym->getName(), COFF::IMAGE_COMDAT_SELECT_ANY));
+        Sym->getName(), Selection));
     OutStreamer->beginCOFFSymbolDef(Sym);
     OutStreamer->emitCOFFSymbolStorageClass(COFF::IMAGE_SYM_CLASS_EXTERNAL);
     OutStreamer->emitCOFFSymbolType(COFF::IMAGE_SYM_DTYPE_FUNCTION
                                     << COFF::SCT_COMPLEX_TYPE_SHIFT);
     OutStreamer->endCOFFSymbolDef();
     OutStreamer->emitSymbolAttribute(Sym, MCSA_Global);
-    OutStreamer->emitCodeAlignment(Align(16), STI);
+    OutStreamer->emitCodeAlignment(Alignment, STI);
     OutStreamer->emitLabel(Sym);
   };
   auto EmitGuardJump = [&](StringRef GuardFn) {
@@ -401,32 +411,50 @@ void X86AsmPrinter::emitKCFIThunks(Module &M) {
     OutStreamer->emitInstruction(MCInstBuilder(X86::INT).addImm(0x29), STI);
   };
 
+  // The types this module opens, whose mismatch routines it defines as the
+  // types' open routines.
+  MapVector<uint32_t, KCFIOpenType> OpenTypes = getKCFIOpenTypes(M);
+
+  // Each kind of thunk has a kind of mismatch routine, which takes the target
+  // in the thunk's register. The scanners walk a type's list on behalf of its
+  // open routine, and a static scanner fails fast where a dynamic one
+  // continues into the guard function.
+  struct RoutineKind {
+    StringRef MismatchPrefix;
+    StringRef Scanner;
+    StringRef DynamicScanner;
+    StringRef Default;
+    StringRef GuardFn;
+    unsigned TargetReg;
+  };
+  const RoutineKind Routines[] = {
+      {"__llvm_kcfi_mismatch_", "__llvm_kcfi_open", "__llvm_kcfi_open_dynamic",
+       "__llvm_kcfi_default", "__guard_dispatch_icall_fptr", X86::RAX},
+      {"__llvm_kcfi_check_mismatch_", "__llvm_kcfi_check_open",
+       "__llvm_kcfi_check_open_dynamic", "__llvm_kcfi_check_default",
+       "__guard_check_icall_fptr", X86::RCX}};
+  // An opener defines the routines of both kinds, each kept only where a
+  // thunk of its kind refers to it.
+  bool UsesRoutine[] = {!OpenTypes.empty(), !OpenTypes.empty()};
+  bool UsesDefault[] = {false, false};
+
   // A local thunk serves a type salted by a class with internal linkage,
   // whose functions are all in this image: a matching target outside the
   // range fails fast, unless the range is empty because the image was not
   // sealed.
   struct ThunkKind {
     StringRef Prefix;
-    StringRef MismatchPrefix;
-    StringRef Open;
-    StringRef GuardFn;
-    unsigned TargetReg;
+    unsigned Routine;
     bool Local;
   };
-  const ThunkKind Kinds[] = {
-      {"__llvm_kcfi_dispatch_", "__llvm_kcfi_mismatch_", "__llvm_kcfi_open",
-       "__guard_dispatch_icall_fptr", X86::RAX, false},
-      {"__llvm_kcfi_check_", "__llvm_kcfi_check_mismatch_",
-       "__llvm_kcfi_check_open", "__guard_check_icall_fptr", X86::RCX, false},
-      {"__llvm_kcfi_local_dispatch_", "__llvm_kcfi_mismatch_",
-       "__llvm_kcfi_open", "__guard_dispatch_icall_fptr", X86::RAX, true},
-      {"__llvm_kcfi_local_check_", "__llvm_kcfi_check_mismatch_",
-       "__llvm_kcfi_check_open", "__guard_check_icall_fptr", X86::RCX, true}};
+  const ThunkKind Kinds[] = {{"__llvm_kcfi_dispatch_", 0, false},
+                             {"__llvm_kcfi_check_", 1, false},
+                             {"__llvm_kcfi_local_dispatch_", 0, true},
+                             {"__llvm_kcfi_local_check_", 1, true}};
   MCSymbol *CodeStart = nullptr;
   MCSymbol *CodeEnd = nullptr;
-  SmallPtrSet<MCSymbol *, 2> EmittedOpens;
   for (const ThunkKind &Kind : Kinds) {
-    MCSymbol *Open = nullptr;
+    const RoutineKind &Routine = Routines[Kind.Routine];
     for (const Function &F : M) {
       StringRef TypeName = F.getName();
       uint32_t Type;
@@ -434,21 +462,24 @@ void X86AsmPrinter::emitKCFIThunks(Module &M) {
           !TypeName.consume_front(Kind.Prefix) || TypeName.size() != 8 ||
           TypeName.getAsInteger(16, Type))
         continue;
-      if (!Open)
-        Open = OutContext.getOrCreateSymbol(Kind.Open);
+      UsesRoutine[Kind.Routine] = true;
       if (!CodeStart) {
         CodeStart = OutContext.getOrCreateSymbol("__llvm_code_start");
         CodeEnd = OutContext.getOrCreateSymbol("__llvm_code_end");
         EmitCodeRangeDefault(CodeStart, CodeEnd);
       }
 
-      // A type's local and ordinary thunks share its mismatch routine.
+      // A type's local and ordinary thunks share its mismatch routine, which
+      // this module defines if it opens the type.
       MCSymbol *Mismatch =
-          OutContext.getOrCreateSymbol(Kind.MismatchPrefix + TypeName);
-      if (!Mismatch->isVariable()) {
+          OutContext.getOrCreateSymbol(Routine.MismatchPrefix + TypeName);
+      if (!Mismatch->isVariable() && !OpenTypes.count(Type)) {
+        UsesDefault[Kind.Routine] = true;
         OutStreamer->emitSymbolAttribute(Mismatch, MCSA_Weak);
-        OutStreamer->emitAssignment(Mismatch,
-                                    MCSymbolRefExpr::create(Open, OutContext));
+        OutStreamer->emitAssignment(
+            Mismatch,
+            MCSymbolRefExpr::create(
+                OutContext.getOrCreateSymbol(Routine.Default), OutContext));
       }
 
       // leaq __llvm_code_start(%rip), %r10; cmpq %r10, %reg; jb 1f
@@ -467,7 +498,7 @@ void X86AsmPrinter::emitKCFIThunks(Module &M) {
         OutStreamer->emitInstruction(
             MCInstBuilder(X86::MOV64ri).addReg(X86::R11).addImm(Expected), STI);
         OutStreamer->emitInstruction(MCInstBuilder(X86::CMP64mr)
-                                         .addReg(Kind.TargetReg)
+                                         .addReg(Routine.TargetReg)
                                          .addImm(1)
                                          .addReg(X86::NoRegister)
                                          .addImm(-(PrefixNops + 8))
@@ -481,20 +512,20 @@ void X86AsmPrinter::emitKCFIThunks(Module &M) {
       if (Kind.Local) {
         EmitLea(X86::R10, CodeStart);
         EmitLea(X86::R11, CodeEnd);
-        EmitCmp(Kind.TargetReg, X86::R10);
+        EmitCmp(Routine.TargetReg, X86::R10);
         EmitJcc(Outside, X86::COND_B);
-        EmitCmp(Kind.TargetReg, X86::R11);
+        EmitCmp(Routine.TargetReg, X86::R11);
         EmitJcc(Outside, X86::COND_AE);
       } else {
         EmitLea(X86::R10, CodeStart);
-        EmitCmp(Kind.TargetReg, X86::R10);
+        EmitCmp(Routine.TargetReg, X86::R10);
         EmitJcc(Outside, X86::COND_B);
         EmitLea(X86::R10, CodeEnd);
-        EmitCmp(Kind.TargetReg, X86::R10);
+        EmitCmp(Routine.TargetReg, X86::R10);
         EmitJcc(Outside, X86::COND_AE);
       }
       EmitCompare();
-      if (Kind.TargetReg == X86::RAX)
+      if (Routine.TargetReg == X86::RAX)
         OutStreamer->emitInstruction(
             MCInstBuilder(X86::JMP64r).addReg(X86::RAX), STI);
       else
@@ -508,48 +539,165 @@ void X86AsmPrinter::emitKCFIThunks(Module &M) {
         EmitCmp(X86::R10, X86::R11);
         EmitJcc(Trap, X86::COND_NE);
       }
-      EmitPageTest(Kind.TargetReg, Mismatch);
+      EmitPageTest(Routine.TargetReg, Mismatch);
       EmitCompare();
-      EmitGuardJump(Kind.GuardFn);
+      EmitGuardJump(Routine.GuardFn);
       if (Trap) {
         OutStreamer->emitLabel(Trap);
         EmitFastFail();
       }
     }
-    if (!Open || !EmittedOpens.insert(Open).second)
+  }
+
+  uint64_t Pattern = getKCFIMarkerPattern(Marker->getZExtValue());
+  for (unsigned I = 0; I != std::size(Routines); ++I) {
+    const RoutineKind &Routine = Routines[I];
+    unsigned Reg = Routine.TargetReg;
+    // movabsq $pattern, %r11; cmpq %r11, -12(%reg)
+    auto EmitMarkerCompare = [&] {
+      OutStreamer->emitInstruction(
+          MCInstBuilder(X86::MOV64ri).addReg(X86::R11).addImm(Pattern), STI);
+      OutStreamer->emitInstruction(MCInstBuilder(X86::CMP64mr)
+                                       .addReg(Reg)
+                                       .addImm(1)
+                                       .addReg(X86::NoRegister)
+                                       .addImm(-(PrefixNops + 12))
+                                       .addReg(X86::NoRegister)
+                                       .addReg(X86::R11),
+                                   STI);
+    };
+    if (UsesDefault[I]) {
+      // testl $mask, %reg32; jz 1f
+      // movabsq $pattern, %r11; cmpq %r11, -12(%reg); je 2f
+      // 1: jmpq *guard(%rip)
+      // 2: movl $FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG, %ecx; int $0x29
+      //
+      // A target in a page's first bytes has no prefix that can be read, so
+      // it is foreign.
+      EmitFunctionStart(OutContext.getOrCreateSymbol(Routine.Default));
+      MCSymbol *Foreign = OutContext.createTempSymbol();
+      EmitPageTest(Reg, Foreign);
+      EmitMarkerCompare();
+      MCSymbol *Trap = OutContext.createTempSymbol();
+      EmitJcc(Trap, X86::COND_E);
+      OutStreamer->emitLabel(Foreign);
+      EmitGuardJump(Routine.GuardFn);
+      OutStreamer->emitLabel(Trap);
+      EmitFastFail();
+    }
+    if (!UsesRoutine[I])
       continue;
 
     // testl $mask, %reg32; jz 1f
-    // movabsq $pattern, %r11; cmpq %r11, -12(%reg); je 2f
-    // 1: jmpq *guard(%rip)
-    // 2: movl $FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG, %ecx; int $0x29
+    // movabsq $pattern, %r11; cmpq %r11, -12(%reg); je 3f
+    // 1: movq (%r10), %r11; addq $8, %r10
+    // testq %r11, %r11; jz 1b
+    // testb $1, %r11b; jnz 2f
+    // cmpq (%r11), %reg; jne 1b
+    // jmpq *%rax (dispatch) or retq (check)
+    // 2: jmpq *guard(%rip) (dynamic)
+    // 3: movl $FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG, %ecx; int $0x29
     //
-    // A target in a page's first bytes has no prefix that can be read, so it
-    // is foreign.
-    uint64_t Pattern = getKCFIMarkerPattern(Marker->getZExtValue());
-    EmitFunctionStart(Open);
-    MCSymbol *Foreign = OutContext.createTempSymbol();
-    EmitPageTest(Kind.TargetReg, Foreign);
-    OutStreamer->emitInstruction(
-        MCInstBuilder(X86::MOV64ri).addReg(X86::R11).addImm(Pattern), STI);
-    OutStreamer->emitInstruction(MCInstBuilder(X86::CMP64mr)
-                                     .addReg(Kind.TargetReg)
-                                     .addImm(1)
-                                     .addReg(X86::NoRegister)
-                                     .addImm(-(PrefixNops + 12))
-                                     .addReg(X86::NoRegister)
-                                     .addReg(X86::R11),
-                                 STI);
-    MCSymbol *Trap = OutContext.createTempSymbol();
-    OutStreamer->emitInstruction(
-        MCInstBuilder(X86::JCC_1)
-            .addExpr(MCSymbolRefExpr::create(Trap, OutContext))
-            .addImm(X86::COND_E),
-        STI);
-    OutStreamer->emitLabel(Foreign);
-    EmitGuardJump(Kind.GuardFn);
-    OutStreamer->emitLabel(Trap);
-    EmitFastFail();
+    // A target that carries the marker is a function of another type; one in
+    // a page's first bytes has no prefix that can be read. R10 points at the
+    // first word of the type's list. A word is the address of a cell holding
+    // a valid target, or zero, which the linker may pad with, or the odd word
+    // that ends the list. A listed target is the address the loader bound
+    // into a read-only import address table slot, which is a valid target
+    // already, so it is taken directly.
+    for (bool Dynamic : {false, true}) {
+      EmitFunctionStart(OutContext.getOrCreateSymbol(
+          Dynamic ? Routine.DynamicScanner : Routine.Scanner));
+      MCSymbol *Walk = OutContext.createTempSymbol();
+      MCSymbol *Trap = OutContext.createTempSymbol();
+      MCSymbol *Miss = Dynamic ? OutContext.createTempSymbol() : Trap;
+      EmitPageTest(Reg, Walk);
+      EmitMarkerCompare();
+      EmitJcc(Trap, X86::COND_E);
+      OutStreamer->emitLabel(Walk);
+      OutStreamer->emitInstruction(MCInstBuilder(X86::MOV64rm)
+                                       .addReg(X86::R11)
+                                       .addReg(X86::R10)
+                                       .addImm(1)
+                                       .addReg(X86::NoRegister)
+                                       .addImm(0)
+                                       .addReg(X86::NoRegister),
+                                   STI);
+      OutStreamer->emitInstruction(MCInstBuilder(X86::ADD64ri8)
+                                       .addReg(X86::R10)
+                                       .addReg(X86::R10)
+                                       .addImm(8),
+                                   STI);
+      OutStreamer->emitInstruction(
+          MCInstBuilder(X86::TEST64rr).addReg(X86::R11).addReg(X86::R11), STI);
+      EmitJcc(Walk, X86::COND_E);
+      OutStreamer->emitInstruction(
+          MCInstBuilder(X86::TEST8ri).addReg(X86::R11B).addImm(1), STI);
+      EmitJcc(Miss, X86::COND_NE);
+      OutStreamer->emitInstruction(MCInstBuilder(X86::CMP64rm)
+                                       .addReg(Reg)
+                                       .addReg(X86::R11)
+                                       .addImm(1)
+                                       .addReg(X86::NoRegister)
+                                       .addImm(0)
+                                       .addReg(X86::NoRegister),
+                                   STI);
+      EmitJcc(Walk, X86::COND_NE);
+      if (Reg == X86::RAX)
+        OutStreamer->emitInstruction(
+            MCInstBuilder(X86::JMP64r).addReg(X86::RAX), STI);
+      else
+        OutStreamer->emitInstruction(MCInstBuilder(X86::RET64), STI);
+      if (Dynamic) {
+        OutStreamer->emitLabel(Miss);
+        EmitGuardJump(Routine.GuardFn);
+      }
+      OutStreamer->emitLabel(Trap);
+      EmitFastFail();
+    }
+  }
+  if (!UsesRoutine[0] && !UsesRoutine[1])
+    return;
+
+  // movl $FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG, %ecx; int $0x29
+  EmitFunctionStart(OutContext.getOrCreateSymbol("__llvm_kcfi_trap"));
+  EmitFastFail();
+
+  for (const auto &[Type, Open] : OpenTypes) {
+    std::string TypeName = utohexstr(Type, /*LowerCase=*/true, /*Width=*/8);
+    MCSymbol *List =
+        OutContext.getOrCreateSymbol("__llvm_kcfi_list_" + TypeName);
+    // leaq __llvm_kcfi_list_<type>+8(%rip), %r10; jmp scanner
+    //
+    // A dynamic opener's routine ends with an int3, so that the linker's
+    // choice of the largest definition prefers it to a static opener's. A
+    // routine is only reached by a jump on a mismatch, so it is not aligned.
+    for (const RoutineKind &Routine : Routines) {
+      EmitFunctionStart(
+          OutContext.getOrCreateSymbol(Routine.MismatchPrefix + TypeName),
+          COFF::IMAGE_COMDAT_SELECT_LARGEST, Align(1));
+      OutStreamer->emitInstruction(
+          MCInstBuilder(X86::LEA64r)
+              .addReg(X86::R10)
+              .addReg(X86::RIP)
+              .addImm(1)
+              .addReg(X86::NoRegister)
+              .addExpr(MCBinaryExpr::createAdd(
+                  MCSymbolRefExpr::create(List, OutContext),
+                  MCConstantExpr::create(8, OutContext), OutContext))
+              .addReg(X86::NoRegister),
+          STI);
+      OutStreamer->emitInstruction(
+          MCInstBuilder(X86::JMP_1)
+              .addExpr(MCSymbolRefExpr::create(
+                  OutContext.getOrCreateSymbol(
+                      Open.Dynamic ? Routine.DynamicScanner : Routine.Scanner),
+                  OutContext)),
+          STI);
+      if (Open.Dynamic)
+        OutStreamer->emitInstruction(MCInstBuilder(X86::INT3), STI);
+    }
+    emitKCFIList(List, Type, Open.Imports);
   }
 }
 
