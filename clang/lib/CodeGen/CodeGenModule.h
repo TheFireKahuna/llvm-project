@@ -523,6 +523,9 @@ private:
   llvm::DenseMap<const FunctionDecl *, llvm::SetVector<const Type *>>
       KCFIUntypedArgTypes;
 
+  /// The canonical function types that this module calls through pointers.
+  llvm::SetVector<const Type *> KCFICalledTypes;
+
   /// Global annotations.
   std::vector<llvm::Constant*> Annotations;
 
@@ -1853,6 +1856,11 @@ public:
   /// among the types of the functions that may reach this module from code
   /// without a prefix of ours.
   void addKCFIVAArgType(QualType T, const Decl *D);
+
+  /// Under the KCFI marker scheme on COFF, record that this module calls a
+  /// function of type FnType through a pointer, so that the types such a call
+  /// hands back open when FnType opens.
+  void addKCFICalledType(QualType FnType);
 
   /// Under the KCFI marker scheme on COFF, record the objects that the
   /// arguments Args of a call to FD point to, when FD is not a library

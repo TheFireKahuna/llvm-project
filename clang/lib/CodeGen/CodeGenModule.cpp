@@ -4009,6 +4009,48 @@ static const NamedDecl *getKCFIBoundaryDecl(const Expr *E) {
   return nullptr;
 }
 
+/// Collect into TypeIds the KCFI types of the function pointers that a call
+/// to a function of type FnType hands back to its caller, through its return
+/// type and through the objects that its pointer parameters to non-const
+/// types point to, following pointers and the fields and bases of records.
+/// With Handed, only the function pointers that the returned value holds and
+/// those that the callee stores where an out-parameter, a pointer to a
+/// non-const pointer, points count, as collectKCFIHandedTypes walks them.
+/// With Records, the walk stops at the records it reaches and lists them
+/// there instead.
+static void
+collectKCFIResultTypes(CodeGenModule &CGM, QualType FnType, bool Handed,
+                       llvm::SmallPtrSetImpl<const RecordDecl *> &Visited,
+                       llvm::SetVector<llvm::ConstantInt *> &TypeIds,
+                       llvm::SetVector<const RecordDecl *> *Records = nullptr) {
+  const auto *FT = FnType->castAs<FunctionType>();
+  if (Handed)
+    collectKCFIHandedTypes(CGM, FT->getReturnType(), Visited, TypeIds,
+                           Records);
+  else
+    collectKCFIReachableTypes(CGM, FT->getReturnType(), Visited, TypeIds,
+                              Records);
+  const auto *FPT = dyn_cast<FunctionProtoType>(FT);
+  if (!FPT)
+    return;
+  // A function pointer passed by value flows to the callee, but the callee
+  // can store one into an object that a pointer to a non-const type points
+  // to.
+  for (QualType T : FPT->param_types()) {
+    T = T.getCanonicalType();
+    if (!(T->isPointerType() || T->isReferenceType()) ||
+        T->getPointeeType().isConstQualified())
+      continue;
+    if (Handed) {
+      if (T->getPointeeType()->isPointerType())
+        collectKCFIHandedTypes(CGM, T->getPointeeType(), Visited, TypeIds,
+                               Records);
+    } else
+      collectKCFIReachableTypes(CGM, T->getPointeeType(), Visited, TypeIds,
+                                Records);
+  }
+}
+
 /// E without the conversions between pointer types around it.
 static const Expr *ignoreKCFIPointerConversions(const Expr *E) {
   E = E->IgnoreParens();
@@ -4047,18 +4089,8 @@ void CodeGenModule::collectKCFIInflowTypes(
     return;
   }
 
-  collectKCFIReachableTypes(*this, FD->getReturnType(), Visited, TypeIds,
-                            Records);
-  // A function pointer passed by value flows to the callee, but the callee
-  // can store one into an object that a pointer to a non-const type points
-  // to.
-  for (const ParmVarDecl *Param : FD->parameters()) {
-    QualType T = Param->getType().getCanonicalType();
-    if ((T->isPointerType() || T->isReferenceType()) &&
-        !T->getPointeeType().isConstQualified())
-      collectKCFIReachableTypes(*this, T->getPointeeType(), Visited, TypeIds,
-                                Records);
-  }
+  collectKCFIResultTypes(*this, FD->getType(), /*Handed=*/false, Visited,
+                         TypeIds, Records);
   auto Untyped = KCFIUntypedArgTypes.find(FD->getCanonicalDecl());
   if (Untyped != KCFIUntypedArgTypes.end())
     for (const Type *T : Untyped->second)
@@ -4079,6 +4111,11 @@ void CodeGenModule::addKCFIVAArgType(QualType T, const Decl *D) {
   }
   llvm::SmallPtrSet<const RecordDecl *, 16> Visited;
   collectKCFIHandedTypes(*this, T, Visited, KCFIDynamicTypes);
+}
+
+void CodeGenModule::addKCFICalledType(QualType FnType) {
+  if (hasKCFIFacts())
+    KCFICalledTypes.insert(FnType.getCanonicalType().getTypePtr());
 }
 
 void CodeGenModule::addKCFICallArguments(
@@ -4454,6 +4491,44 @@ void CodeGenModule::emitKCFIFacts() {
       LinkFacts.emitFacts("__kcfi_param_", GV.getName(), Facts);
     }
   }
+
+  // A call through a pointer that may reach a function without a prefix of
+  // ours hands back the function pointers held in what it returns and in what
+  // it stores through its out-parameters, and those may be called in turn.
+  // A cast between two of our own function pointer types also opens a type,
+  // so the callee is not assumed to write into every object that a pointer
+  // parameter reaches, as a known import, which is foreign code, is.
+  SmallVector<std::pair<llvm::ConstantInt *, QualType>> Called;
+  for (const Type *T : KCFICalledTypes)
+    Called.emplace_back(CreateKCFICallTypeId(QualType(T, 0)), QualType(T, 0));
+  for (bool Changed = true; Changed;) {
+    Changed = false;
+    for (auto &[TypeId, FnType] : Called) {
+      if (FnType.isNull() || !KCFIDynamicTypes.contains(TypeId))
+        continue;
+      llvm::SmallPtrSet<const RecordDecl *, 16> Visited;
+      collectKCFIResultTypes(*this, FnType, /*Handed=*/true, Visited,
+                             KCFIDynamicTypes);
+      FnType = QualType();
+      Changed = true;
+    }
+  }
+  // The linker opens the types of a call through a pointer of a type that
+  // this object does not open, when it opens that type.
+  llvm::MapVector<llvm::ConstantInt *, KCFILinkFacts> CalledFacts;
+  for (auto &[TypeId, FnType] : Called) {
+    if (FnType.isNull())
+      continue;
+    llvm::SmallPtrSet<const RecordDecl *, 16> Visited;
+    KCFILinkFacts &Facts = CalledFacts[TypeId];
+    collectKCFIResultTypes(*this, FnType, /*Handed=*/true, Visited,
+                           Facts.TypeIds, &Facts.Held);
+  }
+  for (auto &[TypeId, Facts] : CalledFacts)
+    LinkFacts.emitFacts("__kcfi_tinflow_",
+                        llvm::utohexstr(TypeId->getZExtValue(),
+                                        /*LowerCase=*/true, /*Width=*/8),
+                        Facts);
 
   if (KCFIDynamicTypes.empty())
     return;
