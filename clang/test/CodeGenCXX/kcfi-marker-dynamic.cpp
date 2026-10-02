@@ -4,12 +4,12 @@
 // RUN: %clang_cc1 -triple x86_64-unknown-linux-gnu -fms-extensions -fsanitize-kcfi-marker -emit-llvm -Wno-ignored-attributes -o - %s | FileCheck %s --check-prefix=ELF --implicit-check-not=kcfi_import --implicit-check-not=kcfi.dynamic --implicit-check-not=__kcfi_inflow_ --implicit-check-not=__kcfi_param_
 
 /// Under the KCFI marker scheme, a virtual call on a class that another image
-/// may create objects of, a class without hidden visibility or one that
-/// derives from a class with a uuid, opens the type of its slot to functions
-/// without a prefix of ours, destructor slots included. A call through a
-/// member function pointer to such a class opens the "__vfn" type and the
-/// ordinary type. A polymorphic class that a known import hands back opens
-/// the types of all its slots. A hidden class opens nothing.
+/// may create objects of, here one with an explicit default visibility or one
+/// that derives from a class with a uuid, opens the type of its slot to
+/// functions without a prefix of ours, destructor slots included. A call
+/// through a member function pointer to such a class opens the "__vfn" type
+/// and the ordinary type. A polymorphic class that a known import hands back
+/// opens the types of all its slots. A hidden class opens nothing.
 
 short w_short(short x) { return x; }
 // CHECK-DAG: define {{.*}} @_Z7w_shorts({{.*}} !kcfi_type ![[#SHORT:]]
@@ -18,7 +18,7 @@ int w_int(int x) { return x; }
 double w_double(double x) { return x; }
 // CHECK-DAG: define {{.*}} @_Z8w_doubled({{.*}} !kcfi_type ![[#DOUBLE:]]
 
-struct Pub {
+struct __attribute__((visibility("default"))) Pub {
   virtual short f(short);
   virtual ~Pub();
 };
