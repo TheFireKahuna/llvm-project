@@ -5115,6 +5115,12 @@ void CodeGenFunction::EmitCallArgs(
 #endif
   }
 
+  if (CGM.hasKCFIFacts())
+    if (const auto *FD = dyn_cast_if_present<FunctionDecl>(AC.getDecl()))
+      CGM.addKCFICallArguments(FD, ArgRange,
+                               IsVariadic ? ArgTypes.size()
+                                          : llvm::size(ArgRange));
+
   // If we still have any arguments, emit them using the type of the argument.
   for (auto *A : llvm::drop_begin(ArgRange, ArgTypes.size()))
     ArgTypes.push_back(IsVariadic ? getVarArgType(A) : A->getType());
