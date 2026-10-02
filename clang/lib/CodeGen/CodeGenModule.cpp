@@ -3798,23 +3798,31 @@ llvm::ConstantInt *CodeGenModule::CreateKCFICallTypeId(QualType FnType) {
 }
 
 void CodeGenModule::addKCFIConversionType(QualType From, QualType To,
-                                          bool LValue) {
+                                          bool LValue, const Expr *Operand) {
   if (!hasKCFIFacts())
     return;
   // A function pointer that an object of another type is reinterpreted as,
   // or that is reinterpreted as an object of another type, can be read or
-  // written untyped, as *(void **)&fp = dlsym(...) or memcpy(&fp, ...) do.
+  // written untyped, as *(void **)&fp = dlsym(...) or memcpy(&fp, ...) do;
+  // so can one that a pointer of another type reaches through more levels.
   if (LValue) {
     if (From->isFunctionPointerType())
       addKCFIConversionType(To, From);
     if (To->isFunctionPointerType())
       addKCFIConversionType(From, To);
+    else if (!From->isFunctionPointerType() && From->isPointerType() &&
+             To->isPointerType())
+      addKCFIConversionType(From->getPointeeType(), To->getPointeeType(),
+                            /*LValue=*/true);
     return;
   }
   if (!To->isFunctionPointerType()) {
-    if (From->isPointerType() && To->isPointerType())
+    if (From->isPointerType() && To->isPointerType()) {
+      if (Operand)
+        addKCFIBoundaryRecord(To->getPointeeType(), Operand);
       addKCFIConversionType(From->getPointeeType(), To->getPointeeType(),
                             /*LValue=*/true);
+    }
     return;
   }
   QualType FnType = To->getPointeeType();
@@ -3829,6 +3837,23 @@ void CodeGenModule::addKCFIConversionType(QualType From, QualType To,
   // of another type, may hold the address of a function without a prefix of
   // ours, such as one that GetProcAddress returned.
   KCFIDynamicTypes.insert(TypeId);
+}
+
+void CodeGenModule::addKCFIUnionReadType(const ValueDecl *Member) {
+  const auto *Field = dyn_cast<FieldDecl>(Member);
+  if (!hasKCFIFacts() || !Field || !Field->getType()->isFunctionPointerType())
+    return;
+  const RecordDecl *RD = Field->getParent();
+  if (!RD->isUnion())
+    return;
+  // A function pointer read from a union may have been written as a member
+  // of another type.
+  for (const FieldDecl *Other : RD->fields())
+    if (!getContext().hasSameType(Other->getType(), Field->getType())) {
+      KCFIDynamicTypes.insert(
+          CreateKCFICallTypeId(Field->getType()->getPointeeType()));
+      return;
+    }
 }
 
 bool CodeGenModule::isKCFIVTableOpen(const CXXRecordDecl *RD) {
@@ -3917,22 +3942,59 @@ collectKCFIHeldTypes(CodeGenModule &CGM, QualType T,
       collectKCFIHeldTypes(CGM, Base.getType(), Visited, TypeIds);
 }
 
+/// Collect into TypeIds the KCFI types of the function pointers that code
+/// hands over in a value of type T: a function pointer, or one held in the
+/// object that T is or points to. Function pointers that the receiver reaches
+/// further, through pointers in that object, come from wherever the code that
+/// hands it over found them.
+static void
+collectKCFIHandedTypes(CodeGenModule &CGM, QualType T,
+                       llvm::SmallPtrSetImpl<const RecordDecl *> &Visited,
+                       llvm::SetVector<llvm::ConstantInt *> &TypeIds) {
+  T = T.getCanonicalType();
+  if ((T->isPointerType() || T->isReferenceType()) &&
+      !T->getPointeeType()->isFunctionType())
+    T = T->getPointeeType();
+  collectKCFIHeldTypes(CGM, T, Visited, TypeIds);
+}
+
+/// The declaration whose value E directly is, when E is a call to a function
+/// that it names or a load of a variable: a value that may come from another
+/// image or from foreign code.
+static const NamedDecl *getKCFIBoundaryDecl(const Expr *E) {
+  E = E->IgnoreParens();
+  if (const auto *Call = dyn_cast<CallExpr>(E))
+    return Call->getDirectCallee();
+  if (const auto *Cast = dyn_cast<ImplicitCastExpr>(E))
+    if (Cast->getCastKind() == CK_LValueToRValue)
+      if (const auto *Ref =
+              dyn_cast<DeclRefExpr>(Cast->getSubExpr()->IgnoreParens()))
+        return dyn_cast<VarDecl>(Ref->getDecl());
+  return nullptr;
+}
+
+void CodeGenModule::addKCFIBoundaryRecord(QualType Pointee,
+                                          const Expr *Operand) {
+  if (!Pointee->isRecordType())
+    return;
+  const NamedDecl *D = getKCFIBoundaryDecl(Operand);
+  if (!D)
+    return;
+  llvm::SmallPtrSet<const RecordDecl *, 16> Visited;
+  llvm::SetVector<llvm::ConstantInt *> TypeIds;
+  collectKCFIHeldTypes(*this, Pointee, Visited, TypeIds);
+  if (!TypeIds.empty())
+    KCFIBoundaryTypes[cast<NamedDecl>(D->getCanonicalDecl())].insert(
+        TypeIds.begin(), TypeIds.end());
+}
+
 void CodeGenModule::collectKCFIInflowTypes(
     const FunctionDecl *FD, bool Params,
     llvm::SetVector<llvm::ConstantInt *> &TypeIds) {
   llvm::SmallPtrSet<const RecordDecl *, 16> Visited;
   if (Params) {
-    // A caller hands over a function pointer as a parameter, or in an object
-    // that a parameter holds or points to. Function pointers that the callee
-    // reaches further, through pointers in those objects, come from wherever
-    // the caller found them.
-    for (const ParmVarDecl *Param : FD->parameters()) {
-      QualType T = Param->getType().getCanonicalType();
-      if ((T->isPointerType() || T->isReferenceType()) &&
-          !T->getPointeeType()->isFunctionType())
-        T = T->getPointeeType();
-      collectKCFIHeldTypes(*this, T, Visited, TypeIds);
-    }
+    for (const ParmVarDecl *Param : FD->parameters())
+      collectKCFIHandedTypes(*this, Param->getType(), Visited, TypeIds);
     return;
   }
 
@@ -4076,6 +4138,16 @@ static void emitKCFILinkFacts(llvm::Module &M, StringRef Prefix, StringRef Name,
   }
 }
 
+/// Whether GV, the global of declaration D, is a known import: dllimport, or
+/// marked with an explicit default visibility that the visibility mapping
+/// imports. A declaration that only -fno-plt imports may be in this image.
+static bool isKCFIKnownImport(const llvm::GlobalValue &GV, const NamedDecl *D,
+                              const LangOptions &LangOpts) {
+  return GV.hasDLLImportStorageClass() &&
+         (D->hasAttr<DLLImportAttr>() ||
+          isMappedImportVisibility(D->getLinkageAndVisibility(), LangOpts));
+}
+
 void CodeGenModule::emitKCFIFacts() {
   llvm::Module &M = getModule();
   for (llvm::Function &F : M.functions()) {
@@ -4091,19 +4163,22 @@ void CodeGenModule::emitKCFIFacts() {
     if (F.isDeclarationForLinker()) {
       if (F.use_empty())
         continue;
-      // A known import, dllimport or marked with an explicit default
-      // visibility, is in another image, which also defines the functions
-      // whose pointers a call to it hands back. A declaration that only
-      // -fno-plt imports may be in this image.
-      if (F.hasDLLImportStorageClass() &&
-          (FD->hasAttr<DLLImportAttr>() ||
-           isMappedImportVisibility(FD->getLinkageAndVisibility(), LangOpts))) {
+      // A known import is in another image, which also defines the functions
+      // whose pointers a call to it hands back, also in the records that its
+      // result is converted to a pointer to.
+      auto Boundary = KCFIBoundaryTypes.find(FD->getCanonicalDecl());
+      if (isKCFIKnownImport(F, FD, LangOpts)) {
         F.setMetadata("kcfi_import", llvm::MDNode::get(VMContext, {}));
         collectKCFIInflowTypes(FD, /*Params=*/false, KCFIDynamicTypes);
+        if (Boundary != KCFIBoundaryTypes.end())
+          KCFIDynamicTypes.insert(Boundary->second.begin(),
+                                  Boundary->second.end());
       } else if (FD->isExternC()) {
         // A C function may be foreign code that the linker brings into the
         // image, which then opens these types.
         collectKCFIInflowTypes(FD, /*Params=*/false, TypeIds);
+        if (Boundary != KCFIBoundaryTypes.end())
+          TypeIds.insert(Boundary->second.begin(), Boundary->second.end());
         emitKCFILinkFacts(M, "__kcfi_inflow_", F.getName(),
                           TypeIds.getArrayRef());
       }
@@ -4117,6 +4192,50 @@ void CodeGenModule::emitKCFIFacts() {
       // opens these types.
       collectKCFIInflowTypes(FD, /*Params=*/true, TypeIds);
       emitKCFILinkFacts(M, "__kcfi_param_", F.getName(), TypeIds.getArrayRef());
+    }
+  }
+
+  // Variables hold function pointers that code in another image or foreign
+  // code reads or writes in the same ways.
+  for (llvm::GlobalVariable &GV : M.globals()) {
+    GlobalDecl GD;
+    if (GV.hasLocalLinkage() || !lookupRepresentativeDecl(GV.getName(), GD))
+      continue;
+    const auto *VD = dyn_cast<VarDecl>(GD.getDecl());
+    if (!VD)
+      continue;
+    VD = VD->getMostRecentDecl();
+
+    llvm::SmallPtrSet<const RecordDecl *, 16> Visited;
+    llvm::SetVector<llvm::ConstantInt *> TypeIds;
+    if (GV.isDeclarationForLinker()) {
+      if (GV.use_empty())
+        continue;
+      if (isKCFIKnownImport(GV, VD, LangOpts)) {
+        // Imported data holds the other image's function pointers, also in
+        // the records that a value loaded from it is converted to a pointer
+        // to.
+        collectKCFIReachableTypes(*this, VD->getType(), Visited,
+                                  KCFIDynamicTypes);
+        auto Boundary = KCFIBoundaryTypes.find(VD->getCanonicalDecl());
+        if (Boundary != KCFIBoundaryTypes.end())
+          KCFIDynamicTypes.insert(Boundary->second.begin(),
+                                  Boundary->second.end());
+      } else if (VD->isExternC()) {
+        // A C variable may be defined in foreign code, or be imported data.
+        collectKCFIReachableTypes(*this, VD->getType(), Visited, TypeIds);
+        emitKCFILinkFacts(M, "__kcfi_inflow_", GV.getName(),
+                          TypeIds.getArrayRef());
+      }
+    } else if (GV.hasDLLExportStorageClass()) {
+      // Another image may store pointers to its own functions into an
+      // exported variable.
+      collectKCFIHandedTypes(*this, VD->getType(), Visited, KCFIDynamicTypes);
+    } else if (VD->isExternC()) {
+      // So may foreign code into a C variable.
+      collectKCFIHandedTypes(*this, VD->getType(), Visited, TypeIds);
+      emitKCFILinkFacts(M, "__kcfi_param_", GV.getName(),
+                        TypeIds.getArrayRef());
     }
   }
 

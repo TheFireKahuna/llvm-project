@@ -1490,7 +1490,8 @@ static Address EmitPointerWithAlignment(const Expr *E, LValueBaseInfo *BaseInfo,
     if (const auto *ECE = dyn_cast<ExplicitCastExpr>(CE))
       CGF.CGM.EmitExplicitCastExprType(ECE, &CGF);
     if (CE->getCastKind() == CK_BitCast)
-      CGF.CGM.addKCFIConversionType(CE->getSubExpr()->getType(), E->getType());
+      CGF.CGM.addKCFIConversionType(CE->getSubExpr()->getType(), E->getType(),
+                                    /*LValue=*/false, CE->getSubExpr());
 
     switch (CE->getCastKind()) {
     // Non-converting casts (but not C's implicit conversion from void*).
@@ -6789,6 +6790,8 @@ CGCallee CodeGenFunction::EmitCallee(const Expr *E) {
     // function pointers.
     if (ICE->getCastKind() == CK_LValueToRValue) {
       const Expr *SubExpr = ICE->getSubExpr();
+      if (const auto *ME = dyn_cast<MemberExpr>(SubExpr->IgnoreParens()))
+        CGM.addKCFIUnionReadType(ME->getMemberDecl());
       if (const auto *PtrType = SubExpr->getType()->getAs<PointerType>()) {
         std::pair<llvm::Value *, CGPointerAuthInfo> Result =
             EmitOrigPointerRValue(E);
