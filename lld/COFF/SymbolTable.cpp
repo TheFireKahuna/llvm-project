@@ -378,8 +378,8 @@ bool SymbolTable::loadLocalImportMembers() {
 //   provides or that an object with code and no prefix defines, the type is
 //   open dynamically.
 // - __kcfi_param_<type>_<g>, for a definition g that can receive a pointer of
-//   the type. If an object with code and no prefix references g, the type is
-//   open dynamically.
+//   the type. If an object with code and no prefix references g, directly or
+//   through __imp_g, the type is open dynamically.
 //
 // A type is opened only where a KCFI thunk refers to its mismatch routine,
 // __llvm_kcfi_mismatch_<type> or __llvm_kcfi_check_mismatch_<type>. While the
@@ -502,8 +502,15 @@ void SymbolTable::openKCFITypes() {
       if (Symbol *g = parseFact(name, type))
         inflows[g].push_back(type);
     } else if (name.consume_front("param_")) {
-      if (Symbol *g = parseFact(name, type))
+      if (Symbol *g = parseFact(name, type)) {
         params[g].push_back(type);
+        // Code that declares g dllimport reaches our g through __imp_g, which
+        // becomes a local import unless it is bound to something else.
+        auto *imp =
+            dyn_cast_or_null<Undefined>(find(("__imp_" + g->getName()).str()));
+        if (imp && !imp->getWeakAlias())
+          params[imp].push_back(type);
+      }
     }
   });
   auto openDynamically = [&](ArrayRef<uint32_t> types) {
