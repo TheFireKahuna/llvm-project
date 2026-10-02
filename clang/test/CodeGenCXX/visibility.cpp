@@ -1453,13 +1453,12 @@ namespace test71 {
     foo<long> p;
     return o.zed() + o.bar<int>() + p.zed() + p.bar<int>();
   }
-  /// FIXME: foo<int>::bar is hidden in GCC w/ or w/o -fvisibility=hidden.
   // CHECK-LABEL: declare hidden noundef i32 @_ZN6test713fooIiE3zedEv(
-  // CHECK-LABEL: define linkonce_odr noundef i32 @_ZN6test713fooIiE3barIiEET_v(
+  // CHECK-LABEL: define linkonce_odr hidden noundef i32 @_ZN6test713fooIiE3barIiEET_v(
   // CHECK-LABEL: define linkonce_odr hidden noundef i64 @_ZN6test713fooIlE3zedEv(
   // CHECK-LABEL: define linkonce_odr hidden noundef i32 @_ZN6test713fooIlE3barIiEET_v(
   // CHECK-HIDDEN-LABEL: declare hidden noundef i32 @_ZN6test713fooIiE3zedEv(
-  // CHECK-HIDDEN-LABEL: define linkonce_odr noundef i32 @_ZN6test713fooIiE3barIiEET_v(
+  // CHECK-HIDDEN-LABEL: define linkonce_odr hidden noundef i32 @_ZN6test713fooIiE3barIiEET_v(
   // CHECK-HIDDEN-LABEL: define linkonce_odr hidden noundef i64 @_ZN6test713fooIlE3zedEv(
   // CHECK-HIDDEN-LABEL: define linkonce_odr hidden noundef i32 @_ZN6test713fooIlE3barIiEET_v(
 }
@@ -1496,8 +1495,8 @@ namespace test73 {
     s<int> o;
     return o.should_not_be_exported<int>();
   }
-  // CHECK-LABEL: define linkonce_odr noundef i32 @_ZN6test731sIiE22should_not_be_exportedIiEET_v(
-  // CHECK-HIDDEN-LABEL: define linkonce_odr noundef i32 @_ZN6test731sIiE22should_not_be_exportedIiEET_v(
+  // CHECK-LABEL: define linkonce_odr hidden noundef i32 @_ZN6test731sIiE22should_not_be_exportedIiEET_v(
+  // CHECK-HIDDEN-LABEL: define linkonce_odr hidden noundef i32 @_ZN6test731sIiE22should_not_be_exportedIiEET_v(
 }
 
 namespace test74 {

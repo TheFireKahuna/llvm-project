@@ -1289,11 +1289,20 @@ getExplicitVisibilityAux(const NamedDecl *ND,
   // Also handle function template specializations.
   if (const auto *fn = dyn_cast<FunctionDecl>(ND)) {
     // If the function is a specialization of a template with an
-    // explicit visibility attribute, use that.
+    // explicit visibility attribute, use that. A member template of a
+    // class template specialization carries no attribute itself; it is on
+    // the member template it was instantiated from.
     if (FunctionTemplateSpecializationInfo *templateInfo
-          = fn->getTemplateSpecializationInfo())
-      return getVisibilityOf(templateInfo->getTemplate()->getTemplatedDecl(),
-                             kind);
+          = fn->getTemplateSpecializationInfo()) {
+      for (const FunctionTemplateDecl *TD = templateInfo->getTemplate(); TD;
+           TD = TD->isMemberSpecialization()
+                    ? nullptr
+                    : TD->getInstantiatedFromMemberTemplate())
+        if (std::optional<Visibility> V =
+                getVisibilityOf(TD->getTemplatedDecl(), kind))
+          return V;
+      return std::nullopt;
+    }
 
     // If the function is a member of a specialization of a class template
     // and the corresponding decl has explicit visibility, use that.
