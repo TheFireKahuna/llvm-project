@@ -510,6 +510,11 @@ private:
   llvm::MapVector<const NamedDecl *, llvm::SetVector<const RecordDecl *>>
       KCFIBoundaryRecords;
 
+  /// The canonical types that a variadic function definition reads with
+  /// va_arg.
+  llvm::DenseMap<const FunctionDecl *, llvm::SetVector<const Type *>>
+      KCFIVAArgTypes;
+
   /// Global annotations.
   std::vector<llvm::Constant*> Annotations;
 
@@ -1834,6 +1839,13 @@ public:
   /// another type, which may have written it.
   void addKCFIUnionReadType(const ValueDecl *Member);
 
+  /// Under the KCFI marker scheme on COFF, record the type T that the code of
+  /// D reads with va_arg: among the types that the callers of D hand it, when
+  /// D is a variadic function, or else, from a va_list that D was handed,
+  /// among the types of the functions that may reach this module from code
+  /// without a prefix of ours.
+  void addKCFIVAArgType(QualType T, const Decl *D);
+
   /// Whether a call through a vtable of RD may reach a function that carries
   /// no KCFI prefix of ours: when RD or one of its bases says that another
   /// image or foreign code may create its objects, by a uuid, which COM
@@ -1848,7 +1860,8 @@ public:
   /// records, and a polymorphic class adds the types of its vtable slots. Or,
   /// when Params is true, that a caller hands to FD: its function pointer
   /// parameters and the function pointers held in the objects its parameters
-  /// hold or point to, without following pointers further.
+  /// hold or point to, without following pointers further, and in the same
+  /// way the variadic arguments it reads with va_arg.
   /// With Records, the walk stops at the records it reaches and lists them
   /// there instead.
   void collectKCFIInflowTypes(

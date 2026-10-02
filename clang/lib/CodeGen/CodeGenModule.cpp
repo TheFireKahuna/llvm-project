@@ -4028,6 +4028,11 @@ void CodeGenModule::collectKCFIInflowTypes(
     for (const ParmVarDecl *Param : FD->parameters())
       collectKCFIHandedTypes(*this, Param->getType(), Visited, TypeIds,
                              Records);
+    auto VAArgs = KCFIVAArgTypes.find(FD->getCanonicalDecl());
+    if (VAArgs != KCFIVAArgTypes.end())
+      for (const Type *T : VAArgs->second)
+        collectKCFIHandedTypes(*this, QualType(T, 0), Visited, TypeIds,
+                               Records);
     return;
   }
 
@@ -4043,6 +4048,22 @@ void CodeGenModule::collectKCFIInflowTypes(
       collectKCFIReachableTypes(*this, T->getPointeeType(), Visited, TypeIds,
                                 Records);
   }
+}
+
+void CodeGenModule::addKCFIVAArgType(QualType T, const Decl *D) {
+  if (!hasKCFIFacts())
+    return;
+  // A variadic function's callers hand it function pointers in its variadic
+  // arguments as they do in its parameters, but a va_list that a function
+  // was handed may come from any caller of whichever function started it.
+  const auto *FD = dyn_cast_or_null<FunctionDecl>(D);
+  if (FD && FD->isVariadic()) {
+    KCFIVAArgTypes[FD->getCanonicalDecl()].insert(
+        T.getCanonicalType().getTypePtr());
+    return;
+  }
+  llvm::SmallPtrSet<const RecordDecl *, 16> Visited;
+  collectKCFIHandedTypes(*this, T, Visited, KCFIDynamicTypes);
 }
 
 bool CodeGenModule::hasKCFIVTableSlotTypes() const {
