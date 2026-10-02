@@ -71,19 +71,22 @@ struct g_holder {
   g_fn f;
 };
 
-/// A function pointer parameter; a record passed by value; a record passed by
-/// pointer, with a record held by value, an array of function pointers and a
-/// pointer that is not followed; a pointer to a function pointer.
+/// A function pointer parameter; a record passed by value, whose single type
+/// is a type fact; a record passed by pointer, with a record held by value, an
+/// array of function pointers and a pointer that is not followed, whose types
+/// are a node; a pointer to a function pointer.
 // CHECK-NEXT: ".weak __kcfi_param_[[#%.8x,B]]_def_fp"
 // CHECK-NEXT: ".set __kcfi_param_[[#%.8x,B]]_def_fp, [[#B]]"
 void def_fp(b_fn f) {}
 // CHECK-NEXT: ".weak __kcfi_param_[[#%.8x,A]]_def_val"
 // CHECK-NEXT: ".set __kcfi_param_[[#%.8x,A]]_def_val, [[#A]]"
 void def_val(struct by_val v) {}
-// CHECK-NEXT: ".weak __kcfi_param_[[#%.8x,C]]_def_ptr"
-// CHECK-NEXT: ".set __kcfi_param_[[#%.8x,C]]_def_ptr, [[#C]]"
-// CHECK-NEXT: ".weak __kcfi_param_[[#%.8x,D]]_def_ptr"
-// CHECK-NEXT: ".set __kcfi_param_[[#%.8x,D]]_def_ptr, [[#D]]"
+// CHECK-NEXT: ".weak __kcfi_param_n[[NODE:[0-9a-f]+]]_def_ptr"
+// CHECK-NEXT: ".set __kcfi_param_n[[NODE]]_def_ptr, 0"
+// CHECK-NEXT: ".weak __kcfi_node_[[NODE]]_[[#%.8x,C]]"
+// CHECK-NEXT: ".set __kcfi_node_[[NODE]]_[[#%.8x,C]], [[#C]]"
+// CHECK-NEXT: ".weak __kcfi_node_[[NODE]]_[[#%.8x,D]]"
+// CHECK-NEXT: ".set __kcfi_node_[[NODE]]_[[#%.8x,D]], [[#D]]"
 void def_ptr(struct outer *o) {}
 // CHECK-NEXT: ".weak __kcfi_param_[[#%.8x,F]]_def_fpp"
 // CHECK-NEXT: ".set __kcfi_param_[[#%.8x,F]]_def_fpp, [[#F]]"
