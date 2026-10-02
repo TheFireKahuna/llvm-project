@@ -28,9 +28,9 @@ typedef short (*short_fn)(short);
 int t_int(int);
 long t_long(long);
 short t_short(short);
-int_fn take_int = t_int;
-long_fn take_long = t_long;
-short_fn take_short = t_short;
+__attribute__((used)) static int_fn take_int = t_int;
+__attribute__((used)) static long_fn take_long = t_long;
+__attribute__((used)) static short_fn take_short = t_short;
 
 // CHECK:      module asm
 // CHECK-NEXT: ".weak __kcfi_typeid_t_int"

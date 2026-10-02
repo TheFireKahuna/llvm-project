@@ -25,13 +25,13 @@ long t_d(long);
 float t_e(float);
 double t_f(double);
 long long t_g(long long);
-a_fn take_a = t_a;
-b_fn take_b = t_b;
-c_fn take_c = t_c;
-d_fn take_d = t_d;
-e_fn take_e = t_e;
-f_fn take_f = t_f;
-g_fn take_g = t_g;
+__attribute__((used)) static a_fn take_a = t_a;
+__attribute__((used)) static b_fn take_b = t_b;
+__attribute__((used)) static c_fn take_c = t_c;
+__attribute__((used)) static d_fn take_d = t_d;
+__attribute__((used)) static e_fn take_e = t_e;
+__attribute__((used)) static f_fn take_f = t_f;
+__attribute__((used)) static g_fn take_g = t_g;
 
 // CHECK:      module asm
 // CHECK-NEXT: ".weak __kcfi_typeid_t_a"

@@ -2155,6 +2155,7 @@ Value *ScalarExprEmitter::VisitMemberExpr(MemberExpr *E) {
     }
   }
 
+  CGF.CGM.addKCFIUnionReadType(E->getMemberDecl());
   llvm::Value *Result = EmitLoadOfLValue(E);
 
   // If -fdebug-info-for-profiling is specified, emit a pseudo variable and its
@@ -2663,7 +2664,7 @@ Value *ScalarExprEmitter::VisitCastExpr(CastExpr *CE) {
   case CK_BlockPointerToObjCPointerCast:
   case CK_AnyPointerToBlockPointerCast:
   case CK_BitCast: {
-    CGF.CGM.addKCFIConversionType(E->getType(), DestTy);
+    CGF.CGM.addKCFIConversionType(E->getType(), DestTy, /*LValue=*/false, E);
     Value *Src = Visit(E);
     llvm::Type *SrcTy = Src->getType();
     llvm::Type *DstTy = ConvertType(DestTy);

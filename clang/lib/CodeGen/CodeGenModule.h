@@ -505,6 +505,12 @@ private:
   /// that carries no KCFI prefix of ours.
   llvm::SetVector<llvm::ConstantInt *> KCFIDynamicTypes;
 
+  /// The KCFI types of the function pointers in the records that a value of
+  /// a declaration, the result of a call to a function or a load of a
+  /// variable, is converted to a pointer to.
+  llvm::MapVector<const NamedDecl *, llvm::SetVector<llvm::ConstantInt *>>
+      KCFIBoundaryTypes;
+
   /// Global annotations.
   std::vector<llvm::Constant*> Annotations;
 
@@ -1810,10 +1816,24 @@ public:
   /// pointer that a conversion of a value of type From to type To creates,
   /// unless From already pointed to a function of that type, or that the
   /// conversion lets code store into or load from untyped, when it converts a
-  /// pointer to a function pointer to or from another pointer type. With
-  /// LValue, the conversion reinterprets an object of type From as one of type
-  /// To.
-  void addKCFIConversionType(QualType From, QualType To, bool LValue = false);
+  /// pointer that reaches a function pointer through one or more levels to a
+  /// pointer of another type at that level, or the reverse. With LValue, the
+  /// conversion reinterprets an object of type From as one of type To.
+  /// Operand, when given, is the converted expression, whose value a
+  /// conversion to a pointer to a record may take from a declaration.
+  void addKCFIConversionType(QualType From, QualType To, bool LValue = false,
+                             const Expr *Operand = nullptr);
+
+  /// Record the KCFI types of the function pointers held in the record
+  /// Pointee, when a pointer to it is converted from Operand and Operand is
+  /// directly the result of a call to a function or a load of a variable, for
+  /// the facts of that declaration.
+  void addKCFIBoundaryRecord(QualType Pointee, const Expr *Operand);
+
+  /// Under the KCFI marker scheme on COFF, record the type of a function
+  /// pointer read from the member Member of a union that has a member of
+  /// another type, which may have written it.
+  void addKCFIUnionReadType(const ValueDecl *Member);
 
   /// Whether a call through a vtable of RD may reach a function that carries
   /// no KCFI prefix of ours: when RD does not have hidden LTO visibility, so
