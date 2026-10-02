@@ -374,7 +374,9 @@ bool SymbolTable::loadLocalImportMembers() {
 //   takes. If f resolves to an import or to a definition without a prefix,
 //   the type is open statically and f is added to its list of targets.
 // - __kcfi_inflow_<type>_<g>, for a declaration g through which a pointer of
-//   the type can come back. If g resolves so, the type is open dynamically.
+//   the type can come back. If g resolves so, or g is a variable that a DLL
+//   provides or that an object with code and no prefix defines, the type is
+//   open dynamically.
 // - __kcfi_param_<type>_<g>, for a definition g that can receive a pointer of
 //   the type. If an object with code and no prefix references g, the type is
 //   open dynamically.
@@ -444,16 +446,31 @@ void SymbolTable::openKCFITypes() {
     }
     return it->second = {definesCode, hasPrefix};
   };
+  // A reference to a variable that a DLL provides stays undefined until
+  // automatic import resolves it to the variable's __imp_ pointer.
+  auto resolve = [&](Symbol *s) -> Defined * {
+    if (!s)
+      return nullptr;
+    if (Defined *d = s->getDefined())
+      return d;
+    return dyn_cast_or_null<DefinedImportData>(impSymbol(s->getName()));
+  };
+  // A function is foreign where it has no prefix; a variable, which never
+  // has one, where the object defining it is foreign.
   auto isForeign = [&](Symbol *s) {
-    Defined *d = s ? s->getDefined() : nullptr;
+    Defined *d = resolve(s);
     if (isa_and_nonnull<DefinedImportThunk, DefinedImportData>(d))
       return true;
-    auto *r = dyn_cast_or_null<DefinedRegular>(d);
-    auto *file = r ? dyn_cast_or_null<ObjFile>(r->file) : nullptr;
+    auto *c = dyn_cast_or_null<DefinedCOFF>(d);
+    auto *file = c ? dyn_cast_or_null<ObjFile>(c->getFile()) : nullptr;
     if (!file)
       return false;
-    scan(file);
-    return !prefixed.contains({r->getChunk(), r->getValue()});
+    auto [definesCode, hasPrefix] = scan(file);
+    auto *r = dyn_cast<DefinedRegular>(c);
+    if (r && r->getChunk() &&
+        (r->getChunk()->getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE))
+      return !prefixed.contains({r->getChunk(), r->getValue()});
+    return definesCode && !hasPrefix;
   };
 
   // For each type, whether it is open dynamically, and the symbols to add to
@@ -465,7 +482,9 @@ void SymbolTable::openKCFITypes() {
   };
   std::map<uint32_t, Opening> openings;
   std::vector<Symbol *> typeids;
-  DenseMap<Symbol *, SmallVector<uint32_t, 1>> params;
+  // The types that the inflow and parameter facts name, by the symbol each
+  // names.
+  DenseMap<Symbol *, SmallVector<uint32_t, 1>> inflows, params;
   auto parseFact = [&](StringRef rest, uint32_t &type) -> Symbol * {
     if (rest.size() < 10 || rest[8] != '_' ||
         rest.take_front(8).getAsInteger(16, type))
@@ -480,13 +499,20 @@ void SymbolTable::openKCFITypes() {
     if (name.starts_with("typeid_")) {
       typeids.push_back(s);
     } else if (name.consume_front("inflow_")) {
-      if (isForeign(parseFact(name, type)))
-        openings[type].dynamic = true;
+      if (Symbol *g = parseFact(name, type))
+        inflows[g].push_back(type);
     } else if (name.consume_front("param_")) {
       if (Symbol *g = parseFact(name, type))
         params[g].push_back(type);
     }
   });
+  auto openDynamically = [&](ArrayRef<uint32_t> types) {
+    for (uint32_t type : types)
+      openings[type].dynamic = true;
+  };
+  for (auto &[g, types] : inflows)
+    if (isForeign(g))
+      openDynamically(types);
 
   // An import is listed by its import address table slot, and by a cell
   // holding its thunk, which static data refers to; a definition without a
@@ -499,7 +525,7 @@ void SymbolTable::openKCFITypes() {
     if (!id || !isForeign(f))
       continue;
     auto &entries = openings[uint32_t(id->getVA())].entries;
-    Defined *d = f->getDefined();
+    Defined *d = resolve(f);
     if (auto *thunk = dyn_cast<DefinedImportThunk>(d)) {
       entries.push_back({thunk->wrappedSym, false});
       entries.push_back({thunk, true});
@@ -521,8 +547,7 @@ void SymbolTable::openKCFITypes() {
         auto [definesCode, hasPrefix] = scan(file);
         if (!definesCode || hasPrefix)
           break;
-        for (uint32_t type : it->second)
-          openings[type].dynamic = true;
+        openDynamically(it->second);
       }
     }
   }
