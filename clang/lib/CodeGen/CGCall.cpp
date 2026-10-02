@@ -6876,6 +6876,7 @@ RValue CodeGenFunction::EmitVAArg(VAArgExpr *VE, Address &VAListAddr,
   QualType Ty = VE->getType();
   if (Ty->isVariablyModifiedType())
     EmitVariablyModifiedType(Ty);
+  CGM.addKCFIVAArgType(Ty, CurCodeDecl);
   if (VE->isMicrosoftABI())
     return CGM.getABIInfo().EmitMSVAArg(*this, VAListAddr, Ty, Slot);
   if (VE->isZOSABI())
