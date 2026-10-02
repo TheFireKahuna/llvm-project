@@ -381,6 +381,13 @@ bool SymbolTable::loadLocalImportMembers() {
 //   the type. If an object with code and no prefix references g, directly or
 //   through __imp_g, the type is open dynamically.
 //
+// An inflow or parameter fact may name a node, n<node> in 16 lowercase hex
+// digits, in place of a type, as __kcfi_inflow_n<node>_<g>, so that an object
+// names the types a record holds once rather than once per function that
+// reaches the record. It stands for the facts of each type the node holds,
+// which __kcfi_node_<node>_<type> gives, and names nothing when the node holds
+// no type.
+//
 // A type is opened only where a KCFI thunk refers to its mismatch routine,
 // __llvm_kcfi_mismatch_<type> or __llvm_kcfi_check_mismatch_<type>. While the
 // routine is the weak default that fails fast, it becomes one that points at
@@ -483,36 +490,67 @@ void SymbolTable::openKCFITypes() {
   std::map<uint32_t, Opening> openings;
   std::vector<Symbol *> typeids;
   // The types that the inflow and parameter facts name, by the symbol each
-  // names.
+  // names, the nodes that they name, and the types of each node.
   DenseMap<Symbol *, SmallVector<uint32_t, 1>> inflows, params;
+  SmallVector<std::pair<Symbol *, uint64_t>, 0> inflowNodes, paramNodes;
+  DenseMap<uint64_t, SmallVector<uint32_t, 2>> nodes;
   auto parseFact = [&](StringRef rest, uint32_t &type) -> Symbol * {
     if (rest.size() < 10 || rest[8] != '_' ||
         rest.take_front(8).getAsInteger(16, type))
       return nullptr;
     return find(rest.drop_front(9));
   };
+  auto parseNodeFact = [&](StringRef rest, uint64_t &node) -> Symbol * {
+    if (rest.size() < 19 || rest[17] != '_' ||
+        rest.substr(1, 16).getAsInteger(16, node))
+      return nullptr;
+    return find(rest.drop_front(18));
+  };
+  auto addParam = [&](Symbol *g, uint32_t type) {
+    params[g].push_back(type);
+    // Code that declares g dllimport reaches our g through __imp_g, which
+    // becomes a local import unless it is bound to something else.
+    auto *imp =
+        dyn_cast_or_null<Undefined>(find(("__imp_" + g->getName()).str()));
+    if (imp && !imp->getWeakAlias())
+      params[imp].push_back(type);
+  };
   forEachSymbol([&](Symbol *s) {
     StringRef name = s->getName();
     uint32_t type = 0;
+    uint64_t node = 0;
     if (!name.consume_front("__kcfi_"))
       return;
     if (name.starts_with("typeid_")) {
       typeids.push_back(s);
     } else if (name.consume_front("inflow_")) {
-      if (Symbol *g = parseFact(name, type))
+      if (name.starts_with("n")) {
+        if (Symbol *g = parseNodeFact(name, node))
+          inflowNodes.push_back({g, node});
+      } else if (Symbol *g = parseFact(name, type)) {
         inflows[g].push_back(type);
-    } else if (name.consume_front("param_")) {
-      if (Symbol *g = parseFact(name, type)) {
-        params[g].push_back(type);
-        // Code that declares g dllimport reaches our g through __imp_g, which
-        // becomes a local import unless it is bound to something else.
-        auto *imp =
-            dyn_cast_or_null<Undefined>(find(("__imp_" + g->getName()).str()));
-        if (imp && !imp->getWeakAlias())
-          params[imp].push_back(type);
       }
+    } else if (name.consume_front("param_")) {
+      if (name.starts_with("n")) {
+        if (Symbol *g = parseNodeFact(name, node))
+          paramNodes.push_back({g, node});
+      } else if (Symbol *g = parseFact(name, type)) {
+        addParam(g, type);
+      }
+    } else if (name.consume_front("node_")) {
+      if (name.size() == 25 && name[16] == '_' &&
+          !name.take_front(16).getAsInteger(16, node) &&
+          !name.drop_front(17).getAsInteger(16, type))
+        nodes[node].push_back(type);
     }
   });
+  for (auto [g, node] : inflowNodes)
+    if (auto it = nodes.find(node); it != nodes.end())
+      llvm::append_range(inflows[g], it->second);
+  for (auto [g, node] : paramNodes)
+    if (auto it = nodes.find(node); it != nodes.end())
+      for (uint32_t type : it->second)
+        addParam(g, type);
   auto openDynamically = [&](ArrayRef<uint32_t> types) {
     for (uint32_t type : types)
       openings[type].dynamic = true;
