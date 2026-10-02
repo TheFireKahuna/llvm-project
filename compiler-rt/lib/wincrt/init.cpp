@@ -22,11 +22,38 @@ namespace {
 
 LONG TerminationComplete;
 
+// Call the entries of the table [First, Last), skipping the null entries that
+// the linker may pad it with, as the UCRT's _initterm does; the _PIFV form
+// stops at the first entry that returns nonzero, as _initterm_e does. The
+// entries come from every object in the image, including objects built
+// without KCFI, so the calls check no KCFI type; Control Flow Guard checks
+// them, as it does in the UCRT. Handing the UCRT pointers to the tables
+// instead would open the types of the entries in every image. The bounds are
+// distinct objects that the linker places around the entries, which the
+// empty asm hides from the optimizer.
+__attribute__((no_sanitize("kcfi"))) void runTable(const _PVFV *First,
+                                                   const _PVFV *Last) {
+  __asm__("" : "+r"(First));
+  for (; First != Last; ++First)
+    if (*First)
+      (*First)();
+}
+
+__attribute__((no_sanitize("kcfi"))) int runTable(const _PIFV *First,
+                                                  const _PIFV *Last) {
+  __asm__("" : "+r"(First));
+  for (; First != Last; ++First)
+    if (*First)
+      if (int Result = (*First)())
+        return Result;
+  return 0;
+}
+
 // The image's pre-terminators and terminators, which run after its
 // registrations.
 void __cdecl runTerminators() {
-  _initterm(const_cast<_PVFV *>(__xp_a), const_cast<_PVFV *>(__xp_z));
-  _initterm(const_cast<_PVFV *>(__xt_a), const_cast<_PVFV *>(__xt_z));
+  runTable(__xp_a, __xp_z);
+  runTable(__xt_a, __xt_z);
   __atomic_store_n(&TerminationComplete, 1, __ATOMIC_RELEASE);
 }
 
@@ -80,9 +107,9 @@ namespace wincrt {
 // Start-up is single-threaded: a DLL's runs under the loader lock, and an
 // executable's before main.
 bool initializeImage() {
-  if (_initterm_e(const_cast<_PIFV *>(__xi_a), const_cast<_PIFV *>(__xi_z)))
+  if (runTable(__xi_a, __xi_z))
     return false;
-  _initterm(const_cast<_PVFV *>(__xc_a), const_cast<_PVFV *>(__xc_z));
+  runTable(__xc_a, __xc_z);
   return true;
 }
 
