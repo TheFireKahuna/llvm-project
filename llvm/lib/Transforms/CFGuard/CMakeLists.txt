@@ -11,4 +11,5 @@ add_llvm_component_library(LLVMCFGuard
   Core
   Support
   TargetParser
+  TransformUtils
   )

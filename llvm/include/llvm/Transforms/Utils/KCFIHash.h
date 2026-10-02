@@ -18,6 +18,8 @@
 
 namespace llvm {
 
+class Module;
+
 enum class KCFIHashAlgorithm { xxHash64, FNV1a };
 
 /// Parse a KCFI hash algorithm name.
@@ -43,6 +45,19 @@ LLVM_ABI uint32_t getX86KCFIType(uint32_t Type);
 /// move of the type ID.
 inline uint64_t getKCFIMarkerPattern(uint32_t Marker) {
   return 0xB8000000'00801F0FULL | uint64_t(Marker) << 24;
+}
+
+/// Returns true if the CFGuard pass routes the KCFI checks of a module through
+/// per-type thunks, which the backend emits: on COFF x86-64 and AArch64,
+/// except Arm64EC, when the prefixes carry a marker.
+LLVM_ABI bool hasKCFIThunks(const Module &M);
+
+/// Returns true if, in a module with KCFI thunks, a call to llvm.kcfi.check at
+/// Offset goes through a per-type check thunk: the type word at offset 4, or
+/// at offset 16 the second type that a function which can occupy a vtable
+/// slot carries before its marker.
+inline bool isKCFICheckThunkOffset(uint64_t Offset) {
+  return Offset == 4 || Offset == 16;
 }
 
 } // end namespace llvm

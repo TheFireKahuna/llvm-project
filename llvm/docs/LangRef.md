@@ -26762,7 +26762,7 @@ entry, not counting any `patchable-function-prefix` between them.
 The intrinsic traps unless the 4-byte word at `offset` bytes before the
 function's entry, and before any patchable-function prefix, equals `type` as
 the target stores it there; x86 stores a type that would spell an `ENDBR64` or
-`ENDBR32` instruction just before the entry plus one. It is expanded before instruction selection into a load, a compare and a call to
+`ENDBR32` instruction plus one. It is expanded before instruction selection into a load, a compare and a call to
 `@llvm.trap`. A target may lower it to a call to a routine of its own that
 performs the same check.
 

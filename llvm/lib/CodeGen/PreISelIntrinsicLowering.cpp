@@ -686,15 +686,22 @@ static bool expandKCFICheck(Function &Intr) {
   Module &M = *Intr.getParent();
   const Triple &TT = M.getTargetTriple();
   LLVMContext &Ctx = M.getContext();
-  // The size of a patchable-function prefix between the type and the entry is
-  // not known here.
-  if (M.getModuleFlag("kcfi-offset") && !Intr.use_empty())
-    Ctx.emitError("a patchable-function prefix is not compatible with "
-                  "llvm.kcfi.check on this target");
+  // The CFGuard pass replaces the checks a per-type thunk can perform.
+  bool HasKCFIThunks = hasKCFIThunks(M);
 
   Type *Int32Ty = Type::getInt32Ty(Ctx);
+  bool Changed = false;
   for (User *U : make_early_inc_range(Intr.users())) {
     auto *Call = cast<CallInst>(U);
+    int64_t Offset = cast<ConstantInt>(Call->getArgOperand(2))->getSExtValue();
+    if (HasKCFIThunks && isKCFICheckThunkOffset(Offset))
+      continue;
+    // The size of a patchable-function prefix between the type and the entry
+    // is not known here.
+    if (!Changed && M.getModuleFlag("kcfi-offset"))
+      Ctx.emitError("a patchable-function prefix is not compatible with "
+                    "llvm.kcfi.check on this target");
+    Changed = true;
     IRBuilder<> B(Call);
     Value *Target = Call->getArgOperand(0);
     // The least significant bit of an ARM function pointer selects Thumb.
@@ -702,13 +709,14 @@ static bool expandKCFICheck(Function &Intr) {
       Target =
           B.CreateIntrinsic(Intrinsic::ptrmask, {Target->getType(), Int32Ty},
                             {Target, B.getInt32(-2)});
-    int64_t Offset = cast<ConstantInt>(Call->getArgOperand(2))->getSExtValue();
     Value *Word = B.CreateAlignedLoad(
         Int32Ty, B.CreateConstGEP1_64(B.getInt8Ty(), Target, -Offset),
         Align(1));
-    // x86 stores the type at the entry as the immediate of a move.
+    // x86 stores the type at the entry as the immediate of a move, and the
+    // second type that a function which can occupy a vtable slot carries,
+    // at offset 16, in the same form.
     uint32_t Type = cast<ConstantInt>(Call->getArgOperand(1))->getZExtValue();
-    if (TT.isX86() && Offset == 4)
+    if (TT.isX86() && (Offset == 4 || Offset == 16))
       Type = getX86KCFIType(Type);
     Value *Mismatch = B.CreateICmpNE(Word, B.getInt32(Type));
     Instruction *Trap =
@@ -718,7 +726,7 @@ static bool expandKCFICheck(Function &Intr) {
     B.CreateIntrinsic(Intrinsic::trap, {});
     Call->eraseFromParent();
   }
-  return true;
+  return Changed;
 }
 
 bool PreISelIntrinsicLowering::lowerIntrinsics(Module &M) const {
