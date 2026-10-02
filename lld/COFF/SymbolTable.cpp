@@ -388,6 +388,13 @@ bool SymbolTable::loadLocalImportMembers() {
 // which __kcfi_node_<node>_<type> gives, and names nothing when the node holds
 // no type.
 //
+// - __kcfi_tinflow_<type>_<called>, or __kcfi_tinflow_n<node>_<called>, for a
+//   type that an object calls: a pointer of the type can come back from a
+//   call through a pointer of the called type. If the called type is open
+//   dynamically, because a compiled mismatch routine of it jumps to a dynamic
+//   scanner or because a fact here opens it, the type is open dynamically,
+//   and so on until nothing more opens.
+//
 // A type is opened only where a KCFI thunk refers to its mismatch routine,
 // __llvm_kcfi_mismatch_<type> or __llvm_kcfi_check_mismatch_<type>. While the
 // routine is the weak default that fails fast, it becomes one that points at
@@ -493,6 +500,8 @@ void SymbolTable::openKCFITypes() {
   // names, the nodes that they name, and the types of each node.
   DenseMap<Symbol *, SmallVector<uint32_t, 1>> inflows, params;
   SmallVector<std::pair<Symbol *, uint64_t>, 0> inflowNodes, paramNodes;
+  DenseMap<uint32_t, SmallVector<uint32_t, 1>> tinflows;
+  SmallVector<std::pair<uint32_t, uint64_t>, 0> tinflowNodes;
   DenseMap<uint64_t, SmallVector<uint32_t, 2>> nodes;
   auto parseFact = [&](StringRef rest, uint32_t &type) -> Symbol * {
     if (rest.size() < 10 || rest[8] != '_' ||
@@ -537,6 +546,18 @@ void SymbolTable::openKCFITypes() {
       } else if (Symbol *g = parseFact(name, type)) {
         addParam(g, type);
       }
+    } else if (name.consume_front("tinflow_")) {
+      // The fact ends in the called type rather than in a symbol.
+      uint32_t called = 0;
+      if (name.size() < 10 || name.drop_back(8).back() != '_' ||
+          name.take_back(8).getAsInteger(16, called))
+        return;
+      name = name.drop_back(9);
+      if (name.size() == 17 && name[0] == 'n' &&
+          !name.drop_front().getAsInteger(16, node))
+        tinflowNodes.push_back({called, node});
+      else if (name.size() == 8 && !name.getAsInteger(16, type))
+        tinflows[called].push_back(type);
     } else if (name.consume_front("node_")) {
       if (name.size() == 25 && name[16] == '_' &&
           !name.take_front(16).getAsInteger(16, node) &&
@@ -551,6 +572,9 @@ void SymbolTable::openKCFITypes() {
     if (auto it = nodes.find(node); it != nodes.end())
       for (uint32_t type : it->second)
         addParam(g, type);
+  for (auto [called, node] : tinflowNodes)
+    if (auto it = nodes.find(node); it != nodes.end())
+      llvm::append_range(tinflows[called], it->second);
   auto openDynamically = [&](ArrayRef<uint32_t> types) {
     for (uint32_t type : types)
       openings[type].dynamic = true;
@@ -597,12 +621,6 @@ void SymbolTable::openKCFITypes() {
     }
   }
 
-  auto keep = [&](Defined *d) {
-    if (!d->isGCRoot) {
-      d->isGCRoot = true;
-      ctx.config.gcroot.push_back(d);
-    }
-  };
   struct Kind {
     StringRef mismatch, staticScanner, dynamicScanner;
   };
@@ -610,6 +628,53 @@ void SymbolTable::openKCFITypes() {
       {"__llvm_kcfi_mismatch_", "__llvm_kcfi_open", "__llvm_kcfi_open_dynamic"},
       {"__llvm_kcfi_check_mismatch_", "__llvm_kcfi_check_open",
        "__llvm_kcfi_check_open_dynamic"}};
+  ArrayRef<Kind> machineKinds = ArrayRef(kinds).drop_front(isX64 ? 0 : 1);
+  // The scanner that m jumps to, if m is a compiled mismatch routine of the
+  // kind.
+  auto compiledScanner = [&](Symbol *m, const Kind &k) -> Symbol * {
+    auto *r = dyn_cast_or_null<DefinedRegular>(m);
+    if (!r)
+      return nullptr;
+    auto refs = r->getChunk()->symbols();
+    for (StringRef name : {k.staticScanner, k.dynamicScanner})
+      if (Symbol *scanner = find(name); scanner && is_contained(refs, scanner))
+        return scanner;
+    return nullptr;
+  };
+
+  // What a call through a foreign pointer returns, or stores through its
+  // pointer parameters, can be foreign too.
+  if (!tinflows.empty()) {
+    SmallVector<uint32_t, 0> worklist;
+    auto open = [&](uint32_t type) {
+      if (!std::exchange(openings[type].dynamic, true))
+        worklist.push_back(type);
+    };
+    for (auto &[type, opening] : openings)
+      if (opening.dynamic)
+        worklist.push_back(type);
+    for (auto &kv : tinflows) {
+      std::string hex = utohexstr(kv.first, /*LowerCase=*/true, /*Width=*/8);
+      for (const Kind &k : machineKinds) {
+        Symbol *m = find((Twine(k.mismatch) + hex).str());
+        if (Symbol *scanner = compiledScanner(m, k);
+            scanner && scanner->getName() == k.dynamicScanner)
+          open(kv.first);
+      }
+    }
+    while (!worklist.empty())
+      if (auto it = tinflows.find(worklist.pop_back_val());
+          it != tinflows.end())
+        for (uint32_t type : it->second)
+          open(type);
+  }
+
+  auto keep = [&](Defined *d) {
+    if (!d->isGCRoot) {
+      d->isGCRoot = true;
+      ctx.config.gcroot.push_back(d);
+    }
+  };
   for (auto &kv : openings) {
     uint32_t type = kv.first;
     Opening &opening = kv.second;
@@ -630,7 +695,7 @@ void SymbolTable::openKCFITypes() {
     // routine, which jumps to one of the scanners. Anything else, such as a
     // routine of another form, is left as it is.
     bool opened = false;
-    for (const Kind &k : ArrayRef(kinds).drop_front(isX64 ? 0 : 1)) {
+    for (const Kind &k : machineKinds) {
       Symbol *m = find((Twine(k.mismatch) + hex).str());
       bool replace;
       if (auto *u = dyn_cast_or_null<Undefined>(m)) {
@@ -638,15 +703,8 @@ void SymbolTable::openKCFITypes() {
         if (!d || d->getName() != "__llvm_kcfi_trap")
           continue;
         replace = true;
-      } else if (auto *r = dyn_cast_or_null<DefinedRegular>(m)) {
-        auto refs = r->getChunk()->symbols();
-        Symbol *staticScanner = find(k.staticScanner);
-        Symbol *dynamicScanner = find(k.dynamicScanner);
-        bool isStatic = staticScanner && is_contained(refs, staticScanner);
-        if (!isStatic &&
-            !(dynamicScanner && is_contained(refs, dynamicScanner)))
-          continue;
-        replace = isStatic && opening.dynamic;
+      } else if (Symbol *scanner = compiledScanner(m, k)) {
+        replace = opening.dynamic && scanner->getName() == k.staticScanner;
       } else {
         continue;
       }
