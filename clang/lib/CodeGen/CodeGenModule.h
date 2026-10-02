@@ -506,7 +506,9 @@ private:
   llvm::SetVector<llvm::ConstantInt *> KCFIDynamicTypes;
 
   /// The records that a value of a declaration, the result of a call to a
-  /// function or a load of a variable, is converted to a pointer to.
+  /// function or a load of a variable, is converted to a pointer to, and
+  /// those that a call to a function passes a pointer to in a variadic
+  /// argument or as an untyped pointer parameter.
   llvm::MapVector<const NamedDecl *, llvm::SetVector<const RecordDecl *>>
       KCFIBoundaryRecords;
 
@@ -514,6 +516,12 @@ private:
   /// va_arg.
   llvm::DenseMap<const FunctionDecl *, llvm::SetVector<const Type *>>
       KCFIVAArgTypes;
+
+  /// The canonical function pointer types of the objects that a call to a
+  /// function passes a pointer to in a variadic argument or as an untyped
+  /// pointer parameter.
+  llvm::DenseMap<const FunctionDecl *, llvm::SetVector<const Type *>>
+      KCFIUntypedArgTypes;
 
   /// Global annotations.
   std::vector<llvm::Constant*> Annotations;
@@ -1846,6 +1854,18 @@ public:
   /// without a prefix of ours.
   void addKCFIVAArgType(QualType T, const Decl *D);
 
+  /// Under the KCFI marker scheme on COFF, record the objects that the
+  /// arguments Args of a call to FD point to, when FD is not a library
+  /// builtin and an argument is in a variadic position, at or after
+  /// NumParams, or converted to a parameter of type void * or a pointer to a
+  /// character type, so that the facts of FD include the function pointers
+  /// those objects hold, as they include those of the records that its
+  /// result is converted to a pointer to.
+  void addKCFICallArguments(
+      const FunctionDecl *FD,
+      llvm::iterator_range<CallExpr::const_arg_iterator> Args,
+      unsigned NumParams);
+
   /// Whether a call through a vtable of RD may reach a function that carries
   /// no KCFI prefix of ours: when RD or one of its bases says that another
   /// image or foreign code may create its objects, by a uuid, which COM
@@ -1855,9 +1875,11 @@ public:
 
   /// Collect into TypeIds the KCFI types of the function pointers that a call
   /// to FD hands back to its caller, through its return type and through the
-  /// objects that its pointer parameters to non-const types point to, when
-  /// Params is false; the walk follows pointers and the fields and bases of
-  /// records, and a polymorphic class adds the types of its vtable slots. Or,
+  /// objects that its pointer parameters to non-const types point to, and
+  /// the function pointers that calls pass untyped as addKCFICallArguments
+  /// records, when Params is false; the walk follows pointers and the fields
+  /// and bases of records, and a polymorphic class adds the types of its
+  /// vtable slots. Or,
   /// when Params is true, that a caller hands to FD: its function pointer
   /// parameters and the function pointers held in the objects its parameters
   /// hold or point to, without following pointers further, and in the same

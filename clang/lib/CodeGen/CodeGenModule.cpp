@@ -4009,6 +4009,17 @@ static const NamedDecl *getKCFIBoundaryDecl(const Expr *E) {
   return nullptr;
 }
 
+/// E without the conversions between pointer types around it.
+static const Expr *ignoreKCFIPointerConversions(const Expr *E) {
+  E = E->IgnoreParens();
+  while (const auto *Cast = dyn_cast<CastExpr>(E)) {
+    if (Cast->getCastKind() != CK_BitCast && Cast->getCastKind() != CK_NoOp)
+      break;
+    E = Cast->getSubExpr()->IgnoreParens();
+  }
+  return E;
+}
+
 void CodeGenModule::addKCFIBoundaryRecord(QualType Pointee,
                                           const Expr *Operand) {
   if (!Pointee->isRecordType())
@@ -4048,6 +4059,10 @@ void CodeGenModule::collectKCFIInflowTypes(
       collectKCFIReachableTypes(*this, T->getPointeeType(), Visited, TypeIds,
                                 Records);
   }
+  auto Untyped = KCFIUntypedArgTypes.find(FD->getCanonicalDecl());
+  if (Untyped != KCFIUntypedArgTypes.end())
+    for (const Type *T : Untyped->second)
+      TypeIds.insert(CreateKCFICallTypeId(T->getPointeeType()));
 }
 
 void CodeGenModule::addKCFIVAArgType(QualType T, const Decl *D) {
@@ -4064,6 +4079,44 @@ void CodeGenModule::addKCFIVAArgType(QualType T, const Decl *D) {
   }
   llvm::SmallPtrSet<const RecordDecl *, 16> Visited;
   collectKCFIHandedTypes(*this, T, Visited, KCFIDynamicTypes);
+}
+
+void CodeGenModule::addKCFICallArguments(
+    const FunctionDecl *FD,
+    llvm::iterator_range<CallExpr::const_arg_iterator> Args,
+    unsigned NumParams) {
+  // None of the C library's functions stores a function pointer of its own
+  // into memory that its caller hands it.
+  if (FD->getBuiltinID())
+    return;
+  // A callee can store its own function pointers into an object that a
+  // pointer in a variadic argument or an untyped pointer points to. Since
+  // nothing says that the callee knows the object's type, as a typed pointer
+  // parameter does, only the function pointers that the object holds count,
+  // as for a record that the callee's result is converted to a pointer to.
+  for (auto [I, Arg] : llvm::enumerate(Args)) {
+    QualType ParamType = Arg->getType();
+    if (I < NumParams &&
+        (!ParamType->isPointerType() ||
+         ParamType->getPointeeType().isConstQualified() ||
+         !(ParamType->getPointeeType()->isVoidType() ||
+           ParamType->getPointeeType()->isCharType())))
+      continue;
+    QualType T = ignoreKCFIPointerConversions(Arg)->getType();
+    if (!T->isPointerType())
+      continue;
+    QualType Pointee = T->getPointeeType();
+    if (Pointee.isConstQualified())
+      continue;
+    QualType Object = getContext().getBaseElementType(Pointee);
+    if (const RecordDecl *RD = Object->getAsRecordDecl()) {
+      if ((RD = RD->getDefinition()))
+        KCFIBoundaryRecords[FD->getCanonicalDecl()].insert(RD);
+    } else if (Object->isFunctionPointerType()) {
+      KCFIUntypedArgTypes[FD->getCanonicalDecl()].insert(
+          Object.getCanonicalType().getTypePtr());
+    }
+  }
 }
 
 bool CodeGenModule::hasKCFIVTableSlotTypes() const {
