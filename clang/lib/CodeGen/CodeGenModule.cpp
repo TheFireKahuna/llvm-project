@@ -76,6 +76,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/TimeProfiler.h"
 #include "llvm/Support/VirtualFileSystem.h"
+#include "llvm/Support/xxhash.h"
 #include "llvm/TargetParser/AArch64TargetParser.h"
 #include "llvm/TargetParser/RISCVISAInfo.h"
 #include "llvm/TargetParser/Triple.h"
@@ -3868,23 +3869,31 @@ bool CodeGenModule::isKCFIVTableOpen(const CXXRecordDecl *RD) {
 /// Collect into TypeIds the KCFI types of the function pointers that a value
 /// of type T holds or reaches through pointers and the fields and bases of
 /// records, and of the vtable slots of the polymorphic classes it reaches.
+/// With Records, the walk stops at the records it reaches and lists them
+/// there instead.
 static void
 collectKCFIReachableTypes(CodeGenModule &CGM, QualType T,
                           llvm::SmallPtrSetImpl<const RecordDecl *> &Visited,
-                          llvm::SetVector<llvm::ConstantInt *> &TypeIds) {
+                          llvm::SetVector<llvm::ConstantInt *> &TypeIds,
+                          llvm::SetVector<const RecordDecl *> *Records =
+                              nullptr) {
   T = CGM.getContext().getBaseElementType(T.getCanonicalType());
   if (T->isPointerType() || T->isReferenceType()) {
     QualType Pointee = T->getPointeeType();
     if (Pointee->isFunctionType())
       TypeIds.insert(CGM.CreateKCFICallTypeId(Pointee));
     else
-      collectKCFIReachableTypes(CGM, Pointee, Visited, TypeIds);
+      collectKCFIReachableTypes(CGM, Pointee, Visited, TypeIds, Records);
     return;
   }
 
   const RecordDecl *RD = T->getAsRecordDecl();
   if (RD)
     RD = RD->getDefinition();
+  if (RD && Records) {
+    Records->insert(RD);
+    return;
+  }
   if (!RD || !Visited.insert(RD).second)
     return;
   for (const FieldDecl *Field : RD->fields())
@@ -3919,10 +3928,13 @@ collectKCFIReachableTypes(CodeGenModule &CGM, QualType T,
 /// Collect into TypeIds the KCFI types of the function pointers that an
 /// object of type T holds itself: T, or the fields and bases of a record and
 /// of the records it holds by value. Pointers to objects are not followed.
+/// With Records, the walk stops at the records it reaches and lists them
+/// there instead.
 static void
 collectKCFIHeldTypes(CodeGenModule &CGM, QualType T,
                      llvm::SmallPtrSetImpl<const RecordDecl *> &Visited,
-                     llvm::SetVector<llvm::ConstantInt *> &TypeIds) {
+                     llvm::SetVector<llvm::ConstantInt *> &TypeIds,
+                     llvm::SetVector<const RecordDecl *> *Records = nullptr) {
   T = CGM.getContext().getBaseElementType(T.getCanonicalType());
   if (T->isPointerType() || T->isReferenceType()) {
     if (T->getPointeeType()->isFunctionType())
@@ -3933,6 +3945,10 @@ collectKCFIHeldTypes(CodeGenModule &CGM, QualType T,
   const RecordDecl *RD = T->getAsRecordDecl();
   if (RD)
     RD = RD->getDefinition();
+  if (RD && Records) {
+    Records->insert(RD);
+    return;
+  }
   if (!RD || !Visited.insert(RD).second)
     return;
   for (const FieldDecl *Field : RD->fields())
@@ -3950,12 +3966,13 @@ collectKCFIHeldTypes(CodeGenModule &CGM, QualType T,
 static void
 collectKCFIHandedTypes(CodeGenModule &CGM, QualType T,
                        llvm::SmallPtrSetImpl<const RecordDecl *> &Visited,
-                       llvm::SetVector<llvm::ConstantInt *> &TypeIds) {
+                       llvm::SetVector<llvm::ConstantInt *> &TypeIds,
+                       llvm::SetVector<const RecordDecl *> *Records = nullptr) {
   T = T.getCanonicalType();
   if ((T->isPointerType() || T->isReferenceType()) &&
       !T->getPointeeType()->isFunctionType())
     T = T->getPointeeType();
-  collectKCFIHeldTypes(CGM, T, Visited, TypeIds);
+  collectKCFIHeldTypes(CGM, T, Visited, TypeIds, Records);
 }
 
 /// The declaration whose value E directly is, when E is a call to a function
@@ -3978,27 +3995,25 @@ void CodeGenModule::addKCFIBoundaryRecord(QualType Pointee,
   if (!Pointee->isRecordType())
     return;
   const NamedDecl *D = getKCFIBoundaryDecl(Operand);
-  if (!D)
-    return;
-  llvm::SmallPtrSet<const RecordDecl *, 16> Visited;
-  llvm::SetVector<llvm::ConstantInt *> TypeIds;
-  collectKCFIHeldTypes(*this, Pointee, Visited, TypeIds);
-  if (!TypeIds.empty())
-    KCFIBoundaryTypes[cast<NamedDecl>(D->getCanonicalDecl())].insert(
-        TypeIds.begin(), TypeIds.end());
+  const RecordDecl *RD = Pointee->getAsRecordDecl()->getDefinition();
+  if (D && RD)
+    KCFIBoundaryRecords[cast<NamedDecl>(D->getCanonicalDecl())].insert(RD);
 }
 
 void CodeGenModule::collectKCFIInflowTypes(
     const FunctionDecl *FD, bool Params,
-    llvm::SetVector<llvm::ConstantInt *> &TypeIds) {
+    llvm::SetVector<llvm::ConstantInt *> &TypeIds,
+    llvm::SetVector<const RecordDecl *> *Records) {
   llvm::SmallPtrSet<const RecordDecl *, 16> Visited;
   if (Params) {
     for (const ParmVarDecl *Param : FD->parameters())
-      collectKCFIHandedTypes(*this, Param->getType(), Visited, TypeIds);
+      collectKCFIHandedTypes(*this, Param->getType(), Visited, TypeIds,
+                             Records);
     return;
   }
 
-  collectKCFIReachableTypes(*this, FD->getReturnType(), Visited, TypeIds);
+  collectKCFIReachableTypes(*this, FD->getReturnType(), Visited, TypeIds,
+                            Records);
   // A function pointer passed by value flows to the callee, but the callee
   // can store one into an object that a pointer to a non-const type points
   // to.
@@ -4006,7 +4021,8 @@ void CodeGenModule::collectKCFIInflowTypes(
     QualType T = Param->getType().getCanonicalType();
     if ((T->isPointerType() || T->isReferenceType()) &&
         !T->getPointeeType().isConstQualified())
-      collectKCFIReachableTypes(*this, T->getPointeeType(), Visited, TypeIds);
+      collectKCFIReachableTypes(*this, T->getPointeeType(), Visited, TypeIds,
+                                Records);
   }
 }
 
@@ -4119,24 +4135,103 @@ void CodeGenModule::finalizeKCFITypes() {
   }
 }
 
-/// Emit, for each type in TypeIds, the constant <Prefix><type>_<Name>, whose
-/// value is the type, as a weak symbol, as the __kcfi_typeid_ constants are.
-/// The type in the name keeps the symbols of two objects from disagreeing.
-static void emitKCFILinkFacts(llvm::Module &M, StringRef Prefix, StringRef Name,
-                              ArrayRef<llvm::ConstantInt *> TypeIds) {
-  if (!allowKCFIIdentifier(Name))
-    return;
-  for (const llvm::ConstantInt *TypeId : TypeIds) {
-    uint64_t Type = TypeId->getZExtValue();
-    std::string Symbol =
-        (Twine(Prefix) +
-         llvm::utohexstr(Type, /*LowerCase=*/true, /*Width=*/8) + "_" + Name)
-            .str();
-    M.appendModuleInlineAsm((".weak " + Twine(Symbol) + "\n.set " + Symbol +
-                             ", " + Twine(Type) + "\n")
-                                .str());
+namespace {
+/// The link facts of one declaration: the KCFI types it reaches directly,
+/// and the records through which it reaches others, those it reaches
+/// through pointers from them and those they hold.
+struct KCFILinkFacts {
+  llvm::SetVector<llvm::ConstantInt *> TypeIds;
+  llvm::SetVector<const RecordDecl *> Reached;
+  llvm::SetVector<const RecordDecl *> Held;
+};
+
+/// Emits link facts as weak constants, as the __kcfi_typeid_ constants are,
+/// with every number in the name, so that the symbols of two objects never
+/// disagree. A type fact <Prefix><type>_<Name> has the type as its value. The
+/// types of a record are a node, emitted once per object as
+/// __kcfi_node_<node>_<type> for each of its types, and named by each fact
+/// <Prefix>n<node>_<Name>. A node is named by a hash of its types, so equal
+/// nodes of two objects are the same symbols; a node of one type is emitted
+/// as a type fact instead.
+class KCFILinkFactEmitter {
+  CodeGenModule &CGM;
+  llvm::DenseMap<std::pair<const RecordDecl *, unsigned>,
+                 std::pair<uint64_t, SmallVector<uint32_t, 4>>>
+      Nodes;
+  llvm::DenseSet<uint64_t> Emitted;
+
+  void emit(StringRef Symbol, uint64_t Value) {
+    CGM.getModule().appendModuleInlineAsm(
+        (".weak " + Twine(Symbol) + "\n.set " + Symbol + ", " + Twine(Value) +
+         "\n")
+            .str());
   }
-}
+
+  const std::pair<uint64_t, SmallVector<uint32_t, 4>> &
+  getNode(const RecordDecl *RD, bool Reached) {
+    auto [It, Inserted] = Nodes.try_emplace({RD, Reached});
+    if (!Inserted)
+      return It->second;
+    llvm::SmallPtrSet<const RecordDecl *, 16> Visited;
+    llvm::SetVector<llvm::ConstantInt *> TypeIds;
+    QualType T = CGM.getContext().getCanonicalTagType(RD);
+    if (Reached)
+      collectKCFIReachableTypes(CGM, T, Visited, TypeIds);
+    else
+      collectKCFIHeldTypes(CGM, T, Visited, TypeIds);
+    SmallVector<uint32_t, 4> &Types = It->second.second;
+    for (const llvm::ConstantInt *TypeId : TypeIds)
+      Types.push_back(TypeId->getZExtValue());
+    llvm::sort(Types);
+    SmallVector<uint8_t, 16> Bytes;
+    for (uint32_t Type : Types)
+      for (unsigned I = 0; I != 4; ++I)
+        Bytes.push_back(Type >> (8 * I));
+    It->second.first = llvm::xxh3_64bits(Bytes);
+    return It->second;
+  }
+
+public:
+  explicit KCFILinkFactEmitter(CodeGenModule &CGM) : CGM(CGM) {}
+
+  void emitFacts(StringRef Prefix, StringRef Name,
+                 const KCFILinkFacts &Facts) {
+    if (!allowKCFIIdentifier(Name))
+      return;
+    llvm::SetVector<uint32_t> Types;
+    for (const llvm::ConstantInt *TypeId : Facts.TypeIds)
+      Types.insert(TypeId->getZExtValue());
+    llvm::SetVector<const std::pair<uint64_t, SmallVector<uint32_t, 4>> *>
+        FactNodes;
+    for (bool Reached : {true, false})
+      for (const RecordDecl *RD : Reached ? Facts.Reached : Facts.Held) {
+        const auto &Node = getNode(RD, Reached);
+        if (Node.second.size() == 1)
+          Types.insert(Node.second.front());
+        else if (!Node.second.empty())
+          FactNodes.insert(&Node);
+      }
+
+    for (uint32_t Type : Types)
+      emit((Twine(Prefix) +
+            llvm::utohexstr(Type, /*LowerCase=*/true, /*Width=*/8) + "_" +
+            Name)
+               .str(),
+           Type);
+    for (const auto *Node : FactNodes) {
+      std::string Id =
+          llvm::utohexstr(Node->first, /*LowerCase=*/true, /*Width=*/16);
+      emit((Twine(Prefix) + "n" + Id + "_" + Name).str(), 0);
+      if (!Emitted.insert(Node->first).second)
+        continue;
+      for (uint32_t Type : Node->second)
+        emit("__kcfi_node_" + Id + "_" +
+                 llvm::utohexstr(Type, /*LowerCase=*/true, /*Width=*/8),
+             Type);
+    }
+  }
+};
+} // namespace
 
 /// Whether GV, the global of declaration D, is a known import: dllimport, or
 /// marked with an explicit default visibility that the visibility mapping
@@ -4150,6 +4245,7 @@ static bool isKCFIKnownImport(const llvm::GlobalValue &GV, const NamedDecl *D,
 
 void CodeGenModule::emitKCFIFacts() {
   llvm::Module &M = getModule();
+  KCFILinkFactEmitter LinkFacts(*this);
   for (llvm::Function &F : M.functions()) {
     GlobalDecl GD;
     if (F.hasLocalLinkage() || !lookupRepresentativeDecl(F.getName(), GD))
@@ -4159,28 +4255,31 @@ void CodeGenModule::emitKCFIFacts() {
       continue;
     FD = FD->getMostRecentDecl();
 
-    llvm::SetVector<llvm::ConstantInt *> TypeIds;
+    KCFILinkFacts Facts;
     if (F.isDeclarationForLinker()) {
       if (F.use_empty())
         continue;
       // A known import is in another image, which also defines the functions
       // whose pointers a call to it hands back, also in the records that its
       // result is converted to a pointer to.
-      auto Boundary = KCFIBoundaryTypes.find(FD->getCanonicalDecl());
+      auto Boundary = KCFIBoundaryRecords.find(FD->getCanonicalDecl());
       if (isKCFIKnownImport(F, FD, LangOpts)) {
         F.setMetadata("kcfi_import", llvm::MDNode::get(VMContext, {}));
         collectKCFIInflowTypes(FD, /*Params=*/false, KCFIDynamicTypes);
-        if (Boundary != KCFIBoundaryTypes.end())
-          KCFIDynamicTypes.insert(Boundary->second.begin(),
-                                  Boundary->second.end());
+        if (Boundary != KCFIBoundaryRecords.end())
+          for (const RecordDecl *RD : Boundary->second) {
+            llvm::SmallPtrSet<const RecordDecl *, 16> Visited;
+            collectKCFIHeldTypes(*this, getContext().getCanonicalTagType(RD),
+                                 Visited, KCFIDynamicTypes);
+          }
       } else if (FD->isExternC()) {
         // A C function may be foreign code that the linker brings into the
         // image, which then opens these types.
-        collectKCFIInflowTypes(FD, /*Params=*/false, TypeIds);
-        if (Boundary != KCFIBoundaryTypes.end())
-          TypeIds.insert(Boundary->second.begin(), Boundary->second.end());
-        emitKCFILinkFacts(M, "__kcfi_inflow_", F.getName(),
-                          TypeIds.getArrayRef());
+        collectKCFIInflowTypes(FD, /*Params=*/false, Facts.TypeIds,
+                               &Facts.Reached);
+        if (Boundary != KCFIBoundaryRecords.end())
+          Facts.Held = Boundary->second;
+        LinkFacts.emitFacts("__kcfi_inflow_", F.getName(), Facts);
       }
     } else if (F.hasDLLExportStorageClass()) {
       // Another image may call an exported function with pointers to its own
@@ -4190,8 +4289,8 @@ void CodeGenModule::emitKCFIFacts() {
       // Foreign code that the linker brings into the image may call a C
       // function with pointers to its own functions, and the linker then
       // opens these types.
-      collectKCFIInflowTypes(FD, /*Params=*/true, TypeIds);
-      emitKCFILinkFacts(M, "__kcfi_param_", F.getName(), TypeIds.getArrayRef());
+      collectKCFIInflowTypes(FD, /*Params=*/true, Facts.TypeIds, &Facts.Held);
+      LinkFacts.emitFacts("__kcfi_param_", F.getName(), Facts);
     }
   }
 
@@ -4207,7 +4306,7 @@ void CodeGenModule::emitKCFIFacts() {
     VD = VD->getMostRecentDecl();
 
     llvm::SmallPtrSet<const RecordDecl *, 16> Visited;
-    llvm::SetVector<llvm::ConstantInt *> TypeIds;
+    KCFILinkFacts Facts;
     if (GV.isDeclarationForLinker()) {
       if (GV.use_empty())
         continue;
@@ -4217,15 +4316,16 @@ void CodeGenModule::emitKCFIFacts() {
         // to.
         collectKCFIReachableTypes(*this, VD->getType(), Visited,
                                   KCFIDynamicTypes);
-        auto Boundary = KCFIBoundaryTypes.find(VD->getCanonicalDecl());
-        if (Boundary != KCFIBoundaryTypes.end())
-          KCFIDynamicTypes.insert(Boundary->second.begin(),
-                                  Boundary->second.end());
+        auto Boundary = KCFIBoundaryRecords.find(VD->getCanonicalDecl());
+        if (Boundary != KCFIBoundaryRecords.end())
+          for (const RecordDecl *RD : Boundary->second)
+            collectKCFIHeldTypes(*this, getContext().getCanonicalTagType(RD),
+                                 Visited, KCFIDynamicTypes);
       } else if (VD->isExternC()) {
         // A C variable may be defined in foreign code, or be imported data.
-        collectKCFIReachableTypes(*this, VD->getType(), Visited, TypeIds);
-        emitKCFILinkFacts(M, "__kcfi_inflow_", GV.getName(),
-                          TypeIds.getArrayRef());
+        collectKCFIReachableTypes(*this, VD->getType(), Visited, Facts.TypeIds,
+                                  &Facts.Reached);
+        LinkFacts.emitFacts("__kcfi_inflow_", GV.getName(), Facts);
       }
     } else if (GV.hasDLLExportStorageClass()) {
       // Another image may store pointers to its own functions into an
@@ -4233,9 +4333,9 @@ void CodeGenModule::emitKCFIFacts() {
       collectKCFIHandedTypes(*this, VD->getType(), Visited, KCFIDynamicTypes);
     } else if (VD->isExternC()) {
       // So may foreign code into a C variable.
-      collectKCFIHandedTypes(*this, VD->getType(), Visited, TypeIds);
-      emitKCFILinkFacts(M, "__kcfi_param_", GV.getName(),
-                        TypeIds.getArrayRef());
+      collectKCFIHandedTypes(*this, VD->getType(), Visited, Facts.TypeIds,
+                             &Facts.Held);
+      LinkFacts.emitFacts("__kcfi_param_", GV.getName(), Facts);
     }
   }
 

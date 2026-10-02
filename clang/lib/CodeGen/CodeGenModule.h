@@ -505,11 +505,10 @@ private:
   /// that carries no KCFI prefix of ours.
   llvm::SetVector<llvm::ConstantInt *> KCFIDynamicTypes;
 
-  /// The KCFI types of the function pointers in the records that a value of
-  /// a declaration, the result of a call to a function or a load of a
-  /// variable, is converted to a pointer to.
-  llvm::MapVector<const NamedDecl *, llvm::SetVector<llvm::ConstantInt *>>
-      KCFIBoundaryTypes;
+  /// The records that a value of a declaration, the result of a call to a
+  /// function or a load of a variable, is converted to a pointer to.
+  llvm::MapVector<const NamedDecl *, llvm::SetVector<const RecordDecl *>>
+      KCFIBoundaryRecords;
 
   /// Global annotations.
   std::vector<llvm::Constant*> Annotations;
@@ -1824,10 +1823,10 @@ public:
   void addKCFIConversionType(QualType From, QualType To, bool LValue = false,
                              const Expr *Operand = nullptr);
 
-  /// Record the KCFI types of the function pointers held in the record
-  /// Pointee, when a pointer to it is converted from Operand and Operand is
-  /// directly the result of a call to a function or a load of a variable, for
-  /// the facts of that declaration.
+  /// Record the record Pointee, whose function pointers the facts of a
+  /// declaration then include, when a pointer to it is converted from Operand
+  /// and Operand is directly the result of a call to the function or a load
+  /// of the variable.
   void addKCFIBoundaryRecord(QualType Pointee, const Expr *Operand);
 
   /// Under the KCFI marker scheme on COFF, record the type of a function
@@ -1849,8 +1848,12 @@ public:
   /// when Params is true, that a caller hands to FD: its function pointer
   /// parameters and the function pointers held in the objects its parameters
   /// hold or point to, without following pointers further.
-  void collectKCFIInflowTypes(const FunctionDecl *FD, bool Params,
-                              llvm::SetVector<llvm::ConstantInt *> &TypeIds);
+  /// With Records, the walk stops at the records it reaches and lists them
+  /// there instead.
+  void collectKCFIInflowTypes(
+      const FunctionDecl *FD, bool Params,
+      llvm::SetVector<llvm::ConstantInt *> &TypeIds,
+      llvm::SetVector<const RecordDecl *> *Records = nullptr);
 
   /// Returns the KCFI marker, which tells prefixes of the KCFI marker scheme
   /// with the type identifiers of this module's options from any other.
