@@ -3992,8 +3992,15 @@ collectKCFIHandedTypes(CodeGenModule &CGM, QualType T,
 /// image or from foreign code.
 static const NamedDecl *getKCFIBoundaryDecl(const Expr *E) {
   E = E->IgnoreParens();
-  if (const auto *Call = dyn_cast<CallExpr>(E))
-    return Call->getDirectCallee();
+  if (const auto *Call = dyn_cast<CallExpr>(E)) {
+    // Memory that an allocation function returns holds no function pointer
+    // yet. The replaceable global allocation functions and the C library's
+    // allocation functions carry an implicit alloc_size.
+    const FunctionDecl *FD = Call->getDirectCallee();
+    if (FD && (FD->hasAttr<RestrictAttr>() || FD->hasAttr<AllocSizeAttr>()))
+      return nullptr;
+    return FD;
+  }
   if (const auto *Cast = dyn_cast<ImplicitCastExpr>(E))
     if (Cast->getCastKind() == CK_LValueToRValue)
       if (const auto *Ref =
