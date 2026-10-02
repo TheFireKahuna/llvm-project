@@ -1835,9 +1835,10 @@ public:
   void addKCFIUnionReadType(const ValueDecl *Member);
 
   /// Whether a call through a vtable of RD may reach a function that carries
-  /// no KCFI prefix of ours: when RD does not have hidden LTO visibility, so
-  /// that another image may create its objects, or derives from a class with
-  /// a uuid, which COM objects implement.
+  /// no KCFI prefix of ours: when RD or one of its bases says that another
+  /// image or foreign code may create its objects, by a uuid, which COM
+  /// objects implement, by dllimport or dllexport, or by an explicit default
+  /// visibility that the visibility mapping exports.
   bool isKCFIVTableOpen(const CXXRecordDecl *RD);
 
   /// Collect into TypeIds the KCFI types of the function pointers that a call

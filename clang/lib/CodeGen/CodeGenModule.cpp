@@ -3857,12 +3857,24 @@ void CodeGenModule::addKCFIUnionReadType(const ValueDecl *Member) {
     }
 }
 
+/// Whether code in another image or foreign code says that it may create
+/// objects of RD: RD has a uuid, which COM objects implement, is dllimport or
+/// dllexport, or has an explicit default visibility that the visibility
+/// mapping exports. An implicit visibility says nothing, since every class
+/// without an attribute has it.
+static bool isKCFIForeignClass(const CXXRecordDecl *RD,
+                               const LangOptions &LangOpts) {
+  return RD->hasAttr<UuidAttr>() || RD->hasAttr<DLLImportAttr>() ||
+         RD->hasAttr<DLLExportAttr>() ||
+         isMappedImportVisibility(RD->getLinkageAndVisibility(), LangOpts);
+}
+
 bool CodeGenModule::isKCFIVTableOpen(const CXXRecordDecl *RD) {
-  if (!HasHiddenLTOVisibility(RD))
-    return true;
   const CXXRecordDecl *Def = RD->getDefinition();
-  return !Def || !Def->forallBases([](const CXXRecordDecl *Base) {
-    return !Base->hasAttr<UuidAttr>();
+  if (!Def || isKCFIForeignClass(Def, LangOpts))
+    return true;
+  return !Def->forallBases([this](const CXXRecordDecl *Base) {
+    return !isKCFIForeignClass(Base, LangOpts);
   });
 }
 

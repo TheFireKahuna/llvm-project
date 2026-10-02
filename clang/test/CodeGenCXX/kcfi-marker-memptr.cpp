@@ -54,5 +54,5 @@ int call(Base *p, int (Base::*f)(int)) { return (p->*f)(1); }
 
 // CHECKS: attributes #[[#NOCF]] = { {{.*}}"guard_nocf"{{.*}} }
 
-// CHECKS: ![[#VFN]] = !{i32 [[#VFN_ID]]}
-// CHECKS: ![[#NV]] = !{i32 [[#NV_ID]]}
+// CHECKS-DAG: ![[#VFN]] = !{i32 [[#VFN_ID]]}
+// CHECKS-DAG: ![[#NV]] = !{i32 [[#NV_ID]]}
