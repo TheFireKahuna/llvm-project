@@ -1861,6 +1861,9 @@ public:
   /// character type, so that the facts of FD include the function pointers
   /// those objects hold, as they include those of the records that its
   /// result is converted to a pointer to.
+  /// When FD is memcpy, memmove or one of their forms, record the record
+  /// that its destination points to as addKCFIBoundaryRecord does for its
+  /// source.
   void addKCFICallArguments(
       const FunctionDecl *FD,
       llvm::iterator_range<CallExpr::const_arg_iterator> Args,
