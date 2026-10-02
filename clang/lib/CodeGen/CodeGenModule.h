@@ -1824,9 +1824,11 @@ public:
   /// Collect into TypeIds the KCFI types of the function pointers that a call
   /// to FD hands back to its caller, through its return type and through the
   /// objects that its pointer parameters to non-const types point to, when
-  /// Params is false; or that a caller hands to FD, through every parameter,
-  /// when Params is true. The walk follows pointers and the fields and bases
-  /// of records, and a polymorphic class adds the types of its vtable slots.
+  /// Params is false; the walk follows pointers and the fields and bases of
+  /// records, and a polymorphic class adds the types of its vtable slots. Or,
+  /// when Params is true, that a caller hands to FD: its function pointer
+  /// parameters and the function pointers held in the objects its parameters
+  /// hold or point to, without following pointers further.
   void collectKCFIInflowTypes(const FunctionDecl *FD, bool Params,
                               llvm::SetVector<llvm::ConstantInt *> &TypeIds);
 

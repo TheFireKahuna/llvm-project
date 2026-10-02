@@ -3891,13 +3891,48 @@ collectKCFIReachableTypes(CodeGenModule &CGM, QualType T,
   }
 }
 
+/// Collect into TypeIds the KCFI types of the function pointers that an
+/// object of type T holds itself: T, or the fields and bases of a record and
+/// of the records it holds by value. Pointers to objects are not followed.
+static void
+collectKCFIHeldTypes(CodeGenModule &CGM, QualType T,
+                     llvm::SmallPtrSetImpl<const RecordDecl *> &Visited,
+                     llvm::SetVector<llvm::ConstantInt *> &TypeIds) {
+  T = CGM.getContext().getBaseElementType(T.getCanonicalType());
+  if (T->isPointerType() || T->isReferenceType()) {
+    if (T->getPointeeType()->isFunctionType())
+      TypeIds.insert(CGM.CreateKCFICallTypeId(T->getPointeeType()));
+    return;
+  }
+
+  const RecordDecl *RD = T->getAsRecordDecl();
+  if (RD)
+    RD = RD->getDefinition();
+  if (!RD || !Visited.insert(RD).second)
+    return;
+  for (const FieldDecl *Field : RD->fields())
+    collectKCFIHeldTypes(CGM, Field->getType(), Visited, TypeIds);
+  if (const auto *CXXRD = dyn_cast<CXXRecordDecl>(RD))
+    for (const CXXBaseSpecifier &Base : CXXRD->bases())
+      collectKCFIHeldTypes(CGM, Base.getType(), Visited, TypeIds);
+}
+
 void CodeGenModule::collectKCFIInflowTypes(
     const FunctionDecl *FD, bool Params,
     llvm::SetVector<llvm::ConstantInt *> &TypeIds) {
   llvm::SmallPtrSet<const RecordDecl *, 16> Visited;
   if (Params) {
-    for (const ParmVarDecl *Param : FD->parameters())
-      collectKCFIReachableTypes(*this, Param->getType(), Visited, TypeIds);
+    // A caller hands over a function pointer as a parameter, or in an object
+    // that a parameter holds or points to. Function pointers that the callee
+    // reaches further, through pointers in those objects, come from wherever
+    // the caller found them.
+    for (const ParmVarDecl *Param : FD->parameters()) {
+      QualType T = Param->getType().getCanonicalType();
+      if ((T->isPointerType() || T->isReferenceType()) &&
+          !T->getPointeeType()->isFunctionType())
+        T = T->getPointeeType();
+      collectKCFIHeldTypes(*this, T, Visited, TypeIds);
+    }
     return;
   }
 

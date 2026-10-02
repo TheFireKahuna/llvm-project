@@ -61,11 +61,18 @@ Fac::~Fac() {}
 __attribute__((dllimport)) Fac *make_fac();
 __attribute__((dllimport)) IFace *create();
 
-/// An exported member function receives its parameters from another image.
+struct Arg {
+  virtual float a(float);
+};
+
+/// An exported member function receives its parameters from another image;
+/// a polymorphic class that a parameter points to adds none of its slots.
 struct __attribute__((dllexport)) Exp {
   void set(double (*cb)(double));
+  void take(Arg *a);
 };
 void Exp::set(double (*cb)(double)) {}
+void Exp::take(Arg *a) {}
 
 void calls(Pub *p, Hid *h, IFace *i, short (Pub::*pm)(short),
            int (Hid::*hm)(int), void *vp) {
