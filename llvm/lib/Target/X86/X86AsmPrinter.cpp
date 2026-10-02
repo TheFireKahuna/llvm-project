@@ -213,7 +213,7 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
   if (Marker)
     OutStreamer->emitLabel(FnSym);
   if (VfnType)
-    OutStreamer->emitInt32(VfnType->getZExtValue());
+    OutStreamer->emitInt32(MaskKCFIType(VfnType->getZExtValue()));
   if (Marker) {
     MCInst Nop = MCInstBuilder(X86::NOOPL)
                      .addReg(X86::RAX)
@@ -389,11 +389,14 @@ void X86AsmPrinter::emitKCFIThunks(Module &M) {
     OutStreamer->emitLabel(Empty);
     OutStreamer->emitIntValue(0, 1);
   };
-  // The bits of a target's page offset that are zero when the prefix read
-  // before it, at most PrefixNops + 12 bytes, could start on the page before.
-  uint32_t PageTestMask = 0xFFF & ~(PowerOf2Ceil(PrefixNops + 12) - 1);
   // testl $mask, %reg32; jz target
-  auto EmitPageTest = [&](unsigned Reg, MCSymbol *Target) {
+  //
+  // The mask has the bits of a target's page offset that are zero when the
+  // prefix read before it, at most PrefixNops + ReadBytes bytes, could start
+  // on the page before.
+  auto EmitPageTest = [&](unsigned Reg, MCSymbol *Target,
+                          unsigned ReadBytes = 12) {
+    uint32_t PageTestMask = 0xFFF & ~(PowerOf2Ceil(PrefixNops + ReadBytes) - 1);
     if (Reg == X86::RAX)
       OutStreamer->emitInstruction(
           MCInstBuilder(X86::TEST32i32).addImm(PageTestMask), STI);
@@ -442,15 +445,21 @@ void X86AsmPrinter::emitKCFIThunks(Module &M) {
   // whose functions are all in this image: a matching target outside the
   // range fails fast, unless the range is empty because the image was not
   // sealed.
+  // A vfn thunk checks the second type that a function which can occupy a
+  // vtable slot carries, before its marker, for a call through a member
+  // function pointer, and compares it with the start of the marker.
   struct ThunkKind {
     StringRef Prefix;
     unsigned Routine;
     bool Local;
+    bool Vfn;
   };
-  const ThunkKind Kinds[] = {{"__llvm_kcfi_dispatch_", 0, false},
-                             {"__llvm_kcfi_check_", 1, false},
-                             {"__llvm_kcfi_local_dispatch_", 0, true},
-                             {"__llvm_kcfi_local_check_", 1, true}};
+  const ThunkKind Kinds[] = {{"__llvm_kcfi_dispatch_", 0, false, false},
+                             {"__llvm_kcfi_check_", 1, false, false},
+                             {"__llvm_kcfi_local_dispatch_", 0, true, false},
+                             {"__llvm_kcfi_local_check_", 1, true, false},
+                             {"__llvm_kcfi_vfn_check_", 1, false, true}};
+  uint64_t Pattern = getKCFIMarkerPattern(Marker->getZExtValue());
   MCSymbol *CodeStart = nullptr;
   MCSymbol *CodeEnd = nullptr;
   for (const ThunkKind &Kind : Kinds) {
@@ -492,8 +501,16 @@ void X86AsmPrinter::emitKCFIThunks(Module &M) {
       //
       // A local thunk loads both bounds first, into R10 and R11, and at 1:
       // cmpq %r11, %r10; jne 2f before the page test, where 2: fails fast.
-      uint64_t Expected = getKCFIMarkerPattern(Marker->getZExtValue()) >> 32 |
-                          uint64_t(MaskKCFIType(Type)) << 32;
+      //
+      // A vfn thunk compares the 8 bytes at -16(%reg) instead, and its page
+      // test allows for a prefix of 16 bytes rather than 12.
+      uint64_t Expected = Pattern >> 32 | uint64_t(MaskKCFIType(Type)) << 32;
+      unsigned CompareOffset = 8;
+      unsigned ReadBytes = 12;
+      if (Kind.Vfn) {
+        Expected = MaskKCFIType(Type) | Pattern << 32;
+        CompareOffset = ReadBytes = 16;
+      }
       auto EmitCompare = [&] {
         OutStreamer->emitInstruction(
             MCInstBuilder(X86::MOV64ri).addReg(X86::R11).addImm(Expected), STI);
@@ -501,7 +518,7 @@ void X86AsmPrinter::emitKCFIThunks(Module &M) {
                                          .addReg(Routine.TargetReg)
                                          .addImm(1)
                                          .addReg(X86::NoRegister)
-                                         .addImm(-(PrefixNops + 8))
+                                         .addImm(-(PrefixNops + CompareOffset))
                                          .addReg(X86::NoRegister)
                                          .addReg(X86::R11),
                                      STI);
@@ -539,7 +556,7 @@ void X86AsmPrinter::emitKCFIThunks(Module &M) {
         EmitCmp(X86::R10, X86::R11);
         EmitJcc(Trap, X86::COND_NE);
       }
-      EmitPageTest(Routine.TargetReg, Mismatch);
+      EmitPageTest(Routine.TargetReg, Mismatch, ReadBytes);
       EmitCompare();
       EmitGuardJump(Routine.GuardFn);
       if (Trap) {
@@ -549,7 +566,6 @@ void X86AsmPrinter::emitKCFIThunks(Module &M) {
     }
   }
 
-  uint64_t Pattern = getKCFIMarkerPattern(Marker->getZExtValue());
   for (unsigned I = 0; I != std::size(Routines); ++I) {
     const RoutineKind &Routine = Routines[I];
     unsigned Reg = Routine.TargetReg;

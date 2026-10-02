@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/Utils/KCFIHash.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/ErrorHandling.h"
 
@@ -154,4 +155,10 @@ uint32_t llvm::getX86KCFIType(uint32_t Type) {
       return Type + 1;
   }
   return Type;
+}
+
+bool llvm::hasKCFIThunks(const Module &M) {
+  const Triple &TT = M.getTargetTriple();
+  return M.getModuleFlag("kcfi-marker") && TT.isOSBinFormatCOFF() &&
+         (TT.isX86_64() || TT.isAArch64()) && !TT.isWindowsArm64EC();
 }

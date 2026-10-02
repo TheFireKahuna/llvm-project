@@ -1184,11 +1184,14 @@ void AArch64AsmPrinter::emitKCFIThunks(Module &M) {
     OutStreamer->emitLabel(Empty);
     OutStreamer->emitIntValue(0, 1);
   };
-  // The bits of a target's page offset that are zero when the prefix read
-  // before it, at most PrefixBytes + 12 bytes, could start on the page before.
-  uint64_t PageTestMask = 0xFFF & ~(PowerOf2Ceil(PrefixBytes + 12) - 1);
   // tst x15, #mask; b.eq target
-  auto EmitPageTest = [&](MCSymbol *Target) {
+  //
+  // The mask has the bits of a target's page offset that are zero when the
+  // prefix read before it, at most PrefixBytes + ReadBytes bytes, could start
+  // on the page before.
+  auto EmitPageTest = [&](MCSymbol *Target, unsigned ReadBytes = 12) {
+    uint64_t PageTestMask =
+        0xFFF & ~(PowerOf2Ceil(PrefixBytes + ReadBytes) - 1);
     // No target has a readable prefix of that size.
     if (!PageTestMask) {
       Emit(MCInstBuilder(AArch64::B)
@@ -1221,10 +1224,21 @@ void AArch64AsmPrinter::emitKCFIThunks(Module &M) {
   // A local thunk serves a type salted by a class with internal linkage,
   // whose functions are all in this image: a matching target outside the
   // range fails fast, unless the range is empty because the image was not
-  // sealed.
-  for (bool Local : {false, true}) {
-    StringRef Prefix =
-        Local ? "__llvm_kcfi_local_check_" : "__llvm_kcfi_check_";
+  // sealed. A vfn thunk checks the second type that a function which can
+  // occupy a vtable slot carries, before its marker, for a call through a
+  // member function pointer, and compares it with the start of the marker.
+  struct ThunkKind {
+    StringRef Prefix;
+    bool Local;
+    bool Vfn;
+  };
+  const ThunkKind Kinds[] = {{"__llvm_kcfi_check_", false, false},
+                             {"__llvm_kcfi_local_check_", true, false},
+                             {"__llvm_kcfi_vfn_check_", false, true}};
+  uint64_t Pattern = getKCFIMarkerPattern(Marker->getZExtValue());
+  for (const ThunkKind &Kind : Kinds) {
+    StringRef Prefix = Kind.Prefix;
+    bool Local = Kind.Local;
     for (const Function &F : M) {
       StringRef TypeName = F.getName();
       uint32_t Type;
@@ -1262,13 +1276,21 @@ void AArch64AsmPrinter::emitKCFIThunks(Module &M) {
       //
       // A local thunk takes both bounds first, into X16 and X17, and at 1:
       // cmp x16, x17; b.ne 2f before the page test, where 2: fails fast.
-      uint64_t Expected = getKCFIMarkerPattern(Marker->getZExtValue()) >> 32 |
-                          uint64_t(Type) << 32;
+      //
+      // A vfn thunk compares the 8 bytes at [x15, #-16] instead, and its page
+      // test allows for a prefix of 16 bytes rather than 12.
+      uint64_t Expected = Pattern >> 32 | uint64_t(Type) << 32;
+      unsigned CompareOffset = 8;
+      unsigned ReadBytes = 12;
+      if (Kind.Vfn) {
+        Expected = Type | Pattern << 32;
+        CompareOffset = ReadBytes = 16;
+      }
       auto EmitCompare = [&] {
         Emit(MCInstBuilder(AArch64::LDURXi)
                  .addReg(AArch64::X16)
                  .addReg(AArch64::X15)
-                 .addImm(-(PrefixBytes + 8)));
+                 .addImm(-(PrefixBytes + CompareOffset)));
         EmitMovX17(Expected);
         EmitCmp(AArch64::X16, AArch64::X17);
         EmitBcc(AArch64CC::NE, Mismatch);
@@ -1301,7 +1323,7 @@ void AArch64AsmPrinter::emitKCFIThunks(Module &M) {
         EmitCmp(AArch64::X16, AArch64::X17);
         EmitBcc(AArch64CC::NE, Trap);
       }
-      EmitPageTest(Mismatch);
+      EmitPageTest(Mismatch, ReadBytes);
       EmitCompare();
       EmitGuardJump();
       if (Trap) {
@@ -1310,7 +1332,6 @@ void AArch64AsmPrinter::emitKCFIThunks(Module &M) {
       }
     }
   }
-  uint64_t Pattern = getKCFIMarkerPattern(Marker->getZExtValue());
   if (UsesDefault) {
     // tst x15, #mask; b.eq 1f
     // ldur x16, [x15, #-12]; mov x17, #pattern; cmp x16, x17; b.eq 2f

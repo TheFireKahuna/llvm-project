@@ -28,6 +28,7 @@
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/TargetParser/Triple.h"
+#include "llvm/Transforms/Utils/KCFIHash.h"
 
 using namespace llvm;
 
@@ -46,6 +47,7 @@ constexpr StringRef KCFIDispatchThunkPrefix = "__llvm_kcfi_dispatch_";
 constexpr StringRef KCFILocalCheckThunkPrefix = "__llvm_kcfi_local_check_";
 constexpr StringRef KCFILocalDispatchThunkPrefix =
     "__llvm_kcfi_local_dispatch_";
+constexpr StringRef KCFIVfnCheckThunkPrefix = "__llvm_kcfi_vfn_check_";
 constexpr unsigned MaxIndexRangeDepth = 6;
 
 namespace {
@@ -143,6 +145,11 @@ public:
   /// \param CB indirect call to instrument.
   void insertCFGuardDispatch(CallBase *CB);
 
+  /// Replaces a call to llvm.kcfi.check, at either type word of a prefix with
+  /// a marker, with a call to the per-type check thunk that checks that word,
+  /// which takes the target as the guard check function does.
+  void insertKCFICheckThunk(IntrinsicInst *II);
+
   bool doInitialization(Module &M);
   bool runOnFunction(Function &F);
 
@@ -161,6 +168,8 @@ private:
   // Whether calls with a kcfi bundle go through a per-type thunk, which the
   // backend emits, whether or not the module has checks enabled.
   bool UseKCFIThunks = false;
+  // Whether calls to llvm.kcfi.check go through a per-type check thunk.
+  bool UseKCFICheckThunks = false;
   // Whether calls whose target is proven to come from a constant table of
   // functions are left unchecked.
   bool ElideProvenCalls = false;
@@ -278,11 +287,10 @@ bool CFGuardImpl::doInitialization(Module &M) {
   // A module whose KCFI prefixes carry a marker checks each indirect call's
   // type in a per-type thunk, which continues into the guard function the
   // image defines, whether or not it has checks enabled. X86-64 emits the
-  // thunks for both mechanisms, and AArch64 for the check mechanism.
+  // thunks for both mechanisms, and AArch64 for the check mechanism. Both emit
+  // the check thunks that calls to llvm.kcfi.check go through.
   const Triple &TT = M.getTargetTriple();
-  bool HasKCFIMarker =
-      M.getModuleFlag("kcfi-marker") && TT.isOSBinFormatCOFF() &&
-      (TT.isX86_64() || TT.isAArch64()) && !TT.isWindowsArm64EC();
+  bool HasKCFIMarker = hasKCFIThunks(M);
 
   // Skip modules for which CFGuard checks have been disabled.
   if (CFGuardModuleFlag != ControlFlowGuardMode::Enabled && !HasKCFIMarker)
@@ -310,6 +318,7 @@ bool CFGuardImpl::doInitialization(Module &M) {
   }
   UseKCFIThunks =
       HasKCFIMarker && (TT.isX86_64() || GuardMechanism == Mechanism::Check);
+  UseKCFICheckThunks = HasKCFIMarker;
   ElideProvenCalls = TT.isWindowsItaniumOrNTPOSIXEnvironment();
 
   // Set up prototypes for the guard check and dispatch functions.
@@ -336,6 +345,18 @@ Constant *CFGuardImpl::getGuardFnGlobal(Module &M, StringRef Name) {
   });
 }
 
+// Returns the declaration of the per-type thunk Prefix<type>, which the
+// backend emits.
+static Function *declareKCFIThunk(Module &M, StringRef Prefix, uint64_t Type) {
+  std::string Name =
+      (Prefix + utohexstr(Type, /*LowerCase=*/true, /*Width=*/8)).str();
+  auto *Thunk = cast<Function>(
+      M.getOrInsertFunction(Name, Type::getVoidTy(M.getContext())).getCallee());
+  Thunk->setVisibility(GlobalValue::HiddenVisibility);
+  Thunk->setDSOLocal(true);
+  return Thunk;
+}
+
 Function *CFGuardImpl::getKCFIThunk(CallBase &CB, StringRef Prefix) {
   if (!UseKCFIThunks)
     return nullptr;
@@ -349,16 +370,26 @@ Function *CFGuardImpl::getKCFIThunk(CallBase &CB, StringRef Prefix) {
   if (CB.getMetadata("kcfi_local"))
     Prefix = Prefix == KCFIDispatchThunkPrefix ? KCFILocalDispatchThunkPrefix
                                                : KCFILocalCheckThunkPrefix;
-  Module &M = *CB.getModule();
-  std::string Name =
-      (Prefix + utohexstr(TypeId->getZExtValue(), /*LowerCase=*/true,
-                          /*Width=*/8))
-          .str();
-  auto *Thunk = cast<Function>(
-      M.getOrInsertFunction(Name, Type::getVoidTy(M.getContext())).getCallee());
-  Thunk->setVisibility(GlobalValue::HiddenVisibility);
-  Thunk->setDSOLocal(true);
-  return Thunk;
+  return declareKCFIThunk(*CB.getModule(), Prefix, TypeId->getZExtValue());
+}
+
+void CFGuardImpl::insertKCFICheckThunk(IntrinsicInst *II) {
+  // The type word at offset 4 is the ordinary type, and the one at offset 16
+  // the second type that a function which can occupy a vtable slot carries.
+  uint64_t Offset = cast<ConstantInt>(II->getArgOperand(2))->getZExtValue();
+  Function *Thunk = declareKCFIThunk(
+      *II->getModule(),
+      Offset == 4 ? KCFICheckThunkPrefix : KCFIVfnCheckThunkPrefix,
+      cast<ConstantInt>(II->getArgOperand(1))->getZExtValue());
+
+  IRBuilder<> B(II);
+  SmallVector<llvm::OperandBundleDef, 1> Bundles;
+  if (auto Bundle = II->getOperandBundle(LLVMContext::OB_funclet))
+    Bundles.push_back(OperandBundleDef(*Bundle));
+  CallInst *Check =
+      B.CreateCall(GuardFnType, Thunk, {II->getArgOperand(0)}, Bundles);
+  Check->setCallingConv(CallingConv::CFGuard_Check);
+  II->eraseFromParent();
 }
 
 // Returns true if the dispatch mechanism can guard CB. On x86-64 it takes the
@@ -565,11 +596,12 @@ static bool hasProvenTarget(const CallBase &CB) {
 bool CFGuardImpl::runOnFunction(Function &F) {
   // Skip modules for which CFGuard checks have been disabled.
   bool CheckAll = CFGuardModuleFlag == ControlFlowGuardMode::Enabled;
-  if (!CheckAll && !UseKCFIThunks)
+  if (!CheckAll && !UseKCFIThunks && !UseKCFICheckThunks)
     return false;
 
   SmallVector<CallBase *, 8> IndirectCalls;
   SmallVector<CallBase *, 8> ProvenCalls;
+  SmallVector<IntrinsicInst *, 2> KCFIChecks;
 
   // Iterate over the instructions to find all indirect call/invoke/callbr
   // instructions. Make a separate list of pointers to indirect
@@ -577,9 +609,18 @@ bool CFGuardImpl::runOnFunction(Function &F) {
   // deleted as the checks are added.
   for (BasicBlock &BB : F) {
     for (Instruction &I : BB) {
+      if (auto *II = dyn_cast<IntrinsicInst>(&I);
+          II && II->getIntrinsicID() == Intrinsic::kcfi_check &&
+          UseKCFICheckThunks &&
+          isKCFICheckThunkOffset(
+              cast<ConstantInt>(II->getArgOperand(2))->getZExtValue())) {
+        KCFIChecks.push_back(II);
+        continue;
+      }
       auto *CB = dyn_cast<CallBase>(&I);
       if (CB && CB->isIndirectCall() && !CB->hasFnAttr("guard_nocf") &&
-          (CheckAll || CB->getOperandBundle(LLVMContext::OB_kcfi))) {
+          (CheckAll ||
+           (UseKCFIThunks && CB->getOperandBundle(LLVMContext::OB_kcfi)))) {
         if (ElideProvenCalls && hasProvenTarget(*CB)) {
           if (CB->getOperandBundle(LLVMContext::OB_kcfi))
             ProvenCalls.push_back(CB);
@@ -593,8 +634,11 @@ bool CFGuardImpl::runOnFunction(Function &F) {
   }
 
   // If no checks are needed, return early.
-  if (IndirectCalls.empty() && ProvenCalls.empty())
+  if (IndirectCalls.empty() && ProvenCalls.empty() && KCFIChecks.empty())
     return false;
+
+  for (IntrinsicInst *II : KCFIChecks)
+    insertKCFICheckThunk(II);
 
   // A proven call is not guarded, nor checked by KCFI where it calls.
   for (CallBase *CB : ProvenCalls) {
