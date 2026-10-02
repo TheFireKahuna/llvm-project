@@ -4085,10 +4085,33 @@ void CodeGenModule::addKCFICallArguments(
     const FunctionDecl *FD,
     llvm::iterator_range<CallExpr::const_arg_iterator> Args,
     unsigned NumParams) {
-  // None of the C library's functions stores a function pointer of its own
-  // into memory that its caller hands it.
-  if (FD->getBuiltinID())
+  switch (FD->getBuiltinID()) {
+  case 0:
+    break;
+  case Builtin::BImemcpy:
+  case Builtin::BI__builtin_memcpy:
+  case Builtin::BI__builtin_memcpy_inline:
+  case Builtin::BI__builtin___memcpy_chk:
+  case Builtin::BImempcpy:
+  case Builtin::BI__builtin_mempcpy:
+  case Builtin::BImemmove:
+  case Builtin::BI__builtin_memmove:
+  case Builtin::BI__builtin___memmove_chk: {
+    // A copy reinterprets its source as an object of its destination's type,
+    // as a conversion of a pointer to it does.
+    if (llvm::size(Args) < 2)
+      return;
+    const Expr *Dest = ignoreKCFIPointerConversions(*Args.begin());
+    if (Dest->getType()->isPointerType())
+      addKCFIBoundaryRecord(Dest->getType()->getPointeeType(),
+                            ignoreKCFIPointerConversions(*++Args.begin()));
     return;
+  }
+  default:
+    // None of the C library's functions stores a function pointer of its own
+    // into memory that its caller hands it.
+    return;
+  }
   // A callee can store its own function pointers into an object that a
   // pointer in a variadic argument or an untyped pointer points to. Since
   // nothing says that the callee knows the object's type, as a typed pointer
