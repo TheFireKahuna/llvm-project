@@ -849,8 +849,10 @@ CGCallee ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
     // carry a prefix of ours, when that image may create objects of the
     // class.
     if (CGM.hasKCFIFacts() && CGM.isKCFIVTableOpen(RD)) {
-      CGM.addKCFIDynamicType(KCFIVfnTypeId);
-      CGM.addKCFIDynamicType(KCFITypeId);
+      CGM.addKCFIDynamicType(CGM.CreateKCFIVfnTypeIds(MPT->getPointeeType()),
+                             MPT->getPointeeType());
+      CGM.addKCFIDynamicType(CGM.CreateKCFICallTypeIds(MPT->getPointeeType()),
+                             MPT->getPointeeType());
     }
   }
   bool ShouldEmitKCFICheck =
@@ -2374,13 +2376,13 @@ CGCallee ItaniumCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
     bool Local = !SlotMD->getParent()->isExternallyVisible() &&
                  (!isa<CXXDestructorDecl>(SlotMD) ||
                   Slot.getDtorType() == Dtor_Deleting);
-    llvm::ConstantInt *TypeId = CGM.CreateKCFIVTableSlotTypeId(Slot);
-    Callee.setKCFITypeId(TypeId, Local);
+    CodeGenModule::KCFITypeId TypeId = CGM.CreateKCFIVTableSlotTypeIds(Slot);
+    Callee.setKCFITypeId(TypeId.first, Local);
     // The object may come from another image, whose functions in the slot
     // need not carry a prefix of ours.
     if (!Local && CGM.hasKCFIFacts() &&
         CGM.isKCFIVTableOpen(MethodDecl->getParent()))
-      CGM.addKCFIDynamicType(TypeId);
+      CGM.addKCFIDynamicType(TypeId, MethodDecl->getType());
   }
   return Callee;
 }

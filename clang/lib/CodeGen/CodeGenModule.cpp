@@ -4689,6 +4689,10 @@ void CodeGenModule::emitKCFIFacts() {
   SmallVector<std::pair<KCFITypeId, QualType>> Called;
   for (const Type *T : KCFICalledTypes)
     Called.emplace_back(CreateKCFICallTypeIds(QualType(T, 0)), QualType(T, 0));
+  // A call through a vtable or a member function pointer checks a type of its
+  // own, which the class it is made through opened.
+  for (auto [TypeId, T] : KCFIDynamicCalls)
+    Called.emplace_back(TypeId, QualType(T, 0));
   // A call propagates only when the call's own precise type is open: two types
   // that share a check identifier, such as a dlsym cast and an unrelated call,
   // open independently.
