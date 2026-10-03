@@ -189,11 +189,13 @@ public:
 class LLVM_ABI TargetLoweringObjectFileCOFF : public TargetLoweringObjectFile {
   mutable unsigned NextUniqueID = 0;
   const TargetMachine *TM = nullptr;
+  SmallPtrSet<GlobalObject *, 2> Used;
 
 public:
   ~TargetLoweringObjectFileCOFF() override = default;
 
   void Initialize(MCContext &Ctx, const TargetMachine &TM) override;
+  void getModuleMetadata(Module &M) override;
   MCSection *getExplicitSectionGlobal(const GlobalObject *GO, SectionKind Kind,
                                       const TargetMachine &TM) const override;
 
