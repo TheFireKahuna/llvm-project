@@ -47,6 +47,11 @@ enum class VTableUniquenessKind {
   /// unique, but a vague-linkage (weak) vtable may be duplicated by the
   /// platform and so has no unique address.
   UniqueIfStrongLinkage,
+  /// As UniqueIfStrongLinkage, and the vtable of a template instantiation is
+  /// not unique either: a translation unit that sees an explicit instantiation
+  /// declaration refers to the instantiating image's vtable, while an image
+  /// that does not see it instantiates its own copy.
+  UniqueIfStrongLinkageAndNotTemplate,
 };
 
 /// Bitfields of CodeGenOptions, split out from CodeGenOptions to ensure

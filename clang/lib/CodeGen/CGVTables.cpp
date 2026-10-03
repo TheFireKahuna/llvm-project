@@ -1290,8 +1290,8 @@ CodeGenModule::getVTableLinkage(const CXXRecordDecl *RD) {
 
 bool CodeGenModule::mayVTableBeDuplicated(
     llvm::GlobalValue::LinkageTypes Linkage) const {
-  return getTarget().getVTableUniqueness() ==
-             VTableUniquenessKind::UniqueIfStrongLinkage &&
+  return getTarget().getVTableUniqueness() !=
+             VTableUniquenessKind::AlwaysUnique &&
          llvm::GlobalValue::isWeakForLinker(Linkage);
 }
 
