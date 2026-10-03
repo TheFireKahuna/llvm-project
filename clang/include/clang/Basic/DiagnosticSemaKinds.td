@@ -9955,6 +9955,10 @@ def warn_cast_function_type : Warning<
   InGroup<CastFunctionTypeMismatch>, DefaultIgnore;
 def warn_cast_function_type_strict : Warning<warn_cast_function_type.Summary>,
   InGroup<CastFunctionTypeStrict>, DefaultIgnore;
+def warn_get_proc_address_type_mismatch : Warning<
+  "'GetProcAddress' result for %0 is cast to %1, which does not match its "
+  "declared type %2">,
+  InGroup<GetProcAddressType>, DefaultIgnore;
 def err_cast_pointer_to_non_pointer_int : Error<
   "pointer cannot be cast to type %0">;
 def err_nullptr_cast : Error<
