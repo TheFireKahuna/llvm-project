@@ -322,7 +322,9 @@
 // TODO: Enable additional explicit instantiations on GCC once it supports exclude_from_explicit_instantiation,
 //       or once libc++ doesn't use the attribute anymore.
 // TODO: Enable them on Windows once https://llvm.org/PR41018 has been fixed.
-#if !defined(_LIBCPP_COMPILER_GCC) && !defined(_WIN32)
+//       Windows Itanium and NT-POSIX take the ELF visibility branches rather
+//       than dllimport, so the issue does not arise there.
+#if !defined(_LIBCPP_COMPILER_GCC) && (!defined(_WIN32) || defined(_WIN32_ITANIUM) || defined(__NTPOSIX__))
 #  define _LIBCPP_AVAILABILITY_HAS_ADDITIONAL_IOSTREAM_EXPLICIT_INSTANTIATIONS_1 _LIBCPP_INTRODUCED_IN_LLVM_12
 #else
 #  define _LIBCPP_AVAILABILITY_HAS_ADDITIONAL_IOSTREAM_EXPLICIT_INSTANTIATIONS_1 0
