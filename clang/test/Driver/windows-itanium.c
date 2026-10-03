@@ -9,6 +9,7 @@
 // CC1-A64:    "-cc1" "-triple" "aarch64-unknown-windows-itanium"
 // CC1-DAG:    "-mdefault-visibility-export-mapping=explicit"
 // CC1-DAG:    "-fno-auto-import"
+// CC1-DAG:    "-Wget-proc-address-type"
 // CC1-X64-DAG: "-fno-plt"
 // CC1-DAG:    "-D_DLL"
 // CC1-DAG:    "-fms-extensions"
