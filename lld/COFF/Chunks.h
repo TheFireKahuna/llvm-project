@@ -741,10 +741,15 @@ private:
 // statically open type, and continues into the guard function for a
 // dynamically open one. On x86-64 the latter ends in a trap, as the compiler
 // emits it.
+//
+// With an outside routine, it first jumps there with a target outside the
+// image, which it finds in RCX for a check routine on x86-64, in RAX for a
+// dispatch routine and in X15 on ARM64. Without a list, it leaves R10 or X16
+// as it finds it.
 class KCFIOpenChunk : public NonSectionCodeChunk {
 public:
   KCFIOpenChunk(COFFLinkerContext &ctx, Defined *list, Defined *scanner,
-                bool dynamic);
+                bool dynamic, Defined *outside = nullptr, bool check = false);
   size_t getSize() const override;
   void writeTo(uint8_t *buf) const override;
   uint32_t getOutputCharacteristics() const override {
@@ -758,6 +763,8 @@ private:
   Defined *list;
   Defined *scanner;
   bool dynamic;
+  Defined *outside;
+  bool check;
   COFFLinkerContext &ctx;
 };
 
