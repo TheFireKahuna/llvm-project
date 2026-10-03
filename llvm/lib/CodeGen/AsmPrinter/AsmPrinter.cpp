@@ -3159,6 +3159,25 @@ bool AsmPrinter::doFinalization(Module &M) {
       const DataLayout &DL = M.getDataLayout();
 
       for (const auto &Stub : Stubs) {
+        // A stub not marked external is a pointer private to this object.
+        // Under -fdata-sections it has a section of its own, so that the
+        // linker discards it with its last user.
+        if (!Stub.second.getInt()) {
+          MCSection *Section = getObjFileLowering().getReadOnlySection();
+          if (TM.getDataSections())
+            Section = OutContext.getCOFFSection(
+                ".rdata",
+                COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
+                    COFF::IMAGE_SCN_MEM_READ | COFF::IMAGE_SCN_LNK_COMDAT,
+                Stub.first->getName(), COFF::IMAGE_COMDAT_SELECT_NODUPLICATES);
+          OutStreamer->switchSection(Section);
+          emitAlignment(Align(DL.getPointerSize()));
+          OutStreamer->emitLabel(Stub.first);
+          OutStreamer->emitSymbolValue(Stub.second.getPointer(),
+                                       DL.getPointerSize());
+          continue;
+        }
+
         SmallString<256> SectionName = StringRef(".rdata$");
         SectionName += Stub.first->getName();
         OutStreamer->switchSection(OutContext.getCOFFSection(
