@@ -526,6 +526,12 @@ private:
   /// The canonical function types that this module calls through pointers.
   llvm::SetVector<const Type *> KCFICalledTypes;
 
+  /// The KCFI types of the calls through vtables and member function pointers
+  /// that may reach a function without a prefix of ours, each with the
+  /// canonical function type that it calls.
+  llvm::SetVector<std::pair<std::pair<llvm::ConstantInt *, uint32_t>,
+                           const Type *>>
+      KCFIDynamicCalls;
 
   /// Global annotations.
   std::vector<llvm::Constant*> Annotations;
@@ -1850,10 +1856,11 @@ public:
   /// Record that a function of KCFI type TypeId may reach this module from
   /// code that carries no KCFI prefix of ours, so that a call of that type to
   /// a target without the marker proceeds at the strength of Control Flow
-  /// Guard. Its precise identifier is its own, since the type that opens it is
-  /// the one called.
-  void addKCFIDynamicType(llvm::ConstantInt *TypeId) {
-    KCFIDynamicTypes.insert({TypeId, uint32_t(TypeId->getZExtValue())});
+  /// Guard. Such a call, through a vtable or a member function pointer, calls
+  /// a function of type FnType, so the types that it hands back open too.
+  void addKCFIDynamicType(KCFITypeId TypeId, QualType FnType) {
+    KCFIDynamicTypes.insert(TypeId);
+    KCFIDynamicCalls.insert({TypeId, FnType.getCanonicalType().getTypePtr()});
   }
 
   /// Under the KCFI marker scheme on COFF, record the type of the function
