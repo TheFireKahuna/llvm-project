@@ -1102,14 +1102,17 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
 // decided per symbol, since an adrp may serve several loads: one other
 // reference keeps them all. Every other reference reads the pointer, as do
 // a GC root and any reference from an x86-64 object that does not describe
-// its sites. Only the objects that refer to a local import are scanned, and
-// only when the link has one.
+// its sites. Under -import-slots, a reference from data reads the pointer but
+// keeps no instruction from being rewritten, and is not reported: it is a
+// pointer that the compiler made, such as a catch-type entry, never a
+// dllimport declaration. Only the objects that refer to a local import are
+// scanned, and only when the link has one.
 void SymbolTable::bindLocalImports() {
   if (localImportChunks.empty())
     return;
   llvm::TimeTraceScope timeScope("Bind local imports");
   bool arm64 = machine == ARM64 && !ctx.hybridSymtab;
-  SmallPtrSet<DefinedLocalImport *, 8> bypassed, read;
+  SmallPtrSet<DefinedLocalImport *, 8> bypassed, read, readByData;
   for (Symbol *b : ctx.config.gcroot)
     if (auto *li = dyn_cast<DefinedLocalImport>(b))
       read.insert(li);
@@ -1142,11 +1145,17 @@ void SymbolTable::bindLocalImports() {
       auto *sc = dyn_cast_or_null<SectionChunk>(c);
       if (!sc || !sc->live)
         continue;
+      bool fromData = ctx.config.importSlots &&
+                      !(sc->header->Characteristics & IMAGE_SCN_CNT_CODE);
       for (const coff_relocation &rel : sc->getRelocs()) {
         Symbol *s = file->getSymbol(rel.SymbolTableIndex);
         if (!isLocalImport(s))
           continue;
         auto *li = cast<DefinedLocalImport>(s);
+        if (fromData) {
+          readByData.insert(li);
+          continue;
+        }
         bool mismatch = false;
         bool rewritable = arm64 ? sc->isArm64LocalImportPageRef(rel)
                                 : sc->getLocalImportRewrite(rel, &mismatch)
@@ -1168,9 +1177,13 @@ void SymbolTable::bindLocalImports() {
       refs.push_back({file, li, rewritable});
   }
 
-  for (DefinedLocalImport *li : bypassed)
-    if (!read.contains(li))
+  for (DefinedLocalImport *li : bypassed) {
+    if (read.contains(li))
+      continue;
+    li->getChunk()->bypassed = true;
+    if (!readByData.contains(li))
       li->getChunk()->live = false;
+  }
   llvm::erase_if(localImportChunks, [](Chunk *c) {
     return !cast<LocalImportChunk>(c)->live;
   });
@@ -1178,7 +1191,7 @@ void SymbolTable::bindLocalImports() {
   if (!ctx.config.warnLocallyDefinedImported)
     return;
   for (const Ref &r : refs)
-    if (!r.rewritable || (arm64 && r.li->getChunk()->live))
+    if (!r.rewritable || (arm64 && !r.li->getChunk()->bypassed))
       Warn(ctx) << r.file << ": locally defined symbol imported: "
                 << printSymbol(r.li->getTarget()) << " (defined in "
                 << r.li->getTarget()->getFile() << ") [LNK4217]";

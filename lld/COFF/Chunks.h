@@ -730,6 +730,10 @@ public:
   // symbol directly, which leaves the pointer out of the image.
   bool live = true;
 
+  // On ARM64, true if every instruction that refers to the pointer is
+  // rewritten to reach the symbol directly. Data may still read the pointer.
+  bool bypassed = false;
+
 private:
   Defined *sym;
   COFFLinkerContext &ctx;
