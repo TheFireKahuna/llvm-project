@@ -220,6 +220,10 @@ void WindowsItaniumBaseToolChain::addClangTargetOptions(
     if (Arg *A = DriverArgs.getLastArgNoClaim(Opt))
       A->ignoreTargetSpecific();
 
+  // Only the cast gives a GetProcAddress result its type, so a cast that
+  // contradicts the system headers' declaration of the name is diagnosed.
+  CC1Args.push_back("-Wget-proc-address-type");
+
   // Every function carries a KCFI prefix with the marker, whether or not
   // KCFI checks calls, and its type ignores pointee types, so that units
   // built with -fno-sanitize=kcfi can be called from units that check.
