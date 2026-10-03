@@ -582,13 +582,15 @@ void SectionChunk::applyRelocation(uint8_t *off,
   // A described call, jump or pointer load through the import pointer of a
   // symbol in the image reaches the symbol directly. Its bytes were verified
   // when local imports were bound.
-  // On ARM64, every adrp and ldr of a pointer that no other reference reads
-  // becomes adrp and add of its symbol.
+  // On ARM64, every adrp and ldr of a pointer that no other instruction reads
+  // becomes adrp and add of its symbol; data still reads the pointer.
   std::optional<LinkSiteForm> rewrite;
   uint16_t type = rel.Type;
   if (auto *li = dyn_cast_or_null<DefinedLocalImport>(sym)) {
     if (getArch() == Triple::aarch64) {
-      if (!li->getChunk()->live) {
+      if (li->getChunk()->bypassed &&
+          (type == IMAGE_REL_ARM64_PAGEBASE_REL21 ||
+           type == IMAGE_REL_ARM64_PAGEOFFSET_12L)) {
         sym = li->getTarget();
         if (type == IMAGE_REL_ARM64_PAGEOFFSET_12L) {
           write32le(off, 0x91000000 | (read32le(off) & 0x3FF));
