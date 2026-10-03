@@ -917,6 +917,15 @@ public:
     }
     this->UseMicrosoftManglingForC = true;
   }
+
+  /// Windows Itanium and NT-POSIX follow the Itanium C++ ABI on PE, where the
+  /// loader never merges the copies of a vague-linkage vtable that each image
+  /// holds.
+  VTableUniquenessKind getVTableUniqueness() const override {
+    if (this->getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+      return VTableUniquenessKind::UniqueIfStrongLinkageAndNotTemplate;
+    return OSTargetInfo<Target>::getVTableUniqueness();
+  }
 };
 
 void getFuchsiaDefines(MacroBuilder &Builder, const LangOptions &Opts,

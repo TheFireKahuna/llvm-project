@@ -216,6 +216,14 @@ public:
     if (!CGM.shouldEmitRTTI())
       return false;
 
+    // A template instantiation's vtable may be instantiated by an image that
+    // does not see its explicit instantiation declaration, even where this
+    // translation unit refers to a single definition.
+    if (CGM.getTarget().getVTableUniqueness() ==
+            VTableUniquenessKind::UniqueIfStrongLinkageAndNotTemplate &&
+        isTemplateInstantiation(RD->getTemplateSpecializationKind()))
+      return false;
+
     // If there's only one definition of the vtable in the program, it has a
     // unique address.
     if (!llvm::GlobalValue::isWeakForLinker(CGM.getVTableLinkage(RD)))
