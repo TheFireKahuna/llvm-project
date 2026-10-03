@@ -15,6 +15,7 @@
 #include "Symbols.h"
 #include "lld/Common/ErrorHandler.h"
 #include "lld/Common/Memory.h"
+#include "lld/Common/Strings.h"
 #include "lld/Common/Timer.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/DebugInfo/DIContext.h"
@@ -956,6 +957,68 @@ void SymbolTable::reportUnresolvable() {
   }
 
   reportProblemSymbols(undefs, /*localImports=*/nullptr, true);
+}
+
+void SymbolTable::addStartStopSymbols() {
+  // An ordered map keeps the diagnostics in a stable order.
+  std::map<StringRef, SectionRun> runs;
+  for (auto &i : symMap) {
+    auto *undef = dyn_cast<Undefined>(i.second);
+    if (!undef || !undef->isUsedInRegularObj || undef->getWeakAlias())
+      continue;
+    StringRef name = undef->getName();
+    if (machine == I386 && !name.consume_front("_"))
+      continue;
+    bool isStop = name.consume_front("__stop_");
+    if ((!isStop && !name.consume_front("__start_")) ||
+        !isValidCIdentifier(name))
+      continue;
+    SectionRun &run = runs[name];
+    run.name = name;
+    (isStop ? run.stop : run.start) = undef;
+  }
+  if (runs.empty())
+    return;
+
+  for (Chunk *c : ctx.driver.getChunks()) {
+    auto *sc = dyn_cast<SectionChunk>(c);
+    if (!sc)
+      continue;
+    auto it = runs.find(sc->getSectionName().split('$').first);
+    if (it != runs.end())
+      it->second.chunks.push_back(sc);
+  }
+
+  for (auto &[name, run] : runs) {
+    // With no section to bound, the reference stays undefined.
+    if (run.chunks.empty())
+      continue;
+    // A bound an input defines cannot be paired with one the linker places.
+    StringRef startName = mangle(saver().save("__start_" + name));
+    StringRef stopName = mangle(saver().save("__stop_" + name));
+    Symbol *other = run.start ? find(stopName) : find(startName);
+    if ((!run.start || !run.stop) && other && isa<Defined>(other)) {
+      Err(ctx) << (run.start ? startName : stopName)
+               << " cannot be defined by the linker: "
+               << (run.start ? stopName : startName)
+               << " is defined by an input";
+      continue;
+    }
+    if (run.start)
+      addSynthetic(startName, nullptr);
+    if (run.stop)
+      addSynthetic(stopName, nullptr);
+    sectionRuns.push_back(std::move(run));
+  }
+}
+
+void SymbolTable::addBoundarySymbols() {
+  for (const char *n : {"_etext", "etext", "_edata", "edata", "_end", "end"}) {
+    auto *undef = dyn_cast_or_null<Undefined>(find(mangle(n)));
+    if (!undef || !undef->isUsedInRegularObj || undef->getWeakAlias())
+      continue;
+    boundarySymbols.push_back(addSynthetic(undef->getName(), nullptr));
+  }
 }
 
 void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
