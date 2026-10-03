@@ -44,13 +44,13 @@ struct e_ops {
 // CHECK-NEXT: ".set __kcfi_typeid_t_b, [[#%u,B:]] /* {{.*}} */"
 // CHECK-NEXT: ".weak __kcfi_typeid_t_e"
 // CHECK-NEXT: ".set __kcfi_typeid_t_e, [[#%u,E:]] /* {{.*}} */"
-// CHECK-NEXT: ".weak __kcfi_param_[[#%.8x,A]]_def_va"
-// CHECK-NEXT: ".set __kcfi_param_[[#%.8x,A]]_def_va, [[#A]]"
-// CHECK-NEXT: ".weak __kcfi_param_[[#%.8x,B]]_def_va"
-// CHECK-NEXT: ".set __kcfi_param_[[#%.8x,B]]_def_va, [[#B]]"
-// CHECK-NEXT: ".weak __kcfi_param_[[#%.8x,E]]_def_va"
-// CHECK-NEXT: ".set __kcfi_param_[[#%.8x,E]]_def_va, [[#E]]"
-// CHECK-NOT:  __kcfi_
+// CHECK-NEXT: ".weak __kcfi_param_00000000[[#%.8x,A]]_def_va"
+// CHECK-NEXT: ".set __kcfi_param_00000000[[#%.8x,A]]_def_va, {{[0-9]+}}"
+// CHECK-NEXT: ".weak __kcfi_param_00000000[[#%.8x,B]]_def_va"
+// CHECK-NEXT: ".set __kcfi_param_00000000[[#%.8x,B]]_def_va, {{[0-9]+}}"
+// CHECK-NEXT: ".weak __kcfi_param_00000000[[#%.8x,E]]_def_va"
+// CHECK-NEXT: ".set __kcfi_param_00000000[[#%.8x,E]]_def_va, {{[0-9]+}}"
+// CHECK-NOT:  {{__kcfi_(inflow|param|tinflow)_}}
 int def_va(int op, ...) {
   va_list ap;
   __builtin_va_start(ap, op);

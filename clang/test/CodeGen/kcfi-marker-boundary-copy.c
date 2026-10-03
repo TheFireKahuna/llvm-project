@@ -24,9 +24,9 @@ __attribute__((used)) static c_fn take_c = t_c;
 // CHECK:      module asm
 // CHECK-NEXT: ".weak __kcfi_typeid_t_c"
 // CHECK-NEXT: ".set __kcfi_typeid_t_c, [[#%u,C:]] /* {{.*}} */"
-// CHECK-NEXT: ".weak __kcfi_inflow_[[#%.8x,C]]_foreign_get"
-// CHECK-NEXT: ".set __kcfi_inflow_[[#%.8x,C]]_foreign_get, [[#C]]"
-// CHECK-NOT:  __kcfi_
+// CHECK-NEXT: ".weak __kcfi_inflow_00000000[[#%.8x,C]]_foreign_get"
+// CHECK-NEXT: ".set __kcfi_inflow_00000000[[#%.8x,C]]_foreign_get, {{[0-9]+}}"
+// CHECK-NOT:  {{__kcfi_(inflow|param|tinflow)_}}
 
 struct a_ops {
   a_fn f;

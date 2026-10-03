@@ -503,7 +503,7 @@ private:
 
   /// The KCFI types of the functions that may reach this module from code
   /// that carries no KCFI prefix of ours.
-  llvm::SetVector<llvm::ConstantInt *> KCFIDynamicTypes;
+  llvm::SetVector<std::pair<llvm::ConstantInt *, uint32_t>> KCFIDynamicTypes;
 
   /// The records that a value of a declaration, the result of a call to a
   /// function or a load of a variable, is converted to a pointer to, and
@@ -517,14 +517,15 @@ private:
   llvm::DenseMap<const FunctionDecl *, llvm::SetVector<const Type *>>
       KCFIVAArgTypes;
 
-  /// The canonical function pointer types of the objects that a call to a
-  /// function passes a pointer to in a variadic argument or as an untyped
-  /// pointer parameter.
+  /// The canonical types of the objects, function pointers or records, that a
+  /// call to a function passes a pointer to in a variadic argument or as an
+  /// untyped pointer parameter.
   llvm::DenseMap<const FunctionDecl *, llvm::SetVector<const Type *>>
       KCFIUntypedArgTypes;
 
   /// The canonical function types that this module calls through pointers.
   llvm::SetVector<const Type *> KCFICalledTypes;
+
 
   /// Global annotations.
   std::vector<llvm::Constant*> Annotations;
@@ -1777,8 +1778,24 @@ public:
   /// Generate a cross-DSO type identifier for MD.
   llvm::ConstantInt *CreateCrossDsoCfiTypeId(llvm::Metadata *MD);
 
-  /// Generate a KCFI type identifier for T.
+  /// A KCFI call type: its check identifier, with pointers generalised, which
+  /// keys thunks, routines and the type checks; and its precise identifier,
+  /// with pointers kept, which decides how an opening propagates.
+  using KCFITypeId = std::pair<llvm::ConstantInt *, uint32_t>;
+
+  /// Generate a KCFI type identifier for T, with pointers generalised when the
+  /// icall-generalize-pointers option is on.
   llvm::ConstantInt *CreateKCFITypeId(QualType T, StringRef Salt);
+
+  /// Generate a KCFI type identifier for T with pointers kept or generalised
+  /// as GeneralizePointers asks, whatever the option is.
+  llvm::ConstantInt *CreateKCFITypeId(QualType T, StringRef Salt,
+                                      bool GeneralizePointers);
+
+  /// The precise KCFI identifier of a function of type FnType salted by Salt:
+  /// its identifier with pointers kept, which decides how an opening of the
+  /// type propagates even where the check identifier generalises pointers.
+  uint32_t CreateKCFIPreciseId(QualType FnType, StringRef Salt);
 
   /// Whether functions carry KCFI types: when KCFI checks calls, or when every
   /// function carries a KCFI prefix with a marker.
@@ -1805,11 +1822,18 @@ public:
   /// virtual destructor, introduces.
   llvm::ConstantInt *CreateKCFIVTableSlotTypeId(GlobalDecl Slot);
 
+  /// The check and precise identifiers of the vtable slot that Slot introduces.
+  KCFITypeId CreateKCFIVTableSlotTypeIds(GlobalDecl Slot);
+
   /// Generate the KCFI type identifier that a function of type FnType that
   /// can occupy a vtable slot carries besides its own, and that a call through
   /// a member function pointer to a virtual function checks: FnType salted
   /// "__vfn", which does not depend on the class that introduces the slot.
   llvm::ConstantInt *CreateKCFIVfnTypeId(QualType FnType);
+
+  /// The check and precise identifiers that a call through a member function
+  /// pointer to a virtual function of type FnType checks.
+  KCFITypeId CreateKCFIVfnTypeIds(QualType FnType);
 
   /// Attach to F, which can occupy a vtable slot of type FnType, the type a
   /// call through a member function pointer checks.
@@ -1819,12 +1843,17 @@ public:
   /// function of type FnType checks: FnType salted by its cfi_salt.
   llvm::ConstantInt *CreateKCFICallTypeId(QualType FnType);
 
+  /// The check and precise identifiers that a call through a pointer to a
+  /// function of type FnType checks.
+  KCFITypeId CreateKCFICallTypeIds(QualType FnType);
+
   /// Record that a function of KCFI type TypeId may reach this module from
   /// code that carries no KCFI prefix of ours, so that a call of that type to
   /// a target without the marker proceeds at the strength of Control Flow
-  /// Guard.
+  /// Guard. Its precise identifier is its own, since the type that opens it is
+  /// the one called.
   void addKCFIDynamicType(llvm::ConstantInt *TypeId) {
-    KCFIDynamicTypes.insert(TypeId);
+    KCFIDynamicTypes.insert({TypeId, uint32_t(TypeId->getZExtValue())});
   }
 
   /// Under the KCFI marker scheme on COFF, record the type of the function
@@ -1890,17 +1919,25 @@ public:
   /// the function pointers that calls pass untyped as addKCFICallArguments
   /// records, when Params is false; the walk follows pointers and the fields
   /// and bases of records, and a polymorphic class adds the types of its
-  /// vtable slots. Or,
+  /// vtable slots; and those that FD hands to the functions that the call
+  /// hands it, in its parameters, held in the objects its parameters hold or
+  /// point to, or in the objects that the call passes untyped, walked as
+  /// their parameters are when Params is true. Or,
   /// when Params is true, that a caller hands to FD: its function pointer
   /// parameters and the function pointers held in the objects its parameters
   /// hold or point to, without following pointers further, and in the same
-  /// way the variadic arguments it reads with va_arg.
+  /// way the variadic arguments it reads with va_arg and the parameters of
+  /// the functions that FD hands back to its caller, in its result and
+  /// through its out-parameters, the pointers to non-const pointers.
   /// With Records, the walk stops at the records it reaches and lists them
-  /// there instead.
+  /// there instead; when Params is false, it lists in Held those whose held
+  /// function pointers alone count, which the parameters of the functions
+  /// that the call hands FD reach.
   void collectKCFIInflowTypes(
       const FunctionDecl *FD, bool Params,
-      llvm::SetVector<llvm::ConstantInt *> &TypeIds,
-      llvm::SetVector<const RecordDecl *> *Records = nullptr);
+      llvm::SetVector<KCFITypeId> &TypeIds,
+      llvm::SetVector<const RecordDecl *> *Records = nullptr,
+      llvm::SetVector<const RecordDecl *> *Held = nullptr);
 
   /// Returns the KCFI marker, which tells prefixes of the KCFI marker scheme
   /// with the type identifiers of this module's options from any other.
@@ -1912,6 +1949,16 @@ public:
   /// introduces the vtable slot, for a deleting destructor.
   llvm::ConstantInt *
   CreateKCFIDestructorTypeId(const CXXRecordDecl *DeletingClass = nullptr);
+
+  /// The check and precise identifiers of a destructor under the KCFI marker
+  /// scheme, as CreateKCFIDestructorTypeId salts them.
+  KCFITypeId
+  CreateKCFIDestructorTypeIds(const CXXRecordDecl *DeletingClass = nullptr);
+
+  /// The salt and the function type of a destructor under the KCFI marker
+  /// scheme.
+  std::string kcfiDestructorSalt(const CXXRecordDecl *DeletingClass);
+  QualType kcfiDestructorType();
 
   /// Create a metadata identifier for the given function type.
   llvm::Metadata *CreateMetadataIdentifierForFnType(QualType T);

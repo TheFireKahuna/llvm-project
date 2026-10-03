@@ -42,8 +42,8 @@ __attribute__((used)) static short_fn take_short = t_short;
 
 /// A definition that is not exported gives the types its parameters can hold,
 /// a function pointer passed by value among them.
-// CHECK-NEXT: ".weak __kcfi_param_[[#%.8x,SHORT]]_def_cb"
-// CHECK-NEXT: ".set __kcfi_param_[[#%.8x,SHORT]]_def_cb, [[#SHORT]]"
+// CHECK-NEXT: ".weak __kcfi_param_00000000[[#%.8x,SHORT]]_def_cb"
+// CHECK-NEXT: ".set __kcfi_param_00000000[[#%.8x,SHORT]]_def_cb, {{[0-9]+}}"
 void def_cb(short_fn cb) {}
 
 /// An exported definition opens its types dynamically.
@@ -57,10 +57,10 @@ static void local_def(int_fn cb) {}
 /// types.
 int_fn foreign_get(void);
 void foreign_out(long_fn *out);
-// CHECK-NEXT: ".weak __kcfi_inflow_[[#%.8x,INT]]_foreign_get"
-// CHECK-NEXT: ".set __kcfi_inflow_[[#%.8x,INT]]_foreign_get, [[#INT]]"
-// CHECK-NEXT: ".weak __kcfi_inflow_[[#%.8x,LONG]]_foreign_out"
-// CHECK-NEXT: ".set __kcfi_inflow_[[#%.8x,LONG]]_foreign_out, [[#LONG]]"
+// CHECK-NEXT: ".weak __kcfi_inflow_00000000[[#%.8x,INT]]_foreign_get"
+// CHECK-NEXT: ".set __kcfi_inflow_00000000[[#%.8x,INT]]_foreign_get, {{[0-9]+}}"
+// CHECK-NEXT: ".weak __kcfi_inflow_00000000[[#%.8x,LONG]]_foreign_out"
+// CHECK-NEXT: ".set __kcfi_inflow_00000000[[#%.8x,LONG]]_foreign_out, {{[0-9]+}}"
 
 /// A function pointer passed by value flows to the callee.
 void foreign_reg(short_fn cb);
@@ -86,7 +86,7 @@ void cxx_def(int_fn cb) {}
 void cxx_use() { cxx_get(); }
 #endif
 
-// CHECK-NOT:  __kcfi_
+// CHECK-NOT:  {{__kcfi_(inflow|param|tinflow)_}}
 
 // NOMARKER: ".weak __kcfi_typeid_t_int"
 

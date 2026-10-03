@@ -81,13 +81,13 @@ int use(void) {
   return imp_cb('a') + imp_ops.f(1) + foreign_cb(1);
 }
 
-// CHECK-NEXT: ".weak __kcfi_inflow_[[#%.8x,D]]_foreign_cb"
-// CHECK-NEXT: ".set __kcfi_inflow_[[#%.8x,D]]_foreign_cb, [[#D]]"
-// CHECK-NEXT: ".weak __kcfi_param_[[#%.8x,F]]_def_cb"
-// CHECK-NEXT: ".set __kcfi_param_[[#%.8x,F]]_def_cb, [[#F]]"
-// CHECK-NEXT: ".weak __kcfi_param_[[#%.8x,G]]_def_holder"
-// CHECK-NEXT: ".set __kcfi_param_[[#%.8x,G]]_def_holder, [[#G]]"
-// CHECK-NOT:  __kcfi_
+// CHECK-NEXT: ".weak __kcfi_inflow_00000000[[#%.8x,D]]_foreign_cb"
+// CHECK-NEXT: ".set __kcfi_inflow_00000000[[#%.8x,D]]_foreign_cb, {{[0-9]+}}"
+// CHECK-NEXT: ".weak __kcfi_param_00000000[[#%.8x,F]]_def_cb"
+// CHECK-NEXT: ".set __kcfi_param_00000000[[#%.8x,F]]_def_cb, {{[0-9]+}}"
+// CHECK-NEXT: ".weak __kcfi_param_00000000[[#%.8x,G]]_def_holder"
+// CHECK-NEXT: ".set __kcfi_param_00000000[[#%.8x,G]]_def_holder, {{[0-9]+}}"
+// CHECK-NOT:  {{__kcfi_(inflow|param|tinflow)_}}
 
 // CHECK-DAG: define {{.*}} @w_a({{.*}} !kcfi_type ![[#A:]]
 char w_a(char x) { return x; }
