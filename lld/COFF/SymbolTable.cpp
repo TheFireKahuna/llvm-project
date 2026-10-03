@@ -413,25 +413,21 @@ void SymbolTable::openKCFITypes() {
     return;
   llvm::TimeTraceScope timeScope("Open KCFI types");
 
-  // Whether each object defines code and whether a function in it has a KCFI
-  // prefix with a marker: the one whose static __cfi_ label it is the first
-  // function to follow in its chunk.
+  // Whether each object is foreign, and the functions with a KCFI prefix with
+  // a marker: each the first function to follow its static __cfi_ label in
+  // its chunk.
   DenseSet<std::pair<SectionChunk *, uint32_t>> prefixed;
-  DenseMap<ObjFile *, std::pair<bool, bool>> objInfo;
+  DenseMap<ObjFile *, bool> objInfo;
   auto scan = [&](ObjFile *file) {
     auto [it, inserted] = objInfo.try_emplace(file);
     if (!inserted)
       return it->second;
     SmallVector<DefinedRegular *, 0> labels, entries;
-    bool definesCode = false, hasPrefix = false;
     for (Symbol *s : file->getSymbols()) {
       auto *d = dyn_cast_or_null<DefinedRegular>(s);
       if (!d || d->file != file || !d->getChunk() ||
           !(d->getChunk()->getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE))
         continue;
-      // An empty section, such as the .text an assembler always emits, holds
-      // no code.
-      definesCode |= d->getChunk()->getSize() != 0;
       if (d->getCOFFSymbol().getComplexType() == IMAGE_SYM_DTYPE_FUNCTION)
         entries.push_back(d);
       else if (!d->getCOFFSymbol().isExternal() &&
@@ -444,21 +440,12 @@ void SymbolTable::openKCFITypes() {
     };
     llvm::sort(entries, byLocation);
     for (DefinedRegular *label : labels) {
-      ArrayRef<uint8_t> data = label->getChunk()->getContents();
-      auto hasMarker = [&](uint32_t at) {
-        return at + 12 <= data.size() && data[at] == 0x0F &&
-               data[at + 1] == 0x1F && data[at + 2] == 0x80 &&
-               data[at + 7] == 0xB8;
-      };
-      uint32_t off = label->getValue();
       auto e = llvm::upper_bound(entries, label, byLocation);
-      if ((hasMarker(off) || hasMarker(off + 4)) && e != entries.end() &&
-          (*e)->getChunk() == label->getChunk()) {
+      if (getKCFIPrefixSize(label->getChunk(), label->getValue()) &&
+          e != entries.end() && (*e)->getChunk() == label->getChunk())
         prefixed.insert({(*e)->getChunk(), (*e)->getValue()});
-        hasPrefix = true;
-      }
     }
-    return it->second = {definesCode, hasPrefix};
+    return it->second = isKCFIForeignFile(file);
   };
   // A reference to a variable that a DLL provides stays undefined until
   // automatic import resolves it to the variable's __imp_ pointer.
@@ -479,12 +466,12 @@ void SymbolTable::openKCFITypes() {
     auto *file = c ? dyn_cast_or_null<ObjFile>(c->getFile()) : nullptr;
     if (!file)
       return false;
-    auto [definesCode, hasPrefix] = scan(file);
+    bool foreign = scan(file);
     auto *r = dyn_cast<DefinedRegular>(c);
     if (r && r->getChunk() &&
         (r->getChunk()->getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE))
       return !prefixed.contains({r->getChunk(), r->getValue()});
-    return definesCode && !hasPrefix;
+    return foreign;
   };
 
   // For each type, whether it is open dynamically, and the symbols to add to
@@ -613,8 +600,7 @@ void SymbolTable::openKCFITypes() {
         auto *r = dyn_cast_or_null<DefinedRegular>(s->getDefined());
         if (r && r->file == file)
           continue;
-        auto [definesCode, hasPrefix] = scan(file);
-        if (!definesCode || hasPrefix)
+        if (!scan(file))
           break;
         openDynamically(it->second);
       }
@@ -742,6 +728,33 @@ void SymbolTable::openKCFITypes() {
       kcfiChunks.push_back(make<KCFIListChunk>(ctx, section, entry));
     }
   }
+}
+
+uint32_t getKCFIPrefixSize(SectionChunk *sc, uint32_t off) {
+  ArrayRef<uint8_t> data = sc->getContents();
+  auto hasMarker = [&](uint32_t at) {
+    return at + 12 <= data.size() && data[at] == 0x0F && data[at + 1] == 0x1F &&
+           data[at + 2] == 0x80 && data[at + 7] == 0xB8;
+  };
+  return hasMarker(off) ? 12 : hasMarker(off + 4) ? 16 : 0;
+}
+
+bool isKCFIForeignFile(ObjFile *file) {
+  bool definesCode = false;
+  for (Symbol *s : file->getSymbols()) {
+    auto *d = dyn_cast_or_null<DefinedRegular>(s);
+    if (!d || d->file != file || !d->getChunk() ||
+        !(d->getChunk()->getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE))
+      continue;
+    if (!d->getCOFFSymbol().isExternal() &&
+        d->getName().starts_with("__cfi_") &&
+        getKCFIPrefixSize(d->getChunk(), d->getValue()))
+      return false;
+    // An empty section, such as the .text an assembler always emits, holds no
+    // code.
+    definesCode |= d->getChunk()->getSize() != 0;
+  }
+  return definesCode;
 }
 
 Defined *SymbolTable::impSymbol(StringRef name) {
