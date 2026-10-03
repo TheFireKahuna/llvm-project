@@ -137,6 +137,10 @@ public:
 
   bool isVTableExternal(const CXXRecordDecl *RD);
 
+  /// Clears dso_local on a declaration of RD's vtable or VTT that another
+  /// image may own. Call it after setGVProperties.
+  void setVTableDSOLocal(llvm::GlobalValue *GV, const CXXRecordDecl *RD) const;
+
   /// Returns the type of a vtable with the given layout. Normally a struct of
   /// arrays of pointers, with one struct element for each vtable in the vtable
   /// group.

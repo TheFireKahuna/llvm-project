@@ -2135,6 +2135,7 @@ void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
 
   // Set the right visibility.
   CGM.setGVProperties(VTable, RD);
+  CGVT.setVTableDSOLocal(VTable, RD);
 
   // If this is the magic class __cxxabiv1::__fundamental_type_info,
   // we will emit the typeinfo for the fundamental types. This is the
@@ -2291,6 +2292,7 @@ llvm::GlobalVariable *ItaniumCXXABI::getAddrOfVTable(const CXXRecordDecl *RD,
     setVTableSelectiveDLLImportExport(CGM, VTable, RD);
 
   CGM.setGVProperties(VTable, RD);
+  CGM.getVTables().setVTableDSOLocal(VTable, RD);
   return VTable;
 }
 
