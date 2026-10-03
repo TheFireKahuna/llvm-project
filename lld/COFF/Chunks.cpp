@@ -1079,45 +1079,101 @@ void LocalImportChunk::getBaserels(std::vector<Baserel> *res) {
 size_t LocalImportChunk::getSize() const { return ctx.config.wordsize; }
 
 KCFIOpenChunk::KCFIOpenChunk(COFFLinkerContext &ctx, Defined *list,
-                             Defined *scanner, bool dynamic)
-    : list(list), scanner(scanner), dynamic(dynamic), ctx(ctx) {
+                             Defined *scanner, bool dynamic, Defined *outside,
+                             bool check)
+    : list(list), scanner(scanner), dynamic(dynamic), outside(outside),
+      check(check), ctx(ctx) {
   setAlignment(ctx.config.machine == ARM64 ? 4 : 1);
 }
 
 size_t KCFIOpenChunk::getSize() const {
   if (ctx.config.machine == ARM64)
-    return 20;
-  return dynamic ? 13 : 12;
+    return (outside ? 36 : 0) + (list ? 8 : 0) + 12;
+  return (outside ? 32 : 0) + (list ? 7 : 0) + (dynamic ? 6 : 5);
 }
 
 MachineTypes KCFIOpenChunk::getMachine() const { return ctx.config.machine; }
 
 void KCFIOpenChunk::writeTo(uint8_t *buf) const {
   // The scanner reads the list from its first word after the head.
-  uint64_t first = list->getRVA() + 8;
+  uint64_t first = list ? list->getRVA() + 8 : 0;
+  // The image ends where its last section does, rounded up to the page that
+  // the loader maps it in.
+  uint64_t end = 0;
+  if (outside) {
+    for (OutputSection *sec : ctx.outputSections)
+      end = std::max(end, sec->getRVA() + sec->getVirtualSize());
+    end = alignTo(end, 4096);
+  }
+  uint32_t off = 0;
   if (ctx.config.machine == ARM64) {
-    // The scanner is reached through X17, at any distance, since the linker
-    // adds no range extension thunk for a chunk of its own.
-    uint64_t target = scanner->getRVA();
-    write32le(buf, 0x90000010);      // adrp x16, first
-    write32le(buf + 4, 0x91000210);  // add x16, x16, :lo12:first
-    write32le(buf + 8, 0x90000011);  // adrp x17, scanner
-    write32le(buf + 12, 0x91000231); // add x17, x17, :lo12:scanner
-    write32le(buf + 16, 0xD61F0220); // br x17
-    applyArm64Addr(buf, first, rva, 12);
-    applyArm64Imm(buf + 4, first & 0xfff, 0);
-    applyArm64Addr(buf + 8, target, rva + 8, 12);
-    applyArm64Imm(buf + 12, target & 0xfff, 0);
+    // Each address is reached at any distance, since the linker adds no range
+    // extension thunk for a chunk of its own.
+    auto setAddr = [&](uint32_t reg, uint64_t target) {
+      write32le(buf + off, 0x90000000 | reg);                // adrp
+      write32le(buf + off + 4, 0x91000000 | reg << 5 | reg); // add
+      applyArm64Addr(buf + off, target, rva + off, 12);
+      applyArm64Imm(buf + off + 4, target & 0xfff, 0);
+      off += 8;
+    };
+    auto branch = [&](uint64_t target) {
+      setAddr(17, target);
+      write32le(buf + off, 0xD61F0220); // br x17
+      off += 4;
+    };
+    if (outside) {
+      // adrp x17, start; cmp x15, x17; b.lo 1f
+      // adrp x17, end; cmp x15, x17; b.hs 1f
+      uint32_t tail = getSize() - 12;
+      write32le(buf, 0x90000011);
+      write32le(buf + 4, 0xEB1101FF);
+      write32le(buf + 8, 0x54000003 | (tail - 8) / 4 << 5);
+      write32le(buf + 12, 0x90000011);
+      write32le(buf + 16, 0xEB1101FF);
+      write32le(buf + 20, 0x54000002 | (tail - 20) / 4 << 5);
+      applyArm64Addr(buf, 0, rva, 12);
+      applyArm64Addr(buf + 12, end, rva + 12, 12);
+      off = 24;
+    }
+    // adrp x16, first; add x16, x16, :lo12:first
+    if (list)
+      setAddr(16, first);
+    // adrp x17, scanner; add x17, x17, :lo12:scanner; br x17
+    branch(scanner->getRVA());
+    // 1: adrp x17, outside; add x17, x17, :lo12:outside; br x17
+    if (outside)
+      branch(outside->getRVA());
     return;
   }
-  static const uint8_t routine[] = {
-      0x4C, 0x8D, 0x15, 0, 0, 0, 0, // lea r10, [rip + first]
-      0xE9, 0,    0,    0, 0,       // jmp scanner
-      0xCC,                         // int3
-  };
-  memcpy(buf, routine, getSize());
-  write32le(buf + 3, first - (rva + 7));
-  write32le(buf + 8, scanner->getRVA() - (rva + 12));
+  if (outside) {
+    static const uint8_t bound[] = {
+        0x4C, 0x8D, 0x1D, 0, 0, 0, 0, // lea r11, [rip + start]
+        0x4C, 0x39, 0xD8,             // cmp rax, r11
+        0x0F, 0x82, 0,    0, 0, 0,    // jb outside
+        0x4C, 0x8D, 0x1D, 0, 0, 0, 0, // lea r11, [rip + end]
+        0x4C, 0x39, 0xD8,             // cmp rax, r11
+        0x0F, 0x83, 0,    0, 0, 0,    // jae outside
+    };
+    memcpy(buf, bound, sizeof(bound));
+    if (check)
+      buf[9] = buf[25] = 0xD9; // cmp rcx, r11
+    write32le(buf + 3, -(rva + 7));
+    write32le(buf + 12, outside->getRVA() - (rva + 16));
+    write32le(buf + 19, end - (rva + 23));
+    write32le(buf + 28, outside->getRVA() - (rva + 32));
+    off = sizeof(bound);
+  }
+  // lea r10, [rip + first]; jmp scanner; int3
+  if (list) {
+    static const uint8_t lea[] = {0x4C, 0x8D, 0x15, 0, 0, 0, 0};
+    memcpy(buf + off, lea, sizeof(lea));
+    write32le(buf + off + 3, first - (rva + off + 7));
+    off += 7;
+  }
+  buf[off] = 0xE9;
+  write32le(buf + off + 1, scanner->getRVA() - (rva + off + 5));
+  if (dynamic)
+    buf[off + 5] = 0xCC;
 }
 
 KCFIListChunk::KCFIListChunk(COFFLinkerContext &ctx, StringRef sectionName,

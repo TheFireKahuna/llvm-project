@@ -369,6 +369,7 @@ private:
   void sealKCFIPrefixes();
   void defineKCFICodeRange();
   void rewriteKCFIThunks();
+  void boundKCFIMismatches();
   SymbolRVASet getEHContTargets();
   bool protectDelayIat();
   void markSymbolsForRVATable(ObjFile *file,
@@ -440,9 +441,13 @@ private:
   // out of; whether the image is sealed; and the output section that holds
   // them all, if there is one.
   std::vector<KCFIPrefix> kcfiPrefixes;
+  // The objects that define code and no KCFI prefix with a marker, which are
+  // foreign.
+  DenseSet<ObjFile *> kcfiForeignFiles;
   DenseMap<const Chunk *, SmallVector<std::pair<uint32_t, uint32_t>, 1>>
       kcfiEntries;
   bool kcfiSealed = false;
+  bool kcfiUnprefixedTargets = false;
   OutputSection *kcfiCodeSec = nullptr;
 
   uint64_t fileSize;
@@ -1450,6 +1455,7 @@ void Writer::createMiscChunks() {
 
   // Create /guard:cf tables if requested.
   createGuardCFTables();
+  boundKCFIMismatches();
 
   createECChunks();
 
@@ -2604,21 +2610,26 @@ void Writer::createGuardCFTables() {
   SymbolRVASet giatsRVASet;
   std::vector<Symbol *> giatsSymbols;
   SymbolRVASet longJmpTargets;
+  // What foreign objects list is collected apart first, as foreign code can
+  // hand ours any function it lists.
+  SymbolRVASet foreignTakenSyms;
   for (ObjFile *file : ctx.objFileInstances) {
+    SymbolRVASet &takenSyms =
+        kcfiForeignFiles.contains(file) ? foreignTakenSyms : addressTakenSyms;
     // If the object was compiled with /guard:cf, the address taken symbols
     // are in .gfids$y sections, and the longjmp targets are in .gljmp$y
     // sections. If the object was not compiled with /guard:cf, we assume there
     // were no setjmp targets, and that all code symbols with relocations are
     // possibly address-taken.
     if (file->hasGuardCF()) {
-      markSymbolsForRVATable(file, file->getGuardFidChunks(), addressTakenSyms);
+      markSymbolsForRVATable(file, file->getGuardFidChunks(), takenSyms);
       std::vector<Symbol *> giats;
       getSymbolsFromSections(file, file->getGuardIATChunks(), giats);
       for (Symbol *s : giats) {
         // The pointer the linker makes for a symbol in the image is no import
         // address table entry; the address it holds is taken.
         if (auto *li = dyn_cast<DefinedLocalImport>(s)) {
-          maybeAddAddressTakenFunction(addressTakenSyms, li->getTarget());
+          maybeAddAddressTakenFunction(takenSyms, li->getTarget());
           continue;
         }
         addSymbolToRVASet(giatsRVASet, cast<Defined>(s));
@@ -2626,11 +2637,12 @@ void Writer::createGuardCFTables() {
       }
       markSymbolsForRVATable(file, file->getGuardLJmpChunks(), longJmpTargets);
       if (file->describesSites)
-        markDescribedAddressTakes(file, addressTakenSyms, giatsRVASet);
+        markDescribedAddressTakes(file, takenSyms, giatsRVASet);
     } else {
-      markSymbolsWithRelocations(file, addressTakenSyms, giatsRVASet);
+      markSymbolsWithRelocations(file, takenSyms, giatsRVASet);
     }
   }
+  addressTakenSyms.insert(foreignTakenSyms.begin(), foreignTakenSyms.end());
 
   // Mark the image entry as address-taken.
   SymbolRVASet exportedSyms;
@@ -2668,10 +2680,20 @@ void Writer::createGuardCFTables() {
   // chunk the definition of several functions, and the table and the prefixes
   // are both keyed by the chunk that remains, so a folded function stays
   // unsealed if any function folded into it is listed.
+  //
+  // A function without a prefix that a foreign object lists, such as one of
+  // its own or an import thunk, is one that foreign code can hand to ours.
   if (config->importSlots) {
     for (KCFIPrefix &p : kcfiPrefixes)
       p.sealed = !addressTakenSyms.contains({p.chunk, p.entry});
     kcfiSealed = true;
+    kcfiUnprefixedTargets =
+        llvm::any_of(foreignTakenSyms, [&](const ChunkAndOffset &c) {
+          auto it = kcfiEntries.find(c.inputChunk);
+          return it == kcfiEntries.end() ||
+                 llvm::none_of(it->second,
+                               [&](auto &e) { return e.first == c.offset; });
+        });
   }
 
   // Ensure sections referenced in the gfid table are 16-byte aligned.
@@ -2736,27 +2758,52 @@ void Writer::createGuardCFTables() {
 
 // Finds the KCFI prefix with a marker of every function the link keeps, which
 // clang labels with a static __cfi_ symbol, keyed by the chunk that remains
-// after identical code folding.
+// after identical code folding, and the foreign objects, which have none.
 void Writer::findKCFIPrefixes() {
+  // The size of the type words and the marker from the __cfi_ label at off, 12
+  // or 16 bytes, or 0 without the marker.
+  auto prefixSize = [](SectionChunk *sc, uint32_t off) -> uint32_t {
+    ArrayRef<uint8_t> data = sc->getContents();
+    auto hasMarker = [&](uint32_t at) {
+      return at + 12 <= data.size() && data[at] == 0x0F &&
+             data[at + 1] == 0x1F && data[at + 2] == 0x80 &&
+             data[at + 7] == 0xB8;
+    };
+    return hasMarker(off) ? 12 : hasMarker(off + 4) ? 16 : 0;
+  };
   DenseSet<std::pair<SectionChunk *, uint32_t>> seen;
   for (ObjFile *file : ctx.objFileInstances) {
     SmallVector<DefinedRegular *, 0> labels, entries;
+    // An object with code and no prefix with the marker anywhere, including in
+    // sections the link drops, was built by another compiler, as clang's
+    // objects keep one for every external function.
+    bool definesCode = false, hasPrefix = false;
     for (Symbol *s : file->getSymbols()) {
       auto *d = dyn_cast_or_null<DefinedRegular>(s);
       if (!d || d->file != file)
         continue;
       SectionChunk *sc = d->getChunk();
-      if (!sc || !sc->live ||
-          !(sc->getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE))
+      if (!sc || !(sc->getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE))
         continue;
+      bool isLabel = !d->getCOFFSymbol().isExternal() &&
+                     d->getName().starts_with("__cfi_");
+      if (!sc->live) {
+        hasPrefix |= isLabel && prefixSize(sc, d->getValue()) != 0;
+        continue;
+      }
+      // An empty section, such as the .text an assembler always emits, holds
+      // no code.
+      definesCode |= sc->getSize() != 0;
       if (d->getCOFFSymbol().getComplexType() == IMAGE_SYM_DTYPE_FUNCTION)
         entries.push_back(d);
-      else if (!d->getCOFFSymbol().isExternal() &&
-               d->getName().starts_with("__cfi_"))
+      else if (isLabel)
         labels.push_back(d);
     }
-    if (labels.empty())
+    if (labels.empty()) {
+      if (definesCode && !hasPrefix)
+        kcfiForeignFiles.insert(file);
       continue;
+    }
 
     // The function a prefix belongs to is the first that follows it in its
     // chunk.
@@ -2769,18 +2816,13 @@ void Writer::findKCFIPrefixes() {
       SectionChunk *sc = label->getChunk();
       uint32_t off = label->getValue();
       auto it = llvm::upper_bound(entries, label, byLocation);
-      ArrayRef<uint8_t> data = sc->getContents();
-      auto hasMarker = [&](uint32_t at) {
-        return at + 12 <= data.size() && data[at] == 0x0F &&
-               data[at + 1] == 0x1F && data[at + 2] == 0x80 &&
-               data[at + 7] == 0xB8;
-      };
       // A prefix without the marker, such as upstream KCFI's, can never pass
       // the thunks' check, so there is nothing to seal. One with the marker
       // that no function follows is malformed.
-      uint32_t size = hasMarker(off) ? 12 : hasMarker(off + 4) ? 16 : 0;
+      uint32_t size = prefixSize(sc, off);
       if (size == 0)
         continue;
+      hasPrefix = true;
       if (it == entries.end() || (*it)->getChunk() != sc ||
           (*it)->getValue() < off + size) {
         Err(ctx) << file << ": no function follows the KCFI prefix at "
@@ -2798,6 +2840,8 @@ void Writer::findKCFIPrefixes() {
       kcfiPrefixes.push_back({sc, off, size, entry});
       kcfiEntries[sc].push_back({entry, PowerOf2Ceil(patchable + size)});
     }
+    if (definesCode && !hasPrefix)
+      kcfiForeignFiles.insert(file);
   }
 }
 
@@ -2844,6 +2888,87 @@ void Writer::defineKCFICodeRange() {
   replaceSymbol<DefinedSynthetic>(start, start->getName(), sec->chunks.front());
   replaceSymbol<DefinedSynthetic>(end, end->getName(), last, last->getSize());
   kcfiCodeSec = sec;
+}
+
+// In an image whose guard function table lists a function without a KCFI
+// prefix, foreign code linked into the image can hand ours one of its
+// functions through a channel that no type rule sees. Where a mismatch would
+// fail fast, at the routine of a closed type or at the end of a statically
+// open type's list, a target in the image then goes to the dynamic scanner
+// instead: the scanner fails fast on a target with our marker, and the guard
+// function it continues into accepts only what this image's table lists. A
+// target outside the image fails fast as before. A closed type's routine
+// points the scanner at an empty list, and the static scanner is entered
+// through a routine that gives it only targets outside the image, and the
+// dynamic scanner the rest, with the same list. The scanners are clang's, as
+// only clang knows the marker and the prefix offset it compares.
+void Writer::boundKCFIMismatches() {
+  bool isX64 = ctx.config.machine == AMD64;
+  if (!kcfiUnprefixedTargets || (!isX64 && ctx.config.machine != ARM64))
+    return;
+  struct Kind {
+    StringRef mismatch, staticScanner, dynamicScanner;
+    bool check;
+  };
+  static const Kind kinds[] = {{"__llvm_kcfi_mismatch_", "__llvm_kcfi_open",
+                                "__llvm_kcfi_open_dynamic", false},
+                               {"__llvm_kcfi_check_mismatch_",
+                                "__llvm_kcfi_check_open",
+                                "__llvm_kcfi_check_open_dynamic", true}};
+  auto *trap =
+      dyn_cast_or_null<DefinedRegular>(ctx.symtab.find("__llvm_kcfi_trap"));
+  Defined *empty = nullptr;
+  for (const Kind &k : ArrayRef(kinds).drop_front(isX64 ? 0 : 1)) {
+    auto *dynamic =
+        dyn_cast_or_null<DefinedRegular>(ctx.symtab.find(k.dynamicScanner));
+    if (!dynamic)
+      continue;
+    KCFIOpenChunk *closed = nullptr, *open = nullptr;
+    // A closed type's routine is the trap, to which the weak default was
+    // resolved.
+    if (trap && trap->isLive()) {
+      ctx.symtab.forEachSymbol([&](Symbol *s) {
+        auto *d = dyn_cast<DefinedRegular>(s);
+        if (!d || d->getChunk() != trap->getChunk() ||
+            d->getValue() != trap->getValue() ||
+            !d->getName().starts_with(k.mismatch))
+          return;
+        if (!closed) {
+          // The head, then the odd word that ends the list.
+          if (!empty) {
+            auto *head = make<KCFIListChunk>(ctx, ".rdata", nullptr);
+            rdataSec->addChunk(head);
+            rdataSec->addChunk(make<KCFIListChunk>(ctx, ".rdata", nullptr, 1));
+            empty = make<DefinedSynthetic>("__llvm_kcfi_list_empty", head);
+          }
+          closed =
+              make<KCFIOpenChunk>(ctx, empty, dynamic, false, trap, k.check);
+          textSec->addChunk(closed);
+        }
+        replaceSymbol<DefinedSynthetic>(s, s->getName(), closed);
+      });
+    }
+    // Every routine that jumps to the static scanner does so through its
+    // symbol.
+    auto *scanner =
+        dyn_cast_or_null<DefinedRegular>(ctx.symtab.find(k.staticScanner));
+    if (scanner && scanner->isLive()) {
+      auto *outside = make<DefinedSynthetic>(
+          scanner->getName(), scanner->getChunk(), scanner->getValue());
+      open =
+          make<KCFIOpenChunk>(ctx, nullptr, dynamic, false, outside, k.check);
+      textSec->addChunk(open);
+      replaceSymbol<DefinedSynthetic>(scanner, scanner->getName(), open);
+    }
+    // The garbage collector left out the dynamic scanner if nothing referred
+    // to it before these routines. It refers only to the guard function,
+    // which every KCFI thunk refers to.
+    SectionChunk *sc = dynamic->getChunk();
+    if ((closed || open) && !sc->live) {
+      sc->live = true;
+      textSec->addChunk(sc);
+    }
+  }
 }
 
 // Rewrites, in place, the range test at the start of each of clang's KCFI
