@@ -892,6 +892,7 @@ def SelTypeCast : DiagGroup<"cast-of-sel-type">;
 def FunctionDefInObjCContainer : DiagGroup<"function-def-in-objc-container">;
 def BadFunctionCast : DiagGroup<"bad-function-cast">;
 def CastFunctionTypeStrict : DiagGroup<"cast-function-type-strict">;
+def GetProcAddressType : DiagGroup<"get-proc-address-type">;
 def CastFunctionTypeMismatch : DiagGroup<"cast-function-type-mismatch">;
 def CastFunctionType : DiagGroup<"cast-function-type",
                                  [CastFunctionTypeStrict,
