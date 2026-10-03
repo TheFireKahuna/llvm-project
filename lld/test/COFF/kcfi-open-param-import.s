@@ -108,14 +108,14 @@ vh:
 vk:
         .quad 0
 
-        .weak __kcfi_param_aaaaaaaa_vg
-__kcfi_param_aaaaaaaa_vg = 0xaaaaaaaa
-        .weak __kcfi_param_bbbbbbbb_vh
-__kcfi_param_bbbbbbbb_vh = 0xbbbbbbbb
-        .weak __kcfi_param_cccccccc_fn
-__kcfi_param_cccccccc_fn = 0xcccccccc
-        .weak __kcfi_param_dddddddd_vk
-__kcfi_param_dddddddd_vk = 0xdddddddd
+        .weak __kcfi_param_00000000aaaaaaaa_vg
+__kcfi_param_00000000aaaaaaaa_vg = 0xaaaaaaaa
+        .weak __kcfi_param_00000000bbbbbbbb_vh
+__kcfi_param_00000000bbbbbbbb_vh = 0xbbbbbbbb
+        .weak __kcfi_param_00000000cccccccc_fn
+__kcfi_param_00000000cccccccc_fn = 0xcccccccc
+        .weak __kcfi_param_00000000dddddddd_vk
+__kcfi_param_00000000dddddddd_vk = 0xdddddddd
 
         .irp t, aaaaaaaa, bbbbbbbb, cccccccc, dddddddd
         .weak __llvm_kcfi_mismatch_\t

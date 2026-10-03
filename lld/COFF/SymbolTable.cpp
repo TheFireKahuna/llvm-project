@@ -381,6 +381,12 @@ bool SymbolTable::loadLocalImportMembers() {
 //   the type. If an object with code and no prefix references g, directly or
 //   through __imp_g, the type is open dynamically.
 //
+// Foreign code in the image that references no import can hand ours only
+// functions in the image, where the writer may bound the mismatch. So a type
+// that only parameter facts and inflow facts whose g is defined in the image
+// open dynamically, directly or through tinflow facts, is remembered, for the
+// writer to open statically instead.
+//
 // An inflow or parameter fact may name a node, n<node> in 16 lowercase hex
 // digits, in place of a type, as __kcfi_inflow_n<node>_<g>, so that an object
 // names the types a record holds once rather than once per function that
@@ -474,27 +480,45 @@ void SymbolTable::openKCFITypes() {
     return foreign;
   };
 
-  // For each type, whether it is open dynamically, and the symbols to add to
-  // its list, each with whether the entry points at a cell holding it rather
-  // than at the symbol itself.
+  // For each type, whether it is open dynamically, and whether only through
+  // foreign code in the image, and the symbols to add to its list, each with
+  // whether the entry points at a cell holding it rather than at the symbol
+  // itself.
   struct Opening {
     bool dynamic = false;
+    bool local = false;
     SmallVector<std::pair<Defined *, bool>, 0> entries;
   };
   std::map<uint32_t, Opening> openings;
   std::vector<Symbol *> typeids;
+  // A fact names its precise key, 16 hex digits, and its value is the check
+  // identifier, which a COFF absolute symbol holds. A precise key of
+  // 1 << 32 | check, printed with 1 in the high word, is an unprototyped type,
+  // which stands for every precise type of the check identifier.
+  auto factCheck = [&](Symbol *s) -> uint32_t {
+    if (auto *d = dyn_cast_or_null<DefinedAbsolute>(s->getDefined()))
+      return d->getVA();
+    return 0;
+  };
   // The types that the inflow and parameter facts name, by the symbol each
-  // names, the nodes that they name, and the types of each node.
-  DenseMap<Symbol *, SmallVector<uint32_t, 1>> inflows, params;
+  // names, the nodes that they name, and the types of each node, each as
+  // (check, precise key). The precise types each object opens, keyed, with the
+  // check identifier. The types that a call through a precise key can hand
+  // back, and the precise keys of the called types of each check identifier.
+  DenseMap<Symbol *, SmallVector<std::pair<uint32_t, uint64_t>, 1>> inflows,
+      params;
   SmallVector<std::pair<Symbol *, uint64_t>, 0> inflowNodes, paramNodes;
-  DenseMap<uint32_t, SmallVector<uint32_t, 1>> tinflows;
-  SmallVector<std::pair<uint32_t, uint64_t>, 0> tinflowNodes;
-  DenseMap<uint64_t, SmallVector<uint32_t, 2>> nodes;
-  auto parseFact = [&](StringRef rest, uint32_t &type) -> Symbol * {
-    if (rest.size() < 10 || rest[8] != '_' ||
-        rest.take_front(8).getAsInteger(16, type))
+  DenseMap<uint64_t, SmallVector<std::pair<uint32_t, uint64_t>, 1>> tinflows;
+  DenseMap<uint32_t, SetVector<uint64_t>> calledKeys;
+  SmallVector<std::pair<uint64_t, uint64_t>, 0> tinflowNodes;
+  DenseMap<uint64_t, SmallVector<std::pair<uint32_t, uint64_t>, 2>> nodes;
+  SmallVector<std::pair<uint64_t, uint32_t>, 0> popens;
+  // A fact names its precise key, 16 hex digits, then the symbol it concerns.
+  auto parseFact = [&](StringRef rest, uint64_t &key) -> Symbol * {
+    if (rest.size() < 18 || rest[16] != '_' ||
+        rest.take_front(16).getAsInteger(16, key))
       return nullptr;
-    return find(rest.drop_front(9));
+    return find(rest.drop_front(17));
   };
   auto parseNodeFact = [&](StringRef rest, uint64_t &node) -> Symbol * {
     if (rest.size() < 19 || rest[17] != '_' ||
@@ -502,18 +526,18 @@ void SymbolTable::openKCFITypes() {
       return nullptr;
     return find(rest.drop_front(18));
   };
-  auto addParam = [&](Symbol *g, uint32_t type) {
-    params[g].push_back(type);
+  auto addParam = [&](Symbol *g, uint32_t check, uint64_t key) {
+    params[g].push_back({check, key});
     // Code that declares g dllimport reaches our g through __imp_g, which
     // becomes a local import unless it is bound to something else.
     auto *imp =
         dyn_cast_or_null<Undefined>(find(("__imp_" + g->getName()).str()));
     if (imp && !imp->getWeakAlias())
-      params[imp].push_back(type);
+      params[imp].push_back({check, key});
   };
   forEachSymbol([&](Symbol *s) {
     StringRef name = s->getName();
-    uint32_t type = 0;
+    uint64_t key = 0;
     uint64_t node = 0;
     if (!name.consume_front("__kcfi_"))
       return;
@@ -523,33 +547,40 @@ void SymbolTable::openKCFITypes() {
       if (name.starts_with("n")) {
         if (Symbol *g = parseNodeFact(name, node))
           inflowNodes.push_back({g, node});
-      } else if (Symbol *g = parseFact(name, type)) {
-        inflows[g].push_back(type);
+      } else if (Symbol *g = parseFact(name, key)) {
+        inflows[g].push_back({factCheck(s), key});
       }
     } else if (name.consume_front("param_")) {
       if (name.starts_with("n")) {
         if (Symbol *g = parseNodeFact(name, node))
           paramNodes.push_back({g, node});
-      } else if (Symbol *g = parseFact(name, type)) {
-        addParam(g, type);
+      } else if (Symbol *g = parseFact(name, key)) {
+        addParam(g, factCheck(s), key);
       }
     } else if (name.consume_front("tinflow_")) {
-      // The fact ends in the called type rather than in a symbol.
-      uint32_t called = 0;
-      if (name.size() < 10 || name.drop_back(8).back() != '_' ||
-          name.take_back(8).getAsInteger(16, called))
+      // The fact ends in the called type's precise key, 16 hex digits, and its
+      // check identifier, 8, rather than in a symbol.
+      uint64_t called = 0;
+      uint32_t calledCheck = 0;
+      if (name.size() < 26 || name[name.size() - 25] != '_' ||
+          name.take_back(24).take_front(16).getAsInteger(16, called) ||
+          name.take_back(8).getAsInteger(16, calledCheck))
         return;
-      name = name.drop_back(9);
+      calledKeys[calledCheck].insert(called);
+      name = name.drop_back(25);
       if (name.size() == 17 && name[0] == 'n' &&
           !name.drop_front().getAsInteger(16, node))
         tinflowNodes.push_back({called, node});
-      else if (name.size() == 8 && !name.getAsInteger(16, type))
-        tinflows[called].push_back(type);
+      else if (name.size() == 16 && !name.getAsInteger(16, key))
+        tinflows[called].push_back({factCheck(s), key});
     } else if (name.consume_front("node_")) {
-      if (name.size() == 25 && name[16] == '_' &&
+      if (name.size() == 33 && name[16] == '_' &&
           !name.take_front(16).getAsInteger(16, node) &&
-          !name.drop_front(17).getAsInteger(16, type))
-        nodes[node].push_back(type);
+          !name.drop_front(17).getAsInteger(16, key))
+        nodes[node].push_back({factCheck(s), key});
+    } else if (name.consume_front("popen_")) {
+      if (name.size() == 16 && !name.getAsInteger(16, key))
+        popens.push_back({key, factCheck(s)});
     }
   });
   for (auto [g, node] : inflowNodes)
@@ -557,18 +588,39 @@ void SymbolTable::openKCFITypes() {
       llvm::append_range(inflows[g], it->second);
   for (auto [g, node] : paramNodes)
     if (auto it = nodes.find(node); it != nodes.end())
-      for (uint32_t type : it->second)
-        addParam(g, type);
+      for (auto [check, key] : it->second)
+        addParam(g, check, key);
   for (auto [called, node] : tinflowNodes)
     if (auto it = nodes.find(node); it != nodes.end())
       llvm::append_range(tinflows[called], it->second);
-  auto openDynamically = [&](ArrayRef<uint32_t> types) {
-    for (uint32_t type : types)
-      openings[type].dynamic = true;
+
+  // A type is open dynamically where a precise key reaches it; its routine is
+  // keyed by the check identifier. The key is remembered, with whether only
+  // local facts reached it, so that a call through it follows its tinflow
+  // facts, again when a non-local fact reaches it later; a type is local,
+  // narrowable by the writer, only where every precise key that reached it is.
+  DenseMap<uint64_t, bool> reached;
+  SmallVector<std::pair<uint64_t, uint32_t>, 0> worklist;
+  auto reach = [&](uint32_t check, uint64_t key, bool local) {
+    Opening &o = openings[check];
+    o.local = (!o.dynamic || o.local) && local;
+    o.dynamic = true;
+    auto [it, inserted] = reached.try_emplace(key, local);
+    if (inserted || (it->second && !local)) {
+      it->second = local;
+      worklist.push_back({key, check});
+    }
   };
+  auto openDynamically =
+      [&](ArrayRef<std::pair<uint32_t, uint64_t>> types, bool local) {
+        for (auto [check, key] : types)
+          reach(check, key, local);
+      };
   for (auto &[g, types] : inflows)
     if (isForeign(g))
-      openDynamically(types);
+      openDynamically(
+          types, !isa_and_nonnull<DefinedImportThunk, DefinedImportData>(
+                     resolve(g)));
 
   // An import is listed by its import address table slot, and by a cell
   // holding its thunk, which static data refers to; a definition without a
@@ -602,7 +654,7 @@ void SymbolTable::openKCFITypes() {
           continue;
         if (!scan(file))
           break;
-        openDynamically(it->second);
+        openDynamically(it->second, /*local=*/true);
       }
     }
   }
@@ -628,31 +680,33 @@ void SymbolTable::openKCFITypes() {
     return nullptr;
   };
 
-  // What a call through a foreign pointer returns, or stores through its
-  // pointer parameters, can be foreign too.
-  if (!tinflows.empty()) {
-    SmallVector<uint32_t, 0> worklist;
-    auto open = [&](uint32_t type) {
-      if (!std::exchange(openings[type].dynamic, true))
-        worklist.push_back(type);
+  // Each object publishes the precise types it opens dynamically; a call
+  // through one of them can hand back a foreign function too, and so on until
+  // nothing more opens. An object opening is never local: it is a cast or an
+  // import, which may carry a run-time address from any image.
+  for (auto [key, check] : popens)
+    reach(check, key, /*local=*/false);
+  // The precise key of an unprototyped type stands for every precise type of
+  // its check identifier: its opening follows the facts of every called type
+  // of that check identifier, and the opening of a precise type follows the
+  // facts of an unprototyped called type of its check identifier as well as
+  // its own.
+  while (!worklist.empty()) {
+    auto [key, check] = worklist.pop_back_val();
+    bool local = reached[key];
+    auto follow = [&](uint64_t from) {
+      if (auto it = tinflows.find(from); it != tinflows.end())
+        for (auto [c, k] : it->second)
+          reach(c, k, local);
     };
-    for (auto &[type, opening] : openings)
-      if (opening.dynamic)
-        worklist.push_back(type);
-    for (auto &kv : tinflows) {
-      std::string hex = utohexstr(kv.first, /*LowerCase=*/true, /*Width=*/8);
-      for (const Kind &k : machineKinds) {
-        Symbol *m = find((Twine(k.mismatch) + hex).str());
-        if (Symbol *scanner = compiledScanner(m, k);
-            scanner && scanner->getName() == k.dynamicScanner)
-          open(kv.first);
-      }
+    if (key >> 32 == 1) {
+      if (auto it = calledKeys.find(check); it != calledKeys.end())
+        for (uint64_t called : it->second)
+          follow(called);
+    } else {
+      follow(key);
+      follow(uint64_t(1) << 32 | check);
     }
-    while (!worklist.empty())
-      if (auto it = tinflows.find(worklist.pop_back_val());
-          it != tinflows.end())
-        for (uint32_t type : it->second)
-          open(type);
   }
 
   auto keep = [&](Defined *d) {
@@ -711,6 +765,9 @@ void SymbolTable::openKCFITypes() {
       auto *routine = make<KCFIOpenChunk>(ctx, head, scanner, opening.dynamic);
       kcfiChunks.push_back(routine);
       replaceSymbol<DefinedSynthetic>(m, m->getName(), routine);
+      if (opening.local)
+        if (auto *s = dyn_cast_or_null<Defined>(find(k.staticScanner)))
+          kcfiLocalRoutines.push_back({routine, s});
     }
     if (!opened || opening.entries.empty())
       continue;

@@ -2897,12 +2897,33 @@ void Writer::boundKCFIMismatches() {
                                 "__llvm_kcfi_check_open_dynamic", true}};
   auto *trap =
       dyn_cast_or_null<DefinedRegular>(ctx.symtab.find("__llvm_kcfi_trap"));
+  // Foreign code that references no import can hand ours only functions in
+  // the image, which the bound accepts, so a type that only such code opened
+  // need not be open dynamically. Foreign code that references one can hand
+  // on pointers that it obtained from any DLL at run time.
+  bool narrow = !ctx.symtab.kcfiLocalRoutines.empty() &&
+                llvm::none_of(kcfiForeignFiles, [](ObjFile *file) {
+                  return llvm::any_of(file->getSymbols(), [](Symbol *s) {
+                    return isa_and_nonnull<DefinedImportData,
+                                           DefinedImportThunk>(s);
+                  });
+                });
   Defined *empty = nullptr;
   for (const Kind &k : ArrayRef(kinds).drop_front(isX64 ? 0 : 1)) {
     auto *dynamic =
         dyn_cast_or_null<DefinedRegular>(ctx.symtab.find(k.dynamicScanner));
     if (!dynamic)
       continue;
+    for (auto [routine, staticScanner] : ctx.symtab.kcfiLocalRoutines) {
+      auto *s = dyn_cast<DefinedRegular>(staticScanner);
+      if (!narrow || !s || s->getName() != k.staticScanner)
+        continue;
+      routine->setStatic(s);
+      if (!s->getChunk()->live) {
+        s->getChunk()->live = true;
+        textSec->addChunk(s->getChunk());
+      }
+    }
     KCFIOpenChunk *closed = nullptr, *open = nullptr;
     // A closed type's routine is the trap, to which the weak default was
     // resolved.

@@ -94,12 +94,12 @@ main:
 vours:
         .quad 0
 
-        .weak __kcfi_inflow_22222222_vforeign
-__kcfi_inflow_22222222_vforeign = 0x22222222
-        .weak __kcfi_inflow_33333333_vours
-__kcfi_inflow_33333333_vours = 0x33333333
-        .weak __kcfi_inflow_44444444_vdata
-__kcfi_inflow_44444444_vdata = 0x44444444
+        .weak __kcfi_inflow_0000000022222222_vforeign
+__kcfi_inflow_0000000022222222_vforeign = 0x22222222
+        .weak __kcfi_inflow_0000000033333333_vours
+__kcfi_inflow_0000000033333333_vours = 0x33333333
+        .weak __kcfi_inflow_0000000044444444_vdata
+__kcfi_inflow_0000000044444444_vdata = 0x44444444
 
 #--- imp.s
         .def main; .scl 2; .type 32; .endef
@@ -120,8 +120,8 @@ main:
 .refptr.vimp:
         .quad vimp
 
-        .weak __kcfi_inflow_11111111_vimp
-__kcfi_inflow_11111111_vimp = 0x11111111
+        .weak __kcfi_inflow_0000000011111111_vimp
+__kcfi_inflow_0000000011111111_vimp = 0x11111111
 
 #--- kcfi.s
 ## The thunks of each type, whose mismatch routines are the trap, and the
