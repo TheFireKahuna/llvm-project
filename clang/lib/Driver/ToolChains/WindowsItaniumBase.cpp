@@ -108,6 +108,11 @@ void tools::windowsitanium::Linker::ConstructJob(
   if (TC.getGuardMode(Args) != "none")
     CmdArgs.push_back(IsDLL ? "-guard:cf" : "-guard:cf,exportsuppress");
 
+  // POSIX code takes its ELF branches on these targets, so the linker defines
+  // the section bounds and boundary symbols that code may reference.
+  CmdArgs.push_back("-start-stop-symbols");
+  CmdArgs.push_back("-boundary-symbols");
+
   std::vector<std::string> LibDirs = Args.getAllArgValues(options::OPT_L);
   TC.addSystemLibraryDirs(Args, LibDirs);
   for (const std::string &Dir : TC.getFilePaths())
