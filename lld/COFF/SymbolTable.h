@@ -252,6 +252,15 @@ private:
 
 std::vector<std::string> getSymbolLocations(ObjFile *file, uint32_t symIndex);
 
+// The size of the type words and the marker of the KCFI prefix that a static
+// __cfi_ label at off in sc begins, 12 or 16 bytes, or 0 without the marker.
+uint32_t getKCFIPrefixSize(SectionChunk *sc, uint32_t off);
+
+// Whether file was built by a compiler other than clang: it defines code and
+// holds no KCFI prefix with the marker in any section, including those the
+// link drops, where clang's objects keep one for every external function.
+bool isKCFIForeignFile(ObjFile *file);
+
 StringRef ltrim1(StringRef s, const char *chars);
 
 } // namespace lld::coff

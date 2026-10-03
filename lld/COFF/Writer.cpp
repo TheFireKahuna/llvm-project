@@ -2760,47 +2760,27 @@ void Writer::createGuardCFTables() {
 // clang labels with a static __cfi_ symbol, keyed by the chunk that remains
 // after identical code folding, and the foreign objects, which have none.
 void Writer::findKCFIPrefixes() {
-  // The size of the type words and the marker from the __cfi_ label at off, 12
-  // or 16 bytes, or 0 without the marker.
-  auto prefixSize = [](SectionChunk *sc, uint32_t off) -> uint32_t {
-    ArrayRef<uint8_t> data = sc->getContents();
-    auto hasMarker = [&](uint32_t at) {
-      return at + 12 <= data.size() && data[at] == 0x0F &&
-             data[at + 1] == 0x1F && data[at + 2] == 0x80 &&
-             data[at + 7] == 0xB8;
-    };
-    return hasMarker(off) ? 12 : hasMarker(off + 4) ? 16 : 0;
-  };
   DenseSet<std::pair<SectionChunk *, uint32_t>> seen;
   for (ObjFile *file : ctx.objFileInstances) {
     SmallVector<DefinedRegular *, 0> labels, entries;
-    // An object with code and no prefix with the marker anywhere, including in
-    // sections the link drops, was built by another compiler, as clang's
-    // objects keep one for every external function.
-    bool definesCode = false, hasPrefix = false;
     for (Symbol *s : file->getSymbols()) {
       auto *d = dyn_cast_or_null<DefinedRegular>(s);
       if (!d || d->file != file)
         continue;
       SectionChunk *sc = d->getChunk();
-      if (!sc || !(sc->getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE))
+      if (!sc || !sc->live ||
+          !(sc->getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE))
         continue;
-      bool isLabel = !d->getCOFFSymbol().isExternal() &&
-                     d->getName().starts_with("__cfi_");
-      if (!sc->live) {
-        hasPrefix |= isLabel && prefixSize(sc, d->getValue()) != 0;
-        continue;
-      }
-      // An empty section, such as the .text an assembler always emits, holds
-      // no code.
-      definesCode |= sc->getSize() != 0;
       if (d->getCOFFSymbol().getComplexType() == IMAGE_SYM_DTYPE_FUNCTION)
         entries.push_back(d);
-      else if (isLabel)
+      else if (!d->getCOFFSymbol().isExternal() &&
+               d->getName().starts_with("__cfi_"))
         labels.push_back(d);
     }
+    // Only an object without a live prefix with the marker can be foreign.
+    bool hasPrefix = false;
     if (labels.empty()) {
-      if (definesCode && !hasPrefix)
+      if (isKCFIForeignFile(file))
         kcfiForeignFiles.insert(file);
       continue;
     }
@@ -2819,7 +2799,7 @@ void Writer::findKCFIPrefixes() {
       // A prefix without the marker, such as upstream KCFI's, can never pass
       // the thunks' check, so there is nothing to seal. One with the marker
       // that no function follows is malformed.
-      uint32_t size = prefixSize(sc, off);
+      uint32_t size = getKCFIPrefixSize(sc, off);
       if (size == 0)
         continue;
       hasPrefix = true;
@@ -2840,7 +2820,7 @@ void Writer::findKCFIPrefixes() {
       kcfiPrefixes.push_back({sc, off, size, entry});
       kcfiEntries[sc].push_back({entry, PowerOf2Ceil(patchable + size)});
     }
-    if (definesCode && !hasPrefix)
+    if (!hasPrefix && isKCFIForeignFile(file))
       kcfiForeignFiles.insert(file);
   }
 }
