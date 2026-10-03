@@ -2308,6 +2308,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   config->autoImport =
       args.hasFlag(OPT_auto_import, OPT_auto_import_no, config->mingw);
   config->importSlots = args.hasArg(OPT_import_slots);
+  config->startStopSymbols =
+      args.hasFlag(OPT_start_stop_symbols, OPT_start_stop_symbols_no, false);
+  config->boundarySymbols =
+      args.hasFlag(OPT_boundary_symbols, OPT_boundary_symbols_no, false);
   // -import-slots binds imports where the image is laid out, so no runtime
   // fixup is left for pseudo relocations to make.
   config->pseudoRelocs =
@@ -2893,6 +2897,14 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
 
   if (config->importSlots)
     ctx.symtab.openKCFITypes();
+
+  // Define the ELF-style linker-defined symbols that inputs reference and
+  // nothing else defines.
+  if (config->startStopSymbols)
+    ctx.forEachSymtab(
+        [](SymbolTable &symtab) { symtab.addStartStopSymbols(); });
+  if (config->boundarySymbols)
+    ctx.forEachSymtab([](SymbolTable &symtab) { symtab.addBoundarySymbols(); });
 
   // Resolve remaining undefined symbols and warn about imported locals.
   std::vector<Undefined *> aliases;
