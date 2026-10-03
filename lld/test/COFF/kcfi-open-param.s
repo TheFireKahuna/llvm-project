@@ -106,12 +106,12 @@ __cfi_k:
 k:
         retq
 
-        .weak __kcfi_param_77777777_g
-__kcfi_param_77777777_g = 0x77777777
-        .weak __kcfi_param_88888888_h
-__kcfi_param_88888888_h = 0x88888888
-        .weak __kcfi_param_99999999_k
-__kcfi_param_99999999_k = 0x99999999
+        .weak __kcfi_param_0000000077777777_g
+__kcfi_param_0000000077777777_g = 0x77777777
+        .weak __kcfi_param_0000000088888888_h
+__kcfi_param_0000000088888888_h = 0x88888888
+        .weak __kcfi_param_0000000099999999_k
+__kcfi_param_0000000099999999_k = 0x99999999
 
         .irp t, 77777777, 88888888, 99999999
         .weak __llvm_kcfi_mismatch_\t

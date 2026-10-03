@@ -4,7 +4,7 @@
 ## opened dynamically when the called type is open dynamically: here
 ## 0x11111111, whose compiled check routine jumps to the dynamic scanner,
 ## opens node a1's 0x22222222, and 0x33333333, opened by
-## __kcfi_inflow_33333333_plain, opens 0x44444444. 0x55555555 is not open, and
+## __kcfi_inflow_0000000033333333_plain, opens 0x44444444. 0x55555555 is not open, and
 ## opens nothing.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
@@ -82,16 +82,19 @@ main:
         .endr
         ret
 
-        .weak __kcfi_inflow_33333333_plain
-__kcfi_inflow_33333333_plain = 0x33333333
-        .weak __kcfi_tinflow_n00000000000000a1_11111111
-__kcfi_tinflow_n00000000000000a1_11111111 = 0
-        .weak __kcfi_node_00000000000000a1_22222222
-__kcfi_node_00000000000000a1_22222222 = 0x22222222
-        .weak __kcfi_tinflow_44444444_33333333
-__kcfi_tinflow_44444444_33333333 = 0x44444444
-        .weak __kcfi_tinflow_66666666_55555555
-__kcfi_tinflow_66666666_55555555 = 0x66666666
+## 0x11111111's own object publishes that it opens it dynamically.
+        .weak __kcfi_popen_0000000011111111
+__kcfi_popen_0000000011111111 = 0x11111111
+        .weak __kcfi_inflow_0000000033333333_plain
+__kcfi_inflow_0000000033333333_plain = 0x33333333
+        .weak __kcfi_tinflow_n00000000000000a1_000000001111111111111111
+__kcfi_tinflow_n00000000000000a1_000000001111111111111111 = 0
+        .weak __kcfi_node_00000000000000a1_0000000022222222
+__kcfi_node_00000000000000a1_0000000022222222 = 0x22222222
+        .weak __kcfi_tinflow_0000000044444444_000000003333333333333333
+__kcfi_tinflow_0000000044444444_000000003333333333333333 = 0x44444444
+        .weak __kcfi_tinflow_0000000066666666_000000005555555555555555
+__kcfi_tinflow_0000000066666666_000000005555555555555555 = 0x66666666
 
         .irpc d, 23456
         .weak __llvm_kcfi_check_mismatch_\d\d\d\d\d\d\d\d

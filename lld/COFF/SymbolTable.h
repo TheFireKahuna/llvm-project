@@ -30,6 +30,7 @@ class Defined;
 class DefinedAbsolute;
 class DefinedRegular;
 class ImportThunkChunk;
+class KCFIOpenChunk;
 class LazyArchive;
 class SameAddressThunkARM64EC;
 class SectionChunk;
@@ -182,6 +183,9 @@ public:
   // The routines and list words of the KCFI types that openKCFITypes opened,
   // each to be placed in its section.
   std::vector<Chunk *> kcfiChunks;
+  // The routines that openKCFITypes made dynamic only because foreign code in
+  // the image reaches them, each with the static scanner of its kind.
+  std::vector<std::pair<KCFIOpenChunk *, Defined *>> kcfiLocalRoutines;
 
   // A list of DLL exports.
   std::vector<Export> exports;

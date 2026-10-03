@@ -90,12 +90,12 @@ __cfi_ours:
 ours:
         retq
 
-        .weak __kcfi_inflow_44444444_getter
-__kcfi_inflow_44444444_getter = 0x44444444
-        .weak __kcfi_inflow_55555555_getter2
-__kcfi_inflow_55555555_getter2 = 0x55555555
-        .weak __kcfi_inflow_66666666_ours
-__kcfi_inflow_66666666_ours = 0x66666666
+        .weak __kcfi_inflow_0000000044444444_getter
+__kcfi_inflow_0000000044444444_getter = 0x44444444
+        .weak __kcfi_inflow_0000000055555555_getter2
+__kcfi_inflow_0000000055555555_getter2 = 0x55555555
+        .weak __kcfi_inflow_0000000066666666_ours
+__kcfi_inflow_0000000066666666_ours = 0x66666666
 
         .weak __llvm_kcfi_mismatch_44444444
 __llvm_kcfi_mismatch_44444444 = __llvm_kcfi_trap

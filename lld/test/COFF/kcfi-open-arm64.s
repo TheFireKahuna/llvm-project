@@ -5,7 +5,7 @@
 ## X17 to the check scanner, which it reaches at any distance: the static
 ## scanner for a type opened statically, here by __kcfi_typeid_plain, and the
 ## dynamic one for a type opened dynamically, here by
-## __kcfi_inflow_22222222_plain2.
+## __kcfi_inflow_0000000022222222_plain2.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=aarch64-windows-msvc main.s -o main.obj
@@ -65,8 +65,8 @@ main:
 
         .weak __kcfi_typeid_plain
 __kcfi_typeid_plain = 0x11111111
-        .weak __kcfi_inflow_22222222_plain2
-__kcfi_inflow_22222222_plain2 = 0x22222222
+        .weak __kcfi_inflow_0000000022222222_plain2
+__kcfi_inflow_0000000022222222_plain2 = 0x22222222
 
         .weak __llvm_kcfi_check_mismatch_11111111
 __llvm_kcfi_check_mismatch_11111111 = __llvm_kcfi_trap

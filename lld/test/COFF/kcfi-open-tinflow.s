@@ -7,7 +7,7 @@
 ## dynamically too, and so on until nothing more opens. Here 0x11111111 is
 ## open dynamically by the routine of opener.obj, which wins over main.obj's
 ## static one, and opens 0x22222222; 0x33333333 is open dynamically by
-## __kcfi_inflow_33333333_getter and opens 0x44444444, which opens
+## __kcfi_inflow_0000000033333333_getter and opens 0x44444444, which opens
 ## 0x55555555, and node a1's 0x66666666; 0x77777777 is not open, and opens
 ## nothing.
 
@@ -78,7 +78,10 @@ getter:
         retq
 
 #--- opener.s
-## An object that opens 0x11111111 dynamically.
+## An object that opens 0x11111111 dynamically, which it publishes so the
+## linker seeds the fixpoint with it.
+        .weak __kcfi_popen_0000000011111111
+__kcfi_popen_0000000011111111 = 0x11111111
         .section .text,"xr",largest,__llvm_kcfi_mismatch_11111111
         .globl __llvm_kcfi_mismatch_11111111
 __llvm_kcfi_mismatch_11111111:
@@ -106,20 +109,20 @@ main:
         .endr
         retq
 
-        .weak __kcfi_inflow_33333333_getter
-__kcfi_inflow_33333333_getter = 0x33333333
-        .weak __kcfi_tinflow_22222222_11111111
-__kcfi_tinflow_22222222_11111111 = 0x22222222
-        .weak __kcfi_tinflow_44444444_33333333
-__kcfi_tinflow_44444444_33333333 = 0x44444444
-        .weak __kcfi_tinflow_55555555_44444444
-__kcfi_tinflow_55555555_44444444 = 0x55555555
-        .weak __kcfi_tinflow_n00000000000000a1_44444444
-__kcfi_tinflow_n00000000000000a1_44444444 = 0
-        .weak __kcfi_node_00000000000000a1_66666666
-__kcfi_node_00000000000000a1_66666666 = 0x66666666
-        .weak __kcfi_tinflow_88888888_77777777
-__kcfi_tinflow_88888888_77777777 = 0x88888888
+        .weak __kcfi_inflow_0000000033333333_getter
+__kcfi_inflow_0000000033333333_getter = 0x33333333
+        .weak __kcfi_tinflow_0000000022222222_000000001111111111111111
+__kcfi_tinflow_0000000022222222_000000001111111111111111 = 0x22222222
+        .weak __kcfi_tinflow_0000000044444444_000000003333333333333333
+__kcfi_tinflow_0000000044444444_000000003333333333333333 = 0x44444444
+        .weak __kcfi_tinflow_0000000055555555_000000004444444444444444
+__kcfi_tinflow_0000000055555555_000000004444444444444444 = 0x55555555
+        .weak __kcfi_tinflow_n00000000000000a1_000000004444444444444444
+__kcfi_tinflow_n00000000000000a1_000000004444444444444444 = 0
+        .weak __kcfi_node_00000000000000a1_0000000066666666
+__kcfi_node_00000000000000a1_0000000066666666 = 0x66666666
+        .weak __kcfi_tinflow_0000000088888888_000000007777777777777777
+__kcfi_tinflow_0000000088888888_000000007777777777777777 = 0x88888888
 
 ## A static routine for 0x11111111, which opener.obj's dynamic one replaces.
         .section .text,"xr",largest,__llvm_kcfi_mismatch_11111111

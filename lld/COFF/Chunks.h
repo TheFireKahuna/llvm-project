@@ -758,6 +758,12 @@ public:
   }
   StringRef getSectionName() const override { return ".text"; }
   MachineTypes getMachine() const override;
+  // Makes the routine jump to the static scanner s, which fails fast where
+  // the dynamic one continues into the guard function.
+  void setStatic(Defined *s) {
+    scanner = s;
+    dynamic = false;
+  }
 
 private:
   Defined *list;
