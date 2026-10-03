@@ -1834,7 +1834,11 @@ MCSection *TargetLoweringObjectFileCOFF::SelectSectionForGlobal(
   else
     EmitUniquedSection = TM.getDataSections();
 
-  if ((EmitUniquedSection && !Kind.isCommon()) || GO->hasComdat()) {
+  // A section outside a COMDAT is never discarded, and /INCLUDE cannot name a
+  // local symbol, so a retained local global goes to the shared section.
+  bool RetainLocal = GO->hasLocalLinkage() && Used.count(GO);
+  if ((EmitUniquedSection && !Kind.isCommon() && !RetainLocal) ||
+      GO->hasComdat()) {
     SmallString<256> Name = getCOFFSectionNameForUniqueGlobal(Kind);
 
     unsigned Characteristics = getCOFFSectionFlags(Kind, TM);
@@ -1945,6 +1949,20 @@ bool TargetLoweringObjectFileCOFF::shouldPutJumpTableInFunctionSection(
   }
   return TargetLoweringObjectFile::shouldPutJumpTableInFunctionSection(
     UsesLabelDifference, F);
+}
+
+// On Windows Itanium and NT-POSIX a global in llvm.used is kept through the
+// link, as ELF's SHF_GNU_RETAIN keeps it; llvm.compiler.used keeps it from
+// the compiler only.
+void TargetLoweringObjectFileCOFF::getModuleMetadata(Module &M) {
+  Used.clear();
+  if (!M.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    return;
+  SmallVector<GlobalValue *, 4> Vec;
+  collectUsedGlobalVariables(M, Vec, false);
+  for (GlobalValue *GV : Vec)
+    if (auto *GO = dyn_cast<GlobalObject>(GV))
+      Used.insert(GO);
 }
 
 void TargetLoweringObjectFileCOFF::emitModuleMetadata(MCStreamer &Streamer,

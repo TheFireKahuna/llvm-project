@@ -277,7 +277,10 @@ void llvm::emitLinkerFlagsForGlobalCOFF(raw_ostream &OS, const GlobalValue *GV,
 
 void llvm::emitLinkerFlagsForUsedCOFF(raw_ostream &OS, const GlobalValue *GV,
                                       const Triple &T, Mangler &M) {
-  if (!T.isWindowsMSVCEnvironment())
+  // Windows Itanium and NT-POSIX keep a global in llvm.used through the link,
+  // as ELF does.
+  if (!T.isWindowsMSVCEnvironment() &&
+      !T.isWindowsItaniumOrNTPOSIXEnvironment())
     return;
 
   OS << " /INCLUDE:";
