@@ -75,21 +75,21 @@ struct g_holder {
 /// is a type fact; a record passed by pointer, with a record held by value, an
 /// array of function pointers and a pointer that is not followed, whose types
 /// are a node; a pointer to a function pointer.
-// CHECK-NEXT: ".weak __kcfi_param_[[#%.8x,B]]_def_fp"
-// CHECK-NEXT: ".set __kcfi_param_[[#%.8x,B]]_def_fp, [[#B]]"
+// CHECK-NEXT: ".weak __kcfi_param_00000000[[#%.8x,B]]_def_fp"
+// CHECK-NEXT: ".set __kcfi_param_00000000[[#%.8x,B]]_def_fp, {{[0-9]+}}"
 void def_fp(b_fn f) {}
-// CHECK-NEXT: ".weak __kcfi_param_[[#%.8x,A]]_def_val"
-// CHECK-NEXT: ".set __kcfi_param_[[#%.8x,A]]_def_val, [[#A]]"
+// CHECK-NEXT: ".weak __kcfi_param_00000000[[#%.8x,A]]_def_val"
+// CHECK-NEXT: ".set __kcfi_param_00000000[[#%.8x,A]]_def_val, {{[0-9]+}}"
 void def_val(struct by_val v) {}
 // CHECK-NEXT: ".weak __kcfi_param_n[[NODE:[0-9a-f]+]]_def_ptr"
 // CHECK-NEXT: ".set __kcfi_param_n[[NODE]]_def_ptr, 0"
-// CHECK-NEXT: ".weak __kcfi_node_[[NODE]]_[[#%.8x,C]]"
-// CHECK-NEXT: ".set __kcfi_node_[[NODE]]_[[#%.8x,C]], [[#C]]"
-// CHECK-NEXT: ".weak __kcfi_node_[[NODE]]_[[#%.8x,D]]"
-// CHECK-NEXT: ".set __kcfi_node_[[NODE]]_[[#%.8x,D]], [[#D]]"
+// CHECK-NEXT: ".weak __kcfi_node_[[NODE]]_00000000[[#%.8x,C]]"
+// CHECK-NEXT: ".set __kcfi_node_[[NODE]]_00000000[[#%.8x,C]], {{[0-9]+}}"
+// CHECK-NEXT: ".weak __kcfi_node_[[NODE]]_00000000[[#%.8x,D]]"
+// CHECK-NEXT: ".set __kcfi_node_[[NODE]]_00000000[[#%.8x,D]], {{[0-9]+}}"
 void def_ptr(struct outer *o) {}
-// CHECK-NEXT: ".weak __kcfi_param_[[#%.8x,F]]_def_fpp"
-// CHECK-NEXT: ".set __kcfi_param_[[#%.8x,F]]_def_fpp, [[#F]]"
+// CHECK-NEXT: ".weak __kcfi_param_00000000[[#%.8x,F]]_def_fpp"
+// CHECK-NEXT: ".set __kcfi_param_00000000[[#%.8x,F]]_def_fpp, {{[0-9]+}}"
 void def_fpp(f_fn *p) {}
 /// A pointer to a pointer to a record gives nothing.
 void def_pp(struct g_holder **pp) {}

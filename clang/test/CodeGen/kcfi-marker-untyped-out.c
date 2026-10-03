@@ -31,11 +31,11 @@ __attribute__((used)) static d_fn take_d = t_d;
 // CHECK-NEXT: ".set __kcfi_typeid_t_c, [[#%u,C:]] /* {{.*}} */"
 // CHECK-NEXT: ".weak __kcfi_typeid_t_d"
 // CHECK-NEXT: ".set __kcfi_typeid_t_d, [[#%u,D:]] /* {{.*}} */"
-// CHECK-NEXT: ".weak __kcfi_inflow_[[#%.8x,C]]_foreign_config"
-// CHECK-NEXT: ".set __kcfi_inflow_[[#%.8x,C]]_foreign_config, [[#C]]"
-// CHECK-NEXT: ".weak __kcfi_inflow_[[#%.8x,D]]_foreign_read"
-// CHECK-NEXT: ".set __kcfi_inflow_[[#%.8x,D]]_foreign_read, [[#D]]"
-// CHECK-NOT:  __kcfi_
+// CHECK-NEXT: ".weak __kcfi_inflow_00000000[[#%.8x,C]]_foreign_config"
+// CHECK-NEXT: ".set __kcfi_inflow_00000000[[#%.8x,C]]_foreign_config, {{[0-9]+}}"
+// CHECK-NEXT: ".weak __kcfi_inflow_00000000[[#%.8x,D]]_foreign_read"
+// CHECK-NEXT: ".set __kcfi_inflow_00000000[[#%.8x,D]]_foreign_read, {{[0-9]+}}"
+// CHECK-NOT:  {{__kcfi_(inflow|param|tinflow)_}}
 
 struct h_ops {
   h_fn f;

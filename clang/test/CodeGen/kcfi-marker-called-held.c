@@ -45,7 +45,7 @@ __attribute__((used)) static int table(void *h) {
 // CHECK:      module asm
 // CHECK-NEXT: ".weak __kcfi_param_{{[0-9a-f]+}}_w_xfunc"
 // CHECK-NEXT: ".set __kcfi_param_{{[0-9a-f]+}}_w_xfunc, {{[0-9]+}}"
-// CHECK-NOT:  __kcfi_
+// CHECK-NOT:  {{__kcfi_(inflow|param|tinflow)_}}
 // CHECK-DAG:  define {{.*}} @w_xfunc({{.*}} !kcfi_type ![[#X:]]
 void w_xfunc(ctx *c, int i) {}
 // CHECK-DAG:  define {{.*}} @w_get_c({{.*}} !kcfi_type ![[#GETC:]]

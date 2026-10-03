@@ -41,7 +41,9 @@ void convert(void *old) {
   (void)b;
 }
 
-// CHECK-NOT:  module asm
+/// Only imp_get's result opens, as a single popen; the allocation results add
+/// no fact, which !kcfi.dynamic holding B alone confirms.
+// CHECK-NOT:  {{__kcfi_(inflow|param|tinflow)_}}
 // CHECK-DAG:  define {{.*}} @w_b({{.*}} !kcfi_type ![[#B:]]
 short w_b(short x) { return x; }
 

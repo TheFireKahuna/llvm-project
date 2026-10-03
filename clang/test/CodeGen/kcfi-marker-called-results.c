@@ -63,8 +63,8 @@ __attribute__((used)) static get_d take_get_d = t_get_d;
 // CHECK-NEXT: ".weak __kcfi_typeid_t_get_d"
 // CHECK-NEXT: ".set __kcfi_typeid_t_get_d, [[#%u,GETD:]] /* {{.*}} */"
 /// The declarations' own inflow facts follow the pointer in d_ops.
-// CHECK-NEXT: ".weak __kcfi_inflow_[[#%.8x,C]]_t_out_c"
-// CHECK-NEXT: ".set __kcfi_inflow_[[#%.8x,C]]_t_out_c, [[#C]]"
+// CHECK-NEXT: ".weak __kcfi_inflow_00000000[[#%.8x,C]]_t_out_c"
+// CHECK-NEXT: ".set __kcfi_inflow_00000000[[#%.8x,C]]_t_out_c, {{[0-9]+}}"
 // CHECK-NEXT: ".weak __kcfi_inflow_[[F:[0-9a-f]+]]_t_out_f"
 // CHECK-NEXT: ".set __kcfi_inflow_[[F]]_t_out_f, {{[0-9]+}}"
 // CHECK-NEXT: ".weak __kcfi_inflow_n[[REACHED:[0-9a-f]+]]_t_get_d"
@@ -78,17 +78,17 @@ __attribute__((used)) static get_d take_get_d = t_get_d;
 /// The called types' facts: the record that out_c stores a pointer to, the
 /// function pointer that out_f stores, and the types d_ops holds; in_c,
 /// whose parameter is a pointer to a record, gives nothing.
-// CHECK-NEXT: ".weak __kcfi_tinflow_[[#%.8x,C]]_[[#%.8x,OUTC]]"
-// CHECK-NEXT: ".set __kcfi_tinflow_[[#%.8x,C]]_[[#%.8x,OUTC]], [[#C]]"
-// CHECK-NEXT: ".weak __kcfi_tinflow_[[F]]_[[#%.8x,OUTF]]"
-// CHECK-NEXT: ".set __kcfi_tinflow_[[F]]_[[#%.8x,OUTF]], {{[0-9]+}}"
-// CHECK-NEXT: ".weak __kcfi_tinflow_n[[HELD:[0-9a-f]+]]_[[#%.8x,GETD]]"
-// CHECK-NEXT: ".set __kcfi_tinflow_n[[HELD]]_[[#%.8x,GETD]], 0"
+// CHECK-NEXT: ".weak __kcfi_tinflow_00000000[[#%.8x,C]]_{{[0-9a-f]+}}"
+// CHECK-NEXT: ".set __kcfi_tinflow_00000000[[#%.8x,C]]_{{[0-9a-f]+}}, {{[0-9]+}}"
+// CHECK-NEXT: ".weak __kcfi_tinflow_[[F]]_{{[0-9a-f]+}}"
+// CHECK-NEXT: ".set __kcfi_tinflow_[[F]]_{{[0-9a-f]+}}, {{[0-9]+}}"
+// CHECK-NEXT: ".weak __kcfi_tinflow_n[[HELD:[0-9a-f]+]]_{{[0-9a-f]+}}"
+// CHECK-NEXT: ".set __kcfi_tinflow_n[[HELD]]_{{[0-9a-f]+}}, 0"
 // CHECK-NEXT: ".weak __kcfi_node_[[HELD]]_{{[0-9a-f]+}}"
 // CHECK-NEXT: ".set __kcfi_node_[[HELD]]_{{[0-9a-f]+}}, {{[0-9]+}}"
 // CHECK-NEXT: ".weak __kcfi_node_[[HELD]]_{{[0-9a-f]+}}"
 // CHECK-NEXT: ".set __kcfi_node_[[HELD]]_{{[0-9a-f]+}}, {{[0-9]+}}"
-// CHECK-NOT:  __kcfi_
+// CHECK-NOT:  {{__kcfi_(inflow|param|tinflow)_}}
 
 /// The conversions open get_a and get_get_b dynamically.
 int call_a(void *h) {
