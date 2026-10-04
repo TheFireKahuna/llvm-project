@@ -1074,8 +1074,10 @@ LocalImportChunk::LocalImportChunk(COFFLinkerContext &c, Defined *s)
   setAlignment(ctx.config.wordsize);
 }
 
+// An absolute address does not move with the image.
 void LocalImportChunk::getBaserels(std::vector<Baserel> *res) {
-  res->emplace_back(getRVA(), ctx.config.machine);
+  if (!isa<DefinedAbsolute>(sym))
+    res->emplace_back(getRVA(), ctx.config.machine);
 }
 
 size_t LocalImportChunk::getSize() const { return ctx.config.wordsize; }
