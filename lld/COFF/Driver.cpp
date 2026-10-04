@@ -2809,8 +2809,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
         ;
   });
 
-  if (config->autoImport || config->stdcallFixup) {
-    // MinGW specific.
+  if (config->autoImport || config->stdcallFixup || config->importSlots) {
+    // MinGW specific, and under -import-slots, where a reference to X that
+    // only an import offering __imp_X satisfies is bound in place.
     // Load any further object files that might be needed for doing automatic
     // imports, and do stdcall fixups.
     //
@@ -2831,15 +2832,6 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     // (and maybe doing more stdcall fixups along the way), this would need
     // to loop these two calls.
     ctx.forEachSymtab([](SymbolTable &symtab) { symtab.loadMinGWSymbols(); });
-    run();
-  } else if (config->importSlots) {
-    // LTO emits a bitcode file's reference to a symbol that is not dso_local
-    // in import form, so an import that offers only __imp_X is loaded for X,
-    // as for an automatic import.
-    ctx.forEachSymtab([](SymbolTable &symtab) {
-      if (!symtab.bitcodeFileInstances.empty())
-        symtab.loadMinGWSymbols();
-    });
     run();
   }
 

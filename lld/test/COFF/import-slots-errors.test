@@ -1,0 +1,148 @@
+# REQUIRES: x86
+## An in-place import slot is validated before it is used: its whole word must
+## be inside its section, read before its addend, and no other relocation may
+## write any byte of it. An identical duplicate is one slot.
+
+# RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
+# RUN: lld-link -def:lib.def -out:lib.lib -machine:x64
+# RUN: yaml2obj one.yaml -o valid.obj
+# RUN: lld-link -dll -noentry -import-slots -out:valid.dll valid.obj lib.lib
+
+# RUN: yaml2obj one.yaml -DOFFSET=4 -o short.obj
+# RUN: not lld-link -dll -noentry -import-slots -out:out.dll short.obj \
+# RUN:   lib.lib 2>&1 | FileCheck --check-prefix=SHORT %s
+# RUN: yaml2obj one.yaml -DOFFSET=8 -o end.obj
+# RUN: not lld-link -dll -noentry -import-slots -out:out.dll end.obj \
+# RUN:   lib.lib 2>&1 | FileCheck --check-prefix=END %s
+# RUN: yaml2obj one.yaml -DOFFSET=4294967295 -o overflow.obj
+# RUN: not lld-link -dll -noentry -import-slots -out:out.dll overflow.obj \
+# RUN:   lib.lib 2>&1 | FileCheck --check-prefix=OVERFLOW %s
+# RUN: yaml2obj one.yaml -DDATA=0400000000000000 -o addend.obj
+# RUN: not lld-link -dll -noentry -import-slots -out:out.dll addend.obj \
+# RUN:   lib.lib 2>&1 | FileCheck --check-prefix=ADDEND %s
+
+# SHORT: error: short.obj: the address of variable at offset 0x4 extends past the end of .rdata (size 0x8)
+# END: error: end.obj: the address of variable at offset 0x8 extends past the end of .rdata (size 0x8)
+# OVERFLOW: error: overflow.obj: the address of variable at offset 0xffffffff extends past the end of .rdata (size 0x8)
+# ADDEND: error: addend.obj: .rdata holds the address of variable plus 4, imported from lib.dll, but the loader writes only the address itself
+
+# RUN: yaml2obj two.yaml -o partial.obj
+# RUN: not lld-link -dll -noentry -import-slots -out:out.dll partial.obj \
+# RUN:   lib.lib 2>&1 | FileCheck --check-prefix=PARTIAL %s
+# RUN: yaml2obj two.yaml -DFIRST=local -o local.obj
+# RUN: not lld-link -dll -noentry -import-slots -out:out.dll local.obj \
+# RUN:   lib.lib 2>&1 | FileCheck --check-prefix=LOCAL %s
+# RUN: yaml2obj two.yaml -DFIRST=local -DTYPE1=IMAGE_REL_AMD64_ADDR32NB \
+# RUN:   -DOFFSET2=2 -o rva.obj
+# RUN: not lld-link -dll -noentry -import-slots -out:out.dll rva.obj \
+# RUN:   lib.lib 2>&1 | FileCheck --check-prefix=RVA %s
+
+# PARTIAL: error: partial.obj: the address of an import at offset 0x0 in .rdata overlaps the relocation at offset 0x4
+# LOCAL: error: local.obj: the address of an import at offset 0x4 in .rdata overlaps the relocation at offset 0x0
+# RVA: error: rva.obj: the address of an import at offset 0x2 in .rdata overlaps the relocation at offset 0x0
+
+## Touching words, an identical duplicate and unsorted relocations are valid;
+## the last two make one run of two words.
+# RUN: yaml2obj two.yaml -DFIRST=local -DTYPE1=IMAGE_REL_AMD64_ADDR32NB \
+# RUN:   -o touching.obj
+# RUN: lld-link -dll -noentry -import-slots -out:touching.dll touching.obj \
+# RUN:   lib.lib
+# RUN: yaml2obj three.yaml -o dup.obj
+# RUN: lld-link -dll -noentry -import-slots -out:dup.dll dup.obj lib.lib 2>&1 | \
+# RUN:   FileCheck --allow-empty --check-prefix=NOWARN %s
+# RUN: llvm-readobj --coff-imports dup.dll | FileCheck --check-prefix=RUN2 %s
+
+# NOWARN-NOT: error
+# RUN2:      Import {
+# RUN2:      Import {
+# RUN2:        ImportAddressTableRVA:
+# RUN2-NEXT:   Symbol: variable (0)
+# RUN2-NEXT:   Symbol: variable (0)
+# RUN2-NEXT: }
+# RUN2-NOT:  Import {
+
+#--- lib.def
+LIBRARY lib.dll
+EXPORTS
+  variable DATA
+
+#--- one.yaml
+--- !COFF
+header:
+  Machine: IMAGE_FILE_MACHINE_AMD64
+sections:
+  - Name: .rdata
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ ]
+    Alignment: 8
+    SectionData: '[[DATA=0000000000000000]]'
+    Relocations:
+      - VirtualAddress: [[OFFSET=0]]
+        SymbolName: variable
+        Type: IMAGE_REL_AMD64_ADDR64
+symbols:
+  - Name: variable
+    Value: 0
+    SectionNumber: 0
+    SimpleType: IMAGE_SYM_TYPE_NULL
+    ComplexType: IMAGE_SYM_DTYPE_NULL
+    StorageClass: IMAGE_SYM_CLASS_EXTERNAL
+...
+
+#--- two.yaml
+--- !COFF
+header:
+  Machine: IMAGE_FILE_MACHINE_AMD64
+sections:
+  - Name: .rdata
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ ]
+    Alignment: 8
+    SectionData: '00000000000000000000000000000000'
+    Relocations:
+      - VirtualAddress: 0
+        SymbolName: [[FIRST=variable]]
+        Type: [[TYPE1=IMAGE_REL_AMD64_ADDR64]]
+      - VirtualAddress: [[OFFSET2=4]]
+        SymbolName: variable
+        Type: IMAGE_REL_AMD64_ADDR64
+symbols:
+  - Name: variable
+    Value: 0
+    SectionNumber: 0
+    SimpleType: IMAGE_SYM_TYPE_NULL
+    ComplexType: IMAGE_SYM_DTYPE_NULL
+    StorageClass: IMAGE_SYM_CLASS_EXTERNAL
+  - Name: local
+    Value: 0
+    SectionNumber: 1
+    SimpleType: IMAGE_SYM_TYPE_NULL
+    ComplexType: IMAGE_SYM_DTYPE_NULL
+    StorageClass: IMAGE_SYM_CLASS_EXTERNAL
+...
+
+#--- three.yaml
+--- !COFF
+header:
+  Machine: IMAGE_FILE_MACHINE_AMD64
+sections:
+  - Name: .rdata
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ ]
+    Alignment: 8
+    SectionData: '00000000000000000000000000000000'
+    Relocations:
+      - VirtualAddress: 8
+        SymbolName: variable
+        Type: IMAGE_REL_AMD64_ADDR64
+      - VirtualAddress: 0
+        SymbolName: variable
+        Type: IMAGE_REL_AMD64_ADDR64
+      - VirtualAddress: 0
+        SymbolName: variable
+        Type: IMAGE_REL_AMD64_ADDR64
+symbols:
+  - Name: variable
+    Value: 0
+    SectionNumber: 0
+    SimpleType: IMAGE_SYM_TYPE_NULL
+    ComplexType: IMAGE_SYM_DTYPE_NULL
+    StorageClass: IMAGE_SYM_CLASS_EXTERNAL
+...

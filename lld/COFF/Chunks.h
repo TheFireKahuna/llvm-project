@@ -228,6 +228,18 @@ public:
   int flags;
 };
 
+// A word of static data that holds the address of an import, which the loader
+// writes in place through an import descriptor whose address table is the run
+// of such words the word belongs to. The word holds the value of its run's
+// lookup table entry until then, and needs no base relocation.
+struct ImportSlot {
+  SectionChunk *chunk;
+  uint32_t offset;
+  DefinedImportData *sym;
+  // The entry of the run's lookup table for this word.
+  Chunk *lookup = nullptr;
+};
+
 // A chunk corresponding a section of an input file.
 class SectionChunk : public Chunk {
   // Identical COMDAT Folding feature accesses section internal data.
@@ -289,6 +301,12 @@ public:
   // adrp or the 64-bit ldr of a load of the pointer, which becomes adrp and
   // add of its symbol when every reference to the pointer is one.
   bool isArm64LocalImportPageRef(const coff_relocation &rel) const;
+
+  // Whether rel is an absolute address as wide as the image's pointers.
+  bool isAddressWord(const coff_relocation &rel) const;
+
+  // The in-place import slot that rel fills, or null.
+  const ImportSlot *getImportSlot(const coff_relocation &rel) const;
   void applyRelX64(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
                    uint64_t p, uint64_t imageBase) const;
   void applyRelX86(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
@@ -400,6 +418,9 @@ public:
   // Whether this section needs to be kept distinct from other sections during
   // ICF. This is set by the driver using address-significance tables.
   bool keepUnique = false;
+
+  // Whether a word of this section is an in-place import slot.
+  bool hasImportSlots = false;
 
   // The COMDAT selection if this is a COMDAT chunk.
   llvm::COFF::COMDATType selection = (llvm::COFF::COMDATType)0;

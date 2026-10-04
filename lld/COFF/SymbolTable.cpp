@@ -850,7 +850,9 @@ bool SymbolTable::handleMinGWAutomaticImport(Symbol *sym, StringRef name) {
   // but we mark the symbol as isRuntimePseudoReloc, and a later pass
   // will add runtime pseudo relocations for every relocation against
   // this Symbol. The runtime pseudo relocation framework expects the
-  // reference itself to point at the IAT entry.
+  // reference itself to point at the IAT entry. Under -import-slots, the
+  // later pass binds each word of static data holding the variable's address
+  // in place instead, and reports every other reference.
   size_t impSize = 0;
   if (isa<DefinedImportData>(imp)) {
     Log(ctx) << "Automatically importing " << name << " from "
@@ -1097,7 +1099,8 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
     if (name.contains("_PchSym_"))
       continue;
 
-    if (ctx.config.autoImport && handleMinGWAutomaticImport(sym, name))
+    if ((ctx.config.autoImport || ctx.config.importSlots) &&
+        handleMinGWAutomaticImport(sym, name))
       continue;
 
     // Remaining undefined symbols are not fatal if /force is specified.

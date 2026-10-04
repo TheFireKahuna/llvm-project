@@ -26,6 +26,9 @@ public:
   void create(COFFLinkerContext &ctx);
 
   std::vector<DefinedImportData *> imports;
+  // Runs of in-place import slots of one DLL each, one word apart, which
+  // get import descriptors of their own.
+  std::vector<std::vector<ImportSlot *>> slotRuns;
   std::vector<Chunk *> dirs;
   std::vector<Chunk *> lookups;
   std::vector<Chunk *> addresses;

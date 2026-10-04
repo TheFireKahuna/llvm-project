@@ -600,8 +600,29 @@ static bool rewriteLocalImportSite(uint8_t *off, LinkSiteForm form,
   }
 }
 
+const ImportSlot *
+SectionChunk::getImportSlot(const coff_relocation &rel) const {
+  if (!hasImportSlots)
+    return nullptr;
+  const std::vector<ImportSlot> &slots =
+      file->symtab.ctx.importSlots.find(this)->second;
+  auto it = llvm::partition_point(slots, [&](const ImportSlot &s) {
+    return s.offset < rel.VirtualAddress;
+  });
+  if (it == slots.end() || it->offset != rel.VirtualAddress)
+    return nullptr;
+  return &*it;
+}
+
 void SectionChunk::applyRelocation(uint8_t *off,
                                    const coff_relocation &rel) const {
+  // The loader writes an in-place import slot; until then it holds the value
+  // of its lookup table entry, which the loader requires.
+  if (const ImportSlot *slot = getImportSlot(rel)) {
+    slot->lookup->writeTo(off);
+    return;
+  }
+
   auto *sym = dyn_cast_or_null<Defined>(file->getSymbol(rel.SymbolTableIndex));
 
   // A described call, jump or pointer load through the import pointer of a
@@ -769,6 +790,12 @@ static uint8_t getBaserelType(const coff_relocation &rel,
   }
 }
 
+bool SectionChunk::isAddressWord(const coff_relocation &rel) const {
+  return getBaserelType(rel, getArch()) == (file->symtab.ctx.config.is64()
+                                                ? IMAGE_REL_BASED_DIR64
+                                                : IMAGE_REL_BASED_HIGHLOW);
+}
+
 // Windows-specific.
 // Collect all locations that contain absolute addresses, which need to be
 // fixed by the loader if load-time relocation is needed.
@@ -780,6 +807,9 @@ void SectionChunk::getBaserels(std::vector<Baserel> *res) {
       continue;
     Symbol *target = file->getSymbol(rel.SymbolTableIndex);
     if (!isa_and_nonnull<Defined>(target) || isa<DefinedAbsolute>(target))
+      continue;
+    // The loader writes an in-place import slot as an absolute address.
+    if (getImportSlot(rel))
       continue;
     res->emplace_back(rva + rel.VirtualAddress, ty);
   }
