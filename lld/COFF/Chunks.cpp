@@ -543,6 +543,23 @@ SectionChunk::getLocalImportRewrite(const coff_relocation &rel,
   return form;
 }
 
+bool SectionChunk::isSectionRelative(const coff_relocation &rel) const {
+  switch (getArch()) {
+  case Triple::x86_64:
+    return rel.Type == IMAGE_REL_AMD64_SECREL ||
+           rel.Type == IMAGE_REL_AMD64_SECREL7 ||
+           rel.Type == IMAGE_REL_AMD64_SECTION;
+  case Triple::aarch64:
+    return rel.Type == IMAGE_REL_ARM64_SECREL ||
+           rel.Type == IMAGE_REL_ARM64_SECREL_LOW12A ||
+           rel.Type == IMAGE_REL_ARM64_SECREL_HIGH12A ||
+           rel.Type == IMAGE_REL_ARM64_SECREL_LOW12L ||
+           rel.Type == IMAGE_REL_ARM64_SECTION;
+  default:
+    return false;
+  }
+}
+
 bool SectionChunk::isDescribedSite(const coff_relocation &rel,
                                    LinkSiteForm form) const {
   return file->describesSites && rel.Type == IMAGE_REL_AMD64_REL32 &&
