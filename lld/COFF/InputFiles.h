@@ -422,6 +422,11 @@ public:
   // If the Live bit is turned off by MarkLive, Writer will ignore dllimported
   // symbols provided by this import library member.
   bool live;
+
+  // Under -import-slots, whether an object may take the imported function's
+  // address in an instruction it does not describe, so that the image uses
+  // the import thunk as the function's address everywhere.
+  bool thunkIsAddress = false;
 };
 
 // Used for LTO.

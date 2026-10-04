@@ -490,8 +490,11 @@ static bool isSiteForm(ArrayRef<uint8_t> data, uint32_t off,
                           0xF3},
                          prefix));
   case LinkSiteLoad:
-    // mov r64, [rip+d], with REX.W, or with REX2 and its W bit.
-    return off >= 3 && opcode == 0x8B && (modrm & 0xC7) == 0x05 &&
+  case LinkSiteAddress:
+    // mov r64, [rip+d] or lea r64, [rip+d], with REX.W, or with REX2 and its
+    // W bit.
+    return off >= 3 && opcode == (form == LinkSiteLoad ? 0x8B : 0x8D) &&
+           (modrm & 0xC7) == 0x05 &&
            ((prefix & 0xF8) == 0x48 ||
             (off >= 4 && data[off - 4] == 0xD5 && (prefix & 0x88) == 0x08));
   default:
@@ -538,6 +541,58 @@ SectionChunk::getLocalImportRewrite(const coff_relocation &rel,
        (getContents()[rel.VirtualAddress - 3] & 0xF0) != 0x40))
     return std::nullopt;
   return form;
+}
+
+bool SectionChunk::isDescribedSite(const coff_relocation &rel,
+                                   LinkSiteForm form) const {
+  return file->describesSites && rel.Type == IMAGE_REL_AMD64_REL32 &&
+         file->getLinkSiteForm(this, rel.VirtualAddress) == form &&
+         isSiteForm(getContents(), rel.VirtualAddress, form);
+}
+
+bool SectionChunk::isArm64AddressPair(const coff_relocation &adrp,
+                                      const coff_relocation &add) const {
+  ArrayRef<uint8_t> data = getContents();
+  if (adrp.Type != IMAGE_REL_ARM64_PAGEBASE_REL21 ||
+      add.Type != IMAGE_REL_ARM64_PAGEOFFSET_12A ||
+      adrp.SymbolTableIndex != add.SymbolTableIndex ||
+      uint64_t(adrp.VirtualAddress) + 4 != add.VirtualAddress ||
+      uint64_t(add.VirtualAddress) + 4 > data.size())
+    return false;
+  uint32_t adrpInsn = read32le(&data[adrp.VirtualAddress]);
+  uint32_t addInsn = read32le(&data[add.VirtualAddress]);
+  // adrp xd with no addend, then add xd, xd, #0.
+  return (adrpInsn & 0x9F000000) == 0x90000000 &&
+         (adrpInsn & 0x60FFFFE0) == 0 && (addInsn & 0xFFFFFC00) == 0x91000000 &&
+         (addInsn & 0x1F) == (adrpInsn & 0x1F) &&
+         ((addInsn >> 5) & 0x1F) == (adrpInsn & 0x1F);
+}
+
+bool SectionChunk::isArm64PointerLoad(const coff_relocation &rel) const {
+  ArrayRef<uint8_t> data = getContents();
+  if (uint64_t(rel.VirtualAddress) + 4 > data.size())
+    return false;
+  uint32_t insn = read32le(&data[rel.VirtualAddress]);
+  switch (rel.Type) {
+  case IMAGE_REL_ARM64_PAGEBASE_REL21:
+    // adrp with no addend.
+    return (insn & 0x9F000000) == 0x90000000 && (insn & 0x60FFFFE0) == 0;
+  case IMAGE_REL_ARM64_PAGEOFFSET_12L:
+    // ldr x, [x, #0], with an unsigned offset.
+    return (insn & 0xFFFFFC00) == 0xF9400000;
+  default:
+    return false;
+  }
+}
+
+Defined *SectionChunk::getImportSiteTarget(const coff_relocation &rel) const {
+  const auto &sites = file->symtab.ctx.importSites;
+  if (sites.empty() || !sites.contains({this, rel.VirtualAddress}))
+    return nullptr;
+  Symbol *s = file->getSymbol(rel.SymbolTableIndex);
+  if (auto *thunk = dyn_cast<DefinedImportThunk>(s))
+    return thunk->wrappedSym;
+  return cast<Defined>(cast<DefinedImportData>(s)->file->thunkSym);
 }
 
 bool SectionChunk::isArm64LocalImportPageRef(const coff_relocation &rel) const {
@@ -624,6 +679,28 @@ void SectionChunk::applyRelocation(uint8_t *off,
   }
 
   auto *sym = dyn_cast_or_null<Defined>(file->getSymbol(rel.SymbolTableIndex));
+  uint16_t type = rel.Type;
+
+  // The address of an imported function that code takes becomes a load of
+  // its import address table entry, and a load of a delay-loaded import's
+  // entry the address of its thunk, so that code agrees with static data.
+  // Each site was verified when imports were bound.
+  if (Defined *target = getImportSiteTarget(rel)) {
+    bool load = isa<DefinedImportData>(target);
+    if (getArch() == Triple::aarch64) {
+      uint32_t regs = read32le(off) & 0x3FF;
+      if (type == IMAGE_REL_ARM64_PAGEOFFSET_12A) {
+        write32le(off, 0xF9400000 | regs);
+        type = IMAGE_REL_ARM64_PAGEOFFSET_12L;
+      } else if (type == IMAGE_REL_ARM64_PAGEOFFSET_12L) {
+        write32le(off, 0x91000000 | regs);
+        type = IMAGE_REL_ARM64_PAGEOFFSET_12A;
+      }
+    } else {
+      off[-2] = load ? 0x8B : 0x8D;
+    }
+    sym = target;
+  }
 
   // A described call, jump or pointer load through the import pointer of a
   // symbol in the image reaches the symbol directly. Its bytes were verified
@@ -631,7 +708,6 @@ void SectionChunk::applyRelocation(uint8_t *off,
   // On ARM64, every adrp and ldr of a pointer that no other instruction reads
   // becomes adrp and add of its symbol; data still reads the pointer.
   std::optional<LinkSiteForm> rewrite;
-  uint16_t type = rel.Type;
   if (auto *li = dyn_cast_or_null<DefinedLocalImport>(sym)) {
     if (getArch() == Triple::aarch64) {
       if (li->getChunk()->bypassed &&
