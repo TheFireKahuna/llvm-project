@@ -1354,6 +1354,14 @@ public:
            getTriple().isWindowsItaniumEnvironment() || getTriple().isPS();
   }
 
+  /// Is the address of a dllimport entity a constant? On Windows Itanium and
+  /// NT-POSIX the linker has the loader write an imported address into the
+  /// static data that names it, so a constant initializer needs neither the
+  /// address of a thunk nor dynamic initialization.
+  virtual bool hasConstantDLLImportAddresses() const {
+    return getTriple().isWindowsItaniumOrNTPOSIXEnvironment();
+  }
+
   // Does this target have PS4 specific dllimport/export handling?
   virtual bool hasPS4DLLImportExport() const {
     return getTriple().isPS() ||
