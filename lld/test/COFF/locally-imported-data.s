@@ -18,22 +18,22 @@
 # RUN: llvm-objdump -d -s a.exe | FileCheck %s
 # RUN: llvm-readobj --coff-basereloc a.exe | FileCheck --check-prefix=RELOC %s
 
-# MAP: 0002:00000066 0000000cH .xdata
+# MAP: 0002:0000005e 00000008H .xdata
 # MAP: 0002:00000000 __imp_f
-# MAP: 0002:00000008 __imp_g
-# MAP: 0002:00000048 __imp_imp {{.*}} lib:lib.dll
+# MAP: 0002:00000040 __imp_imp {{.*}} lib:lib.dll
 
-## The entries at 0x2066, 0x206a and 0x206e hold -0x66, -0x62 and -0x26: the
-## pointers to f and g, and the import address table entry of imp.
+## The entries at 0x205e and 0x2062 hold -0x5e and -0x22: the pointer to f
+## and the import address table entry of imp. One local pointer only, since
+## the order of several is not fixed.
 # CHECK:      Contents of section .rdata:
-# CHECK-NEXT: 140002000 08100040 01000000 09100040 01000000
-# CHECK:      140002060 622e646c 6c009aff ffff9eff ffffdaff
-# CHECK-NEXT: 140002070 ffff
+# CHECK-NEXT: 140002000 08100040 01000000
+# CHECK:      140002050 0000696d 70006c69 622e646c 6c00a2ff
+# CHECK-NEXT: 140002060 ffffdeff ffff
 
 ## The call through the pointer to f still reaches f directly.
 # CHECK: 67 e8 02 00 00 00 addr32 callq 0x140001008
 
-# RELOC-COUNT-2: Type: DIR64
+# RELOC-COUNT-1: Type: DIR64
 # RELOC-NOT:     Type: DIR64
 
 ## Without -import-slots each reference from data is reported, as link.exe
@@ -41,8 +41,7 @@
 # RUN: lld-link -entry:main -subsystem:console -out:b.exe main.obj defs.obj \
 # RUN:   lib.lib 2>&1 | FileCheck --check-prefix=WARN %s
 
-# WARN-DAG: warning: main.obj: locally defined symbol imported: f (defined in defs.obj) [LNK4217]
-# WARN-DAG: warning: main.obj: locally defined symbol imported: g (defined in defs.obj) [LNK4217]
+# WARN: warning: main.obj: locally defined symbol imported: f (defined in defs.obj) [LNK4217]
 
 #--- main.s
   .text
@@ -53,15 +52,12 @@ main:
 
   .section .xdata,"dr"
   .long __imp_f-.
-  .long __imp_g-.
   .long __imp_imp-.
 
 #--- defs.s
   .text
-  .globl f, g
+  .globl f
 f:
-  retq
-g:
   retq
 
 #--- lib.s
