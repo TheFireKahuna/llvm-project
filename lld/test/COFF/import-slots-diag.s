@@ -2,8 +2,9 @@
 ## Under -import-slots, data that resolved to its import is reached only by a
 ## word of static data holding its address. A reference from code is an error
 ## naming the fix, as is a relocation in data that cannot reach another image,
-## a read-only word in a section that cannot be moved to the import address
-## table, and an export of the data. Debug sections are not checked.
+## an absolute address in exception data, which reaches an import only
+## through its import address table entry, and an export of the data. Debug
+## sections are not checked.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: lld-link -def:lib.def -out:lib.lib -machine:x64
@@ -23,7 +24,7 @@
 
 # RUN: not lld-link -dll -noentry -import-slots -out:out.dll ro.obj \
 # RUN:   lib.lib 2>&1 | FileCheck --check-prefix=RO %s
-# RO: error: ro.obj: .myro is read-only and holds the address of variable, imported from lib.dll, but cannot be laid out with the import address table
+# RO: error: ro.obj: .xdata is read-only and holds the address of variable, imported from lib.dll, but cannot be laid out with the import address table
 
 # RUN: not lld-link -dll -noentry -import-slots -out:out.dll debug.obj \
 # RUN:   lib.lib -export:variable 2>&1 | FileCheck --check-prefix=EXPORT %s
@@ -50,7 +51,7 @@ f:
   .rva variable
 
 #--- ro.s
-  .section .myro,"dr"
+  .section .xdata,"dr"
   .quad variable
 
 #--- debug.s

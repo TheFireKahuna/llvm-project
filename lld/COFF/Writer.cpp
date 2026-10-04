@@ -330,6 +330,7 @@ private:
   void createMiscChunks();
   void createImportTables();
   void bindImportSlots();
+  void placeImportSlotSections();
   bool validateImportSlots(SectionChunk *sc, std::vector<ImportSlot> &slots);
   void appendImportThunks();
   void locateImportTables();
@@ -436,6 +437,12 @@ private:
   // the import address tables, in their order there.
   std::vector<SectionChunk *> slotChunks;
   DenseSet<const SectionChunk *> heldBackChunks;
+  // The read-only output sections other than .rdata that hold in-place import
+  // slots, which are laid out before .rdata, and whether a $-group of .rdata
+  // holds one; either places the import address tables at the start of
+  // .rdata, so that the directory covers them all.
+  SetVector<StringRef> slotSections;
+  bool slotRdataGroups = false;
   DelayLoadContents delayIdata;
   bool setNoSEHCharacteristic = false;
   uint32_t tlsAlignment = 0;
@@ -942,6 +949,7 @@ void Writer::run() {
     mergeSections();
     sortECChunks();
     appendECImportTables();
+    placeImportSlotSections();
     createDynamicRelocs();
     removeUnusedSections();
     layoutSections();
@@ -1355,6 +1363,13 @@ void Writer::createSections() {
     // Delay adding its chunks until appendECImportTables.
     if (isArm64EC(ctx.config.machine) &&
         (pSec->name == ".idata$5" || pSec->name == ".idata$9"))
+      continue;
+
+    // Delay the chunks that placeImportSlotSections puts at the start of
+    // .rdata.
+    if ((slotRdataGroups || !slotSections.empty()) &&
+        (pSec->name == ".idata$5" || (slotRdataGroups && name == ".rdata" &&
+                                      pSec->name.starts_with(".rdata$"))))
       continue;
 
     OutputSection *sec = createSection(name, outChars);
@@ -1818,13 +1833,16 @@ void Writer::bindImportSlots() {
 
     // A read-only slot can be written only inside the range the loader
     // makes writable while it binds imports. A chunk of .rdata is moved
-    // there; a chunk of a section whose order or bounds its sections rely
-    // on is not.
+    // there. A read-only section whose order or bounds its program may rely
+    // on keeps its place: another section is laid out beside that range, and
+    // the $-groups of .rdata, together and in their order, at its start.
+    // Exception data never holds an import's address.
     bool readOnly = !(sc->header->Characteristics & IMAGE_SCN_MEM_WRITE);
     StringRef name = sc->getSectionName();
     if (shouldStripSectionSuffix(sc, name, config.mingw))
       name = name.split('$').first;
-    if (readOnly && name != ".rdata") {
+    StringRef outName = getOutputSectionName(name, config.mingw);
+    if (readOnly && outName == ".xdata") {
       Err(ctx) << sc->file << ": " << sc->getSectionName()
                << " is read-only and holds the address of "
                << sc->file->symtab.printSymbol(p.firstRef) << ", imported from "
@@ -1834,7 +1852,15 @@ void Writer::bindImportSlots() {
     }
     sc->hasImportSlots = true;
     ctx.importSlots[sc] = std::move(p.slots);
-    (readOnly ? slotChunks : writable).push_back(sc);
+    if (readOnly && name == ".rdata") {
+      slotChunks.push_back(sc);
+      continue;
+    }
+    if (readOnly && outName == ".rdata")
+      slotRdataGroups = true;
+    else if (readOnly)
+      slotSections.insert(outName);
+    writable.push_back(sc);
   }
   if (ctx.importSlots.empty())
     return;
@@ -1940,6 +1966,44 @@ bool Writer::validateImportSlots(SectionChunk *sc,
                            }),
               slots.end());
   return true;
+}
+
+// A read-only section other than .rdata that holds in-place import slots is
+// laid out before .rdata, whose start holds the import address tables, the
+// read-only chunks laid out with them, and then, when one of them holds a
+// slot, the $-groups of .rdata in their order, so that the import address
+// table directory covers every read-only slot with no other data between.
+void Writer::placeImportSlotSections() {
+  if (!slotRdataGroups && slotSections.empty())
+    return;
+  const uint32_t rdata = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
+  std::vector<Chunk *> start;
+  std::vector<PartialSection *> contribs;
+  for (auto &[key, pSec] : partialSections) {
+    if (key.characteristics != rdata ||
+        (key.name != ".idata$5" &&
+         !(slotRdataGroups && key.name.starts_with(".rdata$"))))
+      continue;
+    // .idata$5 sorts before .rdata$, so the import address tables come first.
+    start.insert(start.end(), pSec->chunks.begin(), pSec->chunks.end());
+    contribs.push_back(pSec);
+  }
+  rdataSec->chunks.insert(rdataSec->chunks.begin(), start.begin(), start.end());
+  rdataSec->contribSections.insert(rdataSec->contribSections.begin(),
+                                   contribs.begin(), contribs.end());
+  iatEnd = start.back();
+
+  std::vector<OutputSection *> before;
+  for (StringRef name : slotSections)
+    if (OutputSection *sec = findSection(name); sec && sec != rdataSec)
+      before.push_back(sec);
+  if (before.empty())
+    return;
+  llvm::erase_if(ctx.outputSections,
+                 [&](OutputSection *sec) { return is_contained(before, sec); });
+  ctx.outputSections.insert(llvm::find(ctx.outputSections, rdataSec),
+                            before.begin(), before.end());
+  iatStart = before.front()->chunks.front();
 }
 
 // The size of the import address table directory: the address tables, and
