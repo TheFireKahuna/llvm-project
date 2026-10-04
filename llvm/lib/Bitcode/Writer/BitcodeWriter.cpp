@@ -5273,12 +5273,22 @@ void IndexBitcodeWriter::writeCombinedGlobalValueSummary() {
   CallStackId CallStackCount = 0;
 
   DenseSet<GlobalValue::GUID> DefOrUseGUIDs;
+  std::set<GlobalValue::GUID> DSOLocalWithoutSummary;
+  auto AddIfDSOLocalWithoutSummary = [&](const ValueInfo &VI) {
+    if (VI.getSummaryList().empty() && VI.isDSOLocal())
+      DSOLocalWithoutSummary.insert(VI.getGUID());
+  };
   forEachSummary([&](GVInfo I, bool IsAliasee) {
     GlobalValueSummary *S = I.second;
     assert(S);
     DefOrUseGUIDs.insert(I.first);
-    for (const ValueInfo &VI : S->refs())
+    for (const ValueInfo &VI : S->refs()) {
       DefOrUseGUIDs.insert(VI.getGUID());
+      AddIfDSOLocalWithoutSummary(VI);
+    }
+    if (auto *FS = dyn_cast<FunctionSummary>(S))
+      for (const FunctionSummary::EdgeTy &Edge : FS->calls())
+        AddIfDSOLocalWithoutSummary(Edge.first);
 
     auto ValueId = getValueId(I.first);
     assert(ValueId);
@@ -5451,6 +5461,13 @@ void IndexBitcodeWriter::writeCombinedGlobalValueSummary() {
 
   EmitCfiFunctions(Index.cfiFunctionDefs(), bitc::FS_CFI_FUNCTION_DEFS);
   EmitCfiFunctions(Index.cfiFunctionDecls(), bitc::FS_CFI_FUNCTION_DECLS);
+
+  if (!DSOLocalWithoutSummary.empty()) {
+    NameVals.assign(DSOLocalWithoutSummary.begin(),
+                    DSOLocalWithoutSummary.end());
+    Stream.EmitRecord(bitc::FS_DSO_LOCAL_WITHOUT_SUMMARY, NameVals);
+    NameVals.clear();
+  }
 
   // Walk the GUIDs that were referenced, and write the
   // corresponding type id records.

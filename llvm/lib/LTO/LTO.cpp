@@ -1243,6 +1243,16 @@ LTO::addThinLTO(BitcodeModule BM, ArrayRef<InputFile::Symbol> Syms,
         }
       }
     }
+    // A reference has no summary to carry its resolution, which matters when
+    // no summary describes the definition either, such as one in a native
+    // object.
+    if (Sym.isUndefined() && !Sym.getIRName().empty()) {
+      auto It = ThinLTO.UndefinedFinality
+                    .try_emplace(GUID, R.FinalDefinitionInLinkageUnit)
+                    .first;
+      if (!R.FinalDefinitionInLinkageUnit)
+        It->second = false;
+    }
   }
 
   if (!ThinLTO.ModuleMap.insert({BMID, BM}).second)
@@ -2068,6 +2078,16 @@ Error LTO::runThinLTO(AddStreamFn AddStream, FileCache Cache,
   });
   if (ThinLTO.ModuleMap.empty())
     return Error::success();
+
+  // A value that no summary describes is dso_local in the backends, and in
+  // the indexes written for distributed backends, if the linker resolved every
+  // reference to it to a definition in the linkage unit.
+  for (auto &[GUID, Final] : ThinLTO.UndefinedFinality)
+    if (Final)
+      if (ValueInfo VI = ThinLTO.CombinedIndex.getValueInfo(GUID);
+          VI && VI.getSummaryList().empty())
+        ThinLTO.CombinedIndex.setDSOLocalWithoutSummary(GUID);
+  ThinLTO.UndefinedFinality = DenseMap<GlobalValue::GUID, bool>();
 
   if (ThinLTO.ModulesToCompile && ThinLTO.ModulesToCompile->empty()) {
     llvm::errs() << "warning: [ThinLTO] No module compiled\n";

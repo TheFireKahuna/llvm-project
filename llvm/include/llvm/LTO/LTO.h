@@ -504,6 +504,10 @@ protected:
     ModuleMapType ModuleMap;
     // The bitcode modules to compile, if specified by the LTO Config.
     std::optional<ModuleMapType> ModulesToCompile;
+    // For each value that modules reference without defining it, whether the
+    // linker resolved every such reference to a definition in the linkage
+    // unit.
+    DenseMap<GlobalValue::GUID, bool> UndefinedFinality;
 
     void setPrevailingModuleForGUID(GlobalValue::GUID GUID, StringRef Module) {
       PrevailingModuleForGUID[GUID] = Module;
