@@ -119,12 +119,15 @@ public:
     auto *e = (coff_import_directory_table_entry *)(buf);
     e->ImportLookupTableRVA = lookupTab->getRVA();
     e->NameRVA = dllName->getRVA();
-    e->ImportAddressTableRVA = addressTab->getRVA();
+    e->ImportAddressTableRVA = addressTab->getRVA() + addressTabOffset;
   }
 
   Chunk *dllName;
   Chunk *lookupTab;
   Chunk *addressTab;
+  // The address table of a run of in-place import slots starts inside the
+  // chunk that holds it.
+  uint32_t addressTabOffset = 0;
 };
 
 // A chunk representing null terminator in the import table.
@@ -722,6 +725,14 @@ private:
 void IdataContents::create(COFFLinkerContext &ctx) {
   std::vector<std::vector<DefinedImportData *>> v = binImports(ctx, imports);
 
+  // The runs of in-place import slots by DLL, and the hint/name record each
+  // named import's lookup entries share.
+  StringMap<std::vector<std::vector<ImportSlot *> *>> runsByDLL;
+  for (std::vector<ImportSlot *> &run : slotRuns)
+    runsByDLL[run[0]->sym->getDLLName().lower()].push_back(&run);
+  DenseMap<DefinedImportData *, HintNameChunk *> hintOf;
+  std::vector<Chunk *> slotLookups;
+
   // In hybrid images, EC and native code are usually very similar,
   // resulting in a highly similar set of imported symbols. Consequently,
   // their import tables can be shared, with ARM64X relocations handling any
@@ -801,6 +812,8 @@ void IdataContents::create(COFFLinkerContext &ctx) {
         lookupsChunk = make<LookupChunk>(ctx, hintChunk);
         addressesChunk = make<LookupChunk>(ctx, hintChunk);
         hints.push_back(hintChunk);
+        if (!slotRuns.empty())
+          hintOf[s] = hintChunk;
       }
 
       // Detect the first EC-only import in the hybrid IAT. Emit null chunk
@@ -895,9 +908,36 @@ void IdataContents::create(COFFLinkerContext &ctx) {
     dir->lookupTab = lookups[base];
     dir->addressTab = addresses[base];
     dirs.push_back(dir);
+
+    // Each run of in-place import slots of this DLL gets a descriptor of its
+    // own after the DLL's, so that the DLL load order is unchanged. Its lookup
+    // table shares the hint/name records, and each slot holds the value of
+    // its lookup entry.
+    auto it = runsByDLL.find(syms[0]->getDLLName().lower());
+    if (it == runsByDLL.end())
+      continue;
+    for (std::vector<ImportSlot *> *run : it->second) {
+      auto *runDir = make<ImportDirectoryChunk>(dllNames.back());
+      for (ImportSlot *slot : *run) {
+        DefinedImportData *s = slot->sym;
+        if (HintNameChunk *hint = hintOf.lookup(s))
+          slot->lookup = make<LookupChunk>(ctx, hint);
+        else
+          slot->lookup = make<OrdinalOnlyChunk>(ctx, s->getOrdinal());
+        slotLookups.push_back(slot->lookup);
+      }
+      slotLookups.push_back(make<NullChunk>(ctx));
+      runDir->lookupTab = run->front()->lookup;
+      runDir->addressTab = run->front()->chunk;
+      runDir->addressTabOffset = run->front()->offset;
+      dirs.push_back(runDir);
+    }
   }
   // Add null terminator.
   dirs.push_back(make<NullChunk>(sizeof(ImportDirectoryTableEntry), 4));
+  // The runs' lookup tables follow the DLLs' own, which stay parallel to the
+  // address tables.
+  lookups.insert(lookups.end(), slotLookups.begin(), slotLookups.end());
 }
 
 std::vector<Chunk *> DelayLoadContents::getChunks() {

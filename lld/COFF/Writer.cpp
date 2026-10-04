@@ -329,8 +329,12 @@ private:
   void createSections();
   void createMiscChunks();
   void createImportTables();
+  void bindImportSlots();
+  bool validateImportSlots(SectionChunk *sc, std::vector<ImportSlot> &slots);
   void appendImportThunks();
   void locateImportTables();
+  uint64_t getIATSize() const;
+  void checkImportSlots();
   void createExportTable();
   StringRef getMergeDestination(StringRef fromSection, StringRef toSection);
   void mergeSection(const std::map<StringRef, StringRef>::value_type &p);
@@ -425,6 +429,13 @@ private:
   uint64_t importTableSize = 0;
   Chunk *iatStart = nullptr;
   uint64_t iatSize = 0;
+  // The last chunk the import address table directory covers, when read-only
+  // in-place import slots extend it past the address tables.
+  Chunk *iatEnd = nullptr;
+  // The read-only chunks holding in-place import slots that are laid out with
+  // the import address tables, in their order there.
+  std::vector<SectionChunk *> slotChunks;
+  DenseSet<const SectionChunk *> heldBackChunks;
   DelayLoadContents delayIdata;
   bool setNoSEHCharacteristic = false;
   uint32_t tlsAlignment = 0;
@@ -921,6 +932,7 @@ void Writer::run() {
     if (ctx.config.machine == ARM64X)
       ctx.dynamicRelocs = make<DynamicRelocsChunk>();
     createImportTables();
+    bindImportSlots();
     createSections();
     appendImportThunks();
     // Import thunks must be added before the Control Flow Guard tables are
@@ -939,6 +951,7 @@ void Writer::run() {
     placeLinkerDefinedSymbols();
     defineKCFICodeRange();
     setSectionPermissions();
+    checkImportSlots();
     setECSymbols();
     createSymbolAndStringTable();
 
@@ -1270,6 +1283,8 @@ void Writer::createSections() {
       if (!cc->live)
         continue;
     }
+    if (sc && sc->hasImportSlots && heldBackChunks.contains(sc))
+      continue;
     StringRef name = c->getSectionName();
     if (shouldStripSectionSuffix(sc, name, ctx.config.mingw))
       name = name.split('$').first;
@@ -1297,6 +1312,17 @@ void Writer::createSections() {
     addSyntheticIdata();
 
   sortSections();
+
+  // The read-only chunks holding in-place import slots follow the import
+  // address tables, inside the range the loader makes writable while it
+  // binds imports. Section ordering has run, so it cannot separate them.
+  if (!slotChunks.empty()) {
+    PartialSection *pSec = findPartialSection(
+        ".idata$5", IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ);
+    pSec->chunks.insert(pSec->chunks.end(), slotChunks.begin(),
+                        slotChunks.end());
+    iatEnd = slotChunks.back();
+  }
 
   if (hasIdata)
     locateImportTables();
@@ -1499,6 +1525,302 @@ void Writer::createImportTables() {
       idata.add(impSym);
     }
   }
+}
+
+// Under -import-slots, a word of static data that holds the address of an
+// import is an in-place import slot: the loader writes the address there
+// through an import descriptor whose address table is the run of such words
+// the word belongs to, so the word needs no base relocation, and a function's
+// address is the function's, not its import thunk's. A delay-loaded function
+// keeps its thunk. A reference to data that resolved to its import other than
+// by such a word cannot reach the data, and is an error.
+void Writer::bindImportSlots() {
+  Configuration &config = ctx.config;
+  if (!config.importSlots || ctx.hybridSymtab || isArm64EC(config.machine))
+    return;
+  llvm::TimeTraceScope timeScope("Import slots");
+
+  auto isImport = [](Symbol *s) {
+    if (isa_and_nonnull<DefinedImportThunk>(s))
+      return true;
+    auto *imp = dyn_cast_or_null<DefinedImportData>(s);
+    return imp && imp->isRuntimePseudoReloc;
+  };
+  auto delayLoaded = [&](DefinedImportData *imp) {
+    return config.delayLoads.contains(imp->getDLLName().lower());
+  };
+
+  // An export of data that resolved to its import would publish the address
+  // of the import address table entry.
+  for (Export &e : ctx.symtab.exports)
+    if (auto *imp = dyn_cast_or_null<DefinedImportData>(e.sym);
+        imp && imp->isRuntimePseudoReloc)
+      Err(ctx) << "cannot export " << ctx.symtab.printSymbol(imp)
+               << ": it is imported from " << imp->getDLLName()
+               << "; export a forwarder to it instead";
+
+  std::vector<SectionChunk *> writable;
+  for (ObjFile *file : ctx.objFileInstances) {
+    if (&file->symtab != &ctx.symtab ||
+        llvm::none_of(file->getSymbols(), isImport))
+      continue;
+    SmallPtrSet<Symbol *, 4> reported;
+    for (Chunk *c : file->getChunks()) {
+      auto *sc = dyn_cast_or_null<SectionChunk>(c);
+      if (!sc || !sc->live)
+        continue;
+      uint32_t chars = sc->header->Characteristics;
+      if (chars & IMAGE_SCN_MEM_DISCARDABLE)
+        continue;
+      std::vector<ImportSlot> slots;
+      Symbol *firstRef = nullptr;
+      for (const coff_relocation &rel : sc->getRelocs()) {
+        Symbol *s = file->getSymbol(rel.SymbolTableIndex);
+        if (!isImport(s))
+          continue;
+        // Data that resolved to its import is a copy of the import's symbol;
+        // the import tables know the original.
+        auto *thunk = dyn_cast<DefinedImportThunk>(s);
+        DefinedImportData *imp =
+            thunk ? thunk->wrappedSym
+                  : cast<DefinedImportData>(
+                        cast<DefinedImportData>(s)->file->impSym);
+        if (chars & IMAGE_SCN_CNT_CODE) {
+          if (!thunk && reported.insert(s).second)
+            Err(ctx) << file << ": " << file->symtab.printSymbol(s)
+                     << " is imported from " << imp->getDLLName()
+                     << ", but the object was compiled as if it were local; "
+                        "mark its declaration, or compile the object with "
+                        "-fauto-import";
+          continue;
+        }
+        if (!sc->isAddressWord(rel)) {
+          if (!thunk && reported.insert(s).second)
+            Err(ctx) << file << ": " << file->symtab.printSymbol(s)
+                     << " is imported from " << imp->getDLLName() << ", but "
+                     << sc->getSectionName()
+                     << " refers to it with relocation type "
+                     << file->getCOFFObj()->getRelocationTypeName(rel.Type)
+                     << ", which cannot reach another image";
+          continue;
+        }
+        if (delayLoaded(imp))
+          continue;
+        if (uint64_t(rel.VirtualAddress) + config.wordsize > sc->getSize()) {
+          Err(ctx) << file << ": the address of " << file->symtab.printSymbol(s)
+                   << " at offset 0x" << Twine::utohexstr(rel.VirtualAddress)
+                   << " extends past the end of " << sc->getSectionName()
+                   << " (size 0x" << Twine::utohexstr(sc->getSize()) << ")";
+          continue;
+        }
+        const uint8_t *word = sc->getContents().data() + rel.VirtualAddress;
+        int64_t addend =
+            config.is64() ? int64_t(read64le(word)) : int32_t(read32le(word));
+        if (addend) {
+          Err(ctx) << file << ": " << sc->getSectionName()
+                   << " holds the address of " << file->symtab.printSymbol(s)
+                   << " plus " << addend << ", imported from "
+                   << imp->getDLLName()
+                   << ", but the loader writes only the address itself";
+          continue;
+        }
+        slots.push_back({sc, rel.VirtualAddress, imp});
+        if (!firstRef)
+          firstRef = s;
+      }
+      if (slots.empty())
+        continue;
+      llvm::stable_sort(slots, [](const ImportSlot &a, const ImportSlot &b) {
+        return a.offset < b.offset;
+      });
+      if (!validateImportSlots(sc, slots))
+        continue;
+
+      // A read-only slot can be written only inside the range the loader
+      // makes writable while it binds imports. A chunk of .rdata is moved
+      // there; a chunk of a section whose order or bounds its sections rely
+      // on is not.
+      bool readOnly = !(chars & IMAGE_SCN_MEM_WRITE);
+      StringRef name = sc->getSectionName();
+      if (shouldStripSectionSuffix(sc, name, config.mingw))
+        name = name.split('$').first;
+      if (readOnly && name != ".rdata") {
+        Err(ctx) << file << ": " << sc->getSectionName()
+                 << " is read-only and holds the address of "
+                 << file->symtab.printSymbol(firstRef) << ", imported from "
+                 << slots[0].sym->getDLLName()
+                 << ", but cannot be laid out with the import address table";
+        continue;
+      }
+      sc->hasImportSlots = true;
+      ctx.importSlots[sc] = std::move(slots);
+      (readOnly ? slotChunks : writable).push_back(sc);
+    }
+  }
+  if (ctx.importSlots.empty())
+    return;
+
+  // Read-only slot chunks are ordered by the DLL of their first slot, so that
+  // single-pointer chunks of one DLL form one run.
+  auto dllIndex = [&](SectionChunk *sc) {
+    StringRef dll = ctx.importSlots[sc].front().sym->getDLLName();
+    return config.dllOrder[dll.lower()];
+  };
+  llvm::stable_sort(slotChunks, [&](SectionChunk *a, SectionChunk *b) {
+    return dllIndex(a) < dllIndex(b);
+  });
+  heldBackChunks.insert(slotChunks.begin(), slotChunks.end());
+
+  // Slots of one DLL one word apart form a run: within a chunk, and across
+  // two read-only chunks laid out with no padding between them.
+  std::vector<ImportSlot *> *run = nullptr;
+  ImportSlot *prev = nullptr;
+  auto follows = [&](ImportSlot &s) {
+    if (!prev ||
+        !prev->sym->getDLLName().equals_insensitive(s.sym->getDLLName()))
+      return false;
+    if (prev->chunk == s.chunk)
+      return s.offset == prev->offset + config.wordsize;
+    SectionChunk *a = prev->chunk;
+    return heldBackChunks.contains(a) && heldBackChunks.contains(s.chunk) &&
+           s.offset == 0 && prev->offset + config.wordsize == a->getSize() &&
+           s.chunk->getAlignment() <= a->getAlignment() &&
+           a->getSize() % s.chunk->getAlignment() == 0;
+  };
+  auto addRuns = [&](SectionChunk *sc) {
+    for (ImportSlot &s : ctx.importSlots[sc]) {
+      if (!follows(s)) {
+        idata.slotRuns.emplace_back();
+        run = &idata.slotRuns.back();
+      }
+      run->push_back(&s);
+      prev = &s;
+    }
+  };
+  for (SectionChunk *sc : writable) {
+    prev = nullptr;
+    addRuns(sc);
+  }
+  prev = nullptr;
+  for (SectionChunk *sc : slotChunks)
+    addRuns(sc);
+}
+
+// Every word that an in-place import slot covers has that slot as its only
+// writer: a relocation overlapping it, which would also be a second writer of
+// a base relocation, is an error. An identical duplicate is one binding.
+bool Writer::validateImportSlots(SectionChunk *sc,
+                                 std::vector<ImportSlot> &slots) {
+  struct Span {
+    uint32_t offset;
+    uint32_t size;
+    const coff_relocation *rel;
+    bool slot;
+  };
+  DenseSet<uint32_t> slotOffsets;
+  for (const ImportSlot &s : slots)
+    slotOffsets.insert(s.offset);
+  std::vector<Span> spans;
+  for (const coff_relocation &rel : sc->getRelocs()) {
+    if (rel.Type == 0) // IMAGE_REL_*_ABSOLUTE writes nothing.
+      continue;
+    bool word = sc->isAddressWord(rel);
+    spans.push_back({rel.VirtualAddress,
+                     word ? uint32_t(ctx.config.wordsize) : 4u, &rel,
+                     word && slotOffsets.contains(rel.VirtualAddress)});
+  }
+  llvm::stable_sort(
+      spans, [](const Span &a, const Span &b) { return a.offset < b.offset; });
+
+  bool ok = true;
+  const Span *last = nullptr;
+  for (const Span &s : spans) {
+    if (last && uint64_t(last->offset) + last->size > s.offset &&
+        (last->slot || s.slot)) {
+      bool identical = last->offset == s.offset && last->size == s.size &&
+                       last->rel->Type == s.rel->Type &&
+                       last->rel->SymbolTableIndex == s.rel->SymbolTableIndex;
+      if (!identical) {
+        Err(ctx) << sc->file << ": the address of an import at offset 0x"
+                 << Twine::utohexstr(last->slot ? last->offset : s.offset)
+                 << " in " << sc->getSectionName()
+                 << " overlaps the relocation at offset 0x"
+                 << Twine::utohexstr(last->slot ? s.offset : last->offset);
+        ok = false;
+      }
+    }
+    if (!last ||
+        uint64_t(s.offset) + s.size > uint64_t(last->offset) + last->size)
+      last = &s;
+  }
+  if (!ok)
+    return false;
+  slots.erase(llvm::unique(slots,
+                           [](const ImportSlot &a, const ImportSlot &b) {
+                             return a.offset == b.offset;
+                           }),
+              slots.end());
+  return true;
+}
+
+// The size of the import address table directory: the address tables, and
+// the read-only in-place import slots laid out after them.
+uint64_t Writer::getIATSize() const {
+  if (!iatEnd)
+    return iatSize;
+  return iatEnd->getRVA() + iatEnd->getSize() - iatStart->getRVA();
+}
+
+// The loader writes an in-place import slot with an absolute address, makes
+// only the import address table directory writable while it binds imports, and
+// restores one protection over all of it. Each slot's word must therefore be
+// in a section that is not executable, a read-only one inside the directory,
+// whose page-rounded range has one protection; each run must still be one word
+// a slot.
+void Writer::checkImportSlots() {
+  if (ctx.importSlots.empty())
+    return;
+  const uint32_t perms =
+      IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_EXECUTE;
+  uint64_t iatBegin = iatStart->getRVA();
+  uint64_t iatLimit = iatBegin + getIATSize();
+  for (auto &[sc, slots] : ctx.importSlots) {
+    OutputSection *os = ctx.getOutputSection(sc);
+    uint32_t chars = os->header.Characteristics;
+    for (const ImportSlot &s : slots) {
+      uint64_t rva = sc->getRVA() + s.offset;
+      if (chars & IMAGE_SCN_MEM_EXECUTE)
+        Err(ctx) << sc->file << ": the address of an import at offset 0x"
+                 << Twine::utohexstr(s.offset) << " in " << sc->getSectionName()
+                 << " is in executable section " << os->name;
+      else if (!(chars & IMAGE_SCN_MEM_WRITE) &&
+               (rva < iatBegin || rva + ctx.config.wordsize > iatLimit))
+        Err(ctx) << sc->file << ": the address of an import at offset 0x"
+                 << Twine::utohexstr(s.offset) << " in " << sc->getSectionName()
+                 << " is in read-only section " << os->name
+                 << " outside the import address table";
+    }
+  }
+  uint64_t pageBegin = alignDown(iatBegin, ctx.config.align);
+  uint64_t pageLimit = alignTo(iatLimit, ctx.config.align);
+  for (OutputSection *os : ctx.outputSections) {
+    if (os->getRVA() >= pageLimit ||
+        os->getRVA() + os->getVirtualSize() <= pageBegin)
+      continue;
+    if ((os->header.Characteristics & perms) != IMAGE_SCN_MEM_READ)
+      Err(ctx) << "section " << os->name
+               << " shares a page with the import address table, which holds "
+                  "in-place import slots, but is not read-only data";
+  }
+  for (const std::vector<ImportSlot *> &run : idata.slotRuns)
+    for (size_t i = 1; i < run.size(); ++i)
+      if (run[i]->chunk->getRVA() + run[i]->offset !=
+          run[i - 1]->chunk->getRVA() + run[i - 1]->offset +
+              ctx.config.wordsize)
+        Err(ctx) << run[i]->chunk->file
+                 << ": a run of in-place import slots in "
+                 << run[i]->chunk->getSectionName()
+                 << " is not contiguous in the image";
 }
 
 void Writer::appendImportThunks() {
@@ -2184,7 +2506,7 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
   }
   if (iatStart) {
     dir[IAT].RelativeVirtualAddress = iatStart->getRVA();
-    dir[IAT].Size = iatSize;
+    dir[IAT].Size = getIATSize();
   }
   if (rsrcSec->getVirtualSize()) {
     dir[RESOURCE_TABLE].RelativeVirtualAddress = rsrcSec->getRVA();
@@ -2450,6 +2772,11 @@ void Writer::markSymbolsWithRelocations(ObjFile *file,
           continue;
       }
 
+      // An in-place import slot reads no import address table entry, and is
+      // listed itself.
+      if (sc->getImportSlot(reloc))
+        continue;
+
       Symbol *ref = sc->file->getSymbol(reloc.SymbolTableIndex);
       // An object without guard metadata does not say which import address
       // table entries it passes the value of, so every entry it references is
@@ -2645,6 +2972,13 @@ void Writer::createGuardCFTables() {
     }
   }
   addressTakenSyms.insert(foreignTakenSyms.begin(), foreignTakenSyms.end());
+
+  // An in-place import slot that holds a function's address is an entry the
+  // loader fills with an address the image passes on.
+  for (auto &kv : ctx.importSlots)
+    for (const ImportSlot &s : kv.second)
+      if (s.sym->file->thunkSym)
+        giatsRVASet.insert({s.chunk, s.offset});
 
   // Mark the image entry as address-taken.
   SymbolRVASet exportedSyms;

@@ -119,6 +119,9 @@ public:
   Configuration config;
 
   DynamicRelocsChunk *dynamicRelocs = nullptr;
+
+  // The in-place import slots of each section that has any, by offset.
+  llvm::DenseMap<const SectionChunk *, std::vector<ImportSlot>> importSlots;
 };
 
 } // namespace lld::coff
