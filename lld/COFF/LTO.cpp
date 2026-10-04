@@ -168,6 +168,34 @@ void BitcodeCompiler::waitForLTOCleanup() {
 
 static void undefine(Symbol *s) { replaceSymbol<Undefined>(s, s->getName()); }
 
+// Returns whether s resolves to an address in the image that nothing replaces
+// after LTO. Imports and absolute symbols are outside the image, and -wrap
+// redirects references only after LTO.
+static bool isDefinedInImage(Symbol *s) {
+  Defined *d = s ? s->getDefined() : nullptr;
+  return d && s->canInline &&
+         !isa<DefinedAbsolute, DefinedImportData, DefinedImportThunk>(d);
+}
+
+// A PE image has no symbol preemption, so a definition in the image is final
+// for every reference from it. An undefined __imp_X is a dllimport reference
+// to X; when X is in the image, the linker would point a local import at it,
+// so the reference is final too, and LTO emits it as a direct reference.
+static bool isFinalInImage(BitcodeFile &f, const lto::InputFile::Symbol &objSym,
+                           Symbol *sym) {
+  // ARM64EC binds symbols through anti-dependencies and thunks, some of
+  // which are created only after LTO.
+  if (f.symtab.isEC())
+    return false;
+  StringRef name = sym->getName();
+  if (objSym.isUndefined() && name.consume_front("__imp_")) {
+    // A defined __imp_X, such as an import, is a pointer whatever X is.
+    auto *u = dyn_cast<Undefined>(sym);
+    return u && !u->getWeakAlias() && isDefinedInImage(f.symtab.find(name));
+  }
+  return isDefinedInImage(sym);
+}
+
 void BitcodeCompiler::add(BitcodeFile &f) {
   lto::InputFile &obj = *f.obj;
   unsigned symNum = 0;
@@ -190,8 +218,12 @@ void BitcodeCompiler::add(BitcodeFile &f) {
     // be removed.
     r.Prevailing = !objSym.isUndefined() && sym->getFile() == &f;
     r.VisibleToRegularObj = sym->isUsedInRegularObj;
+    r.FinalDefinitionInLinkageUnit = isFinalInImage(f, objSym, sym);
+    // The object LTO generates defines the symbol again. It is undefined only
+    // once every file is added, so that the files after this one still see
+    // where it is defined.
     if (r.Prevailing)
-      undefine(sym);
+      prevailingSyms.push_back(sym);
 
     // We tell LTO to not apply interprocedural optimization for wrapped
     // (with -wrap) symbols because otherwise LTO would inline them while
@@ -205,6 +237,9 @@ void BitcodeCompiler::add(BitcodeFile &f) {
 // and return the resulting objects.
 std::vector<InputFile *> BitcodeCompiler::compile() {
   llvm::TimeTraceScope timeScope("Bitcode compile");
+  for (Symbol *sym : std::exchange(prevailingSyms, {}))
+    undefine(sym);
+
   unsigned maxTasks = ltoObj->getMaxTasks();
   buf.resize(maxTasks);
   files.resize(maxTasks);
