@@ -301,7 +301,7 @@ void SymbolTable::loadMinGWSymbols() {
       }
     }
 
-    if (ctx.config.autoImport) {
+    if (ctx.config.autoImport || ctx.config.importSlots) {
       if (name.starts_with("__imp_"))
         continue;
       // If we have an undefined symbol, but we have a lazy symbol we could
@@ -970,7 +970,7 @@ void SymbolTable::reportUnresolvable() {
     }
     if (name.contains("_PchSym_"))
       continue;
-    if (ctx.config.autoImport && impSymbol(name))
+    if ((ctx.config.autoImport || ctx.config.importSlots) && impSymbol(name))
       continue;
     undefs.insert(sym);
   }
