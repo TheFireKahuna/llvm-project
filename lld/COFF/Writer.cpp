@@ -1531,23 +1531,34 @@ void Writer::createImportTables() {
 // import is an in-place import slot: the loader writes the address there
 // through an import descriptor whose address table is the run of such words
 // the word belongs to, so the word needs no base relocation, and a function's
-// address is the function's, not its import thunk's. A delay-loaded function
-// keeps its thunk. A reference to data that resolved to its import other than
-// by such a word cannot reach the data, and is an error.
+// address is the function's, not its import thunk's. Code that takes the
+// address of an imported function in an instruction its object describes, or
+// in an ARM64 adrp and add pair, is rewritten to load it from the import
+// address table, so that code and static data agree. An object that may take
+// it in an instruction it does not describe makes the image use the import
+// thunk as the function's address everywhere, with a warning. A delay-loaded
+// function keeps its thunk, and code that loads its address from the import
+// address table is rewritten to take the thunk's. A reference to data that
+// resolved to its import other than by such a word cannot reach the data, and
+// is an error.
 void Writer::bindImportSlots() {
   Configuration &config = ctx.config;
   if (!config.importSlots || ctx.hybridSymtab || isArm64EC(config.machine))
     return;
   llvm::TimeTraceScope timeScope("Import slots");
 
-  auto isImport = [](Symbol *s) {
+  bool arm64 = config.machine == ARM64;
+  auto delayLoaded = [&](DefinedImportData *imp) {
+    return config.delayLoads.contains(imp->getDLLName().lower());
+  };
+  // An import thunk, data that resolved to its import, or the import address
+  // table entry of a delay-loaded function.
+  auto isImport = [&](Symbol *s) {
     if (isa_and_nonnull<DefinedImportThunk>(s))
       return true;
     auto *imp = dyn_cast_or_null<DefinedImportData>(s);
-    return imp && imp->isRuntimePseudoReloc;
-  };
-  auto delayLoaded = [&](DefinedImportData *imp) {
-    return config.delayLoads.contains(imp->getDLLName().lower());
+    return imp && (imp->isRuntimePseudoReloc ||
+                   (imp->file->thunkSym && delayLoaded(imp)));
   };
 
   // An export of data that resolved to its import would publish the address
@@ -1559,12 +1570,41 @@ void Writer::bindImportSlots() {
                << ": it is imported from " << imp->getDLLName()
                << "; export a forwarder to it instead";
 
-  std::vector<SectionChunk *> writable;
+  struct Pending {
+    SectionChunk *chunk;
+    std::vector<ImportSlot> slots;
+    Symbol *firstRef;
+  };
+  std::vector<Pending> pending;
+  struct Site {
+    SectionChunk *chunk;
+    uint32_t offset;
+    DefinedImportData *imp;
+  };
+  std::vector<Site> addressSites;
+  // On ARM64 the loads of a delay-loaded function's entry are rewritten for
+  // the symbol as a whole, since an adrp may serve several loads.
+  MapVector<DefinedImportData *,
+            std::vector<std::pair<SectionChunk *, uint32_t>>>
+      delayLoads;
+  DenseSet<DefinedImportData *> delayLoadsRead;
+
   for (ObjFile *file : ctx.objFileInstances) {
     if (&file->symtab != &ctx.symtab ||
         llvm::none_of(file->getSymbols(), isImport))
       continue;
     SmallPtrSet<Symbol *, 4> reported;
+    auto thunkIsAddress = [&](Symbol *s, DefinedImportData *imp) {
+      imp->file->thunkIsAddress = true;
+      if (reported.insert(s).second)
+        Warn(ctx) << file << ": may take the address of "
+                  << file->symtab.printSymbol(s) << ", imported from "
+                  << imp->getDLLName()
+                  << ", in an instruction it does not describe, so the image "
+                     "uses its import thunk as its address; declare it "
+                     "imported, or rebuild the object with clang";
+    };
+
     for (Chunk *c : file->getChunks()) {
       auto *sc = dyn_cast_or_null<SectionChunk>(c);
       if (!sc || !sc->live)
@@ -1572,28 +1612,112 @@ void Writer::bindImportSlots() {
       uint32_t chars = sc->header->Characteristics;
       if (chars & IMAGE_SCN_MEM_DISCARDABLE)
         continue;
-      std::vector<ImportSlot> slots;
-      Symbol *firstRef = nullptr;
-      for (const coff_relocation &rel : sc->getRelocs()) {
+      bool code = chars & IMAGE_SCN_CNT_CODE;
+      ArrayRef<coff_relocation> relocs = sc->getRelocs();
+      Pending p{sc, {}, nullptr};
+      for (size_t i = 0, e = relocs.size(); i != e; ++i) {
+        const coff_relocation &rel = relocs[i];
         Symbol *s = file->getSymbol(rel.SymbolTableIndex);
         if (!isImport(s))
           continue;
-        // Data that resolved to its import is a copy of the import's symbol;
-        // the import tables know the original.
         auto *thunk = dyn_cast<DefinedImportThunk>(s);
-        DefinedImportData *imp =
-            thunk ? thunk->wrappedSym
-                  : cast<DefinedImportData>(
-                        cast<DefinedImportData>(s)->file->impSym);
-        if (chars & IMAGE_SCN_CNT_CODE) {
-          if (!thunk && reported.insert(s).second)
-            Err(ctx) << file << ": " << file->symtab.printSymbol(s)
-                     << " is imported from " << imp->getDLLName()
-                     << ", but the object was compiled as if it were local; "
-                        "mark its declaration, or compile the object with "
-                        "-fauto-import";
+        auto *data = dyn_cast<DefinedImportData>(s);
+
+        // The import address table entry of a delay-loaded function: a load
+        // of the address in code takes the thunk's instead.
+        if (data && !data->isRuntimePseudoReloc) {
+          if (!code)
+            delayLoadsRead.insert(data);
+          else if (arm64 && sc->isArm64PointerLoad(rel))
+            delayLoads[data].push_back({sc, rel.VirtualAddress});
+          else if (arm64)
+            delayLoadsRead.insert(data);
+          else if (sc->isDescribedSite(rel, LinkSiteLoad))
+            addressSites.push_back({sc, rel.VirtualAddress, data});
           continue;
         }
+
+        // Data that resolved to its import is a copy of the import's symbol;
+        // the import tables know the original.
+        DefinedImportData *imp =
+            thunk ? thunk->wrappedSym
+                  : cast<DefinedImportData>(data->file->impSym);
+        if (code) {
+          if (!thunk) {
+            if (reported.insert(s).second)
+              Err(ctx) << file << ": " << file->symtab.printSymbol(s)
+                       << " is imported from " << imp->getDLLName()
+                       << ", but the object was compiled as if it were "
+                          "local; mark its declaration, or compile the object "
+                          "with -fauto-import";
+            continue;
+          }
+          if (sc->isAddressWord(rel)) {
+            Err(ctx) << file << ": " << sc->getSectionName()
+                     << " is executable and holds the address of "
+                     << file->symtab.printSymbol(s) << ", imported from "
+                     << imp->getDLLName();
+            continue;
+          }
+          if (delayLoaded(imp))
+            continue;
+          if (arm64) {
+            switch (rel.Type) {
+            case IMAGE_REL_ARM64_PAGEBASE_REL21:
+              if (i + 1 != e && sc->isArm64AddressPair(rel, relocs[i + 1])) {
+                addressSites.push_back({sc, rel.VirtualAddress, imp});
+                addressSites.push_back({sc, relocs[i + 1].VirtualAddress, imp});
+                ++i;
+              } else {
+                thunkIsAddress(s, imp);
+              }
+              break;
+            case IMAGE_REL_ARM64_PAGEOFFSET_12A:
+            case IMAGE_REL_ARM64_REL21:
+              thunkIsAddress(s, imp);
+              break;
+            default:
+              break;
+            }
+            continue;
+          }
+          switch (rel.Type) {
+          case IMAGE_REL_AMD64_REL32: {
+            if (!file->describesSites) {
+              thunkIsAddress(s, imp);
+              break;
+            }
+            std::optional<LinkSiteForm> form =
+                file->getLinkSiteForm(sc, rel.VirtualAddress);
+            if (form == LinkSiteAddress) {
+              if (sc->isDescribedSite(rel, LinkSiteAddress))
+                addressSites.push_back({sc, rel.VirtualAddress, imp});
+              else
+                Err(ctx) << file << ": the instruction at offset 0x"
+                         << Twine::utohexstr(rel.VirtualAddress) << " in "
+                         << sc->getSectionName()
+                         << " is not the one its link-only record describes";
+            } else if (form == LinkSiteOther) {
+              thunkIsAddress(s, imp);
+            }
+            break;
+          }
+          case IMAGE_REL_AMD64_REL32_1:
+          case IMAGE_REL_AMD64_REL32_2:
+          case IMAGE_REL_AMD64_REL32_3:
+          case IMAGE_REL_AMD64_REL32_4:
+          case IMAGE_REL_AMD64_REL32_5:
+            Err(ctx) << file << ": " << file->symtab.printSymbol(s)
+                     << " is imported from " << imp->getDLLName()
+                     << ", but an instruction in " << sc->getSectionName()
+                     << " reads its bytes, which its import thunk's are not";
+            break;
+          default:
+            break;
+          }
+          continue;
+        }
+
         if (!sc->isAddressWord(rel)) {
           if (!thunk && reported.insert(s).second)
             Err(ctx) << file << ": " << file->symtab.printSymbol(s)
@@ -1624,38 +1748,71 @@ void Writer::bindImportSlots() {
                    << ", but the loader writes only the address itself";
           continue;
         }
-        slots.push_back({sc, rel.VirtualAddress, imp});
-        if (!firstRef)
-          firstRef = s;
+        p.slots.push_back({sc, rel.VirtualAddress, imp});
+        if (!p.firstRef)
+          p.firstRef = s;
       }
-      if (slots.empty())
-        continue;
-      llvm::stable_sort(slots, [](const ImportSlot &a, const ImportSlot &b) {
-        return a.offset < b.offset;
-      });
-      if (!validateImportSlots(sc, slots))
-        continue;
-
-      // A read-only slot can be written only inside the range the loader
-      // makes writable while it binds imports. A chunk of .rdata is moved
-      // there; a chunk of a section whose order or bounds its sections rely
-      // on is not.
-      bool readOnly = !(chars & IMAGE_SCN_MEM_WRITE);
-      StringRef name = sc->getSectionName();
-      if (shouldStripSectionSuffix(sc, name, config.mingw))
-        name = name.split('$').first;
-      if (readOnly && name != ".rdata") {
-        Err(ctx) << file << ": " << sc->getSectionName()
-                 << " is read-only and holds the address of "
-                 << file->symtab.printSymbol(firstRef) << ", imported from "
-                 << slots[0].sym->getDLLName()
-                 << ", but cannot be laid out with the import address table";
-        continue;
-      }
-      sc->hasImportSlots = true;
-      ctx.importSlots[sc] = std::move(slots);
-      (readOnly ? slotChunks : writable).push_back(sc);
+      if (!p.slots.empty())
+        pending.push_back(std::move(p));
     }
+  }
+
+  // A function that an object may take the address of in an instruction it
+  // does not describe keeps its thunk as its address: its words in static
+  // data name the thunk, and the instructions that take its address are left
+  // as they are.
+  // The thunk whose address a rewritten load takes is kept in the image.
+  auto keepThunk = [](DefinedImportData *imp) {
+    cast<DefinedImportThunk>(imp->file->thunkSym)->getChunk()->live = true;
+  };
+  for (const Site &site : addressSites) {
+    if (site.imp->file->thunkIsAddress)
+      continue;
+    ctx.importSites.insert({site.chunk, site.offset});
+    if (delayLoaded(site.imp))
+      keepThunk(site.imp);
+  }
+  for (auto &[imp, sites] : delayLoads) {
+    if (delayLoadsRead.contains(imp))
+      continue;
+    for (auto [sc, offset] : sites)
+      ctx.importSites.insert({sc, offset});
+    keepThunk(imp);
+  }
+
+  std::vector<SectionChunk *> writable;
+  for (Pending &p : pending) {
+    SectionChunk *sc = p.chunk;
+    llvm::erase_if(p.slots, [](const ImportSlot &s) {
+      return s.sym->file->thunkIsAddress;
+    });
+    if (p.slots.empty())
+      continue;
+    llvm::stable_sort(p.slots, [](const ImportSlot &a, const ImportSlot &b) {
+      return a.offset < b.offset;
+    });
+    if (!validateImportSlots(sc, p.slots))
+      continue;
+
+    // A read-only slot can be written only inside the range the loader
+    // makes writable while it binds imports. A chunk of .rdata is moved
+    // there; a chunk of a section whose order or bounds its sections rely
+    // on is not.
+    bool readOnly = !(sc->header->Characteristics & IMAGE_SCN_MEM_WRITE);
+    StringRef name = sc->getSectionName();
+    if (shouldStripSectionSuffix(sc, name, config.mingw))
+      name = name.split('$').first;
+    if (readOnly && name != ".rdata") {
+      Err(ctx) << sc->file << ": " << sc->getSectionName()
+               << " is read-only and holds the address of "
+               << sc->file->symtab.printSymbol(p.firstRef) << ", imported from "
+               << p.slots[0].sym->getDLLName()
+               << ", but cannot be laid out with the import address table";
+      continue;
+    }
+    sc->hasImportSlots = true;
+    ctx.importSlots[sc] = std::move(p.slots);
+    (readOnly ? slotChunks : writable).push_back(sc);
   }
   if (ctx.importSlots.empty())
     return;
@@ -2736,9 +2893,13 @@ void Writer::markDescribedAddressTakes(ObjFile *file,
         continue;
       std::optional<LinkSiteForm> form =
           file->getLinkSiteForm(sc, reloc.VirtualAddress);
-      if (form && !isCallOrJump(*form))
-        markAddressTake(file->getSymbol(reloc.SymbolTableIndex), usedSymbols,
-                        usedImports);
+      if (!form || isCallOrJump(*form))
+        continue;
+      // A site rewritten for an import takes the address of what it now
+      // reaches.
+      Symbol *ref = sc->getImportSiteTarget(reloc);
+      markAddressTake(ref ? ref : file->getSymbol(reloc.SymbolTableIndex),
+                      usedSymbols, usedImports);
     }
   }
 }
@@ -2777,7 +2938,9 @@ void Writer::markSymbolsWithRelocations(ObjFile *file,
       if (sc->getImportSlot(reloc))
         continue;
 
-      Symbol *ref = sc->file->getSymbol(reloc.SymbolTableIndex);
+      Symbol *ref = sc->getImportSiteTarget(reloc);
+      if (!ref)
+        ref = sc->file->getSymbol(reloc.SymbolTableIndex);
       // An object without guard metadata does not say which import address
       // table entries it passes the value of, so every entry it references is
       // listed.

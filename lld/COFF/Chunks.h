@@ -305,6 +305,27 @@ public:
   // Whether rel is an absolute address as wide as the image's pointers.
   bool isAddressWord(const coff_relocation &rel) const;
 
+  // Whether rel is the field of an instruction that this section's object
+  // describes as form, and whose bytes are that form's.
+  bool isDescribedSite(const coff_relocation &rel,
+                       llvm::COFF::LinkSiteForm form) const;
+
+  // Whether adrp and add, ARM64 relocations against one symbol, are an adrp
+  // and the add after it computing the symbol's address with no addend, as
+  // lld/ELF requires to relax such a pair.
+  bool isArm64AddressPair(const coff_relocation &adrp,
+                          const coff_relocation &add) const;
+
+  // Whether rel is the adrp, or a 64-bit ldr with no offset, of a load of a
+  // pointer.
+  bool isArm64PointerLoad(const coff_relocation &rel) const;
+
+  // The symbol whose address the instruction holding rel takes once rewritten
+  // for an import, or null: for an instruction that takes the address of an
+  // import thunk, a load of the import's address table entry; for one that
+  // loads the entry of a delay-loaded import, the address of the thunk.
+  Defined *getImportSiteTarget(const coff_relocation &rel) const;
+
   // The in-place import slot that rel fills, or null.
   const ImportSlot *getImportSlot(const coff_relocation &rel) const;
   void applyRelX64(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
