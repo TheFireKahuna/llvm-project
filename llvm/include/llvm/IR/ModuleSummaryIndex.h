@@ -157,6 +157,12 @@ struct alignas(8) GlobalValueSummaryInfo {
 
   bool hasLocal() const { return HasLocal; }
 
+  /// Whether the linker resolved every reference to this value to a definition
+  /// in the linkage unit that no summary describes, such as one in a native
+  /// object.
+  bool isDSOLocalWithoutSummary() const { return DSOLocalWithoutSummary; }
+  void setDSOLocalWithoutSummary() { DSOLocalWithoutSummary = true; }
+
 private:
   /// List of global value summary structures for a particular value held
   /// in the GlobalValueMap. Requires a vector in the case of multiple
@@ -180,6 +186,9 @@ private:
   /// TODO: Replace checks in various ThinLTO analyses that loop through all
   /// summaries to handle the local case with a check of the flag.
   bool HasLocal : 1;
+
+  /// See isDSOLocalWithoutSummary(). Set only for a value with no summary.
+  bool DSOLocalWithoutSummary : 1;
 };
 
 /// Map from global value GUID to corresponding summary structures. Use a
@@ -741,7 +750,7 @@ public:
 };
 
 GlobalValueSummaryInfo::GlobalValueSummaryInfo(bool HaveGVs)
-    : U(HaveGVs), HasLocal(false) {}
+    : U(HaveGVs), HasLocal(false), DSOLocalWithoutSummary(false) {}
 
 void GlobalValueSummaryInfo::addSummary(
     std::unique_ptr<GlobalValueSummary> Summary) {
@@ -1820,6 +1829,13 @@ public:
   /// Return a ValueInfo for \p GUID.
   ValueInfo getOrInsertValueInfo(GlobalValue::GUID GUID) {
     return ValueInfo(HaveGVs, getOrInsertValuePtr(GUID));
+  }
+
+  /// Record that the linker resolved every reference to the value with this
+  /// GUID, which has no summary, to a definition in the linkage unit, so that
+  /// references to it can be dso_local.
+  void setDSOLocalWithoutSummary(GlobalValue::GUID GUID) {
+    getOrInsertValuePtr(GUID)->second.setDSOLocalWithoutSummary();
   }
 
   // Save a string in the Index. Use before passing Name to
