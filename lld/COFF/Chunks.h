@@ -305,6 +305,9 @@ public:
   // Whether rel is an absolute address as wide as the image's pointers.
   bool isAddressWord(const coff_relocation &rel) const;
 
+  // Whether rel is an offset within, or the index of, its target's section.
+  bool isSectionRelative(const coff_relocation &rel) const;
+
   // Whether rel is the field of an instruction that this section's object
   // describes as form, and whose bytes are that form's.
   bool isDescribedSite(const coff_relocation &rel,

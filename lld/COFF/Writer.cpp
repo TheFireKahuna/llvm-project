@@ -1542,6 +1542,14 @@ void Writer::createImportTables() {
   }
 }
 
+// Whether a section is unwind or exception-handling data, which the PE format
+// defines as RVAs of the image's own code and handlers.
+static bool isExceptionData(SectionChunk *sc) {
+  StringRef name = sc->getSectionName();
+  return name == ".xdata" || name == ".pdata" || name.starts_with(".xdata$") ||
+         name.starts_with(".pdata$");
+}
+
 // Under -import-slots, a word of static data that holds the address of an
 // import is an in-place import slot: the loader writes the address there
 // through an import descriptor whose address table is the run of such words
@@ -1612,9 +1620,18 @@ void Writer::bindImportSlots() {
         llvm::none_of(file->getSymbols(), isImport))
       continue;
     SmallPtrSet<Symbol *, 4> reported;
-    auto thunkIsAddress = [&](Symbol *s, DefinedImportData *imp) {
+    auto thunkIsAddress = [&](Symbol *s, DefinedImportData *imp,
+                              SectionChunk *data = nullptr) {
       imp->file->thunkIsAddress = true;
-      if (reported.insert(s).second)
+      if (!reported.insert(s).second)
+        return;
+      if (data)
+        Warn(ctx) << file << ": " << data->getSectionName()
+                  << " holds the address of " << file->symtab.printSymbol(s)
+                  << ", imported from " << imp->getDLLName()
+                  << ", in a 32-bit field, so the image uses its import thunk "
+                     "as its address";
+      else
         Warn(ctx) << file << ": may take the address of "
                   << file->symtab.printSymbol(s) << ", imported from "
                   << imp->getDLLName()
@@ -1662,6 +1679,17 @@ void Writer::bindImportSlots() {
         DefinedImportData *imp =
             thunk ? thunk->wrappedSym
                   : cast<DefinedImportData>(data->file->impSym);
+        // A section-relative offset names a section of this image.
+        if (sc->isSectionRelative(rel)) {
+          if (reported.insert(s).second)
+            Err(ctx) << file << ": " << file->symtab.printSymbol(s)
+                     << " is imported from " << imp->getDLLName() << ", but "
+                     << sc->getSectionName()
+                     << " refers to it with relocation type "
+                     << file->getCOFFObj()->getRelocationTypeName(rel.Type)
+                     << ", which names a section of this image";
+          continue;
+        }
         if (code) {
           if (!thunk) {
             if (reported.insert(s).second)
@@ -1742,8 +1770,14 @@ void Writer::bindImportSlots() {
           continue;
         }
 
+        // A 32-bit field cannot hold another image's address. Exception
+        // data names its handlers by RVAs that the system only calls, which
+        // the import thunk serves; any other function address there is
+        // the thunk's, image-wide.
         if (!sc->isAddressWord(rel)) {
-          if (!thunk && reported.insert(s).second)
+          if (thunk && !isExceptionData(sc))
+            thunkIsAddress(s, imp, sc);
+          else if (!thunk && reported.insert(s).second)
             Err(ctx) << file << ": " << file->symtab.printSymbol(s)
                      << " is imported from " << imp->getDLLName() << ", but "
                      << sc->getSectionName()
