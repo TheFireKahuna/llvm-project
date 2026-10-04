@@ -499,13 +499,20 @@ static bool isSiteForm(ArrayRef<uint8_t> data, uint32_t off,
   }
 }
 
+// Whether a local import pointer holds zero, the default of an absent weak
+// reference, which an instruction can materialise instead of loading.
+static bool isZeroPointer(DefinedLocalImport *li) {
+  auto *abs = dyn_cast<DefinedAbsolute>(li->getTarget());
+  return abs && abs->getVA() == 0;
+}
+
 // Whether a reference to a local import pointer can reach the pointer's
 // symbol directly instead. An absolute symbol is not at an address relative to
-// the image.
+// the image, but zero can be materialised.
 static bool canBypass(ObjFile *file, const coff_relocation &rel) {
   auto *li = dyn_cast_or_null<DefinedLocalImport>(
       file->getSymbol(rel.SymbolTableIndex));
-  return li && !isa<DefinedAbsolute>(li->getTarget());
+  return li && (!isa<DefinedAbsolute>(li->getTarget()) || isZeroPointer(li));
 }
 
 std::optional<LinkSiteForm>
@@ -523,6 +530,13 @@ SectionChunk::getLocalImportRewrite(const coff_relocation &rel,
       *mismatch = true;
     return std::nullopt;
   }
+  // Zero is materialised only into a register named by a REX prefix; a call
+  // or jump through it is left to fault as it would.
+  if (isZeroPointer(cast<DefinedLocalImport>(
+          file->getSymbol(rel.SymbolTableIndex))) &&
+      (*form != LinkSiteLoad ||
+       (getContents()[rel.VirtualAddress - 3] & 0xF0) != 0x40))
+    return std::nullopt;
   return form;
 }
 
@@ -541,6 +555,17 @@ bool SectionChunk::isArm64LocalImportPageRef(const coff_relocation &rel) const {
   default:
     return false;
   }
+}
+
+// Rewrites the described load whose REL32 field is at off, `mov r64,
+// [rip+d]` with a REX prefix, to materialise zero instead, in the same length:
+// `mov r/m64, imm32` with the register moved from ModRM.reg to ModRM.rm.
+static void rewriteZeroLoad(uint8_t *off) {
+  uint8_t rex = off[-3], reg = (off[-1] >> 3) & 7;
+  off[-3] = 0x48 | ((rex >> 2) & 1);
+  off[-2] = 0xC7;
+  off[-1] = 0xC0 | reg;
+  write32le(off, 0);
 }
 
 // Rewrites the described instruction whose REL32 field is at off, a reference
@@ -591,6 +616,11 @@ void SectionChunk::applyRelocation(uint8_t *off,
       if (li->getChunk()->bypassed &&
           (type == IMAGE_REL_ARM64_PAGEBASE_REL21 ||
            type == IMAGE_REL_ARM64_PAGEOFFSET_12L)) {
+        // Zero is materialised by movz into the register each writes.
+        if (isZeroPointer(li)) {
+          write32le(off, 0xD2800000 | (read32le(off) & 0x1F));
+          return;
+        }
         sym = li->getTarget();
         if (type == IMAGE_REL_ARM64_PAGEOFFSET_12L) {
           write32le(off, 0x91000000 | (read32le(off) & 0x3FF));
@@ -598,6 +628,10 @@ void SectionChunk::applyRelocation(uint8_t *off,
         }
       }
     } else if ((rewrite = getLocalImportRewrite(rel))) {
+      if (isZeroPointer(li)) {
+        rewriteZeroLoad(off);
+        return;
+      }
       sym = li->getTarget();
     }
   }

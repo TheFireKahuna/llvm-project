@@ -786,6 +786,11 @@ void ObjFile::initializeSymbols() {
       }
       symbols[i] = createUndefined(coffSym, overrideLazy);
       weakAliases.emplace_back(symbols[i], aux);
+      if (ctx.config.importSlots) {
+        COFFSymbolRef def = check(coffObj->getSymbol(aux->TagIndex));
+        if (def.getSectionNumber() == IMAGE_SYM_ABSOLUTE && def.getValue() == 0)
+          symtab.weakRefs.push_back(symbols[i]);
+      }
     } else if (std::optional<Symbol *> optSym =
                    createDefined(coffSym, comdatDefs, prevailingComdat)) {
       symbols[i] = *optSym;

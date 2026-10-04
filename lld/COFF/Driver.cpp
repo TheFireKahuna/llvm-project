@@ -2910,6 +2910,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   std::vector<Undefined *> aliases;
   ctx.forEachSymtab(
       [&](SymbolTable &symtab) { symtab.resolveRemainingUndefines(aliases); });
+  ctx.forEachSymtab([](SymbolTable &symtab) { symtab.bindPointerCells(); });
 
   if (errorCount())
     return;

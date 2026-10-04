@@ -1,0 +1,84 @@
+# REQUIRES: x86
+
+## Under -import-slots, a .refptr.X pointer, which a compiler reads for an
+## extern_weak X, is a local import pointer to X once X is defined in the
+## image, or to zero once a weak X is absent: a described load of it becomes
+## the lea of X or a move of zero, and a call through it a direct call. A
+## pointer that only such references read is left out of the image; one that
+## holds zero has no base relocation. A reference through a pointer is not
+## reported as an imported local.
+
+# RUN: rm -rf %t && split-file %s %t && cd %t
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium main.s -o main.obj
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium defs.s -o defs.obj
+
+# RUN: lld-link -import-slots -entry:main -subsystem:console -out:a.exe \
+# RUN:   main.obj defs.obj 2>&1 | count 0
+# RUN: llvm-objdump -d a.exe | FileCheck %s
+# RUN: llvm-readobj --coff-basereloc a.exe | FileCheck --check-prefix=RELOC %s
+
+# CHECK:      48 8d 05 {{.*}} leaq {{.*}}(%rip), %rax # 0x[[#%x,F:]]
+# CHECK-NEXT: 67 e8 {{.*}} addr32 callq 0x[[#F]]
+# CHECK-NEXT: 48 8d 0d {{.*}} leaq {{.*}}(%rip), %rcx # 0x[[#%x,V:]]
+# CHECK-NEXT: 49 c7 c1 00 00 00 00 movq $0x0, %r9
+# CHECK-NEXT: 48 c7 c2 00 00 00 00 movq $0x0, %rdx
+# CHECK-NEXT: ff 15 {{.*}} callq *{{.*}}(%rip)
+# CHECK-NEXT: 48 83 3d {{.*}} cmpq $0x0, {{.*}}(%rip)
+# CHECK-NEXT: c3 retq
+# CHECK:      [[#%x,F]]: c3 retq
+
+## The pointer to w, which the compare reads; the pointer that holds zero for
+## the call through absent has none.
+# RELOC-COUNT-1: Type: DIR64
+# RELOC-NOT:     Type: DIR64
+
+## Without -import-slots the instructions read the pointers as before.
+# RUN: lld-link -entry:main -subsystem:console -out:b.exe main.obj defs.obj
+# RUN: llvm-objdump -d b.exe | FileCheck --check-prefix=PLAIN %s
+
+# PLAIN: 48 8b 05 {{.*}} movq {{.*}}(%rip), %rax
+
+#--- main.s
+  .text
+  .globl main
+main:
+  movq .refptr.f(%rip), %rax
+  callq *.refptr.f(%rip)
+  movq .refptr.v(%rip), %rcx
+  movq .refptr.absent(%rip), %r9
+  movq .refptr.absent2(%rip), %rdx
+  callq *.refptr.absent(%rip)
+  cmpq $0, .refptr.w(%rip)
+  retq
+
+  .weak f
+  .weak v
+  .weak w
+  .weak absent
+  .weak absent2
+
+.macro refptr sym
+  .section .rdata$.refptr.\sym,"dr",discard,.refptr.\sym
+  .globl .refptr.\sym
+.refptr.\sym:
+  .quad \sym
+.endm
+  refptr f
+  refptr v
+  refptr w
+  refptr absent
+  refptr absent2
+
+#--- defs.s
+  .text
+  .globl f
+f:
+  retq
+
+  .data
+  .globl v
+v:
+  .long 1
+  .globl w
+w:
+  .long 2
