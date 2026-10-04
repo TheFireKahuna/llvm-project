@@ -1588,6 +1588,9 @@ void Writer::bindImportSlots() {
             std::vector<std::pair<SectionChunk *, uint32_t>>>
       delayLoads;
   DenseSet<DefinedImportData *> delayLoadsRead;
+  // For each import thunk, the references to it, and those that a slot or a
+  // rewritten instruction bypasses.
+  MapVector<DefinedImportThunk *, std::pair<size_t, size_t>> thunkRefs;
 
   for (ObjFile *file : ctx.objFileInstances) {
     if (&file->symtab != &ctx.symtab ||
@@ -1622,6 +1625,8 @@ void Writer::bindImportSlots() {
           continue;
         auto *thunk = dyn_cast<DefinedImportThunk>(s);
         auto *data = dyn_cast<DefinedImportData>(s);
+        if (thunk)
+          ++thunkRefs[thunk].first;
 
         // The import address table entry of a delay-loaded function: a load
         // of the address in code takes the thunk's instead.
@@ -1667,6 +1672,8 @@ void Writer::bindImportSlots() {
               if (i + 1 != e && sc->isArm64AddressPair(rel, relocs[i + 1])) {
                 addressSites.push_back({sc, rel.VirtualAddress, imp});
                 addressSites.push_back({sc, relocs[i + 1].VirtualAddress, imp});
+                ++thunkRefs[thunk].first;
+                thunkRefs[thunk].second += 2;
                 ++i;
               } else {
                 thunkIsAddress(s, imp);
@@ -1690,13 +1697,15 @@ void Writer::bindImportSlots() {
             std::optional<LinkSiteForm> form =
                 file->getLinkSiteForm(sc, rel.VirtualAddress);
             if (form == LinkSiteAddress) {
-              if (sc->isDescribedSite(rel, LinkSiteAddress))
+              if (sc->isDescribedSite(rel, LinkSiteAddress)) {
                 addressSites.push_back({sc, rel.VirtualAddress, imp});
-              else
+                ++thunkRefs[thunk].second;
+              } else {
                 Err(ctx) << file << ": the instruction at offset 0x"
                          << Twine::utohexstr(rel.VirtualAddress) << " in "
                          << sc->getSectionName()
                          << " is not the one its link-only record describes";
+              }
             } else if (form == LinkSiteOther) {
               thunkIsAddress(s, imp);
             }
@@ -1749,6 +1758,8 @@ void Writer::bindImportSlots() {
           continue;
         }
         p.slots.push_back({sc, rel.VirtualAddress, imp});
+        if (thunk)
+          ++thunkRefs[thunk].second;
         if (!p.firstRef)
           p.firstRef = s;
       }
@@ -1779,6 +1790,17 @@ void Writer::bindImportSlots() {
       ctx.importSites.insert({sc, offset});
     keepThunk(imp);
   }
+
+  // An import thunk that every reference bypasses is left out of the image,
+  // and so out of the Control Flow Guard tables, unless something other than
+  // a relocation names it.
+  DenseSet<Symbol *> named(config.gcroot.begin(), config.gcroot.end());
+  for (Export &e : ctx.symtab.exports)
+    named.insert(e.sym);
+  for (auto &[thunk, refs] : thunkRefs)
+    if (refs.first == refs.second && !thunk->wrappedSym->file->thunkIsAddress &&
+        !delayLoaded(thunk->wrappedSym) && !named.contains(thunk))
+      thunk->getChunk()->live = false;
 
   std::vector<SectionChunk *> writable;
   for (Pending &p : pending) {

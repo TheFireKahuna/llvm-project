@@ -39,8 +39,8 @@
 ## cell and plain's cell, and the trailer, before the import tables.
 # DATA:      140002000 90100040 01000000 00000000 00000000
 # DATA-NEXT: 140002010 74100040 01000000 11111111 00000000
-# DATA-NEXT: 140002020 b8200040 01000000 00200040 01000000
-# DATA-NEXT: 140002030 c0200040 01000000 08200040 01000000
+# DATA-NEXT: 140002020 90200040 01000000 00200040 01000000
+# DATA-NEXT: 140002030 98200040 01000000 08200040 01000000
 # DATA-NEXT: 140002040 10200040 01000000 23222222 00000000
 
 ## The zero cell has no base relocation.
@@ -83,6 +83,7 @@ main:
         movq __imp_imported2(%rip), %rax
         callq __llvm_kcfi_dispatch_11111111
         callq __llvm_kcfi_dispatch_22222222
+        callq imported
         retq
 
         .def ours; .scl 2; .type 32; .endef
