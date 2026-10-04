@@ -34,7 +34,9 @@
 # CHECK-NEXT: 48 8d 05 {{.*}} leaq {{.*}}(%rip), %rax # 0x[[#%x,TG:]]
 # CHECK-NEXT: ff 15 {{.*}} callq *{{.*}}(%rip)
 # CHECK:      48 8d 05 {{.*}} leaq {{.*}}(%rip), %rax # 0x[[#T3]]
+## f2's thunk, which no reference reaches, is left out.
 # CHECK:      [[#%x,T1]]: ff 25 {{.*}} jmpq *{{.*}}(%rip) # 0x[[#F1]]
+# CHECK-NOT:  # 0x[[#F1+8]]
 # CHECK:      [[#%x,T3]]: ff 25 {{.*}} jmpq *{{.*}}(%rip) # 0x[[#F1+16]]
 # CHECK:      [[#%x,TG]]: ff 25
 
@@ -53,8 +55,8 @@
 # IMPORTS-NEXT:   Type: DIR64
 # IMPORTS-NEXT:   Address: 0x3010
 
-# DATA: 140003000 f0200000 00000000 60100040 01000000
-# DATA: 140003010 70100040 01000000
+# DATA: 140003000 f0200000 00000000 50100040 01000000
+# DATA: 140003010 60100040 01000000
 
 ## An instruction that reads the bytes of an imported function, and its
 ## address in code, cannot be served by a thunk.
