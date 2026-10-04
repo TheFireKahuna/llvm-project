@@ -2832,6 +2832,15 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     // to loop these two calls.
     ctx.forEachSymtab([](SymbolTable &symtab) { symtab.loadMinGWSymbols(); });
     run();
+  } else if (config->importSlots) {
+    // LTO emits a bitcode file's reference to a symbol that is not dso_local
+    // in import form, so an import that offers only __imp_X is loaded for X,
+    // as for an automatic import.
+    ctx.forEachSymtab([](SymbolTable &symtab) {
+      if (!symtab.bitcodeFileInstances.empty())
+        symtab.loadMinGWSymbols();
+    });
+    run();
   }
 
   // Members loaded for -wrap or MinGW may have added import-form references.
