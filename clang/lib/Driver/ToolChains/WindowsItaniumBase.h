@@ -62,9 +62,11 @@ public:
   }
 
   /// Under LTO, CFI checks the virtual and non-virtual member calls of the
-  /// classes LTO sees whole, beside KCFI.
+  /// classes LTO sees whole, and the indirect calls whose targets LTO tags,
+  /// beside KCFI.
   SanitizerMask getDefaultLTOSanitizers() const override {
-    return SanitizerKind::CFIVCall | SanitizerKind::CFINVCall;
+    return SanitizerKind::CFIVCall | SanitizerKind::CFINVCall |
+           SanitizerKind::CFIICall | SanitizerKind::CFIMFCall;
   }
   bool canCombineKCFIWithCFI() const override { return true; }
 
