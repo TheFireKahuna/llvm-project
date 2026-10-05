@@ -228,6 +228,17 @@
 // RUN:   | FileCheck --check-prefix=NO-LTO-CFI %s
 // NO-LTO-CFI:     "-cc1"
 // NO-LTO-CFI-NOT: cfi-vcall
+
+// A toolchain built without upstream's ignorelist still compiles with the
+// default CFI; asking for CFI needs the list.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s -flto \
+// RUN:     -resource-dir=%S 2>&1 \
+// RUN:   | FileCheck --check-prefix=LTO-CFI-NO-LIST %s --implicit-check-not=error:
+// RUN: not %clang -### --target=x86_64-unknown-windows-itanium -c %s -flto \
+// RUN:     -fsanitize=cfi-vcall -resource-dir=%S 2>&1 \
+// RUN:   | FileCheck --check-prefix=CFI-NO-LIST %s
+// LTO-CFI-NO-LIST: "-fsanitize=cfi-nvcall,cfi-vcall,kcfi"
+// CFI-NO-LIST: error: missing sanitizer ignorelist
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s -flto \
 // RUN:     -fsanitize=cfi -resource-dir=%S/Inputs/resource_dir 2>&1 \
 // RUN:   | FileCheck --check-prefix=CFI-KCFI %s --implicit-check-not=error:
