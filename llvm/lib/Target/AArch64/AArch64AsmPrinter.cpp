@@ -30,6 +30,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/BinaryFormat/ELF.h"
@@ -1234,13 +1235,40 @@ void AArch64AsmPrinter::emitKCFIThunks(Module &M) {
                              {"__llvm_kcfi_local_check_", true, false},
                              {"__llvm_kcfi_vfn_check_", false, true}};
   uint64_t Pattern = getKCFIMarkerPattern(Marker->getZExtValue());
+  // A member thunk serves a function type that LTO checks by membership, and
+  // on a miss continues into the type's ordinary thunk of the same kind
+  // through a weak symbol.
+  struct MemberKind {
+    StringRef Prefix;
+    bool Local;
+    StringRef MissPrefix;
+    StringRef ThunkPrefix;
+  };
+  const MemberKind MemberKinds[] = {
+      {"__llvm_kcfi_member_check_", false, "__llvm_kcfi_member_check_miss_",
+       "__llvm_kcfi_check_"},
+      {"__llvm_kcfi_member_local_check_", true,
+       "__llvm_kcfi_member_local_check_miss_", "__llvm_kcfi_local_check_"}};
+  // The ordinary thunks a member thunk continues into on a miss.
+  StringSet<> MissThunks;
+  for (const Function &F : M) {
+    if (!F.isDeclaration() || F.use_empty() ||
+        !F.hasMetadata("kcfi_member_tags"))
+      continue;
+    for (const MemberKind &Kind : MemberKinds) {
+      StringRef Name = F.getName();
+      if (Name.consume_front(Kind.Prefix) && !Name.starts_with("00000000"))
+        MissThunks.insert((Kind.ThunkPrefix + Name.take_front(8)).str());
+    }
+  }
   for (const ThunkKind &Kind : Kinds) {
     StringRef Prefix = Kind.Prefix;
     bool Local = Kind.Local;
     for (const Function &F : M) {
       StringRef TypeName = F.getName();
       uint32_t Type;
-      if (!F.isDeclaration() || F.use_empty() ||
+      if (!F.isDeclaration() ||
+          (F.use_empty() && !MissThunks.contains(F.getName())) ||
           !TypeName.consume_front(Prefix) || TypeName.size() != 8 ||
           TypeName.getAsInteger(16, Type))
         continue;
@@ -1329,6 +1357,128 @@ void AArch64AsmPrinter::emitKCFIThunks(Module &M) {
       }
     }
   }
+
+  // A member thunk compares the target's type, as the ordinary thunk does, and
+  // the word before the marker, with the marker's first bytes, with each of
+  // the type's membership tags. A target that matches both inside the code
+  // range returns, and one outside it continues into the guard function,
+  // after the page test for a prefix of 16 bytes. Any other target continues
+  // into the type's ordinary thunk through a weak symbol, which the linker may
+  // define as the mismatch routine; without a type, which only the tags are
+  // compared for, a miss fails fast. A local member thunk fails fast on a
+  // target outside the range as a local thunk does.
+  //
+  // adrp x16, __llvm_code_start; add x16, x16, :lo12:__llvm_code_start
+  // cmp x15, x16; b.lo 1f
+  // adrp x16, __llvm_code_end; add x16, x16, :lo12:__llvm_code_end
+  // cmp x15, x16; b.hs 1f
+  // ldur x16, [x15, #-8]; mov x17, #type; cmp x16, x17; b.ne miss
+  // ldur x16, [x15, #-16]
+  // mov x17, #expected; cmp x16, x17; b.eq 2f   (for each tag)
+  // b miss
+  // 2: ret
+  // 1: tst x15, #mask; b.eq miss
+  // ldur x16, [x15, #-8]; mov x17, #type; cmp x16, x17; b.ne miss
+  // ldur x16, [x15, #-16]
+  // mov x17, #expected; cmp x16, x17; b.eq 3f   (for each tag)
+  // b miss
+  // 3: adrp x16, guard; ldr x16, [x16, :lo12:guard]; br x16
+  for (const Function &F : M) {
+    const MDNode *Tags = F.getMetadata("kcfi_member_tags");
+    if (!F.isDeclaration() || F.use_empty() || !Tags)
+      continue;
+    StringRef TypeName = F.getName();
+    const MemberKind *Kind = find_if(MemberKinds, [&](const MemberKind &K) {
+      return TypeName.consume_front(K.Prefix);
+    });
+    uint32_t Type;
+    if (Kind == std::end(MemberKinds) ||
+        TypeName.take_front(8).getAsInteger(16, Type))
+      continue;
+    TypeName = TypeName.take_front(8);
+    if (!CodeStart) {
+      CodeStart = OutContext.getOrCreateSymbol("__llvm_code_start");
+      CodeEnd = OutContext.getOrCreateSymbol("__llvm_code_end");
+      EmitCodeRangeDefault(CodeStart, CodeEnd);
+    }
+    MCSymbol *Miss = TrapFn;
+    if (Type) {
+      Miss = OutContext.getOrCreateSymbol(Kind->MissPrefix + TypeName);
+      if (!Miss->isVariable()) {
+        OutStreamer->emitSymbolAttribute(Miss, MCSA_Weak);
+        OutStreamer->emitAssignment(
+            Miss, MCSymbolRefExpr::create(OutContext.getOrCreateSymbol(
+                                              Kind->ThunkPrefix + TypeName),
+                                          OutContext));
+      }
+    } else {
+      UsesRoutine = true;
+    }
+
+    auto EmitTagCompares = [&](MCSymbol *Hit) {
+      if (Type) {
+        Emit(MCInstBuilder(AArch64::LDURXi)
+                 .addReg(AArch64::X16)
+                 .addReg(AArch64::X15)
+                 .addImm(-(PrefixBytes + 8)));
+        EmitMovX17(Pattern >> 32 | uint64_t(Type) << 32);
+        EmitCmp(AArch64::X16, AArch64::X17);
+        EmitBcc(AArch64CC::NE, Miss);
+      }
+      Emit(MCInstBuilder(AArch64::LDURXi)
+               .addReg(AArch64::X16)
+               .addReg(AArch64::X15)
+               .addImm(-(PrefixBytes + 16)));
+      for (const MDOperand &Tag : Tags->operands()) {
+        EmitMovX17(mdconst::extract<ConstantInt>(Tag)->getZExtValue() |
+                   Pattern << 32);
+        EmitCmp(AArch64::X16, AArch64::X17);
+        EmitBcc(AArch64CC::EQ, Hit);
+      }
+      Emit(MCInstBuilder(AArch64::B)
+               .addExpr(MCSymbolRefExpr::create(Miss, OutContext)));
+    };
+    EmitFunctionStart(getSymbol(&F));
+    MCSymbol *Outside = OutContext.createTempSymbol();
+    MCSymbol *Hit = OutContext.createTempSymbol();
+    MCSymbol *GuardHit = OutContext.createTempSymbol();
+    if (Kind->Local) {
+      EmitAddr(AArch64::X16, CodeStart);
+      EmitAddr(AArch64::X17, CodeEnd);
+      EmitCmp(AArch64::X15, AArch64::X16);
+      EmitBcc(AArch64CC::LO, Outside);
+      EmitCmp(AArch64::X15, AArch64::X17);
+      EmitBcc(AArch64CC::HS, Outside);
+    } else {
+      EmitAddr(AArch64::X16, CodeStart);
+      EmitCmp(AArch64::X15, AArch64::X16);
+      EmitBcc(AArch64CC::LO, Outside);
+      EmitAddr(AArch64::X16, CodeEnd);
+      EmitCmp(AArch64::X15, AArch64::X16);
+      EmitBcc(AArch64CC::HS, Outside);
+    }
+    EmitTagCompares(Hit);
+    OutStreamer->emitLabel(Hit);
+    Emit(MCInstBuilder(AArch64::RET).addReg(AArch64::LR));
+    OutStreamer->emitLabel(Outside);
+    MCSymbol *Trap = nullptr;
+    if (Kind->Local) {
+      // The bounds are equal in an image that was not sealed, where no
+      // target is in the range and the guard check function decides.
+      Trap = OutContext.createTempSymbol();
+      EmitCmp(AArch64::X16, AArch64::X17);
+      EmitBcc(AArch64CC::NE, Trap);
+    }
+    EmitPageTest(Miss, /*ReadBytes=*/16);
+    EmitTagCompares(GuardHit);
+    OutStreamer->emitLabel(GuardHit);
+    EmitGuardJump();
+    if (Trap) {
+      OutStreamer->emitLabel(Trap);
+      EmitFastFail();
+    }
+  }
+
   if (!UsesRoutine)
     return;
 

@@ -1840,14 +1840,19 @@ void AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
 
   // With a marker, the 8 bytes before the type are the pattern x86 encodes
   // as a nopl and the opcode of a move: 0F 1F 80, the marker, B8. A second
-  // type the function carries, which a call through a member function
-  // pointer checks, precedes them. A __cfi_ symbol marks the prefix, as on
-  // x86, with the function's linkage except on COFF, where it is local.
+  // type the function carries precedes them: the type a call through a
+  // member function pointer to a virtual function checks, or the membership
+  // tag LTO gives a function of a type it checks by members. A __cfi_ symbol
+  // marks the prefix, as on x86, with the function's linkage except on COFF,
+  // where it is local.
   MCSymbol *FnSym = OutContext.getOrCreateSymbol("__cfi_" + MF.getName());
   if (!TM.getTargetTriple().isOSBinFormatCOFF())
     emitLinkage(&F, FnSym);
   OutStreamer->emitLabel(FnSym);
-  if (const MDNode *VfnMD = F.getMetadata("kcfi_vfn_type"))
+  const MDNode *VfnMD = F.getMetadata("kcfi_vfn_type");
+  if (!VfnMD)
+    VfnMD = F.getMetadata("kcfi_member_tag");
+  if (VfnMD)
     OutStreamer->emitIntValue(
         mdconst::extract<ConstantInt>(VfnMD->getOperand(0))->getZExtValue(), 4);
   OutStreamer->emitBytes(StringRef("\x0f\x1f\x80", 3));
