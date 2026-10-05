@@ -207,8 +207,9 @@
 // KCFI-OPTS-DAG: "-fsanitize-kcfi-hash=FNV-1a"
 
 // Under LTO, CFI checks the virtual and non-virtual member calls of the
-// classes LTO sees whole, beside KCFI. With no sanitizer runtime, a failed
-// check can only trap.
+// classes LTO sees whole, and the indirect calls through function and member
+// function pointers, beside KCFI. With no sanitizer runtime, a failed check
+// can only trap.
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s -flto \
 // RUN:     -resource-dir=%S/Inputs/resource_dir 2>&1 \
 // RUN:   | FileCheck --check-prefix=LTO-CFI %s --implicit-check-not=error:
@@ -216,8 +217,8 @@
 // RUN:     -resource-dir=%S/Inputs/resource_dir 2>&1 \
 // RUN:   | FileCheck --check-prefix=LTO-CFI %s --implicit-check-not=error:
 // LTO-CFI:     "-cc1"
-// LTO-CFI-DAG: "-fsanitize=cfi-nvcall,cfi-vcall,kcfi"
-// LTO-CFI-DAG: "-fsanitize-trap=cfi-nvcall,cfi-vcall"
+// LTO-CFI-DAG: "-fsanitize=cfi-icall,cfi-mfcall,cfi-nvcall,cfi-vcall,kcfi"
+// LTO-CFI-DAG: "-fsanitize-trap=cfi-icall,cfi-mfcall,cfi-nvcall,cfi-vcall"
 // LTO-CFI-DAG: "-fsanitize-system-ignorelist={{[^"]*}}cfi_ignorelist.txt"
 // LTO-CFI-DAG: "-fsplit-lto-unit"
 // LTO-CFI-DAG: "-fwhole-program-vtables"
@@ -228,10 +229,10 @@
 // RUN:     -fno-sanitize=cfi -resource-dir=%S/Inputs/resource_dir 2>&1 \
 // RUN:   | FileCheck --check-prefix=NO-CFI %s
 // NO-LTO-CFI:     "-cc1"
-// NO-LTO-CFI-NOT: cfi-vcall
+// NO-LTO-CFI-NOT: "-fsanitize={{[^"]*}}cfi-
 // NO-LTO-CFI-NOT: -fwhole-program-vtables
 // NO-CFI:     "-cc1"
-// NO-CFI-NOT: cfi-vcall
+// NO-CFI-NOT: "-fsanitize={{[^"]*}}cfi-
 
 // A toolchain built without upstream's ignorelist still compiles with the
 // default CFI; asking for CFI needs the list.
@@ -241,7 +242,7 @@
 // RUN: not %clang -### --target=x86_64-unknown-windows-itanium -c %s -flto \
 // RUN:     -fsanitize=cfi-vcall -resource-dir=%S 2>&1 \
 // RUN:   | FileCheck --check-prefix=CFI-NO-LIST %s
-// LTO-CFI-NO-LIST: "-fsanitize=cfi-nvcall,cfi-vcall,kcfi"
+// LTO-CFI-NO-LIST: "-fsanitize=cfi-icall,cfi-mfcall,cfi-nvcall,cfi-vcall,kcfi"
 // CFI-NO-LIST: error: missing sanitizer ignorelist
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s -flto \
 // RUN:     -fsanitize=cfi -resource-dir=%S/Inputs/resource_dir 2>&1 \
