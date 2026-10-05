@@ -3006,6 +3006,13 @@ public:
   /// the result of this computation can change.
   const CXXMethodDecl *getCurrentKeyFunction(const CXXRecordDecl *RD);
 
+  /// Get the key function the given record decl would have if a dllimport
+  /// member did not take it away. Unlike getCurrentKeyFunction, it is the same
+  /// in a translation unit that imports the class and in one that exports it.
+  /// The record must have a definition; the result is computed on each call.
+  const CXXMethodDecl *
+  getKeyFunctionIgnoringDLLImport(const CXXRecordDecl *RD);
+
   /// Observe that the given method cannot be a key function.
   /// Checks the key-function cache for the method's class and clears it
   /// if matches the given declaration.
