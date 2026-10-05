@@ -16,7 +16,7 @@
 # RUN: llvm-nm -n %t/out.exe | FileCheck %s
 # RUN: lld-link %t/a.obj %t/b.obj -entry:main -debug:symtab -opt:icf \
 # RUN:   -import-slots -out:%t/slots.exe
-# RUN: llvm-nm -n %t/slots.exe | FileCheck %s
+# RUN: llvm-nm -n %t/slots.exe | FileCheck --check-prefix=SLOTS %s
 
 ## _ZTV1D.ap: required, 16 into its section, at 4072 modulo 4096.
 ## _ZTV1C: a.obj's copy is kept, pinned by b.obj's at 24 modulo 64.
@@ -28,6 +28,14 @@
 # CHECK-NEXT: 140003000 r _ZTV1E
 # CHECK-NEXT: 140003010 r _ZTV1F
 # CHECK-NEXT: 140003020 r inner_start
+
+## -import-slots also packs .rdata; the pins hold.
+# SLOTS:      140002000 r _ZTV1E
+# SLOTS-NEXT: 140002018 R _ZTV1C
+# SLOTS-NEXT: 140002030 r _ZTV1F
+# SLOTS-NEXT: 140002fd8 r _ZTV1D
+# SLOTS-NEXT: 140002fe8 R _ZTV1D.ap
+# SLOTS-NEXT: 140003020 r inner_start
 
 #--- a.s
   .text

@@ -1,16 +1,20 @@
 # REQUIRES: aarch64
 
-## Pins are honoured on AArch64 as on x86-64, with and without -import-slots.
+## Pins are honoured on AArch64 as on x86-64, with and without -import-slots,
+## which also packs .rdata around them.
 
 # RUN: llvm-mc -triple aarch64-unknown-windows-itanium %s -filetype=obj -o %t.obj
 # RUN: lld-link %t.obj -entry:main -debug:symtab -out:%t.exe
 # RUN: llvm-nm -n %t.exe | FileCheck %s --check-prefix=PLAIN
 # RUN: lld-link %t.obj -entry:main -debug:symtab -import-slots -out:%t.slots.exe
-# RUN: llvm-nm -n %t.slots.exe | FileCheck %s --check-prefix=PLAIN
+# RUN: llvm-nm -n %t.slots.exe | FileCheck %s --check-prefix=SLOTS
 
 # PLAIN:      140002000 r s8
 # PLAIN-NEXT: 140002040 r a64
 # PLAIN-NEXT: 140002fc8 R tagged
+# SLOTS:      140002000 r a64
+# SLOTS-NEXT: 140002010 r s8
+# SLOTS-NEXT: 140002fc8 R tagged
 
   .text
   .globl main
