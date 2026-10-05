@@ -9,6 +9,7 @@
 ;; Otherwise, and without -guard:cf, the miss keeps the thunk for the type.
 ;; The miss of a local member thunk, __llvm_kcfi_member_local_miss_<type>, is
 ;; narrowed in the same way from the local thunk for the type.
+;; LTO hashes the output's base name into the tags.
 
 ; RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 ; RUN: llvm-as main.ll -o main.bc
@@ -20,7 +21,7 @@
 ; RUN: llvm-objdump -d narrow.exe | FileCheck %s --check-prefix=NARROW
 ; RUN: llvm-objdump -t narrow.exe | FileCheck %s --check-prefix=NARROW-SYM
 
-; NARROW:      <__llvm_kcfi_member_dispatch_22222222_0c6decd7>:
+; NARROW:      <__llvm_kcfi_member_dispatch_22222222_{{[0-9a-f]+}}>:
 ; NARROW:        jmp {{.*}} <__llvm_kcfi_trap>
 ; NARROW:        je {{.*}} <__llvm_kcfi_trap>
 ; NARROW:        jmp {{.*}} <__llvm_kcfi_trap>
@@ -29,6 +30,12 @@
 ; NARROW-SYM-DAG: 0x[[#%.8x,TRAP:]] __llvm_kcfi_trap
 ; NARROW-SYM-DAG: 0x[[#TRAP]] __llvm_kcfi_member_miss_22222222
 ; NARROW-SYM-DAG: 0x[[#TRAP]] __llvm_kcfi_member_local_miss_22222222
+
+; RUN: lld-link main.bc guard.obj -import-slots -guard:cf -entry:main \
+; RUN:   -lldemit:llvm -out:%t.dir/image.bc
+; RUN: llvm-dis image.bc -o - | FileCheck %s --check-prefix=IMAGE
+
+; IMAGE: !{i32 4, !"kcfi-image", !"image.bc"}
 
 ; RUN: lld-link main.bc guard.obj native.obj -import-slots -guard:cf \
 ; RUN:   -entry:main -include:table -debug:symtab -opt:ref -out:native.exe
@@ -39,7 +46,7 @@
 ; RUN: llvm-objdump -d noguard.exe | FileCheck %s --check-prefix=KEEP
 ; RUN: llvm-objdump -t noguard.exe | FileCheck %s --check-prefix=KEEP-SYM
 
-; KEEP:      <__llvm_kcfi_member_dispatch_22222222_0c6decd7>:
+; KEEP:      <__llvm_kcfi_member_dispatch_22222222_{{[0-9a-f]+}}>:
 ; KEEP:        jmp {{.*}} <__llvm_kcfi_member_miss_22222222>
 ; KEEP:        je {{.*}} <__llvm_kcfi_member_miss_22222222>
 ; KEEP:        jmp {{.*}} <__llvm_kcfi_member_miss_22222222>
