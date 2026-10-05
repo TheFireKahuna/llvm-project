@@ -8,12 +8,12 @@
 // RUN: llvm-mc -triple x86_64-unknown-windows-itanium -filetype=obj %s -o %t.o
 // RUN: llvm-objdump -s -j .llvm_link_records %t.o | FileCheck %s
 
-// "LLRC", version 1, the x86-64 sites capability, then one group of kind 2
-// and 19 bytes: .text's symbol (index 0) with 12 sites, each ULEB128
-// (delta << 4 | form), with forms 0 other, 1 call, 2 jump and 5 jump after
-// one prefix.
+// "LLRC", version 1, the x86-64 sites and call-only capabilities (3), then one
+// group of kind 2 and 19 bytes: .text's symbol (index 0) with 12 sites, each
+// ULEB128 (delta << 4 | form), with forms 0 other, 1 call, 2 jump and 5 jump
+// after one prefix.
 // CHECK:      Contents of section .llvm_link_records:
-// CHECK-NEXT: 0000 4c4c5243 01010213 000c2275 75757070
+// CHECK-NEXT: 0000 4c4c5243 01030213 000c2275 75757070
 // CHECK-NEXT: 0010 800171e2 01800280 018001
 // CHECK-EMPTY:
 
