@@ -2088,6 +2088,13 @@ def int_kcfi_check : Intrinsic<[], [llvm_ptr_ty, llvm_i32_ty, llvm_i32_ty],
                                 ReadOnly<ArgIndex<0>>, NoCapture<ArgIndex<0>>,
                                 ImmArg<ArgIndex<1>>, ImmArg<ArgIndex<2>>]>;
 
+// Returns whether a function pointer is a member of a function type that
+// LowerTypeTests checks by membership: whether the function carries one of the
+// membership tags the metadata lists, in the word before its KCFI marker.
+def int_kcfi_member_test : DefaultAttrsIntrinsic<[llvm_i1_ty],
+                                                 [llvm_ptr_ty, llvm_metadata_ty],
+                                                 [IntrNoMem, IntrSpeculatable]>;
+
 // Return true if ubsan check is allowed.
 def int_allow_ubsan_check : DefaultAttrsIntrinsic<[llvm_i1_ty], [llvm_i8_ty],
     [IntrInaccessibleMemOnly, ImmArg<ArgIndex<0>>, NoUndef<RetIndex>]>;
