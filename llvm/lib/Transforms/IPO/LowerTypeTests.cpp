@@ -1569,6 +1569,36 @@ void LowerTypeTestsModule::importTypeTest(CallInst *CI) {
   if (!TypeIdStr)
     return;
 
+  // Where function types are checked by membership, a type that the thin link
+  // gave no resolution has no members in the LTO unit; its test is one of
+  // membership tags that no function carries.
+  if (UseMembershipTags) {
+    const TypeIdSummary *TidSummary =
+        ImportSummary->getTypeIdSummary(TypeIdStr->getString());
+    if (!TidSummary ||
+        TidSummary->TTRes.TheKind == TypeTestResolution::Members) {
+      // A test that only llvm.assume uses was kept for devirtualization and is
+      // dropped later.
+      if (!CI->use_empty() && all_of(CI->users(), IsaPred<AssumeInst>))
+        return;
+      SmallVector<Metadata *, 1> Tags;
+      if (TidSummary)
+        for (uint32_t Tag : TidSummary->TTRes.MemberTags)
+          Tags.push_back(
+              ConstantAsMetadata::get(ConstantInt::get(Int32Ty, Tag)));
+      CallInst *Test = CallInst::Create(
+          Intrinsic::getOrInsertDeclaration(&M, Intrinsic::kcfi_member_test),
+          {CI->getArgOperand(0),
+           MetadataAsValue::get(M.getContext(),
+                                MDTuple::get(M.getContext(), Tags))},
+          "", CI->getIterator());
+      Test->setDebugLoc(CI->getDebugLoc());
+      CI->replaceAllUsesWith(Test);
+      CI->eraseFromParent();
+      return;
+    }
+  }
+
   TypeIdLowering TIL = importTypeId(TypeIdStr->getString());
   Value *Lowered = lowerTypeTestCall(TypeIdStr, CI, TIL);
   if (Lowered) {
@@ -2429,14 +2459,30 @@ void LowerTypeTestsModule::buildMembershipTagsFromFunctions(
   for (unsigned I = 0; I != TypeIds.size(); ++I)
     TypeIdIndices[TypeIds[I]] = I;
 
+  // In the thin link, a function that a ThinLTO module defines is a
+  // declaration here, which the summary shows to be defined. Whether it has a
+  // KCFI prefix is not known; its backend emits the tag in the prefix if so.
+  auto IsDefinedInThinLTOModule = [&](GlobalTypeMember *GTM) {
+    if (!ExportSummary || !GTM->isExported())
+      return false;
+    ValueInfo VI = ExportSummary->getValueInfo(
+        cast<Function>(GTM->getGlobal())->getGUIDOrFallback());
+    return VI && any_of(VI.getSummaryList(), [&](const auto &S) {
+             return S->isLive() && isa<FunctionSummary>(S->getBaseObject());
+           });
+  };
+
   // Group the members by the set of tested types they belong to.
   std::map<SmallVector<unsigned, 2>, SmallVector<Function *, 4>> Classes;
+  SmallPtrSet<Function *, 8> ThinLTOMembers;
   for (GlobalTypeMember *GTM : Functions) {
     auto *F = cast<Function>(GTM->getGlobal());
-    if (F->isDeclarationForLinker() ||
-        !F->hasMetadata(LLVMContext::MD_kcfi_type) ||
-        F->hasMetadata("kcfi_vfn_type") ||
-        (F->hasLocalLinkage() && !F->hasAddressTaken()))
+    if (IsDefinedInThinLTOModule(GTM))
+      ThinLTOMembers.insert(F);
+    else if (F->isDeclarationForLinker() ||
+             !F->hasMetadata(LLVMContext::MD_kcfi_type) ||
+             F->hasMetadata("kcfi_vfn_type") ||
+             (F->hasLocalLinkage() && !F->hasAddressTaken()))
       continue;
     SmallVector<unsigned, 2> Types;
     for (MDNode *Type : GTM->types()) {
@@ -2486,11 +2532,28 @@ void LowerTypeTestsModule::buildMembershipTagsFromFunctions(
     MDNode *TagMD =
         MDNode::get(M.getContext(),
                     ConstantAsMetadata::get(ConstantInt::get(Int32Ty, *Tag)));
-    for (Function *F : Members)
-      F->setMetadata("kcfi_member_tag", TagMD);
+    for (Function *F : Members) {
+      if (ThinLTOMembers.contains(F))
+        ExportSummary->setKCFIMemberTag(F->getGUIDOrFallback(), *Tag);
+      else
+        F->setMetadata("kcfi_member_tag", TagMD);
+    }
     for (unsigned I : Types)
       TypeTags[I].push_back(*Tag);
   }
+
+  // ThinLTO backends test a type tested outside this module by its tags, and
+  // one without a resolution for no tags.
+  if (ExportSummary)
+    for (unsigned I = 0; I != TypeIds.size(); ++I)
+      if (auto *TypeId = dyn_cast<MDString>(TypeIds[I]);
+          TypeId && TypeIdUsers[TypeIds[I]].IsExported &&
+          !TypeTags[I].empty()) {
+        TypeTestResolution &TTRes =
+            ExportSummary->getOrInsertTypeIdSummary(TypeId->getString()).TTRes;
+        TTRes.TheKind = TypeTestResolution::Members;
+        TTRes.MemberTags.assign(TypeTags[I].begin(), TypeTags[I].end());
+      }
 
   Function *MemberTest =
       Intrinsic::getOrInsertDeclaration(&M, Intrinsic::kcfi_member_test);
@@ -2823,6 +2886,17 @@ bool LowerTypeTestsModule::lower() {
       for (Use &U : llvm::make_early_inc_range(TypeTestFunc->uses()))
         importTypeTest(cast<CallInst>(U.getUser()));
 
+    // Each function the thin link gave a membership tag carries it.
+    if (UseMembershipTags)
+      for (Function &F : M)
+        if (!F.isDeclaration())
+          if (uint32_t Tag =
+                  ImportSummary->getKCFIMemberTag(F.getGUIDOrFallback()))
+            F.setMetadata("kcfi_member_tag",
+                          MDNode::get(M.getContext(),
+                                      ConstantAsMetadata::get(
+                                          ConstantInt::get(Int32Ty, Tag))));
+
     if (ICallBranchFunnelFunc && !ICallBranchFunnelFunc->use_empty())
       report_fatal_error(
           "unexpected call to llvm.icall.branch.funnel during import phase");
@@ -2959,7 +3033,13 @@ bool LowerTypeTestsModule::lower() {
         if (!ExportSummary->isGUIDLive(GUID))
           continue;
         if (!IsAddressTaken(GUID)) {
-          if (!CrossDsoCfi || Linkage != CfiFunctionLinkage::Definition)
+          // A function that a native object can see, or that the image
+          // exports, may have its address taken there, which a membership tag
+          // allows for.
+          if (UseMembershipTags) {
+            if (!ExportSummary->isVisibleOutsideSummary(GUID))
+              continue;
+          } else if (!CrossDsoCfi || Linkage != CfiFunctionLinkage::Definition)
             continue;
 
           bool Exported = false;
