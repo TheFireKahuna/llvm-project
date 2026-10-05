@@ -61,6 +61,16 @@ public:
     return SanitizerKind::KCFI;
   }
 
+  /// Under LTO, CFI checks the virtual and non-virtual member calls of the
+  /// classes LTO sees whole, beside KCFI.
+  SanitizerMask getDefaultLTOSanitizers() const override {
+    return SanitizerKind::CFIVCall | SanitizerKind::CFINVCall;
+  }
+  bool canCombineKCFIWithCFI() const override { return true; }
+
+  /// No sanitizer runtime is built for these targets.
+  bool hasSanitizerRuntimes() const override { return false; }
+
   /// -fstack-protector-strong, as /GS gives for MSVC.
   LangOptions::StackProtectorMode
   GetDefaultStackProtectorLevel(bool KernelOrKext) const override {
