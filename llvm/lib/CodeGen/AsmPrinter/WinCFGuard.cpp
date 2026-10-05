@@ -68,6 +68,11 @@ static bool isPossibleIndirectCallTarget(const GlobalValue *GV) {
         // Ignore llvm.arm64ec.symbolmap; it doesn't lower to an actual address.
         if (G->getName() == "llvm.arm64ec.symbolmap")
           continue;
+        // A personality routine is named by the function's unwind data, and
+        // the system calls it directly, without an indirect-call check.
+        if (const auto *F = dyn_cast<Function>(G);
+            F && F->hasPersonalityFn() && F->getPersonalityFn() == U.get())
+          continue;
         // Globals (for example, vtables) are escapes.
         return true;
       } else if (isa<Constant>(FnUser)) {
