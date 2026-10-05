@@ -26758,6 +26758,10 @@ This intrinsic is lowered to code which is intended to cause an execution trap,
 embedding the argument into encoding of that trap somehow to discriminate
 crashes if possible.
 
+On Windows Itanium and NT-POSIX targets, an argument of 64 or more is a
+fast-fail code: the intrinsic fails fast with that code, as `__fastfail` does,
+which no exception handler can resume past.
+
 Equivalent to `@llvm.trap` for targets that do not support this behavior.
 
 (llvm.kcfi.check)=
