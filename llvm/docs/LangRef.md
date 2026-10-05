@@ -8926,7 +8926,9 @@ required unhonoured. A pin lets a value computed from an address alone, such
 as a tag in the low bits of a vtable pointer, mean the same in every image.
 Like `!type`, the metadata is moved with its offset when a pass moves the
 global's contents, and a global may carry more than one. A pass that splits a
-global must keep its pinned contents together.
+global must keep its pinned contents together, and a pass that merges globals
+into one must place each where its pins hold, or fail if a required one
+cannot, and carry the pins onto the merged global.
 
 It is lowered on COFF targets to a pin in the object's link-only records, and
 has no effect on other targets.

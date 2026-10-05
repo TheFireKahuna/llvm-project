@@ -1111,6 +1111,93 @@ Value *LowerTypeTestsModule::lowerTypeTestCall(Metadata *TypeId, CallInst *CI,
   return P;
 }
 
+namespace {
+/// A pin of a global merged into a combined global: the address Offset bytes
+/// into the global is asked to be Residue modulo 2^Log2.
+struct MemberPin {
+  uint64_t Offset;
+  unsigned Log2;
+  uint64_t Residue;
+  bool Required;
+};
+
+/// Places globals in a combined global so that their pins hold. The combined
+/// global's address B is known modulo 2^KnownLog2, as BaseResidue: at first
+/// from its alignment alone, and then from the first pin wider than it, which
+/// fixes more bits of B and is carried onto the combined global.
+class PinnedLayout {
+public:
+  struct Placement {
+    uint64_t Offset;
+    unsigned KnownLog2;
+    uint64_t BaseResidue;
+    SmallVector<bool, 1> Held;
+  };
+
+  explicit PinnedLayout(Align CombinedAlign)
+      : KnownLog2(Log2(CombinedAlign)) {}
+
+  /// Returns where a global with alignment \p A and pins \p Pins goes at or
+  /// after \p Start, and which of its pins hold there. Required pins anchor
+  /// first, then wider ones.
+  Placement place(uint64_t Start, Align A, ArrayRef<MemberPin> Pins) const {
+    Placement P{alignTo(Start, A), KnownLog2, BaseResidue, {}};
+    SmallVector<const MemberPin *, 1> Anchors;
+    for (const MemberPin &Pin : Pins)
+      Anchors.push_back(&Pin);
+    llvm::stable_sort(Anchors, [](const MemberPin *L, const MemberPin *R) {
+      return std::make_pair(L->Required, L->Log2) >
+             std::make_pair(R->Required, R->Log2);
+    });
+    for (const MemberPin *Pin : Anchors) {
+      unsigned K = std::min(Pin->Log2, KnownLog2);
+      uint64_t Want =
+          (Pin->Residue - Pin->Offset - BaseResidue) & maskTrailingOnes<uint64_t>(K);
+      if (A.value() > (1ULL << K) ? Want != 0 : Want % A.value() != 0)
+        continue;
+      P.Offset = std::max<uint64_t>(alignTo(Start, A),
+                                    alignTo(Start, 1ULL << K, Want));
+      if (Pin->Log2 > KnownLog2) {
+        P.KnownLog2 = Pin->Log2;
+        P.BaseResidue = (Pin->Residue - Pin->Offset - P.Offset) &
+                        maskTrailingOnes<uint64_t>(Pin->Log2);
+      }
+      break;
+    }
+    for (const MemberPin &Pin : Pins)
+      P.Held.push_back(Pin.Log2 <= P.KnownLog2 &&
+                       ((P.BaseResidue + P.Offset + Pin.Offset - Pin.Residue) &
+                        maskTrailingOnes<uint64_t>(Pin.Log2)) == 0);
+    return P;
+  }
+
+  void commit(const Placement &P) {
+    KnownLog2 = P.KnownLog2;
+    BaseResidue = P.BaseResidue;
+  }
+
+  unsigned getKnownLog2() const { return KnownLog2; }
+
+private:
+  unsigned KnownLog2;
+  uint64_t BaseResidue = 0;
+};
+} // namespace
+
+static SmallVector<MemberPin, 1> getPins(const GlobalVariable &GV) {
+  SmallVector<MDNode *, 1> MDs;
+  GV.getMetadata(LLVMContext::MD_pin, MDs);
+  SmallVector<MemberPin, 1> Pins;
+  for (const MDNode *MD : MDs) {
+    auto GetOperand = [&](unsigned I) {
+      return mdconst::extract<ConstantInt>(MD->getOperand(I))->getZExtValue();
+    };
+    Pins.push_back({GetOperand(0), unsigned(GetOperand(1)), GetOperand(2),
+                    GetOperand(3) != 0});
+  }
+  return Pins;
+}
+
 /// Given a disjoint set of type identifiers and globals, lay out the globals,
 /// build the bit sets and lower the llvm.type.test calls.
 void LowerTypeTestsModule::buildBitSetsFromGlobalVariables(
@@ -1124,34 +1211,146 @@ void LowerTypeTestsModule::buildBitSetsFromGlobalVariables(
   const DataLayout &DL = M.getDataLayout();
   DenseMap<GlobalTypeMember *, uint64_t> GlobalLayout;
   Align MaxAlign;
-  uint64_t CurOffset = 0;
-  uint64_t DesiredPadding = 0;
+
+  // Globals may carry pins. A pin no wider than a cache line or the widest
+  // alignment is kept by aligning the combined global; a wider one fixes the
+  // combined global's address modulo its modulus, and the globals with such
+  // pins are placed in the order of the residues they want, so that they walk
+  // forward through the modulus, with the other globals filling the gaps.
+  DenseMap<GlobalTypeMember *, SmallVector<MemberPin, 1>> Pins;
   for (GlobalTypeMember *G : Globals) {
     auto *GV = cast<GlobalVariable>(G->getGlobal());
-    Align Alignment =
-        DL.getValueOrABITypeAlignment(GV->getAlign(), GV->getValueType());
-    MaxAlign = std::max(MaxAlign, Alignment);
-    uint64_t GVOffset = alignTo(CurOffset + DesiredPadding, Alignment);
-    GlobalLayout[G] = GVOffset;
-    if (GVOffset != 0) {
-      uint64_t Padding = GVOffset - CurOffset;
-      GlobalInits.push_back(
-          ConstantAggregateZero::get(ArrayType::get(Int8Ty, Padding)));
-    }
+    MaxAlign = std::max(
+        MaxAlign,
+        DL.getValueOrABITypeAlignment(GV->getAlign(), GV->getValueType()));
+    if (GV->hasMetadata(LLVMContext::MD_pin))
+      Pins[G] = getPins(*GV);
+  }
+  uint64_t NarrowPin = std::max<uint64_t>(MaxAlign.value(), 64);
+  for (auto &[G, GPins] : Pins)
+    for (const MemberPin &Pin : GPins)
+      if ((1ULL << Pin.Log2) <= NarrowPin)
+        MaxAlign = std::max(MaxAlign, Align(1ULL << Pin.Log2));
+  PinnedLayout Layout(MaxAlign);
+  auto IsWide = [&](GlobalTypeMember *G) {
+    return llvm::any_of(Pins.lookup(G), [&](const MemberPin &Pin) {
+      return Pin.Log2 > Layout.getKnownLog2();
+    });
+  };
 
+  // Each global in layout order, with the index of its element.
+  SmallVector<std::pair<GlobalTypeMember *, unsigned>, 16> Order;
+  SmallVector<SmallVector<bool, 1>, 16> HeldPins;
+  uint64_t CurOffset = 0;
+  auto Place = [&](GlobalTypeMember *G, uint64_t Start) {
+    auto *GV = cast<GlobalVariable>(G->getGlobal());
+    return Layout.place(
+        Start, DL.getValueOrABITypeAlignment(GV->getAlign(), GV->getValueType()),
+        Pins.lookup(G));
+  };
+  auto Append = [&](GlobalTypeMember *G, const PinnedLayout::Placement &P) {
+    auto *GV = cast<GlobalVariable>(G->getGlobal());
+    Layout.commit(P);
+    GlobalLayout[G] = P.Offset;
+    if (P.Offset != 0)
+      GlobalInits.push_back(ConstantAggregateZero::get(
+          ArrayType::get(Int8Ty, P.Offset - CurOffset)));
+    Order.push_back({G, unsigned(GlobalInits.size())});
     GlobalInits.push_back(GV->getInitializer());
-    uint64_t InitSize = GV->getGlobalSize(DL);
-    CurOffset = GVOffset + InitSize;
+    CurOffset = P.Offset + GV->getGlobalSize(DL);
+    HeldPins.push_back(P.Held);
+  };
 
-    // Compute the amount of padding that we'd like for the next element.
-    DesiredPadding = NextPowerOf2(InitSize - 1) - InitSize;
+  SmallVector<GlobalTypeMember *, 4> Wide;
+  SmallVector<GlobalTypeMember *, 16> Fillers;
+  for (GlobalTypeMember *G : Globals) {
+    if (IsWide(G))
+      Wide.push_back(G);
+    else
+      Fillers.push_back(G);
+  }
 
-    // Experiments of different caps with Chromium on both x64 and ARM64
-    // have shown that the 32-byte cap generates the smallest binary on
-    // both platforms while different caps yield similar performance.
-    // (see https://lists.llvm.org/pipermail/llvm-dev/2018-July/124694.html)
-    if (DesiredPadding > 32)
-      DesiredPadding = alignTo(InitSize, 32) - InitSize;
+  if (Wide.empty()) {
+    uint64_t DesiredPadding = 0;
+    for (GlobalTypeMember *G : Globals) {
+      Append(G, Place(G, CurOffset + DesiredPadding));
+
+      // Compute the amount of padding that we'd like for the next element.
+      uint64_t InitSize = cast<GlobalVariable>(G->getGlobal())->getGlobalSize(DL);
+      DesiredPadding = NextPowerOf2(InitSize - 1) - InitSize;
+
+      // Experiments of different caps with Chromium on both x64 and ARM64
+      // have shown that the 32-byte cap generates the smallest binary on
+      // both platforms while different caps yield similar performance.
+      // (see https://lists.llvm.org/pipermail/llvm-dev/2018-July/124694.html)
+      if (DesiredPadding > 32)
+        DesiredPadding = alignTo(InitSize, 32) - InitSize;
+    }
+  } else {
+    auto WantedResidue = [&](GlobalTypeMember *G) {
+      const MemberPin &Pin = *llvm::max_element(
+          Pins[G], [](const MemberPin &L, const MemberPin &R) {
+            return std::make_pair(L.Required, L.Log2) <
+                   std::make_pair(R.Required, R.Log2);
+          });
+      return (Pin.Residue - Pin.Offset) & maskTrailingOnes<uint64_t>(Pin.Log2);
+    };
+    llvm::stable_sort(Wide, [&](GlobalTypeMember *L, GlobalTypeMember *R) {
+      return WantedResidue(L) < WantedResidue(R);
+    });
+    SmallVector<GlobalTypeMember *, 16> BySize(Fillers);
+    llvm::stable_sort(BySize, [&](GlobalTypeMember *L, GlobalTypeMember *R) {
+      return cast<GlobalVariable>(L->getGlobal())->getGlobalSize(DL) >
+             cast<GlobalVariable>(R->getGlobal())->getGlobalSize(DL);
+    });
+    SmallPtrSet<GlobalTypeMember *, 16> Placed;
+    for (GlobalTypeMember *W : Wide) {
+      // Fill the gap before W with the largest globals that fit in it. W's
+      // place does not move, since it is the first one at or after the
+      // current offset that keeps W's pins.
+      uint64_t WOffset = Place(W, CurOffset).Offset;
+      for (GlobalTypeMember *F : BySize) {
+        if (Placed.contains(F))
+          continue;
+        PinnedLayout::Placement FP = Place(F, CurOffset);
+        if (FP.Offset + cast<GlobalVariable>(F->getGlobal())->getGlobalSize(
+                            DL) <=
+            WOffset) {
+          Append(F, FP);
+          Placed.insert(F);
+        }
+      }
+      Append(W, Place(W, CurOffset));
+    }
+    for (GlobalTypeMember *F : Fillers)
+      if (!Placed.contains(F))
+        Append(F, Place(F, CurOffset));
+  }
+
+  // A required pin that could not be kept is an error; one that is not
+  // required is dropped. Pins the combined global's alignment does not imply
+  // are carried onto it.
+  SmallVector<Metadata *, 4> CombinedPins;
+  for (auto [GAndIndex, Held] : zip_equal(Order, HeldPins)) {
+    GlobalTypeMember *G = GAndIndex.first;
+    auto *GV = cast<GlobalVariable>(G->getGlobal());
+    SmallVector<MemberPin, 1> GPins = Pins.lookup(G);
+    for (auto [Pin, IsHeld] : zip_equal(GPins, Held)) {
+      if (!IsHeld) {
+        if (Pin.Required)
+          M.getContext().emitError("pin of '" + GV->getName() +
+                                   "' cannot be kept in a combined global");
+        continue;
+      }
+      if ((1ULL << Pin.Log2) > MaxAlign.value())
+        CombinedPins.push_back(MDTuple::get(
+            M.getContext(),
+            {ConstantAsMetadata::get(ConstantInt::get(
+                 Int64Ty, GlobalLayout[G] + Pin.Offset)),
+             ConstantAsMetadata::get(ConstantInt::get(Int64Ty, Pin.Log2)),
+             ConstantAsMetadata::get(ConstantInt::get(Int64Ty, Pin.Residue)),
+             ConstantAsMetadata::get(ConstantInt::get(Int64Ty, Pin.Required))}));
+    }
   }
 
   Constant *NewInit = ConstantStruct::getAnon(M.getContext(), GlobalInits);
@@ -1159,6 +1358,8 @@ void LowerTypeTestsModule::buildBitSetsFromGlobalVariables(
       new GlobalVariable(M, NewInit->getType(), /*isConstant=*/true,
                          GlobalValue::PrivateLinkage, NewInit);
   CombinedGlobal->setAlignment(MaxAlign);
+  for (Metadata *Pin : CombinedPins)
+    CombinedGlobal->addMetadata(LLVMContext::MD_pin, *cast<MDNode>(Pin));
 
   StructType *NewTy = cast<StructType>(NewInit->getType());
   lowerTypeTestCalls(TypeIds, CombinedGlobal, GlobalLayout);
@@ -1166,18 +1367,17 @@ void LowerTypeTestsModule::buildBitSetsFromGlobalVariables(
   // Build aliases pointing to offsets into the combined global for each
   // global from which we built the combined global, and replace references
   // to the original globals with references to the aliases.
-  for (unsigned I = 0; I != Globals.size(); ++I) {
-    GlobalVariable *GV = cast<GlobalVariable>(Globals[I]->getGlobal());
+  for (auto [G, Index] : Order) {
+    GlobalVariable *GV = cast<GlobalVariable>(G->getGlobal());
 
-    // Multiply by 2 to account for padding elements.
     Constant *CombinedGlobalIdxs[] = {ConstantInt::get(Int32Ty, 0),
-                                      ConstantInt::get(Int32Ty, I * 2)};
+                                      ConstantInt::get(Int32Ty, Index)};
     Constant *CombinedGlobalElemPtr = ConstantExpr::getGetElementPtr(
         DL, NewInit->getType(), CombinedGlobal, CombinedGlobalIdxs,
         GEPNoWrapFlags::inBounds());
     assert(GV->getType()->getAddressSpace() == 0);
     GlobalAlias *GAlias =
-        GlobalAlias::create(NewTy->getElementType(I * 2), 0, GV->getLinkage(),
+        GlobalAlias::create(NewTy->getElementType(Index), 0, GV->getLinkage(),
                             "", CombinedGlobalElemPtr, &M);
     GAlias->setVisibility(GV->getVisibility());
     GAlias->setDLLStorageClass(GV->getDLLStorageClass());
