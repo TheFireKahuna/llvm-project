@@ -2390,11 +2390,19 @@ CGCallee ItaniumCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
   uint64_t ByteOffset =
       VTableIndex * CGM.getDataLayout().getTypeSizeInBits(ComponentTy) / 8;
 
+  bool VTableChecked = false;
   if (!Schema && CGF.ShouldEmitVTableTypeCheckedLoad(MethodDecl->getParent())) {
     VFunc = CGF.EmitVTableTypeCheckedLoad(MethodDecl->getParent(), VTable,
                                           PtrTy, ByteOffset);
+    VTableChecked =
+        CGF.SanOpts.has(SanitizerKind::CFIVCall) &&
+        !CGM.getCodeGenOpts().SanitizeRecover.has(SanitizerKind::CFIVCall) &&
+        !CGM.getContext().getNoSanitizeList().containsType(
+            SanitizerKind::CFIVCall,
+            MethodDecl->getParent()->getQualifiedNameAsString());
   } else {
-    CGF.EmitTypeMetadataCodeForVCall(MethodDecl->getParent(), VTable, Loc);
+    VTableChecked =
+        CGF.EmitTypeMetadataCodeForVCall(MethodDecl->getParent(), VTable, Loc);
 
     llvm::Value *VFuncLoad;
     if (CGM.getLangOpts().RelativeCXXABIVTables) {
@@ -2447,6 +2455,11 @@ CGCallee ItaniumCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
                   Slot.getDtorType() == Dtor_Deleting);
     CodeGenModule::KCFITypeId TypeId = CGM.CreateKCFIVTableSlotTypeIds(Slot);
     Callee.setKCFITypeId(TypeId.first, Local);
+    // A function read at a constant offset from a vtable that CFI vetted is
+    // one of the slot's overrides, which neither KCFI nor Control Flow Guard
+    // need check again.
+    if (VTableChecked)
+      Callee.setKCFIChecked();
     // The object may come from another image, whose functions in the slot
     // need not carry a prefix of ours.
     if (!Local && CGM.hasKCFIFacts() &&

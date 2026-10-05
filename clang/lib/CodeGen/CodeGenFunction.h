@@ -2596,18 +2596,22 @@ public:
 
   /// EmitVTablePtrCheckForCall - Virtual method MD is being called via VTable.
   /// If vptr CFI is enabled, emit a check that VTable is valid.
-  void EmitVTablePtrCheckForCall(const CXXRecordDecl *RD, llvm::Value *VTable,
+  /// Returns whether a failed check stops execution, so that a virtual
+  /// function loaded from \p VTable is one of RD's overrides.
+  bool EmitVTablePtrCheckForCall(const CXXRecordDecl *RD, llvm::Value *VTable,
                                  CFITypeCheckKind TCK, SourceLocation Loc);
 
   /// EmitVTablePtrCheck - Emit a check that VTable is a valid virtual table for
   /// RD using llvm.type.test.
-  void EmitVTablePtrCheck(const CXXRecordDecl *RD, llvm::Value *VTable,
+  /// Returns whether it emitted a check whose failure stops execution.
+  bool EmitVTablePtrCheck(const CXXRecordDecl *RD, llvm::Value *VTable,
                           CFITypeCheckKind TCK, SourceLocation Loc);
 
   /// If whole-program virtual table optimization is enabled, emit an assumption
   /// that VTable is a member of RD's type identifier. Or, if vptr CFI is
   /// enabled, emit a check that VTable is a member of RD's type identifier.
-  void EmitTypeMetadataCodeForVCall(const CXXRecordDecl *RD,
+  /// Returns whether it checked VTable as EmitVTablePtrCheckForCall does.
+  bool EmitTypeMetadataCodeForVCall(const CXXRecordDecl *RD,
                                     llvm::Value *VTable, SourceLocation Loc);
 
   /// Returns whether we should perform a type checked load when loading a
