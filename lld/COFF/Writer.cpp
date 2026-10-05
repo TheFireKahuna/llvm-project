@@ -2034,8 +2034,10 @@ void Writer::placeImportSlotSections() {
   iatEnd = start.back();
 
   std::vector<OutputSection *> before;
+  // A section merged into another is left empty and is not laid out.
   for (StringRef name : slotSections)
-    if (OutputSection *sec = findSection(name); sec && sec != rdataSec)
+    if (OutputSection *sec = findSection(name);
+        sec && sec != rdataSec && !sec->chunks.empty())
       before.push_back(sec);
   if (before.empty())
     return;
