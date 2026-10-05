@@ -15,6 +15,7 @@
 
 #include "llvm/ADT/StringRef.h"
 #include <cstdint>
+#include <optional>
 
 namespace llvm {
 
@@ -51,6 +52,12 @@ inline uint64_t getKCFIMarkerPattern(uint32_t Marker) {
 /// per-type thunks, which the backend emits: on COFF x86-64 and AArch64,
 /// except Arm64EC, when the prefixes carry a marker.
 LLVM_ABI bool hasKCFIThunks(const Module &M);
+
+/// Returns a membership tag from a 64-bit hash of the members that carry it, or
+/// std::nullopt if the tag cannot be told from the word that precedes the
+/// marker of a function without one: zero, the sealed type, and the padding
+/// x86 emits there.
+LLVM_ABI std::optional<uint32_t> getKCFIMemberTag(uint64_t Hash);
 
 /// Returns true if, in a module with KCFI thunks, a call to llvm.kcfi.check at
 /// Offset goes through a per-type check thunk: the type word at offset 4, or
