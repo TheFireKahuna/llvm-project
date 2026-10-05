@@ -57,4 +57,7 @@ foreach(target IN LISTS LLVM_RUNTIME_TARGETS)
   # Programs trap on the checks of libc++'s fast hardening mode unless they
   # define _LIBCPP_HARDENING_MODE themselves.
   set(RUNTIMES_${target}_LIBCXX_HARDENING_MODE fast CACHE STRING "")
+  # A failed check fails fast, which no exception handler can resume past.
+  set(RUNTIMES_${target}_LIBCXX_ASSERTION_HANDLER_FILE
+      vendor/windows-itanium/assertion_handler.in CACHE FILEPATH "")
 endforeach()
