@@ -22,6 +22,7 @@
 #include "X86MachineFunctionInfo.h"
 #include "X86Subtarget.h"
 #include "llvm-c/Visibility.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Analysis/StaticDataProfileInfo.h"
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/BinaryFormat/ELF.h"
@@ -196,12 +197,16 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
   unsigned TypeBytes = 5;
   // The marker is the displacement of a 7-byte nopl, so that the 8 bytes
   // before the hash are a fixed pattern: 0F 1F 80, the marker, and the B8 of
-  // the move. A second type the function carries, which a call through a
-  // member function pointer checks, precedes it.
+  // the move. A second type the function carries precedes it: the type a
+  // call through a member function pointer to a virtual function checks, or
+  // the membership tag LTO gives a function of a type it checks by members.
   ConstantInt *VfnType = nullptr;
   if (Marker) {
     TypeBytes += 7;
-    if (const MDNode *MD = F.getMetadata("kcfi_vfn_type")) {
+    const MDNode *MD = F.getMetadata("kcfi_vfn_type");
+    if (!MD)
+      MD = F.getMetadata("kcfi_member_tag");
+    if (MD) {
       VfnType = mdconst::extract<ConstantInt>(MD->getOperand(0));
       TypeBytes += 4;
     }
@@ -459,12 +464,44 @@ void X86AsmPrinter::emitKCFIThunks(Module &M) {
   uint64_t Pattern = getKCFIMarkerPattern(Marker->getZExtValue());
   MCSymbol *CodeStart = nullptr;
   MCSymbol *CodeEnd = nullptr;
+  // A member thunk serves a function type that LTO checks by membership, and
+  // on a miss continues into the type's ordinary thunk of the same kind
+  // through a weak symbol.
+  struct MemberKind {
+    StringRef Prefix;
+    unsigned Routine;
+    bool Local;
+    StringRef MissPrefix;
+    StringRef ThunkPrefix;
+  };
+  const MemberKind MemberKinds[] = {
+      {"__llvm_kcfi_member_dispatch_", 0, false, "__llvm_kcfi_member_miss_",
+       "__llvm_kcfi_dispatch_"},
+      {"__llvm_kcfi_member_check_", 1, false, "__llvm_kcfi_member_check_miss_",
+       "__llvm_kcfi_check_"},
+      {"__llvm_kcfi_member_local_dispatch_", 0, true,
+       "__llvm_kcfi_member_local_miss_", "__llvm_kcfi_local_dispatch_"},
+      {"__llvm_kcfi_member_local_check_", 1, true,
+       "__llvm_kcfi_member_local_check_miss_", "__llvm_kcfi_local_check_"}};
+  // The ordinary thunks a member thunk continues into on a miss.
+  StringSet<> MissThunks;
+  for (const Function &F : M) {
+    if (!F.isDeclaration() || F.use_empty() ||
+        !F.hasMetadata("kcfi_member_tags"))
+      continue;
+    for (const MemberKind &Kind : MemberKinds) {
+      StringRef Name = F.getName();
+      if (Name.consume_front(Kind.Prefix) && !Name.starts_with("00000000"))
+        MissThunks.insert((Kind.ThunkPrefix + Name.take_front(8)).str());
+    }
+  }
   for (const ThunkKind &Kind : Kinds) {
     const RoutineKind &Routine = Routines[Kind.Routine];
     for (const Function &F : M) {
       StringRef TypeName = F.getName();
       uint32_t Type;
-      if (!F.isDeclaration() || F.use_empty() ||
+      if (!F.isDeclaration() ||
+          (F.use_empty() && !MissThunks.contains(F.getName())) ||
           !TypeName.consume_front(Kind.Prefix) || TypeName.size() != 8 ||
           TypeName.getAsInteger(16, Type))
         continue;
@@ -560,6 +597,144 @@ void X86AsmPrinter::emitKCFIThunks(Module &M) {
     }
   }
 
+  // A member thunk compares the target's type, as the ordinary thunk does, and
+  // the word before the marker, with the marker's first bytes, with each of
+  // the type's membership tags. A target that matches both inside the code
+  // range is taken directly, and one outside it continues into the guard
+  // function, after the page test for a prefix of 16 bytes. Any other target
+  // continues into the type's ordinary thunk through a weak symbol, which the
+  // linker may define as the mismatch routine; without a type, which only the
+  // tags are compared for, a miss fails fast. A local member thunk fails fast
+  // on a target outside the range as a local thunk does.
+  //
+  // leaq __llvm_code_start(%rip), %r10; cmpq %r10, %reg; jb 1f
+  // leaq __llvm_code_end(%rip), %r10; cmpq %r10, %reg; jae 1f
+  // movabsq $type, %r11; cmpq %r11, -8(%reg); jne miss
+  // movabsq $expected, %r11; cmpq %r11, -16(%reg); je 2f   (for each tag)
+  // jmp miss
+  // 2: jmpq *%rax (dispatch) or retq (check)
+  // 1: testl $mask, %reg32; jz miss
+  // movabsq $type, %r11; cmpq %r11, -8(%reg); jne miss
+  // movabsq $expected, %r11; cmpq %r11, -16(%reg); je 3f   (for each tag)
+  // jmp miss
+  // 3: jmpq *guard(%rip)
+  bool NeedsTrap = false;
+  for (const Function &F : M) {
+    const MDNode *Tags = F.getMetadata("kcfi_member_tags");
+    if (!F.isDeclaration() || F.use_empty() || !Tags)
+      continue;
+    StringRef TypeName = F.getName();
+    const MemberKind *Kind = find_if(MemberKinds, [&](const MemberKind &K) {
+      return TypeName.consume_front(K.Prefix);
+    });
+    uint32_t Type;
+    if (Kind == std::end(MemberKinds) ||
+        TypeName.take_front(8).getAsInteger(16, Type))
+      continue;
+    TypeName = TypeName.take_front(8);
+    const RoutineKind &Routine = Routines[Kind->Routine];
+    if (!CodeStart) {
+      CodeStart = OutContext.getOrCreateSymbol("__llvm_code_start");
+      CodeEnd = OutContext.getOrCreateSymbol("__llvm_code_end");
+      EmitCodeRangeDefault(CodeStart, CodeEnd);
+    }
+    MCSymbol *Miss = TrapFn;
+    if (Type) {
+      Miss = OutContext.getOrCreateSymbol(Kind->MissPrefix + TypeName);
+      if (!Miss->isVariable()) {
+        OutStreamer->emitSymbolAttribute(Miss, MCSA_Weak);
+        OutStreamer->emitAssignment(
+            Miss, MCSymbolRefExpr::create(OutContext.getOrCreateSymbol(
+                                              Kind->ThunkPrefix + TypeName),
+                                          OutContext));
+      }
+    } else {
+      NeedsTrap = true;
+    }
+
+    auto EmitTagCompares = [&](MCSymbol *Hit) {
+      if (Type) {
+        OutStreamer->emitInstruction(
+            MCInstBuilder(X86::MOV64ri)
+                .addReg(X86::R11)
+                .addImm(Pattern >> 32 | uint64_t(MaskKCFIType(Type)) << 32),
+            STI);
+        OutStreamer->emitInstruction(MCInstBuilder(X86::CMP64mr)
+                                         .addReg(Routine.TargetReg)
+                                         .addImm(1)
+                                         .addReg(X86::NoRegister)
+                                         .addImm(-(PrefixNops + 8))
+                                         .addReg(X86::NoRegister)
+                                         .addReg(X86::R11),
+                                     STI);
+        EmitJcc(Miss, X86::COND_NE);
+      }
+      for (const MDOperand &Tag : Tags->operands()) {
+        uint64_t Expected =
+            MaskKCFIType(mdconst::extract<ConstantInt>(Tag)->getZExtValue()) |
+            Pattern << 32;
+        OutStreamer->emitInstruction(
+            MCInstBuilder(X86::MOV64ri).addReg(X86::R11).addImm(Expected), STI);
+        OutStreamer->emitInstruction(MCInstBuilder(X86::CMP64mr)
+                                         .addReg(Routine.TargetReg)
+                                         .addImm(1)
+                                         .addReg(X86::NoRegister)
+                                         .addImm(-(PrefixNops + 16))
+                                         .addReg(X86::NoRegister)
+                                         .addReg(X86::R11),
+                                     STI);
+        EmitJcc(Hit, X86::COND_E);
+      }
+      OutStreamer->emitInstruction(
+          MCInstBuilder(X86::JMP_1)
+              .addExpr(MCSymbolRefExpr::create(Miss, OutContext)),
+          STI);
+    };
+    EmitFunctionStart(getSymbol(&F));
+    MCSymbol *Outside = OutContext.createTempSymbol();
+    MCSymbol *Hit = OutContext.createTempSymbol();
+    MCSymbol *GuardHit = OutContext.createTempSymbol();
+    if (Kind->Local) {
+      EmitLea(X86::R10, CodeStart);
+      EmitLea(X86::R11, CodeEnd);
+      EmitCmp(Routine.TargetReg, X86::R10);
+      EmitJcc(Outside, X86::COND_B);
+      EmitCmp(Routine.TargetReg, X86::R11);
+      EmitJcc(Outside, X86::COND_AE);
+    } else {
+      EmitLea(X86::R10, CodeStart);
+      EmitCmp(Routine.TargetReg, X86::R10);
+      EmitJcc(Outside, X86::COND_B);
+      EmitLea(X86::R10, CodeEnd);
+      EmitCmp(Routine.TargetReg, X86::R10);
+      EmitJcc(Outside, X86::COND_AE);
+    }
+    EmitTagCompares(Hit);
+    OutStreamer->emitLabel(Hit);
+    if (Routine.TargetReg == X86::RAX)
+      OutStreamer->emitInstruction(MCInstBuilder(X86::JMP64r).addReg(X86::RAX),
+                                   STI);
+    else
+      OutStreamer->emitInstruction(MCInstBuilder(X86::RET64), STI);
+    OutStreamer->emitLabel(Outside);
+    MCSymbol *Trap = nullptr;
+    if (Kind->Local) {
+      // The bounds are equal in an image that was not sealed, where no
+      // target is in the range and the guard function decides.
+      Trap = OutContext.createTempSymbol();
+      EmitCmp(X86::R10, X86::R11);
+      EmitJcc(Trap, X86::COND_NE);
+    }
+    EmitPageTest(Routine.TargetReg, Miss, /*ReadBytes=*/16);
+    EmitTagCompares(GuardHit);
+    OutStreamer->emitLabel(GuardHit);
+    EmitGuardJump(Routine.GuardFn);
+    if (Trap) {
+      OutStreamer->emitLabel(Trap);
+      EmitFastFail();
+    }
+  }
+
   for (unsigned I = 0; I != std::size(Routines); ++I) {
     if (!UsesRoutine[I])
       continue;
@@ -643,7 +818,7 @@ void X86AsmPrinter::emitKCFIThunks(Module &M) {
       EmitFastFail();
     }
   }
-  if (!UsesRoutine[0] && !UsesRoutine[1])
+  if (!UsesRoutine[0] && !UsesRoutine[1] && !NeedsTrap)
     return;
 
   // movl $FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG, %ecx; int $0x29
