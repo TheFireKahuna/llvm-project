@@ -23,6 +23,7 @@
 #include "lld/Common/Timer.h"
 #include "lld/Common/Version.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/BinaryFormat/Magic.h"
@@ -1345,6 +1346,104 @@ static void findKeepUniqueSections(COFFLinkerContext &ctx) {
         markAddrsig(s);
     }
   }
+}
+
+// Gives each chunk the address its objects' pins ask for. Required pins of
+// one chunk must agree, modulo the smaller of their moduli, or the link
+// fails; pins that are not required apply only if they all agree with each
+// other and with the required ones, and are otherwise left out with a
+// warning. The pin with the largest modulus gives the chunk its residue. The
+// outcome does not depend on the order of the inputs.
+static void resolveLinkPins(COFFLinkerContext &ctx) {
+  llvm::TimeTraceScope timeScope("Resolve link pins");
+  struct Given {
+    ObjFile *file;
+    const ObjFile::LinkPin *pin;
+    uint64_t residue;
+  };
+  auto describe = [&](const Given &g) {
+    return g.pin->sym ? toString(ctx, *g.pin->sym)
+                      : g.pin->chunk->getSectionName().str();
+  };
+  auto report = [&](bool required, const Given &g, const Twine &msg) {
+    (required ? Err(ctx) : Warn(ctx))
+        << g.file << ": pin of " << describe(g) << " " << msg;
+  };
+
+  MapVector<SectionChunk *, SmallVector<Given, 1>> given;
+  for (ObjFile *file : ctx.objFileInstances) {
+    for (const ObjFile::LinkPin &pin : file->linkPins) {
+      SectionChunk *sc = pin.chunk;
+      uint64_t residue = pin.residue;
+      // A symbol that resolves to an import or to nothing in the image is
+      // placed by the image that defines it.
+      if (pin.sym) {
+        auto *d = dyn_cast<DefinedRegular>(pin.sym);
+        if (!d)
+          continue;
+        sc = d->getChunk();
+        residue -= d->getValue();
+      }
+      if (!sc || !sc->live)
+        continue;
+      Given g{file, &pin, residue & maskTrailingOnes<uint64_t>(pin.log2)};
+      // Bits 0 to 11 of an address are those of its RVA, since the image
+      // base is page-aligned.
+      if (pin.log2 > 12) {
+        report(pin.required, g, "asks for a modulus larger than a page");
+        continue;
+      }
+      if (g.residue % std::min<uint64_t>(sc->getAlignment(), 1ULL << pin.log2)) {
+        report(pin.required, g, "conflicts with the alignment of its section");
+        continue;
+      }
+      given[sc].push_back(g);
+    }
+  }
+
+  auto agree = [](const Given &a, const Given &b) {
+    uint64_t mask =
+        maskTrailingOnes<uint64_t>(std::min(a.pin->log2, b.pin->log2));
+    return (a.residue & mask) == (b.residue & mask);
+  };
+  for (auto &[sc, pins] : given) {
+    // Each pin is checked against the one with the largest modulus so far,
+    // which agrees with every pin before it.
+    const Given *strongest = nullptr;
+    for (const Given &g : pins) {
+      if (!g.pin->required)
+        continue;
+      if (strongest && !agree(*strongest, g)) {
+        Err(ctx) << g.file << ": pin of " << describe(g)
+                 << " conflicts with the pin of " << describe(*strongest)
+                 << " in " << strongest->file;
+        continue;
+      }
+      if (!strongest || g.pin->log2 > strongest->pin->log2)
+        strongest = &g;
+    }
+    bool required = strongest;
+    const Given *advisory = strongest;
+    for (const Given &g : pins) {
+      if (g.pin->required)
+        continue;
+      if (advisory && !agree(*advisory, g)) {
+        Warn(ctx) << g.file << ": pin of " << describe(g)
+                  << " conflicts with the pin of " << describe(*advisory)
+                  << " in " << advisory->file
+                  << "; the pins that are not required are left out";
+        advisory = strongest;
+        break;
+      }
+      if (!advisory || g.pin->log2 > advisory->pin->log2)
+        advisory = &g;
+    }
+    if (advisory)
+      ctx.chunkPins[sc] = {advisory->residue, advisory->pin->log2, required};
+  }
+  if (!ctx.chunkPins.empty() && ctx.config.imageBase % 4096)
+    Err(ctx) << "/base: an image with pinned sections must be based at a "
+                "multiple of 4096";
 }
 
 // link.exe replaces each %foo% in altPath with the contents of environment
@@ -2700,6 +2799,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     // Needed for MSVC 2019 16.8 CRT.
     symtab.addAbsolute(symtab.mangle("__guard_eh_cont_count"), 0);
     symtab.addAbsolute(symtab.mangle("__guard_eh_cont_table"), 0);
+    // An object whose correctness needs its pins honoured includes this
+    // symbol, so that a linker that ignores them fails to link it.
+    symtab.addAbsolute(symtab.mangle("__llvm_link_pins_v1"), 0);
 
     if (symtab.isEC()) {
       symtab.addAbsolute("__arm64x_extra_rfe_table", 0);
@@ -3062,6 +3164,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
 
   // Needs to happen after the last call to addFile().
   convertResources();
+
+  resolveLinkPins(ctx);
 
   // Identify identical COMDAT sections to merge them.
   if (config->doICF != ICFLevel::None) {

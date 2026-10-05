@@ -436,6 +436,11 @@ void ObjFile::readLinkRecords() {
         return;
       continue;
     }
+    if (cur && kind == LinkRecordPins) {
+      if (!readLinkPins(contents.slice(start, size)))
+        return;
+      continue;
+    }
     if (cur && (kind & LinkRecordKindCritical)) {
       consumeError(cur.takeError());
       Err(symtab.ctx) << this
@@ -459,6 +464,59 @@ void ObjFile::readLinkRecords() {
   listsCallOnly = (capabilities & LinkRecordsCallOnly) && !symtab.isEC();
   if (!listsCallOnly)
     callOnlyRefs.clear();
+}
+
+// Reads a group of pins. A pin naming a section's symbol pins the start of the
+// section; any other names a symbol, which the link resolves. A pin of a
+// section or symbol that COMDAT selection discarded applies to nothing.
+bool ObjFile::readLinkPins(ArrayRef<uint8_t> payload) {
+  auto malformed = [&](const Twine &msg) {
+    Err(symtab.ctx) << this << ": .llvm_link_records is malformed: " << msg;
+    linkPins.clear();
+    return false;
+  };
+  DataExtractor data(payload, /*IsLittleEndian=*/true);
+  DataExtractor::Cursor cur(0);
+  while (cur && !data.eof(cur)) {
+    uint64_t symIndex = data.getULEB128(cur);
+    uint64_t flags = data.getULEB128(cur);
+    uint64_t residue = data.getULEB128(cur);
+    if (!cur)
+      break;
+    uint64_t log2 = flags >> 1;
+    if (log2 > 63 || residue >> log2)
+      return malformed("pin of symbol " + Twine(symIndex) +
+                       " has an invalid residue");
+    Expected<COFFSymbolRef> sym = coffObj->getSymbol(symIndex);
+    if (!sym || symIndex >= symbols.size()) {
+      consumeError(sym.takeError());
+      return malformed("pin of symbol " + Twine(symIndex) +
+                       ", which does not exist");
+    }
+    LinkPin pin{symbols[symIndex], nullptr, residue, uint8_t(log2),
+                bool(flags & 1)};
+    if (sym->isSectionDefinition()) {
+      pin.sym = nullptr;
+      auto it = llvm::find_if(chunks, [&](Chunk *c) {
+        auto *sc = dyn_cast<SectionChunk>(c);
+        return sc &&
+               sc->getSectionNumber() == uint32_t(sym->getSectionNumber());
+      });
+      if (it == chunks.end())
+        continue;
+      pin.chunk = cast<SectionChunk>(*it);
+    } else if (!pin.sym) {
+      continue;
+    }
+    linkPins.push_back(pin);
+  }
+  if (Error e = cur.takeError()) {
+    linkPins.clear();
+    Err(symtab.ctx) << this
+                    << ": .llvm_link_records is malformed: " << std::move(e);
+    return false;
+  }
+  return true;
 }
 
 // Reads a group of fields through which their symbols are only called.
