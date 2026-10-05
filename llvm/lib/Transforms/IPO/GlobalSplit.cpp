@@ -122,6 +122,10 @@ static bool splitGlobal(GlobalVariable &GV) {
                             ? SL->getSizeInBytes()
                             : SL->getElementOffset(I + 1);
 
+    // Each piece keeps the alignment its offset had in the global.
+    if (MaybeAlign A = GV.getAlign())
+      SplitGV->setAlignment(commonAlignment(*A, SplitBegin));
+
     // Rebuild type metadata, adjusting by the split offset.
     // FIXME: See if we can use DW_OP_piece to preserve debug metadata here.
     for (MDNode *Type : Types) {
