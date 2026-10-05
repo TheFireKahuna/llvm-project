@@ -8908,6 +8908,29 @@ $a = comdat any
 !0 = !{ptr @a}
 ```
 
+#### '`pin`' Metadata
+
+The `pin` metadata may be attached to a global variable definition to ask the
+linker to place it so that the address at a byte offset into the global is
+congruent to a residue modulo a power of two. Its operands are the offset, the
+base-2 logarithm of the modulus, the residue, and whether the pin is required:
+
+```text
+@vt = constant [5 x ptr] [...], align 8, !pin !0
+!0 = !{i64 16, i64 12, i64 4072, i64 1}
+```
+
+Here the address 16 bytes into `@vt` is asked to be 4072 modulo 4096. A linker
+must honour a required pin or fail the link; it may leave a pin that is not
+required unhonoured. A pin lets a value computed from an address alone, such
+as a tag in the low bits of a vtable pointer, mean the same in every image.
+Like `!type`, the metadata is moved with its offset when a pass moves the
+global's contents, and a global may carry more than one. A pass that splits a
+global must keep its pinned contents together.
+
+It is lowered on COFF targets to a pin in the object's link-only records, and
+has no effect on other targets.
+
 #### '`prof`' Metadata
 
 The `prof` metadata is used to record profile data in the IR.
