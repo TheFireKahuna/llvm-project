@@ -1793,6 +1793,11 @@ public:
   /// icall-generalize-pointers option is on.
   llvm::ConstantInt *CreateKCFITypeId(QualType T, StringRef Salt);
 
+  /// The trap kind a failed check of the CFI scheme \p Ordinal takes in
+  /// place of its handler's, if the target gives it one.
+  std::optional<uint8_t>
+  getCFITrapKind(SanitizerKind::SanitizerOrdinal Ordinal) const;
+
   /// Generate a KCFI type identifier for T with pointers kept or generalised
   /// as GeneralizePointers asks, whatever the option is.
   llvm::ConstantInt *CreateKCFITypeId(QualType T, StringRef Salt,

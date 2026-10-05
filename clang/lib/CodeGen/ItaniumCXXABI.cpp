@@ -835,7 +835,9 @@ CGCallee ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
       };
 
       if (CGM.getCodeGenOpts().SanitizeTrap.has(SanitizerKind::CFIMFCall)) {
-        CGF.EmitTrapCheck(CheckResult, CheckHandler);
+        CGF.EmitTrapCheck(CheckResult, CheckHandler, /*NoMerge=*/false,
+                          /*TR=*/nullptr,
+                          CGM.getCFITrapKind(SanitizerKind::SO_CFIMFCall));
       } else {
         llvm::Value *AllVtables = llvm::MetadataAsValue::get(
             CGM.getLLVMContext(),

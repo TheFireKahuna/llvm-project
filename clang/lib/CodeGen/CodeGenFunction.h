@@ -5478,8 +5478,10 @@ public:
 
   /// Create a basic block that will call the trap intrinsic, and emit a
   /// conditional branch to it, for the -ftrapv checks.
+  /// \p TrapKind replaces the handler as the trap's kind when given.
   void EmitTrapCheck(llvm::Value *Checked, SanitizerHandler CheckHandlerID,
-                     bool NoMerge = false, const TrapReason *TR = nullptr);
+                     bool NoMerge = false, const TrapReason *TR = nullptr,
+                     std::optional<uint8_t> TrapKind = std::nullopt);
 
   /// Emit a call to trap or debugtrap. If 'EnsureInsertPoint' is false, the
   /// IR builder need not have a valid insert point after this returns.

@@ -4341,7 +4341,10 @@ void CodeGenFunction::EmitCheck(
   }
 
   if (TrapCond)
-    EmitTrapCheck(TrapCond, CheckHandler, NoMerge, TR);
+    EmitTrapCheck(TrapCond, CheckHandler, NoMerge, TR,
+                  CheckHandler == SanitizerHandler::CFICheckFail
+                      ? CGM.getCFITrapKind(Checked.front().second)
+                      : std::nullopt);
   if (!FatalCond && !RecoverableCond)
     return;
 
@@ -4640,15 +4643,17 @@ void CodeGenFunction::EmitUnreachable(SourceLocation Loc) {
 
 void CodeGenFunction::EmitTrapCheck(llvm::Value *Checked,
                                     SanitizerHandler CheckHandlerID,
-                                    bool NoMerge, const TrapReason *TR) {
+                                    bool NoMerge, const TrapReason *TR,
+                                    std::optional<uint8_t> TrapKind) {
   llvm::BasicBlock *Cont = createBasicBlock("cont");
+  uint8_t Kind = TrapKind.value_or(CheckHandlerID);
 
   // If we're optimizing, collapse all calls to trap down to just one per
   // check-type per function to save on code size.
-  if ((int)TrapBBs.size() <= CheckHandlerID)
-    TrapBBs.resize(CheckHandlerID + 1);
+  if (TrapBBs.size() <= Kind)
+    TrapBBs.resize(Kind + 1);
 
-  llvm::BasicBlock *&TrapBB = TrapBBs[CheckHandlerID];
+  llvm::BasicBlock *&TrapBB = TrapBBs[Kind];
 
   llvm::DILocation *TrapLocation = Builder.getCurrentDebugLocation();
   llvm::StringRef TrapMessage;
@@ -4699,7 +4704,7 @@ void CodeGenFunction::EmitTrapCheck(llvm::Value *Checked,
     else
       TrapCall = Builder.CreateCall(
           CGM.getIntrinsic(llvm::Intrinsic::ubsantrap),
-          llvm::ConstantInt::get(CGM.Int8Ty, CheckHandlerID));
+          llvm::ConstantInt::get(CGM.Int8Ty, Kind));
 
     if (!CGM.getCodeGenOpts().TrapFuncName.empty()) {
       auto A = llvm::Attribute::get(getLLVMContext(), "trap-func-name",
