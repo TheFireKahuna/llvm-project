@@ -223,7 +223,10 @@ static void validateSpecialCaseListFormat(const Driver &D,
     D.Diag(MalformedSCLErrorDiagID) << BLError;
 }
 
+/// The ignorelist of CFI must be found when \p RequestedKinds, the sanitizers
+/// asked for rather than enabled by the toolchain, include it.
 static void addDefaultIgnorelists(const Driver &D, SanitizerMask Kinds,
+                                  SanitizerMask RequestedKinds,
                                   std::vector<std::string> &IgnorelistFiles,
                                   bool DiagnoseErrors) {
   struct Ignorelist {
@@ -252,7 +255,8 @@ static void addDefaultIgnorelists(const Driver &D, SanitizerMask Kinds,
     llvm::sys::path::append(Path, "share", BL.File);
     if (D.getVFS().exists(Path))
       IgnorelistFiles.push_back(std::string(Path));
-    else if (BL.Mask == SanitizerKind::CFI && DiagnoseErrors)
+    else if (BL.Mask == SanitizerKind::CFI && (RequestedKinds & BL.Mask) &&
+             DiagnoseErrors)
       // If cfi_ignorelist.txt cannot be found in the resource dir, driver
       // should fail.
       D.Diag(clang::diag::err_drv_missing_sanitizer_ignorelist) << Path;
@@ -909,7 +913,8 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
   // Add default ignorelist from resource directory for activated sanitizers,
   // and validate special case lists format.
   if (!Args.hasArgNoClaim(options::OPT_fno_sanitize_ignorelist))
-    addDefaultIgnorelists(D, Kinds, SystemIgnorelistFiles, DiagnoseErrors);
+    addDefaultIgnorelists(D, Kinds, AllAddedKinds, SystemIgnorelistFiles,
+                          DiagnoseErrors);
 
   // Parse -f(no-)?sanitize-ignorelist options.
   // This also validates special case lists format.
