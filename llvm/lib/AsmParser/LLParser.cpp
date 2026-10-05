@@ -9883,10 +9883,12 @@ bool LLParser::parseTypeIdCompatibleVtableEntry(unsigned ID) {
 
 /// TypeTestResolution
 ///   ::= 'typeTestRes' ':' '(' 'kind' ':'
-///         ( 'unsat' | 'byteArray' | 'inline' | 'single' | 'allOnes' ) ','
+///         ( 'unsat' | 'byteArray' | 'inline' | 'single' | 'allOnes' |
+///           'members' ) ','
 ///         'sizeM1BitWidth' ':' SizeM1BitWidth [',' 'alignLog2' ':' UInt64]?
 ///         [',' 'sizeM1' ':' UInt64]? [',' 'bitMask' ':' UInt8]?
-///         [',' 'inlinesBits' ':' UInt64]? ')'
+///         [',' 'inlinesBits' ':' UInt64]?
+///         [',' 'memberTags' ':' '(' UInt32 [',' UInt32]* ')']? ')'
 bool LLParser::parseTypeTestResolution(TypeTestResolution &TTRes) {
   if (parseToken(lltok::kw_typeTestRes, "expected 'typeTestRes' here") ||
       parseToken(lltok::colon, "expected ':' here") ||
@@ -9913,6 +9915,9 @@ bool LLParser::parseTypeTestResolution(TypeTestResolution &TTRes) {
     break;
   case lltok::kw_allOnes:
     TTRes.TheKind = TypeTestResolution::AllOnes;
+    break;
+  case lltok::kw_members:
+    TTRes.TheKind = TypeTestResolution::Members;
     break;
   default:
     return error(Lex.getLoc(), "unexpected TypeTestResolution kind");
@@ -9952,6 +9957,20 @@ bool LLParser::parseTypeTestResolution(TypeTestResolution &TTRes) {
       Lex.Lex();
       if (parseToken(lltok::colon, "expected ':'") ||
           parseUInt64(TTRes.InlineBits))
+        return true;
+      break;
+    case lltok::kw_memberTags:
+      Lex.Lex();
+      if (parseToken(lltok::colon, "expected ':'") ||
+          parseToken(lltok::lparen, "expected '(' here"))
+        return true;
+      do {
+        unsigned Tag;
+        if (parseUInt32(Tag))
+          return true;
+        TTRes.MemberTags.push_back(Tag);
+      } while (EatIfPresent(lltok::comma));
+      if (parseToken(lltok::rparen, "expected ')' here"))
         return true;
       break;
     default:
@@ -10274,7 +10293,8 @@ bool LLParser::parseBlockCount() {
 /// parseGVEntry
 ///   ::= 'gv' ':' '(' ('name' ':' STRINGCONSTANT | 'guid' ':' UInt64)
 ///         [',' ('dsoLocal' ':' Flag |
-///               'summaries' ':' Summary[',' Summary]*)]? ')'
+///               'summaries' ':' Summary[',' Summary]*
+///               [',' 'kcfiMemberTag' ':' UInt32]?)]? ')'
 /// Summary ::= '(' (FunctionSummary | VariableSummary | AliasSummary) ')'
 bool LLParser::parseGVEntry(unsigned ID) {
   assert(Lex.getKind() == lltok::kw_gv);
@@ -10355,8 +10375,18 @@ bool LLParser::parseGVEntry(unsigned ID) {
     }
   } while (EatIfPresent(lltok::comma));
 
-  if (parseToken(lltok::rparen, "expected ')' here") ||
-      parseToken(lltok::rparen, "expected ')' here"))
+  if (parseToken(lltok::rparen, "expected ')' here"))
+    return true;
+
+  if (EatIfPresent(lltok::comma)) {
+    unsigned Tag;
+    if (parseToken(lltok::kw_kcfiMemberTag, "expected 'kcfiMemberTag' here") ||
+        parseToken(lltok::colon, "expected ':' here") || parseUInt32(Tag))
+      return true;
+    Index->setKCFIMemberTag(NumberedValueInfos[ID].getGUID(), Tag);
+  }
+
+  if (parseToken(lltok::rparen, "expected ')' here"))
     return true;
 
   return false;

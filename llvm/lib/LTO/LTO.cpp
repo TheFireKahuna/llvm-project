@@ -315,6 +315,9 @@ std::string llvm::computeLTOCacheKey(
     GlobalValue::LinkageTypes Linkage = GS.second->linkage();
     Hasher.update(
         ArrayRef<uint8_t>((const uint8_t *)&Linkage, sizeof(Linkage)));
+    // Include the KCFI membership tag the function carries, if any.
+    if (uint32_t Tag = Index.getKCFIMemberTag(GS.first))
+      AddUnsigned(Tag);
     AddUsedCfiGlobal(GS.first);
     AddUsedThings(GS.second);
   }
@@ -340,6 +343,11 @@ std::string llvm::computeLTOCacheKey(
     AddUint64(S.TTRes.SizeM1);
     AddUint64(S.TTRes.BitMask);
     AddUint64(S.TTRes.InlineBits);
+    if (!S.TTRes.MemberTags.empty()) {
+      AddUint64(S.TTRes.MemberTags.size());
+      for (uint32_t Tag : S.TTRes.MemberTags)
+        AddUnsigned(Tag);
+    }
 
     AddUint64(S.WPDRes.size());
     for (auto &WPD : S.WPDRes) {
@@ -1350,6 +1358,10 @@ Error LTO::run(AddStreamFn AddStream, FileCache Cache) {
 
     if (Res.second.ExportDynamic)
       DynamicExportSymbols.insert(GUID);
+
+    if ((Res.second.VisibleOutsideSummary && Res.second.Prevailing) ||
+        Res.second.ExportDynamic)
+      ThinLTO.CombinedIndex.setVisibleOutsideSummary(GUID);
 
     GUIDPrevailingResolutions[GUID] =
         Res.second.Prevailing ? PrevailingType::Yes : PrevailingType::No;

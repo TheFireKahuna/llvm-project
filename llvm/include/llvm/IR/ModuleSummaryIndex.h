@@ -163,6 +163,15 @@ struct alignas(8) GlobalValueSummaryInfo {
   bool isDSOLocalWithoutSummary() const { return DSOLocalWithoutSummary; }
   void setDSOLocalWithoutSummary() { DSOLocalWithoutSummary = true; }
 
+  /// The KCFI membership tag that LowerTypeTests gave the function, or 0.
+  uint32_t getKCFIMemberTag() const { return KCFIMemberTag; }
+  void setKCFIMemberTag(uint32_t Tag) { KCFIMemberTag = Tag; }
+
+  /// Whether the link found the value visible outside the summaries, to a
+  /// native object, or exported from the image. Known only during the link.
+  bool isVisibleOutsideSummary() const { return VisibleOutsideSummary; }
+  void setVisibleOutsideSummary() { VisibleOutsideSummary = true; }
+
 private:
   /// List of global value summary structures for a particular value held
   /// in the GlobalValueMap. Requires a vector in the case of multiple
@@ -189,6 +198,12 @@ private:
 
   /// See isDSOLocalWithoutSummary(). Set only for a value with no summary.
   bool DSOLocalWithoutSummary : 1;
+
+  /// See isVisibleOutsideSummary().
+  bool VisibleOutsideSummary : 1;
+
+  /// See getKCFIMemberTag().
+  uint32_t KCFIMemberTag = 0;
 };
 
 /// Map from global value GUID to corresponding summary structures. Use a
@@ -750,7 +765,8 @@ public:
 };
 
 GlobalValueSummaryInfo::GlobalValueSummaryInfo(bool HaveGVs)
-    : U(HaveGVs), HasLocal(false), DSOLocalWithoutSummary(false) {}
+    : U(HaveGVs), HasLocal(false), DSOLocalWithoutSummary(false),
+      VisibleOutsideSummary(false) {}
 
 void GlobalValueSummaryInfo::addSummary(
     std::unique_ptr<GlobalValueSummary> Summary) {
@@ -1333,6 +1349,7 @@ struct TypeTestResolution {
     AllOnes,   ///< All-ones bit vector ("Eliminating Bit Vector Checks for
                ///  All-Ones Bit Vectors")
     Unknown,   ///< Unknown (analysis not performed, don't lower)
+    Members,   ///< Test the KCFI membership tags in MemberTags
   } TheKind = Unknown;
 
   /// Range of size-1 expressed as a bit width. For example, if the size is in
@@ -1349,6 +1366,10 @@ struct TypeTestResolution {
   uint64_t SizeM1 = 0;
   uint8_t BitMask = 0;
   uint64_t InlineBits = 0;
+
+  /// For Members, the membership tags of the classes of functions of the
+  /// type, which a member of the type carries in its KCFI prefix.
+  std::vector<uint32_t> MemberTags;
 };
 
 struct WholeProgramDevirtResolution {
@@ -1836,6 +1857,34 @@ public:
   /// references to it can be dso_local.
   void setDSOLocalWithoutSummary(GlobalValue::GUID GUID) {
     getOrInsertValuePtr(GUID)->second.setDSOLocalWithoutSummary();
+  }
+
+  /// Record the KCFI membership tag that LowerTypeTests gave the function with
+  /// this GUID, which its definition carries in its KCFI prefix.
+  void setKCFIMemberTag(GlobalValue::GUID GUID, uint32_t Tag) {
+    getOrInsertValuePtr(GUID)->second.setKCFIMemberTag(Tag);
+  }
+
+  /// Returns the KCFI membership tag of the function with this GUID, or 0.
+  uint32_t getKCFIMemberTag(GlobalValue::GUID GUID) const {
+    auto I = GlobalValueMap.find(GUID);
+    return I == GlobalValueMap.end() ? 0 : I->second.getKCFIMemberTag();
+  }
+
+  /// Record that the link found the value with this GUID, if the index has
+  /// it, visible outside the summaries: to a native object, or exported.
+  void setVisibleOutsideSummary(GlobalValue::GUID GUID) {
+    auto I = GlobalValueMap.find(GUID);
+    if (I != GlobalValueMap.end())
+      I->second.setVisibleOutsideSummary();
+  }
+
+  /// Returns whether the link found the value with this GUID visible outside
+  /// the summaries. Known only during the link, before the thin link writes
+  /// or passes on the index.
+  bool isVisibleOutsideSummary(GlobalValue::GUID GUID) const {
+    auto I = GlobalValueMap.find(GUID);
+    return I != GlobalValueMap.end() && I->second.isVisibleOutsideSummary();
   }
 
   // Save a string in the Index. Use before passing Name to

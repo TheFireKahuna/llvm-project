@@ -8367,6 +8367,28 @@ Error ModuleSummaryIndexBitcodeReader::parseEntireSummary(unsigned ID) {
         TheIndex.setDSOLocalWithoutSummary(GUID);
       break;
 
+    case bitc::FS_KCFI_MEMBER_TAGS:
+      if (Record.size() % 2 != 0)
+        return error("Invalid record");
+      for (unsigned I = 0; I != Record.size(); I += 2) {
+        if (Record[I + 1] > UINT32_MAX)
+          return error("Invalid record");
+        TheIndex.setKCFIMemberTag(Record[I], Record[I + 1]);
+      }
+      break;
+
+    case bitc::FS_TYPE_ID_MEMBER_TAGS: {
+      if (Record.size() < 2 || Record[0] > Strtab.size() ||
+          Record[1] > Strtab.size() - Record[0] ||
+          any_of(drop_begin(Record, 2),
+                 [](uint64_t Tag) { return Tag > UINT32_MAX; }))
+        return error("Invalid record");
+      TypeIdSummary &TypeId = TheIndex.getOrInsertTypeIdSummary(
+          {Strtab.data() + Record[0], static_cast<size_t>(Record[1])});
+      TypeId.TTRes.MemberTags.assign(Record.begin() + 2, Record.end());
+      break;
+    }
+
     case bitc::FS_TYPE_ID:
       parseTypeIdSummaryRecord(Record, Strtab, TheIndex);
       break;

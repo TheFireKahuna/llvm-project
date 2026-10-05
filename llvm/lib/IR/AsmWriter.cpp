@@ -3408,6 +3408,8 @@ static const char *getTTResKindName(TypeTestResolution::Kind K) {
     return "single";
   case TypeTestResolution::AllOnes:
     return "allOnes";
+  case TypeTestResolution::Members:
+    return "members";
   }
   llvm_unreachable("invalid TypeTestResolution kind");
 }
@@ -3427,6 +3429,13 @@ void AssemblyWriter::printTypeTestResolution(const TypeTestResolution &TTRes) {
     Out << ", bitMask: " << (unsigned)TTRes.BitMask;
   if (TTRes.InlineBits)
     Out << ", inlineBits: " << TTRes.InlineBits;
+  if (!TTRes.MemberTags.empty()) {
+    Out << ", memberTags: (";
+    ListSeparator LS;
+    for (uint32_t Tag : TTRes.MemberTags)
+      Out << LS << Tag;
+    Out << ")";
+  }
 
   Out << ")";
 }
@@ -3886,6 +3895,8 @@ void AssemblyWriter::printSummaryInfo(unsigned Slot, const ValueInfo &VI) {
       printSummary(*Summary);
     }
     Out << ")";
+    if (uint32_t Tag = VI.getRef()->second.getKCFIMemberTag())
+      Out << ", kcfiMemberTag: " << Tag;
   }
   Out << ")";
   if (VI.hasName() && !VI.name().empty())
