@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/Utils/KCFIHash.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -155,6 +156,17 @@ uint32_t llvm::getX86KCFIType(uint32_t Type) {
       return Type + 1;
   }
   return Type;
+}
+
+std::optional<uint32_t> llvm::getKCFIMemberTag(uint64_t Hash) {
+  uint32_t Tag = uint32_t(Hash) ^ uint32_t(Hash >> 32);
+  // A tag is never zero, the type a linker writes over a function no pointer
+  // may reach, nor the padding x86 emits before a marker (a 4-byte nopl, nops
+  // or int3s), and needs no masking.
+  const uint32_t Rejected[] = {0, 0x00401F0F, 0x90909090, 0xCCCCCCCC};
+  if (llvm::is_contained(Rejected, Tag) || getX86KCFIType(Tag) != Tag)
+    return std::nullopt;
+  return Tag;
 }
 
 bool llvm::hasKCFIThunks(const Module &M) {
