@@ -120,6 +120,10 @@ public:
   // The instruction sites the object's link-only records describe, as offsets
   // and COFF::LinkSiteForm values.
   SmallVector<std::pair<uint32_t, uint8_t>, 0> LinkSites;
+
+  // The offsets of the 32-bit fields through which the symbol they name is
+  // only called.
+  SmallVector<uint32_t, 0> CallOnlyRefs;
 };
 } // namespace
 
@@ -1065,6 +1069,10 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
                 OWriter.TargetObjectWriter->getLinkSiteForm(Fixup,
                                                             Reloc.Data.Type))
           Sec->LinkSites.push_back({Reloc.Data.VirtualAddress, *Form});
+    } else if ((OWriter.LinkRecordCapabilities & COFF::LinkRecordsCallOnly) &&
+               Fixup.getUse() == MCFixupUse::Call && !Reloc.Symb->Section) {
+      // A field in data through which an undefined symbol is only called.
+      Sec->CallOnlyRefs.push_back(Reloc.Data.VirtualAddress);
     }
     Sec->Relocations.push_back(Reloc);
     if (Header.Machine == COFF::IMAGE_FILE_MACHINE_R4000 &&
@@ -1227,6 +1235,27 @@ uint64_t WinCOFFWriter::writeObject() {
       encodeULEB128(COFF::LinkRecordSites, OS);
       encodeULEB128(Sites.size(), OS);
       OS << Sites;
+    }
+
+    SmallString<0> CallOnly;
+    raw_svector_ostream CallOnlyOS(CallOnly);
+    for (const auto &Section : Sections) {
+      auto &Refs = Section->CallOnlyRefs;
+      if (Refs.empty())
+        continue;
+      llvm::sort(Refs);
+      encodeULEB128(Section->Symbol->getIndex(), CallOnlyOS);
+      encodeULEB128(Refs.size(), CallOnlyOS);
+      uint32_t Prev = 0;
+      for (uint32_t Offset : Refs) {
+        encodeULEB128(Offset - Prev, CallOnlyOS);
+        Prev = Offset;
+      }
+    }
+    if (!CallOnly.empty()) {
+      encodeULEB128(COFF::LinkRecordCallOnly, OS);
+      encodeULEB128(CallOnly.size(), OS);
+      OS << CallOnly;
     }
 
     auto *Sec = getContext().getCOFFSection(".llvm_link_records",
