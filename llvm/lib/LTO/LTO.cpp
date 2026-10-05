@@ -60,6 +60,7 @@
 #include "llvm/Transforms/IPO/MemProfContextDisambiguation.h"
 #include "llvm/Transforms/IPO/WholeProgramDevirt.h"
 #include "llvm/Transforms/Utils/FunctionImportUtils.h"
+#include "llvm/Transforms/Utils/KCFIHash.h"
 #include "llvm/Transforms/Utils/SplitModule.h"
 
 #include <optional>
@@ -1440,6 +1441,11 @@ Error LTO::runRegularLTO(AddStreamFn AddStream) {
       GV->setName(I.first);
     }
   }
+
+  if (!Conf.ImageName.empty() && hasKCFIThunks(*RegularLTO.CombinedModule))
+    RegularLTO.CombinedModule->setModuleFlag(
+        Module::Override, "kcfi-image",
+        MDString::get(RegularLTO.Ctx, Conf.ImageName));
 
   bool WholeProgramVisibilityEnabledInLTO =
       Conf.HasWholeProgramVisibility &&

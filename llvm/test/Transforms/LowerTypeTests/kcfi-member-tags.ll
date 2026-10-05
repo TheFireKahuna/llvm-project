@@ -1,9 +1,12 @@
-; RUN: opt -S -passes=lowertypetests %s | FileCheck %s
+; RUN: opt -S -passes=lowertypetests %s | FileCheck %s --check-prefixes=CHECK,NONAME
+; RUN: sed 's/^!llvm.module.flags = !{!20}$/!llvm.module.flags = !{!20, !21}/' %s | \
+; RUN:   opt -S -passes=lowertypetests | FileCheck %s --check-prefixes=CHECK,NAMED
 
 ;; Where KCFI checks go through per-type thunks, a function type is checked by
 ;; membership tags instead of a jump table: no address changes, each member
 ;; carries its class's tag, and each type test becomes a test of the tags of
-;; the type's classes.
+;; the type's classes. The tags hash the image's name, from the kcfi-image
+;; module flag, so that the same functions in another image carry others.
 
 target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-unknown-windows-itanium"
@@ -56,9 +59,12 @@ define i1 @test3(ptr %p) {
 declare i1 @llvm.type.test(ptr, metadata)
 
 ; CHECK-DAG: [[NONE]] = !{}{{$}}
-; CHECK-DAG: [[TAG1]] = !{i32 [[T1:-?[0-9]+]]}
-; CHECK-DAG: [[TAG2]] = !{i32 [[T2]]}
-; CHECK-DAG: [[TAGS1]] = !{i32 [[T2]], i32 [[T1]]}
+; NONAME-DAG: [[TAG1]] = !{i32 [[T1:-1002610694]]}
+; NONAME-DAG: [[TAG2]] = !{i32 [[T2]]}
+; NONAME-DAG: [[TAGS1]] = !{i32 [[T2:-2007502280]], i32 [[T1]]}
+; NAMED-DAG: [[TAG1]] = !{i32 [[T1:-680153288]]}
+; NAMED-DAG: [[TAG2]] = !{i32 [[T2]]}
+; NAMED-DAG: [[TAGS1]] = !{i32 [[T2:252084370]], i32 [[T1]]}
 
 !0 = !{i64 0, !"typeid1"}
 !1 = !{i64 0, !"typeid2"}
@@ -66,3 +72,4 @@ declare i1 @llvm.type.test(ptr, metadata)
 
 !llvm.module.flags = !{!20}
 !20 = !{i32 4, !"kcfi-marker", i32 119298566}
+!21 = !{i32 4, !"kcfi-image", !"a.dll"}

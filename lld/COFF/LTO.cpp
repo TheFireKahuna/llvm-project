@@ -93,6 +93,7 @@ lto::Config BitcodeCompiler::createConfig() {
   c.RunCSIRInstr = ctx.config.ltoCSProfileGenerate;
   c.PGOWarnMismatch = ctx.config.ltoPGOWarnMismatch;
   c.HasWholeProgramVisibility = ctx.config.ltoWholeProgramVisibility;
+  c.ImageName = sys::path::filename(ctx.config.outputFile).str();
   c.ValidateAllVtablesHaveTypeInfos =
       ctx.config.ltoValidateAllVtablesHaveTypeInfos;
   c.AllVtablesHaveTypeInfos = ctx.config.ltoAllVtablesHaveTypeInfos;
