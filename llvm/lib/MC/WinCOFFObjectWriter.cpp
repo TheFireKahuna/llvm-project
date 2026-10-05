@@ -1209,12 +1209,42 @@ uint64_t WinCOFFWriter::writeObject() {
   }
 
   // Create the contents of the .llvm_link_records section.
-  if (Mode != DwoOnly && OWriter.hasLinkRecords()) {
+  if (Mode != DwoOnly &&
+      (OWriter.hasLinkRecords() || !OWriter.LinkPins.empty())) {
     SmallString<0> Content;
     raw_svector_ostream OS(Content);
     OS.write(COFF::LinkRecordsMagic, sizeof(COFF::LinkRecordsMagic));
     encodeULEB128(COFF::LinkRecordsVersion, OS);
     encodeULEB128(OWriter.LinkRecordCapabilities, OS);
+
+    // A pin on a symbol that the symbol table leaves out names the symbol's
+    // section instead, with the residue moved by the symbol's offset in it.
+    SmallString<0> Pins;
+    raw_svector_ostream PinsOS(Pins);
+    for (const WinCOFFObjectWriter::LinkPin &Pin : OWriter.LinkPins) {
+      const MCSymbol *S = Pin.Symbol;
+      uint64_t Residue = Pin.Residue;
+      uint32_t Index;
+      if (!S->isTemporary()) {
+        if (!S->isRegistered() || !S->isInSection())
+          continue;
+        Index = S->getIndex();
+      } else {
+        if (!S->isInSection())
+          continue;
+        Index = SectionMap[&S->getSection()]->Symbol->getIndex();
+        Residue -= Asm->getSymbolOffset(*S);
+      }
+      encodeULEB128(Index, PinsOS);
+      encodeULEB128(Pin.Log2Modulus << 1 | Pin.Required, PinsOS);
+      encodeULEB128(Residue & maskTrailingOnes<uint64_t>(Pin.Log2Modulus),
+                    PinsOS);
+    }
+    if (!Pins.empty()) {
+      encodeULEB128(COFF::LinkRecordPins, OS);
+      encodeULEB128(Pins.size(), OS);
+      OS << Pins;
+    }
 
     SmallString<0> Sites;
     raw_svector_ostream SitesOS(Sites);
@@ -1322,6 +1352,7 @@ int WinCOFFWriter::getSectionNumber(const MCSection &Section) const {
 void WinCOFFObjectWriter::reset() {
   IncrementalLinkerCompatible = false;
   LinkRecordCapabilities = TargetObjectWriter->getLinkRecordCapabilities();
+  LinkPins.clear();
   ObjWriter->reset();
   if (DwoWriter)
     DwoWriter->reset();

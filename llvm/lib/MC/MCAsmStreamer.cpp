@@ -322,6 +322,8 @@ public:
   void emitCOFFImgRel32(MCSymbol const *Symbol, int64_t Offset) override;
   void emitCOFFSecNumber(MCSymbol const *Symbol) override;
   void emitCOFFSecOffset(MCSymbol const *Symbol) override;
+  void emitCOFFLinkPin(MCSymbol const *Symbol, unsigned Log2Modulus,
+                       uint64_t Residue, bool Required) override;
   void emitXCOFFLocalCommonSymbol(MCSymbol *LabelSym, uint64_t Size,
                                   MCSymbol *CsectSym, Align Alignment) override;
   void emitXCOFFSymbolLinkageWithVisibility(MCSymbol *Symbol,
@@ -1026,6 +1028,17 @@ void MCAsmStreamer::emitCOFFSecNumber(MCSymbol const *Symbol) {
 void MCAsmStreamer::emitCOFFSecOffset(MCSymbol const *Symbol) {
   OS << "\t.secoffset\t";
   Symbol->print(OS, MAI);
+  EmitEOL();
+}
+
+void MCAsmStreamer::emitCOFFLinkPin(MCSymbol const *Symbol,
+                                    unsigned Log2Modulus, uint64_t Residue,
+                                    bool Required) {
+  OS << "\t.linkpin\t";
+  Symbol->print(OS, MAI);
+  OS << ", " << Log2Modulus << ", " << Residue;
+  if (Required)
+    OS << ", required";
   EmitEOL();
 }
 
