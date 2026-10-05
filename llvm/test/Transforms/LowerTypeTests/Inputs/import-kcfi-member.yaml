@@ -1,0 +1,14 @@
+---
+TypeIdMap:
+  typeid1:
+    TTRes:
+      Kind:            Members
+      MemberTags:      [ 7, 9 ]
+  typeid2:
+    TTRes:
+      Kind:            Single
+      SizeM1BitWidth:  0
+KCFIMemberTags:
+  - GUID:            1001
+    Tag:             7
+...
