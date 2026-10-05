@@ -233,6 +233,15 @@ public:
   std::optional<llvm::COFF::LinkSiteForm>
   getLinkSiteForm(const SectionChunk *sc, uint32_t offset) const;
 
+  // True if the object lists every 32-bit field in data through which a
+  // symbol it leaves undefined is only called, so that any other such field
+  // holds an address.
+  bool listsCallOnly = false;
+
+  // Whether the relocation at offset in the section of sc fills a field
+  // through which its symbol is only called.
+  bool isCallOnlyRef(const SectionChunk *sc, uint32_t offset) const;
+
   // When using Microsoft precompiled headers, this is the PCH's key.
   // The same key is used by both the precompiled object, and objects using the
   // precompiled object. Any difference indicates out-of-date objects.
@@ -269,6 +278,7 @@ private:
   void initializeFlags();
   void readLinkRecords();
   bool readLinkSites(ArrayRef<uint8_t> payload);
+  bool readCallOnlyRefs(ArrayRef<uint8_t> payload);
   void initializeDependencies();
   void initializeECThunks();
 
@@ -321,6 +331,7 @@ private:
 
   // The instruction sites the object describes, by section and offset.
   std::vector<LinkSite> linkSites;
+  llvm::DenseSet<std::pair<uint32_t, uint32_t>> callOnlyRefs;
 
   std::vector<SectionChunk *> resourceChunks;
 

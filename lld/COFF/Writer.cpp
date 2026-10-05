@@ -1770,12 +1770,18 @@ void Writer::bindImportSlots() {
           continue;
         }
 
-        // A 32-bit field cannot hold another image's address. Exception
-        // data names its handlers by RVAs that the system only calls, which
-        // the import thunk serves; any other function address there is
-        // the thunk's, image-wide.
+        // A 32-bit field cannot hold another image's address. A field
+        // through which the function is only called, as a frame's handler is
+        // in unwind data, is served by its import thunk; any other function
+        // address there makes the thunk the function's address image-wide.
+        // An object that lists its call-only fields says which they are;
+        // otherwise they are those of exception data, which the PE format
+        // defines as RVAs that the system calls.
         if (!sc->isAddressWord(rel)) {
-          if (thunk && !isExceptionData(sc))
+          bool callOnly = file->listsCallOnly
+                              ? file->isCallOnlyRef(sc, rel.VirtualAddress)
+                              : isExceptionData(sc);
+          if (thunk && !callOnly)
             thunkIsAddress(s, imp, sc);
           else if (!thunk && reported.insert(s).second)
             Err(ctx) << file << ": " << file->symtab.printSymbol(s)
