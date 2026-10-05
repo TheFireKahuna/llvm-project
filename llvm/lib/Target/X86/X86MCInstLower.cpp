@@ -2591,6 +2591,17 @@ void X86AsmPrinter::emitInstruction(const MachineInstr *MI) {
     return;
   }
   case X86::UBSAN_UD1:
+    // On Windows Itanium and NT-POSIX, a kind of 64 or more is a fast-fail
+    // code: the trap fails fast through the sequence of __fastfail, which no
+    // exception handler can resume past.
+    if (Subtarget->getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+        MI->getOperand(0).getImm() >= 64) {
+      EmitAndCountInstruction(MCInstBuilder(X86::MOV32ri)
+                                  .addReg(X86::ECX)
+                                  .addImm(MI->getOperand(0).getImm()));
+      EmitAndCountInstruction(MCInstBuilder(X86::INT).addImm(0x29));
+      return;
+    }
     EmitAndCountInstruction(MCInstBuilder(X86::UD1Lm)
                                 .addReg(X86::EAX)
                                 .addReg(X86::EAX)
