@@ -2981,6 +2981,29 @@ llvm::ConstantInt *CodeGenModule::CreateKCFITypeId(QualType T, StringRef Salt) {
       T, Salt, getCodeGenOpts().SanitizeCfiICallGeneralizePointers);
 }
 
+std::optional<uint8_t>
+CodeGenModule::getCFITrapKind(SanitizerKind::SanitizerOrdinal Ordinal) const {
+  // On Windows Itanium and NT-POSIX the backend lowers a kind of 64 or more to
+  // a fast fail with that code, which no exception handler can resume past:
+  // FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG for a check on an indirect
+  // transfer, as kcfi's, and FAST_FAIL_CAST_GUARD for an object of the wrong
+  // class without one.
+  if (!getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    return std::nullopt;
+  switch (Ordinal) {
+  case SanitizerKind::SO_CFIVCall:
+  case SanitizerKind::SO_CFIICall:
+  case SanitizerKind::SO_CFIMFCall:
+    return 64;
+  case SanitizerKind::SO_CFINVCall:
+  case SanitizerKind::SO_CFIDerivedCast:
+  case SanitizerKind::SO_CFIUnrelatedCast:
+    return 65;
+  default:
+    return std::nullopt;
+  }
+}
+
 /// Whether T names a record that has no name, or one declared in a function,
 /// whose mangling two translation units need not agree on.
 static bool hasKCFIUnstableRecord(QualType T) {
