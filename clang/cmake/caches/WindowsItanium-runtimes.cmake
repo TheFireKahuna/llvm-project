@@ -41,8 +41,10 @@ foreach(target IN LISTS LLVM_RUNTIME_TARGETS)
   if(target MATCHES "-windows-itanium")
     set(RUNTIMES_${target}_COMPILER_RT_BUILD_CRT ON CACHE BOOL "")
   endif()
-  # The driver supports no sanitizer for these targets.
+  # No sanitizer runtime is built for these targets. CFI, which traps, reads
+  # upstream's ignorelist.
   set(RUNTIMES_${target}_COMPILER_RT_BUILD_SANITIZERS OFF CACHE BOOL "")
+  set(RUNTIMES_${target}_COMPILER_RT_BUILD_SANITIZER_IGNORELISTS ON CACHE BOOL "")
   set(RUNTIMES_${target}_COMPILER_RT_BUILD_LIBFUZZER OFF CACHE BOOL "")
 
   # libc++abi is linked into both libc++.dll and libc++.lib. Every image links

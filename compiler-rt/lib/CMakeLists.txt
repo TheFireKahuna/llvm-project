@@ -35,12 +35,15 @@ if(COMPILER_RT_BUILD_SANITIZERS OR COMPILER_RT_BUILD_MEMPROF OR COMPILER_RT_BUIL
   compiler_rt_build_runtime(interception)
 endif()
 
-if(COMPILER_RT_BUILD_SANITIZERS)
-  # The sanitizer ignorelists are consumed by the compiler driver, not linked
-  # into the runtimes. Build them as their own target so they can be built
-  # independently of the runtime libraries.
+# The sanitizer ignorelists are consumed by the compiler driver, not linked
+# into the runtimes. Build them as their own target so they can be built
+# independently of the runtime libraries, for CFI's trapping schemes, which
+# need no runtime.
+if(COMPILER_RT_BUILD_SANITIZERS OR COMPILER_RT_BUILD_SANITIZER_IGNORELISTS)
   add_subdirectory(sanitizer_ignorelists)
+endif()
 
+if(COMPILER_RT_BUILD_SANITIZERS)
   if(COMPILER_RT_HAS_SANITIZER_COMMON)
     add_subdirectory(stats)
     # Contains RTLSanCommon used even without COMPILER_RT_HAS_LSAN.
