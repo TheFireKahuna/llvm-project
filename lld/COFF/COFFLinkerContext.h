@@ -120,6 +120,9 @@ public:
 
   DynamicRelocsChunk *dynamicRelocs = nullptr;
 
+  // The address each pinned chunk must start at.
+  llvm::DenseMap<const Chunk *, ChunkPin> chunkPins;
+
   // The in-place import slots of each section that has any, by offset.
   llvm::DenseMap<const SectionChunk *, std::vector<ImportSlot>> importSlots;
 

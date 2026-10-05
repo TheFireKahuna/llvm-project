@@ -81,6 +81,10 @@ bool ICF::isEligible(SectionChunk *c) {
   if (!c->isCOMDAT() || !c->live || writable)
     return false;
 
+  // A pinned chunk's address is part of what it means.
+  if (ctx.chunkPins.contains(c))
+    return false;
+
   // Under regular (not safe) ICF, all code sections are eligible.
   if ((ctx.config.doICF == ICFLevel::All) &&
       c->getOutputCharacteristics() & llvm::COFF::IMAGE_SCN_MEM_EXECUTE)
