@@ -70,6 +70,20 @@ class WinCOFFObjectWriter final : public MCObjectWriter {
   uint64_t LinkRecordCapabilities = 0;
 
 public:
+  /// A symbol's required address modulo a power of two, which the object's
+  /// link-only records carry (COFF::LinkRecordPins).
+  struct LinkPin {
+    const MCSymbol *Symbol;
+    unsigned Log2Modulus;
+    uint64_t Residue;
+    bool Required;
+  };
+
+private:
+  // The pins of the object's link-only records, in the order given.
+  SmallVector<LinkPin, 0> LinkPins;
+
+public:
   WinCOFFObjectWriter(std::unique_ptr<MCWinCOFFObjectTargetWriter> MOTW,
                       raw_pwrite_stream &OS);
   WinCOFFObjectWriter(std::unique_ptr<MCWinCOFFObjectTargetWriter> MOTW,
@@ -85,6 +99,8 @@ public:
     LinkRecordCapabilities = Value;
   }
   bool hasLinkRecords() const { return LinkRecordCapabilities != 0; }
+  void addLinkPin(const LinkPin &Pin) { LinkPins.push_back(Pin); }
+  ArrayRef<LinkPin> getLinkPins() const { return LinkPins; }
   void executePostLayoutBinding() override;
   bool isSymbolRefDifferenceFullyResolvedImpl(const MCSymbol &SymA,
                                               const MCFragment &FB, bool InSet,

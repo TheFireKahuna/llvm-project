@@ -334,6 +334,12 @@ void MCWinCOFFStreamer::emitCOFFSecOffset(MCSymbol const *Symbol) {
   appendContents(4, 0);
 }
 
+void MCWinCOFFStreamer::emitCOFFLinkPin(MCSymbol const *Symbol,
+                                        unsigned Log2Modulus, uint64_t Residue,
+                                        bool Required) {
+  getWriter().addLinkPin({Symbol, Log2Modulus, Residue, Required});
+}
+
 void MCWinCOFFStreamer::emitCommonSymbol(MCSymbol *S, uint64_t Size,
                                          Align ByteAlignment) {
   auto *Symbol = static_cast<MCSymbolCOFF *>(S);
@@ -430,7 +436,7 @@ void MCWinCOFFStreamer::finishImpl() {
     switchSection(Asm.getContext().getCOFFSection(".llvm.call-graph-profile",
                                                   COFF::IMAGE_SCN_LNK_REMOVE));
   }
-  if (getWriter().hasLinkRecords())
+  if (getWriter().hasLinkRecords() || !getWriter().getLinkPins().empty())
     switchSection(Asm.getContext().getCOFFSection(".llvm_link_records",
                                                   COFF::IMAGE_SCN_LNK_REMOVE));
 

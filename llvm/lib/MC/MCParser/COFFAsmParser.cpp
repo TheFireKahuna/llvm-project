@@ -71,6 +71,7 @@ class COFFAsmParser : public MCAsmParserExtension {
     addDirectiveHandler<&COFFAsmParser::parseDirectiveCGProfile>(".cg_profile");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSecNum>(".secnum");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSecOffset>(".secoffset");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkPin>(".linkpin");
 
     // Win64 EH directives.
     addDirectiveHandler<&COFFAsmParser::parseSEHDirectiveStartProc>(
@@ -133,6 +134,7 @@ class COFFAsmParser : public MCAsmParserExtension {
   bool parseDirectiveLinkOnce(StringRef, SMLoc);
   bool parseDirectiveRVA(StringRef, SMLoc);
   bool parseDirectiveCGProfile(StringRef, SMLoc);
+  bool parseDirectiveLinkPin(StringRef, SMLoc);
   bool parseDirectiveSecNum(StringRef, SMLoc);
   bool parseDirectiveSecOffset(StringRef, SMLoc);
 
@@ -566,6 +568,41 @@ bool COFFAsmParser::parseDirectiveSecIdx(StringRef, SMLoc) {
 
   Lex();
   getStreamer().emitCOFFSectionIndex(Symbol);
+  return false;
+}
+
+/// parseDirectiveLinkPin
+///  ::= .linkpin symbol, log2-modulus, residue [, required]
+bool COFFAsmParser::parseDirectiveLinkPin(StringRef, SMLoc) {
+  MCSymbol *Symbol;
+  int64_t Log2Modulus, Residue;
+  bool Required = false;
+  if (getParser().parseSymbol(Symbol))
+    return TokError("expected identifier in directive");
+  if (getParser().parseComma())
+    return true;
+  SMLoc Log2Loc = getLexer().getLoc();
+  if (getParser().parseAbsoluteExpression(Log2Modulus))
+    return true;
+  if (Log2Modulus < 0 || Log2Modulus > 63)
+    return Error(Log2Loc, "log2 of the modulus must be in the range [0, 63]");
+  if (getParser().parseComma())
+    return true;
+  SMLoc ResidueLoc = getLexer().getLoc();
+  if (getParser().parseAbsoluteExpression(Residue))
+    return true;
+  if (Residue < 0 || uint64_t(Residue) >> Log2Modulus)
+    return Error(ResidueLoc, "residue must be less than the modulus");
+  if (parseOptionalToken(AsmToken::Comma)) {
+    StringRef Flag;
+    SMLoc FlagLoc = getLexer().getLoc();
+    if (getParser().parseIdentifier(Flag) || Flag != "required")
+      return Error(FlagLoc, "expected 'required'");
+    Required = true;
+  }
+  if (parseEOL())
+    return true;
+  getStreamer().emitCOFFLinkPin(Symbol, Log2Modulus, Residue, Required);
   return false;
 }
 
