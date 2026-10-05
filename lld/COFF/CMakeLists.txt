@@ -41,6 +41,7 @@ add_lld_library(lldCOFF
   Passes
   Support
   TargetParser
+  TransformUtils
   WindowsDriver
   WindowsManifest
 

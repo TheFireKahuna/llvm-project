@@ -197,6 +197,9 @@ public:
   // True if this file was compiled with /guard:cf.
   bool hasGuardCF() { return feat00Flags & 0x800; }
 
+  // True if LTO generated this file.
+  bool ltoOutput = false;
+
   // True if this file was compiled with /guard:ehcont.
   bool hasGuardEHCont() { return feat00Flags & 0x4000; }
 

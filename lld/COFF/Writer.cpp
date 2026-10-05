@@ -34,6 +34,7 @@
 #include "llvm/Support/TimeProfiler.h"
 #include "llvm/Support/Win64EH.h"
 #include "llvm/Support/xxhash.h"
+#include "llvm/Transforms/Utils/KCFIHash.h"
 #include <algorithm>
 #include <cstdio>
 #include <deque>
@@ -380,6 +381,7 @@ private:
   void defineKCFICodeRange();
   void rewriteKCFIThunks();
   void boundKCFIMismatches();
+  void narrowKCFIMemberMisses();
   SymbolRVASet getEHContTargets();
   bool protectDelayIat();
   void markSymbolsForRVATable(ObjFile *file,
@@ -1525,6 +1527,7 @@ void Writer::createMiscChunks() {
   // Create /guard:cf tables if requested.
   createGuardCFTables();
   boundKCFIMismatches();
+  narrowKCFIMemberMisses();
 
   createECChunks();
 
@@ -3941,6 +3944,63 @@ void Writer::boundKCFIMismatches() {
       textSec->addChunk(sc);
     }
   }
+}
+
+// A member thunk, which takes a target that carries one of its type's
+// membership tags, continues on a miss into the type's ordinary thunk through
+// a weak symbol: a function of the type that LTO did not compile carries no
+// tag, but may be a valid target. In a sealed image the guard function table
+// names every function a pointer can reach, so where no unsealed prefix of
+// the type is in an object LTO did not generate, a target that misses the tag
+// is no member, and the miss goes straight to the type's mismatch routine.
+void Writer::narrowKCFIMemberMisses() {
+  bool isX64 = ctx.config.machine == AMD64;
+  if (!kcfiSealed || (!isX64 && ctx.config.machine != ARM64))
+    return;
+  DenseSet<uint32_t> nativeTypes;
+  for (const KCFIPrefix &p : kcfiPrefixes)
+    if (!p.sealed && !cast<ObjFile>(p.chunk->file)->ltoOutput)
+      nativeTypes.insert(
+          read32le(p.chunk->getContents().data() + p.offset + p.size - 4));
+
+  struct Kind {
+    StringRef miss, mismatch;
+  };
+  static const Kind kinds[] = {
+      {"__llvm_kcfi_member_miss_", "__llvm_kcfi_mismatch_"},
+      {"__llvm_kcfi_member_check_miss_", "__llvm_kcfi_check_mismatch_"},
+      {"__llvm_kcfi_member_local_miss_", "__llvm_kcfi_mismatch_"},
+      {"__llvm_kcfi_member_local_check_miss_", "__llvm_kcfi_check_mismatch_"}};
+  ctx.symtab.forEachSymbol([&](Symbol *s) {
+    auto *d = dyn_cast<Defined>(s);
+    if (!d || !d->isLive())
+      return;
+    for (const Kind &k : kinds) {
+      StringRef hex = d->getName();
+      uint32_t type;
+      if (!hex.consume_front(k.miss) || hex.getAsInteger(16, type))
+        continue;
+      // x86-64 stores a type that would spell an ENDBR instruction plus one.
+      if (nativeTypes.contains(isX64 ? getX86KCFIType(type) : type))
+        return;
+      auto *mismatch =
+          dyn_cast_or_null<Defined>(ctx.symtab.find((k.mismatch + hex).str()));
+      if (!mismatch)
+        return;
+      Chunk *c;
+      uint32_t offset = 0;
+      if (auto *r = dyn_cast<DefinedRegular>(mismatch)) {
+        c = r->getChunk();
+        offset = r->getValue();
+      } else if (auto *syn = dyn_cast<DefinedSynthetic>(mismatch)) {
+        c = syn->getChunk();
+      } else {
+        return;
+      }
+      replaceSymbol<DefinedSynthetic>(d, d->getName(), c, offset);
+      return;
+    }
+  });
 }
 
 // Rewrites, in place, the range test at the start of each of clang's KCFI
