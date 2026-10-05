@@ -220,14 +220,18 @@
 // LTO-CFI-DAG: "-fsanitize-trap=cfi-nvcall,cfi-vcall"
 // LTO-CFI-DAG: "-fsanitize-system-ignorelist={{[^"]*}}cfi_ignorelist.txt"
 // LTO-CFI-DAG: "-fsplit-lto-unit"
+// LTO-CFI-DAG: "-fwhole-program-vtables"
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
 // RUN:     -resource-dir=%S/Inputs/resource_dir 2>&1 \
 // RUN:   | FileCheck --check-prefix=NO-LTO-CFI %s
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s -flto \
 // RUN:     -fno-sanitize=cfi -resource-dir=%S/Inputs/resource_dir 2>&1 \
-// RUN:   | FileCheck --check-prefix=NO-LTO-CFI %s
+// RUN:   | FileCheck --check-prefix=NO-CFI %s
 // NO-LTO-CFI:     "-cc1"
 // NO-LTO-CFI-NOT: cfi-vcall
+// NO-LTO-CFI-NOT: -fwhole-program-vtables
+// NO-CFI:     "-cc1"
+// NO-CFI-NOT: cfi-vcall
 
 // A toolchain built without upstream's ignorelist still compiles with the
 // default CFI; asking for CFI needs the list.

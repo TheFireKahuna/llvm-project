@@ -8461,10 +8461,13 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-fvirtual-function-elimination");
   }
 
-  // VFE requires whole-program-vtables, and enables it by default.
+  // VFE requires whole-program-vtables, and enables it by default, as some
+  // toolchains do when compiling for LTO.
   bool WholeProgramVTables = Args.hasFlag(
       options::OPT_fwhole_program_vtables,
-      options::OPT_fno_whole_program_vtables, VirtualFunctionElimination);
+      options::OPT_fno_whole_program_vtables,
+      VirtualFunctionElimination ||
+          (IsUsingLTO && TC.defaultsToWholeProgramVTablesWithLTO()));
   if (VirtualFunctionElimination && !WholeProgramVTables) {
     D.Diag(diag::err_drv_argument_not_allowed_with)
         << "-fno-whole-program-vtables"

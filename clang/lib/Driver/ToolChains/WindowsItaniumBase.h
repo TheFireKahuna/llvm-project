@@ -68,6 +68,11 @@ public:
   }
   bool canCombineKCFIWithCFI() const override { return true; }
 
+  /// Whole-program devirtualisation acts on the classes LTO sees whole, as
+  /// CFI does; -lto-whole-program-visibility at the link widens it to the
+  /// classes of default visibility that the image does not export.
+  bool defaultsToWholeProgramVTablesWithLTO() const override { return true; }
+
   /// No sanitizer runtime is built for these targets.
   bool hasSanitizerRuntimes() const override { return false; }
 
