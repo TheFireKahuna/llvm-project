@@ -25,6 +25,7 @@ template <> struct ScalarEnumerationTraits<TypeTestResolution::Kind> {
     io.enumCase(value, "Inline", TypeTestResolution::Inline);
     io.enumCase(value, "Single", TypeTestResolution::Single);
     io.enumCase(value, "AllOnes", TypeTestResolution::AllOnes);
+    io.enumCase(value, "Members", TypeTestResolution::Members);
   }
 };
 
@@ -36,6 +37,7 @@ template <> struct MappingTraits<TypeTestResolution> {
     io.mapOptional("SizeM1", res.SizeM1);
     io.mapOptional("BitMask", res.BitMask);
     io.mapOptional("InlineBits", res.InlineBits);
+    io.mapOptional("MemberTags", res.MemberTags);
   }
 };
 
@@ -338,10 +340,23 @@ template <> struct MappingTraits<std::pair<StringRef, GlobalValue::GUID>> {
 
 using StringAndGUID = std::pair<llvm::StringRef, llvm::GlobalValue::GUID>;
 
+struct KCFIMemberTagYaml {
+  GlobalValue::GUID GUID = 0;
+  uint32_t Tag = 0;
+};
+
+template <> struct MappingTraits<KCFIMemberTagYaml> {
+  static void mapping(IO &io, KCFIMemberTagYaml &T) {
+    io.mapRequired("GUID", T.GUID);
+    io.mapRequired("Tag", T.Tag);
+  }
+};
+
 } // namespace yaml
 } // namespace llvm
 
 LLVM_YAML_IS_SEQUENCE_VECTOR(llvm::yaml::StringAndGUID)
+LLVM_YAML_IS_SEQUENCE_VECTOR(llvm::yaml::KCFIMemberTagYaml)
 
 namespace llvm {
 namespace yaml {
@@ -385,6 +400,16 @@ template <> struct MappingTraits<ModuleSummaryIndex> {
       for (auto &[S, G] : CfiFunctionDecls)
         index.CfiFunctionDecls.addSymbolWithThinLTOGUID(S, G);
     }
+
+    std::vector<KCFIMemberTagYaml> KCFIMemberTags;
+    if (io.outputting())
+      for (const auto &P : index.GlobalValueMap.sortedRange())
+        if (uint32_t Tag = P.second.getKCFIMemberTag())
+          KCFIMemberTags.push_back({P.first, Tag});
+    io.mapOptional("KCFIMemberTags", KCFIMemberTags);
+    if (!io.outputting())
+      for (const KCFIMemberTagYaml &T : KCFIMemberTags)
+        index.setKCFIMemberTag(T.GUID, T.Tag);
   }
 };
 

@@ -5469,6 +5469,19 @@ void IndexBitcodeWriter::writeCombinedGlobalValueSummary() {
     NameVals.clear();
   }
 
+  std::set<std::pair<GlobalValue::GUID, uint32_t>> KCFIMemberTags;
+  for (GlobalValue::GUID GUID : DefOrUseGUIDs)
+    if (uint32_t Tag = Index.getKCFIMemberTag(GUID))
+      KCFIMemberTags.insert({GUID, Tag});
+  if (!KCFIMemberTags.empty()) {
+    for (auto [GUID, Tag] : KCFIMemberTags) {
+      NameVals.push_back(GUID);
+      NameVals.push_back(Tag);
+    }
+    Stream.EmitRecord(bitc::FS_KCFI_MEMBER_TAGS, NameVals);
+    NameVals.clear();
+  }
+
   // Walk the GUIDs that were referenced, and write the
   // corresponding type id records.
   for (auto &T : ReferencedTypeIds) {
@@ -5478,6 +5491,13 @@ void IndexBitcodeWriter::writeCombinedGlobalValueSummary() {
                                TypeIdPair.second);
       Stream.EmitRecord(bitc::FS_TYPE_ID, NameVals);
       NameVals.clear();
+      if (!TypeIdPair.second.TTRes.MemberTags.empty()) {
+        NameVals.push_back(StrtabBuilder.add(TypeIdPair.first));
+        NameVals.push_back(TypeIdPair.first.size());
+        append_range(NameVals, TypeIdPair.second.TTRes.MemberTags);
+        Stream.EmitRecord(bitc::FS_TYPE_ID_MEMBER_TAGS, NameVals);
+        NameVals.clear();
+      }
     }
   }
 
