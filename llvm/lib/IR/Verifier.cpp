@@ -615,6 +615,33 @@ void Verifier::visitGlobalValue(const GlobalValue &GV) {
                               RangeLikeMetadataKind::AbsoluteSymbol);
     }
 
+    SmallVector<MDNode *, 1> Pins;
+    GO->getMetadata(LLVMContext::MD_pin, Pins);
+    for (const MDNode *Pin : Pins) {
+      Check(isa<GlobalVariable>(GO) && !GO->isDeclaration(),
+            "pin metadata must be on a global variable definition", GO, Pin);
+      Check(Pin->getNumOperands() == 4, "pin metadata must have four operands",
+            GO, Pin);
+      Check(llvm::all_of(Pin->operands(),
+                         [](const MDOperand &Op) {
+                           return mdconst::dyn_extract_or_null<ConstantInt>(
+                               Op.get());
+                         }),
+            "pin metadata operands must be integers", GO, Pin);
+      const APInt &Log2 =
+          mdconst::extract<ConstantInt>(Pin->getOperand(1))->getValue();
+      const APInt &Residue =
+          mdconst::extract<ConstantInt>(Pin->getOperand(2))->getValue();
+      const APInt &Required =
+          mdconst::extract<ConstantInt>(Pin->getOperand(3))->getValue();
+      Check(Log2.ult(64), "pin metadata's modulus must be at most 2^63", GO,
+            Pin);
+      Check(Residue.getActiveBits() <= Log2.getZExtValue(),
+            "pin metadata's residue must be less than its modulus", GO, Pin);
+      Check(Required.ule(1), "pin metadata's required flag must be 0 or 1", GO,
+            Pin);
+    }
+
     if (GO->hasMetadata(LLVMContext::MD_implicit_ref)) {
       Check(!GO->isDeclaration(),
             "ref metadata must not be placed on a declaration", GO);

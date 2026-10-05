@@ -41,6 +41,11 @@ static bool splitGlobal(GlobalVariable &GV) {
   if (!GV.hasLocalLinkage())
     return false;
 
+  // A pin fixes the global's address modulo a power of two, and so the
+  // addresses of its parts relative to each other.
+  if (GV.hasMetadata(LLVMContext::MD_pin))
+    return false;
+
   // We currently only know how to split ConstantStructs.
   auto *Init = dyn_cast_or_null<ConstantStruct>(GV.getInitializer());
   if (!Init)
