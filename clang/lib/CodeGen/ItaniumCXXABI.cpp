@@ -39,6 +39,7 @@
 #include "llvm/IR/Value.h"
 #include "llvm/Support/ConvertEBCDIC.h"
 #include "llvm/Support/ScopedPrinter.h"
+#include "llvm/Support/xxhash.h"
 
 #include <optional>
 
@@ -54,6 +55,11 @@ class ItaniumCXXABI : public CodeGen::CGCXXABI {
   llvm::SmallVector<std::pair<const VarDecl *, llvm::Function *>, 8>
       ThreadWrappers;
 
+  /// Whether the module has computed a vtable tag, and whether it has pinned
+  /// a vtable at one; each emits a linker directive once.
+  bool UsesVTableTags = false;
+  bool PinsVTableTags = false;
+
 protected:
   bool UseARMMethodPtrABI;
   bool UseARMGuardVarABI;
@@ -62,6 +68,9 @@ protected:
   ItaniumMangleContext &getMangleContext() {
     return cast<ItaniumMangleContext>(CodeGen::CGCXXABI::getMangleContext());
   }
+
+  bool isTaggedVTableClass(const CXXRecordDecl *RD);
+  uint64_t getVTableTagResidue(const CXXRecordDecl *RD);
 
 public:
   ItaniumCXXABI(CodeGen::CodeGenModule &CGM,
@@ -2099,6 +2108,37 @@ static void setVTableSelectiveDLLImportExport(CodeGenModule &CGM,
     VTable->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
 }
 
+/// Whether an exact dynamic_cast to \p RD on Windows Itanium and NT-POSIX
+/// may decide from the low bits of a vtable pointer: a class that is final in
+/// effect and whose vtable every image that uses it holds a copy of. The
+/// answer reads only the class, so that every image agrees: a key function
+/// that a dllimport member takes away in one image still counts.
+bool ItaniumCXXABI::isTaggedVTableClass(const CXXRecordDecl *RD) {
+  return RD->isDynamicClass() && RD->isEffectivelyFinal() &&
+         RD->isExternallyVisible() &&
+         !getContext().getKeyFunctionIgnoringDLLImport(RD);
+}
+
+/// The residue modulo a page at which \p RD's tagged vtables put their
+/// primary address point, in every image: one of 64 lines, chosen by the top
+/// six bits of the xxh3 hash of the type's RTTI name, and one of the five
+/// offsets 24 to 56 of the line, chosen so that (line, offset) is the hash
+/// scaled onto 320 values. Changing any of it changes the vtable layout
+/// version, which objects that compute a tag record for the linker to compare.
+uint64_t ItaniumCXXABI::getVTableTagResidue(const CXXRecordDecl *RD) {
+  if (!UsesVTableTags)
+    CGM.AddDetectMismatch("_WIN_ITANIUM_VTABLE_LAYOUT", "1");
+  UsesVTableTags = true;
+  SmallString<256> Name;
+  llvm::raw_svector_ostream Out(Name);
+  getMangleContext().mangleCXXRTTIName(getContext().getCanonicalTagType(RD),
+                                       Out);
+  uint64_t Hash = llvm::xxh3_64bits(Name.str());
+  uint64_t Line = Hash >> 58;
+  uint64_t Offset = (5 * (Hash & llvm::maskTrailingOnes<uint64_t>(58))) >> 58;
+  return 64 * Line + 24 + 8 * Offset;
+}
+
 void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
                                           const CXXRecordDecl *RD) {
   llvm::GlobalVariable *VTable = getAddrOfVTable(RD, CharUnits());
@@ -2136,6 +2176,23 @@ void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
   // Set the right visibility.
   CGM.setGVProperties(VTable, RD);
   CGVT.setVTableDSOLocal(VTable, RD);
+
+  if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      !VTable->isDeclarationForLinker()) {
+    std::optional<uint64_t> TagResidue;
+    if (isTaggedVTableClass(RD)) {
+      TagResidue = getVTableTagResidue(RD);
+      // A linker that ignores the pin would place the vtable where other
+      // images' casts reject its objects; this one fails to link instead.
+      if (!PinsVTableTags)
+        CGM.AppendLinkerOptions("/INCLUDE:__llvm_link_pins_v1");
+      PinsVTableTags = true;
+    }
+    CGVT.setVTablePlacement(
+        VTable, VTLayout,
+        VTLayout.getAddressPoint(BaseSubobject(RD, CharUnits::Zero())),
+        TagResidue);
+  }
 
   // If this is the magic class __cxxabiv1::__fundamental_type_info,
   // we will emit the typeinfo for the fundamental types. This is the

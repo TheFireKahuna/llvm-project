@@ -2325,7 +2325,8 @@ void ItaniumRecordLayoutBuilder::CheckFieldPadding(
 }
 
 static const CXXMethodDecl *computeKeyFunction(ASTContext &Context,
-                                               const CXXRecordDecl *RD) {
+                                               const CXXRecordDecl *RD,
+                                               bool IgnoreDLLImport = false) {
   // If a class isn't polymorphic it doesn't have a key function.
   if (!RD->isPolymorphic())
     return nullptr;
@@ -2394,7 +2395,8 @@ static const CXXMethodDecl *computeKeyFunction(ASTContext &Context,
     // If the key function is dllimport but the class isn't, then the class has
     // no key function. The DLL that exports the key function won't export the
     // vtable in this case.
-    if (MD->hasAttr<DLLImportAttr>() && !RD->hasAttr<DLLImportAttr>() &&
+    if (!IgnoreDLLImport && MD->hasAttr<DLLImportAttr>() &&
+        !RD->hasAttr<DLLImportAttr>() &&
         !Context.getTargetInfo().hasPS4DLLImportExport())
       return nullptr;
 
@@ -3556,6 +3558,14 @@ const CXXMethodDecl *ASTContext::getCurrentKeyFunction(const CXXRecordDecl *RD) 
     KeyFunctions[RD] = const_cast<Decl*>(Result);
 
   return cast_or_null<CXXMethodDecl>(Result);
+}
+
+const CXXMethodDecl *
+ASTContext::getKeyFunctionIgnoringDLLImport(const CXXRecordDecl *RD) {
+  if (!getTargetInfo().getCXXABI().hasKeyFunctions())
+    return nullptr;
+  return computeKeyFunction(*this, RD->getDefinition(),
+                            /*IgnoreDLLImport=*/true);
 }
 
 void ASTContext::setNonKeyFunction(const CXXMethodDecl *Method) {
