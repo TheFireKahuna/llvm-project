@@ -784,6 +784,8 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
 
   // Enable toolchain specific default sanitizers if not explicitly disabled.
   SanitizerMask Default = TC.getDefaultSanitizers() & ~AllRemove;
+  if (TC.isUsingLTO(Args))
+    Default |= TC.getDefaultLTOSanitizers() & ~AllRemove;
 
   // Disable default sanitizers that are incompatible with explicitly requested
   // ones.
@@ -1015,7 +1017,8 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
     if (const Arg *A = Args.getLastArg(options::OPT_fsanitize_kcfi_hash_EQ))
       KcfiHash = A->getValue();
 
-    if (AllAddedKinds & SanitizerKind::CFI && DiagnoseErrors)
+    if (AllAddedKinds & SanitizerKind::CFI && !TC.canCombineKCFIWithCFI() &&
+        DiagnoseErrors)
       D.Diag(diag::err_drv_argument_not_allowed_with)
           << "-fsanitize=kcfi"
           << lastArgumentForMask(D, Args, SanitizerKind::CFI);
@@ -1352,6 +1355,13 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
   NeedsMemProfRt = Args.hasFlag(options::OPT_fmemory_profile,
                                 options::OPT_fmemory_profile_EQ,
                                 options::OPT_fno_memory_profile, false);
+
+  // Without the runtimes, a failed CFI check can only trap.
+  if ((Kinds & SanitizerKind::CFI & ~TrappingKinds) &&
+      !TC.hasSanitizerRuntimes() && DiagnoseErrors)
+    if (const Arg *A = Args.getLastArg(options::OPT_fno_sanitize_trap_EQ))
+      D.Diag(diag::err_drv_unsupported_opt_for_target)
+          << A->getAsString(Args) << TC.getTripleString();
 
   // Finally, initialize the set of available and recoverable sanitizers.
   Sanitizers.Mask |= Kinds;

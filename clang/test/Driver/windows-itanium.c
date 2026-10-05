@@ -206,6 +206,37 @@
 // KCFI-OPTS-DAG: "-fsanitize-cfi-icall-experimental-normalize-integers"
 // KCFI-OPTS-DAG: "-fsanitize-kcfi-hash=FNV-1a"
 
+// Under LTO, CFI checks the virtual and non-virtual member calls of the
+// classes LTO sees whole, beside KCFI. With no sanitizer runtime, a failed
+// check can only trap.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s -flto \
+// RUN:     -resource-dir=%S/Inputs/resource_dir 2>&1 \
+// RUN:   | FileCheck --check-prefix=LTO-CFI %s --implicit-check-not=error:
+// RUN: %clang -### --target=aarch64-unknown-windows-itanium -c %s -flto=thin \
+// RUN:     -resource-dir=%S/Inputs/resource_dir 2>&1 \
+// RUN:   | FileCheck --check-prefix=LTO-CFI %s --implicit-check-not=error:
+// LTO-CFI:     "-cc1"
+// LTO-CFI-DAG: "-fsanitize=cfi-nvcall,cfi-vcall,kcfi"
+// LTO-CFI-DAG: "-fsanitize-trap=cfi-nvcall,cfi-vcall"
+// LTO-CFI-DAG: "-fsanitize-system-ignorelist={{[^"]*}}cfi_ignorelist.txt"
+// LTO-CFI-DAG: "-fsplit-lto-unit"
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -resource-dir=%S/Inputs/resource_dir 2>&1 \
+// RUN:   | FileCheck --check-prefix=NO-LTO-CFI %s
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s -flto \
+// RUN:     -fno-sanitize=cfi -resource-dir=%S/Inputs/resource_dir 2>&1 \
+// RUN:   | FileCheck --check-prefix=NO-LTO-CFI %s
+// NO-LTO-CFI:     "-cc1"
+// NO-LTO-CFI-NOT: cfi-vcall
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s -flto \
+// RUN:     -fsanitize=cfi -resource-dir=%S/Inputs/resource_dir 2>&1 \
+// RUN:   | FileCheck --check-prefix=CFI-KCFI %s --implicit-check-not=error:
+// CFI-KCFI: "-fsanitize=cfi-derived-cast,cfi-icall,cfi-mfcall,cfi-unrelated-cast,cfi-nvcall,cfi-vcall,kcfi"
+// RUN: not %clang -### --target=x86_64-unknown-windows-itanium -c %s -flto \
+// RUN:     -fno-sanitize-trap=cfi-vcall -resource-dir=%S/Inputs/resource_dir 2>&1 \
+// RUN:   | FileCheck --check-prefix=CFI-NO-TRAP %s
+// CFI-NO-TRAP: error: unsupported option '-fno-sanitize-trap=cfi-vcall' for target 'x86_64-unknown-windows-itanium'
+
 // The resource headers, the wrappers over the Universal CRT and Windows SDK
 // headers, then those headers, found as the MSVC toolchain finds them.
 // RUN: rm -rf %t && split-file %s %t
