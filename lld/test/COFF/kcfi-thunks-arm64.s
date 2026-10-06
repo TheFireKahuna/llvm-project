@@ -1,11 +1,13 @@
 # REQUIRES: aarch64
 
-## On ARM64, under -import-slots, in an image it seals, the linker rewrites
-## the range test at the start of clang's KCFI check thunks: it becomes one
+## On ARM64, under -import-slots, in an image it seals, the linker replaces
+## clang's KCFI check thunks with its own form: the range test becomes one
 ## comparison of the target's offset from the start of .text with its size,
-## followed by a nop to clang's length. A type that no unsealed function in the
-## image has branches straight to the page test. Clang's type checks, page test
-## and guard jump stay. Without -import-slots, clang's form stays.
+## followed by clang's type check and the return for a target inside it; a
+## target outside it takes clang's page test, the type check and the guard
+## function. The mismatch routine is reached at any distance through X17. A type
+## that no unsealed function in the image has goes straight to the page test.
+## Without -import-slots, clang's form stays.
 
 # RUN: llvm-mc -triple aarch64-windows-msvc %s -filetype=obj -o %t.obj
 # RUN: lld-link %t.obj -machine:arm64 -guard:cf -import-slots -entry:main \
@@ -26,54 +28,49 @@
 # CHECK-NEXT:   mov x17, #0x[[#%x,SIZE]]
 # CHECK-NEXT:   movk x17, #0x0, lsl #16
 # CHECK-NEXT:   cmp x16, x17
-# CHECK-NEXT:   b.hs {{.*}}<__llvm_kcfi_check_11111111+0x40>
-# CHECK-NEXT:   nop
+# CHECK-NEXT:   b.hs {{.*}}<__llvm_kcfi_check_11111111+0x3c>
 # CHECK-NEXT:   ldur x16, [x15, #-0x8]
 # CHECK-NEXT:   mov x17, #0x1c5a
 # CHECK-NEXT:   movk x17, #0xb807, lsl #16
 # CHECK-NEXT:   movk x17, #0x1111, lsl #32
 # CHECK-NEXT:   movk x17, #0x1111, lsl #48
 # CHECK-NEXT:   cmp x16, x17
-# CHECK-NEXT:   b.ne
+# CHECK-NEXT:   b.ne {{.*}}<__llvm_kcfi_check_11111111+0x6c>
 # CHECK-NEXT:   ret
 # CHECK-NEXT:   tst x15, #0xff0
-# CHECK-NEXT:   b.eq
+# CHECK-NEXT:   b.eq {{.*}}<__llvm_kcfi_check_11111111+0x6c>
 # CHECK-NEXT:   ldur x16, [x15, #-0x8]
 # CHECK-NEXT:   mov x17, #0x1c5a
 # CHECK-NEXT:   movk x17, #0xb807, lsl #16
 # CHECK-NEXT:   movk x17, #0x1111, lsl #32
 # CHECK-NEXT:   movk x17, #0x1111, lsl #48
 # CHECK-NEXT:   cmp x16, x17
-# CHECK-NEXT:   b.ne
-# CHECK-NEXT:   adrp x16,
-# CHECK-NEXT:   ldr x16, [x16
+# CHECK-NEXT:   b.ne {{.*}}<__llvm_kcfi_check_11111111+0x6c>
+# CHECK-NEXT:   adrp x16, {{.*}}<__guard_check_icall_fptr>
+# CHECK-NEXT:   ldr x16, [x16]
 # CHECK-NEXT:   br x16
+# CHECK-NEXT:   adrp x17, [[MISMATCH:0x[0-9a-f]+]]
+# CHECK-NEXT:   add x17, x17, #0x[[#%x,MISMATCH_LO:]]
+# CHECK-NEXT:   br x17
 
 ## sealed is only called directly, so type 0x22222222 has no unsealed function
 ## in the image and goes straight to the page test.
 # CHECK:      <__llvm_kcfi_check_22222222>:
-# CHECK-NEXT:   b {{.*}}<__llvm_kcfi_check_22222222+0x40>
-# CHECK-COUNT-7: brk #0xf000
-# CHECK-NEXT:   ldur x16, [x15, #-0x8]
-# CHECK-NEXT:   mov x17, #0x1c5a
-# CHECK-NEXT:   movk x17, #0xb807, lsl #16
-# CHECK-NEXT:   movk x17, #0x2222, lsl #32
-# CHECK-NEXT:   movk x17, #0x2222, lsl #48
-# CHECK-NEXT:   cmp x16, x17
-# CHECK-NEXT:   b.ne
-# CHECK-NEXT:   ret
 # CHECK-NEXT:   tst x15, #0xff0
-# CHECK-NEXT:   b.eq
+# CHECK-NEXT:   b.eq {{.*}}<__llvm_kcfi_check_22222222+0x30>
 # CHECK-NEXT:   ldur x16, [x15, #-0x8]
 # CHECK-NEXT:   mov x17, #0x1c5a
 # CHECK-NEXT:   movk x17, #0xb807, lsl #16
 # CHECK-NEXT:   movk x17, #0x2222, lsl #32
 # CHECK-NEXT:   movk x17, #0x2222, lsl #48
 # CHECK-NEXT:   cmp x16, x17
-# CHECK-NEXT:   b.ne
-# CHECK-NEXT:   adrp x16,
-# CHECK-NEXT:   ldr x16, [x16
+# CHECK-NEXT:   b.ne {{.*}}<__llvm_kcfi_check_22222222+0x30>
+# CHECK-NEXT:   adrp x16, {{.*}}<__guard_check_icall_fptr>
+# CHECK-NEXT:   ldr x16, [x16]
 # CHECK-NEXT:   br x16
+# CHECK-NEXT:   adrp x17,
+# CHECK-NEXT:   add x17, x17,
+# CHECK-NEXT:   br x17
 
 ## A thunk that differs from clang's current form in one word is left as it
 ## is.

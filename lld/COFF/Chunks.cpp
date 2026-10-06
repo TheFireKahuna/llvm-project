@@ -1337,6 +1337,195 @@ void KCFIOpenChunk::writeTo(uint8_t *buf) const {
     buf[off + 5] = 0xCC;
 }
 
+KCFIThunkChunk::KCFIThunkChunk(COFFLinkerContext &ctx, bool check,
+                               ArrayRef<uint8_t> compare,
+                               ArrayRef<uint8_t> pageTest, Symbol *mismatch,
+                               Symbol *guard, Defined *codeStart,
+                               Defined *codeEnd, ArrayRef<Range> imported)
+    : check(check), compare(compare), pageTest(pageTest), mismatch(mismatch),
+      guard(guard), codeStart(codeStart), codeEnd(codeEnd), imported(imported),
+      ctx(ctx) {
+  setAlignment(16);
+}
+
+MachineTypes KCFIThunkChunk::getMachine() const { return ctx.config.machine; }
+
+// With the image's own range tested, the thunk is laid out as: the range test,
+// the type check and jump that a target inside a range takes, the tests of the
+// imported ranges, and the path of a target outside every range. Without it,
+// the type check and jump follow that path instead, so that no branch skips
+// them. On ARM64 the branch to the mismatch routine, which may be far, ends
+// the thunk.
+KCFIThunkChunk::Layout KCFIThunkChunk::getLayout() const {
+  bool isARM64 = ctx.config.machine == ARM64;
+  bool own = codeStart;
+  bool hits = own || !imported.empty();
+  uint32_t ownSize = own ? (isARM64 ? 28 : 22) : 0;
+  uint32_t hitSize = 0;
+  if (hits)
+    hitSize = compare.size() + (isARM64 ? 8 : 6 + (check ? 1 : 2));
+  uint32_t importedSize = imported.size() * (isARM64 ? 28 : 18);
+  uint32_t outsideSize =
+      pageTest.size() + compare.size() + (isARM64 ? 4 + 4 + 12 : 6 + 6 + 6);
+  Layout l;
+  l.own = 0;
+  if (own) {
+    l.hit = ownSize;
+    l.imported = l.hit + hitSize;
+    l.outside = l.imported + importedSize;
+    l.mismatch = l.outside + outsideSize;
+  } else {
+    l.imported = 0;
+    l.outside = importedSize;
+    l.hit = l.outside + outsideSize;
+    l.mismatch = l.hit + hitSize;
+  }
+  l.size = l.mismatch + (isARM64 ? 12 : 0);
+  return l;
+}
+
+size_t KCFIThunkChunk::getSize() const { return getLayout().size; }
+
+void KCFIThunkChunk::writeTo(uint8_t *buf) const {
+  Layout l = getLayout();
+  bool hits = codeStart || !imported.empty();
+  uint64_t mismatchRVA = cast<Defined>(mismatch)->getRVA();
+  uint64_t guardRVA = cast<Defined>(guard)->getRVA();
+  uint64_t codeSize = codeStart ? codeEnd->getRVA() - codeStart->getRVA() : 0;
+  // Both forms compare the size as a sign-extended 32-bit immediate.
+  if (codeSize > INT32_MAX)
+    Err(ctx) << "the code range of " << ctx.config.outputFile
+             << " is too large for its KCFI thunks";
+
+  if (ctx.config.machine == ARM64) {
+    // The target is in X15; X16 and X17 are free, as for the guard function.
+    auto insn = [&](uint32_t off, uint32_t v) { write32le(buf + off, v); };
+    auto branch19 = [&](uint32_t off, uint32_t cond, uint32_t to) {
+      int32_t delta = (int32_t(to) - int32_t(off)) / 4;
+      insn(off, 0x54000000 | cond | (delta & 0x7FFFF) << 5);
+    };
+    auto adrpAdd = [&](uint32_t off, uint32_t reg, uint64_t target) {
+      insn(off, 0x90000000 | reg);                // adrp reg, target
+      insn(off + 4, 0x91000000 | reg << 5 | reg); // add reg, reg, :lo12:target
+      applyArm64Addr(buf + off, target, rva + off, 12);
+      applyArm64Imm(buf + off + 4, target & 0xfff, 0);
+    };
+    if (codeStart) {
+      // adrp x16, start; add x16, x16, :lo12:start; sub x16, x15, x16
+      // mov x17, #size; movk x17, #size, lsl #16; cmp x16, x17; b.hs outside
+      adrpAdd(l.own, 16, codeStart->getRVA());
+      insn(l.own + 8, 0xCB1001F0);
+      insn(l.own + 12, 0xD2800011 | (codeSize & 0xFFFF) << 5);
+      insn(l.own + 16, 0xF2A00011 | (codeSize >> 16) << 5);
+      insn(l.own + 20, 0xEB11021F);
+      branch19(l.own + 24, 2, l.imported);
+    }
+    if (hits) {
+      // The type check; b.ne mismatch; ret
+      memcpy(buf + l.hit, compare.data(), compare.size());
+      uint32_t off = l.hit + compare.size();
+      branch19(off, 1, l.mismatch);
+      insn(off + 4, 0xD65F03C0);
+    }
+    for (size_t i = 0; i != imported.size(); ++i) {
+      // adrp x16, start; add x16, x16, :lo12:start; ldp x16, x17, [x16]
+      // cmp x15, x16; b.lo 1f; cmp x15, x17; b.lo hit; 1:
+      uint32_t off = l.imported + i * 28;
+      adrpAdd(off, 16, imported[i].start->getRVA());
+      insn(off + 8, 0xA9404610);
+      insn(off + 12, 0xEB1001FF);
+      branch19(off + 16, 3, off + 28);
+      insn(off + 20, 0xEB1101FF);
+      branch19(off + 24, 3, l.hit);
+    }
+    // The page test; b.eq mismatch; the type check; b.ne mismatch
+    // adrp x16, guard; ldr x16, [x16, :lo12:guard]; br x16
+    uint32_t off = l.outside;
+    memcpy(buf + off, pageTest.data(), pageTest.size());
+    off += pageTest.size();
+    branch19(off, 0, l.mismatch);
+    off += 4;
+    memcpy(buf + off, compare.data(), compare.size());
+    off += compare.size();
+    branch19(off, 1, l.mismatch);
+    insn(off + 4, 0x90000010);
+    insn(off + 8, 0xF9400210);
+    insn(off + 12, 0xD61F0200);
+    applyArm64Addr(buf + off + 4, guardRVA, rva + off + 4, 12);
+    applyArm64Ldr(buf + off + 8, guardRVA & 0xfff);
+    // adrp x17, mismatch; add x17, x17, :lo12:mismatch; br x17
+    adrpAdd(l.mismatch, 17, mismatchRVA);
+    insn(l.mismatch + 8, 0xD61F0220);
+    return;
+  }
+
+  // The target is in RAX for a dispatch thunk and in RCX for a check thunk;
+  // R10 and R11 are free, as for the guard function.
+  uint8_t modrm = check ? 0x0D : 0x05;
+  auto rel32 = [&](uint32_t off, uint64_t target) {
+    write32le(buf + off, target - (rva + off + 4));
+  };
+  auto rel8 = [&](uint32_t off, uint32_t target) {
+    buf[off] = target - (off + 1);
+  };
+  if (codeStart) {
+    static const uint8_t ownTest[] = {
+        0x4C, 0x8D, 0x15, 0, 0, 0, 0, // lea r10, [rip + start]
+        0x49, 0x89, 0xC3,             // mov r11, rax
+        0x4D, 0x29, 0xD3,             // sub r11, r10
+        0x49, 0x81, 0xFB, 0, 0, 0, 0, // cmp r11, size
+        0x73, 0,                      // jae imported
+    };
+    memcpy(buf + l.own, ownTest, sizeof(ownTest));
+    rel32(l.own + 3, codeStart->getRVA());
+    if (check)
+      buf[l.own + 9] = 0xCB; // mov r11, rcx
+    write32le(buf + l.own + 16, codeSize);
+    rel8(l.own + 21, l.imported);
+  }
+  if (hits) {
+    // The type check; jne mismatch; jmp rax or ret
+    uint32_t off = l.hit;
+    memcpy(buf + off, compare.data(), compare.size());
+    off += compare.size();
+    buf[off] = 0x0F;
+    buf[off + 1] = 0x85;
+    rel32(off + 2, mismatchRVA);
+    if (check) {
+      buf[off + 6] = 0xC3;
+    } else {
+      buf[off + 6] = 0xFF;
+      buf[off + 7] = 0xE0;
+    }
+  }
+  for (size_t i = 0; i != imported.size(); ++i) {
+    // cmp rax, [rip + start]; jb 1f; cmp rax, [rip + end]; jb hit; 1:
+    uint32_t off = l.imported + i * 18;
+    const uint8_t test[] = {0x48, 0x3B, modrm, 0, 0, 0, 0, 0x72, 0x09,
+                            0x48, 0x3B, modrm, 0, 0, 0, 0, 0x72, 0};
+    memcpy(buf + off, test, sizeof(test));
+    rel32(off + 3, imported[i].start->getRVA());
+    rel32(off + 12, imported[i].end->getRVA());
+    rel8(off + 17, l.hit);
+  }
+  // The page test; je mismatch; the type check; jne mismatch; jmp [rip + guard]
+  uint32_t off = l.outside;
+  memcpy(buf + off, pageTest.data(), pageTest.size());
+  off += pageTest.size();
+  buf[off] = 0x0F;
+  buf[off + 1] = 0x84;
+  rel32(off + 2, mismatchRVA);
+  off += 6;
+  memcpy(buf + off, compare.data(), compare.size());
+  off += compare.size();
+  buf[off] = 0x0F;
+  buf[off + 1] = 0x85;
+  rel32(off + 2, mismatchRVA);
+  buf[off + 6] = 0xFF;
+  buf[off + 7] = 0x25;
+  rel32(off + 8, guardRVA);
+}
+
 KCFIListChunk::KCFIListChunk(COFFLinkerContext &ctx, StringRef sectionName,
                              Defined *sym, uint64_t value)
     : sectionName(sectionName), sym(sym), value(value), ctx(ctx) {

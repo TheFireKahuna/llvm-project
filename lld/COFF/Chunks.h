@@ -831,6 +831,53 @@ private:
   COFFLinkerContext &ctx;
 };
 
+// The linker's form of one of clang's KCFI thunks, which replaces it in an
+// image the linker sealed. A target inside a code range the image vouches for,
+// its own if a function of the thunk's type is in it and that of each DLL it
+// imports whose code holds one, takes clang's type check and then the jump, or
+// the return of a check thunk. Any other target takes clang's page test, the
+// type check and the guard function. A DLL's range is read from its two bounds
+// in the import address table, start then end.
+class KCFIThunkChunk : public NonSectionCodeChunk {
+public:
+  struct Range {
+    Defined *start;
+    Defined *end;
+  };
+  KCFIThunkChunk(COFFLinkerContext &ctx, bool check, ArrayRef<uint8_t> compare,
+                 ArrayRef<uint8_t> pageTest, Symbol *mismatch, Symbol *guard,
+                 Defined *codeStart, Defined *codeEnd,
+                 ArrayRef<Range> imported);
+  size_t getSize() const override;
+  void writeTo(uint8_t *buf) const override;
+  uint32_t getOutputCharacteristics() const override {
+    return llvm::COFF::IMAGE_SCN_CNT_CODE |
+           NonSectionCodeChunk::getOutputCharacteristics();
+  }
+  StringRef getSectionName() const override { return ".text"; }
+  MachineTypes getMachine() const override;
+
+private:
+  // The offsets of the parts of the thunk, in the order they are laid out
+  // in when the image's own range is tested.
+  struct Layout {
+    uint32_t own, hit, imported, outside, mismatch, size;
+  };
+  Layout getLayout() const;
+
+  bool check;
+  // Clang's type check, without its branch, and its page test.
+  ArrayRef<uint8_t> compare;
+  ArrayRef<uint8_t> pageTest;
+  Symbol *mismatch;
+  Symbol *guard;
+  // The bounds of the image's own range, if the thunk tests it.
+  Defined *codeStart;
+  Defined *codeEnd;
+  SmallVector<Range, 0> imported;
+  COFFLinkerContext &ctx;
+};
+
 // A word of a KCFI type's list, in the section that sorts it among the
 // compiler's pieces of the list, or a cell that an entry points to. It holds
 // a value, or the address of a symbol, which is zero if the symbol is not in
