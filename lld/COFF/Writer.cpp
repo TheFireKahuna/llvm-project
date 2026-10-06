@@ -4135,8 +4135,10 @@ void Writer::narrowKCFIMemberMisses() {
 // chunk tests the image's own range as one comparison of the target's offset
 // from its start with its size, which the linker knows, and only for a type
 // that an unsealed prefix in the range has, since no other target in the image
-// can match. It copies clang's type check and page test, since only clang knows
-// the marker, the prefix offset and the form of the type they compare.
+// can match; then the ranges of the DLLs the image imports whose records list
+// an unsealed function of the type, for the same reason. It copies clang's
+// type check and page test, since only clang knows the marker, the prefix
+// offset and the form of the type they compare.
 void Writer::replaceKCFIThunks() {
   bool isX64 = ctx.config.machine == AMD64;
   if (!kcfiSealed || (!isX64 && ctx.config.machine != ARM64))
@@ -4219,10 +4221,21 @@ void Writer::replaceKCFIThunks() {
       bool own =
           kcfiCodeSec &&
           (vfn ? ctx.kcfiRangeVfnTypes : ctx.kcfiRangeTypes).count(stored);
+      // The ranges of the DLLs with an unsealed function of the type, those
+      // with the most such functions first, at most four.
+      SmallVector<std::pair<uint32_t, size_t>, 4> holders;
+      for (auto [i, r] : llvm::enumerate(ctx.kcfiImportedRanges))
+        if (uint32_t n = (vfn ? r.vfnTypes : r.types).lookup(stored))
+          holders.push_back({n, i});
+      llvm::stable_sort(holders,
+                        [](auto &a, auto &b) { return a.first > b.first; });
+      SmallVector<KCFIThunkChunk::Range, 4> imported;
+      for (auto [n, i] : ArrayRef(holders).take_front(4))
+        imported.push_back(
+            {ctx.kcfiImportedRanges[i].start, ctx.kcfiImportedRanges[i].end});
       replacements[sc] = make<KCFIThunkChunk>(
           ctx, !dispatch, compare, pageTest, mismatchSym, guardSym,
-          own ? kcfiCodeStart : nullptr, own ? kcfiCodeEnd : nullptr,
-          ArrayRef<KCFIThunkChunk::Range>());
+          own ? kcfiCodeStart : nullptr, own ? kcfiCodeEnd : nullptr, imported);
     }
   }
   if (replacements.empty())

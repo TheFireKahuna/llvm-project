@@ -790,8 +790,28 @@ void IdataContents::create(COFFLinkerContext &ctx) {
     }
   }
 
+  // The bounds of each DLL's KCFI code range that the image imports, which a
+  // KCFI thunk loads together: start, then end, in one 16-byte block of the
+  // import address table.
+  DenseMap<DefinedImportData *, DefinedImportData *> rangeEnds;
+  for (const COFFLinkerContext::KCFIImportedRange &r : ctx.kcfiImportedRanges)
+    rangeEnds[r.start] = r.end;
+
   // Create .idata contents for each DLL.
   for (std::vector<DefinedImportData *> &syms : v) {
+    auto start = llvm::find_if(
+        syms, [&](DefinedImportData *s) { return rangeEnds.count(s); });
+    if (start != syms.end()) {
+      DefinedImportData *first = *start, *second = rangeEnds.lookup(first);
+      llvm::erase(syms, first);
+      llvm::erase(syms, second);
+      // The table starts 16-byte aligned, and every entry is 8 bytes. The
+      // image imports something else from the DLL, which is why it binds the
+      // range, so the pair goes first or second.
+      size_t at = lookups.size() % 2;
+      assert(at <= syms.size());
+      syms.insert(syms.begin() + at, {first, second});
+    }
     // Create lookup and address tables. If they have external names,
     // we need to create hintName chunks to store the names.
     // If they don't (if they are import-by-ordinals), we store only
@@ -933,6 +953,8 @@ void IdataContents::create(COFFLinkerContext &ctx) {
       dirs.push_back(runDir);
     }
   }
+  if (!rangeEnds.empty())
+    addresses.front()->setAlignment(16);
   // Add null terminator.
   dirs.push_back(make<NullChunk>(sizeof(ImportDirectoryTableEntry), 4));
   // The runs' lookup tables follow the DLLs' own, which stay parallel to the

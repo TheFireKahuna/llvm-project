@@ -150,6 +150,7 @@ private:
 
   void createImportLibrary(bool asLib);
   void addKCFIRangeExports();
+  void bindKCFIImportedRanges();
 
   // Used by the resolver to parse .drectve section contents.
   void parseDirectives(InputFile *file);

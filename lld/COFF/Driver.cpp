@@ -39,6 +39,7 @@
 #include "llvm/Remarks/HotnessThresholdParser.h"
 #include "llvm/Support/BinaryStreamReader.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/DataExtractor.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/EndianStream.h"
 #include "llvm/Support/GlobPattern.h"
@@ -54,6 +55,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/ToolDrivers/llvm-lib/LibDriver.h"
+#include "llvm/Transforms/Utils/KCFIHash.h"
 #include <algorithm>
 #include <future>
 #include <memory>
@@ -1258,6 +1260,180 @@ void LinkerDriver::addKCFIRangeExports() {
     e.isPrivate = true;
     e.source = ExportSource::Export;
     exports.push_back(e);
+  }
+}
+
+// Reads the record of a DLL's KCFI code range from the member of its import
+// library that holds it, returning false if the member holds none this linker
+// can read.
+static bool readKCFIRangeRecord(COFFLinkerContext &ctx, MemoryBufferRef mb,
+                                uint16_t (&hints)[2],
+                                DenseMap<uint32_t, uint32_t> (&types)[2]) {
+  Expected<std::unique_ptr<COFFObjectFile>> obj = COFFObjectFile::create(mb);
+  if (!obj) {
+    consumeError(obj.takeError());
+    return false;
+  }
+  if ((*obj)->getMachine() != ctx.config.machine)
+    return false;
+  for (const SectionRef &sec : (*obj)->sections()) {
+    Expected<StringRef> name = sec.getName();
+    Expected<StringRef> contents = sec.getContents();
+    if (!name || !contents || *name != ".llvm_link_records") {
+      consumeError(name.takeError());
+      consumeError(contents.takeError());
+      continue;
+    }
+    DataExtractor data(*contents, /*IsLittleEndian=*/true);
+    DataExtractor::Cursor cur(0);
+    if (data.getBytes(cur, sizeof(LinkRecordsMagic)) !=
+            StringRef(LinkRecordsMagic, sizeof(LinkRecordsMagic)) ||
+        data.getULEB128(cur) != LinkRecordsVersion) {
+      consumeError(cur.takeError());
+      return false;
+    }
+    data.getULEB128(cur);
+    while (cur && !data.eof(cur)) {
+      uint64_t kind = data.getULEB128(cur);
+      uint64_t size = data.getULEB128(cur);
+      uint64_t start = cur.tell();
+      data.skip(cur, size);
+      if (!cur || kind != LinkRecordImageCode)
+        continue;
+      DataExtractor group(contents->substr(start, size), true);
+      DataExtractor::Cursor c(0);
+      for (uint16_t &hint : hints) {
+        uint64_t value = group.getULEB128(c);
+        if (value > UINT16_MAX)
+          return false;
+        hint = value;
+      }
+      for (DenseMap<uint32_t, uint32_t> &map : types) {
+        uint64_t count = group.getULEB128(c);
+        for (uint64_t i = 0; c && i != count; ++i) {
+          uint32_t type = group.getU32(c);
+          map[type] = group.getULEB128(c);
+        }
+      }
+      bool ok = c && group.eof(c);
+      consumeError(c.takeError());
+      consumeError(cur.takeError());
+      return ok;
+    }
+    consumeError(cur.takeError());
+  }
+  return false;
+}
+
+// Under -import-slots with a guard function table, the KCFI checks of an image
+// may take a target directly inside the code range of a DLL it imports
+// statically, whose import library records the range. The image imports the
+// range's bounds from each such DLL whose unsealed functions there have a type
+// that one of its thunks checks, as data the loader binds into the import
+// address table, which is read-only once the imports are bound. The imports
+// are named for the DLL, so that no two DLLs' meet in the symbol table.
+void LinkerDriver::bindKCFIImportedRanges() {
+  bool isX64 = ctx.config.machine == AMD64;
+  if (!ctx.config.importSlots || !(ctx.config.guardCF & GuardCFLevel::CF) ||
+      ctx.hybridSymtab || (!isX64 && ctx.config.machine != ARM64))
+    return;
+
+  // The types, and second types, that the image's thunks check, as a prefix
+  // stores them.
+  DenseSet<uint32_t> checked[2];
+  for (ObjFile *file : ctx.objFileInstances) {
+    for (Chunk *c : file->getChunks()) {
+      auto *sc = dyn_cast<SectionChunk>(c);
+      if (!sc || !sc->live || !sc->sym)
+        continue;
+      StringRef name = sc->sym->getName();
+      // The writer replaces dispatch thunks on x86-64 only.
+      bool vfn = name.consume_front("__llvm_kcfi_vfn_check_");
+      uint32_t type;
+      if ((!vfn && !(isX64 && name.consume_front("__llvm_kcfi_dispatch_")) &&
+           !name.consume_front("__llvm_kcfi_check_")) ||
+          name.size() != 8 || name.getAsInteger(16, type))
+        continue;
+      checked[vfn].insert(isX64 ? getX86KCFIType(type) : type);
+    }
+  }
+  if (checked[0].empty() && checked[1].empty())
+    return;
+
+  // The records of the DLLs the image imports statically, in load order.
+  struct Record {
+    ImportFile *file = nullptr;
+    uint16_t hints[2] = {};
+    DenseMap<uint32_t, uint32_t> types[2];
+    bool bound = false;
+  };
+  SmallVector<Record, 0> records;
+  StringSet<> seen;
+  for (ImportFile *file : ctx.importFileInstances) {
+    std::string dll = StringRef(file->dllName).lower();
+    if (!file->live || ctx.config.delayLoads.contains(dll) ||
+        !seen.insert(dll).second)
+      continue;
+    auto *lazy = dyn_cast_or_null<LazyArchive>(
+        ctx.symtab.find("__llvm_code_range$" + dll));
+    Record r;
+    r.file = file;
+    if (lazy &&
+        readKCFIRangeRecord(ctx, lazy->getMemberBuffer(), r.hints, r.types))
+      records.push_back(std::move(r));
+  }
+
+  // A thunk tests the ranges of the DLLs with the most functions of its type,
+  // at most four, as the writer chooses them; only those are bound.
+  for (int vfn : {0, 1}) {
+    for (uint32_t type : checked[vfn]) {
+      SmallVector<std::pair<uint32_t, size_t>, 4> holders;
+      for (auto [i, r] : llvm::enumerate(records))
+        if (uint32_t n = r.types[vfn].lookup(type))
+          holders.push_back({n, i});
+      llvm::stable_sort(holders,
+                        [](auto &a, auto &b) { return a.first > b.first; });
+      for (auto [n, i] : ArrayRef(holders).take_front(4))
+        records[i].bound = true;
+    }
+  }
+
+  for (Record &r : records) {
+    if (!r.bound)
+      continue;
+    ImportFile *file = r.file;
+    uint16_t(&hints)[2] = r.hints;
+    std::string dll = StringRef(file->dllName).lower();
+    DefinedImportData *bounds[2];
+    static const StringRef names[] = {"__llvm_code_start", "__llvm_code_end"};
+    for (int i : {0, 1}) {
+      // A short import of name$dll, exported as name, of data.
+      std::string symbolName = (names[i] + "$" + dll).str();
+      size_t dataSize =
+          symbolName.size() + file->dllName.size() + names[i].size() + 3;
+      size_t size = sizeof(coff_import_header) + dataSize;
+      char *buf = bAlloc().Allocate<char>(size);
+      memset(buf, 0, size);
+      auto *hdr = reinterpret_cast<coff_import_header *>(buf);
+      hdr->Sig2 = 0xFFFF;
+      hdr->Machine = ctx.config.machine;
+      hdr->SizeOfData = dataSize;
+      hdr->OrdinalHint = hints[i];
+      hdr->TypeInfo = IMPORT_NAME_EXPORTAS << 2 | IMPORT_DATA;
+      char *p = buf + sizeof(*hdr);
+      memcpy(p, symbolName.data(), symbolName.size());
+      p += symbolName.size() + 1;
+      memcpy(p, file->dllName.data(), file->dllName.size());
+      p += file->dllName.size() + 1;
+      memcpy(p, names[i].data(), names[i].size());
+      auto *impFile = make<ImportFile>(
+          ctx, MemoryBufferRef(StringRef(buf, size), file->dllName));
+      addFile(impFile);
+      impFile->live = true;
+      bounds[i] = impFile->impSym;
+    }
+    ctx.kcfiImportedRanges.push_back(
+        {bounds[0], bounds[1], std::move(r.types[0]), std::move(r.types[1])});
   }
 }
 
@@ -3276,6 +3452,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // Under -import-slots, the import library describes the DLL's KCFI code
   // range, which the writer decides, so it is written after the image.
   addKCFIRangeExports();
+  bindKCFIImportedRanges();
   bool implibAfterImage = false;
   if (config->dll || !ctx.symtab.exports.empty() ||
       (ctx.config.machine == ARM64X && !ctx.hybridSymtab->exports.empty())) {
