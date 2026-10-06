@@ -149,6 +149,7 @@ private:
   void handleReproFile(StringRef path, InputOpt inputOpt);
 
   void createImportLibrary(bool asLib);
+  void addKCFIRangeExports();
 
   // Used by the resolver to parse .drectve section contents.
   void parseDirectives(InputFile *file);

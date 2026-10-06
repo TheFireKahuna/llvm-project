@@ -29,16 +29,14 @@
 # CHECK-NEXT: <vdirect>:
 
 ## A function whose address is taken in data, in code, by an export, or only
-## in a vtable is listed, so it keeps its types.
+## in a vtable is listed, so it keeps its types. An export that nothing else
+## lists follows the image's other code, outside the code range.
 # CHECK:      <__cfi_indata>:
 # CHECK-NEXT:   nopl 0x71c5a06(%rax)
 # CHECK-NEXT:   movl $0x22222222, %eax
 # CHECK:      <__cfi_incode>:
 # CHECK-NEXT:   nopl 0x71c5a06(%rax)
 # CHECK-NEXT:   movl $0x33333333, %eax
-# CHECK:      <__cfi_exported>:
-# CHECK-NEXT:   nopl 0x71c5a06(%rax)
-# CHECK-NEXT:   movl $0x44444444, %eax
 # CHECK:      <__cfi_virt>:
 # CHECK-NEXT:   nopl (%rax)
 # CHECK-NEXT:   nopl 0x71c5a06(%rax)
@@ -58,6 +56,9 @@
 # CHECK:      <__cfi_nocf_called>:
 # CHECK-NEXT:   nopl 0x71c5a06(%rax)
 # CHECK-NEXT:   movl $0x88888888, %eax
+# CHECK:      <__cfi_exported>:
+# CHECK-NEXT:   nopl 0x71c5a06(%rax)
+# CHECK-NEXT:   movl $0x44444444, %eax
 
 # RUN: lld-link %t.main.obj %t.nocf.obj -guard:cf -import-slots -entry:main \
 # RUN:   -export:exported -debug:symtab -opt:icf -out:%t.icf.exe
