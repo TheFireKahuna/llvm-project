@@ -140,6 +140,19 @@ public:
   bool kcfiRangeDefined = false;
   llvm::MapVector<uint32_t, uint32_t> kcfiRangeTypes;
   llvm::MapVector<uint32_t, uint32_t> kcfiRangeVfnTypes;
+
+  // The KCFI code ranges of the DLLs the image imports statically, in load
+  // order, that its KCFI checks may take a target inside directly: the
+  // imports of each range's bounds, and the types and second types of the
+  // DLL's unsealed functions in it, with how many carry each, as the DLL's
+  // import library records them.
+  struct KCFIImportedRange {
+    DefinedImportData *start;
+    DefinedImportData *end;
+    llvm::DenseMap<uint32_t, uint32_t> types;
+    llvm::DenseMap<uint32_t, uint32_t> vfnTypes;
+  };
+  std::vector<KCFIImportedRange> kcfiImportedRanges;
 };
 
 } // namespace lld::coff
