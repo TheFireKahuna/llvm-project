@@ -661,7 +661,8 @@ NewArchiveMember ObjectFactory::createWeakExternal(StringRef Sym,
 Error writeImportLibrary(StringRef ImportName, StringRef Path,
                          ArrayRef<COFFShortExport> Exports,
                          MachineTypes Machine, bool MinGW,
-                         ArrayRef<COFFShortExport> NativeExports) {
+                         ArrayRef<COFFShortExport> NativeExports,
+                         MutableArrayRef<NewArchiveMember> ExtraMembers) {
 
   MachineTypes NativeMachine = Machine;
   if (isArm64EC(Machine)) {
@@ -796,6 +797,8 @@ Error writeImportLibrary(StringRef ImportName, StringRef Path,
     return e;
   if (Error e = addExports(NativeExports, NativeMachine))
     return e;
+  for (NewArchiveMember &M : ExtraMembers)
+    Members.push_back(std::move(M));
 
   return writeArchive(Path, Members, SymtabWritingMode::NormalSymtab,
                       object::Archive::K_COFF,

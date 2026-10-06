@@ -26,6 +26,9 @@
 #include "llvm/Support/raw_ostream.h"
 
 namespace llvm {
+
+struct NewArchiveMember;
+
 namespace object {
 
 constexpr std::string_view ImportDescriptorPrefix = "__IMPORT_DESCRIPTOR_";
@@ -136,10 +139,14 @@ struct COFFShortExport {
 /// linking both ARM64EC and pure ARM64 objects, and the linker will pick only
 /// the exports relevant to the target platform. For non-hybrid targets,
 /// the NativeExports parameter should not be used.
-LLVM_ABI Error writeImportLibrary(StringRef ImportName, StringRef Path,
-                                  ArrayRef<COFFShortExport> Exports,
-                                  COFF::MachineTypes Machine, bool MinGW,
-                                  ArrayRef<COFFShortExport> NativeExports = {});
+///
+/// ExtraMembers, such as objects that carry facts about the DLL for a linker,
+/// are moved into the library after the import members.
+LLVM_ABI Error writeImportLibrary(
+    StringRef ImportName, StringRef Path, ArrayRef<COFFShortExport> Exports,
+    COFF::MachineTypes Machine, bool MinGW,
+    ArrayRef<COFFShortExport> NativeExports = {},
+    MutableArrayRef<NewArchiveMember> ExtraMembers = {});
 
 } // namespace object
 } // namespace llvm
