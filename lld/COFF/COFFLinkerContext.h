@@ -19,6 +19,7 @@
 #include "Writer.h"
 #include "lld/Common/CommonLinkerContext.h"
 #include "lld/Common/Timer.h"
+#include "llvm/ADT/MapVector.h"
 
 namespace lld::coff {
 
@@ -130,6 +131,15 @@ public:
   // offset of the relocation, which are rewritten to take it as static data
   // does (see SectionChunk::getImportSiteTarget).
   llvm::DenseSet<std::pair<const SectionChunk *, uint32_t>> importSites;
+
+  // A DLL linked under -import-slots exports the bounds of its KCFI code
+  // range, which these symbols take, and its import library describes the
+  // range by the KCFI types, and second types, of the unsealed functions in
+  // it, with how many carry each, when the range is not empty.
+  Defined *kcfiRangeExports[2] = {};
+  bool kcfiRangeDefined = false;
+  llvm::MapVector<uint32_t, uint32_t> kcfiRangeTypes;
+  llvm::MapVector<uint32_t, uint32_t> kcfiRangeVfnTypes;
 };
 
 } // namespace lld::coff

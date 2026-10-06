@@ -30,6 +30,7 @@
 #include "llvm/BinaryFormat/Magic.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/LTO/LTO.h"
+#include "llvm/Object/ArchiveWriter.h"
 #include "llvm/Object/COFFImportFile.h"
 #include "llvm/Object/IRObjectFile.h"
 #include "llvm/Option/Arg.h"
@@ -39,6 +40,7 @@
 #include "llvm/Support/BinaryStreamReader.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/EndianStream.h"
 #include "llvm/Support/GlobPattern.h"
 #include "llvm/Support/LEB128.h"
 #include "llvm/Support/MathExtras.h"
@@ -1079,17 +1081,86 @@ std::string LinkerDriver::getImportName(bool asLib) {
   return std::string(out);
 }
 
+// An object whose only content is the record of a DLL's KCFI code range, with
+// one absolute symbol, named for the DLL, by which the linker of an image that
+// imports the DLL finds the record in the import library without loading it.
+static NewArchiveMember createKCFIRangeMember(COFFLinkerContext &ctx,
+                                              StringRef dllName,
+                                              uint16_t hintStart,
+                                              uint16_t hintEnd) {
+  std::string group;
+  raw_string_ostream g(group);
+  encodeULEB128(hintStart, g);
+  encodeULEB128(hintEnd, g);
+  for (const auto *types : {&ctx.kcfiRangeTypes, &ctx.kcfiRangeVfnTypes}) {
+    SmallVector<std::pair<uint32_t, uint32_t>, 0> sorted(types->begin(),
+                                                         types->end());
+    llvm::sort(sorted);
+    encodeULEB128(sorted.size(), g);
+    for (auto [type, functions] : sorted) {
+      support::endian::write<uint32_t>(g, type, llvm::endianness::little);
+      encodeULEB128(functions, g);
+    }
+  }
+  std::string records;
+  raw_string_ostream r(records);
+  r.write(LinkRecordsMagic, sizeof(LinkRecordsMagic));
+  encodeULEB128(LinkRecordsVersion, r);
+  encodeULEB128(0, r);
+  encodeULEB128(LinkRecordImageCode, r);
+  encodeULEB128(group.size(), r);
+  r << group;
+
+  // The header, the section, its contents, the symbol and the string table,
+  // which holds the section's name and the symbol's.
+  std::string strtab = std::string(4, '\0') + ".llvm_link_records" + '\0' +
+                       "__llvm_code_range$" + dllName.lower() + '\0';
+  support::endian::write32le(strtab.data(), strtab.size());
+  coff_file_header header = {};
+  header.Machine = ctx.config.machine;
+  header.NumberOfSections = 1;
+  header.PointerToSymbolTable =
+      sizeof(coff_file_header) + sizeof(coff_section) + records.size();
+  header.NumberOfSymbols = 1;
+  coff_section section = {};
+  memcpy(section.Name, "/4", 2);
+  section.SizeOfRawData = records.size();
+  section.PointerToRawData = sizeof(coff_file_header) + sizeof(coff_section);
+  section.Characteristics = IMAGE_SCN_LNK_REMOVE;
+  coff_symbol16 sym = {};
+  sym.Name.Offset.Offset = 4 + sizeof(".llvm_link_records");
+  sym.SectionNumber = IMAGE_SYM_ABSOLUTE;
+  sym.StorageClass = IMAGE_SYM_CLASS_EXTERNAL;
+
+  std::string obj;
+  raw_string_ostream o(obj);
+  o.write(reinterpret_cast<const char *>(&header), sizeof(header));
+  o.write(reinterpret_cast<const char *>(&section), sizeof(section));
+  o << records;
+  o.write(reinterpret_cast<const char *>(&sym), sizeof(sym));
+  o << strtab;
+  NewArchiveMember member;
+  member.Buf = MemoryBuffer::getMemBufferCopy(obj, dllName);
+  member.MemberName = member.Buf->getBufferIdentifier();
+  return member;
+}
+
 void LinkerDriver::createImportLibrary(bool asLib) {
   llvm::TimeTraceScope timeScope("Create import library");
   std::vector<COFFShortExport> exports, nativeExports;
+  // The hints of the exported bounds of the KCFI code range.
+  uint16_t rangeHints[2] = {};
 
-  auto getExports = [](SymbolTable &symtab,
-                       std::vector<COFFShortExport> &exports) {
+  auto getExports = [&](SymbolTable &symtab,
+                        std::vector<COFFShortExport> &exports) {
     // A member that imports by name carries a hint rather than an ordinal:
     // the export's index in the export name table, whose order fixupExports
     // has already set.
     uint16_t hint = 0;
     for (Export &e1 : symtab.exports) {
+      for (int i : {0, 1})
+        if (e1.sym && e1.sym == ctx.kcfiRangeExports[i])
+          rangeHints[i] = hint;
       COFFShortExport e2;
       e2.Name = std::string(e1.name);
       e2.SymbolName = std::string(e1.symbolName);
@@ -1111,10 +1182,14 @@ void LinkerDriver::createImportLibrary(bool asLib) {
 
   std::string libName = getImportName(asLib);
   std::string path = getImplibPath();
+  std::vector<NewArchiveMember> extra;
+  if (!asLib && ctx.kcfiRangeDefined && ctx.kcfiRangeExports[0])
+    extra.push_back(
+        createKCFIRangeMember(ctx, libName, rangeHints[0], rangeHints[1]));
 
   if (!ctx.config.incremental) {
     checkError(writeImportLibrary(libName, path, exports, ctx.config.machine,
-                                  ctx.config.mingw, nativeExports));
+                                  ctx.config.mingw, nativeExports, extra));
     return;
   }
 
@@ -1124,7 +1199,7 @@ void LinkerDriver::createImportLibrary(bool asLib) {
       path, /*IsText=*/false, /*RequiresNullTerminator=*/false);
   if (!oldBuf) {
     checkError(writeImportLibrary(libName, path, exports, ctx.config.machine,
-                                  ctx.config.mingw, nativeExports));
+                                  ctx.config.mingw, nativeExports, extra));
     return;
   }
 
@@ -1136,7 +1211,7 @@ void LinkerDriver::createImportLibrary(bool asLib) {
 
   if (Error e =
           writeImportLibrary(libName, tmpName, exports, ctx.config.machine,
-                             ctx.config.mingw, nativeExports)) {
+                             ctx.config.mingw, nativeExports, extra)) {
     checkError(std::move(e));
     return;
   }
@@ -1148,6 +1223,41 @@ void LinkerDriver::createImportLibrary(bool asLib) {
     checkError(errorCodeToError(sys::fs::rename(tmpName, path)));
   } else {
     sys::fs::remove(tmpName);
+  }
+}
+
+// Under -import-slots, a DLL exports the bounds of its KCFI code range, which
+// the writer defines, as private data, so that the KCFI checks of an image
+// that imports it can take a target inside the range directly. A DLL without
+// a range exports an empty one, so that an importer linked against a release
+// with one still loads. The names are reserved for these exports.
+void LinkerDriver::addKCFIRangeExports() {
+  if (!ctx.config.dll || !ctx.config.importSlots || ctx.hybridSymtab ||
+      (ctx.config.machine != AMD64 && ctx.config.machine != ARM64))
+    return;
+  static const StringRef names[] = {"__llvm_code_start", "__llvm_code_end"};
+  std::vector<Export> &exports = ctx.symtab.exports;
+  llvm::erase_if(exports, [&](const Export &e) {
+    StringRef name = !e.exportAs.empty()  ? StringRef(e.exportAs)
+                     : !e.extName.empty() ? StringRef(e.extName)
+                                          : StringRef(e.name);
+    if (!llvm::is_contained(names, name) && !llvm::is_contained(names, e.name))
+      return false;
+    if (e.source != ExportSource::ExportAll)
+      Err(ctx) << "cannot export " << e.name
+               << (name == e.name ? "" : " as " + name.str())
+               << ": the name is reserved for the KCFI code range";
+    return true;
+  });
+  for (int i : {0, 1}) {
+    ctx.kcfiRangeExports[i] = make<DefinedSynthetic>(names[i], nullptr);
+    Export e;
+    e.name = names[i];
+    e.sym = ctx.kcfiRangeExports[i];
+    e.data = true;
+    e.isPrivate = true;
+    e.source = ExportSource::Export;
+    exports.push_back(e);
   }
 }
 
@@ -3163,12 +3273,20 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // Windows specific -- when we are creating a .dll file, we also
   // need to create a .lib file. In MinGW mode, we only do that when the
   // -implib option is given explicitly, for compatibility with GNU ld.
+  // Under -import-slots, the import library describes the DLL's KCFI code
+  // range, which the writer decides, so it is written after the image.
+  addKCFIRangeExports();
+  bool implibAfterImage = false;
   if (config->dll || !ctx.symtab.exports.empty() ||
       (ctx.config.machine == ARM64X && !ctx.hybridSymtab->exports.empty())) {
     llvm::TimeTraceScope timeScope("Create .lib exports");
     ctx.forEachActiveSymtab([](SymbolTable &symtab) { symtab.fixupExports(); });
-    if (!config->noimplib && (!config->mingw || !config->implib.empty()))
-      createImportLibrary(/*asLib=*/false);
+    if (!config->noimplib && (!config->mingw || !config->implib.empty())) {
+      if (config->importSlots)
+        implibAfterImage = true;
+      else
+        createImportLibrary(/*asLib=*/false);
+    }
     ctx.forEachActiveSymtab(
         [](SymbolTable &symtab) { symtab.assignExportOrdinals(); });
   }
@@ -3246,6 +3364,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
 
   // Write the result.
   writeResult(ctx);
+  if (implibAfterImage)
+    createImportLibrary(/*asLib=*/false);
   // LTO cleanup may create time trace events. Wait for it to complete before
   // writing the time trace data.
   ctx.forEachSymtab([](SymbolTable &symtab) { symtab.waitForLTOCleanup(); });

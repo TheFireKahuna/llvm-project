@@ -117,6 +117,21 @@ enum LinkRecordKind : uint64_t {
   //
   // section and delta are as for LinkRecordSites.
   LinkRecordCallOnly = 4,
+
+  // The code range of a DLL, for the linker of an image that imports it, in
+  // a member of the DLL's import library. The DLL exports the range's bounds
+  // as __llvm_code_start and __llvm_code_end, and a KCFI check in the
+  // importer may take a target inside it directly when the DLL has an
+  // unsealed function of the check's type there:
+  //
+  //   payload := hint_start:ULEB128 hint_end:ULEB128 types types
+  //   types   := count:ULEB128 (type:u32 functions:ULEB128){count}
+  //
+  // The hints are those of the two exports. The first types lists each KCFI
+  // type of an unsealed function inside the range, and the second each second
+  // type, which a function that can occupy a vtable slot carries, in
+  // increasing order, with how many such functions carry it.
+  LinkRecordImageCode = 6,
 };
 
 // The form of an instruction site, which a linker verifies against the

@@ -380,6 +380,7 @@ private:
   void placeLinkerDefinedSymbols();
   void defineKCFICodeRange();
   void placeKCFICodeRange();
+  void defineKCFIRangeExports();
   void replaceKCFIThunks();
   void boundKCFIMismatches();
   void narrowKCFIMemberMisses();
@@ -973,6 +974,7 @@ void Writer::run() {
     defineKCFICodeRange();
     replaceKCFIThunks();
     placeKCFICodeRange();
+    defineKCFIRangeExports();
     layoutSections();
     finalizeAddresses();
     removeEmptySections();
@@ -3860,7 +3862,8 @@ void Writer::defineKCFICodeRange() {
     return;
   OutputSection *sec = *secIt;
   // Each bound is replaced only while it is the weak alias resolved to that
-  // default, the leader of its COMDAT.
+  // default, the leader of its COMDAT. An image whose code references
+  // neither still has a range, which a DLL exports.
   auto isEmptyDefault = [](Symbol *s) {
     auto *d = dyn_cast_or_null<DefinedRegular>(s);
     return d && d->getValue() == 0 && d->getChunk()->sym &&
@@ -3868,8 +3871,12 @@ void Writer::defineKCFICodeRange() {
   };
   Symbol *start = ctx.symtab.find("__llvm_code_start");
   Symbol *end = ctx.symtab.find("__llvm_code_end");
-  if (!isEmptyDefault(start) || !isEmptyDefault(end))
+  if ((start && !isEmptyDefault(start)) || (end && !isEmptyDefault(end)))
     return;
+  if (!start)
+    start = make<DefinedSynthetic>("__llvm_code_start", nullptr);
+  if (!end)
+    end = make<DefinedSynthetic>("__llvm_code_end", nullptr);
 
   std::vector<Chunk *> &chunks = sec->chunks;
   auto isPlainText = [](const Chunk *c) {
@@ -3891,12 +3898,23 @@ void Writer::defineKCFICodeRange() {
   if (limit == chunks.begin())
     return;
   kcfiInRange.insert(chunks.begin(), limit);
+  // The types, and the second types of functions that can occupy a vtable
+  // slot, that an unsealed prefix in the range has, with how many do.
+  for (const KCFIPrefix &p : kcfiPrefixes) {
+    if (p.sealed || !kcfiInRange.contains(p.chunk))
+      continue;
+    const uint8_t *words = p.chunk->getContents().data() + p.offset;
+    ++ctx.kcfiRangeTypes[read32le(words + p.size - 4)];
+    if (p.size == 16)
+      ++ctx.kcfiRangeVfnTypes[read32le(words)];
+  }
   kcfiCodeEndChunk = limit == chunks.end() ? nullptr : *limit;
   replaceSymbol<DefinedSynthetic>(start, start->getName(), nullptr);
   replaceSymbol<DefinedSynthetic>(end, end->getName(), nullptr);
   kcfiCodeStart = cast<Defined>(start);
   kcfiCodeEnd = cast<Defined>(end);
   kcfiCodeSec = sec;
+  ctx.kcfiRangeDefined = true;
 }
 
 // Points the bounds of the code range at its first chunk and at the end of its
@@ -3913,6 +3931,42 @@ void Writer::placeKCFICodeRange() {
   else
     replaceSymbol<DefinedSynthetic>(kcfiCodeEnd, kcfiCodeEnd->getName(),
                                     chunks.back(), chunks.back()->getSize());
+}
+
+// Points the bounds that a DLL exports for its importers' KCFI checks at its
+// code range, or, where it has none, both at one address, an empty range. That
+// address is not in the export directory, where the loader would take it for
+// the name of a forwarded export.
+void Writer::defineKCFIRangeExports() {
+  auto [start, end] = ctx.kcfiRangeExports;
+  if (!start)
+    return;
+  // A DLL whose export table comes from its objects exports neither, so its
+  // import library describes no range.
+  if (isa<SectionChunk>(ctx.symtab.edataStart))
+    ctx.kcfiRangeDefined = false;
+  if (kcfiCodeSec) {
+    std::vector<Chunk *> &chunks = kcfiCodeSec->chunks;
+    replaceSymbol<DefinedSynthetic>(start, start->getName(), chunks.front());
+    if (kcfiCodeEndChunk)
+      replaceSymbol<DefinedSynthetic>(end, end->getName(), kcfiCodeEndChunk);
+    else
+      replaceSymbol<DefinedSynthetic>(end, end->getName(), chunks.back(),
+                                      chunks.back()->getSize());
+    return;
+  }
+  // The first code in .text, or, in a DLL without code, a word of its own.
+  auto it = llvm::find_if(textSec->chunks,
+                          [](const Chunk *c) { return c->getSize(); });
+  Chunk *c;
+  if (it != textSec->chunks.end()) {
+    c = *it;
+  } else {
+    c = make<KCFIListChunk>(ctx, ".rdata", nullptr);
+    rdataSec->addChunk(c);
+  }
+  replaceSymbol<DefinedSynthetic>(start, start->getName(), c);
+  replaceSymbol<DefinedSynthetic>(end, end->getName(), c);
 }
 
 // In an image whose guard function table lists a function without a KCFI
@@ -4088,18 +4142,6 @@ void Writer::replaceKCFIThunks() {
   if (!kcfiSealed || (!isX64 && ctx.config.machine != ARM64))
     return;
 
-  // The types, and the second types of functions that can occupy a vtable
-  // slot, that an unsealed prefix in the range has.
-  DenseSet<uint32_t> types, vfnTypes;
-  for (const KCFIPrefix &p : kcfiPrefixes) {
-    if (p.sealed || !kcfiInRange.contains(p.chunk))
-      continue;
-    const uint8_t *words = p.chunk->getContents().data() + p.offset;
-    types.insert(read32le(words + p.size - 4));
-    if (p.size == 16)
-      vfnTypes.insert(read32le(words));
-  }
-
   DenseMap<const Chunk *, Chunk *> replacements;
   for (ObjFile *file : ctx.objFileInstances) {
     for (Chunk *c : file->getChunks()) {
@@ -4174,7 +4216,9 @@ void Writer::replaceKCFIThunks() {
 
       // x86-64 stores a type that would spell an ENDBR instruction plus one.
       uint32_t stored = isX64 ? getX86KCFIType(type) : type;
-      bool own = kcfiCodeSec && (vfn ? vfnTypes : types).contains(stored);
+      bool own =
+          kcfiCodeSec &&
+          (vfn ? ctx.kcfiRangeVfnTypes : ctx.kcfiRangeTypes).count(stored);
       replacements[sc] = make<KCFIThunkChunk>(
           ctx, !dispatch, compare, pageTest, mismatchSym, guardSym,
           own ? kcfiCodeStart : nullptr, own ? kcfiCodeEnd : nullptr,
