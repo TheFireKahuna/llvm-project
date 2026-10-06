@@ -466,8 +466,9 @@ private:
 
   // The KCFI prefixes with a marker, found under -import-slots; by chunk, the
   // entries they precede, each with the bytes at a page's start it must stay
-  // out of; whether the image is sealed; and the output section that holds
-  // them all, if there is one.
+  // out of; whether the image is sealed; the chunks holding a prefix of a
+  // function that is export-suppressed; and the output section that holds
+  // them all, if there is one, with the bounds of the code range in it.
   std::vector<KCFIPrefix> kcfiPrefixes;
   // The objects that define code and no KCFI prefix with a marker, which are
   // foreign.
@@ -476,7 +477,10 @@ private:
       kcfiEntries;
   bool kcfiSealed = false;
   bool kcfiUnprefixedTargets = false;
+  DenseSet<const Chunk *> kcfiSuppressedChunks;
   OutputSection *kcfiCodeSec = nullptr;
+  Defined *kcfiCodeStart = nullptr;
+  Defined *kcfiCodeEnd = nullptr;
 
   uint64_t fileSize;
   uint32_t pointerToSymbolTable = 0;
@@ -962,12 +966,12 @@ void Writer::run() {
     packPlacedChunks();
     createDynamicRelocs();
     removeUnusedSections();
+    defineKCFICodeRange();
     layoutSections();
     finalizeAddresses();
     removeEmptySections();
     assignOutputSectionIndices();
     placeLinkerDefinedSymbols();
-    defineKCFICodeRange();
     setSectionPermissions();
     checkImportSlots();
     setECSymbols();
@@ -3588,9 +3592,17 @@ void Writer::createGuardCFTables() {
   //
   // A function without a prefix that a foreign object lists, such as one of
   // its own or an import thunk, is one that foreign code can hand to ours.
+  //
+  // An export-suppressed function keeps its type, since a pointer to it that
+  // GetProcAddress returns or another image's import grants is valid, but the
+  // guard function accepts it only after such a grant, so its chunk is kept
+  // outside the code range that KCFI's thunks accept a match in directly.
   if (config->importSlots) {
-    for (KCFIPrefix &p : kcfiPrefixes)
+    for (KCFIPrefix &p : kcfiPrefixes) {
       p.sealed = !addressTakenSyms.contains({p.chunk, p.entry});
+      if (exportSuppressed.contains({p.chunk, p.entry}))
+        kcfiSuppressedChunks.insert(p.chunk);
+    }
     kcfiSealed = true;
     kcfiUnprefixedTargets =
         llvm::any_of(foreignTakenSyms, [&](const ChunkAndOffset &c) {
@@ -3746,11 +3758,6 @@ void Writer::sealKCFIPrefixes() {
   }
 }
 
-// Defines __llvm_code_start and __llvm_code_end, which clang's KCFI thunks test
-// to take a target inside the image directly, as the bounds of the output
-// section that holds the KCFI prefixes of a sealed image. They keep clang's
-// weak default, __llvm_code_empty, a byte in a COMDAT, and so an empty range,
-// unless every prefix is in one output section.
 // Places the symbols that SymbolTable::addStartStopSymbols and
 // addBoundarySymbols defined: __start_X at the first section of run X and
 // __stop_X at the end of its last, and _etext, _edata and _end at the ends of
@@ -3820,13 +3827,33 @@ void Writer::placeLinkerDefinedSymbols() {
   });
 }
 
+// Defines __llvm_code_start and __llvm_code_end, which clang's KCFI thunks test
+// to take a target inside the image directly, as the bounds of the code in the
+// output section that holds the KCFI prefixes of a sealed image. They keep
+// clang's weak default, __llvm_code_empty, a byte in a COMDAT, and so an empty
+// range, unless every prefix is in one output section.
+//
+// The range ends before the first chunk holding an export-suppressed function.
+// Such chunks of the section's plain .text group follow its other chunks, where
+// /order does not place them, so that the range keeps the rest; the groups
+// with a $ suffix keep their order after it.
 void Writer::defineKCFICodeRange() {
   if (!kcfiSealed || kcfiPrefixes.empty())
     return;
-  OutputSection *sec = ctx.getOutputSection(kcfiPrefixes.front().chunk);
+  // Output sections are not yet indexed, so the section is found by its
+  // chunks.
+  DenseSet<const Chunk *> prefixed;
   for (const KCFIPrefix &p : kcfiPrefixes)
-    if (ctx.getOutputSection(p.chunk) != sec)
-      return;
+    prefixed.insert(p.chunk);
+  auto holdsAll = [&](OutputSection *s) {
+    return llvm::count_if(s->chunks, [&](Chunk *c) {
+             return prefixed.contains(c);
+           }) == ptrdiff_t(prefixed.size());
+  };
+  auto secIt = llvm::find_if(ctx.outputSections, holdsAll);
+  if (secIt == ctx.outputSections.end())
+    return;
+  OutputSection *sec = *secIt;
   // Each bound is replaced only while it is the weak alias resolved to that
   // default, the leader of its COMDAT.
   auto isEmptyDefault = [](Symbol *s) {
@@ -3838,9 +3865,34 @@ void Writer::defineKCFICodeRange() {
   Symbol *end = ctx.symtab.find("__llvm_code_end");
   if (!isEmptyDefault(start) || !isEmptyDefault(end))
     return;
-  Chunk *last = sec->chunks.back();
-  replaceSymbol<DefinedSynthetic>(start, start->getName(), sec->chunks.front());
-  replaceSymbol<DefinedSynthetic>(end, end->getName(), last, last->getSize());
+
+  std::vector<Chunk *> &chunks = sec->chunks;
+  auto isPlainText = [](const Chunk *c) {
+    auto *sc = dyn_cast<SectionChunk>(c);
+    return sc && sc->getSectionName() == ".text";
+  };
+  auto isMovable = [&](const Chunk *c) {
+    auto *sc = cast<SectionChunk>(c);
+    return kcfiSuppressedChunks.contains(sc) &&
+           !(sc->sym && ctx.config.order.count(sc->sym->getName()));
+  };
+  auto it = llvm::find_if(chunks, isPlainText);
+  auto groupEnd = std::find_if_not(it, chunks.end(), isPlainText);
+  std::stable_partition(it, groupEnd,
+                        [&](const Chunk *c) { return !isMovable(c); });
+
+  auto limit = llvm::find_if(
+      chunks, [&](const Chunk *c) { return kcfiSuppressedChunks.contains(c); });
+  if (limit == chunks.begin())
+    return;
+  replaceSymbol<DefinedSynthetic>(start, start->getName(), chunks.front());
+  if (limit == chunks.end())
+    replaceSymbol<DefinedSynthetic>(end, end->getName(), chunks.back(),
+                                    chunks.back()->getSize());
+  else
+    replaceSymbol<DefinedSynthetic>(end, end->getName(), *limit);
+  kcfiCodeStart = cast<Defined>(start);
+  kcfiCodeEnd = cast<Defined>(end);
   kcfiCodeSec = sec;
 }
 
@@ -4018,15 +4070,14 @@ void Writer::rewriteKCFIThunks() {
   if (!kcfiCodeSec)
     return;
   bool isX64 = ctx.config.machine == AMD64;
-  uint32_t codeStart = kcfiCodeSec->chunks.front()->getRVA();
-  Chunk *last = kcfiCodeSec->chunks.back();
-  uint64_t codeSize = last->getRVA() + last->getSize() - codeStart;
+  uint32_t codeStart = kcfiCodeStart->getRVA();
+  uint64_t codeSize = kcfiCodeEnd->getRVA() - codeStart;
   if ((!isX64 && ctx.config.machine != ARM64) || codeSize > INT32_MAX)
     return;
 
   DenseSet<uint32_t> types;
   for (const KCFIPrefix &p : kcfiPrefixes)
-    if (!p.sealed)
+    if (!p.sealed && p.chunk->getRVA() + p.entry < codeStart + codeSize)
       types.insert(
           read32le(p.chunk->getContents().data() + p.offset + p.size - 4));
 
