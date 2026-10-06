@@ -379,7 +379,8 @@ private:
   void sealKCFIPrefixes();
   void placeLinkerDefinedSymbols();
   void defineKCFICodeRange();
-  void rewriteKCFIThunks();
+  void placeKCFICodeRange();
+  void replaceKCFIThunks();
   void boundKCFIMismatches();
   void narrowKCFIMemberMisses();
   SymbolRVASet getEHContTargets();
@@ -478,9 +479,12 @@ private:
   bool kcfiSealed = false;
   bool kcfiUnprefixedTargets = false;
   DenseSet<const Chunk *> kcfiSuppressedChunks;
+  DenseSet<const Chunk *> kcfiInRange;
   OutputSection *kcfiCodeSec = nullptr;
   Defined *kcfiCodeStart = nullptr;
   Defined *kcfiCodeEnd = nullptr;
+  // The first chunk after the range, or null if the range ends the section.
+  Chunk *kcfiCodeEndChunk = nullptr;
 
   uint64_t fileSize;
   uint32_t pointerToSymbolTable = 0;
@@ -967,6 +971,8 @@ void Writer::run() {
     createDynamicRelocs();
     removeUnusedSections();
     defineKCFICodeRange();
+    replaceKCFIThunks();
+    placeKCFICodeRange();
     layoutSections();
     finalizeAddresses();
     removeEmptySections();
@@ -989,7 +995,6 @@ void Writer::run() {
     }
     writeSections();
     sealKCFIPrefixes();
-    rewriteKCFIThunks();
     prepareLoadConfig();
     sortExceptionTables();
 
@@ -3885,15 +3890,29 @@ void Writer::defineKCFICodeRange() {
       chunks, [&](const Chunk *c) { return kcfiSuppressedChunks.contains(c); });
   if (limit == chunks.begin())
     return;
-  replaceSymbol<DefinedSynthetic>(start, start->getName(), chunks.front());
-  if (limit == chunks.end())
-    replaceSymbol<DefinedSynthetic>(end, end->getName(), chunks.back(),
-                                    chunks.back()->getSize());
-  else
-    replaceSymbol<DefinedSynthetic>(end, end->getName(), *limit);
+  kcfiInRange.insert(chunks.begin(), limit);
+  kcfiCodeEndChunk = limit == chunks.end() ? nullptr : *limit;
+  replaceSymbol<DefinedSynthetic>(start, start->getName(), nullptr);
+  replaceSymbol<DefinedSynthetic>(end, end->getName(), nullptr);
   kcfiCodeStart = cast<Defined>(start);
   kcfiCodeEnd = cast<Defined>(end);
   kcfiCodeSec = sec;
+}
+
+// Points the bounds of the code range at its first chunk and at the end of its
+// last, once the KCFI thunks, which may be either, are in their final form.
+void Writer::placeKCFICodeRange() {
+  if (!kcfiCodeSec)
+    return;
+  std::vector<Chunk *> &chunks = kcfiCodeSec->chunks;
+  replaceSymbol<DefinedSynthetic>(kcfiCodeStart, kcfiCodeStart->getName(),
+                                  chunks.front());
+  if (kcfiCodeEndChunk)
+    replaceSymbol<DefinedSynthetic>(kcfiCodeEnd, kcfiCodeEnd->getName(),
+                                    kcfiCodeEndChunk);
+  else
+    replaceSymbol<DefinedSynthetic>(kcfiCodeEnd, kcfiCodeEnd->getName(),
+                                    chunks.back(), chunks.back()->getSize());
 }
 
 // In an image whose guard function table lists a function without a KCFI
@@ -4055,33 +4074,33 @@ void Writer::narrowKCFIMemberMisses() {
   });
 }
 
-// Rewrites, in place, the range test at the start of each of clang's KCFI
-// thunks the image keeps, __llvm_kcfi_dispatch_<type> with the target in RAX
-// and __llvm_kcfi_check_<type> with it in RCX or X15, once the code range is
-// defined. It becomes one comparison of the target's offset from the start of
-// the range with its size, which the linker knows. A thunk for a type that no
-// unsealed prefix in the image has cannot match a target in the image, so it
-// goes straight to the page test and the guard function. The type checks are
-// kept as clang wrote them, since only clang knows the marker, the prefix
-// offset and the form of the type they compare, and so are the page test and
-// the branches, with their relocations. The new range test is never longer
-// than clang's, and the rest is filled with int3 or brk #0xf000.
-void Writer::rewriteKCFIThunks() {
-  if (!kcfiCodeSec)
-    return;
+// Replaces each of clang's KCFI thunks that the image keeps,
+// __llvm_kcfi_dispatch_<type> with the target in RAX, and
+// __llvm_kcfi_check_<type> and __llvm_kcfi_vfn_check_<type> with it in RCX or
+// X15, with a KCFIThunkChunk in its place, in an image the linker sealed. The
+// chunk tests the image's own range as one comparison of the target's offset
+// from its start with its size, which the linker knows, and only for a type
+// that an unsealed prefix in the range has, since no other target in the image
+// can match. It copies clang's type check and page test, since only clang knows
+// the marker, the prefix offset and the form of the type they compare.
+void Writer::replaceKCFIThunks() {
   bool isX64 = ctx.config.machine == AMD64;
-  uint32_t codeStart = kcfiCodeStart->getRVA();
-  uint64_t codeSize = kcfiCodeEnd->getRVA() - codeStart;
-  if ((!isX64 && ctx.config.machine != ARM64) || codeSize > INT32_MAX)
+  if (!kcfiSealed || (!isX64 && ctx.config.machine != ARM64))
     return;
 
-  DenseSet<uint32_t> types;
-  for (const KCFIPrefix &p : kcfiPrefixes)
-    if (!p.sealed && p.chunk->getRVA() + p.entry < codeStart + codeSize)
-      types.insert(
-          read32le(p.chunk->getContents().data() + p.offset + p.size - 4));
+  // The types, and the second types of functions that can occupy a vtable
+  // slot, that an unsealed prefix in the range has.
+  DenseSet<uint32_t> types, vfnTypes;
+  for (const KCFIPrefix &p : kcfiPrefixes) {
+    if (p.sealed || !kcfiInRange.contains(p.chunk))
+      continue;
+    const uint8_t *words = p.chunk->getContents().data() + p.offset;
+    types.insert(read32le(words + p.size - 4));
+    if (p.size == 16)
+      vfnTypes.insert(read32le(words));
+  }
 
-  uint8_t *buf = buffer->getBufferStart();
+  DenseMap<const Chunk *, Chunk *> replacements;
   for (ObjFile *file : ctx.objFileInstances) {
     for (Chunk *c : file->getChunks()) {
       auto *sc = dyn_cast<SectionChunk>(c);
@@ -4089,16 +4108,18 @@ void Writer::rewriteKCFIThunks() {
         continue;
       StringRef name = sc->sym->getName();
       bool dispatch = name.consume_front("__llvm_kcfi_dispatch_");
+      bool vfn = !dispatch && name.consume_front("__llvm_kcfi_vfn_check_");
       uint32_t type;
-      if ((!dispatch && !name.consume_front("__llvm_kcfi_check_")) ||
+      if ((!dispatch && !vfn && !name.consume_front("__llvm_kcfi_check_")) ||
           name.size() != 8 || name.getAsInteger(16, type))
         continue;
 
-      // Only clang's form is rewritten, which the chunk must match exactly:
+      // Only clang's form is replaced, which the chunk must match exactly:
       // its size, every relocation with its type and target, every byte but
       // those that vary with the type and the options, and two identical type
       // checks. Anything else, such as a thunk of another compiler or
-      // version, is legitimate and left as it is.
+      // version, is legitimate and left as it is. A vfn thunk has the check
+      // thunk's form, with another offset and page mask.
       if (dispatch && !isX64)
         continue;
       StringRef mismatchPrefix =
@@ -4113,6 +4134,7 @@ void Writer::rewriteKCFIThunks() {
       ArrayRef<uint8_t> contents = sc->getContents();
       ArrayRef<coff_relocation> relocs = sc->getRelocs();
       bool matches = relocs.size() == expectedRelocs.size();
+      ArrayRef<uint8_t> compare, pageTest;
       if (isX64) {
         ArrayRef<int16_t> form =
             dispatch ? ArrayRef(kcfiDispatchX64) : ArrayRef(kcfiCheckX64);
@@ -4120,79 +4142,70 @@ void Writer::rewriteKCFIThunks() {
                    contents.slice(24, 14) == contents.slice(57, 14);
         for (size_t i = 0; matches && i != form.size(); ++i)
           matches = form[i] < 0 || contents[i] == form[i];
+        if (matches) {
+          compare = contents.slice(24, 14);
+          pageTest = dispatch ? contents.slice(46, 5) : contents.slice(45, 6);
+        }
       } else {
         matches &= contents.size() == std::size(kcfiCheckARM64) * 4 &&
                    contents.slice(32, 24) == contents.slice(72, 24);
         for (size_t i = 0; matches && i != std::size(kcfiCheckARM64); ++i)
           matches = (read32le(contents.data() + i * 4) &
                      ~kcfiCheckARM64[i].varying) == kcfiCheckARM64[i].insn;
+        if (matches) {
+          compare = contents.slice(32, 24);
+          pageTest = contents.slice(64, 4);
+        }
       }
+      Symbol *mismatchSym = nullptr, *guardSym = nullptr;
       for (size_t i = 0; matches && i != relocs.size(); ++i) {
         const coff_relocation &r = relocs[i];
         Symbol *target = sc->file->getSymbol(r.SymbolTableIndex);
         matches = r.VirtualAddress == expectedRelocs[i].offset &&
                   r.Type == expectedRelocs[i].type && target &&
                   target->getName() == targets[expectedRelocs[i].target];
+        if (expectedRelocs[i].target == 0)
+          mismatchSym = target;
+        else if (expectedRelocs[i].target == 3)
+          guardSym = target;
       }
-      if (!matches)
+      if (!matches || !isa<Defined>(mismatchSym) || !isa<Defined>(guardSym))
         continue;
 
-      // Only the range test, before the first type check, is replaced. The
-      // label 1: of the page test follows the first type check.
-      OutputSection *sec = ctx.getOutputSection(sc);
-      uint8_t *loc = buf + sec->getFileOff() + sc->getRVA() - sec->getRVA();
-      uint64_t rva = sc->getRVA();
-      bool testRange = types.contains(type);
-      if (isX64) {
-        // lea r10, [rip + start]; mov r11, rax (or rcx); sub r11, r10
-        // cmp r11, size; jae 1f; nop
-        //
-        // or, with no unsealed function of the type, jmp 1f.
-        uint8_t outside = dispatch ? 46 : 45;
-        memset(loc, 0xCC, 24);
-        if (testRange) {
-          static const uint8_t rangeTest[] = {
-              0x4C, 0x8D, 0x15, 0, 0, 0, 0, // lea r10, [rip + start]
-              0x49, 0x89, 0xC3,             // mov r11, rax
-              0x4D, 0x29, 0xD3,             // sub r11, r10
-              0x49, 0x81, 0xFB, 0, 0, 0, 0, // cmp r11, size
-              0x73, 0,                      // jae 1f
-              0x66, 0x90,                   // nop
-          };
-          memcpy(loc, rangeTest, sizeof(rangeTest));
-          write32le(loc + 3, codeStart - (rva + 7));
-          if (!dispatch)
-            loc[9] = 0xCB; // mov r11, rcx
-          write32le(loc + 16, codeSize);
-          loc[21] = outside - 22;
-        } else {
-          loc[0] = 0xEB; // jmp 1f
-          loc[1] = outside - 2;
-        }
-      } else {
-        // adrp x16, start; add x16, x16, :lo12:start; sub x16, x15, x16
-        // movz x17, #size; movk x17, #size, lsl #16; cmp x16, x17; b.hs 1f
-        // nop
-        //
-        // or, with no unsealed function of the type, b 1f.
-        for (size_t i = 0; i != 32; i += 4)
-          write32le(loc + i, 0xD43E0000); // brk #0xf000
-        if (testRange) {
-          write32le(loc, 0x90000010);     // adrp x16, start
-          write32le(loc + 4, 0x91000210); // add x16, x16, :lo12:start
-          write32le(loc + 8, 0xCB1001F0); // sub x16, x15, x16
-          write32le(loc + 12, 0xD2800011 | (codeSize & 0xFFFF) << 5);
-          write32le(loc + 16, 0xF2A00011 | (codeSize >> 16) << 5);
-          write32le(loc + 20, 0xEB11021F); // cmp x16, x17
-          write32le(loc + 24, 0x54000142); // b.hs 1f
-          write32le(loc + 28, 0xD503201F); // nop
-          applyArm64Addr(loc, codeStart, rva, 12);
-          applyArm64Imm(loc + 4, codeStart & 0xfff, 0);
-        } else {
-          write32le(loc, 0x14000010); // b 1f
-        }
-      }
+      // x86-64 stores a type that would spell an ENDBR instruction plus one.
+      uint32_t stored = isX64 ? getX86KCFIType(type) : type;
+      bool own = kcfiCodeSec && (vfn ? vfnTypes : types).contains(stored);
+      replacements[sc] = make<KCFIThunkChunk>(
+          ctx, !dispatch, compare, pageTest, mismatchSym, guardSym,
+          own ? kcfiCodeStart : nullptr, own ? kcfiCodeEnd : nullptr,
+          ArrayRef<KCFIThunkChunk::Range>());
     }
+  }
+  if (replacements.empty())
+    return;
+
+  // Each chunk takes clang's place in its section, and every symbol defined
+  // at clang's thunk, its own and those of other objects, such as a weak
+  // alias resolved to it, its address.
+  for (OutputSection *sec : ctx.outputSections)
+    for (Chunk *&c : sec->chunks)
+      if (Chunk *r = replacements.lookup(c))
+        c = r;
+  if (Chunk *r = replacements.lookup(kcfiCodeEndChunk))
+    kcfiCodeEndChunk = r;
+  auto repoint = [&](Symbol *s) {
+    auto *d = dyn_cast_or_null<DefinedRegular>(s);
+    if (!d || d->getValue() != 0)
+      return;
+    if (Chunk *r = replacements.lookup(d->getChunk()))
+      replaceSymbol<DefinedSynthetic>(s, s->getName(), r);
+  };
+  ctx.symtab.forEachSymbol(repoint);
+  for (auto &kv : replacements) {
+    auto *sc = cast<SectionChunk>(const_cast<Chunk *>(kv.first));
+    for (Symbol *s : sc->file->getSymbols())
+      repoint(s);
+    sc->live = false;
   }
 }
 

@@ -1,11 +1,12 @@
 # REQUIRES: x86
 
-## Under -import-slots, in an image it seals, the linker rewrites the range test
-## at the start of clang's KCFI thunks: it becomes one comparison of the
-## target's offset from the start of .text with its size, followed by a nop to
-## clang's length. A type that no unsealed function in the image has jumps
-## straight to the page test. Clang's type checks, page test and guard jump
-## stay. Without -import-slots, clang's form stays.
+## Under -import-slots, in an image it seals, the linker replaces clang's KCFI
+## thunks with its own form: the range test becomes one comparison of the
+## target's offset from the start of .text with its size, followed by clang's
+## type check and the jump, or the return, for a target inside it; a target
+## outside it takes clang's page test, the type check and the guard function. A
+## type that no unsealed function in the image has goes straight to the page
+## test. Without -import-slots, clang's form stays.
 
 # RUN: llvm-mc -triple x86_64-windows-msvc %s -filetype=obj -o %t.obj
 # RUN: lld-link %t.obj -guard:cf -import-slots -entry:main -debug:symtab \
@@ -24,34 +25,29 @@
 # CHECK-NEXT:   movq %rax, %r11
 # CHECK-NEXT:   subq %r10, %r11
 # CHECK-NEXT:   cmpq $0x[[#%x,SIZE]], %r11
-# CHECK-NEXT:   jae {{.*}}<__llvm_kcfi_dispatch_11111111+0x2e>
-# CHECK-NEXT:   nop
+# CHECK-NEXT:   jae {{.*}}<__llvm_kcfi_dispatch_11111111+0x2c>
 # CHECK-NEXT:   movabsq $0x11111111b8071c5a, %r11
 # CHECK-NEXT:   cmpq %r11, -0x8(%rax)
-# CHECK-NEXT:   jne
+# CHECK-NEXT:   jne {{.*}}<__llvm_kcfi_open>
 # CHECK-NEXT:   jmpq *%rax
 # CHECK-NEXT:   testl $0xff0, %eax
-# CHECK-NEXT:   je
+# CHECK-NEXT:   je {{.*}}<__llvm_kcfi_open>
 # CHECK-NEXT:   movabsq $0x11111111b8071c5a, %r11
 # CHECK-NEXT:   cmpq %r11, -0x8(%rax)
-# CHECK-NEXT:   jne
+# CHECK-NEXT:   jne {{.*}}<__llvm_kcfi_open>
 # CHECK-NEXT:   jmpq *{{.*}}(%rip) {{.*}}<__guard_dispatch_icall_fptr>
+# CHECK-NEXT:   int3
 
 ## sealed is only called directly, so type 0x22222222 has no unsealed function
 ## in the image and goes straight to the page test.
 # CHECK:      <__llvm_kcfi_dispatch_22222222>:
-# CHECK-NEXT:   jmp {{.*}}<__llvm_kcfi_dispatch_22222222+0x2e>
-# CHECK-COUNT-22: int3
-# CHECK-NEXT:   movabsq $0x22222222b8071c5a, %r11
-# CHECK-NEXT:   cmpq %r11, -0x8(%rax)
-# CHECK-NEXT:   jne
-# CHECK-NEXT:   jmpq *%rax
 # CHECK-NEXT:   testl $0xff0, %eax
-# CHECK-NEXT:   je
+# CHECK-NEXT:   je {{.*}}<__llvm_kcfi_open>
 # CHECK-NEXT:   movabsq $0x22222222b8071c5a, %r11
 # CHECK-NEXT:   cmpq %r11, -0x8(%rax)
-# CHECK-NEXT:   jne
+# CHECK-NEXT:   jne {{.*}}<__llvm_kcfi_open>
 # CHECK-NEXT:   jmpq *{{.*}}(%rip) {{.*}}<__guard_dispatch_icall_fptr>
+# CHECK-NEXT:   int3
 
 ## The check thunk takes the target in RCX and returns in range.
 # CHECK:      <__llvm_kcfi_check_11111111>:
@@ -59,18 +55,41 @@
 # CHECK-NEXT:   movq %rcx, %r11
 # CHECK-NEXT:   subq %r10, %r11
 # CHECK-NEXT:   cmpq $0x[[#%x,SIZE]], %r11
-# CHECK-NEXT:   jae {{.*}}<__llvm_kcfi_check_11111111+0x2d>
-# CHECK-NEXT:   nop
+# CHECK-NEXT:   jae {{.*}}<__llvm_kcfi_check_11111111+0x2b>
 # CHECK-NEXT:   movabsq $0x11111111b8071c5a, %r11
 # CHECK-NEXT:   cmpq %r11, -0x8(%rcx)
-# CHECK-NEXT:   jne
+# CHECK-NEXT:   jne {{.*}}<__llvm_kcfi_open>
 # CHECK-NEXT:   retq
 # CHECK-NEXT:   testl $0xff0, %ecx
-# CHECK-NEXT:   je
+# CHECK-NEXT:   je {{.*}}<__llvm_kcfi_open>
 # CHECK-NEXT:   movabsq $0x11111111b8071c5a, %r11
 # CHECK-NEXT:   cmpq %r11, -0x8(%rcx)
-# CHECK-NEXT:   jne
+# CHECK-NEXT:   jne {{.*}}<__llvm_kcfi_open>
 # CHECK-NEXT:   jmpq *{{.*}}(%rip) {{.*}}<__guard_check_icall_fptr>
+
+## A vfn thunk compares the second type of a function that can occupy a vtable
+## slot, which vlisted has, unsealed.
+# CHECK:      <__llvm_kcfi_vfn_check_66666666>:
+# CHECK-NEXT:   leaq {{.*}}(%rip), %r10 {{.*}}0x140001000
+# CHECK-NEXT:   movq %rcx, %r11
+# CHECK-NEXT:   subq %r10, %r11
+# CHECK-NEXT:   cmpq $0x[[#%x,SIZE]], %r11
+# CHECK-NEXT:   jae
+# CHECK-NEXT:   movabsq $0x6801f0f66666666, %r11
+# CHECK-NEXT:   cmpq %r11, -0x10(%rcx)
+# CHECK-NEXT:   jne {{.*}}<__llvm_kcfi_open>
+# CHECK-NEXT:   retq
+# CHECK-NEXT:   testl $0xff0, %ecx
+# CHECK-NEXT:   je {{.*}}<__llvm_kcfi_open>
+# CHECK-NEXT:   movabsq $0x6801f0f66666666, %r11
+# CHECK-NEXT:   cmpq %r11, -0x10(%rcx)
+# CHECK-NEXT:   jne {{.*}}<__llvm_kcfi_open>
+# CHECK-NEXT:   jmpq *{{.*}}(%rip) {{.*}}<__guard_check_icall_fptr>
+
+## A type that would spell an ENDBR instruction is stored plus one, in the
+## prefix and in the thunk's comparison, but not in the thunk's name.
+# CHECK:      <__llvm_kcfi_check_fa1e0ff3>:
+# CHECK-NEXT:   leaq {{.*}}(%rip), %r10 {{.*}}0x140001000
 
 ## A thunk that differs from clang's current form in one byte or in one
 ## relocation's target, one of an older form, and a local thunk, which fails
@@ -149,7 +168,32 @@ main:
         callq __llvm_kcfi_dispatch_44444444
         callq __llvm_kcfi_dispatch_55555555
         callq __llvm_kcfi_local_dispatch_11111111
+        movq fp(%rip), %rcx
+        callq __llvm_kcfi_vfn_check_66666666
+        callq __llvm_kcfi_check_fa1e0ff3
         xorl %eax, %eax
+        retq
+
+        .def endbr; .scl 2; .type 32; .endef
+        .section .text,"xr",one_only,endbr
+        .p2align 4
+        .fill 4, 1, 0x90
+__cfi_endbr:
+        nopl 0x71c5a06(%rax)
+        movl $0xfa1e0ff4, %eax
+        .globl endbr
+endbr:
+        retq
+
+        .def vlisted; .scl 2; .type 32; .endef
+        .section .text,"xr",one_only,vlisted
+        .p2align 4
+__cfi_vlisted:
+        .long 0x66666666
+        nopl 0x71c5a06(%rax)
+        movl $0x77777777, %eax
+        .globl vlisted
+vlisted:
         retq
 
         .weak __llvm_code_start
@@ -173,6 +217,10 @@ __llvm_kcfi_mismatch_44444444 = __llvm_kcfi_open
 __llvm_kcfi_mismatch_55555555 = __llvm_kcfi_open
         .weak __llvm_kcfi_check_mismatch_11111111
 __llvm_kcfi_check_mismatch_11111111 = __llvm_kcfi_open
+        .weak __llvm_kcfi_check_mismatch_fa1e0ff3
+__llvm_kcfi_check_mismatch_fa1e0ff3 = __llvm_kcfi_open
+        .weak __llvm_kcfi_check_mismatch_66666666
+__llvm_kcfi_check_mismatch_66666666 = __llvm_kcfi_open
 
         .section .text,"xr",discard,__llvm_kcfi_dispatch_11111111
         .globl __llvm_kcfi_dispatch_11111111
@@ -235,6 +283,48 @@ __llvm_kcfi_check_11111111:
         movabsq $0x11111111b8071c5a, %r11
         cmpq %r11, -8(%rcx)
         jne __llvm_kcfi_check_mismatch_11111111
+        jmpq *__guard_check_icall_fptr(%rip)
+
+        .section .text,"xr",discard,__llvm_kcfi_vfn_check_66666666
+        .globl __llvm_kcfi_vfn_check_66666666
+        .p2align 4
+__llvm_kcfi_vfn_check_66666666:
+        leaq __llvm_code_start(%rip), %r10
+        cmpq %r10, %rcx
+        jb 1f
+        leaq __llvm_code_end(%rip), %r10
+        cmpq %r10, %rcx
+        jae 1f
+        movabsq $0x06801f0f66666666, %r11
+        cmpq %r11, -16(%rcx)
+        jne __llvm_kcfi_check_mismatch_66666666
+        retq
+1:      testl $0xff0, %ecx
+        je __llvm_kcfi_check_mismatch_66666666
+        movabsq $0x06801f0f66666666, %r11
+        cmpq %r11, -16(%rcx)
+        jne __llvm_kcfi_check_mismatch_66666666
+        jmpq *__guard_check_icall_fptr(%rip)
+
+        .section .text,"xr",discard,__llvm_kcfi_check_fa1e0ff3
+        .globl __llvm_kcfi_check_fa1e0ff3
+        .p2align 4
+__llvm_kcfi_check_fa1e0ff3:
+        leaq __llvm_code_start(%rip), %r10
+        cmpq %r10, %rcx
+        jb 1f
+        leaq __llvm_code_end(%rip), %r10
+        cmpq %r10, %rcx
+        jae 1f
+        movabsq $0xfa1e0ff4b8071c5a, %r11
+        cmpq %r11, -8(%rcx)
+        jne __llvm_kcfi_check_mismatch_fa1e0ff3
+        retq
+1:      testl $0xff0, %ecx
+        je __llvm_kcfi_check_mismatch_fa1e0ff3
+        movabsq $0xfa1e0ff4b8071c5a, %r11
+        cmpq %r11, -8(%rcx)
+        jne __llvm_kcfi_check_mismatch_fa1e0ff3
         jmpq *__guard_check_icall_fptr(%rip)
 
         .section .text,"xr",discard,__llvm_kcfi_dispatch_33333333
@@ -324,6 +414,8 @@ fp:
 
         .section .gfids$y,"dr"
         .symidx listed
+        .symidx vlisted
+        .symidx endbr
 
         .section .rdata,"dr"
         .globl __guard_dispatch_icall_fptr
