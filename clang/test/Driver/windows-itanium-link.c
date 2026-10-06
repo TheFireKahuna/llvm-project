@@ -14,6 +14,7 @@
 // C:      lld-link{{(.exe)?}}" "-out:a.exe" "-machine:x64" "-nologo" "-lldignoreenv"
 // C-SAME: "-import-slots" "-cetcompat" "-guard:cf,exportsuppress"
 // C-SAME: "-start-stop-symbols" "-boundary-symbols"
+// C-SAME: "-mllvm:-wholeprogramdevirt-keep-cfi-checks"
 // C-SAME: "{{[^"]*}}.o"
 // C-SAME: "-defaultlib:libunwind.dll.lib"
 // C-SAME: "-defaultlib:clang_rt.builtins{{[^"]*}}.lib"

@@ -113,6 +113,12 @@ void tools::windowsitanium::Linker::ConstructJob(
   CmdArgs.push_back("-start-stop-symbols");
   CmdArgs.push_back("-boundary-symbols");
 
+  // Under LTO, a virtual call's CFI check outlives a devirtualization that
+  // still runs a method on the object or reads through its vtable pointer, as
+  // cfi-nvcall checks a non-virtual call. The option is inert without LTO, and
+  // a link without -flto can still have bitcode inputs.
+  CmdArgs.push_back("-mllvm:-wholeprogramdevirt-keep-cfi-checks");
+
   std::vector<std::string> LibDirs = Args.getAllArgValues(options::OPT_L);
   TC.addSystemLibraryDirs(Args, LibDirs);
   for (const std::string &Dir : TC.getFilePaths())
