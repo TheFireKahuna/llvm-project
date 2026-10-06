@@ -5,14 +5,15 @@
 ;; module checks by the type's tags goes through the member thunk that tests
 ;; it. Without a native object of the type, a miss is the trap. A function of
 ;; the type whose address no module takes is a member when the image exports
-;; it, and not when it is only called.
+;; it, and not when it is only called. A member with internal linkage, which
+;; splitting the module promotes through an alias, carries its tag too.
 
 ; RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 ; RUN: opt -thinlto-bc -thinlto-split-lto-unit a.ll -o a.bc
 ; RUN: opt -thinlto-bc -thinlto-split-lto-unit b.ll -o b.bc
 ; RUN: llvm-mc -filetype=obj -triple=x86_64-windows-msvc guard.s -o guard.obj
 ; RUN: lld-link a.bc b.bc guard.obj -import-slots -guard:cf -entry:main \
-; RUN:   -export:exported -debug:symtab -opt:ref -lldsavetemps -out:t.exe
+; RUN:   -export:exported -export:get_local -debug:symtab -opt:ref -lldsavetemps -out:t.exe
 ; RUN: llvm-dis a.bc.5.precodegen.bc -o - | FileCheck %s --check-prefix=IR
 ; RUN: llvm-objdump -s -j .text -d t.exe | FileCheck %s
 
@@ -30,6 +31,7 @@
 ; CHECK-NEXT:   jmp {{.*}} <__llvm_kcfi_trap>
 
 ; IR: define {{.*}}void @member() {{.*}}!kcfi_member_tag
+; IR: define internal void @local() {{.*}}!kcfi_member_tag
 ; IR: define {{.*}}void @exported() {{.*}}!kcfi_member_tag
 ; IR: define {{.*}}void @called() {{.*}}!kcfi_type !{{[0-9]+}} !guid !{{[0-9]+}} {{[{]$}}
 
@@ -38,8 +40,14 @@ target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:
 target triple = "x86_64-unknown-windows-itanium"
 
 @fp = global ptr @member
+@lp = private unnamed_addr constant ptr @local
 
 define void @member() !type !0 !kcfi_type !10 { ret void }
+define internal void @local() !type !0 !kcfi_type !10 { ret void }
+define ptr @get_local() {
+  %p = load ptr, ptr @lp
+  ret ptr %p
+}
 define void @exported() !type !0 !kcfi_type !10 { ret void }
 define void @called() noinline !type !0 !kcfi_type !10 { ret void }
 

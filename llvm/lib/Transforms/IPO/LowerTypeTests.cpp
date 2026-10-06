@@ -2533,10 +2533,18 @@ void LowerTypeTestsModule::buildMembershipTagsFromFunctions(
         MDNode::get(M.getContext(),
                     ConstantAsMetadata::get(ConstantInt::get(Int32Ty, *Tag)));
     for (Function *F : Members) {
-      if (ThinLTOMembers.contains(F))
-        ExportSummary->setKCFIMemberTag(F->getGUIDOrFallback(), *Tag);
-      else
+      if (!ThinLTOMembers.contains(F)) {
         F->setMetadata("kcfi_member_tag", TagMD);
+        continue;
+      }
+      GlobalValue::GUID GUID = F->getGUIDOrFallback();
+      ExportSummary->setKCFIMemberTag(GUID, *Tag);
+      // A function with local linkage that the regular module references is
+      // seen here through the alias that promotes it, and its backend looks
+      // the tag up by the function's own GUID.
+      for (const auto &S : ExportSummary->getValueInfo(GUID).getSummaryList())
+        if (auto *AS = dyn_cast<AliasSummary>(S.get()))
+          ExportSummary->setKCFIMemberTag(AS->getAliaseeGUID(), *Tag);
     }
     for (unsigned I : Types)
       TypeTags[I].push_back(*Tag);
