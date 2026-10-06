@@ -88,6 +88,18 @@
 # PLAIN-NEXT: RVA: 0x1000
 # PLAIN-MAP:  __llvm_code_range$kcfi-code-range-export.s.tmp.plain.dll in
 
+## So does one linked with an archive whose index lists the bounds, which a
+## member that is not loaded references weakly.
+# RUN: llvm-mc -triple x86_64-windows-msvc %t.dir/weak.s -filetype=obj -o %t.weak.obj
+# RUN: llvm-lib -out:%t.weak.lib %t.weak.obj
+# RUN: llvm-nm --print-armap %t.weak.lib | FileCheck %s --check-prefix=WEAK-MAP
+# RUN: lld-link %t.plain.obj %t.cfg.obj %t.weak.lib -dll -noentry -export:leaf \
+# RUN:   -guard:cf -import-slots -out:%t.lazy.dll -implib:%t.lazy.lib
+# RUN: llvm-readobj --coff-exports %t.lazy.dll | FileCheck %s --check-prefix=PLAIN
+# RUN: llvm-nm --print-armap %t.lazy.lib | FileCheck %s --check-prefix=LAZY-MAP
+# WEAK-MAP:   __llvm_code_start in
+# LAZY-MAP:   __llvm_code_range$kcfi-code-range-export.s.tmp.lazy.dll in
+
 ## The names are reserved for the range, under any spelling of an export.
 # RUN: not lld-link %t.dll.obj -dll -noentry -export:__llvm_code_start \
 # RUN:   -import-slots -out:%t.err.dll 2>&1 | FileCheck %s --check-prefix=ERR
@@ -191,6 +203,24 @@ leaf:
 
         .section .gfids$y,"dr"
         .symidx leaf
+
+#--- weak.s
+        .def unused; .scl 2; .type 32; .endef
+        .section .text,"xr",one_only,unused
+        .globl unused
+unused:
+        leaq __llvm_code_start(%rip), %rax
+        leaq __llvm_code_end(%rip), %rax
+        retq
+
+        .weak __llvm_code_start
+__llvm_code_start = __llvm_code_empty
+        .weak __llvm_code_end
+__llvm_code_end = __llvm_code_empty
+        .section .rdata,"dr",discard,__llvm_code_empty
+        .globl __llvm_code_empty
+__llvm_code_empty:
+        .byte 0
 
 #--- cfg.s
         .section .rdata,"dr"

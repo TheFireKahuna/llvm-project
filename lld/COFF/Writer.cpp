@@ -3869,9 +3869,14 @@ void Writer::defineKCFICodeRange() {
     return d && d->getValue() == 0 && d->getChunk()->sym &&
            d->getChunk()->sym->getName() == "__llvm_code_empty";
   };
+  // An archive indexes a bound that a member references weakly, so a bound
+  // that no loaded object references can be lazy, which defines nothing.
+  auto isUserDefined = [&](Symbol *s) {
+    return s && !s->isLazy() && !isEmptyDefault(s);
+  };
   Symbol *start = ctx.symtab.find("__llvm_code_start");
   Symbol *end = ctx.symtab.find("__llvm_code_end");
-  if ((start && !isEmptyDefault(start)) || (end && !isEmptyDefault(end)))
+  if (isUserDefined(start) || isUserDefined(end))
     return;
   if (!start)
     start = make<DefinedSynthetic>("__llvm_code_start", nullptr);
