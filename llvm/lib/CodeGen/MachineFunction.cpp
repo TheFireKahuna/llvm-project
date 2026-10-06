@@ -236,6 +236,14 @@ void MachineFunction::init() {
       F.getMetadata(LLVMContext::MD_kcfi_type))
     Alignment = std::max(Alignment, Align(4));
 
+  // Control Flow Guard's bitmap can make a target valid alone only at a 16-byte
+  // boundary; any other target makes its whole 16-byte block valid, and cannot
+  // be export-suppressed. As MSVC does, align every function that can be a
+  // target: one whose address is taken, or one another object can see.
+  if ((!F.hasLocalLinkage() || F.hasAddressTaken()) &&
+      F.getParent()->getModuleFlag("cfguard"))
+    Alignment = std::max(Alignment, Align(16));
+
   if (AlignAllFunctions)
     Alignment = Align(1ULL << AlignAllFunctions);
 

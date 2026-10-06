@@ -24,7 +24,7 @@ define void @f(ptr %dst, ptr readonly %f) {
 ; CHECK-NEXT:     .endef
 ; CHECK-NEXT:     .section .wowthk$aa,"xr",discard,"#called$exit_thunk"
 ; CHECK-NEXT:     .globl "#called$exit_thunk"            // -- Begin function #called$exit_thunk
-; CHECK-NEXT:     .p2align 2
+; CHECK-NEXT:     .p2align 4
 ; CHECK-NEXT: "#called$exit_thunk":                   // @"#called$exit_thunk"
 ; CHECK-NEXT:     .weak_anti_dep called
 ; CHECK-NEXT: called = "#called"
