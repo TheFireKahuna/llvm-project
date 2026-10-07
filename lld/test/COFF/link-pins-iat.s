@@ -18,15 +18,18 @@
 # RUN: lld-link -import-slots -entry:main -subsystem:console main.obj a.lib \
 # RUN:   -debug -out:debug.exe
 
-## The address tables end at 0x18; s32 and s8 fill the padding before vt1, s16
-## follows it, and vt2 takes its pin at 3832. The directory reaches vt2's end.
-# CHECK:      140002000 R __imp_func1
-# CHECK-NEXT: 140002008 R __imp_func2
-# CHECK-NEXT: 140002018 r s32
-# CHECK-NEXT: 140002038 r s8
+## The address table holds only func3, which a call reaches through its thunk,
+## and ends at 0x10; func1 and func2 are kept in their slots. s32 and s16 fill
+## the padding before vt1, s8 follows it, and vt2 takes its pin at 3832. The
+## directory reaches vt2's end.
+# CHECK:      140002000 R __imp_func3
+# CHECK-NEXT: 140002010 r s32
+# CHECK-NEXT: 140002030 r s16
 # CHECK-NEXT: 140002040 R vt1
-# CHECK-NEXT: 140002050 r s16
+# CHECK-NEXT: 140002048 R __imp_func1
+# CHECK-NEXT: 140002050 r s8
 # CHECK-NEXT: 140002ef8 R vt2
+# CHECK-NEXT: 140002f08 R __imp_func2
 # DIR:      IATRVA: 0x2000
 # DIR-NEXT: IATSize: 0xF10
 
@@ -35,11 +38,13 @@ LIBRARY a.dll
 EXPORTS
   func1
   func2
+  func3
 
 #--- main.s
   .text
   .globl main
 main:
+  callq func3
   movq vt1(%rip), %rax
   movq vt2(%rip), %rax
   movq s8(%rip), %rax

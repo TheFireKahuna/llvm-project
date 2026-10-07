@@ -333,6 +333,7 @@ private:
   void createMiscChunks();
   void createImportTables();
   void bindImportSlots();
+  void reuseImportSlots();
   void placeImportSlotSections();
   bool iatStartsRdata() const;
   void packPlacedChunks();
@@ -444,6 +445,9 @@ private:
   // The read-only chunks holding in-place import slots that are laid out with
   // the import address tables, in their order there.
   std::vector<SectionChunk *> slotChunks;
+  // The imports whose address code reads from one of their in-place slots
+  // instead of an import address table entry.
+  std::vector<DefinedImportData *> slotReadImports;
   DenseSet<const SectionChunk *> heldBackChunks;
   // The read-only output sections other than .rdata that hold in-place import
   // slots, which are laid out before .rdata, and whether a $-group of .rdata
@@ -958,6 +962,7 @@ void Writer::run() {
       ctx.dynamicRelocs = make<DynamicRelocsChunk>();
     createImportTables();
     bindImportSlots();
+    reuseImportSlots();
     createSections();
     appendImportThunks();
     // Import thunks must be added before the Control Flow Guard tables are
@@ -1992,6 +1997,131 @@ void Writer::bindImportSlots() {
     addRuns(sc);
 }
 
+// An import whose address the image keeps in in-place slots needs no entry of
+// its own in its DLL's import address table when nothing else needs one. Its
+// address is then taken to be one of its slots, which every other user reads
+// instead: code that loads the whole address through an instruction its object
+// describes, or through ARM64 adrp and ldr, the import thunk, and the lists of
+// KCFI's open routines. Such a slot must be naturally aligned and in a
+// read-only section that no /merge or /section option changes, so that the
+// image cannot write what they read. An import that anything uses otherwise
+// keeps its entry: a reference from data, an instruction that takes the
+// entry's address or reads part of it, an object that does not describe its
+// instructions, an export or a root.
+void Writer::reuseImportSlots() {
+  if (idata.slotRuns.empty())
+    return;
+  llvm::TimeTraceScope timeScope("Import slot reuse");
+  Configuration &config = ctx.config;
+
+  // How each import with slots is used apart from its slots.
+  enum Use : uint8_t { Unused, Read, Other };
+  DenseMap<ImportFile *, Use> uses;
+  for (const std::vector<ImportSlot *> &run : idata.slotRuns)
+    for (ImportSlot *slot : run)
+      uses.try_emplace(slot->sym->file, Unused);
+  auto use = [&](DefinedImportData *imp, Use u) {
+    auto it = uses.find(imp->file);
+    if (it != uses.end())
+      it->second = std::max(it->second, u);
+  };
+  auto namesUsed = [&](Symbol *s) {
+    if (auto *thunk = dyn_cast_or_null<DefinedImportThunk>(s))
+      return uses.contains(thunk->wrappedSym->file);
+    auto *imp = dyn_cast_or_null<DefinedImportData>(s);
+    return imp && uses.contains(imp->file);
+  };
+
+  bool arm64 = config.machine == ARM64;
+  for (ObjFile *file : ctx.objFileInstances) {
+    if (&file->symtab != &ctx.symtab ||
+        llvm::none_of(file->getSymbols(), namesUsed))
+      continue;
+    for (Chunk *c : file->getChunks()) {
+      auto *sc = dyn_cast_or_null<SectionChunk>(c);
+      if (!sc || !sc->live ||
+          (sc->header->Characteristics & IMAGE_SCN_MEM_DISCARDABLE))
+        continue;
+      bool code = sc->header->Characteristics & IMAGE_SCN_CNT_CODE;
+      for (const coff_relocation &rel : sc->getRelocs()) {
+        Symbol *s = file->getSymbol(rel.SymbolTableIndex);
+        // An instruction that takes an imported function's address loads it
+        // from the import's entry once rewritten.
+        if (isa_and_nonnull<DefinedImportThunk>(s)) {
+          if (auto *imp = dyn_cast_or_null<DefinedImportData>(
+                  sc->getImportSiteTarget(rel)))
+            use(imp, Read);
+          continue;
+        }
+        // The import's data itself is reached only through its slots.
+        auto *imp = dyn_cast_or_null<DefinedImportData>(s);
+        if (!imp || imp->isRuntimePseudoReloc)
+          continue;
+        bool read = false;
+        if (code && arm64) {
+          read = sc->isArm64PointerLoad(rel);
+        } else if (code && file->describesSites &&
+                   rel.Type == IMAGE_REL_AMD64_REL32) {
+          std::optional<LinkSiteForm> form =
+              file->getLinkSiteForm(sc, rel.VirtualAddress);
+          read = form && *form != LinkSiteOther && *form != LinkSiteAddress &&
+                 sc->isDescribedSite(rel, *form);
+        } else if (!code) {
+          // An entry of a KCFI type's list is the address of a word that the
+          // type's open routine reads whole.
+          StringRef name = sc->getSectionName();
+          read = name.starts_with(".rdata$llvm_kcfi_") &&
+                 name.ends_with("_m") && sc->isAddressWord(rel);
+        }
+        use(imp, read ? Read : Other);
+      }
+    }
+  }
+  for (auto &[file, u] : uses)
+    if (auto *thunk = dyn_cast_or_null<DefinedImportThunk>(file->thunkSym);
+        thunk && thunk->getChunk()->live)
+      u = std::max(u, Read);
+  for (DefinedImportData *imp : ctx.symtab.kcfiListedImports)
+    use(imp, Read);
+  for (const COFFLinkerContext::KCFIImportedRange &r : ctx.kcfiImportedRanges) {
+    use(r.start, Other);
+    use(r.end, Other);
+  }
+  for (Export &e : ctx.symtab.exports)
+    if (auto *imp = dyn_cast_or_null<DefinedImportData>(e.sym))
+      use(imp, Other);
+  for (Symbol *s : config.gcroot)
+    if (auto *imp = dyn_cast<DefinedImportData>(s))
+      use(imp, Other);
+
+  auto readable = [&](const ImportSlot &s) {
+    StringRef name = s.chunk->getSectionName();
+    if (shouldStripSectionSuffix(s.chunk, name, config.mingw))
+      name = name.split('$').first;
+    StringRef outName = getOutputSectionName(name, config.mingw);
+    return !(s.chunk->header->Characteristics & IMAGE_SCN_MEM_WRITE) &&
+           s.chunk->getAlignment() >= config.wordsize &&
+           s.offset % config.wordsize == 0 && !config.merge.count(outName) &&
+           !config.section.count(outName);
+  };
+  // The first readable slot of each import in the order of the runs, and
+  // for an import that nothing else uses, its first slot if none is.
+  MapVector<ImportFile *, ImportSlot *> chosen;
+  for (bool any : {false, true})
+    for (const std::vector<ImportSlot *> &run : idata.slotRuns)
+      for (ImportSlot *slot : run) {
+        Use u = uses.lookup(slot->sym->file);
+        if (u != Other && (any ? u == Unused : readable(*slot)))
+          chosen.try_emplace(slot->sym->file, slot);
+      }
+  for (auto &[file, slot] : chosen) {
+    slot->sym->setLocation(slot->chunk, slot->offset);
+    idata.slotOnly.insert(slot->sym);
+    if (uses.lookup(file) == Read)
+      slotReadImports.push_back(slot->sym);
+  }
+}
+
 // Every word that an in-place import slot covers has that slot as its only
 // writer: a relocation overlapping it, which would also be a second writer of
 // a base relocation, is an error. An identical duplicate is one binding.
@@ -2081,7 +2211,12 @@ void Writer::placeImportSlotSections() {
   rdataSec->chunks.insert(rdataSec->chunks.begin(), start.begin(), start.end());
   rdataSec->contribSections.insert(rdataSec->contribSections.begin(),
                                    contribs.begin(), contribs.end());
-  iatEnd = start.back();
+  // Every import may be kept in slots alone, leaving no address table, and
+  // then the directory starts with the first $-group.
+  if (!start.empty()) {
+    iatStart = start.front();
+    iatEnd = start.back();
+  }
 
   std::vector<OutputSection *> before;
   // A section merged into another is left empty and is not laid out.
@@ -2096,6 +2231,8 @@ void Writer::placeImportSlotSections() {
   ctx.outputSections.insert(llvm::find(ctx.outputSections, rdataSec),
                             before.begin(), before.end());
   iatStart = before.front()->chunks.front();
+  if (!iatEnd)
+    iatEnd = before.back()->chunks.back();
 }
 
 namespace {
@@ -2317,6 +2454,9 @@ void Writer::packPlacedChunks() {
       if (plain->chunks.empty())
         llvm::erase(rdataSec->contribSections, plain);
     }
+    // With no address table, a held-back chunk starts the directory too.
+    if (iatStart && heldBack.contains(iatStart))
+      iatStart = iat->chunks.front();
     if (iatEnd && heldBack.contains(iatEnd))
       iatEnd = iat->chunks.back();
   }
@@ -2352,8 +2492,8 @@ void Writer::checkImportSlots() {
     return;
   const uint32_t perms =
       IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_EXECUTE;
-  uint64_t iatBegin = iatStart->getRVA();
-  uint64_t iatLimit = iatBegin + getIATSize();
+  uint64_t iatBegin = iatStart ? iatStart->getRVA() : 0;
+  uint64_t iatLimit = iatStart ? iatBegin + getIATSize() : 0;
   for (auto &[sc, slots] : ctx.importSlots) {
     OutputSection *os = ctx.getOutputSection(sc);
     uint32_t chars = os->header.Characteristics;
@@ -2391,6 +2531,14 @@ void Writer::checkImportSlots() {
                  << ": a run of in-place import slots in "
                  << run[i]->chunk->getSectionName()
                  << " is not contiguous in the image";
+  for (DefinedImportData *imp : slotReadImports) {
+    OutputSection *os = ctx.getOutputSection(imp->getChunk());
+    if (imp->getRVA() % ctx.config.wordsize ||
+        (os->header.Characteristics & IMAGE_SCN_MEM_WRITE))
+      Err(ctx) << "code reads the address of " << ctx.symtab.printSymbol(imp)
+               << " from an in-place import slot in " << os->name
+               << " that is misaligned or writable";
+  }
 }
 
 void Writer::appendImportThunks() {

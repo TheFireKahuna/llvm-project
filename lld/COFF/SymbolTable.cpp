@@ -801,6 +801,8 @@ void SymbolTable::openKCFITypes() {
         auto *cell = make<KCFIListChunk>(ctx, ".rdata", target);
         kcfiChunks.push_back(cell);
         entry = make<DefinedSynthetic>(target->getName(), cell);
+      } else if (auto *imp = dyn_cast<DefinedImportData>(target)) {
+        kcfiListedImports.push_back(imp);
       }
       kcfiChunks.push_back(make<KCFIListChunk>(ctx, section, entry));
     }

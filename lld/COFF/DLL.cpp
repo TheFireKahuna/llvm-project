@@ -840,9 +840,49 @@ void IdataContents::create(COFFLinkerContext &ctx) {
   // Create .idata contents for each DLL.
   for (std::vector<DefinedImportData *> &syms : v) {
     StringRef dllName = syms[0]->getDLLName();
-    if (pool)
-      for (DefinedImportData *s : syms)
-        keyOf[s] = keyOf.size();
+    if (pool) {
+      for (DefinedImportData *s : syms) {
+        uint32_t key = keyOf.size();
+        keyOf[s] = key;
+      }
+    }
+    // An import that the image keeps only in in-place slots has no entry in
+    // the DLL's own tables, only the hint/name record that its slots' lookup
+    // entries share. A DLL left with no such entry has no descriptor of its
+    // own, only those of its runs.
+    if (!slotOnly.empty()) {
+      // The bounds of a KCFI code range, which always keep their entries,
+      // take a 16-byte block of the table, so a table that starts at an odd
+      // entry needs one entry before them; an import kept only in slots then
+      // keeps its entry too.
+      DefinedImportData *keep = nullptr;
+      bool range = llvm::any_of(
+          syms, [&](DefinedImportData *s) { return rangeEnds.count(s); });
+      if (range && addresses.size() % 2 &&
+          llvm::count_if(syms, [&](DefinedImportData *s) {
+            return !slotOnly.contains(s);
+          }) == 2) {
+        auto it = llvm::find_if(
+            syms, [&](DefinedImportData *s) { return slotOnly.contains(s); });
+        keep = it == syms.end() ? nullptr : *it;
+      }
+      llvm::erase_if(syms, [&](DefinedImportData *s) {
+        if (s == keep || !slotOnly.contains(s))
+          return false;
+        if (!s->getExternalName().empty()) {
+          auto *hintChunk =
+              make<HintNameChunk>(s->getExternalName(), s->getOrdinal());
+          hints.push_back(hintChunk);
+          hintOf[s] = hintChunk;
+        }
+        return true;
+      });
+      if (syms.empty()) {
+        dllNames.push_back(make<StringChunk>(dllName));
+        addSlotRuns(dllName);
+        continue;
+      }
+    }
     auto start = llvm::find_if(
         syms, [&](DefinedImportData *s) { return rangeEnds.count(s); });
     if (start != syms.end()) {
@@ -851,7 +891,8 @@ void IdataContents::create(COFFLinkerContext &ctx) {
       llvm::erase(syms, second);
       // The table starts 16-byte aligned, and every entry is 8 bytes. The
       // image imports something else from the DLL, which is why it binds the
-      // range, so the pair goes first or second.
+      // range, and that import keeps an entry when the pair needs one before
+      // it, so the pair goes first or second.
       size_t at = addresses.size() % 2;
       assert(at <= syms.size());
       syms.insert(syms.begin() + at, {first, second});
@@ -992,6 +1033,7 @@ void IdataContents::create(COFFLinkerContext &ctx) {
   dirs.push_back(make<NullChunk>(sizeof(ImportDirectoryTableEntry), 4));
   if (!pool)
     return;
+  assert(!ctx.hybridSymtab && "hybrid images have no in-place slots");
 
   // The loader only reads a lookup table, so identical tables are written
   // once, and a table that is the end of another is written as that end.

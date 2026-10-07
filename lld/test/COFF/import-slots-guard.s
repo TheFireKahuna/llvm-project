@@ -1,8 +1,9 @@
 # REQUIRES: x86
 ## An in-place import slot holding a function's address is listed in the
-## address-taken import address table; the entry the slot replaces is not, nor
-## is the import thunk taken as an address. A function of a delay-loaded DLL
-## keeps its thunk, with a base relocation, and gets no descriptor.
+## address-taken import address table, and an import used only through slots
+## has no other entry; the import thunk taken as an address is not listed. A
+## function of a delay-loaded DLL keeps its thunk, with a base relocation, and
+## gets no descriptor.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-msvc main.s -o main.obj
@@ -16,11 +17,12 @@
 # RUN:   FileCheck --check-prefix=GUARD %s
 
 # GUARD:      Name: a.dll
-# GUARD:      Name: a.dll
 # GUARD-NEXT: ImportLookupTableRVA:
 # GUARD-NEXT: ImportAddressTableRVA: 0x3000
 # GUARD-NEXT: Symbol: func1 (0)
 # GUARD-NEXT: Symbol: var1 (1)
+# GUARD-NEXT: }
+# GUARD-NOT:  Name: a.dll
 # GUARD:      GuardCFFunctionCount: 0
 # GUARD:      GuardAddressTakenIatEntryCount: 1
 # GUARD:      GuardIatTable [

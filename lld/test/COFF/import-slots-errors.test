@@ -42,7 +42,7 @@
 # RVA: error: rva.obj: the address of an import at offset 0x2 in .rdata overlaps the relocation at offset 0x0
 
 ## Touching words, an identical duplicate and unsorted relocations are valid;
-## the last two make one run of two words.
+## the last two make one run of two words, the DLL's only descriptor.
 # RUN: yaml2obj two.yaml -DFIRST=local -DTYPE1=IMAGE_REL_AMD64_ADDR32NB \
 # RUN:   -o touching.obj
 # RUN: lld-link -dll -noentry -import-slots -out:touching.dll touching.obj \
@@ -53,7 +53,6 @@
 # RUN: llvm-readobj --coff-imports dup.dll | FileCheck --check-prefix=RUN2 %s
 
 # NOWARN-NOT: error
-# RUN2:      Import {
 # RUN2:      Import {
 # RUN2:        ImportAddressTableRVA:
 # RUN2-NEXT:   Symbol: variable (0)

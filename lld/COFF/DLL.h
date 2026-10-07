@@ -11,6 +11,7 @@
 
 #include "Chunks.h"
 #include "Symbols.h"
+#include "llvm/ADT/DenseSet.h"
 
 namespace lld::coff {
 
@@ -29,6 +30,9 @@ public:
   // Runs of in-place import slots of one DLL each, one word apart, which
   // get import descriptors of their own.
   std::vector<std::vector<ImportSlot *>> slotRuns;
+  // The imports whose address the image keeps only in their slots, which get
+  // no entry in their DLL's own tables.
+  llvm::DenseSet<DefinedImportData *> slotOnly;
   std::vector<Chunk *> dirs;
   std::vector<Chunk *> lookups;
   std::vector<Chunk *> addresses;

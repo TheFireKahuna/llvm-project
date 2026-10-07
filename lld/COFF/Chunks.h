@@ -236,7 +236,8 @@ struct ImportSlot {
   SectionChunk *chunk;
   uint32_t offset;
   DefinedImportData *sym;
-  // The entry of the run's lookup table for this word.
+  // A lookup table entry for this word, whose value the word holds until the
+  // loader writes it.
   Chunk *lookup = nullptr;
 };
 
