@@ -1,11 +1,12 @@
 ; On Windows Itanium and NT-POSIX a catch-type entry is a 32-bit offset to a
 ; pointer to the descriptor: the import pointer of a descriptor the linker can
 ; see, and a pointer private to the object for a local or weak one, which has
-; a section of its own under -fdata-sections. catch (...) stays a null entry.
+; a section of its own, as every global does by default on these triples.
+; catch (...) stays a null entry.
 ;
-; RUN: llc -mtriple=x86_64-unknown-windows-itanium < %s | FileCheck %s --check-prefixes=CHECK,SHARED
-; RUN: llc -mtriple=x86_64-pc-windows-ntposix < %s | FileCheck %s --check-prefixes=CHECK,SHARED
-; RUN: llc -mtriple=x86_64-unknown-windows-itanium -data-sections < %s | FileCheck %s --check-prefixes=CHECK,OWN
+; RUN: llc -mtriple=x86_64-unknown-windows-itanium < %s | FileCheck %s --check-prefixes=CHECK,OWN
+; RUN: llc -mtriple=x86_64-pc-windows-ntposix < %s | FileCheck %s --check-prefixes=CHECK,OWN
+; RUN: llc -mtriple=x86_64-unknown-windows-itanium -data-sections=0 < %s | FileCheck %s --check-prefixes=CHECK,SHARED
 ; RUN: llc -mtriple=x86_64-w64-windows-gnu < %s | FileCheck %s --check-prefix=MINGW
 
 @_ZTI8Imported = external constant ptr

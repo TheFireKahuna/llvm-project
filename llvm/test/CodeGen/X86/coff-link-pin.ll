@@ -1,9 +1,8 @@
-; RUN: llc -mtriple=x86_64-unknown-windows-itanium -data-sections < %s | \
-; RUN:   FileCheck %s
-; RUN: llc -mtriple=x86_64-unknown-windows-itanium -data-sections \
+; RUN: llc -mtriple=x86_64-unknown-windows-itanium < %s | FileCheck %s
+; RUN: llc -mtriple=x86_64-unknown-windows-itanium \
 ; RUN:   -filetype=obj < %s | llvm-objdump -s -j .llvm_link_records - | \
 ; RUN:   FileCheck --check-prefix=OBJ %s
-; RUN: llc -mtriple=x86_64-unknown-windows-itanium < %s | \
+; RUN: llc -mtriple=x86_64-unknown-windows-itanium -data-sections=0 < %s | \
 ; RUN:   FileCheck --check-prefix=SHARED %s
 ; RUN: llc -mtriple=x86_64-unknown-linux-gnu < %s | \
 ; RUN:   FileCheck --check-prefix=ELF %s

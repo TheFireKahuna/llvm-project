@@ -1320,9 +1320,12 @@ public:
     return isAArch64() || (isAndroid() && isRISCV64()) || isOSFuchsia();
   }
 
-  /// Tests whether the target uses -data-sections as default.
+  /// Tests whether the target uses -data-sections as default. Windows
+  /// Itanium and NT-POSIX always do: the linker takes a data object's extent
+  /// from its section, and moves a section to bind the words it holds.
   bool hasDefaultDataSections() const {
-    return isOSBinFormatXCOFF() || isWasm();
+    return isOSBinFormatXCOFF() || isWasm() ||
+           isWindowsItaniumOrNTPOSIXEnvironment();
   }
 
   /// Returns the default wchar_t size (in bytes) for this target triple.
