@@ -30,6 +30,7 @@
 ; CHECK-NEXT:  .p2align 3, 0x0
 ; CHECK-NEXT:  .xword __imp_imp1
 ; CHECK-NEXT:  .xword __imp_imp2
+; CHECK-NEXT:  .linkkcfilists
 ; CHECK-NEXT:  .section .rdata$llvm_kcfi_12345678_z,"dr",associative,__llvm_kcfi_list_12345678
 ; CHECK-NEXT:  .p2align 3, 0x0
 ; CHECK-NEXT:  .xword 610839793

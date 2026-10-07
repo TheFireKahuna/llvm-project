@@ -1755,24 +1755,6 @@ AsmPrinter::getKCFIOpenTypes(const Module &M) const {
   return OpenTypes;
 }
 
-// Returns true if the initializer of a global variable refers to F.
-static bool isReferencedFromData(const Function &F) {
-  SmallVector<const User *, 8> Worklist(F.users());
-  SmallPtrSet<const User *, 8> Visited;
-  while (!Worklist.empty()) {
-    const User *U = Worklist.pop_back_val();
-    if (!Visited.insert(U).second)
-      continue;
-    if (auto *GV = dyn_cast<GlobalVariable>(U)) {
-      if (GV->getSection() != "llvm.metadata")
-        return true;
-    } else if (isa<Constant>(U)) {
-      append_range(Worklist, U->users());
-    }
-  }
-  return false;
-}
-
 void AsmPrinter::emitKCFIList(MCSymbol *List, uint32_t Type,
                               ArrayRef<const Function *> Imports) {
   // The pieces of a type's list are in sections that the linker merges in the
@@ -1794,28 +1776,20 @@ void AsmPrinter::emitKCFIList(MCSymbol *List, uint32_t Type,
   OutStreamer->emitInt64(Type);
 
   // An entry is the address of a cell holding a valid target. An import's is
-  // its import address table slot, which holds the address the loader bound,
-  // and, when static data refers to it, a cell holding its thunk too, which
-  // such a reference resolves to.
-  SmallVector<MCSymbol *, 2> Cells;
-  for (const Function *F : Imports) {
-    MCSymbol *Sym = getSymbol(F);
-    Cells.push_back(OutContext.getOrCreateSymbol("__imp_" + Sym->getName()));
-    if (!isReferencedFromData(*F))
-      continue;
-    Cells.push_back(OutContext.createTempSymbol());
-    OutStreamer->switchSection(
-        OutContext.getCOFFSection(".rdata", Characteristics));
-    OutStreamer->emitValueToAlignment(Align(8));
-    OutStreamer->emitLabel(Cells.back());
-    OutStreamer->emitValue(MCSymbolRefExpr::create(Sym, OutContext), 8);
-  }
-  if (!Cells.empty()) {
+  // its import address table entry, which holds the address the loader bound.
+  // Where static data holds the import's thunk instead, which only the linker
+  // knows, the linker lists a cell holding the thunk, as the records ask.
+  if (!Imports.empty()) {
     OutStreamer->switchSection(
         OutContext.getCOFFSection(Prefix + "m", Characteristics));
     OutStreamer->emitValueToAlignment(Align(8));
-    for (MCSymbol *Cell : Cells)
-      OutStreamer->emitValue(MCSymbolRefExpr::create(Cell, OutContext), 8);
+    for (const Function *F : Imports)
+      OutStreamer->emitValue(
+          MCSymbolRefExpr::create(
+              OutContext.getOrCreateSymbol("__imp_" + getSymbol(F)->getName()),
+              OutContext),
+          8);
+    OutStreamer->emitCOFFKCFIImportLists();
   }
 
   OutStreamer->switchSection(OutContext.getCOFFSection(
