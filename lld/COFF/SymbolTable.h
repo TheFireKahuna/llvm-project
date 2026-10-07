@@ -170,7 +170,7 @@ public:
                     const llvm::object::coff_symbol_generic *s = nullptr,
                     CommonChunk *c = nullptr);
   DefinedImportData *addImportData(StringRef n, ImportFile *f,
-                                   Chunk *&location);
+                                   ImportLocation &location);
   Defined *addImportThunk(StringRef name, DefinedImportData *s,
                           ImportThunkChunk *chunk);
   void addLibcall(StringRef name);

@@ -379,23 +379,25 @@ public:
 // table in an output. The former has "__imp_" prefix.
 class DefinedImportData : public Defined {
 public:
-  DefinedImportData(StringRef n, ImportFile *file, Chunk *&location)
+  DefinedImportData(StringRef n, ImportFile *file, ImportLocation &location)
       : Defined(DefinedImportDataKind, n), file(file), location(location) {}
 
   static bool classof(const Symbol *s) {
     return s->kind() == DefinedImportDataKind;
   }
 
-  uint64_t getRVA() { return getChunk()->getRVA(); }
-  Chunk *getChunk() { return location; }
-  void setLocation(Chunk *addressTable) { location = addressTable; }
+  uint64_t getRVA() { return location.chunk->getRVA() + location.offset; }
+  Chunk *getChunk() { return location.chunk; }
+  void setLocation(Chunk *chunk, uint32_t offset = 0) {
+    location = {chunk, offset};
+  }
 
   StringRef getDLLName() { return file->dllName; }
   StringRef getExternalName() { return file->externalName; }
   uint16_t getOrdinal() { return file->hdr->OrdinalHint; }
 
   ImportFile *file;
-  Chunk *&location;
+  ImportLocation &location;
 
   // This is a pointer to the synthetic symbol associated with the load thunk
   // for this symbol that will be called if the DLL is delay-loaded. This is

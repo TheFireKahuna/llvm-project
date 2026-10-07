@@ -408,6 +408,13 @@ public:
   TpiSource *debugTypesObj = nullptr;
 };
 
+// Where the image holds an import's address: an entry of an import address
+// table, or a word of static data that the loader writes in place.
+struct ImportLocation {
+  Chunk *chunk = nullptr;
+  uint32_t offset = 0;
+};
+
 // This type represents import library members that contain DLL names
 // and symbols exported from the DLLs. See Microsoft PE/COFF spec. 7
 // for details about the format.
@@ -434,14 +441,14 @@ private:
 public:
   StringRef externalName;
   const coff_import_header *hdr;
-  Chunk *location = nullptr;
+  ImportLocation location;
 
   // Auxiliary IAT symbols and chunks on ARM64EC.
   DefinedImportData *impECSym = nullptr;
-  Chunk *auxLocation = nullptr;
+  ImportLocation auxLocation;
   Defined *auxThunkSym = nullptr;
   DefinedImportData *auxImpCopySym = nullptr;
-  Chunk *auxCopyLocation = nullptr;
+  ImportLocation auxCopyLocation;
 
   // We want to eliminate dllimported symbols if no one actually refers to them.
   // These "Live" bits are used to keep track of which import library members
