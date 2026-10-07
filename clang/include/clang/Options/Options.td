@@ -5057,8 +5057,11 @@ def fbasic_block_sections_EQ : Joined<["-"], "fbasic-block-sections=">, Group<f_
   DocBrief<[{Place each basic block or a subset of basic blocks in its own section.}]>,
   Values<"all,none,list=">,
   MarshallingInfoString<CodeGenOpts<"BBSections">, [{"none"}]>;
+// Windows Itanium and NT-POSIX always place each data object in its own
+// section; the driver ignores -fno-data-sections there.
 defm data_sections : BoolFOption<"data-sections",
-  CodeGenOpts<"DataSections">, DefaultFalse,
+  CodeGenOpts<"DataSections">,
+  Default<"T.isWindowsItaniumOrNTPOSIXEnvironment()">,
   PosFlag<SetTrue, [], [ClangOption, CC1Option, FlangOption, FC1Option],
           "Place each data in its own section">,
   NegFlag<SetFalse, [], [FlangOption, FC1Option]>>;
