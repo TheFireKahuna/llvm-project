@@ -99,10 +99,10 @@ public:
   // exported definition along with it, whatever exported the definition.
   void exportInteriorNames();
 
-  // Under -import-slots, makes each .refptr.X pointer the pointer to X that
-  // the link already has or can make: X's import pointer when X is imported,
-  // and otherwise a local import pointer, whose described references
-  // bindLocalImports rewrites to reach X, or zero, directly.
+  // Binds each .refptr.X pointer to a local import pointer to X when X is in
+  // the image, or to zero when a weak X is absent, whose references
+  // bindLocalImports rewrites to reach X, or zero, directly; and under
+  // -import-slots to X's import pointer when X is imported.
   void bindPointerCells();
 
   // Under -import-slots, the weak externals of extern_weak declarations, whose

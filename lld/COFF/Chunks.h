@@ -788,6 +788,12 @@ public:
   // rewritten to reach the symbol directly. Data may still read the pointer.
   bool bypassed = false;
 
+  // The pointer that a compiler made for the symbol, such as .refptr.X, if
+  // this one binds it. That pointer, where it is, stays the pointer whenever
+  // the image needs one, so that every name of it gives one address, and this
+  // one is never written.
+  SectionChunk *cell = nullptr;
+
 private:
   Defined *sym;
   COFFLinkerContext &ctx;

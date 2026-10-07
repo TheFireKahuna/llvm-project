@@ -1,21 +1,24 @@
 # REQUIRES: x86
 
-## Under -import-slots, a .refptr.X pointer, which a compiler reads for an
-## extern_weak X, is a local import pointer to X once X is defined in the
-## image, or to zero once a weak X is absent: a described load of it becomes
-## the lea of X or a move of zero, and a call through it a direct call. A
-## pointer that only such references read is left out of the image; one that
-## holds zero has no base relocation. A reference through a pointer is not
-## reported as an imported local.
+## A .refptr.X pointer, which a compiler reads for an extern_weak X, is a
+## local import pointer to X once X is defined in the image, or to zero once a
+## weak X is absent: a described load of it becomes the lea of X or a move of
+## zero, and a call through it a direct call. A pointer that only such
+## references read is left out of the image; one that holds zero has no base
+## relocation. A reference through a pointer is not reported as an imported
+## local. -import-slots changes none of it.
 
 # RUN: rm -rf %t && split-file %s %t && cd %t
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium main.s -o main.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium defs.s -o defs.obj
 
-# RUN: lld-link -import-slots -entry:main -subsystem:console -out:a.exe \
-# RUN:   main.obj defs.obj 2>&1 | count 0
+# RUN: lld-link -entry:main -subsystem:console -out:a.exe main.obj defs.obj \
+# RUN:   2>&1 | count 0
 # RUN: llvm-objdump -d a.exe | FileCheck %s
 # RUN: llvm-readobj --coff-basereloc a.exe | FileCheck --check-prefix=RELOC %s
+# RUN: lld-link -import-slots -entry:main -subsystem:console -out:b.exe \
+# RUN:   main.obj defs.obj 2>&1 | count 0
+# RUN: llvm-objdump -d b.exe | FileCheck %s
 
 # CHECK:      48 8d 05 {{.*}} leaq {{.*}}(%rip), %rax # 0x[[#%x,F:]]
 # CHECK-NEXT: 67 e8 {{.*}} addr32 callq 0x[[#F]]
@@ -31,12 +34,6 @@
 ## the call through absent has none.
 # RELOC-COUNT-1: Type: DIR64
 # RELOC-NOT:     Type: DIR64
-
-## Without -import-slots the instructions read the pointers as before.
-# RUN: lld-link -entry:main -subsystem:console -out:b.exe main.obj defs.obj
-# RUN: llvm-objdump -d b.exe | FileCheck --check-prefix=PLAIN %s
-
-# PLAIN: 48 8b 05 {{.*}} movq {{.*}}(%rip), %rax
 
 #--- main.s
   .text
