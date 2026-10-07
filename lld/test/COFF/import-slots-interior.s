@@ -43,7 +43,7 @@
 # RUN: not lld-link -dll -noentry -import-slots -out:other.dll other.obj \
 # RUN:   lib.lib other.lib 2>&1 | FileCheck --check-prefix=OTHER %s
 
-# OTHER: error: other.obj: .rdata holds the address of obj plus 24, imported from lib.dll, which exports no name for it
+# OTHER: error: other.obj: .rdata holds the address of obj plus 24, imported from lib.dll, which exports no name for it, and the image has no C initializer table (__xi_a) to write it
 
 ## No address inside an imported function is imported.
 # RUN: not lld-link -dll -noentry -import-slots -out:func.dll func.obj \

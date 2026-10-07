@@ -335,6 +335,7 @@ private:
   void bindImportSlots();
   void reuseImportSlots();
   void addImport(DefinedImportData *imp);
+  void createResidualFill();
   void listKCFIThunks();
   void placeImportSlotSections();
   bool iatStartsRdata() const;
@@ -451,9 +452,19 @@ private:
   // instead of an import address table entry.
   std::vector<DefinedImportData *> slotReadImports;
   DenseSet<const SectionChunk *> heldBackChunks;
+  // The words of static data that the residual fill writes, and the read-only
+  // chunks among theirs, which are laid out in .sealed, in their order there.
+  std::vector<ResidualWord> residualWords;
+  SetVector<SectionChunk *> sealedChunks;
   // The imports some of whose words take an interior name instead, with the
   // first such word.
   MapVector<ImportFile *, std::pair<SectionChunk *, uint32_t>> interiorBases;
+  // The residual fill, its pointer in the C initializer table and, when it has
+  // a frame, its unwind information and exception table entry.
+  ResidualFillChunk *residualFill = nullptr;
+  Chunk *residualFillPointer = nullptr;
+  Chunk *residualFillUnwind = nullptr;
+  Chunk *residualFillPdata = nullptr;
   // The read-only output sections other than .rdata that hold in-place import
   // slots, which are laid out before .rdata, and whether a $-group of .rdata
   // holds one; either places the import address tables at the start of
@@ -968,6 +979,7 @@ void Writer::run() {
     createImportTables();
     bindImportSlots();
     reuseImportSlots();
+    createResidualFill();
     listKCFIThunks();
     createSections();
     appendImportThunks();
@@ -1343,6 +1355,8 @@ void Writer::createSections() {
     }
     if (sc && sc->hasImportSlots && heldBackChunks.contains(sc))
       continue;
+    if (sc && sealedChunks.contains(sc))
+      continue;
     StringRef name = c->getSectionName();
     if (shouldStripSectionSuffix(sc, name, ctx.config.mingw))
       name = name.split('$').first;
@@ -1357,6 +1371,19 @@ void Writer::createSections() {
   for (Chunk *c : ctx.symtab.kcfiChunks)
     createPartialSection(c->getSectionName(), c->getOutputCharacteristics())
         ->chunks.push_back(c);
+  if (residualFill) {
+    createPartialSection(".text", residualFill->getOutputCharacteristics())
+        ->chunks.push_back(residualFill);
+    // Right after the table's start, ahead of every other initializer.
+    createPartialSection(".CRT$XIA$fill", data | r)
+        ->chunks.push_back(residualFillPointer);
+  }
+  if (residualFillPdata) {
+    createPartialSection(".xdata", data | r)
+        ->chunks.push_back(residualFillUnwind);
+    createPartialSection(".pdata", data | r)
+        ->chunks.push_back(residualFillPdata);
+  }
 
   fixPartialSectionChars(".rsrc", data | r);
   fixPartialSectionChars(".edata", data | r);
@@ -1406,7 +1433,9 @@ void Writer::createSections() {
 
       Log(ctx) << "Processing section " << pSec->name << " -> " << name;
 
-      sortCRTSectionChunks(pSec->chunks);
+      // The residual fill's pointer is alone in a group of its own.
+      if (pSec->chunks.front() != residualFillPointer)
+        sortCRTSectionChunks(pSec->chunks);
     }
 
     // ARM64EC has specific placement and alignment requirements for the IAT.
@@ -1432,6 +1461,14 @@ void Writer::createSections() {
   if (ctx.hybridSymtab) {
     if (OutputSection *sec = findSection(".CRT"))
       sec->splitECChunks();
+  }
+
+  // The read-only chunks holding residual words get pages of their own, which
+  // the image maps writable and the residual fill makes read-only.
+  if (!sealedChunks.empty()) {
+    OutputSection *sec = createSection(".sealed", data | r | w);
+    for (SectionChunk *sc : sealedChunks)
+      sec->addChunk(sc);
   }
 
   // Finally, move some output sections to the end.
@@ -1666,6 +1703,35 @@ void Writer::bindImportSlots() {
   // rewritten instruction bypasses.
   MapVector<DefinedImportThunk *, std::pair<size_t, size_t>> thunkRefs;
 
+  // A word that holds an address inside an import's data for which its DLL
+  // exports no name is the residual fill's to write. A read-only one moves
+  // with its chunk to pages that the fill makes read-only again once written,
+  // which a read-only section that may not move cannot give it. Thread-local
+  // data is the loader's to copy before any initializer runs.
+  auto addResidualWord = [&](ObjFile *file, SectionChunk *sc, uint32_t offset,
+                             Symbol *s, DefinedImportData *imp,
+                             int64_t addend) {
+    StringRef name = sc->getSectionName();
+    if (shouldStripSectionSuffix(sc, name, config.mingw))
+      name = name.split('$').first;
+    bool readOnly = !(sc->header->Characteristics & IMAGE_SCN_MEM_WRITE);
+    StringRef why;
+    if (name.starts_with(".tls")) {
+      why = ", in thread-local data";
+    } else if (readOnly && name != ".rdata") {
+      why = ", in a read-only section that cannot move";
+    } else if (config.machine == AMD64 || arm64) {
+      if (readOnly)
+        sealedChunks.insert(sc);
+      residualWords.push_back({sc, offset, imp, addend, s});
+      return;
+    }
+    Err(ctx) << file << ": " << sc->getSectionName() << " holds the address of "
+             << file->symtab.printSymbol(s) << " plus " << addend
+             << ", imported from " << imp->getDLLName()
+             << ", which exports no name for it" << why;
+  };
+
   for (ObjFile *file : ctx.objFileInstances) {
     if (&file->symtab != &ctx.symtab ||
         llvm::none_of(file->getSymbols(), isImport))
@@ -1863,13 +1929,14 @@ void Writer::bindImportSlots() {
           DefinedImportData *interior =
               ctx.symtab.findInteriorImport(imp, addend, loaded);
           if (!interior) {
-            Err(ctx) << file << ": " << sc->getSectionName()
-                     << " holds the address of " << file->symtab.printSymbol(s)
-                     << " plus " << addend << ", imported from "
-                     << imp->getDLLName()
-                     << (thunk
-                             ? ", but no address inside a function is imported"
-                             : ", which exports no name for it");
+            if (thunk)
+              Err(ctx) << file << ": " << sc->getSectionName()
+                       << " holds the address of "
+                       << file->symtab.printSymbol(s) << " plus " << addend
+                       << ", imported from " << imp->getDLLName()
+                       << ", but no address inside a function is imported";
+            else
+              addResidualWord(file, sc, rel.VirtualAddress, s, imp, addend);
             continue;
           }
           if (loaded || !interior->file->live)
@@ -1957,6 +2024,12 @@ void Writer::bindImportSlots() {
     }
     sc->hasImportSlots = true;
     ctx.importSlots[sc] = std::move(p.slots);
+    // A chunk that also holds residual words is writable until they are
+    // written.
+    if (sealedChunks.contains(sc)) {
+      writable.push_back(sc);
+      continue;
+    }
     if (readOnly && name == ".rdata") {
       slotChunks.push_back(sc);
       continue;
@@ -2119,6 +2192,9 @@ void Writer::reuseImportSlots() {
   for (Symbol *s : config.gcroot)
     if (auto *imp = dyn_cast<DefinedImportData>(s))
       use(imp, Other);
+  // The residual fill reads the address of each import it adds to.
+  for (const ResidualWord &w : residualWords)
+    use(w.imp, Read);
 
   // An import whose words all take interior names, and that nothing else
   // uses, needs no entry at all. What still names it, such as debug
@@ -2135,12 +2211,14 @@ void Writer::reuseImportSlots() {
     return unneeded.contains(imp);
   });
 
+  // A read-only chunk with residual words is writable until they are written.
   auto readable = [&](const ImportSlot &s) {
     StringRef name = s.chunk->getSectionName();
     if (shouldStripSectionSuffix(s.chunk, name, config.mingw))
       name = name.split('$').first;
     StringRef outName = getOutputSectionName(name, config.mingw);
     return !(s.chunk->header->Characteristics & IMAGE_SCN_MEM_WRITE) &&
+           !sealedChunks.contains(s.chunk) &&
            s.chunk->getAlignment() >= config.wordsize &&
            s.offset % config.wordsize == 0 && !config.merge.count(outName) &&
            !config.section.count(outName);
@@ -2170,6 +2248,60 @@ void Writer::addImport(DefinedImportData *imp) {
   ctx.config.dllOrder.try_emplace(StringRef(imp->file->dllName).lower(),
                                   ctx.config.dllOrder.size());
   idata.add(imp);
+}
+
+// Under -import-slots, the residual fill writes the words of static data that
+// hold an address inside an import for which its DLL exports no name, as the
+// loader would write the import's address. It runs from the image's C
+// initializer table, ahead of every initializer, and makes the pages of the
+// read-only words read-only once it has written them.
+void Writer::createResidualFill() {
+  if (residualWords.empty())
+    return;
+  Configuration &config = ctx.config;
+  const ResidualWord &first = residualWords.front();
+  auto fail = [&](const Twine &why) {
+    Err(ctx) << first.chunk->file << ": " << first.chunk->getSectionName()
+             << " holds the address of "
+             << first.chunk->file->symtab.printSymbol(first.sym) << " plus "
+             << first.addend << ", imported from " << first.imp->getDLLName()
+             << ", which exports no name for it, and " << why;
+  };
+  if (!isa_and_nonnull<Defined>(ctx.symtab.findUnderscore("__xi_a")))
+    return fail("the image has no C initializer table (__xi_a) to write it");
+
+  DefinedImportData *protect = nullptr;
+  if (!sealedChunks.empty()) {
+    if (config.align % 4096)
+      return fail("its section alignment is smaller than a page, which the "
+                  "image cannot make read-only once written");
+    bool loaded;
+    protect = ctx.symtab.findImport("__imp_NtProtectVirtualMemory", loaded);
+    if (!protect)
+      return fail("the image cannot make it read-only once written without "
+                  "NtProtectVirtualMemory from ntdll.lib");
+    if (config.delayLoads.contains(protect->getDLLName().lower()))
+      return fail("NtProtectVirtualMemory, which makes it read-only once "
+                  "written, is delay-loaded");
+    if (loaded || !protect->file->live) {
+      addImport(protect);
+      // The fill calls it through its entry.
+      if (protect->file->thunkSym)
+        cast<DefinedImportThunk>(protect->file->thunkSym)->getChunk()->live =
+            false;
+    }
+  }
+
+  residualFill = make<ResidualFillChunk>(
+      ctx, residualWords, sealedChunks.empty() ? nullptr : sealedChunks.front(),
+      protect);
+  residualFillPointer = make<LocalImportChunk>(
+      ctx, make<DefinedSynthetic>("__llvm_residual_fill", residualFill));
+  if (protect) {
+    auto *unwind = make<ResidualFillUnwindChunk>(ctx, residualFill);
+    residualFillUnwind = unwind;
+    residualFillPdata = make<ResidualFillPdataChunk>(ctx, residualFill, unwind);
+  }
 }
 
 // A KCFI type's list names an imported function by its import address table
@@ -3803,6 +3935,10 @@ void Writer::createGuardCFTables() {
     for (const ImportSlot &s : kv.second)
       if (s.sym->file->thunkSym)
         giatsRVASet.insert({s.chunk, s.offset});
+
+  // The C initializer table calls the residual fill.
+  if (residualFill)
+    addressTakenSyms.insert({residualFill, 0});
 
   // Mark the image entry as address-taken.
   SymbolRVASet exportedSyms;

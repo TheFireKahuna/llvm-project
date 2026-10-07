@@ -1255,6 +1255,206 @@ size_t KCFIOpenChunk::getSize() const {
 
 MachineTypes KCFIOpenChunk::getMachine() const { return ctx.config.machine; }
 
+ResidualFillChunk::ResidualFillChunk(COFFLinkerContext &ctx,
+                                     std::vector<ResidualWord> words,
+                                     Chunk *sealed, DefinedImportData *protect)
+    : words(std::move(words)), sealed(sealed), protect(protect), ctx(ctx) {
+  // Control Flow Guard checks the initializer table's call to it.
+  setAlignment(16);
+}
+
+MachineTypes ResidualFillChunk::getMachine() const {
+  return ctx.config.machine;
+}
+
+size_t ResidualFillChunk::getPrologueSize() const {
+  if (!protect)
+    return 0;
+  return ctx.config.machine == ARM64 ? 8 : 4;
+}
+
+// The instructions that add an addend to the import's address.
+static size_t getArm64AddendSize(int64_t addend) {
+  if (addend > -4096 && addend < 4096)
+    return 4;
+  size_t n = 0;
+  for (int shift = 0; shift != 64; shift += 16)
+    n += (uint64_t(addend) >> shift & 0xFFFF) != 0;
+  return 4 * std::max<size_t>(n, 1) + 4;
+}
+
+size_t ResidualFillChunk::getWordSize(const ResidualWord &w) const {
+  if (ctx.config.machine == ARM64)
+    return 8 + getArm64AddendSize(w.addend) + 12;
+  return 7 + (isInt<32>(w.addend) ? 6 : 13) + 7;
+}
+
+size_t ResidualFillChunk::getSize() const {
+  size_t size = getPrologueSize();
+  for (const ResidualWord &w : words)
+    size += getWordSize(w);
+  if (ctx.config.machine == ARM64)
+    return size + (protect ? 56 + 8 : 0) + 8;
+  return size + (protect ? 60 + 4 : 0) + 3;
+}
+
+void ResidualFillChunk::writeTo(uint8_t *buf) const {
+  const uint32_t pageReadOnly = 2;
+  uint64_t sealStart = 0, sealSize = 0;
+  if (protect) {
+    OutputSection *os = ctx.getOutputSection(sealed);
+    sealStart = os->getRVA();
+    sealSize = os->getVirtualSize();
+  }
+  uint32_t off = 0;
+  if (ctx.config.machine == ARM64) {
+    auto put = [&](uint32_t insn) {
+      write32le(buf + off, insn);
+      off += 4;
+    };
+    // adrp xN, target; ldr xN, [xN, :lo12:target]
+    auto load = [&](uint32_t reg, uint64_t target) {
+      write32le(buf + off, 0x90000000 | reg);
+      write32le(buf + off + 4, 0xF9400000 | reg << 5 | reg);
+      applyArm64Addr(buf + off, target, rva + off, 12);
+      applyArm64Ldr(buf + off + 4, target & 0xfff);
+      off += 8;
+    };
+    // adrp xN, target; add xN, xN, :lo12:target
+    auto address = [&](uint32_t reg, uint64_t target) {
+      write32le(buf + off, 0x90000000 | reg);
+      write32le(buf + off + 4, 0x91000000 | reg << 5 | reg);
+      applyArm64Addr(buf + off, target, rva + off, 12);
+      applyArm64Imm(buf + off + 4, target & 0xfff, 0);
+      off += 8;
+    };
+    if (protect) {
+      put(0xA9BD7BFD); // stp x29, x30, [sp, #-48]!
+      put(0x910003FD); // mov x29, sp
+    }
+    for (const ResidualWord &w : words) {
+      load(16, w.imp->getRVA());
+      if (w.addend > 0 && w.addend < 4096) {
+        put(0x91000210 | uint32_t(w.addend) << 10); // add x16, x16, #addend
+      } else if (w.addend < 0 && w.addend > -4096) {
+        put(0xD1000210 | uint32_t(-w.addend) << 10); // sub x16, x16, #-addend
+      } else {
+        // movz x17, #h0; movk x17, #hN, lsl #16N; add x16, x16, x17
+        bool first = true;
+        for (uint32_t hw = 0; hw != 4; ++hw) {
+          uint32_t half = uint64_t(w.addend) >> (16 * hw) & 0xFFFF;
+          if (!half && !(first && hw == 3))
+            continue;
+          put((first ? 0xD2800011 : 0xF2800011) | hw << 21 | half << 5);
+          first = false;
+        }
+        put(0x8B110210);
+      }
+      address(17, w.chunk->getRVA() + w.offset);
+      put(0xF9000230); // str x16, [x17]
+    }
+    if (protect) {
+      // NtProtectVirtualMemory(-1, &base, &size, PAGE_READONLY, &old), with
+      // base, size and old at sp + 16, 24 and 32.
+      address(0, sealStart);
+      put(0xF9000BE0);                                    // str x0, [sp, #16]
+      put(0xD2800001 | uint32_t(sealSize & 0xFFFF) << 5); // movz x1, #lo
+      put(0xF2A00001 | uint32_t(sealSize >> 16 & 0xFFFF) << 5); // movk x1, #hi
+      put(0xF9000FE1);                     // str x1, [sp, #24]
+      put(0x92800000);                     // mov x0, #-1
+      put(0x910043E1);                     // add x1, sp, #16
+      put(0x910063E2);                     // add x2, sp, #24
+      put(0x52800003 | pageReadOnly << 5); // mov w3, #PAGE_READONLY
+      put(0x910083E4);                     // add x4, sp, #32
+      load(16, protect->getRVA());
+      put(0xD63F0200); // blr x16
+    }
+    put(0x52800000); // mov w0, #0
+    if (protect) {
+      put(0x910003BF); // mov sp, x29
+      put(0xA8C37BFD); // ldp x29, x30, [sp], #48
+    }
+    put(0xD65F03C0); // ret
+    return;
+  }
+
+  auto put = [&](ArrayRef<uint8_t> bytes) {
+    memcpy(buf + off, bytes.data(), bytes.size());
+    off += bytes.size();
+  };
+  // The RIP-relative displacement to target of the instruction just put,
+  // which ends with it.
+  auto disp = [&](uint64_t target) {
+    write32le(buf + off - 4, target - (rva + off));
+  };
+  if (protect)
+    put({0x48, 0x83, 0xEC, 0x48}); // sub rsp, 0x48
+  for (const ResidualWord &w : words) {
+    put({0x48, 0x8B, 0x05, 0, 0, 0, 0}); // mov rax, [rip + imp]
+    disp(w.imp->getRVA());
+    if (isInt<32>(w.addend)) {
+      put({0x48, 0x05, 0, 0, 0, 0}); // add rax, addend
+      write32le(buf + off - 4, uint32_t(w.addend));
+    } else {
+      put({0x48, 0xB9, 0, 0, 0, 0, 0, 0, 0, 0}); // mov rcx, addend
+      write64le(buf + off - 8, uint64_t(w.addend));
+      put({0x48, 0x01, 0xC8}); // add rax, rcx
+    }
+    put({0x48, 0x89, 0x05, 0, 0, 0, 0}); // mov [rip + word], rax
+    disp(w.chunk->getRVA() + w.offset);
+  }
+  if (protect) {
+    // NtProtectVirtualMemory(-1, &base, &size, PAGE_READONLY, &old), with
+    // base, size and old at rsp + 0x30, 0x38 and 0x40.
+    put({0x48, 0x8D, 0x05, 0, 0, 0, 0}); // lea rax, [rip + base]
+    disp(sealStart);
+    put({0x48, 0x89, 0x44, 0x24, 0x30});             // mov [rsp + 0x30], rax
+    put({0x48, 0xC7, 0x44, 0x24, 0x38, 0, 0, 0, 0}); // mov [rsp + 0x38], size
+    write32le(buf + off - 4, uint32_t(sealSize));
+    put({0x48, 0x8D, 0x44, 0x24, 0x40});               // lea rax, [rsp + 0x40]
+    put({0x48, 0x89, 0x44, 0x24, 0x20});               // mov [rsp + 0x20], rax
+    put({0x48, 0xC7, 0xC1, 0xFF, 0xFF, 0xFF, 0xFF});   // mov rcx, -1
+    put({0x48, 0x8D, 0x54, 0x24, 0x30});               // lea rdx, [rsp + 0x30]
+    put({0x4C, 0x8D, 0x44, 0x24, 0x38});               // lea r8, [rsp + 0x38]
+    put({0x41, 0xB9, uint8_t(pageReadOnly), 0, 0, 0}); // mov r9d, PAGE_READONLY
+    put({0xFF, 0x15, 0, 0, 0, 0}); // call [rip + NtProtectVirtualMemory]
+    disp(protect->getRVA());
+  }
+  put({0x31, 0xC0}); // xor eax, eax
+  if (protect)
+    put({0x48, 0x83, 0xC4, 0x48}); // add rsp, 0x48
+  put({0xC3});                     // ret
+}
+
+void ResidualFillUnwindChunk::writeTo(uint8_t *buf) const {
+  if (ctx.config.machine == ARM64) {
+    // One epilog at the end, which the prologue's codes describe: set_fp,
+    // save_fplr_x of 48 bytes, end.
+    write32le(buf, fill->getSize() / 4 | 1 << 21 | 1 << 27);
+    const uint8_t codes[] = {0xE1, 0x85, 0xE4, 0xE4};
+    memcpy(buf + 4, codes, sizeof(codes));
+    return;
+  }
+  // Version 1, a prologue of 4 bytes with one code: UWOP_ALLOC_SMALL of
+  // 0x48 bytes at its end.
+  const uint8_t info[] = {0x01, 0x04, 0x01, 0x00, 0x04, 0x82, 0x00, 0x00};
+  memcpy(buf, info, sizeof(info));
+}
+
+size_t ResidualFillPdataChunk::getSize() const {
+  return ctx.config.machine == ARM64 ? 8 : 12;
+}
+
+void ResidualFillPdataChunk::writeTo(uint8_t *buf) const {
+  write32le(buf, fill->getRVA());
+  if (ctx.config.machine == ARM64) {
+    write32le(buf + 4, unwind->getRVA());
+    return;
+  }
+  write32le(buf + 4, fill->getRVA() + fill->getSize());
+  write32le(buf + 8, unwind->getRVA());
+}
+
 void KCFIOpenChunk::writeTo(uint8_t *buf) const {
   // The scanner reads the list from its first word after the head.
   uint64_t first = list ? list->getRVA() + 8 : 0;

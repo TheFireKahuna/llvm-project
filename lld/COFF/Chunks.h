@@ -832,6 +832,89 @@ private:
   COFFLinkerContext &ctx;
 };
 
+// A word of static data that holds an address inside an import for which the
+// import's DLL exports no name: the import's address plus addend. Sym is the
+// symbol that the word's relocation names.
+struct ResidualWord {
+  SectionChunk *chunk;
+  uint32_t offset;
+  DefinedImportData *imp;
+  int64_t addend;
+  Symbol *sym;
+};
+
+// Under -import-slots, the image's residual fill: an initializer, which the C
+// initializer table runs before any other, that writes each residual word
+// from its import's entry. When read-only words are among them, they are in a
+// writable section of their own, which the function then makes read-only with
+// NtProtectVirtualMemory; that call gives it a frame, which ResidualFillUnwind
+// describes. It returns 0.
+class ResidualFillChunk : public NonSectionCodeChunk {
+public:
+  ResidualFillChunk(COFFLinkerContext &ctx, std::vector<ResidualWord> words,
+                    Chunk *sealed, DefinedImportData *protect);
+  size_t getSize() const override;
+  void writeTo(uint8_t *buf) const override;
+  uint32_t getOutputCharacteristics() const override {
+    return llvm::COFF::IMAGE_SCN_CNT_CODE |
+           NonSectionCodeChunk::getOutputCharacteristics();
+  }
+  StringRef getSectionName() const override { return ".text"; }
+  MachineTypes getMachine() const override;
+  // The size of the prologue, which sets up the frame, if there is one.
+  size_t getPrologueSize() const;
+
+private:
+  size_t getWordSize(const ResidualWord &w) const;
+
+  std::vector<ResidualWord> words;
+  // A chunk of the section the function seals, or null.
+  Chunk *sealed;
+  // NtProtectVirtualMemory's import, when it seals.
+  DefinedImportData *protect;
+  COFFLinkerContext &ctx;
+};
+
+// The unwind information of the residual fill when it has a frame.
+class ResidualFillUnwindChunk : public NonSectionChunk {
+public:
+  ResidualFillUnwindChunk(COFFLinkerContext &ctx, ResidualFillChunk *fill)
+      : fill(fill), ctx(ctx) {
+    setAlignment(4);
+  }
+  size_t getSize() const override { return 8; }
+  void writeTo(uint8_t *buf) const override;
+  uint32_t getOutputCharacteristics() const override {
+    return llvm::COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
+           llvm::COFF::IMAGE_SCN_MEM_READ;
+  }
+
+private:
+  ResidualFillChunk *fill;
+  COFFLinkerContext &ctx;
+};
+
+// The exception table entry of the residual fill when it has a frame.
+class ResidualFillPdataChunk : public NonSectionChunk {
+public:
+  ResidualFillPdataChunk(COFFLinkerContext &ctx, ResidualFillChunk *fill,
+                         ResidualFillUnwindChunk *unwind)
+      : fill(fill), unwind(unwind), ctx(ctx) {
+    setAlignment(4);
+  }
+  size_t getSize() const override;
+  void writeTo(uint8_t *buf) const override;
+  uint32_t getOutputCharacteristics() const override {
+    return llvm::COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
+           llvm::COFF::IMAGE_SCN_MEM_READ;
+  }
+
+private:
+  ResidualFillChunk *fill;
+  ResidualFillUnwindChunk *unwind;
+  COFFLinkerContext &ctx;
+};
+
 // The linker's form of one of clang's KCFI thunks, which replaces it in an
 // image the linker sealed. A target inside a code range the image vouches for,
 // its own if a function of the thunk's type is in it and that of each DLL it
