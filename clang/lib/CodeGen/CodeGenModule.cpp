@@ -2438,6 +2438,18 @@ void CodeGenModule::setDLLImportDLLExport(llvm::GlobalValue *GV,
   setDLLImportDLLExport(GV, D);
 }
 
+bool CodeGenModule::shouldMapDefinitionToDLLExport(
+    const NamedDecl *D, llvm::GlobalValue::LinkageTypes Linkage) const {
+  if (!shouldMapVisibilityToDLLExport(D))
+    return false;
+  // A COFF image has a discardable definition only if it used it, and every
+  // image that uses it emits its own copy, so an export of one is no promise
+  // to importers. A variable the source declared is the exception: its
+  // address is shared across images, as it is across shared objects on ELF.
+  return !getTriple().isOSBinFormatCOFF() ||
+         !llvm::GlobalValue::isLinkOnceLinkage(Linkage) || isa<VarDecl>(D);
+}
+
 /// Whether LV, the linkage and visibility of a declaration, says that the
 /// entity lives in a shared library: an explicit default visibility under the
 /// visibility mapping. An implicit visibility says nothing about a
@@ -2483,7 +2495,7 @@ void CodeGenModule::setDLLImportDLLExport(llvm::GlobalValue *GV,
     if (D->hasAttr<DLLImportAttr>())
       GV->setDLLStorageClass(llvm::GlobalVariable::DLLImportStorageClass);
     else if ((D->hasAttr<DLLExportAttr>() ||
-              shouldMapVisibilityToDLLExport(D)) &&
+              shouldMapDefinitionToDLLExport(D, GV->getLinkage())) &&
              !GV->isDeclarationForLinker())
       GV->setDLLStorageClass(llvm::GlobalVariable::DLLExportStorageClass);
     else if (shouldMapVisibilityToDLLImport(D)) {

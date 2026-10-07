@@ -4383,7 +4383,7 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(QualType Ty) {
   if (auto RD = Ty->getAsCXXRecordDecl()) {
     if ((CGM.getTriple().isWindowsItaniumEnvironment() &&
          RD->hasAttr<DLLExportAttr>()) ||
-        (CGM.shouldMapVisibilityToDLLExport(RD) &&
+        (CGM.shouldMapDefinitionToDLLExport(RD, Linkage) &&
          !llvm::GlobalValue::isLocalLinkage(Linkage) &&
          llvmVisibility == llvm::GlobalValue::DefaultVisibility))
       DLLStorageClass = llvm::GlobalValue::DLLExportStorageClass;
