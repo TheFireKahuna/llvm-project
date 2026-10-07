@@ -38,9 +38,10 @@ int **__attribute__((dllimport))* GlobalDeclChunkAttr;
 int GlobalDeclAttr __attribute__((dllimport));
 
 // Address of variables can't be used for initialization in C language modes,
-// except where the loader writes an imported address into the data naming it.
+// except where the loader writes an imported address into the data naming it,
+// and the linker binds or writes an address inside it.
 int *VarForInit = &GlobalDecl; // runtime-error{{initializer element is not a compile-time constant}}
-int *VarForInitOffset = &GlobalDecl + 1; // expected-error{{initializer element is not a compile-time constant}}
+int *VarForInitOffset = &GlobalDecl + 1; // runtime-error{{initializer element is not a compile-time constant}}
 
 // Not allowed on definitions.
 __declspec(dllimport) extern int ExternGlobalInit = 1; // expected-error{{definition of dllimport data}}

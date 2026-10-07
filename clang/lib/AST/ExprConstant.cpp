@@ -2202,17 +2202,13 @@ static bool CheckEvaluationResult(CheckEvaluationResultKind CERK,
                                   CheckedTemporaries &CheckedTemps,
                                   bool IsCompleteClass = true);
 
-/// Determines whether the address of a dllimport entity, or of a point
-/// Offset bytes into it, is known only at run time. On most targets such an
-/// address exists only in the import address table, and a function reference
-/// would resolve to a thunk rather than the function. Where the loader writes
-/// an imported address into the data that names it, the entity's own address
-/// is a constant, but one inside it is not: the loader adds no offset.
-static bool hasRuntimeDLLImportAddress(EvalInfo &Info, const ValueDecl *D,
-                                       CharUnits Offset = CharUnits::Zero()) {
+/// Determines whether the address of a dllimport entity is known only at run
+/// time. On most targets such an address exists only in the import address
+/// table, and a function reference would resolve to a thunk rather than the
+/// function.
+static bool hasRuntimeDLLImportAddress(EvalInfo &Info, const ValueDecl *D) {
   return D->hasAttr<DLLImportAttr>() &&
-         (!Info.Ctx.getTargetInfo().hasConstantDLLImportAddresses() ||
-          !Offset.isZero());
+         !Info.Ctx.getTargetInfo().hasConstantDLLImportAddresses();
 }
 
 /// Check that this reference or pointer core constant expression is a valid
@@ -2323,8 +2319,7 @@ static bool CheckLValueConstantExpression(EvalInfo &Info, SourceLocation Loc,
       // evaluating a value for use only in name mangling, and unless it's a
       // static local. For the latter case, we'd still need to evaluate the
       // constant expression in case we're inside a (inlined) function.
-      if (!isForManglingOnly(Kind) &&
-          hasRuntimeDLLImportAddress(Info, Var, LVal.getLValueOffset()) &&
+      if (!isForManglingOnly(Kind) && hasRuntimeDLLImportAddress(Info, Var) &&
           !Var->isStaticLocal())
         return false;
 

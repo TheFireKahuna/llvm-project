@@ -1357,7 +1357,9 @@ public:
   /// Is the address of a dllimport entity a constant? On Windows Itanium and
   /// NT-POSIX the linker has the loader write an imported address into the
   /// static data that names it, so a constant initializer needs neither the
-  /// address of a thunk nor dynamic initialization.
+  /// address of a thunk nor dynamic initialization. An address inside the
+  /// entity is bound to the name the exporting image gives it, or written
+  /// before the image's initializers run.
   virtual bool hasConstantDLLImportAddresses() const {
     return getTriple().isWindowsItaniumOrNTPOSIXEnvironment();
   }
