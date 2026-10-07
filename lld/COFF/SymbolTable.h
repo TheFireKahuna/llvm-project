@@ -85,6 +85,20 @@ public:
   // Returns whether any member was loaded or X referenced.
   bool loadLocalImportMembers();
 
+  // The import named name, __imp_X, loading the import library member that
+  // offers it if it is not loaded yet, which sets loaded; or null.
+  DefinedImportData *findImport(StringRef name, bool &loaded);
+
+  // Under -import-slots, the import of the name that the DLL of imp exports
+  // for the address offset bytes into imp's data, or null if it exports none,
+  // as findImport finds it.
+  DefinedImportData *findInteriorImport(DefinedImportData *imp, int64_t offset,
+                                        bool &loaded);
+
+  // Under -import-slots, exports the names of the addresses inside each
+  // exported definition along with it, whatever exported the definition.
+  void exportInteriorNames();
+
   // Under -import-slots, makes each .refptr.X pointer the pointer to X that
   // the link already has or can make: X's import pointer when X is imported,
   // and otherwise a local import pointer, whose described references

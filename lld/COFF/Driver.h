@@ -103,6 +103,9 @@ public:
 
   void pullArm64ECIcallHelper();
 
+  // Reads the input files queued so far. Returns whether there were any.
+  bool run();
+
 private:
   // Searches a file from search paths.
   std::optional<StringRef> findFileIfNew(StringRef filename);
@@ -194,7 +197,6 @@ private:
                             bool lazy);
 
   void enqueueTask(std::function<void()> task);
-  bool run();
   void loadLocalImportMembers();
 
   std::list<std::function<void()>> taskQueue;

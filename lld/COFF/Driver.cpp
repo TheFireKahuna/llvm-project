@@ -3251,6 +3251,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     } while (run() || loadedImports);
   }
 
+  if (config->importSlots)
+    ctx.symtab.exportInteriorNames();
+
   // Handle /includeglob
   for (StringRef pat : args::getStrings(args, OPT_incl_glob))
     ctx.forEachActiveSymtab(

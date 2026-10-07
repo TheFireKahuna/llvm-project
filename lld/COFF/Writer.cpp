@@ -334,6 +334,7 @@ private:
   void createImportTables();
   void bindImportSlots();
   void reuseImportSlots();
+  void addImport(DefinedImportData *imp);
   void listKCFIThunks();
   void placeImportSlotSections();
   bool iatStartsRdata() const;
@@ -450,6 +451,9 @@ private:
   // instead of an import address table entry.
   std::vector<DefinedImportData *> slotReadImports;
   DenseSet<const SectionChunk *> heldBackChunks;
+  // The imports some of whose words take an interior name instead, with the
+  // first such word.
+  MapVector<ImportFile *, std::pair<SectionChunk *, uint32_t>> interiorBases;
   // The read-only output sections other than .rdata that hold in-place import
   // slots, which are laid out before .rdata, and whether a $-group of .rdata
   // holds one; either places the import address tables at the start of
@@ -1851,13 +1855,27 @@ void Writer::bindImportSlots() {
         const uint8_t *word = sc->getContents().data() + rel.VirtualAddress;
         int64_t addend =
             config.is64() ? int64_t(read64le(word)) : int32_t(read32le(word));
+        // The loader adds nothing to the address it writes, so a word that
+        // holds an address inside the import's data takes the name that its
+        // DLL exports for that address.
         if (addend) {
-          Err(ctx) << file << ": " << sc->getSectionName()
-                   << " holds the address of " << file->symtab.printSymbol(s)
-                   << " plus " << addend << ", imported from "
-                   << imp->getDLLName()
-                   << ", but the loader writes only the address itself";
-          continue;
+          bool loaded;
+          DefinedImportData *interior =
+              ctx.symtab.findInteriorImport(imp, addend, loaded);
+          if (!interior) {
+            Err(ctx) << file << ": " << sc->getSectionName()
+                     << " holds the address of " << file->symtab.printSymbol(s)
+                     << " plus " << addend << ", imported from "
+                     << imp->getDLLName()
+                     << (thunk
+                             ? ", but no address inside a function is imported"
+                             : ", which exports no name for it");
+            continue;
+          }
+          if (loaded || !interior->file->live)
+            addImport(interior);
+          interiorBases.try_emplace(imp->file, sc, rel.VirtualAddress);
+          imp = interior;
         }
         p.slots.push_back({sc, rel.VirtualAddress, imp});
         if (thunk)
@@ -2019,9 +2037,15 @@ void Writer::reuseImportSlots() {
   // How each import with slots is used apart from its slots.
   enum Use : uint8_t { Unused, Read, Other };
   DenseMap<ImportFile *, Use> uses;
+  DenseSet<ImportFile *> slotted;
   for (const std::vector<ImportSlot *> &run : idata.slotRuns)
-    for (ImportSlot *slot : run)
+    for (ImportSlot *slot : run) {
       uses.try_emplace(slot->sym->file, Unused);
+      slotted.insert(slot->sym->file);
+    }
+  // An import whose words take interior names may have no other use.
+  for (auto &entry : interiorBases)
+    uses.try_emplace(entry.first, Unused);
   auto use = [&](DefinedImportData *imp, Use u) {
     auto it = uses.find(imp->file);
     if (it != uses.end())
@@ -2096,6 +2120,21 @@ void Writer::reuseImportSlots() {
     if (auto *imp = dyn_cast<DefinedImportData>(s))
       use(imp, Other);
 
+  // An import whose words all take interior names, and that nothing else
+  // uses, needs no entry at all. What still names it, such as debug
+  // information, is given the place of its first such word.
+  DenseSet<DefinedImportData *> unneeded;
+  for (auto &[file, word] : interiorBases) {
+    if (uses.lookup(file) != Unused || slotted.contains(file))
+      continue;
+    file->live = false;
+    file->impSym->setLocation(word.first, word.second);
+    unneeded.insert(file->impSym);
+  }
+  llvm::erase_if(idata.imports, [&](DefinedImportData *imp) {
+    return unneeded.contains(imp);
+  });
+
   auto readable = [&](const ImportSlot &s) {
     StringRef name = s.chunk->getSectionName();
     if (shouldStripSectionSuffix(s.chunk, name, config.mingw))
@@ -2122,6 +2161,15 @@ void Writer::reuseImportSlots() {
     if (uses.lookup(file) == Read)
       slotReadImports.push_back(slot->sym);
   }
+}
+
+// Adds an import that a pass after createImportTables loaded or found unused
+// to the import tables.
+void Writer::addImport(DefinedImportData *imp) {
+  imp->file->live = true;
+  ctx.config.dllOrder.try_emplace(StringRef(imp->file->dllName).lower(),
+                                  ctx.config.dllOrder.size());
+  idata.add(imp);
 }
 
 // A KCFI type's list names an imported function by its import address table
