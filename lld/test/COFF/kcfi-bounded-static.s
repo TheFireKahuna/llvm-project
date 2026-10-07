@@ -18,12 +18,12 @@
 # CHECK:      <__llvm_kcfi_dispatch_11111111>:
 # CHECK:        jne 0x140001071 <__llvm_kcfi_mismatch_11111111>
 # CHECK:      <__llvm_kcfi_mismatch_33333333>:
-# CHECK-NEXT:   leaq {{.*}}(%rip), %r10 # 0x140002148 <__llvm_kcfi_list_33333333+0x8>
+# CHECK-NEXT:   leaq {{.*}}(%rip), %r10 # 0x140002138 <__llvm_kcfi_list_33333333+0x8>
 # CHECK-NEXT:   jmp 0x14000107d <__llvm_kcfi_open>
 # CHECK:      <static_scanner>:
 # CHECK-NEXT:   int3
 # CHECK:      <__llvm_kcfi_mismatch_11111111>:
-# CHECK-NEXT:   leaq {{.*}}(%rip), %r10 # 0x140002128
+# CHECK-NEXT:   leaq {{.*}}(%rip), %r10 # 0x140002120
 # CHECK-NEXT:   jmp 0x14000107d <__llvm_kcfi_open>
 # CHECK-EMPTY:
 # CHECK-NEXT: <__llvm_kcfi_open>:

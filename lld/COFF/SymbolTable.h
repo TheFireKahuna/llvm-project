@@ -203,8 +203,8 @@ public:
   // each to be placed in its section.
   std::vector<Chunk *> kcfiChunks;
   // The imports whose address those lists name by its import address table
-  // entry, which the open routines read.
-  std::vector<DefinedImportData *> kcfiListedImports;
+  // entry, which the open routines read, each with its list's section.
+  std::vector<std::pair<DefinedImportData *, StringRef>> kcfiListedImports;
   // The routines that openKCFITypes made dynamic only because foreign code in
   // the image reaches them, each with the static scanner of its kind.
   std::vector<std::pair<KCFIOpenChunk *, Defined *>> kcfiLocalRoutines;

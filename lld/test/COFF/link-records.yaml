@@ -14,8 +14,12 @@
 # RUN: yaml2obj -DDATA=4C4C52430180807F %s -o %t.empty.obj
 # RUN: lld-link -entry:main -subsystem:console -out:%t.exe %t.empty.obj
 
-## A group of the critical kind 3.
-# RUN: yaml2obj -DDATA=4C4C5243010006010003020001 %s -o %t.critical.obj
+## The critical kind 3, whose payload is empty, is supported.
+# RUN: yaml2obj -DDATA=4C4C524301000300 %s -o %t.lists.obj
+# RUN: lld-link -entry:main -subsystem:console -out:%t.exe %t.lists.obj
+
+## A group of the critical kind 5.
+# RUN: yaml2obj -DDATA=4C4C5243010006010005020001 %s -o %t.critical.obj
 # RUN: not lld-link -entry:main -subsystem:console -out:%t.exe \
 # RUN:   %t.critical.obj 2>&1 | FileCheck --check-prefix=CRITICAL %s
 
@@ -25,7 +29,7 @@
 # RUN: lld-link -entry:main -subsystem:console -out:%t.exe %t.skip.obj \
 # RUN:   %t.critical.lib
 
-# CRITICAL: error: {{.*}}.critical.obj: .llvm_link_records has a record of critical kind 3, which this linker does not support; link the object with a newer linker
+# CRITICAL: error: {{.*}}.critical.obj: .llvm_link_records has a record of critical kind 5, which this linker does not support; link the object with a newer linker
 
 ## Version 2.
 # RUN: yaml2obj -DDATA=4C4C52430200 %s -o %t.version.obj

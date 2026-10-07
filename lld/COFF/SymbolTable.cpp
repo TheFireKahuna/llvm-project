@@ -642,9 +642,9 @@ void SymbolTable::openKCFITypes() {
           types, !isa_and_nonnull<DefinedImportThunk, DefinedImportData>(
                      resolve(g)));
 
-  // An import is listed by its import address table slot, and by a cell
-  // holding its thunk, which static data refers to; a definition without a
-  // prefix by a cell holding its address.
+  // An import is listed by its import address table entry, and the writer adds
+  // a cell holding its thunk where static data holds the thunk; a definition
+  // without a prefix is listed by a cell holding its address.
   llvm::sort(typeids,
              [](Symbol *a, Symbol *b) { return a->getName() < b->getName(); });
   for (Symbol *s : typeids) {
@@ -654,12 +654,10 @@ void SymbolTable::openKCFITypes() {
       continue;
     auto &entries = openings[uint32_t(id->getVA())].entries;
     Defined *d = resolve(f);
-    if (auto *thunk = dyn_cast<DefinedImportThunk>(d)) {
+    if (auto *thunk = dyn_cast<DefinedImportThunk>(d))
       entries.push_back({thunk->wrappedSym, false});
-      entries.push_back({thunk, true});
-    } else {
+    else
       entries.push_back({d, !isa<DefinedImportData>(d)});
-    }
   }
 
   // An object with code and no prefix is foreign.
@@ -802,7 +800,7 @@ void SymbolTable::openKCFITypes() {
         kcfiChunks.push_back(cell);
         entry = make<DefinedSynthetic>(target->getName(), cell);
       } else if (auto *imp = dyn_cast<DefinedImportData>(target)) {
-        kcfiListedImports.push_back(imp);
+        kcfiListedImports.push_back({imp, section});
       }
       kcfiChunks.push_back(make<KCFIListChunk>(ctx, section, entry));
     }

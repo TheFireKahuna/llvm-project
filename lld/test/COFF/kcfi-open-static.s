@@ -5,10 +5,12 @@
 ## opens the type statically: a mismatch routine that is still the trap
 ## becomes one that points R10 at the type's list and jumps to the static
 ## scanner, and the list gets a head, a trailer and an entry for each such f.
-## An import is listed by its import address table slot and by a cell holding
-## its thunk, which is zero when the thunk is not in the image; a definition
-## without a prefix by a cell holding its address. A definition with a prefix
-## is not listed, and a type without such a target keeps the trap.
+## An import is listed by its import address table entry, and by a cell
+## holding its thunk where static data holds the thunk as its address: here
+## for imported, which an object without site records calls, and not for
+## imported2, whose thunk is not in the image. A definition without a prefix
+## is listed by a cell holding its address. A definition with a prefix is not
+## listed, and a type without such a target keeps the trap.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-msvc main.s -o main.obj
@@ -28,30 +30,26 @@
 # CHECK:      <__llvm_kcfi_open>:
 # CHECK:      <plain>:
 # CHECK:      <__llvm_kcfi_mismatch_11111111>:
-# CHECK-NEXT:   4c 8d 15 a4 0f 00 00 leaq 0xfa4(%rip), %r10 # 0x140002020
+# CHECK-NEXT:   4c 8d 15 9c 0f 00 00 leaq 0xf9c(%rip), %r10 # 0x140002018
 # CHECK-NEXT:   e9 ef ff ff ff       jmp 0x140001070 <__llvm_kcfi_open>
 # CHECK:      <imported>:
 # CHECK-NEXT:   140001090:
 
-## The cells come first: the live thunk of imported, zero for the thunk of
-## imported2, which only __imp_imported2 refers to, and plain. Then the head,
-## the entries, __imp_imported, its thunk's cell, __imp_imported2, its thunk's
-## cell and plain's cell, and the trailer, before the import tables.
-# DATA:      140002000 90100040 01000000 00000000 00000000
-# DATA-NEXT: 140002010 74100040 01000000 11111111 00000000
-# DATA-NEXT: 140002020 90200040 01000000 00200040 01000000
-# DATA-NEXT: 140002030 98200040 01000000 08200040 01000000
-# DATA-NEXT: 140002040 10200040 01000000 23222222 00000000
+## The cells come first: plain's, then imported's thunk's. Then the head, the
+## entries, __imp_imported, __imp_imported2, plain's cell and the thunk's cell,
+## and the trailer, before the import tables.
+# DATA:      140002000 74100040 01000000 90100040 01000000
+# DATA-NEXT: 140002010 11111111 00000000 80200040 01000000
+# DATA-NEXT: 140002020 88200040 01000000 00200040 01000000
+# DATA-NEXT: 140002030 08200040 01000000 23222222 00000000
 
-## The zero cell has no base relocation.
+## Every list word and cell has a base relocation.
 # RELOC:     Address: 0x2000
-# RELOC-NOT: Address: 0x2008
-# RELOC:     Address: 0x2010
+# RELOC:     Address: 0x2008
+# RELOC:     Address: 0x2018
 # RELOC:     Address: 0x2020
 # RELOC:     Address: 0x2028
 # RELOC:     Address: 0x2030
-# RELOC:     Address: 0x2038
-# RELOC:     Address: 0x2040
 
 ## Without -import-slots, the routine stays the trap.
 # RUN: lld-link main.obj plain.obj lib.lib -entry:main -debug:symtab \

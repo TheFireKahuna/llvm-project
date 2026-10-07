@@ -441,6 +441,10 @@ void ObjFile::readLinkRecords() {
         return;
       continue;
     }
+    // The writer lists an import's thunk wherever static data holds it, for
+    // every list, so the record asks for nothing more.
+    if (cur && kind == LinkRecordKCFIImportLists)
+      continue;
     if (cur && (kind & LinkRecordKindCritical)) {
       consumeError(cur.takeError());
       Err(symtab.ctx) << this

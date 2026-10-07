@@ -19,21 +19,20 @@
 
 # IMPORTS:      Name: lib.dll
 # IMPORTS-NEXT: ImportLookupTableRVA:
-# IMPORTS-NEXT: ImportAddressTableRVA: 0x20C0
+# IMPORTS-NEXT: ImportAddressTableRVA: 0x20A0
 # IMPORTS-NEXT: Symbol: rw (0)
 # IMPORTS-NEXT: }
 
-# SYMS:      1400020c0 R __imp_rw
-# SYMS:      1400020d0 R __imp_ro
-# SYMS-NEXT: 1400020d8 R __imp_lst
+# SYMS:      1400020a0 R __imp_rw
+# SYMS:      1400020b0 R __imp_ro
+# SYMS-NEXT: 1400020b8 R __imp_lst
 
-## The linker's list: its head, then ro's slot and its thunk's cell, rw's entry
-## and its thunk's cell, and the trailer. Then the compiler's list entry,
-## which names lst's slot.
-# DATA: 140002010 11111111 00000000 d0200040 01000000
-# DATA: 140002020 00200040 01000000 c0200040 01000000
-# DATA: 140002030 08200040 01000000 23222222 00000000
-# DATA: 140002040 d8200040 01000000
+## The linker's list: its head, ro's slot, rw's entry and the trailer; no
+## thunk is in the image, so neither import has a cell holding one. Then the
+## compiler's list entry, which names lst's slot.
+# DATA: 140002000 11111111 00000000 b0200040 01000000
+# DATA: 140002010 a0200040 01000000 23222222 00000000
+# DATA: 140002020 b8200040 01000000
 
 #--- lib.def
 LIBRARY lib.dll

@@ -334,6 +334,7 @@ private:
   void createImportTables();
   void bindImportSlots();
   void reuseImportSlots();
+  void listKCFIThunks();
   void placeImportSlotSections();
   bool iatStartsRdata() const;
   void packPlacedChunks();
@@ -963,6 +964,7 @@ void Writer::run() {
     createImportTables();
     bindImportSlots();
     reuseImportSlots();
+    listKCFIThunks();
     createSections();
     appendImportThunks();
     // Import thunks must be added before the Control Flow Guard tables are
@@ -2081,7 +2083,7 @@ void Writer::reuseImportSlots() {
     if (auto *thunk = dyn_cast_or_null<DefinedImportThunk>(file->thunkSym);
         thunk && thunk->getChunk()->live)
       u = std::max(u, Read);
-  for (DefinedImportData *imp : ctx.symtab.kcfiListedImports)
+  for (auto [imp, section] : ctx.symtab.kcfiListedImports)
     use(imp, Read);
   for (const COFFLinkerContext::KCFIImportedRange &r : ctx.kcfiImportedRanges) {
     use(r.start, Other);
@@ -2119,6 +2121,52 @@ void Writer::reuseImportSlots() {
     idata.slotOnly.insert(slot->sym);
     if (uses.lookup(file) == Read)
       slotReadImports.push_back(slot->sym);
+  }
+}
+
+// A KCFI type's list names an imported function by its import address table
+// entry, which holds the function's address. Where static data holds the
+// function's import thunk as its address instead, a call through such a
+// pointer reaches the thunk, so the list names a cell holding the thunk too:
+// without -import-slots, with it for a function an object may take the
+// address of in an instruction it does not describe, and for a delay-loaded
+// function. Both the compiler's lists and the linker's own are completed.
+void Writer::listKCFIThunks() {
+  Configuration &config = ctx.config;
+  auto thunkIsAddress = [&](DefinedImportData *imp) {
+    auto *thunk = dyn_cast_or_null<DefinedImportThunk>(imp->file->thunkSym);
+    return thunk && thunk->getChunk()->live &&
+           (!config.importSlots || imp->file->thunkIsAddress ||
+            config.delayLoads.contains(imp->getDLLName().lower()));
+  };
+  SetVector<std::pair<ImportFile *, StringRef>> listed;
+  for (auto [imp, section] : ctx.symtab.kcfiListedImports)
+    if (thunkIsAddress(imp))
+      listed.insert({imp->file, section});
+  for (ObjFile *file : ctx.objFileInstances) {
+    if (&file->symtab != &ctx.symtab)
+      continue;
+    for (Chunk *c : file->getChunks()) {
+      auto *sc = dyn_cast_or_null<SectionChunk>(c);
+      if (!sc || !sc->live)
+        continue;
+      StringRef name = sc->getSectionName();
+      if (!name.starts_with(".rdata$llvm_kcfi_") || !name.ends_with("_m"))
+        continue;
+      for (const coff_relocation &rel : sc->getRelocs()) {
+        auto *imp = dyn_cast_or_null<DefinedImportData>(
+            file->getSymbol(rel.SymbolTableIndex));
+        if (imp && !imp->isRuntimePseudoReloc && thunkIsAddress(imp))
+          listed.insert({imp->file, name});
+      }
+    }
+  }
+  for (auto [file, section] : listed) {
+    auto *thunk = cast<DefinedImportThunk>(file->thunkSym);
+    auto *cell = make<KCFIListChunk>(ctx, ".rdata", thunk);
+    ctx.symtab.kcfiChunks.push_back(cell);
+    ctx.symtab.kcfiChunks.push_back(make<KCFIListChunk>(
+        ctx, section, make<DefinedSynthetic>(thunk->getName(), cell)));
   }
 }
 
