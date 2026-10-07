@@ -25,6 +25,7 @@
 #include "llvm/Object/COFF.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/Path.h"
+#include <numeric>
 
 using namespace llvm;
 using namespace llvm::object;
@@ -731,7 +732,17 @@ void IdataContents::create(COFFLinkerContext &ctx) {
   for (std::vector<ImportSlot *> &run : slotRuns)
     runsByDLL[run[0]->sym->getDLLName().lower()].push_back(&run);
   DenseMap<DefinedImportData *, HintNameChunk *> hintOf;
-  std::vector<Chunk *> slotLookups;
+
+  // With in-place slots, lookup tables are written once each after every
+  // descriptor is made, so that identical ones can be shared. The tables of
+  // the DLLs' own descriptors come first, then those of the runs.
+  struct LookupTable {
+    ImportDirectoryChunk *dir;
+    SmallVector<DefinedImportData *, 0> syms;
+    SmallVector<Chunk *, 0> entries;
+  };
+  bool pool = !slotRuns.empty();
+  std::vector<LookupTable> tables, runTables;
 
   // In hybrid images, EC and native code are usually very similar,
   // resulting in a highly similar set of imported symbols. Consequently,
@@ -797,8 +808,41 @@ void IdataContents::create(COFFLinkerContext &ctx) {
   for (const COFFLinkerContext::KCFIImportedRange &r : ctx.kcfiImportedRanges)
     rangeEnds[r.start] = r.end;
 
+  // Each run of in-place import slots of a DLL gets a descriptor of its own
+  // after the DLL's, so that the DLL load order is unchanged. Its lookup table
+  // shares the hint/name records, and each slot holds the value of its lookup
+  // entry.
+  auto addSlotRuns = [&](StringRef dllName) {
+    auto it = runsByDLL.find(dllName.lower());
+    if (it == runsByDLL.end())
+      return;
+    for (std::vector<ImportSlot *> *run : it->second) {
+      LookupTable &table = runTables.emplace_back();
+      table.dir = make<ImportDirectoryChunk>(dllNames.back());
+      for (ImportSlot *slot : *run) {
+        DefinedImportData *s = slot->sym;
+        if (HintNameChunk *hint = hintOf.lookup(s))
+          slot->lookup = make<LookupChunk>(ctx, hint);
+        else
+          slot->lookup = make<OrdinalOnlyChunk>(ctx, s->getOrdinal());
+        table.syms.push_back(s);
+        table.entries.push_back(slot->lookup);
+      }
+      table.dir->addressTab = run->front()->chunk;
+      table.dir->addressTabOffset = run->front()->offset;
+      dirs.push_back(table.dir);
+    }
+  };
+  // The order of each import in the DLLs' tables, by which lookup tables are
+  // compared.
+  DenseMap<DefinedImportData *, uint32_t> keyOf;
+
   // Create .idata contents for each DLL.
   for (std::vector<DefinedImportData *> &syms : v) {
+    StringRef dllName = syms[0]->getDLLName();
+    if (pool)
+      for (DefinedImportData *s : syms)
+        keyOf[s] = keyOf.size();
     auto start = llvm::find_if(
         syms, [&](DefinedImportData *s) { return rangeEnds.count(s); });
     if (start != syms.end()) {
@@ -808,7 +852,7 @@ void IdataContents::create(COFFLinkerContext &ctx) {
       // The table starts 16-byte aligned, and every entry is 8 bytes. The
       // image imports something else from the DLL, which is why it binds the
       // range, so the pair goes first or second.
-      size_t at = lookups.size() % 2;
+      size_t at = addresses.size() % 2;
       assert(at <= syms.size());
       syms.insert(syms.begin() + at, {first, second});
     }
@@ -816,7 +860,8 @@ void IdataContents::create(COFFLinkerContext &ctx) {
     // we need to create hintName chunks to store the names.
     // If they don't (if they are import-by-ordinals), we store only
     // ordinal values to the table.
-    size_t base = lookups.size();
+    size_t base = addresses.size();
+    LookupTable table;
     Chunk *lookupsTerminator = nullptr, *addressesTerminator = nullptr;
     uint32_t nativeOnly = 0;
     for (DefinedImportData *s : syms) {
@@ -832,7 +877,7 @@ void IdataContents::create(COFFLinkerContext &ctx) {
         lookupsChunk = make<LookupChunk>(ctx, hintChunk);
         addressesChunk = make<LookupChunk>(ctx, hintChunk);
         hints.push_back(hintChunk);
-        if (!slotRuns.empty())
+        if (pool)
           hintOf[s] = hintChunk;
       }
 
@@ -866,7 +911,12 @@ void IdataContents::create(COFFLinkerContext &ctx) {
                                sizeof(uint64_t), addressesTerminator);
       }
 
-      lookups.push_back(lookupsChunk);
+      if (pool) {
+        table.syms.push_back(s);
+        table.entries.push_back(lookupsChunk);
+      } else {
+        lookups.push_back(lookupsChunk);
+      }
       addresses.push_back(addressesChunk);
 
       if (s->file->isEC()) {
@@ -885,8 +935,9 @@ void IdataContents::create(COFFLinkerContext &ctx) {
       }
     }
     // Terminate with null values.
-    lookups.push_back(lookupsTerminator ? lookupsTerminator
-                                        : make<NullChunk>(ctx));
+    if (!pool)
+      lookups.push_back(lookupsTerminator ? lookupsTerminator
+                                          : make<NullChunk>(ctx));
     addresses.push_back(addressesTerminator ? addressesTerminator
                                             : make<NullChunk>(ctx));
     if (ctx.symtab.isEC()) {
@@ -901,7 +952,7 @@ void IdataContents::create(COFFLinkerContext &ctx) {
     }
 
     // Create the import table header.
-    dllNames.push_back(make<StringChunk>(syms[0]->getDLLName()));
+    dllNames.push_back(make<StringChunk>(dllName));
     auto *dir = make<ImportDirectoryChunk>(dllNames.back());
 
     if (ctx.hybridSymtab && nativeOnly) {
@@ -925,41 +976,60 @@ void IdataContents::create(COFFLinkerContext &ctx) {
       }
     }
 
-    dir->lookupTab = lookups[base];
+    if (pool) {
+      table.dir = dir;
+      tables.push_back(std::move(table));
+    } else {
+      dir->lookupTab = lookups[base];
+    }
     dir->addressTab = addresses[base];
     dirs.push_back(dir);
-
-    // Each run of in-place import slots of this DLL gets a descriptor of its
-    // own after the DLL's, so that the DLL load order is unchanged. Its lookup
-    // table shares the hint/name records, and each slot holds the value of
-    // its lookup entry.
-    auto it = runsByDLL.find(syms[0]->getDLLName().lower());
-    if (it == runsByDLL.end())
-      continue;
-    for (std::vector<ImportSlot *> *run : it->second) {
-      auto *runDir = make<ImportDirectoryChunk>(dllNames.back());
-      for (ImportSlot *slot : *run) {
-        DefinedImportData *s = slot->sym;
-        if (HintNameChunk *hint = hintOf.lookup(s))
-          slot->lookup = make<LookupChunk>(ctx, hint);
-        else
-          slot->lookup = make<OrdinalOnlyChunk>(ctx, s->getOrdinal());
-        slotLookups.push_back(slot->lookup);
-      }
-      slotLookups.push_back(make<NullChunk>(ctx));
-      runDir->lookupTab = run->front()->lookup;
-      runDir->addressTab = run->front()->chunk;
-      runDir->addressTabOffset = run->front()->offset;
-      dirs.push_back(runDir);
-    }
+    addSlotRuns(dllName);
   }
   if (!rangeEnds.empty())
     addresses.front()->setAlignment(16);
   // Add null terminator.
   dirs.push_back(make<NullChunk>(sizeof(ImportDirectoryTableEntry), 4));
-  // The runs' lookup tables follow the DLLs' own, which stay parallel to the
-  // address tables.
-  lookups.insert(lookups.end(), slotLookups.begin(), slotLookups.end());
+  if (!pool)
+    return;
+
+  // The loader only reads a lookup table, so identical tables are written
+  // once, and a table that is the end of another is written as that end.
+  // Sorted by their imports from the last, the tables that end a table sort
+  // just before it, and of identical tables the earliest sorts last; each is
+  // written in the last table of its sequence, which ends every other.
+  llvm::append_range(tables, runTables);
+  std::vector<SmallVector<uint32_t, 0>> reversed(tables.size());
+  for (size_t i = 0; i < tables.size(); ++i)
+    for (DefinedImportData *s : llvm::reverse(tables[i].syms))
+      reversed[i].push_back(keyOf.lookup(s));
+  std::vector<size_t> order(tables.size());
+  std::iota(order.begin(), order.end(), 0);
+  llvm::sort(order, [&](size_t a, size_t b) {
+    if (reversed[a] != reversed[b])
+      return reversed[a] < reversed[b];
+    return a > b;
+  });
+  std::vector<size_t> writtenIn(tables.size());
+  for (size_t j = order.size(); j--;) {
+    size_t i = order[j];
+    writtenIn[i] = i;
+    if (j + 1 == order.size())
+      continue;
+    size_t k = writtenIn[order[j + 1]];
+    ArrayRef<uint32_t> a = reversed[i], b = reversed[k];
+    if (a.size() <= b.size() && a == b.take_front(a.size()))
+      writtenIn[i] = k;
+  }
+  for (size_t i = 0; i < tables.size(); ++i) {
+    if (writtenIn[i] == i) {
+      llvm::append_range(lookups, tables[i].entries);
+      lookups.push_back(make<NullChunk>(ctx));
+    }
+    const LookupTable &t = tables[writtenIn[i]];
+    tables[i].dir->lookupTab =
+        t.entries[t.entries.size() - tables[i].entries.size()];
+  }
 }
 
 std::vector<Chunk *> DelayLoadContents::getChunks() {

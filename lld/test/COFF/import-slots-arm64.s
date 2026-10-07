@@ -16,14 +16,14 @@
 # RUN: not lld-link -machine:arm64 -opt:noref -entry:main -subsystem:console main.obj a.lib \
 # RUN:   b.lib -out:main.exe 2>&1 | FileCheck --check-prefix=NOSLOTS %s
 
-# CHECK:      IATRVA: 0x2110
+# CHECK:      IATRVA: 0x20F0
 # CHECK-NEXT: IATSize: 0x48
 
 ## The DLL's own descriptor, then its runs: the writable words, then the
 ## read-only chunks ro2 and ro3 as one run across them.
 # CHECK:      Name: a.dll
 # CHECK-NEXT: ImportLookupTableRVA: 0x2090
-# CHECK-NEXT: ImportAddressTableRVA: 0x2110
+# CHECK-NEXT: ImportAddressTableRVA: 0x20F0
 # CHECK-NEXT: Symbol: func1 (0)
 # CHECK-NEXT: Symbol: var1 (1)
 # CHECK-NEXT: Symbol: var2 (2)
@@ -34,20 +34,20 @@
 # CHECK-NEXT: Symbol: var1 (1)
 # CHECK:      Name: a.dll
 # CHECK-NEXT: ImportLookupTableRVA: 0x20D8
-# CHECK-NEXT: ImportAddressTableRVA: 0x2140
+# CHECK-NEXT: ImportAddressTableRVA: 0x2120
 # CHECK-NEXT: Symbol: var2 (2)
 # CHECK-NEXT: Symbol: func1 (0)
-## A local word ends a run.
+## A local word ends a run. b.dll's three descriptors share one lookup table.
 # CHECK:      Name: b.dll
 # CHECK-NEXT: ImportLookupTableRVA: 0x20B0
-# CHECK-NEXT: ImportAddressTableRVA: 0x2130
+# CHECK-NEXT: ImportAddressTableRVA: 0x2110
 # CHECK:      Name: b.dll
-# CHECK-NEXT: ImportLookupTableRVA: 0x20F0
+# CHECK-NEXT: ImportLookupTableRVA: 0x20B0
 # CHECK-NEXT: ImportAddressTableRVA: 0x3018
 # CHECK-NEXT: Symbol: func2 (0)
 # CHECK:      Name: b.dll
-# CHECK-NEXT: ImportLookupTableRVA: 0x2100
-# CHECK-NEXT: ImportAddressTableRVA: 0x2150
+# CHECK-NEXT: ImportLookupTableRVA: 0x20B0
+# CHECK-NEXT: ImportAddressTableRVA: 0x2130
 # CHECK-NEXT: Symbol: func2 (0)
 
 ## Only the local word has a base relocation.
@@ -59,13 +59,13 @@
 # CHECK-NEXT:   Entry {
 # CHECK-NEXT:     Type: ABSOLUTE
 
-## Each word holds its import's hint/name RVA: func1 0x2158, var1 0x2160,
-## var2 0x2168, func2 0x2170.
-# DATA:      140002140 68210000 00000000 58210000 00000000
-# DATA-NEXT: 140002150 70210000 00000000
+## Each word holds its import's hint/name RVA: func1 0x2138, var1 0x2140,
+## var2 0x2148, func2 0x2150.
+# DATA:      140002120 48210000 00000000 38210000 00000000
+# DATA-NEXT: 140002130 50210000 00000000
 # DATA:      Contents of section .data:
-# DATA-NEXT: 140003000 58210000 00000000 60210000 00000000
-# DATA-NEXT: 140003010 00100040 01000000 70210000 00000000
+# DATA-NEXT: 140003000 38210000 00000000 40210000 00000000
+# DATA-NEXT: 140003010 00100040 01000000 50210000 00000000
 
 # NOSLOTS: error: undefined symbol: var1
 

@@ -42,9 +42,9 @@
 # BOUNDS: 140002010 R __stop_myro
 
 ## The import address table, then .rdata$aa and .rdata$zz, then .rdata.
-# RDATA:      140004000 e8400000 00000000 ee400000 00000000
+# RDATA:      140004000 c0400000 00000000 c6400000 00000000
 # RDATA-NEXT: 140004010 00000000 00000000 00000000 00000000
-# RDATA-NEXT: 140004020 ee400000 00000000 01000000 00000000
+# RDATA-NEXT: 140004020 c6400000 00000000 01000000 00000000
 
 ## A layout that puts a slot in an executable section is an error.
 # RUN: not lld-link -import-slots -start-stop-symbols -opt:noref -entry:main \
