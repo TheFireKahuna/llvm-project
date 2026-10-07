@@ -1253,6 +1253,7 @@ void SymbolTable::bindPointerCells() {
       if (absentWeak)
         importedWeakData.insert(x);
       sc->live = false;
+      importedCells.push_back(sc);
     } else if (bindLocal && target && !isa<DefinedImportThunk>(target) &&
                !isa<DefinedImportData>(target) && (!abs || absentWeak)) {
       replaceSymbol<DefinedLocalImport>(cell, ctx, cell->getName(), target);
@@ -1300,6 +1301,13 @@ void SymbolTable::bindPointerCells() {
 // dllimport declaration. Only the objects that refer to a local import are
 // scanned, and only when the link has one.
 void SymbolTable::bindLocalImports() {
+  // A .refptr section that mark-live reached through another name would give
+  // the pointer bound to an import a second address.
+  for (SectionChunk *sc : importedCells)
+    if (sc->live)
+      Err(ctx) << sc->file << ": " << sc->getSectionName()
+               << " is referenced other than through its pointer's symbol, "
+                  "which is bound to an import pointer";
   if (localImportChunks.empty())
     return;
   llvm::TimeTraceScope timeScope("Bind local imports");

@@ -46,6 +46,13 @@
 
 # ERR: error: data.obj: weak reference to v, which is imported, needs its address in .data
 
+## The pointer's section cannot stay where another name reaches it.
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium alias.s -o alias.obj
+# RUN: not lld-link -import-slots -entry:main -subsystem:console -out:d.exe \
+# RUN:   alias.obj dll.lib 2>&1 | FileCheck --check-prefix=ALIAS %s
+
+# ALIAS: error: alias.obj: .rdata$.refptr.f is referenced other than through its pointer's symbol, which is bound to an import pointer
+
 #--- main.s
   .text
   .globl main
@@ -69,6 +76,23 @@ main:
   refptr f
   refptr v
   refptr g
+
+#--- alias.s
+  .text
+  .globl main
+main:
+  movq .refptr.f(%rip), %rax
+  retq
+
+  .data
+  .quad falias
+
+  .weak f
+  .section .rdata$.refptr.f,"dr",discard,.refptr.f
+  .globl .refptr.f
+.refptr.f:
+falias:
+  .quad f
 
 #--- data.s
   .data

@@ -208,6 +208,9 @@ public:
   // A list of chunks which to be added to .rdata.
   std::vector<Chunk *> localImportChunks;
 
+  // The .refptr sections whose pointers are bound to import pointers.
+  std::vector<SectionChunk *> importedCells;
+
   // A list of EC EXP+ symbols.
   std::vector<Symbol *> expSymbols;
 
