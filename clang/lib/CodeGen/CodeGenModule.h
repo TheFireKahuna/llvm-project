@@ -554,6 +554,8 @@ private:
   llvm::DenseMap<const Decl*, llvm::Constant *> StaticLocalDeclMap;
   llvm::DenseMap<const Decl*, llvm::GlobalVariable*> StaticLocalDeclGuardMap;
   llvm::DenseMap<const Expr*, llvm::Constant *> MaterializedGlobalTemporaryMap;
+  /// The offsets of the subobjects that a variable of each record type names.
+  llvm::DenseMap<const RecordDecl *, SmallVector<uint64_t, 4>> SubobjectOffsets;
 
   llvm::DenseMap<QualType, llvm::Constant *> AtomicSetterHelperFnMap;
   llvm::DenseMap<QualType, llvm::Constant *> AtomicGetterHelperFnMap;
@@ -1067,6 +1069,14 @@ public:
   /// Whether a declaration of D that this translation unit does not define
   /// is given dllimport storage without a dllimport attribute.
   bool shouldMapVisibilityToDLLImport(const NamedDecl *D) const;
+
+  /// Give the definition GV, if another image could reach it, a name for
+  /// Address, which is Offset bytes into it: Name is GV's name followed by
+  /// Kind and the decimal offset.
+  void emitInteriorName(llvm::GlobalVariable *GV, StringRef Kind,
+                        uint64_t Offset, llvm::Constant *Address);
+  /// Give the definition GV of D a name for each of its subobjects.
+  void emitSubobjectNames(const VarDecl &D, llvm::GlobalVariable *GV);
   void setDLLImportDLLExport(llvm::GlobalValue *GV, GlobalDecl D) const;
   void setDLLImportDLLExport(llvm::GlobalValue *GV, const NamedDecl *D) const;
   /// Set visibility, dllimport/dllexport and dso_local.
