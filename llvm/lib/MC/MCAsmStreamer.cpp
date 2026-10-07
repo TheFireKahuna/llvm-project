@@ -324,6 +324,7 @@ public:
   void emitCOFFSecOffset(MCSymbol const *Symbol) override;
   void emitCOFFLinkPin(MCSymbol const *Symbol, unsigned Log2Modulus,
                        uint64_t Residue, bool Required) override;
+  void emitCOFFKCFIImportLists() override;
   void emitXCOFFLocalCommonSymbol(MCSymbol *LabelSym, uint64_t Size,
                                   MCSymbol *CsectSym, Align Alignment) override;
   void emitXCOFFSymbolLinkageWithVisibility(MCSymbol *Symbol,
@@ -1039,6 +1040,11 @@ void MCAsmStreamer::emitCOFFLinkPin(MCSymbol const *Symbol,
   OS << ", " << Log2Modulus << ", " << Residue;
   if (Required)
     OS << ", required";
+  EmitEOL();
+}
+
+void MCAsmStreamer::emitCOFFKCFIImportLists() {
+  OS << "\t.linkkcfilists";
   EmitEOL();
 }
 

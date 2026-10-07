@@ -1210,7 +1210,8 @@ uint64_t WinCOFFWriter::writeObject() {
 
   // Create the contents of the .llvm_link_records section.
   if (Mode != DwoOnly &&
-      (OWriter.hasLinkRecords() || !OWriter.LinkPins.empty())) {
+      (OWriter.hasLinkRecords() || !OWriter.LinkPins.empty() ||
+       OWriter.KCFIImportLists)) {
     SmallString<0> Content;
     raw_svector_ostream OS(Content);
     OS.write(COFF::LinkRecordsMagic, sizeof(COFF::LinkRecordsMagic));
@@ -1288,6 +1289,11 @@ uint64_t WinCOFFWriter::writeObject() {
       OS << CallOnly;
     }
 
+    if (OWriter.KCFIImportLists) {
+      encodeULEB128(COFF::LinkRecordKCFIImportLists, OS);
+      encodeULEB128(0, OS);
+    }
+
     auto *Sec = getContext().getCOFFSection(".llvm_link_records",
                                             COFF::IMAGE_SCN_LNK_REMOVE);
     Sec->curFragList()->Tail->setVarContents(OS.str());
@@ -1353,6 +1359,7 @@ void WinCOFFObjectWriter::reset() {
   IncrementalLinkerCompatible = false;
   LinkRecordCapabilities = TargetObjectWriter->getLinkRecordCapabilities();
   LinkPins.clear();
+  KCFIImportLists = false;
   ObjWriter->reset();
   if (DwoWriter)
     DwoWriter->reset();

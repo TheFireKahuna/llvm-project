@@ -82,6 +82,9 @@ public:
 private:
   // The pins of the object's link-only records, in the order given.
   SmallVector<LinkPin, 0> LinkPins;
+  // Whether the object's link-only records say that its KCFI lists name
+  // imports by their import address table entries alone.
+  bool KCFIImportLists = false;
 
 public:
   WinCOFFObjectWriter(std::unique_ptr<MCWinCOFFObjectTargetWriter> MOTW,
@@ -101,6 +104,8 @@ public:
   bool hasLinkRecords() const { return LinkRecordCapabilities != 0; }
   void addLinkPin(const LinkPin &Pin) { LinkPins.push_back(Pin); }
   ArrayRef<LinkPin> getLinkPins() const { return LinkPins; }
+  void setKCFIImportLists() { KCFIImportLists = true; }
+  bool hasKCFIImportLists() const { return KCFIImportLists; }
   void executePostLayoutBinding() override;
   bool isSymbolRefDifferenceFullyResolvedImpl(const MCSymbol &SymA,
                                               const MCFragment &FB, bool InSet,

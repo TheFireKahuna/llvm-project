@@ -60,6 +60,7 @@ public:
   void emitCOFFSecOffset(MCSymbol const *Symbol) override;
   void emitCOFFLinkPin(MCSymbol const *Symbol, unsigned Log2Modulus,
                        uint64_t Residue, bool Required) override;
+  void emitCOFFKCFIImportLists() override;
   void emitCommonSymbol(MCSymbol *Symbol, uint64_t Size,
                         Align ByteAlignment) override;
   void emitLocalCommonSymbol(MCSymbol *Symbol, uint64_t Size,

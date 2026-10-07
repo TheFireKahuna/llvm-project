@@ -623,6 +623,11 @@ public:
   virtual void emitCOFFLinkPin(MCSymbol const *Symbol, unsigned Log2Modulus,
                                uint64_t Residue, bool Required);
 
+  /// Tells the linker that the object's KCFI lists name each imported
+  /// function by its import address table entry alone, so that it lists the
+  /// function's import thunk where static data holds the thunk.
+  virtual void emitCOFFKCFIImportLists();
+
   /// Emits an lcomm directive with XCOFF csect information.
   ///
   /// \param LabelSym - Label on the block of storage.

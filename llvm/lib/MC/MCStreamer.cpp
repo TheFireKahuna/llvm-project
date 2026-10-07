@@ -1280,6 +1280,8 @@ void MCStreamer::emitCOFFSecOffset(MCSymbol const *Symbol) {}
 void MCStreamer::emitCOFFLinkPin(MCSymbol const *Symbol, unsigned Log2Modulus,
                                  uint64_t Residue, bool Required) {}
 
+void MCStreamer::emitCOFFKCFIImportLists() {}
+
 /// EmitRawText - If this file is backed by an assembly streamer, this dumps
 /// the specified string in the output .s file.  This capability is
 /// indicated by the hasRawTextSupport() predicate.

@@ -72,6 +72,8 @@ class COFFAsmParser : public MCAsmParserExtension {
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSecNum>(".secnum");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSecOffset>(".secoffset");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkPin>(".linkpin");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkKCFILists>(
+        ".linkkcfilists");
 
     // Win64 EH directives.
     addDirectiveHandler<&COFFAsmParser::parseSEHDirectiveStartProc>(
@@ -135,6 +137,7 @@ class COFFAsmParser : public MCAsmParserExtension {
   bool parseDirectiveRVA(StringRef, SMLoc);
   bool parseDirectiveCGProfile(StringRef, SMLoc);
   bool parseDirectiveLinkPin(StringRef, SMLoc);
+  bool parseDirectiveLinkKCFILists(StringRef, SMLoc);
   bool parseDirectiveSecNum(StringRef, SMLoc);
   bool parseDirectiveSecOffset(StringRef, SMLoc);
 
@@ -603,6 +606,15 @@ bool COFFAsmParser::parseDirectiveLinkPin(StringRef, SMLoc) {
   if (parseEOL())
     return true;
   getStreamer().emitCOFFLinkPin(Symbol, Log2Modulus, Residue, Required);
+  return false;
+}
+
+/// parseDirectiveLinkKCFILists
+///  ::= .linkkcfilists
+bool COFFAsmParser::parseDirectiveLinkKCFILists(StringRef, SMLoc) {
+  if (parseEOL())
+    return true;
+  getStreamer().emitCOFFKCFIImportLists();
   return false;
 }
 
