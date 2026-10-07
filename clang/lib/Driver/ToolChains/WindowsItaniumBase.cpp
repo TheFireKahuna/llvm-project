@@ -102,6 +102,10 @@ void tools::windowsitanium::Linker::ConstructJob(
   if (Args.hasArg(options::OPT_g_Group, options::OPT__SLASH_Z7))
     CmdArgs.push_back("-debug");
 
+  // An image exports the definitions its sources give default visibility,
+  // executables included, so -rdynamic has nothing to add.
+  Args.ClaimAllArgs(options::OPT_rdynamic);
+
   // Control Flow Guard is on unless -mguard=none, and an executable suppresses
   // its exports as call targets until GetProcAddress returns them. lld-link
   // honors only the last -guard: option, so the two go together.

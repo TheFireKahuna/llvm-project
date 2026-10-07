@@ -72,6 +72,14 @@
 // DEBUG: lld-link{{(.exe)?}}"
 // DEBUG-SAME: "-debug"
 
+// An image exports what its sources give default visibility, so -rdynamic
+// passes nothing to the linker and is not reported as unused.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium %s -rdynamic 2>&1 \
+// RUN:   | FileCheck --check-prefix=RDYNAMIC %s \
+// RUN:       --implicit-check-not=rdynamic \
+// RUN:       --implicit-check-not=-export-all-symbols
+// RDYNAMIC: lld-link{{(.exe)?}}"
+
 // RUN: %clangxx -### --target=x86_64-unknown-windows-itanium %s -nostdlib 2>&1 \
 // RUN:   | FileCheck --check-prefix=NODEFAULTLIBS %s \
 // RUN:       --implicit-check-not=-defaultlib: \
