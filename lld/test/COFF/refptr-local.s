@@ -3,10 +3,11 @@
 ## A .refptr.X pointer, which a compiler reads for an extern_weak X, is a
 ## local import pointer to X once X is defined in the image, or to zero once a
 ## weak X is absent: a described load of it becomes the lea of X or a move of
-## zero, and a call through it a direct call. A pointer that only such
-## references read is left out of the image; one that holds zero has no base
-## relocation. A reference through a pointer is not reported as an imported
-## local. -import-slots changes none of it.
+## zero, and a call through it a direct call, or a call of zero through R11. A
+## pointer that only such references read is left out of the image; one that
+## holds zero has no base relocation. A jump through a pointer that holds zero
+## still reads it. A reference through a pointer is not reported as an
+## imported local. -import-slots changes none of it.
 
 # RUN: rm -rf %t && split-file %s %t && cd %t
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium main.s -o main.obj
@@ -25,13 +26,15 @@
 # CHECK-NEXT: 48 8d 0d {{.*}} leaq {{.*}}(%rip), %rcx # 0x[[#%x,V:]]
 # CHECK-NEXT: 49 c7 c1 00 00 00 00 movq $0x0, %r9
 # CHECK-NEXT: 48 c7 c2 00 00 00 00 movq $0x0, %rdx
-# CHECK-NEXT: ff 15 {{.*}} callq *{{.*}}(%rip)
+# CHECK-NEXT: 45 31 db xorl %r11d, %r11d
+# CHECK-NEXT: 41 ff d3 callq *%r11
 # CHECK-NEXT: 48 83 3d {{.*}} cmpq $0x0, {{.*}}(%rip)
 # CHECK-NEXT: c3 retq
+# CHECK-NEXT: ff 25 {{.*}} jmpq *{{.*}}(%rip)
 # CHECK:      [[#%x,F]]: c3 retq
 
 ## The pointer to w, which the compare reads; the pointer that holds zero for
-## the call through absent has none.
+## the jump through absent3 has none.
 # RELOC-COUNT-1: Type: DIR64
 # RELOC-NOT:     Type: DIR64
 
@@ -47,12 +50,14 @@ main:
   callq *.refptr.absent(%rip)
   cmpq $0, .refptr.w(%rip)
   retq
+  jmpq *.refptr.absent3(%rip)
 
   .weak f
   .weak v
   .weak w
   .weak absent
   .weak absent2
+  .weak absent3
 
 .macro refptr sym
   .section .rdata$.refptr.\sym,"dr",discard,.refptr.\sym
@@ -65,6 +70,7 @@ main:
   refptr w
   refptr absent
   refptr absent2
+  refptr absent3
 
 #--- defs.s
   .text

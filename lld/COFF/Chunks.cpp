@@ -533,12 +533,14 @@ SectionChunk::getLocalImportRewrite(const coff_relocation &rel,
       *mismatch = true;
     return std::nullopt;
   }
-  // Zero is materialised only into a register named by a REX prefix; a call
-  // or jump through it is left to fault as it would.
+  // Zero is materialised only into a register named by a REX prefix, and for
+  // a call. A jump through it keeps reading the pointer, since the unwinder
+  // takes an epilogue to end only in a jump to an immediate or through memory.
   if (isZeroPointer(cast<DefinedLocalImport>(
           file->getSymbol(rel.SymbolTableIndex))) &&
-      (*form != LinkSiteLoad ||
-       (getContents()[rel.VirtualAddress - 3] & 0xF0) != 0x40))
+      !(*form == LinkSiteCall ||
+        (*form == LinkSiteLoad &&
+         (getContents()[rel.VirtualAddress - 3] & 0xF0) == 0x40)))
     return std::nullopt;
   return form;
 }
@@ -638,6 +640,16 @@ static void rewriteZeroLoad(uint8_t *off) {
   off[-2] = 0xC7;
   off[-1] = 0xC0 | reg;
   write32le(off, 0);
+}
+
+// Rewrites the described call whose REL32 field is at off, `call [rip+d]`
+// through a pointer that holds zero, to call zero in the same length:
+// `xor r11d, r11d; call r11`. The call pushes the same return address and
+// faults at the same address. R11 carries no argument to a callee that does
+// not exist, and is the linker's scratch register at a call.
+static void rewriteZeroCall(uint8_t *off) {
+  static const uint8_t call[] = {0x45, 0x31, 0xDB, 0x41, 0xFF, 0xD3};
+  memcpy(off - 2, call, sizeof(call));
 }
 
 // Rewrites the described instruction whose REL32 field is at off, a reference
@@ -743,7 +755,10 @@ void SectionChunk::applyRelocation(uint8_t *off,
       }
     } else if ((rewrite = getLocalImportRewrite(rel))) {
       if (isZeroPointer(li)) {
-        rewriteZeroLoad(off);
+        if (*rewrite == LinkSiteCall)
+          rewriteZeroCall(off);
+        else
+          rewriteZeroLoad(off);
         return;
       }
       sym = li->getTarget();
