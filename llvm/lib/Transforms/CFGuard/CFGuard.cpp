@@ -783,10 +783,24 @@ void CFGuardImpl::lowerKCFIMemberTests() {
     // A test that guards no call through a member thunk checks its target in
     // place. Without a KCFI type to fall back on, a miss fails fast, and a
     // test of no tags is false.
+    //
+    // A test of a function the optimizer has made known, whose call became
+    // direct and lost its KCFI check, is decided here, as LowerTypeTests
+    // decides a test of a known function: a function defined in this module
+    // passes if it carries one of the tags. One defined elsewhere, such as an
+    // import, carries no tag, and a call through KCFI would have taken it at
+    // KCFI's strength, so it passes; a mismatch of KCFI types was reported
+    // when the call became direct.
     bool Result = true;
     if (!FusedMemberTests.contains(II)) {
       MDNode *Tags = getKCFIMemberTags(II);
-      if (Tags->getNumOperands() == 0) {
+      auto *F = dyn_cast<Function>(II->getArgOperand(0)->stripPointerCasts());
+      if (F) {
+        if (!F->isDeclarationForLinker()) {
+          const MDNode *Tag = F->getMetadata("kcfi_member_tag");
+          Result = Tag && is_contained(Tags->operands(), Tag->getOperand(0));
+        }
+      } else if (Tags->getNumOperands() == 0) {
         Result = false;
       } else {
         Function *Thunk = declareKCFIMemberThunk(

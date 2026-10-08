@@ -7,7 +7,8 @@
 ;; into the type's member thunk, which takes a target that carries the call's
 ;; type and one of the tags, and continues into the type's ordinary thunk on a
 ;; miss. A test that guards no KCFI check becomes a call to a member check
-;; thunk without a type, whose miss fails fast, or false if it lists no tag.
+;; thunk without a type, whose miss fails fast, or false if it lists no tag,
+;; unless its target is a known function.
 
 ;--- x64.ll
 target triple = "x86_64-unknown-windows-itanium"
@@ -133,6 +134,48 @@ define i1 @none_unchecked(ptr %p) {
   ret i1 %t
 }
 
+;; A test of a function the optimizer has made known, whose call is direct, is
+;; decided here: a function defined in the module passes if it carries one of
+;; the tags, and one defined elsewhere passes.
+; CHECK-LABEL: define void @known(
+; CHECK-NOT:     llvm.kcfi.member.test
+; CHECK-NOT:     __llvm_kcfi_member_check
+; CHECK:         br i1 true, label %member,
+; CHECK:       member:
+; CHECK-NEXT:    call void @tagged()
+; CHECK-NEXT:    br i1 false, label %other,
+; CHECK:       other:
+; CHECK-NEXT:    call void @untagged()
+; CHECK-NEXT:    br i1 true, label %done,
+define void @known() {
+  %t1 = call i1 @llvm.kcfi.member.test(ptr @tagged, metadata i32 43981)
+  br i1 %t1, label %member, label %trap
+trap:
+  call void @llvm.ubsantrap(i8 64)
+  unreachable
+member:
+  call void @tagged()
+  %t2 = call i1 @llvm.kcfi.member.test(ptr @untagged, metadata i32 43981)
+  br i1 %t2, label %other, label %trap
+other:
+  call void @untagged()
+  %t3 = call i1 @llvm.kcfi.member.test(ptr @imported, metadata i32 43981)
+  br i1 %t3, label %done, label %trap
+done:
+  call void @imported()
+  ret void
+}
+
+define void @tagged() !kcfi_member_tag !2 {
+  ret void
+}
+
+define void @untagged() {
+  ret void
+}
+
+declare void @imported()
+
 ;; A call whose targets are all in the image takes the local member thunk,
 ;; whose miss falls back on the local thunk.
 ; CHECK-LABEL: define void @local(
@@ -164,6 +207,7 @@ declare void @llvm.ubsantrap(i8)
 !llvm.module.flags = !{!0, !1}
 !0 = !{i32 4, !"kcfi", i32 1}
 !1 = !{i32 4, !"kcfi-marker", i32 -559038737}
+!2 = !{i32 43981}
 
 ;--- arm64.ll
 target triple = "aarch64-unknown-windows-itanium"
