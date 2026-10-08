@@ -1,8 +1,12 @@
-; RUN: llc < %s -mtriple=aarch64-pc-windows-msvc | FileCheck %s
-; RUN: llc < %s -mtriple=aarch64-unknown-windows-itanium | FileCheck %s
+; RUN: llc < %s -mtriple=aarch64-pc-windows-msvc | \
+; RUN:   FileCheck %s --check-prefixes=CHECK,MSVC
+; RUN: llc < %s -mtriple=aarch64-unknown-windows-itanium | \
+; RUN:   FileCheck %s --check-prefixes=CHECK,ITANIUM
 ; RUN: llc < %s -mtriple=aarch64-pc-windows-msvc -global-isel \
-; RUN:   -global-isel-abort=2 2>/dev/null | FileCheck %s
-; RUN: llc < %s -mtriple=aarch64-pc-windows-msvc -O0 | FileCheck %s
+; RUN:   -global-isel-abort=2 2>/dev/null | \
+; RUN:   FileCheck %s --check-prefixes=CHECK,MSVC
+; RUN: llc < %s -mtriple=aarch64-pc-windows-msvc -O0 | \
+; RUN:   FileCheck %s --check-prefixes=CHECK,MSVC
 
 ; With RtLibUseGOT (-fno-plt) a runtime library call on COFF goes through the
 ; import table, as it goes through the GOT on ELF. Calls to functions the IR
@@ -30,14 +34,19 @@ define void @calls() {
 
 ; A declaration no front end decided about -- what an optimization or a
 ; lowering creates -- takes the import form rather than a linker thunk. An
-; extern_weak one keeps its stub, since it may resolve to zero.
+; extern_weak one keeps its stub, since it may resolve to zero, except on
+; Windows Itanium, whose objects keep it a weak external and whose linker binds
+; the import pointer to zero when it is absent.
 
 define void @unmarked_calls() {
 ; CHECK-LABEL: unmarked_calls:
 ; CHECK:       adrp [[REG:x[0-9]+]], __imp_unmarked
 ; CHECK-NEXT:  ldr [[REG]], [[[REG]], :lo12:__imp_unmarked]
 ; CHECK-NEXT:  blr [[REG]]
-; CHECK:       .refptr.weakly
+; MSVC:        .refptr.weakly
+; ITANIUM:     adrp [[REG:x[0-9]+]], __imp_weakly
+; ITANIUM-NEXT: ldr [[REG]], [[[REG]], :lo12:__imp_weakly]
+; ITANIUM-NEXT: blr [[REG]]
   call void @unmarked()
   call void @weakly()
   ret void

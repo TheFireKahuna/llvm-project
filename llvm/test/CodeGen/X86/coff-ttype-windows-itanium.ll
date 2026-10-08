@@ -1,8 +1,9 @@
 ; On Windows Itanium and NT-POSIX a catch-type entry is a 32-bit offset to a
 ; pointer to the descriptor: the import pointer of a descriptor the linker can
-; see, and a pointer private to the object for a local or weak one, which has
-; a section of its own, as every global does by default on these triples.
-; catch (...) stays a null entry.
+; see, an extern_weak one included, which the object keeps a weak external,
+; and a pointer private to the object for a local one, which has a section of
+; its own, as every global does by default on these triples. catch (...)
+; stays a null entry.
 ;
 ; RUN: llc -mtriple=x86_64-unknown-windows-itanium < %s | FileCheck %s --check-prefixes=CHECK,OWN
 ; RUN: llc -mtriple=x86_64-pc-windows-ntposix < %s | FileCheck %s --check-prefixes=CHECK,OWN
@@ -46,28 +47,22 @@ ret:
 ; SHARED-NEXT: .long .L_ZTIN12_GLOBAL__N_14AnonE.DW.stub-[[T3]]
 ; OWN-NEXT:    .long _ZTIN12_GLOBAL__N_14AnonE.DW.stub-[[T3]]
 ; CHECK-NEXT:  [[T2:.Ltmp[0-9]+]]: # TypeInfo 2
-; SHARED-NEXT: .long .L_ZTI4Weak.DW.stub-[[T2]]
-; OWN-NEXT:    .long _ZTI4Weak.DW.stub-[[T2]]
+; CHECK-NEXT:  .long __imp__ZTI4Weak-[[T2]]
 ; CHECK-NEXT:  .long 0 # TypeInfo 1
 
 ; SHARED:      .section .rdata,"dr"
 ; SHARED-NOT:  .section
-; SHARED:      .L_ZTI4Weak.DW.stub:
-; SHARED-NEXT: .quad _ZTI4Weak
-; SHARED-NOT:  .section
 ; SHARED:      .L_ZTIN12_GLOBAL__N_14AnonE.DW.stub:
 ; SHARED-NEXT: .quad _ZTIN12_GLOBAL__N_14AnonE
 
-; OWN:         .section .rdata,"dr",one_only,_ZTI4Weak.DW.stub
-; OWN-NEXT:    .p2align 3, 0x0
-; OWN-NEXT:    _ZTI4Weak.DW.stub:
-; OWN-NEXT:    .quad _ZTI4Weak
-; OWN-NEXT:    .section .rdata,"dr",one_only,_ZTIN12_GLOBAL__N_14AnonE.DW.stub
+; OWN:         .section .rdata,"dr",one_only,_ZTIN12_GLOBAL__N_14AnonE.DW.stub
 ; OWN-NEXT:    .p2align 3, 0x0
 ; OWN-NEXT:    _ZTIN12_GLOBAL__N_14AnonE.DW.stub:
 ; OWN-NEXT:    .quad _ZTIN12_GLOBAL__N_14AnonE
 
 ; CHECK-NOT:   .globl {{.*}}DW.stub
+; CHECK-NOT:   _ZTI4Weak.DW.stub
+; CHECK:       .weak _ZTI4Weak
 ; CHECK-NOT:   .refptr
 
 ; MINGW:       .byte 0 # @TType Encoding = absptr

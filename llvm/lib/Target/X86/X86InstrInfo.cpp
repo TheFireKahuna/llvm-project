@@ -8549,10 +8549,12 @@ X86InstrInfo::foldMemoryOperandImpl(MachineFunction &MF, MachineInstr &MI,
   // to an extern_weak symbol with the symbol's address, or with zero, only
   // where the load is an instruction of its own or a call or jump through it.
   if (Subtarget.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
-      !MI.isCall() && LoadMI.getOpcode() == X86::MOV64rm &&
-      LoadMI.getOperand(1 + X86::AddrDisp).getTargetFlags() ==
-          X86II::MO_COFFSTUB)
-    return nullptr;
+      !MI.isCall() && LoadMI.getOpcode() == X86::MOV64rm) {
+    const MachineOperand &Disp = LoadMI.getOperand(1 + X86::AddrDisp);
+    if (Disp.isGlobal() && Disp.getTargetFlags() == X86II::MO_DLLIMPORT &&
+        Disp.getGlobal()->hasExternalWeakLinkage())
+      return nullptr;
+  }
 
   // Determine the alignment of the load.
   Align Alignment;

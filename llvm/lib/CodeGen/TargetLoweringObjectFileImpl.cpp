@@ -1959,11 +1959,11 @@ const MCExpr *TargetLoweringObjectFileCOFF::getTTypeGlobalReference(
                                                              MMI, Streamer);
 
   // The linker provides the import pointer of a symbol it can see, whether
-  // the symbol is imported or defined in the image. A local symbol, or a weak
-  // one that may be absent, is reached through a pointer private to this
-  // object, which keeps a symbol of its own under -fdata-sections so that its
-  // section is discarded with its last user.
-  bool Private = GV->hasLocalLinkage() || GV->hasExternalWeakLinkage();
+  // the symbol is imported or defined in the image, or holds zero for an
+  // extern_weak symbol that is absent. A local symbol is reached through a
+  // pointer private to this object, which keeps a symbol of its own under
+  // -fdata-sections so that its section is discarded with its last user.
+  bool Private = GV->hasLocalLinkage();
   SmallString<128> Name;
   if (!Private)
     Name = "__imp_";

@@ -714,7 +714,8 @@ X86DAGToDAGISel::IsProfitableToFold(SDValue N, SDNode *U, SDNode *Root) const {
     SDValue Ptr = cast<LoadSDNode>(N)->getBasePtr();
     if (Ptr.getOpcode() == X86ISD::WrapperRIP)
       if (auto *GA = dyn_cast<GlobalAddressSDNode>(Ptr.getOperand(0)))
-        if (GA->getTargetFlags() == X86II::MO_COFFSTUB)
+        if (GA->getTargetFlags() == X86II::MO_DLLIMPORT &&
+            GA->getGlobal()->hasExternalWeakLinkage())
           return false;
   }
 

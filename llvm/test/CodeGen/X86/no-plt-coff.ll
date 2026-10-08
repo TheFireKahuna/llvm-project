@@ -1,6 +1,9 @@
-; RUN: llc < %s -mtriple=x86_64-pc-windows-msvc | FileCheck %s
-; RUN: llc < %s -mtriple=x86_64-unknown-windows-itanium | FileCheck %s
-; RUN: llc < %s -mtriple=x86_64-pc-windows-msvc -O0 | FileCheck %s
+; RUN: llc < %s -mtriple=x86_64-pc-windows-msvc | \
+; RUN:   FileCheck %s --check-prefixes=CHECK,MSVC
+; RUN: llc < %s -mtriple=x86_64-unknown-windows-itanium | \
+; RUN:   FileCheck %s --check-prefixes=CHECK,ITANIUM
+; RUN: llc < %s -mtriple=x86_64-pc-windows-msvc -O0 | \
+; RUN:   FileCheck %s --check-prefixes=CHECK,MSVC
 
 ; With RtLibUseGOT (-fno-plt) a runtime library call on COFF goes through the
 ; import table, as it goes through the GOT on ELF. Calls to functions the IR
@@ -31,12 +34,15 @@ define void @calls() {
 
 ; A declaration no front end decided about -- what an optimization or a
 ; lowering creates -- takes the import form rather than a linker thunk. An
-; extern_weak one keeps its stub, since it may resolve to zero.
+; extern_weak one keeps its stub, since it may resolve to zero, except on
+; Windows Itanium, whose objects keep it a weak external and whose linker binds
+; the import pointer to zero when it is absent.
 
 define void @unmarked_calls() {
 ; CHECK-LABEL: unmarked_calls:
 ; CHECK: callq *__imp_unmarked(%rip)
-; CHECK: .refptr.weakly(%rip)
+; MSVC: .refptr.weakly(%rip)
+; ITANIUM: callq *__imp_weakly(%rip)
   call void @unmarked()
   call void @weakly()
   ret void

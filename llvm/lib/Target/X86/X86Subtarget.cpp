@@ -144,11 +144,12 @@ unsigned char X86Subtarget::classifyGlobalReference(const GlobalValue *GV,
   // not define is loaded from its import pointer, as ELF's -fPIE form loads it
   // from the GOT, even where calls to it are direct, so that code sees the
   // address static data sees. The linker replaces the load with the direct
-  // address when the function is in the image.
+  // address when the function is in the image, or with zero when an
+  // extern_weak function is absent.
   if (TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment()) {
     const auto *F = dyn_cast_or_null<Function>(GV);
     if (F && F->isDeclarationForLinker() && !F->isIntrinsic() &&
-        F->hasDefaultVisibility() && !F->hasExternalWeakLinkage())
+        F->hasDefaultVisibility())
       return X86II::MO_DLLIMPORT;
   }
 
@@ -162,10 +163,10 @@ unsigned char X86Subtarget::classifyGlobalReference(const GlobalValue *GV,
     if (GV->hasDLLImportStorageClass())
       return X86II::MO_DLLIMPORT;
     // Windows Itanium and NT-POSIX use the import pointer, not a stub, which
-    // the linker binds to the import or replaces with the direct address.
-    // An extern_weak symbol keeps the stub, since it may resolve to zero.
-    if (TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment() &&
-        !GV->hasExternalWeakLinkage())
+    // the linker binds to the import or replaces with the direct address. For
+    // an extern_weak symbol the object keeps the symbol a weak external, so
+    // the linker binds the pointer to zero when it is absent.
+    if (TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment())
       return X86II::MO_DLLIMPORT;
     return X86II::MO_COFFSTUB;
   }
@@ -232,7 +233,8 @@ X86Subtarget::classifyGlobalFunctionReference(const GlobalValue *GV,
   if (isTargetCOFF()) {
     if (!GV)
       return M.getRtLibUseGOT() ? X86II::MO_DLLIMPORT : X86II::MO_NO_FLAG;
-    if (GV->hasDLLImportStorageClass())
+    if (GV->hasDLLImportStorageClass() ||
+        TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment())
       return X86II::MO_DLLIMPORT;
     return X86II::MO_COFFSTUB;
   }

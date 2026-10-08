@@ -4,8 +4,9 @@
 
 ; On Windows Itanium and NT-POSIX a variable that is not dso_local may be
 ; provided by another image, whether it is declared or defined weakly, and is
-; reached through its import pointer rather than a stub. An extern_weak
-; variable keeps the stub, since it may resolve to zero.
+; reached through its import pointer rather than a stub. So is an extern_weak
+; variable, which the object keeps a weak external, so that the linker binds
+; the pointer to zero when the variable is absent.
 
 $comdatvar = comdat any
 
@@ -37,8 +38,8 @@ define i32 @getDsoLocalVar() {
 
 define i32 @getWeakVar() {
 ; CHECK-LABEL: getWeakVar:
-; CHECK:         adrp x8, .refptr.weakvar
-; CHECK-NEXT:    ldr x8, [x8, :lo12:.refptr.weakvar]
+; CHECK:         adrp x8, __imp_weakvar
+; CHECK-NEXT:    ldr x8, [x8, :lo12:__imp_weakvar]
   %v = load i32, ptr @weakvar
   ret i32 %v
 }

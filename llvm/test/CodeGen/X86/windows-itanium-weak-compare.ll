@@ -3,10 +3,10 @@
 ; RUN: llc -mtriple=x86_64-w64-windows-gnu -O2 < %s \
 ; RUN:   | FileCheck --check-prefix=MINGW %s
 
-; On Windows Itanium and NT-POSIX the pointer to an extern_weak symbol is
-; loaded into a register of its own before it is tested, not folded into the
-; compare, so that the linker can replace the load with the symbol's address
-; or zero. A call through the pointer keeps its memory operand, which the
+; On Windows Itanium and NT-POSIX the import pointer of an extern_weak symbol
+; is loaded into a register of its own before it is tested, not folded into
+; the compare, so that the linker can replace the load with the symbol's
+; address or zero. A call through the pointer keeps its memory operand, which the
 ; linker rewrites as well. The second compare is folded at instruction
 ; selection, the first by the peephole optimizer.
 
@@ -15,10 +15,10 @@ declare extern_weak void @weakfn()
 
 define i32 @f() {
 ; CHECK-LABEL: f:
-; CHECK:         movq .refptr.weakfn(%rip), %rax
+; CHECK:         movq __imp_weakfn(%rip), %rax
 ; CHECK-NEXT:    testq %rax, %rax
-; CHECK:         callq *.refptr.weakfn(%rip)
-; CHECK:         movq .refptr.weakvar(%rip), %rax
+; CHECK:         callq *__imp_weakfn(%rip)
+; CHECK:         movq __imp_weakvar(%rip), %rax
 ; CHECK-NEXT:    testq %rax, %rax
 ; MINGW-LABEL: f:
 ; MINGW:         cmpq $0, .refptr.weakfn(%rip)
