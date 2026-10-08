@@ -1,9 +1,10 @@
 # REQUIRES: aarch64
 
-## On ARM64 under -import-slots, the adrp and ldr of a .refptr.X pointer become
-## the adrp and add of X once X is defined in the image, a move of zero into
-## each register once a weak X is absent, and the adrp and ldr of X's import
-## pointer once X is imported. No pointer is left.
+## On ARM64, the adrp and ldr of __imp_X for an extern_weak X, which the object
+## keeps a weak external, become the adrp and add of X once X is defined in
+## the image, a move of zero once X is absent, and stay the adrp and ldr of X's
+## import address table entry once an import library offers X. No local
+## import pointer is left, and none is reported.
 
 # RUN: rm -rf %t && split-file %s %t && cd %t
 # RUN: llvm-mc -filetype=obj -triple=aarch64-windows main.s -o main.obj
@@ -14,45 +15,38 @@
 # RUN: lld-link -import-slots -entry:main -subsystem:console -out:a.exe \
 # RUN:   main.obj defs.obj dll.lib 2>&1 | count 0
 # RUN: llvm-objdump -d --no-show-raw-insn a.exe | FileCheck %s
-# RUN: llvm-readobj --coff-basereloc a.exe | FileCheck --check-prefix=RELOC %s
+# RUN: llvm-readobj --coff-imports --coff-basereloc a.exe | \
+# RUN:   FileCheck --check-prefix=IMAGE %s
 
 # CHECK:      adrp x0, 0x[[#%x,PAGE:]]
 # CHECK-NEXT: add x0, x0, #0x[[#%x,OFF:]]
 # CHECK-NEXT: mov x1, #0x0
 # CHECK-NEXT: mov x1, #0x0
-# CHECK-NEXT: adrp x2, 0x[[#%x,IATPAGE:]]
-# CHECK-NEXT: ldr x2, [x2{{.*}}]
+# CHECK-NEXT: adrp x2, 0x140002000
+# CHECK-NEXT: ldr x2, [x2, #0x38]
 # CHECK-NEXT: ret
 # CHECK:      [[#PAGE + OFF]]: ret
 
-# RELOC-NOT: Type: DIR64
+# IMAGE:      Name: dll.dll
+# IMAGE:      Symbol: g
+# IMAGE:      BaseReloc [
+# IMAGE-NEXT: ]
 
 #--- main.s
   .text
   .globl main
 main:
-  adrp x0, .refptr.f
-  ldr x0, [x0, :lo12:.refptr.f]
-  adrp x1, .refptr.absent
-  ldr x1, [x1, :lo12:.refptr.absent]
-  adrp x2, .refptr.g
-  ldr x2, [x2, :lo12:.refptr.g]
+  adrp x0, __imp_f
+  ldr x0, [x0, :lo12:__imp_f]
+  adrp x1, __imp_absent
+  ldr x1, [x1, :lo12:__imp_absent]
+  adrp x2, __imp_g
+  ldr x2, [x2, :lo12:__imp_g]
   ret
 
   .weak f
   .weak absent
   .weak g
-
-.macro refptr sym
-  .section .rdata$.refptr.\sym,"dr",discard,.refptr.\sym
-  .globl .refptr.\sym
-  .p2align 3
-.refptr.\sym:
-  .xword \sym
-.endm
-  refptr f
-  refptr absent
-  refptr g
 
 #--- defs.s
   .text

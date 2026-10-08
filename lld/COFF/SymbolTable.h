@@ -101,8 +101,7 @@ public:
 
   // Binds each .refptr.X pointer to a local import pointer to X when X is in
   // the image, or to zero when a weak X is absent, whose references
-  // bindLocalImports rewrites to reach X, or zero, directly; and under
-  // -import-slots to X's import pointer when X is imported.
+  // bindLocalImports rewrites to reach X, or zero, directly.
   void bindPointerCells();
 
   // Under -import-slots, the weak externals of extern_weak declarations, whose
@@ -207,9 +206,6 @@ public:
 
   // A list of chunks which to be added to .rdata.
   std::vector<Chunk *> localImportChunks;
-
-  // The .refptr sections whose pointers are bound to import pointers.
-  std::vector<SectionChunk *> importedCells;
 
   // A list of EC EXP+ symbols.
   std::vector<Symbol *> expSymbols;

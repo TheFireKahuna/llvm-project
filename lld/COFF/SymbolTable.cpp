@@ -1147,8 +1147,19 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
 
     StringRef name = undef->getName();
 
-    // A weak alias may have been resolved, so check for that.
+    // A weak alias may have been resolved, so check for that. Under
+    // -import-slots, an extern_weak X whose import an import library offered
+    // is that import, as a shared object satisfies an ELF weak reference: a
+    // function's import defines X, and imported data is reached as automatic
+    // import reaches it, so that static data holding X's address holds the
+    // address code reads through __imp_X.
     if (undef->getWeakAlias()) {
+      auto *abs =
+          dyn_cast_or_null<DefinedAbsolute>(undef->getDefinedWeakAlias());
+      if (ctx.config.importSlots && abs && abs->getVA() == 0 &&
+          isa_and_nonnull<DefinedImportData>(impSymbol(name)) &&
+          handleMinGWAutomaticImport(sym, name))
+        continue;
       aliases.push_back(undef);
       continue;
     }
@@ -1179,7 +1190,11 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
       if (imp) {
         replaceSymbol<DefinedLocalImport>(sym, ctx, name, imp);
         localImportChunks.push_back(cast<DefinedLocalImport>(sym)->getChunk());
-        localImports[sym] = imp;
+        // A pointer to the zero default of an absent weak X imports nothing
+        // that the image defines.
+        auto *abs = dyn_cast<DefinedAbsolute>(imp);
+        if (!abs || abs->getVA() != 0 || !isa<Undefined>(find(impName)))
+          localImports[sym] = imp;
         continue;
       }
     }
@@ -1206,28 +1221,22 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
 }
 
 // A .refptr.X section holds only a pointer to X, which the compiler reads
-// where X may be outside the image or absent. Once X is resolved, the pointer
-// is one the link has or can make. When X is defined in the image, or is an
-// absent weak reference, it binds a local import pointer to X or to zero,
-// whose rewritten references reach X or zero directly. That costs nothing
-// and changes no value, but pays only where references can be rewritten: on
-// ARM64, and on x86-64 in objects that describe their sites. The section
-// stays the pointer whenever the image needs one, as bindLocalImports
-// decides. Under -import-slots, it becomes X's import pointer when X is
-// imported, which every reader can read in its place, and the section is
-// left out.
+// where X may be outside the image or absent. When X is defined in the image,
+// or is an absent weak reference, the pointer binds a local import pointer to
+// X or to zero, whose rewritten references reach X or zero directly. That
+// costs nothing and changes no value, but pays only where references can be
+// rewritten: on ARM64, and on x86-64 in objects that describe their sites. The
+// section stays the pointer whenever the image needs one, as bindLocalImports
+// decides.
 void SymbolTable::bindPointerCells() {
   if (isEC() || ctx.hybridSymtab)
     return;
-  bool bindLocal =
-      machine == ARM64 ||
-      (machine == AMD64 && llvm::any_of(ctx.objFileInstances, [](ObjFile *f) {
+  if (machine != ARM64 &&
+      (machine != AMD64 || llvm::none_of(ctx.objFileInstances, [](ObjFile *f) {
          return f->describesSites;
-       }));
-  if (!bindLocal && !ctx.config.importSlots)
+       })))
     return;
   llvm::TimeTraceScope timeScope("Bind pointer cells");
-  SmallPtrSet<Symbol *, 4> importedWeakData;
   for (auto &i : symMap) {
     auto *cell = dyn_cast<DefinedRegular>(i.second);
     if (!cell || !cell->getName().starts_with(".refptr."))
@@ -1244,46 +1253,17 @@ void SymbolTable::bindPointerCells() {
 
     // An unresolved weak reference resolves to its default after mark-live.
     Defined *target = x->getDefined();
-    auto *imp = dyn_cast_or_null<DefinedImportData>(
-        find(("__imp_" + name).str()));
     auto *abs = dyn_cast_or_null<DefinedAbsolute>(target);
     bool absentWeak = isa<Undefined>(x) && abs && abs->getVA() == 0;
-    if (ctx.config.importSlots && imp &&
-        (isa<DefinedImportThunk>(x) || absentWeak)) {
-      cell->replaceKeepingName(imp, sizeof(DefinedImportData));
-      if (absentWeak)
-        importedWeakData.insert(x);
-      sc->live = false;
-      importedCells.push_back(sc);
-    } else if (bindLocal && target && !isa<DefinedImportThunk>(target) &&
-               !isa<DefinedImportData>(target) && (!abs || absentWeak)) {
-      replaceSymbol<DefinedLocalImport>(cell, ctx, cell->getName(), target);
-      LocalImportChunk *c = cast<DefinedLocalImport>(cell)->getChunk();
-      c->cell = sc;
-      // Mark-live keeps the pointer when something live refers to it.
-      c->live = !ctx.config.doGC;
-      localImportChunks.push_back(c);
-    }
-  }
-
-  // Imported data has no address in the image, so a reference to it other
-  // than through its pointer would read zero.
-  if (importedWeakData.empty())
-    return;
-  for (ObjFile *file : ctx.objFileInstances) {
-    if (&file->symtab != this)
+    if (!target || isa<DefinedImportThunk>(target) ||
+        isa<DefinedImportData>(target) || (abs && !absentWeak))
       continue;
-    SmallPtrSet<Symbol *, 4> reported;
-    for (Chunk *c : file->getChunks())
-      if (auto *sc = dyn_cast_or_null<SectionChunk>(c);
-          sc && !sc->getSectionName().starts_with(".rdata$.refptr."))
-        for (const coff_relocation &rel : sc->getRelocs()) {
-          Symbol *s = file->getSymbol(rel.SymbolTableIndex);
-          if (importedWeakData.contains(s) && reported.insert(s).second)
-            Err(ctx) << file << ": weak reference to " << printSymbol(s)
-                     << ", which is imported, needs its address in "
-                     << sc->getSectionName();
-        }
+    replaceSymbol<DefinedLocalImport>(cell, ctx, cell->getName(), target);
+    LocalImportChunk *c = cast<DefinedLocalImport>(cell)->getChunk();
+    c->cell = sc;
+    // Mark-live keeps the pointer when something live refers to it.
+    c->live = !ctx.config.doGC;
+    localImportChunks.push_back(c);
   }
 }
 
@@ -1303,13 +1283,6 @@ void SymbolTable::bindPointerCells() {
 // scanned, and only when the link has one; of those that do not describe
 // their sites, only the ones that list a pointer bound to a compiler's.
 void SymbolTable::bindLocalImports() {
-  // A .refptr section that mark-live reached through another name would give
-  // the pointer bound to an import a second address.
-  for (SectionChunk *sc : importedCells)
-    if (sc->live)
-      Err(ctx) << sc->file << ": " << sc->getSectionName()
-               << " is referenced other than through its pointer's symbol, "
-                  "which is bound to an import pointer";
   if (localImportChunks.empty())
     return;
   llvm::TimeTraceScope timeScope("Bind local imports");
@@ -1421,10 +1394,13 @@ void SymbolTable::bindLocalImports() {
         it->second &= rewritable;
       }
     }
-    // A .refptr pointer is the compiler's, not a dllimport declaration.
-    for (auto [li, rewritable] : seen)
-      if (!li->getName().starts_with(".refptr."))
+    // A .refptr pointer is the compiler's, not a dllimport declaration, and
+    // a pointer to an absent weak symbol's zero imports nothing.
+    for (auto [li, rewritable] : seen) {
+      auto *abs = dyn_cast<DefinedAbsolute>(li->getTarget());
+      if (!li->getName().starts_with(".refptr.") && !(abs && abs->getVA() == 0))
         refs.push_back({file, li, rewritable});
+    }
   }
 
   // A pointer that a compiler made stays where it is, as the pointer, if
