@@ -18,6 +18,7 @@
 #include "lld/Common/Strings.h"
 #include "lld/Common/Timer.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/TinyPtrVector.h"
 #include "llvm/BinaryFormat/Magic.h"
 #include "llvm/DebugInfo/DIContext.h"
 #include "llvm/IR/LLVMContext.h"
@@ -1299,7 +1300,8 @@ void SymbolTable::bindPointerCells() {
 // keeps no instruction from being rewritten, and is not reported: it is a
 // pointer that the compiler made, such as a catch-type entry, never a
 // dllimport declaration. Only the objects that refer to a local import are
-// scanned, and only when the link has one.
+// scanned, and only when the link has one; of those that do not describe
+// their sites, only the ones that list a pointer bound to a compiler's.
 void SymbolTable::bindLocalImports() {
   // A .refptr section that mark-live reached through another name would give
   // the pointer bound to an import a second address.
@@ -1325,13 +1327,35 @@ void SymbolTable::bindLocalImports() {
     bool rewritable;
   };
   std::vector<Ref> refs;
+
+  // Without mark-live, the pointers bound to a compiler's pointers, by the
+  // file that holds each compiler's pointer. A scan of that file finds whether
+  // another name reaches the pointer's section: a reference to a local symbol
+  // in it, since no other file can refer to one, or any external symbol
+  // defined in it.
+  DenseMap<ObjFile *, TinyPtrVector<LocalImportChunk *>> cellsByFile;
+  if (!ctx.config.doGC)
+    for (Chunk *c : localImportChunks)
+      if (SectionChunk *cell = cast<LocalImportChunk>(c)->cell)
+        cellsByFile[cell->file].push_back(cast<LocalImportChunk>(c));
+  SmallPtrSet<LocalImportChunk *, 4> named;
+
   for (ObjFile *file : ctx.objFileInstances) {
     if (&file->symtab != this)
       continue;
     auto isLocalImport = [](Symbol *s) {
       return isa_and_nonnull<DefinedLocalImport>(s);
     };
-    if (!file->describesSites && !arm64) {
+    // An object that does not describe its sites reads every local import
+    // pointer it refers to. Its references are scanned only if it lists the
+    // symbol of a pointer bound to a compiler's pointer, which is left out
+    // unless something live reads it.
+    bool describes = file->describesSites || arm64;
+    auto isCell = [](Symbol *s) {
+      auto *li = dyn_cast_or_null<DefinedLocalImport>(s);
+      return li && li->getChunk()->cell;
+    };
+    if (!describes && llvm::none_of(file->getSymbols(), isCell)) {
       for (Symbol *s : file->getSymbols())
         if (isLocalImport(s))
           read.insert(cast<DefinedLocalImport>(s));
@@ -1339,6 +1363,23 @@ void SymbolTable::bindLocalImports() {
     }
     if (llvm::none_of(file->getSymbols(), isLocalImport))
       continue;
+
+    ArrayRef<LocalImportChunk *> cells;
+    if (auto it = cellsByFile.find(file); it != cellsByFile.end())
+      cells = it->second;
+    auto cellOf = [&](Symbol *s) -> LocalImportChunk * {
+      auto *d = dyn_cast_or_null<DefinedRegular>(s);
+      if (!d)
+        return nullptr;
+      for (LocalImportChunk *c : cells)
+        if (d->getChunk() == c->cell)
+          return c;
+      return nullptr;
+    };
+    if (!cells.empty())
+      for (Symbol *s : file->getSymbols())
+        if (LocalImportChunk *c = cellOf(s); c && s->isExternal)
+          named.insert(c);
 
     MapVector<DefinedLocalImport *, bool> seen;
     for (Chunk *c : file->getChunks()) {
@@ -1349,11 +1390,18 @@ void SymbolTable::bindLocalImports() {
                       !(sc->header->Characteristics & IMAGE_SCN_CNT_CODE);
       for (const coff_relocation &rel : sc->getRelocs()) {
         Symbol *s = file->getSymbol(rel.SymbolTableIndex);
-        if (!isLocalImport(s))
+        if (!isLocalImport(s)) {
+          if (LocalImportChunk *c = cellOf(s))
+            named.insert(c);
           continue;
+        }
         auto *li = cast<DefinedLocalImport>(s);
         if (fromData) {
           readByData.insert(li);
+          continue;
+        }
+        if (!describes) {
+          read.insert(li);
           continue;
         }
         bool mismatch = false;
@@ -1381,7 +1429,10 @@ void SymbolTable::bindLocalImports() {
 
   // A pointer that a compiler made stays where it is, as the pointer, if
   // something live reads it other than through a rewritten instruction, or if
-  // its section is otherwise kept.
+  // another name reaches its section, as mark-live or else the scan finds.
+  for (auto &[file, cells] : cellsByFile)
+    for (LocalImportChunk *c : cells)
+      c->cell->live = named.contains(c);
   for (SmallPtrSet<DefinedLocalImport *, 8> *set : {&read, &readByData})
     for (DefinedLocalImport *li : *set)
       if (LocalImportChunk *c = li->getChunk(); c->cell && c->live)

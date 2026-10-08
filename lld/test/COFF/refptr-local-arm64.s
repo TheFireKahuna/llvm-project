@@ -3,7 +3,8 @@
 ## On ARM64, with no -import-slots and in MinGW mode, the adrp and ldr of a
 ## .refptr.X pointer become the adrp and add of X once X is defined in the
 ## image, and the pointer is left out, unless something else reads it, which
-## keeps it where it is.
+## keeps it where it is. Collecting sections or not, as MinGW links by default,
+## makes no difference.
 
 # RUN: rm -rf %t && split-file %s %t && cd %t
 # RUN: llvm-mc -filetype=obj -triple=aarch64-windows-gnu main.s -o main.obj
@@ -13,6 +14,11 @@
 # RUN: llvm-objdump -d --no-show-raw-insn a.exe | FileCheck %s
 # RUN: llvm-readobj --coff-basereloc a.exe | FileCheck --check-prefix=RELOC %s
 # RUN: llvm-objdump -s -j .rdata a.exe | FileCheck --check-prefix=RDATA %s
+# RUN: lld-link -lldmingw -opt:noref -entry:main -subsystem:console \
+# RUN:   -out:b.exe main.obj defs.obj 2>&1 | count 0
+# RUN: llvm-objdump -d --no-show-raw-insn b.exe | FileCheck %s
+# RUN: llvm-readobj --coff-basereloc b.exe | FileCheck --check-prefix=RELOC %s
+# RUN: llvm-objdump -s -j .rdata b.exe | FileCheck --check-prefix=RDATA %s
 
 # CHECK:      adrp x0, 0x[[#%x,PAGE:]]
 # CHECK-NEXT: add x0, x0, #0x[[#%x,OFF:]]
