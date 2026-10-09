@@ -430,7 +430,7 @@ SmallVector<std::unique_ptr<InputFile>, 0> BitcodeCompiler::compile() {
       ltoObjName = ctx.saver.save(path.str());
     }
     if (savePrelink || ctx.arg.ltoEmitAsm)
-      saveBuffer(buf[i].second, ltoObjName);
+      saveBuffer(objBuf, ltoObjName);
     if (!ctx.arg.ltoEmitAsm)
       ret.push_back(createObjFile(ctx, MemoryBufferRef(objBuf, ltoObjName)));
   }

@@ -59,6 +59,25 @@
 ; RUN: lld-link /lldltocache:%t.cache /entry:main /out:%t3 %t2.o %t.o /mllvm:-emit-dwarf-unwind=default /mllvm:-enable-ml-inliner=default
 ; RUN: ls %t.cache | count 9
 
+;; A module served from the cache is written out as it is when compiled: as
+;; assembly under /lldemit:asm, and as the native object under
+;; /lldsavetemps:prelink.
+; RUN: rm -rf %t.dir && mkdir -p %t.dir/cache && cd %t.dir
+; RUN: opt -module-hash -module-summary %s -o a.obj
+; RUN: opt -module-hash -module-summary %p/Inputs/lto-cache.ll -o b.obj
+; RUN: lld-link /lldltocache:cache /lldemit:asm /entry:main /out:out.exe b.obj a.obj
+; RUN: lld-link /lldltocache:cache /lldemit:asm /entry:main /out:out.exe b.obj a.obj
+; RUN: ls cache | count 3
+; RUN: FileCheck %s --check-prefix=ASM-A < out.exe.lto.a.s
+; RUN: FileCheck %s --check-prefix=ASM-B < out.exe.lto.b.s
+; RUN: lld-link /lldltocache:cache /lldsavetemps:prelink /entry:main /out:out.exe b.obj a.obj
+; RUN: lld-link /lldltocache:cache /lldsavetemps:prelink /entry:main /out:out.exe b.obj a.obj
+; RUN: llvm-nm out.exe.lto.a.obj | FileCheck %s --check-prefix=NM-A
+
+; ASM-A: globalfunc:
+; ASM-B: main:
+; NM-A: T globalfunc
+
 target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-pc-windows-msvc"
 
