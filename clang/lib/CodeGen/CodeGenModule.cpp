@@ -2434,7 +2434,9 @@ void CodeGenModule::setDLLImportDLLExport(llvm::GlobalValue *GV,
 
 void CodeGenModule::setDLLImportDLLExport(llvm::GlobalValue *GV,
                                           const NamedDecl *D) const {
-  if (D && D->isExternallyVisible()) {
+  // A global can be local although its declaration is visible: the
+  // construction vtables of an available_externally VTT are internal.
+  if (D && D->isExternallyVisible() && !GV->hasLocalLinkage()) {
     if (D->hasAttr<DLLImportAttr>())
       GV->setDLLStorageClass(llvm::GlobalVariable::DLLImportStorageClass);
     else if ((D->hasAttr<DLLExportAttr>() ||
