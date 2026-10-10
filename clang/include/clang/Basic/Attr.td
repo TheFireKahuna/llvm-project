@@ -4501,12 +4501,10 @@ def MSAllocator : InheritableAttr {
 }
 
 def CFGuard : InheritableAttr, TargetSpecificAttr<TargetWindows> {
-  // Currently only the __declspec(guard(nocf)) modifier is supported. In future
-  // we might also want to support __declspec(guard(suppress)).
   let Spellings = [Declspec<"guard">, Clang<"guard">];
   let Subjects = SubjectList<[Function]>;
   let Args = [EnumArgument<"Guard", "GuardArg", /*is_string=*/false,
-                           ["nocf"], ["nocf"]>];
+                           ["nocf", "suppress"], ["nocf", "suppress"]>];
   let Documentation = [CFGuardDocs];
 }
 

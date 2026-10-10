@@ -95,7 +95,10 @@ void WinCFGuard::endModule() {
   const Module *M = Asm->MMI->getModule();
   std::vector<const MCSymbol *> GFIDsEntries;
   std::vector<const MCSymbol *> GIATsEntries;
+  std::vector<const MCSymbol *> SuppressedTargets;
   for (const Function &F : *M) {
+    if (!F.isDeclaration() && F.hasFnAttribute("guard_suppress"))
+      SuppressedTargets.push_back(Asm->getSymbol(&F));
     if (isPossibleIndirectCallTarget(&F)) {
       // If F is a dllimport and has an "__imp_" symbol already defined, add the
       // "__imp_" symbol to the .giats section.
@@ -120,11 +123,25 @@ void WinCFGuard::endModule() {
       GFIDsEntries.push_back(Asm->getSymbol(&GA));
   }
 
-  if (GFIDsEntries.empty() && GIATsEntries.empty() && LongjmpTargets.empty())
+  if (GFIDsEntries.empty() && GIATsEntries.empty() && LongjmpTargets.empty() &&
+      SuppressedTargets.empty())
     return;
 
-  // Emit the symbol index of each GFIDs entry to form the .gfids section.
+  // Name each suppressed target to the linker, as MSVC does, which lists it in
+  // the function table marked as not a valid call target.
   auto &OS = *Asm->OutStreamer;
+  if (!SuppressedTargets.empty()) {
+    const Triple &TT = M->getTargetTriple();
+    StringRef Flag = TT.isWindowsGNUEnvironment() ||
+                             TT.isWindowsCygwinEnvironment()
+                         ? " -guardsym:"
+                         : " /GUARDSYM:";
+    OS.switchSection(Asm->OutContext.getObjectFileInfo()->getDrectveSection());
+    for (const MCSymbol *S : SuppressedTargets)
+      OS.emitBytes((Flag + S->getName() + ",S").str());
+  }
+
+  // Emit the symbol index of each GFIDs entry to form the .gfids section.
   OS.switchSection(Asm->OutContext.getObjectFileInfo()->getGFIDsSection());
   for (const MCSymbol *S : GFIDsEntries)
     OS.emitCOFFSymbolIndex(S);

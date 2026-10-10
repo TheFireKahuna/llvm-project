@@ -7971,6 +7971,11 @@ can compromise the security of CFG, the programmer must be very careful using
 the directive. Typically, this usage is limited to very small functions that
 only call one function.
 
+A function can be excluded from the valid indirect call targets with the
+`__declspec(guard(suppress))` attribute, even if its address is taken. The
+linker lists it in the image's table of call targets, marked as not valid.
+This is useful for functions that are dangerous to reach indirectly.
+
 `Control Flow Guard documentation <https://docs.microsoft.com/en-us/windows/win32/secbp/pe-metadata>`
 }];
 }

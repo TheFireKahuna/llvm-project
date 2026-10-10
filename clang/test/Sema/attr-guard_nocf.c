@@ -19,6 +19,12 @@ __declspec(guard(nocf)) void testGuardNoCF(void) { // no warning
 __attribute__((guard(nocf))) void testGNUStyleGuardNoCF(void) { // no warning
 }
 
+// A function can be suppressed as a call target.
+__declspec(guard(suppress)) void testGuardSuppress(void) { // no warning
+}
+__attribute__((guard(suppress))) void testGNUStyleGuardSuppress(void) { // no warning
+}
+
 // Can not be used on variable, parameter, or function pointer declarations.
 int __declspec(guard(nocf)) i;                                      // expected-warning {{'guard' attribute only applies to functions}}
 void testGuardNoCFFuncParam(double __declspec(guard(nocf)) i) {}    // expected-warning {{'guard' attribute only applies to functions}}

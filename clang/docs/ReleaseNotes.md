@@ -282,6 +282,12 @@ features cannot lower the translation-unit ABI level;
 
 - Clang now recognizes the `[[gnu::flag_enum]]` attribute and treats it equivalent to `[[clang::flag_enum]]`
 
+- `__declspec(guard(suppress))` is now supported. Under Control Flow Guard the
+  function stays in the image's table of call targets but is marked suppressed,
+  so that it is not a valid target of an indirect call; the object asks for
+  this as MSVC's do, with `/GUARDSYM:<symbol>,S` in its linker directives
+  (`-guardsym:` in MinGW mode).
+
 ### Improvements to Clang's diagnostics
 
 - `-Wfortify-source` now diagnoses when `strlcat`, `__builtin_strlcat`, `strlcpy`, or

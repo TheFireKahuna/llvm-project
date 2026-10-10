@@ -3194,6 +3194,10 @@ void CodeGenModule::SetLLVMFunctionAttributesForDefinition(const Decl *D,
     return;
   }
 
+  if (const auto *A = D->getAttr<CFGuardAttr>();
+      A && A->getGuard() == CFGuardAttr::GuardArg::suppress)
+    B.addAttribute("guard_suppress");
+
   // Handle SME attributes that apply to function definitions,
   // rather than to function prototypes.
   if (D->hasAttr<ArmLocallyStreamingAttr>())
