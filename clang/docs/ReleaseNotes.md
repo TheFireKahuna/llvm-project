@@ -288,6 +288,15 @@ features cannot lower the translation-unit ABI level;
   this as MSVC's do, with `/GUARDSYM:<symbol>,S` in its linker directives
   (`-guardsym:` in MinGW mode).
 
+- The `cfi_salt` attribute is now accepted in C++. A salted function type is
+  distinct from the unsalted one in overload resolution and template argument
+  deduction, and under the Itanium C++ ABI its salt is mangled as the vendor
+  qualifier `U8cfi_salt`, whose template argument is the salt as a name when
+  it is an identifier and its bytes otherwise, so that names built from the
+  two types differ. The attribute is an error in C++ under the Microsoft C++
+  ABI, which has no way to mangle it. CFI and KCFI type identifiers are
+  unchanged and the same in C and C++.
+
 ### Improvements to Clang's diagnostics
 
 - `-Wfortify-source` now diagnoses when `strlcat`, `__builtin_strlcat`, `strlcpy`, or

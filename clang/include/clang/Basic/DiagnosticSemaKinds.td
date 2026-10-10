@@ -4926,6 +4926,8 @@ def err_attribute_regparm_invalid_number : Error<
   "'regparm' parameter must be between 0 and %0 inclusive">;
 def err_attribute_not_supported_in_lang : Error<
   "%0 attribute is not supported in %select{C|C++|Objective-C}1">;
+def err_attribute_not_supported_microsoft_abi : Error<
+  "%0 attribute is not supported in C++ with the Microsoft ABI">;
 def err_attribute_not_supported_on_arch
     : Error<"%0 attribute is not supported on '%1'">;
 def warn_gcc_ignores_type_attr : Warning<

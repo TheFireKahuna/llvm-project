@@ -4209,6 +4209,12 @@ void secure_callback(void) [[clang::cfi_salt("secure")]];
   salt values
 - The attribute affects type compatibility during compilation and CFI hash
   generation during code generation
+- In C++, a salted function type is distinct from the unsalted one in
+  overloading and templates, and the Itanium ABI mangles the salt as the
+  vendor qualifier `U8cfi_salt` with the salt as its template argument, so
+  that names built from the two types differ. The Microsoft C++ ABI cannot
+  mangle it, and the attribute is an error in C++ there. The CFI and KCFI type
+  identifiers of a salted function type are the same in C and C++.
   }];
 }
 

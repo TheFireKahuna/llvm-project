@@ -8230,6 +8230,16 @@ static bool handleFunctionTypeAttr(TypeProcessingState &state, ParsedAttr &attr,
     if (attr.getNumArgs() != 1)
       return true;
 
+    // A salted function type is a distinct type, which the Microsoft ABI has
+    // no way to mangle.
+    if (S.getLangOpts().CPlusPlus &&
+        S.Context.getTargetInfo().getCXXABI().isMicrosoft()) {
+      S.Diag(attr.getLoc(), diag::err_attribute_not_supported_microsoft_abi)
+          << attr;
+      attr.setInvalid();
+      return true;
+    }
+
     StringRef Argument;
     if (!S.checkStringLiteralArgumentAttr(attr, 0, Argument))
       return true;
