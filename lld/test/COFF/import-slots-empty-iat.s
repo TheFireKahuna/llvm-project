@@ -9,7 +9,7 @@
 # RUN: lld-link -def:a.def -out:a.lib -machine:x64
 # RUN: lld-link -def:b.def -out:b.lib -machine:x64
 
-## The 64-byte-aligned vt is packed before small, which preceded it.
+## The pinned vt is packed before small, which preceded it.
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-msvc packed.s -o packed.obj
 # RUN: lld-link -import-slots -opt:noref -entry:main -subsystem:console \
 # RUN:   packed.obj a.lib b.lib -debug:symtab -out:packed.exe
@@ -75,6 +75,7 @@ small:
 vt:
   .quad 0
   .quad fb
+  .linkpin vt, 6, 0
 
 #--- group.s
   .text

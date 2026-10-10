@@ -14,6 +14,7 @@
 #include "ImportSlots.h"
 #include "InputFiles.h"
 #include "LLDMapFile.h"
+#include "LinkPins.h"
 #include "MapFile.h"
 #include "PDB.h"
 #include "SymbolTable.h"
@@ -218,6 +219,7 @@ private:
   void createImportTables();
   void placeImportSlotSections();
   bool iatStartsRdata() const;
+  void packPlacedChunks();
   void appendImportThunks();
   void locateImportTables();
   uint64_t getIATSize() const;
@@ -315,6 +317,9 @@ private:
   // in-place import slots extend it past the address tables.
   Chunk *iatEnd = nullptr;
   ImportSlotContents slots;
+  // Whether packPlacedChunks lays out the pinned and 64-byte-aligned chunks of
+  // .rdata.
+  bool packRdata = false;
   DelayLoadContents delayIdata;
   TypePrefixContents prefixes;
   bool setNoSEHCharacteristic = false;
@@ -811,6 +816,7 @@ void Writer::run() {
     sortECChunks();
     appendECImportTables();
     placeImportSlotSections();
+    packPlacedChunks();
     createDynamicRelocs();
     removeUnusedSections();
     layoutSections();
@@ -1144,6 +1150,23 @@ void Writer::createSections() {
   ctorsSec = createSection(".ctors", data | r | w);
   dtorsSec = createSection(".dtors", data | r | w);
 
+  // Pinned and 64-byte-aligned read-only chunks are packed in an image whose
+  // objects pin chunks, as those of a target that places vtables do, where
+  // the layout's page residues are those of the sections' offsets.
+  const Configuration &config = ctx.config;
+  packRdata =
+      !ctx.chunkPins.empty() && config.order.empty() &&
+      config.align % 4096 == 0 &&
+      !ctx.hybridSymtab && !isArm64EC(config.machine) &&
+      llvm::any_of(ctx.driver.getChunks(), [&](Chunk *c) {
+        auto *sc = dyn_cast<SectionChunk>(c);
+        if (!sc || !sc->live || sc->getOutputCharacteristics() != (data | r) ||
+            !(ctx.chunkPins.contains(sc) || sc->getAlignment() >= 64))
+          return false;
+        return getPartialSectionName(sc, config.mingw) == ".rdata" ||
+               slots.isHeldBack(sc);
+      });
+
   // Then bin chunks by name and output characteristics.
   for (Chunk *c : ctx.driver.getChunks()) {
     auto *sc = dyn_cast<SectionChunk>(c);
@@ -1442,9 +1465,11 @@ void Writer::createImportTables() {
 
 // Whether the import address tables, and the read-only chunks holding
 // in-place import slots after them, start .rdata: when other sections holding
-// slots must lie next to them.
+// slots must lie next to them, and when they are packed before the rest of
+// .rdata.
 bool Writer::iatStartsRdata() const {
-  return slots.hasRdataGroupSlots() || !slots.getSlotSections().empty();
+  return slots.hasRdataGroupSlots() || !slots.getSlotSections().empty() ||
+         (packRdata && !slots.getReadOnlyChunks().empty());
 }
 
 // A read-only section other than .rdata that holds in-place import slots is
@@ -1492,6 +1517,151 @@ void Writer::placeImportSlotSections() {
   iatStart = before.front()->chunks.front();
   if (!iatEnd)
     iatEnd = before.back()->chunks.back();
+}
+
+
+// Lays out the pinned and 64-byte-aligned chunks of .rdata, vtables in
+// practice, so that the padding before each holds other read-only data
+// rather than zeros. Each in turn is the one that needs the least padding from
+// where the layout has reached, and its padding is filled with the largest
+// unplaced chunks that fit. The chunks held back into the import address
+// table directory are packed first, at the start of .rdata; chunks of plain
+// .rdata may fill their gaps, and move into the directory to do so. Nothing
+// else moves. assignAddresses honours the pins whatever the plan.
+void Writer::packPlacedChunks() {
+  if (!packRdata)
+    return;
+  const uint32_t rdata = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
+  PartialSection *plain = findPartialSection(".rdata", rdata);
+  PartialSection *iat = findPartialSection(".idata$5", rdata);
+  if (iat && !is_contained(rdataSec->contribSections, iat))
+    iat = nullptr;
+  if (plain && !is_contained(rdataSec->contribSections, plain))
+    plain = nullptr;
+
+  // The items, held-back ones first, in their current order.
+  DenseMap<Chunk *, Chunk *> continuedBy;
+  for (std::vector<ImportSlot *> &run : idata.slotRuns)
+    for (size_t i = 1; i < run.size(); ++i)
+      if (run[i]->chunk != run[i - 1]->chunk)
+        continuedBy[run[i - 1]->chunk] = run[i]->chunk;
+  std::vector<PackItem> items;
+  auto addItem = [&](Chunk *c) {
+    PackItem &item = items.emplace_back();
+    item.chunks.push_back(c);
+    item.size = c->getSize();
+    item.align = c->getAlignment();
+    if (auto it = ctx.chunkPins.find(c); it != ctx.chunkPins.end())
+      item.pin = &it->second;
+  };
+  size_t numHeldBack = 0;
+  if (iat) {
+    for (Chunk *c : iat->chunks) {
+      auto *sc = dyn_cast<SectionChunk>(c);
+      if (!sc || !slots.isHeldBack(sc))
+        continue;
+      if (numHeldBack && continuedBy.lookup(items.back().chunks.back()) == c) {
+        items.back().chunks.push_back(c);
+        items.back().size += c->getSize();
+        continue;
+      }
+      addItem(c);
+      numHeldBack = items.size();
+    }
+  }
+  if (plain)
+    for (Chunk *c : plain->chunks)
+      addItem(c);
+  if (llvm::none_of(items, [](const PackItem &item) { return item.isPlaced(); }))
+    return;
+
+  // The offset in .rdata of the end of the chunks before target.
+  auto offsetOf = [&](Chunk *target) {
+    uint64_t pos = 0;
+    for (Chunk *c : rdataSec->chunks) {
+      if (c == target)
+        break;
+      pos = alignTo(pos, c->getAlignment());
+      if (auto it = ctx.chunkPins.find(c); it != ctx.chunkPins.end())
+        pos = alignTo(pos, uint64_t(1) << it->second.log2, it->second.residue);
+      pos += c->getSize();
+    }
+    return pos;
+  };
+
+  RdataPacker packer(items);
+
+  // Lays out the chunks of the items that order lists where the chunks of
+  // pSec that isReplaced selects were, in pSec and in .rdata; any other chunk
+  // of those items leaves the place it had.
+  auto relayout = [&](PartialSection *pSec, ArrayRef<size_t> order,
+                      function_ref<bool(Chunk *)> isReplaced) {
+    std::vector<Chunk *> chunks;
+    for (size_t i : order)
+      llvm::append_range(chunks, items[i].chunks);
+    DenseSet<Chunk *> moved(chunks.begin(), chunks.end());
+    auto rebuild = [&](std::vector<Chunk *> &v) {
+      std::vector<Chunk *> out;
+      bool inserted = false;
+      for (Chunk *c : v) {
+        if (isReplaced(c)) {
+          if (!inserted)
+            llvm::append_range(out, chunks);
+          inserted = true;
+        } else if (!moved.contains(c)) {
+          out.push_back(c);
+        }
+      }
+      v = std::move(out);
+    };
+    rebuild(pSec->chunks);
+    rebuild(rdataSec->chunks);
+  };
+
+  for (size_t i = numHeldBack; i != items.size(); ++i)
+    if (!items[i].isPlaced())
+      packer.addFiller(i);
+
+  // The held-back items stay in the directory, after the address tables. The
+  // fillers of their gaps join them, and their unplaced items follow.
+  if (numHeldBack) {
+    for (size_t i = 0; i != numHeldBack; ++i)
+      if (!items[i].isPlaced())
+        packer.addFiller(i);
+    std::vector<size_t> order =
+        packer.pack(0, numHeldBack, offsetOf(items[0].chunks.front()));
+    for (size_t i = 0; i != numHeldBack; ++i)
+      if (!items[i].isPlaced() && packer.takeFiller(i))
+        order.push_back(i);
+    DenseSet<Chunk *> heldBack, movedIn;
+    for (size_t i : order)
+      (i < numHeldBack ? heldBack : movedIn)
+          .insert(items[i].chunks.begin(), items[i].chunks.end());
+    relayout(iat, order, [&](Chunk *c) { return heldBack.contains(c); });
+    if (plain) {
+      llvm::erase_if(plain->chunks,
+                     [&](Chunk *c) { return movedIn.contains(c); });
+      // An emptied partial section contributes nothing.
+      if (plain->chunks.empty())
+        llvm::erase(rdataSec->contribSections, plain);
+    }
+    // With no address table, a held-back chunk starts the directory too.
+    if (iatStart && heldBack.contains(iatStart))
+      iatStart = iat->chunks.front();
+    if (iatEnd && heldBack.contains(iatEnd))
+      iatEnd = iat->chunks.back();
+  }
+
+  // Then plain .rdata, from where its remaining chunks start.
+  if (plain && !plain->chunks.empty()) {
+    std::vector<size_t> order = packer.pack(numHeldBack, items.size(),
+                                            offsetOf(plain->chunks.front()));
+    for (size_t i = numHeldBack; i != items.size(); ++i)
+      if (!items[i].isPlaced() && packer.takeFiller(i))
+        order.push_back(i);
+    DenseSet<Chunk *> remaining(plain->chunks.begin(), plain->chunks.end());
+    relayout(plain, order, [&](Chunk *c) { return remaining.contains(c); });
+  }
 }
 
 // The size of the import address table directory: the address tables, and
@@ -2011,6 +2181,10 @@ void Writer::assignAddresses() {
       if (ctx.typePrefixRecords)
         virtualSize = prefixes.place(c, rva, virtualSize);
       virtualSize = alignTo(virtualSize, c->getAlignment());
+      // A pinned chunk starts at its residue, whatever comes before it.
+      if (auto it = ctx.chunkPins.find(c); it != ctx.chunkPins.end())
+        virtualSize = alignTo(virtualSize, uint64_t(1) << it->second.log2,
+                              it->second.residue - rva);
       c->setRVA(rva + virtualSize);
       virtualSize += c->getSize();
       if (c->hasData)

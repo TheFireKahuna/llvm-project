@@ -12,6 +12,7 @@
 #include "DebugTypes.h"
 #include "ICF.h"
 #include "InputFiles.h"
+#include "LinkPins.h"
 #include "LocalImports.h"
 #include "MarkLive.h"
 #include "MinGW.h"
@@ -2867,6 +2868,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     // Needed for MSVC 2019 16.8 CRT.
     symtab.addAbsolute(symtab.mangle("__guard_eh_cont_count"), 0);
     symtab.addAbsolute(symtab.mangle("__guard_eh_cont_table"), 0);
+    // An object whose correctness needs its pins honoured includes this
+    // symbol, so that a linker that ignores them fails to link it.
+    symtab.addAbsolute(symtab.mangle("__llvm_link_pins_v1"), 0);
     // So does an object whose static data holds an imported address, which
     // needs the loader to write the address there.
     if (config->importSlots)
@@ -3253,6 +3257,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
 
   // Needs to happen after the last call to addFile().
   convertResources();
+
+  resolveLinkPins(ctx);
 
   if (config->guardCF & GuardCFLevel::CF)
     findGuardSuppressed(ctx);

@@ -121,6 +121,9 @@ public:
 
   DynamicRelocsChunk *dynamicRelocs = nullptr;
 
+  // The address each pinned chunk must start at.
+  llvm::DenseMap<const Chunk *, ChunkPin> chunkPins;
+
   // Whether an object says that its functions have KCFI prefixes with a
   // marker, which the writer then finds, seals and places.
   bool typePrefixRecords = false;
