@@ -26,7 +26,6 @@
 // These two headers must be included last, and make sure shlobj is required
 // after Windows.h to make sure it picks up our definition of _WIN32_WINNT
 #include "llvm/Support/Windows/WindowsSupport.h"
-#include <shellapi.h>
 #include <shlobj.h>
 #include <winioctl.h>
 
@@ -971,7 +970,13 @@ static bool isReservedName(StringRef path) {
   return false;
 }
 
-static file_type file_type_from_attrs(DWORD Attrs) {
+static file_type file_type_from_attrs(DWORD Attrs, DWORD ReparseTag = 0) {
+  // A name-surrogate reparse point (symbolic link, junction) is a link to
+  // another name and is reported like lstat(2) reports a symlink. Other
+  // reparse points (cloud placeholders, deduplicated files) are the file.
+  if ((Attrs & FILE_ATTRIBUTE_REPARSE_POINT) &&
+      IsReparseTagNameSurrogate(ReparseTag))
+    return file_type::symlink_file;
   return (Attrs & FILE_ATTRIBUTE_DIRECTORY) ? file_type::directory_file
                                             : file_type::regular_file;
 }
@@ -982,6 +987,7 @@ static perms perms_from_attrs(DWORD Attrs) {
 
 static std::error_code getStatus(HANDLE FileHandle, file_status &Result) {
   SmallVector<wchar_t, MAX_PATH> ntPath;
+  DWORD ReparseTag = 0;
   if (FileHandle == INVALID_HANDLE_VALUE)
     goto handle_status_error;
 
@@ -1009,6 +1015,16 @@ static std::error_code getStatus(HANDLE FileHandle, file_status &Result) {
   if (!::GetFileInformationByHandle(FileHandle, &Info))
     goto handle_status_error;
 
+  // Only a handle opened with FILE_FLAG_OPEN_REPARSE_POINT (or on a reparse
+  // point that is not a link) carries the attribute; the tag is needed to
+  // tell a link from other reparse points.
+  if (Info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+    FILE_ATTRIBUTE_TAG_INFO TagInfo;
+    if (::GetFileInformationByHandleEx(FileHandle, FileAttributeTagInfo,
+                                       &TagInfo, sizeof(TagInfo)))
+      ReparseTag = TagInfo.ReparseTag;
+  }
+
   // File indices aren't necessarily stable after closing the file handle;
   // instead hash a canonicalized path.
   //
@@ -1034,7 +1050,7 @@ static std::error_code getStatus(HANDLE FileHandle, file_status &Result) {
   }
 
   Result = file_status(
-      file_type_from_attrs(Info.dwFileAttributes),
+      file_type_from_attrs(Info.dwFileAttributes, ReparseTag),
       perms_from_attrs(Info.dwFileAttributes), Info.nNumberOfLinks,
       Info.ftLastAccessTime.dwHighDateTime, Info.ftLastAccessTime.dwLowDateTime,
       Info.ftLastWriteTime.dwHighDateTime, Info.ftLastWriteTime.dwLowDateTime,
@@ -1347,13 +1363,15 @@ int mapped_file_region::alignment() {
 }
 
 static basic_file_status status_from_find_data(WIN32_FIND_DATAW *FindData) {
-  return basic_file_status(file_type_from_attrs(FindData->dwFileAttributes),
-                           perms_from_attrs(FindData->dwFileAttributes),
-                           FindData->ftLastAccessTime.dwHighDateTime,
-                           FindData->ftLastAccessTime.dwLowDateTime,
-                           FindData->ftLastWriteTime.dwHighDateTime,
-                           FindData->ftLastWriteTime.dwLowDateTime,
-                           FindData->nFileSizeHigh, FindData->nFileSizeLow);
+  // dwReserved0 holds the reparse tag when the attribute is set.
+  return basic_file_status(
+      file_type_from_attrs(FindData->dwFileAttributes, FindData->dwReserved0),
+      perms_from_attrs(FindData->dwFileAttributes),
+      FindData->ftLastAccessTime.dwHighDateTime,
+      FindData->ftLastAccessTime.dwLowDateTime,
+      FindData->ftLastWriteTime.dwHighDateTime,
+      FindData->ftLastWriteTime.dwLowDateTime, FindData->nFileSizeHigh,
+      FindData->nFileSizeLow);
 }
 
 std::error_code detail::directory_iterator_construct(detail::DirIterState &IT,
@@ -1408,10 +1426,9 @@ std::error_code detail::directory_iterator_construct(detail::DirIterState &IT,
   IT.IterationHandle = intptr_t(FindHandle.take());
   SmallString<128> DirectoryEntryPath(Path);
   path::append(DirectoryEntryPath, DirectoryEntryNameUTF8);
-  IT.CurrentEntry =
-      directory_entry(DirectoryEntryPath, FollowSymlinks,
-                      file_type_from_attrs(FirstFind.dwFileAttributes),
-                      status_from_find_data(&FirstFind));
+  basic_file_status Status = status_from_find_data(&FirstFind);
+  IT.CurrentEntry = directory_entry(DirectoryEntryPath, FollowSymlinks,
+                                    Status.type(), Status);
 
   return std::error_code();
 }
@@ -1449,14 +1466,23 @@ std::error_code detail::directory_iterator_increment(detail::DirIterState &IT) {
                       DirectoryEntryPathUTF8))
     return EC;
 
-  IT.CurrentEntry.replace_filename(
-      Twine(DirectoryEntryPathUTF8),
-      file_type_from_attrs(FindData.dwFileAttributes),
-      status_from_find_data(&FindData));
+  basic_file_status Status = status_from_find_data(&FindData);
+  IT.CurrentEntry.replace_filename(Twine(DirectoryEntryPathUTF8), Status.type(),
+                                   Status);
   return std::error_code();
 }
 
-ErrorOr<basic_file_status> directory_entry::status() const { return Status; }
+ErrorOr<basic_file_status> directory_entry::status() const {
+  // The directory listing describes the link itself; when following, report
+  // its target, as the POSIX implementation does with stat(2).
+  if (Type == file_type::symlink_file && FollowSymlinks) {
+    file_status Target;
+    if (std::error_code EC = fs::status(Path, Target, /*Follow=*/true))
+      return EC;
+    return Target;
+  }
+  return Status;
+}
 
 static std::error_code nativeFileToFd(Expected<file_t> H, int &ResultFD,
                                       OpenFlags Flags) {
@@ -1733,56 +1759,6 @@ std::error_code closeFile(file_t &F) {
   F = file_t::Invalid;
   if (!::CloseHandle(TmpF.get()))
     return mapWindowsError(::GetLastError());
-  return std::error_code();
-}
-
-std::error_code remove_directories(const Twine &path, bool IgnoreErrors) {
-  SmallString<128> NativePath;
-  llvm::sys::path::native(path, NativePath, path::Style::windows_backslash);
-  // Convert to utf-16.
-  SmallVector<wchar_t, 128> Path16;
-  std::error_code EC = widenPath(NativePath, Path16);
-  if (EC && !IgnoreErrors)
-    return EC;
-
-  // SHFileOperation() accepts a list of paths, and so must be double null-
-  // terminated to indicate the end of the list.  The buffer is already null
-  // terminated, but since that null character is not considered part of the
-  // vector's size, pushing another one will just consume that byte.  So we
-  // need to push 2 null terminators.
-  Path16.push_back(0);
-  Path16.push_back(0);
-
-  HRESULT HR;
-  do {
-    HR =
-        CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    if (FAILED(HR))
-      break;
-    llvm::scope_exit Uninitialize([] { CoUninitialize(); });
-    IFileOperation *FileOp = NULL;
-    HR = CoCreateInstance(CLSID_FileOperation, NULL, CLSCTX_ALL,
-                          IID_PPV_ARGS(&FileOp));
-    if (FAILED(HR))
-      break;
-    llvm::scope_exit FileOpRelease([&FileOp] { FileOp->Release(); });
-    HR = FileOp->SetOperationFlags(FOF_NO_UI | FOFX_NOCOPYHOOKS);
-    if (FAILED(HR))
-      break;
-    PIDLIST_ABSOLUTE PIDL = ILCreateFromPathW(Path16.data());
-    llvm::scope_exit FreePIDL([&PIDL] { ILFree(PIDL); });
-    IShellItem *ShItem = NULL;
-    HR = SHCreateItemFromIDList(PIDL, IID_PPV_ARGS(&ShItem));
-    if (FAILED(HR))
-      break;
-    llvm::scope_exit ShItemRelease([&ShItem] { ShItem->Release(); });
-    HR = FileOp->DeleteItem(ShItem, NULL);
-    if (FAILED(HR))
-      break;
-    HR = FileOp->PerformOperations();
-  } while (false);
-  if (FAILED(HR) && !IgnoreErrors)
-    return mapWindowsError(HRESULT_CODE(HR));
   return std::error_code();
 }
 
