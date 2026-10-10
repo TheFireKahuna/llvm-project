@@ -38,11 +38,6 @@
 typedef int errno_t;
 #endif
 
-#ifdef _MSC_VER
-#pragma comment(lib, "advapi32.lib") // This provides CryptAcquireContextW.
-#pragma comment(lib, "ole32.lib")    // This provides CoTaskMemFree
-#endif
-
 // The SDK declares the POSIX-semantics rename and delete (Windows 10 1709)
 // only above the _WIN32_WINNT floor set in WindowsSupport.h. The values are
 // ABI-stable.

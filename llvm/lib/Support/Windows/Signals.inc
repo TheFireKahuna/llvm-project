@@ -35,9 +35,7 @@
 #endif
 #include <psapi.h>
 
-#ifdef _MSC_VER
-#pragma comment(lib, "psapi.lib")
-#elif __MINGW32__
+#ifdef __MINGW32__
 // The version of g++ that comes with MinGW does *not* properly understand
 // the ll format specifier for printf. However, MinGW passes the format
 // specifiers on to the MSVCRT entirely, and the CRT understands the ll

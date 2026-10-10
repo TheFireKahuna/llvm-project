@@ -9,8 +9,9 @@ set(LLVM_LINK_COMPONENTS
   WindowsDriver
   )
 
-if(WIN32)
-  # MSVCToolChain.cpp uses version.dll.
+if(WIN32 AND NOT (MSVC AND NOT MINGW))
+  # MSVCToolChain.cpp uses version.dll. MSVC-style builds take it from the API
+  # set import library that LLVMSupport links.
   set(system_libs version)
 endif()
 

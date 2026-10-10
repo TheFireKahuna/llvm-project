@@ -27,11 +27,6 @@
 #include <psapi.h>
 #include <shellapi.h>
 
-#if !defined(__MINGW32__)
-#pragma comment(lib, "psapi.lib")
-#pragma comment(lib, "shell32.lib")
-#endif
-
 //===----------------------------------------------------------------------===//
 //=== WARNING: Implementation here must contain only Win32 specific code
 //===          and must not be UNIX code

@@ -44,9 +44,18 @@ endif()
 
 if( WIN32 )
   # libuuid required for FOLDERID_Profile usage in lib/Support/Windows/Path.inc.
-  # bcrypt required for BCryptGenRandom in lib/Support/Windows/Process.inc.
   # ntdll required for RtlGetLastNtStatus in lib/Support/ErrorHandling.cpp.
-  set(system_libs ${system_libs} psapi shell32 ole32 uuid advapi32 bcrypt ws2_32 ntdll)
+  if( MSVC AND NOT MINGW )
+    # The API set import library comes first, so that the registry, COM,
+    # security, version and process status functions bind to API sets that
+    # resolve to kernelbase.dll and combase.dll rather than to advapi32.dll,
+    # ole32.dll, version.dll and psapi.dll, which the import libraries later
+    # on the link line name. The API sets need Windows 10.
+    set(system_libs ${system_libs} OneCoreUAP_apiset uuid ws2_32 ntdll)
+  else()
+    # bcrypt required for BCryptGenRandom in lib/Support/Windows/Process.inc.
+    set(system_libs ${system_libs} psapi shell32 ole32 uuid advapi32 bcrypt ws2_32 ntdll)
+  endif()
   if( HAVE_WINDOWS_ICU )
     list(APPEND system_libs icu)
   endif()
@@ -96,15 +105,21 @@ if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.25"
   set(WL "$<$<OR:$<LINK_LANG_AND_ID:C,IntelLLVM>,$<LINK_LANG_AND_ID:CXX,IntelLLVM>,$<LINK_LANG_AND_ID:Fortran,IntelLLVM>>:-Qoption,link,>")
 endif()
 
-# Delay load shell32.dll, ole32.dll, oleaut32.dll and bcrypt.dll if possible to
-# speed up process startup.
+# Delay load the DLLs that only some code paths call into if possible to speed
+# up process startup: COM (combase.dll), the known folders (windows.storage.dll),
+# the privilege lookup (advapi32.dll), the BSTR functions (oleaut32.dll) and
+# bcrypt.dll.
 set (delayload_flags)
 if (MSVC)
   # When linking with Swift, `swiftc.exe` is used as the linker drive rather
   # than invoking `link.exe` directly.  In such a case, the flags should be
   # marked as `-Xlinker` to pass them directly to the linker.  As a temporary
   # workaround simply elide the delay loading.
-  set (delayload_flags $<$<NOT:$<LINK_LANGUAGE:Swift>>:delayimp ${WL}-delayload:shell32.dll ${WL}-delayload:ole32.dll ${WL}-delayload:oleaut32.dll ${WL}-delayload:bcrypt.dll>)
+  set (delayload_flags $<$<NOT:$<LINK_LANGUAGE:Swift>>:delayimp
+    ${WL}-delayload:api-ms-win-core-com-l1-1-0.dll
+    ${WL}-delayload:ext-ms-win-shell32-shellfolders-l1-1-0.dll
+    ${WL}-delayload:api-ms-win-security-lsalookup-l2-1-0.dll
+    ${WL}-delayload:oleaut32.dll ${WL}-delayload:bcrypt.dll>)
 endif()
 
 # Link Z3 if the user wants to build it.
