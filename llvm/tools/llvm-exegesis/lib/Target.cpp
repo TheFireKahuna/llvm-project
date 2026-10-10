@@ -53,7 +53,7 @@ ExegesisTarget::getIgnoredOpcodeReasonOrNull(const LLVMState &State,
 Expected<std::unique_ptr<pfm::CounterGroup>>
 ExegesisTarget::createCounter(StringRef CounterName, const LLVMState &State,
                               ArrayRef<const char *> ValidationCounters,
-                              const pid_t ProcessID) const {
+                              const sys::procid_t ProcessID) const {
   const PfmCountersInfo &PCI = State.getPfmCounters();
 
   std::vector<pfm::PerfEvent> ValidationEvents;

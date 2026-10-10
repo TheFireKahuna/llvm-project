@@ -230,7 +230,7 @@ static Expected<int> connectTCPSocketImpl(std::string Host,
 
   if (int EC = getaddrinfo(Host.c_str(), PortStr.c_str(), &Hints, &AI))
     return llvm::make_error<llvm::StringError>(
-        llvm::formatv("address resolution failed ({0})", strerror(EC)),
+        llvm::formatv("address resolution failed ({0})", gai_strerror(EC)),
         llvm::inconvertibleErrorCode());
   // Cycle through the returned addrinfo structures and connect to the first
   // reachable endpoint.
@@ -239,7 +239,8 @@ static Expected<int> connectTCPSocketImpl(std::string Host,
   for (Server = AI; Server != nullptr; Server = Server->ai_next) {
     // socket might fail, e.g. if the address family is not supported. Skip to
     // the next addrinfo structure in such a case.
-    if ((SockFD = socket(AI->ai_family, AI->ai_socktype, AI->ai_protocol)) < 0)
+    if ((SockFD = socket(Server->ai_family, Server->ai_socktype,
+                         Server->ai_protocol)) < 0)
       continue;
 
     // If connect returns null, we exit the loop with a working socket.

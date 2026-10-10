@@ -18,15 +18,10 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Config/config.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/Program.h"
 
 #include <cstdint>
 #include <functional>
-
-#ifdef _MSC_VER
-typedef int pid_t;
-#else
-#include <sys/types.h>
-#endif // _MSC_VER
 
 struct perf_event_attr;
 
@@ -90,7 +85,7 @@ class ConfiguredEvent {
 public:
   ConfiguredEvent(PerfEvent &&EventToConfigure);
 
-  void initRealEvent(const pid_t ProcessID, const int GroupFD = -1);
+  void initRealEvent(const sys::procid_t ProcessID, const int GroupFD = -1);
   Expected<SmallVector<int64_t>> readOrError(StringRef FunctionBytes) const;
   int getFileDescriptor() const { return FileDescriptor; }
   bool isDummyEvent() const {
@@ -115,7 +110,7 @@ class CounterGroup {
 public:
   // event: the PerfEvent to measure.
   explicit CounterGroup(PerfEvent &&event, std::vector<PerfEvent> &&ValEvents,
-                        pid_t ProcessID = 0);
+                        sys::procid_t ProcessID = 0);
 
   CounterGroup(const CounterGroup &) = delete;
   CounterGroup(CounterGroup &&other) = default;
@@ -149,7 +144,7 @@ protected:
   std::vector<ConfiguredEvent> ValidationEventCounters;
 
 private:
-  void initRealEvent(pid_t ProcessID);
+  void initRealEvent(sys::procid_t ProcessID);
 };
 
 } // namespace pfm

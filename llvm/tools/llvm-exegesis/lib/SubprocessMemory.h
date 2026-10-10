@@ -17,15 +17,9 @@
 
 #include "BenchmarkResult.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/Support/Program.h"
 #include <string>
 #include <vector>
-
-#ifdef _MSC_VER
-typedef int pid_t;
-#else
-#include <sys/types.h>
-#endif // _MSC_VER
-
 
 namespace llvm {
 namespace exegesis {
@@ -38,14 +32,14 @@ public:
   // Gets the thread ID for the calling thread.
   static long getCurrentTID();
 
-  Error initializeSubprocessMemory(pid_t ProcessID);
+  Error initializeSubprocessMemory(sys::procid_t ProcessID);
 
   // The following function sets up memory definitions. It creates shared
   // memory objects for the definitions and fills them with the specified
   // values. Arguments: MemoryDefinitions - A map from memory value names to
   // MemoryValues, ProcessID - The ID of the current process.
   Error addMemoryDefinition(StringMap<MemoryValue> MemoryDefinitions,
-                            pid_t ProcessID);
+                            sys::procid_t ProcessID);
 
   // The following function sets up the auxiliary memory by opening shared
   // memory objects backing memory definitions and putting file descriptors
@@ -56,7 +50,7 @@ public:
   // section.
   static Expected<int>
   setupAuxiliaryMemoryInSubprocess(StringMap<MemoryValue> MemoryDefinitions,
-                                   pid_t ParentPID, long ParentTID,
+                                   sys::procid_t ParentPID, long ParentTID,
                                    int CounterFileDescriptor);
 
   ~SubprocessMemory();

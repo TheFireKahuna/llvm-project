@@ -25,7 +25,9 @@
 #undef in
 #if LLVM_ENABLE_ZLIB
 // Avoid introducing max as a macro from Windows headers.
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <zlib.h>
 #endif
 #if LLVM_ENABLE_ZSTD
