@@ -147,6 +147,9 @@ void *DynamicLibrary::HandleSet::DLSym(void *Handle, const char *Symbol) {
         return (void *)uintptr_t(Ptr);
     }
   }
+
+  if (auto Fallback = ProcessSymbolFallback.load())
+    return Fallback(Symbol);
   return nullptr;
 }
 

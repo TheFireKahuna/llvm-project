@@ -115,6 +115,36 @@ LLVM_NO_SANITIZE("cfi-icall")
   }
 }
 
+static int FallbackTarget;
+
+static void *ProcessFallback(const char *SymbolName) {
+  return StringRef(SymbolName) == "NoModuleDefinesThis" ? &FallbackTarget
+                                                        : nullptr;
+}
+
+// A search of the program handle ends with the fallback, which a search of a
+// library handle never consults.
+TEST(DynamicLibrary, ProcessSymbolFallback) {
+  std::string Err;
+  DynamicLibrary DL = DynamicLibrary::getPermanentLibrary(nullptr, &Err);
+  ASSERT_TRUE(DL.isValid()) << Err;
+  EXPECT_EQ(DL.getAddressOfSymbol("NoModuleDefinesThis"), nullptr);
+
+  DynamicLibrary::setProcessSymbolFallback(ProcessFallback);
+  EXPECT_EQ(DL.getAddressOfSymbol("NoModuleDefinesThis"), &FallbackTarget);
+  EXPECT_EQ(DynamicLibrary::SearchForAddressOfSymbol("NoModuleDefinesThis"),
+            &FallbackTarget);
+  EXPECT_EQ(DL.getAddressOfSymbol("NorThis"), nullptr);
+
+  DynamicLibrary Lib = DynamicLibrary::getLibrary(LibPath().c_str(), &Err);
+  ASSERT_TRUE(Lib.isValid()) << Err;
+  EXPECT_EQ(Lib.getAddressOfSymbol("NoModuleDefinesThis"), nullptr);
+  DynamicLibrary::closeLibrary(Lib);
+
+  DynamicLibrary::setProcessSymbolFallback(nullptr);
+  EXPECT_EQ(DL.getAddressOfSymbol("NoModuleDefinesThis"), nullptr);
+}
+
 #else
 
 TEST(DynamicLibrary, Unsupported) {

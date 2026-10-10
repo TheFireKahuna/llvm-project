@@ -45,7 +45,12 @@ void *DynamicLibrary::HandleSet::DLOpen(const char *File, std::string *Err) {
 void DynamicLibrary::HandleSet::DLClose(void *Handle) { ::dlclose(Handle); }
 
 void *DynamicLibrary::HandleSet::DLSym(void *Handle, const char *Symbol) {
-  return ::dlsym(Handle, Symbol);
+  if (void *Ptr = ::dlsym(Handle, Symbol))
+    return Ptr;
+  auto Fallback = ProcessSymbolFallback.load();
+  if (Fallback && Handle == getGlobals().OpenedHandles.Process)
+    return Fallback(Symbol);
+  return nullptr;
 }
 
 #else // !HAVE_DLOPEN
