@@ -58,7 +58,19 @@ define void @f3() !kcfi_type !1 !kcfi_vfn_type !2 {
   ret void
 }
 
+;; A second type that would spell ENDBR64 is stored plus one, as the type is.
+; ASM-LABEL: __cfi_f4:
+; ASM-NEXT:    .long 4196274164
+; OBJ:      <__cfi_f4>:
+; OBJ-NEXT:   f4 hlt
+; OBJ-NEXT:   0f 1e
+; OBJ-NEXT:   fa cli
+define void @f4() !kcfi_type !1 !kcfi_vfn_type !3 {
+  ret void
+}
+
 !llvm.module.flags = !{!0}
 !0 = !{i32 4, !"function-type-prefix", i32 16}
 !1 = !{i32 12345678}
 !2 = !{i32 305419896}
+!3 = !{i32 -98693133}

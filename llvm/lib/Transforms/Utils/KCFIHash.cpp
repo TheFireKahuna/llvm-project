@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/Utils/KCFIHash.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/ErrorHandling.h"
 
@@ -154,9 +155,29 @@ uint32_t llvm::getTypePrefixMarker(bool NormalizeIntegers,
   return getKCFITypeID(Variant, KCFIHashAlgorithm::xxHash64);
 }
 
+uint32_t llvm::getX86KCFIType(uint32_t Type) {
+  // If the type hash matches an invalid pattern, mask the value.
+  const uint32_t InvalidValues[] = {
+      0xFA1E0FF3, /* ENDBR64 */
+      0xFB1E0FF3, /* ENDBR32 */
+  };
+  for (uint32_t N : InvalidValues) {
+    // LowerKCFI_CHECK emits -Value for indirect call checks, so we must also
+    // mask that. Note that -(Value + 1) == ~Value.
+    if (N == Type || -N == Type)
+      return Type + 1;
+  }
+  return Type;
+}
+
 bool llvm::isX86TypePrefixPadding(uint32_t Word) {
   // Single-byte nops, a 4-byte nopl, or int3s.
   const uint32_t Padding[] = {0x90909090, 0x00401F0F, 0xCCCCCCCC};
   return llvm::is_contained(Padding, Word);
 }
 
+bool llvm::hasKCFIThunks(const Module &M) {
+  const Triple &TT = M.getTargetTriple();
+  return TT.isOSBinFormatCOFF() && (TT.isX86_64() || TT.isAArch64()) &&
+         !TT.isWindowsArm64EC() && M.getModuleFlag("function-type-prefix");
+}

@@ -27,6 +27,7 @@
 #include "llvm/CodeGen/StackMaps.h"
 #include "llvm/DebugInfo/CodeView/CodeView.h"
 #include "llvm/IR/InlineAsm.h"
+#include "llvm/MC/MCRegister.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
 #include <cstdint>
@@ -480,6 +481,75 @@ public:
   void emitKCFITrapEntry(const MachineFunction &MF, const MCSymbol *Symbol);
   virtual void emitKCFITypeId(const MachineFunction &MF);
 
+  /// One kind of KCFI mismatch routine, which takes a target in a register.
+  /// X86-64 has a dispatch routine, which jumps to the target, and a check
+  /// routine, which returns; AArch64 has only the check routine. A scanner
+  /// walks a type's list on the routine's behalf.
+  struct KCFIRoutineKind {
+    /// The KCFIThunkKind the routine guards: dispatch or check.
+    unsigned Kind;
+    StringRef MismatchPrefix;
+    StringRef Scanner;
+    StringRef DynamicScanner;
+    StringRef GuardFn;
+    MCRegister TargetReg;
+  };
+
+  /// A per-type KCFI thunk the shared driver asks the target to emit, after it
+  /// has switched to the thunk's section and emitted its label. An ordinary or
+  /// local thunk checks Type (at offset 16 for Vfn); a member thunk checks Type
+  /// and the membership Tags, and continues into Miss. CodeStart and CodeEnd
+  /// bound the image's sealed code, or are null for an ordinary thunk, which
+  /// takes no range test.
+  struct KCFIThunkInfo {
+    const KCFIRoutineKind *Routine;
+    uint32_t Type;
+    uint64_t Pattern;
+    int64_t PrefixNops;
+    bool Local;
+    bool Vfn;
+    MCSymbol *Mismatch;
+    MCSymbol *Miss;
+    ArrayRef<uint32_t> Tags;
+    MCSymbol *CodeStart;
+    MCSymbol *CodeEnd;
+  };
+
+  /// Emits the per-type thunks the CFGuard pass routes a module's indirect
+  /// calls with a KCFI type through, as the backend does for COFF when the
+  /// prefixes carry a marker. Shared across targets; the per-target hooks
+  /// below emit the bodies.
+  void emitKCFIThunks(Module &M);
+
+protected:
+  /// The mismatch routine kinds the target emits, dispatch first where it has
+  /// one. Empty off the targets that emit KCFI thunks.
+  virtual ArrayRef<KCFIRoutineKind> getKCFIRoutineKinds() const { return {}; }
+
+  /// Switches to a COMDAT section for a KCFI routine named by Sym and emits its
+  /// label, as a global function aligned to Alignment.
+  void emitKCFIFunctionStart(MCSymbol *Sym, int Selection, Align Alignment);
+
+  /// Emits the body of an ordinary, local or vfn thunk described by \p I.
+  virtual void emitKCFIThunk(const KCFIThunkInfo &I) {}
+  /// Emits the body of a type's scanner of \p Routine's kind, which walks a
+  /// list its first argument register points past; a dynamic scanner continues
+  /// into the guard function where a static one fails fast.
+  virtual void emitKCFIScanner(const KCFIRoutineKind &Routine, bool Dynamic,
+                               uint64_t Pattern, int64_t PrefixNops) {}
+  /// Emits the body of an open type's mismatch routine, which points the
+  /// scanner at List and jumps to it.
+  virtual void emitKCFIOpenRoutine(const KCFIRoutineKind &Routine,
+                                   MCSymbol *List, bool Dynamic) {}
+  /// The alignment of an open type's mismatch routine, in bytes.
+  virtual unsigned getKCFIOpenRoutineAlignment() const { return 1; }
+  /// The bytes per unit of the kcfi-offset module flag: 1 on x86, 4 on
+  /// AArch64, where a prefix nop is an instruction.
+  virtual unsigned getKCFIPrefixByteScale() const { return 1; }
+  /// Emits the fast-fail trap body.
+  virtual void emitKCFIFastFail() {}
+
+public:
   void emitCallGraphSection(const MachineFunction &MF,
                             FunctionCallGraphInfo &FuncCGInfo);
 

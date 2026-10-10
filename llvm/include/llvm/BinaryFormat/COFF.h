@@ -156,6 +156,55 @@ enum LinkSiteForm : uint8_t {
 // marked prefixes never assigns this type to a function or a call.
 const uint32_t SealedTypeId = 0;
 
+// The names by which the KCFI checks of an object, the thunks and routines a
+// compiler emits for them, and a linker that rewrites both refer to each
+// other. A name that ends in an underscore is followed by a KCFI type in 8
+// lowercase hexadecimal digits.
+//
+// The thunks a call goes through, which check its target's type.
+inline constexpr char KCFIDispatchThunkPrefix[] = "__llvm_kcfi_dispatch_";
+inline constexpr char KCFICheckThunkPrefix[] = "__llvm_kcfi_check_";
+inline constexpr char KCFILocalDispatchThunkPrefix[] =
+    "__llvm_kcfi_local_dispatch_";
+inline constexpr char KCFILocalCheckThunkPrefix[] = "__llvm_kcfi_local_check_";
+inline constexpr char KCFIVfnCheckThunkPrefix[] = "__llvm_kcfi_vfn_check_";
+inline constexpr char KCFIMemberDispatchThunkPrefix[] =
+    "__llvm_kcfi_member_dispatch_";
+inline constexpr char KCFIMemberCheckThunkPrefix[] =
+    "__llvm_kcfi_member_check_";
+inline constexpr char KCFIMemberLocalDispatchThunkPrefix[] =
+    "__llvm_kcfi_member_local_dispatch_";
+inline constexpr char KCFIMemberLocalCheckThunkPrefix[] =
+    "__llvm_kcfi_member_local_check_";
+// The routines a thunk continues into on a mismatch, and a member thunk on a
+// miss, and the routine that fails fast.
+inline constexpr char KCFIMismatchPrefix[] = "__llvm_kcfi_mismatch_";
+inline constexpr char KCFICheckMismatchPrefix[] = "__llvm_kcfi_check_mismatch_";
+inline constexpr char KCFIMemberMissPrefix[] = "__llvm_kcfi_member_miss_";
+inline constexpr char KCFIMemberCheckMissPrefix[] =
+    "__llvm_kcfi_member_check_miss_";
+inline constexpr char KCFIMemberLocalMissPrefix[] =
+    "__llvm_kcfi_member_local_miss_";
+inline constexpr char KCFIMemberLocalCheckMissPrefix[] =
+    "__llvm_kcfi_member_local_check_miss_";
+inline constexpr char KCFITrap[] = "__llvm_kcfi_trap";
+// The scanners an open type's routine passes the type's list to, for each
+// kind of thunk.
+inline constexpr char KCFIOpenScanner[] = "__llvm_kcfi_open";
+inline constexpr char KCFIOpenDynamicScanner[] = "__llvm_kcfi_open_dynamic";
+inline constexpr char KCFICheckOpenScanner[] = "__llvm_kcfi_check_open";
+inline constexpr char KCFICheckOpenDynamicScanner[] =
+    "__llvm_kcfi_check_open_dynamic";
+// The head of a type's list, and the start of the names of the sections that
+// hold its pieces, which end in _a, _m and _z.
+inline constexpr char KCFIListPrefix[] = "__llvm_kcfi_list_";
+inline constexpr char KCFIListSectionPrefix[] = ".rdata$llvm_kcfi_";
+// The bounds of the code range of an image, which a thunk takes a target
+// inside directly, and their weak default, an empty range.
+inline constexpr char KCFICodeStart[] = "__llvm_code_start";
+inline constexpr char KCFICodeEnd[] = "__llvm_code_end";
+inline constexpr char KCFICodeEmpty[] = "__llvm_code_empty";
+
 // Sizes in bytes of various things in the COFF format.
 enum {
   Header16Size = 20,

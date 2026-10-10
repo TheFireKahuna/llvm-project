@@ -129,6 +129,23 @@ private:
   void EmitKCFITypePadding(const MachineFunction &MF, unsigned TypeBytes);
   void LowerKCFI_CHECK(const MachineInstr &MI);
 
+  // Per-target emission of the KCFI thunks, scanners and open routines, which
+  // AsmPrinter::emitKCFIThunks drives.
+  ArrayRef<KCFIRoutineKind> getKCFIRoutineKinds() const override;
+  void emitKCFIThunk(const KCFIThunkInfo &I) override;
+  void emitKCFIScanner(const KCFIRoutineKind &Routine, bool Dynamic,
+                       uint64_t Pattern, int64_t PrefixNops) override;
+  void emitKCFIOpenRoutine(const KCFIRoutineKind &Routine, MCSymbol *List,
+                           bool Dynamic) override;
+  void emitKCFIFastFail() override;
+  // Shared instruction builders for the hooks above.
+  void emitKCFILea(MCRegister Reg, MCSymbol *Sym);
+  void emitKCFICmp(MCRegister LHS, MCRegister RHS);
+  void emitKCFIJcc(MCSymbol *Target, unsigned Cond);
+  void emitKCFIPageTest(MCRegister Reg, MCSymbol *Target, int64_t PrefixNops,
+                        unsigned ReadBytes = 12);
+  void emitKCFIGuardJump(StringRef GuardFn);
+
   // Address sanitizer specific lowering for X86.
   void LowerASAN_CHECK_MEMACCESS(const MachineInstr &MI);
 

@@ -56,6 +56,7 @@
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstBuilder.h"
+#include "llvm/MC/MCSectionCOFF.h"
 #include "llvm/MC/MCSectionELF.h"
 #include "llvm/MC/MCSectionMachO.h"
 #include "llvm/MC/MCStreamer.h"
@@ -70,6 +71,7 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/Instrumentation/HWAddressSanitizer.h"
+#include "llvm/Transforms/Utils/KCFIHash.h"
 #include <cassert>
 #include <cstdint>
 #include <map>
@@ -166,6 +168,26 @@ public:
   void LowerKCFI_CHECK(const MachineInstr &MI);
   void LowerHWASAN_CHECK_MEMACCESS(const MachineInstr &MI);
   void emitHwasanMemaccessSymbols(Module &M);
+
+  // Per-target emission of the KCFI thunks, scanners and open routines, which
+  // AsmPrinter::emitKCFIThunks drives.
+  ArrayRef<KCFIRoutineKind> getKCFIRoutineKinds() const override;
+  void emitKCFIThunk(const KCFIThunkInfo &I) override;
+  void emitKCFIScanner(const KCFIRoutineKind &Routine, bool Dynamic,
+                       uint64_t Pattern, int64_t PrefixNops) override;
+  void emitKCFIOpenRoutine(const KCFIRoutineKind &Routine, MCSymbol *List,
+                           bool Dynamic) override;
+  unsigned getKCFIOpenRoutineAlignment() const override;
+  unsigned getKCFIPrefixByteScale() const override;
+  void emitKCFIFastFail() override;
+  // Shared instruction builders for the hooks above.
+  void emitKCFIMovX17(uint64_t Value);
+  void emitKCFIGuardJump(StringRef GuardFn);
+  void emitKCFIAddr(MCRegister Reg, MCSymbol *Sym);
+  void emitKCFICmp(MCRegister LHS, MCRegister RHS);
+  void emitKCFIBcc(unsigned Cond, MCSymbol *Target);
+  void emitKCFIPageTest(MCSymbol *Target, int64_t PrefixBytes,
+                        unsigned ReadBytes = 12);
 
   void emitSled(const MachineInstr &MI, SledKind Kind);
 
@@ -1042,8 +1064,323 @@ static void emitAuthenticatedPointer(MCStreamer &OutStreamer,
   OutStreamer.emitValue(StubAuthPtrRef, /*size=*/8);
 }
 
+ArrayRef<AsmPrinter::KCFIRoutineKind>
+AArch64AsmPrinter::getKCFIRoutineKinds() const {
+  // AArch64 has only the check routine; it has no dispatch form yet.
+  static const KCFIRoutineKind Kinds[] = {
+      {KCFIThunkCheck, COFF::KCFICheckMismatchPrefix,
+       COFF::KCFICheckOpenScanner, COFF::KCFICheckOpenDynamicScanner,
+       "__guard_check_icall_fptr", AArch64::X15}};
+  return Kinds;
+}
+
+// mov x17, #value, as a fixed sequence of four instructions.
+void AArch64AsmPrinter::emitKCFIMovX17(uint64_t Value) {
+  const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
+  OutStreamer->emitInstruction(MCInstBuilder(AArch64::MOVZXi)
+                                   .addReg(AArch64::X17)
+                                   .addImm(Value & 0xFFFF)
+                                   .addImm(0),
+                               STI);
+  for (unsigned Shift = 16; Shift != 64; Shift += 16)
+    OutStreamer->emitInstruction(MCInstBuilder(AArch64::MOVKXi)
+                                     .addReg(AArch64::X17)
+                                     .addReg(AArch64::X17)
+                                     .addImm((Value >> Shift) & 0xFFFF)
+                                     .addImm(Shift),
+                                 STI);
+}
+
+// adrp x16, guard; ldr x16, [x16, :lo12:guard]; br x16
+void AArch64AsmPrinter::emitKCFIGuardJump(StringRef GuardFn) {
+  const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
+  const MCExpr *Guard = MCSymbolRefExpr::create(
+      OutContext.getOrCreateSymbol(GuardFn), OutContext);
+  OutStreamer->emitInstruction(MCInstBuilder(AArch64::ADRP)
+                                   .addReg(AArch64::X16)
+                                   .addExpr(MCSpecifierExpr::create(
+                                       Guard, AArch64::S_ABS_PAGE, OutContext)),
+                               STI);
+  OutStreamer->emitInstruction(
+      MCInstBuilder(AArch64::LDRXui)
+          .addReg(AArch64::X16)
+          .addReg(AArch64::X16)
+          .addExpr(MCSpecifierExpr::create(Guard, AArch64::S_LO12, OutContext)),
+      STI);
+  OutStreamer->emitInstruction(MCInstBuilder(AArch64::BR).addReg(AArch64::X16),
+                               STI);
+}
+
+// adrp reg, sym; add reg, reg, :lo12:sym
+void AArch64AsmPrinter::emitKCFIAddr(MCRegister Reg, MCSymbol *Sym) {
+  const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
+  const MCExpr *Ref = MCSymbolRefExpr::create(Sym, OutContext);
+  OutStreamer->emitInstruction(MCInstBuilder(AArch64::ADRP)
+                                   .addReg(Reg)
+                                   .addExpr(MCSpecifierExpr::create(
+                                       Ref, AArch64::S_ABS_PAGE, OutContext)),
+                               STI);
+  OutStreamer->emitInstruction(
+      MCInstBuilder(AArch64::ADDXri)
+          .addReg(Reg)
+          .addReg(Reg)
+          .addExpr(MCSpecifierExpr::create(Ref, AArch64::S_LO12, OutContext))
+          .addImm(0),
+      STI);
+}
+
+void AArch64AsmPrinter::emitKCFICmp(MCRegister LHS, MCRegister RHS) {
+  OutStreamer->emitInstruction(MCInstBuilder(AArch64::SUBSXrs)
+                                   .addReg(AArch64::XZR)
+                                   .addReg(LHS)
+                                   .addReg(RHS)
+                                   .addImm(0),
+                               TM.getMCSubtargetInfo());
+}
+
+void AArch64AsmPrinter::emitKCFIBcc(unsigned Cond, MCSymbol *Target) {
+  OutStreamer->emitInstruction(
+      MCInstBuilder(AArch64::Bcc)
+          .addImm(Cond)
+          .addExpr(MCSymbolRefExpr::create(Target, OutContext)),
+      TM.getMCSubtargetInfo());
+}
+
+// tst x15, #mask; b.eq Target
+//
+// The mask has the bits of a target's page offset that are zero when the
+// prefix read before it, at most PrefixBytes + ReadBytes bytes, could start on
+// the page before.
+void AArch64AsmPrinter::emitKCFIPageTest(MCSymbol *Target, int64_t PrefixBytes,
+                                         unsigned ReadBytes) {
+  const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
+  uint64_t Mask = 0xFFF & ~(PowerOf2Ceil(PrefixBytes + ReadBytes) - 1);
+  // No target has a readable prefix of that size.
+  if (!Mask) {
+    OutStreamer->emitInstruction(
+        MCInstBuilder(AArch64::B)
+            .addExpr(MCSymbolRefExpr::create(Target, OutContext)),
+        STI);
+    return;
+  }
+  OutStreamer->emitInstruction(
+      MCInstBuilder(AArch64::ANDSXri)
+          .addReg(AArch64::XZR)
+          .addReg(AArch64::X15)
+          .addImm(AArch64_AM::encodeLogicalImmediate(Mask, 64)),
+      STI);
+  emitKCFIBcc(AArch64CC::EQ, Target);
+}
+// mov w0, #FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG; brk #0xf003
+void AArch64AsmPrinter::emitKCFIFastFail() {
+  const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
+  OutStreamer->emitInstruction(
+      MCInstBuilder(AArch64::MOVZWi).addReg(AArch64::W0).addImm(64).addImm(0),
+      STI);
+  OutStreamer->emitInstruction(MCInstBuilder(AArch64::BRK).addImm(0xF003), STI);
+}
+unsigned AArch64AsmPrinter::getKCFIOpenRoutineAlignment() const { return 4; }
+
+unsigned AArch64AsmPrinter::getKCFIPrefixByteScale() const { return 4; }
+
+/// Emits the body of an ordinary, local or vfn KCFI thunk; see the header.
+///
+/// tst x15, #mask; b.eq mismatch
+/// ldur x16, [x15, #-8]; mov x17, #expected; cmp x16, x17; b.ne mismatch
+/// adrp x16, guard; ldr x16, [x16, :lo12:guard]; br x16
+///
+/// A local thunk first tests the range:
+/// adrp x16, __llvm_code_start; add x16, x16, :lo12:__llvm_code_start
+/// adrp x17, __llvm_code_end; add x17, x17, :lo12:__llvm_code_end
+/// cmp x15, x16; b.lo 1f; cmp x15, x17; b.hs 1f
+/// ldur x16, [x15, #-8]; mov x17, #expected; cmp x16, x17; b.ne mismatch
+/// ret
+/// 1: cmp x16, x17; b.ne 2f, where 2: fails fast after the guard jump.
+///
+/// A vfn thunk compares the 8 bytes at [x15, #-16] instead, and its page test
+/// allows for a prefix of 16 bytes rather than 12.
+void AArch64AsmPrinter::emitKCFIThunk(const KCFIThunkInfo &I) {
+  const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
+  int64_t PrefixBytes = I.PrefixNops * 4;
+  uint64_t Expected = I.Pattern >> 32 | uint64_t(I.Type) << 32;
+  unsigned CompareOffset = 8, ReadBytes = 12;
+  if (I.Vfn) {
+    Expected = I.Type | I.Pattern << 32;
+    CompareOffset = ReadBytes = 16;
+  }
+  auto EmitCompare = [&] {
+    OutStreamer->emitInstruction(MCInstBuilder(AArch64::LDURXi)
+                                     .addReg(AArch64::X16)
+                                     .addReg(AArch64::X15)
+                                     .addImm(-(PrefixBytes + CompareOffset)),
+                                 STI);
+    emitKCFIMovX17(Expected);
+    emitKCFICmp(AArch64::X16, AArch64::X17);
+    emitKCFIBcc(AArch64CC::NE, I.Mismatch);
+  };
+  MCSymbol *Trap = nullptr;
+  if (I.Local) {
+    MCSymbol *Outside = OutContext.createTempSymbol();
+    emitKCFIAddr(AArch64::X16, I.CodeStart);
+    emitKCFIAddr(AArch64::X17, I.CodeEnd);
+    emitKCFICmp(AArch64::X15, AArch64::X16);
+    emitKCFIBcc(AArch64CC::LO, Outside);
+    emitKCFICmp(AArch64::X15, AArch64::X17);
+    emitKCFIBcc(AArch64CC::HS, Outside);
+    EmitCompare();
+    OutStreamer->emitInstruction(
+        MCInstBuilder(AArch64::RET).addReg(AArch64::LR), STI);
+    OutStreamer->emitLabel(Outside);
+    // The bounds are equal in an image that was not sealed, where no target is
+    // in the range and the guard check function decides.
+    Trap = OutContext.createTempSymbol();
+    emitKCFICmp(AArch64::X16, AArch64::X17);
+    emitKCFIBcc(AArch64CC::NE, Trap);
+  }
+  emitKCFIPageTest(I.Mismatch, PrefixBytes, ReadBytes);
+  EmitCompare();
+  emitKCFIGuardJump(I.Routine->GuardFn);
+  if (Trap) {
+    OutStreamer->emitLabel(Trap);
+    emitKCFIFastFail();
+  }
+}
+/// Emits the body of a KCFI scanner, which walks a type's list; see the header.
+///
+/// tst x15, #mask; b.eq 1f
+/// ldur x17, [x15, #-12]
+/// sub x17, x17, #pattern[11:0]; sub x17, x17, #pattern[23:12], lsl #12
+/// tst x17, #0xffffff; b.ne 1f; lsr x17, x17, #24  (for the low 48 bits)
+/// sub x17, x17, #pattern[59:48]; sub x17, x17, #pattern[63:60], lsl #12
+/// cbz x17, 3f
+/// 1: ldr x17, [x16], #8; cbz x17, 1b; tbnz x17, #0, 2f
+/// ldr x17, [x17]; cmp x17, x15; b.ne 1b
+/// ret
+/// 2: adrp x16, guard; ldr x16, [x16, :lo12:guard]; br x16 (dynamic)
+/// 3: mov w0, #FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG; brk #0xf003
+///
+/// X16 points at the first word of the type's list, so the marker is compared
+/// in X17 alone, 24 bits at a time: the low bits of the difference are zero
+/// only if those of the operands are equal, in which case they borrow nothing
+/// from the rest.
+void AArch64AsmPrinter::emitKCFIScanner(const KCFIRoutineKind &Routine,
+                                        bool Dynamic, uint64_t Pattern,
+                                        int64_t PrefixNops) {
+  const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
+  int64_t PrefixBytes = PrefixNops * 4;
+  MCSymbol *Walk = OutContext.createTempSymbol();
+  MCSymbol *Trap = OutContext.createTempSymbol();
+  MCSymbol *Miss = Dynamic ? OutContext.createTempSymbol() : Trap;
+  emitKCFIPageTest(Walk, PrefixBytes);
+  OutStreamer->emitInstruction(MCInstBuilder(AArch64::LDURXi)
+                                   .addReg(AArch64::X17)
+                                   .addReg(AArch64::X15)
+                                   .addImm(-(PrefixBytes + 12)),
+                               STI);
+  for (unsigned Shift = 0; Shift != 72; Shift += 24) {
+    uint64_t Bits = Pattern >> Shift;
+    for (unsigned Half : {0, 12})
+      OutStreamer->emitInstruction(MCInstBuilder(AArch64::SUBXri)
+                                       .addReg(AArch64::X17)
+                                       .addReg(AArch64::X17)
+                                       .addImm((Bits >> Half) & 0xFFF)
+                                       .addImm(Half),
+                                   STI);
+    if (Shift == 48)
+      break;
+    OutStreamer->emitInstruction(
+        MCInstBuilder(AArch64::ANDSXri)
+            .addReg(AArch64::XZR)
+            .addReg(AArch64::X17)
+            .addImm(AArch64_AM::encodeLogicalImmediate(0xFFFFFF, 64)),
+        STI);
+    emitKCFIBcc(AArch64CC::NE, Walk);
+    OutStreamer->emitInstruction(MCInstBuilder(AArch64::UBFMXri)
+                                     .addReg(AArch64::X17)
+                                     .addReg(AArch64::X17)
+                                     .addImm(24)
+                                     .addImm(63),
+                                 STI);
+  }
+  OutStreamer->emitInstruction(
+      MCInstBuilder(AArch64::CBZX)
+          .addReg(AArch64::X17)
+          .addExpr(MCSymbolRefExpr::create(Trap, OutContext)),
+      STI);
+  OutStreamer->emitLabel(Walk);
+  OutStreamer->emitInstruction(MCInstBuilder(AArch64::LDRXpost)
+                                   .addReg(AArch64::X16)
+                                   .addReg(AArch64::X17)
+                                   .addReg(AArch64::X16)
+                                   .addImm(8),
+                               STI);
+  OutStreamer->emitInstruction(
+      MCInstBuilder(AArch64::CBZX)
+          .addReg(AArch64::X17)
+          .addExpr(MCSymbolRefExpr::create(Walk, OutContext)),
+      STI);
+  OutStreamer->emitInstruction(
+      MCInstBuilder(AArch64::TBNZW)
+          .addReg(AArch64::W17)
+          .addImm(0)
+          .addExpr(MCSymbolRefExpr::create(Miss, OutContext)),
+      STI);
+  OutStreamer->emitInstruction(MCInstBuilder(AArch64::LDRXui)
+                                   .addReg(AArch64::X17)
+                                   .addReg(AArch64::X17)
+                                   .addImm(0),
+                               STI);
+  emitKCFICmp(AArch64::X17, AArch64::X15);
+  emitKCFIBcc(AArch64CC::NE, Walk);
+  OutStreamer->emitInstruction(MCInstBuilder(AArch64::RET).addReg(AArch64::LR),
+                               STI);
+  if (Dynamic) {
+    OutStreamer->emitLabel(Miss);
+    emitKCFIGuardJump(Routine.GuardFn);
+  }
+  OutStreamer->emitLabel(Trap);
+  emitKCFIFastFail();
+}
+
+/// adrp x16, __llvm_kcfi_list_<type>+8; add x16, x16, :lo12:...; b scanner
+///
+/// A dynamic opener's routine ends with a brk, so that the linker's choice of
+/// the largest definition prefers it to a static opener's.
+void AArch64AsmPrinter::emitKCFIOpenRoutine(const KCFIRoutineKind &Routine,
+                                            MCSymbol *List, bool Dynamic) {
+  const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
+  const MCExpr *First = MCBinaryExpr::createAdd(
+      MCSymbolRefExpr::create(List, OutContext),
+      MCConstantExpr::create(8, OutContext), OutContext);
+  OutStreamer->emitInstruction(MCInstBuilder(AArch64::ADRP)
+                                   .addReg(AArch64::X16)
+                                   .addExpr(MCSpecifierExpr::create(
+                                       First, AArch64::S_ABS_PAGE, OutContext)),
+                               STI);
+  OutStreamer->emitInstruction(
+      MCInstBuilder(AArch64::ADDXri)
+          .addReg(AArch64::X16)
+          .addReg(AArch64::X16)
+          .addExpr(MCSpecifierExpr::create(First, AArch64::S_LO12, OutContext))
+          .addImm(0),
+      STI);
+  OutStreamer->emitInstruction(
+      MCInstBuilder(AArch64::B)
+          .addExpr(MCSymbolRefExpr::create(
+              OutContext.getOrCreateSymbol(Dynamic ? Routine.DynamicScanner
+                                                   : Routine.Scanner),
+              OutContext)),
+      STI);
+  if (Dynamic)
+    OutStreamer->emitInstruction(MCInstBuilder(AArch64::BRK).addImm(0xF003),
+                                 STI);
+}
+
 void AArch64AsmPrinter::emitEndOfAsmFile(Module &M) {
   emitHwasanMemaccessSymbols(M);
+
+  if (TM.getTargetTriple().isOSBinFormatCOFF())
+    emitKCFIThunks(M);
 
   const Triple &TT = TM.getTargetTriple();
   if (TT.isOSBinFormatMachO()) {

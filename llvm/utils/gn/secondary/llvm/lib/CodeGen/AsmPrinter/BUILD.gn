@@ -43,6 +43,7 @@ static_library("AsmPrinter") {
     "PseudoProbePrinter.cpp",
     "WasmException.cpp",
     "WinCFGuard.cpp",
+    "WinKCFIThunks.cpp",
     "WinException.cpp",
   ]
 }
