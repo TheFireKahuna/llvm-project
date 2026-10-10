@@ -1,4 +1,5 @@
-if ( CMAKE_SYSTEM_NAME MATCHES "Linux|Android|FreeBSD|NetBSD|OpenBSD" )
+if ( CMAKE_SYSTEM_NAME MATCHES "Linux|Android|FreeBSD|NetBSD|OpenBSD" OR
+     LLVM_RUNTIME_NTPOSIX )
   list(APPEND EXTRA_PLUGINS lldbPluginProcessPOSIX)
 endif()
 

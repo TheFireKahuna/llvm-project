@@ -567,6 +567,10 @@ static bool is_local_impl(struct STATVFS &Vfs) {
   // The file system can have an arbitrary structure on z/OS; must go with the
   // conservative answer.
   return false;
+#elif defined(LLVM_RUNTIME_NTPOSIX)
+  // statvfs does not tell a network volume from a local one on NT; "remote" is
+  // the conservative answer.
+  return false;
 #else
   return !!(STATVFS_F_FLAG(Vfs) & MNT_LOCAL);
 #endif
@@ -657,7 +661,14 @@ std::error_code access(const Twine &Path, AccessMode Mode) {
 bool can_execute(const Twine &Path) {
   sandbox::violationIfEnabled();
 
+#if defined(LLVM_RUNTIME_NTPOSIX)
+  // A PE executable is named without its extension, as on Win32.
+  if (!access(Path, AccessMode::Execute))
+    return true;
+  return !access(Path + ".exe", AccessMode::Execute);
+#else
   return !access(Path, AccessMode::Execute);
+#endif
 }
 
 bool equivalent(file_status A, file_status B) {
@@ -1568,6 +1579,12 @@ static const char *getDefaultTempDir(bool ErasedOnReboot) {
 
 void system_temp_directory(bool ErasedOnReboot, SmallVectorImpl<char> &Result) {
   Result.clear();
+
+#if defined(LLVM_RUNTIME_NTPOSIX)
+  // Windows has a single temporary directory, named by the environment, and no
+  // /var/tmp.
+  ErasedOnReboot = true;
+#endif
 
   if (ErasedOnReboot) {
     // There is no env variable for the cache directory.
