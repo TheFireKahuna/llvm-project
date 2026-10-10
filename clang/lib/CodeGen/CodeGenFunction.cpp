@@ -2892,17 +2892,30 @@ void CodeGenFunction::EmitSanitizerStatReport(llvm::SanitizerStatKind SSK) {
 }
 
 void CodeGenFunction::EmitKCFIOperandBundle(
-    const CGCallee &Callee, SmallVectorImpl<llvm::OperandBundleDef> &Bundles) {
+    const CGCallee &Callee, const CallArgList &CallArgs,
+    SmallVectorImpl<llvm::OperandBundleDef> &Bundles) {
   const CGCalleeInfo &CI = Callee.getAbstractInfo();
-  const FunctionProtoType *FP = CI.getCalleeFunctionProtoType();
-  if (!FP)
+  const FunctionType *FT = CI.getCalleeFunctionType();
+  if (!FT)
     return;
 
   StringRef Salt;
-  if (const auto &Info = FP->getExtraAttributeInfo())
-    Salt = Info.CFISalt;
+  QualType FnType(FT, 0);
+  if (const auto *FP = dyn_cast<FunctionProtoType>(FT)) {
+    if (const auto &Info = FP->getExtraAttributeInfo())
+      Salt = Info.CFISalt;
+  } else {
+    // A call through a pointer without a prototype is valid exactly when the
+    // callee's parameters have the types of the promoted arguments, so it
+    // checks that type, which a definition without a prototype also carries.
+    const auto *FNPT = cast<FunctionNoProtoType>(FT);
+    SmallVector<QualType, 8> ArgTypes;
+    for (const CallArg &Arg : CallArgs)
+      ArgTypes.push_back(Arg.getType());
+    FnType = CGM.ReconstructCallGraphPrototype(FNPT, ArgTypes);
+  }
 
-  Bundles.emplace_back("kcfi", CGM.CreateKCFITypeId(FP->desugar(), Salt));
+  Bundles.emplace_back("kcfi", CGM.CreateKCFITypeId(FnType, Salt));
 }
 
 llvm::Value *
