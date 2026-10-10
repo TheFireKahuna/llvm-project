@@ -879,9 +879,10 @@ void X86ExpandPseudoImpl::expandVastartSaveXmmRegs(
   // TODO: add support for YMM and ZMM here.
   unsigned MOVOpc = STI->hasAVX() ? X86::VMOVAPSmr : X86::MOVAPSmr;
 
-  // In the XMM save block, save all the XMM argument registers.
+  // In the XMM save block, save all the XMM argument registers. They are the
+  // explicit operands after the offsets; implicit operands follow them.
   for (int64_t OpndIdx = 7, RegIdx = 0;
-       OpndIdx < VAStartPseudoInstr->getNumOperands() - 1;
+       OpndIdx < VAStartPseudoInstr->getNumExplicitOperands();
        OpndIdx++, RegIdx++) {
     auto NewMI = BuildMI(GuardedRegsBlk, DL, TII->get(MOVOpc));
     for (int i = 0; i < X86::AddrNumOperands; ++i) {
