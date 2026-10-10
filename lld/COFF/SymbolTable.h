@@ -185,6 +185,9 @@ public:
 
   // A list of DLL exports.
   std::vector<Export> exports;
+  // Exports that repeat the name of one of those through EXPORTAS. The export
+  // table has the name once, and the import library has their symbols too.
+  std::vector<Export> exportAsAliases;
   llvm::DenseSet<StringRef> directivesExports;
   bool hadExplicitExports;
 

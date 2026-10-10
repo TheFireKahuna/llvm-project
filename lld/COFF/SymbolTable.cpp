@@ -1359,8 +1359,21 @@ void SymbolTable::fixupExports() {
       continue;
     }
     Export *existing = pair.first->second.first;
-    if (e == *existing || e.name != existing->name)
+    if (e == *existing)
       continue;
+    if (e.name != existing->name) {
+      // As link.exe does, an import library offers the symbol of an export
+      // that takes another's name through EXPORTAS, importing that name. The
+      // export table needs the name once, for the other export.
+      if (!e.exportAs.empty()) {
+        exportAsAliases.push_back(e);
+      } else if (!existing->exportAs.empty()) {
+        exportAsAliases.push_back(*existing);
+        *existing = e;
+        v[pair.first->second.second] = e;
+      }
+      continue;
+    }
     // If the existing export comes from .OBJ directives, we are allowed to
     // overwrite it with /DEF: or /EXPORT without any warning, as MSVC link.exe
     // does.

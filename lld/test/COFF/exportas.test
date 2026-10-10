@@ -80,6 +80,39 @@ RUN: not lld-link -out:err2.dll -dll -noentry func.obj -export:func,EXPORTAS,exp
 RUN:     FileCheck --check-prefix=ERR2 %s
 ERR2: error: invalid EXPORTAS value: expfunc,DATA
 
+An EXPORTAS export that takes the name of another export: the export table
+has the name once, and the import library offers both symbols, each importing
+the name with its hint, whichever export comes first.
+
+RUN: llvm-mc -filetype=obj -triple=x86_64-windows alias.s -o alias.obj
+RUN: lld-link -out:out8.dll -dll -noentry alias.obj -export:func \
+RUN:     -export:wrapped,EXPORTAS,func
+RUN: llvm-readobj --coff-exports out8.dll | FileCheck --check-prefix=ALIAS %s
+ALIAS:     Name: func
+ALIAS-NOT: Name:
+
+RUN: llvm-readobj out8.lib | FileCheck --check-prefix=ALIAS-IMPLIB %s
+ALIAS-IMPLIB:      Name type: name
+ALIAS-IMPLIB-NEXT: Export name: func
+ALIAS-IMPLIB-NEXT: Symbol: __imp_func
+ALIAS-IMPLIB-NEXT: Symbol: func
+ALIAS-IMPLIB:      Name type: export as
+ALIAS-IMPLIB-NEXT: Export name: func
+ALIAS-IMPLIB-NEXT: Symbol: __imp_wrapped
+ALIAS-IMPLIB-NEXT: Symbol: wrapped
+
+RUN: lld-link -out:out9.dll -dll -noentry alias.obj \
+RUN:     -export:wrapped,EXPORTAS,func -export:func
+RUN: llvm-readobj --coff-exports out9.dll | FileCheck --check-prefix=ALIAS %s
+RUN: llvm-readobj out9.lib | FileCheck --check-prefix=ALIAS-IMPLIB %s
+
+RUN: llvm-mc -filetype=obj -triple=x86_64-windows alias-use.s -o alias-use.obj
+RUN: lld-link -out:out8.exe -entry:main alias-use.obj out8.lib
+RUN: llvm-readobj --coff-imports out8.exe | FileCheck --check-prefix=ALIAS-IMPORT %s
+ALIAS-IMPORT:      Name: out8.dll
+ALIAS-IMPORT:      Symbol: func (0)
+ALIAS-IMPORT-NEXT: Symbol: func (0)
+
 #--- test.s
     .section ".test", "rd"
     .rva __imp_func
@@ -105,3 +138,21 @@ func:
 #--- drectve.s
     .section .drectve, "yn"
     .ascii " -export:func,EXPORTAS,expfunc"
+
+#--- alias.s
+    .text
+    .globl func
+    .globl wrapped
+    .p2align 2, 0x0
+func:
+wrapped:
+    movl $1, %eax
+    retq
+
+#--- alias-use.s
+    .text
+    .globl main
+main:
+    callq *__imp_func(%rip)
+    callq *__imp_wrapped(%rip)
+    retq

@@ -1138,20 +1138,29 @@ void LinkerDriver::createImportLibrary(bool asLib) {
     // the export's index in the export name table, whose order fixupExports
     // has already set.
     uint16_t hint = 0;
-    for (Export &e1 : symtab.exports) {
+    StringMap<uint16_t> hints;
+    auto add = [&](const Export &e1, uint16_t ordinal) {
       COFFShortExport e2;
       e2.Name = std::string(e1.name);
       e2.SymbolName = std::string(e1.symbolName);
       e2.ExtName = std::string(e1.extName);
       e2.ExportAs = std::string(e1.exportAs);
       e2.ImportName = std::string(e1.importName);
-      e2.Ordinal = e1.noname ? e1.ordinal : hint++;
+      e2.Ordinal = ordinal;
       e2.Noname = e1.noname;
       e2.Data = e1.data;
       e2.Private = e1.isPrivate;
       e2.Constant = e1.constant;
       exports.push_back(e2);
+    };
+    for (Export &e1 : symtab.exports) {
+      if (!e1.noname)
+        hints[e1.exportName] = hint;
+      add(e1, e1.noname ? e1.ordinal : hint++);
     }
+    // An alias imports the name of the export it repeats, and so its hint.
+    for (Export &e1 : symtab.exportAsAliases)
+      add(e1, hints.lookup(e1.exportAs));
   };
 
   getExports(ctx.symtab, exports);
