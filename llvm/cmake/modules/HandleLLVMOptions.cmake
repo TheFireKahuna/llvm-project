@@ -596,7 +596,7 @@ endif()
 option(LLVM_ENABLE_WARNINGS "Enable compiler warnings." ON)
 option(LLVM_ENABLE_WARNING_SUPPRESSIONS "Suppress compiler warnings." ON)
 
-if( MSVC )
+if( MSVC OR (CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC") )
 
   # Add definitions that make MSVC much less annoying.
   add_compile_definitions(
@@ -722,6 +722,14 @@ if( MSVC )
   # This ensures handling of various C/C++ constructs is more similar to other compilers.
   append("/permissive-" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
 endif( MSVC )
+
+# Clang's GNU driver targeting MSVC takes none of the options above. Of
+# /permissive-, it needs two-phase name lookup, which it otherwise delays
+# until the end of the translation unit, as MSVC does.
+if(NOT MSVC AND CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC" AND
+   CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  append("-fno-delayed-template-parsing" CMAKE_CXX_FLAGS)
+endif()
 
 # Warnings-as-errors handling for GCC-compatible compilers:
 if ( LLVM_COMPILER_IS_GCC_COMPATIBLE )
@@ -855,8 +863,13 @@ if (LLVM_ENABLE_WARNINGS AND (LLVM_COMPILER_IS_GCC_COMPATIBLE OR CLANG_CL))
   endif()
 
   if (LLVM_ENABLE_PEDANTIC AND LLVM_COMPILER_IS_GCC_COMPATIBLE)
-    append("-pedantic" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
-    append("-Wno-long-long" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
+    # A compiler targeting MSVC follows Microsoft's rules, such as enums whose
+    # type is always int, and LLVM's _MSC_VER paths use Microsoft extensions.
+    # As for clang-cl, there is no pedantic mode.
+    if (NOT CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+      append("-pedantic" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
+      append("-Wno-long-long" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
+    endif()
 
     # GCC warns about redundant toplevel semicolons (enabled by -pedantic
     # above), while Clang doesn't. Enable the corresponding Clang option to
@@ -953,11 +966,20 @@ if (LLVM_ENABLE_WARNINGS AND (LLVM_COMPILER_IS_GCC_COMPATIBLE OR CLANG_CL))
   endif()
 
   # Check if -Wcomment is OK with an // comment ending with '\' if the next
-  # line is also a // comment.
+  # line is also a // comment. A line ending in any number of backslashes
+  # continues, so the source is right whether CMake keeps the two backslashes
+  # here, as CMP0219 does, or reduces them to one.
   set(OLD_CMAKE_REQUIRED_FLAGS ${CMAKE_REQUIRED_FLAGS})
   set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -Werror -Wcomment")
-  CHECK_C_SOURCE_COMPILES("// \\\\\\n//\\nint main(void) {return 0;}"
+  if(POLICY CMP0219)
+    cmake_policy(PUSH)
+    cmake_policy(SET CMP0219 NEW)
+  endif()
+  CHECK_C_SOURCE_COMPILES("// \\\\\n//\nint main(void) {return 0;}"
                           C_WCOMMENT_ALLOWS_LINE_WRAP)
+  if(POLICY CMP0219)
+    cmake_policy(POP)
+  endif()
   set(CMAKE_REQUIRED_FLAGS ${OLD_CMAKE_REQUIRED_FLAGS})
   if (NOT C_WCOMMENT_ALLOWS_LINE_WRAP)
     append("-Wno-comment" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
@@ -1553,8 +1575,8 @@ if(uppercase_LLVM_ENABLE_LTO STREQUAL "THIN")
     append("-Wl,--plugin-opt,cache-dir=${LLVM_THINLTO_CACHE_PATH}"
            CMAKE_EXE_LINKER_FLAGS CMAKE_SHARED_LINKER_FLAGS)
   elseif(LINKER_IS_LLD_LINK)
-    append("/lldltocache:${LLVM_THINLTO_CACHE_PATH}"
-           CMAKE_EXE_LINKER_FLAGS CMAKE_SHARED_LINKER_FLAGS)
+    # A GNU-style compiler driver needs the flag wrapped for the linker.
+    add_link_options("LINKER:/lldltocache:${LLVM_THINLTO_CACHE_PATH}")
   endif()
 elseif(uppercase_LLVM_ENABLE_LTO STREQUAL "FULL")
   append("-flto=full" CMAKE_CXX_FLAGS CMAKE_C_FLAGS)
