@@ -1046,10 +1046,16 @@ CodeGenAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
 
   if (CI.getFrontendOpts().GenReducedBMI &&
       !CI.getFrontendOpts().ModuleOutputPath.empty()) {
+    std::unique_ptr<raw_pwrite_stream> BMIOS = CI.createOutputFile(
+        CI.getFrontendOpts().ModuleOutputPath, /*Binary=*/true,
+        /*RemoveFileOnSignal=*/true, CI.getFrontendOpts().UseTemporary);
+    if (!BMIOS)
+      return nullptr;
     std::vector<std::unique_ptr<ASTConsumer>> Consumers(2);
     Consumers[0] = std::make_unique<ReducedBMIGenerator>(
         CI.getPreprocessor(), CI.getModuleCache(),
-        CI.getFrontendOpts().ModuleOutputPath, CI.getCodeGenOpts());
+        CI.getFrontendOpts().ModuleOutputPath, std::move(BMIOS),
+        CI.getCodeGenOpts());
     Consumers[1] = std::move(Result);
     return std::make_unique<MultiplexConsumer>(std::move(Consumers));
   }
