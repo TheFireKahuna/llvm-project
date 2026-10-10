@@ -39,8 +39,13 @@
 #include <setjmp.h>
 #endif
 
-/* Define the default attributes for the functions in this file. */
-#define __DEFAULT_FN_ATTRS __attribute__((__always_inline__, __nodebug__))
+/* Define the default attributes for the functions in this file. Each function
+   defined here is also declared without inline, by this header or the SDK's
+   winnt.h, so a static or C99 inline definition becomes an external definition
+   in every C unit outside the Microsoft ABI. An extern gnu_inline definition,
+   as in GCC's intrinsic headers, is only ever inlined. */
+#define __DEFAULT_FN_ATTRS                                                     \
+  __attribute__((__always_inline__, __nodebug__, __gnu_inline__))
 
 #if __x86_64__
 #define __LPTRINT_TYPE__ __int64
@@ -243,7 +248,7 @@ __int64 _mul128(__int64, __int64, __int64 *);
 \*----------------------------------------------------------------------------*/
 
 #if defined(__i386__) || (defined(__x86_64__) && !defined(__arm64ec__))
-static __inline__ void __DEFAULT_FN_ATTRS __movsb(unsigned char *__dst,
+extern __inline__ void __DEFAULT_FN_ATTRS __movsb(unsigned char *__dst,
                                                   unsigned char const *__src,
                                                   size_t __n) {
 #if defined(__x86_64__)
@@ -260,7 +265,7 @@ static __inline__ void __DEFAULT_FN_ATTRS __movsb(unsigned char *__dst,
                        : "memory");
 #endif
 }
-static __inline__ void __DEFAULT_FN_ATTRS __movsd(unsigned long *__dst,
+extern __inline__ void __DEFAULT_FN_ATTRS __movsd(unsigned long *__dst,
                                                   unsigned long const *__src,
                                                   size_t __n) {
 #if defined(__x86_64__)
@@ -277,7 +282,7 @@ static __inline__ void __DEFAULT_FN_ATTRS __movsd(unsigned long *__dst,
                        : "memory");
 #endif
 }
-static __inline__ void __DEFAULT_FN_ATTRS __movsw(unsigned short *__dst,
+extern __inline__ void __DEFAULT_FN_ATTRS __movsw(unsigned short *__dst,
                                                   unsigned short const *__src,
                                                   size_t __n) {
 #if defined(__x86_64__)
@@ -294,7 +299,7 @@ static __inline__ void __DEFAULT_FN_ATTRS __movsw(unsigned short *__dst,
                        : "memory");
 #endif
 }
-static __inline__ void __DEFAULT_FN_ATTRS __stosd(unsigned long *__dst,
+extern __inline__ void __DEFAULT_FN_ATTRS __stosd(unsigned long *__dst,
                                                   unsigned long __x,
                                                   size_t __n) {
   __asm__ __volatile__("rep stos{l|d}"
@@ -302,7 +307,7 @@ static __inline__ void __DEFAULT_FN_ATTRS __stosd(unsigned long *__dst,
                        : "a"(__x)
                        : "memory");
 }
-static __inline__ void __DEFAULT_FN_ATTRS __stosw(unsigned short *__dst,
+extern __inline__ void __DEFAULT_FN_ATTRS __stosw(unsigned short *__dst,
                                                   unsigned short __x,
                                                   size_t __n) {
   __asm__ __volatile__("rep stosw"
@@ -312,14 +317,14 @@ static __inline__ void __DEFAULT_FN_ATTRS __stosw(unsigned short *__dst,
 }
 #endif
 #if defined(__x86_64__) && !defined(__arm64ec__)
-static __inline__ void __DEFAULT_FN_ATTRS __movsq(
+extern __inline__ void __DEFAULT_FN_ATTRS __movsq(
     unsigned long long *__dst, unsigned long long const *__src, size_t __n) {
   __asm__ __volatile__("rep movsq"
                        : "+D"(__dst), "+S"(__src), "+c"(__n)
                        :
                        : "memory");
 }
-static __inline__ void __DEFAULT_FN_ATTRS __stosq(unsigned __int64 *__dst,
+extern __inline__ void __DEFAULT_FN_ATTRS __stosq(unsigned __int64 *__dst,
                                                   unsigned __int64 __x,
                                                   size_t __n) {
   __asm__ __volatile__("rep stosq" : "+D"(__dst), "+c"(__n) : "a"(__x)
@@ -331,43 +336,49 @@ static __inline__ void __DEFAULT_FN_ATTRS __stosq(unsigned __int64 *__dst,
 |* Misc
 \*----------------------------------------------------------------------------*/
 #if defined(__i386__) || (defined(__x86_64__) && !defined(__arm64ec__))
-static __inline__ void __DEFAULT_FN_ATTRS __halt(void) {
+extern __inline__ void __DEFAULT_FN_ATTRS __halt(void) {
   __asm__ volatile("hlt");
 }
 
-static __inline__ unsigned char __inbyte(unsigned short port) {
+extern __inline__ unsigned char __DEFAULT_FN_ATTRS
+__inbyte(unsigned short port) {
   unsigned char ret;
   __asm__ __volatile__("inb %w1, %b0" : "=a"(ret) : "Nd"(port));
   return ret;
 }
 
-static __inline__ unsigned short __inword(unsigned short port) {
+extern __inline__ unsigned short __DEFAULT_FN_ATTRS
+__inword(unsigned short port) {
   unsigned short ret;
   __asm__ __volatile__("inw %w1, %w0" : "=a"(ret) : "Nd"(port));
   return ret;
 }
 
-static __inline__ unsigned long __indword(unsigned short port) {
+extern __inline__ unsigned long __DEFAULT_FN_ATTRS
+__indword(unsigned short port) {
   unsigned long ret;
   __asm__ __volatile__("inl %w1, %k0" : "=a"(ret) : "Nd"(port));
   return ret;
 }
 
-static __inline__ void __outbyte(unsigned short port, unsigned char data) {
+extern __inline__ void __DEFAULT_FN_ATTRS __outbyte(unsigned short port,
+                                                    unsigned char data) {
   __asm__ __volatile__("outb %b0, %w1" : : "a"(data), "Nd"(port));
 }
 
-static __inline__ void __outword(unsigned short port, unsigned short data) {
+extern __inline__ void __DEFAULT_FN_ATTRS __outword(unsigned short port,
+                                                    unsigned short data) {
   __asm__ __volatile__("outw %w0, %w1" : : "a"(data), "Nd"(port));
 }
 
-static __inline__ void __outdword(unsigned short port, unsigned long data) {
+extern __inline__ void __DEFAULT_FN_ATTRS __outdword(unsigned short port,
+                                                     unsigned long data) {
   __asm__ __volatile__("outl %k0, %w1" : : "a"(data), "Nd"(port));
 }
 #endif
 
 #if defined(__i386__) || defined(__x86_64__) || defined(__aarch64__)
-static __inline__ void __DEFAULT_FN_ATTRS __nop(void) {
+extern __inline__ void __DEFAULT_FN_ATTRS __nop(void) {
   __asm__ volatile("nop");
 }
 #endif
@@ -460,7 +471,7 @@ void __cdecl __prefetch2(const void *, unsigned char);
 |* Privileged intrinsics
 \*----------------------------------------------------------------------------*/
 #if defined(__i386__) || (defined(__x86_64__) && !defined(__arm64ec__))
-static __inline__ unsigned __int64 __DEFAULT_FN_ATTRS
+extern __inline__ unsigned __int64 __DEFAULT_FN_ATTRS
 __readmsr(unsigned long __register) {
   // Loads the contents of a 64-bit model specific register (MSR) specified in
   // the ECX register into registers EDX:EAX. The EDX register is loaded with
@@ -474,7 +485,7 @@ __readmsr(unsigned long __register) {
   return (((unsigned __int64)__edx) << 32) | (unsigned __int64)__eax;
 }
 
-static __inline__ unsigned __LPTRINT_TYPE__ __DEFAULT_FN_ATTRS __readcr3(void) {
+extern __inline__ unsigned __LPTRINT_TYPE__ __DEFAULT_FN_ATTRS __readcr3(void) {
   unsigned __LPTRINT_TYPE__ __cr3_val;
   __asm__ __volatile__(
                        "mov {%%cr3, %0|%0, cr3}"
@@ -484,7 +495,7 @@ static __inline__ unsigned __LPTRINT_TYPE__ __DEFAULT_FN_ATTRS __readcr3(void) {
   return __cr3_val;
 }
 
-static __inline__ void __DEFAULT_FN_ATTRS
+extern __inline__ void __DEFAULT_FN_ATTRS
 __writecr3(unsigned __IPTRINT_TYPE__ __cr3_val) {
   __asm__ ("mov {%0, %%cr3|cr3, %0}" : : "r"(__cr3_val) : "memory");
 }
