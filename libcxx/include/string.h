@@ -70,7 +70,7 @@ size_t strlen(const char* s);
 // <string.h>. This macro can be defined by users if their C library provides
 // the right signature.
 #  if defined(__CORRECT_ISO_CPP_STRING_H_PROTO) || defined(_LIBCPP_MSVCRT) ||                                          \
-      defined(_STRING_H_CPLUSPLUS_98_CONFORMANCE_)
+      defined(_WIN32_ITANIUM) || defined(_STRING_H_CPLUSPLUS_98_CONFORMANCE_)
 #    define _LIBCPP_STRING_H_HAS_CONST_OVERLOADS
 #  endif
 

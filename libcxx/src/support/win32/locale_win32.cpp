@@ -320,6 +320,21 @@ size_t __strftime(char* ret, size_t n, const char* format, const struct tm* tm, 
   __locale_guard __current(loc);
   return std::strftime(ret, n, format, tm);
 }
+#elif defined(_WIN32_ITANIUM)
+namespace {
+void __ignore_invalid_parameter(const wchar_t*, const wchar_t*, const wchar_t*, unsigned int, uintptr_t) {}
+} // namespace
+
+// The UCRT treats a tm field outside its range as an invalid parameter, and
+// terminates the process unless the handler returns. C leaves the characters
+// stored for such a field unspecified, so let the call fail instead, on this
+// thread only and without changing the process-wide handler.
+size_t __strftime(char* ret, size_t n, const char* format, const struct tm* tm, __locale_t loc) {
+  _invalid_parameter_handler previous = ::_set_thread_local_invalid_parameter_handler(&__ignore_invalid_parameter);
+  size_t result                       = ::_strftime_l(ret, n, format, tm, loc);
+  ::_set_thread_local_invalid_parameter_handler(previous);
+  return result;
+}
 #endif
 
 //

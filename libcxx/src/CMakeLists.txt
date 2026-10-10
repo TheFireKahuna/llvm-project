@@ -96,8 +96,14 @@ if (LIBCXX_ENABLE_LOCALIZATION)
 endif()
 
 if(WIN32)
+  # Windows Itanium always links compiler-rt's builtins, which define these;
+  # libc++ would otherwise export its own copies.
+  if(NOT WIN32_ITANIUM)
+    list(APPEND LIBCXX_SOURCES
+      support/win32/compiler_rt_shims.cpp
+      )
+  endif()
   list(APPEND LIBCXX_SOURCES
-    support/win32/compiler_rt_shims.cpp
     support/win32/locale_win32.cpp
     support/win32/support.cpp
     )

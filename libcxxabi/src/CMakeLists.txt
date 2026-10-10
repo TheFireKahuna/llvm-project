@@ -36,8 +36,9 @@ else()
   )
 endif()
 
-if (LIBCXXABI_ENABLE_THREADS AND (UNIX OR FUCHSIA) AND NOT (APPLE OR CYGWIN)
+if (LIBCXXABI_ENABLE_THREADS AND (((UNIX OR FUCHSIA) AND NOT (APPLE OR CYGWIN)
     AND NOT ("${CMAKE_SYSTEM_NAME}" MATCHES "AIX"))
+    OR WIN32_ITANIUM))
   list(APPEND LIBCXXABI_SOURCES
     cxa_thread_atexit.cpp
   )
@@ -195,12 +196,13 @@ if (LIBCXXABI_SUPPORTS_SHARED_LIBRARY)
   # Build with -fsized-deallocation, which is default in recent versions of Clang.
   # TODO(LLVM 21): This can be dropped once we only support Clang >= 19.
   target_add_compile_flags_if_supported(cxxabi_shared_objects PRIVATE -fsized-deallocation)
-  if (NOT WIN32)
+  if (NOT WIN32 OR WIN32_ITANIUM)
     # Building libcxxabi with -fvisibility=hidden on Windows, if dllexport is
     # used, can trigger a Clang error (if Clang is built with asserts enabled),
     # https://github.com/llvm/llvm-project/issues/207963
     # Once fixed, we could consider allowing -fvisibility=hidden on
     # Windows too (as it can be beneficial for static libraries).
+    # Windows Itanium and NT-POSIX export by visibility, as ELF does.
     target_add_compile_flags_if_supported(cxxabi_shared_objects PRIVATE -fvisibility=hidden)
   endif()
 
@@ -293,12 +295,13 @@ target_compile_options(cxxabi_static_objects PRIVATE "${LIBCXXABI_ADDITIONAL_COM
 # Build with -fsized-deallocation, which is default in recent versions of Clang.
 # TODO(LLVM 21): This can be dropped once we only support Clang >= 19.
 target_add_compile_flags_if_supported(cxxabi_static_objects PRIVATE -fsized-deallocation)
-if (NOT WIN32)
+if (NOT WIN32 OR WIN32_ITANIUM)
   # Building libcxxabi with -fvisibility=hidden on Windows, if dllexport is
   # used, can trigger a Clang error (if Clang is built with asserts enabled),
   # https://github.com/llvm/llvm-project/issues/207963
   # Once fixed, we could consider allowing -fvisibility=hidden on
   # Windows too (as it can be beneficial for static libraries).
+  # Windows Itanium and NT-POSIX export by visibility, as ELF does.
   target_add_compile_flags_if_supported(cxxabi_static_objects PRIVATE -fvisibility=hidden)
 endif()
 
