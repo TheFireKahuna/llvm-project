@@ -246,6 +246,7 @@ private:
   void insertBssDataStartEndSymbols();
   void markSymbolsWithRelocations(ObjFile *file, SymbolRVASet &usedSymbols,
                                   SymbolRVASet &usedImports);
+  DenseSet<std::pair<ObjFile *, Symbol *>> getGuardPointerStubs();
   void createGuardCFTables();
   void placeLinkerDefinedSymbols();
   bool protectDelayIat();
@@ -2203,6 +2204,11 @@ static bool isUnwindTable(const SectionChunk *sc) {
   return sc->getSectionName().split('$').first == ".pdata";
 }
 
+// The loader replaces the guard pointers in .00cfg with its validators.
+static bool isGuardPointerSection(const SectionChunk *sc) {
+  return sc->getSectionName().split('$').first == ".00cfg";
+}
+
 // Visit all relocations from all section contributions of this object file and
 // mark the relocation target as address-taken.
 // Adds the address that a reference other than a call takes: a function's,
@@ -2225,7 +2231,7 @@ void Writer::markSymbolsWithRelocations(ObjFile *file,
     // We only care about live section chunks. Common chunks and other chunks
     // don't generally contain relocations.
     SectionChunk *sc = dyn_cast<SectionChunk>(c);
-    if (!sc || !sc->live || isUnwindTable(sc))
+    if (!sc || !sc->live || isUnwindTable(sc) || isGuardPointerSection(sc))
       continue;
 
     for (const coff_relocation &reloc : sc->getRelocs()) {
@@ -2264,6 +2270,40 @@ bool Writer::protectDelayIat() {
   return protects;
 }
 
+// A guard pointer holds a stub until the loader replaces it with its validator,
+// which the loader does whenever it enforces the guard. The stub is reached
+// only through a call made through the pointer, which nothing checks, so a
+// function whose address does no more than initialize a guard pointer is not a
+// valid call target; a dispatch stub jumps to whatever target it is passed.
+// Returns each such function with the object whose guard pointer holds it,
+// unless the object also references it from another section of the image.
+DenseSet<std::pair<ObjFile *, Symbol *>> Writer::getGuardPointerStubs() {
+  DenseMap<ObjFile *, DenseSet<Symbol *>> refs;
+  for (auto &[key, pSec] : partialSections) {
+    if (pSec->name.split('$').first != ".00cfg")
+      continue;
+    for (Chunk *c : pSec->chunks)
+      if (auto *sc = dyn_cast<SectionChunk>(c))
+        for (const coff_relocation &rel : sc->getRelocs())
+          if (Symbol *s = sc->file->getSymbol(rel.SymbolTableIndex))
+            refs[sc->file].insert(s);
+  }
+  DenseSet<std::pair<ObjFile *, Symbol *>> stubs;
+  for (auto &[file, syms] : refs) {
+    for (Chunk *c : file->getChunks()) {
+      auto *sc = dyn_cast<SectionChunk>(c);
+      if (!sc || !sc->live || isGuardPointerSection(sc) || isUnwindTable(sc) ||
+          (sc->getOutputCharacteristics() & IMAGE_SCN_MEM_DISCARDABLE))
+        continue;
+      for (const coff_relocation &rel : sc->getRelocs())
+        syms.erase(file->getSymbol(rel.SymbolTableIndex));
+    }
+    for (Symbol *s : syms)
+      stubs.insert({file, s});
+  }
+  return stubs;
+}
+
 // Create the guard function id table. This is a table of RVAs of all
 // address-taken functions. It is sorted and uniqued, just like the safe SEH
 // table.
@@ -2294,6 +2334,8 @@ void Writer::createGuardCFTables() {
   SymbolRVASet giatsRVASet;
   std::vector<Symbol *> giatsSymbols;
   SymbolRVASet longJmpTargets;
+  DenseSet<std::pair<ObjFile *, Symbol *>> guardPointerStubs =
+      getGuardPointerStubs();
   SymbolRVASet ehContTargets;
   for (ObjFile *file : ctx.objFileInstances) {
     // If the object was compiled with /guard:cf, the address taken symbols
@@ -2302,7 +2344,11 @@ void Writer::createGuardCFTables() {
     // were no setjmp targets, and that all code symbols with relocations are
     // possibly address-taken.
     if (file->hasGuardCF()) {
-      markSymbolsForRVATable(file, file->getGuardFidChunks(), addressTakenSyms);
+      std::vector<Symbol *> fids;
+      getSymbolsFromSections(file, file->getGuardFidChunks(), fids);
+      for (Symbol *s : fids)
+        if (!guardPointerStubs.contains({file, s}))
+          addSymbolToRVASet(addressTakenSyms, cast<Defined>(s));
       markSymbolsForRVATable(file, file->getGuardIATChunks(), giatsRVASet);
       getSymbolsFromSections(file, file->getGuardIATChunks(), giatsSymbols);
       markSymbolsForRVATable(file, file->getGuardLJmpChunks(), longJmpTargets);
