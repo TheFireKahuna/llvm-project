@@ -23,6 +23,7 @@
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Sema/Initialization.h"
+#include "clang/Sema/Lookup.h"
 #include "clang/Sema/SemaAMDGPU.h"
 #include "clang/Sema/SemaHLSL.h"
 #include "clang/Sema/SemaObjC.h"
@@ -1264,6 +1265,60 @@ static unsigned int checkCastFunctionType(Sema &Self, const ExprResult &SrcExpr,
   return 0;
 }
 
+/// Diagnose a cast of GetProcAddress(Module, "Name") to a function pointer
+/// type that differs from the type a system header declares for Name. The
+/// loader returns whatever the module exports under that name, so a call
+/// through the cast pointer with the wrong type is undefined.
+static void checkGetProcAddressCast(Sema &Self, const Expr *Src,
+                                    QualType DestType, SourceRange OpRange) {
+  if (!DestType->isFunctionPointerType())
+    return;
+  const auto *Call = dyn_cast<CallExpr>(Src->IgnoreParenCasts());
+  const FunctionDecl *Callee = Call ? Call->getDirectCallee() : nullptr;
+  if (!Callee || Call->getNumArgs() != 2 || !Callee->getIdentifier() ||
+      !Callee->getIdentifier()->isStr("GetProcAddress") || !Callee->isExternC())
+    return;
+  if (Self.Diags.isIgnored(diag::warn_get_proc_address_type_mismatch,
+                           OpRange.getBegin()))
+    return;
+  const auto *Name =
+      dyn_cast<StringLiteral>(Call->getArg(1)->IgnoreParenCasts());
+  if (!Name || !(Name->isOrdinary() || Name->isUTF8()))
+    return;
+
+  // A name no declaration uses has no identifier yet.
+  IdentifierTable &Idents = Self.Context.Idents;
+  auto It = Idents.find(Name->getString());
+  if (It == Idents.end())
+    return;
+  LookupResult R(Self, It->getValue(), Name->getBeginLoc(),
+                 Sema::LookupOrdinaryName);
+  Self.LookupQualifiedName(R, Self.Context.getTranslationUnitDecl());
+  const auto *FD = R.getAsSingle<FunctionDecl>();
+  if (!FD || !FD->isExternC() ||
+      !Self.getSourceManager().isInSystemHeader(FD->getLocation()))
+    return;
+
+  // The calling convention and the exception specification do not change
+  // what the export is.
+  const auto *DeclTy = FD->getType()->getAs<FunctionProtoType>();
+  const auto *DestTy = DestType->getPointeeType()->getAs<FunctionProtoType>();
+  if (!DeclTy || !DestTy)
+    return;
+  ASTContext &Ctx = Self.Context;
+  bool Same =
+      Ctx.hasSameType(DeclTy->getReturnType(), DestTy->getReturnType()) &&
+      DeclTy->getNumParams() == DestTy->getNumParams() &&
+      DeclTy->isVariadic() == DestTy->isVariadic();
+  for (unsigned I = 0, E = DeclTy->getNumParams(); Same && I != E; ++I)
+    Same = Ctx.hasSameType(DeclTy->getParamType(I), DestTy->getParamType(I));
+  if (Same)
+    return;
+  Self.Diag(OpRange.getBegin(), diag::warn_get_proc_address_type_mismatch)
+      << FD << DestType << FD->getType() << OpRange;
+  Self.Diag(FD->getLocation(), diag::note_entity_declared_at) << FD;
+}
+
 /// CheckReinterpretCast - Check that a reinterpret_cast\<DestType\>(SrcExpr) is
 /// valid.
 /// Refer to C++ 5.2.10 for details. reinterpret_cast is typically used in code
@@ -1306,6 +1361,7 @@ void CastOperation::CheckReinterpretCast() {
     if (unsigned DiagID = checkCastFunctionType(Self, SrcExpr, DestType))
       Self.Diag(OpRange.getBegin(), DiagID)
           << SrcExpr.get()->getType() << DestType << OpRange;
+    checkGetProcAddressCast(Self, SrcExpr.get(), DestType, OpRange);
   } else {
     SrcExpr = ExprError();
   }
@@ -2923,6 +2979,7 @@ void CastOperation::CheckCXXCStyleCast(bool FunctionalStyle,
     if (unsigned DiagID = checkCastFunctionType(Self, SrcExpr, DestType))
       Self.Diag(OpRange.getBegin(), DiagID)
           << SrcExpr.get()->getType() << DestType << OpRange;
+    checkGetProcAddressCast(Self, SrcExpr.get(), DestType, OpRange);
 
   } else {
     SrcExpr = ExprError();
@@ -3354,6 +3411,7 @@ void CastOperation::CheckCStyleCast() {
 
   if (unsigned DiagID = checkCastFunctionType(Self, SrcExpr, DestType))
     Self.Diag(OpRange.getBegin(), DiagID) << SrcType << DestType << OpRange;
+  checkGetProcAddressCast(Self, SrcExpr.get(), DestType, OpRange);
 
   if (isa<PointerType>(SrcType) && isa<PointerType>(DestType)) {
     QualType SrcTy = cast<PointerType>(SrcType)->getPointeeType();

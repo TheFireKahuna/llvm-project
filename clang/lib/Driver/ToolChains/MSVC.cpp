@@ -678,15 +678,17 @@ MSVCToolChain::getSubDirectoryPath(llvm::SubDirectoryType Type,
 // directory by name and uses the last one of the list.
 // So we compare entry names lexicographically to find the greatest one.
 // Gets the library path required to link against the Windows SDK.
-bool MSVCToolChain::getWindowsSDKLibraryPath(const ArgList &Args,
-                                             std::string &path) const {
+bool clang::driver::toolchains::getWindowsSDKLibraryPath(
+    llvm::vfs::FileSystem &VFS, std::optional<StringRef> WinSdkDir,
+    std::optional<StringRef> WinSdkVersion, std::optional<StringRef> WinSysRoot,
+    llvm::Triple::ArchType Arch, std::string &path) {
   std::string sdkPath;
   int sdkMajor = 0;
   std::string windowsSDKIncludeVersion;
   std::string windowsSDKLibVersion;
 
   path.clear();
-  if (!llvm::getWindowsSDKDir(getVFS(), WinSdkDir, WinSdkVersion, WinSysRoot,
+  if (!llvm::getWindowsSDKDir(VFS, WinSdkDir, WinSdkVersion, WinSysRoot,
                               sdkPath, sdkMajor, windowsSDKIncludeVersion,
                               windowsSDKLibVersion))
     return false;
@@ -699,30 +701,36 @@ bool MSVCToolChain::getWindowsSDKLibraryPath(const ArgList &Args,
       windowsSDKLibVersion = *WinSdkVersion;
   if (sdkMajor >= 8)
     llvm::sys::path::append(libPath, windowsSDKLibVersion, "um");
-  return llvm::appendArchToWindowsSDKLibPath(sdkMajor, libPath, getArch(),
-                                             path);
+  return llvm::appendArchToWindowsSDKLibPath(sdkMajor, libPath, Arch, path);
+}
+
+bool MSVCToolChain::getWindowsSDKLibraryPath(const ArgList &Args,
+                                             std::string &path) const {
+  return toolchains::getWindowsSDKLibraryPath(
+      getVFS(), WinSdkDir, WinSdkVersion, WinSysRoot, getArch(), path);
 }
 
 bool MSVCToolChain::useUniversalCRT() const {
   return llvm::useUniversalCRT(VSLayout, VCToolChainPath, getArch(), getVFS());
 }
 
-bool MSVCToolChain::getUniversalCRTLibraryPath(const ArgList &Args,
-                                               std::string &Path) const {
+bool clang::driver::toolchains::getUniversalCRTLibraryPath(
+    llvm::vfs::FileSystem &VFS, std::optional<StringRef> WinSdkDir,
+    std::optional<StringRef> WinSdkVersion, std::optional<StringRef> WinSysRoot,
+    llvm::Triple::ArchType Arch, std::string &Path) {
   std::string UniversalCRTSdkPath;
   std::string UCRTVersion;
 
   Path.clear();
-  if (!llvm::getUniversalCRTSdkDir(getVFS(), WinSdkDir, WinSdkVersion,
-                                   WinSysRoot, UniversalCRTSdkPath,
-                                   UCRTVersion))
+  if (!llvm::getUniversalCRTSdkDir(VFS, WinSdkDir, WinSdkVersion, WinSysRoot,
+                                   UniversalCRTSdkPath, UCRTVersion))
     return false;
 
   if (!(WinSdkDir.has_value() || WinSysRoot.has_value()) &&
       WinSdkVersion.has_value())
     UCRTVersion = *WinSdkVersion;
 
-  StringRef ArchName = llvm::archToWindowsSDKArch(getArch());
+  StringRef ArchName = llvm::archToWindowsSDKArch(Arch);
   if (ArchName.empty())
     return false;
 
@@ -731,6 +739,12 @@ bool MSVCToolChain::getUniversalCRTLibraryPath(const ArgList &Args,
 
   Path = std::string(LibPath);
   return true;
+}
+
+bool MSVCToolChain::getUniversalCRTLibraryPath(const ArgList &Args,
+                                               std::string &Path) const {
+  return toolchains::getUniversalCRTLibraryPath(
+      getVFS(), WinSdkDir, WinSdkVersion, WinSysRoot, getArch(), Path);
 }
 
 static VersionTuple getMSVCVersionFromExe(const std::string &BinDir) {
@@ -769,13 +783,69 @@ static VersionTuple getMSVCVersionFromExe(const std::string &BinDir) {
   return Version;
 }
 
-void MSVCToolChain::AddSystemIncludeWithSubfolder(
+void clang::driver::toolchains::AddSystemIncludeWithSubfolder(
     const ArgList &DriverArgs, ArgStringList &CC1Args,
     const std::string &folder, const Twine &subfolder1, const Twine &subfolder2,
-    const Twine &subfolder3) const {
+    const Twine &subfolder3) {
   llvm::SmallString<128> path(folder);
   llvm::sys::path::append(path, subfolder1, subfolder2, subfolder3);
-  addSystemInclude(DriverArgs, CC1Args, path);
+  ToolChain::addSystemInclude(DriverArgs, CC1Args, path);
+}
+
+void clang::driver::toolchains::addUniversalCRTIncludeArgs(
+    llvm::vfs::FileSystem &VFS, std::optional<StringRef> WinSdkDir,
+    std::optional<StringRef> WinSdkVersion, std::optional<StringRef> WinSysRoot,
+    const ArgList &DriverArgs, ArgStringList &CC1Args) {
+  std::string UniversalCRTSdkPath;
+  std::string UCRTVersion;
+  if (llvm::getUniversalCRTSdkDir(VFS, WinSdkDir, WinSdkVersion, WinSysRoot,
+                                  UniversalCRTSdkPath, UCRTVersion)) {
+    if (!(WinSdkDir.has_value() || WinSysRoot.has_value()) &&
+        WinSdkVersion.has_value())
+      UCRTVersion = *WinSdkVersion;
+    AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, UniversalCRTSdkPath,
+                                  "Include", UCRTVersion, "ucrt");
+  }
+}
+
+void clang::driver::toolchains::addWindowsSDKIncludeArgs(
+    llvm::vfs::FileSystem &VFS, std::optional<StringRef> WinSdkDir,
+    std::optional<StringRef> WinSdkVersion, std::optional<StringRef> WinSysRoot,
+    const ArgList &DriverArgs, ArgStringList &CC1Args) {
+  std::string WindowsSDKDir;
+  int major = 0;
+  std::string windowsSDKIncludeVersion;
+  std::string windowsSDKLibVersion;
+  if (!llvm::getWindowsSDKDir(VFS, WinSdkDir, WinSdkVersion, WinSysRoot,
+                              WindowsSDKDir, major, windowsSDKIncludeVersion,
+                              windowsSDKLibVersion))
+    return;
+  if (major >= 10)
+    if (!(WinSdkDir.has_value() || WinSysRoot.has_value()) &&
+        WinSdkVersion.has_value())
+      windowsSDKIncludeVersion = windowsSDKLibVersion = *WinSdkVersion;
+  if (major >= 8) {
+    // Note: windowsSDKIncludeVersion is empty for SDKs prior to v10.
+    // Anyway, llvm::sys::path::append is able to manage it.
+    AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, WindowsSDKDir, "Include",
+                                  windowsSDKIncludeVersion, "shared");
+    AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, WindowsSDKDir, "Include",
+                                  windowsSDKIncludeVersion, "um");
+    AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, WindowsSDKDir, "Include",
+                                  windowsSDKIncludeVersion, "winrt");
+    if (major >= 10) {
+      llvm::VersionTuple Tuple;
+      if (!Tuple.tryParse(windowsSDKIncludeVersion) &&
+          Tuple.getSubminor().value_or(0) >= 17134) {
+        AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, WindowsSDKDir,
+                                      "Include", windowsSDKIncludeVersion,
+                                      "cppwinrt");
+      }
+    }
+  } else {
+    AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, WindowsSDKDir,
+                                  "Include");
+  }
 }
 
 void MSVCToolChain::AddMSVCStdlibMultilibIncludeArgs(
@@ -882,58 +952,11 @@ void MSVCToolChain::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
         DriverArgs, CC1Args,
         getSubDirectoryPath(llvm::SubDirectoryType::Include, "atlmfc"));
 
-    if (useUniversalCRT()) {
-      std::string UniversalCRTSdkPath;
-      std::string UCRTVersion;
-      if (llvm::getUniversalCRTSdkDir(getVFS(), WinSdkDir, WinSdkVersion,
-                                      WinSysRoot, UniversalCRTSdkPath,
-                                      UCRTVersion)) {
-        if (!(WinSdkDir.has_value() || WinSysRoot.has_value()) &&
-            WinSdkVersion.has_value())
-          UCRTVersion = *WinSdkVersion;
-        AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, UniversalCRTSdkPath,
-                                      "Include", UCRTVersion, "ucrt");
-      }
-    }
-
-    std::string WindowsSDKDir;
-    int major = 0;
-    std::string windowsSDKIncludeVersion;
-    std::string windowsSDKLibVersion;
-    if (llvm::getWindowsSDKDir(getVFS(), WinSdkDir, WinSdkVersion, WinSysRoot,
-                               WindowsSDKDir, major, windowsSDKIncludeVersion,
-                               windowsSDKLibVersion)) {
-      if (major >= 10)
-        if (!(WinSdkDir.has_value() || WinSysRoot.has_value()) &&
-            WinSdkVersion.has_value())
-          windowsSDKIncludeVersion = windowsSDKLibVersion = *WinSdkVersion;
-      if (major >= 8) {
-        // Note: windowsSDKIncludeVersion is empty for SDKs prior to v10.
-        // Anyway, llvm::sys::path::append is able to manage it.
-        AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, WindowsSDKDir,
-                                      "Include", windowsSDKIncludeVersion,
-                                      "shared");
-        AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, WindowsSDKDir,
-                                      "Include", windowsSDKIncludeVersion,
-                                      "um");
-        AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, WindowsSDKDir,
-                                      "Include", windowsSDKIncludeVersion,
-                                      "winrt");
-        if (major >= 10) {
-          llvm::VersionTuple Tuple;
-          if (!Tuple.tryParse(windowsSDKIncludeVersion) &&
-              Tuple.getSubminor().value_or(0) >= 17134) {
-            AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, WindowsSDKDir,
-                                          "Include", windowsSDKIncludeVersion,
-                                          "cppwinrt");
-          }
-        }
-      } else {
-        AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, WindowsSDKDir,
-                                      "Include");
-      }
-    }
-
+    if (useUniversalCRT())
+      addUniversalCRTIncludeArgs(getVFS(), WinSdkDir, WinSdkVersion, WinSysRoot,
+                                 DriverArgs, CC1Args);
+    addWindowsSDKIncludeArgs(getVFS(), WinSdkDir, WinSdkVersion, WinSysRoot,
+                             DriverArgs, CC1Args);
     return;
   }
 
