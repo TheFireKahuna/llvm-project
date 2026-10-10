@@ -22,6 +22,11 @@ class COFFLinkerContext;
 
 void writeResult(COFFLinkerContext &ctx);
 
+// The name of the partial section that sc is binned into, and that of the
+// output section that a partial section's name gives.
+StringRef getPartialSectionName(SectionChunk *sc, bool isMinGW);
+StringRef getOutputSectionName(StringRef name, bool isMinGW);
+
 class PartialSection {
 public:
   PartialSection(StringRef n, uint32_t chars)

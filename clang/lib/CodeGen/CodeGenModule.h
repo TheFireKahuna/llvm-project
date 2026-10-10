@@ -524,6 +524,11 @@ private:
   llvm::DenseMap<const Decl*, llvm::Constant *> StaticLocalDeclMap;
   llvm::DenseMap<const Decl*, llvm::GlobalVariable*> StaticLocalDeclGuardMap;
   llvm::DenseMap<const Expr*, llvm::Constant *> MaterializedGlobalTemporaryMap;
+  /// The offsets of the subobjects that a variable of each record type names.
+  llvm::DenseMap<const RecordDecl *, SmallVector<uint64_t, 4>> SubobjectOffsets;
+  /// The dllimport entities whose addresses a constant holds only because
+  /// the target's linker has the loader write them into static data.
+  llvm::SmallPtrSet<llvm::GlobalValue *, 4> ConstantDLLImportAddresses;
 
   llvm::DenseMap<QualType, llvm::Constant *> AtomicSetterHelperFnMap;
   llvm::DenseMap<QualType, llvm::Constant *> AtomicGetterHelperFnMap;
@@ -1042,6 +1047,18 @@ public:
   /// the visibility mapping. An implicit visibility says nothing about a
   /// declaration, since every plain declaration has it.
   bool isMappedImportVisibility(const LinkageInfo &LV) const;
+
+  /// Give the definition GV, if another image could reach it, a name for
+  /// Address, which is Offset bytes into it: Name is GV's name followed by
+  /// Kind and the decimal offset.
+  void emitInteriorName(llvm::GlobalVariable *GV, StringRef Kind,
+                        uint64_t Offset, llvm::Constant *Address);
+  /// Give the definition GV of D a name for each of its subobjects.
+  void emitSubobjectNames(const VarDecl &D, llvm::GlobalVariable *GV);
+
+  /// Note that a constant holds the address C of the dllimport entity D,
+  /// when only hasConstantDLLImportAddresses() lets it.
+  void noteConstantDLLImportAddress(const ValueDecl *D, llvm::Constant *C);
   void setDLLImportDLLExport(llvm::GlobalValue *GV, GlobalDecl D) const;
   void setDLLImportDLLExport(llvm::GlobalValue *GV, const NamedDecl *D) const;
   /// Set visibility, dllimport/dllexport and dso_local.

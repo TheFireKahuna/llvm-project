@@ -1184,6 +1184,22 @@ CodeGenModule::StackProtectorAttribute(const Decl *D) const {
   return std::nullopt;
 }
 
+// Whether the initializer of a global variable holds GV's address.
+static bool isAddressInStaticData(const llvm::GlobalValue *GV) {
+  SmallVector<const llvm::User *, 8> Worklist(GV->users());
+  llvm::SmallPtrSet<const llvm::User *, 8> Visited;
+  while (!Worklist.empty()) {
+    const llvm::User *U = Worklist.pop_back_val();
+    if (!Visited.insert(U).second)
+      continue;
+    if (isa<llvm::GlobalVariable>(U))
+      return true;
+    if (isa<llvm::Constant>(U) && !isa<llvm::GlobalValue>(U))
+      Worklist.append(U->user_begin(), U->user_end());
+  }
+  return false;
+}
+
 void CodeGenModule::Release() {
   Module *Primary = getContext().getCurrentNamedModule();
   if (CXX20ModuleInits && Primary && !Primary->isHeaderLikeModule())
@@ -1197,6 +1213,12 @@ void CodeGenModule::Release() {
   emitMultiVersionFunctions();
   emitPFPFieldsWithEvaluatedOffset();
   emitGlobalDeleteForwardingBodies();
+  // Static data that holds a dllimport address needs the linker to have the
+  // loader write it there. A linker that does not define this symbol would
+  // write the address of a thunk, or fail on data, so it fails to link the
+  // object instead.
+  if (llvm::any_of(ConstantDLLImportAddresses, isAddressInStaticData))
+    AppendLinkerOptions("/INCLUDE:__llvm_import_slots_v1");
 
   if (Context.getLangOpts().IncrementalExtensions &&
       GlobalTopLevelStmtBlockInFlight.first) {
@@ -6718,6 +6740,121 @@ const ABIInfo &CodeGenModule::getABIInfo() {
   return getTargetCodeGenInfo().getABIInfo();
 }
 
+// Whether another image could reach the definition GV. A module definition
+// file or an export-everything link can export a definition that carries no
+// dllexport storage, so this asks for more than the visibility mapping does.
+static bool isReachableFromOtherImages(const llvm::GlobalVariable *GV) {
+  return !GV->isDeclarationForLinker() && !GV->hasLocalLinkage() &&
+         !GV->hasCommonLinkage() && GV->hasDefaultVisibility() &&
+         !GV->isThreadLocal();
+}
+
+// On Windows Itanium and NT-POSIX the loader writes an imported address into
+// the static data that holds it, but adds no offset to it. So that static data
+// can hold an address inside another image's vtable or variable, the image
+// that defines one names each interior address that an importer can reach in
+// a constant: a vtable's address points ("$ap") and a variable's subobjects
+// ("$so"). The linker binds a word holding the vtable or variable plus such an
+// offset to the name. '$' cannot occur in a mangled name.
+void CodeGenModule::emitInteriorName(llvm::GlobalVariable *GV, StringRef Kind,
+                                     uint64_t Offset, llvm::Constant *Address) {
+  if (!isReachableFromOtherImages(GV))
+    return;
+  SmallString<256> Name(GV->getName());
+  llvm::raw_svector_ostream(Name) << Kind << Offset;
+  if (getModule().getNamedValue(Name))
+    return;
+  // The alias is in the COMDAT of the object it points into, so it is kept
+  // and discarded with it. A COFF object cannot express a weak alias at a
+  // non-zero offset, so it is external.
+  auto *Alias = llvm::GlobalAlias::create(Int8Ty, GV->getAddressSpace(),
+                                          llvm::GlobalValue::ExternalLinkage,
+                                          Name, Address, &getModule());
+  Alias->setVisibility(GV->getVisibility());
+  Alias->setDLLStorageClass(GV->getDLLStorageClass());
+  Alias->setUnnamedAddr(GV->getUnnamedAddr());
+  Alias->setDSOLocal(GV->isDSOLocal());
+}
+
+// Append the offsets, from the start of the variable, of the subobjects of RD
+// placed at Offset whose addresses the type fixes: base-class subobjects and
+// data members, recursively, but nothing inside an array, whose elements are
+// indexed freely. A member is a complete object and holds its virtual bases;
+// a base-class subobject does not.
+static void collectSubobjectOffsets(const ASTContext &Ctx, const RecordDecl *RD,
+                                    CharUnits Offset, bool Complete,
+                                    SmallVectorImpl<uint64_t> &Offsets) {
+  RD = RD->getDefinition();
+  if (!RD || RD->isInvalidDecl())
+    return;
+  const ASTRecordLayout &Layout = Ctx.getASTRecordLayout(RD);
+  for (const FieldDecl *F : RD->fields()) {
+    // No lvalue designates a bit-field's or a reference's storage.
+    if (F->isBitField() || F->getType()->isReferenceType())
+      continue;
+    CharUnits FieldOffset =
+        Offset +
+        Ctx.toCharUnitsFromBits(Layout.getFieldOffset(F->getFieldIndex()));
+    Offsets.push_back(FieldOffset.getQuantity());
+    if (const RecordDecl *Member = F->getType()->getAsRecordDecl())
+      collectSubobjectOffsets(Ctx, Member, FieldOffset, /*Complete=*/true,
+                              Offsets);
+  }
+  const auto *CRD = dyn_cast<CXXRecordDecl>(RD);
+  if (!CRD)
+    return;
+  for (const CXXBaseSpecifier &B : CRD->bases()) {
+    if (B.isVirtual())
+      continue;
+    const CXXRecordDecl *Base = B.getType()->getAsCXXRecordDecl();
+    CharUnits BaseOffset = Offset + Layout.getBaseClassOffset(Base);
+    Offsets.push_back(BaseOffset.getQuantity());
+    collectSubobjectOffsets(Ctx, Base, BaseOffset, /*Complete=*/false, Offsets);
+  }
+  if (!Complete)
+    return;
+  for (const CXXBaseSpecifier &B : CRD->vbases()) {
+    const CXXRecordDecl *Base = B.getType()->getAsCXXRecordDecl();
+    CharUnits BaseOffset = Offset + Layout.getVBaseClassOffset(Base);
+    Offsets.push_back(BaseOffset.getQuantity());
+    collectSubobjectOffsets(Ctx, Base, BaseOffset, /*Complete=*/false, Offsets);
+  }
+}
+
+void CodeGenModule::noteConstantDLLImportAddress(const ValueDecl *D,
+                                                 llvm::Constant *C) {
+  // Every target folds a C function's address, as the thunk's.
+  if (!D->hasAttr<DLLImportAttr>() ||
+      !getTarget().hasConstantDLLImportAddresses() ||
+      (isa<FunctionDecl>(D) && !getLangOpts().CPlusPlus))
+    return;
+  if (auto *GV = dyn_cast<llvm::GlobalValue>(C->stripPointerCasts()))
+    ConstantDLLImportAddresses.insert(GV);
+}
+
+void CodeGenModule::emitSubobjectNames(const VarDecl &D,
+                                       llvm::GlobalVariable *GV) {
+  const RecordDecl *RD = D.getType()->getAsRecordDecl();
+  if (!RD || !isReachableFromOtherImages(GV))
+    return;
+  auto [It, Inserted] = SubobjectOffsets.try_emplace(RD);
+  SmallVector<uint64_t, 4> &Offsets = It->second;
+  if (Inserted) {
+    collectSubobjectOffsets(getContext(), RD, CharUnits::Zero(),
+                            /*Complete=*/true, Offsets);
+    llvm::sort(Offsets);
+    Offsets.erase(llvm::unique(Offsets), Offsets.end());
+  }
+  // The start of the variable is its own name, and an empty member at its
+  // end is no address inside it.
+  uint64_t Size = getDataLayout().getTypeAllocSize(GV->getValueType());
+  for (uint64_t Offset : Offsets)
+    if (Offset != 0 && Offset < Size)
+      emitInteriorName(GV, "$so", Offset,
+                       llvm::ConstantExpr::getInBoundsPtrAdd(
+                           GV, llvm::ConstantInt::get(Int64Ty, Offset)));
+}
+
 /// Pass IsTentative as true if you want to create a tentative definition.
 void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D,
                                             bool IsTentative) {
@@ -7005,6 +7142,9 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D,
   }
 
   maybeSetTrivialComdat(*D, *GV);
+
+  if (getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    emitSubobjectNames(*D, GV);
 
   // Emit the initializer function if necessary.
   if (NeedsGlobalCtor || NeedsGlobalDtor)

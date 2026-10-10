@@ -83,6 +83,21 @@ public:
   // Returns whether any member was loaded or X referenced.
   bool loadLocalImportMembers();
 
+  // Under -import-slots, loads the import of each name that a DLL exports for
+  // an address inside its data which a word of static data holds, and
+  // NtProtectVirtualMemory's where the residual fill, which writes a word for
+  // which no name is exported, would make a read-only word read-only again.
+  // Returns whether it loaded any, which may change what a word needs.
+  bool loadInteriorImports();
+
+  // Under -import-slots, the import of the name that the DLL of imp exports
+  // for the address offset bytes into imp's data, or null if it exports none.
+  DefinedImportData *findInteriorImport(DefinedImportData *imp, int64_t offset);
+
+  // Under -import-slots, exports the names of the addresses inside each
+  // exported definition along with it, whatever exported the definition.
+  void exportInteriorNames();
+
   // The .refptr.X symbols that objects define where bindPointerCells may
   // bind them, which it visits instead of the whole table.
   std::vector<Symbol *> pointerCells;

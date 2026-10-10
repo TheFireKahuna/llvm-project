@@ -10,6 +10,7 @@
 #include "COFFLinkerContext.h"
 #include "Config.h"
 #include "Driver.h"
+#include "ImportSlots.h"
 #include "LTO.h"
 #include "LocalImports.h"
 #include "PDB.h"
@@ -322,6 +323,27 @@ void SymbolTable::loadMinGWSymbols() {
   }
 }
 
+// The kinds of name that an image built by clang for Windows Itanium or
+// NT-POSIX defines for the addresses inside an object that static data in
+// another image can hold: X$apK for the address point K bytes into vtable X,
+// and X$soK for the subobject K bytes into variable X.
+static constexpr StringLiteral interiorKinds[] = {"$so", "$ap"};
+
+// The name of the object into which the interior name Name points, or an empty
+// string if Name is not one.
+static StringRef getInteriorBase(StringRef name) {
+  size_t i = name.rfind('$');
+  if (i == StringRef::npos)
+    return {};
+  StringRef offset = name.substr(i);
+  for (StringRef kind : interiorKinds)
+    if (offset.consume_front(kind))
+      return !offset.empty() && llvm::all_of(offset, isDigit)
+                 ? name.take_front(i)
+                 : StringRef();
+  return {};
+}
+
 // Whether the lazy symbol s is offered by an import, an import library's member
 // or a DLL's export, whose loading adds no reference to the link.
 static bool isLazyImport(Symbol *s) {
@@ -330,6 +352,125 @@ static bool isLazyImport(Symbol *s) {
            file_magic::coff_import_library;
   return isa<LazyDLLSymbol>(s);
 }
+
+DefinedImportData *SymbolTable::findInteriorImport(DefinedImportData *imp,
+                                                   int64_t offset) {
+  if (offset <= 0)
+    return nullptr;
+  for (StringRef kind : interiorKinds) {
+    auto *interior = dyn_cast_or_null<DefinedImportData>(
+        find((imp->getName() + kind + Twine(offset)).str()));
+    // Only the image that exports the object names addresses inside it.
+    if (interior &&
+        interior->getDLLName().equals_insensitive(imp->getDLLName()))
+      return interior;
+  }
+  return nullptr;
+}
+
+bool SymbolTable::loadInteriorImports() {
+  if (ctx.hybridSymtab || isEC())
+    return false;
+  bool canSeal = machine == AMD64 || machine == ARM64;
+  // The import that a word holding the address of s takes in place, if any.
+  auto getImport = [&](Symbol *s) -> DefinedImportData * {
+    DefinedImportData *imp = getAddressedImport(s);
+    if (!imp || ctx.config.delayLoads.contains(imp->getDLLName().lower()))
+      return nullptr;
+    return imp;
+  };
+
+  std::vector<Symbol *> lazies;
+  bool sealed = false;
+  for (ObjFile *file : ctx.objFileInstances) {
+    if (&file->symtab != this || llvm::none_of(file->getSymbols(), getImport))
+      continue;
+    for (Chunk *c : file->getChunks()) {
+      auto *sc = dyn_cast_or_null<SectionChunk>(c);
+      if (!sc || (sc->header->Characteristics &
+                  (IMAGE_SCN_MEM_DISCARDABLE | IMAGE_SCN_CNT_CODE)))
+        continue;
+      bool readOnly = !(sc->header->Characteristics & IMAGE_SCN_MEM_WRITE);
+      for (const coff_relocation &rel : sc->getRelocs()) {
+        Symbol *s = file->getSymbol(rel.SymbolTableIndex);
+        DefinedImportData *imp = getImport(s);
+        if (!imp || !sc->isAddressWord(rel))
+          continue;
+        int64_t addend = getAddressWordAddend(sc, rel).value_or(0);
+        if (!addend)
+          continue;
+        bool pending = false;
+        if (addend > 0)
+          for (StringRef kind : interiorKinds) {
+            Symbol *l = find((imp->getName() + kind + Twine(addend)).str());
+            if (l && l->isLazy() && !l->pendingArchiveLoad && isLazyImport(l)) {
+              lazies.push_back(l);
+              pending = true;
+            }
+          }
+        if (!pending && readOnly && canSeal && isa<DefinedImportData>(s) &&
+            !findInteriorImport(imp, addend))
+          sealed = true;
+      }
+    }
+  }
+  if (sealed)
+    if (Symbol *l = find("__imp_NtProtectVirtualMemory");
+        l && l->isLazy() && !l->pendingArchiveLoad && isLazyImport(l))
+      lazies.push_back(l);
+
+  bool loaded = false;
+  for (Symbol *l : lazies) {
+    if (!l->isLazy() || l->pendingArchiveLoad)
+      continue;
+    Log(ctx) << "Loading lazy " << l->getName() << " from "
+             << l->getFile()->getName() << " for a word of static data";
+    forceLazy(l);
+    loaded = true;
+  }
+  return loaded;
+}
+
+void SymbolTable::exportInteriorNames() {
+  // The compiler exports the names along with a definition that it exports;
+  // only an export from elsewhere needs them added.
+  if (llvm::all_of(exports, [](const Export &e) {
+        return e.source == ExportSource::Directives;
+      }))
+    return;
+  DenseMap<StringRef, size_t> byName;
+  for (size_t i = 0, e = exports.size(); i != e; ++i)
+    if (exports[i].forwardTo.empty())
+      byName.try_emplace(exports[i].name, i);
+  std::vector<Export> added;
+  for (auto &entry : symMap) {
+    Symbol *sym = entry.second;
+    StringRef name = sym->getName();
+    StringRef base = getInteriorBase(name);
+    if (base.empty() || !isa<DefinedRegular>(sym) || byName.contains(name))
+      continue;
+    auto it = byName.find(base);
+    if (it == byName.end())
+      continue;
+    const Export &b = exports[it->second];
+    StringRef suffix = name.drop_front(base.size());
+    Export e;
+    e.name = name;
+    if (!b.extName.empty())
+      e.extName = saver().save(b.extName + suffix);
+    if (!b.exportAs.empty())
+      e.exportAs = saver().save(b.exportAs + suffix);
+    e.noname = b.noname;
+    e.isPrivate = b.isPrivate;
+    e.data = true;
+    e.source = b.source;
+    e.symbolName = name;
+    e.sym = addGCRoot(name);
+    added.push_back(e);
+  }
+  llvm::append_range(exports, added);
+}
+
 bool SymbolTable::loadLocalImportMembers() {
   std::vector<Symbol *> lazies;
   bool referenced = false;
@@ -407,7 +548,9 @@ bool SymbolTable::handleMinGWAutomaticImport(Symbol *sym, StringRef name) {
   // but we mark the symbol as isRuntimePseudoReloc, and a later pass
   // will add runtime pseudo relocations for every relocation against
   // this Symbol. The runtime pseudo relocation framework expects the
-  // reference itself to point at the IAT entry.
+  // reference itself to point at the IAT entry. Under -import-slots, the
+  // later pass binds each word of static data holding the variable's address
+  // in place instead, and reports every other reference.
   size_t impSize = 0;
   if (isa<DefinedImportData>(imp)) {
     Log(ctx) << "Automatically importing " << name << " from "
@@ -684,7 +827,8 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
     if (name.contains("_PchSym_"))
       continue;
 
-    if (ctx.config.autoImport && handleMinGWAutomaticImport(sym, name))
+    if ((ctx.config.autoImport || ctx.config.importSlots) &&
+        handleMinGWAutomaticImport(sym, name))
       continue;
 
     // Remaining undefined symbols are not fatal if /force is specified.

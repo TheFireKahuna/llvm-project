@@ -2202,6 +2202,15 @@ static bool CheckEvaluationResult(CheckEvaluationResultKind CERK,
                                   CheckedTemporaries &CheckedTemps,
                                   bool IsCompleteClass = true);
 
+/// Determines whether the address of a dllimport entity is known only at run
+/// time. On most targets such an address exists only in the import address
+/// table, and a function reference would resolve to a thunk rather than the
+/// function.
+static bool hasRuntimeDLLImportAddress(EvalInfo &Info, const ValueDecl *D) {
+  return D->hasAttr<DLLImportAttr>() &&
+         !Info.Ctx.getTargetInfo().hasConstantDLLImportAddresses();
+}
+
 /// Check that this reference or pointer core constant expression is a valid
 /// value for an address or reference constant expression. Return true if we
 /// can fold this expression, whether or not it's a constant expression.
@@ -2310,7 +2319,7 @@ static bool CheckLValueConstantExpression(EvalInfo &Info, SourceLocation Loc,
       // evaluating a value for use only in name mangling, and unless it's a
       // static local. For the latter case, we'd still need to evaluate the
       // constant expression in case we're inside a (inlined) function.
-      if (!isForManglingOnly(Kind) && Var->hasAttr<DLLImportAttr>() &&
+      if (!isForManglingOnly(Kind) && hasRuntimeDLLImportAddress(Info, Var) &&
           !Var->isStaticLocal())
         return false;
 
@@ -2341,7 +2350,7 @@ static bool CheckLValueConstantExpression(EvalInfo &Info, SourceLocation Loc,
       // dynamic initialization.  This means that we are permitted to
       // perform initialization with the address of the thunk.
       if (Info.getLangOpts().CPlusPlus && !isForManglingOnly(Kind) &&
-          FD->hasAttr<DLLImportAttr>())
+          hasRuntimeDLLImportAddress(Info, FD))
         // FIXME: Diagnostic!
         return false;
     }
@@ -2404,7 +2413,7 @@ static bool CheckMemberPointerConstantExpression(EvalInfo &Info,
     return false;
   }
   return isForManglingOnly(Kind) || FD->isVirtual() ||
-         !FD->hasAttr<DLLImportAttr>();
+         !hasRuntimeDLLImportAddress(Info, FD);
 }
 
 /// Check that this core constant expression is of literal type, and if not,

@@ -386,9 +386,12 @@ public:
     return s->kind() == DefinedImportDataKind;
   }
 
-  uint64_t getRVA() { return getChunk()->getRVA(); }
+  uint64_t getRVA() { return getChunk()->getRVA() + file->locationOffset; }
   Chunk *getChunk() { return location; }
-  void setLocation(Chunk *addressTable) { location = addressTable; }
+  void setLocation(Chunk *addressTable, uint32_t offset = 0) {
+    location = addressTable;
+    file->locationOffset = offset;
+  }
 
   StringRef getDLLName() { return file->dllName; }
   StringRef getExternalName() { return file->externalName; }

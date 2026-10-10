@@ -1,13 +1,13 @@
-// RUN: %clang_cc1 -triple i686-win32             -fsyntax-only -fms-extensions -verify -std=c99 -DMS %s
-// RUN: %clang_cc1 -triple x86_64-win32           -fsyntax-only -fms-extensions -verify -std=c11 -DMS %s
-// RUN: %clang_cc1 -triple i686-mingw32           -fsyntax-only -fms-extensions -verify -std=c11 -DGNU %s
-// RUN: %clang_cc1 -triple x86_64-mingw32         -fsyntax-only -fms-extensions -verify -std=c99 -DGNU %s
-// RUN: %clang_cc1 -triple aarch64-win32          -fsyntax-only -fms-extensions -verify -std=c99 -DMS %s
+// RUN: %clang_cc1 -triple i686-win32             -fsyntax-only -fms-extensions -verify=expected,runtime -std=c99 -DMS %s
+// RUN: %clang_cc1 -triple x86_64-win32           -fsyntax-only -fms-extensions -verify=expected,runtime -std=c11 -DMS %s
+// RUN: %clang_cc1 -triple i686-mingw32           -fsyntax-only -fms-extensions -verify=expected,runtime -std=c11 -DGNU %s
+// RUN: %clang_cc1 -triple x86_64-mingw32         -fsyntax-only -fms-extensions -verify=expected,runtime -std=c99 -DGNU %s
+// RUN: %clang_cc1 -triple aarch64-win32          -fsyntax-only -fms-extensions -verify=expected,runtime -std=c99 -DMS %s
 // RUN: %clang_cc1 -triple i686-windows-itanium   -fsyntax-only -fms-extensions -verify -std=c99 -DWI %s
 // RUN: %clang_cc1 -triple x86_64-windows-itanium -fsyntax-only -fms-extensions -verify -std=c11 -DWI %s
-// RUN: %clang_cc1 -triple x86_64-scei-ps4        -fsyntax-only -fms-extensions -verify -std=c11 -DWI %s
-// RUN: %clang_cc1 -triple x86_64-scei-ps4        -fsyntax-only -fms-extensions -verify -std=c99 -DWI %s
-// RUN: %clang_cc1 -triple x86_64-sie-ps5         -fsyntax-only -fms-extensions -verify -std=c11 -DWI %s
+// RUN: %clang_cc1 -triple x86_64-scei-ps4        -fsyntax-only -fms-extensions -verify=expected,runtime -std=c11 -DWI %s
+// RUN: %clang_cc1 -triple x86_64-scei-ps4        -fsyntax-only -fms-extensions -verify=expected,runtime -std=c99 -DWI %s
+// RUN: %clang_cc1 -triple x86_64-sie-ps5         -fsyntax-only -fms-extensions -verify=expected,runtime -std=c11 -DWI %s
 
 // Invalid usage.
 __declspec(dllimport) typedef int typedef1;
@@ -37,8 +37,11 @@ __declspec(dllimport) int GlobalDecl;
 int **__attribute__((dllimport))* GlobalDeclChunkAttr;
 int GlobalDeclAttr __attribute__((dllimport));
 
-// Address of variables can't be used for initialization in C language modes.
-int *VarForInit = &GlobalDecl; // expected-error{{initializer element is not a compile-time constant}}
+// Address of variables can't be used for initialization in C language modes,
+// except where the loader writes an imported address into the data naming it,
+// and the linker binds or writes an address inside it.
+int *VarForInit = &GlobalDecl; // runtime-error{{initializer element is not a compile-time constant}}
+int *VarForInitOffset = &GlobalDecl + 1; // runtime-error{{initializer element is not a compile-time constant}}
 
 // Not allowed on definitions.
 __declspec(dllimport) extern int ExternGlobalInit = 1; // expected-error{{definition of dllimport data}}

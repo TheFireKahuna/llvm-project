@@ -2315,6 +2315,7 @@ ConstantLValueEmitter::tryEmitBase(const APValue::LValueBase &base) {
 
     if (const auto *FD = dyn_cast<FunctionDecl>(D)) {
       llvm::Constant *C = CGM.getRawFunctionPointer(FD);
+      CGM.noteConstantDLLImportAddress(FD, C);
       if (FD->getType()->isCFIUncheckedCalleeFunctionType())
         C = llvm::NoCFIValue::get(cast<llvm::GlobalValue>(C));
       return PtrAuthSign(C);
@@ -2323,8 +2324,11 @@ ConstantLValueEmitter::tryEmitBase(const APValue::LValueBase &base) {
     if (const auto *VD = dyn_cast<VarDecl>(D)) {
       // We can never refer to a variable with local storage.
       if (!VD->hasLocalStorage()) {
-        if (VD->isFileVarDecl() || VD->hasExternalStorage())
-          return CGM.GetAddrOfGlobalVar(VD);
+        if (VD->isFileVarDecl() || VD->hasExternalStorage()) {
+          llvm::Constant *C = CGM.GetAddrOfGlobalVar(VD);
+          CGM.noteConstantDLLImportAddress(VD, C);
+          return C;
+        }
 
         if (VD->isLocalVarDecl()) {
           return CGM.getOrCreateStaticVarDecl(
@@ -2753,8 +2757,14 @@ ConstantEmitter::tryEmitPrivate(const APValue &Value, QualType DestType,
     return EmitArrayConstant(CGM, Desired, CommonElementType, NumElements, Elts,
                              Filler);
   }
-  case APValue::MemberPointer:
-    return CGM.getCXXABI().EmitMemberPointer(Value, DestType);
+  case APValue::MemberPointer: {
+    llvm::Constant *C = CGM.getCXXABI().EmitMemberPointer(Value, DestType);
+    if (const auto *MD =
+            dyn_cast_or_null<CXXMethodDecl>(Value.getMemberPointerDecl());
+        MD && !MD->isVirtual() && MD->hasAttr<DLLImportAttr>())
+      CGM.noteConstantDLLImportAddress(MD, CGM.GetAddrOfFunction(MD));
+    return C;
+  }
   }
   llvm_unreachable("Unknown APValue kind");
 }

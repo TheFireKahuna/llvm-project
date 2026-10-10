@@ -120,6 +120,7 @@ public:
   Configuration config;
 
   DynamicRelocsChunk *dynamicRelocs = nullptr;
+
   // Whether an object says that its functions have KCFI prefixes with a
   // marker, which the writer then finds, seals and places.
   bool typePrefixRecords = false;
@@ -132,6 +133,14 @@ public:
   // but suppressed.
   std::vector<Defined *> guardSuppressed;
 
+  // The in-place import slots of each section that has any, by offset, in
+  // the order the sections were bound.
+  llvm::MapVector<const SectionChunk *, std::vector<ImportSlot>> importSlots;
+
+  // The instructions that take the address of an import, by section and the
+  // offset of the relocation, which are rewritten to take it as static data
+  // does (see SectionChunk::getImportSiteTarget).
+  llvm::DenseSet<std::pair<const SectionChunk *, uint32_t>> importSites;
 };
 
 } // namespace lld::coff

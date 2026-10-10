@@ -11,6 +11,7 @@
 #include "CallGraphSort.h"
 #include "Config.h"
 #include "DLL.h"
+#include "ImportSlots.h"
 #include "InputFiles.h"
 #include "LLDMapFile.h"
 #include "MapFile.h"
@@ -207,7 +208,7 @@ class Writer {
 public:
   Writer(COFFLinkerContext &c)
       : buffer(c.e.outputBuffer), strtab(StringTableBuilder::WinCOFF),
-        delayIdata(c), prefixes(c), ctx(c) {}
+        slots(c, idata), delayIdata(c), prefixes(c), ctx(c) {}
   void run();
 
 private:
@@ -215,8 +216,11 @@ private:
   void createSections();
   void createMiscChunks();
   void createImportTables();
+  void placeImportSlotSections();
+  bool iatStartsRdata() const;
   void appendImportThunks();
   void locateImportTables();
+  uint64_t getIATSize() const;
   void createExportTable();
   StringRef getMergeDestination(StringRef fromSection, StringRef toSection);
   void mergeSection(const std::map<StringRef, StringRef>::value_type &p);
@@ -307,6 +311,10 @@ private:
   uint64_t importTableSize = 0;
   Chunk *iatStart = nullptr;
   uint64_t iatSize = 0;
+  // The last chunk the import address table directory covers, when read-only
+  // in-place import slots extend it past the address tables.
+  Chunk *iatEnd = nullptr;
+  ImportSlotContents slots;
   DelayLoadContents delayIdata;
   TypePrefixContents prefixes;
   bool setNoSEHCharacteristic = false;
@@ -791,6 +799,8 @@ void Writer::run() {
     if (ctx.config.machine == ARM64X)
       ctx.dynamicRelocs = make<DynamicRelocsChunk>();
     createImportTables();
+    slots.bind();
+    slots.createResidualFill();
     createSections();
     appendImportThunks();
     // Import thunks must be added before the Control Flow Guard tables are
@@ -800,6 +810,7 @@ void Writer::run() {
     mergeSections();
     sortECChunks();
     appendECImportTables();
+    placeImportSlotSections();
     createDynamicRelocs();
     removeUnusedSections();
     layoutSections();
@@ -808,6 +819,7 @@ void Writer::run() {
     assignOutputSectionIndices();
     placeLinkerDefinedSymbols();
     setSectionPermissions();
+    slots.check(iatStart, getIATSize());
     setECSymbols();
     createSymbolAndStringTable();
 
@@ -855,7 +867,7 @@ void Writer::run() {
                << "': " << toString(std::move(e));
 }
 
-static StringRef getOutputSectionName(StringRef name, bool isMinGW) {
+StringRef lld::coff::getOutputSectionName(StringRef name, bool isMinGW) {
   StringRef s = name.split('$').first;
   if (!isMinGW)
     return s;
@@ -1054,6 +1066,15 @@ static bool shouldStripSectionSuffix(SectionChunk *sc, StringRef name,
          name.starts_with(".xdata$") || name.starts_with(".eh_frame$");
 }
 
+// The name of the partial section that sc is binned into, from which
+// getOutputSectionName gives the output section's.
+StringRef lld::coff::getPartialSectionName(SectionChunk *sc, bool isMinGW) {
+  StringRef name = sc->getSectionName();
+  if (shouldStripSectionSuffix(sc, name, isMinGW))
+    name = name.split('$').first;
+  return name;
+}
+
 void Writer::sortSections() {
   if (!ctx.config.callGraphProfile.empty()) {
     DenseMap<const SectionChunk *, int> order =
@@ -1135,6 +1156,8 @@ void Writer::createSections() {
       if (!cc->live)
         continue;
     }
+    if (sc && slots.isHeldBack(sc))
+      continue;
     StringRef name = c->getSectionName();
     if (shouldStripSectionSuffix(sc, name, ctx.config.mingw))
       name = name.split('$').first;
@@ -1145,6 +1168,18 @@ void Writer::createSections() {
     PartialSection *pSec = createPartialSection(name,
                                                 c->getOutputCharacteristics());
     pSec->chunks.push_back(c);
+  }
+  if (Chunk *fill = slots.getFill()) {
+    createPartialSection(".text", fill->getOutputCharacteristics())
+        ->chunks.push_back(fill);
+    // Right after the table's start, ahead of every other initializer.
+    createPartialSection(".CRT$XIA$fill", data | r)
+        ->chunks.push_back(slots.getFillPointer());
+  }
+  if (Chunk *pdata = slots.getFillPdata()) {
+    createPartialSection(".xdata", data | r)
+        ->chunks.push_back(slots.getFillUnwind());
+    createPartialSection(".pdata", data | r)->chunks.push_back(pdata);
   }
 
   fixPartialSectionChars(".rsrc", data | r);
@@ -1159,6 +1194,24 @@ void Writer::createSections() {
     addSyntheticIdata();
 
   sortSections();
+
+  // The read-only chunks holding in-place import slots follow the import
+  // address tables, inside the range the loader makes writable while it
+  // binds imports. Section ordering has run, so it cannot separate them.
+  if (ArrayRef<SectionChunk *> held = slots.getReadOnlyChunks();
+      !held.empty()) {
+    PartialSection *pSec = findPartialSection(
+        ".idata$5", IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ);
+    pSec->chunks.insert(pSec->chunks.end(), held.begin(), held.end());
+    iatEnd = held.back();
+  }
+  // The writable ones are laid out together at the end of .data, where the
+  // runs that cross from one to the next stay unbroken.
+  if (ArrayRef<SectionChunk *> held = slots.getWritableChunks();
+      !held.empty()) {
+    PartialSection *pSec = createPartialSection(".data", data | r | w);
+    pSec->chunks.insert(pSec->chunks.end(), held.begin(), held.end());
+  }
 
   if (hasIdata)
     locateImportTables();
@@ -1184,13 +1237,23 @@ void Writer::createSections() {
 
       Log(ctx) << "Processing section " << pSec->name << " -> " << name;
 
-      sortCRTSectionChunks(pSec->chunks);
+      // The residual fill's pointer is alone in a group of its own.
+      if (pSec->chunks.front() != slots.getFillPointer())
+        sortCRTSectionChunks(pSec->chunks);
     }
 
     // ARM64EC has specific placement and alignment requirements for the IAT.
     // Delay adding its chunks until appendECImportTables.
     if (isArm64EC(ctx.config.machine) &&
         (pSec->name == ".idata$5" || pSec->name == ".idata$9"))
+      continue;
+
+    // Delay the chunks that placeImportSlotSections puts at the start of
+    // .rdata.
+    if (iatStartsRdata() &&
+        (pSec->name == ".idata$5" ||
+         (slots.hasRdataGroupSlots() && name == ".rdata" &&
+          pSec->name.starts_with(".rdata$"))))
       continue;
 
     // Sections named .didat join the protected delay-load import address
@@ -1210,6 +1273,14 @@ void Writer::createSections() {
   if (ctx.hybridSymtab) {
     if (OutputSection *sec = findSection(".CRT"))
       sec->splitECChunks();
+  }
+
+  // The read-only chunks holding residual words get pages of their own, which
+  // the image maps writable and the residual fill makes read-only.
+  if (!slots.getSealedChunks().empty()) {
+    OutputSection *sec = createSection(".sealed", data | r | w);
+    for (SectionChunk *sc : slots.getSealedChunks())
+      sec->addChunk(sc);
   }
 
   // Finally, move some output sections to the end.
@@ -1367,6 +1438,68 @@ void Writer::createImportTables() {
       idata.add(impSym);
     }
   }
+}
+
+// Whether the import address tables, and the read-only chunks holding
+// in-place import slots after them, start .rdata: when other sections holding
+// slots must lie next to them.
+bool Writer::iatStartsRdata() const {
+  return slots.hasRdataGroupSlots() || !slots.getSlotSections().empty();
+}
+
+// A read-only section other than .rdata that holds in-place import slots is
+// laid out before .rdata, whose start holds the import address tables, the
+// read-only chunks laid out with them, and then, when one of them holds a
+// slot, the $-groups of .rdata in their order, so that the import address
+// table directory covers every read-only slot with no other data between.
+void Writer::placeImportSlotSections() {
+  if (!iatStartsRdata())
+    return;
+  const uint32_t rdata = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
+  std::vector<Chunk *> start;
+  std::vector<PartialSection *> contribs;
+  for (auto &[key, pSec] : partialSections) {
+    if (key.characteristics != rdata ||
+        (key.name != ".idata$5" &&
+         !(slots.hasRdataGroupSlots() && key.name.starts_with(".rdata$"))))
+      continue;
+    // .idata$5 sorts before .rdata$, so the import address tables come first.
+    start.insert(start.end(), pSec->chunks.begin(), pSec->chunks.end());
+    contribs.push_back(pSec);
+  }
+  rdataSec->chunks.insert(rdataSec->chunks.begin(), start.begin(), start.end());
+  rdataSec->contribSections.insert(rdataSec->contribSections.begin(),
+                                   contribs.begin(), contribs.end());
+  // Every import may be kept in slots alone, leaving no address table, and
+  // then the directory starts with the first $-group.
+  if (!start.empty()) {
+    iatStart = start.front();
+    iatEnd = start.back();
+  }
+
+  std::vector<OutputSection *> before;
+  // A section merged into another is left empty and is not laid out.
+  for (StringRef name : slots.getSlotSections())
+    if (OutputSection *sec = findSection(name);
+        sec && sec != rdataSec && !sec->chunks.empty())
+      before.push_back(sec);
+  if (before.empty())
+    return;
+  llvm::erase_if(ctx.outputSections,
+                 [&](OutputSection *sec) { return is_contained(before, sec); });
+  ctx.outputSections.insert(llvm::find(ctx.outputSections, rdataSec),
+                            before.begin(), before.end());
+  iatStart = before.front()->chunks.front();
+  if (!iatEnd)
+    iatEnd = before.back()->chunks.back();
+}
+
+// The size of the import address table directory: the address tables, and
+// the read-only in-place import slots laid out after them.
+uint64_t Writer::getIATSize() const {
+  if (!iatEnd)
+    return iatSize;
+  return iatEnd->getRVA() + iatEnd->getSize() - iatStart->getRVA();
 }
 
 void Writer::appendImportThunks() {
@@ -2054,7 +2187,7 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
   }
   if (iatStart) {
     dir[IAT].RelativeVirtualAddress = iatStart->getRVA();
-    dir[IAT].Size = iatSize;
+    dir[IAT].Size = getIATSize();
   }
   if (rsrcSec->getVirtualSize()) {
     dir[RESOURCE_TABLE].RelativeVirtualAddress = rsrcSec->getRVA();
@@ -2297,8 +2430,11 @@ void Writer::markDescribedAddressTakes(ObjFile *file,
           file->getLinkSiteForm(sc, reloc.VirtualAddress);
       if (!form || isCallOrJump(*form))
         continue;
-      markAddressTake(file->getSymbol(reloc.SymbolTableIndex), usedSymbols,
-                      usedImports);
+      // A site rewritten for an import takes the address of what it now
+      // reaches.
+      Symbol *ref = sc->getImportSiteTarget(reloc);
+      markAddressTake(ref ? ref : file->getSymbol(reloc.SymbolTableIndex),
+                      usedSymbols, usedImports);
     }
   }
 }
@@ -2332,7 +2468,14 @@ void Writer::markSymbolsWithRelocations(ObjFile *file,
           continue;
       }
 
-      Symbol *ref = sc->file->getSymbol(reloc.SymbolTableIndex);
+      // An in-place import slot reads no import address table entry, and is
+      // listed itself.
+      if (sc->getImportSlot(reloc))
+        continue;
+
+      Symbol *ref = sc->getImportSiteTarget(reloc);
+      if (!ref)
+        ref = sc->file->getSymbol(reloc.SymbolTableIndex);
       // An object without guard metadata does not say which import address
       // table entries it passes the value of, so every entry it references is
       // listed.
@@ -2616,6 +2759,16 @@ void Writer::createGuardCFTables() {
   }
   addressTakenSyms.insert(foreignTakenSyms.begin(), foreignTakenSyms.end());
 
+  // An in-place import slot that holds a function's address is an entry the
+  // loader fills with an address the image passes on.
+  for (auto &kv : ctx.importSlots)
+    for (const ImportSlot &s : kv.second)
+      if (s.sym->file->thunkSym)
+        giatsRVASet.insert({s.chunk, s.offset});
+
+  // The C initializer table calls the residual fill.
+  if (Chunk *fill = slots.getFill())
+    addressTakenSyms.insert({fill, 0});
 
   // Mark the image entry as address-taken.
   SymbolRVASet exportedSyms;

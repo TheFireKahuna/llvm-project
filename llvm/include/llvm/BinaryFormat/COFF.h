@@ -71,6 +71,12 @@ const uint64_t LinkRecordKindCritical = 1;
 // may take a site with no record as a branch.
 const uint64_t LinkRecordsX86_64Sites = 1;
 
+// The capability that says an object lists, in a LinkRecordCallOnly group,
+// every reference that a data section makes through a 32-bit field to a
+// symbol the object leaves undefined and only calls through, so that a
+// linker may take such a reference without a record as an address.
+const uint64_t LinkRecordsCallOnly = 2;
+
 enum LinkRecordKind : uint64_t {
   // How instructions use the address a relocation gives them, for a linker
   // that rewrites an instruction whose target it finds in the image. Each
@@ -90,6 +96,16 @@ enum LinkRecordKind : uint64_t {
   // introduces data about the site, which a linker that does not use it
   // skips.
   LinkRecordSites = 2,
+
+  // The 32-bit fields in data sections through which the function they name
+  // is only ever called, never compared, such as a frame's handler in its
+  // unwind information, which a linker may serve with a stand-in that calls
+  // the function, as ELF's PLT32 relocations are served:
+  //
+  //   payload := (section:ULEB128 count:ULEB128 delta:ULEB128{count})*
+  //
+  // section and delta are as for LinkRecordSites.
+  LinkRecordCallOnly = 4,
 
   // The object gives its functions KCFI prefixes with a marker, each after a
   // static __cfi_ symbol, which a linker seals where no indirect call may

@@ -34,7 +34,8 @@ using llvm::support::ulittle32_t;
 namespace lld::coff {
 
 SectionChunk::SectionChunk(ObjFile *f, const coff_section *h, Kind k)
-    : Chunk(k), file(f), header(h), repl(this) {
+    : Chunk(k), file(f), header(h), hasImportSlots(false),
+      hasImportSites(false), repl(this) {
   // Initialize relocs.
   if (file)
     setRelocs(file->getCOFFObj()->getRelocations(header));
@@ -478,10 +479,78 @@ void SectionChunk::writeTo(uint8_t *buf) const {
   }
 }
 
+bool SectionChunk::isSectionRelative(const coff_relocation &rel) const {
+  switch (getArch()) {
+  case Triple::x86_64:
+    return rel.Type == IMAGE_REL_AMD64_SECREL ||
+           rel.Type == IMAGE_REL_AMD64_SECREL7 ||
+           rel.Type == IMAGE_REL_AMD64_SECTION;
+  case Triple::aarch64:
+    return rel.Type == IMAGE_REL_ARM64_SECREL ||
+           rel.Type == IMAGE_REL_ARM64_SECREL_LOW12A ||
+           rel.Type == IMAGE_REL_ARM64_SECREL_HIGH12A ||
+           rel.Type == IMAGE_REL_ARM64_SECREL_LOW12L ||
+           rel.Type == IMAGE_REL_ARM64_SECTION;
+  default:
+    return false;
+  }
+}
+
+Defined *SectionChunk::getImportSiteTarget(const coff_relocation &rel) const {
+  if (!hasImportSites ||
+      !file->symtab.ctx.importSites.contains({this, rel.VirtualAddress}))
+    return nullptr;
+  Symbol *s = file->getSymbol(rel.SymbolTableIndex);
+  if (auto *thunk = dyn_cast<DefinedImportThunk>(s))
+    return thunk->wrappedSym;
+  return cast<Defined>(cast<DefinedImportData>(s)->file->thunkSym);
+}
+
+const ImportSlot *
+SectionChunk::getImportSlot(const coff_relocation &rel) const {
+  if (!hasImportSlots)
+    return nullptr;
+  const std::vector<ImportSlot> &slots =
+      file->symtab.ctx.importSlots.find(this)->second;
+  auto it = llvm::partition_point(slots, [&](const ImportSlot &s) {
+    return s.offset < rel.VirtualAddress;
+  });
+  if (it == slots.end() || it->offset != rel.VirtualAddress)
+    return nullptr;
+  return &*it;
+}
+
 void SectionChunk::applyRelocation(uint8_t *off,
                                    const coff_relocation &rel) const {
+  // The loader writes an in-place import slot; until then it holds the value
+  // of its lookup table entry, which the loader requires.
+  if (const ImportSlot *slot = getImportSlot(rel)) {
+    slot->lookup->writeTo(off);
+    return;
+  }
+
   auto *sym = dyn_cast_or_null<Defined>(file->getSymbol(rel.SymbolTableIndex));
   uint16_t type = rel.Type;
+
+  // The address of an imported function that code takes becomes a load of
+  // its import address table entry, and a load of a delay-loaded import's
+  // entry the address of its thunk, so that code agrees with static data.
+  // Each site was verified when imports were bound.
+  if (Defined *target = getImportSiteTarget(rel)) {
+    bool load = isa<DefinedImportData>(target);
+    if (getArch() == Triple::aarch64) {
+      if (type == IMAGE_REL_ARM64_PAGEOFFSET_12A) {
+        setArm64Opcode(off, 0xF9400000); // ldr
+        type = IMAGE_REL_ARM64_PAGEOFFSET_12L;
+      } else if (type == IMAGE_REL_ARM64_PAGEOFFSET_12L) {
+        setArm64Opcode(off, 0x91000000); // add
+        type = IMAGE_REL_ARM64_PAGEOFFSET_12A;
+      }
+    } else {
+      off[-2] = load ? 0x8B : 0x8D;
+    }
+    sym = target;
+  }
 
   // A reference through the import pointer of a symbol in the image may reach
   // the symbol directly instead.
@@ -623,6 +692,12 @@ static uint8_t getBaserelType(const coff_relocation &rel,
   }
 }
 
+bool SectionChunk::isAddressWord(const coff_relocation &rel) const {
+  return getBaserelType(rel, getArch()) == (file->symtab.ctx.config.is64()
+                                                ? IMAGE_REL_BASED_DIR64
+                                                : IMAGE_REL_BASED_HIGHLOW);
+}
+
 // Windows-specific.
 // Collect all locations that contain absolute addresses, which need to be
 // fixed by the loader if load-time relocation is needed.
@@ -634,6 +709,9 @@ void SectionChunk::getBaserels(std::vector<Baserel> *res) {
       continue;
     Symbol *target = file->getSymbol(rel.SymbolTableIndex);
     if (!isa_and_nonnull<Defined>(target) || isa<DefinedAbsolute>(target))
+      continue;
+    // The loader writes an in-place import slot as an absolute address.
+    if (getImportSlot(rel))
       continue;
     res->emplace_back(rva + rel.VirtualAddress, ty);
   }

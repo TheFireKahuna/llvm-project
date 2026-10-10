@@ -238,6 +238,19 @@ public:
   int flags;
 };
 
+// A word of static data that holds the address of an import, which the loader
+// writes in place through an import descriptor whose address table is the run
+// of such words the word belongs to. The word holds the value of its run's
+// lookup table entry until then, and needs no base relocation.
+struct ImportSlot {
+  SectionChunk *chunk;
+  uint32_t offset;
+  DefinedImportData *sym;
+  // A lookup table entry for this word, whose value the word holds until the
+  // loader writes it.
+  Chunk *lookup = nullptr;
+};
+
 // A chunk corresponding a section of an input file.
 class SectionChunk : public Chunk {
   // Identical COMDAT Folding feature accesses section internal data.
@@ -286,6 +299,20 @@ public:
   bool isCOMDAT() const;
   void applyRelocation(uint8_t *off, const coff_relocation &rel) const;
 
+  // Whether rel is an absolute address as wide as the image's pointers.
+  bool isAddressWord(const coff_relocation &rel) const;
+
+  // Whether rel is an offset within, or the index of, its target's section.
+  bool isSectionRelative(const coff_relocation &rel) const;
+
+  // The symbol whose address the instruction holding rel takes once rewritten
+  // for an import, or null: for an instruction that takes the address of an
+  // import thunk, a load of the import's address table entry; for one that
+  // loads the entry of a delay-loaded import, the address of the thunk.
+  Defined *getImportSiteTarget(const coff_relocation &rel) const;
+
+  // The in-place import slot that rel fills, or null.
+  const ImportSlot *getImportSlot(const coff_relocation &rel) const;
   void applyRelX64(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
                    uint64_t p, uint64_t imageBase) const;
   void applyRelX86(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
@@ -397,6 +424,12 @@ public:
   // Whether this section needs to be kept distinct from other sections during
   // ICF. This is set by the driver using address-significance tables.
   bool keepUnique = false;
+
+  // Whether a word of this section is an in-place import slot, and whether an
+  // instruction in it is rewritten to take an import's address as static data
+  // does.
+  bool hasImportSlots : 1;
+  bool hasImportSites : 1;
 
   // The COMDAT selection if this is a COMDAT chunk.
   llvm::COFF::COMDATType selection = (llvm::COFF::COMDATType)0;

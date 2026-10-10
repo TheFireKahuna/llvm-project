@@ -572,6 +572,11 @@ void ObjFile::readLinkRecords() {
         return;
       continue;
     }
+    if (cur && kind == LinkRecordCallOnly) {
+      if (!readCallOnlyRefs(contents.slice(start, size)))
+        return;
+      continue;
+    }
     if (cur && kind == LinkRecordTypePrefixes) {
       symtab.ctx.typePrefixRecords = true;
       continue;
@@ -600,6 +605,64 @@ void ObjFile::readLinkRecords() {
                                 getMachineType() == AMD64 && !symtab.isEC();
   if (!linkRecords->describesSites)
     linkRecords->sites.clear();
+  linkRecords->listsCallOnly =
+      (capabilities & LinkRecordsCallOnly) && !symtab.isEC();
+  if (!linkRecords->listsCallOnly)
+    linkRecords->callOnlyRefs.clear();
+}
+
+// Reads a group of fields through which their symbols are only called.
+bool ObjFile::readCallOnlyRefs(ArrayRef<uint8_t> payload) {
+  std::vector<std::pair<uint32_t, uint32_t>> &callOnlyRefs =
+      linkRecords->callOnlyRefs;
+  auto malformed = [&](const Twine &msg) {
+    Err(symtab.ctx) << this << ": .llvm_link_records is malformed: " << msg;
+    callOnlyRefs.clear();
+    return false;
+  };
+  DataExtractor data(payload, /*IsLittleEndian=*/true);
+  DataExtractor::Cursor cur(0);
+  while (cur && !data.eof(cur)) {
+    uint64_t symIndex = data.getULEB128(cur);
+    uint64_t count = data.getULEB128(cur);
+    if (!cur)
+      break;
+    Expected<COFFSymbolRef> sym = coffObj->getSymbol(symIndex);
+    Expected<const coff_section *> sec =
+        sym && sym->isSectionDefinition() && sym->getSectionNumber() > 0
+            ? coffObj->getSection(sym->getSectionNumber())
+            : Expected<const coff_section *>(nullptr);
+    if (!sym || !sec || !*sec) {
+      consumeError(sym.takeError());
+      consumeError(sec.takeError());
+      return malformed("call-only group of symbol " + Twine(symIndex) +
+                       ", which is not a section's symbol");
+    }
+    uint32_t section = sym->getSectionNumber();
+    uint64_t size = (*sec)->SizeOfRawData;
+    uint64_t offset = 0;
+    for (uint64_t i = 0; cur && i != count; ++i) {
+      uint64_t delta = data.getULEB128(cur);
+      if (!cur)
+        break;
+      if (i != 0 && delta == 0)
+        return malformed("call-only references out of order in section " +
+                         Twine(section));
+      offset += delta;
+      if (offset + 4 > size)
+        return malformed("call-only reference past the end of section " +
+                         Twine(section));
+      callOnlyRefs.push_back({section, uint32_t(offset)});
+    }
+  }
+  if (Error e = cur.takeError()) {
+    callOnlyRefs.clear();
+    Err(symtab.ctx) << this
+                    << ": .llvm_link_records is malformed: " << std::move(e);
+    return false;
+  }
+  llvm::sort(callOnlyRefs);
+  return true;
 }
 
 // Reads a group of instruction sites. Sites are found from relocations, so a
@@ -693,6 +756,12 @@ ObjFile::getLinkSiteForm(const SectionChunk *sc, uint32_t offset) const {
   if (it == sites.end() || it->offset != offset)
     return std::nullopt;
   return it->form;
+}
+
+bool ObjFile::isCallOnlyRef(const SectionChunk *sc, uint32_t offset) const {
+  return linkRecords && llvm::binary_search(linkRecords->callOnlyRefs,
+                                            std::make_pair(
+                                                sc->getSectionNumber(), offset));
 }
 
 SectionChunk *ObjFile::readSection(uint32_t sectionNumber,

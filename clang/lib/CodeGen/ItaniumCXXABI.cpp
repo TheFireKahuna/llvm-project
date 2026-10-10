@@ -2108,6 +2108,23 @@ void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
   CGVT.setVTableDSOLocal(VTable, RD);
 
 
+    // Name the address point of each vtable of the group, counted from the
+    // start of the group, as getVTableAddressPoint computes it for the bases
+    // that share it.
+    SmallVector<std::optional<BaseSubobject>, 4> Bases(
+        VTLayout.getNumVTables());
+    for (const auto &[Base, AddressPoint] : VTLayout.getAddressPoints())
+      if (!Bases[AddressPoint.VTableIndex])
+        Bases[AddressPoint.VTableIndex] = Base;
+    uint64_t ComponentSize =
+        CGM.getDataLayout().getTypeAllocSize(CGM.getVTableComponentType());
+    for (unsigned I = 0, E = Bases.size(); I != E; ++I)
+      CGM.emitInteriorName(
+          VTable, "$ap",
+          (VTLayout.getVTableOffset(I) + VTLayout.getAddressPointIndices()[I]) *
+              ComponentSize,
+          getVTableAddressPoint(*Bases[I], RD));
+
   // If this is the magic class __cxxabiv1::__fundamental_type_info,
   // we will emit the typeinfo for the fundamental types. This is the
   // same behaviour as GCC.

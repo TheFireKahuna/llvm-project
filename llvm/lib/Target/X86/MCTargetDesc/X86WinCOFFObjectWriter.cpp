@@ -30,7 +30,9 @@ public:
   ~X86WinCOFFObjectWriter() override = default;
 
   uint64_t getLinkRecordCapabilities() const override {
-    return DescribeSites ? COFF::LinkRecordsX86_64Sites : 0;
+    return DescribeSites
+               ? COFF::LinkRecordsX86_64Sites | COFF::LinkRecordsCallOnly
+               : 0;
   }
   std::optional<unsigned> getLinkSiteForm(const MCFixup &Fixup,
                                           unsigned Type) const override;

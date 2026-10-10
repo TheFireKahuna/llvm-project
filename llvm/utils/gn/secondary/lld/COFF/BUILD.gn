@@ -37,6 +37,7 @@ static_library("COFF") {
     "Driver.cpp",
     "DriverUtils.cpp",
     "ICF.cpp",
+    "ImportSlots.cpp",
     "InputFiles.cpp",
     "LLDMapFile.cpp",
     "LocalImports.cpp",
