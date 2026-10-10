@@ -149,6 +149,7 @@ public:
   bool hasShadowCallStack() const {
     return Sanitizers.has(SanitizerKind::ShadowCallStack);
   }
+  bool hasKCFI() const { return Sanitizers.has(SanitizerKind::KCFI); }
 
   bool requiresPIE() const;
   bool needsUnwindTables() const;

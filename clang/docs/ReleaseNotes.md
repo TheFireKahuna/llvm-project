@@ -992,6 +992,10 @@ The `alpha.cplusplus.UseAfterLifetimeEnd` checker was renamed to `alpha.core.Use
 
 ### Sanitizers
 
+- `-fms-hotpatch` is now rejected whenever KCFI is enabled, including by a
+  target's default, not only when `-fsanitize=kcfi` is given: a hot patch
+  writes over the type hash that KCFI places before a function's entry.
+
 ### Python Binding Changes
 
 - Fixed a crash (`SIGFPE`) when traversing an AST via the visitor callbacks

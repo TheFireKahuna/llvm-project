@@ -3884,10 +3884,7 @@ static void RenderTrivialAutoVarInitOptions(const Driver &D,
 
   if (Arg *A =
           Args.getLastArg(options::OPT_ftrivial_auto_var_init_stop_after)) {
-    if (!Args.hasArg(options::OPT_ftrivial_auto_var_init) ||
-        StringRef(
-            Args.getLastArg(options::OPT_ftrivial_auto_var_init)->getValue()) ==
-            "uninitialized")
+    if (TrivialAutoVarInit.empty() || TrivialAutoVarInit == "uninitialized")
       D.Diag(diag::err_drv_trivial_auto_var_init_stop_after_missing_dependency);
     A->claim();
     StringRef Val = A->getValue();
@@ -3898,10 +3895,7 @@ static void RenderTrivialAutoVarInitOptions(const Driver &D,
   }
 
   if (Arg *A = Args.getLastArg(options::OPT_ftrivial_auto_var_init_max_size)) {
-    if (!Args.hasArg(options::OPT_ftrivial_auto_var_init) ||
-        StringRef(
-            Args.getLastArg(options::OPT_ftrivial_auto_var_init)->getValue()) ==
-            "uninitialized")
+    if (TrivialAutoVarInit.empty() || TrivialAutoVarInit == "uninitialized")
       D.Diag(diag::err_drv_trivial_auto_var_init_max_size_missing_dependency);
     A->claim();
     StringRef Val = A->getValue();
