@@ -85,6 +85,13 @@ static void checkAndSetWeakAlias(SymbolTable &symtab, InputFile *f,
       if (isAntiDep)
         return;
       if (!u->isAntiDep) {
+        // Weak aliases to absolute symbols of the same value, as each object
+        // that takes the address of a declaration gives
+        // __kcfi_typeid_<name>, are the same alias.
+        auto *oldAbs = dyn_cast<DefinedAbsolute>(u->weakAlias);
+        auto *newAbs = dyn_cast_or_null<DefinedAbsolute>(target);
+        if (oldAbs && newAbs && oldAbs->getVA() == newAbs->getVA())
+          return;
         // Weak aliases as produced by GCC are named in the form
         // .weak.<weaksymbol>.<othersymbol>, where <othersymbol> is the name
         // of another symbol emitted near the weak symbol.
