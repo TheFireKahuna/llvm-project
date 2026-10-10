@@ -7,6 +7,7 @@
 // RUN:       --implicit-check-not=-fms-extensions \
 // RUN:       --implicit-check-not=-fwchar-type \
 // RUN:       --implicit-check-not=-D_DLL \
+// RUN:       --implicit-check-not=-fno-use-cxa-atexit \
 // RUN:       --implicit-check-not=-ehcontguard \
 // RUN:       --implicit-check-not=-disable-red-zone
 // RUN: %clang -### --target=aarch64-pc-windows-ntposix -c %s 2>&1 \

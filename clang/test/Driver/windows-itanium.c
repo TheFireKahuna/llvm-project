@@ -3,7 +3,8 @@
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s 2>&1 \
 // RUN:   | FileCheck --check-prefixes=CC1,CC1-X64 %s
 // RUN: %clang -### --target=aarch64-unknown-windows-itanium -c %s 2>&1 \
-// RUN:   | FileCheck --check-prefixes=CC1,CC1-A64 %s
+// RUN:   | FileCheck --check-prefixes=CC1,CC1-A64 %s \
+// RUN:       --implicit-check-not=-ehcontguard
 // CC1-X64:    "-cc1" "-triple" "x86_64-unknown-windows-itanium"
 // CC1-A64:    "-cc1" "-triple" "aarch64-unknown-windows-itanium"
 // CC1-DAG:    "-mdefault-visibility-export-mapping=explicit"
@@ -13,6 +14,7 @@
 // CC1-DAG:    "-fms-compatibility-version=19.33"
 // CC1-DAG:    "-fdeclspec"
 // CC1-DAG:    "-exception-model=seh"
+// CC1-X64-DAG: "-ehcontguard"
 
 // The SCEI flavour of Windows Itanium keeps the cross-Windows toolchain.
 // RUN: %clang -### --target=x86_64-scei-windows-itanium -c %s 2>&1 \
@@ -158,12 +160,47 @@
 // LINK-A64-SAME: "-dll"
 
 // Control Flow Guard is on by default, and an executable suppresses its
+// exports as call targets. On x86-64, which runs with the shadow stack, the
+// image has the table of EH continuation targets.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium %s 2>&1 \
+// RUN:   | FileCheck --check-prefixes=CF,CF-X64 %s
+// RUN: %clang -### --target=aarch64-unknown-windows-itanium %s \
+// RUN:     -mguard=cf 2>&1 \
+// RUN:   | FileCheck --check-prefixes=CF,CF-A64 %s
+// RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium /guard:cf- \
+// RUN:     /guard:cf -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefixes=CF,CF-X64 %s
+// CF:          "-cc1"
+// CF-SAME:     "-cfguard"
+// CF-NEXT:     lld-link{{(.exe)?}}"
+// CF-X64-SAME: "-guard:cf,ehcont,exportsuppress"
+// CF-A64-SAME: "-guard:cf,exportsuppress"
 
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium %s -shared 2>&1 \
 // RUN:   | FileCheck --check-prefix=CF-DLL %s
 // CF-DLL:      "-cc1"
 // CF-DLL-SAME: "-cfguard"
 // CF-DLL-NEXT: lld-link{{(.exe)?}}"
+// CF-DLL-SAME: "-guard:cf,ehcont"
+// CF-DLL-NOT:  "-guard:
+
+// -mguard=none and /guard:cf- turn it off. The table of EH continuation
+// targets stays.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium %s \
+// RUN:     -mguard=none 2>&1 \
+// RUN:   | FileCheck --check-prefixes=NO-CF,NO-CF-X64 %s
+// RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium /guard:cf- \
+// RUN:     -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefixes=NO-CF,NO-CF-X64 %s
+// RUN: %clang -### --target=aarch64-unknown-windows-itanium %s \
+// RUN:     -mguard=none 2>&1 \
+// RUN:   | FileCheck --check-prefixes=NO-CF,NO-CF-A64 %s
+// NO-CF:          "-cc1"
+// NO-CF-NOT:      "-cfguard"
+// NO-CF-NOT:      "-cfguard-no-checks"
+// NO-CF-NEXT:     lld-link{{(.exe)?}}"
+// NO-CF-X64-SAME: "-guard:ehcont,nocf"
+// NO-CF-A64-NOT:  "-guard:
 
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium %s \
 // RUN:     -mguard=cf-nochecks 2>&1 \
@@ -179,6 +216,7 @@
 // CF-NOCHECKS-SAME: "-cfguard-no-checks"
 // CF-NOCHECKS-NOT:  "-cfguard"
 // CF-NOCHECKS-NEXT: lld-link{{(.exe)?}}"
+// CF-NOCHECKS-SAME: "-guard:cf,ehcont,exportsuppress"
 
 // /guard:ehcont and /guard:ehcont- leave the mode alone.
 // RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium /guard:ehcont- \

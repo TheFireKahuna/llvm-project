@@ -70,6 +70,11 @@ void WindowsItaniumToolChain::addClangTargetOptions(
   // The Universal CRT is always linked dynamically, so its headers declare
   // its functions and data imported, as under /MD.
   CC1Args.push_back("-D_DLL");
+
+  // Every object lists its EH continuation targets, since the table of an
+  // image that runs with the shadow stack must list them all.
+  if (getArch() == llvm::Triple::x86_64)
+    CC1Args.push_back("-ehcontguard");
 }
 
 void WindowsItaniumToolChain::AddClangSystemIncludeArgs(

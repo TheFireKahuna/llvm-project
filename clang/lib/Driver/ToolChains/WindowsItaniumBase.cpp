@@ -80,6 +80,12 @@ void tools::windowsitanium::Linker::ConstructJob(
   // targets never link.
   CmdArgs.push_back("-lldignoreenv");
 
+  // On x86-64 Windows Itanium, the image runs with the hardware shadow stack.
+  bool ShadowStack = TC.getTriple().isWindowsItaniumEnvironment() &&
+                     TC.getArch() == llvm::Triple::x86_64;
+  if (ShadowStack)
+    CmdArgs.push_back("-cetcompat");
+
   bool IsDLL = Args.hasArg(options::OPT_shared, options::OPT__SLASH_LD,
                            options::OPT__SLASH_LDd);
   if (IsDLL) {
@@ -104,9 +110,21 @@ void tools::windowsitanium::Linker::ConstructJob(
   Args.ClaimAllArgs(options::OPT_rdynamic);
 
   // Control Flow Guard is on unless -mguard=none, and an executable suppresses
-  // its exports as call targets until GetProcAddress returns them.
-  if (TC.getGuardMode(Args) != "none")
-    CmdArgs.push_back(IsDLL ? "-guard:cf" : "-guard:cf,exportsuppress");
+  // its exports as call targets until GetProcAddress returns them. An image
+  // that runs with the shadow stack has the table of EH continuation targets,
+  // which the shadow stack checks a continuation against whether or not Control
+  // Flow Guard is on; lld-link's ehcont turns it on, and nocf off again.
+  // lld-link honors only the last -guard: option, so they go together.
+  bool CFGuard = TC.getGuardMode(Args) != "none";
+  SmallVector<StringRef, 3> Guard;
+  if (CFGuard)
+    Guard.push_back("cf");
+  if (ShadowStack)
+    Guard.push_back(CFGuard ? "ehcont" : "ehcont,nocf");
+  if (CFGuard && !IsDLL)
+    Guard.push_back("exportsuppress");
+  if (!Guard.empty())
+    CmdArgs.push_back(Args.MakeArgString("-guard:" + llvm::join(Guard, ",")));
 
   // Every executable embeds a manifest, which keeps a loose manifest or a
   // .local redirection from changing what the loader binds. On Windows

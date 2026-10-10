@@ -19,6 +19,7 @@
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineOperand.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/Module.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCStreamer.h"
@@ -246,6 +247,16 @@ void EHStreamer::computeCallSiteTable(
 
   bool IsSJLJ = Asm->MAI.getExceptionHandlingType() == ExceptionHandling::SjLj;
 
+  // Under asynchronous exceptions, which Windows Itanium and NT-POSIX give
+  // non-funclet personalities, any instruction but a label or a terminator
+  // may raise one, so each counts as potentially throwing: the code between
+  // two try-ranges gets an entry with no landing pad, which unwinds a fault
+  // there to the caller instead of terminating, and keeps the ranges on
+  // either side from being merged over it.
+  const Module &M = *Asm->MF->getFunction().getParent();
+  bool IsEHa = M.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+               M.getModuleFlag("eh-asynch");
+
   // Visit all instructions in order of address.
   for (const auto &MBB : *Asm->MF) {
     if (&MBB == &Asm->MF->front() || MBB.isBeginSection()) {
@@ -265,7 +276,9 @@ void EHStreamer::computeCallSiteTable(
 
     for (const auto &MI : MBB) {
       if (!MI.isEHLabel()) {
-        if (MI.isCall())
+        if (IsEHa && !MI.isMetaInstruction() && !MI.isTerminator())
+          SawPotentiallyThrowing = true;
+        else if (MI.isCall())
           SawPotentiallyThrowing |= !callToNoUnwindFunction(&MI);
         continue;
       }
