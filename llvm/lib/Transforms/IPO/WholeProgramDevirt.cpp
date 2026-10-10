@@ -466,7 +466,7 @@ struct VirtualCallSite {
   void replaceAndErase(
       const StringRef OptName, const StringRef TargetName, bool RemarksEnabled,
       function_ref<OptimizationRemarkEmitter &(Function &)> OREGetter,
-      Value *New) {
+      Value *New, bool KeepCheck = false) {
     if (RemarksEnabled)
       emitRemark(OptName, TargetName, OREGetter);
     CB.replaceAllUsesWith(New);
@@ -475,8 +475,8 @@ struct VirtualCallSite {
       II->getUnwindDest()->removePredecessor(II->getParent());
     }
     CB.eraseFromParent();
-    // This use is no longer unsafe.
-    if (NumUnsafeUses)
+    // This use is no longer unsafe, unless its check is to be kept.
+    if (NumUnsafeUses && !KeepCheck)
       --*NumUnsafeUses;
   }
 };
@@ -499,6 +499,10 @@ struct CallSiteInfo {
   /// need to add a use of llvm.type.test to each of the function summaries in
   /// the vector.
   bool AllCallSitesDevirted = true;
+
+  /// Whether devirtualization kept the CFI checks of these call sites, which
+  /// then need resolutions for llvm.type.test as undevirtualized ones do.
+  bool ChecksKept = false;
 
   // These fields are used during the export phase of ThinLTO and reflect
   // information collected from function summaries.
@@ -611,6 +615,17 @@ struct DevirtModule {
   PatternList FunctionsToSkip;
 
   const bool DevirtSpeculatively;
+
+  /// A CFI check of a virtual call (llvm.type.checked.load) normally protects
+  /// only the indirect call, and goes when devirtualization removes the call.
+  /// On Windows Itanium and NT-POSIX, single-implementation devirtualization
+  /// and virtual constant propagation keep it, as cfi-nvcall checks a
+  /// non-virtual call: the first still runs a method on the object, and the
+  /// second still reads at an offset from the object's vtable pointer. Uniform
+  /// and unique return value optimization, which read nothing through the
+  /// vtable pointer, drop it as before.
+  const bool KeepCFIChecks;
+
   DevirtModule(Module &M, ModuleAnalysisManager &MAM,
                ModuleSummaryIndex *ExportSummary,
                const ModuleSummaryIndex *ImportSummary,
@@ -628,7 +643,9 @@ struct DevirtModule {
         OREGetter([&](Function &F) -> OptimizationRemarkEmitter & {
           return FAM.getResult<OptimizationRemarkEmitterAnalysis>(F);
         }),
-        DevirtSpeculatively(DevirtSpeculatively) {
+        DevirtSpeculatively(DevirtSpeculatively),
+        KeepCFIChecks(
+            M.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
     assert(!(ExportSummary && ImportSummary));
     FunctionsToSkip.init(SkipFunctionNames);
   }
@@ -1293,13 +1310,14 @@ void DevirtModule::applySingleImplDevirt(VTableSlotInfo &SlotInfo,
         }
       }
 
-      // This use is no longer unsafe.
-      if (VCallSite.NumUnsafeUses)
+      // This use is no longer unsafe, unless its check is to be kept.
+      if (VCallSite.NumUnsafeUses && !KeepCFIChecks)
         --*VCallSite.NumUnsafeUses;
     }
     if (CSInfo.isExported())
       IsExported = true;
     CSInfo.markDevirt();
+    CSInfo.ChecksKept |= KeepCFIChecks;
   };
   Apply(SlotInfo.CSInfo);
   for (auto &P : SlotInfo.ConstCSInfo)
@@ -1870,15 +1888,16 @@ void DevirtModule::applyVirtualConstProp(CallSiteInfo &CSInfo, StringRef FnName,
       auto IsBitSet = B.CreateICmpNE(BitsAndBit, ConstantInt::get(Int8Ty, 0));
       NumVirtConstProp1Bit++;
       Call.replaceAndErase("virtual-const-prop-1-bit", FnName, RemarksEnabled,
-                           OREGetter, IsBitSet);
+                           OREGetter, IsBitSet, KeepCFIChecks);
     } else {
       Value *Val = B.CreateLoad(RetType, Addr);
       NumVirtConstProp++;
       Call.replaceAndErase("virtual-const-prop", FnName, RemarksEnabled,
-                           OREGetter, Val);
+                           OREGetter, Val, KeepCFIChecks);
     }
   }
   CSInfo.markDevirt();
+  CSInfo.ChecksKept |= KeepCFIChecks;
 }
 
 bool DevirtModule::tryVirtualConstProp(
@@ -2536,14 +2555,14 @@ bool DevirtModule::run() {
     }
 
     // CFI-specific: if we are exporting and any llvm.type.checked.load
-    // intrinsics were *not* devirtualized, we need to add the resulting
-    // llvm.type.test intrinsics to the function summaries so that the
-    // LowerTypeTests pass will export them.
+    // intrinsics were *not* devirtualized, or kept their checks, we need to add
+    // the resulting llvm.type.test intrinsics to the function summaries so that
+    // the LowerTypeTests pass will export them.
     if (ExportSummary && isa<MDString>(S.first.TypeID)) {
       auto GUID = GlobalValue::getGUIDAssumingExternalLinkage(
           cast<MDString>(S.first.TypeID)->getString());
       auto AddTypeTestsForTypeCheckedLoads = [&](CallSiteInfo &CSI) {
-        if (!CSI.AllCallSitesDevirted)
+        if (!CSI.AllCallSitesDevirted || CSI.ChecksKept)
           for (auto *FS : CSI.SummaryTypeCheckedLoadUsers)
             FS->addTypeTest(GUID);
       };

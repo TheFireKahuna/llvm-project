@@ -2790,11 +2790,12 @@ LeastDerivedClassWithSameLayout(const CXXRecordDecl *RD) {
       RD->bases_begin()->getType()->getAsCXXRecordDecl());
 }
 
-void CodeGenFunction::EmitTypeMetadataCodeForVCall(const CXXRecordDecl *RD,
+bool CodeGenFunction::EmitTypeMetadataCodeForVCall(const CXXRecordDecl *RD,
                                                    llvm::Value *VTable,
                                                    SourceLocation Loc) {
   if (SanOpts.has(SanitizerKind::CFIVCall))
-    EmitVTablePtrCheckForCall(RD, VTable, CodeGenFunction::CFITCK_VCall, Loc);
+    return EmitVTablePtrCheckForCall(RD, VTable, CodeGenFunction::CFITCK_VCall,
+                                     Loc);
   // Emit the intrinsics of (type_test and assume) for the features of WPD and
   // speculative devirtualization. For WPD, emit the intrinsics only for the
   // case of non_public LTO visibility.
@@ -2819,6 +2820,7 @@ void CodeGenFunction::EmitTypeMetadataCodeForVCall(const CXXRecordDecl *RD,
         Builder.CreateCall(CGM.getIntrinsic(IID), {VTable, TypeId});
     Builder.CreateCall(CGM.getIntrinsic(llvm::Intrinsic::assume), TypeTest);
   }
+  return false;
 }
 
 /// Converts the CFITypeCheckKind into SanitizerKind::SanitizerOrdinal and
@@ -2845,7 +2847,7 @@ SanitizerInfoFromCFICheckKind(CodeGenFunction::CFITypeCheckKind TCK) {
   llvm_unreachable("Unknown CFITypeCheckKind enum");
 }
 
-void CodeGenFunction::EmitVTablePtrCheckForCall(const CXXRecordDecl *RD,
+bool CodeGenFunction::EmitVTablePtrCheckForCall(const CXXRecordDecl *RD,
                                                 llvm::Value *VTable,
                                                 CFITypeCheckKind TCK,
                                                 SourceLocation Loc) {
@@ -2856,7 +2858,7 @@ void CodeGenFunction::EmitVTablePtrCheckForCall(const CXXRecordDecl *RD,
   SanitizerDebugLocation SanScope(this, {Ordinal},
                                   SanitizerHandler::CFICheckFail);
 
-  EmitVTablePtrCheck(RD, VTable, TCK, Loc);
+  return EmitVTablePtrCheck(RD, VTable, TCK, Loc);
 }
 
 void CodeGenFunction::EmitVTablePtrCheckForCast(QualType T, Address Derived,
@@ -2906,7 +2908,7 @@ void CodeGenFunction::EmitVTablePtrCheckForCast(QualType T, Address Derived,
   }
 }
 
-void CodeGenFunction::EmitVTablePtrCheck(const CXXRecordDecl *RD,
+bool CodeGenFunction::EmitVTablePtrCheck(const CXXRecordDecl *RD,
                                          llvm::Value *VTable,
                                          CFITypeCheckKind TCK,
                                          SourceLocation Loc) {
@@ -2914,14 +2916,14 @@ void CodeGenFunction::EmitVTablePtrCheck(const CXXRecordDecl *RD,
 
   if (!CGM.getCodeGenOpts().SanitizeCfiCrossDso &&
       !CGM.HasHiddenLTOVisibility(RD))
-    return;
+    return false;
 
   auto [M, SSK] = SanitizerInfoFromCFICheckKind(TCK);
 
   std::string TypeName = RD->getQualifiedNameAsString();
   if (getContext().getNoSanitizeList().containsType(
           SanitizerMask::bitPosToMask(M), TypeName))
-    return;
+    return false;
 
   EmitSanitizerStatReport(SSK);
 
@@ -2941,14 +2943,14 @@ void CodeGenFunction::EmitVTablePtrCheck(const CXXRecordDecl *RD,
   auto CrossDsoTypeId = CGM.CreateCrossDsoCfiTypeId(MD);
   if (CGM.getCodeGenOpts().SanitizeCfiCrossDso && CrossDsoTypeId) {
     EmitCfiSlowPathCheck(M, TypeTest, CrossDsoTypeId, VTable, StaticData);
-    return;
+    return false;
   }
 
   if (CGM.getCodeGenOpts().SanitizeTrap.has(M)) {
     bool NoMerge = !CGM.getCodeGenOpts().SanitizeMergeHandlers.has(M);
     EmitTrapCheck(TypeTest, SanitizerHandler::CFICheckFail, NoMerge,
                   /*TR=*/nullptr, CGM.getCFITrapKind(M));
-    return;
+    return true;
   }
 
   llvm::Value *AllVtables = llvm::MetadataAsValue::get(
@@ -2958,6 +2960,7 @@ void CodeGenFunction::EmitVTablePtrCheck(const CXXRecordDecl *RD,
       CGM.getIntrinsic(llvm::Intrinsic::type_test), {VTable, AllVtables});
   EmitCheck(std::make_pair(TypeTest, M), SanitizerHandler::CFICheckFail,
             StaticData, {VTable, ValidVtable});
+  return !CGM.getCodeGenOpts().SanitizeRecover.has(M);
 }
 
 bool CodeGenFunction::ShouldEmitVTableTypeCheckedLoad(const CXXRecordDecl *RD) {

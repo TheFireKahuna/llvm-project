@@ -22,6 +22,8 @@
 // CC1-DAG:    "-funwind-tables=2"
 // CC1-DAG:    "-stack-protector" "2"
 // CC1-DAG:    "-ftrivial-auto-var-init=zero"
+// CC1-DAG:    "-fsanitize=kcfi"
+// CC1-DAG:    "-fsanitize-cfi-icall-generalize-pointers"
 
 // The SCEI flavour of Windows Itanium keeps the cross-Windows toolchain.
 // RUN: %clang -### --target=x86_64-scei-windows-itanium -c %s 2>&1 \
@@ -189,6 +191,14 @@
 // AUTO-INIT-LIMITS-DAG: "-ftrivial-auto-var-init-stop-after=1"
 // AUTO-INIT-LIMITS-DAG: "-ftrivial-auto-var-init-max-size=1024"
 
+// -fno-sanitize=kcfi removes the checks; -cc1 keeps every function's prefix,
+// typed as with the checks.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fno-sanitize=kcfi 2>&1 \
+// RUN:   | FileCheck --check-prefix=NO-KCFI %s --implicit-check-not=-fsanitize=kcfi
+// NO-KCFI:     "-cc1"
+// NO-KCFI-SAME: "-fsanitize-cfi-icall-generalize-pointers"
+
 // A hot patch would overwrite the prefix, with or without the checks, and is
 // reported once.
 // RUN: not %clang -### --target=x86_64-unknown-windows-itanium -c %s \
@@ -197,11 +207,18 @@
 // RUN: not %clang -### --target=aarch64-unknown-windows-itanium -c %s \
 // RUN:     -fno-sanitize=kcfi -fms-hotpatch 2>&1 \
 // RUN:   | FileCheck --check-prefix=HOTPATCH-A64 %s --implicit-check-not=error:
+// RUN: not %clang_cl -### --target=x86_64-unknown-windows-itanium /c /hotpatch \
+// RUN:     -fno-sanitize=kcfi -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=HOTPATCH-CL %s --implicit-check-not=error:
+// RUN: not %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fms-hotpatch 2>&1 \
+// RUN:   | FileCheck --check-prefix=HOTPATCH-KCFI %s --implicit-check-not=error:
 // RUN: not %clang -### --target=x86_64-unknown-windows-itanium -c %s \
 // RUN:     -fsanitize=kcfi -fms-hotpatch 2>&1 \
 // RUN:   | FileCheck --check-prefix=HOTPATCH-KCFI %s --implicit-check-not=error:
 // HOTPATCH: error: unsupported option '-fms-hotpatch' for target 'x86_64-unknown-windows-itanium'
 // HOTPATCH-A64: error: unsupported option '-fms-hotpatch' for target 'aarch64-unknown-windows-itanium'
+// HOTPATCH-CL: error: unsupported option '/hotpatch' for target 'x86_64-unknown-windows-itanium'
 // HOTPATCH-KCFI: error: invalid argument '-fsanitize=kcfi' not allowed with '-fms-hotpatch'
 
 // The target fixes the definition of every function's type, with or without
@@ -226,6 +243,70 @@
 // KCFI-ARITY: error: unsupported option '-fsanitize-kcfi-arity' for target 'x86_64-unknown-windows-itanium'
 // KCFI-OPTS: "-cc1"
 // KCFI-OPTS-SAME: "-fsanitize-cfi-icall-generalize-pointers"
+
+// Under LTO, CFI checks the virtual and non-virtual member calls of the
+// classes LTO sees whole, and the indirect calls through function and member
+// function pointers, beside KCFI. With no sanitizer runtime, a failed check
+// can only trap.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s -flto \
+// RUN:     -resource-dir=%S/Inputs/resource_dir 2>&1 \
+// RUN:   | FileCheck --check-prefix=LTO-CFI %s --implicit-check-not=error:
+// RUN: %clang -### --target=aarch64-unknown-windows-itanium -c %s -flto=thin \
+// RUN:     -resource-dir=%S/Inputs/resource_dir 2>&1 \
+// RUN:   | FileCheck --check-prefix=LTO-CFI %s --implicit-check-not=error:
+// LTO-CFI:     "-cc1"
+// LTO-CFI-DAG: "-fsanitize=cfi-icall,cfi-mfcall,cfi-nvcall,cfi-vcall,kcfi"
+// LTO-CFI-DAG: "-fsanitize-trap=cfi-icall,cfi-mfcall,cfi-nvcall,cfi-vcall"
+// LTO-CFI-DAG: "-fsanitize-system-ignorelist={{[^"]*}}cfi_ignorelist.txt"
+// LTO-CFI-DAG: "-fsplit-lto-unit"
+// LTO-CFI-DAG: "-fwhole-program-vtables"
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -resource-dir=%S/Inputs/resource_dir 2>&1 \
+// RUN:   | FileCheck --check-prefix=NO-LTO-CFI %s
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s -flto \
+// RUN:     -fno-sanitize=cfi -resource-dir=%S/Inputs/resource_dir 2>&1 \
+// RUN:   | FileCheck --check-prefix=NO-CFI %s
+// NO-LTO-CFI:     "-cc1"
+// NO-LTO-CFI-NOT: "-fsanitize={{[^"]*}}cfi-
+// NO-LTO-CFI-NOT: -fwhole-program-vtables
+// NO-CFI:     "-cc1"
+// NO-CFI-NOT: "-fsanitize={{[^"]*}}cfi-
+
+// A toolchain built without upstream's ignorelist still compiles with the
+// default CFI; asking for CFI needs the list.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s -flto \
+// RUN:     -resource-dir=%S 2>&1 \
+// RUN:   | FileCheck --check-prefix=LTO-CFI-NO-LIST %s --implicit-check-not=error:
+// RUN: not %clang -### --target=x86_64-unknown-windows-itanium -c %s -flto \
+// RUN:     -fsanitize=cfi-vcall -resource-dir=%S 2>&1 \
+// RUN:   | FileCheck --check-prefix=CFI-NO-LIST %s
+// LTO-CFI-NO-LIST: "-fsanitize=cfi-icall,cfi-mfcall,cfi-nvcall,cfi-vcall,kcfi"
+// CFI-NO-LIST: error: missing sanitizer ignorelist
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s -flto \
+// RUN:     -fsanitize=cfi -resource-dir=%S/Inputs/resource_dir 2>&1 \
+// RUN:   | FileCheck --check-prefix=CFI-KCFI %s --implicit-check-not=error:
+// CFI-KCFI: "-fsanitize=cfi-derived-cast,cfi-icall,cfi-mfcall,cfi-unrelated-cast,cfi-nvcall,cfi-vcall,kcfi"
+// RUN: not %clang -### --target=x86_64-unknown-windows-itanium -c %s -flto \
+// RUN:     -fno-sanitize-trap=cfi-vcall -resource-dir=%S/Inputs/resource_dir 2>&1 \
+// RUN:   | FileCheck --check-prefix=CFI-NO-TRAP %s
+// CFI-NO-TRAP: error: unsupported option '-fno-sanitize-trap=cfi-vcall' for target 'x86_64-unknown-windows-itanium'
+
+// So must every other check that would report through a runtime, and
+// cross-DSO CFI, which calls the runtime for a target outside the image, is
+// rejected.
+// RUN: not %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fsanitize=undefined 2>&1 \
+// RUN:   | FileCheck --check-prefix=UBSAN-NO-TRAP %s
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fsanitize=undefined -fsanitize-trap=undefined 2>&1 \
+// RUN:   | FileCheck --check-prefix=UBSAN-TRAP %s --implicit-check-not=error: \
+// RUN:       --implicit-check-not=ubsan_standalone
+// RUN: not %clang -### --target=x86_64-unknown-windows-itanium -c %s -flto \
+// RUN:     -fsanitize-cfi-cross-dso -resource-dir=%S/Inputs/resource_dir 2>&1 \
+// RUN:   | FileCheck --check-prefix=CFI-CROSS-DSO %s
+// UBSAN-NO-TRAP: error: unsupported option '-fsanitize=undefined' for target 'x86_64-unknown-windows-itanium'
+// UBSAN-TRAP: "-fsanitize-trap=
+// CFI-CROSS-DSO: error: unsupported option '-fsanitize-cfi-cross-dso' for target 'x86_64-unknown-windows-itanium'
 
 // The resource headers, the wrappers over the Universal CRT and Windows SDK
 // headers, then those headers, found as the MSVC toolchain finds them.
