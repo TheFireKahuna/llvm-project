@@ -112,6 +112,14 @@ features cannot lower the translation-unit ABI level;
   for homogeneous aggregate classification.
   `-fclang-abi-compat=23` restores the previous behavior. (#GH218799)
 
+- A function type with a vendor qualifier, such as a calling convention
+  attribute or `cfi_salt`, is now mangled as a qualified type: the function
+  type without the qualifier and the qualified function type are both
+  substitution candidates, as the Itanium C++ ABI has it for qualified types
+  and as demanglers count them. A name that refers back to such a type, or to
+  the function type without the qualifier, changes.
+  `-fclang-abi-compat=23` restores the previous mangling.
+
 ### AST Dumping Potentially Breaking Changes
 
 ### Clang Frontend Potentially Breaking Changes

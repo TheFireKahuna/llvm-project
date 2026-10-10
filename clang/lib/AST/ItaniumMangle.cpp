@@ -3794,6 +3794,23 @@ void CXXNameMangler::mangleType(const FunctionProtoType *T) {
   mangleExtFunctionInfo(T);
   mangleCFISalt(T->getExtraAttributeInfo().CFISalt);
 
+  // A vendor qualifier, such as a calling convention or a CFI salt, makes the
+  // function type a qualified type, so the function type without it is a
+  // substitution candidate of its own, which may already stand for it.
+  QualType Base;
+  if (!SMEAttrs &&
+      (!getCallingConvQualifierName(T->getExtInfo().getCC()).empty() ||
+       (!OmitCFISalt && !T->getExtraAttributeInfo().CFISalt.empty())) &&
+      !getASTContext().getLangOpts().isCompatibleWith(
+          LangOptions::ClangABI::Ver23)) {
+    FunctionProtoType::ExtProtoInfo EPI = T->getExtProtoInfo();
+    EPI.ExtInfo = EPI.ExtInfo.withCallingConv(CC_C);
+    EPI.ExtraAttributeInfo = {};
+    Base = getASTContext().getFunctionType(T->getReturnType(),
+                                           T->getParamTypes(), EPI);
+    if (mangleSubstitution(Base))
+      return;
+  }
 
   // Mangle CV-qualifiers, if present.  These are 'this' qualifiers,
   // e.g. "const" in "int (A::*)() const".
@@ -3827,6 +3844,9 @@ void CXXNameMangler::mangleType(const FunctionProtoType *T) {
   mangleRefQualifier(T->getRefQualifier());
 
   Out << 'E';
+
+  if (!Base.isNull())
+    addSubstitution(Base);
 
   mangleSMEAttrs(SMEAttrs);
 }

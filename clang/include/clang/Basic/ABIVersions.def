@@ -167,6 +167,9 @@ ABI_VER_MAJOR(22)
 ///     faithfully reproduces Clang 23, including its crash on aggregates such
 ///     as a run of `__int128` bit-fields, where skipping the unnamed field
 ///     leaves part of a wider access unit unclassified.)
+///   - Mangle a function type with a vendor qualifier, such as a calling
+///     convention, as one substitution candidate, rather than as a qualified
+///     type whose function type without the qualifier is a candidate too.
 ABI_VER_MAJOR(23)
 
 /// Conform to the underlying platform's C and C++ ABIs as closely as we can.
