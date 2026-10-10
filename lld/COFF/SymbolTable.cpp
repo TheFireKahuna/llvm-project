@@ -256,6 +256,11 @@ void SymbolTable::loadMinGWSymbols() {
       continue;
     undefs.push_back(sym);
   }
+  // Loading may bring in regular archive members, such as those of a GNU
+  // import library, so the order is by name rather than by hash.
+  llvm::sort(undefs, [](Symbol *a, Symbol *b) {
+    return a->getName() < b->getName();
+  });
 
   for (auto sym : undefs) {
     auto *undef = dyn_cast<Undefined>(sym);
