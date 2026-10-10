@@ -246,6 +246,7 @@ private:
   void insertBssDataStartEndSymbols();
   void markSymbolsWithRelocations(ObjFile *file, SymbolRVASet &usedSymbols);
   void createGuardCFTables();
+  void placeLinkerDefinedSymbols();
   bool protectDelayIat();
   void markSymbolsForRVATable(ObjFile *file,
                               ArrayRef<SectionChunk *> symIdxChunks,
@@ -795,6 +796,7 @@ void Writer::run() {
     finalizeAddresses();
     removeEmptySections();
     assignOutputSectionIndices();
+    placeLinkerDefinedSymbols();
     setSectionPermissions();
     setECSymbols();
     createSymbolAndStringTable();
@@ -2347,6 +2349,80 @@ void Writer::createGuardCFTables() {
   ctx.forEachSymtab([guardFlags](SymbolTable &symtab) {
     Symbol *flagSym = symtab.findUnderscore("__guard_flags");
     cast<DefinedAbsolute>(flagSym)->setVA(guardFlags);
+  });
+}
+
+// Places the symbols that SymbolTable::addStartStopSymbols and
+// addBoundarySymbols defined: __start_X at the first section of run X and
+// __stop_X at the end of its last, and _etext, _edata and _end at the ends of
+// .text, of .data's initialized data and of .data.
+void Writer::placeLinkerDefinedSymbols() {
+  ctx.forEachSymtab([&](SymbolTable &symtab) {
+    for (SymbolTable::SectionRun &run : symtab.sectionRuns) {
+      DenseSet<Chunk *> live;
+      OutputSection *sec = nullptr;
+      bool split = false;
+      for (SectionChunk *c : run.chunks) {
+        if (!c->live)
+          continue;
+        OutputSection *s = ctx.getOutputSection(c);
+        split |= sec && s != sec;
+        sec = s;
+        live.insert(c);
+      }
+      // Only dead code refers to the bounds of a run with no live section.
+      if (live.empty())
+        continue;
+      if (split) {
+        Err(ctx) << "section " << run.name
+                 << " is split across output sections and cannot be bounded "
+                    "by __start_"
+                 << run.name << " and __stop_" << run.name;
+        continue;
+      }
+      // The run's sections make up the output section named X, which merging
+      // appends whole, so only range extension thunks can fall between them.
+      auto isLive = [&](Chunk *c) { return live.contains(c); };
+      Chunk *firstChunk = *llvm::find_if(sec->chunks, isLive);
+      Chunk *lastChunk = *llvm::find_if(llvm::reverse(sec->chunks), isLive);
+      if (run.start)
+        replaceSymbol<DefinedSynthetic>(run.start, run.start->getName(),
+                                        firstChunk);
+      if (run.stop)
+        replaceSymbol<DefinedSynthetic>(run.stop, run.stop->getName(),
+                                        lastChunk, lastChunk->getSize());
+    }
+
+    for (auto [s, weak] : symtab.boundarySymbols) {
+      StringRef name = s->getName();
+      if (ctx.config.machine == I386)
+        name = name.drop_front();
+      name.consume_front("_");
+      StringRef secName = name == "etext" ? ".text" : ".data";
+      OutputSection *sec = findSection(secName);
+      if (!sec || sec->chunks.empty()) {
+        // With no region to bound, a weak reference keeps its zero default.
+        if (weak) {
+          replaceSymbol<DefinedAbsolute>(s, ctx, s->getName(), 0);
+          continue;
+        }
+        Err(ctx) << s->getName() << " is referenced, but the image has no "
+                 << secName << " section";
+        continue;
+      }
+      // _edata ends the initialized data, which precedes the uninitialized.
+      Chunk *c = sec->chunks.back();
+      if (name == "edata") {
+        auto it = llvm::find_if(llvm::reverse(sec->chunks),
+                                [](Chunk *c) { return c->hasData; });
+        if (it == sec->chunks.rend()) {
+          replaceSymbol<DefinedSynthetic>(s, s->getName(), sec->chunks[0]);
+          continue;
+        }
+        c = *it;
+      }
+      replaceSymbol<DefinedSynthetic>(s, s->getName(), c, c->getSize());
+    }
   });
 }
 

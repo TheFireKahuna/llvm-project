@@ -73,6 +73,12 @@ public:
   // Try to resolve undefined symbols with alternate names.
   void resolveAlternateNames();
 
+  // Define placeholders for the referenced, undefined __start_X and __stop_X
+  // of each section run X, and for _etext, _edata and _end. The writer places
+  // them once the output sections are laid out.
+  void addStartStopSymbols();
+  void addBoundarySymbols();
+
   // Load lazy objects that are needed for MinGW automatic import and for
   // doing stdcall fixups.
   void loadMinGWSymbols();
@@ -164,6 +170,18 @@ public:
   std::vector<Symbol *> expSymbols;
 
   std::vector<SameAddressThunkARM64EC *> sameAddressThunks;
+
+  // The input sections named X or X$*, which __start_X and __stop_X bound.
+  struct SectionRun {
+    StringRef name;
+    Symbol *start = nullptr;
+    Symbol *stop = nullptr;
+    std::vector<SectionChunk *> chunks;
+  };
+  std::vector<SectionRun> sectionRuns;
+  // The placeholders addBoundarySymbols defined, each with whether its
+  // reference was weak.
+  std::vector<std::pair<Symbol *, bool>> boundarySymbols;
 
   // A list of DLL exports.
   std::vector<Export> exports;

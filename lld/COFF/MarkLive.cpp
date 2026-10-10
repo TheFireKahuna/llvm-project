@@ -8,6 +8,7 @@
 
 #include "COFFLinkerContext.h"
 #include "Chunks.h"
+#include "SymbolTable.h"
 #include "Symbols.h"
 #include "lld/Common/Timer.h"
 #include "llvm/Support/TimeProfiler.h"
@@ -41,6 +42,20 @@ void markLive(COFFLinkerContext &ctx) {
     worklist.push_back(c);
   };
 
+  // A section of a run is kept by references to it or by a retained symbol
+  // it defines, not by references to the run's bounds, as under ELF's
+  // -z start-stop-gc. Runs named __libc_* are kept whole while their bounds
+  // are referenced, as ELF linkers keep them: C libraries fill sections such
+  // as __libc_atexit with entries that nothing references or retains.
+  llvm::DenseMap<Symbol *, ArrayRef<SectionChunk *>> runChunks;
+  ctx.forEachSymtab([&](SymbolTable &symtab) {
+    for (const SymbolTable::SectionRun &run : symtab.sectionRuns)
+      if (run.name.starts_with("__libc_"))
+        for (Symbol *bound : {run.start, run.stop})
+          if (bound)
+            runChunks[bound] = run.chunks;
+  });
+
   std::function<void(Symbol *)> addSym;
 
   auto addImportFile = [&](ImportFile *file) {
@@ -60,6 +75,9 @@ void markLive(COFFLinkerContext &ctx) {
     } else if (auto *sym = dyn_cast<DefinedImportThunk>(b)) {
       addImportFile(sym->wrappedSym->file);
       sym->getChunk()->live = true;
+    } else if (isa<DefinedSynthetic>(b)) {
+      for (SectionChunk *c : runChunks.lookup(b))
+        enqueue(c);
     }
   };
 

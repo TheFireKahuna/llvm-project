@@ -51,12 +51,15 @@ from the [LLVM releases web site](https://llvm.org/releases/).
   whole section read-only at load and reopens only the table's pages, so their
   data is read-only once the image is loaded. Merges into or out of `.didat`
   are errors in such an image. MinGW images, whose delay-load helper stores to
-  the table directly, are unchanged.
   the table directly, are unchanged. An image whose delay-load thunks call a
   helper whose object carries a link record saying that the helper writes the
   table only while it is writable (kind 16, `.linkprotecteddelayiat` in
   assembly) gets the same protection without `/guard:cf`, in a MinGW image
   too.
+* `-start-stop-symbols` defines a referenced `__start_X` and `__stop_X`, where
+  `X` is a C identifier, around the input sections named `X` or `X$*`, as ELF
+  linkers do, and `-boundary-symbols` defines a referenced `_etext`, `_edata`
+  and `_end` and their unprefixed forms. Both are off by default.
 
 ### MinGW Improvements
 

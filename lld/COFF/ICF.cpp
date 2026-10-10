@@ -20,6 +20,7 @@
 #include "ICF.h"
 #include "COFFLinkerContext.h"
 #include "Chunks.h"
+#include "SymbolTable.h"
 #include "Symbols.h"
 #include "lld/Common/Timer.h"
 #include "llvm/Support/Parallel.h"
@@ -241,11 +242,19 @@ void ICF::run() {
   llvm::TimeTraceScope timeScope("ICF");
   ScopedTimer t(ctx.icfTimer);
 
+  // A program enumerates a run of sections through __start_X and __stop_X, so
+  // folding one of them away would drop an entry.
+  DenseSet<SectionChunk *> uniqueChunks;
+  ctx.forEachSymtab([&](SymbolTable &symtab) {
+    for (const SymbolTable::SectionRun &run : symtab.sectionRuns)
+      uniqueChunks.insert_range(run.chunks);
+  });
+
   // Collect only mergeable sections and group by hash value.
   uint32_t nextId = 1;
   for (Chunk *c : ctx.driver.getChunks()) {
     if (auto *sc = dyn_cast<SectionChunk>(c)) {
-      if (isEligible(sc))
+      if (isEligible(sc) && !uniqueChunks.contains(sc))
         chunks.push_back(sc);
       else
         sc->eqClass[0] = nextId++;

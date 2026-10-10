@@ -252,6 +252,10 @@ def help_q : Flag<["/??", "-??", "/?", "-?"], "">, Alias<help>;
 // LLD extensions
 defm auto_import : B_priv<"auto-import">;
 defm runtime_pseudo_reloc : B_priv<"runtime-pseudo-reloc">;
+defm boundary_symbols : B<"boundary-symbols",
+    "Define _etext, _edata and _end, and their unprefixed forms, where "
+    "referenced",
+    "Do not define _etext, _edata and _end (default)">;
 def end_lib : F<"end-lib">,
   HelpText<"End group of objects treated as if they were in a library">;
 def exclude_all_symbols : F<"exclude-all-symbols">;
@@ -274,6 +278,10 @@ def rsp_quoting : Joined<["--"], "rsp-quoting=">,
   HelpText<"Quoting style for response files, 'windows' (default) or 'posix'">;
 def start_lib : F<"start-lib">,
   HelpText<"Start group of objects treated as if they were in a library">;
+defm start_stop_symbols : B<"start-stop-symbols",
+    "Define __start_X and __stop_X around the sections named X or X$*, "
+    "where X is a C identifier, where referenced",
+    "Do not define __start_X and __stop_X (default)">;
 defm stdcall_fixup : B_priv<"stdcall-fixup">;
 def thinlto_emit_imports_files :
     F<"thinlto-emit-imports-files">,

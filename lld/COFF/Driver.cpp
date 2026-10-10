@@ -2317,6 +2317,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
       args.hasFlag(OPT_auto_import, OPT_auto_import_no, config->mingw);
   config->pseudoRelocs = args.hasFlag(
       OPT_runtime_pseudo_reloc, OPT_runtime_pseudo_reloc_no, config->mingw);
+  config->startStopSymbols =
+      args.hasFlag(OPT_start_stop_symbols, OPT_start_stop_symbols_no, false);
+  config->boundarySymbols =
+      args.hasFlag(OPT_boundary_symbols, OPT_boundary_symbols_no, false);
   config->callGraphProfileSort = args.hasFlag(
       OPT_call_graph_profile_sort, OPT_call_graph_profile_sort_no, true);
   config->stdcallFixup =
@@ -2872,6 +2876,14 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
 
   if (isArm64EC(config->machine))
     createECExportThunks();
+
+  // Define the ELF-style linker-defined symbols that inputs reference and
+  // nothing else defines.
+  if (config->startStopSymbols)
+    ctx.forEachSymtab(
+        [](SymbolTable &symtab) { symtab.addStartStopSymbols(); });
+  if (config->boundarySymbols)
+    ctx.forEachSymtab([](SymbolTable &symtab) { symtab.addBoundarySymbols(); });
 
   // Resolve remaining undefined symbols and warn about imported locals.
   std::vector<Undefined *> aliases;
