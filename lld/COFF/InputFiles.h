@@ -116,36 +116,34 @@ public:
   bool lazy = false;
 };
 
-// .lib or .a file.
-class ArchiveFile : public InputFile {
+// An archive's symbol table indexed by name: the first of its symbols with
+// each name is in a hash table, by its position in the symbol table. The
+// thread that reads an archive builds its index.
+class ArchiveIndex {
 public:
-  explicit ArchiveFile(COFFLinkerContext &ctx, MemoryBufferRef mb,
-                       std::unique_ptr<Archive> &f);
-  static bool classof(const InputFile *f) { return f->kind() == ArchiveKind; }
-  void parse() override;
+  // Creates the archive in mb and indexes it, or leaves the index unbuilt if
+  // mb is not a valid archive.
+  void build(MemoryBufferRef mb);
+  void build(const Archive &a);
+  bool isBuilt() const { return archive; }
+  // Leaves the first symbol named as the one at position i out.
+  void remove(uint32_t i);
 
-  // Enqueues an archive member load for the given symbol. If we've already
-  // enqueued a load for the same archive member, this function does nothing,
-  // which ensures that we don't load the same member more than once.
-  void addMember(const Archive::Symbol &sym);
-
-  // An archive that the symbol table looks up instead of holding its lazy
-  // symbols is indexed: the first of its symbols with each name is in a hash
-  // table, by its position in the archive's symbol table.
-  std::optional<uint32_t> findSymbol(llvm::CachedHashStringRef name) const;
+  std::optional<uint32_t> find(llvm::CachedHashStringRef name) const;
   Archive::Symbol getSymbol(uint32_t i) const;
   StringRef getSymbolName(uint32_t i) const;
-  // The positions of the indexed symbols, in hash table order.
   std::vector<uint32_t> getIndexedSymbols() const;
-  // The names of the archive's symbols that start with prefix.
   std::vector<StringRef> getSymbolNames(StringRef prefix) const;
   size_t getNumIndexed() const { return numIndexed; }
 
-private:
-  void addToIndex(uint32_t i, llvm::CachedHashStringRef name);
-
+  // The archive that build(mb) created, until its reader takes it.
   std::unique_ptr<Archive> file;
-  llvm::DenseSet<uint64_t> seen;
+  // The positions of the symbols that could be an imported DllMain, which
+  // the archive's reader checks once the machine is known.
+  std::vector<uint32_t> dllMainCandidates;
+
+private:
+  const Archive *archive = nullptr;
   // Each symbol's name, as an offset into the archive's symbol table, and the
   // hash table. An entry is zero, or holds one more than a symbol's position
   // in its low positionBits bits and the high bits of the name's hash above.
@@ -156,6 +154,44 @@ private:
   // Whether the names are in ascending order, as in a COFF archive, so that
   // those with a given prefix are adjacent.
   bool sorted = true;
+  // The positions that remove() left out.
+  std::vector<uint32_t> removed;
+};
+
+// .lib or .a file.
+class ArchiveFile : public InputFile {
+public:
+  explicit ArchiveFile(COFFLinkerContext &ctx, MemoryBufferRef mb,
+                       std::unique_ptr<Archive> &f, ArchiveIndex index = {});
+  static bool classof(const InputFile *f) { return f->kind() == ArchiveKind; }
+  void parse() override;
+
+  // Enqueues an archive member load for the given symbol. If we've already
+  // enqueued a load for the same archive member, this function does nothing,
+  // which ensures that we don't load the same member more than once.
+  void addMember(const Archive::Symbol &sym);
+
+  // An archive that the symbol table looks up instead of holding its lazy
+  // symbols is indexed.
+  std::optional<uint32_t> findSymbol(llvm::CachedHashStringRef name) const {
+    return index.find(name);
+  }
+  Archive::Symbol getSymbol(uint32_t i) const { return index.getSymbol(i); }
+  StringRef getSymbolName(uint32_t i) const { return index.getSymbolName(i); }
+  // The positions of the indexed symbols, in hash table order.
+  std::vector<uint32_t> getIndexedSymbols() const {
+    return index.getIndexedSymbols();
+  }
+  // The names of the archive's symbols that start with prefix.
+  std::vector<StringRef> getSymbolNames(StringRef prefix) const {
+    return index.getSymbolNames(prefix);
+  }
+  size_t getNumIndexed() const { return index.getNumIndexed(); }
+
+private:
+  std::unique_ptr<Archive> file;
+  llvm::DenseSet<uint64_t> seen;
+  ArchiveIndex index;
 };
 
 // .obj or .o file. This may be a member of an archive file.

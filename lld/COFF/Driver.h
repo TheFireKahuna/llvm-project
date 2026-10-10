@@ -190,8 +190,8 @@ private:
 
   std::set<std::string> visitedLibs;
 
-  void addBuffer(std::unique_ptr<MemoryBuffer> mb, bool wholeArchive,
-                 bool lazy);
+  void addBuffer(std::unique_ptr<MemoryBuffer> mb, bool wholeArchive, bool lazy,
+                 ArchiveIndex *index = nullptr);
   void addArchiveBuffer(MemoryBufferRef mbref, StringRef symName,
                         StringRef parentName, uint64_t offsetInArchive,
                         bool lazy);

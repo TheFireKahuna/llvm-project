@@ -158,8 +158,8 @@ static bool fixupDllMain(COFFLinkerContext &ctx, llvm::object::Archive *file,
 }
 
 ArchiveFile::ArchiveFile(COFFLinkerContext &ctx, MemoryBufferRef m,
-                         std::unique_ptr<Archive> &f)
-    : InputFile(ctx.symtab, ArchiveKind, m) {
+                         std::unique_ptr<Archive> &f, ArchiveIndex index)
+    : InputFile(ctx.symtab, ArchiveKind, m), index(std::move(index)) {
   file.swap(f);
 }
 
@@ -235,63 +235,97 @@ void ArchiveFile::parse() {
   // the cost of reading it. On ARM64EC, where a lazy symbol is checked against
   // its counterpart in the other symbol table as it is entered, and before the
   // machine is known, the archive enters them all now.
-  bool indexed =
-      !ctx.symtab.isEC() && ctx.config.machine != IMAGE_FILE_MACHINE_UNKNOWN;
-  if (indexed) {
-    uint32_t n = file->getNumberOfSymbols();
-    nameOffsets.reserve(n);
-    // A load of at most 3/4.
-    buckets.resize(PowerOf2Ceil(uint64_t(n) * 4 / 3 + 1));
-    positionBits = llvm::bit_width(n);
+  if (!ctx.symtab.isEC() && ctx.config.machine != IMAGE_FILE_MACHINE_UNKNOWN) {
+    if (!index.isBuilt())
+      index.build(*file);
+    for (uint32_t i : index.dllMainCandidates) {
+      StringRef name = index.getSymbolName(i);
+      if (name != mangledDllMain && name != impMangledDllMain)
+        continue;
+      if (skipDllMain ||
+          fixupDllMain(ctx, file.get(), index.getSymbol(i), skipDllMain))
+        index.remove(i);
+    }
+    symtab.addIndexedArchive(this);
+    return;
   }
+  index = ArchiveIndex();
 
   // Read the symbol table to construct Lazy objects.
-  StringRef prev;
   for (const Archive::Symbol &sym : file->symbols()) {
-    StringRef name = sym.getName();
-    if (indexed) {
-      nameOffsets.push_back(name.data() - file->getSymbolTable().data());
-      sorted = sorted && prev <= name;
-      prev = name;
-    }
     // If an import library provides the DllMain symbol, skip importing it, as
     // we should be using our own DllMain, not another DLL's DllMain.
-    if (!mangledDllMain.empty() &&
-        (name == mangledDllMain || name == impMangledDllMain)) {
+    if (!mangledDllMain.empty() && (sym.getName() == mangledDllMain ||
+                                    sym.getName() == impMangledDllMain)) {
       if (skipDllMain || fixupDllMain(ctx, file.get(), sym, skipDllMain))
         continue;
     }
-    if (indexed)
-      addToIndex(nameOffsets.size() - 1, CachedHashStringRef(name));
-    else
-      archiveSymtab->addLazyArchive(this, sym);
+    archiveSymtab->addLazyArchive(this, sym);
   }
-  if (indexed)
-    symtab.addIndexedArchive(this);
 }
 
-void ArchiveFile::addToIndex(uint32_t i, CachedHashStringRef name) {
-  // The high bits of the hash only tell most other names apart.
-  uint64_t tag = uint64_t(name.hash()) >> positionBits;
-  size_t mask = buckets.size() - 1;
-  for (size_t j = name.hash() & mask;; j = (j + 1) & mask) {
-    uint32_t &b = buckets[j];
-    if (!b) {
-      b = tag << positionBits | (i + 1);
-      ++numIndexed;
-      return;
-    }
+void ArchiveIndex::build(MemoryBufferRef mb) {
+  if (identify_magic(mb.getBuffer()) != file_magic::archive)
+    return;
+  Expected<std::unique_ptr<Archive>> f = Archive::create(mb);
+  if (!f) {
+    // The reader creates the archive again and reports the error.
+    consumeError(f.takeError());
+    return;
+  }
+  file = std::move(*f);
+  build(*file);
+}
+
+void ArchiveIndex::build(const Archive &a) {
+  archive = &a;
+  uint32_t n = a.getNumberOfSymbols();
+  nameOffsets.reserve(n);
+  // A load of at most 3/4.
+  buckets.resize(PowerOf2Ceil(uint64_t(n) * 4 / 3 + 1));
+  positionBits = llvm::bit_width(n);
+  StringRef prev;
+  for (const Archive::Symbol &sym : a.symbols()) {
+    StringRef name = sym.getName();
+    uint32_t i = nameOffsets.size();
+    nameOffsets.push_back(name.data() - a.getSymbolTable().data());
+    sorted = sorted && prev <= name;
+    prev = name;
+    // DllMain, mangled for x86 or not, and its import pointer.
+    StringRef base = name;
+    base.consume_front("__imp_");
+    if (base == "DllMain" || base == "_DllMain")
+      dllMainCandidates.push_back(i);
+
     // The first symbol with a name is the one the archive offers.
-    uint32_t k = (b & maskTrailingOnes<uint32_t>(positionBits)) - 1;
-    if (uint64_t(b) >> positionBits == tag && getSymbolName(k) == name.val())
-      return;
+    CachedHashStringRef key(name);
+    uint64_t tag = uint64_t(key.hash()) >> positionBits;
+    size_t mask = buckets.size() - 1;
+    for (size_t j = key.hash() & mask;; j = (j + 1) & mask) {
+      uint32_t &b = buckets[j];
+      if (!b) {
+        b = tag << positionBits | (i + 1);
+        ++numIndexed;
+        break;
+      }
+      uint32_t k = (b & maskTrailingOnes<uint32_t>(positionBits)) - 1;
+      if (uint64_t(b) >> positionBits == tag && getSymbolName(k) == name)
+        break;
+    }
   }
 }
 
-std::optional<uint32_t>
-ArchiveFile::findSymbol(CachedHashStringRef name) const {
+void ArchiveIndex::remove(uint32_t i) {
+  if (find(CachedHashStringRef(getSymbolName(i))) != i)
+    return;
+  removed.push_back(i);
+  --numIndexed;
+}
+
+std::optional<uint32_t> ArchiveIndex::find(CachedHashStringRef name) const {
   if (buckets.empty())
     return std::nullopt;
+  // The high bits of the hash only tell most other names apart.
   uint64_t tag = uint64_t(name.hash()) >> positionBits;
   size_t mask = buckets.size() - 1;
   for (size_t j = name.hash() & mask;; j = (j + 1) & mask) {
@@ -299,29 +333,34 @@ ArchiveFile::findSymbol(CachedHashStringRef name) const {
     if (!b)
       return std::nullopt;
     uint32_t k = (b & maskTrailingOnes<uint32_t>(positionBits)) - 1;
-    if (uint64_t(b) >> positionBits == tag && getSymbolName(k) == name.val())
+    if (uint64_t(b) >> positionBits == tag && getSymbolName(k) == name.val()) {
+      if (!removed.empty() && llvm::is_contained(removed, k))
+        return std::nullopt;
       return k;
+    }
   }
 }
 
-Archive::Symbol ArchiveFile::getSymbol(uint32_t i) const {
-  return Archive::Symbol(file.get(), i, nameOffsets[i]);
+Archive::Symbol ArchiveIndex::getSymbol(uint32_t i) const {
+  return Archive::Symbol(archive, i, nameOffsets[i]);
 }
 
-StringRef ArchiveFile::getSymbolName(uint32_t i) const {
+StringRef ArchiveIndex::getSymbolName(uint32_t i) const {
   return getSymbol(i).getName();
 }
 
-std::vector<uint32_t> ArchiveFile::getIndexedSymbols() const {
+std::vector<uint32_t> ArchiveIndex::getIndexedSymbols() const {
   std::vector<uint32_t> v;
   v.reserve(numIndexed);
-  for (uint32_t b : buckets)
-    if (b)
-      v.push_back((b & maskTrailingOnes<uint32_t>(positionBits)) - 1);
+  for (uint32_t b : buckets) {
+    uint32_t k = (b & maskTrailingOnes<uint32_t>(positionBits)) - 1;
+    if (b && !llvm::is_contained(removed, k))
+      v.push_back(k);
+  }
   return v;
 }
 
-std::vector<StringRef> ArchiveFile::getSymbolNames(StringRef prefix) const {
+std::vector<StringRef> ArchiveIndex::getSymbolNames(StringRef prefix) const {
   std::vector<StringRef> v;
   uint32_t i = 0, e = nameOffsets.size();
   if (sorted) {

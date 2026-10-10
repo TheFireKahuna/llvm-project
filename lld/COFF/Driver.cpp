@@ -154,9 +154,11 @@ static bool isCrtend(StringRef s) {
 using MBErrPair = std::pair<std::unique_ptr<MemoryBuffer>, std::error_code>;
 
 // Create a std::future that opens and maps a file using the best strategy for
-// the host platform.
-static std::future<MBErrPair> createFutureForFile(std::string path,
-                                                  bool prefetchInputs) {
+// the host platform. If the file is an archive, the future also indexes its
+// symbol table into index, if given.
+static std::future<MBErrPair>
+createFutureForFile(std::string path, bool prefetchInputs,
+                    std::shared_ptr<ArchiveIndex> index = nullptr) {
 #if _WIN64
   // On Windows, file I/O is relatively slow so it is best to do this
   // asynchronously.  But 32-bit has issues with potentially launching tons
@@ -173,6 +175,8 @@ static std::future<MBErrPair> createFutureForFile(std::string path,
     // Prefetch memory pages in the background as we will need them soon enough.
     if (prefetchInputs)
       (*mbOrErr)->willNeedIfMmap();
+    if (index)
+      index->build((*mbOrErr)->getMemBufferRef());
     return MBErrPair{std::move(*mbOrErr), std::error_code()};
   });
 }
@@ -302,7 +306,8 @@ InputFile *LinkerDriver::addObjectFile(COFFLinkerContext &ctx,
 }
 
 void LinkerDriver::addBuffer(std::unique_ptr<MemoryBuffer> mb,
-                             bool wholeArchive, bool lazy) {
+                             bool wholeArchive, bool lazy,
+                             ArchiveIndex *index) {
   StringRef filename = mb->getBufferIdentifier();
 
   MemoryBufferRef mbref = takeBuffer(std::move(mb));
@@ -314,7 +319,9 @@ void LinkerDriver::addBuffer(std::unique_ptr<MemoryBuffer> mb,
     break;
   case file_magic::archive: {
     std::unique_ptr<Archive> file =
-        CHECK(Archive::create(mbref), filename + ": failed to parse archive");
+        index && index->file ? std::move(index->file)
+                             : CHECK(Archive::create(mbref),
+                                     filename + ": failed to parse archive");
 
     // On ARM64EC/ARM64X, the archive may contain both, potentially conflicting,
     // native and EC symbols in the symbol table. Regular archives handle this
@@ -337,7 +344,8 @@ void LinkerDriver::addBuffer(std::unique_ptr<MemoryBuffer> mb,
 
       return;
     }
-    addFile(make<ArchiveFile>(ctx, mbref, file));
+    addFile(make<ArchiveFile>(ctx, mbref, file,
+                              index ? std::move(*index) : ArchiveIndex()));
     break;
   }
   case file_magic::bitcode:
@@ -409,8 +417,13 @@ void LinkerDriver::handleReproFile(StringRef path, InputOpt inputOpt) {
 }
 
 void LinkerDriver::enqueuePath(StringRef path, bool lazy, InputOpt inputOpt) {
+  // The thread that reads an archive indexes its symbols, unless all of its
+  // members are to be loaded.
+  std::shared_ptr<ArchiveIndex> index;
+  if (inputOpt != InputOpt::WholeArchive)
+    index = std::make_shared<ArchiveIndex>();
   auto future = std::make_shared<std::future<MBErrPair>>(
-      createFutureForFile(std::string(path), ctx.config.prefetchInputs));
+      createFutureForFile(std::string(path), ctx.config.prefetchInputs, index));
   std::string pathStr = std::string(path);
   enqueueTask([=]() {
     llvm::TimeTraceScope timeScope("File: ", path);
@@ -454,7 +467,7 @@ void LinkerDriver::enqueuePath(StringRef path, bool lazy, InputOpt inputOpt) {
     } else {
       handleReproFile(pathStr, inputOpt);
       ctx.driver.addBuffer(std::move(mb), inputOpt == InputOpt::WholeArchive,
-                           lazy);
+                           lazy, index.get());
     }
   });
 }
