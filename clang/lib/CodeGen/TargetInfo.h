@@ -495,6 +495,13 @@ public:
 protected:
   static std::string qualifyWindowsLibrary(StringRef Lib);
 
+  /// The linker options of getDependentLibraryOption and
+  /// getDetectMismatchOption for link.exe-compatible linkers.
+  static void getWindowsDependentLibraryOption(StringRef Lib,
+                                               llvm::SmallString<24> &Opt);
+  static void getWindowsDetectMismatchOption(StringRef Name, StringRef Value,
+                                             llvm::SmallString<32> &Opt);
+
   void addStackProbeTargetAttributes(const Decl *D, llvm::GlobalValue *GV,
                                      CodeGen::CodeGenModule &CGM) const;
 };
@@ -648,6 +655,10 @@ createX86_64TargetCodeGenInfo(CodeGenModule &CGM, X86AVXABILevel AVXLevel);
 
 std::unique_ptr<TargetCodeGenInfo>
 createWinX86_64TargetCodeGenInfo(CodeGenModule &CGM, X86AVXABILevel AVXLevel);
+
+std::unique_ptr<TargetCodeGenInfo>
+createNTPOSIXX86_64TargetCodeGenInfo(CodeGenModule &CGM,
+                                     X86AVXABILevel AVXLevel);
 
 std::unique_ptr<TargetCodeGenInfo>
 createXCoreTargetCodeGenInfo(CodeGenModule &CGM);

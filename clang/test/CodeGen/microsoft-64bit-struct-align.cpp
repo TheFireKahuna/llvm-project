@@ -1,5 +1,11 @@
 // RUN: %clang_cc1 -triple aarch64-windows-msvc -emit-llvm -o - %s | FileCheck %s
 // RUN: %clang_cc1 -triple x86_64-windows-msvc  -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple aarch64-windows-itanium -emit-llvm -o - %s \
+// RUN:   | FileCheck %s --check-prefix=ITANIUM
+// RUN: %clang_cc1 -triple x86_64-windows-itanium -emit-llvm -o - %s \
+// RUN:   | FileCheck %s --check-prefix=ITANIUM
+// RUN: %clang_cc1 -triple aarch64-pc-windows-ntposix -emit-llvm -o - %s \
+// RUN:   | FileCheck %s --check-prefix=NTPOSIX
 
 struct size1 { char str[1]; };
 struct size2 { char str[2]; };
@@ -10,18 +16,30 @@ struct size64 { char str[64]; };
 
 struct size1 s1;
 // CHECK: @"?s1@@3Usize1@@A" = dso_local global %struct.size1 zeroinitializer, align 1
+// ITANIUM: @s1 = dso_local global %struct.size1 zeroinitializer, align 1
+// NTPOSIX: @s1 = dso_local global %struct.size1 zeroinitializer, align 1
 
 struct size2 s2;
 // CHECK: @"?s2@@3Usize2@@A" = dso_local global %struct.size2 zeroinitializer, align 4
+// ITANIUM: @s2 = dso_local global %struct.size2 zeroinitializer, align 4
+// NTPOSIX: @s2 = dso_local global %struct.size2 zeroinitializer, align 1
 
 struct size7 s7;
 // CHECK: @"?s7@@3Usize7@@A" = dso_local global %struct.size7 zeroinitializer, align 4
+// ITANIUM: @s7 = dso_local global %struct.size7 zeroinitializer, align 4
+// NTPOSIX: @s7 = dso_local global %struct.size7 zeroinitializer, align 1
 
 struct size8 s8;
 // CHECK: @"?s8@@3Usize8@@A" = dso_local global %struct.size8 zeroinitializer, align 8
+// ITANIUM: @s8 = dso_local global %struct.size8 zeroinitializer, align 8
+// NTPOSIX: @s8 = dso_local global %struct.size8 zeroinitializer, align 1
 
 struct size63 s63;
 // CHECK: @"?s63@@3Usize63@@A" = dso_local global %struct.size63 zeroinitializer, align 8
+// ITANIUM: @s63 = dso_local global %struct.size63 zeroinitializer, align 8
+// NTPOSIX: @s63 = dso_local global %struct.size63 zeroinitializer, align 1
 
 struct size64 s64;
 // CHECK: @"?s64@@3Usize64@@A" = dso_local global %struct.size64 zeroinitializer, align 16
+// ITANIUM: @s64 = dso_local global %struct.size64 zeroinitializer, align 16
+// NTPOSIX: @s64 = dso_local global %struct.size64 zeroinitializer, align 1

@@ -122,8 +122,11 @@ void x86::getX86TargetFeatures(const Driver &D, const llvm::Triple &Triple,
   // Claim and report unsupported -mabi=. Note: we don't support "sysv_abi" or
   // "ms_abi" as default function attributes.
   if (const Arg *A = Args.getLastArg(options::OPT_mabi_EQ)) {
-    StringRef DefaultAbi =
-        (Triple.isOSWindows() || Triple.isUEFI()) ? "ms" : "sysv";
+    // NT-POSIX is a Windows target whose default is System V.
+    StringRef DefaultAbi = (Triple.isOSWindows() || Triple.isUEFI()) &&
+                                   !Triple.isWindowsNTPOSIXEnvironment()
+                               ? "ms"
+                               : "sysv";
     if (A->getValue() != DefaultAbi)
       D.Diag(diag::err_drv_unsupported_opt_for_target)
           << A->getSpelling() << Triple.getTriple();

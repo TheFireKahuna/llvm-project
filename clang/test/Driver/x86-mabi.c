@@ -7,6 +7,10 @@
 
 // RUN: %clang -### --target=x86_64-windows-gnu -mabi=ms -S %s 2>&1 | FileCheck %s
 
+// NT-POSIX on x86-64 defaults to the System V convention.
+// RUN: %clang -### --target=x86_64-pc-windows-ntposix -mabi=sysv -S %s 2>&1 | FileCheck %s
+// RUN: not %clang -### --target=x86_64-pc-windows-ntposix -mabi=ms -S %s 2>&1 | FileCheck --check-prefix=ERR %s
+
 // CHECK-NOT: {{error|warning}}:
 // ERR: error: unsupported option '-mabi=' for target '{{.*}}'
 

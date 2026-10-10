@@ -1708,6 +1708,17 @@ std::string TargetCodeGenInfo::qualifyWindowsLibrary(StringRef Lib) {
   return ArgStr;
 }
 
+void TargetCodeGenInfo::getWindowsDependentLibraryOption(
+    StringRef Lib, llvm::SmallString<24> &Opt) {
+  Opt = "/DEFAULTLIB:";
+  Opt += qualifyWindowsLibrary(Lib);
+}
+
+void TargetCodeGenInfo::getWindowsDetectMismatchOption(
+    StringRef Name, StringRef Value, llvm::SmallString<32> &Opt) {
+  Opt = "/FAILIFMISMATCH:\"" + Name.str() + "=" + Value.str() + "\"";
+}
+
 namespace {
 class WinX86_32TargetCodeGenInfo : public X86_32TargetCodeGenInfo {
 public:
@@ -1722,14 +1733,13 @@ public:
 
   void getDependentLibraryOption(llvm::StringRef Lib,
                                  llvm::SmallString<24> &Opt) const override {
-    Opt = "/DEFAULTLIB:";
-    Opt += qualifyWindowsLibrary(Lib);
+    getWindowsDependentLibraryOption(Lib, Opt);
   }
 
   void getDetectMismatchOption(llvm::StringRef Name,
                                llvm::StringRef Value,
                                llvm::SmallString<32> &Opt) const override {
-    Opt = "/FAILIFMISMATCH:\"" + Name.str() + "=" + Value.str() + "\"";
+    getWindowsDetectMismatchOption(Name, Value, Opt);
   }
 };
 } // namespace
@@ -1743,6 +1753,33 @@ void WinX86_32TargetCodeGenInfo::setTargetAttributes(
 }
 
 namespace {
+// x86-64 NT-POSIX: the System V convention, with the linker directives and
+// stack probe options of Windows.
+class NTPOSIXX86_64TargetCodeGenInfo : public X86_64TargetCodeGenInfo {
+public:
+  NTPOSIXX86_64TargetCodeGenInfo(CodeGen::CodeGenTypes &CGT,
+                                 X86AVXABILevel AVXLevel)
+      : X86_64TargetCodeGenInfo(CGT, AVXLevel) {}
+
+  void setTargetAttributes(const Decl *D, llvm::GlobalValue *GV,
+                           CodeGen::CodeGenModule &CGM) const override {
+    X86_64TargetCodeGenInfo::setTargetAttributes(D, GV, CGM);
+    if (GV->isDeclaration())
+      return;
+    addStackProbeTargetAttributes(D, GV, CGM);
+  }
+
+  void getDependentLibraryOption(llvm::StringRef Lib,
+                                 llvm::SmallString<24> &Opt) const override {
+    getWindowsDependentLibraryOption(Lib, Opt);
+  }
+
+  void getDetectMismatchOption(llvm::StringRef Name, llvm::StringRef Value,
+                               llvm::SmallString<32> &Opt) const override {
+    getWindowsDetectMismatchOption(Name, Value, Opt);
+  }
+};
+
 class WinX86_64TargetCodeGenInfo : public TargetCodeGenInfo {
 public:
   WinX86_64TargetCodeGenInfo(CodeGen::CodeGenTypes &CGT,
@@ -1771,14 +1808,13 @@ public:
 
   void getDependentLibraryOption(llvm::StringRef Lib,
                                  llvm::SmallString<24> &Opt) const override {
-    Opt = "/DEFAULTLIB:";
-    Opt += qualifyWindowsLibrary(Lib);
+    getWindowsDependentLibraryOption(Lib, Opt);
   }
 
   void getDetectMismatchOption(llvm::StringRef Name,
                                llvm::StringRef Value,
                                llvm::SmallString<32> &Opt) const override {
-    Opt = "/FAILIFMISMATCH:\"" + Name.str() + "=" + Value.str() + "\"";
+    getWindowsDetectMismatchOption(Name, Value, Opt);
   }
 };
 } // namespace
@@ -3746,4 +3782,11 @@ std::unique_ptr<TargetCodeGenInfo>
 CodeGen::createWinX86_64TargetCodeGenInfo(CodeGenModule &CGM,
                                           X86AVXABILevel AVXLevel) {
   return std::make_unique<WinX86_64TargetCodeGenInfo>(CGM.getTypes(), AVXLevel);
+}
+
+std::unique_ptr<TargetCodeGenInfo>
+CodeGen::createNTPOSIXX86_64TargetCodeGenInfo(CodeGenModule &CGM,
+                                              X86AVXABILevel AVXLevel) {
+  return std::make_unique<NTPOSIXX86_64TargetCodeGenInfo>(CGM.getTypes(),
+                                                          AVXLevel);
 }

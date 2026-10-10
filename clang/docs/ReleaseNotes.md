@@ -112,6 +112,17 @@ features cannot lower the translation-unit ABI level;
   for homogeneous aggregate classification.
   `-fclang-abi-compat=23` restores the previous behavior. (#GH218799)
 
+- On x86-64 Windows with a non-Microsoft C++ ABI, such as
+  `x86_64-windows-itanium`, a class is now passed and returned in registers
+  under the Itanium C++ ABI's rules, as on other Itanium targets, instead of
+  MSVC's. A small class with a trivial copy constructor and a non-trivial
+  destructor or move constructor is now passed and returned indirectly, and
+  one with a deleted copy constructor and a trivial move constructor in a
+  register. `-fclang-abi-compat=23` restores the previous behavior.
+
+- `aarch64-windows-itanium` now uses the Itanium C++ ABI, as the other Windows
+  Itanium targets do, instead of the Microsoft C++ ABI.
+
 - A function type with a vendor qualifier, such as a calling convention
   attribute or `cfi_salt`, is now mangled as a qualified type: the function
   type without the qualifier and the qualified function type are both
@@ -883,6 +894,16 @@ features cannot lower the translation-unit ABI level;
   position when ``-fms-compatibility`` is enabled, matching the existing
   ``_try``, ``_finally``, and ``_leave`` aliases. ``_except`` remains an ordinary
   identifier outside that context.
+
+- The x86-64 and AArch64 ``windows-itanium`` targets now predefine the macros
+  the Windows SDK expects, whether or not ``-fms-compatibility`` is on: the
+  MSVC environment's defines, ``WIN32``, ``WINNT``, ``WIN64``, ``WINVER`` and
+  ``_WIN32_WINNT`` for Windows 10, ``_AMD64_`` or ``_ARM64_``,
+  ``_STDCALL_SUPPORTED``, ``_FORCENAMELESSUNION``, and ``_WIN32_ITANIUM``, which
+  names the environment. They no longer define ``_MSC_VER``, ``_MSC_FULL_VER``,
+  ``_MSVC_LANG`` or the other macros that identify the compiler as MSVC, even
+  with ``-fms-compatibility``. 32-bit ``windows-itanium`` targets are
+  unchanged.
 
 - Fixed ``setjmp`` on 32-bit Arm passing the frame pointer, rather than the
   stack pointer as it was on entry to the function, as the frame value the CRT

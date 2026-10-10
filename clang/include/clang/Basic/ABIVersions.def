@@ -167,6 +167,9 @@ ABI_VER_MAJOR(22)
 ///     faithfully reproduces Clang 23, including its crash on aggregates such
 ///     as a run of `__int128` bit-fields, where skipping the unnamed field
 ///     leaves part of a wider access unit unclassified.)
+///   - On x86_64 Windows with a non-Microsoft C++ ABI, such as Windows
+///     Itanium, use MSVC's rules for passing and returning classes in
+///     registers.
 ///   - Mangle a function type with a vendor qualifier, such as a calling
 ///     convention, as one substitution candidate, rather than as a qualified
 ///     type whose function type without the qualifier is a candidate too.

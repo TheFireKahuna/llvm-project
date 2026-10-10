@@ -1824,7 +1824,10 @@ WindowsARM64TargetInfo::checkCallingConvention(CallingConv CC) const {
 MicrosoftARM64TargetInfo::MicrosoftARM64TargetInfo(const llvm::Triple &Triple,
                                                    const TargetOptions &Opts)
     : WindowsARM64TargetInfo(Triple, Opts) {
-  TheCXXABI.set(TargetCXXABI::Microsoft);
+  // Windows Itanium shares the MSVC environment's C ABI, but not its C++ ABI.
+  TheCXXABI.set(Triple.isWindowsItaniumOrNTPOSIXEnvironment()
+                    ? TargetCXXABI::GenericAArch64
+                    : TargetCXXABI::Microsoft);
 }
 
 void MicrosoftARM64TargetInfo::getTargetDefines(const LangOptions &Opts,
@@ -1841,7 +1844,11 @@ void MicrosoftARM64TargetInfo::getTargetDefines(const LangOptions &Opts,
 
 TargetInfo::CallingConvKind
 MicrosoftARM64TargetInfo::getCallingConvKind(bool ClangABICompat4) const {
-  return CCK_MicrosoftWin64;
+  // MSVC's rules for passing classes in registers belong to the Microsoft
+  // C++ ABI. Windows Itanium keeps the Itanium C++ ABI's own.
+  if (!getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    return CCK_MicrosoftWin64;
+  return WindowsARM64TargetInfo::getCallingConvKind(ClangABICompat4);
 }
 
 unsigned MicrosoftARM64TargetInfo::getMinGlobalAlign(uint64_t TypeSize,
@@ -1850,6 +1857,12 @@ unsigned MicrosoftARM64TargetInfo::getMinGlobalAlign(uint64_t TypeSize,
       WindowsARM64TargetInfo::getMinGlobalAlign(TypeSize, HasNonWeakDef);
 
   return std::max(Align, Microsoft64BitMinGlobalAlign(TypeSize));
+}
+
+NTPOSIXWindowsARM64TargetInfo::NTPOSIXWindowsARM64TargetInfo(
+    const llvm::Triple &Triple, const TargetOptions &Opts)
+    : WindowsARM64TargetInfo(Triple, Opts) {
+  TheCXXABI.set(TargetCXXABI::GenericAArch64);
 }
 
 MinGWARM64TargetInfo::MinGWARM64TargetInfo(const llvm::Triple &Triple,
