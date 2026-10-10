@@ -96,6 +96,21 @@
 // DWARF: warning: ignoring '-fdwarf-exceptions' option as it is not currently supported for target 'x86_64-unknown-windows-itanium'
 // DWARF: "-exception-model=seh"
 
+// -fstack-protector-strong by default, which -fno-stack-protector and
+// clang-cl's /GS- turn off.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fno-stack-protector 2>&1 \
+// RUN:   | FileCheck --check-prefix=NO-SSP %s
+// RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium /c /GS- \
+// RUN:     -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=NO-SSP %s
+// NO-SSP:     "-cc1"
+// NO-SSP-NOT: "-stack-protector"
+// RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium /c /GS- /GS \
+// RUN:     -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CL-SSP %s
+// CL-SSP: "-stack-protector" "2"
+
 // The resource headers, the wrappers over the Universal CRT and Windows SDK
 // headers, then those headers, found as the MSVC toolchain finds them.
 // RUN: rm -rf %t && split-file %s %t
