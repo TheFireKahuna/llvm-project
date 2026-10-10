@@ -206,6 +206,9 @@ public:
   bool wrapsAdded = false;
   // The wrapped names that nothing referred to when they were to be wrapped.
   std::vector<StringRef> unreferencedWraps;
+  // The wrapped symbols whose __real_ name nothing has referred to yet, by
+  // index into wrapped, with that name.
+  std::vector<std::pair<size_t, StringRef>> unreferencedReals;
 
   // Used for /alternatename.
   std::map<StringRef, StringRef> alternateNames;

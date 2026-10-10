@@ -226,6 +226,22 @@ void lld::coff::addWrappedSymbols(SymbolTable &symtab,
   symtab.wrapsAdded = true;
 }
 
+// Binds __real_X, which something references, to X. As with GNU ld and lld's
+// ELF port, the reference loads X if only an archive or import library offers
+// it, since nothing else might.
+static void addWrappedReal(SymbolTable &symtab, WrappedSymbol &w,
+                           Symbol *real) {
+  w.real = real;
+  real->deferUndefined = true;
+  real->canInline = false;
+  real->isUsedInRegularObj = true;
+  // A weak __real_X loads nothing, as a weak external loads no archive member
+  // elsewhere in a link.
+  auto *u = dyn_cast<Undefined>(real);
+  if (w.sym->isLazy() && !(u && u->weakAlias))
+    symtab.addUndefined(w.sym->getName());
+}
+
 void lld::coff::addWrappedSymbol(SymbolTable &symtab, StringRef name) {
   Symbol *sym = symtab.findUnderscore(name);
   if (!sym || llvm::any_of(symtab.wrapped, [&](const WrappedSymbol &w) {
@@ -236,27 +252,30 @@ void lld::coff::addWrappedSymbol(SymbolTable &symtab, StringRef name) {
   // As with GNU ld, a wrap renames references and nothing else: if neither
   // the symbol, nor its import nor its __real_ name is referenced, the wrapper
   // is not loaded, and none of its imports is added.
+  StringRef realName = mangle("__real_" + name, symtab.machine);
+  Symbol *real = symtab.find(realName);
   auto isUnreferenced = [&](Symbol *s) { return !s || s->isLazy(); };
   if (isUnreferenced(sym) &&
       isUnreferenced(symtab.find(("__imp_" + sym->getName()).str())) &&
-      isUnreferenced(symtab.find(mangle("__real_" + name, symtab.machine)))) {
+      isUnreferenced(real)) {
     symtab.unreferencedWraps.push_back(name);
     return;
   }
 
-  Symbol *real = symtab.addUndefined(mangle("__real_" + name, symtab.machine));
   Symbol *wrap = symtab.addUndefined(mangle("__wrap_" + name, symtab.machine));
-  symtab.wrapped.push_back({sym, real, wrap});
+  symtab.wrapped.push_back({sym, nullptr, wrap});
+  if (real)
+    addWrappedReal(symtab, symtab.wrapped.back(), real);
+  else
+    symtab.unreferencedReals.push_back({symtab.wrapped.size() - 1, realName});
 
   // These symbols may seem undefined initially, but don't bail out
   // at symtab.reportUnresolvable() due to them, but let wrapSymbols
   // below sort things out before checking finally with
   // symtab.resolveRemainingUndefines().
   sym->deferUndefined = true;
-  real->deferUndefined = true;
   // We want to tell LTO not to inline symbols to be overwritten
   // because LTO doesn't know the final symbol contents after renaming.
-  real->canInline = false;
   sym->canInline = false;
 
   // Tell LTO not to eliminate these symbols.
@@ -269,7 +288,16 @@ bool lld::coff::addReferencedWraps(SymbolTable &symtab) {
   size_t numWrapped = symtab.wrapped.size();
   for (StringRef name : std::exchange(symtab.unreferencedWraps, {}))
     addWrappedSymbol(symtab, name);
-  return symtab.wrapped.size() != numWrapped;
+  bool addedReal = false;
+  llvm::erase_if(symtab.unreferencedReals, [&](auto &pending) {
+    Symbol *real = symtab.find(pending.second);
+    if (!real)
+      return false;
+    addWrappedReal(symtab, symtab.wrapped[pending.first], real);
+    addedReal = true;
+    return true;
+  });
+  return addedReal || symtab.wrapped.size() != numWrapped;
 }
 
 // Do renaming for -wrap by updating pointers to symbols.
@@ -281,7 +309,9 @@ void lld::coff::wrapSymbols(SymbolTable &symtab) {
   DenseMap<Symbol *, Symbol *> map;
   for (const WrappedSymbol &w : symtab.wrapped) {
     map[w.sym] = w.wrap;
-    map[w.real] = w.sym;
+    // A weak __real_ reference to a symbol nothing loaded keeps its default.
+    if (w.real && !w.sym->isLazy())
+      map[w.real] = w.sym;
     if (Defined *d = dyn_cast<Defined>(w.wrap)) {
       Symbol *imp = symtab.find(("__imp_" + w.sym->getName()).str());
       // Create a new defined local import for the wrap symbol. If
