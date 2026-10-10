@@ -2913,6 +2913,11 @@ void CodeGenFunction::EmitKCFIOperandBundle(
     for (const CallArg &Arg : CallArgs)
       ArgTypes.push_back(Arg.getType());
     FnType = CGM.ReconstructCallGraphPrototype(FNPT, ArgTypes);
+    // The pointer may hold any function, so the call converts it as a cast
+    // would.
+    if (CodeGenKCFI *KCFI = CGM.getKCFI())
+      KCFI->addConversionType(QualType(FNPT, 0),
+                              getContext().getPointerType(FnType));
   }
 
   Bundles.emplace_back("kcfi", CGM.CreateKCFITypeId(FnType, Salt));

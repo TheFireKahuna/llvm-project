@@ -1780,13 +1780,19 @@ public:
   /// Generate a cross-DSO type identifier for MD.
   llvm::ConstantInt *CreateCrossDsoCfiTypeId(llvm::Metadata *MD);
 
-  /// Generate a KCFI type identifier for T.
+  /// Generate a KCFI type identifier for T, with pointers generalised when the
+  /// icall-generalize-pointers option is on.
   llvm::ConstantInt *CreateKCFITypeId(QualType T, StringRef Salt);
 
   /// The trap kind a failed check of the CFI scheme \p Ordinal takes in
   /// place of its handler's, if the target gives it one.
   std::optional<uint8_t>
   getCFITrapKind(SanitizerKind::SanitizerOrdinal Ordinal) const;
+
+  /// Generate a KCFI type identifier for T with pointers kept or generalised
+  /// as GeneralizePointers asks, whatever the option is.
+  llvm::ConstantInt *CreateKCFITypeId(QualType T, StringRef Salt,
+                                      bool GeneralizePointers);
 
   /// Whether functions carry a KCFI type prefix: when KCFI checks calls, or
   /// when every function carries one with a marker, checked or not.
@@ -1858,6 +1864,9 @@ public:
 
   /// Emit KCFI type identifier constants and remove unused identifiers.
   void finalizeKCFITypes();
+
+  /// Whether Name may be part of the name of a KCFI identifier constant.
+  static bool allowKCFIIdentifier(StringRef Name);
 
   /// Whether this function's return type has no side effects, and thus may
   /// be trivially discarded if it is unused.
