@@ -1528,9 +1528,12 @@ void BitcodeFile::parse() {
 }
 
 void BitcodeFile::parseLazy() {
+  // The names may be in a symbol table that obj built for the file, such as
+  // for bitcode from another producer, which LTO frees with obj, so the symbol
+  // table keeps copies, as BitcodeFile::parse does.
   for (const lto::InputFile::Symbol &sym : obj->symbols())
     if (!sym.isUndefined()) {
-      symtab.addLazyObject(this, sym.getName());
+      symtab.addLazyObject(this, saver().save(sym.getName()));
       if (!lazy)
         return;
     }
