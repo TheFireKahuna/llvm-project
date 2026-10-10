@@ -12,6 +12,7 @@
 
 #include <errno.h>
 #include <limits.h>
+#include <stdint.h>
 #include <stdlib.h>
 
 #define __KMP_IMP
@@ -165,6 +166,9 @@ void *kmp_aligned_malloc(size_t sz, size_t a) {
 #if KMP_OS_WINDOWS
   res = _aligned_malloc(sz, a);
 #else
+  // posix_memalign rejects a power of two below the pointer size.
+  if (a && !(a & (a - 1)) && a < sizeof(void *))
+    a = sizeof(void *);
   int err;
   if ((err = posix_memalign(&res, a, sz))) {
     errno = err; // can be EINVAL or ENOMEM
@@ -400,6 +404,9 @@ void *omp_aligned_alloc(size_t a, size_t size, omp_allocator_handle_t al) {
 #if KMP_OS_WINDOWS
   res = _aligned_malloc(size, a);
 #else
+  // posix_memalign rejects a power of two below the pointer size.
+  if (a && !(a & (a - 1)) && a < sizeof(void *))
+    a = sizeof(void *);
   int err;
   if ((err = posix_memalign(&res, a, size))) {
     errno = err; // can be EINVAL or ENOMEM
@@ -427,12 +434,13 @@ void *omp_aligned_calloc(size_t a, size_t nmemb, size_t size,
 #if KMP_OS_WINDOWS
   res = _aligned_recalloc(NULL, nmemb, size, a);
 #else
-  int err;
-  if ((err = posix_memalign(&res, a, nmemb * size))) {
-    errno = err; // can be EINVAL or ENOMEM
-    res = NULL;
+  if (nmemb && size > SIZE_MAX / nmemb) {
+    errno = ENOMEM;
+    return NULL;
   }
-  memset(res, 0x00, size);
+  res = omp_aligned_alloc(a, nmemb * size, al);
+  if (res)
+    memset(res, 0x00, nmemb * size);
 #endif
   return res;
 }

@@ -44,7 +44,7 @@ public:
     // Windows cannot deallocate any over-aligned memory. Microsoft provides an
     // alternative for std::aligned_alloc named _aligned_malloc, but it must be
     // paired with _aligned_free instead of std::free.
-    void *mem = ::_aligned_malloc(static_cast<size_t>(align), s);
+    void *mem = ::_aligned_malloc(s, static_cast<size_t>(align));
 #else
     void *mem = ::aligned_alloc(static_cast<size_t>(align), s);
 #endif

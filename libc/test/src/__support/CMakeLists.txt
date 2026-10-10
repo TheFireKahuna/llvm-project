@@ -272,6 +272,18 @@ add_libc_test(
 )
 
 add_libc_test(
+  alloc_checker_test
+  SUITE
+    libc-support-tests
+  SRCS
+    alloc_checker_test.cpp
+  DEPENDS
+    libc.src.__support.alloc_checker
+    libc.src.__support.CPP.new
+    libc.src.string.memset
+)
+
+add_libc_test(
   hash_test
   SUITE
     libc-support-tests
