@@ -229,17 +229,119 @@ void ArchiveFile::parse() {
     impMangledDllMain = uniqueSaver().save("__imp_" + mangledDllMain);
   }
 
+  // The symbol table looks the archive's symbols up when it needs them rather
+  // than holding a lazy symbol for each: most symbols of a large import
+  // library are never referenced, and creating their lazy symbols is most of
+  // the cost of reading it. On ARM64EC, where a lazy symbol is checked against
+  // its counterpart in the other symbol table as it is entered, and before the
+  // machine is known, the archive enters them all now.
+  bool indexed =
+      !ctx.symtab.isEC() && ctx.config.machine != IMAGE_FILE_MACHINE_UNKNOWN;
+  if (indexed) {
+    uint32_t n = file->getNumberOfSymbols();
+    nameOffsets.reserve(n);
+    // A load of at most 3/4.
+    buckets.resize(PowerOf2Ceil(uint64_t(n) * 4 / 3 + 1));
+    positionBits = llvm::bit_width(n);
+  }
+
   // Read the symbol table to construct Lazy objects.
+  StringRef prev;
   for (const Archive::Symbol &sym : file->symbols()) {
+    StringRef name = sym.getName();
+    if (indexed) {
+      nameOffsets.push_back(name.data() - file->getSymbolTable().data());
+      sorted = sorted && prev <= name;
+      prev = name;
+    }
     // If an import library provides the DllMain symbol, skip importing it, as
     // we should be using our own DllMain, not another DLL's DllMain.
-    if (!mangledDllMain.empty() && (sym.getName() == mangledDllMain ||
-                                    sym.getName() == impMangledDllMain)) {
+    if (!mangledDllMain.empty() &&
+        (name == mangledDllMain || name == impMangledDllMain)) {
       if (skipDllMain || fixupDllMain(ctx, file.get(), sym, skipDllMain))
         continue;
     }
-    archiveSymtab->addLazyArchive(this, sym);
+    if (indexed)
+      addToIndex(nameOffsets.size() - 1, CachedHashStringRef(name));
+    else
+      archiveSymtab->addLazyArchive(this, sym);
   }
+  if (indexed)
+    symtab.addIndexedArchive(this);
+}
+
+void ArchiveFile::addToIndex(uint32_t i, CachedHashStringRef name) {
+  // The high bits of the hash only tell most other names apart.
+  uint64_t tag = uint64_t(name.hash()) >> positionBits;
+  size_t mask = buckets.size() - 1;
+  for (size_t j = name.hash() & mask;; j = (j + 1) & mask) {
+    uint32_t &b = buckets[j];
+    if (!b) {
+      b = tag << positionBits | (i + 1);
+      ++numIndexed;
+      return;
+    }
+    // The first symbol with a name is the one the archive offers.
+    uint32_t k = (b & maskTrailingOnes<uint32_t>(positionBits)) - 1;
+    if (uint64_t(b) >> positionBits == tag && getSymbolName(k) == name.val())
+      return;
+  }
+}
+
+std::optional<uint32_t>
+ArchiveFile::findSymbol(CachedHashStringRef name) const {
+  if (buckets.empty())
+    return std::nullopt;
+  uint64_t tag = uint64_t(name.hash()) >> positionBits;
+  size_t mask = buckets.size() - 1;
+  for (size_t j = name.hash() & mask;; j = (j + 1) & mask) {
+    uint32_t b = buckets[j];
+    if (!b)
+      return std::nullopt;
+    uint32_t k = (b & maskTrailingOnes<uint32_t>(positionBits)) - 1;
+    if (uint64_t(b) >> positionBits == tag && getSymbolName(k) == name.val())
+      return k;
+  }
+}
+
+Archive::Symbol ArchiveFile::getSymbol(uint32_t i) const {
+  return Archive::Symbol(file.get(), i, nameOffsets[i]);
+}
+
+StringRef ArchiveFile::getSymbolName(uint32_t i) const {
+  return getSymbol(i).getName();
+}
+
+std::vector<uint32_t> ArchiveFile::getIndexedSymbols() const {
+  std::vector<uint32_t> v;
+  v.reserve(numIndexed);
+  for (uint32_t b : buckets)
+    if (b)
+      v.push_back((b & maskTrailingOnes<uint32_t>(positionBits)) - 1);
+  return v;
+}
+
+std::vector<StringRef> ArchiveFile::getSymbolNames(StringRef prefix) const {
+  std::vector<StringRef> v;
+  uint32_t i = 0, e = nameOffsets.size();
+  if (sorted) {
+    uint32_t hi = e;
+    while (i != hi) {
+      uint32_t mid = i + (hi - i) / 2;
+      if (getSymbolName(mid) < prefix)
+        i = mid + 1;
+      else
+        hi = mid;
+    }
+  }
+  for (; i != e; ++i) {
+    StringRef name = getSymbolName(i);
+    if (name.starts_with(prefix))
+      v.push_back(name);
+    else if (sorted)
+      break;
+  }
+  return v;
 }
 
 // Returns a buffer pointing to a member file containing a given symbol.

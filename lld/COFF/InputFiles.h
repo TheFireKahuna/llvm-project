@@ -12,6 +12,7 @@
 #include "Config.h"
 #include "lld/Common/LLVM.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/CachedHashString.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringSet.h"
@@ -128,9 +129,33 @@ public:
   // which ensures that we don't load the same member more than once.
   void addMember(const Archive::Symbol &sym);
 
+  // An archive that the symbol table looks up instead of holding its lazy
+  // symbols is indexed: the first of its symbols with each name is in a hash
+  // table, by its position in the archive's symbol table.
+  std::optional<uint32_t> findSymbol(llvm::CachedHashStringRef name) const;
+  Archive::Symbol getSymbol(uint32_t i) const;
+  StringRef getSymbolName(uint32_t i) const;
+  // The positions of the indexed symbols, in hash table order.
+  std::vector<uint32_t> getIndexedSymbols() const;
+  // The names of the archive's symbols that start with prefix.
+  std::vector<StringRef> getSymbolNames(StringRef prefix) const;
+  size_t getNumIndexed() const { return numIndexed; }
+
 private:
+  void addToIndex(uint32_t i, llvm::CachedHashStringRef name);
+
   std::unique_ptr<Archive> file;
   llvm::DenseSet<uint64_t> seen;
+  // Each symbol's name, as an offset into the archive's symbol table, and the
+  // hash table. An entry is zero, or holds one more than a symbol's position
+  // in its low positionBits bits and the high bits of the name's hash above.
+  std::vector<uint32_t> nameOffsets;
+  std::vector<uint32_t> buckets;
+  unsigned positionBits = 0;
+  size_t numIndexed = 0;
+  // Whether the names are in ascending order, as in a COFF archive, so that
+  // those with a given prefix are adjacent.
+  bool sorted = true;
 };
 
 // .obj or .o file. This may be a member of an archive file.

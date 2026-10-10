@@ -433,8 +433,9 @@ void SymbolTable::reportProblemSymbols(
 
 void SymbolTable::reportUnresolvable() {
   SmallPtrSet<Symbol *, 8> undefs;
-  for (auto &i : symMap) {
-    Symbol *sym = i.second;
+  // A lookup below can enter a lazy symbol, so the loop visits a copy.
+  SmallVector<Symbol *, 0> syms(llvm::make_second_range(symMap));
+  for (Symbol *sym : syms) {
     auto *undef = dyn_cast<Undefined>(sym);
     if (!undef || sym->deferUndefined)
       continue;
@@ -535,8 +536,9 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
   SmallPtrSet<Symbol *, 8> undefs;
   DenseMap<Symbol *, Symbol *> localImports;
 
-  for (auto &i : symMap) {
-    Symbol *sym = i.second;
+  // A lookup below can enter a lazy symbol, so the loop visits a copy.
+  SmallVector<Symbol *, 0> syms(llvm::make_second_range(symMap));
+  for (Symbol *sym : syms) {
     auto *undef = dyn_cast<Undefined>(sym);
     if (!undef)
       continue;
@@ -765,6 +767,8 @@ void SymbolTable::initializeSameAddressThunks() {
 Symbol *SymbolTable::addUndefined(StringRef name, InputFile *f,
                                   bool overrideLazy) {
   auto [s, wasInserted] = insert(name, f);
+  if (wasInserted && addIndexedLazy(s, name))
+    wasInserted = false;
   if (wasInserted || (s->isLazy() && overrideLazy)) {
     replaceSymbol<Undefined>(s, name);
     return s;
@@ -847,6 +851,8 @@ void SymbolTable::addLazyArchive(ArchiveFile *f, const Archive::Symbol &sym) {
   if (isEC() && !checkLazyECPair<LazyArchive>(this, name, f))
     return;
   auto [s, wasInserted] = insert(name);
+  if (wasInserted && addIndexedLazy(s, name))
+    wasInserted = false;
   if (wasInserted) {
     replaceSymbol<LazyArchive>(s, f, sym);
     return;
@@ -863,6 +869,8 @@ void SymbolTable::addLazyObject(InputFile *f, StringRef n) {
   if (isEC() && !checkLazyECPair<LazyObject>(this, n, f))
     return;
   auto [s, wasInserted] = insert(n, f);
+  if (wasInserted && addIndexedLazy(s, n))
+    wasInserted = false;
   if (wasInserted) {
     replaceSymbol<LazyObject>(s, f, n);
     return;
@@ -878,6 +886,8 @@ void SymbolTable::addLazyObject(InputFile *f, StringRef n) {
 void SymbolTable::addLazyDLLSymbol(DLLFile *f, DLLFile::Symbol *sym,
                                    StringRef n) {
   auto [s, wasInserted] = insert(n);
+  if (wasInserted && addIndexedLazy(s, n))
+    wasInserted = false;
   if (wasInserted) {
     replaceSymbol<LazyDLLSymbol>(s, f, sym, n);
     return;
@@ -1066,11 +1076,74 @@ void SymbolTable::addLibcall(StringRef name) {
   }
 }
 
-Symbol *SymbolTable::find(StringRef name) const {
-  return symMap.lookup(CachedHashStringRef(name));
+Symbol *SymbolTable::find(StringRef name) {
+  CachedHashStringRef key(name);
+  if (Symbol *s = symMap.lookup(key))
+    return s;
+  auto [f, i] = findIndexed(key);
+  if (!f)
+    return nullptr;
+  // The table keeps the name, which the archive holds for the link.
+  Symbol *s = insert(f->getSymbolName(i)).first;
+  replaceSymbol<LazyArchive>(s, f, f->getSymbol(i));
+  return s;
 }
 
-Symbol *SymbolTable::findUnderscore(StringRef name) const {
+std::pair<ArchiveFile *, uint32_t>
+SymbolTable::findIndexed(CachedHashStringRef name) {
+  for (ArchiveFile *f : indexedArchives)
+    if (std::optional<uint32_t> i = f->findSymbol(name))
+      return {f, *i};
+  return {nullptr, 0};
+}
+
+bool SymbolTable::addIndexedLazy(Symbol *s, StringRef name) {
+  if (indexedArchives.empty())
+    return false;
+  auto [f, i] = findIndexed(CachedHashStringRef(name));
+  if (!f)
+    return false;
+  replaceSymbol<LazyArchive>(s, f, f->getSymbol(i));
+  return true;
+}
+
+void SymbolTable::addIndexedArchive(ArchiveFile *f) {
+  // An undefined symbol loads the member defining it, as addLazyArchive would
+  // load it, and the members load in the order of the archive's symbols.
+  auto isWaiting = [&](Symbol *s) {
+    auto *u = dyn_cast<Undefined>(s);
+    return u && !(u->weakAlias && !u->isECAlias(machine)) &&
+           !s->pendingArchiveLoad;
+  };
+  SmallVector<std::pair<uint32_t, Symbol *>, 0> loads;
+  // Look the table's symbols up in the archive, or the archive's in the
+  // table, whichever is fewer; a lookup in the table costs more.
+  if (symMap.size() < f->getNumIndexed() * 4) {
+    for (auto &[key, s] : symMap)
+      if (isWaiting(s))
+        if (std::optional<uint32_t> i = f->findSymbol(key))
+          loads.push_back({*i, s});
+  } else {
+    for (uint32_t i : f->getIndexedSymbols())
+      if (Symbol *s = symMap.lookup(CachedHashStringRef(f->getSymbolName(i)));
+          s && isWaiting(s))
+        loads.push_back({i, s});
+  }
+  llvm::sort(loads);
+  for (auto [i, s] : loads) {
+    s->pendingArchiveLoad = true;
+    f->addMember(f->getSymbol(i));
+  }
+  indexedArchives.push_back(f);
+}
+
+void SymbolTable::addIndexedLazies(StringRef prefix) {
+  for (ArchiveFile *f : indexedArchives)
+    for (StringRef name : f->getSymbolNames(prefix))
+      find(name);
+}
+
+Symbol *SymbolTable::findUnderscore(StringRef name) {
   if (machine == I386)
     return find(("_" + name).str());
   return find(name);
@@ -1109,11 +1182,16 @@ Symbol *SymbolTable::findMangle(StringRef name) {
   // vector. Then compare each possibly matching symbol with each possible
   // mangling.
   std::vector<Symbol *> syms = getSymsWithPrefix(name);
-  auto findByPrefix = [&syms](const Twine &t) -> Symbol * {
+  auto findByPrefix = [&](const Twine &t) -> Symbol * {
     std::string prefix = t.str();
     for (auto *s : syms)
       if (s->getName().starts_with(prefix))
         return s;
+    // The table has an indexed archive's symbol once it is looked up.
+    for (ArchiveFile *f : indexedArchives)
+      for (StringRef name : f->getSymbolNames(prefix))
+        if (Symbol *s = find(name))
+          return s;
     return nullptr;
   };
 
@@ -1229,6 +1307,8 @@ void SymbolTable::addUndefinedGlob(StringRef arg) {
     return;
   }
 
+  // The pattern can match the name of any archive's symbol.
+  addIndexedLazies("");
   SmallVector<Symbol *, 0> syms;
   forEachSymbol([&syms, &pat](Symbol *sym) {
     if (pat->match(sym->getName())) {

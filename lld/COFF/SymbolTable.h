@@ -88,8 +88,8 @@ public:
   bool handleMinGWAutomaticImport(Symbol *sym, StringRef name);
 
   // Returns a symbol for a given name. Returns a nullptr if not found.
-  Symbol *find(StringRef name) const;
-  Symbol *findUnderscore(StringRef name) const;
+  Symbol *find(StringRef name);
+  Symbol *findUnderscore(StringRef name);
 
   void addUndefinedGlob(StringRef arg);
 
@@ -131,6 +131,12 @@ public:
 
   Symbol *addUndefined(StringRef name, InputFile *f, bool overrideLazy);
   void addLazyArchive(ArchiveFile *f, const Archive::Symbol &sym);
+  // Adds an archive whose symbols are looked up in its index when needed,
+  // which loads the members that define the symbols waiting for them now.
+  void addIndexedArchive(ArchiveFile *f);
+  // Enters the lazy symbols of indexed archives whose names start with
+  // prefix, so that iterating the table sees them.
+  void addIndexedLazies(StringRef prefix);
   void addLazyObject(InputFile *f, StringRef n);
   void addLazyDLLSymbol(DLLFile *f, DLLFile::Symbol *sym, StringRef n);
   Symbol *addAbsolute(StringRef n, COFFSymbolRef s);
@@ -228,10 +234,12 @@ public:
   void parseAlternateName(StringRef);
   void parseAligncomm(StringRef);
 
-  // Iterates symbols in non-determinstic hash table order.
+  // Iterates symbols in non-determinstic hash table order. The callback may
+  // look up a symbol, which can enter an indexed archive's lazy symbol.
   template <typename T> void forEachSymbol(T callback) {
-    for (auto &pair : symMap)
-      callback(pair.second);
+    SmallVector<Symbol *, 0> syms(llvm::make_second_range(symMap));
+    for (Symbol *sym : syms)
+      callback(sym);
   }
 
   std::vector<BitcodeFile *> bitcodeFileInstances;
@@ -253,8 +261,19 @@ private:
 
   bool findUnderscoreMangle(StringRef sym);
   std::vector<Symbol *> getSymsWithPrefix(StringRef prefix);
+  // The first indexed archive that defines name, with the position of its
+  // symbol, or null.
+  std::pair<ArchiveFile *, uint32_t>
+  findIndexed(llvm::CachedHashStringRef name);
+  // Makes the new symbol s the lazy symbol of the first indexed archive that
+  // defines name, if any. Returns whether it did.
+  bool addIndexedLazy(Symbol *s, StringRef name);
 
   llvm::DenseMap<llvm::CachedHashStringRef, Symbol *> symMap;
+  // The indexed archives, in the order they were read. A name that the table
+  // lacks is that of the lazy symbol of the first of them that defines it, as
+  // if each had entered its lazy symbols when it was read.
+  std::vector<ArchiveFile *> indexedArchives;
   std::unique_ptr<BitcodeCompiler> lto;
   std::vector<std::pair<Symbol *, Symbol *>> entryThunks;
   llvm::DenseMap<Symbol *, Symbol *> exitThunks;
