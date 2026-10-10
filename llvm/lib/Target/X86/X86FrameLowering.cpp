@@ -1542,12 +1542,15 @@ void X86FrameLowering::BuildStackAlignAND(MachineBasicBlock &MBB,
 
 bool X86FrameLowering::has128ByteRedZone(const MachineFunction &MF) const {
   // x86-64 (non Win64) has a 128 byte red zone which is guaranteed not to be
-  // clobbered by any interrupt handler.
+  // clobbered by any interrupt handler. Windows builds the frames of its
+  // exception and APC dispatchers right below the stack pointer of the thread
+  // it interrupts, so there no function has one, whatever its convention.
   assert(&STI == &MF.getSubtarget<X86Subtarget>() &&
          "MF used frame lowering for wrong subtarget");
   const Function &Fn = MF.getFunction();
   const bool IsWin64CC = STI.isCallingConvWin64(Fn.getCallingConv());
-  return Is64Bit && !IsWin64CC && !Fn.hasFnAttribute(Attribute::NoRedZone);
+  return Is64Bit && !IsWin64CC && !STI.isOSWindows() &&
+         !Fn.hasFnAttribute(Attribute::NoRedZone);
 }
 
 /// Return true if we need to use the restricted Windows x64 prologue and
