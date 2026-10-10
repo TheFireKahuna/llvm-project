@@ -32,6 +32,21 @@ LLVM_ABI StringRef stringifyKCFIHashAlgorithm(KCFIHashAlgorithm Algorithm);
 LLVM_ABI uint32_t getKCFITypeID(StringRef MangledTypeName,
                                 KCFIHashAlgorithm Algorithm);
 
+/// Returns the 8 bytes that precede the type ID in a KCFI prefix with a
+/// marker, read as a little-endian integer: 0F 1F 80, the marker, and B8, which
+/// x86 decodes as a nopl whose displacement is the marker and the opcode of a
+/// move of the type ID.
+inline uint64_t getTypePrefixPattern(uint32_t Marker) {
+  return 0xB8000000'00801F0FULL | uint64_t(Marker) << 24;
+}
+
+/// Returns the marker of a KCFI prefix, which tells prefixes whose type IDs
+/// follow one definition from those of any other: whether integer types are
+/// normalized, whether pointer types are generalized, and the hash algorithm.
+LLVM_ABI uint32_t getTypePrefixMarker(bool NormalizeIntegers,
+                                      bool GeneralizePointers,
+                                      KCFIHashAlgorithm Algorithm);
+
 } // end namespace llvm
 
 #endif // LLVM_TRANSFORMS_UTILS_KCFIHASH_H

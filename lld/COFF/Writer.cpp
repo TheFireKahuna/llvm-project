@@ -17,6 +17,7 @@
 #include "PDB.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
+#include "TypePrefix.h"
 #include "lld/Common/ErrorHandler.h"
 #include "lld/Common/Memory.h"
 #include "lld/Common/Timer.h"
@@ -206,7 +207,7 @@ class Writer {
 public:
   Writer(COFFLinkerContext &c)
       : buffer(c.e.outputBuffer), strtab(StringTableBuilder::WinCOFF),
-        delayIdata(c), ctx(c) {}
+        delayIdata(c), prefixes(c), ctx(c) {}
   void run();
 
 private:
@@ -305,6 +306,7 @@ private:
   Chunk *iatStart = nullptr;
   uint64_t iatSize = 0;
   DelayLoadContents delayIdata;
+  TypePrefixContents prefixes;
   bool setNoSEHCharacteristic = false;
   uint32_t tlsAlignment = 0;
 
@@ -315,6 +317,7 @@ private:
 
   // List of Arm64EC export thunks.
   std::vector<std::pair<Chunk *, Defined *>> exportThunks;
+
 
   uint64_t fileSize;
   uint32_t pointerToSymbolTable = 0;
@@ -817,6 +820,7 @@ void Writer::run() {
       writeHeader<pe32_header>();
     }
     writeSections();
+    prefixes.write(buffer->getBufferStart());
     prepareLoadConfig();
     sortExceptionTables();
 
@@ -1314,6 +1318,9 @@ void Writer::createMiscChunks() {
   // Create SEH table. x86-only.
   if (config->safeSEH)
     createSEHTable();
+
+  if (ctx.typePrefixRecords)
+    prefixes.find();
 
   // Create /guard:cf tables if requested.
   createGuardCFTables();
@@ -1860,6 +1867,10 @@ void Writer::assignAddresses() {
       // thunk.
       if (c->getEntryThunk())
         virtualSize += sizeof(uint32_t);
+      // No entry of a function with a KCFI prefix starts in a page's first
+      // bytes.
+      if (ctx.typePrefixRecords)
+        virtualSize = prefixes.place(c, rva, virtualSize);
       virtualSize = alignTo(virtualSize, c->getAlignment());
       c->setRVA(rva + virtualSize);
       virtualSize += c->getSize();
@@ -2487,9 +2498,14 @@ void Writer::createGuardCFTables() {
   SymbolRVASet giatsRVASet;
   std::vector<Symbol *> giatsSymbols;
   SymbolRVASet longJmpTargets;
+  // What foreign objects list is collected apart first, as foreign code can
+  // hand ours any function it lists.
+  SymbolRVASet foreignTakenSyms;
   DenseSet<std::pair<ObjFile *, Symbol *>> guardPointerStubs =
       getGuardPointerStubs();
   for (ObjFile *file : ctx.objFileInstances) {
+    SymbolRVASet &takenSyms =
+        prefixes.isForeign(file) ? foreignTakenSyms : addressTakenSyms;
     // If the object was compiled with /guard:cf, the address taken symbols
     // are in .gfids$y sections, and the longjmp targets are in .gljmp$y
     // sections. If the object was not compiled with /guard:cf, we assume there
@@ -2500,14 +2516,16 @@ void Writer::createGuardCFTables() {
       getSymbolsFromSections(file, file->getGuardFidChunks(), fids);
       for (Symbol *s : fids)
         if (!guardPointerStubs.contains({file, s}))
-          addSymbolToRVASet(addressTakenSyms, cast<Defined>(s));
+          addSymbolToRVASet(takenSyms, cast<Defined>(s));
       markSymbolsForRVATable(file, file->getGuardIATChunks(), giatsRVASet);
       getSymbolsFromSections(file, file->getGuardIATChunks(), giatsSymbols);
       markSymbolsForRVATable(file, file->getGuardLJmpChunks(), longJmpTargets);
     } else {
-      markSymbolsWithRelocations(file, addressTakenSyms, giatsRVASet);
+      markSymbolsWithRelocations(file, takenSyms, giatsRVASet);
     }
   }
+  addressTakenSyms.insert(foreignTakenSyms.begin(), foreignTakenSyms.end());
+
 
   // Mark the image entry as address-taken.
   SymbolRVASet exportedSyms;
@@ -2551,6 +2569,10 @@ void Writer::createGuardCFTables() {
   for (const ChunkAndOffset &c : fidSuppressed)
     if (addressTakenSyms.contains(c))
       entryFlags[c] |= uint8_t(GuardTableEntryFlags::FID_SUPPRESSED);
+
+  // An image whose objects have KCFI prefixes is sealed.
+  if (ctx.typePrefixRecords)
+    prefixes.seal(addressTakenSyms, entryFlags, foreignTakenSyms);
 
   // Ensure sections referenced in the gfid table are 16-byte aligned.
   for (const ChunkAndOffset &c : addressTakenSyms)

@@ -140,3 +140,17 @@ uint32_t llvm::getKCFITypeID(StringRef MangledTypeName,
   }
   llvm_unreachable("Unknown KCFI hash algorithm");
 }
+
+uint32_t llvm::getTypePrefixMarker(bool NormalizeIntegers,
+                                   bool GeneralizePointers,
+                                   KCFIHashAlgorithm Algorithm) {
+  std::string Variant = "kcfi-marker.1";
+  if (NormalizeIntegers)
+    Variant += ".normalized";
+  if (GeneralizePointers)
+    Variant += ".generalized";
+  Variant += ".";
+  Variant += stringifyKCFIHashAlgorithm(Algorithm);
+  return getKCFITypeID(Variant, KCFIHashAlgorithm::xxHash64);
+}
+

@@ -3752,14 +3752,10 @@ void CodeGenModule::createCalleeTypeMetadataForIcall(const QualType &QT,
 uint32_t CodeGenModule::getTypePrefixMarker() const {
   // The marker tells prefixes of this scheme from any other, so it folds in
   // every option that changes the type identifiers.
-  std::string Variant = "kcfi-marker.1";
-  if (CodeGenOpts.SanitizeCfiICallNormalizeIntegers)
-    Variant += ".normalized";
-  if (CodeGenOpts.SanitizeCfiICallGeneralizePointers)
-    Variant += ".generalized";
-  Variant += ".";
-  Variant += llvm::stringifyKCFIHashAlgorithm(CodeGenOpts.SanitizeKcfiHash);
-  return llvm::getKCFITypeID(Variant, llvm::KCFIHashAlgorithm::xxHash64);
+  return llvm::getTypePrefixMarker(
+      CodeGenOpts.SanitizeCfiICallNormalizeIntegers,
+      CodeGenOpts.SanitizeCfiICallGeneralizePointers,
+      CodeGenOpts.SanitizeKcfiHash);
 }
 
 void CodeGenModule::setKCFIType(GlobalDecl GD, llvm::Function *F) {

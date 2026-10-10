@@ -21,6 +21,7 @@
 #include "lld/Common/Timer.h"
 
 namespace lld::coff {
+struct TypePrefixLabels;
 
 class COFFLinkerContext : public CommonLinkerContext {
 public:
@@ -119,6 +120,14 @@ public:
   Configuration config;
 
   DynamicRelocsChunk *dynamicRelocs = nullptr;
+  // Whether an object says that its functions have KCFI prefixes with a
+  // marker, which the writer then finds, seals and places.
+  bool typePrefixRecords = false;
+
+  // The KCFI prefixes with a marker that each object holds, which
+  // TypePrefix.cpp finds the first time it is asked.
+  llvm::DenseMap<ObjFile *, TypePrefixLabels *> typePrefixLabels;
+
   // The functions that /guardsym keeps listed as Control Flow Guard targets
   // but suppressed.
   std::vector<Defined *> guardSuppressed;

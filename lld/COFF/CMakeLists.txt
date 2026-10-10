@@ -20,6 +20,7 @@ add_lld_library(lldCOFF
   PDB.cpp
   SymbolTable.cpp
   Symbols.cpp
+  TypePrefix.cpp
   Writer.cpp
 
   LINK_COMPONENTS
@@ -41,6 +42,7 @@ add_lld_library(lldCOFF
   Passes
   Support
   TargetParser
+  TransformUtils
   WindowsDriver
   WindowsManifest
 
