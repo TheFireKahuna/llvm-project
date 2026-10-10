@@ -2195,6 +2195,12 @@ static void maybeAddAddressTakenFunction(SymbolRVASet &addressTakenSyms,
   }
 }
 
+// The function table names the functions that its unwind data describes, but
+// nothing calls through it, so it takes no function's address.
+static bool isUnwindTable(const SectionChunk *sc) {
+  return sc->getSectionName().split('$').first == ".pdata";
+}
+
 // Visit all relocations from all section contributions of this object file and
 // mark the relocation target as address-taken.
 void Writer::markSymbolsWithRelocations(ObjFile *file,
@@ -2203,7 +2209,7 @@ void Writer::markSymbolsWithRelocations(ObjFile *file,
     // We only care about live section chunks. Common chunks and other chunks
     // don't generally contain relocations.
     SectionChunk *sc = dyn_cast<SectionChunk>(c);
-    if (!sc || !sc->live)
+    if (!sc || !sc->live || isUnwindTable(sc))
       continue;
 
     for (const coff_relocation &reloc : sc->getRelocs()) {
