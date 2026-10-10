@@ -342,7 +342,7 @@ bool SymbolTable::handleMinGWAutomaticImport(Symbol *sym, StringRef name) {
     impSize = sizeof(DefinedRegular);
   } else {
     Warn(ctx) << "unable to automatically import " << name << " from "
-              << imp->getName() << " from " << cast<DefinedRegular>(imp)->file
+              << imp->getName() << " from " << imp->getFile()
               << "; unexpected symbol type";
     return false;
   }
