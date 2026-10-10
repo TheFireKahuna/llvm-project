@@ -595,6 +595,7 @@ void ObjFile::readLinkRecords() {
                     << ": .llvm_link_records is malformed: " << std::move(e);
     return;
   }
+  // ARM64EC gives an import two pointers, which the sites do not describe.
   linkRecords->describesSites = (capabilities & LinkRecordsX86_64Sites) &&
                                 getMachineType() == AMD64 && !symtab.isEC();
   if (!linkRecords->describesSites)
@@ -643,7 +644,7 @@ bool ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
       // A form this linker does not know is still a site that is not a
       // branch, which it leaves as it is.
       unsigned form = site & 7;
-      if (form > LinkSiteJumpOnePrefix)
+      if (form > LinkSiteLoadREX2)
         form = LinkSiteOther;
       if (offset + 4 > size)
         return malformed("site past the end of section " + Twine(section));
@@ -896,6 +897,13 @@ Symbol *ObjFile::createRegular(COFFSymbolRef sym) {
   return nullptr;
 }
 
+// Lists s, an external symbol, for SymbolTable::bindPointerCells if it is
+// named as a .refptr.X pointer is.
+static void listPointerCell(SymbolTable &symtab, Symbol *s) {
+  if (s && s->getName().starts_with(".refptr."))
+    symtab.pointerCells.push_back(s);
+}
+
 void ObjFile::initializeSymbols() {
   uint32_t numSymbols = coffObj->getNumberOfSymbols();
   symbols.resize(numSymbols);
@@ -910,11 +918,20 @@ void ObjFile::initializeSymbols() {
       coffObj->getNumberOfSections() + 1);
   COFFLinkerContext &ctx = symtab.ctx;
 
+  // The .refptr.X pointers that bindPointerCells may bind: any on ARM64, and
+  // on x86-64 those that objects which describe their sites, and so carry
+  // link records, define or refer to, since only their references to one can
+  // be rewritten.
+  bool listCells =
+      getMachineType() == ARM64 || (getMachineType() == AMD64 && linkRecords);
+
   for (uint32_t i = 0; i < numSymbols; ++i) {
     COFFSymbolRef coffSym = check(coffObj->getSymbol(i));
     bool prevailingComdat;
     if (coffSym.isUndefined()) {
       symbols[i] = createUndefined(coffSym, false);
+      if (listCells)
+        listPointerCell(symtab, symbols[i]);
     } else if (coffSym.isWeakExternal()) {
       auto aux = coffSym.getAux<coff_aux_weak_external>();
       bool overrideLazy = true;
@@ -943,11 +960,18 @@ void ObjFile::initializeSymbols() {
       }
       symbols[i] = createUndefined(coffSym, overrideLazy);
       weakAliases.emplace_back(symbols[i], aux);
+      if (ctx.config.importSlots) {
+        COFFSymbolRef def = check(coffObj->getSymbol(aux->TagIndex));
+        if (def.getSectionNumber() == IMAGE_SYM_ABSOLUTE && def.getValue() == 0)
+          symtab.weakRefs.push_back(symbols[i]);
+      }
     } else if (std::optional<Symbol *> optSym =
                    createDefined(coffSym, comdatDefs, prevailingComdat)) {
       symbols[i] = *optSym;
       if (ctx.config.mingw && prevailingComdat)
         recordPrevailingSymbolForMingw(coffSym, prevailingSectionMap);
+      if (listCells && coffSym.isExternal())
+        listPointerCell(symtab, symbols[i]);
     } else {
       // createDefined() returns std::nullopt if a symbol belongs to a section
       // that was pending at the point when the symbol was read. This can happen
@@ -977,6 +1001,8 @@ void ObjFile::initializeSymbols() {
       continue;
     }
     symbols[i] = createRegular(sym);
+    if (listCells && sym.isExternal())
+      listPointerCell(symtab, symbols[i]);
   }
 
   for (auto &kv : weakAliases) {

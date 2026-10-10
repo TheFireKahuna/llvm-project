@@ -1,0 +1,56 @@
+## A described site whose bytes are not those of its form is an error, rather
+## than a rewrite of an instruction the record does not describe: here the
+## record says call [rip+__imp_main], and the instruction is a mov.
+
+# RUN: yaml2obj %s -o %t.obj
+# RUN: not lld-link -entry:main -subsystem:console -out:%t.exe %t.obj 2>&1 \
+# RUN:   | FileCheck %s
+
+# CHECK: error: {{.*}}.obj: the instruction at offset 0x3 in .text is not the one its link-only record describes
+
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_AMD64
+  Characteristics: []
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       16
+    ## mov rax, [rip+__imp_main]; ret
+    SectionData:     488B0500000000C3
+    Relocations:
+      - VirtualAddress:  3
+        SymbolName:      __imp_main
+        Type:            IMAGE_REL_AMD64_REL32
+  - Name:            .llvm_link_records
+    Characteristics: [ IMAGE_SCN_LNK_REMOVE ]
+    Alignment:       1
+    ## "LLRC", version 1, the x86-64 sites capability, and a group of kind 2:
+    ## .text's symbol with one site, a call at offset 3.
+    SectionData:     4C4C524301010203000131
+symbols:
+  - Name:            .text
+    Value:           0
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_STATIC
+    SectionDefinition:
+      Length:          8
+      NumberOfRelocations: 1
+      NumberOfLinenumbers: 0
+      CheckSum:        0
+      Number:          1
+  - Name:            main
+    Value:           0
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            __imp_main
+    Value:           0
+    SectionNumber:   0
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+...

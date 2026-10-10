@@ -39,6 +39,7 @@ static_library("COFF") {
     "ICF.cpp",
     "InputFiles.cpp",
     "LLDMapFile.cpp",
+    "LocalImports.cpp",
     "LTO.cpp",
     "MapFile.cpp",
     "MarkLive.cpp",

@@ -9,6 +9,7 @@
 #include "Chunks.h"
 #include "COFFLinkerContext.h"
 #include "InputFiles.h"
+#include "LocalImports.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
 #include "Writer.h"
@@ -290,6 +291,15 @@ static void applyArm64Ldr(uint8_t *off, uint64_t imm) {
   applyArm64Imm(off, imm >> size, size);
 }
 
+// Replaces the instruction at off with opcode, an add or a 64-bit ldr of an
+// immediate or a movz, all of whose immediates are zero, keeping the
+// registers that the instruction names: its destination, and for an add or a
+// ldr, its base.
+void setArm64Opcode(uint8_t *off, uint32_t opcode) {
+  bool movz = (opcode & 0x1F800000) == 0x12800000;
+  write32le(off, opcode | (read32le(off) & (movz ? 0x1F : 0x3FF)));
+}
+
 static void applySecRelLow12A(const SectionChunk *sec, uint8_t *off,
                               OutputSection *os, uint64_t s) {
   if (checkSecRel(sec, os))
@@ -471,6 +481,14 @@ void SectionChunk::writeTo(uint8_t *buf) const {
 void SectionChunk::applyRelocation(uint8_t *off,
                                    const coff_relocation &rel) const {
   auto *sym = dyn_cast_or_null<Defined>(file->getSymbol(rel.SymbolTableIndex));
+  uint16_t type = rel.Type;
+
+  // A reference through the import pointer of a symbol in the image may reach
+  // the symbol directly instead.
+  std::optional<LinkSiteForm> rewrite;
+  if (auto *li = dyn_cast_or_null<DefinedLocalImport>(sym))
+    if (relaxLocalImport(this, rel, off, li, sym, type, rewrite))
+      return;
 
   // Get the output section of the symbol for this relocation.  The output
   // section is needed to compute SECREL and SECTION relocations used in debug
@@ -493,6 +511,8 @@ void SectionChunk::applyRelocation(uint8_t *off,
 
   // Compute the RVA of the relocation for relative relocations.
   uint64_t p = rva + rel.VirtualAddress;
+  if (rewrite && !rewriteLocalImportSite(off, *rewrite, s, p))
+    return;
   uint64_t imageBase = ctx.config.imageBase;
   switch (getArch()) {
   case Triple::x86_64:
@@ -505,7 +525,7 @@ void SectionChunk::applyRelocation(uint8_t *off,
     applyRelARM(off, rel.Type, os, s, p, imageBase);
     break;
   case Triple::aarch64:
-    applyRelARM64(off, rel.Type, os, s, p, imageBase);
+    applyRelARM64(off, type, os, s, p, imageBase);
     break;
   case Triple::mipsel:
     applyRelMIPS(off, rel.Type, os, s, p, imageBase);
@@ -942,8 +962,10 @@ LocalImportChunk::LocalImportChunk(COFFLinkerContext &c, Defined *s)
   setAlignment(ctx.config.wordsize);
 }
 
+// An absolute address does not move with the image.
 void LocalImportChunk::getBaserels(std::vector<Baserel> *res) {
-  res->emplace_back(getRVA(), ctx.config.machine);
+  if (!isa<DefinedAbsolute>(sym))
+    res->emplace_back(getRVA(), ctx.config.machine);
 }
 
 size_t LocalImportChunk::getSize() const { return ctx.config.wordsize; }
