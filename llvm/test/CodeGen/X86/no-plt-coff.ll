@@ -1,32 +1,37 @@
-; RUN: llc < %s -mtriple=aarch64-pc-windows-msvc | \
+; RUN: llc < %s -mtriple=x86_64-pc-windows-msvc | \
 ; RUN:   FileCheck %s --check-prefixes=CHECK,MSVC
-; RUN: llc < %s -mtriple=aarch64-unknown-windows-itanium | \
+; RUN: llc < %s -mtriple=x86_64-unknown-windows-itanium | \
 ; RUN:   FileCheck %s --check-prefixes=CHECK,ITANIUM
-; RUN: llc < %s -mtriple=aarch64-pc-windows-msvc -global-isel \
-; RUN:   -global-isel-abort=2 2>/dev/null | \
+; RUN: llc < %s -mtriple=x86_64-pc-windows-msvc -O0 | \
 ; RUN:   FileCheck %s --check-prefixes=CHECK,MSVC
-; RUN: llc < %s -mtriple=aarch64-pc-windows-msvc -O0 | \
+; RUN: llc < %s -mtriple=x86_64-w64-windows-gnu | \
 ; RUN:   FileCheck %s --check-prefixes=CHECK,MSVC
 
-; With RtLibUseGOT (-fno-plt) a runtime library call on COFF, which has no
-; GOT, goes through the import table, as it goes through the GOT on ELF. Calls
-; to functions the IR declares follow their storage class as before.
+; With RtLibUseGOT (-fno-plt) a runtime library call on Windows Itanium goes
+; through the import table, as it goes through the GOT on ELF; MSVC calls it
+; directly as before. Calls to functions the IR declares follow their storage
+; class.
 
 define void @copy(ptr %d, ptr %s, i64 %n) {
 ; CHECK-LABEL: copy:
-; CHECK:       adrp [[REG:x[0-9]+]], __imp_memcpy
-; CHECK-NEXT:  ldr [[REG]], [[[REG]], :lo12:__imp_memcpy]
-; CHECK:       {{blr|br}} [[REG]]
+; ITANIUM: {{callq|jmpq}} *__imp_memcpy(%rip)
+; MSVC: {{callq|jmp}} memcpy
   call void @llvm.memcpy.p0.p0.i64(ptr %d, ptr %s, i64 %n, i1 false)
   ret void
 }
 
+define i128 @div(i128 %a, i128 %b) {
+; CHECK-LABEL: div:
+; ITANIUM: {{callq \*|movq }}__imp___udivti3(%rip)
+; MSVC: callq __udivti3
+  %r = udiv i128 %a, %b
+  ret i128 %r
+}
+
 define void @calls() {
 ; CHECK-LABEL: calls:
-; CHECK:       bl local
-; CHECK:       adrp [[REG:x[0-9]+]], __imp_imported
-; CHECK-NEXT:  ldr [[REG]], [[[REG]], :lo12:__imp_imported]
-; CHECK-NEXT:  blr [[REG]]
+; CHECK: callq local
+; CHECK: callq *__imp_imported(%rip)
   call void @local()
   call void @imported()
   ret void
@@ -40,14 +45,10 @@ define void @calls() {
 
 define void @unmarked_calls() {
 ; CHECK-LABEL: unmarked_calls:
-; ITANIUM:      adrp [[REG:x[0-9]+]], __imp_unmarked
-; ITANIUM-NEXT: ldr [[REG]], [[[REG]], :lo12:__imp_unmarked]
-; ITANIUM-NEXT: blr [[REG]]
-; MSVC:        bl unmarked
-; MSVC:        .refptr.weakly
-; ITANIUM:     adrp [[REG:x[0-9]+]], __imp_weakly
-; ITANIUM-NEXT: ldr [[REG]], [[[REG]], :lo12:__imp_weakly]
-; ITANIUM-NEXT: blr [[REG]]
+; ITANIUM: callq *__imp_unmarked(%rip)
+; MSVC: callq unmarked
+; MSVC: .refptr.weakly(%rip)
+; ITANIUM: callq *__imp_weakly(%rip)
   call void @unmarked()
   call void @weakly()
   ret void
@@ -58,8 +59,7 @@ define void @unmarked_calls() {
 
 define void @hidden_weak_call() {
 ; CHECK-LABEL: hidden_weak_call:
-; CHECK:       adrp [[REG:x[0-9]+]], .refptr.hidden_weakly
-; CHECK-NEXT:  ldr [[REG]], [[[REG]], :lo12:.refptr.hidden_weakly]
+; CHECK:       .refptr.hidden_weakly(%rip)
 ; CHECK-NOT:   __imp_hidden_weakly
   call void @hidden_weakly()
   ret void

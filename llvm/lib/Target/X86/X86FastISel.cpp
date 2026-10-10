@@ -3559,6 +3559,13 @@ bool X86FastISel::fastLowerCall(CallLoweringInfo &CLI) {
                            ? (Is64Bit ? X86::CALL64m : X86::CALL32m)
                            : (Is64Bit ? X86::CALL64pcrel32 : X86::CALLpcrel32);
 
+    // The import table entry of a library call is a symbol of its own.
+    if (Symbol && OpFlags == X86II::MO_DLLIMPORT) {
+      Symbol = FuncInfo.MF->getContext().getOrCreateSymbol(Twine("__imp_") +
+                                                           Symbol->getName());
+      OpFlags = X86II::MO_NO_FLAG;
+    }
+
     MIB = BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(CallOpc));
     if (NeedLoad)
       MIB.addReg(Is64Bit ? X86::RIP : X86::NoRegister).addImm(1).addReg(0);

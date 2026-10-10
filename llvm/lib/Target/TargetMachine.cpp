@@ -231,6 +231,19 @@ bool TargetMachine::shouldAssumeDSOLocal(const GlobalValue *GV) const {
         isa<GlobalVariable>(GV))
       return false;
 
+    // On Windows Itanium and NT-POSIX, as on ELF, a variable the producer did
+    // not mark DSO local may be provided by another image: a declaration, or a
+    // definition that another image's copy may stand in for. It is reached
+    // through its import pointer, which the linker replaces with the direct
+    // address when the variable is in the image. A native thread-local
+    // variable cannot be imported.
+    if (TT.isWindowsItaniumOrNTPOSIXEnvironment()) {
+      const auto *Var = dyn_cast<GlobalVariable>(GV);
+      if (Var && !Var->isThreadLocal() &&
+          (Var->isDeclarationForLinker() || Var->isWeakForLinker()))
+        return false;
+    }
+
     // Don't mark 'extern_weak' symbols as DSO local. If these symbols remain
     // unresolved in the link, they can be resolved to zero, which is outside
     // the current DSO.

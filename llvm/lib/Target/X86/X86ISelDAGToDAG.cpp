@@ -703,6 +703,23 @@ X86DAGToDAGISel::IsProfitableToFold(SDValue N, SDNode *U, SDNode *Root) const {
   if (useNonTemporalLoad(cast<LoadSDNode>(N)))
     return false;
 
+  // On Windows Itanium and NT-POSIX the linker replaces a load of the import
+  // pointer of a symbol not known to be imported with the symbol's address, or
+  // with zero for an absent extern_weak symbol, when it resolves in the image,
+  // but only a load into a register or a call or jump through it. Folded into
+  // another instruction, such as a compare, the load would keep the pointer
+  // and its read.
+  if (Subtarget->getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      U->getOpcode() != X86ISD::CALL && U->getOpcode() != X86ISD::NT_CALL &&
+      U->getOpcode() != X86ISD::TC_RETURN) {
+    SDValue Ptr = cast<LoadSDNode>(N)->getBasePtr();
+    if (Ptr.getOpcode() == X86ISD::WrapperRIP)
+      if (auto *GA = dyn_cast<GlobalAddressSDNode>(Ptr.getOperand(0)))
+        if (GA->getTargetFlags() == X86II::MO_DLLIMPORT &&
+            !GA->getGlobal()->hasDLLImportStorageClass())
+          return false;
+  }
+
   // If N is a load, do additional profitability checks.
   if (U == Root) {
     switch (U->getOpcode()) {

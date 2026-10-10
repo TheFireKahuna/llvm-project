@@ -93,6 +93,10 @@ MCSymbol *WinCFGuard::lookupImpSymbol(const MCSymbol *Sym) {
 
 void WinCFGuard::endModule() {
   const Module *M = Asm->MMI->getModule();
+  // On Windows Itanium and NT-POSIX a target may load the address of a
+  // function that is not dllimport from its import pointer too.
+  bool ImportsUndeclared =
+      M->getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment();
   std::vector<const MCSymbol *> GFIDsEntries;
   std::vector<const MCSymbol *> GIATsEntries;
   std::vector<const MCSymbol *> SuppressedTargets;
@@ -102,7 +106,8 @@ void WinCFGuard::endModule() {
     if (isPossibleIndirectCallTarget(&F)) {
       // If F is a dllimport and has an "__imp_" symbol already defined, add the
       // "__imp_" symbol to the .giats section.
-      if (F.hasDLLImportStorageClass()) {
+      if (F.hasDLLImportStorageClass() ||
+          (ImportsUndeclared && F.isDeclarationForLinker())) {
         if (MCSymbol *impSym = lookupImpSymbol(Asm->getSymbol(&F))) {
           GIATsEntries.push_back(impSym);
         }

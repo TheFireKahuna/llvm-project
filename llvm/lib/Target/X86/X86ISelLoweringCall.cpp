@@ -619,6 +619,13 @@ void X86TargetLowering::insertSSPDeclarations(
     // MSVC CRT has a global variable holding security cookie.
     M.getOrInsertGlobal(getLibcallImplName(SecurityCookieVar),
                         PointerType::getUnqual(M.getContext()));
+    // Every Windows Itanium and NT-POSIX image defines its own cookie, which
+    // a module that declares it reads directly too.
+    if (Subtarget.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+      if (GlobalVariable *GV =
+              M.getNamedGlobal(getLibcallImplName(SecurityCookieVar)))
+        if (!GV->hasDLLImportStorageClass())
+          GV->setDSOLocal(true);
 
     // MSVC CRT has a function to validate security cookie.
     FunctionCallee SecurityCheckCookie =

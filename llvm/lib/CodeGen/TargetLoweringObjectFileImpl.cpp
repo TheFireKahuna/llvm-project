@@ -1951,6 +1951,42 @@ bool TargetLoweringObjectFileCOFF::shouldPutJumpTableInFunctionSection(
     UsesLabelDifference, F);
 }
 
+const MCExpr *TargetLoweringObjectFileCOFF::getTTypeGlobalReference(
+    const GlobalValue *GV, unsigned Encoding, const TargetMachine &TM,
+    MachineModuleInfo *MMI, MCStreamer &Streamer) const {
+  if (!(Encoding & DW_EH_PE_indirect))
+    return TargetLoweringObjectFile::getTTypeGlobalReference(GV, Encoding, TM,
+                                                             MMI, Streamer);
+
+  // The linker provides the import pointer of a symbol it can see, whether
+  // the symbol is imported or defined in the image, or holds zero for an
+  // extern_weak symbol that is absent. A local symbol is reached through a
+  // pointer private to this object, which keeps a symbol of its own under
+  // -fdata-sections so that its section is discarded with its last user.
+  bool Private = GV->hasLocalLinkage();
+  SmallString<128> Name;
+  if (!Private)
+    Name = "__imp_";
+  else if (!TM.getDataSections())
+    Name = GV->getDataLayout().getInternalSymbolPrefix();
+  TM.getNameWithPrefix(Name, GV, getMangler());
+  if (Private)
+    Name += ".DW.stub";
+  MCSymbol *SSym = getContext().getOrCreateSymbol(Name);
+
+  if (Private) {
+    MachineModuleInfoCOFF &COFFMMI =
+        MMI->getObjFileInfo<MachineModuleInfoCOFF>();
+    MachineModuleInfoImpl::StubValueTy &StubSym = COFFMMI.getGVStubEntry(SSym);
+    if (!StubSym.getPointer())
+      StubSym = MachineModuleInfoImpl::StubValueTy(TM.getSymbol(GV), false);
+  }
+
+  return TargetLoweringObjectFile::getTTypeReference(
+      MCSymbolRefExpr::create(SSym, getContext()),
+      Encoding & ~DW_EH_PE_indirect, Streamer);
+}
+
 // On Windows Itanium and NT-POSIX a global in llvm.used is kept through the
 // link, as ELF's SHF_GNU_RETAIN keeps it; llvm.compiler.used keeps it from
 // the compiler only.
@@ -2078,6 +2114,13 @@ void TargetLoweringObjectFileCOFF::Initialize(MCContext &Ctx,
         ".dtors", COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
                       COFF::IMAGE_SCN_MEM_READ | COFF::IMAGE_SCN_MEM_WRITE);
   }
+
+  // A catch-type entry reaches its descriptor through a pointer, so that the
+  // exception table holds no absolute address and a descriptor in another
+  // image is read through its import address table entry.
+  if (T.isWindowsItaniumOrNTPOSIXEnvironment())
+    TTypeEncoding = dwarf::DW_EH_PE_indirect | dwarf::DW_EH_PE_pcrel |
+                    dwarf::DW_EH_PE_sdata4;
 }
 
 static MCSectionCOFF *getCOFFStaticStructorSection(MCContext &Ctx,
