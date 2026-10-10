@@ -106,6 +106,10 @@ public:
   virtual void addNoDefaultLibArgs(const llvm::opt::ArgList &Args,
                                    llvm::opt::ArgStringList &CmdArgs) const;
 
+  /// Returns the Control Flow Guard mode: "cf" unless -mguard= selects
+  /// "cf-nochecks" or "none".
+  StringRef getGuardMode(const llvm::opt::ArgList &Args) const;
+
 protected:
   Tool *buildLinker() const override;
 
