@@ -54,7 +54,10 @@ config.test_source_root = os.path.dirname(__file__)
 
 # Path to the static library
 is_msvc = get_required_attr(config, "is_msvc")
-if is_msvc:
+# Windows Itanium uses the MSVC library names, and its programs take their
+# start-up code and C library from the driver's default libraries.
+is_windows_itanium = config.target_triple.endswith("-windows-itanium")
+if is_msvc or is_windows_itanium:
     base_lib = os.path.join(
         config.compiler_rt_libdir, "clang_rt.builtins%s.lib " % config.target_suffix
     )
@@ -144,7 +147,11 @@ builtins_source_dir = os.path.join(
 )
 builtins_lit_source_dir = get_required_attr(config, "builtins_lit_source_dir")
 
-extra_link_flags = ["-nodefaultlibs"]
+if is_windows_itanium:
+    # The tests are C programs, and libunwind is not built with the builtins.
+    extra_link_flags = ["--unwindlib=none"]
+else:
+    extra_link_flags = ["-nodefaultlibs"]
 
 target_cflags = [get_required_attr(config, "target_cflags")]
 target_cflags += ["-fno-builtin", "-I", builtins_source_dir]

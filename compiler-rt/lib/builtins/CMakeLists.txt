@@ -74,6 +74,7 @@ include(builtin-config-ix)
 include(CMakeDependentOption)
 include(CMakePushCheckState)
 include(CheckAssemblerFlag)
+include(DetectWindowsItanium)
 
 option(COMPILER_RT_BUILTINS_HIDE_SYMBOLS
   "Do not export any symbols from the static library." ON)
@@ -349,6 +350,16 @@ if(NOT FUCHSIA AND NOT COMPILER_RT_BAREMETAL_BUILD AND NOT COMPILER_RT_GPU_BUILD
   )
 endif()
 
+# Windows Itanium and NT-POSIX leave out:
+# - emutls.c: their thread-local variables are native, so nothing calls
+#   __emutls_get_address.
+# - enable_execute_stack.c: their images never make stack memory executable.
+# - eprintf.c: only the assert.h of GCC before 4.0 calls __eprintf, and it
+#   would tie the builtins to stdio.
+if(WIN32_ITANIUM)
+  list(REMOVE_ITEM GENERIC_SOURCES emutls.c enable_execute_stack.c eprintf.c)
+endif()
+
 option(COMPILER_RT_LIBATOMIC_USE_PTHREAD
   "Whether libatomic should use pthreads if available."
   Off)
@@ -387,6 +398,15 @@ if (NOT FUCHSIA)
   set(GENERIC_SOURCES
     ${GENERIC_SOURCES}
     clear_cache.c
+  )
+endif()
+
+# These targets link no MSVC startup objects, which would otherwise define the
+# CRT table bounds, __dso_handle and _fltused.
+if(WIN32_ITANIUM)
+  set(GENERIC_SOURCES
+    ${GENERIC_SOURCES}
+    crt_windows.c
   )
 endif()
 
@@ -864,7 +884,7 @@ foreach(pat cas swp ldadd ldclr ldeor ldset)
   endforeach(size)
 endforeach(pat)
 
-if (MINGW)
+if (MINGW OR WIN32_ITANIUM)
   set(aarch64_SOURCES
     ${aarch64_SOURCES}
     aarch64/chkstk.S
