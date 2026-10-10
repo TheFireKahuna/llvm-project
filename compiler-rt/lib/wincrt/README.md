@@ -121,8 +121,8 @@ executable's activation context.
 The executable's start-up installs the filter ntdll runs for an exception that
 no frame of its thread handled. An Itanium exception that reaches it is
 resumed, so that `__cxa_throw` calls `std::terminate` with nothing unwound.
-The filter finds the unwinder through its exports, so it recognizes only a
-libunwind DLL, not one linked statically.
+The filter finds the unwinder through its exports, or, for a libunwind linked
+into the executable, through the hidden table of its raise functions.
 
 ## Tests
 

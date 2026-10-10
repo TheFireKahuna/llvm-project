@@ -30,6 +30,11 @@ if (LIBCXXABI_ENABLE_EXCEPTIONS)
     cxa_exception.cpp
     cxa_personality.cpp
   )
+  if (WIN32_ITANIUM)
+    list(APPEND LIBCXXABI_SOURCES
+      cxa_seh_translator.cpp
+    )
+  endif()
 else()
   list(APPEND LIBCXXABI_SOURCES
     cxa_noexception.cpp
