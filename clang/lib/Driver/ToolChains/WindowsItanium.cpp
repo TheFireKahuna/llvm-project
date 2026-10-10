@@ -129,9 +129,9 @@ void WindowsItaniumToolChain::addSystemLibArgs(const ArgList &Args,
   // beside wincrt, provides aligned_alloc and posix_memalign, which the
   // Universal CRT lacks. oldnames.lib maps the POSIX names to the Universal
   // CRT's underscored ones, as it does for MSVC. Every image registers its
-  // termination functions with the process's registries, and ends the process
-  // through exit, which clang_rt.wincrt_dynamic.dll holds; with -static they
-  // are in the image.
+  // termination functions with the process's registries, ends the process
+  // through exit and calls the Universal CRT's formatted I/O, all of which
+  // clang_rt.wincrt_dynamic.dll holds; with -static they are in the image.
   CmdArgs.push_back(Args.MakeArgString("-defaultlib:" +
                                        getCompilerRTBasename(Args, "wincrt")));
   CmdArgs.push_back(Args.MakeArgString(

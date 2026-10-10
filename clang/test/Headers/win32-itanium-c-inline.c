@@ -42,7 +42,6 @@
 #include <tchar.h>
 
 // CHECK-DAG: @__local_stdio_printf_options._OptionsStorage = internal global i64 0
-// CHECK-DAG: define linkonce_odr {{.*}}i32 @sprintf(
 // CHECK-DAG: define linkonce_odr {{.*}}float @__ucrt_mathf(
 // CHECK-DAG: define linkonce_odr {{.*}}void @_freea(
 // CHECK-DAG: define linkonce_odr {{.*}}ptr @wmemset(
@@ -59,7 +58,6 @@ int use(char *buffer, void *memory, wchar_t *wide) {
   (void)_tclen(buffer);
 #endif
   (void)__local_stdio_printf_options();
-  return sprintf(buffer, "%d", 1) + (int)__ucrt_mathf(1.0f) +
-         _chvalidchk_l('a', 1) + feraiseexcept(0) + __ascii_tolower('A') +
-         (int)PtrToUlong(buffer);
+  return (int)__ucrt_mathf(1.0f) + _chvalidchk_l('a', 1) + feraiseexcept(0) +
+         __ascii_tolower('A') + (int)PtrToUlong(buffer);
 }

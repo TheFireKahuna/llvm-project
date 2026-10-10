@@ -24,6 +24,7 @@ The builtins define the bounds of the `.CRT$X??` tables, `__dso_handle` and
 | Signals | `__wrap_raise` and `__wrap_abort`, wrapping the Universal CRT's | `signal.cpp` |
 | Threads | `__wrap__beginthread`, `__wrap__beginthreadex`, `__wrap__endthread`, `__wrap__endthreadex`, wrapping the Universal CRT's | `thread.cpp` |
 | Random numbers | `__wrap_rand_s`, wrapping the Universal CRT's | `rand_s.cpp` |
+| Formatted I/O | `printf`, `scanf` and the rest of the Universal CRT's formatted I/O, which its headers define inline | `formatted_io.c` |
 | Pure virtual calls | `_purecall`, over the Universal CRT's handler | `purecall.cpp` |
 | Stack protector | `__security_cookie`, `__security_init_cookie`, `__security_check_cookie`, `__report_gsfailure` | `security.cpp` |
 | MSVC `/GS` objects | `__GSHandlerCheck`, `__GSHandlerCheck_SEH`, `__report_rangecheckfailure`, and on AArch64 `__security_push_cookie`, `__security_pop_cookie` | `gshandler.cpp`, `gs_cookie.S` |
@@ -46,6 +47,19 @@ than `WinMain` gets wincrt's `WinMain` (`winmain_main.cpp`), which calls its
 `memcpy` and the other memory and string functions the compiler calls,
 `setjmp` and `longjmp`, `__C_specific_handler`, and the pure virtual call
 handler accessors. The driver links it with wincrt.
+
+A program can name another import library that offers some of the Universal
+CRT's functions under the same names: the SDK's private `ntdllp.lib` imports
+`memset`, `strlen`, `__C_specific_handler` and about 150 others from
+`ntdll.dll`, and `vcruntime.lib` imports the memory functions and
+`__C_specific_handler` from `vcruntime140.dll`. Their forms differ; ntdll's
+`__C_specific_handler`, for one, never destroys a Visual C++ exception that an
+`__except` accepts. Every entry object wraps each such function
+(`shared_imports.h`), and `clang_rt.ucrt_memory.lib` also holds an import of
+each `__wrap_` name as the function itself, from the DLL that `ucrt.lib` or
+`ucrt_memory.def` names for it, generated from that list. The image binds the
+Universal CRT's function whichever libraries it names, and imports it under
+its own name, in a `-static` link too, since the Universal CRT is always a DLL.
 
 `oldnames.lib`, generated from `oldnames.def`, maps the POSIX and other
 traditional names of Universal CRT functions (`open`, `strdup` and so on) to
@@ -101,6 +115,25 @@ reads the policy from `kernelbase.dll` and loads `combase.dll` for the Windows
 Runtime only where the policy asks for it; a TLS slot holds what the start did
 for the end to undo. `rand_s` draws from `ProcessPrng` in
 `bcryptprimitives.dll`.
+
+The Universal CRT defines `printf`, `scanf` and the rest of its formatted
+I/O, the narrow, wide and console forms with their `v`, `_s`, `_l` and `_p`
+variants, inline in its headers, over the `__stdio_common_*` and
+`__conio_common_*` functions `ucrtbase.dll` exports, and no DLL exports them.
+The same DLL defines and exports them, compiled from those headers, and the
+headers declare them imported from it, so that a program has one definition
+of each, as with a C library on other targets: a C unit that declares them
+itself links, `GetProcAddress` and a JIT find them, and `&printf` is the same
+in every image. A translation unit that defines `_CRT_STDIO_INLINE` itself
+keeps the inline definitions.
+
+`ntdll.dll` exports reduced forms of some of these functions, such as
+`sprintf`, `sscanf` and `_vsnprintf`, which the SDK's private `ntdllp.lib`
+imports. Every entry object wraps those names (`formatted_io.h`), as it wraps
+`exit`, so that a program that links `ntdllp.lib` still calls the DLL's
+definitions. The import library offers each `__wrap_` name as an import of the
+function's own name, which stays the DLL's one export of it, and
+`clang_rt.wincrt_static.lib` defines it beside the function.
 
 Under kcfi, clang's destructors carry the type `void(void *)` salted
 `"__cxa_dtor"`, while a function that any other caller passes to

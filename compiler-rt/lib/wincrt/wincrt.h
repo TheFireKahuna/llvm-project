@@ -19,11 +19,15 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <appmodel.h>
 #include <corecrt_startup.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <winternl.h>
+
+#include "formatted_io.h"
+#include "shared_imports.h"
 
 #if !defined(__x86_64__) && !defined(__aarch64__)
 #error "wincrt supports x86-64 and AArch64 only"
@@ -38,13 +42,21 @@
 
 // Every entry object wraps the Universal CRT functions that wincrt defines
 // again, so that each reference to them in the image, the Universal CRT's
-// import included, reaches wincrt's definitions.
+// import included, reaches wincrt's definitions. It wraps the formatted I/O
+// that ntdll.dll also exports in the same way, so that an import of it from
+// ntdll.dll, which the SDK's ntdllp.lib offers, reaches the runtime's. The
+// Universal CRT functions that ntdllp.lib or vcruntime.lib offers too are
+// wrapped so that the image calls the Universal CRT's whichever it links.
+#define WINCRT_WRAP_NAME(Name, ...) " /wrap:" #Name
 #define WINCRT_WRAP_UCRT                                                       \
   __pragma(comment(linker,                                                     \
                    "/wrap:exit /wrap:_exit /wrap:_Exit "                       \
                    "/wrap:_beginthread /wrap:_beginthreadex "                  \
                    "/wrap:_endthread /wrap:_endthreadex /wrap:rand_s "         \
-                   "/wrap:raise /wrap:abort"))
+                   "/wrap:raise /wrap:abort"                                   \
+                   WINCRT_NTDLL_FORMATTED_IO(WINCRT_WRAP_NAME)                 \
+                   WINCRT_SHARED_IMPORTS(WINCRT_WRAP_NAME)                     \
+                   WINCRT_SHARED_IMPORTS_RENAMED(WINCRT_WRAP_NAME)))
 
 // The parts of wincrt that serve the whole process: the termination
 // registries, exit, raise, abort, the thread start and rand_s. Every image
@@ -58,6 +70,18 @@
 #endif
 
 extern "C" {
+// The app model's policy queries, which kernel32.dll forwards to
+// kernelbase.dll, already loaded in every Win32 process. wincrt imports them
+// under these names, which clang_rt.ucrt_memory.lib alone offers, each as an
+// import of the function from kernel32.dll, so that no library on the link
+// line can bind them elsewhere. An umbrella library such as
+// onecoreuap_apiset.lib offers the functions' own names from an API set that
+// kernel.appcore.dll hosts, which loads msvcrt.dll with it.
+__declspec(dllimport) LONG WINAPI __wincrt_AppPolicyGetProcessTerminationMethod(
+    HANDLE, AppPolicyProcessTerminationMethod *);
+__declspec(dllimport) LONG WINAPI __wincrt_AppPolicyGetThreadInitializationType(
+    HANDLE, AppPolicyThreadInitializationType *);
+
 // Defined by the builtins: the table bounds and the image's DSO handle.
 extern const _PIFV __xi_a[], __xi_z[];
 extern const _PVFV __xc_a[], __xc_z[];

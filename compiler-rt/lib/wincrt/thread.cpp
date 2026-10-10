@@ -25,7 +25,6 @@
 
 #include "wincrt.h"
 
-#include <appmodel.h>
 #include <errno.h>
 #include <process.h>
 #include <roapi.h>
@@ -118,8 +117,8 @@ __attribute__((no_sanitize("kcfi"))) bool roInitialize() {
     AppPolicyThreadInitializationType Type =
         AppPolicyThreadInitializationType_None;
     if (!wincrt::isSecureProcess())
-      AppPolicyGetThreadInitializationType(GetCurrentThreadEffectiveToken(),
-                                           &Type);
+      __wincrt_AppPolicyGetThreadInitializationType(
+          GetCurrentThreadEffectiveToken(), &Type);
     Current = Type == AppPolicyThreadInitializationType_InitializeWinRT
                   ? Runtime
                   : NoRuntime;
