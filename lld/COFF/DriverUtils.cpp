@@ -902,8 +902,9 @@ ParsedDirectives ArgParser::parseDirectives(StringRef s) {
   ParsedDirectives result;
   SmallVector<const char *, 16> rest;
 
-  // Handle /EXPORT and /INCLUDE in a fast path. These directives can appear for
-  // potentially every symbol in the object, so they must be handled quickly.
+  // Handle /EXPORT, /INCLUDE and /WRAP in a fast path. These directives can
+  // appear for potentially every symbol in the object, so they must be handled
+  // quickly.
   SmallVector<StringRef, 16> tokens;
   cl::TokenizeWindowsCommandLineNoCopy(s, saver(), tokens);
   for (StringRef tok : tokens) {
@@ -916,6 +917,9 @@ ParsedDirectives ArgParser::parseDirectives(StringRef s) {
     else if (tok.starts_with_insensitive("/exclude-symbols:") ||
              tok.starts_with_insensitive("-exclude-symbols:"))
       result.excludes.push_back(tok.substr(strlen("/exclude-symbols:")));
+    else if (tok.starts_with_insensitive("/wrap:") ||
+             tok.starts_with_insensitive("-wrap:"))
+      result.wraps.push_back(tok.substr(strlen("/wrap:")));
     else {
       // Copy substrings that are not valid C strings. The tokenizer may have
       // already copied quoted arguments for us, so those do not need to be

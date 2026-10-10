@@ -216,41 +216,42 @@ static StringRef mangle(Twine sym, MachineTypes machine) {
 // that LTO won't eliminate them.
 void lld::coff::addWrappedSymbols(SymbolTable &symtab,
                                   opt::InputArgList &args) {
-  std::vector<WrappedSymbol> v;
   DenseSet<StringRef> seen;
+  for (auto *arg : args.filtered(OPT_wrap))
+    if (seen.insert(arg->getValue()).second)
+      addWrappedSymbol(symtab, arg->getValue());
+  for (StringRef name : symtab.directiveWraps)
+    if (seen.insert(name).second)
+      addWrappedSymbol(symtab, name);
+  symtab.wrapsAdded = true;
+}
 
-  for (auto *arg : args.filtered(OPT_wrap)) {
-    StringRef name = arg->getValue();
-    if (!seen.insert(name).second)
-      continue;
+void lld::coff::addWrappedSymbol(SymbolTable &symtab, StringRef name) {
+  Symbol *sym = symtab.findUnderscore(name);
+  if (!sym || llvm::any_of(symtab.wrapped, [&](const WrappedSymbol &w) {
+        return w.sym == sym;
+      }))
+    return;
 
-    Symbol *sym = symtab.findUnderscore(name);
-    if (!sym)
-      continue;
+  Symbol *real = symtab.addUndefined(mangle("__real_" + name, symtab.machine));
+  Symbol *wrap = symtab.addUndefined(mangle("__wrap_" + name, symtab.machine));
+  symtab.wrapped.push_back({sym, real, wrap});
 
-    Symbol *real =
-        symtab.addUndefined(mangle("__real_" + name, symtab.machine));
-    Symbol *wrap =
-        symtab.addUndefined(mangle("__wrap_" + name, symtab.machine));
-    v.push_back({sym, real, wrap});
+  // These symbols may seem undefined initially, but don't bail out
+  // at symtab.reportUnresolvable() due to them, but let wrapSymbols
+  // below sort things out before checking finally with
+  // symtab.resolveRemainingUndefines().
+  sym->deferUndefined = true;
+  real->deferUndefined = true;
+  // We want to tell LTO not to inline symbols to be overwritten
+  // because LTO doesn't know the final symbol contents after renaming.
+  real->canInline = false;
+  sym->canInline = false;
 
-    // These symbols may seem undefined initially, but don't bail out
-    // at symtab.reportUnresolvable() due to them, but let wrapSymbols
-    // below sort things out before checking finally with
-    // symtab.resolveRemainingUndefines().
-    sym->deferUndefined = true;
-    real->deferUndefined = true;
-    // We want to tell LTO not to inline symbols to be overwritten
-    // because LTO doesn't know the final symbol contents after renaming.
-    real->canInline = false;
-    sym->canInline = false;
-
-    // Tell LTO not to eliminate these symbols.
-    sym->isUsedInRegularObj = true;
-    if (!isa<Undefined>(wrap))
-      wrap->isUsedInRegularObj = true;
-  }
-  symtab.wrapped = std::move(v);
+  // Tell LTO not to eliminate these symbols.
+  sym->isUsedInRegularObj = true;
+  if (!isa<Undefined>(wrap))
+    wrap->isUsedInRegularObj = true;
 }
 
 // Do renaming for -wrap by updating pointers to symbols.

@@ -648,6 +648,9 @@ void LinkerDriver::parseDirectives(InputFile *file) {
     case OPT_guardsym:
       parseGuardSym(file, arg->getValue());
       break;
+    case OPT_wrap:
+      directives.wraps.push_back(arg->getValue());
+      break;
     case OPT_subsystem: {
       bool gotVersion = false;
       parseSubsystem(arg->getValue(), &ctx.config.subsystem,
@@ -671,7 +674,17 @@ void LinkerDriver::parseDirectives(InputFile *file) {
                << toString(file) << ")";
     }
   }
+
+  // A wrap that an object loaded after the others asks for still renames
+  // every reference, since the renaming runs once the link has resolved.
+  for (StringRef name : directives.wraps) {
+    if (file->symtab.wrapsAdded)
+      addWrappedSymbol(file->symtab, name);
+    else
+      file->symtab.directiveWraps.push_back(name);
+  }
 }
+
 // LTO's output repeats in its directives what the bitcode gave, except for
 // what code generation adds: the functions it suppresses as Control Flow Guard
 // targets.

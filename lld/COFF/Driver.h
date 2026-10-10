@@ -47,6 +47,7 @@ struct ParsedDirectives {
   std::vector<StringRef> exports;
   std::vector<StringRef> includes;
   std::vector<StringRef> excludes;
+  std::vector<StringRef> wraps;
   llvm::opt::InputArgList args;
 };
 

@@ -197,6 +197,11 @@ public:
   // A list of wrapped symbols.
   std::vector<WrappedSymbol> wrapped;
 
+  // The names that /wrap in .drectve sections wraps, and whether the wrapped
+  // symbols have been instantiated, after which a directive wraps at once.
+  std::vector<StringRef> directiveWraps;
+  bool wrapsAdded = false;
+
   // Used for /alternatename.
   std::map<StringRef, StringRef> alternateNames;
 
