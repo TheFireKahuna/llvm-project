@@ -13,6 +13,8 @@
 #include "SymbolTable.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/IR/RuntimeLibcalls.h"
+#include "llvm/LTO/LTO.h"
 #include "llvm/Support/Parallel.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/TimeProfiler.h"
@@ -251,13 +253,27 @@ void lld::coff::addWrappedSymbol(SymbolTable &symtab, StringRef name) {
 
   // As with GNU ld, a wrap renames references and nothing else: if neither
   // the symbol, nor its import nor its __real_ name is referenced, the wrapper
-  // is not loaded, and none of its imports is added.
-  StringRef realName = mangle("__real_" + name, symtab.machine);
+  // is not loaded, and none of its imports is added. A runtime library
+  // function counts as referenced when there is bitcode, because the LTO code
+  // generator may call it although no bitcode symbol names it yet. Most wraps
+  // are skipped, so the names looked up are built on the stack.
+  SmallString<128> impName("__imp_");
+  impName += sym->getName();
+  SmallString<128> realName(symtab.machine == I386 ? "___real_" : "__real_");
+  realName += name;
   Symbol *real = symtab.find(realName);
   auto isUnreferenced = [&](Symbol *s) { return !s || s->isLazy(); };
-  if (isUnreferenced(sym) &&
-      isUnreferenced(symtab.find(("__imp_" + sym->getName()).str())) &&
-      isUnreferenced(real)) {
+  auto isLTOLibcall = [&] {
+    if (symtab.bitcodeFileInstances.empty())
+      return false;
+    if (!symtab.ltoLibcalls)
+      symtab.ltoLibcalls = make<RTLIB::RuntimeLibcallsInfo>(
+          Triple(symtab.bitcodeFileInstances.front()->obj->getTargetTriple()));
+    return symtab.ltoLibcalls->getSupportedLibcallImpl(name) !=
+           RTLIB::Unsupported;
+  };
+  if (isUnreferenced(sym) && isUnreferenced(symtab.find(impName)) &&
+      isUnreferenced(real) && !isLTOLibcall()) {
     symtab.unreferencedWraps.push_back(name);
     return;
   }
@@ -267,7 +283,8 @@ void lld::coff::addWrappedSymbol(SymbolTable &symtab, StringRef name) {
   if (real)
     addWrappedReal(symtab, symtab.wrapped.back(), real);
   else
-    symtab.unreferencedReals.push_back({symtab.wrapped.size() - 1, realName});
+    symtab.unreferencedReals.push_back(
+        {symtab.wrapped.size() - 1, saver().save(realName.str())});
 
   // These symbols may seem undefined initially, but don't bail out
   // at symtab.reportUnresolvable() due to them, but let wrapSymbols

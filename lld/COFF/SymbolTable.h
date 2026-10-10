@@ -19,6 +19,9 @@
 
 namespace llvm {
 struct LTOCodeGenerator;
+namespace RTLIB {
+struct RuntimeLibcallsInfo;
+}
 }
 
 namespace lld::coff {
@@ -209,6 +212,9 @@ public:
   // The wrapped symbols whose __real_ name nothing has referred to yet, by
   // index into wrapped, with that name.
   std::vector<std::pair<size_t, StringRef>> unreferencedReals;
+  // The runtime library functions of the bitcode's target, which a wrap
+  // counts as referenced, built on first use.
+  llvm::RTLIB::RuntimeLibcallsInfo *ltoLibcalls = nullptr;
 
   // Used for /alternatename.
   std::map<StringRef, StringRef> alternateNames;
