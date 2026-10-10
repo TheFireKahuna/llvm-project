@@ -51,6 +51,21 @@ static const char WinResMagic[] = {
     '\xff', '\xff', '\x00', '\x00', '\xff', '\xff', '\x00', '\x00',
 };
 
+// The start of an object's link-only records, the contents of its
+// .llvm_link_records section, which the linker removes. The records carry
+// facts for the linker that no other part of the object carries:
+//
+//   magic version:ULEB128 capabilities:ULEB128 group*
+//   group := kind:ULEB128 size:ULEB128 payload
+//
+// A linker skips a group whose kind it does not know, unless the kind is
+// critical, marked by its low bit, which it reports, since it cannot link the
+// object correctly without it. A kind whose payload changes takes a new
+// number; the version changes only with the framing above.
+static const char LinkRecordsMagic[] = {'L', 'L', 'R', 'C'};
+const uint64_t LinkRecordsVersion = 1;
+const uint64_t LinkRecordKindCritical = 1;
+
 // Sizes in bytes of various things in the COFF format.
 enum {
   Header16Size = 20,

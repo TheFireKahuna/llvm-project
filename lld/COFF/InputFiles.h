@@ -221,6 +221,7 @@ public:
   // Whether the object was already merged into the final PDB.
   bool mergedIntoPDB = false;
 
+
   // If the OBJ has a .debug$T stream, this tells how it will be handled.
   TpiSource *debugTypesObj = nullptr;
 
@@ -244,6 +245,7 @@ private:
   void initializeChunks();
   void initializeSymbols();
   void initializeFlags();
+  void readLinkRecords();
   void initializeDependencies();
   void initializeECThunks();
 
@@ -294,6 +296,14 @@ private:
   // chunks and non-section chunks for common symbols.
   std::vector<Chunk *> chunks;
 
+  // What the object's link-only records hold, which only an object that has
+  // them allocates: their section; what they say of the object; the
+  // instruction sites it describes, by section and offset; its call-only
+  // fields; its pins.
+  struct LinkRecords {
+    const coff_section *sec;
+  };
+  LinkRecords *linkRecords = nullptr;
   std::vector<SectionChunk *> resourceChunks;
 
   // CodeView debug info sections.

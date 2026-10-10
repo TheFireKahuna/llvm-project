@@ -30,6 +30,7 @@
 #include "llvm/Object/COFF.h"
 #include "llvm/Object/COFFImportFile.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/DataExtractor.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
@@ -358,6 +359,8 @@ void ObjFile::parse() {
   initializeFlags();
   initializeDependencies();
   initializeECThunks();
+  if (linkRecords)
+    readLinkRecords();
 }
 
 const coff_section *ObjFile::getSection(uint32_t i) {
@@ -387,6 +390,52 @@ void ObjFile::initializeChunks() {
   }
 }
 
+// Reads the object's link-only records. A record of a critical kind is needed
+// to link the object correctly, so an object holding one this linker does not
+// support, or whose records it cannot read, is an error.
+void ObjFile::readLinkRecords() {
+  ArrayRef<uint8_t> contents;
+  cantFail(coffObj->getSectionContents(linkRecords->sec, contents));
+  DataExtractor data(contents, /*IsLittleEndian=*/true);
+  DataExtractor::Cursor cur(0);
+  StringRef magic = data.getBytes(cur, sizeof(LinkRecordsMagic));
+  if (cur && magic != StringRef(LinkRecordsMagic, sizeof(LinkRecordsMagic))) {
+    consumeError(cur.takeError());
+    Err(symtab.ctx) << this
+                    << ": .llvm_link_records is malformed: invalid signature";
+    return;
+  }
+  uint64_t version = data.getULEB128(cur);
+  if (cur && version != LinkRecordsVersion) {
+    consumeError(cur.takeError());
+    Err(symtab.ctx) << this << ": .llvm_link_records has version " << version
+                    << ", which this linker does not support; link the "
+                       "object with a newer linker";
+    return;
+  }
+  // The capabilities field, which no kind read here needs.
+  data.getULEB128(cur);
+  while (cur && !data.eof(cur)) {
+    uint64_t kind = data.getULEB128(cur);
+    uint64_t size = data.getULEB128(cur);
+    data.skip(cur, size);
+    if (cur && (kind & LinkRecordKindCritical)) {
+      consumeError(cur.takeError());
+      Err(symtab.ctx) << this
+                      << ": .llvm_link_records has a record of critical kind "
+                      << kind
+                      << ", which this linker does not support; link "
+                         "the object with a newer linker";
+      return;
+    }
+  }
+  if (Error e = cur.takeError()) {
+    Err(symtab.ctx) << this
+                    << ": .llvm_link_records is malformed: " << std::move(e);
+    return;
+  }
+}
+
 SectionChunk *ObjFile::readSection(uint32_t sectionNumber,
                                    const coff_aux_section_definition *def,
                                    StringRef leaderName) {
@@ -413,6 +462,12 @@ SectionChunk *ObjFile::readSection(uint32_t sectionNumber,
 
   if (name == ".llvm.call-graph-profile") {
     callgraphSec = sec;
+    return nullptr;
+  }
+
+  if (name == ".llvm_link_records") {
+    linkRecords = make<LinkRecords>();
+    linkRecords->sec = sec;
     return nullptr;
   }
 

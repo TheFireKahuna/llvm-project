@@ -1175,6 +1175,24 @@ uint64_t WinCOFFWriter::writeObject() {
     Sec->curFragList()->Tail->setVarContents(OS.str());
   }
 
+  // Create the contents of the .llvm_link_records section.
+  if (Mode != DwoOnly && OWriter.hasLinkRecordsSection()) {
+    SmallString<0> Content;
+    raw_svector_ostream OS(Content);
+    OS.write(COFF::LinkRecordsMagic, sizeof(COFF::LinkRecordsMagic));
+    encodeULEB128(COFF::LinkRecordsVersion, OS);
+    // No capabilities yet.
+    encodeULEB128(0, OS);
+    for (uint64_t Kind : OWriter.LinkFacts) {
+      encodeULEB128(Kind, OS);
+      encodeULEB128(0, OS);
+    }
+
+    auto *Sec = getContext().getCOFFSection(".llvm_link_records",
+                                            COFF::IMAGE_SCN_LNK_REMOVE);
+    Sec->curFragList()->Tail->setVarContents(OS.str());
+  }
+
   assignFileOffsets();
 
   // MS LINK expects to be able to use this timestamp to implement their
@@ -1233,6 +1251,7 @@ int WinCOFFWriter::getSectionNumber(const MCSection &Section) const {
 
 void WinCOFFObjectWriter::reset() {
   IncrementalLinkerCompatible = false;
+  LinkFacts.clear();
   ObjWriter->reset();
   if (DwoWriter)
     DwoWriter->reset();

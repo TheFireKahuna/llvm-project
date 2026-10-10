@@ -617,6 +617,9 @@ public:
   /// object writing (i.e., this is not a runtime relocation).
   virtual void emitCOFFSecOffset(MCSymbol const *Symbol);
 
+  /// Tells the linker the fact about the whole object that a link record of
+  /// COFF::LinkRecordKind \p Kind with an empty payload states.
+  virtual void emitCOFFLinkFact(uint64_t Kind);
   /// Emits an lcomm directive with XCOFF csect information.
   ///
   /// \param LabelSym - Label on the block of storage.
