@@ -72,6 +72,8 @@ class COFFAsmParser : public MCAsmParserExtension {
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSecNum>(".secnum");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSecOffset>(".secoffset");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkPin>(".linkpin");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFact>(
+        ".linkkcfilists");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkKCFIThunk>(
         ".linkkcfithunk");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFact>(
@@ -615,10 +617,12 @@ bool COFFAsmParser::parseDirectiveLinkPin(StringRef, SMLoc) {
 }
 
 /// parseDirectiveLinkFact
+///  ::= .linkkcfilists
 ///  ::= .linktypeprefixes
 ///  ::= .linkprotecteddelayiat
 bool COFFAsmParser::parseDirectiveLinkFact(StringRef Directive, SMLoc) {
   uint64_t Kind = StringSwitch<uint64_t>(Directive)
+                      .Case(".linkkcfilists", COFF::LinkRecordKCFIImportLists)
                       .Case(".linktypeprefixes", COFF::LinkRecordTypePrefixes)
                       .Case(".linkprotecteddelayiat",
                             COFF::LinkRecordProtectedDelayIAT);
