@@ -2917,10 +2917,13 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // Create wrapped symbols for -wrap option.
   ctx.forEachSymtab([&](SymbolTable &symtab) {
     addWrappedSymbols(symtab, args);
-    // Load more object files that might be needed for wrapped symbols.
+    // Load more object files that might be needed for wrapped symbols. They
+    // may refer to a symbol whose wrap was skipped for want of a reference.
     if (!symtab.wrapped.empty())
-      while (run())
-        ;
+      do {
+        while (run())
+          ;
+      } while (addReferencedWraps(symtab));
   });
 
   if (config->autoImport || config->stdcallFixup) {

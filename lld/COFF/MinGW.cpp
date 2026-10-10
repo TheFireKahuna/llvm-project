@@ -233,6 +233,17 @@ void lld::coff::addWrappedSymbol(SymbolTable &symtab, StringRef name) {
       }))
     return;
 
+  // As with GNU ld, a wrap renames references and nothing else: if neither
+  // the symbol, nor its import nor its __real_ name is referenced, the wrapper
+  // is not loaded, and none of its imports is added.
+  auto isUnreferenced = [&](Symbol *s) { return !s || s->isLazy(); };
+  if (isUnreferenced(sym) &&
+      isUnreferenced(symtab.find(("__imp_" + sym->getName()).str())) &&
+      isUnreferenced(symtab.find(mangle("__real_" + name, symtab.machine)))) {
+    symtab.unreferencedWraps.push_back(name);
+    return;
+  }
+
   Symbol *real = symtab.addUndefined(mangle("__real_" + name, symtab.machine));
   Symbol *wrap = symtab.addUndefined(mangle("__wrap_" + name, symtab.machine));
   symtab.wrapped.push_back({sym, real, wrap});
@@ -252,6 +263,13 @@ void lld::coff::addWrappedSymbol(SymbolTable &symtab, StringRef name) {
   sym->isUsedInRegularObj = true;
   if (!isa<Undefined>(wrap))
     wrap->isUsedInRegularObj = true;
+}
+
+bool lld::coff::addReferencedWraps(SymbolTable &symtab) {
+  size_t numWrapped = symtab.wrapped.size();
+  for (StringRef name : std::exchange(symtab.unreferencedWraps, {}))
+    addWrappedSymbol(symtab, name);
+  return symtab.wrapped.size() != numWrapped;
 }
 
 // Do renaming for -wrap by updating pointers to symbols.

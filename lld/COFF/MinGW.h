@@ -58,6 +58,9 @@ void writeDefFile(COFFLinkerContext &, StringRef name,
 // An object can ask for the same with /wrap in its .drectve section.
 void addWrappedSymbols(SymbolTable &symtab, llvm::opt::InputArgList &args);
 void addWrappedSymbol(SymbolTable &symtab, StringRef name);
+// Wraps the names skipped as unreferenced that are referenced now, and returns
+// whether there were any.
+bool addReferencedWraps(SymbolTable &symtab);
 
 void wrapSymbols(SymbolTable &symtab);
 

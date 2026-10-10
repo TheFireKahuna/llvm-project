@@ -201,6 +201,8 @@ public:
   // symbols have been instantiated, after which a directive wraps at once.
   std::vector<StringRef> directiveWraps;
   bool wrapsAdded = false;
+  // The wrapped names that nothing referred to when they were to be wrapped.
+  std::vector<StringRef> unreferencedWraps;
 
   // Used for /alternatename.
   std::map<StringRef, StringRef> alternateNames;
