@@ -1586,6 +1586,11 @@ void CodeGenModule::Release() {
                               1);
   }
 
+  if (CodeGenOpts.SanitizeCfiICallGeneralizePointers) {
+    getModule().addModuleFlag(llvm::Module::Override,
+                              "cfi-generalize-pointers", 1);
+  }
+
   if (!CodeGenOpts.UniqueSourceFileIdentifier.empty()) {
     getModule().addModuleFlag(
         llvm::Module::Append, "Unique Source File Identifier",
@@ -5966,8 +5971,8 @@ static void setWindowsItaniumDLLImport(CodeGenModule &CGM, bool Local,
   // dllimport. For Mingw and MSVC, don't. We don't really know if the user
   // will link their standard library statically or dynamically. Marking
   // functions imported when they are not imported can cause linker errors
-  // and warnings.
   if (!Local && CGM.getTriple().isWindowsItaniumEnvironment() &&
+  // and warnings.
       !CGM.getCodeGenOpts().LTOVisibilityPublicStd) {
     const FunctionDecl *FD = GetRuntimeFunctionDecl(CGM.getContext(), Name);
     if (!FD || FD->hasAttr<DLLImportAttr>()) {

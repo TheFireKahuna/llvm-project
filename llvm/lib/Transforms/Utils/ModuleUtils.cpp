@@ -208,6 +208,8 @@ void llvm::setKCFIType(Module &M, Function &F, StringRef MangledType) {
   std::string Type = MangledType.str();
   if (M.getModuleFlag("cfi-normalize-integers"))
     Type += ".normalized";
+  if (M.getModuleFlag("cfi-generalize-pointers"))
+    Type += ".generalized";
 
   // Determine which hash algorithm to use
   auto *MD = dyn_cast_or_null<MDString>(M.getModuleFlag("kcfi-hash"));
