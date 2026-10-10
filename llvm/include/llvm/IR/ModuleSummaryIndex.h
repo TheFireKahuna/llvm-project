@@ -163,6 +163,15 @@ struct alignas(8) GlobalValueSummaryInfo {
   bool isDSOLocalWithoutSummary() const { return DSOLocalWithoutSummary; }
   void setDSOLocalWithoutSummary() { DSOLocalWithoutSummary = true; }
 
+  /// The KCFI membership tag that LowerTypeTests gave the function, or 0.
+  uint32_t getKCFIMemberTag() const { return KCFIMemberTag; }
+  void setKCFIMemberTag(uint32_t Tag) { KCFIMemberTag = Tag; }
+
+  /// Whether the link found the value visible outside the summaries, to a
+  /// native object, or exported from the image. Known only during the link.
+  bool isVisibleOutsideSummary() const { return VisibleOutsideSummary; }
+  void setVisibleOutsideSummary() { VisibleOutsideSummary = true; }
+
 private:
   /// List of global value summary structures for a particular value held
   /// in the GlobalValueMap. Requires a vector in the case of multiple
@@ -189,6 +198,12 @@ private:
 
   /// See isDSOLocalWithoutSummary(). Set only for a value with no summary.
   bool DSOLocalWithoutSummary : 1;
+
+  /// See isVisibleOutsideSummary().
+  bool VisibleOutsideSummary : 1;
+
+  /// See getKCFIMemberTag().
+  uint32_t KCFIMemberTag = 0;
 };
 
 /// Map from global value GUID to corresponding summary structures. Use a
@@ -750,7 +765,8 @@ public:
 };
 
 GlobalValueSummaryInfo::GlobalValueSummaryInfo(bool HaveGVs)
-    : U(HaveGVs), HasLocal(false), DSOLocalWithoutSummary(false) {}
+    : U(HaveGVs), HasLocal(false), DSOLocalWithoutSummary(false),
+      VisibleOutsideSummary(false) {}
 
 void GlobalValueSummaryInfo::addSummary(
     std::unique_ptr<GlobalValueSummary> Summary) {
@@ -1333,6 +1349,7 @@ struct TypeTestResolution {
     AllOnes,   ///< All-ones bit vector ("Eliminating Bit Vector Checks for
                ///  All-Ones Bit Vectors")
     Unknown,   ///< Unknown (analysis not performed, don't lower)
+    Members,   ///< Test the KCFI membership tags of the type identifier
   } TheKind = Unknown;
 
   /// Range of size-1 expressed as a bit width. For example, if the size is in
@@ -1601,6 +1618,14 @@ private:
   /// True if some of the FunctionSummary contains a ParamAccess.
   bool HasParamAccess = false;
 
+  /// True if some value carries a KCFI membership tag.
+  bool HasKCFIMemberTags = false;
+
+  /// By name, the membership tags of the classes of functions of each type
+  /// identifier resolved to TypeTestResolution::Members, which a member of the
+  /// type carries in its KCFI prefix.
+  std::map<std::string, std::vector<uint32_t>> TypeIdMemberTags;
+
   CfiFunctionIndex CfiFunctionDefs;
   CfiFunctionIndex CfiFunctionDecls;
 
@@ -1838,6 +1863,38 @@ public:
     getOrInsertValuePtr(GUID)->second.setDSOLocalWithoutSummary();
   }
 
+  /// Record the KCFI membership tag that LowerTypeTests gave the function with
+  /// this GUID, which its definition carries in its KCFI prefix.
+  void setKCFIMemberTag(GlobalValue::GUID GUID, uint32_t Tag) {
+    getOrInsertValuePtr(GUID)->second.setKCFIMemberTag(Tag);
+    HasKCFIMemberTags = true;
+  }
+
+  /// Returns whether some value carries a KCFI membership tag.
+  bool hasKCFIMemberTags() const { return HasKCFIMemberTags; }
+
+  /// Returns the KCFI membership tag of the function with this GUID, or 0.
+  uint32_t getKCFIMemberTag(GlobalValue::GUID GUID) const {
+    auto I = GlobalValueMap.find(GUID);
+    return I == GlobalValueMap.end() ? 0 : I->second.getKCFIMemberTag();
+  }
+
+  /// Record that the link found the value with this GUID, if the index has
+  /// it, visible outside the summaries: to a native object, or exported.
+  void setVisibleOutsideSummary(GlobalValue::GUID GUID) {
+    auto I = GlobalValueMap.find(GUID);
+    if (I != GlobalValueMap.end())
+      I->second.setVisibleOutsideSummary();
+  }
+
+  /// Returns whether the link found the value with this GUID visible outside
+  /// the summaries. Known only during the link, before the thin link writes
+  /// or passes on the index.
+  bool isVisibleOutsideSummary(GlobalValue::GUID GUID) const {
+    auto I = GlobalValueMap.find(GUID);
+    return I != GlobalValueMap.end() && I->second.isVisibleOutsideSummary();
+  }
+
   // Save a string in the Index. Use before passing Name to
   // getOrInsertValueInfo when the string isn't owned elsewhere (e.g. on the
   // module's Strtab).
@@ -2023,6 +2080,21 @@ public:
   }
 
   const TypeIdSummaryMapTy &typeIds() const { return TypeIdMap; }
+
+  /// Record the KCFI membership tags of the type identifier \p TypeId.
+  void setTypeIdMemberTags(StringRef TypeId, ArrayRef<uint32_t> Tags) {
+    TypeIdMemberTags[std::string(TypeId)].assign(Tags.begin(), Tags.end());
+  }
+
+  /// Returns the KCFI membership tags of the type identifier \p TypeId.
+  ArrayRef<uint32_t> getTypeIdMemberTags(StringRef TypeId) const {
+    if (TypeIdMemberTags.empty())
+      return {};
+    auto I = TypeIdMemberTags.find(std::string(TypeId));
+    if (I == TypeIdMemberTags.end())
+      return {};
+    return I->second;
+  }
 
   /// Return an existing or new TypeIdSummary entry for \p TypeId.
   /// This accessor can mutate the map and therefore should not be used in

@@ -545,6 +545,8 @@ protected:
 
   /// Emits the body of an ordinary, local or vfn thunk described by \p I.
   virtual void emitKCFIThunk(const KCFIThunkInfo &I) {}
+  /// Emits the body of a member thunk described by \p I.
+  virtual void emitKCFIMemberThunk(const KCFIThunkInfo &I) {}
   /// Emits the body of a type's scanner of \p Routine's kind, which walks a
   /// list its first argument register points past; a dynamic scanner continues
   /// into the guard function where a static one fails fast.

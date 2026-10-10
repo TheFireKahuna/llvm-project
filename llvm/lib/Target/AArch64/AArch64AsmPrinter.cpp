@@ -173,6 +173,7 @@ public:
   // AsmPrinter::emitKCFIThunks drives.
   ArrayRef<KCFIRoutineKind> getKCFIRoutineKinds() const override;
   void emitKCFIThunk(const KCFIThunkInfo &I) override;
+  void emitKCFIMemberThunk(const KCFIThunkInfo &I) override;
   void emitKCFIScanner(const KCFIRoutineKind &Routine, bool Dynamic,
                        uint64_t Pattern, int64_t PrefixNops) override;
   void emitKCFIOpenRoutine(const KCFIRoutineKind &Routine, MCSymbol *List,
@@ -1171,6 +1172,7 @@ void AArch64AsmPrinter::emitKCFIPageTest(MCSymbol *Target, int64_t PrefixBytes,
       STI);
   emitKCFIBcc(AArch64CC::EQ, Target);
 }
+
 // mov w0, #FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG; brk #0xf003
 void AArch64AsmPrinter::emitKCFIFastFail() {
   const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
@@ -1179,6 +1181,7 @@ void AArch64AsmPrinter::emitKCFIFastFail() {
       STI);
   OutStreamer->emitInstruction(MCInstBuilder(AArch64::BRK).addImm(0xF003), STI);
 }
+
 unsigned AArch64AsmPrinter::getKCFIOpenRoutineAlignment() const { return 4; }
 
 unsigned AArch64AsmPrinter::getKCFIPrefixByteScale() const { return 4; }
@@ -1245,6 +1248,92 @@ void AArch64AsmPrinter::emitKCFIThunk(const KCFIThunkInfo &I) {
     emitKCFIFastFail();
   }
 }
+
+/// Emits the body of a KCFI member thunk; see the header.
+///
+/// adrp x16, __llvm_code_start; add x16, x16, :lo12:__llvm_code_start
+/// cmp x15, x16; b.lo 1f
+/// adrp x16, __llvm_code_end; add x16, x16, :lo12:__llvm_code_end
+/// cmp x15, x16; b.hs 1f
+/// ldur x16, [x15, #-8]; mov x17, #type; cmp x16, x17; b.ne miss
+/// ldur x16, [x15, #-16]
+/// mov x17, #expected; cmp x16, x17; b.eq 2f   (for each tag)
+/// b miss
+/// 2: ret
+/// 1: tst x15, #mask; b.eq miss
+/// ldur x16, [x15, #-8]; mov x17, #type; cmp x16, x17; b.ne miss
+/// ldur x16, [x15, #-16]
+/// mov x17, #expected; cmp x16, x17; b.eq 3f   (for each tag)
+/// b miss
+/// 3: adrp x16, guard; ldr x16, [x16, :lo12:guard]; br x16
+void AArch64AsmPrinter::emitKCFIMemberThunk(const KCFIThunkInfo &I) {
+  const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
+  int64_t PrefixBytes = I.PrefixNops * 4;
+  auto EmitTagCompares = [&](MCSymbol *Hit) {
+    if (I.Type) {
+      OutStreamer->emitInstruction(MCInstBuilder(AArch64::LDURXi)
+                                       .addReg(AArch64::X16)
+                                       .addReg(AArch64::X15)
+                                       .addImm(-(PrefixBytes + 8)),
+                                   STI);
+      emitKCFIMovX17(I.Pattern >> 32 | uint64_t(I.Type) << 32);
+      emitKCFICmp(AArch64::X16, AArch64::X17);
+      emitKCFIBcc(AArch64CC::NE, I.Miss);
+    }
+    OutStreamer->emitInstruction(MCInstBuilder(AArch64::LDURXi)
+                                     .addReg(AArch64::X16)
+                                     .addReg(AArch64::X15)
+                                     .addImm(-(PrefixBytes + 16)),
+                                 STI);
+    for (uint32_t Tag : I.Tags) {
+      emitKCFIMovX17(Tag | I.Pattern << 32);
+      emitKCFICmp(AArch64::X16, AArch64::X17);
+      emitKCFIBcc(AArch64CC::EQ, Hit);
+    }
+    OutStreamer->emitInstruction(
+        MCInstBuilder(AArch64::B)
+            .addExpr(MCSymbolRefExpr::create(I.Miss, OutContext)),
+        STI);
+  };
+  MCSymbol *Outside = OutContext.createTempSymbol();
+  MCSymbol *Hit = OutContext.createTempSymbol();
+  MCSymbol *GuardHit = OutContext.createTempSymbol();
+  if (I.Local) {
+    emitKCFIAddr(AArch64::X16, I.CodeStart);
+    emitKCFIAddr(AArch64::X17, I.CodeEnd);
+    emitKCFICmp(AArch64::X15, AArch64::X16);
+    emitKCFIBcc(AArch64CC::LO, Outside);
+    emitKCFICmp(AArch64::X15, AArch64::X17);
+    emitKCFIBcc(AArch64CC::HS, Outside);
+  } else {
+    emitKCFIAddr(AArch64::X16, I.CodeStart);
+    emitKCFICmp(AArch64::X15, AArch64::X16);
+    emitKCFIBcc(AArch64CC::LO, Outside);
+    emitKCFIAddr(AArch64::X16, I.CodeEnd);
+    emitKCFICmp(AArch64::X15, AArch64::X16);
+    emitKCFIBcc(AArch64CC::HS, Outside);
+  }
+  EmitTagCompares(Hit);
+  OutStreamer->emitLabel(Hit);
+  OutStreamer->emitInstruction(MCInstBuilder(AArch64::RET).addReg(AArch64::LR),
+                               STI);
+  OutStreamer->emitLabel(Outside);
+  MCSymbol *Trap = nullptr;
+  if (I.Local) {
+    Trap = OutContext.createTempSymbol();
+    emitKCFICmp(AArch64::X16, AArch64::X17);
+    emitKCFIBcc(AArch64CC::NE, Trap);
+  }
+  emitKCFIPageTest(I.Miss, PrefixBytes, /*ReadBytes=*/16);
+  EmitTagCompares(GuardHit);
+  OutStreamer->emitLabel(GuardHit);
+  emitKCFIGuardJump(I.Routine->GuardFn);
+  if (Trap) {
+    OutStreamer->emitLabel(Trap);
+    emitKCFIFastFail();
+  }
+}
+
 /// Emits the body of a KCFI scanner, which walks a type's list; see the header.
 ///
 /// tst x15, #mask; b.eq 1f

@@ -60,6 +60,7 @@
 #include "llvm/Transforms/IPO/MemProfContextDisambiguation.h"
 #include "llvm/Transforms/IPO/WholeProgramDevirt.h"
 #include "llvm/Transforms/Utils/FunctionImportUtils.h"
+#include "llvm/Transforms/Utils/KCFIHash.h"
 #include "llvm/Transforms/Utils/SplitModule.h"
 
 #include <optional>
@@ -314,6 +315,10 @@ std::string llvm::computeLTOCacheKey(
     GlobalValue::LinkageTypes Linkage = GS.second->linkage();
     Hasher.update(
         ArrayRef<uint8_t>((const uint8_t *)&Linkage, sizeof(Linkage)));
+    // Include the KCFI membership tag the function carries, if any.
+    if (Index.hasKCFIMemberTags())
+      if (uint32_t Tag = Index.getKCFIMemberTag(GS.first))
+        AddUnsigned(Tag);
     AddUsedCfiGlobal(GS.first);
     AddUsedThings(GS.second);
   }
@@ -339,6 +344,12 @@ std::string llvm::computeLTOCacheKey(
     AddUint64(S.TTRes.SizeM1);
     AddUint64(S.TTRes.BitMask);
     AddUint64(S.TTRes.InlineBits);
+    ArrayRef<uint32_t> Tags = Index.getTypeIdMemberTags(TId);
+    if (!Tags.empty()) {
+      AddUint64(Tags.size());
+      for (uint32_t Tag : Tags)
+        AddUnsigned(Tag);
+    }
 
     AddUint64(S.WPDRes.size());
     for (auto &WPD : S.WPDRes) {
@@ -897,9 +908,11 @@ LTO::addModule(InputFile &Input, ArrayRef<SymbolResolution> InputRes,
   Input.IsThinLTO |= IsThinLTO;
 
   auto ModSyms = Input.module_symbols(ModI);
+  Triple TT(Input.getTargetTriple());
+  HasKCFIMemberTagTarget |= TT.isWindowsItaniumOrNTPOSIXEnvironment();
   addModuleToGlobalRes(ModSyms, Res,
                        IsThinLTO ? ThinLTO.ModuleMap.size() + 1 : 0,
-                       LTOInfo->HasSummary, Triple(Input.getTargetTriple()));
+                       LTOInfo->HasSummary, TT);
 
   if (IsThinLTO)
     return addThinLTO(BM, ModSyms, Res);
@@ -1350,6 +1363,13 @@ Error LTO::run(AddStreamFn AddStream, FileCache Cache) {
     if (Res.second.ExportDynamic)
       DynamicExportSymbols.insert(GUID);
 
+    // A function visible outside the summaries may have its address taken
+    // there, which a membership tag allows for.
+    if (HasKCFIMemberTagTarget &&
+        ((Res.second.VisibleOutsideSummary && Res.second.Prevailing) ||
+         Res.second.ExportDynamic))
+      ThinLTO.CombinedIndex.setVisibleOutsideSummary(GUID);
+
     GUIDPrevailingResolutions[GUID] =
         Res.second.Prevailing ? PrevailingType::Yes : PrevailingType::No;
   }
@@ -1440,6 +1460,11 @@ Error LTO::runRegularLTO(AddStreamFn AddStream) {
       GV->setName(I.first);
     }
   }
+
+  if (!Conf.ImageName.empty() && hasKCFIThunks(*RegularLTO.CombinedModule))
+    RegularLTO.CombinedModule->setModuleFlag(
+        Module::Override, "kcfi-image",
+        MDString::get(RegularLTO.Ctx, Conf.ImageName));
 
   bool WholeProgramVisibilityEnabledInLTO =
       Conf.HasWholeProgramVisibility &&

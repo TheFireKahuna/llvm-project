@@ -15,6 +15,7 @@
 
 #include "llvm/ADT/StringRef.h"
 #include <cstdint>
+#include <optional>
 
 namespace llvm {
 
@@ -75,6 +76,12 @@ LLVM_ABI bool hasKCFIThunks(const Module &M);
 /// or int3s. The word before a marker, a second type or a membership tag, is
 /// never compared with one.
 LLVM_ABI bool isX86TypePrefixPadding(uint32_t Word);
+
+/// Returns a membership tag from a 64-bit hash of the members that carry it, or
+/// std::nullopt if the tag cannot be told from the word that precedes the
+/// marker of a function without one: zero, the sealed type, and the padding
+/// x86 emits there.
+LLVM_ABI std::optional<uint32_t> getKCFIMemberTag(uint64_t Hash);
 
 /// Returns true if, in a module with KCFI thunks, a call to llvm.kcfi.check at
 /// Offset goes through a per-type check thunk: the type word at offset 4, or

@@ -351,6 +351,10 @@ void MCWinCOFFStreamer::emitCOFFKCFIThunk(const MCSymbol *Thunk, unsigned Kind,
   getWriter().addKCFIThunk({Thunk, Kind, Type, Marker, Offset, Mismatch});
 }
 
+void MCWinCOFFStreamer::emitCOFFKCFIMemberTag(const MCSymbol *Prefix) {
+  getWriter().addKCFIMemberTag(Prefix);
+}
+
 void MCWinCOFFStreamer::emitCommonSymbol(MCSymbol *S, uint64_t Size,
                                          Align ByteAlignment) {
   auto *Symbol = static_cast<MCSymbolCOFF *>(S);

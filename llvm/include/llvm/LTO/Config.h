@@ -85,6 +85,11 @@ struct Config {
   /// link.
   bool HasWholeProgramVisibility = false;
 
+  /// The base name of the image the link produces, if known. Where KCFI checks
+  /// go through per-type thunks, it distinguishes the membership tags of one
+  /// image's functions from another's.
+  std::string ImageName;
+
   /// We're validating that all native vtables have corresponding type infos.
   bool ValidateAllVtablesHaveTypeInfos = false;
   /// If all native vtables have corresponding type infos, allow

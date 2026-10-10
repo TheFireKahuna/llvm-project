@@ -76,6 +76,8 @@ class COFFAsmParser : public MCAsmParserExtension {
         ".linkkcfilists");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkKCFIThunk>(
         ".linkkcfithunk");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkKCFITag>(
+        ".linkkcfitag");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFact>(
         ".linktypeprefixes");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFact>(
@@ -145,6 +147,7 @@ class COFFAsmParser : public MCAsmParserExtension {
   bool parseDirectiveLinkPin(StringRef, SMLoc);
   bool parseDirectiveLinkFact(StringRef, SMLoc);
   bool parseDirectiveLinkKCFIThunk(StringRef, SMLoc);
+  bool parseDirectiveLinkKCFITag(StringRef, SMLoc);
   bool parseDirectiveSecNum(StringRef, SMLoc);
   bool parseDirectiveSecOffset(StringRef, SMLoc);
 
@@ -681,6 +684,18 @@ bool COFFAsmParser::parseDirectiveLinkKCFIThunk(StringRef, SMLoc) {
   if (parseEOL())
     return true;
   getStreamer().emitCOFFKCFIThunk(Thunk, Kind, Type, Marker, Offset, Mismatch);
+  return false;
+}
+
+/// parseDirectiveLinkKCFITag
+///  ::= .linkkcfitag prefix
+bool COFFAsmParser::parseDirectiveLinkKCFITag(StringRef, SMLoc) {
+  MCSymbol *Prefix;
+  if (getParser().parseSymbol(Prefix))
+    return TokError("expected identifier in directive");
+  if (parseEOL())
+    return true;
+  getStreamer().emitCOFFKCFIMemberTag(Prefix);
   return false;
 }
 

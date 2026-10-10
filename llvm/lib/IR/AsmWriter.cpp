@@ -3029,9 +3029,11 @@ public:
   void printAliasSummary(const AliasSummary *AS);
   void printGlobalVarSummary(const GlobalVarSummary *GS);
   void printFunctionSummary(const FunctionSummary *FS);
-  void printTypeIdSummary(const TypeIdSummary &TIS);
+  void printTypeIdSummary(const TypeIdSummary &TIS,
+                          ArrayRef<uint32_t> MemberTags);
   void printTypeIdCompatibleVtableSummary(const TypeIdCompatibleVtableInfo &TI);
-  void printTypeTestResolution(const TypeTestResolution &TTRes);
+  void printTypeTestResolution(const TypeTestResolution &TTRes,
+                               ArrayRef<uint32_t> MemberTags);
   void printArgs(ArrayRef<uint64_t> Args);
   void printWPDRes(const WholeProgramDevirtResolution &WPDRes);
   void printTypeIdInfo(const FunctionSummary::TypeIdInfo &TIDInfo);
@@ -3343,7 +3345,8 @@ void AssemblyWriter::printModuleSummaryIndex() {
   for (const auto &TID : TheIndex->typeIds()) {
     Out << "^" << Machine.getTypeIdSlot(TID.second.first)
         << " = typeid: (name: \"" << TID.second.first << "\"";
-    printTypeIdSummary(TID.second.second);
+    printTypeIdSummary(TID.second.second,
+                       TheIndex->getTypeIdMemberTags(TID.second.first));
     Out << ") ; guid = " << TID.first << "\n";
   }
 
@@ -3408,11 +3411,14 @@ static const char *getTTResKindName(TypeTestResolution::Kind K) {
     return "single";
   case TypeTestResolution::AllOnes:
     return "allOnes";
+  case TypeTestResolution::Members:
+    return "members";
   }
   llvm_unreachable("invalid TypeTestResolution kind");
 }
 
-void AssemblyWriter::printTypeTestResolution(const TypeTestResolution &TTRes) {
+void AssemblyWriter::printTypeTestResolution(const TypeTestResolution &TTRes,
+                                             ArrayRef<uint32_t> MemberTags) {
   Out << "typeTestRes: (kind: " << getTTResKindName(TTRes.TheKind)
       << ", sizeM1BitWidth: " << TTRes.SizeM1BitWidth;
 
@@ -3427,13 +3433,21 @@ void AssemblyWriter::printTypeTestResolution(const TypeTestResolution &TTRes) {
     Out << ", bitMask: " << (unsigned)TTRes.BitMask;
   if (TTRes.InlineBits)
     Out << ", inlineBits: " << TTRes.InlineBits;
+  if (!MemberTags.empty()) {
+    Out << ", memberTags: (";
+    ListSeparator LS;
+    for (uint32_t Tag : MemberTags)
+      Out << LS << Tag;
+    Out << ")";
+  }
 
   Out << ")";
 }
 
-void AssemblyWriter::printTypeIdSummary(const TypeIdSummary &TIS) {
+void AssemblyWriter::printTypeIdSummary(const TypeIdSummary &TIS,
+                                        ArrayRef<uint32_t> MemberTags) {
   Out << ", summary: (";
-  printTypeTestResolution(TIS.TTRes);
+  printTypeTestResolution(TIS.TTRes, MemberTags);
   if (!TIS.WPDRes.empty()) {
     Out << ", wpdResolutions: (";
     ListSeparator FS;
@@ -3886,6 +3900,8 @@ void AssemblyWriter::printSummaryInfo(unsigned Slot, const ValueInfo &VI) {
       printSummary(*Summary);
     }
     Out << ")";
+    if (uint32_t Tag = VI.getRef()->second.getKCFIMemberTag())
+      Out << ", kcfiMemberTag: " << Tag;
   }
   Out << ")";
   if (VI.hasName() && !VI.name().empty())

@@ -197,6 +197,24 @@ void AsmPrinter::emitKCFIThunks(Module &M) {
     emitKCFICodeRangeDefault(*OutStreamer, OutContext, CodeStart, CodeEnd);
   };
 
+  // The ordinary thunk a member thunk continues into on a miss, named from the
+  // member thunk's kind and type, must be emitted even if nothing else uses it.
+  StringSet<> MissThunks;
+  for (const Function &F : M) {
+    std::optional<ThunkMD> MD = getThunkMD(F);
+    if (!F.isDeclaration() || F.use_empty() || !MD ||
+        !(MD->Flags & KCFIThunkMember) || MD->Type == 0)
+      continue;
+    StringRef Prefix =
+        MD->Kind == KCFIThunkDispatch
+            ? (MD->Flags & KCFIThunkLocal ? COFF::KCFILocalDispatchThunkPrefix
+                                          : COFF::KCFIDispatchThunkPrefix)
+            : (MD->Flags & KCFIThunkLocal ? COFF::KCFILocalCheckThunkPrefix
+                                          : COFF::KCFICheckThunkPrefix);
+    MissThunks.insert(
+        (Prefix + utohexstr(MD->Type, /*LowerCase=*/true, /*Width=*/8)).str());
+  }
+
   // The ordinary, local and vfn thunks, in the same order as a type's: all the
   // non-local routines, then the local ones, then the vfn check.
   struct ThunkKind {
@@ -220,7 +238,7 @@ void AsmPrinter::emitKCFIThunks(Module &M) {
           bool(MD->Flags & KCFIThunkVfn) != Kind.Vfn)
         continue;
       MCSymbol *Thunk = getSymbol(&F);
-      if (F.use_empty())
+      if (F.use_empty() && !MissThunks.contains(Thunk->getName()))
         continue;
       AnyThunk = true;
       if (Kind.Local)
@@ -257,6 +275,57 @@ void AsmPrinter::emitKCFIThunks(Module &M) {
     }
   }
 
+  // A member thunk serves a function type that LTO checks by membership.
+  bool NeedsTrap = false;
+  for (const Function &F : M) {
+    std::optional<ThunkMD> MD = getThunkMD(F);
+    const MDNode *Tags = F.getMetadata("kcfi_member_tags");
+    if (!F.isDeclaration() || F.use_empty() || !MD ||
+        !(MD->Flags & KCFIThunkMember) || !Tags)
+      continue;
+    const KCFIRoutineKind *Routine = llvm::find_if(
+        Routines, [&](const KCFIRoutineKind &R) { return R.Kind == MD->Kind; });
+    if (Routine == Routines.end())
+      continue;
+    bool Local = MD->Flags & KCFIThunkLocal;
+    ensureRange();
+
+    std::string Hex = utohexstr(MD->Type, /*LowerCase=*/true, /*Width=*/8);
+    MCSymbol *Miss = TrapFn;
+    if (MD->Type) {
+      StringRef MissPrefix = MD->Kind == KCFIThunkDispatch
+                                 ? (Local ? COFF::KCFIMemberLocalMissPrefix
+                                          : COFF::KCFIMemberMissPrefix)
+                                 : (Local ? COFF::KCFIMemberLocalCheckMissPrefix
+                                          : COFF::KCFIMemberCheckMissPrefix);
+      StringRef ThunkPrefix = MD->Kind == KCFIThunkDispatch
+                                  ? (Local ? COFF::KCFILocalDispatchThunkPrefix
+                                           : COFF::KCFIDispatchThunkPrefix)
+                                  : (Local ? COFF::KCFILocalCheckThunkPrefix
+                                           : COFF::KCFICheckThunkPrefix);
+      Miss = OutContext.getOrCreateSymbol(MissPrefix + Hex);
+      if (!Miss->isVariable()) {
+        OutStreamer->emitSymbolAttribute(Miss, MCSA_Weak);
+        OutStreamer->emitAssignment(
+            Miss,
+            MCSymbolRefExpr::create(
+                OutContext.getOrCreateSymbol(ThunkPrefix + Hex), OutContext));
+      }
+    } else {
+      NeedsTrap = true;
+    }
+
+    AnyThunk = true;
+    SmallVector<uint32_t, 2> TagValues;
+    for (const MDOperand &Tag : Tags->operands())
+      TagValues.push_back(mdconst::extract<ConstantInt>(Tag)->getZExtValue());
+    emitKCFIFunctionStart(getSymbol(&F), COFF::IMAGE_COMDAT_SELECT_ANY,
+                          Align(16));
+    emitKCFIMemberThunk({Routine, MD->Type, Pattern, PrefixNops, Local,
+                         /*Vfn=*/false, /*Mismatch=*/nullptr, Miss, TagValues,
+                         CodeStart, CodeEnd});
+  }
+
   for (const KCFIRoutineKind &Routine : Routines) {
     if (OpenTypes.empty())
       break;
@@ -271,7 +340,7 @@ void AsmPrinter::emitKCFIThunks(Module &M) {
 
   // The trap is the default of every type's mismatch routine, a static
   // scanner's fall-through, and a type-0 member thunk's miss.
-  if (!AnyThunk && OpenTypes.empty())
+  if (!AnyThunk && OpenTypes.empty() && !NeedsTrap)
     return;
 
   emitKCFIFunctionStart(TrapFn, COFF::IMAGE_COMDAT_SELECT_ANY, Align(16));
