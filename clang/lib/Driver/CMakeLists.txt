@@ -83,6 +83,7 @@ add_clang_library(clangDriver
   ToolChains/MSP430.cpp
   ToolChains/MSVC.cpp
   ToolChains/NetBSD.cpp
+  ToolChains/NTPOSIX.cpp
   ToolChains/OHOS.cpp
   ToolChains/OpenBSD.cpp
   ToolChains/PS4CPU.cpp
@@ -95,6 +96,8 @@ add_clang_library(clangDriver
   ToolChains/UEFI.cpp
   ToolChains/VEToolchain.cpp
   ToolChains/WebAssembly.cpp
+  ToolChains/WindowsItanium.cpp
+  ToolChains/WindowsItaniumBase.cpp
   ToolChains/XCore.cpp
   ToolChains/PPCLinux.cpp
   ToolChains/PPCFreeBSD.cpp

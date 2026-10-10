@@ -8,6 +8,10 @@
 // RUN: %clang -target armv7-windows-gnu -c %s -### 2>&1 | FileCheck -check-prefix=MINGW-SEH %s
 // RUN: %clang -target aarch64-windows-gnu -fdwarf-exceptions -c %s -### 2>&1 | FileCheck -check-prefix=MINGW-DWARF %s
 // RUN: %clang -target aarch64-windows-gnu -c %s -### 2>&1 | FileCheck -check-prefix=MINGW-SEH %s
+// RUN: %clang --target=x86_64-windows-itanium -c %s -### 2>&1 | FileCheck -check-prefix=ITANIUM %s
+// RUN: %clang --target=aarch64-windows-itanium -c %s -### 2>&1 | FileCheck -check-prefix=ITANIUM %s
+// RUN: %clang --target=x86_64-windows-itanium -fsjlj-exceptions -c %s -### 2>&1 | FileCheck -check-prefixes=ITANIUM-SJLJ,ITANIUM %s
+// RUN: %clang --target=aarch64-windows-itanium -fsjlj-exceptions -c %s -### 2>&1 | FileCheck -check-prefixes=ITANIUM-SJLJ,ITANIUM %s
 
 MSVC-NOT: -exception-model=dwarf
 MSVC-NOT: -exception-model=seh
@@ -16,3 +20,8 @@ MSVC-SEH: -funwind-tables=2
 MINGW-DWARF: -exception-model=dwarf
 MINGW-SEH: -funwind-tables=2
 MINGW-SEH: -exception-model=seh
+ITANIUM-SJLJ: warning: ignoring '-fsjlj-exceptions' option as it is not currently supported for target
+ITANIUM-NOT: -exception-model=sjlj
+ITANIUM: -funwind-tables=2
+ITANIUM-NOT: -exception-model=sjlj
+ITANIUM: -exception-model=seh

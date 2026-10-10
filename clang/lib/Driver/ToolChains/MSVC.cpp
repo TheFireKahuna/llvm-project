@@ -629,6 +629,13 @@ void MSVCToolChain::addSYCLIncludeArgs(const ArgList &DriverArgs,
 
 void MSVCToolChain::addOffloadRTLibs(unsigned ActiveKinds, const ArgList &Args,
                                      ArgStringList &CmdArgs) const {
+  addHIPRuntimeLibArgs(*this, RocmInstallation, ActiveKinds, Args, CmdArgs);
+}
+
+void clang::driver::toolchains::addHIPRuntimeLibArgs(
+    const ToolChain &TC,
+    const LazyDetector<RocmInstallationDetector> &RocmInstallation,
+    unsigned ActiveKinds, const ArgList &Args, ArgStringList &CmdArgs) {
   if (!Args.hasFlag(options::OPT_offloadlib, options::OPT_no_offloadlib,
                     true) ||
       Args.hasArg(options::OPT_no_hip_rt) || Args.hasArg(options::OPT_r))
@@ -642,9 +649,10 @@ void MSVCToolChain::addOffloadRTLibs(unsigned ActiveKinds, const ArgList &Args,
     // For HIP device PGO, link clang_rt.profile_rocm when available. It is a
     // self-contained superset of clang_rt.profile, emitted first so the base
     // archive stays inert (avoiding a /MD-vs-/MT CRT mix in the host image).
-    if (needsProfileRT(Args) &&
-        getVFS().exists(getCompilerRT(Args, "profile_rocm", FT_Static))) {
-      CmdArgs.push_back(getCompilerRTArgString(Args, "profile_rocm"));
+    if (ToolChain::needsProfileRT(Args) &&
+        TC.getVFS().exists(
+            TC.getCompilerRT(Args, "profile_rocm", ToolChain::FT_Static))) {
+      CmdArgs.push_back(TC.getCompilerRTArgString(Args, "profile_rocm"));
       // Force the linker to retain the constructor-only hipModuleLoad*
       // interceptor object from clang_rt.profile_rocm (see Linux.cpp). The
       // constructor self-skips for programs that do not use hipModuleLoad.
@@ -792,6 +800,18 @@ void clang::driver::toolchains::AddSystemIncludeWithSubfolder(
   ToolChain::addSystemInclude(DriverArgs, CC1Args, path);
 }
 
+bool clang::driver::toolchains::addSystemIncludesFromEnv(
+    const ArgList &DriverArgs, ArgStringList &CC1Args, StringRef Var) {
+  if (auto Val = llvm::sys::Process::GetEnv(Var)) {
+    SmallVector<StringRef, 8> Dirs;
+    StringRef(*Val).split(Dirs, ";", /*MaxSplit=*/-1, /*KeepEmpty=*/false);
+    for (StringRef Dir : Dirs)
+      ToolChain::addSystemInclude(DriverArgs, CC1Args, Dir);
+    return !Dirs.empty();
+  }
+  return false;
+}
+
 void clang::driver::toolchains::addUniversalCRTIncludeArgs(
     llvm::vfs::FileSystem &VFS, std::optional<StringRef> WinSdkDir,
     std::optional<StringRef> WinSdkVersion, std::optional<StringRef> WinSysRoot,
@@ -893,22 +913,10 @@ void MSVCToolChain::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
   for (const auto &Path : DriverArgs.getAllArgValues(options::OPT__SLASH_imsvc))
     addSystemInclude(DriverArgs, CC1Args, Path);
 
-  auto AddSystemIncludesFromEnv = [&](StringRef Var) -> bool {
-    if (auto Val = llvm::sys::Process::GetEnv(Var)) {
-      SmallVector<StringRef, 8> Dirs;
-      StringRef(*Val).split(Dirs, ";", /*MaxSplit=*/-1, /*KeepEmpty=*/false);
-      if (!Dirs.empty()) {
-        addSystemIncludes(DriverArgs, CC1Args, Dirs);
-        return true;
-      }
-    }
-    return false;
-  };
-
   // Add %INCLUDE%-like dirs via /external:env: flags.
   for (const auto &Var :
        DriverArgs.getAllArgValues(options::OPT__SLASH_external_env)) {
-    AddSystemIncludesFromEnv(Var);
+    addSystemIncludesFromEnv(DriverArgs, CC1Args, Var);
   }
 
   // Add DIA SDK include if requested.
@@ -937,8 +945,8 @@ void MSVCToolChain::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
           options::OPT__SLASH_vctoolsdir, options::OPT__SLASH_vctoolsversion,
           options::OPT__SLASH_winsysroot, options::OPT__SLASH_winsdkdir,
           options::OPT__SLASH_winsdkversion)) {
-    bool Found = AddSystemIncludesFromEnv("INCLUDE");
-    Found |= AddSystemIncludesFromEnv("EXTERNAL_INCLUDE");
+    bool Found = addSystemIncludesFromEnv(DriverArgs, CC1Args, "INCLUDE");
+    Found |= addSystemIncludesFromEnv(DriverArgs, CC1Args, "EXTERNAL_INCLUDE");
     if (Found)
       return;
   }
@@ -1172,13 +1180,14 @@ static void TranslatePermissiveMinus(Arg *A, llvm::opt::DerivedArgList &DAL,
 }
 
 llvm::opt::DerivedArgList *
-MSVCToolChain::TranslateArgs(const llvm::opt::DerivedArgList &Args,
-                             BoundArch BA, Action::OffloadKind OFK) const {
+clang::driver::toolchains::translateMSVCCompatibleArgs(
+    const ToolChain &TC, const llvm::opt::DerivedArgList &Args,
+    Action::OffloadKind OFK) {
   DerivedArgList *DAL = new DerivedArgList(Args.getBaseArgs());
-  const OptTable &Opts = getDriver().getOpts();
+  const OptTable &Opts = TC.getDriver().getOpts();
 
   // /Oy and /Oy- don't have an effect on X86-64
-  bool SupportsForcingFramePointer = getArch() != llvm::Triple::x86_64;
+  bool SupportsForcingFramePointer = TC.getArch() != llvm::Triple::x86_64;
 
   // The -O[12xd] flag actually expands to several flags.  We must desugar the
   // flags so that options embedded can be negated.  For example, the '-O2' flag
@@ -1225,6 +1234,12 @@ MSVCToolChain::TranslateArgs(const llvm::opt::DerivedArgList &Args,
   }
 
   return DAL;
+}
+
+llvm::opt::DerivedArgList *
+MSVCToolChain::TranslateArgs(const llvm::opt::DerivedArgList &Args,
+                             BoundArch BA, Action::OffloadKind OFK) const {
+  return translateMSVCCompatibleArgs(*this, Args, OFK);
 }
 
 void MSVCToolChain::addClangTargetOptions(

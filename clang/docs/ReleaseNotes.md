@@ -939,6 +939,25 @@ features cannot lower the translation-unit ABI level;
   subsequent base; Clang now does the same.
   ([#210174](https://github.com/llvm/llvm-project/issues/210174))
 
+- The x86-64 and AArch64 ``windows-itanium`` targets now have a toolchain of
+  their own instead of sharing the cross-compiling Windows toolchain. It
+  compiles against the Universal CRT and the Windows SDK, located as the MSVC
+  toolchain locates them, without Visual C++, and defaults to
+  ``-fms-extensions``, ``-fdeclspec``, ``-fuse-cxa-atexit``, SEH exceptions and
+  ``-mdefault-visibility-export-mapping=explicit``. It links with lld-link,
+  passing libc++, libunwind, compiler-rt, the Universal CRT and the system
+  import libraries as default libraries, names a DLL's import library
+  ``name.dll.lib``, and resolves ``-lname`` to ``libname.dll.lib`` or
+  ``libname.lib`` before ``name.lib``. 32-bit x86 and Arm ``windows-itanium``
+  targets keep the cross-compiling toolchain.
+
+- Added a toolchain for the x86-64 and AArch64 ``windows-ntposix`` targets:
+  POSIX on the NT kernel with llvm-libc as the C library, sharing the
+  ``windows-itanium`` toolchain's base. llvm-libc is linked as
+  ``libc.dll.lib``, or with ``-static`` as ``libc.lib`` together with the
+  static libc++ and libunwind; ``-pthread`` is always on, and ``-fshort-wchar``
+  is rejected.
+
 #### LoongArch Support
 
 - `loongarch32-*-none-elf` and `loongarch64-*-none-elf` targets now use the

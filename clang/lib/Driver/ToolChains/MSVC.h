@@ -183,6 +183,12 @@ bool getUniversalCRTLibraryPath(llvm::vfs::FileSystem &VFS,
                                 std::optional<llvm::StringRef> WinSysRoot,
                                 llvm::Triple::ArchType Arch, std::string &Path);
 
+/// Adds the directories that the environment variable Var lists, separated by
+/// semicolons, as system include directories. Returns whether it listed any.
+bool addSystemIncludesFromEnv(const llvm::opt::ArgList &DriverArgs,
+                              llvm::opt::ArgStringList &CC1Args,
+                              llvm::StringRef Var);
+
 /// Adds the Universal CRT's include directory.
 void addUniversalCRTIncludeArgs(llvm::vfs::FileSystem &VFS,
                                 std::optional<llvm::StringRef> WinSdkDir,
@@ -198,6 +204,21 @@ void addWindowsSDKIncludeArgs(llvm::vfs::FileSystem &VFS,
                               std::optional<llvm::StringRef> WinSysRoot,
                               const llvm::opt::ArgList &DriverArgs,
                               llvm::opt::ArgStringList &CC1Args);
+
+/// Adds the HIP runtime from the ROCm installation, and the profile runtime
+/// for HIP device code under -fprofile-generate, when ActiveKinds includes HIP.
+void addHIPRuntimeLibArgs(
+    const ToolChain &TC,
+    const LazyDetector<RocmInstallationDetector> &RocmInstallation,
+    unsigned ActiveKinds, const llvm::opt::ArgList &Args,
+    llvm::opt::ArgStringList &CmdArgs);
+
+/// Expands the clang-cl arguments whose meaning does not depend on the
+/// toolchain: /O..., /permissive, /permissive- and -Dname#value.
+llvm::opt::DerivedArgList *
+translateMSVCCompatibleArgs(const ToolChain &TC,
+                            const llvm::opt::DerivedArgList &Args,
+                            Action::OffloadKind OFK);
 
 void AddSystemIncludeWithSubfolder(const llvm::opt::ArgList &DriverArgs,
                                    llvm::opt::ArgStringList &CC1Args,
