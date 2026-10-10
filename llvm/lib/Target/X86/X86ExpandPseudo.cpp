@@ -318,7 +318,7 @@ bool X86ExpandPseudoImpl::expandMI(MachineBasicBlock &MBB,
     }
 
     // Use this predicate to set REX prefix for X86_64 targets.
-    bool IsX64 = STI->isTargetWin64() || STI->isTargetUEFI64();
+    bool IsX64 = STI->isTargetWindowsX64() || STI->isTargetUEFI64();
     // Jump to label or value in register.
     if (Opcode == X86::TCRETURNdi || Opcode == X86::TCRETURNdicc ||
         Opcode == X86::TCRETURNdi64 || Opcode == X86::TCRETURNdi64cc) {
@@ -403,7 +403,7 @@ bool X86ExpandPseudoImpl::expandMI(MachineBasicBlock &MBB,
       unsigned PopOpcode = STI->is64Bit() ? X86::POP64r : X86::POP32r;
       unsigned JumpOpcode = X86::JMP32r;
       if (Uses64BitFramePtr)
-        JumpOpcode = STI->isTargetWin64() || STI->isTargetUEFI64()
+        JumpOpcode = STI->isTargetWindowsX64() || STI->isTargetUEFI64()
                          ? X86::JMP64r_REX
                          : X86::JMP64r;
       BuildMI(MBB, MBBI, DL, TII->get(PopOpcode))

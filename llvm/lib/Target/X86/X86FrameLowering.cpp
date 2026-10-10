@@ -743,7 +743,9 @@ void X86FrameLowering::emitStackProbe(
 }
 
 bool X86FrameLowering::stackProbeFunctionModifiesSP() const {
-  return STI.isOSWindows() && !STI.isTargetWin64();
+  // Only the 32-bit Windows probe helpers adjust the stack pointer; every
+  // x86-64 Windows helper leaves it to the caller, whatever the convention.
+  return STI.isOSWindows() && !Is64Bit;
 }
 
 void X86FrameLowering::inlineStackProbe(MachineFunction &MF,
@@ -1320,7 +1322,7 @@ void X86FrameLowering::emitStackProbeCall(
       .addReg(X86::EFLAGS, RegState::Define | RegState::Implicit);
 
   MachineInstr *ModInst = CI;
-  if (STI.isTargetWin64() || !STI.isOSWindows()) {
+  if (!stackProbeFunctionModifiesSP()) {
     // MSVC x32's _chkstk and cygwin/mingw's _alloca adjust %esp themselves.
     // MSVC x64's __chkstk and cygwin/mingw's ___chkstk_ms do not adjust %rsp
     // themselves. They also does not clobber %rax so we can reuse it when
@@ -1337,7 +1339,7 @@ void X86FrameLowering::emitStackProbeCall(
   // allocation (i.e., DYN_ALLOC_*), substitute it for the instruction that
   // modifies SP.
   if (InstrNum) {
-    if (STI.isTargetWin64() || !STI.isOSWindows()) {
+    if (!stackProbeFunctionModifiesSP()) {
       // Label destination operand of the subtract.
       MF.makeDebugValueSubstitution(*InstrNum,
                                     {ModInst->getDebugInstrNum(), 0});
@@ -3051,7 +3053,7 @@ X86FrameLowering::getFrameIndexReferencePreferSP(const MachineFunction &MF,
   // SP in the middle of the function.
 
   if (MFI.isFixedObjectIndex(FI) && TRI->hasStackRealignment(MF) &&
-      !STI.isTargetWin64())
+      !STI.isTargetWindowsX64())
     return getFrameIndexReference(MF, FI, FrameReg);
 
   // If !hasReservedCallFrame the function might have SP adjustement in the
@@ -3530,7 +3532,7 @@ void X86FrameLowering::adjustForSegmentedStacks(
   if (MF.getFunction().isVarArg())
     report_fatal_error("Segmented stacks do not support vararg functions.");
   if (!STI.isTargetLinux() && !STI.isTargetDarwin() && !STI.isTargetWin32() &&
-      !STI.isTargetWin64() && !STI.isTargetFreeBSD() &&
+      !STI.isTargetWindowsX64() && !STI.isTargetFreeBSD() &&
       !STI.isTargetDragonFly())
     report_fatal_error("Segmented stacks not supported on this platform.");
 
@@ -3577,7 +3579,7 @@ void X86FrameLowering::adjustForSegmentedStacks(
     } else if (STI.isTargetDarwin()) {
       TlsReg = X86::GS;
       TlsOffset = 0x60 + 90 * 8; // See pthread_machdep.h. Steal TLS slot 90.
-    } else if (STI.isTargetWin64()) {
+    } else if (STI.isTargetWindowsX64()) {
       TlsReg = X86::GS;
       TlsOffset = 0x28; // pvArbitrary, reserved for application use
     } else if (STI.isTargetFreeBSD()) {
@@ -4176,7 +4178,7 @@ bool X86FrameLowering::canUseAsEpilogue(const MachineBasicBlock &MBB) const {
   // not taking a chance at messing with them.
   // I.e., unless this block is already an exit block, we can't use
   // it as an epilogue.
-  if (STI.isTargetWin64() && !MBB.succ_empty() && !MBB.isReturnBlock())
+  if (STI.isTargetWindowsX64() && !MBB.succ_empty() && !MBB.isReturnBlock())
     return false;
 
   // Swift async context epilogue has a BTR instruction that clobbers parts of

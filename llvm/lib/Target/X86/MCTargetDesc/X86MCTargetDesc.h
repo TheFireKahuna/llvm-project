@@ -60,6 +60,10 @@ std::string ParseX86Triple(const Triple &TT);
 
 unsigned getDwarfRegFlavour(const Triple &TT, bool isEH);
 
+/// Returns true if the Microsoft x64 calling convention is the default for
+/// \p TT. NT-POSIX is a Windows x64 target that uses the System V convention.
+bool isWin64DefaultCC(const Triple &TT);
+
 void initLLVMToSEHAndCVRegMapping(MCRegisterInfo *MRI);
 
 

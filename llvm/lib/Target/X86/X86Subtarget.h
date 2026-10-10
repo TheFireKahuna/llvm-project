@@ -341,7 +341,12 @@ public:
 
   bool isTargetUEFI64() const { return Is64Bit && isUEFI(); }
 
-  bool isTargetWin64() const { return Is64Bit && isOSWindows(); }
+  bool isTargetWin64() const {
+    return Is64Bit && X86_MC::isWin64DefaultCC(TargetTriple);
+  }
+
+  /// The Windows x64 platform, whose unwinder rules apply; see isTargetWin64.
+  bool isTargetWindowsX64() const { return Is64Bit && isOSWindows(); }
 
   bool isTargetWin32() const { return !Is64Bit && isOSWindows(); }
 

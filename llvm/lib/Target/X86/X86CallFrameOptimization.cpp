@@ -158,7 +158,7 @@ bool X86CallFrameOptimizationImpl::isLegal(MachineFunction &MF) {
 
   // It is not valid to change the stack pointer outside the prolog/epilog
   // on 64-bit Windows.
-  if (STI->isTargetWin64())
+  if (STI->isTargetWindowsX64())
     return false;
 
   // You would expect straight-line code between call-frame setup and

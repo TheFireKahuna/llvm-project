@@ -1834,7 +1834,11 @@ MCSection *TargetLoweringObjectFileCOFF::SelectSectionForGlobal(
   else
     EmitUniquedSection = TM.getDataSections();
 
-  if ((EmitUniquedSection && !Kind.isCommon()) || GO->hasComdat()) {
+  // A section outside a COMDAT is never discarded, and /INCLUDE cannot name a
+  // local symbol, so a retained local global goes to the shared section.
+  bool RetainLocal = GO->hasLocalLinkage() && Used.count(GO);
+  if ((EmitUniquedSection && !Kind.isCommon() && !RetainLocal) ||
+      GO->hasComdat()) {
     SmallString<256> Name = getCOFFSectionNameForUniqueGlobal(Kind);
 
     unsigned Characteristics = getCOFFSectionFlags(Kind, TM);
@@ -1947,6 +1951,20 @@ bool TargetLoweringObjectFileCOFF::shouldPutJumpTableInFunctionSection(
     UsesLabelDifference, F);
 }
 
+// On Windows Itanium and NT-POSIX a global in llvm.used is kept through the
+// link, as ELF's SHF_GNU_RETAIN keeps it; llvm.compiler.used keeps it from
+// the compiler only.
+void TargetLoweringObjectFileCOFF::getModuleMetadata(Module &M) {
+  Used.clear();
+  if (!M.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    return;
+  SmallVector<GlobalValue *, 4> Vec;
+  collectUsedGlobalVariables(M, Vec, false);
+  for (GlobalValue *GV : Vec)
+    if (auto *GO = dyn_cast<GlobalObject>(GV))
+      Used.insert(GO);
+}
+
 void TargetLoweringObjectFileCOFF::emitModuleMetadata(MCStreamer &Streamer,
                                                       Module &M) const {
   emitLinkerDirectives(Streamer, M);
@@ -2044,7 +2062,8 @@ void TargetLoweringObjectFileCOFF::Initialize(MCContext &Ctx,
   TargetLoweringObjectFile::Initialize(Ctx, TM);
   this->TM = &TM;
   const Triple &T = TM.getTargetTriple();
-  if (T.isWindowsMSVCEnvironment() || T.isWindowsItaniumEnvironment()) {
+  if (T.isWindowsMSVCEnvironment() || T.isWindowsItaniumEnvironment() ||
+      T.isWindowsNTPOSIXEnvironment()) {
     StaticCtorSection =
         Ctx.getCOFFSection(".CRT$XCU", COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
                                            COFF::IMAGE_SCN_MEM_READ);
@@ -2066,7 +2085,8 @@ static MCSectionCOFF *getCOFFStaticStructorSection(MCContext &Ctx,
                                                    unsigned Priority,
                                                    const MCSymbol *KeySym,
                                                    MCSectionCOFF *Default) {
-  if (T.isWindowsMSVCEnvironment() || T.isWindowsItaniumEnvironment()) {
+  if (T.isWindowsMSVCEnvironment() || T.isWindowsItaniumEnvironment() ||
+      T.isWindowsNTPOSIXEnvironment()) {
     // If the priority is the default, use .CRT$XCU, possibly associative.
     if (Priority == 65535)
       return Ctx.getAssociativeCOFFSection(Default, KeySym, 0);

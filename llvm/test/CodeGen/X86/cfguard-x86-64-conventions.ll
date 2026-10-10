@@ -1,4 +1,5 @@
 ; RUN: llc < %s -mtriple=x86_64-pc-windows-msvc | FileCheck %s --check-prefixes=CHECK,MSVC
+; RUN: llc < %s -mtriple=x86_64-pc-windows-ntposix | FileCheck %s --check-prefixes=CHECK,NTPOSIX
 ; Control Flow Guard is currently only available on Windows
 
 ; The guard dispatch function takes the target in RAX, uses R10 and R11 as

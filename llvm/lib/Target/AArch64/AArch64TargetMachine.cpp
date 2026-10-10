@@ -752,8 +752,12 @@ bool AArch64PassConfig::addPreISel() {
     // Merging of extern globals is enabled by default on non-Mach-O as we
     // expect it to be generally either beneficial or harmless. On Mach-O it
     // is disabled as we emit the .subsections_via_symbols directive which
-    // means that merging extern globals is not safe.
-    bool MergeExternalByDefault = !TM->getTargetTriple().isOSBinFormatMachO();
+    // means that merging extern globals is not safe. On Windows Itanium and
+    // NT-POSIX every extern global keeps a section of its own, from which the
+    // linker takes its extent.
+    const Triple &TT = TM->getTargetTriple();
+    bool MergeExternalByDefault =
+        !TT.isOSBinFormatMachO() && !TT.isWindowsItaniumOrNTPOSIXEnvironment();
     addPass(createGlobalMergePass(TM, 4095, OnlyOptimizeForSize,
                                   MergeExternalByDefault));
   }

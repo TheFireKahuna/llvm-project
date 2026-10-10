@@ -217,7 +217,7 @@ def In32BitMode  : Predicate<"Subtarget->is32Bit()">,
                              AssemblerPredicate<(all_of Is32Bit), "32-bit mode">;
 def IsWin64      : Predicate<"Subtarget->isTargetWin64()">;
 def NotWin64     : Predicate<"!Subtarget->isTargetWin64()">;
-def NotWin64WithoutFP : Predicate<"!Subtarget->isTargetWin64() ||"
+def NotWin64WithoutFP : Predicate<"!Subtarget->isTargetWindowsX64() ||"
                                   "Subtarget->getFrameLowering()->hasFP(*MF)"> {
   let RecomputePerFunction = 1;
 }

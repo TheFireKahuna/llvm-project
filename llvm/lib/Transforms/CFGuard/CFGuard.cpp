@@ -312,8 +312,8 @@ static bool canUseDispatch(const CallBase &CB) {
   case CallingConv::X86_StdCall:
   case CallingConv::X86_ThisCall:
   case CallingConv::X86_VectorCall:
-    // These follow the target's default.
-    IsWin64 = true;
+    // These follow the target's default, which is System V on NT-POSIX.
+    IsWin64 = !TT.isWindowsNTPOSIXEnvironment();
     break;
   case CallingConv::Win64:
     IsWin64 = true;

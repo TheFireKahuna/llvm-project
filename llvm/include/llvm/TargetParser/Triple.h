@@ -387,6 +387,7 @@ public:
     Itanium,
     Cygnus,
     CoreCLR,
+    NTPOSIX,
     Simulator, // Simulator variants of other systems, e.g., Apple's iOS
     MacABI,    // Mac Catalyst variant of Apple's iOS deployment target.
 
@@ -809,6 +810,17 @@ public:
 
   bool isWindowsCygwinEnvironment() const {
     return isOSWindows() && getEnvironment() == Triple::Cygnus;
+  }
+
+  bool isWindowsNTPOSIXEnvironment() const {
+    return isOSWindows() && getEnvironment() == Triple::NTPOSIX;
+  }
+
+  /// The SCEI flavour of Windows Itanium tests PlayStation's DLL import and
+  /// export handling on Windows, and keeps that target's rules.
+  bool isWindowsItaniumOrNTPOSIXEnvironment() const {
+    return (isWindowsItaniumEnvironment() && getVendor() != Triple::SCEI) ||
+           isWindowsNTPOSIXEnvironment();
   }
 
   bool isWindowsGNUEnvironment() const {
@@ -1311,9 +1323,12 @@ public:
     return isAArch64() || (isAndroid() && isRISCV64()) || isOSFuchsia();
   }
 
-  /// Tests whether the target uses -data-sections as default.
+  /// Tests whether the target uses -data-sections as default. Windows
+  /// Itanium and NT-POSIX always do: the linker takes a data object's extent
+  /// from its section, and moves a section to bind the words it holds.
   bool hasDefaultDataSections() const {
-    return isOSBinFormatXCOFF() || isWasm();
+    return isOSBinFormatXCOFF() || isWasm() ||
+           isWindowsItaniumOrNTPOSIXEnvironment();
   }
 
   /// Returns the default wchar_t size (in bytes) for this target triple.
