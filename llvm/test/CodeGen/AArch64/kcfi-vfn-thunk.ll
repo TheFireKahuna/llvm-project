@@ -22,6 +22,7 @@
 ; CHECK-NEXT:  __llvm_kcfi_check_mismatch_89abcdef = __llvm_kcfi_trap
 ; CHECK-NEXT:  .section .text,"xr",discard,__llvm_kcfi_vfn_check_89abcdef
 ; CHECK:       __llvm_kcfi_vfn_check_89abcdef:
+; CHECK-NEXT:    .linkkcfithunk __llvm_kcfi_vfn_check_89abcdef, vfn_check, 0x89abcdef, 0xdeadbeef, 0, __llvm_kcfi_check_mismatch_89abcdef
 ; CHECK-NEXT:    tst x15, #0xff0
 ; CHECK-NEXT:    b.eq __llvm_kcfi_check_mismatch_89abcdef
 ; CHECK-NEXT:    ldur x16, [x15, #-16]
@@ -40,6 +41,7 @@
 ; BYTES:       8: f85f01f0 ldur x16, [x15, #-0x10]
 
 ; PREFIX-LABEL: __llvm_kcfi_vfn_check_89abcdef:
+; PREFIX-NEXT:    .linkkcfithunk __llvm_kcfi_vfn_check_89abcdef, vfn_check, 0x89abcdef, 0xdeadbeef, 16, __llvm_kcfi_check_mismatch_89abcdef
 ; PREFIX-NEXT:    tst x15, #0xfe0
 ; PREFIX-NEXT:    b.eq __llvm_kcfi_check_mismatch_89abcdef
 ; PREFIX-NEXT:    ldur x16, [x15, #-32]

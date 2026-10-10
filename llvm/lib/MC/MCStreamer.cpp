@@ -1282,6 +1282,10 @@ void MCStreamer::emitCOFFLinkPin(MCSymbol const *Symbol, unsigned Log2Modulus,
 
 void MCStreamer::emitCOFFLinkFact(uint64_t Kind) {}
 
+void MCStreamer::emitCOFFKCFIThunk(const MCSymbol *Thunk, unsigned Kind,
+                                   uint32_t Type, uint32_t Marker,
+                                   uint32_t Offset, const MCSymbol *Mismatch) {}
+
 /// EmitRawText - If this file is backed by an assembly streamer, this dumps
 /// the specified string in the output .s file.  This capability is
 /// indicated by the hasRawTextSupport() predicate.

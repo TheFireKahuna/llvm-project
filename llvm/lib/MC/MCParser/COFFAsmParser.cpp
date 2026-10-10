@@ -72,6 +72,8 @@ class COFFAsmParser : public MCAsmParserExtension {
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSecNum>(".secnum");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSecOffset>(".secoffset");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkPin>(".linkpin");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkKCFIThunk>(
+        ".linkkcfithunk");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFact>(
         ".linktypeprefixes");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFact>(
@@ -140,6 +142,7 @@ class COFFAsmParser : public MCAsmParserExtension {
   bool parseDirectiveCGProfile(StringRef, SMLoc);
   bool parseDirectiveLinkPin(StringRef, SMLoc);
   bool parseDirectiveLinkFact(StringRef, SMLoc);
+  bool parseDirectiveLinkKCFIThunk(StringRef, SMLoc);
   bool parseDirectiveSecNum(StringRef, SMLoc);
   bool parseDirectiveSecOffset(StringRef, SMLoc);
 
@@ -622,6 +625,58 @@ bool COFFAsmParser::parseDirectiveLinkFact(StringRef Directive, SMLoc) {
   if (parseEOL())
     return true;
   getStreamer().emitCOFFLinkFact(Kind);
+  return false;
+}
+
+/// parseDirectiveLinkKCFIThunk
+///  ::= .linkkcfithunk thunk, (dispatch|check|vfn_check), type, marker,
+///                     offset, mismatch
+bool COFFAsmParser::parseDirectiveLinkKCFIThunk(StringRef, SMLoc) {
+  MCSymbol *Thunk, *Mismatch;
+  StringRef KindName;
+  int64_t Type, Marker, Offset;
+  if (getParser().parseSymbol(Thunk))
+    return TokError("expected identifier in directive");
+  if (getParser().parseComma())
+    return true;
+  SMLoc KindLoc = getLexer().getLoc();
+  if (getParser().parseIdentifier(KindName))
+    return TokError("expected identifier in directive");
+  unsigned Kind = StringSwitch<unsigned>(KindName)
+                      .Case("dispatch", COFF::LinkKCFIThunkDispatch)
+                      .Case("check", COFF::LinkKCFIThunkCheck)
+                      .Case("vfn_check", COFF::LinkKCFIThunkVfnCheck)
+                      .Default(~0u);
+  if (Kind == ~0u)
+    return Error(KindLoc, "expected 'dispatch', 'check' or 'vfn_check'");
+  if (getParser().parseComma())
+    return true;
+  SMLoc TypeLoc = getLexer().getLoc();
+  if (getParser().parseAbsoluteExpression(Type))
+    return true;
+  if (!isUInt<32>(Type))
+    return Error(TypeLoc, "type must be a 32-bit unsigned value");
+  if (getParser().parseComma())
+    return true;
+  SMLoc MarkerLoc = getLexer().getLoc();
+  if (getParser().parseAbsoluteExpression(Marker))
+    return true;
+  if (!isUInt<32>(Marker))
+    return Error(MarkerLoc, "marker must be a 32-bit unsigned value");
+  if (getParser().parseComma())
+    return true;
+  SMLoc OffsetLoc = getLexer().getLoc();
+  if (getParser().parseAbsoluteExpression(Offset))
+    return true;
+  if (!isUInt<32>(Offset))
+    return Error(OffsetLoc, "offset must be a 32-bit unsigned value");
+  if (getParser().parseComma())
+    return true;
+  if (getParser().parseSymbol(Mismatch))
+    return TokError("expected identifier in directive");
+  if (parseEOL())
+    return true;
+  getStreamer().emitCOFFKCFIThunk(Thunk, Kind, Type, Marker, Offset, Mismatch);
   return false;
 }
 

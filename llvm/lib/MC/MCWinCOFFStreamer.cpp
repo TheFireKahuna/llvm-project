@@ -344,6 +344,13 @@ void MCWinCOFFStreamer::emitCOFFLinkFact(uint64_t Kind) {
   getWriter().addLinkFact(Kind);
 }
 
+void MCWinCOFFStreamer::emitCOFFKCFIThunk(const MCSymbol *Thunk, unsigned Kind,
+                                          uint32_t Type, uint32_t Marker,
+                                          uint32_t Offset,
+                                          const MCSymbol *Mismatch) {
+  getWriter().addKCFIThunk({Thunk, Kind, Type, Marker, Offset, Mismatch});
+}
+
 void MCWinCOFFStreamer::emitCommonSymbol(MCSymbol *S, uint64_t Size,
                                          Align ByteAlignment) {
   auto *Symbol = static_cast<MCSymbolCOFF *>(S);

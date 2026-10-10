@@ -67,6 +67,7 @@ define x86_64_sysvcc void @f5(ptr %p) nounwind {
 ; CHECK:       .globl __llvm_kcfi_dispatch_12345678
 ; CHECK-NEXT:  .p2align 4
 ; CHECK-NEXT:  __llvm_kcfi_dispatch_12345678:
+; CHECK-NEXT:    .linkkcfithunk __llvm_kcfi_dispatch_12345678, dispatch, 0x12345678, 0xdeadbeef, 0, __llvm_kcfi_mismatch_12345678
 ; CHECK-NEXT:    testl $4080, %eax
 ; CHECK-NEXT:    je __llvm_kcfi_mismatch_12345678
 ; CHECK-NEXT:    movabsq $1311768467969322430, %r11 # imm = 0x12345678B8DEADBE
@@ -78,6 +79,7 @@ define x86_64_sysvcc void @f5(ptr %p) nounwind {
 ; CHECK-NEXT:  .section .text,"xr",discard,__llvm_kcfi_check_00000010
 ; CHECK:       .p2align 4
 ; CHECK-NEXT:  __llvm_kcfi_check_00000010:
+; CHECK-NEXT:    .linkkcfithunk __llvm_kcfi_check_00000010, check, 0x00000010, 0xdeadbeef, 0, __llvm_kcfi_check_mismatch_00000010
 ; CHECK-NEXT:    testl $4080, %ecx
 ; CHECK-NEXT:    je __llvm_kcfi_check_mismatch_00000010
 ; CHECK-NEXT:    movabsq $71821077950, %r11 # imm = 0x10B8DEADBE
