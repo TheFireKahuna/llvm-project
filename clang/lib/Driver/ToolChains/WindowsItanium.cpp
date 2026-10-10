@@ -11,6 +11,7 @@
 #include "clang/Driver/Driver.h"
 #include "clang/Options/Options.h"
 #include "llvm/Option/ArgList.h"
+#include "llvm/Support/VirtualFileSystem.h"
 
 using namespace clang::driver;
 using namespace clang::driver::toolchains;
@@ -119,8 +120,9 @@ void WindowsItaniumToolChain::addSystemLibArgs(const ArgList &Args,
   // wincrt provides the start-up code and bridges the Universal CRT to the
   // Itanium C++ ABI. ucrtbase.dll exports memcpy, memset and the other
   // functions that Microsoft ships in vcruntime.lib rather than ucrt.lib, and
-  // clang_rt.ucrt_memory.lib imports them. oldnames.lib maps the POSIX names
-  // to the Universal CRT's underscored ones, as it does for MSVC.
+  // clang_rt.ucrt_memory.lib imports them. clang_rt.aligned_alloc, built
+  // beside wincrt, provides aligned_alloc and posix_memalign, which the
+  // Universal CRT lacks. oldnames.lib maps the POSIX names to the Universal
   // CRT's underscored ones, as it does for MSVC. Every image registers its
   // termination functions with the process's registries, and ends the process
   // through exit, which clang_rt.wincrt_dynamic.dll holds; with -static they
@@ -134,6 +136,8 @@ void WindowsItaniumToolChain::addSystemLibArgs(const ArgList &Args,
                                       : "wincrt_dynamic")));
   CmdArgs.push_back(Args.MakeArgString(
       "-defaultlib:" + getCompilerRTBasename(Args, "ucrt_memory")));
+  CmdArgs.push_back(Args.MakeArgString(
+      "-defaultlib:" + getCompilerRTBasename(Args, "aligned_alloc")));
   //
   // The API-set umbrella comes last, so that kernel32.lib still binds what it
   // covers, while registry, security, COM and shell-core functions bind to the

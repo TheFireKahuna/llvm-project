@@ -112,6 +112,20 @@ void tools::windowsitanium::Linker::ConstructJob(
           << A->getSpelling() << GuardArgs;
   }
 
+  // Every executable embeds a manifest, which keeps a loose manifest or a
+  // .local redirection from changing what the loader binds. On Windows
+  // Itanium it is the manifest shipped beside wincrt, which requests the
+  // segment heap that wincrt's executable start-up checks for.
+  if (!IsDLL) {
+    CmdArgs.push_back("-manifest:embed");
+    if (TC.getTriple().isWindowsItaniumEnvironment()) {
+      SmallString<128> Manifest(
+          llvm::sys::path::parent_path(TC.getCompilerRT(Args, "wincrt")));
+      llvm::sys::path::append(Manifest, "segment_heap.manifest");
+      CmdArgs.push_back(Args.MakeArgString("-manifestinput:" + Manifest));
+    }
+  }
+
   std::vector<std::string> LibDirs = Args.getAllArgValues(options::OPT_L);
   TC.addSystemLibraryDirs(Args, LibDirs);
   for (const std::string &Dir : TC.getFilePaths())

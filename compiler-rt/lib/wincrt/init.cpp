@@ -57,6 +57,15 @@ void __cdecl runTerminators() {
   __atomic_store_n(&TerminationComplete, 1, __ATOMIC_RELEASE);
 }
 
+// The heap's signature, which the Windows heap manager keeps at offset 0x10
+// of every heap and which tells a segment heap from an NT heap.
+bool isSegmentHeap(HANDLE Heap) {
+  uint32_t Signature;
+  __builtin_memcpy(&Signature, reinterpret_cast<const char *>(Heap) + 0x10,
+                   sizeof(Signature));
+  return Signature == 0xDDEEDDEE;
+}
+
 // The filter ntdll runs for an exception that no frame of its thread handled,
 // at a thread's start, in the thread pool and at a fiber's start. An Itanium
 // exception that gets here has no handler; resuming its raise makes
@@ -91,6 +100,12 @@ void initializeExecutable() {
   __wincrt_register_executable(runTerminators);
   if (_matherr)
     __setusermatherr(_matherr);
+  // Only the executable's manifest selects the segment heap, so a process
+  // started without the executable's activation context would silently run
+  // on the NT heap.
+  if (!isSegmentHeap(GetProcessHeap()))
+    fatal("the executable requires the segment heap, which its manifest "
+          "selects");
   if (!initializeImage())
     fatal("a C initializer failed");
 }

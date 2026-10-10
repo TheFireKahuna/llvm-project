@@ -123,4 +123,11 @@ foreach(arch ${BUILTIN_SUPPORTED_ARCH})
   file(CONFIGURE OUTPUT ${output_dir}/m.lib CONTENT "!<arch>\n"
        NEWLINE_STYLE LF)
   install(FILES ${output_dir}/m.lib DESTINATION ${install_dir} COMPONENT crt)
+
+  # The manifest the driver embeds in every executable, beside wincrt, whose
+  # start-up requires the segment heap it selects.
+  configure_file(segment_heap.manifest
+    ${output_dir}/segment_heap.manifest COPYONLY)
+  install(FILES ${output_dir}/segment_heap.manifest
+    DESTINATION ${install_dir} COMPONENT crt)
 endforeach()

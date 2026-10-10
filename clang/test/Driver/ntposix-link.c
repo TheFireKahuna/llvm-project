@@ -11,6 +11,7 @@
 // RUN:       --implicit-check-not=dllcrt.obj \
 // RUN:       --implicit-check-not=-defaultlib:ucrt
 // EXE:      lld-link{{(.exe)?}}" "-out:a.exe" "-machine:x64" "-nologo" "-lldignoreenv"
+// EXE-SAME: "-manifest:embed"
 // EXE-SAME: "[[LIB:[^"]*]]{{/|\\\\}}crt1.obj" "[[LIB]]{{/|\\\\}}crt_do_start.obj"
 // EXE-SAME: "[[LIB]]{{/|\\\\}}crt_tls.obj" "[[LIB]]{{/|\\\\}}crt_tls_cleanup.obj"
 // EXE-SAME: "[[LIB]]{{/|\\\\}}crt_gs.obj" "[[LIB]]{{/|\\\\}}crt_cfg.obj"

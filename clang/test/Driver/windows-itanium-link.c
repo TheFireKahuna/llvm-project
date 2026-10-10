@@ -14,12 +14,15 @@
 // RUN:       --implicit-check-not=user32 --implicit-check-not=gdi32 \
 // RUN:       --implicit-check-not=advapi32 --implicit-check-not=shell32
 // C:      lld-link{{(.exe)?}}" "-out:a.exe" "-machine:x64" "-nologo" "-lldignoreenv"
+// C-SAME: "-manifest:embed"
+// C-SAME: "-manifestinput:{{[^"]*}}segment_heap.manifest"
 // C-SAME: "{{[^"]*}}.o"
 // C-SAME: "-defaultlib:libunwind.dll.lib"
 // C-SAME: "-defaultlib:clang_rt.builtins{{[^"]*}}.lib"
 // C-SAME: "-defaultlib:clang_rt.wincrt{{(-x86_64)?}}.lib"
 // C-SAME: "-defaultlib:clang_rt.wincrt_dynamic{{[^"]*}}.lib"
 // C-SAME: "-defaultlib:clang_rt.ucrt_memory{{[^"]*}}.lib"
+// C-SAME: "-defaultlib:clang_rt.aligned_alloc{{[^"]*}}.lib"
 // C-SAME: "-defaultlib:ucrt.lib" "-defaultlib:kernel32.lib"
 // C-SAME: "-defaultlib:ntdll.lib" "-defaultlib:oldnames.lib"
 // C-SAME: "-defaultlib:onecore_apiset.lib"
@@ -106,6 +109,7 @@
 // RUN: %clangxx -### --target=x86_64-unknown-windows-itanium %s -nolibc 2>&1 \
 // RUN:   | FileCheck --check-prefix=NOLIBC %s \
 // RUN:       --implicit-check-not=wincrt \
+// RUN:       --implicit-check-not=aligned_alloc \
 // RUN:       --implicit-check-not=ucrt.lib
 // NOLIBC: "-defaultlib:libc++.dll.lib"
 // NOLIBC-SAME: "-nodefaultlib:msvcrt"
