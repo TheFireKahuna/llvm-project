@@ -601,6 +601,14 @@ sub-projects. Nearly all of these variable names begin with `LLVM_`.
     can access it, all built executables will be linked against the LLVM libc
     overlay before linking against the system libc. Defaults to OFF.
 
+**LLVM_ENABLE_LONG_PATHS_MANIFEST**:BOOL
+
+:   On Windows, embed a manifest in every LLVM executable that declares it
+    long-path aware, so that the Win32 functions that cannot take a long path
+    prefix accept paths longer than `MAX_PATH` where the system allows it.
+    Defaults to ON when the manifest tool is `llvm-mt` or the host toolchain
+    targets Windows Itanium or NT-POSIX, and OFF otherwise.
+
 **LLVM_ENABLE_LTO**:STRING
 
 :   Add `-flto` or `-flto=` flags to the compile and link command lines,

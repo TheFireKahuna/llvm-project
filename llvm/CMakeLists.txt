@@ -639,6 +639,18 @@ set(LLVM_TARGET_ARCH "host"
 
 set(LLVM_ENABLE_LIBXML2 "ON" CACHE STRING "Use libxml2 if available. Can be ON, OFF, or FORCE_ON")
 
+# The manifest is embedded by the manifest tool CMake runs, or by the linker
+# that WindowsItaniumRules.cmake hands it to, so it is on by default only where
+# that is one of LLVM's own tools.
+if(CMAKE_MT MATCHES "llvm-mt" OR WIN32_ITANIUM OR WIN32_NTPOSIX)
+  set(llvm_long_paths_manifest_default ON)
+else()
+  set(llvm_long_paths_manifest_default OFF)
+endif()
+option(LLVM_ENABLE_LONG_PATHS_MANIFEST
+  "Embed a manifest that declares Windows executables long-path aware"
+  ${llvm_long_paths_manifest_default})
+
 set(LLVM_USE_STATIC_LIBXML2 "OFF" CACHE BOOL "Use static version of libxml2. Can be ON, or OFF")
 
 option(LLVM_ENABLE_LIBEDIT "Use libedit if available." ON)
