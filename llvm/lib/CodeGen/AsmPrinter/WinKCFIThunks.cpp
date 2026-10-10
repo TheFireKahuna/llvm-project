@@ -35,6 +35,71 @@
 
 using namespace llvm;
 
+MapVector<uint32_t, AsmPrinter::KCFIOpenType>
+AsmPrinter::getKCFIOpenTypes(const Module &M) const {
+  // A module opens a type statically by taking the address of a known import
+  // of the type, which is then the only kind of foreign target the image can
+  // hold for it, and dynamically where a pointer of the type may come from
+  // foreign code.
+  MapVector<uint32_t, KCFIOpenType> OpenTypes;
+  for (const Function &F : M)
+    if (const MDNode *MD = F.getMetadata(LLVMContext::MD_kcfi_type))
+      if (F.isDeclaration() && F.hasDLLImportStorageClass() &&
+          F.hasMetadata("kcfi_import") && F.hasAddressTaken())
+        OpenTypes[mdconst::extract<ConstantInt>(MD->getOperand(0))
+                      ->getZExtValue()]
+            .Imports.push_back(&F);
+  if (const NamedMDNode *Dynamic = M.getNamedMetadata("kcfi.dynamic"))
+    for (const MDNode *MD : Dynamic->operands())
+      OpenTypes[mdconst::extract<ConstantInt>(MD->getOperand(0))
+                    ->getZExtValue()]
+          .Dynamic = true;
+  return OpenTypes;
+}
+
+void AsmPrinter::emitKCFIList(MCSymbol *List, uint32_t Type,
+                              ArrayRef<const Function *> Imports) {
+  // The pieces of a type's list are in sections that the linker merges in the
+  // order of their names: the head, in a COMDAT, which the type's open routine
+  // refers to past its first word; each object's entries; and the trailer,
+  // kept with the head, whose odd word ends the list. Both hold a word unique
+  // to the type, so that no two types' pieces are folded, and the entries are
+  // in no COMDAT, so that none is.
+  std::string Prefix = COFF::KCFIListSectionPrefix +
+                       utohexstr(Type, /*LowerCase=*/true, /*Width=*/8) + "_";
+  unsigned Characteristics =
+      COFF::IMAGE_SCN_CNT_INITIALIZED_DATA | COFF::IMAGE_SCN_MEM_READ;
+  OutStreamer->switchSection(OutContext.getCOFFSection(
+      Prefix + "a", Characteristics | COFF::IMAGE_SCN_LNK_COMDAT,
+      List->getName(), COFF::IMAGE_COMDAT_SELECT_ANY));
+  OutStreamer->emitValueToAlignment(Align(8));
+  OutStreamer->emitSymbolAttribute(List, MCSA_Global);
+  OutStreamer->emitLabel(List);
+  OutStreamer->emitInt64(Type);
+
+  // An entry is the address of a cell holding a valid target. An import's is
+  // its import address table entry, which holds the address the loader bound.
+  // Where static data holds the import's thunk instead, which only the linker
+  // knows, the linker lists a cell holding the thunk, as the records ask.
+  if (!Imports.empty()) {
+    OutStreamer->switchSection(
+        OutContext.getCOFFSection(Prefix + "m", Characteristics));
+    OutStreamer->emitValueToAlignment(Align(8));
+    for (const Function *F : Imports)
+      OutStreamer->emitValue(
+          MCSymbolRefExpr::create(
+              OutContext.getOrCreateSymbol("__imp_" + getSymbol(F)->getName()),
+              OutContext),
+          8);
+    OutStreamer->emitCOFFLinkFact(COFF::LinkRecordKCFIImportLists);
+  }
+
+  OutStreamer->switchSection(OutContext.getCOFFSection(
+      Prefix + "z", Characteristics | COFF::IMAGE_SCN_LNK_COMDAT,
+      List->getName(), COFF::IMAGE_COMDAT_SELECT_ASSOCIATIVE));
+  OutStreamer->emitValueToAlignment(Align(8));
+  OutStreamer->emitInt64(uint64_t(Type) << 1 | 1);
+}
 
 void AsmPrinter::emitKCFIFunctionStart(MCSymbol *Sym, int Selection,
                                        Align Alignment) {
@@ -116,6 +181,10 @@ void AsmPrinter::emitKCFIThunks(Module &M) {
       });
   assert(CheckRoutine != Routines.end());
 
+  MapVector<uint32_t, KCFIOpenType> OpenTypes = getKCFIOpenTypes(M);
+  // A module defines the scanners only if it opens a type, whose mismatch
+  // routines pass their lists to them. A module that only calls thunks
+  // references no scanner, so emitting them there would be dead COMDATs.
   bool AnyThunk = false;
   MCSymbol *TrapFn = OutContext.getOrCreateSymbol(COFF::KCFITrap);
   MCSymbol *CodeStart = nullptr;
@@ -162,7 +231,7 @@ void AsmPrinter::emitKCFIThunks(Module &M) {
       // this module defines if it opens the type.
       MCSymbol *Mismatch =
           OutContext.getOrCreateSymbol(Kind.Routine->MismatchPrefix + Hex);
-      if (!Mismatch->isVariable()) {
+      if (!Mismatch->isVariable() && !OpenTypes.count(MD->Type)) {
         OutStreamer->emitSymbolAttribute(Mismatch, MCSA_Weak);
         OutStreamer->emitAssignment(
             Mismatch, MCSymbolRefExpr::create(TrapFn, OutContext));
@@ -188,12 +257,40 @@ void AsmPrinter::emitKCFIThunks(Module &M) {
     }
   }
 
+  for (const KCFIRoutineKind &Routine : Routines) {
+    if (OpenTypes.empty())
+      break;
+    for (bool Dynamic : {false, true}) {
+      emitKCFIFunctionStart(
+          OutContext.getOrCreateSymbol(Dynamic ? Routine.DynamicScanner
+                                               : Routine.Scanner),
+          COFF::IMAGE_COMDAT_SELECT_ANY, Align(16));
+      emitKCFIScanner(Routine, Dynamic, Pattern, PrefixNops);
+    }
+  }
+
   // The trap is the default of every type's mismatch routine, a static
   // scanner's fall-through, and a type-0 member thunk's miss.
-  if (!AnyThunk)
+  if (!AnyThunk && OpenTypes.empty())
     return;
 
   emitKCFIFunctionStart(TrapFn, COFF::IMAGE_COMDAT_SELECT_ANY, Align(16));
   emitKCFIFastFail();
 
+  for (const auto &[Type, Open] : OpenTypes) {
+    std::string Hex = utohexstr(Type, /*LowerCase=*/true, /*Width=*/8);
+    MCSymbol *List = OutContext.getOrCreateSymbol(COFF::KCFIListPrefix + Hex);
+    for (const KCFIRoutineKind &Routine : Routines) {
+      // A dynamic opener's routine ends with a trap, so that the linker's
+      // choice of the largest definition prefers it to a static opener's. A
+      // routine is only reached by a jump on a mismatch, so it is not aligned
+      // beyond an instruction.
+      emitKCFIFunctionStart(
+          OutContext.getOrCreateSymbol(Routine.MismatchPrefix + Hex),
+          COFF::IMAGE_COMDAT_SELECT_LARGEST,
+          Align(getKCFIOpenRoutineAlignment()));
+      emitKCFIOpenRoutine(Routine, List, Open.Dynamic);
+    }
+    emitKCFIList(List, Type, Open.Imports);
+  }
 }

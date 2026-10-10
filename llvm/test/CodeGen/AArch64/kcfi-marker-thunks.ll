@@ -57,7 +57,7 @@ define void @f2(ptr %p) {
 ; CHECK-NEXT:    ldr x16, [x16, :lo12:__guard_check_icall_fptr]
 ; CHECK-NEXT:    br x16
 
-;; The local thunk shares the type's mismatch routine and the open routine.
+;; The local thunk shares the type's mismatch routine.
 ; CHECK:       .weak __llvm_code_start
 ; CHECK-NEXT:  __llvm_code_start = __llvm_code_empty
 ; CHECK-NEXT:  .weak __llvm_code_end
@@ -103,8 +103,11 @@ define void @f2(ptr %p) {
 ; CHECK-NEXT:    mov w0, #64
 ; CHECK-NEXT:    brk #0xf003
 ; CHECK-NOT:   __llvm_kcfi_check_mismatch_12345678 =
-;; The scanners and the trap, the default of the mismatch routine, which every
-;; object with a thunk emits.
+;; The trap, the default of the mismatch routine, which every object with a
+;; thunk emits. A module that opens no type references no scanner, so it emits
+;; none.
+; CHECK-NOT:   __llvm_kcfi_check_open
+; CHECK:       .section .text,"xr",discard,__llvm_kcfi_trap
 ; CHECK:       .globl __llvm_kcfi_trap
 ; CHECK-NEXT:  .p2align 4
 ; CHECK-NEXT:  __llvm_kcfi_trap:

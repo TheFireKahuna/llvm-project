@@ -86,6 +86,7 @@ define x86_64_sysvcc void @f5(ptr %p) nounwind {
 ; CHECK-NEXT:    cmpq %r11, -8(%rcx)
 ; CHECK-NEXT:    jne __llvm_kcfi_check_mismatch_00000010
 ; CHECK-NEXT:    jmpq *__guard_check_icall_fptr(%rip)
+;; The local thunks share the types' mismatch routines.
 ; CHECK:       .weak __llvm_code_start
 ; CHECK-NEXT:  __llvm_code_start = __llvm_code_empty
 ; CHECK-NEXT:  .weak __llvm_code_end
@@ -144,6 +145,13 @@ define x86_64_sysvcc void @f5(ptr %p) nounwind {
 ; CHECK-NEXT:    movl $64, %ecx
 ; CHECK-NEXT:    int $41
 ; CHECK-NOT:   __llvm_kcfi_mismatch_12345678 =
+
+;; The trap, the default of the mismatch routines, which every object with a
+;; thunk emits. A module that opens no type references no scanner, so it emits
+;; none.
+; CHECK-NOT:   __llvm_kcfi_open
+; CHECK-NOT:   __llvm_kcfi_check_open
+; CHECK:       .section .text,"xr",discard,__llvm_kcfi_trap
 ; CHECK:       .globl __llvm_kcfi_trap
 ; CHECK-NEXT:  .p2align 4
 ; CHECK-NEXT:  __llvm_kcfi_trap:
