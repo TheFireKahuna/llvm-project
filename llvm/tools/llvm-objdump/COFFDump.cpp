@@ -523,7 +523,12 @@ static void printImportTables(const COFFObjectFile *Obj) {
                      static_cast<uint32_t>(Dir->ImportAddressTableRVA));
     outs() << "    DLL Name: " << Name << "\n";
     outs() << "    Hint/Ord  Name\n";
-    for (const ImportedSymbolRef &Entry : DirRef.imported_symbols()) {
+    // The loader walks the import lookup table, so the import address table
+    // need not end in a null entry when there is one. Only older linkers that
+    // omit the lookup table leave the address table to be walked.
+    for (const ImportedSymbolRef &Entry :
+         Dir->ImportLookupTableRVA ? DirRef.lookup_table_symbols()
+                                   : DirRef.imported_symbols()) {
       bool IsOrdinal;
       if (Entry.isOrdinal(IsOrdinal))
         return;

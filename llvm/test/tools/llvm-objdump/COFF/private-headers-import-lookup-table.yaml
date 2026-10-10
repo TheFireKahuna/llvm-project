@@ -1,0 +1,63 @@
+## Check that the import tables are printed from the import lookup table,
+## which the loader walks, and from the import address table only when an
+## older linker left the lookup table out. An address table need not end in
+## a null entry: here a.dll's table is followed by a non-null pointer.
+
+# RUN: yaml2obj %s -o %t.exe
+# RUN: llvm-objdump -p %t.exe | FileCheck %s
+
+# CHECK:      The Import Tables:
+# CHECK-NEXT:   lookup 00002060 time 00000000 fwd 00000000 name 00002090 addr 00002000
+# CHECK-EMPTY:
+# CHECK-NEXT:     DLL Name: a.dll
+# CHECK-NEXT:     Hint/Ord  Name
+# CHECK-NEXT:            1  funcA
+# CHECK-EMPTY:
+# CHECK-NEXT:   lookup 00000000 time 00000000 fwd 00000000 name 00002098 addr 00002010
+# CHECK-EMPTY:
+# CHECK-NEXT:     DLL Name: b.dll
+# CHECK-NEXT:     Hint/Ord  Name
+# CHECK-NEXT:            2  funcB
+# CHECK-EMPTY:
+
+--- !COFF
+OptionalHeader:
+  AddressOfEntryPoint: 0
+  ImageBase:       5368709120
+  SectionAlignment: 4096
+  FileAlignment:   512
+  MajorOperatingSystemVersion: 6
+  MinorOperatingSystemVersion: 0
+  MajorImageVersion: 0
+  MinorImageVersion: 0
+  MajorSubsystemVersion: 6
+  MinorSubsystemVersion: 0
+  Subsystem:       IMAGE_SUBSYSTEM_WINDOWS_CUI
+  DLLCharacteristics: [ ]
+  SizeOfStackReserve: 1048576
+  SizeOfStackCommit: 4096
+  SizeOfHeapReserve: 1048576
+  SizeOfHeapCommit: 4096
+  ImportTable:
+    RelativeVirtualAddress: 0x2020
+    Size:            60
+  IAT:
+    RelativeVirtualAddress: 0x2000
+    Size:            32
+header:
+  Machine:         IMAGE_FILE_MACHINE_AMD64
+  Characteristics: [ IMAGE_FILE_EXECUTABLE_IMAGE, IMAGE_FILE_LARGE_ADDRESS_AWARE ]
+sections:
+  - Name:            .rdata
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ ]
+    VirtualAddress:  0x2000
+    VirtualSize:     160
+    ## 0x2000: a.dll's address table, followed by a non-null pointer.
+    ## 0x2010: b.dll's address table.
+    ## 0x2020: the import directory: a.dll, b.dll with no lookup table, null.
+    ## 0x2060: a.dll's lookup table.
+    ## 0x2070: hint/name entries for funcA and funcB.
+    ## 0x2090: the DLL names.
+    SectionData:     70200000000000005C22004001000000802000000000000000000000000000006020000000000000000000009020000000200000000000000000000000000000982000001020000000000000000000000000000000000000000000000000000070200000000000000000000000000000010066756E6341000000000000000000020066756E6342000000000000000000612E646C6C000000622E646C6C000000
+symbols:         []
+...
