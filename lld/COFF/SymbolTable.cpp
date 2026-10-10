@@ -438,7 +438,7 @@ void SymbolTable::reportUnresolvable() {
     StringRef name = undef->getName();
     if (name.starts_with("__imp_")) {
       Symbol *imp = find(name.substr(strlen("__imp_")));
-      if (Defined *def = dyn_cast_or_null<Defined>(imp)) {
+      if (Defined *def = imp ? imp->getDefined() : nullptr) {
         def->isUsedInRegularObj = true;
         continue;
       }
@@ -1401,9 +1401,27 @@ void SymbolTable::assignExportOrdinals() {
   for (Export &e : exports)
     if (e.ordinal == 0)
       e.ordinal = ++max;
-  if (max > std::numeric_limits<uint16_t>::max())
-    Fatal(ctx) << "too many exported symbols (got " << max << ", max "
-               << Twine(std::numeric_limits<uint16_t>::max()) << ")";
+  if (max <= std::numeric_limits<uint16_t>::max())
+    return;
+
+  // Name the files that define the most exported symbols, which are where the
+  // export set has to be narrowed.
+  MapVector<InputFile *, uint32_t> counts;
+  for (Export &e : exports)
+    if (e.sym)
+      ++counts[e.sym->getFile()];
+  SmallVector<std::pair<InputFile *, uint32_t>, 0> byCount(counts.takeVector());
+  llvm::stable_sort(byCount, [](const auto &a, const auto &b) {
+    return a.second > b.second;
+  });
+  auto diag = Fatal(ctx);
+  diag << "too many exported symbols (got " << max << ", max "
+       << Twine(std::numeric_limits<uint16_t>::max()) << ")";
+  constexpr size_t maxFiles = 10;
+  for (const auto &[file, count] : ArrayRef(byCount).take_front(maxFiles))
+    diag << "\n>>> " << count << " defined in " << file;
+  if (byCount.size() > maxFiles)
+    diag << "\n>>> and " << byCount.size() - maxFiles << " more files";
 }
 
 void SymbolTable::parseModuleDefs(StringRef path) {

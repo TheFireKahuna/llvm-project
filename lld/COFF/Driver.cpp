@@ -1119,6 +1119,10 @@ void LinkerDriver::createImportLibrary(bool asLib) {
 
   auto getExports = [](SymbolTable &symtab,
                        std::vector<COFFShortExport> &exports) {
+    // A member that imports by name carries a hint rather than an ordinal:
+    // the export's index in the export name table, whose order fixupExports
+    // has already set.
+    uint16_t hint = 0;
     for (Export &e1 : symtab.exports) {
       COFFShortExport e2;
       e2.Name = std::string(e1.name);
@@ -1126,7 +1130,7 @@ void LinkerDriver::createImportLibrary(bool asLib) {
       e2.ExtName = std::string(e1.extName);
       e2.ExportAs = std::string(e1.exportAs);
       e2.ImportName = std::string(e1.importName);
-      e2.Ordinal = e1.ordinal;
+      e2.Ordinal = e1.noname ? e1.ordinal : hint++;
       e2.Noname = e1.noname;
       e2.Data = e1.data;
       e2.Private = e1.isPrivate;

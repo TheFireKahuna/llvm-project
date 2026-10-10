@@ -33,6 +33,11 @@ from the [LLVM releases web site](https://llvm.org/releases/).
 
 ### COFF Improvements
 
+* In an import library LLD writes, a member that imports by name carries the
+  export's index in the DLL's export name table as its hint, as link.exe
+  writes it, so the loader finds the import without a binary search. Before,
+  the hint was the export's ordinal, or 0 without an explicit one.
+
 * `/delay:unload` is honored rather than ignored: the image gets a copy of the
   delay-load import address table in `UnloadDelayImportTable`, which
   `__FUnloadDelayLoadedDLL2` restores before it frees the library.
@@ -93,6 +98,10 @@ from the [LLVM releases web site](https://llvm.org/releases/).
 
 * The error for a DLL that would export more than 65535 symbols names the
   files that define the most exported symbols.
+
+* An undefined `__imp_X` whose `X` is defined through a weak alias is no longer
+  reported as unresolvable before LTO, as the link without LTO resolves it
+  with a local import.
 
 * `-start-stop-symbols` defines a referenced `__start_X` and `__stop_X`, where
   `X` is a C identifier, around the input sections named `X` or `X$*`, as ELF
