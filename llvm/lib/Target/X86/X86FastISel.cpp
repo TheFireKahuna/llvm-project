@@ -3540,8 +3540,10 @@ bool X86FastISel::fastLowerCall(CallLoweringInfo &CLI) {
   } else {
     // Direct call.
     assert(GV && "Not a direct call");
-    // See if we need any target-specific flags on the GV operand.
-    unsigned char OpFlags = Subtarget->classifyGlobalFunctionReference(GV);
+    // See if we need any target-specific flags on the GV operand. A library
+    // call is named by its symbol and is classified as one.
+    unsigned char OpFlags = Subtarget->classifyGlobalFunctionReference(
+        Symbol ? nullptr : GV, *FuncInfo.MF->getFunction().getParent());
     if (OpFlags == X86II::MO_PLT && !Is64Bit &&
         TM.getRelocationModel() == Reloc::Static && isa<Function>(GV) &&
         cast<Function>(GV)->isIntrinsic())
