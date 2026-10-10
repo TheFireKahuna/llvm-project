@@ -643,6 +643,9 @@ void LinkerDriver::parseDirectives(InputFile *file) {
       parseNumbers(arg->getValue(), &ctx.config.stackReserve,
                    &ctx.config.stackCommit);
       break;
+    case OPT_guardsym:
+      parseGuardSym(file, arg->getValue());
+      break;
     case OPT_subsystem: {
       bool gotVersion = false;
       parseSubsystem(arg->getValue(), &ctx.config.subsystem,
@@ -657,7 +660,6 @@ void LinkerDriver::parseDirectives(InputFile *file) {
     // Only add flags here that link.exe accepts in
     // `#pragma comment(linker, "/flag")`-generated sections.
     case OPT_editandcontinue:
-    case OPT_guardsym:
     case OPT_throwingnew:
     case OPT_inferasanlibs:
     case OPT_inferasanlibs_no:
@@ -667,6 +669,18 @@ void LinkerDriver::parseDirectives(InputFile *file) {
                << toString(file) << ")";
     }
   }
+}
+// LTO's output repeats in its directives what the bitcode gave, except for
+// what code generation adds: the functions it suppresses as Control Flow Guard
+// targets.
+void LinkerDriver::parseGuardSymDirectives(ObjFile *file) {
+  StringRef s = file->getDirectives();
+  if (s.empty())
+    return;
+  ArgParser parser(ctx);
+  for (auto *arg : parser.parseDirectives(s).args)
+    if (arg->getOption().getID() == OPT_guardsym)
+      parseGuardSym(file, arg->getValue());
 }
 
 // Find file from search paths. You can omit ".obj", this function takes
@@ -1309,6 +1323,27 @@ static void markAddrsig(Symbol *s) {
   if (auto *d = dyn_cast_or_null<Defined>(s))
     if (SectionChunk *c = dyn_cast_or_null<SectionChunk>(d->getChunk()))
       c->keepUnique = true;
+}
+
+// Finds the functions that /guardsym suppresses. A directive names a symbol of
+// the object that gives it, which may be local to it, and the command line a
+// global symbol.
+static void findGuardSuppressed(COFFLinkerContext &ctx) {
+  for (auto [file, name] : ctx.config.guardSymArgs) {
+    Symbol *s = nullptr;
+    if (auto *obj = dyn_cast_or_null<ObjFile>(file))
+      for (Symbol *sym : obj->getSymbols())
+        if (sym && sym->getName() == name) {
+          s = sym;
+          break;
+        }
+    ctx.forEachSymtab([&](SymbolTable &symtab) {
+      if (!s)
+        s = symtab.find(name);
+    });
+    if (auto *d = dyn_cast_or_null<Defined>(s))
+      ctx.guardSuppressed.push_back(d);
+  }
 }
 
 static void findKeepUniqueSections(COFFLinkerContext &ctx) {
@@ -1999,6 +2034,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // Handle /guard:cf
   if (auto *arg = args.getLastArg(OPT_guard))
     parseGuard(arg->getValue());
+
+  // Handle /guardsym
+  for (auto *arg : args.filtered(OPT_guardsym))
+    parseGuardSym(nullptr, arg->getValue());
 
   // Handle /heap
   if (auto *arg = args.getLastArg(OPT_heap))
@@ -2850,6 +2889,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // resolve symbols and write indices, but don't generate native code or link).
   ltoCompilationDone = true;
   ctx.forEachSymtab([](SymbolTable &symtab) { symtab.compileBitcodeFiles(); });
+  if (config->guardCF & GuardCFLevel::CF)
+    for (ObjFile *f : ctx.objFileInstances)
+      if (f->ltoOutput)
+        parseGuardSymDirectives(f);
 
   ctx.forEachSymtab([&](SymbolTable &symtab) {
     if (Defined *d =
@@ -3037,6 +3080,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
 
   // Needs to happen after the last call to addFile().
   convertResources();
+
+  if (config->guardCF & GuardCFLevel::CF)
+    findGuardSuppressed(ctx);
 
   // Identify identical COMDAT sections to merge them.
   if (config->doICF != ICFLevel::None) {

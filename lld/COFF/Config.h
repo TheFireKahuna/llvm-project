@@ -96,6 +96,7 @@ enum GuardCFLevel {
   CF      = 0x1, /// Emit gfids tables
   LongJmp = 0x2, /// Emit longjmp tables
   EHCont  = 0x4, /// Emit ehcont tables
+  ExportSuppress = 0x8, /// Suppress exports as call targets in the process
   All     = 0x7  /// Enable all protections
 };
 
@@ -172,6 +173,8 @@ struct Configuration {
 
   // /guard:cf
   int guardCF = GuardCFLevel::Off;
+  // /guardsym:symbol,S, with the object whose directives give it, if any
+  std::vector<std::pair<InputFile *, StringRef>> guardSymArgs;
 
   // Used for SafeSEH.
   bool safeSEH = false;

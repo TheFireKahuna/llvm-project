@@ -110,9 +110,26 @@ void LinkerDriver::parseGuard(StringRef fullArg) {
       ctx.config.guardCF |= GuardCFLevel::CF | GuardCFLevel::LongJmp;
     else if (arg.equals_insensitive("ehcont"))
       ctx.config.guardCF |= GuardCFLevel::CF | GuardCFLevel::EHCont;
+    else if (arg.equals_insensitive("exportsuppress"))
+      ctx.config.guardCF |= GuardCFLevel::CF | GuardCFLevel::ExportSuppress;
+    else if (arg.equals_insensitive("noexportsuppress"))
+      ctx.config.guardCF &= ~GuardCFLevel::ExportSuppress;
     else
       Fatal(ctx) << "invalid argument to /guard: " << arg;
   }
+}
+
+// Parses a string in the form of "<symbol>,S", which keeps the function the
+// symbol names listed as a control flow guard target but suppressed. A flag
+// this linker does not know leaves the symbol as it is. file is the object
+// whose directives give the string, if any.
+void LinkerDriver::parseGuardSym(InputFile *file, StringRef arg) {
+  auto [name, flags] = arg.split(',');
+  if (name.empty() || !flags.equals_insensitive("s")) {
+    Warn(ctx) << "/guardsym: ignoring unsupported argument: " << arg;
+    return;
+  }
+  ctx.config.guardSymArgs.push_back({file, name});
 }
 
 // Parses a string in the form of "<subsystem>[,<integer>[.<integer>]]".

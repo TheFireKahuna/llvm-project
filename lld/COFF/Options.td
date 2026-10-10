@@ -422,4 +422,4 @@ def maxilksize : P_priv<"maxilksize">;
 def tlbid : P_priv<"tlbid">;
 def tlbout : P_priv<"tlbout">;
 def verbose_all : P_priv<"verbose">;
-def guardsym : P_priv<"guardsym">;
+def guardsym : P<"guardsym", "Suppress a guard target: <symbol>,S">;

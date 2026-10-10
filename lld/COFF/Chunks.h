@@ -735,6 +735,7 @@ struct ChunkAndOffset {
 };
 
 using SymbolRVASet = llvm::DenseSet<ChunkAndOffset>;
+using SymbolRVAFlags = llvm::DenseMap<ChunkAndOffset, uint8_t>;
 
 // Table which contains symbol RVAs. Used for /safeseh and /guard:cf.
 class RVATableChunk : public NonSectionChunk {
@@ -747,15 +748,19 @@ private:
   SymbolRVASet syms;
 };
 
-// Table which contains symbol RVAs with flags. Used for /guard:ehcont.
+// Table which contains symbol RVAs with flags. Used for the /guard:cf tables
+// when an entry of any of them has a flag, which entryFlags gives for the
+// entries that have one.
 class RVAFlagTableChunk : public NonSectionChunk {
 public:
-  explicit RVAFlagTableChunk(SymbolRVASet s) : syms(std::move(s)) {}
+  explicit RVAFlagTableChunk(SymbolRVASet s, SymbolRVAFlags f)
+      : syms(std::move(s)), entryFlags(std::move(f)) {}
   size_t getSize() const override { return syms.size() * 5; }
   void writeTo(uint8_t *buf) const override;
 
 private:
   SymbolRVASet syms;
+  SymbolRVAFlags entryFlags;
 };
 
 // Windows-specific.

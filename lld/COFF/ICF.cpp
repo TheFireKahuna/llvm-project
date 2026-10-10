@@ -243,12 +243,16 @@ void ICF::run() {
   ScopedTimer t(ctx.icfTimer);
 
   // A program enumerates a run of sections through __start_X and __stop_X, so
-  // folding one of them away would drop an entry.
+  // folding one of them away would drop an entry. A function that the guard
+  // tables mark suppressed differs from one they do not.
   DenseSet<SectionChunk *> uniqueChunks;
   ctx.forEachSymtab([&](SymbolTable &symtab) {
     for (const SymbolTable::SectionRun &run : symtab.sectionRuns)
       uniqueChunks.insert_range(run.chunks);
   });
+  for (Defined *d : ctx.guardSuppressed)
+    if (auto *sc = dyn_cast_or_null<SectionChunk>(d->getChunk()))
+      uniqueChunks.insert(sc);
 
   // Collect only mergeable sections and group by hash value.
   uint32_t nextId = 1;

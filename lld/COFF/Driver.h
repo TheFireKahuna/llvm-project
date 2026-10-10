@@ -157,6 +157,7 @@ private:
 
   // Used by the resolver to parse .drectve section contents.
   void parseDirectives(InputFile *file);
+  void parseGuardSymDirectives(ObjFile *file);
 
   // Parse an /order file. If an option is given, the linker places COMDAT
   // sections int he same order as their names appear in the given file.
@@ -225,6 +226,7 @@ private:
   void parseNumbers(StringRef arg, uint64_t *addr, uint64_t *size = nullptr);
 
   void parseGuard(StringRef arg);
+  void parseGuardSym(InputFile *file, StringRef arg);
 
   // Parses a string in the form of "<integer>[.<integer>]".
   // Minor's default value is 0.

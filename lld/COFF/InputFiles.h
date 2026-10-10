@@ -227,6 +227,8 @@ public:
   // Whether the object was already merged into the final PDB.
   bool mergedIntoPDB = false;
 
+  // True if LTO generated this file.
+  bool ltoOutput = false;
 
   // If the OBJ has a .debug$T stream, this tells how it will be handled.
   TpiSource *debugTypesObj = nullptr;

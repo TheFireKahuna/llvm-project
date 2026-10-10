@@ -983,7 +983,7 @@ void RVAFlagTableChunk::writeTo(uint8_t *buf) const {
     const auto &sym = std::get<0>(t);
     auto &flag = std::get<1>(t);
     flag.rva = sym.inputChunk->getRVA() + sym.offset;
-    flag.flag = 0;
+    flag.flag = entryFlags.lookup(sym);
   }
   llvm::sort(flags,
              [](const RVAFlag &a, const RVAFlag &b) { return a.rva < b.rva; });

@@ -119,6 +119,10 @@ public:
   Configuration config;
 
   DynamicRelocsChunk *dynamicRelocs = nullptr;
+  // The functions that /guardsym keeps listed as Control Flow Guard targets
+  // but suppressed.
+  std::vector<Defined *> guardSuppressed;
+
 };
 
 } // namespace lld::coff
