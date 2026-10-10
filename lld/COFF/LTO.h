@@ -60,6 +60,7 @@ private:
   std::vector<Symbol *> prevailingSyms;
   // The symbols the image exports, found when the first file is added.
   std::optional<llvm::DenseSet<Symbol *>> exportedSyms;
+  bool addedFile = false;
 
   std::string getThinLTOOutputFile(StringRef path);
   llvm::lto::Config createConfig();

@@ -91,9 +91,6 @@ public:
   bool isForeign(ObjFile *file) const {
     return kcfiForeignFiles.contains(file);
   }
-  const llvm::DenseSet<ObjFile *> &getForeignFiles() const {
-    return kcfiForeignFiles;
-  }
 
 private:
   // The KCFI prefixes with a marker; by chunk, the indices of those it holds;

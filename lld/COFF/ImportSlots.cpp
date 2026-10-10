@@ -10,6 +10,7 @@
 #include "COFFLinkerContext.h"
 #include "DLL.h"
 #include "InputFiles.h"
+#include "KCFI.h"
 #include "LocalImports.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
@@ -346,7 +347,7 @@ static bool readsWholeEntry(SectionChunk *sc, const coff_relocation &rel,
     std::optional<LinkSiteForm> form = getDescribedSite(sc, rel);
     return form && *form != LinkSiteAddress;
   }
-  return false;
+  return isKCFIListEntry(sc, rel);
 }
 
 // What the scan of the relocations of the image's sections gathers for the
@@ -922,6 +923,12 @@ void ImportSlotContents::resolve(SlotScan &scan) {
   // keeps its entry: a reference from data, an instruction that takes the
   // entry's address or reads part of it, an object that does not describe its
   // instructions, an export or a root.
+  SmallVector<DefinedImportData *, 0> kcfiRead, kcfiOther;
+  getKCFIImportUses(ctx, kcfiRead, kcfiOther);
+  for (DefinedImportData *imp : kcfiRead)
+    scan.use(imp, SlotScan::Read);
+  for (DefinedImportData *imp : kcfiOther)
+    scan.use(imp, SlotScan::Other);
   for (Export &e : ctx.symtab.exports)
     if (auto *imp = dyn_cast_or_null<DefinedImportData>(e.sym))
       scan.use(imp, SlotScan::Other);

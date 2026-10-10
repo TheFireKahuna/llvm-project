@@ -801,6 +801,13 @@ void IdataContents::create(COFFLinkerContext &ctx) {
     }
   }
 
+  // The bounds of each DLL's KCFI code range that the image imports, which a
+  // KCFI thunk loads together: start, then end, in one 16-byte block of the
+  // import address table.
+  DenseMap<DefinedImportData *, DefinedImportData *> rangeEnds;
+  for (const KCFIState::ImportedRange &r : ctx.kcfi.importedRanges)
+    rangeEnds[r.start] = r.end;
+
   // Each run of in-place import slots of a DLL gets a descriptor of its own
   // after the DLL's, so that the DLL load order is unchanged. Its lookup table
   // shares the hint/name records, and each slot holds the value of its lookup
@@ -844,8 +851,25 @@ void IdataContents::create(COFFLinkerContext &ctx) {
     // entries share. A DLL left with no such entry has no descriptor of its
     // own, only those of its runs.
     if (!slotOnly.empty()) {
+      // The bounds of a KCFI code range, which always keep their entries,
+      // take a 16-byte block of the table, so a table that starts at an odd
+      // entry needs one entry before them; an import kept only in slots then
+      // keeps its entry too.
+      DefinedImportData *keep = nullptr;
+      bool range =
+          !rangeEnds.empty() && llvm::any_of(syms, [&](DefinedImportData *s) {
+            return rangeEnds.count(s);
+          });
+      if (range && addresses.size() % 2 &&
+          llvm::count_if(syms, [&](DefinedImportData *s) {
+            return !slotOnly.contains(s);
+          }) == 2) {
+        auto it = llvm::find_if(
+            syms, [&](DefinedImportData *s) { return slotOnly.contains(s); });
+        keep = it == syms.end() ? nullptr : *it;
+      }
       llvm::erase_if(syms, [&](DefinedImportData *s) {
-        if (!slotOnly.contains(s))
+        if (s == keep || !slotOnly.contains(s))
           return false;
         if (!s->getExternalName().empty()) {
           auto *hintChunk =
@@ -860,6 +884,23 @@ void IdataContents::create(COFFLinkerContext &ctx) {
         addSlotRuns(dllName);
         continue;
       }
+    }
+    auto start = rangeEnds.empty()
+                     ? syms.end()
+                     : llvm::find_if(syms, [&](DefinedImportData *s) {
+                         return rangeEnds.count(s);
+                       });
+    if (start != syms.end()) {
+      DefinedImportData *first = *start, *second = rangeEnds.lookup(first);
+      llvm::erase(syms, first);
+      llvm::erase(syms, second);
+      // The table starts 16-byte aligned, and every entry is 8 bytes. The
+      // image imports something else from the DLL, which is why it binds the
+      // range, and that import keeps an entry when the pair needs one before
+      // it, so the pair goes first or second.
+      size_t at = addresses.size() % 2;
+      assert(at <= syms.size());
+      syms.insert(syms.begin() + at, {first, second});
     }
     // Create lookup and address tables. If they have external names,
     // we need to create hintName chunks to store the names.
@@ -991,6 +1032,8 @@ void IdataContents::create(COFFLinkerContext &ctx) {
     dirs.push_back(dir);
     addSlotRuns(dllName);
   }
+  if (!rangeEnds.empty())
+    addresses.front()->setAlignment(16);
   // Add null terminator.
   dirs.push_back(make<NullChunk>(sizeof(ImportDirectoryTableEntry), 4));
   if (!pool)

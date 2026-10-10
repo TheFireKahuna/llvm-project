@@ -93,6 +93,7 @@ lto::Config BitcodeCompiler::createConfig() {
   c.RunCSIRInstr = ctx.config.ltoCSProfileGenerate;
   c.PGOWarnMismatch = ctx.config.ltoPGOWarnMismatch;
   c.HasWholeProgramVisibility = ctx.config.ltoWholeProgramVisibility;
+  c.ImageName = sys::path::filename(ctx.config.outputFile).str();
   c.ValidateAllVtablesHaveTypeInfos =
       ctx.config.ltoValidateAllVtablesHaveTypeInfos;
   c.AllVtablesHaveTypeInfos = ctx.config.ltoAllVtablesHaveTypeInfos;
@@ -210,13 +211,18 @@ void BitcodeCompiler::add(BitcodeFile &f) {
     thinIndices.insert(obj.getName());
 
   // Another image may reference what this one exports, so whole-program
-  // visibility leaves the vtables it exports public.
-  if (!exportedSyms) {
+  // visibility leaves the vtables it exports public, and where KCFI checks go
+  // through per-type thunks an exported function may have its address taken
+  // there.
+  if (!addedFile &&
+      (ctx.config.ltoWholeProgramVisibility ||
+       Triple(obj.getTargetTriple()).isWindowsItaniumOrNTPOSIXEnvironment())) {
     exportedSyms.emplace();
     for (const Export &e : f.symtab.exports)
       if (e.sym)
         exportedSyms->insert(e.sym);
   }
+  addedFile = true;
 
   // Provide a resolution to the LTO API for each symbol.
   for (const lto::InputFile::Symbol &objSym : obj.symbols()) {
@@ -231,7 +237,7 @@ void BitcodeCompiler::add(BitcodeFile &f) {
     // be removed.
     r.Prevailing = !objSym.isUndefined() && sym->getFile() == &f;
     r.VisibleToRegularObj = sym->isUsedInRegularObj;
-    r.ExportDynamic = exportedSyms->contains(sym);
+    r.ExportDynamic = exportedSyms && exportedSyms->contains(sym);
     r.FinalDefinitionInLinkageUnit = isFinalInImage(f, objSym, sym);
     // The object LTO generates defines the symbol again. It is undefined only
     // once every file is added, so that the files after this one still see

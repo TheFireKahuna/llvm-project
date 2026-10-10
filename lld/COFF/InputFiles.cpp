@@ -582,6 +582,31 @@ void ObjFile::readLinkRecords() {
         return;
       continue;
     }
+    if (cur && kind == LinkRecordKCFIThunks) {
+      if (!readKCFIThunks(contents.slice(start, size)))
+        return;
+      continue;
+    }
+    if (cur && kind == LinkRecordKCFIMemberTags) {
+      DataExtractor group(contents.slice(start, size), /*IsLittleEndian=*/true);
+      DataExtractor::Cursor c(0);
+      while (c && !group.eof(c)) {
+        uint64_t index = group.getULEB128(c);
+        if (c && index < symbols.size() && symbols[index])
+          symtab.ctx.kcfi.memberTags.push_back(symbols[index]);
+      }
+      if (Error e = c.takeError()) {
+        Err(symtab.ctx) << this << ": .llvm_link_records is malformed: "
+                        << std::move(e);
+        return;
+      }
+      continue;
+    }
+    if (cur && kind == LinkRecordKCFIImportLists) {
+      linkRecords->listsKCFIImports = true;
+      symtab.ctx.kcfi.listsImports = true;
+      continue;
+    }
     if (cur && kind == LinkRecordTypePrefixes) {
       symtab.ctx.typePrefixRecords = true;
       continue;
@@ -660,6 +685,59 @@ bool ObjFile::readLinkPins(ArrayRef<uint8_t> payload) {
   }
   if (Error e = cur.takeError()) {
     pins.clear();
+    Err(symtab.ctx) << this
+                    << ": .llvm_link_records is malformed: " << std::move(e);
+    return false;
+  }
+  return true;
+}
+
+// Reads a group of KCFI thunks. The copies of a thunk's COMDAT in different
+// objects are interchangeable only if they compare the same prefixes, so
+// copies whose marker or offset differ are an error.
+bool ObjFile::readKCFIThunks(ArrayRef<uint8_t> payload) {
+  auto malformed = [&](const Twine &msg) {
+    Err(symtab.ctx) << this << ": .llvm_link_records is malformed: " << msg;
+    return false;
+  };
+  DataExtractor data(payload, /*IsLittleEndian=*/true);
+  DataExtractor::Cursor cur(0);
+  while (cur && !data.eof(cur)) {
+    uint64_t thunkIndex = data.getULEB128(cur);
+    uint64_t kind = data.getULEB128(cur);
+    uint32_t type = data.getU32(cur);
+    uint32_t marker = data.getU32(cur);
+    uint64_t offset = data.getULEB128(cur);
+    uint64_t mismatchIndex = data.getULEB128(cur);
+    if (!cur)
+      break;
+    for (uint64_t index : {thunkIndex, mismatchIndex})
+      if (index >= symbols.size() || !symbols[index])
+        return malformed("KCFI thunk of symbol " + Twine(index) +
+                         ", which does not exist");
+    if (offset > UINT32_MAX)
+      return malformed("KCFI thunk " + symbols[thunkIndex]->getName() +
+                       " has an invalid offset");
+    // A thunk of a kind this linker does not know is left as it is.
+    if (kind > LinkKCFIThunkVfnCheck)
+      continue;
+    KCFIState::Thunk thunk{
+        this,   LinkKCFIThunkKind(kind), type,
+        marker, uint32_t(offset),        symbols[mismatchIndex]};
+    auto [it, inserted] =
+        symtab.ctx.kcfi.thunks.try_emplace(symbols[thunkIndex], thunk);
+    const KCFIState::Thunk &other = it->second;
+    if (!inserted &&
+        (other.marker != thunk.marker || other.offset != thunk.offset))
+      Err(symtab.ctx) << this << ": KCFI thunk "
+                      << symbols[thunkIndex]->getName() << " has marker 0x"
+                      << utohexstr(marker, /*LowerCase=*/true) << " and offset "
+                      << offset << ", but its copy in " << other.file
+                      << " has marker 0x"
+                      << utohexstr(other.marker, /*LowerCase=*/true)
+                      << " and offset " << other.offset;
+  }
+  if (Error e = cur.takeError()) {
     Err(symtab.ctx) << this
                     << ": .llvm_link_records is malformed: " << std::move(e);
     return false;

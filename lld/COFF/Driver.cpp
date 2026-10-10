@@ -31,6 +31,7 @@
 #include "llvm/BinaryFormat/Magic.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/LTO/LTO.h"
+#include "llvm/Object/ArchiveWriter.h"
 #include "llvm/Object/COFFImportFile.h"
 #include "llvm/Object/IRObjectFile.h"
 #include "llvm/Option/Arg.h"
@@ -1184,10 +1185,14 @@ void LinkerDriver::createImportLibrary(bool asLib) {
 
   std::string libName = getImportName(asLib);
   std::string path = getImplibPath();
+  std::vector<NewArchiveMember> extra;
+  std::vector<uint8_t> rangeRecord;
+  if (!asLib)
+    addKCFIRangeImports(ctx, libName, exports, extra, rangeRecord);
 
   if (!ctx.config.incremental) {
     checkError(writeImportLibrary(libName, path, exports, ctx.config.machine,
-                                  ctx.config.mingw, nativeExports));
+                                  ctx.config.mingw, nativeExports, extra));
     return;
   }
 
@@ -1197,7 +1202,7 @@ void LinkerDriver::createImportLibrary(bool asLib) {
       path, /*IsText=*/false, /*RequiresNullTerminator=*/false);
   if (!oldBuf) {
     checkError(writeImportLibrary(libName, path, exports, ctx.config.machine,
-                                  ctx.config.mingw, nativeExports));
+                                  ctx.config.mingw, nativeExports, extra));
     return;
   }
 
@@ -1209,7 +1214,7 @@ void LinkerDriver::createImportLibrary(bool asLib) {
 
   if (Error e =
           writeImportLibrary(libName, tmpName, exports, ctx.config.machine,
-                             ctx.config.mingw, nativeExports)) {
+                             ctx.config.mingw, nativeExports, extra)) {
     checkError(std::move(e));
     return;
   }
@@ -3084,6 +3089,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   if (isArm64EC(config->machine))
     createECExportThunks();
 
+  if (ctx.typePrefixRecords)
+    openKCFITypes(ctx.symtab);
+
   // Define the ELF-style linker-defined symbols that inputs reference and
   // nothing else defines.
   if (config->startStopSymbols)
@@ -3185,12 +3193,22 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // Windows specific -- when we are creating a .dll file, we also
   // need to create a .lib file. In MinGW mode, we only do that when the
   // -implib option is given explicitly, for compatibility with GNU ld.
+  // The import library of a DLL that exports the bounds of its KCFI code range
+  // describes the range, which the writer decides, so it is written after the
+  // image.
+  addKCFIRangeExports(ctx);
+  bindKCFIImportedRanges(ctx);
+  bool implibAfterImage = false;
   if (config->dll || !ctx.symtab.exports.empty() ||
       (ctx.config.machine == ARM64X && !ctx.hybridSymtab->exports.empty())) {
     llvm::TimeTraceScope timeScope("Create .lib exports");
     ctx.forEachActiveSymtab([](SymbolTable &symtab) { symtab.fixupExports(); });
-    if (!config->noimplib && (!config->mingw || !config->implib.empty()))
-      createImportLibrary(/*asLib=*/false);
+    if (!config->noimplib && (!config->mingw || !config->implib.empty())) {
+      if (ctx.kcfi.rangeExports[0])
+        implibAfterImage = true;
+      else
+        createImportLibrary(/*asLib=*/false);
+    }
     ctx.forEachActiveSymtab(
         [](SymbolTable &symtab) { symtab.assignExportOrdinals(); });
   }
@@ -3271,6 +3289,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
 
   // Write the result.
   writeResult(ctx);
+  if (implibAfterImage)
+    createImportLibrary(/*asLib=*/false);
   // LTO cleanup may create time trace events. Wait for it to complete before
   // writing the time trace data.
   ctx.forEachSymtab([](SymbolTable &symtab) { symtab.waitForLTOCleanup(); });

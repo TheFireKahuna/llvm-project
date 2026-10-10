@@ -14,11 +14,13 @@
 #include "DebugTypes.h"
 #include "Driver.h"
 #include "InputFiles.h"
+#include "KCFI.h"
 #include "PDB.h"
 #include "SymbolTable.h"
 #include "Writer.h"
 #include "lld/Common/CommonLinkerContext.h"
 #include "lld/Common/Timer.h"
+#include "llvm/ADT/MapVector.h"
 
 namespace lld::coff {
 struct TypePrefixLabels;
@@ -144,6 +146,9 @@ public:
   // offset of the relocation, which are rewritten to take it as static data
   // does (see SectionChunk::getImportSiteTarget).
   llvm::DenseSet<std::pair<const SectionChunk *, uint32_t>> importSites;
+
+  // The state of the link's KCFI checks.
+  KCFIState kcfi;
 };
 
 } // namespace lld::coff
