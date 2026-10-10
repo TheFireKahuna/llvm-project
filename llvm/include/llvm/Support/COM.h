@@ -30,6 +30,8 @@ public:
 private:
   InitializeCOMRAII(const InitializeCOMRAII &) = delete;
   void operator=(const InitializeCOMRAII &) = delete;
+
+  [[maybe_unused]] bool Initialized = false;
 };
 }
 }

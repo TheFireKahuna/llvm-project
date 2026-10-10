@@ -23,6 +23,7 @@ add_llvm_unittest(SupportTests
   CheckedArithmeticTest.cpp
   CHERICapabilityFormatTest.cpp
   Chrono.cpp
+  COMTest.cpp
   CommandLineTest.cpp
   CompressionTest.cpp
   ConvertEBCDICTest.cpp

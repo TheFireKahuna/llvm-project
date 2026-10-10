@@ -96,15 +96,15 @@ if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.25"
   set(WL "$<$<OR:$<LINK_LANG_AND_ID:C,IntelLLVM>,$<LINK_LANG_AND_ID:CXX,IntelLLVM>,$<LINK_LANG_AND_ID:Fortran,IntelLLVM>>:-Qoption,link,>")
 endif()
 
-# Delay load shell32.dll, ole32.dll and bcrypt.dll if possible to speed up
-# process startup.
+# Delay load shell32.dll, ole32.dll, oleaut32.dll and bcrypt.dll if possible to
+# speed up process startup.
 set (delayload_flags)
 if (MSVC)
   # When linking with Swift, `swiftc.exe` is used as the linker drive rather
   # than invoking `link.exe` directly.  In such a case, the flags should be
   # marked as `-Xlinker` to pass them directly to the linker.  As a temporary
   # workaround simply elide the delay loading.
-  set (delayload_flags $<$<NOT:$<LINK_LANGUAGE:Swift>>:delayimp ${WL}-delayload:shell32.dll ${WL}-delayload:ole32.dll ${WL}-delayload:bcrypt.dll>)
+  set (delayload_flags $<$<NOT:$<LINK_LANGUAGE:Swift>>:delayimp ${WL}-delayload:shell32.dll ${WL}-delayload:ole32.dll ${WL}-delayload:oleaut32.dll ${WL}-delayload:bcrypt.dll>)
 endif()
 
 # Link Z3 if the user wants to build it.
