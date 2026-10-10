@@ -154,6 +154,21 @@ enum LinkRecordKind : uint64_t {
   // prefix.
   LinkRecordKCFIMemberTags = 10,
 
+  // The code range of a DLL, for the linker of an image that imports it, in
+  // a member of the DLL's import library. The DLL exports the range's bounds
+  // as __llvm_code_start and __llvm_code_end, and a KCFI check in the
+  // importer may take a target inside it directly when the DLL has an
+  // unsealed function of the check's type there:
+  //
+  //   payload := types types
+  //   types   := count:ULEB128 (type:u32 functions:ULEB128){count}
+  //
+  // The first types lists each KCFI type of an unsealed function inside the
+  // range, and the second each second type, which a function that can occupy
+  // a vtable slot carries, in increasing order, with how many such functions
+  // carry it.
+  LinkRecordImageCode = 12,
+
   // The object gives its functions KCFI prefixes with a marker, each after a
   // static __cfi_ symbol, which a linker seals where no indirect call may
   // reach the function and keeps out of a page's first bytes. A linker looks

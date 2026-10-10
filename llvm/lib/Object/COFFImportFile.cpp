@@ -257,6 +257,13 @@ public:
   NewArchiveMember createWeakExternal(StringRef Sym, StringRef Weak, bool Imp,
                                       MachineTypes Machine);
 
+  // Create an object of one section that the linker removes and one absolute
+  // symbol, which carries facts about the DLL for a linker.
+  NewArchiveMember createLinkerFacts(std::vector<uint8_t> &Buffer,
+                                     StringRef SectionName,
+                                     ArrayRef<uint8_t> Contents,
+                                     StringRef SymbolName);
+
   bool is64Bit() const { return COFF::is64Bit(NativeMachine); }
 };
 } // namespace
@@ -658,10 +665,79 @@ NewArchiveMember ObjectFactory::createWeakExternal(StringRef Sym,
   return {MemoryBufferRef(StringRef(Buf, Buffer.size()), ImportName)};
 }
 
+NewArchiveMember ObjectFactory::createLinkerFacts(std::vector<uint8_t> &Buffer,
+                                                  StringRef SectionName,
+                                                  ArrayRef<uint8_t> Contents,
+                                                  StringRef SymbolName) {
+  const uint32_t NumberOfSections = 1;
+  const uint32_t NumberOfSymbols = 1;
+
+  // COFF Header
+  coff_file_header Header{
+      u16(NativeMachine),
+      u16(NumberOfSections),
+      u32(0),
+      u32(sizeof(Header) + (NumberOfSections * sizeof(coff_section)) +
+          Contents.size()),
+      u32(NumberOfSymbols),
+      u16(0),
+      u16(is64Bit() ? C_Invalid : IMAGE_FILE_32BIT_MACHINE),
+  };
+  append(Buffer, Header);
+
+  // Section Header Table. A name longer than the header holds is in the
+  // string table, after the table's size.
+  std::vector<std::string_view> Strings;
+  coff_section Section{
+      {},
+      u32(0),
+      u32(0),
+      u32(Contents.size()),
+      u32(sizeof(coff_file_header) + (NumberOfSections * sizeof(coff_section))),
+      u32(0),
+      u32(0),
+      u16(0),
+      u16(0),
+      u32(IMAGE_SCN_LNK_REMOVE)};
+  if (SectionName.size() <= COFF::NameSize) {
+    memcpy(Section.Name, SectionName.data(), SectionName.size());
+  } else {
+    memcpy(Section.Name, "/4", 2);
+    Strings.push_back(SectionName);
+  }
+  append(Buffer, Section);
+  Buffer.insert(Buffer.end(), Contents.begin(), Contents.end());
+
+  // Symbol Table
+  coff_symbol16 Symbol{{{0, 0, 0, 0, 0, 0, 0, 0}}, u32(0),
+                       u16(IMAGE_SYM_ABSOLUTE),    u16(0),
+                       IMAGE_SYM_CLASS_EXTERNAL,   0};
+  Symbol.Name.Offset.Offset =
+      sizeof(uint32_t) + (Strings.empty() ? 0 : SectionName.size() + 1);
+  append(Buffer, Symbol);
+  Strings.push_back(SymbolName);
+
+  // String Table
+  writeStringTable(Buffer, Strings);
+
+  StringRef F{reinterpret_cast<const char *>(Buffer.data()), Buffer.size()};
+  return {MemoryBufferRef(F, ImportName)};
+}
+
+NewArchiveMember createLinkerFacts(StringRef ImportName, MachineTypes Machine,
+                                   StringRef SectionName,
+                                   ArrayRef<uint8_t> Contents,
+                                   StringRef SymbolName,
+                                   std::vector<uint8_t> &Buffer) {
+  ObjectFactory OF(llvm::sys::path::filename(ImportName), Machine);
+  return OF.createLinkerFacts(Buffer, SectionName, Contents, SymbolName);
+}
+
 Error writeImportLibrary(StringRef ImportName, StringRef Path,
                          ArrayRef<COFFShortExport> Exports,
                          MachineTypes Machine, bool MinGW,
-                         ArrayRef<COFFShortExport> NativeExports) {
+                         ArrayRef<COFFShortExport> NativeExports,
+                         ArrayRef<NewArchiveMember> ExtraMembers) {
 
   MachineTypes NativeMachine = Machine;
   if (isArm64EC(Machine)) {
@@ -796,6 +872,8 @@ Error writeImportLibrary(StringRef ImportName, StringRef Path,
     return e;
   if (Error e = addExports(NativeExports, NativeMachine))
     return e;
+  for (const NewArchiveMember &M : ExtraMembers)
+    Members.emplace_back(M.Buf->getMemBufferRef());
 
   return writeArchive(Path, Members, SymtabWritingMode::NormalSymtab,
                       object::Archive::K_COFF,
