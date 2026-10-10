@@ -82,6 +82,9 @@ option(COMPILER_RT_DISABLE_AARCH64_FMV "Disable AArch64 Function Multi Versionin
 mark_as_advanced(COMPILER_RT_DISABLE_AARCH64_FMV)
 option(COMPILER_RT_BUILD_SANITIZERS "Build sanitizers" ON)
 mark_as_advanced(COMPILER_RT_BUILD_SANITIZERS)
+option(COMPILER_RT_BUILD_SANITIZER_IGNORELISTS
+  "Build the sanitizer ignorelists, which the sanitizers also build" OFF)
+mark_as_advanced(COMPILER_RT_BUILD_SANITIZER_IGNORELISTS)
 option(COMPILER_RT_BUILD_XRAY "Build xray" ON)
 mark_as_advanced(COMPILER_RT_BUILD_XRAY)
 option(COMPILER_RT_BUILD_LIBFUZZER "Build libFuzzer" ON)
@@ -830,15 +833,15 @@ endif()
 # Warnings to turn off for all libraries, not just sanitizers.
 append_string_if(COMPILER_RT_HAS_WUNUSED_PARAMETER_FLAG -Wno-unused-parameter CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
 
-if (CMAKE_LINKER MATCHES "link.exe$")
-  # Silence MSVC linker warnings caused by empty object files. The
+if (CMAKE_AR MATCHES "lib\\.exe$")
+  # Silence lib.exe warnings caused by empty object files. The
   # sanitizer libraries intentionally use ifdefs that result in empty
   # files, rather than skipping these files in the build system.
   # Ideally, we would pass this flag only for the libraries that need
   # it, but CMake doesn't seem to have a way to set linker flags for
   # individual static libraries, so we enable the suppression flag for
   # the whole compiler-rt project.
-  set(CMAKE_STATIC_LINKER_FLAGS "${CMAKE_STATIC_LINKER_FLAGS} ${CMAKE_CXX_LINKER_WRAPPER_FLAG}/IGNORE:4221")
+  set(CMAKE_STATIC_LINKER_FLAGS "${CMAKE_STATIC_LINKER_FLAGS} /IGNORE:4221")
 endif()
 
 add_subdirectory(include)
