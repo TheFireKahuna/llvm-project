@@ -2422,6 +2422,11 @@ FunctionDecl *Sema::CreateBuiltin(IdentifierInfo *II, QualType Type,
     LinkageSpecDecl *CLinkageDecl = LinkageSpecDecl::Create(
         Context, Parent, Loc, Loc, LinkageSpecLanguageIDs::C, false);
     CLinkageDecl->setImplicit();
+    // C++ [module.unit]p7.2: a declaration within a linkage-specification is
+    // attached to the global module, wherever in a module unit it appears.
+    if (getLangOpts().CPlusPlusModules && isCurrentModulePurview())
+      CLinkageDecl->setLocalOwningModule(
+          getOrCreateImplicitGlobalModuleFragment(Loc));
     Parent->addDecl(CLinkageDecl);
     Parent = CLinkageDecl;
   }

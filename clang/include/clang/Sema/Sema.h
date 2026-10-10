@@ -10067,6 +10067,10 @@ private:
   /// Leave the scope of the explicit global module fragment.
   void PopGlobalModuleFragment();
 
+  /// Return the implicit global module fragment of the current module unit,
+  /// creating it if it does not exist yet.
+  Module *getOrCreateImplicitGlobalModuleFragment(SourceLocation BeginLoc);
+
   /// Enter the scope of an implicit global module fragment.
   Module *PushImplicitGlobalModuleFragment(SourceLocation BeginLoc);
   /// Leave the scope of an implicit global module fragment.

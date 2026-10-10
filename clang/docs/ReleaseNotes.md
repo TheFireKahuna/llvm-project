@@ -626,6 +626,9 @@ features cannot lower the translation-unit ABI level;
   template now applies to the instantiations of the template made from its
   enclosing class template's instantiations, as it already did for member
   function templates.
+- Fixed an implicitly declared builtin first named in a module unit's purview
+  being attached to the named module instead of the global module, which
+  rejected a redeclaration in a linkage-specification such as `extern "C"`.
 
 - Fixed lambdas with specifiers or attributes after the capture list being
   misparsed as function declarations in direct-initialization contexts under
