@@ -6797,8 +6797,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
                                   /*Joined=*/true);
       } else
         ImplyVCPPCVer = true;
-    }
-    else if (IsWindowsMSVC)
+    } else if (IsWindowsMSVC || Args.hasArg(options::OPT__SLASH_std))
       ImplyVCPPCXXVer = true;
 
     if (IsSYCL && types::isCXX(InputType) &&
