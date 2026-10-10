@@ -93,7 +93,15 @@ public:
 
   _LIBCPP_HIDE_FROM_ABI pointer get() const { return static_cast<_Tp*>(__libcpp_tls_get(__key_)); }
   _LIBCPP_HIDE_FROM_ABI pointer operator*() const { return *get(); }
-  _LIBCPP_HIDE_FROM_ABI pointer operator->() const { return get(); }
+  // A thread not created by std::thread has no data until its first use.
+  _LIBCPP_HIDE_FROM_ABI pointer operator->() {
+    pointer __p = get();
+    if (__p == nullptr) {
+      __p = new _Tp;
+      set_pointer(__p);
+    }
+    return __p;
+  }
   void set_pointer(pointer __p);
 };
 
@@ -120,7 +128,11 @@ __thread_specific_ptr<_Tp>::~__thread_specific_ptr() {
 template <class _Tp>
 void __thread_specific_ptr<_Tp>::set_pointer(pointer __p) {
   _LIBCPP_ASSERT_INTERNAL(get() == nullptr, "Attempting to overwrite thread local data");
-  std::__libcpp_tls_set(__key_, __p);
+  unique_ptr<_Tp> __owner(__p);
+  int __ec = std::__libcpp_tls_set(__key_, __p);
+  if (__ec)
+    std::__throw_system_error(__ec, "__thread_specific_ptr initialization failed");
+  __owner.release();
 }
 
 template <>
