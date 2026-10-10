@@ -599,6 +599,11 @@ features cannot lower the translation-unit ABI level;
 
 #### Bug Fixes to C++ Support
 
+- The visibility attribute of a member variable template or a member class
+  template now applies to the instantiations of the template made from its
+  enclosing class template's instantiations, as it already did for member
+  function templates.
+
 - Fixed lambdas with specifiers or attributes after the capture list being
   misparsed as function declarations in direct-initialization contexts under
   `-fms-extensions` or in HLSL mode.

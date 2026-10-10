@@ -237,6 +237,22 @@ getVisibilityOf(const NamedDecl *D, NamedDecl::ExplicitVisibilityKind kind) {
   return std::nullopt;
 }
 
+/// Return the explicit visibility of the given template, or of the member
+/// template it was instantiated from: a member template of a class template
+/// specialization carries no attribute of its own. An explicit specialization
+/// of a member template does not inherit one.
+static std::optional<Visibility>
+getVisibilityOfTemplate(const RedeclarableTemplateDecl *TD,
+                        NamedDecl::ExplicitVisibilityKind kind) {
+  for (; TD; TD = TD->isMemberSpecialization()
+                      ? nullptr
+                      : TD->getInstantiatedFromMemberTemplate())
+    if (std::optional<Visibility> V =
+            getVisibilityOf(TD->getTemplatedDecl(), kind))
+      return V;
+  return std::nullopt;
+}
+
 LinkageInfo LinkageComputer::getLVForType(const Type &T,
                                           LVComputationKind computation) {
   if (computation.IgnoreAllVisibility)
@@ -1263,7 +1279,11 @@ getExplicitVisibilityAux(const NamedDecl *ND,
         return Vis;
       TD = TD->getPreviousDecl();
     }
-    return std::nullopt;
+    const ClassTemplateDecl *CTD = spec->getSpecializedTemplate();
+    if (CTD->isMemberSpecialization())
+      return std::nullopt;
+    return getVisibilityOfTemplate(CTD->getInstantiatedFromMemberTemplate(),
+                                   kind);
   }
 
   // Use the most recent declaration.
@@ -1281,8 +1301,7 @@ getExplicitVisibilityAux(const NamedDecl *ND,
     }
 
     if (const auto *VTSD = dyn_cast<VarTemplateSpecializationDecl>(Var))
-      return getVisibilityOf(VTSD->getSpecializedTemplate()->getTemplatedDecl(),
-                             kind);
+      return getVisibilityOfTemplate(VTSD->getSpecializedTemplate(), kind);
 
     return std::nullopt;
   }
@@ -1292,8 +1311,7 @@ getExplicitVisibilityAux(const NamedDecl *ND,
     // explicit visibility attribute, use that.
     if (FunctionTemplateSpecializationInfo *templateInfo
           = fn->getTemplateSpecializationInfo())
-      return getVisibilityOf(templateInfo->getTemplate()->getTemplatedDecl(),
-                             kind);
+      return getVisibilityOfTemplate(templateInfo->getTemplate(), kind);
 
     // If the function is a member of a specialization of a class template
     // and the corresponding decl has explicit visibility, use that.
