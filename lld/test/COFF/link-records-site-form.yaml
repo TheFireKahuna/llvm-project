@@ -1,0 +1,73 @@
+## A site of a form the linker does not know is a site of no form: the
+## instruction is left as it is and keeps reading the local import pointer,
+## which is reported.
+
+## A call through __imp_f, described with the unknown form 7.
+# RUN: yaml2obj -DSITE=27 %s -o %t.unknown.obj
+# RUN: lld-link -entry:main -subsystem:console -out:%t.unknown.exe \
+# RUN:   %t.unknown.obj 2>&1 | FileCheck --check-prefix=WARN %s
+# RUN: llvm-objdump -d --no-show-raw-insn %t.unknown.exe | \
+# RUN:   FileCheck --check-prefix=KEEP %s
+
+# WARN: warning: {{.*}}.unknown.obj: locally defined symbol imported: f (defined in {{.*}}.unknown.obj) [LNK4217]
+
+# KEEP: callq *0x{{[0-9a-f]+}}(%rip)
+
+## The same call described as a call, form 1, reaches f directly.
+# RUN: yaml2obj -DSITE=21 %s -o %t.call.obj
+# RUN: lld-link -entry:main -subsystem:console -out:%t.call.exe %t.call.obj \
+# RUN:   2>&1 | count 0
+# RUN: llvm-objdump -d --no-show-raw-insn %t.call.exe | \
+# RUN:   FileCheck --check-prefix=CALL %s
+
+# CALL: addr32 callq 0x140001007
+
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_AMD64
+  Characteristics: []
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       16
+    SectionData:     FF1500000000C3C3
+    Relocations:
+      - VirtualAddress:  2
+        SymbolName:      __imp_f
+        Type:            IMAGE_REL_AMD64_REL32
+  - Name:            .llvm_link_records
+    Characteristics: [ IMAGE_SCN_LNK_REMOVE ]
+    Alignment:       1
+    SectionData:     4C4C5243010302030001[[SITE]]
+symbols:
+  - Name:            .text
+    Value:           0
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_STATIC
+    SectionDefinition:
+      Length:          8
+      NumberOfRelocations: 1
+      NumberOfLinenumbers: 0
+      CheckSum:        0
+      Number:          1
+  - Name:            main
+    Value:           0
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            f
+    Value:           7
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            __imp_f
+    Value:           0
+    SectionNumber:   0
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+...

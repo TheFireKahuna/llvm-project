@@ -147,6 +147,13 @@ class llvm::WinCOFFWriter {
 
   symbol_list WeakDefaults;
 
+  // By section, the instruction sites the object's link-only records
+  // describe, as offsets and COFF::LinkSiteForm values, and the offsets of the
+  // 32-bit fields through which the symbol they name is only called.
+  DenseMap<const COFFSection *, SmallVector<std::pair<uint32_t, uint8_t>, 0>>
+      LinkSites;
+  DenseMap<const COFFSection *, SmallVector<uint32_t, 0>> CallOnlyRefs;
+
   bool UseBigObj;
   bool UseOffsetLabels = false;
   unsigned SecRelSymbolCount = 0;
@@ -205,7 +212,9 @@ WinCOFFObjectWriter::WinCOFFObjectWriter(
     std::unique_ptr<MCWinCOFFObjectTargetWriter> MOTW, raw_pwrite_stream &OS)
     : TargetObjectWriter(std::move(MOTW)),
       ObjWriter(std::make_unique<WinCOFFWriter>(*this, OS,
-                                                WinCOFFWriter::AllSections)) {}
+                                                WinCOFFWriter::AllSections)),
+      LinkRecordCapabilities(TargetObjectWriter->getLinkRecordCapabilities()) {
+}
 WinCOFFObjectWriter::WinCOFFObjectWriter(
     std::unique_ptr<MCWinCOFFObjectTargetWriter> MOTW, raw_pwrite_stream &OS,
     raw_pwrite_stream &DwoOS)
@@ -213,7 +222,9 @@ WinCOFFObjectWriter::WinCOFFObjectWriter(
       ObjWriter(std::make_unique<WinCOFFWriter>(*this, OS,
                                                 WinCOFFWriter::NonDwoOnly)),
       DwoWriter(std::make_unique<WinCOFFWriter>(*this, DwoOS,
-                                                WinCOFFWriter::DwoOnly)) {}
+                                                WinCOFFWriter::DwoOnly)),
+      LinkRecordCapabilities(TargetObjectWriter->getLinkRecordCapabilities()) {
+}
 
 static bool isDwoSection(const MCSection &Sec) {
   return Sec.getName().ends_with(".dwo");
@@ -840,6 +851,8 @@ void WinCOFFWriter::reset() {
   SymbolMap.clear();
   SecRelSymbolMap.clear();
   WeakDefaults.clear();
+  LinkSites.clear();
+  CallOnlyRefs.clear();
   SecRelSymbolCount = 0;
 }
 
@@ -1041,6 +1054,23 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
     FixedValue = 0;
 
   if (OWriter.TargetObjectWriter->recordRelocation(Fixup)) {
+    // A site is described when its target may resolve to something other
+    // than a definition the object fixes: a symbol it leaves undefined or
+    // defines as weak, or one in a COMDAT that another section can replace.
+    // A reference within one section always reaches that section.
+    if (OWriter.hasLinkRecords() &&
+        (Sec->Header.Characteristics & COFF::IMAGE_SCN_CNT_CODE)) {
+      const COFFSection *TargetSec = Reloc.Symb->Section;
+      bool Preemptible =
+          TargetSec ? TargetSec != Sec && (TargetSec->Header.Characteristics &
+                                           COFF::IMAGE_SCN_LNK_COMDAT)
+                    : Reloc.Symb->Data.SectionNumber != COFF::IMAGE_SYM_ABSOLUTE;
+      if (Preemptible)
+        if (std::optional<unsigned> Form =
+                OWriter.TargetObjectWriter->getLinkSiteForm(Fixup,
+                                                            Reloc.Data.Type))
+          LinkSites[Sec].push_back({Reloc.Data.VirtualAddress, *Form});
+    }
     Sec->Relocations.push_back(Reloc);
     if (Header.Machine == COFF::IMAGE_FILE_MACHINE_R4000 &&
         (Reloc.Data.Type == COFF::IMAGE_REL_MIPS_REFHI ||
@@ -1181,8 +1211,30 @@ uint64_t WinCOFFWriter::writeObject() {
     raw_svector_ostream OS(Content);
     OS.write(COFF::LinkRecordsMagic, sizeof(COFF::LinkRecordsMagic));
     encodeULEB128(COFF::LinkRecordsVersion, OS);
-    // No capabilities yet.
-    encodeULEB128(0, OS);
+    encodeULEB128(OWriter.LinkRecordCapabilities, OS);
+
+    SmallString<0> Sites;
+    raw_svector_ostream SitesOS(Sites);
+    for (const auto &Section : Sections) {
+      auto It = LinkSites.find(Section.get());
+      if (It == LinkSites.end())
+        continue;
+      auto &SecSites = It->second;
+      llvm::sort(SecSites);
+      encodeULEB128(Section->Symbol->getIndex(), SitesOS);
+      encodeULEB128(SecSites.size(), SitesOS);
+      uint32_t Prev = 0;
+      for (auto [Offset, Form] : SecSites) {
+        encodeULEB128(uint64_t(Offset - Prev) << 4 | Form, SitesOS);
+        Prev = Offset;
+      }
+    }
+    if (!Sites.empty()) {
+      encodeULEB128(COFF::LinkRecordSites, OS);
+      encodeULEB128(Sites.size(), OS);
+      OS << Sites;
+    }
+
     for (uint64_t Kind : OWriter.LinkFacts) {
       encodeULEB128(Kind, OS);
       encodeULEB128(0, OS);

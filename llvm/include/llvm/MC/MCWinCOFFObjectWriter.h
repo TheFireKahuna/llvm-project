@@ -11,6 +11,7 @@
 
 #include "llvm/MC/MCObjectWriter.h"
 #include <memory>
+#include <optional>
 
 namespace llvm {
 
@@ -41,6 +42,18 @@ public:
                                 const MCFixup &Fixup, bool IsCrossSection,
                                 const MCAsmBackend &MAB) const = 0;
   virtual bool recordRelocation(const MCFixup &) const { return true; }
+
+  /// The capabilities field of the link-only records of each object. A
+  /// nonzero value gives the object a .llvm_link_records section.
+  virtual uint64_t getLinkRecordCapabilities() const { return 0; }
+
+  /// The COFF::LinkSiteForm that the object's link-only records give the
+  /// instruction holding \p Fixup, whose relocation in a code section has type
+  /// \p Type, or none if the records do not describe it.
+  virtual std::optional<unsigned> getLinkSiteForm(const MCFixup &Fixup,
+                                                  unsigned Type) const {
+    return std::nullopt;
+  }
 };
 
 class WinCOFFWriter;
@@ -51,6 +64,11 @@ class WinCOFFObjectWriter final : public MCObjectWriter {
   std::unique_ptr<MCWinCOFFObjectTargetWriter> TargetObjectWriter;
   std::unique_ptr<WinCOFFWriter> ObjWriter, DwoWriter;
   bool IncrementalLinkerCompatible = false;
+  // The capabilities field of the object's link-only records, which the
+  // target writer gives. A nonzero value gives the object a
+  // .llvm_link_records section.
+  const uint64_t LinkRecordCapabilities;
+
   // The kinds of the object's link-only records with an empty payload, each
   // stating a fact about the whole object, in increasing order.
   SmallVector<uint64_t, 0> LinkFacts;
@@ -67,9 +85,10 @@ public:
   void setIncrementalLinkerCompatible(bool Value) {
     IncrementalLinkerCompatible = Value;
   }
+  bool hasLinkRecords() const { return LinkRecordCapabilities != 0; }
   // Whether the object has a .llvm_link_records section.
   bool hasLinkRecordsSection() const {
-    return !LinkFacts.empty();
+    return hasLinkRecords() || !LinkFacts.empty();
   }
   void addLinkFact(uint64_t Kind) {
     auto I = llvm::lower_bound(LinkFacts, Kind);
