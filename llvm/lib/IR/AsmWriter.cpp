@@ -3876,6 +3876,8 @@ void AssemblyWriter::printSummaryInfo(unsigned Slot, const ValueInfo &VI) {
     Out << "name: \"" << VI.name() << "\"";
   else
     Out << "guid: " << VI.getGUID();
+  if (VI.getSummaryList().empty() && VI.isDSOLocal())
+    Out << ", dsoLocal: 1";
   if (!VI.getSummaryList().empty()) {
     Out << ", summaries: (";
     ListSeparator FS;

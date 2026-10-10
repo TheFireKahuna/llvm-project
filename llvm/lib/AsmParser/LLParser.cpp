@@ -10273,7 +10273,8 @@ bool LLParser::parseBlockCount() {
 
 /// parseGVEntry
 ///   ::= 'gv' ':' '(' ('name' ':' STRINGCONSTANT | 'guid' ':' UInt64)
-///         [',' 'summaries' ':' Summary[',' Summary]* ]? ')'
+///         [',' ('dsoLocal' ':' Flag |
+///               'summaries' ':' Summary[',' Summary]*)]? ')'
 /// Summary ::= '(' (FunctionSummary | VariableSummary | AliasSummary) ')'
 bool LLParser::parseGVEntry(unsigned ID) {
   assert(Lex.getKind() == lltok::kw_gv);
@@ -10303,7 +10304,16 @@ bool LLParser::parseGVEntry(unsigned ID) {
     return error(Lex.getLoc(), "expected name or guid tag");
   }
 
-  if (!EatIfPresent(lltok::comma)) {
+  bool HasSummaries = EatIfPresent(lltok::comma);
+  unsigned DSOLocal = 0;
+  if (HasSummaries && Lex.getKind() == lltok::kw_dsoLocal) {
+    Lex.Lex();
+    if (parseToken(lltok::colon, "expected ':' here") || parseFlag(DSOLocal))
+      return true;
+    HasSummaries = false;
+  }
+
+  if (!HasSummaries) {
     // No summaries. Wrap up.
     if (parseToken(lltok::rparen, "expected ')' here"))
       return true;
@@ -10313,8 +10323,12 @@ bool LLParser::parseGVEntry(unsigned ID) {
     // an external definition. We pass ExternalLinkage since that is only
     // used when the GUID must be computed from Name, and in that case
     // the symbol must have external linkage.
-    return addGlobalValueToIndex(Name, GUID, GlobalValue::ExternalLinkage, ID,
-                                 nullptr, Loc);
+    if (addGlobalValueToIndex(Name, GUID, GlobalValue::ExternalLinkage, ID,
+                              nullptr, Loc))
+      return true;
+    if (DSOLocal)
+      Index->setDSOLocalWithoutSummary(NumberedValueInfos[ID].getGUID());
+    return false;
   }
 
   // Have a list of summaries
