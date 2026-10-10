@@ -15,6 +15,11 @@
 // CC1-DAG:    "-fdeclspec"
 // CC1-DAG:    "-exception-model=seh"
 // CC1-X64-DAG: "-ehcontguard"
+// CC1-DAG:    "-ffunction-sections"
+// CC1-DAG:    "-fdata-sections"
+// CC1-DAG:    "-funwind-tables=2"
+// CC1-DAG:    "-stack-protector" "2"
+// CC1-DAG:    "-ftrivial-auto-var-init=zero"
 
 // The SCEI flavour of Windows Itanium keeps the cross-Windows toolchain.
 // RUN: %clang -### --target=x86_64-scei-windows-itanium -c %s 2>&1 \
@@ -96,6 +101,37 @@
 // DWARF: warning: ignoring '-fdwarf-exceptions' option as it is not currently supported for target 'x86_64-unknown-windows-itanium'
 // DWARF: "-exception-model=seh"
 
+// Every function and every data item has a section of its own.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fno-function-sections -fno-data-sections 2>&1 \
+// RUN:   | FileCheck --check-prefixes=SECTIONS,SECTIONS-ALL %s
+// RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium /c /Gy- /Gw- \
+// RUN:     -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefixes=SECTIONS-CL,SECTIONS-ALL %s
+// SECTIONS-NOT:    warning: argument unused
+// SECTIONS:        warning: ignoring '-fno-function-sections' option as it is not currently supported for target 'x86_64-unknown-windows-itanium'
+// SECTIONS-NEXT:   warning: ignoring '-fno-data-sections' option as it is not currently supported for target 'x86_64-unknown-windows-itanium'
+// SECTIONS-NOT:    warning: argument unused
+// SECTIONS-CL:     warning: ignoring '/Gy-' option as it is not currently supported for target 'x86_64-unknown-windows-itanium'
+// SECTIONS-CL-NEXT: warning: ignoring '/Gw-' option as it is not currently supported for target 'x86_64-unknown-windows-itanium'
+// SECTIONS-ALL:      "-cc1"
+// SECTIONS-ALL-SAME: "-ffunction-sections"
+// SECTIONS-ALL-SAME: "-fdata-sections"
+
+// Unwind tables are always emitted.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fno-asynchronous-unwind-tables -fno-unwind-tables 2>&1 \
+// RUN:   | FileCheck --check-prefix=UNWIND %s
+// RUN: %clang -### --target=aarch64-unknown-windows-itanium -c %s \
+// RUN:     -ffreestanding 2>&1 \
+// RUN:   | FileCheck --check-prefix=UNWIND-FREESTANDING %s
+// UNWIND-NOT:  warning: argument unused
+// UNWIND:      warning: ignoring '-fno-asynchronous-unwind-tables' option as it is not currently supported for target 'x86_64-unknown-windows-itanium'
+// UNWIND-NEXT: warning: ignoring '-fno-unwind-tables' option as it is not currently supported for target 'x86_64-unknown-windows-itanium'
+// UNWIND-NOT:  warning: argument unused
+// UNWIND:      "-funwind-tables=2"
+// UNWIND-FREESTANDING: "-funwind-tables=2"
+
 // -fstack-protector-strong by default, which -fno-stack-protector and
 // clang-cl's /GS- turn off.
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
@@ -110,6 +146,37 @@
 // RUN:     -- %s 2>&1 \
 // RUN:   | FileCheck --check-prefix=CL-SSP %s
 // CL-SSP: "-stack-protector" "2"
+
+// Automatic variables start zeroed by default, in both drivers; a user's
+// -ftrivial-auto-var-init= wins, uninitialized included.
+// RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium /c -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=AUTO-INIT-ZERO %s
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -ftrivial-auto-var-init=uninitialized 2>&1 \
+// RUN:   | FileCheck --check-prefix=AUTO-INIT-UNINIT %s \
+// RUN:       --implicit-check-not=-ftrivial-auto-var-init=zero
+// RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium /c \
+// RUN:     -ftrivial-auto-var-init=uninitialized -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=AUTO-INIT-UNINIT %s \
+// RUN:       --implicit-check-not=-ftrivial-auto-var-init=zero
+// RUN: %clang -### --target=aarch64-unknown-windows-itanium -c %s \
+// RUN:     -ftrivial-auto-var-init=pattern 2>&1 \
+// RUN:   | FileCheck --check-prefix=AUTO-INIT-PATTERN %s \
+// RUN:       --implicit-check-not=-ftrivial-auto-var-init=zero
+// AUTO-INIT-ZERO:    "-ftrivial-auto-var-init=zero"
+// AUTO-INIT-UNINIT:  "-ftrivial-auto-var-init=uninitialized"
+// AUTO-INIT-PATTERN: "-ftrivial-auto-var-init=pattern"
+
+// The zero default satisfies the options that need an initialization kind.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -ftrivial-auto-var-init-stop-after=1 \
+// RUN:     -ftrivial-auto-var-init-max-size=1024 2>&1 \
+// RUN:   | FileCheck --check-prefix=AUTO-INIT-LIMITS %s \
+// RUN:       --implicit-check-not=error:
+// AUTO-INIT-LIMITS:     "-cc1"
+// AUTO-INIT-LIMITS-DAG: "-ftrivial-auto-var-init=zero"
+// AUTO-INIT-LIMITS-DAG: "-ftrivial-auto-var-init-stop-after=1"
+// AUTO-INIT-LIMITS-DAG: "-ftrivial-auto-var-init-max-size=1024"
 
 // The resource headers, the wrappers over the Universal CRT and Windows SDK
 // headers, then those headers, found as the MSVC toolchain finds them.

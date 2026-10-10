@@ -410,6 +410,8 @@ def HasTEV           : Predicate<"Subtarget->hasTEV()">,
 def IsLE             : Predicate<"Subtarget->isLittleEndian()">;
 def IsBE             : Predicate<"!Subtarget->isLittleEndian()">;
 def IsWindows        : Predicate<"Subtarget->isTargetWindows()">;
+def IsWindowsItaniumOrNTPOSIX
+    : Predicate<"Subtarget->getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()">;
 def UseExperimentalZeroingPseudos
                      : Predicate<"Subtarget->useExperimentalZeroingPseudos()">;
 def UseAlternateSExtLoadCVTF32
@@ -11001,6 +11003,19 @@ def ubsan_trap_imm : TImmLeaf<i32, [{
 }], ubsan_trap_xform>;
 
 def : Pat<(ubsantrap ubsan_trap_imm:$kind), (BRK ubsan_trap_imm:$kind)>;
+
+// On Windows Itanium and NT-POSIX, a sanitizer trap whose kind is 64 or more
+// fails fast with the kind as its code, through the sequence of __fastfail.
+def fastfail_trap_imm : TImmLeaf<i32, [{
+  return Imm >= 64 && isUInt<8>(Imm);
+}]>;
+
+let isTrap = 1, hasSideEffects = 1, Defs = [X0], Size = 8 in
+def UBSAN_FASTFAIL : Pseudo<(outs), (ins i32imm:$code), []>, Sched<[]>;
+
+let Predicates = [IsWindowsItaniumOrNTPOSIX], AddedComplexity = 1 in
+def : Pat<(ubsantrap fastfail_trap_imm:$kind),
+          (UBSAN_FASTFAIL fastfail_trap_imm:$kind)>;
 
 // Multiply high patterns which multiply the lower subvector using smull/umull
 // and the upper subvector with smull2/umull2. Then shuffle the high the high

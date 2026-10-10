@@ -5031,8 +5031,11 @@ defm zero_initialized_in_bss : BoolFOption<"zero-initialized-in-bss",
   NegFlag<SetTrue, [], [ClangOption, CC1Option],
           "Don't place zero initialized data in BSS">,
   PosFlag<SetFalse>>;
+// Windows Itanium and NT-POSIX always place each function in its own
+// section; the driver ignores -fno-function-sections there.
 defm function_sections : BoolFOption<"function-sections",
-  CodeGenOpts<"FunctionSections">, DefaultFalse,
+  CodeGenOpts<"FunctionSections">,
+  Default<"T.isWindowsItaniumOrNTPOSIXEnvironment()">,
   PosFlag<SetTrue, [], [ClangOption, CC1Option, FlangOption, FC1Option],
           "Place each function in its own section">,
   NegFlag<SetFalse, [], [FlangOption, FC1Option]>>;

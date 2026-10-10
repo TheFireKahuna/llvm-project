@@ -4,7 +4,9 @@ RUN: cd %t.d
 RUN: %clang --coverage -o instrprof-shared-lib.o -c %S/Inputs/instrprof-shared-lib.c
 RUN: test -f instrprof-shared-lib.gcno
 
-RUN: %clang --coverage -o instrprof-shared-main.o -c %S/Inputs/instrprof-shared-main.c
+A local declared without an initializer must not count as executed, so
+keep it uninitialized on targets that zero-initialize locals by default.
+RUN: %clang --coverage -ftrivial-auto-var-init=uninitialized -o instrprof-shared-main.o -c %S/Inputs/instrprof-shared-main.c
 RUN: test -f instrprof-shared-main.gcno
 
 RUN: %clang --coverage -o %t instrprof-shared-main.o instrprof-shared-lib.o

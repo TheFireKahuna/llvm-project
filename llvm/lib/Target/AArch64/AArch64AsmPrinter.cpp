@@ -3929,6 +3929,14 @@ void AArch64AsmPrinter::emitInstruction(const MachineInstr *MI) {
   case TargetOpcode::PATCHABLE_TYPED_EVENT_CALL:
     return LowerPATCHABLE_EVENT_CALL(*MI, true);
 
+  case AArch64::UBSAN_FASTFAIL:
+    EmitToStreamer(*OutStreamer, MCInstBuilder(AArch64::MOVZWi)
+                                     .addReg(AArch64::W0)
+                                     .addImm(MI->getOperand(0).getImm())
+                                     .addImm(0));
+    EmitToStreamer(*OutStreamer, MCInstBuilder(AArch64::BRK).addImm(0xF003));
+    return;
+
   case AArch64::KCFI_CHECK:
     LowerKCFI_CHECK(*MI);
     return;

@@ -2921,6 +2921,28 @@ llvm::ConstantInt *CodeGenModule::CreateKCFITypeId(QualType T, StringRef Salt) {
   return llvm::ConstantInt::get(
       Int32Ty, llvm::getKCFITypeID(OutName, getCodeGenOpts().SanitizeKcfiHash));
 }
+std::optional<uint8_t>
+CodeGenModule::getCFITrapKind(SanitizerKind::SanitizerOrdinal Ordinal) const {
+  // On Windows Itanium and NT-POSIX the backend lowers a kind of 64 or more to
+  // a fast fail with that code, which no exception handler can resume past:
+  // FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG for a check on an indirect
+  // transfer, as kcfi's, and FAST_FAIL_CAST_GUARD for an object of the wrong
+  // class without one.
+  if (!getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    return std::nullopt;
+  switch (Ordinal) {
+  case SanitizerKind::SO_CFIVCall:
+  case SanitizerKind::SO_CFIICall:
+  case SanitizerKind::SO_CFIMFCall:
+    return 64;
+  case SanitizerKind::SO_CFINVCall:
+  case SanitizerKind::SO_CFIDerivedCast:
+  case SanitizerKind::SO_CFIUnrelatedCast:
+    return 65;
+  default:
+    return std::nullopt;
+  }
+}
 
 void CodeGenModule::SetLLVMFunctionAttributes(GlobalDecl GD,
                                               const CGFunctionInfo &Info,
