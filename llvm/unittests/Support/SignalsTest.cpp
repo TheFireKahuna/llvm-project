@@ -14,8 +14,15 @@
 #include "llvm/Support/Signals.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/Config/config.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Program.h"
+#include "llvm/Support/raw_ostream.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+
+#ifdef LLVM_RUNTIME_WIN32
+#include "llvm/Support/Windows/WindowsSupport.h"
+#endif
 
 using namespace llvm;
 using namespace llvm::sys;
@@ -67,3 +74,37 @@ TEST(SignalsTest, SymbolizerMarkupDisabled) {
 }
 
 #endif // defined(HAVE_BACKTRACE) && ...
+
+#ifdef LLVM_RUNTIME_WIN32
+extern const char *TestMainArgv0;
+
+static int SignalsTestAnchor;
+
+// The test main registers the crash handlers. Run the check in a child process,
+// whose only work after that is this test.
+TEST(SignalsTest, LoadsDbgHelpOnFirstStackTrace) {
+  if (getenv("LLVM_SIGNALS_TEST_CHILD")) {
+    if (::GetModuleHandleW(L"dbghelp.dll"))
+      exit(1);
+    std::string Res;
+    raw_string_ostream RawStream(Res);
+    PrintStackTrace(RawStream);
+    if (!::GetModuleHandleW(L"dbghelp.dll") || Res.empty())
+      exit(2);
+    exit(0);
+  }
+
+  std::string Exe = fs::getMainExecutable(TestMainArgv0, &SignalsTestAnchor);
+  StringRef Args[] = {
+      Exe, "--gtest_filter=SignalsTest.LoadsDbgHelpOnFirstStackTrace"};
+  ASSERT_TRUE(::SetEnvironmentVariableW(L"LLVM_SIGNALS_TEST_CHILD", L"1"));
+  scope_exit Exit(
+      []() { ::SetEnvironmentVariableW(L"LLVM_SIGNALS_TEST_CHILD", nullptr); });
+  std::string Error;
+  bool ExecutionFailed;
+  int RC = ExecuteAndWait(Exe, Args, std::nullopt, {}, /*SecondsToWait=*/60,
+                          /*MemoryLimit=*/0, &Error, &ExecutionFailed);
+  EXPECT_FALSE(ExecutionFailed) << Error;
+  EXPECT_EQ(0, RC);
+}
+#endif // LLVM_RUNTIME_WIN32
