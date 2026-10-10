@@ -6350,9 +6350,12 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
   SmallVector<llvm::OperandBundleDef, 1> BundleList =
       getBundlesForFunclet(CalleePtr);
 
-  if (SanOpts.has(SanitizerKind::KCFI) &&
-      !isa_and_nonnull<FunctionDecl>(TargetDecl))
-    EmitKCFIOperandBundle(ConcreteCallee, CallArgs, BundleList);
+  if (SanOpts.has(SanitizerKind::KCFI) && !ConcreteCallee.isKCFIChecked()) {
+    if (llvm::ConstantInt *TypeId = ConcreteCallee.getKCFITypeId())
+      BundleList.emplace_back("kcfi", TypeId);
+    else if (!isa_and_nonnull<FunctionDecl>(TargetDecl))
+      EmitKCFIOperandBundle(ConcreteCallee, CallArgs, BundleList);
+  }
 
   // Add the pointer-authentication bundle.
   EmitPointerAuthOperandBundle(ConcreteCallee.getPointerAuthInfo(), BundleList);
@@ -6378,6 +6381,11 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
                               BundleList);
     EmitBlock(Cont);
   }
+  // Every target of the call is in this image, which lets its KCFI check fail
+  // fast for a target outside the image.
+  if (SanOpts.has(SanitizerKind::KCFI) && ConcreteCallee.isOrdinary() &&
+      ConcreteCallee.isKCFITypeLocal())
+    CI->setMetadata("kcfi_local", llvm::MDNode::get(getLLVMContext(), {}));
   if (CI->getCalledFunction() && CI->getCalledFunction()->hasName() &&
       CI->getCalledFunction()->getName().starts_with("_Z4sqrt")) {
     SetSqrtFPAccuracy(CI);
@@ -6467,6 +6475,11 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
         Attrs = Attrs.addFnAttribute(getLLVMContext(), "guard_nocf");
     }
   }
+  // A KCFI check where the pointer was loaded already handed any target
+  // outside the image to Control Flow Guard.
+  if (ConcreteCallee.isOrdinary() && ConcreteCallee.isKCFIChecked() &&
+      !CI->getCalledFunction())
+    Attrs = Attrs.addFnAttribute(getLLVMContext(), "guard_nocf");
 
   // Apply the attributes and calling convention.
   CI->setAttributes(Attrs);

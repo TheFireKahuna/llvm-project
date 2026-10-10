@@ -8,6 +8,17 @@
 // RUN:     -fsanitize-trap=cfi-vcall,cfi-nvcall,cfi-derived-cast,cfi-icall,cfi-mfcall \
 // RUN:     -fsanitize-cfi-icall-generalize-pointers \
 // RUN:   | FileCheck %s
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -emit-llvm -o - %s \
+// RUN:     -flto -flto-unit -fwhole-program-vtables -fsanitize=kcfi,cfi-vcall \
+// RUN:     -fsanitize-trap=cfi-vcall -fsanitize-cfi-icall-generalize-pointers \
+// RUN:   | FileCheck --check-prefix=WPD %s
+// RUN: echo "type:H" > %t.ignorelist
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -emit-llvm -o - %s \
+// RUN:     -flto -flto-unit -fwhole-program-vtables \
+// RUN:     -fvirtual-function-elimination -fsanitize=kcfi,cfi-vcall \
+// RUN:     -fsanitize-trap=cfi-vcall -fsanitize-cfi-icall-generalize-pointers \
+// RUN:     -fsanitize-ignorelist=%t.ignorelist \
+// RUN:   | FileCheck --check-prefix=IGNORED %s
 // RUN: %clang_cc1 -triple x86_64-unknown-linux-gnu -emit-llvm -o - %s \
 // RUN:     -flto -flto-unit -fsanitize=cfi-vcall,cfi-nvcall -fsanitize-trap=cfi-vcall,cfi-nvcall \
 // RUN:   | FileCheck --check-prefix=ELF %s
@@ -34,6 +45,16 @@ struct P {
 // CHECK:       call void %{{[0-9a-z]+}}(ptr {{.*}}) [[VETTED:#[0-9]+]]{{$}}
 // ELF-LABEL:   define {{.*}}@_Z5vcallP1H(
 // ELF:         call void @llvm.ubsantrap(i8 2)
+/// So does one whose vtable a checked load vetted, unless the class is on the
+/// ignorelist, which leaves the load unchecked.
+// WPD-LABEL:     define {{.*}}@_Z5vcallP1H(
+// WPD:           call { ptr, i1 } @llvm.type.checked.load(
+// WPD:           call void @llvm.ubsantrap(i8 64)
+// WPD:           call void %{{[0-9a-z]+}}(ptr {{.*}}) [[WPD_VETTED:#[0-9]+]]{{$}}
+// IGNORED-LABEL: define {{.*}}@_Z5vcallP1H(
+// IGNORED:       call { ptr, i1 } @llvm.type.checked.load(
+// IGNORED-NOT:   ubsantrap
+// IGNORED:       call void %{{[0-9a-z]+}}(ptr {{.*}}) [ "kcfi"(i32 {{-?[0-9]+}}) ]
 void vcall(H *h) { h->f(); }
 
 // A class the LTO unit need not see whole keeps KCFI's check.
@@ -61,3 +82,4 @@ void icall(void (*fp)()) { fp(); }
 void mfcall(H *h, void (H::*mf)()) { (h->*mf)(); }
 
 // CHECK: attributes [[VETTED]] = { {{.*}}"guard_nocf"{{.*}} }
+// WPD: attributes [[WPD_VETTED]] = { {{.*}}"guard_nocf"{{.*}} }

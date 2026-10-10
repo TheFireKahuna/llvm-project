@@ -1576,9 +1576,16 @@ void ItaniumVTableBuilder::AddMethods(
               ComputeReturnAdjustment(ReturnAdjustmentOffset);
 
             // This is a virtual thunk for the most derived class, add it.
-            AddThunk(Overrider.Method,
-                     ThunkInfo(ThisAdjustment, ReturnAdjustment,
-                               OverriddenMD->getThisType().getTypePtr()));
+            // A thunk with a KCFI type prefix carries the type of its vtable
+            // slot, so it records the method that created the vtable entry,
+            // as the other thunks do.
+            AddThunk(
+                Overrider.Method,
+                ThunkInfo(ThisAdjustment, ReturnAdjustment,
+                          OverriddenMD->getThisType().getTypePtr(),
+                          Context.getLangOpts().FunctionTypePrefix
+                              ? VTables.findOriginalMethodInMap(OverriddenMD)
+                              : nullptr));
           }
         }
 
