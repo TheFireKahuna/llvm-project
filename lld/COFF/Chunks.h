@@ -710,6 +710,7 @@ public:
   size_t getSize() const override;
   void getBaserels(std::vector<Baserel> *res) override;
   void writeTo(uint8_t *buf) const override;
+  Defined *getTarget() const { return sym; }
 
 private:
   Defined *sym;

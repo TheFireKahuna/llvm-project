@@ -356,4 +356,55 @@ void lld::coff::wrapSymbols(SymbolTable &symtab) {
       if (Symbol *s = map.lookup(sym))
         sym = s;
   });
+
+  // Without the garbage collector, every import loaded stays in the image.
+  // Two kinds that a wrap leaves unreachable are dropped here instead, as the
+  // collector would drop them: an import of the wrapped symbol that a
+  // reference loaded before the wrap applied, once every reference to the
+  // symbol and to its import pointer is renamed; and an imported wrapper that
+  // a wrap of a runtime library function loaded for an LTO link whose code
+  // never called it. The symbol of the latter is still lazy, and a scan of
+  // the objects finds any reference to the wrapper itself.
+  if (symtab.ctx.config.doGC)
+    return;
+  DenseSet<Symbol *> roots;
+  auto isUnreachable = [&](DefinedImportThunk *thunk) {
+    ImportFile *file = thunk->wrappedSym->file;
+    if (roots.empty())
+      roots.insert(symtab.ctx.config.gcroot.begin(),
+                   symtab.ctx.config.gcroot.end());
+    return !file->isEC() && !roots.contains(thunk) &&
+           !roots.contains(file->impSym) &&
+           llvm::none_of(symtab.localImportChunks, [&](Chunk *c) {
+             return cast<LocalImportChunk>(c)->getTarget() == thunk;
+           });
+  };
+  auto drop = [](DefinedImportThunk *thunk) {
+    thunk->wrappedSym->file->live = false;
+    thunk->getChunk()->live = false;
+  };
+  DenseSet<Symbol *> unusedWrappers;
+  for (const WrappedSymbol &w : symtab.wrapped) {
+    if (w.real)
+      continue;
+    if (auto *thunk = dyn_cast<DefinedImportThunk>(w.sym)) {
+      if (map.count(thunk->wrappedSym->file->impSym) && isUnreachable(thunk))
+        drop(thunk);
+    } else if (auto *thunk = dyn_cast<DefinedImportThunk>(w.wrap)) {
+      if (w.sym->isLazy() && isUnreachable(thunk)) {
+        unusedWrappers.insert(thunk);
+        unusedWrappers.insert(thunk->wrappedSym->file->impSym);
+      }
+    }
+  }
+  if (unusedWrappers.empty())
+    return;
+  for (ObjFile *file : symtab.ctx.objFileInstances)
+    for (Symbol *sym : file->getSymbols())
+      unusedWrappers.erase(sym);
+  for (const WrappedSymbol &w : symtab.wrapped)
+    if (auto *thunk = dyn_cast<DefinedImportThunk>(w.wrap))
+      if (unusedWrappers.contains(thunk) &&
+          unusedWrappers.contains(thunk->wrappedSym->file->impSym))
+        drop(thunk);
 }

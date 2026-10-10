@@ -21,16 +21,38 @@
 ; CHECK-NEXT: }
 ; CHECK-NOT:  Name: crt.dll
 
+;; A wrap of a runtime library function that code generation did not call
+;; leaves no import of the wrapper, without garbage collection too, unless an
+;; object calls the wrapper itself.
+; RUN: llvm-mc -filetype=obj -triple=x86_64-windows-msvc call.s -o call.obj
+; RUN: lld-link -entry:start -subsystem:console -out:noref.exe main.obj \
+; RUN:   crt.lib rt.lib -wrap:memset -wrap:memcpy -opt:noref
+; RUN: llvm-readobj --coff-imports noref.exe | FileCheck %s
+; RUN: lld-link -entry:start -subsystem:console -out:call.exe main.obj \
+; RUN:   call.obj crt.lib rt.lib -wrap:memset -wrap:memcpy -opt:noref
+; RUN: llvm-readobj --coff-imports call.exe | FileCheck --check-prefix=CALL %s
+
+; CALL:     Name: rt.dll
+; CALL-DAG: Symbol: __wrap_memset (0)
+; CALL-DAG: Symbol: __wrap_memcpy (0)
+
+;--- call.s
+  .globl helper
+helper:
+  jmp __wrap_memcpy
+
 ;--- crt.def
 LIBRARY crt.dll
 EXPORTS
   memset
+  memcpy
   foo
 
 ;--- rt.def
 LIBRARY rt.dll
 EXPORTS
   __wrap_memset
+  __wrap_memcpy
   __wrap_foo
 
 ;--- main.ll

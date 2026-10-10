@@ -48,12 +48,11 @@
 
 # STATIC-NOT: Name: crt.dll
 
-## Without garbage collection every import loaded stays, as with link.exe.
+## Without garbage collection too, since nothing reaches the import.
 # RUN: lld-link -entry:start -subsystem:console -out:e.exe main.obj crt.lib \
 # RUN:   start.lib wrap.lib -opt:noref
-# RUN: llvm-readobj --coff-imports e.exe | FileCheck --check-prefix=NOREF %s
-
-# NOREF: Name: crt.dll
+# RUN: llvm-readobj --coff-imports e.exe | FileCheck --check-prefix=STATIC \
+# RUN:   --allow-empty %s
 
 # STATIC-SYMS: R __imp___wrap_exit
 # STATIC-SYMS: T __wrap_exit
