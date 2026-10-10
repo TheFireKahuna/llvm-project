@@ -232,6 +232,11 @@ public:
   OutputConfig Config;
   const std::string OutputPath;
   std::optional<std::string> TempPath;
+  /// Owns the temporary's descriptor when the output is discarded on a
+  /// signal. On Windows the final rename goes through this still-open handle,
+  /// so the temporary is never reopened by name and a scanner holding it
+  /// briefly cannot fail the rename.
+  std::optional<sys::fs::TempFile> Temp;
   std::optional<raw_fd_ostream> FileOS;
   std::optional<buffer_ostream> BufferOS;
 };
@@ -284,12 +289,23 @@ Error OnDiskOutputFile::tryToCreateTemporary(std::optional<int> &FD) {
     int NewFD;
     SmallString<128> UniquePath;
     sys::fs::OpenFlags OF = generateFlagsFromConfig(Config);
+    // TempFile always registers signal handlers, and on Windows the file dies
+    // with the process, so use it only when the output asks for that.
+    if (Config.getDiscardOnSignal()) {
+      Expected<sys::fs::TempFile> NewTemp = sys::fs::TempFile::create(
+          ModelPath, sys::fs::all_read | sys::fs::all_write, OF);
+      if (!NewTemp)
+        return make_error<TempFileOutputError>(
+            ModelPath, OutputPath, errorToErrorCode(NewTemp.takeError()));
+      TempPath = NewTemp->TmpName;
+      FD.emplace(NewTemp->FD);
+      Temp.emplace(std::move(*NewTemp));
+      return Error::success();
+    }
+
     if (std::error_code EC =
             sys::fs::createUniqueFile(ModelPath, NewFD, UniquePath, OF))
       return make_error<TempFileOutputError>(ModelPath, OutputPath, EC);
-
-    if (Config.getDiscardOnSignal())
-      sys::RemoveFileOnSignal(UniquePath);
 
     TempPath = UniquePath.str().str();
     FD.emplace(NewFD);
@@ -358,7 +374,7 @@ Error OnDiskOutputFile::initializeStream() {
     std::optional<int> FD;
     if (Error E = initializeFile(FD))
       return E;
-    FileOS.emplace(*FD, /*shouldClose=*/true);
+    FileOS.emplace(*FD, /*shouldClose=*/!Temp);
   }
 
   // Buffer the stream if necessary.
@@ -393,20 +409,29 @@ enum class FileDifference : uint8_t {
 };
 } // end anonymous namespace
 
+// The source is read through \p SourceFd if given: on Windows versions
+// before 10 1607, a temporary created by TempFile is delete-pending and
+// cannot be reopened by name.
 static Expected<FileDifference>
-areFilesDifferent(const llvm::Twine &Source, const llvm::Twine &Destination) {
-  if (sys::fs::equivalent(Source, Destination))
-    return FileDifference::IdenticalFile;
-
+areFilesDifferent(std::optional<int> SourceFd, const llvm::Twine &Source,
+                  const llvm::Twine &Destination) {
   OpenFileRAII SourceFile;
+  if (!SourceFd) {
+    // If we can't open the source file, fail.
+    if (std::error_code EC = sys::fs::openFileForRead(Source, SourceFile.Fd))
+      return convertToOutputError(Source, EC);
+    SourceFd = SourceFile.Fd;
+  }
+
   sys::fs::file_status SourceStatus;
-  // If we can't open the source file, fail.
-  if (std::error_code EC = sys::fs::openFileForRead(Source, SourceFile.Fd))
+  // If we can't stat the source file, fail.
+  if (std::error_code EC = sys::fs::status(*SourceFd, SourceStatus))
     return convertToOutputError(Source, EC);
 
-  // If we can't stat the source file, fail.
-  if (std::error_code EC = sys::fs::status(SourceFile.Fd, SourceStatus))
-    return convertToOutputError(Source, EC);
+  sys::fs::file_status DestPathStatus;
+  if (!sys::fs::status(Destination, DestPathStatus) &&
+      sys::fs::equivalent(SourceStatus, DestPathStatus))
+    return FileDifference::IdenticalFile;
 
   OpenFileRAII DestFile;
   sys::fs::file_status DestStatus;
@@ -432,7 +457,7 @@ areFilesDifferent(const llvm::Twine &Source, const llvm::Twine &Destination) {
   // if they're the same.
   std::error_code SourceRegionErr;
   sys::fs::mapped_file_region SourceRegion(
-      sys::fs::convertFDToNativeFile(SourceFile.Fd),
+      sys::fs::convertFDToNativeFile(*SourceFd),
       sys::fs::mapped_file_region::readonly, Size, 0, SourceRegionErr);
   if (SourceRegionErr)
     return convertToOutputError(Source, SourceRegionErr);
@@ -470,8 +495,11 @@ Error OnDiskOutputFile::reset() {
 Error OnDiskOutputFile::keep() {
   auto BypassSandbox = sys::sandbox::scopedDisable();
 
-  if (auto E = reset())
+  if (auto E = reset()) {
+    if (Temp)
+      return joinErrors(std::move(E), Temp->discard());
     return E;
+  }
 
   // Close the file descriptor and remove crash cleanup before exit.
   llvm::scope_exit RemoveDiscardOnSignal([&]() {
@@ -482,13 +510,26 @@ Error OnDiskOutputFile::keep() {
   if (!TempPath)
     return Error::success();
 
+  // Resolve a TempFile that is not kept before every return below.
+  auto DiscardTemp = [&]() {
+    if (Temp)
+      consumeError(Temp->discard());
+  };
+
   // See if we should append instead of move.
   if (Config.getAppend() && OutputPath != "-") {
-    // Read TempFile for the content to append.
-    auto Content = MemoryBuffer::getFile(*TempPath);
-    if (!Content)
+    // Read TempFile for the content to append. A TempFile is read through its
+    // open descriptor, since it may not be reopened by name (see
+    // areFilesDifferent).
+    auto Content = Temp ? MemoryBuffer::getOpenFile(
+                              sys::fs::convertFDToNativeFile(Temp->FD),
+                              *TempPath, /*FileSize=*/-1)
+                        : MemoryBuffer::getFile(*TempPath);
+    if (!Content) {
+      DiscardTemp();
       return convertToTempFileOutputError(*TempPath, OutputPath,
                                           Content.getError());
+    }
     while (1) {
       // Attempt to lock the output file.
       // Only one process is allowed to append to this file at a time.
@@ -498,6 +539,7 @@ Error OnDiskOutputFile::keep() {
         // If we error acquiring a lock, we cannot ensure appends
         // to the trace file are atomic - cannot ensure output correctness.
         Lock.unsafeUnlock();
+        DiscardTemp();
         return convertToOutputError(
             OutputPath, std::make_error_code(std::errc::no_lock_available));
       }
@@ -505,14 +547,20 @@ Error OnDiskOutputFile::keep() {
         // Lock acquired, perform the write and release the lock.
         std::error_code EC;
         llvm::raw_fd_ostream Out(OutputPath, EC, llvm::sys::fs::OF_Append);
-        if (EC)
+        if (EC) {
+          DiscardTemp();
           return convertToOutputError(OutputPath, EC);
+        }
         Out << (*Content)->getBuffer();
         Out.close();
         Lock.unsafeUnlock();
-        if (Out.has_error())
+        if (Out.has_error()) {
+          DiscardTemp();
           return convertToOutputError(OutputPath, Out.error());
+        }
         // Remove temp file and done.
+        if (Temp)
+          return Temp->discard();
         (void)sys::fs::remove(*TempPath);
         return Error::success();
       }
@@ -538,22 +586,40 @@ Error OnDiskOutputFile::keep() {
   }
 
   if (Config.getOnlyIfDifferent()) {
-    auto Result = areFilesDifferent(*TempPath, OutputPath);
-    if (!Result)
+    auto Result =
+        areFilesDifferent(Temp ? std::optional<int>(Temp->FD) : std::nullopt,
+                          *TempPath, OutputPath);
+    if (!Result) {
+      DiscardTemp();
       return Result.takeError();
+    }
     switch (*Result) {
     case FileDifference::IdenticalFile:
       // Do nothing for a self-move.
+      if (Temp)
+        return Temp->keep();
       return Error::success();
 
     case FileDifference::SameContents:
       // Files are identical; remove the source file.
+      if (Temp)
+        return Temp->discard();
       (void)sys::fs::remove(*TempPath);
       return Error::success();
 
     case FileDifference::DifferentContents:
       break; // Rename the file.
     }
+  }
+
+  // Move the temporary to the final output path. TempFile::keep renames
+  // through the open handle where the platform allows it, falls back to a
+  // copy across devices, and removes the temporary if that fails.
+  if (Temp) {
+    if (Error E = Temp->keep(OutputPath))
+      return make_error<TempFileOutputError>(*TempPath, OutputPath,
+                                             errorToErrorCode(std::move(E)));
+    return Error::success();
   }
 
   // Move temporary to the final output path and remove it if that fails.
@@ -577,8 +643,11 @@ Error OnDiskOutputFile::discard() {
   auto BypassSandbox = sys::sandbox::scopedDisable();
 
   // Destroy the streams to flush them.
-  if (auto E = reset())
+  if (auto E = reset()) {
+    if (Temp)
+      return joinErrors(std::move(E), Temp->discard());
     return E;
+  }
 
   // Nothing on the filesystem to remove for stdout.
   if (OutputPath == "-")
@@ -593,6 +662,9 @@ Error OnDiskOutputFile::discard() {
   // Clean up the file that's in-progress.
   if (!TempPath)
     return convertToOutputError(OutputPath, discardPath(OutputPath));
+  if (Temp)
+    return convertToTempFileOutputError(*TempPath, OutputPath,
+                                        errorToErrorCode(Temp->discard()));
   return convertToTempFileOutputError(*TempPath, OutputPath,
                                       discardPath(*TempPath));
 }

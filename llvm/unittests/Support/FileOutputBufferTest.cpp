@@ -12,6 +12,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/Process.h"
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 
@@ -156,6 +157,48 @@ TEST(FileOutputBuffer, Test) {
   ASSERT_NO_ERROR(fs::remove(File6.str()));
 
   // Clean up.
+  ASSERT_NO_ERROR(fs::remove(TestDirectory.str()));
+}
+
+TEST(FileOutputBuffer, InMemoryReplacesMappedFile) {
+  // An in-memory buffer replaces an existing file instead of truncating it,
+  // so a reader that has the old file mapped keeps seeing its contents.
+  SmallString<128> TestDirectory;
+  ASSERT_NO_ERROR(
+      fs::createUniqueDirectory("FileOutputBuffer-test", TestDirectory));
+  SmallString<128> File(TestDirectory);
+  path::append(File, "file");
+  {
+    std::error_code EC;
+    raw_fd_ostream OS(File, EC);
+    ASSERT_NO_ERROR(EC);
+    OS << std::string(4096, 'o');
+  }
+
+  int FD;
+  ASSERT_NO_ERROR(fs::openFileForRead(File, FD));
+  std::error_code EC;
+  fs::mapped_file_region MFR(fs::convertFDToNativeFile(FD),
+                             fs::mapped_file_region::readonly, 4096, 0, EC);
+  ASSERT_NO_ERROR(EC);
+
+  {
+    Expected<std::unique_ptr<FileOutputBuffer>> BufferOrErr =
+        FileOutputBuffer::create(File, 16, FileOutputBuffer::F_mmap);
+    ASSERT_NO_ERROR(errorToErrorCode(BufferOrErr.takeError()));
+    std::unique_ptr<FileOutputBuffer> &Buffer = *BufferOrErr;
+    memset(Buffer->getBufferStart(), 'n', 16);
+    ASSERT_NO_ERROR(errorToErrorCode(Buffer->commit()));
+  }
+
+  EXPECT_EQ(MFR.const_data()[4095], 'o');
+  uint64_t FileSize;
+  ASSERT_NO_ERROR(fs::file_size(Twine(File), FileSize));
+  EXPECT_EQ(FileSize, 16ULL);
+
+  MFR.unmap();
+  ASSERT_NO_ERROR(Process::SafelyCloseFileDescriptor(FD));
+  ASSERT_NO_ERROR(fs::remove(File.str()));
   ASSERT_NO_ERROR(fs::remove(TestDirectory.str()));
 }
 } // anonymous namespace

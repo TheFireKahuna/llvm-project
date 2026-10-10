@@ -42,6 +42,7 @@ typedef int errno_t;
 #pragma comment(lib, "ole32.lib")    // This provides CoTaskMemFree
 #endif
 
+// The SDK declares the POSIX-semantics rename and delete (Windows 10 1709)
 // only above the _WIN32_WINNT floor set in WindowsSupport.h. The values are
 // ABI-stable.
 #ifndef FILE_RENAME_FLAG_REPLACE_IF_EXISTS
@@ -54,6 +55,13 @@ typedef int errno_t;
 #endif
 #ifndef FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE
 #define FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE 0x00000010
+#endif
+#ifndef FILE_DISPOSITION_FLAG_ON_CLOSE
+#define FILE_DISPOSITION_FLAG_DO_NOT_DELETE 0x00000000
+#define FILE_DISPOSITION_FLAG_ON_CLOSE 0x00000008
+#endif
+#ifndef FILE_SUPPORTS_POSIX_UNLINK_RENAME
+#define FILE_SUPPORTS_POSIX_UNLINK_RENAME 0x00000400
 #endif
 static const FILE_INFO_BY_HANDLE_CLASS FileDispositionInfoExClass =
     static_cast<FILE_INFO_BY_HANDLE_CLASS>(21); // FileDispositionInfoEx
@@ -484,13 +492,14 @@ std::error_code remove(const Twine &path, bool IgnoreNonExisting) {
     return std::error_code();
   }
 
-  // Prefer a POSIX-semantics delete (Windows 10 1607+ on NTFS/ReFS), which
+  // Prefer a POSIX-semantics delete (Windows 10 1709+ on NTFS/ReFS), which
   // behaves like unlink(2): the name is released immediately even while
   // another process still has the file open or mapped, so the caller may
   // recreate it at once, and the read-only attribute does not prevent
   // deletion. A file that cannot be deleted (a non-empty directory, a loaded
   // image) is reported here instead of being silently kept the way
-  // FILE_FLAG_DELETE_ON_CLOSE would.
+  // FILE_FLAG_DELETE_ON_CLOSE would. Windows 10 1709 and 1803 reject the
+  // read-only flag, which arrived in 1809, and take the fallback below.
   DWORD Flags = FILE_DISPOSITION_FLAG_DELETE |
                 FILE_DISPOSITION_FLAG_POSIX_SEMANTICS |
                 FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE;
@@ -645,19 +654,90 @@ static std::error_code realPathFromHandle(HANDLE H,
   return std::error_code();
 }
 
-std::error_code is_local(int FD, bool &Result) {
-  sandbox::violationIfEnabled();
-
+static std::error_code is_local_handle(HANDLE Handle, bool &Result) {
   SmallVector<wchar_t, 128> FinalPath;
-  HANDLE Handle = reinterpret_cast<HANDLE>(_get_osfhandle(FD));
-
   if (std::error_code EC = realPathFromHandle(Handle, FinalPath))
     return EC;
 
   return is_local_internal(FinalPath, Result);
 }
 
-static std::error_code setDeleteDisposition(HANDLE Handle, bool Delete) {
+std::error_code is_local(int FD, bool &Result) {
+  sandbox::violationIfEnabled();
+
+  HANDLE Handle = reinterpret_cast<HANDLE>(_get_osfhandle(FD));
+  return is_local_handle(Handle, Result);
+}
+
+// Windows 10 1709 can withdraw a delete-on-close requested at open
+// (FileDispositionInfoEx with FILE_DISPOSITION_FLAG_ON_CLOSE). Before that,
+// the deletion of a temporary has to be arranged after it is opened with
+// FileDispositionInfo, which marks the file delete-pending and so refuses
+// every other open of it by name until it is closed.
+static bool haveDispositionEx() {
+  static bool Ret{GetWindowsOSVersion() >= llvm::VersionTuple(10, 0, 0, 16299)};
+  return Ret;
+}
+
+// How a temporary that is not kept is removed.
+enum class TempRemoval {
+  // Deleted when its last handle is closed.
+  OnClose,
+  // Removed by name by the caller.
+  ByName,
+  // Opened delete-on-close on a volume that cannot withdraw it, so it cannot
+  // be kept; the caller must create it again without OF_DeleteOnClose.
+  Reopen,
+};
+
+// Manages the deletion of a temporary opened with OF_DeleteOnClose (on
+// systems without FileDispositionInfoEx, arranges it here). With Delete set,
+// reports in *Removal how the file will be removed; an error leaves the file
+// in an unknown state. With Delete clear, withdraws the deletion so that the
+// file can be kept.
+static std::error_code setDeleteDisposition(HANDLE Handle, bool Delete,
+                                            TempRemoval *Removal = nullptr) {
+  assert(!Delete || Removal);
+  if (Delete)
+    *Removal = TempRemoval::OnClose;
+  if (haveDispositionEx()) {
+    DWORD Flags =
+        FILE_DISPOSITION_FLAG_DO_NOT_DELETE | FILE_DISPOSITION_FLAG_ON_CLOSE;
+    if (Delete) {
+      // Keep delete-on-close only where keep() is known to be able to
+      // withdraw it: on a volume with POSIX unlink and rename, which NTFS and
+      // ReFS report. Elsewhere withdraw it now, while a volume that rejects
+      // the request can still be told apart from a failed keep(), which
+      // would lose the output. Also check if the file is on a network
+      // (non-local) drive. If so, or if that cannot be told, don't keep
+      // delete-on-close, since it prevents opening the file for writes.
+      DWORD VolumeFlags;
+      bool IsLocal;
+      if (::GetVolumeInformationByHandleW(Handle, nullptr, 0, nullptr, nullptr,
+                                          &VolumeFlags, nullptr, 0) &&
+          (VolumeFlags & FILE_SUPPORTS_POSIX_UNLINK_RENAME) &&
+          !is_local_handle(Handle, IsLocal) && IsLocal)
+        return std::error_code();
+    }
+    ::SetLastError(ERROR_SUCCESS);
+    if (!SetFileInformationByHandle(Handle, FileDispositionInfoExClass, &Flags,
+                                    sizeof(Flags))) {
+      DWORD Err = ::GetLastError();
+      // Windows' own SMB server, among others, rejects the information class
+      // and so cannot withdraw a delete-on-close requested at open.
+      if (Delete && isInfoClassRejected(Err)) {
+        *Removal = TempRemoval::Reopen;
+        return std::error_code();
+      }
+      if (Err == ERROR_SUCCESS)
+        Err = ERROR_CALL_NOT_IMPLEMENTED; // Wine doesn't always set error code.
+      return mapWindowsError(Err);
+    }
+    if (Delete)
+      *Removal = TempRemoval::ByName;
+    return std::error_code();
+  }
+
   // Clear the FILE_DISPOSITION_INFO flag first, before checking if it's a
   // network file. On Windows 7 the function realPathFromHandle() below fails
   // if the FILE_DISPOSITION_INFO flag was already set to 'DeleteFile = true' by
@@ -673,16 +753,14 @@ static std::error_code setDeleteDisposition(HANDLE Handle, bool Delete) {
   // Check if the file is on a network (non-local) drive. If so, don't
   // continue when DeleteFile is true, since it prevents opening the file for
   // writes.
-  SmallVector<wchar_t, 128> FinalPath;
-  if (std::error_code EC = realPathFromHandle(Handle, FinalPath))
-    return EC;
-
   bool IsLocal;
-  if (std::error_code EC = is_local_internal(FinalPath, IsLocal))
+  if (std::error_code EC = is_local_handle(Handle, IsLocal))
     return EC;
 
-  if (!IsLocal)
-    return errc::not_supported;
+  if (!IsLocal) {
+    *Removal = TempRemoval::ByName;
+    return std::error_code();
+  }
 
   // The file is on a local drive, we can safely set FILE_DISPOSITION_INFO's
   // flag.
@@ -707,7 +785,7 @@ static std::error_code rename_internal(HANDLE FromHandle, const Twine &To,
   RenameInfo.FileNameLength = ToWide.size() * sizeof(wchar_t);
   std::copy(ToWide.begin(), ToWide.end(), &RenameInfo.FileName[0]);
 
-  // Prefer a POSIX-semantics rename (Windows 10 1607+ on NTFS/ReFS). It swaps
+  // Prefer a POSIX-semantics rename (Windows 10 1709+ on NTFS/ReFS). It swaps
   // the destination name atomically even while another process still has the
   // old destination open or memory-mapped; the old stream stays intact for
   // that process. A classic rename over a mapped destination fails, and the
@@ -1303,12 +1381,9 @@ void mapped_file_region::unmapImpl() {
         // cases where we do the flushing. Only do the flushing if we aren't
         // sure we are on a local file system.
         bool IsLocal = false;
-        SmallVector<wchar_t, 128> FinalPath;
-        if (!realPathFromHandle(FileHandle.get(), FinalPath)) {
-          // Not checking the return value here - if the check fails, assume the
-          // file isn't local.
-          is_local_internal(FinalPath, IsLocal);
-        }
+        // Not checking the return value here - if the check fails, assume the
+        // file isn't local.
+        is_local_handle(FileHandle.get(), IsLocal);
         DoFlush = !IsLocal;
       }
       if (DoFlush)
@@ -1538,7 +1613,7 @@ static DWORD nativeAccess(FileAccess Access, OpenFlags Flags) {
     Result |= GENERIC_READ;
   if (Access & FA_Write)
     Result |= GENERIC_WRITE;
-  if (Flags & OF_Delete)
+  if (Flags & (OF_Delete | OF_DeleteOnClose))
     Result |= DELETE;
   if (Flags & OF_UpdateAtime)
     Result |= FILE_WRITE_ATTRIBUTES;
@@ -1595,6 +1670,9 @@ Expected<file_t> openNativeFile(const Twine &Name, CreationDisposition Disp,
   DWORD NativeFlags = FILE_ATTRIBUTE_NORMAL;
   if (Flags & OF_OpenDirectory)
     NativeFlags |= FILE_FLAG_BACKUP_SEMANTICS;
+  // Only where it can be withdrawn again; see setDeleteDisposition.
+  if ((Flags & OF_DeleteOnClose) && haveDispositionEx())
+    NativeFlags |= FILE_FLAG_DELETE_ON_CLOSE;
 
   bool Inherit = false;
   if (Flags & OF_ChildInherit)
