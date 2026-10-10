@@ -26,6 +26,50 @@
 #include "platform_support.h"
 #include "test_macros.h"
 
+#if defined(_WIN32)
+#  include <windows.h>
+
+// libc++ takes the environment's encoding from the system ANSI code page, which
+// is a host setting: it is 65001 (UTF-8) when the system uses UTF-8 for
+// non-Unicode programs.
+static std::text_encoding::id windows_acp_id() {
+  switch (::GetACP()) {
+  case 874:
+    return std::text_encoding::windows874;
+  case 932:
+    return std::text_encoding::ShiftJIS;
+  case 936:
+    return std::text_encoding::GB2312;
+  case 949:
+    return std::text_encoding::KSC56011987;
+  case 950:
+    return std::text_encoding::Big5;
+  case 1250:
+    return std::text_encoding::windows1250;
+  case 1251:
+    return std::text_encoding::windows1251;
+  case 1252:
+    return std::text_encoding::windows1252;
+  case 1253:
+    return std::text_encoding::windows1253;
+  case 1254:
+    return std::text_encoding::windows1254;
+  case 1255:
+    return std::text_encoding::windows1255;
+  case 1256:
+    return std::text_encoding::windows1256;
+  case 1257:
+    return std::text_encoding::windows1257;
+  case 1258:
+    return std::text_encoding::windows1258;
+  case 65001:
+    return std::text_encoding::UTF8;
+  default:
+    return std::text_encoding::unknown;
+  }
+}
+#endif
+
 int main(int, char**) {
   auto check_env = []() {
 #if defined(__ANDROID__)
@@ -33,7 +77,7 @@ int main(int, char**) {
 #elif defined(__linux__) || defined(__FreeBSD__) || defined(__APPLE__)
     constexpr std::text_encoding::id expected_id = std::text_encoding::ASCII;
 #elif defined(_WIN32)
-    constexpr std::text_encoding::id expected_id = std::text_encoding::windows1252;
+    const std::text_encoding::id expected_id = windows_acp_id();
 #elif defined(_AIX)
     constexpr std::text_encoding::id expected_id = std::text_encoding::ISOLatin1;
 #else
@@ -48,7 +92,16 @@ int main(int, char**) {
           "Environment mismatch: Expected ID {}, received: {{{},{}}}\n", int(expected_id), int(te.mib()), te.name());
       fail = true;
     }
+#if defined(_WIN32)
+    // environment_is takes the id as a template argument, so check it in both
+    // directions for the two code pages Windows hosts commonly use.
+    std::same_as<bool> decltype(auto) env_is_expected =
+        std::text_encoding::environment_is<std::text_encoding::windows1252>() ==
+            (expected_id == std::text_encoding::windows1252) &&
+        std::text_encoding::environment_is<std::text_encoding::UTF8>() == (expected_id == std::text_encoding::UTF8);
+#else
     std::same_as<bool> decltype(auto) env_is_expected = std::text_encoding::environment_is<expected_id>();
+#endif
     if (!env_is_expected) {
       fail = true;
     }
