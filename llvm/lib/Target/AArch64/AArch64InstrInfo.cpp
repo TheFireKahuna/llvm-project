@@ -10305,7 +10305,8 @@ ArrayRef<std::pair<MachineMemOperand::Flags, const char *>>
 AArch64InstrInfo::getSerializableMachineMemOperandTargetFlags() const {
   static const std::pair<MachineMemOperand::Flags, const char *> TargetFlags[] =
       {{MOSuppressPair, "aarch64-suppress-pair"},
-       {MOStridedAccess, "aarch64-strided-access"}};
+       {MOStridedAccess, "aarch64-strided-access"},
+       {MOProvenCallTarget, "aarch64-proven-call-target"}};
   return ArrayRef(TargetFlags);
 }
 

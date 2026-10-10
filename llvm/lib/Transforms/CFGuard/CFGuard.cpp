@@ -13,15 +13,20 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/CFGuard.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/IR/CallingConv.h"
+#include "llvm/IR/ConstantRange.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instruction.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Operator.h"
+#include "llvm/IR/PatternMatch.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/TargetParser/Triple.h"
@@ -34,6 +39,8 @@ using OperandBundleDef = OperandBundleDefT<Value *>;
 #define DEBUG_TYPE "cfguard"
 
 STATISTIC(CFGuardCounter, "Number of Control Flow Guard checks added");
+STATISTIC(CFGuardProvenCounter,
+          "Number of indirect calls whose target is proven");
 
 constexpr StringRef GuardCheckFunctionName = "__guard_check_icall_fptr";
 constexpr StringRef GuardDispatchFunctionName = "__guard_dispatch_icall_fptr";
@@ -46,6 +53,7 @@ using COFF::KCFIMemberDispatchThunkPrefix;
 using COFF::KCFIMemberLocalCheckThunkPrefix;
 using COFF::KCFIMemberLocalDispatchThunkPrefix;
 using COFF::KCFIVfnCheckThunkPrefix;
+constexpr unsigned MaxIndexRangeDepth = 6;
 
 namespace {
 
@@ -185,6 +193,10 @@ private:
   bool UseKCFIThunks = false;
   // Whether calls to llvm.kcfi.check go through a per-type check thunk.
   bool UseKCFICheckThunks = false;
+  // Whether the loads of targets proven to come from a constant table of
+  // functions are marked for the backend, which leaves the call unchecked if
+  // the target stays in its register.
+  bool MarkProvenCalls = false;
   Mechanism GuardMechanism = Mechanism::Check;
   // The globals holding the pointers to the guard check and dispatch
   // functions, once a call needs them.
@@ -339,6 +351,7 @@ bool CFGuardImpl::doInitialization(Module &M) {
   UseKCFIThunks =
       HasKCFIMarker && (TT.isX86_64() || GuardMechanism == Mechanism::Check);
   UseKCFICheckThunks = HasKCFIMarker;
+  MarkProvenCalls = TT.isWindowsItaniumOrNTPOSIXEnvironment();
 
   // Set up prototypes for the guard check and dispatch functions.
   GuardFnType =
@@ -579,6 +592,174 @@ static bool canUseDispatch(const CallBase &CB) {
   return true;
 }
 
+// Returns true if I may be a call. A callee may spill a value that is live
+// across it to its own writable frame.
+static bool mayCall(const Instruction &I) {
+  const auto *II = dyn_cast<IntrinsicInst>(&I);
+  return isa<CallBase>(I) && !(II && II->isAssumeLikeIntrinsic());
+}
+
+// Returns the range to which the conditional branch that is the only way into
+// BB constrains V. The compare must be in that branch's block with no call
+// after it, so that BB uses the value it tested.
+static ConstantRange getEdgeRange(const Value *V, const BasicBlock *BB) {
+  using namespace PatternMatch;
+  ConstantRange Full =
+      ConstantRange::getFull(V->getType()->getScalarSizeInBits());
+  const BasicBlock *Pred = BB->getSinglePredecessor();
+  auto *BI = Pred ? dyn_cast<CondBrInst>(Pred->getTerminator()) : nullptr;
+  const APInt *C;
+  if (!BI || !match(BI->getCondition(), m_ICmp(m_Specific(V), m_APInt(C))))
+    return Full;
+  // A same-sign compare may be lowered with either signedness, so it proves
+  // neither range.
+  auto *Cmp = cast<ICmpInst>(BI->getCondition());
+  if (Cmp->getParent() != Pred || Cmp->hasSameSign())
+    return Full;
+  for (const Instruction *I = Cmp->getNextNode(); I != BI; I = I->getNextNode())
+    if (mayCall(*I))
+      return Full;
+  CmpInst::Predicate P = BI->getSuccessor(0) == BB ? Cmp->getPredicate()
+                                                   : Cmp->getInversePredicate();
+  return ConstantRange::makeExactICmpRegion(P, *C);
+}
+
+// Returns the range of the index V where BB uses it. Each step follows only
+// the semantics of an operation, never a poison-generating flag, metadata, an
+// attribute or an assumption: an index that breaks such a promise is exactly
+// what an attacker supplies. computeConstantRange, computeKnownBits and
+// LazyValueInfo are not used because each reads range attributes, or flags,
+// !range and assumptions, whatever the query asks. Only values computed after
+// LastCall, the last call before the use, count, since a callee may spill an
+// older one.
+static ConstantRange computeIndexRange(const Value *V, const BasicBlock *BB,
+                                       const Instruction *LastCall,
+                                       unsigned Depth = 0) {
+  using namespace PatternMatch;
+  if (auto *C = dyn_cast<ConstantInt>(V))
+    return ConstantRange(C->getValue());
+  unsigned BitWidth = V->getType()->getScalarSizeInBits();
+  ConstantRange CR =
+      LastCall ? ConstantRange::getFull(BitWidth) : getEdgeRange(V, BB);
+  auto *I = dyn_cast<Instruction>(V);
+  if (!I || I->getParent() != BB || (LastCall && I->comesBefore(LastCall)) ||
+      Depth == MaxIndexRangeDepth)
+    return CR;
+
+  if (isa<ZExtInst, SExtInst, TruncInst>(I))
+    return CR.intersectWith(
+        computeIndexRange(I->getOperand(0), BB, LastCall, Depth + 1)
+            .castOp(cast<CastInst>(I)->getOpcode(), BitWidth));
+
+  const APInt *C;
+  auto *BO = dyn_cast<BinaryOperator>(I);
+  if (!BO || !match(BO->getOperand(1), m_APInt(C)))
+    return CR;
+  switch (BO->getOpcode()) {
+  case Instruction::And:
+    break;
+  case Instruction::Shl:
+  case Instruction::LShr:
+    if (C->uge(BitWidth))
+      return CR;
+    break;
+  case Instruction::URem:
+    if (C->isZero())
+      return CR;
+    break;
+  default:
+    return CR;
+  }
+  return CR.intersectWith(
+      computeIndexRange(BO->getOperand(0), BB, LastCall, Depth + 1)
+          .binaryOp(BO->getOpcode(), ConstantRange(*C)));
+}
+
+// Returns the type a call's kcfi bundle checks, or null.
+static const ConstantInt *getKCFIType(const CallBase &CB) {
+  std::optional<OperandBundleUse> Bundle =
+      CB.getOperandBundle(LLVMContext::OB_kcfi);
+  return Bundle ? cast<ConstantInt>(Bundle->Inputs[0]) : nullptr;
+}
+
+// Returns true if every pointer-sized word of C is null or the address of a
+// function this image defines or reaches through its own thunk. With a KCFI
+// type, each function must carry it, so that leaving the call unchecked
+// accepts no target the check would reject.
+static bool holdsOnlyFunctions(const Constant *C, const ConstantInt *Type) {
+  if (isa<ConstantPointerNull, ConstantAggregateZero>(C))
+    return true;
+  if (auto *F = dyn_cast<Function>(C)) {
+    if (F->hasDLLImportStorageClass())
+      return false;
+    if (!Type)
+      return true;
+    const MDNode *MD = F->getMetadata(LLVMContext::MD_kcfi_type);
+    return MD && mdconst::extract<ConstantInt>(MD->getOperand(0)) == Type;
+  }
+  return isa<ConstantArray, ConstantStruct>(C) &&
+         all_of(C->operands(), [&](const Use &Op) {
+           return holdsOnlyFunctions(cast<Constant>(Op), Type);
+         });
+}
+
+// Returns true if CB's target is loaded from a constant table of functions at
+// an index proven to select one of its words, so it is one of a fixed set of
+// functions and needs no check. The table must be read-only once the image is
+// loaded, and the proof must not rest on inbounds, which only makes an
+// out-of-range address poison.
+static bool hasProvenTarget(const CallBase &CB) {
+  const BasicBlock *BB = CB.getParent();
+  auto *Load = dyn_cast<LoadInst>(CB.getCalledOperand());
+  auto *GEP =
+      Load ? dyn_cast<GetElementPtrInst>(Load->getPointerOperand()) : nullptr;
+  if (!GEP || Load->getParent() != BB || GEP->getParent() != BB)
+    return false;
+
+  const DataLayout &DL = CB.getDataLayout();
+  unsigned IndexWidth = DL.getIndexTypeSizeInBits(GEP->getType());
+  APInt Offset(IndexWidth, 0);
+  auto *GV = dyn_cast<GlobalVariable>(
+      GEP->getPointerOperand()->stripAndAccumulateConstantOffsets(
+          DL, Offset, /*AllowNonInbounds=*/true));
+  // A thread-local or explicitly placed constant may be writable.
+  if (!GV || !GV->isConstant() || !GV->hasDefinitiveInitializer() ||
+      GV->isDeclarationForLinker() || GV->isThreadLocal() || GV->hasSection() ||
+      !holdsOnlyFunctions(GV->getInitializer(), getKCFIType(CB)))
+    return false;
+
+  SmallMapVector<Value *, APInt, 4> VariableOffsets;
+  APInt ConstantOffset(IndexWidth, 0);
+  if (!GEP->collectOffset(DL, IndexWidth, VariableOffsets, ConstantOffset) ||
+      VariableOffsets.size() != 1)
+    return false;
+  Offset += ConstantOffset;
+  const auto &[Index, Scale] = VariableOffsets.front();
+
+  // Every offset must select a whole word inside the table.
+  uint64_t WordSize = DL.getTypeStoreSize(Load->getType());
+  uint64_t TableSize = DL.getTypeAllocSize(GV->getValueType());
+  if (TableSize < WordSize || Scale.urem(WordSize) || Offset.urem(WordSize))
+    return false;
+
+  // The proof holds for values in registers. Requiring them to be computed
+  // after the last call keeps them out of a callee's frame; the backend checks
+  // that register allocation kept them out of this function's.
+  const Instruction *LastCall = CB.getPrevNode();
+  while (LastCall && !mayCall(*LastCall))
+    LastCall = LastCall->getPrevNode();
+  if (LastCall && GEP->comesBefore(LastCall))
+    return false;
+
+  ConstantRange Offsets = computeIndexRange(Index, BB, LastCall)
+                              .sextOrTrunc(IndexWidth)
+                              .multiply(ConstantRange(Scale))
+                              .add(ConstantRange(Offset));
+  return ConstantRange(APInt(IndexWidth, 0),
+                       APInt(IndexWidth, TableSize - WordSize + 1))
+      .contains(Offsets);
+}
+
 bool CFGuardImpl::runOnFunction(Function &F) {
   // Skip modules for which CFGuard checks have been disabled.
   bool CheckAll = CFGuardModuleFlag == ControlFlowGuardMode::Enabled;
@@ -586,6 +767,10 @@ bool CFGuardImpl::runOnFunction(Function &F) {
     return false;
 
   SmallVector<CallBase *, 8> IndirectCalls;
+  // The loads of proven targets, and those of targets some other call of the
+  // load does not prove.
+  SmallPtrSet<LoadInst *, 4> ProvenLoads;
+  SmallPtrSet<LoadInst *, 4> UnprovenLoads;
   SmallVector<IntrinsicInst *, 2> KCFIChecks;
   MemberTests.clear();
   FusedMemberTests.clear();
@@ -615,6 +800,16 @@ bool CFGuardImpl::runOnFunction(Function &F) {
       if (CB && CB->isIndirectCall() && !CB->hasFnAttr("guard_nocf") &&
           (CheckAll ||
            (UseKCFIThunks && CB->getOperandBundle(LLVMContext::OB_kcfi)))) {
+        if (auto *Load = MarkProvenCalls
+                             ? dyn_cast<LoadInst>(CB->getCalledOperand())
+                             : nullptr) {
+          if (hasProvenTarget(*CB)) {
+            ProvenLoads.insert(Load);
+            CFGuardProvenCounter++;
+          } else {
+            UnprovenLoads.insert(Load);
+          }
+        }
         IndirectCalls.push_back(CB);
         CFGuardCounter++;
       }
@@ -627,6 +822,13 @@ bool CFGuardImpl::runOnFunction(Function &F) {
 
   for (IntrinsicInst *II : KCFIChecks)
     insertKCFICheckThunk(II);
+
+  // A proven call keeps its check, which only the backend can drop, once it
+  // knows that the target stayed in its register from the load to the call.
+  // The mark is on the load, so each call of the loaded value must prove it.
+  for (LoadInst *Load : ProvenLoads)
+    if (!UnprovenLoads.contains(Load))
+      Load->setMetadata("cfguard_proven", MDNode::get(F.getContext(), {}));
 
   // For each indirect call/invoke, add the appropriate dispatch or check.
   for (CallBase *CB : IndirectCalls) {

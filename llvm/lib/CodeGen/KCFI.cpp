@@ -21,6 +21,7 @@
 #include "llvm/CodeGen/RegisterClassInfo.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetLowering.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/Module.h"
 #include "llvm/InitializePasses.h"
@@ -132,4 +133,63 @@ bool KCFI::run(MachineFunction &MF) {
   }
 
   return Changed;
+}
+
+MachineInstr *llvm::findProvenCallTarget(MachineInstr &Call, Register Reg,
+                                         MachineMemOperand::Flags ProvenFlag,
+                                         const MachineInstr *Check,
+                                         const TargetInstrInfo &TII,
+                                         const TargetRegisterInfo &TRI) {
+  MachineBasicBlock &MBB = *Call.getParent();
+  auto I = Call.getReverseIterator(), E = MBB.instr_rend();
+  MachineInstr *Load = nullptr;
+  for (++I; I != E && !Load; ++I) {
+    if (&*I == Check) {
+      if (I->modifiesRegister(Reg, &TRI))
+        return nullptr;
+      continue;
+    }
+    // A callee may spill the value to its own frame.
+    if (I->isCall())
+      return nullptr;
+    if (!I->modifiesRegister(Reg, &TRI))
+      continue;
+    const MachineOperand &Def = I->getOperand(0);
+    if (!Def.isReg() || Def.getReg() != Reg || Def.getSubReg())
+      return nullptr;
+    if (I->isCopy()) {
+      Register Src = I->getOperand(1).getReg();
+      if (!Src.isPhysical() || I->getOperand(1).getSubReg() ||
+          TRI.getRegSizeInBits(*TRI.getMinimalPhysRegClass(Src)) !=
+              TRI.getRegSizeInBits(*TRI.getMinimalPhysRegClass(Reg)))
+        return nullptr;
+      Reg = Src;
+      continue;
+    }
+    if (I->getNumExplicitDefs() != 1 || !I->hasOneMemOperand() ||
+        I->mayStore() || !((*I->memoperands_begin())->getFlags() & ProvenFlag))
+      return nullptr;
+    Load = &*I;
+  }
+  if (!Load)
+    return nullptr;
+
+  // The proof also rests on the address the load used.
+  SmallVector<Register, 2> AddrRegs;
+  for (const MachineOperand &MO : Load->uses())
+    if (MO.isReg() && MO.getReg().isPhysical() && !MO.isImplicit())
+      AddrRegs.push_back(MO.getReg());
+  for (; I != E && !AddrRegs.empty(); ++I) {
+    for (unsigned J = 0; J != AddrRegs.size();) {
+      if (!I->modifiesRegister(AddrRegs[J], &TRI)) {
+        ++J;
+        continue;
+      }
+      int FI;
+      if (TII.isLoadFromStackSlotPostFE(*I, FI))
+        return nullptr;
+      AddrRegs.erase(AddrRegs.begin() + J);
+    }
+  }
+  return Load;
 }

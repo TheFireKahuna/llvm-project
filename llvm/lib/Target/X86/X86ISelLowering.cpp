@@ -65460,6 +65460,16 @@ bool X86TargetLowering::supportSwiftError() const {
   return Subtarget.is64Bit();
 }
 
+MachineMemOperand::Flags
+X86TargetLowering::getTargetMMOFlags(const Instruction &I) const {
+  // The CFGuard pass marks the load of a target it proved, which the call may
+  // take unchecked if the target stays in its register.
+  if (Subtarget.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      I.hasMetadata("cfguard_proven"))
+    return X86::MOProvenCallTarget;
+  return MachineMemOperand::MONone;
+}
+
 MachineInstr *
 X86TargetLowering::EmitKCFICheck(MachineBasicBlock &MBB,
                                  MachineBasicBlock::instr_iterator &MBBI,
