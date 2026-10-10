@@ -7,9 +7,17 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/Memory.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Process.h"
+#include "llvm/Support/Program.h"
 #include "gtest/gtest.h"
 #include <cstdlib>
+
+#ifdef LLVM_RUNTIME_WIN32
+#include "llvm/Support/Windows/WindowsSupport.h"
+
+extern const char *TestMainArgv0;
+#endif
 
 #if defined(__NetBSD__)
 // clang-format off
@@ -429,5 +437,44 @@ unsigned MemoryFlags[] = {
 
 INSTANTIATE_TEST_SUITE_P(AllocationTests, MappedMemoryTest,
                          ::testing::ValuesIn(MemoryFlags));
+
+#ifdef LLVM_RUNTIME_WIN32
+static int MemoryTestAnchor;
+
+// Only a request for large pages looks up the privilege they need, which
+// loads advapi32.dll. Run the check in a child process, whose only work after
+// start-up is this test.
+TEST(MappedMemoryLargePagesTest, LooksUpPrivilegeOnlyOnRequest) {
+  if (getenv("LLVM_MEMORY_TEST_CHILD")) {
+    if (::GetModuleHandleW(L"advapi32.dll"))
+      exit(1);
+    std::error_code EC;
+    MemoryBlock M = Memory::allocateMappedMemory(
+        16, nullptr, Memory::MF_READ | Memory::MF_WRITE, EC);
+    if (EC || ::GetModuleHandleW(L"advapi32.dll"))
+      exit(2);
+    Memory::releaseMappedMemory(M);
+    M = Memory::allocateMappedMemory(
+        16, nullptr, Memory::MF_READ | Memory::MF_WRITE | Memory::MF_HUGE_HINT,
+        EC);
+    if (EC || (::GetLargePageMinimum() && !::GetModuleHandleW(L"advapi32.dll")))
+      exit(3);
+    Memory::releaseMappedMemory(M);
+    exit(0);
+  }
+
+  std::string Exe = fs::getMainExecutable(TestMainArgv0, &MemoryTestAnchor);
+  StringRef Args[] = {Exe, "--gtest_filter=MappedMemoryLargePagesTest."
+                           "LooksUpPrivilegeOnlyOnRequest"};
+  ASSERT_TRUE(::SetEnvironmentVariableW(L"LLVM_MEMORY_TEST_CHILD", L"1"));
+  std::string Error;
+  bool ExecutionFailed;
+  int RC = ExecuteAndWait(Exe, Args, std::nullopt, {}, /*SecondsToWait=*/60,
+                          /*MemoryLimit=*/0, &Error, &ExecutionFailed);
+  ::SetEnvironmentVariableW(L"LLVM_MEMORY_TEST_CHILD", nullptr);
+  EXPECT_FALSE(ExecutionFailed) << Error;
+  EXPECT_EQ(0, RC);
+}
+#endif // LLVM_RUNTIME_WIN32
 
 }  // anonymous namespace

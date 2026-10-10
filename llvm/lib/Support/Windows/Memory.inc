@@ -104,16 +104,20 @@ MemoryBlock Memory::allocateMappedMemory(size_t NumBytes,
     return MemoryBlock();
 
   static size_t DefaultGranularity = getAllocationGranularity();
-  static size_t LargePageGranularity = enableProcessLargePages();
 
   DWORD AllocType = MEM_RESERVE | MEM_COMMIT;
   bool HugePages = false;
   size_t Granularity = DefaultGranularity;
 
-  if ((Flags & MF_HUGE_HINT) && LargePageGranularity > 0) {
-    AllocType |= MEM_LARGE_PAGES;
-    HugePages = true;
-    Granularity = LargePageGranularity;
+  if (Flags & MF_HUGE_HINT) {
+    // Enabling large pages looks up a privilege through the LSA, which only
+    // a request for them should pay for.
+    static size_t LargePageGranularity = enableProcessLargePages();
+    if (LargePageGranularity > 0) {
+      AllocType |= MEM_LARGE_PAGES;
+      HugePages = true;
+      Granularity = LargePageGranularity;
+    }
   }
 
   size_t NumBlocks = (NumBytes + Granularity - 1) / Granularity;
