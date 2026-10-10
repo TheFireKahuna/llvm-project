@@ -1081,6 +1081,17 @@ else:
 # Set LD_LIBRARY_PATH to pick dynamic runtime up properly.
 push_dynamic_library_lookup_path(config, config.compiler_rt_libdir)
 
+# On Windows Itanium, C++ test programs load libc++.dll, which is installed
+# next to the target's other runtime libraries rather than in the compiler-rt
+# library directory.
+if config.target_triple.endswith("-windows-itanium"):
+    libcxx_dll, _ = get_path_from_clang(
+        shlex.split(config.target_cflags) + ["-print-file-name=libc++.dll"],
+        allow_failure=True,
+    )
+    if os.path.isfile(libcxx_dll):
+        push_dynamic_library_lookup_path(config, os.path.dirname(libcxx_dll))
+
 # GCC-ASan uses dynamic runtime by default.
 if config.compiler_id == "GNU":
     gcc_dir = os.path.dirname(config.clang)

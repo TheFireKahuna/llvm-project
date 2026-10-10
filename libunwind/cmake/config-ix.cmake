@@ -60,7 +60,8 @@ if(LIBUNWIND_TARGET_ARM AND NOT LIBUNWIND_USES_SJLJ_EXCEPTIONS AND NOT LIBUNWIND
 endif()
 
 # Check libraries
-if(FUCHSIA)
+# Windows Itanium needs neither library, and NT-POSIX's C library provides both.
+if(FUCHSIA OR WIN32_ITANIUM)
   set(LIBUNWIND_HAS_DL_LIB NO)
   set(LIBUNWIND_HAS_PTHREAD_LIB NO)
 else()
