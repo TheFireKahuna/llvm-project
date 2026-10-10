@@ -2195,8 +2195,17 @@ std::error_code readlink(const Twine &path, SmallVectorImpl<char> &dest) {
 } // end namespace fs
 
 namespace path {
-static bool getKnownFolderPath(KNOWNFOLDERID folderId,
+static bool getTempDirEnvVar(const wchar_t *Var, SmallVectorImpl<char> &Res);
+
+static bool getKnownFolderPath(KNOWNFOLDERID folderId, const wchar_t *EnvVar,
                                SmallVectorImpl<char> &result) {
+  // The environment names the folder for the current user, as $HOME does on
+  // Unix, and reading it does not load the shell.
+  if (getTempDirEnvVar(EnvVar, result)) {
+    llvm::sys::path::make_preferred(result);
+    return true;
+  }
+
   wchar_t *path = nullptr;
   if (::SHGetKnownFolderPath(folderId, KF_FLAG_CREATE, nullptr, &path) != S_OK)
     return false;
@@ -2209,17 +2218,17 @@ static bool getKnownFolderPath(KNOWNFOLDERID folderId,
 }
 
 bool home_directory(SmallVectorImpl<char> &result) {
-  return getKnownFolderPath(FOLDERID_Profile, result);
+  return getKnownFolderPath(FOLDERID_Profile, L"USERPROFILE", result);
 }
 
 bool user_config_directory(SmallVectorImpl<char> &result) {
   // Either local or roaming appdata may be suitable in some cases, depending
   // on the data. Local is more conservative, Roaming may not always be correct.
-  return getKnownFolderPath(FOLDERID_LocalAppData, result);
+  return getKnownFolderPath(FOLDERID_LocalAppData, L"LOCALAPPDATA", result);
 }
 
 bool cache_directory(SmallVectorImpl<char> &result) {
-  return getKnownFolderPath(FOLDERID_LocalAppData, result);
+  return getKnownFolderPath(FOLDERID_LocalAppData, L"LOCALAPPDATA", result);
 }
 
 static bool getTempDirEnvVar(const wchar_t *Var, SmallVectorImpl<char> &Res) {

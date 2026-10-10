@@ -489,7 +489,6 @@ TEST(Support, HomeDirectory) {
     expected = path;
 #endif
   // Do not try to test it if we don't know what to expect.
-  // On Windows we use something better than env vars.
   if (expected.empty())
     GTEST_SKIP();
   SmallString<128> HomeDir;
@@ -586,6 +585,35 @@ TEST(Support, CacheDirectory) {
   SmallString<128> CacheDir;
   EXPECT_TRUE(path::cache_directory(CacheDir));
   EXPECT_EQ(Expected, CacheDir);
+}
+
+TEST(Support, KnownFolderDirectoriesFromEnv) {
+  std::optional<std::wstring> Profile, LocalAppData;
+  if (const wchar_t *V = ::_wgetenv(L"USERPROFILE"))
+    Profile = V;
+  if (const wchar_t *V = ::_wgetenv(L"LOCALAPPDATA"))
+    LocalAppData = V;
+  scope_exit Restore([&] {
+    ::_wputenv_s(L"USERPROFILE", Profile ? Profile->c_str() : L"");
+    ::_wputenv_s(L"LOCALAPPDATA", LocalAppData ? LocalAppData->c_str() : L"");
+  });
+
+  ASSERT_EQ(0, ::_wputenv_s(L"USERPROFILE", L"C:/Custom/Profile"));
+  ASSERT_EQ(0, ::_wputenv_s(L"LOCALAPPDATA", L"C:\\Custom\\Local"));
+  SmallString<128> HomeDir, ConfigDir, CacheDir;
+  EXPECT_TRUE(path::home_directory(HomeDir));
+  EXPECT_EQ("C:\\Custom\\Profile", HomeDir);
+  EXPECT_TRUE(path::user_config_directory(ConfigDir));
+  EXPECT_EQ("C:\\Custom\\Local", ConfigDir);
+  EXPECT_TRUE(path::cache_directory(CacheDir));
+  EXPECT_EQ("C:\\Custom\\Local", CacheDir);
+
+  // Without the variable, the known folder is used.
+  ASSERT_EQ(0, ::_wputenv_s(L"USERPROFILE", L""));
+  SmallString<128> FolderDir;
+  EXPECT_TRUE(path::home_directory(FolderDir));
+  EXPECT_FALSE(FolderDir.empty());
+  EXPECT_NE("C:\\Custom\\Profile", FolderDir);
 }
 #endif
 
