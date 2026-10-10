@@ -114,6 +114,11 @@ private:
   // Determines the location of the sysroot based on `args`, environment, etc.
   void detectWinSysRoot(const llvm::opt::InputArgList &args);
 
+  // Detects the MSVC and Windows SDK library directories if that is pending
+  // and the machine type is known, and appends them to the search paths.
+  // Returns true if it added any.
+  bool addPendingWinSysRootLibSearchPaths();
+
   // Adds various search paths based on the sysroot.  Must only be called once
   // config.machine has been set.
   void addWinSysRootLibSearchPaths();
@@ -196,6 +201,10 @@ private:
   llvm::DenseSet<StringRef> excludedSymbols;
 
   COFFLinkerContext &ctx;
+
+  // The arguments to detect the MSVC and Windows SDK library directories from
+  // when a search first misses the other paths.
+  const llvm::opt::InputArgList *pendingWinSysRootArgs = nullptr;
 
   llvm::ToolsetLayout vsLayout = llvm::ToolsetLayout::OlderVS;
   std::string vcToolChainPath;

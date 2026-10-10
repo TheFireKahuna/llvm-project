@@ -695,6 +695,8 @@ StringRef LinkerDriver::findFile(StringRef filename) {
         return saver().save(path.str());
     }
   }
+  if (addPendingWinSysRootLibSearchPaths())
+    return findFile(filename);
   return filename;
 }
 
@@ -784,6 +786,23 @@ void LinkerDriver::setMachine(MachineTypes machine) {
   }
 
   addWinSysRootLibSearchPaths();
+}
+
+// The MSVC and Windows SDK library directories come last in the search order,
+// so they are needed only once a search misses every other path. Detecting
+// them can query the registry and the Visual Studio setup COM server, so
+// unless the command line names them, it waits for that miss.
+bool LinkerDriver::addPendingWinSysRootLibSearchPaths() {
+  // The directories depend on the machine type.
+  if (!pendingWinSysRootArgs ||
+      ctx.config.machine == IMAGE_FILE_MACHINE_UNKNOWN)
+    return false;
+  const opt::InputArgList &args = *pendingWinSysRootArgs;
+  pendingWinSysRootArgs = nullptr;
+  size_t numSearchPaths = searchPaths.size();
+  detectWinSysRoot(args);
+  addWinSysRootLibSearchPaths();
+  return searchPaths.size() != numSearchPaths;
 }
 
 void LinkerDriver::detectWinSysRoot(const opt::InputArgList &Args) {
@@ -878,6 +897,7 @@ void LinkerDriver::addClangLibSearchPaths(const std::string &argv0) {
 }
 
 void LinkerDriver::addWinSysRootLibSearchPaths() {
+  size_t numSearchPaths = searchPaths.size();
   if (!diaPath.empty()) {
     // The DIA SDK always uses the legacy vc arch, even in new MSVC versions.
     path::append(diaPath, "lib", archToLegacyVCArch(getArch()));
@@ -905,7 +925,10 @@ void LinkerDriver::addWinSysRootLibSearchPaths() {
   }
 
   // Libraries specified by `/nodefaultlib:` may not be found in incomplete
-  // search paths before lld infers a machine type from input files.
+  // search paths before lld infers a machine type from input files. Without
+  // new search paths, they resolve as before.
+  if (searchPaths.size() == numSearchPaths)
+    return;
   llvm::StringSet<> noDefaultLibs;
   for (auto &iter : ctx.config.noDefaultLibs)
     noDefaultLibs.insert(findLib(iter.first()).lower());
@@ -1742,7 +1765,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
       // Don't automatically deduce the lib path from the environment or MSVC
       // installations when operating in mingw mode. (This also makes LLD ignore
       // winsysroot and vctoolsdir arguments.)
-      detectWinSysRoot(args);
+      if (args.hasArg(OPT_winsysroot, OPT_vctoolsdir, OPT_winsdkdir))
+        detectWinSysRoot(args);
+      else
+        pendingWinSysRootArgs = &args;
       if (!args.hasArg(OPT_lldignoreenv, OPT_winsysroot, OPT_vctoolsdir,
                        OPT_vctoolsversion, OPT_winsdkdir, OPT_winsdkversion))
         addLibSearchPaths();

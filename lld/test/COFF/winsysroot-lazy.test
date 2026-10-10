@@ -1,0 +1,20 @@
+Without /winsysroot, /vctoolsdir or /winsdkdir, lld-link looks for the MSVC
+libraries only when a search misses the other search paths.
+
+# RUN: mkdir -p %t.dir/vc/lib/x64 %t.dir/lib
+# RUN: cp %p/Inputs/std64.lib %t.dir/vc/lib/x64
+# RUN: cp %p/Inputs/std64.lib %t.dir/lib
+
+A link whose /libpath has every library does not look for MSVC.
+# RUN: env -u LIB VCToolsInstallDir=%t.dir/vc lld-link %p/Inputs/hello64.obj \
+# RUN:     /libpath:%t.dir/lib std64.lib /entry:main /out:%t.exe \
+# RUN:     -print-search-paths | FileCheck --check-prefix=FOUND %s
+FOUND:     Library search paths:
+FOUND-NOT: {{[/\\]}}vc{{[/\\]}}lib
+
+A library that no other search path has is found in the MSVC directory.
+# RUN: env -u LIB VCToolsInstallDir=%t.dir/vc lld-link %p/Inputs/hello64.obj \
+# RUN:     std64.lib /entry:main /out:%t.exe -print-search-paths \
+# RUN:     | FileCheck --check-prefix=MISS %s
+MISS: Library search paths:
+MISS: {{[/\\]}}vc{{[/\\]}}lib{{[/\\]}}x64
