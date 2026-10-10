@@ -14,7 +14,7 @@
 // RUN:       --implicit-check-not=-cetcompat
 // EXE:      lld-link{{(.exe)?}}" "-out:a.exe" "-machine:x64" "-nologo" "-lldignoreenv"
 // EXE-SAME: "-import-slots" "-guard:cf,exportsuppress"
-// EXE-SAME: "-manifest:embed"
+// EXE-SAME: "-start-stop-symbols" "-boundary-symbols" "-manifest:embed"
 // EXE-SAME: "[[LIB:[^"]*]]{{/|\\\\}}crt1.obj" "[[LIB]]{{/|\\\\}}crt_do_start.obj"
 // EXE-SAME: "[[LIB]]{{/|\\\\}}crt_tls.obj" "[[LIB]]{{/|\\\\}}crt_tls_cleanup.obj"
 // EXE-SAME: "[[LIB]]{{/|\\\\}}crt_gs.obj" "[[LIB]]{{/|\\\\}}crt_cfg.obj"

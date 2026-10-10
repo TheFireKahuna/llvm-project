@@ -3,7 +3,7 @@
 // RUN: rm -rf %t && split-file %s %t
 
 // RUN: %clang -### --target=x86_64-pc-windows-ntposix -c %s 2>&1 \
-// RUN:   | FileCheck --check-prefix=CC1 %s \
+// RUN:   | FileCheck --check-prefixes=CC1,CC1-X64 %s \
 // RUN:       --implicit-check-not=-fms-extensions \
 // RUN:       --implicit-check-not=-fwchar-type \
 // RUN:       --implicit-check-not=-D_DLL \
@@ -12,10 +12,12 @@
 // RUN:       --implicit-check-not=-disable-red-zone
 // RUN: %clang -### --target=aarch64-pc-windows-ntposix -c %s 2>&1 \
 // RUN:   | FileCheck --check-prefix=CC1 %s \
-// RUN:       --implicit-check-not=-disable-red-zone
+// RUN:       --implicit-check-not=-disable-red-zone --implicit-check-not=-fno-plt
 // CC1:         "-cc1" "-triple" "{{x86_64|aarch64}}-pc-windows-ntposix"
 // CC1-DAG:     "-mdefault-visibility-export-mapping=explicit"
+// CC1-DAG:     "-fno-auto-import"
 // CC1-DAG:     "-Wget-proc-address-type"
+// CC1-X64-DAG: "-fno-plt"
 // CC1-DAG:     "-D_LIBC_DLL"
 // CC1-DAG:     "-pthread"
 // CC1-DAG:     "-fdeclspec"

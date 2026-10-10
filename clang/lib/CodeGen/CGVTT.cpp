@@ -121,6 +121,7 @@ CodeGenVTables::EmitVTTDefinition(llvm::GlobalVariable *VTT,
   // Set it again, now that we have a definition, as the implicit visibility can
   // apply differently to definitions.
   CGM.setGVProperties(VTT, RD);
+  setVTableDSOLocal(VTT, RD);
 }
 
 llvm::GlobalVariable *CodeGenVTables::GetAddrOfVTT(const CXXRecordDecl *RD) {
@@ -145,6 +146,7 @@ llvm::GlobalVariable *CodeGenVTables::GetAddrOfVTT(const CXXRecordDecl *RD) {
       Name, ArrayType, llvm::GlobalValue::ExternalLinkage, Align);
   GV->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
   CGM.setGVProperties(GV, RD);
+  setVTableDSOLocal(GV, RD);
   return GV;
 }
 

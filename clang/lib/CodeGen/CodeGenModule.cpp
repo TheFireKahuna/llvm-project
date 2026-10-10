@@ -2338,10 +2338,11 @@ static bool shouldAssumeDSOLocal(const CodeGenModule &CGM,
 
   const llvm::Triple &TT = CGM.getTriple();
   const auto &CGOpts = CGM.getCodeGenOpts();
-  if (TT.isOSCygMing()) {
+  if (TT.isOSCygMing() || TT.isWindowsItaniumOrNTPOSIXEnvironment()) {
     // In MinGW, variables without DLLImport can still be automatically
     // imported from a DLL by the linker; don't mark variables that
-    // potentially could come from another DLL as DSO local.
+    // potentially could come from another DLL as DSO local. Windows Itanium
+    // and NT-POSIX reach such a variable through its import pointer.
 
     // With EmulatedTLS, TLS variables can be autoimported from other DLLs
     // (and this actually happens in the public interface of libstdc++), so
@@ -2441,6 +2442,59 @@ void CodeGenModule::setDLLImportDLLExport(llvm::GlobalValue *GV,
   setDLLImportDLLExport(GV, D);
 }
 
+bool CodeGenModule::shouldMapDefinitionToDLLExport(
+    const NamedDecl *D, llvm::GlobalValue::LinkageTypes Linkage) const {
+  if (!shouldMapVisibilityToDLLExport(D))
+    return false;
+  // A COFF image has a discardable definition only if it used it, and every
+  // image that uses it emits its own copy, so an export of one is no promise
+  // to importers. A variable the source declared is the exception: its
+  // address is shared across images, as it is across shared objects on ELF.
+  return !getTriple().isOSBinFormatCOFF() ||
+         !llvm::GlobalValue::isLinkOnceLinkage(Linkage) || isa<VarDecl>(D);
+}
+
+bool CodeGenModule::isMappedImportVisibility(const LinkageInfo &LV) const {
+  return LV.getVisibility() == DefaultVisibility && LV.isVisibilityExplicit() &&
+         LangOpts.hasDefaultVisibilityExportMapping();
+}
+
+bool CodeGenModule::shouldMapVisibilityToDLLImport(const NamedDecl *D) const {
+  // Only COFF has an import table for the storage class to name.
+  if (!getTriple().isOSBinFormatCOFF())
+    return false;
+  // Without the mapping or -fno-plt nothing is imported, and the linkage and
+  // visibility need not be computed. Only Windows Itanium and NT-POSIX import
+  // under -fno-plt, since their linker makes a call to a function in the
+  // image direct; link.exe would give it a local import pointer and LNK4217.
+  bool NoPLT =
+      CodeGenOpts.NoPLT && getTriple().isWindowsItaniumOrNTPOSIXEnvironment();
+  if (!LangOpts.hasDefaultVisibilityExportMapping() && !NoPLT)
+    return false;
+  // A vtable or a type_info object, named by its class, follows rules of its
+  // own, and a declaration marked dllexport is defined in this image.
+  if (!isa<FunctionDecl, VarDecl>(D) || D->hasAttr<DLLExportAttr>())
+    return false;
+  // A native thread-local variable cannot be imported.
+  if (const auto *VD = dyn_cast<VarDecl>(D))
+    if (VD->getTLSKind() != VarDecl::TLS_None)
+      return false;
+  // An explicit default visibility says that the entity lives in a shared
+  // library, as it says on a definition that the mapping exports.
+  LinkageInfo LV = D->getLinkageAndVisibility();
+  if (isMappedImportVisibility(LV))
+    return true;
+  // Under -fno-plt a call to a function the translation unit does not define
+  // goes through the import table, which takes the place of the GOT, and the
+  // linker makes it direct when the function is in the image. A declaration
+  // is local when its visibility is explicitly not default, or when the
+  // global visibility applies to declarations too.
+  return NoPLT && isa<FunctionDecl>(D) &&
+         (LV.getVisibility() == DefaultVisibility ||
+          (!LV.isVisibilityExplicit() &&
+           !getLangOpts().SetVisibilityForExternDecls));
+}
+
 void CodeGenModule::setDLLImportDLLExport(llvm::GlobalValue *GV,
                                           const NamedDecl *D) const {
   // A global can be local although its declaration is visible: the
@@ -2449,9 +2503,17 @@ void CodeGenModule::setDLLImportDLLExport(llvm::GlobalValue *GV,
     if (D->hasAttr<DLLImportAttr>())
       GV->setDLLStorageClass(llvm::GlobalVariable::DLLImportStorageClass);
     else if ((D->hasAttr<DLLExportAttr>() ||
-              shouldMapVisibilityToDLLExport(D)) &&
+              shouldMapDefinitionToDLLExport(D, GV->getLinkage())) &&
              !GV->isDeclarationForLinker())
       GV->setDLLStorageClass(llvm::GlobalVariable::DLLExportStorageClass);
+    else if (shouldMapVisibilityToDLLImport(D)) {
+      // An extern_weak declaration may resolve to zero, which an import
+      // cannot, and a definition may turn up after the declaration.
+      if (!GV->isDeclarationForLinker())
+        GV->setDLLStorageClass(llvm::GlobalVariable::DefaultStorageClass);
+      else if (!GV->hasExternalWeakLinkage())
+        GV->setDLLStorageClass(llvm::GlobalVariable::DLLImportStorageClass);
+    }
   }
 }
 
@@ -3955,7 +4017,10 @@ void CodeGenModule::addCompilerUsedGlobal(llvm::GlobalValue *GV) {
 void CodeGenModule::addUsedOrCompilerUsedGlobal(llvm::GlobalValue *GV) {
   assert((isa<llvm::Function>(GV) || !GV->isDeclaration()) &&
          "Only globals with definition can force usage.");
-  if (getTriple().isOSBinFormatELF())
+  // As on ELF, Windows Itanium and NT-POSIX keep a global marked used from the
+  // compiler only; retain keeps it through the link.
+  if (getTriple().isOSBinFormatELF() ||
+      getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
     LLVMCompilerUsed.emplace_back(GV);
   else
     LLVMUsed.emplace_back(GV);
@@ -5702,6 +5767,10 @@ void CodeGenModule::setMultiVersionResolverAttributes(llvm::Function *Resolver,
   // for Resolver to be considered as definition.
   setGlobalVisibility(Resolver, D);
 
+  // The resolver is the definition callers reach, so it takes the DLL storage
+  // of one, replacing any dllimport its declaration took from an earlier call.
+  setDLLImportDLLExport(Resolver, D);
+
   setDSOLocal(Resolver);
 
   // The resolver must be exempt from sanitizer instrumentation, as it can run
@@ -5725,7 +5794,8 @@ bool CodeGenModule::shouldDropDLLAttribute(const Decl *D,
     return false;
   const Decl *MRD = D->getMostRecentDecl();
   return (((SC == llvm::GlobalValue::DLLImportStorageClass &&
-            !MRD->hasAttr<DLLImportAttr>()) ||
+            !MRD->hasAttr<DLLImportAttr>() &&
+            !shouldMapVisibilityToDLLImport(cast<NamedDecl>(MRD))) ||
            (SC == llvm::GlobalValue::DLLExportStorageClass &&
             !MRD->hasAttr<DLLExportAttr>())) &&
           !shouldMapVisibilityToDLLExport(cast<NamedDecl>(MRD)));
@@ -6039,16 +6109,26 @@ static void setWindowsItaniumDLLImport(CodeGenModule &CGM, bool Local,
   // dllimport. For Mingw and MSVC, don't. We don't really know if the user
   // will link their standard library statically or dynamically. Marking
   // functions imported when they are not imported can cause linker errors
-  // and warnings. The pure-call entry point and the functions that register
-  // destructors at exit are defined in every image by its startup code, not by
-  // the C++ runtime library.
-  if (!Local && CGM.getTriple().isWindowsItaniumEnvironment() &&
-      !CGM.getCodeGenOpts().LTOVisibilityPublicStd &&
-      Name != CGM.getCXXABI().GetPureVirtualCallName() &&
-      Name != "__cxa_atexit" && Name != "__llvm_kcfi_cxa_atexit" &&
-      Name != "atexit") {
+  // and warnings. Under -fno-plt, Windows Itanium and NT-POSIX call every
+  // function the translation unit does not define through the import table.
+  // The pure-call entry point and the functions that register destructors at
+  // exit are defined in every Windows Itanium image by its startup code, not
+  // by the C++ runtime library.
+  const llvm::Triple &TT = CGM.getTriple();
+  bool NoPLT = CGM.getCodeGenOpts().NoPLT &&
+               TT.isWindowsItaniumOrNTPOSIXEnvironment();
+  if (!Local &&
+      (NoPLT || (TT.isWindowsItaniumEnvironment() &&
+                 !CGM.getCodeGenOpts().LTOVisibilityPublicStd)) &&
+      !(TT.isWindowsItaniumOrNTPOSIXEnvironment() &&
+        !TT.isWindowsNTPOSIXEnvironment() &&
+        (Name == CGM.getCXXABI().GetPureVirtualCallName() ||
+         Name == "__cxa_atexit" || Name == "__llvm_kcfi_cxa_atexit" ||
+         Name == "atexit"))) {
     const FunctionDecl *FD = GetRuntimeFunctionDecl(CGM.getContext(), Name);
-    if (!FD || FD->hasAttr<DLLImportAttr>()) {
+    if (!FD || FD->hasAttr<DLLImportAttr>() ||
+        (NoPLT && !F->hasExternalWeakLinkage() &&
+         CGM.shouldMapVisibilityToDLLImport(FD))) {
       F->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
       F->setLinkage(llvm::GlobalValue::ExternalLinkage);
     }

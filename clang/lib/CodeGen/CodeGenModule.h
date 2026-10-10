@@ -1030,6 +1030,18 @@ public:
             (getLangOpts().isExplicitDefaultVisibilityExportMapping() &&
              D->getLinkageAndVisibility().isVisibilityExplicit()));
   }
+  /// Whether the visibility mapping exports a definition of D that has
+  /// linkage Linkage.
+  bool shouldMapDefinitionToDLLExport(
+      const NamedDecl *D, llvm::GlobalValue::LinkageTypes Linkage) const;
+  /// Whether a declaration of D that this translation unit does not define
+  /// is given dllimport storage without a dllimport attribute.
+  bool shouldMapVisibilityToDLLImport(const NamedDecl *D) const;
+  /// Whether LV, the linkage and visibility of a declaration, says that the
+  /// entity lives in a shared library: an explicit default visibility under
+  /// the visibility mapping. An implicit visibility says nothing about a
+  /// declaration, since every plain declaration has it.
+  bool isMappedImportVisibility(const LinkageInfo &LV) const;
   void setDLLImportDLLExport(llvm::GlobalValue *GV, GlobalDecl D) const;
   void setDLLImportDLLExport(llvm::GlobalValue *GV, const NamedDecl *D) const;
   /// Set visibility, dllimport/dllexport and dso_local.
