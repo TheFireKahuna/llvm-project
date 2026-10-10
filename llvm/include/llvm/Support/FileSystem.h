@@ -124,7 +124,7 @@ inline perms operator~(perms x) {
 /// represents the information provided by Windows FileFirstFile/FindNextFile.
 class basic_file_status {
 protected:
-  #if defined(LLVM_ON_UNIX)
+  #if defined(LLVM_RUNTIME_POSIX)
   time_t fs_st_atime = 0;
   time_t fs_st_mtime = 0;
   uint32_t fs_st_atime_nsec = 0;
@@ -132,7 +132,7 @@ protected:
   uid_t fs_st_uid = 0;
   gid_t fs_st_gid = 0;
   off_t fs_st_size = 0;
-  #elif defined (_WIN32)
+  #elif defined (LLVM_RUNTIME_WIN32)
   uint32_t LastAccessedTimeHigh = 0;
   uint32_t LastAccessedTimeLow = 0;
   uint32_t LastWriteTimeHigh = 0;
@@ -148,7 +148,7 @@ public:
 
   explicit basic_file_status(file_type Type) : Type(Type) {}
 
-  #if defined(LLVM_ON_UNIX)
+  #if defined(LLVM_RUNTIME_POSIX)
   basic_file_status(file_type Type, perms Perms, time_t ATime,
                     uint32_t ATimeNSec, time_t MTime, uint32_t MTimeNSec,
                     uid_t UID, gid_t GID, off_t Size)
@@ -156,7 +156,7 @@ public:
         fs_st_atime_nsec(ATimeNSec), fs_st_mtime_nsec(MTimeNSec),
         fs_st_uid(UID), fs_st_gid(GID),
         fs_st_size(Size), Type(Type), Perms(Perms) {}
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
   basic_file_status(file_type Type, perms Perms, uint32_t LastAccessTimeHigh,
                     uint32_t LastAccessTimeLow, uint32_t LastWriteTimeHigh,
                     uint32_t LastWriteTimeLow, uint32_t FileSizeHigh,
@@ -187,11 +187,11 @@ public:
   /// same machine.
   LLVM_ABI TimePoint<> getLastModificationTime() const;
 
-#if defined(LLVM_ON_UNIX)
+#if defined(LLVM_RUNTIME_POSIX)
   uint32_t getUser() const { return fs_st_uid; }
   uint32_t getGroup() const { return fs_st_gid; }
   uint64_t getSize() const { return fs_st_size; }
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
   uint32_t getUser() const {
     return 9999; // Not applicable to Windows, so...
   }
@@ -214,11 +214,11 @@ public:
 class file_status : public basic_file_status {
   LLVM_ABI friend bool equivalent(file_status A, file_status B);
 
-#if defined(LLVM_ON_UNIX)
+#if defined(LLVM_RUNTIME_POSIX)
   dev_t fs_st_dev = 0;
   nlink_t fs_st_nlinks = 0;
   ino_t fs_st_ino = 0;
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
   uint32_t NumLinks = 0;
   uint32_t VolumeSerialNumber = 0;
   uint64_t PathHash = 0;
@@ -229,7 +229,7 @@ public:
 
   explicit file_status(file_type Type) : basic_file_status(Type) {}
 
-  #if defined(LLVM_ON_UNIX)
+  #if defined(LLVM_RUNTIME_POSIX)
   file_status(file_type Type, perms Perms, dev_t Dev, nlink_t Links, ino_t Ino,
               time_t ATime, uint32_t ATimeNSec,
               time_t MTime, uint32_t MTimeNSec,
@@ -237,7 +237,7 @@ public:
       : basic_file_status(Type, Perms, ATime, ATimeNSec, MTime, MTimeNSec,
                           UID, GID, Size),
         fs_st_dev(Dev), fs_st_nlinks(Links), fs_st_ino(Ino) {}
-  #elif defined(_WIN32)
+  #elif defined(LLVM_RUNTIME_WIN32)
   file_status(file_type Type, perms Perms, uint32_t LinkCount,
               uint32_t LastAccessTimeHigh, uint32_t LastAccessTimeLow,
               uint32_t LastWriteTimeHigh, uint32_t LastWriteTimeLow,
@@ -423,7 +423,7 @@ LLVM_ABI std::error_code resize_file_sparse(int FD, uint64_t Size);
 /// extends the file.
 inline std::error_code resize_file_before_mapping_readwrite(int FD,
                                                             uint64_t Size) {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   (void)FD;
   (void)Size;
   return std::error_code();
@@ -1026,7 +1026,7 @@ LLVM_ABI Expected<file_t> openNativeFile(const Twine &Name,
 /// no-op.
 LLVM_ABI file_t convertFDToNativeFile(int FD);
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 inline file_t convertFDToNativeFile(int FD) { return file_t(FD); }
 #endif
 
@@ -1261,7 +1261,7 @@ LLVM_ABI std::error_code unlockFile(int FD);
 /// means that the filesystem may have failed to perform some buffered writes.
 LLVM_ABI std::error_code closeFile(file_t &F);
 
-#ifdef LLVM_ON_UNIX
+#ifdef LLVM_RUNTIME_POSIX
 /// @brief Change ownership of a file.
 ///
 /// @param Owner The owner of the file to change to.

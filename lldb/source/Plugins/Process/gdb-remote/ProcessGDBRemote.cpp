@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "lldb/Host/Config.h"
+#include "llvm/Config/llvm-config.h"
 
 #include <cerrno>
 #include <cstdlib>
@@ -21,7 +22,7 @@
 #if defined(__APPLE__)
 #include <sys/sysctl.h>
 #endif
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "lldb/Host/windows/windows.h"
 #endif
 #include <ctime>
@@ -204,7 +205,7 @@ public:
 std::chrono::seconds ResumeTimeout() { return std::chrono::seconds(5); }
 
 static std::pair<uint16_t, uint16_t> GetClientTerminalSize() {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   CONSOLE_SCREEN_BUFFER_INFO csbi{};
   HANDLE h = ::GetStdHandle(STD_OUTPUT_HANDLE);
   if (h != INVALID_HANDLE_VALUE && ::GetConsoleScreenBufferInfo(h, &csbi)) {
@@ -947,7 +948,7 @@ Status ProcessGDBRemote::DoLaunch(lldb_private::Module *exe_module,
         if (pty.GetPrimaryFileDescriptor() != PseudoTerminal::invalid_fd) {
           SetSTDIOFileDescriptor(pty.ReleasePrimaryFileDescriptor());
         }
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
         else if (m_stdin_forward) {
           // No client-side PTY FD on Windows.
           std::lock_guard<std::mutex> guard(m_process_input_reader_mutex);

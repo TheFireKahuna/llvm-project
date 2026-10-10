@@ -28,7 +28,7 @@
 #include "llvm/TextAPI/Utils.h"
 #include <cstdlib>
 
-#if !defined(_MSC_VER) && !defined(__MINGW32__)
+#if !defined(LLVM_RUNTIME_WIN32)
 #include <unistd.h>
 #endif
 
@@ -98,7 +98,7 @@ static void reportWarning(Twine Message) {
 /// Get what the symlink points to.
 /// This is a no-op on windows as it references POSIX level apis.
 static void read_link(const Twine &Path, SmallVectorImpl<char> &Output) {
-#if !defined(_MSC_VER) && !defined(__MINGW32__)
+#if !defined(LLVM_RUNTIME_WIN32)
   Output.clear();
   if (Path.isTriviallyEmpty())
     return;

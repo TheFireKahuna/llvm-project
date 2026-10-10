@@ -63,6 +63,15 @@
 /* Define if this is Unixish platform */
 /* LLVM_ON_UNIX defined in Bazel */
 
+/* Define if host code uses the Win32 API and the Windows C runtime */
+/* LLVM_RUNTIME_WIN32 defined in Bazel */
+
+/* Define if host code uses the POSIX API and a POSIX C runtime */
+/* LLVM_RUNTIME_POSIX defined in Bazel */
+
+/* Define if the host is Windows with a POSIX runtime (NT-POSIX) */
+/* #undef LLVM_RUNTIME_NTPOSIX */
+
 /* Define if we have the Intel JIT API runtime support library */
 #define LLVM_USE_INTEL_JITEVENTS 0
 

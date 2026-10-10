@@ -67,7 +67,7 @@
 #include <utility>
 #include <variant>
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #define NOMINMAX
 #include <fcntl.h>
 #include <io.h>
@@ -81,7 +81,7 @@ using namespace lldb_dap::protocol;
 using namespace lldb_private;
 
 namespace {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 const char DEV_NULL[] = "nul";
 #else
 const char DEV_NULL[] = "/dev/null";
@@ -1228,7 +1228,7 @@ llvm::Error DAP::InitializeDebugger() {
   if (!err_fd)
     return err_fd.takeError();
 
-#if defined(_WIN32) && !defined(_DLL)
+#if defined(LLVM_RUNTIME_WIN32) && !defined(_DLL)
   // When LLVM is built with a different CRT allocator, it's built against the
   // static C runtime. Since the C runtime is the one managing the file
   // descriptors, its state is now local to each module. Here, lldb-dap and

@@ -445,7 +445,7 @@ ConnectionFileDescriptor::BytesAvailable(const Timeout<std::micro> &timeout,
 
     // FIXME: Migrate to MainLoop.
     select_helper.FDSetRead(reinterpret_cast<socket_t>(handle));
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
     // select() won't accept pipes on Windows.  The entire Windows codepath
     // needs to be converted over to using WaitForMultipleObjects and event
     // HANDLEs, but for now at least this will allow ::select() to not return

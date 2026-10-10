@@ -11,7 +11,9 @@
 #include <cstdio>
 #include <cstring>
 
-#ifdef _WIN32
+#include "llvm/Config/llvm-config.h"
+
+#ifdef LLVM_RUNTIME_WIN32
 #include "lldb/Host/windows/windows.h"
 #else
 #include <csignal>
@@ -50,7 +52,7 @@
 #include "Plugins/Process/FreeBSD/NativeProcessFreeBSD.h"
 #elif defined(__NetBSD__)
 #include "Plugins/Process/NetBSD/NativeProcessNetBSD.h"
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
 #include "Plugins/Process/Windows/Common/NativeProcessWindows.h"
 #elif defined(_AIX)
 #include "Plugins/Process/AIX/NativeProcessAIX.h"
@@ -77,7 +79,7 @@ typedef process_linux::NativeProcessLinux::Manager NativeProcessManager;
 typedef process_freebsd::NativeProcessFreeBSD::Manager NativeProcessManager;
 #elif defined(__NetBSD__)
 typedef process_netbsd::NativeProcessNetBSD::Manager NativeProcessManager;
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
 typedef NativeProcessWindows::Manager NativeProcessManager;
 #elif defined(_AIX)
 typedef process_aix::NativeProcessAIX::Manager NativeProcessManager;
@@ -102,7 +104,7 @@ public:
 #endif
 }
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 // Watch for signals
 static int g_sighup_received_count = 0;
 
@@ -116,7 +118,7 @@ static void sighup_handler(MainLoopBase &mainloop) {
   if (g_sighup_received_count >= 2)
     mainloop.RequestTermination();
 }
-#endif // #ifndef _WIN32
+#endif // #ifndef LLVM_RUNTIME_WIN32
 
 llvm::Error handle_attach_to_pid(GDBRemoteCommunicationServerLLGS &gdb_server,
                                  lldb::pid_t pid) {
@@ -222,7 +224,7 @@ llvm::Error ConnectToRemote(MainLoop &mainloop,
   std::string url;
 
   if (connection_fd != SharedSocket::kInvalidFD) {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     NativeSocket sockfd;
     status = SharedSocket::GetNativeSocket(connection_fd, sockfd);
     if (status.Fail())
@@ -333,7 +335,7 @@ DESCRIPTION
 int main_gdbserver(int argc, char *argv[]) {
   Status status;
   MainLoop mainloop;
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   // Setup signal handlers first thing.
   signal(SIGPIPE, SIG_IGN);
   MainLoop::SignalHandleUP sighup_handle =
@@ -377,7 +379,7 @@ int main_gdbserver(int argc, char *argv[]) {
     return EXIT_SUCCESS;
   }
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   if (Args.hasArg(OPT_setsid)) {
     // Put llgs into a new session. Terminals group processes
     // into sessions and when a special terminal key sequences
@@ -413,7 +415,7 @@ int main_gdbserver(int argc, char *argv[]) {
       return EXIT_FAILURE;
     }
     unnamed_pipe = (pipe_t)Arg;
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     if (::GetFileType((HANDLE)unnamed_pipe) != FILE_TYPE_PIPE) {
       WithColor::error() << "'--pipe' argument is not a pipe handle\n"
                          << HelpText;

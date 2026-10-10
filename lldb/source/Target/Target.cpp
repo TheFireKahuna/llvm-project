@@ -4036,7 +4036,7 @@ void Target::FinalizeFileActions(ProcessLaunchInfo &info) {
       }
 
       if (default_to_use_pty) {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
         if (info.GetFlags().Test(eLaunchFlagUsePipes) ||
             ::getenv("LLDB_LAUNCH_FLAG_USE_PIPES")) {
           llvm::Error Err = info.SetUpPipeRedirection();
@@ -4047,7 +4047,7 @@ void Target::FinalizeFileActions(ProcessLaunchInfo &info) {
           llvm::Error Err = info.SetUpPtyRedirection();
           LLDB_LOG_ERROR(log, std::move(Err),
                          "SetUpPtyRedirection failed: {0}");
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
         }
 #endif
       }

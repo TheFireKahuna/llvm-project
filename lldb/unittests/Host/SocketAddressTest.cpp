@@ -47,7 +47,7 @@ TEST_F(SocketAddressTest, GetAddressInfo) {
   EXPECT_EQ("127.0.0.1", addr[0].GetIPAddress());
 }
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
 // we need to test our inet_ntop implementation for Windows XP
 const char *inet_ntop(int af, const void *src, char *dst, socklen_t size);

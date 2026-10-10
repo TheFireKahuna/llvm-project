@@ -25,7 +25,7 @@
 #include "llvm/Support/Signals.h"
 #include <cctype>
 
-#if !defined(_MSC_VER) && !defined(__MINGW32__)
+#if !defined(LLVM_RUNTIME_WIN32)
 #include <unistd.h>
 #else
 #include <io.h>
@@ -1306,10 +1306,10 @@ std::error_code remove_directories(const Twine &path, bool IgnoreErrors) {
 } // end namespace llvm
 
 // Include the truly platform-specific parts.
-#if defined(LLVM_ON_UNIX)
+#if defined(LLVM_RUNTIME_POSIX)
 #include "Unix/Path.inc"
 #endif
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include "Windows/Path.inc"
 #endif
 
@@ -1325,7 +1325,7 @@ TempFile &TempFile::operator=(TempFile &&Other) {
   FD = Other.FD;
   Other.Done = true;
   Other.FD = -1;
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   RemoveOnClose = Other.RemoveOnClose;
   Other.RemoveOnClose = false;
 #endif
@@ -1342,7 +1342,7 @@ Error TempFile::discard() {
   }
   FD = -1;
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   // On Windows, closing will remove the file, if we set the delete
   // disposition. If not, remove it manually.
   bool Remove = RemoveOnClose;
@@ -1366,7 +1366,7 @@ Error TempFile::keep(const Twine &Name) {
   assert(!Done);
   Done = true;
   // Always try to close and rename.
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   // If we can't cancel the delete don't rename.
   auto H = reinterpret_cast<HANDLE>(_get_osfhandle(FD));
   std::error_code RenameEC =
@@ -1415,7 +1415,7 @@ Error TempFile::keep() {
   assert(!Done);
   Done = true;
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   auto H = reinterpret_cast<HANDLE>(_get_osfhandle(FD));
   if (std::error_code EC = setDeleteDisposition(H, false))
     return errorCodeToError(EC);
@@ -1440,7 +1440,7 @@ Expected<TempFile> TempFile::create(const Twine &Model, unsigned Mode,
                            OF_Delete | OF_DeleteOnClose | ExtraFlags, Mode))
     return errorCodeToError(EC);
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   auto H = reinterpret_cast<HANDLE>(_get_osfhandle(FD));
   TempRemoval Removal;
   if (std::error_code EC = setDeleteDisposition(H, true, &Removal)) {

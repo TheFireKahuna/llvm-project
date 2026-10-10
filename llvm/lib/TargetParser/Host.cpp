@@ -27,11 +27,11 @@
 #include <string.h>
 
 // Include the platform-specific parts of this class.
-#ifdef LLVM_ON_UNIX
+#ifdef LLVM_RUNTIME_POSIX
 #include "Unix/Host.inc"
 #include <sched.h>
 #endif
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "Windows/Host.inc"
 #endif
 #ifdef _MSC_VER
@@ -2374,8 +2374,9 @@ StringMap<bool> sys::getHostCPUFeatures() {
 
   return Features;
 }
-#elif defined(_WIN32) && (defined(__aarch64__) || defined(_M_ARM64) ||         \
-                          defined(__arm64ec__) || defined(_M_ARM64EC))
+#elif defined(LLVM_RUNTIME_WIN32) &&                                           \
+    (defined(__aarch64__) || defined(_M_ARM64) || defined(__arm64ec__) ||      \
+     defined(_M_ARM64EC))
 #ifndef PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE
 #define PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE 43
 #endif

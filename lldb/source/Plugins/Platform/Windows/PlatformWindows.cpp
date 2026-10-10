@@ -11,7 +11,7 @@
 #include <chrono>
 #include <cstdio>
 #include <optional>
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include "lldb/Host/windows/windows.h"
 #include <pathcch.h>
 #include <winsock2.h>
@@ -149,7 +149,7 @@ void PlatformWindows::Initialize() {
   Platform::Initialize();
 
   if (g_initialize_count++ == 0) {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
     // Force a host flag to true for the default platform object.
     PlatformSP default_platform_sp(new PlatformWindows(true));
     default_platform_sp->SetSystemArchitecture(HostInfo::GetArchitecture());
@@ -636,7 +636,7 @@ ProcessSP PlatformWindows::DebugProcess(ProcessLaunchInfo &launch_info,
   // We need to launch and attach to the process.
   launch_info.GetFlags().Set(eLaunchFlagDebug);
   error = process_sp->Launch(launch_info);
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   if (error.Success()) {
     process_sp->SetPseudoConsoleHandle();
   } else {
@@ -688,7 +688,7 @@ lldb::ProcessSP PlatformWindows::Attach(ProcessAttachInfo &attach_info,
 void PlatformWindows::GetStatus(Stream &strm) {
   Platform::GetStatus(strm);
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   llvm::VersionTuple version = HostInfo::GetOSVersion();
   strm << "      Host: Windows " << version.getAsString() << '\n';
 #endif

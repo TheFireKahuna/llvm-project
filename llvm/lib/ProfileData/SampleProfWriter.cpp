@@ -127,7 +127,7 @@ std::error_code SampleProfileWriter::writeWithSizeLimitInternal(
     // On Windows every "\n" is actually written as "\r\n" to disk but not to
     // memory buffer, this difference should be added when considering the total
     // output size.
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     if (Format == SPF_Text)
       TotalSize += LineCount;
 #endif

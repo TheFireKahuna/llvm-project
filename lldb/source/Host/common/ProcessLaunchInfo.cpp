@@ -20,7 +20,7 @@
 #include "llvm/Support/ConvertUTF.h"
 #include "llvm/Support/FileSystem.h"
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "lldb/Host/windows/PseudoConsole.h"
 #include "lldb/Host/windows/WindowsFileAction.h"
 #else
@@ -35,7 +35,7 @@ using namespace lldb_private;
 ProcessLaunchInfo::ProcessLaunchInfo()
     : ProcessInfo(), m_working_dir(), m_plugin_name(), m_flags(0),
       m_file_actions(), m_monitor_callback(nullptr) {
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   m_pty = std::make_shared<PTY>();
 #endif
 }
@@ -47,7 +47,7 @@ ProcessLaunchInfo::ProcessLaunchInfo(const FileSpec &stdin_file_spec,
                                      uint32_t launch_flags)
     : ProcessInfo(), m_working_dir(), m_plugin_name(), m_flags(launch_flags),
       m_file_actions() {
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   m_pty = std::make_shared<PTY>();
 #endif
   if (stdin_file_spec) {
@@ -93,7 +93,7 @@ bool ProcessLaunchInfo::AppendDuplicateFileAction(int fd, int dup_fd) {
   return false;
 }
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 bool ProcessLaunchInfo::AppendDuplicateFileAction(HANDLE fh, HANDLE dup_fh) {
   WindowsFileAction file_action;
   if (file_action.Duplicate(fh, dup_fh)) {
@@ -243,7 +243,7 @@ llvm::Error ProcessLaunchInfo::SetUpPtyRedirection() {
 
   LLDB_LOG(log, "Generating a pty to use for stdin/out/err");
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   if (llvm::Error Err = m_pty->OpenPseudoConsole(m_stdio_window_size.cols,
                                                  m_stdio_window_size.rows))
     return Err;
@@ -267,7 +267,7 @@ llvm::Error ProcessLaunchInfo::SetUpPtyRedirection() {
 #endif
 }
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 llvm::Error ProcessLaunchInfo::SetUpPipeRedirection() {
   if (!m_pty)
     m_pty = std::make_shared<PTY>();

@@ -14,7 +14,7 @@
 #include "lldb/Host/MainLoopBase.h"
 #include "lldb/Host/PseudoTerminal.h"
 #include "lldb/Host/common/TCPSocket.h"
-#include "llvm/Config/llvm-config.h" // for LLVM_ON_UNIX
+#include "llvm/Config/llvm-config.h" // for LLVM_RUNTIME_POSIX
 #include "llvm/Testing/Support/Error.h"
 #include "gtest/gtest.h"
 #include <chrono>
@@ -85,7 +85,7 @@ TEST_F(MainLoopTest, ReadSocketObject) {
 }
 
 // Flakey, see https://github.com/llvm/llvm-project/issues/152677.
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 TEST_F(MainLoopTest, ReadPipeObject) {
   Pipe pipe;
 
@@ -494,7 +494,7 @@ TEST_F(MainLoopTest, TimedCallbackShortensSleep) {
   EXPECT_FALSE(long_callback_called);
 }
 
-#ifdef LLVM_ON_UNIX
+#ifdef LLVM_RUNTIME_POSIX
 TEST_F(MainLoopTest, DetectsEOF) {
 
   PseudoTerminal term;

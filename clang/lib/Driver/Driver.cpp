@@ -117,7 +117,7 @@
 #include <set>
 #include <string>
 #include <utility>
-#if LLVM_ON_UNIX
+#if LLVM_RUNTIME_POSIX
 #include <unistd.h> // getpid
 #endif
 
@@ -1959,7 +1959,7 @@ bool Driver::getCrashDiagnosticFile(StringRef ReproCrashFilename,
     CrashDiagDir = "/";
   path::append(CrashDiagDir, "Library/Logs/DiagnosticReports");
   int PID =
-#if LLVM_ON_UNIX
+#if LLVM_RUNTIME_POSIX
       getpid();
 #else
       0;
@@ -2471,7 +2471,7 @@ int Driver::ExecuteCompilation(
 
     if (!FailingCommand->getCreator().hasGoodDiagnostics() || CommandRes != 1) {
       // FIXME: See FIXME above regarding result code interpretation.
-#if LLVM_ON_UNIX
+#if LLVM_RUNTIME_POSIX
       // On Unix, signals are represented by return codes of 128 plus the
       // signal number. Return code 255 is excluded because some tools,
       // such as llvm-ifs, exit with code 255 (-1) on failure.

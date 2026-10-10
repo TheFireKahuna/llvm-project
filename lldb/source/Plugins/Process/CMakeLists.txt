@@ -17,7 +17,7 @@ elseif (CMAKE_SYSTEM_NAME MATCHES "AIX")
   add_subdirectory(POSIX)
 elseif (CMAKE_SYSTEM_NAME MATCHES "OpenBSD")
   add_subdirectory(POSIX)
-elseif (CMAKE_SYSTEM_NAME MATCHES "Windows")
+elseif (LLVM_RUNTIME_WIN32)
   add_subdirectory(Windows/Common)
 endif()
 

@@ -19,7 +19,7 @@
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "llvm/Support/Windows/WindowsSupport.h"
 #endif
 
@@ -417,7 +417,7 @@ TYPED_TEST(ThreadPoolTest, RecursiveWaitDeadlock) {
 // FIXME: Skip some tests below on non-Windows because multi-socket systems
 // were not fully tested on Unix yet, and llvm::get_thread_affinity_mask()
 // isn't implemented for Unix (need AffinityMask in Support/Unix/Program.inc).
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
 template <typename ThreadPoolImpl>
 SmallVector<llvm::BitVector, 0>
@@ -483,7 +483,7 @@ extern const char *TestMainArgv0;
 // Just a reachable symbol to ease resolving of the executable's path.
 static cl::opt<std::string> ThreadPoolTestStringArg1("thread-pool-string-arg1");
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #define setenv(name, var, ignore) _putenv_s(name, var)
 #endif
 
@@ -530,5 +530,5 @@ TYPED_TEST(ThreadPoolTest, AffinityMask) {
   ASSERT_EQ(0, Ret);
 }
 
-#endif // #ifdef _WIN32
+#endif // #ifdef LLVM_RUNTIME_WIN32
 #endif // #if LLVM_ENABLE_THREADS == 1

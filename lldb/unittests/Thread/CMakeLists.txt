@@ -1,4 +1,4 @@
-if (CMAKE_SYSTEM_NAME MATCHES "Windows")
+if (LLVM_RUNTIME_WIN32)
   list(APPEND LLDB_WINDOWS_LIBS lldbPluginPlatformWindows)
   list(APPEND LLDB_WINDOWS_LIBS lldbPluginProcessWindowsCommon)
 endif()

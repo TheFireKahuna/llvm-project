@@ -24,7 +24,7 @@
 #include <cstdio>
 #include <fcntl.h>
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "lldb/Host/windows/windows.h"
 #else
 #include <sys/ioctl.h>
@@ -395,13 +395,13 @@ static int GetOpenFlags(File::OpenOptions options) {
   } else if (rw == File::eOpenOptionReadOnly) {
     open_flags |= O_RDONLY;
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
     if (options & File::eOpenOptionDontFollowSymlinks)
       open_flags |= O_NOFOLLOW;
 #endif
   }
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   if (options & File::eOpenOptionNonBlocking)
     open_flags |= O_NONBLOCK;
   if (options & File::eOpenOptionCloseOnExec)

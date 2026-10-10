@@ -198,7 +198,7 @@ int main(int argc, const char **argv) {
     }
   }
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   _putenv_s("FLANG_COMPILER_OPTIONS_STRING", compilerOptsGathered.c_str());
 #else
   setenv("FLANG_COMPILER_OPTIONS_STRING", compilerOptsGathered.c_str(), 1);
@@ -220,7 +220,7 @@ int main(int argc, const char **argv) {
     // return an exit code of 3. In these cases, generate additional diagnostic
     // information if possible.
     isCrash = commandRes < 0;
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     isCrash |= commandRes == 3;
 #endif
     if (isCrash) {

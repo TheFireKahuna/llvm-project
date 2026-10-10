@@ -13,7 +13,7 @@
 #include "gtest/gtest.h"
 #include <optional>
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include <windows.h>
 #endif
 
@@ -25,7 +25,7 @@ using namespace sys;
 TEST(ProcessTest, GetProcessIdTest) {
   const Process::Pid pid = Process::getProcessId();
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   EXPECT_EQ((DWORD)pid, ::GetCurrentProcessId());
 #else
   EXPECT_EQ(pid, ::getpid());
@@ -58,7 +58,7 @@ TEST(ProcessTest, None) {
 }
 #endif
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
 TEST(ProcessTest, EmptyVal) {
   SetEnvironmentVariableA("__LLVM_TEST_ENVIRON_VAR__", "");

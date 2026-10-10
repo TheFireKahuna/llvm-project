@@ -74,7 +74,7 @@ add_host_subdirectory(posix
   posix/ConnectionFileDescriptorPosix.cpp
   )
 
-if (CMAKE_SYSTEM_NAME MATCHES "Windows")
+if (LLVM_RUNTIME_WIN32)
   add_host_subdirectory(windows
     windows/ConPTYUtils.cpp
     windows/ConnectionConPTYWindows.cpp
@@ -202,7 +202,7 @@ endif()
 if (LLDB_ENABLE_LIBEDIT)
   list(APPEND EXTRA_LIBS LibEdit::LibEdit)
 endif()
-if (WIN32)
+if (LLVM_RUNTIME_WIN32)
   list(APPEND LLDB_SYSTEM_LIBS psapi)
 endif()
 

@@ -301,7 +301,7 @@ Status GDBRemoteCommunicationServerLLGS::LaunchProcess() {
   m_process_launch_info.GetFlags().Set(eLaunchFlagDebug);
 
   if (should_forward_stdio) {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
     ProcessLaunchInfo::STDIOWindowSize win_size =
         m_process_launch_info.GetSTDIOWindowSize();
     if (m_process_launch_info.IsSTDIOWindowSizeExplicit() &&
@@ -2596,7 +2596,7 @@ GDBRemoteCommunicationServerLLGS::Handle_I(StringExtractorGDBRemote &packet) {
     // remote host
     Status error;
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
     // On Windows the inferior's stdio is owned by NativeProcessWindows (which
     // holds the ConPTY). Route stdin through NativeProcessProtocol::WriteStdin
     // rather than m_stdio_communication, which is unconnected on Windows.

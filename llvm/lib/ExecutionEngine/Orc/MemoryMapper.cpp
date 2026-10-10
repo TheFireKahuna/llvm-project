@@ -12,7 +12,7 @@
 #include "llvm/Support/MSVCErrorWorkarounds.h"
 #include "llvm/Support/WindowsError.h"
 
-#if defined(LLVM_ON_UNIX) && !defined(__ANDROID__)
+#if defined(LLVM_RUNTIME_POSIX) && !defined(__ANDROID__)
 #include <fcntl.h>
 #include <sys/mman.h>
 #if defined(__MVS__)
@@ -20,7 +20,7 @@
 #include <sys/shm.h>
 #endif
 #include <unistd.h>
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
 #include <windows.h>
 #endif
 
@@ -198,14 +198,16 @@ SharedMemoryMapper::SharedMemoryMapper(ExecutionSession &ES,
                                        SharedMemoryMapBindings B,
                                        size_t PageSize)
     : ES(ES), B(std::move(B)), PageSize(PageSize) {
-#if (!defined(LLVM_ON_UNIX) || defined(__ANDROID__)) && !defined(_WIN32)
+#if (!defined(LLVM_RUNTIME_POSIX) || defined(__ANDROID__)) &&                  \
+    !defined(LLVM_RUNTIME_WIN32)
   llvm_unreachable("SharedMemoryMapper is not supported on this platform yet");
 #endif
 }
 
 Expected<std::unique_ptr<SharedMemoryMapper>>
 SharedMemoryMapper::Create(ExecutionSession &ES, SharedMemoryMapBindings B) {
-#if (defined(LLVM_ON_UNIX) && !defined(__ANDROID__)) || defined(_WIN32)
+#if (defined(LLVM_RUNTIME_POSIX) && !defined(__ANDROID__)) ||                  \
+    defined(LLVM_RUNTIME_WIN32)
   auto PageSize = sys::Process::getPageSize();
   if (!PageSize)
     return PageSize.takeError();
@@ -220,7 +222,8 @@ SharedMemoryMapper::Create(ExecutionSession &ES, SharedMemoryMapBindings B) {
 
 void SharedMemoryMapper::reserve(size_t NumBytes,
                                  OnReservedFunction OnReserved) {
-#if (defined(LLVM_ON_UNIX) && !defined(__ANDROID__)) || defined(_WIN32)
+#if (defined(LLVM_RUNTIME_POSIX) && !defined(__ANDROID__)) ||                  \
+    defined(LLVM_RUNTIME_WIN32)
 
   int SharedMemoryId = -1;
   B.Reserve(
@@ -235,7 +238,7 @@ void SharedMemoryMapper::reserve(size_t NumBytes,
 
         void *LocalAddr = nullptr;
 
-#if defined(LLVM_ON_UNIX)
+#if defined(LLVM_RUNTIME_POSIX)
 
 #if defined(__MVS__)
         ArrayRef<uint8_t> Data(
@@ -272,7 +275,7 @@ void SharedMemoryMapper::reserve(size_t NumBytes,
         close(SharedMemoryFile);
 #endif
 
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
 
         std::wstring WideSharedMemoryName(SharedMemoryName.begin(),
                                           SharedMemoryName.end());
@@ -359,7 +362,8 @@ void SharedMemoryMapper::deinitialize(
 
 void SharedMemoryMapper::release(ArrayRef<ExecutorAddr> Bases,
                                  OnReleasedFunction OnReleased) {
-#if (defined(LLVM_ON_UNIX) && !defined(__ANDROID__)) || defined(_WIN32)
+#if (defined(LLVM_RUNTIME_POSIX) && !defined(__ANDROID__)) ||                  \
+    defined(LLVM_RUNTIME_WIN32)
   Error Err = Error::success();
 
   {
@@ -367,7 +371,7 @@ void SharedMemoryMapper::release(ArrayRef<ExecutorAddr> Bases,
 
     for (auto Base : Bases) {
 
-#if defined(LLVM_ON_UNIX)
+#if defined(LLVM_RUNTIME_POSIX)
 
 #if defined(__MVS__)
       if (shmdt(Reservations[Base].LocalAddr) < 0 ||
@@ -378,7 +382,7 @@ void SharedMemoryMapper::release(ArrayRef<ExecutorAddr> Bases,
         Err = joinErrors(std::move(Err), errorCodeToError(errnoAsErrorCode()));
 #endif
 
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
 
       if (!UnmapViewOfFile(Reservations[Base].LocalAddr))
         Err = joinErrors(std::move(Err),
@@ -407,7 +411,7 @@ SharedMemoryMapper::~SharedMemoryMapper() {
   std::lock_guard<std::mutex> Lock(Mutex);
   for (const auto &R : Reservations) {
 
-#if defined(LLVM_ON_UNIX) && !defined(__ANDROID__)
+#if defined(LLVM_RUNTIME_POSIX) && !defined(__ANDROID__)
 
 #if defined(__MVS__)
     shmdt(R.second.LocalAddr);
@@ -415,7 +419,7 @@ SharedMemoryMapper::~SharedMemoryMapper() {
     munmap(R.second.LocalAddr, R.second.Size);
 #endif
 
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
 
     UnmapViewOfFile(R.second.LocalAddr);
 

@@ -28,6 +28,7 @@ def native_arch_defines(arch, triple):
 
 posix_defines = [
     "LLVM_ON_UNIX=1",
+    "LLVM_RUNTIME_POSIX=1",
     "LLVM_ENABLE_LLVM_EXPORT_ANNOTATIONS=1",
     "LLVM_ENABLE_PLUGINS=1",
     "LLVM_ENABLE_THREADS=1",
@@ -51,6 +52,7 @@ posix_so_defines = posix_defines + [
 
 emscripten_defines = [
     "LLVM_ON_UNIX=1",
+    "LLVM_RUNTIME_POSIX=1",
     r'LTDL_SHLIB_EXT=\".so\"',
     r'LLVM_PLUGIN_EXT=\".so\"',
     "LLVM_ENABLE_LLVM_EXPORT_ANNOTATIONS=1",
@@ -120,6 +122,7 @@ win32_defines = [
     r'LTDL_SHLIB_EXT=\".dll\"',
     r'LLVM_PLUGIN_EXT=\".dll\"',
     "LLVM_ENABLE_THREADS=1",
+    "LLVM_RUNTIME_WIN32=1",
 ]
 
 # TODO: We should switch to platforms-based config settings to make this easier

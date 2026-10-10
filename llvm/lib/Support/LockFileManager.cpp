@@ -27,10 +27,10 @@
 #include <system_error>
 #include <tuple>
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include <windows.h>
 #endif
-#if LLVM_ON_UNIX
+#if LLVM_RUNTIME_POSIX
 #include <unistd.h>
 #endif
 
@@ -96,7 +96,7 @@ static std::error_code getHostID(SmallVectorImpl<char> &HostID) {
   StringRef UUIDRef(UUIDStr);
   HostID.append(UUIDRef.begin(), UUIDRef.end());
 
-#elif LLVM_ON_UNIX
+#elif LLVM_RUNTIME_POSIX
   char HostName[256];
   HostName[255] = 0;
   HostName[0] = 0;
@@ -113,7 +113,7 @@ static std::error_code getHostID(SmallVectorImpl<char> &HostID) {
 }
 
 bool LockFileManager::processStillExecuting(StringRef HostID, int PID) {
-#if LLVM_ON_UNIX && !defined(__ANDROID__)
+#if LLVM_RUNTIME_POSIX && !defined(__ANDROID__)
   SmallString<256> StoredHostID;
   if (getHostID(StoredHostID))
     return true; // Conservatively assume it's executing on error.

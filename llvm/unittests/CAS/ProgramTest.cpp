@@ -38,7 +38,7 @@ class CASProgramTest : public testing::Test {
 protected:
   void SetUp() override {
     auto EnvP = [] {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
       _wgetenv(L"TMP"); // Populate _wenviron, initially is null
       return _wenviron;
 #elif defined(__APPLE__)
@@ -50,7 +50,7 @@ protected:
     ASSERT_TRUE(EnvP);
 
     auto prepareEnvVar = [this](decltype(*EnvP) Var) -> StringRef {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
       // On Windows convert UTF16 encoded variable to UTF8
       auto Len = wcslen(Var);
       ArrayRef<char> Ref{reinterpret_cast<char const *>(Var),

@@ -1,5 +1,5 @@
 # Dbghelp is used on windows for writing minidump files.
-if(WIN32)
+if(LLVM_RUNTIME_WIN32)
   set(DBGHELP_LINK_FILES dbghelp)
 else()
   set(DBGHELP_LINK_FILES "")

@@ -20,7 +20,7 @@
 #include <fcntl.h>
 #include <functional>
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -33,7 +33,7 @@
 #include <afunix.h>
 // clang-format on
 #include <io.h>
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32
 
 #if defined(HAVE_UNISTD_H)
 #include <unistd.h>
@@ -41,7 +41,7 @@
 
 using namespace llvm;
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 WSABalancer::WSABalancer() {
   WSADATA WsaData;
   ::memset(&WsaData, 0, sizeof(WsaData));
@@ -51,10 +51,10 @@ WSABalancer::WSABalancer() {
 }
 
 WSABalancer::~WSABalancer() { WSACleanup(); }
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32
 
 static std::error_code getLastSocketErrorCode() {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   return std::error_code(::WSAGetLastError(), std::system_category());
 #else
   return errnoAsErrorCode();
@@ -76,13 +76,13 @@ static Expected<sockaddr_un> setSocketAddr(StringRef SocketPath) {
 }
 
 static Expected<int> getSocketFD(StringRef SocketPath) {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   SOCKET Socket = socket(AF_UNIX, SOCK_STREAM, 0);
   if (Socket == INVALID_SOCKET) {
 #else
   int Socket = socket(AF_UNIX, SOCK_STREAM, 0);
   if (Socket == -1) {
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32
     return llvm::make_error<StringError>(getLastSocketErrorCode(),
                                          "Create socket failed");
   }
@@ -106,11 +106,11 @@ static Expected<int> getSocketFD(StringRef SocketPath) {
                                          "Connect socket failed");
   }
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   return _open_osfhandle(Socket, 0);
 #else
   return Socket;
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32
 }
 
 ListeningSocket::ListeningSocket(int SocketFD, StringRef SocketPath,
@@ -156,7 +156,7 @@ Expected<ListeningSocket> ListeningSocket::createUnix(StringRef SocketPath,
         "Socket address unavailable");
   }
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   WSABalancer _;
   SOCKET Socket = socket(AF_UNIX, SOCK_STREAM, 0);
   if (Socket == INVALID_SOCKET)
@@ -193,20 +193,20 @@ Expected<ListeningSocket> ListeningSocket::createUnix(StringRef SocketPath,
                                          "Listen error");
 
   int PipeFD[2];
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   // Reserve 1 byte for the pipe and use default textmode
   if (::_pipe(PipeFD, 1, 0) == -1)
 #else
   if (::pipe(PipeFD) == -1)
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32
     return llvm::make_error<StringError>(getLastSocketErrorCode(),
                                          "pipe failed");
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   return ListeningSocket{_open_osfhandle(Socket, 0), SocketPath, PipeFD};
 #else
   return ListeningSocket{Socket, SocketPath, PipeFD};
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32
 }
 
 // If a file descriptor being monitored by ::poll is closed by another thread,
@@ -224,7 +224,7 @@ manageTimeout(const std::chrono::milliseconds &Timeout,
               const std::optional<int> &CancelFD = std::nullopt) {
   struct pollfd FD[2];
   FD[0].events = POLLIN;
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   SOCKET WinServerSock = _get_osfhandle(getActiveFD());
   FD[0].fd = WinServerSock;
 #else
@@ -255,7 +255,7 @@ manageTimeout(const std::chrono::milliseconds &Timeout,
 
       RemainingTimeout = Timeout - TotalElapsedTime;
     }
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     PollStatus = WSAPoll(FD, FDCount, RemainingTimeout.count());
   } while (PollStatus == SOCKET_ERROR &&
            getLastSocketErrorCode() == std::errc::interrupted);
@@ -269,7 +269,7 @@ manageTimeout(const std::chrono::milliseconds &Timeout,
   // has been canceled by another thread
   if (getActiveFD() == -1 || (CancelFD.has_value() && FD[1].revents & POLLIN))
     return std::make_error_code(std::errc::operation_canceled);
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   if (PollStatus == SOCKET_ERROR)
 #else
   if (PollStatus == -1)
@@ -290,7 +290,7 @@ ListeningSocket::accept(const std::chrono::milliseconds &Timeout) {
     return llvm::make_error<StringError>(TimeoutErr, "Timeout error");
 
   int AcceptFD;
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   SOCKET WinAcceptSock = ::accept(_get_osfhandle(FD), NULL, NULL);
   AcceptFD = _open_osfhandle(WinAcceptSock, 0);
 #else
@@ -350,9 +350,9 @@ raw_socket_stream::~raw_socket_stream() = default;
 
 Expected<std::unique_ptr<raw_socket_stream>>
 raw_socket_stream::createConnectedUnix(StringRef SocketPath) {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   WSABalancer _;
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32
   Expected<int> FD = getSocketFD(SocketPath);
   if (!FD)
     return FD.takeError();

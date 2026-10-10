@@ -9,7 +9,7 @@ if (LLVM_ENABLE_HTTPLIB)
 endif()
 
 # Use WinHTTP on Windows
-if (WIN32)
+if (LLVM_RUNTIME_WIN32)
   set(imported_libs ${imported_libs} winhttp.lib crypt32.lib)
 endif()
 

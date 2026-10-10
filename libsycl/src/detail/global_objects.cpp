@@ -12,7 +12,7 @@
 #include <detail/program_manager.hpp>
 #include <detail/queue_impl.hpp>
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 #  include <windows.h>
 #endif
 

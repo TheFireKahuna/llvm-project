@@ -357,9 +357,9 @@ static bool printMarkupStackTrace(StringRef Argv0, void **StackTrace, int Depth,
 }
 
 // Include the platform-specific parts of this class.
-#ifdef LLVM_ON_UNIX
+#ifdef LLVM_RUNTIME_POSIX
 #include "Unix/Signals.inc"
 #endif
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "Windows/Signals.inc"
 #endif

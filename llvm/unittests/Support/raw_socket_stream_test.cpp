@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include <thread>
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "llvm/Support/Windows/WindowsSupport.h"
 #endif
 
@@ -15,7 +15,7 @@ using namespace llvm;
 namespace {
 
 bool hasUnixSocketSupport() {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   VersionTuple Ver = GetWindowsOSVersion();
   if (Ver < VersionTuple(10, 0, 0, 17063))
     return false;
