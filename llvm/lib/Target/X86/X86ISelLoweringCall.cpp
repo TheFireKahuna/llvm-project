@@ -2325,6 +2325,7 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
 
   // Walk the register/memloc assignments, inserting copies/loads.  In the case
   // of tail call optimization arguments are handle later.
+  std::optional<bool> CFGuardTargetInRAX;
   for (unsigned I = 0, OutIndex = 0, E = ArgLocs.size(); I != E;
        ++I, ++OutIndex) {
     assert(OutIndex < Outs.size() && "Invalid Out index");
@@ -2337,6 +2338,8 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
     EVT RegVT = VA.getLocVT();
     SDValue Arg = OutVals[OutIndex];
     bool isByVal = Flags.isByVal();
+    if (Flags.isCFGuardTarget())
+      CFGuardTargetInRAX = VA.isRegLoc() && VA.getLocReg() == X86::RAX;
 
     // Promote the value if needed.
     switch (VA.getLocInfo()) {
@@ -2561,6 +2564,15 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
                                      getPointerTy(DAG.getDataLayout()),
                                      RegInfo->getSlotSize(), FPDiff, dl);
   }
+
+  // The guard dispatch function takes the target in RAX, and the CFGuard pass
+  // guards a call whose convention passes something else there with a check.
+  if (Is64Bit && CFGuardTargetInRAX &&
+      (!*CFGuardTargetInRAX || count_if(RegsToPass, [&](const auto &R) {
+                                 return RegInfo->regsOverlap(R.first, X86::RAX);
+                               }) != 1))
+    reportFatalInternalError(
+        "cannot pass the Control Flow Guard target in RAX alone");
 
   // Build a sequence of copy-to-reg nodes chained together with token chain
   // and glue operands which copy the outgoing args into registers.

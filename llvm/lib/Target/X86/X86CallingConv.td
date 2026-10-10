@@ -547,6 +547,9 @@ def CC_X86_64_C : CallingConv<[
   CCIfCC<"CallingConv::SwiftTail",
     CCIfSRet<CCIfType<[i64], CCAssignToReg<[RAX]>>>>,
 
+  // The 'CFGuardTarget' parameter, if any, is passed in RAX, as on Win64.
+  CCIfCFGuardTarget<CCAssignToReg<[RAX]>>,
+
   // Pointers are always passed in full 64-bit registers.
   CCIfPtr<CCCustom<"CC_X86_64_Pointer">>,
 
@@ -982,6 +985,12 @@ def CC_X86_Win32_CFGuard_Check : CallingConv<[
   CCIfType<[i32], CCAssignToReg<[ECX]>>
 ]>;
 
+def CC_X86_Win64_CFGuard_Check : CallingConv<[
+  // The CFGuard check call takes exactly one integer argument
+  // (i.e. the target function address), which is passed in RCX.
+  CCIfType<[i64], CCAssignToReg<[RCX]>>
+]>;
+
 def CC_X86_32_GHC : CallingConv<[
   // Promote i8/i16 arguments to i32.
   CCIfType<[i8, i16], CCPromoteToType<i32>>,
@@ -1098,6 +1107,8 @@ def CC_X86_64 : CallingConv<[
   CCIfCC<"CallingConv::X86_RegCall", CCDelegateTo<CC_X86_SysV64_RegCall>>,
   CCIfCC<"CallingConv::PreserveNone", CCDelegateTo<CC_X86_64_Preserve_None>>,
   CCIfCC<"CallingConv::X86_INTR", CCCustom<"CC_X86_Intr">>,
+  CCIfCC<"CallingConv::CFGuard_Check",
+    CCDelegateTo<CC_X86_Win64_CFGuard_Check>>,
 
   // Mingw64 and native Win64 use Win64 CC
   CCIfSubtarget<"isTargetWin64()", CCDelegateTo<CC_X86_Win64_C>>,
@@ -1240,12 +1251,12 @@ def CSR_Win64_RegCall       : CalleeSavedRegs<(add CSR_Win64_RegCall_NoSSE,
                                               (sequence "XMM%u", 8, 15))>;
 def CSR_Win64_APX_RegCall   : CalleeSavedRegs<(add CSR_Win64_RegCall_NoSSE, R30, R31,
                                               (sequence "XMM%u", 8, 15))>;
-def CSR_Win64_CFGuard_Check_NoSSE : CalleeSavedRegs<(add CSR_Win64_RegCall_NoSSE, RCX)>;
-def CSR_Win64_CFGuard_Check       : CalleeSavedRegs<(add CSR_Win64_RegCall, RCX)>;
-def CSR_Win64_APX_CFGuard_Check   : CalleeSavedRegs<(add CSR_Win64_RegCall_NoSSE,
-                                                     (sequence "R%u", 16, 31),
-                                                     (sequence "XMM%u", 8, 15),
-                                                     RCX)>;
+// The x86-64 guard check function is a Win64 function that also preserves its
+// argument; it uses RAX, R10 and R11 as scratch.
+def CSR_Win64_CFGuard_Check_NoSSE : CalleeSavedRegs<(add CSR_Win64_NoSSE, RCX)>;
+def CSR_Win64_CFGuard_Check       : CalleeSavedRegs<(add CSR_Win64, RCX)>;
+def CSR_Win64_APX_CFGuard_Check   : CalleeSavedRegs<(add CSR_Win64, RCX,
+                                                     (sequence "R%u", 16, 31))>;
 def CSR_SysV64_RegCall_NoSSE : CalleeSavedRegs<(add RBX, RBP,
                                                (sequence "R%u", 12, 15))>;
 def CSR_SysV64_RegCall       : CalleeSavedRegs<(add CSR_SysV64_RegCall_NoSSE,               

@@ -133,12 +133,19 @@ public:
   bool runOnFunction(Function &F);
 
 private:
+  /// Returns the global holding the pointer to the guard function Name,
+  /// declaring it in M if it is not already declared, and keeps it in Cache.
+  Constant *getGuardFnGlobal(Module &M, StringRef Name, Constant *&Cache);
+
   // Only add checks if the module has them enabled.
   ControlFlowGuardMode CFGuardModuleFlag = ControlFlowGuardMode::Disabled;
   Mechanism GuardMechanism = Mechanism::Check;
+  // The globals holding the pointers to the guard check and dispatch
+  // functions, once a call needs them.
+  Constant *GuardCheckFnGlobal = nullptr;
+  Constant *GuardDispatchFnGlobal = nullptr;
   FunctionType *GuardFnType = nullptr;
   PointerType *GuardFnPtrType = nullptr;
-  Constant *GuardFnGlobal = nullptr;
 };
 
 class CFGuard : public FunctionPass {
@@ -172,7 +179,9 @@ void CFGuardImpl::insertCFGuardCheck(CallBase *CB) {
     Bundles.push_back(OperandBundleDef(*Bundle));
 
   // Load the global symbol as a pointer to the check function.
-  LoadInst *GuardCheckLoad = B.CreateLoad(GuardFnPtrType, GuardFnGlobal);
+  LoadInst *GuardCheckLoad = B.CreateLoad(
+      GuardFnPtrType, getGuardFnGlobal(*CB->getModule(), GuardCheckFunctionName,
+                                       GuardCheckFnGlobal));
 
   // Create new call instruction. The CFGuard check should always be a call,
   // even if the original CallBase is an Invoke or CallBr instruction.
@@ -195,7 +204,10 @@ void CFGuardImpl::insertCFGuardDispatch(CallBase *CB) {
   Type *CalledOperandType = CalledOperand->getType();
 
   // Load the global as a pointer to a function of the same type.
-  LoadInst *GuardDispatchLoad = B.CreateLoad(CalledOperandType, GuardFnGlobal);
+  LoadInst *GuardDispatchLoad = B.CreateLoad(
+      CalledOperandType, getGuardFnGlobal(*CB->getModule(),
+                                          GuardDispatchFunctionName,
+                                          GuardDispatchFnGlobal));
 
   // Add the original call target as a cfguardtarget operand bundle.
   SmallVector<llvm::OperandBundleDef, 1> Bundles;
@@ -220,6 +232,8 @@ void CFGuardImpl::insertCFGuardDispatch(CallBase *CB) {
 bool CFGuardImpl::doInitialization(Module &M) {
   // Check if this module has the cfguard flag and read its value.
   CFGuardModuleFlag = M.getControlFlowGuardMode();
+  GuardCheckFnGlobal = nullptr;
+  GuardDispatchFnGlobal = nullptr;
 
   // Skip modules for which CFGuard checks have been disabled.
   if (CFGuardModuleFlag != ControlFlowGuardMode::Enabled)
@@ -252,17 +266,73 @@ bool CFGuardImpl::doInitialization(Module &M) {
                         {PointerType::getUnqual(M.getContext())}, false);
   GuardFnPtrType = PointerType::get(M.getContext(), 0);
 
-  StringRef GuardFnName = GuardMechanism == Mechanism::Check
-                              ? GuardCheckFunctionName
-                              : GuardDispatchFunctionName;
-  GuardFnGlobal = M.getOrInsertGlobal(GuardFnName, GuardFnPtrType, [&] {
-    auto *Var = new GlobalVariable(M, GuardFnPtrType, false,
-                                   GlobalVariable::ExternalLinkage, nullptr,
-                                   GuardFnName);
-    Var->setDSOLocal(true);
-    return Var;
-  });
+  if (CFGuardModuleFlag == ControlFlowGuardMode::Enabled) {
+    if (GuardMechanism == Mechanism::Check)
+      getGuardFnGlobal(M, GuardCheckFunctionName, GuardCheckFnGlobal);
+    else
+      getGuardFnGlobal(M, GuardDispatchFunctionName, GuardDispatchFnGlobal);
+  }
 
+  return true;
+}
+
+Constant *CFGuardImpl::getGuardFnGlobal(Module &M, StringRef Name,
+                                        Constant *&Cache) {
+  if (!Cache)
+    Cache = M.getOrInsertGlobal(Name, GuardFnPtrType, [&] {
+      auto *Var =
+          new GlobalVariable(M, GuardFnPtrType, false,
+                             GlobalVariable::ExternalLinkage, nullptr, Name);
+      Var->setDSOLocal(true);
+      return Var;
+    });
+  return Cache;
+}
+
+// Returns true if the dispatch mechanism can guard CB. On x86-64 it takes the
+// target in RAX, so the call's convention must pass nothing else there: not
+// AL, in which a variadic call under the System V convention passes the number
+// of vector registers it uses, nor the sret pointer of a Swift call under that
+// convention. It must also put the target in RAX, and treat R10 and R11 as
+// clobbered, as the dispatch function uses them. Any other call takes a check.
+static bool canUseDispatch(const CallBase &CB) {
+  const Triple &TT = CB.getModule()->getTargetTriple();
+  if (!TT.isX86_64())
+    return true;
+
+  // Whether the call uses the Win64 convention, as X86 lowering decides it.
+  bool IsWin64;
+  switch (CB.getCallingConv()) {
+  case CallingConv::C:
+  case CallingConv::Fast:
+  case CallingConv::Tail:
+  case CallingConv::Swift:
+  case CallingConv::SwiftTail:
+  case CallingConv::X86_FastCall:
+  case CallingConv::X86_StdCall:
+  case CallingConv::X86_ThisCall:
+  case CallingConv::X86_VectorCall:
+    // These follow the target's default.
+    IsWin64 = true;
+    break;
+  case CallingConv::Win64:
+    IsWin64 = true;
+    break;
+  case CallingConv::X86_64_SysV:
+    IsWin64 = false;
+    break;
+  default:
+    return false;
+  }
+  if (IsWin64)
+    return true;
+  if (CB.getFunctionType()->isVarArg())
+    return false;
+  if (CB.getCallingConv() == CallingConv::Swift ||
+      CB.getCallingConv() == CallingConv::SwiftTail)
+    for (unsigned I = 0, E = CB.arg_size(); I != E; ++I)
+      if (CB.paramHasAttr(I, Attribute::StructRet))
+        return false;
   return true;
 }
 
@@ -292,11 +362,10 @@ bool CFGuardImpl::runOnFunction(Function &F) {
     return false;
 
   // For each indirect call/invoke, add the appropriate dispatch or check.
-  if (GuardMechanism == Mechanism::Dispatch) {
-    for (CallBase *CB : IndirectCalls)
+  for (CallBase *CB : IndirectCalls) {
+    if (GuardMechanism == Mechanism::Dispatch && canUseDispatch(*CB))
       insertCFGuardDispatch(CB);
-  } else {
-    for (CallBase *CB : IndirectCalls)
+    else
       insertCFGuardCheck(CB);
   }
 
