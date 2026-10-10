@@ -4,6 +4,9 @@
 # RUN: lld-link /entry:main /subsystem:console /out:%t.exe %t.obj %p/Inputs/library-arm64.lib /alternatename:__delayLoadHelper2=main /delayload:library.dll
 # RUN: llvm-objdump --no-print-imm-hex -d %t.exe | FileCheck %s --check-prefix DISASM
 # RUN: llvm-readobj --coff-imports %t.exe | FileCheck %s -check-prefix IMPORTS
+# RUN: lld-link /entry:main /subsystem:console /out:%t.unload.exe %t.obj %p/Inputs/library-arm64.lib /alternatename:__delayLoadHelper2=main /delayload:library.dll /delay:unload
+# RUN: llvm-readobj --coff-imports --coff-basereloc %t.unload.exe | FileCheck %s -check-prefix UNLOAD
+# RUN: llvm-readobj --hex-dump=.rdata %t.unload.exe | FileCheck %s -check-prefix UNLOAD-RDATA
 
 # DISASM:  140001014:      d0000011        adrp    x17, 0x140003000
 # DISASM:  140001018:      91002231        add     x17, x17, #8
@@ -54,6 +57,19 @@
 # IMPORTS:     Address: 0x140001014
 # IMPORTS:   }
 # IMPORTS: }
+
+# /delay:unload adds a relocated copy of the address table's initial
+# contents, the address of the load thunk.
+# UNLOAD:      ImportAddressTable: 0x3008
+# UNLOAD-NEXT: ImportNameTable: 0x2050
+# UNLOAD-NEXT: BoundDelayImportTable: 0x0
+# UNLOAD-NEXT: UnloadDelayImportTable: 0x2040
+# UNLOAD:      Address: 0x140001014
+# UNLOAD:      BaseReloc [
+# UNLOAD-NEXT:   Entry {
+# UNLOAD-NEXT:     Type: DIR64
+# UNLOAD-NEXT:     Address: 0x2040
+# UNLOAD-RDATA: 0x140002040 14100040 01000000 00000000 00000000
 
 --- !COFF
 header:

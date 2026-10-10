@@ -347,6 +347,24 @@ void LinkerDriver::parseManifestUAC(StringRef arg) {
   }
 }
 
+// Parses a string in the form of "unload|nobind[,(unload|nobind)]*"
+// Results are directly written to Config.
+void LinkerDriver::parseDelay(StringRef arg) {
+  do {
+    auto [delay, newArg] = arg.split(',');
+    if (delay.equals_insensitive("unload")) {
+      ctx.config.delayUnload = true;
+    } else if (delay.equals_insensitive("nobind")) {
+      // No image this linker writes has a bound delay-load import table.
+    } else if (delay.empty()) {
+      Err(ctx) << "/delay: missing argument";
+    } else {
+      Err(ctx) << "/delay: invalid argument: " << delay;
+    }
+    arg = newArg;
+  } while (!arg.empty());
+}
+
 // Parses a string in the form of "cd|net[,(cd|net)]*"
 // Results are directly written to Config.
 void LinkerDriver::parseSwaprun(StringRef arg) {

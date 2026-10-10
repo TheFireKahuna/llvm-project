@@ -63,6 +63,7 @@ private:
   std::vector<Chunk *> dirs;
   std::vector<Chunk *> moduleHandles;
   std::vector<Chunk *> addresses;
+  std::vector<Chunk *> unloadAddresses;
   std::vector<Chunk *> names;
   std::vector<Chunk *> hintNames;
   std::vector<Chunk *> thunks;

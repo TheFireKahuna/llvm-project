@@ -141,6 +141,51 @@ AUXIAT:      0x180005000 00000000 00000000 00000000 00000000
 AUXIAT-NEXT: 0x180005010 1c200080 01000000 00000000 00000000
 
 
+# With -delay:unload each view's descriptor names a copy of that view's
+# address table, so the EC descriptor's field gets the same delta as its
+# address and name table fields.
+
+RUN: lld-link -machine:arm64x -dll -noentry -out:out-unload.dll loadconfig-arm64.obj loadconfig-arm64ec.obj \
+RUN:          arm64-helper.obj arm64ec-helper.obj test-arm64.obj test-arm64ec.obj test-arm64.lib test-arm64ec.lib \
+RUN:          -delayload:test.dll -delay:unload
+
+RUN: llvm-readobj --coff-imports out-unload.dll | FileCheck --check-prefix=UNLOAD-IMPORTS %s
+UNLOAD-IMPORTS:      ImportAddressTable: 0x6088
+UNLOAD-IMPORTS-NEXT: ImportNameTable: 0x43A8
+UNLOAD-IMPORTS-NEXT: BoundDelayImportTable: 0x0
+UNLOAD-IMPORTS-NEXT: UnloadDelayImportTable: 0x4388
+UNLOAD-IMPORTS:      HybridObject {
+UNLOAD-IMPORTS:        ImportAddressTable: 0x6098
+UNLOAD-IMPORTS-NEXT:   ImportNameTable: 0x43B8
+UNLOAD-IMPORTS-NEXT:   BoundDelayImportTable: 0x0
+UNLOAD-IMPORTS-NEXT:   UnloadDelayImportTable: 0x4398
+
+# The copies hold each view's initial address: the native thunk, then the
+# x86-64 one.
+RUN: llvm-readobj --hex-dump=.rdata out-unload.dll | FileCheck --check-prefix=UNLOAD-RDATA %s
+UNLOAD-RDATA:      0x180004380 00000000 00000000 14100080 01000000
+UNLOAD-RDATA-NEXT: 0x180004390 00000000 00000000 06300080 01000000
+
+# The descriptor is at 0x4348; its address table, name table and unload
+# table fields are at 0x4354, 0x4358 and 0x4360.
+RUN: llvm-readobj --coff-load-config out-unload.dll | FileCheck --check-prefix=UNLOAD-DYNRELOC %s
+UNLOAD-DYNRELOC:      DynamicRelocations [
+UNLOAD-DYNRELOC:          RVA: 0x4354
+UNLOAD-DYNRELOC-NEXT:     Type: DELTA
+UNLOAD-DYNRELOC-NEXT:     Value: 16
+UNLOAD-DYNRELOC-NEXT:   ]
+UNLOAD-DYNRELOC-NEXT:   Entry [
+UNLOAD-DYNRELOC-NEXT:     RVA: 0x4358
+UNLOAD-DYNRELOC-NEXT:     Type: DELTA
+UNLOAD-DYNRELOC-NEXT:     Value: 16
+UNLOAD-DYNRELOC-NEXT:   ]
+UNLOAD-DYNRELOC-NEXT:   Entry [
+UNLOAD-DYNRELOC-NEXT:     RVA: 0x4360
+UNLOAD-DYNRELOC-NEXT:     Type: DELTA
+UNLOAD-DYNRELOC-NEXT:     Value: 16
+UNLOAD-DYNRELOC-NEXT:   ]
+
+
 # Test delayed-load import from native code only.
 
 RUN: lld-link -machine:arm64x -dll -noentry -out:out-native.dll loadconfig-arm64.obj loadconfig-arm64ec.obj \

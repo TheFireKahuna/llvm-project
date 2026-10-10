@@ -347,6 +347,7 @@ struct Configuration {
   bool repro = false;
   bool swaprunCD = false;
   bool swaprunNet = false;
+  bool delayUnload = false;
   bool thinLTOEmitImportsFiles;
   bool thinLTOIndexOnly;
   bool timeTraceEnabled = false;
