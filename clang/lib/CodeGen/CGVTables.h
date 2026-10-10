@@ -141,6 +141,12 @@ public:
   /// image may own. Call it after setGVProperties.
   void setVTableDSOLocal(llvm::GlobalValue *GV, const CXXRecordDecl *RD) const;
 
+  /// Places the primary address point of the vtable \p VTable, whose layout
+  /// is \p Layout, at offset 16 of a 64-byte line.
+  void setVTablePlacement(llvm::GlobalVariable *VTable,
+                          const VTableLayout &Layout,
+                          VTableLayout::AddressPointLocation AddressPoint);
+
   /// Returns the type of a vtable with the given layout. Normally a struct of
   /// arrays of pointers, with one struct element for each vtable in the vtable
   /// group.
