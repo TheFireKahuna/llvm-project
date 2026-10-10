@@ -25,3 +25,12 @@ add_llvm_library(LLVMHTTP
   LINK_COMPONENTS
   Support
 )
+
+# Only an HTTP request calls into WinHTTP and CryptoAPI, so delay load them to
+# keep them from loading in every process of a tool that links this library.
+# LLVMSupport provides the delay load helper.
+if (LLVM_RUNTIME_WIN32 AND MSVC)
+  target_link_options(LLVMHTTP INTERFACE
+    "$<$<NOT:$<LINK_LANGUAGE:Swift>>:LINKER:/DELAYLOAD:winhttp.dll>"
+    "$<$<NOT:$<LINK_LANGUAGE:Swift>>:LINKER:/DELAYLOAD:crypt32.dll>")
+endif()
