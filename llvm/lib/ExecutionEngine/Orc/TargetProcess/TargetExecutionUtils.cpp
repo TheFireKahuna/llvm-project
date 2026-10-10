@@ -7,8 +7,19 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ExecutionEngine/Orc/TargetProcess/TargetExecutionUtils.h"
+#include "llvm/Support/DynamicLibrary.h"
 
+#include <cstdint>
 #include <vector>
+
+#ifdef _MSC_VER
+// Defined in UCRTFormattedIO.c.
+extern "C" void (*llvm_find_ucrt_formatted_io(const char *Name))(void);
+
+static void *findUCRTFormattedIO(const char *Name) {
+  return (void *)uintptr_t(llvm_find_ucrt_formatted_io(Name));
+}
+#endif
 
 namespace llvm {
 namespace orc {
@@ -42,6 +53,14 @@ int runAsMain(int (*Main)(int, char *[]), ArrayRef<std::string> Args,
 int runAsVoidFunction(int (*Func)(void)) { return Func(); }
 
 int runAsIntFunction(int (*Func)(int), int Arg) { return Func(Arg); }
+
+void registerInlineCRTFunctions() {
+#ifdef _MSC_VER
+  // No module exports the Universal CRT's formatted I/O, which its headers
+  // define inline; this program's definitions stand in for them.
+  sys::DynamicLibrary::setProcessSymbolFallback(findUCRTFormattedIO);
+#endif
+}
 
 } // End namespace orc.
 } // End namespace llvm.

@@ -153,6 +153,8 @@ SelfExecutorProcessControl::InProcessDylibManager::InProcessDylibManager(
 Expected<tpctypes::DylibHandle>
 SelfExecutorProcessControl::InProcessDylibManager::loadDylib(
     const char *DylibPath) {
+  if (!DylibPath)
+    registerInlineCRTFunctions();
   std::string ErrMsg;
   auto Dylib = sys::DynamicLibrary::getPermanentLibrary(DylibPath, &ErrMsg);
   if (!Dylib.isValid())

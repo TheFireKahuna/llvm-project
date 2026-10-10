@@ -8,6 +8,7 @@
 
 #include "llvm/ExecutionEngine/Orc/TargetProcess/SimpleExecutorDylibManager.h"
 #include "llvm/ExecutionEngine/Orc/Shared/Mangler.h"
+#include "llvm/ExecutionEngine/Orc/TargetProcess/TargetExecutionUtils.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
 
@@ -34,6 +35,8 @@ SimpleExecutorDylibManager::open(const std::string &Path, uint64_t Mode) {
                                    inconvertibleErrorCode());
 
   const char *PathCStr = Path.empty() ? nullptr : Path.c_str();
+  if (!PathCStr)
+    registerInlineCRTFunctions();
   std::string ErrMsg;
 
   auto DL = sys::DynamicLibrary::getPermanentLibrary(PathCStr, &ErrMsg);

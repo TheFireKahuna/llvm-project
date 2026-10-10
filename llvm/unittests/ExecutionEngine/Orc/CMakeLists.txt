@@ -53,6 +53,7 @@ add_llvm_unittest(OrcJITTests
   SPSProxySpecTest.cpp
   SymbolLookupSetTest.cpp
   SymbolStringPoolTest.cpp
+  TargetExecutionUtilsTest.cpp
   TaskDispatchTest.cpp
   ThreadSafeModuleTest.cpp
   WaitingOnGraphTest.cpp

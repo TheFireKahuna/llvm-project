@@ -27,6 +27,7 @@ add_llvm_component_library(LLVMOrcTargetProcess
   SimpleExecutorMemoryManager.cpp
   SimpleRemoteEPCServer.cpp
   TargetExecutionUtils.cpp
+  UCRTFormattedIO.c
   UnwindInfoManager.cpp
 
   ADDITIONAL_HEADER_DIRS
