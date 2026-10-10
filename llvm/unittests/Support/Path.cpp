@@ -701,6 +701,11 @@ TEST_F(FileSystemTest, Unique) {
   ASSERT_NO_ERROR(fs::getUniqueID(Twine(TempPath), F2));
   ASSERT_EQ(F1, F2);
 
+  // Querying the file through a descriptor gives the same unique id.
+  fs::file_status FDStatus;
+  ASSERT_NO_ERROR(fs::status(FileDescriptor, FDStatus));
+  ASSERT_EQ(FDStatus.getUniqueID(), F1);
+
   // Different files should return different unique ids.
   int FileDescriptor2;
   SmallString<64> TempPath2;
@@ -714,16 +719,12 @@ TEST_F(FileSystemTest, Unique) {
 
   ASSERT_NO_ERROR(fs::remove(Twine(TempPath2)));
 
-#ifndef _WIN32
   // Two paths representing the same file on disk should still provide the
   // same unique id.  We can test this by making a hard link.
-  // FIXME: Our implementation of getUniqueID on Windows doesn't consider hard
-  // links to be the same file.
   ASSERT_NO_ERROR(fs::create_link(Twine(TempPath), Twine(TempPath2)));
   fs::UniqueID D2;
   ASSERT_NO_ERROR(fs::getUniqueID(Twine(TempPath2), D2));
   ASSERT_EQ(D2, F1);
-#endif
 
   ::close(FileDescriptor);
 
@@ -931,6 +932,84 @@ TEST_F(FileSystemTest, ReadlinkNonExistent) {
   EXPECT_EQ(fs::readlink(TestDirectory + "/does_not_exist", Result),
             errc::no_such_file_or_directory);
 }
+
+TEST_F(FileSystemTest, StatusEmptyPath) {
+  // An empty name is not the current directory.
+  fs::file_status Status;
+  EXPECT_EQ(fs::status("", Status), errc::no_such_file_or_directory);
+  EXPECT_FALSE(fs::exists(""));
+  EXPECT_FALSE(fs::is_directory(""));
+}
+
+TEST_F(FileSystemTest, StatusTrailingSeparator) {
+  // A name followed by a separator must be a directory, as in POSIX.
+  SmallString<128> FilePath(TestDirectory);
+  path::append(FilePath, "file");
+  int FD;
+  ASSERT_NO_ERROR(fs::openFileForWrite(FilePath, FD));
+  ::close(FD);
+
+  fs::file_status Status;
+  EXPECT_TRUE(fs::status(FilePath + "/", Status));
+  EXPECT_FALSE(fs::is_regular_file(FilePath + "/"));
+#ifdef _WIN32
+  EXPECT_TRUE(fs::status(FilePath + "\\", Status));
+#endif
+  ASSERT_NO_ERROR(fs::status(TestDirectory + "/", Status));
+  EXPECT_TRUE(fs::is_directory(Status));
+
+  ASSERT_NO_ERROR(fs::remove(FilePath));
+}
+
+#ifdef _WIN32
+TEST_F(FileSystemTest, StatusWin32Names) {
+  // status() reads a name as the Win32 layer does: a single trailing dot is
+  // dropped from every segment, and a reserved device name in the last one
+  // names the device.
+  SmallString<128> Dir(TestDirectory);
+  path::append(Dir, "d");
+  ASSERT_NO_ERROR(fs::create_directory(Dir));
+  SmallString<128> FilePath(Dir);
+  path::append(FilePath, "f");
+  int FD;
+  ASSERT_NO_ERROR(fs::openFileForWrite(FilePath, FD));
+  ::close(FD);
+
+  fs::file_status Status;
+  ASSERT_NO_ERROR(fs::status(TestDirectory + "\\d.\\f", Status));
+  EXPECT_TRUE(fs::is_regular_file(Status));
+  EXPECT_TRUE(fs::exists(TestDirectory + "\\d.\\f"));
+  EXPECT_TRUE(fs::exists(Dir + "\\NUL"));
+
+  ASSERT_NO_ERROR(fs::remove(FilePath));
+  ASSERT_NO_ERROR(fs::remove(Dir));
+}
+
+TEST_F(FileSystemTest, StatusUniqueIDOnNetworkShare) {
+  // A file's identity is the same whether it is found by name or through an
+  // open descriptor, on a redirected drive as on a local one.
+  if (TestDirectory.size() < 3 || TestDirectory[1] != ':')
+    GTEST_SKIP() << "test directory is not on a drive";
+  SmallString<128> Share("\\\\localhost\\");
+  Share += TestDirectory[0];
+  Share += "$";
+  Share += StringRef(TestDirectory).drop_front(2);
+  if (!fs::is_directory(Share))
+    GTEST_SKIP() << "administrative share is not reachable";
+
+  SmallString<128> FilePath(Share);
+  path::append(FilePath, "file");
+  int FD;
+  ASSERT_NO_ERROR(fs::openFileForWrite(FilePath, FD));
+  fs::file_status ByName, ByFD;
+  ASSERT_NO_ERROR(fs::status(FilePath, ByName));
+  ASSERT_NO_ERROR(fs::status(FD, ByFD));
+  ::close(FD);
+  EXPECT_EQ(ByName.getUniqueID(), ByFD.getUniqueID());
+  EXPECT_TRUE(fs::equivalent(ByName, ByFD));
+  ASSERT_NO_ERROR(fs::remove(FilePath));
+}
+#endif
 
 TEST_F(FileSystemTest, ExpandTilde) {
   SmallString<64> Expected;

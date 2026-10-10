@@ -28,6 +28,7 @@
 #include "llvm/Support/Windows/WindowsSupport.h"
 #include <shlobj.h>
 #include <winioctl.h>
+#include <winternl.h>
 
 #undef max
 
@@ -68,6 +69,58 @@ static const FILE_INFO_BY_HANDLE_CLASS FileDispositionInfoExClass =
 static const FILE_INFO_BY_HANDLE_CLASS FileRenameInfoExClass =
     static_cast<FILE_INFO_BY_HANDLE_CLASS>(22); // FileRenameInfoEx
 
+// File identity. NTFS and ReFS identify a file by a 128-bit ID that is
+// stable for the life of the file (NTFS uses the low 64 bits), which is what
+// stat(2)'s st_ino is: two names for one file, such as hard links, yield the
+// same ID. FileIdInfo (Windows 8) reports it for a handle; the same value
+// comes back from a query by name below, so both paths agree. The SDK hides
+// these below the _WIN32_WINNT floor set in WindowsSupport.h.
+struct FileId128 {
+  BYTE Identifier[16];
+};
+struct FileIdInfoLocal { // FILE_ID_INFO
+  ULONGLONG VolumeSerialNumber;
+  FileId128 FileId;
+};
+static const FILE_INFO_BY_HANDLE_CLASS FileIdInfoClass =
+    static_cast<FILE_INFO_BY_HANDLE_CLASS>(18); // FileIdInfo
+
+static uint64_t fileIdToUniqueID(const FileId128 &Id) {
+  uint64_t Low, High;
+  memcpy(&Low, Id.Identifier, 8);
+  memcpy(&High, Id.Identifier + 8, 8);
+  return High ? static_cast<uint64_t>(llvm::hash_combine(Low, High)) : Low;
+}
+
+// Windows 11 24H2 answers a stat by name in one system call, without
+// creating a file object or a handle: NtQueryInformationByName with
+// FileStatBasicInformation. It does not follow reparse points, so a link is
+// reported as such (like lstat(2)) and following it takes the handle path.
+// The structure and class are declared only in the kernel-mode headers and
+// above the _WIN32_WINNT floor; the entry point is resolved at run time.
+struct FileStatBasicInformation { // FILE_STAT_BASIC_INFORMATION
+  LARGE_INTEGER FileId;
+  LARGE_INTEGER CreationTime;
+  LARGE_INTEGER LastAccessTime;
+  LARGE_INTEGER LastWriteTime;
+  LARGE_INTEGER ChangeTime;
+  LARGE_INTEGER AllocationSize;
+  LARGE_INTEGER EndOfFile;
+  DWORD FileAttributes;
+  DWORD ReparseTag;
+  DWORD NumberOfLinks;
+  DWORD DeviceType;
+  DWORD DeviceCharacteristics;
+  DWORD Reserved;
+  LARGE_INTEGER VolumeSerialNumber;
+  FileId128 FileId128;
+};
+static const FILE_INFORMATION_CLASS FileStatBasicInformationClass =
+    static_cast<FILE_INFORMATION_CLASS>(77); // FileStatBasicInformation
+typedef NTSTATUS(NTAPI *NtQueryInformationByName_t)(POBJECT_ATTRIBUTES,
+                                                    PIO_STATUS_BLOCK, PVOID,
+                                                    ULONG,
+                                                    FILE_INFORMATION_CLASS);
 
 using namespace llvm;
 
@@ -1066,6 +1119,9 @@ static perms perms_from_attrs(DWORD Attrs) {
 static std::error_code getStatus(HANDLE FileHandle, file_status &Result) {
   SmallVector<wchar_t, MAX_PATH> ntPath;
   DWORD ReparseTag = 0;
+  uint32_t VolumeSerial;
+  uint64_t UniqueId;
+  FileIdInfoLocal IdInfo;
   if (FileHandle == INVALID_HANDLE_VALUE)
     goto handle_status_error;
 
@@ -1103,6 +1159,9 @@ static std::error_code getStatus(HANDLE FileHandle, file_status &Result) {
       ReparseTag = TagInfo.ReparseTag;
   }
 
+  // The 128-bit file ID identifies the file the way st_ino does. A file
+  // system that does not report one gets the following instead.
+  //
   // File indices aren't necessarily stable after closing the file handle;
   // instead hash a canonicalized path.
   //
@@ -1113,18 +1172,23 @@ static std::error_code getStatus(HANDLE FileHandle, file_status &Result) {
   // The default format with VOLUME_NAME_DOS doesn't work with all file system
   // drivers, such as ImDisk. (See
   // https://github.com/rust-lang/rust/pull/86447.)
-  uint64_t PathHash;
-  if (std::error_code EC =
-          realPathFromHandle(FileHandle, ntPath, VOLUME_NAME_NT)) {
+  VolumeSerial = Info.dwVolumeSerialNumber;
+  if (::GetFileInformationByHandleEx(FileHandle, FileIdInfoClass, &IdInfo,
+                                     sizeof(IdInfo)) &&
+      fileIdToUniqueID(IdInfo.FileId) != 0) {
+    VolumeSerial = static_cast<uint32_t>(IdInfo.VolumeSerialNumber);
+    UniqueId = fileIdToUniqueID(IdInfo.FileId);
+  } else if (std::error_code EC =
+                 realPathFromHandle(FileHandle, ntPath, VOLUME_NAME_NT)) {
     // If realPathFromHandle failed, fall back on the fields
     // nFileIndex{High,Low} instead. They're not necessarily stable on all file
     // systems as they're only documented as being unique/stable as long as the
     // file handle is open - but they're a decent fallback if we couldn't get
     // the canonical path.
-    PathHash = (static_cast<uint64_t>(Info.nFileIndexHigh) << 32ULL) |
+    UniqueId = (static_cast<uint64_t>(Info.nFileIndexHigh) << 32ULL) |
                static_cast<uint64_t>(Info.nFileIndexLow);
   } else {
-    PathHash = hash_combine_range(ntPath);
+    UniqueId = hash_combine_range(ntPath);
   }
 
   Result = file_status(
@@ -1132,8 +1196,7 @@ static std::error_code getStatus(HANDLE FileHandle, file_status &Result) {
       perms_from_attrs(Info.dwFileAttributes), Info.nNumberOfLinks,
       Info.ftLastAccessTime.dwHighDateTime, Info.ftLastAccessTime.dwLowDateTime,
       Info.ftLastWriteTime.dwHighDateTime, Info.ftLastWriteTime.dwLowDateTime,
-      Info.dwVolumeSerialNumber, Info.nFileSizeHigh, Info.nFileSizeLow,
-      PathHash);
+      VolumeSerial, Info.nFileSizeHigh, Info.nFileSizeLow, UniqueId);
   return std::error_code();
 
 handle_status_error:
@@ -1145,6 +1208,131 @@ handle_status_error:
   else
     Result = file_status(file_type::status_error);
   return Err;
+}
+
+// Answers status() by name where the kernel can. Returns true when \p Result
+// and \p EC are the answer (including "does not exist"), false when the
+// caller must open the file: no support, a path form the NT namespace would
+// read differently from Win32, a link that must be followed, or any other
+// failure, so that the handle path reports the precise error.
+static bool status_by_name(StringRef Path8, bool Follow, file_status &Result,
+                           std::error_code &EC) {
+  static const NtQueryInformationByName_t Query =
+      []() -> NtQueryInformationByName_t {
+    if (GetWindowsOSVersion() < llvm::VersionTuple(10, 0, 0, 26100))
+      return nullptr;
+    HMODULE NtDll = llvm::sys::windows::loadSystemModuleSecure(L"ntdll.dll");
+    if (!NtDll)
+      return nullptr;
+    return (NtQueryInformationByName_t)::GetProcAddress(
+        NtDll, "NtQueryInformationByName");
+  }();
+  if (!Query)
+    return false;
+
+  // Build the NT form of the absolute, lexically normalized path. The NT
+  // namespace takes the name literally, so Win32's forgiveness for forward
+  // slashes, "." and ".." components must be applied here; its stripping of
+  // trailing dots and spaces, its rejection of a file name followed by a
+  // separator (which remove_dots would hide), and device paths are left to
+  // the handle path. A drive-relative path ("C:foo") resolves against that
+  // drive's own current directory, which only the Win32 layer tracks. An
+  // empty name is not the current directory, though make_absolute would say
+  // so.
+  if (Path8.empty())
+    return false;
+  if (path::is_separator(Path8.back()) && !path::relative_path(Path8).empty())
+    return false;
+  if (Path8.size() >= 2 && Path8[1] == ':' &&
+      (Path8.size() == 2 || !path::is_separator(Path8[2])))
+    return false;
+  SmallString<MAX_PATH> Abs(Path8);
+  if (!path::is_absolute(Abs)) {
+    if (make_absolute(Abs))
+      return false;
+  }
+  path::native(Abs, path::Style::windows_backslash);
+  path::remove_dots(Abs, /*remove_dot_dot=*/true, path::Style::windows);
+  if (Abs.empty() || Abs.back() == '.' || Abs.back() == ' ' ||
+      Abs.starts_with("\\\\.\\"))
+    return false;
+  // Win32 also drops a single trailing dot from every other segment, and
+  // reads a last segment whose stem is a reserved device name as the device.
+  if (!Abs.starts_with(LongPathPrefix8)) {
+    for (StringRef Segment : llvm::make_range(
+             path::begin(Abs, path::Style::windows), path::end(Abs)))
+      if (Segment.ends_with("."))
+        return false;
+    StringRef Stem = path::filename(Abs, path::Style::windows);
+    if (isReservedName(Stem.take_until([](char C) {
+                             return C == '.' || C == ':';
+                           }).rtrim(' ')))
+      return false;
+  }
+
+  SmallString<MAX_PATH> Nt;
+  if (Abs.starts_with(LongPathPrefix8)) {
+    Nt = Abs;
+    Nt[1] = '?'; // \\?\ becomes \??\.
+  } else if (Abs.starts_with("\\\\")) {
+    Nt = "\\??\\UNC\\";
+    Nt += StringRef(Abs).drop_front(2);
+  } else if (Abs.size() >= 3 && Abs[1] == ':' && Abs[2] == '\\') {
+    Nt = "\\??\\";
+    Nt += Abs;
+  } else {
+    return false;
+  }
+
+  SmallVector<wchar_t, MAX_PATH> NtWide;
+  if (UTF8ToUTF16(Nt, NtWide) || NtWide.size() * sizeof(wchar_t) > 0xFFFF)
+    return false;
+
+  UNICODE_STRING Name;
+  Name.Buffer = NtWide.data();
+  Name.Length = Name.MaximumLength =
+      static_cast<USHORT>(NtWide.size() * sizeof(wchar_t));
+  OBJECT_ATTRIBUTES Attributes;
+  InitializeObjectAttributes(&Attributes, &Name, OBJ_CASE_INSENSITIVE, nullptr,
+                             nullptr);
+  IO_STATUS_BLOCK IoStatus;
+  FileStatBasicInformation Info;
+  NTSTATUS Status = Query(&Attributes, &IoStatus, &Info, sizeof(Info),
+                          FileStatBasicInformationClass);
+  switch (static_cast<ULONG>(Status)) {
+  case 0: // STATUS_SUCCESS
+    break;
+  case 0xC0000034: // STATUS_OBJECT_NAME_NOT_FOUND
+  case 0xC000003A: // STATUS_OBJECT_PATH_NOT_FOUND
+  case 0xC000000F: // STATUS_NO_SUCH_FILE
+    Result = file_status(file_type::file_not_found);
+    EC = make_error_code(errc::no_such_file_or_directory);
+    return true;
+  default:
+    return false;
+  }
+
+  // The query does not follow links; the handle path does.
+  if (Follow && (Info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
+      IsReparseTagNameSurrogate(Info.ReparseTag))
+    return false;
+  // A volume without file IDs cannot identify files this way.
+  uint64_t UniqueId = fileIdToUniqueID(Info.FileId128);
+  if (UniqueId == 0)
+    return false;
+
+  Result =
+      file_status(file_type_from_attrs(Info.FileAttributes, Info.ReparseTag),
+                  perms_from_attrs(Info.FileAttributes), Info.NumberOfLinks,
+                  static_cast<uint32_t>(Info.LastAccessTime.HighPart),
+                  Info.LastAccessTime.LowPart,
+                  static_cast<uint32_t>(Info.LastWriteTime.HighPart),
+                  Info.LastWriteTime.LowPart,
+                  static_cast<uint32_t>(Info.VolumeSerialNumber.QuadPart),
+                  static_cast<uint32_t>(Info.EndOfFile.HighPart),
+                  Info.EndOfFile.LowPart, UniqueId);
+  EC = std::error_code();
+  return true;
 }
 
 std::error_code status(const Twine &path, file_status &result, bool Follow) {
@@ -1159,7 +1347,11 @@ std::error_code status(const Twine &path, file_status &result, bool Follow) {
     return std::error_code();
   }
 
-  if (std::error_code ec = widenPath(path8, path_utf16))
+  std::error_code ec;
+  if (status_by_name(path8, Follow, result, ec))
+    return ec;
+
+  if ((ec = widenPath(path8, path_utf16)))
     return ec;
 
   DWORD Flags = FILE_FLAG_BACKUP_SEMANTICS;
