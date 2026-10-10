@@ -512,8 +512,10 @@ static void printImportTables(const COFFObjectFile *Obj) {
   for (const ImportDirectoryEntryRef &DirRef : Obj->import_directories()) {
     const coff_import_directory_table_entry *Dir;
     StringRef Name;
-    if (DirRef.getImportTableEntry(Dir)) return;
-    if (DirRef.getName(Name)) return;
+    if (Error E = DirRef.getImportTableEntry(Dir))
+      reportError(std::move(E), Obj->getFileName());
+    if (Error E = DirRef.getName(Name))
+      reportError(std::move(E), Obj->getFileName());
 
     outs() << format("  lookup %08x time %08x fwd %08x name %08x addr %08x\n\n",
                      static_cast<uint32_t>(Dir->ImportLookupTableRVA),
@@ -530,22 +532,22 @@ static void printImportTables(const COFFObjectFile *Obj) {
          Dir->ImportLookupTableRVA ? DirRef.lookup_table_symbols()
                                    : DirRef.imported_symbols()) {
       bool IsOrdinal;
-      if (Entry.isOrdinal(IsOrdinal))
-        return;
+      if (Error E = Entry.isOrdinal(IsOrdinal))
+        reportError(std::move(E), Obj->getFileName());
       if (IsOrdinal) {
         uint16_t Ordinal;
-        if (Entry.getOrdinal(Ordinal))
-          return;
+        if (Error E = Entry.getOrdinal(Ordinal))
+          reportError(std::move(E), Obj->getFileName());
         outs() << format("      % 6d\n", Ordinal);
         continue;
       }
       uint32_t HintNameRVA;
-      if (Entry.getHintNameRVA(HintNameRVA))
-        return;
+      if (Error E = Entry.getHintNameRVA(HintNameRVA))
+        reportError(std::move(E), Obj->getFileName());
       uint16_t Hint;
       StringRef Name;
-      if (Obj->getHintName(HintNameRVA, Hint, Name))
-        return;
+      if (Error E = Obj->getHintName(HintNameRVA, Hint, Name))
+        reportError(std::move(E), Obj->getFileName());
       outs() << format("      % 6d  ", Hint) << Name << "\n";
     }
     outs() << "\n";

@@ -1,0 +1,49 @@
+## Check that an import lookup entry whose hint/name RVA lies outside every
+## section is reported as an error rather than dropped.
+
+# RUN: yaml2obj %s -o %t.exe
+# RUN: not llvm-objdump -p %t.exe 2>&1 | FileCheck %s -DFILE=%t.exe
+
+# CHECK:      DLL Name: a.dll
+# CHECK-NEXT: Hint/Ord  Name
+# CHECK-NEXT: error: '[[FILE]]': RVA 0x4000225c not found
+
+--- !COFF
+OptionalHeader:
+  AddressOfEntryPoint: 0
+  ImageBase:       5368709120
+  SectionAlignment: 4096
+  FileAlignment:   512
+  MajorOperatingSystemVersion: 6
+  MinorOperatingSystemVersion: 0
+  MajorImageVersion: 0
+  MinorImageVersion: 0
+  MajorSubsystemVersion: 6
+  MinorSubsystemVersion: 0
+  Subsystem:       IMAGE_SUBSYSTEM_WINDOWS_CUI
+  DLLCharacteristics: [ ]
+  SizeOfStackReserve: 1048576
+  SizeOfStackCommit: 4096
+  SizeOfHeapReserve: 1048576
+  SizeOfHeapCommit: 4096
+  ImportTable:
+    RelativeVirtualAddress: 0x2010
+    Size:            40
+  IAT:
+    RelativeVirtualAddress: 0x2000
+    Size:            16
+header:
+  Machine:         IMAGE_FILE_MACHINE_AMD64
+  Characteristics: [ IMAGE_FILE_EXECUTABLE_IMAGE, IMAGE_FILE_LARGE_ADDRESS_AWARE ]
+sections:
+  - Name:            .rdata
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ ]
+    VirtualAddress:  0x2000
+    VirtualSize:     88
+    ## 0x2000: the import address table.
+    ## 0x2010: the import directory: a.dll, then null.
+    ## 0x2040: the import lookup table, whose entry names RVA 0x4000225c.
+    ## 0x2050: the DLL name.
+    SectionData:     5C2200400000000000000000000000004020000000000000000000005020000000200000000000000000000000000000000000000000000000000000000000005C220040000000000000000000000000612E646C6C000000
+symbols:         []
+...
