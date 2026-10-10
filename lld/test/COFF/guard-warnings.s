@@ -20,6 +20,13 @@
 # WARN_INVALID-NEXT: warning: GuardEHContinuationTable not set correctly in '_load_config_used'
 # WARN_INVALID-NEXT: warning: GuardEHContinuationCount not set correctly in '_load_config_used'
 
+# The EH continuation fields are checked whether or not the longjmp table, or
+# Control Flow Guard, is asked for.
+# RUN: lld-link %t/main.obj %t/loadcfg-invalid.obj -guard:cf,nolongjmp,ehcont -out:%t-nolongjmp.exe -entry:main %basename_t-exp.lib 2>&1 | FileCheck %s --check-prefix=WARN_EHCONT --implicit-check-not=LongJump
+# RUN: lld-link %t/main.obj %t/loadcfg-invalid.obj -guard:ehcont,nocf -out:%t-nocf.exe -entry:main %basename_t-exp.lib 2>&1 | FileCheck %s --check-prefix=WARN_EHCONT --implicit-check-not=LongJump
+# WARN_EHCONT: warning: GuardEHContinuationTable not set correctly in '_load_config_used'
+# WARN_EHCONT-NEXT: warning: GuardEHContinuationCount not set correctly in '_load_config_used'
+
 # RUN: llvm-mc -triple x86_64-windows-msvc %t/loadcfg-small112.s -filetype=obj -o %t/loadcfg-small112.obj
 # RUN: lld-link %t/main.obj %t/loadcfg-small112.obj -guard:cf,longjmp -out:%t-small112.exe -entry:main %basename_t-exp.lib 2>&1 | FileCheck %s --check-prefix=WARN_SMALL_112
 # WARN_SMALL_112: warning: '_load_config_used' structure too small to include GuardFlags

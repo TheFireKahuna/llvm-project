@@ -106,6 +106,9 @@ void LinkerDriver::parseGuard(StringRef fullArg) {
       ctx.config.guardCF &= ~GuardCFLevel::LongJmp;
     else if (arg.equals_insensitive("noehcont"))
       ctx.config.guardCF &= ~GuardCFLevel::EHCont;
+    else if (arg.equals_insensitive("nocf"))
+      ctx.config.guardCF &= ~(GuardCFLevel::CF | GuardCFLevel::LongJmp |
+                              GuardCFLevel::ExportSuppress);
     else if (arg.equals_insensitive("cf") || arg.equals_insensitive("longjmp"))
       ctx.config.guardCF |= GuardCFLevel::CF | GuardCFLevel::LongJmp;
     else if (arg.equals_insensitive("ehcont"))

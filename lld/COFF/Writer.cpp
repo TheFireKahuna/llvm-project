@@ -32,6 +32,7 @@
 #include "llvm/Support/Parallel.h"
 #include "llvm/Support/RandomNumberGenerator.h"
 #include "llvm/Support/TimeProfiler.h"
+#include "llvm/Support/Win64EH.h"
 #include "llvm/Support/xxhash.h"
 #include <algorithm>
 #include <cstdio>
@@ -249,6 +250,7 @@ private:
   DenseSet<std::pair<ObjFile *, Symbol *>> getGuardPointerStubs();
   void createGuardCFTables();
   void placeLinkerDefinedSymbols();
+  SymbolRVASet getEHContTargets();
   bool protectDelayIat();
   void markSymbolsForRVATable(ObjFile *file,
                               ArrayRef<SectionChunk *> symIdxChunks,
@@ -2002,7 +2004,7 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
     pe->DLLCharacteristics |= IMAGE_DLL_CHARACTERISTICS_NX_COMPAT;
   if (!config->allowIsolation)
     pe->DLLCharacteristics |= IMAGE_DLL_CHARACTERISTICS_NO_ISOLATION;
-  if (config->guardCF != GuardCFLevel::Off)
+  if (config->guardCF & GuardCFLevel::CF)
     pe->DLLCharacteristics |= IMAGE_DLL_CHARACTERISTICS_GUARD_CF;
   if (config->integrityCheck)
     pe->DLLCharacteristics |= IMAGE_DLL_CHARACTERISTICS_FORCE_INTEGRITY;
@@ -2270,6 +2272,151 @@ bool Writer::protectDelayIat() {
   return protects;
 }
 
+// Returns the offset in data of the language handler RVA of the unwind record
+// at off, if the record names a handler. A chained record is not followed.
+static std::optional<uint32_t>
+getUnwindHandlerOffset(bool isArm64, ArrayRef<uint8_t> data, uint32_t off) {
+  if (off + 4 > data.size())
+    return std::nullopt;
+  if (!isArm64) {
+    uint8_t flags = data[off] >> 3;
+    if (!(flags &
+          (Win64EH::UNW_ExceptionHandler | Win64EH::UNW_TerminateHandler)))
+      return std::nullopt;
+    return off + 4 + alignTo(data[off + 2], 2) * 2;
+  }
+  uint32_t header = read32le(&data[off]);
+  if (!(header & (1u << 20)))
+    return std::nullopt;
+  uint32_t size = 4;
+  uint32_t epilogCount = (header >> 22) & 0x1f;
+  uint32_t codeWords = header >> 27;
+  if (epilogCount == 0 && codeWords == 0) {
+    if (off + 8 > data.size())
+      return std::nullopt;
+    uint32_t ext = read32le(&data[off + 4]);
+    epilogCount = ext & 0xffff;
+    codeWords = (ext >> 16) & 0xff;
+    size = 8;
+  }
+  // With the E bit, the only epilog scope is packed into the header.
+  if (header & (1u << 21))
+    epilogCount = 0;
+  return off + size + epilogCount * 4 + codeWords * 4;
+}
+
+// Adds to targets the __except blocks of the C scope table that follows the
+// handler RVA at handlerOff in xdata: the jump target of each scope record,
+// which a scope without one, a __finally, leaves zero.
+static void addScopeTableTargets(ObjFile *file, SectionChunk *xdata,
+                                 uint32_t handlerOff, SymbolRVASet &targets) {
+  ArrayRef<uint8_t> data = xdata->getContents();
+  uint32_t tableOff = handlerOff + 4;
+  if (tableOff + 4 > data.size())
+    return;
+  uint32_t end = tableOff + 4 + read32le(&data[tableOff]) * 16;
+  for (const coff_relocation &rel : xdata->getRelocs()) {
+    uint32_t off = rel.VirtualAddress;
+    if (off < tableOff + 4 || off + 4 > std::min<size_t>(end, data.size()) ||
+        (off - tableOff - 4) % 16 != 12)
+      continue;
+    auto *d = dyn_cast_or_null<DefinedRegular>(
+        file->getSymbol(rel.SymbolTableIndex));
+    if (d && d->getChunk())
+      targets.insert({d->getChunk()->repl,
+                      uint32_t(d->getValue() + read32le(&data[off]))});
+  }
+}
+
+// Reports an object without EH continuation metadata that has continuation
+// targets no table would list, where link.exe fails with LNK2046 or LNK2047:
+// an unwind record naming a language handler other than __GSHandlerCheck,
+// which only checks the stack cookie, or a reference to _local_unwind. For
+// SEH in a COMDAT, link.exe warns (LNK4291) and lists the scope tables'
+// __except blocks instead, which are the targets __C_specific_handler can
+// continue at.
+static void checkEHContMetadata(COFFLinkerContext &ctx, ObjFile *file,
+                                SymbolRVASet &targets) {
+  MachineTypes machine = file->getMachineType();
+  bool isArm64 = isAnyArm64(machine);
+  if (machine != AMD64 && !isArm64)
+    return;
+  Symbol *localUnwind = file->symtab.find("_local_unwind");
+  bool warned = false;
+  for (Chunk *c : file->getChunks()) {
+    auto *sc = dyn_cast<SectionChunk>(c);
+    if (!sc || !sc->live)
+      continue;
+    for (const coff_relocation &rel : sc->getRelocs()) {
+      if (localUnwind &&
+          file->getSymbol(rel.SymbolTableIndex) == localUnwind) {
+        Err(ctx) << "/guard:ehcont: " << file
+                 << " has no EH continuation metadata but references "
+                    "_local_unwind";
+        return;
+      }
+    }
+    if (sc->getSectionName() != ".pdata")
+      continue;
+    // The object carries no records, so its unwind data is read as link.exe
+    // reads it: through the unwind data field of each function table entry.
+    uint32_t entrySize = isArm64 ? 8 : 12;
+    ArrayRef<uint8_t> pdata = sc->getContents();
+    for (const coff_relocation &rel : sc->getRelocs()) {
+      if (rel.VirtualAddress % entrySize != entrySize - 4 ||
+          rel.VirtualAddress + 4 > pdata.size())
+        continue;
+      auto *unwind = dyn_cast_or_null<DefinedRegular>(
+          file->getSymbol(rel.SymbolTableIndex));
+      if (!unwind || !unwind->getChunk())
+        continue;
+      SectionChunk *xdata = unwind->getChunk();
+      std::optional<uint32_t> handlerOff = getUnwindHandlerOffset(
+          isArm64, xdata->getContents(),
+          unwind->getValue() + read32le(&pdata[rel.VirtualAddress]));
+      if (!handlerOff)
+        continue;
+      for (const coff_relocation &hrel : xdata->getRelocs()) {
+        if (hrel.VirtualAddress != *handlerOff)
+          continue;
+        Symbol *handler = file->getSymbol(hrel.SymbolTableIndex);
+        if (handler && handler->getName() == "__C_specific_handler" &&
+            xdata->isCOMDAT()) {
+          if (!warned)
+            Warn(ctx) << "/guard:ehcont: " << file
+                      << " has no EH continuation metadata; its SEH scope "
+                         "tables' __except blocks are listed instead";
+          warned = true;
+          addScopeTableTargets(file, xdata, *handlerOff, targets);
+          continue;
+        }
+        if (handler && handler->getName() != "__GSHandlerCheck") {
+          Err(ctx) << "/guard:ehcont: " << file
+                   << " has no EH continuation metadata but its unwind data "
+                      "names exception handler "
+                   << handler->getName();
+          return;
+        }
+      }
+    }
+  }
+}
+
+// Returns the EH continuation targets, which objects compiled with
+// /guard:ehcont list in .gehcont$y sections, and reports each object without
+// that metadata whose continuation targets would be missing or are found
+// otherwise.
+SymbolRVASet Writer::getEHContTargets() {
+  SymbolRVASet ehContTargets;
+  for (ObjFile *file : ctx.objFileInstances) {
+    if (file->hasGuardEHCont())
+      markSymbolsForRVATable(file, file->getGuardEHContChunks(), ehContTargets);
+    else
+      checkEHContMetadata(ctx, file, ehContTargets);
+  }
+  return ehContTargets;
+}
+
 // A guard pointer holds a stub until the loader replaces it with its validator,
 // which the loader does whenever it enforces the guard. The stub is reached
 // only through a call made through the pointer, which nothing checks, so a
@@ -2310,7 +2457,7 @@ DenseSet<std::pair<ObjFile *, Symbol *>> Writer::getGuardPointerStubs() {
 void Writer::createGuardCFTables() {
   Configuration *config = &ctx.config;
 
-  if (config->guardCF == GuardCFLevel::Off) {
+  if (!(config->guardCF & GuardCFLevel::CF)) {
     // MSVC marks the entire image as instrumented if any input object was built
     // with /guard:cf.
     uint32_t guardFlags = 0;
@@ -2319,6 +2466,12 @@ void Writer::createGuardCFTables() {
         guardFlags |= uint32_t(GuardFlags::CF_INSTRUMENTED);
         break;
       }
+    }
+    // The EH continuation table can be asked for without /guard:cf.
+    if (config->guardCF & GuardCFLevel::EHCont) {
+      maybeAddRVATable(getEHContTargets(), "__guard_eh_cont_table",
+                       "__guard_eh_cont_count");
+      guardFlags |= uint32_t(GuardFlags::EH_CONTINUATION_TABLE_PRESENT);
     }
     if (protectDelayIat())
       guardFlags |= uint32_t(GuardFlags::PROTECT_DELAYLOAD_IAT) |
@@ -2336,7 +2489,6 @@ void Writer::createGuardCFTables() {
   SymbolRVASet longJmpTargets;
   DenseSet<std::pair<ObjFile *, Symbol *>> guardPointerStubs =
       getGuardPointerStubs();
-  SymbolRVASet ehContTargets;
   for (ObjFile *file : ctx.objFileInstances) {
     // If the object was compiled with /guard:cf, the address taken symbols
     // are in .gfids$y sections, and the longjmp targets are in .gljmp$y
@@ -2355,10 +2507,6 @@ void Writer::createGuardCFTables() {
     } else {
       markSymbolsWithRelocations(file, addressTakenSyms, giatsRVASet);
     }
-    // If the object was compiled with /guard:ehcont, the ehcont targets are in
-    // .gehcont$y sections.
-    if (file->hasGuardEHCont())
-      markSymbolsForRVATable(file, file->getGuardEHContChunks(), ehContTargets);
   }
 
   // Mark the image entry as address-taken.
@@ -2427,7 +2575,7 @@ void Writer::createGuardCFTables() {
 
   // Add the ehcont target table unless the user told us not to.
   if (config->guardCF & GuardCFLevel::EHCont)
-    maybeAddRVATable(std::move(ehContTargets), "__guard_eh_cont_table",
+    maybeAddRVATable(getEHContTargets(), "__guard_eh_cont_table",
                      "__guard_eh_cont_count", hasFlag);
 
   // Set __guard_flags, which will be used in the load config to indicate that
@@ -3356,17 +3504,17 @@ void Writer::prepareLoadConfig(SymbolTable &symtab, T *loadConfig) {
     CHECK_ABSOLUTE(GuardAddressTakenIatEntryCount, "__guard_iat_count")
   }
 
-  if (!(ctx.config.guardCF & GuardCFLevel::LongJmp))
-    return;
-  RETURN_IF_NOT_CONTAINS(GuardLongJumpTargetCount)
-  CHECK_VA(GuardLongJumpTargetTable, "__guard_longjmp_table")
-  CHECK_ABSOLUTE(GuardLongJumpTargetCount, "__guard_longjmp_count")
+  if (ctx.config.guardCF & GuardCFLevel::LongJmp) {
+    RETURN_IF_NOT_CONTAINS(GuardLongJumpTargetCount)
+    CHECK_VA(GuardLongJumpTargetTable, "__guard_longjmp_table")
+    CHECK_ABSOLUTE(GuardLongJumpTargetCount, "__guard_longjmp_count")
+  }
 
-  if (!(ctx.config.guardCF & GuardCFLevel::EHCont))
-    return;
-  RETURN_IF_NOT_CONTAINS(GuardEHContinuationCount)
-  CHECK_VA(GuardEHContinuationTable, "__guard_eh_cont_table")
-  CHECK_ABSOLUTE(GuardEHContinuationCount, "__guard_eh_cont_count")
+  if (ctx.config.guardCF & GuardCFLevel::EHCont) {
+    RETURN_IF_NOT_CONTAINS(GuardEHContinuationCount)
+    CHECK_VA(GuardEHContinuationTable, "__guard_eh_cont_table")
+    CHECK_ABSOLUTE(GuardEHContinuationCount, "__guard_eh_cont_count")
+  }
 
 #undef RETURN_IF_NOT_CONTAINS
 #undef IF_CONTAINS

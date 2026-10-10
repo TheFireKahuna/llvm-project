@@ -633,7 +633,7 @@ void SymbolTable::initializeLoadConfig() {
                    "ARM64X target";
       return;
     }
-    if (ctx.config.guardCF != GuardCFLevel::Off)
+    if (ctx.config.guardCF & GuardCFLevel::CF)
       Warn(ctx)
           << "Control Flow Guard is enabled but '_load_config_used' is missing";
     if (ctx.config.dependentLoadFlags)

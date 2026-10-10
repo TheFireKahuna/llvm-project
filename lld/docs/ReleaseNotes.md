@@ -57,6 +57,22 @@ from the [LLVM releases web site](https://llvm.org/releases/).
   code folding leaves a suppressed function out. Any other argument is ignored
   with a warning.
 
+* With `/guard:ehcont`, an object compiled without EH continuation metadata is
+  an error when its unwind data names a language handler other than
+  `__GSHandlerCheck`, or when it references `_local_unwind`, as with link.exe's
+  LNK2046 and LNK2047: its continuation targets would be missing from the
+  table. SEH in a COMDAT is a warning instead, as with LNK4291, and the table
+  lists the `__except` blocks of its scope tables. `/guard:nocf` turns off Control Flow Guard, the longjmp table and
+  export suppression that earlier arguments turned on, so that
+  `/guard:ehcont,nocf` asks for the EH continuation table alone, which a
+  shadow stack checks continuations against whether or not calls are checked.
+  The EH continuation fields of `_load_config_used` are checked whenever the
+  table is asked for, not only with the longjmp table.
+
+* With `/guard:cf`, an object without guard metadata has every import address
+  table entry it references listed in the address-taken IAT table, since a
+  call through an entry cannot be told from a read of it.
+
 * With `/guard:cf`, the delay-load import address table starts a section of
   its own, `.didat`, as link.exe lays it out, and the image is marked
   `IMAGE_GUARD_PROTECT_DELAYLOAD_IAT` and
@@ -74,6 +90,10 @@ from the [LLVM releases web site](https://llvm.org/releases/).
   table only while it is writable (kind 16, `.linkprotecteddelayiat` in
   assembly) gets the same protection without `/guard:cf`, in a MinGW image
   too.
+
+* The error for a DLL that would export more than 65535 symbols names the
+  files that define the most exported symbols.
+
 * `-start-stop-symbols` defines a referenced `__start_X` and `__stop_X`, where
   `X` is a C identifier, around the input sections named `X` or `X$*`, as ELF
   linkers do, and `-boundary-symbols` defines a referenced `_etext`, `_edata`
