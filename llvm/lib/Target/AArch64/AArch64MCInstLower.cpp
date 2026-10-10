@@ -140,6 +140,11 @@ MCSymbol *AArch64MCInstLower::GetGlobalValueSymbol(const GlobalValue *GV,
 
 MCSymbol *
 AArch64MCInstLower::GetExternalSymbolSymbol(const MachineOperand &MO) const {
+  // COFF has no GOT: a runtime library call that goes through the GOT under
+  // -fno-plt goes through the function's import pointer.
+  if (Printer.TM.getTargetTriple().isOSBinFormatCOFF() &&
+      (MO.getTargetFlags() & AArch64II::MO_GOT))
+    return Ctx.getOrCreateSymbol(Twine("__imp_") + MO.getSymbolName());
   return Printer.GetExternalSymbolSymbol(MO.getSymbolName());
 }
 

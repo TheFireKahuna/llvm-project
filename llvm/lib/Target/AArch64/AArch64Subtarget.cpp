@@ -503,6 +503,17 @@ unsigned AArch64Subtarget::classifyGlobalFunctionReference(
       }
     }
 
+    // Under -fno-plt a call on COFF goes through the import table as it goes
+    // through the GOT on ELF. The front end decides that for every
+    // declaration it creates, marking it dllimport or dso_local. A
+    // declaration created by an optimization or a lowering carries neither,
+    // and would otherwise reach a linker thunk. Where the function is in the
+    // image, the linker gives the reference a local pointer.
+    if (F && GV->getParent()->getRtLibUseGOT() && !F->isDSOLocal() &&
+        !F->isIntrinsic() && F->isDeclarationForLinker() &&
+        !F->hasExternalWeakLinkage())
+      return AArch64II::MO_GOT | AArch64II::MO_DLLIMPORT;
+
     // Use ClassifyGlobalReference for setting MO_DLLIMPORT/MO_COFFSTUB.
     return ClassifyGlobalReference(GV, TM);
   }
