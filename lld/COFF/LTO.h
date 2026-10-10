@@ -57,6 +57,7 @@ private:
   std::vector<std::string> file_names;
   std::unique_ptr<llvm::raw_fd_ostream> indexFile;
   llvm::DenseSet<StringRef> thinIndices;
+  std::vector<Symbol *> prevailingSyms;
   // The symbols the image exports, found when the first file is added.
   std::optional<llvm::DenseSet<Symbol *>> exportedSyms;
 

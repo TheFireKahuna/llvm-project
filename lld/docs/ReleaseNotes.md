@@ -109,6 +109,9 @@ from the [LLVM releases web site](https://llvm.org/releases/).
   do. A vtable the image exports stays public.
 
 * A reference that binds to a definition in the image, or a dllimport
+  reference to one, is final for LTO, which emits it as a direct reference,
+  since a PE image has no symbol preemption.
+
 * `-start-stop-symbols` defines a referenced `__start_X` and `__stop_X`, where
   `X` is a C identifier, around the input sections named `X` or `X$*`, as ELF
   linkers do, and `-boundary-symbols` defines a referenced `_etext`, `_edata`
