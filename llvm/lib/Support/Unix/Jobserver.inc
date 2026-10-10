@@ -82,19 +82,7 @@ JobserverClientImpl::JobserverClientImpl(const JobserverConfig &Config) {
   }
 
   IsInitialized = true;
-  // Determine the total number of jobs by acquiring all available slots and
-  // then immediately releasing them.
-  SmallVector<JobSlot, 8> Slots;
-  while (true) {
-    auto S = tryAcquire();
-    if (!S.isValid())
-      break;
-    Slots.push_back(std::move(S));
-  }
-  NumJobs = Slots.size();
-  assert(NumJobs >= 1 && "Invalid number of jobs");
-  for (auto &S : Slots)
-    release(std::move(S));
+  initNumJobs();
 }
 
 /// The destructor closes any open file descriptors.

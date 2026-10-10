@@ -15,6 +15,7 @@
 #include "llvm/Config/llvm-config.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FileUtilities.h"
+#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/Parallel.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/ThreadPool.h"
@@ -521,6 +522,69 @@ TEST_F(JobserverStrategyTest, ParallelSortIsLimited_SubprocessChild) {
 }
 
 #endif // LLVM_ENABLE_THREADS
+
+#elif defined(_WIN32)
+
+// RAII helper to create and close a uniquely named semaphore.
+class ScopedSemaphore {
+  HANDLE Handle = nullptr;
+  std::string Name;
+
+public:
+  ScopedSemaphore(long InitialCount, long MaximumCount) {
+    Name = formatv("llvm_jobserver_test_{0}_{1:x}", ::GetCurrentProcessId(),
+                   reinterpret_cast<uintptr_t>(this))
+               .str();
+    Handle =
+        ::CreateSemaphoreA(nullptr, InitialCount, MaximumCount, Name.c_str());
+  }
+
+  ~ScopedSemaphore() {
+    if (Handle != nullptr)
+      ::CloseHandle(Handle);
+  }
+
+  bool isValid() const { return Handle != nullptr; }
+  StringRef getName() const { return Name; }
+};
+
+TEST_F(JobserverClientTest, Semaphore) {
+  ScopedSemaphore Sema(/*InitialCount=*/2, /*MaximumCount=*/2);
+  ASSERT_TRUE(Sema.isValid());
+
+  std::string Makeflags =
+      formatv("-j3 --jobserver-auth={0}", Sema.getName()).str();
+  ScopedEnvironment Env("MAKEFLAGS", Makeflags.c_str());
+
+  JobserverClient *Client = JobserverClient::getInstance();
+  ASSERT_NE(Client, nullptr);
+  // The implicit slot plus the two semaphore tokens.
+  EXPECT_EQ(Client->getNumJobs(), 3u);
+
+  JobSlot S1 = Client->tryAcquire();
+  ASSERT_TRUE(S1.isValid());
+  EXPECT_TRUE(S1.isImplicit());
+
+  JobSlot S2 = Client->tryAcquire();
+  ASSERT_TRUE(S2.isValid());
+  EXPECT_TRUE(S2.isExplicit());
+
+  JobSlot S3 = Client->tryAcquire();
+  ASSERT_TRUE(S3.isValid());
+  EXPECT_TRUE(S3.isExplicit());
+
+  JobSlot S4 = Client->tryAcquire();
+  EXPECT_FALSE(S4.isValid());
+
+  Client->release(std::move(S2));
+  S4 = Client->tryAcquire();
+  ASSERT_TRUE(S4.isValid());
+  EXPECT_TRUE(S4.isExplicit());
+
+  Client->release(std::move(S4));
+  Client->release(std::move(S3));
+  Client->release(std::move(S1));
+}
 
 #endif // defined(LLVM_ON_UNIX)
 

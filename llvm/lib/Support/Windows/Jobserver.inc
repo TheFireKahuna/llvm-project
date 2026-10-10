@@ -19,12 +19,15 @@ namespace llvm {
 /// The constructor for the Windows jobserver client. It attempts to open a
 /// handle to an existing named semaphore, the name of which is provided by
 /// GNU make in the --jobserver-auth argument. If the semaphore is opened
-/// successfully, the client is marked as initialized.
+/// successfully, the client is marked as initialized and the number of
+/// available jobs is determined by draining the semaphore once.
 JobserverClientImpl::JobserverClientImpl(const JobserverConfig &Config) {
   Semaphore = (void *)::OpenSemaphoreA(SEMAPHORE_MODIFY_STATE | SYNCHRONIZE,
                                        FALSE, Config.Path.c_str());
-  if (Semaphore != nullptr)
-    IsInitialized = true;
+  if (Semaphore == nullptr)
+    return;
+  IsInitialized = true;
+  initNumJobs();
 }
 
 /// The destructor closes the handle to the semaphore, releasing the resource.
