@@ -337,6 +337,7 @@ void MCWinCOFFStreamer::emitCOFFSecOffset(MCSymbol const *Symbol) {
 void MCWinCOFFStreamer::emitCOFFLinkFact(uint64_t Kind) {
   getWriter().addLinkFact(Kind);
 }
+
 void MCWinCOFFStreamer::emitCommonSymbol(MCSymbol *S, uint64_t Size,
                                          Align ByteAlignment) {
   auto *Symbol = static_cast<MCSymbolCOFF *>(S);

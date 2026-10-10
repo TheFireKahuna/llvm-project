@@ -57,6 +57,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/IR/AttributeMask.h"
 #include "llvm/IR/CallingConv.h"
@@ -614,6 +615,8 @@ CodeGenModule::CodeGenModule(ASTContext &C,
     createCUDARuntime();
   if (LangOpts.HLSL)
     createHLSLRuntime();
+  if (LangOpts.FunctionTypePrefix)
+    KCFI.reset(new CodeGenKCFI(*this));
 
   // Enable TBAA unless it's suppressed. TSan and TySan need TBAA even at O0.
   if (LangOpts.Sanitize.hasOneOf(SanitizerKind::Thread | SanitizerKind::Type) ||
@@ -1252,7 +1255,7 @@ void CodeGenModule::Release() {
     CodeGenFunction(*this).EmitCfiCheckFail();
     CodeGenFunction(*this).EmitCfiCheckStub();
   }
-  if (LangOpts.Sanitize.has(SanitizerKind::KCFI))
+  if (hasFunctionTypePrefix())
     finalizeKCFITypes();
   emitAtAvailableLinkGuard();
   if (Context.getTargetInfo().getTriple().isWasm())
@@ -1618,6 +1621,10 @@ void CodeGenModule::Release() {
             getLLVMContext(),
             llvm::stringifyKCFIHashAlgorithm(CodeGenOpts.SanitizeKcfiHash)));
   }
+
+  if (LangOpts.FunctionTypePrefix)
+    getModule().addModuleFlag(llvm::Module::Override, "function-type-prefix",
+                              getTypePrefixMarker());
 
   if (CodeGenOpts.CFProtectionReturn &&
       Target.checkCFProtectionReturnSupported(getDiags())) {
@@ -2918,9 +2925,15 @@ llvm::ConstantInt *CodeGenModule::CreateKCFITypeId(QualType T, StringRef Salt) {
   if (getCodeGenOpts().SanitizeCfiICallGeneralizePointers)
     Out << ".generalized";
 
-  return llvm::ConstantInt::get(
-      Int32Ty, llvm::getKCFITypeID(OutName, getCodeGenOpts().SanitizeKcfiHash));
+  uint32_t TypeId =
+      llvm::getKCFITypeID(OutName, getCodeGenOpts().SanitizeKcfiHash);
+  // A linker overwrites the type of a function that no pointer may reach with
+  // the sealed type, which a call must therefore never expect.
+  if (LangOpts.FunctionTypePrefix && TypeId == llvm::COFF::SealedTypeId)
+    ++TypeId;
+  return llvm::ConstantInt::get(Int32Ty, TypeId);
 }
+
 std::optional<uint8_t>
 CodeGenModule::getCFITrapKind(SanitizerKind::SanitizerOrdinal Ordinal) const {
   // On Windows Itanium and NT-POSIX the backend lowers a kind of 64 or more to
@@ -3736,7 +3749,23 @@ void CodeGenModule::createCalleeTypeMetadataForIcall(const QualType &QT,
   CB->setMetadata(llvm::LLVMContext::MD_callee_type, MDN);
 }
 
-void CodeGenModule::setKCFIType(const FunctionDecl *FD, llvm::Function *F) {
+uint32_t CodeGenModule::getTypePrefixMarker() const {
+  // The marker tells prefixes of this scheme from any other, so it folds in
+  // every option that changes the type identifiers.
+  std::string Variant = "kcfi-marker.1";
+  if (CodeGenOpts.SanitizeCfiICallNormalizeIntegers)
+    Variant += ".normalized";
+  if (CodeGenOpts.SanitizeCfiICallGeneralizePointers)
+    Variant += ".generalized";
+  Variant += ".";
+  Variant += llvm::stringifyKCFIHashAlgorithm(CodeGenOpts.SanitizeKcfiHash);
+  return llvm::getKCFITypeID(Variant, llvm::KCFIHashAlgorithm::xxHash64);
+}
+
+void CodeGenModule::setKCFIType(GlobalDecl GD, llvm::Function *F) {
+  if (KCFI && KCFI->setVTableSlotType(GD, F))
+    return;
+  const auto *FD = cast<FunctionDecl>(GD.getDecl());
   llvm::LLVMContext &Ctx = F->getContext();
   llvm::MDBuilder MDB(Ctx);
   llvm::StringRef Salt;
@@ -3888,8 +3917,8 @@ void CodeGenModule::SetFunctionAttributes(GlobalDecl GD, llvm::Function *F,
   if (CodeGenOpts.CallGraphSection)
     createIndirectFunctionTypeMD(FD, F);
 
-  if (LangOpts.Sanitize.has(SanitizerKind::KCFI))
-    setKCFIType(FD, F);
+  if (hasFunctionTypePrefix())
+    setKCFIType(GD, F);
 
   if (getLangOpts().OpenMP && FD->hasAttr<OMPDeclareSimdDeclAttr>())
     getOpenMPRuntime().emitDeclareSimdFunction(FD, F);
@@ -6020,7 +6049,8 @@ static void setWindowsItaniumDLLImport(CodeGenModule &CGM, bool Local,
   if (!Local && CGM.getTriple().isWindowsItaniumEnvironment() &&
       !CGM.getCodeGenOpts().LTOVisibilityPublicStd &&
       Name != CGM.getCXXABI().GetPureVirtualCallName() &&
-      Name != "__cxa_atexit" && Name != "atexit") {
+      Name != "__cxa_atexit" && Name != "__llvm_kcfi_cxa_atexit" &&
+      Name != "atexit") {
     const FunctionDecl *FD = GetRuntimeFunctionDecl(CGM.getContext(), Name);
     if (!FD || FD->hasAttr<DLLImportAttr>()) {
       F->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);

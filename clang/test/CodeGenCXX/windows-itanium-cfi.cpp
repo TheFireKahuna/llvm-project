@@ -1,6 +1,12 @@
 // RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -emit-llvm -o - %s \
 // RUN:     -flto -flto-unit -fsanitize=kcfi,cfi-vcall,cfi-nvcall,cfi-derived-cast,cfi-icall,cfi-mfcall \
 // RUN:     -fsanitize-trap=cfi-vcall,cfi-nvcall,cfi-derived-cast,cfi-icall,cfi-mfcall \
+// RUN:     -fsanitize-cfi-icall-generalize-pointers \
+// RUN:   | FileCheck %s
+// RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -emit-llvm -o - %s \
+// RUN:     -flto -flto-unit -fsanitize=kcfi,cfi-vcall,cfi-nvcall,cfi-derived-cast,cfi-icall,cfi-mfcall \
+// RUN:     -fsanitize-trap=cfi-vcall,cfi-nvcall,cfi-derived-cast,cfi-icall,cfi-mfcall \
+// RUN:     -fsanitize-cfi-icall-generalize-pointers \
 // RUN:   | FileCheck %s
 // RUN: %clang_cc1 -triple x86_64-unknown-linux-gnu -emit-llvm -o - %s \
 // RUN:     -flto -flto-unit -fsanitize=cfi-vcall,cfi-nvcall -fsanitize-trap=cfi-vcall,cfi-nvcall \

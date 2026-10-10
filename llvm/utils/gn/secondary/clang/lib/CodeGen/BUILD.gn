@@ -75,6 +75,7 @@ static_library("CodeGen") {
     "CGGPUBuiltin.cpp",
     "CGHLSLBuiltins.cpp",
     "CGHLSLRuntime.cpp",
+    "CGKCFI.cpp",
     "CGLoopInfo.cpp",
     "CGNonTrivialStruct.cpp",
     "CGObjC.cpp",

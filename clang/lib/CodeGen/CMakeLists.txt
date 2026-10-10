@@ -85,6 +85,7 @@ add_clang_library(clangCodeGen
   CGGPUBuiltin.cpp
   CGHLSLRuntime.cpp
   CGHLSLBuiltins.cpp
+  CGKCFI.cpp
   CGLoopInfo.cpp
   CGNonTrivialStruct.cpp
   CGObjC.cpp

@@ -178,6 +178,44 @@
 // AUTO-INIT-LIMITS-DAG: "-ftrivial-auto-var-init-stop-after=1"
 // AUTO-INIT-LIMITS-DAG: "-ftrivial-auto-var-init-max-size=1024"
 
+// A hot patch would overwrite the prefix, with or without the checks, and is
+// reported once.
+// RUN: not %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fno-sanitize=kcfi -fms-hotpatch 2>&1 \
+// RUN:   | FileCheck --check-prefix=HOTPATCH %s --implicit-check-not=error:
+// RUN: not %clang -### --target=aarch64-unknown-windows-itanium -c %s \
+// RUN:     -fno-sanitize=kcfi -fms-hotpatch 2>&1 \
+// RUN:   | FileCheck --check-prefix=HOTPATCH-A64 %s --implicit-check-not=error:
+// RUN: not %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fsanitize=kcfi -fms-hotpatch 2>&1 \
+// RUN:   | FileCheck --check-prefix=HOTPATCH-KCFI %s --implicit-check-not=error:
+// HOTPATCH: error: unsupported option '-fms-hotpatch' for target 'x86_64-unknown-windows-itanium'
+// HOTPATCH-A64: error: unsupported option '-fms-hotpatch' for target 'aarch64-unknown-windows-itanium'
+// HOTPATCH-KCFI: error: invalid argument '-fsanitize=kcfi' not allowed with '-fms-hotpatch'
+
+// The target fixes the definition of every function's type, with or without
+// the checks, so an option that would change it is an error. Pointer
+// generalisation and the default hash are the target's own.
+// RUN: not %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fsanitize-kcfi-hash=FNV-1a 2>&1 \
+// RUN:   | FileCheck --check-prefix=KCFI-HASH %s
+// RUN: not %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fsanitize-cfi-icall-experimental-normalize-integers 2>&1 \
+// RUN:   | FileCheck --check-prefix=KCFI-NORMALIZE %s
+// RUN: not %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fno-sanitize=kcfi -fsanitize-kcfi-arity 2>&1 \
+// RUN:   | FileCheck --check-prefix=KCFI-ARITY %s
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fsanitize-kcfi-hash=xxHash64 \
+// RUN:     -fsanitize-cfi-icall-generalize-pointers 2>&1 \
+// RUN:   | FileCheck --check-prefix=KCFI-OPTS %s \
+// RUN:       --implicit-check-not=error: --implicit-check-not=warning:
+// KCFI-HASH: error: unsupported option '-fsanitize-kcfi-hash=FNV-1a' for target 'x86_64-unknown-windows-itanium'
+// KCFI-NORMALIZE: error: unsupported option '-fsanitize-cfi-icall-experimental-normalize-integers' for target 'x86_64-unknown-windows-itanium'
+// KCFI-ARITY: error: unsupported option '-fsanitize-kcfi-arity' for target 'x86_64-unknown-windows-itanium'
+// KCFI-OPTS: "-cc1"
+// KCFI-OPTS-SAME: "-fsanitize-cfi-icall-generalize-pointers"
+
 // The resource headers, the wrappers over the Universal CRT and Windows SDK
 // headers, then those headers, found as the MSVC toolchain finds them.
 // RUN: rm -rf %t && split-file %s %t

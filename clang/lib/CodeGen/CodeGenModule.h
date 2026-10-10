@@ -13,6 +13,7 @@
 #ifndef LLVM_CLANG_LIB_CODEGEN_CODEGENMODULE_H
 #define LLVM_CLANG_LIB_CODEGEN_CODEGENMODULE_H
 
+#include "CGKCFI.h"
 #include "CGVTables.h"
 #include "CodeGenTypeCache.h"
 #include "CodeGenTypes.h"
@@ -395,6 +396,7 @@ private:
   std::unique_ptr<CGOpenMPRuntime> OpenMPRuntime;
   std::unique_ptr<CGCUDARuntime> CUDARuntime;
   std::unique_ptr<CGHLSLRuntime> HLSLRuntime;
+  std::unique_ptr<CodeGenKCFI> KCFI;
   std::unique_ptr<CGDebugInfo> DebugInfo;
   std::unique_ptr<ObjCEntrypoints> ObjCData;
   llvm::MDNode *NoObjCARCExceptionsMetadata = nullptr;
@@ -1757,6 +1759,27 @@ public:
   std::optional<uint8_t>
   getCFITrapKind(SanitizerKind::SanitizerOrdinal Ordinal) const;
 
+  /// Whether functions carry a KCFI type prefix: when KCFI checks calls, or
+  /// when every function carries one with a marker, checked or not.
+  bool hasFunctionTypePrefix() const {
+    return LangOpts.Sanitize.has(SanitizerKind::KCFI) ||
+           LangOpts.FunctionTypePrefix;
+  }
+
+  /// The KCFI types of calls, vtable slots and destructors, and the link
+  /// facts, when every function carries a type prefix with a marker.
+  CodeGenKCFI *getKCFI() { return KCFI.get(); }
+
+  /// Whether a virtual call checks a KCFI type salted by the class that
+  /// introduces the vtable slot, as CodeGenKCFI::hasVTableSlotTypes says.
+  bool hasKCFIVTableSlotTypes() const {
+    return KCFI && KCFI->hasVTableSlotTypes();
+  }
+
+  /// Returns the KCFI marker, which tells prefixes of the KCFI marker scheme
+  /// with the type identifiers of this module's options from any other.
+  uint32_t getTypePrefixMarker() const;
+
   /// Create a metadata identifier for the given function type.
   llvm::Metadata *CreateMetadataIdentifierForFnType(QualType T);
 
@@ -1802,7 +1825,7 @@ public:
   void createCalleeTypeMetadataForIcall(const QualType &QT, llvm::CallBase *CB);
 
   /// Set type metadata to the given function.
-  void setKCFIType(const FunctionDecl *FD, llvm::Function *F);
+  void setKCFIType(GlobalDecl GD, llvm::Function *F);
 
   /// Emit KCFI type identifier constants and remove unused identifiers.
   void finalizeKCFITypes();

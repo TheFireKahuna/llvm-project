@@ -126,7 +126,7 @@ private:
 
   // KCFI specific lowering for X86.
   uint32_t MaskKCFIType(uint32_t Value);
-  void EmitKCFITypePadding(const MachineFunction &MF, bool HasType = true);
+  void EmitKCFITypePadding(const MachineFunction &MF, unsigned TypeBytes);
   void LowerKCFI_CHECK(const MachineInstr &MI);
 
   // Address sanitizer specific lowering for X86.

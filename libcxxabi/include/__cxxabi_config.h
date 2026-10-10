@@ -82,6 +82,15 @@
 #define _LIBCXXABI_DTOR_FUNC
 #endif
 
+// Where functions carry type prefixes, a destructor that the runtime calls
+// carries the type void(void *) salted "__cxa_dtor", and the runtime calls it
+// through that type.
+#if defined(_LIBCXXABI_COMPILER_CLANG) && __has_feature(function_type_prefix)
+#  define _LIBCXXABI_KCFI_DTOR __attribute__((__cfi_salt__("__cxa_dtor")))
+#else
+#  define _LIBCXXABI_KCFI_DTOR
+#endif
+
 #if __has_include(<ptrauth.h>)
 #  include <ptrauth.h>
 #endif

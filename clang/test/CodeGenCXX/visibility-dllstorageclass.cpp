@@ -3,14 +3,16 @@
 //// Test that -fvisibility-from-dllstorageclass maps DLL storage class to visibility
 //// and that it overrides the effect of visibility options and annotations.
 
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fdeclspec \
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium \
+// RUN:     -fno-function-type-prefix -fdeclspec \
 // RUN:     -fvisibility=hidden \
 // RUN:     -fapply-global-visibility-to-externs \
 // RUN:     -fvisibility-from-dllstorageclass \
 // RUN:     -x c++ %s -emit-llvm -o - | \
 // RUN:   FileCheck %s --check-prefixes=DEFAULTS
 
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fdeclspec \
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium \
+// RUN:     -fno-function-type-prefix -fdeclspec \
 // RUN:     -fvisibility=hidden \
 // RUN:     -fapply-global-visibility-to-externs \
 // RUN:     -fvisibility-from-dllstorageclass \
@@ -21,7 +23,8 @@
 // RUN:     -x c++  %s -emit-llvm -o - | \
 // RUN:   FileCheck %s --check-prefixes=EXPLICIT
 
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fdeclspec \
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium \
+// RUN:     -fno-function-type-prefix -fdeclspec \
 // RUN:     -fvisibility=hidden \
 // RUN:     -fapply-global-visibility-to-externs \
 // RUN:     -fvisibility-from-dllstorageclass \
@@ -32,7 +35,8 @@
 // RUN:     -x c++  %s -emit-llvm -o - | \
 // RUN:   FileCheck %s --check-prefixes=ALL_DEFAULT
 
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fdeclspec \
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium \
+// RUN:     -fno-function-type-prefix -fdeclspec \
 // RUN:     -fvisibility=hidden \
 // RUN:     -fapply-global-visibility-to-externs \
 // RUN:     -fvisibility-from-dllstorageclass \

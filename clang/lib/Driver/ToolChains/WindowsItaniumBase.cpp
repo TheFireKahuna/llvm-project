@@ -9,6 +9,7 @@
 #include "WindowsItaniumBase.h"
 #include "clang/Driver/Compilation.h"
 #include "clang/Driver/Driver.h"
+#include "clang/Driver/SanitizerArgs.h"
 #include "clang/Options/Options.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Support/Path.h"
@@ -277,6 +278,29 @@ void WindowsItaniumBaseToolChain::addClangTargetOptions(
   // Only the cast gives a GetProcAddress result its type, so a cast that
   // contradicts the system headers' declaration of the name is diagnosed.
   CC1Args.push_back("-Wget-proc-address-type");
+
+  // -cc1 gives every function a KCFI prefix with the marker for these
+  // triples, whether or not KCFI checks calls. Its type ignores pointee
+  // types, so that units built with -fno-sanitize=kcfi can be called from
+  // units that check. An option that types functions otherwise, or encodes
+  // their prefix otherwise, would change every function's ABI. A hot patch
+  // writes a jump over the bytes before a function's entry, which hold the
+  // prefix; SanitizerArgs reports that when KCFI checks calls.
+  DriverArgs.ClaimAllArgs(options::OPT_fsanitize_cfi_icall_generalize_pointers);
+  CC1Args.push_back("-fsanitize-cfi-icall-generalize-pointers");
+  for (auto Opt : {options::OPT_fsanitize_cfi_icall_normalize_integers,
+                   options::OPT_fsanitize_kcfi_arity})
+    if (const Arg *A = DriverArgs.getLastArg(Opt))
+      getDriver().Diag(diag::err_drv_unsupported_opt_for_target)
+          << A->getAsString(DriverArgs) << getTriple().str();
+  if (const Arg *A = DriverArgs.getLastArg(options::OPT_fms_hotpatch);
+      A && !getSanitizerArgs(DriverArgs).hasKCFI())
+    getDriver().Diag(diag::err_drv_unsupported_opt_for_target)
+        << A->getAsString(DriverArgs) << getTriple().str();
+  if (const Arg *A = DriverArgs.getLastArg(options::OPT_fsanitize_kcfi_hash_EQ);
+      A && StringRef(A->getValue()) != "xxHash64")
+    getDriver().Diag(diag::err_drv_unsupported_opt_for_target)
+        << A->getAsString(DriverArgs) << getTriple().str();
 
   StringRef GuardArgs = getGuardMode(DriverArgs);
   if (GuardArgs == "cf") {

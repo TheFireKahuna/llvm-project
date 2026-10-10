@@ -3001,6 +3001,16 @@ def fsanitize_kcfi_arity : Flag<["-"], "fsanitize-kcfi-arity">,
                            Group<f_clang_Group>,
                            HelpText<"Embed function arity information into the KCFI patchable function prefix">,
                            MarshallingInfoFlag<CodeGenOpts<"SanitizeKcfiArity">>;
+// On Windows Itanium and NT-POSIX the prefix is part of the function ABI,
+// since checks in other images read it whether or not this unit checks.
+defm function_type_prefix : BoolFOption<"function-type-prefix",
+  LangOpts<"FunctionTypePrefix">,
+  Default<"T.isWindowsItaniumOrNTPOSIXEnvironment() && T.isArch64Bit()">,
+  PosFlag<SetTrue, [], [CC1Option], "Give">,
+  NegFlag<SetFalse, [], [CC1Option], "Do not give">,
+  BothFlags<[], [CC1Option],
+            " every function a marked type prefix that indirect-call checks "
+            "in any image can read">>;
 def fsanitize_kcfi_hash_EQ
     : Joined<["-"], "fsanitize-kcfi-hash=">,
       HelpText<"Select hash algorithm for KCFI type IDs (xxHash64, FNV-1a)">,

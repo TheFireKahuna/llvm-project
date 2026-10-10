@@ -1,6 +1,6 @@
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -emit-llvm -o - %s | FileCheck %s
-// RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -emit-llvm -o - %s | FileCheck %s
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fno-use-cxa-atexit -emit-llvm -o - %s | FileCheck %s --check-prefix=ATEXIT
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fno-function-type-prefix -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -fno-function-type-prefix -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fno-function-type-prefix -fno-use-cxa-atexit -emit-llvm -o - %s | FileCheck %s --check-prefix=ATEXIT
 
 // The functions that register a destructor at exit are defined in every image
 // by its startup code, so they are not imported, unlike the C++ runtime's

@@ -1032,6 +1032,9 @@ void MCAsmStreamer::emitCOFFSecOffset(MCSymbol const *Symbol) {
 }
 void MCAsmStreamer::emitCOFFLinkFact(uint64_t Kind) {
   switch (Kind) {
+  case COFF::LinkRecordTypePrefixes:
+    OS << "\t.linktypeprefixes";
+    break;
   case COFF::LinkRecordProtectedDelayIAT:
     OS << "\t.linkprotecteddelayiat";
     break;

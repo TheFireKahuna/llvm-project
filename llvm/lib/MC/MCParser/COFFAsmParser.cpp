@@ -72,6 +72,8 @@ class COFFAsmParser : public MCAsmParserExtension {
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSecNum>(".secnum");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSecOffset>(".secoffset");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFact>(
+        ".linktypeprefixes");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFact>(
         ".linkprotecteddelayiat");
 
     // Win64 EH directives.
@@ -573,9 +575,11 @@ bool COFFAsmParser::parseDirectiveSecIdx(StringRef, SMLoc) {
 }
 
 /// parseDirectiveLinkFact
+///  ::= .linktypeprefixes
 ///  ::= .linkprotecteddelayiat
 bool COFFAsmParser::parseDirectiveLinkFact(StringRef Directive, SMLoc) {
   uint64_t Kind = StringSwitch<uint64_t>(Directive)
+                      .Case(".linktypeprefixes", COFF::LinkRecordTypePrefixes)
                       .Case(".linkprotecteddelayiat",
                             COFF::LinkRecordProtectedDelayIAT);
   if (parseEOL())

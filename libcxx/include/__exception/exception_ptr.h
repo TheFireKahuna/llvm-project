@@ -126,6 +126,13 @@ _LIBCPP_HIDE_FROM_ABI exception_ptr __make_exception_ptr_explicit(_Ep& __e) _NOE
     std::__destroy_at(static_cast<_Ep2*>(__p));
     return __p;
   };
+#      elif __has_feature(function_type_prefix)
+  // Where functions carry type prefixes, the runtime calls the cleanup as it
+  // calls a destructor, through void(void *) salted "__cxa_dtor".
+  auto __salted_cleanup = [](void* __p) __attribute__((__cfi_salt__("__cxa_dtor"))) {
+    std::__destroy_at(static_cast<_Ep2*>(__p));
+  };
+  auto __cleanup = reinterpret_cast<void (*)(void*)>(+__salted_cleanup);
 #      else
   auto __cleanup = [](void* __p) { std::__destroy_at(static_cast<_Ep2*>(__p)); };
 #      endif
