@@ -14,6 +14,10 @@
 #include "llvm/Support/Process.h"
 #include "gtest/gtest.h"
 
+#ifdef _WIN32
+#include "llvm/Support/Windows/WindowsSupport.h"
+#endif
+
 using namespace llvm;
 using namespace llvm::sys;
 
@@ -115,6 +119,31 @@ TEST(rename, FileOpenedForReadingCanBeReplaced) {
   ASSERT_NO_ERROR(fs::remove(TestDirectory.str()));
 }
 
+#ifdef _WIN32
+#ifndef FILE_SUPPORTS_POSIX_UNLINK_RENAME
+#define FILE_SUPPORTS_POSIX_UNLINK_RENAME 0x00000400
+#endif
+
+// Whether the volume holding Path supports POSIX-semantics rename and delete.
+// Where it does not (FAT, exFAT, some SMB servers), Windows falls back to the
+// classic operations.
+static bool hasPosixUnlinkRename(const Twine &Path) {
+  SmallVector<wchar_t, 128> PathW;
+  if (sys::windows::widenPath(Path, PathW))
+    return false;
+  HANDLE H = ::CreateFileW(
+      PathW.data(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+  if (H == INVALID_HANDLE_VALUE)
+    return false;
+  DWORD Flags = 0;
+  bool Ok = ::GetVolumeInformationByHandleW(H, nullptr, 0, nullptr, nullptr,
+                                            &Flags, nullptr, 0);
+  ::CloseHandle(H);
+  return Ok && (Flags & FILE_SUPPORTS_POSIX_UNLINK_RENAME);
+}
+#endif
+
 TEST(rename, ExistingTemp) {
   // Test that existing .tmpN files don't get deleted by the Windows
   // sys::fs::rename implementation.
@@ -140,9 +169,9 @@ TEST(rename, ExistingTemp) {
 
   {
     // Use mapped_file_region to make sure that the destination file is mmap'ed.
-    // This will cause SetInformationByHandle to fail when renaming to the
-    // destination, and we will follow the code path that tries to give target
-    // a temporary name.
+    // On a Windows volume without POSIX-semantics rename, this will cause
+    // SetInformationByHandle to fail when renaming to the destination, and we
+    // will follow the code path that tries to give target a temporary name.
     int TargetFD;
     std::error_code EC;
     ASSERT_NO_ERROR(fs::openFileForRead(TargetFileName, TargetFD));
@@ -154,13 +183,22 @@ TEST(rename, ExistingTemp) {
 
     ASSERT_NO_ERROR(fs::rename(SourceFileName, TargetFileName));
 
+    // The mapping still sees the old contents and the name has the new ones.
+    EXPECT_EQ(StringRef(MFR.const_data(), 10), "!!target!!");
+    EXPECT_TRUE(FileHasContent(TargetFileName, "!!source!!"));
+    EXPECT_FALSE(fs::exists(SourceFileName));
+
 #ifdef _WIN32
-    // Make sure that target was temporarily renamed to target.tmp1 on Windows.
-    // This is signified by a permission denied error as opposed to no such file
-    // or directory when trying to open it.
+    // A POSIX-semantics rename supersedes the mapped target in place. On a
+    // volume without one, the target was renamed to target.tmp1 instead,
+    // which is signified by a permission denied error as opposed to no such
+    // file or directory when trying to open it.
     int Tmp1FD;
-    EXPECT_EQ(errc::permission_denied,
-              fs::openFileForRead(TargetTmp1FileName, Tmp1FD));
+    std::error_code Tmp1EC = fs::openFileForRead(TargetTmp1FileName, Tmp1FD);
+    if (hasPosixUnlinkRename(TestDirectory))
+      EXPECT_EQ(Tmp1EC, errc::no_such_file_or_directory) << Tmp1EC.message();
+    else
+      EXPECT_EQ(Tmp1EC, errc::permission_denied) << Tmp1EC.message();
 #endif
   }
 

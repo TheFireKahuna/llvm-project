@@ -1441,6 +1441,20 @@ TEST_F(FileSystemTest, UTF8ToUTF16DirectoryIteration) {
 }
 #endif
 
+// unlink(2) removes a file regardless of the file's own permissions; on
+// Windows the read-only attribute must not prevent removal either.
+TEST_F(FileSystemTest, RemoveReadOnlyFile) {
+  SmallString<128> Path(TestDirectory);
+  path::append(Path, "readonly.txt");
+  int FD;
+  ASSERT_NO_ERROR(fs::openFileForWrite(Path, FD, fs::CD_CreateNew));
+  ASSERT_EQ(close(FD), 0);
+  ASSERT_NO_ERROR(fs::setPermissions(Path, fs::all_read));
+
+  ASSERT_NO_ERROR(fs::remove(Path));
+  EXPECT_FALSE(fs::exists(Path));
+}
+
 TEST_F(FileSystemTest, Remove) {
   SmallString<64> BaseDir;
   SmallString<64> Paths[4];
@@ -2077,6 +2091,10 @@ static void verifyFileContents(const Twine &Path, StringRef Contents) {
   ASSERT_EQ(Data, Contents);
 }
 
+// Replacing a file by rename must succeed while another handle still has the
+// old file memory-mapped, and the mapping must keep seeing the old contents.
+// This is how a compiler replaces an output that a language server or a
+// linker is reading.
 TEST_F(FileSystemTest, CreateNew) {
   int FD;
   std::optional<FileDescriptorCloser> Closer;
