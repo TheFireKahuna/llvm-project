@@ -7,7 +7,11 @@
  *===-----------------------------------------------------------------------===
  */
 
-#if !defined(__cplusplus) || (defined(_MSC_VER) && !_NATIVE_WCHAR_T_DEFINED)
+/* __is_identifier(wchar_t) is 0 only in C++, where wchar_t is a keyword. Some
+ * C library wrappers hide __cplusplus while they include a C library header
+ * that has C++ declarations the C++ library replaces. */
+#if (!defined(__cplusplus) && __is_identifier(wchar_t)) ||                     \
+    (defined(_MSC_VER) && !_NATIVE_WCHAR_T_DEFINED)
 
 /*
  * When -fbuiltin-headers-in-system-modules is set this is a non-modular header

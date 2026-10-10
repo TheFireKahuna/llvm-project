@@ -8,7 +8,7 @@
  */
 
 /* Only include this if we're compiling for the windows platform. */
-#ifndef _MSC_VER
+#if !defined(_MSC_VER) && !defined(_WIN32_ITANIUM)
 #include_next <intrin.h>
 #else
 
@@ -377,7 +377,9 @@ extern __inline__ void __DEFAULT_FN_ATTRS __outdword(unsigned short port,
 }
 #endif
 
-#if defined(__i386__) || defined(__x86_64__) || defined(__aarch64__)
+/* Without _MSC_VER, arm_acle.h defines __nop for AArch64. */
+#if defined(__i386__) || defined(__x86_64__) ||                                \
+    (defined(__aarch64__) && defined(_MSC_VER))
 extern __inline__ void __DEFAULT_FN_ATTRS __nop(void) {
   __asm__ volatile("nop");
 }

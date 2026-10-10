@@ -430,6 +430,58 @@ set(zos_wrapper_files
   zos_wrappers/variant.h
 )
 
+set(win32_itanium_wrapper_files
+  win32_itanium_wrappers/__winnt_declspec.h
+  win32_itanium_wrappers/complex.h
+  win32_itanium_wrappers/conio.h
+  win32_itanium_wrappers/corecrt.h
+  win32_itanium_wrappers/corecrt_share.h
+  win32_itanium_wrappers/corecrt_stdio_config.h
+  win32_itanium_wrappers/ctype.h
+  win32_itanium_wrappers/direct.h
+  win32_itanium_wrappers/dos.h
+  win32_itanium_wrappers/eh.h
+  win32_itanium_wrappers/excpt.h
+  win32_itanium_wrappers/fcntl.h
+  win32_itanium_wrappers/io.h
+  win32_itanium_wrappers/malloc.h
+  win32_itanium_wrappers/math.h
+  win32_itanium_wrappers/memory.h
+  win32_itanium_wrappers/new.h
+  win32_itanium_wrappers/ntdef.h
+  win32_itanium_wrappers/process.h
+  win32_itanium_wrappers/sal.h
+  win32_itanium_wrappers/search.h
+  win32_itanium_wrappers/setjmp.h
+  win32_itanium_wrappers/share.h
+  win32_itanium_wrappers/specstrings_strict.h
+  win32_itanium_wrappers/stdio.h
+  win32_itanium_wrappers/stdlib.h
+  win32_itanium_wrappers/string.h
+  win32_itanium_wrappers/time.h
+  win32_itanium_wrappers/unistd.h
+  win32_itanium_wrappers/vadefs.h
+  win32_itanium_wrappers/vcruntime.h
+  win32_itanium_wrappers/vcruntime_new.h
+  win32_itanium_wrappers/vcruntime_new_debug.h
+  win32_itanium_wrappers/vcruntime_startup.h
+  win32_itanium_wrappers/vcruntime_string.h
+  win32_itanium_wrappers/wchar.h
+  win32_itanium_wrappers/winnt.h
+)
+
+set(win32_itanium_wrapper_sys_files
+  win32_itanium_wrappers/sys/locking.h
+  win32_itanium_wrappers/sys/stat.h
+  win32_itanium_wrappers/sys/timeb.h
+  win32_itanium_wrappers/sys/types.h
+  win32_itanium_wrappers/sys/utime.h
+)
+
+set(win32_itanium_wrapper_wrl_files
+  win32_itanium_wrappers/wrl/def.h
+)
+
 include(GetClangResourceDir)
 get_clang_resource_dir(output_dir PREFIX ${LLVM_LIBRARY_OUTPUT_INTDIR}/.. SUBDIR include)
 set(out_files)
@@ -480,7 +532,9 @@ endfunction(clang_generate_header)
 foreach( f ${files} ${cuda_wrapper_files} ${cuda_wrapper_bits_files}
            ${cuda_wrapper_utility_files} ${ppc_wrapper_files} ${openmp_wrapper_files}
            ${zos_wrapper_files} ${hlsl_files} ${llvm_libc_wrapper_files}
-           ${llvm_offload_wrapper_files} ${gpu_hip_wrapper_files})
+           ${llvm_offload_wrapper_files} ${gpu_hip_wrapper_files}
+           ${win32_itanium_wrapper_files} ${win32_itanium_wrapper_sys_files}
+           ${win32_itanium_wrapper_wrl_files})
   copy_header_to_output_dir(${CMAKE_CURRENT_SOURCE_DIR} ${f})
 endforeach( f )
 
@@ -620,7 +674,7 @@ add_header_target("opencl-resource-headers" ${opencl_files})
 add_header_target("llvm-libc-resource-headers" ${llvm_libc_wrapper_files})
 add_header_target("openmp-resource-headers" ${openmp_wrapper_files})
 add_header_target("llvm-offload-resource-headers" ${llvm_libc_wrapper_files})
-add_header_target("windows-resource-headers" ${windows_only_files})
+add_header_target("windows-resource-headers" "${windows_only_files};${win32_itanium_wrapper_files};${win32_itanium_wrapper_sys_files};${win32_itanium_wrapper_wrl_files}")
 add_header_target("utility-resource-headers" ${utility_files})
 
 get_clang_resource_dir(header_install_dir SUBDIR include)
@@ -679,6 +733,21 @@ install(
 install(
   FILES ${zos_wrapper_files}
   DESTINATION ${header_install_dir}/zos_wrappers
+  COMPONENT clang-resource-headers)
+
+install(
+  FILES ${win32_itanium_wrapper_files}
+  DESTINATION ${header_install_dir}/win32_itanium_wrappers
+  COMPONENT clang-resource-headers)
+
+install(
+  FILES ${win32_itanium_wrapper_sys_files}
+  DESTINATION ${header_install_dir}/win32_itanium_wrappers/sys
+  COMPONENT clang-resource-headers)
+
+install(
+  FILES ${win32_itanium_wrapper_wrl_files}
+  DESTINATION ${header_install_dir}/win32_itanium_wrappers/wrl
   COMPONENT clang-resource-headers)
 
 #############################################################
@@ -875,6 +944,24 @@ install(
 install(
   FILES ${windows_only_files}
   DESTINATION ${header_install_dir}
+  EXCLUDE_FROM_ALL
+  COMPONENT windows-resource-headers)
+
+install(
+  FILES ${win32_itanium_wrapper_files}
+  DESTINATION ${header_install_dir}/win32_itanium_wrappers
+  EXCLUDE_FROM_ALL
+  COMPONENT windows-resource-headers)
+
+install(
+  FILES ${win32_itanium_wrapper_sys_files}
+  DESTINATION ${header_install_dir}/win32_itanium_wrappers/sys
+  EXCLUDE_FROM_ALL
+  COMPONENT windows-resource-headers)
+
+install(
+  FILES ${win32_itanium_wrapper_wrl_files}
+  DESTINATION ${header_install_dir}/win32_itanium_wrappers/wrl
   EXCLUDE_FROM_ALL
   COMPONENT windows-resource-headers)
 #############################################################
