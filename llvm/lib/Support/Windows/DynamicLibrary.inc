@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/ConvertUTF.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/Windows/WindowsSupport.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -37,8 +38,13 @@ void *DynamicLibrary::HandleSet::DLOpen(const char *File, std::string *Err) {
   if (!File)
     return &getGlobals().OpenedHandles;
 
+  // A relative name is looked up along the DLL search path, so only an
+  // absolute path may be given the long path prefix.
   SmallVector<wchar_t, MAX_PATH> FileUnicode;
-  if (std::error_code ec = windows::UTF8ToUTF16(File, FileUnicode)) {
+  std::error_code ec = sys::path::is_absolute(File)
+                           ? windows::widenPath(File, FileUnicode)
+                           : windows::UTF8ToUTF16(File, FileUnicode);
+  if (ec) {
     SetLastError(ec.value());
     MakeErrMsg(Err, std::string(File) + ": Can't convert to UTF-16");
     return &DynamicLibrary::Invalid;
