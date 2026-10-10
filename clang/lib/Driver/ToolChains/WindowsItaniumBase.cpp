@@ -81,6 +81,9 @@ void tools::windowsitanium::Linker::ConstructJob(
   // targets never link.
   CmdArgs.push_back("-lldignoreenv");
 
+  // The import binding model of these targets.
+  CmdArgs.push_back("-import-slots");
+
   // On x86-64 Windows Itanium, the image runs with the hardware shadow stack.
   bool ShadowStack = TC.getTriple().isWindowsItaniumEnvironment() &&
                      TC.getArch() == llvm::Triple::x86_64;

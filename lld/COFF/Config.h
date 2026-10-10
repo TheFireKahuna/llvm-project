@@ -365,6 +365,7 @@ struct Configuration {
   bool thinLTOIndexOnly;
   bool timeTraceEnabled = false;
   bool autoImport = false;
+  bool importSlots = false;
   bool startStopSymbols = false;
   bool boundarySymbols = false;
   bool pseudoRelocs = false;

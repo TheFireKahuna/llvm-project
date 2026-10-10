@@ -303,7 +303,7 @@ void SymbolTable::loadMinGWSymbols() {
       }
     }
 
-    if (ctx.config.autoImport) {
+    if (ctx.config.autoImport || ctx.config.importSlots) {
       if (name.starts_with("__imp_"))
         continue;
       // If we have an undefined symbol, but we have a lazy symbol we could
@@ -317,6 +317,56 @@ void SymbolTable::loadMinGWSymbols() {
       forceLazy(l);
     }
   }
+}
+
+bool SymbolTable::loadLocalImportMembers() {
+  std::vector<Symbol *> lazies;
+  bool referenced = false;
+  llvm::erase_if(impUndefs, [&](Symbol *sym) {
+    auto *u = dyn_cast<Undefined>(sym);
+    if (!u)
+      return true;
+    // An archive offering __imp_X itself, such as an import library, takes
+    // precedence; its member was requested when the reference was added.
+    if (u->pendingArchiveLoad || u->getWeakAlias())
+      return false;
+    StringRef name = sym->getName().substr(strlen("__imp_"));
+    Symbol *l = find(name);
+    if (l && l->isLazy() && !l->pendingArchiveLoad)
+      lazies.push_back(l);
+    // /alternatename defines X only when something references X, so
+    // __imp_X references it, as a direct reference would; when the alternate
+    // is an import, __imp_X is that import's pointer.
+    if (!l) {
+      auto it = alternateNames.find(name);
+      if (it == alternateNames.end())
+        return false;
+      Symbol *impTo = find(("__imp_" + it->second).str());
+      if (impTo && !isa<Undefined>(impTo)) {
+        impTo->isUsedInRegularObj = true;
+        if (impTo->isLazy())
+          forceLazy(impTo);
+        u->setWeakAlias(impTo);
+        referenced = true;
+      } else if (Symbol *to = find(it->second); to && !isa<Undefined>(to)) {
+        addUndefined(name);
+        referenced = true;
+      }
+    }
+    return false;
+  });
+  // Loading a lazy object parses it at once, which may add to impUndefs or
+  // define a symbol that is still to be loaded.
+  bool loaded = referenced;
+  for (Symbol *l : lazies) {
+    if (!l->isLazy() || l->pendingArchiveLoad)
+      continue;
+    Log(ctx) << "Loading lazy " << l->getName() << " from "
+             << l->getFile()->getName() << " for __imp_" << l->getName();
+    forceLazy(l);
+    loaded = true;
+  }
+  return loaded;
 }
 
 Defined *SymbolTable::impSymbol(StringRef name) {
@@ -451,7 +501,7 @@ void SymbolTable::reportUnresolvable() {
     }
     if (name.contains("_PchSym_"))
       continue;
-    if (ctx.config.autoImport && impSymbol(name))
+    if ((ctx.config.autoImport || ctx.config.importSlots) && impSymbol(name))
       continue;
     undefs.insert(sym);
   }
@@ -771,6 +821,8 @@ Symbol *SymbolTable::addUndefined(StringRef name, InputFile *f,
     wasInserted = false;
   if (wasInserted || (s->isLazy() && overrideLazy)) {
     replaceSymbol<Undefined>(s, name);
+    if (ctx.config.importSlots && name.starts_with("__imp_"))
+      impUndefs.push_back(s);
     return s;
   }
   if (s->isLazy())

@@ -76,6 +76,12 @@ public:
   // Try to resolve undefined symbols with alternate names.
   void resolveAlternateNames();
 
+  // Under -import-slots, load the archive member behind each undefined __imp_X
+  // that no input defines under that name and whose X is lazy, and reference
+  // an X that /alternatename defines, as a direct reference to X would.
+  // Returns whether any member was loaded or X referenced.
+  bool loadLocalImportMembers();
+
   // Define placeholders for the referenced, undefined __start_X and __stop_X
   // of each section run X, and for _etext, _edata and _end. The writer places
   // them once the output sections are laid out.
@@ -274,6 +280,9 @@ private:
   // lacks is that of the lazy symbol of the first of them that defines it, as
   // if each had entered its lazy symbols when it was read.
   std::vector<ArchiveFile *> indexedArchives;
+  // Symbols created undefined with the __imp_ prefix under -import-slots,
+  // which loadLocalImportMembers visits instead of the whole table.
+  std::vector<Symbol *> impUndefs;
   std::unique_ptr<BitcodeCompiler> lto;
   std::vector<std::pair<Symbol *, Symbol *>> entryThunks;
   llvm::DenseMap<Symbol *, Symbol *> exitThunks;
