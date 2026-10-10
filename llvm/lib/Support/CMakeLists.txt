@@ -44,9 +44,9 @@ endif()
 
 if( WIN32 )
   # libuuid required for FOLDERID_Profile usage in lib/Support/Windows/Path.inc.
-  # advapi32 required for CryptAcquireContextW in lib/Support/Windows/Path.inc.
+  # bcrypt required for BCryptGenRandom in lib/Support/Windows/Process.inc.
   # ntdll required for RtlGetLastNtStatus in lib/Support/ErrorHandling.cpp.
-  set(system_libs ${system_libs} psapi shell32 ole32 uuid advapi32 ws2_32 ntdll)
+  set(system_libs ${system_libs} psapi shell32 ole32 uuid advapi32 bcrypt ws2_32 ntdll)
   if( HAVE_WINDOWS_ICU )
     list(APPEND system_libs icu)
   endif()
@@ -96,14 +96,15 @@ if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.25"
   set(WL "$<$<OR:$<LINK_LANG_AND_ID:C,IntelLLVM>,$<LINK_LANG_AND_ID:CXX,IntelLLVM>,$<LINK_LANG_AND_ID:Fortran,IntelLLVM>>:-Qoption,link,>")
 endif()
 
-# Delay load shell32.dll if possible to speed up process startup.
+# Delay load shell32.dll, ole32.dll and bcrypt.dll if possible to speed up
+# process startup.
 set (delayload_flags)
 if (MSVC)
   # When linking with Swift, `swiftc.exe` is used as the linker drive rather
   # than invoking `link.exe` directly.  In such a case, the flags should be
   # marked as `-Xlinker` to pass them directly to the linker.  As a temporary
   # workaround simply elide the delay loading.
-  set (delayload_flags $<$<NOT:$<LINK_LANGUAGE:Swift>>:delayimp ${WL}-delayload:shell32.dll ${WL}-delayload:ole32.dll>)
+  set (delayload_flags $<$<NOT:$<LINK_LANGUAGE:Swift>>:delayimp ${WL}-delayload:shell32.dll ${WL}-delayload:ole32.dll ${WL}-delayload:bcrypt.dll>)
 endif()
 
 # Link Z3 if the user wants to build it.

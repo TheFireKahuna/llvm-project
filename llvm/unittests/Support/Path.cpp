@@ -688,6 +688,21 @@ protected:
   void TearDown() override { ASSERT_NO_ERROR(fs::remove(TestDirectory.str())); }
 };
 
+TEST(Support, UniquePathDigits) {
+  // More digits than one 64-bit random value supplies.
+  const char *Model = "unique-%%%%%%%%%%%%%%%%%%%%%%%%.tmp";
+  SmallString<64> A, B;
+  fs::createUniquePath(Model, A, /*MakeAbsolute=*/false);
+  fs::createUniquePath(Model, B, /*MakeAbsolute=*/false);
+  for (StringRef Name : {A.str(), B.str()}) {
+    ASSERT_TRUE(Name.consume_front("unique-"));
+    ASSERT_TRUE(Name.consume_back(".tmp"));
+    EXPECT_EQ(24u, Name.size());
+    EXPECT_TRUE(all_of(Name, isHexDigit)) << Name;
+  }
+  EXPECT_NE(A, B);
+}
+
 TEST_F(FileSystemTest, Unique) {
   // Create a temp file.
   int FileDescriptor;

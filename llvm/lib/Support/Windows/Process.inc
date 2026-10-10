@@ -451,23 +451,19 @@ static unsigned GetRandomNumberSeed() {
 static unsigned GetPseudoRandomNumber() {
   // Arrange to call srand once when this function is first used, and
   // otherwise (if GetRandomNumber always succeeds in using
-  // CryptGenRandom) don't bother at all.
+  // BCryptGenRandom) don't bother at all.
   static int x = (static_cast<void>(::srand(GetRandomNumberSeed())), 0);
   (void)x;
   return ::rand();
 }
 
 unsigned Process::GetRandomNumber() {
-  // Try to use CryptGenRandom.
-  HCRYPTPROV HCPC;
-  if (::CryptAcquireContextW(&HCPC, NULL, NULL, PROV_RSA_FULL,
-                             CRYPT_VERIFYCONTEXT)) {
-    ScopedCryptContext CryptoProvider(HCPC);
-    unsigned Ret;
-    if (::CryptGenRandom(CryptoProvider, sizeof(Ret),
-                         reinterpret_cast<BYTE *>(&Ret)))
-      return Ret;
-  }
+  // Try to use the system's preferred random number generator.
+  unsigned Ret;
+  if (BCRYPT_SUCCESS(::BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(&Ret),
+                                       sizeof(Ret),
+                                       BCRYPT_USE_SYSTEM_PREFERRED_RNG)))
+    return Ret;
 
   // If that fails, fall back to pseudo-random numbers.
   return GetPseudoRandomNumber();
