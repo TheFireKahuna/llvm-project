@@ -8,6 +8,8 @@
 
 #include "wincrt.h"
 
+WINCRT_WRAP_UCRT
+
 extern "C" BOOL WINAPI DllMain(HINSTANCE, DWORD, LPVOID);
 
 // The DllMain of a DLL that defines none.

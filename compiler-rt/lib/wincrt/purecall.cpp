@@ -15,8 +15,9 @@
 #include "wincrt.h"
 
 extern "C" [[noreturn]] void __cxa_pure_virtual(void);
-// libc++abi reports the call; an image without it aborts.
-WINCRT_ALTERNATENAME(__cxa_pure_virtual, abort)
+// libc++abi reports the call; an image without it aborts, through wincrt's
+// abort, which the wrap of abort would not make the target of an alias.
+WINCRT_ALTERNATENAME(__cxa_pure_virtual, __wrap_abort)
 
 extern "C" int __cdecl _purecall(void) {
   if (_purecall_handler Handler = _get_purecall_handler()) {
