@@ -269,14 +269,18 @@ void WindowsItaniumBaseToolChain::addClangTargetOptions(
 
 void WindowsItaniumBaseToolChain::AddCXXStdlibLibArgs(
     const ArgList &Args, ArgStringList &CmdArgs) const {
-  CmdArgs.push_back("-defaultlib:libc++.dll.lib");
+  CmdArgs.push_back(Args.hasArg(options::OPT_static)
+                        ? "-defaultlib:libc++.lib"
+                        : "-defaultlib:libc++.dll.lib");
   if (Args.hasArg(options::OPT_fexperimental_library))
     CmdArgs.push_back("-defaultlib:libc++experimental.lib");
 }
 
 void WindowsItaniumBaseToolChain::addUnwindLibArgs(
     const ArgList &Args, ArgStringList &CmdArgs) const {
-  CmdArgs.push_back("-defaultlib:libunwind.dll.lib");
+  CmdArgs.push_back(Args.hasArg(options::OPT_static)
+                        ? "-defaultlib:libunwind.lib"
+                        : "-defaultlib:libunwind.dll.lib");
 }
 
 void WindowsItaniumBaseToolChain::addNoDefaultLibArgs(

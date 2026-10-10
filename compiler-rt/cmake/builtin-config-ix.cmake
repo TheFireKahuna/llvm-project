@@ -1,6 +1,7 @@
 include(BuiltinTests)
 include(CheckIncludeFiles)
 include(CheckCSourceCompiles)
+include(DetectWindowsItanium)
 
 # Make all the tests only check the compiler
 set(TEST_COMPILE_ONLY On)
@@ -297,8 +298,8 @@ else()
   endforeach()
 endif()
 
-if(OS_NAME MATCHES "Linux|SerenityOS" AND NOT LLVM_USE_SANITIZER AND NOT
-   COMPILER_RT_GPU_BUILD)
+if((OS_NAME MATCHES "Linux|SerenityOS" OR WIN32_ITANIUM) AND
+   NOT LLVM_USE_SANITIZER AND NOT COMPILER_RT_GPU_BUILD)
   set(COMPILER_RT_HAS_CRT TRUE)
 else()
   set(COMPILER_RT_HAS_CRT FALSE)

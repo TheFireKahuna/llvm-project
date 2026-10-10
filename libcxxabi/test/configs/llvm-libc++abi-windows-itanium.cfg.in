@@ -1,0 +1,7 @@
+
+# Every image of Windows Itanium imports the process's termination registries
+# from clang_rt.wincrt_dynamic.dll, in the compiler's runtime directory.
+import subprocess
+runtime_dir = subprocess.check_output(
+    ['@CMAKE_CXX_COMPILER@', '--target=@CMAKE_CXX_COMPILER_TARGET@',
+     '-print-runtime-dir'], text=True).strip().replace('\\', '/')
