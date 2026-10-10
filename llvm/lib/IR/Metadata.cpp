@@ -1933,6 +1933,16 @@ void GlobalObject::copyMetadata(const GlobalObject *Other, unsigned Offset) {
                   *MDNode::get(getContext(), {NewOffsetMD, TypeId}));
       continue;
     }
+    // So is the offset of a pin.
+    if (Offset != 0 && MD.first == LLVMContext::MD_pin) {
+      SmallVector<Metadata *, 4> Ops(MD.second->operands());
+      auto *OffsetConst =
+          cast<ConstantInt>(cast<ConstantAsMetadata>(Ops[0])->getValue());
+      Ops[0] = ConstantAsMetadata::get(ConstantInt::get(
+          OffsetConst->getType(), OffsetConst->getValue() + Offset));
+      addMetadata(LLVMContext::MD_pin, *MDNode::get(getContext(), Ops));
+      continue;
+    }
     // If an offset adjustment was specified we need to modify the DIExpression
     // to prepend the adjustment:
     // !DIExpression(DW_OP_plus, Offset, [original expr])

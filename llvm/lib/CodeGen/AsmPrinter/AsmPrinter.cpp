@@ -793,6 +793,38 @@ MCSymbol *AsmPrinter::getSymbolPreferLocal(const GlobalValue &GV) const {
   return TM.getSymbol(&GV);
 }
 
+/// Asks the linker to place \p Sym, the start of \p GV, where the pins
+/// attached to \p GV want it. \p Alignment, the alignment the global is
+/// emitted with, already fixes the low bits of the address: a pin that
+/// disagrees with it is an error if required. A pin that is not required is
+/// dropped then, and when the global shares its section, which the linker
+/// places as a whole.
+static void emitLinkPins(const GlobalVariable &GV, MCSymbol *Sym,
+                         Align Alignment, bool OwnsSection,
+                         MCStreamer &OutStreamer, MCContext &OutContext) {
+  SmallVector<MDNode *, 1> Pins;
+  GV.getMetadata(LLVMContext::MD_pin, Pins);
+  for (const MDNode *Pin : Pins) {
+    auto GetOperand = [&](unsigned I) {
+      return mdconst::extract<ConstantInt>(Pin->getOperand(I))->getZExtValue();
+    };
+    unsigned Log2Modulus = GetOperand(1);
+    bool Required = GetOperand(3);
+    uint64_t Residue = (GetOperand(2) - GetOperand(0)) &
+                       maskTrailingOnes<uint64_t>(Log2Modulus);
+    uint64_t Fixed = std::min<uint64_t>(Alignment.value(), 1ULL << Log2Modulus);
+    if (!Required && !OwnsSection)
+      continue;
+    if (Residue % Fixed) {
+      if (Required)
+        OutContext.reportError(SMLoc(), "pin of '" + GV.getName() +
+                                            "' conflicts with its alignment");
+      continue;
+    }
+    OutStreamer.emitCOFFLinkPin(Sym, Log2Modulus, Residue, Required);
+  }
+}
+
 /// EmitGlobalVariable - Emit the specified global variable to the .s file.
 void AsmPrinter::emitGlobalVariable(const GlobalVariable *GV) {
   MaybeAlign AlignmentGranule = getRequiredGlobalAlignmentGranule(*GV);
@@ -994,6 +1026,14 @@ void AsmPrinter::emitGlobalVariable(const GlobalVariable *GV,
   MCSymbol *LocalAlias = getSymbolPreferLocal(*GV);
   if (LocalAlias != EmittedInitSym)
     OutStreamer->emitLabel(LocalAlias);
+
+  if (TM.getTargetTriple().isOSBinFormatCOFF() &&
+      GV->hasMetadata(LLVMContext::MD_pin))
+    emitLinkPins(*GV, EmittedInitSym, Alignment,
+                 static_cast<const MCSectionCOFF *>(TheSection)
+                         ->getCharacteristics() &
+                     COFF::IMAGE_SCN_LNK_COMDAT,
+                 *OutStreamer, OutContext);
 
   emitGlobalConstant(GV->getDataLayout(), GV->getInitializer());
 

@@ -105,6 +105,8 @@ static bool splitGlobal(GlobalVariable &GV) {
 
   SmallVector<MDNode *, 2> Types;
   GV.getMetadata(LLVMContext::MD_type, Types);
+  SmallVector<MDNode *, 1> Pins;
+  GV.getMetadata(LLVMContext::MD_pin, Pins);
 
   IntegerType *Int32Ty = Type::getInt32Ty(GV.getContext());
 
@@ -149,6 +151,21 @@ static bool splitGlobal(GlobalVariable &GV) {
                        {ConstantAsMetadata::get(
                             ConstantInt::get(Int32Ty, ByteOffset - SplitBegin)),
                         Type->getOperand(1)}));
+    }
+
+    // A pin fixes the address at its offset modulo a power of two, so it moves
+    // to the piece holding that address, which is found as for type metadata.
+    for (MDNode *Pin : Pins) {
+      auto *OffsetConst = mdconst::extract<ConstantInt>(Pin->getOperand(0));
+      uint64_t ByteOffset = OffsetConst->getZExtValue();
+      uint64_t AttachedTo = (ByteOffset == 0) ? ByteOffset : ByteOffset - 1;
+      if (AttachedTo < SplitBegin || AttachedTo >= SplitEnd)
+        continue;
+      SmallVector<Metadata *, 4> Ops(Pin->operands());
+      Ops[0] = ConstantAsMetadata::get(
+          ConstantInt::get(OffsetConst->getType(), ByteOffset - SplitBegin));
+      SplitGV->addMetadata(LLVMContext::MD_pin,
+                           *MDNode::get(GV.getContext(), Ops));
     }
 
     if (GV.hasMetadata(LLVMContext::MD_vcall_visibility))

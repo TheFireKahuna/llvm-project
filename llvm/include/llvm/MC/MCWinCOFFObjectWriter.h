@@ -69,6 +69,19 @@ class WinCOFFObjectWriter final : public MCObjectWriter {
   // .llvm_link_records section.
   const uint64_t LinkRecordCapabilities;
 
+public:
+  /// A symbol's required address modulo a power of two, which the object's
+  /// link-only records carry (COFF::LinkRecordPins).
+  struct LinkPin {
+    const MCSymbol *Symbol;
+    unsigned Log2Modulus;
+    uint64_t Residue;
+    bool Required;
+  };
+
+private:
+  // The pins of the object's link-only records, in the order given.
+  SmallVector<LinkPin, 0> LinkPins;
   // The kinds of the object's link-only records with an empty payload, each
   // stating a fact about the whole object, in increasing order.
   SmallVector<uint64_t, 0> LinkFacts;
@@ -88,8 +101,9 @@ public:
   bool hasLinkRecords() const { return LinkRecordCapabilities != 0; }
   // Whether the object has a .llvm_link_records section.
   bool hasLinkRecordsSection() const {
-    return hasLinkRecords() || !LinkFacts.empty();
+    return hasLinkRecords() || !LinkPins.empty() || !LinkFacts.empty();
   }
+  void addLinkPin(const LinkPin &Pin) { LinkPins.push_back(Pin); }
   void addLinkFact(uint64_t Kind) {
     auto I = llvm::lower_bound(LinkFacts, Kind);
     if (I == LinkFacts.end() || *I != Kind)
