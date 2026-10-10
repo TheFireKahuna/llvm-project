@@ -5,6 +5,8 @@
 ; CHECK: @feat.00 = 16384
 
 ; CHECK: .section .gehcont$y
+; CHECK-NEXT: .symidx {{.*}}
+; CHECK-NOT: .symidx
 
 define dso_local void @"?func1@@YAXXZ"() #0 personality ptr @__CxxFrameHandler3 {
 entry:

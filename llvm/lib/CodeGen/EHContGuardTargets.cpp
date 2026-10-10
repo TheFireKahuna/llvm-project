@@ -21,8 +21,10 @@
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/Passes.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/Module.h"
 #include "llvm/InitializePasses.h"
+#include "llvm/Target/TargetMachine.h"
 
 using namespace llvm;
 
@@ -32,16 +34,34 @@ STATISTIC(EHContGuardTargetsFound, "Number of EHCont Guard targets");
 
 static bool runEHContGuardTargets(MachineFunction &MF) {
   // Skip modules for which the ehcontguard flag is not set.
-  if (!MF.getFunction().getParent()->getModuleFlag("ehcontguard"))
+  const Function &F = MF.getFunction();
+  const Module *M = F.getParent();
+  if (!M->getModuleFlag("ehcontguard"))
     return false;
 
+  // Under Windows EH with a landing-pad personality, the unwinder enters each
+  // landing pad by setting the instruction pointer, as it enters a catchret
+  // target under a funclet personality.
+  bool LandingPads = false;
+  if (F.hasPersonalityFn() &&
+      !isFuncletEHPersonality(classifyEHPersonality(F.getPersonalityFn()))) {
+    ExceptionHandling EH = M->getExceptionModel();
+    if (EH == ExceptionHandling::Default)
+      EH = MF.getTarget().getExceptionModel();
+    LandingPads = EH == ExceptionHandling::WinEH;
+  }
+
   // Skip functions that do not have targets
-  if (!MF.hasEHContTarget())
+  if (!MF.hasEHContTarget() && !LandingPads)
     return false;
 
   bool Result = false;
 
   for (MachineBasicBlock &MBB : MF) {
+    if (LandingPads && MBB.isEHPad()) {
+      MBB.setIsEHContTarget();
+      MF.setHasEHContTarget(true);
+    }
     if (MBB.isEHContTarget()) {
       MF.addEHContTarget(MBB.getEHContSymbol());
       EHContGuardTargetsFound++;
