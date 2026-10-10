@@ -1180,6 +1180,10 @@ void LowerTypeTestsModule::buildBitSetsFromGlobalVariables(
         GlobalAlias::create(NewTy->getElementType(I * 2), 0, GV->getLinkage(),
                             "", CombinedGlobalElemPtr, &M);
     GAlias->setVisibility(GV->getVisibility());
+    GAlias->setDLLStorageClass(GV->getDLLStorageClass());
+    GAlias->setDSOLocal(GV->isDSOLocal());
+    GAlias->setUnnamedAddr(GV->getUnnamedAddr());
+    GAlias->setPartition(GV->getPartition());
     GAlias->takeName(GV);
     GV->replaceAllUsesWith(GAlias);
     GV->eraseFromParent();
