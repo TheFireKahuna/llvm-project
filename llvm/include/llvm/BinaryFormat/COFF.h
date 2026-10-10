@@ -66,6 +66,16 @@ static const char LinkRecordsMagic[] = {'L', 'L', 'R', 'C'};
 const uint64_t LinkRecordsVersion = 1;
 const uint64_t LinkRecordKindCritical = 1;
 
+enum LinkRecordKind : uint64_t {
+
+  // The object defines a delay-load helper that writes a delay-load import
+  // address table only while it has made the table writable, or leaves the
+  // writes to the loader, which does the same. A linker may then give the
+  // table a section of its own, which the loader keeps read-only, when the
+  // image's delay-load thunks call this object's helper. The payload is
+  // empty.
+  LinkRecordProtectedDelayIAT = 16,
+};
 // Sizes in bytes of various things in the COFF format.
 enum {
   Header16Size = 20,

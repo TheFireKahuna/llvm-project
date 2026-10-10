@@ -39,6 +39,25 @@ from the [LLVM releases web site](https://llvm.org/releases/).
   `/delay:nobind` is accepted; no image LLD writes has a bound delay-load
   import table. Any other argument is an error.
 
+* With `/guard:cf`, the delay-load import address table starts a section of
+  its own, `.didat`, as link.exe lays it out, and the image is marked
+  `IMAGE_GUARD_PROTECT_DELAYLOAD_IAT` and
+  `IMAGE_GUARD_DELAYLOAD_IAT_IN_ITS_OWN_SECTION`. The loader then keeps the
+  table read-only and makes it writable only while it resolves an import, so
+  a table that calls go through without a Control Flow Guard check is not
+  writable for the life of the process. The descriptors and name table move to
+  `.rdata`. Input sections named `.didat`, writable or not, follow the table
+  in `.didat` in name order, starting on the next page. The loader makes the
+  whole section read-only at load and reopens only the table's pages, so their
+  data is read-only once the image is loaded. Merges into or out of `.didat`
+  are errors in such an image. MinGW images, whose delay-load helper stores to
+  the table directly, are unchanged.
+  the table directly, are unchanged. An image whose delay-load thunks call a
+  helper whose object carries a link record saying that the helper writes the
+  table only while it is writable (kind 16, `.linkprotecteddelayiat` in
+  assembly) gets the same protection without `/guard:cf`, in a MinGW image
+  too.
+
 ### MinGW Improvements
 
 ### MachO Improvements

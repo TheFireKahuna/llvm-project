@@ -323,6 +323,7 @@ public:
   void emitCOFFImgRel32(MCSymbol const *Symbol, int64_t Offset) override;
   void emitCOFFSecNumber(MCSymbol const *Symbol) override;
   void emitCOFFSecOffset(MCSymbol const *Symbol) override;
+  void emitCOFFLinkFact(uint64_t Kind) override;
   void emitXCOFFLocalCommonSymbol(MCSymbol *LabelSym, uint64_t Size,
                                   MCSymbol *CsectSym, Align Alignment) override;
   void emitXCOFFSymbolLinkageWithVisibility(MCSymbol *Symbol,
@@ -1027,6 +1028,16 @@ void MCAsmStreamer::emitCOFFSecNumber(MCSymbol const *Symbol) {
 void MCAsmStreamer::emitCOFFSecOffset(MCSymbol const *Symbol) {
   OS << "\t.secoffset\t";
   Symbol->print(OS, MAI);
+  EmitEOL();
+}
+void MCAsmStreamer::emitCOFFLinkFact(uint64_t Kind) {
+  switch (Kind) {
+  case COFF::LinkRecordProtectedDelayIAT:
+    OS << "\t.linkprotecteddelayiat";
+    break;
+  default:
+    llvm_unreachable("not a link record with an empty payload");
+  }
   EmitEOL();
 }
 

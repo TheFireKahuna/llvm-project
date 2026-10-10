@@ -185,6 +185,104 @@ UNLOAD-DYNRELOC-NEXT:     Type: DELTA
 UNLOAD-DYNRELOC-NEXT:     Value: 16
 UNLOAD-DYNRELOC-NEXT:   ]
 
+# With -guard:cf the address tables of both views are alone in a writable
+# .didat, their descriptors and name tables are in .rdata, the module handle
+# stays in .data, and each view asks the loader to keep the tables read-only.
+# A native ARM64 image gets the same layout.
+
+RUN: lld-link -machine:arm64 -dll -noentry -out:out-native-prot.dll loadconfig-arm64.obj \
+RUN:          arm64-helper.obj test-arm64.obj test-arm64.lib -delayload:test.dll -guard:cf
+RUN: llvm-readobj --sections --coff-imports --coff-load-config out-native-prot.dll \
+RUN:   | FileCheck --check-prefix=NATIVE-PROT %s
+
+NATIVE-PROT:      Name: .rdata
+NATIVE-PROT-NEXT: VirtualSize:
+NATIVE-PROT-NEXT: VirtualAddress: 0x2000
+NATIVE-PROT:      Name: .data
+NATIVE-PROT-NEXT: VirtualSize:
+NATIVE-PROT-NEXT: VirtualAddress: 0x3000
+NATIVE-PROT:      IMAGE_SCN_MEM_WRITE
+NATIVE-PROT:      Name: .didat
+NATIVE-PROT-NEXT: VirtualSize: 0x10
+NATIVE-PROT-NEXT: VirtualAddress: 0x4000
+NATIVE-PROT:      IMAGE_SCN_MEM_WRITE
+NATIVE-PROT:      ModuleHandle: 0x3000
+NATIVE-PROT-NEXT: ImportAddressTable: 0x4000
+NATIVE-PROT-NEXT: ImportNameTable: 0x2180
+NATIVE-PROT:      GuardFlags [ (0x17500)
+NATIVE-PROT:        DELAYLOAD_IAT_IN_ITS_OWN_SECTION (0x2000)
+NATIVE-PROT-NEXT:   PROTECT_DELAYLOAD_IAT (0x1000)
+NATIVE-PROT-NEXT: ]
+
+RUN: lld-link -machine:arm64x -dll -noentry -out:out-prot.dll loadconfig-arm64.obj loadconfig-arm64ec.obj \
+RUN:          arm64-helper.obj arm64ec-helper.obj test-arm64.obj test-arm64ec.obj test-arm64.lib test-arm64ec.lib \
+RUN:          -delayload:test.dll -guard:cf
+RUN: llvm-readobj --sections --coff-imports --coff-load-config out-prot.dll \
+RUN:   | FileCheck --check-prefix=PROT %s
+
+PROT:      Name: .rdata
+PROT-NEXT: VirtualSize:
+PROT-NEXT: VirtualAddress: 0x4000
+PROT:      Name: .data
+PROT-NEXT: VirtualSize:
+PROT-NEXT: VirtualAddress: 0x6000
+PROT:      Name: .didat
+PROT-NEXT: VirtualSize: 0x20
+PROT-NEXT: VirtualAddress: 0x8000
+PROT:      IMAGE_SCN_MEM_WRITE
+PROT:      ModuleHandle: 0x6080
+PROT-NEXT: ImportAddressTable: 0x8000
+PROT-NEXT: ImportNameTable: 0x4180
+PROT:      GuardFlags [ (0x17500)
+PROT:        DELAYLOAD_IAT_IN_ITS_OWN_SECTION (0x2000)
+PROT-NEXT:   PROTECT_DELAYLOAD_IAT (0x1000)
+PROT-NEXT: ]
+# The descriptor's address table and name table move to the EC view's.
+PROT:      DynamicRelocations [
+PROT:        RVA: 0x414C
+PROT-NEXT:   Type: DELTA
+PROT-NEXT:   Value: 16
+PROT:        RVA: 0x4150
+PROT-NEXT:   Type: DELTA
+PROT-NEXT:   Value: 16
+PROT:      HybridObject {
+PROT:        ModuleHandle: 0x6080
+PROT-NEXT:   ImportAddressTable: 0x8010
+PROT-NEXT:   ImportNameTable: 0x4190
+PROT:        GuardFlags [ (0x17500)
+PROT:          DELAYLOAD_IAT_IN_ITS_OWN_SECTION (0x2000)
+PROT-NEXT:     PROTECT_DELAYLOAD_IAT (0x1000)
+PROT-NEXT:   ]
+
+# Without -guard:cf the tables are protected when the helpers of both views say
+# that they write the tables only while the tables are writable, and not when
+# only one does.
+
+RUN: llvm-mc -filetype=obj -triple=arm64ec-windows arm64ec-helper.s --defsym RECORD=1 -o arm64ec-helper-rec.obj
+RUN: llvm-mc -filetype=obj -triple=aarch64-windows arm64-helper.s --defsym RECORD=1 -o arm64-helper-rec.obj
+RUN: lld-link -machine:arm64x -dll -noentry -out:out-rec.dll loadconfig-arm64.obj loadconfig-arm64ec.obj \
+RUN:          arm64-helper-rec.obj arm64ec-helper-rec.obj test-arm64.obj test-arm64ec.obj test-arm64.lib test-arm64ec.lib \
+RUN:          -delayload:test.dll
+RUN: llvm-readobj --sections --coff-load-config out-rec.dll | FileCheck --check-prefix=REC %s
+RUN: lld-link -machine:arm64x -dll -noentry -out:out-half.dll loadconfig-arm64.obj loadconfig-arm64ec.obj \
+RUN:          arm64-helper-rec.obj arm64ec-helper.obj test-arm64.obj test-arm64ec.obj test-arm64.lib test-arm64ec.lib \
+RUN:          -delayload:test.dll
+RUN: llvm-readobj --sections --coff-load-config out-half.dll | FileCheck --check-prefix=HALF %s
+
+REC:      Name: .didat
+REC:      GuardFlags [ (0x3000)
+REC-NEXT:   DELAYLOAD_IAT_IN_ITS_OWN_SECTION (0x2000)
+REC-NEXT:   PROTECT_DELAYLOAD_IAT (0x1000)
+REC-NEXT: ]
+REC:      HybridObject {
+REC:        GuardFlags [ (0x3000)
+REC-NEXT:     DELAYLOAD_IAT_IN_ITS_OWN_SECTION (0x2000)
+REC-NEXT:     PROTECT_DELAYLOAD_IAT (0x1000)
+REC-NEXT:   ]
+
+HALF-NOT: Name: .didat
+HALF-NOT: DELAYLOAD
+
 
 # Test delayed-load import from native code only.
 
@@ -390,6 +488,9 @@ __icall_helper_arm64ec:
 "#__delayLoadHelper2":
     mov w0, #3
     ret
+.ifdef RECORD
+    .linkprotecteddelayiat
+.endif
 
     .section .hybmp$x, "yi"
     .symidx __imp_func
@@ -409,6 +510,9 @@ func_exit_thunk:
 __delayLoadHelper2:
     mov w0, #3
     ret
+.ifdef RECORD
+    .linkprotecteddelayiat
+.endif
 
 #--- test.def
 NAME test.dll

@@ -210,6 +210,12 @@ public:
 
   const coff_section *callgraphSec = nullptr;
 
+  // True if the object's delay-load helper writes a delay-load import address
+  // table only while the table is writable.
+  bool protectsDelayIat() const {
+    return linkRecords && linkRecords->protectsDelayIat;
+  }
+
   // When using Microsoft precompiled headers, this is the PCH's key.
   // The same key is used by both the precompiled object, and objects using the
   // precompiled object. Any difference indicates out-of-date objects.
@@ -302,6 +308,7 @@ private:
   // fields; its pins.
   struct LinkRecords {
     const coff_section *sec;
+    bool protectsDelayIat = false;
   };
   LinkRecords *linkRecords = nullptr;
   std::vector<SectionChunk *> resourceChunks;

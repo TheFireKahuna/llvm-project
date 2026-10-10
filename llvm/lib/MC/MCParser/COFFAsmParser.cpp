@@ -71,6 +71,8 @@ class COFFAsmParser : public MCAsmParserExtension {
     addDirectiveHandler<&COFFAsmParser::parseDirectiveCGProfile>(".cg_profile");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSecNum>(".secnum");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSecOffset>(".secoffset");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFact>(
+        ".linkprotecteddelayiat");
 
     // Win64 EH directives.
     addDirectiveHandler<&COFFAsmParser::parseSEHDirectiveStartProc>(
@@ -133,6 +135,7 @@ class COFFAsmParser : public MCAsmParserExtension {
   bool parseDirectiveLinkOnce(StringRef, SMLoc);
   bool parseDirectiveRVA(StringRef, SMLoc);
   bool parseDirectiveCGProfile(StringRef, SMLoc);
+  bool parseDirectiveLinkFact(StringRef, SMLoc);
   bool parseDirectiveSecNum(StringRef, SMLoc);
   bool parseDirectiveSecOffset(StringRef, SMLoc);
 
@@ -566,6 +569,18 @@ bool COFFAsmParser::parseDirectiveSecIdx(StringRef, SMLoc) {
 
   Lex();
   getStreamer().emitCOFFSectionIndex(Symbol);
+  return false;
+}
+
+/// parseDirectiveLinkFact
+///  ::= .linkprotecteddelayiat
+bool COFFAsmParser::parseDirectiveLinkFact(StringRef Directive, SMLoc) {
+  uint64_t Kind = StringSwitch<uint64_t>(Directive)
+                      .Case(".linkprotecteddelayiat",
+                            COFF::LinkRecordProtectedDelayIAT);
+  if (parseEOL())
+    return true;
+  getStreamer().emitCOFFLinkFact(Kind);
   return false;
 }
 

@@ -246,6 +246,7 @@ private:
   void insertBssDataStartEndSymbols();
   void markSymbolsWithRelocations(ObjFile *file, SymbolRVASet &usedSymbols);
   void createGuardCFTables();
+  bool protectDelayIat();
   void markSymbolsForRVATable(ObjFile *file,
                               ArrayRef<SectionChunk *> symIdxChunks,
                               SymbolRVASet &tableSymbols);
@@ -1101,7 +1102,7 @@ void Writer::createSections() {
   pdataSec = createSection(".pdata", data | r);
   idataSec = createSection(".idata", data | r);
   edataSec = createSection(".edata", data | r);
-  didatSec = createSection(".didat", data | r);
+  didatSec = createSection(".didat", data | r | (protectDelayIat() ? w : 0));
   if (isArm64EC(ctx.config.machine))
     a64xrmSec = createSection(".a64xrm", data | r);
   rsrcSec = createSection(".rsrc", data | r);
@@ -1178,6 +1179,13 @@ void Writer::createSections() {
     if (isArm64EC(ctx.config.machine) &&
         (pSec->name == ".idata$5" || pSec->name == ".idata$9"))
       continue;
+
+    // Sections named .didat join the protected delay-load import address
+    // table's section, after the table and on pages of their own. The loader
+    // makes the whole section read-only at load and reopens only the table's
+    // pages, so the data in them is read-only once the image is loaded.
+    if (name == ".didat" && protectDelayIat())
+      outChars = data | r | w;
 
     OutputSection *sec = createSection(name, outChars);
     for (Chunk *c : pSec->chunks)
@@ -1378,10 +1386,47 @@ void Writer::appendImportThunks() {
 
   if (!delayIdata.empty()) {
     delayIdata.create();
+    // A protected delay-load import address table starts .didat, as link.exe
+    // lays it out: the loader keeps the section read-only and makes the
+    // table writable only while it resolves an import. The descriptors and the
+    // name table are never written and go with the other read-only data.
+    OutputSection *tableSec = didatSec;
+    OutputSection *iatSec = dataSec;
+    if (protectDelayIat()) {
+      // .didat=.rdata is the default merge rule.
+      auto it = ctx.config.merge.find(".didat");
+      if (it != ctx.config.merge.end()) {
+        if (it->second != ".rdata")
+          Err(ctx) << "/merge:.didat=" << it->second
+                   << ": .didat holds the protected delay-load import address "
+                      "table and cannot be merged";
+        ctx.config.merge.erase(it);
+      }
+      for (auto &p : ctx.config.merge)
+        if (getMergeDestination(p.first, p.second) == ".didat")
+          Err(ctx) << "/merge:" << p.first << "=" << p.second
+                   << ": .didat holds the protected delay-load import address "
+                      "table and cannot be merged into";
+      tableSec = rdataSec;
+      iatSec = didatSec;
+    }
     for (Chunk *c : delayIdata.getChunks())
-      didatSec->addChunk(c);
+      tableSec->addChunk(c);
     for (Chunk *c : delayIdata.getDataChunks())
       dataSec->addChunk(c);
+    if (iatSec == didatSec) {
+      // The table starts .didat, and the input sections in it start on the
+      // next page.
+      if (!didatSec->chunks.empty())
+        didatSec->chunks.front()->setAlignment(
+            std::max(0x1000u, didatSec->chunks.front()->getAlignment()));
+      didatSec->chunks.insert(didatSec->chunks.begin(),
+                              delayIdata.getIat().begin(),
+                              delayIdata.getIat().end());
+    } else {
+      for (Chunk *c : delayIdata.getIat())
+        iatSec->addChunk(c);
+    }
     for (Chunk *c : delayIdata.getCodeChunks())
       textSec->addChunk(c);
     for (Chunk *c : delayIdata.getCodePData())
@@ -2172,6 +2217,26 @@ void Writer::markSymbolsWithRelocations(ObjFile *file,
   }
 }
 
+// Whether the delay-load import address table gets a section of its own,
+// which the loader keeps read-only. A call through the table is not checked by
+// Control Flow Guard, so it must not stay writable. mingw-w64's delay-load
+// helper stores to the table directly, so /guard:cf leaves MinGW images with
+// the old layout. A writable table is a target for overwriting whether or not
+// other calls are checked, so a helper whose object says that it writes the
+// table only while the table is writable gets it with or without /guard:cf.
+bool Writer::protectDelayIat() {
+  if (delayIdata.empty())
+    return false;
+  if ((ctx.config.guardCF & GuardCFLevel::CF) && !ctx.config.mingw)
+    return true;
+  bool protects = true;
+  ctx.forEachActiveSymtab([&](SymbolTable &symtab) {
+    auto *helper = dyn_cast_or_null<DefinedRegular>(symtab.delayLoadHelper);
+    protects &= helper && helper->getChunk()->file->protectsDelayIat();
+  });
+  return protects;
+}
+
 // Create the guard function id table. This is a table of RVAs of all
 // address-taken functions. It is sorted and uniqued, just like the safe SEH
 // table.
@@ -2181,16 +2246,20 @@ void Writer::createGuardCFTables() {
   if (config->guardCF == GuardCFLevel::Off) {
     // MSVC marks the entire image as instrumented if any input object was built
     // with /guard:cf.
+    uint32_t guardFlags = 0;
     for (ObjFile *file : ctx.objFileInstances) {
       if (file->hasGuardCF()) {
-        ctx.forEachSymtab([&](SymbolTable &symtab) {
-          Symbol *flagSym = symtab.findUnderscore("__guard_flags");
-          cast<DefinedAbsolute>(flagSym)->setVA(
-              uint32_t(GuardFlags::CF_INSTRUMENTED));
-        });
+        guardFlags |= uint32_t(GuardFlags::CF_INSTRUMENTED);
         break;
       }
     }
+    if (protectDelayIat())
+      guardFlags |= uint32_t(GuardFlags::PROTECT_DELAYLOAD_IAT) |
+                    uint32_t(GuardFlags::DELAYLOAD_IAT_IN_ITS_OWN_SECTION);
+    ctx.forEachSymtab([&](SymbolTable &symtab) {
+      Symbol *flagSym = symtab.findUnderscore("__guard_flags");
+      cast<DefinedAbsolute>(flagSym)->setVA(guardFlags);
+    });
     return;
   }
 
@@ -2269,6 +2338,12 @@ void Writer::createGuardCFTables() {
     guardFlags |= uint32_t(GuardFlags::CF_LONGJUMP_TABLE_PRESENT);
   if (config->guardCF & GuardCFLevel::EHCont)
     guardFlags |= uint32_t(GuardFlags::EH_CONTINUATION_TABLE_PRESENT);
+  // The loader resolves a protected table's imports in a buffer and copies
+  // them in under one reprotection, restoring read-only whether or not the
+  // section was protected at load, so the two flags go together.
+  if (protectDelayIat())
+    guardFlags |= uint32_t(GuardFlags::PROTECT_DELAYLOAD_IAT) |
+                  uint32_t(GuardFlags::DELAYLOAD_IAT_IN_ITS_OWN_SECTION);
   ctx.forEachSymtab([guardFlags](SymbolTable &symtab) {
     Symbol *flagSym = symtab.findUnderscore("__guard_flags");
     cast<DefinedAbsolute>(flagSym)->setVA(guardFlags);

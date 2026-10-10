@@ -419,6 +419,10 @@ void ObjFile::readLinkRecords() {
     uint64_t kind = data.getULEB128(cur);
     uint64_t size = data.getULEB128(cur);
     data.skip(cur, size);
+    if (cur && kind == LinkRecordProtectedDelayIAT) {
+      linkRecords->protectsDelayIat = true;
+      continue;
+    }
     if (cur && (kind & LinkRecordKindCritical)) {
       consumeError(cur.takeError());
       Err(symtab.ctx) << this
