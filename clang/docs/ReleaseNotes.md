@@ -123,6 +123,24 @@ features cannot lower the translation-unit ABI level;
 - `aarch64-windows-itanium` now uses the Itanium C++ ABI, as the other Windows
   Itanium targets do, instead of the Microsoft C++ ABI.
 
+- On `*-windows-itanium` targets, the vtable slot of a pure virtual function
+  now names `_purecall`, as MSVC's vtables do, instead of `__cxa_pure_virtual`,
+  so that a handler installed with `_set_purecall_handler` applies.
+  `-fclang-abi-compat=23` restores the previous behavior.
+
+- On `*-windows-itanium` targets, a non-static member function now returns
+  every class through a hidden pointer passed after `this` (in `x1` on
+  AArch64), as Microsoft's calling convention does, so that a COM method
+  implemented by MSVC-built code can be called through its vtable. Before, the
+  pointer came first, and a class that a free function returns in registers
+  was returned in registers. `-fclang-abi-compat=23` restores the previous
+  behavior.
+
+- On `*-windows-itanium` targets, records are now laid out as with
+  `-mms-bitfields`, as on MinGW, so that a struct with bit-fields has the same
+  size and field offsets as with MSVC. `-mno-ms-bitfields`, the `gcc_struct`
+  attribute and `-fclang-abi-compat=23` restore GCC's layout.
+
 - A function type with a vendor qualifier, such as a calling convention
   attribute or `cfi_salt`, is now mangled as a qualified type: the function
   type without the qualifier and the qualified function type are both
@@ -292,6 +310,11 @@ features cannot lower the translation-unit ABI level;
 ### Modified Compiler Flags
 
 - All options of the `-fzero-call-used-regs` compiler flag are now allowed on RISC-V.
+
+- `-fasync-exceptions`, and `/EHa` in clang-cl mode, are now accepted for the
+  x86-64 and AArch64 `windows-itanium` targets, so that a hardware exception
+  raised by any instruction in a `try` block or during an object's lifetime
+  reaches that scope's handler under the Itanium C++ personality.
 
 ### Removed Compiler Flags
 

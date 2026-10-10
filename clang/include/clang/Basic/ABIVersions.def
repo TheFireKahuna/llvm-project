@@ -170,6 +170,13 @@ ABI_VER_MAJOR(22)
 ///   - On x86_64 Windows with a non-Microsoft C++ ABI, such as Windows
 ///     Itanium, use MSVC's rules for passing and returning classes in
 ///     registers.
+///   - On Windows Itanium, name `__cxa_pure_virtual` rather than `_purecall`
+///     in the vtable slot of a pure virtual function.
+///   - On Windows Itanium, return a class from a non-static member function
+///     by the Itanium C++ ABI's rules, with the hidden return pointer before
+///     `this`, instead of always through a pointer after `this`.
+///   - On Windows Itanium, lay out bit-fields by GCC's rules rather than
+///     MSVC's.
 ///   - Mangle a function type with a vendor qualifier, such as a calling
 ///     convention, as one substitution candidate, rather than as a qualified
 ///     type whose function type without the qualifier is a candidate too.

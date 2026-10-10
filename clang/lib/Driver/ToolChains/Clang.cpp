@@ -130,6 +130,16 @@ shouldUseExceptionTablesForObjCExceptions(const ObjCRuntime &runtime,
            Triple.getArch() == llvm::Triple::arm));
 }
 
+/// Whether asynchronous exceptions are supported: they need exception tables
+/// that can describe a range of instructions, as MSVC's do, and the Itanium
+/// C++ personality's on the Windows Itanium targets whose exceptions are SEH.
+static bool supportsAsyncExceptions(const llvm::Triple &Triple) {
+  return Triple.isWindowsMSVCEnvironment() ||
+         (Triple.isWindowsItaniumOrNTPOSIXEnvironment() &&
+          !Triple.isWindowsNTPOSIXEnvironment() &&
+          (Triple.isX86_64() || Triple.isAArch64()));
+}
+
 /// Adds exception related arguments to the driver command arguments. There's a
 /// main flag, -fexceptions and also language specific flags to enable/disable
 /// C++ and Objective-C exceptions. This makes it possible to for example
@@ -159,8 +169,7 @@ static bool addExceptionArgs(const ArgList &Args, types::ID InputType,
   bool EH = Args.hasFlag(options::OPT_fexceptions, options::OPT_fno_exceptions,
                          false);
 
-  // Async exceptions are Windows MSVC only.
-  if (Triple.isWindowsMSVCEnvironment()) {
+  if (supportsAsyncExceptions(Triple)) {
     bool EHa = Args.hasFlag(options::OPT_fasync_exceptions,
                             options::OPT_fno_async_exceptions, false);
     if (EHa) {
@@ -8813,7 +8822,7 @@ struct EHFlags {
 /// - c: Assume that extern "C" functions are implicitly nounwind.
 /// The default is /EHs-c-, meaning cleanups are disabled.
 static EHFlags parseClangCLEHFlags(const Driver &D, const ArgList &Args,
-                                   bool isWindowsMSVC) {
+                                   bool AsynchSupported) {
   EHFlags EH;
 
   std::vector<std::string> EHArgs =
@@ -8824,8 +8833,7 @@ static EHFlags parseClangCLEHFlags(const Driver &D, const ArgList &Args,
       case 'a':
         EH.Asynch = maybeConsumeDash(EHVal, I);
         if (EH.Asynch) {
-          // Async exceptions are Windows MSVC only.
-          if (!isWindowsMSVC) {
+          if (!AsynchSupported) {
             EH.Asynch = false;
             D.Diag(clang::diag::warn_drv_unused_argument) << "/EHa" << EHVal;
             continue;
@@ -8895,8 +8903,8 @@ void Clang::AddClangCLArgs(const ArgList &Args, types::ID InputType,
 
   const Driver &D = getToolChain().getDriver();
 
-  bool IsWindowsMSVC = getToolChain().getTriple().isWindowsMSVCEnvironment();
-  EHFlags EH = parseClangCLEHFlags(D, Args, IsWindowsMSVC);
+  EHFlags EH = parseClangCLEHFlags(
+      D, Args, supportsAsyncExceptions(getToolChain().getTriple()));
   if (!isNVPTX && (EH.Synch || EH.Asynch)) {
     if (types::isCXX(InputType))
       CmdArgs.push_back("-fcxx-exceptions");

@@ -6365,7 +6365,10 @@ static void ReferenceDllExportedMembers(Sema &S, CXXRecordDecl *Class) {
     }
   } MarkingDllexportedContext(S, Class, ClassAttr->getLocation());
 
-  if (S.Context.getTargetInfo().getTriple().isOSCygMing())
+  // With the Itanium C++ ABI on COFF, export the class's vtable even when no
+  // exported member definition otherwise causes it to be emitted.
+  if (S.Context.getTargetInfo().getTriple().isOSBinFormatCOFF() &&
+      S.Context.getTargetInfo().getCXXABI().isItaniumFamily())
     S.MarkVTableUsed(Class->getLocation(), Class, true);
 
   for (Decl *Member : Class->decls()) {

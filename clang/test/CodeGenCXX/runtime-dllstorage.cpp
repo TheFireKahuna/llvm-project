@@ -119,7 +119,7 @@ void l() {
 // CHECK-IA-DAG: define linkonce_odr hidden void @__clang_call_terminate(ptr noundef %0)
 
 // CHECK-DYNAMIC-IA-DAG: declare dllimport i32 @__cxa_thread_atexit(ptr, ptr, ptr)
-// CHECK-DYNAMIC-IA-DAG: declare dllimport i32 @__cxa_atexit(ptr, ptr, ptr)
+// CHECK-DYNAMIC-IA-DAG: declare dso_local i32 @__cxa_atexit(ptr, ptr, ptr)
 // CHECK-DYNAMIC-IA-DECL-DAG: declare ptr @__cxa_allocate_exception(i32 noundef)
 // CHECK-DYNAMIC-IA-NODECL-DAG: declare dllimport ptr @__cxa_allocate_exception(i32 noundef)
 // CHECK-DYNAMIC-IA-IMPORT-DAG: declare dllimport ptr @__cxa_allocate_exception(i32 noundef)

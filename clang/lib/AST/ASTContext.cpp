@@ -13083,6 +13083,15 @@ QualType ASTContext::GetBuiltinType(unsigned Id,
   return getFunctionType(ResType, ArgTypes, EPI);
 }
 
+/// Windows Itanium emits a C inline function as MSVC does, as a discardable
+/// ODR definition in each unit that uses it: the Universal CRT and Windows SDK
+/// headers define functions inline in C that no library defines.
+static bool isWindowsItaniumCInline(const ASTContext &Context) {
+  const llvm::Triple &T = Context.getTargetInfo().getTriple();
+  return T.isWindowsItaniumOrNTPOSIXEnvironment() &&
+         !T.isWindowsNTPOSIXEnvironment();
+}
+
 static GVALinkage basicGVALinkageForFunction(const ASTContext &Context,
                                              const FunctionDecl *FD) {
   if (!FD->isExternallyVisible())
@@ -13122,7 +13131,7 @@ static GVALinkage basicGVALinkageForFunction(const ASTContext &Context,
 
   if ((!Context.getLangOpts().CPlusPlus &&
        !Context.getTargetInfo().getCXXABI().isMicrosoft() &&
-       !FD->hasAttr<DLLExportAttr>()) ||
+       !isWindowsItaniumCInline(Context) && !FD->hasAttr<DLLExportAttr>()) ||
       FD->hasAttr<GNUInlineAttr>()) {
     // FIXME: This doesn't match gcc's behavior for dllexport inline functions.
 
