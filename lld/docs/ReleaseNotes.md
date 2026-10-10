@@ -103,6 +103,12 @@ from the [LLVM releases web site](https://llvm.org/releases/).
   reported as unresolvable before LTO, as the link without LTO resolves it
   with a local import.
 
+* `/lto-whole-program-visibility`, `/lto-validate-all-vtables-have-type-infos`
+  and `/lto-known-safe-vtables` work as ELF's `--lto-whole-program-visibility`,
+  `--lto-validate-all-vtables-have-type-infos` and `--lto-known-safe-vtables`
+  do. A vtable the image exports stays public.
+
+* A reference that binds to a definition in the image, or a dllimport
 * `-start-stop-symbols` defines a referenced `__start_X` and `__stop_X`, where
   `X` is a C identifier, around the input sections named `X` or `X$*`, as ELF
   linkers do, and `-boundary-symbols` defines a referenced `_etext`, `_edata`

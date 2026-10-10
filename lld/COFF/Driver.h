@@ -179,6 +179,10 @@ private:
 
   void maybeExportMinGWSymbols(const llvm::opt::InputArgList &args);
 
+  // Finds the vtables defined outside the bitcode without a type info, for
+  // /lto-validate-all-vtables-have-type-infos.
+  void ltoValidateAllVtablesHaveTypeInfos(const llvm::opt::InputArgList &args);
+
   // We don't want to add the same file more than once.
   // Files are uniquified by their filesystem and file number.
   std::set<llvm::sys::fs::UniqueID> visitedFiles;

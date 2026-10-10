@@ -25,6 +25,7 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/raw_ostream.h"
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace llvm::lto {
@@ -37,6 +38,7 @@ namespace lld::coff {
 class BitcodeFile;
 class InputFile;
 class COFFLinkerContext;
+class Symbol;
 
 class BitcodeCompiler {
 public:
@@ -55,6 +57,8 @@ private:
   std::vector<std::string> file_names;
   std::unique_ptr<llvm::raw_fd_ostream> indexFile;
   llvm::DenseSet<StringRef> thinIndices;
+  // The symbols the image exports, found when the first file is added.
+  std::optional<llvm::DenseSet<Symbol *>> exportedSyms;
 
   std::string getThinLTOOutputFile(StringRef path);
   llvm::lto::Config createConfig();

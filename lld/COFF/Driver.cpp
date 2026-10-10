@@ -23,6 +23,7 @@
 #include "lld/Common/Timer.h"
 #include "lld/Common/Version.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/BinaryFormat/Magic.h"
@@ -37,6 +38,7 @@
 #include "llvm/Support/BinaryStreamReader.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/GlobPattern.h"
 #include "llvm/Support/LEB128.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/Parallel.h"
@@ -1545,6 +1547,66 @@ void LinkerDriver::pullArm64ECIcallHelper() {
         ctx.symtab.addGCRoot("__icall_helper_arm64ec");
 }
 
+// Whole-program visibility upgrades the visibility of a class whose vtables
+// are all in the bitcode; a class with a vtable in a native object or a DLL
+// shows itself there by its type info, unless it has none. Such a vtable
+// disables the upgrade, as in the ELF port.
+void LinkerDriver::ltoValidateAllVtablesHaveTypeInfos(
+    const opt::InputArgList &args) {
+  DenseSet<StringRef> typeInfoSymbols;
+  SmallSetVector<StringRef, 0> vtableSymbols;
+  auto processVtableAndTypeInfoSymbols = [&](StringRef name) {
+    if (name.consume_front("_ZTI"))
+      typeInfoSymbols.insert(name);
+    else if (name.consume_front("_ZTV"))
+      vtableSymbols.insert(name);
+  };
+
+  for (ObjFile *f : ctx.objFileInstances) {
+    COFFObjectFile *obj = f->getCOFFObj();
+    for (const object::SymbolRef &sym : obj->symbols()) {
+      COFFSymbolRef coffSym = obj->getCOFFSymbol(sym);
+      if (!coffSym.isExternal() || coffSym.isUndefined())
+        continue;
+      if (Expected<StringRef> name = obj->getSymbolName(coffSym))
+        processVtableAndTypeInfoSymbols(*name);
+      else
+        consumeError(name.takeError());
+    }
+  }
+  // A DLL's exports, which an import library names.
+  for (ImportFile *f : ctx.importFileInstances)
+    if (f->impSym)
+      processVtableAndTypeInfoSymbols(
+          f->impSym->getName().drop_front(strlen("__imp_")));
+
+  SmallSetVector<StringRef, 0> vtableSymbolsWithNoRTTI;
+  for (StringRef s : vtableSymbols)
+    if (!typeInfoSymbols.contains(s))
+      vtableSymbolsWithNoRTTI.insert(s);
+
+  for (auto *arg : args.filtered(OPT_lto_known_safe_vtables)) {
+    StringRef knownSafeName = arg->getValue();
+    if (!knownSafeName.consume_front("_ZTV"))
+      Err(ctx) << "/lto-known-safe-vtables: expected symbol to start with "
+                  "_ZTV, but got "
+               << knownSafeName;
+    Expected<GlobPattern> pat = GlobPattern::create(knownSafeName);
+    if (!pat) {
+      Err(ctx) << "/lto-known-safe-vtables: " << pat.takeError();
+      continue;
+    }
+    vtableSymbolsWithNoRTTI.remove_if(
+        [&](StringRef s) { return pat->match(s); });
+  }
+
+  ctx.config.ltoAllVtablesHaveTypeInfos = vtableSymbolsWithNoRTTI.empty();
+  for (StringRef s : vtableSymbolsWithNoRTTI)
+    Msg(ctx) << "/lto-validate-all-vtables-have-type-infos: RTTI missing for "
+                "vtable _ZTV"
+             << s << ", /lto-whole-program-visibility disabled";
+}
+
 // In MinGW, if no symbols are chosen to be exported, then all symbols are
 // automatically exported by default. This behavior can be forced by the
 // -export-all-symbols option, so that it happens even when exports are
@@ -2331,6 +2393,12 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // Handle miscellaneous boolean flags.
   config->ltoPGOWarnMismatch = args.hasFlag(OPT_lto_pgo_warn_mismatch,
                                             OPT_lto_pgo_warn_mismatch_no, true);
+  config->ltoWholeProgramVisibility =
+      args.hasFlag(OPT_lto_whole_program_visibility,
+                   OPT_lto_whole_program_visibility_no, false);
+  config->ltoValidateAllVtablesHaveTypeInfos =
+      args.hasFlag(OPT_lto_validate_all_vtables_have_type_infos,
+                   OPT_lto_validate_all_vtables_have_type_infos_no, false);
   config->allowBind = args.hasFlag(OPT_allowbind, OPT_allowbind_no, true);
   config->allowIsolation =
       args.hasFlag(OPT_allowisolation, OPT_allowisolation_no, true);
@@ -2887,6 +2955,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     // are chosen to be exported.
     maybeExportMinGWSymbols(args);
   }
+
+  if (config->ltoValidateAllVtablesHaveTypeInfos)
+    ltoValidateAllVtablesHaveTypeInfos(args);
 
   // Do LTO by compiling bitcode input files to a set of native COFF files then
   // link those files (unless -thinlto-index-only was given, in which case we

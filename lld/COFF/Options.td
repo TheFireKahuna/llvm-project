@@ -326,6 +326,16 @@ defm lto_pgo_warn_mismatch: B<
      "lto-pgo-warn-mismatch",
      "turn on warnings about profile cfg mismatch (default)>",
      "turn off warnings about profile cfg mismatch">;
+defm lto_whole_program_visibility: B<"lto-whole-program-visibility",
+    "Asserts that the LTO link has whole program visibility",
+    "Asserts that the LTO link does not have whole program visibility (default)">;
+defm lto_validate_all_vtables_have_type_infos: B<
+    "lto-validate-all-vtables-have-type-infos",
+    "Validate that all vtables have type infos for LTO link",
+    "Do not validate that all vtables have type infos for LTO link (default)">;
+def lto_known_safe_vtables : P<"lto-known-safe-vtables",
+    "When -lto-validate-all-vtables-have-type-infos is enabled, skip validation "
+    "on these vtables (_ZTV symbols)">;
 def dash_dash_version : Flag<["--"], "version">,
   HelpText<"Display the version number and exit">;
 def threads
