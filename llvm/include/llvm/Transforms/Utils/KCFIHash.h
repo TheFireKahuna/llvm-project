@@ -47,6 +47,12 @@ LLVM_ABI uint32_t getTypePrefixMarker(bool NormalizeIntegers,
                                       bool GeneralizePointers,
                                       KCFIHashAlgorithm Algorithm);
 
+/// Returns true if Word can be the four bytes that precede the marker of a
+/// KCFI prefix without a second type on x86: the padding emitted there, nops
+/// or int3s. The word before a marker, a second type or a membership tag, is
+/// never compared with one.
+LLVM_ABI bool isX86TypePrefixPadding(uint32_t Word);
+
 } // end namespace llvm
 
 #endif // LLVM_TRANSFORMS_UTILS_KCFIHASH_H

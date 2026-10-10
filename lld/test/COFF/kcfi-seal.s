@@ -30,6 +30,7 @@
 # CHECK-NEXT:   00 00 addb %al, (%rax)
 # CHECK-NEXT:   nopl 0x71c5a06(%rax)
 # CHECK-NEXT:   movl $0x0, %eax
+# CHECK-NEXT:   nop
 # CHECK-EMPTY:
 # CHECK-NEXT: <vdirect>:
 
@@ -50,8 +51,15 @@
 # CHECK-NEXT:   movl $0x55555555, %eax
 
 ## Without identical code folding, a function called only directly is sealed
-## even if an identical one is listed. With it, the two share one chunk, which
-## stays unsealed because one of them is listed.
+## even if an identical one is listed, and the image leaves out its prefix.
+## With it, the two share one chunk, which stays unsealed because one of them
+## is listed.
+# NOICF:      <__cfi_icf_listed>:
+# NOICF-NEXT:   nopl 0x71c5a06(%rax)
+# NOICF-NEXT:   movl $0x77777777, %eax
+# NOICF:      <icf_listed>:
+# NOICF-NOT:    nopl
+# NOICF:      <icf_unlisted>:
 
 ## An object without guard metadata lists every function it references.
 # CHECK:      <__cfi_nocf_called>:
@@ -124,13 +132,14 @@ __cfi_direct:
 direct:
         retq
 
+## With a patchable prefix after the prefix, whose bytes the image then holds.
         .def vdirect; .scl 2; .type 32; .endef
         .section .text,"xr",one_only,vdirect
-        .p2align 4
 __cfi_vdirect:
         .long 0x00401f0f
         nopl 0x71c5a06(%rax)
         movl $0x66666666, %eax
+        nop
         .globl vdirect
 vdirect:
         retq

@@ -51,7 +51,8 @@ static std::vector<DefinedRegular *> getSymbols(const COFFLinkerContext &ctx) {
   for (ObjFile *file : ctx.objFileInstances)
     for (Symbol *b : file->getSymbols())
       if (auto *sym = dyn_cast_or_null<DefinedRegular>(b))
-        if (sym && !sym->getCOFFSymbol().isSectionDefinition())
+        if (sym && !sym->getCOFFSymbol().isSectionDefinition() &&
+            sym->getValue() >= sym->getChunk()->getElidedSize())
           v.push_back(sym);
   return v;
 }
@@ -117,7 +118,8 @@ void lld::coff::writeLLDMapFile(const COFFLinkerContext &ctx) {
       if (!sc)
         continue;
 
-      writeHeader(os, sc->getRVA(), sc->getSize(), sc->getAlignment());
+      writeHeader(os, sc->getRVA() + sc->getElidedSize(),
+                  sc->getSize() - sc->getElidedSize(), sc->getAlignment());
       os << indent8 << sc->file->getName() << ":(" << sc->getSectionName()
          << ")\n";
       for (DefinedRegular *sym : sectionSyms[sc])

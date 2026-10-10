@@ -67,6 +67,10 @@ public:
   // Returns the size of this chunk (even if this is a common or BSS.)
   size_t getSize() const;
 
+  // Returns the number of bytes at the start of this chunk that the image does
+  // not hold, since they overlap what precedes the chunk.
+  uint32_t getElidedSize() const;
+
   // Returns chunk alignment in power of two form. Value values are powers of
   // two from 1 to 8192.
   uint32_t getAlignment() const { return 1U << p2Align; }
@@ -131,7 +135,8 @@ public:
   void setEntryThunk(Defined *entryThunk);
 
 protected:
-  Chunk(Kind k = OtherKind) : chunkKind(k), hasData(true), p2Align(0) {}
+  Chunk(Kind k = OtherKind)
+      : chunkKind(k), hasData(true), p2Align(0), elidedPrefix(0) {}
 
   const Kind chunkKind;
 
@@ -145,7 +150,12 @@ public:
 public:
   // The alignment of this chunk, stored in log2 form. The writer uses the
   // value.
-  uint8_t p2Align : 7;
+  uint8_t p2Align : 4;
+
+  // Which bytes before the entry of a function no pointer reaches, padding and
+  // its KCFI prefix, the image leaves out of a section chunk, overlapping them
+  // with what precedes it: none, 12, 16, or the chunk's first alignment unit.
+  uint8_t elidedPrefix : 2;
 
   // The output section index for this chunk. The first valid section number is
   // one.
@@ -430,6 +440,18 @@ inline size_t Chunk::getSize() const {
   if (isa<SectionChunk>(this))
     return static_cast<const SectionChunk *>(this)->getSize();
   return static_cast<const NonSectionChunk *>(this)->getSize();
+}
+
+inline uint32_t Chunk::getElidedSize() const {
+  switch (elidedPrefix) {
+  case 1:
+    return 12;
+  case 2:
+    return 16;
+  case 3:
+    return getAlignment();
+  }
+  return 0;
 }
 
 inline uint32_t Chunk::getOutputCharacteristics() const {

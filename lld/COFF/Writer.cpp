@@ -1592,6 +1592,9 @@ std::optional<coff_symbol16> Writer::createSymbol(Defined *def) {
     OutputSection *os = ctx.getOutputSection(c);
     if (!os)
       return std::nullopt;
+    // Nor those in bytes the image leaves out.
+    if (def->getRVA() < c->getRVA() + c->getElidedSize())
+      return std::nullopt;
 
     sym.Value = def->getRVA() - os->getRVA();
     sym.SectionNumber = os->sectionIndex;
@@ -1867,7 +1870,8 @@ void Writer::assignAddresses() {
       // thunk.
       if (c->getEntryThunk())
         virtualSize += sizeof(uint32_t);
-      // No entry of a function with a KCFI prefix starts in a page's first
+      // The KCFI prefix of a function no pointer reaches overlaps what precedes
+      // it, and no other entry of a function with one starts in a page's first
       // bytes.
       if (ctx.typePrefixRecords)
         virtualSize = prefixes.place(c, rva, virtualSize);
@@ -3080,7 +3084,8 @@ void Writer::writeSections() {
         // rawSize; stop filling when we reach the end of raw data.
         if (off >= rawSize)
           break;
-        memset(secBuf + prevEnd, 0xCC, off - prevEnd);
+        // The bytes a chunk leaves out overlap what precedes it.
+        memset(secBuf + prevEnd, 0xCC, off + c->getElidedSize() - prevEnd);
         prevEnd = std::min(off + static_cast<uint32_t>(c->getSize()), rawSize);
       }
       memset(secBuf + prevEnd, 0xCC, rawSize - prevEnd);

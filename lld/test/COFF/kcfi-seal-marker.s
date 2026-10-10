@@ -11,9 +11,10 @@
 # RUN:   -debug:symtab -out:%t.exe
 # RUN: llvm-objdump -d %t.exe | FileCheck %s
 
-# CHECK:      <__cfi_ours>:
-# CHECK-NEXT:   nopl 0x71c5a06(%rax)
-# CHECK-NEXT:   movl $0x0, %eax
+## Ours is sealed, and the image leaves out its prefix.
+# CHECK:      <main>:
+# CHECK-NOT:    nopl
+# CHECK:      <ours>:
 # CHECK:      <__cfi_other>:
 # CHECK-NEXT:   nopl 0x12345678(%rax)
 # CHECK-NEXT:   movl $0x22222222, %eax
