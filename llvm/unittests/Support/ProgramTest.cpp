@@ -13,6 +13,7 @@
 #include "llvm/Support/ExponentialBackoff.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/Process.h"
 #include "llvm/Support/Signals.h"
 #include "gtest/gtest.h"
 #include <stdlib.h>
@@ -163,6 +164,59 @@ TEST_F(ProgramEnvTest, CreateProcessLongPath) {
   // Remove the long stdout.
   ASSERT_NO_ERROR(fs::remove(Twine(LongPath)));
   ASSERT_NO_ERROR(fs::remove(Twine(TestDirectory)));
+}
+
+TEST(ProgramTest, FindProgramByName) {
+  // A directory named like the program is skipped, and a directory longer
+  // than MAX_PATH is searched.
+  SmallString<128> TestDirectory;
+  ASSERT_NO_ERROR(
+      fs::createUniqueDirectory("find-program-test", TestDirectory));
+  SmallString<128> First(TestDirectory);
+  path::append(First, "first");
+  ASSERT_NO_ERROR(fs::create_directories(First + "\\tool"));
+  SmallString<512> Second(TestDirectory);
+  path::append(Second, std::string(150, 'a'), std::string(150, 'b'));
+  ASSERT_NO_ERROR(fs::create_directories(Second));
+  SmallString<512> Tool(Second);
+  path::append(Tool, "tool.exe");
+  {
+    std::error_code EC;
+    raw_fd_ostream OS(Tool, EC);
+    ASSERT_NO_ERROR(EC);
+  }
+
+  StringRef Paths[] = {First, Second};
+  ErrorOr<std::string> Found = findProgramByName("tool", Paths);
+  ASSERT_TRUE(bool(Found));
+  EXPECT_EQ(*Found, Tool);
+
+  ASSERT_NO_ERROR(fs::remove_directories(TestDirectory));
+}
+
+TEST(ProgramTest, FindProgramInQuotedPathEntry) {
+  // cmd.exe accepts a PATH entry in double quotes, as a directory with a
+  // semicolon in its name needs.
+  SmallString<128> TestDirectory;
+  ASSERT_NO_ERROR(
+      fs::createUniqueDirectory("find-program-test", TestDirectory));
+  SmallString<128> Tool(TestDirectory);
+  path::append(Tool, "tool.exe");
+  {
+    std::error_code EC;
+    raw_fd_ostream OS(Tool, EC);
+    ASSERT_NO_ERROR(EC);
+  }
+
+  std::optional<std::string> OldPath = sys::Process::GetEnv("PATH");
+  std::string Quoted = ("\"" + TestDirectory + "\"").str();
+  ASSERT_TRUE(::SetEnvironmentVariableA("PATH", Quoted.c_str()));
+  ErrorOr<std::string> Found = findProgramByName("tool");
+  ::SetEnvironmentVariableA("PATH", OldPath ? OldPath->c_str() : nullptr);
+  ASSERT_TRUE(bool(Found));
+  EXPECT_EQ(*Found, Tool);
+
+  ASSERT_NO_ERROR(fs::remove_directories(TestDirectory));
 }
 #endif
 
