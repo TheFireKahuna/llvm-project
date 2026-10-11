@@ -55,7 +55,6 @@
 # FWD-NEXT: ForwardedTo: a.iv
 # LIB:      a.dll:
 # LIB-NEXT: {{0+}} D __imp_iv
-# LIB-NOT:  b.dll:{{$}}
 # LIB-NOT:  __imp_iv
 
 #--- a.s

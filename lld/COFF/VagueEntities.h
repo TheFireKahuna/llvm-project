@@ -1,0 +1,52 @@
+//===- VagueEntities.h ------------------------------------------*- C++ -*-===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef LLD_COFF_VAGUE_ENTITIES_H
+#define LLD_COFF_VAGUE_ENTITIES_H
+
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Object/ArchiveWriter.h"
+#include <vector>
+
+namespace lld::coff {
+class COFFLinkerContext;
+
+// Under -import-slots, reports each pair of images of the load closure of the
+// image imageName, as the records of the DLLs it imports describe it, that
+// both keep an observable vague entity with default visibility: siblings that
+// no import path joins, or an image that keeps its copy while importing from
+// one that defines the entity.
+void checkVagueEntities(COFFLinkerContext &ctx, llvm::StringRef imageName);
+
+// Under -import-slots, adds to the import library of the DLL dllName a member
+// that records the entities it keeps, the DLLs it imports from and their
+// records. The member refers to buffer, which holds it.
+void addVagueEntityRecord(COFFLinkerContext &ctx, llvm::StringRef dllName,
+                          std::vector<llvm::NewArchiveMember> &members,
+                          std::vector<uint8_t> &buffer);
+
+// Under -import-slots and -offers-baseline, reports each entity the DLL dllName
+// keeps that the previous release, whose import library the option names, did
+// not: a DLL linked against that import library keeps its own copy.
+void checkOfferAdditions(COFFLinkerContext &ctx, llvm::StringRef dllName);
+
+// The name of the epoch export of the DLL, which changes when the entities it
+// keeps change, for -offers-epoch.
+llvm::StringRef getOffersEpoch(COFFLinkerContext &ctx);
+
+// Under -import-slots and -offers-epoch, in a DLL that offers data, exports
+// the epoch of the entities it keeps.
+void addOffersEpoch(COFFLinkerContext &ctx);
+
+// Under -import-slots, in a DLL that offers a shared entity, imports the epoch
+// of each DLL it imports from that exports one, so that a release of that DLL
+// with more offers refuses this DLL's load.
+void importOffersEpochs(COFFLinkerContext &ctx);
+} // namespace lld::coff
+
+#endif

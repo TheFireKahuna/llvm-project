@@ -188,6 +188,9 @@ public:
   // the image takes from a DLL that offers it is exported as a forwarder to
   // that DLL.
   void addOffers();
+
+  // The name of the epoch export of the entities the image keeps, if any.
+  StringRef offersEpoch;
   llvm::MapVector<Symbol *, DefinedImportData *> offeredFunctions;
 
   // The exports that forward to the instance of a DLL the image imports, by

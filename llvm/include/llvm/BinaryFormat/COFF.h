@@ -209,6 +209,21 @@ enum LinkRecordKind : uint64_t {
   // image's delay-load thunks call this object's helper. The payload is
   // empty.
   LinkRecordProtectedDelayIAT = 16,
+
+  // The observable vague entities with default visibility that a DLL keeps,
+  // which a linker shares along import paths, with the DLLs it imports from
+  // and their records in turn, in a member of the DLL's import library, so
+  // that a linker sees the whole static load closure of the DLLs it imports:
+  //
+  //   payload := count:ULEB128 image{count}
+  //   image   := name imports:ULEB128 index:ULEB128{imports}
+  //              entities:ULEB128 name{entities} epoch
+  //   name    := size:ULEB128 byte{size}
+  //
+  // The first image is the DLL itself, and index is that of an image of the
+  // payload it imports from. epoch is the name of the export whose import
+  // refuses a load beside a release that offers more, or empty.
+  LinkRecordVagueEntities = 18,
 };
 
 // The role of a definition that a LinkRecordBinding group lists.
