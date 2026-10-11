@@ -162,6 +162,17 @@ LLVM_ABI NewArchiveMember createLinkerFacts(StringRef ImportName,
                                             StringRef SymbolName,
                                             std::vector<uint8_t> &Buffer);
 
+/// Creates a member that imports \p Sym by name from the image
+/// \p ImportName, as data or code as \p Type says, for the import library of
+/// another image that forwards its export of \p Sym there: a linker that reads
+/// it binds the import to the image that holds \p Sym. The member refers to
+/// \p Buffer, which holds it.
+LLVM_ABI NewArchiveMember createImportMember(StringRef ImportName,
+                                             COFF::MachineTypes Machine,
+                                             StringRef Sym,
+                                             COFF::ImportType Type,
+                                             std::vector<uint8_t> &Buffer);
+
 } // namespace object
 } // namespace llvm
 
