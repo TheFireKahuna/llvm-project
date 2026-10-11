@@ -1922,12 +1922,11 @@ void ImportFile::parse() {
   // address pointed by the __imp_ symbol. (This allows you to call
   // DLL functions just like regular non-DLL functions.)
   if (isCode) {
-    // Under -import-slots, a DLL's offer of a function that the link defines
-    // in a COMDAT gives the function's address only: calls keep the image's
-    // copy, so the thunk takes no name.
-    auto *def = dyn_cast_or_null<DefinedRegular>(symtab.find(name));
-    if (symtab.ctx.config.importSlots && def && def->isCOMDAT &&
-        !symtab.isEC()) {
+    // Under -import-slots, a definition of the function in the link beats the
+    // import, or takes only the function's address from it where the DLL
+    // offers what the image shares, so the thunk takes no name.
+    if (symtab.ctx.config.importSlots && !symtab.isEC() &&
+        isa_and_nonnull<DefinedRegular>(symtab.find(name))) {
       thunkSym =
           make<DefinedImportThunk>(symtab.ctx, name, impSym, makeImportThunk());
     } else if (!symtab.isEC()) {

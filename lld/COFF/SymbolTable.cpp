@@ -768,32 +768,33 @@ bool SymbolTable::ignoresOffersOf(DefinedImportData *imp) const {
          ctx.config.ignoredOffers.contains(dll);
 }
 
-void SymbolTable::keepCopiesOfIgnoredOffers() {
-  if (!ctx.config.importSlots || ctx.hybridSymtab || isEC() ||
-      (ctx.config.delayLoads.empty() && ctx.config.ignoredOffers.empty()))
+void SymbolTable::bindImportsToDefinitions() {
+  if (!ctx.config.importSlots || ctx.hybridSymtab || isEC())
     return;
-  auto getIgnoredOffer = [&](StringRef name) -> DefinedImportData * {
-    auto *imp = dyn_cast_or_null<DefinedImportData>(impSymbol(name));
-    return imp && ignoresOffersOf(imp) ? imp : nullptr;
-  };
-  SmallVector<SectionChunk *, 4> chunks;
-  SmallVector<DefinedRegular *, 4> members;
-  for (Symbol *sym : weakData) {
-    auto *d = dyn_cast<DefinedRegular>(sym);
-    if (!d || !isa<ObjFile>(d->getFile()) || !isDefaultVisibility(d) ||
-        !getIgnoredOffer(d->getName()))
+  for (ImportFile *file : ctx.importFileInstances) {
+    DefinedImportData *imp = file->impSym;
+    if (&file->symtab != this || !imp || find(imp->getName()) != imp)
       continue;
-    collectWeakDataGroup(d, chunks, members, /*liveOnly=*/false);
-    for (DefinedRegular *m : members) {
-      Symbol *imp = getIgnoredOffer(m->getName());
-      if (!imp)
-        continue;
-      Log(ctx) << "Keeping " << printSymbol(m) << " in " << m->getFile()
-               << ": the image does not take "
-               << cast<DefinedImportData>(imp)->getDLLName() << "'s offer";
-      replaceSymbol<DefinedLocalImport>(imp, ctx, imp->getName(), m);
-      localImportChunks.push_back(cast<DefinedLocalImport>(imp)->getChunk());
-    }
+    StringRef name = imp->getName();
+    auto *d = dyn_cast_or_null<DefinedRegular>(
+        find(name.drop_front(strlen("__imp_"))));
+    if (!d || !isa<ObjFile>(d->getFile()))
+      continue;
+    // What the image takes from a DLL that offers it keeps the import: a
+    // shared vague definition, which the DLL's instance preempts, or whose
+    // address it gives.
+    DefinedRegular *leader = d->getChunk()->sym;
+    if (leader && leader->isCOMDAT && isShareableVagueName(leader->getName()) &&
+        isDefaultVisibility(leader) && !ignoresOffersOf(imp))
+      continue;
+    Log(ctx) << "Binding " << name << " to " << printSymbol(d) << " in "
+             << d->getFile();
+    // The import keeps a symbol of its own, which nothing in the link names.
+    file->impSym = make<DefinedImportData>(name, file, file->location);
+    if (auto *thunk = dyn_cast_or_null<DefinedImportThunk>(file->thunkSym))
+      thunk->wrappedSym = file->impSym;
+    replaceSymbol<DefinedLocalImport>(imp, ctx, name, d);
+    localImportChunks.push_back(cast<DefinedLocalImport>(imp)->getChunk());
   }
 }
 
@@ -1633,10 +1634,16 @@ Symbol *SymbolTable::addRegular(InputFile *f, StringRef n,
                                 const coff_symbol_generic *sym, SectionChunk *c,
                                 uint32_t sectionOffset, bool isWeak) {
   auto [s, wasInserted] = insert(n, f);
-  if (wasInserted || !isa<DefinedRegular>(s) || s->isWeak)
+  if (wasInserted || !isa<DefinedRegular>(s) || s->isWeak) {
+    // Under -import-slots, the import whose thunk the definition replaces
+    // keeps the thunk.
+    if (auto *thunk = dyn_cast<DefinedImportThunk>(s);
+        thunk && ctx.config.importSlots)
+      thunk->wrappedSym->file->thunkSym = make<DefinedImportThunk>(
+          ctx, thunk->getName(), thunk->wrappedSym, thunk->getChunk());
     replaceSymbol<DefinedRegular>(s, f, n, /*IsCOMDAT*/ false,
                                   /*IsExternal*/ true, sym, c, isWeak);
-  else if (!isWeak)
+  } else if (!isWeak)
     reportDuplicate(s, f, c, sectionOffset);
   return s;
 }
