@@ -276,6 +276,83 @@ class AIXDumpExtractor(object):
         return out.find("SHROBJ") != -1
 
 
+class COFFExportExtractor(object):
+    """
+    COFFExportExtractor - Extract the symbols a PE image exports, which are
+    what its import library offers, from its export table using llvm-readobj.
+    """
+
+    @staticmethod
+    def find_tool():
+        """
+        Search for the llvm-readobj executable and return the path.
+        """
+        return shutil.which("llvm-readobj")
+
+    def __init__(self, static_lib):
+        self.tool = self.find_tool()
+        if self.tool is None:
+            # ERROR no tool found
+            print("ERROR: Could not find llvm-readobj")
+            sys.exit(1)
+
+    def extract(self, lib):
+        """
+        Extract the exports of a PE image and return them as a list of parsed
+        symbols: an export whose address is in a code section is a function,
+        and any other, a forwarder included, is data.
+        """
+        cmd = [self.tool, "--sections", "--coff-exports", lib]
+        out = subprocess.check_output(cmd).decode()
+        code_ranges = []
+        syms = []
+        section = None
+        export = None
+        for line in out.splitlines():
+            line = line.strip()
+            if line == "Section {":
+                section = {}
+            elif line == "Export {":
+                export = {}
+            elif line == "}":
+                if section is not None and "rva" in section:
+                    if section.get("code"):
+                        code_ranges.append(
+                            (section["rva"], section["rva"] + section["size"])
+                        )
+                    section = None
+                elif export is not None and "name" in export:
+                    rva = export.get("rva")
+                    is_code = rva is not None and any(
+                        start <= rva < end for start, end in code_ranges
+                    )
+                    syms.append(
+                        {
+                            "name": export["name"],
+                            "type": "FUNC" if is_code else "OBJECT",
+                            "is_defined": True,
+                        }
+                    )
+                    export = None
+            elif section is not None:
+                key, _, value = line.partition(":")
+                if key == "VirtualAddress":
+                    section["rva"] = int(value, 16)
+                elif key == "VirtualSize":
+                    section["size"] = int(value, 16)
+                elif line.startswith("IMAGE_SCN_CNT_CODE"):
+                    section["code"] = True
+            elif export is not None and ":" in line:
+                key, _, value = line.partition(":")
+                value = value.strip()
+                if key == "Name":
+                    export["name"] = value
+                elif key == "RVA":
+                    export["rva"] = int(value, 16)
+        syms = [s for s in syms if s["name"] not in extract_ignore_names]
+        return util.read_syms_from_list(sorted(set(repr(s) for s in syms)))
+
+
 def is_static_library(lib_file):
     """
     Determine if a given library is static or shared.
@@ -296,7 +373,9 @@ def extract_symbols(lib_file, static_lib=None):
     """
     if static_lib is None:
         static_lib = is_static_library(lib_file)
-    if sys.platform.startswith("aix"):
+    if util.is_pe(lib_file):
+        extractor = COFFExportExtractor(static_lib=static_lib)
+    elif sys.platform.startswith("aix"):
         extractor = AIXDumpExtractor(static_lib=static_lib)
     elif ReadElfExtractor.find_tool() and not static_lib:
         extractor = ReadElfExtractor(static_lib=static_lib)
