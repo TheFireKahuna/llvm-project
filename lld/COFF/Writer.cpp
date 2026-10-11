@@ -2922,8 +2922,11 @@ void Writer::createGuardCFTables() {
     if (file->hasGuardCF()) {
       std::vector<Symbol *> fids;
       getSymbolsFromSections(file, file->getGuardFidChunks(), fids);
+      // A function whose address is a DLL's instance has no address taken
+      // in the image.
       for (Symbol *s : fids)
-        if (!guardPointerStubs.contains({file, s}))
+        if (!guardPointerStubs.contains({file, s}) &&
+            !file->symtab.offeredFunctions.contains(s))
           addSymbolToRVASet(takenSyms, cast<Defined>(s));
       std::vector<Symbol *> giats;
       getSymbolsFromSections(file, file->getGuardIATChunks(), giats);

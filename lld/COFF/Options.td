@@ -266,6 +266,7 @@ defm demangle : B<"demangle",
 def include_optional : Joined<["/", "-", "/?", "-?"], "includeoptional:">,
     HelpText<"Add symbol as undefined, but allow it to remain undefined">;
 def import_slots : F<"import-slots">;
+def ignore_offers : Joined<["/", "-", "/?", "-?"], "ignore-offers:">;
 def kill_at : F<"kill-at">;
 defm lld_allow_duplicate_weak : B_priv<"lld-allow-duplicate-weak">;
 def lldemit : P<"lldemit", "Specify output type">;

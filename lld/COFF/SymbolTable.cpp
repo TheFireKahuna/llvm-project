@@ -27,6 +27,7 @@
 #include "llvm/IR/Mangler.h"
 #include "llvm/LTO/LTO.h"
 #include "llvm/Object/COFFModuleDefinition.h"
+#include "llvm/Support/DataExtractor.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/GlobPattern.h"
 #include "llvm/Support/Parallel.h"
@@ -355,6 +356,118 @@ static bool isLazyImport(Symbol *s) {
   return isa<LazyDLLSymbol>(s);
 }
 
+bool isShareableVagueName(StringRef name) {
+  // Vtables and type descriptors are bound by other rules, and data that MSVC
+  // mangles keeps the per-image copies its code expects.
+  if (name.starts_with("?") || name.starts_with("."))
+    return false;
+  return !(name.size() > 3 && name.starts_with("_ZT") &&
+           StringRef("VTCIS").contains(name[3]));
+}
+
+// Whether the lazy symbol s is an import library's offer of data or code, as
+// type says.
+static bool isLazyImportOf(Symbol *s, ImportType type) {
+  auto *a = dyn_cast<LazyArchive>(s);
+  if (!a || a->pendingArchiveLoad)
+    return false;
+  MemoryBufferRef mb = a->getMemberBuffer();
+  if (identify_magic(mb.getBuffer()) != file_magic::coff_import_library)
+    return false;
+  auto *hdr = reinterpret_cast<const coff_import_header *>(mb.getBufferStart());
+  return hdr->getType() == type;
+}
+
+static bool isLazyDataImport(Symbol *s) {
+  return isLazyImportOf(s, IMPORT_DATA);
+}
+
+// Adds to functions the leaders of the COMDAT groups of functions with default
+// visibility that file defines and whose addresses are significant: listed in
+// its address-significance table, or any if it has none.
+static void collectWeakFunctions(ObjFile *file,
+                                 std::vector<Symbol *> &functions) {
+  ArrayRef<Symbol *> syms = file->getSymbols();
+  auto consider = [&](Symbol *s) {
+    auto *d = dyn_cast_or_null<DefinedRegular>(s);
+    if (!d || d->getFile() != file || !d->isCOMDAT)
+      return;
+    SectionChunk *c = d->getChunk();
+    if (!c || c->sym != d ||
+        !(c->header->Characteristics & IMAGE_SCN_CNT_CODE) ||
+        c->selection == IMAGE_COMDAT_SELECT_NODUPLICATES ||
+        !isShareableVagueName(d->getName()) || !file->hasDefaultVisibility(d))
+      return;
+    functions.push_back(d);
+  };
+  if (!file->addrsigSec) {
+    for (Symbol *s : syms)
+      consider(s);
+    return;
+  }
+  ArrayRef<uint8_t> contents;
+  cantFail(file->getCOFFObj()->getSectionContents(file->addrsigSec, contents));
+  DataExtractor data(contents, /*IsLittleEndian=*/true);
+  DataExtractor::Cursor cur(0);
+  while (cur && !data.eof(cur)) {
+    uint64_t index = data.getULEB128(cur);
+    if (cur && index < syms.size())
+      consider(syms[index]);
+  }
+  // The table is checked where identical code folding reads it.
+  consumeError(cur.takeError());
+}
+
+// The name of the guard variable of the variable named name: GV followed by
+// the variable's name, with the length prefix of a source name that the
+// Itanium ABI leaves unmangled (_ZGV2iv for iv).
+static std::string getGuardName(StringRef name) {
+  if (name.consume_front("_Z"))
+    return ("_ZGV" + name).str();
+  return ("_ZGV" + Twine(name.size()) + name).str();
+}
+
+// Whether a data definition in a COMDAT has default visibility, so that a
+// DLL's instance may preempt it, as on ELF.
+static bool isDefaultVisibility(DefinedRegular *d) {
+  auto *file = dyn_cast<ObjFile>(d->getFile());
+  return !file || file->hasDefaultVisibility(d);
+}
+
+// Adds to chunks the sections of the COMDAT group that leader heads, and to
+// members its external symbols, leader first.
+static void collectComdatGroup(DefinedRegular *leader,
+                               SmallVectorImpl<SectionChunk *> &chunks,
+                               SmallVectorImpl<DefinedRegular *> &members) {
+  size_t begin = chunks.size();
+  SectionChunk *sc = leader->getChunk();
+  chunks.push_back(sc);
+  for (SectionChunk &child : sc->children())
+    chunks.push_back(&child);
+  ArrayRef<SectionChunk *> group = ArrayRef(chunks).drop_front(begin);
+  members.push_back(leader);
+  for (Symbol *s : cast<ObjFile>(leader->getFile())->getSymbols())
+    if (auto *d = dyn_cast_or_null<DefinedRegular>(s);
+        d && d != leader && llvm::is_contained(group, d->getChunk()) &&
+        d->getCOFFSymbol().isExternal())
+      members.push_back(d);
+}
+
+// Adds to chunks and members the COMDAT group of the data definition d, and
+// that of its guard where its group does not hold the guard, as clang emits
+// it for COFF. Once liveness is decided, a guard the image discards is left.
+void SymbolTable::collectWeakDataGroup(
+    DefinedRegular *d, SmallVectorImpl<SectionChunk *> &chunks,
+    SmallVectorImpl<DefinedRegular *> &members, bool liveOnly) {
+  chunks.clear();
+  members.clear();
+  collectComdatGroup(d, chunks, members);
+  auto *g = dyn_cast_or_null<DefinedRegular>(find(getGuardName(d->getName())));
+  if (g && g->isCOMDAT && isa<ObjFile>(g->getFile()) &&
+      (!liveOnly || g->getChunk()->live) && !llvm::is_contained(members, g))
+    collectComdatGroup(g, chunks, members);
+}
+
 DefinedImportData *SymbolTable::findInteriorImport(DefinedImportData *imp,
                                                    int64_t offset) {
   if (offset <= 0)
@@ -520,6 +633,48 @@ bool SymbolTable::loadLocalImportMembers() {
       lazies.push_back(l);
   }
 
+  // What an import library offers of the COMDAT definitions of the link loads
+  // the offer, as ELF's definition in a shared object preempts the same
+  // definition: a function's gives the function's address to every
+  // address-take, and data's, with those of the other external symbols of its
+  // group and of its guard, takes the data's place.
+  std::vector<Symbol *> offers;
+  if (ctx.config.importSlots && !ctx.hybridSymtab && !isEC()) {
+    for (; weakFunctionObjects != ctx.objFileInstances.size();
+         ++weakFunctionObjects)
+      if (ObjFile *file = ctx.objFileInstances[weakFunctionObjects];
+          &file->symtab == this)
+        collectWeakFunctions(file, weakFunctions);
+    for (Symbol *sym : weakFunctions)
+      if (isa<DefinedRegular>(sym))
+        if (Symbol *l = find(("__imp_" + sym->getName()).str());
+            l && isLazyImportOf(l, IMPORT_CODE))
+          offers.push_back(l);
+
+    auto addOffer = [&](StringRef name) {
+      Symbol *l = find(("__imp_" + name).str());
+      if (l && isLazyDataImport(l))
+        offers.push_back(l);
+      return l && (isa<DefinedImportData>(l) || isLazyDataImport(l));
+    };
+    SmallVector<SectionChunk *, 4> chunks;
+    SmallVector<DefinedRegular *, 4> members;
+    for (Symbol *sym : weakData) {
+      auto *d = dyn_cast<DefinedRegular>(sym);
+      if (!d || !isDefaultVisibility(d) || !addOffer(sym->getName()))
+        continue;
+      addOffer(getGuardName(d->getName()));
+      if (!isa<ObjFile>(d->getFile()))
+        continue;
+      chunks.clear();
+      members.clear();
+      collectComdatGroup(d, chunks, members);
+      for (DefinedRegular *m : members)
+        if (m != d)
+          addOffer(m->getName());
+    }
+  }
+
   // Loading a lazy object parses it at once, which may add to impUndefs or
   // define a symbol that is still to be loaded.
   bool loaded = referenced;
@@ -528,6 +683,14 @@ bool SymbolTable::loadLocalImportMembers() {
       continue;
     Log(ctx) << "Loading lazy " << l->getName() << " from "
              << l->getFile()->getName() << " for __imp_" << l->getName();
+    forceLazy(l);
+    loaded = true;
+  }
+  for (Symbol *l : offers) {
+    if (!l->isLazy() || l->pendingArchiveLoad)
+      continue;
+    Log(ctx) << "Loading lazy " << l->getName() << " from "
+             << l->getFile()->getName() << " for its offer";
     forceLazy(l);
     loaded = true;
   }
@@ -587,6 +750,232 @@ bool SymbolTable::handleMinGWAutomaticImport(Symbol *sym, StringRef name) {
     }
   }
   return true;
+}
+
+void SymbolTable::preemptSymbol(Symbol *sym, DefinedImportData *imp) {
+  Log(ctx) << "Preempting " << printSymbol(sym) << " in " << sym->getFile()
+           << " with its instance in " << imp->getDLLName();
+  imp->file->live = true;
+  preemptedGroupImports.insert(imp->file);
+  sym->replaceKeepingName(imp, sizeof(DefinedImportData));
+  sym->isRuntimePseudoReloc = true;
+  preemptedData.insert(sym);
+}
+
+bool SymbolTable::ignoresOffersOf(DefinedImportData *imp) const {
+  std::string dll = imp->getDLLName().lower();
+  return ctx.config.delayLoads.contains(dll) ||
+         ctx.config.ignoredOffers.contains(dll);
+}
+
+void SymbolTable::keepCopiesOfIgnoredOffers() {
+  if (!ctx.config.importSlots || ctx.hybridSymtab || isEC() ||
+      (ctx.config.delayLoads.empty() && ctx.config.ignoredOffers.empty()))
+    return;
+  auto getIgnoredOffer = [&](StringRef name) -> DefinedImportData * {
+    auto *imp = dyn_cast_or_null<DefinedImportData>(impSymbol(name));
+    return imp && ignoresOffersOf(imp) ? imp : nullptr;
+  };
+  SmallVector<SectionChunk *, 4> chunks;
+  SmallVector<DefinedRegular *, 4> members;
+  for (Symbol *sym : weakData) {
+    auto *d = dyn_cast<DefinedRegular>(sym);
+    if (!d || !isa<ObjFile>(d->getFile()) || !isDefaultVisibility(d) ||
+        !getIgnoredOffer(d->getName()))
+      continue;
+    collectWeakDataGroup(d, chunks, members, /*liveOnly=*/false);
+    for (DefinedRegular *m : members) {
+      Symbol *imp = getIgnoredOffer(m->getName());
+      if (!imp)
+        continue;
+      Log(ctx) << "Keeping " << printSymbol(m) << " in " << m->getFile()
+               << ": the image does not take "
+               << cast<DefinedImportData>(imp)->getDLLName() << "'s offer";
+      replaceSymbol<DefinedLocalImport>(imp, ctx, imp->getName(), m);
+      localImportChunks.push_back(cast<DefinedLocalImport>(imp)->getChunk());
+    }
+  }
+}
+
+void SymbolTable::preemptWeakData() {
+  if (!ctx.config.importSlots || ctx.hybridSymtab || isEC() || weakData.empty())
+    return;
+  llvm::TimeTraceScope timeScope("Preempt weak data");
+  DenseSet<Symbol *> seen;
+  SmallVector<SectionChunk *, 4> chunks;
+  SmallVector<DefinedRegular *, 4> members;
+  SmallVector<DefinedImportData *, 4> imports;
+  for (Symbol *sym : weakData) {
+    auto *d = dyn_cast<DefinedRegular>(sym);
+    if (!d || !seen.insert(d).second || !isa<ObjFile>(d->getFile()) ||
+        !d->getChunk()->live || !isDefaultVisibility(d))
+      continue;
+    auto *imp = dyn_cast_or_null<DefinedImportData>(impSymbol(d->getName()));
+    if (!imp)
+      continue;
+
+    collectWeakDataGroup(d, chunks, members, /*liveOnly=*/true);
+
+    // The group moves as a whole: an image that kept any of it would run its
+    // own initialization of the DLL's instance, or keep a second guard.
+    imports.clear();
+    for (DefinedRegular *m : members) {
+      auto *mi = dyn_cast_or_null<DefinedImportData>(impSymbol(m->getName()));
+      if (mi && mi->getDLLName().equals_insensitive(imp->getDLLName())) {
+        imports.push_back(mi);
+        continue;
+      }
+      Err(ctx) << m->getFile() << ": " << printSymbol(d) << " is provided by "
+               << imp->getDLLName() << ", but " << printSymbol(m)
+               << ", which belongs with it, is "
+               << (mi ? "provided by " + mi->getDLLName().str()
+                      : "not provided by " + imp->getDLLName().str());
+    }
+    if (imports.size() != members.size())
+      continue;
+
+    for (auto [m, mi] : llvm::zip_equal(members, imports))
+      preemptSymbol(m, mi);
+    for (SectionChunk *c : chunks) {
+      c->live = false;
+      for (const coff_relocation &rel : c->getRelocs())
+        if (auto *imp = dyn_cast_or_null<DefinedImportData>(
+                c->file->getSymbol(rel.SymbolTableIndex));
+            imp && !imp->isRuntimePseudoReloc)
+          preemptedGroupImports.insert(imp->file);
+    }
+  }
+  if (preemptedData.empty())
+    return;
+
+  // An export of preempted data forwards to the DLL's instance.
+  forwardExports([&](Symbol *s) -> DefinedImportData * {
+    return preemptedData.contains(s) ? cast<DefinedImportData>(s) : nullptr;
+  });
+}
+
+static StringRef getForwardTarget(DefinedImportData *imp);
+
+void SymbolTable::forwardExports(
+    function_ref<DefinedImportData *(Symbol *)> getInstance) {
+  // Exports that an LTO object's directives add are matched by name.
+  for (Export &e : exports) {
+    Symbol *s = e.sym;
+    if (!s && e.forwardTo.empty())
+      s = find(e.name);
+    DefinedImportData *imp = s ? getInstance(s) : nullptr;
+    if (!imp)
+      continue;
+    if (!e.extName.empty())
+      e.name = e.extName;
+    e.extName = {};
+    e.forwardTo = getForwardTarget(imp);
+    e.sym = nullptr;
+    forwardedImports[e.name] = imp;
+  }
+}
+
+// The forwarder of an export to the instance that imp imports: the DLL's name
+// without its extension, and the export's name or ordinal.
+static StringRef getForwardTarget(DefinedImportData *imp) {
+  StringRef dll = imp->getDLLName();
+  std::string target = imp->file->hdr->getNameType() == IMPORT_ORDINAL
+                           ? "#" + std::to_string(imp->getOrdinal())
+                           : imp->getExternalName().str();
+  return saver().save(dll.take_front(dll.rfind('.')) + "." + target);
+}
+
+void SymbolTable::addOffers() {
+  if (!ctx.config.importSlots || ctx.hybridSymtab || isEC() ||
+      (!ctx.config.dll && ctx.config.implib.empty()))
+    return;
+  // The names exported already, which an offer does not export again. An
+  // offer is generated by the linker, and gives way to any other export.
+  DenseSet<StringRef> exported;
+  for (Export &e : exports)
+    exported.insert(e.extName.empty() ? e.name : e.extName);
+  auto offer = [&](Symbol *s, bool data, DefinedImportData *forward) {
+    if (!exported.insert(s->getName()).second)
+      return;
+    Export e;
+    e.name = s->getName();
+    e.data = data;
+    e.source = ExportSource::ExportAll;
+    if (forward) {
+      e.forwardTo = getForwardTarget(forward);
+      forwardedImports[e.name] = forward;
+    } else {
+      e.sym = s;
+      e.symbolName = e.name;
+    }
+    exports.push_back(e);
+  };
+
+  // The data with default visibility in a COMDAT that the image keeps, with
+  // the other external symbols of its group and its guard.
+  SmallVector<SectionChunk *, 4> chunks;
+  SmallVector<DefinedRegular *, 4> members;
+  for (Symbol *sym : weakData) {
+    auto *d = dyn_cast<DefinedRegular>(sym);
+    if (!d || !isa<ObjFile>(d->getFile()) || !d->getChunk()->live ||
+        !isDefaultVisibility(d))
+      continue;
+    collectWeakDataGroup(d, chunks, members, /*liveOnly=*/true);
+    for (DefinedRegular *m : members)
+      offer(m, /*data=*/true, nullptr);
+  }
+  // The functions whose addresses are significant.
+  for (Symbol *sym : weakFunctions)
+    if (auto *d = dyn_cast<DefinedRegular>(sym);
+        d && d->getChunk()->live && !offeredFunctions.contains(d))
+      offer(d, /*data=*/false, nullptr);
+  // What the image imports from a DLL that offers it, forwarded to that DLL,
+  // so that a path through this image reaches the instance, whether or not
+  // the image kept a copy.
+  auto getOffer = [&](StringRef name) -> DefinedImportData * {
+    auto *imp = dyn_cast_or_null<DefinedImportData>(impSymbol(name));
+    if (!imp || !imp->file->live || ignoresOffersOf(imp))
+      return nullptr;
+    return imp;
+  };
+  for (Symbol *s : preemptedData)
+    offer(s, /*data=*/true, cast<DefinedImportData>(s));
+  for (Symbol *sym : weakData) {
+    auto *d = dyn_cast<DefinedRegular>(sym);
+    if (!d || !isa<ObjFile>(d->getFile()) || !isDefaultVisibility(d))
+      continue;
+    collectWeakDataGroup(d, chunks, members, /*liveOnly=*/false);
+    for (DefinedRegular *m : members)
+      if (DefinedImportData *imp = getOffer(m->getName()))
+        offer(m, /*data=*/true, imp);
+  }
+  for (auto &[f, imp] : offeredFunctions)
+    offer(f, /*data=*/false, imp);
+  for (Symbol *f : weakFunctions)
+    if (DefinedImportData *imp = getOffer(f->getName());
+        imp && imp->file->thunkSym)
+      offer(f, /*data=*/false, imp);
+}
+
+void SymbolTable::bindOfferedFunctions() {
+  if (!ctx.config.importSlots || ctx.hybridSymtab || isEC() ||
+      weakFunctions.empty())
+    return;
+  for (Symbol *sym : weakFunctions) {
+    auto *d = dyn_cast<DefinedRegular>(sym);
+    if (!d || !d->getChunk()->live || offeredFunctions.contains(d))
+      continue;
+    auto *imp = dyn_cast_or_null<DefinedImportData>(impSymbol(d->getName()));
+    if (!imp || !imp->file->thunkSym || ignoresOffersOf(imp))
+      continue;
+    Log(ctx) << "Binding the address of " << printSymbol(d) << " in "
+             << d->getFile() << " to its instance in " << imp->getDLLName();
+    imp->file->live = true;
+    offeredFunctions[d] = imp;
+  }
+  // An export of the function forwards to the DLL's instance.
+  if (!offeredFunctions.empty())
+    forwardExports([&](Symbol *s) { return offeredFunctions.lookup(s); });
 }
 
 /// Helper function for reportUnresolvable and resolveRemainingUndefines.
@@ -1257,6 +1646,12 @@ SymbolTable::addComdat(InputFile *f, StringRef n,
                        const coff_symbol_generic *sym) {
   auto [s, wasInserted] = insert(n, f);
   if (wasInserted || !isa<DefinedRegular>(s)) {
+    // Under -import-slots, the import whose thunk the definition replaces
+    // keeps the thunk, which serves only the function's address.
+    if (auto *thunk = dyn_cast<DefinedImportThunk>(s);
+        thunk && ctx.config.importSlots)
+      thunk->wrappedSym->file->thunkSym = make<DefinedImportThunk>(
+          ctx, thunk->getName(), thunk->wrappedSym, thunk->getChunk());
     replaceSymbol<DefinedRegular>(s, f, n, /*IsCOMDAT*/ true,
                                   /*IsExternal*/ true, sym, nullptr);
     return {cast<DefinedRegular>(s), true};

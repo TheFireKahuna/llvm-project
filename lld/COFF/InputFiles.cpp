@@ -602,6 +602,23 @@ void ObjFile::readLinkRecords() {
       }
       continue;
     }
+    if (cur && kind == LinkRecordBinding) {
+      linkRecords->listsBindings = true;
+      DataExtractor group(contents.slice(start, size), /*IsLittleEndian=*/true);
+      DataExtractor::Cursor c(0);
+      while (c && !group.eof(c)) {
+        uint64_t index = group.getULEB128(c);
+        uint64_t role = group.getULEB128(c);
+        if (c && role == LinkBindingDefault)
+          linkRecords->defaultBindings.insert(index);
+      }
+      if (Error e = c.takeError()) {
+        Err(symtab.ctx) << this << ": .llvm_link_records is malformed: "
+                        << std::move(e);
+        return;
+      }
+      continue;
+    }
     if (cur && kind == LinkRecordKCFIImportLists) {
       linkRecords->listsKCFIImports = true;
       symtab.ctx.kcfi.listsImports = true;
@@ -639,6 +656,13 @@ void ObjFile::readLinkRecords() {
       (capabilities & LinkRecordsCallOnly) && !symtab.isEC();
   if (!linkRecords->listsCallOnly)
     linkRecords->callOnlyRefs.clear();
+}
+
+bool ObjFile::hasDefaultVisibility(DefinedRegular *d) const {
+  if (!linkRecords || !linkRecords->listsBindings)
+    return true;
+  return linkRecords->defaultBindings.contains(
+      coffObj->getSymbolIndex(d->getCOFFSymbol()));
 }
 
 // Reads a group of pins. A pin naming a section's symbol pins the start of the
@@ -1496,6 +1520,16 @@ std::optional<Symbol *> ObjFile::createDefined(
       c->sym = cast<DefinedRegular>(leader);
       c->selection = selection;
       cast<DefinedRegular>(leader)->data = &c->repl;
+      // Native thread-local data cannot be imported, and a guard follows the
+      // variable it guards.
+      if (symtab.ctx.config.importSlots && sym.isExternal() &&
+          selection != IMAGE_COMDAT_SELECT_NODUPLICATES &&
+          !(c->header->Characteristics &
+            (IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_DISCARDABLE)) &&
+          !c->getSectionName().starts_with(".tls") &&
+          isShareableVagueName(leader->getName()) &&
+          !leader->getName().starts_with("_ZGV"))
+        symtab.weakData.push_back(leader);
     } else {
       sparseChunks[sectionNumber] = nullptr;
     }
@@ -1888,7 +1922,15 @@ void ImportFile::parse() {
   // address pointed by the __imp_ symbol. (This allows you to call
   // DLL functions just like regular non-DLL functions.)
   if (isCode) {
-    if (!symtab.isEC()) {
+    // Under -import-slots, a DLL's offer of a function that the link defines
+    // in a COMDAT gives the function's address only: calls keep the image's
+    // copy, so the thunk takes no name.
+    auto *def = dyn_cast_or_null<DefinedRegular>(symtab.find(name));
+    if (symtab.ctx.config.importSlots && def && def->isCOMDAT &&
+        !symtab.isEC()) {
+      thunkSym =
+          make<DefinedImportThunk>(symtab.ctx, name, impSym, makeImportThunk());
+    } else if (!symtab.isEC()) {
       thunkSym = symtab.addImportThunk(name, impSym, makeImportThunk());
     } else {
       thunkSym = symtab.addImportThunk(
@@ -1993,6 +2035,22 @@ void BitcodeFile::parse() {
         sym = comdat[comdatIndex].first;
         if (cast<DefinedRegular>(sym)->data == nullptr)
           cast<DefinedRegular>(sym)->data = &fakeSC->repl;
+        // A function whose address is significant may be offered too, which
+        // LTO keeps for the address-takes the native link binds to the offer.
+        if (symtab.ctx.config.importSlots && comdat[comdatIndex].second &&
+            objSym.isExecutable() && !objSym.canBeOmittedFromSymbolTable() &&
+            objSym.getVisibility() == GlobalValue::DefaultVisibility &&
+            isShareableVagueName(symName))
+          symtab.weakFunctions.push_back(sym);
+        // Found before LTO, the DLL's offer keeps the definition from being
+        // final in the image.
+        if (symtab.ctx.config.importSlots && comdat[comdatIndex].second &&
+            obj->getComdatTable()[comdatIndex].second !=
+                Comdat::NoDeduplicate &&
+            !objSym.isExecutable() && !objSym.isTLS() &&
+            objSym.getVisibility() == GlobalValue::DefaultVisibility &&
+            isShareableVagueName(symName) && !symName.starts_with("_ZGV"))
+          symtab.weakData.push_back(sym);
       } else if (comdat[comdatIndex].second) {
         sym = symtab.addRegular(this, symName, nullptr, fakeSC);
       } else {

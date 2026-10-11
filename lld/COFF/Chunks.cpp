@@ -503,7 +503,14 @@ Defined *SectionChunk::getImportSiteTarget(const coff_relocation &rel) const {
   Symbol *s = file->getSymbol(rel.SymbolTableIndex);
   if (auto *thunk = dyn_cast<DefinedImportThunk>(s))
     return thunk->wrappedSym;
-  return cast<Defined>(cast<DefinedImportData>(s)->file->thunkSym);
+  // Data that resolved to its import, and a function whose address is a DLL's
+  // instance, are reached through the import's entry.
+  if (DefinedImportData *offer = file->symtab.offeredFunctions.lookup(s))
+    return offer;
+  auto *data = cast<DefinedImportData>(s);
+  if (data->isRuntimePseudoReloc)
+    return data->file->impSym;
+  return cast<Defined>(data->file->thunkSym);
 }
 
 const ImportSlot *

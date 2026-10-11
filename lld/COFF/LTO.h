@@ -39,6 +39,8 @@ class BitcodeFile;
 class InputFile;
 class COFFLinkerContext;
 class Symbol;
+class SymbolTable;
+class DefinedImportData;
 
 class BitcodeCompiler {
 public:
@@ -58,6 +60,10 @@ private:
   std::unique_ptr<llvm::raw_fd_ostream> indexFile;
   llvm::DenseSet<StringRef> thinIndices;
   std::vector<Symbol *> prevailingSyms;
+  // The definitions that the instances of DLLs preempt once every file is
+  // added, which LTO does not take as prevailing.
+  std::vector<std::tuple<SymbolTable *, Symbol *, DefinedImportData *>>
+      preemptedSyms;
   // The symbols the image exports, found when the first file is added.
   std::optional<llvm::DenseSet<Symbol *>> exportedSyms;
   bool addedFile = false;

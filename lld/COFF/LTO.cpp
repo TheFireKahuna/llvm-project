@@ -10,6 +10,7 @@
 #include "COFFLinkerContext.h"
 #include "Config.h"
 #include "InputFiles.h"
+#include "SymbolTable.h"
 #include "Symbols.h"
 #include "lld/Common/Args.h"
 #include "lld/Common/CommonLinkerContext.h"
@@ -201,6 +202,54 @@ static bool isFinalInImage(BitcodeFile &f, const lto::InputFile::Symbol &objSym,
   return isDefinedInImage(sym);
 }
 
+// Returns whether a DLL the image imports from offers the COMDAT data that
+// objSym defines, whose instance preempts the definition after LTO.
+static bool isOfferedWeakData(BitcodeFile &f,
+                              const lto::InputFile::Symbol &objSym,
+                              Symbol *sym) {
+  if (!f.symtab.ctx.config.importSlots || objSym.isUndefined() ||
+      objSym.getComdatIndex() == -1 || objSym.isExecutable() ||
+      objSym.getVisibility() != GlobalValue::DefaultVisibility ||
+      !isShareableVagueName(sym->getName()))
+    return false;
+  auto *imp = dyn_cast_or_null<DefinedImportData>(
+      f.symtab.find(("__imp_" + sym->getName()).str()));
+  return imp && !f.symtab.ignoresOffersOf(imp);
+}
+
+// Returns whether a DLL the image imports from offers the function that objSym
+// defines in a COMDAT, whose address-takes the native link binds to the offer
+// while calls keep the image's copy.
+static bool isOfferedFunction(BitcodeFile &f,
+                              const lto::InputFile::Symbol &objSym,
+                              Symbol *sym) {
+  if (!f.symtab.ctx.config.importSlots || objSym.isUndefined() ||
+      objSym.getComdatIndex() == -1 || !objSym.isExecutable() ||
+      objSym.getVisibility() != GlobalValue::DefaultVisibility)
+    return false;
+  auto *imp = dyn_cast_or_null<DefinedImportData>(
+      f.symtab.find(("__imp_" + sym->getName()).str()));
+  return imp && imp->file->thunkSym && !f.symtab.ignoresOffersOf(imp);
+}
+
+// Returns whether the image offers what objSym defines once LTO is done, as
+// ld.lld exports a definition of default visibility from a shared object, so
+// that LTO keeps it: under -import-slots, in a link that writes an import
+// library, a definition with default visibility in a COMDAT that another image
+// may observe, data or a function whose address is significant.
+static bool isOfferedByImage(BitcodeFile &f,
+                             const lto::InputFile::Symbol &objSym,
+                             Symbol *sym) {
+  const Configuration &config = f.symtab.ctx.config;
+  return config.importSlots && (config.dll || !config.implib.empty()) &&
+         !f.symtab.isEC() && !objSym.isUndefined() &&
+         objSym.getComdatIndex() != -1 &&
+         objSym.getVisibility() == GlobalValue::DefaultVisibility &&
+         (objSym.isExecutable() ? !objSym.canBeOmittedFromSymbolTable()
+                                : !objSym.isTLS()) &&
+         isShareableVagueName(sym->getName());
+}
+
 void BitcodeCompiler::add(BitcodeFile &f) {
   lto::InputFile &obj = *f.obj;
   unsigned symNum = 0;
@@ -224,6 +273,37 @@ void BitcodeCompiler::add(BitcodeFile &f) {
   }
   addedFile = true;
 
+  // Under -import-slots, the COMDATs of data that a DLL offers whole, every
+  // definition in them by the same DLL, are preempted before LTO, as the
+  // native link preempts them after: LTO compiles no copy, and ThinLTO keeps
+  // one available for its value.
+  SmallVector<DefinedImportData *, 0> offeredComdats;
+  if (ctx.config.importSlots && !f.symtab.isEC() && !ctx.hybridSymtab) {
+    size_t numComdats = obj.getComdatTable().size();
+    offeredComdats.assign(numComdats, nullptr);
+    SmallVector<bool, 0> partial(numComdats, false);
+    unsigned i = 0;
+    for (const lto::InputFile::Symbol &objSym : obj.symbols()) {
+      Symbol *sym = symBodies[i++];
+      int c = objSym.getComdatIndex();
+      if (c == -1 || objSym.isUndefined() || partial[c])
+        continue;
+      DefinedImportData *imp = nullptr;
+      if (sym->getFile() == &f && isOfferedWeakData(f, objSym, sym))
+        imp = cast<DefinedImportData>(
+            f.symtab.find(("__imp_" + sym->getName()).str()));
+      if (!imp || (offeredComdats[c] &&
+                   !offeredComdats[c]->getDLLName().equals_insensitive(
+                       imp->getDLLName()))) {
+        partial[c] = true;
+        offeredComdats[c] = nullptr;
+        continue;
+      }
+      if (!offeredComdats[c])
+        offeredComdats[c] = imp;
+    }
+  }
+
   // Provide a resolution to the LTO API for each symbol.
   for (const lto::InputFile::Symbol &objSym : obj.symbols()) {
     Symbol *sym = symBodies[symNum];
@@ -236,9 +316,24 @@ void BitcodeCompiler::add(BitcodeFile &f) {
     // Once IRObjectFile is fixed to report only one symbol this hack can
     // be removed.
     r.Prevailing = !objSym.isUndefined() && sym->getFile() == &f;
-    r.VisibleToRegularObj = sym->isUsedInRegularObj;
+    if (int c = objSym.getComdatIndex(); r.Prevailing && c != -1 &&
+                                         !offeredComdats.empty() &&
+                                         offeredComdats[c]) {
+      r.Prevailing = false;
+      preemptedSyms.emplace_back(&f.symtab, sym,
+                                 cast<DefinedImportData>(f.symtab.find(
+                                     ("__imp_" + sym->getName()).str())));
+      continue;
+    }
+    // Preempted after LTO, offered data is kept, and the references to it
+    // reach it through its import.
+    bool offered = isOfferedWeakData(f, objSym, sym);
+    r.VisibleToRegularObj =
+        sym->isUsedInRegularObj || offered ||
+        (r.Prevailing && (isOfferedByImage(f, objSym, sym) ||
+                          isOfferedFunction(f, objSym, sym)));
     r.ExportDynamic = exportedSyms && exportedSyms->contains(sym);
-    r.FinalDefinitionInLinkageUnit = isFinalInImage(f, objSym, sym);
+    r.FinalDefinitionInLinkageUnit = !offered && isFinalInImage(f, objSym, sym);
     // The object LTO generates defines the symbol again. It is undefined only
     // once every file is added, so that the files after this one still see
     // where it is defined.
@@ -259,6 +354,8 @@ std::vector<InputFile *> BitcodeCompiler::compile() {
   llvm::TimeTraceScope timeScope("Bitcode compile");
   for (Symbol *sym : std::exchange(prevailingSyms, {}))
     undefine(sym);
+  for (auto [symtab, sym, imp] : std::exchange(preemptedSyms, {}))
+    symtab->preemptSymbol(sym, imp);
 
   unsigned maxTasks = ltoObj->getMaxTasks();
   buf.resize(maxTasks);
