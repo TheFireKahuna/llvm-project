@@ -5017,6 +5017,11 @@ void ItaniumCXXABI::emitCXXStructor(GlobalDecl GD) {
   // selected 'operator delete'.
 
   llvm::Function *Fn = CGM.codegenCXXStructor(GD);
+  if (DD && GD.getDtorType() == Dtor_Base)
+    if (llvm::GlobalValue *Base = CGM.getForwardedBaseDestructor(DD))
+      Fn->setMetadata("forwarder",
+                      llvm::MDNode::get(CGM.getLLVMContext(),
+                                        llvm::ValueAsMetadata::get(Base)));
 
   if (CGType == StructorCodegen::COMDAT) {
     SmallString<256> Buffer;

@@ -140,6 +140,17 @@ bool CodeGenModule::TryEmitBaseDestructorAsAlias(const CXXDestructorDecl *D) {
   // Find the referent.
   auto *Aliasee = cast<llvm::GlobalValue>(GetAddrOfGlobal(TargetDecl));
 
+  // On Windows Itanium and NT-POSIX a base destructor that another image
+  // defines would be an import of its own in the vtable of each class whose
+  // destructor it replaced. The destructor is emitted instead, a tail jump
+  // through the import pointer, which the linker replaces by the base
+  // destructor where the image defines it.
+  if (getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      Aliasee->hasDLLImportStorageClass()) {
+    ForwardedBaseDestructors[D] = Aliasee;
+    return true;
+  }
+
   // Instead of creating as alias to a linkonce_odr, replace all of the uses
   // of the aliasee.
   if (llvm::GlobalValue::isDiscardableIfUnused(Linkage) &&
