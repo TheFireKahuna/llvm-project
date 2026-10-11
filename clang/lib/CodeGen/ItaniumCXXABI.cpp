@@ -2133,7 +2133,10 @@ void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
   if (CGM.mayVTableBeDuplicated(VTable->getLinkage()))
     VTable->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
 
-  if (CGM.supportsCOMDAT() && VTable->isWeakForLinker())
+  // The owner of a vtable that other images copy keeps its external linkage
+  // in the copies' COMDAT, so that a copy linked beside it folds into it.
+  if (CGM.supportsCOMDAT() &&
+      (VTable->isWeakForLinker() || CGVT.hasVTableCopies(RD)))
     VTable->setComdat(CGM.getModule().getOrInsertComdat(VTable->getName()));
 
   if (CGM.getTarget().hasPS4DLLImportExport())
@@ -2142,6 +2145,10 @@ void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
   // Set the right visibility.
   CGM.setGVProperties(VTable, RD);
   CGVT.setVTableDSOLocal(VTable, RD);
+  // Code reaches a copy through the import pointer, as it reaches the
+  // owner's vtable, and the linker binds the pointer to the copy.
+  if (CGVT.isVTableCopied(RD))
+    VTable->setDSOLocal(false);
 
   if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
       !VTable->isDeclarationForLinker()) {

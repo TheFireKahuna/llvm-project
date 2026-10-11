@@ -137,6 +137,13 @@ public:
 
   bool isVTableExternal(const CXXRecordDecl *RD);
 
+  /// Whether this translation unit emits a discardable copy of RD's vtable,
+  /// which another image owns: on Windows Itanium and NT-POSIX, for a class
+  /// that is not effectively final, so that constructing it stores the address
+  /// of the image's copy. The owner puts its definition in the copies' COMDAT.
+  bool isVTableCopied(const CXXRecordDecl *RD);
+  bool hasVTableCopies(const CXXRecordDecl *RD);
+
   /// Clears dso_local on a declaration of RD's vtable or VTT that another
   /// image may own. Call it after setGVProperties.
   void setVTableDSOLocal(llvm::GlobalValue *GV, const CXXRecordDecl *RD) const;

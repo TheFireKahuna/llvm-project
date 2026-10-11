@@ -114,7 +114,10 @@ CodeGenVTables::EmitVTTDefinition(llvm::GlobalVariable *VTT,
   // Set the correct linkage.
   VTT->setLinkage(Linkage);
 
-  if (CGM.supportsCOMDAT() && VTT->isWeakForLinker())
+  // The owner of a VTT that other images copy with the vtable keeps it in the
+  // copies' COMDAT.
+  if (CGM.supportsCOMDAT() &&
+      (VTT->isWeakForLinker() || hasVTableCopies(RD)))
     VTT->setComdat(CGM.getModule().getOrInsertComdat(VTT->getName()));
 
   // Set the visibility. This will already have been set on the VTT declaration.
