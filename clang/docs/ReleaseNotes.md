@@ -639,6 +639,10 @@ features cannot lower the translation-unit ABI level;
 
 #### Bug Fixes to C++ Support
 
+- Fixed an implicitly declared builtin first named in a module unit's purview
+  being attached to the named module instead of the global module, which
+  rejected a redeclaration in a linkage-specification such as `extern "C"`.
+
 - Fixed lambdas with specifiers or attributes after the capture list being
   misparsed as function declarations in direct-initialization contexts under
   `-fms-extensions` or in HLSL mode.
