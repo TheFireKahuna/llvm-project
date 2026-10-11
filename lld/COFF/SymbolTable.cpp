@@ -798,6 +798,21 @@ void SymbolTable::bindImportsToDefinitions() {
   }
 }
 
+void SymbolTable::bindForwarders() {
+  for (auto [file, sym, pointer] : forwarders) {
+    auto *f = dyn_cast<DefinedRegular>(sym);
+    auto *li = dyn_cast<DefinedLocalImport>(pointer);
+    if (!f || f->getFile() != file || !li)
+      continue;
+    auto *target = dyn_cast<DefinedRegular>(li->getTarget());
+    if (!target || target == f)
+      continue;
+    Log(ctx) << "Replacing forwarder " << printSymbol(f) << " in " << file
+             << " by " << printSymbol(target);
+    f->replaceKeepingName(target, sizeof(DefinedRegular));
+  }
+}
+
 void SymbolTable::preemptWeakData() {
   if (!ctx.config.importSlots || ctx.hybridSymtab || isEC() || weakData.empty())
     return;

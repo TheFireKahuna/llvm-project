@@ -3158,8 +3158,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     symtab.initializeLoadConfig();
   });
 
-  ctx.forEachSymtab(
-      [](SymbolTable &symtab) { symtab.bindImportsToDefinitions(); });
+  ctx.forEachSymtab([](SymbolTable &symtab) {
+    symtab.bindImportsToDefinitions();
+    symtab.bindForwarders();
+  });
 
   // Identify unreferenced COMDAT sections.
   if (config->doGC) {
