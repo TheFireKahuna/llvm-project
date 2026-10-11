@@ -635,6 +635,12 @@ public:
                                  uint32_t Type, uint32_t Marker,
                                  uint32_t Offset, const MCSymbol *Mismatch);
 
+  /// Tells the linker that the external definition \p Symbol in a COMDAT has
+  /// COFF::LinkBindingRole \p Role. An object that lists such definitions
+  /// lists each of them, together with the fact of kind
+  /// COFF::LinkRecordBinding.
+  virtual void emitCOFFLinkBinding(const MCSymbol *Symbol, unsigned Role);
+
   /// Tells the linker that the KCFI prefix that \p Prefix marks holds a
   /// membership tag in the word before its marker, not a second type.
   virtual void emitCOFFKCFIMemberTag(const MCSymbol *Prefix);

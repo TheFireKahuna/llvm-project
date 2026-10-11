@@ -1298,6 +1298,21 @@ uint64_t WinCOFFWriter::writeObject() {
     }
 
     for (uint64_t Kind : OWriter.LinkFacts) {
+      // The bindings' group says that the object lists every binding, with or
+      // without a payload.
+      if (Kind == COFF::LinkRecordBinding) {
+        SmallString<0> Bindings;
+        raw_svector_ostream BindingsOS(Bindings);
+        for (const WinCOFFObjectWriter::LinkBinding &B : OWriter.LinkBindings)
+          if (!B.Symbol->isTemporary() && B.Symbol->isRegistered()) {
+            encodeULEB128(B.Symbol->getIndex(), BindingsOS);
+            encodeULEB128(B.Role, BindingsOS);
+          }
+        encodeULEB128(Kind, OS);
+        encodeULEB128(Bindings.size(), OS);
+        OS << Bindings;
+        continue;
+      }
       encodeULEB128(Kind, OS);
       encodeULEB128(0, OS);
     }
@@ -1401,6 +1416,7 @@ void WinCOFFObjectWriter::reset() {
   LinkFacts.clear();
   KCFIThunks.clear();
   KCFIMemberTags.clear();
+  LinkBindings.clear();
   ObjWriter->reset();
   if (DwoWriter)
     DwoWriter->reset();
