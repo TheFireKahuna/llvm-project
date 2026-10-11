@@ -2557,6 +2557,16 @@ void CodeGenModule::setGVPropertiesAux(llvm::GlobalValue *GV,
                                        const NamedDecl *D) const {
   setGlobalVisibility(GV, D);
   setDSOLocal(GV);
+  // Windows Itanium and NT-POSIX give a variable with vague linkage one
+  // instance along import paths, as ELF gives it one per process: code reaches
+  // it through its import pointer, which the linker binds to the instance of a
+  // DLL the image imports it from, or relaxes when the image keeps its own.
+  // Its guard follows it.
+  if (const auto *VD = dyn_cast_or_null<VarDecl>(D);
+      VD && GV->isDSOLocal() && GV->isWeakForLinker() &&
+      GV->hasDefaultVisibility() && !VD->getTLSKind() &&
+      getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    GV->setDSOLocal(false);
   GV->setPartition(CodeGenOpts.SymbolPartition);
 }
 

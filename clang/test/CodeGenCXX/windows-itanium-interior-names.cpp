@@ -50,7 +50,7 @@ S *use() { (void)internal; (void)tls; return loc(); }
 // CHECK-DAG: @"wobj$so56" = dso_local dllexport alias i8, getelementptr inbounds (i8, ptr @wobj, i64 56)
 // CHECK-DAG: @"wobj$so64" = dso_local dllexport alias i8, getelementptr inbounds (i8, ptr @wobj, i64 64)
 // CHECK-DAG: @"plain$so4" = dso_local alias i8, getelementptr inbounds (i8, ptr @plain, i64 4)
-// CHECK-DAG: @"_ZZ3locvE1s$so4" = dso_local alias i8, getelementptr inbounds (i8, ptr @_ZZ3locvE1s, i64 4)
+// CHECK-DAG: @"_ZZ3locvE1s$so4" = alias i8, getelementptr inbounds (i8, ptr @_ZZ3locvE1s, i64 4)
 
 // CHECK-DAG: @"_ZTV1B$ap16" = dso_local dllexport alias i8, getelementptr inbounds inrange(-16, 8) (i8, ptr @_ZTV1B, i64 16)
 // CHECK-DAG: @"_ZTV1D$ap16" = dso_local dllexport alias i8, getelementptr inbounds inrange(-16, 8) (i8, ptr @_ZTV1D, i64 16)
