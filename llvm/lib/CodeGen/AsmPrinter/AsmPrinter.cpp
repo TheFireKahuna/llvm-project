@@ -1116,6 +1116,18 @@ void AsmPrinter::emitFunctionHeader() {
     emitVisibility(CurrentFnSym, F.getVisibility());
 
   emitLinkage(&F, CurrentFnSym);
+
+  // A function that only jumps through the import pointer of an equivalent
+  // one tells a COFF linker, which may replace it by that function where the
+  // image defines it.
+  if (const MDNode *MD = F.getMetadata("forwarder");
+      MD && TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    if (auto *Target =
+            mdconst::dyn_extract_or_null<GlobalValue>(MD->getOperand(0)))
+      OutStreamer->emitCOFFLinkForwarder(
+          CurrentFnSym, OutContext.getOrCreateSymbol(
+                            "__imp_" + getSymbol(Target)->getName()));
+
   if (MAI.hasFunctionAlignment()) {
     Align PrefAlign = MF->getPreferredAlignment();
     if (MAI.useIntegratedAssembler() && MAI.hasPreferredAlignment()) {

@@ -84,6 +84,8 @@ class COFFAsmParser : public MCAsmParserExtension {
         ".linkbindings");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkBinding>(
         ".linkbinding");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkForwarder>(
+        ".linkforwarder");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFact>(
         ".linkprotecteddelayiat");
 
@@ -153,6 +155,7 @@ class COFFAsmParser : public MCAsmParserExtension {
   bool parseDirectiveLinkKCFIThunk(StringRef, SMLoc);
   bool parseDirectiveLinkKCFITag(StringRef, SMLoc);
   bool parseDirectiveLinkBinding(StringRef, SMLoc);
+  bool parseDirectiveLinkForwarder(StringRef, SMLoc);
   bool parseDirectiveSecNum(StringRef, SMLoc);
   bool parseDirectiveSecOffset(StringRef, SMLoc);
 
@@ -709,6 +712,22 @@ bool COFFAsmParser::parseDirectiveLinkBinding(StringRef, SMLoc) {
   if (parseEOL())
     return true;
   getStreamer().emitCOFFLinkBinding(Symbol, COFF::LinkBindingDefault);
+  return false;
+}
+
+/// parseDirectiveLinkForwarder
+///  ::= .linkforwarder forwarder, pointer
+bool COFFAsmParser::parseDirectiveLinkForwarder(StringRef, SMLoc) {
+  MCSymbol *Forwarder, *Pointer;
+  if (getParser().parseSymbol(Forwarder))
+    return TokError("expected identifier in directive");
+  if (getParser().parseComma())
+    return true;
+  if (getParser().parseSymbol(Pointer))
+    return TokError("expected identifier in directive");
+  if (parseEOL())
+    return true;
+  getStreamer().emitCOFFLinkForwarder(Forwarder, Pointer);
   return false;
 }
 

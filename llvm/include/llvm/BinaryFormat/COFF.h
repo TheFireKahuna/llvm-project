@@ -141,6 +141,18 @@ enum LinkRecordKind : uint64_t {
   // definitions.
   LinkRecordBinding = 5,
 
+  // Forwarders the object defines, each a function that only jumps through
+  // the import pointer of another, equivalent function, which a linker may
+  // replace by that function where it is defined in the image, redirecting
+  // every reference to the forwarder:
+  //
+  //   payload := (forwarder:ULEB128 pointer:ULEB128)*
+  //
+  // forwarder is the symbol index of the forwarder and pointer that of the
+  // import pointer it jumps through. A linker that does not know the kind
+  // keeps the forwarders, which are correct as they are.
+  LinkRecordForwarders = 6,
+
   // The KCFI thunks the object defines, each a function in a COMDAT that
   // checks the KCFI type of a call's target, for a linker that replaces them
   // with a form of its own:

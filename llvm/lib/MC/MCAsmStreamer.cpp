@@ -330,6 +330,8 @@ public:
                          uint32_t Marker, uint32_t Offset,
                          const MCSymbol *Mismatch) override;
   void emitCOFFLinkBinding(const MCSymbol *Symbol, unsigned Role) override;
+  void emitCOFFLinkForwarder(const MCSymbol *Forwarder,
+                             const MCSymbol *Pointer) override;
   void emitCOFFKCFIMemberTag(const MCSymbol *Prefix) override;
   void emitXCOFFLocalCommonSymbol(MCSymbol *LabelSym, uint64_t Size,
                                   MCSymbol *CsectSym, Align Alignment) override;
@@ -1087,6 +1089,15 @@ void MCAsmStreamer::emitCOFFLinkBinding(const MCSymbol *Symbol, unsigned Role) {
   OS << "\t.linkbinding\t";
   Symbol->print(OS, MAI);
   OS << ", default";
+  EmitEOL();
+}
+
+void MCAsmStreamer::emitCOFFLinkForwarder(const MCSymbol *Forwarder,
+                                          const MCSymbol *Pointer) {
+  OS << "\t.linkforwarder\t";
+  Forwarder->print(OS, MAI);
+  OS << ", ";
+  Pointer->print(OS, MAI);
   EmitEOL();
 }
 
