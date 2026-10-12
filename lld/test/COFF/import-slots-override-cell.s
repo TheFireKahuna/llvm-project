@@ -25,11 +25,14 @@
 # IMPORT:      Name: rt.dll
 # IMPORT:      Symbol: _Znwy
 
-## The fill is a TLS callback: it reads the executable's image base through the
-## PEB, checks the table's magic, and for slot 0's tag writes base + the slot's
-## RVA into the cell.
+## The fill is a TLS callback: for process attach only, since a later thread
+## attach must not undo the program's own assignment to the cell, it reads the
+## executable's image base through the PEB, checks the table's magic, and for
+## slot 0's tag writes base + the slot's RVA into the cell.
 # RUN: llvm-objdump -d use.dll | FileCheck --check-prefix=FILL %s
-# FILL:      movq    %gs:0x60, %r11
+# FILL:      cmpl    $0x1, %edx
+# FILL-NEXT: jne
+# FILL-NEXT: movq    %gs:0x60, %r11
 # FILL-NEXT: movq    0x10(%r11), %r11
 # FILL-NEXT: cmpl    $0x7b3ac2d5, 0x80(%r11)
 # FILL-NEXT: jne
@@ -53,6 +56,13 @@
 # RUN:   -out:plain.dll
 # RUN: llvm-objdump -d plain.dll | FileCheck --check-prefix=NONE %s
 # NONE-NOT: %gs:0x60
+
+## Without a TLS directory the loader never calls the fill, so a cell would keep
+## the runtime's entry: that is an error, not a silently unreplaced default.
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium notls.s -o notls.obj
+# RUN: not lld-link -import-slots -dll -noentry notls.obj rt.lib records.lib \
+# RUN:   -out:notls.dll 2>&1 | FileCheck --check-prefix=NOTLS %s
+# NOTLS: error: notls.obj: the address of an overridable default needs a TLS directory to fill, but _tls_used is not defined
 
 #--- rt.s
         .text
@@ -109,3 +119,13 @@ dllmain:
         .globl n
 n:
         .long 0
+
+#--- notls.s
+        .text
+        .globl dllmain
+dllmain:
+        retq
+        .data
+        .globl gnew
+gnew:
+        .quad _Znwy

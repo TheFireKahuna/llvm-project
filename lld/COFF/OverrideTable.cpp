@@ -69,18 +69,20 @@ MachineTypes OverrideCellFillChunk::getMachine() const {
 
 // The x86-64 fill writes each replaced cell with base + rva, read from the
 // executable's table; each AArch64 cell takes three more instructions for the
-// store address. Both begin by reading the executable's image base through the
-// PEB and comparing the table's magic, so a foreign executable with no table
-// leaves every cell the loader's value.
+// store address. Both return unless called for process attach, then read the
+// executable's image base through the PEB and compare the table's magic, so a
+// foreign executable with no table leaves every cell the loader's value.
 size_t OverrideCellFillChunk::getSize() const {
   if (ctx.config.machine == ARM64) {
-    // ldr x16,[x18,#0x60]; ldr x16,[x16,#0x10]; ldr w17,[x16,#0x80];
-    // movz/movk w9,#magic; cmp w17,w9; b.ne .ret (seven words), then per cell
-    // ldr w17,[x16,#off]; movz/movk w9,#tag; cmp; b.ne; ldr w17,[x16,#off+4];
-    // add x17,x16,x17; adrp x9; add x9; str x17,[x9] (ten words), then ret.
-    return 28 + 40 * cells.size() + 4;
+    // cmp w1,#1; b.ne .ret; ldr x16,[x18,#0x60]; ldr x16,[x16,#0x10];
+    // ldr w17,[x16,#0x80]; movz/movk w9,#magic; cmp w17,w9; b.ne .ret (nine
+    // words), then per cell ldr w17,[x16,#off]; movz/movk w9,#tag; cmp; b.ne;
+    // ldr w17,[x16,#off+4]; add x17,x16,x17; adrp x9; add x9; str x17,[x9]
+    // (ten words), then ret.
+    return 36 + 40 * cells.size() + 4;
   }
-  size_t size = 9 + 4 + 11 + 6; // PEB, base, cmp magic (disp32), jne .ret
+  // cmp edx, 1; jne .ret; PEB, base, cmp magic (disp32), jne .ret
+  size_t size = 3 + 6 + 9 + 4 + 11 + 6;
   for (const OverrideCell &c : cells) {
     bool wide = overrideSlotOffset(c.slot) >= 0x80;
     size += (wide ? 11 : 8) + 2 + (wide ? 7 : 4) + 3 + 7;
@@ -99,6 +101,9 @@ void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
       put(0x52800000 | reg | (value & 0xFFFF) << 5);       // movz w, #lo
       put(0x72A00000 | reg | (value >> 16 & 0xFFFF) << 5); // movk w, #hi, lsl 16
     };
+    put(0x7100043F);         // cmp w1, #1   the reason: process attach
+    uint32_t attachBranch = off;
+    put(0x54000001);         // b.ne .ret
     put(0xF9403010);         // ldr x16, [x18, #0x60]   TEB->PEB
     put(0xF9400A10);         // ldr x16, [x16, #0x10]   PEB->ImageBaseAddress
     put(0xB9408211);         // ldr w17, [x16, #0x80]   the table's magic
@@ -124,6 +129,7 @@ void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
       put(0xF9000131);                           // str x17, [x9]
       write32le(buf + skip, 0x54000001 | (off - skip) / 4 << 5); // b.ne .next
     }
+    write32le(buf + attachBranch, 0x54000001 | (off - attachBranch) / 4 << 5);
     write32le(buf + retBranch, 0x54000001 | (off - retBranch) / 4 << 5);
     put(0xD65F03C0); // ret
     return;
@@ -137,6 +143,9 @@ void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
   auto disp = [&](uint64_t target) {
     write32le(buf + off - 4, target - (rva + off));
   };
+  put({0x83, 0xFA, 0x01});       // cmp edx, 1   the reason: process attach
+  put({0x0F, 0x85, 0, 0, 0, 0}); // jne .ret
+  uint32_t attachFixup = off - 4;
   put({0x65, 0x4C, 0x8B, 0x1C, 0x25, 0x60, 0, 0, 0}); // mov r11, gs:[0x60]
   put({0x4D, 0x8B, 0x5B, 0x10});                       // mov r11, [r11 + 0x10]
   // The magic is at 0x80, past the reach of a signed disp8, so a disp32.
@@ -170,6 +179,7 @@ void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
     disp(c.chunk->getRVA() + c.offset);
     buf[skipFixup] = off - (skipFixup + 1);
   }
+  write32le(buf + attachFixup, off - (attachFixup + 4));
   write32le(buf + retFixup, off - (retFixup + 4)); // jne .ret -> the ret below
   put({0xC3});                                     // ret
 }

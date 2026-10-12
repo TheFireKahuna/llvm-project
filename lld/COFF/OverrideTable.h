@@ -125,8 +125,9 @@ struct OverrideCell {
 // the executable's image base plus the slot's RVA into the cell; a slot the
 // table does not name, or a foreign executable with no table, leaves the cell
 // the loader's value, the runtime's entry. These cells are in writable data, so
-// the fill writes in place and needs no frame, and running again on a later
-// thread attach writes the same value.
+// the fill writes in place and needs no frame. It runs only for process attach:
+// a cell is the program's own variable, which the program may have assigned
+// since, so a later thread attach or detach must not write it again.
 class OverrideCellFillChunk : public NonSectionCodeChunk {
 public:
   OverrideCellFillChunk(COFFLinkerContext &ctx, std::vector<OverrideCell> cells)
