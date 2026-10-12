@@ -1446,7 +1446,16 @@ Symbol *SymbolTable::addUndefined(StringRef name, InputFile *f,
   auto [s, wasInserted] = insert(name, f);
   if (wasInserted && addIndexedLazy(s, name))
     wasInserted = false;
+  // Only a weak external passes overrideLazy; any other reference is one a
+  // weak fallback must not shadow (question 136).
+  if (ctx.config.importSlots && !overrideLazy)
+    stronglyReferenced.insert(s);
   if (wasInserted || (s->isLazy() && overrideLazy)) {
+    // A weak external that consumes a lazy archive symbol keeps its member
+    // reachable, so a strong reference can still pull it.
+    if (ctx.config.importSlots && overrideLazy)
+      if (auto *la = dyn_cast<LazyArchive>(s))
+        weakFallbackLazy.try_emplace(s, la->file, la->sym);
     replaceSymbol<Undefined>(s, name);
     if (ctx.config.importSlots && name.starts_with("__imp_"))
       impUndefs.push_back(s);
@@ -1454,7 +1463,22 @@ Symbol *SymbolTable::addUndefined(StringRef name, InputFile *f,
   }
   if (s->isLazy())
     forceLazy(s);
+  if (ctx.config.importSlots && !overrideLazy)
+    pullWeakFallbackLazy(s);
   return s;
+}
+
+// Loads the lazy archive member a weak external's consumption of s kept
+// reachable, once a reference other than a weak external names s.
+void SymbolTable::pullWeakFallbackLazy(Symbol *s) {
+  auto it = weakFallbackLazy.find(s);
+  if (it == weakFallbackLazy.end() || s->pendingArchiveLoad)
+    return;
+  ArchiveFile *f = it->second.first;
+  Archive::Symbol sym = it->second.second;
+  weakFallbackLazy.erase(it);
+  s->pendingArchiveLoad = true;
+  f->addMember(sym);
 }
 
 Symbol *SymbolTable::addGCRoot(StringRef name, bool aliasEC) {
@@ -1537,8 +1561,22 @@ void SymbolTable::addLazyArchive(ArchiveFile *f, const Archive::Symbol &sym) {
     return;
   }
   auto *u = dyn_cast<Undefined>(s);
-  if (!u || (u->weakAlias && !u->isECAlias(machine)) || s->pendingArchiveLoad)
+  if (!u || s->pendingArchiveLoad)
     return;
+  if (u->weakAlias && !u->isECAlias(machine)) {
+    // A weak external shadows the symbol. link.exe, and this linker without
+    // -import-slots, drop the member, so a later strong reference resolves to
+    // the weak fallback where ELF would pull the member. Under -import-slots
+    // the member stays reachable: pull it now if a reference other than a weak
+    // external has named the symbol, otherwise keep it for one that may
+    // (question 136).
+    if (!ctx.config.importSlots)
+      return;
+    if (!stronglyReferenced.count(s)) {
+      weakFallbackLazy.try_emplace(s, f, sym);
+      return;
+    }
+  }
   s->pendingArchiveLoad = true;
   f->addMember(sym);
 }
@@ -1803,8 +1841,15 @@ void SymbolTable::addIndexedArchive(ArchiveFile *f) {
   // load it, and the members load in the order of the archive's symbols.
   auto isWaiting = [&](Symbol *s) {
     auto *u = dyn_cast<Undefined>(s);
-    return u && !(u->weakAlias && !u->isECAlias(machine)) &&
-           !s->pendingArchiveLoad;
+    if (!u || s->pendingArchiveLoad)
+      return false;
+    // A weak external shadows the symbol. link.exe, and this linker without
+    // -import-slots, leave it so and the member stays unloaded; under
+    // -import-slots a reference other than the weak external still pulls the
+    // member, as ELF pulls it for the strong reference (question 136).
+    if (u->weakAlias && !u->isECAlias(machine))
+      return ctx.config.importSlots && stronglyReferenced.contains(s);
+    return true;
   };
   SmallVector<std::pair<uint32_t, Symbol *>, 0> loads;
   // Look the table's symbols up in the archive, or the archive's in the

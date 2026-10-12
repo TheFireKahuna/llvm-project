@@ -416,6 +416,16 @@ private:
   // Symbols created undefined with the __imp_ prefix under -import-slots,
   // which loadLocalImportMembers visits instead of the whole table.
   std::vector<Symbol *> impUndefs;
+  // Under -import-slots: symbols a reference other than a weak external made,
+  // and the lazy archive member a weak external's consumption of a symbol kept
+  // reachable for such a reference. COFF records no per-reference strength and
+  // a weak external consumes the lazy symbol, so without this a later strong
+  // reference could not pull a member ELF would, resolving the symbol to the
+  // weak fallback instead (question 136).
+  llvm::DenseSet<Symbol *> stronglyReferenced;
+  llvm::DenseMap<Symbol *, std::pair<ArchiveFile *, llvm::object::Archive::Symbol>>
+      weakFallbackLazy;
+  void pullWeakFallbackLazy(Symbol *s);
   std::unique_ptr<BitcodeCompiler> lto;
   std::vector<std::pair<Symbol *, Symbol *>> entryThunks;
   llvm::DenseMap<Symbol *, Symbol *> exitThunks;
