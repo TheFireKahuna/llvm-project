@@ -535,6 +535,10 @@ private:
   /// the target's linker has the loader write them into static data.
   llvm::SmallPtrSet<llvm::GlobalValue *, 4> ConstantDLLImportAddresses;
 
+  /// Whether this module strongly defines an overridable default, replacing
+  /// the runtime's weak one for every image of the program.
+  bool HasOverridableDefaultReplacement = false;
+
   llvm::DenseMap<QualType, llvm::Constant *> AtomicSetterHelperFnMap;
   llvm::DenseMap<QualType, llvm::Constant *> AtomicGetterHelperFnMap;
 

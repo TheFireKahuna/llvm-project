@@ -18,6 +18,8 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/raw_ostream.h"
+#include <optional>
+#include <vector>
 
 namespace llvm {
 struct LTOCodeGenerator;
@@ -194,9 +196,33 @@ public:
   // default for every image of the program.
   void checkOverridableExports();
 
+  // Under -import-slots in an executable that replaces an overridable default,
+  // loads the C++ runtime's records member, a regular member of its import
+  // library that defines each default's slot and forwarding target as absolute
+  // symbols. Called in the resolution loop; returns whether it loaded it.
+  bool loadOverrideRecords();
+
+  // Under -import-slots in an executable, reads each replaced overridable
+  // default's slot and forwarding target from the records member, after
+  // resolution, into overrideReplacements.
+  void resolveOverridableReplacements();
+
+  // An overridable default that this executable replaces: the body B of the
+  // replacement, its ABI name, its slot in the override table, and, for a
+  // default the standard specifies as calling another, that other's slot with
+  // the forwarding bits the records member encodes.
+  struct OverrideReplacement {
+    Defined *body;
+    StringRef name;
+    uint32_t slot;
+    std::optional<uint32_t> forward;
+  };
+  std::vector<OverrideReplacement> overrideReplacements;
+
   // The names of the overridable defaults that inputs define, from their
   // /overridable: directives.
   llvm::DenseSet<StringRef> overridables;
+  bool overrideRecordsLoaded = false;
 
   // The name of the epoch export of the entities the image keeps, if any.
   StringRef offersEpoch;
