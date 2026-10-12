@@ -2997,8 +2997,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
         loadedImports |= symtab.loadLocalImportMembers();
 
         // Under -import-slots, an executable that replaces an overridable
-        // default loads the C++ runtime's records member for its slots, then
-        // the runtime's start-up validation of the table it writes.
+        // default, itself or by selecting a linked DLL's offer, loads the C++
+        // runtime's records member for its slots, then the runtime's start-up
+        // validation of the table it writes.
+        loadedImports |= symtab.loadOverrideOffers();
         loadedImports |= symtab.loadOverrideRecords();
         loadedImports |= symtab.nameOverrideCheck();
       });
@@ -3241,7 +3243,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   checkVagueEntities(ctx, sys::path::filename(config->outputFile));
   if (config->dll && config->importSlots)
     ctx.forEachSymtab(
-        [](SymbolTable &symtab) { symtab.checkOverridableExports(); });
+        [](SymbolTable &symtab) { symtab.offerOverridableDefaults(); });
 
   ctx.forEachSymtab([](SymbolTable &symtab) { bindLocalImports(symtab); });
 

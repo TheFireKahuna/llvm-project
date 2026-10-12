@@ -1,9 +1,11 @@
 # REQUIRES: x86
 ## Only the executable replaces an overridable default for every image of the
 ## program. A DLL linked under -import-slots that exports a strong definition
-## of a function that an input marks as an overridable default is an error.
-## The runtime's own default is a weak definition and is exported cleanly, as
-## is a definition that the DLL keeps to itself. Strength comes from the
+## of a function that an input marks as an overridable default makes an offer:
+## it exports the body under the offer name, so no importer binds to it as the
+## ABI symbol, and an executable that links the DLL selects the offer. The
+## runtime's own default is a weak definition and is exported under its ABI
+## name, as is a definition the DLL keeps to itself. Strength comes from the
 ## defining symbol, before and after LTO.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
@@ -13,33 +15,38 @@
 # RUN: llvm-as strong.ll -o strong.bc
 # RUN: llvm-as weak.ll -o weak.bc
 
-# RUN: not lld-link -import-slots -dll -noentry strong.obj -out:strong.dll 2>&1 \
-# RUN:   | FileCheck --check-prefix=STRONG %s
-# RUN: not lld-link -import-slots -dll -noentry strong.bc -out:strong.dll 2>&1 \
-# RUN:   | FileCheck --check-prefix=STRONG-BC %s
-# STRONG: error: strong.obj: the DLL exports operator new(unsigned long long), which replaces an overridable default for this DLL and its importers only; replace it in the executable, which replaces it for every image, or give the definition hidden visibility
-# STRONG-BC: error: {{.*}}: the DLL exports operator new(unsigned long long), which replaces an overridable default
+## A strong definition is offered: the DLL exports the body under the offer
+## name, not under the ABI name, so no importer binds to it as operator new.
+# RUN: lld-link -import-slots -dll -noentry strong.obj -out:strong.dll
+# RUN: llvm-readobj --coff-exports strong.dll | FileCheck --check-prefix=OFFER %s
+# RUN: lld-link -import-slots -dll -noentry strong.bc -out:strong-bc.dll
+# RUN: llvm-readobj --coff-exports strong-bc.dll | FileCheck --check-prefix=OFFER %s
+# OFFER:      Name: __ovr_offer$_Znwy
+# OFFER-NOT:  Name: _Znwy
 
+## The runtime's own weak default is exported under its ABI name.
 # RUN: lld-link -import-slots -dll -noentry weak.obj -out:weak.dll
 # RUN: llvm-readobj --coff-exports weak.dll | FileCheck --check-prefix=EXPORTS %s
 # RUN: lld-link -import-slots -dll -noentry weak.bc -out:weak-bc.dll
 # RUN: llvm-readobj --coff-exports weak-bc.dll | FileCheck --check-prefix=EXPORTS %s
-# EXPORTS: Name: _Znwy
+# EXPORTS:     Name: _Znwy
+# EXPORTS-NOT: Name: __ovr_offer$_Znwy
 
+## A definition the DLL keeps to itself exports nothing, and makes no offer.
 # RUN: lld-link -import-slots -dll -noentry hidden.obj -out:hidden.dll
-# RUN: lld-link -dll -noentry strong.obj -out:strong.dll
-# RUN: lld-link -import-slots -entry:main -subsystem:console strong.obj \
-# RUN:   -out:strong.exe
+# RUN: llvm-readobj --coff-exports hidden.dll | FileCheck --check-prefix=NONE %s
+# NONE-NOT: Name:
+
+## Without -import-slots the DLL has no offer form; the strong export keeps its
+## ABI name, as link.exe would export it.
+# RUN: lld-link -dll -noentry strong.obj -out:plain.dll
+# RUN: llvm-readobj --coff-exports plain.dll | FileCheck --check-prefix=EXPORTS %s
 
 #--- strong.s
   .text
   .globl _Znwy
 _Znwy:
   xorl %eax, %eax
-  retq
-
-  .globl main
-main:
   retq
 
   .section .drectve,"yni"

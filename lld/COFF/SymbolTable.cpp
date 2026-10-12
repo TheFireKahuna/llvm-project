@@ -1003,11 +1003,12 @@ void SymbolTable::bindOfferedFunctions() {
     forwardExports([&](Symbol *s) { return offeredFunctions.lookup(s); });
 }
 
-void SymbolTable::checkOverridableExports() {
+void SymbolTable::offerOverridableDefaults() {
   if (overridables.empty())
     return;
-  for (const Export &e : exports) {
-    if (!e.sym || !overridables.contains(e.sym->getName()))
+  for (Export &e : exports) {
+    if (!e.sym || !overridables.contains(e.sym->getName()) ||
+        !e.extName.empty() || !e.exportAs.empty())
       continue;
     // The runtime's default is a weak definition, the fallback that the
     // executable's replacement supersedes, so exporting it is what makes it
@@ -1019,16 +1020,58 @@ void SymbolTable::checkOverridableExports() {
     auto *d = dyn_cast_or_null<Defined>(def);
     if (!d || d->isWeak || d->getName().starts_with(".weak."))
       continue;
-    Err(ctx) << d->getFile() << ": the DLL exports " << printSymbol(d)
-             << ", which replaces an overridable default for this DLL and its "
-                "importers only; replace it in the executable, which replaces "
-                "it for every image, or give the definition hidden visibility";
+    // Only the executable replaces an overridable default for every image of
+    // the program. A DLL's strong definition is an offer the executable's link
+    // may select instead, so the DLL exports the body under the offer name
+    // rather than its own: no importer binds to it as the ABI symbol, which
+    // would split the heap, and an executable that links the DLL discovers the
+    // offer and picks the winner for each slot.
+    e.extName = saver().save(overrideOfferPrefix + e.sym->getName());
   }
+}
+
+bool SymbolTable::isLocalOverrideReplacement(StringRef name) {
+  auto *d = dyn_cast_or_null<DefinedRegular>(find(name));
+  return d && !d->isWeak && isa<ObjFile>(d->getFile()) &&
+         !d->getName().starts_with(".weak.");
+}
+
+bool SymbolTable::loadOverrideOffers() {
+  if (!ctx.config.importSlots || ctx.config.dll || ctx.hybridSymtab ||
+      isEC() || overrideOffersLoaded)
+    return false;
+  overrideOffersLoaded = true;
+  // A DLL that defines its own overridable default exports it under the offer
+  // name, so its import library carries an offer symbol. Materialise the offer
+  // symbols the linked import libraries hold, so this link can see them by
+  // name; each names an offered default's ABI symbol after the prefix.
+  addIndexedLazies(overrideOfferPrefix);
+  SmallVector<StringRef, 8> offers;
+  for (auto &pair : symMap)
+    if (pair.second->getName().starts_with(overrideOfferPrefix))
+      offers.push_back(pair.second->getName());
+  bool pulled = false;
+  for (StringRef offer : offers) {
+    StringRef name = offer.drop_front(overrideOfferPrefix.size());
+    overrideOffers.insert(name);
+    // The executable's own replacement wins its slot, so an offer of a default
+    // the executable replaces itself is left unpulled. The first offer in link
+    // order, which find resolves, wins among several, as ELF selects the first
+    // in breadth-first order.
+    if (isLocalOverrideReplacement(name))
+      continue;
+    if (Symbol *s = find(offer); s && s->isLazy()) {
+      addGCRoot(offer);
+      pulled = true;
+    }
+  }
+  return pulled;
 }
 
 bool SymbolTable::loadOverrideRecords() {
   if (!ctx.config.importSlots || ctx.config.dll || ctx.hybridSymtab ||
-      isEC() || overridables.empty() || overrideRecordsLoaded)
+      isEC() || (overridables.empty() && overrideOffers.empty()) ||
+      overrideRecordsLoaded)
     return false;
   // The records member is a regular member of the C++ runtime's import or
   // static library, loaded only when a link replaces a default. It is pulled
@@ -1044,17 +1087,25 @@ bool SymbolTable::loadOverrideRecords() {
 
 void SymbolTable::resolveOverridableReplacements() {
   if (!ctx.config.importSlots || ctx.config.dll || ctx.hybridSymtab ||
-      isEC() || overridables.empty())
+      isEC() || (overridables.empty() && overrideOffers.empty()))
     return;
   // An overridable default this executable replaces is one an input defines
   // with a strong definition, the body B, superseding the runtime's weak
   // default for every image.
   SmallVector<std::pair<StringRef, Defined *>, 8> replaced;
-  for (StringRef name : overridables) {
-    auto *d = dyn_cast_or_null<DefinedRegular>(find(name));
-    if (d && !d->isWeak && isa<ObjFile>(d->getFile()) &&
-        !d->getName().starts_with(".weak."))
-      replaced.emplace_back(name, d);
+  for (StringRef name : overridables)
+    if (isLocalOverrideReplacement(name))
+      replaced.emplace_back(name, cast<Defined>(find(name)));
+  // A default the executable does not replace itself but a linked DLL offers is
+  // replaced for every image by that offer, reached through an import thunk to
+  // the DLL's instance that loadOverrideOffers pulled.
+  for (StringRef name : overrideOffers) {
+    if (isLocalOverrideReplacement(name))
+      continue;
+    auto *thunk =
+        dyn_cast_or_null<Defined>(find((overrideOfferPrefix + name).str()));
+    if (thunk && !thunk->isLazy())
+      replaced.emplace_back(name, thunk);
   }
   if (replaced.empty())
     return;
@@ -1183,14 +1234,17 @@ bool SymbolTable::nameOverrideCheck() {
   if (!ctx.config.importSlots || ctx.config.dll || ctx.hybridSymtab ||
       isEC() || !overrideRecordsLoaded || overrideAnchor)
     return false;
-  // Not until an input defines a strong replacement, the body that supersedes
-  // the runtime's weak default. A link that only loaded the records member,
-  // with no replacement after all, writes no table.
-  bool replaces = llvm::any_of(overridables, [&](StringRef name) {
-    auto *d = dyn_cast_or_null<DefinedRegular>(find(name));
-    return d && !d->isWeak && isa<ObjFile>(d->getFile()) &&
-           !d->getName().starts_with(".weak.");
-  });
+  // Not until a replacement supersedes the runtime's weak default: an input's
+  // strong definition, or a linked DLL's offer the executable selects for a
+  // slot it does not replace itself. A link that only loaded the records
+  // member, with no replacement after all, writes no table.
+  bool replaces =
+      llvm::any_of(overridables,
+                   [&](StringRef name) { return isLocalOverrideReplacement(name); }) ||
+      llvm::any_of(overrideOffers, [&](StringRef name) {
+        return !isLocalOverrideReplacement(name) &&
+               isa_and_nonnull<Defined>(find((overrideOfferPrefix + name).str()));
+      });
   if (!replaces)
     return false;
   // The executable's start-up validation, whose TLS callback the C++ runtime

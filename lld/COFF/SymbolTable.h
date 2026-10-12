@@ -191,10 +191,18 @@ public:
   // that DLL.
   void addOffers();
 
-  // In a DLL linked under -import-slots, reports each export that is a strong
-  // definition of an overridable default: only the executable replaces a
-  // default for every image of the program.
-  void checkOverridableExports();
+  // In a DLL linked under -import-slots, turns each export that is a strong
+  // definition of an overridable default into an offer under the offer name:
+  // only the executable replaces a default for every image of the program, so
+  // the executable's link selects a DLL's offer rather than the DLL binding
+  // its importers to its own definition.
+  void offerOverridableDefaults();
+
+  // Under -import-slots in an executable, materialises the offer symbols its
+  // linked import libraries carry, records each offered default's ABI name in
+  // overrideOffers, and pulls the offer the executable does not itself replace.
+  // Called in the resolution loop; returns whether it pulled anything.
+  bool loadOverrideOffers();
 
   // Under -import-slots in an executable that replaces an overridable default,
   // loads the C++ runtime's records member, a regular member of its import
@@ -249,6 +257,16 @@ public:
   // /overridable: directives.
   llvm::DenseSet<StringRef> overridables;
   bool overrideRecordsLoaded = false;
+
+  // The ABI names of the overridable defaults that linked import libraries
+  // offer, from their offer symbols. The executable selects an offer for a
+  // slot it does not replace itself.
+  llvm::DenseSet<StringRef> overrideOffers;
+  bool overrideOffersLoaded = false;
+
+  // Whether name is defined by this executable's own inputs as a strong
+  // definition, the body that replaces the runtime's weak overridable default.
+  bool isLocalOverrideReplacement(StringRef name);
 
   // The name of the epoch export of the entities the image keeps, if any.
   StringRef offersEpoch;
