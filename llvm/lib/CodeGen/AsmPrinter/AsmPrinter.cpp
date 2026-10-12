@@ -4748,6 +4748,17 @@ static void emitGlobalConstantImpl(const DataLayout &DL, const Constant *CV,
     if (CE->getOpcode() == Instruction::BitCast)
       return emitGlobalConstantImpl(DL, CE->getOperand(0), AP);
 
+    // Windows Itanium and NT-POSIX publish a thread-local variable's offset in
+    // its image's TLS template, the only value of it fixed at link time, as a
+    // 32-bit integer.
+    if (CE->getOpcode() == Instruction::PtrToInt && Size == 4 &&
+        AP.TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+      if (const auto *GV = dyn_cast<GlobalVariable>(CE->getOperand(0));
+          GV && GV->isThreadLocal()) {
+        AP.OutStreamer->emitCOFFSecRel32(AP.getSymbol(GV), /*Offset=*/0);
+        return;
+      }
+
     if (Size > 8) {
       // If the constant expression's size is greater than 64-bits, then we have
       // to emit the value in chunks. Try to constant fold the value and emit it
