@@ -4894,6 +4894,12 @@ def BuiltinFunctionStart : Builtin {
   let Prototype = "void*(void&)";
 }
 
+def BuiltinOverridableDefaultSlot : Builtin {
+  let Spellings = ["__builtin_overridable_default_slot"];
+  let Attributes = [NoThrow, Const, CustomTypeChecking];
+  let Prototype = "unsigned int(void&)";
+}
+
 def BuiltinOperatorNew : Builtin {
   let Spellings = ["__builtin_operator_new"];
   let Attributes = [Const, CustomTypeChecking, Constexpr];
