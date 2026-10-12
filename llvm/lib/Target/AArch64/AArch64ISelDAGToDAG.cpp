@@ -4439,6 +4439,17 @@ bool AArch64DAGToDAGISel::tryReadRegister(SDNode *N) {
         // rejects); the AsmPrinter materializes the real mov/fmov.
         Register PReg = Subtarget->getTargetLowering()->matchRegisterName(
             RegString->getString());
+        // A reserved register, such as x18 on Windows, which holds the TEB,
+        // is never undefined, so it is read by a copy that later passes can
+        // fold into its users.
+        if (!ReadIs128Bit && N->getValueType(0) == MVT::i64 &&
+            AArch64::GPR64RegClass.contains(PReg) &&
+            Subtarget->getRegisterInfo()->isReservedReg(*MF, PReg)) {
+          ReplaceNode(
+              N, CurDAG->getCopyFromReg(N->getOperand(0), DL, PReg, MVT::i64)
+                     .getNode());
+          return true;
+        }
         unsigned PseudoOp = 0;
         if (AArch64::GPR64RegClass.contains(PReg))
           PseudoOp = AArch64::READ_REGISTER_GPR64;
