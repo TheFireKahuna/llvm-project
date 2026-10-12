@@ -21,6 +21,9 @@ set(WINCRT_SOURCES
   gshandler.cpp
   init.cpp
   loadconfig.cpp
+  # Loaded only by the link of an executable that replaces an overridable
+  # default.
+  override_check.cpp
   purecall.cpp
   security.cpp
   tls.cpp
