@@ -2,6 +2,9 @@
 ; RUN: llc < %s -mtriple=x86_64-linux-gnu | FileCheck %s --check-prefix=X64
 ; RUN: llc < %s -mtriple=x86_64-linux-gnux32 | FileCheck %s --check-prefix=X32
 ; RUN: llc < %s -mtriple=i386-linux-gnu | FileCheck %s --check-prefix=X86
+; RUN: llc < %s -mtriple=x86_64-pc-windows-msvc | FileCheck %s --check-prefix=WIN64
+; RUN: llc < %s -mtriple=i686-pc-windows-msvc | FileCheck %s --check-prefix=WIN32
+; RUN: llc < %s -mtriple=i686-pc-windows-gnu | FileCheck %s --check-prefix=MINGW32
 
 declare ptr @llvm.thread.pointer()
 
@@ -20,6 +23,21 @@ define ptr @thread_pointer() nounwind {
 ; X86:       # %bb.0:
 ; X86-NEXT:    movl %gs:0, %eax
 ; X86-NEXT:    retl
+;
+; WIN64-LABEL: thread_pointer:
+; WIN64:       # %bb.0:
+; WIN64-NEXT:    movq %gs:88, %rax
+; WIN64-NEXT:    retq
+;
+; WIN32-LABEL: thread_pointer:
+; WIN32:       # %bb.0:
+; WIN32-NEXT:    movl %fs:__tls_array, %eax
+; WIN32-NEXT:    retl
+;
+; MINGW32-LABEL: thread_pointer:
+; MINGW32:       # %bb.0:
+; MINGW32-NEXT:    movl %fs:44, %eax
+; MINGW32-NEXT:    retl
   %1 = tail call ptr @llvm.thread.pointer()
   ret ptr %1
 }
@@ -42,6 +60,27 @@ define i32 @thread_pointer2(i32 %i) nounwind {
 ; X86-NEXT:    movl {{[0-9]+}}(%esp), %eax
 ; X86-NEXT:    movl %gs:(,%eax,4), %eax
 ; X86-NEXT:    retl
+;
+; WIN64-LABEL: thread_pointer2:
+; WIN64:       # %bb.0: # %entry
+; WIN64-NEXT:    movq %gs:88, %rax
+; WIN64-NEXT:    movslq %ecx, %rcx
+; WIN64-NEXT:    movl (%rax,%rcx,4), %eax
+; WIN64-NEXT:    retq
+;
+; WIN32-LABEL: thread_pointer2:
+; WIN32:       # %bb.0: # %entry
+; WIN32-NEXT:    movl {{[0-9]+}}(%esp), %eax
+; WIN32-NEXT:    movl %fs:__tls_array, %ecx
+; WIN32-NEXT:    movl (%ecx,%eax,4), %eax
+; WIN32-NEXT:    retl
+;
+; MINGW32-LABEL: thread_pointer2:
+; MINGW32:       # %bb.0: # %entry
+; MINGW32-NEXT:    movl {{[0-9]+}}(%esp), %eax
+; MINGW32-NEXT:    movl %fs:44, %ecx
+; MINGW32-NEXT:    movl (%ecx,%eax,4), %eax
+; MINGW32-NEXT:    retl
 entry:
   %0 = tail call ptr @llvm.thread.pointer()
   %arrayidx = getelementptr inbounds i32, ptr %0, i32 %i

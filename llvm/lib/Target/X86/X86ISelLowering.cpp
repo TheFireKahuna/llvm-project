@@ -20082,6 +20082,26 @@ static SDValue LowerToTLSExecModel(GlobalAddressSDNode *GA, SelectionDAG &DAG,
   return DAG.getNode(ISD::ADD, dl, PtrVT, ThreadPointer, Offset);
 }
 
+// Windows finds a thread's TLS blocks through its TLS array, whose address the
+// TEB holds at %fs:__tls_array (32-bit) or %gs:0x58 (64-bit). On MinGW,
+// __tls_array is not available, so directly use its literal value of 0x2C.
+static SDValue getWindowsTLSArray(SelectionDAG &DAG, const SDLoc &dl,
+                                  const X86Subtarget &Subtarget) {
+  EVT PtrVT = DAG.getTargetLoweringInfo().getPointerTy(DAG.getDataLayout());
+  Value *Ptr = Constant::getNullValue(
+      Subtarget.is64Bit() ? PointerType::get(*DAG.getContext(), X86AS::GS)
+                          : PointerType::get(*DAG.getContext(), X86AS::FS));
+
+  SDValue TlsArray = Subtarget.is64Bit()
+                         ? DAG.getIntPtrConstant(0x58, dl)
+                         : (Subtarget.isTargetWindowsGNU()
+                                ? DAG.getIntPtrConstant(0x2C, dl)
+                                : DAG.getExternalSymbol("_tls_array", PtrVT));
+
+  return DAG.getLoad(PtrVT, dl, DAG.getEntryNode(), TlsArray,
+                     MachinePointerInfo(Ptr));
+}
+
 SDValue
 X86TargetLowering::LowerGlobalTLSAddress(SDValue Op, SelectionDAG &DAG) const {
 
@@ -20183,21 +20203,8 @@ X86TargetLowering::LowerGlobalTLSAddress(SDValue Op, SelectionDAG &DAG) const {
     SDLoc dl(GA);
     SDValue Chain = DAG.getEntryNode();
 
-    // Get the Thread Pointer, which is %fs:__tls_array (32-bit) or
-    // %gs:0x58 (64-bit). On MinGW, __tls_array is not available, so directly
-    // use its literal value of 0x2C.
-    Value *Ptr = Constant::getNullValue(
-        Subtarget.is64Bit() ? PointerType::get(*DAG.getContext(), X86AS::GS)
-                            : PointerType::get(*DAG.getContext(), X86AS::FS));
-
-    SDValue TlsArray = Subtarget.is64Bit()
-                           ? DAG.getIntPtrConstant(0x58, dl)
-                           : (Subtarget.isTargetWindowsGNU()
-                                  ? DAG.getIntPtrConstant(0x2C, dl)
-                                  : DAG.getExternalSymbol("_tls_array", PtrVT));
-
-    SDValue ThreadPointer =
-        DAG.getLoad(PtrVT, dl, Chain, TlsArray, MachinePointerInfo(Ptr));
+    // Get the Thread Pointer, the thread's TLS array.
+    SDValue ThreadPointer = getWindowsTLSArray(DAG, dl, Subtarget);
 
     SDValue res;
     if (GV->getThreadLocalMode() == GlobalVariable::LocalExecTLSModel) {
@@ -28079,6 +28086,10 @@ SDValue X86TargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
                        Op.getOperand(1), ShAmt);
   }
   case Intrinsic::thread_pointer: {
+    // On Windows it is the thread's TLS array, through which native TLS
+    // reaches the variables of every image.
+    if (Subtarget.isOSWindows())
+      return getWindowsTLSArray(DAG, SDLoc(Op), Subtarget);
     if (Subtarget.isTargetELF()) {
       SDLoc dl(Op);
       EVT PtrVT = Op.getValueType();
