@@ -383,7 +383,7 @@ static bool isLazyImportOf(Symbol *s, ImportType type) {
   if (identify_magic(mb.getBuffer()) != file_magic::coff_import_library)
     return false;
   auto *hdr = reinterpret_cast<const coff_import_header *>(mb.getBufferStart());
-  return hdr->getType() == type;
+  return hdr->getType() == static_cast<int>(type);
 }
 
 static bool isLazyDataImport(Symbol *s) {
