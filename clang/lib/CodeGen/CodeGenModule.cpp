@@ -2474,8 +2474,13 @@ bool CodeGenModule::shouldMapDefinitionToDLLExport(
   // image that uses it emits its own copy, so an export of one is no promise
   // to importers. A variable the source declared is the exception: its
   // address is shared across images, as it is across shared objects on ELF.
-  return !getTriple().isOSBinFormatCOFF() ||
-         !llvm::GlobalValue::isLinkOnceLinkage(Linkage) || isa<VarDecl>(D);
+  // A native thread-local variable has no address another image can reach,
+  // and the C++ ABI exports a record of it in its place.
+  if (!getTriple().isOSBinFormatCOFF())
+    return true;
+  if (const auto *VD = dyn_cast<VarDecl>(D))
+    return VD->getTLSKind() == VarDecl::TLS_None;
+  return !llvm::GlobalValue::isLinkOnceLinkage(Linkage);
 }
 
 bool CodeGenModule::isMappedImportVisibility(const LinkageInfo &LV) const {
