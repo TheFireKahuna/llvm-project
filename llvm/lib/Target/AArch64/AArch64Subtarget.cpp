@@ -453,11 +453,15 @@ AArch64Subtarget::ClassifyGlobalReference(const GlobalValue *GV,
   // from the GOT, even where calls to it are direct, so that code sees the
   // address static data sees. The linker replaces the load with the direct
   // address when the function is in the image, or with zero when an
-  // extern_weak function is absent.
+  // extern_weak function is absent. A definition of an overridable default is
+  // defined here yet has the same import-form address: its one replacement is
+  // reached through its import pointer in every image, while calls to it stay
+  // direct.
   if (getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
     const auto *F = dyn_cast<Function>(GV);
-    if (F && F->isDeclarationForLinker() && !F->isIntrinsic() &&
-        F->hasDefaultVisibility())
+    if (F && !F->isIntrinsic() && F->hasDefaultVisibility() &&
+        (F->isDeclarationForLinker() ||
+         F->hasFnAttribute("overridable-default")))
       return AArch64II::MO_GOT | AArch64II::MO_DLLIMPORT;
   }
 
