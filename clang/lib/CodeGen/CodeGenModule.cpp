@@ -7509,6 +7509,18 @@ void CodeGenModule::EmitGlobalFunctionDefinition(GlobalDecl GD,
   if (!tryEmitCUDADeviceInvalidFunctionBody(GD, Fn))
     CodeGenFunction(*this).GenerateCode(GD, Fn, FI);
 
+  // Only the executable replaces an overridable default for every image of
+  // the program, so the linker rejects a DLL that exports a definition of one
+  // in place of the runtime's default. A definition says that it is one, also
+  // for links without the runtime's import library. An asm label names a
+  // function that no other image calls by its ABI name.
+  if (getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      !D->hasAttr<AsmLabelAttr>() &&
+      (D->isReplaceableGlobalAllocationFunction() ||
+       (D->isInStdNamespace() && D->getIdentifier() &&
+        D->getName() == "__libcpp_verbose_abort")))
+    AppendLinkerOptions(("/OVERRIDABLE:" + Fn->getName()).str());
+
   setNonAliasAttributes(GD, Fn);
 
   bool ShouldAddOptNone = !CodeGenOpts.DisableO0ImplyOptNone &&
