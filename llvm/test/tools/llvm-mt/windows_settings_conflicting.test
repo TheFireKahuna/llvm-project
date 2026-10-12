@@ -1,0 +1,19 @@
+REQUIRES: libxml2
+UNSUPPORTED: system-windows
+
+A setting in windowsSettings has one value. The same setting with the same
+value in two manifests is kept once; with two values it is an error.
+
+RUN: llvm-mt /manifest %p/Inputs/heap_type.manifest \
+RUN:   /manifest %p/Inputs/heap_type.manifest /out:%t
+RUN: FileCheck %s -input-file=%t
+
+CHECK:      <windowsSettings>
+CHECK-NEXT:   <heapType xmlns="http://schemas.microsoft.com/SMI/2020/WindowsSettings">SegmentHeap</heapType>
+CHECK-NEXT: </windowsSettings>
+
+RUN: not llvm-mt /manifest %p/Inputs/heap_type.manifest \
+RUN:   /manifest %p/Inputs/heap_type_nt.manifest /out:%t 2>&1 >/dev/null \
+RUN:   | FileCheck --check-prefix=CONFLICT %s
+
+CONFLICT: llvm-mt: error: conflicting values for heapType
