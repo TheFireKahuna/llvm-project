@@ -317,10 +317,22 @@ struct OverrideCell {
   DefinedImportData *imp;
   uint32_t slot;
   bool readOnly;
+  // Whether the slot is in the template of the image's thread-local data.
+  bool threadLocal;
 
   uint64_t getRVA() const {
     return chunk ? chunk->getRVA() + offset : imp->getRVA();
   }
+};
+
+// Where the TLS directory says the template of the image's thread-local data
+// starts, and the index the loader writes for the image's thread-local blocks:
+// a symbol and an addend each.
+struct OverrideTLS {
+  Defined *start = nullptr;
+  int64_t startAddend = 0;
+  Defined *index = nullptr;
+  int64_t indexAddend = 0;
 };
 
 // The fill of a DLL's overridable-default cells, which the C initializer table
@@ -338,11 +350,19 @@ struct OverrideCell {
 // without read-only cells it is a leaf. It returns 0, or the status of a
 // protection call that failed, which fails the image's start-up, as any nonzero
 // return from the table does.
+//
+// The loader binds a DLL's thread-local template before it copies it into the
+// block of any thread, so an unreplaced thread-local cell is right in every
+// thread. A replaced one is written in the template, which every thread created
+// later copies, and in the loading thread's block, which the loader copied
+// before the fill ran. A thread that already ran when the DLL was loaded late
+// got its block from the template before the fill, and keeps the runtime's
+// entry, through which a call still reaches the replacement.
 class OverrideCellFillChunk : public NonSectionCodeChunk {
 public:
   OverrideCellFillChunk(COFFLinkerContext &ctx, std::vector<OverrideCell> cells,
-                        DefinedImportData *protect)
-      : cells(std::move(cells)), protect(protect), ctx(ctx) {
+                        DefinedImportData *protect, OverrideTLS tls)
+      : cells(std::move(cells)), protect(protect), tls(tls), ctx(ctx) {
     setAlignment(16);
   }
   size_t getSize() const override;
@@ -361,6 +381,8 @@ private:
   std::vector<OverrideCell> cells;
   // NtProtectVirtualMemory's import, when there are read-only cells.
   DefinedImportData *protect;
+  // The TLS directory's template and index, when there are thread-local cells.
+  OverrideTLS tls;
   COFFLinkerContext &ctx;
 };
 
@@ -370,11 +392,15 @@ static constexpr uint32_t overrideAnchorRVAOffset = overrideHeaderOffset + 8;
 static constexpr uint32_t overrideAnchorMaskOffset = 8;
 
 size_t OverrideCellFillChunk::getCellSize(const OverrideCell &c) const {
-  // tbz; ldr; add; adrp; add; str
+  // tbz; ldr; add; adrp; add; str; for a thread-local cell, the store in the
+  // thread's block: adrp; ldr; ldr; ldr; movz; movk; str
   if (ctx.config.machine == ARM64)
-    return 24;
-  // bt; jnc; mov eax, [r11 + rva]; add rax, r11; mov [rip + cell], rax
-  return 5 + 2 + (overrideSlotOffset(c.slot) + 4 >= 0x80 ? 7 : 4) + 3 + 7;
+    return 24 + (c.threadLocal ? 28 : 0);
+  // bt; jnc; mov eax, [r11 + rva]; add rax, r11; mov [rip + cell], rax; for a
+  // thread-local cell, the store in the thread's block: mov ecx, [rip + index];
+  // mov rdx, gs:[0x58]; mov rdx, [rdx + rcx * 8]; mov [rdx + offset], rax
+  return 5 + 2 + (overrideSlotOffset(c.slot) + 4 >= 0x80 ? 7 : 4) + 3 + 7 +
+         (c.threadLocal ? 26 : 0);
 }
 
 size_t OverrideCellFillChunk::getSize() const {
@@ -480,6 +506,21 @@ void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
         put(0x8B110211);
         address(9, c.getRVA());
         put(0xF9000131);
+        if (c.threadLocal) {
+          // adrp x9, index; ldr w9, [x9, :lo12:index]; ldr x11, [x18, #0x58]
+          // (TEB->ThreadLocalStoragePointer); ldr x11, [x11, x9, lsl #3];
+          // movz/movk w12, #offset; str x17, [x11, x12]
+          uint64_t index = tls.index->getRVA() + tls.indexAddend;
+          write32le(buf + off, 0x90000009);
+          write32le(buf + off + 4, 0xB9400129);
+          applyArm64Addr(buf + off, index, rva + off, 12);
+          applyArm64Ldr(buf + off + 4, index & 0xfff);
+          off += 8;
+          put(0xF9402E4B);
+          put(0xF869796B);
+          movImm(12, c.getRVA() - (tls.start->getRVA() + tls.startAddend));
+          put(0xF82C6971);
+        }
         write32le(buf + skip, read32le(buf + skip) | (off - skip) / 4 << 5);
       }
     };
@@ -583,6 +624,16 @@ void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
       put({0x4C, 0x01, 0xD8});             // add rax, r11   base + rva
       put({0x48, 0x89, 0x05, 0, 0, 0, 0}); // mov [rip + cell], rax
       disp(c.getRVA());
+      if (c.threadLocal) {
+        put({0x8B, 0x0D, 0, 0, 0, 0}); // mov ecx, [rip + index]
+        disp(tls.index->getRVA() + tls.indexAddend);
+        // mov rdx, gs:[0x58]   TEB->ThreadLocalStoragePointer
+        put({0x65, 0x48, 0x8B, 0x14, 0x25, 0x58, 0, 0, 0});
+        put({0x48, 0x8B, 0x14, 0xCA});       // mov rdx, [rdx + rcx * 8]
+        put({0x48, 0x89, 0x82, 0, 0, 0, 0}); // mov [rdx + offset], rax
+        write32le(buf + off - 4,
+                  c.getRVA() - (tls.start->getRVA() + tls.startAddend));
+      }
       buf[skip] = off - (skip + 1);
     }
   };
@@ -1531,10 +1582,10 @@ void ImportSlotContents::createOverrideCellFill() {
     return;
   std::vector<OverrideCell> cells;
   auto add = [&](SectionChunk *sc, uint32_t offset, DefinedImportData *imp,
-                 bool readOnly) {
+                 bool readOnly, bool threadLocal) {
     StringRef name = imp->getName().drop_front(strlen("__imp_"));
     if (std::optional<uint32_t> k = ctx.symtab.overrideImportSlot(name))
-      cells.push_back({sc, offset, imp, *k, readOnly});
+      cells.push_back({sc, offset, imp, *k, readOnly, threadLocal});
   };
   // A slot in a chunk with residual words is in a section that stays writable
   // until the residual fill, which runs after this one, seals it.
@@ -1542,13 +1593,15 @@ void ImportSlotContents::createOverrideCellFill() {
     auto *chunk = const_cast<SectionChunk *>(sc);
     bool readOnly = !(sc->header->Characteristics & IMAGE_SCN_MEM_WRITE) &&
                     !sealedChunks.contains(chunk);
+    bool threadLocal =
+        getPartialSectionName(chunk, config.mingw).starts_with(".tls");
     for (const ImportSlot &slot : slots)
-      add(chunk, slot.offset, slot.sym, readOnly);
+      add(chunk, slot.offset, slot.sym, readOnly, threadLocal);
   }
   // An import whose entry is one of its slots is covered by that slot.
   for (DefinedImportData *imp : idata.imports)
     if (!idata.slotOnly.contains(imp))
-      add(nullptr, 0, imp, true);
+      add(nullptr, 0, imp, true, false);
   if (cells.empty())
     return;
 
@@ -1565,6 +1618,35 @@ void ImportSlotContents::createOverrideCellFill() {
       return fail("that the override table's mask cannot name");
   if (!isa_and_nonnull<Defined>(ctx.symtab.findUnderscore("__xi_a")))
     return fail("that the image has no C initializer table (__xi_a) to fill");
+  // A thread-local cell is written in the template and in the loading thread's
+  // block, which the TLS directory's template start and index locate: the
+  // targets of the relocations of its first and third fields.
+  OverrideTLS tls;
+  if (llvm::any_of(cells,
+                   [](const OverrideCell &c) { return c.threadLocal; })) {
+    auto *dir = dyn_cast_or_null<DefinedRegular>(
+        ctx.symtab.findUnderscore("_tls_used"));
+    if (dir) {
+      for (const coff_relocation &rel : dir->getChunk()->getRelocs()) {
+        if (!dir->getChunk()->isAddressWord(rel))
+          continue;
+        uint64_t field = rel.VirtualAddress - dir->getValue();
+        Defined *target = dyn_cast_or_null<Defined>(
+            dir->getChunk()->file->getSymbol(rel.SymbolTableIndex));
+        int64_t addend = getAddressWordAddend(dir->getChunk(), rel).value_or(0);
+        if (field == 0) {
+          tls.start = target;
+          tls.startAddend = addend;
+        } else if (field == 2 * config.wordsize) {
+          tls.index = target;
+          tls.indexAddend = addend;
+        }
+      }
+    }
+    if (!tls.start || !tls.index)
+      return fail("in thread-local data, but the image's TLS directory "
+                  "(_tls_used) names no template or index");
+  }
   DefinedImportData *protect = nullptr;
   if (llvm::any_of(cells, [](const OverrideCell &c) { return c.readOnly; })) {
     protect = dyn_cast_or_null<DefinedImportData>(
@@ -1581,7 +1663,7 @@ void ImportSlotContents::createOverrideCellFill() {
 
   std::stable_partition(cells.begin(), cells.end(),
                         [](const OverrideCell &c) { return !c.readOnly; });
-  auto *fill = make<OverrideCellFillChunk>(ctx, std::move(cells), protect);
+  auto *fill = make<OverrideCellFillChunk>(ctx, std::move(cells), protect, tls);
   overrideCellFill = fill;
   overrideCellFillPointer = make<LocalImportChunk>(
       ctx, make<DefinedSynthetic>("__llvm_override_cell_fill", fill));

@@ -135,6 +135,46 @@
 # RUN:   FileCheck --check-prefix=NOPROTECT %s
 # NOPROTECT: error: the image reaches __declspec(dllimport) operator new(unsigned long long), an overridable default imported from rt.dll, through a cell that it cannot write without NtProtectVirtualMemory from ntdll.lib
 
+## A thread-local cell is a slot in the template of the DLL's thread-local
+## data, which the loader binds before it copies the template into any thread's
+## block. A replaced one is written in the template, which later threads copy,
+## and in the loading thread's block, found through the index and the template
+## start that the TLS directory names.
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium tl.s -o tl.obj
+# RUN: lld-link -import-slots -dll -noentry tl.obj crt.obj rt.lib records.lib \
+# RUN:   -out:tl.dll
+# RUN: llvm-readobj --coff-imports --sections tl.dll > tl.txt
+# RUN: llvm-objdump -d --print-imm-hex tl.dll >> tl.txt
+# RUN: FileCheck --ignore-case --check-prefix=TL --input-file=tl.txt %s
+# TL:      Name: .data
+# TL-NEXT: VirtualSize:
+# TL-NEXT: VirtualAddress: 0x[[DATA:[0-9A-F]+]]
+# TL:      Name: .tls
+# TL-NEXT: VirtualSize:
+# TL-NEXT: VirtualAddress: 0x[[TLS:[0-9A-F]+]]
+# TL:      Name: rt.dll
+# TL-NEXT: ImportLookupTableRVA:
+# TL-NEXT: ImportAddressTableRVA: 0x[[CELL:[0-9A-F]+]]
+# TL-NEXT: Symbol: _Znwy
+# TL:      btl     $0x0, %r10d
+# TL-NEXT: jae
+# TL-NEXT: movl    0x44(%r11), %eax
+# TL-NEXT: addq    %r11, %rax
+# TL-NEXT: movq    %rax, {{.*}}(%rip) # 0x18000[[CELL]]
+# TL-NEXT: movl    {{.*}}(%rip), %ecx # 0x18000[[DATA]]
+# TL-NEXT: movq    %gs:0x58, %rdx
+# TL-NEXT: movq    (%rdx,%rcx,8), %rdx
+# TL-NEXT: movq    %rax, 0x8(%rdx)
+# TL-NEXT: xorl    %eax, %eax
+# TL-NEXT: retq
+
+## A TLS directory that names no template or index leaves no thread's block
+## to write.
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium tlbad.s -o tlbad.obj
+# RUN: not lld-link -import-slots -dll -noentry tlbad.obj crt.obj rt.lib \
+# RUN:   records.lib -out:tlbad.dll 2>&1 | FileCheck --check-prefix=TLBAD %s
+# TLBAD: error: the image reaches __declspec(dllimport) operator new(unsigned long long), an overridable default imported from rt.dll, through a cell in thread-local data, but the image's TLS directory (_tls_used) names no template or index
+
 ## An executable binds its own references at link time and carries no fill.
 # RUN: lld-link -import-slots -entry:dllmain -subsystem:console use.obj crt.obj \
 # RUN:   rt.lib records.lib ntdll.lib -out:use.exe
@@ -210,3 +250,59 @@ dllmain:
         .globl gother
 gother:
         .quad other
+
+#--- tl.s
+        .text
+        .globl dllmain
+dllmain:
+        retq
+## The template starts with another thread-local datum, so the cell is at
+## offset 8 in each thread's block.
+        .section .tls,"dw"
+        .globl _tls_start
+_tls_start:
+        .quad 0
+        .section .tls$,"dw"
+        .globl tnew
+        .p2align 3
+tnew:
+        .quad _Znwy
+        .section .tls$ZZZ,"dw"
+        .globl _tls_end
+_tls_end:
+        .quad 0
+        .data
+        .globl _tls_index
+_tls_index:
+        .long 0
+        .section .rdata,"dr"
+        .globl _tls_used
+        .p2align 3
+_tls_used:
+        .quad _tls_start
+        .quad _tls_end
+        .quad _tls_index
+        .quad 0
+        .long 0
+        .long 0
+
+#--- tlbad.s
+        .text
+        .globl dllmain
+dllmain:
+        retq
+        .section .tls$,"dw"
+        .globl tnew
+        .p2align 3
+tnew:
+        .quad _Znwy
+        .section .rdata,"dr"
+        .globl _tls_used
+        .p2align 3
+_tls_used:
+        .quad 0
+        .quad 0
+        .quad 0
+        .quad 0
+        .long 0
+        .long 0
