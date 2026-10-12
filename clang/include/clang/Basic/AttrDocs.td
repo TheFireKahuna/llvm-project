@@ -3556,6 +3556,33 @@ affecting the code.
 }];
 }
 
+def OverridableDefaultDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+On Windows Itanium and NT-POSIX, ``__attribute__((overridable_default(N)))``
+marks the definition of a function that a runtime DLL supplies as the default
+of an overridable function, such as a replaceable ``operator new``, which the
+program may replace for every image.
+
+A program replaces such a default through the table that its executable
+carries in its header page. The definition begins by reading slot ``N`` of the
+running executable's table through the process environment block. When the
+slot names a replacement, the function transfers to it with its arguments
+unchanged, through Control Flow Guard where it is enabled. Otherwise the
+default runs. The slot is the default's fixed index in the table, which the
+runtime and the linker that writes the table agree on.
+
+.. code-block:: c++
+
+  [[gnu::weak, clang::overridable_default(0)]] void *operator new(size_t n) {
+    // The default, which runs unless the executable's table replaces it.
+  }
+
+The transfer carries no ``kcfi`` type check: a slot may name the replacement
+of another default that the linker forwards to, whose type differs.
+}];
+}
+
 def DocCatAMDGPUAttributes : DocumentationCategory<"AMD GPU Attributes">;
 
 def AMDGPUFlatWorkGroupSizeDocs : Documentation {

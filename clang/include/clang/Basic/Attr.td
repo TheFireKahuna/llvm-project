@@ -518,6 +518,12 @@ def TargetMicrosoftRecordLayout : TargetArch<["x86", "x86_64", "arm", "thumb",
   let CustomCode = [{ Target.hasMicrosoftRecordLayout() }];
 }
 
+// The 64-bit Windows targets that use the Itanium C++ ABI with COFF and
+// visibility-driven exports: Windows Itanium and NT-POSIX.
+def TargetWindowsItaniumOrNTPOSIX : TargetArch<["x86_64", "aarch64"]> {
+  let CustomCode = [{ T.isWindowsItaniumOrNTPOSIXEnvironment() }];
+}
+
 def TargetMustTailAvailable:  TargetSpec {
   let CustomCode = [{ Target.hasMustTail() }];
 }
@@ -3788,6 +3794,14 @@ def MinVectorWidth : InheritableAttr {
   let Args = [UnsignedArgument<"VectorWidth">];
   let Subjects = SubjectList<[Function], ErrorDiag>;
   let Documentation = [MinVectorWidthDocs];
+}
+
+def OverridableDefault : InheritableAttr,
+                         TargetSpecificAttr<TargetWindowsItaniumOrNTPOSIX> {
+  let Spellings = [Clang<"overridable_default">];
+  let Args = [UnsignedArgument<"Slot">];
+  let Subjects = SubjectList<[Function], ErrorDiag>;
+  let Documentation = [OverridableDefaultDocs];
 }
 
 def TransparentUnion : InheritableAttr {

@@ -1203,6 +1203,9 @@ void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
     Fn->addFnAttr("warn-stack-size",
                   std::to_string(CGM.getCodeGenOpts().WarnStackSize));
 
+  if (const auto *OD = FD ? FD->getAttr<OverridableDefaultAttr>() : nullptr)
+    EmitOverridableDefaultCheck(OD->getSlot());
+
   if (RetTy->isVoidType()) {
     // Void type; nothing to return.
     ReturnValue = Address::invalid();
@@ -1359,6 +1362,99 @@ void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
 
   if (CGM.shouldEmitConvergenceTokens())
     ConvergenceTokenStack.push_back(getOrEmitConvergenceEntryToken(CurFn));
+}
+
+/// Loads a value of type \p Ty at \p Offset bytes into the read-only data at
+/// \p Base, which does not change while the process runs the same image.
+static llvm::LoadInst *loadInvariant(CGBuilderTy &Builder, llvm::Type *Ty,
+                                     llvm::Value *Base, uint64_t Offset,
+                                     uint64_t Align) {
+  llvm::Value *Ptr =
+      Builder.CreateConstInBoundsGEP1_64(Builder.getInt8Ty(), Base, Offset);
+  llvm::LoadInst *Load = Builder.CreateAlignedLoad(Ty, Ptr, llvm::Align(Align));
+  Load->setMetadata(llvm::LLVMContext::MD_invariant_load,
+                    llvm::MDNode::get(Builder.getContext(), {}));
+  return Load;
+}
+
+void CodeGenFunction::EmitOverridableDefaultCheck(unsigned Slot) {
+  // The table in the executable's header page, version 1: slot k is
+  // {tag u32, rva u32} at 0x40 + 8k for the eight slots on the first cache
+  // line and at 0x98 + 8(k - 8) after the header, which holds the magic at
+  // 0x80 and the number of slots at 0x86. Each slot's tag differs, so a slot
+  // that another slot's bytes were copied into does not match.
+  constexpr uint32_t TableMagic = 0x7B3AC2D5;
+  constexpr uint32_t TagBase = 0xC5E1A7F3;
+  uint64_t SlotOffset = Slot < 8 ? 0x40 + 8 * Slot : 0x98 + 8 * (Slot - 8);
+  auto AL = ApplyDebugLocation::CreateArtificial(*this);
+
+  // The executable is PEB->ImageBaseAddress, and TEB->ProcessEnvironmentBlock
+  // is gs:[0x60] on x86-64 and [x18, #0x60] on AArch64.
+  llvm::Type *PtrTy = Builder.getPtrTy();
+  llvm::Value *PEB;
+  if (getTarget().getTriple().isX86()) {
+    PEB = loadInvariant(
+        Builder, PtrTy,
+        Builder.CreateIntToPtr(Builder.getInt64(0x60), Builder.getPtrTy(256)),
+        0, 8);
+  } else {
+    llvm::Metadata *X18[] = {llvm::MDString::get(getLLVMContext(), "x18")};
+    llvm::Value *TEB = Builder.CreateCall(
+        CGM.getIntrinsic(llvm::Intrinsic::read_register, {Int64Ty}),
+        llvm::MetadataAsValue::get(getLLVMContext(),
+                                   llvm::MDNode::get(getLLVMContext(), X18)));
+    PEB = loadInvariant(Builder, PtrTy, Builder.CreateIntToPtr(TEB, PtrTy),
+                        0x60, 8);
+  }
+  llvm::Value *Base = loadInvariant(Builder, PtrTy, PEB, 0x10, 8);
+
+  // A replaced slot holds its tag; anything else, a foreign image's header
+  // included, reads as not replaced, and the default runs.
+  llvm::BasicBlock *Replaced = createBasicBlock("overridable.replaced");
+  llvm::BasicBlock *Forward = createBasicBlock("overridable.forward");
+  llvm::BasicBlock *Default = createBasicBlock("overridable.default");
+  llvm::Value *Tag = loadInvariant(Builder, Int32Ty, Base, SlotOffset, 8);
+  Builder.CreateCondBr(
+      Builder.CreateICmpEQ(Tag, Builder.getInt32(TagBase ^ Slot)), Replaced,
+      Default, llvm::MDBuilder(getLLVMContext()).createUnlikelyBranchWeights());
+
+  // A tag that matches by chance in an image without a table meets no magic.
+  // A slot past the end of the table belongs to a newer runtime's default.
+  EmitBlock(Replaced);
+  llvm::Value *IsTable =
+      Builder.CreateICmpEQ(loadInvariant(Builder, Int32Ty, Base, 0x80, 8),
+                           Builder.getInt32(TableMagic));
+  if (Slot >= 8)
+    IsTable = Builder.CreateAnd(
+        IsTable,
+        Builder.CreateICmpUGT(loadInvariant(Builder, Int16Ty, Base, 0x86, 2),
+                              Builder.getInt16(Slot)));
+  Builder.CreateCondBr(IsTable, Forward, Default);
+
+  // The replacement is reached with this function's arguments and returns to
+  // its caller. Its type is not checked: the linker may point the slot at the
+  // replacement of the default that this one forwards to, whose type differs.
+  EmitBlock(Forward);
+  llvm::Value *RVA = loadInvariant(Builder, Int32Ty, Base, SlotOffset + 4, 4);
+  llvm::Value *Target =
+      Builder.CreateInBoundsGEP(Int8Ty, Base, Builder.CreateZExt(RVA, Int64Ty));
+  SmallVector<llvm::Value *, 8> Args(llvm::make_pointer_range(CurFn->args()));
+  llvm::CallInst *Call =
+      Builder.CreateCall(CurFn->getFunctionType(), Target, Args);
+  Call->setTailCallKind(llvm::CallInst::TCK_MustTail);
+  unsigned CallingConv;
+  llvm::AttributeList Attrs;
+  CGM.ConstructAttributeList(CurFn->getName(), *CurFnInfo, CurGD, Attrs,
+                             CallingConv, /*AttrOnCallSite=*/true,
+                             /*IsThunk=*/false);
+  Call->setAttributes(Attrs);
+  Call->setCallingConv(static_cast<llvm::CallingConv::ID>(CallingConv));
+  if (Call->getType()->isVoidTy())
+    Builder.CreateRetVoid();
+  else
+    Builder.CreateRet(Call);
+
+  EmitBlock(Default);
 }
 
 void CodeGenFunction::EmitFunctionBody(const Stmt *Body) {

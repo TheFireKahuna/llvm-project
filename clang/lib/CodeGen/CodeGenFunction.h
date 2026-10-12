@@ -2521,6 +2521,10 @@ public:
   /// Finish an Objective-C direct method thunk.
   void FinishObjCDirectPreconditionThunk();
 
+  /// Emit the entry of an overridable default, which transfers to the
+  /// replacement that slot \p Slot of the executable's override table names.
+  void EmitOverridableDefaultCheck(unsigned Slot);
+
   /// Emit a musttail call for a thunk with a potentially adjusted this pointer.
   void EmitMustTailThunk(GlobalDecl GD, llvm::Value *AdjustedThisPtr,
                          llvm::FunctionCallee Callee);
