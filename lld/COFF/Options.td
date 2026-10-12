@@ -273,6 +273,7 @@ def allow_vague_duplicates : Joined<["/", "-", "/?", "-?"],
                                     "allow-vague-duplicates:">;
 def offers_baseline : Joined<["/", "-", "/?", "-?"], "offers-baseline:">;
 def offers_epoch : F<"offers-epoch">;
+def overridable : P_priv<"overridable">;
 def kill_at : F<"kill-at">;
 defm lld_allow_duplicate_weak : B_priv<"lld-allow-duplicate-weak">;
 def lldemit : P<"lldemit", "Specify output type">;

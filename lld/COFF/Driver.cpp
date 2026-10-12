@@ -650,6 +650,9 @@ void LinkerDriver::parseDirectives(InputFile *file) {
     case OPT_merge:
       parseMerge(arg->getValue());
       break;
+    case OPT_overridable:
+      file->symtab.overridables.insert(arg->getValue());
+      break;
     case OPT_nodefaultlib:
       ctx.config.noDefaultLibs.insert(findLib(arg->getValue()).lower());
       break;
@@ -3211,6 +3214,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   if (config->dll)
     checkOfferAdditions(ctx, sys::path::filename(config->outputFile));
   checkVagueEntities(ctx, sys::path::filename(config->outputFile));
+  if (config->dll && config->importSlots)
+    ctx.forEachSymtab(
+        [](SymbolTable &symtab) { symtab.checkOverridableExports(); });
 
   ctx.forEachSymtab([](SymbolTable &symtab) { bindLocalImports(symtab); });
 
