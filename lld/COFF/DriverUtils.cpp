@@ -518,6 +518,11 @@ LinkerDriver::createManifestXmlWithInternalMt(StringRef defaultXml) {
       Fatal(ctx) << "internal manifest tool failed on file " << filename << ": "
                  << toString(std::move(e));
   }
+  for (const std::unique_ptr<MemoryBuffer> &manifest : resourceManifests)
+    if (auto e = merger.merge(*manifest))
+      Fatal(ctx) << "internal manifest tool failed on "
+                 << manifest->getBufferIdentifier() << ": "
+                 << toString(std::move(e));
 
   return std::string(merger.getMergedManifest()->getBuffer());
 }
@@ -549,6 +554,13 @@ LinkerDriver::createManifestXmlWithExternalMt(StringRef defaultXml) {
       if (auto mbOrErr = MemoryBuffer::getFile(filename))
         takeBuffer(std::move(*mbOrErr));
   }
+  std::vector<TemporaryFile> resourceFiles;
+  for (const std::unique_ptr<MemoryBuffer> &manifest : resourceManifests) {
+    resourceFiles.emplace_back(ctx, "resource", "manifest",
+                               manifest->getBuffer());
+    e.add("/manifest");
+    e.add(resourceFiles.back().path);
+  }
   e.add("/nologo");
   e.add("/out:" + StringRef(user.path));
   e.run();
@@ -561,7 +573,7 @@ LinkerDriver::createManifestXmlWithExternalMt(StringRef defaultXml) {
 
 std::string LinkerDriver::createManifestXml() {
   std::string defaultXml = createDefaultXml();
-  if (ctx.config.manifestInput.empty())
+  if (ctx.config.manifestInput.empty() && resourceManifests.empty())
     return defaultXml;
 
   if (windows_manifest::isAvailable())
@@ -612,6 +624,53 @@ static void writeResEntryHeader(char *&buf, size_t manifestSize,
   suffix->Version = 0;
   suffix->Characteristics = 0;
   buf += sizeof(object::WinResHeaderSuffix);
+}
+
+// Takes the manifest resources that .res inputs give the image under the ID of
+// the one the linker embeds, to merge them into it: the image then has one
+// manifest, which carries what the linker requires as well as what the inputs
+// add.
+void LinkerDriver::takeManifestResources() {
+  for (MemoryBufferRef &mb : resources) {
+    std::unique_ptr<object::Binary> bin = check(object::createBinary(mb));
+    auto *rf = dyn_cast<object::WindowsResource>(bin.get());
+    if (!rf)
+      continue;
+
+    // Entries follow each other from the end of the null entry, each padded
+    // to the alignment of the next header.
+    const char *start = mb.getBufferStart();
+    size_t entryStart =
+        object::WIN_RES_MAGIC_SIZE + object::WIN_RES_NULL_ENTRY_SIZE;
+    std::string kept(start, entryStart);
+    bool took = false;
+    object::ResourceEntryRef entry = check(rf->getHeadEntry());
+    for (bool end = false; !end;) {
+      ArrayRef<uint8_t> data = entry.getData();
+      size_t entryEnd =
+          alignTo(reinterpret_cast<const char *>(data.end()) - start,
+                  object::WIN_RES_DATA_ALIGNMENT);
+      if (!entry.checkTypeString() && entry.getTypeID() == RT_MANIFEST &&
+          !entry.checkNameString() &&
+          entry.getNameID() == ctx.config.manifestID) {
+        resourceManifests.push_back(MemoryBuffer::getMemBufferCopy(
+            toStringRef(data), mb.getBufferIdentifier()));
+        took = true;
+      } else {
+        kept.append(start + entryStart, entryEnd - entryStart);
+      }
+      entryStart = entryEnd;
+      if (Error e = entry.moveNext(end))
+        Fatal(ctx) << mb.getBufferIdentifier() << ": "
+                   << toString(std::move(e));
+    }
+    if (!took)
+      continue;
+    std::unique_ptr<MemoryBuffer> rest =
+        MemoryBuffer::getMemBufferCopy(kept, mb.getBufferIdentifier());
+    mb = rest->getMemBufferRef();
+    make<std::unique_ptr<MemoryBuffer>>(std::move(rest)); // take ownership
+  }
 }
 
 // Create a resource file containing a manifest XML.

@@ -2411,6 +2411,18 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
       parseManifest(arg->getValue());
   }
 
+  // Under -import-slots, an executable embeds its manifest. The loader then
+  // ignores .local redirection for it, no loose manifest file applies to it,
+  // and its signature covers the manifest. A side-by-side manifest is written
+  // when asked for.
+  if (args.hasArg(OPT_import_slots) && !config->dll) {
+    if (config->manifest == Configuration::No)
+      Err(ctx) << "/manifest:no is not compatible with -import-slots, under "
+                  "which an executable embeds its manifest";
+    else if (config->manifest == Configuration::Default)
+      config->manifest = Configuration::Embed;
+  }
+
   // Handle /manifestuac
   if (auto *arg = args.getLastArg(OPT_manifestuac))
     parseManifestUAC(arg->getValue());
@@ -3297,12 +3309,17 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // Windows specific -- Create an embedded or side-by-side manifest.
   // /manifestdependency: enables /manifest unless an explicit /manifest:no is
   // also passed.
-  if (config->manifest == Configuration::Embed)
+  if (config->manifest == Configuration::Embed) {
+    // Under -import-slots, an input's manifest for the executable merges into
+    // the one it embeds instead of duplicating it.
+    if (config->importSlots && !config->dll)
+      takeManifestResources();
     addBuffer(createManifestRes(), false, false);
-  else if (config->manifest == Configuration::SideBySide ||
-           (config->manifest == Configuration::Default &&
-            !config->manifestDependencies.empty()))
+  } else if (config->manifest == Configuration::SideBySide ||
+             (config->manifest == Configuration::Default &&
+              !config->manifestDependencies.empty())) {
     createSideBySideManifest();
+  }
 
   // Handle /order. We want to do this at this moment because we
   // need a complete list of comdat sections to warn on nonexistent
