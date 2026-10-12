@@ -161,4 +161,64 @@ _LIBCPP_END_NAMESPACE_STD
 
 #endif // defined(_LIBCPP_OBJECT_FORMAT_MACHO) || (defined(_LIBCPP_OBJECT_FORMAT_ELF) && !defined(__NVPTX__))
 
+//
+// On Windows Itanium and NT-POSIX, every image calls the overridable defaults
+// of the shared library under their ABI names, and a program replaces one for
+// every image through the table that its executable carries in its header
+// page. Each default begins by reading its slot there (clang's
+// overridable_default attribute), and the program's link writes the table from
+// the slots below, which the library's import library carries. A default that
+// the standard specifies as calling another runs that one's body instead, since
+// the link points its slot at a replacement of the other.
+//
+// Slots are never reused or renumbered, so that a program and a library built
+// at different times agree on every slot they both know. Slots 0 to 7, on the
+// table's first cache line, are the most frequently called defaults.
+//
+
+#if __has_attribute(__overridable_default__)
+#  define _LIBCPP_HAS_OVERRIDE_TABLE 1
+#  define _LIBCPP_OVERRIDABLE_SLOT(__slot) __attribute__((__overridable_default__(__slot)))
+#else
+#  define _LIBCPP_HAS_OVERRIDE_TABLE 0
+#  define _LIBCPP_OVERRIDABLE_SLOT(__slot)
+#endif
+
+#define _LIBCPP_OVERRIDE_SLOT_NEW 0
+#define _LIBCPP_OVERRIDE_SLOT_NEW_ARRAY 1
+#define _LIBCPP_OVERRIDE_SLOT_DELETE 2
+#define _LIBCPP_OVERRIDE_SLOT_DELETE_SIZED 3
+#define _LIBCPP_OVERRIDE_SLOT_DELETE_ARRAY 4
+#define _LIBCPP_OVERRIDE_SLOT_DELETE_ARRAY_SIZED 5
+#define _LIBCPP_OVERRIDE_SLOT_NEW_ALIGNED 6
+#define _LIBCPP_OVERRIDE_SLOT_DELETE_ALIGNED 7
+#define _LIBCPP_OVERRIDE_SLOT_NEW_ARRAY_ALIGNED 8
+#define _LIBCPP_OVERRIDE_SLOT_DELETE_SIZED_ALIGNED 9
+#define _LIBCPP_OVERRIDE_SLOT_DELETE_ARRAY_ALIGNED 10
+#define _LIBCPP_OVERRIDE_SLOT_DELETE_ARRAY_SIZED_ALIGNED 11
+#define _LIBCPP_OVERRIDE_SLOT_NEW_NOTHROW 12
+#define _LIBCPP_OVERRIDE_SLOT_NEW_ARRAY_NOTHROW 13
+#define _LIBCPP_OVERRIDE_SLOT_NEW_ALIGNED_NOTHROW 14
+#define _LIBCPP_OVERRIDE_SLOT_NEW_ARRAY_ALIGNED_NOTHROW 15
+#define _LIBCPP_OVERRIDE_SLOT_DELETE_NOTHROW 16
+#define _LIBCPP_OVERRIDE_SLOT_DELETE_ARRAY_NOTHROW 17
+#define _LIBCPP_OVERRIDE_SLOT_DELETE_ALIGNED_NOTHROW 18
+#define _LIBCPP_OVERRIDE_SLOT_DELETE_ARRAY_ALIGNED_NOTHROW 19
+#define _LIBCPP_OVERRIDE_SLOT_VERBOSE_ABORT 20
+// Slots 21 to 23 are kept for std::is_debugger_present,
+// ::handle_contract_violation and
+// std::execution::parallel_scheduler_replacement::query_parallel_scheduler_backend.
+
+// The version of the table's format that the library reads.
+#define _LIBCPP_OVERRIDE_TABLE_VERSION 1
+
+// The body of a default that the standard specifies as calling another: the
+// call where a replacement of the other supersedes it at link time, and the
+// other's body where the table forwards the default to its replacement.
+#if _LIBCPP_HAS_OVERRIDE_TABLE
+#  define _LIBCPP_OVERRIDABLE_FORWARD(__call, __body) __body
+#else
+#  define _LIBCPP_OVERRIDABLE_FORWARD(__call, __body) __call
+#endif
+
 #endif // _LIBCPP_SRC_INCLUDE_OVERRIDABLE_FUNCTION_H

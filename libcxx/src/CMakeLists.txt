@@ -176,6 +176,17 @@ endif()
 split_list(LIBCXX_COMPILE_FLAGS)
 split_list(LIBCXX_LINK_FLAGS)
 
+# On Windows Itanium and NT-POSIX, the slots of the override table that a
+# program's link reads, as absolute symbols in a regular member of the import
+# library and of the static library.
+if (WIN32_ITANIUM OR WIN32_NTPOSIX)
+  add_library(cxx_override_slots OBJECT support/win32/override_slots.cpp)
+  target_include_directories(cxx_override_slots PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  target_link_libraries(cxx_override_slots PRIVATE cxx-headers)
+  set_target_properties(cxx_override_slots PROPERTIES COMPILE_FLAGS "${LIBCXX_COMPILE_FLAGS}")
+  cxx_add_common_build_flags(cxx_override_slots)
+endif()
+
 include(FindLibcCommonUtils)
 
 # Build the shared library.
@@ -212,6 +223,17 @@ if (LIBCXX_SUPPORTS_SHARED_LIBRARY)
     target_link_libraries(cxx_shared PRIVATE libcxx-abi-shared-objects)
   else()
     target_link_libraries(cxx_shared PUBLIC libcxx-abi-shared)
+  endif()
+
+  # The shared library checks the executable's override table when it loads,
+  # and its import library carries the table's slots.
+  if (WIN32_ITANIUM OR WIN32_NTPOSIX)
+    target_sources(cxx_shared PRIVATE support/win32/override_table.cpp)
+    add_custom_command(TARGET cxx_shared POST_BUILD
+      COMMAND ${CMAKE_AR} qs $<TARGET_LINKER_FILE:cxx_shared> $<TARGET_OBJECTS:cxx_override_slots>
+      COMMENT "Adding the override table's slots to $<TARGET_LINKER_FILE_NAME:cxx_shared>"
+      VERBATIM)
+    add_dependencies(cxx_shared cxx_override_slots)
   endif()
 
   # Maybe force some symbols to be weak, not weak or not exported.
@@ -302,6 +324,10 @@ endif()
 # Attempt to merge the libc++.a archive and the ABI library archive into one.
 if (LIBCXX_STATICALLY_LINK_ABI_IN_STATIC_LIBRARY)
   target_link_libraries(cxx_static PRIVATE libcxx-abi-static-objects)
+endif()
+
+if (WIN32_ITANIUM OR WIN32_NTPOSIX)
+  target_link_libraries(cxx_static PRIVATE cxx_override_slots)
 endif()
 
 # Build the experimental static library
