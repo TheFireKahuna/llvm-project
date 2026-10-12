@@ -1376,6 +1376,10 @@ void Writer::createMiscChunks() {
     }
   });
 
+  // The thunks of forwarded override slots that shuffle an argument are code.
+  for (Chunk *c : ctx.symtab.overrideThunks)
+    textSec->addChunk(c);
+
   // Create Debug Information Chunks
   if (config->mingw) {
     debugInfoSec = buildidSec;
@@ -2983,10 +2987,13 @@ void Writer::createGuardCFTables() {
   if (Chunk *fill = slots.getFill())
     addressTakenSyms.insert({fill, 0});
 
-  // The override table's anchor names each replacement body, whose checked
-  // dispatch from a default needs it in the guard table.
+  // The override table's anchor names each replacement body, and each
+  // forwarding thunk, whose checked dispatch from a default needs it in the
+  // guard table.
   for (const auto &slot : ctx.symtab.overrideSlots)
     maybeAddAddressTakenFunction(addressTakenSyms, slot.target);
+  for (Chunk *thunk : ctx.symtab.overrideThunks)
+    addressTakenSyms.insert({thunk, 0});
 
   // Mark the image entry as address-taken.
   SymbolRVASet exportedSyms;

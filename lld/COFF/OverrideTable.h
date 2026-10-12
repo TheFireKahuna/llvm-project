@@ -83,6 +83,26 @@ private:
   SymbolTable &symtab;
 };
 
+// The thunk a forwarded slot names when the default it forwards to drops the
+// default's second argument, as a sized aligned deallocation forwards to the
+// unsized one: it moves the third argument into the second and jumps to the
+// target body. It moves no stack, so it needs no unwind entry, and carries no
+// kcfi prefix, since only the replacing tail, built without kcfi, reaches it.
+class OverrideThunkChunk : public NonSectionCodeChunk {
+public:
+  OverrideThunkChunk(COFFLinkerContext &ctx, Defined *target)
+      : ctx(ctx), target(target) {
+    setAlignment(16);
+  }
+  size_t getSize() const override { return 8; }
+  void writeTo(uint8_t *buf) const override;
+  MachineTypes getMachine() const override;
+
+private:
+  COFFLinkerContext &ctx;
+  Defined *target;
+};
+
 // Writes the override table into the header page, at base, which is the image
 // base in the output: its slots, then its header with the magic, version,
 // slot count, the anchor's RVA and a zero extension RVA and reserved word.

@@ -1094,24 +1094,88 @@ void SymbolTable::resolveOverridableReplacements() {
 void SymbolTable::buildOverrideSlots() {
   if (overrideReplacements.empty())
     return;
-  // The table's slots run from zero to the highest the link writes. Its first
-  // eight, the hot line, are always present, so the count is at least eight
-  // and the runtime's check of a hot-line slot needs no bound. Each
-  // replacement names its body and sets the anchor's mask bit for its slot;
-  // the body is a root, which keeps it and lists it in the guard table through
-  // the anchor's pointer to it.
-  uint32_t count = 8;
-  for (const OverrideReplacement &r : overrideReplacements)
-    count = std::max(count, r.slot + 1);
-  overrideSlots.assign(count, {});
-  for (const OverrideReplacement &r : overrideReplacements) {
-    overrideSlots[r.slot] = {r.body, /*replaced=*/true};
-    if (r.slot < 32)
-      overrideMask |= 1u << r.slot;
-    if (!r.body->isGCRoot) {
-      r.body->isGCRoot = true;
-      ctx.config.gcroot.push_back(r.body);
+  auto root = [&](Defined *d) {
+    if (!d->isGCRoot) {
+      d->isGCRoot = true;
+      ctx.config.gcroot.push_back(d);
     }
+  };
+  // The slot each replacement names, its body.
+  DenseMap<uint32_t, Defined *> replaced;
+  for (const OverrideReplacement &r : overrideReplacements)
+    replaced[r.slot] = r.body;
+
+  // The forwarding graph the records member carries: the standard specifies
+  // most defaults as calling another, and the records member records, for each
+  // such default, its own slot's forwarding to that other's slot, with a bit
+  // when it drops its second argument on the way. A default forwarded to a
+  // replaced default runs the replacement's body.
+  struct Edge {
+    uint32_t target;
+    bool dropsSecond;
+  };
+  DenseMap<uint32_t, Edge> edges;
+  for (auto &entry : symMap) {
+    StringRef name = entry.second->getName();
+    if (!name.consume_front("__ovr_fwd$"))
+      continue;
+    auto *fwd = dyn_cast<DefinedAbsolute>(entry.second);
+    auto *from = dyn_cast_or_null<DefinedAbsolute>(
+        find(("__ovr_slot$" + name).str()));
+    if (fwd && from)
+      edges[uint32_t(from->getVA())] = {uint32_t(fwd->getVA()) & 0xFFFF,
+                                        (fwd->getVA() & 0x10000) != 0};
+  }
+  // Each forwarding slot that is not replaced resolves to the nearest replaced
+  // slot its chain reaches, through a thunk when an edge on the way drops the
+  // second argument.
+  DenseMap<uint32_t, std::pair<Defined *, bool>> forwarded;
+  for (const auto &edge : edges) {
+    uint32_t from = edge.first;
+    if (replaced.count(from))
+      continue;
+    uint32_t cur = from;
+    bool drops = false;
+    DenseSet<uint32_t> seen;
+    while (edges.count(cur) && seen.insert(cur).second) {
+      drops |= edges[cur].dropsSecond;
+      cur = edges[cur].target;
+      auto it = replaced.find(cur);
+      if (it != replaced.end()) {
+        forwarded[from] = {it->second, drops};
+        break;
+      }
+    }
+  }
+
+  // The table runs from slot zero to the highest slot it writes, and never
+  // fewer than its first eight, the hot line, which is always present, so a
+  // hot-line slot's check needs no bound.
+  uint32_t count = 8;
+  for (const auto &r : replaced)
+    count = std::max(count, r.first + 1);
+  for (const auto &f : forwarded)
+    count = std::max(count, f.first + 1);
+  overrideSlots.assign(count, {});
+  // A replacement names its body and sets the anchor's mask bit for its slot.
+  for (const auto &r : replaced) {
+    overrideSlots[r.first] = {r.second, /*replaced=*/true};
+    if (r.first < 32)
+      overrideMask |= 1u << r.first;
+    root(r.second);
+  }
+  // A forwarded slot names the replacement's body, or the thunk to it, and
+  // sets no mask bit. Each body is a root already; a thunk is kept because the
+  // code section holds it.
+  for (const auto &f : forwarded) {
+    Defined *target = f.second.first;
+    if (f.second.second) {
+      auto *thunk = make<OverrideThunkChunk>(ctx, target);
+      overrideThunks.push_back(thunk);
+      target = make<DefinedSynthetic>(saver().save("__ovr_thunk$" + Twine(f.first)),
+                                      thunk);
+    }
+    overrideSlots[f.first] = {target, /*replaced=*/false};
   }
 }
 
