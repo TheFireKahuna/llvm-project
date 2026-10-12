@@ -268,6 +268,12 @@ public:
   // definition, the body that replaces the runtime's weak overridable default.
   bool isLocalOverrideReplacement(StringRef name);
 
+  // The override table slot of an imported default, from the records member,
+  // or none if name is not a recorded default. An image whose static data or
+  // code takes such an import's address carries a cell for that slot, which its
+  // fill writes from the executable's table.
+  std::optional<uint32_t> overrideImportSlot(StringRef name);
+
   // The name of the epoch export of the entities the image keeps, if any.
   StringRef offersEpoch;
   llvm::MapVector<Symbol *, DefinedImportData *> offeredFunctions;

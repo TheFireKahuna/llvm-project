@@ -809,6 +809,7 @@ void Writer::run() {
     createImportTables();
     slots.bind();
     slots.createResidualFill();
+    slots.createOverrideCellFill();
     if (ctx.kcfi.listsImports || !ctx.kcfi.listedImports.empty())
       kcfi.listThunks();
     createSections();
@@ -1228,6 +1229,14 @@ void Writer::createSections() {
     createPartialSection(".xdata", data | r)
         ->chunks.push_back(slots.getFillUnwind());
     createPartialSection(".pdata", data | r)->chunks.push_back(pdata);
+  }
+  if (Chunk *fill = slots.getOverrideCellFill()) {
+    createPartialSection(".text", fill->getOutputCharacteristics())
+        ->chunks.push_back(fill);
+    // A TLS callback, right after the executable's validation of its table and
+    // ahead of the program's own callbacks, so it runs before any image code.
+    createPartialSection(".CRT$XLAB", data | r)
+        ->chunks.push_back(slots.getOverrideCellFillPointer());
   }
 
   fixPartialSectionChars(".rsrc", data | r);
@@ -2985,6 +2994,10 @@ void Writer::createGuardCFTables() {
 
   // The C initializer table calls the residual fill.
   if (Chunk *fill = slots.getFill())
+    addressTakenSyms.insert({fill, 0});
+
+  // The TLS callback array holds the override-default cell fill.
+  if (Chunk *fill = slots.getOverrideCellFill())
     addressTakenSyms.insert({fill, 0});
 
   // The override table's anchor names each replacement body, and each

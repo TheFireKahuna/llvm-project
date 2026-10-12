@@ -54,6 +54,9 @@ public:
       : ctx(ctx), idata(idata) {}
   void bind();
   void createResidualFill();
+  // Builds the fill of this image's overridable-default cells, the in-place
+  // slots that hold such a default's address, from the committed slots.
+  void createOverrideCellFill();
   void check(Chunk *iatStart, uint64_t iatSize);
 
   // Whether sc is laid out apart from the other chunks of its section.
@@ -76,6 +79,8 @@ public:
   Chunk *getFillPointer() const { return residualFillPointer; }
   Chunk *getFillUnwind() const { return residualFillUnwind; }
   Chunk *getFillPdata() const { return residualFillPdata; }
+  Chunk *getOverrideCellFill() const { return overrideCellFill; }
+  Chunk *getOverrideCellFillPointer() const { return overrideCellFillPointer; }
 
 private:
   void scanChunk(SlotScan &scan, SectionChunk *sc);
@@ -114,6 +119,10 @@ private:
   Chunk *residualFillPointer = nullptr;
   Chunk *residualFillUnwind = nullptr;
   Chunk *residualFillPdata = nullptr;
+  // The fill of this image's overridable-default cells and its pointer in the
+  // TLS callback array, which runs it before any of the image's own code.
+  Chunk *overrideCellFill = nullptr;
+  Chunk *overrideCellFillPointer = nullptr;
   // The read-only output sections other than .rdata that hold in-place import
   // slots, which are laid out before .rdata, and whether a $-group of .rdata
   // holds one; either places the import address tables at the start of

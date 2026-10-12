@@ -108,6 +108,45 @@ private:
   Defined *target;
 };
 
+// A word of this image's static data that holds the address of an overridable
+// default X, an in-place import slot the loader fills with the runtime's entry.
+// Its fill overwrites it with the program's replacement when the executable's
+// table names one for X's slot, so every image observes &X as the one
+// replacement, as on ELF.
+struct OverrideCell {
+  Chunk *chunk;
+  uint32_t offset;
+  uint32_t slot;
+};
+
+// The fill of this image's overridable-default cells, a TLS callback that runs
+// before any of the image's code. It reads the executable's override table
+// through the PEB and, for each cell whose slot the table names replaced, writes
+// the executable's image base plus the slot's RVA into the cell; a slot the
+// table does not name, or a foreign executable with no table, leaves the cell
+// the loader's value, the runtime's entry. These cells are in writable data, so
+// the fill writes in place and needs no frame, and running again on a later
+// thread attach writes the same value.
+class OverrideCellFillChunk : public NonSectionCodeChunk {
+public:
+  OverrideCellFillChunk(COFFLinkerContext &ctx, std::vector<OverrideCell> cells)
+      : cells(std::move(cells)), ctx(ctx) {
+    setAlignment(16);
+  }
+  size_t getSize() const override;
+  void writeTo(uint8_t *buf) const override;
+  uint32_t getOutputCharacteristics() const override {
+    return llvm::COFF::IMAGE_SCN_CNT_CODE |
+           NonSectionCodeChunk::getOutputCharacteristics();
+  }
+  StringRef getSectionName() const override { return ".text"; }
+  MachineTypes getMachine() const override;
+
+private:
+  std::vector<OverrideCell> cells;
+  COFFLinkerContext &ctx;
+};
+
 // Writes the override table into the header page, at base, which is the image
 // base in the output: its slots, then its header with the magic, version,
 // slot count, the anchor's RVA and a zero extension RVA and reserved word.
