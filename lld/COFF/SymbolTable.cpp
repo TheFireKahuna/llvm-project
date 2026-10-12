@@ -538,6 +538,15 @@ bool SymbolTable::loadInteriorImports() {
       }
     }
   }
+  // A DLL's fill writes the entries and read-only slots of the overridable
+  // defaults it imports between two protection calls.
+  if (!sealed && canSeal && ctx.config.dll && overrideRecordsLoaded)
+    sealed = llvm::any_of(ctx.importFileInstances, [&](ImportFile *f) {
+      return &f->symtab == this && f->impSym &&
+             !ctx.config.delayLoads.contains(StringRef(f->dllName).lower()) &&
+             overrideImportSlot(
+                 f->impSym->getName().drop_front(strlen("__imp_")));
+    });
   if (sealed)
     if (Symbol *l = find("__imp_NtProtectVirtualMemory");
         l && l->isLazy() && !l->pendingArchiveLoad && isLazyImport(l))
