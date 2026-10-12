@@ -13,6 +13,7 @@
 #include "ImportSlots.h"
 #include "LTO.h"
 #include "LocalImports.h"
+#include "OverrideTable.h"
 #include "PDB.h"
 #include "Symbols.h"
 #include "lld/Common/ErrorHandler.h"
@@ -1025,11 +1026,6 @@ void SymbolTable::checkOverridableExports() {
   }
 }
 
-// The override table format this linker writes, which the records member's
-// __ovr_version must match. Slots are never reused or renumbered, so a program
-// and a runtime built at different times agree on every slot they both know.
-static const uint32_t overrideTableVersion = 1;
-
 bool SymbolTable::loadOverrideRecords() {
   if (!ctx.config.importSlots || ctx.config.dll || ctx.hybridSymtab ||
       isEC() || overridables.empty() || overrideRecordsLoaded)
@@ -1092,6 +1088,54 @@ void SymbolTable::resolveOverridableReplacements() {
     overrideReplacements.push_back(
         {body, name, uint32_t(*slot), absolute("__ovr_fwd$" + name)});
   }
+  buildOverrideSlots();
+}
+
+void SymbolTable::buildOverrideSlots() {
+  if (overrideReplacements.empty())
+    return;
+  // The table's slots run from zero to the highest the link writes. Its first
+  // eight, the hot line, are always present, so the count is at least eight
+  // and the runtime's check of a hot-line slot needs no bound. Each
+  // replacement names its body and sets the anchor's mask bit for its slot;
+  // the body is a root, which keeps it and lists it in the guard table through
+  // the anchor's pointer to it.
+  uint32_t count = 8;
+  for (const OverrideReplacement &r : overrideReplacements)
+    count = std::max(count, r.slot + 1);
+  overrideSlots.assign(count, {});
+  for (const OverrideReplacement &r : overrideReplacements) {
+    overrideSlots[r.slot] = {r.body, /*replaced=*/true};
+    if (r.slot < 32)
+      overrideMask |= 1u << r.slot;
+    if (!r.body->isGCRoot) {
+      r.body->isGCRoot = true;
+      ctx.config.gcroot.push_back(r.body);
+    }
+  }
+}
+
+bool SymbolTable::nameOverrideCheck() {
+  if (!ctx.config.importSlots || ctx.config.dll || ctx.hybridSymtab ||
+      isEC() || !overrideRecordsLoaded || overrideAnchor)
+    return false;
+  // Not until an input defines a strong replacement, the body that supersedes
+  // the runtime's weak default. A link that only loaded the records member,
+  // with no replacement after all, writes no table.
+  bool replaces = llvm::any_of(overridables, [&](StringRef name) {
+    auto *d = dyn_cast_or_null<DefinedRegular>(find(name));
+    return d && !d->isWeak && isa<ObjFile>(d->getFile()) &&
+           !d->getName().starts_with(".weak.");
+  });
+  if (!replaces)
+    return false;
+  // The executable's start-up validation, whose TLS callback the C++ runtime
+  // provides runs before any of the executable's code. It reads the anchor the
+  // writer fills beside the table, which the runtime reaches by this name.
+  overrideAnchor = make<OverrideAnchorChunk>(ctx, *this);
+  addSynthetic("__ovr_anchor", overrideAnchor);
+  addGCRoot(mangle("__ovr_check"));
+  return true;
 }
 
 /// Helper function for reportUnresolvable and resolveRemainingUndefines.

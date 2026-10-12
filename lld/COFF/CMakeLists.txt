@@ -21,6 +21,7 @@ add_lld_library(lldCOFF
   MapFile.cpp
   MarkLive.cpp
   MinGW.cpp
+  OverrideTable.cpp
   PDB.cpp
   SymbolTable.cpp
   Symbols.cpp

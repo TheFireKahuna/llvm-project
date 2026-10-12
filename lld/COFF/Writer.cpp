@@ -17,6 +17,7 @@
 #include "LLDMapFile.h"
 #include "LinkPins.h"
 #include "MapFile.h"
+#include "OverrideTable.h"
 #include "PDB.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
@@ -1107,6 +1108,13 @@ void Writer::sortSections() {
 void Writer::calculateStubDependentSizes() {
   if (ctx.config.dosStub)
     dosStubSize = alignTo(ctx.config.dosStub->getBufferSize(), 8);
+  else if (!ctx.symtab.overrideSlots.empty())
+    // A replacing link holds the override table between the MZ header and the
+    // DOS program, which starts a paragraph past the table so that it runs.
+    dosStubSize = alignTo(
+        alignTo(overrideTableEnd(ctx.symtab.overrideSlots.size()), 16) +
+            sizeof(dosProgram),
+        8);
   else
     dosStubSize = sizeof(dos_header) + sizeof(dosProgram);
 
@@ -1158,6 +1166,11 @@ void Writer::createSections() {
   relocSec = createSection(".reloc", data | discardable | r);
   ctorsSec = createSection(".ctors", data | r | w);
   dtorsSec = createSection(".dtors", data | r | w);
+
+  // A replacing link holds its override table's anchor in a read-only section
+  // of its own, which the C++ runtime locates by name.
+  if (Chunk *anchor = ctx.symtab.overrideAnchor)
+    createSection(".ovra", data | r)->addChunk(anchor);
 
   // Pinned and 64-byte-aligned read-only chunks are packed in an image whose
   // objects pin chunks, as those of a target that places vtables do, where
@@ -2242,18 +2255,28 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
     // In that case, we add zero paddings ourselves.
     buf += alignTo(config->dosStub->getBufferSize(), 8);
   } else {
+    uint8_t *stub = buf;
     buf += sizeof(dos_header);
     dos->Magic[0] = 'M';
     dos->Magic[1] = 'Z';
     dos->UsedBytesInTheLastPage = dosStubSize % 512;
     dos->FileSizeInPages = divideCeil(dosStubSize, 512);
-    dos->HeaderSizeInParagraphs = sizeof(dos_header) / 16;
-
     dos->AddressOfRelocationTable = sizeof(dos_header);
     dos->AddressOfNewExeHeader = dosStubSize;
 
-    memcpy(buf, dosProgram, sizeof(dosProgram));
-    buf += sizeof(dosProgram);
+    // A replacing link holds the override table after the MZ header, so that
+    // the C++ runtime's defaults reach it through the PEB at a fixed offset
+    // from the image base, and moves the DOS program past it. Covering the
+    // table with the header size leaves the program where it still runs.
+    uint32_t programOffset = sizeof(dos_header);
+    if (ctx.symtab.overrideAnchor) {
+      writeOverrideTable(ctx, ctx.symtab, stub);
+      programOffset =
+          alignTo(overrideTableEnd(ctx.symtab.overrideSlots.size()), 16);
+    }
+    dos->HeaderSizeInParagraphs = programOffset / 16;
+    memcpy(stub + programOffset, dosProgram, sizeof(dosProgram));
+    buf = stub + dosStubSize;
   }
 
   // Make sure DOS stub is aligned to 8 bytes at this point
@@ -2959,6 +2982,11 @@ void Writer::createGuardCFTables() {
   // The C initializer table calls the residual fill.
   if (Chunk *fill = slots.getFill())
     addressTakenSyms.insert({fill, 0});
+
+  // The override table's anchor names each replacement body, whose checked
+  // dispatch from a default needs it in the guard table.
+  for (const auto &slot : ctx.symtab.overrideSlots)
+    maybeAddAddressTakenFunction(addressTakenSyms, slot.target);
 
   // Mark the image entry as address-taken.
   SymbolRVASet exportedSyms;
