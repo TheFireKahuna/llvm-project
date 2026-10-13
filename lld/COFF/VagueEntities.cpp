@@ -19,6 +19,7 @@
 #include "COFFLinkerContext.h"
 #include "Driver.h"
 #include "InputFiles.h"
+#include "OverrideTable.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
 #include "lld/Common/ErrorHandler.h"
@@ -41,17 +42,19 @@ using namespace llvm::object;
 namespace lld::coff {
 // The name by which an import library's record of the DLL dll is found.
 static std::string getRecordSymbol(StringRef dll) {
-  return "__llvm_vague$" + dll.lower();
+  return (vagueRecordPrefix + dll.lower()).str();
 }
 
 namespace {
 // One image of a load closure: the entities it keeps, the images it imports
-// from, by index, and the name of the epoch it exports, if any.
+// from, by index, the name of the epoch it exports, if any, and the
+// overridable defaults it offers.
 struct Image {
   std::string name;
   std::vector<std::string> entities;
   std::vector<uint32_t> imports;
   std::string epoch;
+  std::vector<std::string> offers;
 };
 
 // The images of a load closure, by name.
@@ -96,12 +99,14 @@ readRecord(COFFLinkerContext &ctx, MemoryBufferRef mb, Closure &closure) {
       return std::nullopt;
     }
     data.getULEB128(cur);
+    SmallVector<uint32_t, 0> index;
     while (cur && !data.eof(cur)) {
       uint64_t kind = data.getULEB128(cur);
       uint64_t size = data.getULEB128(cur);
       uint64_t start = cur.tell();
       data.skip(cur, size);
-      if (!cur || kind != LinkRecordVagueEntities)
+      if (!cur ||
+          (kind != LinkRecordVagueEntities && kind != LinkRecordOverrideOffers))
         continue;
       DataExtractor group(contents->substr(start, size), true);
       DataExtractor::Cursor c(0);
@@ -109,8 +114,25 @@ readRecord(COFFLinkerContext &ctx, MemoryBufferRef mb, Closure &closure) {
         uint64_t n = group.getULEB128(c);
         return group.getBytes(c, n);
       };
+      // The offers of the images the closure group listed, by their index.
+      if (kind == LinkRecordOverrideOffers) {
+        while (c && !group.eof(c) && !index.empty()) {
+          uint64_t image = group.getULEB128(c);
+          uint64_t count = group.getULEB128(c);
+          std::vector<std::string> *offers =
+              image < index.size() ? &closure.images[index[image]].offers
+                                   : nullptr;
+          bool known = offers && !offers->empty();
+          for (uint64_t j = 0; c && j != count; ++j) {
+            StringRef offer = getString();
+            if (offers && !known)
+              offers->push_back(offer.str());
+          }
+        }
+        consumeError(c.takeError());
+        continue;
+      }
       uint64_t count = group.getULEB128(c);
-      SmallVector<uint32_t, 0> index;
       SmallVector<SmallVector<uint64_t, 0>, 0> imports;
       for (uint64_t i = 0; c && i != count; ++i) {
         uint32_t image = closure.add(getString());
@@ -149,8 +171,10 @@ readRecord(COFFLinkerContext &ctx, MemoryBufferRef mb, Closure &closure) {
                   << ": the record of vague entities is malformed";
         return std::nullopt;
       }
-      return index[0];
     }
+    consumeError(cur.takeError());
+    if (!index.empty())
+      return index[0];
   }
   return std::nullopt;
 }
@@ -204,6 +228,36 @@ static std::vector<uint32_t> readImportedRecords(COFFLinkerContext &ctx,
               readRecord(ctx, lazy->getMemberBuffer(), closure))
         direct.push_back(*i);
   return direct;
+}
+
+std::vector<std::pair<std::string, std::string>>
+getDependentOverrideOffers(COFFLinkerContext &ctx,
+                           ArrayRef<MemoryBufferRef> records) {
+  Closure closure;
+  std::vector<uint32_t> queue;
+  for (MemoryBufferRef mb : records)
+    if (std::optional<uint32_t> i = readRecord(ctx, mb, closure);
+        i && !llvm::is_contained(queue, *i))
+      queue.push_back(*i);
+  // Breadth first from the DLLs whose records the import libraries hold,
+  // which make their own offers through their offer symbols.
+  BitVector seen(closure.images.size());
+  for (uint32_t i : queue)
+    seen.set(i);
+  size_t roots = queue.size();
+  std::vector<std::pair<std::string, std::string>> offers;
+  for (size_t next = 0; next != queue.size(); ++next) {
+    const Image &image = closure.images[queue[next]];
+    if (next >= roots)
+      for (const std::string &offer : image.offers)
+        offers.emplace_back(image.name, offer);
+    for (uint32_t i : image.imports)
+      if (!seen.test(i)) {
+        seen.set(i);
+        queue.push_back(i);
+      }
+  }
+  return offers;
 }
 
 void checkVagueEntities(COFFLinkerContext &ctx, StringRef imageName) {
@@ -413,6 +467,9 @@ void addVagueEntityRecord(COFFLinkerContext &ctx, StringRef dllName,
   closure.images[self].entities = getKeptEntities(ctx.symtab);
   closure.images[self].imports = direct;
   closure.images[self].epoch = ctx.symtab.offersEpoch.str();
+  for (const Export &e : ctx.symtab.exports)
+    if (StringRef name = e.extName; name.consume_front(overrideOfferPrefix))
+      closure.images[self].offers.push_back(name.str());
 
   std::string group;
   raw_string_ostream g(group);
@@ -439,6 +496,26 @@ void addVagueEntityRecord(COFFLinkerContext &ctx, StringRef dllName,
   encodeULEB128(LinkRecordVagueEntities, r);
   encodeULEB128(group.size(), r);
   r << group;
+  // The overridable defaults each image of the closure offers, so that an
+  // executable that does not link the import library of a DLL its imports
+  // depend on still selects that DLL's offer in load order.
+  std::string offers;
+  raw_string_ostream o(offers);
+  for (auto [i, image] : llvm::enumerate(closure.images)) {
+    if (image.offers.empty())
+      continue;
+    encodeULEB128(i, o);
+    encodeULEB128(image.offers.size(), o);
+    for (const std::string &offer : image.offers) {
+      encodeULEB128(offer.size(), o);
+      o << offer;
+    }
+  }
+  if (!offers.empty()) {
+    encodeULEB128(LinkRecordOverrideOffers, r);
+    encodeULEB128(offers.size(), r);
+    r << offers;
+  }
   members.push_back(createLinkerFacts(
       dllName, config.machine, ".llvm_link_records",
       arrayRefFromStringRef(records), getRecordSymbol(dllName), buffer));
