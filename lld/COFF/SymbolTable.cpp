@@ -540,7 +540,11 @@ bool SymbolTable::loadInteriorImports() {
     }
   }
   // A DLL's fill writes the entries and read-only slots of the overridable
-  // defaults it imports between two protection calls.
+  // defaults it imports, and the read-only cells of its own defaults replaced
+  // by name, between two protection calls.
+  if (!sealed && canSeal && ctx.config.dll && ctx.config.importSlots &&
+      !overridablesByName.empty())
+    sealed = true;
   if (!sealed && canSeal && ctx.config.dll) {
     readDefaultsByName();
     sealed = llvm::any_of(ctx.importFileInstances, [&](ImportFile *f) {
@@ -1672,6 +1676,11 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
       if (imp) {
         replaceSymbol<DefinedLocalImport>(sym, ctx, name, imp);
         localImportChunks.push_back(cast<DefinedLocalImport>(sym)->getChunk());
+        // A DLL's own address-take of its default replaced by name reads a
+        // cell, as every other image's does, which its fill writes.
+        if (ctx.config.importSlots && ctx.config.dll &&
+            overridablesByName.contains(impName))
+          cast<DefinedLocalImport>(sym)->getChunk()->overrideDefault = impName;
         // Under -import-slots, a pointer to the zero default of an absent
         // weak X imports nothing that the image defines.
         auto *abs = dyn_cast<DefinedAbsolute>(imp);

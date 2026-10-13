@@ -790,6 +790,12 @@ public:
   // rewritten to reach the symbol directly. Data may still read the pointer.
   bool bypassed = false;
 
+  // The name of the image's own overridable default whose address the pointer
+  // holds, if it is one, which the image's fill overwrites with the program's
+  // choice when the executable replaces the default. No reference to such a
+  // pointer reaches the symbol directly.
+  StringRef overrideDefault;
+
   // The pointer that a compiler made for the symbol, such as .refptr.X, if
   // this one binds it. That pointer, where it is, stays the pointer whenever
   // the image needs one, so that every name of it gives one address, and this

@@ -96,7 +96,8 @@ static bool isZeroPointer(DefinedLocalImport *li) {
 static bool canBypass(ObjFile *file, const coff_relocation &rel) {
   auto *li = dyn_cast_or_null<DefinedLocalImport>(
       file->getSymbol(rel.SymbolTableIndex));
-  return li && (!isa<DefinedAbsolute>(li->getTarget()) || isZeroPointer(li));
+  return li && li->getChunk()->overrideDefault.empty() &&
+         (!isa<DefinedAbsolute>(li->getTarget()) || isZeroPointer(li));
 }
 
 // The form of the instruction at rel, a REL32 relocation against a local
@@ -533,7 +534,9 @@ void bindLocalImports(SymbolTable &symtab) {
       continue;
     for (auto [li, rewritable] : seen) {
       auto *abs = dyn_cast<DefinedAbsolute>(li->getTarget());
-      if (!li->getName().starts_with(".refptr.") && !(abs && abs->getVA() == 0))
+      if (!li->getName().starts_with(".refptr.") &&
+          !(abs && abs->getVA() == 0) &&
+          li->getChunk()->overrideDefault.empty())
         refs.push_back({file, li, rewritable});
     }
   }
