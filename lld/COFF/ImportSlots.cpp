@@ -2068,7 +2068,7 @@ void ImportSlotContents::createOverrideCellFill() {
       (config.machine != AMD64 && config.machine != ARM64))
     return;
   std::vector<OverrideCell> cells;
-  ctx.symtab.readDefaultsByName();
+  ctx.symtab.readOverrideRecords();
   auto add = [&](SectionChunk *sc, uint32_t offset, DefinedImportData *imp,
                  bool readOnly, bool threadLocal) {
     StringRef name = imp->getName().drop_front(strlen("__imp_"));
@@ -2093,23 +2093,26 @@ void ImportSlotContents::createOverrideCellFill() {
   for (DefinedImportData *imp : idata.imports)
     if (!idata.slotOnly.contains(imp))
       add(nullptr, 0, imp, true, false);
-  // The DLL's own default replaced by name has cells too, as on ELF its
-  // address in the defining object is the program's one: the pointer its
-  // address-takes read, and the words of its static data that hold its
-  // address. Each holds the default until the fill writes the replacement.
-  // Both are in read-only data beside the import address tables, or in
-  // writable data.
-  auto ownKey = [&](Symbol *s) -> uint64_t {
-    auto *d = dyn_cast_or_null<Defined>(s);
-    if (!d || !ctx.symtab.overridablesByName.contains(d->getName()))
-      return 0;
-    return overrideNameKey(d->getName());
+  // The DLL's own defaults have cells too, as on ELF its address in the
+  // defining object is the program's one: the pointer its address-takes read,
+  // and the words of its static data that hold its address. Each holds the
+  // default until the fill writes the replacement. Both are in read-only data
+  // beside the import address tables, or in writable data. A default with a
+  // slot is keyed by the slot its definition records, and one without by its
+  // name.
+  auto addOwn = [&](StringRef name, Chunk *c, uint32_t offset, bool readOnly,
+                    bool threadLocal) {
+    if (ctx.symtab.isOwnSlotDefault(name))
+      cells.push_back({c, offset, nullptr, *ctx.symtab.overrideImportSlot(name),
+                       0, readOnly, threadLocal});
+    else if (ctx.symtab.overridablesByName.contains(name))
+      cells.push_back({c, offset, nullptr, 0, overrideNameKey(name), readOnly,
+                       threadLocal});
   };
   for (Chunk *c : ctx.symtab.localImportChunks) {
     auto *li = cast<LocalImportChunk>(c);
     if (!li->overrideDefault.empty())
-      cells.push_back({li, 0, nullptr, 0, overrideNameKey(li->overrideDefault),
-                       true, false});
+      addOwn(li->overrideDefault, li, 0, true, false);
   }
   for (ObjFile *file : ctx.objFileInstances) {
     if (&file->symtab != &ctx.symtab)
@@ -2126,10 +2129,10 @@ void ImportSlotContents::createOverrideCellFill() {
       bool threadLocal =
           getPartialSectionName(sc, config.mingw).starts_with(".tls");
       for (const coff_relocation &rel : sc->getRelocs())
-        if (uint64_t key = ownKey(file->getSymbol(rel.SymbolTableIndex));
-            key && sc->isAddressWord(rel) && getAddressWordAddend(sc, rel) == 0)
-          cells.push_back({sc, uint32_t(rel.VirtualAddress), nullptr, 0, key,
-                           readOnly, threadLocal});
+        if (auto *d = dyn_cast_or_null<Defined>(
+                file->getSymbol(rel.SymbolTableIndex));
+            d && sc->isAddressWord(rel) && getAddressWordAddend(sc, rel) == 0)
+          addOwn(d->getName(), sc, rel.VirtualAddress, readOnly, threadLocal);
     }
   }
   if (cells.empty())

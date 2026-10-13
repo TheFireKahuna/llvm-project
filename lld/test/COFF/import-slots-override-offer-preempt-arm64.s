@@ -8,15 +8,13 @@
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium rt.s -o rt.obj
-# RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium records.s -o records.obj
 # RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium crt.s -o crt.obj
 # RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium offer.s -o offer.obj
-# RUN: llvm-lib -machine:arm64 -out:records.lib records.obj
 # RUN: lld-link -def:ntdll.def -out:ntdll.lib -machine:arm64
 # RUN: lld-link -import-slots -dll -noentry rt.obj -out:rt.dll -implib:rt.lib
 
 # RUN: lld-link -import-slots -dll -noentry offer.obj crt.obj rt.lib \
-# RUN:   records.lib ntdll.lib -out:offer.dll
+# RUN:   ntdll.lib -out:offer.dll
 # RUN: llvm-readobj --coff-exports --coff-imports offer.dll > offer.txt
 # RUN: llvm-objdump -d --no-show-raw-insn offer.dll >> offer.txt
 # RUN: FileCheck --input-file=offer.txt %s
@@ -53,13 +51,7 @@
 _Znwy:
         ret
         .section .drectve,"yni"
-        .ascii " /EXPORT:_Znwy"
-
-#--- records.s
-        .globl __ovr_version
-        .set __ovr_version, 1
-        .globl "__ovr_slot$_Znwy"
-        .set "__ovr_slot$_Znwy", 0
+        .ascii " /OVERRIDABLE:_Znwy,0 /EXPORT:_Znwy"
 
 #--- ntdll.def
 LIBRARY ntdll.dll

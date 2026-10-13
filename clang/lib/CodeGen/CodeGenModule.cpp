@@ -7640,9 +7640,19 @@ void CodeGenModule::EmitGlobalFunctionDefinition(GlobalDecl GD,
   if (getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
       !D->hasAttr<AsmLabelAttr>() &&
       (D->isReplaceableGlobalAllocationFunction() ||
+       D->hasAttr<OverridableDefaultAttr>() ||
        (D->isInStdNamespace() && D->getIdentifier() &&
         D->getName() == "__libcpp_verbose_abort"))) {
-    AppendLinkerOptions(("/OVERRIDABLE:" + Fn->getName()).str());
+    // A default with a slot records it, and the default it forwards to, for
+    // the link of its image and the import library that link writes.
+    std::string Mark = ("/OVERRIDABLE:" + Fn->getName()).str();
+    if (const auto *OD = D->getAttr<OverridableDefaultAttr>()) {
+      Mark += "," + std::to_string(OD->getSlot());
+      if (OD->getForward() >= 0)
+        Mark += "," + std::to_string(OD->getForward()) +
+                (OD->getDropsSecond() ? ",1" : "");
+    }
+    AppendLinkerOptions(Mark);
     // The definition keeps its ABI name, but its address is the program's one
     // replacement in every image, reached through its import pointer, so the
     // back end emits an address-take in import form. The attribute marks the

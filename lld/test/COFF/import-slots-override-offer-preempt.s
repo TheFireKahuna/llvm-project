@@ -15,17 +15,15 @@
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium rt.s -o rt.obj
-# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium records.s -o records.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium crt.s -o crt.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium offer.s -o offer.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium hidden.s -o hidden.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium check.s -o check.obj
-# RUN: llvm-lib -out:records.lib records.obj
 # RUN: lld-link -def:ntdll.def -out:ntdll.lib -machine:x64
 # RUN: lld-link -import-slots -dll -noentry rt.obj -out:rt.dll -implib:rt.lib
 
 # RUN: lld-link -import-slots -dll -noentry offer.obj crt.obj rt.lib \
-# RUN:   records.lib ntdll.lib -out:offer.dll -verbose 2>&1 | \
+# RUN:   ntdll.lib -out:offer.dll -verbose 2>&1 | \
 # RUN:   FileCheck --check-prefix=LOG %s
 # RUN: llvm-readobj --coff-exports --coff-imports offer.dll > offer.txt
 # RUN: llvm-objdump -d offer.dll >> offer.txt
@@ -63,12 +61,12 @@
 
 ## A definition the DLL does not export makes no offer, and is its own.
 # RUN: lld-link -import-slots -dll -noentry hidden.obj crt.obj rt.lib \
-# RUN:   records.lib ntdll.lib -out:hidden.dll
+# RUN:   ntdll.lib -out:hidden.dll
 # RUN: llvm-objdump -d hidden.dll | FileCheck --check-prefix=OWN %s
 
 ## The executable's replacement is the program's.
 # RUN: lld-link -import-slots -entry:dllmain -subsystem:console hidden.obj \
-# RUN:   crt.obj check.obj rt.lib records.lib ntdll.lib -out:main.exe
+# RUN:   crt.obj check.obj rt.lib ntdll.lib -out:main.exe
 # RUN: llvm-objdump -d main.exe | FileCheck --check-prefix=OWN %s
 
 #--- rt.s
@@ -77,13 +75,7 @@
 _Znwy:
         retq
         .section .drectve,"yni"
-        .ascii " /EXPORT:_Znwy"
-
-#--- records.s
-        .globl __ovr_version
-        .set __ovr_version, 1
-        .globl "__ovr_slot$_Znwy"
-        .set "__ovr_slot$_Znwy", 0
+        .ascii " /OVERRIDABLE:_Znwy,0 /EXPORT:_Znwy"
 
 #--- ntdll.def
 LIBRARY ntdll.dll

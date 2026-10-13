@@ -8,22 +8,20 @@
 ## mask names replaced, writes the executable's image base plus the slot's RVA
 ## into each of its cells, so every image observes and calls the one
 ## replacement. A forwarded or unreplaced slot, or an executable with no table,
-## leaves every cell the loader's value. A DLL loads the runtime's records
-## member for its imports' slots.
+## leaves every cell the loader's value. A DLL reads its imports' slots from
+## the runtime's import library, which records them as its defaults do.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium rt.s -o rt.obj
-# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium records.s -o records.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium crt.s -o crt.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium use.s -o use.obj
-# RUN: llvm-lib -out:records.lib records.obj
 # RUN: lld-link -def:ntdll.def -out:ntdll.lib -machine:x64
 # RUN: lld-link -import-slots -dll -noentry rt.obj -out:rt.dll -implib:rt.lib
 
 ## The DLL calls the default, and holds its address in writable and in
 ## read-only data. The read-only word is the slot its import is read from, so
 ## the call's thunk reads it too.
-# RUN: lld-link -import-slots -dll -noentry use.obj crt.obj rt.lib records.lib \
+# RUN: lld-link -import-slots -dll -noentry use.obj crt.obj rt.lib \
 # RUN:   ntdll.lib -out:use.dll
 # RUN: llvm-readobj --coff-imports use.dll > use.txt
 # RUN: llvm-objdump -d --print-imm-hex use.dll >> use.txt
@@ -108,7 +106,7 @@
 ## With only a writable cell, which is then the slot its import is read from,
 ## the fill is a leaf that needs no protection call, and so no ntdll.lib.
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium rw.s -o rw.obj
-# RUN: lld-link -import-slots -dll -noentry rw.obj crt.obj rt.lib records.lib \
+# RUN: lld-link -import-slots -dll -noentry rw.obj crt.obj rt.lib \
 # RUN:   -out:rw.dll
 # RUN: llvm-objdump -d --print-imm-hex rw.dll | FileCheck --check-prefix=LEAF %s
 # LEAF-NOT:  subq
@@ -120,18 +118,18 @@
 ## A DLL that reaches no overridable default carries no fill.
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium plain.s -o plain.obj
 # RUN: lld-link -import-slots -dll -noentry plain.obj crt.obj rt.lib \
-# RUN:   records.lib -out:plain.dll
+# RUN:   -out:plain.dll
 # RUN: llvm-objdump -d plain.dll | FileCheck --check-prefix=NONE %s
 # NONE-NOT: %gs:0x60
 
 ## Without a C initializer table nothing runs the fill, and without
 ## NtProtectVirtualMemory it cannot write a read-only cell: either is an error,
 ## not a silently unreplaced default.
-# RUN: not lld-link -import-slots -dll -noentry use.obj rt.lib records.lib \
+# RUN: not lld-link -import-slots -dll -noentry use.obj rt.lib \
 # RUN:   ntdll.lib -out:nocrt.dll 2>&1 | FileCheck --check-prefix=NOCRT %s
 # NOCRT: error: the image reaches __declspec(dllimport) operator new(unsigned long long), an overridable default imported from rt.dll, through a cell that the image has no C initializer table (__xi_a) to fill
 # RUN: not lld-link -import-slots -dll -noentry use.obj crt.obj rt.lib \
-# RUN:   records.lib -out:noprotect.dll 2>&1 | \
+# RUN:   -out:noprotect.dll 2>&1 | \
 # RUN:   FileCheck --check-prefix=NOPROTECT %s
 # NOPROTECT: error: the image reaches __declspec(dllimport) operator new(unsigned long long), an overridable default imported from rt.dll, through a cell that it cannot write without NtProtectVirtualMemory from ntdll.lib
 
@@ -141,7 +139,7 @@
 ## and in the loading thread's block, found through the index and the template
 ## start that the TLS directory names.
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium tl.s -o tl.obj
-# RUN: lld-link -import-slots -dll -noentry tl.obj crt.obj rt.lib records.lib \
+# RUN: lld-link -import-slots -dll -noentry tl.obj crt.obj rt.lib \
 # RUN:   -out:tl.dll
 # RUN: llvm-readobj --coff-imports --sections tl.dll > tl.txt
 # RUN: llvm-objdump -d --print-imm-hex tl.dll >> tl.txt
@@ -172,30 +170,24 @@
 ## to write.
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium tlbad.s -o tlbad.obj
 # RUN: not lld-link -import-slots -dll -noentry tlbad.obj crt.obj rt.lib \
-# RUN:   records.lib -out:tlbad.dll 2>&1 | FileCheck --check-prefix=TLBAD %s
+# RUN:   -out:tlbad.dll 2>&1 | FileCheck --check-prefix=TLBAD %s
 # TLBAD: error: the image reaches __declspec(dllimport) operator new(unsigned long long), an overridable default imported from rt.dll, through a cell in thread-local data, but the image's TLS directory (_tls_used) names no template or index
 
 ## An executable binds its own references at link time and carries no fill.
 # RUN: lld-link -import-slots -entry:dllmain -subsystem:console use.obj crt.obj \
-# RUN:   rt.lib records.lib ntdll.lib -out:use.exe
+# RUN:   rt.lib ntdll.lib -out:use.exe
 # RUN: llvm-objdump -d use.exe | FileCheck --check-prefix=NONE %s
 
 #--- rt.s
         .text
-        .globl _Znwy
+        .weak _Znwy
 _Znwy:
         retq
         .globl other
 other:
         retq
         .section .drectve,"yni"
-        .ascii " /EXPORT:_Znwy /EXPORT:other"
-
-#--- records.s
-        .globl __ovr_version
-        .set __ovr_version, 1
-        .globl "__ovr_slot$_Znwy"
-        .set "__ovr_slot$_Znwy", 0
+        .ascii " /OVERRIDABLE:_Znwy,0 /EXPORT:_Znwy /EXPORT:other"
 
 #--- ntdll.def
 LIBRARY ntdll.dll

@@ -3578,6 +3578,22 @@ runtime and the linker that writes the table agree on.
     // The default, which runs unless the executable's table replaces it.
   }
 
+A default that is specified as calling another, as the default ``operator
+new[]`` calls ``operator new``, names that default's slot as a second argument,
+so that the linker points its slot at that default's replacement when the
+program replaces that one alone. A third argument, true, says that the other
+default takes this one's arguments without the second, as an aligned sized
+``operator delete`` calls the aligned unsized one; the linker then reaches the
+replacement through a thunk that drops it. The compiler records the slot and
+the forwarding in the object, for the link of the image that defines the
+default and for the import library it writes.
+
+.. code-block:: c++
+
+  [[gnu::weak, clang::overridable_default(1, 0)]] void *operator new[](size_t n) {
+    return ::operator new(n);
+  }
+
 The transfer carries no ``kcfi`` type check: a slot may name the replacement
 of another default that the linker forwards to, whose type differs.
 }];

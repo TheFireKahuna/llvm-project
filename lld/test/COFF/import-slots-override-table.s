@@ -13,7 +13,8 @@
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium repl.s -o repl.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium records.s -o records.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium noop.s -o noop.obj
-# RUN: llvm-lib -out:records.lib records.obj
+# RUN: lld-link -import-slots -dll -noentry records.obj -out:records.dll \
+# RUN:   -implib:records.lib
 # RUN: lld-link -import-slots repl.obj records.lib -out:repl.exe \
 # RUN:   -entry:_Znwy -subsystem:console
 
@@ -66,10 +67,13 @@ __ovr_check:
         .ascii " /OVERRIDABLE:_Znwy /INCLUDE:__llvm_overrides_v1"
 
 #--- records.s
-        .globl __ovr_version
-        .set __ovr_version, 1
-        .globl "__ovr_slot$_Znwy"
-        .set "__ovr_slot$_Znwy", 0
+## Stands in for the C++ runtime, whose default records its slot.
+        .text
+        .weak _Znwy
+_Znwy:
+        retq
+        .section .drectve,"yni"
+        .ascii " /OVERRIDABLE:_Znwy,0 /EXPORT:_Znwy"
 
 #--- noop.s
         .text

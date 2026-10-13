@@ -207,9 +207,10 @@ _LIBCPP_END_NAMESPACE_STD
 // every image through the table that its executable carries in its header
 // page. Each default begins by reading its slot there (clang's
 // overridable_default attribute), and the program's link writes the table from
-// the slots below, which the library's import library carries. A default that
-// the standard specifies as calling another runs that one's body instead, since
-// the link points its slot at a replacement of the other.
+// the slots below, which the compiler records with each default and the
+// library's link writes into its import library. A default that the standard
+// specifies as calling another names that one's slot too, and runs that one's
+// body instead, since the link points its slot at a replacement of the other.
 //
 // Slots are never reused or renumbered, so that a program and a library built
 // at different times agree on every slot they both know. Slots 0 to 7, on the
@@ -218,10 +219,10 @@ _LIBCPP_END_NAMESPACE_STD
 
 #if __has_attribute(__overridable_default__)
 #  define _LIBCPP_HAS_OVERRIDE_TABLE 1
-#  define _LIBCPP_OVERRIDABLE_SLOT(__slot) __attribute__((__overridable_default__(__slot)))
+#  define _LIBCPP_OVERRIDABLE_SLOT(...) __attribute__((__overridable_default__(__VA_ARGS__)))
 #else
 #  define _LIBCPP_HAS_OVERRIDE_TABLE 0
-#  define _LIBCPP_OVERRIDABLE_SLOT(__slot)
+#  define _LIBCPP_OVERRIDABLE_SLOT(...)
 #endif
 
 #define _LIBCPP_OVERRIDE_SLOT_NEW 0

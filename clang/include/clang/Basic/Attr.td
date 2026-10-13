@@ -3799,7 +3799,8 @@ def MinVectorWidth : InheritableAttr {
 def OverridableDefault : InheritableAttr,
                          TargetSpecificAttr<TargetWindowsItaniumOrNTPOSIX> {
   let Spellings = [Clang<"overridable_default">];
-  let Args = [UnsignedArgument<"Slot">];
+  let Args = [UnsignedArgument<"Slot">, IntArgument<"Forward", 1>,
+              BoolArgument<"DropsSecond", 1>];
   let Subjects = SubjectList<[Function], ErrorDiag>;
   let Documentation = [OverridableDefaultDocs];
 }

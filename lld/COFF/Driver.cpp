@@ -650,9 +650,32 @@ void LinkerDriver::parseDirectives(InputFile *file) {
     case OPT_merge:
       parseMerge(arg->getValue());
       break;
-    case OPT_overridable:
-      file->symtab.overridables.insert(arg->getValue());
+    case OPT_overridable: {
+      // name[,slot[,forward[,1]]]: a default's slot, the slot of the default
+      // it forwards to, and whether that one takes its arguments without the
+      // second.
+      SmallVector<StringRef, 4> fields;
+      StringRef(arg->getValue()).split(fields, ',');
+      file->symtab.overridables.insert(fields[0]);
+      if (fields.size() < 2)
+        break;
+      uint32_t slot, forward, drops = 0;
+      SymbolTable::OverrideSlotFacts facts{0, std::nullopt, false, true};
+      if (fields.size() > 4 || fields[1].getAsInteger(10, slot) ||
+          (fields.size() > 2 && fields[2].getAsInteger(10, forward)) ||
+          (fields.size() > 3 &&
+           (fields[3].getAsInteger(10, drops) || drops > 1))) {
+        Err(ctx) << file
+                 << ": malformed /overridable: directive: " << arg->getValue();
+        break;
+      }
+      facts.slot = slot;
+      if (fields.size() > 2)
+        facts.forward = forward;
+      facts.dropsSecond = drops;
+      file->symtab.addOverrideSlotFacts(fields[0], facts, toString(file));
       break;
+    }
     case OPT_overridable_by_name:
       file->symtab.overridablesByName.insert(arg->getValue());
       break;
@@ -3001,12 +3024,11 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
 
         // Under -import-slots, an executable that replaces an overridable
         // default, itself or by selecting a linked DLL's offer, loads the C++
-        // runtime's records member for its slots, then the runtime's start-up
-        // validation of the table it writes. A DLL that offers a default loads
-        // the default's import, through which its own references go.
+        // runtime's start-up validation of the table it writes. A DLL that
+        // offers a default loads the default's import, through which its own
+        // references go.
         loadedImports |= symtab.loadOverrideOffers();
         loadedImports |= symtab.loadOverrideOfferImports();
-        loadedImports |= symtab.loadOverrideRecords();
         loadedImports |= symtab.nameOverrideCheck();
       });
 

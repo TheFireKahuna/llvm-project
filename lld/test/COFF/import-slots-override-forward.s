@@ -8,7 +8,8 @@
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium records.s -o records.obj
-# RUN: llvm-lib -out:records.lib records.obj
+# RUN: lld-link -import-slots -dll -noentry records.obj -out:records.dll \
+# RUN:   -implib:records.lib
 
 ## Replacing operator new forwards operator new[] to it directly: slot 1 holds
 ## tag 0xC5E1A7F2 and operator new's RVA, the same body slot 0 names.
@@ -36,20 +37,27 @@
 # DELMASK: {{[0-9a-f]+}} d5c23a7b 01000a00 80000000 00000000
 
 #--- records.s
-        .globl __ovr_version
-        .set __ovr_version, 1
-        .globl "__ovr_slot$_Znwy"
-        .set "__ovr_slot$_Znwy", 0
-        .globl "__ovr_slot$_Znay"
-        .set "__ovr_slot$_Znay", 1
-        .globl "__ovr_fwd$_Znay"
-        .set "__ovr_fwd$_Znay", 0
-        .globl "__ovr_slot$_ZdlPvSt11align_val_t"
-        .set "__ovr_slot$_ZdlPvSt11align_val_t", 7
-        .globl "__ovr_slot$_ZdlPvySt11align_val_t"
-        .set "__ovr_slot$_ZdlPvySt11align_val_t", 9
-        .globl "__ovr_fwd$_ZdlPvySt11align_val_t"
-        .set "__ovr_fwd$_ZdlPvySt11align_val_t", 0x10007
+## Stands in for the C++ runtime, whose defaults record their slots and the
+## defaults they forward to.
+        .text
+        .weak _Znwy
+_Znwy:
+        retq
+        .weak _Znay
+_Znay:
+        retq
+        .weak _ZdlPvSt11align_val_t
+_ZdlPvSt11align_val_t:
+        retq
+        .weak _ZdlPvySt11align_val_t
+_ZdlPvySt11align_val_t:
+        retq
+        .section .drectve,"yni"
+        .ascii " /OVERRIDABLE:_Znwy,0 /OVERRIDABLE:_Znay,1,0"
+        .ascii " /OVERRIDABLE:_ZdlPvSt11align_val_t,7"
+        .ascii " /OVERRIDABLE:_ZdlPvySt11align_val_t,9,7,1"
+        .ascii " /EXPORT:_Znwy /EXPORT:_Znay /EXPORT:_ZdlPvSt11align_val_t"
+        .ascii " /EXPORT:_ZdlPvySt11align_val_t"
 
 #--- new.s
         .text

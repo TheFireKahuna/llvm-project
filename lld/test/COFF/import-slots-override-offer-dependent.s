@@ -13,7 +13,8 @@
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium records.s -o records.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium main.s -o main.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium repl.s -o repl.obj
-# RUN: llvm-lib -out:records.lib records.obj
+# RUN: lld-link -import-slots -dll -noentry records.obj -out:records.dll \
+# RUN:   -implib:records.lib
 
 ## m.dll offers its allocator, and a.dll, which imports from m.dll, carries
 ## that offer in its import library's record.
@@ -77,10 +78,13 @@ afn:
         .ascii " /EXPORT:afn"
 
 #--- records.s
-        .globl __ovr_version
-        .set __ovr_version, 1
-        .globl "__ovr_slot$_Znwy"
-        .set "__ovr_slot$_Znwy", 0
+## Stands in for the C++ runtime, whose default records its slot.
+        .text
+        .weak _Znwy
+_Znwy:
+        retq
+        .section .drectve,"yni"
+        .ascii " /OVERRIDABLE:_Znwy,0 /EXPORT:_Znwy"
 
 #--- main.s
         .text

@@ -7,44 +7,92 @@
 //===----------------------------------------------------------------------===//
 
 // REQUIRES: target={{.+}}-windows-itanium
-// REQUIRES: has-filecheck
+// UNSUPPORTED: c++03, c++11, c++14
 
-// The import library and the static library carry, for each overridable
-// default, its slot in the executable's override table and, for a default that
-// the standard specifies as calling another, that other's slot, with bit 16
-// set when the forwarding drops the second argument. A program's link reads
-// them to write the table. Slots never change.
+// Each overridable default of the library records its slot in the executable's
+// override table, and the slot of the default it is specified as calling, and
+// the library's link writes them into its import library, from which the
+// program's link writes the table. Slots never change. A program that replaces
+// some defaults finds each in its slot, and each default that calls a replaced
+// one forwarded to it, through a thunk where the replaced one takes its
+// arguments without the second.
 
-// RUN: llvm-nm "%{lib-dir}/libc++.dll.lib" | FileCheck %s
-// RUN: llvm-nm "%{lib-dir}/libc++.lib" | FileCheck %s
+// RUN: %{cxx} %{flags} %{compile_flags} %s %{link_flags} -o %{temp}/main.exe
+// RUN: %{exec} %{temp}/main.exe
 
-// CHECK-DAG: 00000001 A __ovr_version
-// CHECK-DAG: 00000000 A __ovr_slot$_Znwy
-// CHECK-DAG: 00000001 A __ovr_slot$_Znay
-// CHECK-DAG: 00000000 A __ovr_fwd$_Znay
-// CHECK-DAG: 00000002 A __ovr_slot$_ZdlPv
-// CHECK-DAG: 00000003 A __ovr_slot$_ZdlPvy
-// CHECK-DAG: 00000002 A __ovr_fwd$_ZdlPvy
-// CHECK-DAG: 00000004 A __ovr_slot$_ZdaPv
-// CHECK-DAG: 00000002 A __ovr_fwd$_ZdaPv
-// CHECK-DAG: 00000005 A __ovr_slot$_ZdaPvy
-// CHECK-DAG: 00000004 A __ovr_fwd$_ZdaPvy
-// CHECK-DAG: 00000006 A __ovr_slot$_ZnwySt11align_val_t
-// CHECK-DAG: 00000007 A __ovr_slot$_ZdlPvSt11align_val_t
-// CHECK-DAG: 00000008 A __ovr_slot$_ZnaySt11align_val_t
-// CHECK-DAG: 00000006 A __ovr_fwd$_ZnaySt11align_val_t
-// CHECK-DAG: 00000009 A __ovr_slot$_ZdlPvySt11align_val_t
-// CHECK-DAG: 00010007 A __ovr_fwd$_ZdlPvySt11align_val_t
-// CHECK-DAG: 0000000a A __ovr_slot$_ZdaPvSt11align_val_t
-// CHECK-DAG: 00000007 A __ovr_fwd$_ZdaPvSt11align_val_t
-// CHECK-DAG: 0000000b A __ovr_slot$_ZdaPvySt11align_val_t
-// CHECK-DAG: 0001000a A __ovr_fwd$_ZdaPvySt11align_val_t
-// CHECK-DAG: 0000000c A __ovr_slot$_ZnwyRKSt9nothrow_t
-// CHECK-DAG: 0000000d A __ovr_slot$_ZnayRKSt9nothrow_t
-// CHECK-DAG: 0000000e A __ovr_slot$_ZnwySt11align_val_tRKSt9nothrow_t
-// CHECK-DAG: 0000000f A __ovr_slot$_ZnaySt11align_val_tRKSt9nothrow_t
-// CHECK-DAG: 00000010 A __ovr_slot$_ZdlPvRKSt9nothrow_t
-// CHECK-DAG: 00000011 A __ovr_slot$_ZdaPvRKSt9nothrow_t
-// CHECK-DAG: 00000012 A __ovr_slot$_ZdlPvSt11align_val_tRKSt9nothrow_t
-// CHECK-DAG: 00000013 A __ovr_slot$_ZdaPvSt11align_val_tRKSt9nothrow_t
-// CHECK-DAG: 00000014 A __ovr_slot$_ZNSt3__122__libcpp_verbose_abortEPKcz
+#include <__verbose_abort>
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <new>
+
+#include "test_macros.h"
+
+extern "C" char __ImageBase;
+
+void* operator new(std::size_t n) { return std::malloc(n ? n : 1); }
+void operator delete(void* p) noexcept { std::free(p); }
+void* operator new(std::size_t n, std::align_val_t) { return std::malloc(n ? n : 1); }
+void operator delete(void* p, std::align_val_t) noexcept { std::free(p); }
+void* operator new(std::size_t n, const std::nothrow_t&) noexcept { return std::malloc(n ? n : 1); }
+void operator delete(void* p, const std::nothrow_t&) noexcept { std::free(p); }
+void std::__libcpp_verbose_abort(char const*, ...) noexcept { std::abort(); }
+
+namespace {
+const unsigned char* base() { return reinterpret_cast<const unsigned char*>(&__ImageBase); }
+
+std::uint32_t slot_offset(unsigned k) { return k < 8 ? 0x40 + 8 * k : 0x98 + 8 * (k - 8); }
+
+// The function slot k names, after checking that it holds its tag, or null.
+const void* slot(unsigned k) {
+  std::uint32_t tag, rva;
+  std::memcpy(&tag, base() + slot_offset(k), 4);
+  std::memcpy(&rva, base() + slot_offset(k) + 4, 4);
+  if (tag != (0xC5E1A7F3u ^ k) || rva == 0)
+    return nullptr;
+  return base() + rva;
+}
+
+template <class F>
+const void* address(F* f) {
+  return reinterpret_cast<const void*>(f);
+}
+} // namespace
+
+int main(int, char**) {
+  const void* new_ = address(static_cast<void* (*)(std::size_t)>(&::operator new));
+  const void* delete_ = address(static_cast<void (*)(void*) noexcept>(&::operator delete));
+  const void* new_aligned = address(static_cast<void* (*)(std::size_t, std::align_val_t)>(&::operator new));
+  const void* delete_aligned =
+      address(static_cast<void (*)(void*, std::align_val_t) noexcept>(&::operator delete));
+
+  // Replaced: new 0, delete 2, aligned new 6, aligned delete 7, nothrow new 12,
+  // nothrow delete 16, __libcpp_verbose_abort 20.
+  assert(slot(0) == new_);
+  assert(slot(2) == delete_);
+  assert(slot(6) == new_aligned);
+  assert(slot(7) == delete_aligned);
+  assert(slot(12) == address(static_cast<void* (*)(std::size_t, const std::nothrow_t&) noexcept>(&::operator new)));
+  assert(slot(16) == address(static_cast<void (*)(void*, const std::nothrow_t&) noexcept>(&::operator delete)));
+  assert(slot(20) == address(&std::__libcpp_verbose_abort));
+
+  // Forwarded: new[] 1 to new; sized delete 3, delete[] 4 and sized delete[] 5
+  // to delete; aligned new[] 8 to aligned new; aligned delete[] 10 to aligned
+  // delete; sized aligned delete 9 and sized aligned delete[] 11 to aligned
+  // delete through a thunk that drops the size.
+  assert(slot(1) == new_);
+  assert(slot(3) == delete_);
+  assert(slot(4) == delete_);
+  assert(slot(5) == delete_);
+  assert(slot(8) == new_aligned);
+  assert(slot(10) == delete_aligned);
+  assert(slot(9) != nullptr && slot(9) != delete_aligned);
+  assert(slot(11) != nullptr && slot(11) != delete_aligned);
+
+  // Not replaced: the other nothrow forms.
+  assert(slot(13) == nullptr);
+  assert(slot(17) == nullptr);
+  return 0;
+}
