@@ -328,11 +328,17 @@ struct OverrideCell {
 // Where the TLS directory says the template of the image's thread-local data
 // starts, and the index the loader writes for the image's thread-local blocks:
 // a symbol and an addend each.
-struct OverrideTLS {
+struct TLSTemplate {
   Defined *start = nullptr;
   int64_t startAddend = 0;
   Defined *index = nullptr;
   int64_t indexAddend = 0;
+
+  uint64_t getIndexRVA() const { return index->getRVA() + indexAddend; }
+  // The offset in each thread's block of the template word at rva.
+  uint32_t getOffset(uint64_t rva) const {
+    return rva - (start->getRVA() + startAddend);
+  }
 };
 
 // The fill of a DLL's overridable-default cells, which the C initializer table
@@ -361,7 +367,7 @@ struct OverrideTLS {
 class OverrideCellFillChunk : public NonSectionCodeChunk {
 public:
   OverrideCellFillChunk(COFFLinkerContext &ctx, std::vector<OverrideCell> cells,
-                        DefinedImportData *protect, OverrideTLS tls)
+                        DefinedImportData *protect, TLSTemplate tls)
       : cells(std::move(cells)), protect(protect), tls(tls), ctx(ctx) {
     setAlignment(16);
   }
@@ -382,7 +388,7 @@ private:
   // NtProtectVirtualMemory's import, when there are read-only cells.
   DefinedImportData *protect;
   // The TLS directory's template and index, when there are thread-local cells.
-  OverrideTLS tls;
+  TLSTemplate tls;
   COFFLinkerContext &ctx;
 };
 
@@ -510,7 +516,7 @@ void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
           // adrp x9, index; ldr w9, [x9, :lo12:index]; ldr x11, [x18, #0x58]
           // (TEB->ThreadLocalStoragePointer); ldr x11, [x11, x9, lsl #3];
           // movz/movk w12, #offset; str x17, [x11, x12]
-          uint64_t index = tls.index->getRVA() + tls.indexAddend;
+          uint64_t index = tls.getIndexRVA();
           write32le(buf + off, 0x90000009);
           write32le(buf + off + 4, 0xB9400129);
           applyArm64Addr(buf + off, index, rva + off, 12);
@@ -518,7 +524,7 @@ void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
           off += 8;
           put(0xF9402E4B);
           put(0xF869796B);
-          movImm(12, c.getRVA() - (tls.start->getRVA() + tls.startAddend));
+          movImm(12, tls.getOffset(c.getRVA()));
           put(0xF82C6971);
         }
         write32le(buf + skip, read32le(buf + skip) | (off - skip) / 4 << 5);
@@ -626,13 +632,12 @@ void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
       disp(c.getRVA());
       if (c.threadLocal) {
         put({0x8B, 0x0D, 0, 0, 0, 0}); // mov ecx, [rip + index]
-        disp(tls.index->getRVA() + tls.indexAddend);
+        disp(tls.getIndexRVA());
         // mov rdx, gs:[0x58]   TEB->ThreadLocalStoragePointer
         put({0x65, 0x48, 0x8B, 0x14, 0x25, 0x58, 0, 0, 0});
         put({0x48, 0x8B, 0x14, 0xCA});       // mov rdx, [rdx + rcx * 8]
         put({0x48, 0x89, 0x82, 0, 0, 0, 0}); // mov [rdx + offset], rax
-        write32le(buf + off - 4,
-                  c.getRVA() - (tls.start->getRVA() + tls.startAddend));
+        write32le(buf + off - 4, tls.getOffset(c.getRVA()));
       }
       buf[skip] = off - (skip + 1);
     }
@@ -686,6 +691,100 @@ void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
   if (protect)
     put({0x48, 0x83, 0xC4, 0x48}); // add rsp, 0x48
   put({0xC3});                     // ret
+}
+
+// The copy of an executable's thread-local import slots into the main thread's
+// block, which the C initializer table runs before every other initializer.
+// The loader copies the executable's template into the main thread's block
+// before it binds the executable's imports, so that block holds each slot's
+// import lookup entry, while every later thread copies the bound template. The
+// copy gives the main thread the bound words too. It is a leaf that returns 0.
+// The executable's own TLS callbacks, which run before it, still see the
+// unbound words in the main thread.
+class ThreadLocalSlotCopyChunk : public NonSectionCodeChunk {
+public:
+  ThreadLocalSlotCopyChunk(
+      COFFLinkerContext &ctx,
+      std::vector<std::pair<SectionChunk *, uint32_t>> words, TLSTemplate tls)
+      : words(std::move(words)), tls(tls), ctx(ctx) {
+    setAlignment(16);
+  }
+  size_t getSize() const override {
+    // The block's address and, for each word, its load and its store; then the
+    // zero status and ret.
+    if (ctx.config.machine == ARM64)
+      return 16 + 20 * words.size() + 8;
+    return 19 + 14 * words.size() + 3;
+  }
+  void writeTo(uint8_t *buf) const override;
+  uint32_t getOutputCharacteristics() const override {
+    return llvm::COFF::IMAGE_SCN_CNT_CODE |
+           NonSectionCodeChunk::getOutputCharacteristics();
+  }
+  StringRef getSectionName() const override { return ".text"; }
+  MachineTypes getMachine() const override { return ctx.config.machine; }
+
+private:
+  // The chunk and offset of each slot in the template.
+  std::vector<std::pair<SectionChunk *, uint32_t>> words;
+  TLSTemplate tls;
+  COFFLinkerContext &ctx;
+};
+
+void ThreadLocalSlotCopyChunk::writeTo(uint8_t *buf) const {
+  uint32_t off = 0;
+  if (ctx.config.machine == ARM64) {
+    auto put = [&](uint32_t insn) {
+      write32le(buf + off, insn);
+      off += 4;
+    };
+    // adrp xN, target; ldr wN or xN, [xN, :lo12:target]
+    auto load = [&](uint32_t ldr, uint32_t reg, uint64_t target) {
+      write32le(buf + off, 0x90000000 | reg);
+      write32le(buf + off + 4, ldr | reg << 5 | reg);
+      applyArm64Addr(buf + off, target, rva + off, 12);
+      applyArm64Ldr(buf + off + 4, target & 0xfff);
+      off += 8;
+    };
+    load(0xB9400000, 9, tls.getIndexRVA()); // the index into w9
+    put(0xF9402E4B); // ldr x11, [x18, #0x58]   TEB->ThreadLocalStoragePointer
+    put(0xF869796B); // ldr x11, [x11, x9, lsl #3]
+    for (auto [sc, offset] : words) {
+      // the word into x10; movz/movk w12, #offset; str x10, [x11, x12]
+      uint64_t word = sc->getRVA() + offset;
+      load(0xF9400000, 10, word);
+      uint32_t blockOff = tls.getOffset(word);
+      put(0x5280000C | (blockOff & 0xFFFF) << 5);
+      put(0x72A0000C | (blockOff >> 16) << 5);
+      put(0xF82C696A);
+    }
+    put(0x52800000); // mov w0, #0
+    put(0xD65F03C0); // ret
+    return;
+  }
+
+  auto put = [&](ArrayRef<uint8_t> bytes) {
+    memcpy(buf + off, bytes.data(), bytes.size());
+    off += bytes.size();
+  };
+  // The RIP-relative displacement to target of the instruction just put.
+  auto disp = [&](uint64_t target) {
+    write32le(buf + off - 4, target - (rva + off));
+  };
+  put({0x8B, 0x0D, 0, 0, 0, 0}); // mov ecx, [rip + index]
+  disp(tls.getIndexRVA());
+  // mov rdx, gs:[0x58]   TEB->ThreadLocalStoragePointer
+  put({0x65, 0x48, 0x8B, 0x14, 0x25, 0x58, 0, 0, 0});
+  put({0x48, 0x8B, 0x14, 0xCA}); // mov rdx, [rdx + rcx * 8]
+  for (auto [sc, offset] : words) {
+    uint64_t word = sc->getRVA() + offset;
+    put({0x48, 0x8B, 0x05, 0, 0, 0, 0}); // mov rax, [rip + word]
+    disp(word);
+    put({0x48, 0x89, 0x82, 0, 0, 0, 0}); // mov [rdx + offset], rax
+    write32le(buf + off - 4, tls.getOffset(word));
+  }
+  put({0x31, 0xC0}); // xor eax, eax
+  put({0xC3});       // ret
 }
 } // namespace
 
@@ -1569,6 +1668,70 @@ void ImportSlotContents::createResidualFill() {
   }
 }
 
+// The TLS directory's template start and index: the targets of the
+// relocations of its first and third fields. Either is null when the image has
+// no directory or the directory names none.
+static TLSTemplate findTLSTemplate(COFFLinkerContext &ctx) {
+  TLSTemplate tls;
+  auto *dir =
+      dyn_cast_or_null<DefinedRegular>(ctx.symtab.findUnderscore("_tls_used"));
+  if (!dir)
+    return tls;
+  SectionChunk *sc = dir->getChunk();
+  for (const coff_relocation &rel : sc->getRelocs()) {
+    if (!sc->isAddressWord(rel))
+      continue;
+    uint64_t field = rel.VirtualAddress - dir->getValue();
+    auto *target =
+        dyn_cast_or_null<Defined>(sc->file->getSymbol(rel.SymbolTableIndex));
+    int64_t addend = getAddressWordAddend(sc, rel).value_or(0);
+    if (field == 0) {
+      tls.start = target;
+      tls.startAddend = addend;
+    } else if (field == 2 * ctx.config.wordsize) {
+      tls.index = target;
+      tls.indexAddend = addend;
+    }
+  }
+  return tls;
+}
+
+// Under -import-slots, an executable's in-place import slots in its
+// thread-local template are bound in the template only after the loader has
+// copied it into the main thread's block; the copy writes them there too.
+void ImportSlotContents::createThreadLocalSlotCopy() {
+  Configuration &config = ctx.config;
+  if (!config.importSlots || config.dll || ctx.hybridSymtab ||
+      (config.machine != AMD64 && config.machine != ARM64))
+    return;
+  std::vector<std::pair<SectionChunk *, uint32_t>> words;
+  for (auto &[sc, slots] : ctx.importSlots) {
+    auto *chunk = const_cast<SectionChunk *>(sc);
+    if (getPartialSectionName(chunk, config.mingw).starts_with(".tls"))
+      for (const ImportSlot &slot : slots)
+        words.push_back({chunk, slot.offset});
+  }
+  // Without a TLS directory the loader gives no thread a block.
+  if (words.empty() || !ctx.symtab.findUnderscore("_tls_used"))
+    return;
+  auto fail = [&](const Twine &why) {
+    Err(ctx) << words.front().first->file
+             << ": the address of an import in thread-local data needs a copy "
+                "into the main thread's block, but "
+             << why;
+  };
+  TLSTemplate tls = findTLSTemplate(ctx);
+  if (!tls.start || !tls.index)
+    return fail("the image's TLS directory (_tls_used) names no template or "
+                "index");
+  if (!isa_and_nonnull<Defined>(ctx.symtab.findUnderscore("__xi_a")))
+    return fail("the image has no C initializer table (__xi_a) to run it");
+  auto *copy = make<ThreadLocalSlotCopyChunk>(ctx, std::move(words), tls);
+  threadLocalSlotCopy = copy;
+  threadLocalSlotCopyPointer = make<LocalImportChunk>(
+      ctx, make<DefinedSynthetic>("__llvm_thread_local_slot_copy", copy));
+}
+
 // Under -import-slots, a DLL's cells of the overridable defaults it imports
 // are the words through which it reaches them: each in-place import slot of a
 // default, and the default's own entry, which its calls and the instructions
@@ -1619,30 +1782,11 @@ void ImportSlotContents::createOverrideCellFill() {
   if (!isa_and_nonnull<Defined>(ctx.symtab.findUnderscore("__xi_a")))
     return fail("that the image has no C initializer table (__xi_a) to fill");
   // A thread-local cell is written in the template and in the loading thread's
-  // block, which the TLS directory's template start and index locate: the
-  // targets of the relocations of its first and third fields.
-  OverrideTLS tls;
+  // block.
+  TLSTemplate tls;
   if (llvm::any_of(cells,
                    [](const OverrideCell &c) { return c.threadLocal; })) {
-    auto *dir = dyn_cast_or_null<DefinedRegular>(
-        ctx.symtab.findUnderscore("_tls_used"));
-    if (dir) {
-      for (const coff_relocation &rel : dir->getChunk()->getRelocs()) {
-        if (!dir->getChunk()->isAddressWord(rel))
-          continue;
-        uint64_t field = rel.VirtualAddress - dir->getValue();
-        Defined *target = dyn_cast_or_null<Defined>(
-            dir->getChunk()->file->getSymbol(rel.SymbolTableIndex));
-        int64_t addend = getAddressWordAddend(dir->getChunk(), rel).value_or(0);
-        if (field == 0) {
-          tls.start = target;
-          tls.startAddend = addend;
-        } else if (field == 2 * config.wordsize) {
-          tls.index = target;
-          tls.indexAddend = addend;
-        }
-      }
-    }
+    tls = findTLSTemplate(ctx);
     if (!tls.start || !tls.index)
       return fail("in thread-local data, but the image's TLS directory "
                   "(_tls_used) names no template or index");
