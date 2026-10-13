@@ -16,6 +16,8 @@
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium plain.s -o plain.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium crt.s -o crt.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium use.s -o use.obj
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium offer.s -o offer.obj
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-msvc offer.s -o undesc.obj
 # RUN: lld-link -def:ntdll.def -out:ntdll.lib -machine:x64
 # RUN: lld-link -import-slots -dll -noentry l.obj -out:l.dll -implib:l.lib
 
@@ -93,6 +95,34 @@
 # FILL:      cmpl    $0x0, 0x8c(%r11)
 # FILL-NEXT: je
 
+## A DLL whose strong definition of such a function the image exports offers
+## it, marked or not, and reaches it as every other image does: its
+## address-take through the import pointer keeps the default's import, whose
+## entry the fill writes. Without the library's import library the load is
+## direct.
+# RUN: lld-link -import-slots -dll -noentry offer.obj crt.obj l.lib ntdll.lib \
+# RUN:   -out:offer.dll
+# RUN: llvm-readobj --coff-exports --coff-imports offer.dll > offer.txt
+# RUN: llvm-objdump -d offer.dll >> offer.txt
+# RUN: FileCheck --check-prefix=OFFER --input-file=offer.txt %s
+# OFFER:      Name: l.dll
+# OFFER-NEXT: ImportLookupTableRVA:
+# OFFER-NEXT: ImportAddressTableRVA: 0x[[#%X,OENTRY:]]
+# OFFER-NEXT: Symbol: hook
+# OFFER:      Name: __ovr_offer$hook
+# OFFER:      <take>:
+# OFFER-NEXT: 48 8b 05 {{.*}} movq {{.*}}(%rip), %rax # 0x[[#%x,0x180000000+OENTRY]]
+# RUN: lld-link -import-slots -dll -noentry offer.obj crt.obj -out:own.dll
+# RUN: llvm-objdump -d own.dll | FileCheck --check-prefix=OWN %s
+# OWN:      <take>:
+# OWN-NEXT: 48 8d 05 {{.*}} leaq {{.*}}(%rip), %rax
+
+## An object that does not describe its references cannot have them reach the
+## program's choice.
+# RUN: not lld-link -import-slots -dll -noentry undesc.obj crt.obj l.lib \
+# RUN:   ntdll.lib -out:undesc.dll 2>&1 | FileCheck --check-prefix=UNDESC %s
+# UNDESC: error: undesc.obj: hook is offered as an overridable default, but its object does not describe its references to it, which therefore cannot reach the program's choice
+
 #--- l.s
         .text
         .weak hook
@@ -156,6 +186,19 @@ __xi_a:
         .globl __xi_z
 __xi_z:
         .quad 0
+
+#--- offer.s
+        .text
+        .globl take
+take:
+        movq __imp_hook(%rip), %rax
+        retq
+        .globl hook
+hook:
+        movl $4, %eax
+        retq
+        .section .drectve,"yni"
+        .ascii " /EXPORT:hook /EXPORT:take"
 
 #--- use.s
         .text
