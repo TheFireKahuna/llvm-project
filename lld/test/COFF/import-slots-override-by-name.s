@@ -48,6 +48,18 @@
 # ANCHOR-NEXT: 8e6126f4 e31fc3bf 0d100040 01000000
 # ANCHOR-NEXT: dcc1c65f b65088bb 13100040 01000000
 
+## Each body the block names is a target of the dispatch from its default, so
+## the guard function table lists it.
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-msvc config.s -o config.obj
+# RUN: lld-link -import-slots -guard:cf main.obj config.obj l.lib -out:guard.exe \
+# RUN:   -entry:main -subsystem:console
+# RUN: llvm-readobj --coff-load-config guard.exe | FileCheck --check-prefix=GUARD %s
+# GUARD:      GuardFidTable [
+# GUARD-NEXT:   0x140001007
+# GUARD-NEXT:   0x14000100D
+# GUARD-NEXT:   0x140001013
+# GUARD-NEXT: ]
+
 ## An executable that replaces nothing writes no table.
 # RUN: lld-link -import-slots plain.obj l.lib -out:plain.exe -entry:main \
 # RUN:   -subsystem:console
@@ -143,19 +155,27 @@ hook156:
         .ascii " /OVERRIDABLEBYNAME:hook156 /EXPORT:hook156"
 
 #--- main.s
+## Compiled for Control Flow Guard, so no symbol is taken as address-taken
+## by default.
+        .def @feat.00; .scl 3; .type 0; .endef
+        .globl @feat.00
+@feat.00 = 0x800
         .text
         .globl main
 main:
         callq *__imp_hook(%rip)
         retq
+        .def hook; .scl 2; .type 32; .endef
         .globl hook
 hook:
         movl $1, %eax
         retq
+        .def hook133; .scl 2; .type 32; .endef
         .globl hook133
 hook133:
         movl $2, %eax
         retq
+        .def hook156; .scl 2; .type 32; .endef
         .globl hook156
 hook156:
         movl $3, %eax
@@ -212,3 +232,20 @@ ghook:
         .quad hook
         .section .drectve,"yni"
         .ascii " /INCLUDE:ghook"
+
+#--- config.s
+  .section .rdata,"dr"
+  .p2align 3
+  .globl _load_config_used
+_load_config_used:
+  .long 256
+  .fill 124, 1, 0
+  .quad __guard_fids_table
+  .quad __guard_fids_count
+  .long __guard_flags
+  .fill 12, 1, 0
+  .quad __guard_iat_table
+  .quad __guard_iat_count
+  .quad __guard_longjmp_table
+  .quad __guard_fids_count
+  .fill 84, 1, 0
