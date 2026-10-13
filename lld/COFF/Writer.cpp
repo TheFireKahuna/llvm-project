@@ -1219,16 +1219,17 @@ void Writer::createSections() {
   for (Chunk *c : ctx.kcfi.chunks)
     createPartialSection(c->getSectionName(), c->getOutputCharacteristics())
         ->chunks.push_back(c);
-  // Right after the table's start, ahead of every other initializer: the
-  // fill of the overridable-default cells or the copy of the thread-local
-  // slots, then the residual fill, which seals the section of the cells that
-  // share a chunk with residual words.
+  // The executable's first TLS callback, right after the callback array's
+  // opening null: the copy of the thread-local slots.
   if (Chunk *copy = slots.getThreadLocalSlotCopy()) {
     createPartialSection(".text", copy->getOutputCharacteristics())
         ->chunks.push_back(copy);
-    createPartialSection(".CRT$XIA$fill", data | r)
+    createPartialSection(".CRT$XLA$fill", data | r)
         ->chunks.push_back(slots.getThreadLocalSlotCopyPointer());
   }
+  // Right after the table's start, ahead of every other initializer: the
+  // fill of the overridable-default cells, then the residual fill, which seals
+  // the section of the cells that share a chunk with residual words.
   if (Chunk *fill = slots.getOverrideCellFill()) {
     createPartialSection(".text", fill->getOutputCharacteristics())
         ->chunks.push_back(fill);
@@ -1307,8 +1308,8 @@ void Writer::createSections() {
 
       Log(ctx) << "Processing section " << pSec->name << " -> " << name;
 
-      // The linker's fills have a group of their own, in their order there.
-      if (pSec->name != ".CRT$XIA$fill")
+      // The linker's fills have groups of their own, in their order there.
+      if (pSec->name != ".CRT$XIA$fill" && pSec->name != ".CRT$XLA$fill")
         sortCRTSectionChunks(pSec->chunks);
     }
 
@@ -2301,6 +2302,10 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
           alignTo(overrideTableEnd(ctx.symtab.overrideSlots.size()), 16);
     }
     dos->HeaderSizeInParagraphs = programOffset / 16;
+    if (Chunk *copy = slots.getThreadLocalSlotCopy()) {
+      write32le(stub + threadLocalSlotCopyOffset, threadLocalSlotCopyTag);
+      write32le(stub + threadLocalSlotCopyOffset + 4, copy->getRVA());
+    }
     memcpy(stub + programOffset, dosProgram, sizeof(dosProgram));
     buf = stub + dosStubSize;
   }
@@ -3013,7 +3018,8 @@ void Writer::createGuardCFTables() {
   if (Chunk *fill = slots.getOverrideCellFill())
     addressTakenSyms.insert({fill, 0});
 
-  // The C initializer table calls the copy of the thread-local slots.
+  // The TLS callback array, and the DLLs the executable's header names it to,
+  // call the copy of the thread-local slots.
   if (Chunk *copy = slots.getThreadLocalSlotCopy())
     addressTakenSyms.insert({copy, 0});
 
