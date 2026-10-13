@@ -75,6 +75,50 @@
 # NONE-NOT: %gs:0x58
 # NOTAG: 00 00 00 00 00 00 00 00
 
+## A DLL that imports from an executable may call it from its initializers
+## before the executable's TLS callbacks run, so its C initializer table runs
+## the copy the executable names first, ahead of every other initializer, while
+## the process initializes; through the guard's dispatch where the image has
+## it, here the first word of .rdata, or directly where it has none.
+# RUN: lld-link -def:host.def -out:host.lib -machine:x64
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium plug.s -o plug.obj
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium guard.s -o guard.obj
+# RUN: lld-link -import-slots -dll -noentry crt.obj plug.obj guard.obj \
+# RUN:   host.lib -out:plug.dll
+# RUN: llvm-readobj --sections plug.dll > plug.txt
+# RUN: llvm-objdump -d --print-imm-hex plug.dll >> plug.txt
+# RUN: llvm-objdump -s -j .CRT plug.dll >> plug.txt
+# RUN: FileCheck --check-prefix=CALL --input-file=plug.txt %s
+# CALL:      Name: .rdata
+# CALL-NEXT: VirtualSize:
+# CALL-NEXT: VirtualAddress: 0x[[#%x,RDATA:]]
+# CALL:      180001010: {{.*}} movq %gs:0x60, %rax
+# CALL-NEXT: btl $0x1, 0x50(%rax)
+# CALL-NEXT: jae 0x[[#%x,ZERO:]]
+# CALL-NEXT: movq 0x10(%rax), %rax
+# CALL-NEXT: cmpl $0x9e3779b9, 0x1c(%rax)
+# CALL-NEXT: jne 0x[[#ZERO]]
+# CALL-NEXT: movl 0x20(%rax), %ecx
+# CALL-NEXT: addq %rcx, %rax
+# CALL-NEXT: jmpq *{{.*}}(%rip) # 0x[[#RDATA + 0x180000000]]
+# CALL-NEXT: [[#ZERO]]: {{.*}} xorl %eax, %eax
+# CALL-NEXT: retq
+# CALL:      Contents of section .CRT:
+# CALL-NEXT: 11111111 11111111 10100080 01000000
+
+# RUN: lld-link -import-slots -dll -noentry crt.obj plug.obj host.lib \
+# RUN:   -out:noguard.dll
+# RUN: llvm-objdump -d noguard.dll | FileCheck --check-prefix=NOGUARD %s
+# NOGUARD:      addq %rcx, %rax
+# NOGUARD-NEXT: jmpq *%rax
+
+## A DLL that imports from no executable, or that has no C initializer table,
+## carries none.
+# RUN: llvm-objdump -d tl.dll | FileCheck --check-prefix=NOCALL %s
+# RUN: lld-link -import-slots -dll -noentry plug.obj host.lib -out:nocrt.dll
+# RUN: llvm-objdump -d nocrt.dll | FileCheck --check-prefix=NOCALL %s
+# NOCALL-NOT: 0x9e3779b9
+
 ## Without a TLS callback array nothing runs the copy, and a TLS directory that
 ## names no template or index leaves no block to copy into.
 # RUN: not lld-link -import-slots -entry:main -subsystem:console main.obj \
@@ -153,6 +197,25 @@ _tls_used:
   .data
   .p2align 3
   .quad arr+8
+
+#--- host.def
+LIBRARY host.exe
+EXPORTS
+  hostfn
+
+#--- plug.s
+  .text
+  .globl dllmain
+dllmain:
+  jmp hostfn
+
+#--- guard.s
+## The guard's dispatch pointer, as the load configuration provides it.
+  .section .rdata,"dr"
+  .globl __guard_dispatch_icall_fptr
+  .p2align 3
+__guard_dispatch_icall_fptr:
+  .quad 0
 
 #--- bad.s
   .section .rdata,"dr"

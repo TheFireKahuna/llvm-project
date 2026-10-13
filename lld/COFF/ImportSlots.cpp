@@ -67,8 +67,8 @@ private:
 
 // The unwind information of a fill function with a frame, which its first
 // instruction sets up and its last two take down: the residual fill when it
-// seals, or the fill of overridable-default cells when it writes read-only
-// ones.
+// seals, the fill of overridable-default cells when it writes read-only ones,
+// or a DLL's run of the executable's thread-local slot copy on AArch64.
 class ResidualFillUnwindChunk : public NonSectionChunk {
 public:
   ResidualFillUnwindChunk(COFFLinkerContext &ctx, Chunk *fill)
@@ -823,6 +823,118 @@ void ThreadLocalSlotCopyChunk::writeTo(uint8_t *buf) const {
     write32le(buf + off - 4, blockOff);
   }
   write32le(buf + skip, off - (skip + 4));
+  put({0x31, 0xC0}); // xor eax, eax
+  put({0xC3});       // ret
+}
+
+// The run of the executable's thread-local slot copy by a DLL that may reach
+// the executable while the DLLs initialize, which the C initializer table runs
+// before every other initializer of the DLL. While the process initializes, it
+// reads the executable's MZ header through the PEB and, when the header names a
+// copy, calls it, checked by Control Flow Guard where the image has the check,
+// so that code of the executable that the DLL's initializers call sees its
+// thread-local import slots bound in the main thread. It returns 0, as the copy
+// does. On x86-64 it tail-jumps through the guard's dispatch and needs no
+// frame; on AArch64 the check is a call, so it keeps the fill's frame.
+class ThreadLocalSlotCopyCallChunk : public NonSectionCodeChunk {
+public:
+  ThreadLocalSlotCopyCallChunk(COFFLinkerContext &ctx, Defined *guard)
+      : guard(guard), ctx(ctx) {
+    setAlignment(16);
+  }
+  size_t getSize() const override {
+    if (ctx.config.machine == ARM64)
+      return 72 + (guard ? 12 : 0);
+    return 40 + (guard ? 4 : 0);
+  }
+  void writeTo(uint8_t *buf) const override;
+  uint32_t getOutputCharacteristics() const override {
+    return llvm::COFF::IMAGE_SCN_CNT_CODE |
+           NonSectionCodeChunk::getOutputCharacteristics();
+  }
+  StringRef getSectionName() const override { return ".text"; }
+  MachineTypes getMachine() const override { return ctx.config.machine; }
+
+private:
+  // The guard's dispatch pointer on x86-64, or its check pointer on AArch64,
+  // or null in an image without them.
+  Defined *guard;
+  COFFLinkerContext &ctx;
+};
+
+void ThreadLocalSlotCopyCallChunk::writeTo(uint8_t *buf) const {
+  uint32_t off = 0;
+  if (ctx.config.machine == ARM64) {
+    auto put = [&](uint32_t insn) {
+      write32le(buf + off, insn);
+      off += 4;
+    };
+    put(0xA9BD7BFD); // stp x29, x30, [sp, #-48]!
+    put(0x910003FD); // mov x29, sp
+    put(0xF9403249); // ldr x9, [x18, #0x60]   TEB->PEB
+    put(0xB940012A | pebCrossProcessFlags / 4 << 10); // ldr w10, [x9, #flags]
+    uint32_t notInitializing = off;
+    put(0x3608000A); // tbz w10, #1, .zero
+    put(0xF9400929); // ldr x9, [x9, #0x10]   PEB->ImageBaseAddress
+    // ldr w10, [x9, #tag]; movz/movk w11, #tag; cmp w10, w11; b.ne .zero
+    put(0xB940012A | threadLocalSlotCopyOffset / 4 << 10);
+    put(0x5280000B | (threadLocalSlotCopyTag & 0xFFFF) << 5);
+    put(0x72A0000B | (threadLocalSlotCopyTag >> 16) << 5);
+    put(0x6B0B015F);
+    uint32_t noCopy = off;
+    put(0x54000001);
+    // ldr w10, [x9, #rva]; add x15, x9, x10
+    put(0xB940012A | (threadLocalSlotCopyOffset + 4) / 4 << 10);
+    put(0x8B0A012F);
+    if (guard) {
+      // adrp x16, guard; ldr x16, [x16, :lo12:guard]; blr x16, which checks
+      // the target in x15 and preserves it.
+      write32le(buf + off, 0x90000010);
+      write32le(buf + off + 4, 0xF9400210);
+      applyArm64Addr(buf + off, guard->getRVA(), rva + off, 12);
+      applyArm64Ldr(buf + off + 4, guard->getRVA() & 0xfff);
+      off += 8;
+      put(0xD63F0200);
+    }
+    put(0xD63F01E0); // blr x15
+    write32le(buf + notInitializing, read32le(buf + notInitializing) |
+                                         (off - notInitializing) / 4 << 5);
+    write32le(buf + noCopy, read32le(buf + noCopy) | (off - noCopy) / 4 << 5);
+    put(0x52800000); // mov w0, #0
+    put(0x910003BF); // mov sp, x29
+    put(0xA8C37BFD); // ldp x29, x30, [sp], #48
+    put(0xD65F03C0); // ret
+    return;
+  }
+
+  auto put = [&](ArrayRef<uint8_t> bytes) {
+    memcpy(buf + off, bytes.data(), bytes.size());
+    off += bytes.size();
+  };
+  put({0x65, 0x48, 0x8B, 0x04, 0x25, 0x60, 0, 0, 0}); // mov rax, gs:[0x60]
+  // bt dword ptr [rax + flags], 1; jnc .zero
+  put({0x0F, 0xBA, 0x60, uint8_t(pebCrossProcessFlags), 1});
+  put({0x73, 0});
+  uint32_t notInitializing = off - 1;
+  put({0x48, 0x8B, 0x40, 0x10}); // mov rax, [rax + 0x10]   ImageBaseAddress
+  // cmp dword ptr [rax + tag], tag; jne .zero
+  put({0x81, 0x78, uint8_t(threadLocalSlotCopyOffset), 0, 0, 0, 0});
+  write32le(buf + off - 4, threadLocalSlotCopyTag);
+  put({0x75, 0});
+  uint32_t noCopy = off - 1;
+  // mov ecx, [rax + rva]; add rax, rcx
+  put({0x8B, 0x48, uint8_t(threadLocalSlotCopyOffset + 4)});
+  put({0x48, 0x01, 0xC8});
+  if (guard) {
+    // jmp [rip + __guard_dispatch_icall_fptr], which checks the target in rax
+    // and jumps to it.
+    put({0xFF, 0x25, 0, 0, 0, 0});
+    write32le(buf + off - 4, guard->getRVA() - (rva + off));
+  } else {
+    put({0xFF, 0xE0}); // jmp rax
+  }
+  buf[notInitializing] = off - (notInitializing + 1);
+  buf[noCopy] = off - (noCopy + 1);
   put({0x31, 0xC0}); // xor eax, eax
   put({0xC3});       // ret
 }
@@ -1769,6 +1881,41 @@ void ImportSlotContents::createThreadLocalSlotCopy() {
   threadLocalSlotCopy = copy;
   threadLocalSlotCopyPointer = make<LocalImportChunk>(
       ctx, make<DefinedSynthetic>("__llvm_thread_local_slot_copy", copy));
+}
+
+// Under -import-slots, a DLL that imports from an executable may call it from
+// its initializers while the DLLs initialize, before the executable's TLS
+// callbacks run the copy of its thread-local slots; the DLL runs the copy the
+// executable names first. Without a C initializer table nothing would run it,
+// and the DLL is left as it was.
+void ImportSlotContents::createThreadLocalSlotCopyCall() {
+  Configuration &config = ctx.config;
+  if (!config.importSlots || !config.dll || ctx.hybridSymtab ||
+      (config.machine != AMD64 && config.machine != ARM64))
+    return;
+  if (llvm::none_of(ctx.importFileInstances, [](ImportFile *f) {
+        return f->live && StringRef(f->dllName).ends_with_insensitive(".exe");
+      }))
+    return;
+  if (!isa_and_nonnull<Defined>(ctx.symtab.findUnderscore("__xi_a")))
+    return;
+  // The guard's pointer, where the image has it: the dispatch on x86-64, the
+  // check on AArch64.
+  auto *guard = dyn_cast_or_null<Defined>(
+      ctx.symtab.find(config.machine == AMD64 ? "__guard_dispatch_icall_fptr"
+                                              : "__guard_check_icall_fptr"));
+  if (auto *d = dyn_cast_or_null<DefinedRegular>(guard); d && !d->isLive())
+    guard = nullptr;
+  auto *call = make<ThreadLocalSlotCopyCallChunk>(ctx, guard);
+  threadLocalSlotCopyCall = call;
+  threadLocalSlotCopyCallPointer = make<LocalImportChunk>(
+      ctx, make<DefinedSynthetic>("__llvm_thread_local_slot_copy_call", call));
+  if (config.machine == ARM64) {
+    auto *unwind = make<ResidualFillUnwindChunk>(ctx, call);
+    threadLocalSlotCopyCallUnwind = unwind;
+    threadLocalSlotCopyCallPdata =
+        make<ResidualFillPdataChunk>(ctx, call, unwind);
+  }
 }
 
 // Under -import-slots, a DLL's cells of the overridable defaults it imports
