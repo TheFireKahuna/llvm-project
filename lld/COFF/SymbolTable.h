@@ -244,6 +244,9 @@ public:
     std::optional<uint32_t> forward;
   };
   std::vector<OverrideReplacement> overrideReplacements;
+  // The defaults this executable replaces by name, before buildOverrideSlots
+  // lays them out in overrideBlock.
+  std::vector<std::pair<StringRef, Defined *>> overrideReplacementsByName;
 
   // The override table this executable writes, by slot: for each slot the body
   // its entry names, or null, and whether the slot's default is replaced (so
@@ -275,6 +278,30 @@ public:
   // /overridable: directives.
   llvm::DenseSet<StringRef> overridables;
   bool overrideRecordsLoaded = false;
+
+  // The overridable defaults that inputs define with no fixed slot, which a
+  // definition in another image replaces by name, from their
+  // /overridablebyname: directives, and those that the DLLs whose import
+  // libraries the link names define, from the records of those libraries.
+  llvm::DenseSet<StringRef> overridablesByName;
+  llvm::DenseSet<StringRef> defaultsByName;
+  size_t defaultsByNameArchives = 0;
+  void readDefaultsByName();
+
+  // The record members of the import libraries the link names, in link order.
+  SmallVector<MemoryBufferRef, 4> getImportLibraryRecords();
+
+  // A default replaced by name in the table's block: the body its entry names,
+  // its key and its bucket, or -1 for an entry in the overflow list. The block
+  // holds them in this order, the buckets' in increasing order of bucket, then
+  // the overflow list's.
+  struct OverrideByName {
+    Defined *target;
+    StringRef name;
+    uint64_t key;
+    int32_t bucket;
+  };
+  std::vector<OverrideByName> overrideBlock;
 
   // The ABI names of the overridable defaults that linked import libraries
   // offer, from their offer symbols. The executable selects an offer for a

@@ -17,9 +17,19 @@ using namespace llvm::COFF;
 using namespace llvm::support::endian;
 
 namespace lld::coff {
+uint32_t OverrideAnchorChunk::getEntriesOffset() const {
+  return overrideAnchorHeaderSize + 8 * symtab.overrideSlots.size();
+}
+
+uint32_t OverrideAnchorChunk::getOverflowOffset() const {
+  return getEntriesOffset() + 16 * symtab.overrideBlock.size();
+}
 
 size_t OverrideAnchorChunk::getSize() const {
-  return overrideAnchorHeaderSize + 8 * symtab.overrideSlots.size();
+  size_t overflow = llvm::count_if(
+      symtab.overrideBlock,
+      [](const SymbolTable::OverrideByName &e) { return e.bucket < 0; });
+  return getOverflowOffset() + overrideBlockEntrySize * overflow;
 }
 
 void OverrideAnchorChunk::writeTo(uint8_t *buf) const {
@@ -28,11 +38,24 @@ void OverrideAnchorChunk::writeTo(uint8_t *buf) const {
   write16le(buf + 4, overrideTableVersion);
   write16le(buf + 6, count);
   write32le(buf + 8, symtab.overrideMask);
-  write32le(buf + 12, 0);
+  write32le(buf + 12, symtab.overrideBlock.size());
   for (uint32_t k = 0; k != count; ++k) {
     const auto &slot = symtab.overrideSlots[k];
     write64le(buf + overrideAnchorHeaderSize + 8 * k,
               slot.target ? ctx.config.imageBase + slot.target->getRVA() : 0);
+  }
+  uint8_t *entry = buf + getEntriesOffset();
+  uint8_t *overflow = buf + getOverflowOffset();
+  for (const SymbolTable::OverrideByName &e : symtab.overrideBlock) {
+    write64le(entry, e.key);
+    write64le(entry + 8, ctx.config.imageBase + e.target->getRVA());
+    entry += 16;
+    if (e.bucket >= 0)
+      continue;
+    write64le(overflow, e.key);
+    write32le(overflow + 8, e.target->getRVA());
+    write32le(overflow + 12, 0);
+    overflow += overrideBlockEntrySize;
   }
 }
 
@@ -42,6 +65,9 @@ void OverrideAnchorChunk::getBaserels(std::vector<Baserel> *res) {
     if (symtab.overrideSlots[k].target)
       res->emplace_back(rva + overrideAnchorHeaderSize + 8 * k,
                         ctx.config.machine);
+  for (size_t i = 0, e = symtab.overrideBlock.size(); i != e; ++i)
+    res->emplace_back(rva + getEntriesOffset() + 16 * i + 8,
+                      ctx.config.machine);
 }
 
 MachineTypes OverrideThunkChunk::getMachine() const {
@@ -73,12 +99,40 @@ void writeOverrideTable(COFFLinkerContext &ctx, SymbolTable &symtab,
     write32le(entry + 4, slot.target ? slot.target->getRVA() : 0);
   }
   uint8_t *header = base + overrideHeaderOffset;
+  const std::vector<SymbolTable::OverrideByName> &entries =
+      symtab.overrideBlock;
   write32le(header, overrideTableMagic);
   write16le(header + 4, overrideTableVersion);
   write16le(header + 6, count);
   write32le(header + 8, symtab.overrideAnchor->getRVA());
-  write32le(header + 12, 0);
+  write32le(header + 12, entries.empty() ? 0 : overrideBlockOffset);
   write64le(header + 16, 0);
+  if (entries.empty())
+    return;
+
+  auto *anchor = cast<OverrideAnchorChunk>(symtab.overrideAnchor);
+  uint32_t overflow = 0;
+  for (const SymbolTable::OverrideByName &e : entries) {
+    uint8_t *entry = e.bucket < 0 ? nullptr
+                                  : base + overrideBucketsOffset +
+                                        overrideBlockEntrySize * e.bucket;
+    if (!entry) {
+      ++overflow;
+      continue;
+    }
+    write64le(entry, e.key);
+    write32le(entry + 8, e.target->getRVA());
+    write32le(entry + 12, 0);
+  }
+  uint8_t *block = base + overrideBlockOffset;
+  write32le(block, overrideBlockMagic);
+  write16le(block + 4, overrideTableVersion);
+  write16le(block + 6, entries.size());
+  write32le(block + 8,
+            overflow ? anchor->getRVA() + anchor->getOverflowOffset() : 0);
+  write32le(block + 12, overflow);
+  write64le(block + 16, 0);
+  write64le(block + 24, 0);
 }
 
 } // namespace lld::coff

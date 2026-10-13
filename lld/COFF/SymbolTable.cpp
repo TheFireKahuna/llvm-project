@@ -541,13 +541,16 @@ bool SymbolTable::loadInteriorImports() {
   }
   // A DLL's fill writes the entries and read-only slots of the overridable
   // defaults it imports between two protection calls.
-  if (!sealed && canSeal && ctx.config.dll && overrideRecordsLoaded)
+  if (!sealed && canSeal && ctx.config.dll) {
+    readDefaultsByName();
     sealed = llvm::any_of(ctx.importFileInstances, [&](ImportFile *f) {
-      return &f->symtab == this && f->impSym &&
-             !ctx.config.delayLoads.contains(StringRef(f->dllName).lower()) &&
-             overrideImportSlot(
-                 f->impSym->getName().drop_front(strlen("__imp_")));
+      if (&f->symtab != this || !f->impSym ||
+          ctx.config.delayLoads.contains(StringRef(f->dllName).lower()))
+        return false;
+      StringRef name = f->impSym->getName().drop_front(strlen("__imp_"));
+      return overrideImportSlot(name) || defaultsByName.contains(name);
     });
+  }
   if (sealed)
     if (Symbol *l = find("__imp_NtProtectVirtualMemory");
         l && l->isLazy() && !l->pendingArchiveLoad && isLazyImport(l))
@@ -1037,8 +1040,9 @@ void SymbolTable::bindOfferedFunctions() {
 }
 
 Defined *SymbolTable::getOverrideOffer(const Export &e) {
-  if (!ctx.config.dll || !e.sym || !overridables.contains(e.sym->getName()) ||
-      !e.extName.empty() || !e.exportAs.empty())
+  if (!ctx.config.dll || !e.sym || !e.extName.empty() || !e.exportAs.empty() ||
+      (!overridables.contains(e.sym->getName()) &&
+       !defaultsByName.contains(e.sym->getName())))
     return nullptr;
   // The runtime's default is a weak definition, the fallback that the
   // executable's replacement supersedes, so exporting it is what makes it
@@ -1054,7 +1058,7 @@ Defined *SymbolTable::getOverrideOffer(const Export &e) {
 }
 
 void SymbolTable::offerOverridableDefaults() {
-  if (overridables.empty())
+  if (overridables.empty() && defaultsByName.empty())
     return;
   // Only the executable replaces an overridable default for every image of
   // the program. A DLL's strong definition is an offer the executable's link
@@ -1068,8 +1072,10 @@ void SymbolTable::offerOverridableDefaults() {
 }
 
 bool SymbolTable::loadOverrideOfferImports() {
-  if (!ctx.config.importSlots || !ctx.config.dll || ctx.hybridSymtab ||
-      isEC() || overridables.empty())
+  if (!ctx.config.importSlots || !ctx.config.dll || ctx.hybridSymtab || isEC())
+    return false;
+  readDefaultsByName();
+  if (overridables.empty() && defaultsByName.empty())
     return false;
   // The DLL's own references to a definition it offers go through the
   // default's import, which nothing else may have loaded, since the DLL
@@ -1128,12 +1134,8 @@ bool SymbolTable::loadOverrideOffers() {
   // import libraries describe. The executable imports the first such offer
   // of a default that nothing before it offers or replaces from its DLL by
   // name, as it would through that DLL's import library.
-  SmallVector<MemoryBufferRef, 4> records;
-  for (ArchiveFile *f : indexedArchives)
-    for (StringRef name : f->getSymbolNames(vagueRecordPrefix))
-      if (auto *lazy = dyn_cast_or_null<LazyArchive>(find(name)))
-        records.push_back(lazy->getMemberBuffer());
-  for (auto &[dll, name] : getDependentOverrideOffers(ctx, records)) {
+  for (auto &[dll, name] :
+       getDependentOverrideOffers(ctx, getImportLibraryRecords())) {
     if (overrideOffers.contains(name) || isLocalOverrideReplacement(name))
       continue;
     StringRef offer = saver().save(overrideOfferPrefix + name);
@@ -1147,6 +1149,27 @@ bool SymbolTable::loadOverrideOffers() {
     pulled = true;
   }
   return pulled;
+}
+
+SmallVector<MemoryBufferRef, 4> SymbolTable::getImportLibraryRecords() {
+  SmallVector<MemoryBufferRef, 4> records;
+  for (ArchiveFile *f : indexedArchives)
+    for (StringRef name : f->getSymbolNames(vagueRecordPrefix))
+      if (auto *lazy = dyn_cast_or_null<LazyArchive>(find(name)))
+        records.push_back(lazy->getMemberBuffer());
+  return records;
+}
+
+void SymbolTable::readDefaultsByName() {
+  // The records come only with the import libraries, so they are read again
+  // only once more libraries have been read.
+  if (!ctx.config.importSlots || ctx.hybridSymtab || isEC() ||
+      indexedArchives.size() == defaultsByNameArchives)
+    return;
+  defaultsByNameArchives = indexedArchives.size();
+  for (std::string &name :
+       getOverridablesByName(ctx, getImportLibraryRecords()))
+    defaultsByName.insert(saver().save(name));
 }
 
 bool SymbolTable::loadOverrideRecords() {
@@ -1180,16 +1203,30 @@ std::optional<uint32_t> SymbolTable::overrideImportSlot(StringRef name) {
 }
 
 void SymbolTable::resolveOverridableReplacements() {
-  if (!ctx.config.importSlots || ctx.config.dll || ctx.hybridSymtab ||
-      isEC() || (overridables.empty() && overrideOffers.empty()))
+  if (!ctx.config.importSlots || ctx.config.dll || ctx.hybridSymtab || isEC())
+    return;
+  readDefaultsByName();
+  if (overridables.empty() && overrideOffers.empty() && defaultsByName.empty())
     return;
   // An overridable default this executable replaces is one an input defines
   // with a strong definition, the body B, superseding the runtime's weak
-  // default for every image.
+  // default for every image. A default a DLL defines with no fixed slot is
+  // replaced by name, through the table's block, by any such definition,
+  // whether or not its object marks it, as an executable's definition
+  // preempts a shared object's on ELF.
   SmallVector<std::pair<StringRef, Defined *>, 8> replaced;
+  auto add = [&](StringRef name, Defined *body) {
+    if (defaultsByName.contains(name))
+      overrideReplacementsByName.emplace_back(name, body);
+    else
+      replaced.emplace_back(name, body);
+  };
   for (StringRef name : overridables)
+    if (!defaultsByName.contains(name) && isLocalOverrideReplacement(name))
+      add(name, cast<Defined>(find(name)));
+  for (StringRef name : defaultsByName)
     if (isLocalOverrideReplacement(name))
-      replaced.emplace_back(name, cast<Defined>(find(name)));
+      add(name, cast<Defined>(find(name)));
   // A default the executable does not replace itself but a linked DLL offers is
   // replaced for every image by that offer, reached through an import thunk to
   // the DLL's instance that loadOverrideOffers pulled.
@@ -1199,10 +1236,13 @@ void SymbolTable::resolveOverridableReplacements() {
     auto *thunk =
         dyn_cast_or_null<Defined>(find((overrideOfferPrefix + name).str()));
     if (thunk && !thunk->isLazy())
-      replaced.emplace_back(name, thunk);
+      add(name, thunk);
   }
-  if (replaced.empty())
+  llvm::sort(overrideReplacementsByName, llvm::less_first());
+  if (replaced.empty()) {
+    buildOverrideSlots();
     return;
+  }
   auto absolute = [&](const Twine &n) -> std::optional<uint64_t> {
     if (auto *a = dyn_cast_or_null<DefinedAbsolute>(find(n.str())))
       return a->getVA();
@@ -1214,8 +1254,10 @@ void SymbolTable::resolveOverridableReplacements() {
   // such runtime, as a freestanding one may, keeps its own definition and
   // needs no table.
   std::optional<uint64_t> version = absolute("__ovr_version");
-  if (!version)
+  if (!version) {
+    buildOverrideSlots();
     return;
+  }
   if (*version != overrideTableVersion) {
     Err(ctx) << "the C++ runtime's override table format (version " << *version
              << ") is not the one this linker writes (version "
@@ -1237,7 +1279,7 @@ void SymbolTable::resolveOverridableReplacements() {
 }
 
 void SymbolTable::buildOverrideSlots() {
-  if (overrideReplacements.empty())
+  if (overrideReplacements.empty() && overrideReplacementsByName.empty())
     return;
   auto root = [&](Defined *d) {
     if (!d->isGCRoot) {
@@ -1245,6 +1287,41 @@ void SymbolTable::buildOverrideSlots() {
       ctx.config.gcroot.push_back(d);
     }
   };
+  // The block's entries: each takes the first free bucket from its home
+  // bucket, in the order of their names, so that the layout does not depend
+  // on the order of the inputs, and the rest go to the overflow list.
+  DenseMap<uint64_t, StringRef> keys;
+  std::array<bool, overrideBucketCount> taken = {};
+  std::vector<OverrideByName> overflow;
+  for (auto [name, body] : overrideReplacementsByName) {
+    uint64_t key = overrideNameKey(name);
+    auto [it, inserted] = keys.try_emplace(key, name);
+    if (!inserted || key == 0) {
+      Err(ctx) << "overridable defaults " << it->second << " and " << name
+               << " have the same key in the override table's block";
+      continue;
+    }
+    root(body);
+    OverrideByName entry{body, name, key, -1};
+    uint32_t home = overrideHomeBucket(key);
+    for (uint32_t i = 0; i != overrideBucketCount; ++i) {
+      uint32_t b = (home + i) % overrideBucketCount;
+      if (!taken[b]) {
+        taken[b] = true;
+        entry.bucket = b;
+        break;
+      }
+    }
+    if (entry.bucket < 0)
+      overflow.push_back(entry);
+    else
+      overrideBlock.push_back(entry);
+  }
+  llvm::sort(overrideBlock,
+             [](const OverrideByName &a, const OverrideByName &b) {
+               return a.bucket < b.bucket;
+             });
+  llvm::append_range(overrideBlock, overflow);
   // The slot each replacement names, its body.
   DenseMap<uint32_t, Defined *> replaced;
   for (const OverrideReplacement &r : overrideReplacements)
@@ -1295,7 +1372,8 @@ void SymbolTable::buildOverrideSlots() {
 
   // The table runs from slot zero to the highest slot it writes, and never
   // fewer than its first eight, the hot line, which is always present, so a
-  // hot-line slot's check needs no bound.
+  // hot-line slot's check needs no bound. A table with no slot replaced still
+  // holds them, beside its block.
   uint32_t count = 8;
   for (const auto &r : replaced)
     count = std::max(count, r.first + 1);
@@ -1325,19 +1403,29 @@ void SymbolTable::buildOverrideSlots() {
 }
 
 bool SymbolTable::nameOverrideCheck() {
-  if (!ctx.config.importSlots || ctx.config.dll || ctx.hybridSymtab ||
-      isEC() || !overrideRecordsLoaded || overrideAnchor)
+  if (!ctx.config.importSlots || ctx.config.dll || ctx.hybridSymtab || isEC() ||
+      overrideAnchor)
+    return false;
+  readDefaultsByName();
+  if (!overrideRecordsLoaded && defaultsByName.empty())
     return false;
   // Not until a replacement supersedes the runtime's weak default: an input's
   // strong definition, or a linked DLL's offer the executable selects for a
   // slot it does not replace itself. A link that only loaded the records
   // member, with no replacement after all, writes no table.
   bool replaces =
-      llvm::any_of(overridables,
-                   [&](StringRef name) { return isLocalOverrideReplacement(name); }) ||
+      (overrideRecordsLoaded &&
+       llvm::any_of(
+           overridables,
+           [&](StringRef name) { return isLocalOverrideReplacement(name); })) ||
+      llvm::any_of(
+          defaultsByName,
+          [&](StringRef name) { return isLocalOverrideReplacement(name); }) ||
       llvm::any_of(overrideOffers, [&](StringRef name) {
-        return !isLocalOverrideReplacement(name) &&
-               isa_and_nonnull<Defined>(find((overrideOfferPrefix + name).str()));
+        return (overrideRecordsLoaded || defaultsByName.contains(name)) &&
+               !isLocalOverrideReplacement(name) &&
+               isa_and_nonnull<Defined>(
+                   find((overrideOfferPrefix + name).str()));
       });
   if (!replaces)
     return false;

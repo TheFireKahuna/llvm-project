@@ -2522,8 +2522,10 @@ public:
   void FinishObjCDirectPreconditionThunk();
 
   /// Emit the entry of an overridable default, which transfers to the
-  /// replacement that slot \p Slot of the executable's override table names.
-  void EmitOverridableDefaultCheck(unsigned Slot);
+  /// replacement that slot \p Slot of the executable's override table names,
+  /// or, without a slot, that the table's block names for the function's
+  /// name.
+  void EmitOverridableDefaultCheck(std::optional<unsigned> Slot);
 
   /// Emit a musttail call for a thunk with a potentially adjusted this pointer.
   void EmitMustTailThunk(GlobalDecl GD, llvm::Value *AdjustedThisPtr,

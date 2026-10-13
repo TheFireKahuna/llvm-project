@@ -1205,6 +1205,8 @@ void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
 
   if (const auto *OD = FD ? FD->getAttr<OverridableDefaultAttr>() : nullptr)
     EmitOverridableDefaultCheck(OD->getSlot());
+  else if (FD && CGM.isOverridableDefaultByName(FD, Fn))
+    EmitOverridableDefaultCheck(std::nullopt);
 
   if (RetTy->isVoidType()) {
     // Void type; nothing to return.
@@ -1377,15 +1379,19 @@ static llvm::LoadInst *loadInvariant(CGBuilderTy &Builder, llvm::Type *Ty,
   return Load;
 }
 
-void CodeGenFunction::EmitOverridableDefaultCheck(unsigned Slot) {
+void CodeGenFunction::EmitOverridableDefaultCheck(
+    std::optional<unsigned> Slot) {
   // The table in the executable's header page, version 1: slot k is
   // {tag u32, rva u32} at 0x40 + 8k for the eight slots on the first cache
   // line and at 0x98 + 8(k - 8) after the header, which holds the magic at
   // 0x80 and the number of slots at 0x86. Each slot's tag differs, so a slot
-  // that another slot's bytes were copied into does not match.
+  // that another slot's bytes were copied into does not match. A default
+  // without a slot is found by name in the table's block at 0x7E0, whose 64
+  // buckets of {key u64, rva u32, info u32} follow at 0x800: its key is the
+  // xxh3_64 hash of its name with bit 0 clear, and its home bucket the hash's
+  // top six bits.
   constexpr uint32_t TableMagic = 0x7B3AC2D5;
   constexpr uint32_t TagBase = 0xC5E1A7F3;
-  uint64_t SlotOffset = Slot < 8 ? 0x40 + 8 * Slot : 0x98 + 8 * (Slot - 8);
   auto AL = ApplyDebugLocation::CreateArtificial(*this);
 
   // The executable is PEB->ImageBaseAddress, and TEB->ProcessEnvironmentBlock
@@ -1408,34 +1414,60 @@ void CodeGenFunction::EmitOverridableDefaultCheck(unsigned Slot) {
   }
   llvm::Value *Base = loadInvariant(Builder, PtrTy, PEB, 0x10, 8);
 
-  // A replaced slot holds its tag; anything else, a foreign image's header
-  // included, reads as not replaced, and the default runs.
   llvm::BasicBlock *Replaced = createBasicBlock("overridable.replaced");
   llvm::BasicBlock *Forward = createBasicBlock("overridable.forward");
   llvm::BasicBlock *Default = createBasicBlock("overridable.default");
-  llvm::Value *Tag = loadInvariant(Builder, Int32Ty, Base, SlotOffset, 8);
-  Builder.CreateCondBr(
-      Builder.CreateICmpEQ(Tag, Builder.getInt32(TagBase ^ Slot)), Replaced,
-      Default, llvm::MDBuilder(getLLVMContext()).createUnlikelyBranchWeights());
+  llvm::MDNode *Unlikely =
+      llvm::MDBuilder(getLLVMContext()).createUnlikelyBranchWeights();
+  llvm::Value *RVA;
+  if (Slot) {
+    // A replaced slot holds its tag; anything else, a foreign image's header
+    // included, reads as not replaced, and the default runs.
+    uint64_t SlotOffset = *Slot < 8 ? 0x40 + 8 * *Slot : 0x98 + 8 * (*Slot - 8);
+    llvm::Value *Tag = loadInvariant(Builder, Int32Ty, Base, SlotOffset, 8);
+    Builder.CreateCondBr(
+        Builder.CreateICmpEQ(Tag, Builder.getInt32(TagBase ^ *Slot)), Replaced,
+        Default, Unlikely);
 
-  // A tag that matches by chance in an image without a table meets no magic.
-  // A slot past the end of the table belongs to a newer runtime's default.
-  EmitBlock(Replaced);
-  llvm::Value *IsTable =
-      Builder.CreateICmpEQ(loadInvariant(Builder, Int32Ty, Base, 0x80, 8),
-                           Builder.getInt32(TableMagic));
-  if (Slot >= 8)
-    IsTable = Builder.CreateAnd(
-        IsTable,
-        Builder.CreateICmpUGT(loadInvariant(Builder, Int16Ty, Base, 0x86, 2),
-                              Builder.getInt16(Slot)));
-  Builder.CreateCondBr(IsTable, Forward, Default);
+    // A tag that matches by chance in an image without a table meets no
+    // magic. A slot past the end of the table belongs to a newer runtime's
+    // default.
+    EmitBlock(Replaced);
+    llvm::Value *IsTable =
+        Builder.CreateICmpEQ(loadInvariant(Builder, Int32Ty, Base, 0x80, 8),
+                             Builder.getInt32(TableMagic));
+    if (*Slot >= 8)
+      IsTable = Builder.CreateAnd(
+          IsTable,
+          Builder.CreateICmpUGT(loadInvariant(Builder, Int16Ty, Base, 0x86, 2),
+                                Builder.getInt16(*Slot)));
+    Builder.CreateCondBr(IsTable, Forward, Default);
+    EmitBlock(Forward);
+    RVA = loadInvariant(Builder, Int32Ty, Base, SlotOffset + 4, 4);
+  } else {
+    // An empty home bucket, as in an image without the block, means the
+    // default is not replaced. A taken one may hold another name, or be the
+    // start of a search the block's own function makes.
+    uint64_t Hash = llvm::xxh3_64bits(CurFn->getName());
+    uint32_t Bucket = Hash >> 58;
+    llvm::Value *Home =
+        loadInvariant(Builder, Int32Ty, Base, 0x800 + 16 * Bucket, 8);
+    Builder.CreateCondBr(Builder.CreateICmpNE(Home, Builder.getInt32(0)),
+                         Replaced, Default, Unlikely);
+    EmitBlock(Replaced);
+    llvm::CallInst *Find = Builder.CreateCall(
+        CGM.getOverrideFindFn(), {Base, Builder.getInt64(Hash & ~uint64_t(1)),
+                                  Builder.getInt32(Bucket)});
+    Find->setDoesNotThrow();
+    RVA = Find;
+    Builder.CreateCondBr(Builder.CreateICmpNE(RVA, Builder.getInt32(0)),
+                         Forward, Default);
+    EmitBlock(Forward);
+  }
 
   // The replacement is reached with this function's arguments and returns to
   // its caller. Its type is not checked: the linker may point the slot at the
   // replacement of the default that this one forwards to, whose type differs.
-  EmitBlock(Forward);
-  llvm::Value *RVA = loadInvariant(Builder, Int32Ty, Base, SlotOffset + 4, 4);
   llvm::Value *Target =
       Builder.CreateInBoundsGEP(Int8Ty, Base, Builder.CreateZExt(RVA, Int64Ty));
   SmallVector<llvm::Value *, 8> Args(llvm::make_pointer_range(CurFn->args()));

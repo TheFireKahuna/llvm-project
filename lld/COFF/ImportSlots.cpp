@@ -315,7 +315,10 @@ struct OverrideCell {
   SectionChunk *chunk;
   uint32_t offset;
   DefinedImportData *imp;
+  // The default's slot in the table, or, for a default replaced by name, its
+  // key in the table's block, which is never zero.
   uint32_t slot;
+  uint64_t key;
   bool readOnly;
   // Whether the slot is in the template of the image's thread-local data.
   bool threadLocal;
@@ -348,14 +351,16 @@ struct TLSTemplate {
 // base plus the slot's RVA, the replacement, into the cell. A forwarded or
 // unreplaced slot, or a foreign executable with no table, leaves the cell the
 // loader's value, the runtime's entry, so a program that replaces nothing
-// writes nothing. The read-only cells are inside the import address table
-// directory, which the loader restores to read-only once it has bound the
-// image; when one of their slots is replaced, the fill makes the range writable
-// with NtProtectVirtualMemory, writes them, and restores the protection the
-// call reported, as the loader's own bracket does. Those calls give it a frame;
-// without read-only cells it is a leaf. It returns 0, or the status of a
-// protection call that failed, which fails the image's start-up, as any nonzero
-// return from the table does.
+// writes nothing. A cell of a default replaced by name takes the address that
+// the anchor's entry with its key names, if any. The read-only cells are
+// inside the import address table directory, which the loader restores to
+// read-only once it has bound the image; when one of their slots is replaced,
+// or for a default replaced by name the table has a block, the fill makes the
+// range writable with NtProtectVirtualMemory, writes them, and restores the
+// protection the call reported, as the loader's own bracket does. Those calls
+// give it a frame; without read-only cells it is a leaf. It returns 0, or the
+// status of a protection call that failed, which fails the image's start-up, as
+// any nonzero return from the table does.
 //
 // The loader binds a DLL's thread-local template before it copies it into the
 // block of any thread, so an unreplaced thread-local cell is right in every
@@ -382,6 +387,15 @@ public:
 
 private:
   size_t getCellSize(const OverrideCell &c) const;
+  // The size of the test of whether a read-only cell is to be written: by its
+  // slot's bit in the mask, or, for a default replaced by name, by whether the
+  // table has a block.
+  size_t getReadOnlyTestSize() const;
+  uint32_t getReadOnlyMask() const;
+  bool hasReadOnlyByName() const {
+    return llvm::any_of(
+        cells, [](const OverrideCell &c) { return c.readOnly && c.key; });
+  }
 
   // The writable cells, then the read-only ones.
   std::vector<OverrideCell> cells;
@@ -392,21 +406,55 @@ private:
   COFFLinkerContext &ctx;
 };
 
-// The table's anchor RVA follows its magic, version and count, and the anchor's
-// mask follows its own.
+// The table's anchor RVA follows its magic, version and count, and its block's
+// RVA the anchor's; the anchor's mask follows its own magic, version and count,
+// and the number of the block's entries the mask.
 static constexpr uint32_t overrideAnchorRVAOffset = overrideHeaderOffset + 8;
+static constexpr uint32_t overrideBlockRVAOffset = overrideHeaderOffset + 12;
+static constexpr uint32_t overrideCountOffset = overrideHeaderOffset + 6;
 static constexpr uint32_t overrideAnchorMaskOffset = 8;
+static constexpr uint32_t overrideAnchorEntriesOffset = 12;
 
 size_t OverrideCellFillChunk::getCellSize(const OverrideCell &c) const {
-  // tbz; ldr; add; adrp; add; str; for a thread-local cell, the store in the
-  // thread's block: adrp; ldr; ldr; ldr; movz; movk; str
+  if (ctx.config.machine == ARM64) {
+    // By name, the search of the anchor's entries: ldr; add; ldr; ldrh; add;
+    // add; movz and three movk; cbz; ldr; cmp; b.eq; add; sub; b; ldr; then
+    // adrp; add; str. By slot: tbz; ldr; add; adrp; add; str. For a
+    // thread-local cell, the store in the thread's block: adrp; ldr; ldr; ldr;
+    // movz; movk; str.
+    return (c.key ? 72 : 12) + 12 + (c.threadLocal ? 28 : 0);
+  }
+  // By name, the search of the anchor's entries: mov eax, [r11 + anchor];
+  // add rax, r11; mov ecx, [rax + entries]; movzx edx, word [r11 + count];
+  // lea rax, [rax + rdx * 8 + 16]; mov rdx, key; test ecx, ecx; jz .next;
+  // cmp [rax], rdx; je .found; add rax, 16; dec ecx; jmp; mov rax, [rax + 8].
+  // By slot: bt; jnc; mov eax, [r11 + rva]; add rax, r11. Then
+  // mov [rip + cell], rax; for a thread-local cell, the store in the thread's
+  // block: mov ecx, [rip + index]; mov rdx, gs:[0x58];
+  // mov rdx, [rdx + rcx * 8]; mov [rdx + offset], rax
+  size_t find =
+      c.key ? 57 : 5 + 2 + (overrideSlotOffset(c.slot) + 4 >= 0x80 ? 7 : 4) + 3;
+  return find + 7 + (c.threadLocal ? 26 : 0);
+}
+
+uint32_t OverrideCellFillChunk::getReadOnlyMask() const {
+  uint32_t mask = 0;
+  for (const OverrideCell &c : cells)
+    if (c.readOnly && !c.key)
+      mask |= 1u << c.slot;
+  return mask;
+}
+
+size_t OverrideCellFillChunk::getReadOnlyTestSize() const {
+  bool byName = hasReadOnlyByName();
+  bool bySlot = getReadOnlyMask() != 0;
+  // movz; movk; tst; b.eq or b.ne; then by name, ldr; cbz.
   if (ctx.config.machine == ARM64)
-    return 24 + (c.threadLocal ? 28 : 0);
-  // bt; jnc; mov eax, [r11 + rva]; add rax, r11; mov [rip + cell], rax; for a
-  // thread-local cell, the store in the thread's block: mov ecx, [rip + index];
-  // mov rdx, gs:[0x58]; mov rdx, [rdx + rcx * 8]; mov [rdx + offset], rax
-  return 5 + 2 + (overrideSlotOffset(c.slot) + 4 >= 0x80 ? 7 : 4) + 3 + 7 +
-         (c.threadLocal ? 26 : 0);
+    return (bySlot ? 16 : 0) + (byName ? 8 : 0);
+  // test r10d, mask; je, or by name jne rel8; then cmp [r11 + block], 0; je.
+  if (!byName)
+    return 13;
+  return (bySlot ? 9 : 0) + 14;
 }
 
 size_t OverrideCellFillChunk::getSize() const {
@@ -420,24 +468,26 @@ size_t OverrideCellFillChunk::getSize() const {
     // first's status check, the reload of the base and mask between them (five)
     // and the branch past the zero status.
     size += 28 + 12 + 8;
-    return protect ? size + 16 + 16 + 56 + 32 + 4 + 20 + 4 : size;
+    return protect ? size + 16 + getReadOnlyTestSize() + 56 + 32 + 4 + 20 + 4
+                   : size;
   }
   // The base, the magic's check, the mask, the zero status and ret; with
   // read-only cells, the frame, the test of their slots, the two protection
   // calls, the first's status check, the reload of the base and mask between
   // them and the jump past the zero status.
   size += 13 + 17 + 12 + 2 + 1;
-  return protect ? size + 8 + 13 + 60 + 38 + 8 + 25 + 2 : size;
+  return protect ? size + 8 + getReadOnlyTestSize() + 60 + 38 + 8 + 25 + 2
+                 : size;
 }
 
 void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
   const uint32_t pageReadWrite = 4;
-  uint32_t roMask = 0;
+  uint32_t roMask = getReadOnlyMask();
+  bool roByName = hasReadOnlyByName();
   uint64_t roStart = UINT64_MAX, roEnd = 0;
   for (const OverrideCell &c : cells) {
     if (!c.readOnly)
       continue;
-    roMask |= 1u << c.slot;
     roStart = std::min(roStart, c.getRVA());
     roEnd = std::max(roEnd, c.getRVA() + ctx.config.wordsize);
   }
@@ -503,13 +553,44 @@ void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
       for (const OverrideCell &c : cells) {
         if (c.readOnly != readOnly)
           continue;
-        // tbz w10, #slot, .next; ldr w17, [x16, #rva]; add x17, x16, x17;
+        uint32_t skip;
+        if (c.key) {
+          // The anchor's entries into x11 and their number into w12:
+          // ldr w11, [x16, #anchor]; add x11, x16, x11; ldr w12, [x11, #n];
+          // ldrh w13, [x16, #count]; add x11, x11, x13, lsl #3;
+          // add x11, x11, #16. The key into x14. Then the search:
+          // .loop: cbz w12, .next; ldr x13, [x11]; cmp x13, x14; b.eq .found;
+          // add x11, x11, #16; sub w12, w12, #1; b .loop;
+          // .found: ldr x17, [x11, #8]
+          put(0xB9400000 | overrideAnchorRVAOffset / 4 << 10 | 16 << 5 | 11);
+          put(0x8B0B020B);
+          put(0xB9400000 | overrideAnchorEntriesOffset / 4 << 10 | 11 << 5 |
+              12);
+          put(0x79400000 | overrideCountOffset / 2 << 10 | 16 << 5 | 13);
+          put(0x8B0D0D6B);
+          put(0x91000000 | overrideAnchorHeaderSize << 10 | 11 << 5 | 11);
+          put(0xD280000E | uint32_t(c.key & 0xFFFF) << 5);
+          for (uint32_t hw = 1; hw != 4; ++hw)
+            put(0xF280000E | hw << 21 |
+                uint32_t(c.key >> (16 * hw) & 0xFFFF) << 5);
+          skip = off;
+          put(0x3400000C);
+          put(0xF940016D);
+          put(0xEB0E01BF);
+          put(0x54000080); // b.eq +4
+          put(0x91000000 | 16 << 10 | 11 << 5 | 11);
+          put(0x5100058C);
+          put(0x14000000 | (-6 & 0x3FFFFFF));
+          put(0xF9400571);
+        } else {
+          // tbz w10, #slot, .next; ldr w17, [x16, #rva]; add x17, x16, x17
+          skip = off;
+          put(0x36000000 | c.slot << 19 | 10);
+          put(0xB9400000 | (overrideSlotOffset(c.slot) + 4) / 4 << 10 |
+              16 << 5 | 17);
+          put(0x8B110211);
+        }
         // adrp x9, cell; add x9, x9, :lo12:cell; str x17, [x9]
-        uint32_t skip = off;
-        put(0x36000000 | c.slot << 19 | 10);
-        put(0xB9400000 | (overrideSlotOffset(c.slot) + 4) / 4 << 10 | 16 << 5 |
-            17);
-        put(0x8B110211);
         address(9, c.getRVA());
         put(0xF9000131);
         if (c.threadLocal) {
@@ -543,9 +624,20 @@ void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
     loadMask();
     writeCells(false);
     if (protect) {
-      movImm(9, roMask);
-      put(0x6A09015F);            // tst w10, w9
-      branch(toZero, 0x54000000); // b.eq .zero
+      // A read-only cell of a default replaced by name is written whenever
+      // the table has a block.
+      if (roMask) {
+        movImm(9, roMask);
+        put(0x6A09015F); // tst w10, w9
+        if (roByName)
+          put(0x54000061); // b.ne +3
+        else
+          branch(toZero, 0x54000000); // b.eq .zero
+      }
+      if (roByName) {
+        put(0xB9400000 | overrideBlockRVAOffset / 4 << 10 | 16 << 5 | 9);
+        branch(toZero, 0x34000009); // cbz w9, .zero
+      }
       // NtProtectVirtualMemory(-1, &base, &size, PAGE_READWRITE, &old), with
       // base, size and old at sp + 16, 24 and 32.
       address(0, roStart);
@@ -581,6 +673,7 @@ void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
       put(0xA8C37BFD); // ldp x29, x30, [sp], #48
     }
     put(0xD65F03C0); // ret
+    assert(off == getSize());
     return;
   }
 
@@ -616,18 +709,44 @@ void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
     for (const OverrideCell &c : cells) {
       if (c.readOnly != readOnly)
         continue;
-      put({0x41, 0x0F, 0xBA, 0xE2, uint8_t(c.slot)}); // bt r10d, slot
-      put({0x73, 0});                                 // jnc .next
-      uint32_t skip = off - 1;
-      // mov eax, dword ptr [r11 + slot offset + 4]   the slot's RVA
-      uint32_t rvaOff = overrideSlotOffset(c.slot) + 4;
-      if (rvaOff >= 0x80) {
-        put({0x41, 0x8B, 0x83, 0, 0, 0, 0});
-        write32le(buf + off - 4, rvaOff);
+      uint32_t skip;
+      if (c.key) {
+        put({0x41, 0x8B, 0x83, 0, 0, 0, 0}); // mov eax, [r11 + anchor]
+        write32le(buf + off - 4, overrideAnchorRVAOffset);
+        put({0x4C, 0x01, 0xD8}); // add rax, r11
+        // mov ecx, [rax + entries]   the number of the block's entries
+        put({0x8B, 0x48, uint8_t(overrideAnchorEntriesOffset)});
+        put({0x41, 0x0F, 0xB7, 0x93, 0, 0, 0, 0}); // movzx edx, [r11 + count]
+        write32le(buf + off - 4, overrideCountOffset);
+        // lea rax, [rax + rdx * 8 + 16]   the anchor's first entry
+        put({0x48, 0x8D, 0x44, 0xD0, uint8_t(overrideAnchorHeaderSize)});
+        put({0x48, 0xBA, 0, 0, 0, 0, 0, 0, 0, 0}); // mov rdx, key
+        write64le(buf + off - 8, c.key);
+        uint32_t loop = off;
+        put({0x85, 0xC9}); // test ecx, ecx
+        put({0x74, 0});    // jz .next
+        skip = off - 1;
+        put({0x48, 0x39, 0x10});       // cmp [rax], rdx
+        put({0x74, 8});                // je .found
+        put({0x48, 0x83, 0xC0, 0x10}); // add rax, 16
+        put({0xFF, 0xC9});             // dec ecx
+        put({0xEB, 0});                // jmp .loop
+        buf[off - 1] = uint8_t(loop - off);
+        put({0x48, 0x8B, 0x40, 0x08}); // .found: mov rax, [rax + 8]
       } else {
-        put({0x41, 0x8B, 0x43, uint8_t(rvaOff)});
+        put({0x41, 0x0F, 0xBA, 0xE2, uint8_t(c.slot)}); // bt r10d, slot
+        put({0x73, 0});                                 // jnc .next
+        skip = off - 1;
+        // mov eax, dword ptr [r11 + slot offset + 4]   the slot's RVA
+        uint32_t rvaOff = overrideSlotOffset(c.slot) + 4;
+        if (rvaOff >= 0x80) {
+          put({0x41, 0x8B, 0x83, 0, 0, 0, 0});
+          write32le(buf + off - 4, rvaOff);
+        } else {
+          put({0x41, 0x8B, 0x43, uint8_t(rvaOff)});
+        }
+        put({0x4C, 0x01, 0xD8}); // add rax, r11   base + rva
       }
-      put({0x4C, 0x01, 0xD8});             // add rax, r11   base + rva
       put({0x48, 0x89, 0x05, 0, 0, 0, 0}); // mov [rip + cell], rax
       disp(c.getRVA());
       if (c.threadLocal) {
@@ -664,9 +783,21 @@ void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
   loadMask();
   writeCells(false);
   if (protect) {
-    put({0x41, 0xF7, 0xC2, 0, 0, 0, 0}); // test r10d, read-only cells' slots
-    write32le(buf + off - 4, roMask);
-    jump(toZero, 0x84);                  // je .zero
+    // A read-only cell of a default replaced by name is written whenever the
+    // table has a block.
+    if (roMask || !roByName) {
+      put({0x41, 0xF7, 0xC2, 0, 0, 0, 0}); // test r10d, read-only cells' slots
+      write32le(buf + off - 4, roMask);
+      if (roByName)
+        put({0x75, 14}); // jne past the block's test
+      else
+        jump(toZero, 0x84); // je .zero
+    }
+    if (roByName) {
+      put({0x41, 0x83, 0xBB, 0, 0, 0, 0, 0}); // cmp dword [r11 + block], 0
+      write32le(buf + off - 5, overrideBlockRVAOffset);
+      jump(toZero, 0x84); // je .zero
+    }
     put({0x48, 0x8D, 0x05, 0, 0, 0, 0}); // lea rax, [rip + base]
     disp(roStart);
     put({0x48, 0x89, 0x44, 0x24, 0x30});             // mov [rsp + 0x30], rax
@@ -691,6 +822,7 @@ void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
   if (protect)
     put({0x48, 0x83, 0xC4, 0x48}); // add rsp, 0x48
   put({0xC3});                     // ret
+  assert(off == getSize());
 }
 
 // The copy of an executable's thread-local import slots into the main thread's
@@ -1935,11 +2067,15 @@ void ImportSlotContents::createOverrideCellFill() {
       (config.machine != AMD64 && config.machine != ARM64))
     return;
   std::vector<OverrideCell> cells;
+  ctx.symtab.readDefaultsByName();
   auto add = [&](SectionChunk *sc, uint32_t offset, DefinedImportData *imp,
                  bool readOnly, bool threadLocal) {
     StringRef name = imp->getName().drop_front(strlen("__imp_"));
     if (std::optional<uint32_t> k = ctx.symtab.overrideImportSlot(name))
-      cells.push_back({sc, offset, imp, *k, readOnly, threadLocal});
+      cells.push_back({sc, offset, imp, *k, 0, readOnly, threadLocal});
+    else if (ctx.symtab.defaultsByName.contains(name))
+      cells.push_back(
+          {sc, offset, imp, 0, overrideNameKey(name), readOnly, threadLocal});
   };
   // A slot in a chunk with residual words is in a section that stays writable
   // until the residual fill, which runs after this one, seals it.
@@ -1968,7 +2104,7 @@ void ImportSlotContents::createOverrideCellFill() {
   // The anchor's mask, which the fill reads, has a bit for each of the first
   // 32 slots.
   for (const OverrideCell &c : cells)
-    if (c.slot >= 32)
+    if (!c.key && c.slot >= 32)
       return fail("that the override table's mask cannot name");
   if (!isa_and_nonnull<Defined>(ctx.symtab.findUnderscore("__xi_a")))
     return fail("that the image has no C initializer table (__xi_a) to fill");
