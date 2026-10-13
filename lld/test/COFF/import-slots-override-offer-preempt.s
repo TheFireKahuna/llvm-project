@@ -4,12 +4,14 @@
 ## program's choice, which the loader binds and the DLL's fill writes from the
 ## executable's table. A definition the program does not select is preempted
 ## in the DLL itself, as ELF preempts a shared object's definition. The DLL's
-## calls through the import pointer keep it, a word of its static data naming
-## the definition becomes an in-place slot of the import, and the DLL still
-## exports its body under the offer name. Without the runtime's import library,
-## or for a definition it does not export, the DLL keeps its definition to
-## itself and its calls are direct. The executable's calls of its replacement
-## through the import pointer are direct.
+## calls of the definition reach the import's thunk, also from the unit that
+## defines it, whose object keeps every relocation to a function and describes
+## the sites that are not branches; its address-takes, a described lea, load
+## the import's entry; a word of its static data naming the definition becomes
+## an in-place slot of the import; and the DLL still exports its body under the
+## offer name. Without the runtime's import library, or for a definition it
+## does not export, the DLL keeps its definition to itself, and so does the
+## executable.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium rt.s -o rt.obj
@@ -44,19 +46,19 @@
 # OFFER:      Name: __ovr_offer$_Znwy
 # OFFER-NEXT: RVA: 0x[[#%X,BODY:]]
 # OFFER:      <.text>:
-# OFFER-NEXT: ff 15 {{.*}} callq *{{.*}}(%rip) # 0x[[#%x,0x180000000+ENTRY]]
+# OFFER-NEXT: e8 {{.*}} callq 0x[[#%x,THUNK:]]
 # OFFER-NEXT: 48 8b 05 {{.*}} movq {{.*}}(%rip), %rax # 0x[[#%x,0x180000000+ENTRY]]
 # OFFER-NEXT: c3 retq
 # OFFER:      [[#%x,0x180000000+BODY]] <__ovr_offer$_Znwy>:
 # OFFER:      movq %rax, {{.*}}(%rip) # 0x[[#%x,0x180000000+SLOT]]
+# OFFER:      [[#THUNK]]: ff 25 {{.*}} jmpq *{{.*}}(%rip) # 0x[[#%x,0x180000000+ENTRY]]
 
 ## Without the runtime's import library there is no import to reach, and the
-## definition stays the DLL's own: its calls through the import pointer are
-## direct.
+## definition stays the DLL's own.
 # RUN: lld-link -import-slots -dll -noentry offer.obj crt.obj -out:own.dll
 # RUN: llvm-objdump -d own.dll | FileCheck --check-prefix=OWN %s
 # OWN:      <.text>:
-# OWN-NEXT: 67 e8 {{.*}} addr32 callq 0x[[#%x,OWNBODY:]]
+# OWN-NEXT: e8 {{.*}} callq 0x[[#%x,OWNBODY:]]
 # OWN-NEXT: 48 8d 05 {{.*}} leaq {{.*}}(%rip), %rax # 0x[[#OWNBODY]]
 
 ## A definition the DLL does not export makes no offer, and is its own.
@@ -64,7 +66,7 @@
 # RUN:   records.lib ntdll.lib -out:hidden.dll
 # RUN: llvm-objdump -d hidden.dll | FileCheck --check-prefix=OWN %s
 
-## The executable's replacement is the program's: its calls are direct.
+## The executable's replacement is the program's.
 # RUN: lld-link -import-slots -entry:dllmain -subsystem:console hidden.obj \
 # RUN:   crt.obj check.obj rt.lib records.lib ntdll.lib -out:main.exe
 # RUN: llvm-objdump -d main.exe | FileCheck --check-prefix=OWN %s
@@ -109,9 +111,10 @@ __ovr_check:
         .text
         .globl dllmain
 dllmain:
-        callq *__imp__Znwy(%rip)
-        movq __imp__Znwy(%rip), %rax
+        callq _Znwy
+        leaq _Znwy(%rip), %rax
         retq
+        .def _Znwy; .scl 2; .type 32; .endef
         .globl _Znwy
 _Znwy:
         xorl %eax, %eax
@@ -127,9 +130,10 @@ gnew:
         .text
         .globl dllmain
 dllmain:
-        callq *__imp__Znwy(%rip)
-        movq __imp__Znwy(%rip), %rax
+        callq _Znwy
+        leaq _Znwy(%rip), %rax
         retq
+        .def _Znwy; .scl 2; .type 32; .endef
         .globl _Znwy
 _Znwy:
         xorl %eax, %eax

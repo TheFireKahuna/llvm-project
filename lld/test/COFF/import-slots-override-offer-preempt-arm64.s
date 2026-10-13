@@ -84,9 +84,9 @@ dllmain:
         adrp x0, __imp__Znwy
         ldr x0, [x0, :lo12:__imp__Znwy]
         b _Znwy
-## The compiler gives a replacement a section of its own, so that its unit's
-## branches to it keep their relocations.
-        .section .text,"xr",one_only,_Znwy
+## A function, whose references keep their relocations, its own unit's
+## branches too.
+        .def _Znwy; .scl 2; .type 32; .endef
         .globl _Znwy
 _Znwy:
         mov x0, #0

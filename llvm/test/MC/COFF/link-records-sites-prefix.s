@@ -8,7 +8,7 @@
 // One group of kind 2 and 10 bytes: .text's symbol (index 0) with 6 sites,
 // each of form 0 (other).
 // CHECK:      Contents of section .llvm_link_records:
-// CHECK-NEXT: 0000 4c4c5243 0103020a 00064070 70800170
+// CHECK-NEXT: 0000 4c4c5243 0107020a 00064070 70800170
 // CHECK-NEXT: 0010 8001
 // CHECK-EMPTY:
 

@@ -1057,7 +1057,9 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
     // A site is described when its target may resolve to something other
     // than a definition the object fixes: a symbol it leaves undefined or
     // defines as weak, or one in a COMDAT that another section can replace.
-    // A reference within one section always reaches that section.
+    // A reference within one section always reaches that section, unless the
+    // target is an external function, which another image's definition may
+    // preempt where the object says so.
     if (OWriter.hasLinkRecords() &&
         (Sec->Header.Characteristics & COFF::IMAGE_SCN_CNT_CODE)) {
       const COFFSection *TargetSec = Reloc.Symb->Section;
@@ -1065,6 +1067,12 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
           TargetSec ? TargetSec != Sec && (TargetSec->Header.Characteristics &
                                            COFF::IMAGE_SCN_LNK_COMDAT)
                     : Reloc.Symb->Data.SectionNumber != COFF::IMAGE_SYM_ABSOLUTE;
+      if (TargetSec &&
+          (OWriter.LinkRecordCapabilities & COFF::LinkRecordsFunctionSites) &&
+          Reloc.Symb->Data.StorageClass == COFF::IMAGE_SYM_CLASS_EXTERNAL &&
+          (Reloc.Symb->Data.Type >> COFF::SCT_COMPLEX_TYPE_SHIFT) ==
+              COFF::IMAGE_SYM_DTYPE_FUNCTION)
+        Preemptible = true;
       if (Preemptible)
         if (std::optional<unsigned> Form =
                 OWriter.TargetObjectWriter->getLinkSiteForm(Fixup,

@@ -298,6 +298,11 @@ public:
   bool describesSites() const {
     return linkRecords && linkRecords->describesSites;
   }
+  // Whether the object describes its sites that refer to an external function
+  // it defines, so that a REL32 relocation to one without a site is a branch.
+  bool describesFunctionSites() const {
+    return linkRecords && linkRecords->describesFunctionSites;
+  }
 
   // True if the object's KCFI lists name each imported function by its import
   // address table entry alone, so that the linker lists the function's import
@@ -443,6 +448,7 @@ private:
   struct LinkRecords {
     const coff_section *sec;
     bool describesSites = false;
+    bool describesFunctionSites = false;
     bool listsKCFIImports = false;
     bool protectsDelayIat = false;
     bool listsCallOnly = false;

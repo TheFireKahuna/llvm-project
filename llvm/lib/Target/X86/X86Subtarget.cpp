@@ -145,16 +145,14 @@ unsigned char X86Subtarget::classifyGlobalReference(const GlobalValue *GV,
   // from the GOT, even where calls to it are direct, so that code sees the
   // address static data sees. The linker replaces the load with the direct
   // address when the function is in the image, or with zero when an
-  // extern_weak function is absent. A definition the module exports, and one
-  // of an overridable default, is defined here yet has the same import-form
-  // address, as ELF's -fPIC form loads a preemptible function's address from
-  // the GOT: a definition in another image may preempt it, and the default's
-  // one replacement is reached through its import pointer in every image.
-  // Unless something preempts it, the linker makes the load direct.
+  // extern_weak function is absent. A definition of an overridable default is
+  // defined here yet has the same import-form address: its one replacement is
+  // reached through its import pointer in every image, while calls to it stay
+  // direct.
   if (TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment()) {
     const auto *F = dyn_cast_or_null<Function>(GV);
     if (F && !F->isIntrinsic() && F->hasDefaultVisibility() &&
-        (F->isDeclarationForLinker() || F->hasDLLExportStorageClass() ||
+        (F->isDeclarationForLinker() ||
          F->hasFnAttribute("overridable-default")))
       return X86II::MO_DLLIMPORT;
   }
@@ -225,16 +223,11 @@ X86Subtarget::classifyGlobalFunctionReference(const GlobalValue *GV,
   // declaration created by an optimization or a lowering carries neither, and
   // would otherwise reach a linker thunk: a call and a jump where the table
   // takes one call. Where the function is in the image, the linker makes the
-  // call direct. A replacement of an overridable default is called through
-  // its import pointer too: the executable's link makes the call direct, and a
-  // DLL's keeps it, so that a DLL whose replacement the program does not
-  // select reaches the program's choice, as ELF preempts its definition.
+  // call direct.
   bool NoPLT =
       TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment() && M.getRtLibUseGOT();
   if (NoPLT && F && !F->isDSOLocal() && !F->isIntrinsic() &&
-      (F->isDeclarationForLinker() ||
-       (F->hasFnAttribute("overridable-default") && !F->isWeakForLinker())) &&
-      !F->hasExternalWeakLinkage())
+      F->isDeclarationForLinker() && !F->hasExternalWeakLinkage())
     return X86II::MO_DLLIMPORT;
 
   if (TM.shouldAssumeDSOLocal(GV))

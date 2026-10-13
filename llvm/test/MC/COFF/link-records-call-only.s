@@ -9,11 +9,11 @@
 // RUN: llvm-mc -triple x86_64-pc-windows-msvc -filetype=obj %s -o %t.msvc.o
 // RUN: llvm-objdump -h %t.msvc.o | FileCheck --check-prefix=NONE %s
 
-// "LLRC", version 1, the x86-64 sites and call-only capabilities (3), then a
-// group of kind 4 and 3 bytes: .xdata's symbol (index 6), one reference, at
-// offset 8.
+// "LLRC", version 1, the x86-64 sites, call-only and function sites
+// capabilities (7), then a group of kind 4 and 3 bytes: .xdata's symbol (index
+// 6), one reference, at offset 8.
 // X86:      Contents of section .llvm_link_records:
-// X86-NEXT: 0000 4c4c5243 01030403 060108
+// X86-NEXT: 0000 4c4c5243 01070403 060108
 // RELOC:    0000000000000008 IMAGE_REL_AMD64_ADDR32NB __gxx_personality_seh0
 // NONE-NOT: .llvm_link_records
 

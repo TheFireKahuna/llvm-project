@@ -670,6 +670,8 @@ void ObjFile::readLinkRecords() {
                                 getMachineType() == AMD64 && !symtab.isEC();
   if (!linkRecords->describesSites)
     linkRecords->sites.clear();
+  linkRecords->describesFunctionSites =
+      linkRecords->describesSites && (capabilities & LinkRecordsFunctionSites);
   linkRecords->listsCallOnly =
       (capabilities & LinkRecordsCallOnly) && !symtab.isEC();
   if (!linkRecords->listsCallOnly)
