@@ -2999,8 +2999,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
         // Under -import-slots, an executable that replaces an overridable
         // default, itself or by selecting a linked DLL's offer, loads the C++
         // runtime's records member for its slots, then the runtime's start-up
-        // validation of the table it writes.
+        // validation of the table it writes. A DLL that offers a default loads
+        // the default's import, through which its own references go.
         loadedImports |= symtab.loadOverrideOffers();
+        loadedImports |= symtab.loadOverrideOfferImports();
         loadedImports |= symtab.loadOverrideRecords();
         loadedImports |= symtab.nameOverrideCheck();
       });

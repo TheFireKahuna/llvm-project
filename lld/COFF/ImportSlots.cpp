@@ -1263,8 +1263,13 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
     // The address of a function that a DLL offers is the DLL's instance:
     // a described address-take loads it from the import's entry and a word of
     // static data takes it in place. Calls, and any other reference from
-    // outside the function's own sections, keep the image's copy.
-    if (DefinedImportData *offer = ctx.symtab.offeredFunctions.lookup(s)) {
+    // outside the function's own sections, keep the image's copy. The address
+    // of a definition this DLL offers as an overridable default is the
+    // program's choice, which the default's import holds, alike.
+    DefinedImportData *offer = ctx.symtab.offeredFunctions.lookup(s);
+    if (!offer)
+      offer = ctx.symtab.preemptedOffers.lookup(s);
+    if (offer) {
       if (code && arm64 && rel.Type == IMAGE_REL_ARM64_PAGEBASE_REL21 &&
           i + 1 != e && isArm64AddressPair(sc, rel, relocs[i + 1])) {
         scan.addressSites.push_back({sc, rel.VirtualAddress, offer});

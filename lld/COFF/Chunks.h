@@ -321,6 +321,12 @@ public:
 
   // The in-place import slot that rel fills, or null.
   const ImportSlot *getImportSlot(const coff_relocation &rel) const;
+
+  // The symbol that rel, a relocation against sym, branches to: on ARM64, the
+  // import thunk of the default that a definition this DLL offers stands in
+  // for, through which the DLL's own calls reach the program's choice; else
+  // sym itself.
+  Defined *getBranchTarget(const coff_relocation &rel, Defined *sym) const;
   void applyRelX64(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
                    uint64_t p, uint64_t imageBase) const;
   void applyRelX86(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,

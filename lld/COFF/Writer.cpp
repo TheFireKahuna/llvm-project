@@ -555,6 +555,7 @@ bool Writer::createThunks(OutputSection *os, int margin) {
       Defined *sym = dyn_cast_or_null<Defined>(relocTarget);
       if (!sym)
         continue;
+      sym = sc->getBranchTarget(rel, sym);
 
       uint64_t s = sym->getRVA();
 
@@ -677,6 +678,7 @@ bool Writer::verifyRanges(const std::vector<Chunk *> chunks) {
       Defined *sym = dyn_cast_or_null<Defined>(relocTarget);
       if (!sym)
         continue;
+      sym = sc->getBranchTarget(rel, sym);
 
       uint64_t p = sc->getRVA() + rel.VirtualAddress;
       uint64_t s = sym->getRVA();

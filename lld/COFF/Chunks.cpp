@@ -507,10 +507,23 @@ Defined *SectionChunk::getImportSiteTarget(const coff_relocation &rel) const {
   // instance, are reached through the import's entry.
   if (DefinedImportData *offer = file->symtab.offeredFunctions.lookup(s))
     return offer;
+  if (DefinedImportData *offer = file->symtab.preemptedOffers.lookup(s))
+    return offer;
   auto *data = cast<DefinedImportData>(s);
   if (data->isRuntimePseudoReloc)
     return data->file->impSym;
   return cast<Defined>(data->file->thunkSym);
+}
+
+Defined *SectionChunk::getBranchTarget(const coff_relocation &rel,
+                                       Defined *sym) const {
+  if (rel.Type != IMAGE_REL_ARM64_BRANCH26 || getArch() != Triple::aarch64 ||
+      file->symtab.preemptedOffers.empty())
+    return sym;
+  if (DefinedImportData *imp = file->symtab.preemptedOffers.lookup(sym))
+    if (auto *thunk = dyn_cast_or_null<DefinedImportThunk>(imp->file->thunkSym))
+      return thunk;
+  return sym;
 }
 
 const ImportSlot *
@@ -538,6 +551,8 @@ void SectionChunk::applyRelocation(uint8_t *off,
 
   auto *sym = dyn_cast_or_null<Defined>(file->getSymbol(rel.SymbolTableIndex));
   uint16_t type = rel.Type;
+  if (sym)
+    sym = getBranchTarget(rel, sym);
 
   // The address of an imported function that code takes becomes a load of
   // its import address table entry, and a load of a delay-loaded import's
