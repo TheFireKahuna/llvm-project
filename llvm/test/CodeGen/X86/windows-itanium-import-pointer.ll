@@ -62,7 +62,7 @@ define i32 @getStrongVar() {
 
 define i32 @getTLSVar() {
 ; CHECK-LABEL: getTLSVar:
-; CHECK:         movl tlsvar@SECREL32({{%r[a-z0-9]+}}), %eax
+; CHECK:         movq __imp_tlsvar$tls(%rip), {{%r[a-z0-9]+}}
   %v = load i32, ptr @tlsvar
   ret i32 %v
 }

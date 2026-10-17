@@ -20203,6 +20203,50 @@ X86TargetLowering::LowerGlobalTLSAddress(SDValue Op, SelectionDAG &DAG) const {
     SDLoc dl(GA);
     SDValue Chain = DAG.getEntryNode();
 
+    // On Windows Itanium and NT-POSIX, as under ELF's dynamic models, a
+    // thread-local variable that another image may define is reached through
+    // that image: the import pointer of <name>$tls holds the address of a
+    // record of the address of the image's TLS index and the variable's offset
+    // in its template, all fixed before any code of the importer runs. The
+    // linker makes the pointer that of a record of its own when the variable
+    // is in the image.
+    if (Subtarget.is64Bit() &&
+        Subtarget.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+        !getTargetMachine().shouldAssumeDSOLocal(GV)) {
+      MachineFunction &MF = DAG.getMachineFunction();
+      SDValue Record = DAG.getNode(
+          X86ISD::WrapperRIP, dl, PtrVT,
+          DAG.getTargetExternalSymbol(
+              MF.createExternalSymbolName(
+                  (getTargetMachine().getSymbol(GV)->getName() + "$tls").str()),
+              PtrVT, X86II::MO_DLLIMPORT));
+      Record =
+          DAG.getLoad(PtrVT, dl, Chain, Record, MachinePointerInfo::getGOT(MF));
+      auto Invariant =
+          MachineMemOperand::MOInvariant | MachineMemOperand::MODereferenceable;
+      SDValue IndexAddr = DAG.getLoad(
+          PtrVT, dl, Chain, Record, MachinePointerInfo(), Align(8), Invariant);
+      SDValue Index =
+          DAG.getExtLoad(ISD::ZEXTLOAD, dl, PtrVT, Chain, IndexAddr,
+                         MachinePointerInfo(), MVT::i32, Align(4), Invariant);
+      SDValue Offset = DAG.getExtLoad(
+          ISD::ZEXTLOAD, dl, PtrVT, Chain,
+          DAG.getMemBasePlusOffset(Record, TypeSize::getFixed(8), dl),
+          MachinePointerInfo(), MVT::i32, Align(8), Invariant);
+      SDValue Block =
+          DAG.getLoad(PtrVT, dl, Chain,
+                      DAG.getNode(ISD::ADD, dl, PtrVT,
+                                  getWindowsTLSArray(DAG, dl, Subtarget),
+                                  DAG.getNode(ISD::SHL, dl, PtrVT, Index,
+                                              DAG.getConstant(3, dl, MVT::i8))),
+                      MachinePointerInfo());
+      SDValue Addr = DAG.getNode(ISD::ADD, dl, PtrVT, Block, Offset);
+      if (GA->getOffset())
+        Addr = DAG.getMemBasePlusOffset(
+            Addr, TypeSize::getFixed(GA->getOffset()), dl);
+      return Addr;
+    }
+
     // Get the Thread Pointer, the thread's TLS array.
     SDValue ThreadPointer = getWindowsTLSArray(DAG, dl, Subtarget);
 

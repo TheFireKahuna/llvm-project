@@ -235,11 +235,12 @@ bool TargetMachine::shouldAssumeDSOLocal(const GlobalValue *GV) const {
     // not mark DSO local may be provided by another image: a declaration, or a
     // definition that another image's copy may stand in for. It is reached
     // through its import pointer, which the linker replaces with the direct
-    // address when the variable is in the image. A native thread-local
-    // variable cannot be imported.
+    // address when the variable is in the image. A thread-local variable is
+    // reached through the record of its image's TLS index and its offset, on
+    // the targets that have one.
     if (TT.isWindowsItaniumOrNTPOSIXEnvironment()) {
       const auto *Var = dyn_cast<GlobalVariable>(GV);
-      if (Var && !Var->isThreadLocal() &&
+      if (Var && (!Var->isThreadLocal() || TT.isX86_64() || TT.isAArch64()) &&
           (Var->isDeclarationForLinker() || Var->isWeakForLinker()))
         return false;
     }
