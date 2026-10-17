@@ -15,14 +15,21 @@
 // RUN: %{cxx} -DHOST %s %t/lto/a.dll.lib %t/lto/b.dll.lib %t/lto/c.dll.lib \
 // RUN:   -o %t/lto/host.exe
 // RUN: %run %t/lto/host.exe %t/lto/plugin.dll | FileCheck %s
+// RUN: %{cxx} -flto -DHOST %s %t/a.dll.lib %t/b.dll.lib %t/c.dll.lib \
+// RUN:   -o %t/lto_host.exe
+// RUN: %run %t/lto_host.exe %t/plugin.dll | FileCheck %s
+// RUN: %{cxx} -flto -DHOST %s %t/lto/a.dll.lib %t/lto/b.dll.lib \
+// RUN:   %t/lto/c.dll.lib -o %t/lto/lto_host.exe
+// RUN: %run %t/lto/lto_host.exe %t/lto/plugin.dll | FileCheck %s
 
 // A vague thread-local variable has one instance on each thread, as on ELF:
 // the executable takes a.dll's offer of each, along with its guard; b.dll
 // and c.dll, true siblings, each keep one preemptible, and the executable's
 // link picks b.dll's, which a plugin binds to when it loads. Each is
 // initialized once on each thread, by whichever image's code reaches it first
-// there, and each thread has instances of its own, also where the DLLs are
-// built with LTO.
+// there, and each thread has instances of its own, also where the DLLs or
+// the executable, which calls the plugin through GetProcAddress, are built
+// with LTO.
 
 // CHECK: main: offered 1 inits 1 fixed 1 local 1 member 1
 // CHECK: main: siblings 1

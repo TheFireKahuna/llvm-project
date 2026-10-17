@@ -28,6 +28,13 @@
 // RUN:   -o %t/lto/host.exe
 // RUN: %run %t/lto/host.exe %t/lto/p.dll %t/lto/k.dll | \
 // RUN:   FileCheck --check-prefix=HOST %s
+// RUN: %{cxx} -flto -DHOST %s %t/a.dll.lib %t/b.dll.lib %t/c.dll.lib \
+// RUN:   -o %t/lto_host.exe
+// RUN: %run %t/lto_host.exe %t/p.dll %t/k.dll | FileCheck --check-prefix=HOST %s
+// RUN: %{cxx} -flto -DHOST %s %t/lto/a.dll.lib %t/lto/b.dll.lib \
+// RUN:   %t/lto/c.dll.lib -o %t/lto/lto_host.exe
+// RUN: %run %t/lto/lto_host.exe %t/lto/p.dll %t/lto/k.dll | \
+// RUN:   FileCheck --check-prefix=HOST %s
 
 // An inline variable has one instance in the program, as on ELF. a.dll and
 // b.dll, true siblings, each keep it preemptible, and the executable's link
@@ -41,7 +48,9 @@
 // plugin's instance, which a plugin loaded later does not see, as under
 // RTLD_LOCAL. Of two delay-loaded DLLs that keep it, the first to load
 // keeps its instance and the second binds to it. DLLs built with LTO keep
-// their references to the instance in import form, and behave alike.
+// their references to the instance in import form, and behave alike, as does
+// an executable built with LTO, which calls the plugins through
+// GetProcAddress.
 
 // HOST: same 1 value 3
 // HOST: fixed same 1

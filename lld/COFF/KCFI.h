@@ -65,6 +65,11 @@ struct KCFIState {
   // The imports whose address those lists name by its import address table
   // entry, which the open routines read, each with its list's section.
   std::vector<std::pair<DefinedImportData *, StringRef>> listedImports;
+  // The KCFI types of which a function in another image may be a valid
+  // target: those that an object opens, and those that the linker opens for
+  // an import, or dynamically other than only for foreign code in the image
+  // that references no import.
+  llvm::DenseSet<uint32_t> outsideTypes;
   // The routines that openKCFITypes made dynamic only because foreign code in
   // the image, which references no import, reaches them, each with the static
   // scanner of its kind.

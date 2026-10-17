@@ -72,6 +72,25 @@
 ; FORMS-NEXT:   cmpq %r10, %rax
 ; FORMS-NEXT:   jb
 
+;; A function in another image carries none of the image's tags, so the miss
+;; of a type of which it may be a valid target keeps the thunk for the type:
+;; one that an object opens, here dynamically, and one that the linker opens
+;; for an import. One that the linker opens only for a definition in the image
+;; without a prefix is narrowed, to the routine the linker makes for it.
+; RUN: llvm-as open.ll -o open.bc
+; RUN: llvm-mc -filetype=obj -triple=x86_64-windows-msvc plain.s -o plain.obj
+; RUN: llvm-dlltool -m i386:x86-64 -d lib.def -D lib.dll -l lib.lib
+; RUN: lld-link main.bc open.bc guard.obj plain.obj lib.lib -guard:cf \
+; RUN:   -entry:main -include:open -debug:symtab -opt:ref -out:open.exe
+; RUN: llvm-objdump -t open.exe | FileCheck %s --check-prefix=OPEN
+
+; OPEN-DAG: 0x[[#%.8x,DYNAMIC:]] __llvm_kcfi_dispatch_33333333
+; OPEN-DAG: 0x[[#DYNAMIC]] __llvm_kcfi_member_miss_33333333
+; OPEN-DAG: 0x[[#%.8x,IMPORTED:]] __llvm_kcfi_dispatch_44444444
+; OPEN-DAG: 0x[[#IMPORTED]] __llvm_kcfi_member_miss_44444444
+; OPEN-DAG: 0x[[#%.8x,PLAIN:]] __llvm_kcfi_mismatch_55555555
+; OPEN-DAG: 0x[[#PLAIN]] __llvm_kcfi_member_miss_55555555
+
 ;--- main.ll
 target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-unknown-windows-itanium"
@@ -162,3 +181,80 @@ table:
 
         .section .gfids$y,"dr"
         .symidx other
+;--- open.ll
+target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-unknown-windows-itanium"
+
+define void @call_dynamic(ptr %p) noinline !kcfi_type !10 {
+  %t = call i1 @llvm.type.test(ptr %p, metadata !"typeid.dynamic")
+  br i1 %t, label %cont, label %trap
+trap:
+  call void @llvm.ubsantrap(i8 64)
+  unreachable
+cont:
+  call void %p() [ "kcfi"(i32 858993459) ]
+  ret void
+}
+
+define void @call_imported(ptr %p) noinline !kcfi_type !10 {
+  %t = call i1 @llvm.type.test(ptr %p, metadata !"typeid.imported")
+  br i1 %t, label %cont, label %trap
+trap:
+  call void @llvm.ubsantrap(i8 64)
+  unreachable
+cont:
+  call void %p() [ "kcfi"(i32 1145324612) ]
+  ret void
+}
+
+define void @call_plain(ptr %p) noinline !kcfi_type !10 {
+  %t = call i1 @llvm.type.test(ptr %p, metadata !"typeid.plain")
+  br i1 %t, label %cont, label %trap
+trap:
+  call void @llvm.ubsantrap(i8 64)
+  unreachable
+cont:
+  call void %p() [ "kcfi"(i32 1431655765) ]
+  ret void
+}
+
+define void @open(ptr %p) !kcfi_type !10 {
+  call void @call_dynamic(ptr %p)
+  call void @call_imported(ptr %p)
+  call void @call_plain(ptr %p)
+  ret void
+}
+
+declare i1 @llvm.type.test(ptr, metadata)
+declare void @llvm.ubsantrap(i8)
+
+!10 = !{i32 572662306}
+!kcfi.dynamic = !{!20}
+!20 = !{i32 858993459}
+!llvm.module.flags = !{!1, !2, !3}
+!1 = !{i32 4, !"kcfi", i32 1}
+!2 = !{i32 4, !"function-type-prefix", i32 119298566}
+!3 = !{i32 2, !"cfguard", i32 2}
+
+;--- plain.s
+        .globl @feat.00
+@feat.00 = 0x800
+
+        .text
+        .globl plain
+plain:
+        retq
+
+        .data
+        .quad imported
+        .quad plain
+
+        .weak __kcfi_typeid_imported
+__kcfi_typeid_imported = 0x44444444
+        .weak __kcfi_typeid_plain
+__kcfi_typeid_plain = 0x55555555
+
+;--- lib.def
+LIBRARY lib.dll
+EXPORTS
+imported

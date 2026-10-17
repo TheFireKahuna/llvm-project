@@ -836,6 +836,8 @@ void openKCFITypes(SymbolTable &symtab) {
       ctx.config.gcroot.push_back(d);
     }
   };
+  // The types that only foreign code in the image opened dynamically.
+  SmallVector<uint32_t, 0> localTypes;
   for (auto &kv : openings) {
     uint32_t type = kv.first;
     Opening &opening = kv.second;
@@ -866,6 +868,7 @@ void openKCFITypes(SymbolTable &symtab) {
           continue;
         replace = true;
       } else if (Symbol *scanner = compiledScanner(m, k)) {
+        ctx.kcfi.outsideTypes.insert(type);
         replace = opening.dynamic && scanner->getName() == k.staticScanner;
       } else {
         continue;
@@ -891,7 +894,18 @@ void openKCFITypes(SymbolTable &symtab) {
         if (auto *s = dyn_cast_or_null<Defined>(symtab.find(k.staticScanner)))
           ctx.kcfi.localRoutines.push_back({routine, s});
     }
-    if (!opened || opening.entries.empty())
+    if (!opened)
+      continue;
+    // A function in another image may be a valid target of a type listed for
+    // an import, and of one open dynamically, unless only foreign code in the
+    // image that references no import opened it.
+    bool imported = llvm::any_of(opening.entries, [](auto entry) {
+      return isa<DefinedImportData>(entry.first);
+    });
+    if ((imported || opening.dynamic) &&
+        ctx.kcfi.outsideTypes.insert(type).second && !imported && opening.local)
+      localTypes.push_back(type);
+    if (opening.entries.empty())
       continue;
 
     if (!head)
@@ -954,6 +968,10 @@ void openKCFITypes(SymbolTable &symtab) {
   }
   for (auto [routine, staticScanner] : ctx.kcfi.localRoutines)
     keep(staticScanner);
+  // Foreign code that references no import hands ours only functions in the
+  // image.
+  for (uint32_t type : localTypes)
+    ctx.kcfi.outsideTypes.erase(type);
 }
 
 // The import library of a DLL with a code range holds the record of the range
@@ -1499,9 +1517,14 @@ void KCFIContents::boundMismatches(OutputSection *textSec,
 // membership tags, continues on a miss into the type's ordinary thunk through
 // a weak symbol: a function of the type that LTO did not compile carries no
 // tag, but may be a valid target. In a sealed image the guard function table
-// names every function a pointer can reach, so where no unsealed prefix of
-// the type is in an object LTO did not generate, a target that misses the tag
-// is no member, and the miss goes straight to the type's mismatch routine.
+// names every function of the image a pointer can reach, so where no unsealed
+// prefix of the type is in an object LTO did not generate, a target in the
+// image that misses the tag is no member, and the miss goes straight to the
+// type's mismatch routine. A function in another image carries none of the
+// image's tags, and where it may be a valid target of the type, it passes
+// only through the ordinary thunk: the mismatch routine, which a target of
+// the type reaches nowhere else, fails fast on a target with a prefix. Every
+// target of a local member thunk is in the image.
 void KCFIContents::narrowMemberMisses() {
   bool isX64 = ctx.config.machine == AMD64;
   if (!prefixes.isSealed() || (!isX64 && ctx.config.machine != ARM64))
@@ -1512,14 +1535,26 @@ void KCFIContents::narrowMemberMisses() {
       nativeTypes.insert(
           read32le(p.chunk->getContents().data() + p.offset + p.size - 4));
 
+  // A type that an object opens may also have the object's mismatch routine
+  // where the linker found no fact of it.
+  auto *trap = dyn_cast_or_null<DefinedRegular>(ctx.symtab.find(KCFITrap));
+  auto isOutsideType = [&](uint32_t type, Defined *mismatch) {
+    if (ctx.kcfi.outsideTypes.contains(type))
+      return true;
+    auto *r = dyn_cast<DefinedRegular>(mismatch);
+    return r && (!trap || r->getChunk() != trap->getChunk() ||
+                 r->getValue() != trap->getValue());
+  };
+
   struct Kind {
     StringRef miss, mismatch;
+    bool local;
   };
   static const Kind kinds[] = {
-      {KCFIMemberMissPrefix, KCFIMismatchPrefix},
-      {KCFIMemberCheckMissPrefix, KCFICheckMismatchPrefix},
-      {KCFIMemberLocalMissPrefix, KCFIMismatchPrefix},
-      {KCFIMemberLocalCheckMissPrefix, KCFICheckMismatchPrefix}};
+      {KCFIMemberMissPrefix, KCFIMismatchPrefix, false},
+      {KCFIMemberCheckMissPrefix, KCFICheckMismatchPrefix, false},
+      {KCFIMemberLocalMissPrefix, KCFIMismatchPrefix, true},
+      {KCFIMemberLocalCheckMissPrefix, KCFICheckMismatchPrefix, true}};
   ctx.symtab.forEachSymbol([&](Symbol *s) {
     auto *d = dyn_cast<Defined>(s);
     if (!d || !d->isLive())
@@ -1534,7 +1569,7 @@ void KCFIContents::narrowMemberMisses() {
         return;
       auto *mismatch =
           dyn_cast_or_null<Defined>(ctx.symtab.find((k.mismatch + hex).str()));
-      if (!mismatch)
+      if (!mismatch || (!k.local && isOutsideType(type, mismatch)))
         return;
       Chunk *c;
       uint32_t offset = 0;
