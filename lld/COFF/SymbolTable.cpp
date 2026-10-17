@@ -691,6 +691,32 @@ bool SymbolTable::loadInteriorImports() {
         }
       }
   }
+  // A DLL's cells of its own preemptible vague entities: the pointers its
+  // import-form references read, in read-only data, and read-only words of
+  // its static data.
+  if (!sealed && canSeal && ctx.config.dll && ctx.config.importSlots) {
+    sealed = llvm::any_of(localImportChunks, [](Chunk *c) {
+      return !cast<LocalImportChunk>(c)->vagueEntity.empty();
+    });
+    for (ObjFile *file : ctx.objFileInstances) {
+      if (&file->symtab != this || sealed)
+        continue;
+      for (Chunk *c : file->getChunks()) {
+        auto *sc = dyn_cast_or_null<SectionChunk>(c);
+        if (!sc || sealed ||
+            (sc->header->Characteristics &
+             (IMAGE_SCN_MEM_DISCARDABLE | IMAGE_SCN_CNT_CODE |
+              IMAGE_SCN_MEM_WRITE)))
+          continue;
+        for (const coff_relocation &rel : sc->getRelocs())
+          if (Symbol *s = file->getSymbol(rel.SymbolTableIndex);
+              s && sc->isAddressWord(rel) && isPreemptibleVagueEntity(s)) {
+            sealed = true;
+            break;
+          }
+      }
+    }
+  }
   if (!sealed && canSeal && ctx.config.dll) {
     readOverrideRecords();
     sealed = llvm::any_of(ctx.importFileInstances, [&](ImportFile *f) {
@@ -1189,6 +1215,40 @@ void SymbolTable::addOffers() {
       offer(f, /*data=*/false, imp);
 }
 
+bool SymbolTable::isPreemptibleVagueEntity(Symbol *s) {
+  if (!preemptibleVagueEntities) {
+    preemptibleVagueEntities.emplace();
+    Configuration &config = ctx.config;
+    using B = Configuration::Bsymbolic;
+    // The cells are written by the image's fill, which its C initializer
+    // table runs.
+    if (!config.importSlots || !config.dll || ctx.hybridSymtab || isEC() ||
+        config.bsymbolic == B::All ||
+        !isa_and_nonnull<Defined>(findUnderscore("__xi_a")))
+      return false;
+    // Asked before liveness is decided, which a cell's reference keeps.
+    SmallVector<SectionChunk *, 4> chunks;
+    SmallVector<DefinedRegular *, 4> members;
+    for (Symbol *sym : weakData) {
+      auto *d = dyn_cast<DefinedRegular>(sym);
+      if (!d || !isa<ObjFile>(d->getFile()) || !isDefaultVisibility(d))
+        continue;
+      collectWeakDataGroup(d, chunks, members, /*liveOnly=*/false);
+      // Thread-local data has a record of its own instead.
+      for (DefinedRegular *m : members)
+        if ((m->getChunk()->getOutputCharacteristics() & IMAGE_SCN_MEM_WRITE) &&
+            !m->getChunk()->getSectionName().starts_with(".tls"))
+          preemptibleVagueEntities->insert(m);
+    }
+    if (config.bsymbolic != B::Functions)
+      for (Symbol *sym : weakFunctions)
+        if (auto *d = dyn_cast<DefinedRegular>(sym);
+            d && !offeredFunctions.contains(d))
+          preemptibleVagueEntities->insert(d);
+  }
+  return preemptibleVagueEntities->contains(s);
+}
+
 void SymbolTable::bindOfferedFunctions() {
   if (!ctx.config.importSlots || ctx.hybridSymtab || isEC() ||
       weakFunctions.empty())
@@ -1375,7 +1435,8 @@ void SymbolTable::resolveOverridableReplacements() {
   if (!ctx.config.importSlots || ctx.config.dll || ctx.hybridSymtab || isEC())
     return;
   readOverrideRecords();
-  if (overridables.empty() && overrideOffers.empty() && defaultsByName.empty())
+  if (overridables.empty() && overrideOffers.empty() &&
+      defaultsByName.empty() && vagueOwners.empty())
     return;
   // An overridable default this executable replaces is one an input defines
   // with a strong definition, the body B, superseding the runtime's weak
@@ -1434,7 +1495,84 @@ void SymbolTable::resolveOverridableReplacements() {
   buildOverrideSlots();
 }
 
+bool SymbolTable::bindVagueSiblings() {
+  Configuration &config = ctx.config;
+  if (!config.importSlots || config.dll || ctx.hybridSymtab || isEC() ||
+      !vagueOwners.empty())
+    return false;
+  // What the executable keeps: its default-visibility vague data, with the
+  // other external symbols of its group and its guard, and functions whose
+  // addresses are significant, that no DLL it imports from offers, a
+  // delay-loaded one's offer not being taken.
+  DenseSet<StringRef> kept;
+  auto keeps = [&](DefinedRegular *d) {
+    if (!d || !isa<ObjFile>(d->getFile()) || !isDefaultVisibility(d))
+      return false;
+    auto *imp = dyn_cast_or_null<DefinedImportData>(impSymbol(d->getName()));
+    return !imp || ignoresOffersOf(imp);
+  };
+  SmallVector<SectionChunk *, 4> chunks;
+  SmallVector<DefinedRegular *, 4> members;
+  for (Symbol *sym : weakData)
+    if (auto *d = dyn_cast<DefinedRegular>(sym); keeps(d)) {
+      collectWeakDataGroup(d, chunks, members, /*liveOnly=*/false);
+      for (DefinedRegular *m : members)
+        kept.insert(m->getName());
+    }
+  for (Symbol *sym : weakFunctions)
+    if (auto *d = dyn_cast<DefinedRegular>(sym); keeps(d))
+      kept.insert(d->getName());
+
+  bool added = false;
+  for (auto &[name, dll] : chooseVagueOwners(ctx, kept)) {
+    StringRef entity = saver().save(name);
+    if (dll.empty()) {
+      auto *d = dyn_cast_or_null<Defined>(find(entity));
+      if (!d)
+        continue;
+      auto *pointer = make<LocalImportChunk>(ctx, d);
+      localImportChunks.push_back(pointer);
+      vagueOwners[entity] = make<DefinedSynthetic>(
+          saver().save("__vague_owner$" + entity), pointer);
+      continue;
+    }
+    // The import of the owner's instance, unless the executable imports the
+    // entity from a DLL already, which is then the one it reaches.
+    StringRef imp = saver().save("__imp_" + entity);
+    vagueOwners[entity] = nullptr;
+    if (isa_and_nonnull<DefinedImportData>(find(imp)))
+      continue;
+    Log(ctx) << "Importing " << entity << " from " << dll
+             << ", which owns it for the program";
+    ctx.driver.addFile(make<ImportFile>(
+        ctx, makeShortImport(machine, saver().save(dll), entity, IMPORT_DATA,
+                             IMPORT_NAME)));
+    added = true;
+  }
+  if (vagueOwners.empty())
+    return false;
+  // The table's validation, as for a replacement.
+  if (!overrideAnchor) {
+    overrideAnchor = make<OverrideAnchorChunk>(ctx, *this);
+    addSynthetic("__ovr_anchor", overrideAnchor);
+    addGCRoot(mangle("__ovr_check"));
+  }
+  for (auto &[entity, word] : vagueOwners)
+    if (!word)
+      addGCRoot(saver().save("__imp_" + entity));
+  return true;
+}
+
 void SymbolTable::buildOverrideSlots() {
+  // The words of the vague entities' owners, once their imports are read.
+  for (auto &[entity, word] : vagueOwners) {
+    if (!word)
+      word = dyn_cast_or_null<DefinedImportData>(
+          find(saver().save("__imp_" + entity)));
+    if (word)
+      overrideReplacementsByName.emplace_back(entity, word);
+  }
+  llvm::sort(overrideReplacementsByName, llvm::less_first());
   if (overrideReplacements.empty() && overrideReplacementsByName.empty())
     return;
   auto root = [&](Defined *d) {
@@ -1458,7 +1596,7 @@ void SymbolTable::buildOverrideSlots() {
       continue;
     }
     root(body);
-    OverrideByName entry{body, name, key, -1};
+    OverrideByName entry{body, name, key, -1, vagueOwners.contains(name)};
     uint32_t home = overrideHomeBucket(key);
     for (uint32_t i = 0; i != overrideBucketCount; ++i) {
       uint32_t b = (home + i) % overrideBucketCount;
@@ -1817,6 +1955,10 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
         if (ctx.config.importSlots && ctx.config.dll &&
             (overridablesByName.contains(impName) || isOwnSlotDefault(impName)))
           cast<DefinedLocalImport>(sym)->getChunk()->overrideDefault = impName;
+        // Its own address of a vague entity another image's instance may
+        // preempt reads a cell too.
+        else if (isPreemptibleVagueEntity(imp))
+          cast<DefinedLocalImport>(sym)->getChunk()->vagueEntity = impName;
         // Under -import-slots, a pointer to the zero default of an absent
         // weak X imports nothing that the image defines.
         auto *abs = dyn_cast<DefinedAbsolute>(imp);

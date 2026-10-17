@@ -2160,6 +2160,25 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   if (args.hasArg(OPT_force, OPT_force_unresolved))
     config->forceUnresolved = true;
   config->unresolvedHostImports = args.hasArg(OPT_unresolved_host_imports);
+  if (auto *arg = args.getLastArg(OPT_Bsymbolic, OPT_Bsymbolic_functions,
+                                  OPT_Bsymbolic_non_weak,
+                                  OPT_Bsymbolic_non_weak_functions)) {
+    using B = Configuration::Bsymbolic;
+    switch (arg->getOption().getID()) {
+    case OPT_Bsymbolic:
+      config->bsymbolic = B::All;
+      break;
+    case OPT_Bsymbolic_functions:
+      config->bsymbolic = B::Functions;
+      break;
+    case OPT_Bsymbolic_non_weak:
+      config->bsymbolic = B::NonWeak;
+      break;
+    default:
+      config->bsymbolic = B::NonWeakFunctions;
+      break;
+    }
+  }
 
   // Handle /force or /force:multiple
   if (args.hasArg(OPT_force, OPT_force_multiple))
@@ -3336,6 +3355,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
 
   if (config->unresolvedHostImports && config->dll && config->importSlots &&
       ctx.symtab.importUnresolvedFromHost())
+    run();
+  // An executable picks the owner of each vague entity two images it loads
+  // keep preemptible, and imports its instance.
+  if (ctx.symtab.bindVagueSiblings())
     run();
 
   // Resolve remaining undefined symbols and warn about imported locals.

@@ -189,6 +189,28 @@ public:
   // is decided.
   void bindOfferedFunctions();
 
+  // Under -import-slots in a DLL, whether s is one of the vague entities the
+  // DLL offers whose instance another image may preempt at run time, as an ELF
+  // shared object's own references to its default-visibility data go through
+  // its GOT: mutable data, with the other external symbols of its group and
+  // its guard, and functions whose addresses are significant. The DLL's own
+  // references reach such an entity through cells its fill writes from the
+  // executable's table, unless -Bsymbolic keeps them local. Immutable data is
+  // read locally, and calls stay direct.
+  bool isPreemptibleVagueEntity(Symbol *s);
+  std::optional<llvm::DenseSet<Symbol *>> preemptibleVagueEntities;
+
+  // Under -import-slots in an executable, for each vague entity that two
+  // images of its load closure keep preemptible, or one of them and the
+  // executable, imports the instance of its owner, which chooseVagueOwners
+  // gives, or makes a pointer to its own, and names the entity in the
+  // override table's block, whose entry names that import's entry or pointer:
+  // a word holding the instance's address, which every DLL's fill copies into
+  // its cells. Returns whether it added anything to the link.
+  bool bindVagueSiblings();
+  // The words that the block's entries for vague entities name, by name.
+  llvm::MapVector<StringRef, Defined *> vagueOwners;
+
   // Under -import-slots, in a link that writes an import library, exports
   // each definition with default visibility in a COMDAT that the image keeps
   // and another image may observe, as an ELF shared object's dynamic symbol
@@ -317,6 +339,8 @@ public:
     StringRef name;
     uint64_t key;
     int32_t bucket;
+    // Whether target is a word that holds the address, as for a vague entity.
+    bool indirect = false;
   };
   std::vector<OverrideByName> overrideBlock;
 

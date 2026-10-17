@@ -262,6 +262,27 @@ enum LinkRecordKind : uint64_t {
   // the default this one is specified as calling, or zero, and flags bit 0
   // set when that default takes this one's arguments without the second.
   LinkRecordOverrideSlots = 24,
+
+  // The vague entities that the images of a LinkRecordVagueEntities group in
+  // the same member keep preemptible: their own references reach them through
+  // cells that another image's instance may preempt at run time, so the link
+  // of an executable picks one owner for each that two of them keep, rather
+  // than reporting the pair:
+  //
+  //   payload := (image:ULEB128 count:ULEB128 name{count})*
+  //
+  // image is the index of an image of that group.
+  LinkRecordPreemptibleEntities = 26,
+
+  // The DLLs that the images of a LinkRecordVagueEntities group in the same
+  // member delay-load, which that group lists among its images but not among
+  // their imports, since a delay-load is no binding path: a delay-loaded DLL
+  // joins its importer's scope at run time, after every image loaded eagerly:
+  //
+  //   payload := (image:ULEB128 count:ULEB128 index:ULEB128{count})*
+  //
+  // image and index are indices of images of that group.
+  LinkRecordDelayLoads = 28,
 };
 
 // The role of a definition that a LinkRecordBinding group lists.

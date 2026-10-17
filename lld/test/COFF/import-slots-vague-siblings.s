@@ -1,0 +1,151 @@
+# REQUIRES: x86
+## Under -import-slots, a DLL keeps the mutable vague data it offers
+## preemptible, as an ELF shared object reaches its own default-visibility data
+## through its GOT: its import-form references and the words of its static
+## data that hold the data's address read cells, which its fill writes from
+## the word that the executable's override table names for the entity, and its
+## import library's record lists the entity as preemptible. An executable that
+## sees two images keep an entity preemptible, true siblings that no import
+## path joins, picks its owner in breadth-first load order, itself first,
+## a delay-loaded DLL after every eagerly loaded one, imports the owner's
+## instance, and names the entity in its table's block with a word that holds
+## the instance's address. -Bsymbolic keeps a DLL's references local, and the
+## pair is then reported as before.
+
+# RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium a.s -o a.obj
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium b.s -o b.obj
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium crt.s -o crt.obj
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium main.s -o main.obj
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium keep.s -o keep.obj
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium check.s -o check.obj
+# RUN: lld-link -def:ntdll.def -out:ntdll.lib -machine:x64
+
+# RUN: lld-link -import-slots -dll -noentry a.obj crt.obj ntdll.lib -out:a.dll
+# RUN: lld-link -import-slots -dll -noentry b.obj crt.obj ntdll.lib -out:b.dll
+# RUN: llvm-objdump -d --print-imm-hex b.dll | FileCheck --check-prefix=CELL %s
+## b's own reference reads its cell, which its fill writes from the word the
+## executable's block names for the entity's key.
+# CELL:      <fb>:
+# CELL-NEXT: movq {{.*}}(%rip), %rax # 0x[[#%x,CELLADDR:]]
+# CELL:      movabsq $0x{{[0-9a-f]+}}, %rdx
+# CELL:      movq 0x8(%rax), %rax
+# CELL-NEXT: movq (%rax), %rax
+# CELL:      movq %rax, {{.*}}(%rip) # 0x[[#CELLADDR]]
+
+## The executable picks a.dll, first in link order, and imports its instance.
+# RUN: lld-link -import-slots -entry:main -subsystem:console main.obj \
+# RUN:   check.obj a.lib b.lib -out:m.exe -verbose 2>&1 | \
+# RUN:   FileCheck --check-prefix=OWNER %s
+# RUN: llvm-readobj --coff-imports m.exe | FileCheck --check-prefix=IMPORT %s
+# RUN: od -A x -t x4 -j 0x80 -N 4 m.exe | FileCheck --check-prefix=TABLE %s
+# OWNER:  Importing _ZN1n1gE from a.dll, which owns it for the program
+# IMPORT:      Name: a.dll
+# IMPORT:      Symbol: _ZN1n1gE
+# TABLE: 000080 7b3ac2d5
+
+## The executable owns an entity it keeps, here as it takes no delay-loaded
+## DLL's offer, and imports none.
+# RUN: lld-link -import-slots -entry:main -subsystem:console main.obj \
+# RUN:   keep.obj check.obj a.lib b.lib -delayload:a.dll -delayload:b.dll \
+# RUN:   -out:k.exe
+# RUN: llvm-readobj --coff-imports k.exe | FileCheck --check-prefix=KEEP %s
+# RUN: od -A x -t x4 -j 0x80 -N 4 k.exe | FileCheck --check-prefix=TABLE %s
+# KEEP-NOT: Symbol: _ZN1n1gE
+
+## A delay-loaded DLL owns nothing that an eagerly loaded image keeps.
+# RUN: lld-link -import-slots -entry:main -subsystem:console main.obj \
+# RUN:   check.obj b.lib a.lib -delayload:b.dll -out:d.exe -verbose 2>&1 | \
+# RUN:   FileCheck --check-prefix=OWNER %s
+
+## A DLL linked -Bsymbolic keeps its copy, and the pair is reported.
+# RUN: mkdir bsym
+# RUN: lld-link -import-slots -dll -noentry b.obj crt.obj ntdll.lib \
+# RUN:   -out:bsym/b.dll -Bsymbolic
+# RUN: llvm-objdump -d bsym/b.dll | FileCheck --check-prefix=LOCAL %s
+# LOCAL:      <fb>:
+# LOCAL-NEXT: leaq
+# RUN: not lld-link -import-slots -entry:main -subsystem:console main.obj \
+# RUN:   a.lib bsym/b.lib -out:e.exe 2>&1 | FileCheck --check-prefix=ERROR %s
+# ERROR: error: _ZN1n1gE is defined by both a.dll and b.dll, neither of which imports from the other
+
+#--- a.s
+  .linkbindings
+  .section .data,"dw",discard,_ZN1n1gE
+  .globl _ZN1n1gE
+_ZN1n1gE:
+  .linkbinding _ZN1n1gE, default
+  .long 1
+
+  .text
+  .globl fa
+fa:
+  movq __imp__ZN1n1gE(%rip), %rax
+  retq
+  .section .drectve,"yni"
+  .ascii " -export:fa"
+
+#--- b.s
+  .linkbindings
+  .section .data,"dw",discard,_ZN1n1gE
+  .globl _ZN1n1gE
+_ZN1n1gE:
+  .linkbinding _ZN1n1gE, default
+  .long 1
+
+  .text
+  .globl fb
+fb:
+  movq __imp__ZN1n1gE(%rip), %rax
+  retq
+  .section .drectve,"yni"
+  .ascii " -export:fb"
+
+#--- keep.s
+  .linkbindings
+  .section .data,"dw",discard,_ZN1n1gE
+  .globl _ZN1n1gE
+_ZN1n1gE:
+  .linkbinding _ZN1n1gE, default
+  .long 1
+
+  .text
+  .globl keep
+keep:
+  movq __imp__ZN1n1gE(%rip), %rax
+  retq
+
+#--- crt.s
+  .section .CRT$XIA,"dr"
+  .globl __xi_a
+__xi_a:
+  .quad 0
+  .section .CRT$XIZ,"dr"
+  .globl __xi_z
+__xi_z:
+  .quad 0
+
+#--- check.s
+## Stands in for the C runtime's validation of the table, which the link
+## names, and its delay-load helper.
+  .data
+  .globl __ovr_check
+__ovr_check:
+  .quad 0
+  .text
+  .globl __delayLoadHelper2
+__delayLoadHelper2:
+  retq
+
+#--- main.s
+  .text
+  .globl main
+main:
+  callq *__imp_fa(%rip)
+  callq *__imp_fb(%rip)
+  retq
+
+#--- ntdll.def
+LIBRARY ntdll.dll
+EXPORTS
+  NtProtectVirtualMemory

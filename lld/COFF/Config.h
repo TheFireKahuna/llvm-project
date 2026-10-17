@@ -153,6 +153,12 @@ struct Configuration {
   bool forceUnresolved = false;
   // Import what nothing defines from the executable that loads the DLL.
   bool unresolvedHostImports = false;
+  // Under -import-slots, which of a DLL's own references to the vague entities
+  // it offers bind locally rather than through cells another image's instance
+  // may preempt, as ld.lld's -Bsymbolic family: none, functions, all, or the
+  // non-weak ones (functions only), which leaves vague entities preemptible.
+  enum class Bsymbolic { None, Functions, NonWeakFunctions, NonWeak, All };
+  Bsymbolic bsymbolic = Bsymbolic::None;
   bool debug = false;
   bool includeDwarfChunks = false;
   bool debugGHashes = false;

@@ -268,6 +268,18 @@ def version_script : P<"version-script",
 def include_optional : Joined<["/", "-", "/?", "-?"], "includeoptional:">,
     HelpText<"Add symbol as undefined, but allow it to remain undefined">;
 def import_slots : F<"import-slots">;
+def Bsymbolic : F<"Bsymbolic">,
+    HelpText<"Under -import-slots, bind a DLL's references to the vague "
+             "entities it offers locally">;
+def Bsymbolic_functions : F<"Bsymbolic-functions">,
+    HelpText<"Under -import-slots, bind a DLL's references to the vague "
+             "functions it offers locally">;
+def Bsymbolic_non_weak : F<"Bsymbolic-non-weak">,
+    HelpText<"Under -import-slots, bind a DLL's references to the non-weak "
+             "symbols it offers locally">;
+def Bsymbolic_non_weak_functions : F<"Bsymbolic-non-weak-functions">,
+    HelpText<"Under -import-slots, bind a DLL's references to the non-weak "
+             "functions it offers locally">;
 def unresolved_host_imports : F<"unresolved-host-imports">,
     HelpText<"Under -import-slots, import what nothing defines from the "
              "executable that loads the DLL">;

@@ -96,7 +96,7 @@ static bool isZeroPointer(DefinedLocalImport *li) {
 static bool canBypass(ObjFile *file, const coff_relocation &rel) {
   auto *li = dyn_cast_or_null<DefinedLocalImport>(
       file->getSymbol(rel.SymbolTableIndex));
-  return li && li->getChunk()->overrideDefault.empty() &&
+  return li && !li->getChunk()->isCell() &&
          (!isa<DefinedAbsolute>(li->getTarget()) || isZeroPointer(li));
 }
 
@@ -535,8 +535,7 @@ void bindLocalImports(SymbolTable &symtab) {
     for (auto [li, rewritable] : seen) {
       auto *abs = dyn_cast<DefinedAbsolute>(li->getTarget());
       if (!li->getName().starts_with(".refptr.") &&
-          !(abs && abs->getVA() == 0) &&
-          li->getChunk()->overrideDefault.empty())
+          !(abs && abs->getVA() == 0) && !li->getChunk()->isCell())
         refs.push_back({file, li, rewritable});
     }
   }

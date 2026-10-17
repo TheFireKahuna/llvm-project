@@ -797,6 +797,17 @@ public:
   // pointer reaches the symbol directly.
   StringRef overrideDefault;
 
+  // The name of the vague entity whose address the pointer holds, if another
+  // image's instance may preempt it, which the image's fill overwrites with
+  // that instance's address when the executable's table names one.
+  StringRef vagueEntity;
+
+  // Whether the pointer is a cell the image's fill may overwrite, which no
+  // reference bypasses.
+  bool isCell() const {
+    return !overrideDefault.empty() || !vagueEntity.empty();
+  }
+
   // The pointer that a compiler made for the symbol, such as .refptr.X, if
   // this one binds it. That pointer, where it is, stays the pointer whenever
   // the image needs one, so that every name of it gives one address, and this

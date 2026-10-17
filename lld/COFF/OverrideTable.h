@@ -41,15 +41,17 @@ inline constexpr uint32_t overrideTableBase = 0x40;
 inline constexpr uint32_t overrideHeaderOffset = 0x80;
 
 // The table's block, at a fixed offset in the header page, which holds the
-// defaults with no fixed slot that the executable replaces by name. Its header
-// holds the magic u32, the version and the number of entries u16, the overflow
-// list's RVA and length u32, and two reserved u64; 64 buckets of
-// {key u64, rva u32, info u32} follow. A name's key is its xxh3_64 hash with
-// bit 0 clear, and its home bucket the hash's top six bits. An entry takes the
-// first free bucket from its home bucket, so a free bucket ends a search; only
-// once every bucket is taken do entries go to the overflow list, which lies in
-// the anchor's section and has their layout. The header page must then reach
-// past the buckets.
+// defaults with no fixed slot that the executable replaces by name, and the
+// vague entities whose owner it picks. Its header holds the magic u32, the
+// version and the number of entries u16, the overflow list's RVA and length
+// u32, and two reserved u64; 64 buckets of {key u64, rva u32, info u32}
+// follow, info's bit 0 set where rva names a word that holds the address, as
+// for a vague entity. A name's key is its xxh3_64 hash with bit 0 clear, and
+// its home bucket the hash's top six bits. An entry takes the first free
+// bucket from its home bucket, so a free bucket ends a search; only once every
+// bucket is taken do entries go to the overflow list, which lies in the
+// anchor's section and has their layout. The header page must then reach past
+// the buckets.
 inline constexpr uint32_t overrideBlockOffset = 0x7E0;
 inline constexpr uint32_t overrideBucketsOffset = 0x800;
 inline constexpr uint32_t overrideBucketCount = 64;

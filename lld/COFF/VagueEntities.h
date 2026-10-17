@@ -10,6 +10,7 @@
 #define LLD_COFF_VAGUE_ENTITIES_H
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Object/ArchiveWriter.h"
 #include "llvm/Support/MemoryBufferRef.h"
@@ -31,6 +32,16 @@ inline constexpr llvm::StringLiteral vagueRecordPrefix = "__llvm_vague$";
 // no import path joins, or an image that keeps its copy while importing from
 // one that defines the entity.
 void checkVagueEntities(COFFLinkerContext &ctx, llvm::StringRef imageName);
+
+// Under -import-slots, the vague entities that an executable's link sees two
+// images keep preemptible, among the images of its load closure, whose records
+// the link reads, and the executable itself, which keeps those in kept: each
+// with its owner's DLL name, or an empty name for the executable, which owns
+// what it keeps, and otherwise the first to keep it in breadth-first load
+// order, as ELF's global scope gives.
+std::vector<std::pair<std::string, std::string>>
+chooseVagueOwners(COFFLinkerContext &ctx,
+                  const llvm::DenseSet<llvm::StringRef> &kept);
 
 // The overridable defaults that the DLLs whose records records, the record
 // members of import libraries, describe defining: by name, with no fixed slot

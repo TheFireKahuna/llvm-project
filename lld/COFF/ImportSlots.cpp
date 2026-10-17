@@ -495,6 +495,10 @@ struct OverrideCell {
   bool readOnly;
   // Whether the slot is in the template of the image's thread-local data.
   bool threadLocal;
+  // Whether the block's entry for the key names a word that holds the
+  // address, as for a vague entity, whose instance the executable imports,
+  // rather than the address itself.
+  bool indirect = false;
 
   uint64_t getRVA() const {
     return chunk ? chunk->getRVA() + offset : imp->getRVA();
@@ -595,7 +599,8 @@ size_t OverrideCellFillChunk::getCellSize(const OverrideCell &c) const {
     // adrp; add; str. By slot: tbz; ldr; add; adrp; add; str. For a
     // thread-local cell, the store in the thread's block: adrp; ldr; ldr; ldr;
     // movz; movk; str.
-    return (c.key ? 72 : 12) + 12 + (c.threadLocal ? 28 : 0);
+    return (c.key ? 72 : 12) + (c.indirect ? 4 : 0) + 12 +
+           (c.threadLocal ? 28 : 0);
   }
   // By name, the search of the anchor's entries: mov eax, [r11 + anchor];
   // add rax, r11; mov ecx, [rax + entries]; movzx edx, word [r11 + count];
@@ -607,7 +612,7 @@ size_t OverrideCellFillChunk::getCellSize(const OverrideCell &c) const {
   // mov rdx, [rdx + rcx * 8]; mov [rdx + offset], rax
   size_t find =
       c.key ? 57 : 5 + 2 + (overrideSlotOffset(c.slot) + 4 >= 0x80 ? 7 : 4) + 3;
-  return find + 7 + (c.threadLocal ? 26 : 0);
+  return find + (c.indirect ? 3 : 0) + 7 + (c.threadLocal ? 26 : 0);
 }
 
 uint32_t OverrideCellFillChunk::getReadOnlyMask() const {
@@ -755,6 +760,8 @@ void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
           put(0x5100058C);
           put(0x14000000 | (-6 & 0x3FFFFFF));
           put(0xF9400571);
+          if (c.indirect)
+            put(0xF9400231); // ldr x17, [x17]
         } else {
           // tbz w10, #slot, .next; ldr w17, [x16, #rva]; add x17, x16, x17
           skip = off;
@@ -906,6 +913,8 @@ void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
         put({0xEB, 0});                // jmp .loop
         buf[off - 1] = uint8_t(loop - off);
         put({0x48, 0x8B, 0x40, 0x08}); // .found: mov rax, [rax + 8]
+        if (c.indirect)
+          put({0x48, 0x8B, 0x00}); // mov rax, [rax]
       } else {
         put({0x41, 0x0F, 0xBA, 0xE2, uint8_t(c.slot)}); // bt r10d, slot
         put({0x73, 0});                                 // jnc .next
@@ -2411,10 +2420,22 @@ void ImportSlotContents::createOverrideCellFill() {
       cells.push_back({c, offset, nullptr, 0, overrideNameKey(name), readOnly,
                        threadLocal});
   };
+  // As on ELF, where a shared object's own references to its preemptible
+  // data go through its GOT, its references to a vague entity another image's
+  // instance may preempt read a cell: the pointer its import-form references
+  // read, and the words of its static data that hold its address, keyed by
+  // the entity's name. The executable's block names a word holding the
+  // instance's address.
+  auto addVague = [&](Defined *d, Chunk *c, uint32_t offset, bool readOnly) {
+    cells.push_back({c, offset, nullptr, 0, overrideNameKey(d->getName()),
+                     readOnly, false, /*indirect=*/true});
+  };
   for (Chunk *c : ctx.symtab.localImportChunks) {
     auto *li = cast<LocalImportChunk>(c);
     if (!li->overrideDefault.empty())
       addOwn(li->overrideDefault, li, 0, true, false);
+    else if (!li->vagueEntity.empty())
+      addVague(li->getTarget(), li, 0, true);
   }
   for (ObjFile *file : ctx.objFileInstances) {
     if (&file->symtab != &ctx.symtab)
@@ -2430,11 +2451,16 @@ void ImportSlotContents::createOverrideCellFill() {
                       !sealedChunks.contains(sc);
       bool threadLocal =
           getPartialSectionName(sc, config.mingw).starts_with(".tls");
-      for (const coff_relocation &rel : sc->getRelocs())
-        if (auto *d = dyn_cast_or_null<Defined>(
-                file->getSymbol(rel.SymbolTableIndex));
-            d && sc->isAddressWord(rel) && getAddressWordAddend(sc, rel) == 0)
+      for (const coff_relocation &rel : sc->getRelocs()) {
+        auto *d =
+            dyn_cast_or_null<Defined>(file->getSymbol(rel.SymbolTableIndex));
+        if (!d || !sc->isAddressWord(rel) || getAddressWordAddend(sc, rel) != 0)
+          continue;
+        if (!threadLocal && ctx.symtab.isPreemptibleVagueEntity(d))
+          addVague(d, sc, rel.VirtualAddress, readOnly);
+        else
           addOwn(d->getName(), sc, rel.VirtualAddress, readOnly, threadLocal);
+      }
     }
   }
   if (cells.empty())

@@ -54,7 +54,7 @@ void OverrideAnchorChunk::writeTo(uint8_t *buf) const {
       continue;
     write64le(overflow, e.key);
     write32le(overflow + 8, e.target->getRVA());
-    write32le(overflow + 12, 0);
+    write32le(overflow + 12, e.indirect);
     overflow += overrideBlockEntrySize;
   }
 }
@@ -122,7 +122,7 @@ void writeOverrideTable(COFFLinkerContext &ctx, SymbolTable &symtab,
     }
     write64le(entry, e.key);
     write32le(entry + 8, e.target->getRVA());
-    write32le(entry + 12, 0);
+    write32le(entry + 12, e.indirect);
   }
   uint8_t *block = base + overrideBlockOffset;
   write32le(block, overrideBlockMagic);
