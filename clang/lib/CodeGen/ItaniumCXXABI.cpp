@@ -5080,6 +5080,10 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(
   TypeName->setPartition(CGM.getCodeGenOpts().SymbolPartition);
   GV->setPartition(CGM.getCodeGenOpts().SymbolPartition);
 
+  if (CodeGenABIContracts *Contracts = CGM.getABIContracts())
+    if (const CXXRecordDecl *RD = Ty->getAsCXXRecordDecl())
+      Contracts->addTypeInfo(GV, RD);
+
   return GV;
 }
 

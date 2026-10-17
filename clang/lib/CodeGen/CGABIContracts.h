@@ -52,6 +52,9 @@ public:
   /// Records that the import-form declaration GV is the vtable or VTT of RD.
   void addVTableImport(llvm::GlobalValue *GV, const CXXRecordDecl *RD);
 
+  /// Records that GV is the type_info object of RD.
+  void addTypeInfo(llvm::GlobalValue *GV, const CXXRecordDecl *RD);
+
   /// Emits the contracts that the module's definitions provide, as linker
   /// options, and those that its references require, as the
   /// abi.requirements metadata.
@@ -88,6 +91,8 @@ private:
   llvm::DenseSet<const RecordDecl *> UsedLayouts;
   llvm::SmallVector<std::pair<llvm::GlobalValue *, const CXXRecordDecl *>, 0>
       VTableImports;
+  llvm::SmallVector<std::pair<llvm::GlobalValue *, const CXXRecordDecl *>, 0>
+      TypeInfos;
 };
 
 } // namespace CodeGen

@@ -63,6 +63,11 @@ void CodeGenABIContracts::addVTableImport(llvm::GlobalValue *GV,
   VTableImports.push_back({GV, RD});
 }
 
+void CodeGenABIContracts::addTypeInfo(llvm::GlobalValue *GV,
+                                      const CXXRecordDecl *RD) {
+  TypeInfos.push_back({GV, RD});
+}
+
 // Whether the contract of RD, a definition, is checked between images: that
 // of a C++ class with a name by which other images know it, outside an
 // extern "C" context, or under -fabi-witness-c-types that of a C struct at file
@@ -580,6 +585,18 @@ void CodeGenABIContracts::emit() {
         ProvidedData.push_back(std::move(Row));
     }
   }
+
+  // A type_info object that the image may export, or offer to the images that
+  // import from it, provides the contract of its class, so that every class
+  // another image can name by its type_info has one, whether or not a
+  // function or datum the image exports is about it.
+  for (auto [GV, RD] : TypeInfos)
+    if (!GV->isDeclarationForLinker() &&
+        (GV->hasDLLExportStorageClass() ||
+         (GV->isWeakForLinker() && GV->hasDefaultVisibility())))
+      if (const RecordDecl *Def = RD->getDefinition())
+        addCoveredRecords(RecordSet(&Def, &Def + 1), /*UsedOnly=*/false,
+                          ProvidedTypes);
 
   // A vtable or VTT that the module emits in import form requires the
   // contract of its class.
