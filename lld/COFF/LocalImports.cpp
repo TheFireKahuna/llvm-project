@@ -916,7 +916,10 @@ void writeFusedArm64(const SectionChunk *sc, uint8_t *buf) {
     if (!l.isLoad || !l.dead)
       continue;
     uint64_t lo12 = getData(l.offset)->getRVA() & 0xFFF;
-    ArrayRef<const ObjFile::LinkFusion *> accesses = accessesOf.lookup(l.offset);
+    auto it = accessesOf.find(l.offset);
+    if (it == accessesOf.end())
+      continue;
+    ArrayRef<const ObjFile::LinkFusion *> accesses = it->second;
     auto fits = [&](const ObjFile::LinkFusion *f) {
       uint32_t insn = read32le(buf + f->offset);
       Arm64Access access(insn);
