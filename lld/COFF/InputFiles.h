@@ -289,6 +289,13 @@ public:
     return linkRecords && linkRecords->describesSites;
   }
 
+  // True if the object's KCFI lists name each imported function by its import
+  // address table entry alone, so that the linker lists the function's import
+  // thunk where static data holds the thunk.
+  bool listsKCFIImports() const {
+    return linkRecords && linkRecords->listsKCFIImports;
+  }
+
   // True if the object's delay-load helper writes a delay-load import address
   // table only while the table is writable.
   bool protectsDelayIat() const {
@@ -367,6 +374,7 @@ private:
   void readLinkRecords();
   bool readLinkSites(ArrayRef<uint8_t> payload);
   bool readLinkPins(ArrayRef<uint8_t> payload);
+  bool readKCFIThunks(ArrayRef<uint8_t> payload);
   bool readCallOnlyRefs(ArrayRef<uint8_t> payload);
   void initializeDependencies();
   void initializeECThunks();
@@ -425,6 +433,7 @@ private:
   struct LinkRecords {
     const coff_section *sec;
     bool describesSites = false;
+    bool listsKCFIImports = false;
     bool protectsDelayIat = false;
     bool listsCallOnly = false;
     std::vector<LinkSite> sites;

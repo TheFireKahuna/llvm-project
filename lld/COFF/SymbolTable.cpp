@@ -19,6 +19,7 @@
 #include "lld/Common/Memory.h"
 #include "lld/Common/Strings.h"
 #include "lld/Common/Timer.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/TinyPtrVector.h"
 #include "llvm/BinaryFormat/Magic.h"
 #include "llvm/DebugInfo/DIContext.h"
@@ -31,6 +32,7 @@
 #include "llvm/Support/Parallel.h"
 #include "llvm/Support/TimeProfiler.h"
 #include "llvm/Support/raw_ostream.h"
+#include <map>
 #include <utility>
 
 using namespace llvm;

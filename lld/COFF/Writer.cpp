@@ -13,6 +13,7 @@
 #include "DLL.h"
 #include "ImportSlots.h"
 #include "InputFiles.h"
+#include "KCFI.h"
 #include "LLDMapFile.h"
 #include "LinkPins.h"
 #include "MapFile.h"
@@ -209,7 +210,8 @@ class Writer {
 public:
   Writer(COFFLinkerContext &c)
       : buffer(c.e.outputBuffer), strtab(StringTableBuilder::WinCOFF),
-        slots(c, idata), delayIdata(c), prefixes(c), ctx(c) {}
+        slots(c, idata), delayIdata(c), prefixes(c), kcfi(c, prefixes), ctx(c) {
+  }
   void run();
 
 private:
@@ -322,6 +324,7 @@ private:
   bool packRdata = false;
   DelayLoadContents delayIdata;
   TypePrefixContents prefixes;
+  KCFIContents kcfi;
   bool setNoSEHCharacteristic = false;
   uint32_t tlsAlignment = 0;
 
@@ -332,7 +335,6 @@ private:
 
   // List of Arm64EC export thunks.
   std::vector<std::pair<Chunk *, Defined *>> exportThunks;
-
 
   uint64_t fileSize;
   uint32_t pointerToSymbolTable = 0;
@@ -806,6 +808,8 @@ void Writer::run() {
     createImportTables();
     slots.bind();
     slots.createResidualFill();
+    if (ctx.kcfi.listsImports || !ctx.kcfi.listedImports.empty())
+      kcfi.listThunks();
     createSections();
     appendImportThunks();
     // Import thunks must be added before the Control Flow Guard tables are
@@ -819,8 +823,10 @@ void Writer::run() {
     packPlacedChunks();
     createDynamicRelocs();
     removeUnusedSections();
+    kcfi.layOut(textSec, rdataSec);
     layoutSections();
     finalizeAddresses();
+    kcfi.checkCodeRange();
     removeEmptySections();
     assignOutputSectionIndices();
     placeLinkerDefinedSymbols();
@@ -1067,9 +1073,12 @@ static bool shouldStripSectionSuffix(SectionChunk *sc, StringRef name,
     return false;
   if (!sc || !sc->isCOMDAT())
     return false;
+  // The pieces of a KCFI type's list are kept in order by their suffix.
   return name.starts_with(".text$") || name.starts_with(".data$") ||
-         name.starts_with(".rdata$") || name.starts_with(".pdata$") ||
-         name.starts_with(".xdata$") || name.starts_with(".eh_frame$");
+         (name.starts_with(".rdata$") &&
+          !name.starts_with(KCFIListSectionPrefix)) ||
+         name.starts_with(".pdata$") || name.starts_with(".xdata$") ||
+         name.starts_with(".eh_frame$");
 }
 
 // The name of the partial section that sc is binned into, from which
@@ -1192,6 +1201,9 @@ void Writer::createSections() {
                                                 c->getOutputCharacteristics());
     pSec->chunks.push_back(c);
   }
+  for (Chunk *c : ctx.kcfi.chunks)
+    createPartialSection(c->getSectionName(), c->getOutputCharacteristics())
+        ->chunks.push_back(c);
   if (Chunk *fill = slots.getFill()) {
     createPartialSection(".text", fill->getOutputCharacteristics())
         ->chunks.push_back(fill);
@@ -1420,6 +1432,7 @@ void Writer::createMiscChunks() {
 
   // Create /guard:cf tables if requested.
   createGuardCFTables();
+  kcfi.bound(textSec, rdataSec);
 
   createECChunks();
 
@@ -2926,7 +2939,7 @@ void Writer::createGuardCFTables() {
       }
       markSymbolsForRVATable(file, file->getGuardLJmpChunks(), longJmpTargets);
       if (file->describesSites())
-        markDescribedAddressTakes(file, addressTakenSyms, giatsRVASet);
+        markDescribedAddressTakes(file, takenSyms, giatsRVASet);
     } else {
       markSymbolsWithRelocations(file, takenSyms, giatsRVASet);
     }
