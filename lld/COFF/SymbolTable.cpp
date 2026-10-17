@@ -1025,6 +1025,75 @@ void SymbolTable::checkOverridableExports() {
   }
 }
 
+// The override table format this linker writes, which the records member's
+// __ovr_version must match. Slots are never reused or renumbered, so a program
+// and a runtime built at different times agree on every slot they both know.
+static const uint32_t overrideTableVersion = 1;
+
+bool SymbolTable::loadOverrideRecords() {
+  if (!ctx.config.importSlots || ctx.config.dll || ctx.hybridSymtab ||
+      isEC() || overridables.empty() || overrideRecordsLoaded)
+    return false;
+  // The records member is a regular member of the C++ runtime's import or
+  // static library, loaded only when a link replaces a default. It is pulled
+  // by its format-version symbol, which defines every slot alongside it. A
+  // link whose runtime does not carry it, such as a freestanding one that
+  // happens to define a replaceable function, has nothing to override.
+  if (!find("__ovr_version") || !find("__ovr_version")->isLazy())
+    return false;
+  overrideRecordsLoaded = true;
+  addGCRoot("__ovr_version");
+  return true;
+}
+
+void SymbolTable::resolveOverridableReplacements() {
+  if (!ctx.config.importSlots || ctx.config.dll || ctx.hybridSymtab ||
+      isEC() || overridables.empty())
+    return;
+  // An overridable default this executable replaces is one an input defines
+  // with a strong definition, the body B, superseding the runtime's weak
+  // default for every image.
+  SmallVector<std::pair<StringRef, Defined *>, 8> replaced;
+  for (StringRef name : overridables) {
+    auto *d = dyn_cast_or_null<DefinedRegular>(find(name));
+    if (d && !d->isWeak && isa<ObjFile>(d->getFile()) &&
+        !d->getName().starts_with(".weak."))
+      replaced.emplace_back(name, d);
+  }
+  if (replaced.empty())
+    return;
+  auto absolute = [&](const Twine &n) -> std::optional<uint64_t> {
+    if (auto *a = dyn_cast_or_null<DefinedAbsolute>(find(n.str())))
+      return a->getVA();
+    return std::nullopt;
+  };
+  // The records member, which only a C++ runtime that supports overrides
+  // carries, is the runtime's declaration of its slots. Without it there is no
+  // default to override: a program that defines a replaceable function with no
+  // such runtime, as a freestanding one may, keeps its own definition and
+  // needs no table.
+  std::optional<uint64_t> version = absolute("__ovr_version");
+  if (!version)
+    return;
+  if (*version != overrideTableVersion) {
+    Err(ctx) << "the C++ runtime's override table format (version " << *version
+             << ") is not the one this linker writes (version "
+             << overrideTableVersion << ")";
+    return;
+  }
+  for (auto [name, body] : replaced) {
+    std::optional<uint64_t> slot = absolute("__ovr_slot$" + name);
+    if (!slot) {
+      Err(ctx) << body->getFile() << ": " << printSymbol(body)
+               << " replaces an overridable default, but the C++ runtime's "
+                  "import library records no slot for it";
+      continue;
+    }
+    overrideReplacements.push_back(
+        {body, name, uint32_t(*slot), absolute("__ovr_fwd$" + name)});
+  }
+}
+
 /// Helper function for reportUnresolvable and resolveRemainingUndefines.
 /// This function emits an "undefined symbol" diagnostic for each symbol in
 /// undefs. If localImports is not nullptr, it also emits a "locally

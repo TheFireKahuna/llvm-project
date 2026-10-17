@@ -1219,6 +1219,13 @@ void CodeGenModule::Release() {
   // object instead.
   if (llvm::any_of(ConstantDLLImportAddresses, isAddressInStaticData))
     AppendLinkerOptions("/INCLUDE:__llvm_import_slots_v1");
+  // A strong definition of an overridable default replaces the runtime's weak
+  // one for every image, which only the import-slots binding carries out: it
+  // writes the override table and binds the replacement into it. A linker that
+  // does not define this symbol would leave the program with a split heap, so
+  // it fails to link the object instead.
+  if (HasOverridableDefaultReplacement)
+    AppendLinkerOptions("/INCLUDE:__llvm_overrides_v1");
 
   if (Context.getLangOpts().IncrementalExtensions &&
       GlobalTopLevelStmtBlockInFlight.first) {
@@ -7525,6 +7532,12 @@ void CodeGenModule::EmitGlobalFunctionDefinition(GlobalDecl GD,
     // back end emits an address-take in import form. The attribute marks the
     // definition for the back end; calls to it stay direct.
     Fn->addFnAttr("overridable-default");
+    // A strong definition replaces the runtime's weak default for every image.
+    // The runtime's own weak default is the fallback it carries, not a
+    // replacement. Release() references a marker for the replacement, so that a
+    // link that cannot carry it out fails loudly.
+    if (!Fn->hasWeakAnyLinkage())
+      HasOverridableDefaultReplacement = true;
   }
 
   setNonAliasAttributes(GD, Fn);

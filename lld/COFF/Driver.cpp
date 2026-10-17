@@ -2920,10 +2920,16 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     // An object whose correctness needs its pins honoured includes this
     // symbol, so that a linker that ignores them fails to link it.
     symtab.addAbsolute(symtab.mangle("__llvm_link_pins_v1"), 0);
-    // So does an object whose static data holds an imported address, which
-    // needs the loader to write the address there.
-    if (config->importSlots)
+    if (config->importSlots) {
+      // So does an object whose static data holds an imported address, which
+      // needs the loader to write the address there.
       symtab.addAbsolute(symtab.mangle("__llvm_import_slots_v1"), 0);
+      // An object that replaces an overridable default needs the linker to
+      // write the override table and bind the replacement into it, so that the
+      // program does not keep a split heap; a link that does not define this
+      // fails.
+      symtab.addAbsolute(symtab.mangle("__llvm_overrides_v1"), 0);
+    }
 
     if (symtab.isEC()) {
       symtab.addAbsolute("__arm64x_extra_rfe_table", 0);
@@ -2989,6 +2995,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
         // member that defines its symbol, as a direct reference would, when
         // nothing provides it in import form.
         loadedImports |= symtab.loadLocalImportMembers();
+
+        // Under -import-slots, an executable that replaces an overridable
+        // default loads the C++ runtime's records member for its slots.
+        loadedImports |= symtab.loadOverrideRecords();
       });
 
       ctx.forEachActiveSymtab([&](SymbolTable &symtab) {
@@ -3185,6 +3195,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   });
 
   ctx.forEachSymtab([](SymbolTable &symtab) {
+    symtab.resolveOverridableReplacements();
     symtab.bindImportsToDefinitions();
     symtab.bindForwarders();
   });
