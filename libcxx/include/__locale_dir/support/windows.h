@@ -177,7 +177,7 @@ _LIBCPP_EXPORTED_FROM_ABI const char* __get_locale_encoding(__locale_t __loc);
 // the *_l functions are prefixed on Windows, only available for msvcr80+, VS2005+
 template <class _FloatT>
 _LIBCPP_HIDE_FROM_ABI _FloatT __str_to_float_c_locale(const char* __nptr, char** __endptr);
-#if defined(_LIBCPP_MSVCRT)
+#if defined(_LIBCPP_MSVCRT) || defined(_WIN32_ITANIUM)
 
 template <>
 inline _LIBCPP_HIDE_FROM_ABI float __str_to_float_c_locale<float>(const char* __nptr, char** __endptr) {

@@ -298,7 +298,7 @@ const char* __get_locale_encoding(__locale_t loc) {
 //
 // Strtonum functions
 //
-#if !defined(_LIBCPP_MSVCRT)
+#if !defined(_LIBCPP_MSVCRT) && !defined(_WIN32_ITANIUM)
 template <>
 float __str_to_float_c_locale<float>(const char* nptr, char** endptr) {
   __locale_guard __current(__get_c_locale());
