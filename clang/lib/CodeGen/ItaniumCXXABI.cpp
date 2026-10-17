@@ -2107,6 +2107,11 @@ void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
   CGM.setGVProperties(VTable, RD);
   CGVT.setVTableDSOLocal(VTable, RD);
 
+  if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      !VTable->isDeclarationForLinker()) {
+    CGVT.setVTablePlacement(
+        VTable, VTLayout,
+        VTLayout.getAddressPoint(BaseSubobject(RD, CharUnits::Zero())));
 
     // Name the address point of each vtable of the group, counted from the
     // start of the group, as getVTableAddressPoint computes it for the bases
@@ -2124,6 +2129,7 @@ void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
           (VTLayout.getVTableOffset(I) + VTLayout.getAddressPointIndices()[I]) *
               ComponentSize,
           getVTableAddressPoint(*Bases[I], RD));
+  }
 
   // If this is the magic class __cxxabiv1::__fundamental_type_info,
   // we will emit the typeinfo for the fundamental types. This is the

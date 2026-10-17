@@ -1016,6 +1016,9 @@ llvm::GlobalVariable *CodeGenVTables::GenerateConstructionVTable(
 
   CGM.EmitVTableTypeMetadata(RD, VTable, *VTLayout);
 
+  if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    setVTablePlacement(VTable, *VTLayout, VTLayout->getAddressPoint(Base));
+
   if (UsingRelativeLayout) {
     RemoveHwasanMetadata(VTable);
     if (!VTable->isDSOLocal())
@@ -1257,6 +1260,39 @@ void CodeGenVTables::setVTableDSOLocal(llvm::GlobalValue *GV,
   if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
       GV->isDeclarationForLinker() && CGM.shouldMapVisibilityToDLLExport(RD))
     GV->setDSOLocal(false);
+}
+
+/// Pins the address point Offset bytes into VTable at Residue modulo
+/// 2^Log2Modulus; a linker must honour a Required pin.
+static void addVTablePin(CodeGenModule &CGM, llvm::GlobalVariable *VTable,
+                         uint64_t Offset, uint64_t Log2Modulus,
+                         uint64_t Residue, bool Required) {
+  uint64_t Values[] = {Offset, Log2Modulus, Residue, Required};
+  llvm::Metadata *Ops[std::size(Values)];
+  for (unsigned I = 0; I != std::size(Values); ++I)
+    Ops[I] = llvm::ConstantAsMetadata::get(
+        llvm::ConstantInt::get(CGM.Int64Ty, Values[I]));
+  VTable->addMetadata(llvm::LLVMContext::MD_pin,
+                      *llvm::MDNode::get(CGM.getLLVMContext(), Ops));
+}
+
+/// On Windows Itanium and NT-POSIX the primary address point of every vtable
+/// definition is placed at offset 16 of a 64-byte line, so that offset-to-top,
+/// the RTTI word and the first entries share the line. The address point
+/// follows the vcall and vbase offsets of a class with virtual bases, so the
+/// vtable is aligned to 64 bytes only when they fill whole lines. Every
+/// placed vtable is pinned, which tells the linker that the image places
+/// vtables, so that it packs other read-only data into their padding.
+void CodeGenVTables::setVTablePlacement(
+    llvm::GlobalVariable *VTable, const VTableLayout &Layout,
+    VTableLayout::AddressPointLocation AddressPoint) {
+  uint64_t Offset =
+      (Layout.getVTableOffset(AddressPoint.VTableIndex) +
+       AddressPoint.AddressPointIndex) *
+      CGM.getDataLayout().getTypeAllocSize(getVTableComponentType());
+  if (Offset % 64 == 16)
+    VTable->setAlignment(llvm::Align(64));
+  addVTablePin(CGM, VTable, Offset, 6, 16, /*Required=*/false);
 }
 
 /// At this point in the translation unit, does it appear that can we
