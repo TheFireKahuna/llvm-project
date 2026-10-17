@@ -1170,7 +1170,7 @@ bool ObjFile::readLinkCoverage(ArrayRef<uint8_t> payload) {
     case LinkFieldSigned:
       return size == 1 || size == 2 || size == 4 || size == 8;
     case LinkFieldJump:
-      return size == 1;
+      return size == 1 || size == 4;
     case LinkFieldULEB128:
     case LinkFieldSLEB128:
       return size >= 1 && size <= 10;

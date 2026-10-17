@@ -40,8 +40,9 @@ struct RelaxEdit {
     Access,
     // No-operations that align what follows, as coverage describes.
     Align,
-    // The jump whose 8-bit displacement coverage describes, with a 32-bit
-    // displacement once promoted.
+    // The jump whose displacement coverage describes: an 8-bit one, with a
+    // 32-bit displacement once promoted; or a 32-bit one, with 8 bits until
+    // promoted back.
     Branch,
   };
 

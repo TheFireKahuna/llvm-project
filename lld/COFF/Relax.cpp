@@ -111,13 +111,14 @@ static unsigned getPromotedSize(uint8_t opcode) {
 // The value that c, an entry of sc's file that measures the code of r's
 // chunk, takes in the new layout: the difference of two places, one of them
 // the field's own for a PC-relative value. A jump that the linker lengthened
-// measures from the end of the new jump.
+// or shortened measures from the end of the new jump.
 static int64_t getValue(const ObjFile::LinkCoverage &c, const Relaxation &r) {
   int64_t a = r.getOutputOffset(c.a);
   if (c.type == LinkCoverageDifference)
     return a - r.getOutputOffset(c.b) + c.constant;
   if (c.kind == LinkFieldJump)
-    if (const RelaxEdit *e = r.findEdit(c.offset); e && e->promoted)
+    if (const RelaxEdit *e = r.findEdit(c.offset);
+        e && e->newSize != e->oldSize)
       return a - (e->newOffset + e->newSize);
   return a - r.getOutputOffset(c.offset) + c.constant;
 }
@@ -185,7 +186,8 @@ static void solve(Relaxation &r, ArrayRef<uint8_t> data) {
           int64_t(r.getOutputOffset(e.coverage->a)) - (e.newOffset + e.newSize);
       if (!isInt<8>(value)) {
         e.promoted = true;
-        e.newSize = getPromotedSize(data[e.offset]);
+        e.newSize =
+            e.oldSize == 2 ? getPromotedSize(data[e.offset]) : e.oldSize;
         changed = true;
       }
     }
@@ -206,30 +208,42 @@ static bool relax(COFFLinkerContext &ctx, SectionChunk *sc,
   ArrayRef<uint8_t> data = sc->getContents();
   Relaxation r;
   addSiteEdits(sc, r.edits);
-  if (llvm::all_of(r.edits,
-                   [](const RelaxEdit &e) { return e.newSize == e.oldSize; }))
-    return false;
   for (const ObjFile::LinkCoverage &c : file->getLinkCoverage(sc)) {
     if (c.type == LinkCoverageAlign) {
       RelaxEdit e{c.offset, c.a, c.a, 0, RelaxEdit::Align};
       e.coverage = &c;
       r.edits.push_back(e);
     } else if (c.type == LinkCoveragePCRelative && c.kind == LinkFieldJump) {
-      // The opcode of jmp rel8 or of a conditional jump precedes its
-      // displacement.
+      // The opcode of jmp or of a conditional jump precedes its
+      // displacement. A jump with a 32-bit one starts out with 8 bits, and
+      // takes its own form back only where those do not hold the value, so
+      // that the layout is the smallest the jumps fit.
       uint8_t opcode = c.offset ? data[c.offset - 1] : 0;
-      if (opcode != 0xEB && (opcode & 0xF0) != 0x70) {
+      uint32_t start = c.offset - 1;
+      if (c.size == 4 && opcode != 0xE9) {
+        start = c.offset - 2;
+        opcode = c.offset > 1 && data[start] == 0x0F ? opcode : 0;
+      }
+      bool isJump = c.size == 1
+                        ? opcode == 0xEB || (opcode & 0xF0) == 0x70
+                        : c.size == 4 &&
+                              (opcode == 0xE9 || (opcode & 0xF0) == 0x80);
+      if (!isJump) {
         Err(ctx) << file << ": the instruction at offset 0x"
-                 << Twine::utohexstr(c.offset - 1) << " in "
-                 << sc->getSectionName()
+                 << Twine::utohexstr(start) << " in " << sc->getSectionName()
                  << " is not the jump its link-only record describes";
         return false;
       }
-      RelaxEdit e{c.offset - 1, 2, 2, 0, RelaxEdit::Branch};
+      RelaxEdit e{start, c.offset + c.size - start, 2, 0, RelaxEdit::Branch};
       e.coverage = &c;
       r.edits.push_back(e);
     }
   }
+  // Code where no instruction may change its size, a jump that the assembler
+  // lengthened included, keeps its layout.
+  if (llvm::all_of(r.edits,
+                   [](const RelaxEdit &e) { return e.newSize == e.oldSize; }))
+    return false;
   // Padding of no length comes before the instruction where it ends.
   llvm::sort(r.edits, [](const RelaxEdit &a, const RelaxEdit &b) {
     return std::make_tuple(a.offset, a.oldSize != 0) <
@@ -259,7 +273,7 @@ static bool relax(COFFLinkerContext &ctx, SectionChunk *sc,
         *misfit = true;
         return false;
       }
-      if (e && e->promoted)
+      if (e && e->newSize != e->oldSize)
         continue;
     }
     if (!fits(getValue(*c, r), c->kind, c->size)) {
@@ -354,20 +368,26 @@ static void writeEdit(const SectionChunk *sc, const RelaxEdit &e, uint8_t *buf,
   case RelaxEdit::Align:
     writeNops(buf, e.newSize, e.coverage->size);
     break;
-  case RelaxEdit::Branch:
-    if (!e.promoted) {
-      memcpy(buf, old, 2);
-      break;
-    }
-    if (old[0] == 0xEB) {
-      buf[0] = 0xE9;
+  case RelaxEdit::Branch: {
+    // A jump that keeps its form holds the value written with the others.
+    int64_t value =
+        r.getOutputOffset(e.coverage->a) - (e.newOffset + e.newSize);
+    if (e.newSize == e.oldSize) {
+      memcpy(buf, old, e.oldSize);
+    } else if (e.newSize == 2) {
+      buf[0] = old[0] == 0xE9 ? 0xEB : 0x70 | (old[1] & 0x0F);
+      buf[1] = uint8_t(value);
     } else {
-      buf[0] = 0x0F;
-      buf[1] = 0x80 | (old[0] & 0x0F);
+      if (old[0] == 0xEB) {
+        buf[0] = 0xE9;
+      } else {
+        buf[0] = 0x0F;
+        buf[1] = 0x80 | (old[0] & 0x0F);
+      }
+      write32le(buf + e.newSize - 4, value);
     }
-    write32le(buf + e.newSize - 4,
-              r.getOutputOffset(e.coverage->a) - (e.newOffset + e.newSize));
     break;
+  }
   case RelaxEdit::Access: {
     // The bytes before ModRM, with the base register's high bit clear: REX.B,
     // or VEX's or EVEX's inverted B set. Then ModRM addressing RIP plus a
@@ -442,9 +462,10 @@ void writeCoverageValues(const SectionChunk *sc, uint8_t *buf, uint32_t begin,
       continue;
     uint32_t out = c.offset;
     if (self) {
-      // A lengthened jump holds the displacement it was written with.
+      // A lengthened or shortened jump holds the displacement it was
+      // written with.
       if (const RelaxEdit *e = self->findEdit(c.offset);
-          e && e->kind == RelaxEdit::Branch && e->promoted)
+          e && e->kind == RelaxEdit::Branch && e->newSize != e->oldSize)
         continue;
       out = self->getOutputOffset(c.offset);
     }
