@@ -132,27 +132,6 @@ public:
   uint32_t addressTabOffset = 0;
 };
 
-// A chunk representing null terminator in the import table.
-// Contents of this chunk is always null bytes.
-class NullChunk : public NonSectionChunk {
-public:
-  explicit NullChunk(size_t n, uint32_t align) : size(n) {
-    setAlignment(align);
-  }
-  explicit NullChunk(COFFLinkerContext &ctx)
-      : NullChunk(ctx.config.wordsize, ctx.config.wordsize) {}
-  explicit NullChunk(COFFLinkerContext &ctx, size_t n)
-      : NullChunk(n, ctx.config.wordsize) {}
-  size_t getSize() const override { return size; }
-
-  void writeTo(uint8_t *buf) const override {
-    memset(buf, 0, size);
-  }
-
-private:
-  size_t size;
-};
-
 // A chunk for ARM64EC auxiliary IAT.
 class AuxImportChunk : public NonSectionChunk {
 public:
@@ -723,6 +702,11 @@ private:
 };
 
 } // anonymous namespace
+
+NullChunk::NullChunk(COFFLinkerContext &ctx)
+    : NullChunk(ctx.config.wordsize, ctx.config.wordsize) {}
+NullChunk::NullChunk(COFFLinkerContext &ctx, size_t n)
+    : NullChunk(n, ctx.config.wordsize) {}
 
 void IdataContents::create(COFFLinkerContext &ctx) {
   // An import bound at run time is read from its cell, and has neither an

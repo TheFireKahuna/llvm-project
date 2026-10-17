@@ -77,21 +77,6 @@ private:
   COFFLinkerContext &ctx;
 };
 
-// The cell of an import bound at run time: a word the fill writes, null until
-// it does.
-class RunTimeCellChunk : public NonSectionChunk {
-public:
-  explicit RunTimeCellChunk(COFFLinkerContext &ctx)
-      : size(ctx.config.wordsize) {
-    setAlignment(size);
-  }
-  size_t getSize() const override { return size; }
-  void writeTo(uint8_t *buf) const override { memset(buf, 0, size); }
-
-private:
-  size_t size;
-};
-
 // A NUL-terminated UTF-16 string, the form ntdll takes a module's name in.
 class WideStringChunk : public NonSectionChunk {
 public:
@@ -2502,7 +2487,7 @@ void ImportSlotContents::bind() {
                << " by ordinal, at run time";
       return;
     }
-    RunTimeCell c{imp, make<RunTimeCellChunk>(ctx),
+    RunTimeCell c{imp, make<NullChunk>(ctx),
                   make<StringChunk>(imp->getExternalName()),
                   imp->file->isHostImport
                       ? nullptr

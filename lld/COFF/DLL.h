@@ -12,8 +12,24 @@
 #include "Chunks.h"
 #include "Symbols.h"
 #include "llvm/ADT/DenseSet.h"
+#include <cstring>
 
 namespace lld::coff {
+
+// A chunk of null bytes: a null terminator in the import tables, or a cell that
+// an importer binds at run time, left null until then.
+class NullChunk : public NonSectionChunk {
+public:
+  explicit NullChunk(size_t n, uint32_t align) : size(n) { setAlignment(align); }
+  explicit NullChunk(COFFLinkerContext &ctx);
+  explicit NullChunk(COFFLinkerContext &ctx, size_t n);
+  size_t getSize() const override { return size; }
+
+  void writeTo(uint8_t *buf) const override { memset(buf, 0, size); }
+
+private:
+  size_t size;
+};
 
 // Windows-specific.
 // IdataContents creates all chunks for the DLL import table.
