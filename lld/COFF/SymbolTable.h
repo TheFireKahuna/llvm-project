@@ -78,9 +78,20 @@ public:
 
   // Under -import-slots, load the archive member behind each undefined __imp_X
   // that no input defines under that name and whose X is lazy, and reference
-  // an X that /alternatename defines, as a direct reference to X would.
+  // an X that /alternatename defines, as a direct reference to X would; and
+  // load the import that an import library offers for each weak reference.
   // Returns whether any member was loaded or X referenced.
   bool loadLocalImportMembers();
+
+  // The .refptr.X symbols that objects define where bindPointerCells may
+  // bind them, which it visits instead of the whole table.
+  std::vector<Symbol *> pointerCells;
+
+  // Under -import-slots, the weak externals of extern_weak declarations, whose
+  // default is absolute zero: an import library's offer satisfies them, as a
+  // shared object satisfies an ELF weak reference, though no archive member
+  // does.
+  std::vector<Symbol *> weakRefs;
 
   // Define placeholders for the referenced, undefined __start_X and __stop_X
   // of each section run X, and for _etext, _edata and _end. The writer places

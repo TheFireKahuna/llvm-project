@@ -12,6 +12,7 @@
 #include "DebugTypes.h"
 #include "ICF.h"
 #include "InputFiles.h"
+#include "LocalImports.h"
 #include "MarkLive.h"
 #include "MinGW.h"
 #include "SymbolTable.h"
@@ -3092,6 +3093,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   std::vector<Undefined *> aliases;
   ctx.forEachSymtab(
       [&](SymbolTable &symtab) { symtab.resolveRemainingUndefines(aliases); });
+  ctx.forEachSymtab([](SymbolTable &symtab) { bindPointerCells(symtab); });
 
   if (errorCount())
     return;
@@ -3140,6 +3142,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
 
     markLive(ctx);
   }
+
+  ctx.forEachSymtab([](SymbolTable &symtab) { bindLocalImports(symtab); });
 
   ctx.symtab.initializeSameAddressThunks();
   for (auto alias : aliases) {

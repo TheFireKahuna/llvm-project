@@ -75,6 +75,11 @@ void markLive(COFFLinkerContext &ctx) {
     } else if (auto *sym = dyn_cast<DefinedImportThunk>(b)) {
       addImportFile(sym->wrappedSym->file);
       sym->getChunk()->live = true;
+    } else if (auto *sym = dyn_cast<DefinedLocalImport>(b)) {
+      // The pointer holds the symbol's address. One that binds a compiler's
+      // pointer is kept only if something live refers to it.
+      sym->getChunk()->live = true;
+      addSym(sym->getTarget());
     } else if (isa<DefinedSynthetic>(b)) {
       for (SectionChunk *c : runChunks.lookup(b))
         enqueue(c);

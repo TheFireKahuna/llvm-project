@@ -285,6 +285,7 @@ public:
   void getBaserels(std::vector<Baserel> *res);
   bool isCOMDAT() const;
   void applyRelocation(uint8_t *off, const coff_relocation &rel) const;
+
   void applyRelX64(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
                    uint64_t p, uint64_t imageBase) const;
   void applyRelX86(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
@@ -734,6 +735,20 @@ public:
   void writeTo(uint8_t *buf) const override;
   Defined *getTarget() const { return sym; }
 
+  // False if every reference to the pointer was rewritten to reach the
+  // symbol directly, which leaves the pointer out of the image.
+  bool live = true;
+
+  // On ARM64, true if every instruction that refers to the pointer is
+  // rewritten to reach the symbol directly. Data may still read the pointer.
+  bool bypassed = false;
+
+  // The pointer that a compiler made for the symbol, such as .refptr.X, if
+  // this one binds it. That pointer, where it is, stays the pointer whenever
+  // the image needs one, so that every name of it gives one address, and this
+  // one is never written.
+  SectionChunk *cell = nullptr;
+
 private:
   Defined *sym;
   COFFLinkerContext &ctx;
@@ -1004,6 +1019,8 @@ void applyBranch24T(uint8_t *off, int32_t v);
 
 void applyArm64Addr(uint8_t *off, uint64_t s, uint64_t p, int shift);
 void applyArm64Imm(uint8_t *off, uint64_t imm, uint32_t rangeLimit);
+void applyArm64Ldr(uint8_t *off, uint64_t imm);
+void setArm64Opcode(uint8_t *off, uint32_t opcode);
 void applyArm64Branch26(uint8_t *off, int64_t v);
 
 // Convenience class for initializing a coff_section with specific flags.

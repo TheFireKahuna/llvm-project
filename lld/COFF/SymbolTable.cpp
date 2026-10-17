@@ -11,12 +11,15 @@
 #include "Config.h"
 #include "Driver.h"
 #include "LTO.h"
+#include "LocalImports.h"
 #include "PDB.h"
 #include "Symbols.h"
 #include "lld/Common/ErrorHandler.h"
 #include "lld/Common/Memory.h"
 #include "lld/Common/Strings.h"
 #include "lld/Common/Timer.h"
+#include "llvm/ADT/TinyPtrVector.h"
+#include "llvm/BinaryFormat/Magic.h"
 #include "llvm/DebugInfo/DIContext.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Mangler.h"
@@ -319,6 +322,14 @@ void SymbolTable::loadMinGWSymbols() {
   }
 }
 
+// Whether the lazy symbol s is offered by an import, an import library's member
+// or a DLL's export, whose loading adds no reference to the link.
+static bool isLazyImport(Symbol *s) {
+  if (auto *a = dyn_cast<LazyArchive>(s))
+    return identify_magic(a->getMemberBuffer().getBuffer()) ==
+           file_magic::coff_import_library;
+  return isa<LazyDLLSymbol>(s);
+}
 bool SymbolTable::loadLocalImportMembers() {
   std::vector<Symbol *> lazies;
   bool referenced = false;
@@ -355,6 +366,17 @@ bool SymbolTable::loadLocalImportMembers() {
     }
     return false;
   });
+  // A weak reference loads the import an import library offers for it, which
+  // defines X for a function and __imp_X in every case. A weak reference
+  // loads no other member, so an archive's definition does not satisfy it.
+  for (Symbol *sym : weakRefs) {
+    if (!isa<Undefined>(sym) || sym->pendingArchiveLoad)
+      continue;
+    Symbol *l = find(("__imp_" + sym->getName()).str());
+    if (l && l->isLazy() && !l->pendingArchiveLoad && isLazyImport(l))
+      lazies.push_back(l);
+  }
+
   // Loading a lazy object parses it at once, which may add to impUndefs or
   // define a symbol that is still to be loaded.
   bool loaded = referenced;
@@ -449,7 +471,12 @@ void SymbolTable::reportProblemSymbols(
   std::vector<UndefinedDiag> undefDiags;
   DenseMap<Symbol *, int> firstDiag;
 
+  bool arm64 = machine == ARM64 && !ctx.hybridSymtab;
   auto processFile = [&](InputFile *file, ArrayRef<Symbol *> symbols) {
+    // References whose instructions may be rewritten are reported only if
+    // they still read the pointer, by bindLocalImports.
+    auto *obj = dyn_cast<ObjFile>(file);
+    bool deferred = obj && defersLocalImportWarning(obj, arm64);
     uint32_t symIndex = (uint32_t)-1;
     for (Symbol *sym : symbols) {
       ++symIndex;
@@ -462,7 +489,7 @@ void SymbolTable::reportProblemSymbols(
         else
           undefDiags[it->second].files.push_back({file, symIndex});
       }
-      if (localImports)
+      if (localImports && !deferred)
         if (Symbol *imp = localImports->lookup(sym))
           Warn(ctx) << file
                     << ": locally defined symbol imported: " << printSymbol(imp)
@@ -597,8 +624,21 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
 
     StringRef name = undef->getName();
 
-    // A weak alias may have been resolved, so check for that.
+    // A weak alias may have been resolved, so check for that. Under
+    // -import-slots, an extern_weak X whose import an import library offered
+    // is that import, as a shared object satisfies an ELF weak reference: a
+    // function's import defines X, and imported data is reached as automatic
+    // import reaches it, so that static data holding X's address holds the
+    // address code reads through __imp_X.
     if (undef->getWeakAlias()) {
+      if (ctx.config.importSlots) {
+        auto *abs =
+            dyn_cast_or_null<DefinedAbsolute>(undef->getDefinedWeakAlias());
+        if (abs && abs->getVA() == 0 &&
+            isa_and_nonnull<DefinedImportData>(impSymbol(name)) &&
+            handleMinGWAutomaticImport(sym, name))
+          continue;
+      }
       aliases.push_back(undef);
       continue;
     }
@@ -629,7 +669,12 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
       if (imp) {
         replaceSymbol<DefinedLocalImport>(sym, ctx, name, imp);
         localImportChunks.push_back(cast<DefinedLocalImport>(sym)->getChunk());
-        localImports[sym] = imp;
+        // Under -import-slots, a pointer to the zero default of an absent
+        // weak X imports nothing that the image defines.
+        auto *abs = dyn_cast<DefinedAbsolute>(imp);
+        if (!ctx.config.importSlots || !abs || abs->getVA() != 0 ||
+            !isa<Undefined>(find(impName)))
+          localImports[sym] = imp;
         continue;
       }
     }

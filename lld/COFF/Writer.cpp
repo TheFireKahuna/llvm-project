@@ -248,6 +248,8 @@ private:
   void insertBssDataStartEndSymbols();
   void markSymbolsWithRelocations(ObjFile *file, SymbolRVASet &usedSymbols,
                                   SymbolRVASet &usedImports);
+  void markDescribedAddressTakes(ObjFile *file, SymbolRVASet &usedSymbols,
+                                 SymbolRVASet &usedImports);
   DenseSet<std::pair<ObjFile *, Symbol *>> getGuardPointerStubs();
   void createGuardCFTables();
   void placeLinkerDefinedSymbols();
@@ -2228,17 +2230,77 @@ static bool isGuardPointerSection(const SectionChunk *sc) {
 
 // Visit all relocations from all section contributions of this object file and
 // mark the relocation target as address-taken.
-// Adds the address that a reference other than a call takes: a function's,
-// or an import address table entry's, with the delay-load thunk the entry
-// holds until resolved.
+static bool isCallOrJump(LinkSiteForm form) {
+  return form == LinkSiteCall || form == LinkSiteJump ||
+         form == LinkSiteJumpOnePrefix;
+}
+
+// Whether the target of rel, as its object sees it, may resolve to something
+// other than a definition the object fixes: a symbol it leaves undefined or
+// weak, or a symbol in a COMDAT other than the section of rel. An object that
+// describes its instruction sites gives every such REL32 in code that is not a
+// branch a site, so such a REL32 without one is a branch.
+static bool hasPreemptibleTarget(ObjFile *file, const SectionChunk *sc,
+                                 const coff_relocation &rel) {
+  COFFObjectFile *obj = file->getCOFFObj();
+  Expected<COFFSymbolRef> sym = obj->getSymbol(rel.SymbolTableIndex);
+  if (!sym) {
+    consumeError(sym.takeError());
+    return false;
+  }
+  int32_t secNum = sym->getSectionNumber();
+  if (secNum == IMAGE_SYM_UNDEFINED)
+    return true;
+  if (secNum <= 0 || uint32_t(secNum) == sc->getSectionNumber())
+    return false;
+  Expected<const coff_section *> sec = obj->getSection(secNum);
+  if (!sec) {
+    consumeError(sec.takeError());
+    return false;
+  }
+  return (*sec)->Characteristics & IMAGE_SCN_LNK_COMDAT;
+}
+
+// Adds the address that a reference other than a call takes: a function's, the
+// symbol's that a local import pointer holds, or an import address table
+// entry's, with the delay-load thunk the entry holds until resolved.
 static void markAddressTake(Symbol *ref, SymbolRVASet &usedSymbols,
                             SymbolRVASet &usedImports) {
+  if (auto *li = dyn_cast_or_null<DefinedLocalImport>(ref)) {
+    maybeAddAddressTakenFunction(usedSymbols, li->getTarget());
+    return;
+  }
   if (auto *imp = dyn_cast_or_null<DefinedImportData>(ref)) {
     addSymbolToRVASet(usedImports, imp);
     if (imp->loadThunkSym)
       addSymbolToRVASet(usedSymbols, imp->loadThunkSym);
   }
   maybeAddAddressTakenFunction(usedSymbols, ref);
+}
+
+// The compiler lists the addresses an object takes, but not those taken by
+// instructions it did not generate, such as inline assembly, nor the one that
+// a load through a local import pointer takes once rewritten to compute the
+// address. An object that describes its instruction sites says which
+// instructions take one: every site that is not a call or jump.
+void Writer::markDescribedAddressTakes(ObjFile *file,
+                                       SymbolRVASet &usedSymbols,
+                                       SymbolRVASet &usedImports) {
+  for (Chunk *c : file->getChunks()) {
+    SectionChunk *sc = dyn_cast<SectionChunk>(c);
+    if (!sc || !sc->live || file->getLinkSites(sc).empty())
+      continue;
+    for (const coff_relocation &reloc : sc->getRelocs()) {
+      if (reloc.Type != IMAGE_REL_AMD64_REL32)
+        continue;
+      std::optional<LinkSiteForm> form =
+          file->getLinkSiteForm(sc, reloc.VirtualAddress);
+      if (!form || isCallOrJump(*form))
+        continue;
+      markAddressTake(file->getSymbol(reloc.SymbolTableIndex), usedSymbols,
+                      usedImports);
+    }
+  }
 }
 
 void Writer::markSymbolsWithRelocations(ObjFile *file,
@@ -2250,6 +2312,8 @@ void Writer::markSymbolsWithRelocations(ObjFile *file,
     SectionChunk *sc = dyn_cast<SectionChunk>(c);
     if (!sc || !sc->live || isUnwindTable(sc) || isGuardPointerSection(sc))
       continue;
+    bool described = file->describesSites() &&
+                     (sc->getOutputCharacteristics() & IMAGE_SCN_CNT_CODE);
 
     for (const coff_relocation &reloc : sc->getRelocs()) {
       if (ctx.config.machine == I386 &&
@@ -2257,6 +2321,16 @@ void Writer::markSymbolsWithRelocations(ObjFile *file,
         // Ignore relative relocations on x86. On x86_64 they can't be ignored
         // since they're also used to compute absolute addresses.
         continue;
+
+      // Where the object describes its sites, a branch takes no address, and
+      // neither does a call or jump through a pointer, which passes the
+      // pointer's value nowhere.
+      if (described && reloc.Type == IMAGE_REL_AMD64_REL32) {
+        std::optional<LinkSiteForm> form =
+            file->getLinkSiteForm(sc, reloc.VirtualAddress);
+        if (form ? isCallOrJump(*form) : hasPreemptibleTarget(file, sc, reloc))
+          continue;
+      }
 
       Symbol *ref = sc->file->getSymbol(reloc.SymbolTableIndex);
       // An object without guard metadata does not say which import address
@@ -2521,9 +2595,21 @@ void Writer::createGuardCFTables() {
       for (Symbol *s : fids)
         if (!guardPointerStubs.contains({file, s}))
           addSymbolToRVASet(takenSyms, cast<Defined>(s));
-      markSymbolsForRVATable(file, file->getGuardIATChunks(), giatsRVASet);
-      getSymbolsFromSections(file, file->getGuardIATChunks(), giatsSymbols);
+      std::vector<Symbol *> giats;
+      getSymbolsFromSections(file, file->getGuardIATChunks(), giats);
+      for (Symbol *s : giats) {
+        // The pointer the linker makes for a symbol in the image is no import
+        // address table entry; the address it holds is taken.
+        if (auto *li = dyn_cast<DefinedLocalImport>(s)) {
+          maybeAddAddressTakenFunction(takenSyms, li->getTarget());
+          continue;
+        }
+        addSymbolToRVASet(giatsRVASet, cast<Defined>(s));
+        giatsSymbols.push_back(s);
+      }
       markSymbolsForRVATable(file, file->getGuardLJmpChunks(), longJmpTargets);
+      if (file->describesSites())
+        markDescribedAddressTakes(file, addressTakenSyms, giatsRVASet);
     } else {
       markSymbolsWithRelocations(file, takenSyms, giatsRVASet);
     }

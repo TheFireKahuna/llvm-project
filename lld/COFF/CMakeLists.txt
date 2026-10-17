@@ -13,6 +13,7 @@ add_lld_library(lldCOFF
   ICF.cpp
   InputFiles.cpp
   LLDMapFile.cpp
+  LocalImports.cpp
   LTO.cpp
   MapFile.cpp
   MarkLive.cpp
