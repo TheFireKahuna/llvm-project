@@ -42,7 +42,8 @@
 
 ## The fill reads the anchor's mask and writes the writable cell for slot 0 in
 ## place. Only when a read-only cell's slot is replaced does it make their range
-## writable, write them, and restore the protection the first call reported. It
+## writable, write them, and make it read-only again, as read-only cells are
+## only in read-only data. It
 ## returns 0, or the status of a failed protection call, which fails start-up.
 # FILL:      subq    $0x48, %rsp
 # FILL-NEXT: movq    %gs:0x60, %r11
@@ -79,7 +80,10 @@
 # FILL-NEXT: movl    0x44(%r11), %eax
 # FILL-NEXT: addq    %r11, %rax
 # FILL-NEXT: movq    %rax, {{.*}}(%rip) # 0x18000[[RO]]
-# FILL-NEXT: movl    0x40(%rsp), %r9d
+# FILL-NEXT: leaq    {{.*}}(%rip), %rax # 0x18000[[RO]]
+# FILL-NEXT: movq    %rax, 0x30(%rsp)
+# FILL-NEXT: movq    $0x8, 0x38(%rsp)
+# FILL-NEXT: movl    $0x2, %r9d
 # FILL-NEXT: leaq    0x40(%rsp), %rax
 # FILL-NEXT: movq    %rax, 0x20(%rsp)
 # FILL-NEXT: movq    $-0x1, %rcx

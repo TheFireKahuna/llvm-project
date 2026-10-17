@@ -510,6 +510,51 @@ struct OverrideCell {
   }
 };
 
+// The ranges of the read-only cells, one for each output section that holds
+// any, in address order. A fill makes each writable and read-only again with
+// protection calls of its own: one range across sections would give the
+// sections between them the protection of the first page.
+//
+// A fill's size is fixed before the chunks are placed in output sections, so
+// it has as many ranges as the output sections the cells' input sections are
+// named for, which merging can only reduce; once the chunks are placed, the
+// last range fills the ranges to spare, protecting it again to no effect.
+std::vector<std::pair<uint64_t, uint64_t>>
+getReadOnlyRanges(COFFLinkerContext &ctx, ArrayRef<OverrideCell> cells) {
+  StringSet<> names;
+  MapVector<OutputSection *, std::pair<uint64_t, uint64_t>> bySection;
+  for (const OverrideCell &c : cells) {
+    if (!c.readOnly)
+      continue;
+    // The pointers and the import address tables are in .rdata.
+    auto *sc = dyn_cast_or_null<SectionChunk>(c.chunk);
+    names.insert(
+        sc ? getOutputSectionName(getPartialSectionName(sc, ctx.config.mingw),
+                                  ctx.config.mingw)
+           : ".rdata");
+    Chunk *chunk = c.chunk ? c.chunk : c.imp->getChunk();
+    uint64_t start = c.getRVA(), end = start + ctx.config.wordsize;
+    auto [it, inserted] =
+        bySection.try_emplace(ctx.getOutputSection(chunk), start, end);
+    if (!inserted) {
+      it->second.first = std::min(it->second.first, start);
+      it->second.second = std::max(it->second.second, end);
+    }
+  }
+  std::vector<std::pair<uint64_t, uint64_t>> ranges;
+  for (auto &[os, range] : bySection)
+    ranges.push_back(range);
+  llvm::sort(ranges);
+  if (ranges.size() > names.size()) {
+    Err(ctx) << "read-only cells lie in more output sections than their input "
+                "sections name";
+    ranges.resize(names.size());
+  }
+  if (!ranges.empty())
+    ranges.resize(names.size(), ranges.back());
+  return ranges;
+}
+
 // Where the TLS directory says the template of the image's thread-local data
 // starts, and the index the loader writes for the image's thread-local blocks:
 // a symbol and an addend each.
@@ -537,12 +582,12 @@ struct TLSTemplate {
 // the anchor's entry with its key names, if any. The read-only cells are
 // inside the import address table directory, which the loader restores to
 // read-only once it has bound the image; when one of their slots is replaced,
-// or for a default replaced by name the table has a block, the fill makes the
-// range writable with NtProtectVirtualMemory, writes them, and restores the
-// protection the call reported, as the loader's own bracket does. Those calls
-// give it a frame; without read-only cells it is a leaf. It returns 0, or the
-// status of a protection call that failed, which fails the image's start-up, as
-// any nonzero return from the table does.
+// or for a default replaced by name the table has a block, the fill makes each
+// output section's range of them writable with NtProtectVirtualMemory, writes
+// them, and makes each read-only again. Those calls give it a frame; without
+// read-only cells it is a leaf. It returns 0, or the status of a protection
+// call that failed, which fails the image's start-up, as any nonzero return
+// from the table does.
 //
 // The loader binds a DLL's thread-local template before it copies it into the
 // block of any thread, so an unreplaced thread-local cell is right in every
@@ -566,6 +611,9 @@ public:
   }
   StringRef getSectionName() const override { return ".text"; }
   MachineTypes getMachine() const override { return ctx.config.machine; }
+  std::vector<std::pair<uint64_t, uint64_t>> getReadOnlyRanges() const {
+    return lld::coff::getReadOnlyRanges(ctx, cells);
+  }
 
 private:
   size_t getCellSize(const OverrideCell &c) const;
@@ -647,33 +695,31 @@ size_t OverrideCellFillChunk::getSize() const {
   if (ctx.config.machine == ARM64) {
     // The base and the magic's check (seven words), the mask (three), the
     // zero status and ret; with read-only cells, the frame (four), the test of
-    // their slots (four), the two protection calls (fourteen and eight), the
-    // first's status check, the reload of the base and mask between them (five)
-    // and the branch past the zero status.
+    // their slots (four), for each range the two protection calls (fourteen
+    // words each) and the first's status check, the reload of the base and
+    // mask between them (five) and the branch past the zero status.
     size += 28 + 12 + 8;
-    return protect ? size + 16 + getReadOnlyTestSize() + 56 + 32 + 4 + 20 + 4
+    return protect ? size + 16 + getReadOnlyTestSize() +
+                         getReadOnlyRanges().size() * (56 + 4 + 56) + 20 + 4
                    : size;
   }
   // The base, the magic's check, the mask, the zero status and ret; with
-  // read-only cells, the frame, the test of their slots, the two protection
-  // calls, the first's status check, the reload of the base and mask between
-  // them and the jump past the zero status.
+  // read-only cells, the frame, the test of their slots, for each range the
+  // two protection calls and the first's status check, the reload of the base
+  // and mask between them and the jump past the zero status.
   size += 13 + 17 + 12 + 2 + 1;
-  return protect ? size + 8 + getReadOnlyTestSize() + 60 + 38 + 8 + 25 + 2
+  return protect ? size + 8 + getReadOnlyTestSize() +
+                       getReadOnlyRanges().size() * (60 + 8 + 60) + 25 + 2
                  : size;
 }
 
 void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
-  const uint32_t pageReadWrite = 4;
+  const uint32_t pageReadWrite = 4, pageReadOnly = 2;
   uint32_t roMask = getReadOnlyMask();
   bool roByName = hasReadOnlyByName();
-  uint64_t roStart = UINT64_MAX, roEnd = 0;
-  for (const OverrideCell &c : cells) {
-    if (!c.readOnly)
-      continue;
-    roStart = std::min(roStart, c.getRVA());
-    roEnd = std::max(roEnd, c.getRVA() + ctx.config.wordsize);
-  }
+  std::vector<std::pair<uint64_t, uint64_t>> ranges =
+      protect ? getReadOnlyRanges()
+              : std::vector<std::pair<uint64_t, uint64_t>>();
   uint32_t off = 0;
   // The branches to the zero status, and to the epilogue with the status of a
   // protection call, patched once their places are known.
@@ -823,31 +869,32 @@ void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
         put(0xB9400000 | overrideBlockRVAOffset / 4 << 10 | 16 << 5 | 9);
         branch(toZero, 0x34000009); // cbz w9, .zero
       }
-      // NtProtectVirtualMemory(-1, &base, &size, PAGE_READWRITE, &old), with
-      // base, size and old at sp + 16, 24 and 32.
-      address(0, roStart);
-      put(0xF9000BE0); // str x0, [sp, #16]
-      put(0xD2800001 | uint32_t((roEnd - roStart) & 0xFFFF) << 5); // movz x1
-      put(0xF2A00001 | uint32_t((roEnd - roStart) >> 16 & 0xFFFF) << 5);
-      put(0xF9000FE1);                      // str x1, [sp, #24]
-      put(0x92800000);                      // mov x0, #-1
-      put(0x910043E1);                      // add x1, sp, #16
-      put(0x910063E2);                      // add x2, sp, #24
-      put(0x52800003 | pageReadWrite << 5); // mov w3, #PAGE_READWRITE
-      put(0x910083E4);                      // add x4, sp, #32
-      callProtect();
-      branch(toDone, 0x35000000); // cbnz w0, .done
+      // NtProtectVirtualMemory(-1, &base, &size, protection, &old) over each
+      // range, with base, size and old at sp + 16, 24 and 32.
+      auto protectRange = [&](std::pair<uint64_t, uint64_t> r,
+                              uint32_t protection) {
+        address(0, r.first);
+        put(0xF9000BE0); // str x0, [sp, #16]
+        put(0xD2800001 | uint32_t((r.second - r.first) & 0xFFFF) << 5);
+        put(0xF2A00001 | uint32_t((r.second - r.first) >> 16 & 0xFFFF) << 5);
+        put(0xF9000FE1);                   // str x1, [sp, #24]
+        put(0x92800000);                   // mov x0, #-1
+        put(0x910043E1);                   // add x1, sp, #16
+        put(0x910063E2);                   // add x2, sp, #24
+        put(0x52800003 | protection << 5); // mov w3, #protection
+        put(0x910083E4);                   // add x4, sp, #32
+        callProtect();
+      };
+      for (auto r : ranges) {
+        protectRange(r, pageReadWrite);
+        branch(toDone, 0x35000000); // cbnz w0, .done
+      }
       loadBase();
       loadMask();
       writeCells(true);
-      // NtProtectVirtualMemory(-1, &base, &size, old, &old) over the pages the
-      // first call reported.
-      put(0xB94023E3); // ldr w3, [sp, #32]
-      put(0x92800000); // mov x0, #-1
-      put(0x910043E1); // add x1, sp, #16
-      put(0x910063E2); // add x2, sp, #24
-      put(0x910083E4); // add x4, sp, #32
-      callProtect();
+      // Read-only cells are only in read-only data.
+      for (auto r : ranges)
+        protectRange(r, pageReadOnly);
       branch(toDone, 0x14000000); // b .done
     }
     patch(toZero, off);
@@ -985,22 +1032,29 @@ void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
       write32le(buf + off - 5, overrideBlockRVAOffset);
       jump(toZero, 0x84); // je .zero
     }
-    put({0x48, 0x8D, 0x05, 0, 0, 0, 0}); // lea rax, [rip + base]
-    disp(roStart);
-    put({0x48, 0x89, 0x44, 0x24, 0x30});             // mov [rsp + 0x30], rax
-    put({0x48, 0xC7, 0x44, 0x24, 0x38, 0, 0, 0, 0}); // mov [rsp + 0x38], size
-    write32le(buf + off - 4, uint32_t(roEnd - roStart));
-    // mov r9d, PAGE_READWRITE
-    put({0x41, 0xB9, uint8_t(pageReadWrite), 0, 0, 0});
-    callProtect();
-    put({0x85, 0xC0});  // test eax, eax
-    jump(toDone, 0x85); // jne .done
+    // NtProtectVirtualMemory(-1, &base, &size, protection, &old) over each
+    // range.
+    auto protectRange = [&](std::pair<uint64_t, uint64_t> r,
+                            uint32_t protection) {
+      put({0x48, 0x8D, 0x05, 0, 0, 0, 0}); // lea rax, [rip + base]
+      disp(r.first);
+      put({0x48, 0x89, 0x44, 0x24, 0x30});             // mov [rsp + 0x30], rax
+      put({0x48, 0xC7, 0x44, 0x24, 0x38, 0, 0, 0, 0}); // mov [rsp + 0x38], size
+      write32le(buf + off - 4, uint32_t(r.second - r.first));
+      put({0x41, 0xB9, uint8_t(protection), 0, 0, 0}); // mov r9d, protection
+      callProtect();
+    };
+    for (auto r : ranges) {
+      protectRange(r, pageReadWrite);
+      put({0x85, 0xC0});  // test eax, eax
+      jump(toDone, 0x85); // jne .done
+    }
     loadBase();
     loadMask();
     writeCells(true);
-    // The protection the first call reported, over the pages it reported.
-    put({0x44, 0x8B, 0x4C, 0x24, 0x40}); // mov r9d, [rsp + 0x40]
-    callProtect();
+    // Read-only cells are only in read-only data.
+    for (auto r : ranges)
+      protectRange(r, pageReadOnly);
     put({0xEB, 2}); // jmp .done
   }
   patch(toZero);
@@ -1258,7 +1312,7 @@ void ThreadLocalSlotCopyCallChunk::writeTo(uint8_t *buf) const {
   put({0xC3});       // ret
 }
 // A routine of fixed shape whose branches name labels bound before or after
-// them, patched once the routine is written.
+// them, patched once the routine is written; with no buffer, only measured.
 class LabelledCode {
 public:
   LabelledCode(uint8_t *buf, uint64_t rva) : buf(buf), rva(rva) {}
@@ -1269,17 +1323,28 @@ public:
   }
   void bind(uint32_t label) { labels[label] = off; }
   void put(ArrayRef<uint8_t> bytes) {
-    memcpy(buf + off, bytes.data(), bytes.size());
+    if (buf)
+      memcpy(buf + off, bytes.data(), bytes.size());
     off += bytes.size();
   }
   void put32(uint32_t insn) {
-    write32le(buf + off, insn);
+    if (buf)
+      write32le(buf + off, insn);
     off += 4;
   }
   // The last four bytes put: a 32-bit immediate, or the RIP-relative
   // displacement to target of the instruction that ends with them.
-  void imm32(uint32_t value) { write32le(buf + off - 4, value); }
-  void disp(uint64_t target) { write32le(buf + off - 4, target - (rva + off)); }
+  void imm32(uint32_t value) { at32(4, value); }
+  void disp(uint64_t target) { at32(4, target - (rva + off)); }
+  // The 32-bit or 64-bit field that ends back bytes before the end.
+  void at32(uint32_t back, uint32_t value) {
+    if (buf)
+      write32le(buf + off - back, value);
+  }
+  void imm64(uint64_t value) {
+    if (buf)
+      write64le(buf + off - 8, value);
+  }
   // x86-64: jcc rel32 or jmp rel32 to label.
   void jcc(uint8_t cc, uint32_t label) {
     put({0x0F, cc, 0, 0, 0, 0});
@@ -1296,6 +1361,10 @@ public:
   void branch26(uint32_t insn, uint32_t label) { branch(insn, label, Imm26); }
   // adrp xN, target; add xN, xN, :lo12:target
   void address(uint32_t reg, uint64_t target) {
+    if (!buf) {
+      off += 8;
+      return;
+    }
     write32le(buf + off, 0x90000000 | reg);
     write32le(buf + off + 4, 0x91000000 | reg << 5 | reg);
     applyArm64Addr(buf + off, target, rva + off, 12);
@@ -1304,6 +1373,10 @@ public:
   }
   // adrp x16, imp; ldr x16, [x16, :lo12:imp]; blr x16
   void callImport(uint64_t imp) {
+    if (!buf) {
+      off += 12;
+      return;
+    }
     write32le(buf + off, 0x90000010);
     write32le(buf + off + 4, 0xF9400210);
     applyArm64Addr(buf + off, imp, rva + off, 12);
@@ -1324,6 +1397,8 @@ public:
             uint32_t(value >> (16 * hw) & 0xFFFF) << 5);
   }
   uint32_t finish() {
+    if (!buf)
+      return off;
     for (const Fixup &f : fixups) {
       uint32_t target = labels[f.label];
       assert(target != UINT32_MAX && "unbound label");
@@ -1413,16 +1488,8 @@ public:
     return llvm::any_of(cells,
                         [](const OverrideCell &c) { return c.indirect; });
   }
-  // The start and end of the read-only cells.
-  std::pair<uint64_t, uint64_t> getReadOnlyRange() const {
-    uint64_t start = UINT64_MAX, end = 0;
-    for (const OverrideCell &c : cells) {
-      if (!c.readOnly)
-        continue;
-      start = std::min(start, c.getRVA());
-      end = std::max(end, c.getRVA() + ctx.config.wordsize);
-    }
-    return {start, end};
+  std::vector<std::pair<uint64_t, uint64_t>> getReadOnlyRanges() const {
+    return lld::coff::getReadOnlyRanges(ctx, cells);
   }
 
 private:
@@ -1547,10 +1614,7 @@ public:
         selfKey(selfKey), ctx(ctx) {
     setAlignment(16);
   }
-  size_t getSize() const override {
-    std::vector<uint8_t> scratch(2048);
-    return write(scratch.data());
-  }
+  size_t getSize() const override { return write(nullptr); }
   void writeTo(uint8_t *buf) const override { write(buf); }
   uint32_t getOutputCharacteristics() const override {
     return llvm::COFF::IMAGE_SCN_CNT_CODE |
@@ -1624,10 +1688,12 @@ uint32_t NamedCellFillChunk::write(uint8_t *buf) const {
 }
 
 void NamedCellFillChunk::writeAMD64(LabelledCode &a) const {
-  const uint32_t pageReadWrite = 4;
+  const uint32_t pageReadWrite = 4, pageReadOnly = 2;
   bool readOnly = list->hasReadOnly();
   bool vague = list->hasVague();
-  auto [roStart, roEnd] = list->getReadOnlyRange();
+  std::vector<std::pair<uint64_t, uint64_t>> ranges =
+      readOnly ? list->getReadOnlyRanges()
+               : std::vector<std::pair<uint64_t, uint64_t>>();
   uint32_t outer = a.newLabel(), search = a.newLabel(), block = a.newLabel(),
            nextModule = a.newLabel(), delayLoad = a.newLabel(),
            probe = a.newLabel(), bucket = a.newLabel(), hit = a.newLabel(),
@@ -1647,6 +1713,26 @@ void NamedCellFillChunk::writeAMD64(LabelledCode &a) const {
     a.put({0x4C, 0x8D, 0x44, 0x24, 0x38});             // lea r8, [rsp + 0x38]
     a.put({0xFF, 0x15, 0, 0, 0, 0}); // call [rip + NtProtectVirtualMemory]
     a.disp(protect->getRVA());
+  };
+  // Each range of the read-only cells made writable, ending the fill with
+  // the status of a call that fails, or read-only again, since read-only
+  // cells are only in read-only data.
+  auto protectRanges = [&](bool writable) {
+    for (auto [start, end] : ranges) {
+      a.put({0x48, 0x8D, 0x05, 0, 0, 0, 0}); // lea rax, [rip + base]
+      a.disp(start);
+      a.put({0x48, 0x89, 0x44, 0x24, 0x30}); // mov [rsp + 0x30], rax
+      a.put({0x48, 0xC7, 0x44, 0x24, 0x38, 0, 0, 0, 0}); // mov [rsp+0x38], n
+      a.imm32(uint32_t(end - start));
+      // mov r9d, protection
+      a.put({0x41, 0xB9, uint8_t(writable ? pageReadWrite : pageReadOnly), 0, 0,
+             0});
+      callProtect();
+      if (writable) {
+        a.put({0x85, 0xC0}); // test eax, eax
+        a.jcc(0x85, done);   // jnz .done
+      }
+    }
   };
 
   // push rbx, rbp, rsi, rdi, r12, r13, r14, r15; sub rsp, 0x68, the frame
@@ -1802,7 +1888,7 @@ void NamedCellFillChunk::writeAMD64(LabelledCode &a) const {
     a.bind(parent);
     // cmp dword ptr [rax + reason], LoadReasonDelayloadDependency
     a.put({0x83, 0xB8, 0, 0, 0, 0, uint8_t(loadReasonDelayloadDependency)});
-    write32le(a.buf + a.off - 5, ldrEntryLoadReason);
+    a.at32(5, ldrEntryLoadReason);
     a.jcc(0x85, delayLoaders);
     a.put({0xFF, 0xC9}); // dec ecx
     a.jcc(0x84, delayLoaders);
@@ -1830,7 +1916,7 @@ void NamedCellFillChunk::writeAMD64(LabelledCode &a) const {
     a.put({0x45, 0x8B, 0x48, 0x0C});             // mov r9d, [r8 + 12]
     a.put({0x4D, 0x01, 0xC1});                   // add r9, r8
     a.put({0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0}); // mov rax, key
-    write64le(a.buf + a.off - 8, selfKey);
+    a.imm64(selfKey);
     a.bind(delayLoad);
     a.put({0x85, 0xC9}); // test ecx, ecx
     a.jcc(0x84, nextModule);
@@ -1914,16 +2000,7 @@ void NamedCellFillChunk::writeAMD64(LabelledCode &a) const {
     a.jcc(0x84, store);
     a.put({0x41, 0x0F, 0xBA, 0xEE, 0x00}); // bts r14d, 0
     a.jcc(0x82, store);
-    a.put({0x48, 0x8D, 0x05, 0, 0, 0, 0}); // lea rax, [rip + base]
-    a.disp(roStart);
-    a.put({0x48, 0x89, 0x44, 0x24, 0x30});             // mov [rsp + 0x30], rax
-    a.put({0x48, 0xC7, 0x44, 0x24, 0x38, 0, 0, 0, 0}); // mov [rsp + 0x38], size
-    a.imm32(uint32_t(roEnd - roStart));
-    // mov r9d, PAGE_READWRITE
-    a.put({0x41, 0xB9, uint8_t(pageReadWrite), 0, 0, 0});
-    callProtect();
-    a.put({0x85, 0xC0}); // test eax, eax
-    a.jcc(0x85, done);   // jnz .done
+    protectRanges(true);
   }
   a.bind(store);
   a.put({0x8B, 0x43, 0x08});             // mov eax, [rbx + 8]
@@ -1964,8 +2041,7 @@ void NamedCellFillChunk::writeAMD64(LabelledCode &a) const {
     if (readOnly) {
       a.put({0x41, 0xF6, 0xC6, 0x01}); // test r14b, 1
       a.jcc(0x84, pinStatus);
-      a.put({0x44, 0x8B, 0x4C, 0x24, 0x40}); // mov r9d, [rsp + 0x40]
-      callProtect();
+      protectRanges(false);
     }
     a.bind(pinStatus);
     a.put({0x89, 0xD8}); // mov eax, ebx
@@ -1974,12 +2050,11 @@ void NamedCellFillChunk::writeAMD64(LabelledCode &a) const {
 
   a.bind(finish);
   if (readOnly) {
-    // The protection the first call reported, over the pages it reported.
+    // The read-only cells protected again.
     a.put({0x31, 0xC0});             // xor eax, eax
     a.put({0x41, 0xF6, 0xC6, 0x01}); // test r14b, 1
     a.jcc(0x84, done);
-    a.put({0x44, 0x8B, 0x4C, 0x24, 0x40}); // mov r9d, [rsp + 0x40]
-    callProtect();
+    protectRanges(false);
     a.jmp(done);
   }
   a.bind(zero);
@@ -1992,10 +2067,12 @@ void NamedCellFillChunk::writeAMD64(LabelledCode &a) const {
 }
 
 void NamedCellFillChunk::writeARM64(LabelledCode &a) const {
-  const uint32_t pageReadWrite = 4;
+  const uint32_t pageReadWrite = 4, pageReadOnly = 2;
   bool readOnly = list->hasReadOnly();
   bool vague = list->hasVague();
-  auto [roStart, roEnd] = list->getReadOnlyRange();
+  std::vector<std::pair<uint64_t, uint64_t>> ranges =
+      readOnly ? list->getReadOnlyRanges()
+               : std::vector<std::pair<uint64_t, uint64_t>>();
   uint32_t outer = a.newLabel(), search = a.newLabel(), block = a.newLabel(),
            nextModule = a.newLabel(), delayLoad = a.newLabel(),
            probe = a.newLabel(), bucket = a.newLabel(), hit = a.newLabel(),
@@ -2013,6 +2090,23 @@ void NamedCellFillChunk::writeARM64(LabelledCode &a) const {
     a.put32(0x910183E2); // add x2, sp, #96
     a.put32(0x9101A3E4); // add x4, sp, #104
     a.callImport(protect->getRVA());
+  };
+  // Each range of the read-only cells made writable, ending the fill with
+  // the status of a call that fails, or read-only again, since read-only
+  // cells are only in read-only data.
+  auto protectRanges = [&](bool writable) {
+    for (auto [start, end] : ranges) {
+      a.address(0, start);
+      a.put32(0xF9002FE0); // str x0, [sp, #88]
+      a.put32(0xD2800001 | uint32_t((end - start) & 0xFFFF) << 5); // movz x1
+      a.put32(0xF2A00001 | uint32_t((end - start) >> 16 & 0xFFFF) << 5);
+      a.put32(0xF90033E1); // str x1, [sp, #96]
+      // mov w3, #protection
+      a.put32(0x52800003 | (writable ? pageReadWrite : pageReadOnly) << 5);
+      callProtect();
+      if (writable)
+        a.branch19(0x35000000, done); // cbnz w0, .done
+    }
   };
 
   // The frame holds the protection calls' base, size and old protection at
@@ -2254,14 +2348,7 @@ void NamedCellFillChunk::writeARM64(LabelledCode &a) const {
     a.branch14(0x36000009, store); // tbz w9, #0
     a.branch14(0x37000018, store); // tbnz w24, #0
     a.put32(0x32000318);           // orr w24, w24, #1
-    a.address(0, roStart);
-    a.put32(0xF9002FE0); // str x0, [sp, #88]
-    a.put32(0xD2800001 | uint32_t((roEnd - roStart) & 0xFFFF) << 5); // movz x1
-    a.put32(0xF2A00001 | uint32_t((roEnd - roStart) >> 16 & 0xFFFF) << 5);
-    a.put32(0xF90033E1);                      // str x1, [sp, #96]
-    a.put32(0x52800003 | pageReadWrite << 5); // mov w3, #PAGE_READWRITE
-    callProtect();
-    a.branch19(0x35000000, done); // cbnz w0, .done
+    protectRanges(true);
   }
   a.bind(store);
   a.put32(0xB9400A69);           // ldr w9, [x19, #8]
@@ -2299,8 +2386,7 @@ void NamedCellFillChunk::writeARM64(LabelledCode &a) const {
     a.put32(0x2A0003F3); // mov w19, w0
     if (readOnly) {
       a.branch14(0x36000018, pinStatus); // tbz w24, #0
-      a.put32(0xB9406BE3);               // ldr w3, [sp, #104]
-      callProtect();
+      protectRanges(false);
     }
     a.bind(pinStatus);
     a.put32(0x2A1303E0); // mov w0, w19
@@ -2309,11 +2395,10 @@ void NamedCellFillChunk::writeARM64(LabelledCode &a) const {
 
   a.bind(finish);
   if (readOnly) {
-    // The protection the first call reported, over the pages it reported.
+    // The read-only cells protected again.
     a.put32(0x52800000);          // mov w0, #0
     a.branch14(0x36000018, done); // tbz w24, #0
-    a.put32(0xB9406BE3);          // ldr w3, [sp, #104]
-    callProtect();
+    protectRanges(false);
     a.branch26(0x14000000, done);
   }
   a.bind(zero);
@@ -3745,6 +3830,32 @@ void ImportSlotContents::createNamedCellFill() {
 // whose page-rounded range has one protection; each run must still be one word
 // a slot.
 void ImportSlotContents::check(Chunk *iatStart, uint64_t iatSize) {
+  // A fill makes the pages of each range of its read-only cells writable and
+  // then read-only again; every section those pages hold must therefore be
+  // read-only data.
+  auto checkCells = [&](ArrayRef<std::pair<uint64_t, uint64_t>> ranges) {
+    for (auto [start, end] : ranges) {
+      uint64_t pageBegin = alignDown(start, ctx.config.align);
+      uint64_t pageLimit = alignTo(end, ctx.config.align);
+      for (OutputSection *os : ctx.outputSections) {
+        if (os->getRVA() >= pageLimit ||
+            os->getRVA() + os->getVirtualSize() <= pageBegin)
+          continue;
+        if ((os->header.Characteristics &
+             (IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE |
+              IMAGE_SCN_MEM_EXECUTE)) != IMAGE_SCN_MEM_READ)
+          Err(ctx) << "section " << os->name
+                   << " shares a page with read-only cells, which the image's "
+                      "fill makes writable, but is not read-only data";
+      }
+    }
+  };
+  if (overrideCellFill)
+    checkCells(
+        cast<OverrideCellFillChunk>(overrideCellFill)->getReadOnlyRanges());
+  if (namedCellList)
+    checkCells(cast<NamedCellListChunk>(namedCellList)->getReadOnlyRanges());
+
   if (ctx.importSlots.empty())
     return;
   const uint32_t perms =

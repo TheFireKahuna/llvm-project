@@ -65,10 +65,16 @@
 # CHECK-NEXT: adrp    x9, 0x180002000
 # CHECK-NEXT: add     x9, x9, #0x[[RO]]
 # CHECK-NEXT: str     x17, [x9]
-# CHECK-NEXT: ldr     w3, [sp, #0x20]
+# CHECK-NEXT: adrp    x0, 0x180002000
+# CHECK-NEXT: add     x0, x0, #0x[[RO]]
+# CHECK-NEXT: str     x0, [sp, #0x10]
+# CHECK-NEXT: mov     x1, #0x8
+# CHECK-NEXT: movk    x1, #0x0, lsl #16
+# CHECK-NEXT: str     x1, [sp, #0x18]
 # CHECK-NEXT: mov     x0, #-0x1
 # CHECK-NEXT: add     x1, sp, #0x10
 # CHECK-NEXT: add     x2, sp, #0x18
+# CHECK-NEXT: mov     w3, #0x2
 # CHECK-NEXT: add     x4, sp, #0x20
 # CHECK-NEXT: adrp    x16, 0x180002000
 # CHECK-NEXT: ldr     x16, [x16, #0x[[PROTECT]]]
@@ -83,7 +89,7 @@
 # CHECK-NEXT: ldr     x16, [x16, #0x[[RO]]]
 # CHECK-NEXT: br      x16
 
-# UNWIND:      FunctionLength: 244
+# UNWIND:      FunctionLength: 268
 # UNWIND:      EpiloguePacked: Yes
 # UNWIND:      0xe1                ; mov fp, sp
 # UNWIND-NEXT: 0x85                ; stp x29, x30, [sp, #-48]!
