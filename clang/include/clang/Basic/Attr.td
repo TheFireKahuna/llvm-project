@@ -531,6 +531,9 @@ def TargetMustTailAvailable:  TargetSpec {
 def TargetELF : TargetSpec {
   let ObjectFormats = ["ELF"];
 }
+def TargetELFOrCOFF : TargetSpec {
+  let ObjectFormats = ["ELF", "COFF"];
+}
 def TargetELFOrMachO : TargetSpec {
   let ObjectFormats = ["ELF", "MachO"];
 }
@@ -3904,6 +3907,13 @@ def Used : InheritableAttr {
   let Subjects = SubjectList<[NonLocalVar, Function, ObjCMethod]>;
   let Documentation = [UsedDocs];
   let SimpleHandler = 1;
+}
+
+def Symver : InheritableAttr, TargetSpecificAttr<TargetELFOrCOFF> {
+  let Spellings = [GCC<"symver">];
+  let Args = [StringArgument<"Version">];
+  let Subjects = SubjectList<[NonLocalVar, Function]>;
+  let Documentation = [SymverDocs];
 }
 
 def Retain : InheritableAttr {

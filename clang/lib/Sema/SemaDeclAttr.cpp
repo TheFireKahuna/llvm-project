@@ -3516,6 +3516,18 @@ bool Sema::checkSectionName(SourceLocation LiteralLoc, StringRef SecName) {
   return true;
 }
 
+static void handleSymverAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
+  StringRef Name;
+  if (!S.checkStringLiteralArgumentAttr(AL, 0, Name))
+    return;
+  size_t At = Name.find('@');
+  if (At == 0 || At == StringRef::npos || At + 1 == Name.size()) {
+    S.Diag(AL.getLoc(), diag::err_attribute_symver_name);
+    return;
+  }
+  D->addAttr(::new (S.Context) SymverAttr(S.Context, AL, Name));
+}
+
 static void handleSectionAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
   // Make sure that there is a string literal as the sections's single
   // argument.
@@ -8102,6 +8114,9 @@ ProcessDeclAttribute(Sema &S, Decl *D, const ParsedAttr &AL,
     break;
   case ParsedAttr::AT_Section:
     handleSectionAttr(S, D, AL);
+    break;
+  case ParsedAttr::AT_Symver:
+    handleSymverAttr(S, D, AL);
     break;
   case ParsedAttr::AT_CodeModel:
     handleCodeModelAttr(S, D, AL);

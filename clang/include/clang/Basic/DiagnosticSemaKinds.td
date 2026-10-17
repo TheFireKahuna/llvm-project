@@ -2381,6 +2381,8 @@ def err_conflicting_overriding_attributes : Error<
   "virtual function %0 has different attributes "
   "%diff{($) than the function it overrides (which has $)|"
   "than the function it overrides}1,2">;
+def err_attribute_symver_name : Error<
+  "'symver' attribute requires a name of the form 'name@version'">;
 def err_ms_member_cc_nontrivial_param : Error<
   "%0, which is not trivial for calls, cannot be passed by value to a member "
   "function with Microsoft's calling convention">;

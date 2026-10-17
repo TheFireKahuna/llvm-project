@@ -3564,6 +3564,15 @@ void CodeGenModule::SetCommonAttributes(GlobalDecl GD, llvm::GlobalValue *GV) {
   if (D && D->hasAttr<UsedAttr>())
     addUsedOrCompilerUsedGlobal(GV);
 
+  // Each symver attribute gives the definition a versioned name, which the
+  // assembler defines as the definition is kept.
+  if (D && D->hasAttr<SymverAttr>()) {
+    for (const auto *A : D->specific_attrs<SymverAttr>())
+      getModule().appendModuleInlineAsm(
+          (".symver " + GV->getName() + ", " + A->getVersion()).str());
+    addCompilerUsedGlobal(GV);
+  }
+
   if (const auto *VD = dyn_cast_if_present<VarDecl>(D);
       VD &&
       ((CodeGenOpts.KeepPersistentStorageVariables &&
