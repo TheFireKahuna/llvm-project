@@ -210,18 +210,19 @@ static Symbol *findOffer(BitcodeFile &f, const lto::InputFile::Symbol &objSym,
       ("__imp_" + sym->getName() + (objSym.isTLS() ? "$tls" : "")).str());
 }
 
-// Returns whether a DLL the image imports from offers the COMDAT data that
-// objSym defines, whose instance preempts the definition after LTO.
-static bool isOfferedWeakData(BitcodeFile &f,
-                              const lto::InputFile::Symbol &objSym,
-                              Symbol *sym) {
+// Returns the import of a DLL the image imports from that offers the COMDAT
+// data objSym defines, whose instance preempts the definition after LTO, if
+// one does.
+static DefinedImportData *
+findOfferedWeakData(BitcodeFile &f, const lto::InputFile::Symbol &objSym,
+                    Symbol *sym) {
   if (!f.symtab.ctx.config.importSlots || objSym.isUndefined() ||
       objSym.getComdatIndex() == -1 || objSym.isExecutable() ||
       objSym.getVisibility() != GlobalValue::DefaultVisibility ||
       !isShareableVagueName(sym->getName()))
-    return false;
+    return nullptr;
   auto *imp = dyn_cast_or_null<DefinedImportData>(findOffer(f, objSym, sym));
-  return imp && !f.symtab.ignoresOffersOf(imp);
+  return imp && !f.symtab.ignoresOffersOf(imp) ? imp : nullptr;
 }
 
 // Returns whether a DLL the image imports from offers the function that objSym
@@ -262,10 +263,11 @@ static bool isOfferedByImage(BitcodeFile &f,
 // through its GOT, so that LTO keeps them in import form: data with default
 // visibility in a COMDAT but type_info objects, and functions whose addresses
 // are significant, unless -Bsymbolic binds them locally
-// (SymbolTable::isPreemptibleVagueEntity).
+// (SymbolTable::isPreemptibleVagueEntity). The cells are written by the
+// image's fill, which runs only where the image has a C initializer table.
 static bool isPreemptibleInImage(BitcodeFile &f,
                                  const lto::InputFile::Symbol &objSym,
-                                 Symbol *sym) {
+                                 Symbol *sym, bool hasCInitializers) {
   const Configuration &config = f.symtab.ctx.config;
   using B = Configuration::Bsymbolic;
   if (!config.importSlots || !config.dll || f.symtab.isEC() ||
@@ -275,7 +277,7 @@ static bool isPreemptibleInImage(BitcodeFile &f,
           Comdat::NoDeduplicate ||
       objSym.getVisibility() != GlobalValue::DefaultVisibility ||
       !isShareableVagueName(sym->getName()) || isTypeInfoName(sym->getName()) ||
-      !isa_and_nonnull<Defined>(f.symtab.findUnderscore("__xi_a")))
+      !hasCInitializers)
     return false;
   if (objSym.isExecutable())
     return config.bsymbolic != B::Functions &&
@@ -307,6 +309,15 @@ void BitcodeCompiler::add(BitcodeFile &f) {
   }
   addedFile = true;
 
+  // The offer of the COMDAT data each symbol defines, which the loops below
+  // read.
+  SmallVector<DefinedImportData *, 0> dataOffers;
+  if (ctx.config.importSlots) {
+    dataOffers.resize(symBodies.size());
+    for (auto [i, objSym] : llvm::enumerate(obj.symbols()))
+      dataOffers[i] = findOfferedWeakData(f, objSym, symBodies[i]);
+  }
+
   // Under -import-slots, the COMDATs of data that a DLL offers whole, every
   // definition in them by the same DLL, are preempted before LTO, as the
   // native link preempts them after: LTO compiles no copy, and ThinLTO keeps
@@ -321,13 +332,12 @@ void BitcodeCompiler::add(BitcodeFile &f) {
     SmallVector<bool, 0> partial(numComdats, false);
     unsigned i = 0;
     for (const lto::InputFile::Symbol &objSym : obj.symbols()) {
-      Symbol *sym = symBodies[i++];
+      Symbol *sym = symBodies[i];
+      DefinedImportData *imp = sym->getFile() == &f ? dataOffers[i] : nullptr;
+      ++i;
       int c = objSym.getComdatIndex();
       if (c == -1 || objSym.isUndefined() || partial[c])
         continue;
-      DefinedImportData *imp = nullptr;
-      if (sym->getFile() == &f && isOfferedWeakData(f, objSym, sym))
-        imp = cast<DefinedImportData>(findOffer(f, objSym, sym));
       if (!imp || (offeredComdats[c] &&
                    !offeredComdats[c]->getDLLName().equals_insensitive(
                        imp->getDLLName()))) {
@@ -358,10 +368,16 @@ void BitcodeCompiler::add(BitcodeFile &f) {
         offeredComdats[c] = nullptr;
   }
 
+  bool hasCInitializers =
+      ctx.config.importSlots && ctx.config.dll &&
+      isa_and_nonnull<Defined>(f.symtab.findUnderscore("__xi_a"));
+
   // Provide a resolution to the LTO API for each symbol.
   for (const lto::InputFile::Symbol &objSym : obj.symbols()) {
     Symbol *sym = symBodies[symNum];
     lto::SymbolResolution &r = resols[symNum];
+    DefinedImportData *dataOffer =
+        dataOffers.empty() ? nullptr : dataOffers[symNum];
     ++symNum;
 
     // Ideally we shouldn't check for SF_Undefined but currently IRObjectFile
@@ -374,21 +390,20 @@ void BitcodeCompiler::add(BitcodeFile &f) {
                                          !offeredComdats.empty() &&
                                          offeredComdats[c]) {
       r.Prevailing = false;
-      preemptedSyms.emplace_back(
-          &f.symtab, sym, cast<DefinedImportData>(findOffer(f, objSym, sym)));
+      preemptedSyms.emplace_back(&f.symtab, sym, dataOffer);
       continue;
     }
     // Preempted after LTO, offered data is kept, and the references to it
     // reach it through its import.
-    bool offered = isOfferedWeakData(f, objSym, sym);
+    bool offered = dataOffer != nullptr;
     r.VisibleToRegularObj =
         sym->isUsedInRegularObj || offered ||
         (r.Prevailing && (isOfferedByImage(f, objSym, sym) ||
                           isOfferedFunction(f, objSym, sym)));
     r.ExportDynamic = exportedSyms && exportedSyms->contains(sym);
-    r.FinalDefinitionInLinkageUnit = !offered &&
-                                     !isPreemptibleInImage(f, objSym, sym) &&
-                                     isFinalInImage(f, objSym, sym);
+    r.FinalDefinitionInLinkageUnit =
+        !offered && !isPreemptibleInImage(f, objSym, sym, hasCInitializers) &&
+        isFinalInImage(f, objSym, sym);
     // The object LTO generates defines the symbol again. It is undefined only
     // once every file is added, so that the files after this one still see
     // where it is defined.
