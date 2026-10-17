@@ -98,6 +98,7 @@ define x86_64_sysvcc void @f5(ptr %p) nounwind {
 ; CHECK-NEXT:  .section .text,"xr",discard,__llvm_kcfi_local_dispatch_12345678
 ; CHECK:       .p2align 4
 ; CHECK-NEXT:  __llvm_kcfi_local_dispatch_12345678:
+; CHECK-NEXT:    .linkkcfithunk __llvm_kcfi_local_dispatch_12345678, local_dispatch, 0x12345678, 0xdeadbeef, 0, __llvm_kcfi_mismatch_12345678
 ; CHECK-NEXT:    leaq __llvm_code_start(%rip), %r10
 ; CHECK-NEXT:    leaq __llvm_code_end(%rip), %r11
 ; CHECK-NEXT:    cmpq %r10, %rax
@@ -122,6 +123,7 @@ define x86_64_sysvcc void @f5(ptr %p) nounwind {
 ; CHECK-NEXT:    int $41
 ; CHECK:       .p2align 4
 ; CHECK-NEXT:  __llvm_kcfi_local_check_00000010:
+; CHECK-NEXT:    .linkkcfithunk __llvm_kcfi_local_check_00000010, local_check, 0x00000010, 0xdeadbeef, 0, __llvm_kcfi_check_mismatch_00000010
 ; CHECK-NEXT:    leaq __llvm_code_start(%rip), %r10
 ; CHECK-NEXT:    leaq __llvm_code_end(%rip), %r11
 ; CHECK-NEXT:    cmpq %r10, %rcx

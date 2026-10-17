@@ -273,17 +273,18 @@ void AsmPrinter::emitKCFIThunks(Module &M) {
       }
 
       emitKCFIFunctionStart(Thunk, COFF::IMAGE_COMDAT_SELECT_ANY, Align(16));
-      // A linker may replace an ordinary thunk with a form of its own, which
-      // it builds from these facts.
-      if (!Kind.Local)
-        OutStreamer->emitCOFFKCFIThunk(Thunk,
-                                       Kind.Vfn ? COFF::LinkKCFIThunkVfnCheck
-                                       : Kind.Routine->Kind == KCFIThunkDispatch
-                                           ? COFF::LinkKCFIThunkDispatch
-                                           : COFF::LinkKCFIThunkCheck,
-                                       MD->Type, Marker->getZExtValue(),
-                                       PrefixNops * getKCFIPrefixByteScale(),
-                                       Mismatch);
+      // A linker may replace a thunk with a form of its own, which it builds
+      // from these facts.
+      bool Dispatch = Kind.Routine->Kind == KCFIThunkDispatch;
+      OutStreamer->emitCOFFKCFIThunk(
+          Thunk,
+          Kind.Vfn     ? COFF::LinkKCFIThunkVfnCheck
+          : Kind.Local ? (Dispatch ? COFF::LinkKCFIThunkLocalDispatch
+                                   : COFF::LinkKCFIThunkLocalCheck)
+          : Dispatch   ? COFF::LinkKCFIThunkDispatch
+                       : COFF::LinkKCFIThunkCheck,
+          MD->Type, Marker->getZExtValue(),
+          PrefixNops * getKCFIPrefixByteScale(), Mismatch);
 
       emitKCFIThunk({Kind.Routine, MD->Type, Pattern, PrefixNops, Kind.Local,
                      Kind.Vfn, Mismatch, /*Miss=*/nullptr,

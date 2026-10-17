@@ -68,6 +68,7 @@ define void @f2(ptr %p) {
 ; CHECK-NEXT:  .byte 0
 ; CHECK-NEXT:  .section .text,"xr",discard,__llvm_kcfi_local_check_12345678
 ; CHECK:       __llvm_kcfi_local_check_12345678:
+; CHECK-NEXT:    .linkkcfithunk __llvm_kcfi_local_check_12345678, local_check, 0x12345678, 0xdeadbeef, 0, __llvm_kcfi_check_mismatch_12345678
 ; CHECK-NEXT:    adrp x16, __llvm_code_start
 ; CHECK-NEXT:    add x16, x16, :lo12:__llvm_code_start
 ; CHECK-NEXT:    adrp x17, __llvm_code_end

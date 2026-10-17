@@ -422,6 +422,11 @@ enum LinkKCFIThunkKind : uint8_t {
   // As LinkKCFIThunkCheck, but checks the second type that a function which
   // can occupy a vtable slot carries.
   LinkKCFIThunkVfnCheck,
+  // As LinkKCFIThunkDispatch and LinkKCFIThunkCheck, for a type whose every
+  // target is in the image: the thunk tests the code range itself, and fails
+  // fast on a target outside it where the linker defined the range.
+  LinkKCFIThunkLocalDispatch,
+  LinkKCFIThunkLocalCheck,
 };
 
 // The form of an instruction site, which a linker verifies against the
