@@ -12,6 +12,7 @@
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCDirectives.h"
+#include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCParser/AsmLexer.h"
 #include "llvm/MC/MCParser/MCAsmParserExtension.h"
 #include "llvm/MC/MCSectionCOFF.h"
@@ -68,6 +69,7 @@ class COFFAsmParser : public MCAsmParserExtension {
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSymbolAttribute>(".weak");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSymbolAttribute>(
         ".weak_anti_dep");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveSymver>(".symver");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveCGProfile>(".cg_profile");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSecNum>(".secnum");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSecOffset>(".secoffset");
@@ -175,6 +177,7 @@ class COFFAsmParser : public MCAsmParserExtension {
 
   bool parseAtUnwindOrAtExcept(bool &unwind, bool &except);
   bool parseDirectiveSymbolAttribute(StringRef Directive, SMLoc);
+  bool parseDirectiveSymver(StringRef, SMLoc);
 
 public:
   COFFAsmParser() = default;
@@ -299,6 +302,37 @@ bool COFFAsmParser::parseSectionFlags(StringRef SectionName,
   if (SecFlags & Info)
     *Flags |= COFF::IMAGE_SCN_LNK_INFO;
 
+  return false;
+}
+
+/// parseDirectiveSymver
+///  ::= .symver foo, bar@ver
+/// COFF has no symbol versions, so the versioned name is an external alias of
+/// the symbol, which a linker exports under its version. "@@@" names the
+/// default version, as "@@" does; the original symbol cannot be removed.
+bool COFFAsmParser::parseDirectiveSymver(StringRef, SMLoc) {
+  MCSymbol *OriginalSym;
+  StringRef Name;
+  if (getParser().parseSymbol(OriginalSym))
+    return TokError("expected identifier");
+  if (getLexer().isNot(AsmToken::Comma))
+    return TokError("expected a comma");
+  Lex();
+  if (getParser().parseIdentifier(Name))
+    return TokError("expected identifier");
+  if (!Name.contains('@'))
+    return TokError("expected a '@' in the name");
+  if (parseOptionalToken(AsmToken::Comma))
+    return TokError("'remove' is not supported for COFF");
+  (void)parseOptionalToken(AsmToken::EndOfStatement);
+
+  std::string Versioned = Name.str();
+  if (size_t At = Versioned.find("@@@"); At != std::string::npos)
+    Versioned.erase(At, 1);
+  MCSymbol *Alias = getContext().getOrCreateSymbol(Versioned);
+  getStreamer().emitAssignment(
+      Alias, MCSymbolRefExpr::create(OriginalSym, getContext()));
+  getStreamer().emitSymbolAttribute(Alias, MCSA_Global);
   return false;
 }
 
