@@ -37,6 +37,7 @@
   #else
     #define _LIBUNWIND_SUPPORT_DWARF_UNWIND 1
   #endif
+  #define _LIBUNWIND_USE_WIN32_API 1
 #elif defined(_LIBUNWIND_IS_BAREMETAL)
   #if !defined(_LIBUNWIND_ARM_EHABI)
     #define _LIBUNWIND_SUPPORT_DWARF_UNWIND 1
@@ -75,7 +76,9 @@
   #define _LIBUNWIND_EXPORT
   #define _LIBUNWIND_HIDDEN
 #else
-  #if !defined(__ELF__) && !defined(__MACH__) && !defined(_AIX)
+  // Windows Itanium and NT-POSIX export by visibility, as ELF does.
+  #if !defined(__ELF__) && !defined(__MACH__) && !defined(_AIX) &&             \
+      !defined(_WIN32_ITANIUM)
     #define _LIBUNWIND_EXPORT __declspec(dllexport)
     #define _LIBUNWIND_HIDDEN
   #else
@@ -103,7 +106,7 @@
   extern "C" _LIBUNWIND_EXPORT __typeof(name) aliasname                        \
       __attribute__((weak, alias(#name)));
 #elif defined(_WIN32)
-#if defined(__MINGW32__)
+#if defined(__MINGW32__) || defined(_WIN32_ITANIUM)
 #define _LIBUNWIND_WEAK_ALIAS(name, aliasname)                                 \
   extern "C" _LIBUNWIND_EXPORT __typeof(name) aliasname                        \
       __attribute__((alias(#name)));
@@ -135,6 +138,7 @@
 #ifndef _LIBUNWIND_REMEMBER_HEAP_ALLOC
 #if defined(_LIBUNWIND_REMEMBER_STACK_ALLOC) || defined(__APPLE__) ||          \
     defined(__linux__) || defined(__ANDROID__) || defined(__MINGW32__) ||      \
+    defined(_WIN32_ITANIUM) ||                         \
     defined(_LIBUNWIND_IS_BAREMETAL)
 #define _LIBUNWIND_REMEMBER_ALLOC(_size) __builtin_alloca(_size)
 #define _LIBUNWIND_REMEMBER_FREE(_ptr)                                         \

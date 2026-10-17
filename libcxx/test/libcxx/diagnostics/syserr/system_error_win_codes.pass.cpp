@@ -7,6 +7,8 @@
 //===----------------------------------------------------------------------===//
 
 // REQUIRES: windows
+// NT-POSIX has no Win32 API.
+// UNSUPPORTED: target={{.+}}-windows-ntposix
 
 // Validate that system_error on windows accepts Windows' System Error Codes (as
 // used by win32 APIs and reported by GetLastError), and that they are properly

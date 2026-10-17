@@ -244,7 +244,7 @@ inline _LIBCPP_HIDE_FROM_ABI size_t __wcsxfrm(wchar_t* __dest, const wchar_t* __
 }
 #  endif // _LIBCPP_HAS_WIDE_CHARACTERS
 
-#  if defined(__MINGW32__) && __MSVCRT_VERSION__ < 0x0800
+#  if (defined(__MINGW32__) && __MSVCRT_VERSION__ < 0x0800) || defined(_WIN32_ITANIUM)
 _LIBCPP_EXPORTED_FROM_ABI _LIBCPP_ATTRIBUTE_FORMAT(__strftime__, 3, 0) size_t
     __strftime(char*, size_t, const char*, const struct tm*, __locale_t);
 #  else

@@ -28,6 +28,14 @@
 #  include <windows.h>
 #endif
 
+#if defined(_WIN32_ITANIUM)
+// The C runtime's thread-exit entry: runs the destructors that
+// __cxa_thread_atexit registered on this thread and have not run yet.
+extern "C" void __cxa_thread_finalize(void*);
+// ntdll: whether the process is exiting.
+extern "C" __declspec(dllimport) BOOLEAN NTAPI RtlDllShutdownInProgress(void);
+#endif
+
 #if defined(__ELF__) && defined(_LIBCPP_LINK_PTHREAD_LIB)
 #  pragma comment(lib, "pthread")
 #endif
@@ -163,7 +171,19 @@ void __thread_struct_imp::__make_ready_at_thread_exit(__assoc_sub_state* __s) {
 
 __thread_struct::__thread_struct() : __p_(new __thread_struct_imp) {}
 
-__thread_struct::~__thread_struct() { delete __p_; }
+__thread_struct::~__thread_struct() {
+#if defined(_WIN32_ITANIUM)
+  // The *_at_thread_exit functions act after the thread's thread_local objects
+  // are destroyed. This destructor runs from a fiber-local storage callback,
+  // which Windows runs at thread exit before the TLS callbacks that destroy
+  // those objects. So run them first, through the C runtime: this is the
+  // thread's own data only when the thread, or its running fiber, is exiting,
+  // not when another fiber is deleted, and at process exit none may run.
+  if (__thread_local_data().get() == this && !RtlDllShutdownInProgress())
+    __cxa_thread_finalize(nullptr);
+#endif
+  delete __p_;
+}
 
 void __thread_struct::notify_all_at_thread_exit(condition_variable* cv, mutex* m) {
   __p_->notify_all_at_thread_exit(cv, m);
