@@ -34,6 +34,7 @@
 #include "Relax.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
+#include "lld/Common/AArch64Instructions.h"
 #include "lld/Common/ErrorHandler.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -48,6 +49,7 @@ using namespace llvm;
 using namespace llvm::COFF;
 using namespace llvm::object;
 using namespace llvm::support::endian;
+using namespace lld::aarch64;
 
 namespace lld::coff {
 bool isSiteForm(ArrayRef<uint8_t> data, uint32_t off, LinkSiteForm form) {
@@ -148,56 +150,10 @@ std::optional<LinkSiteForm> getDescribedSite(const SectionChunk *sc,
   return std::nullopt;
 }
 
-namespace {
-// The fields of the ARM64 instructions that compute an address from a page
-// and an offset in it, decoded as lld/MachO decodes them for its linker
-// optimization hints.
-struct Adrp {
-  uint32_t destRegister;
-  int64_t addend;
-};
-
-struct Add {
-  uint8_t destRegister;
-  uint8_t srcRegister;
-  uint32_t addend;
-};
-
-struct Ldr {
-  uint8_t destRegister;
-  uint8_t baseRegister;
-  uint32_t offset;
-};
-} // namespace
-
-static bool parseAdrp(uint32_t insn, Adrp &adrp) {
-  if ((insn & 0x9f000000) != 0x90000000)
-    return false;
-  adrp.destRegister = insn & 0x1f;
-  uint64_t immHi = (insn >> 5) & 0x7ffff;
-  uint64_t immLo = (insn >> 29) & 0x3;
-  adrp.addend = SignExtend64<21>(immLo | (immHi << 2)) * 4096;
-  return true;
-}
-
-// add xd, xn, #imm, with a 64-bit destination and an unshifted immediate.
-static bool parseAdd(uint32_t insn, Add &add) {
-  if ((insn & 0xffc00000) != 0x91000000)
-    return false;
-  add.destRegister = insn & 0x1f;
-  add.srcRegister = (insn >> 5) & 0x1f;
-  add.addend = (insn >> 10) & 0xfff;
-  return true;
-}
-
-// ldr xt, [xn, #imm], a 64-bit load with an unsigned offset.
-static bool parseLdr(uint32_t insn, Ldr &ldr) {
-  if ((insn & 0xffc00000) != 0xf9400000)
-    return false;
-  ldr.destRegister = insn & 0x1f;
-  ldr.baseRegister = (insn >> 5) & 0x1f;
-  ldr.offset = ((insn >> 10) & 0xfff) << 3;
-  return true;
+// A 64-bit integer load with an unsigned offset, ldr xt, [xn, #imm].
+static bool isLdrX(const Ldr &ldr) {
+  return ldr.p2Size == 3 && !ldr.isFloat &&
+         ldr.extendType == ZeroExtend;
 }
 
 bool isArm64AddressPair(const SectionChunk *sc, const coff_relocation &adrp,
@@ -231,7 +187,7 @@ bool isArm64PointerLoad(const SectionChunk *sc, const coff_relocation &rel) {
   }
   case IMAGE_REL_ARM64_PAGEOFFSET_12L: {
     Ldr ldr;
-    return parseLdr(insn, ldr) && ldr.offset == 0;
+    return parseLdr(insn, ldr) && isLdrX(ldr) && ldr.offset == 0;
   }
   default:
     return false;
