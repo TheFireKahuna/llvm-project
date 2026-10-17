@@ -3056,6 +3056,8 @@ void Writer::createGuardCFTables() {
   // guard table.
   for (const auto &slot : ctx.symtab.overrideSlots)
     maybeAddAddressTakenFunction(addressTakenSyms, slot.target);
+  for (const auto &entry : ctx.symtab.overrideBlock)
+    maybeAddAddressTakenFunction(addressTakenSyms, entry.target);
   for (Chunk *thunk : ctx.symtab.overrideThunks)
     addressTakenSyms.insert({thunk, 0});
 
