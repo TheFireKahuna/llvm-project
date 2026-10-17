@@ -624,6 +624,19 @@ bool X86WindowsImportFusion::run(MachineFunction &MF,
     if (It->second)
       ValueOnly.insert(Load);
   }
+  // Where a load of such data stays for what else reads its register, each
+  // access described with it that only reads may read the copy directly.
+  for (Fusion &F : Work) {
+    const MachineOperand &Pointer = *getLoadedPointer(*F.Load);
+    if (F.Accesses.empty() || ValueOnly.contains(F.Load) ||
+        !isImmutableData(Pointer) ||
+        Pointer.getTargetFlags() != X86II::MO_DLLIMPORT)
+      continue;
+    Register Reg = F.Load->getOperand(0).getReg();
+    for (MachineInstr *Access : F.Accesses)
+      if (isValueRead(*Access, Reg))
+        ValueOnly.insert(Access);
+  }
   X86MachineFunctionInfo *FI = MF.getInfo<X86MachineFunctionInfo>();
   for (MachineInstr *Load : ValueOnly)
     FI->addImportValueOnlyLoad(Load);

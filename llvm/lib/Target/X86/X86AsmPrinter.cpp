@@ -143,7 +143,7 @@ MCSymbol *X86AsmPrinter::getImportFusionLabel(const MachineInstr *Load) {
 // first, so that it pushes the same return address. An access through the
 // register, or an add of a constant to it, the linker may resize. A load whose
 // register only reads of memory read may take the address of the image's own
-// copy of the data.
+// copy of the data, and an access that only reads may read that copy.
 void X86AsmPrinter::emitImportFusion(const MachineInstr &MI) {
   using UseKind = X86MachineFunctionInfo::ImportFusedUseKind;
   auto Use = ImportFusion->getImportFusedUses().find(&MI);
@@ -152,6 +152,8 @@ void X86AsmPrinter::emitImportFusion(const MachineInstr &MI) {
     MCSymbol *Label = getImportFusionLabel(Load);
     if (Kind == UseKind::Access) {
       OutStreamer->emitCOFFLinkFusedAccess(Label, Reg);
+      if (ImportFusion->getImportValueOnlyLoads().contains(&MI))
+        OutStreamer->emitCOFFLinkValueOnly(nullptr);
       return;
     }
     if (Kind == UseKind::Add) {

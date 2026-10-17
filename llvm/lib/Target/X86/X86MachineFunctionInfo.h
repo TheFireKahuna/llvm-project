@@ -179,7 +179,8 @@ private:
   DenseMap<const MachineInstr *, ImportFusedUse> ImportFusedUses;
   DenseMap<const MachineInstr *, bool> ImportFusedLoads;
   /// The loads of import pointers of data whose registers only reads of
-  /// memory read, which the pass describes to the linker too.
+  /// memory read, and the accesses through the register of such a load that
+  /// stays that only read, which the pass describes to the linker too.
   SmallPtrSet<const MachineInstr *, 2> ImportValueOnlyLoads;
 
   std::optional<int> SwiftAsyncContextFrameIdx;
