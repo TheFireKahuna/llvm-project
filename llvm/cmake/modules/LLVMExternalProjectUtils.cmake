@@ -41,6 +41,19 @@ function(is_msvc_triple out_var triple)
   endif()
 endfunction()
 
+# is_windows_itanium_triple(out_var triple)
+#   Checks whether the passed triple refers to a Windows environment that uses
+#   the Itanium C++ ABI (windows-itanium or windows-ntposix). These link with
+#   lld-link and use llvm-lib, llvm-rc and llvm-mt as MSVC targets do, but keep
+#   the GNU compiler driver and llvm-ar.
+function(is_windows_itanium_triple out_var triple)
+  if (triple MATCHES ".*-windows-(itanium|ntposix).*")
+    set(${out_var} TRUE PARENT_SCOPE)
+  else()
+    set(${out_var} FALSE PARENT_SCOPE)
+  endif()
+endfunction()
+
 
 # llvm_ExternalProject_Add(name source_dir ...
 #   ENABLE_FORTRAN
@@ -97,6 +110,7 @@ function(llvm_ExternalProject_Add name source_dir)
   endif()
 
   is_msvc_triple(is_msvc_target "${target_triple}")
+  is_windows_itanium_triple(is_windows_itanium_target "${target_triple}")
 
   if(NOT ARG_TOOLCHAIN_TOOLS)
     set(ARG_TOOLCHAIN_TOOLS clang)
@@ -108,7 +122,7 @@ function(llvm_ExternalProject_Add name source_dir)
       list(APPEND ARG_TOOLCHAIN_TOOLS lld llvm-ar llvm-ranlib llvm-nm llvm-objdump)
       if(_cmake_system_name STREQUAL Darwin)
         list(APPEND ARG_TOOLCHAIN_TOOLS llvm-libtool-darwin llvm-lipo)
-      elseif(is_msvc_target)
+      elseif(is_msvc_target OR is_windows_itanium_target)
         list(APPEND ARG_TOOLCHAIN_TOOLS llvm-lib llvm-rc)
         if (LLVM_ENABLE_LIBXML2)
           list(APPEND ARG_TOOLCHAIN_TOOLS llvm-mt)
@@ -250,7 +264,7 @@ function(llvm_ExternalProject_Add name source_dir)
       endif()
     endif()
     if(lld IN_LIST TOOLCHAIN_TOOLS)
-      if(is_msvc_target)
+      if(is_msvc_target OR is_windows_itanium_target)
         list(APPEND compiler_args -DCMAKE_LINKER=${LLVM_RUNTIME_OUTPUT_INTDIR}/lld-link${CMAKE_EXECUTABLE_SUFFIX})
       elseif(NOT _cmake_system_name STREQUAL Darwin)
         list(APPEND compiler_args -DCMAKE_LINKER=${LLVM_RUNTIME_OUTPUT_INTDIR}/ld.lld${CMAKE_EXECUTABLE_SUFFIX})
@@ -287,10 +301,12 @@ function(llvm_ExternalProject_Add name source_dir)
     if(llvm-readelf IN_LIST TOOLCHAIN_TOOLS)
       list(APPEND compiler_args -DCMAKE_READELF=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-readelf${CMAKE_EXECUTABLE_SUFFIX})
     endif()
-    if(llvm-mt IN_LIST TOOLCHAIN_TOOLS AND is_msvc_target)
+    if(llvm-mt IN_LIST TOOLCHAIN_TOOLS AND
+       (is_msvc_target OR is_windows_itanium_target))
       list(APPEND compiler_args -DCMAKE_MT=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-mt${CMAKE_EXECUTABLE_SUFFIX})
     endif()
-    if(llvm-rc IN_LIST TOOLCHAIN_TOOLS AND is_msvc_target AND CLANG_IN_TOOLCHAIN)
+    if(llvm-rc IN_LIST TOOLCHAIN_TOOLS AND
+       (is_msvc_target OR is_windows_itanium_target) AND CLANG_IN_TOOLCHAIN)
         list(APPEND compiler_args -DCMAKE_RC_COMPILER=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-rc${CMAKE_EXECUTABLE_SUFFIX})
     endif()
     list(APPEND ARG_DEPENDS ${TOOLCHAIN_TOOLS})

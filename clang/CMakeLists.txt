@@ -715,6 +715,17 @@ if (CLANG_ENABLE_BOOTSTRAP)
   set(STAMP_DIR ${CMAKE_CURRENT_BINARY_DIR}/${NEXT_CLANG_STAGE}-stamps/)
   set(BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/${NEXT_CLANG_STAGE}-bins/)
 
+  # The next stage runs on Windows Itanium or NT-POSIX when it names that host,
+  # or when this stage runs there and it names none.
+  set(next_host_triple "${LLVM_HOST_TRIPLE}")
+  if(BOOTSTRAP_LLVM_HOST_TRIPLE)
+    set(next_host_triple "${BOOTSTRAP_LLVM_HOST_TRIPLE}")
+  endif()
+  set(next_host_windows_itanium OFF)
+  if(WIN32 AND next_host_triple MATCHES "-windows-(itanium|ntposix)")
+    set(next_host_windows_itanium ON)
+  endif()
+
   if(BOOTSTRAP_LLVM_ENABLE_LLD)
     # adding lld to clang-bootstrap-deps without having it enabled in
     # LLVM_ENABLE_PROJECTS just generates a cryptic error message.
@@ -747,6 +758,12 @@ if (CLANG_ENABLE_BOOTSTRAP)
       set(LTO_LIBRARY -DDARWIN_LTO_LIBRARY=${LLVM_SHLIB_OUTPUT_INTDIR}/libLTO.dylib
         -DDYLD_LIBRARY_PATH=${LLVM_LIBRARY_OUTPUT_INTDIR})
       set(${CLANG_STAGE}_LIBTOOL -DCMAKE_LIBTOOL=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-libtool-darwin)
+    elseif(next_host_windows_itanium)
+      # The next stage's compiler is the GNU-style driver, whose CMake rules
+      # archive with ar's command line.
+      add_dependencies(clang-bootstrap-deps llvm-ar llvm-ranlib)
+      set(${CLANG_STAGE}_AR -DCMAKE_AR=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-ar)
+      set(${CLANG_STAGE}_RANLIB -DCMAKE_RANLIB=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-ranlib)
     elseif(MSVC)
       add_dependencies(clang-bootstrap-deps llvm-lib)
       set(${CLANG_STAGE}_AR -DCMAKE_AR=${LLVM_RUNTIME_OUTPUT_INTDIR}/llvm-lib)
@@ -817,7 +834,11 @@ if (CLANG_ENABLE_BOOTSTRAP)
 
   set(C_COMPILER "clang")
   set(CXX_COMPILER "clang++")
-  if(WIN32)
+  if(next_host_windows_itanium)
+    # These environments use the GNU-style driver.
+    set(C_COMPILER "clang.exe")
+    set(CXX_COMPILER "clang++.exe")
+  elseif(WIN32)
     set(C_COMPILER "clang-cl.exe")
     set(CXX_COMPILER "clang-cl.exe")
   endif()
@@ -974,6 +995,32 @@ if (CLANG_ENABLE_BOOTSTRAP)
     LIST_SEPARATOR |
     )
 
+  set(runtime_dlls_step)
+  if(next_host_windows_itanium)
+    # The next stage's programs load the C++ runtime DLLs that this stage's
+    # runtimes build made. Windows has no run path, but it looks in a program's
+    # own directory first, so the DLLs are copied there before any of those
+    # programs runs. The step always runs, because rebuilding the runtimes
+    # changes nothing that the next stage's steps depend on.
+    set(runtime_dlls_dir ${LLVM_LIBRARY_OUTPUT_INTDIR}/${next_host_triple})
+    set(runtime_dlls
+      ${runtime_dlls_dir}/libc++.dll ${runtime_dlls_dir}/libunwind.dll)
+    if(next_host_triple MATCHES "-windows-ntposix")
+      # NT-POSIX's C library is LLVM libc, which the runtimes build makes too.
+      list(APPEND runtime_dlls ${runtime_dlls_dir}/libc.dll)
+    endif()
+    ExternalProject_Add_Step(${NEXT_CLANG_STAGE} copy-runtime-dlls
+      COMMAND ${CMAKE_COMMAND} -E make_directory <BINARY_DIR>/bin
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${runtime_dlls}
+              <BINARY_DIR>/bin
+      COMMENT "Copying the runtime DLLs for '${NEXT_CLANG_STAGE}'"
+      DEPENDEES configure
+      DEPENDERS build
+      ALWAYS ON
+    )
+    set(runtime_dlls_step copy-runtime-dlls)
+  endif()
+
   # exclude really-install from main target
   set_target_properties(${NEXT_CLANG_STAGE} PROPERTIES _EP_really-install_EXCLUDE_FROM_MAIN On)
   ExternalProject_Add_Step(${NEXT_CLANG_STAGE} really-install
@@ -993,7 +1040,7 @@ if (CLANG_ENABLE_BOOTSTRAP)
     ExternalProject_Add_Step(${NEXT_CLANG_STAGE} ${target}
       COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --target ${target}
       COMMENT "Performing ${target} for '${NEXT_CLANG_STAGE}'"
-      DEPENDEES configure
+      DEPENDEES configure ${runtime_dlls_step}
       # We need to set ALWAYS to ON here, otherwise these targets won't be
       # built on a second invocation of ninja.  The targets have their own
       # logic to determine if they should build or not so setting ALWAYS ON
