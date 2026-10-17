@@ -647,7 +647,7 @@ void SectionChunk::applyRelocation(uint8_t *off,
     if (relaxLocalImport(this, rel, off, li, sym, type, rewrite))
       return;
     if (rewrite && file->hasLinkFusions())
-      foldedAddend = takeFusedAdd(this, rel, off);
+      foldedAddend = takeFusedAdd(this, rel, off, *rewrite);
   }
 
   // Get the output section of the symbol for this relocation.  The output

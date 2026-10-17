@@ -2931,7 +2931,7 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
       }
       if (code && !arm64 && rel.Type == IMAGE_REL_AMD64_REL32 &&
           file->getLinkSiteForm(sc, rel.VirtualAddress) == LinkSiteAddress &&
-          getDescribedSite(sc, rel) == LinkSiteAddress) {
+          isSiteForm(sc->getContents(), rel.VirtualAddress, LinkSiteAddress)) {
         scan.addressSites.push_back({sc, rel.VirtualAddress, offer});
         continue;
       }
@@ -3000,7 +3000,8 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
         }
         if (preempted && !arm64 && rel.Type == IMAGE_REL_AMD64_REL32 &&
             file->getLinkSiteForm(sc, rel.VirtualAddress) == LinkSiteAddress &&
-            getDescribedSite(sc, rel) == LinkSiteAddress) {
+            isSiteForm(sc->getContents(), rel.VirtualAddress,
+                       LinkSiteAddress)) {
           scan.addressSites.push_back({sc, rel.VirtualAddress, imp});
           continue;
         }
@@ -3067,7 +3068,8 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
         std::optional<LinkSiteForm> form =
             file->getLinkSiteForm(sc, rel.VirtualAddress);
         if (form == LinkSiteAddress) {
-          if (getDescribedSite(sc, rel) == LinkSiteAddress) {
+          if (isSiteForm(sc->getContents(), rel.VirtualAddress,
+                         LinkSiteAddress)) {
             scan.addressSites.push_back({sc, rel.VirtualAddress, imp});
             ++scan.thunkRefs[thunk].second;
           } else {

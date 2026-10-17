@@ -50,11 +50,7 @@ using namespace llvm::object;
 using namespace llvm::support::endian;
 
 namespace lld::coff {
-// Whether the bytes around a REL32 field at off are those of the form an
-// object describes there. They verify the description, which is the only
-// means of finding the instruction.
-static bool isSiteForm(ArrayRef<uint8_t> data, uint32_t off,
-                       LinkSiteForm form) {
+bool isSiteForm(ArrayRef<uint8_t> data, uint32_t off, LinkSiteForm form) {
   // A displacement that names the pointer itself has no addend.
   if (off < 2 || off + 4 > data.size() || read32le(&data[off]) != 0)
     return false;
@@ -832,6 +828,9 @@ static void disposeOfLoad(uint8_t *start, uint64_t rva, unsigned size,
 
 bool writeFusedSite(const SectionChunk *sc, const coff_relocation &rel,
                     uint8_t *off) {
+  // A load's field is REL32; most relocations are not a load's.
+  if (rel.Type != IMAGE_REL_AMD64_REL32)
+    return false;
   const ObjFile::LinkFusion *f =
       sc->file->getLinkFusion(sc, rel.VirtualAddress);
   if (!f || !f->isLoad || !f->dead)
@@ -942,14 +941,14 @@ void writeFusedArm64(const SectionChunk *sc, uint8_t *buf) {
 }
 
 int64_t takeFusedAdd(const SectionChunk *sc, const coff_relocation &rel,
-                     uint8_t *off) {
+                     uint8_t *off, LinkSiteForm form) {
   const ObjFile::LinkFusion *f =
       sc->file->symtab.ctx.fusedAdds.lookup({sc, rel.VirtualAddress});
   if (!f)
     return 0;
   // ModRM.reg, and its high bits: REX.R, or REX2's R3 with R4 clear.
   off[-1] = (off[-1] & 0xC7) | (f->reg & 7) << 3;
-  if (sc->file->getLinkSiteForm(sc, rel.VirtualAddress) == LinkSiteLoadREX2)
+  if (form == LinkSiteLoadREX2)
     off[-3] = (off[-3] & ~0x44) | (f->reg & 8) >> 1;
   else
     off[-3] = (off[-3] & ~0x04) | (f->reg & 8) >> 1;

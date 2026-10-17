@@ -24,6 +24,12 @@ class SectionChunk;
 class SymbolTable;
 struct RelaxEdit;
 
+// Whether the bytes around a REL32 field at off are those of the form an
+// object describes there. They verify the description, which is the only
+// means of finding the instruction.
+bool isSiteForm(ArrayRef<uint8_t> data, uint32_t off,
+                llvm::COFF::LinkSiteForm form);
+
 // The form that the object of sc describes for the instruction whose field
 // rel is, if its bytes are that form's; none for a site of no form.
 std::optional<llvm::COFF::LinkSiteForm>
@@ -92,11 +98,12 @@ bool writeFusedSite(const SectionChunk *sc,
 void writeFusedCalls(const SectionChunk *sc, uint8_t *buf);
 
 // Where a fused add that the load holding rel, a REL32 relocation, a local
-// import pointer's, serves makes the load take the sum, rewrites the load,
-// whose field is at off and which is to become lea, to write the add's
-// register, and returns the constant the add adds; zero otherwise.
+// import pointer's, serves makes the load take the sum, rewrites the load of
+// the given form, whose field is at off and which is to become lea, to write
+// the add's register, and returns the constant the add adds; zero otherwise.
 int64_t takeFusedAdd(const SectionChunk *sc,
-                     const llvm::object::coff_relocation &rel, uint8_t *off);
+                     const llvm::object::coff_relocation &rel, uint8_t *off,
+                     llvm::COFF::LinkSiteForm form);
 
 // Adds to edits the changes of size the linker makes to the instructions the
 // object of sc, a covered section, describes there, as local imports and
