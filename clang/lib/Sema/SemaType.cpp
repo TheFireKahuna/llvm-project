@@ -8482,6 +8482,28 @@ bool Sema::hasExplicitCallingConv(QualType T) {
   return false;
 }
 
+std::optional<CallingConv>
+Sema::getMicrosoftMemberCallingConv(QualType T) const {
+  const llvm::Triple &Triple = Context.getTargetInfo().getTriple();
+  if (!Triple.isWindowsItaniumOrNTPOSIXEnvironment() ||
+      Triple.isWindowsNTPOSIXEnvironment() ||
+      getLangOpts().isCompatibleWith(LangOptions::ClangABI::Ver23))
+    return std::nullopt;
+  const AttributedType *AT = getCallingConvAttributedType(T);
+  if (!AT ||
+      (AT->getAttrKind() != attr::StdCall &&
+       AT->getAttrKind() != attr::ThisCall && AT->getAttrKind() != attr::MSABI))
+    return std::nullopt;
+  // The convention differs from the default only in how a class is returned.
+  const auto *FT = T->castAs<FunctionType>();
+  if (FT->getReturnType()->isRecordType() ||
+      FT->getReturnType()->isDependentType())
+    return CC_Win64;
+  const auto *FPT = dyn_cast<FunctionProtoType>(FT);
+  return Context.getDefaultCallingConvention(FPT && FPT->isVariadic(),
+                                             /*IsCXXMethod=*/true);
+}
+
 void Sema::adjustMemberFunctionCC(QualType &T, bool HasThisPointer,
                                   bool IsCtorOrDtor, SourceLocation Loc) {
   FunctionTypeUnwrapper Unwrapped(*this, T);
@@ -8491,6 +8513,20 @@ void Sema::adjustMemberFunctionCC(QualType &T, bool HasThisPointer,
   CallingConv CurCC = FT->getCallConv();
   CallingConv ToCC =
       Context.getDefaultCallingConvention(IsVariadic, HasThisPointer);
+
+  // On Windows Itanium an explicit __stdcall, __thiscall or ms_abi on a
+  // non-static member function selects Microsoft's convention for it, which
+  // the COM methods that MSVC-built code implements and calls spell.
+  if (HasThisPointer) {
+    if (std::optional<CallingConv> CC = getMicrosoftMemberCallingConv(T)) {
+      if (CurCC != *CC) {
+        FT = Context.adjustFunctionType(FT,
+                                        FT->getExtInfo().withCallingConv(*CC));
+        T = Context.getAdjustedType(T, Unwrapped.wrap(*this, FT));
+      }
+      return;
+    }
+  }
 
   if (CurCC == ToCC)
     return;

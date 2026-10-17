@@ -3933,9 +3933,17 @@ bool Sema::MergeFunctionDecl(FunctionDecl *New, NamedDecl *&OldD, Scope *S,
         First->getType().getCanonicalType()->castAs<FunctionType>();
     FunctionType::ExtInfo FI = FT->getExtInfo();
     bool NewCCExplicit = getCallingConvAttributedType(New->getType());
+    const auto *OldMethod = dyn_cast<CXXMethodDecl>(Old);
     if (!NewCCExplicit) {
       // Inherit the CC from the previous declaration if it was specified
       // there but not here.
+      NewTypeInfo = NewTypeInfo.withCallingConv(OldTypeInfo.getCC());
+      RequiresAdjustment = true;
+    } else if (OldMethod && OldMethod->isInstance() &&
+               getMicrosoftMemberCallingConv(New->getType()) ==
+                   OldTypeInfo.getCC()) {
+      // An out-of-line definition of a member function spells the convention
+      // that its declaration in the class adjusted.
       NewTypeInfo = NewTypeInfo.withCallingConv(OldTypeInfo.getCC());
       RequiresAdjustment = true;
     } else if (Old->getBuiltinID()) {
@@ -12725,6 +12733,7 @@ bool Sema::CheckFunctionDeclaration(Scope *S, FunctionDecl *NewFD,
 
       if (Method->isStatic())
         checkThisInStaticMemberFunctionType(Method);
+      checkMicrosoftMemberParams(Method);
     }
 
     if (CXXConversionDecl *Conversion = dyn_cast<CXXConversionDecl>(NewFD))
@@ -16612,9 +16621,11 @@ Decl *Sema::ActOnStartOfFunctionDef(Scope *FnBodyScope, Decl *D,
     PushDeclContext(FnBodyScope, FD);
 
   // Check the validity of our function parameters
-  if (BodyKind != FnBodyKind::Delete)
+  if (BodyKind != FnBodyKind::Delete) {
     CheckParmsForFunctionDef(FD->parameters(),
                              /*CheckParameterNames=*/true);
+    checkMicrosoftMemberParams(FD);
+  }
 
   // Add non-parameter declarations already in the function to the current
   // scope.

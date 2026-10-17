@@ -19089,6 +19089,28 @@ void Sema::SetFunctionBodyKind(Decl *D, SourceLocation Loc, FnBodyKind BodyKind,
   }
 }
 
+void Sema::checkMicrosoftMemberParams(const FunctionDecl *FD) {
+  const auto *MD = dyn_cast<CXXMethodDecl>(FD);
+  const llvm::Triple &Triple = Context.getTargetInfo().getTriple();
+  if (!MD || !MD->isInstance() ||
+      MD->getType()->castAs<FunctionType>()->getCallConv() != CC_Win64 ||
+      !Triple.isWindowsItaniumOrNTPOSIXEnvironment() ||
+      Triple.isWindowsNTPOSIXEnvironment())
+    return;
+  // Microsoft's convention has the callee destroy a class argument, which
+  // the Itanium ABI passes by reference and has the caller destroy when the
+  // class is not trivial for calls.
+  for (ParmVarDecl *Param : MD->parameters()) {
+    const CXXRecordDecl *RD = Param->getType()->getAsCXXRecordDecl();
+    if (!Param->isInvalidDecl() && RD && RD->isCompleteDefinition() &&
+        !RD->canPassInRegisters()) {
+      Diag(Param->getLocation(), diag::err_ms_member_cc_nontrivial_param)
+          << Param->getType();
+      Param->setInvalidDecl();
+    }
+  }
+}
+
 bool Sema::CheckOverridingFunctionAttributes(CXXMethodDecl *New,
                                              const CXXMethodDecl *Old) {
   const auto *NewFT = New->getType()->castAs<FunctionProtoType>();
@@ -19175,6 +19197,20 @@ bool Sema::CheckOverridingFunctionAttributes(CXXMethodDecl *New,
   // If the calling conventions match, everything is fine
   if (NewCC == OldCC)
     return false;
+
+  // On Windows Itanium an override that spells no calling convention takes
+  // Microsoft's from the function it overrides, as a COM method implemented
+  // without the SDK's macro does.
+  const llvm::Triple &Triple = Context.getTargetInfo().getTriple();
+  if (OldCC == CC_Win64 && Triple.isWindowsItaniumOrNTPOSIXEnvironment() &&
+      !Triple.isWindowsNTPOSIXEnvironment() &&
+      !getCallingConvAttributedType(New->getType()) && !New->isStatic()) {
+    New->setType(
+        QualType(Context.adjustFunctionType(
+                     NewFT, NewFT->getExtInfo().withCallingConv(OldCC)),
+                 0));
+    return false;
+  }
 
   // If the calling conventions mismatch because the new function is static,
   // suppress the calling convention mismatch error; the error about static

@@ -15478,6 +15478,16 @@ public:
   void adjustMemberFunctionCC(QualType &T, bool HasThisPointer,
                               bool IsCtorOrDtor, SourceLocation Loc);
 
+  /// On Windows Itanium, the calling convention of a non-static member
+  /// function of type \p T that spells __stdcall, __thiscall or ms_abi:
+  /// Microsoft's where it returns a class, and the default otherwise. Returns
+  /// std::nullopt if \p T spells none of them.
+  std::optional<CallingConv> getMicrosoftMemberCallingConv(QualType T) const;
+
+  /// Diagnose a by-value parameter of \p FD that Microsoft's member-function
+  /// convention would have the callee destroy.
+  void checkMicrosoftMemberParams(const FunctionDecl *FD);
+
   // Check if there is an explicit attribute, but only look through parens.
   // The intent is to look for an attribute on the current declarator, but not
   // one that came from a typedef.
