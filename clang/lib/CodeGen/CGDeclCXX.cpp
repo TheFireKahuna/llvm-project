@@ -638,9 +638,10 @@ CodeGenModule::EmitCXXGlobalVarDeclInitFunc(const VarDecl *D,
         I == DelayedCXXInitPosition.end() ? CXXGlobalInits.size() : I->second;
     AddGlobalCtor(Fn, 65535, LexOrder, COMDATKey);
     if (COMDATKey && (getTriple().isOSBinFormatELF() ||
-                      getTarget().getCXXABI().isMicrosoft())) {
-      // When COMDAT is used on ELF or in the MS C++ ABI, the key must be in
-      // llvm.used to prevent linker GC.
+                      getTarget().getCXXABI().isMicrosoft() ||
+                      getTriple().isWindowsItaniumOrNTPOSIXEnvironment())) {
+      // When COMDAT is used on ELF, in the MS C++ ABI, or on Windows Itanium
+      // and NT-POSIX, the key must be in llvm.used to prevent linker GC.
       addUsedGlobal(COMDATKey);
     }
 
@@ -650,7 +651,8 @@ CodeGenModule::EmitCXXGlobalVarDeclInitFunc(const VarDecl *D,
     llvm::Comdat *C = Addr->getComdat();
     if (COMDATKey && C &&
         (getTarget().getTriple().isOSBinFormatELF() ||
-         getTarget().getTriple().isOSBinFormatWasm())) {
+         getTarget().getTriple().isOSBinFormatWasm() ||
+         getTarget().getTriple().isWindowsItaniumOrNTPOSIXEnvironment())) {
       Fn->setComdat(C);
     }
   } else {
