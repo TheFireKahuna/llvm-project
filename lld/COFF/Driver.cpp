@@ -3285,6 +3285,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // Members loaded for -wrap or MinGW may have added import-form references.
   loadLocalImportMembers();
 
+  // The vtable range symbols that a bitcode file's checks reference are the
+  // linker's to define, so that they are not reported below.
+  registerVTableRunSymbols(ctx);
+
   // At this point, we should not have any symbols that cannot be resolved.
   // If we are going to do codegen for link-time optimization, check for
   // unresolvable symbols first, so we don't spend time generating code that
