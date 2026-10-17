@@ -2920,13 +2920,15 @@ void Writer::markDescribedAddressTakes(ObjFile *file,
                                        SymbolRVASet &usedImports) {
   for (Chunk *c : file->getChunks()) {
     SectionChunk *sc = dyn_cast<SectionChunk>(c);
-    if (!sc || !sc->live || file->getLinkSites(sc).empty())
+    if (!sc || !sc->live || !file->hasRelocFacts(sc))
       continue;
     for (const coff_relocation &reloc : sc->getRelocs()) {
       if (reloc.Type != IMAGE_REL_AMD64_REL32)
         continue;
-      std::optional<LinkSiteForm> form =
-          file->getLinkSiteForm(sc, reloc.VirtualAddress);
+      const ObjFile::RelocFact *fact = file->relocFact(sc, reloc);
+      std::optional<LinkSiteForm> form;
+      if (fact && fact->hasSite)
+        form = fact->form;
       if (!form || takesNoAddress(file, sc, reloc, *form))
         continue;
       // A site rewritten for an import takes the address of what it now
@@ -2967,8 +2969,10 @@ void Writer::markSymbolsWithRelocations(ObjFile *file,
       // neither does a call or jump through a pointer, nor a load that only
       // such calls read.
       if (described && reloc.Type == IMAGE_REL_AMD64_REL32) {
-        std::optional<LinkSiteForm> form =
-            file->getLinkSiteForm(sc, reloc.VirtualAddress);
+        const ObjFile::RelocFact *fact = file->relocFact(sc, reloc);
+        std::optional<LinkSiteForm> form;
+        if (fact && fact->hasSite)
+          form = fact->form;
         if (form ? takesNoAddress(file, sc, reloc, *form)
                  : hasPreemptibleTarget(file, sc, reloc))
           continue;

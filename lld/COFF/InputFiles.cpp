@@ -569,6 +569,27 @@ void ObjFile::readLinkRecords() {
     return;
   }
   uint64_t capabilities = data.getULEB128(cur);
+  // ARM64EC gives an import two pointers, which the sites do not describe.
+  linkRecords->describesSites = (capabilities & LinkRecordsX86_64Sites) &&
+                                getMachineType() == AMD64 && !symtab.isEC();
+  linkRecords->describesFunctionSites =
+      linkRecords->describesSites && (capabilities & LinkRecordsFunctionSites);
+  linkRecords->listsCallOnly =
+      (capabilities & LinkRecordsCallOnly) && !symtab.isEC();
+  // The records place their per-relocation facts straight into a slot for each
+  // relocation of the object as they are read, so size it up front from the
+  // sections' relocation counts.
+  if (linkRecords->describesSites || linkRecords->listsCallOnly) {
+    uint32_t numSections = coffObj->getNumberOfSections();
+    linkRecords->relocFactStarts.assign(numSections + 2, 0);
+    for (uint32_t sec = 1; sec <= numSections; ++sec)
+      if (SectionChunk *sc = getSectionChunk(sec))
+        linkRecords->relocFactStarts[sec + 1] = sc->getRelocs().size();
+    for (uint32_t sec = 1; sec <= numSections + 1; ++sec)
+      linkRecords->relocFactStarts[sec] += linkRecords->relocFactStarts[sec - 1];
+    linkRecords->relocFacts.assign(linkRecords->relocFactStarts[numSections + 1],
+                                   RelocFact());
+  }
   while (cur && !data.eof(cur)) {
     uint64_t kind = data.getULEB128(cur);
     uint64_t size = data.getULEB128(cur);
@@ -693,19 +714,40 @@ void ObjFile::readLinkRecords() {
                     << ": .llvm_link_records is malformed: " << std::move(e);
     return;
   }
-  // ARM64EC gives an import two pointers, which the sites do not describe.
-  linkRecords->describesSites = (capabilities & LinkRecordsX86_64Sites) &&
-                                getMachineType() == AMD64 && !symtab.isEC();
-  if (!linkRecords->describesSites)
-    linkRecords->sites.clear();
-  if (symtab.isEC())
-    linkRecords->valueOnlyLoads.clear();
-  linkRecords->describesFunctionSites =
-      linkRecords->describesSites && (capabilities & LinkRecordsFunctionSites);
-  linkRecords->listsCallOnly =
-      (capabilities & LinkRecordsCallOnly) && !symtab.isEC();
-  if (!linkRecords->listsCallOnly)
-    linkRecords->callOnlyRefs.clear();
+}
+
+// Advances r over the relocations of relocs, which a record group reads in
+// offset order, to the one at off, and returns its index, or -1 if none is
+// there. A fact at an offset with no relocation is never used.
+static int64_t placeReloc(ArrayRef<coff_relocation> relocs, size_t &r,
+                          uint32_t off) {
+  while (r < relocs.size() && relocs[r].VirtualAddress < off)
+    ++r;
+  return r < relocs.size() && relocs[r].VirtualAddress == off ? int64_t(r) : -1;
+}
+
+const ObjFile::RelocFact *
+ObjFile::relocFact(const SectionChunk *sc, const coff_relocation &rel) const {
+  if (!linkRecords)
+    return nullptr;
+  const LinkRecords &lr = *linkRecords;
+  uint32_t sec = sc->getSectionNumber();
+  if (size_t(sec) + 1 >= lr.relocFactStarts.size())
+    return nullptr;
+  uint32_t base = lr.relocFactStarts[sec];
+  if (lr.relocFactStarts[sec + 1] == base)
+    return nullptr;
+  size_t i = &rel - sc->getRelocs().data();
+  return &lr.relocFacts[base + i];
+}
+
+bool ObjFile::hasRelocFacts(const SectionChunk *sc) const {
+  if (!linkRecords)
+    return false;
+  uint32_t sec = sc->getSectionNumber();
+  return size_t(sec) + 1 < linkRecords->relocFactStarts.size() &&
+         linkRecords->relocFactStarts[sec] !=
+             linkRecords->relocFactStarts[sec + 1];
 }
 
 bool ObjFile::hasDefaultVisibility(DefinedRegular *d) const {
@@ -898,11 +940,8 @@ bool ObjFile::readTailJumps(ArrayRef<uint8_t> payload) {
 }
 
 bool ObjFile::readCallOnlyRefs(ArrayRef<uint8_t> payload) {
-  std::vector<std::pair<uint32_t, uint32_t>> &callOnlyRefs =
-      linkRecords->callOnlyRefs;
   auto malformed = [&](const Twine &msg) {
     Err(symtab.ctx) << this << ": .llvm_link_records is malformed: " << msg;
-    callOnlyRefs.clear();
     return false;
   };
   DataExtractor data(payload, /*IsLittleEndian=*/true);
@@ -926,6 +965,12 @@ bool ObjFile::readCallOnlyRefs(ArrayRef<uint8_t> payload) {
     uint32_t section = sym->getSectionNumber();
     uint64_t size = (*sec)->SizeOfRawData;
     uint64_t offset = 0;
+    SectionChunk *sc = linkRecords->listsCallOnly ? getSectionChunk(section)
+                                                  : nullptr;
+    ArrayRef<coff_relocation> relocs =
+        sc ? sc->getRelocs() : ArrayRef<coff_relocation>();
+    uint32_t base = sc ? linkRecords->relocFactStarts[section] : 0;
+    size_t r = 0;
     for (uint64_t i = 0; cur && i != count; ++i) {
       uint64_t delta = data.getULEB128(cur);
       if (!cur)
@@ -937,16 +982,15 @@ bool ObjFile::readCallOnlyRefs(ArrayRef<uint8_t> payload) {
       if (offset + 4 > size)
         return malformed("call-only reference past the end of section " +
                          Twine(section));
-      callOnlyRefs.push_back({section, uint32_t(offset)});
+      if (int64_t j = placeReloc(relocs, r, offset); j >= 0)
+        linkRecords->relocFacts[base + j].callOnly = true;
     }
   }
   if (Error e = cur.takeError()) {
-    callOnlyRefs.clear();
     Err(symtab.ctx) << this
                     << ": .llvm_link_records is malformed: " << std::move(e);
     return false;
   }
-  llvm::sort(callOnlyRefs);
   return true;
 }
 
@@ -955,11 +999,11 @@ bool ObjFile::readCallOnlyRefs(ArrayRef<uint8_t> payload) {
 // facts about fused calls and loads; a fact of a kind this linker does not
 // know is skipped.
 bool ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
-  std::vector<LinkSite> &sites = linkRecords->sites;
   std::vector<LinkFusion> &fusions = linkRecords->fusions;
+  bool describes = linkRecords->describesSites;
+  bool ec = symtab.isEC();
   auto malformed = [&](const Twine &msg) {
     Err(symtab.ctx) << this << ": .llvm_link_records is malformed: " << msg;
-    sites.clear();
     fusions.clear();
     linkRecords->valueOnlyLoads.clear();
     return false;
@@ -985,7 +1029,16 @@ bool ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
     uint32_t section = sym->getSectionNumber();
     uint64_t size = (*sec)->SizeOfRawData;
     uint64_t offset = 0;
-    size_t first = sites.size(), firstFusion = fusions.size();
+    size_t firstFusion = fusions.size();
+    // The offset of each site in the group, by its index, so a fused call
+    // finds its load; and a forward cursor over the section's relocations that
+    // places each site's form in its relocation's slot.
+    SmallVector<uint32_t, 0> siteOffsets;
+    SectionChunk *sc = describes ? getSectionChunk(section) : nullptr;
+    ArrayRef<coff_relocation> relocs =
+        sc ? sc->getRelocs() : ArrayRef<coff_relocation>();
+    uint32_t base = describes ? linkRecords->relocFactStarts[section] : 0;
+    size_t r = 0;
     for (uint64_t i = 0; cur && i != count; ++i) {
       uint64_t site = data.getULEB128(cur);
       StringRef siteData;
@@ -1005,8 +1058,13 @@ bool ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
       // checks with the site's bytes; one that facts describe may be shorter.
       if (offset >= size)
         return malformed("site past the end of section " + Twine(section));
-      sites.push_back(
-          {section, uint32_t(offset), static_cast<LinkSiteForm>(form)});
+      siteOffsets.push_back(offset);
+      if (describes)
+        if (int64_t j = placeReloc(relocs, r, offset); j >= 0) {
+          linkRecords->relocFacts[base + j].form =
+              static_cast<LinkSiteForm>(form);
+          linkRecords->relocFacts[base + j].hasSite = true;
+        }
 
       // Data that is not facts is skipped, as the data of a site may be.
       DataExtractor facts(siteData, /*IsLittleEndian=*/true);
@@ -1026,10 +1084,11 @@ bool ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
           if (fusions.size() != siteFusions &&
               fusions.back().use == LinkFusion::Access)
             fusions.back().valueRead = !value;
-          linkRecords->valueOnlyLoads.push_back(
-              {section, uint32_t(offset),
-               uint16_t(value > UINT16_MAX ? 0 : value),
-               static_cast<LinkSiteForm>(form)});
+          if (!ec)
+            linkRecords->valueOnlyLoads.push_back(
+                {section, uint32_t(offset),
+                 uint16_t(value > UINT16_MAX ? 0 : value),
+                 static_cast<LinkSiteForm>(form)});
           continue;
         }
         LinkFusion f{section, uint32_t(offset)};
@@ -1078,29 +1137,18 @@ bool ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
     for (LinkFusion &f : MutableArrayRef(fusions).drop_front(firstFusion)) {
       if (f.isLoad)
         continue;
-      if (f.load >= sites.size() - first)
+      if (f.load >= siteOffsets.size())
         return malformed("fused call at offset 0x" +
                          Twine::utohexstr(f.offset) + " in section " +
                          Twine(section) + " reads a site that does not exist");
-      f.load = sites[first + f.load].offset;
+      f.load = siteOffsets[f.load];
     }
   }
   if (Error e = cur.takeError()) {
-    sites.clear();
     Err(symtab.ctx) << this
                     << ": .llvm_link_records is malformed: " << std::move(e);
     return false;
   }
-  // Each section appears once, so sorting by section keeps each section's
-  // sites in order.
-  llvm::stable_sort(sites, [](const LinkSite &a, const LinkSite &b) {
-    return a.section < b.section;
-  });
-  for (size_t i = 1; i < sites.size(); ++i)
-    if (sites[i - 1].section == sites[i].section &&
-        sites[i - 1].offset >= sites[i].offset)
-      return malformed("sites out of order in section " +
-                       Twine(sites[i].section));
   // A site that two facts describe keeps the first.
   llvm::stable_sort(fusions, [](const LinkFusion &a, const LinkFusion &b) {
     return std::tie(a.section, a.offset) < std::tie(b.section, b.offset);
@@ -1114,33 +1162,9 @@ bool ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
   return true;
 }
 
-ArrayRef<ObjFile::LinkSite>
-ObjFile::getLinkSites(const SectionChunk *sc) const {
-  if (!linkRecords)
-    return {};
-  ArrayRef<LinkSite> sites = linkRecords->sites;
-  uint32_t section = sc->getSectionNumber();
-  auto [b, e] =
-      std::equal_range(sites.begin(), sites.end(), LinkSite{section, 0, {}},
-                       [](const LinkSite &a, const LinkSite &b) {
-                         return a.section < b.section;
-                       });
-  return sites.slice(b - sites.begin(), e - b);
-}
-
 bool ObjFile::endsInTailJump(const SectionChunk *sc) const {
   return linkRecords &&
          llvm::binary_search(linkRecords->tailJumps, sc->getSectionNumber());
-}
-
-std::optional<LinkSiteForm>
-ObjFile::getLinkSiteForm(const SectionChunk *sc, uint32_t offset) const {
-  ArrayRef<LinkSite> sites = getLinkSites(sc);
-  auto it = llvm::partition_point(
-      sites, [&](const LinkSite &s) { return s.offset < offset; });
-  if (it == sites.end() || it->offset != offset)
-    return std::nullopt;
-  return it->form;
 }
 
 MutableArrayRef<ObjFile::LinkFusion>
@@ -1243,6 +1267,14 @@ bool ObjFile::readLinkCoverage(ArrayRef<uint8_t> payload) {
     bool own = field == target;
     if (own)
       covered.push_back(target);
+    // An interior entry gives the place a relocation refers to; it is joined
+    // to that relocation as it is read.
+    SectionChunk *fieldChunk =
+        linkRecords->describesSites ? getSectionChunk(field) : nullptr;
+    ArrayRef<coff_relocation> fieldRelocs =
+        fieldChunk ? fieldChunk->getRelocs() : ArrayRef<coff_relocation>();
+    uint32_t fieldBase = fieldChunk ? linkRecords->relocFactStarts[field] : 0;
+    size_t fieldCursor = 0;
     // Places are delta-coded, and a field or constant left out is the
     // previous entry's or the usual one.
     uint64_t offset = 0, prevA = 0, prevB = 0, prevField = 0;
@@ -1309,6 +1341,12 @@ bool ObjFile::readLinkCoverage(ArrayRef<uint8_t> payload) {
       }
       c.a = a;
       c.b = b;
+      if (c.type == LinkCoverageInterior && fieldChunk)
+        if (int64_t j = placeReloc(fieldRelocs, fieldCursor, c.offset);
+            j >= 0 && !linkRecords->relocFacts[fieldBase + j].hasInterior) {
+          linkRecords->relocFacts[fieldBase + j].interior = a;
+          linkRecords->relocFacts[fieldBase + j].hasInterior = true;
+        }
       coverage.push_back(c);
     }
   }
@@ -1346,23 +1384,6 @@ ObjFile::getLinkCoverage(const SectionChunk *sc) const {
         return c.field == section;
       });
   return ArrayRef(first, last);
-}
-
-std::optional<uint32_t> ObjFile::getLinkInterior(const SectionChunk *sc,
-                                                 uint32_t offset) const {
-  ArrayRef<LinkCoverage> coverage = getLinkCoverage(sc);
-  auto it = llvm::partition_point(
-      coverage, [&](const LinkCoverage &c) { return c.offset < offset; });
-  for (; it != coverage.end() && it->offset == offset; ++it)
-    if (it->type == LinkCoverageInterior)
-      return it->a;
-  return std::nullopt;
-}
-
-bool ObjFile::isCallOnlyRef(const SectionChunk *sc, uint32_t offset) const {
-  return linkRecords && llvm::binary_search(linkRecords->callOnlyRefs,
-                                            std::make_pair(
-                                                sc->getSectionNumber(), offset));
 }
 
 ArrayRef<ObjFile::LinkPin> ObjFile::getLinkPins() const {

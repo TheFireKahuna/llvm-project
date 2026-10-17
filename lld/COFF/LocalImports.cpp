@@ -93,7 +93,10 @@ static std::optional<LinkSiteForm> getSiteForm(const SectionChunk *sc,
                                                const coff_relocation &rel) {
   if (!sc->file->describesSites() || rel.Type != IMAGE_REL_AMD64_REL32)
     return std::nullopt;
-  return sc->file->getLinkSiteForm(sc, rel.VirtualAddress);
+  const ObjFile::RelocFact *f = sc->file->relocFact(sc, rel);
+  if (!f || !f->hasSite)
+    return std::nullopt;
+  return f->form;
 }
 
 // Whether a local import pointer holds zero, the default of an absent weak
@@ -809,7 +812,7 @@ bool writeFusedSite(const SectionChunk *sc, const coff_relocation &rel,
   if (!f || !f->isLoad || !f->dead)
     return false;
   // The load's prefix, opcode and ModRM byte precede its displacement.
-  LinkSiteForm form = *sc->file->getLinkSiteForm(sc, rel.VirtualAddress);
+  LinkSiteForm form = sc->file->relocFact(sc, rel)->form;
   unsigned size = form == LinkSiteLoadREX2 ? 8 : 7;
   disposeOfLoad(off + 4 - size, sc->getRVA() + rel.VirtualAddress + 4 - size,
                 size, *f);
@@ -830,7 +833,7 @@ void writeFusedCalls(const SectionChunk *sc, uint8_t *buf) {
     // and an access stays as it is where the code keeps its size.
     if (f.use == ObjFile::LinkFusion::Add) {
       ArrayRef<uint8_t> data = sc->getContents();
-      LinkSiteForm form = *sc->file->getLinkSiteForm(sc, f.load);
+      LinkSiteForm form = sc->file->relocFact(sc, *loadRel)->form;
       unsigned length =
           getFusedAddLength(data, f, getLoadRegister(data, f.load, form));
       writeNops(buf + f.offset, length, length);
@@ -983,7 +986,8 @@ void addSiteEdits(const SectionChunk *sc, std::vector<RelaxEdit> &edits) {
     if (f.isLoad) {
       if (!f.dead)
         continue;
-      LinkSiteForm form = *file->getLinkSiteForm(sc, f.offset);
+      LinkSiteForm form =
+          file->relocFact(sc, *getRel32At(sc, f.offset))->form;
       uint32_t size = form == LinkSiteLoadREX2 ? 8 : 7;
       edits.push_back({f.offset + 4 - size, size, 0, 0, RelaxEdit::Delete});
       continue;
@@ -1011,7 +1015,7 @@ void addSiteEdits(const SectionChunk *sc, std::vector<RelaxEdit> &edits) {
     case ObjFile::LinkFusion::Add: {
       if (f.form != ObjFile::LinkFusion::Direct)
         break;
-      LinkSiteForm form = *file->getLinkSiteForm(sc, f.load);
+      LinkSiteForm form = file->relocFact(sc, *loadRel)->form;
       unsigned length =
           getFusedAddLength(data, f, getLoadRegister(data, f.load, form));
       edits.push_back({f.offset, length, 0, 0, RelaxEdit::Delete});

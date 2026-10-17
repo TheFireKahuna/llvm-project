@@ -2683,8 +2683,9 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
         ++i;
         continue;
       }
-      if (code && !arm64 && rel.Type == IMAGE_REL_AMD64_REL32 &&
-          file->getLinkSiteForm(sc, rel.VirtualAddress) == LinkSiteAddress &&
+      if (const ObjFile::RelocFact *fact = file->relocFact(sc, rel);
+          code && !arm64 && rel.Type == IMAGE_REL_AMD64_REL32 && fact &&
+          fact->hasSite && fact->form == LinkSiteAddress &&
           isSiteForm(sc->getContents(), rel.VirtualAddress, LinkSiteAddress)) {
         scan.addressSites.push_back({sc, rel.VirtualAddress, offer});
         continue;
@@ -2752,8 +2753,9 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
           ++i;
           continue;
         }
-        if (preempted && !arm64 && rel.Type == IMAGE_REL_AMD64_REL32 &&
-            file->getLinkSiteForm(sc, rel.VirtualAddress) == LinkSiteAddress &&
+        const ObjFile::RelocFact *fact = file->relocFact(sc, rel);
+        if (preempted && !arm64 && rel.Type == IMAGE_REL_AMD64_REL32 && fact &&
+            fact->hasSite && fact->form == LinkSiteAddress &&
             isSiteForm(sc->getContents(), rel.VirtualAddress,
                        LinkSiteAddress)) {
           scan.addressSites.push_back({sc, rel.VirtualAddress, imp});
@@ -2819,8 +2821,10 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
             useThunkAsAddress(scan, file, s, imp);
           break;
         }
-        std::optional<LinkSiteForm> form =
-            file->getLinkSiteForm(sc, rel.VirtualAddress);
+        std::optional<LinkSiteForm> form;
+        if (const ObjFile::RelocFact *fact = file->relocFact(sc, rel);
+            fact && fact->hasSite)
+          form = fact->form;
         if (form == LinkSiteAddress) {
           if (isSiteForm(sc->getContents(), rel.VirtualAddress,
                          LinkSiteAddress)) {
@@ -2861,9 +2865,9 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
     // exception data, which the PE format defines as RVAs that the system
     // calls.
     if (!sc->isAddressWord(rel)) {
-      bool callOnly = file->listsCallOnly()
-                          ? file->isCallOnlyRef(sc, rel.VirtualAddress)
-                          : isExceptionData(sc);
+      const ObjFile::RelocFact *fact = file->relocFact(sc, rel);
+      bool callOnly = file->listsCallOnly() ? fact && fact->callOnly
+                                            : isExceptionData(sc);
       if (thunk && !callOnly)
         useThunkAsAddress(scan, file, s, imp, sc);
       else if (!thunk && scan.reported.insert(s).second)

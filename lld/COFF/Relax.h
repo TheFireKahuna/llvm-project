@@ -99,11 +99,11 @@ void writeRelaxed(const SectionChunk *sc, uint8_t *buf);
 void writeCoverageValues(const SectionChunk *sc, uint8_t *buf, uint32_t begin,
                          uint32_t end);
 
-// How far the place that a relocation in sc at offset reaches moves relative
-// to the relocation's symbol, a definition at value in the chunk target,
-// whose code the linker resizes, which the relocation's addend, addend, moves
-// by.
-int64_t getAddendShift(const SectionChunk *sc, uint32_t offset,
+// How far the place that rel, a relocation in sc, reaches moves relative to
+// the relocation's symbol, a definition at value in the chunk target, whose
+// code the linker resizes, which the relocation's addend, addend, moves by.
+int64_t getAddendShift(const SectionChunk *sc,
+                       const llvm::object::coff_relocation &rel,
                        const SectionChunk *target, uint32_t value,
                        int64_t addend);
 } // namespace lld::coff

@@ -52,6 +52,7 @@ using llvm::object::Archive;
 using llvm::object::COFFObjectFile;
 using llvm::object::COFFSymbolRef;
 using llvm::object::coff_import_header;
+using llvm::object::coff_relocation;
 using llvm::object::coff_section;
 
 class Chunk;
@@ -280,12 +281,16 @@ public:
 
   const coff_section *callgraphSec = nullptr;
 
-  // An instruction site the object's link-only records describe: how the
-  // instruction holding the relocation at offset in a section uses it.
-  struct LinkSite {
-    uint32_t section;
-    uint32_t offset;
-    llvm::COFF::LinkSiteForm form;
+  // The facts the object's link-only records describe about one relocation,
+  // joined to it when the chunk is read so consumers need no search: the form
+  // of its instruction site, whether its symbol is only called through it, and
+  // the place inside code the linker resizes that it refers to.
+  struct RelocFact {
+    uint32_t interior = 0;
+    llvm::COFF::LinkSiteForm form = llvm::COFF::LinkSiteOther;
+    bool hasSite = false;
+    bool hasInterior = false;
+    bool callOnly = false;
   };
 
   // A site the object's records describe as a load of an import pointer whose
@@ -389,13 +394,13 @@ public:
     return linkRecords && linkRecords->protectsDelayIat;
   }
 
-  // The sites in the section of sc, by offset.
-  ArrayRef<LinkSite> getLinkSites(const SectionChunk *sc) const;
+  // The facts the records join to rel, a relocation of the section of sc, or
+  // null when the object joins none to that section's relocations.
+  const RelocFact *relocFact(const SectionChunk *sc,
+                             const coff_relocation &rel) const;
 
-  // The form of the site of a relocation at offset in the section of sc, if
-  // the object describes one.
-  std::optional<llvm::COFF::LinkSiteForm>
-  getLinkSiteForm(const SectionChunk *sc, uint32_t offset) const;
+  // Whether the object joins facts to the relocations of the section of sc.
+  bool hasRelocFacts(const SectionChunk *sc) const;
 
   // The fused calls and loads of the section of sc, by offset.
   MutableArrayRef<LinkFusion> getLinkFusions(const SectionChunk *sc);
@@ -451,10 +456,6 @@ public:
     return linkRecords ? ArrayRef<LinkCoverage>(linkRecords->coverage)
                        : ArrayRef<LinkCoverage>();
   }
-  // The place that the relocation at offset in the section of sc refers to,
-  // where an interior entry gives it.
-  std::optional<uint32_t> getLinkInterior(const SectionChunk *sc,
-                                          uint32_t offset) const;
 
   // True if the object lists every 32-bit field in data through which a
   // symbol it leaves undefined is only called, so that any other such field
@@ -462,10 +463,6 @@ public:
   bool listsCallOnly() const {
     return linkRecords && linkRecords->listsCallOnly;
   }
-
-  // Whether the relocation at offset in the section of sc fills a field
-  // through which its symbol is only called.
-  bool isCallOnlyRef(const SectionChunk *sc, uint32_t offset) const;
 
   // A pin of the object's link-only records: the address of sym, or of the
   // start of chunk when the pin names a section, must be residue modulo
@@ -601,7 +598,6 @@ private:
     bool protectsDelayIat = false;
     bool listsCallOnly = false;
     bool listsBindings = false;
-    std::vector<LinkSite> sites;
     std::vector<LinkFusion> fusions;
     std::vector<LinkValueOnly> valueOnlyLoads;
     // The values and alignments that depend on where code a linker may
@@ -609,7 +605,6 @@ private:
     // whose code is covered, in order.
     std::vector<LinkCoverage> coverage;
     std::vector<uint32_t> coveredSections;
-    std::vector<std::pair<uint32_t, uint32_t>> callOnlyRefs;
     // The numbers of the sections that end in a jump that also ends the
     // function each holds, in order.
     std::vector<uint32_t> tailJumps;
@@ -617,6 +612,11 @@ private:
     std::vector<LinkVTable> vtables;
     // The indices of the symbols the object gives default visibility.
     llvm::DenseSet<uint32_t> defaultBindings;
+    // The facts joined to each relocation of the object, and where each
+    // section's begin, by section number, which the readers fill directly as
+    // the records are read.
+    std::vector<RelocFact> relocFacts;
+    std::vector<uint32_t> relocFactStarts;
   };
   LinkRecords *linkRecords = nullptr;
 

@@ -529,13 +529,14 @@ void writeCoverageValues(const SectionChunk *sc, uint8_t *buf, uint32_t begin,
   }
 }
 
-int64_t getAddendShift(const SectionChunk *sc, uint32_t offset,
+int64_t getAddendShift(const SectionChunk *sc, const coff_relocation &rel,
                        const SectionChunk *target, uint32_t value,
                        int64_t addend) {
   const Relaxation &r = *getRelaxation(target);
   uint32_t place = value + addend;
-  if (std::optional<uint32_t> interior = sc->file->getLinkInterior(sc, offset))
-    place = *interior;
+  if (const ObjFile::RelocFact *f = sc->file->relocFact(sc, rel);
+      f && f->hasInterior)
+    place = f->interior;
   return (int64_t(r.getOutputOffset(place)) - place) -
          (int64_t(r.getOutputOffset(value)) - value);
 }

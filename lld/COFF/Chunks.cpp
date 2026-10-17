@@ -482,12 +482,12 @@ static void moveAddend(const SectionChunk *sc, const coff_relocation &rel,
   case IMAGE_REL_AMD64_REL32_5:
   case IMAGE_REL_AMD64_SECREL: {
     int32_t addend = read32le(off);
-    add32(off, getAddendShift(sc, rel.VirtualAddress, target, value, addend));
+    add32(off, getAddendShift(sc, rel, target, value, addend));
     break;
   }
   case IMAGE_REL_AMD64_ADDR64: {
     int64_t addend = read64le(off);
-    add64(off, getAddendShift(sc, rel.VirtualAddress, target, value, addend));
+    add64(off, getAddendShift(sc, rel, target, value, addend));
     break;
   }
   default:
@@ -572,13 +572,14 @@ Defined *SectionChunk::getBranchTarget(const coff_relocation &rel,
                                        Defined *sym) const {
   if (file->symtab.preemptedOffers.empty())
     return sym;
+  const ObjFile::RelocFact *fact = file->relocFact(this, rel);
   bool branch = getArch() == Triple::aarch64
                     ? rel.Type == IMAGE_REL_ARM64_BRANCH26
                     : getArch() == Triple::x86_64 &&
                           rel.Type == IMAGE_REL_AMD64_REL32 &&
                           (header->Characteristics & IMAGE_SCN_CNT_CODE) &&
                           file->describesFunctionSites() &&
-                          !file->getLinkSiteForm(this, rel.VirtualAddress);
+                          !(fact && fact->hasSite);
   if (!branch)
     return sym;
   if (DefinedImportData *imp = file->symtab.preemptedOffers.lookup(sym))
