@@ -33046,7 +33046,27 @@ bool AArch64TargetLowering::shouldLocalize(
   return TargetLoweringBase::shouldLocalize(MI, TTI);
 }
 
+std::optional<unsigned>
+AArch64TargetLowering::getFaultProbeAddressSpace() const {
+  if (Subtarget->getTargetTriple().isWindowsNTPOSIXEnvironment())
+    return ARM64AS::FAULT_PROBE;
+  return std::nullopt;
+}
+
 bool AArch64TargetLowering::fallBackToDAGISel(const Instruction &Inst) const {
+  // Fault probes are selected through the DAG.
+  if (const Value *Ptr = getLoadStorePointerOperand(&Inst);
+      Ptr && getFaultProbeMMOFlags(Ptr) != MachineMemOperand::MONone)
+    return true;
+  if (const auto *RMW = dyn_cast<AtomicRMWInst>(&Inst);
+      RMW && getFaultProbeMMOFlags(RMW->getPointerOperand()) !=
+                 MachineMemOperand::MONone)
+    return true;
+  if (const auto *CmpX = dyn_cast<AtomicCmpXchgInst>(&Inst);
+      CmpX && getFaultProbeMMOFlags(CmpX->getPointerOperand()) !=
+                  MachineMemOperand::MONone)
+    return true;
+
   // Fallback for scalable vectors.
   // Note that if EnableSVEGISel is true, we allow scalable vector types for
   // all instructions, regardless of whether they are actually supported.

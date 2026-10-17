@@ -931,6 +931,11 @@ void AArch64PassConfig::addPreEmitPass() {
 
   addPass(createAArch64A53Fix835769LegacyPass());
 
+  // Before the EH continuation targets are collected, which takes in each
+  // probe's landing.
+  if (TM->getTargetTriple().isWindowsNTPOSIXEnvironment())
+    addPass(&FaultProbeLoweringID);
+
   if (TM->getTargetTriple().isOSWindows()) {
     // Identify valid longjmp targets for Windows Control Flow Guard.
     addPass(createCFGuardLongjmpPass());

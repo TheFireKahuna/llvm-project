@@ -56,7 +56,13 @@ const unsigned StackProbeMaxLoopUnroll = 4;
 } // namespace AArch64
 
 namespace ARM64AS {
-enum : unsigned { PTR32_SPTR = 270, PTR32_UPTR = 271, PTR64 = 272 };
+enum : unsigned {
+  PTR32_SPTR = 270,
+  PTR32_UPTR = 271,
+  PTR64 = 272,
+  // Accesses through it are fault probes on targets that have them.
+  FAULT_PROBE = 280
+};
 }
 
 class AArch64Subtarget;
@@ -123,6 +129,8 @@ public:
                                     TargetLoweringOpt &TLO) const override;
 
   MVT getScalarShiftAmountTy(const DataLayout &DL, EVT) const override;
+
+  std::optional<unsigned> getFaultProbeAddressSpace() const override;
 
   /// Returns true if the target allows unaligned memory accesses of the
   /// specified type.

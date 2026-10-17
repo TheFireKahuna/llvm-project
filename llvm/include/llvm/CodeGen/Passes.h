@@ -375,6 +375,10 @@ LLVM_ABI extern char &MachineCSELegacyID;
 /// code.
 LLVM_ABI extern char &MIRCanonicalizerID;
 
+/// FaultProbeLowering - This pass gives each fault probe a landing that
+/// leaves its zero result and records the probe in the exception table.
+LLVM_ABI extern char &FaultProbeLoweringID;
+
 /// ImplicitNullChecks - This pass folds null pointer checks into nearby
 /// memory operations.
 LLVM_ABI extern char &ImplicitNullChecksID;

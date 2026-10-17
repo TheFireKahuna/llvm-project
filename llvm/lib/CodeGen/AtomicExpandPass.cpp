@@ -31,6 +31,7 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instruction.h"
@@ -334,12 +335,37 @@ bool AtomicExpandImpl::tryInsertFencesForAtomic(AtomicInst *AtomicI,
   return false;
 }
 
+/// A fault probe is one instruction, whose landing leaves the state it leaves
+/// on zero memory: an expansion into several, a loop or a call has no landing.
+/// The diagnosed access continues as an ordinary one, through address space 0.
+static void diagnoseProbeExpansion(const TargetLowering *TLI, Instruction *I) {
+  unsigned PtrIdx;
+  if (isa<AtomicRMWInst>(I))
+    PtrIdx = AtomicRMWInst::getPointerOperandIndex();
+  else if (isa<AtomicCmpXchgInst>(I))
+    PtrIdx = AtomicCmpXchgInst::getPointerOperandIndex();
+  else if (isa<StoreInst>(I))
+    PtrIdx = StoreInst::getPointerOperandIndex();
+  else
+    PtrIdx = LoadInst::getPointerOperandIndex();
+  Value *Ptr = I->getOperand(PtrIdx);
+  if (TLI->getFaultProbeMMOFlags(Ptr) == MachineMemOperand::MONone)
+    return;
+  const Function &F = *I->getFunction();
+  F.getContext().diagnose(DiagnosticInfoUnsupported(
+      F, "a fault probe must lower to one instruction", I->getDebugLoc()));
+  I->setOperand(PtrIdx, new AddrSpaceCastInst(
+                            Ptr, PointerType::getUnqual(I->getContext()), "",
+                            I->getIterator()));
+}
+
 bool AtomicExpandImpl::processAtomicInstr(Instruction *I) {
   if (auto *LI = dyn_cast<LoadInst>(I)) {
     if (!LI->isAtomic())
       return false;
 
     if (!atomicSizeSupported(TLI, LI)) {
+      diagnoseProbeExpansion(TLI, I);
       expandAtomicLoadToLibcall(LI);
       return true;
     }
@@ -363,6 +389,7 @@ bool AtomicExpandImpl::processAtomicInstr(Instruction *I) {
       return false;
 
     if (!atomicSizeSupported(TLI, SI)) {
+      diagnoseProbeExpansion(TLI, I);
       expandAtomicStoreToLibcall(SI);
       return true;
     }
@@ -383,6 +410,7 @@ bool AtomicExpandImpl::processAtomicInstr(Instruction *I) {
 
   if (auto *RMWI = dyn_cast<AtomicRMWInst>(I)) {
     if (!atomicSizeSupported(TLI, RMWI)) {
+      diagnoseProbeExpansion(TLI, I);
       expandAtomicRMWToLibcall(RMWI);
       return true;
     }
@@ -411,6 +439,7 @@ bool AtomicExpandImpl::processAtomicInstr(Instruction *I) {
 
   if (auto *CASI = dyn_cast<AtomicCmpXchgInst>(I)) {
     if (!atomicSizeSupported(TLI, CASI)) {
+      diagnoseProbeExpansion(TLI, I);
       expandAtomicCASToLibcall(CASI);
       return true;
     }
@@ -606,7 +635,12 @@ AtomicExpandImpl::convertAtomicXchgToIntegerType(AtomicRMWInst *RMWI) {
 }
 
 bool AtomicExpandImpl::tryExpandAtomicLoad(LoadInst *LI) {
-  switch (TLI->shouldExpandAtomicLoadInIR(LI)) {
+  TargetLoweringBase::AtomicExpansionKind Kind =
+      TLI->shouldExpandAtomicLoadInIR(LI);
+  if (Kind != TargetLoweringBase::AtomicExpansionKind::None &&
+      Kind != TargetLoweringBase::AtomicExpansionKind::NotAtomic)
+    diagnoseProbeExpansion(TLI, LI);
+  switch (Kind) {
   case TargetLoweringBase::AtomicExpansionKind::None:
     return false;
   case TargetLoweringBase::AtomicExpansionKind::LLSC:
@@ -631,7 +665,12 @@ bool AtomicExpandImpl::tryExpandAtomicLoad(LoadInst *LI) {
 }
 
 bool AtomicExpandImpl::tryExpandAtomicStore(StoreInst *SI) {
-  switch (TLI->shouldExpandAtomicStoreInIR(SI)) {
+  TargetLoweringBase::AtomicExpansionKind Kind =
+      TLI->shouldExpandAtomicStoreInIR(SI);
+  // An exchange is checked as the read-modify-write it becomes.
+  if (Kind == TargetLoweringBase::AtomicExpansionKind::CustomExpand)
+    diagnoseProbeExpansion(TLI, SI);
+  switch (Kind) {
   case TargetLoweringBase::AtomicExpansionKind::None:
     return false;
   case TargetLoweringBase::AtomicExpansionKind::CustomExpand:
@@ -778,6 +817,9 @@ static void createCmpXchgInstFun(IRBuilderBase &Builder, Value *Addr,
 bool AtomicExpandImpl::tryExpandAtomicRMW(AtomicRMWInst *AI) {
   LLVMContext &Ctx = AI->getModule()->getContext();
   TargetLowering::AtomicExpansionKind Kind = TLI->shouldExpandAtomicRMWInIR(AI);
+  if (Kind != TargetLoweringBase::AtomicExpansionKind::None &&
+      Kind != TargetLoweringBase::AtomicExpansionKind::BitTestIntrinsic)
+    diagnoseProbeExpansion(TLI, AI);
   switch (Kind) {
   case TargetLoweringBase::AtomicExpansionKind::None:
     return false;
@@ -1831,7 +1873,12 @@ bool AtomicExpandImpl::tryExpandAtomicCmpXchg(AtomicCmpXchgInst *CI) {
   unsigned MinCASSize = TLI->getMinCmpXchgSizeInBits() / 8;
   unsigned ValueSize = getAtomicOpSize(CI);
 
-  switch (TLI->shouldExpandAtomicCmpXchgInIR(CI)) {
+  TargetLoweringBase::AtomicExpansionKind Kind =
+      TLI->shouldExpandAtomicCmpXchgInIR(CI);
+  if (Kind != TargetLoweringBase::AtomicExpansionKind::None ||
+      ValueSize < MinCASSize)
+    diagnoseProbeExpansion(TLI, CI);
+  switch (Kind) {
   default:
     llvm_unreachable("Unhandled case in tryExpandAtomicCmpXchg");
   case TargetLoweringBase::AtomicExpansionKind::None:

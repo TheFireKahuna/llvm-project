@@ -2432,6 +2432,11 @@ bool SelectionDAGISel::IsLegalToFold(SDValue N, SDNode *U, SDNode *Root,
   if (OptLevel == CodeGenOptLevel::None)
     return false;
 
+  // A fault probe stays the one access its landing describes.
+  if (const auto *Mem = dyn_cast<MemSDNode>(N))
+    if (Mem->getMemOperand()->isFaultProbe())
+      return false;
+
   // If Root use can somehow reach N through a path that doesn't contain
   // U then folding N would create a cycle. e.g. In the following
   // diagram, Root can reach N through X. If N is folded into Root, then

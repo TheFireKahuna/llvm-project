@@ -809,6 +809,56 @@ void AArch64InstrInfo::instantiateCondBranch(
   }
 }
 
+bool AArch64InstrInfo::insertFaultProbeResult(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
+    const MachineInstr &Probe, const LivePhysRegs &LiveAfter) const {
+  const DebugLoc &DL = Probe.getDebugLoc();
+  const MachineRegisterInfo &MRI = MBB.getParent()->getRegInfo();
+  // No probe the target selects sets the flags.
+  if (!LiveAfter.available(MRI, AArch64::NZCV) &&
+      Probe.modifiesRegister(AArch64::NZCV, &RI))
+    return false;
+
+  auto ZeroGPR = [&](Register Reg) {
+    BuildMI(MBB, I, DL,
+            get(AArch64::GPR64allRegClass.contains(Reg) ? AArch64::MOVZXi
+                                                        : AArch64::MOVZWi),
+            Reg)
+        .addImm(0)
+        .addImm(0);
+  };
+  // Each result the access defines, as zero memory gives it: a register pair
+  // in both halves, and a SIMD&FP register whole, as a load writes it.
+  for (const MachineOperand &MO : Probe.all_defs()) {
+    Register Reg = MO.getReg();
+    if (Reg == AArch64::NZCV || MRI.isReserved(Reg) ||
+        LiveAfter.available(MRI, Reg))
+      continue;
+    if (AArch64::GPR64allRegClass.contains(Reg) ||
+        AArch64::GPR32allRegClass.contains(Reg)) {
+      ZeroGPR(Reg);
+    } else if (AArch64::XSeqPairsClassRegClass.contains(Reg)) {
+      ZeroGPR(RI.getSubReg(Reg, AArch64::sube64));
+      ZeroGPR(RI.getSubReg(Reg, AArch64::subo64));
+    } else if (AArch64::WSeqPairsClassRegClass.contains(Reg)) {
+      ZeroGPR(RI.getSubReg(Reg, AArch64::sube32));
+      ZeroGPR(RI.getSubReg(Reg, AArch64::subo32));
+    } else {
+      MCRegister Q;
+      if (AArch64::FPR128RegClass.contains(Reg))
+        Q = Reg;
+      for (unsigned Sub : {AArch64::dsub, AArch64::ssub, AArch64::hsub,
+                           AArch64::bsub})
+        if (!Q)
+          Q = RI.getMatchingSuperReg(Reg, Sub, &AArch64::FPR128RegClass);
+      if (!Q)
+        return false;
+      BuildMI(MBB, I, DL, get(AArch64::MOVIv2d_ns), Q).addImm(0);
+    }
+  }
+  return true;
+}
+
 unsigned AArch64InstrInfo::insertBranch(
     MachineBasicBlock &MBB, MachineBasicBlock *TBB, MachineBasicBlock *FBB,
     ArrayRef<MachineOperand> Cond, const DebugLoc &DL, int *BytesAdded) const {

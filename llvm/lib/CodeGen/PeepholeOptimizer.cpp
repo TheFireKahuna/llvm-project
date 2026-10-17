@@ -1402,6 +1402,11 @@ bool PeepholeOptimizer::isLoadFoldable(
     MachineInstr &MI, SmallSet<Register, 16> &FoldAsLoadDefCandidates) {
   if (!MI.canFoldAsLoad() || !MI.mayLoad())
     return false;
+  // A fault probe stays the one access its landing describes.
+  if (llvm::any_of(MI.memoperands(), [](const MachineMemOperand *MMO) {
+        return MMO->isFaultProbe();
+      }))
+    return false;
   const MCInstrDesc &MCID = MI.getDesc();
   if (MCID.getNumDefs() != 1)
     return false;

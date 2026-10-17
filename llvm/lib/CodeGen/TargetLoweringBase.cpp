@@ -2822,12 +2822,23 @@ void TargetLoweringBase::finalizeLowering(MachineFunction &MF) const {
   MF.getRegInfo().freezeReservedRegs();
 }
 
+MachineMemOperand::Flags
+TargetLoweringBase::getFaultProbeMMOFlags(const Value *Ptr) const {
+  std::optional<unsigned> ProbeAS = getFaultProbeAddressSpace();
+  if (!ProbeAS || Ptr->getType()->getPointerAddressSpace() != *ProbeAS)
+    return MachineMemOperand::MONone;
+  // Volatile as well, so that no machine pass merges, moves or re-executes
+  // the access away from the one instruction its landing describes.
+  return MachineMemOperand::MOFaultProbe | MachineMemOperand::MOVolatile;
+}
+
 MachineMemOperand::Flags TargetLoweringBase::getLoadMemOperandFlags(
     const LoadInst &LI, const DataLayout &DL, AssumptionCache *AC,
     const TargetLibraryInfo *LibInfo, CodeGenOptLevel OptLevel) const {
   MachineMemOperand::Flags Flags = MachineMemOperand::MOLoad;
   if (LI.isVolatile())
     Flags |= MachineMemOperand::MOVolatile;
+  Flags |= getFaultProbeMMOFlags(LI.getPointerOperand());
 
   if (LI.hasMetadata(LLVMContext::MD_nontemporal))
     Flags |= MachineMemOperand::MONonTemporal;
@@ -2856,6 +2867,7 @@ TargetLoweringBase::getStoreMemOperandFlags(const StoreInst &SI,
 
   if (SI.isVolatile())
     Flags |= MachineMemOperand::MOVolatile;
+  Flags |= getFaultProbeMMOFlags(SI.getPointerOperand());
 
   if (SI.hasMetadata(LLVMContext::MD_nontemporal))
     Flags |= MachineMemOperand::MONonTemporal;
@@ -2873,9 +2885,11 @@ TargetLoweringBase::getAtomicMemOperandFlags(const Instruction &AI,
   if (const AtomicRMWInst *RMW = dyn_cast<AtomicRMWInst>(&AI)) {
     if (RMW->isVolatile())
       Flags |= MachineMemOperand::MOVolatile;
+    Flags |= getFaultProbeMMOFlags(RMW->getPointerOperand());
   } else if (const AtomicCmpXchgInst *CmpX = dyn_cast<AtomicCmpXchgInst>(&AI)) {
     if (CmpX->isVolatile())
       Flags |= MachineMemOperand::MOVolatile;
+    Flags |= getFaultProbeMMOFlags(CmpX->getPointerOperand());
   } else
     llvm_unreachable("not an atomic instruction");
 

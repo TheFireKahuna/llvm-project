@@ -413,6 +413,10 @@ public:
                         MachineBasicBlock *FBB, ArrayRef<MachineOperand> Cond,
                         const DebugLoc &DL,
                         int *BytesAdded = nullptr) const override;
+  bool insertFaultProbeResult(MachineBasicBlock &MBB,
+                              MachineBasicBlock::iterator I,
+                              const MachineInstr &Probe,
+                              const LivePhysRegs &LiveAfter) const override;
 
   std::unique_ptr<TargetInstrInfo::PipelinerLoopInfo>
   analyzeLoopForPipelining(MachineBasicBlock *LoopBB) const override;

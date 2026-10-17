@@ -140,6 +140,7 @@ LLVM_ABI void initializeIVUsersWrapperPassPass(PassRegistry &);
 LLVM_ABI void initializeIfConverterPass(PassRegistry &);
 LLVM_ABI void
 initializeImmutableModuleSummaryIndexWrapperPassPass(PassRegistry &);
+LLVM_ABI void initializeFaultProbeLoweringPass(PassRegistry &);
 LLVM_ABI void initializeImplicitNullChecksPass(PassRegistry &);
 LLVM_ABI void initializeIndirectBrExpandLegacyPassPass(PassRegistry &);
 LLVM_ABI void initializeInferAddressSpacesPass(PassRegistry &);

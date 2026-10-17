@@ -458,6 +458,10 @@ public:
                         MachineBasicBlock *FBB, ArrayRef<MachineOperand> Cond,
                         const DebugLoc &DL,
                         int *BytesAdded = nullptr) const override;
+  bool insertFaultProbeResult(MachineBasicBlock &MBB,
+                              MachineBasicBlock::iterator I,
+                              const MachineInstr &Probe,
+                              const LivePhysRegs &LiveAfter) const override;
   bool canInsertSelect(const MachineBasicBlock &, ArrayRef<MachineOperand> Cond,
                        Register, Register, Register, int &, int &,
                        int &) const override;

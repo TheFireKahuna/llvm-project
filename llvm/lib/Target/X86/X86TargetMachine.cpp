@@ -322,7 +322,11 @@ bool X86TargetMachine::isNoopAddrSpaceCast(unsigned SrcAS,
   assert(SrcAS != DestAS && "Expected different address spaces!");
   if (getPointerSize(SrcAS) != getPointerSize(DestAS))
     return false;
-  return SrcAS < 256 && DestAS < 256;
+  // A fault probe addresses the same flat memory.
+  auto IsFlat = [](unsigned AS) {
+    return AS < 256 || AS == X86AS::FAULT_PROBE;
+  };
+  return IsFlat(SrcAS) && IsFlat(DestAS);
 }
 
 void X86TargetMachine::reset() { SubtargetMap.clear(); }
@@ -573,6 +577,11 @@ void X86PassConfig::addPreEmitPass() {
   }
   addPass(createX86CompressEVEXLegacyPass());
   addPass(createX86InsertX87WaitLegacyPass());
+
+  // Last, so no later pass rewrites a probe and loses its symbol, and before
+  // the EH continuation targets are collected.
+  if (TM->getTargetTriple().isWindowsNTPOSIXEnvironment())
+    addPass(&FaultProbeLoweringID);
 }
 
 void X86PassConfig::addPreEmitPass2() {
