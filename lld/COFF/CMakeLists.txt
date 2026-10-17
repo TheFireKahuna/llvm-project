@@ -24,6 +24,7 @@ add_lld_library(lldCOFF
   PDB.cpp
   SymbolTable.cpp
   Symbols.cpp
+  VagueEntities.cpp
   TypePrefix.cpp
   Writer.cpp
 

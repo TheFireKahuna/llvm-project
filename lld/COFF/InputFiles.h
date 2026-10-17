@@ -284,6 +284,11 @@ public:
   // default visibility: listed with that role in the object's link records,
   // or any such definition of an object whose records list none.
   bool hasDefaultVisibility(DefinedRegular *d) const;
+  // Whether the object's link records list its definitions with default
+  // visibility, as a compiler that shares them along import paths emits.
+  bool listsBindings() const {
+    return linkRecords && linkRecords->listsBindings;
+  }
 
   bool hasLinkRecords() const { return linkRecords; }
 

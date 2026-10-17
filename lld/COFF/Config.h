@@ -169,6 +169,15 @@ struct Configuration {
   // The DLLs, in lowercase, whose offers of what the image also defines the
   // image does not take: it keeps its own copies.
   llvm::StringSet<> ignoredOffers;
+  // The entities, and the DLLs in lowercase, that two images of the load
+  // closure may both keep without an error.
+  llvm::StringSet<> allowedVagueDuplicates;
+  llvm::StringSet<> allowedVagueDuplicateDLLs;
+  // The previous release's import library, whose record the entities the
+  // image newly keeps are compared with, and whether the image exports an
+  // epoch of the entities it keeps.
+  StringRef offersBaseline;
+  bool offersEpoch = false;
   std::map<std::string, int> dllOrder;
   Symbol *arm64ECIcallHelper = nullptr;
 

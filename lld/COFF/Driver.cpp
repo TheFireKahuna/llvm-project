@@ -18,6 +18,7 @@
 #include "MinGW.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
+#include "VagueEntities.h"
 #include "Writer.h"
 #include "lld/Common/Args.h"
 #include "lld/Common/CommonLinkerContext.h"
@@ -1201,9 +1202,11 @@ void LinkerDriver::createImportLibrary(bool asLib) {
 
   std::string libName = getImportName(asLib);
   std::string path = getImplibPath();
-  std::vector<uint8_t> rangeRecord;
-  if (!asLib)
+  std::vector<uint8_t> rangeRecord, vagueRecord;
+  if (!asLib) {
     addKCFIRangeImports(ctx, libName, exports, extra, rangeRecord);
+    addVagueEntityRecord(ctx, libName, extra, vagueRecord);
+  }
 
   if (!ctx.config.incremental) {
     checkError(writeImportLibrary(libName, path, exports, ctx.config.machine,
@@ -2790,6 +2793,14 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
 
   for (auto *arg : args.filtered(OPT_ignore_offers))
     config->ignoredOffers.insert(StringRef(arg->getValue()).lower());
+  for (auto *arg : args.filtered(OPT_allow_vague_duplicate))
+    config->allowedVagueDuplicates.insert(arg->getValue());
+  for (auto *arg : args.filtered(OPT_allow_vague_duplicates))
+    config->allowedVagueDuplicateDLLs.insert(
+        StringRef(arg->getValue()).lower());
+  if (auto *arg = args.getLastArg(OPT_offers_baseline))
+    config->offersBaseline = arg->getValue();
+  config->offersEpoch = args.hasArg(OPT_offers_epoch);
 
   // Handle /delayload
   {
@@ -3195,6 +3206,11 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     symtab.bindOfferedFunctions();
     symtab.addOffers();
   });
+  addOffersEpoch(ctx);
+  importOffersEpochs(ctx);
+  if (config->dll)
+    checkOfferAdditions(ctx, sys::path::filename(config->outputFile));
+  checkVagueEntities(ctx, sys::path::filename(config->outputFile));
 
   ctx.forEachSymtab([](SymbolTable &symtab) { bindLocalImports(symtab); });
 
