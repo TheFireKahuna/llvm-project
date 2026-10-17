@@ -424,17 +424,17 @@ inline constexpr char KCFICodeEmpty[] = "__llvm_code_empty";
 // followed by the class's name in a LinkRecordVTables group. The range is n
 // slots of S bytes, S a power of two of at least 64 that the linker chooses,
 // each holding the primary address point of one vtable of the class or of a
-// class derived from it through primary bases, so that a vtable pointer is
-// one of them exactly when its offset from the range's start is a multiple of
-// S below n * S. The symbols are the first address point; n * S and S - 1, as
-// absolute symbols; and the address n * S + log2(S) bytes after the first,
-// from which code without relocatable immediates takes both. The range of a
-// class with no vtable laid out by these rules is empty and starts at the
-// image base.
+// class derived from it through primary bases, so that a vtable pointer is one
+// of them exactly when its offset from the range's start is a multiple of S
+// below the extent. A guard thunk tests the pointer through addresses, not
+// absolute immediates, which on COFF would take a relocation that adds the
+// image base to a constant: the start is the first address point, the end one
+// past the last slot, and the mask a read-only word holding S - 1, which the
+// thunk loads. The range of a class with no vtable laid out by these rules is
+// empty and starts at the image base.
 inline constexpr char VTableRangeStartPrefix[] = "__llvm_vtables$";
-inline constexpr char VTableRangeSizePrefix[] = "__llvm_vtables_size$";
+inline constexpr char VTableRangeEndPrefix[] = "__llvm_vtables_end$";
 inline constexpr char VTableRangeMaskPrefix[] = "__llvm_vtables_mask$";
-inline constexpr char VTableRangeShapePrefix[] = "__llvm_vtables_shape$";
 
 // The thunk that a virtual call of a class's slot goes through, followed by
 // the class's name and then the slot's offset in decimal, after an

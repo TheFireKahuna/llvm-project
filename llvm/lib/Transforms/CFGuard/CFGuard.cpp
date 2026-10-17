@@ -30,6 +30,7 @@
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/TargetParser/Triple.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/Transforms/Utils/KCFIHash.h"
 
 using namespace llvm;
@@ -55,6 +56,9 @@ using COFF::KCFIMemberLocalDispatchThunkPrefix;
 using COFF::KCFIVfnCheckThunkPrefix;
 constexpr unsigned MaxIndexRangeDepth = 6;
 
+static bool canUseDispatch(const CallBase &CB);
+static Function *declareVTableGuardThunk(Module &M, StringRef Cls, uint64_t Off,
+                                         uint64_t Type, bool Local);
 namespace {
 
 /// Adds Control Flow Guard (CFG) checks on indirect function calls/invokes.
@@ -177,6 +181,12 @@ public:
   /// a marker, with a call to the per-type check thunk that checks that word,
   /// which takes the target as the guard check function does.
   void insertKCFICheckThunk(IntrinsicInst *II);
+
+  /// If CB is a virtual call whose vtable pointer load is marked for a vtable
+  /// guard, routes it through the class's guard thunk with the vtable pointer
+  /// as the dispatch target and returns true. Only on x86-64, where the
+  /// dispatch register carries the pointer.
+  bool insertVTableGuard(CallBase *CB);
 
   bool doInitialization(Module &M);
   bool runOnFunction(Function &F);
@@ -359,6 +369,54 @@ void CFGuardImpl::insertCFGuardDispatch(CallBase *CB) {
   CB->eraseFromParent();
 }
 
+bool CFGuardImpl::insertVTableGuard(CallBase *CB) {
+  Module &M = *CB->getModule();
+  if (!UseKCFIThunks || !M.getTargetTriple().isX86_64())
+    return false;
+  auto *Load = dyn_cast<LoadInst>(CB->getCalledOperand());
+  if (!Load)
+    return false;
+  MDNode *MD = Load->getMetadata("vtable_guard");
+  if (!MD || !canUseDispatch(*CB))
+    return false;
+  std::optional<OperandBundleUse> Bundle = CB->getOperandBundle(LLVMContext::OB_kcfi);
+  if (!Bundle)
+    return false;
+  uint64_t Type = cast<ConstantInt>(Bundle->Inputs[0])->getZExtValue();
+  StringRef Cls = cast<MDString>(MD->getOperand(0))->getString();
+  uint64_t Off = mdconst::extract<ConstantInt>(MD->getOperand(1))->getZExtValue();
+
+  // The guard tests the vtable pointer, which is the base the slot is loaded
+  // from. Only the plain pattern the frontend emits is guarded; anything else
+  // keeps the type check it already has.
+  Value *VPtr = Load->getPointerOperand();
+  if (auto *GEP = dyn_cast<GEPOperator>(VPtr)) {
+    APInt GEPOff(M.getDataLayout().getIndexTypeSizeInBits(GEP->getType()), 0);
+    Value *Base = GEP->stripAndAccumulateConstantOffsets(
+        M.getDataLayout(), GEPOff, /*AllowNonInbounds=*/true);
+    if (GEPOff.getZExtValue() != Off)
+      return false;
+    VPtr = Base;
+  } else if (Off != 0) {
+    return false;
+  }
+
+  bool Local = CB->getMetadata("kcfi_local");
+  Function *Thunk = declareVTableGuardThunk(M, Cls, Off, Type, Local);
+
+  SmallVector<OperandBundleDef, 1> Bundles;
+  CB->getOperandBundlesAsDefs(Bundles);
+  llvm::erase_if(Bundles, [](const OperandBundleDef &B) {
+    return B.getTag() == "kcfi";
+  });
+  Bundles.emplace_back("cfguardtarget", VPtr);
+  CallBase *NewCB = CallBase::Create(CB, Bundles, CB->getIterator());
+  NewCB->setCalledOperand(Thunk);
+  CB->replaceAllUsesWith(NewCB);
+  CB->eraseFromParent();
+  return true;
+}
+
 bool CFGuardImpl::doInitialization(Module &M) {
   // Check if this module has the cfguard flag and read its value.
   CFGuardModuleFlag = M.getControlFlowGuardMode();
@@ -464,6 +522,35 @@ static Function *declareKCFIThunk(Module &M, StringRef Prefix, uint64_t Type) {
                       ? KCFIThunkDispatch
                       : KCFIThunkCheck;
   setKCFIThunkMetadata(Thunk, Kind, Type, Flags);
+  return Thunk;
+}
+
+// Returns the vtable guard thunk for a virtual call of class Cls through the
+// slot at byte offset Off, whose target of KCFI type Type the slow path checks.
+// The thunk takes a vtable pointer, jumps through the slot when the pointer is
+// in the class's run of vtables, and otherwise loads the slot and continues
+// into the type's KCFI dispatch thunk. Its name is unique to the class and the
+// slot; the backend emits the body from the !vcall_thunk metadata.
+static Function *declareVTableGuardThunk(Module &M, StringRef Cls, uint64_t Off,
+                                         uint64_t Type, bool Local) {
+  std::string Name = (COFF::VTableGuardThunkPrefix + Cls + "_" + Twine(Off)).str();
+  auto *Thunk = cast<Function>(
+      M.getOrInsertFunction(Name, Type::getVoidTy(M.getContext())).getCallee());
+  Thunk->setVisibility(GlobalValue::HiddenVisibility);
+  Thunk->setDSOLocal(true);
+  LLVMContext &Ctx = M.getContext();
+  auto *I64 = Type::getInt64Ty(Ctx);
+  Metadata *Ops[] = {
+      MDString::get(Ctx, Cls),
+      ConstantAsMetadata::get(ConstantInt::get(I64, Off)),
+      ConstantAsMetadata::get(ConstantInt::get(Type::getInt32Ty(Ctx), uint32_t(Type))),
+      ConstantAsMetadata::get(ConstantInt::get(Type::getInt1Ty(Ctx), Local))};
+  Thunk->setMetadata("vcall_thunk", MDNode::get(Ctx, Ops));
+  // The slow path continues into the type's dispatch thunk, which the backend
+  // emits for the type like any other.
+  declareKCFIThunk(M, Local ? KCFILocalDispatchThunkPrefix
+                            : KCFIDispatchThunkPrefix,
+                   Type);
   return Thunk;
 }
 
@@ -881,6 +968,8 @@ bool CFGuardImpl::runOnFunction(Function &F) {
 
   // For each indirect call/invoke, add the appropriate dispatch or check.
   for (CallBase *CB : IndirectCalls) {
+    if (insertVTableGuard(CB))
+      continue;
     if (GuardMechanism == Mechanism::Dispatch && canUseDispatch(*CB))
       insertCFGuardDispatch(CB);
     else if (useTailCallThunk(*CB))

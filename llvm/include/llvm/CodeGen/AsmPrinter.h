@@ -531,6 +531,22 @@ public:
     MCSymbol *CodeEnd;
   };
 
+  /// A vtable guard thunk the shared driver asks the target to emit, after it
+  /// has switched to the thunk's section and emitted its label. The thunk takes
+  /// a vtable pointer in the dispatch target register, jumps through the slot
+  /// at byte offset Off when the pointer is in the run [Start, End) and a
+  /// multiple of the stride the Mask word holds less one from Start, and
+  /// otherwise loads the slot and continues into Dispatch, the type's KCFI
+  /// dispatch thunk.
+  struct VTableGuardThunkInfo {
+    MCSymbol *Thunk;
+    MCSymbol *Start;
+    MCSymbol *End;
+    MCSymbol *Mask;
+    uint64_t Off;
+    MCSymbol *Dispatch;
+  };
+
   /// Emits the per-type thunks the CFGuard pass routes a module's indirect
   /// calls with a KCFI type through, as the backend does for COFF when the
   /// prefixes carry a marker. Shared across targets; the per-target hooks
@@ -550,6 +566,8 @@ protected:
   virtual void emitKCFIThunk(const KCFIThunkInfo &I) {}
   /// Emits the body of a member thunk described by \p I.
   virtual void emitKCFIMemberThunk(const KCFIThunkInfo &I) {}
+  /// Emits the body of a vtable guard thunk described by \p I.
+  virtual void emitVTableGuardThunk(const VTableGuardThunkInfo &I) {}
   /// Emits the body of a type's scanner of \p Routine's kind, which walks a
   /// list its first argument register points past; a dynamic scanner continues
   /// into the guard function where a static one fails fast.

@@ -28,9 +28,11 @@
 #include "InputFiles.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
+#include "lld/Common/Memory.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/BinaryFormat/COFF.h"
+#include "llvm/Support/Endian.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/TimeProfiler.h"
 #include <algorithm>
@@ -44,6 +46,28 @@ using namespace lld::coff;
 // giving a run a slot this large to hold it would waste a page or more on every
 // other class of the run. Vtables are far smaller in practice.
 static const uint64_t maxSlot = 1 << 16;
+
+namespace {
+// A 4-byte read-only word holding a run's stride less one, which a guard thunk
+// loads to mask a vtable pointer's offset, since a constant cannot be an
+// immediate on COFF without a relocation that adds the image base.
+class MaskChunk : public NonSectionChunk {
+public:
+  explicit MaskChunk(uint32_t mask) : mask(mask) { setAlignment(4); }
+  size_t getSize() const override { return 4; }
+  void writeTo(uint8_t *buf) const override {
+    llvm::support::endian::write32le(buf, mask);
+  }
+  uint32_t getOutputCharacteristics() const override {
+    return llvm::COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
+           llvm::COFF::IMAGE_SCN_MEM_READ;
+  }
+  StringRef getSectionName() const override { return ".rdata"; }
+
+private:
+  uint32_t mask;
+};
+} // namespace
 
 namespace {
 // A class the records name, before the runs are formed: the kept chunk of its
@@ -114,11 +138,9 @@ void lld::coff::registerVTableRunSymbols(COFFLinkerContext &ctx) {
       return;
     StringRef name = s->getName();
     if (name.starts_with(VTableRangeStartPrefix) ||
-        name.starts_with(VTableRangeShapePrefix))
+        name.starts_with(VTableRangeEndPrefix) ||
+        name.starts_with(VTableRangeMaskPrefix))
       replaceSymbol<DefinedSynthetic>(s, name, nullptr);
-    else if (name.starts_with(VTableRangeSizePrefix) ||
-             name.starts_with(VTableRangeMaskPrefix))
-      replaceSymbol<DefinedAbsolute>(s, ctx, name, 0);
   });
 }
 
@@ -173,6 +195,7 @@ void lld::coff::resolveVTableRuns(COFFLinkerContext &ctx) {
         break;
       }
       run.stride = std::max<uint64_t>(64, llvm::bit_ceil(widest));
+      run.maskChunk = make<MaskChunk>(uint32_t(run.stride - 1));
       unsigned runIndex = ctx.vtableRuns.size();
       for (unsigned i = 0; i != run.slots.size(); ++i)
         ctx.runChunkRun[run.slots[i].chunk] = {runIndex, i};
@@ -192,6 +215,8 @@ void lld::coff::placeVTableRuns(COFFLinkerContext &ctx,
                                 OutputSection *rdataSec) {
   if (ctx.vtableRuns.empty())
     return;
+  for (const VTableRun &run : ctx.vtableRuns)
+    rdataSec->addChunk(run.maskChunk);
   std::vector<Chunk *> &chunks = rdataSec->chunks;
   for (const VTableRun &run : ctx.vtableRuns) {
     DenseSet<const Chunk *> members;
@@ -233,32 +258,26 @@ void lld::coff::defineVTableRuns(COFFLinkerContext &ctx) {
     }
     for (const VTableRun::Class &cls : run.classes) {
       const VTableRun::Slot &slot = run.slots[cls.first];
-      uint64_t log2 = llvm::countr_zero(run.stride);
-      uint64_t bytes = placed ? uint64_t(cls.count) * run.stride : 0;
+      uint64_t bytes = uint64_t(cls.count) * run.stride;
       auto define = [&](StringRef prefix, Chunk *c, uint64_t off) {
         if (Symbol *s = ctx.symtab.find((prefix + cls.name).str());
             s && isa<Defined>(s))
           replaceSymbol<DefinedSynthetic>(s, s->getName(), c, off);
       };
-      auto defineAbs = [&](StringRef prefix, uint64_t v) {
-        if (Symbol *s = ctx.symtab.find((prefix + cls.name).str());
-            s && isa<Defined>(s))
-          replaceSymbol<DefinedAbsolute>(s, ctx, s->getName(), v);
-      };
-      // The start is the class's own address point, the size the bytes its
-      // subtree's slots span, and the mask the stride less one. The shape, for
-      // a target that cannot hold the size and the stride as immediates, is the
-      // address the size past the start with the log2 of the stride in the low
-      // bits the stride leaves free.
+      // The guard thunk tests a vtable pointer through addresses: the start is
+      // the class's own address point, the end one past its subtree's last
+      // slot, and the mask the read-only word holding the stride less one. An
+      // unplaced run gives an empty range at the image base, so a pointer
+      // misses it.
       if (placed) {
         define(VTableRangeStartPrefix, slot.chunk, slot.apoff);
-        define(VTableRangeShapePrefix, slot.chunk, slot.apoff + bytes + log2);
+        define(VTableRangeEndPrefix, slot.chunk, slot.apoff + bytes);
+        define(VTableRangeMaskPrefix, run.maskChunk, 0);
       } else {
         define(VTableRangeStartPrefix, nullptr, 0);
-        define(VTableRangeShapePrefix, nullptr, 0);
+        define(VTableRangeEndPrefix, nullptr, 0);
+        define(VTableRangeMaskPrefix, nullptr, 0);
       }
-      defineAbs(VTableRangeSizePrefix, bytes);
-      defineAbs(VTableRangeMaskPrefix, placed ? run.stride - 1 : 0);
     }
   }
 

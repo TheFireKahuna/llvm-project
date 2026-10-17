@@ -2456,6 +2456,21 @@ CGCallee ItaniumCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
           PtrTy, VTable, VTableIndex, "vfn");
       VFuncLoad = CGF.Builder.CreateAlignedLoad(PtrTy, VTableSlotPtr,
                                                 CGF.getPointerAlign());
+      // Mark the load so the call through it goes through the class's vtable
+      // guard: a thunk that takes the vtable pointer, jumps through the slot
+      // when the pointer is in the class's run of vtables, and otherwise takes
+      // the slow path that checks the slot's KCFI type. The guard adds nothing
+      // where the type check already reads a vetted vtable (VTableChecked).
+      if (auto *Load = dyn_cast<llvm::LoadInst>(VFuncLoad);
+          Load && CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+          CGM.hasKCFIVTableSlotTypes() && !VTableChecked) {
+        llvm::LLVMContext &Ctx = CGM.getLLVMContext();
+        llvm::Metadata *Ops[] = {
+            llvm::MDString::get(Ctx, vtableRunName(CGM, MethodDecl->getParent())),
+            llvm::ConstantAsMetadata::get(
+                llvm::ConstantInt::get(CGM.Int64Ty, ByteOffset))};
+        Load->setMetadata("vtable_guard", llvm::MDNode::get(Ctx, Ops));
+      }
     }
 
     // Add !invariant.load md to virtual function load to indicate that

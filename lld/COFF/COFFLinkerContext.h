@@ -39,6 +39,8 @@ struct VTableRun {
   // The address point of the run's first slot, which assignAddresses sets and
   // the later slots are placed the stride apart from.
   uint64_t anchor = 0;
+  // The read-only word holding the stride less one, which a guard thunk loads.
+  Chunk *maskChunk = nullptr;
   struct Slot {
     SectionChunk *chunk;
     uint64_t apoff;

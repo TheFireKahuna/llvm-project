@@ -19,8 +19,8 @@
 ## C's the last one. The first address point is 16 into a 64-byte line.
 # CHECK-DAG: [[#%x,A:]] R _ZTV1A
 
-## The start symbols are the classes' address points, 16 into each vtable, and
-## the slots are 64 apart: A, B, C at A+16, A+80, A+144.
+## The start symbols are the classes' address points, 16 into each vtable, the
+## slots 64 apart: A, B, C at A+16, A+80, A+144.
 # CHECK-DAG: [[#A+16]] R __llvm_vtables$1A
 # CHECK-DAG: [[#A+16]] R _ZTV1A.ap
 # CHECK-DAG: [[#A+80]] R __llvm_vtables$1B
@@ -28,21 +28,24 @@
 # CHECK-DAG: [[#A+64]] R _ZTV1B
 # CHECK-DAG: [[#A+128]] R _ZTV1C
 
-## The shape is the start plus the subtree's bytes plus the stride's log2, 6.
-# CHECK-DAG: [[#A+16+192+6]] R __llvm_vtables_shape$1A
-# CHECK-DAG: [[#A+80+128+6]] R __llvm_vtables_shape$1B
+## The end is one past the subtree's last slot: A spans 3 slots (end A+16+192),
+## B spans 2 (A+80+128), C spans 1 (A+144+64).
+# CHECK-DAG: [[#A+16+192]] R __llvm_vtables_end$1A
+# CHECK-DAG: [[#A+80+128]] R __llvm_vtables_end$1B
+# CHECK-DAG: [[#A+144+64]] R __llvm_vtables_end$1C
 
-## The sizes and masks are absolute. A spans 3 slots, B 2, C 1; the stride is 64.
-# CHECK-DAG: 000000c0 A __llvm_vtables_size$1A
-# CHECK-DAG: 00000080 A __llvm_vtables_size$1B
-# CHECK-DAG: 00000040 A __llvm_vtables_size$1C
-# CHECK-DAG: 0000003f A __llvm_vtables_mask$1A
+## The mask is a read-only word, the same for every class of the run.
+# CHECK-DAG: [[#%x,MASK:]] R __llvm_vtables_mask$1A
+# CHECK-DAG: [[#MASK]] R __llvm_vtables_mask$1B
+# CHECK-DAG: [[#MASK]] R __llvm_vtables_mask$1C
 
-## A merged global holds M and N, so both are left out with an empty range.
-# CHECK-DAG: 00000000 A __llvm_vtables_size$1M
-# CHECK-DAG: 00000000 A __llvm_vtables_size$1N
-## A class whose vtable no record places gets an empty range too.
-# CHECK-DAG: 00000000 A __llvm_vtables_size$1Z
+## A merged global holds M and N, so neither heads a run; a class no record
+## places has none either. Their range symbols are defined as an empty range at
+## the image base rather than a run address (the link resolves them, and nm
+## does not list an image-base synthetic), so no run symbol names them.
+# CHECK-NOT: R __llvm_vtables$1M
+# CHECK-NOT: R __llvm_vtables$1N
+# CHECK-NOT: R __llvm_vtables$1Z
 
 #--- a.s
   .text
@@ -51,20 +54,22 @@ main:
   leaq _ZTV1A(%rip), %rax
   leaq _ZTV1B(%rip), %rax
   leaq _ZTV1C(%rip), %rax
+  leaq _ZTV1A.ap(%rip), %rax
   movq __llvm_vtables$1A(%rip), %rax
   movq __llvm_vtables$1B(%rip), %rax
   movq __llvm_vtables$1C(%rip), %rax
-  movq __llvm_vtables_shape$1A(%rip), %rax
-  movq __llvm_vtables_shape$1B(%rip), %rax
-  movabsq $__llvm_vtables_size$1A, %rax
-  movabsq $__llvm_vtables_size$1B, %rax
-  movabsq $__llvm_vtables_size$1C, %rax
-  movabsq $__llvm_vtables_mask$1A, %rax
+  movq __llvm_vtables_end$1A(%rip), %rax
+  movq __llvm_vtables_end$1B(%rip), %rax
+  movq __llvm_vtables_end$1C(%rip), %rax
+  movq __llvm_vtables_mask$1A(%rip), %rax
+  movq __llvm_vtables_mask$1B(%rip), %rax
+  movq __llvm_vtables_mask$1C(%rip), %rax
   movq _ZTV1M(%rip), %rax
   movq _ZTV1N(%rip), %rax
-  movabsq $__llvm_vtables_size$1M, %rax
-  movabsq $__llvm_vtables_size$1N, %rax
-  movabsq $__llvm_vtables_size$1Z, %rax
+  movq __llvm_vtables$1M(%rip), %rax
+  movq __llvm_vtables_end$1M(%rip), %rax
+  movq __llvm_vtables$1N(%rip), %rax
+  movq __llvm_vtables$1Z(%rip), %rax
   retq
 
   .section .rdata,"dr",discard,_ZTV1A

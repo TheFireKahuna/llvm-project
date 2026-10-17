@@ -214,6 +214,20 @@ void AsmPrinter::emitKCFIThunks(Module &M) {
     MissThunks.insert(
         (Prefix + utohexstr(MD->Type, /*LowerCase=*/true, /*Width=*/8)).str());
   }
+  // A vtable guard thunk continues into its type's dispatch thunk on a miss,
+  // which is reached only from the guard thunk's emitted body, so it is forced
+  // too.
+  for (const Function &F : M) {
+    const MDNode *MD = F.getMetadata("vcall_thunk");
+    if (!F.isDeclaration() || F.use_empty() || !MD)
+      continue;
+    uint32_t Type = mdconst::extract<ConstantInt>(MD->getOperand(2))->getZExtValue();
+    bool Local = mdconst::extract<ConstantInt>(MD->getOperand(3))->getZExtValue();
+    MissThunks.insert((Twine(Local ? COFF::KCFILocalDispatchThunkPrefix
+                                   : COFF::KCFIDispatchThunkPrefix) +
+                       utohexstr(Type, /*LowerCase=*/true, /*Width=*/8))
+                          .str());
+  }
 
   // The ordinary, local and vfn thunks, in the same order as a type's: all the
   // non-local routines, then the local ones, then the vfn check.
@@ -340,6 +354,33 @@ void AsmPrinter::emitKCFIThunks(Module &M) {
     emitKCFIMemberThunk({Routine, MD->Type, Pattern, PrefixNops, Local,
                          /*Vfn=*/false, Mismatch, Miss, OutsideMiss, TagValues,
                          CodeStart, CodeEnd});
+  }
+
+  // The vtable guard thunks a virtual call is routed through, each testing a
+  // vtable pointer against its class's run and continuing into the type's
+  // dispatch thunk on a miss.
+  for (const Function &F : M) {
+    const MDNode *MD = F.getMetadata("vcall_thunk");
+    if (!F.isDeclaration() || F.use_empty() || !MD)
+      continue;
+    StringRef Cls = cast<MDString>(MD->getOperand(0))->getString();
+    uint64_t Off = mdconst::extract<ConstantInt>(MD->getOperand(1))->getZExtValue();
+    uint32_t Type = mdconst::extract<ConstantInt>(MD->getOperand(2))->getZExtValue();
+    bool Local = mdconst::extract<ConstantInt>(MD->getOperand(3))->getZExtValue();
+    std::string Hex = utohexstr(Type, /*LowerCase=*/true, /*Width=*/8);
+    MCSymbol *Dispatch = OutContext.getOrCreateSymbol(
+        (Local ? COFF::KCFILocalDispatchThunkPrefix
+               : COFF::KCFIDispatchThunkPrefix) +
+        Hex);
+    auto Range = [&](StringRef Prefix) {
+      return OutContext.getOrCreateSymbol(Prefix + Cls);
+    };
+    AnyThunk = true;
+    emitKCFIFunctionStart(getSymbol(&F), COFF::IMAGE_COMDAT_SELECT_ANY,
+                          Align(16));
+    emitVTableGuardThunk({getSymbol(&F), Range(COFF::VTableRangeStartPrefix),
+                          Range(COFF::VTableRangeEndPrefix),
+                          Range(COFF::VTableRangeMaskPrefix), Off, Dispatch});
   }
 
   for (const KCFIRoutineKind &Routine : Routines) {

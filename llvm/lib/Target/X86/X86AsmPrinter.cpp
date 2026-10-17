@@ -361,6 +361,65 @@ void X86AsmPrinter::emitKCFIFastFail() {
   OutStreamer->emitInstruction(MCInstBuilder(X86::INT).addImm(0x29), STI);
 }
 
+/// Emits the body of a vtable guard thunk; see the header. The vtable pointer
+/// arrives in RAX, the dispatch target register.
+///
+/// leaq __llvm_vtables$cls(%rip), %r10; cmpq %r10, %rax; jb 1f
+/// movq %rax, %r11; subq %r10, %r11
+/// leaq __llvm_vtables_end$cls(%rip), %r10; cmpq %r10, %rax; jae 1f
+/// testl %r11d, __llvm_vtables_mask$cls(%rip); jnz 1f
+/// jmpq *off(%rax)
+/// 1: movq off(%rax), %rax; jmp __llvm_kcfi_dispatch_<h>
+void X86AsmPrinter::emitVTableGuardThunk(const VTableGuardThunkInfo &I) {
+  const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
+  MCSymbol *Miss = OutContext.createTempSymbol();
+  // The pointer is below the run's start.
+  emitKCFILea(X86::R10, I.Start);
+  emitKCFICmp(X86::RAX, X86::R10);
+  emitKCFIJcc(Miss, X86::COND_B);
+  // r11 = pointer - start, the offset tested for alignment to the stride.
+  OutStreamer->emitInstruction(
+      MCInstBuilder(X86::MOV64rr).addReg(X86::R11).addReg(X86::RAX), STI);
+  OutStreamer->emitInstruction(
+      MCInstBuilder(X86::SUB64rr).addReg(X86::R11).addReg(X86::R11).addReg(X86::R10),
+      STI);
+  // At or past the run's end.
+  emitKCFILea(X86::R10, I.End);
+  emitKCFICmp(X86::RAX, X86::R10);
+  emitKCFIJcc(Miss, X86::COND_AE);
+  // Not a multiple of the stride: low bits of the offset meet the mask word.
+  OutStreamer->emitInstruction(MCInstBuilder(X86::TEST32mr)
+                                   .addReg(X86::RIP)
+                                   .addImm(1)
+                                   .addReg(X86::NoRegister)
+                                   .addExpr(MCSymbolRefExpr::create(I.Mask, OutContext))
+                                   .addReg(X86::NoRegister)
+                                   .addReg(X86::R11D),
+                               STI);
+  emitKCFIJcc(Miss, X86::COND_NE);
+  // A vetted vtable: jump through the slot.
+  OutStreamer->emitInstruction(MCInstBuilder(X86::JMP64m)
+                                   .addReg(X86::RAX)
+                                   .addImm(1)
+                                   .addReg(X86::NoRegister)
+                                   .addImm(I.Off)
+                                   .addReg(X86::NoRegister),
+                               STI);
+  // The slow path loads the slot and lets the type check decide.
+  OutStreamer->emitLabel(Miss);
+  OutStreamer->emitInstruction(MCInstBuilder(X86::MOV64rm)
+                                   .addReg(X86::RAX)
+                                   .addReg(X86::RAX)
+                                   .addImm(1)
+                                   .addReg(X86::NoRegister)
+                                   .addImm(I.Off)
+                                   .addReg(X86::NoRegister),
+                               STI);
+  OutStreamer->emitInstruction(
+      MCInstBuilder(X86::JMP_4).addExpr(MCSymbolRefExpr::create(I.Dispatch, OutContext)),
+      STI);
+}
+
 /// Emits the body of an ordinary, local or vfn KCFI thunk; see the header.
 ///
 /// testl $mask, %reg32; jz mismatch

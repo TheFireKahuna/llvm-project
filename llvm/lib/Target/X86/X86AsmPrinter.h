@@ -134,6 +134,7 @@ private:
   ArrayRef<KCFIRoutineKind> getKCFIRoutineKinds() const override;
   void emitKCFIThunk(const KCFIThunkInfo &I) override;
   void emitKCFIMemberThunk(const KCFIThunkInfo &I) override;
+  void emitVTableGuardThunk(const VTableGuardThunkInfo &I) override;
   void emitKCFIScanner(const KCFIRoutineKind &Routine, bool Dynamic,
                        uint64_t Pattern, int64_t PrefixNops) override;
   void emitKCFIOpenRoutine(const KCFIRoutineKind &Routine, MCSymbol *List,
