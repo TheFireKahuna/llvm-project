@@ -181,6 +181,13 @@ bool EHStreamer::callToNoUnwindFunction(const MachineInstr *MI) {
     SawFunc = true;
   }
 
+  // A call through a register names no function, but its function may be
+  // known.
+  if (!SawFunc)
+    if (const auto *F = dyn_cast_or_null<Function>(
+            MI->getMF()->tryGetCalledGlobal(MI).Callee))
+      MarkedNoUnwind = F->doesNotThrow();
+
   return MarkedNoUnwind;
 }
 
