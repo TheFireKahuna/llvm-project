@@ -43,9 +43,12 @@
 # RUN:   FileCheck --check-prefix=OWNER %s
 # RUN: llvm-readobj --coff-imports m.exe | FileCheck --check-prefix=IMPORT %s
 # RUN: od -A x -t x4 -j 0x80 -N 4 m.exe | FileCheck --check-prefix=TABLE %s
+## Immutable data too, whose address is the program's one.
 # OWNER:  Importing _ZN1n1gE from a.dll, which owns it for the program
+# OWNER:  Importing _ZN1n1kE from a.dll, which owns it for the program
 # IMPORT:      Name: a.dll
 # IMPORT:      Symbol: _ZN1n1gE
+# IMPORT:      Symbol: _ZN1n1kE
 # TABLE: 000080 7b3ac2d5
 
 ## The executable owns an entity it keeps, here as it takes no delay-loaded
@@ -86,11 +89,17 @@
 _ZN1n1gE:
   .linkbinding _ZN1n1gE, default
   .long 1
+  .section .rdata,"dr",discard,_ZN1n1kE
+  .globl _ZN1n1kE
+_ZN1n1kE:
+  .linkbinding _ZN1n1kE, default
+  .long 5
 
   .text
   .globl fa
 fa:
   movq __imp__ZN1n1gE(%rip), %rax
+  movq __imp__ZN1n1kE(%rip), %rcx
   retq
   .section .drectve,"yni"
   .ascii " -export:fa"
@@ -102,11 +111,17 @@ fa:
 _ZN1n1gE:
   .linkbinding _ZN1n1gE, default
   .long 1
+  .section .rdata,"dr",discard,_ZN1n1kE
+  .globl _ZN1n1kE
+_ZN1n1kE:
+  .linkbinding _ZN1n1kE, default
+  .long 5
 
   .text
   .globl fb
 fb:
   movq __imp__ZN1n1gE(%rip), %rax
+  movq __imp__ZN1n1kE(%rip), %rcx
   retq
   .section .drectve,"yni"
   .ascii " -export:fb"

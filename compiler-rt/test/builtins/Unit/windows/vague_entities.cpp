@@ -26,13 +26,15 @@
 // unloads it, since nothing it registered refers to that instance. A plugin
 // whose code initializes a.dll's instance of a static local, and so registers
 // its destructor, stays loaded, since unloading it would destroy an object
-// a.dll uses. A
+// a.dll uses. An immutable inline variable has one address too. A
 // DLL that a plugin delay-loads joins the plugin's scope and binds to the
 // plugin's instance, which a plugin loaded later does not see, as under
 // RTLD_LOCAL. Of two delay-loaded DLLs that keep it, the first to load
 // keeps its instance and the second binds to it.
 
 // HOST: same 1 value 3
+// HOST: fixed same 1
+// HOST: plugin fixed same 1
 // HOST: constant same 1 value 4 pinned 0
 // HOST: guarded same 1 value 7 pinned 1
 // PLUGIN: same 1 value 2
@@ -46,6 +48,12 @@
 
 struct API Counter {
   static inline int value = 0;
+};
+
+// Immutable, which every image may read from its own copy, but whose address
+// is the program's one.
+struct API Fixed {
+  static inline const int value = 5;
 };
 
 // Initialized on the first call, by whichever image's code makes it; the
@@ -68,9 +76,11 @@ API inline Tracker &tracker() {
 
 #if defined(DLL_A)
 BUMP(bumpA)
+API const int *fixedA() { return &Fixed::value; }
 API int *viaA() { return &tracker().x; }
 #elif defined(DLL_B)
 BUMP(bumpB)
+API const int *fixedB() { return &Fixed::value; }
 #elif defined(DLL_C)
 BUMP(bumpC)
 #elif defined(DLL_P)
@@ -78,6 +88,7 @@ BUMP(bumpP)
 API int *viaP() { return &tracker().x; }
 #elif defined(DLL_K)
 BUMP(bumpK)
+API const int *fixedK() { return &Fixed::value; }
 #elif defined(DLL_D)
 BUMP(bumpD)
 #elif defined(DLL_Q)
@@ -89,10 +100,13 @@ API int *bumpA();
 API int *bumpB();
 API int *bumpC();
 API int *viaA();
+API const int *fixedA();
+API const int *fixedB();
 
 int main(int argc, char **argv) {
   int *a = bumpA(), *b = bumpB(), *c = bumpC();
   printf("same %d value %d\n", a == b && b == c, *a);
+  printf("fixed same %d\n", fixedA() == fixedB() && fixedA() == &Fixed::value);
 
   HMODULE constant = LoadLibraryA(argv[2]);
   if (!constant)
@@ -101,6 +115,11 @@ int main(int argc, char **argv) {
   if (!bumpK)
     return 3;
   int *k = bumpK();
+  const int *(*fixedK)() =
+      (const int *(*)())GetProcAddress(constant, "_Z6fixedKv");
+  if (!fixedK)
+    return 3;
+  printf("plugin fixed same %d\n", fixedK() == fixedA());
   FreeLibrary(constant);
   printf("constant same %d value %d pinned %d\n", k == a, *a,
          GetModuleHandleA("k.dll") != NULL);

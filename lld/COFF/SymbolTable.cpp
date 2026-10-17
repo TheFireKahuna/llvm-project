@@ -1259,10 +1259,12 @@ bool SymbolTable::isPreemptibleVagueEntity(Symbol *s) {
       if (!d || !isa<ObjFile>(d->getFile()) || !isDefaultVisibility(d))
         continue;
       collectWeakDataGroup(d, chunks, members, /*liveOnly=*/false);
-      // Thread-local data has a record of its own instead.
+      // Thread-local data has a record of its own instead. Immutable data is
+      // preemptible too, since its address is the program's one; its value
+      // reads go through the cell with its address-takes, which nothing yet
+      // tells apart.
       for (DefinedRegular *m : members)
-        if ((m->getChunk()->getOutputCharacteristics() & IMAGE_SCN_MEM_WRITE) &&
-            !m->getChunk()->getSectionName().starts_with(".tls"))
+        if (!m->getChunk()->getSectionName().starts_with(".tls"))
           preemptibleVagueEntities->insert(m);
     }
     if (config.bsymbolic != B::Functions)
