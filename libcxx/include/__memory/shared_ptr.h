@@ -137,7 +137,11 @@ struct _LIBCPP_HIDE_STRUCT_FROM_ABI __shared_ptr_emplace : __shared_weak_count {
     allocator_traits<_Alloc>::construct(__alloc_, __get_elem(), std::forward<_Args>(__args)...);
   }
 
-  _LIBCPP_HIDE_FROM_ABI __value_type* __get_elem() _NOEXCEPT { return reinterpret_cast<__value_type*>(__buffer_); }
+  // The buffer holds no object until the constructor builds one in it, so the
+  // cast must not be checked as one between object types.
+  _LIBCPP_HIDE_FROM_ABI _LIBCPP_NO_CFI __value_type* __get_elem() _NOEXCEPT {
+    return reinterpret_cast<__value_type*>(__buffer_);
+  }
 
 private:
   _LIBCPP_HIDE_FROM_ABI_VIRTUAL void __on_zero_shared() _NOEXCEPT override {
@@ -790,8 +794,10 @@ private:
   };
 };
 
+// The control block is cast from storage that holds no object yet, so the cast
+// must not be checked as one between object types.
 template <class _Array, class _Alloc, class... _Arg>
-_LIBCPP_HIDE_FROM_ABI shared_ptr<_Array>
+_LIBCPP_HIDE_FROM_ABI _LIBCPP_NO_CFI shared_ptr<_Array>
 __allocate_shared_unbounded_array(const _Alloc& __a, size_t __n, _Arg&&... __arg) {
   static_assert(__is_unbounded_array_v<_Array>);
   // We compute the number of bytes necessary to hold the control block and the
