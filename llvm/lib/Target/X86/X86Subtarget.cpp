@@ -147,8 +147,7 @@ unsigned char X86Subtarget::classifyGlobalReference(const GlobalValue *GV,
   // address when the function is in the image, or with zero when an
   // extern_weak function is absent. A definition of an overridable default is
   // defined here yet has the same import-form address: its one replacement is
-  // reached through its import pointer in every image, while calls to it stay
-  // direct.
+  // reached through its import pointer in every image.
   if (TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment()) {
     const auto *F = dyn_cast_or_null<Function>(GV);
     if (F && !F->isIntrinsic() && F->hasDefaultVisibility() &&
@@ -223,11 +222,16 @@ X86Subtarget::classifyGlobalFunctionReference(const GlobalValue *GV,
   // declaration created by an optimization or a lowering carries neither, and
   // would otherwise reach a linker thunk: a call and a jump where the table
   // takes one call. Where the function is in the image, the linker makes the
-  // call direct.
+  // call direct. A replacement of an overridable default is called through
+  // its import pointer too: the executable's link makes the call direct, and a
+  // DLL's keeps it, so that a DLL whose replacement the program does not
+  // select reaches the program's choice, as ELF preempts its definition.
   bool NoPLT =
       TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment() && M.getRtLibUseGOT();
   if (NoPLT && F && !F->isDSOLocal() && !F->isIntrinsic() &&
-      F->isDeclarationForLinker() && !F->hasExternalWeakLinkage())
+      (F->isDeclarationForLinker() ||
+       (F->hasFnAttribute("overridable-default") && !F->isWeakForLinker())) &&
+      !F->hasExternalWeakLinkage())
     return X86II::MO_DLLIMPORT;
 
   if (TM.shouldAssumeDSOLocal(GV))

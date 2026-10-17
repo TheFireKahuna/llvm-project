@@ -200,6 +200,22 @@ public:
   // its importers to its own definition.
   void offerOverridableDefaults();
 
+  // The strong definition of an overridable default that e exports, which a
+  // DLL offers under the offer name, or null.
+  Defined *getOverrideOffer(const Export &e);
+
+  // Under -import-slots in a DLL that offers an overridable default, loads the
+  // default's import, through which the DLL's own references reach the
+  // program's choice. Called in the resolution loop; returns whether it loaded
+  // anything.
+  bool loadOverrideOfferImports();
+
+  // The definitions this DLL offers, each with the import of the default it
+  // offers. The DLL's own references to one reach that import, as any other
+  // image's do, so a definition that the program does not select is
+  // preempted, as ELF preempts a shared object's definition.
+  llvm::MapVector<Symbol *, DefinedImportData *> preemptedOffers;
+
   // Under -import-slots in an executable, materialises the offer symbols its
   // linked import libraries carry, records each offered default's ABI name in
   // overrideOffers, and pulls the offer the executable does not itself replace.

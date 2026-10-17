@@ -789,6 +789,10 @@ bool SymbolTable::ignoresOffersOf(DefinedImportData *imp) const {
 void SymbolTable::bindImportsToDefinitions() {
   if (!ctx.config.importSlots || ctx.hybridSymtab || isEC())
     return;
+  SmallPtrSet<Symbol *, 4> offers;
+  for (const Export &e : exports)
+    if (Defined *d = getOverrideOffer(e))
+      offers.insert(d);
   for (ImportFile *file : ctx.importFileInstances) {
     DefinedImportData *imp = file->impSym;
     if (&file->symtab != this || !imp || find(imp->getName()) != imp)
@@ -798,6 +802,25 @@ void SymbolTable::bindImportsToDefinitions() {
         find(name.drop_front(strlen("__imp_"))));
     if (!d || !isa<ObjFile>(d->getFile()))
       continue;
+    // A definition the DLL offers is the program's only if the executable
+    // selects it. The DLL's own references keep the default's import, which
+    // the loader binds and the fill writes with the program's choice, so a
+    // definition the program does not select is preempted in the DLL too, as
+    // a definition in an ELF shared object is.
+    if (offers.contains(d) &&
+        !ctx.config.delayLoads.contains(StringRef(file->dllName).lower())) {
+      Log(ctx) << "Keeping " << name << " for " << printSymbol(d)
+               << ", which the image offers";
+      preemptedOffers[d] = imp;
+      file->live = true;
+      // On ARM64, where calls stay direct, the DLL's branches to the
+      // definition reach the import's thunk instead.
+      if (machine == ARM64 && file->thunkSym && !file->thunkSym->isGCRoot) {
+        file->thunkSym->isGCRoot = true;
+        ctx.config.gcroot.push_back(file->thunkSym);
+      }
+      continue;
+    }
     // What the image takes from a DLL that offers it keeps the import: a
     // shared vague definition, which the DLL's instance preempts, or whose
     // address it gives.
@@ -1012,31 +1035,56 @@ void SymbolTable::bindOfferedFunctions() {
     forwardExports([&](Symbol *s) { return offeredFunctions.lookup(s); });
 }
 
+Defined *SymbolTable::getOverrideOffer(const Export &e) {
+  if (!ctx.config.dll || !e.sym || !overridables.contains(e.sym->getName()) ||
+      !e.extName.empty() || !e.exportAs.empty())
+    return nullptr;
+  // The runtime's default is a weak definition, the fallback that the
+  // executable's replacement supersedes, so exporting it is what makes it
+  // the default of every image. Its definition is the weak external's
+  // .weak.<name>.* alias, or a weak definition from bitcode.
+  Symbol *def = e.sym;
+  if (auto *u = dyn_cast<Undefined>(def))
+    def = u->getWeakAlias();
+  auto *d = dyn_cast_or_null<Defined>(def);
+  if (!d || d->isWeak || d->getName().starts_with(".weak."))
+    return nullptr;
+  return d;
+}
+
 void SymbolTable::offerOverridableDefaults() {
   if (overridables.empty())
     return;
-  for (Export &e : exports) {
-    if (!e.sym || !overridables.contains(e.sym->getName()) ||
-        !e.extName.empty() || !e.exportAs.empty())
+  // Only the executable replaces an overridable default for every image of
+  // the program. A DLL's strong definition is an offer the executable's link
+  // may select instead, so the DLL exports the body under the offer name
+  // rather than its own: no importer binds to it as the ABI symbol, which
+  // would split the heap, and an executable that links the DLL discovers the
+  // offer and picks the winner for each slot.
+  for (Export &e : exports)
+    if (getOverrideOffer(e))
+      e.extName = saver().save(overrideOfferPrefix + e.sym->getName());
+}
+
+bool SymbolTable::loadOverrideOfferImports() {
+  if (!ctx.config.importSlots || !ctx.config.dll || ctx.hybridSymtab ||
+      isEC() || overridables.empty())
+    return false;
+  // The DLL's own references to a definition it offers go through the
+  // default's import, which nothing else may have loaded, since the DLL
+  // defines the name. A link without the runtime's import library has no
+  // import, and the DLL keeps its definition to itself.
+  bool loaded = false;
+  for (const Export &e : exports) {
+    if (!getOverrideOffer(e))
       continue;
-    // The runtime's default is a weak definition, the fallback that the
-    // executable's replacement supersedes, so exporting it is what makes it
-    // the default of every image. Its definition is the weak external's
-    // .weak.<name>.* alias, or a weak definition from bitcode.
-    Symbol *def = e.sym;
-    if (auto *u = dyn_cast<Undefined>(def))
-      def = u->getWeakAlias();
-    auto *d = dyn_cast_or_null<Defined>(def);
-    if (!d || d->isWeak || d->getName().starts_with(".weak."))
-      continue;
-    // Only the executable replaces an overridable default for every image of
-    // the program. A DLL's strong definition is an offer the executable's link
-    // may select instead, so the DLL exports the body under the offer name
-    // rather than its own: no importer binds to it as the ABI symbol, which
-    // would split the heap, and an executable that links the DLL discovers the
-    // offer and picks the winner for each slot.
-    e.extName = saver().save(overrideOfferPrefix + e.sym->getName());
+    Symbol *l = find(("__imp_" + e.sym->getName()).str());
+    if (l && l->isLazy() && !l->pendingArchiveLoad && isLazyImport(l)) {
+      forceLazy(l);
+      loaded = true;
+    }
   }
+  return loaded;
 }
 
 bool SymbolTable::isLocalOverrideReplacement(StringRef name) {
