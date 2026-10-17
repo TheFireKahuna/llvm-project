@@ -627,6 +627,14 @@ public:
   const DenseMap<const MachineInstr *, bool> &getImportFusedLoads() const {
     return ImportFusedLoads;
   }
+  bool addImportValueOnlyLoad(const MachineInstr *Load,
+                              const MachineInstr *Adrp) {
+    return ImportValueOnlyLoads.try_emplace(Load, Adrp).second;
+  }
+  const DenseMap<const MachineInstr *, const MachineInstr *> &
+  getImportValueOnlyLoads() const {
+    return ImportValueOnlyLoads;
+  }
 
   bool hasStackProbing() const { return StackProbeSize != 0; }
 
@@ -644,6 +652,10 @@ private:
   // each with whether only such instructions read it.
   DenseMap<const MachineInstr *, ImportFusedUse> ImportFusedUses;
   DenseMap<const MachineInstr *, bool> ImportFusedLoads;
+  // The loads of import pointers of data whose registers only reads of memory
+  // read, which the pass describes to the linker too, each with the adrp that
+  // gives it the pointer's page.
+  DenseMap<const MachineInstr *, const MachineInstr *> ImportValueOnlyLoads;
 };
 
 namespace yaml {

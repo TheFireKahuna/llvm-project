@@ -24,6 +24,11 @@
 // The linker makes either change only where the offsets it computes fit their
 // fields, and leaves both instructions as they are otherwise.
 //
+// A load of the import pointer of data that never changes, whose register
+// only reads of memory read, is described as such, with its adrp: the linker
+// may make the pair take the address of the image's own copy of the data,
+// which holds the same value wherever the data's address leads.
+//
 //===----------------------------------------------------------------------===//
 
 #include "AArch64.h"
@@ -33,6 +38,7 @@
 #include "Utils/AArch64BaseInfo.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/Analysis/CaptureTracking.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/ReachingDefAnalysis.h"
 #include "llvm/IR/GlobalAlias.h"
@@ -43,6 +49,7 @@ using namespace llvm;
 
 STATISTIC(NumAccesses, "Number of accesses described as fused with a load");
 STATISTIC(NumAdds, "Number of adds described as fused with a load");
+STATISTIC(NumValueOnly, "Number of loads described as read only for values");
 
 namespace {
 class AArch64WindowsImportFusion : public MachineFunctionPass {
@@ -93,6 +100,14 @@ static bool isData(const GlobalValue *GV) {
   if (const auto *GA = dyn_cast<GlobalAlias>(GV))
     GV = GA->getAliaseeObject();
   return GV && !isa<Function>(GV);
+}
+
+// Whether GV is data that never changes and whose every definition holds the
+// same value, so that a copy of it in any image reads as the data itself does.
+static bool isImmutableData(const GlobalValue *GV) {
+  const auto *Var = dyn_cast<GlobalVariable>(GV);
+  return Var && Var->isConstant() && Var->hasDefinitiveInitializer() &&
+         (Var->isWeakForLinker() || Var->hasAvailableExternallyLinkage());
 }
 
 // The operand that holds the base register of an access through an
@@ -157,6 +172,33 @@ static bool isFusibleAccess(const MachineInstr &MI, Register Reg,
     if (I != Base && MO.isReg() && MO.getReg() && MO.readsReg() &&
         TRI->regsOverlap(MO.getReg(), Reg))
       return false;
+  return true;
+}
+
+// Whether MI only reads memory through Reg, as the base of its address with
+// any offset or index register but Reg: a load, neither volatile nor atomic,
+// that neither writes an address back to Reg nor reads it elsewhere, so that
+// the address in Reg does not escape. The value loaded may replace it.
+static bool isValueRead(const MachineInstr &MI, Register Reg,
+                        const TargetRegisterInfo *TRI) {
+  if (!MI.mayLoad() || MI.mayStore() || MI.isCall() || MI.isBranch() ||
+      MI.hasUnmodeledSideEffects() || MI.isBundled() ||
+      MI.getNumOperands() < 3 || MI.memoperands_empty() ||
+      any_of(MI.memoperands(), [](const MachineMemOperand *MMO) {
+        return MMO->isVolatile() || MMO->isAtomic();
+      }))
+    return false;
+  const MachineOperand &Base = AArch64InstrInfo::getLdStBaseOp(MI);
+  if (!Base.isReg() || Base.getReg() != Reg)
+    return false;
+  for (const MachineOperand &MO : MI.operands()) {
+    if (&MO == &Base || !MO.isReg() || !MO.getReg() ||
+        !TRI->regsOverlap(MO.getReg(), Reg))
+      continue;
+    // A write-back definition is tied to the base.
+    if (MO.readsReg() || (MO.isDef() && MO.isTied()))
+      return false;
+  }
   return true;
 }
 
@@ -231,14 +273,27 @@ bool AArch64WindowsImportFusion::runOnMachineFunction(MachineFunction &MF) {
   // The loads of import pointers of data into the register that holds the
   // pointer's page.
   SmallVector<MachineInstr *, 8> Loads;
-  for (MachineBasicBlock &MBB : MF)
-    for (MachineInstr &MI : MBB)
+  // The data whose import pointers an instruction other than such a load, or
+  // an adrp of a pointer's page, names.
+  SmallPtrSet<const GlobalValue *, 4> OtherUses;
+  for (MachineBasicBlock &MBB : MF) {
+    for (MachineInstr &MI : MBB) {
       if (MI.getOpcode() == AArch64::LDRXui && !MI.isBundled() &&
           MI.getOperand(0).getReg() == MI.getOperand(1).getReg())
         if (const GlobalValue *GV =
                 getImportPointer(MI.getOperand(2), AArch64II::MO_PAGEOFF))
-          if (isData(GV))
+          if (isData(GV)) {
             Loads.push_back(&MI);
+            continue;
+          }
+      if (MI.getOpcode() == AArch64::ADRP && !MI.isBundled())
+        continue;
+      for (const MachineOperand &MO : MI.operands())
+        if (MO.isGlobal() && (MO.getTargetFlags() & (AArch64II::MO_DLLIMPORT |
+                                                     AArch64II::MO_COFFSTUB)))
+          OtherUses.insert(MO.getGlobal());
+    }
+  }
   if (Loads.empty())
     return false;
 
@@ -247,21 +302,45 @@ bool AArch64WindowsImportFusion::runOnMachineFunction(MachineFunction &MF) {
   AArch64FunctionInfo *FI = MF.getInfo<AArch64FunctionInfo>();
   using UseKind = AArch64FunctionInfo::ImportFusedUseKind;
   bool Changed = false;
+  // The loads of import pointers of data that never changes, each with the
+  // adrp in its section that only it reads, and the data some of whose loads
+  // have no such adrp, which the linker would not find.
+  SmallVector<std::pair<MachineInstr *, MachineInstr *>, 4> Paired;
+  SmallPtrSet<const GlobalValue *, 4> Unpaired;
   for (MachineInstr *Load : Loads) {
     Register Reg = Load->getOperand(0).getReg();
     const GlobalValue *GV = Load->getOperand(2).getGlobal();
     // The adrp of the pointer's page, which only this load reads.
     MachineInstr *Adrp = RDI.getUniqueReachingMIDef(Load, Reg);
-    if (!Adrp || Adrp->getOpcode() != AArch64::ADRP ||
-        getImportPointer(Adrp->getOperand(1), AArch64II::MO_PAGE) != GV)
-      continue;
     SmallPtrSet<MachineInstr *, 4> AdrpUses;
-    RDI.getGlobalUses(Adrp, Reg, AdrpUses);
-    if (AdrpUses.size() != 1 || !AdrpUses.contains(Load))
+    if (Adrp && Adrp->getOpcode() == AArch64::ADRP &&
+        getImportPointer(Adrp->getOperand(1), AArch64II::MO_PAGE) == GV)
+      RDI.getGlobalUses(Adrp, Reg, AdrpUses);
+    if (AdrpUses.size() != 1 || !AdrpUses.contains(Load)) {
+      Unpaired.insert(GV);
       continue;
+    }
+    if (isImmutableData(GV)) {
+      if (Adrp->getParent()->getSectionID() ==
+          Load->getParent()->getSectionID())
+        Paired.push_back({Load, Adrp});
+      else
+        Unpaired.insert(GV);
+    }
 
     SmallPtrSet<MachineInstr *, 4> Uses;
     RDI.getGlobalUses(Load, Reg, Uses);
+    // Where only reads of memory read the address of data that never
+    // changes, the address may be that of the image's own copy. The linker
+    // finds the adrp in the load's section.
+    if (!Uses.empty() && !Paired.empty() && Paired.back().first == Load &&
+        all_of(Uses, [&](MachineInstr *Use) {
+          return isValueRead(*Use, Reg, TRI);
+        })) {
+      FI->addImportValueOnlyLoad(Load, Adrp);
+      ++NumValueOnly;
+      Changed = true;
+    }
     if (Uses.empty() || any_of(Uses, [&](MachineInstr *Use) {
           return Use->getParent()->getSectionID() !=
                      Load->getParent()->getSectionID() ||
@@ -287,6 +366,25 @@ bool AArch64WindowsImportFusion::runOnMachineFunction(MachineFunction &MF) {
     undefDebugValues(*Load, Reg, TRI);
     NumAccesses += Uses.size();
     Changed = true;
+  }
+
+  // Where the function only reads data that never changes through its
+  // address, or compares addresses within it, every load of the data's import
+  // pointer may read the image's own copy, all of them together, so that
+  // addresses that different loads lead to still compare as before.
+  DenseMap<const GlobalValue *, bool> ReadOnlyThrough;
+  for (auto [Load, Adrp] : Paired) {
+    const GlobalValue *GV = Load->getOperand(2).getGlobal();
+    auto [It, Inserted] = ReadOnlyThrough.try_emplace(GV, false);
+    if (Inserted)
+      It->second =
+          !Unpaired.contains(GV) && !OtherUses.contains(GV) &&
+          (Load->getOperand(2).getTargetFlags() & AArch64II::MO_DLLIMPORT) &&
+          !globalAddressMayBeCapturedIn(GV, MF.getFunction());
+    if (It->second && FI->addImportValueOnlyLoad(Load, Adrp)) {
+      ++NumValueOnly;
+      Changed = true;
+    }
   }
   return Changed;
 }

@@ -343,6 +343,9 @@ public:
 
     AArch64FI = MF.getInfo<AArch64FunctionInfo>();
     ImportFusionLabels.clear();
+    ImportPageLabels.clear();
+    for (auto [Load, Adrp] : AArch64FI->getImportValueOnlyLoads())
+      ImportPageLabels.try_emplace(Adrp, nullptr);
     STI = &MF.getSubtarget<AArch64Subtarget>();
 
     SetupMachineFunction(MF);
@@ -418,6 +421,9 @@ private:
   // The labels of the loads of import pointers that the import fusion pass
   // describes, by load.
   MInstToMCSymbol ImportFusionLabels;
+  // The labels of the adrp instructions that give value-only loads their
+  // pages, by adrp.
+  MInstToMCSymbol ImportPageLabels;
 
   void emitImportFusion(const MachineInstr &MI);
 
@@ -4108,7 +4114,9 @@ void AArch64AsmPrinter::EmitToStreamer(MCStreamer &S, const MCInst &Inst) {
 
 // Tells the linker about the next instruction, an access through, or an add
 // to, the register that a load of an import pointer of data filled, or such a
-// load, which a label names for the instructions that use it.
+// load, which a label names for the instructions that use it. A load whose
+// register only reads of memory read is described with the adrp before it,
+// which a label names.
 void AArch64AsmPrinter::emitImportFusion(const MachineInstr &MI) {
   auto GetLabel = [&](const MachineInstr *Load) {
     MCSymbol *&Label = ImportFusionLabels[Load];
@@ -4116,6 +4124,17 @@ void AArch64AsmPrinter::emitImportFusion(const MachineInstr &MI) {
       Label = createTempSymbol("fused");
     return Label;
   };
+  if (auto Page = ImportPageLabels.find(&MI); Page != ImportPageLabels.end()) {
+    if (!Page->second)
+      Page->second = createTempSymbol("page");
+    OutStreamer->emitLabel(Page->second);
+    return;
+  }
+  // The linker looks for the adrp only before the load.
+  if (auto Load = AArch64FI->getImportValueOnlyLoads().find(&MI);
+      Load != AArch64FI->getImportValueOnlyLoads().end())
+    if (MCSymbol *Page = ImportPageLabels[Load->second])
+      OutStreamer->emitCOFFLinkValueOnly(Page);
   using UseKind = AArch64FunctionInfo::ImportFusedUseKind;
   auto Use = AArch64FI->getImportFusedUses().find(&MI);
   if (Use != AArch64FI->getImportFusedUses().end()) {
@@ -4159,7 +4178,8 @@ void AArch64AsmPrinter::emitInstruction(const MachineInstr *MI) {
     }
   }
 
-  if (!AArch64FI->getImportFusedLoads().empty())
+  if (!AArch64FI->getImportFusedLoads().empty() ||
+      !AArch64FI->getImportValueOnlyLoads().empty())
     emitImportFusion(*MI);
 
   if (AArch64FI->getLOHRelated().count(MI)) {
