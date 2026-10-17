@@ -8934,6 +8934,31 @@ merged global.
 It is lowered on COFF targets to a pin in the object's link-only records, and
 has no effect on other targets.
 
+#### '`vtable_hierarchy`' Metadata
+
+The `vtable_hierarchy` metadata may be attached to a global variable
+definition holding a vtable, to tell the linker where the vtable's primary
+address point is, which class the vtable is of, and that class's primary base.
+Its operands are the address point's byte offset into the global, the name of
+the class, and the name of its primary base, or an empty string for a class
+with none:
+
+```text
+@_ZTV1D = constant { [4 x ptr] } [...], align 64, !vtable_hierarchy !0
+!0 = !{i64 16, !"1D", !"1B"}
+```
+
+A class's name is the same in every module that uses it, and different from
+that of any other class. A linker may then lay out the vtables of a class and
+of the classes derived from it through primary bases as one range, which code
+can test a vtable pointer against. Like `!type`, the metadata is moved with
+its offset when a pass moves the global's contents, and a global may carry
+more than one. A pass that splits a global must give each to the piece holding
+its address point, with the offset adjusted.
+
+It is lowered on COFF targets to a vtable in the object's link-only records,
+and has no effect on other targets.
+
 #### '`prof`' Metadata
 
 The `prof` metadata is used to record profile data in the IR.

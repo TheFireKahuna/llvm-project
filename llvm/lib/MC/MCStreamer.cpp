@@ -1280,6 +1280,9 @@ void MCStreamer::emitCOFFSecOffset(MCSymbol const *Symbol) {}
 void MCStreamer::emitCOFFLinkPin(MCSymbol const *Symbol, unsigned Log2Modulus,
                                  uint64_t Residue, bool Required) {}
 
+void MCStreamer::emitCOFFLinkVTable(const MCSymbol *VTable, uint64_t Offset,
+                                    StringRef Class, StringRef Base) {}
+
 void MCStreamer::emitCOFFLinkFact(uint64_t Kind) {}
 
 void MCStreamer::emitCOFFKCFIThunk(const MCSymbol *Thunk, unsigned Kind,

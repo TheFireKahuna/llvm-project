@@ -81,6 +81,16 @@ public:
     bool Required;
   };
 
+  /// The primary address point of a vtable, Offset bytes after VTable, with
+  /// its class and the class's primary base, which the object's link-only
+  /// records carry (COFF::LinkRecordVTables).
+  struct LinkVTable {
+    const MCSymbol *VTable;
+    uint64_t Offset;
+    std::string Class;
+    std::string Base;
+  };
+
   /// A KCFI thunk, which the object's link-only records describe
   /// (COFF::LinkRecordKCFIThunks).
   struct KCFIThunk {
@@ -120,6 +130,8 @@ public:
 private:
   // The pins of the object's link-only records, in the order given.
   SmallVector<LinkPin, 0> LinkPins;
+  // The vtables of the object's link-only records, in the order given.
+  SmallVector<LinkVTable, 0> LinkVTables;
   // The kinds of the object's link-only records with an empty payload, each
   // stating a fact about the whole object, in increasing order.
   SmallVector<uint64_t, 0> LinkFacts;
@@ -152,9 +164,12 @@ public:
     return hasLinkRecords() || !LinkPins.empty() || !LinkFacts.empty() ||
            !KCFIThunks.empty() || !KCFIMemberTags.empty() ||
            !LinkBindings.empty() || !LinkForwarders.empty() ||
-           !LinkContracts.empty();
+           !LinkContracts.empty() || !LinkVTables.empty();
   }
   void addLinkPin(const LinkPin &Pin) { LinkPins.push_back(Pin); }
+  void addLinkVTable(LinkVTable VTable) {
+    LinkVTables.push_back(std::move(VTable));
+  }
   void addLinkFact(uint64_t Kind) {
     auto I = llvm::lower_bound(LinkFacts, Kind);
     if (I == LinkFacts.end() || *I != Kind)

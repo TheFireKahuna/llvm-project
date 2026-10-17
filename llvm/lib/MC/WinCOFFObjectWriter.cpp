@@ -1264,6 +1264,38 @@ uint64_t WinCOFFWriter::writeObject() {
       OS << Pins;
     }
 
+    // A vtable on a symbol that the symbol table leaves out names the symbol's
+    // section instead, with the offset moved by the symbol's offset in it.
+    SmallString<0> VTables;
+    raw_svector_ostream VTablesOS(VTables);
+    for (const WinCOFFObjectWriter::LinkVTable &VT : OWriter.LinkVTables) {
+      const MCSymbol *S = VT.VTable;
+      uint64_t Offset = VT.Offset;
+      if (!S->isInSection() || (!S->isTemporary() && !S->isRegistered())) {
+        getContext().reportError(SMLoc(), "vtable '" + S->getName() +
+                                              "' is not defined");
+        continue;
+      }
+      uint32_t Index;
+      if (!S->isTemporary()) {
+        Index = S->getIndex();
+      } else {
+        Index = SectionMap[&S->getSection()]->Symbol->getIndex();
+        Offset += Asm->getSymbolOffset(*S);
+      }
+      encodeULEB128(Index, VTablesOS);
+      encodeULEB128(Offset, VTablesOS);
+      for (StringRef Name : {StringRef(VT.Class), StringRef(VT.Base)}) {
+        encodeULEB128(Name.size(), VTablesOS);
+        VTablesOS << Name;
+      }
+    }
+    if (!VTables.empty()) {
+      encodeULEB128(COFF::LinkRecordVTables, OS);
+      encodeULEB128(VTables.size(), OS);
+      OS << VTables;
+    }
+
     SmallString<0> Sites;
     raw_svector_ostream SitesOS(Sites);
     for (const auto &Section : Sections) {
@@ -1491,6 +1523,7 @@ int WinCOFFWriter::getSectionNumber(const MCSection &Section) const {
 void WinCOFFObjectWriter::reset() {
   IncrementalLinkerCompatible = false;
   LinkPins.clear();
+  LinkVTables.clear();
   LinkFacts.clear();
   KCFIThunks.clear();
   KCFIMemberTags.clear();

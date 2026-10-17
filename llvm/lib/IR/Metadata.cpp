@@ -1943,6 +1943,17 @@ void GlobalObject::copyMetadata(const GlobalObject *Other, unsigned Offset) {
       addMetadata(LLVMContext::MD_pin, *MDNode::get(getContext(), Ops));
       continue;
     }
+    // And that of a vtable's address point.
+    if (Offset != 0 && MD.first == LLVMContext::MD_vtable_hierarchy) {
+      SmallVector<Metadata *, 3> Ops(MD.second->operands());
+      auto *OffsetConst =
+          cast<ConstantInt>(cast<ConstantAsMetadata>(Ops[0])->getValue());
+      Ops[0] = ConstantAsMetadata::get(ConstantInt::get(
+          OffsetConst->getType(), OffsetConst->getValue() + Offset));
+      addMetadata(LLVMContext::MD_vtable_hierarchy,
+                  *MDNode::get(getContext(), Ops));
+      continue;
+    }
     // If an offset adjustment was specified we need to modify the DIExpression
     // to prepend the adjustment:
     // !DIExpression(DW_OP_plus, Offset, [original expr])

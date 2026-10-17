@@ -623,6 +623,12 @@ public:
   virtual void emitCOFFLinkPin(MCSymbol const *Symbol, unsigned Log2Modulus,
                                uint64_t Residue, bool Required);
 
+  /// Tells the linker that the primary address point of a vtable of class
+  /// \p Class is \p Offset bytes after \p VTable, and that \p Base, if not
+  /// empty, is the class's primary base.
+  virtual void emitCOFFLinkVTable(const MCSymbol *VTable, uint64_t Offset,
+                                  StringRef Class, StringRef Base);
+
   /// Tells the linker the fact about the whole object that a link record of
   /// COFF::LinkRecordKind \p Kind with an empty payload states.
   virtual void emitCOFFLinkFact(uint64_t Kind);

@@ -198,6 +198,22 @@ enum LinkRecordKind : uint64_t {
   // between a prefix and its function's entry.
   LinkRecordKCFIThunks = 8,
 
+  // The primary address points of the vtables the object defines, each with
+  // its class and the class's primary base, for a linker that lays out the
+  // vtables of a class and of the classes derived from it through primary
+  // bases as one range, which it defines symbols for, so that a test of a
+  // vtable pointer against the range tells whether it is one of the class's:
+  //
+  //   payload := (symbol:ULEB128 offset:ULEB128 class:name base:name)*
+  //   name    := size:ULEB128 byte{size}
+  //
+  // symbol is a symbol index, so the facts a discarded COMDAT copy carries
+  // describe the copy the linker keeps, and offset is the address point's
+  // offset from the symbol. class names the class as the symbols of its range
+  // do, and base names its primary base, or is empty. The kind is critical,
+  // since code tests vtable pointers against the ranges.
+  LinkRecordVTables = 9,
+
   // The KCFI prefixes the object defines whose word before the marker is a
   // membership tag, which LTO gives a function of a type it checks by
   // members, rather than the second type of a function that can occupy a
@@ -403,6 +419,30 @@ inline constexpr char KCFIListSectionPrefix[] = ".rdata$llvm_kcfi_";
 inline constexpr char KCFICodeStart[] = "__llvm_code_start";
 inline constexpr char KCFICodeEnd[] = "__llvm_code_end";
 inline constexpr char KCFICodeEmpty[] = "__llvm_code_empty";
+
+// The symbols a linker defines for the range of a class's vtables, each
+// followed by the class's name in a LinkRecordVTables group. The range is n
+// slots of S bytes, S a power of two of at least 64 that the linker chooses,
+// each holding the primary address point of one vtable of the class or of a
+// class derived from it through primary bases, so that a vtable pointer is
+// one of them exactly when its offset from the range's start is a multiple of
+// S below n * S. The symbols are the first address point; n * S and S - 1, as
+// absolute symbols; and the address n * S + log2(S) bytes after the first,
+// from which code without relocatable immediates takes both. The range of a
+// class with no vtable laid out by these rules is empty and starts at the
+// image base.
+inline constexpr char VTableRangeStartPrefix[] = "__llvm_vtables$";
+inline constexpr char VTableRangeSizePrefix[] = "__llvm_vtables_size$";
+inline constexpr char VTableRangeMaskPrefix[] = "__llvm_vtables_mask$";
+inline constexpr char VTableRangeShapePrefix[] = "__llvm_vtables_shape$";
+
+// The thunk that a virtual call of a class's slot goes through, followed by
+// the class's name and then the slot's offset in decimal, after an
+// underscore. It takes the vtable pointer, and on x86-64 jumps through the
+// slot when the pointer is in the class's range of vtables, and otherwise
+// continues into the KCFI thunk that checks the type of the function the slot
+// holds. On AArch64 it returns instead of jumping.
+inline constexpr char VTableGuardThunkPrefix[] = "__llvm_vcall_";
 
 // Sizes in bytes of various things in the COFF format.
 enum {

@@ -340,6 +340,12 @@ void MCWinCOFFStreamer::emitCOFFLinkPin(MCSymbol const *Symbol,
   getWriter().addLinkPin({Symbol, Log2Modulus, Residue, Required});
 }
 
+void MCWinCOFFStreamer::emitCOFFLinkVTable(const MCSymbol *VTable,
+                                           uint64_t Offset, StringRef Class,
+                                           StringRef Base) {
+  getWriter().addLinkVTable({VTable, Offset, Class.str(), Base.str()});
+}
+
 void MCWinCOFFStreamer::emitCOFFLinkFact(uint64_t Kind) {
   getWriter().addLinkFact(Kind);
 }

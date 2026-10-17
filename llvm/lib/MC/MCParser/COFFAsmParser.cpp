@@ -75,6 +75,8 @@ class COFFAsmParser : public MCAsmParserExtension {
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSecNum>(".secnum");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSecOffset>(".secoffset");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkPin>(".linkpin");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkVTable>(
+        ".linkvtable");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFact>(
         ".linkkcfilists");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkKCFIThunk>(
@@ -156,6 +158,7 @@ class COFFAsmParser : public MCAsmParserExtension {
   bool parseDirectiveRVA(StringRef, SMLoc);
   bool parseDirectiveCGProfile(StringRef, SMLoc);
   bool parseDirectiveLinkPin(StringRef, SMLoc);
+  bool parseDirectiveLinkVTable(StringRef, SMLoc);
   bool parseDirectiveLinkFact(StringRef, SMLoc);
   bool parseDirectiveLinkKCFIThunk(StringRef, SMLoc);
   bool parseDirectiveLinkKCFITag(StringRef, SMLoc);
@@ -662,6 +665,35 @@ bool COFFAsmParser::parseDirectiveLinkPin(StringRef, SMLoc) {
   if (parseEOL())
     return true;
   getStreamer().emitCOFFLinkPin(Symbol, Log2Modulus, Residue, Required);
+  return false;
+}
+
+/// parseDirectiveLinkVTable
+///  ::= .linkvtable symbol, offset, "class", "base"
+bool COFFAsmParser::parseDirectiveLinkVTable(StringRef, SMLoc) {
+  MCSymbol *VTable;
+  int64_t Offset;
+  std::string Class, Base;
+  if (getParser().parseSymbol(VTable))
+    return TokError("expected identifier in directive");
+  if (getParser().parseComma())
+    return true;
+  SMLoc OffsetLoc = getLexer().getLoc();
+  if (getParser().parseAbsoluteExpression(Offset))
+    return true;
+  if (Offset < 0)
+    return Error(OffsetLoc, "offset must not be negative");
+  if (getParser().parseComma())
+    return true;
+  SMLoc ClassLoc = getLexer().getLoc();
+  if (getParser().parseEscapedString(Class))
+    return true;
+  if (Class.empty())
+    return Error(ClassLoc, "class name must not be empty");
+  if (getParser().parseComma() || getParser().parseEscapedString(Base) ||
+      parseEOL())
+    return true;
+  getStreamer().emitCOFFLinkVTable(VTable, Offset, Class, Base);
   return false;
 }
 

@@ -107,6 +107,8 @@ static bool splitGlobal(GlobalVariable &GV) {
   GV.getMetadata(LLVMContext::MD_type, Types);
   SmallVector<MDNode *, 1> Pins;
   GV.getMetadata(LLVMContext::MD_pin, Pins);
+  SmallVector<MDNode *, 1> VTables;
+  GV.getMetadata(LLVMContext::MD_vtable_hierarchy, VTables);
 
   IntegerType *Int32Ty = Type::getInt32Ty(GV.getContext());
 
@@ -165,6 +167,20 @@ static bool splitGlobal(GlobalVariable &GV) {
       Ops[0] = ConstantAsMetadata::get(
           ConstantInt::get(OffsetConst->getType(), ByteOffset - SplitBegin));
       SplitGV->addMetadata(LLVMContext::MD_pin,
+                           *MDNode::get(GV.getContext(), Ops));
+    }
+
+    // So does a vtable's address point, with its class.
+    for (MDNode *VTable : VTables) {
+      auto *OffsetConst = mdconst::extract<ConstantInt>(VTable->getOperand(0));
+      uint64_t ByteOffset = OffsetConst->getZExtValue();
+      uint64_t AttachedTo = (ByteOffset == 0) ? ByteOffset : ByteOffset - 1;
+      if (AttachedTo < SplitBegin || AttachedTo >= SplitEnd)
+        continue;
+      SmallVector<Metadata *, 3> Ops(VTable->operands());
+      Ops[0] = ConstantAsMetadata::get(
+          ConstantInt::get(OffsetConst->getType(), ByteOffset - SplitBegin));
+      SplitGV->addMetadata(LLVMContext::MD_vtable_hierarchy,
                            *MDNode::get(GV.getContext(), Ops));
     }
 

@@ -647,6 +647,30 @@ void Verifier::visitGlobalValue(const GlobalValue &GV) {
             Pin);
     }
 
+    SmallVector<MDNode *, 1> VTables;
+    GO->getMetadata(LLVMContext::MD_vtable_hierarchy, VTables);
+    for (const MDNode *VTable : VTables) {
+      Check(isa<GlobalVariable>(GO) && !GO->isDeclaration(),
+            "vtable_hierarchy metadata must be on a global variable definition",
+            GO, VTable);
+      Check(VTable->getNumOperands() == 3,
+            "vtable_hierarchy metadata must have three operands", GO, VTable);
+      auto *Offset =
+          mdconst::dyn_extract_or_null<ConstantInt>(VTable->getOperand(0));
+      Check(Offset, "vtable_hierarchy metadata's offset must be an integer", GO,
+            VTable);
+      Check(Offset->getValue().ule(DL.getTypeAllocSize(
+                cast<GlobalVariable>(GO)->getValueType())),
+            "vtable_hierarchy metadata's offset must be within its global", GO,
+            VTable);
+      auto *Class = dyn_cast_or_null<MDString>(VTable->getOperand(1));
+      Check(Class && !Class->getString().empty(),
+            "vtable_hierarchy metadata's class must be a nonempty string", GO,
+            VTable);
+      Check(isa_and_nonnull<MDString>(VTable->getOperand(2)),
+            "vtable_hierarchy metadata's base must be a string", GO, VTable);
+    }
+
     if (GO->hasMetadata(LLVMContext::MD_implicit_ref)) {
       Check(!GO->isDeclaration(),
             "ref metadata must not be placed on a declaration", GO);

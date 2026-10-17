@@ -837,6 +837,21 @@ static void emitLinkPins(const GlobalVariable &GV, MCSymbol *Sym,
   }
 }
 
+/// Tells the linker where the vtables that \p GV holds put their primary
+/// address points, with their classes, so that it lays out each class's
+/// vtables as one range. \p Sym is the start of \p GV.
+static void emitLinkVTables(const GlobalVariable &GV, MCSymbol *Sym,
+                            MCStreamer &OutStreamer) {
+  SmallVector<MDNode *, 1> VTables;
+  GV.getMetadata(LLVMContext::MD_vtable_hierarchy, VTables);
+  for (const MDNode *VTable : VTables)
+    OutStreamer.emitCOFFLinkVTable(
+        Sym,
+        mdconst::extract<ConstantInt>(VTable->getOperand(0))->getZExtValue(),
+        cast<MDString>(VTable->getOperand(1))->getString(),
+        cast<MDString>(VTable->getOperand(2))->getString());
+}
+
 /// EmitGlobalVariable - Emit the specified global variable to the .s file.
 void AsmPrinter::emitGlobalVariable(const GlobalVariable *GV) {
   MaybeAlign AlignmentGranule = getRequiredGlobalAlignmentGranule(*GV);
@@ -1046,6 +1061,9 @@ void AsmPrinter::emitGlobalVariable(const GlobalVariable *GV,
                          ->getCharacteristics() &
                      COFF::IMAGE_SCN_LNK_COMDAT,
                  *OutStreamer, OutContext);
+  if (TM.getTargetTriple().isOSBinFormatCOFF() &&
+      GV->hasMetadata(LLVMContext::MD_vtable_hierarchy))
+    emitLinkVTables(*GV, EmittedInitSym, *OutStreamer);
 
   emitGlobalConstant(GV->getDataLayout(), GV->getInitializer());
 

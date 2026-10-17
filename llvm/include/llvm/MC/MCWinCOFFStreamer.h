@@ -60,6 +60,8 @@ public:
   void emitCOFFSecOffset(MCSymbol const *Symbol) override;
   void emitCOFFLinkPin(MCSymbol const *Symbol, unsigned Log2Modulus,
                        uint64_t Residue, bool Required) override;
+  void emitCOFFLinkVTable(const MCSymbol *VTable, uint64_t Offset,
+                          StringRef Class, StringRef Base) override;
   void emitCOFFLinkFact(uint64_t Kind) override;
   void emitCOFFKCFIThunk(const MCSymbol *Thunk, unsigned Kind, uint32_t Type,
                          uint32_t Marker, uint32_t Offset,
