@@ -93,12 +93,12 @@ static const Relaxation *getRelaxation(const SectionChunk *sc) {
 }
 
 // The relaxation whose layout the code of the section numbered target, in
-// file, takes, if the linker resizes it.
+// file, takes, if the linker resizes it. A folded section takes the layout of
+// the replacement that holds its code.
 static const Relaxation *getTargetRelaxation(const ObjFile *file,
                                              uint32_t target) {
-  COFFLinkerContext &ctx = file->symtab.ctx;
-  const SectionChunk *sc = ctx.relaxedSections.lookup({file, target});
-  return sc ? getRelaxation(sc) : nullptr;
+  const SectionChunk *sc = file->getSectionChunk(target);
+  return sc ? getRelaxation(sc->repl) : nullptr;
 }
 
 // The length of the jump with a 32-bit displacement that the linker makes of
@@ -286,24 +286,6 @@ static bool relax(COFFLinkerContext &ctx, SectionChunk *sc,
   return true;
 }
 
-// A chunk that identical code folding replaced takes its replacement's
-// layout, which is the same code's.
-static void recordFoldedRelaxations(COFFLinkerContext &ctx) {
-  for (ObjFile *file : ctx.objFileInstances) {
-    if (!file->hasLinkCoverage())
-      continue;
-    for (Chunk *c : file->getChunks()) {
-      auto *sc = dyn_cast<SectionChunk>(c);
-      if (!sc)
-        continue;
-      if (sc->repl->relaxed)
-        ctx.relaxedSections[{file, sc->getSectionNumber()}] = sc->repl;
-      else
-        ctx.relaxedSections.erase({file, sc->getSectionNumber()});
-    }
-  }
-}
-
 // The values that measure the code of each covered section of file, by
 // section number.
 static DenseMap<uint32_t, SmallVector<const ObjFile::LinkCoverage *, 0>>
@@ -369,7 +351,6 @@ void leaveOutTailJumps(
   }
   for (auto [sc, target] : left)
     ctx.tailJumpTargets.insert(target->getChunk());
-  recordFoldedRelaxations(ctx);
   Log(ctx) << "Left out " << left.size() << " of " << jumps.size()
            << " jumps that end their functions before their targets";
 }
@@ -404,7 +385,6 @@ void relaxSections(COFFLinkerContext &ctx) {
       }
     }
   }
-  recordFoldedRelaxations(ctx);
   Log(ctx) << "Relaxed " << relaxed << " of " << covered
            << " covered sections, " << saved << " bytes smaller; " << misfits
            << " kept their size where a value would not fit";

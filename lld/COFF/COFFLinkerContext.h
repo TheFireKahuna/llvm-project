@@ -219,12 +219,8 @@ public:
                  const ObjFile::LinkFusion *>
       fusedAdds;
 
-  // How the code of each covered section chunk the linker resizes is laid
-  // out, and, by object and section number, the chunk whose layout each
-  // covered section takes, which identical code folding may make another.
+  // How the code of each covered section chunk the linker resizes is laid out.
   llvm::DenseMap<const SectionChunk *, Relaxation> relaxations;
-  llvm::DenseMap<std::pair<const ObjFile *, uint32_t>, const SectionChunk *>
-      relaxedSections;
   // The jumps that end their functions which the image leaves out, by chunk,
   // at the offset of each's displacement, and the chunks whose functions
   // those functions then run into.
