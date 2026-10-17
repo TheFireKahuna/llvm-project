@@ -1201,6 +1201,15 @@ void ImportSlotContents::createOverrideCellFill() {
   }
   if (cells.empty())
     return;
+  // The loader calls the fill only through the image's TLS directory; without
+  // one, every cell would silently keep the runtime's entry.
+  if (!ctx.symtab.findUnderscore("_tls_used")) {
+    const OverrideCell &c = cells.front();
+    Err(ctx) << cast<SectionChunk>(c.chunk)->file
+             << ": the address of an overridable default needs a TLS directory "
+                "to fill, but _tls_used is not defined";
+    return;
+  }
   llvm::stable_sort(cells, [](const OverrideCell &a, const OverrideCell &b) {
     return a.slot < b.slot;
   });
