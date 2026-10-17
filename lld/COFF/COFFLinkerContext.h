@@ -29,6 +29,7 @@
 
 namespace lld::coff {
 struct TypePrefixLabels;
+struct ParsedVagueRecord;
 
 // A run of the vtables of one class and of the classes derived from it through
 // primary bases, laid out as consecutive stride-byte slots so that a vtable
@@ -212,6 +213,11 @@ public:
   // offset of the relocation, which are rewritten to take it as static data
   // does (see SectionChunk::getImportSiteTarget).
   llvm::DenseSet<std::pair<const SectionChunk *, uint32_t>> importSites;
+
+  // Each import library member's vague-entity record, parsed once and keyed by
+  // the member's buffer, so the closures the passes build read it without a
+  // reparse.
+  llvm::DenseMap<const char *, ParsedVagueRecord *> vagueRecordCache;
 
   // The fused adds that a load takes the sum of, by section and the offset of
   // the load's relocation.

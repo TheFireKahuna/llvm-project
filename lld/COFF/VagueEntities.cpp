@@ -48,7 +48,6 @@ static std::string getRecordSymbol(StringRef dll) {
   return (vagueRecordPrefix + dll.lower()).str();
 }
 
-namespace {
 // One image of a load closure: the entities it keeps, the images it imports
 // from, by index, the name of the epoch it exports, if any, and the
 // overridable defaults it offers.
@@ -79,16 +78,23 @@ struct Closure {
     return it->second;
   }
 };
-} // namespace
 
-// Reads the record that mb, a member of an import library, holds into
-// closure, and returns the index of its first image, the DLL itself.
-static std::optional<uint32_t>
-readRecord(COFFLinkerContext &ctx, MemoryBufferRef mb, Closure &closure) {
+// One import library member's record, a closure of its own images, parsed
+// once; the first image is the DLL. Held on the context, keyed by the member
+// buffer.
+struct ParsedVagueRecord {
+  std::vector<Image> images;
+};
+
+// Parses the record that mb, a member of an import library, holds into a
+// closure of its own images, or returns null if it holds none or is
+// malformed.
+static ParsedVagueRecord *parseRecord(COFFLinkerContext &ctx,
+                                      MemoryBufferRef mb) {
   Expected<std::unique_ptr<COFFObjectFile>> obj = COFFObjectFile::create(mb);
   if (!obj) {
     consumeError(obj.takeError());
-    return std::nullopt;
+    return nullptr;
   }
   for (const SectionRef &sec : (*obj)->sections()) {
     Expected<StringRef> name = sec.getName();
@@ -104,9 +110,10 @@ readRecord(COFFLinkerContext &ctx, MemoryBufferRef mb, Closure &closure) {
             StringRef(LinkRecordsMagic, sizeof(LinkRecordsMagic)) ||
         data.getULEB128(cur) != LinkRecordsVersion) {
       consumeError(cur.takeError());
-      return std::nullopt;
+      return nullptr;
     }
     data.getULEB128(cur);
+    Closure member;
     SmallVector<uint32_t, 0> index;
     while (cur && !data.eof(cur)) {
       uint64_t kind = data.getULEB128(cur);
@@ -132,9 +139,9 @@ readRecord(COFFLinkerContext &ctx, MemoryBufferRef mb, Closure &closure) {
           for (uint64_t j = 0; c && j != count; ++j) {
             uint64_t to = group.getULEB128(c);
             if (image < index.size() && to < index.size() &&
-                !llvm::is_contained(closure.images[index[image]].delayLoads,
+                !llvm::is_contained(member.images[index[image]].delayLoads,
                                     index[to]))
-              closure.images[index[image]].delayLoads.push_back(index[to]);
+              member.images[index[image]].delayLoads.push_back(index[to]);
           }
         }
         consumeError(c.takeError());
@@ -150,7 +157,7 @@ readRecord(COFFLinkerContext &ctx, MemoryBufferRef mb, Closure &closure) {
           uint64_t image = group.getULEB128(c);
           uint64_t count = group.getULEB128(c);
           std::vector<std::string> *offers =
-              image < index.size() ? &(closure.images[index[image]].*field)
+              image < index.size() ? &(member.images[index[image]].*field)
                                    : nullptr;
           bool known = offers && !offers->empty();
           for (uint64_t j = 0; c && j != count; ++j) {
@@ -165,7 +172,7 @@ readRecord(COFFLinkerContext &ctx, MemoryBufferRef mb, Closure &closure) {
       uint64_t count = group.getULEB128(c);
       SmallVector<SmallVector<uint64_t, 0>, 0> imports;
       for (uint64_t i = 0; c && i != count; ++i) {
-        uint32_t image = closure.add(getString());
+        uint32_t image = member.add(getString());
         index.push_back(image);
         imports.emplace_back();
         uint64_t numImports = group.getULEB128(c);
@@ -173,15 +180,15 @@ readRecord(COFFLinkerContext &ctx, MemoryBufferRef mb, Closure &closure) {
           imports.back().push_back(group.getULEB128(c));
         uint64_t numEntities = group.getULEB128(c);
         // An image that several records hold is described alike by each.
-        bool known = !closure.images[image].entities.empty();
+        bool known = !member.images[image].entities.empty();
         for (uint64_t j = 0; c && j != numEntities; ++j) {
           StringRef entity = getString();
           if (!known)
-            closure.images[image].entities.push_back(entity.str());
+            member.images[image].entities.push_back(entity.str());
         }
         StringRef epoch = getString();
         if (!known)
-          closure.images[image].epoch = epoch.str();
+          member.images[image].epoch = epoch.str();
       }
       bool ok = c && group.eof(c) && !index.empty();
       for (size_t i = 0; ok && i != index.size(); ++i)
@@ -190,7 +197,7 @@ readRecord(COFFLinkerContext &ctx, MemoryBufferRef mb, Closure &closure) {
             ok = false;
             break;
           }
-          std::vector<uint32_t> &to = closure.images[index[i]].imports;
+          std::vector<uint32_t> &to = member.images[index[i]].imports;
           if (!llvm::is_contained(to, index[j]))
             to.push_back(index[j]);
         }
@@ -199,14 +206,63 @@ readRecord(COFFLinkerContext &ctx, MemoryBufferRef mb, Closure &closure) {
       if (!ok) {
         Warn(ctx) << mb.getBufferIdentifier()
                   << ": the record of vague entities is malformed";
-        return std::nullopt;
+        return nullptr;
       }
     }
     consumeError(cur.takeError());
-    if (!index.empty())
-      return index[0];
+    if (!index.empty()) {
+      auto *parsed = make<ParsedVagueRecord>();
+      parsed->images = std::move(member.images);
+      return parsed;
+    }
   }
-  return std::nullopt;
+  return nullptr;
+}
+
+// The parsed record of the import library member mb, parsed on the first
+// request and kept on the context, or null if it holds none.
+static ParsedVagueRecord *getParsedRecord(COFFLinkerContext &ctx,
+                                          MemoryBufferRef mb) {
+  auto [it, inserted] = ctx.vagueRecordCache.try_emplace(mb.getBufferStart());
+  if (inserted)
+    it->second = parseRecord(ctx, mb);
+  return it->second;
+}
+
+// Adds the images of mb's record to closure, keeping the first description of
+// each image an earlier member already gave, and returns the index of the
+// member's first image, the DLL itself.
+static std::optional<uint32_t>
+readRecord(COFFLinkerContext &ctx, MemoryBufferRef mb, Closure &closure) {
+  ParsedVagueRecord *parsed = getParsedRecord(ctx, mb);
+  if (!parsed)
+    return std::nullopt;
+  SmallVector<uint32_t, 0> idx;
+  idx.reserve(parsed->images.size());
+  for (const Image &mi : parsed->images)
+    idx.push_back(closure.add(mi.name));
+  for (size_t i = 0, e = parsed->images.size(); i != e; ++i) {
+    const Image &mi = parsed->images[i];
+    Image &img = closure.images[idx[i]];
+    // An image several members describe keeps the first description's entities
+    // and epoch, offers and preemptible entities, each independently.
+    if (img.entities.empty()) {
+      img.entities = mi.entities;
+      img.epoch = mi.epoch;
+    }
+    if (img.offers.empty())
+      img.offers = mi.offers;
+    if (img.preemptible.empty())
+      img.preemptible = mi.preemptible;
+    // The imports and delay-loads are the union of every member's.
+    for (uint32_t j : mi.imports)
+      if (!llvm::is_contained(img.imports, idx[j]))
+        img.imports.push_back(idx[j]);
+    for (uint32_t j : mi.delayLoads)
+      if (!llvm::is_contained(img.delayLoads, idx[j]))
+        img.delayLoads.push_back(idx[j]);
+  }
+  return idx[0];
 }
 
 // The entities that the image keeps and may share: data with default
