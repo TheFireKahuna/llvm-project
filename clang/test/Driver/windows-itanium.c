@@ -4,11 +4,13 @@
 // RUN:   | FileCheck --check-prefixes=CC1,CC1-X64 %s
 // RUN: %clang -### --target=aarch64-unknown-windows-itanium -c %s 2>&1 \
 // RUN:   | FileCheck --check-prefixes=CC1,CC1-A64 %s \
-// RUN:       --implicit-check-not=-ehcontguard
+// RUN:       --implicit-check-not=-ehcontguard --implicit-check-not=-fno-plt
 // CC1-X64:    "-cc1" "-triple" "x86_64-unknown-windows-itanium"
 // CC1-A64:    "-cc1" "-triple" "aarch64-unknown-windows-itanium"
 // CC1-DAG:    "-mdefault-visibility-export-mapping=explicit"
+// CC1-DAG:    "-fno-auto-import"
 // CC1-DAG:    "-Wget-proc-address-type"
+// CC1-X64-DAG: "-fno-plt"
 // CC1-DAG:    "-D_DLL"
 // CC1-DAG:    "-fms-extensions"
 // CC1-DAG:    "-fms-compatibility-version=19.33"
@@ -50,6 +52,15 @@
 // RUN:   | FileCheck --check-prefix=MAPPING %s \
 // RUN:       --implicit-check-not=-mdefault-visibility-export-mapping=explicit
 // MAPPING: "-mdefault-visibility-export-mapping=none"
+
+// -fplt, -fno-plt and -fauto-import replace the defaults.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s -fplt \
+// RUN:     -fauto-import 2>&1 | FileCheck --check-prefix=PLT %s \
+// RUN:       --implicit-check-not=-fno-plt --implicit-check-not=-fno-auto-import
+// RUN: %clang -### --target=aarch64-unknown-windows-itanium -c %s -fno-plt \
+// RUN:     2>&1 | FileCheck --check-prefix=NO-PLT %s
+// PLT:    "-cc1"
+// NO-PLT: "-fno-plt"
 
 // Without the Microsoft extensions there is no compatibility version.
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \

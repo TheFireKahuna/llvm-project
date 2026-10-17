@@ -1246,6 +1246,19 @@ CodeGenVTables::GenerateClassData(const CXXRecordDecl *RD) {
   CGM.getCXXABI().emitVTableDefinitions(*this, RD);
 }
 
+/// On Windows Itanium and NT-POSIX a vtable or VTT that the visibility
+/// mapping exports from its own image is reached from other images through
+/// its import pointer, since a PE has no copy relocations. A declaration of
+/// one is therefore not dso_local, and the linker makes the reference direct
+/// when the definition is in the image. A class the mapping does not export
+/// can only be defined in this image, so its references stay direct.
+void CodeGenVTables::setVTableDSOLocal(llvm::GlobalValue *GV,
+                                       const CXXRecordDecl *RD) const {
+  if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      GV->isDeclarationForLinker() && CGM.shouldMapVisibilityToDLLExport(RD))
+    GV->setDSOLocal(false);
+}
+
 /// At this point in the translation unit, does it appear that can we
 /// rely on the vtable being defined elsewhere in the program?
 ///
@@ -1362,7 +1375,11 @@ bool CodeGenModule::HasHiddenLTOVisibility(const CXXRecordDecl *RD) {
   if (!isExternallyVisible(LV.getLinkage()))
     return true;
 
-  if (!getTriple().isOSBinFormatCOFF() &&
+  // On COFF a class is usually in the linkage unit unless it is dllimport or
+  // dllexport, but on Windows Itanium and NT-POSIX visibility is the image's
+  // boundary, as it is on ELF.
+  if ((!getTriple().isOSBinFormatCOFF() ||
+       getTriple().isWindowsItaniumOrNTPOSIXEnvironment()) &&
       LV.getVisibility() != HiddenVisibility)
     return false;
 

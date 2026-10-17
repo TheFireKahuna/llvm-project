@@ -36,11 +36,11 @@ int use(A<int> &a, A<int>::B<int> &b, A<long> &l, A<int>::C<int> &c,
 // CHECK-DAG:  @_ZN1AIiE3varIiEE = linkonce_odr hidden global i32 6
 // CHECK-DAG:  define linkonce_odr hidden noundef i32 @_ZN1AIiE1CIiE3getEv(
 // ELF-DAG:    define linkonce_odr noundef i32 @_ZN1AIlE1CIiE3getEv(
-// COFF-DAG:   define linkonce_odr dso_local dllexport noundef i32 @_ZN1AIlE1CIiE3getEv(
+// COFF-DAG:   define linkonce_odr dso_local noundef i32 @_ZN1AIlE1CIiE3getEv(
 // CHECK-DAG:  define linkonce_odr hidden noundef i32 @_ZN1AIiE3hidIiEEiT_(
 // ELF-DAG:    define linkonce_odr noundef i32 @_ZN1AIiE5plainIiEEiT_(
-// COFF-DAG:   define linkonce_odr dso_local dllexport noundef i32 @_ZN1AIiE5plainIiEEiT_(
+// COFF-DAG:   define linkonce_odr dso_local noundef i32 @_ZN1AIiE5plainIiEEiT_(
 // CHECK-DAG:  define linkonce_odr hidden noundef i32 @_ZN1AIiE2fnEv(
 // CHECK-DAG:  define linkonce_odr hidden noundef i32 @_ZN1AIiE1BIiE3hidIiEEiT_(
 // ELF-DAG:    define linkonce_odr noundef i32 @_ZN1AIlE3hidIiEEiT_(
-// COFF-DAG:   define linkonce_odr dso_local dllexport noundef i32 @_ZN1AIlE3hidIiEEiT_(
+// COFF-DAG:   define linkonce_odr dso_local noundef i32 @_ZN1AIlE3hidIiEEiT_(

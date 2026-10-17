@@ -130,6 +130,11 @@ void tools::windowsitanium::Linker::ConstructJob(
   if (!Guard.empty())
     CmdArgs.push_back(Args.MakeArgString("-guard:" + llvm::join(Guard, ",")));
 
+  // POSIX code takes its ELF branches on these targets, so the linker defines
+  // the section bounds and boundary symbols that code may reference.
+  CmdArgs.push_back("-start-stop-symbols");
+  CmdArgs.push_back("-boundary-symbols");
+
   // Every executable embeds a manifest, which keeps a loose manifest or a
   // .local redirection from changing what the loader binds. On Windows
   // Itanium it is the manifest shipped beside wincrt, which requests the
@@ -273,6 +278,20 @@ void WindowsItaniumBaseToolChain::addClangTargetOptions(
     A->render(DriverArgs, CC1Args);
   else
     CC1Args.push_back("-mdefault-visibility-export-mapping=explicit");
+
+  // A variable is imported when its declaration says so, not on the chance
+  // that a DLL provides it, unless -fauto-import asks for that.
+  if (!DriverArgs.hasFlag(options::OPT_fauto_import,
+                          options::OPT_fno_auto_import, false))
+    CC1Args.push_back("-fno-auto-import");
+
+  // On x86-64 a call to a function the translation unit does not define goes
+  // through the import table, as it goes through the GOT under -fno-plt on
+  // ELF, and the linker makes it direct when the function is in the image.
+  // AArch64 calls directly unless -fno-plt is given.
+  if (DriverArgs.hasFlag(options::OPT_fno_plt, options::OPT_fplt,
+                         getArch() == llvm::Triple::x86_64))
+    CC1Args.push_back("-fno-plt");
 
   for (auto Opt : {options::OPT_mwindows, options::OPT_mconsole})
     if (Arg *A = DriverArgs.getLastArgNoClaim(Opt))

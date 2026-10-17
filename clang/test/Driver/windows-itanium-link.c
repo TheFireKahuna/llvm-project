@@ -15,7 +15,7 @@
 // RUN:       --implicit-check-not=advapi32 --implicit-check-not=shell32
 // C:      lld-link{{(.exe)?}}" "-out:a.exe" "-machine:x64" "-nologo" "-lldignoreenv"
 // C-SAME: "-import-slots" "-cetcompat" "-guard:cf,ehcont,exportsuppress"
-// C-SAME: "-manifest:embed"
+// C-SAME: "-start-stop-symbols" "-boundary-symbols" "-manifest:embed"
 // C-SAME: "-manifestinput:{{[^"]*}}segment_heap.manifest"
 // C-SAME: "{{[^"]*}}.o"
 // C-SAME: "-defaultlib:libunwind.dll.lib"

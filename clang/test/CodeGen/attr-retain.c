@@ -1,4 +1,8 @@
 // RUN: %clang_cc1 -emit-llvm -triple x86_64 %s -o - | FileCheck %s
+/// Windows Itanium and NT-POSIX follow ELF: used keeps a global from the
+/// compiler only, and retain keeps it through the link.
+// RUN: %clang_cc1 -emit-llvm -triple x86_64-unknown-windows-itanium %s -o - | FileCheck %s
+// RUN: %clang_cc1 -emit-llvm -triple aarch64-pc-windows-ntposix %s -o - | FileCheck %s
 
 /// Set !retain regardless of the target. The backend will lower !retain to
 /// SHF_GNU_RETAIN on ELF and ignore the metadata for other binary formats.
