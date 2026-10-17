@@ -2362,6 +2362,16 @@ void X86AsmPrinter::emitInstruction(const MachineInstr *MI) {
           IMAGE_RETPOLINE_AMD64_IMPORT_BR);
     }
 
+    // A jump that ends its function, where nothing else follows it in its
+    // section, is one a linker may leave out where it places the function's
+    // target right after it, but not where unwind data covers the function.
+    if (TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+        !EnableImportCallOptimization && !MF->hasWinCFI() &&
+        MI->getParent() == &MF->back() &&
+        next_nodbg(MI->getIterator(), MI->getParent()->instr_end()) ==
+            MI->getParent()->instr_end())
+      OutStreamer->emitCOFFLinkTailJump();
+
     // Lower this as normal, but add a comment.
     OutStreamer->AddComment("TAILCALL");
     IsTailJump = true;
