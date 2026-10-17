@@ -307,6 +307,37 @@ static bool BuiltinFunctionStart(Sema &S, CallExpr *TheCall) {
                                               TheCall->getBeginLoc());
 }
 
+/// Check that the argument to __builtin_overridable_default_slot is a function
+/// marked as an overridable default, and give the call the slot's type.
+static bool BuiltinOverridableDefaultSlot(Sema &S, CallExpr *TheCall) {
+  if (S.checkArgCount(TheCall, 1))
+    return true;
+
+  if (TheCall->getArg(0)->containsErrors())
+    return true;
+
+  ExprResult Arg = S.DefaultFunctionArrayLvalueConversion(TheCall->getArg(0));
+  if (Arg.isInvalid())
+    return true;
+  TheCall->setArg(0, Arg.get());
+
+  // The attribute may sit on any declaration of the function, such as the
+  // library's definition rather than the header's first declaration.
+  const auto *FD = dyn_cast_or_null<FunctionDecl>(
+      Arg.get()->getAsBuiltinConstantDeclRef(S.getASTContext()));
+  bool Marked = false;
+  if (FD)
+    for (const FunctionDecl *R : FD->redecls())
+      Marked |= R->hasAttr<OverridableDefaultAttr>();
+  if (!Marked) {
+    S.Diag(TheCall->getBeginLoc(), diag::err_overridable_default_slot_arg)
+        << TheCall->getSourceRange();
+    return true;
+  }
+  TheCall->setType(S.Context.UnsignedIntTy);
+  return false;
+}
+
 /// Check the number of arguments and set the result type to
 /// the argument type.
 static bool BuiltinPreserveAI(Sema &S, CallExpr *TheCall) {
@@ -3541,6 +3572,10 @@ Sema::CheckBuiltinFunctionCall(FunctionDecl *FDecl, unsigned BuiltinID,
     break;
   case Builtin::BI__builtin_function_start:
     if (BuiltinFunctionStart(*this, TheCall))
+      return ExprError();
+    break;
+  case Builtin::BI__builtin_overridable_default_slot:
+    if (BuiltinOverridableDefaultSlot(*this, TheCall))
       return ExprError();
     break;
   case Builtin::BI__builtin_is_aligned:

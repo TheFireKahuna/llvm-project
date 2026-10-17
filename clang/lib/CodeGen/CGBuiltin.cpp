@@ -5980,6 +5980,16 @@ RValue CodeGenFunction::EmitBuiltinExpr(const GlobalDecl GD, unsigned BuiltinID,
   case Builtin::BI__builtin_function_start:
     return RValue::get(CGM.GetFunctionStart(
         E->getArg(0)->getAsBuiltinConstantDeclRef(CGM.getContext())));
+  case Builtin::BI__builtin_overridable_default_slot: {
+    const auto *FD = cast<FunctionDecl>(
+        E->getArg(0)->getAsBuiltinConstantDeclRef(CGM.getContext()));
+    // Sema checked the attribute is on some declaration of the function.
+    const OverridableDefaultAttr *A = nullptr;
+    for (const FunctionDecl *R : FD->redecls())
+      if ((A = R->getAttr<OverridableDefaultAttr>()))
+        break;
+    return RValue::get(llvm::ConstantInt::get(IntTy, A->getSlot()));
+  }
   case Builtin::BI__builtin_operator_new:
     return EmitBuiltinNewDeleteCall(
         E->getCallee()->getType()->castAs<FunctionProtoType>(), E, false);

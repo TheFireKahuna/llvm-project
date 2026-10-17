@@ -154,6 +154,46 @@ _LIBCPP_END_NAMESPACE_STD
 
 #  endif // __has_feature(ptrauth_calls)
 
+#elif __has_attribute(__overridable_default__)
+
+// On Windows Itanium and NT-POSIX a program replaces an overridable default for
+// every image through the table its executable carries in its header page; the
+// table's anchor holds a mask of the slots that a replacement, rather than a
+// forwarded default, fills. Each default is reached by its ABI name in every
+// image, so its address never changes to mark the replacement as it would on
+// ELF: the mask is the signal. __is_function_overridden reads the bit for the
+// function's slot, which the overridable_default attribute carries.
+
+#  define _LIBCPP_CAN_DETECT_OVERRIDDEN_FUNCTION 1
+#  define OVERRIDABLE_FUNCTION [[gnu::weak]]
+
+_LIBCPP_BEGIN_NAMESPACE_STD
+
+template <typename T, T* _Func>
+_LIBCPP_HIDE_FROM_ABI inline bool __is_function_overridden() noexcept {
+  unsigned __slot = __builtin_overridable_default_slot(_Func);
+  if (__slot >= 32)
+    return false;
+  const unsigned char* __peb;
+#  if defined(__x86_64__)
+  __asm__("movq %%gs:0x60, %0" : "=r"(__peb));
+#  elif defined(__aarch64__)
+  __asm__("ldr %0, [x18, #0x60]" : "=r"(__peb));
+#  endif
+  const unsigned char* __base; // PEB->ImageBaseAddress
+  __builtin_memcpy(&__base, __peb + 0x10, sizeof(__base));
+  unsigned __magic;
+  __builtin_memcpy(&__magic, __base + 0x80, sizeof(__magic));
+  if (__magic != 0x7B3AC2D5u) // no table: the program replaced nothing
+    return false;
+  unsigned __anchor_rva, __mask;
+  __builtin_memcpy(&__anchor_rva, __base + 0x88, sizeof(__anchor_rva));
+  __builtin_memcpy(&__mask, __base + __anchor_rva + 8, sizeof(__mask));
+  return (__mask >> __slot) & 1u;
+}
+
+_LIBCPP_END_NAMESPACE_STD
+
 #else // defined(_LIBCPP_OBJECT_FORMAT_MACHO) || (defined(_LIBCPP_OBJECT_FORMAT_ELF) && !defined(__NVPTX__))
 
 #  define _LIBCPP_CAN_DETECT_OVERRIDDEN_FUNCTION 0
