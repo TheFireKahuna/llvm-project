@@ -3085,10 +3085,16 @@ void ImportSlotContents::resolve(SlotScan &scan) {
   }
 
   // The slot chunks laid out together are ordered by the DLL of their first
-  // slot, so that single-pointer chunks of one DLL form one run.
+  // slot, so that single-pointer chunks of one DLL form one run. The DLL order
+  // of a chunk is found and lower-cased once, not for each comparison.
+  DenseMap<SectionChunk *, int> dllIndexOf;
   auto dllIndex = [&](SectionChunk *sc) {
-    StringRef dll = ctx.importSlots[sc].front().sym->getDLLName();
-    return config.dllOrder[dll.lower()];
+    auto [it, inserted] = dllIndexOf.try_emplace(sc, 0);
+    if (inserted) {
+      StringRef dll = ctx.importSlots[sc].front().sym->getDLLName();
+      it->second = config.dllOrder[dll.lower()];
+    }
+    return it->second;
   };
   for (std::vector<SectionChunk *> *v : {&writableSlotChunks, &slotChunks}) {
     llvm::stable_sort(*v, [&](SectionChunk *a, SectionChunk *b) {
