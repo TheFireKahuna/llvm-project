@@ -26,14 +26,22 @@
 # CHECK:      IATRVA: 0x20C8
 # CHECK-NEXT: IATSize: 0x28
 
-## The DLL's own descriptor holds var2, whose entry an instruction takes the
-## address of; then its runs: the writable words, then the read-only chunks
-## ro2 and ro3 as one run across them.
+## The DLLs' own descriptors come first: a.dll's holds var2, whose entry an
+## instruction takes the address of, and b.dll, whose func2 is used only
+## through slots and which has no descriptor of its own, keeps its first run's
+## in its place. The other runs follow every DLL's descriptor: a.dll's
+## writable words, then the read-only chunks ro2 and ro3 as one run across
+## them, then b.dll's second run. A local word ends a run, and b.dll's two
+## runs share a lookup table.
 # CHECK:      Name: a.dll
 # CHECK-NEXT: ImportLookupTableRVA: 0x2078
 # CHECK-NEXT: ImportAddressTableRVA: 0x20C8
 # CHECK-NEXT: Symbol: var2 (2)
 # CHECK-NEXT: }
+# CHECK:      Name: b.dll
+# CHECK-NEXT: ImportLookupTableRVA: 0x20B8
+# CHECK-NEXT: ImportAddressTableRVA: 0x3018
+# CHECK-NEXT: Symbol: func2 (0)
 # CHECK:      Name: a.dll
 # CHECK-NEXT: ImportLookupTableRVA: 0x2088
 # CHECK-NEXT: ImportAddressTableRVA: 0x3000
@@ -44,12 +52,6 @@
 # CHECK-NEXT: ImportAddressTableRVA: 0x20D8
 # CHECK-NEXT: Symbol: var2 (2)
 # CHECK-NEXT: Symbol: func1 (0)
-## func2 is used only through slots, so b.dll has no descriptor of its own. A
-## local word ends a run, and the two runs share a lookup table.
-# CHECK:      Name: b.dll
-# CHECK-NEXT: ImportLookupTableRVA: 0x20B8
-# CHECK-NEXT: ImportAddressTableRVA: 0x3018
-# CHECK-NEXT: Symbol: func2 (0)
 # CHECK:      Name: b.dll
 # CHECK-NEXT: ImportLookupTableRVA: 0x20B8
 # CHECK-NEXT: ImportAddressTableRVA: 0x20E8

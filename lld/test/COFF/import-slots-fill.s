@@ -32,14 +32,14 @@
 # CHECK-NEXT: ImportLookupTableRVA:
 # CHECK-NEXT: ImportAddressTableRVA: 0x[[#%X,ARR:]]
 # CHECK-NEXT: Symbol: arr
-# CHECK:      Name: lib.dll
-# CHECK-NEXT: ImportLookupTableRVA:
-# CHECK-NEXT: ImportAddressTableRVA: 0x[[#%X,SLOT:]]
-# CHECK-NEXT: Symbol: arr
 # CHECK:      Name: ntdll.dll
 # CHECK-NEXT: ImportLookupTableRVA:
 # CHECK-NEXT: ImportAddressTableRVA: 0x[[#%X,PROTECT:]]
 # CHECK-NEXT: Symbol: NtProtectVirtualMemory
+# CHECK:      Name: lib.dll
+# CHECK-NEXT: ImportLookupTableRVA:
+# CHECK-NEXT: ImportAddressTableRVA: 0x[[#%X,SLOT:]]
+# CHECK-NEXT: Symbol: arr
 
 # CHECK:      Name: .data
 # CHECK-NEXT: VirtualSize:

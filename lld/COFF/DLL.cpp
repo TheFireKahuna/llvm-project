@@ -808,11 +808,15 @@ void IdataContents::create(COFFLinkerContext &ctx) {
   for (const KCFIState::ImportedRange &r : ctx.kcfi.importedRanges)
     rangeEnds[r.start] = r.end;
 
-  // Each run of in-place import slots of a DLL gets a descriptor of its own
-  // after the DLL's, so that the DLL load order is unchanged. Its lookup table
-  // shares the hint/name records, and each slot holds the value of its lookup
-  // entry.
-  auto addSlotRuns = [&](StringRef dllName) {
+  // Each run of in-place import slots of a DLL gets a descriptor of its own.
+  // The runs' descriptors follow every DLL's own, so that the loader's work on
+  // the DLLs in between lets a provider be mapped before the walk reaches the
+  // first of its runs, which would otherwise wait on a search for it. A DLL
+  // with no descriptor of its own keeps its first run's in its place, so that
+  // the DLL load order is unchanged. A run's lookup table shares the
+  // hint/name records, and each slot holds the value of its lookup entry.
+  std::vector<Chunk *> runDirs;
+  auto addSlotRuns = [&](StringRef dllName, bool firstInPlace) {
     auto it = runsByDLL.find(dllName.lower());
     if (it == runsByDLL.end())
       return;
@@ -830,7 +834,8 @@ void IdataContents::create(COFFLinkerContext &ctx) {
       }
       table.dir->addressTab = run->front()->chunk;
       table.dir->addressTabOffset = run->front()->offset;
-      dirs.push_back(table.dir);
+      (firstInPlace ? dirs : runDirs).push_back(table.dir);
+      firstInPlace = false;
     }
   };
   // The order of each import in the DLLs' tables, by which lookup tables are
@@ -881,7 +886,7 @@ void IdataContents::create(COFFLinkerContext &ctx) {
       });
       if (syms.empty()) {
         dllNames.push_back(make<StringChunk>(dllName));
-        addSlotRuns(dllName);
+        addSlotRuns(dllName, /*firstInPlace=*/true);
         continue;
       }
     }
@@ -1030,8 +1035,9 @@ void IdataContents::create(COFFLinkerContext &ctx) {
     }
     dir->addressTab = addresses[base];
     dirs.push_back(dir);
-    addSlotRuns(dllName);
+    addSlotRuns(dllName, /*firstInPlace=*/false);
   }
+  llvm::append_range(dirs, runDirs);
   if (!rangeEnds.empty())
     addresses.front()->setAlignment(16);
   // Add null terminator.

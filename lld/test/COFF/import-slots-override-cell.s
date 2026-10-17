@@ -31,14 +31,14 @@
 # IMPORT-NEXT: ImportLookupTableRVA:
 # IMPORT-NEXT: ImportAddressTableRVA: 0x[[RO:[0-9A-F]+]]
 # IMPORT-NEXT: Symbol: _Znwy
-# IMPORT:      Name: rt.dll
-# IMPORT-NEXT: ImportLookupTableRVA:
-# IMPORT-NEXT: ImportAddressTableRVA: 0x[[RW:[0-9A-F]+]]
-# IMPORT-NEXT: Symbol: _Znwy
 # IMPORT:      Name: ntdll.dll
 # IMPORT-NEXT: ImportLookupTableRVA:
 # IMPORT-NEXT: ImportAddressTableRVA: 0x[[PROTECT:[0-9A-F]+]]
 # IMPORT-NEXT: Symbol: NtProtectVirtualMemory
+# IMPORT:      Name: rt.dll
+# IMPORT-NEXT: ImportLookupTableRVA:
+# IMPORT-NEXT: ImportAddressTableRVA: 0x[[RW:[0-9A-F]+]]
+# IMPORT-NEXT: Symbol: _Znwy
 
 ## The fill reads the anchor's mask and writes the writable cell for slot 0 in
 ## place. Only when a read-only cell's slot is replaced does it make their range
