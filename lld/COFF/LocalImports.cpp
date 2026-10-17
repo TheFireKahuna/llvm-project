@@ -949,6 +949,10 @@ int64_t takeFusedAdd(const SectionChunk *sc, const coff_relocation &rel,
 void addSiteEdits(const SectionChunk *sc, std::vector<RelaxEdit> &edits) {
   ObjFile *file = sc->file;
   ArrayRef<uint8_t> data = sc->getContents();
+  // A jump that ends its function, which its target then follows, goes.
+  if (auto it = file->symtab.ctx.tailJumps.find(sc);
+      it != file->symtab.ctx.tailJumps.end())
+    edits.push_back({it->second - 1, 5, 0, 0, RelaxEdit::Delete});
   // A call or jump through a local import pointer becomes the direct one.
   for (const coff_relocation &rel : sc->getRelocs()) {
     std::optional<LinkSiteForm> form = getLocalImportRewrite(sc, rel);

@@ -404,6 +404,10 @@ public:
   const LinkFusion *getLinkFusion(const SectionChunk *sc,
                                   uint32_t offset) const;
 
+  // Whether the section of sc ends in a jump that also ends the function it
+  // holds.
+  bool endsInTailJump(const SectionChunk *sc) const;
+
   bool hasLinkFusions() const {
     return linkRecords && !linkRecords->fusions.empty();
   }
@@ -534,6 +538,7 @@ private:
   bool readLinkVTables(ArrayRef<uint8_t> payload);
   bool readKCFIThunks(ArrayRef<uint8_t> payload);
   bool readCallOnlyRefs(ArrayRef<uint8_t> payload);
+  bool readTailJumps(ArrayRef<uint8_t> payload);
   void initializeDependencies();
   void initializeECThunks();
 
@@ -605,6 +610,9 @@ private:
     std::vector<LinkCoverage> coverage;
     std::vector<uint32_t> coveredSections;
     std::vector<std::pair<uint32_t, uint32_t>> callOnlyRefs;
+    // The numbers of the sections that end in a jump that also ends the
+    // function each holds, in order.
+    std::vector<uint32_t> tailJumps;
     std::vector<LinkPin> pins;
     std::vector<LinkVTable> vtables;
     // The indices of the symbols the object gives default visibility.

@@ -261,7 +261,8 @@ uint64_t TypePrefixContents::place(Chunk *c, uint64_t secRVA,
 // those of what precedes the chunk, which must not read as a prefix of ours,
 // since a KCFI check would then accept the function: neither as the end of the
 // marker, which a check of the type compares, nor as its start, which a check
-// of the second type word compares.
+// of the second type word compares. A function that another runs into, which
+// left out the jump to it, shares that function's entry and its prefix.
 void TypePrefixContents::write(uint8_t *buf) const {
   for (const TypePrefix &p : typePrefixes) {
     if (!p.sealed)
@@ -269,7 +270,7 @@ void TypePrefixContents::write(uint8_t *buf) const {
     OutputSection *sec = ctx.getOutputSection(p.chunk);
     uint8_t *loc = buf + sec->getFileOff() + p.chunk->getRVA() - sec->getRVA() +
                    p.chunk->getOutputOffset(p.offset);
-    if (p.chunk->getElidedSize()) {
+    if (p.chunk->getElidedSize() && !ctx.tailJumpTargets.contains(p.chunk)) {
       if (read32le(loc + p.size - 8) == getPattern() >> 32 ||
           read32le(loc + p.size - 12) == uint32_t(getPattern()))
         Err(ctx) << "cannot leave out the KCFI prefix of "

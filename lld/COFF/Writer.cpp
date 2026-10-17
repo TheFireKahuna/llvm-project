@@ -20,6 +20,7 @@
 #include "MapFile.h"
 #include "OverrideTable.h"
 #include "PDB.h"
+#include "Relax.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
 #include "TypePrefix.h"
@@ -246,6 +247,8 @@ private:
   bool verifyRanges(const std::vector<Chunk *> chunks);
   void createECCodeMap();
   void finalizeAddresses();
+  std::vector<std::tuple<SectionChunk *, uint32_t, Defined *>>
+  findTailJumps();
   void removeEmptySections();
   void assignOutputSectionIndices();
   void createSymbolAndStringTable();
@@ -339,6 +342,11 @@ private:
 
   // List of Arm64EC export thunks.
   std::vector<std::pair<Chunk *, Defined *>> exportThunks;
+
+  // The functions whose addresses the image or another one may take, which
+  // only the guard tables collect, and whether they did.
+  SymbolRVASet identityTaken;
+  bool identityKnown = false;
 
   // The relocations of each section that range extension thunks were added
   // to, as they were before the first pass added any.
@@ -700,10 +708,64 @@ bool Writer::verifyRanges(const std::vector<Chunk *> chunks) {
 }
 
 // Assign addresses and add thunks if necessary.
+static bool isUnwindTable(const SectionChunk *sc);
+
+// The jumps that end their functions, each with the offset of its
+// displacement, where the next chunk of the output section begins with its
+// target, which the linker may then leave out: in a chunk it may resize, which
+// no unwind data covers, to a target whose address neither the image nor
+// another one takes, since the function and its target then share theirs. A
+// target's prefix that the image leaves out, as it does a type prefix that no
+// pointer reaches, lies before where its chunk begins in the image.
+std::vector<std::tuple<SectionChunk *, uint32_t, Defined *>>
+Writer::findTailJumps() {
+  std::vector<std::tuple<SectionChunk *, uint32_t, Defined *>> jumps;
+  if (!identityKnown)
+    return jumps;
+  for (OutputSection *os : ctx.outputSections) {
+    if (!os->isCodeSection())
+      continue;
+    for (size_t i = 0, e = os->chunks.size(); i + 1 < e; ++i) {
+      auto *sc = dyn_cast<SectionChunk>(os->chunks[i]);
+      auto *next = dyn_cast<SectionChunk>(os->chunks[i + 1]);
+      if (!sc || !next || !sc->file->hasLinkRecords() ||
+          !sc->file->isCovered(sc) ||
+          next->getAlignment() > sc->getAlignment())
+        continue;
+      // jmp rel32, whose displacement holds the section's last relocation and
+      // names the target itself.
+      ArrayRef<coff_relocation> relocs = sc->getRelocs();
+      ArrayRef<uint8_t> data = sc->getContents();
+      uint32_t field = data.size() - 4;
+      if (!sc->file->endsInTailJump(sc) || data.size() < 5 || relocs.empty() ||
+          relocs.back().VirtualAddress != field ||
+          relocs.back().Type != IMAGE_REL_AMD64_REL32 ||
+          data[field - 1] != 0xE9 || read32le(&data[field]) != 0)
+        continue;
+      // The guard tables collect the addresses taken only of what objects
+      // say are functions.
+      auto *target = dyn_cast_or_null<DefinedRegular>(
+          sc->file->getSymbol(relocs.back().SymbolTableIndex));
+      if (!target || target->getChunk() != next ||
+          target->getValue() != next->getElidedSize() ||
+          target->getCOFFSymbol().getComplexType() !=
+              IMAGE_SYM_DTYPE_FUNCTION ||
+          identityTaken.contains({next, 0}) ||
+          llvm::any_of(sc->children(),
+                       [](const SectionChunk &c) { return isUnwindTable(&c); }))
+        continue;
+      jumps.push_back({sc, field, target});
+    }
+  }
+  return jumps;
+}
+
 void Writer::finalizeAddresses() {
   assignAddresses();
-  if (ctx.config.machine != ARMNT && !isAnyArm64(ctx.config.machine))
+  if (ctx.config.machine != ARMNT && !isAnyArm64(ctx.config.machine)) {
+    leaveOutTailJumps(ctx, findTailJumps(), [&] { assignAddresses(); });
     return;
+  }
 
   size_t origNumChunks = 0;
   for (OutputSection *sec : ctx.outputSections) {
@@ -2892,6 +2954,12 @@ void Writer::markSymbolsWithRelocations(ObjFile *file,
         // since they're also used to compute absolute addresses.
         continue;
 
+      // A jump that ends its function, which the object lists, takes no
+      // address.
+      if (reloc.Type == IMAGE_REL_AMD64_REL32 &&
+          &reloc == &sc->getRelocs().back() && file->endsInTailJump(sc))
+        continue;
+
       // Where the object describes its sites, a branch takes no address, and
       // neither does a call or jump through a pointer, nor a load that only
       // such calls read.
@@ -3277,6 +3345,10 @@ void Writer::createGuardCFTables() {
   for (const ChunkAndOffset &c : exportedSyms)
     if (addressTakenSyms.insert(c).second && c.offset % 16 == 0)
       exportSuppressed.insert(c);
+  // Sealing may yet leave out of the table a function whose address is
+  // taken.
+  identityTaken = addressTakenSyms;
+  identityKnown = true;
 
   // A function that /guardsym suppresses stays listed, but is not a valid
   // target.

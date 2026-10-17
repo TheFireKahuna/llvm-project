@@ -11,7 +11,9 @@
 
 #include "InputFiles.h"
 #include "lld/Common/LLVM.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include <cstdint>
+#include <tuple>
 #include <vector>
 
 namespace lld::coff {
@@ -78,6 +80,15 @@ void writeNops(uint8_t *buf, size_t n, unsigned maxNop);
 // Decides, after identical code folding, which covered section chunks the
 // linker resizes, and how.
 void relaxSections(COFFLinkerContext &ctx);
+
+// Leaves out each jump that ends its function, its chunk with the offset of
+// its displacement and its target, where the target begins right after the
+// jump's chunk in the layout that layOut gives, so that the jump's function
+// runs into it.
+void leaveOutTailJumps(
+    COFFLinkerContext &ctx,
+    llvm::ArrayRef<std::tuple<SectionChunk *, uint32_t, Defined *>> jumps,
+    llvm::function_ref<void()> layOut);
 
 // Writes sc, whose code the linker resizes, at buf.
 void writeRelaxed(const SectionChunk *sc, uint8_t *buf);

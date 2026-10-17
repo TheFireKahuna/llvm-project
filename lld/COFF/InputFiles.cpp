@@ -590,6 +590,11 @@ void ObjFile::readLinkRecords() {
         return;
       continue;
     }
+    if (cur && kind == LinkRecordTailJumps) {
+      if (!readTailJumps(contents.slice(start, size)))
+        return;
+      continue;
+    }
     if (cur && kind == LinkRecordPins) {
       if (!readLinkPins(contents.slice(start, size)))
         return;
@@ -860,6 +865,38 @@ bool ObjFile::readKCFIThunks(ArrayRef<uint8_t> payload) {
 }
 
 // Reads a group of fields through which their symbols are only called.
+// Reads the sections that end in a jump that also ends the function each
+// holds.
+bool ObjFile::readTailJumps(ArrayRef<uint8_t> payload) {
+  std::vector<uint32_t> &tailJumps = linkRecords->tailJumps;
+  DataExtractor data(payload, /*IsLittleEndian=*/true);
+  DataExtractor::Cursor cur(0);
+  while (cur && !data.eof(cur)) {
+    uint64_t symIndex = data.getULEB128(cur);
+    if (!cur)
+      break;
+    Expected<COFFSymbolRef> sym = coffObj->getSymbol(symIndex);
+    if (!sym || !sym->isSectionDefinition() || sym->getSectionNumber() <= 0) {
+      consumeError(sym.takeError());
+      Err(symtab.ctx) << this
+                      << ": .llvm_link_records is malformed: tail jump of "
+                         "symbol "
+                      << symIndex << ", which is not a section's symbol";
+      tailJumps.clear();
+      return false;
+    }
+    tailJumps.push_back(sym->getSectionNumber());
+  }
+  if (Error e = cur.takeError()) {
+    tailJumps.clear();
+    Err(symtab.ctx) << this
+                    << ": .llvm_link_records is malformed: " << std::move(e);
+    return false;
+  }
+  llvm::sort(tailJumps);
+  return true;
+}
+
 bool ObjFile::readCallOnlyRefs(ArrayRef<uint8_t> payload) {
   std::vector<std::pair<uint32_t, uint32_t>> &callOnlyRefs =
       linkRecords->callOnlyRefs;
@@ -1089,6 +1126,11 @@ ObjFile::getLinkSites(const SectionChunk *sc) const {
                          return a.section < b.section;
                        });
   return sites.slice(b - sites.begin(), e - b);
+}
+
+bool ObjFile::endsInTailJump(const SectionChunk *sc) const {
+  return linkRecords &&
+         llvm::binary_search(linkRecords->tailJumps, sc->getSectionNumber());
 }
 
 std::optional<LinkSiteForm>

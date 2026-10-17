@@ -225,6 +225,11 @@ public:
   llvm::DenseMap<const SectionChunk *, Relaxation> relaxations;
   llvm::DenseMap<std::pair<const ObjFile *, uint32_t>, const SectionChunk *>
       relaxedSections;
+  // The jumps that end their functions which the image leaves out, by chunk,
+  // at the offset of each's displacement, and the chunks whose functions
+  // those functions then run into.
+  llvm::DenseMap<const SectionChunk *, uint32_t> tailJumps;
+  llvm::DenseSet<const Chunk *> tailJumpTargets;
 
   // The state of the link's KCFI checks.
   KCFIState kcfi;

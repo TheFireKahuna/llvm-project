@@ -286,6 +286,94 @@ static bool relax(COFFLinkerContext &ctx, SectionChunk *sc,
   return true;
 }
 
+// A chunk that identical code folding replaced takes its replacement's
+// layout, which is the same code's.
+static void recordFoldedRelaxations(COFFLinkerContext &ctx) {
+  for (ObjFile *file : ctx.objFileInstances) {
+    if (!file->hasLinkCoverage())
+      continue;
+    for (Chunk *c : file->getChunks()) {
+      auto *sc = dyn_cast<SectionChunk>(c);
+      if (!sc)
+        continue;
+      if (sc->repl->relaxed)
+        ctx.relaxedSections[{file, sc->getSectionNumber()}] = sc->repl;
+      else
+        ctx.relaxedSections.erase({file, sc->getSectionNumber()});
+    }
+  }
+}
+
+// The values that measure the code of each covered section of file, by
+// section number.
+static DenseMap<uint32_t, SmallVector<const ObjFile::LinkCoverage *, 0>>
+getCoverageValues(ObjFile *file) {
+  DenseMap<uint32_t, SmallVector<const ObjFile::LinkCoverage *, 0>> values;
+  for (const ObjFile::LinkCoverage &c : file->getAllLinkCoverage())
+    if (c.type == LinkCoverageDifference || c.type == LinkCoveragePCRelative)
+      values[c.target].push_back(&c);
+  return values;
+}
+
+void leaveOutTailJumps(
+    COFFLinkerContext &ctx,
+    ArrayRef<std::tuple<SectionChunk *, uint32_t, Defined *>> jumps,
+    function_ref<void()> layOut) {
+  if (jumps.empty())
+    return;
+  llvm::TimeTraceScope timeScope("Leave out tail jumps");
+  DenseMap<ObjFile *,
+           DenseMap<uint32_t, SmallVector<const ObjFile::LinkCoverage *, 0>>>
+      fileValues;
+  // Lays out sc, a covered chunk, with the edits the linker makes of it now,
+  // or leaves it as it is where none changes its size or a value would not
+  // fit.
+  auto relaxAgain = [&](SectionChunk *sc) {
+    auto [it, inserted] = fileValues.try_emplace(sc->file);
+    if (inserted)
+      it->second = getCoverageValues(sc->file);
+    ArrayRef<const ObjFile::LinkCoverage *> values;
+    if (auto v = it->second.find(sc->getSectionNumber()); v != it->second.end())
+      values = v->second;
+    bool misfit = false;
+    return relax(ctx, sc, values, &misfit);
+  };
+  SmallVector<std::pair<SectionChunk *, Defined *>, 0> left;
+  for (auto [sc, field, target] : jumps) {
+    ctx.tailJumps[sc] = field;
+    if (relaxAgain(sc))
+      left.push_back({sc, target});
+    else
+      ctx.tailJumps.erase(sc);
+  }
+  if (left.empty())
+    return;
+  // Padding, or where a function's prefix may be placed, may yet separate a
+  // jump's chunk from its target's. Such a jump comes back, which only moves
+  // what follows further, so that the loop ends.
+  for (bool restored = true; restored;) {
+    layOut();
+    size_t before = left.size();
+    llvm::erase_if(left, [&](const auto &jump) {
+      auto [sc, target] = jump;
+      if (target->getRVA() == sc->getRVA() + sc->getSize())
+        return false;
+      ctx.tailJumps.erase(sc);
+      if (!relaxAgain(sc)) {
+        ctx.relaxations.erase(sc);
+        sc->relaxed = false;
+      }
+      return true;
+    });
+    restored = left.size() != before;
+  }
+  for (auto [sc, target] : left)
+    ctx.tailJumpTargets.insert(target->getChunk());
+  recordFoldedRelaxations(ctx);
+  Log(ctx) << "Left out " << left.size() << " of " << jumps.size()
+           << " jumps that end their functions before their targets";
+}
+
 void relaxSections(COFFLinkerContext &ctx) {
   if (llvm::none_of(ctx.objFileInstances,
                     [](ObjFile *f) { return f->hasLinkCoverage(); }))
@@ -296,10 +384,8 @@ void relaxSections(COFFLinkerContext &ctx) {
   for (ObjFile *file : ctx.objFileInstances) {
     if (!file->hasLinkCoverage())
       continue;
-    DenseMap<uint32_t, SmallVector<const ObjFile::LinkCoverage *, 0>> values;
-    for (const ObjFile::LinkCoverage &c : file->getAllLinkCoverage())
-      if (c.type == LinkCoverageDifference || c.type == LinkCoveragePCRelative)
-        values[c.target].push_back(&c);
+    DenseMap<uint32_t, SmallVector<const ObjFile::LinkCoverage *, 0>> values =
+        getCoverageValues(file);
     for (Chunk *c : file->getChunks()) {
       auto *sc = dyn_cast<SectionChunk>(c);
       if (!sc || !sc->live || sc->repl != sc || !file->isCovered(sc))
@@ -318,17 +404,7 @@ void relaxSections(COFFLinkerContext &ctx) {
       }
     }
   }
-  // A chunk that identical code folding replaced takes its replacement's
-  // layout, which is the same code's.
-  for (ObjFile *file : ctx.objFileInstances) {
-    if (!file->hasLinkCoverage())
-      continue;
-    for (Chunk *c : file->getChunks()) {
-      auto *sc = dyn_cast<SectionChunk>(c);
-      if (sc && sc->repl->relaxed)
-        ctx.relaxedSections[{file, sc->getSectionNumber()}] = sc->repl;
-    }
-  }
+  recordFoldedRelaxations(ctx);
   Log(ctx) << "Relaxed " << relaxed << " of " << covered
            << " covered sections, " << saved << " bytes smaller; " << misfits
            << " kept their size where a value would not fit";
