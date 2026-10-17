@@ -46,6 +46,7 @@ static_library("COFF") {
     "PDB.cpp",
     "SymbolTable.cpp",
     "Symbols.cpp",
+    "TypePrefix.cpp",
     "Writer.cpp",
   ]
 }
