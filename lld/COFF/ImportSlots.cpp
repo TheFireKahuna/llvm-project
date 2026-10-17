@@ -501,6 +501,9 @@ struct OverrideCell {
   // address, as for a vague entity, whose instance the executable imports,
   // rather than the address itself.
   bool indirect = false;
+  // For a vague entity, its name, by which a DLL loaded outside the
+  // executable's link finds the instance it binds to.
+  StringRef name;
 
   uint64_t getRVA() const {
     return chunk ? chunk->getRVA() + offset : imp->getRVA();
@@ -1365,11 +1368,12 @@ private:
   SmallVector<Fixup, 32> fixups;
 };
 
-// A DLL's cells bound by name, as {key u64, rva u32, flags u32} in the order
-// of their keys, so that the cells of one name are bound together: flags' bit
-// 0 is set for a cell in read-only data, and bit 1 for a vague entity's, whose
-// table entry names a word that holds the address and which a search of the
-// loaded modules binds where the executable's table does not name it.
+// A DLL's cells bound by name, as {key u64, rva u32, flags u32, name u32,
+// length u32} in the order of their keys, so that the cells of one name are
+// bound together: flags' bit 0 is set for a cell in read-only data, and bit 1
+// for a vague entity's, whose table entry names a word that holds the address
+// and which a search of the loaded modules binds where the executable's table
+// does not name it, by the name, a string of the length given.
 class NamedCellListChunk : public NonSectionChunk {
 public:
   NamedCellListChunk(COFFLinkerContext &ctx, std::vector<OverrideCell> cells)
@@ -1380,15 +1384,23 @@ public:
                         return a.key < b.key;
                       });
   }
-  size_t getSize() const override { return 16 * cells.size(); }
+  size_t getSize() const override { return entrySize * cells.size(); }
   void writeTo(uint8_t *buf) const override {
     for (const OverrideCell &c : cells) {
       write64le(buf, c.key);
       write32le(buf + 8, c.getRVA());
       write32le(buf + 12, c.readOnly | c.indirect << 1);
-      buf += 16;
+      if (Chunk *name = names.lookup(c.name)) {
+        write32le(buf + 16, name->getRVA());
+        write32le(buf + 20, c.name.size());
+      }
+      buf += entrySize;
     }
   }
+  static constexpr uint32_t entrySize = 24;
+  // The names of the vague entities, each a string of its own.
+  ArrayRef<OverrideCell> getCells() const { return cells; }
+  DenseMap<StringRef, Chunk *> names;
   uint32_t getOutputCharacteristics() const override {
     return llvm::COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
            llvm::COFF::IMAGE_SCN_MEM_READ;
@@ -1423,11 +1435,17 @@ private:
 // the instances it uses: the shift that gives an entity's home bucket from the
 // top bits of its key, the mask of the number of buckets, a power of two, and
 // the number and offset of the keys of the names of the DLLs it delay-loads;
-// then the buckets, each {key u64, rva u32, zero u32}, rva naming the DLL's
-// cell of the entity, and a zero key ending a probe; then those keys.
+// then the buckets, each {key u64, rva u32, name u32}, rva naming the DLL's
+// cell of the entity and name its name, a string, and a zero key ending a
+// probe; then those keys.
 class VagueOfferTableChunk : public NonSectionChunk {
 public:
-  VagueOfferTableChunk(std::vector<std::pair<uint64_t, Chunk *>> offers,
+  struct Offer {
+    uint64_t key = 0;
+    Chunk *cell = nullptr;
+    Chunk *name = nullptr;
+  };
+  VagueOfferTableChunk(std::vector<Offer> offers,
                        std::vector<uint64_t> delayLoads)
       : delayLoads(std::move(delayLoads)) {
     setAlignment(16);
@@ -1435,11 +1453,13 @@ public:
     while ((size_t(1) << log2) < 2 * offers.size())
       ++log2;
     buckets.resize(size_t(1) << log2);
-    llvm::sort(offers, llvm::less_first());
-    for (auto &[key, cell] : offers)
-      for (uint64_t b = key >> (64 - log2);; b = (b + 1) & (buckets.size() - 1))
-        if (!buckets[b].second) {
-          buckets[b] = {key, cell};
+    llvm::sort(offers,
+               [](const Offer &a, const Offer &b) { return a.key < b.key; });
+    for (const Offer &o : offers)
+      for (uint64_t b = o.key >> (64 - log2);;
+           b = (b + 1) & (buckets.size() - 1))
+        if (!buckets[b].cell) {
+          buckets[b] = o;
           break;
         }
   }
@@ -1452,10 +1472,11 @@ public:
     write32le(buf + 8, delayLoads.size());
     write32le(buf + 12, 16 + 16 * buckets.size());
     uint8_t *p = buf + 16;
-    for (auto &[key, cell] : buckets) {
-      if (cell) {
-        write64le(p, key);
-        write32le(p + 8, cell->getRVA());
+    for (const Offer &o : buckets) {
+      if (o.cell) {
+        write64le(p, o.key);
+        write32le(p + 8, o.cell->getRVA());
+        write32le(p + 12, o.name->getRVA());
       }
       p += 16;
     }
@@ -1471,7 +1492,7 @@ public:
 
 private:
   uint32_t log2 = 1;
-  std::vector<std::pair<uint64_t, Chunk *>> buckets;
+  std::vector<Offer> buckets;
   std::vector<uint64_t> delayLoads;
 };
 
@@ -1521,9 +1542,9 @@ class NamedCellFillChunk : public NonSectionCodeChunk {
 public:
   NamedCellFillChunk(COFFLinkerContext &ctx, NamedCellListChunk *list,
                      DefinedImportData *protect, DefinedImportData *addRef,
-                     uint64_t selfKey)
-      : list(list), protect(protect), addRef(addRef), selfKey(selfKey),
-        ctx(ctx) {
+                     DefinedImportData *getProc, uint64_t selfKey)
+      : list(list), protect(protect), addRef(addRef), getProc(getProc),
+        selfKey(selfKey), ctx(ctx) {
     setAlignment(16);
   }
   size_t getSize() const override {
@@ -1546,6 +1567,7 @@ private:
   NamedCellListChunk *list;
   DefinedImportData *protect;
   DefinedImportData *addRef;
+  DefinedImportData *getProc;
   // The key of this DLL's name, by which a module that delay-loads it lists it.
   uint64_t selfKey;
   COFFLinkerContext &ctx;
@@ -1567,17 +1589,17 @@ public:
     if (ctx.config.machine == ARM64) {
       // One epilogue at the end, which the prologue's codes describe:
       // save_reg x27 at 80, save_regp x25, x23, x21 and x19 at 64, 48, 32 and
-      // 16, set_fp, save_fplr_x of 112 bytes, end.
+      // 16, set_fp, save_fplr_x of 144 bytes, end.
       write32le(buf, fill->getSize() / 4 | 1 << 21 | 4 << 27);
       const uint8_t codes[] = {0xD2, 0x0A, 0xC9, 0x88, 0xC9, 0x06, 0xC8, 0x84,
-                               0xC8, 0x02, 0xE1, 0x8D, 0xE4, 0xE4, 0xE4, 0xE4};
+                               0xC8, 0x02, 0xE1, 0x91, 0xE4, 0xE4, 0xE4, 0xE4};
       memcpy(buf + 4, codes, sizeof(codes));
       return;
     }
     // Version 1, a prologue of 16 bytes with nine codes: UWOP_ALLOC_SMALL of
-    // 0x48 bytes, then UWOP_PUSH_NONVOL of r15, r14, r13, r12, rdi, rsi, rbp
+    // 0x68 bytes, then UWOP_PUSH_NONVOL of r15, r14, r13, r12, rdi, rsi, rbp
     // and rbx, each at the end of its instruction.
-    const uint8_t info[] = {0x01, 0x10, 0x09, 0x00, 0x10, 0x82, 0x0C, 0xF0,
+    const uint8_t info[] = {0x01, 0x10, 0x09, 0x00, 0x10, 0xC2, 0x0C, 0xF0,
                             0x0A, 0xE0, 0x08, 0xD0, 0x06, 0xC0, 0x04, 0x70,
                             0x03, 0x60, 0x02, 0x50, 0x01, 0x30, 0x00, 0x00};
     memcpy(buf, info, sizeof(info));
@@ -1613,7 +1635,8 @@ void NamedCellFillChunk::writeAMD64(LabelledCode &a) const {
            tableHit = a.newLabel(), finish = a.newLabel(), zero = a.newLabel(),
            done = a.newLabel(), parent = a.newLabel(), importer = a.newLabel(),
            found = a.newLabel(), delayLoaders = a.newLabel(),
-           pinFailed = a.newLabel(), pinStatus = a.newLabel();
+           pinFailed = a.newLabel(), pinStatus = a.newLabel(),
+           walk = a.newLabel(), compare = a.newLabel();
   // NtProtectVirtualMemory(-1, &base, &size, r9d, &old), with base, size and
   // old at rsp + 0x30, 0x38 and 0x40.
   auto callProtect = [&] {
@@ -1626,10 +1649,13 @@ void NamedCellFillChunk::writeAMD64(LabelledCode &a) const {
     a.disp(protect->getRVA());
   };
 
-  // push rbx, rbp, rsi, rdi, r12, r13, r14, r15; sub rsp, 0x48
+  // push rbx, rbp, rsi, rdi, r12, r13, r14, r15; sub rsp, 0x68, the frame
+  // holding the protection calls' base, size and old protection at 0x30, 0x38
+  // and 0x40, and a name's ANSI_STRING and its lookup's result at 0x48 and
+  // 0x58.
   a.put(
       {0x53, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57});
-  a.put({0x48, 0x83, 0xEC, 0x48});
+  a.put({0x48, 0x83, 0xEC, 0x68});
   // r14's bit 0 is set once the read-only cells are writable, and bit 2 if
   // the DLL was loaded after the process initialized, outside the
   // executable's link.
@@ -1689,8 +1715,41 @@ void NamedCellFillChunk::writeAMD64(LabelledCode &a) const {
     a.jcc(0x84, skip);
     a.put({0x41, 0x0F, 0xBA, 0xE6, 0x02}); // bt r14d, 2
     a.jcc(0x83, skip);                     // jnc .skip
-    // The modules after the executable, the list's head in rbp and the entry in
-    // r15.
+    // First the executable, whose exports are the instances it shares, by
+    // exact name: LdrGetProcedureAddressForCaller(base, &name, 0, rsp + 0x58,
+    // 1, fill), flag 1 binding without initializing the module. The
+    // executable is never unloaded, so nothing is pinned.
+    a.put({0x8B, 0x43, 0x10});             // mov eax, [rbx + 16]   the name
+    a.put({0x85, 0xC0});                   // test eax, eax
+    a.jcc(0x84, walk);                     // jz .walk
+    a.put({0x48, 0x8D, 0x0D, 0, 0, 0, 0}); // lea rcx, [rip + __ImageBase]
+    a.disp(0);
+    a.put({0x48, 0x01, 0xC8});             // add rax, rcx
+    a.put({0x48, 0x89, 0x44, 0x24, 0x50}); // mov [rsp + 0x50], rax
+    a.put({0x8B, 0x43, 0x14});             // mov eax, [rbx + 20]   its length
+    a.put({0x8D, 0x48, 0x01});             // lea ecx, [rax + 1]
+    a.put({0xC1, 0xE1, 0x10});             // shl ecx, 16
+    a.put({0x09, 0xC8});                   // or eax, ecx
+    a.put({0x89, 0x44, 0x24, 0x48});       // mov [rsp + 0x48], eax
+    a.put({0x65, 0x48, 0x8B, 0x04, 0x25, 0x60, 0, 0, 0}); // mov rax, gs:[0x60]
+    a.put({0x48, 0x8B, 0x48, 0x10});             // mov rcx, [rax + 0x10]
+    a.put({0x48, 0x8D, 0x54, 0x24, 0x48});       // lea rdx, [rsp + 0x48]
+    a.put({0x45, 0x31, 0xC0});                   // xor r8d, r8d
+    a.put({0x4C, 0x8D, 0x4C, 0x24, 0x58});       // lea r9, [rsp + 0x58]
+    a.put({0xC7, 0x44, 0x24, 0x20, 1, 0, 0, 0}); // mov dword [rsp + 0x20], 1
+    a.put({0x48, 0x8D, 0x05, 0, 0, 0, 0});       // lea rax, [rip + fill]
+    a.disp(rva);
+    a.put({0x48, 0x89, 0x44, 0x24, 0x28}); // mov [rsp + 0x28], rax
+    a.put({0xFF, 0x15, 0, 0, 0, 0});       // call [rip + getProc]
+    a.disp(getProc->getRVA());
+    a.put({0x85, 0xC0});                   // test eax, eax
+    a.jcc(0x88, walk);                     // js .walk
+    a.put({0x4C, 0x8B, 0x6C, 0x24, 0x58}); // mov r13, [rsp + 0x58]
+    a.put({0x4D, 0x85, 0xED});             // test r13, r13
+    a.jcc(0x85, next);                     // jnz .next
+    // Then the modules after the executable, the list's head in rbp and the
+    // entry in r15.
+    a.bind(walk);
     a.put({0x65, 0x48, 0x8B, 0x04, 0x25, 0x60, 0, 0, 0}); // mov rax, gs:[0x60]
     a.put({0x48, 0x8B, 0x68, uint8_t(pebLdr)}); // mov rbp, [rax + Ldr]
     a.put(
@@ -1806,6 +1865,29 @@ void NamedCellFillChunk::writeAMD64(LabelledCode &a) const {
     // The instance in r13, from a word inside the image; a null word binds
     // nothing.
     a.bind(hit);
+    // The bucket's name, inside the image, must be the entity's: its length
+    // and terminator, compared byte for byte.
+    a.put({0x41, 0x8B, 0x42, 0x0C});       // mov eax, [r10 + 12]
+    a.put({0x8B, 0x4B, 0x14});             // mov ecx, [rbx + 20]
+    a.put({0x4C, 0x8D, 0x4C, 0x08, 0x01}); // lea r9, [rax + rcx + 1]
+    a.put(
+        {0x45, 0x8B, 0x5F, uint8_t(ldrEntrySizeOfImage)}); // mov r11d, [r15+n]
+    a.put({0x4D, 0x39, 0xD9});                             // cmp r9, r11
+    a.jcc(0x87, nextModule);                               // ja
+    a.put({0x48, 0x01, 0xD0});                             // add rax, rdx
+    a.put({0x44, 0x8B, 0x4B, 0x10});       // mov r9d, [rbx + 16]
+    a.put({0x4C, 0x8D, 0x1D, 0, 0, 0, 0}); // lea r11, [rip + __ImageBase]
+    a.disp(0);
+    a.put({0x4D, 0x01, 0xD9}); // add r9, r11
+    a.put({0xFF, 0xC1});       // inc ecx
+    a.bind(compare);
+    a.put({0x44, 0x0F, 0xB6, 0x18}); // movzx r11d, byte ptr [rax]
+    a.put({0x45, 0x3A, 0x19});       // cmp r11b, [r9]
+    a.jcc(0x85, nextModule);         // jne
+    a.put({0x48, 0xFF, 0xC0});       // inc rax
+    a.put({0x49, 0xFF, 0xC1});       // inc r9
+    a.put({0xFF, 0xC9});             // dec ecx
+    a.jcc(0x85, compare);            // jnz
     a.put({0x41, 0x8B, 0x42, 0x08}); // mov eax, [r10 + 8]
     a.put({0x48, 0x8D, 0x48, 0x08}); // lea rcx, [rax + 8]
     a.put(
@@ -1848,7 +1930,8 @@ void NamedCellFillChunk::writeAMD64(LabelledCode &a) const {
   a.put({0x48, 0x8D, 0x0D, 0, 0, 0, 0}); // lea rcx, [rip + __ImageBase]
   a.disp(0);
   a.put({0x4C, 0x89, 0x2C, 0x01}); // mov [rcx + rax], r13
-  a.put({0x48, 0x83, 0xC3, 0x10}); // add rbx, 16
+  a.put(
+      {0x48, 0x83, 0xC3, uint8_t(NamedCellListChunk::entrySize)}); // add rbx, n
   a.put({0x48, 0x39, 0xF3});       // cmp rbx, rsi
   a.jcc(0x83, outer);              // jae .outer
   a.put({0x4C, 0x39, 0x23});       // cmp [rbx], r12
@@ -1857,7 +1940,8 @@ void NamedCellFillChunk::writeAMD64(LabelledCode &a) const {
 
   // Past the entity's cells.
   a.bind(skip);
-  a.put({0x48, 0x83, 0xC3, 0x10}); // add rbx, 16
+  a.put(
+      {0x48, 0x83, 0xC3, uint8_t(NamedCellListChunk::entrySize)}); // add rbx, n
   a.put({0x48, 0x39, 0xF3});       // cmp rbx, rsi
   a.jcc(0x83, outer);
   a.put({0x4C, 0x39, 0x23}); // cmp [rbx], r12
@@ -1901,8 +1985,8 @@ void NamedCellFillChunk::writeAMD64(LabelledCode &a) const {
   a.bind(zero);
   a.put({0x31, 0xC0}); // xor eax, eax
   a.bind(done);
-  // add rsp, 0x48; pop r15, r14, r13, r12, rdi, rsi, rbp, rbx; ret
-  a.put({0x48, 0x83, 0xC4, 0x48});
+  // add rsp, 0x68; pop r15, r14, r13, r12, rdi, rsi, rbp, rbx; ret
+  a.put({0x48, 0x83, 0xC4, 0x68});
   a.put({0x41, 0x5F, 0x41, 0x5E, 0x41, 0x5D, 0x41, 0x5C, 0x5F, 0x5E, 0x5D, 0x5B,
          0xC3});
 }
@@ -1919,7 +2003,8 @@ void NamedCellFillChunk::writeARM64(LabelledCode &a) const {
            tableHit = a.newLabel(), finish = a.newLabel(), zero = a.newLabel(),
            done = a.newLabel(), parent = a.newLabel(), importer = a.newLabel(),
            found = a.newLabel(), delayLoaders = a.newLabel(),
-           pinFailed = a.newLabel(), pinStatus = a.newLabel();
+           pinFailed = a.newLabel(), pinStatus = a.newLabel(),
+           walk = a.newLabel(), compare = a.newLabel();
   // The arguments of NtProtectVirtualMemory other than the protection, with
   // base, size and old at sp + 88, 96 and 104; then the call.
   auto callProtect = [&] {
@@ -1930,7 +2015,10 @@ void NamedCellFillChunk::writeARM64(LabelledCode &a) const {
     a.callImport(protect->getRVA());
   };
 
-  a.put32(0xA9B97BFD); // stp x29, x30, [sp, #-112]!
+  // The frame holds the protection calls' base, size and old protection at
+  // sp + 88, 96 and 104, and a name's ANSI_STRING and its lookup's result at
+  // sp + 112 and 128.
+  a.put32(0xA9B77BFD); // stp x29, x30, [sp, #-144]!
   a.put32(0x910003FD); // mov x29, sp
   a.put32(0xA90153F3); // stp x19, x20, [sp, #16]
   a.put32(0xA9025BF5); // stp x21, x22, [sp, #32]
@@ -1991,8 +2079,32 @@ void NamedCellFillChunk::writeARM64(LabelledCode &a) const {
     a.put32(0xB9400E69);          // ldr w9, [x19, #12]
     a.branch14(0x36080009, skip); // tbz w9, #1
     a.branch14(0x36100018, skip); // tbz w24, #2
-    // The modules after the executable, the list's head in x26 and the entry in
-    // x25.
+    // First the executable, whose exports are the instances it shares, by
+    // exact name: LdrGetProcedureAddressForCaller(base, &name, 0, sp + 128,
+    // 1, fill), flag 1 binding without initializing the module. The
+    // executable is never unloaded, so nothing is pinned.
+    a.put32(0xB9401269);          // ldr w9, [x19, #16]   the name
+    a.branch19(0x34000009, walk); // cbz w9, .walk
+    a.put32(0x8B090369);          // add x9, x27, x9
+    a.put32(0xF9003FE9);          // str x9, [sp, #120]
+    a.put32(0xB940166A);          // ldr w10, [x19, #20]   its length
+    a.put32(0x1100054B);          // add w11, w10, #1
+    a.put32(0x2A0B414A);          // orr w10, w10, w11, lsl #16
+    a.put32(0xB90073EA);          // str w10, [sp, #112]
+    a.put32(0xF9403249);          // ldr x9, [x18, #0x60]
+    a.put32(0xF9400920);          // ldr x0, [x9, #0x10]
+    a.put32(0x9101C3E1);          // add x1, sp, #112
+    a.put32(0x52800002);          // mov w2, #0
+    a.put32(0x910203E3);          // add x3, sp, #128
+    a.put32(0x52800024);          // mov w4, #1
+    a.address(5, rva);
+    a.callImport(getProc->getRVA());
+    a.branch14(0x37F80000, walk); // tbnz w0, #31, .walk
+    a.put32(0xF94043F7);          // ldr x23, [sp, #128]
+    a.branch19(0xB5000017, next); // cbnz x23, .next
+    // Then the modules after the executable, the list's head in x26 and the
+    // entry in x25.
+    a.bind(walk);
     a.put32(0xF9403249);                    // ldr x9, [x18, #0x60]
     a.put32(0xF940013A | pebLdr / 8 << 10); // ldr x26, [x9, #Ldr]
     a.put32(0x9100035A | ldrInLoadOrderModuleList << 10); // add x26, x26, #list
@@ -2100,6 +2212,26 @@ void NamedCellFillChunk::writeARM64(LabelledCode &a) const {
     // The instance in x23, from a word inside the image; a null word binds
     // nothing.
     a.bind(hit);
+    // The bucket's name, inside the image, must be the entity's: its length
+    // and terminator, compared byte for byte.
+    a.put32(0xB9401DEC);                                 // ldr w12, [x15, #28]
+    a.put32(0xB940166D);                                 // ldr w13, [x19, #20]
+    a.put32(0x8B0D018E);                                 // add x14, x12, x13
+    a.put32(0x910005CE);                                 // add x14, x14, #1
+    a.put32(0xB9400330 | ldrEntrySizeOfImage / 4 << 10); // ldr w16, [x25, #n]
+    a.put32(0xEB1001DF);                                 // cmp x14, x16
+    a.branch19(0x54000008, nextModule);                  // b.hi
+    a.put32(0x8B0C014C);                                 // add x12, x10, x12
+    a.put32(0xB940126E);                                 // ldr w14, [x19, #16]
+    a.put32(0x8B0E036E);                                 // add x14, x27, x14
+    a.put32(0x110005AD);                                 // add w13, w13, #1
+    a.bind(compare);
+    a.put32(0x38401590);                                 // ldrb w16, [x12], #1
+    a.put32(0x384015D1);                                 // ldrb w17, [x14], #1
+    a.put32(0x6B11021F);                                 // cmp w16, w17
+    a.branch19(0x54000001, nextModule);                  // b.ne
+    a.put32(0x710005AD);                                 // subs w13, w13, #1
+    a.branch19(0x54000001, compare);                     // b.ne
     a.put32(0xB94019E9);                                 // ldr w9, [x15, #24]
     a.put32(0xB940032C | ldrEntrySizeOfImage / 4 << 10); // ldr w12, [x25, #n]
     a.put32(0x91002130);                                 // add x16, x9, #8
@@ -2134,7 +2266,7 @@ void NamedCellFillChunk::writeARM64(LabelledCode &a) const {
   a.bind(store);
   a.put32(0xB9400A69);           // ldr w9, [x19, #8]
   a.put32(0xF8296B77);           // str x23, [x27, x9]
-  a.put32(0x91004273);           // add x19, x19, #16
+  a.put32(0x91000273 | NamedCellListChunk::entrySize << 10); // add x19, x19, #n
   a.put32(0xEB14027F);           // cmp x19, x20
   a.branch19(0x54000002, outer); // b.hs
   a.put32(0xF9400269);           // ldr x9, [x19]
@@ -2144,7 +2276,7 @@ void NamedCellFillChunk::writeARM64(LabelledCode &a) const {
 
   // Past the entity's cells.
   a.bind(skip);
-  a.put32(0x91004273);           // add x19, x19, #16
+  a.put32(0x91000273 | NamedCellListChunk::entrySize << 10); // add x19, x19, #n
   a.put32(0xEB14027F);           // cmp x19, x20
   a.branch19(0x54000002, outer); // b.hs
   a.put32(0xF9400269);           // ldr x9, [x19]
@@ -2193,7 +2325,7 @@ void NamedCellFillChunk::writeARM64(LabelledCode &a) const {
   a.put32(0xA9425BF5); // ldp x21, x22, [sp, #32]
   a.put32(0xA94153F3); // ldp x19, x20, [sp, #16]
   a.put32(0x910003BF); // mov sp, x29
-  a.put32(0xA8C77BFD); // ldp x29, x30, [sp], #112
+  a.put32(0xA8C97BFD); // ldp x29, x30, [sp], #144
   a.put32(0xD65F03C0); // ret
 }
 } // namespace
@@ -3343,7 +3475,7 @@ void ImportSlotContents::createOverrideCellFill() {
       auto it = preemptibleOffers.find(imp->getDLLName().lower());
       if (it != preemptibleOffers.end() && it->second.contains(name))
         cells.push_back({sc, offset, imp, 0, overrideNameKey(name), readOnly,
-                         false, /*indirect=*/true});
+                         false, /*indirect=*/true, name});
     }
   };
   // A slot in a chunk with residual words is in a section that stays writable
@@ -3385,7 +3517,7 @@ void ImportSlotContents::createOverrideCellFill() {
   // instance's address.
   auto addVague = [&](Defined *d, Chunk *c, uint32_t offset, bool readOnly) {
     cells.push_back({c, offset, nullptr, 0, overrideNameKey(d->getName()),
-                     readOnly, false, /*indirect=*/true});
+                     readOnly, false, /*indirect=*/true, d->getName()});
   };
   // Each live entity the DLL keeps preemptible has a pointer that its offer
   // table names to the search of a DLL loaded later, made here where no
@@ -3525,10 +3657,21 @@ void ImportSlotContents::createNamedCellFill() {
   if (!config.importSlots || !config.dll || ctx.hybridSymtab ||
       (config.machine != AMD64 && config.machine != ARM64))
     return;
+  // Each vague entity's name, one string that the offer table and the list
+  // share, against which a search confirms what a key found.
+  DenseMap<StringRef, Chunk *> names;
+  auto getName = [&](StringRef name) {
+    Chunk *&c = names[name];
+    if (!c) {
+      c = make<StringChunk>(name);
+      namedCellNames.push_back(c);
+    }
+    return c;
+  };
   // The offer table: the pointer of each entity the DLL keeps preemptible,
   // which holds the instance it uses, and the keys of the names of the DLLs
   // it delay-loads.
-  std::vector<std::pair<uint64_t, Chunk *>> offers;
+  std::vector<VagueOfferTableChunk::Offer> offers;
   DenseMap<uint64_t, StringRef> keys;
   for (Chunk *c : ctx.symtab.localImportChunks) {
     auto *li = cast<LocalImportChunk>(c);
@@ -3537,7 +3680,7 @@ void ImportSlotContents::createNamedCellFill() {
     uint64_t key = overrideNameKey(li->vagueEntity);
     auto [it, inserted] = keys.try_emplace(key, li->vagueEntity);
     if (inserted)
-      offers.emplace_back(key, li);
+      offers.push_back({key, li, getName(li->vagueEntity)});
     else if (it->second != li->vagueEntity)
       Err(ctx) << "vague entities " << it->second << " and " << li->vagueEntity
                << " have the same key in the offer table";
@@ -3552,9 +3695,12 @@ void ImportSlotContents::createNamedCellFill() {
 
   if (!namedCellList)
     return;
-  // The read-only cells are written between two protection calls, and a
-  // search pins what it binds to.
   auto *list = cast<NamedCellListChunk>(namedCellList);
+  for (const OverrideCell &c : list->getCells())
+    if (c.indirect)
+      list->names[c.name] = getName(c.name);
+  // The read-only cells are written between two protection calls; a search
+  // looks names up in the executable and pins the module it binds to.
   auto getImport = [&](StringRef name) -> DefinedImportData * {
     auto *imp = dyn_cast_or_null<DefinedImportData>(ctx.symtab.find(name));
     if (!imp) {
@@ -3572,15 +3718,18 @@ void ImportSlotContents::createNamedCellFill() {
       addImport(imp);
     return imp;
   };
-  DefinedImportData *protect = nullptr, *addRef = nullptr;
+  DefinedImportData *protect = nullptr, *addRef = nullptr, *getProc = nullptr;
   if (list->hasReadOnly() &&
       !(protect = getImport("__imp_NtProtectVirtualMemory")))
     return;
-  if (list->hasVague() && !(addRef = getImport("__imp_LdrAddRefDll")))
+  if (list->hasVague() &&
+      (!(addRef = getImport("__imp_LdrAddRefDll")) ||
+       !(getProc = getImport("__imp_LdrGetProcedureAddressForCaller"))))
     return;
   uint64_t selfKey =
       overrideNameKey(sys::path::filename(config.outputFile).lower());
-  auto *fill = make<NamedCellFillChunk>(ctx, list, protect, addRef, selfKey);
+  auto *fill =
+      make<NamedCellFillChunk>(ctx, list, protect, addRef, getProc, selfKey);
   namedCellFill = fill;
   namedCellFillPointer = make<LocalImportChunk>(
       ctx, make<DefinedSynthetic>("__llvm_named_cell_fill", fill));

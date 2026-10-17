@@ -129,6 +129,7 @@ public:
   Chunk *getNamedCellFillPdata() const { return namedCellFillPdata; }
   Chunk *getNamedCellList() const { return namedCellList; }
   Chunk *getVagueOfferTable() const { return vagueOfferTable; }
+  ArrayRef<Chunk *> getNamedCellNames() const { return namedCellNames; }
   Chunk *getThreadLocalSlotCopy() const { return threadLocalSlotCopy; }
   Chunk *getThreadLocalSlotCopyPointer() const {
     return threadLocalSlotCopyPointer;
@@ -203,6 +204,7 @@ private:
   Chunk *namedCellFillPdata = nullptr;
   Chunk *namedCellList = nullptr;
   Chunk *vagueOfferTable = nullptr;
+  std::vector<Chunk *> namedCellNames;
   // The copy of an executable's thread-local slots and its pointer in the C
   // initializer table.
   Chunk *threadLocalSlotCopy = nullptr;

@@ -26,13 +26,14 @@
 # CHECK-NEXT:   0xc884 ; stp x21, x22, [sp, #32]
 # CHECK-NEXT:   0xc802 ; stp x19, x20, [sp, #16]
 # CHECK-NEXT:   0xe1 ; mov fp, sp
-# CHECK-NEXT:   0x8d ; stp x29, x30, [sp, #-112]!
+# CHECK-NEXT:   0x91 ; stp x29, x30, [sp, #-144]!
 # CHECK-NEXT:   0xe4 ; end
 
 # CHECK:      Name: ntdll.dll
 # CHECK-NEXT: ImportLookupTableRVA:
 # CHECK-NEXT: ImportAddressTableRVA: 0x[[#%X,NTDLL:]]
 # CHECK-NEXT: Symbol: LdrAddRefDll
+# CHECK-NEXT: Symbol: LdrGetProcedureAddressForCaller
 # CHECK-NEXT: Symbol: NtProtectVirtualMemory
 
 ## The reference reads the cell.
@@ -45,12 +46,18 @@
 ## modules after the executable, each with the table's tag inside its image,
 ## probed if loaded with the process, if delay-loaded within that scope, or if
 ## it delay-loads this DLL.
-# CHECK:      stp x29, x30, [sp, #-0x70]!
+# CHECK:      stp x29, x30, [sp, #-0x90]!
 # CHECK:      mov w24, #0x0
 # CHECK-NEXT: ldr x16, [x18, #0x60]
 # CHECK-NEXT: ldrb w9, [x16, #0x50]
 # CHECK-NEXT: tbnz w9, #0x1,
 # CHECK-NEXT: orr w24, w24, #0x4
+## First the executable, by the entity's exact name.
+# CHECK:      ldr w9, [x19, #0x10]
+# CHECK-NEXT: cbz w9,
+# CHECK:      ldr x0, [x9, #0x10]
+# CHECK:      ldr x23, [sp, #0x80]
+# CHECK-NEXT: cbnz x23,
 # CHECK:      ldr x26, [x9, #0x18]
 # CHECK-NEXT: add x26, x26, #0x10
 # CHECK:      ldr x10, [x25, #0x30]
@@ -67,6 +74,10 @@
 # CHECK-NEXT: cmp x12, x14
 ## On a hit, LdrAddRefDll(LDR_ADDREF_DLL_PIN, module), whose failure ends the
 ## search with its status.
+## A bucket's key counts only if its name is the entity's.
+# CHECK:      ldrb w16, [x12], #0x1
+# CHECK-NEXT: ldrb w17, [x14], #0x1
+# CHECK-NEXT: cmp w16, w17
 # CHECK:      ldr x23, [x10, x9]
 # CHECK:      mov w0, #0x1
 # CHECK-NEXT: mov x1, x10
@@ -75,6 +86,7 @@
 # CHECK-NEXT: blr x16
 # CHECK-NEXT: tbnz w0, #0x1f,
 # CHECK:      str x23, [x27, x9]
+# CHECK-NEXT: add x19, x19, #0x18
 ## An entity the table names takes the word its entry names, then the
 ## instance from it.
 # CHECK:      ldr x23, [x11, #0x8]
@@ -85,7 +97,7 @@
 ## Nothing pins the DLL itself.
 # RUN: FileCheck --check-prefix=NOSELF --input-file=a.txt %s
 # NOSELF-NOT: mov x1, x27
-# CHECK:      ldp x29, x30, [sp], #0x70
+# CHECK:      ldp x29, x30, [sp], #0x90
 # CHECK-NEXT: ret
 
 #--- a.s
@@ -119,4 +131,5 @@ __xi_z:
 LIBRARY ntdll.dll
 EXPORTS
   LdrAddRefDll
+  LdrGetProcedureAddressForCaller
   NtProtectVirtualMemory

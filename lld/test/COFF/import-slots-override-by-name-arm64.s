@@ -19,7 +19,8 @@
 ## The list: the writable word and the import's entry, read-only, under the
 ## default's key.
 # CHECK:      d2315e5a e1358eba {{[0-9a-f]+}} 00000000
-# CHECK-NEXT: d2315e5a e1358eba {{[0-9a-f]+}} 01000000
+# CHECK-NEXT: 00000000 00000000 d2315e5a e1358eba
+# CHECK-NEXT: {{[0-9a-f]+}} 01000000 00000000 00000000
 ## The executable's table, the anchor's entries searched for each key, and on
 ## a hit the address the entry names; the read-only cell once the first
 ## protection call has made it writable.

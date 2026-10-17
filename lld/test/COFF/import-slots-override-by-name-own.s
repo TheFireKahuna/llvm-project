@@ -19,8 +19,10 @@
 
 ## The fill's list: the pointer, the writable word and the read-only word,
 ## under the default's key, the read-only ones marked.
+## Each entry is {key, rva, flags, name, length}, 24 bytes.
 # CHECK:      d2315e5a e1358eba {{[0-9a-f]+}} 01000000
-# CHECK-NEXT: d2315e5a e1358eba {{[0-9a-f]+}} 00000000
+# CHECK-NEXT: 00000000 00000000 d2315e5a e1358eba
+# CHECK-NEXT: {{[0-9a-f]+}} 00000000 00000000 00000000
 # CHECK-NEXT: d2315e5a e1358eba {{[0-9a-f]+}} 01000000
 # CHECK:      <take>:
 # CHECK-NEXT: movq    {{.*}}(%rip), %rax

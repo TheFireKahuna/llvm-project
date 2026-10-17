@@ -79,7 +79,7 @@
 # RUN: FileCheck --check-prefix=FILL --input-file=use.txt %s
 # FILL:      Name: l.dll
 # FILL-NEXT: ImportLookupTableRVA:
-# FILL-NEXT: ImportAddressTableRVA: 0x2090
+# FILL-NEXT: ImportAddressTableRVA:
 # FILL-NEXT: Symbol: hook
 # FILL:      Name: ntdll.dll
 # FILL-NEXT: ImportLookupTableRVA:
@@ -90,8 +90,11 @@
 # FILL-NEXT: ImportLookupTableRVA:
 # FILL-NEXT: ImportAddressTableRVA: 0x3000
 # FILL-NEXT: Symbol: hook
+## Each entry is {key, rva, flags, name, length}, 24 bytes; a default has no
+## name.
 # FILL:      180002000 d2315e5a e1358eba 00300000 00000000
-# FILL-NEXT: 180002010 d2315e5a e1358eba 90200000 01000000
+# FILL-NEXT: 180002010 00000000 00000000 d2315e5a e1358eba
+# FILL-NEXT: 180002020 {{[0-9a-f]+}} 01000000 00000000 00000000
 # FILL:      cmpl $0x7b3ac2d5, 0x80(%rdi)
 # FILL:      leaq {{.*}}(%rip), %rbx # 0x180002000
 # FILL:      cmpq %r12, (%rax)

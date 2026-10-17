@@ -630,7 +630,8 @@ bool SymbolTable::loadInteriorImports() {
     }
     if (cells)
       for (StringRef name :
-           {"__imp_LdrAddRefDll", "__imp_NtProtectVirtualMemory"})
+           {"__imp_LdrAddRefDll", "__imp_LdrGetProcedureAddressForCaller",
+            "__imp_NtProtectVirtualMemory"})
         if (Symbol *l = find(name);
             l && l->isLazy() && !l->pendingArchiveLoad && isLazyImport(l))
           runTimeLazies.push_back(l);

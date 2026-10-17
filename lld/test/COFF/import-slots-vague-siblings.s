@@ -159,4 +159,5 @@ main:
 LIBRARY ntdll.dll
 EXPORTS
   LdrAddRefDll
+  LdrGetProcedureAddressForCaller
   NtProtectVirtualMemory

@@ -1267,6 +1267,9 @@ void Writer::createSections() {
   }
   if (Chunk *table = slots.getVagueOfferTable())
     createPartialSection(".rdata", data | r)->chunks.push_back(table);
+  if (!slots.getNamedCellNames().empty())
+    llvm::append_range(createPartialSection(".rdata", data | r)->chunks,
+                       slots.getNamedCellNames());
   if (Chunk *fill = slots.getFill()) {
     createPartialSection(".text", fill->getOutputCharacteristics())
         ->chunks.push_back(fill);

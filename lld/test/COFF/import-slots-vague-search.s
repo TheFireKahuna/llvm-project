@@ -33,17 +33,19 @@
 # RUN: FileCheck --input-file=a.txt %s
 
 ## The table: two buckets, one delay-loaded DLL's key at 0x30; the bucket of
-## _ZN1n1gE's key names its pointer, and x.dll's key follows the buckets.
+## _ZN1n1gE's key names its pointer and its name, and x.dll's key follows the
+## buckets, then the name.
 # CHECK:      000030 6c8e9cf5 [[#%x,TABLE:]]
 # CHECK:      [[#TABLE + 0x180000000]] 3f000000 01000000 01000000 30000000
-# CHECK-NEXT: b65fec27 d80a3472 {{[0-9a-f]+}} 00000000
+# CHECK-NEXT: b65fec27 d80a3472 {{[0-9a-f]+}} {{[0-9a-f]+}}
 # CHECK-NEXT: 00000000 00000000 00000000 00000000
-# CHECK-NEXT: 5ac27ce3 f11f7492
+# CHECK-NEXT: 5ac27ce3 f11f7492 {{.*}} Z.|...t._ZN1n1gE
 
 # CHECK:      Name: ntdll.dll
 # CHECK-NEXT: ImportLookupTableRVA:
 # CHECK-NEXT: ImportAddressTableRVA: 0x[[#%X,NTDLL:]]
 # CHECK-NEXT: Symbol: LdrAddRefDll
+# CHECK-NEXT: Symbol: LdrGetProcedureAddressForCaller
 # CHECK-NEXT: Symbol: NtProtectVirtualMemory
 
 ## Bit 2 of r14 records a DLL loaded after the process initialized. For an
@@ -63,6 +65,13 @@
 # CHECK-NEXT: je
 # CHECK-NEXT: btl $0x2, %r14d
 # CHECK-NEXT: jae
+## First the executable, by the entity's exact name, through
+## LdrGetProcedureAddressForCaller; nothing is pinned.
+# CHECK-NEXT: movl 0x10(%rbx), %eax
+# CHECK:      callq *{{.*}}(%rip) # 0x[[#%x,NTDLL + 0x180000008]]
+# CHECK-NEXT: testl %eax, %eax
+# CHECK-NEXT: js
+# CHECK-NEXT: movq 0x58(%rsp), %r13
 # CHECK:      movq 0x18(%rax), %rbp
 # CHECK-NEXT: addq $0x10, %rbp
 # CHECK:      movq 0x30(%r15), %rdx
@@ -81,6 +90,10 @@
 ## On a hit, LdrAddRefDll(LDR_ADDREF_DLL_PIN, module), whose failure ends the
 ## search with its status; the pointer is written between two protection
 ## calls.
+## A bucket's key counts only if its name, inside the image, is the
+## entity's.
+# CHECK:      movzbl (%rax), %r11d
+# CHECK-NEXT: cmpb (%r9), %r11b
 # CHECK:      movq (%rdx,%rax), %r13
 # CHECK:      movl $0x1, %ecx
 # CHECK-NEXT: callq *{{.*}}(%rip) # 0x[[#%x,NTDLL + 0x180000000]]
@@ -88,6 +101,7 @@
 # CHECK-NEXT: js
 # CHECK:      movl $0x4, %r9d
 # CHECK:      movq %r13, (%rcx,%rax)
+# CHECK-NEXT: addq $0x18, %rbx
 ## An entity the table names takes the word its entry names, then the
 ## instance from it.
 # CHECK:      movq 0x8(%rax), %r13
@@ -205,6 +219,7 @@ __delayLoadHelper2:
 LIBRARY ntdll.dll
 EXPORTS
   LdrAddRefDll
+  LdrGetProcedureAddressForCaller
   NtProtectVirtualMemory
 
 #--- protect.def
