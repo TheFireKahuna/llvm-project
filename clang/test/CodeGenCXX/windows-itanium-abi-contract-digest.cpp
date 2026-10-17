@@ -7,6 +7,9 @@
 // RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -DRENAME \
 // RUN:   -mdefault-visibility-export-mapping=explicit -emit-llvm -o - %s \
 // RUN:   | FileCheck --check-prefix=SAME %s
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -DOPAQUE_ENUM \
+// RUN:   -mdefault-visibility-export-mapping=explicit -emit-llvm -o - %s \
+// RUN:   | FileCheck --check-prefix=SAME %s
 // RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -DWIDE \
 // RUN:   -mdefault-visibility-export-mapping=explicit -emit-llvm -o - %s \
 // RUN:   | FileCheck --check-prefix=WIDE %s
@@ -15,7 +18,9 @@
 // else: a field's name does not change it, and a field more does. The locator,
 // the first 11 characters, is the hash of the class's name alone. The digest is
 // pinned, since an image built by one compiler binds to one another compiler
-// built: a change to the canonical form takes a new schema version.
+// built: a change to the canonical form takes a new schema version. An
+// enumeration is its underlying type, whether the unit defines it or only
+// declares it with a fixed one.
 
 #define API __attribute__((visibility("default")))
 
@@ -40,5 +45,18 @@ struct API Pinned : Base {
 
 void Pinned::f() {}
 
-// SAME: !{!"/abiprovide:bYVgnX5b3082C4uyG6tcxDE6hrq6WDBbg"}
-// WIDE: !{!"/abiprovide:bYVgnX5b308pa8Ei5rlFv6O0NNUzIZN_Q"}
+#ifdef OPAQUE_ENUM
+enum class Kind : short;
+#else
+enum class Kind : short { A, B };
+#endif
+
+struct API WithEnum {
+  Kind k;
+  API void g();
+};
+
+void WithEnum::g() {}
+
+// SAME: !{!"/abiprovide:bYVgnX5b3082C4uyG6tcxDE6hrq6WDBbg,_JxiUs3TwoUWTmcUCigZPOZB4ND2-E-Pg"}
+// WIDE: !{!"/abiprovide:bYVgnX5b308pa8Ei5rlFv6O0NNUzIZN_Q,_JxiUs3TwoUWTmcUCigZPOZB4ND2-E-Pg"}

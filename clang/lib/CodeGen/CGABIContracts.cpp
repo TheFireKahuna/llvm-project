@@ -291,9 +291,13 @@ void CodeGenABIContracts::encodeType(QualType T, llvm::raw_ostream &OS) {
     }
     return;
   }
-  if (const auto *ED = T->getAsEnumDecl())
-    if (const EnumDecl *Def = ED->getDefinition())
-      T = Context.getCanonicalType(Def->getIntegerType());
+  // An enumeration is its underlying type, which a declaration with a fixed
+  // one gives as its definition does.
+  if (const auto *ED = T->getAsEnumDecl()) {
+    const EnumDecl *Def = ED->getDefinition();
+    if (QualType Int = (Def ? Def : ED)->getIntegerType(); !Int.isNull())
+      T = Context.getCanonicalType(Int);
+  }
   if (T->isBooleanType()) {
     OS << 'b';
     EncodeSize();
