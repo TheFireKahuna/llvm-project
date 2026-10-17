@@ -177,8 +177,11 @@ void tools::windowsitanium::Linker::ConstructJob(
   // PE has no run-time library search path. Build systems written for ELF
   // pass -rpath, which lld-link would reject, so it is dropped with its value
   // and a warning, as lld's MinGW driver does. A GNU version script is passed
-  // in lld-link's spelling, as lld's MinGW driver passes it.
-  bool InRPath = false, InVersionScript = false;
+  // in lld-link's spelling, as lld's MinGW driver passes it. -z defs and
+  // --no-undefined make a symbol a DLL leaves undefined an error, which it is
+  // already unless NT-POSIX imports it from the executable below.
+  bool InRPath = false, InVersionScript = false, InZ = false;
+  bool NoUndefined = false;
   for (const auto &Input : Inputs) {
     if (Input.isFilename()) {
       CmdArgs.push_back(Input.getFilename());
@@ -200,6 +203,18 @@ void tools::windowsitanium::Linker::ConstructJob(
         StringRef V(Value);
         if (InRPath) {
           InRPath = false;
+        } else if (InZ && V == "defs") {
+          NoUndefined = true;
+          InZ = false;
+        } else if (InZ) {
+          CmdArgs.push_back("-z");
+          CmdArgs.push_back(Value);
+          InZ = false;
+        } else if (V == "-z") {
+          InZ = true;
+        } else if (V == "--no-undefined" || V == "-no-undefined" ||
+                   V == "-zdefs") {
+          NoUndefined = true;
         } else if (InVersionScript) {
           CmdArgs.push_back(Args.MakeArgString("-version-script:" + V));
           InVersionScript = false;
@@ -221,6 +236,11 @@ void tools::windowsitanium::Linker::ConstructJob(
     }
     A.renderAsInput(Args, CmdArgs);
   }
+
+  // An NT-POSIX shared library, as an ELF one, may leave symbols for the
+  // executable that loads it to define; the linker imports them from it.
+  if (IsDLL && TC.getTriple().isWindowsNTPOSIXEnvironment() && !NoUndefined)
+    CmdArgs.push_back("-unresolved-host-imports");
 
   // The runtime libraries are default libraries, which lld-link searches after
   // every input, so that a definition in the user's objects or libraries

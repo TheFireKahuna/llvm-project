@@ -181,6 +181,23 @@
 // VERSION-SCRIPT:      lld-link{{(.exe)?}}"
 // VERSION-SCRIPT-SAME: "-version-script:a.map" "-version-script:b.map" "-version-script:c.map"
 
+// An NT-POSIX shared library imports what nothing defines from the executable
+// that loads it, unless -z defs or --no-undefined asks for the error, which
+// Windows Itanium always gives; either is dropped.
+// RUN: %clang -### --target=x86_64-pc-windows-ntposix -nostdlib -shared %s \
+// RUN:     2>&1 | FileCheck --check-prefix=HOST %s
+// RUN: %clang -### --target=x86_64-pc-windows-ntposix -nostdlib -shared %s \
+// RUN:     -Wl,-z,defs 2>&1 | FileCheck --check-prefix=NOHOST %s
+// RUN: %clang -### --target=x86_64-pc-windows-ntposix -nostdlib -shared %s \
+// RUN:     -Wl,--no-undefined 2>&1 | FileCheck --check-prefix=NOHOST %s
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -shared %s \
+// RUN:     -Wl,-z,defs 2>&1 | FileCheck --check-prefix=NOHOST %s
+// HOST:       lld-link{{(.exe)?}}"
+// HOST-SAME:  "-unresolved-host-imports"
+// NOHOST:     lld-link{{(.exe)?}}"
+// NOHOST-NOT: "-unresolved-host-imports"
+// NOHOST-NOT: "defs"
+
 // A HIP link takes the HIP runtime from the ROCm installation, as with the
 // MSVC toolchain.
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium --hip-link \
