@@ -1345,7 +1345,7 @@ PrefixKind X86MCCodeEmitter::emitREXPrefix(int MemOperand, const MCInst &MI,
   X86OpcodePrefixHelper Prefix(*Ctx.getRegisterInfo());
   const MCInstrDesc &Desc = MCII.get(MI.getOpcode());
   uint64_t TSFlags = Desc.TSFlags;
-  Prefix.setW(TSFlags & X86II::REX_W);
+  Prefix.setW((TSFlags & X86II::REX_W) || (MI.getFlags() & X86::IP_HAS_REX_W));
   unsigned NumOps = MI.getNumOperands();
   bool UsesHighByteReg = false;
 #ifndef NDEBUG

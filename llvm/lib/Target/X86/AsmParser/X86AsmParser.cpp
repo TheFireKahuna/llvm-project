@@ -3680,15 +3680,19 @@ bool X86AsmParser::parseInstruction(ParseInstructionInfo &Info, StringRef Name,
   bool IsPrefix =
       StringSwitch<bool>(Name)
           .Cases({"cs", "ds", "es", "fs", "gs", "ss"}, true)
-          .Cases({"rex64", "data32", "data16", "addr32", "addr16"}, true)
+          .Cases({"data32", "data16", "addr32", "addr16"}, true)
           .Cases({"xacquire", "xrelease"}, true)
           .Cases({"acquire", "release"}, isParsingIntelSyntax())
           .Default(false);
 
+  // As GNU as does, rex64 before an instruction sets REX.W in the
+  // instruction's own REX prefix rather than being a byte of its own, which a
+  // REX prefix the instruction needs would override.
   auto isLockRepeatNtPrefix = [](StringRef N) {
     return StringSwitch<bool>(N)
         .Cases({"lock", "rep", "repe", "repz", "repne", "repnz", "notrack"},
                true)
+        .Case("rex64", true)
         .Default(false);
   };
 
@@ -3702,6 +3706,7 @@ bool X86AsmParser::parseInstruction(ParseInstructionInfo &Info, StringRef Name,
             .Cases({"rep", "repe", "repz"}, X86::IP_HAS_REPEAT)
             .Cases({"repne", "repnz"}, X86::IP_HAS_REPEAT_NE)
             .Case("notrack", X86::IP_HAS_NOTRACK)
+            .Case("rex64", X86::IP_HAS_REX_W)
             .Default(X86::IP_NO_PREFIX); // Invalid prefix (impossible)
     Flags |= Prefix;
     if (getLexer().is(AsmToken::EndOfStatement)) {
@@ -4190,9 +4195,13 @@ bool X86AsmParser::validateInstruction(MCInst &Inst, const OperandVector &Ops) {
   //  * REX2
   // VEX/XOP don't use REX; they are excluded from the legacy check.
   const unsigned Enc = TSFlags & X86II::EncodingMask;
+  if ((Inst.getFlags() & X86::IP_HAS_REX_W) && Enc != X86II::LEGACY)
+    return Error(Ops[0]->getStartLoc(),
+                 "'rex64' prefix is not allowed with this instruction");
   if (Enc != X86II::VEX && Enc != X86II::XOP) {
     MCRegister HReg;
-    bool UsesRex = TSFlags & X86II::REX_W;
+    bool UsesRex =
+        (TSFlags & X86II::REX_W) || (Inst.getFlags() & X86::IP_HAS_REX_W);
     unsigned NumOps = Inst.getNumOperands();
     for (unsigned i = 0; i != NumOps; ++i) {
       const MCOperand &MO = Inst.getOperand(i);
