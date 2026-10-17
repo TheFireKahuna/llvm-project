@@ -390,14 +390,17 @@ FARPROC resolveDescriptor(const IMAGE_DELAYLOAD_DESCRIPTOR *Descriptor,
 }
 
 // Whether a name table entry is that of an ABI contract witness, which names
-// a type's or datum's layout and its digest.
+// a type's or datum's layout and its digest: a standalone witness, or the
+// type_info object of a type that the library owns, under the name that the
+// type's layout qualifies.
 bool isWitness(const IMAGE_THUNK_DATA &Name) {
   if (IMAGE_SNAP_BY_ORDINAL(Name.u1.Ordinal))
     return false;
   const char *Proc =
       fromRva<IMAGE_IMPORT_BY_NAME>(static_cast<DWORD>(Name.u1.AddressOfData))
           ->Name;
-  return !strncmp(Proc, "__abiw$", 7) || !strncmp(Proc, "__abis$", 7);
+  return !strncmp(Proc, "__abiw$", 7) || !strncmp(Proc, "__abis$", 7) ||
+         (!strncmp(Proc, "_ZTI", 4) && strstr(Proc, "$abi$"));
 }
 
 bool hasHooks() { return __pfnDliNotifyHook2 || __pfnDliFailureHook2; }
