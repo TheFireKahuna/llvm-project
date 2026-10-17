@@ -1264,11 +1264,13 @@ void SymbolTable::preemptWeakData() {
       continue;
 
     // A copy that never changes may still serve the loads that only read
-    // values through its address, under a symbol of its own.
+    // values through its address, under a symbol of its own for each member
+    // of a group that lies in one section.
     SectionChunk *sc = d->getChunk();
-    if (members.size() == 1 && !(sc->header->Characteristics &
-                                 (IMAGE_SCN_MEM_WRITE | IMAGE_SCN_CNT_CODE)))
-      immutableCopies[imports.front()] = makeCopy(d);
+    if (chunks.size() == 1 && !(sc->header->Characteristics &
+                                (IMAGE_SCN_MEM_WRITE | IMAGE_SCN_CNT_CODE)))
+      for (auto [m, mi] : llvm::zip_equal(members, imports))
+        immutableCopies[mi] = makeCopy(m);
     for (auto [m, mi] : llvm::zip_equal(members, imports))
       preemptSymbol(m, mi);
     for (SectionChunk *c : chunks) {
@@ -1323,9 +1325,9 @@ void SymbolTable::readImmutableDataLocally() {
   // by its cell.
   struct Copy {
     DefinedRegular *copy = nullptr;
-    // The definition that the copy was, if liveness discarded it, which a
-    // DLL's instance preempts once the copy is kept.
-    DefinedRegular *discarded = nullptr;
+    // If liveness discarded the copy, the definitions of its group, each with
+    // the import of the DLL's instance that preempts it once the copy is kept.
+    SmallVector<std::pair<DefinedRegular *, DefinedImportData *>, 1> discarded;
     DefinedLocalImport *pointer = nullptr;
     size_t sites = 0;
   };
@@ -1347,11 +1349,21 @@ void SymbolTable::readImmutableDataLocally() {
           d->getChunk()->live || isThreadLocal(d) || !isDefaultVisibility(d) ||
           ignoresOffersOf(imp))
         return;
+      // The group moves to the DLL whole, so it must lie in the copy's
+      // section, and the DLL must provide each member.
       collectWeakDataGroup(d, chunks, members, /*liveOnly=*/false);
-      if (members.size() != 1 || !isCanonicalCopy(d->getChunk()))
+      if (chunks.size() != 1 || !isCanonicalCopy(d->getChunk()))
         return;
+      for (DefinedRegular *m : members) {
+        auto *mi =
+            dyn_cast_or_null<DefinedImportData>(impSymbol(getSharedName(m)));
+        if (!mi || !mi->getDLLName().equals_insensitive(imp->getDLLName())) {
+          c.discarded.clear();
+          return;
+        }
+        c.discarded.push_back({m, mi});
+      }
       c.copy = makeCopy(d);
-      c.discarded = d;
     } else if (auto *cell = dyn_cast_or_null<DefinedLocalImport>(s);
                cell && !cell->getChunk()->vagueEntity.empty()) {
       auto *d = dyn_cast<DefinedRegular>(cell->getChunk()->getTarget());
@@ -1499,8 +1511,8 @@ void SymbolTable::readImmutableDataLocally() {
     keep(sc);
     for (SectionChunk &child : sc->children())
       keep(&child);
-    if (copy->discarded)
-      preemptSymbol(copy->discarded, cast<DefinedImportData>(s));
+    for (auto [m, mi] : copy->discarded)
+      preemptSymbol(m, mi);
   }
 }
 
