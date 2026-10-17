@@ -22,9 +22,38 @@
 #include "lld/Common/CommonLinkerContext.h"
 #include "lld/Common/Timer.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/StringRef.h"
+#include <string>
+#include <vector>
 
 namespace lld::coff {
 struct TypePrefixLabels;
+
+// A run of the vtables of one class and of the classes derived from it through
+// primary bases, laid out as consecutive stride-byte slots so that a vtable
+// pointer is one of the run's exactly when its offset from the run's start is a
+// multiple of the stride below the run's extent. Each slot holds one vtable,
+// whose primary address point is apoff bytes into its chunk.
+struct VTableRun {
+  uint64_t stride = 0;
+  // The address point of the run's first slot, which assignAddresses sets and
+  // the later slots are placed the stride apart from.
+  uint64_t anchor = 0;
+  struct Slot {
+    SectionChunk *chunk;
+    uint64_t apoff;
+  };
+  std::vector<Slot> slots;
+  // Each class the run covers, with the index of its own slot and the number
+  // of consecutive slots its subtree spans, since a subtree is contiguous in
+  // the depth-first slot order.
+  struct Class {
+    std::string name;
+    unsigned first;
+    unsigned count;
+  };
+  std::vector<Class> classes;
+};
 
 class COFFLinkerContext : public CommonLinkerContext {
 public:
@@ -126,6 +155,13 @@ public:
 
   // The address each pinned chunk must start at.
   llvm::DenseMap<const Chunk *, ChunkPin> chunkPins;
+
+  // The runs the vtable records ask the writer to lay out, each the vtables of
+  // a class and of the classes derived from it through primary bases, placed
+  // as consecutive slots. runChunkRun maps each vtable in a run to the run's
+  // index and the vtable's slot in it.
+  std::vector<VTableRun> vtableRuns;
+  llvm::DenseMap<const Chunk *, std::pair<unsigned, unsigned>> runChunkRun;
 
   // Whether an object says that its functions have KCFI prefixes with a
   // marker, which the writer then finds, seals and places.

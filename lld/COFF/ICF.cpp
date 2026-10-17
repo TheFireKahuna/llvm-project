@@ -81,8 +81,10 @@ bool ICF::isEligible(SectionChunk *c) {
   if (!c->isCOMDAT() || !c->live || writable)
     return false;
 
-  // A pinned chunk's address is part of what it means.
-  if (ctx.chunkPins.contains(c))
+  // A pinned chunk's address is part of what it means, as is a vtable the
+  // linker lays out in a run, whose fold would serve one hierarchy's objects
+  // from another's run.
+  if (ctx.chunkPins.contains(c) || ctx.runChunkRun.contains(c))
     return false;
 
   // Under regular (not safe) ICF, all code sections are eligible.

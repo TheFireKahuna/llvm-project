@@ -349,6 +349,20 @@ public:
   };
   ArrayRef<LinkPin> getLinkPins() const;
 
+  // A vtable of the object's link-only records: vtable->getValue() + offset is
+  // the primary address point of a vtable of class cls, whose primary base is
+  // base, or which has none when base is empty. onSection is set when the
+  // record named a section rather than the vtable's own symbol. The facts a
+  // discarded COMDAT copy carries describe the copy the link keeps.
+  struct LinkVTable {
+    DefinedRegular *vtable;
+    uint64_t offset;
+    std::string cls;
+    std::string base;
+    bool onSection;
+  };
+  ArrayRef<LinkVTable> getLinkVTables() const;
+
   // When using Microsoft precompiled headers, this is the PCH's key.
   // The same key is used by both the precompiled object, and objects using the
   // precompiled object. Any difference indicates out-of-date objects.
@@ -389,6 +403,7 @@ private:
   void readLinkRecords();
   bool readLinkSites(ArrayRef<uint8_t> payload);
   bool readLinkPins(ArrayRef<uint8_t> payload);
+  bool readLinkVTables(ArrayRef<uint8_t> payload);
   bool readKCFIThunks(ArrayRef<uint8_t> payload);
   bool readCallOnlyRefs(ArrayRef<uint8_t> payload);
   void initializeDependencies();
@@ -456,6 +471,7 @@ private:
     std::vector<LinkSite> sites;
     std::vector<std::pair<uint32_t, uint32_t>> callOnlyRefs;
     std::vector<LinkPin> pins;
+    std::vector<LinkVTable> vtables;
     // The indices of the symbols the object gives default visibility.
     llvm::DenseSet<uint32_t> defaultBindings;
   };

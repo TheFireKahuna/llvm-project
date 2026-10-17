@@ -16,6 +16,7 @@
 #include "KCFI.h"
 #include "LLDMapFile.h"
 #include "LinkPins.h"
+#include "VTableRuns.h"
 #include "MapFile.h"
 #include "OverrideTable.h"
 #include "PDB.h"
@@ -828,11 +829,13 @@ void Writer::run() {
     appendECImportTables();
     placeImportSlotSections();
     packPlacedChunks();
+    placeVTableRuns(ctx, rdataSec);
     createDynamicRelocs();
     removeUnusedSections();
     kcfi.layOut(textSec, rdataSec);
     layoutSections();
     finalizeAddresses();
+    defineVTableRuns(ctx);
     kcfi.checkCodeRange();
     removeEmptySections();
     assignOutputSectionIndices();
@@ -1651,6 +1654,8 @@ void Writer::packPlacedChunks() {
         continuedBy[run[i - 1]->chunk] = run[i]->chunk;
   std::vector<PackItem> items;
   auto addItem = [&](Chunk *c) {
+    if (ctx.runChunkRun.contains(c))
+      return;
     PackItem &item = items.emplace_back();
     item.chunks.push_back(c);
     item.size = c->getSize();
@@ -2293,6 +2298,23 @@ void Writer::assignAddresses() {
       // bytes.
       if (ctx.typePrefixRecords)
         virtualSize = prefixes.place(c, rva, virtualSize);
+      // A vtable the linker lays out in a run is placed so its address point
+      // is the run's stride past the one before it, the first 16 bytes into a
+      // line, which spaces the points by the stride with nothing else on a
+      // boundary.
+      if (auto it = ctx.runChunkRun.find(c); it != ctx.runChunkRun.end()) {
+        VTableRun &run = ctx.vtableRuns[it->second.first];
+        unsigned slot = it->second.second;
+        uint64_t apoff = run.slots[slot].apoff;
+        if (slot == 0)
+          run.anchor = alignTo(rva + virtualSize + apoff - 16, 64) + 16;
+        uint64_t start = run.anchor + uint64_t(slot) * run.stride - apoff;
+        c->setRVA(start);
+        virtualSize = start - rva + c->getSize();
+        if (c->hasData)
+          rawSize = alignTo(virtualSize, config->fileAlign);
+        continue;
+      }
       virtualSize = alignTo(virtualSize, c->getAlignment());
       // A pinned chunk starts at its residue, whatever comes before it.
       if (auto it = ctx.chunkPins.find(c); it != ctx.chunkPins.end())

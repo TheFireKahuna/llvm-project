@@ -11,6 +11,7 @@
 #include "Config.h"
 #include "DebugTypes.h"
 #include "ICF.h"
+#include "VTableRuns.h"
 #include "InputFiles.h"
 #include "LinkPins.h"
 #include "LocalImports.h"
@@ -3368,6 +3369,11 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   if (ctx.symtab.bindVagueSiblings())
     run();
 
+  // Define the vtable range symbols a guard thunk and a checked downcast
+  // reference, as empty until the runs are laid out, so they do not read as
+  // undefined.
+  registerVTableRunSymbols(ctx);
+
   // Resolve remaining undefined symbols and warn about imported locals.
   std::vector<Undefined *> aliases;
   ctx.forEachSymtab(
@@ -3576,6 +3582,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   convertResources();
 
   resolveLinkPins(ctx);
+  resolveVTableRuns(ctx);
 
   if (config->guardCF & GuardCFLevel::CF)
     findGuardSuppressed(ctx);

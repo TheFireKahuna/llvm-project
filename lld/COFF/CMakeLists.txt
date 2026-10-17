@@ -28,6 +28,7 @@ add_lld_library(lldCOFF
   Symbols.cpp
   VagueEntities.cpp
   TypePrefix.cpp
+  VTableRuns.cpp
   Writer.cpp
 
   LINK_COMPONENTS

@@ -582,6 +582,11 @@ void ObjFile::readLinkRecords() {
         return;
       continue;
     }
+    if (cur && kind == LinkRecordVTables) {
+      if (!readLinkVTables(contents.slice(start, size)))
+        return;
+      continue;
+    }
     if (cur && kind == LinkRecordKCFIThunks) {
       if (!readKCFIThunks(contents.slice(start, size)))
         return;
@@ -734,6 +739,51 @@ bool ObjFile::readLinkPins(ArrayRef<uint8_t> payload) {
   }
   if (Error e = cur.takeError()) {
     pins.clear();
+    Err(symtab.ctx) << this
+                    << ": .llvm_link_records is malformed: " << std::move(e);
+    return false;
+  }
+  return true;
+}
+
+// Reads a group of vtables: the primary address point of each vtable the
+// object defines, with its class and the class's primary base. A vtable on a
+// section's symbol is at the start of the section; any other names a symbol
+// the link resolves. A vtable of a section or symbol that COMDAT selection
+// discarded applies to nothing.
+bool ObjFile::readLinkVTables(ArrayRef<uint8_t> payload) {
+  std::vector<LinkVTable> &vtables = linkRecords->vtables;
+  auto malformed = [&](const Twine &msg) {
+    Err(symtab.ctx) << this << ": .llvm_link_records is malformed: " << msg;
+    vtables.clear();
+    return false;
+  };
+  DataExtractor data(payload, /*IsLittleEndian=*/true);
+  DataExtractor::Cursor cur(0);
+  while (cur && !data.eof(cur)) {
+    uint64_t symIndex = data.getULEB128(cur);
+    uint64_t offset = data.getULEB128(cur);
+    StringRef cls = data.getBytes(cur, data.getULEB128(cur));
+    StringRef base = data.getBytes(cur, data.getULEB128(cur));
+    if (!cur)
+      break;
+    if (cls.empty())
+      return malformed("vtable of symbol " + Twine(symIndex) +
+                       " has an empty class");
+    Expected<COFFSymbolRef> sym = coffObj->getSymbol(symIndex);
+    if (!sym || symIndex >= symbols.size()) {
+      consumeError(sym.takeError());
+      return malformed("vtable of symbol " + Twine(symIndex) +
+                       ", which does not exist");
+    }
+    auto *d = dyn_cast_or_null<DefinedRegular>(symbols[symIndex]);
+    if (!d)
+      continue;
+    vtables.push_back(
+        {d, offset, cls.str(), base.str(), sym->isSectionDefinition()});
+  }
+  if (Error e = cur.takeError()) {
+    vtables.clear();
     Err(symtab.ctx) << this
                     << ": .llvm_link_records is malformed: " << std::move(e);
     return false;
@@ -951,6 +1001,12 @@ ArrayRef<ObjFile::LinkPin> ObjFile::getLinkPins() const {
   if (!linkRecords)
     return {};
   return linkRecords->pins;
+}
+
+ArrayRef<ObjFile::LinkVTable> ObjFile::getLinkVTables() const {
+  if (!linkRecords)
+    return {};
+  return linkRecords->vtables;
 }
 
 SectionChunk *ObjFile::readSection(uint32_t sectionNumber,

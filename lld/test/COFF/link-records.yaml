@@ -18,8 +18,8 @@
 # RUN: yaml2obj -DDATA=4C4C524301000300 %s -o %t.lists.obj
 # RUN: lld-link -entry:main -subsystem:console -out:%t.exe %t.lists.obj
 
-## A group of the critical kind 9.
-# RUN: yaml2obj -DDATA=4C4C5243010014010009020001 %s -o %t.critical.obj
+## A group of the critical kind 11, which is not assigned.
+# RUN: yaml2obj -DDATA=4C4C524301001401000B020001 %s -o %t.critical.obj
 # RUN: not lld-link -entry:main -subsystem:console -out:%t.exe \
 # RUN:   %t.critical.obj 2>&1 | FileCheck --check-prefix=CRITICAL %s
 
@@ -29,7 +29,7 @@
 # RUN: lld-link -entry:main -subsystem:console -out:%t.exe %t.skip.obj \
 # RUN:   %t.critical.lib
 
-# CRITICAL: error: {{.*}}.critical.obj: .llvm_link_records has a record of critical kind 9, which this linker does not support; link the object with a newer linker
+# CRITICAL: error: {{.*}}.critical.obj: .llvm_link_records has a record of critical kind 11, which this linker does not support; link the object with a newer linker
 
 ## Version 2.
 # RUN: yaml2obj -DDATA=4C4C52430200 %s -o %t.version.obj
