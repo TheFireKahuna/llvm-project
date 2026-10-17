@@ -202,6 +202,14 @@ static bool isFinalInImage(BitcodeFile &f, const lto::InputFile::Symbol &objSym,
   return isDefinedInImage(sym);
 }
 
+// The import that offers what objSym defines: that of a thread-local
+// variable's record, or else that of the definition.
+static Symbol *findOffer(BitcodeFile &f, const lto::InputFile::Symbol &objSym,
+                         Symbol *sym) {
+  return f.symtab.find(
+      ("__imp_" + sym->getName() + (objSym.isTLS() ? "$tls" : "")).str());
+}
+
 // Returns whether a DLL the image imports from offers the COMDAT data that
 // objSym defines, whose instance preempts the definition after LTO.
 static bool isOfferedWeakData(BitcodeFile &f,
@@ -212,8 +220,7 @@ static bool isOfferedWeakData(BitcodeFile &f,
       objSym.getVisibility() != GlobalValue::DefaultVisibility ||
       !isShareableVagueName(sym->getName()))
     return false;
-  auto *imp = dyn_cast_or_null<DefinedImportData>(
-      f.symtab.find(("__imp_" + sym->getName()).str()));
+  auto *imp = dyn_cast_or_null<DefinedImportData>(findOffer(f, objSym, sym));
   return imp && !f.symtab.ignoresOffersOf(imp);
 }
 
@@ -245,8 +252,7 @@ static bool isOfferedByImage(BitcodeFile &f,
          !f.symtab.isEC() && !objSym.isUndefined() &&
          objSym.getComdatIndex() != -1 &&
          objSym.getVisibility() == GlobalValue::DefaultVisibility &&
-         (objSym.isExecutable() ? !objSym.canBeOmittedFromSymbolTable()
-                                : !objSym.isTLS()) &&
+         (!objSym.isExecutable() || !objSym.canBeOmittedFromSymbolTable()) &&
          isShareableVagueName(sym->getName());
 }
 
@@ -274,7 +280,7 @@ static bool isPreemptibleInImage(BitcodeFile &f,
     return config.bsymbolic != B::Functions &&
            !objSym.canBeOmittedFromSymbolTable() &&
            !isOfferedFunction(f, objSym, sym);
-  return !objSym.isTLS();
+  return true;
 }
 
 void BitcodeCompiler::add(BitcodeFile &f) {
@@ -317,8 +323,7 @@ void BitcodeCompiler::add(BitcodeFile &f) {
         continue;
       DefinedImportData *imp = nullptr;
       if (sym->getFile() == &f && isOfferedWeakData(f, objSym, sym))
-        imp = cast<DefinedImportData>(
-            f.symtab.find(("__imp_" + sym->getName()).str()));
+        imp = cast<DefinedImportData>(findOffer(f, objSym, sym));
       if (!imp || (offeredComdats[c] &&
                    !offeredComdats[c]->getDLLName().equals_insensitive(
                        imp->getDLLName()))) {
@@ -347,9 +352,8 @@ void BitcodeCompiler::add(BitcodeFile &f) {
                                          !offeredComdats.empty() &&
                                          offeredComdats[c]) {
       r.Prevailing = false;
-      preemptedSyms.emplace_back(&f.symtab, sym,
-                                 cast<DefinedImportData>(f.symtab.find(
-                                     ("__imp_" + sym->getName()).str())));
+      preemptedSyms.emplace_back(
+          &f.symtab, sym, cast<DefinedImportData>(findOffer(f, objSym, sym)));
       continue;
     }
     // Preempted after LTO, offered data is kept, and the references to it

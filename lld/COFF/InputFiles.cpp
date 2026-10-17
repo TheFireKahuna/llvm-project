@@ -1540,13 +1540,11 @@ std::optional<Symbol *> ObjFile::createDefined(
       c->sym = cast<DefinedRegular>(leader);
       c->selection = selection;
       cast<DefinedRegular>(leader)->data = &c->repl;
-      // Native thread-local data cannot be imported, and a guard follows the
-      // variable it guards.
+      // A guard follows the variable it guards.
       if (symtab.ctx.config.importSlots && sym.isExternal() &&
           selection != IMAGE_COMDAT_SELECT_NODUPLICATES &&
           !(c->header->Characteristics &
             (IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_DISCARDABLE)) &&
-          !c->getSectionName().starts_with(".tls") &&
           isShareableVagueName(leader->getName()) &&
           !leader->getName().starts_with("_ZGV"))
         symtab.weakData.push_back(leader);
@@ -2080,7 +2078,7 @@ void BitcodeFile::parse() {
         if (symtab.ctx.config.importSlots && comdat[comdatIndex].second &&
             obj->getComdatTable()[comdatIndex].second !=
                 Comdat::NoDeduplicate &&
-            !objSym.isExecutable() && !objSym.isTLS() &&
+            !objSym.isExecutable() &&
             objSym.getVisibility() == GlobalValue::DefaultVisibility &&
             isShareableVagueName(symName) && !symName.starts_with("_ZGV"))
           symtab.weakData.push_back(sym);
@@ -2096,6 +2094,8 @@ void BitcodeFile::parse() {
     symbols.push_back(sym);
     if (objSym.isUsed())
       symtab.ctx.config.gcroot.push_back(sym);
+    if (objSym.isTLS() && !objSym.isUndefined())
+      symtab.threadLocalBitcodeData.insert(sym);
   }
   directives = saver.save(obj->getCOFFLinkerOpts());
 }

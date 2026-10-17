@@ -41,6 +41,7 @@ class LazyArchive;
 class SameAddressThunkARM64EC;
 class SectionChunk;
 class Symbol;
+class ThreadLocalRecordChunk;
 
 // This data structure is instantiated for each -wrap option.
 struct WrappedSymbol {
@@ -128,6 +129,37 @@ public:
   // loadLocalImportMembers and preemptWeakData visit instead of the whole
   // table.
   std::vector<Symbol *> weakData;
+  // The thread-local variables that bitcode defines, which no section shows
+  // to be thread-local before LTO.
+  llvm::DenseSet<Symbol *> threadLocalBitcodeData;
+
+  // Whether s is a thread-local variable, which code reaches through its
+  // record where another image may define it, and which is shared along
+  // import paths under its record's name.
+  bool isThreadLocal(Symbol *s) const;
+  // The name under which the vague entity s is shared along import paths.
+  StringRef getSharedName(Symbol *s);
+  // The name under which the guard of the vague variable d is shared.
+  StringRef getSharedGuardName(Symbol *d);
+  // The vague entity shared under name: the thread-local variable whose
+  // record has that name, where the image writes the record, or else the
+  // symbol of that name.
+  Symbol *findVagueEntity(StringRef name);
+
+  // Under -import-slots, the record of the thread-local variable var through
+  // which code reaches the variable where another image may define it: the
+  // one an input defines, or else one the image writes, where a reference, an
+  // export or an offer needs one. Reports an error and returns null if the
+  // image cannot write it.
+  Defined *getThreadLocalRecord(DefinedRegular *var);
+  // The thread-local variable whose record the image writes as s, if any.
+  DefinedRegular *getRecordVariable(Symbol *s);
+  // Keeps a record that the image writes, which the link needs once liveness
+  // is decided.
+  void keepThreadLocalRecord(Defined *record);
+  // The records the image writes, which it keeps if something live refers to
+  // them.
+  std::vector<ThreadLocalRecordChunk *> threadLocalRecords;
 
   // Under -import-slots, makes each COMDAT data definition that an import
   // library offers the DLL's instance, as an ELF shared object's definition
@@ -192,11 +224,12 @@ public:
   // Under -import-slots in a DLL, whether s is one of the vague entities the
   // DLL offers whose instance another image may preempt at run time, as an ELF
   // shared object's own references to its default-visibility data go through
-  // its GOT: mutable data, with the other external symbols of its group and
-  // its guard, and functions whose addresses are significant. The DLL's own
+  // its GOT: data, with the other external symbols of its group and its
+  // guard, and functions whose addresses are significant. The DLL's own
   // references reach such an entity through cells its fill writes from the
-  // executable's table, unless -Bsymbolic keeps them local. Immutable data is
-  // read locally, and calls stay direct.
+  // executable's table, unless -Bsymbolic keeps them local. A thread-local
+  // variable is preemptible with its record, which s may be. Calls stay
+  // direct.
   bool isPreemptibleVagueEntity(Symbol *s);
   std::optional<llvm::DenseSet<Symbol *>> preemptibleVagueEntities;
 

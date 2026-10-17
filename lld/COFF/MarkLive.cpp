@@ -83,6 +83,14 @@ void markLive(COFFLinkerContext &ctx) {
     } else if (isa<DefinedSynthetic>(b)) {
       for (SectionChunk *c : runChunks.lookup(b))
         enqueue(c);
+      // A thread-local variable's record keeps the variable and its guard.
+      if (auto *c = dyn_cast_or_null<ThreadLocalRecordChunk>(b->getChunk());
+          c && !c->live) {
+        c->live = true;
+        addSym(c->var);
+        addSym(c->guard);
+        addSym(c->index);
+      }
     }
   };
 

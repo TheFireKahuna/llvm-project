@@ -3709,22 +3709,33 @@ void ImportSlotContents::createOverrideCellFill() {
   };
   // Each live entity the DLL keeps preemptible has a pointer that its offer
   // table names to the search of a DLL loaded later, made here where no
-  // import-form reference of its own made one.
+  // import-form reference of its own made one. A thread-local variable's
+  // instance is its record.
   ctx.symtab.isPreemptibleVagueEntity(nullptr); // which computes the set
   if (!ctx.symtab.preemptibleVagueEntities->empty()) {
     DenseSet<Defined *> pointed;
     for (Chunk *c : ctx.symtab.localImportChunks)
       if (auto *li = cast<LocalImportChunk>(c); !li->vagueEntity.empty())
         pointed.insert(li->getTarget());
-    std::vector<DefinedRegular *> entities;
-    for (Symbol *s : *ctx.symtab.preemptibleVagueEntities)
-      if (auto *d = dyn_cast<DefinedRegular>(s);
-          d && d->isLive() && !pointed.contains(d))
-        entities.push_back(d);
-    llvm::sort(entities, [](DefinedRegular *a, DefinedRegular *b) {
+    std::vector<Defined *> entities;
+    for (Symbol *s : *ctx.symtab.preemptibleVagueEntities) {
+      auto *d = dyn_cast<DefinedRegular>(s);
+      if (!d || !d->isLive())
+        continue;
+      Defined *instance = d;
+      if (ctx.symtab.isThreadLocal(d)) {
+        instance = ctx.symtab.getThreadLocalRecord(d);
+        if (!instance)
+          continue;
+        ctx.symtab.keepThreadLocalRecord(instance);
+      }
+      if (!pointed.contains(instance))
+        entities.push_back(instance);
+    }
+    llvm::sort(entities, [](Defined *a, Defined *b) {
       return a->getName() < b->getName();
     });
-    for (DefinedRegular *d : entities) {
+    for (Defined *d : entities) {
       auto *li = make<LocalImportChunk>(ctx, d);
       li->vagueEntity = d->getName();
       ctx.symtab.localImportChunks.push_back(li);
@@ -3870,11 +3881,15 @@ void ImportSlotContents::createNamedCellFill() {
     DenseSet<Symbol *> vague;
     vague.insert_range(ctx.symtab.weakData);
     vague.insert_range(ctx.symtab.weakFunctions);
-    for (const Export &e : ctx.symtab.exports)
-      if (auto *d = dyn_cast_or_null<DefinedRegular>(e.sym);
-          d && d->isLive() && vague.contains(d) &&
+    for (const Export &e : ctx.symtab.exports) {
+      // A thread-local variable's instance is its record.
+      auto *d = dyn_cast_or_null<DefinedRegular>(e.sym);
+      if (DefinedRegular *var = ctx.symtab.getRecordVariable(e.sym))
+        d = var;
+      if (d && d->isLive() && vague.contains(d) &&
           isShareableVagueName(d->getName()))
-        offer(e.exportName, nullptr, d);
+        offer(e.exportName, nullptr, cast<Defined>(e.sym));
+    }
     if (!offers.empty())
       vagueOfferTable = make<VagueOfferTableChunk>(
           std::move(offers), std::vector<uint64_t>(), /*direct=*/true);

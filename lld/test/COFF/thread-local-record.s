@@ -3,8 +3,8 @@
 ## an image that reaches the variable by its section-relative offset cannot
 ## link against it: the undefined symbol's note names the record the import
 ## library provides, and the reference to a DLL that did export the variable
-## cannot name a section of another image. A thread-local variable has an
-## instance per image, so a link never offers its record or init function.
+## cannot name a section of another image. A link offers a vague thread-local
+## variable through its record, never the variable or its init function.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium lib.s -o lib.obj
@@ -25,10 +25,10 @@
 
 # RUN: lld-link -import-slots -dll -noentry vague.obj -out:vague.dll
 # RUN: llvm-readobj --coff-exports vague.dll | FileCheck --check-prefix=OFFERS %s
-# OFFERS-NOT: Name: _ZN1SIiE1xE$tls
 # OFFERS-NOT: Name: _ZTHN1SIiE1xE
+# OFFERS-NOT: Name: _ZN1SIiE1xE{{$}}
+# OFFERS:     Name: _ZN1SIiE1xE$tls
 # OFFERS:     Name: _ZN1SIiE1yE
-# OFFERS-NOT: Name: _ZN1SIiE1xE$tls
 # OFFERS-NOT: Name: _ZTHN1SIiE1xE
 
 #--- lib.s

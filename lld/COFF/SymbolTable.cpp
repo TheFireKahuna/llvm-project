@@ -367,9 +367,9 @@ static bool isLazyImport(Symbol *s) {
 bool isShareableVagueName(StringRef name) {
   // Vtables and type descriptors are bound by other rules, and data that MSVC
   // mangles keeps the per-image copies its code expects. A thread-local
-  // variable has an instance per image, which its record, init function and
-  // wrapper follow.
-  if (name.starts_with("?") || name.starts_with(".") || name.ends_with("$tls"))
+  // variable is shared through its record, and its init function and wrapper
+  // stay per image.
+  if (name.starts_with("?") || name.starts_with("."))
     return false;
   return !(name.size() > 3 && name.starts_with("_ZT") &&
            StringRef("VTCISHW").contains(name[3]));
@@ -428,13 +428,87 @@ static void collectWeakFunctions(ObjFile *file,
   consumeError(cur.takeError());
 }
 
-// The name of the guard variable of the variable named name: GV followed by
-// the variable's name, with the length prefix of a source name that the
-// Itanium ABI leaves unmangled (_ZGV2iv for iv).
-static std::string getGuardName(StringRef name) {
+// The Itanium ABI's special name kind, such as GV, of the variable named
+// name: kind followed by the variable's name, with the length prefix of a
+// source name that the ABI leaves unmangled (_ZGV2iv for iv).
+static std::string getSpecialName(StringRef kind, StringRef name) {
   if (name.consume_front("_Z"))
-    return ("_ZGV" + name).str();
-  return ("_ZGV" + Twine(name.size()) + name).str();
+    return ("_Z" + kind + name).str();
+  return ("_Z" + kind + Twine(name.size()) + name).str();
+}
+
+// The name of the guard variable of the variable named name.
+static std::string getGuardName(StringRef name) {
+  return getSpecialName("GV", name);
+}
+
+bool SymbolTable::isThreadLocal(Symbol *s) const {
+  if (auto *d = dyn_cast_or_null<DefinedRegular>(s);
+      d && isa<ObjFile>(d->getFile()))
+    return d->getChunk()->getSectionName().starts_with(".tls");
+  return threadLocalBitcodeData.contains(s);
+}
+
+StringRef SymbolTable::getSharedName(Symbol *s) {
+  if (isThreadLocal(s))
+    return saver().save(s->getName() + "$tls");
+  return s->getName();
+}
+
+// The name under which the guard of the vague variable d is shared.
+StringRef SymbolTable::getSharedGuardName(Symbol *d) {
+  std::string name = getGuardName(d->getName());
+  if (isThreadLocal(d))
+    name += "$tls";
+  return saver().save(name);
+}
+
+Symbol *SymbolTable::findVagueEntity(StringRef name) {
+  Symbol *s = find(name);
+  if (!isa_and_nonnull<Defined>(s) && name.ends_with("$tls"))
+    if (Symbol *var = find(name.drop_back(strlen("$tls"))); isThreadLocal(var))
+      return var;
+  return s;
+}
+
+DefinedRegular *SymbolTable::getRecordVariable(Symbol *s) {
+  auto *d = dyn_cast_or_null<DefinedSynthetic>(s);
+  auto *c =
+      d ? dyn_cast_or_null<ThreadLocalRecordChunk>(d->getChunk()) : nullptr;
+  return c ? cast<DefinedRegular>(c->var) : nullptr;
+}
+
+Defined *SymbolTable::getThreadLocalRecord(DefinedRegular *var) {
+  StringRef name = saver().save(var->getName() + "$tls");
+  if (auto *d = dyn_cast_or_null<Defined>(find(name)))
+    return d;
+  auto *index = dyn_cast_or_null<Defined>(findUnderscore("_tls_index"));
+  if (!index) {
+    Err(ctx) << "the record of thread-local variable " << printSymbol(var)
+             << " needs the image's TLS index, _tls_index, which nothing "
+                "defines";
+    return nullptr;
+  }
+  // The byte that says on a thread whether the variable's initialization has
+  // begun there, under the name the Itanium ABI gives the variable's guard. A
+  // variable without one has no init function, which a reader that tests the
+  // guard would call, and so is never tested; its record names the variable
+  // itself.
+  Defined *guard = var;
+  if (auto *g = dyn_cast_or_null<Defined>(find(getGuardName(var->getName())))) {
+    guard = g;
+  } else if (isa_and_nonnull<Defined>(
+                 find(getSpecialName("TH", var->getName())))) {
+    Err(ctx) << var->getFile() << ": the record of thread-local variable "
+             << printSymbol(var)
+             << " needs the byte that guards its initialization, which "
+                "nothing names "
+             << getGuardName(var->getName());
+    return nullptr;
+  }
+  auto *c = make<ThreadLocalRecordChunk>(ctx, index, var, guard);
+  threadLocalRecords.push_back(c);
+  return cast<Defined>(addSynthetic(name, c));
 }
 
 // Whether a data definition in a COMDAT has default visibility, so that a
@@ -831,6 +905,21 @@ bool SymbolTable::loadLocalImportMembers() {
     Symbol *l = find(name);
     if (l && l->isLazy() && !l->pendingArchiveLoad)
       lazies.push_back(l);
+    // The record of a thread-local variable, which the image writes where no
+    // input defines it, needs the variable and the image's TLS index, which
+    // the reference loads, as a direct reference to the variable would.
+    if (!l && name.ends_with("$tls")) {
+      if (Symbol *var = find(name.drop_back(strlen("$tls")))) {
+        if (var->isLazy() && !var->pendingArchiveLoad)
+          lazies.push_back(var);
+        if (Symbol *index = find(mangle("_tls_index"));
+            !index || (index->isLazy() && !index->pendingArchiveLoad)) {
+          addUndefined(mangle("_tls_index"));
+          referenced = true;
+        }
+      }
+      return false;
+    }
     // /alternatename defines X only when something references X, so
     // __imp_X references it, as a direct reference would; when the alternate
     // is an import, __imp_X is that import's pointer.
@@ -891,9 +980,9 @@ bool SymbolTable::loadLocalImportMembers() {
     SmallVector<DefinedRegular *, 4> members;
     for (Symbol *sym : weakData) {
       auto *d = dyn_cast<DefinedRegular>(sym);
-      if (!d || !isDefaultVisibility(d) || !addOffer(sym->getName()))
+      if (!d || !isDefaultVisibility(d) || !addOffer(getSharedName(d)))
         continue;
-      addOffer(getGuardName(d->getName()));
+      addOffer(getSharedGuardName(d));
       if (!isa<ObjFile>(d->getFile()))
         continue;
       chunks.clear();
@@ -901,7 +990,7 @@ bool SymbolTable::loadLocalImportMembers() {
       collectComdatGroup(d, chunks, members);
       for (DefinedRegular *m : members)
         if (m != d)
-          addOffer(m->getName());
+          addOffer(getSharedName(m));
     }
   }
 
@@ -1015,8 +1104,8 @@ void SymbolTable::bindImportsToDefinitions() {
     if (&file->symtab != this || !imp || find(imp->getName()) != imp)
       continue;
     StringRef name = imp->getName();
-    auto *d = dyn_cast_or_null<DefinedRegular>(
-        find(name.drop_front(strlen("__imp_"))));
+    StringRef target = name.drop_front(strlen("__imp_"));
+    auto *d = dyn_cast_or_null<DefinedRegular>(findVagueEntity(target));
     if (!d || !isa<ObjFile>(d->getFile()))
       continue;
     // A definition the DLL offers is the program's only if the executable
@@ -1053,13 +1142,17 @@ void SymbolTable::bindImportsToDefinitions() {
     if (leader && leader->isCOMDAT && isShareableVagueName(leader->getName()) &&
         isDefaultVisibility(leader) && !ignoresOffersOf(imp))
       continue;
-    Log(ctx) << "Binding " << name << " to " << printSymbol(d) << " in "
+    // A thread-local variable's import binds to the record the image writes.
+    Defined *bound = d;
+    if (d->getName() != target && !(bound = getThreadLocalRecord(d)))
+      continue;
+    Log(ctx) << "Binding " << name << " to " << printSymbol(bound) << " in "
              << d->getFile();
     // The import keeps a symbol of its own, which nothing in the link names.
     file->impSym = make<DefinedImportData>(name, file, file->location);
     if (auto *thunk = dyn_cast_or_null<DefinedImportThunk>(file->thunkSym))
       thunk->wrappedSym = file->impSym;
-    replaceSymbol<DefinedLocalImport>(imp, ctx, name, d);
+    replaceSymbol<DefinedLocalImport>(imp, ctx, name, bound);
     localImportChunks.push_back(cast<DefinedLocalImport>(imp)->getChunk());
   }
 }
@@ -1092,7 +1185,8 @@ void SymbolTable::preemptWeakData() {
     if (!d || !seen.insert(d).second || !isa<ObjFile>(d->getFile()) ||
         !d->getChunk()->live || !isDefaultVisibility(d))
       continue;
-    auto *imp = dyn_cast_or_null<DefinedImportData>(impSymbol(d->getName()));
+    auto *imp =
+        dyn_cast_or_null<DefinedImportData>(impSymbol(getSharedName(d)));
     if (!imp)
       continue;
 
@@ -1102,7 +1196,8 @@ void SymbolTable::preemptWeakData() {
     // own initialization of the DLL's instance, or keep a second guard.
     imports.clear();
     for (DefinedRegular *m : members) {
-      auto *mi = dyn_cast_or_null<DefinedImportData>(impSymbol(m->getName()));
+      auto *mi =
+          dyn_cast_or_null<DefinedImportData>(impSymbol(getSharedName(m)));
       if (mi && mi->getDLLName().equals_insensitive(imp->getDLLName())) {
         imports.push_back(mi);
         continue;
@@ -1177,10 +1272,15 @@ void SymbolTable::addOffers() {
   for (Export &e : exports)
     exported.insert(e.extName.empty() ? e.name : e.extName);
   auto offer = [&](Symbol *s, bool data, DefinedImportData *forward) {
-    if (!exported.insert(s->getName()).second)
+    // A forwarded offer has the name the DLL offers it under, which is a
+    // thread-local variable's record's.
+    StringRef name =
+        forward ? forward->file->impSym->getName().drop_front(strlen("__imp_"))
+                : s->getName();
+    if (!exported.insert(name).second)
       return;
     Export e;
-    e.name = s->getName();
+    e.name = name;
     e.data = data;
     e.source = ExportSource::ExportAll;
     if (forward) {
@@ -1194,7 +1294,8 @@ void SymbolTable::addOffers() {
   };
 
   // The data with default visibility in a COMDAT that the image keeps, with
-  // the other external symbols of its group and its guard.
+  // the other external symbols of its group and its guard; a thread-local
+  // variable's record, which the image then keeps too.
   SmallVector<SectionChunk *, 4> chunks;
   SmallVector<DefinedRegular *, 4> members;
   for (Symbol *sym : weakData) {
@@ -1203,8 +1304,14 @@ void SymbolTable::addOffers() {
         !isDefaultVisibility(d))
       continue;
     collectWeakDataGroup(d, chunks, members, /*liveOnly=*/true);
-    for (DefinedRegular *m : members)
-      offer(m, /*data=*/true, nullptr);
+    for (DefinedRegular *m : members) {
+      if (!isThreadLocal(m)) {
+        offer(m, /*data=*/true, nullptr);
+      } else if (Defined *record = getThreadLocalRecord(m)) {
+        keepThreadLocalRecord(record);
+        offer(record, /*data=*/true, nullptr);
+      }
+    }
   }
   // The functions whose addresses are significant.
   for (Symbol *sym : weakFunctions)
@@ -1228,7 +1335,7 @@ void SymbolTable::addOffers() {
       continue;
     collectWeakDataGroup(d, chunks, members, /*liveOnly=*/false);
     for (DefinedRegular *m : members)
-      if (DefinedImportData *imp = getOffer(m->getName()))
+      if (DefinedImportData *imp = getOffer(getSharedName(m)))
         offer(m, /*data=*/true, imp);
   }
   for (auto &[f, imp] : offeredFunctions)
@@ -1258,13 +1365,11 @@ bool SymbolTable::isPreemptibleVagueEntity(Symbol *s) {
       if (!d || !isa<ObjFile>(d->getFile()) || !isDefaultVisibility(d))
         continue;
       collectWeakDataGroup(d, chunks, members, /*liveOnly=*/false);
-      // Thread-local data has a record of its own instead. Immutable data is
-      // preemptible too, since its address is the program's one; its value
-      // reads go through the cell with its address-takes, which nothing yet
-      // tells apart.
-      for (DefinedRegular *m : members)
-        if (!m->getChunk()->getSectionName().starts_with(".tls"))
-          preemptibleVagueEntities->insert(m);
+      // Immutable data is preemptible too, since its address is the program's
+      // one; its value reads go through the cell with its address-takes,
+      // which nothing yet tells apart. A thread-local variable is preempted
+      // with its record.
+      preemptibleVagueEntities->insert_range(members);
     }
     if (config.bsymbolic != B::Functions)
       for (Symbol *sym : weakFunctions)
@@ -1272,7 +1377,20 @@ bool SymbolTable::isPreemptibleVagueEntity(Symbol *s) {
             d && !offeredFunctions.contains(d))
           preemptibleVagueEntities->insert(d);
   }
+  if (DefinedRegular *var = getRecordVariable(s))
+    s = var;
   return preemptibleVagueEntities->contains(s);
+}
+
+void SymbolTable::keepThreadLocalRecord(Defined *record) {
+  auto *c = dyn_cast_or_null<ThreadLocalRecordChunk>(record->getChunk());
+  if (!c)
+    return;
+  c->live = true;
+  // A guard that liveness discarded is set by nothing live, and so is never
+  // tested.
+  if (auto *g = dyn_cast<DefinedRegular>(c->guard); g && !g->isLive())
+    c->guard = c->var;
 }
 
 void SymbolTable::bindOfferedFunctions() {
@@ -1534,7 +1652,8 @@ bool SymbolTable::bindVagueSiblings() {
   auto keeps = [&](DefinedRegular *d) {
     if (!d || !isa<ObjFile>(d->getFile()) || !isDefaultVisibility(d))
       return false;
-    auto *imp = dyn_cast_or_null<DefinedImportData>(impSymbol(d->getName()));
+    auto *imp =
+        dyn_cast_or_null<DefinedImportData>(impSymbol(getSharedName(d)));
     return !imp || ignoresOffersOf(imp);
   };
   SmallVector<SectionChunk *, 4> chunks;
@@ -1543,7 +1662,7 @@ bool SymbolTable::bindVagueSiblings() {
     if (auto *d = dyn_cast<DefinedRegular>(sym); keeps(d)) {
       collectWeakDataGroup(d, chunks, members, /*liveOnly=*/false);
       for (DefinedRegular *m : members)
-        kept.insert(m->getName());
+        kept.insert(getSharedName(m));
     }
   for (Symbol *sym : weakFunctions)
     if (auto *d = dyn_cast<DefinedRegular>(sym); keeps(d))
@@ -1553,7 +1672,14 @@ bool SymbolTable::bindVagueSiblings() {
   for (auto &[name, dll] : chooseVagueOwners(ctx, kept)) {
     StringRef entity = saver().save(name);
     if (dll.empty()) {
-      auto *d = dyn_cast_or_null<Defined>(find(entity));
+      auto *d = dyn_cast_or_null<Defined>(findVagueEntity(entity));
+      // A thread-local variable's instance is its record, which the pointer
+      // keeps.
+      if (d && isThreadLocal(d)) {
+        d = getThreadLocalRecord(cast<DefinedRegular>(d));
+        if (d)
+          ctx.config.gcroot.push_back(d);
+      }
       if (!d)
         continue;
       auto *pointer = make<LocalImportChunk>(ctx, d);
@@ -1832,6 +1958,21 @@ void SymbolTable::reportUnresolvable() {
         continue;
       }
     }
+    // The record of a thread-local variable that the link defines, which the
+    // image writes once LTO is done, and which needs the variable and its
+    // guard.
+    if (ctx.config.importSlots) {
+      StringRef record = name;
+      record.consume_front("__imp_");
+      Symbol *var = record.consume_back("$tls") ? find(record) : nullptr;
+      if (Defined *def = var ? var->getDefined() : nullptr;
+          def && isThreadLocal(def)) {
+        def->isUsedInRegularObj = true;
+        if (Symbol *guard = find(getGuardName(record)))
+          guard->isUsedInRegularObj = true;
+        continue;
+      }
+    }
     if (name.contains("_PchSym_"))
       continue;
     if ((ctx.config.autoImport || ctx.config.importSlots) && impSymbol(name))
@@ -1948,6 +2089,21 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
       }
       aliases.push_back(undef);
       continue;
+    }
+
+    // Under -import-slots, the record of a thread-local variable that the
+    // image defines, which code reaches through its import pointer where
+    // another image may define the variable, is the one the image writes.
+    if (ctx.config.importSlots) {
+      StringRef record = name;
+      record.consume_front("__imp_");
+      auto *var = record.ends_with("$tls")
+                      ? dyn_cast_or_null<DefinedRegular>(
+                            find(record.drop_back(strlen("$tls"))))
+                      : nullptr;
+      if (var && isThreadLocal(var) && getThreadLocalRecord(var) &&
+          isa<Defined>(sym))
+        continue;
     }
 
     // If we can resolve a symbol by removing __imp_ prefix, do that.

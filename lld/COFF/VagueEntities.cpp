@@ -207,10 +207,11 @@ readRecord(COFFLinkerContext &ctx, MemoryBufferRef mb, Closure &closure) {
 }
 
 // The entities that the image keeps and may share: data with default
-// visibility in a COMDAT that it keeps and no DLL's instance preempted, and
-// functions whose addresses are significant and not a DLL's, from objects
-// that list what has default visibility. Names that MSVC mangles keep the
-// per-image copies their code expects.
+// visibility in a COMDAT that it keeps and no DLL's instance preempted, under
+// its record's name for a thread-local variable, and functions whose
+// addresses are significant and not a DLL's, from objects that list what has
+// default visibility. Names that MSVC mangles keep the per-image copies their
+// code expects.
 static std::vector<std::string> getKeptEntities(SymbolTable &symtab) {
   std::vector<std::string> kept;
   auto add = [&](Symbol *s) {
@@ -219,7 +220,7 @@ static std::vector<std::string> getKeptEntities(SymbolTable &symtab) {
     if (!file || !d->getChunk()->live || !file->listsBindings() ||
         !file->hasDefaultVisibility(d) || !isShareableVagueName(d->getName()))
       return;
-    kept.push_back(d->getName().str());
+    kept.push_back(symtab.getSharedName(d).str());
   };
   for (Symbol *s : symtab.weakData)
     add(s);
@@ -456,7 +457,7 @@ void checkVagueEntities(COFFLinkerContext &ctx, StringRef imageName) {
   // entities two images keep.
   for (const std::string &entity : closure.images[self].entities)
     if (!config.dll ||
-        ctx.symtab.isPreemptibleVagueEntity(ctx.symtab.find(entity)))
+        ctx.symtab.isPreemptibleVagueEntity(ctx.symtab.findVagueEntity(entity)))
       closure.images[self].preemptible.push_back(entity);
 
   // Which images each image reaches through its imports.

@@ -1434,6 +1434,16 @@ void Writer::createMiscChunks() {
       for (Chunk *c : symtab.localImportChunks)
         rdataSec->addChunk(c);
     }
+    // The records of thread-local variables that the image writes, which it
+    // keeps if something live refers to them, laid out by their variables'
+    // names rather than in the order of a walk of the symbol table.
+    llvm::stable_sort(symtab.threadLocalRecords, [](Chunk *a, Chunk *b) {
+      return cast<ThreadLocalRecordChunk>(a)->var->getName() <
+             cast<ThreadLocalRecordChunk>(b)->var->getName();
+    });
+    for (ThreadLocalRecordChunk *c : symtab.threadLocalRecords)
+      if (c->live)
+        rdataSec->addChunk(c);
   });
 
   // The thunks of forwarded override slots that shuffle an argument are code.

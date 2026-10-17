@@ -60,7 +60,8 @@ public:
     SectionECKind,
     OtherKind,
     ImportThunkKind,
-    ECExportThunkKind
+    ECExportThunkKind,
+    ThreadLocalRecordKind
   };
   Kind kind() const { return chunkKind; }
 
@@ -816,6 +817,31 @@ public:
 
 private:
   Defined *sym;
+  COFFLinkerContext &ctx;
+};
+
+// The record through which code reaches a thread-local variable that another
+// image may define, written by the linker where no object defines it: the
+// address of the image's TLS index, the variable's offset in the image's TLS
+// template, and the offset of the byte that guards its initialization.
+class ThreadLocalRecordChunk : public NonSectionChunk {
+public:
+  ThreadLocalRecordChunk(COFFLinkerContext &ctx, Defined *index, Defined *var,
+                         Defined *guard);
+  static bool classof(const Chunk *c) {
+    return c->kind() == ThreadLocalRecordKind;
+  }
+  size_t getSize() const override { return 16; }
+  void getBaserels(std::vector<Baserel> *res) override;
+  void writeTo(uint8_t *buf) const override;
+
+  Defined *index;
+  Defined *var;
+  Defined *guard;
+  // Whether something live refers to the record, as mark-live finds.
+  bool live;
+
+private:
   COFFLinkerContext &ctx;
 };
 

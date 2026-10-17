@@ -1070,6 +1070,28 @@ LocalImportChunk::LocalImportChunk(COFFLinkerContext &c, Defined *s)
   setAlignment(ctx.config.wordsize);
 }
 
+ThreadLocalRecordChunk::ThreadLocalRecordChunk(COFFLinkerContext &c,
+                                               Defined *index, Defined *var,
+                                               Defined *guard)
+    : NonSectionChunk(ThreadLocalRecordKind), index(index), var(var),
+      guard(guard), live(!c.config.doGC), ctx(c) {
+  setAlignment(8);
+}
+
+void ThreadLocalRecordChunk::getBaserels(std::vector<Baserel> *res) {
+  res->emplace_back(getRVA(), ctx.config.machine);
+}
+
+void ThreadLocalRecordChunk::writeTo(uint8_t *buf) const {
+  auto secRel = [&](Defined *d) -> uint32_t {
+    OutputSection *os = ctx.getOutputSection(d->getChunk());
+    return os ? d->getRVA() - os->getRVA() : 0;
+  };
+  write64le(buf, index->getRVA() + ctx.config.imageBase);
+  write32le(buf + 8, secRel(var));
+  write32le(buf + 12, secRel(guard));
+}
+
 // An absolute address does not move with the image.
 void LocalImportChunk::getBaserels(std::vector<Baserel> *res) {
   if (!isa<DefinedAbsolute>(sym))
