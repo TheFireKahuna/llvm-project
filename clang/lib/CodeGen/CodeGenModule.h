@@ -459,6 +459,11 @@ private:
 
   llvm::MapVector<StringRef, llvm::TrackingVH<llvm::Constant>> Replacements;
 
+  /// The base destructors, defined in another image, that the base destructors
+  /// of these classes forward to rather than alias.
+  llvm::DenseMap<const CXXDestructorDecl *, llvm::GlobalValue *>
+      ForwardedBaseDestructors;
+
   /// List of global values to be replaced with something else. Used when we
   /// want to replace a GlobalValue but can't identify it by its mangled name
   /// anymore (because the name is already taken).
@@ -1704,6 +1709,12 @@ public:
 
   /// Check that class need vector deleting destructor body.
   bool classNeedsVectorDestructor(const CXXRecordDecl *RD);
+
+  /// The base destructor, defined in another image, that the base destructor
+  /// of D's class only forwards to, if any.
+  llvm::GlobalValue *getForwardedBaseDestructor(const CXXDestructorDecl *D) {
+    return ForwardedBaseDestructors.lookup(D);
+  }
 
   bool TryEmitBaseDestructorAsAlias(const CXXDestructorDecl *D);
   void EmitDefinitionAsAlias(GlobalDecl Alias, GlobalDecl Target);
