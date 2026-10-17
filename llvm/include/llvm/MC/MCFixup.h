@@ -44,6 +44,17 @@ enum {
   FirstTargetFixupKind,
 };
 
+/// How an instruction uses the address a fixup gives it, where the code
+/// emitter knows. Object writers that describe instructions to the linker read
+/// it.
+enum class MCFixupUse : uint8_t {
+  Unknown, ///< Not described.
+  Call,    ///< An indirect call through the pointer at the address.
+  Jump,    ///< An indirect jump through the pointer at the address.
+  Load,    ///< A load of the pointer at the address into a register.
+  Address, ///< The address itself, computed into a register.
+};
+
 /// Encode information on a single operation to perform on a byte
 /// sequence (e.g., an encoded instruction) which requires assemble- or run-
 /// time patching.
@@ -74,15 +85,24 @@ class MCFixup {
   /// True if this is a PC-relative fixup. The relocatable expression is
   /// typically resolved When SymB is nullptr and SymA is a local symbol defined
   /// within the current section.
-  bool PCRel = false;
+  bool PCRel : 1;
 
   /// Used by RISC-V style linker relaxation. Whether the fixup is
   /// linker-relaxable.
-  bool LinkerRelaxable = false;
+  bool LinkerRelaxable : 1;
 
-  /// Consider bit fields if we need more flags.
+  /// How the instruction holding the fixup uses its address. The bit-fields
+  /// share one underlying type size so that the Microsoft layout packs them
+  /// into the bytes that follow Kind.
+  uint8_t Use : 3;
+
+  /// The fixup's offset from the start of its instruction, recorded with the
+  /// use.
+  uint8_t InstOffset : 4;
 
 public:
+  MCFixup() : PCRel(false), LinkerRelaxable(false), Use(0), InstOffset(0) {}
+
   static MCFixup create(uint32_t Offset, const MCExpr *Value, MCFixupKind Kind,
                         bool PCRel = false) {
     MCFixup FI;
@@ -104,6 +124,15 @@ public:
   void setPCRel() { PCRel = true; }
   bool isLinkerRelaxable() const { return LinkerRelaxable; }
   void setLinkerRelaxable() { LinkerRelaxable = true; }
+  MCFixupUse getUse() const { return static_cast<MCFixupUse>(Use); }
+  unsigned getInstOffset() const { return InstOffset; }
+  /// Records how the instruction uses the address, and where the fixup lies
+  /// in the instruction.
+  void setUse(MCFixupUse U, unsigned Offset) {
+    assert(Offset < 16 && "an instruction is at most 15 bytes");
+    Use = static_cast<uint8_t>(U);
+    InstOffset = Offset;
+  }
 
   /// Return the generic fixup kind for a value with the given size. It
   /// is an error to pass an unsupported size.
@@ -123,6 +152,10 @@ public:
 
   LLVM_ABI SMLoc getLoc() const;
 };
+
+// Every instruction and data directive with a relocatable operand holds one,
+// so the flags stay within the padding after Kind.
+static_assert(sizeof(MCFixup) == sizeof(void *) + 8, "MCFixup grew");
 
 namespace mc {
 // Check if the fixup kind is a relocation type. Return false if the fixup can

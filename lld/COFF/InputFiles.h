@@ -271,11 +271,37 @@ public:
 
   const coff_section *callgraphSec = nullptr;
 
+  // An instruction site the object's link-only records describe: how the
+  // instruction holding the relocation at offset in a section uses it.
+  struct LinkSite {
+    uint32_t section;
+    uint32_t offset;
+    llvm::COFF::LinkSiteForm form;
+  };
+
+  // True if the object has link-only records.
+  bool hasLinkRecords() const { return linkRecords; }
+
+  // True if the object describes the form of every x86-64 instruction site
+  // that its records must, so that any other REL32 relocation in code against
+  // a symbol that the link may resolve elsewhere is a branch.
+  bool describesSites() const {
+    return linkRecords && linkRecords->describesSites;
+  }
+
   // True if the object's delay-load helper writes a delay-load import address
   // table only while the table is writable.
   bool protectsDelayIat() const {
     return linkRecords && linkRecords->protectsDelayIat;
   }
+
+  // The sites in the section of sc, by offset.
+  ArrayRef<LinkSite> getLinkSites(const SectionChunk *sc) const;
+
+  // The form of the site of a relocation at offset in the section of sc, if
+  // the object describes one.
+  std::optional<llvm::COFF::LinkSiteForm>
+  getLinkSiteForm(const SectionChunk *sc, uint32_t offset) const;
 
   // When using Microsoft precompiled headers, this is the PCH's key.
   // The same key is used by both the precompiled object, and objects using the
@@ -315,6 +341,7 @@ private:
   void initializeSymbols();
   void initializeFlags();
   void readLinkRecords();
+  bool readLinkSites(ArrayRef<uint8_t> payload);
   void initializeDependencies();
   void initializeECThunks();
 
@@ -371,9 +398,12 @@ private:
   // fields; its pins.
   struct LinkRecords {
     const coff_section *sec;
+    bool describesSites = false;
     bool protectsDelayIat = false;
+    std::vector<LinkSite> sites;
   };
   LinkRecords *linkRecords = nullptr;
+
   std::vector<SectionChunk *> resourceChunks;
 
   // CodeView debug info sections.
