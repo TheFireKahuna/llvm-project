@@ -148,7 +148,7 @@ public:
   // The name under which the vague entity s is shared along import paths.
   StringRef getSharedName(Symbol *s);
   // The name under which the guard of the vague variable d is shared.
-  StringRef getSharedGuardName(Symbol *d);
+  std::string getSharedGuardName(Symbol *d);
   // The vague entity shared under name: the thread-local variable whose
   // record has that name, where the image writes the record, or else the
   // symbol of that name.

@@ -462,12 +462,13 @@ StringRef SymbolTable::getSharedName(Symbol *s) {
   return s->getName();
 }
 
-// The name under which the guard of the vague variable d is shared.
-StringRef SymbolTable::getSharedGuardName(Symbol *d) {
+// The name under which the guard of the vague variable d is shared, which
+// only lookups read, so that the link keeps no copy of it.
+std::string SymbolTable::getSharedGuardName(Symbol *d) {
   std::string name = getGuardName(d->getName());
   if (isThreadLocal(d))
     name += "$tls";
-  return saver().save(name);
+  return name;
 }
 
 Symbol *SymbolTable::findVagueEntity(StringRef name) {
