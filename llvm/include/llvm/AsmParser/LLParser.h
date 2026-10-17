@@ -462,9 +462,11 @@ namespace llvm {
     bool parseParamAccessOffset(ConstantRange &Range);
     bool parseOptionalRefs(SmallVectorImpl<ValueInfo> &Refs);
     bool parseTypeIdEntry(unsigned ID);
-    bool parseTypeIdSummary(TypeIdSummary &TIS);
+    bool parseTypeIdSummary(TypeIdSummary &TIS,
+                            std::vector<uint32_t> &MemberTags);
     bool parseTypeIdCompatibleVtableEntry(unsigned ID);
-    bool parseTypeTestResolution(TypeTestResolution &TTRes);
+    bool parseTypeTestResolution(TypeTestResolution &TTRes,
+                                 std::vector<uint32_t> &MemberTags);
     bool parseOptionalWpdResolutions(
         std::map<uint64_t, WholeProgramDevirtResolution> &WPDResMap);
     bool parseWpdRes(WholeProgramDevirtResolution &WPDRes);

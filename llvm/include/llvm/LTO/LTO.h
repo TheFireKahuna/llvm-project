@@ -658,6 +658,10 @@ private:
   // referenced by a shared library not visible to the linker.
   DenseSet<GlobalValue::GUID> DynamicExportSymbols;
 
+  // Whether a module is for Windows Itanium or NT-POSIX, where LowerTypeTests
+  // gives membership tags to functions visible outside the summaries.
+  bool HasKCFIMemberTagTarget = false;
+
   // Diagnostic optimization remarks file
   LLVMRemarkFileHandle DiagnosticOutputFile;
 

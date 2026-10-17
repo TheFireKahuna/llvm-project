@@ -198,12 +198,16 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
   unsigned TypeBytes = 5;
   // The marker is the displacement of a 7-byte nopl, so that the 8 bytes
   // before the hash are a fixed pattern: 0F 1F 80, the marker, and the B8 of
-  // the move. A second type the function carries, which a call through a
-  // member function pointer checks, precedes it.
+  // the move. A second type the function carries precedes it: the type a
+  // call through a member function pointer to a virtual function checks, or
+  // the membership tag LTO gives a function of a type it checks by members.
   ConstantInt *VfnType = nullptr;
   if (Marker) {
     TypeBytes += 7;
-    if (const MDNode *MD = F.getMetadata("kcfi_vfn_type")) {
+    const MDNode *MD = F.getMetadata("kcfi_vfn_type");
+    if (!MD)
+      MD = F.getMetadata("kcfi_member_tag");
+    if (MD) {
       VfnType = mdconst::extract<ConstantInt>(MD->getOperand(0));
       TypeBytes += 4;
     }
@@ -214,6 +218,9 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
   // it tells a linker whether the prefix has a second type.
   if (Marker)
     OutStreamer->emitLabel(FnSym);
+  // A linker tells a membership tag from a second type by the records.
+  if (VfnType && !F.hasMetadata("kcfi_vfn_type"))
+    OutStreamer->emitCOFFKCFIMemberTag(FnSym);
   if (VfnType)
     OutStreamer->emitInt32(MaskKCFIType(VfnType->getZExtValue()));
   if (Marker) {
@@ -353,6 +360,7 @@ void X86AsmPrinter::emitKCFIFastFail() {
       MCInstBuilder(X86::MOV32ri).addReg(X86::ECX).addImm(64), STI);
   OutStreamer->emitInstruction(MCInstBuilder(X86::INT).addImm(0x29), STI);
 }
+
 /// Emits the body of an ordinary, local or vfn KCFI thunk; see the header.
 ///
 /// testl $mask, %reg32; jz mismatch
@@ -409,6 +417,7 @@ void X86AsmPrinter::emitKCFIThunk(const KCFIThunkInfo &I) {
     emitKCFIJcc(Outside, X86::COND_AE);
     EmitCompare();
     EmitTakeTarget();
+    OutStreamer->emitLabel(Outside);
     // The bounds are equal in an image that was not sealed, where no target is
     // in the range and the guard function decides.
     Trap = OutContext.createTempSymbol();
@@ -423,6 +432,106 @@ void X86AsmPrinter::emitKCFIThunk(const KCFIThunkInfo &I) {
     emitKCFIFastFail();
   }
 }
+
+/// Emits the body of a KCFI member thunk; see the header.
+///
+/// leaq __llvm_code_start(%rip), %r10; cmpq %r10, %reg; jb 1f
+/// leaq __llvm_code_end(%rip), %r10; cmpq %r10, %reg; jae 1f
+/// movabsq $type, %r11; cmpq %r11, -8(%reg); jne miss
+/// movabsq $expected, %r11; cmpq %r11, -16(%reg); je 2f   (for each tag)
+/// jmp miss
+/// 2: jmpq *%rax (dispatch) or retq (check)
+/// 1: testl $mask, %reg32; jz miss
+/// movabsq $type, %r11; cmpq %r11, -8(%reg); jne miss
+/// movabsq $expected, %r11; cmpq %r11, -16(%reg); je 3f   (for each tag)
+/// jmp miss
+/// 3: jmpq *guard(%rip)
+///
+/// A local member thunk fails fast on a target outside the range as a local
+/// thunk does.
+void X86AsmPrinter::emitKCFIMemberThunk(const KCFIThunkInfo &I) {
+  const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
+  MCRegister Reg = I.Routine->TargetReg;
+  auto EmitTagCompares = [&](MCSymbol *Hit) {
+    if (I.Type) {
+      OutStreamer->emitInstruction(
+          MCInstBuilder(X86::MOV64ri)
+              .addReg(X86::R11)
+              .addImm(I.Pattern >> 32 | uint64_t(MaskKCFIType(I.Type)) << 32),
+          STI);
+      OutStreamer->emitInstruction(MCInstBuilder(X86::CMP64mr)
+                                       .addReg(Reg)
+                                       .addImm(1)
+                                       .addReg(X86::NoRegister)
+                                       .addImm(-(I.PrefixNops + 8))
+                                       .addReg(X86::NoRegister)
+                                       .addReg(X86::R11),
+                                   STI);
+      emitKCFIJcc(I.Miss, X86::COND_NE);
+    }
+    for (uint32_t Tag : I.Tags) {
+      OutStreamer->emitInstruction(
+          MCInstBuilder(X86::MOV64ri)
+              .addReg(X86::R11)
+              .addImm(MaskKCFIType(Tag) | I.Pattern << 32),
+          STI);
+      OutStreamer->emitInstruction(MCInstBuilder(X86::CMP64mr)
+                                       .addReg(Reg)
+                                       .addImm(1)
+                                       .addReg(X86::NoRegister)
+                                       .addImm(-(I.PrefixNops + 16))
+                                       .addReg(X86::NoRegister)
+                                       .addReg(X86::R11),
+                                   STI);
+      emitKCFIJcc(Hit, X86::COND_E);
+    }
+    OutStreamer->emitInstruction(
+        MCInstBuilder(X86::JMP_1)
+            .addExpr(MCSymbolRefExpr::create(I.Miss, OutContext)),
+        STI);
+  };
+  MCSymbol *Outside = OutContext.createTempSymbol();
+  MCSymbol *Hit = OutContext.createTempSymbol();
+  MCSymbol *GuardHit = OutContext.createTempSymbol();
+  if (I.Local) {
+    emitKCFILea(X86::R10, I.CodeStart);
+    emitKCFILea(X86::R11, I.CodeEnd);
+    emitKCFICmp(Reg, X86::R10);
+    emitKCFIJcc(Outside, X86::COND_B);
+    emitKCFICmp(Reg, X86::R11);
+    emitKCFIJcc(Outside, X86::COND_AE);
+  } else {
+    emitKCFILea(X86::R10, I.CodeStart);
+    emitKCFICmp(Reg, X86::R10);
+    emitKCFIJcc(Outside, X86::COND_B);
+    emitKCFILea(X86::R10, I.CodeEnd);
+    emitKCFICmp(Reg, X86::R10);
+    emitKCFIJcc(Outside, X86::COND_AE);
+  }
+  EmitTagCompares(Hit);
+  OutStreamer->emitLabel(Hit);
+  if (Reg == X86::RAX)
+    OutStreamer->emitInstruction(MCInstBuilder(X86::JMP64r).addReg(X86::RAX),
+                                 STI);
+  else
+    OutStreamer->emitInstruction(MCInstBuilder(X86::RET64), STI);
+  OutStreamer->emitLabel(Outside);
+  MCSymbol *Trap = nullptr;
+  if (I.Local) {
+    Trap = OutContext.createTempSymbol();
+    emitKCFICmp(X86::R10, X86::R11);
+    emitKCFIJcc(Trap, X86::COND_NE);
+  }
+  emitKCFIPageTest(Reg, I.Miss, I.PrefixNops, /*ReadBytes=*/16);
+  EmitTagCompares(GuardHit);
+  OutStreamer->emitLabel(GuardHit);
+  emitKCFIGuardJump(I.Routine->GuardFn);
+  if (Trap) {
+    OutStreamer->emitLabel(Trap);
+    emitKCFIFastFail();
+  }
+}
+
 /// Emits the body of a KCFI scanner, which walks a type's list; see the header.
 ///
 /// testl $mask, %reg32; jz 1f

@@ -352,6 +352,12 @@ enum GlobalValueSummarySymtabCodes {
   // the linkage unit, so that references to them can be dso_local.
   // [n x valueguid]
   FS_DSO_LOCAL_WITHOUT_SUMMARY = 34,
+  // The KCFI membership tags that LowerTypeTests gave functions.
+  // [n x (valueguid, tag)]
+  FS_KCFI_MEMBER_TAGS = 35,
+  // The membership tags of a type id whose resolution is Members.
+  // [typeid, n x tag]
+  FS_TYPE_ID_MEMBER_TAGS = 36,
 };
 
 enum MetadataCodes {

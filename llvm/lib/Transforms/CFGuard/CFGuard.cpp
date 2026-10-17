@@ -18,6 +18,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/IR/CallingConv.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Module.h"
@@ -158,6 +159,24 @@ private:
   /// indirect call with the kcfi bundle of CB and continues into the guard
   /// function, or null if CB is checked where it calls.
   Function *getKCFIThunk(CallBase &CB, StringRef Prefix);
+
+  /// Returns the member thunk that checks the target Target of the call Call
+  /// of KCFI type Type, if tests of the membership tags of Target dominate it,
+  /// or null.
+  Function *getKCFIMemberThunk(Instruction *Call, Value *Target, uint64_t Type,
+                               bool Dispatch, bool Local);
+
+  /// Replaces each test of membership tags. One whose target a call through a
+  /// member thunk checks is true; any other becomes a call to the member
+  /// check thunk, which fails fast where the tags do not match, or false if
+  /// it lists no tag.
+  void lowerKCFIMemberTests();
+
+  // The tests of membership tags in the function, and those that a member
+  // thunk checks with a call they dominate.
+  SmallVector<IntrinsicInst *, 2> MemberTests;
+  SmallPtrSet<IntrinsicInst *, 2> FusedMemberTests;
+  std::optional<DominatorTree> DT;
 
   // Only add checks if the module has them enabled.
   ControlFlowGuardMode CFGuardModuleFlag = ControlFlowGuardMode::Disabled;
@@ -386,6 +405,87 @@ static Function *declareKCFIThunk(Module &M, StringRef Prefix, uint64_t Type) {
   return Thunk;
 }
 
+// Returns the declaration of the member thunk Prefix<type>_<tag>..., which
+// checks that a target carries one of the membership tags Tags, and on a
+// miss continues into the type's ordinary thunk. The backend reads the tags
+// from the declaration.
+static Function *declareKCFIMemberThunk(Module &M, StringRef Prefix,
+                                        uint64_t Type, MDNode *Tags) {
+  std::string Name =
+      (Prefix + utohexstr(Type, /*LowerCase=*/true, /*Width=*/8)).str();
+  for (const MDOperand &Tag : Tags->operands())
+    Name += "_" + utohexstr(mdconst::extract<ConstantInt>(Tag)->getZExtValue(),
+                            /*LowerCase=*/true, /*Width=*/8);
+  auto *Thunk = cast<Function>(
+      M.getOrInsertFunction(Name, Type::getVoidTy(M.getContext())).getCallee());
+  Thunk->setVisibility(GlobalValue::HiddenVisibility);
+  Thunk->setDSOLocal(true);
+  Thunk->setMetadata("kcfi_member_tags", Tags);
+  unsigned Flags = KCFIThunkMember;
+  if (Prefix == KCFIMemberLocalDispatchThunkPrefix ||
+      Prefix == KCFIMemberLocalCheckThunkPrefix)
+    Flags |= KCFIThunkLocal;
+  unsigned Kind = (Prefix == KCFIMemberDispatchThunkPrefix ||
+                   Prefix == KCFIMemberLocalDispatchThunkPrefix)
+                      ? KCFIThunkDispatch
+                      : KCFIThunkCheck;
+  setKCFIThunkMetadata(Thunk, Kind, Type, Flags);
+  return Thunk;
+}
+
+// Returns the tags a test of membership tags lists, as a tuple: a tuple of one
+// tag is a value as metadata in an argument.
+static MDNode *getKCFIMemberTags(IntrinsicInst *Test) {
+  Metadata *MD = cast<MetadataAsValue>(Test->getArgOperand(1))->getMetadata();
+  if (auto *C = dyn_cast<ConstantAsMetadata>(MD))
+    return MDNode::get(Test->getContext(), C);
+  return cast<MDNode>(MD);
+}
+
+// A member thunk compares the target's KCFI type as well as its tags, so a
+// call takes the tags of every test of its target that dominates it: a tag of
+// another type's class matches no function of the call's type. A test checked
+// this way is true; the check it asked for happens at the call, before
+// control reaches the target.
+Function *CFGuardImpl::getKCFIMemberThunk(Instruction *Call, Value *Target,
+                                          uint64_t Type, bool Dispatch,
+                                          bool Local) {
+  SmallVector<Metadata *, 2> Tags;
+  bool Tested = false;
+  for (IntrinsicInst *Test : MemberTests) {
+    if (Test->getArgOperand(0) != Target)
+      continue;
+    if (!DT)
+      DT.emplace(*Call->getFunction());
+    if (!DT->dominates(Test, Call))
+      continue;
+    Tested = true;
+    FusedMemberTests.insert(Test);
+    for (const MDOperand &Tag : getKCFIMemberTags(Test)->operands())
+      if (!is_contained(Tags, Tag.get()))
+        Tags.push_back(Tag.get());
+  }
+  if (!Tested)
+    return nullptr;
+  Module &M = *Call->getModule();
+  // A miss continues into the type's ordinary thunk.
+  StringRef Prefix;
+  if (Dispatch) {
+    declareKCFIThunk(
+        M, Local ? KCFILocalDispatchThunkPrefix : KCFIDispatchThunkPrefix,
+        Type);
+    Prefix = Local ? KCFIMemberLocalDispatchThunkPrefix
+                   : KCFIMemberDispatchThunkPrefix;
+  } else {
+    declareKCFIThunk(
+        M, Local ? KCFILocalCheckThunkPrefix : KCFICheckThunkPrefix, Type);
+    Prefix =
+        Local ? KCFIMemberLocalCheckThunkPrefix : KCFIMemberCheckThunkPrefix;
+  }
+  return declareKCFIMemberThunk(M, Prefix, Type,
+                                MDTuple::get(M.getContext(), Tags));
+}
+
 Function *CFGuardImpl::getKCFIThunk(CallBase &CB, StringRef Prefix) {
   if (!UseKCFIThunks)
     return nullptr;
@@ -396,7 +496,13 @@ Function *CFGuardImpl::getKCFIThunk(CallBase &CB, StringRef Prefix) {
   auto *TypeId = cast<ConstantInt>(Bundle->Inputs[0]);
   // Every target of a call marked kcfi_local is in this image, so its thunk
   // may fail fast on a target outside it.
-  if (CB.getMetadata("kcfi_local"))
+  bool Local = CB.getMetadata("kcfi_local");
+  // A call whose target LTO tests by membership tags takes the member thunk.
+  if (Function *Thunk =
+          getKCFIMemberThunk(&CB, CB.getCalledOperand(), TypeId->getZExtValue(),
+                             Prefix == KCFIDispatchThunkPrefix, Local))
+    return Thunk;
+  if (Local)
     Prefix = Prefix == KCFIDispatchThunkPrefix ? KCFILocalDispatchThunkPrefix
                                                : KCFILocalCheckThunkPrefix;
   return declareKCFIThunk(*CB.getModule(), Prefix, TypeId->getZExtValue());
@@ -406,10 +512,15 @@ void CFGuardImpl::insertKCFICheckThunk(IntrinsicInst *II) {
   // The type word at offset 4 is the ordinary type, and the one at offset 16
   // the second type that a function which can occupy a vtable slot carries.
   uint64_t Offset = cast<ConstantInt>(II->getArgOperand(2))->getZExtValue();
-  Function *Thunk = declareKCFIThunk(
-      *II->getModule(),
-      Offset == 4 ? KCFICheckThunkPrefix : KCFIVfnCheckThunkPrefix,
-      cast<ConstantInt>(II->getArgOperand(1))->getZExtValue());
+  uint64_t Type = cast<ConstantInt>(II->getArgOperand(1))->getZExtValue();
+  Function *Thunk = nullptr;
+  if (Offset == 4)
+    Thunk = getKCFIMemberThunk(II, II->getArgOperand(0), Type,
+                               /*Dispatch=*/false, /*Local=*/false);
+  if (!Thunk)
+    Thunk = declareKCFIThunk(
+        *II->getModule(),
+        Offset == 4 ? KCFICheckThunkPrefix : KCFIVfnCheckThunkPrefix, Type);
 
   IRBuilder<> B(II);
   SmallVector<llvm::OperandBundleDef, 1> Bundles;
@@ -476,6 +587,9 @@ bool CFGuardImpl::runOnFunction(Function &F) {
 
   SmallVector<CallBase *, 8> IndirectCalls;
   SmallVector<IntrinsicInst *, 2> KCFIChecks;
+  MemberTests.clear();
+  FusedMemberTests.clear();
+  DT.reset();
 
   // Iterate over the instructions to find all indirect call/invoke/callbr
   // instructions. Make a separate list of pointers to indirect
@@ -483,7 +597,13 @@ bool CFGuardImpl::runOnFunction(Function &F) {
   // deleted as the checks are added.
   for (BasicBlock &BB : F) {
     for (Instruction &I : BB) {
+      // Only a module with KCFI thunks has tests of membership tags, which
+      // LowerTypeTests makes for such modules alone.
       if (auto *II = dyn_cast<IntrinsicInst>(&I); II && UseKCFICheckThunks) {
+        if (II->getIntrinsicID() == Intrinsic::kcfi_member_test) {
+          MemberTests.push_back(II);
+          continue;
+        }
         if (II->getIntrinsicID() == Intrinsic::kcfi_check &&
             isKCFICheckThunkOffset(
                 cast<ConstantInt>(II->getArgOperand(2))->getZExtValue())) {
@@ -502,7 +622,7 @@ bool CFGuardImpl::runOnFunction(Function &F) {
   }
 
   // If no checks are needed, return early.
-  if (IndirectCalls.empty() && KCFIChecks.empty())
+  if (IndirectCalls.empty() && KCFIChecks.empty() && MemberTests.empty())
     return false;
 
   for (IntrinsicInst *II : KCFIChecks)
@@ -516,7 +636,46 @@ bool CFGuardImpl::runOnFunction(Function &F) {
       insertCFGuardCheck(CB);
   }
 
+  lowerKCFIMemberTests();
   return true;
+}
+
+void CFGuardImpl::lowerKCFIMemberTests() {
+  for (IntrinsicInst *II : MemberTests) {
+    // A test that guards no call through a member thunk checks its target in
+    // place. Without a KCFI type to fall back on, a miss fails fast, and a
+    // test of no tags is false.
+    //
+    // A test of a function the optimizer has made known, whose call became
+    // direct and lost its KCFI check, is decided here, as LowerTypeTests
+    // decides a test of a known function: a function defined in this module
+    // passes if it carries one of the tags. One defined elsewhere, such as an
+    // import, carries no tag, and a call through KCFI would have taken it at
+    // KCFI's strength, so it passes; a mismatch of KCFI types was reported
+    // when the call became direct.
+    bool Result = true;
+    if (!FusedMemberTests.contains(II)) {
+      MDNode *Tags = getKCFIMemberTags(II);
+      auto *F = dyn_cast<Function>(II->getArgOperand(0)->stripPointerCasts());
+      if (F) {
+        if (!F->isDeclarationForLinker()) {
+          const MDNode *Tag = F->getMetadata("kcfi_member_tag");
+          Result = Tag && is_contained(Tags->operands(), Tag->getOperand(0));
+        }
+      } else if (Tags->getNumOperands() == 0) {
+        Result = false;
+      } else {
+        Function *Thunk = declareKCFIMemberThunk(
+            *II->getModule(), KCFIMemberCheckThunkPrefix, /*Type=*/0, Tags);
+        IRBuilder<> B(II);
+        CallInst *Check =
+            B.CreateCall(GuardFnType, Thunk, {II->getArgOperand(0)});
+        Check->setCallingConv(CallingConv::CFGuard_Check);
+      }
+    }
+    II->replaceAllUsesWith(ConstantInt::getBool(II->getContext(), Result));
+    II->eraseFromParent();
+  }
 }
 
 PreservedAnalyses CFGuardPass::run(Function &F, FunctionAnalysisManager &FAM) {

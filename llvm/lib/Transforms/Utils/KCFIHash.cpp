@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/Utils/KCFIHash.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -174,6 +175,15 @@ bool llvm::isX86TypePrefixPadding(uint32_t Word) {
   // Single-byte nops, a 4-byte nopl, or int3s.
   const uint32_t Padding[] = {0x90909090, 0x00401F0F, 0xCCCCCCCC};
   return llvm::is_contained(Padding, Word);
+}
+
+std::optional<uint32_t> llvm::getKCFIMemberTag(uint64_t Hash) {
+  uint32_t Tag = uint32_t(Hash) ^ uint32_t(Hash >> 32);
+  // A tag is never zero, the type a linker writes over a function no pointer
+  // may reach, nor padding, and needs no masking.
+  if (!Tag || isX86TypePrefixPadding(Tag) || getX86KCFIType(Tag) != Tag)
+    return std::nullopt;
+  return Tag;
 }
 
 bool llvm::hasKCFIThunks(const Module &M) {

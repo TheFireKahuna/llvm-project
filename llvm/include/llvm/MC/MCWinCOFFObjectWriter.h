@@ -98,6 +98,8 @@ private:
   SmallVector<uint64_t, 0> LinkFacts;
   // The KCFI thunks of the object's link-only records, in the order given.
   SmallVector<KCFIThunk, 0> KCFIThunks;
+  // The KCFI prefixes whose word before the marker is a membership tag.
+  SmallVector<const MCSymbol *, 0> KCFIMemberTags;
 
 public:
   WinCOFFObjectWriter(std::unique_ptr<MCWinCOFFObjectTargetWriter> MOTW,
@@ -115,7 +117,7 @@ public:
   // Whether the object has a .llvm_link_records section.
   bool hasLinkRecordsSection() const {
     return hasLinkRecords() || !LinkPins.empty() || !LinkFacts.empty() ||
-           !KCFIThunks.empty();
+           !KCFIThunks.empty() || !KCFIMemberTags.empty();
   }
   void addLinkPin(const LinkPin &Pin) { LinkPins.push_back(Pin); }
   void addLinkFact(uint64_t Kind) {
@@ -124,6 +126,9 @@ public:
       LinkFacts.insert(I, Kind);
   }
   void addKCFIThunk(const KCFIThunk &Thunk) { KCFIThunks.push_back(Thunk); }
+  void addKCFIMemberTag(const MCSymbol *Prefix) {
+    KCFIMemberTags.push_back(Prefix);
+  }
   void executePostLayoutBinding() override;
   bool isSymbolRefDifferenceFullyResolvedImpl(const MCSymbol &SymA,
                                               const MCFragment &FB, bool InSet,

@@ -1323,6 +1323,17 @@ uint64_t WinCOFFWriter::writeObject() {
       OS << Thunks;
     }
 
+    SmallString<0> Tags;
+    raw_svector_ostream TagsOS(Tags);
+    for (const MCSymbol *S : OWriter.KCFIMemberTags)
+      if (!S->isTemporary() && S->isRegistered())
+        encodeULEB128(S->getIndex(), TagsOS);
+    if (!Tags.empty()) {
+      encodeULEB128(COFF::LinkRecordKCFIMemberTags, OS);
+      encodeULEB128(Tags.size(), OS);
+      OS << Tags;
+    }
+
     auto *Sec = getContext().getCOFFSection(".llvm_link_records",
                                             COFF::IMAGE_SCN_LNK_REMOVE);
     Sec->curFragList()->Tail->setVarContents(OS.str());
@@ -1389,6 +1400,7 @@ void WinCOFFObjectWriter::reset() {
   LinkPins.clear();
   LinkFacts.clear();
   KCFIThunks.clear();
+  KCFIMemberTags.clear();
   ObjWriter->reset();
   if (DwoWriter)
     DwoWriter->reset();

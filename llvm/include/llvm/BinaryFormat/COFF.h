@@ -143,6 +143,17 @@ enum LinkRecordKind : uint64_t {
   // between a prefix and its function's entry.
   LinkRecordKCFIThunks = 8,
 
+  // The KCFI prefixes the object defines whose word before the marker is a
+  // membership tag, which LTO gives a function of a type it checks by
+  // members, rather than the second type of a function that can occupy a
+  // vtable slot:
+  //
+  //   payload := symbol:ULEB128*
+  //
+  // symbol is the symbol index of the static __cfi_ symbol that marks the
+  // prefix.
+  LinkRecordKCFIMemberTags = 10,
+
   // The object gives its functions KCFI prefixes with a marker, each after a
   // static __cfi_ symbol, which a linker seals where no indirect call may
   // reach the function and keeps out of a page's first bytes. A linker looks

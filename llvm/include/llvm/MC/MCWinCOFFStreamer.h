@@ -64,6 +64,7 @@ public:
   void emitCOFFKCFIThunk(const MCSymbol *Thunk, unsigned Kind, uint32_t Type,
                          uint32_t Marker, uint32_t Offset,
                          const MCSymbol *Mismatch) override;
+  void emitCOFFKCFIMemberTag(const MCSymbol *Prefix) override;
   void emitCommonSymbol(MCSymbol *Symbol, uint64_t Size,
                         Align ByteAlignment) override;
   void emitLocalCommonSymbol(MCSymbol *Symbol, uint64_t Size,

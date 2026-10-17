@@ -74,6 +74,7 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/Endian.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
@@ -83,13 +84,16 @@
 #include "llvm/Support/TrailingObjects.h"
 #include "llvm/Support/YAMLTraits.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/xxhash.h"
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include "llvm/Transforms/Utils/KCFIHash.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <map>
 #include <set>
 #include <string>
 #include <system_error>
@@ -727,6 +731,14 @@ class LowerTypeTestsModule {
   // selectJumpTableArmEncoding may decide to use Thumb in either case.
   bool CanUseArmJumpTable = false, CanUseThumbBWJumpTable = false;
 
+  // Whether function types are checked by membership tags in the KCFI
+  // prefixes rather than by jump tables.
+  bool UseMembershipTags = false;
+  // The membership tags given, and the second types of the functions that can
+  // occupy a vtable slot, which a member thunk compares in the same word. A
+  // tag differs from all of them.
+  DenseSet<uint32_t> UsedMemberTags;
+
   // Cache variable used by hasBranchTargetEnforcement().
   int HasBranchTargetEnforcement = -1;
 
@@ -823,6 +835,8 @@ class LowerTypeTestsModule {
                                        ArrayRef<GlobalTypeMember *> Functions);
   void buildBitSetsFromFunctionsWASM(ArrayRef<Metadata *> TypeIds,
                                      ArrayRef<GlobalTypeMember *> Functions);
+  void buildMembershipTagsFromFunctions(ArrayRef<Metadata *> TypeIds,
+                                        ArrayRef<GlobalTypeMember *> Functions);
   void
   buildBitSetsFromDisjointSet(ArrayRef<Metadata *> TypeIds,
                               ArrayRef<GlobalTypeMember *> Globals,
@@ -1553,6 +1567,37 @@ void LowerTypeTestsModule::importTypeTest(CallInst *CI) {
   if (!TypeIdStr)
     return;
 
+  // Where function types are checked by membership, a type that the thin link
+  // gave no resolution has no members in the LTO unit; its test is one of
+  // membership tags that no function carries.
+  if (UseMembershipTags) {
+    const TypeIdSummary *TidSummary =
+        ImportSummary->getTypeIdSummary(TypeIdStr->getString());
+    if (!TidSummary ||
+        TidSummary->TTRes.TheKind == TypeTestResolution::Members) {
+      // A test that only llvm.assume uses was kept for devirtualization and is
+      // dropped later.
+      if (!CI->use_empty() && all_of(CI->users(), IsaPred<AssumeInst>))
+        return;
+      SmallVector<Metadata *, 1> Tags;
+      if (TidSummary)
+        for (uint32_t Tag :
+             ImportSummary->getTypeIdMemberTags(TypeIdStr->getString()))
+          Tags.push_back(
+              ConstantAsMetadata::get(ConstantInt::get(Int32Ty, Tag)));
+      CallInst *Test = CallInst::Create(
+          Intrinsic::getOrInsertDeclaration(&M, Intrinsic::kcfi_member_test),
+          {CI->getArgOperand(0),
+           MetadataAsValue::get(M.getContext(),
+                                MDTuple::get(M.getContext(), Tags))},
+          "", CI->getIterator());
+      Test->setDebugLoc(CI->getDebugLoc());
+      CI->replaceAllUsesWith(Test);
+      CI->eraseFromParent();
+      return;
+    }
+  }
+
   TypeIdLowering TIL = importTypeId(TypeIdStr->getString());
   Value *Lowered = lowerTypeTestCall(TypeIdStr, CI, TIL);
   if (Lowered) {
@@ -1903,6 +1948,10 @@ LowerTypeTestsModule::createJumpTableEntryAsm(Triple::ArchType JumpTableArch) {
 /// and lower the llvm.type.test calls, architecture dependently.
 void LowerTypeTestsModule::buildBitSetsFromFunctions(
     ArrayRef<Metadata *> TypeIds, ArrayRef<GlobalTypeMember *> Functions) {
+  if (UseMembershipTags) {
+    buildMembershipTagsFromFunctions(TypeIds, Functions);
+    return;
+  }
   if (Arch == Triple::x86 || Arch == Triple::x86_64 || Arch == Triple::arm ||
       Arch == Triple::thumb || Arch == Triple::aarch64 ||
       Arch == Triple::riscv32 || Arch == Triple::riscv64 ||
@@ -2392,9 +2441,162 @@ void LowerTypeTestsModule::buildBitSetsFromFunctionsWASM(
                      GlobalLayout);
 }
 
+/// Where KCFI checks go through per-type thunks, as on Windows Itanium, a
+/// function type is checked by membership rather than by a jump table, so that
+/// a function keeps one address in every image. The members of a type are its
+/// functions whose address may be taken: the address-taken functions and those
+/// visible outside the module. Functions with the same set of tested types
+/// form a class, and each carries its class's membership tag in the word
+/// before its KCFI marker; a type test becomes a test for the tags of the
+/// type's classes, which the CFGuard pass routes, with the call it guards,
+/// through a per-type thunk. The tag hashes the image's name, the class's types
+/// and its members' names, so that a function of another image does not carry
+/// it.
+void LowerTypeTestsModule::buildMembershipTagsFromFunctions(
+    ArrayRef<Metadata *> TypeIds, ArrayRef<GlobalTypeMember *> Functions) {
+  DenseMap<Metadata *, unsigned> TypeIdIndices;
+  for (unsigned I = 0; I != TypeIds.size(); ++I)
+    TypeIdIndices[TypeIds[I]] = I;
+
+  // In the thin link, a function that a ThinLTO module defines is a
+  // declaration here, which the summary shows to be defined. Whether it has a
+  // KCFI prefix is not known; its backend emits the tag in the prefix if so.
+  auto IsDefinedInThinLTOModule = [&](GlobalTypeMember *GTM) {
+    if (!ExportSummary || !GTM->isExported())
+      return false;
+    ValueInfo VI = ExportSummary->getValueInfo(
+        cast<Function>(GTM->getGlobal())->getGUIDOrFallback());
+    return VI && any_of(VI.getSummaryList(), [&](const auto &S) {
+             return S->isLive() && isa<FunctionSummary>(S->getBaseObject());
+           });
+  };
+
+  // Group the members by the set of tested types they belong to.
+  std::map<SmallVector<unsigned, 2>, SmallVector<Function *, 4>> Classes;
+  SmallPtrSet<Function *, 8> ThinLTOMembers;
+  for (GlobalTypeMember *GTM : Functions) {
+    auto *F = cast<Function>(GTM->getGlobal());
+    if (IsDefinedInThinLTOModule(GTM))
+      ThinLTOMembers.insert(F);
+    else if (F->isDeclarationForLinker() ||
+             !F->hasMetadata(LLVMContext::MD_kcfi_type) ||
+             F->hasMetadata("kcfi_vfn_type") ||
+             (F->hasLocalLinkage() && !F->hasAddressTaken()))
+      continue;
+    SmallVector<unsigned, 2> Types;
+    for (MDNode *Type : GTM->types()) {
+      auto I = TypeIdIndices.find(Type->getOperand(1));
+      if (I != TypeIdIndices.end())
+        Types.push_back(I->second);
+    }
+    if (Types.empty())
+      continue;
+    llvm::sort(Types);
+    Types.erase(llvm::unique(Types), Types.end());
+    Classes[Types].push_back(F);
+  }
+
+  StringRef ImageName;
+  if (auto *MD = dyn_cast_or_null<MDString>(M.getModuleFlag("kcfi-image")))
+    ImageName = MD->getString();
+
+  std::vector<SmallVector<uint32_t, 1>> TypeTags(TypeIds.size());
+  for (auto &[Types, Members] : Classes) {
+    SmallVector<StringRef, 2> TypeNames;
+    for (unsigned I : Types)
+      TypeNames.push_back(cast<MDString>(TypeIds[I])->getString());
+    llvm::sort(TypeNames);
+    SmallVector<StringRef, 4> MemberNames;
+    for (Function *F : Members)
+      MemberNames.push_back(F->getName());
+    llvm::sort(MemberNames);
+
+    // The strings hashed, each followed by a zero byte, then a salt that
+    // changes until the tag is usable.
+    SmallString<256> Key;
+    for (StringRef Name :
+         concat<const StringRef>(ArrayRef(ImageName), TypeNames, MemberNames)) {
+      Key += Name;
+      Key.push_back(0);
+    }
+    size_t KeySize = Key.size();
+    std::optional<uint32_t> Tag;
+    for (uint64_t Salt = 0; !Tag || !UsedMemberTags.insert(*Tag).second;
+         ++Salt) {
+      Key.resize(KeySize + 8);
+      support::endian::write64le(Key.data() + KeySize, Salt);
+      Tag = getKCFIMemberTag(xxh3_64bits(arrayRefFromStringRef(Key)));
+    }
+
+    MDNode *TagMD =
+        MDNode::get(M.getContext(),
+                    ConstantAsMetadata::get(ConstantInt::get(Int32Ty, *Tag)));
+    for (Function *F : Members) {
+      if (!ThinLTOMembers.contains(F)) {
+        F->setMetadata("kcfi_member_tag", TagMD);
+        continue;
+      }
+      GlobalValue::GUID GUID = F->getGUIDOrFallback();
+      ExportSummary->setKCFIMemberTag(GUID, *Tag);
+      // A function with local linkage that the regular module references is
+      // seen here through the alias that promotes it, and its backend looks
+      // the tag up by the function's own GUID.
+      for (const auto &S : ExportSummary->getValueInfo(GUID).getSummaryList())
+        if (auto *AS = dyn_cast<AliasSummary>(S.get()))
+          ExportSummary->setKCFIMemberTag(AS->getAliaseeGUID(), *Tag);
+    }
+    for (unsigned I : Types)
+      TypeTags[I].push_back(*Tag);
+  }
+
+  // ThinLTO backends test a type tested outside this module by its tags, and
+  // one without a resolution for no tags.
+  if (ExportSummary)
+    for (unsigned I = 0; I != TypeIds.size(); ++I)
+      if (auto *TypeId = dyn_cast<MDString>(TypeIds[I]);
+          TypeId && TypeIdUsers[TypeIds[I]].IsExported &&
+          !TypeTags[I].empty()) {
+        ExportSummary->getOrInsertTypeIdSummary(TypeId->getString())
+            .TTRes.TheKind = TypeTestResolution::Members;
+        ExportSummary->setTypeIdMemberTags(TypeId->getString(), TypeTags[I]);
+      }
+
+  Function *MemberTest =
+      Intrinsic::getOrInsertDeclaration(&M, Intrinsic::kcfi_member_test);
+  for (unsigned I = 0; I != TypeIds.size(); ++I) {
+    SmallVector<Metadata *, 1> Tags;
+    for (uint32_t Tag : TypeTags[I])
+      Tags.push_back(ConstantAsMetadata::get(ConstantInt::get(Int32Ty, Tag)));
+    Value *TagsMD = MetadataAsValue::get(M.getContext(),
+                                         MDTuple::get(M.getContext(), Tags));
+    for (CallInst *CI : TypeIdUsers[TypeIds[I]].CallSites) {
+      ++NumTypeTestCallsLowered;
+      // A known member passes, though it may carry no tag: the prefix of a
+      // function that can occupy a vtable slot holds its second type instead.
+      Value *Test = ConstantInt::getTrue(M.getContext());
+      if (!isKnownTypeIdMember(TypeIds[I], M.getDataLayout(),
+                               CI->getArgOperand(0), 0)) {
+        Test = CallInst::Create(MemberTest, {CI->getArgOperand(0), TagsMD}, "",
+                                CI->getIterator());
+        cast<CallInst>(Test)->setDebugLoc(CI->getDebugLoc());
+      }
+      CI->replaceAllUsesWith(Test);
+      CI->eraseFromParent();
+    }
+  }
+}
+
 void LowerTypeTestsModule::buildBitSetsFromDisjointSet(
     ArrayRef<Metadata *> TypeIds, ArrayRef<GlobalTypeMember *> Globals,
     ArrayRef<ICallBranchFunnel *> ICallBranchFunnels) {
+  // Where function types are checked by membership, a type with no members is
+  // tested for no tags, as in a ThinLTO backend, so that a function of the
+  // type that LTO did not see still reaches its KCFI thunk.
+  if (UseMembershipTags && Globals.empty()) {
+    buildMembershipTagsFromFunctions(TypeIds, {});
+    return;
+  }
+
   DenseMap<Metadata *, uint64_t> TypeIdIndices;
   for (unsigned I = 0; I != TypeIds.size(); ++I)
     TypeIdIndices[TypeIds[I]] = I;
@@ -2510,6 +2712,12 @@ LowerTypeTestsModule::LowerTypeTestsModule(
   }
   OS = TargetTriple.getOS();
   ObjectFormat = TargetTriple.getObjectFormat();
+  UseMembershipTags = hasKCFIThunks(M);
+  if (UseMembershipTags)
+    for (Function &F : M)
+      if (MDNode *MD = F.getMetadata("kcfi_vfn_type"))
+        UsedMemberTags.insert(
+            mdconst::extract<ConstantInt>(MD->getOperand(0))->getZExtValue());
 
   // Function annotation describes or applies to function itself, and
   // shouldn't be associated with jump table thunk generated for CFI.
@@ -2690,6 +2898,17 @@ bool LowerTypeTestsModule::lower() {
       for (Use &U : llvm::make_early_inc_range(TypeTestFunc->uses()))
         importTypeTest(cast<CallInst>(U.getUser()));
 
+    // Each function the thin link gave a membership tag carries it.
+    if (UseMembershipTags)
+      for (Function &F : M)
+        if (!F.isDeclaration())
+          if (uint32_t Tag =
+                  ImportSummary->getKCFIMemberTag(F.getGUIDOrFallback()))
+            F.setMetadata("kcfi_member_tag",
+                          MDNode::get(M.getContext(),
+                                      ConstantAsMetadata::get(
+                                          ConstantInt::get(Int32Ty, Tag))));
+
     if (ICallBranchFunnelFunc && !ICallBranchFunnelFunc->use_empty())
       report_fatal_error(
           "unexpected call to llvm.icall.branch.funnel during import phase");
@@ -2826,7 +3045,13 @@ bool LowerTypeTestsModule::lower() {
         if (!ExportSummary->isGUIDLive(GUID))
           continue;
         if (!IsAddressTaken(GUID)) {
-          if (!CrossDsoCfi || Linkage != CfiFunctionLinkage::Definition)
+          // A function that a native object can see, or that the image
+          // exports, may have its address taken there, which a membership tag
+          // allows for.
+          if (UseMembershipTags) {
+            if (!ExportSummary->isVisibleOutsideSummary(GUID))
+              continue;
+          } else if (!CrossDsoCfi || Linkage != CfiFunctionLinkage::Definition)
             continue;
 
           bool Exported = false;
@@ -2979,7 +3204,10 @@ bool LowerTypeTestsModule::lower() {
       // their liveness and emit fewer jumptable entries once monolithic LTO
       // builds also emit summaries.
       } else if (!F->hasAddressTaken()) {
-        if (!CrossDsoCfi || !IsJumpTableCanonical || F->hasLocalLinkage())
+        // A function visible outside the module may have its address taken
+        // there, which a membership tag allows for.
+        if ((!CrossDsoCfi || !IsJumpTableCanonical || F->hasLocalLinkage()) &&
+            !(UseMembershipTags && !F->hasLocalLinkage()))
           continue;
       }
 
