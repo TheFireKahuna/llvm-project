@@ -131,11 +131,13 @@ public:
   // Makes sym, a definition of data, the instance that imp imports.
   void preemptSymbol(Symbol *sym, DefinedImportData *imp);
 
-  // Under -import-slots, binds the import-form references to each COMDAT data
-  // definition, and to the other external symbols of its group and its guard,
-  // that a DLL offers whose offers the image does not take to the image's own
-  // copy. Runs before liveness is decided, which keeps the copy.
-  void keepCopiesOfIgnoredOffers();
+  // Under -import-slots, binds each import library's __imp_X to the image's
+  // own definition of X, which beats it, as a definition in an ELF executable
+  // beats a shared object's: the import-form references reach the definition
+  // locally. What the image takes from a DLL that offers it keeps the import;
+  // an offer of a delay-loaded or ignored DLL is not taken. Runs before
+  // liveness is decided, which keeps the definition.
+  void bindImportsToDefinitions();
 
   // Whether the image does not take what imp's DLL offers: data is never
   // delay-bound, a delay-load thunk is not a function's address, and

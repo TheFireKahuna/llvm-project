@@ -112,8 +112,8 @@
 # RUN:   -ignore-offers:LIB.dll -out:ignore.exe -verbose 2>&1 | \
 # RUN:   FileCheck --check-prefix=DELAYLOG %s
 # RUN: llvm-objdump -d ignore.exe | FileCheck --check-prefix=KEPT %s
-# DELAYLOG-DAG: Keeping A::v in main.obj: the image does not take lib.dll's offer
-# DELAYLOG-DAG: Keeping guard variable for A::v in main.obj: the image does not take lib.dll's offer
+# DELAYLOG-DAG: Binding __imp__ZN1A1vE to A::v in main.obj
+# DELAYLOG-DAG: Binding __imp__ZGVN1A1vE to guard variable for A::v in main.obj
 # DELAYLOG-NOT: Preempting
 # KEPT:      <.text>:
 # KEPT-NEXT: 48 8d 05 {{.*}} leaq

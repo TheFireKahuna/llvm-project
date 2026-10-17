@@ -3159,7 +3159,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   });
 
   ctx.forEachSymtab(
-      [](SymbolTable &symtab) { symtab.keepCopiesOfIgnoredOffers(); });
+      [](SymbolTable &symtab) { symtab.bindImportsToDefinitions(); });
 
   // Identify unreferenced COMDAT sections.
   if (config->doGC) {
