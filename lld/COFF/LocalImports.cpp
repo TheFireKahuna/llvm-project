@@ -902,6 +902,12 @@ void writeFusedArm64(const SectionChunk *sc, uint8_t *buf) {
     if (isLiteralLdrEligible(ldr))
       writeLiteralLdr(buf + f.offset, ldr);
   }
+  // The accesses of each load, grouped once in fusion order, so a dead load
+  // reaches its own without a scan of every fusion.
+  DenseMap<uint32_t, SmallVector<const ObjFile::LinkFusion *, 2>> accessesOf;
+  for (const ObjFile::LinkFusion &f : fusions)
+    if (!f.isLoad && f.use == ObjFile::LinkFusion::Access)
+      accessesOf[f.load].push_back(&f);
   // A dead load whose accesses all take the data's offset in its page,
   // within their fields and aligned to their scale, becomes a no-operation,
   // its register keeping the page adrp gives it; otherwise the accesses keep
@@ -910,21 +916,18 @@ void writeFusedArm64(const SectionChunk *sc, uint8_t *buf) {
     if (!l.isLoad || !l.dead)
       continue;
     uint64_t lo12 = getData(l.offset)->getRVA() & 0xFFF;
-    auto accesses = llvm::make_filter_range(fusions, [&](auto &f) {
-      return !f.isLoad && f.use == ObjFile::LinkFusion::Access &&
-             f.load == l.offset;
-    });
-    auto fits = [&](const ObjFile::LinkFusion &f) {
-      uint32_t insn = read32le(buf + f.offset);
+    ArrayRef<const ObjFile::LinkFusion *> accesses = accessesOf.lookup(l.offset);
+    auto fits = [&](const ObjFile::LinkFusion *f) {
+      uint32_t insn = read32le(buf + f->offset);
       Arm64Access access(insn);
       return access.fits(lo12 + access.getOffset(insn));
     };
     if (accesses.empty() || !llvm::all_of(accesses, fits))
       continue;
-    for (const ObjFile::LinkFusion &f : accesses) {
-      uint32_t insn = read32le(buf + f.offset);
+    for (const ObjFile::LinkFusion *f : accesses) {
+      uint32_t insn = read32le(buf + f->offset);
       Arm64Access access(insn);
-      write32le(buf + f.offset,
+      write32le(buf + f->offset,
                 access.setOffset(insn, lo12 + access.getOffset(insn)));
     }
     write32le(buf + l.offset, nop);
