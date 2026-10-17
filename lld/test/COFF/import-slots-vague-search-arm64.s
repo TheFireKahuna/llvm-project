@@ -4,7 +4,7 @@
 ## cells writes from the word the executable's table names for the entity's
 ## key, and which the search of the loaded modules writes from the table of a
 ## module loaded with the process, or that delay-loads it, once the process
-## has initialized, pinning that module and itself.
+## has initialized, pinning that module but not itself.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium a.s -o a.obj
@@ -65,22 +65,26 @@
 # CHECK:      ldr x14, [x13, #0xb8]
 # CHECK:      ldr x12, [x13, #0x30]
 # CHECK-NEXT: cmp x12, x14
-## On a hit, LdrAddRefDll(LDR_ADDREF_DLL_PIN, module), then once this DLL.
+## On a hit, LdrAddRefDll(LDR_ADDREF_DLL_PIN, module), whose failure ends the
+## search with its status.
 # CHECK:      ldr x23, [x10, x9]
 # CHECK:      mov w0, #0x1
 # CHECK-NEXT: mov x1, x10
 # CHECK-NEXT: adrp x16, 0x[[#%x,mul(div(NTDLL + 0x180000000, 0x1000), 0x1000)]]
 # CHECK-NEXT: ldr x16, [x16, #0x[[#%x,sub(NTDLL, mul(div(NTDLL, 0x1000), 0x1000))]]]
 # CHECK-NEXT: blr x16
-# CHECK:      mov x1, x27
+# CHECK-NEXT: tbnz w0, #0x1f,
 # CHECK:      str x23, [x27, x9]
 ## An entity the table names takes the word its entry names, then the
-## instance from it; such a DLL pins itself.
+## instance from it.
 # CHECK:      ldr x23, [x11, #0x8]
 # CHECK-NEXT: ldr w9, [x19, #0xc]
 # CHECK-NEXT: tbz w9, #0x1,
 # CHECK-NEXT: ldr x23, [x23]
-# CHECK-NEXT: tbz w24, #0x2,
+# CHECK-NEXT: b
+## Nothing pins the DLL itself.
+# RUN: FileCheck --check-prefix=NOSELF --input-file=a.txt %s
+# NOSELF-NOT: mov x1, x27
 # CHECK:      ldp x29, x30, [sp], #0x70
 # CHECK-NEXT: ret
 

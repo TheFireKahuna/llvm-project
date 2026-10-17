@@ -11,7 +11,8 @@
 ## has initialized, for each entity the executable's table does not name, it
 ## probes the table of each module loaded with the process, or that
 ## delay-loads it, writes the instance into the entity's cells, and pins the
-## module and itself.
+## module. The DLL itself is not pinned: the C runtime keeps it loaded only
+## once it registers the destructor of an instance another image owns.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium a.s -o a.obj
@@ -77,27 +78,29 @@
 # CHECK:      cmpq (%rbp), %rax
 # CHECK:      testb $0x20, 0x68(%rax)
 # CHECK:      movabsq $0x58a7bdf45370db42, %rax
-## On a hit, LdrAddRefDll(LDR_ADDREF_DLL_PIN, module), then once this DLL; the
-## pointer is written between two protection calls.
+## On a hit, LdrAddRefDll(LDR_ADDREF_DLL_PIN, module), whose failure ends the
+## search with its status; the pointer is written between two protection
+## calls.
 # CHECK:      movq (%rdx,%rax), %r13
 # CHECK:      movl $0x1, %ecx
 # CHECK-NEXT: callq *{{.*}}(%rip) # 0x[[#%x,NTDLL + 0x180000000]]
-# CHECK:      movl $0x1, %ecx
-# CHECK-NEXT: leaq {{.*}}(%rip), %rdx # 0x180000000
-# CHECK-NEXT: callq *{{.*}}(%rip) # 0x[[#%x,NTDLL + 0x180000000]]
+# CHECK-NEXT: testl %eax, %eax
+# CHECK-NEXT: js
 # CHECK:      movl $0x4, %r9d
 # CHECK:      movq %r13, (%rcx,%rax)
 ## An entity the table names takes the word its entry names, then the
-## instance from it; such a DLL pins itself.
+## instance from it.
 # CHECK:      movq 0x8(%rax), %r13
 # CHECK-NEXT: testb $0x2, 0xc(%rbx)
 # CHECK-NEXT: je
 # CHECK-NEXT: movq (%r13), %r13
-# CHECK-NEXT: btl $0x2, %r14d
-# CHECK-NEXT: jae
-# CHECK-NEXT: btsl $0x1, %r14d
+# CHECK-NEXT: jmp
 # CHECK:      popq %rbx
 # CHECK-NEXT: retq
+
+## Nothing pins the DLL itself.
+# RUN: FileCheck --check-prefix=NOSELF --input-file=a.txt %s
+# NOSELF-NOT: leaq {{.*}}(%rip), %rdx # 0x180000000
 
 ## The fill's list holds the pointer, read-only and a vague entity's.
 # RUN: llvm-objdump -s -j .rdata a.dll | FileCheck --check-prefix=BIND %s

@@ -1505,10 +1505,11 @@ static constexpr uint32_t ldrInLoadOrderModuleList = 0x10;
 // joins. In each that names an offer table in its MZ header, it probes the
 // table for the entity's key; on a hit it writes the word the entry names,
 // the instance that module uses, into each cell of the entity, and pins the
-// module. Once such a DLL shares an entity, found so or named by the table,
-// it pins itself too, as glibc keeps an object that binds a unique symbol
-// loaded: an instance others use must outlive the image that may have
-// registered its destructor. The loader holds its lock over the initializers
+// module, whose instance must outlive every image that uses it. The DLL
+// itself stays free to unload: the C runtime keeps it loaded once it
+// registers the destructor of an instance another image owns, the one case
+// in which its unloading would destroy what others use. The loader holds its
+// lock over the initializers
 // and changes the list only under it. A table, its buckets and the words it
 // names are read only inside the image that names it, and a probe visits each
 // bucket at most once.
@@ -1629,9 +1630,9 @@ void NamedCellFillChunk::writeAMD64(LabelledCode &a) const {
   a.put(
       {0x53, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57});
   a.put({0x48, 0x83, 0xEC, 0x48});
-  // r14's bit 0 is set once the read-only cells are writable, bit 1 once
-  // this DLL is pinned, and bit 2 if it was loaded after the process
-  // initialized, outside the executable's link.
+  // r14's bit 0 is set once the read-only cells are writable, and bit 2 if
+  // the DLL was loaded after the process initialized, outside the
+  // executable's link.
   a.put({0x45, 0x31, 0xF6});                            // xor r14d, r14d
   a.put({0x65, 0x48, 0x8B, 0x04, 0x25, 0x60, 0, 0, 0}); // mov rax, gs:[0x60]
   if (vague) {
@@ -1814,19 +1815,10 @@ void NamedCellFillChunk::writeAMD64(LabelledCode &a) const {
     a.put({0x4C, 0x8B, 0x2C, 0x02}); // mov r13, [rdx + rax]
     a.put({0x4D, 0x85, 0xED});       // test r13, r13
     a.jcc(0x84, skip);
-    // LdrAddRefDll(LDR_ADDREF_DLL_PIN, module), then once this DLL.
-    // A pin that fails ends the search with its status, which fails the DLL's
-    // initialization rather than leave it free to unload.
+    // LdrAddRefDll(LDR_ADDREF_DLL_PIN, module); a pin that fails ends the
+    // search with its status, which fails the DLL's initialization rather
+    // than leave the instance free to unload.
     a.put({0xB9, 0x01, 0, 0, 0});    // mov ecx, 1
-    a.put({0xFF, 0x15, 0, 0, 0, 0}); // call [rip + LdrAddRefDll]
-    a.disp(addRef->getRVA());
-    a.put({0x85, 0xC0});                   // test eax, eax
-    a.jcc(0x88, pinFailed);                // js .pinFailed
-    a.put({0x41, 0x0F, 0xBA, 0xEE, 0x01}); // bts r14d, 1
-    a.jcc(0x82, next);                     // jc .next
-    a.put({0xB9, 0x01, 0, 0, 0});          // mov ecx, 1
-    a.put({0x48, 0x8D, 0x15, 0, 0, 0, 0}); // lea rdx, [rip + __ImageBase]
-    a.disp(0);
     a.put({0xFF, 0x15, 0, 0, 0, 0}); // call [rip + LdrAddRefDll]
     a.disp(addRef->getRVA());
     a.put({0x85, 0xC0});    // test eax, eax
@@ -1873,26 +1865,12 @@ void NamedCellFillChunk::writeAMD64(LabelledCode &a) const {
   a.jmp(outer);
 
   // The address the entry names, or for a vague entity the one held by the
-  // word it names. A DLL loaded outside the executable's link that shares
-  // the entity pins itself once.
+  // word it names.
   a.bind(tableHit);
   a.put({0x4C, 0x8B, 0x68, 0x08}); // mov r13, [rax + 8]
   a.put({0xF6, 0x43, 0x0C, 0x02}); // test byte ptr [rbx + 12], 2
   a.jcc(0x84, next);
   a.put({0x4D, 0x8B, 0x6D, 0x00}); // mov r13, [r13]
-  if (vague) {
-    a.put({0x41, 0x0F, 0xBA, 0xE6, 0x02}); // bt r14d, 2
-    a.jcc(0x83, next);                     // jnc .next
-    a.put({0x41, 0x0F, 0xBA, 0xEE, 0x01}); // bts r14d, 1
-    a.jcc(0x82, next);                     // jc .next
-    a.put({0xB9, 0x01, 0, 0, 0});          // mov ecx, 1
-    a.put({0x48, 0x8D, 0x15, 0, 0, 0, 0}); // lea rdx, [rip + __ImageBase]
-    a.disp(0);
-    a.put({0xFF, 0x15, 0, 0, 0, 0}); // call [rip + LdrAddRefDll]
-    a.disp(addRef->getRVA());
-    a.put({0x85, 0xC0});    // test eax, eax
-    a.jcc(0x88, pinFailed); // js .pinFailed
-  }
   a.jmp(next);
 
   if (vague) {
@@ -1959,9 +1937,9 @@ void NamedCellFillChunk::writeARM64(LabelledCode &a) const {
   a.put32(0xA90363F7); // stp x23, x24, [sp, #48]
   a.put32(0xA9046BF9); // stp x25, x26, [sp, #64]
   a.put32(0xF9002BFB); // str x27, [sp, #80]
-  // w24's bit 0 is set once the read-only cells are writable, bit 1 once
-  // this DLL is pinned, and bit 2 if it was loaded after the process
-  // initialized, outside the executable's link.
+  // w24's bit 0 is set once the read-only cells are writable, and bit 2 if
+  // the DLL was loaded after the process initialized, outside the
+  // executable's link.
   a.put32(0x52800018); // mov w24, #0
   a.put32(0xF9403250); // ldr x16, [x18, #0x60]   TEB->PEB
   if (vague) {
@@ -2129,16 +2107,10 @@ void NamedCellFillChunk::writeARM64(LabelledCode &a) const {
     a.branch19(0x54000008, nextModule);                  // b.hi
     a.put32(0xF8696957);                                 // ldr x23, [x10, x9]
     a.branch19(0xB4000017, skip);                        // cbz x23
-    // LdrAddRefDll(LDR_ADDREF_DLL_PIN, module), then once this DLL; a pin that
-    // fails ends the search with its status.
+    // LdrAddRefDll(LDR_ADDREF_DLL_PIN, module); a pin that fails ends the
+    // search with its status.
     a.put32(0x52800020); // mov w0, #1
     a.put32(0xAA0A03E1); // mov x1, x10
-    a.callImport(addRef->getRVA());
-    a.branch14(0x37F80000, pinFailed); // tbnz w0, #31, .pinFailed
-    a.branch14(0x37080018, next);      // tbnz w24, #1, .next
-    a.put32(0x321F0318);               // orr w24, w24, #2
-    a.put32(0x52800020);               // mov w0, #1
-    a.put32(0xAA1B03E1);               // mov x1, x27
     a.callImport(addRef->getRVA());
     a.branch14(0x37F80000, pinFailed); // tbnz w0, #31, .pinFailed
   }
@@ -2181,22 +2153,12 @@ void NamedCellFillChunk::writeARM64(LabelledCode &a) const {
   a.branch26(0x14000000, outer);
 
   // The address the entry names, or for a vague entity the one held by the
-  // word it names. A DLL loaded outside the executable's link that shares
-  // the entity pins itself once.
+  // word it names.
   a.bind(tableHit);
   a.put32(0xF9400577);          // ldr x23, [x11, #8]
   a.put32(0xB9400E69);          // ldr w9, [x19, #12]
   a.branch14(0x36080009, next); // tbz w9, #1
   a.put32(0xF94002F7);          // ldr x23, [x23]
-  if (vague) {
-    a.branch14(0x36100018, next); // tbz w24, #2
-    a.branch14(0x37080018, next); // tbnz w24, #1
-    a.put32(0x321F0318);          // orr w24, w24, #2
-    a.put32(0x52800020);          // mov w0, #1
-    a.put32(0xAA1B03E1);          // mov x1, x27
-    a.callImport(addRef->getRVA());
-    a.branch14(0x37F80000, pinFailed); // tbnz w0, #31, .pinFailed
-  }
   a.branch26(0x14000000, next);
 
   if (vague) {
