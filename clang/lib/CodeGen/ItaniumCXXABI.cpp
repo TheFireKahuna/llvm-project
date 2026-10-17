@@ -2129,6 +2129,51 @@ static void setVTableSelectiveDLLImportExport(CodeGenModule &CGM,
     VTable->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
 }
 
+/// The name by which the linker's vtable runs know a class, the same in every
+/// module that uses it: its RTTI name without the _ZTS prefix, and, for a class
+/// of internal linkage, the module's hash, since two translation units may give
+/// unrelated internal classes the same mangling.
+static std::string vtableRunName(CodeGenModule &CGM, const CXXRecordDecl *RD) {
+  SmallString<256> Mangled;
+  llvm::raw_svector_ostream Out(Mangled);
+  CGM.getCXXABI().getMangleContext().mangleCXXRTTIName(
+      CGM.getContext().getCanonicalTagType(RD), Out);
+  std::string Name = StringRef(Mangled).drop_front(4).str();
+  // The module hash, when the build sets one, already carries its own
+  // separator and makes an internal class's name unique across units.
+  if (!RD->isExternallyVisible())
+    Name += CGM.getModuleNameHash();
+  return Name;
+}
+
+/// Tells the linker that \p VTable holds a vtable of \p RD whose primary
+/// address point it should lay out in the run of RD's primary-base chain, so
+/// that a guard thunk and a checked downcast can test a vtable pointer against
+/// the run. The record carries RD's name, its primary base's and the address
+/// point's offset into the global.
+static void emitVTableHierarchy(CodeGenModule &CGM, llvm::GlobalVariable *VTable,
+                                const CXXRecordDecl *RD,
+                                const VTableLayout &VTLayout) {
+  VTableLayout::AddressPointLocation AP =
+      VTLayout.getAddressPoint(BaseSubobject(RD, CharUnits::Zero()));
+  uint64_t ComponentSize =
+      CGM.getDataLayout().getTypeAllocSize(CGM.getVTableComponentType());
+  uint64_t Offset =
+      (VTLayout.getVTableOffset(AP.VTableIndex) + AP.AddressPointIndex) *
+      ComponentSize;
+  std::string Base;
+  if (const CXXRecordDecl *PrimaryBase =
+          CGM.getContext().getASTRecordLayout(RD).getPrimaryBase())
+    Base = vtableRunName(CGM, PrimaryBase);
+  llvm::LLVMContext &Ctx = CGM.getLLVMContext();
+  llvm::Metadata *Ops[] = {
+      llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(CGM.Int64Ty, Offset)),
+      llvm::MDString::get(Ctx, vtableRunName(CGM, RD)),
+      llvm::MDString::get(Ctx, Base)};
+  VTable->addMetadata(llvm::LLVMContext::MD_vtable_hierarchy,
+                      *llvm::MDNode::get(Ctx, Ops));
+}
+
 void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
                                           const CXXRecordDecl *RD) {
   llvm::GlobalVariable *VTable = getAddrOfVTable(RD, CharUnits());
@@ -2179,6 +2224,7 @@ void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
     CGVT.setVTablePlacement(
         VTable, VTLayout,
         VTLayout.getAddressPoint(BaseSubobject(RD, CharUnits::Zero())));
+    emitVTableHierarchy(CGM, VTable, RD, VTLayout);
 
     // Name the address point of each vtable of the group, counted from the
     // start of the group, as getVTableAddressPoint computes it for the bases

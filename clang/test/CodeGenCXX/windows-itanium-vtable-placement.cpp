@@ -18,7 +18,7 @@ struct V { virtual void v(); };
 // k = 0: align 64, with a pin that says as much. Without RTTI, vtables of
 // different classes can be identical, and the pins keep the linker from
 // folding them.
-// CHECK-DAG: @_ZTV5Plain = {{.*}} align 64, !pin ![[K0:[0-9]+]]{{$}}
+// CHECK-DAG: @_ZTV5Plain = {{.*}} align 64, !pin ![[K0:[0-9]+]], !vtable_hierarchy {{![0-9]+$}}
 // NORTTI-DAG: @_ZTV5Plain = {{.*}} align 64, !pin
 // NORTTI-DAG: @_ZTV6VBased = {{.*}} align 8, !pin
 // CHECK-DAG: ![[K0]] = !{i64 16, i64 6, i64 16, i64 0}
