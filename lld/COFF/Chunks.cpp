@@ -9,7 +9,6 @@
 #include "Chunks.h"
 #include "COFFLinkerContext.h"
 #include "InputFiles.h"
-#include "LocalImports.h"
 #include "Relax.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
@@ -35,9 +34,8 @@ using llvm::support::ulittle32_t;
 namespace lld::coff {
 
 SectionChunk::SectionChunk(ObjFile *f, const coff_section *h, Kind k)
-    : Chunk(k), file(f), header(h), hasImportSlots(false),
-      hasImportSites(false), relaxed(false), ineligibleForICF(false),
-      referencesLocalImport(false), repl(this) {
+    : Chunk(k), file(f), header(h), hasImportSlots(false), edited(false),
+      relaxed(false), ineligibleForICF(false), repl(this) {
   // Initialize relocs.
   if (file)
     setRelocs(file->getCOFFObj()->getRelocations(header));
@@ -498,8 +496,8 @@ static void moveAddend(const SectionChunk *sc, const coff_relocation &rel,
 void SectionChunk::writeTo(uint8_t *buf) const {
   if (!hasData)
     return;
-  if (relaxed) {
-    writeRelaxed(this, buf);
+  if (edited) {
+    writeEdited(this, buf);
     return;
   }
   // Copy section contents from source object file to output file, except the
@@ -510,7 +508,6 @@ void SectionChunk::writeTo(uint8_t *buf) const {
 
   // Apply relocations.
   size_t inputSize = getSize();
-  bool rewrites = rewritesRelocations();
   for (const coff_relocation &rel : getRelocs()) {
     // Check for an invalid relocation offset. This check isn't perfect, because
     // we don't have the relocation size, which is only known after checking the
@@ -521,13 +518,9 @@ void SectionChunk::writeTo(uint8_t *buf) const {
       continue;
     }
 
-    applyRelocation(buf + rel.VirtualAddress, rel, rewrites);
+    applyRelocation(buf + rel.VirtualAddress, rel);
   }
 
-  if (getArch() == Triple::x86_64 && file->hasLinkFusions())
-    writeFusedCalls(this, buf);
-  if (getArch() == Triple::aarch64 && file->hasLinkFusions())
-    writeFusedArm64(this, buf);
   if (getArch() == Triple::x86_64 && file->hasLinkCoverage())
     writeCoverageValues(this, buf, 0, inputSize);
 }
@@ -549,23 +542,12 @@ bool SectionChunk::isSectionRelative(const coff_relocation &rel) const {
   }
 }
 
-Defined *SectionChunk::getImportSiteTarget(const coff_relocation &rel) const {
-  if (!hasImportSites ||
-      !file->symtab.ctx.importSites.contains({this, rel.VirtualAddress}))
+Defined *SectionChunk::getEditTarget(const coff_relocation &rel) const {
+  if (!edited)
     return nullptr;
-  Symbol *s = file->getSymbol(rel.SymbolTableIndex);
-  if (auto *thunk = dyn_cast<DefinedImportThunk>(s))
-    return thunk->wrappedSym;
-  // Data that resolved to its import, and a function whose address is a DLL's
-  // instance, are reached through the import's entry.
-  if (DefinedImportData *offer = file->symtab.offeredFunctions.lookup(s))
-    return offer;
-  if (DefinedImportData *offer = file->symtab.preemptedOffers.lookup(s))
-    return offer;
-  auto *data = cast<DefinedImportData>(s);
-  if (data->isRuntimePseudoReloc)
-    return data->file->impSym;
-  return cast<Defined>(data->file->thunkSym);
+  const RelaxEdit *e = file->symtab.ctx.relaxations.find(this)->second.findEdit(
+      rel.VirtualAddress);
+  return e ? e->target : nullptr;
 }
 
 Defined *SectionChunk::getBranchTarget(const coff_relocation &rel,
@@ -602,72 +584,17 @@ SectionChunk::getImportSlot(const coff_relocation &rel) const {
   return &*it;
 }
 
-bool SectionChunk::rewritesRelocations() const {
-  // On ARM64, a reference to a local import is relaxed in place and a branch to
-  // a preempted offer is retargeted, so a chunk with neither needs no rewrite.
-  // ARM64EC and hybrid images keep rewriting every ARM64 relocation, as their
-  // local imports are bound through the x86-64 path.
-  bool arm64Rewrite = getArch() == Triple::aarch64 &&
-                      (referencesLocalImport ||
-                       !file->symtab.preemptedOffers.empty() ||
-                       getMachine() != ARM64 ||
-                       file->symtab.ctx.hybridSymtab.has_value());
-  return hasImportSlots || hasImportSites || relaxed || arm64Rewrite ||
-         file->hasLinkRecords() || !file->symtab.ctx.relaxations.empty();
-}
-
-void SectionChunk::applyRelocation(uint8_t *off, const coff_relocation &rel,
-                                   bool rewrites) const {
-  auto *sym = dyn_cast_or_null<Defined>(file->getSymbol(rel.SymbolTableIndex));
-  uint16_t type = rel.Type;
-  std::optional<LinkSiteForm> rewrite;
-  int64_t foldedAddend = 0;
-  if (rewrites) {
-    // The loader writes an in-place import slot; until then it holds the
-    // value of its lookup table entry, which the loader requires.
-    if (const ImportSlot *slot = getImportSlot(rel)) {
-      slot->lookup->writeTo(off);
-      return;
-    }
-
-    // A fused load nothing reads reaches no symbol.
-    if (getArch() == Triple::x86_64 && file->hasLinkFusions() &&
-        writeFusedSite(this, rel, off))
-      return;
-
-    if (sym)
-      sym = getBranchTarget(rel, sym);
-
-    // The address of an imported function that code takes becomes a load of
-    // its import address table entry, and a load of a delay-loaded import's
-    // entry the address of its thunk, so that code agrees with static data.
-    // Each site was verified when imports were bound.
-    if (Defined *target = getImportSiteTarget(rel)) {
-      bool load = isa<DefinedImportData>(target);
-      if (getArch() == Triple::aarch64) {
-        if (type == IMAGE_REL_ARM64_PAGEOFFSET_12A) {
-          setArm64Opcode(off, 0xF9400000); // ldr
-          type = IMAGE_REL_ARM64_PAGEOFFSET_12L;
-        } else if (type == IMAGE_REL_ARM64_PAGEOFFSET_12L) {
-          setArm64Opcode(off, 0x91000000); // add
-          type = IMAGE_REL_ARM64_PAGEOFFSET_12A;
-        }
-      } else {
-        off[-2] = load ? 0x8B : 0x8D;
-      }
-      sym = target;
-    }
-
-    // A reference through the import pointer of a symbol in the image may
-    // reach the symbol directly instead, with the constant of an add the
-    // linker folds into it.
-    if (auto *li = dyn_cast_or_null<DefinedLocalImport>(sym)) {
-      if (relaxLocalImport(this, rel, off, li, sym, type, rewrite))
-        return;
-      if (rewrite && file->hasLinkFusions())
-        foldedAddend = takeFusedAdd(this, rel, off, *rewrite);
-    }
+void SectionChunk::applyRelocation(uint8_t *off,
+                                   const coff_relocation &rel) const {
+  // The loader writes an in-place import slot; until then it holds the value
+  // of its lookup table entry, which the loader requires.
+  if (const ImportSlot *slot = getImportSlot(rel)) {
+    slot->lookup->writeTo(off);
+    return;
   }
+  auto *sym = dyn_cast_or_null<Defined>(file->getSymbol(rel.SymbolTableIndex));
+  if (sym)
+    sym = getBranchTarget(rel, sym);
 
   // Get the output section of the symbol for this relocation.  The output
   // section is needed to compute SECREL and SECTION relocations used in debug
@@ -686,18 +613,15 @@ void SectionChunk::applyRelocation(uint8_t *off, const coff_relocation &rel,
     return;
   }
 
-  uint64_t s = sym->getRVA() + foldedAddend;
+  uint64_t s = sym->getRVA();
 
   // A place in code that the linker resizes moves relative to its symbol.
-  if (rewrites)
-    if (auto *d = dyn_cast<DefinedRegular>(sym))
-      if (SectionChunk *target = d->getChunk(); target && target->relaxed)
-        moveAddend(this, rel, off, type, target, d->getValue());
+  if (auto *d = dyn_cast<DefinedRegular>(sym))
+    if (SectionChunk *target = d->getChunk(); target && target->relaxed)
+      moveAddend(this, rel, off, rel.Type, target, d->getValue());
 
   // Compute the RVA of the relocation for relative relocations.
   uint64_t p = rva + getOutputOffset(rel.VirtualAddress);
-  if (rewrite && !rewriteLocalImportSite(off, *rewrite, s, p))
-    return;
   uint64_t imageBase = ctx.config.imageBase;
   switch (getArch()) {
   case Triple::x86_64:
@@ -710,7 +634,7 @@ void SectionChunk::applyRelocation(uint8_t *off, const coff_relocation &rel,
     applyRelARM(off, rel.Type, os, s, p, imageBase);
     break;
   case Triple::aarch64:
-    applyRelARM64(off, type, os, s, p, imageBase);
+    applyRelARM64(off, rel.Type, os, s, p, imageBase);
     break;
   case Triple::mipsel:
     applyRelMIPS(off, rel.Type, os, s, p, imageBase);
@@ -747,7 +671,6 @@ void SectionChunk::writeAndRelocateSubsection(ArrayRef<uint8_t> sec,
   size_t vaBegin = std::distance(sec.begin(), subsec.begin());
   size_t vaEnd = std::distance(sec.begin(), subsec.end());
   memcpy(buf, subsec.data(), subsec.size());
-  bool rewrites = rewritesRelocations();
   for (; nextRelocIndex < relocsSize; ++nextRelocIndex) {
     const coff_relocation &rel = relocsData[nextRelocIndex];
     // Only apply relocations that apply to this subsection. These checks
@@ -757,7 +680,7 @@ void SectionChunk::writeAndRelocateSubsection(ArrayRef<uint8_t> sec,
       continue;
     if (rel.VirtualAddress + 1 >= vaEnd)
       break;
-    applyRelocation(&buf[rel.VirtualAddress - vaBegin], rel, rewrites);
+    applyRelocation(&buf[rel.VirtualAddress - vaBegin], rel);
   }
   if (file->hasLinkCoverage())
     writeCoverageValues(this, buf, vaBegin, vaEnd);

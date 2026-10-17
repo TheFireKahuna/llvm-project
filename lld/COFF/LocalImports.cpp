@@ -204,101 +204,36 @@ bool isValueOnlyLoad(const SectionChunk *sc, size_t i, LinkSiteForm form,
          adrp.destRegister == ldr.baseRegister;
 }
 
-// Rewrites the described load whose REL32 field is at off, `mov r64,
-// [rip+d]` with a REX or REX2 prefix, to materialise zero instead, in the same
-// length: `mov r/m64, imm32` with the register moved from ModRM.reg to
-// ModRM.rm, and so its high bits from R to B in the prefix, as lld/ELF's
-// relaxGotNoPic moves them. REX is 0100WRXB, and REX2's payload is
-// M R4 X4 B4 W R3 X3 B3; the X and B bits, which a RIP-relative operand
-// ignores, are cleared.
-static void rewriteZeroLoad(uint8_t *off, bool isRex2) {
-  uint8_t rex = off[-3];
-  if (isRex2)
-    off[-3] = (rex & 0x08) | (rex & 0x44) >> 2;
-  else
-    off[-3] = (rex & 0xF8) | (rex & 0x4) >> 2;
-  off[-2] = 0xC7;
-  off[-1] = 0xC0 | (off[-1] & 0x38) >> 3;
-  write32le(off, 0);
-}
-
-// Rewrites the described call whose REL32 field is at off, `call [rip+d]`
-// through a pointer that holds zero, to call zero in the same length:
-// `xor r11d, r11d; call r11`. The call pushes the same return address and
-// faults at the same address. R11 carries no argument to a callee that does
-// not exist, and is the linker's scratch register at a call.
-static void rewriteZeroCall(uint8_t *off) {
-  static const uint8_t call[] = {0x45, 0x31, 0xDB, 0x41, 0xFF, 0xD3};
-  memcpy(off - 2, call, sizeof(call));
-}
-
-// Rewrites the described instruction whose REL32 field is at off, a reference
-// through the import pointer of a symbol in the image at s, to reach the
-// symbol directly, keeping the instruction's length and the address of the
-// instruction after it. A load becomes `lea` and a call `addr32 call rel32`.
-// A jump becomes `jmp rel32` at its first byte, followed by int3: the Windows
-// unwinder recognises an epilogue only by the instruction that ends it, and
-// accepts no prefix but BND before a direct jump.
-bool rewriteLocalImportSite(uint8_t *off, LinkSiteForm form, uint64_t s,
-                            uint64_t p) {
+// Rewrites the described instruction of form whose REL32 field is rel, a
+// reference through li, to reach li's symbol directly in the same length: a
+// load becomes lea and a call addr32 call rel32, or each materialises zero
+// for a pointer that holds it, and a jump becomes jmp rel32 at its first
+// byte, followed by int3. Where the linker resizes the code, a call or jump
+// drops the bytes after the direct one.
+static void addSiteEdit(SectionChunk *sc, const coff_relocation &rel,
+                        LinkSiteForm form, DefinedLocalImport *li) {
+  uint32_t off = rel.VirtualAddress;
+  Defined *target = li->getTarget();
+  bool zero = isZeroPointer(li);
   switch (form) {
-  case LinkSiteLoad:
-  case LinkSiteLoadREX2:
-    off[-2] = 0x8D;
-    return true;
   case LinkSiteCall:
-    off[-2] = 0x67;
-    off[-1] = 0xE8;
-    return true;
+    addEdit(sc, {off - 2, 6, zero ? 6u : 5u,
+                 zero ? RelaxEdit::ZeroCall : RelaxEdit::DirectCall, target});
+    break;
   case LinkSiteJump:
-  case LinkSiteJumpOnePrefix: {
-    uint8_t *start = off - (form == LinkSiteJump ? 2 : 3);
-    uint64_t end = p - (off - start) + 5;
-    start[0] = 0xE9;
-    write32le(start + 1, s - end);
-    memset(start + 5, 0xCC, off + 4 - (start + 5));
-    return false;
+    addEdit(sc, {off - 2, 6, 5, RelaxEdit::DirectJump, target});
+    break;
+  case LinkSiteJumpOnePrefix:
+    addEdit(sc, {off - 3, 7, 5, RelaxEdit::DirectJump, target});
+    break;
+  default: {
+    uint32_t size = form == LinkSiteLoadREX2 ? 8 : 7;
+    addEdit(sc, {off + 4 - size, size, size,
+                 zero ? RelaxEdit::ZeroLoad : RelaxEdit::Load, target, nullptr,
+                 0x8D});
+    break;
   }
-  default:
-    llvm_unreachable("not a rewritten form");
   }
-}
-
-// A described call, jump or pointer load through the import pointer of a
-// symbol in the image reaches the symbol directly. Its bytes were verified
-// when local imports were bound.
-// On ARM64, every adrp and ldr of a pointer that no other instruction reads
-// becomes adrp and add of its symbol; data still reads the pointer.
-bool relaxLocalImport(const SectionChunk *sc, const coff_relocation &rel,
-                      uint8_t *off, DefinedLocalImport *li, Defined *&sym,
-                      uint16_t &type, std::optional<LinkSiteForm> &rewrite) {
-  if (sc->getArch() == Triple::aarch64) {
-    if (li->getChunk()->bypassed && (type == IMAGE_REL_ARM64_PAGEBASE_REL21 ||
-                                     type == IMAGE_REL_ARM64_PAGEOFFSET_12L)) {
-      // Zero is materialised by movz into the register each writes.
-      if (isZeroPointer(li)) {
-        setArm64Opcode(off, 0xD2800000); // movz
-        return true;
-      }
-      sym = li->getTarget();
-      if (type == IMAGE_REL_ARM64_PAGEOFFSET_12L) {
-        setArm64Opcode(off, 0x91000000); // add
-        type = IMAGE_REL_ARM64_PAGEOFFSET_12A;
-      }
-    }
-  } else if (const ObjFile::RelocFact *f = sc->file->relocFact(sc, rel);
-             f && f->hasRewrite) {
-    rewrite = f->rewriteForm;
-    if (isZeroPointer(li)) {
-      if (*rewrite == LinkSiteCall)
-        rewriteZeroCall(off);
-      else
-        rewriteZeroLoad(off, *rewrite == LinkSiteLoadREX2);
-      return true;
-    }
-    sym = li->getTarget();
-  }
-  return false;
 }
 
 // The register that the described load whose REL32 field is at off fills:
@@ -617,6 +552,10 @@ static void bindFusedArm64(SectionChunk *sc,
     f.dead = !keptLoads.contains(f.offset) && getPageOffsetAt(sc, f.offset);
     dead += f.dead;
   }
+  // writeFusedArm64 writes what reaches the data directly, as the chunk is.
+  sc->edited |= llvm::any_of(fusions, [](const ObjFile::LinkFusion &f) {
+    return f.dead || f.form == ObjFile::LinkFusion::Direct;
+  });
 }
 
 // A fused call names the load that fills its register. Each that stays a call
@@ -657,6 +596,15 @@ void bindFusedCalls(SymbolTable &symtab) {
         continue;
       }
 
+      // An access reaches the data directly only where the code may be
+      // resized, since a RIP-relative operand is longer than one with a base
+      // register and a small displacement; so does one that only reads data
+      // that never changes, reading the image's copy of it while the load
+      // stays for what else reads it.
+      bool covered = file->isCovered(sc);
+      Relaxation *edits = nullptr;
+      if (auto it = ctx.relaxations.find(sc); it != ctx.relaxations.end())
+        edits = &it->second;
       DenseSet<uint32_t> keptLoads;
       for (ObjFile::LinkFusion &f : fusions) {
         if (f.isLoad)
@@ -671,40 +619,43 @@ void bindFusedCalls(SymbolTable &symtab) {
           continue;
         }
         unsigned reg = getLoadRegister(data, f.load, *loadForm);
+        auto *li = dyn_cast<DefinedLocalImport>(s);
+        bool reaches = reachesDirectly(file, *loadRel);
 
-        // An access reaches the data directly only where the code may be
-        // resized, since a RIP-relative operand is longer than one with a
-        // base register and a small displacement.
         if (f.use == ObjFile::LinkFusion::Access) {
           if (!isFusedAccess(data, f, reg)) {
             mismatch(f.offset);
             continue;
           }
-          // One that only reads data that never changes may read the
-          // image's copy of it while the load stays for what else reads it.
-          if (file->isCovered(sc) && reachesDirectly(file, *loadRel)) {
-            f.form = ObjFile::LinkFusion::Direct;
-          } else {
+          if (!covered || !reaches)
             keptLoads.insert(f.load);
-            if (f.valueRead && file->isCovered(sc) &&
-                symtab.immutableReads.contains(s))
-              f.form = ObjFile::LinkFusion::Direct;
+          if (covered &&
+              (reaches || (f.valueRead && symtab.immutableReads.contains(s)))) {
+            unsigned dispSize = f.disp == 1 ? 1 : f.disp == 2 ? 4 : 0;
+            addEdit(sc, {f.offset, f.length,
+                         uint32_t(f.length - dispSize - f.sib + 4),
+                         RelaxEdit::Access,
+                         li ? li->getTarget() : symtab.immutableReads.lookup(s),
+                         &f});
+            ++direct;
           }
           ++accesses;
-          direct += f.form == ObjFile::LinkFusion::Direct;
           continue;
         }
+        // The load takes the sum of an add, which then goes.
         if (f.use == ObjFile::LinkFusion::Add) {
-          if (!getFusedAddLength(data, f, reg)) {
+          unsigned length = getFusedAddLength(data, f, reg);
+          if (!length) {
             mismatch(f.offset);
             continue;
           }
-          if (reachesDirectly(file, *loadRel)) {
-            f.form = ObjFile::LinkFusion::Direct;
-            ctx.fusedAdds[{sc, f.load}] = &f;
+          RelaxEdit *load = edits ? edits->findEdit(f.load) : nullptr;
+          if (reaches && load && load->kind == RelaxEdit::Load) {
+            load->fusion = &f;
+            addEdit(sc, {f.offset, length, 0, RelaxEdit::Dispose, nullptr, &f});
+            ++direct;
           }
           ++adds;
-          direct += f.form == ObjFile::LinkFusion::Direct;
           continue;
         }
 
@@ -719,30 +670,59 @@ void bindFusedCalls(SymbolTable &symtab) {
           mismatch(f.load);
           continue;
         }
-        if (goesThroughRegister(file, *loadRel))
-          keptLoads.insert(f.load);
-        else if (isa<DefinedLocalImport>(s))
-          f.form = ObjFile::LinkFusion::Direct;
-        else if (isa<Defined>(s))
-          f.form = ObjFile::LinkFusion::ThroughPointer;
-        else
-          keptLoads.insert(f.load);
         ++calls;
-        throughRegister += f.form == ObjFile::LinkFusion::ThroughRegister;
+        bool through = goesThroughRegister(file, *loadRel);
+        if (!through && li) {
+          addEdit(sc, {f.offset, uint32_t(size), 5,
+                       f.isJump ? RelaxEdit::DirectJump : RelaxEdit::DirectCall,
+                       li->getTarget()});
+        } else if (!through && isa<Defined>(s)) {
+          addEdit(sc,
+                  {f.offset, uint32_t(size), uint32_t(size),
+                   f.isJump ? RelaxEdit::PointerJump : RelaxEdit::PointerCall,
+                   cast<Defined>(s)});
+        } else {
+          // Resized, a jump keeps its first three bytes, REX.W jmp through
+          // the register, and the int3 after it goes; a call keeps its last
+          // bytes, the call through the register, and the segment overrides
+          // before it go.
+          keptLoads.insert(f.load);
+          ++throughRegister;
+          if (covered && f.isJump)
+            addEdit(sc, {f.offset, 7, 3, RelaxEdit::KeepHead});
+          else if (covered)
+            addEdit(sc, {f.offset, 6,
+                         f.reg >= 16  ? 4u
+                         : f.reg >= 8 ? 3u
+                                      : 2u,
+                         RelaxEdit::KeepTail});
+        }
       }
+      // A load that nothing reads goes. One rewritten to reach its data
+      // directly keeps what it becomes should the code keep its size after
+      // all, and its accesses their register.
       for (ObjFile::LinkFusion &f : fusions) {
         if (!f.isLoad)
           continue;
         ++loads;
-        if (keptLoads.contains(f.offset))
+        const coff_relocation *rel = getRel32At(sc, f.offset);
+        if (keptLoads.contains(f.offset) || !rel)
           continue;
-        if (const coff_relocation *rel = getRel32At(sc, f.offset)) {
-          if (isLoad(getDescribedSite(sc, *rel)))
-            f.dead = true;
-          else
-            mismatch(f.offset);
+        std::optional<LinkSiteForm> form = getDescribedSite(sc, *rel);
+        if (!isLoad(form)) {
+          mismatch(f.offset);
+          continue;
         }
-        dead += f.dead;
+        uint32_t size = form == LinkSiteLoadREX2 ? 8 : 7;
+        if (RelaxEdit *e = edits ? edits->findEdit(f.offset) : nullptr) {
+          e->kind = RelaxEdit::Dispose;
+          e->relaxedSize = 0;
+          e->fusion = &f;
+        } else {
+          addEdit(sc, {f.offset + 4 - size, size, 0, RelaxEdit::Dispose,
+                       nullptr, &f});
+        }
+        ++dead;
       }
     }
   }
@@ -753,85 +733,6 @@ void bindFusedCalls(SymbolTable &symtab) {
   if (accesses || adds)
     Log(ctx) << "Fused accesses and adds: " << direct << " of "
              << accesses + adds << " direct";
-}
-
-// Disposes of the dead load of size bytes at start, at RVA rva, without moving
-// anything. Segment overrides there are decoded as prefixes of the
-// instruction that follows, which then executes alone, if the two together
-// are fifteen bytes or fewer, the most a processor decodes; and if that
-// instruction transfers control, only if it then crosses no 32-byte boundary
-// it did not cross before, which a branch pays for on many processors.
-// Otherwise the load becomes one no-operation of its length.
-static void disposeOfLoad(uint8_t *start, uint64_t rva, unsigned size,
-                          const ObjFile::LinkFusion &f) {
-  if (f.nextSize && size + f.nextSize <= 15 &&
-      (!f.nextTransfers || rva / 32 == (rva + size) / 32)) {
-    memset(start, 0x2E, size);
-    return;
-  }
-  static const uint8_t nop7[] = {0x0F, 0x1F, 0x80, 0x00, 0x00, 0x00, 0x00};
-  static const uint8_t nop8[] = {0x0F, 0x1F, 0x84, 0x00,
-                                 0x00, 0x00, 0x00, 0x00};
-  memcpy(start, size == 7 ? nop7 : nop8, size);
-}
-
-bool writeFusedSite(const SectionChunk *sc, const coff_relocation &rel,
-                    uint8_t *off) {
-  // A load's field is REL32; most relocations are not a load's.
-  if (rel.Type != IMAGE_REL_AMD64_REL32)
-    return false;
-  const ObjFile::LinkFusion *f =
-      sc->file->getLinkFusion(sc, rel.VirtualAddress);
-  if (!f || !f->isLoad || !f->dead)
-    return false;
-  // The load's prefix, opcode and ModRM byte precede its displacement.
-  LinkSiteForm form = sc->file->relocFact(sc, rel)->form;
-  unsigned size = form == LinkSiteLoadREX2 ? 8 : 7;
-  disposeOfLoad(off + 4 - size, sc->getRVA() + rel.VirtualAddress + 4 - size,
-                size, *f);
-  return true;
-}
-
-// A fused call that becomes direct is written as a call through its
-// function's local import pointer would be rewritten, and one that reads its
-// pointer as the same call through memory, each in the bytes of the call
-// through memory, whose displacement follows its opcode and ModRM byte, and a
-// jump's REX.W.
-void writeFusedCalls(const SectionChunk *sc, uint8_t *buf) {
-  for (const ObjFile::LinkFusion &f : sc->file->getLinkFusions(sc)) {
-    if (f.isLoad || f.form == ObjFile::LinkFusion::ThroughRegister)
-      continue;
-    const coff_relocation *loadRel = getRel32At(sc, f.load);
-    // An add whose sum the load takes is one no-operation of its length,
-    // and an access stays as it is where the code keeps its size.
-    if (f.use == ObjFile::LinkFusion::Add) {
-      ArrayRef<uint8_t> data = sc->getContents();
-      LinkSiteForm form = sc->file->relocFact(sc, *loadRel)->form;
-      unsigned length =
-          getFusedAddLength(data, f, getLoadRegister(data, f.load, form));
-      writeNops(buf + f.offset, length, length);
-      continue;
-    }
-    if (f.use != ObjFile::LinkFusion::Call)
-      continue;
-    auto *s = cast<Defined>(sc->file->getSymbol(loadRel->SymbolTableIndex));
-    unsigned disp = f.isJump ? 3 : 2;
-    uint8_t *off = buf + f.offset + disp;
-    uint64_t p = sc->getRVA() + f.offset + disp;
-    uint64_t target;
-    if (f.form == ObjFile::LinkFusion::Direct) {
-      target = cast<DefinedLocalImport>(s)->getTarget()->getRVA();
-      if (!rewriteLocalImportSite(
-              off, f.isJump ? LinkSiteJumpOnePrefix : LinkSiteCall, target, p))
-        continue;
-    } else {
-      target = s->getRVA();
-      static const uint8_t call[] = {0xFF, 0x15};
-      static const uint8_t jump[] = {0x48, 0xFF, 0x25};
-      memcpy(off - disp, f.isJump ? jump : call, disp);
-    }
-    write32le(off, target - p - 4);
-  }
 }
 
 void writeFusedArm64(const SectionChunk *sc, uint8_t *buf) {
@@ -911,132 +812,6 @@ void writeFusedArm64(const SectionChunk *sc, uint8_t *buf) {
     }
     write32le(buf + l.offset, nop);
   }
-}
-
-int64_t takeFusedAdd(const SectionChunk *sc, const coff_relocation &rel,
-                     uint8_t *off, LinkSiteForm form) {
-  const ObjFile::LinkFusion *f =
-      sc->file->symtab.ctx.fusedAdds.lookup({sc, rel.VirtualAddress});
-  if (!f)
-    return 0;
-  // ModRM.reg, and its high bits: REX.R, or REX2's R3 with R4 clear.
-  off[-1] = (off[-1] & 0xC7) | (f->reg & 7) << 3;
-  if (form == LinkSiteLoadREX2)
-    off[-3] = (off[-3] & ~0x44) | (f->reg & 8) >> 1;
-  else
-    off[-3] = (off[-3] & ~0x04) | (f->reg & 8) >> 1;
-  return f->addend;
-}
-
-void addSiteEdits(const SectionChunk *sc, std::vector<RelaxEdit> &edits) {
-  ObjFile *file = sc->file;
-  ArrayRef<uint8_t> data = sc->getContents();
-  // A jump that ends its function, which its target then follows, goes.
-  if (auto it = file->symtab.ctx.tailJumps.find(sc);
-      it != file->symtab.ctx.tailJumps.end())
-    edits.push_back({it->second - 1, 5, 0, 0, RelaxEdit::Delete});
-  // A call or jump through a local import pointer becomes the direct one.
-  for (const coff_relocation &rel : sc->getRelocs()) {
-    const ObjFile::RelocFact *f = file->relocFact(sc, rel);
-    std::optional<LinkSiteForm> form;
-    if (f && f->hasRewrite)
-      form = f->rewriteForm;
-    if (!form || *form == LinkSiteLoad || *form == LinkSiteLoadREX2)
-      continue;
-    auto *li = cast<DefinedLocalImport>(file->getSymbol(rel.SymbolTableIndex));
-    if (isZeroPointer(li))
-      continue;
-    uint32_t off = rel.VirtualAddress;
-    if (*form == LinkSiteCall)
-      edits.push_back(
-          {off - 2, 6, 5, 0, RelaxEdit::DirectCall, false, li->getTarget()});
-    else if (*form == LinkSiteJump)
-      edits.push_back(
-          {off - 2, 6, 5, 0, RelaxEdit::DirectJump, false, li->getTarget()});
-    else
-      edits.push_back(
-          {off - 3, 7, 5, 0, RelaxEdit::DirectJump, false, li->getTarget()});
-  }
-
-  for (const ObjFile::LinkFusion &f : file->getLinkFusions(sc)) {
-    if (f.isLoad) {
-      if (!f.dead)
-        continue;
-      LinkSiteForm form =
-          file->relocFact(sc, *getRel32At(sc, f.offset))->form;
-      uint32_t size = form == LinkSiteLoadREX2 ? 8 : 7;
-      edits.push_back({f.offset + 4 - size, size, 0, 0, RelaxEdit::Delete});
-      continue;
-    }
-    const coff_relocation *loadRel = getRel32At(sc, f.load);
-    if (!loadRel)
-      continue;
-    auto *s =
-        dyn_cast_or_null<Defined>(file->getSymbol(loadRel->SymbolTableIndex));
-    Defined *target = nullptr;
-    if (auto *li = dyn_cast_or_null<DefinedLocalImport>(s))
-      target = li->getTarget();
-    else if (f.valueRead)
-      target = file->symtab.immutableReads.lookup(s);
-    switch (f.use) {
-    case ObjFile::LinkFusion::Access: {
-      if (f.form != ObjFile::LinkFusion::Direct)
-        break;
-      unsigned dispSize = f.disp == 1 ? 1 : f.disp == 2 ? 4 : 0;
-      edits.push_back({f.offset, f.length,
-                       uint32_t(f.length - dispSize - f.sib + 4), 0,
-                       RelaxEdit::Access, false, target, &f});
-      break;
-    }
-    case ObjFile::LinkFusion::Add: {
-      if (f.form != ObjFile::LinkFusion::Direct)
-        break;
-      LinkSiteForm form = file->relocFact(sc, *loadRel)->form;
-      unsigned length =
-          getFusedAddLength(data, f, getLoadRegister(data, f.load, form));
-      edits.push_back({f.offset, length, 0, 0, RelaxEdit::Delete});
-      break;
-    }
-    case ObjFile::LinkFusion::Call: {
-      uint32_t size = f.isJump ? 7 : 6;
-      if (f.form == ObjFile::LinkFusion::Direct) {
-        edits.push_back(
-            {f.offset, size, 5, 0,
-             f.isJump ? RelaxEdit::DirectJump : RelaxEdit::DirectCall, false,
-             target});
-      } else if (f.form == ObjFile::LinkFusion::ThroughPointer) {
-        edits.push_back(
-            {f.offset, size, size, 0,
-             f.isJump ? RelaxEdit::PointerJump : RelaxEdit::PointerCall, false,
-             s});
-      } else if (f.isJump) {
-        // The jump keeps its first three bytes, REX.W jmp through the
-        // register, and the int3 after it goes.
-        edits.push_back({f.offset, size, 3, 0, RelaxEdit::KeepHead});
-      } else {
-        // The call keeps its last bytes, the call through the register, and
-        // the segment overrides before it go.
-        uint32_t length = f.reg >= 16 ? 4 : f.reg >= 8 ? 3 : 2;
-        edits.push_back({f.offset, size, length, 0, RelaxEdit::KeepTail});
-      }
-      break;
-    }
-    }
-  }
-}
-
-void keepFusedAccesses(const SectionChunk *sc) {
-  MutableArrayRef<ObjFile::LinkFusion> fusions = sc->file->getLinkFusions(sc);
-  DenseSet<uint32_t> loads;
-  for (ObjFile::LinkFusion &f : fusions) {
-    if (f.use != ObjFile::LinkFusion::Access || f.isLoad)
-      continue;
-    f.form = ObjFile::LinkFusion::ThroughRegister;
-    loads.insert(f.load);
-  }
-  for (ObjFile::LinkFusion &f : fusions)
-    if (f.isLoad && loads.contains(f.offset))
-      f.dead = false;
 }
 
 // Whether the references of file to local import pointers are reported only if
@@ -1164,6 +939,15 @@ void bindLocalImports(SymbolTable &symtab) {
         cellsByFile[cell->file].push_back(cast<LocalImportChunk>(c));
   SmallPtrSet<LocalImportChunk *, 4> named;
 
+  // On ARM64, the adrp and ldr instructions of each pointer, rewritten once
+  // every reference to it is known to be.
+  struct Arm64Site {
+    SectionChunk *sc;
+    const coff_relocation *rel;
+    DefinedLocalImport *li;
+  };
+  std::vector<Arm64Site> arm64Sites;
+
   SmallVector<DefinedLocalImport *, 0> fileImports;
   for (ObjFile *file : ctx.objFileInstances) {
     if (&file->symtab != &symtab)
@@ -1220,7 +1004,6 @@ void bindLocalImports(SymbolTable &symtab) {
           continue;
         }
         auto *li = cast<DefinedLocalImport>(s);
-        sc->referencesLocalImport = true;
         if (fromData) {
           readByData.insert(li);
           continue;
@@ -1233,11 +1016,12 @@ void bindLocalImports(SymbolTable &symtab) {
         bool rewritable;
         if (arm64) {
           rewritable = canBypass(file, rel) && isArm64PointerLoad(sc, rel);
+          if (rewritable)
+            arm64Sites.push_back({sc, &rel, li});
         } else {
-          // Classify the site once: a call, jump or pointer load through a
-          // bypassable local import, whose bytes are its form's, which the
-          // relaxation and the write then reach without deriving it again. A
-          // jump through a pointer that holds zero keeps reading it.
+          // A call, jump or pointer load through a bypassable local import,
+          // whose bytes are its form's, is rewritten. A jump through a
+          // pointer that holds zero keeps reading it.
           std::optional<LinkSiteForm> form;
           if (canBypass(file, rel)) {
             form = getSiteForm(sc, rel);
@@ -1251,11 +1035,8 @@ void bindLocalImports(SymbolTable &symtab) {
               form.reset();
           }
           rewritable = form.has_value();
-          if (ObjFile::RelocFact *f = file->relocFact(sc, rel)) {
-            f->hasRewrite = rewritable;
-            if (form)
-              f->rewriteForm = *form;
-          }
+          if (form)
+            addSiteEdit(sc, rel, *form, li);
         }
         if (mismatch)
           Err(ctx) << file << ": the instruction at offset 0x"
@@ -1303,6 +1084,16 @@ void bindLocalImports(SymbolTable &symtab) {
     if (!readByData.contains(li))
       li->getChunk()->live = false;
   }
+  // An adrp and ldr of a bypassed pointer become adrp and add of its symbol,
+  // or each movz of zero.
+  for (auto [sc, rel, li] : arm64Sites)
+    if (li->getChunk()->bypassed)
+      addEdit(sc, {rel->VirtualAddress, 4, 4,
+                   isZeroPointer(li) ? RelaxEdit::Arm64Zero
+                   : rel->Type == IMAGE_REL_ARM64_PAGEBASE_REL21
+                       ? RelaxEdit::Arm64Page
+                       : RelaxEdit::Arm64Add,
+                   li->getTarget()});
   llvm::erase_if(localImportChunks, [](Chunk *c) {
     auto *li = cast<LocalImportChunk>(c);
     if (li->cell)

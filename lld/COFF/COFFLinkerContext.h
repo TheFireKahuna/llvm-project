@@ -209,28 +209,16 @@ public:
   // the order the sections were bound.
   llvm::MapVector<const SectionChunk *, std::vector<ImportSlot>> importSlots;
 
-  // The instructions that take the address of an import, by section and the
-  // offset of the relocation, which are rewritten to take it as static data
-  // does (see SectionChunk::getImportSiteTarget).
-  llvm::DenseSet<std::pair<const SectionChunk *, uint32_t>> importSites;
-
   // Each import library member's vague-entity record, parsed once and keyed by
   // the member's buffer, so the closures the passes build read it without a
   // reparse.
   llvm::DenseMap<const char *, ParsedVagueRecord *> vagueRecordCache;
 
-  // The fused adds that a load takes the sum of, by section and the offset of
-  // the load's relocation.
-  llvm::DenseMap<std::pair<const SectionChunk *, uint32_t>,
-                 const ObjFile::LinkFusion *>
-      fusedAdds;
-
-  // How the code of each covered section chunk the linker resizes is laid out.
+  // The changes the linker makes to the code of each section chunk it
+  // changes, and how it lays out the code of each it resizes.
   llvm::DenseMap<const SectionChunk *, Relaxation> relaxations;
-  // The jumps that end their functions which the image leaves out, by chunk,
-  // at the offset of each's displacement, and the chunks whose functions
-  // those functions then run into.
-  llvm::DenseMap<const SectionChunk *, uint32_t> tailJumps;
+  // The chunks whose functions run into them from a function whose jump to
+  // them the image leaves out.
   llvm::DenseSet<const Chunk *> tailJumpTargets;
 
   // The state of the link's KCFI checks.

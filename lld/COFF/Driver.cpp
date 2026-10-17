@@ -17,7 +17,6 @@
 #include "LocalImports.h"
 #include "MarkLive.h"
 #include "MinGW.h"
-#include "Relax.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
 #include "VagueEntities.h"
@@ -3608,10 +3607,6 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     findKeepUniqueSections(ctx);
     doICF(ctx);
   }
-
-  // Resize the code that objects describe completely once the forms of its
-  // instructions, and the chunks folding keeps, are settled.
-  relaxSections(ctx);
 
   // Write the result.
   writeResult(ctx);

@@ -288,14 +288,9 @@ public:
   struct RelocFact {
     uint32_t interior = 0;
     llvm::COFF::LinkSiteForm form = llvm::COFF::LinkSiteOther;
-    // The form in which a call, jump or pointer load through a bypassable
-    // local import is rewritten to reach its symbol directly, classified once
-    // when local imports are bound and read by the relaxation and the write.
-    llvm::COFF::LinkSiteForm rewriteForm = llvm::COFF::LinkSiteOther;
     bool hasSite = false;
     bool hasInterior = false;
     bool callOnly = false;
-    bool hasRewrite = false;
   };
 
   // A site the object's records describe as a load of an import pointer whose

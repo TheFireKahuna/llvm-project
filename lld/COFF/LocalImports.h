@@ -17,12 +17,9 @@
 #include <vector>
 
 namespace lld::coff {
-class Defined;
-class DefinedLocalImport;
 class ObjFile;
 class SectionChunk;
 class SymbolTable;
-struct RelaxEdit;
 
 // Whether the bytes around a REL32 field at off are those of the form an
 // object describes there. They verify the description, which is the only
@@ -71,60 +68,15 @@ void bindPointerCells(SymbolTable &symtab);
 // reads.
 void bindLocalImports(SymbolTable &symtab);
 
-// Rewrites the instruction at off in sc holding rel, a reference to the local
-// import pointer li, to reach li's symbol directly where the instruction may,
-// as bindLocalImports decided. Sets sym and type to the symbol and the
-// relocation type that the rewritten instruction takes, and rewrite to the
-// x86-64 form that rewriteLocalImportSite finishes once the symbol's address
-// is known. Returns true if the instruction now needs no relocation.
-bool relaxLocalImport(const SectionChunk *sc,
-                      const llvm::object::coff_relocation &rel, uint8_t *off,
-                      DefinedLocalImport *li, Defined *&sym, uint16_t &type,
-                      std::optional<llvm::COFF::LinkSiteForm> &rewrite);
-
 // Decides, once local imports are bound, which fused calls go through their
-// register and which fused loads nothing reads.
+// register, which fused accesses and adds reach their data directly and which
+// fused loads nothing reads, and makes the edits of each.
 void bindFusedCalls(SymbolTable &symtab);
-
-// Writes the instruction at off in sc holding rel, where bindFusedCalls
-// decided that nothing reads a fused load. Returns whether it did, in which
-// case the instruction needs no relocation.
-bool writeFusedSite(const SectionChunk *sc,
-                    const llvm::object::coff_relocation &rel, uint8_t *off);
-
-// Writes, into the contents of sc at buf, each fused call that bindFusedCalls
-// decided becomes direct or reads its pointer. A fused call has no
-// relocation of its own.
-void writeFusedCalls(const SectionChunk *sc, uint8_t *buf);
-
-// Where a fused add that the load holding rel, a REL32 relocation, a local
-// import pointer's, serves makes the load take the sum, rewrites the load of
-// the given form, whose field is at off and which is to become lea, to write
-// the add's register, and returns the constant the add adds; zero otherwise.
-int64_t takeFusedAdd(const SectionChunk *sc,
-                     const llvm::object::coff_relocation &rel, uint8_t *off,
-                     llvm::COFF::LinkSiteForm form);
-
-// Adds to edits the changes of size the linker makes to the instructions the
-// object of sc, a covered section, describes there, as local imports and
-// fused calls are bound.
-void addSiteEdits(const SectionChunk *sc, std::vector<RelaxEdit> &edits);
-
-// Keeps each fused access in sc as it is, and each load it reads, where the
-// linker does not resize sc after all.
-void keepFusedAccesses(const SectionChunk *sc);
 
 // Writes, into the contents of sc at buf, an ARM64 chunk, each fused access
 // and add that bindFusedCalls decided reaches the data directly, where the
 // offsets the data's address gives them fit their fields.
 void writeFusedArm64(const SectionChunk *sc, uint8_t *buf);
-
-// Rewrites the described instruction of form whose REL32 field is at off, at
-// RVA p, a reference through the import pointer of a symbol at RVA s, to
-// reach the symbol directly. Returns whether the field is left for the
-// relocation to fill.
-bool rewriteLocalImportSite(uint8_t *off, llvm::COFF::LinkSiteForm form,
-                            uint64_t s, uint64_t p);
 } // namespace lld::coff
 
 #endif

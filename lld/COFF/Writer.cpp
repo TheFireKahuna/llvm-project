@@ -247,8 +247,7 @@ private:
   bool verifyRanges(const std::vector<Chunk *> chunks);
   void createECCodeMap();
   void finalizeAddresses();
-  std::vector<std::tuple<SectionChunk *, uint32_t, Defined *>>
-  findTailJumps();
+  std::vector<std::pair<SectionChunk *, Defined *>> findTailJumps();
   void removeEmptySections();
   void assignOutputSectionIndices();
   void createSymbolAndStringTable();
@@ -717,10 +716,9 @@ static bool isUnwindTable(const SectionChunk *sc);
 // another one takes, since the function and its target then share theirs. A
 // target's prefix that the image leaves out, as it does a type prefix that no
 // pointer reaches, lies before where its chunk begins in the image.
-std::vector<std::tuple<SectionChunk *, uint32_t, Defined *>>
-Writer::findTailJumps() {
+std::vector<std::pair<SectionChunk *, Defined *>> Writer::findTailJumps() {
   llvm::TimeTraceScope timeScope("Find tail jumps");
-  std::vector<std::tuple<SectionChunk *, uint32_t, Defined *>> jumps;
+  std::vector<std::pair<SectionChunk *, Defined *>> jumps;
   if (!identityKnown)
     return jumps;
   for (OutputSection *os : ctx.outputSections) {
@@ -755,7 +753,7 @@ Writer::findTailJumps() {
           llvm::any_of(sc->children(),
                        [](const SectionChunk &c) { return isUnwindTable(&c); }))
         continue;
-      jumps.push_back({sc, field, target});
+      jumps.push_back({sc, target});
     }
   }
   return jumps;
@@ -882,6 +880,7 @@ void Writer::run() {
       ctx.dynamicRelocs = make<DynamicRelocsChunk>();
     createImportTables();
     slots.bind();
+    relaxSections(ctx);
     slots.createResidualFill();
     slots.createOverrideCellFill();
     slots.createNamedCellFill();
@@ -2931,9 +2930,8 @@ void Writer::markDescribedAddressTakes(ObjFile *file,
         form = fact->form;
       if (!form || takesNoAddress(file, sc, reloc, *form))
         continue;
-      // A site rewritten for an import takes the address of what it now
-      // reaches.
-      Symbol *ref = sc->getImportSiteTarget(reloc);
+      // A rewritten site takes the address of what it now reaches.
+      Symbol *ref = sc->getEditTarget(reloc);
       markAddressTake(ref ? ref : file->getSymbol(reloc.SymbolTableIndex),
                       usedSymbols, usedImports);
     }
@@ -2983,7 +2981,7 @@ void Writer::markSymbolsWithRelocations(ObjFile *file,
       if (sc->getImportSlot(reloc))
         continue;
 
-      Symbol *ref = sc->getImportSiteTarget(reloc);
+      Symbol *ref = sc->getEditTarget(reloc);
       if (!ref)
         ref = sc->file->getSymbol(reloc.SymbolTableIndex);
       // An object without guard metadata does not say which import address

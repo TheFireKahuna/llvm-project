@@ -2333,11 +2333,11 @@ struct SlotScan {
     Symbol *firstRef = nullptr;
     std::vector<std::pair<Span, Span>> overlaps;
   };
-  // An instruction that is rewritten unless the import's thunk is its
+  // An instruction rewritten for imp, unless the import's thunk is its
   // address.
   struct Site {
     SectionChunk *chunk;
-    uint32_t offset;
+    RelaxEdit edit;
     DefinedImportData *imp;
   };
   // How the references other than its slots use an import's address: not at
@@ -2354,7 +2354,7 @@ struct SlotScan {
   // On ARM64 the loads of a delay-loaded function's entry are rewritten for
   // the symbol as a whole, since an adrp may serve several loads.
   MapVector<DefinedImportData *,
-            std::vector<std::pair<SectionChunk *, uint32_t>>>
+            std::vector<std::pair<SectionChunk *, RelaxEdit>>>
       delayLoads;
   DenseSet<DefinedImportData *> delayLoadsRead;
   // For each import thunk, the references to it, and those that a slot or a
@@ -2658,6 +2658,19 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
   bool code = sc->header->Characteristics & IMAGE_SCN_CNT_CODE;
   ArrayRef<coff_relocation> relocs = sc->getRelocs();
   SlotScan::Pending p{sc, {}, nullptr, {}};
+  // An instruction that takes the address of an import thunk, or of what a
+  // DLL provides, is rewritten to load it from the import's entry: lea
+  // becomes mov, and the add after an ARM64 adrp a 64-bit ldr.
+  auto addressSite = [&](const coff_relocation &r, DefinedImportData *imp) {
+    uint32_t off = r.VirtualAddress;
+    RelaxEdit edit{off - 3, 7, 7, RelaxEdit::Load, imp, nullptr, 0x8B};
+    if (arm64)
+      edit = {off, 4, 4,
+              r.Type == IMAGE_REL_ARM64_PAGEBASE_REL21 ? RelaxEdit::Arm64Page
+                                                       : RelaxEdit::Arm64Load,
+              imp};
+    scan.addressSites.push_back({sc, edit, imp});
+  };
   for (size_t i = 0, e = relocs.size(); i != e; ++i) {
     const coff_relocation &rel = relocs[i];
     Symbol *s = file->getSymbol(rel.SymbolTableIndex);
@@ -2678,16 +2691,15 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
     if (offer) {
       if (code && arm64 && rel.Type == IMAGE_REL_ARM64_PAGEBASE_REL21 &&
           i + 1 != e && isArm64AddressPair(sc, rel, relocs[i + 1])) {
-        scan.addressSites.push_back({sc, rel.VirtualAddress, offer});
-        scan.addressSites.push_back({sc, relocs[i + 1].VirtualAddress, offer});
-        ++i;
+        addressSite(rel, offer);
+        addressSite(relocs[++i], offer);
         continue;
       }
       if (const ObjFile::RelocFact *fact = file->relocFact(sc, rel);
           code && !arm64 && rel.Type == IMAGE_REL_AMD64_REL32 && fact &&
           fact->hasSite && fact->form == LinkSiteAddress &&
           isSiteForm(sc->getContents(), rel.VirtualAddress, LinkSiteAddress)) {
-        scan.addressSites.push_back({sc, rel.VirtualAddress, offer});
+        addressSite(rel, offer);
         continue;
       }
       if (!code && !isExceptionData(sc) && sc->isAddressWord(rel) &&
@@ -2711,18 +2723,30 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
       scan.use(data, readsWholeEntry(sc, rel, code, arm64) ? SlotScan::Read
                                                            : SlotScan::Other);
       // That of a delay-loaded function: a load of the address in code takes
-      // the thunk's instead.
+      // the thunk's instead, mov becoming lea, and ldr add.
       if (!data->file->thunkSym || !data->file->isDelayLoaded())
         continue;
-      if (!code)
+      auto *thunk = cast<Defined>(data->file->thunkSym);
+      uint32_t off = rel.VirtualAddress;
+      if (!code) {
         scan.delayLoadsRead.insert(data);
-      else if (arm64 && isArm64PointerLoad(sc, rel))
-        scan.delayLoads[data].push_back({sc, rel.VirtualAddress});
-      else if (arm64)
+      } else if (arm64 && isArm64PointerLoad(sc, rel)) {
+        scan.delayLoads[data].push_back(
+            {sc,
+             {off, 4, 4,
+              rel.Type == IMAGE_REL_ARM64_PAGEBASE_REL21 ? RelaxEdit::Arm64Page
+                                                         : RelaxEdit::Arm64Add,
+              thunk}});
+      } else if (arm64) {
         scan.delayLoadsRead.insert(data);
-      else if (std::optional<LinkSiteForm> form = getDescribedSite(sc, rel);
-               form == LinkSiteLoad || form == LinkSiteLoadREX2)
-        scan.addressSites.push_back({sc, rel.VirtualAddress, data});
+      } else if (std::optional<LinkSiteForm> form = getDescribedSite(sc, rel);
+                 form == LinkSiteLoad || form == LinkSiteLoadREX2) {
+        uint32_t size = form == LinkSiteLoadREX2 ? 8 : 7;
+        scan.addressSites.push_back({sc,
+                                     {off + 4 - size, size, size,
+                                      RelaxEdit::Load, thunk, nullptr, 0x8D},
+                                     data});
+      }
       continue;
     }
 
@@ -2748,9 +2772,8 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
         bool preempted = file->symtab.preemptedData.contains(s);
         if (preempted && arm64 && rel.Type == IMAGE_REL_ARM64_PAGEBASE_REL21 &&
             i + 1 != e && isArm64AddressPair(sc, rel, relocs[i + 1])) {
-          scan.addressSites.push_back({sc, rel.VirtualAddress, imp});
-          scan.addressSites.push_back({sc, relocs[i + 1].VirtualAddress, imp});
-          ++i;
+          addressSite(rel, imp);
+          addressSite(relocs[++i], imp);
           continue;
         }
         const ObjFile::RelocFact *fact = file->relocFact(sc, rel);
@@ -2758,7 +2781,7 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
             fact->hasSite && fact->form == LinkSiteAddress &&
             isSiteForm(sc->getContents(), rel.VirtualAddress,
                        LinkSiteAddress)) {
-          scan.addressSites.push_back({sc, rel.VirtualAddress, imp});
+          addressSite(rel, imp);
           continue;
         }
         if (!scan.reported.insert(s).second)
@@ -2795,12 +2818,10 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
         switch (rel.Type) {
         case IMAGE_REL_ARM64_PAGEBASE_REL21:
           if (i + 1 != e && isArm64AddressPair(sc, rel, relocs[i + 1])) {
-            scan.addressSites.push_back({sc, rel.VirtualAddress, imp});
-            scan.addressSites.push_back(
-                {sc, relocs[i + 1].VirtualAddress, imp});
+            addressSite(rel, imp);
+            addressSite(relocs[++i], imp);
             ++scan.thunkRefs[thunk].first;
             scan.thunkRefs[thunk].second += 2;
-            ++i;
           } else {
             useThunkAsAddress(scan, file, s, imp);
           }
@@ -2828,7 +2849,7 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
         if (form == LinkSiteAddress) {
           if (isSiteForm(sc->getContents(), rel.VirtualAddress,
                          LinkSiteAddress)) {
-            scan.addressSites.push_back({sc, rel.VirtualAddress, imp});
+            addressSite(rel, imp);
             ++scan.thunkRefs[thunk].second;
           } else {
             Err(ctx) << file << ": the instruction at offset 0x"
@@ -2932,11 +2953,16 @@ void ImportSlotContents::resolve(SlotScan &scan) {
   auto keepThunk = [](DefinedImportData *imp) {
     cast<DefinedImportThunk>(imp->file->thunkSym)->getChunk()->live = true;
   };
+  // A load that the linker disposes of, which nothing reads, needs no rewrite.
+  auto addSite = [&](SectionChunk *sc, const RelaxEdit &edit) {
+    auto it = ctx.relaxations.find(sc);
+    if (it == ctx.relaxations.end() || !it->second.findEdit(edit.offset))
+      addEdit(sc, edit);
+  };
   for (const SlotScan::Site &site : scan.addressSites) {
     if (site.imp->file->thunkIsAddress)
       continue;
-    ctx.importSites.insert({site.chunk, site.offset});
-    site.chunk->hasImportSites = true;
+    addSite(site.chunk, site.edit);
     if (site.imp->file->isDelayLoaded())
       keepThunk(site.imp);
     else
@@ -2945,10 +2971,8 @@ void ImportSlotContents::resolve(SlotScan &scan) {
   for (auto &[imp, sites] : scan.delayLoads) {
     if (scan.delayLoadsRead.contains(imp))
       continue;
-    for (auto [sc, offset] : sites) {
-      ctx.importSites.insert({sc, offset});
-      sc->hasImportSites = true;
-    }
+    for (auto &[sc, edit] : sites)
+      addSite(sc, edit);
     keepThunk(imp);
   }
 

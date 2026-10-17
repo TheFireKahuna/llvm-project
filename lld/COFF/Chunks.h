@@ -314,17 +314,7 @@ public:
   }
   void getBaserels(std::vector<Baserel> *res);
   bool isCOMDAT() const;
-  // Writes rel at off. Where rewrites is false, rel is written as it says;
-  // see rewritesRelocations.
-  void applyRelocation(uint8_t *off, const coff_relocation &rel,
-                       bool rewrites) const;
-
-  // Whether the linker may write a relocation of this section otherwise than
-  // it says: to an in-place import slot, a rewritten instruction, or a place
-  // in code that the linker resizes, as only a section of an object with
-  // link-only records, or ARM64 code, whose references to local import
-  // pointers and offered functions the linker may redirect, can need.
-  bool rewritesRelocations() const;
+  void applyRelocation(uint8_t *off, const coff_relocation &rel) const;
 
   // Whether rel is an absolute address as wide as the image's pointers.
   bool isAddressWord(const coff_relocation &rel) const;
@@ -332,11 +322,9 @@ public:
   // Whether rel is an offset within, or the index of, its target's section.
   bool isSectionRelative(const coff_relocation &rel) const;
 
-  // The symbol whose address the instruction holding rel takes once rewritten
-  // for an import, or null: for an instruction that takes the address of an
-  // import thunk, a load of the import's address table entry; for one that
-  // loads the entry of a delay-loaded import, the address of the thunk.
-  Defined *getImportSiteTarget(const coff_relocation &rel) const;
+  // The symbol that the instruction holding rel reaches once the linker
+  // rewrites it, if it does.
+  Defined *getEditTarget(const coff_relocation &rel) const;
 
   // The in-place import slot that rel fills, or null.
   const ImportSlot *getImportSlot(const coff_relocation &rel) const;
@@ -459,14 +447,12 @@ public:
   // ICF. This is set by the driver using address-significance tables.
   bool keepUnique = false;
 
-  // Whether a word of this section is an in-place import slot, and whether an
-  // instruction in it is rewritten to take an import's address as static data
-  // does.
+  // Whether a word of this section is an in-place import slot.
   bool hasImportSlots : 1;
-  bool hasImportSites : 1;
 
-  // Whether the linker resizes code in this section, which its file's
-  // records cover (see Relax.h).
+  // Whether the linker changes code in this section, and whether it resizes
+  // it, which its file's records cover (see Relax.h).
+  bool edited : 1;
   bool relaxed : 1;
 
   // Whether ICF must keep this section distinct: its address is load-bearing
@@ -474,10 +460,6 @@ public:
   // through __start_X and __stop_X, or the guard tables mark its function
   // suppressed.
   bool ineligibleForICF : 1;
-
-  // Whether a relocation in this section refers to a local import, which on
-  // ARM64 may be relaxed in place.
-  bool referencesLocalImport : 1;
 
   // The COMDAT selection if this is a COMDAT chunk.
   llvm::COFF::COMDATType selection = (llvm::COFF::COMDATType)0;

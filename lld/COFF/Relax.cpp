@@ -6,18 +6,20 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// A compiler may describe every value in an object that depends on where the
-// code of a section lies, as it does for the sections in which the linker may
-// change the size of instructions the object's sites describe: the
-// alignments, branch displacements and label differences, including those of
-// unwind, exception and debug data, that an assembler would otherwise fold
-// into numbers. Such a section is covered, and the linker changes sizes there
-// as RISC-V's linker relaxation does: it decides each instruction's new
-// form, lays the code out again, lengthening a jump with an 8-bit
-// displacement that no longer reaches, and writes each value the object
-// describes from the new layout. A section whose new layout leaves a value
-// out of its field's range keeps its size, and its instructions the forms of
-// the same length that fit any layout.
+// Every change the linker makes to an instruction is an edit of its chunk,
+// decided once, when the reference it serves is bound, and written by the one
+// path that writes a chunk the linker changes.
+//
+// A compiler may also describe every value in an object that depends on where
+// the code of a section lies: the alignments, branch displacements and label
+// differences, including those of unwind, exception and debug data, that an
+// assembler would otherwise fold into numbers. Such a section is covered, and
+// the linker may resize it as RISC-V's linker relaxation does: its edits take
+// their shorter forms, the code is laid out again, a jump with an 8-bit
+// displacement that no longer reaches is lengthened, and each value the
+// object describes is written from the new layout. A section whose new layout
+// leaves a value out of its field's range keeps its size, and its edits the
+// forms of the same length that fit any layout.
 //
 //===----------------------------------------------------------------------===//
 
@@ -29,6 +31,7 @@
 #include "Symbols.h"
 #include "lld/Common/ErrorHandler.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/Alignment.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/LEB128.h"
@@ -58,6 +61,29 @@ const RelaxEdit *Relaxation::findEdit(uint32_t offset) const {
     return nullptr;
   const RelaxEdit &e = *std::prev(it);
   return offset < e.offset + e.oldSize ? &e : nullptr;
+}
+
+static void reportOverlap(const SectionChunk *sc, uint32_t offset) {
+  Err(sc->file->symtab.ctx)
+      << sc->file << ": the instructions that the link-only records of "
+      << sc->getSectionName() << " describe at offset 0x"
+      << Twine::utohexstr(offset) << " overlap";
+}
+
+void addEdit(SectionChunk *sc, RelaxEdit e) {
+  std::vector<RelaxEdit> &edits = sc->file->symtab.ctx.relaxations[sc].edits;
+  auto it = llvm::partition_point(
+      edits, [&](const RelaxEdit &x) { return x.offset <= e.offset; });
+  if ((it != edits.begin() &&
+       std::prev(it)->offset + std::prev(it)->oldSize > e.offset) ||
+      (it != edits.end() && e.offset + e.oldSize > it->offset)) {
+    reportOverlap(sc, e.offset);
+    return;
+  }
+  e.newOffset = e.offset;
+  e.newSize = e.oldSize;
+  edits.insert(it, e);
+  sc->edited = true;
 }
 
 // The no-operations of each length up to ten that x86-64 assemblers emit,
@@ -196,21 +222,35 @@ static void solve(Relaxation &r, ArrayRef<uint8_t> data) {
   }
 }
 
-// Decides how to lay out the code of sc, a covered chunk, or leaves it as it
-// is: where nothing changes size, or where the new layout leaves a value the
-// object describes out of its field's range, or in bytes the linker
-// rewrites. values are the values that measure sc's code. Sets *misfit where
-// a value leaves sc as it is.
+// Whether e is part of how the linker lays out resized code rather than a
+// change to an instruction that a reference's binding made.
+static bool isLayoutEdit(const RelaxEdit &e) {
+  return e.kind == RelaxEdit::Align || e.kind == RelaxEdit::Branch ||
+         e.kind == RelaxEdit::TailJump;
+}
+
+// Decides how to lay out the code of sc, a covered chunk, with the edits its
+// references' binding made in their shorter forms, and with the jump that
+// ends its function left out where tailJump is set; or leaves it as it is:
+// where nothing changes size, or where the new layout leaves a value the
+// object describes out of its field's range, or in bytes the linker rewrites.
+// values are the values that measure sc's code. Sets *misfit where a value
+// leaves sc as it is.
 static bool relax(COFFLinkerContext &ctx, SectionChunk *sc,
-                  ArrayRef<const ObjFile::LinkCoverage *> values,
+                  ArrayRef<const ObjFile::LinkCoverage *> values, bool tailJump,
                   bool *misfit) {
   ObjFile *file = sc->file;
   ArrayRef<uint8_t> data = sc->getContents();
   Relaxation r;
-  addSiteEdits(sc, r.edits);
+  if (auto it = ctx.relaxations.find(sc); it != ctx.relaxations.end())
+    for (const RelaxEdit &e : it->second.edits)
+      if (!isLayoutEdit(e))
+        r.edits.push_back(e);
+  if (tailJump)
+    r.edits.push_back({uint32_t(data.size() - 5), 5, 0, RelaxEdit::TailJump});
   for (const ObjFile::LinkCoverage &c : file->getLinkCoverage(sc)) {
     if (c.type == LinkCoverageAlign) {
-      RelaxEdit e{c.offset, c.a, c.a, 0, RelaxEdit::Align};
+      RelaxEdit e{c.offset, c.a, c.a, RelaxEdit::Align};
       e.coverage = &c;
       r.edits.push_back(e);
     } else if (c.type == LinkCoveragePCRelative && c.kind == LinkFieldJump) {
@@ -234,11 +274,13 @@ static bool relax(COFFLinkerContext &ctx, SectionChunk *sc,
                  << " is not the jump its link-only record describes";
         return false;
       }
-      RelaxEdit e{start, c.offset + c.size - start, 2, 0, RelaxEdit::Branch};
+      RelaxEdit e{start, c.offset + c.size - start, 2, RelaxEdit::Branch};
       e.coverage = &c;
       r.edits.push_back(e);
     }
   }
+  for (RelaxEdit &e : r.edits)
+    e.newSize = e.relaxedSize;
   // Code where no instruction may change its size, a jump that the assembler
   // lengthened included, keeps its layout.
   if (llvm::all_of(r.edits,
@@ -253,9 +295,7 @@ static bool relax(COFFLinkerContext &ctx, SectionChunk *sc,
     const RelaxEdit &e = r.edits[i];
     if (uint64_t(e.offset) + e.oldSize > data.size() ||
         (i && r.edits[i - 1].offset + r.edits[i - 1].oldSize > e.offset)) {
-      Err(ctx) << file << ": the instructions that the link-only records of "
-               << sc->getSectionName() << " describe at offset 0x"
-               << Twine::utohexstr(e.offset) << " overlap";
+      reportOverlap(sc, e.offset);
       return false;
     }
   }
@@ -283,7 +323,44 @@ static bool relax(COFFLinkerContext &ctx, SectionChunk *sc,
   }
   ctx.relaxations[sc] = std::move(r);
   sc->relaxed = true;
+  sc->edited = true;
   return true;
+}
+
+// Leaves sc, which the linker does not resize after all, at its size: each
+// edit takes the form of its old length, and each fused access, which only
+// resized code changes, keeps its register, and so the load that fills it,
+// rewritten as it would have been had it not been dead.
+static void keepSize(COFFLinkerContext &ctx, SectionChunk *sc) {
+  sc->relaxed = false;
+  auto it = ctx.relaxations.find(sc);
+  if (it == ctx.relaxations.end())
+    return;
+  DenseSet<uint32_t> loads;
+  for (const ObjFile::LinkFusion &f : sc->file->getLinkFusions(sc))
+    if (f.use == ObjFile::LinkFusion::Access && !f.isLoad)
+      loads.insert(f.load);
+  std::vector<RelaxEdit> &edits = it->second.edits;
+  auto revived = [&](const RelaxEdit &e) {
+    return e.kind == RelaxEdit::Dispose && e.fusion->isLoad &&
+           loads.contains(e.fusion->offset);
+  };
+  for (RelaxEdit &e : edits)
+    if (revived(e) && e.target) {
+      e.kind = RelaxEdit::Load;
+      e.fusion = nullptr;
+    }
+  llvm::erase_if(edits, [&](const RelaxEdit &e) {
+    return isLayoutEdit(e) || e.kind == RelaxEdit::Access || revived(e);
+  });
+  for (RelaxEdit &e : edits) {
+    e.newOffset = e.offset;
+    e.newSize = e.oldSize;
+  }
+  if (edits.empty()) {
+    ctx.relaxations.erase(it);
+    sc->edited = false;
+  }
 }
 
 // The values that measure the code of each covered section of file, by
@@ -297,20 +374,18 @@ getCoverageValues(ObjFile *file) {
   return values;
 }
 
-void leaveOutTailJumps(
-    COFFLinkerContext &ctx,
-    ArrayRef<std::tuple<SectionChunk *, uint32_t, Defined *>> jumps,
-    function_ref<void()> layOut) {
+void leaveOutTailJumps(COFFLinkerContext &ctx,
+                       ArrayRef<std::pair<SectionChunk *, Defined *>> jumps,
+                       function_ref<void()> layOut) {
   if (jumps.empty())
     return;
   llvm::TimeTraceScope timeScope("Leave out tail jumps");
   DenseMap<ObjFile *,
            DenseMap<uint32_t, SmallVector<const ObjFile::LinkCoverage *, 0>>>
       fileValues;
-  // Lays out sc, a covered chunk, with the edits the linker makes of it now,
-  // or leaves it as it is where none changes its size or a value would not
-  // fit.
-  auto relaxAgain = [&](SectionChunk *sc) {
+  // Lays out sc, a covered chunk, with or without its tail jump, or leaves it
+  // as it is where nothing changes size or a value would not fit.
+  auto relaxAgain = [&](SectionChunk *sc, bool tailJump) {
     auto [it, inserted] = fileValues.try_emplace(sc->file);
     if (inserted)
       it->second = getCoverageValues(sc->file);
@@ -318,16 +393,12 @@ void leaveOutTailJumps(
     if (auto v = it->second.find(sc->getSectionNumber()); v != it->second.end())
       values = v->second;
     bool misfit = false;
-    return relax(ctx, sc, values, &misfit);
+    return relax(ctx, sc, values, tailJump, &misfit);
   };
   SmallVector<std::pair<SectionChunk *, Defined *>, 0> left;
-  for (auto [sc, field, target] : jumps) {
-    ctx.tailJumps[sc] = field;
-    if (relaxAgain(sc))
+  for (auto [sc, target] : jumps)
+    if (relaxAgain(sc, true))
       left.push_back({sc, target});
-    else
-      ctx.tailJumps.erase(sc);
-  }
   if (left.empty())
     return;
   // Padding, or where a function's prefix may be placed, may yet separate a
@@ -340,11 +411,8 @@ void leaveOutTailJumps(
       auto [sc, target] = jump;
       if (target->getRVA() == sc->getRVA() + sc->getSize())
         return false;
-      ctx.tailJumps.erase(sc);
-      if (!relaxAgain(sc)) {
-        ctx.relaxations.erase(sc);
-        sc->relaxed = false;
-      }
+      if (!relaxAgain(sc, false))
+        keepSize(ctx, sc);
       return true;
     });
     restored = left.size() != before;
@@ -376,18 +444,35 @@ void relaxSections(COFFLinkerContext &ctx) {
       if (auto it = values.find(sc->getSectionNumber()); it != values.end())
         chunkValues = it->second;
       bool misfit = false;
-      if (relax(ctx, sc, chunkValues, &misfit)) {
+      if (relax(ctx, sc, chunkValues, false, &misfit)) {
         ++relaxed;
         saved += int64_t(sc->getContents().size()) - ctx.relaxations[sc].size;
       } else {
         misfits += misfit;
-        keepFusedAccesses(sc);
+        keepSize(ctx, sc);
       }
     }
   }
   Log(ctx) << "Relaxed " << relaxed << " of " << covered
            << " covered sections, " << saved << " bytes smaller; " << misfits
            << " kept their size where a value would not fit";
+}
+
+// Disposes of the dead load of size bytes at start, at RVA rva, without moving
+// anything. Segment overrides there are decoded as prefixes of the
+// instruction that follows, which then executes alone, if the two together
+// are fifteen bytes or fewer, the most a processor decodes; and if that
+// instruction transfers control, only if it then crosses no 32-byte boundary
+// it did not cross before, which a branch pays for on many processors.
+// Otherwise the load becomes one no-operation of its length.
+static void disposeOfLoad(uint8_t *start, uint64_t rva, unsigned size,
+                          const ObjFile::LinkFusion &f) {
+  if (f.nextSize && size + f.nextSize <= 15 &&
+      (!f.nextTransfers || rva / 32 == (rva + size) / 32)) {
+    memset(start, 0x2E, size);
+    return;
+  }
+  writeNops(start, size, size);
 }
 
 // Writes the instruction or padding that e makes of the bytes it changes, at
@@ -398,10 +483,15 @@ static void writeEdit(const SectionChunk *sc, const RelaxEdit &e, uint8_t *buf,
   const uint8_t *old = data.data() + e.offset;
   switch (e.kind) {
   case RelaxEdit::DirectCall:
-  case RelaxEdit::DirectJump:
-    buf[0] = e.kind == RelaxEdit::DirectCall ? 0xE8 : 0xE9;
-    write32le(buf + 1, e.target->getRVA() - (p + 5));
+  case RelaxEdit::DirectJump: {
+    uint8_t *inst = buf;
+    if (e.kind == RelaxEdit::DirectCall && e.newSize > 5)
+      *inst++ = 0x67;
+    inst[0] = e.kind == RelaxEdit::DirectCall ? 0xE8 : 0xE9;
+    write32le(inst + 1, e.target->getRVA() - (p + (inst - buf) + 5));
+    memset(inst + 5, 0xCC, buf + e.newSize - (inst + 5));
     break;
+  }
   case RelaxEdit::PointerCall:
     buf[0] = 0xFF;
     buf[1] = 0x15;
@@ -413,13 +503,61 @@ static void writeEdit(const SectionChunk *sc, const RelaxEdit &e, uint8_t *buf,
     buf[2] = 0x25;
     write32le(buf + 3, e.target->getRVA() - (p + 7));
     break;
+  case RelaxEdit::Load: {
+    // The load of an add's sum writes the add's register: ModRM.reg, and its
+    // high bits, REX.R, or REX2's R3 with R4 clear.
+    memcpy(buf, old, e.newSize);
+    uint8_t *off = buf + e.newSize - 4;
+    off[-2] = e.opcode;
+    int64_t addend = 0;
+    if (const ObjFile::LinkFusion *f = e.fusion) {
+      off[-1] = (off[-1] & 0xC7) | (f->reg & 7) << 3;
+      off[-3] =
+          (off[-3] & (e.newSize == 8 ? ~0x44 : ~0x04)) | (f->reg & 8) >> 1;
+      addend = f->addend;
+    }
+    write32le(off, e.target->getRVA() + addend - (p + e.newSize));
+    break;
+  }
+  case RelaxEdit::ZeroLoad: {
+    // mov r/m64, imm32, with the register moved from ModRM.reg to ModRM.rm,
+    // and so its high bits from R to B in the prefix, as lld/ELF's
+    // relaxGotNoPic moves them. REX is 0100WRXB, and REX2's payload is
+    // M R4 X4 B4 W R3 X3 B3; the X and B bits, which a RIP-relative operand
+    // ignores, are cleared.
+    memcpy(buf, old, e.newSize);
+    uint8_t *off = buf + e.newSize - 4;
+    uint8_t rex = off[-3];
+    off[-3] = e.newSize == 8 ? (rex & 0x08) | (rex & 0x44) >> 2
+                             : (rex & 0xF8) | (rex & 0x4) >> 2;
+    off[-2] = 0xC7;
+    off[-1] = 0xC0 | (off[-1] & 0x38) >> 3;
+    write32le(off, 0);
+    break;
+  }
+  case RelaxEdit::ZeroCall: {
+    // xor r11d, r11d; call r11, which pushes the same return address and
+    // faults at the same address. R11 carries no argument to a callee that
+    // does not exist, and is the linker's scratch register at a call.
+    static const uint8_t call[] = {0x45, 0x31, 0xDB, 0x41, 0xFF, 0xD3};
+    memcpy(buf, call, sizeof(call));
+    break;
+  }
   case RelaxEdit::KeepTail:
     memcpy(buf, old + e.oldSize - e.newSize, e.newSize);
     break;
   case RelaxEdit::KeepHead:
     memcpy(buf, old, e.newSize);
     break;
-  case RelaxEdit::Delete:
+  case RelaxEdit::Dispose:
+    if (!e.newSize)
+      break;
+    if (e.fusion->isLoad)
+      disposeOfLoad(buf, p, e.newSize, *e.fusion);
+    else
+      writeNops(buf, e.newSize, e.newSize);
+    break;
+  case RelaxEdit::TailJump:
     break;
   case RelaxEdit::Align:
     writeNops(buf, e.newSize, e.coverage->size);
@@ -469,11 +607,31 @@ static void writeEdit(const SectionChunk *sc, const RelaxEdit &e, uint8_t *buf,
     write32le(buf + f.modrm + 1, e.target->getRVA() + disp - (p + e.newSize));
     break;
   }
+  case RelaxEdit::Arm64Page:
+    memcpy(buf, old, 4);
+    applyArm64Addr(buf, e.target->getRVA(), p, 12);
+    break;
+  case RelaxEdit::Arm64Add:
+  case RelaxEdit::Arm64Load:
+  case RelaxEdit::Arm64Zero:
+    memcpy(buf, old, 4);
+    setArm64Opcode(buf, e.kind == RelaxEdit::Arm64Add    ? 0x91000000
+                        : e.kind == RelaxEdit::Arm64Load ? 0xF9400000
+                                                         : 0xD2800000);
+    if (e.kind == RelaxEdit::Arm64Add)
+      applyArm64Imm(buf, e.target->getRVA() & 0xFFF, 0);
+    else if (e.kind == RelaxEdit::Arm64Load)
+      applyArm64Ldr(buf, e.target->getRVA() & 0xFFF);
+    break;
   }
 }
 
-void writeRelaxed(const SectionChunk *sc, uint8_t *buf) {
-  const Relaxation &r = *getRelaxation(sc);
+void writeEdited(const SectionChunk *sc, uint8_t *buf) {
+  // An ARM64 chunk may have only fused accesses and adds to write.
+  static const Relaxation none;
+  auto it = sc->file->symtab.ctx.relaxations.find(sc);
+  const Relaxation &r =
+      it == sc->file->symtab.ctx.relaxations.end() ? none : it->second;
   ArrayRef<uint8_t> data = sc->getContents();
   // The bytes the image leaves out overlap what precedes the chunk; they are
   // padding and a prefix before the function's entry, which no change
@@ -486,7 +644,6 @@ void writeRelaxed(const SectionChunk *sc, uint8_t *buf) {
   }
   memcpy(buf + r.getOutputOffset(prev), data.data() + prev, data.size() - prev);
 
-  // An instruction the linker rewrites takes no relocation of its own.
   for (const coff_relocation &rel : sc->getRelocs()) {
     if (rel.VirtualAddress >= data.size()) {
       Err(sc->file->symtab.ctx)
@@ -494,11 +651,12 @@ void writeRelaxed(const SectionChunk *sc, uint8_t *buf) {
       continue;
     }
     if (!r.findEdit(rel.VirtualAddress))
-      sc->applyRelocation(buf + r.getOutputOffset(rel.VirtualAddress), rel,
-                          /*rewrites=*/true);
+      sc->applyRelocation(buf + r.getOutputOffset(rel.VirtualAddress), rel);
   }
   for (const RelaxEdit &e : r.edits)
     writeEdit(sc, e, buf + e.newOffset, data, r);
+  if (sc->getArch() == Triple::aarch64 && sc->file->hasLinkFusions())
+    writeFusedArm64(sc, buf);
   writeCoverageValues(sc, buf, 0, data.size());
 }
 
