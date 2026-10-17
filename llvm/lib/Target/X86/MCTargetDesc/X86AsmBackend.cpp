@@ -11,6 +11,8 @@
 #include "MCTargetDesc/X86FixupKinds.h"
 #include "MCTargetDesc/X86MCAsmInfo.h"
 #include "llvm/ADT/StringSwitch.h"
+#include "llvm/BinaryFormat/COFF.h"
+#include "llvm/BinaryFormat/Dwarf.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/BinaryFormat/MachO.h"
 #include "llvm/MC/MCAsmBackend.h"
@@ -31,9 +33,12 @@
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCTargetOptions.h"
 #include "llvm/MC/MCValue.h"
+#include "llvm/MC/MCWinCOFFObjectWriter.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/EndianStream.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/LEB128.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
@@ -1290,6 +1295,30 @@ class WindowsX86AsmBackend : public X86AsmBackend {
   // Whether objects describe their instruction sites to the linker, which
   // the Windows Itanium and NT-POSIX linkers rely on.
   bool DescribeSites;
+  // A place at a fixup, from which the distance to its target is measured.
+  MCSymbol *FixupPlace = nullptr;
+
+  // Whether a linker may resize code that the object's sites describe, and
+  // then computes what depends on where that code lies. Padding that aligns
+  // branches depends on where each lies in the image, which the linker does
+  // not redo, so no code is resized where the assembler pads branches.
+  bool coversCode() const { return DescribeSites && !allowAutoPadding(); }
+  // Whether F is in a section whose code a linker may resize.
+  bool isLinkerRelaxed(const MCFragment &F) const {
+    return coversCode() && F.getParent()->isLinkerRelaxable();
+  }
+  bool crossesLinkerRelaxable(const MCSymbol *Target, const MCFragment &F,
+                              uint64_t Offset);
+  // Whether Expr, a distance, spans code a linker may resize, which is
+  // structural: a difference MC cannot fold yet may still span none.
+  bool isLinkerRelaxed(const MCExpr &Expr) const {
+    MCValue Value;
+    if (!coversCode() || !Expr.evaluateAsRelocatable(Value, Asm) ||
+        !Value.getAddSym() || !Value.getSubSym())
+      return false;
+    return Asm->isLinkerRelaxableBetween(*Value.getAddSym(),
+                                         *Value.getSubSym());
+  }
 
 public:
   WindowsX86AsmBackend(const Target &T, bool is64Bit,
@@ -1298,6 +1327,38 @@ public:
         DescribeSites(
             is64Bit &&
             STI.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {}
+
+  void reset() override {
+    FixupPlace = nullptr;
+    X86AsmBackend::reset();
+  }
+
+  // Padding after the first instruction a linker may resize is padding the
+  // linker redoes, so a distance across it is the linker's to compute.
+  bool relaxAlign(MCFragment &F, unsigned &Size) override {
+    if (isLinkerRelaxed(F) &&
+        F.getLayoutOrder() > F.getParent()->firstLinkerRelaxable())
+      F.setLinkerRelaxable();
+    return false;
+  }
+
+  // A distance a linker computes is encoded in a form whose length does not
+  // depend on its value, with a fixup for the object's records to describe.
+  std::pair<bool, bool> relaxLEB128(MCFragment &F,
+                                    int64_t &Value) const override {
+    const MCExpr &Expr = F.getLEBValue();
+    if (!coversCode())
+      return X86AsmBackend::relaxLEB128(F, Value);
+    if (isLinkerRelaxed(Expr))
+      F.setVarFixups({MCFixup::create(0, &Expr, FK_Data_leb128)});
+    return {Expr.evaluateKnownAbsolute(Value, *Asm), false};
+  }
+  bool relaxDwarfLineAddr(MCFragment &F) const override;
+  bool relaxDwarfCFA(MCFragment &F) const override;
+
+  void applyFixup(const MCFragment &F, const MCFixup &Fixup,
+                  const MCValue &Target, uint8_t *Data, uint64_t Value,
+                  bool IsResolved) override;
 
   std::optional<MCFixupKind> getFixupKind(StringRef Name) const override {
     return StringSwitch<std::optional<MCFixupKind>>(Name)
@@ -1312,6 +1373,113 @@ public:
     return createX86WinCOFFObjectWriter(Is64Bit, DescribeSites);
   }
 };
+
+// Whether the distance from the place Offset bytes into F to Target spans an
+// instruction or padding that a linker may resize, as RISC-V's linker
+// relaxation finds.
+bool WindowsX86AsmBackend::crossesLinkerRelaxable(const MCSymbol *Target,
+                                                  const MCFragment &F,
+                                                  uint64_t Offset) {
+  if (!FixupPlace)
+    FixupPlace = getContext().createTempSymbol();
+  FixupPlace->setFragment(const_cast<MCFragment *>(&F));
+  FixupPlace->setOffset(Offset);
+  MCValue Res;
+  MCExpr::evaluateSymbolicAdd(Asm, false, MCValue::get(Target),
+                              MCValue::get(nullptr, FixupPlace), Res);
+  return Res.getSubSym();
+}
+
+// A line advance across code a linker may resize is DW_LNS_fixed_advance_pc,
+// whose two-byte operand a fixup fills, as RISC-V's linker relaxation has it.
+bool WindowsX86AsmBackend::relaxDwarfLineAddr(MCFragment &F) const {
+  int64_t LineDelta = F.getDwarfLineDelta();
+  const MCExpr &AddrDelta = F.getDwarfAddrDelta();
+  int64_t Value;
+  if (!isLinkerRelaxed(AddrDelta))
+    return false;
+  [[maybe_unused]] bool IsAbsolute =
+      AddrDelta.evaluateKnownAbsolute(Value, *Asm);
+  assert(IsAbsolute && "line advance with invalid expression");
+
+  SmallVector<char> Data;
+  raw_svector_ostream OS(Data);
+  // INT64_MAX is a signal that this is actually a DW_LNE_end_sequence.
+  if (LineDelta != INT64_MAX) {
+    OS << uint8_t(dwarf::DW_LNS_advance_line);
+    encodeSLEB128(LineDelta, OS);
+  }
+  OS << uint8_t(dwarf::DW_LNS_fixed_advance_pc);
+  support::endian::write<uint16_t>(OS, 0, llvm::endianness::little);
+  auto Offset = OS.tell() - 2;
+  if (LineDelta == INT64_MAX) {
+    OS << uint8_t(dwarf::DW_LNS_extended_op);
+    OS << uint8_t(1);
+    OS << uint8_t(dwarf::DW_LNE_end_sequence);
+  } else {
+    OS << uint8_t(dwarf::DW_LNS_copy);
+  }
+  F.setVarContents(Data);
+  F.setVarFixups({MCFixup::create(Offset, &AddrDelta, FK_Data_2)});
+  return true;
+}
+
+// A call frame advance across code a linker may resize is
+// DW_CFA_advance_loc4, whose operand a fixup fills.
+bool WindowsX86AsmBackend::relaxDwarfCFA(MCFragment &F) const {
+  const MCExpr &AddrDelta = F.getDwarfAddrDelta();
+  int64_t Value;
+  if (!coversCode() || AddrDelta.evaluateAsAbsolute(Value, *Asm))
+    return false;
+  SmallVector<char, 8> Data;
+  // A distance MC cannot fold yet, but that spans nothing a linker resizes,
+  // takes the usual encoding from the current layout.
+  if (!isLinkerRelaxed(AddrDelta)) {
+    [[maybe_unused]] bool IsAbsolute =
+        AddrDelta.evaluateKnownAbsolute(Value, *Asm);
+    assert(IsAbsolute && "call frame advance with invalid expression");
+    MCDwarfFrameEmitter::encodeAdvanceLoc(getContext(), Value, Data);
+    F.setVarContents(Data);
+    F.clearVarFixups();
+    return true;
+  }
+  raw_svector_ostream OS(Data);
+  OS << uint8_t(dwarf::DW_CFA_advance_loc4);
+  support::endian::write<uint32_t>(OS, 0, llvm::endianness::little);
+  F.setVarContents(Data);
+  F.setVarFixups({MCFixup::create(1, &AddrDelta, FK_Data_4)});
+  return true;
+}
+
+// A branch, or another reference within its section, across code a linker
+// may resize is described for the linker to compute, as is a jump with an
+// 8-bit displacement, which the linker may lengthen.
+void WindowsX86AsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
+                                      const MCValue &Target, uint8_t *Data,
+                                      uint64_t Value, bool IsResolved) {
+  // The LEB128 fragment holds the value already; the fixup is only for the
+  // object's records to describe.
+  if (Fixup.getKind() == FK_Data_leb128) {
+    maybeAddReloc(F, Fixup, Target, Value, IsResolved);
+    return;
+  }
+  X86AsmBackend::applyFixup(F, Fixup, Target, Data, Value, IsResolved);
+  if (!IsResolved || !Fixup.isPCRel() || !isLinkerRelaxed(F) ||
+      Target.getSubSym() || !Target.getAddSym() ||
+      !crossesLinkerRelaxable(Target.getAddSym(), F, Fixup.getOffset()))
+    return;
+  uint8_t Size = getFixupKindSize(Fixup.getKind());
+  uint8_t Kind = COFF::LinkFieldSigned;
+  if (Size == 1 && F.getKind() == MCFragment::FT_Relaxable &&
+      (F.getOpcode() == X86::JCC_1 || F.getOpcode() == X86::JMP_1))
+    Kind = COFF::LinkFieldJump;
+  static_cast<WinCOFFObjectWriter &>(Asm->getWriter())
+      .addLinkCoverageValue(
+          {F.getParent(),
+           uint32_t(Asm->getFragmentOffset(F) + Fixup.getOffset()),
+           F.getParent(), uint32_t(Asm->getSymbolOffset(*Target.getAddSym())),
+           0, Target.getConstant(), COFF::LinkCoveragePCRelative, Kind, Size});
+}
 
 namespace CU {
 

@@ -8,9 +8,11 @@
 
 // One group of kind 2 and 8 bytes: .text's symbol (index 0) with 4 sites, of
 // forms 3 (load) at 0x3, 6 (load with REX2) at 0xb, 4 (address) at 0x13 and
-// 1 (call) at 0x19.
+// 1 (call) at 0x19. The call may become shorter, so a group of kind 30 and 3
+// bytes says that .text is covered, with no value depending on the call.
 // CHECK:      Contents of section .llvm_link_records:
 // CHECK-NEXT: 0000 4c4c5243 01070208 00043386 01840161
+// CHECK-NEXT: 0010 1e030000 00
 // CHECK-EMPTY:
 
   .text

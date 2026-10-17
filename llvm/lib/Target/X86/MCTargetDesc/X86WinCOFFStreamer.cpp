@@ -6,9 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "X86MCTargetDesc.h"
 #include "TargetInfo/X86TargetInfo.h"
 #include "X86BaseInfo.h"
+#include "X86MCTargetDesc.h"
 #include "X86TargetStreamer.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAssembler.h"
@@ -16,6 +16,7 @@
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCObjectWriter.h"
+#include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCWin64EH.h"
 #include "llvm/MC/MCWinCOFFObjectWriter.h"
 #include "llvm/MC/MCWinCOFFStreamer.h"
@@ -54,9 +55,16 @@ class X86WinCOFFStreamer : public MCWinCOFFStreamer {
   MCRegister FusedCallReg;
   unsigned FusedCallOverrides = 0;
   MCSymbol *FusedJumpEnd = nullptr;
+  // A fused access or add is the next instruction, which the streamer
+  // describes once it has seen that it is in a form the records describe.
+  enum { NoFusedUse, AwaitingAccess, AwaitingAdd } FusedUse = NoFusedUse;
+  MCRegister FusedUseReg;
 
-  void continueFusedCall(const MCInst &Inst, bool Follows, int Preceding,
+  bool continueFusedCall(const MCInst &Inst, bool Follows, int Preceding,
                          size_t Size);
+  bool describeFusedUse(const MCInst &Inst, MCSymbol *Start,
+                        ArrayRef<char> Bytes);
+  void markResizable(MCFragment *Tail);
 
   bool followsLastInstruction() const;
   bool startsSection() const;
@@ -79,11 +87,14 @@ public:
     FusedRead = NoFusedRead;
     FusedCall = NoFusedCall;
     FusedJumpEnd = nullptr;
+    FusedUse = NoFusedUse;
     MCWinCOFFStreamer::reset();
   }
   void emitInstruction(const MCInst &Inst, const MCSubtargetInfo &STI) override;
   void emitCOFFLinkFusedCall(const MCSymbol *Load, MCRegister Reg) override;
   void emitCOFFLinkFusedRead() override;
+  void emitCOFFLinkFusedAccess(const MCSymbol *Load, MCRegister Reg) override;
+  void emitCOFFLinkFusedAdd(const MCSymbol *Load, MCRegister Reg) override;
   void emitLabel(MCSymbol *Symbol, SMLoc Loc = SMLoc()) override;
   void emitWinEHHandlerData(SMLoc Loc) override;
   void emitWindowsUnwindTables(WinEH::FrameInfo *Frame) override;
@@ -171,6 +182,13 @@ void X86WinCOFFStreamer::emitInstruction(const MCInst &Inst,
     Preceding = -1;
   }
 
+  // A fused access or add is labeled where it begins.
+  MCSymbol *UseStart = nullptr;
+  if (FusedUse != NoFusedUse) {
+    UseStart = getContext().createTempSymbol();
+    MCWinCOFFStreamer::emitLabel(UseStart);
+  }
+
   size_t NumFixups = F->getFixups().size();
   size_t Start = getCurFragSize();
   X86_MC::emitInstruction(*this, Inst, STI);
@@ -183,14 +201,29 @@ void X86WinCOFFStreamer::emitInstruction(const MCInst &Inst,
     Tail = Frag;
   MutableArrayRef<MCFixup> Fixups;
   size_t Size;
+  ArrayRef<char> Bytes;
   if (Tail && Tail->getKind() == MCFragment::FT_Relaxable) {
     Fixups = Tail->getVarFixups();
     Size = Tail->getVarSize();
   } else {
+    Tail = nullptr;
     Fixups = After->getFixups().drop_front(After == F ? NumFixups : 0);
     Size = getCurFragSize() - (After == F ? Start : 0);
+    Bytes = After->getContents().take_back(Size);
   }
   describeJumpPrefixes(Fixups, Preceding);
+
+  // A call or jump through an import pointer is one whose size a linker may
+  // change, as is each fused instruction the streamer describes.
+  bool Resizable = any_of(Fixups, [](const MCFixup &Fixup) {
+    return Fixup.getUse() == MCFixupUse::Call ||
+           Fixup.getUse() == MCFixupUse::Jump;
+  });
+  if (FusedUse != NoFusedUse) {
+    if (Fixups.empty())
+      Resizable |= describeFusedUse(Inst, UseStart, Bytes);
+    FusedUse = NoFusedUse;
+  }
 
   if (X86II::isPrefix(MCII->get(Inst.getOpcode()).TSFlags)) {
     // A prefix extends the run it follows. One whose bytes cannot be counted,
@@ -208,7 +241,7 @@ void X86WinCOFFStreamer::emitInstruction(const MCInst &Inst,
   LastInstEnd = getCurFragSize();
 
   if (FusedCall != NoFusedCall)
-    continueFusedCall(Inst, Follows, Preceding, Size);
+    Resizable |= continueFusedCall(Inst, Follows, Preceding, Size);
 
   // The instruction after a fused read, with the prefixes before it, carries
   // the read's bytes only if nothing lies between them; one that transfers
@@ -216,6 +249,7 @@ void X86WinCOFFStreamer::emitInstruction(const MCInst &Inst,
   // weighs.
   if (FusedRead == AwaitingLoad) {
     FusedRead = AwaitingNext;
+    Resizable = true;
   } else if (FusedRead == AwaitingNext) {
     bool IsPrefix = X86II::isPrefix(MCII->get(Inst.getOpcode()).TSFlags);
     if (!Follows || !IsPrefix)
@@ -233,6 +267,217 @@ void X86WinCOFFStreamer::emitInstruction(const MCInst &Inst,
               X86::FirstMacroFusionInstKind::Invalid;
     }
   }
+
+  if (Resizable)
+    markResizable(Tail);
+}
+
+// Marks the instruction just emitted, in Tail where the backend may still
+// relax it and otherwise at the end of the current fragment, as one whose size
+// a linker may change: it ends its fragment, so that the assembler leaves
+// every distance across it to the linker, which the object's records then
+// describe. Where the assembler pads branches, which depends on where each
+// lies in the image, nothing is resized.
+void X86WinCOFFStreamer::markResizable(MCFragment *Tail) {
+  if (getAssembler().getBackend().allowAutoPadding())
+    return;
+  MCFragment *F = Tail ? Tail : getCurrentFragment();
+  MCSection *Sec = F->getParent();
+  if (!Sec->isLinkerRelaxable())
+    Sec->setFirstLinkerRelaxable(F->getLayoutOrder());
+  F->setLinkerRelaxable();
+  if (Tail)
+    return;
+  // What follows the instruction directly begins the new fragment.
+  newFragment();
+  if (LastInstFrag == F) {
+    LastInstFrag = getCurrentFragment();
+    LastInstEnd = 0;
+  }
+}
+
+// The register that the base of Inst's memory operand, at operand MemOp, is,
+// with no index or segment and a displacement that needs no relocation.
+static MCRegister getMemoryBase(const MCInst &Inst, unsigned MemOp) {
+  const MCOperand &Disp = Inst.getOperand(MemOp + X86::AddrDisp);
+  if (Inst.getOperand(MemOp + X86::AddrIndexReg).getReg() ||
+      Inst.getOperand(MemOp + X86::AddrSegmentReg).getReg() || !Disp.isImm())
+    return MCRegister();
+  return Inst.getOperand(MemOp + X86::AddrBaseReg).getReg();
+}
+
+// Describes Inst, whose bytes are Bytes and which Start labels, as the fused
+// access or add the streamer awaits, if it is in a form the records describe:
+// an access with a legacy, VEX or EVEX encoding, outside APX's map 4, and no
+// prefix that changes how its memory operand is addressed, whose memory operand has the register as its
+// base with no index, and that reads the register nowhere else; an add of a
+// constant to the register, or an lea of the register plus a constant.
+bool X86WinCOFFStreamer::describeFusedUse(const MCInst &Inst, MCSymbol *Start,
+                                          ArrayRef<char> Bytes) {
+  bool IsAccess = FusedUse == AwaitingAccess;
+  FusedUse = NoFusedUse;
+  const MCInstrDesc &Desc = MCII->get(Inst.getOpcode());
+  const MCRegisterInfo &MRI = *getContext().getRegisterInfo();
+  unsigned Reg = MRI.getEncodingValue(FusedUseReg);
+  if (Bytes.empty() || Reg >= 16)
+    return false;
+
+  if (!IsAccess) {
+    WinCOFFObjectWriter::LinkFusedAdd &Add = getWriter().getLastLinkFusedAdd();
+    MCRegister Dest;
+    int64_t Constant;
+    switch (Inst.getOpcode()) {
+    case X86::ADD64ri8:
+    case X86::ADD64ri32:
+    case X86::SUB64ri8:
+    case X86::SUB64ri32:
+      if (Inst.getOperand(0).getReg() != FusedUseReg ||
+          Inst.getOperand(1).getReg() != FusedUseReg ||
+          !Inst.getOperand(2).isImm())
+        return false;
+      Dest = FusedUseReg;
+      Constant = Inst.getOperand(2).getImm();
+      if (Inst.getOpcode() == X86::SUB64ri8 ||
+          Inst.getOpcode() == X86::SUB64ri32)
+        Constant = -Constant;
+      break;
+    case X86::LEA64r:
+      if (getMemoryBase(Inst, 1) != FusedUseReg)
+        return false;
+      Dest = Inst.getOperand(0).getReg();
+      Constant = Inst.getOperand(1 + X86::AddrDisp).getImm();
+      break;
+    default:
+      return false;
+    }
+    if (MRI.getEncodingValue(Dest) >= 16)
+      return false;
+    Add.Start = Start;
+    Add.Register = MRI.getEncodingValue(Dest);
+    Add.Constant = Constant;
+    return true;
+  }
+
+  WinCOFFObjectWriter::LinkFusedAccess &Access =
+      getWriter().getLastLinkFusedAccess();
+  uint64_t Encoding = Desc.TSFlags & X86II::EncodingMask;
+  uint64_t Map = Desc.TSFlags & X86II::OpMapMask;
+  if ((Encoding != X86II::LEGACY && Encoding != X86II::VEX &&
+       Encoding != X86II::EVEX) ||
+      Map == X86II::T_MAP4 || Bytes.size() > 15)
+    return false;
+  int MemOp = X86II::getMemoryOperandNo(Desc.TSFlags);
+  if (MemOp < 0)
+    return false;
+  MemOp += X86II::getOperandBias(Desc);
+  if (getMemoryBase(Inst, MemOp) != FusedUseReg)
+    return false;
+  // Nothing else may read the register, which the linker leaves unfilled.
+  for (unsigned I = 0, E = Inst.getNumOperands(); I != E; ++I) {
+    const MCOperand &MO = Inst.getOperand(I);
+    if (I >= unsigned(MemOp) && I < unsigned(MemOp) + X86::AddrNumOperands)
+      continue;
+    if (MO.isReg() && MO.getReg() &&
+        MRI.regsOverlap(MO.getReg(), FusedUseReg) &&
+        (I >= Desc.getNumDefs() ||
+         Desc.getOperandConstraint(I, MCOI::TIED_TO) != -1))
+      return false;
+  }
+  if (any_of(Desc.implicit_uses(),
+             [&](MCPhysReg R) { return MRI.regsOverlap(R, FusedUseReg); }))
+    return false;
+
+  // The encoder's bytes: prefixes that do not change addressing, then REX
+  // and the opcode in its map, or VEX or EVEX and the opcode, then ModRM,
+  // which must address memory through the register, with a SIB byte that
+  // names no index. The base register's high bit is REX.B, or VEX's or EVEX's
+  // inverted B; two-byte VEX holds none, its base being one of the first
+  // eight.
+  size_t I = 0;
+  while (I < Bytes.size() &&
+         is_contained({0x66, 0xF0, 0xF2, 0xF3}, uint8_t(Bytes[I])))
+    ++I;
+  unsigned Prefix = 15, HighBit = 0;
+  uint8_t PrefixKind = COFF::LinkAccessREX;
+  unsigned ModRMOffset;
+  if (Encoding == X86II::LEGACY) {
+    if (I < Bytes.size() && (uint8_t(Bytes[I]) & 0xF0) == 0x40) {
+      Prefix = I;
+      HighBit = Bytes[I] & 1;
+      if (Bytes[I] & 2)
+        return false;
+      ++I;
+    }
+    switch (Map) {
+    case X86II::OB:
+      break;
+    case X86II::TB:
+      I += 1;
+      break;
+    case X86II::T8:
+    case X86II::TA:
+      I += 2;
+      break;
+    default:
+      return false;
+    }
+    ModRMOffset = I + 1;
+  } else {
+    if (I + 2 >= Bytes.size())
+      return false;
+    uint8_t Lead = Bytes[I];
+    if (Lead == 0xC5) {
+      ModRMOffset = I + 3;
+    } else if (Lead == 0xC4 || Lead == 0x62) {
+      // ~X must be set, since there is no index.
+      if (!(Bytes[I + 1] & 0x40))
+        return false;
+      Prefix = I;
+      PrefixKind = Lead == 0xC4 ? COFF::LinkAccessVEX : COFF::LinkAccessEVEX;
+      HighBit = !(Bytes[I + 1] & 0x20);
+      ModRMOffset = I + (Lead == 0xC4 ? 4 : 5);
+    } else {
+      return false;
+    }
+  }
+  if (ModRMOffset >= Bytes.size())
+    return false;
+  uint8_t ModRM = Bytes[ModRMOffset];
+  unsigned Mod = ModRM >> 6, RM = ModRM & 7, Base = RM;
+  bool SIB = RM == 4;
+  if (Mod == 3 || (Mod == 0 && RM == 5))
+    return false;
+  if (SIB) {
+    if (ModRMOffset + 1 >= Bytes.size())
+      return false;
+    uint8_t SIBByte = Bytes[ModRMOffset + 1];
+    Base = SIBByte & 7;
+    if ((SIBByte >> 3 & 7) != 4 || (Mod == 0 && Base == 5))
+      return false;
+  }
+  if ((Base | HighBit << 3) != Reg)
+    return false;
+  // EVEX multiplies an 8-bit displacement by a scale the instruction
+  // implies, which the operand's displacement and the byte give.
+  unsigned Scale = 0;
+  if (PrefixKind == COFF::LinkAccessEVEX && Mod == 1) {
+    int8_t Disp8 = Bytes[ModRMOffset + 1 + SIB];
+    int64_t Disp = Inst.getOperand(MemOp + X86::AddrDisp).getImm();
+    if (Disp8 != 0) {
+      if (Disp % Disp8 || !isPowerOf2_64(Disp / Disp8) || Disp / Disp8 > 64)
+        return false;
+      Scale = Log2_64(Disp / Disp8);
+    }
+  }
+  Access.Start = Start;
+  Access.ModRM = ModRMOffset;
+  Access.Prefix = Prefix;
+  Access.Length = Bytes.size();
+  Access.Disp = Mod == 1 ? 1 : Mod == 2 ? 2 : 0;
+  Access.SIB = SIB;
+  Access.PrefixKind = PrefixKind;
+  Access.Scale = Scale;
+  return true;
 }
 
 // Takes the next instruction of a fused call, whose description is dropped
@@ -241,7 +486,7 @@ void X86WinCOFFStreamer::emitInstruction(const MCInst &Inst,
 // bytes after the first override, or a jump of three bytes with REX.W, which
 // assembly gives as rex64, that int3 follows to seven. A jump's region begins
 // with the jump, wherever padding puts it.
-void X86WinCOFFStreamer::continueFusedCall(const MCInst &Inst, bool Follows,
+bool X86WinCOFFStreamer::continueFusedCall(const MCInst &Inst, bool Follows,
                                            int Preceding, size_t Size) {
   unsigned Opcode = Inst.getOpcode();
   WinCOFFObjectWriter::LinkFusedCall &Call = getWriter().getLastLinkFusedCall();
@@ -252,18 +497,19 @@ void X86WinCOFFStreamer::continueFusedCall(const MCInst &Inst, bool Follows,
       FusedCall = NoFusedCall;
       Call.End = FusedJumpEnd;
       Call.IsJump = true;
+      return true;
     }
-    return;
+    return false;
   }
   if (Opcode == X86::CS_PREFIX) {
     ++FusedCallOverrides;
-    return;
+    return false;
   }
   FusedCall = NoFusedCall;
   bool ThroughReg = Inst.getNumOperands() && Inst.getOperand(0).isReg() &&
                     Inst.getOperand(0).getReg() == FusedCallReg;
   if (!ThroughReg || Preceding != int(FusedCallOverrides))
-    return;
+    return false;
   bool HasREXW = Inst.getFlags() & X86::IP_HAS_REX_W;
   bool IsCall = Opcode == X86::CALL64r;
   bool IsJump = !FusedCallOverrides && (Opcode == X86::JMP64r_REX ||
@@ -273,12 +519,13 @@ void X86WinCOFFStreamer::continueFusedCall(const MCInst &Inst, bool Follows,
     emitLabel(End);
     if (IsCall) {
       Call.End = End;
-    } else {
-      FusedJumpEnd = End;
-      FusedCallOverrides = 0;
-      FusedCall = AwaitingInt3;
+      return true;
     }
+    FusedJumpEnd = End;
+    FusedCallOverrides = 0;
+    FusedCall = AwaitingInt3;
   }
+  return false;
 }
 
 void X86WinCOFFStreamer::emitCOFFLinkFusedCall(const MCSymbol *Load,
@@ -289,6 +536,24 @@ void X86WinCOFFStreamer::emitCOFFLinkFusedCall(const MCSymbol *Load,
   FusedCall = AwaitingCall;
   FusedCallReg = Reg;
   FusedCallOverrides = 0;
+}
+
+void X86WinCOFFStreamer::emitCOFFLinkFusedAccess(const MCSymbol *Load,
+                                                 MCRegister Reg) {
+  MCWinCOFFStreamer::emitCOFFLinkFusedAccess(Load, Reg);
+  if (!MCII)
+    return;
+  FusedUse = AwaitingAccess;
+  FusedUseReg = Reg;
+}
+
+void X86WinCOFFStreamer::emitCOFFLinkFusedAdd(const MCSymbol *Load,
+                                              MCRegister Reg) {
+  MCWinCOFFStreamer::emitCOFFLinkFusedAdd(Load, Reg);
+  if (!MCII)
+    return;
+  FusedUse = AwaitingAdd;
+  FusedUseReg = Reg;
 }
 
 // A fused read that directly follows another leaves the first without an

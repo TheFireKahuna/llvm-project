@@ -27,10 +27,13 @@
 // capabilities (7), then one group of kind 2 and 20 bytes: .text's symbol
 // (index 0) with 11 sites, then .text$c's symbol (index 6) with 2. Each site is
 // ULEB128 (delta << 4 | form), with forms 0 other, 1 call, 2 jump, 3 load, 4
-// address and 5 jump after one prefix.
+// address and 5 jump after one prefix. The calls and jumps may become
+// shorter, so a group of kind 30 and 6 bytes says that .text and .text$c are
+// covered, with no value depending on them: the jump to .Lpast follows them.
 // CHECK:      Contents of section .llvm_link_records:
 // CHECK-NEXT: 0000 4c4c5243 01070214 000b2162 75737374
-// CHECK-NEXT: 0010 70709312 e4014006 02a30161
+// CHECK-NEXT: 0010 70709312 e4014006 02a30161 1e060000
+// CHECK-NEXT: 0020 00060600
 // CHECK-EMPTY:
 
 .ifndef X86
