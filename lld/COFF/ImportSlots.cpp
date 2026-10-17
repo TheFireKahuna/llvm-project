@@ -604,8 +604,8 @@ public:
       : cells(std::move(cells)), protect(protect), tls(tls), ctx(ctx) {
     setAlignment(16);
   }
-  size_t getSize() const override;
-  void writeTo(uint8_t *buf) const override;
+  size_t getSize() const override { return write(nullptr); }
+  void writeTo(uint8_t *buf) const override { write(buf); }
   uint32_t getOutputCharacteristics() const override {
     return llvm::COFF::IMAGE_SCN_CNT_CODE |
            NonSectionCodeChunk::getOutputCharacteristics();
@@ -617,11 +617,9 @@ public:
   }
 
 private:
-  size_t getCellSize(const OverrideCell &c) const;
-  // The size of the test of whether a read-only cell is to be written: by its
-  // slot's bit in the mask, or, for a default replaced by name, by whether the
-  // table has a block.
-  size_t getReadOnlyTestSize() const;
+  uint32_t write(uint8_t *buf) const;
+  void writeAMD64(LabelledCode &a) const;
+  void writeARM64(LabelledCode &a) const;
   uint32_t getReadOnlyMask() const;
   bool hasReadOnlyByName() const {
     return llvm::any_of(
@@ -646,29 +644,6 @@ static constexpr uint32_t overrideCountOffset = overrideHeaderOffset + 6;
 static constexpr uint32_t overrideAnchorMaskOffset = 8;
 static constexpr uint32_t overrideAnchorEntriesOffset = 12;
 
-size_t OverrideCellFillChunk::getCellSize(const OverrideCell &c) const {
-  if (ctx.config.machine == ARM64) {
-    // By name, the search of the anchor's entries: ldr; add; ldr; ldrh; add;
-    // add; movz and three movk; cbz; ldr; cmp; b.eq; add; sub; b; ldr; then
-    // adrp; add; str. By slot: tbz; ldr; add; adrp; add; str. For a
-    // thread-local cell, the store in the thread's block: adrp; ldr; ldr; ldr;
-    // movz; movk; str.
-    return (c.key ? 72 : 12) + (c.indirect ? 4 : 0) + 12 +
-           (c.threadLocal ? 28 : 0);
-  }
-  // By name, the search of the anchor's entries: mov eax, [r11 + anchor];
-  // add rax, r11; mov ecx, [rax + entries]; movzx edx, word [r11 + count];
-  // lea rax, [rax + rdx * 8 + 16]; mov rdx, key; test ecx, ecx; jz .next;
-  // cmp [rax], rdx; je .found; add rax, 16; dec ecx; jmp; mov rax, [rax + 8].
-  // By slot: bt; jnc; mov eax, [r11 + rva]; add rax, r11. Then
-  // mov [rip + cell], rax; for a thread-local cell, the store in the thread's
-  // block: mov ecx, [rip + index]; mov rdx, gs:[0x58];
-  // mov rdx, [rdx + rcx * 8]; mov [rdx + offset], rax
-  size_t find =
-      c.key ? 57 : 5 + 2 + (overrideSlotOffset(c.slot) + 4 >= 0x80 ? 7 : 4) + 3;
-  return find + (c.indirect ? 3 : 0) + 7 + (c.threadLocal ? 26 : 0);
-}
-
 uint32_t OverrideCellFillChunk::getReadOnlyMask() const {
   uint32_t mask = 0;
   for (const OverrideCell &c : cells)
@@ -677,378 +652,149 @@ uint32_t OverrideCellFillChunk::getReadOnlyMask() const {
   return mask;
 }
 
-size_t OverrideCellFillChunk::getReadOnlyTestSize() const {
-  bool byName = hasReadOnlyByName();
-  bool bySlot = getReadOnlyMask() != 0;
-  // movz; movk; tst; b.eq or b.ne; then by name, ldr; cbz.
-  if (ctx.config.machine == ARM64)
-    return (bySlot ? 16 : 0) + (byName ? 8 : 0);
-  // test r10d, mask; je, or by name jne rel8; then cmp [r11 + block], 0; je.
-  if (!byName)
-    return 13;
-  return (bySlot ? 9 : 0) + 14;
+uint32_t OverrideCellFillChunk::write(uint8_t *buf) const {
+  return LabelledCode::layOut(buf, rva, [&](LabelledCode &a) {
+    if (ctx.config.machine == ARM64)
+      writeARM64(a);
+    else
+      writeAMD64(a);
+  });
 }
 
-size_t OverrideCellFillChunk::getSize() const {
-  size_t size = 0;
-  for (const OverrideCell &c : cells)
-    size += getCellSize(c);
-  if (ctx.config.machine == ARM64) {
-    // The base and the magic's check (seven words), the mask (three), the
-    // zero status and ret; with read-only cells, the frame (four), the test of
-    // their slots (four), for each range the two protection calls (fourteen
-    // words each) and the first's status check, the reload of the base and
-    // mask between them (five) and the branch past the zero status.
-    size += 28 + 12 + 8;
-    return protect ? size + 16 + getReadOnlyTestSize() +
-                         getReadOnlyRanges().size() * (56 + 4 + 56) + 20 + 4
-                   : size;
-  }
-  // The base, the magic's check, the mask, the zero status and ret; with
-  // read-only cells, the frame, the test of their slots, for each range the
-  // two protection calls and the first's status check, the reload of the base
-  // and mask between them and the jump past the zero status.
-  size += 13 + 17 + 12 + 2 + 1;
-  return protect ? size + 8 + getReadOnlyTestSize() +
-                       getReadOnlyRanges().size() * (60 + 8 + 60) + 25 + 2
-                 : size;
-}
-
-void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
+void OverrideCellFillChunk::writeARM64(LabelledCode &a) const {
   const uint32_t pageReadWrite = 4, pageReadOnly = 2;
   uint32_t roMask = getReadOnlyMask();
   bool roByName = hasReadOnlyByName();
   std::vector<std::pair<uint64_t, uint64_t>> ranges =
       protect ? getReadOnlyRanges()
               : std::vector<std::pair<uint64_t, uint64_t>>();
-  uint32_t off = 0;
-  // The branches to the zero status, and to the epilogue with the status of a
-  // protection call, patched once their places are known.
-  SmallVector<uint32_t, 4> toZero, toDone;
+  // The zero status, and the epilogue with the status of a protection call.
+  uint32_t zero = a.newLabel(), done = a.newLabel();
 
-  if (ctx.config.machine == ARM64) {
-    auto put = [&](uint32_t insn) {
-      write32le(buf + off, insn);
-      off += 4;
-    };
-    auto branch = [&](SmallVector<uint32_t, 4> &list, uint32_t insn) {
-      list.push_back(off);
-      put(insn);
-    };
-    // A conditional branch's or cbnz's 19-bit offset, or b's 26-bit one.
-    auto patch = [&](ArrayRef<uint32_t> list, uint32_t target) {
-      for (uint32_t b : list) {
-        uint32_t insn = read32le(buf + b);
-        uint32_t delta = (target - b) / 4;
-        write32le(buf + b, (insn >> 26) == 0x05
-                               ? insn | (delta & 0x3FFFFFF)
-                               : insn | (delta & 0x7FFFF) << 5);
-      }
-    };
-    // movz wN, #lo; movk wN, #hi, lsl 16
-    auto movImm = [&](uint32_t reg, uint32_t value) {
-      put(0x52800000 | reg | (value & 0xFFFF) << 5);
-      put(0x72A00000 | reg | (value >> 16 & 0xFFFF) << 5);
-    };
-    // adrp xN, target; add xN, xN, :lo12:target
-    auto address = [&](uint32_t reg, uint64_t target) {
-      write32le(buf + off, 0x90000000 | reg);
-      write32le(buf + off + 4, 0x91000000 | reg << 5 | reg);
-      applyArm64Addr(buf + off, target, rva + off, 12);
-      applyArm64Imm(buf + off + 4, target & 0xfff, 0);
-      off += 8;
-    };
-    // adrp x16, protect; ldr x16, [x16, :lo12:protect]; blr x16
-    auto callProtect = [&] {
-      write32le(buf + off, 0x90000010);
-      write32le(buf + off + 4, 0xF9400210);
-      applyArm64Addr(buf + off, protect->getRVA(), rva + off, 12);
-      applyArm64Ldr(buf + off + 4, protect->getRVA() & 0xfff);
-      off += 8;
-      put(0xD63F0200);
-    };
-    // The executable's image base, from the PEB, into x16.
-    auto loadBase = [&] {
-      put(0xF9403250); // ldr x16, [x18, #0x60]   TEB->PEB
-      put(0xF9400A10); // ldr x16, [x16, #0x10]   PEB->ImageBaseAddress
-    };
-    // The anchor's mask into w10: ldr w10, [x16, #anchor]; add x10, x16, x10;
-    // ldr w10, [x10, #mask].
-    auto loadMask = [&] {
-      put(0xB9400000 | overrideAnchorRVAOffset / 4 << 10 | 16 << 5 | 10);
-      put(0x8B0A020A);
-      put(0xB9400000 | overrideAnchorMaskOffset / 4 << 10 | 10 << 5 | 10);
-    };
-    auto writeCells = [&](bool readOnly) {
-      for (const OverrideCell &c : cells) {
-        if (c.readOnly != readOnly)
-          continue;
-        uint32_t skip;
-        if (c.key) {
-          // The anchor's entries into x11 and their number into w12:
-          // ldr w11, [x16, #anchor]; add x11, x16, x11; ldr w12, [x11, #n];
-          // ldrh w13, [x16, #count]; add x11, x11, x13, lsl #3;
-          // add x11, x11, #16. The key into x14. Then the search:
-          // .loop: cbz w12, .next; ldr x13, [x11]; cmp x13, x14; b.eq .found;
-          // add x11, x11, #16; sub w12, w12, #1; b .loop;
-          // .found: ldr x17, [x11, #8]
-          put(0xB9400000 | overrideAnchorRVAOffset / 4 << 10 | 16 << 5 | 11);
-          put(0x8B0B020B);
-          put(0xB9400000 | overrideAnchorEntriesOffset / 4 << 10 | 11 << 5 |
-              12);
-          put(0x79400000 | overrideCountOffset / 2 << 10 | 16 << 5 | 13);
-          put(0x8B0D0D6B);
-          put(0x91000000 | overrideAnchorHeaderSize << 10 | 11 << 5 | 11);
-          put(0xD280000E | uint32_t(c.key & 0xFFFF) << 5);
-          for (uint32_t hw = 1; hw != 4; ++hw)
-            put(0xF280000E | hw << 21 |
-                uint32_t(c.key >> (16 * hw) & 0xFFFF) << 5);
-          skip = off;
-          put(0x3400000C);
-          put(0xF940016D);
-          put(0xEB0E01BF);
-          put(0x54000080); // b.eq +4
-          put(0x91000000 | 16 << 10 | 11 << 5 | 11);
-          put(0x5100058C);
-          put(0x14000000 | (-6 & 0x3FFFFFF));
-          put(0xF9400571);
-          if (c.indirect)
-            put(0xF9400231); // ldr x17, [x17]
-        } else {
-          // tbz w10, #slot, .next; ldr w17, [x16, #rva]; add x17, x16, x17
-          skip = off;
-          put(0x36000000 | c.slot << 19 | 10);
-          put(0xB9400000 | (overrideSlotOffset(c.slot) + 4) / 4 << 10 |
-              16 << 5 | 17);
-          put(0x8B110211);
-        }
-        // adrp x9, cell; add x9, x9, :lo12:cell; str x17, [x9]
-        address(9, c.getRVA());
-        put(0xF9000131);
-        if (c.threadLocal) {
-          // adrp x9, index; ldr w9, [x9, :lo12:index]; ldr x11, [x18, #0x58]
-          // (TEB->ThreadLocalStoragePointer); ldr x11, [x11, x9, lsl #3];
-          // movz/movk w12, #offset; str x17, [x11, x12]
-          uint64_t index = tls.getIndexRVA();
-          write32le(buf + off, 0x90000009);
-          write32le(buf + off + 4, 0xB9400129);
-          applyArm64Addr(buf + off, index, rva + off, 12);
-          applyArm64Ldr(buf + off + 4, index & 0xfff);
-          off += 8;
-          put(0xF9402E4B);
-          put(0xF869796B);
-          movImm(12, tls.getOffset(c.getRVA()));
-          put(0xF82C6971);
-        }
-        write32le(buf + skip, read32le(buf + skip) | (off - skip) / 4 << 5);
-      }
-    };
-
-    if (protect) {
-      put(0xA9BD7BFD); // stp x29, x30, [sp, #-48]!
-      put(0x910003FD); // mov x29, sp
-    }
-    loadBase();
-    put(0xB9408211); // ldr w17, [x16, #0x80]   the table's magic
-    movImm(9, overrideTableMagic);
-    put(0x6B09023F);            // cmp w17, w9
-    branch(toZero, 0x54000001); // b.ne .zero
-    loadMask();
-    writeCells(false);
-    if (protect) {
-      // A read-only cell of a default replaced by name is written whenever
-      // the table has a block.
-      if (roMask) {
-        movImm(9, roMask);
-        put(0x6A09015F); // tst w10, w9
-        if (roByName)
-          put(0x54000061); // b.ne +3
-        else
-          branch(toZero, 0x54000000); // b.eq .zero
-      }
-      if (roByName) {
-        put(0xB9400000 | overrideBlockRVAOffset / 4 << 10 | 16 << 5 | 9);
-        branch(toZero, 0x34000009); // cbz w9, .zero
-      }
-      // NtProtectVirtualMemory(-1, &base, &size, protection, &old) over each
-      // range, with base, size and old at sp + 16, 24 and 32.
-      auto protectRange = [&](std::pair<uint64_t, uint64_t> r,
-                              uint32_t protection) {
-        address(0, r.first);
-        put(0xF9000BE0); // str x0, [sp, #16]
-        put(0xD2800001 | uint32_t((r.second - r.first) & 0xFFFF) << 5);
-        put(0xF2A00001 | uint32_t((r.second - r.first) >> 16 & 0xFFFF) << 5);
-        put(0xF9000FE1);                   // str x1, [sp, #24]
-        put(0x92800000);                   // mov x0, #-1
-        put(0x910043E1);                   // add x1, sp, #16
-        put(0x910063E2);                   // add x2, sp, #24
-        put(0x52800003 | protection << 5); // mov w3, #protection
-        put(0x910083E4);                   // add x4, sp, #32
-        callProtect();
-      };
-      for (auto r : ranges) {
-        protectRange(r, pageReadWrite);
-        branch(toDone, 0x35000000); // cbnz w0, .done
-      }
-      loadBase();
-      loadMask();
-      writeCells(true);
-      // Read-only cells are only in read-only data.
-      for (auto r : ranges)
-        protectRange(r, pageReadOnly);
-      branch(toDone, 0x14000000); // b .done
-    }
-    patch(toZero, off);
-    put(0x52800000); // mov w0, #0
-    patch(toDone, off);
-    if (protect) {
-      put(0x910003BF); // mov sp, x29
-      put(0xA8C37BFD); // ldp x29, x30, [sp], #48
-    }
-    put(0xD65F03C0); // ret
-    assert(off == getSize());
-    return;
-  }
-
-  auto put = [&](ArrayRef<uint8_t> bytes) {
-    memcpy(buf + off, bytes.data(), bytes.size());
-    off += bytes.size();
-  };
-  // The RIP-relative displacement to target of the instruction just put.
-  auto disp = [&](uint64_t target) {
-    write32le(buf + off - 4, target - (rva + off));
-  };
-  auto jump = [&](SmallVector<uint32_t, 4> &list, uint8_t cc) {
-    put({0x0F, cc, 0, 0, 0, 0});
-    list.push_back(off - 4);
-  };
-  auto patch = [&](ArrayRef<uint32_t> list) {
-    for (uint32_t d : list)
-      write32le(buf + d, off - (d + 4));
-  };
-  // The executable's image base, from the PEB, into r11.
+  // The executable's image base, from the PEB, into x16.
   auto loadBase = [&] {
-    put({0x65, 0x4C, 0x8B, 0x1C, 0x25, 0x60, 0, 0, 0}); // mov r11, gs:[0x60]
-    put({0x4D, 0x8B, 0x5B, 0x10});                      // mov r11, [r11 + 0x10]
+    a.put32(0xF9403250); // ldr x16, [x18, #0x60]   TEB->PEB
+    a.put32(0xF9400A10); // ldr x16, [x16, #0x10]   PEB->ImageBaseAddress
   };
-  // The anchor's mask into r10d.
+  // The anchor's mask into w10: ldr w10, [x16, #anchor]; add x10, x16, x10;
+  // ldr w10, [x10, #mask].
   auto loadMask = [&] {
-    put({0x45, 0x8B, 0x93, 0, 0, 0, 0}); // mov r10d, [r11 + anchor]
-    write32le(buf + off - 4, overrideAnchorRVAOffset);
-    // mov r10d, [r11 + r10 + mask]
-    put({0x47, 0x8B, 0x54, 0x13, uint8_t(overrideAnchorMaskOffset)});
+    a.put32(0xB9400000 | overrideAnchorRVAOffset / 4 << 10 | 16 << 5 | 10);
+    a.put32(0x8B0A020A);
+    a.put32(0xB9400000 | overrideAnchorMaskOffset / 4 << 10 | 10 << 5 | 10);
   };
   auto writeCells = [&](bool readOnly) {
     for (const OverrideCell &c : cells) {
       if (c.readOnly != readOnly)
         continue;
-      uint32_t skip;
+      uint32_t next = a.newLabel();
       if (c.key) {
-        put({0x41, 0x8B, 0x83, 0, 0, 0, 0}); // mov eax, [r11 + anchor]
-        write32le(buf + off - 4, overrideAnchorRVAOffset);
-        put({0x4C, 0x01, 0xD8}); // add rax, r11
-        // mov ecx, [rax + entries]   the number of the block's entries
-        put({0x8B, 0x48, uint8_t(overrideAnchorEntriesOffset)});
-        put({0x41, 0x0F, 0xB7, 0x93, 0, 0, 0, 0}); // movzx edx, [r11 + count]
-        write32le(buf + off - 4, overrideCountOffset);
-        // lea rax, [rax + rdx * 8 + 16]   the anchor's first entry
-        put({0x48, 0x8D, 0x44, 0xD0, uint8_t(overrideAnchorHeaderSize)});
-        put({0x48, 0xBA, 0, 0, 0, 0, 0, 0, 0, 0}); // mov rdx, key
-        write64le(buf + off - 8, c.key);
-        uint32_t loop = off;
-        put({0x85, 0xC9}); // test ecx, ecx
-        put({0x74, 0});    // jz .next
-        skip = off - 1;
-        put({0x48, 0x39, 0x10});       // cmp [rax], rdx
-        put({0x74, 8});                // je .found
-        put({0x48, 0x83, 0xC0, 0x10}); // add rax, 16
-        put({0xFF, 0xC9});             // dec ecx
-        put({0xEB, 0});                // jmp .loop
-        buf[off - 1] = uint8_t(loop - off);
-        put({0x48, 0x8B, 0x40, 0x08}); // .found: mov rax, [rax + 8]
+        // The anchor's entries into x11 and their number into w12:
+        // ldr w11, [x16, #anchor]; add x11, x16, x11; ldr w12, [x11, #n];
+        // ldrh w13, [x16, #count]; add x11, x11, x13, lsl #3;
+        // add x11, x11, #16. The key into x14. Then the search:
+        // .loop: cbz w12, .next; ldr x13, [x11]; cmp x13, x14; b.eq .found;
+        // add x11, x11, #16; sub w12, w12, #1; b .loop;
+        // .found: ldr x17, [x11, #8]
+        uint32_t loop = a.newLabel(), found = a.newLabel();
+        a.put32(0xB9400000 | overrideAnchorRVAOffset / 4 << 10 | 16 << 5 | 11);
+        a.put32(0x8B0B020B);
+        a.put32(0xB9400000 | overrideAnchorEntriesOffset / 4 << 10 | 11 << 5 |
+                12);
+        a.put32(0x79400000 | overrideCountOffset / 2 << 10 | 16 << 5 | 13);
+        a.put32(0x8B0D0D6B);
+        a.put32(0x91000000 | overrideAnchorHeaderSize << 10 | 11 << 5 | 11);
+        a.movImm64(14, c.key);
+        a.bind(loop);
+        a.branch19(0x3400000C, next);
+        a.put32(0xF940016D);
+        a.put32(0xEB0E01BF);
+        a.branch19(0x54000000, found);
+        a.put32(0x91000000 | 16 << 10 | 11 << 5 | 11);
+        a.put32(0x5100058C);
+        a.branch26(0x14000000, loop);
+        a.bind(found);
+        a.put32(0xF9400571);
         if (c.indirect)
-          put({0x48, 0x8B, 0x00}); // mov rax, [rax]
+          a.put32(0xF9400231); // ldr x17, [x17]
       } else {
-        put({0x41, 0x0F, 0xBA, 0xE2, uint8_t(c.slot)}); // bt r10d, slot
-        put({0x73, 0});                                 // jnc .next
-        skip = off - 1;
-        // mov eax, dword ptr [r11 + slot offset + 4]   the slot's RVA
-        uint32_t rvaOff = overrideSlotOffset(c.slot) + 4;
-        if (rvaOff >= 0x80) {
-          put({0x41, 0x8B, 0x83, 0, 0, 0, 0});
-          write32le(buf + off - 4, rvaOff);
-        } else {
-          put({0x41, 0x8B, 0x43, uint8_t(rvaOff)});
-        }
-        put({0x4C, 0x01, 0xD8}); // add rax, r11   base + rva
+        // tbz w10, #slot, .next; ldr w17, [x16, #rva]; add x17, x16, x17
+        a.branch14(0x36000000 | c.slot << 19 | 10, next);
+        a.put32(0xB9400000 | (overrideSlotOffset(c.slot) + 4) / 4 << 10 |
+                16 << 5 | 17);
+        a.put32(0x8B110211);
       }
-      put({0x48, 0x89, 0x05, 0, 0, 0, 0}); // mov [rip + cell], rax
-      disp(c.getRVA());
+      // adrp x9, cell; add x9, x9, :lo12:cell; str x17, [x9]
+      a.address(9, c.getRVA());
+      a.put32(0xF9000131);
       if (c.threadLocal) {
-        put({0x8B, 0x0D, 0, 0, 0, 0}); // mov ecx, [rip + index]
-        disp(tls.getIndexRVA());
-        // mov rdx, gs:[0x58]   TEB->ThreadLocalStoragePointer
-        put({0x65, 0x48, 0x8B, 0x14, 0x25, 0x58, 0, 0, 0});
-        put({0x48, 0x8B, 0x14, 0xCA});       // mov rdx, [rdx + rcx * 8]
-        put({0x48, 0x89, 0x82, 0, 0, 0, 0}); // mov [rdx + offset], rax
-        write32le(buf + off - 4, tls.getOffset(c.getRVA()));
+        // adrp x9, index; ldr w9, [x9, :lo12:index]; ldr x11, [x18, #0x58]
+        // (TEB->ThreadLocalStoragePointer); ldr x11, [x11, x9, lsl #3];
+        // movz/movk w12, #offset; str x17, [x11, x12]
+        uint64_t index = tls.getIndexRVA();
+        if (a.buf) {
+          write32le(a.buf + a.off, 0x90000009);
+          write32le(a.buf + a.off + 4, 0xB9400129);
+          applyArm64Addr(a.buf + a.off, index, a.rva + a.off, 12);
+          applyArm64Ldr(a.buf + a.off + 4, index & 0xfff);
+        }
+        a.off += 8;
+        a.put32(0xF9402E4B);
+        a.put32(0xF869796B);
+        a.movImm32(12, tls.getOffset(c.getRVA()));
+        a.put32(0xF82C6971);
       }
-      buf[skip] = off - (skip + 1);
+      a.bind(next);
     }
   };
-  // NtProtectVirtualMemory(-1, &base, &size, r9d, &old), with base, size and
-  // old at rsp + 0x30, 0x38 and 0x40.
-  auto callProtect = [&] {
-    put({0x48, 0x8D, 0x44, 0x24, 0x40});             // lea rax, [rsp + 0x40]
-    put({0x48, 0x89, 0x44, 0x24, 0x20});             // mov [rsp + 0x20], rax
-    put({0x48, 0xC7, 0xC1, 0xFF, 0xFF, 0xFF, 0xFF}); // mov rcx, -1
-    put({0x48, 0x8D, 0x54, 0x24, 0x30});             // lea rdx, [rsp + 0x30]
-    put({0x4C, 0x8D, 0x44, 0x24, 0x38});             // lea r8, [rsp + 0x38]
-    put({0xFF, 0x15, 0, 0, 0, 0}); // call [rip + NtProtectVirtualMemory]
-    disp(protect->getRVA());
-  };
 
-  if (protect)
-    put({0x48, 0x83, 0xEC, 0x48}); // sub rsp, 0x48
+  if (protect) {
+    a.put32(0xA9BD7BFD); // stp x29, x30, [sp, #-48]!
+    a.put32(0x910003FD); // mov x29, sp
+  }
   loadBase();
-  // The magic is at 0x80, past the reach of a signed disp8, so a disp32.
-  put({0x41, 0x81, 0xBB, 0x80, 0, 0, 0, 0, 0, 0, 0}); // cmp [r11 + 0x80], magic
-  write32le(buf + off - 4, overrideTableMagic);
-  jump(toZero, 0x85); // jne .zero
+  a.put32(0xB9408211); // ldr w17, [x16, #0x80]   the table's magic
+  a.movImm32(9, overrideTableMagic);
+  a.put32(0x6B09023F);          // cmp w17, w9
+  a.branch19(0x54000001, zero); // b.ne .zero
   loadMask();
   writeCells(false);
   if (protect) {
-    // A read-only cell of a default replaced by name is written whenever the
-    // table has a block.
-    if (roMask || !roByName) {
-      put({0x41, 0xF7, 0xC2, 0, 0, 0, 0}); // test r10d, read-only cells' slots
-      write32le(buf + off - 4, roMask);
+    // A read-only cell of a default replaced by name is written whenever
+    // the table has a block.
+    uint32_t writable = a.newLabel();
+    if (roMask) {
+      a.movImm32(9, roMask);
+      a.put32(0x6A09015F); // tst w10, w9
       if (roByName)
-        put({0x75, 14}); // jne past the block's test
+        a.branch19(0x54000001, writable); // b.ne past the block's test
       else
-        jump(toZero, 0x84); // je .zero
+        a.branch19(0x54000000, zero); // b.eq .zero
     }
     if (roByName) {
-      put({0x41, 0x83, 0xBB, 0, 0, 0, 0, 0}); // cmp dword [r11 + block], 0
-      write32le(buf + off - 5, overrideBlockRVAOffset);
-      jump(toZero, 0x84); // je .zero
+      a.put32(0xB9400000 | overrideBlockRVAOffset / 4 << 10 | 16 << 5 | 9);
+      a.branch19(0x34000009, zero); // cbz w9, .zero
     }
+    a.bind(writable);
     // NtProtectVirtualMemory(-1, &base, &size, protection, &old) over each
-    // range.
+    // range, with base, size and old at sp + 16, 24 and 32.
     auto protectRange = [&](std::pair<uint64_t, uint64_t> r,
                             uint32_t protection) {
-      put({0x48, 0x8D, 0x05, 0, 0, 0, 0}); // lea rax, [rip + base]
-      disp(r.first);
-      put({0x48, 0x89, 0x44, 0x24, 0x30});             // mov [rsp + 0x30], rax
-      put({0x48, 0xC7, 0x44, 0x24, 0x38, 0, 0, 0, 0}); // mov [rsp + 0x38], size
-      write32le(buf + off - 4, uint32_t(r.second - r.first));
-      put({0x41, 0xB9, uint8_t(protection), 0, 0, 0}); // mov r9d, protection
-      callProtect();
+      a.address(0, r.first);
+      a.put32(0xF9000BE0); // str x0, [sp, #16]
+      a.put32(0xD2800001 | uint32_t((r.second - r.first) & 0xFFFF) << 5);
+      a.put32(0xF2A00001 | uint32_t((r.second - r.first) >> 16 & 0xFFFF) << 5);
+      a.put32(0xF9000FE1);                   // str x1, [sp, #24]
+      a.put32(0x92800000);                   // mov x0, #-1
+      a.put32(0x910043E1);                   // add x1, sp, #16
+      a.put32(0x910063E2);                   // add x2, sp, #24
+      a.put32(0x52800003 | protection << 5); // mov w3, #protection
+      a.put32(0x910083E4);                   // add x4, sp, #32
+      a.callImport(protect->getRVA());
     };
     for (auto r : ranges) {
       protectRange(r, pageReadWrite);
-      put({0x85, 0xC0});  // test eax, eax
-      jump(toDone, 0x85); // jne .done
+      a.branch19(0x35000000, done); // cbnz w0, .done
     }
     loadBase();
     loadMask();
@@ -1056,15 +802,169 @@ void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
     // Read-only cells are only in read-only data.
     for (auto r : ranges)
       protectRange(r, pageReadOnly);
-    put({0xEB, 2}); // jmp .done
+    a.branch26(0x14000000, done); // b .done
   }
-  patch(toZero);
-  put({0x31, 0xC0}); // xor eax, eax
-  patch(toDone);
+  a.bind(zero);
+  a.put32(0x52800000); // mov w0, #0
+  a.bind(done);
+  if (protect) {
+    a.put32(0x910003BF); // mov sp, x29
+    a.put32(0xA8C37BFD); // ldp x29, x30, [sp], #48
+  }
+  a.put32(0xD65F03C0); // ret
+}
+
+void OverrideCellFillChunk::writeAMD64(LabelledCode &a) const {
+  const uint32_t pageReadWrite = 4, pageReadOnly = 2;
+  uint32_t roMask = getReadOnlyMask();
+  bool roByName = hasReadOnlyByName();
+  std::vector<std::pair<uint64_t, uint64_t>> ranges =
+      protect ? getReadOnlyRanges()
+              : std::vector<std::pair<uint64_t, uint64_t>>();
+  // The zero status, and the epilogue with the status of a protection call.
+  uint32_t zero = a.newLabel(), done = a.newLabel();
+
+  // The executable's image base, from the PEB, into r11.
+  auto loadBase = [&] {
+    a.put({0x65, 0x4C, 0x8B, 0x1C, 0x25, 0x60, 0, 0, 0}); // mov r11, gs:[0x60]
+    a.put({0x4D, 0x8B, 0x5B, 0x10}); // mov r11, [r11 + 0x10]
+  };
+  // The anchor's mask into r10d.
+  auto loadMask = [&] {
+    a.put({0x45, 0x8B, 0x93, 0, 0, 0, 0}); // mov r10d, [r11 + anchor]
+    a.imm32(overrideAnchorRVAOffset);
+    // mov r10d, [r11 + r10 + mask]
+    a.put({0x47, 0x8B, 0x54, 0x13, uint8_t(overrideAnchorMaskOffset)});
+  };
+  auto writeCells = [&](bool readOnly) {
+    for (const OverrideCell &c : cells) {
+      if (c.readOnly != readOnly)
+        continue;
+      uint32_t next = a.newLabel();
+      if (c.key) {
+        uint32_t loop = a.newLabel(), found = a.newLabel();
+        a.put({0x41, 0x8B, 0x83, 0, 0, 0, 0}); // mov eax, [r11 + anchor]
+        a.imm32(overrideAnchorRVAOffset);
+        a.put({0x4C, 0x01, 0xD8}); // add rax, r11
+        // mov ecx, [rax + entries]   the number of the block's entries
+        a.put({0x8B, 0x48, uint8_t(overrideAnchorEntriesOffset)});
+        a.put({0x41, 0x0F, 0xB7, 0x93, 0, 0, 0, 0}); // movzx edx, [r11 + count]
+        a.imm32(overrideCountOffset);
+        // lea rax, [rax + rdx * 8 + 16]   the anchor's first entry
+        a.put({0x48, 0x8D, 0x44, 0xD0, uint8_t(overrideAnchorHeaderSize)});
+        a.put({0x48, 0xBA, 0, 0, 0, 0, 0, 0, 0, 0}); // mov rdx, key
+        a.imm64(c.key);
+        a.bind(loop);
+        a.put({0x85, 0xC9});             // test ecx, ecx
+        a.jcc(0x84, next);               // jz .next
+        a.put({0x48, 0x39, 0x10});       // cmp [rax], rdx
+        a.jcc(0x84, found);              // je .found
+        a.put({0x48, 0x83, 0xC0, 0x10}); // add rax, 16
+        a.put({0xFF, 0xC9});             // dec ecx
+        a.jmp(loop);                     // jmp .loop
+        a.bind(found);
+        a.put({0x48, 0x8B, 0x40, 0x08}); // mov rax, [rax + 8]
+        if (c.indirect)
+          a.put({0x48, 0x8B, 0x00}); // mov rax, [rax]
+      } else {
+        a.put({0x41, 0x0F, 0xBA, 0xE2, uint8_t(c.slot)}); // bt r10d, slot
+        a.jcc(0x83, next);                                // jnc .next
+        // mov eax, dword ptr [r11 + slot offset + 4]   the slot's RVA
+        uint32_t rvaOff = overrideSlotOffset(c.slot) + 4;
+        if (rvaOff >= 0x80) {
+          a.put({0x41, 0x8B, 0x83, 0, 0, 0, 0});
+          a.imm32(rvaOff);
+        } else {
+          a.put({0x41, 0x8B, 0x43, uint8_t(rvaOff)});
+        }
+        a.put({0x4C, 0x01, 0xD8}); // add rax, r11   base + rva
+      }
+      a.put({0x48, 0x89, 0x05, 0, 0, 0, 0}); // mov [rip + cell], rax
+      a.disp(c.getRVA());
+      if (c.threadLocal) {
+        a.put({0x8B, 0x0D, 0, 0, 0, 0}); // mov ecx, [rip + index]
+        a.disp(tls.getIndexRVA());
+        // mov rdx, gs:[0x58]   TEB->ThreadLocalStoragePointer
+        a.put({0x65, 0x48, 0x8B, 0x14, 0x25, 0x58, 0, 0, 0});
+        a.put({0x48, 0x8B, 0x14, 0xCA});       // mov rdx, [rdx + rcx * 8]
+        a.put({0x48, 0x89, 0x82, 0, 0, 0, 0}); // mov [rdx + offset], rax
+        a.imm32(tls.getOffset(c.getRVA()));
+      }
+      a.bind(next);
+    }
+  };
+  // NtProtectVirtualMemory(-1, &base, &size, r9d, &old), with base, size and
+  // old at rsp + 0x30, 0x38 and 0x40.
+  auto callProtect = [&] {
+    a.put({0x48, 0x8D, 0x44, 0x24, 0x40});             // lea rax, [rsp + 0x40]
+    a.put({0x48, 0x89, 0x44, 0x24, 0x20});             // mov [rsp + 0x20], rax
+    a.put({0x48, 0xC7, 0xC1, 0xFF, 0xFF, 0xFF, 0xFF}); // mov rcx, -1
+    a.put({0x48, 0x8D, 0x54, 0x24, 0x30});             // lea rdx, [rsp + 0x30]
+    a.put({0x4C, 0x8D, 0x44, 0x24, 0x38});             // lea r8, [rsp + 0x38]
+    a.put({0xFF, 0x15, 0, 0, 0, 0}); // call [rip + NtProtectVirtualMemory]
+    a.disp(protect->getRVA());
+  };
+
   if (protect)
-    put({0x48, 0x83, 0xC4, 0x48}); // add rsp, 0x48
-  put({0xC3});                     // ret
-  assert(off == getSize());
+    a.put({0x48, 0x83, 0xEC, 0x48}); // sub rsp, 0x48
+  loadBase();
+  // The magic is at 0x80, past the reach of a signed disp8, so a disp32.
+  // cmp dword [r11 + 0x80], magic
+  a.put({0x41, 0x81, 0xBB, 0x80, 0, 0, 0, 0, 0, 0, 0});
+  a.imm32(overrideTableMagic);
+  a.jcc(0x85, zero); // jne .zero
+  loadMask();
+  writeCells(false);
+  if (protect) {
+    // A read-only cell of a default replaced by name is written whenever the
+    // table has a block.
+    uint32_t writable = a.newLabel();
+    if (roMask || !roByName) {
+      // test r10d, read-only cells' slots
+      a.put({0x41, 0xF7, 0xC2, 0, 0, 0, 0});
+      a.imm32(roMask);
+      if (roByName)
+        a.jcc(0x85, writable); // jne past the block's test
+      else
+        a.jcc(0x84, zero); // je .zero
+    }
+    if (roByName) {
+      a.put({0x41, 0x83, 0xBB, 0, 0, 0, 0, 0}); // cmp dword [r11 + block], 0
+      a.at32(5, overrideBlockRVAOffset);
+      a.jcc(0x84, zero); // je .zero
+    }
+    a.bind(writable);
+    // NtProtectVirtualMemory(-1, &base, &size, protection, &old) over each
+    // range.
+    auto protectRange = [&](std::pair<uint64_t, uint64_t> r,
+                            uint32_t protection) {
+      a.put({0x48, 0x8D, 0x05, 0, 0, 0, 0}); // lea rax, [rip + base]
+      a.disp(r.first);
+      a.put({0x48, 0x89, 0x44, 0x24, 0x30}); // mov [rsp + 0x30], rax
+      a.put({0x48, 0xC7, 0x44, 0x24, 0x38, 0, 0, 0, 0}); // mov [rsp+0x38], size
+      a.imm32(uint32_t(r.second - r.first));
+      a.put({0x41, 0xB9, uint8_t(protection), 0, 0, 0}); // mov r9d, protection
+      callProtect();
+    };
+    for (auto r : ranges) {
+      protectRange(r, pageReadWrite);
+      a.put({0x85, 0xC0}); // test eax, eax
+      a.jcc(0x85, done);   // jne .done
+    }
+    loadBase();
+    loadMask();
+    writeCells(true);
+    // Read-only cells are only in read-only data.
+    for (auto r : ranges)
+      protectRange(r, pageReadOnly);
+    a.jmp(done); // jmp .done
+  }
+  a.bind(zero);
+  a.put({0x31, 0xC0}); // xor eax, eax
+  a.bind(done);
+  if (protect)
+    a.put({0x48, 0x83, 0xC4, 0x48}); // add rsp, 0x48
+  a.put({0xC3});                     // ret
 }
 
 // The copy of an executable's thread-local import slots into the main thread's
@@ -1086,14 +986,8 @@ public:
       : slots(std::move(slots)), tls(tls), ctx(ctx) {
     setAlignment(16);
   }
-  size_t getSize() const override {
-    // The test of the process's initialization and the block's address; for
-    // each word, its test and its copy; then the zero status and ret.
-    if (ctx.config.machine == ARM64)
-      return 28 + 48 * slots.size() + 8;
-    return 39 + 36 * slots.size() + 3;
-  }
-  void writeTo(uint8_t *buf) const override;
+  size_t getSize() const override { return write(nullptr); }
+  void writeTo(uint8_t *buf) const override { write(buf); }
   uint32_t getOutputCharacteristics() const override {
     return llvm::COFF::IMAGE_SCN_CNT_CODE |
            NonSectionCodeChunk::getOutputCharacteristics();
@@ -1102,6 +996,10 @@ public:
   MachineTypes getMachine() const override { return ctx.config.machine; }
 
 private:
+  uint32_t write(uint8_t *buf) const;
+  void writeAMD64(LabelledCode &a) const;
+  void writeARM64(LabelledCode &a) const;
+
   // The slots in the template, each with its lookup entry.
   std::vector<const ImportSlot *> slots;
   // The value of a slot's lookup entry, which the slot holds in the file.
@@ -1118,87 +1016,83 @@ private:
 // process.
 static constexpr uint32_t pebCrossProcessFlags = 0x50;
 
-void ThreadLocalSlotCopyChunk::writeTo(uint8_t *buf) const {
-  uint32_t off = 0;
-  if (ctx.config.machine == ARM64) {
-    auto put = [&](uint32_t insn) {
-      write32le(buf + off, insn);
-      off += 4;
-    };
-    // adrp xN, target; ldr wN or xN, [xN, :lo12:target]
-    auto load = [&](uint32_t ldr, uint32_t reg, uint64_t target) {
-      write32le(buf + off, 0x90000000 | reg);
-      write32le(buf + off + 4, ldr | reg << 5 | reg);
-      applyArm64Addr(buf + off, target, rva + off, 12);
-      applyArm64Ldr(buf + off + 4, target & 0xfff);
-      off += 8;
-    };
-    put(0xF9403249); // ldr x9, [x18, #0x60]   TEB->PEB
-    put(0xB9400129 | pebCrossProcessFlags / 4 << 10); // ldr w9, [x9, #flags]
-    uint32_t skip = off;
-    put(0x36080009);                        // tbz w9, #1, .done
-    load(0xB9400000, 9, tls.getIndexRVA()); // the index into w9
-    put(0xF9402E4B); // ldr x11, [x18, #0x58]   TEB->ThreadLocalStoragePointer
-    put(0xF869796B); // ldr x11, [x11, x9, lsl #3]
-    for (const ImportSlot *s : slots) {
-      // movz/movk w12, #offset; ldr x13, [x11, x12]; movz/movk x14, #lookup
-      // value; cmp x13, x14; b.ne .next; the word into x10;
-      // str x10, [x11, x12]
-      uint64_t word = s->chunk->getRVA() + s->offset;
-      uint32_t blockOff = tls.getOffset(word);
-      put(0x5280000C | (blockOff & 0xFFFF) << 5);
-      put(0x72A0000C | (blockOff >> 16) << 5);
-      put(0xF86C696D);
-      uint64_t value = getLookupValue(s);
-      put(0xD280000E | uint32_t(value & 0xFFFF) << 5);
-      for (uint32_t hw = 1; hw != 4; ++hw)
-        put(0xF280000E | hw << 21 | uint32_t(value >> (16 * hw) & 0xFFFF) << 5);
-      put(0xEB0E01BF);
-      put(0x54000081);
-      load(0xF9400000, 10, word);
-      put(0xF82C696A);
-    }
-    write32le(buf + skip, read32le(buf + skip) | (off - skip) / 4 << 5);
-    put(0x52800000); // mov w0, #0
-    put(0xD65F03C0); // ret
-    return;
-  }
+uint32_t ThreadLocalSlotCopyChunk::write(uint8_t *buf) const {
+  return LabelledCode::layOut(buf, rva, [&](LabelledCode &a) {
+    if (ctx.config.machine == ARM64)
+      writeARM64(a);
+    else
+      writeAMD64(a);
+  });
+}
 
-  auto put = [&](ArrayRef<uint8_t> bytes) {
-    memcpy(buf + off, bytes.data(), bytes.size());
-    off += bytes.size();
+void ThreadLocalSlotCopyChunk::writeARM64(LabelledCode &a) const {
+  // adrp xN, target; ldr wN or xN, [xN, :lo12:target]
+  auto load = [&](uint32_t ldr, uint32_t reg, uint64_t target) {
+    if (a.buf) {
+      write32le(a.buf + a.off, 0x90000000 | reg);
+      write32le(a.buf + a.off + 4, ldr | reg << 5 | reg);
+      applyArm64Addr(a.buf + a.off, target, a.rva + a.off, 12);
+      applyArm64Ldr(a.buf + a.off + 4, target & 0xfff);
+    }
+    a.off += 8;
   };
-  // The RIP-relative displacement to target of the instruction just put.
-  auto disp = [&](uint64_t target) {
-    write32le(buf + off - 4, target - (rva + off));
-  };
-  put({0x65, 0x48, 0x8B, 0x04, 0x25, 0x60, 0, 0, 0}); // mov rax, gs:[0x60]
-  // bt dword ptr [rax + flags], 1; jnc .done
-  put({0x0F, 0xBA, 0x60, uint8_t(pebCrossProcessFlags), 1});
-  put({0x0F, 0x83, 0, 0, 0, 0});
-  uint32_t skip = off - 4;
-  put({0x8B, 0x0D, 0, 0, 0, 0}); // mov ecx, [rip + index]
-  disp(tls.getIndexRVA());
-  // mov rdx, gs:[0x58]   TEB->ThreadLocalStoragePointer
-  put({0x65, 0x48, 0x8B, 0x14, 0x25, 0x58, 0, 0, 0});
-  put({0x48, 0x8B, 0x14, 0xCA}); // mov rdx, [rdx + rcx * 8]
+  uint32_t done = a.newLabel();
+  a.put32(0xF9403249); // ldr x9, [x18, #0x60]   TEB->PEB
+  a.put32(0xB9400129 | pebCrossProcessFlags / 4 << 10); // ldr w9, [x9, #flags]
+  a.branch14(0x36080009, done);           // tbz w9, #1, .done
+  load(0xB9400000, 9, tls.getIndexRVA()); // the index into w9
+  a.put32(0xF9402E4B); // ldr x11, [x18, #0x58]   TEB->ThreadLocalStoragePointer
+  a.put32(0xF869796B); // ldr x11, [x11, x9, lsl #3]
   for (const ImportSlot *s : slots) {
+    // movz/movk w12, #offset; ldr x13, [x11, x12]; movz/movk x14, #lookup
+    // value; cmp x13, x14; b.ne .next; the word into x10;
+    // str x10, [x11, x12]
+    uint32_t next = a.newLabel();
+    uint64_t word = s->chunk->getRVA() + s->offset;
+    a.movImm32(12, tls.getOffset(word));
+    a.put32(0xF86C696D);
+    a.movImm64(14, getLookupValue(s));
+    a.put32(0xEB0E01BF);
+    a.branch19(0x54000001, next);
+    load(0xF9400000, 10, word);
+    a.put32(0xF82C696A);
+    a.bind(next);
+  }
+  a.bind(done);
+  a.put32(0x52800000); // mov w0, #0
+  a.put32(0xD65F03C0); // ret
+}
+
+void ThreadLocalSlotCopyChunk::writeAMD64(LabelledCode &a) const {
+  uint32_t done = a.newLabel();
+  a.put({0x65, 0x48, 0x8B, 0x04, 0x25, 0x60, 0, 0, 0}); // mov rax, gs:[0x60]
+  // bt dword ptr [rax + flags], 1; jnc .done
+  a.put({0x0F, 0xBA, 0x60, uint8_t(pebCrossProcessFlags), 1});
+  a.jcc(0x83, done);
+  a.put({0x8B, 0x0D, 0, 0, 0, 0}); // mov ecx, [rip + index]
+  a.disp(tls.getIndexRVA());
+  // mov rdx, gs:[0x58]   TEB->ThreadLocalStoragePointer
+  a.put({0x65, 0x48, 0x8B, 0x14, 0x25, 0x58, 0, 0, 0});
+  a.put({0x48, 0x8B, 0x14, 0xCA}); // mov rdx, [rdx + rcx * 8]
+  for (const ImportSlot *s : slots) {
+    uint32_t next = a.newLabel();
     uint64_t word = s->chunk->getRVA() + s->offset;
     uint32_t blockOff = tls.getOffset(word);
-    put({0x48, 0x8B, 0x82, 0, 0, 0, 0}); // mov rax, [rdx + offset]
-    write32le(buf + off - 4, blockOff);
-    put({0x49, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0}); // mov r8, lookup value
-    write64le(buf + off - 8, getLookupValue(s));
-    put({0x4C, 0x39, 0xC0});             // cmp rax, r8
-    put({0x75, 14});                     // jne .next
-    put({0x48, 0x8B, 0x05, 0, 0, 0, 0}); // mov rax, [rip + word]
-    disp(word);
-    put({0x48, 0x89, 0x82, 0, 0, 0, 0}); // mov [rdx + offset], rax
-    write32le(buf + off - 4, blockOff);
+    a.put({0x48, 0x8B, 0x82, 0, 0, 0, 0}); // mov rax, [rdx + offset]
+    a.imm32(blockOff);
+    a.put({0x49, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0}); // mov r8, lookup value
+    a.imm64(getLookupValue(s));
+    a.put({0x4C, 0x39, 0xC0});             // cmp rax, r8
+    a.jcc(0x85, next);                     // jne .next
+    a.put({0x48, 0x8B, 0x05, 0, 0, 0, 0}); // mov rax, [rip + word]
+    a.disp(word);
+    a.put({0x48, 0x89, 0x82, 0, 0, 0, 0}); // mov [rdx + offset], rax
+    a.imm32(blockOff);
+    a.bind(next);
   }
-  write32le(buf + skip, off - (skip + 4));
-  put({0x31, 0xC0}); // xor eax, eax
-  put({0xC3});       // ret
+  a.bind(done);
+  a.put({0x31, 0xC0}); // xor eax, eax
+  a.put({0xC3});       // ret
 }
 
 // The run of the executable's thread-local slot copy by a DLL that may reach
