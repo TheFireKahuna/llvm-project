@@ -2204,6 +2204,15 @@ void Writer::assignAddresses() {
                   sizeof(coff_section) * ctx.outputSections.size();
   sizeOfHeaders +=
       config->is64() ? sizeof(pe32plus_header) : sizeof(pe32_header);
+  // The override table's block lies at a fixed offset in the header page,
+  // which the section table must end before and the headers must cover.
+  if (!ctx.symtab.overrideBlock.empty()) {
+    if (sizeOfHeaders > overrideBlockOffset)
+      Err(ctx) << "the image's section table ends past 0x"
+               << Twine::utohexstr(overrideBlockOffset)
+               << ", where the override table's block starts";
+    sizeOfHeaders = std::max<uint64_t>(sizeOfHeaders, overrideBlockEnd);
+  }
   sizeOfHeaders = alignTo(sizeOfHeaders, config->fileAlign);
   fileSize = sizeOfHeaders;
 

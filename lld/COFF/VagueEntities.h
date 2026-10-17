@@ -31,6 +31,13 @@ inline constexpr llvm::StringLiteral vagueRecordPrefix = "__llvm_vague$";
 // one that defines the entity.
 void checkVagueEntities(COFFLinkerContext &ctx, llvm::StringRef imageName);
 
+// The overridable defaults that the DLLs whose records records, the record
+// members of import libraries, describe define with no fixed slot in the
+// override table, which a definition in another image replaces by name.
+std::vector<std::string>
+getOverridablesByName(COFFLinkerContext &ctx,
+                      llvm::ArrayRef<llvm::MemoryBufferRef> records);
+
 // The overridable defaults that the DLLs of the load closure that records, the
 // record members of import libraries in link order, describe offer, each with
 // the name of its DLL, in breadth-first load order, leaving out those of the

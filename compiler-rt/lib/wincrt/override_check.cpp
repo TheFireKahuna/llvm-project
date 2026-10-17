@@ -39,21 +39,29 @@ uint32_t slotOffset(uint32_t K) {
 // The table's version-1 layout: slot K is {tag u32, rva u32} at 0x40 + 8K for
 // the eight slots of the first cache line and at 0x98 + 8(K - 8) after the
 // header, which holds the magic u32 and the version and slot count u16 at
-// 0x80, the anchor's RVA u32 at 0x88 and a reserved u64 at 0x90. The anchor
-// holds the magic, version and slot count, the mask of the slots that name a
-// replacement rather than a forwarded one, a reserved u32, then for each slot
-// the address its table entry names, or null. This only reads.
+// 0x80, the anchor's RVA u32 at 0x88, the block's RVA u32 at 0x8C and a
+// reserved u64 at 0x90. The block of the defaults replaced by name holds the
+// magic u32, the version and the number of entries u16, the overflow list's
+// RVA and length u32 and two reserved u64 at 0x7E0, then 64 buckets of
+// {key u64, rva u32, info u32} from 0x800; the overflow list has their layout.
+// The anchor holds the magic, version and slot count, the mask of the slots
+// that name a replacement rather than a forwarded one, the number of the
+// block's entries, then for each slot the address its table entry names, or
+// null, then for each entry of the block, in the block's order, its key and
+// the address it names. This only reads.
 void checkOverrideTable() {
   constexpr uint32_t Magic = 0x7B3AC2D5;
   constexpr uint32_t TagBase = 0xC5E1A7F3;
+  constexpr uint32_t BlockMagic = 0x2F1B8E57;
   const auto *Base = reinterpret_cast<const unsigned char *>(&__ImageBase);
   const unsigned char *Anchor = __ovr_anchor;
   uint16_t Count = readAt<uint16_t>(Base + 0x86);
+  uint32_t NewHeader = readAt<uint32_t>(Base + 0x3C);
   if (readAt<uint32_t>(Base + 0x80) != Magic ||
       readAt<uint16_t>(Base + 0x84) != 1 || Count < 8 ||
       readAt<uint64_t>(Base + 0x90) != 0 ||
       Base + readAt<uint32_t>(Base + 0x88) != Anchor ||
-      readAt<uint32_t>(Base + 0x3C) < slotOffset(Count - 1) + 8)
+      NewHeader < slotOffset(Count - 1) + 8)
     __fastfail(FAST_FAIL_FATAL_APP_EXIT);
   uint32_t Mask = readAt<uint32_t>(Anchor + 8);
   if (readAt<uint32_t>(Anchor) != Magic || readAt<uint16_t>(Anchor + 4) != 1 ||
@@ -70,6 +78,48 @@ void checkOverrideTable() {
                  : Tag != 0 || RVA != 0 || Entry || (K < 32 && (Mask >> K) & 1))
       __fastfail(FAST_FAIL_FATAL_APP_EXIT);
   }
+
+  uint32_t Named = readAt<uint32_t>(Anchor + 12);
+  uint32_t Block = readAt<uint32_t>(Base + 0x8C);
+  if (!Block) {
+    if (Named)
+      __fastfail(FAST_FAIL_FATAL_APP_EXIT);
+    return;
+  }
+  const unsigned char *Overflow = Base + readAt<uint32_t>(Base + 0x7E8);
+  uint32_t OverflowCount = readAt<uint32_t>(Base + 0x7EC);
+  if (Block != 0x7E0 || NewHeader > 0x7E0 ||
+      readAt<uint32_t>(Base + NewHeader + 0x54) < 0xC00 ||
+      readAt<uint32_t>(Base + 0x7E0) != BlockMagic ||
+      readAt<uint16_t>(Base + 0x7E4) != 1 ||
+      readAt<uint16_t>(Base + 0x7E6) != Named ||
+      readAt<uint64_t>(Base + 0x7F0) != 0 ||
+      readAt<uint64_t>(Base + 0x7F8) != 0 ||
+      (OverflowCount && Overflow == Base))
+    __fastfail(FAST_FAIL_FATAL_APP_EXIT);
+  // Each entry of the block, in the block's order, against the anchor's.
+  const unsigned char *Expected = Anchor + 16 + 8 * Count;
+  uint32_t Seen = 0;
+  auto Check = [&](const unsigned char *E) {
+    uint32_t RVA = readAt<uint32_t>(E + 8);
+    if (Seen == Named || !RVA ||
+        readAt<uint64_t>(E) != readAt<uint64_t>(Expected) ||
+        readAt<const unsigned char *>(Expected + 8) != Base + RVA)
+      __fastfail(FAST_FAIL_FATAL_APP_EXIT);
+    Expected += 16;
+    ++Seen;
+  };
+  for (uint32_t B = 0; B != 64; ++B) {
+    const unsigned char *E = Base + 0x800 + 16 * B;
+    if (readAt<uint64_t>(E))
+      Check(E);
+    else if (readAt<uint64_t>(E + 8))
+      __fastfail(FAST_FAIL_FATAL_APP_EXIT);
+  }
+  for (uint32_t I = 0; I != OverflowCount; ++I)
+    Check(Overflow + 16 * I);
+  if (Seen != Named)
+    __fastfail(FAST_FAIL_FATAL_APP_EXIT);
 }
 
 void NTAPI tlsCallback(PVOID, DWORD Reason, PVOID) {

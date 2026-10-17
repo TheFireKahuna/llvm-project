@@ -1906,6 +1906,19 @@ public:
   /// Get the declaration of std::terminate for the platform.
   llvm::FunctionCallee getTerminateFn();
 
+  /// Whether Fn, the definition of D, is an overridable default that the
+  /// program replaces by name: on Windows Itanium and NT-POSIX, a weak
+  /// function definition that the image exports and that has no fixed slot in
+  /// the override table, which another image's definition preempts as ELF
+  /// preempts a shared object's weak definition.
+  bool isOverridableDefaultByName(const FunctionDecl *D,
+                                  const llvm::Function *Fn) const;
+
+  /// The function that finds a default replaced by name in the name-keyed
+  /// block of the override table of the executable at the given image base,
+  /// and returns the RVA of its replacement, or 0.
+  llvm::Function *getOverrideFindFn();
+
   llvm::SanitizerStatReport &getSanStats();
 
   llvm::Value *

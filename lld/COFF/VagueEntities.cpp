@@ -230,6 +230,56 @@ static std::vector<uint32_t> readImportedRecords(COFFLinkerContext &ctx,
   return direct;
 }
 
+std::vector<std::string>
+getOverridablesByName(COFFLinkerContext &ctx,
+                      ArrayRef<MemoryBufferRef> records) {
+  std::vector<std::string> names;
+  for (MemoryBufferRef mb : records) {
+    Expected<std::unique_ptr<COFFObjectFile>> obj = COFFObjectFile::create(mb);
+    if (!obj) {
+      consumeError(obj.takeError());
+      continue;
+    }
+    for (const SectionRef &sec : (*obj)->sections()) {
+      Expected<StringRef> name = sec.getName();
+      Expected<StringRef> contents = sec.getContents();
+      if (!name || !contents || *name != ".llvm_link_records") {
+        consumeError(name.takeError());
+        consumeError(contents.takeError());
+        continue;
+      }
+      DataExtractor data(*contents, /*IsLittleEndian=*/true);
+      DataExtractor::Cursor cur(0);
+      if (data.getBytes(cur, sizeof(LinkRecordsMagic)) !=
+              StringRef(LinkRecordsMagic, sizeof(LinkRecordsMagic)) ||
+          data.getULEB128(cur) != LinkRecordsVersion) {
+        consumeError(cur.takeError());
+        continue;
+      }
+      data.getULEB128(cur);
+      while (cur && !data.eof(cur)) {
+        uint64_t kind = data.getULEB128(cur);
+        uint64_t size = data.getULEB128(cur);
+        uint64_t start = cur.tell();
+        data.skip(cur, size);
+        if (!cur || kind != LinkRecordOverridableByName)
+          continue;
+        DataExtractor group(contents->substr(start, size), true);
+        DataExtractor::Cursor c(0);
+        while (c && !group.eof(c)) {
+          uint64_t n = group.getULEB128(c);
+          StringRef s = group.getBytes(c, n);
+          if (c)
+            names.push_back(s.str());
+        }
+        consumeError(c.takeError());
+      }
+      consumeError(cur.takeError());
+    }
+  }
+  return names;
+}
+
 std::vector<std::pair<std::string, std::string>>
 getDependentOverrideOffers(COFFLinkerContext &ctx,
                            ArrayRef<MemoryBufferRef> records) {
@@ -515,6 +565,26 @@ void addVagueEntityRecord(COFFLinkerContext &ctx, StringRef dllName,
     encodeULEB128(LinkRecordOverrideOffers, r);
     encodeULEB128(offers.size(), r);
     r << offers;
+  }
+  // The defaults the DLL defines and exports with no fixed slot, which an
+  // image that links its import library replaces, offers or reaches by name.
+  std::vector<StringRef> byName;
+  for (const Export &e : ctx.symtab.exports)
+    if (e.sym && e.extName.empty() &&
+        ctx.symtab.overridablesByName.contains(e.sym->getName()))
+      byName.push_back(e.sym->getName());
+  llvm::sort(byName);
+  byName.erase(llvm::unique(byName), byName.end());
+  if (!byName.empty()) {
+    std::string names;
+    raw_string_ostream n(names);
+    for (StringRef name : byName) {
+      encodeULEB128(name.size(), n);
+      n << name;
+    }
+    encodeULEB128(LinkRecordOverridableByName, r);
+    encodeULEB128(names.size(), r);
+    r << names;
   }
   members.push_back(createLinkerFacts(
       dllName, config.machine, ".llvm_link_records",

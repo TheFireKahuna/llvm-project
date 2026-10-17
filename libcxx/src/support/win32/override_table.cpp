@@ -32,9 +32,21 @@ constexpr std::uint32_t __table_magic = 0x7B3AC2D5;
 constexpr std::uint32_t __tag_base    = 0xC5E1A7F3;
 
 // The anchor: the magic, version and slot count of its table, the mask of the
-// slots that name a replacement rather than a forwarded one, a reserved u32,
-// then for each slot the address that its table entry names, or null.
+// slots that name a replacement rather than a forwarded one, the number of the
+// block's entries, then for each slot the address that its table entry names,
+// or null, then for each entry of the block, in the block's order, its key and
+// the address it names.
 constexpr std::uint32_t __anchor_entries = 16;
+
+// The block of the defaults replaced by name, which the header's u32 at 0x8C
+// names: the magic u32, the version and the number of entries u16, the
+// overflow list's RVA and length u32, and two reserved u64 at 0x7E0, then 64
+// buckets of {key u64, rva u32, info u32} from 0x800. The overflow list has the
+// buckets' layout.
+constexpr std::uint32_t __block_offset   = 0x7E0;
+constexpr std::uint32_t __buckets_offset = 0x800;
+constexpr std::uint32_t __block_end      = 0xC00;
+constexpr std::uint32_t __block_magic    = 0x2F1B8E57;
 
 std::uint32_t __slot_offset(std::uint32_t __k) { return __k < 8 ? 0x40 + 8 * __k : 0x98 + 8 * (__k - 8); }
 
@@ -115,13 +127,54 @@ void __check_override_table(const unsigned char* __base) {
   if (__anchor_rva == 0 || __anchor_end > __image_size)
     __fail();
 
-  // The extension serves only the defaults of user libraries, which read and
-  // check their own entries.
   const unsigned char* __anchor = __base + __anchor_rva;
   std::uint32_t __mask          = __read<std::uint32_t>(__anchor + 8);
+  std::uint32_t __named         = __read<std::uint32_t>(__anchor + 12);
   if (__read<std::uint32_t>(__anchor) != __table_magic || __read<std::uint16_t>(__anchor + 4) != __version ||
-      __read<std::uint16_t>(__anchor + 6) != __count || (__count < 32 && (__mask >> __count) != 0))
+      __read<std::uint16_t>(__anchor + 6) != __count || (__count < 32 && (__mask >> __count) != 0) ||
+      __anchor_end + 16 * std::uint64_t(__named) > __image_size)
     __fail();
+
+  // Each entry of the block, in the block's order, against the anchor's.
+  std::uint32_t __block = __read<std::uint32_t>(__base + 0x8C);
+  if (__block == 0) {
+    if (__named != 0)
+      __fail();
+  } else {
+    std::uint32_t __overflow       = __read<std::uint32_t>(__base + __block_offset + 8);
+    std::uint32_t __overflow_count = __read<std::uint32_t>(__base + __block_offset + 12);
+    if (__block != __block_offset || __lfanew > __block_offset ||
+        __read<std::uint32_t>(__base + __lfanew + 0x54) < __block_end ||
+        __read<std::uint32_t>(__base + __block_offset) != __block_magic ||
+        __read<std::uint16_t>(__base + __block_offset + 4) != __version ||
+        __read<std::uint16_t>(__base + __block_offset + 6) != __named ||
+        __read<std::uint64_t>(__base + __block_offset + 16) != 0 ||
+        __read<std::uint64_t>(__base + __block_offset + 24) != 0 ||
+        std::uint64_t(__overflow) + 16 * std::uint64_t(__overflow_count) > __image_size ||
+        (__overflow_count != 0 && __overflow == 0))
+      __fail();
+    const unsigned char* __entry = __anchor + __anchor_end - __anchor_rva;
+    std::uint32_t __seen         = 0;
+    auto __check                 = [&](const unsigned char* __e) {
+      std::uint32_t __rva = __read<std::uint32_t>(__e + 8);
+      if (__seen == __named || __rva == 0 || __read<std::uint64_t>(__e) != __read<std::uint64_t>(__entry) ||
+          __read<const unsigned char*>(__entry + 8) != __base + __rva)
+        __fail();
+      __entry += 16;
+      ++__seen;
+    };
+    for (std::uint32_t __b = 0; __b != 64; ++__b) {
+      const unsigned char* __e = __base + __buckets_offset + 16 * __b;
+      if (__read<std::uint64_t>(__e) != 0)
+        __check(__e);
+      else if (__read<std::uint64_t>(__e + 8) != 0)
+        __fail();
+    }
+    for (std::uint32_t __i = 0; __i != __overflow_count; ++__i)
+      __check(__base + __overflow + 16 * __i);
+    if (__seen != __named)
+      __fail();
+  }
 
   for (std::uint32_t __k = 0; __k != __count; ++__k) {
     const unsigned char* __slot  = __base + __slot_offset(__k);

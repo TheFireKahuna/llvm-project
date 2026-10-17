@@ -18,6 +18,7 @@
 #define LLD_COFF_OVERRIDETABLE_H
 
 #include "Chunks.h"
+#include "llvm/Support/xxhash.h"
 #include <algorithm>
 #include <cstdint>
 
@@ -39,6 +40,28 @@ inline constexpr uint32_t overrideTagBase = 0xC5E1A7F3;
 inline constexpr uint32_t overrideTableBase = 0x40;
 inline constexpr uint32_t overrideHeaderOffset = 0x80;
 
+// The table's block, at a fixed offset in the header page, which holds the
+// defaults with no fixed slot that the executable replaces by name. Its header
+// holds the magic u32, the version and the number of entries u16, the overflow
+// list's RVA and length u32, and two reserved u64; 64 buckets of
+// {key u64, rva u32, info u32} follow. A name's key is its xxh3_64 hash with
+// bit 0 clear, and its home bucket the hash's top six bits. An entry takes the
+// first free bucket from its home bucket, so a free bucket ends a search; only
+// once every bucket is taken do entries go to the overflow list, which lies in
+// the anchor's section and has their layout. The header page must then reach
+// past the buckets.
+inline constexpr uint32_t overrideBlockOffset = 0x7E0;
+inline constexpr uint32_t overrideBucketsOffset = 0x800;
+inline constexpr uint32_t overrideBucketCount = 64;
+inline constexpr uint32_t overrideBlockEnd = 0xC00;
+inline constexpr uint32_t overrideBlockMagic = 0x2F1B8E57;
+inline constexpr uint32_t overrideBlockEntrySize = 16;
+
+inline uint64_t overrideNameKey(StringRef name) {
+  return llvm::xxh3_64bits(name) & ~uint64_t(1);
+}
+inline uint32_t overrideHomeBucket(uint64_t key) { return key >> 58; }
+
 // A DLL exports its own strong definition of an overridable default under this
 // prefix, so no importer binds to it as the ABI symbol: it is an offer the
 // executable's link selects for the program, not the program's replacement.
@@ -59,15 +82,17 @@ inline uint32_t overrideTableEnd(uint32_t count) {
 }
 
 // The anchor's header is the magic, version and slot count of its table, the
-// mask of the slots that name a replacement rather than a forwarded one, and a
-// reserved word; then come the slots' entries.
+// mask of the slots that name a replacement rather than a forwarded one, and
+// the number of the block's entries; then come the slots' entries.
 inline constexpr uint32_t overrideAnchorHeaderSize = 16;
 
 // The anchor beside the table: its header, then for each slot the address its
-// table entry names, as an image-relocated pointer, or null. The runtime
-// reaches it through the table's anchor RVA and validates every slot against
-// it, and its pointers make each body address-taken, so the guard function
-// table lists them.
+// table entry names, as an image-relocated pointer, or null, then for each
+// entry of the block, in the block's order, its key and the address it names.
+// The block's overflow list follows. The runtime reaches the anchor through
+// the table's anchor RVA and validates every slot and entry against it, and
+// its pointers make each body address-taken, so the guard function table lists
+// them.
 class OverrideAnchorChunk : public NonSectionChunk {
 public:
   explicit OverrideAnchorChunk(COFFLinkerContext &ctx, SymbolTable &symtab)
@@ -77,6 +102,9 @@ public:
   size_t getSize() const override;
   void writeTo(uint8_t *buf) const override;
   void getBaserels(std::vector<Baserel> *res) override;
+  // The offsets of the block's entries and of its overflow list.
+  uint32_t getEntriesOffset() const;
+  uint32_t getOverflowOffset() const;
   uint32_t getOutputCharacteristics() const override {
     return llvm::COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
            llvm::COFF::IMAGE_SCN_MEM_READ;
@@ -110,7 +138,8 @@ private:
 
 // Writes the override table into the header page, at base, which is the image
 // base in the output: its slots, then its header with the magic, version,
-// slot count, the anchor's RVA and a zero extension RVA and reserved word.
+// slot count, the anchor's RVA, the block's RVA or zero, and a reserved word,
+// then the block, if any.
 void writeOverrideTable(COFFLinkerContext &ctx, SymbolTable &symtab,
                         uint8_t *base);
 

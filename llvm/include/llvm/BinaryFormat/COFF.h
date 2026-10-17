@@ -234,6 +234,14 @@ enum LinkRecordKind : uint64_t {
   //
   // image is the index of an image of that group.
   LinkRecordOverrideOffers = 20,
+
+  // The overridable defaults that a DLL defines with no fixed slot in the
+  // override table, which a definition in another image replaces by name, in
+  // a member of the DLL's import library, so that the link of an image that
+  // replaces one, offers one or reaches one knows it:
+  //
+  //   payload := name*
+  LinkRecordOverridableByName = 22,
 };
 
 // The role of a definition that a LinkRecordBinding group lists.

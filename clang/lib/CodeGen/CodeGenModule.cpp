@@ -7478,6 +7478,113 @@ void CodeGenModule::HandleCXXStaticMemberVarInstantiation(VarDecl *VD) {
   EmitTopLevelDecl(VD);
 }
 
+bool CodeGenModule::isOverridableDefaultByName(const FunctionDecl *D,
+                                               const llvm::Function *Fn) const {
+  // The override table that the check reads is that of the 64-bit forms, and
+  // an asm label names a function that no other image calls by its ABI name.
+  const llvm::Triple &T = getTriple();
+  return T.isWindowsItaniumOrNTPOSIXEnvironment() &&
+         (T.getArch() == llvm::Triple::x86_64 ||
+          T.getArch() == llvm::Triple::aarch64) &&
+         Fn->hasWeakAnyLinkage() &&
+         (D->hasAttr<DLLExportAttr>() ||
+          shouldMapDefinitionToDLLExport(D, Fn->getLinkage())) &&
+         !D->hasAttr<OverridableDefaultAttr>() && !D->hasAttr<AsmLabelAttr>();
+}
+
+llvm::Function *CodeGenModule::getOverrideFindFn() {
+  constexpr StringRef Name = "__llvm_override_find";
+  if (llvm::Function *F = getModule().getFunction(Name))
+    return F;
+  llvm::LLVMContext &Ctx = getLLVMContext();
+  llvm::Type *PtrTy = llvm::PointerType::getUnqual(Ctx);
+  llvm::FunctionType *FnTy = llvm::FunctionType::get(
+      Int32Ty, {PtrTy, Int64Ty, Int32Ty}, /*isVarArg=*/false);
+  llvm::Function *F = llvm::Function::Create(
+      FnTy, llvm::GlobalValue::LinkOnceODRLinkage, Name, &getModule());
+  F->setVisibility(llvm::GlobalValue::HiddenVisibility);
+  F->setDSOLocal(true);
+  if (supportsCOMDAT())
+    F->setComdat(getModule().getOrInsertComdat(Name));
+  F->setDoesNotThrow();
+  F->addFnAttr(llvm::Attribute::Cold);
+  F->setOnlyReadsMemory();
+  SetLLVMFunctionAttributesForDefinition(nullptr, F);
+  llvm::Value *Base = F->getArg(0), *Key = F->getArg(1), *Bucket = F->getArg(2);
+
+  // The block's version-1 layout, in the executable's header page at 0x7E0:
+  // the magic u32, the version and the number of entries u16, the overflow
+  // list's RVA and length u32, and two reserved u64; then 64 buckets of
+  // {key u64, rva u32, info u32}. An entry takes the first free bucket from
+  // its home bucket, so a free bucket ends the search; only once every bucket
+  // is taken do entries go to the overflow list, which has their layout.
+  constexpr uint32_t BlockMagic = 0x2F1B8E57;
+  auto *Entry = llvm::BasicBlock::Create(Ctx, "", F);
+  auto *Probe = llvm::BasicBlock::Create(Ctx, "probe", F);
+  auto *Next = llvm::BasicBlock::Create(Ctx, "next", F);
+  auto *Overflow = llvm::BasicBlock::Create(Ctx, "overflow", F);
+  auto *Scan = llvm::BasicBlock::Create(Ctx, "scan", F);
+  auto *ScanNext = llvm::BasicBlock::Create(Ctx, "scan.next", F);
+  auto *Found = llvm::BasicBlock::Create(Ctx, "found", F);
+  auto *Missing = llvm::BasicBlock::Create(Ctx, "missing", F);
+  CGBuilderTy B(*this, Entry);
+  auto Load = [&](llvm::Type *Ty, llvm::Value *P, uint64_t Offset) {
+    return B.CreateAlignedLoad(Ty,
+                               B.CreateConstInBoundsGEP1_64(Int8Ty, P, Offset),
+                               llvm::Align(Ty->getPrimitiveSizeInBits() / 8));
+  };
+  // An image without the block, such as a foreign one, replaces nothing.
+  llvm::Value *IsBlock = B.CreateAnd(
+      B.CreateICmpEQ(Load(Int32Ty, Base, 0x7E0), B.getInt32(BlockMagic)),
+      B.CreateICmpEQ(Load(Int16Ty, Base, 0x7E4), B.getInt16(1)));
+  B.CreateCondBr(IsBlock, Probe, Missing);
+
+  // The buckets from the home bucket on, up to the first free one.
+  B.SetInsertPoint(Probe);
+  llvm::PHINode *I = B.CreatePHI(Int32Ty, 2);
+  I->addIncoming(B.getInt32(0), Entry);
+  llvm::Value *Index = B.CreateAnd(B.CreateAdd(Bucket, I), B.getInt32(63));
+  llvm::Value *Slot = B.CreateInBoundsGEP(
+      Int8Ty, Base,
+      B.CreateAdd(B.getInt64(0x800),
+                  B.CreateShl(B.CreateZExt(Index, Int64Ty), 4)));
+  llvm::Value *SlotKey = Load(Int64Ty, Slot, 0);
+  llvm::BasicBlock *NotFound = llvm::BasicBlock::Create(Ctx, "probe.miss", F);
+  B.CreateCondBr(B.CreateICmpEQ(SlotKey, Key), Found, NotFound);
+  B.SetInsertPoint(NotFound);
+  B.CreateCondBr(B.CreateICmpEQ(SlotKey, B.getInt64(0)), Missing, Next);
+  B.SetInsertPoint(Next);
+  llvm::Value *INext = B.CreateAdd(I, B.getInt32(1));
+  I->addIncoming(INext, Next);
+  B.CreateCondBr(B.CreateICmpEQ(INext, B.getInt32(64)), Overflow, Probe);
+
+  // The overflow list, in order.
+  B.SetInsertPoint(Overflow);
+  llvm::Value *List = B.CreateInBoundsGEP(
+      Int8Ty, Base, B.CreateZExt(Load(Int32Ty, Base, 0x7E8), Int64Ty));
+  llvm::Value *Count = Load(Int32Ty, Base, 0x7EC);
+  B.CreateCondBr(B.CreateICmpEQ(Count, B.getInt32(0)), Missing, Scan);
+  B.SetInsertPoint(Scan);
+  llvm::PHINode *J = B.CreatePHI(Int32Ty, 2);
+  J->addIncoming(B.getInt32(0), Overflow);
+  llvm::Value *Item = B.CreateInBoundsGEP(
+      Int8Ty, List, B.CreateShl(B.CreateZExt(J, Int64Ty), 4));
+  B.CreateCondBr(B.CreateICmpEQ(Load(Int64Ty, Item, 0), Key), Found, ScanNext);
+  B.SetInsertPoint(ScanNext);
+  llvm::Value *JNext = B.CreateAdd(J, B.getInt32(1));
+  J->addIncoming(JNext, ScanNext);
+  B.CreateCondBr(B.CreateICmpEQ(JNext, Count), Missing, Scan);
+
+  B.SetInsertPoint(Found);
+  llvm::PHINode *At = B.CreatePHI(PtrTy, 2);
+  At->addIncoming(Slot, Probe);
+  At->addIncoming(Item, Scan);
+  B.CreateRet(Load(Int32Ty, At, 8));
+  B.SetInsertPoint(Missing);
+  B.CreateRet(B.getInt32(0));
+  return F;
+}
+
 void CodeGenModule::EmitGlobalFunctionDefinition(GlobalDecl GD,
                                                  llvm::GlobalValue *GV) {
   const auto *D = cast<FunctionDecl>(GD.getDecl());
@@ -7538,6 +7645,13 @@ void CodeGenModule::EmitGlobalFunctionDefinition(GlobalDecl GD,
     // link that cannot carry it out fails loudly.
     if (!Fn->hasWeakAnyLinkage())
       HasOverridableDefaultReplacement = true;
+  } else if (isOverridableDefaultByName(D, Fn)) {
+    // The default of every image, which a definition elsewhere in the program
+    // replaces by name. The linker lists it in the image's import library, so
+    // that the link of an image that replaces it, or reaches it, knows it. Its
+    // address is the program's one replacement, as for the runtime's defaults.
+    AppendLinkerOptions(("/OVERRIDABLEBYNAME:" + Fn->getName()).str());
+    Fn->addFnAttr("overridable-default");
   }
 
   setNonAliasAttributes(GD, Fn);
