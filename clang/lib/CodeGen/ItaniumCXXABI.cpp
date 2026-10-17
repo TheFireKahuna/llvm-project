@@ -40,6 +40,7 @@
 #include "llvm/IR/Value.h"
 #include "llvm/Support/ConvertEBCDIC.h"
 #include "llvm/Support/ScopedPrinter.h"
+#include "llvm/Support/xxhash.h"
 
 #include <optional>
 
@@ -55,6 +56,11 @@ class ItaniumCXXABI : public CodeGen::CGCXXABI {
   llvm::SmallVector<std::pair<const VarDecl *, llvm::Function *>, 8>
       ThreadWrappers;
 
+  /// Whether the module has computed a vtable tag, and whether it has pinned
+  /// a vtable at one, which emit their linker directives once each.
+  bool UsesVTableTags = false;
+  bool PinsVTableTags = false;
+
 protected:
   bool UseARMMethodPtrABI;
   bool UseARMGuardVarABI;
@@ -63,6 +69,15 @@ protected:
   ItaniumMangleContext &getMangleContext() {
     return cast<ItaniumMangleContext>(CodeGen::CGCXXABI::getMangleContext());
   }
+
+  bool isTaggedVTableClass(const CXXRecordDecl *RD);
+  uint64_t getVTableTagResidue(const CXXRecordDecl *RD);
+  llvm::Value *emitTaggedExactCastCheck(CodeGenFunction &CGF,
+                                        llvm::Value *VTable,
+                                        llvm::Value *LocalMatch,
+                                        uint64_t PointOffset,
+                                        uint64_t PrimaryPointOffset,
+                                        QualType DestRecordTy);
 
 public:
   ItaniumCXXABI(CodeGen::CodeGenModule &CGM,
@@ -246,7 +261,14 @@ public:
   }
 
   bool shouldEmitExactDynamicCast(QualType DestRecordTy) override {
-    return hasUniqueVTablePointer(DestRecordTy);
+    if (hasUniqueVTablePointer(DestRecordTy))
+      return true;
+    // Each image holds its own copy of a tagged class's vtable. The cast
+    // compares with this image's copy, then decides an object built elsewhere
+    // from the tag and the type_info.
+    return !CGM.getCodeGenOpts().DisableExactDynamicCast &&
+           CGM.shouldEmitRTTI() &&
+           isTaggedVTableClass(DestRecordTy->getAsCXXRecordDecl());
   }
 
   std::optional<ExactDynamicCastInfo>
@@ -1840,9 +1862,57 @@ llvm::Value *ItaniumCXXABI::emitExactDynamicCast(
 
   // Compare the vptr against the expected vptr for the destination type at
   // this offset.
-  llvm::Constant *ExpectedVTable = getVTableAddressPoint(
-      BaseSubobject(SrcDecl, ExactCastInfo.Offset), DestDecl);
+  llvm::Constant *ExpectedVTable = nullptr;
+  bool Tagged = isTaggedVTableClass(DestDecl);
+  uint64_t PointOffset = 0, PrimaryPointOffset = 0;
+  if (Tagged) {
+    const VTableLayout &Layout =
+        CGM.getItaniumVTableContext().getVTableLayout(DestDecl);
+    uint64_t ComponentSize =
+        CGM.getDataLayout().getTypeAllocSize(CGM.getVTableComponentType());
+    auto getPointOffset = [&](BaseSubobject Base) {
+      VTableLayout::AddressPointLocation AP = Layout.getAddressPoint(Base);
+      return (Layout.getVTableOffset(AP.VTableIndex) + AP.AddressPointIndex) *
+             ComponentSize;
+    };
+    PointOffset = getPointOffset(BaseSubobject(SrcDecl, ExactCastInfo.Offset));
+    PrimaryPointOffset =
+        getPointOffset(BaseSubobject(DestDecl, CharUnits::Zero()));
+    // A unit that uses the class only to cast to it emits no copy of its
+    // vtable. It refers to the vtable weakly, and the linker makes the load of
+    // its address direct where the image holds a copy and zero where it does
+    // not, so that the tag alone decides there.
+    if (!VTables.count(DestDecl) &&
+        !CGM.getVTables().isVTableExternal(DestDecl) &&
+        !DestDecl->hasAttr<DLLImportAttr>()) {
+      SmallString<256> Name;
+      llvm::raw_svector_ostream Out(Name);
+      getMangleContext().mangleCXXVTable(DestDecl, Out);
+      llvm::GlobalVariable *GV = CGM.getModule().getNamedGlobal(Name);
+      if (!GV) {
+        GV = new llvm::GlobalVariable(
+            CGM.getModule(), CGM.getVTables().getVTableType(Layout),
+            /*isConstant=*/true, llvm::GlobalValue::ExternalWeakLinkage,
+            nullptr, Name);
+        GV->setAlignment(getContext()
+                             .toCharUnitsFromBits(
+                                 CGM.getVtableGlobalVarAlignment())
+                             .getAsAlign());
+        CGM.setGVProperties(GV, DestDecl);
+      }
+      // Not inbounds: the vtable may be absent, and the address point is
+      // then compared with an object's vptr, which it never equals.
+      ExpectedVTable = llvm::ConstantExpr::getGetElementPtr(
+          CGM.Int8Ty, GV, llvm::ConstantInt::get(CGM.Int64Ty, PointOffset));
+    }
+  }
+  if (!ExpectedVTable)
+    ExpectedVTable = getVTableAddressPoint(
+        BaseSubobject(SrcDecl, ExactCastInfo.Offset), DestDecl);
   llvm::Value *Success = CGF.Builder.CreateICmpEQ(VTable, ExpectedVTable);
+  if (Tagged)
+    Success = emitTaggedExactCastCheck(CGF, VTable, Success, PointOffset,
+                                       PrimaryPointOffset, DestRecordTy);
   llvm::Value *AdjustedThisPtr = ThisAddr.emitRawPointer(CGF);
 
   if (!ExactCastInfo.Offset.isZero()) {
@@ -1879,6 +1949,108 @@ llvm::Value *ItaniumCXXABI::emitExactDynamicCast(
   }
   CGF.Builder.CreateCondBr(Success, CastSuccess, CastFail);
   return AdjustedThisPtr;
+}
+
+/// Decides, for an object whose vptr \p VTable is not this image's copy of the
+/// tagged class's vtable at the address point \p PointOffset bytes into it,
+/// whether its class is the destination: a vptr whose primary address point,
+/// \p PrimaryPointOffset bytes into the group, does not sit at the class's tag
+/// is another class's, and one that does is confirmed through the object's
+/// type_info, compared as std::type_info compares, so that an object built
+/// by an image no link joins to this one, which holds its own type_info, is
+/// found by name. A vtable without RTTI holds a null type_info pointer, whose
+/// object the cast rejects. Returns whether the object is of the class, in
+/// the block the builder is left in.
+llvm::Value *ItaniumCXXABI::emitTaggedExactCastCheck(
+    CodeGenFunction &CGF, llvm::Value *VTable, llvm::Value *LocalMatch,
+    uint64_t PointOffset, uint64_t PrimaryPointOffset, QualType DestRecordTy) {
+  CGBuilderTy &Builder = CGF.Builder;
+  llvm::BasicBlock *TagBlock = CGF.createBasicBlock("dynamic_cast.tag");
+  llvm::BasicBlock *TypeInfoBlock = CGF.createBasicBlock("dynamic_cast.rtti");
+  llvm::BasicBlock *NameBlock = CGF.createBasicBlock("dynamic_cast.name");
+  llvm::BasicBlock *FlagBlock = CGF.createBasicBlock("dynamic_cast.flag");
+  llvm::BasicBlock *CompareBlock = CGF.createBasicBlock("dynamic_cast.strcmp");
+  llvm::BasicBlock *End = CGF.createBasicBlock("dynamic_cast.tag.end");
+  SmallVector<std::pair<llvm::Value *, llvm::BasicBlock *>, 6> Results;
+  llvm::Constant *True = Builder.getTrue(), *False = Builder.getFalse();
+
+  // Built in this image.
+  Results.push_back({True, Builder.GetInsertBlock()});
+  Builder.CreateCondBr(LocalMatch, End, TagBlock);
+
+  // The tag, in bits 3 to 11 of the primary address point.
+  CGF.EmitBlock(TagBlock);
+  llvm::Value *Point = Builder.CreatePtrToInt(VTable, CGF.IntPtrTy);
+  if (PointOffset != PrimaryPointOffset)
+    Point = Builder.CreateSub(
+        Point, llvm::ConstantInt::get(CGF.IntPtrTy,
+                                      PointOffset - PrimaryPointOffset));
+  llvm::Value *Tag = Builder.CreateAnd(Point, 0xFF8);
+  llvm::Value *TagMatch = Builder.CreateICmpEQ(
+      Tag, llvm::ConstantInt::get(CGF.IntPtrTy,
+                                  getVTableTagResidue(
+                                      DestRecordTy->getAsCXXRecordDecl())));
+  Results.push_back({False, TagBlock});
+  Builder.CreateCondBr(TagMatch, TypeInfoBlock, End);
+
+  // The type_info: the RTTI word precedes every address point.
+  CGF.EmitBlock(TypeInfoBlock);
+  CharUnits PtrAlign = CGF.getPointerAlign();
+  llvm::Value *ObjectTypeInfo = Builder.CreateAlignedLoad(
+      CGM.GlobalsInt8PtrTy,
+      Builder.CreateConstInBoundsGEP1_64(CGM.Int8Ty, VTable,
+                                         -int64_t(PtrAlign.getQuantity())),
+      PtrAlign, "rtti");
+  llvm::Constant *TypeInfo = CGM.GetAddrOfRTTIDescriptor(DestRecordTy);
+  Results.push_back({True, TypeInfoBlock});
+  Builder.CreateCondBr(Builder.CreateICmpEQ(ObjectTypeInfo, TypeInfo), End,
+                       NameBlock);
+
+  // As std::type_info compares: equal names, or two non-unique ones, whose
+  // top bit is set, that spell the same string.
+  CGF.EmitBlock(NameBlock);
+  llvm::BasicBlock *NotNull = CGF.createBasicBlock("dynamic_cast.rtti.nonnull");
+  Results.push_back({False, NameBlock});
+  Builder.CreateCondBr(Builder.CreateIsNull(ObjectTypeInfo), End, NotNull);
+  CGF.EmitBlock(NotNull);
+  auto loadName = [&](llvm::Value *TI) {
+    return Builder.CreateAlignedLoad(
+        CGF.IntPtrTy, Builder.CreateConstInBoundsGEP1_64(
+                          CGM.Int8Ty, TI, PtrAlign.getQuantity()),
+        PtrAlign, "rtti.name");
+  };
+  llvm::Value *ObjectName = loadName(ObjectTypeInfo);
+  llvm::Value *Name = loadName(TypeInfo);
+  Results.push_back({True, NotNull});
+  Builder.CreateCondBr(Builder.CreateICmpEQ(ObjectName, Name), End,
+                       FlagBlock);
+  CGF.EmitBlock(FlagBlock);
+  llvm::Value *BothNonUnique = Builder.CreateIsNeg(
+      Builder.CreateAnd(ObjectName, Name));
+  Results.push_back({False, FlagBlock});
+  Builder.CreateCondBr(BothNonUnique, CompareBlock, End);
+  CGF.EmitBlock(CompareBlock);
+  llvm::Constant *Mask = llvm::ConstantInt::get(
+      CGF.IntPtrTy,
+      llvm::APInt::getSignedMaxValue(CGF.IntPtrTy->getIntegerBitWidth()));
+  llvm::Type *StrcmpArgs[] = {CGF.Int8PtrTy, CGF.Int8PtrTy};
+  llvm::FunctionCallee Strcmp = CGM.CreateRuntimeFunction(
+      llvm::FunctionType::get(CGF.IntTy, StrcmpArgs, false), "strcmp");
+  llvm::Value *Cmp = CGF.EmitNounwindRuntimeCall(
+      Strcmp,
+      {Builder.CreateIntToPtr(Builder.CreateAnd(ObjectName, Mask),
+                              CGF.Int8PtrTy),
+       Builder.CreateIntToPtr(Builder.CreateAnd(Name, Mask), CGF.Int8PtrTy)});
+  Results.push_back(
+      {Builder.CreateIsNull(Cmp), Builder.GetInsertBlock()});
+  Builder.CreateBr(End);
+
+  CGF.EmitBlock(End);
+  llvm::PHINode *Result =
+      Builder.CreatePHI(CGF.Builder.getInt1Ty(), Results.size(), "is.exact");
+  for (auto &[V, BB] : Results)
+    Result->addIncoming(V, BB);
+  return Result;
 }
 
 llvm::Value *ItaniumCXXABI::emitDynamicCastToVoid(CodeGenFunction &CGF,
@@ -2129,6 +2301,39 @@ static void setVTableSelectiveDLLImportExport(CodeGenModule &CGM,
     VTable->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
 }
 
+/// Whether an exact dynamic_cast to \p RD on Windows Itanium and NT-POSIX
+/// may decide from the low bits of a vtable pointer: a class that is final in
+/// effect and whose vtable every image that uses it holds a copy of. The
+/// answer reads only the class, so that every image agrees, and a key function
+/// is kept whatever DLL attributes it carries.
+bool ItaniumCXXABI::isTaggedVTableClass(const CXXRecordDecl *RD) {
+  return CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+         RD->isDynamicClass() && RD->isEffectivelyFinal() &&
+         RD->isExternallyVisible() && !getContext().getCurrentKeyFunction(RD);
+}
+
+/// The residue modulo a page at which \p RD's tagged vtables put their
+/// primary address point, in every image: one of 64 lines, chosen by the top
+/// six bits of the xxh3 hash of the type's RTTI name, and one of the five
+/// offsets 24 to 56 of the line, chosen so that (line, offset) is the hash
+/// scaled onto 320 values. Changing any of it changes the vtable layout
+/// version, which the objects that compute a tag record for the linker to
+/// compare.
+uint64_t ItaniumCXXABI::getVTableTagResidue(const CXXRecordDecl *RD) {
+  if (!UsesVTableTags) {
+    CGM.AddDetectMismatch("_WIN_ITANIUM_VTABLE_LAYOUT", "1");
+    UsesVTableTags = true;
+  }
+  SmallString<256> Name;
+  llvm::raw_svector_ostream Out(Name);
+  getMangleContext().mangleCXXRTTIName(getContext().getCanonicalTagType(RD),
+                                       Out);
+  uint64_t Hash = llvm::xxh3_64bits(Name.str());
+  uint64_t Line = Hash >> 58;
+  uint64_t Offset = (5 * (Hash & llvm::maskTrailingOnes<uint64_t>(58))) >> 58;
+  return 64 * Line + 24 + 8 * Offset;
+}
+
 /// The name by which the linker's vtable runs know a class, the same in every
 /// module that uses it: its RTTI name without the _ZTS prefix, and, for a class
 /// of internal linkage, the module's hash, since two translation units may give
@@ -2221,10 +2426,24 @@ void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
 
   if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
       !VTable->isDeclarationForLinker()) {
+    std::optional<uint64_t> TagResidue;
+    if (isTaggedVTableClass(RD)) {
+      TagResidue = getVTableTagResidue(RD);
+      // A linker that ignores the pin would place the vtable where other
+      // images' casts reject its objects; this one fails to link instead.
+      if (!PinsVTableTags)
+        CGM.AppendLinkerOptions("/INCLUDE:__llvm_link_pins_v1");
+      PinsVTableTags = true;
+    }
     CGVT.setVTablePlacement(
         VTable, VTLayout,
-        VTLayout.getAddressPoint(BaseSubobject(RD, CharUnits::Zero())));
-    emitVTableHierarchy(CGM, VTable, RD, VTLayout);
+        VTLayout.getAddressPoint(BaseSubobject(RD, CharUnits::Zero())),
+        TagResidue);
+    // A tagged vtable sits at its tag, not in a slot of its primary base's
+    // run, so the calls and downcasts that test the run take their slow path
+    // for its objects.
+    if (!TagResidue)
+      emitVTableHierarchy(CGM, VTable, RD, VTLayout);
 
     // Name the address point of each vtable of the group, counted from the
     // start of the group, as getVTableAddressPoint computes it for the bases
@@ -2392,6 +2611,10 @@ llvm::GlobalVariable *ItaniumCXXABI::getAddrOfVTable(const CXXRecordDecl *RD,
   VTable = CGM.CreateOrReplaceCXXRuntimeVariable(
       Name, VTableType, llvm::GlobalValue::ExternalLinkage,
       getContext().toCharUnitsFromBits(PAlign).getAsAlign());
+  // An exact cast may have referred to the vtable weakly before the unit used
+  // it otherwise.
+  if (VTable->hasExternalWeakLinkage())
+    VTable->setLinkage(llvm::GlobalValue::ExternalLinkage);
   if (!CGM.shouldEmitRTTI())
     VTable->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
 

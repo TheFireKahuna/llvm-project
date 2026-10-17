@@ -1097,8 +1097,10 @@ llvm::GlobalVariable *CodeGenVTables::GenerateConstructionVTable(
 
   CGM.EmitVTableTypeMetadata(RD, VTable, *VTLayout);
 
+  // A construction vtable is never tagged: its class is a base.
   if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
-    setVTablePlacement(VTable, *VTLayout, VTLayout->getAddressPoint(Base));
+    setVTablePlacement(VTable, *VTLayout, VTLayout->getAddressPoint(Base),
+                       std::nullopt);
 
   if (UsingRelativeLayout) {
     RemoveHwasanMetadata(VTable);
@@ -1364,22 +1366,29 @@ static void addVTablePin(CodeGenModule &CGM, llvm::GlobalVariable *VTable,
 }
 
 /// On Windows Itanium and NT-POSIX the primary address point of every vtable
-/// definition is placed at offset 16 of a 64-byte line, so that offset-to-top,
-/// the RTTI word and the first entries share the line. The address point
-/// follows the vcall and vbase offsets of a class with virtual bases, so the
-/// vtable is aligned to 64 bytes only when they fill whole lines. Every
+/// definition is placed: at offset 16 of a 64-byte line, so that
+/// offset-to-top, the RTTI word and the first entries share the line, or, for
+/// a class whose exact dynamic_cast reads a tag from the vtable pointer, at the
+/// tag's residue modulo a page, which the linker must honour. The address
+/// point follows the vcall and vbase offsets of a class with virtual bases, so
+/// the vtable is aligned to 64 bytes only when they fill whole lines. Every
 /// placed vtable is pinned, which tells the linker that the image places
 /// vtables, so that it packs other read-only data into their padding.
 void CodeGenVTables::setVTablePlacement(
     llvm::GlobalVariable *VTable, const VTableLayout &Layout,
-    VTableLayout::AddressPointLocation AddressPoint) {
+    VTableLayout::AddressPointLocation AddressPoint,
+    std::optional<uint64_t> TagResidue) {
   uint64_t Offset =
       (Layout.getVTableOffset(AddressPoint.VTableIndex) +
        AddressPoint.AddressPointIndex) *
       CGM.getDataLayout().getTypeAllocSize(getVTableComponentType());
-  if (Offset % 64 == 16)
-    VTable->setAlignment(llvm::Align(64));
-  addVTablePin(CGM, VTable, Offset, 6, 16, /*Required=*/false);
+  if (TagResidue)
+    addVTablePin(CGM, VTable, Offset, 12, *TagResidue, /*Required=*/true);
+  else {
+    if (Offset % 64 == 16)
+      VTable->setAlignment(llvm::Align(64));
+    addVTablePin(CGM, VTable, Offset, 6, 16, /*Required=*/false);
+  }
 }
 
 /// At this point in the translation unit, does it appear that can we

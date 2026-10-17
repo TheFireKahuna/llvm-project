@@ -220,13 +220,15 @@ void lld::coff::placeVTableRuns(
   for (VTableRun &run : ctx.vtableRuns) {
     // A run the linker places needs all its vtables in plain read-only data,
     // laid out as consecutive slots. A vtable held back into the import
-    // address table span, or otherwise not here, is left in place, and the run
-    // becomes an empty range so its class's calls take the slow path.
-    // A vtable held back into the import address table span keeps its in-place
-    // import slots inside that table, so it cannot move into a run; its class,
-    // and the run that would hold it, take the slow path.
+    // address table span keeps its in-place import slots inside that table,
+    // and one that a required pin places, as a tagged vtable is, sits at its
+    // pin, so neither can move into a run. Such a vtable, or one otherwise not
+    // here, is left in place, and the run becomes an empty range so that its
+    // classes' calls take the slow path.
     bool whole = llvm::all_of(run.slots, [&](const VTableRun::Slot &s) {
-      return inRdata.contains(s.chunk) && !heldBack(s.chunk);
+      auto pin = ctx.chunkPins.find(s.chunk);
+      return inRdata.contains(s.chunk) && !heldBack(s.chunk) &&
+             (pin == ctx.chunkPins.end() || !pin->second.required);
     });
     if (!whole) {
       for (const VTableRun::Slot &slot : run.slots)

@@ -24,7 +24,7 @@ $vtT = comdat any
 @vtA = dllexport constant [4 x ptr] [ptr null, ptr null, ptr @fa, ptr @fa], align 64, !type !0
 ; Address point at 32, with a pin that is not required.
 @vtB = dllexport constant [5 x ptr] [ptr null, ptr null, ptr null, ptr null, ptr @fb], align 8, !type !1, !pin !10
-; A required pin of modulus 4096.
+; A tagged vtable: a required pin of modulus 4096.
 @vtT = linkonce_odr constant [3 x ptr] [ptr null, ptr null, ptr @fb], comdat, align 8, !type !0, !pin !11
 
 define void @fa(ptr %this) { ret void }
