@@ -26,6 +26,11 @@ class ToolChain;
 
 class SanitizerArgs {
   SanitizerSet Sanitizers;
+  // The enabled CFI schemes that the toolchain checks from facts its linker
+  // provides, which need no sanitizer runtime, and those of them that need no
+  // LTO because the compilation does not use it.
+  SanitizerMask LinkerChecked;
+  SanitizerMask WithoutLTO;
   SanitizerSet RecoverableSanitizers;
   SanitizerSet TrapSanitizers;
   SanitizerSet MergeHandlers;

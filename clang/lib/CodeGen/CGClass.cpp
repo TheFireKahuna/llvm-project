@@ -27,6 +27,7 @@
 #include "clang/CodeGen/CGFunctionInfo.h"
 #include "clang/CodeGenUtils/ClassUtils.h"
 #include "clang/CodeGenUtils/CodeGenUtils.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/Support/SaveAndRestore.h"
@@ -2864,7 +2865,8 @@ bool CodeGenFunction::EmitVTablePtrCheckForCall(const CXXRecordDecl *RD,
 void CodeGenFunction::EmitVTablePtrCheckForCast(QualType T, Address Derived,
                                                 bool MayBeNull,
                                                 CFITypeCheckKind TCK,
-                                                SourceLocation Loc) {
+                                                SourceLocation Loc,
+                                                Address Base, QualType BaseTy) {
   if (!getLangOpts().CPlusPlus)
     return;
 
@@ -2877,6 +2879,32 @@ void CodeGenFunction::EmitVTablePtrCheckForCast(QualType T, Address Derived,
 
   if (!SanOpts.has(SanitizerKind::CFICastStrict))
     ClassDecl = LeastDerivedClassWithSameLayout(ClassDecl);
+
+  // On Windows Itanium and NT-POSIX a downcast to a class that LTO does not
+  // see whole is checked from the layout of the vtables the linker provides,
+  // and a miss is confirmed by __dynamic_cast, which needs the type_info of
+  // both classes and finds only a public base. A cast to a class the source
+  // already derives from always holds.
+  bool CheckFromLayout =
+      TCK == CFITCK_DerivedCast &&
+      CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      !(CGM.getCodeGenOpts().LTOUnit && CGM.HasHiddenLTOVisibility(ClassDecl));
+  if (CheckFromLayout) {
+    const CXXRecordDecl *BaseDecl = BaseTy.isNull()
+                                        ? nullptr
+                                        : BaseTy->getAsCXXRecordDecl();
+    if (!Base.isValid() || !BaseDecl || !CGM.shouldEmitRTTI() ||
+        BaseDecl == ClassDecl || BaseDecl->isDerivedFrom(ClassDecl) ||
+        getContext().getNoSanitizeList().containsType(
+            SanitizerKind::CFIDerivedCast,
+            ClassDecl->getQualifiedNameAsString()))
+      return;
+    CXXBasePaths Paths(/*FindAmbiguities=*/false, /*RecordPaths=*/true,
+                       /*DetectVirtual=*/false);
+    if (!ClassDecl->isDerivedFrom(BaseDecl, Paths) ||
+        Paths.front().Access != AS_public)
+      return;
+  }
 
   auto [Ordinal, _] = SanitizerInfoFromCFICheckKind(TCK);
   SanitizerDebugLocation SanScope(this, {Ordinal},
@@ -2896,11 +2924,16 @@ void CodeGenFunction::EmitVTablePtrCheckForCast(QualType T, Address Derived,
     EmitBlock(CheckBlock);
   }
 
-  llvm::Value *VTable;
-  std::tie(VTable, ClassDecl) =
-      CGM.getCXXABI().LoadVTablePtr(*this, Derived, ClassDecl);
+  if (CheckFromLayout) {
+    CGM.getCXXABI().emitDowncastCheck(*this, Base, BaseTy, Derived,
+                                      ClassDecl);
+  } else {
+    llvm::Value *VTable;
+    std::tie(VTable, ClassDecl) =
+        CGM.getCXXABI().LoadVTablePtr(*this, Derived, ClassDecl);
 
-  EmitVTablePtrCheck(ClassDecl, VTable, TCK, Loc);
+    EmitVTablePtrCheck(ClassDecl, VTable, TCK, Loc);
+  }
 
   if (MayBeNull) {
     Builder.CreateBr(ContBlock);
@@ -2953,6 +2986,15 @@ bool CodeGenFunction::EmitVTablePtrCheck(const CXXRecordDecl *RD,
     return true;
   }
 
+  // Windows Itanium and NT-POSIX have no sanitizer runtime: a failed cast
+  // reports through the routine that the downcast checks of other classes
+  // call.
+  if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      (TCK == CFITCK_DerivedCast || TCK == CFITCK_UnrelatedCast)) {
+    EmitCastCheck(TypeTest, VTable, RD, M);
+    return !CGM.getCodeGenOpts().SanitizeRecover.has(M);
+  }
+
   llvm::Value *AllVtables = llvm::MetadataAsValue::get(
       CGM.getLLVMContext(),
       llvm::MDString::get(CGM.getLLVMContext(), "all-vtables"));
@@ -2961,6 +3003,105 @@ bool CodeGenFunction::EmitVTablePtrCheck(const CXXRecordDecl *RD,
   EmitCheck(std::make_pair(TypeTest, M), SanitizerHandler::CFICheckFail,
             StaticData, {VTable, ValidVtable});
   return !CGM.getCodeGenOpts().SanitizeRecover.has(M);
+}
+
+/// The default of the routine that a failed cast check calls when it does not
+/// trap: a report through the slot that the load configuration's CastGuard
+/// field names, which the loader binds to the system's routine for a failed
+/// cast, and a return.
+static llvm::Function *getCastCheckReport(CodeGenModule &CGM,
+                                          llvm::FunctionType *Ty) {
+  llvm::Module &M = CGM.getModule();
+  StringRef Name = "__llvm_cast_check_report";
+  if (llvm::Function *F = M.getFunction(Name))
+    return F;
+  llvm::Function *F = llvm::Function::Create(
+      Ty, llvm::GlobalValue::LinkOnceODRLinkage, Name, M);
+  F->setVisibility(llvm::GlobalValue::HiddenVisibility);
+  F->setComdat(M.getOrInsertComdat(Name));
+  F->setDoesNotThrow();
+  F->addFnAttr(llvm::Attribute::NoInline);
+  F->addFnAttr(llvm::Attribute::Cold);
+  // The slot sits among the other pointers the loader binds, which are
+  // read-only once it has.
+  auto *Slot = new llvm::GlobalVariable(
+      M, CGM.GlobalsInt8PtrTy, /*isConstant=*/true,
+      llvm::GlobalValue::LinkOnceODRLinkage,
+      llvm::ConstantPointerNull::get(CGM.GlobalsInt8PtrTy),
+      llvm::COFF::CastGuardFailureSlot);
+  Slot->setVisibility(llvm::GlobalValue::HiddenVisibility);
+  Slot->setComdat(M.getOrInsertComdat(Slot->getName()));
+  Slot->setSection(".00cfg");
+  Slot->setAlignment(CGM.getPointerAlign().getAsAlign());
+
+  llvm::LLVMContext &Ctx = CGM.getLLVMContext();
+  llvm::BasicBlock *Entry = llvm::BasicBlock::Create(Ctx, "entry", F);
+  llvm::BasicBlock *Report = llvm::BasicBlock::Create(Ctx, "report", F);
+  llvm::BasicBlock *Ret = llvm::BasicBlock::Create(Ctx, "ret", F);
+  CGBuilderTy B(CGM, Entry);
+  llvm::LoadInst *Routine = B.CreateAlignedLoad(CGM.GlobalsInt8PtrTy, Slot,
+                                                CGM.getPointerAlign());
+  Routine->setVolatile(true);
+  B.CreateCondBr(B.CreateIsNull(Routine), Ret, Report);
+  B.SetInsertPoint(Report);
+  // The loader wrote the routine's address, and the routine takes the vtable
+  // pointer under the system's calling convention.
+  llvm::FunctionType *RoutineTy =
+      llvm::FunctionType::get(CGM.VoidTy, {CGM.GlobalsInt8PtrTy}, false);
+  llvm::CallInst *Call = B.CreateCall(RoutineTy, Routine, {F->getArg(0)});
+  Call->addFnAttr(llvm::Attribute::get(Ctx, "guard_nocf"));
+  if (CGM.getTriple().isX86_64())
+    Call->setCallingConv(llvm::CallingConv::Win64);
+  B.CreateBr(Ret);
+  B.SetInsertPoint(Ret);
+  B.CreateRetVoid();
+  return F;
+}
+
+void CodeGenFunction::EmitCastCheck(llvm::Value *Checked, llvm::Value *VTable,
+                                    const CXXRecordDecl *RD,
+                                    SanitizerKind::SanitizerOrdinal Ordinal) {
+  if (CGM.getCodeGenOpts().SanitizeTrap.has(Ordinal)) {
+    EmitTrapCheck(Checked, SanitizerHandler::CFICheckFail,
+                  !CGM.getCodeGenOpts().SanitizeMergeHandlers.has(Ordinal),
+                  /*TR=*/nullptr, CGM.getCFITrapKind(Ordinal));
+    return;
+  }
+  llvm::BasicBlock *Cont = createBasicBlock("cast.check.cont");
+  llvm::BasicBlock *Fail = createBasicBlock("cast.check.fail");
+  Builder.CreateCondBr(Checked, Cont, Fail);
+  EmitBlock(Fail);
+  // A weak definition, which a program's own definition of the routine
+  // replaces. It takes a vtable pointer of the object and the type_info of
+  // the class the object should derive from.
+  llvm::Module &M = CGM.getModule();
+  llvm::FunctionType *Ty = llvm::FunctionType::get(
+      VoidTy, {CGM.GlobalsInt8PtrTy, CGM.GlobalsInt8PtrTy}, false);
+  llvm::GlobalValue *Routine = M.getNamedValue(llvm::COFF::CastCheckFailure);
+  if (!Routine) {
+    Routine = llvm::GlobalAlias::create(
+        Ty, 0, llvm::GlobalValue::WeakAnyLinkage, llvm::COFF::CastCheckFailure,
+        getCastCheckReport(CGM, Ty), &M);
+    Routine->setVisibility(llvm::GlobalValue::HiddenVisibility);
+  }
+  llvm::Value *TypeInfo =
+      CGM.shouldEmitRTTI()
+          ? CGM.GetAddrOfRTTIDescriptor(getContext().getCanonicalTagType(RD))
+          : llvm::ConstantPointerNull::get(CGM.GlobalsInt8PtrTy);
+  EmitNounwindRuntimeCall(llvm::FunctionCallee(Ty, Routine),
+                          {VTable, TypeInfo});
+  // Only a recoverable check continues after the report.
+  if (!CGM.getCodeGenOpts().SanitizeRecover.has(Ordinal)) {
+    llvm::CallInst *Trap =
+        Builder.CreateCall(CGM.getIntrinsic(llvm::Intrinsic::ubsantrap),
+                           Builder.getInt8(*CGM.getCFITrapKind(Ordinal)));
+    Trap->setDoesNotReturn();
+    Trap->setDoesNotThrow();
+    Builder.CreateUnreachable();
+  } else {
+    Builder.CreateBr(Cont);
+  }
+  EmitBlock(Cont);
 }
 
 bool CodeGenFunction::ShouldEmitVTableTypeCheckedLoad(const CXXRecordDecl *RD) {

@@ -399,7 +399,8 @@ bool SanitizerArgs::needsUbsanRt() const {
       needsCfiCrossDsoDiagRt() || (needsScudoRt() && !requiresMinimalRuntime()))
     return false;
 
-  return (Sanitizers.Mask & NeedsUbsanRt & ~TrapSanitizers.Mask) ||
+  return (Sanitizers.Mask & NeedsUbsanRt & ~TrapSanitizers.Mask &
+          ~LinkerChecked) ||
          CoverageFeatures;
 }
 
@@ -408,7 +409,7 @@ bool SanitizerArgs::needsUbsanCXXRt() const {
   // specific cases, but forces the program to depend on C++ ABI. UBSAN C++
   // runtime is not included with other sanitizers.
   return static_cast<bool>(Sanitizers.Mask & NeedsUbsanCxxRt &
-                           ~TrapSanitizers.Mask);
+                           ~TrapSanitizers.Mask & ~LinkerChecked);
 }
 
 bool SanitizerArgs::needsCfiCrossDsoRt() const {
@@ -429,7 +430,7 @@ bool SanitizerArgs::needsUnwindTables() const {
 }
 
 bool SanitizerArgs::needsLTO() const {
-  return static_cast<bool>(Sanitizers.Mask & NeedsLTO);
+  return static_cast<bool>(Sanitizers.Mask & NeedsLTO & ~WithoutLTO);
 }
 
 SanitizerArgs::SanitizerArgs(const ToolChain &TC,
@@ -808,9 +809,14 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
   }
 
   // Check that LTO is enabled if we need it.
-  if ((Kinds & NeedsLTO) && !TC.isUsingLTO(Args) && DiagnoseErrors) {
+  LinkerChecked = Kinds & TC.getLinkerCheckedSanitizers();
+  if (!TC.isUsingLTO(Args))
+    WithoutLTO = LinkerChecked;
+  if ((Kinds & NeedsLTO & ~WithoutLTO) && !TC.isUsingLTO(Args) &&
+      DiagnoseErrors) {
     D.Diag(diag::err_drv_argument_only_allowed_with)
-        << lastArgumentForMask(D, Args, Kinds & NeedsLTO) << "-flto";
+        << lastArgumentForMask(D, Args, Kinds & NeedsLTO & ~WithoutLTO)
+        << "-flto";
   }
 
   if ((Kinds & SanitizerKind::ShadowCallStack) && TC.getTriple().isAArch64() &&
@@ -1363,7 +1369,8 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
   // Without the runtimes, a failed check can only trap, and cross-DSO CFI has
   // no slow path to call for a target outside the image.
   if (!TC.hasSanitizerRuntimes() && DiagnoseErrors) {
-    if (SanitizerMask NonTrapping = Kinds & NeedsUbsanRt & ~TrappingKinds) {
+    if (SanitizerMask NonTrapping =
+            Kinds & NeedsUbsanRt & ~TrappingKinds & ~LinkerChecked) {
       if (const Arg *A = Args.getLastArg(options::OPT_fno_sanitize_trap_EQ))
         D.Diag(diag::err_drv_unsupported_opt_for_target)
             << A->getAsString(Args) << TC.getTripleString();

@@ -311,6 +311,14 @@ public:
       const ExactDynamicCastInfo &CastInfo, llvm::BasicBlock *CastSuccess,
       llvm::BasicBlock *CastFail) = 0;
 
+  /// Emit a check that \p Derived, which a downcast of \p Base, an object of
+  /// type \p SrcRecordTy, gives, is an object of \p DestDecl or of a class
+  /// derived from it, for a target that checks downcasts from the layout of
+  /// the vtables its linker provides.
+  virtual void emitDowncastCheck(CodeGenFunction &CGF, Address Base,
+                                 QualType SrcRecordTy, Address Derived,
+                                 const CXXRecordDecl *DestDecl) {}
+
   virtual bool EmitBadCastCall(CodeGenFunction &CGF) = 0;
 
   virtual llvm::Value *GetVirtualBaseClassOffset(CodeGenFunction &CGF,

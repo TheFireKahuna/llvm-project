@@ -28,7 +28,8 @@
 // CC1-DAG:     "-funwind-tables=2"
 // CC1-DAG:     "-stack-protector" "2"
 // CC1-DAG:     "-ftrivial-auto-var-init=zero"
-// CC1-DAG:     "-fsanitize=kcfi"
+// CC1-DAG:     "-fsanitize=cfi-derived-cast,kcfi"
+// CC1-DAG:     "-fsanitize-trap=cfi-derived-cast"
 // CC1-DAG:     "-fsanitize-cfi-icall-generalize-pointers"
 
 // A statically linked libc is not imported.

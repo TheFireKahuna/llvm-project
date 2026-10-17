@@ -2900,7 +2900,8 @@ Value *ScalarExprEmitter::VisitCastExpr(CastExpr *CE) {
       CGF.EmitVTablePtrCheckForCast(DestTy->getPointeeType(), Derived,
                                     /*MayBeNull=*/true,
                                     CodeGenFunction::CFITCK_DerivedCast,
-                                    CE->getBeginLoc());
+                                    CE->getBeginLoc(), Base,
+                                    E->getType()->getPointeeType());
 
     return CGF.getAsNaturalPointerTo(Derived, CE->getType()->getPointeeType());
   }

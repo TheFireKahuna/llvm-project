@@ -22,7 +22,8 @@
 // CC1-DAG:    "-funwind-tables=2"
 // CC1-DAG:    "-stack-protector" "2"
 // CC1-DAG:    "-ftrivial-auto-var-init=zero"
-// CC1-DAG:    "-fsanitize=kcfi"
+// CC1-DAG:    "-fsanitize=cfi-derived-cast,kcfi"
+// CC1-DAG:    "-fsanitize-trap=cfi-derived-cast"
 // CC1-DAG:    "-fsanitize-cfi-icall-generalize-pointers"
 
 // The SCEI flavour of Windows Itanium keeps the cross-Windows toolchain.
@@ -246,8 +247,8 @@
 
 // Under LTO, CFI checks the virtual and non-virtual member calls of the
 // classes LTO sees whole, and the indirect calls through function and member
-// function pointers, beside KCFI. With no sanitizer runtime, a failed check
-// can only trap.
+// function pointers, beside KCFI, and downcasts as without LTO. With no
+// sanitizer runtime, a failed check can only trap.
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s -flto \
 // RUN:     -resource-dir=%S/Inputs/resource_dir 2>&1 \
 // RUN:   | FileCheck --check-prefix=LTO-CFI %s --implicit-check-not=error:
@@ -255,8 +256,8 @@
 // RUN:     -resource-dir=%S/Inputs/resource_dir 2>&1 \
 // RUN:   | FileCheck --check-prefix=LTO-CFI %s --implicit-check-not=error:
 // LTO-CFI:     "-cc1"
-// LTO-CFI-DAG: "-fsanitize=cfi-icall,cfi-mfcall,cfi-nvcall,cfi-vcall,kcfi"
-// LTO-CFI-DAG: "-fsanitize-trap=cfi-icall,cfi-mfcall,cfi-nvcall,cfi-vcall"
+// LTO-CFI-DAG: "-fsanitize=cfi-derived-cast,cfi-icall,cfi-mfcall,cfi-nvcall,cfi-vcall,kcfi"
+// LTO-CFI-DAG: "-fsanitize-trap=cfi-derived-cast,cfi-icall,cfi-mfcall,cfi-nvcall,cfi-vcall"
 // LTO-CFI-DAG: "-fsanitize-system-ignorelist={{[^"]*}}cfi_ignorelist.txt"
 // LTO-CFI-DAG: "-fsplit-lto-unit"
 // LTO-CFI-DAG: "-fwhole-program-vtables"
@@ -266,9 +267,22 @@
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s -flto \
 // RUN:     -fno-sanitize=cfi -resource-dir=%S/Inputs/resource_dir 2>&1 \
 // RUN:   | FileCheck --check-prefix=NO-CFI %s
+// Without LTO, CFI checks downcasts from the vtable layout LLD provides, which
+// needs neither the LTO unit nor a sanitizer runtime: a check that does not
+// trap reports through a routine the compiler emits.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fno-sanitize-trap=cfi-derived-cast \
+// RUN:     -resource-dir=%S/Inputs/resource_dir 2>&1 \
+// RUN:   | FileCheck --check-prefix=NO-LTO-REPORT %s --implicit-check-not=error:
 // NO-LTO-CFI:     "-cc1"
-// NO-LTO-CFI-NOT: "-fsanitize={{[^"]*}}cfi-
+// NO-LTO-CFI-SAME: "-fsanitize=cfi-derived-cast,kcfi"
+// NO-LTO-CFI-SAME: "-fsanitize-trap=cfi-derived-cast"
 // NO-LTO-CFI-NOT: -fwhole-program-vtables
+// NO-LTO-CFI-NOT: -fsplit-lto-unit
+// NO-LTO-REPORT:     "-cc1"
+// NO-LTO-REPORT-NOT: ubsan
+// NO-LTO-REPORT-SAME: "-fsanitize=cfi-derived-cast,kcfi"
+// NO-LTO-REPORT-NOT: -fsanitize-trap=
 // NO-CFI:     "-cc1"
 // NO-CFI-NOT: "-fsanitize={{[^"]*}}cfi-
 
@@ -280,7 +294,7 @@
 // RUN: not %clang -### --target=x86_64-unknown-windows-itanium -c %s -flto \
 // RUN:     -fsanitize=cfi-vcall -resource-dir=%S 2>&1 \
 // RUN:   | FileCheck --check-prefix=CFI-NO-LIST %s
-// LTO-CFI-NO-LIST: "-fsanitize=cfi-icall,cfi-mfcall,cfi-nvcall,cfi-vcall,kcfi"
+// LTO-CFI-NO-LIST: "-fsanitize=cfi-derived-cast,cfi-icall,cfi-mfcall,cfi-nvcall,cfi-vcall,kcfi"
 // CFI-NO-LIST: error: missing sanitizer ignorelist
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s -flto \
 // RUN:     -fsanitize=cfi -resource-dir=%S/Inputs/resource_dir 2>&1 \

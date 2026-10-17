@@ -3023,6 +3023,18 @@ DenseSet<std::pair<ObjFile *, Symbol *>> Writer::getGuardPointerStubs() {
   return stubs;
 }
 
+// The guard flags that the image's own definitions add: CastGuard is present
+// when the image holds the slot that a compiler's report routine for failed
+// cast checks reads, which the load configuration names and the loader binds
+// only under this flag.
+static uint32_t getDefinedGuardFlags(SymbolTable &symtab) {
+  auto *slot =
+      dyn_cast_or_null<DefinedRegular>(symtab.find(CastGuardFailureSlot));
+  if (slot && slot->getChunk()->live)
+    return uint32_t(GuardFlags::CASTGUARD_PRESENT);
+  return 0;
+}
+
 // Create the guard function id table. This is a table of RVAs of all
 // address-taken functions. It is sorted and uniqued, just like the safe SEH
 // table.
@@ -3050,7 +3062,8 @@ void Writer::createGuardCFTables() {
                     uint32_t(GuardFlags::DELAYLOAD_IAT_IN_ITS_OWN_SECTION);
     ctx.forEachSymtab([&](SymbolTable &symtab) {
       Symbol *flagSym = symtab.findUnderscore("__guard_flags");
-      cast<DefinedAbsolute>(flagSym)->setVA(guardFlags);
+      cast<DefinedAbsolute>(flagSym)->setVA(guardFlags |
+                                            getDefinedGuardFlags(symtab));
     });
     return;
   }
@@ -3239,7 +3252,7 @@ void Writer::createGuardCFTables() {
           ? offsetof(coff_load_configuration64, GuardLongJumpTargetTable)
           : offsetof(coff_load_configuration32, GuardLongJumpTargetTable);
   ctx.forEachSymtab([&](SymbolTable &symtab) {
-    uint32_t flags = guardFlags;
+    uint32_t flags = guardFlags | getDefinedGuardFlags(symtab);
     if (symtab.loadConfigSize >= giatsEnd)
       flags |= uint32_t(GuardFlags::CF_EXPORT_SUPPRESSION_INFO_PRESENT);
     Symbol *flagSym = symtab.findUnderscore("__guard_flags");

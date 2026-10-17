@@ -56,9 +56,16 @@ public:
   }
   bool isPICDefaultForced() const override { return true; }
 
-  /// KCFI checks indirect calls unless -fno-sanitize=kcfi.
+  /// KCFI checks indirect calls unless -fno-sanitize=kcfi, and CFI checks
+  /// downcasts unless -fno-sanitize=cfi-derived-cast.
   SanitizerMask getDefaultSanitizers() const override {
-    return SanitizerKind::KCFI;
+    return SanitizerKind::KCFI | SanitizerKind::CFIDerivedCast;
+  }
+
+  /// A downcast is checked from the vtable layout that LLD provides, and a
+  /// failed check reports through a routine the compiler emits.
+  SanitizerMask getLinkerCheckedSanitizers() const override {
+    return SanitizerKind::CFIDerivedCast;
   }
 
   /// Under LTO, CFI checks the virtual and non-virtual member calls of the

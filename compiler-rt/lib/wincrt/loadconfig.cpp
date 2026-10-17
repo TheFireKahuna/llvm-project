@@ -30,6 +30,11 @@ extern char __guard_longjmp_count[];
 extern char __guard_eh_cont_table[];
 extern char __guard_eh_cont_count[];
 extern char __enclave_config[];
+
+// Defined by the compiler, beside the pointers above, when the image reports
+// failed cast checks: the loader binds it to the system's routine for one.
+__attribute__((weak)) extern void *volatile
+    __castguard_check_failure_os_handled_fptr;
 }
 
 #define WINCRT_ADDRESS(Symbol) reinterpret_cast<ULONGLONG>(&Symbol)
@@ -77,7 +82,7 @@ extern "C" __declspec(allocate(".rdata$T")) const LoadConfig
         0,                                    // GuardXFGCheckFunctionPointer
         0,                                    // GuardXFGDispatchFunctionPointer
         0,                                    // GuardXFGTableDispatch*
-        0,                                    // CastGuardOsDeterminedFailureMode
+        WINCRT_ADDRESS(__castguard_check_failure_os_handled_fptr),
         0,                                    // GuardMemcpyFunctionPointer
         0,                                    // UmaFunctionPointers
 };

@@ -32,6 +32,7 @@
 #include "clang/Basic/PointerAuthOptions.h"
 #include "clang/CodeGen/ConstantInitBuilder.h"
 #include "clang/CodeGenUtils/ItaniumCXXABIUtils.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/Instructions.h"
@@ -289,6 +290,10 @@ public:
 
   llvm::Value *emitDynamicCastToVoid(CodeGenFunction &CGF, Address Value,
                                      QualType SrcRecordTy) override;
+
+  void emitDowncastCheck(CodeGenFunction &CGF, Address Base,
+                         QualType SrcRecordTy, Address Derived,
+                         const CXXRecordDecl *DestDecl) override;
 
   bool EmitBadCastCall(CodeGenFunction &CGF) override;
 
@@ -2051,6 +2056,79 @@ llvm::Value *ItaniumCXXABI::emitTaggedExactCastCheck(
   for (auto &[V, BB] : Results)
     Result->addIncoming(V, BB);
   return Result;
+}
+
+static std::string vtableRunName(CodeGenModule &CGM, const CXXRecordDecl *RD);
+
+/// On Windows Itanium and NT-POSIX, checks a downcast to \p DestDecl: a class
+/// final in effect by the exact cast, any other by its run, the vtables of the
+/// class and of every class derived from it through primary bases, which the
+/// linker lays out as equal slots and describes by three symbols: the run's
+/// first address point, one past its last slot, and a word holding the slot
+/// size less one. A vtable pointer that misses, of an object built by another
+/// image, at a secondary address point or of a tagged class, is confirmed by
+/// __dynamic_cast, whose result must be the downcast's.
+void ItaniumCXXABI::emitDowncastCheck(CodeGenFunction &CGF, Address Base,
+                                      QualType SrcRecordTy, Address Derived,
+                                      const CXXRecordDecl *DestDecl) {
+  CGBuilderTy &Builder = CGF.Builder;
+  QualType DestRecordTy = getContext().getCanonicalTagType(DestDecl);
+  QualType DestTy = getContext().getPointerType(DestRecordTy);
+  llvm::BasicBlock *Hit = CGF.createBasicBlock("cast.check.hit");
+  llvm::BasicBlock *Miss = CGF.createBasicBlock("cast.check.miss");
+
+  std::optional<ExactDynamicCastInfo> ExactCastInfo;
+  if (DestDecl->isEffectivelyFinal() && shouldEmitExactDynamicCast(DestRecordTy))
+    ExactCastInfo = getExactDynamicCastInfo(SrcRecordTy, DestTy, DestRecordTy);
+  if (ExactCastInfo) {
+    emitExactDynamicCast(CGF, Base, SrcRecordTy, DestTy, DestRecordTy,
+                         *ExactCastInfo, Hit, Miss);
+  } else {
+    llvm::Value *VTable =
+        CGF.GetVTablePtr(Derived, CGM.GlobalsInt8PtrTy, DestDecl);
+    std::string Name = vtableRunName(CGM, DestDecl);
+    auto getRunSymbol = [&](StringRef Prefix, llvm::Type *Ty) {
+      auto *GV = cast<llvm::GlobalVariable>(
+          CGM.getModule().getOrInsertGlobal((Prefix + Name).str(), Ty));
+      GV->setConstant(true);
+      GV->setDSOLocal(true);
+      return GV;
+    };
+    llvm::Value *Start =
+        getRunSymbol(llvm::COFF::VTableRangeStartPrefix, CGM.Int8Ty);
+    llvm::Value *End = getRunSymbol(llvm::COFF::VTableRangeEndPrefix, CGM.Int8Ty);
+    llvm::GlobalVariable *MaskWord =
+        getRunSymbol(llvm::COFF::VTableRangeMaskPrefix, CGM.Int32Ty);
+    llvm::Value *AtOrAfterStart = Builder.CreateICmpUGE(VTable, Start);
+    llvm::Value *BeforeEnd = Builder.CreateICmpULT(VTable, End);
+    llvm::Value *InRun = Builder.CreateAnd(AtOrAfterStart, BeforeEnd);
+    llvm::Value *Offset =
+        Builder.CreateSub(Builder.CreatePtrToInt(VTable, CGF.IntPtrTy),
+                          Builder.CreatePtrToInt(Start, CGF.IntPtrTy));
+    llvm::Value *Mask = Builder.CreateAlignedLoad(CGM.Int32Ty, MaskWord,
+                                                  CharUnits::fromQuantity(4));
+    llvm::Value *OnSlot = Builder.CreateIsNull(
+        Builder.CreateAnd(Builder.CreateTrunc(Offset, CGM.Int32Ty), Mask));
+    Builder.CreateCondBr(Builder.CreateAnd(InRun, OnSlot), Hit, Miss);
+  }
+
+  CGF.EmitBlock(Miss);
+  llvm::Value *Found = emitDynamicCastCall(CGF, Base, SrcRecordTy, DestTy,
+                                           DestRecordTy, /*CastEnd=*/nullptr);
+  llvm::Value *Checked =
+      Builder.CreateICmpEQ(Found, Derived.emitRawPointer(CGF));
+  // A trap reports nothing, and the routine takes a vtable pointer of the
+  // object, which the source's always is.
+  llvm::Value *VTable =
+      CGM.getCodeGenOpts().SanitizeTrap.has(SanitizerKind::CFIDerivedCast)
+          ? nullptr
+          : CGF.GetVTablePtr(Base, CGM.GlobalsInt8PtrTy,
+                             SrcRecordTy->getAsCXXRecordDecl());
+  CGF.EmitCastCheck(Checked, VTable, DestDecl,
+                    SanitizerKind::SO_CFIDerivedCast);
+  Builder.CreateBr(Hit);
+
+  CGF.EmitBlock(Hit);
 }
 
 llvm::Value *ItaniumCXXABI::emitDynamicCastToVoid(CodeGenFunction &CGF,

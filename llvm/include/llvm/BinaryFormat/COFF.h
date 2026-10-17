@@ -444,6 +444,16 @@ inline constexpr char VTableRangeMaskPrefix[] = "__llvm_vtables_mask$";
 // holds. On AArch64 it returns instead of jumping.
 inline constexpr char VTableGuardThunkPrefix[] = "__llvm_vcall_";
 
+// The routine a failed downcast check calls with a vtable pointer of the object
+// and the type_info of the class it should derive from, which a compiler
+// defines as weak, so that a program may define its own. Its default fails
+// fast, or reports the failure through the slot that the load configuration's
+// CastGuard field names, which the loader binds to the system's routine when
+// the image's guard flags say that CastGuard is present, and returns.
+inline constexpr char CastCheckFailure[] = "__llvm_cast_check_fail";
+inline constexpr char CastGuardFailureSlot[] =
+    "__castguard_check_failure_os_handled_fptr";
+
 // Sizes in bytes of various things in the COFF format.
 enum {
   Header16Size = 20,
@@ -1190,6 +1200,9 @@ enum class GuardFlags : uint32_t {
   CF_LONGJUMP_TABLE_PRESENT = 0x10000,
   /// Module contains EH continuation target information.
   EH_CONTINUATION_TABLE_PRESENT = 0x400000,
+  /// Module checks casts, and the load configuration names the slot for the
+  /// routine that the system provides for a failed check.
+  CASTGUARD_PRESENT = 0x1000000,
   /// Mask for the subfield that contains the stride of Control Flow Guard
   /// function table entries (that is, the additional count of bytes per table
   /// entry).

@@ -898,6 +898,12 @@ public:
   /// indirect calls they leave unchecked.
   virtual bool canCombineKCFIWithCFI() const { return false; }
 
+  /// Return the CFI schemes that this toolchain checks from facts its linker
+  /// provides, which need neither LTO nor a sanitizer runtime.
+  virtual SanitizerMask getLinkerCheckedSanitizers() const {
+    return SanitizerMask();
+  }
+
   /// Whether -fwhole-program-vtables is on by default when compiling for LTO.
   virtual bool defaultsToWholeProgramVTablesWithLTO() const { return false; }
 

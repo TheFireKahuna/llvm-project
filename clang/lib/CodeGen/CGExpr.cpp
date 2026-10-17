@@ -6498,7 +6498,8 @@ LValue CodeGenFunction::EmitCastLValue(const CastExpr *E) {
     if (SanOpts.has(SanitizerKind::CFIDerivedCast))
       EmitVTablePtrCheckForCast(E->getType(), Derived,
                                 /*MayBeNull=*/false, CFITCK_DerivedCast,
-                                E->getBeginLoc());
+                                E->getBeginLoc(), LV.getAddress(),
+                                E->getSubExpr()->getType());
 
     return MakeAddrLValue(Derived, E->getType(), LV.getBaseInfo(),
                           CGM.getTBAAInfoForSubobject(LV, E->getType()));

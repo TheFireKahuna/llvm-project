@@ -2596,9 +2596,20 @@ public:
 
   /// Derived is the presumed address of an object of type T after a
   /// cast. If T is a polymorphic class type, emit a check that the virtual
-  /// table for Derived belongs to a class derived from T.
+  /// table for Derived belongs to a class derived from T. A downcast also
+  /// gives the address it casts, Base, of type BaseTy.
   void EmitVTablePtrCheckForCast(QualType T, Address Derived, bool MayBeNull,
-                                 CFITypeCheckKind TCK, SourceLocation Loc);
+                                 CFITypeCheckKind TCK, SourceLocation Loc,
+                                 Address Base = Address::invalid(),
+                                 QualType BaseTy = QualType());
+
+  /// Emits, on Windows Itanium and NT-POSIX, what a cast check of kind
+  /// Ordinal does when Checked is false for an object whose vtable pointer is
+  /// VTable and whose class should derive from RD: a trap, or a call of the
+  /// routine that reports the failure.
+  void EmitCastCheck(llvm::Value *Checked, llvm::Value *VTable,
+                     const CXXRecordDecl *RD,
+                     SanitizerKind::SanitizerOrdinal Ordinal);
 
   /// EmitVTablePtrCheckForCall - Virtual method MD is being called via VTable.
   /// If vptr CFI is enabled, emit a check that VTable is valid.

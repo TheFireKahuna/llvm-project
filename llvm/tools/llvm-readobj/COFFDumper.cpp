@@ -627,6 +627,7 @@ constexpr EnumStringDef<uint32_t> PELoadConfigGuardFlagsDefs[] = {
     LLVM_READOBJ_ENUM_CLASS_ENT(COFF::GuardFlags, CF_LONGJUMP_TABLE_PRESENT),
     LLVM_READOBJ_ENUM_CLASS_ENT(COFF::GuardFlags,
                                 EH_CONTINUATION_TABLE_PRESENT),
+    LLVM_READOBJ_ENUM_CLASS_ENT(COFF::GuardFlags, CASTGUARD_PRESENT),
     LLVM_READOBJ_ENUM_CLASS_ENT(COFF::GuardFlags,
                                 CF_FUNCTION_TABLE_SIZE_5BYTES),
     LLVM_READOBJ_ENUM_CLASS_ENT(COFF::GuardFlags,
