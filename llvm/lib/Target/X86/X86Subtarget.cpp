@@ -145,13 +145,16 @@ unsigned char X86Subtarget::classifyGlobalReference(const GlobalValue *GV,
   // from the GOT, even where calls to it are direct, so that code sees the
   // address static data sees. The linker replaces the load with the direct
   // address when the function is in the image, or with zero when an
-  // extern_weak function is absent. A definition of an overridable default is
-  // defined here yet has the same import-form address: its one replacement is
-  // reached through its import pointer in every image.
+  // extern_weak function is absent. A definition the module exports, and one
+  // of an overridable default, is defined here yet has the same import-form
+  // address, as ELF's -fPIC form loads a preemptible function's address from
+  // the GOT: a definition in another image may preempt it, and the default's
+  // one replacement is reached through its import pointer in every image.
+  // Unless something preempts it, the linker makes the load direct.
   if (TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment()) {
     const auto *F = dyn_cast_or_null<Function>(GV);
     if (F && !F->isIntrinsic() && F->hasDefaultVisibility() &&
-        (F->isDeclarationForLinker() ||
+        (F->isDeclarationForLinker() || F->hasDLLExportStorageClass() ||
          F->hasFnAttribute("overridable-default")))
       return X86II::MO_DLLIMPORT;
   }

@@ -8,8 +8,8 @@
 ; linker makes direct in the executable and keeps in a DLL whose replacement
 ; the program may not select; a call to a weak definition, the runtime's own
 ; default, stays direct. A replacement has a section of its own, as its
-; branches keep their relocations. A definition without the attribute keeps its
-; direct address.
+; branches keep their relocations. A definition without the attribute that the
+; module does not export keeps its direct address.
 
 ; CHECK-LABEL: take:
 ; CHECK:       movq __imp__Znwy(%rip), %rax
@@ -54,6 +54,16 @@ define ptr @takelocal() {
   ret ptr @local
 }
 
+; A definition the module exports may be preempted by another image's, as a
+; shared object's is on ELF, so its address is a load of its import pointer
+; too, which the linker makes direct unless something preempts it.
+; CHECK-LABEL: takeexported:
+; CHECK:       movq __imp_exported(%rip), %rax
+; CHECK-NEXT:  retq
+define ptr @takeexported() {
+  ret ptr @exported
+}
+
 ; CHECK:      .section .text,"xr",one_only,_Znwy,unique,0
 ; CHECK-NEXT: .globl _Znwy
 define ptr @_Znwy(i64 %n) #0 {
@@ -66,6 +76,10 @@ define weak ptr @_Znay(i64 %n) #0 {
 }
 
 define dso_local ptr @local() {
+  ret ptr null
+}
+
+define dso_local dllexport ptr @exported() {
   ret ptr null
 }
 

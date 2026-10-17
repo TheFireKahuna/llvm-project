@@ -815,6 +815,15 @@ void SymbolTable::bindImportsToDefinitions() {
         !ctx.config.delayLoads.contains(StringRef(file->dllName).lower())) {
       Log(ctx) << "Keeping " << name << " for " << printSymbol(d)
                << ", which the image offers";
+      // Only an object that reaches the definition's address through its
+      // import pointer and describes how its instructions use it can have
+      // those uses reach the program's choice.
+      if (!defersLocalImportWarning(cast<ObjFile>(d->getFile()),
+                                    machine == ARM64))
+        Err(ctx) << d->getFile() << ": " << printSymbol(d)
+                 << " is offered as an overridable default, but its object "
+                    "does not describe its references to it, which therefore "
+                    "cannot reach the program's choice";
       preemptedOffers[d] = imp;
       file->live = true;
       // On ARM64, where calls stay direct, the DLL's branches to the
