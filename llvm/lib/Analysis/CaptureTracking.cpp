@@ -449,3 +449,85 @@ void llvm::PointerMayBeCaptured(const Value *V, CaptureTracker *Tracker,
 
   // All uses examined.
 }
+
+namespace {
+// Whether a use captures the address of a global other than by comparing it
+// with an address based on the same global.
+struct GlobalAddressTracker : public CaptureTracker {
+  const GlobalValue *GV;
+  bool Captured = false;
+
+  explicit GlobalAddressTracker(const GlobalValue *GV) : GV(GV) {}
+
+  void tooManyUses() override { Captured = true; }
+
+  Action captured(const Use *U, UseCaptureInfo CI) override {
+    if (auto *Cmp = dyn_cast<ICmpInst>(U->getUser())) {
+      SmallVector<const Value *, 4> Objects;
+      getUnderlyingObjects(Cmp->getOperand(1 - U->getOperandNo()), Objects);
+      if (!Objects.empty() &&
+          all_of(Objects, [&](const Value *O) { return O == GV; }))
+        return ContinueIgnoringReturn;
+    }
+    Captured = true;
+    return Stop;
+  }
+};
+} // namespace
+
+// Whether an instruction of F uses C, or a constant that uses it.
+static bool isUsedIn(const Constant *C, const Function &F) {
+  SmallVector<const User *, 8> Worklist = {C};
+  SmallPtrSet<const User *, 8> Visited;
+  while (!Worklist.empty()) {
+    for (const User *U : Worklist.pop_back_val()->users()) {
+      if (auto *I = dyn_cast<Instruction>(U)) {
+        if (I->getFunction() == &F)
+          return true;
+      } else if (Visited.insert(U).second) {
+        Worklist.push_back(U);
+      }
+    }
+  }
+  return false;
+}
+
+bool llvm::globalAddressMayBeCapturedIn(const GlobalValue *GV,
+                                        const Function &F) {
+  GlobalAddressTracker Tracker(GV);
+  // GV and the constant addresses computed from it, whose uses by the
+  // instructions of F start the search.
+  SmallVector<const Constant *, 4> Bases = {GV};
+  while (!Bases.empty()) {
+    for (const Use &U : Bases.pop_back_val()->uses()) {
+      const User *Usr = U.getUser();
+      if (auto *CE = dyn_cast<ConstantExpr>(Usr);
+          CE && (CE->getOpcode() == Instruction::GetElementPtr ||
+                 CE->getOpcode() == Instruction::AddrSpaceCast)) {
+        Bases.push_back(CE);
+        continue;
+      }
+      auto *I = dyn_cast<Instruction>(Usr);
+      if (!I) {
+        // Another constant holds the address as a value.
+        if (isUsedIn(cast<Constant>(Usr), F))
+          return true;
+        continue;
+      }
+      if (I->getFunction() != &F)
+        continue;
+      UseCaptureInfo CI = DetermineUseCaptureKind(U, GV);
+      if (capturesAnything(CI.UseCC) &&
+          Tracker.captured(&U, CI) == CaptureTracker::Stop)
+        return true;
+      if (capturesAnything(CI.ResultCC)) {
+        if (!I->getType()->isPointerTy())
+          return true;
+        PointerMayBeCaptured(I, &Tracker);
+        if (Tracker.Captured)
+          return true;
+      }
+    }
+  }
+  return false;
+}

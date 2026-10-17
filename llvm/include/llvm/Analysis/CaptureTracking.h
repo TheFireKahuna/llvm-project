@@ -27,6 +27,7 @@ namespace llvm {
   class DominatorTree;
   class LoopInfo;
   class Function;
+  class GlobalValue;
   template <typename Fn> class function_ref;
 
   /// getDefaultMaxUsesToExploreForCaptureTracking - Return default value of
@@ -202,6 +203,15 @@ namespace llvm {
   /// implicit captures such as for external globals.
   LLVM_ABI void PointerMayBeCaptured(const Value *V, CaptureTracker *Tracker,
                                      unsigned MaxUsesToExplore = 0);
+
+  /// Returns true if an instruction of \p F may capture the address of \p GV
+  /// other than by comparing it with an address based on \p GV, which
+  /// reveals no more than offsets within \p GV. Where it returns false, the
+  /// instructions of \p F would behave the same given the address of a copy
+  /// of \p GV that holds the same bytes, as long as they are given it
+  /// everywhere.
+  LLVM_ABI bool globalAddressMayBeCapturedIn(const GlobalValue *GV,
+                                             const Function &F);
 } // end namespace llvm
 
 #endif

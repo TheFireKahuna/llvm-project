@@ -132,3 +132,73 @@ TEST(CaptureTracking, MultipleUsesInSameInstruction) {
   EXPECT_EQ(ICmp, CT.Captures[6]->getUser());
   EXPECT_EQ(1u, CT.Captures[6]->getOperandNo());
 }
+
+TEST(CaptureTracking, GlobalAddressInFunction) {
+  StringRef Assembly = R"(
+    @g = constant [4 x i32] [i32 1, i32 2, i32 3, i32 4]
+    @h = external global i32
+    @holder = global ptr @g
+    declare void @reads(ptr captures(none) readonly)
+    declare void @keeps(ptr)
+
+    define i32 @loop() {
+    entry:
+      br label %loop
+    loop:
+      %p = phi ptr [ @g, %entry ], [ %n, %loop ]
+      %v = load i32, ptr %p
+      %n = getelementptr inbounds i32, ptr %p, i64 1
+      %d = icmp eq ptr %n, getelementptr inbounds (i8, ptr @g, i64 16)
+      br i1 %d, label %exit, label %loop
+    exit:
+      ret i32 %v
+    }
+
+    define void @passes() {
+      call void @reads(ptr getelementptr inbounds (i8, ptr @g, i64 4))
+      ret void
+    }
+
+    define i1 @compares(ptr %q) {
+      %c = icmp eq ptr %q, @g
+      ret i1 %c
+    }
+
+    define void @keeps_it() {
+      call void @keeps(ptr @g)
+      ret void
+    }
+
+    define ptr @returns() {
+      ret ptr @g
+    }
+
+    define i32 @in_aggregate() {
+      %s = extractvalue { ptr, i32 } { ptr @g, i32 0 }, 0
+      %v = load i32, ptr %s
+      ret i32 %v
+    }
+
+    define void @other() {
+      call void @keeps(ptr @g)
+      ret void
+    }
+  )";
+
+  LLVMContext Context;
+  SMDiagnostic Error;
+  auto M = parseAssemblyString(Assembly, Error, Context);
+  ASSERT_TRUE(M) << "Bad assembly?";
+  const GlobalValue *G = M->getNamedValue("g");
+  auto Captures = [&](const char *FName) {
+    return globalAddressMayBeCapturedIn(G, *M->getFunction(FName));
+  };
+  // A function's own uses decide, whatever other functions and the
+  // initializers of other globals do with the address.
+  EXPECT_FALSE(Captures("loop"));
+  EXPECT_FALSE(Captures("passes"));
+  EXPECT_TRUE(Captures("compares"));
+  EXPECT_TRUE(Captures("keeps_it"));
+  EXPECT_TRUE(Captures("returns"));
+  EXPECT_TRUE(Captures("in_aggregate"));
+}
