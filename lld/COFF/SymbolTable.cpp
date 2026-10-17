@@ -736,7 +736,48 @@ bool SymbolTable::loadInteriorImports() {
   }
   std::vector<Symbol *> lazies;
   bool sealed = false;
-  for (ObjFile *file : ctx.objFileInstances) {
+  // Nothing that loads between calls adds an object or an archive, so a word
+  // of an object that an earlier call walked names and takes what it did
+  // then, unless a name it was to take was still to be loaded, or a member
+  // loaded since defines a symbol that an object references. Such a word
+  // loads nothing more, and what it seals mattered only then: had any walk
+  // sealed the image, NtProtectVirtualMemory's import was loaded then.
+  size_t first = interiorImportsRewalk ? 0 : interiorImportObjects;
+  interiorImportObjects = ctx.objFileInstances.size();
+  interiorImportsRewalk = false;
+  // Loads the names that the DLL providing an import may export for the
+  // address that the word at rel in sc holds inside the import's object, and
+  // finds whether the word is read-only and takes none. Returns whether a name
+  // it may take is still to be loaded.
+  auto walkWord = [&](SectionChunk *sc, const coff_relocation &rel) {
+    Symbol *s = sc->file->getSymbol(rel.SymbolTableIndex);
+    DefinedImportData *imp = getInPlaceImport(s);
+    if (!imp || !sc->isAddressWord(rel))
+      return false;
+    int64_t addend = getAddressWordAddend(sc, rel).value_or(0);
+    if (!addend)
+      return false;
+    bool pending = false;
+    if (addend > 0)
+      for (StringRef kind : interiorKinds) {
+        Symbol *l = find((imp->getName() + kind + Twine(addend)).str());
+        if (l && l->isLazy() && !l->pendingArchiveLoad && isLazyImport(l)) {
+          lazies.push_back(l);
+          pending = true;
+        }
+      }
+    bool readOnly = !(sc->header->Characteristics & IMAGE_SCN_MEM_WRITE);
+    if (!pending && readOnly && canSeal && isa<DefinedImportData>(s) &&
+        !findInteriorImport(imp, addend))
+      sealed = true;
+    return pending;
+  };
+  std::vector<std::pair<SectionChunk *, size_t>> pendingWords;
+  if (first)
+    for (auto [sc, i] : pendingInteriorWords)
+      if (walkWord(sc, sc->getRelocs()[i]))
+        pendingWords.push_back({sc, i});
+  for (ObjFile *file : llvm::drop_begin(ctx.objFileInstances, first)) {
     if (&file->symtab != this ||
         llvm::none_of(file->getSymbols(), getInPlaceImport))
       continue;
@@ -745,30 +786,12 @@ bool SymbolTable::loadInteriorImports() {
       if (!sc || (sc->header->Characteristics &
                   (IMAGE_SCN_MEM_DISCARDABLE | IMAGE_SCN_CNT_CODE)))
         continue;
-      bool readOnly = !(sc->header->Characteristics & IMAGE_SCN_MEM_WRITE);
-      for (const coff_relocation &rel : sc->getRelocs()) {
-        Symbol *s = file->getSymbol(rel.SymbolTableIndex);
-        DefinedImportData *imp = getInPlaceImport(s);
-        if (!imp || !sc->isAddressWord(rel))
-          continue;
-        int64_t addend = getAddressWordAddend(sc, rel).value_or(0);
-        if (!addend)
-          continue;
-        bool pending = false;
-        if (addend > 0)
-          for (StringRef kind : interiorKinds) {
-            Symbol *l = find((imp->getName() + kind + Twine(addend)).str());
-            if (l && l->isLazy() && !l->pendingArchiveLoad && isLazyImport(l)) {
-              lazies.push_back(l);
-              pending = true;
-            }
-          }
-        if (!pending && readOnly && canSeal && isa<DefinedImportData>(s) &&
-            !findInteriorImport(imp, addend))
-          sealed = true;
-      }
+      for (auto [i, rel] : llvm::enumerate(sc->getRelocs()))
+        if (walkWord(sc, rel))
+          pendingWords.push_back({sc, i});
     }
   }
+  pendingInteriorWords = std::move(pendingWords);
   // A DLL's fill writes the entries and read-only slots of the overridable
   // defaults it imports, and the read-only cells of its own defaults, between
   // two protection calls. Its own default has cells only where the DLL takes
@@ -787,7 +810,7 @@ bool SymbolTable::loadInteriorImports() {
     if (!sealed && (!overridablesByName.empty() ||
                     llvm::any_of(overrideSlotFacts,
                                  [](const auto &f) { return f.second.own; })))
-      for (ObjFile *file : ctx.objFileInstances) {
+      for (ObjFile *file : llvm::drop_begin(ctx.objFileInstances, first)) {
         if (&file->symtab != this || sealed)
           continue;
         for (Chunk *c : file->getChunks()) {
@@ -814,7 +837,7 @@ bool SymbolTable::loadInteriorImports() {
     sealed = llvm::any_of(localImportChunks, [](Chunk *c) {
       return !cast<LocalImportChunk>(c)->vagueEntity.empty();
     });
-    for (ObjFile *file : ctx.objFileInstances) {
+    for (ObjFile *file : llvm::drop_begin(ctx.objFileInstances, first)) {
       if (&file->symtab != this || sealed)
         continue;
       for (Chunk *c : file->getChunks()) {
@@ -847,13 +870,21 @@ bool SymbolTable::loadInteriorImports() {
         l && l->isLazy() && !l->pendingArchiveLoad && isLazyImport(l))
       lazies.push_back(l);
 
+  // Each lazy is an import pointer, which no object references, or it would
+  // not be lazy; the member also defines the import's own name, which one may.
+  auto load = [&](Symbol *l) {
+    if (isa_and_nonnull<Undefined>(
+            find(l->getName().drop_front(strlen("__imp_")))))
+      interiorImportsRewalk = true;
+    forceLazy(l);
+  };
   bool loaded = false;
   for (Symbol *l : lazies) {
     if (!l->isLazy() || l->pendingArchiveLoad)
       continue;
     Log(ctx) << "Loading lazy " << l->getName() << " from "
              << l->getFile()->getName() << " for a word of static data";
-    forceLazy(l);
+    load(l);
     loaded = true;
   }
   for (Symbol *l : runTimeLazies) {
@@ -861,7 +892,7 @@ bool SymbolTable::loadInteriorImports() {
       continue;
     Log(ctx) << "Loading lazy " << l->getName() << " from "
              << l->getFile()->getName() << " to bind imports at run time";
-    forceLazy(l);
+    load(l);
     loaded = true;
   }
   return loaded;

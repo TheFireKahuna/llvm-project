@@ -109,6 +109,12 @@ public:
   // default it imports. Returns whether it loaded any, which may change what a
   // word needs.
   bool loadInteriorImports();
+  // The objects that loadInteriorImports has walked, the words among theirs
+  // whose names were still to be loaded, by section and relocation, and
+  // whether a member it loaded since defines a symbol an object references.
+  size_t interiorImportObjects = 0;
+  std::vector<std::pair<SectionChunk *, size_t>> pendingInteriorWords;
+  bool interiorImportsRewalk = false;
   bool importUnresolvedFromHost();
   // Redirects the accesses to a .refptr.<name> pointer to the symbol sym to
   // imp, which holds the same address, dropping the pointer.
