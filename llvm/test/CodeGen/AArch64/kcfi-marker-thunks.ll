@@ -43,6 +43,7 @@ define void @f2(ptr %p) {
 ; CHECK:       .globl __llvm_kcfi_check_12345678
 ; CHECK-NEXT:  .p2align 4
 ; CHECK-NEXT:  __llvm_kcfi_check_12345678:
+; CHECK-NEXT:    .linkkcfithunk __llvm_kcfi_check_12345678, check, 0x12345678, 0xdeadbeef, 0, __llvm_kcfi_check_mismatch_12345678
 ; CHECK-NEXT:    tst x15, #0xff0
 ; CHECK-NEXT:    b.eq __llvm_kcfi_check_mismatch_12345678
 ; CHECK-NEXT:    ldur x16, [x15, #-8]
@@ -56,6 +57,7 @@ define void @f2(ptr %p) {
 ; CHECK-NEXT:    ldr x16, [x16, :lo12:__guard_check_icall_fptr]
 ; CHECK-NEXT:    br x16
 
+;; The local thunk shares the type's mismatch routine and the open routine.
 ; CHECK:       .weak __llvm_code_start
 ; CHECK-NEXT:  __llvm_code_start = __llvm_code_empty
 ; CHECK-NEXT:  .weak __llvm_code_end

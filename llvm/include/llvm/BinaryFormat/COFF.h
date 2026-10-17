@@ -120,6 +120,22 @@ enum LinkRecordKind : uint64_t {
   // section and delta are as for LinkRecordSites.
   LinkRecordCallOnly = 4,
 
+  // The KCFI thunks the object defines, each a function in a COMDAT that
+  // checks the KCFI type of a call's target, for a linker that replaces them
+  // with a form of its own:
+  //
+  //   payload := (thunk:ULEB128 kind:ULEB128 type:u32 marker:u32
+  //               offset:ULEB128 mismatch:ULEB128)*
+  //
+  // thunk is the symbol index of the thunk, so the facts a discarded COMDAT
+  // copy carries describe the copy the linker keeps, and mismatch that of the
+  // routine it continues into on a mismatch. kind is a LinkKCFIThunkKind, which
+  // gives the register holding the target; a linker skips a thunk of a kind it
+  // does not know. type is the KCFI type the thunk checks, marker the marker of
+  // the prefixes it compares, and offset the bytes of any patchable prefix
+  // between a prefix and its function's entry.
+  LinkRecordKCFIThunks = 8,
+
   // The object gives its functions KCFI prefixes with a marker, each after a
   // static __cfi_ symbol, which a linker seals where no indirect call may
   // reach the function and keeps out of a page's first bytes. A linker looks
@@ -135,7 +151,16 @@ enum LinkRecordKind : uint64_t {
   // empty.
   LinkRecordProtectedDelayIAT = 16,
 };
+
+// The kind of a KCFI thunk.
 enum LinkKCFIThunkKind : uint8_t {
+  // Takes the target in RAX, checks its type and jumps to it.
+  LinkKCFIThunkDispatch,
+  // Takes the target in RCX, or X15 on ARM64, checks its type and returns.
+  LinkKCFIThunkCheck,
+  // As LinkKCFIThunkCheck, but checks the second type that a function which
+  // can occupy a vtable slot carries.
+  LinkKCFIThunkVfnCheck,
 };
 
 // The form of an instruction site, which a linker verifies against the

@@ -21,6 +21,7 @@
 ; CHECK-NEXT:  __llvm_kcfi_check_mismatch_89abcdef = __llvm_kcfi_trap
 ; CHECK-NEXT:  .section .text,"xr",discard,__llvm_kcfi_vfn_check_89abcdef
 ; CHECK:       __llvm_kcfi_vfn_check_89abcdef:
+; CHECK-NEXT:    .linkkcfithunk __llvm_kcfi_vfn_check_89abcdef, vfn_check, 0x89abcdef, 0xdeadbeef, 0, __llvm_kcfi_check_mismatch_89abcdef
 ; CHECK-NEXT:    testl $4080, %ecx
 ; CHECK-NEXT:    je __llvm_kcfi_check_mismatch_89abcdef
 ; CHECK-NEXT:    movabsq $-1188916150031102481, %r11 # imm = 0xEF801F0F89ABCDEF
@@ -39,6 +40,7 @@
 ; BYTES-NEXT:  16: 4c 39 59 f0                   cmpq %r11, -0x10(%rcx)
 
 ; PREFIX-LABEL: __llvm_kcfi_vfn_check_89abcdef:
+; PREFIX-NEXT:    .linkkcfithunk __llvm_kcfi_vfn_check_89abcdef, vfn_check, 0x89abcdef, 0xdeadbeef, 4, __llvm_kcfi_check_mismatch_89abcdef
 ; PREFIX-NEXT:    testl $4064, %ecx
 ; PREFIX-NEXT:    je __llvm_kcfi_check_mismatch_89abcdef
 ; PREFIX-NEXT:    movabsq $-1188916150031102481, %r11

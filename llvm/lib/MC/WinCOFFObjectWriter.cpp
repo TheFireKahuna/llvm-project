@@ -1302,6 +1302,27 @@ uint64_t WinCOFFWriter::writeObject() {
       encodeULEB128(0, OS);
     }
 
+    SmallString<0> Thunks;
+    raw_svector_ostream ThunksOS(Thunks);
+    for (const WinCOFFObjectWriter::KCFIThunk &T : OWriter.KCFIThunks) {
+      if (T.Thunk->isTemporary() || !T.Thunk->isRegistered() ||
+          T.Mismatch->isTemporary() || !T.Mismatch->isRegistered())
+        continue;
+      encodeULEB128(T.Thunk->getIndex(), ThunksOS);
+      encodeULEB128(T.Kind, ThunksOS);
+      support::endian::write<uint32_t>(ThunksOS, T.Type,
+                                       llvm::endianness::little);
+      support::endian::write<uint32_t>(ThunksOS, T.Marker,
+                                       llvm::endianness::little);
+      encodeULEB128(T.Offset, ThunksOS);
+      encodeULEB128(T.Mismatch->getIndex(), ThunksOS);
+    }
+    if (!Thunks.empty()) {
+      encodeULEB128(COFF::LinkRecordKCFIThunks, OS);
+      encodeULEB128(Thunks.size(), OS);
+      OS << Thunks;
+    }
+
     auto *Sec = getContext().getCOFFSection(".llvm_link_records",
                                             COFF::IMAGE_SCN_LNK_REMOVE);
     Sec->curFragList()->Tail->setVarContents(OS.str());
@@ -1367,6 +1388,7 @@ void WinCOFFObjectWriter::reset() {
   IncrementalLinkerCompatible = false;
   LinkPins.clear();
   LinkFacts.clear();
+  KCFIThunks.clear();
   ObjWriter->reset();
   if (DwoWriter)
     DwoWriter->reset();

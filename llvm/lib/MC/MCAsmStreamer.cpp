@@ -326,6 +326,9 @@ public:
   void emitCOFFLinkPin(MCSymbol const *Symbol, unsigned Log2Modulus,
                        uint64_t Residue, bool Required) override;
   void emitCOFFLinkFact(uint64_t Kind) override;
+  void emitCOFFKCFIThunk(const MCSymbol *Thunk, unsigned Kind, uint32_t Type,
+                         uint32_t Marker, uint32_t Offset,
+                         const MCSymbol *Mismatch) override;
   void emitXCOFFLocalCommonSymbol(MCSymbol *LabelSym, uint64_t Size,
                                   MCSymbol *CsectSym, Align Alignment) override;
   void emitXCOFFSymbolLinkageWithVisibility(MCSymbol *Symbol,
@@ -1054,6 +1057,19 @@ void MCAsmStreamer::emitCOFFLinkFact(uint64_t Kind) {
   default:
     llvm_unreachable("not a link record with an empty payload");
   }
+  EmitEOL();
+}
+
+void MCAsmStreamer::emitCOFFKCFIThunk(const MCSymbol *Thunk, unsigned Kind,
+                                      uint32_t Type, uint32_t Marker,
+                                      uint32_t Offset,
+                                      const MCSymbol *Mismatch) {
+  static const char *const Kinds[] = {"dispatch", "check", "vfn_check"};
+  OS << "\t.linkkcfithunk\t";
+  Thunk->print(OS, MAI);
+  OS << ", " << Kinds[Kind] << ", " << format_hex(Type, 10) << ", "
+     << format_hex(Marker, 10) << ", " << Offset << ", ";
+  Mismatch->print(OS, MAI);
   EmitEOL();
 }
 

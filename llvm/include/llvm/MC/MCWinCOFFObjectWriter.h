@@ -79,12 +79,25 @@ public:
     bool Required;
   };
 
+  /// A KCFI thunk, which the object's link-only records describe
+  /// (COFF::LinkRecordKCFIThunks).
+  struct KCFIThunk {
+    const MCSymbol *Thunk;
+    unsigned Kind;
+    uint32_t Type;
+    uint32_t Marker;
+    uint32_t Offset;
+    const MCSymbol *Mismatch;
+  };
+
 private:
   // The pins of the object's link-only records, in the order given.
   SmallVector<LinkPin, 0> LinkPins;
   // The kinds of the object's link-only records with an empty payload, each
   // stating a fact about the whole object, in increasing order.
   SmallVector<uint64_t, 0> LinkFacts;
+  // The KCFI thunks of the object's link-only records, in the order given.
+  SmallVector<KCFIThunk, 0> KCFIThunks;
 
 public:
   WinCOFFObjectWriter(std::unique_ptr<MCWinCOFFObjectTargetWriter> MOTW,
@@ -101,7 +114,8 @@ public:
   bool hasLinkRecords() const { return LinkRecordCapabilities != 0; }
   // Whether the object has a .llvm_link_records section.
   bool hasLinkRecordsSection() const {
-    return hasLinkRecords() || !LinkPins.empty() || !LinkFacts.empty();
+    return hasLinkRecords() || !LinkPins.empty() || !LinkFacts.empty() ||
+           !KCFIThunks.empty();
   }
   void addLinkPin(const LinkPin &Pin) { LinkPins.push_back(Pin); }
   void addLinkFact(uint64_t Kind) {
@@ -109,6 +123,7 @@ public:
     if (I == LinkFacts.end() || *I != Kind)
       LinkFacts.insert(I, Kind);
   }
+  void addKCFIThunk(const KCFIThunk &Thunk) { KCFIThunks.push_back(Thunk); }
   void executePostLayoutBinding() override;
   bool isSymbolRefDifferenceFullyResolvedImpl(const MCSymbol &SymA,
                                               const MCFragment &FB, bool InSet,

@@ -627,6 +627,14 @@ public:
   /// COFF::LinkRecordKind \p Kind with an empty payload states.
   virtual void emitCOFFLinkFact(uint64_t Kind);
 
+  /// Tells the linker that \p Thunk is a KCFI thunk of COFF::LinkKCFIThunkKind
+  /// \p Kind, which checks \p Type against prefixes with \p Marker, \p Offset
+  /// bytes before their function's entry, and continues into \p Mismatch on a
+  /// mismatch.
+  virtual void emitCOFFKCFIThunk(const MCSymbol *Thunk, unsigned Kind,
+                                 uint32_t Type, uint32_t Marker,
+                                 uint32_t Offset, const MCSymbol *Mismatch);
+
   /// Emits an lcomm directive with XCOFF csect information.
   ///
   /// \param LabelSym - Label on the block of storage.
