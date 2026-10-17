@@ -356,6 +356,11 @@ void MCWinCOFFStreamer::emitCOFFLinkBinding(const MCSymbol *Symbol,
   getWriter().addLinkBinding({Symbol, Role});
 }
 
+void MCWinCOFFStreamer::emitCOFFLinkForwarder(const MCSymbol *Forwarder,
+                                              const MCSymbol *Pointer) {
+  getWriter().addLinkForwarder({Forwarder, Pointer});
+}
+
 void MCWinCOFFStreamer::emitCOFFKCFIMemberTag(const MCSymbol *Prefix) {
   getWriter().addKCFIMemberTag(Prefix);
 }

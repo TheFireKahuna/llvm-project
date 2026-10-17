@@ -641,6 +641,12 @@ public:
   /// COFF::LinkRecordBinding.
   virtual void emitCOFFLinkBinding(const MCSymbol *Symbol, unsigned Role);
 
+  /// Tells the linker that the function \p Forwarder only jumps through the
+  /// import pointer \p Pointer of an equivalent function, which may replace
+  /// it where that function is defined in the image.
+  virtual void emitCOFFLinkForwarder(const MCSymbol *Forwarder,
+                                     const MCSymbol *Pointer);
+
   /// Tells the linker that the KCFI prefix that \p Prefix marks holds a
   /// membership tag in the word before its marker, not a second type.
   virtual void emitCOFFKCFIMemberTag(const MCSymbol *Prefix);

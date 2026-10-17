@@ -1338,6 +1338,20 @@ uint64_t WinCOFFWriter::writeObject() {
       OS << Thunks;
     }
 
+    SmallString<0> Forwarders;
+    raw_svector_ostream ForwardersOS(Forwarders);
+    for (const WinCOFFObjectWriter::LinkForwarder &F : OWriter.LinkForwarders)
+      if (!F.Forwarder->isTemporary() && F.Forwarder->isRegistered() &&
+          !F.Pointer->isTemporary() && F.Pointer->isRegistered()) {
+        encodeULEB128(F.Forwarder->getIndex(), ForwardersOS);
+        encodeULEB128(F.Pointer->getIndex(), ForwardersOS);
+      }
+    if (!Forwarders.empty()) {
+      encodeULEB128(COFF::LinkRecordForwarders, OS);
+      encodeULEB128(Forwarders.size(), OS);
+      OS << Forwarders;
+    }
+
     SmallString<0> Tags;
     raw_svector_ostream TagsOS(Tags);
     for (const MCSymbol *S : OWriter.KCFIMemberTags)
@@ -1417,6 +1431,7 @@ void WinCOFFObjectWriter::reset() {
   KCFIThunks.clear();
   KCFIMemberTags.clear();
   LinkBindings.clear();
+  LinkForwarders.clear();
   ObjWriter->reset();
   if (DwoWriter)
     DwoWriter->reset();

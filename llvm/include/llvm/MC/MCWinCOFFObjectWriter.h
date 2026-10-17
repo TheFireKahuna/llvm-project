@@ -98,6 +98,13 @@ public:
     unsigned Role;
   };
 
+  /// A forwarder and the import pointer it jumps through, which the object's
+  /// link-only records carry (COFF::LinkRecordForwarders).
+  struct LinkForwarder {
+    const MCSymbol *Forwarder;
+    const MCSymbol *Pointer;
+  };
+
 private:
   // The pins of the object's link-only records, in the order given.
   SmallVector<LinkPin, 0> LinkPins;
@@ -110,6 +117,8 @@ private:
   SmallVector<const MCSymbol *, 0> KCFIMemberTags;
   // The roles of the object's definitions in COMDATs, in the order given.
   SmallVector<LinkBinding, 0> LinkBindings;
+  // The object's forwarders, in the order given.
+  SmallVector<LinkForwarder, 0> LinkForwarders;
 
 public:
   WinCOFFObjectWriter(std::unique_ptr<MCWinCOFFObjectTargetWriter> MOTW,
@@ -128,7 +137,7 @@ public:
   bool hasLinkRecordsSection() const {
     return hasLinkRecords() || !LinkPins.empty() || !LinkFacts.empty() ||
            !KCFIThunks.empty() || !KCFIMemberTags.empty() ||
-           !LinkBindings.empty();
+           !LinkBindings.empty() || !LinkForwarders.empty();
   }
   void addLinkPin(const LinkPin &Pin) { LinkPins.push_back(Pin); }
   void addLinkFact(uint64_t Kind) {
@@ -139,6 +148,9 @@ public:
   void addKCFIThunk(const KCFIThunk &Thunk) { KCFIThunks.push_back(Thunk); }
   void addKCFIMemberTag(const MCSymbol *Prefix) {
     KCFIMemberTags.push_back(Prefix);
+  }
+  void addLinkForwarder(const LinkForwarder &Forwarder) {
+    LinkForwarders.push_back(Forwarder);
   }
   // A binding implies the fact that the object lists every binding.
   void addLinkBinding(const LinkBinding &Binding) {
