@@ -156,6 +156,7 @@ private:
   void emitKCFIPageTest(MCRegister Reg, MCSymbol *Target, int64_t PrefixNops,
                         unsigned ReadBytes = 12);
   void emitKCFIGuardJump(StringRef GuardFn);
+  void emitKCFITailJump(MCSymbol *Target);
 
   // Address sanitizer specific lowering for X86.
   void LowerASAN_CHECK_MEMACCESS(const MachineInstr &MI);

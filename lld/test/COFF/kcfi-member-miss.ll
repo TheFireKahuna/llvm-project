@@ -24,11 +24,12 @@
 ; RUN: llvm-objdump -t narrow.exe | FileCheck %s --check-prefix=NARROW-SYM
 
 ; NARROW:      <__llvm_kcfi_member_dispatch_22222222_{{[0-9a-f]+}}>:
-; NARROW:        jne {{.*}} <__llvm_kcfi_trap>
+; NARROW:        jne 0x[[TAIL:[0-9a-f]+]]
 ; NARROW:        jmp {{.*}} <__llvm_kcfi_trap>
-; NARROW:        je {{.*}} <__llvm_kcfi_trap>
+; NARROW:        je 0x[[TAIL]]
 ; NARROW:        jmp {{.*}} <__llvm_kcfi_trap>
 ; NARROW:        jmpq *{{.*}} <__guard_dispatch_icall_fptr>
+; NARROW-NEXT:   [[TAIL]]: {{.*}}jmp {{.*}} <__llvm_kcfi_trap>
 
 ; NARROW-SYM-DAG: 0x[[#%.8x,TRAP:]] __llvm_kcfi_trap
 ; NARROW-SYM-DAG: 0x[[#TRAP]] __llvm_kcfi_member_miss_22222222
@@ -51,10 +52,11 @@
 ; RUN: llvm-objdump -t noguard.exe | FileCheck %s --check-prefix=KEEP-SYM
 
 ; KEEP:      <__llvm_kcfi_member_dispatch_22222222_{{[0-9a-f]+}}>:
-; KEEP:        jne {{.*}} <__llvm_kcfi_{{trap|mismatch_22222222}}>
+; KEEP:        jne 0x[[KTAIL:[0-9a-f]+]]
 ; KEEP:        jmp {{.*}} <__llvm_kcfi_{{member_miss|member_outside_miss|dispatch}}_22222222>
-; KEEP:        je {{.*}} <__llvm_kcfi_{{trap|mismatch_22222222}}>
+; KEEP:        je 0x[[KTAIL]]
 ; KEEP:        jmp {{.*}} <__llvm_kcfi_{{member_outside_miss|member_miss|dispatch}}_22222222>
+; KEEP:        [[KTAIL]]: {{.*}}jmp {{.*}} <__llvm_kcfi_{{trap|mismatch_22222222}}>
 
 ; KEEP-SYM-DAG: 0x[[#%.8x,HASH:]] __llvm_kcfi_dispatch_22222222
 ; KEEP-SYM-DAG: 0x[[#HASH]] __llvm_kcfi_member_miss_22222222

@@ -427,6 +427,16 @@ void X86AsmPrinter::emitKCFIGuardJump(StringRef GuardFn) {
       STI);
 }
 
+// jmp Target, a jump that ends its function, which a linker that places Target
+// right after the function leaves out.
+void X86AsmPrinter::emitKCFITailJump(MCSymbol *Target) {
+  OutStreamer->emitCOFFLinkTailJump();
+  OutStreamer->emitInstruction(
+      MCInstBuilder(X86::JMP_4).addExpr(
+          MCSymbolRefExpr::create(Target, OutContext)),
+      TM.getMCSubtargetInfo());
+}
+
 // movl $FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG, %ecx; int $0x29
 void X86AsmPrinter::emitKCFIFastFail() {
   const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
@@ -542,9 +552,7 @@ void X86AsmPrinter::emitVTableGuardThunk(const VTableGuardThunkInfo &I) {
                                    .addImm(I.Off)
                                    .addReg(X86::NoRegister),
                                STI);
-  OutStreamer->emitInstruction(
-      MCInstBuilder(X86::JMP_4).addExpr(MCSymbolRefExpr::create(I.Miss, OutContext)),
-      STI);
+  emitKCFITailJump(I.Miss);
 }
 
 /// Emits the body of an ordinary, local or vfn KCFI thunk; see the header.
@@ -562,9 +570,15 @@ void X86AsmPrinter::emitVTableGuardThunk(const VTableGuardThunkInfo &I) {
 ///
 /// A vfn thunk compares the 8 bytes at -16(%reg) instead, and its page test
 /// allows for a prefix of 16 bytes rather than 12.
+///
+/// Each jump to the mismatch routine goes to the thunk's end, where one jump
+/// continues into it: the routine is in another section, so a jump to it
+/// takes a 32-bit displacement, and a linker that places the routine right
+/// after the thunk leaves that jump out.
 void X86AsmPrinter::emitKCFIThunk(const KCFIThunkInfo &I) {
   const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
   MCRegister Reg = I.Routine->TargetReg;
+  MCSymbol *Mismatch = OutContext.createTempSymbol();
   uint64_t Expected = I.Pattern >> 32 | uint64_t(MaskKCFIType(I.Type)) << 32;
   unsigned CompareOffset = 8, ReadBytes = 12;
   if (I.Vfn) {
@@ -582,7 +596,7 @@ void X86AsmPrinter::emitKCFIThunk(const KCFIThunkInfo &I) {
                                      .addReg(X86::NoRegister)
                                      .addReg(X86::R11),
                                  STI);
-    emitKCFIJcc(I.Mismatch, X86::COND_NE);
+    emitKCFIJcc(Mismatch, X86::COND_NE);
   };
   auto EmitTakeTarget = [&] {
     if (Reg == X86::RAX)
@@ -610,13 +624,15 @@ void X86AsmPrinter::emitKCFIThunk(const KCFIThunkInfo &I) {
     emitKCFICmp(X86::R10, X86::R11);
     emitKCFIJcc(Trap, X86::COND_NE);
   }
-  emitKCFIPageTest(Reg, I.Mismatch, I.PrefixNops, ReadBytes);
+  emitKCFIPageTest(Reg, Mismatch, I.PrefixNops, ReadBytes);
   EmitCompare();
   emitKCFIGuardJump(I.Routine->GuardFn);
   if (Trap) {
     OutStreamer->emitLabel(Trap);
     emitKCFIFastFail();
   }
+  OutStreamer->emitLabel(Mismatch);
+  emitKCFITailJump(I.Mismatch);
 }
 
 /// Emits the body of a KCFI member thunk; see the header.
@@ -634,10 +650,12 @@ void X86AsmPrinter::emitKCFIThunk(const KCFIThunkInfo &I) {
 /// 3: jmpq *guard(%rip)
 ///
 /// A local member thunk fails fast on a target outside the range as a local
-/// thunk does.
+/// thunk does. Each jump to the mismatch routine goes to the thunk's end, as
+/// in an ordinary thunk.
 void X86AsmPrinter::emitKCFIMemberThunk(const KCFIThunkInfo &I) {
   const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
   MCRegister Reg = I.Routine->TargetReg;
+  MCSymbol *Mismatch = OutContext.createTempSymbol();
   auto EmitTagCompares = [&](MCSymbol *Hit, MCSymbol *Miss) {
     if (I.Type) {
       OutStreamer->emitInstruction(
@@ -653,7 +671,7 @@ void X86AsmPrinter::emitKCFIMemberThunk(const KCFIThunkInfo &I) {
                                        .addReg(X86::NoRegister)
                                        .addReg(X86::R11),
                                    STI);
-      emitKCFIJcc(I.Mismatch, X86::COND_NE);
+      emitKCFIJcc(Mismatch, X86::COND_NE);
     }
     for (uint32_t Tag : I.Tags) {
       OutStreamer->emitInstruction(
@@ -708,7 +726,7 @@ void X86AsmPrinter::emitKCFIMemberThunk(const KCFIThunkInfo &I) {
     emitKCFICmp(X86::R10, X86::R11);
     emitKCFIJcc(Trap, X86::COND_NE);
   }
-  emitKCFIPageTest(Reg, I.Mismatch, I.PrefixNops, /*ReadBytes=*/16);
+  emitKCFIPageTest(Reg, Mismatch, I.PrefixNops, /*ReadBytes=*/16);
   EmitTagCompares(GuardHit, I.OutsideMiss);
   OutStreamer->emitLabel(GuardHit);
   emitKCFIGuardJump(I.Routine->GuardFn);
@@ -716,6 +734,8 @@ void X86AsmPrinter::emitKCFIMemberThunk(const KCFIThunkInfo &I) {
     OutStreamer->emitLabel(Trap);
     emitKCFIFastFail();
   }
+  OutStreamer->emitLabel(Mismatch);
+  emitKCFITailJump(I.Mismatch);
 }
 
 /// Emits the body of a KCFI scanner, which walks a type's list; see the header.

@@ -69,11 +69,14 @@ define x86_64_sysvcc void @f5(ptr %p) nounwind {
 ; CHECK-NEXT:  __llvm_kcfi_dispatch_12345678:
 ; CHECK-NEXT:    .linkkcfithunk __llvm_kcfi_dispatch_12345678, dispatch, 0x12345678, 0xdeadbeef, 0, __llvm_kcfi_mismatch_12345678
 ; CHECK-NEXT:    testl $4080, %eax
-; CHECK-NEXT:    je __llvm_kcfi_mismatch_12345678
+; CHECK-NEXT:    je [[MIS1:.Ltmp[0-9]+]]
 ; CHECK-NEXT:    movabsq $1311768467969322430, %r11 # imm = 0x12345678B8DEADBE
 ; CHECK-NEXT:    cmpq %r11, -8(%rax)
-; CHECK-NEXT:    jne __llvm_kcfi_mismatch_12345678
+; CHECK-NEXT:    jne [[MIS1]]
 ; CHECK-NEXT:    jmpq *__guard_dispatch_icall_fptr(%rip)
+; CHECK-NEXT:  [[MIS1]]:
+; CHECK-NEXT:    .linktailjump
+; CHECK-NEXT:    jmp __llvm_kcfi_mismatch_12345678
 ; CHECK:       .weak __llvm_kcfi_check_mismatch_00000010
 ; CHECK-NEXT:  __llvm_kcfi_check_mismatch_00000010 = __llvm_kcfi_trap
 ; CHECK-NEXT:  .section .text,"xr",discard,__llvm_kcfi_check_00000010
@@ -81,11 +84,14 @@ define x86_64_sysvcc void @f5(ptr %p) nounwind {
 ; CHECK-NEXT:  __llvm_kcfi_check_00000010:
 ; CHECK-NEXT:    .linkkcfithunk __llvm_kcfi_check_00000010, check, 0x00000010, 0xdeadbeef, 0, __llvm_kcfi_check_mismatch_00000010
 ; CHECK-NEXT:    testl $4080, %ecx
-; CHECK-NEXT:    je __llvm_kcfi_check_mismatch_00000010
+; CHECK-NEXT:    je [[MIS2:.Ltmp[0-9]+]]
 ; CHECK-NEXT:    movabsq $71821077950, %r11 # imm = 0x10B8DEADBE
 ; CHECK-NEXT:    cmpq %r11, -8(%rcx)
-; CHECK-NEXT:    jne __llvm_kcfi_check_mismatch_00000010
+; CHECK-NEXT:    jne [[MIS2]]
 ; CHECK-NEXT:    jmpq *__guard_check_icall_fptr(%rip)
+; CHECK-NEXT:  [[MIS2]]:
+; CHECK-NEXT:    .linktailjump
+; CHECK-NEXT:    jmp __llvm_kcfi_check_mismatch_00000010
 ;; The local thunks share the types' mismatch routines.
 ; CHECK:       .weak __llvm_code_start
 ; CHECK-NEXT:  __llvm_code_start = __llvm_code_empty
@@ -107,20 +113,23 @@ define x86_64_sysvcc void @f5(ptr %p) nounwind {
 ; CHECK-NEXT:    jae [[OUT]]
 ; CHECK-NEXT:    movabsq $1311768467969322430, %r11 # imm = 0x12345678B8DEADBE
 ; CHECK-NEXT:    cmpq %r11, -8(%rax)
-; CHECK-NEXT:    jne __llvm_kcfi_mismatch_12345678
+; CHECK-NEXT:    jne [[MIS3:.Ltmp[0-9]+]]
 ; CHECK-NEXT:    jmpq *%rax
 ; CHECK-NEXT:  [[OUT]]:
 ; CHECK-NEXT:    cmpq %r11, %r10
 ; CHECK-NEXT:    jne [[TRAP:.Ltmp[0-9]+]]
 ; CHECK-NEXT:    testl $4080, %eax
-; CHECK-NEXT:    je __llvm_kcfi_mismatch_12345678
+; CHECK-NEXT:    je [[MIS3]]
 ; CHECK-NEXT:    movabsq $1311768467969322430, %r11 # imm = 0x12345678B8DEADBE
 ; CHECK-NEXT:    cmpq %r11, -8(%rax)
-; CHECK-NEXT:    jne __llvm_kcfi_mismatch_12345678
+; CHECK-NEXT:    jne [[MIS3]]
 ; CHECK-NEXT:    jmpq *__guard_dispatch_icall_fptr(%rip)
 ; CHECK-NEXT:  [[TRAP]]:
 ; CHECK-NEXT:    movl $64, %ecx
 ; CHECK-NEXT:    int $41
+; CHECK-NEXT:  [[MIS3]]:
+; CHECK-NEXT:    .linktailjump
+; CHECK-NEXT:    jmp __llvm_kcfi_mismatch_12345678
 ; CHECK:       .p2align 4
 ; CHECK-NEXT:  __llvm_kcfi_local_check_00000010:
 ; CHECK-NEXT:    .linkkcfithunk __llvm_kcfi_local_check_00000010, local_check, 0x00000010, 0xdeadbeef, 0, __llvm_kcfi_check_mismatch_00000010
@@ -132,20 +141,23 @@ define x86_64_sysvcc void @f5(ptr %p) nounwind {
 ; CHECK-NEXT:    jae [[OUT]]
 ; CHECK-NEXT:    movabsq $71821077950, %r11 # imm = 0x10B8DEADBE
 ; CHECK-NEXT:    cmpq %r11, -8(%rcx)
-; CHECK-NEXT:    jne __llvm_kcfi_check_mismatch_00000010
+; CHECK-NEXT:    jne [[MIS4:.Ltmp[0-9]+]]
 ; CHECK-NEXT:    retq
 ; CHECK-NEXT:  [[OUT]]:
 ; CHECK-NEXT:    cmpq %r11, %r10
 ; CHECK-NEXT:    jne [[TRAP:.Ltmp[0-9]+]]
 ; CHECK-NEXT:    testl $4080, %ecx
-; CHECK-NEXT:    je __llvm_kcfi_check_mismatch_00000010
+; CHECK-NEXT:    je [[MIS4]]
 ; CHECK-NEXT:    movabsq $71821077950, %r11 # imm = 0x10B8DEADBE
 ; CHECK-NEXT:    cmpq %r11, -8(%rcx)
-; CHECK-NEXT:    jne __llvm_kcfi_check_mismatch_00000010
+; CHECK-NEXT:    jne [[MIS4]]
 ; CHECK-NEXT:    jmpq *__guard_check_icall_fptr(%rip)
 ; CHECK-NEXT:  [[TRAP]]:
 ; CHECK-NEXT:    movl $64, %ecx
 ; CHECK-NEXT:    int $41
+; CHECK-NEXT:  [[MIS4]]:
+; CHECK-NEXT:    .linktailjump
+; CHECK-NEXT:    jmp __llvm_kcfi_check_mismatch_00000010
 ; CHECK-NOT:   __llvm_kcfi_mismatch_12345678 =
 
 ;; The trap, the default of the mismatch routines, which every object with a

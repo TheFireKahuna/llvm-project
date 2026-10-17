@@ -86,7 +86,7 @@ cont:
 ;; The marker's last bytes and the type, as the ordinary thunk compares.
 ; CHECK-NEXT:   movabsq $1311768467969322430, %r11 # imm = 0x12345678B8DEADBE
 ; CHECK-NEXT:   cmpq %r11, -8(%rax)
-; CHECK-NEXT:   jne __llvm_kcfi_mismatch_12345678
+; CHECK-NEXT:   jne [[MISMATCH:\.Ltmp[0-9]+]]
 ;; The tag, then 0F 1F 80 and the marker's low byte.
 ; CHECK-NEXT:   movabsq $-1188916152340796467, %r11 # imm = 0xEF801F0F0000ABCD
 ; CHECK-NEXT:   cmpq %r11, -16(%rax)
@@ -96,16 +96,19 @@ cont:
 ; CHECK-NEXT:   jmpq *%rax
 ; CHECK-NEXT: [[OUT]]:
 ; CHECK-NEXT:   testl $4080, %eax
-; CHECK-NEXT:   je __llvm_kcfi_mismatch_12345678
+; CHECK-NEXT:   je [[MISMATCH]]
 ; CHECK-NEXT:   movabsq $1311768467969322430, %r11
 ; CHECK-NEXT:   cmpq %r11, -8(%rax)
-; CHECK-NEXT:   jne __llvm_kcfi_mismatch_12345678
+; CHECK-NEXT:   jne [[MISMATCH]]
 ; CHECK-NEXT:   movabsq $-1188916152340796467, %r11
 ; CHECK-NEXT:   cmpq %r11, -16(%rax)
 ; CHECK-NEXT:   je [[GUARD:\.Ltmp[0-9]+]]
 ; CHECK-NEXT:   jmp __llvm_kcfi_member_outside_miss_12345678
 ; CHECK-NEXT: [[GUARD]]:
 ; CHECK-NEXT:   jmpq *__guard_dispatch_icall_fptr(%rip)
+; CHECK-NEXT: [[MISMATCH]]:
+; CHECK-NEXT:   .linktailjump
+; CHECK-NEXT:   jmp __llvm_kcfi_mismatch_12345678
 
 
 ;; A local member thunk fails fast on a target outside a sealed image's range,
@@ -123,13 +126,16 @@ cont:
 ; CHECK-NEXT:   cmpq %r11, %r10
 ; CHECK-NEXT:   jne [[LTRAP:\.Ltmp[0-9]+]]
 ; CHECK-NEXT:   testl $4080, %eax
-; CHECK-NEXT:   je __llvm_kcfi_mismatch_12345678
+; CHECK-NEXT:   je [[LMISMATCH:\.Ltmp[0-9]+]]
 ; CHECK:        jmp __llvm_kcfi_member_local_miss_12345678
 ; CHECK-NEXT: {{\.Ltmp[0-9]+}}:
 ; CHECK-NEXT:   jmpq *__guard_dispatch_icall_fptr(%rip)
 ; CHECK-NEXT: [[LTRAP]]:
 ; CHECK-NEXT:   movl $64, %ecx
 ; CHECK-NEXT:   int $41
+; CHECK-NEXT: [[LMISMATCH]]:
+; CHECK-NEXT:   .linktailjump
+; CHECK-NEXT:   jmp __llvm_kcfi_mismatch_12345678
 
 ;; Without a type, only the tags are compared.
 ; CHECK:      __llvm_kcfi_member_check_00000000_0000abcd:

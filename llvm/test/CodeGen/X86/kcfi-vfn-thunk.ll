@@ -23,11 +23,14 @@
 ; CHECK:       __llvm_kcfi_vfn_check_89abcdef:
 ; CHECK-NEXT:    .linkkcfithunk __llvm_kcfi_vfn_check_89abcdef, vfn_check, 0x89abcdef, 0xdeadbeef, 0, __llvm_kcfi_check_mismatch_89abcdef
 ; CHECK-NEXT:    testl $4080, %ecx
-; CHECK-NEXT:    je __llvm_kcfi_check_mismatch_89abcdef
+; CHECK-NEXT:    je [[MISMATCH:.Ltmp[0-9]+]]
 ; CHECK-NEXT:    movabsq $-1188916150031102481, %r11 # imm = 0xEF801F0F89ABCDEF
 ; CHECK-NEXT:    cmpq %r11, -16(%rcx)
-; CHECK-NEXT:    jne __llvm_kcfi_check_mismatch_89abcdef
+; CHECK-NEXT:    jne [[MISMATCH]]
 ; CHECK-NEXT:    jmpq *__guard_check_icall_fptr(%rip)
+; CHECK-NEXT:  [[MISMATCH]]:
+; CHECK-NEXT:    .linktailjump
+; CHECK-NEXT:    jmp __llvm_kcfi_check_mismatch_89abcdef
 
 ;; A second type that would spell ENDBR64 is compared as the prefix stores it,
 ;; plus one.
@@ -36,13 +39,13 @@
 
 ; BYTES-LABEL: <__llvm_kcfi_vfn_check_89abcdef>:
 ; BYTES:       0: f7 c1 f0 0f 00 00              testl $0xff0, %ecx
-; BYTES:       c: 49 bb ef cd ab 89 0f 1f 80 ef  movabsq
-; BYTES-NEXT:  16: 4c 39 59 f0                   cmpq %r11, -0x10(%rcx)
+; BYTES:       8: 49 bb ef cd ab 89 0f 1f 80 ef  movabsq
+; BYTES-NEXT:  12: 4c 39 59 f0                   cmpq %r11, -0x10(%rcx)
 
 ; PREFIX-LABEL: __llvm_kcfi_vfn_check_89abcdef:
 ; PREFIX-NEXT:    .linkkcfithunk __llvm_kcfi_vfn_check_89abcdef, vfn_check, 0x89abcdef, 0xdeadbeef, 4, __llvm_kcfi_check_mismatch_89abcdef
 ; PREFIX-NEXT:    testl $4064, %ecx
-; PREFIX-NEXT:    je __llvm_kcfi_check_mismatch_89abcdef
+; PREFIX-NEXT:    je {{\.Ltmp[0-9]+}}
 ; PREFIX-NEXT:    movabsq $-1188916150031102481, %r11
 ; PREFIX-NEXT:    cmpq %r11, -20(%rcx)
 

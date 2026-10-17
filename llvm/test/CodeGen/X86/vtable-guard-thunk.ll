@@ -29,6 +29,7 @@
 ; CHECK-NEXT:    jmpq *8(%rax)
 ; CHECK-NEXT:  [[MISS]]:
 ; CHECK-NEXT:    movq 8(%rax), %rax
+; CHECK-NEXT:    .linktailjump
 ; CHECK-NEXT:    jmp __llvm_kcfi_dispatch_0001e240
 
 ;; A class whose run another image may own too tests the run of the image
@@ -53,6 +54,7 @@
 ; CHECK-NEXT:    jmpq *8(%rax)
 ; CHECK-NEXT:  [[MISS2]]:
 ; CHECK-NEXT:    movq 8(%rax), %rax
+; CHECK-NEXT:    .linktailjump
 ; CHECK-NEXT:    jmp __llvm_kcfi_dispatch_0001e240
 
 ;; The dispatch thunk the miss path continues into is emitted even though only
