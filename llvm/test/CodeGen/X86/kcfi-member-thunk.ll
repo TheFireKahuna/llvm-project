@@ -8,9 +8,11 @@
 ;; compares the type as the ordinary thunk does, and the 8 bytes 16 bytes
 ;; before the target with each tag and the start of the marker. A target that
 ;; matches is taken directly inside the code range and through the guard
-;; function outside it; any other continues into the type's ordinary thunk
-;; through a weak symbol, or fails fast for a member check thunk without a
-;; type.
+;; function outside it. A target of another type continues into the type's
+;; mismatch routine, as from the ordinary thunk; one that carries no tag into
+;; the ordinary thunk, through one weak symbol inside the range and another
+;; outside it, where a target may be in another image. A member check thunk
+;; without a type fails fast.
 
 ; CHECK:      __cfi_member:
 ; CHECK-NEXT:   .linkkcfitag __cfi_member
@@ -67,11 +69,13 @@ cont:
   ret void
 }
 
-;; The miss falls back on the ordinary thunk, which is emitted though no call
+;; The misses fall back on the ordinary thunk, which is emitted though no call
 ;; refers to it directly.
 ; CHECK:      __llvm_kcfi_dispatch_12345678:
 ; CHECK:      .weak __llvm_kcfi_member_miss_12345678
 ; CHECK-NEXT: __llvm_kcfi_member_miss_12345678 = __llvm_kcfi_dispatch_12345678
+; CHECK-NEXT: .weak __llvm_kcfi_member_outside_miss_12345678
+; CHECK-NEXT: __llvm_kcfi_member_outside_miss_12345678 = __llvm_kcfi_dispatch_12345678
 ; CHECK:      __llvm_kcfi_member_dispatch_12345678_0000abcd:
 ; CHECK-NEXT:   leaq __llvm_code_start(%rip), %r10
 ; CHECK-NEXT:   cmpq %r10, %rax
@@ -82,7 +86,7 @@ cont:
 ;; The marker's last bytes and the type, as the ordinary thunk compares.
 ; CHECK-NEXT:   movabsq $1311768467969322430, %r11 # imm = 0x12345678B8DEADBE
 ; CHECK-NEXT:   cmpq %r11, -8(%rax)
-; CHECK-NEXT:   jne __llvm_kcfi_member_miss_12345678
+; CHECK-NEXT:   jne __llvm_kcfi_mismatch_12345678
 ;; The tag, then 0F 1F 80 and the marker's low byte.
 ; CHECK-NEXT:   movabsq $-1188916152340796467, %r11 # imm = 0xEF801F0F0000ABCD
 ; CHECK-NEXT:   cmpq %r11, -16(%rax)
@@ -92,20 +96,20 @@ cont:
 ; CHECK-NEXT:   jmpq *%rax
 ; CHECK-NEXT: [[OUT]]:
 ; CHECK-NEXT:   testl $4080, %eax
-; CHECK-NEXT:   je __llvm_kcfi_member_miss_12345678
+; CHECK-NEXT:   je __llvm_kcfi_mismatch_12345678
 ; CHECK-NEXT:   movabsq $1311768467969322430, %r11
 ; CHECK-NEXT:   cmpq %r11, -8(%rax)
-; CHECK-NEXT:   jne __llvm_kcfi_member_miss_12345678
+; CHECK-NEXT:   jne __llvm_kcfi_mismatch_12345678
 ; CHECK-NEXT:   movabsq $-1188916152340796467, %r11
 ; CHECK-NEXT:   cmpq %r11, -16(%rax)
 ; CHECK-NEXT:   je [[GUARD:\.Ltmp[0-9]+]]
-; CHECK-NEXT:   jmp __llvm_kcfi_member_miss_12345678
+; CHECK-NEXT:   jmp __llvm_kcfi_member_outside_miss_12345678
 ; CHECK-NEXT: [[GUARD]]:
 ; CHECK-NEXT:   jmpq *__guard_dispatch_icall_fptr(%rip)
 
 
 ;; A local member thunk fails fast on a target outside a sealed image's range,
-;; and misses into the local thunk.
+;; and misses into the local thunk, within the range and outside an empty one.
 ; CHECK:      .weak __llvm_kcfi_member_local_miss_12345678
 ; CHECK-NEXT: __llvm_kcfi_member_local_miss_12345678 = __llvm_kcfi_local_dispatch_12345678
 ; CHECK:      __llvm_kcfi_member_local_dispatch_12345678_0000abcd:
@@ -119,8 +123,10 @@ cont:
 ; CHECK-NEXT:   cmpq %r11, %r10
 ; CHECK-NEXT:   jne [[LTRAP:\.Ltmp[0-9]+]]
 ; CHECK-NEXT:   testl $4080, %eax
-; CHECK-NEXT:   je __llvm_kcfi_member_local_miss_12345678
-; CHECK:        jmpq *__guard_dispatch_icall_fptr(%rip)
+; CHECK-NEXT:   je __llvm_kcfi_mismatch_12345678
+; CHECK:        jmp __llvm_kcfi_member_local_miss_12345678
+; CHECK-NEXT: {{\.Ltmp[0-9]+}}:
+; CHECK-NEXT:   jmpq *__guard_dispatch_icall_fptr(%rip)
 ; CHECK-NEXT: [[LTRAP]]:
 ; CHECK-NEXT:   movl $64, %ecx
 ; CHECK-NEXT:   int $41

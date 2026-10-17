@@ -1,15 +1,17 @@
 ; REQUIRES: x86
 
 ;; Under -guard:cf, the thunk that tests a member tag of an
-;; LTO image sends a target that fails it to __llvm_kcfi_member_miss_<type>,
-;; which clang makes a weak alias of the thunk for the type alone. When no
-;; object the linker did not compile from bitcode has an unsealed prefix of
-;; that type, no target of the type is outside the tagged set, so the linker
-;; points the miss at the mismatch routine of the type, which here is the trap.
-;; Otherwise, and without -guard:cf, the miss keeps the thunk for the type.
-;; The miss of a local member thunk, __llvm_kcfi_member_local_miss_<type>, is
-;; narrowed in the same way from the local thunk for the type.
-;; LTO hashes the output's base name into the tags.
+;; LTO image sends a target of its type that fails it to
+;; __llvm_kcfi_member_miss_<type>, or to __llvm_kcfi_member_outside_miss_<type>
+;; outside the image's code range, which clang makes weak aliases of the thunk
+;; for the type alone; a target of another type goes to the type's mismatch
+;; routine. When no object the linker did not compile from bitcode has an
+;; unsealed prefix of that type, no target of the type in the image is outside
+;; the tagged set, so the linker points the misses at the mismatch routine of
+;; the type, which here is the trap. Otherwise, and without -guard:cf, the
+;; misses keep the thunk for the type. The miss of a local member thunk,
+;; __llvm_kcfi_member_local_miss_<type>, is narrowed in the same way from the
+;; local thunk for the type. LTO hashes the output's base name into the tags.
 
 ; RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 ; RUN: llvm-as main.ll -o main.bc
@@ -22,6 +24,7 @@
 ; RUN: llvm-objdump -t narrow.exe | FileCheck %s --check-prefix=NARROW-SYM
 
 ; NARROW:      <__llvm_kcfi_member_dispatch_22222222_{{[0-9a-f]+}}>:
+; NARROW:        jne {{.*}} <__llvm_kcfi_trap>
 ; NARROW:        jmp {{.*}} <__llvm_kcfi_trap>
 ; NARROW:        je {{.*}} <__llvm_kcfi_trap>
 ; NARROW:        jmp {{.*}} <__llvm_kcfi_trap>
@@ -29,6 +32,7 @@
 
 ; NARROW-SYM-DAG: 0x[[#%.8x,TRAP:]] __llvm_kcfi_trap
 ; NARROW-SYM-DAG: 0x[[#TRAP]] __llvm_kcfi_member_miss_22222222
+; NARROW-SYM-DAG: 0x[[#TRAP]] __llvm_kcfi_member_outside_miss_22222222
 ; NARROW-SYM-DAG: 0x[[#TRAP]] __llvm_kcfi_member_local_miss_22222222
 
 ; RUN: lld-link main.bc guard.obj -guard:cf -entry:main \
@@ -47,49 +51,70 @@
 ; RUN: llvm-objdump -t noguard.exe | FileCheck %s --check-prefix=KEEP-SYM
 
 ; KEEP:      <__llvm_kcfi_member_dispatch_22222222_{{[0-9a-f]+}}>:
-; KEEP:        jmp {{.*}} <__llvm_kcfi_member_miss_22222222>
-; KEEP:        je {{.*}} <__llvm_kcfi_member_miss_22222222>
-; KEEP:        jmp {{.*}} <__llvm_kcfi_member_miss_22222222>
+; KEEP:        jne {{.*}} <__llvm_kcfi_{{trap|mismatch_22222222}}>
+; KEEP:        jmp {{.*}} <__llvm_kcfi_{{member_miss|member_outside_miss|dispatch}}_22222222>
+; KEEP:        je {{.*}} <__llvm_kcfi_{{trap|mismatch_22222222}}>
+; KEEP:        jmp {{.*}} <__llvm_kcfi_{{member_outside_miss|member_miss|dispatch}}_22222222>
 
 ; KEEP-SYM-DAG: 0x[[#%.8x,HASH:]] __llvm_kcfi_dispatch_22222222
 ; KEEP-SYM-DAG: 0x[[#HASH]] __llvm_kcfi_member_miss_22222222
 ; KEEP-SYM-DAG: 0x[[#%.8x,LOCAL:]] __llvm_kcfi_local_dispatch_22222222
 ; KEEP-SYM-DAG: 0x[[#LOCAL]] __llvm_kcfi_member_local_miss_22222222
 
+; NOGUARD-SYM-DAG: 0x[[#%.8x,HASH:]] __llvm_kcfi_dispatch_22222222
+; NOGUARD-SYM-DAG: 0x[[#HASH]] __llvm_kcfi_member_outside_miss_22222222
+
 ;; In the sealed image the linker replaces the type's ordinary thunk, which the
-;; miss reaches, but leaves the member thunk as clang wrote it. A target outside
+;; misses reach, but leaves the member thunk as clang wrote it. A target outside
 ;; the image never carries the image's tags, so it passes only through the
-;; ordinary thunk, whose form tests the code ranges of the image and of the
-;; DLLs it imports; testing them in the member thunk would change nothing.
+;; ordinary thunk, whose form tests the code ranges of the DLLs the image
+;; imports. The outside miss, whose type the member thunk has checked, takes
+;; the form's entry for such a target, which tests those ranges alone and
+;; continues into the guard function.
 ; RUN: llvm-objdump -d native.exe | FileCheck %s --check-prefix=FORMS
+; RUN: llvm-objdump -t noguard.exe | FileCheck %s --check-prefix=NOGUARD-SYM
 
 ; FORMS:      <__llvm_kcfi_member_miss_22222222>:
 ; FORMS-NEXT:   leaq {{.*}}(%rip), %r10
 ; FORMS-NEXT:   movq %rax, %r11
 ; FORMS-NEXT:   subq %r10, %r11
+; FORMS:      <__llvm_kcfi_member_outside_miss_22222222>:
+; FORMS-NEXT:   jmpq *{{.*}}(%rip) {{.*}}<__guard_dispatch_icall_fptr>
+; FORMS-NEXT:   jmpq *%rax
 ; FORMS:      <__llvm_kcfi_member_dispatch_22222222_{{[0-9a-f]+}}>:
 ; FORMS-NEXT:   leaq {{.*}}(%rip), %r10
 ; FORMS-NEXT:   cmpq %r10, %rax
 ; FORMS-NEXT:   jb
 
-;; A function in another image carries none of the image's tags, so the miss
-;; of a type of which it may be a valid target keeps the thunk for the type:
-;; one that an object opens, here dynamically, and one that the linker opens
-;; for an import. One that the linker opens only for a definition in the image
-;; without a prefix is narrowed, to the routine the linker makes for it.
+;; A function in another image carries none of the image's tags, so the
+;; outside miss of a type of which it may be a valid target keeps the thunk
+;; for the type, at its entry for a checked target: one that an object opens,
+;; here dynamically, and one that the linker opens for an import. Their misses
+;; inside the range, and both misses of a type that the linker opens only for
+;; a definition in the image without a prefix, are narrowed to the mismatch
+;; routine, the one the linker makes for the last.
 ; RUN: llvm-as open.ll -o open.bc
 ; RUN: llvm-mc -filetype=obj -triple=x86_64-windows-msvc plain.s -o plain.obj
 ; RUN: llvm-dlltool -m i386:x86-64 -d lib.def -D lib.dll -l lib.lib
 ; RUN: lld-link main.bc open.bc guard.obj plain.obj lib.lib -guard:cf \
 ; RUN:   -entry:main -include:open -debug:symtab -opt:ref -out:open.exe
 ; RUN: llvm-objdump -t open.exe | FileCheck %s --check-prefix=OPEN
+; RUN: llvm-objdump -d open.exe | FileCheck %s --check-prefix=OPEN-FORMS
 
-; OPEN-DAG: 0x[[#%.8x,DYNAMIC:]] __llvm_kcfi_dispatch_33333333
+; OPEN-DAG: 0x[[#%.8x,DYNAMIC:]] __llvm_kcfi_mismatch_33333333
 ; OPEN-DAG: 0x[[#DYNAMIC]] __llvm_kcfi_member_miss_33333333
-; OPEN-DAG: 0x[[#%.8x,IMPORTED:]] __llvm_kcfi_dispatch_44444444
+; OPEN-DAG: 0x[[#%.8x,IMPORTED:]] __llvm_kcfi_mismatch_44444444
 ; OPEN-DAG: 0x[[#IMPORTED]] __llvm_kcfi_member_miss_44444444
 ; OPEN-DAG: 0x[[#%.8x,PLAIN:]] __llvm_kcfi_mismatch_55555555
 ; OPEN-DAG: 0x[[#PLAIN]] __llvm_kcfi_member_miss_55555555
+; OPEN-DAG: 0x[[#PLAIN]] __llvm_kcfi_member_outside_miss_55555555
+
+; OPEN-FORMS:      <__llvm_kcfi_member_outside_miss_33333333>:
+; OPEN-FORMS-NEXT:   jmpq *{{.*}}(%rip) {{.*}}<__guard_dispatch_icall_fptr>
+; OPEN-FORMS-NEXT:   jmpq *%rax
+; OPEN-FORMS:      <__llvm_kcfi_member_outside_miss_44444444>:
+; OPEN-FORMS-NEXT:   jmpq *{{.*}}(%rip) {{.*}}<__guard_dispatch_icall_fptr>
+; OPEN-FORMS-NEXT:   jmpq *%rax
 
 ;--- main.ll
 target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"

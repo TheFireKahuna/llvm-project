@@ -1256,21 +1256,21 @@ void AArch64AsmPrinter::emitKCFIThunk(const KCFIThunkInfo &I) {
 /// cmp x15, x16; b.lo 1f
 /// adrp x16, __llvm_code_end; add x16, x16, :lo12:__llvm_code_end
 /// cmp x15, x16; b.hs 1f
-/// ldur x16, [x15, #-8]; mov x17, #type; cmp x16, x17; b.ne miss
+/// ldur x16, [x15, #-8]; mov x17, #type; cmp x16, x17; b.ne mismatch
 /// ldur x16, [x15, #-16]
 /// mov x17, #expected; cmp x16, x17; b.eq 2f   (for each tag)
 /// b miss
 /// 2: ret
-/// 1: tst x15, #mask; b.eq miss
-/// ldur x16, [x15, #-8]; mov x17, #type; cmp x16, x17; b.ne miss
+/// 1: tst x15, #mask; b.eq mismatch
+/// ldur x16, [x15, #-8]; mov x17, #type; cmp x16, x17; b.ne mismatch
 /// ldur x16, [x15, #-16]
 /// mov x17, #expected; cmp x16, x17; b.eq 3f   (for each tag)
-/// b miss
+/// b outside_miss
 /// 3: adrp x16, guard; ldr x16, [x16, :lo12:guard]; br x16
 void AArch64AsmPrinter::emitKCFIMemberThunk(const KCFIThunkInfo &I) {
   const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
   int64_t PrefixBytes = I.PrefixNops * 4;
-  auto EmitTagCompares = [&](MCSymbol *Hit) {
+  auto EmitTagCompares = [&](MCSymbol *Hit, MCSymbol *Miss) {
     if (I.Type) {
       OutStreamer->emitInstruction(MCInstBuilder(AArch64::LDURXi)
                                        .addReg(AArch64::X16)
@@ -1279,7 +1279,7 @@ void AArch64AsmPrinter::emitKCFIMemberThunk(const KCFIThunkInfo &I) {
                                    STI);
       emitKCFIMovX17(I.Pattern >> 32 | uint64_t(I.Type) << 32);
       emitKCFICmp(AArch64::X16, AArch64::X17);
-      emitKCFIBcc(AArch64CC::NE, I.Miss);
+      emitKCFIBcc(AArch64CC::NE, I.Mismatch);
     }
     OutStreamer->emitInstruction(MCInstBuilder(AArch64::LDURXi)
                                      .addReg(AArch64::X16)
@@ -1293,7 +1293,7 @@ void AArch64AsmPrinter::emitKCFIMemberThunk(const KCFIThunkInfo &I) {
     }
     OutStreamer->emitInstruction(
         MCInstBuilder(AArch64::B)
-            .addExpr(MCSymbolRefExpr::create(I.Miss, OutContext)),
+            .addExpr(MCSymbolRefExpr::create(Miss, OutContext)),
         STI);
   };
   MCSymbol *Outside = OutContext.createTempSymbol();
@@ -1314,7 +1314,7 @@ void AArch64AsmPrinter::emitKCFIMemberThunk(const KCFIThunkInfo &I) {
     emitKCFICmp(AArch64::X15, AArch64::X16);
     emitKCFIBcc(AArch64CC::HS, Outside);
   }
-  EmitTagCompares(Hit);
+  EmitTagCompares(Hit, I.Miss);
   OutStreamer->emitLabel(Hit);
   OutStreamer->emitInstruction(MCInstBuilder(AArch64::RET).addReg(AArch64::LR),
                                STI);
@@ -1325,8 +1325,8 @@ void AArch64AsmPrinter::emitKCFIMemberThunk(const KCFIThunkInfo &I) {
     emitKCFICmp(AArch64::X16, AArch64::X17);
     emitKCFIBcc(AArch64CC::NE, Trap);
   }
-  emitKCFIPageTest(I.Miss, PrefixBytes, /*ReadBytes=*/16);
-  EmitTagCompares(GuardHit);
+  emitKCFIPageTest(I.Mismatch, PrefixBytes, /*ReadBytes=*/16);
+  EmitTagCompares(GuardHit, I.OutsideMiss);
   OutStreamer->emitLabel(GuardHit);
   emitKCFIGuardJump(I.Routine->GuardFn);
   if (Trap) {

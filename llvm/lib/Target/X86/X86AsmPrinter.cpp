@@ -437,14 +437,14 @@ void X86AsmPrinter::emitKCFIThunk(const KCFIThunkInfo &I) {
 ///
 /// leaq __llvm_code_start(%rip), %r10; cmpq %r10, %reg; jb 1f
 /// leaq __llvm_code_end(%rip), %r10; cmpq %r10, %reg; jae 1f
-/// movabsq $type, %r11; cmpq %r11, -8(%reg); jne miss
+/// movabsq $type, %r11; cmpq %r11, -8(%reg); jne mismatch
 /// movabsq $expected, %r11; cmpq %r11, -16(%reg); je 2f   (for each tag)
 /// jmp miss
 /// 2: jmpq *%rax (dispatch) or retq (check)
-/// 1: testl $mask, %reg32; jz miss
-/// movabsq $type, %r11; cmpq %r11, -8(%reg); jne miss
+/// 1: testl $mask, %reg32; jz mismatch
+/// movabsq $type, %r11; cmpq %r11, -8(%reg); jne mismatch
 /// movabsq $expected, %r11; cmpq %r11, -16(%reg); je 3f   (for each tag)
-/// jmp miss
+/// jmp outside_miss
 /// 3: jmpq *guard(%rip)
 ///
 /// A local member thunk fails fast on a target outside the range as a local
@@ -452,7 +452,7 @@ void X86AsmPrinter::emitKCFIThunk(const KCFIThunkInfo &I) {
 void X86AsmPrinter::emitKCFIMemberThunk(const KCFIThunkInfo &I) {
   const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
   MCRegister Reg = I.Routine->TargetReg;
-  auto EmitTagCompares = [&](MCSymbol *Hit) {
+  auto EmitTagCompares = [&](MCSymbol *Hit, MCSymbol *Miss) {
     if (I.Type) {
       OutStreamer->emitInstruction(
           MCInstBuilder(X86::MOV64ri)
@@ -467,7 +467,7 @@ void X86AsmPrinter::emitKCFIMemberThunk(const KCFIThunkInfo &I) {
                                        .addReg(X86::NoRegister)
                                        .addReg(X86::R11),
                                    STI);
-      emitKCFIJcc(I.Miss, X86::COND_NE);
+      emitKCFIJcc(I.Mismatch, X86::COND_NE);
     }
     for (uint32_t Tag : I.Tags) {
       OutStreamer->emitInstruction(
@@ -487,7 +487,7 @@ void X86AsmPrinter::emitKCFIMemberThunk(const KCFIThunkInfo &I) {
     }
     OutStreamer->emitInstruction(
         MCInstBuilder(X86::JMP_1)
-            .addExpr(MCSymbolRefExpr::create(I.Miss, OutContext)),
+            .addExpr(MCSymbolRefExpr::create(Miss, OutContext)),
         STI);
   };
   MCSymbol *Outside = OutContext.createTempSymbol();
@@ -508,7 +508,7 @@ void X86AsmPrinter::emitKCFIMemberThunk(const KCFIThunkInfo &I) {
     emitKCFICmp(Reg, X86::R10);
     emitKCFIJcc(Outside, X86::COND_AE);
   }
-  EmitTagCompares(Hit);
+  EmitTagCompares(Hit, I.Miss);
   OutStreamer->emitLabel(Hit);
   if (Reg == X86::RAX)
     OutStreamer->emitInstruction(MCInstBuilder(X86::JMP64r).addReg(X86::RAX),
@@ -522,8 +522,8 @@ void X86AsmPrinter::emitKCFIMemberThunk(const KCFIThunkInfo &I) {
     emitKCFICmp(X86::R10, X86::R11);
     emitKCFIJcc(Trap, X86::COND_NE);
   }
-  emitKCFIPageTest(Reg, I.Miss, I.PrefixNops, /*ReadBytes=*/16);
-  EmitTagCompares(GuardHit);
+  emitKCFIPageTest(Reg, I.Mismatch, I.PrefixNops, /*ReadBytes=*/16);
+  EmitTagCompares(GuardHit, I.OutsideMiss);
   OutStreamer->emitLabel(GuardHit);
   emitKCFIGuardJump(I.Routine->GuardFn);
   if (Trap) {

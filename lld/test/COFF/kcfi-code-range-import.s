@@ -96,6 +96,19 @@
 # CHECK-NEXT:   jne {{.*}}<__llvm_kcfi_open>
 # CHECK-NEXT:   jmpq *%rax
 
+## A member thunk misses a target outside its code range whose type it has
+## checked, of a type of which a function in another image may be a valid
+## target, into the type's thunk. The thunk then has an entry for such a
+## target, which tests the ranges alone: inside one it takes the jump, and
+## outside them all the guard function.
+# CHECK:      <__llvm_kcfi_member_outside_miss_44444444>:
+# CHECK-NEXT:   cmpq {{.*}}(%rip), %rax {{.*}}# 0x[[#%x,0x140000000+B_IAT]]
+# CHECK-NEXT:   jb
+# CHECK-NEXT:   cmpq {{.*}}(%rip), %rax {{.*}}# 0x[[#%x,0x140000008+B_IAT]]
+# CHECK-NEXT:   jb 0x[[TAIL:[0-9a-f]+]]
+# CHECK-NEXT:   jmpq *{{.*}}(%rip) {{.*}}<__guard_dispatch_icall_fptr>
+# CHECK-NEXT:   [[TAIL]]: {{.*}}jmpq *%rax
+
 ## A delay-loaded DLL's range, and every range of an image without a guard
 ## function table or without an object that says it has KCFI prefixes, are not
 ## bound.
@@ -267,6 +280,7 @@ main:
         callq __llvm_kcfi_dispatch_11111111
         callq __llvm_kcfi_dispatch_22222222
         callq __llvm_kcfi_dispatch_44444444
+        callq __llvm_kcfi_member_outside_miss_44444444
         xorl %eax, %eax
         retq
 
@@ -329,6 +343,8 @@ __llvm_kcfi_dispatch_22222222:
 
         .weak __llvm_kcfi_mismatch_44444444
 __llvm_kcfi_mismatch_44444444 = __llvm_kcfi_open
+        .weak __llvm_kcfi_member_outside_miss_44444444
+__llvm_kcfi_member_outside_miss_44444444 = __llvm_kcfi_dispatch_44444444
         .section .text,"xr",discard,__llvm_kcfi_dispatch_44444444
         .globl __llvm_kcfi_dispatch_44444444
         .p2align 4

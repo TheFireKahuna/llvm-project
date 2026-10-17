@@ -269,7 +269,8 @@ void AsmPrinter::emitKCFIThunks(Module &M) {
                                        Mismatch);
 
       emitKCFIThunk({Kind.Routine, MD->Type, Pattern, PrefixNops, Kind.Local,
-                     Kind.Vfn, Mismatch, /*Miss=*/nullptr, /*Tags=*/{},
+                     Kind.Vfn, Mismatch, /*Miss=*/nullptr,
+                     /*OutsideMiss=*/nullptr, /*Tags=*/{},
                      Kind.Local ? CodeStart : nullptr,
                      Kind.Local ? CodeEnd : nullptr});
     }
@@ -291,26 +292,41 @@ void AsmPrinter::emitKCFIThunks(Module &M) {
     ensureRange();
 
     std::string Hex = utohexstr(MD->Type, /*LowerCase=*/true, /*Width=*/8);
+    // A target of another type continues into the type's mismatch routine, as
+    // from the ordinary thunk. One that carries none of the tags continues into
+    // the ordinary thunk, through a weak symbol that a linker which knows the
+    // image's targets may point elsewhere, and through another for one
+    // outside the code range, which may be in another image. Every target of
+    // a local thunk is in the image. A thunk without a type fails fast.
+    MCSymbol *Mismatch = TrapFn;
     MCSymbol *Miss = TrapFn;
+    MCSymbol *OutsideMiss = TrapFn;
     if (MD->Type) {
-      StringRef MissPrefix = MD->Kind == KCFIThunkDispatch
-                                 ? (Local ? COFF::KCFIMemberLocalMissPrefix
-                                          : COFF::KCFIMemberMissPrefix)
-                                 : (Local ? COFF::KCFIMemberLocalCheckMissPrefix
-                                          : COFF::KCFIMemberCheckMissPrefix);
-      StringRef ThunkPrefix = MD->Kind == KCFIThunkDispatch
-                                  ? (Local ? COFF::KCFILocalDispatchThunkPrefix
-                                           : COFF::KCFIDispatchThunkPrefix)
-                                  : (Local ? COFF::KCFILocalCheckThunkPrefix
-                                           : COFF::KCFICheckThunkPrefix);
-      Miss = OutContext.getOrCreateSymbol(MissPrefix + Hex);
-      if (!Miss->isVariable()) {
-        OutStreamer->emitSymbolAttribute(Miss, MCSA_Weak);
-        OutStreamer->emitAssignment(
-            Miss,
-            MCSymbolRefExpr::create(
-                OutContext.getOrCreateSymbol(ThunkPrefix + Hex), OutContext));
-      }
+      bool Dispatch = MD->Kind == KCFIThunkDispatch;
+      MCSymbol *Thunk = OutContext.getOrCreateSymbol(
+          (Dispatch ? (Local ? COFF::KCFILocalDispatchThunkPrefix
+                             : COFF::KCFIDispatchThunkPrefix)
+                    : (Local ? COFF::KCFILocalCheckThunkPrefix
+                             : COFF::KCFICheckThunkPrefix)) +
+          Hex);
+      auto GetMiss = [&](StringRef Prefix) {
+        MCSymbol *Sym = OutContext.getOrCreateSymbol(Prefix + Hex);
+        if (!Sym->isVariable()) {
+          OutStreamer->emitSymbolAttribute(Sym, MCSA_Weak);
+          OutStreamer->emitAssignment(
+              Sym, MCSymbolRefExpr::create(Thunk, OutContext));
+        }
+        return Sym;
+      };
+      Mismatch = OutContext.getOrCreateSymbol(Routine->MismatchPrefix + Hex);
+      Miss = GetMiss(Dispatch ? (Local ? COFF::KCFIMemberLocalMissPrefix
+                                       : COFF::KCFIMemberMissPrefix)
+                              : (Local ? COFF::KCFIMemberLocalCheckMissPrefix
+                                       : COFF::KCFIMemberCheckMissPrefix));
+      OutsideMiss =
+          Local ? Miss
+                : GetMiss(Dispatch ? COFF::KCFIMemberOutsideMissPrefix
+                                   : COFF::KCFIMemberCheckOutsideMissPrefix);
     } else {
       NeedsTrap = true;
     }
@@ -322,7 +338,7 @@ void AsmPrinter::emitKCFIThunks(Module &M) {
     emitKCFIFunctionStart(getSymbol(&F), COFF::IMAGE_COMDAT_SELECT_ANY,
                           Align(16));
     emitKCFIMemberThunk({Routine, MD->Type, Pattern, PrefixNops, Local,
-                         /*Vfn=*/false, /*Mismatch=*/nullptr, Miss, TagValues,
+                         /*Vfn=*/false, Mismatch, Miss, OutsideMiss, TagValues,
                          CodeStart, CodeEnd});
   }
 

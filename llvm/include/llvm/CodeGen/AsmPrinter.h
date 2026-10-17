@@ -511,7 +511,9 @@ public:
   /// A per-type KCFI thunk the shared driver asks the target to emit, after it
   /// has switched to the thunk's section and emitted its label. An ordinary or
   /// local thunk checks Type (at offset 16 for Vfn); a member thunk checks Type
-  /// and the membership Tags, and continues into Miss. CodeStart and CodeEnd
+  /// and the membership Tags, and continues into Mismatch for a target of
+  /// another type, and into Miss, or OutsideMiss for a target outside the
+  /// range, for one that carries none of the tags. CodeStart and CodeEnd
   /// bound the image's sealed code, or are null for an ordinary thunk, which
   /// takes no range test.
   struct KCFIThunkInfo {
@@ -523,6 +525,7 @@ public:
     bool Vfn;
     MCSymbol *Mismatch;
     MCSymbol *Miss;
+    MCSymbol *OutsideMiss;
     ArrayRef<uint32_t> Tags;
     MCSymbol *CodeStart;
     MCSymbol *CodeEnd;

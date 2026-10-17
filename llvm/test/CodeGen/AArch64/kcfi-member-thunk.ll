@@ -6,8 +6,11 @@
 ;; target in X15, which compares the type as the ordinary thunk does, and the 8
 ;; bytes 16 bytes before the target with each tag and the start of the marker.
 ;; A target that matches returns inside the code range and continues into the
-;; guard function outside it; any other continues into the type's ordinary
-;; check thunk through a weak symbol, or fails fast for a thunk without a type.
+;; guard function outside it. A target of another type continues into the
+;; type's mismatch routine, as from the ordinary check thunk; one that carries
+;; no tag into the ordinary check thunk, through one weak symbol inside the
+;; range and another outside it, where a target may be in another image. A
+;; thunk without a type fails fast.
 
 ; CHECK:      __cfi_member:
 ; CHECK-NEXT:   .linkkcfitag __cfi_member
@@ -63,6 +66,8 @@ cont:
 ; CHECK:      __llvm_kcfi_check_12345678:
 ; CHECK:      .weak __llvm_kcfi_member_check_miss_12345678
 ; CHECK-NEXT: __llvm_kcfi_member_check_miss_12345678 = __llvm_kcfi_check_12345678
+; CHECK-NEXT: .weak __llvm_kcfi_member_check_outside_miss_12345678
+; CHECK-NEXT: __llvm_kcfi_member_check_outside_miss_12345678 = __llvm_kcfi_check_12345678
 ; CHECK:      __llvm_kcfi_member_check_12345678_0000abcd:
 ; CHECK-NEXT:   adrp x16, __llvm_code_start
 ; CHECK-NEXT:   add x16, x16, :lo12:__llvm_code_start
@@ -79,7 +84,7 @@ cont:
 ; CHECK-NEXT:   movk x17, #22136, lsl #32
 ; CHECK-NEXT:   movk x17, #4660, lsl #48
 ; CHECK-NEXT:   cmp x16, x17
-; CHECK-NEXT:   b.ne __llvm_kcfi_member_check_miss_12345678
+; CHECK-NEXT:   b.ne __llvm_kcfi_check_mismatch_12345678
 ; CHECK-NEXT:   ldur x16, [x15, #-16]
 ;; The tag, then 0F 1F 80 and the marker's low byte.
 ; CHECK-NEXT:   mov x17, #43981
@@ -93,17 +98,17 @@ cont:
 ; CHECK-NEXT:   ret
 ; CHECK-NEXT: [[OUT]]:
 ; CHECK-NEXT:   tst x15, #0xff0
-; CHECK-NEXT:   b.eq __llvm_kcfi_member_check_miss_12345678
+; CHECK-NEXT:   b.eq __llvm_kcfi_check_mismatch_12345678
 ; CHECK-NEXT:   ldur x16, [x15, #-8]
-; CHECK:        b.ne __llvm_kcfi_member_check_miss_12345678
+; CHECK:        b.ne __llvm_kcfi_check_mismatch_12345678
 ; CHECK-NEXT:   ldur x16, [x15, #-16]
 ; CHECK:        b.eq [[GUARD:\.Ltmp[0-9]+]]
-; CHECK-NEXT:   b __llvm_kcfi_member_check_miss_12345678
+; CHECK-NEXT:   b __llvm_kcfi_member_check_outside_miss_12345678
 ; CHECK-NEXT: [[GUARD]]:
 ; CHECK-NEXT:   adrp x16, __guard_check_icall_fptr
 
 ;; A local member thunk fails fast on a target outside a sealed image's range,
-;; and misses into the local thunk.
+;; and misses into the local thunk, within the range and outside an empty one.
 ; CHECK:      .weak __llvm_kcfi_member_local_check_miss_12345678
 ; CHECK-NEXT: __llvm_kcfi_member_local_check_miss_12345678 = __llvm_kcfi_local_check_12345678
 ; CHECK:      __llvm_kcfi_member_local_check_12345678_0000abcd:
@@ -119,7 +124,10 @@ cont:
 ; CHECK-NEXT:   cmp x16, x17
 ; CHECK-NEXT:   b.ne [[LTRAP:\.Ltmp[0-9]+]]
 ; CHECK-NEXT:   tst x15, #0xff0
-; CHECK-NEXT:   b.eq __llvm_kcfi_member_local_check_miss_12345678
+; CHECK-NEXT:   b.eq __llvm_kcfi_check_mismatch_12345678
+; CHECK:        b __llvm_kcfi_member_local_check_miss_12345678
+; CHECK-NEXT: {{\.Ltmp[0-9]+}}:
+; CHECK-NEXT:   adrp x16, __guard_check_icall_fptr
 ; CHECK:        br x16
 ; CHECK-NEXT: [[LTRAP]]:
 ; CHECK-NEXT:   mov w0, #64

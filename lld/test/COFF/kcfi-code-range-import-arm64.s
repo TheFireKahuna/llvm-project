@@ -52,10 +52,27 @@
 # CHECK-NEXT:   b.ne 0x[[MISMATCH]]
 # CHECK-NEXT:   ret
 # CHECK-NEXT:   [[MISMATCH]]: {{.*}}adrp x17, 0x140001000
-# CHECK-NEXT:   add x17, x17, #0xa0
+# CHECK-NEXT:   add x17, x17, #0x[[#%x,OPEN:]]
 # CHECK-NEXT:   br x17
+
+## A member thunk's miss of a target outside its code range whose type it has
+## checked takes the thunk's entry for such a target, which tests the ranges
+## alone.
+# CHECK-EMPTY:
+# CHECK-NEXT: <__llvm_kcfi_member_check_outside_miss_11111111>:
+# CHECK-NEXT:   adrp x16, 0x140002000
+# CHECK-NEXT:   add x16, x16, #0x{{[0-9a-f]+}}
+# CHECK-NEXT:   ldp x16, x17, [x16]
+# CHECK-NEXT:   cmp x15, x16
+# CHECK-NEXT:   b.lo
+# CHECK-NEXT:   cmp x15, x17
+# CHECK-NEXT:   b.lo 0x[[RET:[0-9a-f]+]]
+# CHECK-NEXT:   adrp x16, {{.*}}<__guard_check_icall_fptr>
+# CHECK-NEXT:   ldr x16, [x16]
+# CHECK-NEXT:   br x16
+# CHECK-NEXT:   [[RET]]: {{.*}}ret
 # CHECK:      <__llvm_kcfi_check_open>:
-# CHECK-NEXT:   1400010a0:
+# CHECK-NEXT:   [[#%x,0x140001000+OPEN]]:
 
 #--- dll.s
   .linktypeprefixes
@@ -111,6 +128,7 @@ main:
         blr x16
         mov x15, x16
         bl __llvm_kcfi_check_11111111
+        bl __llvm_kcfi_member_check_outside_miss_11111111
         ret
 
         .weak __llvm_code_start
@@ -124,6 +142,8 @@ __llvm_code_empty:
 
         .weak __llvm_kcfi_check_mismatch_11111111
 __llvm_kcfi_check_mismatch_11111111 = __llvm_kcfi_check_open
+        .weak __llvm_kcfi_member_check_outside_miss_11111111
+__llvm_kcfi_member_check_outside_miss_11111111 = __llvm_kcfi_check_11111111
 
         .section .text,"xr",discard,__llvm_kcfi_check_11111111
         .globl __llvm_kcfi_check_11111111

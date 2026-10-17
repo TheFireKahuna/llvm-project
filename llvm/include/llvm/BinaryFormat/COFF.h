@@ -348,7 +348,9 @@ inline constexpr char KCFIMemberLocalDispatchThunkPrefix[] =
 inline constexpr char KCFIMemberLocalCheckThunkPrefix[] =
     "__llvm_kcfi_member_local_check_";
 // The routines a thunk continues into on a mismatch, and a member thunk on a
-// miss, and the routine that fails fast.
+// miss, and the routine that fails fast. A member thunk misses where a target
+// of the type carries none of its tags, and into the outside miss where the
+// target is outside the image's code range.
 inline constexpr char KCFIMismatchPrefix[] = "__llvm_kcfi_mismatch_";
 inline constexpr char KCFICheckMismatchPrefix[] = "__llvm_kcfi_check_mismatch_";
 inline constexpr char KCFIMemberMissPrefix[] = "__llvm_kcfi_member_miss_";
@@ -358,6 +360,10 @@ inline constexpr char KCFIMemberLocalMissPrefix[] =
     "__llvm_kcfi_member_local_miss_";
 inline constexpr char KCFIMemberLocalCheckMissPrefix[] =
     "__llvm_kcfi_member_local_check_miss_";
+inline constexpr char KCFIMemberOutsideMissPrefix[] =
+    "__llvm_kcfi_member_outside_miss_";
+inline constexpr char KCFIMemberCheckOutsideMissPrefix[] =
+    "__llvm_kcfi_member_check_outside_miss_";
 inline constexpr char KCFITrap[] = "__llvm_kcfi_trap";
 // The scanners an open type's routine passes the type's list to, for each
 // kind of thunk.

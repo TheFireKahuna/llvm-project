@@ -85,6 +85,10 @@ private:
 // the return of a check thunk. Any other target takes clang's page test, the
 // type check and the guard function. A DLL's range is read from its two bounds
 // in the import address table, start then end.
+//
+// A thunk may also have an entry for a target outside the image's range whose
+// type a member thunk has checked: it takes the jump inside an imported range,
+// and the guard function outside every one.
 class KCFIThunkChunk : public NonSectionCodeChunk {
 public:
   struct Range {
@@ -93,8 +97,8 @@ public:
   };
   KCFIThunkChunk(COFFLinkerContext &ctx, bool check, ArrayRef<uint8_t> compare,
                  ArrayRef<uint8_t> pageTest, Symbol *mismatch, Symbol *guard,
-                 Defined *codeStart, Defined *codeEnd,
-                 ArrayRef<Range> imported);
+                 Defined *codeStart, Defined *codeEnd, ArrayRef<Range> imported,
+                 bool checked);
   size_t getSize() const override;
   void writeTo(uint8_t *buf) const override;
   uint32_t getOutputCharacteristics() const override {
@@ -103,16 +107,20 @@ public:
   }
   StringRef getSectionName() const override { return ".text"; }
   MachineTypes getMachine() const override;
+  // The offset of the entry for a target whose type is checked.
+  uint32_t getCheckedOffset() const { return getLayout().checked; }
 
 private:
   // The offsets of the parts of the thunk, in the order they are laid out
-  // in when the image's own range is tested.
+  // in when the image's own range is tested, and of the entry for a checked
+  // target, which ends it.
   struct Layout {
-    uint32_t own, hit, imported, outside, mismatch, size;
+    uint32_t own, hit, imported, outside, mismatch, checked, size;
   };
   Layout getLayout() const;
 
   bool check;
+  bool checked;
   // Clang's type check, without its branch, and its page test.
   SmallVector<uint8_t, 24> compare;
   SmallVector<uint8_t, 6> pageTest;
@@ -251,10 +259,11 @@ KCFIThunkChunk::KCFIThunkChunk(COFFLinkerContext &ctx, bool check,
                                ArrayRef<uint8_t> compare,
                                ArrayRef<uint8_t> pageTest, Symbol *mismatch,
                                Symbol *guard, Defined *codeStart,
-                               Defined *codeEnd, ArrayRef<Range> imported)
-    : check(check), compare(compare), pageTest(pageTest), mismatch(mismatch),
-      guard(guard), codeStart(codeStart), codeEnd(codeEnd), imported(imported),
-      ctx(ctx) {
+                               Defined *codeEnd, ArrayRef<Range> imported,
+                               bool checked)
+    : check(check), checked(checked), compare(compare), pageTest(pageTest),
+      mismatch(mismatch), guard(guard), codeStart(codeStart), codeEnd(codeEnd),
+      imported(imported), ctx(ctx) {
   setAlignment(16);
 }
 
@@ -290,7 +299,11 @@ KCFIThunkChunk::Layout KCFIThunkChunk::getLayout() const {
     l.hit = l.outside + outsideSize;
     l.mismatch = l.hit + hitSize;
   }
-  l.size = l.mismatch + (isARM64 ? 12 : 0);
+  l.checked = l.mismatch + (isARM64 ? 12 : 0);
+  l.size = l.checked;
+  if (checked)
+    l.size += isARM64 ? imported.size() * 28 + 16
+                      : imported.size() * 22 + 6 + (check ? 1 : 2);
   return l;
 }
 
@@ -362,6 +375,27 @@ void KCFIThunkChunk::writeTo(uint8_t *buf) const {
     // adrp x17, mismatch; add x17, x17, :lo12:mismatch; br x17
     adrpAdd(l.mismatch, 17, mismatchRVA);
     insn(l.mismatch + 8, 0xD61F0220);
+    if (!checked)
+      return;
+    // The tests of the imported ranges, as above, each taking the return; then
+    // adrp x16, guard; ldr x16, [x16, :lo12:guard]; br x16; ret
+    uint32_t ret = l.size - 4;
+    for (size_t i = 0; i != imported.size(); ++i) {
+      uint32_t at = l.checked + i * 28;
+      adrpAdd(at, 16, imported[i].start->getRVA());
+      insn(at + 8, 0xA9404610);
+      insn(at + 12, 0xEB1001FF);
+      branch19(at + 16, 3, at + 28);
+      insn(at + 20, 0xEB1101FF);
+      branch19(at + 24, 3, ret);
+    }
+    off = l.checked + imported.size() * 28;
+    insn(off, 0x90000010);
+    insn(off + 4, 0xF9400210);
+    insn(off + 8, 0xD61F0200);
+    applyArm64Addr(buf + off, guardRVA, rva + off, 12);
+    applyArm64Ldr(buf + off + 4, guardRVA & 0xfff);
+    insn(ret, 0xD65F03C0);
     return;
   }
 
@@ -430,6 +464,31 @@ void KCFIThunkChunk::writeTo(uint8_t *buf) const {
   buf[off + 6] = 0xFF;
   buf[off + 7] = 0x25;
   rel32(off + 8, guardRVA);
+  if (!checked)
+    return;
+
+  // cmp rax, [rip + start]; jb 1f; cmp rax, [rip + end]; jb 2f; 1:
+  // for each imported range, then jmp [rip + guard]; 2: jmp rax or ret
+  uint32_t tail = l.checked + imported.size() * 22 + 6;
+  for (size_t i = 0; i != imported.size(); ++i) {
+    off = l.checked + i * 22;
+    const uint8_t test[] = {0x48, 0x3B, modrm, 0,     0, 0, 0, 0x72,
+                            0x0D, 0x48, 0x3B,  modrm, 0, 0, 0, 0,
+                            0x0F, 0x82, 0,     0,     0, 0};
+    memcpy(buf + off, test, sizeof(test));
+    rel32(off + 3, imported[i].start->getRVA());
+    rel32(off + 12, imported[i].end->getRVA());
+    write32le(buf + off + 18, tail - (off + 22));
+  }
+  buf[tail - 6] = 0xFF;
+  buf[tail - 5] = 0x25;
+  rel32(tail - 4, guardRVA);
+  if (check) {
+    buf[tail] = 0xC3;
+  } else {
+    buf[tail] = 0xFF;
+    buf[tail + 1] = 0xE0;
+  }
 }
 
 KCFIListChunk::KCFIListChunk(COFFLinkerContext &ctx, StringRef sectionName,
@@ -1521,10 +1580,11 @@ void KCFIContents::boundMismatches(OutputSection *textSec,
 // prefix of the type is in an object LTO did not generate, a target in the
 // image that misses the tag is no member, and the miss goes straight to the
 // type's mismatch routine. A function in another image carries none of the
-// image's tags, and where it may be a valid target of the type, it passes
-// only through the ordinary thunk: the mismatch routine, which a target of
-// the type reaches nowhere else, fails fast on a target with a prefix. Every
-// target of a local member thunk is in the image.
+// image's tags and is outside the range, so a member thunk misses it through
+// its outside miss. Where such a function may be a valid target of the type,
+// that miss keeps the ordinary thunk, and takes the entry for a checked
+// target where the linker builds the thunk's form; otherwise it is narrowed
+// as the other. Every target of a local member thunk is in the image.
 void KCFIContents::narrowMemberMisses() {
   bool isX64 = ctx.config.machine == AMD64;
   if (!prefixes.isSealed() || (!isX64 && ctx.config.machine != ARM64))
@@ -1535,8 +1595,9 @@ void KCFIContents::narrowMemberMisses() {
       nativeTypes.insert(
           read32le(p.chunk->getContents().data() + p.offset + p.size - 4));
 
-  // A type that an object opens may also have the object's mismatch routine
-  // where the linker found no fact of it.
+  // A function in another image may be a valid target of a type that an
+  // object opens, which may give it the object's mismatch routine where the
+  // linker found no fact of it, or that the linker opens for one.
   auto *trap = dyn_cast_or_null<DefinedRegular>(ctx.symtab.find(KCFITrap));
   auto isOutsideType = [&](uint32_t type, Defined *mismatch) {
     if (ctx.kcfi.outsideTypes.contains(type))
@@ -1548,13 +1609,15 @@ void KCFIContents::narrowMemberMisses() {
 
   struct Kind {
     StringRef miss, mismatch;
-    bool local;
+    bool outside;
   };
   static const Kind kinds[] = {
       {KCFIMemberMissPrefix, KCFIMismatchPrefix, false},
       {KCFIMemberCheckMissPrefix, KCFICheckMismatchPrefix, false},
-      {KCFIMemberLocalMissPrefix, KCFIMismatchPrefix, true},
-      {KCFIMemberLocalCheckMissPrefix, KCFICheckMismatchPrefix, true}};
+      {KCFIMemberLocalMissPrefix, KCFIMismatchPrefix, false},
+      {KCFIMemberLocalCheckMissPrefix, KCFICheckMismatchPrefix, false},
+      {KCFIMemberOutsideMissPrefix, KCFIMismatchPrefix, true},
+      {KCFIMemberCheckOutsideMissPrefix, KCFICheckMismatchPrefix, true}};
   ctx.symtab.forEachSymbol([&](Symbol *s) {
     auto *d = dyn_cast<Defined>(s);
     if (!d || !d->isLive())
@@ -1569,7 +1632,7 @@ void KCFIContents::narrowMemberMisses() {
         return;
       auto *mismatch =
           dyn_cast_or_null<Defined>(ctx.symtab.find((k.mismatch + hex).str()));
-      if (!mismatch || (!k.local && isOutsideType(type, mismatch)))
+      if (!mismatch || (k.outside && isOutsideType(type, mismatch)))
         return;
       Chunk *c;
       uint32_t offset = 0;
@@ -1667,6 +1730,7 @@ void KCFIContents::replaceThunks() {
     return;
 
   DenseMap<const Chunk *, Chunk *> replacements;
+  SmallVector<std::pair<Symbol *, KCFIThunkChunk *>, 0> checkedMisses;
   SetVector<ObjFile *> files;
   for (auto &[sym, thunk] : ctx.kcfi.thunks) {
     // The record describes the thunk only if the chunk is the thunk's own.
@@ -1699,10 +1763,27 @@ void KCFIContents::replaceThunks() {
         imported.push_back(
             {ctx.kcfi.importedRanges[i].start, ctx.kcfi.importedRanges[i].end});
     kcfiThunksTestRange |= own;
-    replacements[sc] = make<KCFIThunkChunk>(
+    // A member thunk's miss of a target outside the range that still
+    // continues into this thunk, as for a type of which a function in another
+    // image may be a valid target, takes its entry for a checked target.
+    StringRef outsidePrefix = thunk.kind == LinkKCFIThunkDispatch
+                                  ? KCFIMemberOutsideMissPrefix
+                                  : KCFIMemberCheckOutsideMissPrefix;
+    auto *outsideMiss = dyn_cast_or_null<DefinedRegular>(
+        vfn ? nullptr
+            : ctx.symtab.find((outsidePrefix + utohexstr(thunk.type,
+                                                         /*LowerCase=*/true,
+                                                         /*Width=*/8))
+                                  .str()));
+    bool checked = outsideMiss && outsideMiss->getChunk() == sc &&
+                   outsideMiss->getValue() == 0;
+    auto *chunk = make<KCFIThunkChunk>(
         ctx, thunk.kind != LinkKCFIThunkDispatch, compare, pageTest,
         mismatchSym, guardSym, own ? kcfiCodeStart : nullptr,
-        own ? kcfiCodeEnd : nullptr, imported);
+        own ? kcfiCodeEnd : nullptr, imported, checked);
+    replacements[sc] = chunk;
+    if (checked)
+      checkedMisses.push_back({outsideMiss, chunk});
     files.insert(cast<ObjFile>(sc->file));
   }
   if (replacements.empty())
@@ -1731,6 +1812,9 @@ void KCFIContents::replaceThunks() {
       if (auto *d = dyn_cast_or_null<DefinedRegular>(s);
           d && !d->getCOFFSymbol().isExternal())
         repoint(d);
+  for (auto [miss, chunk] : checkedMisses)
+    replaceSymbol<DefinedSynthetic>(miss, miss->getName(), chunk,
+                                    chunk->getCheckedOffset());
   for (auto &kv : replacements)
     cast<SectionChunk>(const_cast<Chunk *>(kv.first))->live = false;
 }
