@@ -726,11 +726,11 @@ static int64_t placeReloc(ArrayRef<coff_relocation> relocs, size_t &r,
   return r < relocs.size() && relocs[r].VirtualAddress == off ? int64_t(r) : -1;
 }
 
-const ObjFile::RelocFact *
+ObjFile::RelocFact *
 ObjFile::relocFact(const SectionChunk *sc, const coff_relocation &rel) const {
   if (!linkRecords)
     return nullptr;
-  const LinkRecords &lr = *linkRecords;
+  LinkRecords &lr = *linkRecords;
   uint32_t sec = sc->getSectionNumber();
   if (size_t(sec) + 1 >= lr.relocFactStarts.size())
     return nullptr;

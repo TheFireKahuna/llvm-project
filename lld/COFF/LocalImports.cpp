@@ -116,35 +116,6 @@ static bool canBypass(ObjFile *file, const coff_relocation &rel) {
          (!isa<DefinedAbsolute>(li->getTarget()) || isZeroPointer(li));
 }
 
-// The form of the instruction at rel, a REL32 relocation against a local
-// import pointer, if the object describes it as a call, jump or pointer load,
-// which the linker rewrites to reach the pointer's symbol directly. A site
-// whose bytes are not its form's sets *mismatch, if given, and is not
-// rewritten.
-static std::optional<LinkSiteForm>
-getLocalImportRewrite(const SectionChunk *sc, const coff_relocation &rel,
-                      bool *mismatch = nullptr) {
-  ObjFile *file = sc->file;
-  if (!canBypass(file, rel))
-    return std::nullopt;
-  std::optional<LinkSiteForm> form = getSiteForm(sc, rel);
-  if (!form || *form == LinkSiteOther || *form == LinkSiteAddress)
-    return std::nullopt;
-  if (!isSiteForm(sc->getContents(), rel.VirtualAddress, *form)) {
-    if (mismatch)
-      *mismatch = true;
-    return std::nullopt;
-  }
-  // Zero is materialised for a load or a call. A jump through it keeps
-  // reading the pointer, since the unwinder takes an epilogue to end only in a
-  // jump to an immediate or through memory.
-  if (isZeroPointer(
-          cast<DefinedLocalImport>(file->getSymbol(rel.SymbolTableIndex))) &&
-      (*form == LinkSiteJump || *form == LinkSiteJumpOnePrefix))
-    return std::nullopt;
-  return form;
-}
-
 std::optional<LinkSiteForm> getDescribedSite(const SectionChunk *sc,
                                              const coff_relocation &rel) {
   std::optional<LinkSiteForm> form = getSiteForm(sc, rel);
@@ -315,7 +286,9 @@ bool relaxLocalImport(const SectionChunk *sc, const coff_relocation &rel,
         type = IMAGE_REL_ARM64_PAGEOFFSET_12A;
       }
     }
-  } else if ((rewrite = getLocalImportRewrite(sc, rel))) {
+  } else if (const ObjFile::RelocFact *f = sc->file->relocFact(sc, rel);
+             f && f->hasRewrite) {
+    rewrite = f->rewriteForm;
     if (isZeroPointer(li)) {
       if (*rewrite == LinkSiteCall)
         rewriteZeroCall(off);
@@ -964,7 +937,10 @@ void addSiteEdits(const SectionChunk *sc, std::vector<RelaxEdit> &edits) {
     edits.push_back({it->second - 1, 5, 0, 0, RelaxEdit::Delete});
   // A call or jump through a local import pointer becomes the direct one.
   for (const coff_relocation &rel : sc->getRelocs()) {
-    std::optional<LinkSiteForm> form = getLocalImportRewrite(sc, rel);
+    const ObjFile::RelocFact *f = file->relocFact(sc, rel);
+    std::optional<LinkSiteForm> form;
+    if (f && f->hasRewrite)
+      form = f->rewriteForm;
     if (!form || *form == LinkSiteLoad || *form == LinkSiteLoadREX2)
       continue;
     auto *li = cast<DefinedLocalImport>(file->getSymbol(rel.SymbolTableIndex));
@@ -1254,9 +1230,33 @@ void bindLocalImports(SymbolTable &symtab) {
           continue;
         }
         bool mismatch = false;
-        bool rewritable =
-            arm64 ? canBypass(file, rel) && isArm64PointerLoad(sc, rel)
-                  : getLocalImportRewrite(sc, rel, &mismatch).has_value();
+        bool rewritable;
+        if (arm64) {
+          rewritable = canBypass(file, rel) && isArm64PointerLoad(sc, rel);
+        } else {
+          // Classify the site once: a call, jump or pointer load through a
+          // bypassable local import, whose bytes are its form's, which the
+          // relaxation and the write then reach without deriving it again. A
+          // jump through a pointer that holds zero keeps reading it.
+          std::optional<LinkSiteForm> form;
+          if (canBypass(file, rel)) {
+            form = getSiteForm(sc, rel);
+            if (!form || *form == LinkSiteOther || *form == LinkSiteAddress)
+              form.reset();
+            else if (!isSiteForm(sc->getContents(), rel.VirtualAddress, *form)) {
+              mismatch = true;
+              form.reset();
+            } else if (isZeroPointer(li) && (*form == LinkSiteJump ||
+                                             *form == LinkSiteJumpOnePrefix))
+              form.reset();
+          }
+          rewritable = form.has_value();
+          if (ObjFile::RelocFact *f = file->relocFact(sc, rel)) {
+            f->hasRewrite = rewritable;
+            if (form)
+              f->rewriteForm = *form;
+          }
+        }
         if (mismatch)
           Err(ctx) << file << ": the instruction at offset 0x"
                    << Twine::utohexstr(rel.VirtualAddress) << " in "
