@@ -810,6 +810,7 @@ void Writer::run() {
     slots.bind();
     slots.createResidualFill();
     slots.createOverrideCellFill();
+    slots.createThreadLocalSlotCopy();
     if (ctx.kcfi.listsImports || !ctx.kcfi.listedImports.empty())
       kcfi.listThunks();
     createSections();
@@ -1219,8 +1220,15 @@ void Writer::createSections() {
     createPartialSection(c->getSectionName(), c->getOutputCharacteristics())
         ->chunks.push_back(c);
   // Right after the table's start, ahead of every other initializer: the
-  // fill of the overridable-default cells, then the residual fill, which seals
-  // the section of the cells that share a chunk with residual words.
+  // fill of the overridable-default cells or the copy of the thread-local
+  // slots, then the residual fill, which seals the section of the cells that
+  // share a chunk with residual words.
+  if (Chunk *copy = slots.getThreadLocalSlotCopy()) {
+    createPartialSection(".text", copy->getOutputCharacteristics())
+        ->chunks.push_back(copy);
+    createPartialSection(".CRT$XIA$fill", data | r)
+        ->chunks.push_back(slots.getThreadLocalSlotCopyPointer());
+  }
   if (Chunk *fill = slots.getOverrideCellFill()) {
     createPartialSection(".text", fill->getOutputCharacteristics())
         ->chunks.push_back(fill);
@@ -1299,8 +1307,8 @@ void Writer::createSections() {
 
       Log(ctx) << "Processing section " << pSec->name << " -> " << name;
 
-      // The residual fill's pointer is alone in a group of its own.
-      if (pSec->chunks.front() != slots.getFillPointer())
+      // The linker's fills have a group of their own, in their order there.
+      if (pSec->name != ".CRT$XIA$fill")
         sortCRTSectionChunks(pSec->chunks);
     }
 
@@ -3004,6 +3012,10 @@ void Writer::createGuardCFTables() {
   // The C initializer table calls the overridable-default cell fill.
   if (Chunk *fill = slots.getOverrideCellFill())
     addressTakenSyms.insert({fill, 0});
+
+  // The C initializer table calls the copy of the thread-local slots.
+  if (Chunk *copy = slots.getThreadLocalSlotCopy())
+    addressTakenSyms.insert({copy, 0});
 
   // The override table's anchor names each replacement body, and each
   // forwarding thunk, whose checked dispatch from a default needs it in the

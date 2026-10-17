@@ -57,6 +57,9 @@ public:
   // Builds the fill of a DLL's overridable-default cells, the words through
   // which it reaches the defaults it imports.
   void createOverrideCellFill();
+  // Builds the copy of an executable's thread-local import slots into the main
+  // thread's block.
+  void createThreadLocalSlotCopy();
   void check(Chunk *iatStart, uint64_t iatSize);
 
   // Whether sc is laid out apart from the other chunks of its section.
@@ -83,6 +86,10 @@ public:
   Chunk *getOverrideCellFillPointer() const { return overrideCellFillPointer; }
   Chunk *getOverrideCellFillUnwind() const { return overrideCellFillUnwind; }
   Chunk *getOverrideCellFillPdata() const { return overrideCellFillPdata; }
+  Chunk *getThreadLocalSlotCopy() const { return threadLocalSlotCopy; }
+  Chunk *getThreadLocalSlotCopyPointer() const {
+    return threadLocalSlotCopyPointer;
+  }
 
 private:
   void scanChunk(SlotScan &scan, SectionChunk *sc);
@@ -128,6 +135,10 @@ private:
   Chunk *overrideCellFillPointer = nullptr;
   Chunk *overrideCellFillUnwind = nullptr;
   Chunk *overrideCellFillPdata = nullptr;
+  // The copy of an executable's thread-local slots and its pointer in the C
+  // initializer table.
+  Chunk *threadLocalSlotCopy = nullptr;
+  Chunk *threadLocalSlotCopyPointer = nullptr;
   // The read-only output sections other than .rdata that hold in-place import
   // slots, which are laid out before .rdata, and whether a $-group of .rdata
   // holds one; either places the import address tables at the start of
