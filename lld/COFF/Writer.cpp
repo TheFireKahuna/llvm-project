@@ -2335,6 +2335,16 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
       write32le(stub + threadLocalSlotCopyOffset, threadLocalSlotCopyTag);
       write32le(stub + threadLocalSlotCopyOffset + 4, copy->getRVA());
     }
+    // An executable that reserves the process's exit-list state names it as
+    // {tag, rva} at 0x30, in the MZ header's reserved words, where every copy
+    // of the C runtime's termination registries in the process finds it
+    // through PEB->ImageBaseAddress.
+    if (auto *state = dyn_cast_or_null<DefinedRegular>(
+            ctx.symtab.findUnderscore("__wincrt_exit_state"));
+        state && state->isLive() && !ctx.config.dll) {
+      write32le(stub + 0x30, 0x7E1A5C03);
+      write32le(stub + 0x34, state->getRVA());
+    }
     memcpy(stub + programOffset, dosProgram, sizeof(dosProgram));
     buf = stub + dosStubSize;
   }
