@@ -59,6 +59,9 @@ class X86WinCOFFStreamer : public MCWinCOFFStreamer {
   // describes once it has seen that it is in a form the records describe.
   enum { NoFusedUse, AwaitingAccess, AwaitingAdd } FusedUse = NoFusedUse;
   MCRegister FusedUseReg;
+  // The next instruction is a jump that ends its function, which a linker may
+  // leave out, so that what its function's length depends on is described.
+  bool TailJump = false;
 
   bool continueFusedCall(const MCInst &Inst, bool Follows, int Preceding,
                          size_t Size);
@@ -88,6 +91,7 @@ public:
     FusedCall = NoFusedCall;
     FusedJumpEnd = nullptr;
     FusedUse = NoFusedUse;
+    TailJump = false;
     MCWinCOFFStreamer::reset();
   }
   void emitInstruction(const MCInst &Inst, const MCSubtargetInfo &STI) override;
@@ -95,6 +99,10 @@ public:
   void emitCOFFLinkFusedRead() override;
   void emitCOFFLinkFusedAccess(const MCSymbol *Load, MCRegister Reg) override;
   void emitCOFFLinkFusedAdd(const MCSymbol *Load, MCRegister Reg) override;
+  void emitCOFFLinkTailJump() override {
+    MCWinCOFFStreamer::emitCOFFLinkTailJump();
+    TailJump = true;
+  }
   void emitLabel(MCSymbol *Symbol, SMLoc Loc = SMLoc()) override;
   void emitWinEHHandlerData(SMLoc Loc) override;
   void emitWindowsUnwindTables(WinEH::FrameInfo *Frame) override;
@@ -224,6 +232,8 @@ void X86WinCOFFStreamer::emitInstruction(const MCInst &Inst,
       Resizable |= describeFusedUse(Inst, UseStart, Bytes);
     FusedUse = NoFusedUse;
   }
+  Resizable |= TailJump;
+  TailJump = false;
 
   if (X86II::isPrefix(MCII->get(Inst.getOpcode()).TSFlags)) {
     // A prefix extends the run it follows. One whose bytes cannot be counted,

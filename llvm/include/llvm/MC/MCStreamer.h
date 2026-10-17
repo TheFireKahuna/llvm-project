@@ -694,6 +694,11 @@ public:
   /// load the pointer's page begins, and is null elsewhere.
   virtual void emitCOFFLinkValueOnly(const MCSymbol *Page);
 
+  /// Tells the linker that the next instruction, a jump to a function, ends
+  /// its function, so that a linker that places the function's target right
+  /// after it may leave the jump out.
+  virtual void emitCOFFLinkTailJump();
+
   /// Emits an lcomm directive with XCOFF csect information.
   ///
   /// \param LabelSym - Label on the block of storage.

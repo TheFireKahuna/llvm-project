@@ -104,6 +104,8 @@ class COFFAsmParser : public MCAsmParserExtension {
         ".linkfusedadd");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkValueOnly>(
         ".linkvalueonly");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkTailJump>(
+        ".linktailjump");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFact>(
         ".linkprotecteddelayiat");
 
@@ -180,6 +182,7 @@ class COFFAsmParser : public MCAsmParserExtension {
   bool parseDirectiveLinkFusedRead(StringRef, SMLoc);
   bool parseDirectiveLinkFusedAccess(StringRef, SMLoc);
   bool parseDirectiveLinkValueOnly(StringRef, SMLoc);
+  bool parseDirectiveLinkTailJump(StringRef, SMLoc);
   bool parseDirectiveSecNum(StringRef, SMLoc);
   bool parseDirectiveSecOffset(StringRef, SMLoc);
 
@@ -871,6 +874,15 @@ bool COFFAsmParser::parseDirectiveLinkFusedAccess(StringRef Directive, SMLoc) {
     getStreamer().emitCOFFLinkFusedAdd(Load, Reg);
   else
     getStreamer().emitCOFFLinkFusedAccess(Load, Reg);
+  return false;
+}
+
+/// parseDirectiveLinkTailJump
+///  ::= .linktailjump
+bool COFFAsmParser::parseDirectiveLinkTailJump(StringRef, SMLoc) {
+  if (parseEOL())
+    return true;
+  getStreamer().emitCOFFLinkTailJump();
   return false;
 }
 

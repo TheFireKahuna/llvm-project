@@ -407,6 +407,13 @@ void MCWinCOFFStreamer::emitCOFFLinkFusedAdd(const MCSymbol *Load,
   getWriter().addLinkFusedAdd({nullptr, Load, 0, 0});
 }
 
+// A jump that ends its function names the place where it begins.
+void MCWinCOFFStreamer::emitCOFFLinkTailJump() {
+  MCSymbol *Site = getContext().createTempSymbol();
+  emitLabel(Site);
+  getWriter().addLinkTailJump(Site);
+}
+
 // A value-only load names the place where the load begins, as a fused read
 // does.
 void MCWinCOFFStreamer::emitCOFFLinkValueOnly(const MCSymbol *Page) {

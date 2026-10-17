@@ -1828,6 +1828,29 @@ uint64_t WinCOFFWriter::writeObject() {
       OS << CallOnly;
     }
 
+    // A section that a jump ending its function ends too, the jump's
+    // displacement holding the section's last relocation.
+    SmallString<0> TailJumps;
+    raw_svector_ostream TailJumpsOS(TailJumps);
+    for (const MCSymbol *Jump : OWriter.LinkTailJumps) {
+      COFFSection *Sec =
+          Jump->isInSection() ? SectionMap.lookup(&Jump->getSection()) : nullptr;
+      if (!Sec || Sec->Relocations.empty() ||
+          Header.Machine != COFF::IMAGE_FILE_MACHINE_AMD64)
+        continue;
+      uint64_t Field = Asm->getSymbolOffset(*Jump) + 1;
+      const COFF::relocation &Last = Sec->Relocations.back().Data;
+      if (Last.Type == COFF::IMAGE_REL_AMD64_REL32 &&
+          Last.VirtualAddress == Field &&
+          Field + 4 == Asm->getSectionAddressSize(*Sec->MCSection))
+        encodeULEB128(Sec->Symbol->getIndex(), TailJumpsOS);
+    }
+    if (!TailJumps.empty()) {
+      encodeULEB128(COFF::LinkRecordTailJumps, OS);
+      encodeULEB128(TailJumps.size(), OS);
+      OS << TailJumps;
+    }
+
     for (uint64_t Kind : OWriter.LinkFacts) {
       // The bindings' group says that the object lists every binding, with or
       // without a payload.
@@ -2023,6 +2046,7 @@ void WinCOFFObjectWriter::reset() {
   LinkFusedAccesses.clear();
   LinkFusedAdds.clear();
   LinkValueOnlyLoads.clear();
+  LinkTailJumps.clear();
   LinkCoverageValues.clear();
   ObjWriter->reset();
   if (DwoWriter)

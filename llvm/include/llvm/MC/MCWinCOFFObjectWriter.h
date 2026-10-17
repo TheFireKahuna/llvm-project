@@ -235,6 +235,10 @@ private:
   SmallVector<LinkFusedAccess, 0> LinkFusedAccesses;
   SmallVector<LinkFusedAdd, 0> LinkFusedAdds;
   SmallVector<LinkValueOnly, 0> LinkValueOnlyLoads;
+  // Where the jumps begin that end their functions, which the object's
+  // link-only records list (COFF::LinkRecordTailJumps) where each ends its
+  // section too.
+  SmallVector<const MCSymbol *, 0> LinkTailJumps;
   // The values that depend on where code a linker may resize lies.
   SmallVector<LinkCoverageValue, 0> LinkCoverageValues;
 
@@ -300,6 +304,7 @@ public:
   void addLinkValueOnly(const LinkValueOnly &Load) {
     LinkValueOnlyLoads.push_back(Load);
   }
+  void addLinkTailJump(const MCSymbol *Site) { LinkTailJumps.push_back(Site); }
   void addLinkCoverageValue(const LinkCoverageValue &Value) {
     LinkCoverageValues.push_back(Value);
   }

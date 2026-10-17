@@ -366,6 +366,17 @@ enum LinkRecordKind : uint64_t {
   // to the relocation's symbol with the addend the field holds. A linker that
   // does not know the kind leaves every size as it is.
   LinkRecordCoverage = 30,
+
+  // The code sections that end in a jump to a function, jmp rel32 whose
+  // displacement holds the section's last relocation, that also ends the
+  // function the section holds, so that a linker that places the jump's target
+  // right after the section may leave the jump out:
+  //
+  //   payload := section:ULEB128*
+  //
+  // section is as for LinkRecordSites. A linker that does not know the kind
+  // takes the jump as the branch it is.
+  LinkRecordTailJumps = 32,
 };
 
 // The type of an entry in a LinkRecordCoverage group.
