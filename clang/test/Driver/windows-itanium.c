@@ -246,8 +246,9 @@
 // KCFI-OPTS-SAME: "-fsanitize-cfi-icall-generalize-pointers"
 
 // Under LTO, CFI checks the virtual and non-virtual member calls of the
-// classes LTO sees whole, and the indirect calls through function and member
-// function pointers, beside KCFI, and downcasts as without LTO. With no
+// classes LTO sees whole and the casts to them from unrelated types, and the
+// indirect calls through function and member function pointers, beside KCFI,
+// and downcasts as without LTO. With no
 // sanitizer runtime, a failed check can only trap.
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s -flto \
 // RUN:     -resource-dir=%S/Inputs/resource_dir 2>&1 \
@@ -256,8 +257,8 @@
 // RUN:     -resource-dir=%S/Inputs/resource_dir 2>&1 \
 // RUN:   | FileCheck --check-prefix=LTO-CFI %s --implicit-check-not=error:
 // LTO-CFI:     "-cc1"
-// LTO-CFI-DAG: "-fsanitize=cfi-derived-cast,cfi-icall,cfi-mfcall,cfi-nvcall,cfi-vcall,kcfi"
-// LTO-CFI-DAG: "-fsanitize-trap=cfi-derived-cast,cfi-icall,cfi-mfcall,cfi-nvcall,cfi-vcall"
+// LTO-CFI-DAG: "-fsanitize=cfi-derived-cast,cfi-icall,cfi-mfcall,cfi-unrelated-cast,cfi-nvcall,cfi-vcall,kcfi"
+// LTO-CFI-DAG: "-fsanitize-trap=cfi-derived-cast,cfi-icall,cfi-mfcall,cfi-unrelated-cast,cfi-nvcall,cfi-vcall"
 // LTO-CFI-DAG: "-fsanitize-system-ignorelist={{[^"]*}}cfi_ignorelist.txt"
 // LTO-CFI-DAG: "-fsplit-lto-unit"
 // LTO-CFI-DAG: "-fwhole-program-vtables"
@@ -294,7 +295,7 @@
 // RUN: not %clang -### --target=x86_64-unknown-windows-itanium -c %s -flto \
 // RUN:     -fsanitize=cfi-vcall -resource-dir=%S 2>&1 \
 // RUN:   | FileCheck --check-prefix=CFI-NO-LIST %s
-// LTO-CFI-NO-LIST: "-fsanitize=cfi-derived-cast,cfi-icall,cfi-mfcall,cfi-nvcall,cfi-vcall,kcfi"
+// LTO-CFI-NO-LIST: "-fsanitize=cfi-derived-cast,cfi-icall,cfi-mfcall,cfi-unrelated-cast,cfi-nvcall,cfi-vcall,kcfi"
 // CFI-NO-LIST: error: missing sanitizer ignorelist
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s -flto \
 // RUN:     -fsanitize=cfi -resource-dir=%S/Inputs/resource_dir 2>&1 \
