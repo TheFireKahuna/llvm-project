@@ -117,6 +117,16 @@ from the [LLVM releases web site](https://llvm.org/releases/).
   linkers do, and `-boundary-symbols` defines a referenced `_etext`, `_edata`
   and `_end` and their unprefixed forms. Both are off by default.
 
+* `-import-slots` selects the import binding model of Windows Itanium and
+  NT-POSIX. Under it, an undefined `__imp_X` that no input provides under that
+  name loads the archive member that defines `X`, as a reference to `X` would,
+  and binds to it through a local pointer with warning LNK4217, where
+  link.exe and LLD otherwise report an undefined symbol. The member is also
+  loaded after LTO, for the calls through `__imp_` that code generation adds
+  to library functions under `-fno-plt`. MinGW mode no longer turns on
+  `-runtime-pseudo-reloc` under it, and asking for pseudo relocations with it
+  is an error.
+
 ### MinGW Improvements
 
 ### MachO Improvements

@@ -14,7 +14,7 @@
 // RUN:       --implicit-check-not=user32 --implicit-check-not=gdi32 \
 // RUN:       --implicit-check-not=advapi32 --implicit-check-not=shell32
 // C:      lld-link{{(.exe)?}}" "-out:a.exe" "-machine:x64" "-nologo" "-lldignoreenv"
-// C-SAME: "-cetcompat" "-guard:cf,ehcont,exportsuppress"
+// C-SAME: "-import-slots" "-cetcompat" "-guard:cf,ehcont,exportsuppress"
 // C-SAME: "-manifest:embed"
 // C-SAME: "-manifestinput:{{[^"]*}}segment_heap.manifest"
 // C-SAME: "{{[^"]*}}.o"
@@ -68,7 +68,7 @@
 // RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium /LD /Fefoo.dll \
 // RUN:     /Tc%s 2>&1 \
 // RUN:   | FileCheck --check-prefix=DLL %s
-// DLL: "-out:foo.dll" "-machine:x64" "-nologo" "-lldignoreenv"
+// DLL: "-out:foo.dll" "-machine:x64" "-nologo" "-lldignoreenv" "-import-slots"
 // DLL-SAME: "-cetcompat" "-dll" "-implib:foo.dll.lib"
 
 // A GUI program links user32 by default; a console program does not, and
@@ -78,7 +78,7 @@
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium %s -mconsole \
 // RUN:     -mwindows 2>&1 \
 // RUN:   | FileCheck --check-prefix=WINDOWS %s --implicit-check-not=gdi32
-// WINDOWS: "-lldignoreenv" "-cetcompat" "-subsystem:windows"
+// WINDOWS: "-lldignoreenv" "-import-slots" "-cetcompat" "-subsystem:windows"
 // WINDOWS: "-defaultlib:onecore_apiset.lib" "-defaultlib:user32.lib"
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium %s -mconsole 2>&1 \
 // RUN:   | FileCheck --check-prefix=CONSOLE %s \
@@ -87,7 +87,7 @@
 // RUN:     -mconsole 2>&1 \
 // RUN:   | FileCheck --check-prefix=CONSOLE %s \
 // RUN:       --implicit-check-not=user32 --implicit-check-not=gdi32
-// CONSOLE: "-lldignoreenv" "-cetcompat" "-subsystem:console"
+// CONSOLE: "-lldignoreenv" "-import-slots" "-cetcompat" "-subsystem:console"
 
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium %s -g 2>&1 \
 // RUN:   | FileCheck --check-prefix=DEBUG %s

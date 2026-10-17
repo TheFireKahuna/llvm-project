@@ -1226,6 +1226,20 @@ void LinkerDriver::enqueueTask(std::function<void()> task) {
   taskQueue.push_back(std::move(task));
 }
 
+// Under -import-slots, loads the archive members that undefined __imp_
+// symbols ask for, until no loaded member asks for another.
+void LinkerDriver::loadLocalImportMembers() {
+  if (!ctx.config.importSlots)
+    return;
+  for (bool loaded = true; loaded;) {
+    loaded = false;
+    ctx.forEachSymtab([&](SymbolTable &symtab) {
+      loaded |= symtab.loadLocalImportMembers();
+    });
+    run();
+  }
+}
+
 bool LinkerDriver::run() {
   llvm::TimeTraceScope timeScope("Read input files");
   ScopedTimer t(ctx.inputFileTimer);
@@ -1901,9 +1915,12 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
       // Don't automatically deduce the lib path from the environment or MSVC
       // installations when operating in mingw mode. (This also makes LLD ignore
       // winsysroot and vctoolsdir arguments.)
+      // A link with import slots takes every library directory from its
+      // command line. Its targets link none of the Visual C++ libraries, so
+      // the MSVC directory must not be searched.
       if (args.hasArg(OPT_winsysroot, OPT_vctoolsdir, OPT_winsdkdir))
         detectWinSysRoot(args);
-      else
+      else if (!args.hasArg(OPT_import_slots))
         pendingWinSysRootArgs = &args;
       if (!args.hasArg(OPT_lldignoreenv, OPT_winsysroot, OPT_vctoolsdir,
                        OPT_vctoolsversion, OPT_winsdkdir, OPT_winsdkversion))
@@ -2461,12 +2478,18 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
       !config->dll && args.hasFlag(OPT_tsaware, OPT_tsaware_no, true);
   config->autoImport =
       args.hasFlag(OPT_auto_import, OPT_auto_import_no, config->mingw);
-  config->pseudoRelocs = args.hasFlag(
-      OPT_runtime_pseudo_reloc, OPT_runtime_pseudo_reloc_no, config->mingw);
+  config->importSlots = args.hasArg(OPT_import_slots);
   config->startStopSymbols =
       args.hasFlag(OPT_start_stop_symbols, OPT_start_stop_symbols_no, false);
   config->boundarySymbols =
       args.hasFlag(OPT_boundary_symbols, OPT_boundary_symbols_no, false);
+  // -import-slots binds imports where the image is laid out, so no runtime
+  // fixup is left for pseudo relocations to make.
+  config->pseudoRelocs =
+      args.hasFlag(OPT_runtime_pseudo_reloc, OPT_runtime_pseudo_reloc_no,
+                   config->mingw && !config->importSlots);
+  if (config->importSlots && config->pseudoRelocs)
+    Err(ctx) << "-runtime-pseudo-reloc is not compatible with -import-slots";
   config->callGraphProfileSort = args.hasFlag(
       OPT_call_graph_profile_sort, OPT_call_graph_profile_sort_no, true);
   config->stdcallFixup =
@@ -2884,7 +2907,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // converge.
   {
     llvm::TimeTraceScope timeScope("Add unresolved symbols");
+    bool loadedImports;
     do {
+      loadedImports = false;
       ctx.forEachSymtab([&](SymbolTable &symtab) {
         // Windows specific -- if entry point is not found,
         // search for its mangled names.
@@ -2901,6 +2926,11 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
         }
 
         symtab.resolveAlternateNames();
+
+        // Under -import-slots, an import-form reference loads the archive
+        // member that defines its symbol, as a direct reference would, when
+        // nothing provides it in import form.
+        loadedImports |= symtab.loadLocalImportMembers();
       });
 
       ctx.forEachActiveSymtab([&](SymbolTable &symtab) {
@@ -2928,7 +2958,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
               symtab.addGCRoot(arg->getValue());
         }
       });
-    } while (run());
+    } while (run() || loadedImports);
   }
 
   // Handle /includeglob
@@ -2971,7 +3001,19 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     // to loop these two calls.
     ctx.forEachSymtab([](SymbolTable &symtab) { symtab.loadMinGWSymbols(); });
     run();
+  } else if (config->importSlots) {
+    // LTO emits a bitcode file's reference to a symbol that is not dso_local
+    // in import form, so an import that offers only __imp_X is loaded for X,
+    // as for an automatic import.
+    ctx.forEachSymtab([](SymbolTable &symtab) {
+      if (!symtab.bitcodeFileInstances.empty())
+        symtab.loadMinGWSymbols();
+    });
+    run();
   }
+
+  // Members loaded for -wrap or MinGW may have added import-form references.
+  loadLocalImportMembers();
 
   // At this point, we should not have any symbols that cannot be resolved.
   // If we are going to do codegen for link-time optimization, check for
@@ -3023,6 +3065,11 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // If we generated native object files from bitcode files, this resolves
   // references to the symbols we use from them.
   run();
+
+  // The LTO step may have added import-form references, such as calls to the
+  // library functions it introduces, whose members input resolution could not
+  // load.
+  loadLocalImportMembers();
 
   // Apply symbol renames for -wrap.
   ctx.forEachSymtab([](SymbolTable &symtab) {

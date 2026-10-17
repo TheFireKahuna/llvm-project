@@ -13,7 +13,7 @@
 // RUN:       --implicit-check-not=libc.lib \
 // RUN:       --implicit-check-not=-cetcompat
 // EXE:      lld-link{{(.exe)?}}" "-out:a.exe" "-machine:x64" "-nologo" "-lldignoreenv"
-// EXE-SAME: "-guard:cf,exportsuppress"
+// EXE-SAME: "-import-slots" "-guard:cf,exportsuppress"
 // EXE-SAME: "-manifest:embed"
 // EXE-SAME: "[[LIB:[^"]*]]{{/|\\\\}}crt1.obj" "[[LIB]]{{/|\\\\}}crt_do_start.obj"
 // EXE-SAME: "[[LIB]]{{/|\\\\}}crt_tls.obj" "[[LIB]]{{/|\\\\}}crt_tls_cleanup.obj"
