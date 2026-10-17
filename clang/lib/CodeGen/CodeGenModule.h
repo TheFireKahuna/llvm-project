@@ -1752,6 +1752,11 @@ public:
   /// Generate a KCFI type identifier for T.
   llvm::ConstantInt *CreateKCFITypeId(QualType T, StringRef Salt);
 
+  /// The trap kind a failed check of the CFI scheme \p Ordinal takes in
+  /// place of its handler's, if the target gives it one.
+  std::optional<uint8_t>
+  getCFITrapKind(SanitizerKind::SanitizerOrdinal Ordinal) const;
+
   /// Create a metadata identifier for the given function type.
   llvm::Metadata *CreateMetadataIdentifierForFnType(QualType T);
 

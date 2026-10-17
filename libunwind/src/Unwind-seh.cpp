@@ -620,7 +620,18 @@ _GCC_specific_handler(PEXCEPTION_RECORD ms_exc, PVOID frame, PCONTEXT ms_ctx,
 /// This is a wrapper that calls the real SEH handler function, which in
 /// turn (at least, for Itanium-style frames) calls the real Itanium
 /// personality function (see \c _GCC_specific_handler()).
-extern "C" _Unwind_Reason_Code
+///
+/// The system calls a frame's language handler directly, trusting it as part
+/// of the image's read-only unwind data, and so does this call: a Control
+/// Flow Guard or KCFI check would reject handlers that are no valid
+/// indirect-call targets, such as ntdll's __C_specific_handler, which a
+/// forced unwind reaches at the bottom of every thread's stack.
+#if defined(__clang__)
+#define _LIBUNWIND_SEH_DIRECT_CALL __attribute__((guard(nocf), no_sanitize("kcfi")))
+#else
+#define _LIBUNWIND_SEH_DIRECT_CALL
+#endif
+extern "C" _LIBUNWIND_SEH_DIRECT_CALL _Unwind_Reason_Code
 __libunwind_seh_personality(int version, _Unwind_Action state,
                             uint64_t klass, _Unwind_Exception *exc,
                             struct _Unwind_Context *context) {
