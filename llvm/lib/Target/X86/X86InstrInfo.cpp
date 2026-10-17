@@ -8545,6 +8545,18 @@ X86InstrInfo::foldMemoryOperandImpl(MachineFunction &MF, MachineInstr &MI,
       X86II::hasNewDataDest(TSFlags))
     return nullptr;
 
+  // On Windows Itanium and NT-POSIX the linker replaces a load of the import
+  // pointer of a symbol not known to be imported with the symbol's address, or
+  // with zero, only where the load is an instruction of its own or a call or
+  // jump through it.
+  if (Subtarget.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      !MI.isCall() && LoadMI.getOpcode() == X86::MOV64rm) {
+    const MachineOperand &Disp = LoadMI.getOperand(1 + X86::AddrDisp);
+    if (Disp.isGlobal() && Disp.getTargetFlags() == X86II::MO_DLLIMPORT &&
+        !Disp.getGlobal()->hasDLLImportStorageClass())
+      return nullptr;
+  }
+
   // Determine the alignment of the load.
   Align Alignment;
   unsigned LoadOpc = LoadMI.getOpcode();

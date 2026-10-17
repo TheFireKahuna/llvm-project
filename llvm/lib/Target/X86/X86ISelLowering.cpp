@@ -3543,8 +3543,16 @@ bool X86TargetLowering::shouldReduceLoadWidth(
   // relocation target a movq or addq instruction: don't let the load shrink.
   SDValue BasePtr = cast<LoadSDNode>(Load)->getBasePtr();
   if (BasePtr.getOpcode() == X86ISD::WrapperRIP)
-    if (const auto *GA = dyn_cast<GlobalAddressSDNode>(BasePtr.getOperand(0)))
+    if (const auto *GA = dyn_cast<GlobalAddressSDNode>(BasePtr.getOperand(0))) {
+      // Nor may a Windows Itanium or NT-POSIX load of the import pointer of a
+      // symbol not known to be imported, which the linker makes the symbol's
+      // address only as a whole.
+      if (GA->getTargetFlags() == X86II::MO_DLLIMPORT &&
+          !GA->getGlobal()->hasDLLImportStorageClass() &&
+          Subtarget.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+        return false;
       return GA->getTargetFlags() != X86II::MO_GOTTPOFF;
+    }
 
   // If this is a (1) 128-bit or wider vector load, and any use will be used by
   // a legal full width instruction, then the load can typically be memory

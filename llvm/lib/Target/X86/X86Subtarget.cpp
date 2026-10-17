@@ -140,6 +140,19 @@ unsigned char X86Subtarget::classifyGlobalReference(const GlobalValue *GV,
     }
   }
 
+  // On Windows Itanium and NT-POSIX the address of a function the module does
+  // not define is loaded from its import pointer, as ELF's -fPIE form loads it
+  // from the GOT, even where calls to it are direct, so that code sees the
+  // address static data sees. The linker replaces the load with the direct
+  // address when the function is in the image, or with zero when an
+  // extern_weak function is absent.
+  if (TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment()) {
+    const auto *F = dyn_cast_or_null<Function>(GV);
+    if (F && F->isDeclarationForLinker() && !F->isIntrinsic() &&
+        F->hasDefaultVisibility())
+      return X86II::MO_DLLIMPORT;
+  }
+
   if (TM.shouldAssumeDSOLocal(GV))
     return classifyLocalReference(GV);
 
@@ -147,7 +160,15 @@ unsigned char X86Subtarget::classifyGlobalReference(const GlobalValue *GV,
     // ExternalSymbolSDNode like _tls_index.
     if (!GV)
       return X86II::MO_NO_FLAG;
-    if (GV->hasDLLImportStorageClass())
+    // Windows Itanium and NT-POSIX use the import pointer, not a stub, which
+    // the linker binds to the import or replaces with the direct address. For
+    // an extern_weak symbol the object keeps the symbol a weak external, so
+    // the linker binds the pointer to zero when it is absent. A hidden
+    // extern_weak symbol can only be defined in the image, so it keeps the
+    // stub, which the linker never binds to another image's export.
+    if (GV->hasDLLImportStorageClass() ||
+        (TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment() &&
+         GV->hasDefaultVisibility()))
       return X86II::MO_DLLIMPORT;
     return X86II::MO_COFFSTUB;
   }
@@ -190,22 +211,38 @@ X86Subtarget::classifyGlobalFunctionReference(const GlobalValue *GV) const {
 unsigned char
 X86Subtarget::classifyGlobalFunctionReference(const GlobalValue *GV,
                                               const Module &M) const {
+  const Function *F = dyn_cast_or_null<Function>(GV);
+
+  // Under -fno-plt a call on Windows Itanium and NT-POSIX goes through the
+  // import table as it goes through the GOT on ELF. The front end decides that
+  // for every declaration it creates, marking it dllimport or dso_local. A
+  // declaration created by an optimization or a lowering carries neither, and
+  // would otherwise reach a linker thunk: a call and a jump where the table
+  // takes one call. Where the function is in the image, the linker makes the
+  // call direct.
+  bool NoPLT =
+      TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment() && M.getRtLibUseGOT();
+  if (NoPLT && F && !F->isDSOLocal() && !F->isIntrinsic() &&
+      F->isDeclarationForLinker() && !F->hasExternalWeakLinkage())
+    return X86II::MO_DLLIMPORT;
+
   if (TM.shouldAssumeDSOLocal(GV))
     return X86II::MO_NO_FLAG;
 
   // Functions on COFF can be non-DSO local for three reasons:
-  // - They are intrinsic functions (!GV)
+  // - They are intrinsic functions (!GV), which Windows Itanium and NT-POSIX
+  //   call through the import table under -fno-plt
   // - They are marked dllimport
   // - They are extern_weak, and a stub is needed
   if (isTargetCOFF()) {
     if (!GV)
-      return X86II::MO_NO_FLAG;
-    if (GV->hasDLLImportStorageClass())
+      return NoPLT ? X86II::MO_DLLIMPORT : X86II::MO_NO_FLAG;
+    if (GV->hasDLLImportStorageClass() ||
+        (TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment() &&
+         GV->hasDefaultVisibility()))
       return X86II::MO_DLLIMPORT;
     return X86II::MO_COFFSTUB;
   }
-
-  const Function *F = dyn_cast_or_null<Function>(GV);
 
   if (isTargetELF()) {
     if (is64Bit() && F && (CallingConv::X86_RegCall == F->getCallingConv()))

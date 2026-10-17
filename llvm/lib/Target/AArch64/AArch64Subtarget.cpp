@@ -448,10 +448,32 @@ AArch64Subtarget::ClassifyGlobalReference(const GlobalValue *GV,
   if (GV->isTagged())
     return AArch64II::MO_GOT;
 
+  // On Windows Itanium and NT-POSIX the address of a function the module does
+  // not define is loaded from its import pointer, as ELF's -fPIE form loads it
+  // from the GOT, even where calls to it are direct, so that code sees the
+  // address static data sees. The linker replaces the load with the direct
+  // address when the function is in the image, or with zero when an
+  // extern_weak function is absent.
+  if (getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+    const auto *F = dyn_cast<Function>(GV);
+    if (F && F->isDeclarationForLinker() && !F->isIntrinsic() &&
+        F->hasDefaultVisibility())
+      return AArch64II::MO_GOT | AArch64II::MO_DLLIMPORT;
+  }
+
   if (!TM.shouldAssumeDSOLocal(GV)) {
     if (GV->hasDLLImportStorageClass()) {
       return AArch64II::MO_GOT | AArch64II::MO_DLLIMPORT;
     }
+    // Windows Itanium and NT-POSIX use the import pointer, not a stub, which
+    // the linker binds to the import or replaces with the direct address. For
+    // an extern_weak symbol the object keeps the symbol a weak external, so
+    // the linker binds the pointer to zero when it is absent. A hidden
+    // extern_weak symbol can only be defined in the image, so it keeps the
+    // stub, which the linker never binds to another image's export.
+    if (getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+        GV->hasDefaultVisibility())
+      return AArch64II::MO_GOT | AArch64II::MO_DLLIMPORT;
     if (getTargetTriple().isOSWindows())
       return AArch64II::MO_GOT | AArch64II::MO_COFFSTUB;
     return AArch64II::MO_GOT;
@@ -503,16 +525,23 @@ unsigned AArch64Subtarget::classifyGlobalFunctionReference(
       }
     }
 
-    // Under -fno-plt a call on COFF goes through the import table as it goes
-    // through the GOT on ELF. The front end decides that for every
-    // declaration it creates, marking it dllimport or dso_local. A
-    // declaration created by an optimization or a lowering carries neither,
-    // and would otherwise reach a linker thunk. Where the function is in the
-    // image, the linker gives the reference a local pointer.
-    if (F && GV->getParent()->getRtLibUseGOT() && !F->isDSOLocal() &&
+    // Under -fno-plt a call on Windows Itanium and NT-POSIX goes through the
+    // import table as it goes through the GOT on ELF. The front end decides
+    // that for every declaration it creates, marking it dllimport or
+    // dso_local. A declaration created by an optimization or a lowering
+    // carries neither, and would otherwise reach a linker thunk. Where the
+    // function is in the image, the linker makes the call direct.
+    if (F && getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+        GV->getParent()->getRtLibUseGOT() && !F->isDSOLocal() &&
         !F->isIntrinsic() && F->isDeclarationForLinker() &&
         !F->hasExternalWeakLinkage())
       return AArch64II::MO_GOT | AArch64II::MO_DLLIMPORT;
+
+    // On Windows Itanium and NT-POSIX a call to a DSO-local function is
+    // direct, though its address may be loaded from its import pointer.
+    if (getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+        TM.shouldAssumeDSOLocal(GV))
+      return AArch64II::MO_NO_FLAG;
 
     // Use ClassifyGlobalReference for setting MO_DLLIMPORT/MO_COFFSTUB.
     return ClassifyGlobalReference(GV, TM);

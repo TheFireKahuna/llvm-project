@@ -2229,6 +2229,12 @@ void TargetLoweringBase::insertSSPDeclarations(
 
         return GV;
       });
+  // Every Windows Itanium and NT-POSIX image defines its own guard, which a
+  // module that declares it reads directly too.
+  if (TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    if (GlobalVariable *GV = M.getNamedGlobal(StackGuardVarName))
+      if (!GV->hasDLLImportStorageClass())
+        GV->setDSOLocal(true);
 }
 
 // Currently only support "standard" __stack_chk_guard.
