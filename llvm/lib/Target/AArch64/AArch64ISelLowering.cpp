@@ -6808,6 +6808,18 @@ SDValue AArch64TargetLowering::LowerINTRINSIC_W_CHAIN(SDValue Op,
   }
 }
 
+// Load the ThreadLocalStoragePointer from the TEB, through which Windows finds
+// a thread's TLS blocks. A pointer to the TLS array is located at offset 0x58
+// from the TEB.
+static SDValue getWindowsTLSArray(SelectionDAG &DAG, const SDLoc &DL) {
+  EVT PtrVT = DAG.getTargetLoweringInfo().getPointerTy(DAG.getDataLayout());
+  SDValue TEB = DAG.getRegister(AArch64::X18, MVT::i64);
+  SDValue TLSArray =
+      DAG.getNode(ISD::ADD, DL, PtrVT, TEB, DAG.getIntPtrConstant(0x58, DL));
+  return DAG.getLoad(PtrVT, DL, DAG.getEntryNode(), TLSArray,
+                     MachinePointerInfo());
+}
+
 SDValue AArch64TargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
                                                      SelectionDAG &DAG) const {
   unsigned IntNo = Op.getConstantOperandVal(0);
@@ -6815,6 +6827,10 @@ SDValue AArch64TargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
   switch (IntNo) {
   default: return SDValue();    // Don't custom lower most intrinsics.
   case Intrinsic::thread_pointer: {
+    // On Windows it is the thread's TLS array, through which native TLS
+    // reaches the variables of every image.
+    if (Subtarget->isTargetWindows())
+      return getWindowsTLSArray(DAG, DL);
     EVT PtrVT = getPointerTy(DAG.getDataLayout());
     return DAG.getNode(AArch64ISD::THREAD_POINTER, DL, PtrVT);
   }
@@ -11929,18 +11945,11 @@ AArch64TargetLowering::LowerWindowsGlobalTLSAddress(SDValue Op,
                                                     SelectionDAG &DAG) const {
   assert(Subtarget->isTargetWindows() && "Windows specific TLS lowering");
 
-  SDValue Chain = DAG.getEntryNode();
   EVT PtrVT = getPointerTy(DAG.getDataLayout());
   SDLoc DL(Op);
 
-  SDValue TEB = DAG.getRegister(AArch64::X18, MVT::i64);
-
-  // Load the ThreadLocalStoragePointer from the TEB
-  // A pointer to the TLS array is located at offset 0x58 from the TEB.
-  SDValue TLSArray =
-      DAG.getNode(ISD::ADD, DL, PtrVT, TEB, DAG.getIntPtrConstant(0x58, DL));
-  TLSArray = DAG.getLoad(PtrVT, DL, Chain, TLSArray, MachinePointerInfo());
-  Chain = TLSArray.getValue(1);
+  SDValue TLSArray = getWindowsTLSArray(DAG, DL);
+  SDValue Chain = TLSArray.getValue(1);
 
   // Load the TLS index from the C runtime;
   // This does the same as getAddr(), but without having a GlobalAddressSDNode.
