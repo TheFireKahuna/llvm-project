@@ -554,7 +554,9 @@ enum : unsigned {
   SS = 258,
   PTR32_SPTR = 270,
   PTR32_UPTR = 271,
-  PTR64 = 272
+  PTR64 = 272,
+  // Accesses through it are fault probes on targets that have them.
+  FAULT_PROBE = 280
 };
 } // End X86AS namespace
 

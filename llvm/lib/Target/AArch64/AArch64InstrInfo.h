@@ -427,6 +427,10 @@ public:
                         MachineBasicBlock *FBB, ArrayRef<MachineOperand> Cond,
                         const DebugLoc &DL,
                         int *BytesAdded = nullptr) const override;
+  bool insertFaultProbeResult(MachineBasicBlock &MBB,
+                              MachineBasicBlock::iterator I,
+                              const MachineInstr &Probe,
+                              const LivePhysRegs &LiveAfter) const override;
 
   /// Inserts the compare instruction needed to un-fuse a fused conditional
   /// branch instruction and returns the condition code of the original fused

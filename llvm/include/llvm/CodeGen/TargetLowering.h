@@ -496,6 +496,17 @@ public:
     return MachineMemOperand::MONone;
   }
 
+  /// The address space whose accesses are fault probes, if the target has one:
+  /// an access through it that faults completes as though the memory read
+  /// zero and discarded the write, and continues at the next instruction.
+  virtual std::optional<unsigned> getFaultProbeAddressSpace() const {
+    return std::nullopt;
+  }
+
+  /// The memory-operand flags an access through \p Ptr takes for being a
+  /// fault probe: none outside the fault-probe address space.
+  MachineMemOperand::Flags getFaultProbeMMOFlags(const Value *Ptr) const;
+
   MachineMemOperand::Flags getLoadMemOperandFlags(
       const LoadInst &LI, const DataLayout &DL, AssumptionCache *AC = nullptr,
       const TargetLibraryInfo *LibInfo = nullptr,

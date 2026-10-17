@@ -4143,6 +4143,109 @@ unsigned X86InstrInfo::removeBranch(MachineBasicBlock &MBB,
   return Count;
 }
 
+bool X86InstrInfo::insertFaultProbeResult(MachineBasicBlock &MBB,
+                                          MachineBasicBlock::iterator I,
+                                          const MachineInstr &Probe,
+                                          const LivePhysRegs &LiveAfter) const {
+  const DebugLoc &DL = Probe.getDebugLoc();
+  const MachineRegisterInfo &MRI = MBB.getParent()->getRegInfo();
+
+  // The flags first, from the registers the access read: on zero memory a
+  // compare-exchange compares its accumulator with zero, an exchange-add sets
+  // them from its addend, and a bit test finds the bit clear.
+  if (!LiveAfter.available(MRI, X86::EFLAGS) &&
+      Probe.modifiesRegister(X86::EFLAGS, &RI)) {
+    switch (Probe.getOpcode()) {
+    case X86::LCMPXCHG8:
+      BuildMI(MBB, I, DL, get(X86::CMP8ri)).addReg(X86::AL).addImm(0);
+      break;
+    case X86::LCMPXCHG16:
+      BuildMI(MBB, I, DL, get(X86::CMP16ri)).addReg(X86::AX).addImm(0);
+      break;
+    case X86::LCMPXCHG32:
+      BuildMI(MBB, I, DL, get(X86::CMP32ri)).addReg(X86::EAX).addImm(0);
+      break;
+    case X86::LCMPXCHG64:
+      BuildMI(MBB, I, DL, get(X86::CMP64ri32)).addReg(X86::RAX).addImm(0);
+      break;
+    case X86::LCMPXCHG16B:
+      // Only ZF is defined: set when RDX:RAX was zero. Both are rewritten
+      // below.
+      BuildMI(MBB, I, DL, get(X86::OR64rr), X86::RAX)
+          .addReg(X86::RAX)
+          .addReg(X86::RDX);
+      break;
+    case X86::LXADD8:
+    case X86::LXADD16:
+    case X86::LXADD32:
+    case X86::LXADD64: {
+      static const unsigned Test[] = {X86::TEST8rr, X86::TEST16rr,
+                                      X86::TEST32rr, X86::TEST64rr};
+      unsigned Idx = Probe.getOpcode() == X86::LXADD8    ? 0
+                     : Probe.getOpcode() == X86::LXADD16 ? 1
+                     : Probe.getOpcode() == X86::LXADD32 ? 2
+                                                         : 3;
+      Register Addend = Probe.getOperand(0).getReg();
+      BuildMI(MBB, I, DL, get(Test[Idx])).addReg(Addend).addReg(Addend);
+      break;
+    }
+    case X86::LOCK_BTS16m:
+    case X86::LOCK_BTS32m:
+    case X86::LOCK_BTS64m:
+    case X86::LOCK_BTC16m:
+    case X86::LOCK_BTC32m:
+    case X86::LOCK_BTC64m:
+    case X86::LOCK_BTR16m:
+    case X86::LOCK_BTR32m:
+    case X86::LOCK_BTR64m:
+    case X86::LOCK_BTS_RM16rm:
+    case X86::LOCK_BTS_RM32rm:
+    case X86::LOCK_BTS_RM64rm:
+    case X86::LOCK_BTC_RM16rm:
+    case X86::LOCK_BTC_RM32rm:
+    case X86::LOCK_BTC_RM64rm:
+    case X86::LOCK_BTR_RM16rm:
+    case X86::LOCK_BTR_RM32rm:
+    case X86::LOCK_BTR_RM64rm:
+      BuildMI(MBB, I, DL, get(X86::CLC));
+      break;
+    default:
+      return false;
+    }
+  }
+
+  // Then each result the access defines, as zero memory gives it. A move
+  // leaves the flags.
+  for (const MachineOperand &MO : Probe.all_defs()) {
+    Register Reg = MO.getReg();
+    if (Reg == X86::EFLAGS || MRI.isReserved(Reg) ||
+        LiveAfter.available(MRI, Reg))
+      continue;
+    if (X86::GR64RegClass.contains(Reg))
+      BuildMI(MBB, I, DL, get(X86::MOV32ri),
+              RI.getSubReg(Reg, X86::sub_32bit))
+          .addImm(0);
+    else if (X86::GR32RegClass.contains(Reg))
+      BuildMI(MBB, I, DL, get(X86::MOV32ri), Reg).addImm(0);
+    else if (X86::GR16RegClass.contains(Reg))
+      BuildMI(MBB, I, DL, get(X86::MOV16ri), Reg).addImm(0);
+    else if (X86::GR8RegClass.contains(Reg))
+      BuildMI(MBB, I, DL, get(X86::MOV8ri), Reg).addImm(0);
+    else if (X86::VR128RegClass.contains(Reg))
+      BuildMI(MBB, I, DL,
+              get(Subtarget.hasAVX() ? X86::VXORPSrr : X86::XORPSrr), Reg)
+          .addReg(Reg, RegState::Undef)
+          .addReg(Reg, RegState::Undef);
+    else if (X86::VR256RegClass.contains(Reg))
+      BuildMI(MBB, I, DL, get(X86::VXORPSYrr), Reg)
+          .addReg(Reg, RegState::Undef)
+          .addReg(Reg, RegState::Undef);
+    else
+      return false;
+  }
+  return true;
+}
+
 unsigned X86InstrInfo::insertBranch(MachineBasicBlock &MBB,
                                     MachineBasicBlock *TBB,
                                     MachineBasicBlock *FBB,

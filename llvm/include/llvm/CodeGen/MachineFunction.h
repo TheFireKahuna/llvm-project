@@ -278,6 +278,10 @@ struct LandingPadInfo {
   SmallVector<MCSymbol *, 1> EndLabels;    // Labels after invoke.
   MCSymbol *LandingPadLabel = nullptr;     // Label at beginning of landing pad.
   std::vector<int> TypeIds;                // List of type ids (filters negative).
+  // A fault probe's landing: each of its call sites spans one faulting
+  // instruction, which a runtime resumes here by editing the PC, so the sites
+  // are never coalesced over the code between them.
+  bool IsFaultProbe = false;
 
   explicit LandingPadInfo(MachineBasicBlock *MBB)
       : LandingPadBlock(MBB) {}

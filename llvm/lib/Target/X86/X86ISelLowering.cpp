@@ -3420,7 +3420,8 @@ void X86TargetLowering::getTgtMemIntrinsic(
       Info.memVT = EVT::getIntegerVT(I.getType()->getContext(), Size);
       Info.align = Align(Size);
       Info.flags |= MachineMemOperand::MOLoad | MachineMemOperand::MOStore |
-                    MachineMemOperand::MOVolatile;
+                    MachineMemOperand::MOVolatile |
+                    getFaultProbeMMOFlags(I.getArgOperand(0));
       Infos.push_back(Info);
       return;
     }
@@ -3433,7 +3434,8 @@ void X86TargetLowering::getTgtMemIntrinsic(
       Info.memVT = EVT::getIntegerVT(I.getType()->getContext(), Size);
       Info.align = Align(Size);
       Info.flags |= MachineMemOperand::MOLoad | MachineMemOperand::MOStore |
-                    MachineMemOperand::MOVolatile;
+                    MachineMemOperand::MOVolatile |
+                    getFaultProbeMMOFlags(I.getArgOperand(0));
       Infos.push_back(Info);
       return;
     }
@@ -3456,7 +3458,8 @@ void X86TargetLowering::getTgtMemIntrinsic(
       Info.memVT = EVT::getIntegerVT(I.getType()->getContext(), Size);
       Info.align = Align(Size);
       Info.flags |= MachineMemOperand::MOLoad | MachineMemOperand::MOStore |
-                    MachineMemOperand::MOVolatile;
+                    MachineMemOperand::MOVolatile |
+                    getFaultProbeMMOFlags(I.getArgOperand(0));
       Infos.push_back(Info);
       return;
     }
@@ -33316,20 +33319,26 @@ X86TargetLowering::shouldExpandAtomicRMWInIR(const AtomicRMWInst *AI) const {
                                    : AtomicExpansionKind::None;
   }
 
+  // A fault probe's landing restores its old value, not the flags of the
+  // operation, so a probe compares the old value.
+  const bool CmpArith =
+      getFaultProbeMMOFlags(AI->getPointerOperand()) ==
+          MachineMemOperand::MONone &&
+      shouldExpandCmpArithRMWInIR(AI);
   AtomicRMWInst::BinOp Op = AI->getOperation();
   switch (Op) {
   case AtomicRMWInst::Xchg:
     return AtomicExpansionKind::None;
   case AtomicRMWInst::Add:
   case AtomicRMWInst::Sub:
-    if (shouldExpandCmpArithRMWInIR(AI))
+    if (CmpArith)
       return AtomicExpansionKind::CmpArithIntrinsic;
     // It's better to use xadd, xsub or xchg for these in other cases.
     return AtomicExpansionKind::None;
   case AtomicRMWInst::Or:
   case AtomicRMWInst::And:
   case AtomicRMWInst::Xor:
-    if (shouldExpandCmpArithRMWInIR(AI))
+    if (CmpArith)
       return AtomicExpansionKind::CmpArithIntrinsic;
     return shouldExpandLogicAtomicRMWInIR(AI);
   case AtomicRMWInst::Nand:
@@ -37065,6 +37074,12 @@ bool X86TargetLowering::areJTsAllowed(const Function *Fn) const {
 
   // Otherwise, fallback on the generic logic.
   return TargetLowering::areJTsAllowed(Fn);
+}
+
+std::optional<unsigned> X86TargetLowering::getFaultProbeAddressSpace() const {
+  if (Subtarget.getTargetTriple().isWindowsNTPOSIXEnvironment())
+    return X86AS::FAULT_PROBE;
+  return std::nullopt;
 }
 
 MVT X86TargetLowering::getPreferredSwitchConditionType(LLVMContext &Context,
@@ -49573,6 +49588,9 @@ static SDValue combineSetCCAtomicArith(SDValue Cmp, X86::CondCode &CC,
 
   unsigned Opc = CmpLHS.getOpcode();
   if (Opc != ISD::ATOMIC_LOAD_ADD && Opc != ISD::ATOMIC_LOAD_SUB)
+    return SDValue();
+  // A fault probe's landing restores its old value, not the flags of an add.
+  if (cast<AtomicSDNode>(CmpLHS)->getMemOperand()->isFaultProbe())
     return SDValue();
 
   SDValue OpRHS = CmpLHS.getOperand(2);

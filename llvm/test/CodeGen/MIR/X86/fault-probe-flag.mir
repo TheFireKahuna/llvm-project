@@ -1,0 +1,19 @@
+# RUN: llc -mtriple=x86_64-pc-windows-ntposix -run-pass=none -o - %s | FileCheck %s
+# The fault-probe memory-operand flag round-trips through MIR.
+
+--- |
+  define i64 @load(ptr addrspace(280) %p) {
+    %v = load volatile i64, ptr addrspace(280) %p, align 8
+    ret i64 %v
+  }
+...
+---
+name: load
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $rcx
+    ; CHECK: MOV64rm {{.*}} :: (volatile fault-probe load (s64) from %ir.p, addrspace 280)
+    $rax = MOV64rm $rcx, 1, $noreg, 0, $noreg :: (volatile fault-probe load (s64) from %ir.p, addrspace 280)
+    RET 0, $rax
+...

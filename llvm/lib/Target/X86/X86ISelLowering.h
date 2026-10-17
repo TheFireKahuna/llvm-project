@@ -550,6 +550,8 @@ namespace llvm {
     MVT getPreferredSwitchConditionType(LLVMContext &Context,
                                         EVT ConditionVT) const override;
 
+    std::optional<unsigned> getFaultProbeAddressSpace() const override;
+
     /// If true, then instruction selection should
     /// seek to shrink the FP constant of the specified type to a smaller type
     /// in order to save space and / or reduce runtime.

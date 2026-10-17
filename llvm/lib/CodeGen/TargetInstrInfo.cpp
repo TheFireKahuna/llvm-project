@@ -2142,6 +2142,12 @@ TargetInstrInfo::getOutliningType(const MachineModuleInfo &MMI,
   if (MI.isLabel())
     return outliner::InstrType::Illegal;
 
+  // A fault probe resumes at a landing in its own function.
+  if (llvm::any_of(MI.memoperands(), [](const MachineMemOperand *MMO) {
+        return MMO->isFaultProbe();
+      }))
+    return outliner::InstrType::Illegal;
+
   // Don't let debug instructions impact analysis.
   if (MI.isDebugInstr())
     return outliner::InstrType::Invisible;

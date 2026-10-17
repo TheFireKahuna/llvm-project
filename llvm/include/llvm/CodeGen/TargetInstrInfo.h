@@ -44,6 +44,7 @@ namespace llvm {
 class DFAPacketizer;
 class InstrItineraryData;
 class LiveIntervals;
+class LivePhysRegs;
 class LiveVariables;
 class MachineCycleInfo;
 class MachineLoop;
@@ -466,6 +467,17 @@ public:
   /// micro-architectures can also be finely tuned inside.
   virtual bool isAsCheapAsAMove(const MachineInstr &MI) const {
     return MI.isAsCheapAsAMove();
+  }
+
+  /// Insert at \p I in a fault probe's landing the state \p Probe leaves when
+  /// it faults: each of its results that \p LiveAfter holds is what the access
+  /// produces on memory that reads zero, and its write is discarded. Returns
+  /// false if the target cannot express that state for \p Probe.
+  virtual bool insertFaultProbeResult(MachineBasicBlock &MBB,
+                                      MachineBasicBlock::iterator I,
+                                      const MachineInstr &Probe,
+                                      const LivePhysRegs &LiveAfter) const {
+    return false;
   }
 
   /// Return true if the instruction should be sunk by MachineSink.

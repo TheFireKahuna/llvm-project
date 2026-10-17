@@ -332,8 +332,9 @@ void EHStreamer::computeCallSiteTable(
           FirstActions[P.PadIndex]
         };
 
-        // Try to merge with the previous call-site. SJLJ doesn't do this
-        if (PreviousIsInvoke && !IsSJLJ) {
+        // Try to merge with the previous call-site. SJLJ doesn't do this,
+        // and a fault probe's site stays the one instruction it spans.
+        if (PreviousIsInvoke && !IsSJLJ && !LandingPad->IsFaultProbe) {
           CallSiteEntry &Prev = CallSites.back();
           if (Site.LPad == Prev.LPad && Site.Action == Prev.Action) {
             // Extend the range of the previous entry.
