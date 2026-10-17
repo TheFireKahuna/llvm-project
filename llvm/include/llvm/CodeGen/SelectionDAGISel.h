@@ -534,6 +534,10 @@ private:
   // Mark and Report IPToState for each Block under AsynchEH
   void reportIPToStateForBlocks(MachineFunction *Fn);
 
+  // Under AsynchEH with a landing-pad personality, turn each block's
+  // instructions into call-site ranges of the landing pad in effect.
+  void reportAsynchEHLandingPadRanges(MachineFunction *Fn);
+
   /// Perform instruction selection on all basic blocks in the function.
   void SelectAllBasicBlocks(const Function &Fn);
 
