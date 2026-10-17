@@ -30,10 +30,11 @@ struct __declspec(dllexport) exported {
 };
 exported::~exported() {}
 
-/// PS4/PS5 also export the type info when a non-inline method is dllexported.
+/// PS4/PS5 and Windows Itanium also export the type info when a non-inline
+/// method is dllexported.
 // GNU-DAG: @_ZTI10partExport = linkonce_odr hidden constant
 // GNU-DAG: @_ZTS10partExport = linkonce_odr hidden constant
-// ITANIUM-DAG: @_ZTI10partExport = hidden constant
+// ITANIUM-DAG: @_ZTI10partExport = dso_local dllexport constant
 // ITANIUM-DAG: @_ZTS10partExport = hidden constant
 // PS-DAG: @_ZTI10partExport = {{(dso_local )?}}dllexport constant
 // PS-DAG: @_ZTS10partExport = {{(linkonce_odr )?}}hidden constant

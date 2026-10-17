@@ -137,7 +137,8 @@ llvm::GlobalVariable *CodeGenVTables::GetAddrOfVTT(const CXXRecordDecl *RD) {
   StringRef Name = OutName.str();
 
   // This will also defer the definition of the VTT.
-  (void) CGM.getCXXABI().getAddrOfVTable(RD, CharUnits());
+  llvm::GlobalVariable *VTable =
+      CGM.getCXXABI().getAddrOfVTable(RD, CharUnits());
 
   VTTBuilder Builder(CGM.getContext(), RD, /*GenerateDefinition=*/false);
 
@@ -148,6 +149,10 @@ llvm::GlobalVariable *CodeGenVTables::GetAddrOfVTT(const CXXRecordDecl *RD) {
   llvm::GlobalVariable *GV = CGM.CreateOrReplaceCXXRuntimeVariable(
       Name, ArrayType, llvm::GlobalValue::ExternalLinkage, Align);
   GV->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+  // A constructor inlined into another image reads the VTT, which is
+  // therefore imported with the vtable.
+  if (CGM.getTarget().hasPS4DLLImportExport())
+    GV->setDLLStorageClass(VTable->getDLLStorageClass());
   CGM.setGVProperties(GV, RD);
   setVTableDSOLocal(GV, RD);
   return GV;

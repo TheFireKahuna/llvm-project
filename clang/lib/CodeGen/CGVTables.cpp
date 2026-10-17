@@ -1425,17 +1425,23 @@ bool CodeGenVTables::isVTableExternal(const CXXRecordDecl *RD) {
   return !keyFunction->hasBody();
 }
 
-// Whether another image may own RD's vtable, which the visibility mapping
-// exports, and a derived class extend it, so that an image that does not own
-// it constructs the class through a copy of its own: a direct address, where
-// importing the vtable would cost a load and a cold miss per construction. A
-// class marked dllimport keeps the imported vtable.
+// Whether another image may own RD's vtable, which the visibility mapping or
+// its key function's DLL attribute exports, and a derived class extend it, so
+// that an image that does not own it constructs the class through a copy of
+// its own: a direct address, where importing the vtable would cost a load and
+// a cold miss per construction. A class marked dllimport keeps the imported
+// vtable.
 static bool isOwnedElsewhereAndExtensible(CodeGenModule &CGM,
                                           const CXXRecordDecl *RD) {
-  return CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
-         RD->isExternallyVisible() && !RD->isEffectivelyFinal() &&
-         !RD->hasAttr<DLLImportAttr>() &&
-         CGM.shouldMapVisibilityToDLLExport(RD);
+  if (!CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() ||
+      !RD->isExternallyVisible() || RD->isEffectivelyFinal() ||
+      RD->hasAttr<DLLImportAttr>())
+    return false;
+  if (CGM.shouldMapVisibilityToDLLExport(RD))
+    return true;
+  const CXXMethodDecl *Key = CGM.getContext().getCurrentKeyFunction(RD);
+  return Key &&
+         (Key->hasAttr<DLLImportAttr>() || Key->hasAttr<DLLExportAttr>());
 }
 
 bool CodeGenVTables::isVTableCopied(const CXXRecordDecl *RD) {

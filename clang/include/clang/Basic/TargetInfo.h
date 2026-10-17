@@ -1370,7 +1370,11 @@ public:
            // Windows Itanium support allows for testing the SCEI flavour of
            // dllimport/export handling on a Windows system.
            (getTriple().isWindowsItaniumEnvironment() &&
-            getTriple().getVendor() == llvm::Triple::SCEI);
+            getTriple().getVendor() == llvm::Triple::SCEI) ||
+           // Windows Itanium and NT-POSIX keep a key function that carries
+           // dllimport, so that a class's vtable and type_info are emitted
+           // once, in the image of its key function, and exported from it.
+           getTriple().isWindowsItaniumOrNTPOSIXEnvironment();
   }
 
   /// Set forced language options.

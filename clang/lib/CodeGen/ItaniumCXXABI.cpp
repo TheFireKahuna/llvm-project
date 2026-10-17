@@ -2112,8 +2112,10 @@ static void setVTableSelectiveDLLImportExport(CodeGenModule &CGM,
       RD->hasAttr<DLLImportAttr>() || RD->hasAttr<DLLExportAttr>())
     return;
 
+  // A copy of a vtable another image owns is a definition, never an import.
   if (CGM.getVTables().isVTableExternal(RD)) {
-    if (CXXRecordNonInlineHasAttr<DLLImportAttr>(RD))
+    if (CXXRecordNonInlineHasAttr<DLLImportAttr>(RD) &&
+        !CGM.getVTables().isVTableCopied(RD))
       VTable->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
   } else if (CXXRecordNonInlineHasAttr<DLLExportAttr>(RD))
     VTable->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
@@ -2486,6 +2488,8 @@ void ItaniumCXXABI::emitVirtualInheritanceTables(const CXXRecordDecl *RD) {
   CodeGenVTables &VTables = CGM.getVTables();
   llvm::GlobalVariable *VTT = VTables.GetAddrOfVTT(RD);
   VTables.EmitVTTDefinition(VTT, CGM.getVTableLinkage(RD), RD);
+  if (CGM.getTarget().hasPS4DLLImportExport())
+    setVTableSelectiveDLLImportExport(CGM, VTT, RD);
 }
 
 bool ItaniumCXXABI::canSpeculativelyEmitVTableAsBaseClass(
