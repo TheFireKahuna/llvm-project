@@ -345,6 +345,7 @@ void X86AsmPrinter::emitKCFIGuardJump(StringRef GuardFn) {
           .addReg(X86::NoRegister),
       STI);
 }
+
 // movl $FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG, %ecx; int $0x29
 void X86AsmPrinter::emitKCFIFastFail() {
   const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();

@@ -481,6 +481,19 @@ public:
   void emitKCFITrapEntry(const MachineFunction &MF, const MCSymbol *Symbol);
   virtual void emitKCFITypeId(const MachineFunction &MF);
 
+  /// A KCFI type that a module opens on COFF, where the module defines the
+  /// type's mismatch routine: dynamically, or statically by taking the address
+  /// of the known imports of the type it lists.
+  struct KCFIOpenType {
+    bool Dynamic = false;
+    SmallVector<const Function *, 1> Imports;
+  };
+  MapVector<uint32_t, KCFIOpenType> getKCFIOpenTypes(const Module &M) const;
+  /// Emits the head, the entries and the trailer of the list of an open KCFI
+  /// type on COFF, whose head is labeled List.
+  void emitKCFIList(MCSymbol *List, uint32_t Type,
+                    ArrayRef<const Function *> Imports);
+
   /// One kind of KCFI mismatch routine, which takes a target in a register.
   /// X86-64 has a dispatch routine, which jumps to the target, and a check
   /// routine, which returns; AArch64 has only the check routine. A scanner
