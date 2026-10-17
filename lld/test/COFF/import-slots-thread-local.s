@@ -81,10 +81,11 @@
 ## the process initializes; through the guard's dispatch where the image has
 ## it, here the first word of .rdata, or directly where it has none.
 # RUN: lld-link -def:host.def -out:host.lib -machine:x64
+# RUN: lld-link -def:ntdll.def -out:ntdll.lib -machine:x64
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium plug.s -o plug.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium guard.s -o guard.obj
 # RUN: lld-link -import-slots -dll -noentry crt.obj plug.obj guard.obj \
-# RUN:   host.lib -out:plug.dll
+# RUN:   host.lib ntdll.lib -out:plug.dll
 # RUN: llvm-readobj --sections plug.dll > plug.txt
 # RUN: llvm-objdump -d --print-imm-hex plug.dll >> plug.txt
 # RUN: llvm-objdump -s -j .CRT plug.dll >> plug.txt
@@ -106,18 +107,19 @@
 # CALL:      Contents of section .CRT:
 # CALL-NEXT: 11111111 11111111 10100080 01000000
 
-# RUN: lld-link -import-slots -dll -noentry crt.obj plug.obj host.lib \
+# RUN: lld-link -import-slots -dll -noentry crt.obj plug.obj host.lib ntdll.lib \
 # RUN:   -out:noguard.dll
 # RUN: llvm-objdump -d noguard.dll | FileCheck --check-prefix=NOGUARD %s
 # NOGUARD:      addq %rcx, %rax
 # NOGUARD-NEXT: jmpq *%rax
 
-## A DLL that imports from no executable, or that has no C initializer table,
-## carries none.
+## A DLL that imports from no executable carries none, and one with no C
+## initializer table has nothing to bind its import from the executable.
 # RUN: llvm-objdump -d tl.dll | FileCheck --check-prefix=NOCALL %s
-# RUN: lld-link -import-slots -dll -noentry plug.obj host.lib -out:nocrt.dll
-# RUN: llvm-objdump -d nocrt.dll | FileCheck --check-prefix=NOCALL %s
 # NOCALL-NOT: 0x9e3779b9
+# RUN: not lld-link -import-slots -dll -noentry plug.obj host.lib ntdll.lib \
+# RUN:   -out:nocrt.dll 2>&1 | FileCheck --check-prefix=NOCRTDLL %s
+# NOCRTDLL: error: cannot bind __declspec(dllimport) hostfn, imported from host.exe, at run time: the image has no C initializer table (__xi_a) to write it
 
 ## Without a TLS callback array nothing runs the copy, and a TLS directory that
 ## names no template or index leaves no block to copy into.
@@ -197,6 +199,12 @@ _tls_used:
   .data
   .p2align 3
   .quad arr+8
+
+#--- ntdll.def
+LIBRARY ntdll.dll
+EXPORTS
+  LdrGetProcedureAddressForCaller
+  NtProtectVirtualMemory
 
 #--- host.def
 LIBRARY host.exe

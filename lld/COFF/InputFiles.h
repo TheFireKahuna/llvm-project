@@ -567,6 +567,16 @@ public:
   // the import thunk as the function's address everywhere.
   bool thunkIsAddress = false;
 
+  // Under -import-slots, whether the import is bound by name when the image
+  // starts, into a cell its fill writes, rather than by the loader through a
+  // descriptor: an import from an executable, which can only mean the
+  // process's own whatever its file name, and binds against it; and one that
+  // only weak references name, which is null where its DLL lacks it, and does
+  // not make its DLL a dependency.
+  bool isHostImport = false;
+  bool isWeakImport = false;
+  bool isBoundAtRunTime() const { return isHostImport || isWeakImport; }
+
   // The offset of the import's address in location: 0 for an entry of an
   // import address table, and the offset of the word for a word of static
   // data that the loader writes in place. ARM64EC links have no such words,

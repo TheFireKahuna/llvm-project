@@ -44,8 +44,10 @@
 ## from its C initializer table, after the guard's check, in a frame its unwind
 ## information describes.
 # RUN: lld-link -def:host.def -out:host.lib -machine:arm64
+# RUN: lld-link -def:ntdll.def -out:ntdll.lib -machine:arm64
 # RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium plug.s -o plug.obj
-# RUN: lld-link -import-slots -dll -noentry plug.obj host.lib -out:plug.dll
+# RUN: lld-link -import-slots -dll -noentry plug.obj host.lib ntdll.lib \
+# RUN:   -out:plug.dll
 # RUN: llvm-objdump -d --print-imm-hex plug.dll > plug.txt
 # RUN: llvm-readobj --unwind plug.dll >> plug.txt
 # RUN: FileCheck --check-prefix=CALL --input-file=plug.txt %s
@@ -75,6 +77,12 @@
 # CALL-NEXT:   0xe1 ; mov fp, sp
 # CALL-NEXT:   0x85 ; stp x29, x30, [sp, #-48]!
 # CALL-NEXT:   0xe4 ; end
+
+#--- ntdll.def
+LIBRARY ntdll.dll
+EXPORTS
+  LdrGetProcedureAddressForCaller
+  NtProtectVirtualMemory
 
 #--- host.def
 LIBRARY host.exe

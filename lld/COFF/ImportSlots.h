@@ -51,6 +51,16 @@ struct ResidualWord {
   Symbol *sym;
 };
 
+// Under -import-slots, an import bound by name when the image starts: its
+// cell, which code reads in place of an import address table entry, the
+// import's name, and, for a weak import from a DLL, the DLL's name in UTF-16.
+struct RunTimeCell {
+  DefinedImportData *imp;
+  Chunk *cell;
+  Chunk *name;
+  Chunk *dllName;
+};
+
 // Under -import-slots, the words of static data that hold imports' addresses:
 // the in-place import slots, which the loader writes, and the residual words,
 // which the residual fill writes. The writer lays out the chunks it holds
@@ -88,6 +98,9 @@ public:
     return slotSections;
   }
   bool hasRdataGroupSlots() const { return slotRdataGroups; }
+  ArrayRef<RunTimeCell> getRunTimeCells() const { return runTimeCells; }
+  // The names the fill resolves its cells by.
+  ArrayRef<Chunk *> getRunTimeNames() const { return runTimeNames; }
   Chunk *getFill() const { return residualFill; }
   Chunk *getFillPointer() const { return residualFillPointer; }
   Chunk *getFillUnwind() const { return residualFillUnwind; }
@@ -138,6 +151,10 @@ private:
   // chunks among theirs, which are laid out in .sealed, in their order there.
   std::vector<ResidualWord> residualWords;
   llvm::SetVector<SectionChunk *> sealedChunks;
+  // The imports the residual fill binds by name, which are laid out in
+  // .sealed before sealedChunks, and the names it binds them by.
+  std::vector<RunTimeCell> runTimeCells;
+  std::vector<Chunk *> runTimeNames;
   // The imports some of whose words take an interior name instead, with the
   // first such word.
   llvm::MapVector<ImportFile *, std::pair<SectionChunk *, uint32_t>>

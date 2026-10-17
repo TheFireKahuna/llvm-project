@@ -2159,6 +2159,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // Handle /force or /force:unresolved
   if (args.hasArg(OPT_force, OPT_force_unresolved))
     config->forceUnresolved = true;
+  config->unresolvedHostImports = args.hasArg(OPT_unresolved_host_imports);
 
   // Handle /force or /force:multiple
   if (args.hasArg(OPT_force, OPT_force_multiple))
@@ -3332,6 +3333,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
         [](SymbolTable &symtab) { symtab.addStartStopSymbols(); });
   if (config->boundarySymbols)
     ctx.forEachSymtab([](SymbolTable &symtab) { symtab.addBoundarySymbols(); });
+
+  if (config->unresolvedHostImports && config->dll && config->importSlots &&
+      ctx.symtab.importUnresolvedFromHost())
+    run();
 
   // Resolve remaining undefined symbols and warn about imported locals.
   std::vector<Undefined *> aliases;

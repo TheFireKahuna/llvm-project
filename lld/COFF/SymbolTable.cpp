@@ -493,9 +493,123 @@ DefinedImportData *SymbolTable::findInteriorImport(DefinedImportData *imp,
   return nullptr;
 }
 
+// Whether a reference other than a weak one names the import of Name: one to
+// Name that is not a weak external, or one to its import pointer from an
+// object in which Name is not a weak external, as a declaration marked
+// dllimport gives. A compiler reaches a weak Name through its import pointer
+// in an object that keeps Name a weak external.
+bool SymbolTable::isImportedStrongly(StringRef name) {
+  if (Symbol *s = find(name); s && stronglyReferenced.contains(s))
+    return true;
+  readImportReferences();
+  return strongImportPointers->contains(name);
+}
+
+// Reads which names the objects' weak externals name, and which import
+// pointers a reference other than a weak one names.
+void SymbolTable::readImportReferences() {
+  if (!strongImportPointers) {
+    strongImportPointers.emplace();
+    weakExternalNames.emplace();
+    functionNames.emplace();
+    for (ObjFile *file : ctx.objFileInstances) {
+      if (&file->symtab != this)
+        continue;
+      COFFObjectFile *obj = file->getCOFFObj();
+      DenseSet<StringRef> weak;
+      SmallVector<StringRef, 0> pointers;
+      for (const SymbolRef &ref : obj->symbols()) {
+        COFFSymbolRef sym = obj->getCOFFSymbol(ref);
+        Expected<StringRef> symName = obj->getSymbolName(sym);
+        if (!symName) {
+          consumeError(symName.takeError());
+          continue;
+        }
+        if (sym.isWeakExternal())
+          weak.insert(*symName);
+        else if (sym.isUndefined() && symName->starts_with("__imp_"))
+          pointers.push_back(symName->drop_front(strlen("__imp_")));
+        else if (sym.isUndefined() &&
+                 sym.getComplexType() == IMAGE_SYM_DTYPE_FUNCTION)
+          functionNames->insert(*symName);
+      }
+      for (StringRef p : pointers)
+        if (!weak.contains(p))
+          strongImportPointers->insert(p);
+      weakExternalNames->insert(weak.begin(), weak.end());
+    }
+  }
+}
+
+// An ELF shared object may leave symbols for the executable that loads it to
+// define. Under -unresolved-host-imports, a DLL imports each symbol nothing
+// defines from the executable, which the fill binds by name against the
+// process's own; a function declared as one is imported as code, anything
+// else as data.
+bool SymbolTable::importUnresolvedFromHost() {
+  readImportReferences();
+  DenseSet<StringRef> names;
+  for (auto &[name, sym] : symMap) {
+    auto *u = dyn_cast<Undefined>(sym);
+    if (!u || u->getWeakAlias() || !sym->isUsedInRegularObj)
+      continue;
+    StringRef base = sym->getName();
+    base.consume_front("__imp_");
+    if (Symbol *b = find(base); b && !isa<Undefined>(b))
+      continue;
+    names.insert(base);
+  }
+  SmallVector<StringRef, 0> sorted(names.begin(), names.end());
+  llvm::sort(sorted);
+  for (StringRef name : sorted) {
+    bool code = functionNames->contains(name) ||
+                !isa_and_nonnull<Undefined>(find(name));
+    Log(ctx) << "Importing " << name << " from the executable that loads the "
+             << "image";
+    ctx.driver.addFile(make<ImportFile>(
+        ctx, makeShortImport(machine, "<host>.exe", saver().save(name),
+                             code ? IMPORT_CODE : IMPORT_DATA, IMPORT_NAME)));
+  }
+  return !sorted.empty();
+}
+
 bool SymbolTable::loadInteriorImports() {
   if (ctx.hybridSymtab || isEC())
     return false;
+
+  // An import from an executable is bound at run time against the process's
+  // own, and one that only weak references name, as ELF binds a weak
+  // undefined symbol, null where its DLL lacks it. Both need ntdll's resolver,
+  // and the seal of their cells.
+  for (ImportFile *f : ctx.importFileInstances) {
+    if (&f->symtab != this || !f->impSym ||
+        ctx.config.delayLoads.contains(StringRef(f->dllName).lower()))
+      continue;
+    if (ctx.config.dll && StringRef(f->dllName).ends_with_insensitive(".exe"))
+      f->isHostImport = true;
+    StringRef name = f->impSym->getName().drop_front(strlen("__imp_"));
+    if (!weakExternalNames)
+      readImportReferences();
+    if (weakExternalNames->contains(name) && !isImportedStrongly(name))
+      f->isWeakImport = true;
+  }
+  bool runTime = false, runTimeWeak = false;
+  for (ImportFile *f : ctx.importFileInstances) {
+    if (&f->symtab != this || !f->isBoundAtRunTime())
+      continue;
+    runTime = true;
+    runTimeWeak |= !f->isHostImport;
+  }
+  std::vector<Symbol *> runTimeLazies;
+  if (runTime) {
+    StringRef names[] = {"__imp_LdrGetProcedureAddressForCaller",
+                         "__imp_NtProtectVirtualMemory",
+                         "__imp_LdrGetDllHandleEx"};
+    for (StringRef name : ArrayRef(names).take_front(runTimeWeak ? 3 : 2))
+      if (Symbol *l = find(name);
+          l && l->isLazy() && !l->pendingArchiveLoad && isLazyImport(l))
+        runTimeLazies.push_back(l);
+  }
   bool canSeal = machine == AMD64 || machine == ARM64;
   // The import that a word holding the address of s takes in place, if any.
   auto getImport = [&](Symbol *s) -> DefinedImportData * {
@@ -598,6 +712,14 @@ bool SymbolTable::loadInteriorImports() {
       continue;
     Log(ctx) << "Loading lazy " << l->getName() << " from "
              << l->getFile()->getName() << " for a word of static data";
+    forceLazy(l);
+    loaded = true;
+  }
+  for (Symbol *l : runTimeLazies) {
+    if (!l->isLazy() || l->pendingArchiveLoad)
+      continue;
+    Log(ctx) << "Loading lazy " << l->getName() << " from "
+             << l->getFile()->getName() << " to bind imports at run time";
     forceLazy(l);
     loaded = true;
   }
@@ -761,6 +883,26 @@ Defined *SymbolTable::impSymbol(StringRef name) {
   return dyn_cast_or_null<Defined>(find(("__imp_" + name).str()));
 }
 
+// There may exist symbols named .refptr.<name> which only consist
+// of a single pointer to <name>. If it turns out <name> is
+// automatically imported, we don't need to keep the .refptr.<name>
+// pointer at all, but redirect all accesses to it to the IAT entry
+// for __imp_<name> instead, and drop the whole .refptr.<name> chunk.
+void SymbolTable::replaceRefPtr(Symbol *sym, StringRef name, Defined *imp) {
+  DefinedRegular *refptr =
+      dyn_cast_or_null<DefinedRegular>(find((".refptr." + name).str()));
+  if (refptr && refptr->getChunk()->getSize() == ctx.config.wordsize) {
+    SectionChunk *sc = dyn_cast_or_null<SectionChunk>(refptr->getChunk());
+    if (sc && sc->getRelocs().size() == 1 && *sc->symbols().begin() == sym) {
+      Log(ctx) << "Replacing .refptr." << name << " with " << imp->getName();
+      refptr->getChunk()->live = false;
+      refptr->replaceKeepingName(imp, isa<DefinedImportData>(imp)
+                                          ? sizeof(DefinedImportData)
+                                          : sizeof(DefinedRegular));
+    }
+  }
+}
+
 bool SymbolTable::handleMinGWAutomaticImport(Symbol *sym, StringRef name) {
   Defined *imp = impSymbol(name);
   if (!imp)
@@ -791,22 +933,7 @@ bool SymbolTable::handleMinGWAutomaticImport(Symbol *sym, StringRef name) {
   }
   sym->replaceKeepingName(imp, impSize);
   sym->isRuntimePseudoReloc = true;
-
-  // There may exist symbols named .refptr.<name> which only consist
-  // of a single pointer to <name>. If it turns out <name> is
-  // automatically imported, we don't need to keep the .refptr.<name>
-  // pointer at all, but redirect all accesses to it to the IAT entry
-  // for __imp_<name> instead, and drop the whole .refptr.<name> chunk.
-  DefinedRegular *refptr =
-      dyn_cast_or_null<DefinedRegular>(find((".refptr." + name).str()));
-  if (refptr && refptr->getChunk()->getSize() == ctx.config.wordsize) {
-    SectionChunk *sc = dyn_cast_or_null<SectionChunk>(refptr->getChunk());
-    if (sc && sc->getRelocs().size() == 1 && *sc->symbols().begin() == sym) {
-      Log(ctx) << "Replacing .refptr." << name << " with " << imp->getName();
-      refptr->getChunk()->live = false;
-      refptr->replaceKeepingName(imp, impSize);
-    }
-  }
+  replaceRefPtr(sym, name, imp);
   return true;
 }
 
@@ -1651,8 +1778,9 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
             dyn_cast_or_null<DefinedAbsolute>(undef->getDefinedWeakAlias());
         if (abs && abs->getVA() == 0 &&
             isa_and_nonnull<DefinedImportData>(impSymbol(name)) &&
-            handleMinGWAutomaticImport(sym, name))
+            handleMinGWAutomaticImport(sym, name)) {
           continue;
+        }
       }
       aliases.push_back(undef);
       continue;

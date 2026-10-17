@@ -21,6 +21,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/BinaryFormat/COFF.h"
+#include "llvm/Support/ConvertUTF.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/TimeProfiler.h"
 
@@ -42,7 +43,9 @@ namespace {
 class ResidualFillChunk : public NonSectionCodeChunk {
 public:
   ResidualFillChunk(COFFLinkerContext &ctx, std::vector<ResidualWord> words,
-                    Chunk *sealed, DefinedImportData *protect);
+                    std::vector<RunTimeCell> cells, Chunk *sealed,
+                    DefinedImportData *protect, DefinedImportData *getProc,
+                    DefinedImportData *getDll);
   size_t getSize() const override;
   void writeTo(uint8_t *buf) const override;
   uint32_t getOutputCharacteristics() const override {
@@ -56,13 +59,52 @@ public:
 
 private:
   size_t getWordSize(const ResidualWord &w) const;
+  size_t getCellSize(const RunTimeCell &c) const;
 
   std::vector<ResidualWord> words;
+  std::vector<RunTimeCell> cells;
   // A chunk of the section the function seals, or null.
   Chunk *sealed;
   // NtProtectVirtualMemory's import, when it seals.
   DefinedImportData *protect;
+  // LdrGetProcedureAddressForCaller's and LdrGetDllHandleEx's imports, when it
+  // binds cells.
+  DefinedImportData *getProc;
+  DefinedImportData *getDll;
   COFFLinkerContext &ctx;
+};
+
+// The cell of an import bound at run time: a word the fill writes, null until
+// it does.
+class RunTimeCellChunk : public NonSectionChunk {
+public:
+  explicit RunTimeCellChunk(COFFLinkerContext &ctx)
+      : size(ctx.config.wordsize) {
+    setAlignment(size);
+  }
+  size_t getSize() const override { return size; }
+  void writeTo(uint8_t *buf) const override { memset(buf, 0, size); }
+
+private:
+  size_t size;
+};
+
+// A NUL-terminated UTF-16 string, the form ntdll takes a module's name in.
+class WideStringChunk : public NonSectionChunk {
+public:
+  explicit WideStringChunk(StringRef s) {
+    convertUTF8ToUTF16String(s, str);
+    setAlignment(2);
+  }
+  size_t getSize() const override { return 2 * (str.size() + 1); }
+  void writeTo(uint8_t *buf) const override {
+    for (size_t i = 0; i != str.size(); ++i)
+      write16le(buf + 2 * i, str[i]);
+    write16le(buf + 2 * str.size(), 0);
+  }
+
+private:
+  SmallVector<UTF16, 0> str;
 };
 
 // The unwind information of a fill function with a frame, which its first
@@ -109,8 +151,12 @@ private:
 };
 ResidualFillChunk::ResidualFillChunk(COFFLinkerContext &ctx,
                                      std::vector<ResidualWord> words,
-                                     Chunk *sealed, DefinedImportData *protect)
-    : words(std::move(words)), sealed(sealed), protect(protect), ctx(ctx) {
+                                     std::vector<RunTimeCell> cells,
+                                     Chunk *sealed, DefinedImportData *protect,
+                                     DefinedImportData *getProc,
+                                     DefinedImportData *getDll)
+    : words(std::move(words)), cells(std::move(cells)), sealed(sealed),
+      protect(protect), getProc(getProc), getDll(getDll), ctx(ctx) {
   // Control Flow Guard checks the initializer table's call to it.
   setAlignment(16);
 }
@@ -141,8 +187,22 @@ size_t ResidualFillChunk::getWordSize(const ResidualWord &w) const {
   return 7 + (isInt<32>(w.addend) ? 6 : 13) + 7;
 }
 
+// A cell is bound in the executable for a host import and in its DLL, found
+// by name, for a weak one; a host import that is not weak fails the fill when
+// the executable lacks it.
+size_t ResidualFillChunk::getCellSize(const RunTimeCell &c) const {
+  bool arm64 = ctx.config.machine == ARM64;
+  size_t lookup = arm64 ? 64 : 61;
+  if (c.dllName)
+    return lookup + (arm64 ? 64 : 60);
+  bool weak = c.imp->file->isWeakImport;
+  return lookup + (arm64 ? 8 : 13) + (weak ? 0 : (arm64 ? 4 : 8));
+}
+
 size_t ResidualFillChunk::getSize() const {
   size_t size = getPrologueSize();
+  for (const RunTimeCell &c : cells)
+    size += getCellSize(c);
   for (const ResidualWord &w : words)
     size += getWordSize(w);
   if (ctx.config.machine == ARM64)
@@ -183,6 +243,59 @@ void ResidualFillChunk::writeTo(uint8_t *buf) const {
     if (protect) {
       put(0xA9BD7BFD); // stp x29, x30, [sp, #-48]!
       put(0x910003FD); // mov x29, sp
+    }
+    // The epilogue, which a failed lookup of a host import branches to with
+    // its status in w0.
+    uint32_t end = getSize() - 12;
+    // movz w16, #lo; movk w16, #hi, lsl #16
+    auto movW16 = [&](uint32_t v) {
+      put(0x52800010 | (v & 0xFFFF) << 5);
+      put(0x72A00010 | (v >> 16) << 5);
+    };
+    // LdrGetProcedureAddressForCaller(x0, &name, 0, &cell, 1, fill), the
+    // name an ANSI_STRING at sp + 16. Flag 1 binds without initializing the
+    // module, as the loader's snap does.
+    auto lookup = [&](const RunTimeCell &c) {
+      uint32_t len = c.name->getSize() - 1;
+      address(16, c.name->getRVA());
+      put(0xF9000FF0); // str x16, [sp, #24]
+      movW16(len | (len + 1) << 16);
+      put(0xB90013F0); // str w16, [sp, #16]
+      put(0x910043E1); // add x1, sp, #16
+      put(0x52800002); // mov w2, #0
+      address(3, c.cell->getRVA());
+      put(0x52800024); // mov w4, #1
+      address(5, rva);
+      load(16, getProc->getRVA());
+      put(0xD63F0200); // blr x16
+    };
+    for (const RunTimeCell &c : cells) {
+      if (c.dllName) {
+        // LdrGetDllHandleEx(1, null, null, &dllName, sp + 32), the name a
+        // UNICODE_STRING at sp + 16, leaving the cell null when the DLL is
+        // not loaded.
+        uint32_t len = c.dllName->getSize() - 2;
+        address(16, c.dllName->getRVA());
+        put(0xF9000FF0); // str x16, [sp, #24]
+        movW16(len | (len + 2) << 16);
+        put(0xB90013F0); // str w16, [sp, #16]
+        put(0x52800020); // mov w0, #1
+        put(0xAA1F03E1); // mov x1, xzr
+        put(0xAA1F03E2); // mov x2, xzr
+        put(0x910043E3); // add x3, sp, #16
+        put(0x910083E4); // add x4, sp, #32
+        load(16, getDll->getRVA());
+        put(0xD63F0200);           // blr x16
+        put(0x37F80000 | 18 << 5); // tbnz w0, #31, past the lookup
+        put(0xF94013E0);           // ldr x0, [sp, #32]
+        lookup(c);
+        continue;
+      }
+      put(0xF9403240); // ldr x0, [x18, #0x60]: the PEB
+      put(0xF9400800); // ldr x0, [x0, #0x10]: the executable's base
+      lookup(c);
+      if (!c.imp->file->isWeakImport)
+        put(0x37F80000 | ((end - off) / 4 & 0x3FFF) << 5); // tbnz w0, #31, end
     }
     for (const ResidualWord &w : words) {
       load(16, w.imp->getRVA());
@@ -240,6 +353,65 @@ void ResidualFillChunk::writeTo(uint8_t *buf) const {
   };
   if (protect)
     put({0x48, 0x83, 0xEC, 0x48}); // sub rsp, 0x48
+  // The epilogue, which a failed lookup of a host import jumps to with its
+  // status in eax.
+  uint32_t end = getSize() - 5;
+  // LdrGetProcedureAddressForCaller(rcx, &name, 0, &cell, 1, fill), the name
+  // an ANSI_STRING at rsp + 0x30. Flag 1 binds without initializing the
+  // module, as the loader's snap does.
+  auto lookup = [&](const RunTimeCell &c) {
+    uint32_t len = c.name->getSize() - 1;
+    put({0x48, 0x8D, 0x05, 0, 0, 0, 0}); // lea rax, [rip + name]
+    disp(c.name->getRVA());
+    put({0x48, 0x89, 0x44, 0x24, 0x38});       // mov [rsp + 0x38], rax
+    put({0xC7, 0x44, 0x24, 0x30, 0, 0, 0, 0}); // mov dword [rsp + 0x30], ...
+    write32le(buf + off - 4, len | (len + 1) << 16);
+    put({0x48, 0x8D, 0x54, 0x24, 0x30}); // lea rdx, [rsp + 0x30]
+    put({0x45, 0x31, 0xC0});             // xor r8d, r8d
+    put({0x4C, 0x8D, 0x0D, 0, 0, 0, 0}); // lea r9, [rip + cell]
+    disp(c.cell->getRVA());
+    put({0xC7, 0x44, 0x24, 0x20, 1, 0, 0, 0}); // mov dword [rsp + 0x20], 1
+    put({0x48, 0x8D, 0x05, 0, 0, 0, 0});       // lea rax, [rip + fill]
+    disp(rva);
+    put({0x48, 0x89, 0x44, 0x24, 0x28}); // mov [rsp + 0x28], rax
+    put({0xFF, 0x15, 0, 0, 0,
+         0}); // call [rip + LdrGetProcedureAddressForCaller]
+    disp(getProc->getRVA());
+  };
+  for (const RunTimeCell &c : cells) {
+    if (c.dllName) {
+      // LdrGetDllHandleEx(1, null, null, &dllName, rsp + 0x40), the name a
+      // UNICODE_STRING at rsp + 0x30, leaving the cell null when the DLL is
+      // not loaded.
+      uint32_t len = c.dllName->getSize() - 2;
+      put({0x48, 0x8D, 0x05, 0, 0, 0, 0}); // lea rax, [rip + dllName]
+      disp(c.dllName->getRVA());
+      put({0x48, 0x89, 0x44, 0x24, 0x38});       // mov [rsp + 0x38], rax
+      put({0xC7, 0x44, 0x24, 0x30, 0, 0, 0, 0}); // mov dword [rsp + 0x30], ...
+      write32le(buf + off - 4, len | (len + 2) << 16);
+      put({0xB9, 1, 0, 0, 0});             // mov ecx, 1
+      put({0x31, 0xD2});                   // xor edx, edx
+      put({0x45, 0x31, 0xC0});             // xor r8d, r8d
+      put({0x4C, 0x8D, 0x4C, 0x24, 0x30}); // lea r9, [rsp + 0x30]
+      put({0x48, 0x8D, 0x44, 0x24, 0x40}); // lea rax, [rsp + 0x40]
+      put({0x48, 0x89, 0x44, 0x24, 0x20}); // mov [rsp + 0x20], rax
+      put({0xFF, 0x15, 0, 0, 0, 0});       // call [rip + LdrGetDllHandleEx]
+      disp(getDll->getRVA());
+      put({0x85, 0xC0});                   // test eax, eax
+      put({0x78, 5 + 61});                 // js past the lookup
+      put({0x48, 0x8B, 0x4C, 0x24, 0x40}); // mov rcx, [rsp + 0x40]
+      lookup(c);
+      continue;
+    }
+    put({0x65, 0x48, 0x8B, 0x0C, 0x25, 0x60, 0, 0, 0}); // mov rcx, gs:[0x60]
+    put({0x48, 0x8B, 0x49, 0x10}); // mov rcx, [rcx + 0x10]: the executable
+    lookup(c);
+    if (!c.imp->file->isWeakImport) {
+      put({0x85, 0xC0});             // test eax, eax
+      put({0x0F, 0x88, 0, 0, 0, 0}); // js end
+      write32le(buf + off - 4, end - off);
+    }
+  }
   for (const ResidualWord &w : words) {
     put({0x48, 0x8B, 0x05, 0, 0, 0, 0}); // mov rax, [rip + imp]
     disp(w.imp->getRVA());
@@ -1275,6 +1447,50 @@ void ImportSlotContents::bind() {
                << ": it is imported from " << imp->getDLLName()
                << "; export a forwarder to it instead";
 
+  // An import bound at run time has a cell in .sealed in place of an entry of
+  // an import address table, which code reads unchanged, and no descriptor.
+  // The bounds of a DLL's KCFI code range, which a KCFI thunk loads together,
+  // take one 16-byte block, start then end.
+  DenseMap<DefinedImportData *, DefinedImportData *> rangeEnds;
+  DenseSet<DefinedImportData *> rangeEndSet;
+  for (const KCFIState::ImportedRange &r : ctx.kcfi.importedRanges) {
+    rangeEnds[r.start] = r.end;
+    rangeEndSet.insert(r.end);
+  }
+  auto addCell = [&](DefinedImportData *imp, uint32_t align) {
+    if (imp->getExternalName().empty()) {
+      Err(ctx) << "cannot bind " << ctx.symtab.printSymbol(imp)
+               << ", imported from " << imp->getDLLName()
+               << " by ordinal, at run time";
+      return;
+    }
+    RunTimeCell c{imp, make<RunTimeCellChunk>(ctx),
+                  make<StringChunk>(imp->getExternalName()),
+                  imp->file->isHostImport
+                      ? nullptr
+                      : make<WideStringChunk>(imp->getDLLName())};
+    c.cell->setAlignment(std::max<uint32_t>(align, c.cell->getAlignment()));
+    imp->setLocation(c.cell);
+    // A .refptr pointer to the function reads the cell instead.
+    StringRef name = imp->getName().drop_front(strlen("__imp_"));
+    if (Symbol *s = ctx.symtab.find(name))
+      ctx.symtab.replaceRefPtr(s, name, imp);
+    runTimeNames.push_back(c.name);
+    if (c.dllName)
+      runTimeNames.push_back(c.dllName);
+    runTimeCells.push_back(c);
+  };
+  for (ImportFile *f : ctx.importFileInstances) {
+    DefinedImportData *imp = f->impSym;
+    if (&f->symtab != &ctx.symtab || !f->live || !imp ||
+        !f->isBoundAtRunTime() || rangeEndSet.contains(imp))
+      continue;
+    DefinedImportData *end = rangeEnds.lookup(imp);
+    addCell(imp, end ? 16 : 1);
+    if (end)
+      addCell(end, 1);
+  }
+
   if (!ctx.symtab.offeredFunctions.empty())
     keepUndescribedFunctionAddresses();
 
@@ -1707,8 +1923,11 @@ void ImportSlotContents::resolve(SlotScan &scan) {
   DenseSet<Symbol *> named(config.gcroot.begin(), config.gcroot.end());
   for (Export &e : ctx.symtab.exports)
     named.insert(e.sym);
+  // The words of static data that hold the address of an import bound at run
+  // time name its thunk until the fill writes them.
   for (auto &[thunk, refs] : scan.thunkRefs)
     if (refs.first == refs.second && !thunk->wrappedSym->file->thunkIsAddress &&
+        !thunk->wrappedSym->file->isBoundAtRunTime() &&
         !isDelayLoaded(ctx, thunk->wrappedSym) && !named.contains(thunk))
       thunk->getChunk()->live = false;
 
@@ -1727,6 +1946,14 @@ void ImportSlotContents::resolve(SlotScan &scan) {
   std::vector<SectionChunk *> writable;
   for (SlotScan::Pending &p : scan.pending) {
     SectionChunk *sc = p.chunk;
+    // A word holding the address of an import bound at run time is the fill's
+    // to write, from the import's cell.
+    llvm::erase_if(p.slots, [&](const ImportSlot &s) {
+      if (!s.sym->file->isBoundAtRunTime() || s.sym->file->thunkIsAddress)
+        return false;
+      addResidualWord(sc, s.offset, s.sym, s.sym, 0);
+      return true;
+    });
     llvm::erase_if(p.slots, [](const ImportSlot &s) {
       return s.sym->file->thunkIsAddress;
     });
@@ -1949,11 +2176,18 @@ void ImportSlotContents::addImport(DefinedImportData *imp) {
 // initializer table, ahead of every initializer, and makes the pages of the
 // read-only words read-only once it has written them.
 void ImportSlotContents::createResidualFill() {
-  if (residualWords.empty())
+  if (residualWords.empty() && runTimeCells.empty())
     return;
   Configuration &config = ctx.config;
-  const ResidualWord &first = residualWords.front();
   auto fail = [&](const Twine &why) {
+    if (!runTimeCells.empty()) {
+      DefinedImportData *imp = runTimeCells.front().imp;
+      Err(ctx) << "cannot bind " << ctx.symtab.printSymbol(imp)
+               << ", imported from " << imp->getDLLName()
+               << ", at run time: " << why;
+      return;
+    }
+    const ResidualWord &first = residualWords.front();
     Err(ctx) << first.chunk->file << ": " << first.chunk->getSectionName()
              << " holds the address of "
              << first.chunk->file->symtab.printSymbol(first.sym) << " plus "
@@ -1963,8 +2197,37 @@ void ImportSlotContents::createResidualFill() {
   if (!isa_and_nonnull<Defined>(ctx.symtab.findUnderscore("__xi_a")))
     return fail("the image has no C initializer table (__xi_a) to write it");
 
+  // The fill binds cells through ntdll's resolver, which follows forwarders
+  // and grants an export-suppressed target as GetProcAddress does.
+  auto getNtdll = [&](StringRef name) -> DefinedImportData * {
+    auto *imp = dyn_cast_or_null<DefinedImportData>(
+        ctx.symtab.find(("__imp_" + name).str()));
+    if (!imp) {
+      fail("the image has no " + name + " from ntdll.lib");
+      return nullptr;
+    }
+    if (config.delayLoads.contains(imp->getDLLName().lower())) {
+      fail(name + " is delay-loaded");
+      return nullptr;
+    }
+    if (!imp->file->live)
+      addImport(imp);
+    return imp;
+  };
+  DefinedImportData *getProc = nullptr, *getDll = nullptr;
+  if (!runTimeCells.empty()) {
+    getProc = getNtdll("LdrGetProcedureAddressForCaller");
+    if (!getProc)
+      return;
+    if (llvm::any_of(
+            runTimeCells,
+            [](const RunTimeCell &c) { return c.dllName != nullptr; }) &&
+        !(getDll = getNtdll("LdrGetDllHandleEx")))
+      return;
+  }
+
   DefinedImportData *protect = nullptr;
-  if (!sealedChunks.empty()) {
+  if (!sealedChunks.empty() || !runTimeCells.empty()) {
     if (config.align % 4096)
       return fail("its section alignment is smaller than a page, which the "
                   "image cannot make read-only once written");
@@ -1980,9 +2243,13 @@ void ImportSlotContents::createResidualFill() {
       addImport(protect);
   }
 
-  auto *fill = make<ResidualFillChunk>(
-      ctx, residualWords, sealedChunks.empty() ? nullptr : sealedChunks.front(),
-      protect);
+  Chunk *sealed = nullptr;
+  if (!runTimeCells.empty())
+    sealed = runTimeCells.front().cell;
+  else if (!sealedChunks.empty())
+    sealed = sealedChunks.front();
+  auto *fill = make<ResidualFillChunk>(ctx, residualWords, runTimeCells, sealed,
+                                       protect, getProc, getDll);
   residualFill = fill;
   residualFillPointer = make<LocalImportChunk>(
       ctx, make<DefinedSynthetic>("__llvm_residual_fill", fill));

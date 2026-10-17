@@ -1256,6 +1256,8 @@ void Writer::createSections() {
         ->chunks.push_back(fill);
     createPartialSection(".CRT$XIA$fill", data | r)
         ->chunks.push_back(slots.getFillPointer());
+    llvm::append_range(createPartialSection(".rdata", data | r)->chunks,
+                       slots.getRunTimeNames());
   }
   if (Chunk *pdata = slots.getFillPdata()) {
     createPartialSection(".xdata", data | r)
@@ -1361,10 +1363,13 @@ void Writer::createSections() {
       sec->splitECChunks();
   }
 
-  // The read-only chunks holding residual words get pages of their own, which
-  // the image maps writable and the residual fill makes read-only.
-  if (!slots.getSealedChunks().empty()) {
+  // The read-only chunks holding residual words, and the cells of imports
+  // bound at run time, get pages of their own, which the image maps writable
+  // and the residual fill makes read-only.
+  if (!slots.getSealedChunks().empty() || !slots.getRunTimeCells().empty()) {
     OutputSection *sec = createSection(".sealed", data | r | w);
+    for (const RunTimeCell &c : slots.getRunTimeCells())
+      sec->addChunk(c.cell);
     for (SectionChunk *sc : slots.getSealedChunks())
       sec->addChunk(sc);
   }

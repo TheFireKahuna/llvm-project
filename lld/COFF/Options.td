@@ -268,6 +268,9 @@ def version_script : P<"version-script",
 def include_optional : Joined<["/", "-", "/?", "-?"], "includeoptional:">,
     HelpText<"Add symbol as undefined, but allow it to remain undefined">;
 def import_slots : F<"import-slots">;
+def unresolved_host_imports : F<"unresolved-host-imports">,
+    HelpText<"Under -import-slots, import what nothing defines from the "
+             "executable that loads the DLL">;
 def ignore_offers : Joined<["/", "-", "/?", "-?"], "ignore-offers:">;
 def allow_vague_duplicate : Joined<["/", "-", "/?", "-?"],
                                    "allow-vague-duplicate:">;

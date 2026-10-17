@@ -100,6 +100,10 @@ public:
   // default it imports. Returns whether it loaded any, which may change what a
   // word needs.
   bool loadInteriorImports();
+  bool importUnresolvedFromHost();
+  // Redirects the accesses to a .refptr.<name> pointer to the symbol sym to
+  // imp, which holds the same address, dropping the pointer.
+  void replaceRefPtr(Symbol *sym, StringRef name, Defined *imp);
 
   // Under -import-slots, the import of the name that the DLL of imp exports
   // for the address offset bytes into imp's data, or null if it exports none.
@@ -560,6 +564,14 @@ private:
   llvm::DenseMap<Symbol *, std::pair<ArchiveFile *, llvm::object::Archive::Symbol>>
       weakFallbackLazy;
   void pullWeakFallbackLazy(Symbol *s);
+  bool isImportedStrongly(StringRef name);
+  void readImportReferences();
+  // The names whose import pointers a reference other than a weak one names,
+  // and those the objects' weak externals name, once read.
+  std::optional<llvm::DenseSet<StringRef>> strongImportPointers;
+  std::optional<llvm::DenseSet<StringRef>> weakExternalNames;
+  // The undefined names the objects declare as functions, once read.
+  std::optional<llvm::DenseSet<StringRef>> functionNames;
   std::unique_ptr<BitcodeCompiler> lto;
   std::vector<std::pair<Symbol *, Symbol *>> entryThunks;
   llvm::DenseMap<Symbol *, Symbol *> exitThunks;

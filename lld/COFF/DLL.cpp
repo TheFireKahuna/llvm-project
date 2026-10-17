@@ -724,6 +724,11 @@ private:
 } // anonymous namespace
 
 void IdataContents::create(COFFLinkerContext &ctx) {
+  // An import bound at run time is read from its cell, and has neither an
+  // entry nor a descriptor.
+  llvm::erase_if(imports, [](DefinedImportData *imp) {
+    return imp->file->isBoundAtRunTime();
+  });
   std::vector<std::vector<DefinedImportData *>> v = binImports(ctx, imports);
 
   // The runs of in-place import slots by DLL, and the hint/name record each

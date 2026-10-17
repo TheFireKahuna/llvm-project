@@ -151,6 +151,8 @@ struct Configuration {
   bool forceMultiple = false;
   bool forceMultipleRes = false;
   bool forceUnresolved = false;
+  // Import what nothing defines from the executable that loads the DLL.
+  bool unresolvedHostImports = false;
   bool debug = false;
   bool includeDwarfChunks = false;
   bool debugGHashes = false;
