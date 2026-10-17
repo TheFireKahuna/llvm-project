@@ -54,8 +54,8 @@ public:
       : ctx(ctx), idata(idata) {}
   void bind();
   void createResidualFill();
-  // Builds the fill of this image's overridable-default cells, the in-place
-  // slots that hold such a default's address, from the committed slots.
+  // Builds the fill of a DLL's overridable-default cells, the words through
+  // which it reaches the defaults it imports.
   void createOverrideCellFill();
   void check(Chunk *iatStart, uint64_t iatSize);
 
@@ -81,6 +81,8 @@ public:
   Chunk *getFillPdata() const { return residualFillPdata; }
   Chunk *getOverrideCellFill() const { return overrideCellFill; }
   Chunk *getOverrideCellFillPointer() const { return overrideCellFillPointer; }
+  Chunk *getOverrideCellFillUnwind() const { return overrideCellFillUnwind; }
+  Chunk *getOverrideCellFillPdata() const { return overrideCellFillPdata; }
 
 private:
   void scanChunk(SlotScan &scan, SectionChunk *sc);
@@ -119,10 +121,13 @@ private:
   Chunk *residualFillPointer = nullptr;
   Chunk *residualFillUnwind = nullptr;
   Chunk *residualFillPdata = nullptr;
-  // The fill of this image's overridable-default cells and its pointer in the
-  // TLS callback array, which runs it before any of the image's own code.
+  // The fill of this image's overridable-default cells, its pointer in the C
+  // initializer table, and, when it has a frame, its unwind information and
+  // exception table entry.
   Chunk *overrideCellFill = nullptr;
   Chunk *overrideCellFillPointer = nullptr;
+  Chunk *overrideCellFillUnwind = nullptr;
+  Chunk *overrideCellFillPdata = nullptr;
   // The read-only output sections other than .rdata that hold in-place import
   // slots, which are laid out before .rdata, and whether a $-group of .rdata
   // holds one; either places the import address tables at the start of

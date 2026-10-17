@@ -1218,10 +1218,18 @@ void Writer::createSections() {
   for (Chunk *c : ctx.kcfi.chunks)
     createPartialSection(c->getSectionName(), c->getOutputCharacteristics())
         ->chunks.push_back(c);
+  // Right after the table's start, ahead of every other initializer: the
+  // fill of the overridable-default cells, then the residual fill, which seals
+  // the section of the cells that share a chunk with residual words.
+  if (Chunk *fill = slots.getOverrideCellFill()) {
+    createPartialSection(".text", fill->getOutputCharacteristics())
+        ->chunks.push_back(fill);
+    createPartialSection(".CRT$XIA$fill", data | r)
+        ->chunks.push_back(slots.getOverrideCellFillPointer());
+  }
   if (Chunk *fill = slots.getFill()) {
     createPartialSection(".text", fill->getOutputCharacteristics())
         ->chunks.push_back(fill);
-    // Right after the table's start, ahead of every other initializer.
     createPartialSection(".CRT$XIA$fill", data | r)
         ->chunks.push_back(slots.getFillPointer());
   }
@@ -1230,13 +1238,10 @@ void Writer::createSections() {
         ->chunks.push_back(slots.getFillUnwind());
     createPartialSection(".pdata", data | r)->chunks.push_back(pdata);
   }
-  if (Chunk *fill = slots.getOverrideCellFill()) {
-    createPartialSection(".text", fill->getOutputCharacteristics())
-        ->chunks.push_back(fill);
-    // A TLS callback, right after the executable's validation of its table and
-    // ahead of the program's own callbacks, so it runs before any image code.
-    createPartialSection(".CRT$XLAB", data | r)
-        ->chunks.push_back(slots.getOverrideCellFillPointer());
+  if (Chunk *pdata = slots.getOverrideCellFillPdata()) {
+    createPartialSection(".xdata", data | r)
+        ->chunks.push_back(slots.getOverrideCellFillUnwind());
+    createPartialSection(".pdata", data | r)->chunks.push_back(pdata);
   }
 
   fixPartialSectionChars(".rsrc", data | r);
@@ -2996,7 +3001,7 @@ void Writer::createGuardCFTables() {
   if (Chunk *fill = slots.getFill())
     addressTakenSyms.insert({fill, 0});
 
-  // The TLS callback array holds the override-default cell fill.
+  // The C initializer table calls the overridable-default cell fill.
   if (Chunk *fill = slots.getOverrideCellFill())
     addressTakenSyms.insert({fill, 0});
 

@@ -1,82 +1,178 @@
 # REQUIRES: x86
-## Under -import-slots, a word of an image's static data that holds the address
-## of an overridable default it imports is a cell: an in-place import slot the
-## loader fills with the runtime's entry. The image's fill, a TLS callback that
-## runs before any of its code, reads the executable's override table through
-## the PEB and, for a slot the table names replaced, overwrites the cell with
-## the executable's image base plus the slot's RVA, so every image observes the
-## default's address as the one replacement. A DLL loads the runtime's records
-## member for its imports' slots, as the executable does for its replacements.
+## Under -import-slots, a DLL's cells of an overridable default it imports are
+## the words through which it reaches the default: each in-place import slot of
+## it, and its import's entry, through which the DLL calls it and loads its
+## address. The loader writes them with the runtime's entry. The DLL's fill,
+## which its C initializer table runs before every other initializer, reads the
+## executable's override table through the PEB and, for a slot the anchor's
+## mask names replaced, writes the executable's image base plus the slot's RVA
+## into each of its cells, so every image observes and calls the one
+## replacement. A forwarded or unreplaced slot, or an executable with no table,
+## leaves every cell the loader's value. A DLL loads the runtime's records
+## member for its imports' slots.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium rt.s -o rt.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium records.s -o records.obj
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium crt.s -o crt.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium use.s -o use.obj
 # RUN: llvm-lib -out:records.lib records.obj
+# RUN: lld-link -def:ntdll.def -out:ntdll.lib -machine:x64
 # RUN: lld-link -import-slots -dll -noentry rt.obj -out:rt.dll -implib:rt.lib
 
-# RUN: lld-link -import-slots -dll -noentry use.obj rt.lib records.lib \
-# RUN:   -out:use.dll
-
-## The cell holds the address of the imported default, so the DLL imports it;
-## the word is an in-place import slot the loader fills, which the fill below
-## then overwrites.
-# RUN: llvm-readobj --coff-imports use.dll | FileCheck --check-prefix=IMPORT %s
+## The DLL calls the default, and holds its address in writable and in
+## read-only data. The read-only word is the slot its import is read from, so
+## the call's thunk reads it too.
+# RUN: lld-link -import-slots -dll -noentry use.obj crt.obj rt.lib records.lib \
+# RUN:   ntdll.lib -out:use.dll
+# RUN: llvm-readobj --coff-imports use.dll > use.txt
+# RUN: llvm-objdump -d --print-imm-hex use.dll >> use.txt
+# RUN: FileCheck --ignore-case --check-prefixes=IMPORT,FILL --input-file=use.txt \
+# RUN:   %s
 # IMPORT:      Name: rt.dll
-# IMPORT:      Symbol: _Znwy
+# IMPORT-NEXT: ImportLookupTableRVA:
+# IMPORT-NEXT: ImportAddressTableRVA: 0x[[RO:[0-9A-F]+]]
+# IMPORT-NEXT: Symbol: _Znwy
+# IMPORT:      Name: rt.dll
+# IMPORT-NEXT: ImportLookupTableRVA:
+# IMPORT-NEXT: ImportAddressTableRVA: 0x[[RW:[0-9A-F]+]]
+# IMPORT-NEXT: Symbol: _Znwy
+# IMPORT:      Name: ntdll.dll
+# IMPORT-NEXT: ImportLookupTableRVA:
+# IMPORT-NEXT: ImportAddressTableRVA: 0x[[PROTECT:[0-9A-F]+]]
+# IMPORT-NEXT: Symbol: NtProtectVirtualMemory
 
-## The fill is a TLS callback: for process attach only, since a later thread
-## attach must not undo the program's own assignment to the cell, it reads the
-## executable's image base through the PEB, checks the table's magic, and for
-## slot 0's tag writes base + the slot's RVA into the cell.
-# RUN: llvm-objdump -d use.dll | FileCheck --check-prefix=FILL %s
-# FILL:      cmpl    $0x1, %edx
-# FILL-NEXT: jne
+## The fill reads the anchor's mask and writes the writable cell for slot 0 in
+## place. Only when a read-only cell's slot is replaced does it make their range
+## writable, write them, and restore the protection the first call reported. It
+## returns 0, or the status of a failed protection call, which fails start-up.
+# FILL:      subq    $0x48, %rsp
 # FILL-NEXT: movq    %gs:0x60, %r11
 # FILL-NEXT: movq    0x10(%r11), %r11
 # FILL-NEXT: cmpl    $0x7b3ac2d5, 0x80(%r11)
-# FILL-NEXT: jne
-# FILL-NEXT: cmpl    $0xc5e1a7f3, 0x40(%r11)
-# FILL-NEXT: jne
+# FILL-NEXT: jne     0x[[ZERO:[0-9a-f]+]]
+# FILL-NEXT: movl    0x88(%r11), %r10d
+# FILL-NEXT: movl    0x8(%r11,%r10), %r10d
+# FILL-NEXT: btl     $0x0, %r10d
+# FILL-NEXT: jae
 # FILL-NEXT: movl    0x44(%r11), %eax
 # FILL-NEXT: addq    %r11, %rax
-# FILL-NEXT: movq    %rax,
+# FILL-NEXT: movq    %rax, {{.*}}(%rip) # 0x18000[[RW]]
+# FILL-NEXT: testl   $0x1, %r10d
+# FILL-NEXT: je      0x[[ZERO]]
+# FILL-NEXT: leaq    {{.*}}(%rip), %rax # 0x18000[[RO]]
+# FILL-NEXT: movq    %rax, 0x30(%rsp)
+# FILL-NEXT: movq    $0x8, 0x38(%rsp)
+# FILL-NEXT: movl    $0x4, %r9d
+# FILL-NEXT: leaq    0x40(%rsp), %rax
+# FILL-NEXT: movq    %rax, 0x20(%rsp)
+# FILL-NEXT: movq    $-0x1, %rcx
+# FILL-NEXT: leaq    0x30(%rsp), %rdx
+# FILL-NEXT: leaq    0x38(%rsp), %r8
+# FILL-NEXT: callq   *{{.*}}(%rip) # 0x18000[[PROTECT]]
+# FILL-NEXT: testl   %eax, %eax
+# FILL-NEXT: jne     0x[[DONE:[0-9a-f]+]]
+# FILL-NEXT: movq    %gs:0x60, %r11
+# FILL-NEXT: movq    0x10(%r11), %r11
+# FILL-NEXT: movl    0x88(%r11), %r10d
+# FILL-NEXT: movl    0x8(%r11,%r10), %r10d
+# FILL-NEXT: btl     $0x0, %r10d
+# FILL-NEXT: jae
+# FILL-NEXT: movl    0x44(%r11), %eax
+# FILL-NEXT: addq    %r11, %rax
+# FILL-NEXT: movq    %rax, {{.*}}(%rip) # 0x18000[[RO]]
+# FILL-NEXT: movl    0x40(%rsp), %r9d
+# FILL-NEXT: leaq    0x40(%rsp), %rax
+# FILL-NEXT: movq    %rax, 0x20(%rsp)
+# FILL-NEXT: movq    $-0x1, %rcx
+# FILL-NEXT: leaq    0x30(%rsp), %rdx
+# FILL-NEXT: leaq    0x38(%rsp), %r8
+# FILL-NEXT: callq   *{{.*}}(%rip) # 0x18000[[PROTECT]]
+# FILL-NEXT: jmp     0x[[DONE]]
+# FILL-NEXT: [[ZERO]]: {{.*}} xorl %eax, %eax
+# FILL-NEXT: [[DONE]]: {{.*}} addq $0x48, %rsp
 # FILL-NEXT: retq
+# FILL:      jmpq    *{{.*}}(%rip) # 0x18000[[RO]]
 
-## The fill's pointer is in the TLS callback array, which the loader runs, right
-## after the executable's validation and before the program's own callbacks; the
-## runtime's TLS directory brackets it, so the loader reaches it.
-# RUN: llvm-readobj --sections use.dll | FileCheck --check-prefix=CRT %s
-# CRT: Name: .CRT
+## The protection calls give the fill a frame, which its unwind information
+## describes, and the C initializer table holds its pointer right after the
+## table's start.
+# RUN: llvm-readobj --unwind use.dll | FileCheck --check-prefix=UNWIND %s
+# UNWIND:      StartAddress: (0x180001010)
+# UNWIND:      PrologSize: 4
+# UNWIND:      0x04: ALLOC_SMALL size=72
+# RUN: llvm-objdump -s -j .CRT use.dll | FileCheck --check-prefix=CRT %s
+# CRT:      Contents of section .CRT:
+# CRT-NEXT: 00000000 00000000 10100080 01000000
 
-## A DLL that imports no overridable default, or takes no address, carries no
-## fill: the cell is the whole mechanism.
+## With only a writable cell, which is then the slot its import is read from,
+## the fill is a leaf that needs no protection call, and so no ntdll.lib.
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium rw.s -o rw.obj
+# RUN: lld-link -import-slots -dll -noentry rw.obj crt.obj rt.lib records.lib \
+# RUN:   -out:rw.dll
+# RUN: llvm-objdump -d --print-imm-hex rw.dll | FileCheck --check-prefix=LEAF %s
+# LEAF-NOT:  subq
+# LEAF:      btl     $0x0, %r10d
+# LEAF-NOT:  callq
+# LEAF:      xorl    %eax, %eax
+# LEAF-NEXT: retq
+
+## A DLL that reaches no overridable default carries no fill.
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium plain.s -o plain.obj
-# RUN: lld-link -import-slots -dll -noentry plain.obj rt.lib records.lib \
-# RUN:   -out:plain.dll
+# RUN: lld-link -import-slots -dll -noentry plain.obj crt.obj rt.lib \
+# RUN:   records.lib -out:plain.dll
 # RUN: llvm-objdump -d plain.dll | FileCheck --check-prefix=NONE %s
 # NONE-NOT: %gs:0x60
 
-## Without a TLS directory the loader never calls the fill, so a cell would keep
-## the runtime's entry: that is an error, not a silently unreplaced default.
-# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium notls.s -o notls.obj
-# RUN: not lld-link -import-slots -dll -noentry notls.obj rt.lib records.lib \
-# RUN:   -out:notls.dll 2>&1 | FileCheck --check-prefix=NOTLS %s
-# NOTLS: error: notls.obj: the address of an overridable default needs a TLS directory to fill, but _tls_used is not defined
+## Without a C initializer table nothing runs the fill, and without
+## NtProtectVirtualMemory it cannot write a read-only cell: either is an error,
+## not a silently unreplaced default.
+# RUN: not lld-link -import-slots -dll -noentry use.obj rt.lib records.lib \
+# RUN:   ntdll.lib -out:nocrt.dll 2>&1 | FileCheck --check-prefix=NOCRT %s
+# NOCRT: error: the image reaches __declspec(dllimport) operator new(unsigned long long), an overridable default imported from rt.dll, through a cell that the image has no C initializer table (__xi_a) to fill
+# RUN: not lld-link -import-slots -dll -noentry use.obj crt.obj rt.lib \
+# RUN:   records.lib -out:noprotect.dll 2>&1 | \
+# RUN:   FileCheck --check-prefix=NOPROTECT %s
+# NOPROTECT: error: the image reaches __declspec(dllimport) operator new(unsigned long long), an overridable default imported from rt.dll, through a cell that it cannot write without NtProtectVirtualMemory from ntdll.lib
+
+## An executable binds its own references at link time and carries no fill.
+# RUN: lld-link -import-slots -entry:dllmain -subsystem:console use.obj crt.obj \
+# RUN:   rt.lib records.lib ntdll.lib -out:use.exe
+# RUN: llvm-objdump -d use.exe | FileCheck --check-prefix=NONE %s
 
 #--- rt.s
         .text
         .globl _Znwy
 _Znwy:
         retq
+        .globl other
+other:
+        retq
         .section .drectve,"yni"
-        .ascii " /EXPORT:_Znwy"
+        .ascii " /EXPORT:_Znwy /EXPORT:other"
 
 #--- records.s
         .globl __ovr_version
         .set __ovr_version, 1
         .globl "__ovr_slot$_Znwy"
         .set "__ovr_slot$_Znwy", 0
+
+#--- ntdll.def
+LIBRARY ntdll.dll
+EXPORTS
+  NtProtectVirtualMemory
+
+#--- crt.s
+## The C initializer table's bounds, as the C runtime provides them, so the
+## linker's fill joins the table the runtime's start-up runs.
+        .section .CRT$XIA,"dr"
+        .globl __xi_a
+__xi_a:
+        .quad 0
+        .section .CRT$XIZ,"dr"
+        .globl __xi_z
+__xi_z:
+        .quad 0
 
 #--- use.s
         .text
@@ -88,39 +184,13 @@ dllmain:
         .globl gnew
 gnew:
         .quad _Znwy
-## A minimal TLS directory with its callback-array bounds, as the C++ runtime
-## provides, so the linker's callback joins the array the loader runs.
-        .section .CRT$XLA,"dr"
-        .globl __xl_a
-__xl_a:
-        .quad 0
-        .section .CRT$XLZ,"dr"
-        .globl __xl_z
-__xl_z:
-        .quad 0
-        .section .rdata,"dr"
-        .globl _tls_used
+        .section .rdata,"dr",discard,cnew
+        .globl cnew
         .p2align 3
-_tls_used:
-        .quad 0
-        .quad 0
-        .quad 0
-        .quad __xl_a + 8
-        .long 0
-        .long 0
+cnew:
+        .quad _Znwy
 
-#--- plain.s
-        .text
-        .globl dllmain
-dllmain:
-        callq _Znwy
-        retq
-        .data
-        .globl n
-n:
-        .long 0
-
-#--- notls.s
+#--- rw.s
         .text
         .globl dllmain
 dllmain:
@@ -129,3 +199,14 @@ dllmain:
         .globl gnew
 gnew:
         .quad _Znwy
+
+#--- plain.s
+        .text
+        .globl dllmain
+dllmain:
+        callq other
+        retq
+        .data
+        .globl gother
+gother:
+        .quad other

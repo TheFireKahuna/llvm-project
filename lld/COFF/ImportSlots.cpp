@@ -65,10 +65,13 @@ private:
   COFFLinkerContext &ctx;
 };
 
-// The unwind information of the residual fill when it has a frame.
+// The unwind information of a fill function with a frame, which its first
+// instruction sets up and its last two take down: the residual fill when it
+// seals, or the fill of overridable-default cells when it writes read-only
+// ones.
 class ResidualFillUnwindChunk : public NonSectionChunk {
 public:
-  ResidualFillUnwindChunk(COFFLinkerContext &ctx, ResidualFillChunk *fill)
+  ResidualFillUnwindChunk(COFFLinkerContext &ctx, Chunk *fill)
       : fill(fill), ctx(ctx) {
     setAlignment(4);
   }
@@ -80,14 +83,14 @@ public:
   }
 
 private:
-  ResidualFillChunk *fill;
+  Chunk *fill;
   COFFLinkerContext &ctx;
 };
 
-// The exception table entry of the residual fill when it has a frame.
+// The exception table entry of a fill function with a frame.
 class ResidualFillPdataChunk : public NonSectionChunk {
 public:
-  ResidualFillPdataChunk(COFFLinkerContext &ctx, ResidualFillChunk *fill,
+  ResidualFillPdataChunk(COFFLinkerContext &ctx, Chunk *fill,
                          ResidualFillUnwindChunk *unwind)
       : fill(fill), unwind(unwind), ctx(ctx) {
     setAlignment(4);
@@ -100,7 +103,7 @@ public:
   }
 
 private:
-  ResidualFillChunk *fill;
+  Chunk *fill;
   ResidualFillUnwindChunk *unwind;
   COFFLinkerContext &ctx;
 };
@@ -301,6 +304,337 @@ void ResidualFillPdataChunk::writeTo(uint8_t *buf) const {
   }
   write32le(buf + 4, fill->getRVA() + fill->getSize());
   write32le(buf + 8, unwind->getRVA());
+}
+
+// A word of this image that holds the address of an overridable default X: an
+// in-place import slot of X, or the entry through which the image calls X and
+// loads its address. The loader writes it with the runtime's entry; the fill
+// writes the program's replacement over it when the executable replaces X.
+struct OverrideCell {
+  // The slot's chunk and offset, or null for the import's entry.
+  SectionChunk *chunk;
+  uint32_t offset;
+  DefinedImportData *imp;
+  uint32_t slot;
+  bool readOnly;
+
+  uint64_t getRVA() const {
+    return chunk ? chunk->getRVA() + offset : imp->getRVA();
+  }
+};
+
+// The fill of a DLL's overridable-default cells, which the C initializer table
+// runs once, before every other initializer and before the residual fill. It
+// reads the executable's override table through the PEB and, for each cell
+// whose slot the anchor's mask names replaced, writes the executable's image
+// base plus the slot's RVA, the replacement, into the cell. A forwarded or
+// unreplaced slot, or a foreign executable with no table, leaves the cell the
+// loader's value, the runtime's entry, so a program that replaces nothing
+// writes nothing. The read-only cells are inside the import address table
+// directory, which the loader restores to read-only once it has bound the
+// image; when one of their slots is replaced, the fill makes the range writable
+// with NtProtectVirtualMemory, writes them, and restores the protection the
+// call reported, as the loader's own bracket does. Those calls give it a frame;
+// without read-only cells it is a leaf. It returns 0, or the status of a
+// protection call that failed, which fails the image's start-up, as any nonzero
+// return from the table does.
+class OverrideCellFillChunk : public NonSectionCodeChunk {
+public:
+  OverrideCellFillChunk(COFFLinkerContext &ctx, std::vector<OverrideCell> cells,
+                        DefinedImportData *protect)
+      : cells(std::move(cells)), protect(protect), ctx(ctx) {
+    setAlignment(16);
+  }
+  size_t getSize() const override;
+  void writeTo(uint8_t *buf) const override;
+  uint32_t getOutputCharacteristics() const override {
+    return llvm::COFF::IMAGE_SCN_CNT_CODE |
+           NonSectionCodeChunk::getOutputCharacteristics();
+  }
+  StringRef getSectionName() const override { return ".text"; }
+  MachineTypes getMachine() const override { return ctx.config.machine; }
+
+private:
+  size_t getCellSize(const OverrideCell &c) const;
+
+  // The writable cells, then the read-only ones.
+  std::vector<OverrideCell> cells;
+  // NtProtectVirtualMemory's import, when there are read-only cells.
+  DefinedImportData *protect;
+  COFFLinkerContext &ctx;
+};
+
+// The table's anchor RVA follows its magic, version and count, and the anchor's
+// mask follows its own.
+static constexpr uint32_t overrideAnchorRVAOffset = overrideHeaderOffset + 8;
+static constexpr uint32_t overrideAnchorMaskOffset = 8;
+
+size_t OverrideCellFillChunk::getCellSize(const OverrideCell &c) const {
+  // tbz; ldr; add; adrp; add; str
+  if (ctx.config.machine == ARM64)
+    return 24;
+  // bt; jnc; mov eax, [r11 + rva]; add rax, r11; mov [rip + cell], rax
+  return 5 + 2 + (overrideSlotOffset(c.slot) + 4 >= 0x80 ? 7 : 4) + 3 + 7;
+}
+
+size_t OverrideCellFillChunk::getSize() const {
+  size_t size = 0;
+  for (const OverrideCell &c : cells)
+    size += getCellSize(c);
+  if (ctx.config.machine == ARM64) {
+    // The base and the magic's check (seven words), the mask (three), the
+    // zero status and ret; with read-only cells, the frame (four), the test of
+    // their slots (four), the two protection calls (fourteen and eight), the
+    // first's status check, the reload of the base and mask between them (five)
+    // and the branch past the zero status.
+    size += 28 + 12 + 8;
+    return protect ? size + 16 + 16 + 56 + 32 + 4 + 20 + 4 : size;
+  }
+  // The base, the magic's check, the mask, the zero status and ret; with
+  // read-only cells, the frame, the test of their slots, the two protection
+  // calls, the first's status check, the reload of the base and mask between
+  // them and the jump past the zero status.
+  size += 13 + 17 + 12 + 2 + 1;
+  return protect ? size + 8 + 13 + 60 + 38 + 8 + 25 + 2 : size;
+}
+
+void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
+  const uint32_t pageReadWrite = 4;
+  uint32_t roMask = 0;
+  uint64_t roStart = UINT64_MAX, roEnd = 0;
+  for (const OverrideCell &c : cells) {
+    if (!c.readOnly)
+      continue;
+    roMask |= 1u << c.slot;
+    roStart = std::min(roStart, c.getRVA());
+    roEnd = std::max(roEnd, c.getRVA() + ctx.config.wordsize);
+  }
+  uint32_t off = 0;
+  // The branches to the zero status, and to the epilogue with the status of a
+  // protection call, patched once their places are known.
+  SmallVector<uint32_t, 4> toZero, toDone;
+
+  if (ctx.config.machine == ARM64) {
+    auto put = [&](uint32_t insn) {
+      write32le(buf + off, insn);
+      off += 4;
+    };
+    auto branch = [&](SmallVector<uint32_t, 4> &list, uint32_t insn) {
+      list.push_back(off);
+      put(insn);
+    };
+    // A conditional branch's or cbnz's 19-bit offset, or b's 26-bit one.
+    auto patch = [&](ArrayRef<uint32_t> list, uint32_t target) {
+      for (uint32_t b : list) {
+        uint32_t insn = read32le(buf + b);
+        uint32_t delta = (target - b) / 4;
+        write32le(buf + b, (insn >> 26) == 0x05
+                               ? insn | (delta & 0x3FFFFFF)
+                               : insn | (delta & 0x7FFFF) << 5);
+      }
+    };
+    // movz wN, #lo; movk wN, #hi, lsl 16
+    auto movImm = [&](uint32_t reg, uint32_t value) {
+      put(0x52800000 | reg | (value & 0xFFFF) << 5);
+      put(0x72A00000 | reg | (value >> 16 & 0xFFFF) << 5);
+    };
+    // adrp xN, target; add xN, xN, :lo12:target
+    auto address = [&](uint32_t reg, uint64_t target) {
+      write32le(buf + off, 0x90000000 | reg);
+      write32le(buf + off + 4, 0x91000000 | reg << 5 | reg);
+      applyArm64Addr(buf + off, target, rva + off, 12);
+      applyArm64Imm(buf + off + 4, target & 0xfff, 0);
+      off += 8;
+    };
+    // adrp x16, protect; ldr x16, [x16, :lo12:protect]; blr x16
+    auto callProtect = [&] {
+      write32le(buf + off, 0x90000010);
+      write32le(buf + off + 4, 0xF9400210);
+      applyArm64Addr(buf + off, protect->getRVA(), rva + off, 12);
+      applyArm64Ldr(buf + off + 4, protect->getRVA() & 0xfff);
+      off += 8;
+      put(0xD63F0200);
+    };
+    // The executable's image base, from the PEB, into x16.
+    auto loadBase = [&] {
+      put(0xF9403250); // ldr x16, [x18, #0x60]   TEB->PEB
+      put(0xF9400A10); // ldr x16, [x16, #0x10]   PEB->ImageBaseAddress
+    };
+    // The anchor's mask into w10: ldr w10, [x16, #anchor]; add x10, x16, x10;
+    // ldr w10, [x10, #mask].
+    auto loadMask = [&] {
+      put(0xB9400000 | overrideAnchorRVAOffset / 4 << 10 | 16 << 5 | 10);
+      put(0x8B0A020A);
+      put(0xB9400000 | overrideAnchorMaskOffset / 4 << 10 | 10 << 5 | 10);
+    };
+    auto writeCells = [&](bool readOnly) {
+      for (const OverrideCell &c : cells) {
+        if (c.readOnly != readOnly)
+          continue;
+        // tbz w10, #slot, .next; ldr w17, [x16, #rva]; add x17, x16, x17;
+        // adrp x9, cell; add x9, x9, :lo12:cell; str x17, [x9]
+        uint32_t skip = off;
+        put(0x36000000 | c.slot << 19 | 10);
+        put(0xB9400000 | (overrideSlotOffset(c.slot) + 4) / 4 << 10 | 16 << 5 |
+            17);
+        put(0x8B110211);
+        address(9, c.getRVA());
+        put(0xF9000131);
+        write32le(buf + skip, read32le(buf + skip) | (off - skip) / 4 << 5);
+      }
+    };
+
+    if (protect) {
+      put(0xA9BD7BFD); // stp x29, x30, [sp, #-48]!
+      put(0x910003FD); // mov x29, sp
+    }
+    loadBase();
+    put(0xB9408211); // ldr w17, [x16, #0x80]   the table's magic
+    movImm(9, overrideTableMagic);
+    put(0x6B09023F);            // cmp w17, w9
+    branch(toZero, 0x54000001); // b.ne .zero
+    loadMask();
+    writeCells(false);
+    if (protect) {
+      movImm(9, roMask);
+      put(0x6A09015F);            // tst w10, w9
+      branch(toZero, 0x54000000); // b.eq .zero
+      // NtProtectVirtualMemory(-1, &base, &size, PAGE_READWRITE, &old), with
+      // base, size and old at sp + 16, 24 and 32.
+      address(0, roStart);
+      put(0xF9000BE0); // str x0, [sp, #16]
+      put(0xD2800001 | uint32_t((roEnd - roStart) & 0xFFFF) << 5); // movz x1
+      put(0xF2A00001 | uint32_t((roEnd - roStart) >> 16 & 0xFFFF) << 5);
+      put(0xF9000FE1);                      // str x1, [sp, #24]
+      put(0x92800000);                      // mov x0, #-1
+      put(0x910043E1);                      // add x1, sp, #16
+      put(0x910063E2);                      // add x2, sp, #24
+      put(0x52800003 | pageReadWrite << 5); // mov w3, #PAGE_READWRITE
+      put(0x910083E4);                      // add x4, sp, #32
+      callProtect();
+      branch(toDone, 0x35000000); // cbnz w0, .done
+      loadBase();
+      loadMask();
+      writeCells(true);
+      // NtProtectVirtualMemory(-1, &base, &size, old, &old) over the pages the
+      // first call reported.
+      put(0xB94023E3); // ldr w3, [sp, #32]
+      put(0x92800000); // mov x0, #-1
+      put(0x910043E1); // add x1, sp, #16
+      put(0x910063E2); // add x2, sp, #24
+      put(0x910083E4); // add x4, sp, #32
+      callProtect();
+      branch(toDone, 0x14000000); // b .done
+    }
+    patch(toZero, off);
+    put(0x52800000); // mov w0, #0
+    patch(toDone, off);
+    if (protect) {
+      put(0x910003BF); // mov sp, x29
+      put(0xA8C37BFD); // ldp x29, x30, [sp], #48
+    }
+    put(0xD65F03C0); // ret
+    return;
+  }
+
+  auto put = [&](ArrayRef<uint8_t> bytes) {
+    memcpy(buf + off, bytes.data(), bytes.size());
+    off += bytes.size();
+  };
+  // The RIP-relative displacement to target of the instruction just put.
+  auto disp = [&](uint64_t target) {
+    write32le(buf + off - 4, target - (rva + off));
+  };
+  auto jump = [&](SmallVector<uint32_t, 4> &list, uint8_t cc) {
+    put({0x0F, cc, 0, 0, 0, 0});
+    list.push_back(off - 4);
+  };
+  auto patch = [&](ArrayRef<uint32_t> list) {
+    for (uint32_t d : list)
+      write32le(buf + d, off - (d + 4));
+  };
+  // The executable's image base, from the PEB, into r11.
+  auto loadBase = [&] {
+    put({0x65, 0x4C, 0x8B, 0x1C, 0x25, 0x60, 0, 0, 0}); // mov r11, gs:[0x60]
+    put({0x4D, 0x8B, 0x5B, 0x10});                      // mov r11, [r11 + 0x10]
+  };
+  // The anchor's mask into r10d.
+  auto loadMask = [&] {
+    put({0x45, 0x8B, 0x93, 0, 0, 0, 0}); // mov r10d, [r11 + anchor]
+    write32le(buf + off - 4, overrideAnchorRVAOffset);
+    // mov r10d, [r11 + r10 + mask]
+    put({0x47, 0x8B, 0x54, 0x13, uint8_t(overrideAnchorMaskOffset)});
+  };
+  auto writeCells = [&](bool readOnly) {
+    for (const OverrideCell &c : cells) {
+      if (c.readOnly != readOnly)
+        continue;
+      put({0x41, 0x0F, 0xBA, 0xE2, uint8_t(c.slot)}); // bt r10d, slot
+      put({0x73, 0});                                 // jnc .next
+      uint32_t skip = off - 1;
+      // mov eax, dword ptr [r11 + slot offset + 4]   the slot's RVA
+      uint32_t rvaOff = overrideSlotOffset(c.slot) + 4;
+      if (rvaOff >= 0x80) {
+        put({0x41, 0x8B, 0x83, 0, 0, 0, 0});
+        write32le(buf + off - 4, rvaOff);
+      } else {
+        put({0x41, 0x8B, 0x43, uint8_t(rvaOff)});
+      }
+      put({0x4C, 0x01, 0xD8});             // add rax, r11   base + rva
+      put({0x48, 0x89, 0x05, 0, 0, 0, 0}); // mov [rip + cell], rax
+      disp(c.getRVA());
+      buf[skip] = off - (skip + 1);
+    }
+  };
+  // NtProtectVirtualMemory(-1, &base, &size, r9d, &old), with base, size and
+  // old at rsp + 0x30, 0x38 and 0x40.
+  auto callProtect = [&] {
+    put({0x48, 0x8D, 0x44, 0x24, 0x40});             // lea rax, [rsp + 0x40]
+    put({0x48, 0x89, 0x44, 0x24, 0x20});             // mov [rsp + 0x20], rax
+    put({0x48, 0xC7, 0xC1, 0xFF, 0xFF, 0xFF, 0xFF}); // mov rcx, -1
+    put({0x48, 0x8D, 0x54, 0x24, 0x30});             // lea rdx, [rsp + 0x30]
+    put({0x4C, 0x8D, 0x44, 0x24, 0x38});             // lea r8, [rsp + 0x38]
+    put({0xFF, 0x15, 0, 0, 0, 0}); // call [rip + NtProtectVirtualMemory]
+    disp(protect->getRVA());
+  };
+
+  if (protect)
+    put({0x48, 0x83, 0xEC, 0x48}); // sub rsp, 0x48
+  loadBase();
+  // The magic is at 0x80, past the reach of a signed disp8, so a disp32.
+  put({0x41, 0x81, 0xBB, 0x80, 0, 0, 0, 0, 0, 0, 0}); // cmp [r11 + 0x80], magic
+  write32le(buf + off - 4, overrideTableMagic);
+  jump(toZero, 0x85); // jne .zero
+  loadMask();
+  writeCells(false);
+  if (protect) {
+    put({0x41, 0xF7, 0xC2, 0, 0, 0, 0}); // test r10d, read-only cells' slots
+    write32le(buf + off - 4, roMask);
+    jump(toZero, 0x84);                  // je .zero
+    put({0x48, 0x8D, 0x05, 0, 0, 0, 0}); // lea rax, [rip + base]
+    disp(roStart);
+    put({0x48, 0x89, 0x44, 0x24, 0x30});             // mov [rsp + 0x30], rax
+    put({0x48, 0xC7, 0x44, 0x24, 0x38, 0, 0, 0, 0}); // mov [rsp + 0x38], size
+    write32le(buf + off - 4, uint32_t(roEnd - roStart));
+    // mov r9d, PAGE_READWRITE
+    put({0x41, 0xB9, uint8_t(pageReadWrite), 0, 0, 0});
+    callProtect();
+    put({0x85, 0xC0});  // test eax, eax
+    jump(toDone, 0x85); // jne .done
+    loadBase();
+    loadMask();
+    writeCells(true);
+    // The protection the first call reported, over the pages it reported.
+    put({0x44, 0x8B, 0x4C, 0x24, 0x40}); // mov r9d, [rsp + 0x40]
+    callProtect();
+    put({0xEB, 2}); // jmp .done
+  }
+  patch(toZero);
+  put({0x31, 0xC0}); // xor eax, eax
+  patch(toDone);
+  if (protect)
+    put({0x48, 0x83, 0xC4, 0x48}); // add rsp, 0x48
+  put({0xC3});                     // ret
 }
 } // namespace
 
@@ -1184,42 +1518,78 @@ void ImportSlotContents::createResidualFill() {
   }
 }
 
+// Under -import-slots, a DLL's cells of the overridable defaults it imports
+// are the words through which it reaches them: each in-place import slot of a
+// default, and the default's own entry, which its calls and the instructions
+// that take its address read. The fill writes those of a replaced default with
+// the replacement, so the DLL observes and calls the one the program chose, as
+// on ELF. An executable binds its own at link time, from the table it writes.
 void ImportSlotContents::createOverrideCellFill() {
-  // A word that holds an overridable default's address is a cell: an in-place
-  // import slot the loader fills with the runtime's entry, which the fill
-  // overwrites with the program's replacement from the executable's table. A
-  // writable cell is filled in place, with no section to re-seal.
+  Configuration &config = ctx.config;
+  if (!config.importSlots || !config.dll || ctx.hybridSymtab ||
+      (config.machine != AMD64 && config.machine != ARM64))
+    return;
   std::vector<OverrideCell> cells;
+  auto add = [&](SectionChunk *sc, uint32_t offset, DefinedImportData *imp,
+                 bool readOnly) {
+    StringRef name = imp->getName().drop_front(strlen("__imp_"));
+    if (std::optional<uint32_t> k = ctx.symtab.overrideImportSlot(name))
+      cells.push_back({sc, offset, imp, *k, readOnly});
+  };
+  // A slot in a chunk with residual words is in a section that stays writable
+  // until the residual fill, which runs after this one, seals it.
   for (auto &[sc, slots] : ctx.importSlots) {
-    if (!(sc->header->Characteristics & llvm::COFF::IMAGE_SCN_MEM_WRITE))
-      continue;
-    for (const ImportSlot &slot : slots) {
-      StringRef name = slot.sym->getName().drop_front(strlen("__imp_"));
-      if (std::optional<uint32_t> k = ctx.symtab.overrideImportSlot(name))
-        cells.push_back({const_cast<SectionChunk *>(sc), slot.offset, *k});
-    }
+    auto *chunk = const_cast<SectionChunk *>(sc);
+    bool readOnly = !(sc->header->Characteristics & IMAGE_SCN_MEM_WRITE) &&
+                    !sealedChunks.contains(chunk);
+    for (const ImportSlot &slot : slots)
+      add(chunk, slot.offset, slot.sym, readOnly);
   }
+  // An import whose entry is one of its slots is covered by that slot.
+  for (DefinedImportData *imp : idata.imports)
+    if (!idata.slotOnly.contains(imp))
+      add(nullptr, 0, imp, true);
   if (cells.empty())
     return;
-  // The loader calls the fill only through the image's TLS directory; without
-  // one, every cell would silently keep the runtime's entry.
-  if (!ctx.symtab.findUnderscore("_tls_used")) {
-    const OverrideCell &c = cells.front();
-    Err(ctx) << cast<SectionChunk>(c.chunk)->file
-             << ": the address of an overridable default needs a TLS directory "
-                "to fill, but _tls_used is not defined";
-    return;
+
+  const OverrideCell &first = cells.front();
+  auto fail = [&](const Twine &why) {
+    Err(ctx) << "the image reaches " << ctx.symtab.printSymbol(first.imp)
+             << ", an overridable default imported from "
+             << first.imp->getDLLName() << ", through a cell " << why;
+  };
+  // The anchor's mask, which the fill reads, has a bit for each of the first
+  // 32 slots.
+  for (const OverrideCell &c : cells)
+    if (c.slot >= 32)
+      return fail("that the override table's mask cannot name");
+  if (!isa_and_nonnull<Defined>(ctx.symtab.findUnderscore("__xi_a")))
+    return fail("that the image has no C initializer table (__xi_a) to fill");
+  DefinedImportData *protect = nullptr;
+  if (llvm::any_of(cells, [](const OverrideCell &c) { return c.readOnly; })) {
+    protect = dyn_cast_or_null<DefinedImportData>(
+        ctx.symtab.find("__imp_NtProtectVirtualMemory"));
+    if (!protect)
+      return fail("that it cannot write without NtProtectVirtualMemory from "
+                  "ntdll.lib");
+    if (config.delayLoads.contains(protect->getDLLName().lower()))
+      return fail("that it cannot write while NtProtectVirtualMemory is "
+                  "delay-loaded");
+    if (!protect->file->live)
+      addImport(protect);
   }
-  llvm::stable_sort(cells, [](const OverrideCell &a, const OverrideCell &b) {
-    return a.slot < b.slot;
-  });
-  auto *fill = make<OverrideCellFillChunk>(ctx, std::move(cells));
+
+  std::stable_partition(cells.begin(), cells.end(),
+                        [](const OverrideCell &c) { return !c.readOnly; });
+  auto *fill = make<OverrideCellFillChunk>(ctx, std::move(cells), protect);
   overrideCellFill = fill;
-  // The fill runs from the image's first TLS callback, before any of its own
-  // code, so a constructor or constinit datum that names a default's address
-  // already observes the program's replacement.
   overrideCellFillPointer = make<LocalImportChunk>(
       ctx, make<DefinedSynthetic>("__llvm_override_cell_fill", fill));
+  if (protect) {
+    auto *unwind = make<ResidualFillUnwindChunk>(ctx, fill);
+    overrideCellFillUnwind = unwind;
+    overrideCellFillPdata = make<ResidualFillPdataChunk>(ctx, fill, unwind);
+  }
 }
 
 // The loader writes an in-place import slot with an absolute address, makes
