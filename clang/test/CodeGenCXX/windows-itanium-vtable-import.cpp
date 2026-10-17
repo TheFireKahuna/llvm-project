@@ -12,8 +12,10 @@
 
 // On Windows Itanium and NT-POSIX a vtable or VTT that the visibility mapping
 // exports is reached from other images through its import pointer, so a
-// declaration of one is not dso_local. A class the mapping does not export,
-// and a definition, stay dso_local.
+// declaration of one is not dso_local: a final class's. A class the mapping
+// exports and a derived class may extend is constructed through a copy of its
+// vtable and VTT, the vtable reached through its import pointer too. A class
+// the mapping does not export, and a definition, stay dso_local.
 
 #define EXPORTED __attribute__((visibility("default")))
 
@@ -47,21 +49,28 @@ struct EXPORTED More : Derived {
   virtual void h();
 };
 
+struct EXPORTED Final final {
+  Final() {}
+  virtual void f();
+};
+
 struct EXPORTED Later {
   Later() {}
   virtual void f();
 };
 
-// CHECK-DAG: @_ZTV8Exported = external constant
+// CHECK-DAG: @_ZTV8Exported = linkonce_odr unnamed_addr constant {{.*}}, comdat
 // CHECK-DAG: @_ZTV5Plain = external dso_local constant
 // CHECK-DAG: @_ZTV6Hidden = external hidden constant
-// CHECK-DAG: @_ZTV4More = external constant
-// CHECK-DAG: @_ZTT4More = external unnamed_addr constant
-// CHECK-DAG: @_ZTV5Later = dso_local dllexport constant
+// CHECK-DAG: @_ZTV4More = linkonce_odr unnamed_addr constant {{.*}}, comdat
+// CHECK-DAG: @_ZTT4More = linkonce_odr dso_local unnamed_addr constant {{.*}}, comdat
+// CHECK-DAG: @_ZTV5Final = external constant
+// CHECK-DAG: @_ZTV5Later = dso_local dllexport constant {{.*}}, comdat
 
-// OPT-DAG: @_ZTV8Exported = available_externally constant
+// OPT-DAG: @_ZTV8Exported = linkonce_odr unnamed_addr constant
 // OPT-DAG: @_ZTV5Plain = available_externally dso_local constant
-// OPT-DAG: @_ZTT4More = available_externally unnamed_addr constant
+// OPT-DAG: @_ZTV5Final = available_externally constant
+// OPT-DAG: @_ZTT4More = linkonce_odr dso_local unnamed_addr constant
 
 // NOMAP-DAG: @_ZTV8Exported = external dso_local constant
 // NOMAP-DAG: @_ZTT4More = external dso_local unnamed_addr constant
@@ -71,6 +80,7 @@ void use() {
   Plain p;
   Hidden h;
   More m;
+  Final fi;
   Later l;
 }
 

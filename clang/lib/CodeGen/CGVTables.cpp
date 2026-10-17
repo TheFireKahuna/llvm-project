@@ -1067,6 +1067,10 @@ llvm::GlobalVariable *CodeGenVTables::GenerateConstructionVTable(
   // Create the variable that will hold the construction vtable.
   llvm::GlobalVariable *VTable =
       CGM.CreateOrReplaceCXXRuntimeVariable(Name, VTType, Linkage, Align);
+  // As does the owner of a construction vtable.
+  if (CGM.supportsCOMDAT() && !VTable->hasComdat() &&
+      !VTable->hasLocalLinkage() && hasVTableCopies(RD))
+    VTable->setComdat(CGM.getModule().getOrInsertComdat(VTable->getName()));
 
   // dynamic_cast assumes the vtable address is unique; see
   // https://github.com/llvm/llvm-project/pull/200108. The address is
@@ -1195,7 +1199,10 @@ llvm::GlobalVariable::LinkageTypes
 CodeGenModule::getVTableLinkage(const CXXRecordDecl *RD) {
   if (!RD->isExternallyVisible())
     return llvm::GlobalVariable::InternalLinkage;
-  
+
+  if (getVTables().isVTableCopied(RD))
+    return llvm::GlobalVariable::LinkOnceODRLinkage;
+
   // In windows, the linkage of vtable is not related to modules.
   bool IsInNamedModule = !getTarget().getCXXABI().isMicrosoft() &&
         RD->isInNamedModule();
@@ -1418,13 +1425,35 @@ bool CodeGenVTables::isVTableExternal(const CXXRecordDecl *RD) {
   return !keyFunction->hasBody();
 }
 
+// Whether another image may own RD's vtable, which the visibility mapping
+// exports, and a derived class extend it, so that an image that does not own
+// it constructs the class through a copy of its own: a direct address, where
+// importing the vtable would cost a load and a cold miss per construction. A
+// class marked dllimport keeps the imported vtable.
+static bool isOwnedElsewhereAndExtensible(CodeGenModule &CGM,
+                                          const CXXRecordDecl *RD) {
+  return CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+         RD->isExternallyVisible() && !RD->isEffectivelyFinal() &&
+         !RD->hasAttr<DLLImportAttr>() &&
+         CGM.shouldMapVisibilityToDLLExport(RD);
+}
+
+bool CodeGenVTables::isVTableCopied(const CXXRecordDecl *RD) {
+  return isOwnedElsewhereAndExtensible(CGM, RD) && isVTableExternal(RD);
+}
+
+bool CodeGenVTables::hasVTableCopies(const CXXRecordDecl *RD) {
+  return isOwnedElsewhereAndExtensible(CGM, RD) && !isVTableExternal(RD);
+}
+
 /// Given that we're currently at the end of the translation unit, and
 /// we've emitted a reference to the vtable for this class, should
 /// we define that vtable?
 static bool shouldEmitVTableAtEndOfTranslationUnit(CodeGenModule &CGM,
                                                    const CXXRecordDecl *RD) {
   // If vtable is internal then it has to be done.
-  if (!CGM.getVTables().isVTableExternal(RD))
+  if (!CGM.getVTables().isVTableExternal(RD) ||
+      CGM.getVTables().isVTableCopied(RD))
     return true;
 
   // If it's external then maybe we will need it as available_externally.
