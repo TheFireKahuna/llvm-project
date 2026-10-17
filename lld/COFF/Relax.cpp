@@ -418,7 +418,8 @@ void writeRelaxed(const SectionChunk *sc, uint8_t *buf) {
       continue;
     }
     if (!r.findEdit(rel.VirtualAddress))
-      sc->applyRelocation(buf + r.getOutputOffset(rel.VirtualAddress), rel);
+      sc->applyRelocation(buf + r.getOutputOffset(rel.VirtualAddress), rel,
+                          /*rewrites=*/true);
   }
   for (const RelaxEdit &e : r.edits)
     writeEdit(sc, e, buf + e.newOffset, data, r);

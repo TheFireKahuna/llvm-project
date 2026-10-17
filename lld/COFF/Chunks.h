@@ -314,7 +314,17 @@ public:
   }
   void getBaserels(std::vector<Baserel> *res);
   bool isCOMDAT() const;
-  void applyRelocation(uint8_t *off, const coff_relocation &rel) const;
+  // Writes rel at off. Where rewrites is false, rel is written as it says;
+  // see rewritesRelocations.
+  void applyRelocation(uint8_t *off, const coff_relocation &rel,
+                       bool rewrites) const;
+
+  // Whether the linker may write a relocation of this section otherwise than
+  // it says: to an in-place import slot, a rewritten instruction, or a place
+  // in code that the linker resizes, as only a section of an object with
+  // link-only records, or ARM64 code, whose references to local import
+  // pointers and offered functions the linker may redirect, can need.
+  bool rewritesRelocations() const;
 
   // Whether rel is an absolute address as wide as the image's pointers.
   bool isAddressWord(const coff_relocation &rel) const;

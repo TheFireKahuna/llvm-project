@@ -509,6 +509,7 @@ void SectionChunk::writeTo(uint8_t *buf) const {
 
   // Apply relocations.
   size_t inputSize = getSize();
+  bool rewrites = rewritesRelocations();
   for (const coff_relocation &rel : getRelocs()) {
     // Check for an invalid relocation offset. This check isn't perfect, because
     // we don't have the relocation size, which is only known after checking the
@@ -519,7 +520,7 @@ void SectionChunk::writeTo(uint8_t *buf) const {
       continue;
     }
 
-    applyRelocation(buf + rel.VirtualAddress, rel);
+    applyRelocation(buf + rel.VirtualAddress, rel, rewrites);
   }
 
   if (getArch() == Triple::x86_64 && file->hasLinkFusions())
@@ -599,55 +600,63 @@ SectionChunk::getImportSlot(const coff_relocation &rel) const {
   return &*it;
 }
 
-void SectionChunk::applyRelocation(uint8_t *off,
-                                   const coff_relocation &rel) const {
-  // The loader writes an in-place import slot; until then it holds the value
-  // of its lookup table entry, which the loader requires.
-  if (const ImportSlot *slot = getImportSlot(rel)) {
-    slot->lookup->writeTo(off);
-    return;
-  }
+bool SectionChunk::rewritesRelocations() const {
+  return hasImportSlots || hasImportSites || relaxed ||
+         getArch() == Triple::aarch64 || file->hasLinkRecords() ||
+         !file->symtab.ctx.relaxations.empty();
+}
 
-  // A fused load nothing reads reaches no symbol.
-  if (getArch() == Triple::x86_64 && file->hasLinkFusions() &&
-      writeFusedSite(this, rel, off))
-    return;
-
+void SectionChunk::applyRelocation(uint8_t *off, const coff_relocation &rel,
+                                   bool rewrites) const {
   auto *sym = dyn_cast_or_null<Defined>(file->getSymbol(rel.SymbolTableIndex));
   uint16_t type = rel.Type;
-  if (sym)
-    sym = getBranchTarget(rel, sym);
-
-  // The address of an imported function that code takes becomes a load of
-  // its import address table entry, and a load of a delay-loaded import's
-  // entry the address of its thunk, so that code agrees with static data.
-  // Each site was verified when imports were bound.
-  if (Defined *target = getImportSiteTarget(rel)) {
-    bool load = isa<DefinedImportData>(target);
-    if (getArch() == Triple::aarch64) {
-      if (type == IMAGE_REL_ARM64_PAGEOFFSET_12A) {
-        setArm64Opcode(off, 0xF9400000); // ldr
-        type = IMAGE_REL_ARM64_PAGEOFFSET_12L;
-      } else if (type == IMAGE_REL_ARM64_PAGEOFFSET_12L) {
-        setArm64Opcode(off, 0x91000000); // add
-        type = IMAGE_REL_ARM64_PAGEOFFSET_12A;
-      }
-    } else {
-      off[-2] = load ? 0x8B : 0x8D;
-    }
-    sym = target;
-  }
-
-  // A reference through the import pointer of a symbol in the image may reach
-  // the symbol directly instead, with the constant of an add the linker folds
-  // into it.
   std::optional<LinkSiteForm> rewrite;
   int64_t foldedAddend = 0;
-  if (auto *li = dyn_cast_or_null<DefinedLocalImport>(sym)) {
-    if (relaxLocalImport(this, rel, off, li, sym, type, rewrite))
+  if (rewrites) {
+    // The loader writes an in-place import slot; until then it holds the
+    // value of its lookup table entry, which the loader requires.
+    if (const ImportSlot *slot = getImportSlot(rel)) {
+      slot->lookup->writeTo(off);
       return;
-    if (rewrite && file->hasLinkFusions())
-      foldedAddend = takeFusedAdd(this, rel, off, *rewrite);
+    }
+
+    // A fused load nothing reads reaches no symbol.
+    if (getArch() == Triple::x86_64 && file->hasLinkFusions() &&
+        writeFusedSite(this, rel, off))
+      return;
+
+    if (sym)
+      sym = getBranchTarget(rel, sym);
+
+    // The address of an imported function that code takes becomes a load of
+    // its import address table entry, and a load of a delay-loaded import's
+    // entry the address of its thunk, so that code agrees with static data.
+    // Each site was verified when imports were bound.
+    if (Defined *target = getImportSiteTarget(rel)) {
+      bool load = isa<DefinedImportData>(target);
+      if (getArch() == Triple::aarch64) {
+        if (type == IMAGE_REL_ARM64_PAGEOFFSET_12A) {
+          setArm64Opcode(off, 0xF9400000); // ldr
+          type = IMAGE_REL_ARM64_PAGEOFFSET_12L;
+        } else if (type == IMAGE_REL_ARM64_PAGEOFFSET_12L) {
+          setArm64Opcode(off, 0x91000000); // add
+          type = IMAGE_REL_ARM64_PAGEOFFSET_12A;
+        }
+      } else {
+        off[-2] = load ? 0x8B : 0x8D;
+      }
+      sym = target;
+    }
+
+    // A reference through the import pointer of a symbol in the image may
+    // reach the symbol directly instead, with the constant of an add the
+    // linker folds into it.
+    if (auto *li = dyn_cast_or_null<DefinedLocalImport>(sym)) {
+      if (relaxLocalImport(this, rel, off, li, sym, type, rewrite))
+        return;
+      if (rewrite && file->hasLinkFusions())
+        foldedAddend = takeFusedAdd(this, rel, off, *rewrite);
+    }
   }
 
   // Get the output section of the symbol for this relocation.  The output
@@ -670,9 +679,10 @@ void SectionChunk::applyRelocation(uint8_t *off,
   uint64_t s = sym->getRVA() + foldedAddend;
 
   // A place in code that the linker resizes moves relative to its symbol.
-  if (auto *d = dyn_cast<DefinedRegular>(sym))
-    if (SectionChunk *target = d->getChunk(); target && target->relaxed)
-      moveAddend(this, rel, off, type, target, d->getValue());
+  if (rewrites)
+    if (auto *d = dyn_cast<DefinedRegular>(sym))
+      if (SectionChunk *target = d->getChunk(); target && target->relaxed)
+        moveAddend(this, rel, off, type, target, d->getValue());
 
   // Compute the RVA of the relocation for relative relocations.
   uint64_t p = rva + getOutputOffset(rel.VirtualAddress);
@@ -727,6 +737,7 @@ void SectionChunk::writeAndRelocateSubsection(ArrayRef<uint8_t> sec,
   size_t vaBegin = std::distance(sec.begin(), subsec.begin());
   size_t vaEnd = std::distance(sec.begin(), subsec.end());
   memcpy(buf, subsec.data(), subsec.size());
+  bool rewrites = rewritesRelocations();
   for (; nextRelocIndex < relocsSize; ++nextRelocIndex) {
     const coff_relocation &rel = relocsData[nextRelocIndex];
     // Only apply relocations that apply to this subsection. These checks
@@ -736,7 +747,7 @@ void SectionChunk::writeAndRelocateSubsection(ArrayRef<uint8_t> sec,
       continue;
     if (rel.VirtualAddress + 1 >= vaEnd)
       break;
-    applyRelocation(&buf[rel.VirtualAddress - vaBegin], rel);
+    applyRelocation(&buf[rel.VirtualAddress - vaBegin], rel, rewrites);
   }
   if (file->hasLinkCoverage())
     writeCoverageValues(this, buf, vaBegin, vaEnd);
