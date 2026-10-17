@@ -97,6 +97,7 @@ add_llvm_target(AArch64CodeGen
   AArch64SRLTDefineSuperRegs.cpp
   AArch64SIMDInstrOpt.cpp
   AArch64PrologueEpilogue.cpp
+  AArch64WindowsImportFusion.cpp
 
   DEPENDS
   intrinsics_gen

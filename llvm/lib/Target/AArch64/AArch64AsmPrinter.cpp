@@ -342,6 +342,7 @@ public:
       SDPI = &SDPIW->getStaticDataProfileInfo();
 
     AArch64FI = MF.getInfo<AArch64FunctionInfo>();
+    ImportFusionLabels.clear();
     STI = &MF.getSubtarget<AArch64Subtarget>();
 
     SetupMachineFunction(MF);
@@ -414,6 +415,11 @@ private:
   using MInstToMCSymbol = std::map<const MachineInstr *, MCSymbol *>;
 
   MInstToMCSymbol LOHInstToLabel;
+  // The labels of the loads of import pointers that the import fusion pass
+  // describes, by load.
+  MInstToMCSymbol ImportFusionLabels;
+
+  void emitImportFusion(const MachineInstr &MI);
 
   bool shouldEmitWeakSwiftAsyncExtendedFramePointerFlags() const override {
     return ShouldEmitWeakSwiftAsyncExtendedFramePointerFlags;
@@ -4100,6 +4106,34 @@ void AArch64AsmPrinter::EmitToStreamer(MCStreamer &S, const MCInst &Inst) {
 #endif
 }
 
+// Tells the linker about the next instruction, an access through, or an add
+// to, the register that a load of an import pointer of data filled, or such a
+// load, which a label names for the instructions that use it.
+void AArch64AsmPrinter::emitImportFusion(const MachineInstr &MI) {
+  auto GetLabel = [&](const MachineInstr *Load) {
+    MCSymbol *&Label = ImportFusionLabels[Load];
+    if (!Label)
+      Label = createTempSymbol("fused");
+    return Label;
+  };
+  using UseKind = AArch64FunctionInfo::ImportFusedUseKind;
+  auto Use = AArch64FI->getImportFusedUses().find(&MI);
+  if (Use != AArch64FI->getImportFusedUses().end()) {
+    auto [Load, Reg, Kind] = Use->second;
+    if (Kind == UseKind::Add)
+      OutStreamer->emitCOFFLinkFusedAdd(GetLabel(Load), Reg);
+    else
+      OutStreamer->emitCOFFLinkFusedAccess(GetLabel(Load), Reg);
+    return;
+  }
+  auto Load = AArch64FI->getImportFusedLoads().find(&MI);
+  if (Load == AArch64FI->getImportFusedLoads().end())
+    return;
+  OutStreamer->emitLabel(GetLabel(&MI));
+  if (Load->second)
+    OutStreamer->emitCOFFLinkFusedRead();
+}
+
 void AArch64AsmPrinter::emitInstruction(const MachineInstr *MI) {
   AArch64_MC::verifyInstructionPredicates(MI->getOpcode(), STI->getFeatureBits());
 
@@ -4124,6 +4158,9 @@ void AArch64AsmPrinter::emitInstruction(const MachineInstr *MI) {
       }
     }
   }
+
+  if (!AArch64FI->getImportFusedLoads().empty())
+    emitImportFusion(*MI);
 
   if (AArch64FI->getLOHRelated().count(MI)) {
     // Generate a label for LOH related instruction

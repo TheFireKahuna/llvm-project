@@ -253,6 +253,7 @@ LLVMInitializeAArch64Target() {
   initializeAArch64ConditionOptimizerLegacyPass(PR);
   initializeAArch64DeadRegisterDefinitionsLegacyPass(PR);
   initializeAArch64ExpandPseudoLegacyPass(PR);
+  initializeAArch64WindowsImportFusionPass(PR);
   initializeAArch64LoadStoreOptLegacyPass(PR);
   initializeAArch64MIPeepholeOptLegacyPass(PR);
   initializeAArch64PTrueCoalescingLegacyPass(PR);
@@ -979,6 +980,14 @@ void AArch64PassConfig::addPreEmitPass2() {
   // SVE bundles move prefixes with destructive operations. BLR_RVMARKER pseudo
   // instructions are lowered to bundles as well.
   addPass(createUnpackMachineBundlesLegacy(nullptr));
+
+  // Describe to the linker the accesses through import pointers of data that
+  // it may relax, once the machine outliner, whose calls say which registers
+  // they read, can no longer move one away from its load.
+  if (TM->getOptLevel() != CodeGenOptLevel::None &&
+      TM->getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      !TM->getTargetTriple().isWindowsArm64EC())
+    addPass(createAArch64WindowsImportFusionPass());
 }
 
 bool AArch64PassConfig::addRegAssignAndRewriteOptimized() {

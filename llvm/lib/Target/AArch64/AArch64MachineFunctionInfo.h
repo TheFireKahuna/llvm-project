@@ -603,6 +603,31 @@ public:
     HasStreamingModeChanges = HasChanges;
   }
 
+  /// How an instruction that the import fusion pass describes to the linker
+  /// uses the register a load of an import pointer filled: as the base of a
+  /// memory operand, or by adding a constant to it.
+  enum class ImportFusedUseKind : uint8_t { Access, Add };
+  struct ImportFusedUse {
+    const MachineInstr *Load;
+    MCRegister Reg;
+    ImportFusedUseKind Kind;
+  };
+
+  void addImportFusedUse(const MachineInstr *MI, const MachineInstr *Load,
+                         MCRegister Reg, ImportFusedUseKind Kind) {
+    ImportFusedUses.try_emplace(MI, ImportFusedUse{Load, Reg, Kind});
+  }
+  void addImportFusedLoad(const MachineInstr *Load, bool OnlyFused) {
+    ImportFusedLoads.try_emplace(Load, OnlyFused);
+  }
+  const DenseMap<const MachineInstr *, ImportFusedUse> &
+  getImportFusedUses() const {
+    return ImportFusedUses;
+  }
+  const DenseMap<const MachineInstr *, bool> &getImportFusedLoads() const {
+    return ImportFusedLoads;
+  }
+
   bool hasStackProbing() const { return StackProbeSize != 0; }
 
   int64_t getStackProbeSize() const { return StackProbeSize; }
@@ -613,6 +638,12 @@ private:
   SetOfInstructions LOHRelated;
 
   SmallVector<std::pair<unsigned, MCSymbol *>, 2> JumpTableEntryInfo;
+
+  // The instructions that the import fusion pass describes to the linker,
+  // each with the load that filled the register it uses, and those loads,
+  // each with whether only such instructions read it.
+  DenseMap<const MachineInstr *, ImportFusedUse> ImportFusedUses;
+  DenseMap<const MachineInstr *, bool> ImportFusedLoads;
 };
 
 namespace yaml {

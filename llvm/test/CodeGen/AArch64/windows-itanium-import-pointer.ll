@@ -19,8 +19,8 @@ $comdatvar = comdat any
 define i32 @getVar() {
 ; CHECK-LABEL: getVar:
 ; CHECK:         adrp x8, __imp_var
-; CHECK-NEXT:    ldr x8, [x8, :lo12:__imp_var]
-; CHECK-NEXT:    ldr w0, [x8]
+; CHECK:         ldr x8, [x8, :lo12:__imp_var]
+; CHECK:         ldr w0, [x8]
 ; MSVC-LABEL:  getVar:
 ; MSVC:          adrp x8, var
 ; MSVC-NEXT:     ldr w0, [x8, :lo12:var]
@@ -39,7 +39,7 @@ define i32 @getDsoLocalVar() {
 define i32 @getWeakVar() {
 ; CHECK-LABEL: getWeakVar:
 ; CHECK:         adrp x8, __imp_weakvar
-; CHECK-NEXT:    ldr x8, [x8, :lo12:__imp_weakvar]
+; CHECK:         ldr x8, [x8, :lo12:__imp_weakvar]
   %v = load i32, ptr @weakvar
   ret i32 %v
 }
@@ -47,8 +47,8 @@ define i32 @getWeakVar() {
 define i32 @getComdatVar() {
 ; CHECK-LABEL: getComdatVar:
 ; CHECK:         adrp x8, __imp_comdatvar
-; CHECK-NEXT:    ldr x8, [x8, :lo12:__imp_comdatvar]
-; CHECK-NEXT:    ldr w0, [x8]
+; CHECK:         ldr x8, [x8, :lo12:__imp_comdatvar]
+; CHECK:         ldr w0, [x8]
 ; MSVC-LABEL:  getComdatVar:
 ; MSVC:          adrp x8, comdatvar
 ; MSVC-NEXT:     ldr w0, [x8, :lo12:comdatvar]

@@ -43,6 +43,16 @@ public:
     return ListCallOnly ? COFF::LinkRecordsCallOnly : 0;
   }
 
+  // A 64-bit load at the offset of a symbol in its page is the load of a
+  // pointer, which the fused accesses and adds the object describes name.
+  std::optional<unsigned> getLinkSiteForm(const MCFixup &Fixup,
+                                          unsigned Type) const override {
+    if (ListCallOnly && Type == COFF::IMAGE_REL_ARM64_PAGEOFFSET_12L &&
+        Fixup.getKind() == AArch64::fixup_aarch64_ldst_imm12_scale8)
+      return COFF::LinkSiteLoad;
+    return std::nullopt;
+  }
+
   ~AArch64WinCOFFObjectWriter() override = default;
 
   unsigned getRelocType(MCContext &Ctx, const MCValue &Target,

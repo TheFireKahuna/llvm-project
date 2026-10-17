@@ -7,10 +7,17 @@
 //===----------------------------------------------------------------------===//
 
 #include "AArch64WinCOFFStreamer.h"
+#include "AArch64AddressingModes.h"
+#include "AArch64MCTargetDesc.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAssembler.h"
 #include "llvm/MC/MCCodeEmitter.h"
+#include "llvm/MC/MCContext.h"
+#include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCObjectWriter.h"
+#include "llvm/MC/MCRegisterInfo.h"
+#include "llvm/MC/MCWinCOFFObjectWriter.h"
 #include "llvm/MC/MCWin64EH.h"
 #include "llvm/MC/MCWinCOFFStreamer.h"
 
@@ -20,6 +27,12 @@ namespace {
 
 class AArch64WinCOFFStreamer : public MCWinCOFFStreamer {
   Win64EH::ARM64UnwindEmitter EHStreamer;
+  // A fused access or add is the next instruction, which the streamer
+  // describes once it has seen that it is in a form the records describe.
+  enum { NoFusedUse, AwaitingAccess, AwaitingAdd } FusedUse = NoFusedUse;
+  MCRegister FusedUseReg;
+
+  bool describeFusedUse(const MCInst &Inst, MCSymbol *Start);
 
 public:
   AArch64WinCOFFStreamer(MCContext &C, std::unique_ptr<MCAsmBackend> AB,
@@ -27,11 +40,122 @@ public:
                          std::unique_ptr<MCObjectWriter> OW)
       : MCWinCOFFStreamer(C, std::move(AB), std::move(CE), std::move(OW)) {}
 
+  void reset() override {
+    FusedUse = NoFusedUse;
+    MCWinCOFFStreamer::reset();
+  }
+  void emitInstruction(const MCInst &Inst,
+                       const MCSubtargetInfo &STI) override {
+    if (FusedUse == NoFusedUse) {
+      MCWinCOFFStreamer::emitInstruction(Inst, STI);
+      return;
+    }
+    // A fused access or add is labeled where it begins.
+    MCSymbol *Start = getContext().createTempSymbol();
+    emitLabel(Start);
+    MCWinCOFFStreamer::emitInstruction(Inst, STI);
+    describeFusedUse(Inst, Start);
+    FusedUse = NoFusedUse;
+  }
+  void emitCOFFLinkFusedAccess(const MCSymbol *Load, MCRegister Reg) override {
+    MCWinCOFFStreamer::emitCOFFLinkFusedAccess(Load, Reg);
+    FusedUse = AwaitingAccess;
+    FusedUseReg = Reg;
+  }
+  void emitCOFFLinkFusedAdd(const MCSymbol *Load, MCRegister Reg) override {
+    MCWinCOFFStreamer::emitCOFFLinkFusedAdd(Load, Reg);
+    FusedUse = AwaitingAdd;
+    FusedUseReg = Reg;
+  }
+
   void emitWinEHHandlerData(SMLoc Loc) override;
   void emitWindowsUnwindTables() override;
   void emitWindowsUnwindTables(WinEH::FrameInfo *Frame) override;
   void finishImpl() override;
 };
+
+// Describes Inst, which Start labels, as the fused access or add the streamer
+// awaits, if it is in a form the records describe: a load, store or prefetch
+// at an unsigned offset from the register, or a pair of loads or stores at a
+// signed one, reading it nowhere else; or an add or sub of an immediate to the
+// register.
+bool AArch64WinCOFFStreamer::describeFusedUse(const MCInst &Inst,
+                                              MCSymbol *Start) {
+  const MCRegisterInfo &MRI = *getContext().getRegisterInfo();
+  if (FusedUse == AwaitingAdd) {
+    unsigned Opcode = Inst.getOpcode();
+    if ((Opcode != AArch64::ADDXri && Opcode != AArch64::SUBXri) ||
+        Inst.getOperand(1).getReg() != FusedUseReg ||
+        !Inst.getOperand(2).isImm() || !Inst.getOperand(3).isImm())
+      return false;
+    int64_t Constant = Inst.getOperand(2).getImm()
+                       << AArch64_AM::getShiftValue(Inst.getOperand(3).getImm());
+    WinCOFFObjectWriter::LinkFusedAdd &Add = getWriter().getLastLinkFusedAdd();
+    Add.Start = Start;
+    Add.Register = MRI.getEncodingValue(Inst.getOperand(0).getReg());
+    Add.Constant = Opcode == AArch64::SUBXri ? -Constant : Constant;
+    return true;
+  }
+  unsigned Base;
+  switch (Inst.getOpcode()) {
+  case AArch64::LDRBBui:
+  case AArch64::LDRHHui:
+  case AArch64::LDRWui:
+  case AArch64::LDRXui:
+  case AArch64::LDRSBWui:
+  case AArch64::LDRSBXui:
+  case AArch64::LDRSHWui:
+  case AArch64::LDRSHXui:
+  case AArch64::LDRSWui:
+  case AArch64::LDRBui:
+  case AArch64::LDRHui:
+  case AArch64::LDRSui:
+  case AArch64::LDRDui:
+  case AArch64::LDRQui:
+  case AArch64::PRFMui:
+    Base = 1;
+    break;
+  case AArch64::LDPWi:
+  case AArch64::LDPXi:
+  case AArch64::LDPSWi:
+  case AArch64::LDPSi:
+  case AArch64::LDPDi:
+  case AArch64::LDPQi:
+    Base = 2;
+    break;
+  case AArch64::STRBBui:
+  case AArch64::STRHHui:
+  case AArch64::STRWui:
+  case AArch64::STRXui:
+  case AArch64::STRBui:
+  case AArch64::STRHui:
+  case AArch64::STRSui:
+  case AArch64::STRDui:
+  case AArch64::STRQui:
+    Base = 1;
+    // A store of the register itself would store the page it holds instead.
+    if (MRI.regsOverlap(Inst.getOperand(0).getReg(), FusedUseReg))
+      return false;
+    break;
+  case AArch64::STPWi:
+  case AArch64::STPXi:
+  case AArch64::STPSi:
+  case AArch64::STPDi:
+  case AArch64::STPQi:
+    Base = 2;
+    if (MRI.regsOverlap(Inst.getOperand(0).getReg(), FusedUseReg) ||
+        MRI.regsOverlap(Inst.getOperand(1).getReg(), FusedUseReg))
+      return false;
+    break;
+  default:
+    return false;
+  }
+  if (Inst.getOperand(Base).getReg() != FusedUseReg ||
+      !Inst.getOperand(Base + 1).isImm())
+    return false;
+  getWriter().getLastLinkFusedAccess().Start = Start;
+  return true;
+}
 
 void AArch64WinCOFFStreamer::emitWinEHHandlerData(SMLoc Loc) {
   MCStreamer::emitWinEHHandlerData(Loc);
