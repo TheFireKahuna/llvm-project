@@ -617,6 +617,12 @@ public:
   /// object writing (i.e., this is not a runtime relocation).
   virtual void emitCOFFSecOffset(MCSymbol const *Symbol);
 
+  /// Asks the linker to place \p Symbol at an address that is \p Residue
+  /// modulo 2^\p Log2Modulus. The linker must honour a \p Required pin, and
+  /// may leave another unhonoured, with a warning.
+  virtual void emitCOFFLinkPin(MCSymbol const *Symbol, unsigned Log2Modulus,
+                               uint64_t Residue, bool Required);
+
   /// Tells the linker the fact about the whole object that a link record of
   /// COFF::LinkRecordKind \p Kind with an empty payload states.
   virtual void emitCOFFLinkFact(uint64_t Kind);

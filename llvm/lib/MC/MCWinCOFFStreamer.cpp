@@ -334,6 +334,12 @@ void MCWinCOFFStreamer::emitCOFFSecOffset(MCSymbol const *Symbol) {
   appendContents(4, 0);
 }
 
+void MCWinCOFFStreamer::emitCOFFLinkPin(MCSymbol const *Symbol,
+                                        unsigned Log2Modulus, uint64_t Residue,
+                                        bool Required) {
+  getWriter().addLinkPin({Symbol, Log2Modulus, Residue, Required});
+}
+
 void MCWinCOFFStreamer::emitCOFFLinkFact(uint64_t Kind) {
   getWriter().addLinkFact(Kind);
 }

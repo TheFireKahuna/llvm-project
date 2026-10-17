@@ -1277,6 +1277,9 @@ void MCStreamer::emitCOFFSecNumber(MCSymbol const *Symbol) {}
 
 void MCStreamer::emitCOFFSecOffset(MCSymbol const *Symbol) {}
 
+void MCStreamer::emitCOFFLinkPin(MCSymbol const *Symbol, unsigned Log2Modulus,
+                                 uint64_t Residue, bool Required) {}
+
 void MCStreamer::emitCOFFLinkFact(uint64_t Kind) {}
 
 /// EmitRawText - If this file is backed by an assembly streamer, this dumps

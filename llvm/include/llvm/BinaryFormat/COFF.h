@@ -78,6 +78,19 @@ const uint64_t LinkRecordsX86_64Sites = 1;
 const uint64_t LinkRecordsCallOnly = 2;
 
 enum LinkRecordKind : uint64_t {
+  // Addresses that symbols must take modulo a power of two, so that a value
+  // computed from a symbol's address alone, such as a tag in the low bits of
+  // a vtable pointer, means the same in every image:
+  //
+  //   payload := (symbol:ULEB128 flags:ULEB128 residue:ULEB128)*
+  //   flags   := log2 << 1 | required
+  //
+  // symbol is a symbol index, so a pin a COMDAT copy carries applies to
+  // whichever copy the linker keeps. The symbol's address must be residue
+  // modulo 2^log2. A linker must honour a required pin or report an error;
+  // it may leave a pin that is not required unhonoured, with a warning.
+  LinkRecordPins = 1,
+
   // How instructions use the address a relocation gives them, for a linker
   // that rewrites an instruction whose target it finds in the image. Each
   // code section's REL32 relocations that are not branches and refer to a

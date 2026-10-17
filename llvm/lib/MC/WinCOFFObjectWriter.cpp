@@ -1217,6 +1217,42 @@ uint64_t WinCOFFWriter::writeObject() {
     encodeULEB128(COFF::LinkRecordsVersion, OS);
     encodeULEB128(OWriter.LinkRecordCapabilities, OS);
 
+    // A pin on a symbol that the symbol table leaves out names the symbol's
+    // section instead, with the residue moved by the symbol's offset in it.
+    // Only a symbol the object defines can be placed: a pin of any other is an
+    // error if required and otherwise dropped.
+    SmallString<0> Pins;
+    raw_svector_ostream PinsOS(Pins);
+    for (const WinCOFFObjectWriter::LinkPin &Pin : OWriter.LinkPins) {
+      const MCSymbol *S = Pin.Symbol;
+      uint64_t Residue = Pin.Residue;
+      if (!S->isInSection() || (!S->isTemporary() && !S->isRegistered())) {
+        std::string Msg =
+            ("pin of '" + S->getName() + "', which is not defined").str();
+        if (Pin.Required)
+          getContext().reportError(SMLoc(), Msg);
+        else
+          getContext().reportWarning(SMLoc(), Msg + "; the pin is dropped");
+        continue;
+      }
+      uint32_t Index;
+      if (!S->isTemporary()) {
+        Index = S->getIndex();
+      } else {
+        Index = SectionMap[&S->getSection()]->Symbol->getIndex();
+        Residue -= Asm->getSymbolOffset(*S);
+      }
+      encodeULEB128(Index, PinsOS);
+      encodeULEB128(Pin.Log2Modulus << 1 | Pin.Required, PinsOS);
+      encodeULEB128(Residue & maskTrailingOnes<uint64_t>(Pin.Log2Modulus),
+                    PinsOS);
+    }
+    if (!Pins.empty()) {
+      encodeULEB128(COFF::LinkRecordPins, OS);
+      encodeULEB128(Pins.size(), OS);
+      OS << Pins;
+    }
+
     SmallString<0> Sites;
     raw_svector_ostream SitesOS(Sites);
     for (const auto &Section : Sections) {
@@ -1329,6 +1365,7 @@ int WinCOFFWriter::getSectionNumber(const MCSection &Section) const {
 
 void WinCOFFObjectWriter::reset() {
   IncrementalLinkerCompatible = false;
+  LinkPins.clear();
   LinkFacts.clear();
   ObjWriter->reset();
   if (DwoWriter)
