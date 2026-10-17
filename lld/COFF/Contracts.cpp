@@ -58,7 +58,7 @@ static std::string getWitnessName(bool data, StringRef locator,
   return (getWitnessPrefix(data) + locator + "$" + digest).str();
 }
 
-static bool isWitnessName(StringRef name) {
+bool lld::coff::isContractWitnessName(StringRef name) {
   return name.starts_with(getWitnessPrefix(false)) ||
          name.starts_with(getWitnessPrefix(true));
 }
@@ -246,7 +246,7 @@ void lld::coff::addContractWitnessExports(COFFLinkerContext &ctx) {
     StringRef name = !e.exportAs.empty()  ? StringRef(e.exportAs)
                      : !e.extName.empty() ? StringRef(e.extName)
                                           : StringRef(e.name);
-    if (!isWitnessName(name) && !isWitnessName(e.name))
+    if (!isContractWitnessName(name) && !isContractWitnessName(e.name))
       return false;
     if (e.source != ExportSource::ExportAll)
       Err(ctx) << "cannot export " << e.name
@@ -302,7 +302,7 @@ void lld::coff::addContractWitnessImports(
     return;
   std::string dll = dllName.lower();
   for (size_t i = 0, e = exports.size(); i != e; ++i) {
-    if (!exports[i].Private || !isWitnessName(exports[i].Name))
+    if (!exports[i].Private || !isContractWitnessName(exports[i].Name))
       continue;
     COFFShortExport w;
     w.Name = exports[i].Name + "$" + dll;

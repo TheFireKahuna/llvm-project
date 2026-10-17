@@ -19,8 +19,9 @@
 # RUN:   d.lib e.lib plain.lib -out:main.exe
 # RUN: llvm-readobj --coff-imports main.exe | FileCheck --check-prefix=BOTH %s
 # BOTH:      Name: d.dll
-# BOTH:      Symbol: __abiw$Z7E5CzMxeVE$AAECAwQFBgcICQoLDA0ODw (0)
-# BOTH-NEXT: Symbol: g (1)
+# BOTH:      Symbol: __abiw$PwFGDH9_sEQ$EBESExQVFhcYGRobHB0eHw (0)
+# BOTH-NEXT: Symbol: __abiw$Z7E5CzMxeVE$AAECAwQFBgcICQoLDA0ODw (1)
+# BOTH-NEXT: Symbol: g (2)
 # BOTH:      Name: e.dll
 # BOTH:      Symbol: __abiw$Z7E5CzMxeVE$AAECAwQFBgcICQoLDA0ODw (0)
 # BOTH-NEXT: Symbol: h (1)
@@ -30,16 +31,23 @@
 # BOTH-NEXT: Symbol: p (0)
 # BOTH-NEXT: }
 
-# A delay-loaded DLL's witness is in its delay-load descriptor.
+# A delay-loaded DLL's witnesses are in its delay-load descriptor, with their
+# hints; code never calls them, so they share one thunk.
 # RUN: lld-link -import-slots -entry:main -subsystem:console main.obj \
 # RUN:   helper.obj d.lib e.lib plain.lib -delayload:d.dll -out:delay.exe
 # RUN: llvm-readobj --coff-imports delay.exe | FileCheck --check-prefix=DELAY %s
 # DELAY:      DelayImport {
 # DELAY-NEXT:   Name: d.dll
 # DELAY:        Import {
-# DELAY-NEXT:     Symbol: __abiw$Z7E5CzMxeVE$AAECAwQFBgcICQoLDA0ODw
+# DELAY-NEXT:     Symbol: __abiw$PwFGDH9_sEQ$EBESExQVFhcYGRobHB0eHw (0)
+# DELAY-NEXT:     Address: [[THUNK:0x[0-9A-F]+]]
 # DELAY:        Import {
-# DELAY-NEXT:     Symbol: g
+# DELAY-NEXT:     Symbol: __abiw$Z7E5CzMxeVE$AAECAwQFBgcICQoLDA0ODw (1)
+# DELAY-NEXT:     Address: [[THUNK]]
+# DELAY:        Import {
+# DELAY-NEXT:     Symbol: g (2)
+# DELAY-NEXT:     Address: 0x
+# DELAY-NOT:      [[THUNK]]
 
 # A requirement of another contract of T is an error against a DLL that exports
 # a witness of T, and nothing against one that exports none.
@@ -55,7 +63,7 @@
 # GC:      Name: d.dll
 # GC-NEXT: ImportLookupTableRVA:
 # GC-NEXT: ImportAddressTableRVA:
-# GC-NEXT: Symbol: g (1)
+# GC-NEXT: Symbol: g (2)
 # GC-NEXT: }
 
 # Within an image the contracts of one identity agree.
@@ -69,7 +77,7 @@
 g:
   retq
   .section .drectve,"yn"
-  .ascii " -export:g /abiprovide:Z7E5CzMxeVEAAECAwQFBgcICQoLDA0ODw"
+  .ascii " -export:g /abiprovide:Z7E5CzMxeVEAAECAwQFBgcICQoLDA0ODw,PwFGDH9_sEQEBESExQVFhcYGRobHB0eHw"
 
 #--- e.s
   .text
@@ -92,6 +100,7 @@ p:
   .globl main
 main:
   .linkcontract main, __imp_g, type, "1T", "000102030405060708090a0b0c0d0e0f"
+  .linkcontract main, __imp_g, type, "1U", "101112131415161718191a1b1c1d1e1f"
   .linkcontract main, __imp_h, type, "1T", "000102030405060708090a0b0c0d0e0f"
   .linkcontract main, __imp_p, type, "1T", "000102030405060708090a0b0c0d0e0f"
   callq *__imp_g(%rip)

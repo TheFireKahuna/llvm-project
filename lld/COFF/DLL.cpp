@@ -20,6 +20,7 @@
 #include "DLL.h"
 #include "COFFLinkerContext.h"
 #include "Chunks.h"
+#include "Contracts.h"
 #include "SymbolTable.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Object/COFF.h"
@@ -1147,6 +1148,10 @@ void DelayLoadContents::create() {
       }
 
       Chunk *tm = nullptr;
+      // Code never calls an ABI contract witness, so the witnesses of a DLL
+      // share one thunk, which gives their slots an initial value in the
+      // image and is no call target.
+      Chunk *witnessThunk = nullptr;
 
       for (DefinedImportData *s : syms) {
         // Process only the symbols belonging to the current symtab.
@@ -1160,14 +1165,20 @@ void DelayLoadContents::create() {
             pdata.push_back(pdataChunk);
         }
 
-        Chunk *t = newThunkChunk(s, tm);
+        StringRef extName = s->getExternalName();
+        bool witness = isContractWitnessName(extName);
+        Chunk *t = witness ? witnessThunk : nullptr;
+        if (!t) {
+          t = newThunkChunk(s, tm);
+          thunks.push_back(t);
+          if (witness)
+            witnessThunk = t;
+        }
         auto *a = make<DelayAddressChunk>(ctx, t);
         addresses.push_back(a);
         if (ctx.config.delayUnload)
           unloadAddresses.push_back(make<DelayAddressChunk>(ctx, t));
         s->setLocation(a);
-        thunks.push_back(t);
-        StringRef extName = s->getExternalName();
         if (extName.empty()) {
           names.push_back(make<OrdinalOnlyChunk>(ctx, s->getOrdinal()));
         } else {
@@ -1179,9 +1190,11 @@ void DelayLoadContents::create() {
           // Add a synthetic symbol for this load thunk, using the
           // "__imp___load" prefix, in case this thunk needs to be added to the
           // list of valid call targets for Control Flow Guard.
-          StringRef symName = saver().save("__imp___load_" + extName);
-          s->loadThunkSym =
-              cast<DefinedSynthetic>(symtab.addSynthetic(symName, t));
+          if (!witness) {
+            StringRef symName = saver().save("__imp___load_" + extName);
+            s->loadThunkSym =
+                cast<DefinedSynthetic>(symtab.addSynthetic(symName, t));
+          }
         }
 
         if (symtab.isEC()) {

@@ -86,6 +86,9 @@ void addContractWitnessExports(COFFLinkerContext &ctx);
 // other.
 bool isContractWitness(COFFLinkerContext &ctx, const Defined *sym);
 
+// Whether name is that of a witness, which code never calls.
+bool isContractWitnessName(StringRef name);
+
 // Adds to the import library of a DLL, whose exports, as the writer would put
 // them in the library, describe, the imports of its witnesses, named for the
 // DLL.
