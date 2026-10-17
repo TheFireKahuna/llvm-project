@@ -32787,10 +32787,20 @@ enum BitTestKind : unsigned {
   NotShiftBit
 };
 
+/// \p V, or the one value a phi of \p V's merges, such as a loop-closed
+/// phi with a single incoming edge.
+static const Value *peekThroughTrivialPHI(const Value *V) {
+  if (auto *PN = dyn_cast<PHINode>(V))
+    if (Value *Same = PN->hasConstantValue())
+      return Same;
+  return V;
+}
+
 static std::pair<const Value *, BitTestKind>
 FindSingleBitChange(const Value *V) {
   using namespace llvm::PatternMatch;
   BitTestKind BTK = UndefBit;
+  V = peekThroughTrivialPHI(V);
   if (auto *C = dyn_cast<ConstantInt>(V)) {
     // Check if V is a power of 2 or NOT power of 2.
     if (isPowerOf2_64(C->getZExtValue()))
@@ -32808,7 +32818,7 @@ FindSingleBitChange(const Value *V) {
     if (match(I, m_Not(m_Value(PeekI))) ||
         match(I, m_Sub(m_AllOnes(), m_Value(PeekI)))) {
       Not = true;
-      I = dyn_cast<Instruction>(PeekI);
+      I = dyn_cast<Instruction>(peekThroughTrivialPHI(PeekI));
 
       // If I is constant, it will fold and we can evaluate later. If its an
       // argument or something of that nature, we can't analyze.
@@ -32836,13 +32846,13 @@ FindSingleBitChange(const Value *V) {
       if (BTK == UndefBit)
         return {nullptr, UndefBit};
 
-      Value *BitV = I->getOperand(1);
+      const Value *BitV = peekThroughTrivialPHI(I->getOperand(1));
 
       // Read past a shiftmask instruction to find count
       Value *AndOp;
       uint64_t ShiftMask = I->getType()->getPrimitiveSizeInBits() - 1;
       if (match(BitV, m_c_And(m_Value(AndOp), m_SpecificInt(ShiftMask))))
-        BitV = AndOp;
+        BitV = peekThroughTrivialPHI(AndOp);
 
       return {BitV, BTK};
     }
@@ -32888,8 +32898,9 @@ X86TargetLowering::shouldExpandLogicAtomicRMWInIR(
 
   // The following instruction must be a AND single bit.
   if (BitChange.second == ConstantBit || BitChange.second == NotConstantBit) {
-    auto *C1 = cast<ConstantInt>(AI->getValOperand());
-    auto *C2 = dyn_cast<ConstantInt>(I->getOperand(OtherIdx));
+    auto *C1 = cast<ConstantInt>(BitChange.first);
+    auto *C2 =
+        dyn_cast<ConstantInt>(peekThroughTrivialPHI(I->getOperand(OtherIdx)));
     if (!C2 || !isPowerOf2_64(C2->getZExtValue())) {
       return AtomicExpansionKind::CmpXChg;
     }
@@ -32959,7 +32970,8 @@ void X86TargetLowering::emitBitTestAtomicRMWIntrinsic(AtomicRMWInst *AI) const {
   assert(BitTested.first != nullptr);
 
   if (BitTested.second == ConstantBit || BitTested.second == NotConstantBit) {
-    auto *C = cast<ConstantInt>(I->getOperand(I->getOperand(0) == AI ? 1 : 0));
+    auto *C = cast<ConstantInt>(
+        peekThroughTrivialPHI(I->getOperand(I->getOperand(0) == AI ? 1 : 0)));
 
     unsigned Imm = llvm::countr_zero(C->getZExtValue());
     Result = Builder.CreateIntrinsic(IID_C, {AI->getType(), Addr->getType()},
