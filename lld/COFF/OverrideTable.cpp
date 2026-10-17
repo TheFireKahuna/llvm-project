@@ -44,6 +44,25 @@ void OverrideAnchorChunk::getBaserels(std::vector<Baserel> *res) {
                         ctx.config.machine);
 }
 
+MachineTypes OverrideThunkChunk::getMachine() const {
+  return ctx.config.machine;
+}
+
+void OverrideThunkChunk::writeTo(uint8_t *buf) const {
+  if (ctx.config.machine == ARM64) {
+    write32le(buf, 0xAA0203E1);                       // mov x1, x2
+    write32le(buf + 4, 0x14000000 |                   // b target
+                           ((target->getRVA() - rva - 4) >> 2 & 0x3FFFFFF));
+    return;
+  }
+  // MS x64, where the deallocation's arguments are the pointer, the size and
+  // the alignment in rcx, rdx and r8; dropping the size moves r8 into rdx.
+  static const uint8_t thunk[] = {0x4C, 0x89, 0xC2,          // mov rdx, r8
+                                  0xE9, 0, 0, 0, 0};         // jmp target
+  memcpy(buf, thunk, sizeof(thunk));
+  write32le(buf + 4, target->getRVA() - rva - getSize());
+}
+
 void writeOverrideTable(COFFLinkerContext &ctx, SymbolTable &symtab,
                         uint8_t *base) {
   uint32_t count = symtab.overrideSlots.size();

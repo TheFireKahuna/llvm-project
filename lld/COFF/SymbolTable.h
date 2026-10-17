@@ -231,6 +231,9 @@ public:
   std::vector<OverrideSlot> overrideSlots;
   uint32_t overrideMask = 0;
   Chunk *overrideAnchor = nullptr;
+  // The thunks that forwarded slots whose target drops the second argument
+  // name, which the writer lays out in the code section.
+  std::vector<Chunk *> overrideThunks;
 
   // Under -import-slots in the resolution loop, once records are loaded and an
   // input defines a replacement, names __ovr_check, the executable's start-up
