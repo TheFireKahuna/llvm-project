@@ -6448,6 +6448,27 @@ bool AArch64AsmParser::showMatchError(SMLoc Loc, unsigned ErrCode,
 
 static const char *getSubtargetFeatureName(uint64_t Val);
 
+// On Windows Itanium and NT-POSIX a symbol's import pointer, __imp_X, is its
+// GOT entry: the linker binds it to the symbol's import, or to the symbol when
+// the image defines it, and relaxes a load of it as an ELF linker relaxes a
+// GOT load. So :got:X and :got_lo12:X reach the page and offset of __imp_X.
+static const MCExpr *getImportPointerForGOT(const MCExpr *E, MCContext &Ctx) {
+  const auto *SE = dyn_cast<MCSpecifierExpr>(E);
+  if (!SE || (SE->getSpecifier() != AArch64::S_GOT_PAGE &&
+              SE->getSpecifier() != AArch64::S_GOT_LO12))
+    return E;
+  const auto *SRE = dyn_cast<MCSymbolRefExpr>(SE->getSubExpr());
+  if (!SRE)
+    return E;
+  MCSymbol *Pointer =
+      Ctx.getOrCreateSymbol("__imp_" + SRE->getSymbol().getName());
+  return MCSpecifierExpr::create(
+      MCSymbolRefExpr::create(Pointer, Ctx, SRE->getLoc()),
+      SE->getSpecifier() == AArch64::S_GOT_PAGE ? AArch64::S_ABS_PAGE
+                                                : AArch64::S_LO12,
+      Ctx, SE->getLoc());
+}
+
 bool AArch64AsmParser::matchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
                                                OperandVector &Operands,
                                                MCStreamer &Out,
@@ -6779,6 +6800,10 @@ bool AArch64AsmParser::matchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
     if (validateInstruction(Inst, IDLoc, OperandLocs))
       return true;
 
+    if (getSTI().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+      for (MCOperand &Op : Inst)
+        if (Op.isExpr())
+          Op.setExpr(getImportPointerForGOT(Op.getExpr(), getContext()));
     Inst.setLoc(IDLoc);
     Out.emitInstruction(Inst, getSTI());
     return false;

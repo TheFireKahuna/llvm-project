@@ -4333,8 +4333,36 @@ void X86AsmParser::applyLVILoadHardeningMitigation(MCInst &Inst,
   }
 }
 
+// On Windows Itanium and NT-POSIX a symbol's import pointer, __imp_X, is its
+// GOT entry: the linker binds it to the symbol's import, or to the symbol when
+// the image defines it, and relaxes a load of it as an ELF linker relaxes a
+// GOT load. So X@GOTPCREL reaches __imp_X.
+static const MCExpr *getImportPointerForGOT(const MCExpr *E, MCContext &Ctx) {
+  if (const auto *SRE = dyn_cast<MCSymbolRefExpr>(E)) {
+    if (SRE->getSpecifier() != X86::S_GOTPCREL)
+      return E;
+    MCSymbol *Pointer =
+        Ctx.getOrCreateSymbol("__imp_" + SRE->getSymbol().getName());
+    return MCSymbolRefExpr::create(Pointer, Ctx, SRE->getLoc());
+  }
+  if (const auto *BE = dyn_cast<MCBinaryExpr>(E)) {
+    const MCExpr *LHS = getImportPointerForGOT(BE->getLHS(), Ctx);
+    const MCExpr *RHS = getImportPointerForGOT(BE->getRHS(), Ctx);
+    if (LHS != BE->getLHS() || RHS != BE->getRHS())
+      return MCBinaryExpr::create(BE->getOpcode(), LHS, RHS, Ctx,
+                                  BE->getLoc());
+  }
+  return E;
+}
+
 void X86AsmParser::emitInstruction(MCInst &Inst, OperandVector &Operands,
                                    MCStreamer &Out) {
+  if (getSTI().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      is64BitMode())
+    for (MCOperand &Op : Inst)
+      if (Op.isExpr())
+        Op.setExpr(getImportPointerForGOT(Op.getExpr(), getContext()));
+
   if (LVIInlineAsmHardening &&
       getSTI().hasFeature(X86::FeatureLVIControlFlowIntegrity))
     applyLVICFIMitigation(Inst, Out);
