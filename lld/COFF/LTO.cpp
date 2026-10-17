@@ -401,9 +401,16 @@ void BitcodeCompiler::add(BitcodeFile &f) {
         (r.Prevailing && (isOfferedByImage(f, objSym, sym) ||
                           isOfferedFunction(f, objSym, sym)));
     r.ExportDynamic = exportedSyms && exportedSyms->contains(sym);
-    r.FinalDefinitionInLinkageUnit =
-        !offered && !isPreemptibleInImage(f, objSym, sym, hasCInitializers) &&
-        isFinalInImage(f, objSym, sym);
+    // A PE image has no symbol preemption, so a definition in the image is
+    // final for every reference from it, and LTO may resolve references to it
+    // directly.
+    r.FinalDefinitionInLinkageUnit = isFinalInImage(f, objSym, sym);
+    // Under -import-slots a definition a DLL the image imports from offers, or
+    // one this DLL reaches through a cell so another image may preempt it at
+    // run time, is not final. Both are definitions, so isFinalInImage did not
+    // look an undefined __imp_ reference up to reach this point.
+    if (offered || isPreemptibleInImage(f, objSym, sym, hasCInitializers))
+      r.FinalDefinitionInLinkageUnit = false;
     // The object LTO generates defines the symbol again. It is undefined only
     // once every file is added, so that the files after this one still see
     // where it is defined.
