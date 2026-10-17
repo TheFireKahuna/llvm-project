@@ -2026,12 +2026,16 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
         handleMinGWAutomaticImport(sym, name))
       continue;
 
-    // Remaining undefined symbols are not fatal if /force is specified.
-    // They are replaced with dummy defined symbols.
-    if (ctx.config.forceUnresolved)
-      replaceSymbol<DefinedAbsolute>(sym, ctx, name, 0);
     undefs.insert(sym);
   }
+
+  // Remaining undefined symbols are not fatal if /force is specified.
+  // They are replaced with dummy defined symbols, once the loop is done, so
+  // that automatic import of X does not depend on whether __imp_X was
+  // visited first.
+  if (ctx.config.forceUnresolved)
+    for (Symbol *sym : undefs)
+      replaceSymbol<DefinedAbsolute>(sym, ctx, sym->getName(), 0);
 
   reportProblemSymbols(
       undefs, ctx.config.warnLocallyDefinedImported ? &localImports : nullptr,
