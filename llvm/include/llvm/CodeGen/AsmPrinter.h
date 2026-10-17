@@ -536,15 +536,16 @@ public:
   /// a vtable pointer in the dispatch target register, jumps through the slot
   /// at byte offset Off when the pointer is in the run [Start, End) and a
   /// multiple of the stride the Mask word holds less one from Start, and
-  /// otherwise loads the slot and continues into Dispatch, the type's KCFI
-  /// dispatch thunk.
+  /// otherwise loads the slot and continues into Miss, the type's KCFI thunk:
+  /// a dispatch thunk it tail-jumps to where the dispatch register carries the
+  /// target, or a check thunk it calls and then branches itself.
   struct VTableGuardThunkInfo {
     MCSymbol *Thunk;
     MCSymbol *Start;
     MCSymbol *End;
     MCSymbol *Mask;
     uint64_t Off;
-    MCSymbol *Dispatch;
+    MCSymbol *Miss;
   };
 
   /// Emits the per-type thunks the CFGuard pass routes a module's indirect

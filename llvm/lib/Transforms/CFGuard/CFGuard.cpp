@@ -371,7 +371,9 @@ void CFGuardImpl::insertCFGuardDispatch(CallBase *CB) {
 
 bool CFGuardImpl::insertVTableGuard(CallBase *CB) {
   Module &M = *CB->getModule();
-  if (!UseKCFIThunks || !M.getTargetTriple().isX86_64())
+  const Triple &TT = M.getTargetTriple();
+  if (!UseKCFIThunks || !(TT.isX86_64() || TT.isAArch64()) ||
+      TT.isWindowsArm64EC())
     return false;
   auto *Load = dyn_cast<LoadInst>(CB->getCalledOperand());
   if (!Load)
@@ -546,10 +548,16 @@ static Function *declareVTableGuardThunk(Module &M, StringRef Cls, uint64_t Off,
       ConstantAsMetadata::get(ConstantInt::get(Type::getInt32Ty(Ctx), uint32_t(Type))),
       ConstantAsMetadata::get(ConstantInt::get(Type::getInt1Ty(Ctx), Local))};
   Thunk->setMetadata("vcall_thunk", MDNode::get(Ctx, Ops));
-  // The slow path continues into the type's dispatch thunk, which the backend
-  // emits for the type like any other.
-  declareKCFIThunk(M, Local ? KCFILocalDispatchThunkPrefix
-                            : KCFIDispatchThunkPrefix,
+  // The slow path continues into the type's thunk, which the backend emits for
+  // the type like any other: a dispatch thunk where the dispatch register
+  // carries the target, a check thunk where the guard thunk calls it and then
+  // branches itself.
+  bool Dispatch = M.getTargetTriple().isX86_64();
+  declareKCFIThunk(M,
+                   Dispatch ? (Local ? KCFILocalDispatchThunkPrefix
+                                     : KCFIDispatchThunkPrefix)
+                            : (Local ? KCFILocalCheckThunkPrefix
+                                     : KCFICheckThunkPrefix),
                    Type);
   return Thunk;
 }

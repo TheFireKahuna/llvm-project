@@ -416,7 +416,7 @@ void X86AsmPrinter::emitVTableGuardThunk(const VTableGuardThunkInfo &I) {
                                    .addReg(X86::NoRegister),
                                STI);
   OutStreamer->emitInstruction(
-      MCInstBuilder(X86::JMP_4).addExpr(MCSymbolRefExpr::create(I.Dispatch, OutContext)),
+      MCInstBuilder(X86::JMP_4).addExpr(MCSymbolRefExpr::create(I.Miss, OutContext)),
       STI);
 }
 

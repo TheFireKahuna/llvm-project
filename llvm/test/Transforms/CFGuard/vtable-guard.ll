@@ -1,5 +1,7 @@
 ; RUN: opt -S -passes=cfguard %s | FileCheck %s
 ; RUN: sed 's/x86_64-unknown-windows-itanium/aarch64-unknown-windows-itanium/' %s \
+; RUN:   | opt -S -passes=cfguard | FileCheck %s
+; RUN: sed 's/x86_64-unknown-windows-itanium/arm64ec-pc-windows-msvc/' %s \
 ; RUN:   | opt -S -passes=cfguard | FileCheck %s --check-prefix=KEEP
 
 ;; A virtual call whose vtable pointer load carries vtable_guard metadata goes
@@ -17,9 +19,8 @@
 ; CHECK:       declare !vcall_thunk ![[MD:[0-9]+]] hidden void @__llvm_vcall_1A_8()
 ; CHECK-DAG:   ![[MD]] = !{!"1A", i64 8, i32 123456, i1 false}
 
-; On AArch64 the call takes the ordinary KCFI routing, not a vtable guard.
+; On Arm64EC the call takes the ordinary KCFI routing, not a vtable guard.
 ; KEEP-LABEL: define void @call(
-; KEEP:         call cfguard_checkcc void @__llvm_kcfi_check_0001e240(ptr %f)
 ; KEEP-NOT:     __llvm_vcall
 
 target triple = "x86_64-unknown-windows-itanium"

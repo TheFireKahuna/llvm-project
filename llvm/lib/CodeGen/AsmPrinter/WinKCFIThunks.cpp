@@ -223,8 +223,11 @@ void AsmPrinter::emitKCFIThunks(Module &M) {
       continue;
     uint32_t Type = mdconst::extract<ConstantInt>(MD->getOperand(2))->getZExtValue();
     bool Local = mdconst::extract<ConstantInt>(MD->getOperand(3))->getZExtValue();
-    MissThunks.insert((Twine(Local ? COFF::KCFILocalDispatchThunkPrefix
-                                   : COFF::KCFIDispatchThunkPrefix) +
+    bool Dispatch = TM.getTargetTriple().isX86_64();
+    MissThunks.insert((Twine(Dispatch ? (Local ? COFF::KCFILocalDispatchThunkPrefix
+                                                : COFF::KCFIDispatchThunkPrefix)
+                                       : (Local ? COFF::KCFILocalCheckThunkPrefix
+                                                : COFF::KCFICheckThunkPrefix)) +
                        utohexstr(Type, /*LowerCase=*/true, /*Width=*/8))
                           .str());
   }
@@ -368,9 +371,15 @@ void AsmPrinter::emitKCFIThunks(Module &M) {
     uint32_t Type = mdconst::extract<ConstantInt>(MD->getOperand(2))->getZExtValue();
     bool Local = mdconst::extract<ConstantInt>(MD->getOperand(3))->getZExtValue();
     std::string Hex = utohexstr(Type, /*LowerCase=*/true, /*Width=*/8);
-    MCSymbol *Dispatch = OutContext.getOrCreateSymbol(
-        (Local ? COFF::KCFILocalDispatchThunkPrefix
-               : COFF::KCFIDispatchThunkPrefix) +
+    // A dispatch thunk takes the target in the dispatch register and branches
+    // to it; a check thunk, on a target that has none, takes the target and
+    // returns, so the guard thunk calls it and branches itself.
+    bool Dispatch = TM.getTargetTriple().isX86_64();
+    MCSymbol *Miss = OutContext.getOrCreateSymbol(
+        Twine(Dispatch ? (Local ? COFF::KCFILocalDispatchThunkPrefix
+                                 : COFF::KCFIDispatchThunkPrefix)
+                       : (Local ? COFF::KCFILocalCheckThunkPrefix
+                                : COFF::KCFICheckThunkPrefix)) +
         Hex);
     auto Range = [&](StringRef Prefix) {
       return OutContext.getOrCreateSymbol(Prefix + Cls);
@@ -380,7 +389,7 @@ void AsmPrinter::emitKCFIThunks(Module &M) {
                           Align(16));
     emitVTableGuardThunk({getSymbol(&F), Range(COFF::VTableRangeStartPrefix),
                           Range(COFF::VTableRangeEndPrefix),
-                          Range(COFF::VTableRangeMaskPrefix), Off, Dispatch});
+                          Range(COFF::VTableRangeMaskPrefix), Off, Miss});
   }
 
   for (const KCFIRoutineKind &Routine : Routines) {
