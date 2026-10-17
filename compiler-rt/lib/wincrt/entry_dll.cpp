@@ -50,9 +50,10 @@ BOOL detach(HINSTANCE Instance, LPVOID Reserved) {
 
 } // namespace
 
-// Not exported: each DLL links its own from the archive.
-extern "C" BOOL WINAPI _DllMainCRTStartup(HINSTANCE Instance, DWORD Reason,
-                                          LPVOID Reserved) {
+// Not exported: each DLL links its own from the archive. It returns after it
+// sets the cookie, so the cookie cannot protect its own frame.
+extern "C" __attribute__((no_stack_protector)) BOOL WINAPI
+_DllMainCRTStartup(HINSTANCE Instance, DWORD Reason, LPVOID Reserved) {
   if (Reason == DLL_PROCESS_ATTACH)
     __security_init_cookie();
   __try {
