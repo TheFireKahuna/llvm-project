@@ -229,11 +229,18 @@ uint64_t RdataPacker::layOutRun(const VTableRun &run, ArrayRef<size_t> slots,
                                 std::vector<size_t> &out) {
   uint64_t anchor = start + run.slots.front().apoff;
   uint64_t pos = start + run.slots.front().chunk->getSize();
+  // The pinned items this run places in its gaps, filtered once in pinned
+  // order; a slot reconsiders those it could not yet fit, and drops each as it
+  // places it, without copying all of pinned per slot.
+  SmallVector<size_t, 0> runPinned;
+  for (size_t t : pinned)
+    if (items[t].baseRun == &run)
+      runPinned.push_back(t);
   for (size_t i : slots.drop_front()) {
     const VTableRun::Slot &slot = run.slots[items[i].slot];
     uint64_t next = anchor + items[i].slot * run.stride - slot.apoff;
-    for (size_t t : std::vector<size_t>(pinned)) {
-      if (items[t].baseRun != &run)
+    for (size_t &t : runPinned) {
+      if (t == SIZE_MAX)
         continue;
       uint64_t at = items[t].startAt(pos);
       if (at + items[t].size > next)
@@ -242,6 +249,7 @@ uint64_t RdataPacker::layOutRun(const VTableRun &run, ArrayRef<size_t> slots,
       out.push_back(t);
       pos = at + items[t].size;
       llvm::erase(pinned, t);
+      t = SIZE_MAX;
     }
     fill(pos, next, out);
     out.push_back(i);
