@@ -540,13 +540,45 @@ bool SymbolTable::loadInteriorImports() {
     }
   }
   // A DLL's fill writes the entries and read-only slots of the overridable
-  // defaults it imports, and the read-only cells of its own defaults replaced
-  // by name, between two protection calls.
-  if (!sealed && canSeal && ctx.config.dll && ctx.config.importSlots &&
-      !overridablesByName.empty())
-    sealed = true;
+  // defaults it imports, and the read-only cells of its own defaults, between
+  // two protection calls. Its own default has cells only where the DLL takes
+  // its address, through the import pointer or in a word of its static data.
+  if (!sealed && canSeal && ctx.config.dll && ctx.config.importSlots) {
+    auto isOwnDefault = [&](StringRef name) {
+      return overridablesByName.contains(name) || isOwnSlotDefault(name);
+    };
+    auto addressTaken = [&](StringRef name) {
+      return find(("__imp_" + name).str()) != nullptr;
+    };
+    sealed = llvm::any_of(overridablesByName, addressTaken) ||
+             llvm::any_of(overrideSlotFacts, [&](const auto &f) {
+               return f.second.own && addressTaken(f.first);
+             });
+    if (!sealed && (!overridablesByName.empty() ||
+                    llvm::any_of(overrideSlotFacts,
+                                 [](const auto &f) { return f.second.own; })))
+      for (ObjFile *file : ctx.objFileInstances) {
+        if (&file->symtab != this || sealed)
+          continue;
+        for (Chunk *c : file->getChunks()) {
+          auto *sc = dyn_cast_or_null<SectionChunk>(c);
+          if (!sc || (sc->header->Characteristics &
+                      (IMAGE_SCN_MEM_DISCARDABLE | IMAGE_SCN_CNT_CODE)))
+            continue;
+          for (const coff_relocation &rel : sc->getRelocs()) {
+            Symbol *s = file->getSymbol(rel.SymbolTableIndex);
+            if (s && isOwnDefault(s->getName()) && sc->isAddressWord(rel)) {
+              sealed = true;
+              break;
+            }
+          }
+          if (sealed)
+            break;
+        }
+      }
+  }
   if (!sealed && canSeal && ctx.config.dll) {
-    readDefaultsByName();
+    readOverrideRecords();
     sealed = llvm::any_of(ctx.importFileInstances, [&](ImportFile *f) {
       if (&f->symtab != this || !f->impSym ||
           ctx.config.delayLoads.contains(StringRef(f->dllName).lower()))
@@ -1086,7 +1118,7 @@ void SymbolTable::offerOverridableDefaults() {
 bool SymbolTable::loadOverrideOfferImports() {
   if (!ctx.config.importSlots || !ctx.config.dll || ctx.hybridSymtab || isEC())
     return false;
-  readDefaultsByName();
+  readOverrideRecords();
   if (overridables.empty() && defaultsByName.empty())
     return false;
   // The DLL's own references to a definition it offers go through the
@@ -1172,52 +1204,50 @@ SmallVector<MemoryBufferRef, 4> SymbolTable::getImportLibraryRecords() {
   return records;
 }
 
-void SymbolTable::readDefaultsByName() {
+void SymbolTable::readOverrideRecords() {
   // The records come only with the import libraries, so they are read again
   // only once more libraries have been read.
   if (!ctx.config.importSlots || ctx.hybridSymtab || isEC() ||
-      indexedArchives.size() == defaultsByNameArchives)
+      indexedArchives.size() == overrideRecordsArchives)
     return;
-  defaultsByNameArchives = indexedArchives.size();
-  for (std::string &name :
-       getOverridablesByName(ctx, getImportLibraryRecords()))
+  overrideRecordsArchives = indexedArchives.size();
+  OverrideRecords records = readImportedOverrideRecords(
+      ctx, getImportLibraryRecords(), overrideTableVersion);
+  for (std::string &name : records.byName)
     defaultsByName.insert(saver().save(name));
+  for (OverrideRecords::Slot &s : records.slots)
+    addOverrideSlotFacts(saver().save(s.name),
+                         {s.slot, s.forward, s.dropsSecond, /*own=*/false},
+                         "an import library");
 }
 
-bool SymbolTable::loadOverrideRecords() {
-  if (!ctx.config.importSlots || ctx.hybridSymtab || isEC() ||
-      overrideRecordsLoaded)
-    return false;
-  // The records member defines every slot. The executable pulls it to replace
-  // a default or select an offer; a DLL pulls it so its own fill can learn the
-  // slot of each default whose address it imports, the cell it fills from the
-  // executable's table. It is pulled by its format-version symbol, which
-  // defines every slot alongside it, and adds only absolute symbols and no
-  // image bytes, so an image that needs no slot pays nothing. A link whose
-  // runtime does not carry it, such as a freestanding one, has none to bind.
-  if (!ctx.config.dll && overridables.empty() && overrideOffers.empty())
-    return false;
-  Symbol *version = find("__ovr_version");
-  if (!version || !version->isLazy())
-    return false;
-  overrideRecordsLoaded = true;
-  addGCRoot("__ovr_version");
-  return true;
+void SymbolTable::addOverrideSlotFacts(StringRef name, OverrideSlotFacts facts,
+                                       const Twine &source) {
+  auto [it, inserted] = overrideSlotFacts.try_emplace(name, facts);
+  if (inserted)
+    return;
+  OverrideSlotFacts &old = it->second;
+  if (old.slot != facts.slot || old.forward != facts.forward ||
+      old.dropsSecond != facts.dropsSecond) {
+    Err(ctx) << source << " records overridable default " << name
+             << " with slot " << facts.slot << ", but another input with slot "
+             << old.slot << " or another forwarding";
+    return;
+  }
+  old.own |= facts.own;
 }
 
 std::optional<uint32_t> SymbolTable::overrideImportSlot(StringRef name) {
-  if (!overrideRecordsLoaded)
+  auto it = overrideSlotFacts.find(name);
+  if (it == overrideSlotFacts.end())
     return std::nullopt;
-  if (auto *a =
-          dyn_cast_or_null<DefinedAbsolute>(find(("__ovr_slot$" + name).str())))
-    return uint32_t(a->getVA());
-  return std::nullopt;
+  return it->second.slot;
 }
 
 void SymbolTable::resolveOverridableReplacements() {
   if (!ctx.config.importSlots || ctx.config.dll || ctx.hybridSymtab || isEC())
     return;
-  readDefaultsByName();
+  readOverrideRecords();
   if (overridables.empty() && overrideOffers.empty() && defaultsByName.empty())
     return;
   // An overridable default this executable replaces is one an input defines
@@ -1255,37 +1285,24 @@ void SymbolTable::resolveOverridableReplacements() {
     buildOverrideSlots();
     return;
   }
-  auto absolute = [&](const Twine &n) -> std::optional<uint64_t> {
-    if (auto *a = dyn_cast_or_null<DefinedAbsolute>(find(n.str())))
-      return a->getVA();
-    return std::nullopt;
-  };
-  // The records member, which only a C++ runtime that supports overrides
-  // carries, is the runtime's declaration of its slots. Without it there is no
-  // default to override: a program that defines a replaceable function with no
-  // such runtime, as a freestanding one may, keeps its own definition and
-  // needs no table.
-  std::optional<uint64_t> version = absolute("__ovr_version");
-  if (!version) {
+  // The slots, which the C++ runtime's definitions of its defaults record, in
+  // its objects or in its import library. Without them there is no default to
+  // override: a program that defines a replaceable function with no such
+  // runtime, as a freestanding one may, keeps its own definition and needs no
+  // table.
+  if (overrideSlotFacts.empty()) {
     buildOverrideSlots();
     return;
   }
-  if (*version != overrideTableVersion) {
-    Err(ctx) << "the C++ runtime's override table format (version " << *version
-             << ") is not the one this linker writes (version "
-             << overrideTableVersion << ")";
-    return;
-  }
   for (auto [name, body] : replaced) {
-    std::optional<uint64_t> slot = absolute("__ovr_slot$" + name);
+    std::optional<uint32_t> slot = overrideImportSlot(name);
     if (!slot) {
       Err(ctx) << body->getFile() << ": " << printSymbol(body)
-               << " replaces an overridable default, but the C++ runtime's "
-                  "import library records no slot for it";
+               << " replaces an overridable default, but the C++ runtime "
+                  "records no slot for it";
       continue;
     }
-    overrideReplacements.push_back(
-        {body, name, uint32_t(*slot), absolute("__ovr_fwd$" + name)});
+    overrideReplacements.push_back({body, name, *slot});
   }
   buildOverrideSlots();
 }
@@ -1339,27 +1356,19 @@ void SymbolTable::buildOverrideSlots() {
   for (const OverrideReplacement &r : overrideReplacements)
     replaced[r.slot] = r.body;
 
-  // The forwarding graph the records member carries: the standard specifies
-  // most defaults as calling another, and the records member records, for each
-  // such default, its own slot's forwarding to that other's slot, with a bit
-  // when it drops its second argument on the way. A default forwarded to a
-  // replaced default runs the replacement's body.
+  // The forwarding graph the runtime's defaults record: the standard specifies
+  // most defaults as calling another, and each such default records that
+  // other's slot, and whether the other takes its arguments without the
+  // second. A default forwarded to a replaced default runs the replacement's
+  // body.
   struct Edge {
     uint32_t target;
     bool dropsSecond;
   };
   DenseMap<uint32_t, Edge> edges;
-  for (auto &entry : symMap) {
-    StringRef name = entry.second->getName();
-    if (!name.consume_front("__ovr_fwd$"))
-      continue;
-    auto *fwd = dyn_cast<DefinedAbsolute>(entry.second);
-    auto *from = dyn_cast_or_null<DefinedAbsolute>(
-        find(("__ovr_slot$" + name).str()));
-    if (fwd && from)
-      edges[uint32_t(from->getVA())] = {uint32_t(fwd->getVA()) & 0xFFFF,
-                                        (fwd->getVA() & 0x10000) != 0};
-  }
+  for (auto &[name, facts] : overrideSlotFacts)
+    if (facts.forward)
+      edges[facts.slot] = {*facts.forward, facts.dropsSecond};
   // Each forwarding slot that is not replaced resolves to the nearest replaced
   // slot its chain reaches, through a thunk when an edge on the way drops the
   // second argument.
@@ -1418,15 +1427,15 @@ bool SymbolTable::nameOverrideCheck() {
   if (!ctx.config.importSlots || ctx.config.dll || ctx.hybridSymtab || isEC() ||
       overrideAnchor)
     return false;
-  readDefaultsByName();
-  if (!overrideRecordsLoaded && defaultsByName.empty())
+  readOverrideRecords();
+  if (overrideSlotFacts.empty() && defaultsByName.empty())
     return false;
   // Not until a replacement supersedes the runtime's weak default: an input's
   // strong definition, or a linked DLL's offer the executable selects for a
-  // slot it does not replace itself. A link that only loaded the records
-  // member, with no replacement after all, writes no table.
+  // slot it does not replace itself. A link with no replacement writes no
+  // table.
   bool replaces =
-      (overrideRecordsLoaded &&
+      (!overrideSlotFacts.empty() &&
        llvm::any_of(
            overridables,
            [&](StringRef name) { return isLocalOverrideReplacement(name); })) ||
@@ -1434,7 +1443,7 @@ bool SymbolTable::nameOverrideCheck() {
           defaultsByName,
           [&](StringRef name) { return isLocalOverrideReplacement(name); }) ||
       llvm::any_of(overrideOffers, [&](StringRef name) {
-        return (overrideRecordsLoaded || defaultsByName.contains(name)) &&
+        return (!overrideSlotFacts.empty() || defaultsByName.contains(name)) &&
                !isLocalOverrideReplacement(name) &&
                isa_and_nonnull<Defined>(
                    find((overrideOfferPrefix + name).str()));
@@ -1678,7 +1687,7 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
         // A DLL's own address-take of its default replaced by name reads a
         // cell, as every other image's does, which its fill writes.
         if (ctx.config.importSlots && ctx.config.dll &&
-            overridablesByName.contains(impName))
+            (overridablesByName.contains(impName) || isOwnSlotDefault(impName)))
           cast<DefinedLocalImport>(sym)->getChunk()->overrideDefault = impName;
         // Under -import-slots, a pointer to the zero default of an absent
         // weak X imports nothing that the image defines.

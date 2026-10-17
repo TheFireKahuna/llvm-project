@@ -8,13 +8,11 @@
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium rt.s -o rt.obj
-# RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium records.s -o records.obj
 # RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium crt.s -o crt.obj
 # RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium use.s -o use.obj
-# RUN: llvm-lib -machine:arm64 -out:records.lib records.obj
 # RUN: lld-link -def:ntdll.def -out:ntdll.lib -machine:arm64
 # RUN: lld-link -import-slots -dll -noentry rt.obj -out:rt.dll -implib:rt.lib
-# RUN: lld-link -import-slots -dll -noentry use.obj crt.obj rt.lib records.lib \
+# RUN: lld-link -import-slots -dll -noentry use.obj crt.obj rt.lib \
 # RUN:   ntdll.lib -out:use.dll
 # RUN: llvm-objdump -d --no-show-raw-insn use.dll | FileCheck %s
 # RUN: llvm-readobj --unwind use.dll | FileCheck --check-prefix=UNWIND %s
@@ -93,7 +91,7 @@
 ## A thread-local cell is also written in the loading thread's block, at its
 ## offset in the template, through the index the TLS directory names.
 # RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium tl.s -o tl.obj
-# RUN: lld-link -import-slots -dll -noentry tl.obj crt.obj rt.lib records.lib \
+# RUN: lld-link -import-slots -dll -noentry tl.obj crt.obj rt.lib \
 # RUN:   -out:tl.dll
 # RUN: llvm-objdump -d --no-show-raw-insn tl.dll | FileCheck --check-prefix=TL %s
 # TL:      str     x17, [x9]
@@ -109,17 +107,11 @@
 
 #--- rt.s
         .text
-        .globl _Znwy
+        .weak _Znwy
 _Znwy:
         ret
         .section .drectve,"yni"
-        .ascii " /EXPORT:_Znwy"
-
-#--- records.s
-        .globl __ovr_version
-        .set __ovr_version, 1
-        .globl "__ovr_slot$_Znwy"
-        .set "__ovr_slot$_Znwy", 0
+        .ascii " /OVERRIDABLE:_Znwy,0 /EXPORT:_Znwy"
 
 #--- ntdll.def
 LIBRARY ntdll.dll

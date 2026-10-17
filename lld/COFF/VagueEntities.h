@@ -13,6 +13,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Object/ArchiveWriter.h"
 #include "llvm/Support/MemoryBufferRef.h"
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -32,11 +33,24 @@ inline constexpr llvm::StringLiteral vagueRecordPrefix = "__llvm_vague$";
 void checkVagueEntities(COFFLinkerContext &ctx, llvm::StringRef imageName);
 
 // The overridable defaults that the DLLs whose records records, the record
-// members of import libraries, describe define with no fixed slot in the
-// override table, which a definition in another image replaces by name.
-std::vector<std::string>
-getOverridablesByName(COFFLinkerContext &ctx,
-                      llvm::ArrayRef<llvm::MemoryBufferRef> records);
+// members of import libraries, describe defining: by name, with no fixed slot
+// in the override table, and by slot, with the slot each records and the slot
+// of the default it forwards to. A record of a table format other than
+// version is an error.
+struct OverrideRecords {
+  struct Slot {
+    std::string name;
+    uint32_t slot;
+    std::optional<uint32_t> forward;
+    bool dropsSecond;
+  };
+  std::vector<std::string> byName;
+  std::vector<Slot> slots;
+};
+OverrideRecords
+readImportedOverrideRecords(COFFLinkerContext &ctx,
+                            llvm::ArrayRef<llvm::MemoryBufferRef> records,
+                            uint32_t version);
 
 // The overridable defaults that the DLLs of the load closure that records, the
 // record members of import libraries in link order, describe offer, each with

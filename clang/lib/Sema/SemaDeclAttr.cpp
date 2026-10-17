@@ -3827,31 +3827,62 @@ static void handleMinVectorWidthAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
 
 static void handleOverridableDefaultAttr(Sema &S, Decl *D,
                                          const ParsedAttr &AL) {
-  uint32_t Slot;
-  if (!S.checkUInt32Argument(AL, AL.getArgAsExpr(0), Slot)) {
+  // The table stays within the executable's header page, below its block at
+  // 0x7E0: eight slots before its 24-byte header at 0x80, and the rest after
+  // the header from 0x98.
+  constexpr uint32_t MaxSlot = 8 + (0x7E0 - 0x98) / 8 - 1;
+  auto getSlot = [&](unsigned I, uint32_t &Slot) {
+    if (!S.checkUInt32Argument(AL, AL.getArgAsExpr(I), Slot, I))
+      return false;
+    if (Slot <= MaxSlot)
+      return true;
+    S.Diag(AL.getArgAsExpr(I)->getExprLoc(),
+           diag::err_attribute_argument_out_of_range)
+        << AL << 0 << MaxSlot;
+    return false;
+  };
+  uint32_t Slot, Forward;
+  int32_t ForwardArg = -1;
+  bool DropsSecond = false;
+  if (!getSlot(0, Slot) || (AL.getNumArgs() > 1 && !getSlot(1, Forward))) {
     AL.setInvalid();
     return;
   }
-
-  // The table stays within the executable's first page: eight slots before
-  // its 24-byte header at 0x80, and the rest after the header from 0x98.
-  constexpr uint32_t MaxSlot = 8 + (0x1000 - 0x98) / 8 - 1;
-  if (Slot > MaxSlot) {
-    S.Diag(AL.getLoc(), diag::err_attribute_argument_out_of_range)
-        << AL << 0 << MaxSlot;
-    AL.setInvalid();
-    return;
+  if (AL.getNumArgs() > 1) {
+    // A default does not forward to itself.
+    if (Forward == Slot) {
+      S.Diag(AL.getArgAsExpr(1)->getExprLoc(),
+             diag::err_overridable_default_forwards_to_itself);
+      AL.setInvalid();
+      return;
+    }
+    ForwardArg = Forward;
+  }
+  if (AL.getNumArgs() > 2) {
+    uint32_t Drops;
+    if (!S.checkUInt32Argument(AL, AL.getArgAsExpr(2), Drops, 2))
+      return AL.setInvalid();
+    if (Drops > 1) {
+      S.Diag(AL.getArgAsExpr(2)->getExprLoc(),
+             diag::err_attribute_argument_out_of_range)
+          << AL << 0 << 1;
+      return AL.setInvalid();
+    }
+    DropsSecond = Drops;
   }
 
   OverridableDefaultAttr *Existing = D->getAttr<OverridableDefaultAttr>();
-  if (Existing && Existing->getSlot() != Slot) {
+  if (Existing &&
+      (Existing->getSlot() != Slot || Existing->getForward() != ForwardArg ||
+       Existing->getDropsSecond() != DropsSecond)) {
     S.Diag(AL.getLoc(), diag::err_attributes_are_not_compatible)
         << AL << Existing << AL.isRegularKeywordAttribute();
     S.Diag(Existing->getLocation(), diag::note_conflicting_attribute);
     return;
   }
 
-  D->addAttr(::new (S.Context) OverridableDefaultAttr(S.Context, AL, Slot));
+  D->addAttr(::new (S.Context) OverridableDefaultAttr(S.Context, AL, Slot,
+                                                      ForwardArg, DropsSecond));
 }
 
 static void handleCleanupAttr(Sema &S, Decl *D, const ParsedAttr &AL) {

@@ -230,10 +230,10 @@ static std::vector<uint32_t> readImportedRecords(COFFLinkerContext &ctx,
   return direct;
 }
 
-std::vector<std::string>
-getOverridablesByName(COFFLinkerContext &ctx,
-                      ArrayRef<MemoryBufferRef> records) {
-  std::vector<std::string> names;
+OverrideRecords readImportedOverrideRecords(COFFLinkerContext &ctx,
+                                            ArrayRef<MemoryBufferRef> records,
+                                            uint32_t version) {
+  OverrideRecords result;
   for (MemoryBufferRef mb : records) {
     Expected<std::unique_ptr<COFFObjectFile>> obj = COFFObjectFile::create(mb);
     if (!obj) {
@@ -262,22 +262,48 @@ getOverridablesByName(COFFLinkerContext &ctx,
         uint64_t size = data.getULEB128(cur);
         uint64_t start = cur.tell();
         data.skip(cur, size);
-        if (!cur || kind != LinkRecordOverridableByName)
+        if (!cur || (kind != LinkRecordOverridableByName &&
+                     kind != LinkRecordOverrideSlots))
           continue;
         DataExtractor group(contents->substr(start, size), true);
         DataExtractor::Cursor c(0);
-        while (c && !group.eof(c)) {
+        auto getString = [&] {
           uint64_t n = group.getULEB128(c);
-          StringRef s = group.getBytes(c, n);
+          return group.getBytes(c, n);
+        };
+        if (kind == LinkRecordOverrideSlots) {
+          uint64_t format = group.getULEB128(c);
+          if (c && format != version) {
+            Err(ctx) << mb.getBufferIdentifier()
+                     << ": the C++ runtime's override table format (version "
+                     << format << ") is not the one this linker writes "
+                     << "(version " << version << ")";
+            consumeError(c.takeError());
+            continue;
+          }
+        }
+        while (c && !group.eof(c)) {
+          StringRef s = getString();
+          if (kind == LinkRecordOverridableByName) {
+            if (c)
+              result.byName.push_back(s.str());
+            continue;
+          }
+          uint64_t slot = group.getULEB128(c);
+          uint64_t forward = group.getULEB128(c);
+          uint64_t flags = group.getULEB128(c);
           if (c)
-            names.push_back(s.str());
+            result.slots.push_back(
+                {s.str(), uint32_t(slot),
+                 forward ? std::optional<uint32_t>(forward - 1) : std::nullopt,
+                 (flags & 1) != 0});
         }
         consumeError(c.takeError());
       }
       consumeError(cur.takeError());
     }
   }
-  return names;
+  return result;
 }
 
 std::vector<std::pair<std::string, std::string>>
@@ -585,6 +611,35 @@ void addVagueEntityRecord(COFFLinkerContext &ctx, StringRef dllName,
     encodeULEB128(LinkRecordOverridableByName, r);
     encodeULEB128(names.size(), r);
     r << names;
+  }
+  // The defaults the DLL defines and exports with a fixed slot, as their
+  // definitions record it, which an image that links its import library
+  // replaces or reaches through that slot.
+  std::vector<std::pair<StringRef, SymbolTable::OverrideSlotFacts>> bySlot;
+  for (const Export &e : ctx.symtab.exports)
+    if (e.sym && isa<Defined>(e.sym) && !isa<DefinedImportData>(e.sym))
+      if (auto it = ctx.symtab.overrideSlotFacts.find(e.sym->getName());
+          it != ctx.symtab.overrideSlotFacts.end() && it->second.own)
+        bySlot.emplace_back(it->first, it->second);
+  llvm::sort(bySlot, llvm::less_first());
+  bySlot.erase(
+      llvm::unique(bySlot, [](const auto &a,
+                              const auto &b) { return a.first == b.first; }),
+      bySlot.end());
+  if (!bySlot.empty()) {
+    std::string slots;
+    raw_string_ostream o(slots);
+    encodeULEB128(overrideTableVersion, o);
+    for (auto &[name, facts] : bySlot) {
+      encodeULEB128(name.size(), o);
+      o << name;
+      encodeULEB128(facts.slot, o);
+      encodeULEB128(facts.forward ? *facts.forward + 1 : 0, o);
+      encodeULEB128(facts.dropsSecond, o);
+    }
+    encodeULEB128(LinkRecordOverrideSlots, r);
+    encodeULEB128(slots.size(), r);
+    r << slots;
   }
   members.push_back(createLinkerFacts(
       dllName, config.machine, ".llvm_link_records",

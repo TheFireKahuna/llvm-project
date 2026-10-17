@@ -249,6 +249,19 @@ enum LinkRecordKind : uint64_t {
   //
   //   payload := name*
   LinkRecordOverridableByName = 22,
+
+  // The overridable defaults that a DLL defines with a fixed slot in the
+  // override table, in a member of the DLL's import library, which the
+  // compiler records with each definition, so that the link of an image that
+  // replaces one or reaches one knows its slot:
+  //
+  //   payload := version:ULEB128 (name slot:ULEB128 forward:ULEB128
+  //              flags:ULEB128)*
+  //
+  // version is that of the table's format, forward one more than the slot of
+  // the default this one is specified as calling, or zero, and flags bit 0
+  // set when that default takes this one's arguments without the second.
+  LinkRecordOverrideSlots = 24,
 };
 
 // The role of a definition that a LinkRecordBinding group lists.

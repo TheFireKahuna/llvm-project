@@ -1054,6 +1054,8 @@ def err_function_start_invalid_type: Error<
   "argument must be a function">;
 def err_overridable_default_slot_arg: Error<
   "argument must be a function that is an overridable default">;
+def err_overridable_default_forwards_to_itself : Error<
+  "an overridable default cannot forward to its own slot">;
 
 def err_ptrauth_disabled :
   Error<"this target does not support pointer authentication">;

@@ -11,7 +11,8 @@
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium records.s -o records.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium main.s -o main.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium repl.s -o repl.obj
-# RUN: llvm-lib -out:records.lib records.obj
+# RUN: lld-link -import-slots -dll -noentry records.obj -out:records.dll \
+# RUN:   -implib:records.lib
 
 ## The DLL offers its allocator; its import library carries the offer symbol.
 # RUN: lld-link -import-slots -dll -noentry offer.obj -out:offer.dll \
@@ -20,7 +21,7 @@
 # IMPLIB: __imp___ovr_offer$_Znwy
 
 ## The executable defines no operator new, links the offering DLL and the
-## runtime's records, and selects the offer: slot 0 names the import thunk's
+## runtime's import library, and selects the offer: slot 0 names the import thunk's
 ## RVA, and the anchor's mask marks slot 0 replaced.
 # RUN: lld-link -import-slots main.obj offer.lib records.lib -out:main.exe \
 # RUN:   -entry:main -subsystem:console
@@ -55,10 +56,13 @@ _Znwy:
         .ascii " /OVERRIDABLE:_Znwy /EXPORT:_Znwy"
 
 #--- records.s
-        .globl __ovr_version
-        .set __ovr_version, 1
-        .globl "__ovr_slot$_Znwy"
-        .set "__ovr_slot$_Znwy", 0
+## Stands in for the C++ runtime, whose default records its slot.
+        .text
+        .weak _Znwy
+_Znwy:
+        retq
+        .section .drectve,"yni"
+        .ascii " /OVERRIDABLE:_Znwy,0 /EXPORT:_Znwy"
 
 #--- main.s
         .text

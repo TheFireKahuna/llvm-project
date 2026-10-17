@@ -222,26 +222,17 @@ public:
   // Called in the resolution loop; returns whether it pulled anything.
   bool loadOverrideOffers();
 
-  // Under -import-slots in an executable that replaces an overridable default,
-  // loads the C++ runtime's records member, a regular member of its import
-  // library that defines each default's slot and forwarding target as absolute
-  // symbols. Called in the resolution loop; returns whether it loaded it.
-  bool loadOverrideRecords();
-
   // Under -import-slots in an executable, reads each replaced overridable
-  // default's slot and forwarding target from the records member, after
-  // resolution, into overrideReplacements.
+  // default's slot, which the runtime's definitions or import library record,
+  // after resolution, into overrideReplacements.
   void resolveOverridableReplacements();
 
   // An overridable default that this executable replaces: the body B of the
-  // replacement, its ABI name, its slot in the override table, and, for a
-  // default the standard specifies as calling another, that other's slot with
-  // the forwarding bits the records member encodes.
+  // replacement, its ABI name and its slot in the override table.
   struct OverrideReplacement {
     Defined *body;
     StringRef name;
     uint32_t slot;
-    std::optional<uint32_t> forward;
   };
   std::vector<OverrideReplacement> overrideReplacements;
   // The defaults this executable replaces by name, before buildOverrideSlots
@@ -277,7 +268,27 @@ public:
   // The names of the overridable defaults that inputs define, from their
   // /overridable: directives.
   llvm::DenseSet<StringRef> overridables;
-  bool overrideRecordsLoaded = false;
+
+  // A default's fixed slot in the override table and, for a default the
+  // standard specifies as calling another, that other's slot, with whether it
+  // takes this one's arguments without the second; and whether an input of
+  // this link defines the default, rather than an import library recording it.
+  struct OverrideSlotFacts {
+    uint32_t slot;
+    std::optional<uint32_t> forward;
+    bool dropsSecond;
+    bool own;
+  };
+  llvm::DenseMap<StringRef, OverrideSlotFacts> overrideSlotFacts;
+  // Records the facts that an input's /overridable: directive gives, or that
+  // an import library records, and reports a conflict between two of them.
+  void addOverrideSlotFacts(StringRef name, OverrideSlotFacts facts,
+                            const Twine &source);
+  // Whether an input of this link defines the default name with a slot.
+  bool isOwnSlotDefault(StringRef name) const {
+    auto it = overrideSlotFacts.find(name);
+    return it != overrideSlotFacts.end() && it->second.own;
+  }
 
   // The overridable defaults that inputs define with no fixed slot, which a
   // definition in another image replaces by name, from their
@@ -285,8 +296,10 @@ public:
   // libraries the link names define, from the records of those libraries.
   llvm::DenseSet<StringRef> overridablesByName;
   llvm::DenseSet<StringRef> defaultsByName;
-  size_t defaultsByNameArchives = 0;
-  void readDefaultsByName();
+  // Reads the overridable defaults that the import libraries the link names
+  // record, by slot and by name, again only once more libraries have been read.
+  size_t overrideRecordsArchives = 0;
+  void readOverrideRecords();
 
   // The record members of the import libraries the link names, in link order.
   SmallVector<MemoryBufferRef, 4> getImportLibraryRecords();
@@ -313,10 +326,10 @@ public:
   // definition, the body that replaces the runtime's weak overridable default.
   bool isLocalOverrideReplacement(StringRef name);
 
-  // The override table slot of an imported default, from the records member,
-  // or none if name is not a recorded default. An image whose static data or
-  // code takes such an import's address carries a cell for that slot, which its
-  // fill writes from the executable's table.
+  // The override table slot of a default, from the facts its definition or
+  // its import library records, or none if name is not such a default. An image
+  // whose static data or code takes such an import's address carries a cell for
+  // that slot, which its fill writes from the executable's table.
   std::optional<uint32_t> overrideImportSlot(StringRef name);
 
   // The name of the epoch export of the entities the image keeps, if any.
