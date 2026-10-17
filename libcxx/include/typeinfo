@@ -146,7 +146,8 @@ public:
 //                          NonUniqueARMRTTIBit
 //               (_LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION = 3)
 // -------------------------------------------------------------------------- //
-// This implementation is specific to ARM64 on Apple platforms.
+// This implementation is used on ARM64 on Apple platforms, and on Windows
+// Itanium and NT-POSIX.
 //
 // This implementation of type_info does not assume always a unique copy of
 // the RTTI for a given type inside a program. When constructing the type_info,
@@ -174,8 +175,15 @@ public:
 // we pick a default implementation based on the platform here.
 #      ifndef _LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION
 
+// On Windows Itanium and NT-POSIX the linker binds the images that an import path
+// joins to one typeinfo of each type, and the compiler flags each weakly emitted
+// typeinfo, which images that no link joins compare by name, as on arm64 on
+// Apple platforms.
+#        if defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
+#          define _LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION 3
+
 // Windows and AIX binaries can't merge typeinfos, so use the NonUnique implementation.
-#        if defined(_LIBCPP_OBJECT_FORMAT_COFF) || defined(_LIBCPP_OBJECT_FORMAT_XCOFF)
+#        elif defined(_LIBCPP_OBJECT_FORMAT_COFF) || defined(_LIBCPP_OBJECT_FORMAT_XCOFF)
 #          define _LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION 2
 
 // On arm64 on Apple platforms, use the special NonUniqueARMRTTIBit implementation.

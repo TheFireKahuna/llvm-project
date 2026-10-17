@@ -450,7 +450,14 @@ public:
 protected:
   /// Returns true if the ABI requires RTTI type_info objects to be unique
   /// across a program.
-  virtual bool shouldRTTIBeUnique() const { return true; }
+  virtual bool shouldRTTIBeUnique() const {
+    // On Windows Itanium and NT-POSIX the linker gives a weakly emitted
+    // type_info object one owner among the images an import path or a joint
+    // link joins; images that no link joins, as plugins loaded at run time
+    // may be, keep their own, which compare by name.
+    return !CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() ||
+           CGM.getLangOpts().isCompatibleWith(LangOptions::ClangABI::Ver23);
+  }
 
 public:
   /// What sort of unique-RTTI behavior should we use?
@@ -4636,7 +4643,7 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(
       CXXABI.classifyRTTIUniqueness(Ty, Linkage);
   if (RTTIUniqueness != ItaniumCXXABI::RUK_Unique) {
     // The flag is the sign bit, which on ARM64 is defined to be clear
-    // for global pointers.  This is very ARM64-specific.
+    // for global pointers, as it is for user-mode addresses on Windows.
     TypeNameField = llvm::ConstantExpr::getPtrToInt(TypeName, CGM.Int64Ty);
     llvm::Constant *flag =
         llvm::ConstantInt::get(CGM.Int64Ty, ((uint64_t)1) << 63);
@@ -5109,14 +5116,18 @@ ItaniumCXXABI::RTTIUniquenessKind ItaniumCXXABI::classifyRTTIUniqueness(
   if (CanTy->getVisibility() != DefaultVisibility)
     return RUK_Unique;
 
-  // If we're not required to publish this symbol, hide it.
-  if (Linkage == llvm::GlobalValue::LinkOnceODRLinkage)
+  // If we're not required to publish this symbol, hide it. On Windows Itanium
+  // and NT-POSIX it stays visible, so that the linker can bind every image an
+  // import path joins to one owner's.
+  if (Linkage == llvm::GlobalValue::LinkOnceODRLinkage &&
+      !CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
     return RUK_NonUniqueHidden;
 
   // If we're required to publish this symbol, as we might be under an
   // explicit instantiation, leave it with default visibility but
   // enable string-comparisons.
-  assert(Linkage == llvm::GlobalValue::WeakODRLinkage);
+  assert(Linkage == llvm::GlobalValue::WeakODRLinkage ||
+         CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment());
   return RUK_NonUniqueVisible;
 }
 
