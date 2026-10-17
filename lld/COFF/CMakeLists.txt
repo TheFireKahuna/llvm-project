@@ -13,6 +13,7 @@ add_lld_library(lldCOFF
   ICF.cpp
   ImportSlots.cpp
   InputFiles.cpp
+  LinkPins.cpp
   LLDMapFile.cpp
   LocalImports.cpp
   LTO.cpp

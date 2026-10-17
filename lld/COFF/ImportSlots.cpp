@@ -886,6 +886,7 @@ void ImportSlotContents::resolve(SlotScan &scan) {
       return s.offset == prev->offset + config.wordsize;
     SectionChunk *a = prev->chunk;
     return heldBackChunks.contains(a) && heldBackChunks.contains(s.chunk) &&
+           !ctx.chunkPins.contains(s.chunk) && s.offset == 0 &&
            prev->offset + config.wordsize == a->getSize() &&
            s.chunk->getAlignment() <= a->getAlignment() &&
            a->getSize() % s.chunk->getAlignment() == 0;

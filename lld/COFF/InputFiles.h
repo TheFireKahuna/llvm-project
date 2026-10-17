@@ -314,6 +314,19 @@ public:
   // through which its symbol is only called.
   bool isCallOnlyRef(const SectionChunk *sc, uint32_t offset) const;
 
+  // A pin of the object's link-only records: the address of sym, or of the
+  // start of chunk when the pin names a section, must be residue modulo
+  // 2^log2. A pin names a symbol, so one that a discarded COMDAT copy carries
+  // applies to the copy the link keeps.
+  struct LinkPin {
+    Symbol *sym;
+    SectionChunk *chunk;
+    uint64_t residue;
+    uint8_t log2;
+    bool required;
+  };
+  ArrayRef<LinkPin> getLinkPins() const;
+
   // When using Microsoft precompiled headers, this is the PCH's key.
   // The same key is used by both the precompiled object, and objects using the
   // precompiled object. Any difference indicates out-of-date objects.
@@ -353,6 +366,7 @@ private:
   void initializeFlags();
   void readLinkRecords();
   bool readLinkSites(ArrayRef<uint8_t> payload);
+  bool readLinkPins(ArrayRef<uint8_t> payload);
   bool readCallOnlyRefs(ArrayRef<uint8_t> payload);
   void initializeDependencies();
   void initializeECThunks();
@@ -415,6 +429,7 @@ private:
     bool listsCallOnly = false;
     std::vector<LinkSite> sites;
     std::vector<std::pair<uint32_t, uint32_t>> callOnlyRefs;
+    std::vector<LinkPin> pins;
   };
   LinkRecords *linkRecords = nullptr;
 

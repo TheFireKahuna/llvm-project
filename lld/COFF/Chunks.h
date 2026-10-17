@@ -251,6 +251,14 @@ struct ImportSlot {
   Chunk *lookup = nullptr;
 };
 
+// The address a chunk must start at, modulo 2^log2, from the pins of the
+// link-only records.
+struct ChunkPin {
+  uint64_t residue;
+  uint8_t log2;
+  bool required;
+};
+
 // A chunk corresponding a section of an input file.
 class SectionChunk : public Chunk {
   // Identical COMDAT Folding feature accesses section internal data.
