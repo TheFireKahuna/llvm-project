@@ -2015,6 +2015,19 @@ void BitcodeFile::parse() {
     // FIXME: Check nodeduplicate
     comdat[i] =
         symtab.addComdat(this, saver.save(obj->getComdatTable()[i].first));
+  // Whether the module has a symbol named name. The target of a weak alias
+  // that is local to the module, such as the init function of an inline
+  // thread-local variable, is not one, and the alias is then a weak
+  // definition of the module.
+  std::optional<DenseSet<StringRef>> names;
+  auto isModuleSymbol = [&](StringRef name) {
+    if (!names) {
+      names.emplace();
+      for (const lto::InputFile::Symbol &objSym : obj->symbols())
+        names->insert(objSym.getName());
+    }
+    return names->contains(name);
+  };
   for (const lto::InputFile::Symbol &objSym : obj->symbols()) {
     StringRef symName = saver.save(objSym.getName());
     int comdatIndex = objSym.getComdatIndex();
@@ -2043,7 +2056,8 @@ void BitcodeFile::parse() {
         sym->isUsedInRegularObj = true;
     } else if (objSym.isCommon()) {
       sym = symtab.addCommon(this, symName, objSym.getCommonSize());
-    } else if (objSym.isWeak() && objSym.isIndirect()) {
+    } else if (objSym.isWeak() && objSym.isIndirect() &&
+               isModuleSymbol(objSym.getCOFFWeakExternalFallback())) {
       // Weak external.
       sym = symtab.addUndefined(symName, this, true);
       std::string fallback = std::string(objSym.getCOFFWeakExternalFallback());
