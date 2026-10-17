@@ -205,6 +205,10 @@ public:
   // value reads, a symbol for each by the import that preempted it.
   llvm::DenseMap<DefinedImportData *, DefinedRegular *> immutableCopies;
 
+  // The copies that accesses which only read may read directly where their
+  // load stays, by the symbol that the load's relocation names.
+  llvm::DenseMap<Symbol *, Defined *> immutableReads;
+
   // Under -import-slots, binds each import library's __imp_X to the image's
   // own definition of X, which beats it, as a definition in an ELF executable
   // beats a shared object's: the import-form references reach the definition

@@ -602,9 +602,13 @@ static void bindFusedArm64(SectionChunk *sc,
     const coff_relocation *loadRel = getPageOffsetAt(sc, f.load);
     if (!loadRel)
       continue;
+    // The page that adrp gives the load's register is what the accesses
+    // take the data's offset in; an access that only reads, which may read
+    // the copy instead, takes nothing from it.
     uint32_t load = read32le(&data[f.load]);
     unsigned reg = load & 31;
-    if (!isArm64PointerLoad(sc, *loadRel) || (load >> 5 & 31) != reg) {
+    if (!isArm64PointerLoad(sc, *loadRel) ||
+        (!f.valueRead && (load >> 5 & 31) != reg)) {
       mismatch(f.load);
       continue;
     }
@@ -615,11 +619,18 @@ static void bindFusedArm64(SectionChunk *sc,
     auto *li = dyn_cast_or_null<DefinedLocalImport>(
         file->getSymbol(loadRel->SymbolTableIndex));
     // A bypassed pointer's adrp and load compute the data's page and
-    // address, as relaxLocalImport rewrites them.
-    if (li && li->getChunk()->bypassed && !isZeroPointer(li))
+    // address, as relaxLocalImport rewrites them. Where the load stays, an
+    // access that only reads data that never changes may read the image's
+    // copy of it.
+    if (li && li->getChunk()->bypassed && !isZeroPointer(li)) {
       f.form = ObjFile::LinkFusion::Direct;
-    else
+    } else {
       keptLoads.insert(f.load);
+      if (f.use == ObjFile::LinkFusion::Access && f.valueRead &&
+          file->symtab.immutableReads.contains(
+              file->getSymbol(loadRel->SymbolTableIndex)))
+        f.form = ObjFile::LinkFusion::Direct;
+    }
     ++(f.use == ObjFile::LinkFusion::Access ? accesses : adds);
     direct += f.form == ObjFile::LinkFusion::Direct;
   }
@@ -693,10 +704,16 @@ void bindFusedCalls(SymbolTable &symtab) {
             mismatch(f.offset);
             continue;
           }
-          if (file->isCovered(sc) && reachesDirectly(file, *loadRel))
+          // One that only reads data that never changes may read the
+          // image's copy of it while the load stays for what else reads it.
+          if (file->isCovered(sc) && reachesDirectly(file, *loadRel)) {
             f.form = ObjFile::LinkFusion::Direct;
-          else
+          } else {
             keptLoads.insert(f.load);
+            if (f.valueRead && file->isCovered(sc) &&
+                symtab.immutableReads.contains(s))
+              f.form = ObjFile::LinkFusion::Direct;
+          }
           ++accesses;
           direct += f.form == ObjFile::LinkFusion::Direct;
           continue;
@@ -867,6 +884,24 @@ void writeFusedArm64(const SectionChunk *sc, uint8_t *buf) {
       write32le(buf + f.offset, nop);
     }
   }
+  // An access that only reads data that never changes, whose load stays,
+  // reads the image's copy of it from an offset from its own address, as
+  // lld/MachO makes a load after adrp and add one, where the copy is near
+  // enough and aligned; otherwise it reads through its register.
+  for (const ObjFile::LinkFusion &f : fusions) {
+    if (f.isLoad || f.use != ObjFile::LinkFusion::Access || !f.valueRead ||
+        f.form != ObjFile::LinkFusion::Direct)
+      continue;
+    const coff_relocation *rel = getPageOffsetAt(sc, f.load);
+    Defined *copy = sc->file->symtab.immutableReads.lookup(
+        sc->file->getSymbol(rel->SymbolTableIndex));
+    Ldr ldr;
+    if (!copy || !parseLdr(read32le(buf + f.offset), ldr))
+      continue;
+    ldr.offset += int64_t(copy->getRVA()) - int64_t(sc->getRVA() + f.offset);
+    if (isLiteralLdrEligible(ldr))
+      writeLiteralLdr(buf + f.offset, ldr);
+  }
   // A dead load whose accesses all take the data's offset in its page,
   // within their fields and aligned to their scale, becomes a no-operation,
   // its register keeping the page adrp gives it; otherwise the accesses keep
@@ -951,6 +986,8 @@ void addSiteEdits(const SectionChunk *sc, std::vector<RelaxEdit> &edits) {
     Defined *target = nullptr;
     if (auto *li = dyn_cast_or_null<DefinedLocalImport>(s))
       target = li->getTarget();
+    else if (f.valueRead)
+      target = file->symtab.immutableReads.lookup(s);
     switch (f.use) {
     case ObjFile::LinkFusion::Access: {
       if (f.form != ObjFile::LinkFusion::Direct)

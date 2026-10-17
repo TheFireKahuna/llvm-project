@@ -291,7 +291,8 @@ public:
   // A site the object's records describe as a load of an import pointer whose
   // register only reads of memory read, with its form, and on ARM64 the
   // distance in instructions back to the adrp that gives it the pointer's
-  // page.
+  // page; or, of form LinkSiteOther, as an access through such a load's
+  // register that only reads.
   struct LinkValueOnly {
     uint32_t section;
     uint32_t offset;
@@ -334,6 +335,10 @@ public:
     bool sib = false;
     // For an add, the constant it adds.
     int64_t addend = 0;
+    // For an access, whether it only reads memory, neither volatile nor
+    // atomic, so that it may read the image's own copy of data that never
+    // changes.
+    bool valueRead = false;
     // For a load, the length of the instruction that directly follows it, or
     // zero where none is known, and whether that one transfers control or may
     // fuse with a branch.
@@ -403,7 +408,8 @@ public:
     return linkRecords && !linkRecords->fusions.empty();
   }
 
-  // The loads the object describes as only read through.
+  // The loads the object describes as only read through, and the accesses it
+  // describes as only reading.
   ArrayRef<LinkValueOnly> getValueOnlyLoads() const {
     return linkRecords ? ArrayRef(linkRecords->valueOnlyLoads)
                        : ArrayRef<LinkValueOnly>();

@@ -1372,6 +1372,27 @@ void SymbolTable::readImmutableDataLocally() {
   };
   SmallVector<Site, 0> sites;
   SmallPtrSet<Copy *, 4> mismatched;
+  auto getCopy = [&](Symbol *s) -> Copy & {
+    auto [it, inserted] = copies.try_emplace(s, nullptr);
+    if (inserted) {
+      it->second = make<Copy>();
+      findCopy(s, *it->second);
+    }
+    return *it->second;
+  };
+  // The index of the relocation at offset in sc, or the number of its
+  // relocations if none is there.
+  auto findReloc = [](SectionChunk *sc, uint32_t offset) {
+    ArrayRef<coff_relocation> relocs = sc->getRelocs();
+    size_t i = llvm::partition_point(relocs,
+                                     [&](const coff_relocation &r) {
+                                       return r.VirtualAddress < offset;
+                                     }) -
+               relocs.begin();
+    return i != relocs.size() && relocs[i].VirtualAddress == offset
+               ? i
+               : relocs.size();
+  };
   for (ObjFile *file : ctx.objFileInstances) {
     ArrayRef<ObjFile::LinkValueOnly> loads = file->getValueOnlyLoads();
     if (&file->symtab != this || loads.empty())
@@ -1383,21 +1404,31 @@ void SymbolTable::readImmutableDataLocally() {
       if (!sc || !sc->live ||
           !(sc->header->Characteristics & IMAGE_SCN_CNT_CODE))
         continue;
-      ArrayRef<coff_relocation> relocs = sc->getRelocs();
-      size_t i = llvm::partition_point(relocs,
-                                       [&](const coff_relocation &r) {
-                                         return r.VirtualAddress < load.offset;
-                                       }) -
-                 relocs.begin();
-      if (i == relocs.size() || relocs[i].VirtualAddress != load.offset)
+      // An access that only reads, through the register of a load that
+      // stays, may read the copy directly: on x86-64 where its code may be
+      // resized, since a RIP-relative operand is longer than one through a
+      // register, and on ARM64, where nothing changes size, anywhere.
+      if (load.form == LinkSiteOther) {
+        const ObjFile::LinkFusion *f = file->getLinkFusion(sc, load.offset);
+        if (!f || f->use != ObjFile::LinkFusion::Access || !f->valueRead ||
+            (!file->isCovered(sc) && sc->getArch() != Triple::aarch64))
+          continue;
+        size_t i = findReloc(sc, f->load);
+        if (i == sc->getRelocs().size())
+          continue;
+        Symbol *s = file->getSymbol(sc->getRelocs()[i].SymbolTableIndex);
+        Copy &copy = getCopy(s);
+        if (!copy.copy)
+          continue;
+        immutableReads.try_emplace(s, copy.copy);
+        ++copy.sites;
         continue;
-      Symbol *s = file->getSymbol(relocs[i].SymbolTableIndex);
-      auto [it, inserted] = copies.try_emplace(s, nullptr);
-      if (inserted) {
-        it->second = make<Copy>();
-        findCopy(s, *it->second);
       }
-      Copy &copy = *it->second;
+      size_t i = findReloc(sc, load.offset);
+      if (i == sc->getRelocs().size())
+        continue;
+      Symbol *s = file->getSymbol(sc->getRelocs()[i].SymbolTableIndex);
+      Copy &copy = getCopy(s);
       if (!copy.copy)
         continue;
       size_t page;
@@ -1437,15 +1468,24 @@ void SymbolTable::readImmutableDataLocally() {
     }
   }
 
-  // A discarded copy is kept, with no symbol, while loads read it, and the
-  // imports whose addresses its words hold are kept with it.
+  // A discarded copy is kept, with no symbol, while loads or accesses read
+  // it, and the imports whose addresses its words hold are kept with it.
   for (auto [s, copy] : copies) {
     if (!copy->sites)
       continue;
-    Log(ctx) << "Keeping the copy of " << printSymbol(copy->copy) << " in "
-             << copy->copy->getFile() << " for " << copy->sites
-             << (copy->sites == 1 ? " value read" : " value reads");
     SectionChunk *sc = copy->copy->getChunk();
+    if (ctx.config.verbose) {
+      // Each word that holds an address in another image is a slot the
+      // loader binds by name.
+      size_t inPlace = llvm::count_if(sc->getRelocs(), [&](auto &rel) {
+        return getInPlaceImport(sc->file->getSymbol(rel.SymbolTableIndex));
+      });
+      Log(ctx) << "Keeping the copy of " << printSymbol(copy->copy) << " in "
+               << copy->copy->getFile() << " for " << copy->sites
+               << (copy->sites == 1 ? " value read" : " value reads")
+               << (inPlace ? ", binding " + Twine(inPlace) + " of its words"
+                           : Twine(""));
+    }
     if (sc->live)
       continue;
     sc->sym = nullptr;

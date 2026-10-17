@@ -980,12 +980,19 @@ bool ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
         uint64_t value = facts.getULEB128(factCur);
         if (!factCur)
           break;
-        // A distance no adrp can be at is a fact this linker cannot use.
+        // On an access that the site's facts already describe, the fact
+        // says that the access only reads. A load whose adrp is at a distance
+        // no field holds is kept with none, as one whose adrp the linker does
+        // not find, so that its pointer's other loads do not read the copy
+        // either.
         if (kind == LinkSiteValueOnly) {
-          if (value <= UINT16_MAX)
-            linkRecords->valueOnlyLoads.push_back(
-                {section, uint32_t(offset), uint16_t(value),
-                 static_cast<LinkSiteForm>(form)});
+          if (fusions.size() != siteFusions &&
+              fusions.back().use == LinkFusion::Access)
+            fusions.back().valueRead = !value;
+          linkRecords->valueOnlyLoads.push_back(
+              {section, uint32_t(offset),
+               uint16_t(value > UINT16_MAX ? 0 : value),
+               static_cast<LinkSiteForm>(form)});
           continue;
         }
         LinkFusion f{section, uint32_t(offset)};
