@@ -1770,9 +1770,99 @@ void LinkerDriver::maybeExportMinGWSymbols(const opt::InputArgList &args) {
   });
 }
 
-bool LinkerDriver::isLocalByVersionScript(StringRef name) {
+// Splits a symbol name of the form "f@V", or "f@@V" for f's default version,
+// into f, V and whether V is the default, as ld.lld parses a versioned name.
+// A Microsoft C++ name, which starts with '?', and a vectorcall name, whose
+// suffix is a size, carry no version.
+static std::optional<std::tuple<StringRef, StringRef, bool>>
+splitVersionedName(StringRef name) {
+  size_t at = name.find('@');
+  if (name.starts_with("?") || at == 0 || at == StringRef::npos)
+    return std::nullopt;
+  StringRef version = name.drop_front(at + 1);
+  bool isDefault = version.consume_front("@");
+  if (version.empty() || version.contains('@') ||
+      llvm::all_of(version, isDigit))
+    return std::nullopt;
+  return std::make_tuple(name.take_front(at), version, isDefault);
+}
+
+// A symbol whose name carries a version, as .symver gives it, is exported
+// under the name "f@V", as on ELF, where such a symbol exists to be exported.
+// A default version is also exported as plain f for GetProcAddress, defines f
+// in the image unless something else does, and the import library binds a
+// reference to f to the default version's name, so that a binary keeps the
+// version it was linked against when a later release changes the default,
+// and fails to load against a release without it.
+void LinkerDriver::addVersionedExports(SymbolTable &symtab) {
+  if (ctx.config.machine == I386)
+    return;
+  SmallVector<std::pair<Defined *, std::tuple<StringRef, StringRef, bool>>, 0>
+      versioned;
+  symtab.forEachSymbol([&](Symbol *s) {
+    if (auto *d = dyn_cast<DefinedRegular>(s))
+      if (auto v = splitVersionedName(d->getName()))
+        versioned.push_back({d, *v});
+  });
+  bool hasDefault = false;
+  // A global name of a named node of the version script gives an exported
+  // symbol that carries no version of its own that node as its default: its
+  // export keeps its name in the export table, and the import library binds
+  // it to the versioned name.
+  std::vector<VersionDefinition> &nodes = ctx.config.versionDefinitions;
+  for (size_t i = 0, e = symtab.exports.size(); i != e; ++i) {
+    Export &exp = symtab.exports[i];
+    if (!exp.sym || !exp.forwardTo.empty() || exp.noname ||
+        !exp.exportAs.empty() || splitVersionedName(exp.sym->getName()))
+      continue;
+    std::optional<VersionScope> scope = findVersionScope(exp.name);
+    if (!scope || scope->isLocal || nodes[scope->node].name.empty())
+      continue;
+    StringRef base = exp.extName.empty() ? exp.name : exp.extName;
+    Export versionedExport = exp;
+    versionedExport.extName =
+        saver().save(base + "@" + nodes[scope->node].name);
+    exp.isPrivate = true;
+    Export alias;
+    alias.name = base;
+    alias.exportAs = versionedExport.extName;
+    alias.data = exp.data;
+    symtab.exportAsAliases.push_back(alias);
+    symtab.exports.push_back(versionedExport);
+  }
+
+  for (auto &[d, v] : versioned) {
+    auto [base, version, isDefault] = v;
+    Export e;
+    e.name = d->getName();
+    e.extName = saver().save(base + "@" + version);
+    e.sym = symtab.addGCRoot(e.name);
+    e.data =
+        !(d->getChunk()->getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE);
+    e.source = ExportSource::Directives;
+    symtab.exports.push_back(e);
+    if (!isDefault)
+      continue;
+    Export plain = e;
+    plain.extName = base;
+    plain.isPrivate = true;
+    symtab.exports.push_back(plain);
+    Export alias;
+    alias.name = base;
+    alias.exportAs = e.extName;
+    alias.data = e.data;
+    symtab.exportAsAliases.push_back(alias);
+    symtab.alternateNames.insert({base, e.name});
+    hasDefault = true;
+  }
+  if (hasDefault)
+    symtab.resolveAlternateNames();
+}
+
+std::optional<LinkerDriver::VersionScope>
+LinkerDriver::findVersionScope(StringRef name) {
   if (ctx.config.versionDefinitions.empty())
-    return false;
+    return std::nullopt;
   if (auto it = versionNames.find(name); it != versionNames.end())
     return it->second;
   std::optional<std::string> demangled;
@@ -1787,8 +1877,13 @@ bool LinkerDriver::isLocalByVersionScript(StringRef name) {
       return it->second;
   for (const VersionPattern &pat : versionPatterns)
     if (pat.matcher.match(pat.isExternCpp ? getDemangled() : name))
-      return pat.isLocal;
-  return false;
+      return pat.scope;
+  return std::nullopt;
+}
+
+bool LinkerDriver::isLocalByVersionScript(StringRef name) {
+  std::optional<VersionScope> scope = findVersionScope(name);
+  return scope && scope->isLocal;
 }
 
 // The version script cannot export what the visibility mapping did not, so a
@@ -3181,6 +3276,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     // are chosen to be exported.
     maybeExportMinGWSymbols(args);
   }
+  ctx.forEachSymtab([&](SymbolTable &symtab) { addVersionedExports(symtab); });
 
   if (config->ltoValidateAllVtablesHaveTypeInfos)
     ltoValidateAllVtablesHaveTypeInfos(args);

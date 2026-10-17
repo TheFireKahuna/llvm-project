@@ -167,11 +167,20 @@ private:
 
   // Reads a GNU version script.
   void parseVersionScript(StringRef path);
+  // The pattern of the version script that decides the scope of the symbol
+  // Name, if one does.
+  struct VersionScope {
+    bool isLocal;
+    uint32_t node;
+  };
+  std::optional<VersionScope> findVersionScope(StringRef name);
   // Whether the version script makes the symbol Name local, which removes an
   // export that the visibility mapping or -export-all-symbols gave it.
   bool isLocalByVersionScript(StringRef name);
   // Warns of a global name of the version script that names no export.
   void checkVersionScriptGlobals();
+  // Exports the definitions whose names carry a version.
+  void addVersionedExports(SymbolTable &symtab);
 
   void parseCallGraphFile(StringRef path);
 
@@ -304,9 +313,9 @@ private:
   struct VersionPattern {
     SingleStringMatcher matcher;
     bool isExternCpp;
-    bool isLocal;
+    VersionScope scope;
   };
-  llvm::DenseMap<StringRef, bool> versionNames, versionCppNames;
+  llvm::DenseMap<StringRef, VersionScope> versionNames, versionCppNames;
   std::vector<VersionPattern> versionPatterns;
 
   // Parses a string in the form of "key=value" and check

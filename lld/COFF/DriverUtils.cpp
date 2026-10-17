@@ -418,19 +418,21 @@ void LinkerDriver::parseVersionScript(StringRef path) {
   // Names decide before wildcards, by the first node that assigns them, and
   // wildcards from the last node to the first, with "*" last, as in GNU ld.
   std::vector<VersionPattern> asterisks;
-  for (const VersionDefinition &v : defs)
+  for (uint32_t node = 0; node != defs.size(); ++node)
     for (bool isLocal : {false, true})
-      for (const SymbolVersion &pat : isLocal ? v.locals : v.globals)
+      for (const SymbolVersion &pat :
+           isLocal ? defs[node].locals : defs[node].globals)
         if (!pat.hasWildcard)
           (pat.isExternCpp ? versionCppNames : versionNames)
-              .try_emplace(pat.name, isLocal);
-  for (const VersionDefinition &v : llvm::reverse(defs))
+              .try_emplace(pat.name, VersionScope{isLocal, node});
+  for (uint32_t node = defs.size(); node-- != 0;)
     for (bool isLocal : {false, true})
-      for (const SymbolVersion &pat : isLocal ? v.locals : v.globals)
+      for (const SymbolVersion &pat :
+           isLocal ? defs[node].locals : defs[node].globals)
         if (pat.hasWildcard)
           (pat.name == "*" ? asterisks : versionPatterns)
-              .push_back(
-                  {SingleStringMatcher(pat.name), pat.isExternCpp, isLocal});
+              .push_back({SingleStringMatcher(pat.name), pat.isExternCpp,
+                          VersionScope{isLocal, node}});
   llvm::append_range(versionPatterns, asterisks);
 }
 
