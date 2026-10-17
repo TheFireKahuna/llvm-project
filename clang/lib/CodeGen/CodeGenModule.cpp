@@ -1292,6 +1292,14 @@ void CodeGenModule::Release() {
     KCFI->emitFacts();
   if (ABIContracts)
     ABIContracts->emit();
+  // On Windows Itanium and NT-POSIX a C++ object records the revision of the
+  // C++ ABI it was compiled for, which fixes how its type_info objects compare
+  // and how it passes and returns classes, so that a link of objects compiled
+  // for another revision fails.
+  if (LangOpts.CPlusPlus &&
+      getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      !LangOpts.isCompatibleWith(LangOptions::ClangABI::Ver23))
+    AddDetectMismatch("_WIN_ITANIUM_CXX_ABI", "1");
   emitAtAvailableLinkGuard();
   if (Context.getTargetInfo().getTriple().isWasm())
     EmitMainVoidAlias();

@@ -89,9 +89,10 @@ int use(Named *n, Sized *s, Grows *gr, CStruct *cs) {
 // uses; the layouts of Dyn and DynFinal, whose inline constructors may be
 // offered; the type of the inline variable.
 // CHECK: !abi.requirements = !{
-// CHECK: !llvm.linker.options = !{![[#P:]], ![[#PD:]]}
+// CHECK: !llvm.linker.options = !{![[#P:]], ![[#PD:]], ![[#ABI:]]}
 // CHECK-DAG: ![[#P]] = !{!"/abiprovide:{{[[:alnum:]_-]+,[[:alnum:]_-]+,[[:alnum:]_-]+,[[:alnum:]_-]+}}"}
 // CHECK-DAG: ![[#PD]] = !{!"/abiprovidedata:{{[[:alnum:]_-]+}}"}
+// CHECK-DAG: ![[#ABI]] = !{!"/FAILIFMISMATCH:\22_WIN_ITANIUM_CXX_ABI=1\22"}
 
 // CHECK-DAG: !{ptr @_ZN8ImportedC1Ev, ![[#IMPORTED:]], ![[#IMPL:]]}
 // CHECK-DAG: !{ptr @_ZN8Imported1fEv, ![[#IMPORTED]], ![[#IMPL]]}

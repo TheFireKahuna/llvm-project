@@ -36,6 +36,7 @@ int (*code_func())() { return imported_func; }
 int *pint = &imported_int;
 #endif
 
-// CHECK: !llvm.linker.options = !{![[#OPT:]]}
+// CHECK: !llvm.linker.options = !{![[#OPT:]], ![[#ABI:]]}
 // CHECK: ![[#OPT]] = !{!"/INCLUDE:__llvm_import_slots_v1"}
+// CHECK: ![[#ABI]] = !{!"/FAILIFMISMATCH:\22_WIN_ITANIUM_CXX_ABI=1\22"}
 // NONE-NOT: __llvm_import_slots_v1

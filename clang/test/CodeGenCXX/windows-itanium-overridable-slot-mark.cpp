@@ -28,9 +28,10 @@ namespace std {
 }
 } // namespace std
 
-// CHECK:     !llvm.linker.options = !{![[M0:[0-9]+]], ![[M1:[0-9]+]], ![[M2:[0-9]+]], ![[M3:[0-9]+]]}
+// CHECK:     !llvm.linker.options = !{![[M0:[0-9]+]], ![[M1:[0-9]+]], ![[M2:[0-9]+]], ![[M3:[0-9]+]], ![[ABI:[0-9]+]]}
 // CHECK-DAG: ![[M0]] = !{!"/OVERRIDABLE:_Znwy,0"}
 // CHECK-DAG: ![[M1]] = !{!"/OVERRIDABLE:_Znay,1,0"}
 // CHECK-DAG: ![[M2]] = !{!"/OVERRIDABLE:_ZdlPvySt11align_val_t,9,7,1"}
 // CHECK-DAG: ![[M3]] = !{!"/OVERRIDABLE:_ZSt19is_debugger_presentv,21"}
+// CHECK-DAG: ![[ABI]] = !{!"/FAILIFMISMATCH:\22_WIN_ITANIUM_CXX_ABI=1\22"}
 // CHECK-NOT: __llvm_overrides_v1
