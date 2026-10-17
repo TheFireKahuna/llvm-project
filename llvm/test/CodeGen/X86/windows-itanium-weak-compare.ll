@@ -6,8 +6,9 @@
 ; On Windows Itanium and NT-POSIX the import pointer of a symbol not known to
 ; be imported, extern_weak or not, is loaded into a register of its own before
 ; it is tested, not folded into the compare, so that the linker can replace the
-; load with the symbol's address or zero. A call through the pointer keeps its
-; memory operand, which the linker rewrites as well. In f, the second compare
+; load with the symbol's address or zero. A call through the pointer goes
+; through the register the test loaded, padded so that the linker can rewrite
+; it as well. In f, the second compare
 ; is folded at instruction selection, the first by the peephole optimizer. A
 ; known import's pointer is folded, as MSVC folds it. Nor is the load narrowed
 ; where only part of the address is used.
@@ -22,7 +23,8 @@ define i32 @f() {
 ; CHECK-LABEL: f:
 ; CHECK:         movq __imp_weakfn(%rip), %rax
 ; CHECK-NEXT:    testq %rax, %rax
-; CHECK:         callq *__imp_weakfn(%rip)
+; CHECK:         .linkfusedcall {{.*}}, %rax
+; CHECK:         callq *%rax
 ; CHECK:         movq __imp_weakvar(%rip), %rax
 ; CHECK-NEXT:    testq %rax, %rax
 ; MINGW-LABEL: f:

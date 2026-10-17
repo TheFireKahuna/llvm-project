@@ -22,6 +22,7 @@ namespace {
 namespace llvm {
 class MCCodeEmitter;
 class MCStreamer;
+class X86MachineFunctionInfo;
 class X86Subtarget;
 class TargetMachine;
 
@@ -57,6 +58,14 @@ private:
   };
   DenseMap<MCSection *, std::vector<ImportCallInfo>>
       SectionToImportedFunctionCalls;
+
+  // The function being emitted, if the import fusion pass described calls in
+  // it, and the labels of the loads those calls read.
+  const X86MachineFunctionInfo *ImportFusion = nullptr;
+  DenseMap<const MachineInstr *, MCSymbol *> ImportFusionLabels;
+  MCSymbol *getImportFusionLabel(const MachineInstr *Load);
+  void emitImportFusion(const MachineInstr &MI);
+  void emitImportFusionTail(const MachineInstr &MI);
 
   // This utility class tracks the length of a stackmap instruction's 'shadow'.
   // It is used by the X86AsmPrinter to ensure that the stackmap shadow

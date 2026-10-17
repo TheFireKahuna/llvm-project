@@ -93,6 +93,10 @@ bool X86AsmPrinter::runOnMachineFunction(MachineFunction &MF) {
 
   IndCSPrefix = M->getModuleFlag("indirect_branch_cs_prefix");
 
+  const auto *FI = MF.getInfo<X86MachineFunctionInfo>();
+  ImportFusion = FI->getImportFusedLoads().empty() ? nullptr : FI;
+  ImportFusionLabels.clear();
+
   SetupMachineFunction(MF);
 
   if (Subtarget->isTargetCOFF()) {
@@ -115,8 +119,58 @@ bool X86AsmPrinter::runOnMachineFunction(MachineFunction &MF) {
 
   IndCSPrefix = false;
 
+  ImportFusion = nullptr;
+
   // We didn't modify anything.
   return false;
+}
+
+MCSymbol *X86AsmPrinter::getImportFusionLabel(const MachineInstr *Load) {
+  MCSymbol *&Label = ImportFusionLabels[Load];
+  if (!Label)
+    Label = createTempSymbol("fused");
+  return Label;
+}
+
+// Tells the linker about the next instruction, a call through a register
+// that a load filled with an import pointer, or such a load, which a label
+// names for the calls. The call takes as many bytes as the same call through
+// the pointer, which the linker may make it, or a direct call: segment
+// overrides, which a call through a register ignores, come first, so that it
+// pushes the same return address.
+void X86AsmPrinter::emitImportFusion(const MachineInstr &MI) {
+  auto Call = ImportFusion->getImportFusedCalls().find(&MI);
+  if (Call != ImportFusion->getImportFusedCalls().end()) {
+    auto [Load, Reg] = Call->second;
+    OutStreamer->emitCOFFLinkFusedCall(getImportFusionLabel(Load), Reg);
+    if (MI.getOpcode() == X86::CALL64r) {
+      // call r64 takes REX.B for the next eight registers, and REX2 for the
+      // rest.
+      unsigned Enc = Subtarget->getRegisterInfo()->getEncodingValue(Reg);
+      unsigned Size = Enc >= 16 ? 4 : Enc >= 8 ? 3 : 2;
+      for (unsigned I = Size; I != 6; ++I)
+        EmitAndCountInstruction(MCInstBuilder(X86::CS_PREFIX));
+    }
+    return;
+  }
+  auto Load = ImportFusion->getImportFusedLoads().find(&MI);
+  if (Load == ImportFusion->getImportFusedLoads().end())
+    return;
+  OutStreamer->emitLabel(getImportFusionLabel(&MI));
+  if (Load->second)
+    OutStreamer->emitCOFFLinkFusedRead();
+}
+
+// A jump through a register that the linker may make the same jump through
+// an import pointer, or a direct one, takes as many bytes as the jump through
+// the pointer, REX.W included: the unwinder finds an epilogue by the jump
+// that ends it, which must therefore begin where it begins, so int3 follows.
+void X86AsmPrinter::emitImportFusionTail(const MachineInstr &MI) {
+  if (MI.getOpcode() != X86::TAILJMPr64_REX ||
+      !ImportFusion->getImportFusedCalls().count(&MI))
+    return;
+  for (unsigned I = 0; I != 4; ++I)
+    EmitAndCountInstruction(MCInstBuilder(X86::INT3));
 }
 
 void X86AsmPrinter::emitFunctionBodyStart() {

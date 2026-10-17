@@ -378,6 +378,18 @@ public:
 
 FunctionPass *createX86WinEHUnwindV2LegacyPass();
 
+/// Folds each load of an import pointer back into the calls through the
+/// register it fills, for Windows Itanium and NT-POSIX, whose linker chooses
+/// between a call through the pointer and one through the register.
+class X86WindowsImportFusionPass
+    : public OptionalPassInfoMixin<X86WindowsImportFusionPass> {
+public:
+  PreservedAnalyses run(MachineFunction &MF,
+                        MachineFunctionAnalysisManager &MFAM);
+};
+
+FunctionPass *createX86WindowsImportFusionLegacyPass();
+
 /// The pass transforms load/store <256 x i32> to AMX load/store intrinsics
 /// or split the data to two <128 x i32>.
 class X86LowerAMXTypePass : public RequiredPassInfoMixin<X86LowerAMXTypePass> {
@@ -530,6 +542,7 @@ void initializeX86SpeculativeLoadHardeningLegacyPass(PassRegistry &);
 void initializeX86SuppressAPXForRelocationLegacyPass(PassRegistry &);
 void initializeX86TileConfigLegacyPass(PassRegistry &);
 void initializeX86WinEHUnwindV2LegacyPass(PassRegistry &);
+void initializeX86WindowsImportFusionLegacyPass(PassRegistry &);
 void initializeX86PreLegalizerCombinerLegacyPass(PassRegistry &);
 void initializeX86PostLegalizerCombinerLegacyPass(PassRegistry &);
 void initializeX86WinEHUnwindV3Pass(PassRegistry &);

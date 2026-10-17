@@ -2292,6 +2292,9 @@ void X86AsmPrinter::emitInstruction(const MachineInstr *MI) {
   if (OutStreamer->isVerboseAsm())
     addConstantComments(MI, *OutStreamer);
 
+  if (ImportFusion)
+    emitImportFusion(*MI);
+
   // Add a comment about EVEX compression
   if (TM.Options.MCOptions.ShowMCEncoding) {
     if (MI->getAsmPrinterFlags() & X86::AC_EVEX_2_LEGACY)
@@ -2690,6 +2693,8 @@ void X86AsmPrinter::emitInstruction(const MachineInstr *MI) {
 
   if (MI->isCall()) {
     emitCallInstruction(TmpInst);
+    if (ImportFusion && IsTailJump)
+      emitImportFusionTail(*MI);
     // Since tail calls transfer control without leaving a stack frame, there is
     // never a need for NOP padding tail calls.
     if (!IsTailJump)

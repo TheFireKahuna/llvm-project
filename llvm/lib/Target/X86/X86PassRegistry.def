@@ -70,6 +70,7 @@ MACHINE_FUNCTION_PASS("x86-slh", X86SpeculativeLoadHardeningPass())
 MACHINE_FUNCTION_PASS("x86-suppress-apx-for-relocation", X86SuppressAPXForRelocationPass())
 MACHINE_FUNCTION_PASS("x86-tile-config", X86TileConfigPass())
 MACHINE_FUNCTION_PASS("x86-wineh-unwindv2", X86WinEHUnwindV2Pass())
+MACHINE_FUNCTION_PASS("x86-windows-import-fusion", X86WindowsImportFusionPass())
 #undef MACHINE_FUNCTION_PASS
 
 #ifndef DUMMY_MACHINE_FUNCTION_PASS

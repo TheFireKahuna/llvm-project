@@ -1,0 +1,217 @@
+# RUN: llc -mtriple=x86_64-unknown-windows-itanium \
+# RUN:   -start-before=x86-windows-import-fusion -o - %s | FileCheck %s
+# RUN: llc -mtriple=x86_64-unknown-windows-itanium \
+# RUN:   -start-before=x86-windows-import-fusion -filetype=obj -o - %s | \
+# RUN:   llvm-objdump -d - | FileCheck %s --check-prefix=OBJ
+# RUN: llc -mtriple=x86_64-unknown-windows-itanium \
+# RUN:   -run-pass=x86-windows-import-fusion -verify-machineinstrs -o - %s | \
+# RUN:   FileCheck %s --check-prefix=MIR
+# RUN: llc -mtriple=x86_64-unknown-windows-itanium \
+# RUN:   -passes=x86-windows-import-fusion -o - %s | \
+# RUN:   FileCheck %s --check-prefix=MIR
+
+--- |
+  declare dllimport void @f()
+  declare dllimport void @g()
+
+  define void @pointless() { ret void }
+  define void @shared() { ret void }
+  define void @clobbered() { ret void }
+  define void @preserved() { ret void }
+  define void @block_end() { ret void }
+  define void @r9() { ret void }
+  define void @guarded_jump() { ret void }
+...
+---
+# The load serves one call, in its block, so holding the pointer saves
+# nothing: the load is folded into the call, which is not described.
+# CHECK-LABEL: pointless:
+# CHECK-NOT:     movq
+# CHECK-NOT:     .linkfused
+# CHECK:         callq *__imp_f(%rip)
+# CHECK-NEXT:    retq
+# MIR-LABEL: name: pointless
+# MIR-NOT:     MOV64rm
+# MIR:         CALL64m $rip, 1, $noreg, target-flags(x86-dllimport) @f, $noreg, csr_win64, implicit $rsp, implicit $ssp, implicit-def $rsp, implicit-def $ssp :: (load (s64) from got)
+# MIR-NEXT:    RET64
+name: pointless
+tracksRegLiveness: true
+body: |
+  bb.0:
+    $rbx = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @f, $noreg :: (load (s64) from got)
+    CALL64r $rbx, csr_win64, implicit $rsp, implicit $ssp, implicit-def $rsp, implicit-def $ssp
+    RET64
+...
+---
+# The load serves two calls in its block, which save a load each where f is
+# in another image, so both are described, padded to six bytes, and noted as
+# calls to f.
+# CHECK-LABEL: shared:
+# CHECK:       [[LOAD:\.Lfused[0-9]+]]:
+# CHECK-NEXT:    .linkfusedread
+# CHECK-NEXT:    movq __imp_f(%rip), %rbx
+# CHECK-NEXT:    .linkfusedcall [[LOAD]], %rbx
+# CHECK-NEXT:    cs
+# CHECK-NEXT:    cs
+# CHECK-NEXT:    cs
+# CHECK-NEXT:    cs
+# CHECK-NEXT:    callq *%rbx
+# CHECK-NEXT:    .linkfusedcall [[LOAD]], %rbx
+# CHECK-NEXT:    cs
+# CHECK-NEXT:    cs
+# CHECK-NEXT:    cs
+# CHECK-NEXT:    cs
+# CHECK-NEXT:    callq *%rbx
+# MIR-LABEL: name: shared
+# MIR:       calledGlobals:
+# MIR-NEXT:    - bb: 0
+# MIR-NEXT:      offset: 1
+# MIR-NEXT:      callee: f
+# MIR-NEXT:      flags: 17
+# MIR-NEXT:    - bb: 0
+# MIR-NEXT:      offset: 2
+# MIR-NEXT:      callee: f
+# MIR-NEXT:      flags: 17
+name: shared
+tracksRegLiveness: true
+body: |
+  bb.0:
+    $rbx = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @f, $noreg :: (load (s64) from got)
+    CALL64r $rbx, csr_win64, implicit $rsp, implicit $ssp, implicit-def $rsp, implicit-def $ssp
+    CALL64r $rbx, csr_win64, implicit $rsp, implicit $ssp, implicit-def $rsp, implicit-def $ssp
+    RET64
+...
+---
+# The call to g clobbers rax, so the call through f's pointer is not described.
+# CHECK-LABEL: clobbered:
+# CHECK-NOT:     .linkfused
+# CHECK:         retq
+name: clobbered
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    $rax = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @f, $noreg :: (load (s64) from got)
+    TEST64rr killed $rax, $rax, implicit-def $eflags
+    JCC_1 %bb.2, 4, implicit $eflags
+  bb.1:
+    successors: %bb.2
+    CALL64m $rip, 1, $noreg, target-flags(x86-dllimport) @g, $noreg, csr_win64, implicit $rsp, implicit $ssp, implicit-def $rsp, implicit-def $ssp :: (load (s64) from got)
+    CALL64m $rip, 1, $noreg, target-flags(x86-dllimport) @f, $noreg, csr_win64, implicit $rsp, implicit $ssp, implicit-def $rsp, implicit-def $ssp :: (load (s64) from got)
+  bb.2:
+    RET64
+...
+---
+# rbx survives the call to g, so the call through f's pointer becomes a call
+# through rbx, which makes rbx live into its block and no longer killed by the
+# test.
+# CHECK-LABEL: preserved:
+# CHECK:       [[LOAD:\.Lfused[0-9]+]]:
+# CHECK-NEXT:    movq __imp_f(%rip), %rbx
+# CHECK:         callq *__imp_g(%rip)
+# CHECK-NEXT:    .linkfusedcall [[LOAD]], %rbx
+# CHECK-NEXT:    cs
+# CHECK-NEXT:    cs
+# CHECK-NEXT:    cs
+# CHECK-NEXT:    cs
+# CHECK-NEXT:    callq *%rbx
+# MIR-LABEL: name: preserved
+# MIR:       calledGlobals:
+# MIR-NEXT:    - bb: 1
+# MIR-NEXT:      offset: 1
+# MIR-NEXT:      callee: f
+# MIR:         TEST64rr $rbx, $rbx, implicit-def $eflags
+# MIR:       bb.1:
+# MIR:         liveins: $rbx
+# MIR:         CALL64r $rbx, csr_win64, implicit $rsp, implicit $ssp, implicit-def $rsp, implicit-def $ssp{{$}}
+name: preserved
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    $rbx = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @f, $noreg :: (load (s64) from got)
+    TEST64rr killed $rbx, $rbx, implicit-def $eflags
+    JCC_1 %bb.2, 4, implicit $eflags
+  bb.1:
+    successors: %bb.2
+    CALL64m $rip, 1, $noreg, target-flags(x86-dllimport) @g, $noreg, csr_win64, implicit $rsp, implicit $ssp, implicit-def $rsp, implicit-def $ssp :: (load (s64) from got)
+    CALL64m $rip, 1, $noreg, target-flags(x86-dllimport) @f, $noreg, csr_win64, implicit $rsp, implicit $ssp, implicit-def $rsp, implicit-def $ssp :: (load (s64) from got)
+  bb.2:
+    RET64
+...
+---
+# A load the linker may dispose of needs the instruction after it in its
+# block, so it moves back over one that neither reads nor writes its register.
+# CHECK-LABEL: block_end:
+# CHECK:       [[LOAD:\.Lfused[0-9]+]]:
+# CHECK-NEXT:    .linkfusedread
+# CHECK-NEXT:    movq __imp_f(%rip), %rbx
+# CHECK-NEXT:    movl %ecx, %esi
+# CHECK:         .linkfusedcall [[LOAD]], %rbx
+# CHECK:         callq *%rbx
+# MIR-LABEL: name: block_end
+# MIR:         $rbx = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @f, $noreg :: (load (s64) from got)
+# MIR-NEXT:    $esi = MOV32rr $ecx
+# MIR:         CALL64r $rbx, csr_win64
+name: block_end
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1
+    liveins: $ecx
+    $esi = MOV32rr $ecx
+    $rbx = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @f, $noreg :: (load (s64) from got)
+  bb.1:
+    successors: %bb.1, %bb.2
+    liveins: $rbx, $esi
+    CALL64r $rbx, csr_win64, implicit $rsp, implicit $ssp, implicit-def $rsp, implicit-def $ssp
+    $esi = DEC32r killed $esi, implicit-def $eflags
+    JCC_1 %bb.1, 5, implicit $eflags
+  bb.2:
+    RET64
+...
+---
+# A call through one of the next eight registers takes REX.B, and so three
+# overrides.
+# OBJ-LABEL: <r9>:
+# OBJ:         4c 8b 0d 00 00 00 00 movq
+# OBJ-NEXT:    2e 2e 2e 41 ff d1 callq *%r9
+name: r9
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1
+    $r9 = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @f, $noreg :: (load (s64) from got)
+  bb.1:
+    liveins: $r9
+    CALL64r $r9, csr_win64, implicit $rsp, implicit $ssp, implicit-def $rsp, implicit-def $ssp
+    RET64
+...
+---
+# A guarded tail jump through the pointer becomes REX.W jmp through the
+# register the test loaded, which the unwinder takes to end an epilogue, and
+# int3 pads it to the seven bytes of the jump through the pointer.
+# CHECK-LABEL: guarded_jump:
+# CHECK:         .linkfusedcall {{\.Lfused[0-9]+}}, %r11
+# CHECK-NEXT:    rex64 jmpq *%r11
+# OBJ-LABEL: <guarded_jump>:
+# OBJ:         49 ff e3 jmpq *%r11
+# OBJ-NEXT:    cc int3
+# OBJ-NEXT:    cc int3
+# OBJ-NEXT:    cc int3
+# OBJ-NEXT:    cc int3
+# MIR-LABEL: name: guarded_jump
+# MIR:         TAILJMPr64_REX $r11, csr_win64, implicit $rsp, implicit $ssp
+name: guarded_jump
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    $r11 = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @f, $noreg :: (load (s64) from got)
+    TEST64rr killed $r11, $r11, implicit-def $eflags
+    JCC_1 %bb.2, 4, implicit $eflags
+  bb.1:
+    TAILJMPm64_REX $rip, 1, $noreg, target-flags(x86-dllimport) @f, $noreg, csr_win64, implicit $rsp, implicit $ssp :: (load (s64) from got)
+  bb.2:
+    RET64
+...

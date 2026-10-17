@@ -107,6 +107,7 @@ extern "C" LLVM_C_ABI void LLVMInitializeX86Target() {
   initializeX86DynAllocaExpanderLegacyPass(PR);
   initializeX86SuppressAPXForRelocationLegacyPass(PR);
   initializeX86WinEHUnwindV2LegacyPass(PR);
+  initializeX86WindowsImportFusionLegacyPass(PR);
   initializeX86PreLegalizerCombinerLegacyPass(PR);
   initializeX86PostLegalizerCombinerLegacyPass(PR);
   initializeX86WinEHUnwindV3Pass(PR);
@@ -581,6 +582,13 @@ void X86PassConfig::addPreEmitPass() {
 void X86PassConfig::addPreEmitPass2() {
   const Triple &TT = TM->getTargetTriple();
   const MCAsmInfo &MAI = TM->getMCAsmInfo();
+
+  // Late enough that no pass hoists or unfolds a load again, and that a tail
+  // call is a jump rather than one of the pseudo-instructions that becomes
+  // one; before the passes that harden the loads and calls it leaves.
+  if (getOptLevel() != CodeGenOptLevel::None && TT.isX86_64() &&
+      TT.isWindowsItaniumOrNTPOSIXEnvironment())
+    addPass(createX86WindowsImportFusionLegacyPass());
 
   // The X86 Speculative Execution Pass must run after all control
   // flow graph modifying passes. As a result it was listed to run right before

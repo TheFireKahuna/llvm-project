@@ -159,6 +159,14 @@ class X86MachineFunctionInfo : public MachineFunctionInfo {
 
   MachineInstr *StackPtrSaveMI = nullptr;
 
+  /// The calls and jumps through registers that the import fusion pass
+  /// describes to the linker, each with the load of an import pointer that
+  /// filled its register and that register, and those loads, each with
+  /// whether only such calls read it.
+  DenseMap<const MachineInstr *, std::pair<const MachineInstr *, MCRegister>>
+      ImportFusedCalls;
+  DenseMap<const MachineInstr *, bool> ImportFusedLoads;
+
   std::optional<int> SwiftAsyncContextFrameIdx;
 
   // Preallocated fields are only used during isel.
@@ -294,6 +302,22 @@ public:
 
   void setStackPtrSaveMI(MachineInstr *MI) { StackPtrSaveMI = MI; }
   MachineInstr *getStackPtrSaveMI() const { return StackPtrSaveMI; }
+
+  void addImportFusedCall(const MachineInstr *Call, const MachineInstr *Load,
+                          MCRegister Reg) {
+    ImportFusedCalls.try_emplace(Call, Load, Reg);
+  }
+  void addImportFusedLoad(const MachineInstr *Load, bool OnlyCalls) {
+    ImportFusedLoads.try_emplace(Load, OnlyCalls);
+  }
+  const DenseMap<const MachineInstr *,
+                 std::pair<const MachineInstr *, MCRegister>> &
+  getImportFusedCalls() const {
+    return ImportFusedCalls;
+  }
+  const DenseMap<const MachineInstr *, bool> &getImportFusedLoads() const {
+    return ImportFusedLoads;
+  }
 
   std::optional<int> getSwiftAsyncContextFrameIdx() const {
     return SwiftAsyncContextFrameIdx;
