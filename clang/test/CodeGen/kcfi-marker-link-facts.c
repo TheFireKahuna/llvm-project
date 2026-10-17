@@ -1,8 +1,8 @@
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fno-auto-import -fno-plt -mdefault-visibility-export-mapping=explicit -fsanitize=kcfi -emit-llvm -o - %s | FileCheck %s
-// RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -fno-auto-import -mdefault-visibility-export-mapping=explicit -fsanitize=kcfi -emit-llvm -o - %s | FileCheck %s
-// RUN: %clang_cc1 -triple x86_64-pc-windows-ntposix -fno-auto-import -fno-plt -mdefault-visibility-export-mapping=explicit -fsanitize=kcfi -emit-llvm -o - %s | FileCheck %s
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fno-auto-import -fno-plt -mdefault-visibility-export-mapping=explicit -fsanitize=kcfi -emit-llvm -x c++ -o - %s | FileCheck %s
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fno-function-type-prefix -fno-auto-import -fno-plt -mdefault-visibility-export-mapping=explicit -fsanitize=kcfi -emit-llvm -o - %s | FileCheck %s --check-prefix=NOMARKER --implicit-check-not=__kcfi_inflow_ --implicit-check-not=__kcfi_param_
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fno-plt -mdefault-visibility-export-mapping=explicit -fsanitize=kcfi -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -mdefault-visibility-export-mapping=explicit -fsanitize=kcfi -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple x86_64-pc-windows-ntposix -fno-plt -mdefault-visibility-export-mapping=explicit -fsanitize=kcfi -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fno-plt -mdefault-visibility-export-mapping=explicit -fsanitize=kcfi -emit-llvm -x c++ -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fno-function-type-prefix -fno-plt -mdefault-visibility-export-mapping=explicit -fsanitize=kcfi -emit-llvm -o - %s | FileCheck %s --check-prefix=NOMARKER --implicit-check-not=__kcfi_inflow_ --implicit-check-not=__kcfi_param_
 // RUN: %clang_cc1 -triple x86_64-unknown-linux-gnu -ffunction-type-prefix -fsanitize=kcfi -emit-llvm -Wno-ignored-attributes -o - %s | FileCheck %s --check-prefix=ELF --implicit-check-not=kcfi_import --implicit-check-not=kcfi.dynamic --implicit-check-not=__kcfi_inflow_ --implicit-check-not=__kcfi_param_
 
 /// Under the KCFI marker scheme, a C function that may be foreign code the

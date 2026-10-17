@@ -1,6 +1,6 @@
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fms-extensions -fno-auto-import -fno-plt -mdefault-visibility-export-mapping=explicit -fsanitize=kcfi -emit-llvm -o - %s | FileCheck %s
-// RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -fms-extensions -fno-auto-import -mdefault-visibility-export-mapping=explicit -fsanitize=kcfi -emit-llvm -o - %s | FileCheck %s
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fms-extensions -fno-auto-import -fno-plt -mdefault-visibility-export-mapping=explicit -fsanitize=kcfi -flto -fwhole-program-vtables -emit-llvm -o - %s | FileCheck %s --check-prefix=LTO
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fms-extensions -fno-plt -mdefault-visibility-export-mapping=explicit -fsanitize=kcfi -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -fms-extensions -mdefault-visibility-export-mapping=explicit -fsanitize=kcfi -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fms-extensions -fno-plt -mdefault-visibility-export-mapping=explicit -fsanitize=kcfi -flto -fwhole-program-vtables -emit-llvm -o - %s | FileCheck %s --check-prefix=LTO
 
 /// A virtual call opens the type of its slot only when the class it is made
 /// through, or one of its bases, says that another image or foreign code may

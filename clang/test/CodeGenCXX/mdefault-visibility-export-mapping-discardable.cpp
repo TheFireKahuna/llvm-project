@@ -1,12 +1,12 @@
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fno-auto-import \
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium \
 // RUN:   -fdeclspec -mdefault-visibility-export-mapping=explicit \
 // RUN:   -emit-llvm -o - %s | \
 // RUN:   FileCheck --check-prefixes=CHECK,COFF %s
-// RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -fno-auto-import \
+// RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium \
 // RUN:   -fdeclspec -mdefault-visibility-export-mapping=all \
 // RUN:   -emit-llvm -o - %s | \
 // RUN:   FileCheck --check-prefixes=CHECK,COFF %s
-// RUN: %clang_cc1 -triple x86_64-pc-windows-ntposix -fno-auto-import \
+// RUN: %clang_cc1 -triple x86_64-pc-windows-ntposix \
 // RUN:   -fdeclspec -mdefault-visibility-export-mapping=explicit \
 // RUN:   -emit-llvm -o - %s | \
 // RUN:   FileCheck --check-prefixes=CHECK,COFF %s

@@ -15,7 +15,7 @@
 // RUN:       --implicit-check-not=-disable-red-zone --implicit-check-not=-fno-plt
 // CC1:         "-cc1" "-triple" "{{x86_64|aarch64}}-pc-windows-ntposix"
 // CC1-DAG:     "-mdefault-visibility-export-mapping=explicit"
-// CC1-DAG:     "-fno-auto-import"
+// CC1-DAG:     "-pic-level" "2"
 // CC1-DAG:     "-Wget-proc-address-type"
 // CC1-X64-DAG: "-fno-plt"
 // CC1-DAG:     "-D_LIBC_DLL"

@@ -1,9 +1,9 @@
 // RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium \
-// RUN:   -fno-function-type-prefix -fno-auto-import \
+// RUN:   -fno-function-type-prefix \
 // RUN:   -fno-plt -fcxx-exceptions -fexceptions -emit-llvm -o - %s \
 // RUN:   | FileCheck --check-prefixes=CHECK,ITANIUM %s
 // RUN: %clang_cc1 -triple aarch64-pc-windows-ntposix \
-// RUN:   -fno-function-type-prefix -fno-auto-import \
+// RUN:   -fno-function-type-prefix \
 // RUN:   -fno-plt -fcxx-exceptions -fexceptions -emit-llvm -o - %s \
 // RUN:   | FileCheck --check-prefixes=CHECK,NTPOSIX %s
 // RUN: %clang_cc1 -triple x86_64-pc-windows-msvc -fno-plt -emit-llvm -o - %s \
@@ -13,15 +13,15 @@
 // RUN:   -fexceptions -emit-llvm -o - %s | FileCheck --check-prefix=PLT %s \
 // RUN:   --implicit-check-not=dllimport
 // RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium \
-// RUN:   -fno-function-type-prefix -fno-auto-import \
+// RUN:   -fno-function-type-prefix \
 // RUN:   -fcxx-exceptions \
 // RUN:   -fexceptions -emit-llvm -o - %s | FileCheck --check-prefix=PLT %s
 // RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium \
-// RUN:   -fno-function-type-prefix -fno-auto-import \
+// RUN:   -fno-function-type-prefix \
 // RUN:   -fno-plt -fvisibility=hidden -emit-llvm -o - %s -DNO_ITANIUM \
 // RUN:   | FileCheck %s
 // RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium \
-// RUN:   -fno-function-type-prefix -fno-auto-import \
+// RUN:   -fno-function-type-prefix \
 // RUN:   -fno-plt -fvisibility=hidden -fapply-global-visibility-to-externs \
 // RUN:   -emit-llvm -o - %s -DNO_ITANIUM | FileCheck --check-prefix=EXTERNS %s
 

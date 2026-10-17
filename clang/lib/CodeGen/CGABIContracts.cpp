@@ -569,7 +569,8 @@ void CodeGenABIContracts::emit() {
     else if (GV->isDeclarationForLinker())
       ImportForm = D->hasAttr<DLLImportAttr>() ||
                    CGM.isMappedImportVisibility(D->getLinkageAndVisibility()) ||
-                   (VD && !GV->isDSOLocal() && CGM.getCodeGenOpts().AutoImport);
+                   (VD && !GV->isDSOLocal() &&
+                    !CGM.getCodeGenOpts().DirectAccessExternalData);
     else
       ImportForm = VD && GV->isWeakForLinker() && GV->hasDefaultVisibility() &&
                    !GV->isDSOLocal();

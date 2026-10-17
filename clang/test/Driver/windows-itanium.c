@@ -8,7 +8,7 @@
 // CC1-X64:    "-cc1" "-triple" "x86_64-unknown-windows-itanium"
 // CC1-A64:    "-cc1" "-triple" "aarch64-unknown-windows-itanium"
 // CC1-DAG:    "-mdefault-visibility-export-mapping=explicit"
-// CC1-DAG:    "-fno-auto-import"
+// CC1-DAG:    "-pic-level" "2"
 // CC1-DAG:    "-Wget-proc-address-type"
 // CC1-X64-DAG: "-fno-plt"
 // CC1-DAG:    "-D_DLL"
@@ -56,10 +56,20 @@
 // RUN:       --implicit-check-not=-mdefault-visibility-export-mapping=explicit
 // MAPPING: "-mdefault-visibility-export-mapping=none"
 
-// -fplt, -fno-plt and -fauto-import replace the defaults.
+// External data is reached through its import pointer, the default for the
+// PIC these targets always are, unless -fdirect-access-external-data says
+// otherwise; MinGW's auto-import does not apply.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fdirect-access-external-data 2>&1 \
+// RUN:   | FileCheck --check-prefix=DIRECT %s
+// RUN: not %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fauto-import 2>&1 | FileCheck --check-prefix=AUTO %s
+// DIRECT: "-fdirect-access-external-data"
+// AUTO:   error: unsupported option '-fauto-import' for target 'x86_64-unknown-windows-itanium'
+
+// -fplt and -fno-plt replace the default.
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s -fplt \
-// RUN:     -fauto-import 2>&1 | FileCheck --check-prefix=PLT %s \
-// RUN:       --implicit-check-not=-fno-plt --implicit-check-not=-fno-auto-import
+// RUN:     2>&1 | FileCheck --check-prefix=PLT %s --implicit-check-not=-fno-plt
 // RUN: %clang -### --target=aarch64-unknown-windows-itanium -c %s -fno-plt \
 // RUN:     2>&1 | FileCheck --check-prefix=NO-PLT %s
 // PLT:    "-cc1"

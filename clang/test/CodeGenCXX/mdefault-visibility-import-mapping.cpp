@@ -1,17 +1,17 @@
 // RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium \
-// RUN:   -fno-function-type-prefix -fno-auto-import \
+// RUN:   -fno-function-type-prefix \
 // RUN:   -emit-llvm -o - %s -mdefault-visibility-export-mapping=explicit \
 // RUN:   | FileCheck --check-prefixes=CHECK,MAPPED %s
 // RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium \
-// RUN:   -fno-function-type-prefix -fno-auto-import \
+// RUN:   -fno-function-type-prefix \
 // RUN:   -emit-llvm -o - %s -mdefault-visibility-export-mapping=all \
 // RUN:   | FileCheck --check-prefixes=CHECK,MAPPED %s
 // RUN: %clang_cc1 -triple aarch64-pc-windows-ntposix \
-// RUN:   -fno-function-type-prefix -fno-auto-import \
+// RUN:   -fno-function-type-prefix \
 // RUN:   -emit-llvm -o - %s -mdefault-visibility-export-mapping=explicit \
 // RUN:   | FileCheck --check-prefixes=CHECK,MAPPED %s
 // RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium \
-// RUN:   -fno-function-type-prefix -fno-auto-import \
+// RUN:   -fno-function-type-prefix \
 // RUN:   -emit-llvm -o - %s | FileCheck --check-prefixes=CHECK,UNMAPPED %s
 // RUN: %clang_cc1 -triple powerpc64-ibm-aix -emit-llvm -o - %s \
 // RUN:   -mdefault-visibility-export-mapping=explicit -Wno-ignored-attributes \

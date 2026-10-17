@@ -1,5 +1,5 @@
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fno-auto-import -fno-plt -mdefault-visibility-export-mapping=explicit -emit-llvm -o - %s | FileCheck %s
-// RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -fno-auto-import -mdefault-visibility-export-mapping=explicit -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fno-plt -mdefault-visibility-export-mapping=explicit -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -mdefault-visibility-export-mapping=explicit -emit-llvm -o - %s | FileCheck %s
 
 /// A copy by memcpy or memmove, or one of their builtin forms, whose source
 /// is directly a value that may come from another image or from foreign code

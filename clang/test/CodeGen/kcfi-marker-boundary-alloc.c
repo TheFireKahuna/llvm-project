@@ -1,5 +1,5 @@
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fms-extensions -fno-auto-import -fno-plt -mdefault-visibility-export-mapping=explicit -emit-llvm -o - %s | FileCheck %s
-// RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -fms-extensions -fno-auto-import -mdefault-visibility-export-mapping=explicit -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fms-extensions -fno-plt -mdefault-visibility-export-mapping=explicit -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -fms-extensions -mdefault-visibility-export-mapping=explicit -emit-llvm -o - %s | FileCheck %s
 
 /// The result of a call to an allocation function is fresh memory, which
 /// holds no function pointer, so a conversion of it to a pointer to a record

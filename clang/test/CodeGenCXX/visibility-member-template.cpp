@@ -1,5 +1,5 @@
 // RUN: %clang_cc1 -triple x86_64-unknown-linux-gnu -std=c++17 -emit-llvm -o - %s | FileCheck %s --check-prefixes=CHECK,ELF
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -std=c++17 -fno-auto-import -mdefault-visibility-export-mapping=explicit -emit-llvm -o - %s | FileCheck %s --check-prefixes=CHECK,COFF
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -std=c++17 -mdefault-visibility-export-mapping=explicit -emit-llvm -o - %s | FileCheck %s --check-prefixes=CHECK,COFF
 
 /// A specialization of a member template of a class template specialization,
 /// whether a function, variable or class template, takes the visibility

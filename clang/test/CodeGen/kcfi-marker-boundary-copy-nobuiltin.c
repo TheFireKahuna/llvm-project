@@ -1,5 +1,5 @@
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fno-auto-import -fno-plt -mdefault-visibility-export-mapping=explicit -fno-builtin -emit-llvm -o - %s | FileCheck %s
-// RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -fno-auto-import -mdefault-visibility-export-mapping=explicit -fno-builtin-memcpy -fno-builtin-memmove -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fno-plt -mdefault-visibility-export-mapping=explicit -fno-builtin -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -mdefault-visibility-export-mapping=explicit -fno-builtin-memcpy -fno-builtin-memmove -emit-llvm -o - %s | FileCheck %s
 
 /// Without builtins, memcpy and memmove are still the C library's copies: a
 /// copy whose source is directly a value that may come from another image

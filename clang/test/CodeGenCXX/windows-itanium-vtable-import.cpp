@@ -1,13 +1,13 @@
 // RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium \
-// RUN:   -mdefault-visibility-export-mapping=explicit -fno-auto-import -emit-llvm -o - %s \
+// RUN:   -mdefault-visibility-export-mapping=explicit -emit-llvm -o - %s \
 // RUN:   | FileCheck %s
 // RUN: %clang_cc1 -triple aarch64-pc-windows-ntposix \
-// RUN:   -mdefault-visibility-export-mapping=explicit -fno-auto-import -emit-llvm -o - %s \
+// RUN:   -mdefault-visibility-export-mapping=explicit -emit-llvm -o - %s \
 // RUN:   | FileCheck %s
 // RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium \
-// RUN:   -mdefault-visibility-export-mapping=explicit -fno-auto-import -O1 \
+// RUN:   -mdefault-visibility-export-mapping=explicit -O1 \
 // RUN:   -disable-llvm-passes -emit-llvm -o - %s | FileCheck --check-prefix=OPT %s
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fno-auto-import \
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium \
 // RUN:   -emit-llvm -o - %s | FileCheck --check-prefix=NOMAP %s
 
 // On Windows Itanium and NT-POSIX a vtable or VTT that the visibility mapping

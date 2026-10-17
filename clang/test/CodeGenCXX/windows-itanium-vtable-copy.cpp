@@ -61,7 +61,7 @@ Imported *i() { return new Imported; }
 // USER-DAG: $_ZTV1B = comdat any
 // USER-DAG: @_ZTV1B = linkonce_odr unnamed_addr constant {{.*}}, comdat, align 64
 // USER-DAG: @_ZTV1F = external constant
-// USER-DAG: @_ZTV6Hidden = external constant
+// USER-DAG: @_ZTV6Hidden = external dso_local constant
 // USER-DAG: @"_ZTV1B$ap16" = unnamed_addr alias
 // USER-DAG: @_ZTT1W = linkonce_odr dso_local unnamed_addr constant {{.*}}, comdat
 // USER-NOT: @_ZTV1B = {{.*}}dllexport

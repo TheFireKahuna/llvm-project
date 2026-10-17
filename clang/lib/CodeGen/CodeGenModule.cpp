@@ -2391,7 +2391,9 @@ static bool shouldAssumeDSOLocal(const CodeGenModule &CGM,
     // In MinGW, variables without DLLImport can still be automatically
     // imported from a DLL by the linker; don't mark variables that
     // potentially could come from another DLL as DSO local. Windows Itanium
-    // and NT-POSIX reach such a variable through its import pointer.
+    // and NT-POSIX reach such a variable through its import pointer, as ELF
+    // reaches another shared object's data through the GOT, unless
+    // -fdirect-access-external-data says it is in the image.
 
     // With EmulatedTLS, TLS variables can be autoimported from other DLLs
     // (and this actually happens in the public interface of libstdc++), so
@@ -2401,7 +2403,8 @@ static bool shouldAssumeDSOLocal(const CodeGenModule &CGM,
     if (GV->isDeclarationForLinker() && isa<llvm::GlobalVariable>(GV) &&
         (!GV->isThreadLocal() || CGM.getCodeGenOpts().EmulatedTLS ||
          CGM.hasThreadLocalRecords()) &&
-        CGOpts.AutoImport)
+        (TT.isOSCygMing() ? CGOpts.AutoImport
+                          : !CGOpts.DirectAccessExternalData))
       return false;
   }
 

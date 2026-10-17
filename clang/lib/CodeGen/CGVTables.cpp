@@ -1340,15 +1340,21 @@ CodeGenVTables::GenerateClassData(const CXXRecordDecl *RD) {
 /// its import pointer, since a PE has no copy relocations. A declaration of
 /// one is therefore not dso_local, and the linker makes the reference direct
 /// when the definition is in the image. A class the mapping does not export
-/// can only be defined in this image, so its references stay direct.
+/// can only be defined in this image, so its references stay direct whatever
+/// the access to external data is.
 void CodeGenVTables::setVTableDSOLocal(llvm::GlobalValue *GV,
                                        const CXXRecordDecl *RD) const {
-  if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
-      GV->isDeclarationForLinker() && CGM.shouldMapVisibilityToDLLExport(RD)) {
-    GV->setDSOLocal(false);
-    if (CodeGenABIContracts *Contracts = CGM.getABIContracts())
-      Contracts->addVTableImport(GV, RD);
+  if (!CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() ||
+      !GV->isDeclarationForLinker())
+    return;
+  if (!CGM.shouldMapVisibilityToDLLExport(RD)) {
+    if (!GV->hasDLLImportStorageClass() && !GV->hasExternalWeakLinkage())
+      GV->setDSOLocal(true);
+    return;
   }
+  GV->setDSOLocal(false);
+  if (CodeGenABIContracts *Contracts = CGM.getABIContracts())
+    Contracts->addVTableImport(GV, RD);
 }
 
 /// Pins the address point Offset bytes into VTable at Residue modulo

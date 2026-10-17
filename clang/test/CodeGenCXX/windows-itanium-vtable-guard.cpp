@@ -1,7 +1,7 @@
 // RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fms-extensions \
-// RUN:   -fno-auto-import -mdefault-visibility-export-mapping=explicit \
+// RUN:   -mdefault-visibility-export-mapping=explicit \
 // RUN:   -fsanitize=kcfi -emit-llvm -o - %s | FileCheck %s
-// RUN: %clang_cc1 -triple aarch64-pc-windows-ntposix -fno-auto-import \
+// RUN: %clang_cc1 -triple aarch64-pc-windows-ntposix \
 // RUN:   -mdefault-visibility-export-mapping=explicit -fsanitize=kcfi \
 // RUN:   -emit-llvm -o - %s | FileCheck %s
 

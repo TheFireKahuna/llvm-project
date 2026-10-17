@@ -308,11 +308,13 @@ void WindowsItaniumBaseToolChain::addClangTargetOptions(
   else
     CC1Args.push_back("-mdefault-visibility-export-mapping=explicit");
 
-  // A variable is imported when its declaration says so, not on the chance
-  // that a DLL provides it, unless -fauto-import asks for that.
-  if (!DriverArgs.hasFlag(options::OPT_fauto_import,
-                          options::OPT_fno_auto_import, false))
-    CC1Args.push_back("-fno-auto-import");
+  // External data is reached as ELF reaches it, through its import pointer
+  // unless -fdirect-access-external-data says otherwise; MinGW's auto-import
+  // scheme does not apply.
+  if (const Arg *A = DriverArgs.getLastArg(options::OPT_fauto_import,
+                                           options::OPT_fno_auto_import))
+    getDriver().Diag(diag::err_drv_unsupported_opt_for_target)
+        << A->getAsString(DriverArgs) << getTripleString();
 
   // The layouts of C structs, and the types of extern "C" data, are checked
   // between images only on request: a versioned C struct that grows at its

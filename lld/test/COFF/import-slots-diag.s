@@ -15,7 +15,7 @@
 
 # RUN: not lld-link -dll -noentry -import-slots -out:out.dll code.obj \
 # RUN:   lib.lib 2>&1 | FileCheck --check-prefix=CODE %s
-# CODE:     error: code.obj: variable is imported from lib.dll, but the object was compiled as if it were local; mark its declaration, or compile the object with -fauto-import; in assembly, reach it through __imp_variable or variable@GOTPCREL
+# CODE:     error: code.obj: variable is imported from lib.dll, but the object was compiled as if it were local; mark its declaration, or compile the object with -fno-direct-access-external-data; in assembly, reach it through __imp_variable or variable@GOTPCREL
 # CODE-NOT: error:
 
 # RUN: not lld-link -dll -noentry -import-slots -out:out.dll data.obj \

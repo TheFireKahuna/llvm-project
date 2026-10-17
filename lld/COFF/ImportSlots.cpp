@@ -2799,7 +2799,8 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
                    << " is imported from " << imp->getDLLName()
                    << ", but the object was compiled as if it were "
                       "local; mark its declaration, or compile the object "
-                      "with -fauto-import; in assembly, reach it through "
+                      "with -fno-direct-access-external-data; in assembly, "
+                      "reach it through "
                    << imp->getName() << " or "
                    << (arm64 ? (":got:" + name).str() : (name + "@GOTPCREL").str());
         }
