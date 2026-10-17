@@ -475,6 +475,10 @@ public:
   // suppressed.
   bool ineligibleForICF : 1;
 
+  // Whether a relocation in this section refers to a local import, which on
+  // ARM64 may be relaxed in place.
+  bool referencesLocalImport : 1;
+
   // The COMDAT selection if this is a COMDAT chunk.
   llvm::COFF::COMDATType selection = (llvm::COFF::COMDATType)0;
 

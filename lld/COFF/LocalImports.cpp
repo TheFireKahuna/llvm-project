@@ -1233,6 +1233,7 @@ void bindLocalImports(SymbolTable &symtab) {
           continue;
         }
         auto *li = cast<DefinedLocalImport>(s);
+        sc->referencesLocalImport = true;
         if (fromData) {
           readByData.insert(li);
           continue;

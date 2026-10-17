@@ -37,7 +37,7 @@ namespace lld::coff {
 SectionChunk::SectionChunk(ObjFile *f, const coff_section *h, Kind k)
     : Chunk(k), file(f), header(h), hasImportSlots(false),
       hasImportSites(false), relaxed(false), ineligibleForICF(false),
-      repl(this) {
+      referencesLocalImport(false), repl(this) {
   // Initialize relocs.
   if (file)
     setRelocs(file->getCOFFObj()->getRelocations(header));
@@ -602,9 +602,17 @@ SectionChunk::getImportSlot(const coff_relocation &rel) const {
 }
 
 bool SectionChunk::rewritesRelocations() const {
-  return hasImportSlots || hasImportSites || relaxed ||
-         getArch() == Triple::aarch64 || file->hasLinkRecords() ||
-         !file->symtab.ctx.relaxations.empty();
+  // On ARM64, a reference to a local import is relaxed in place and a branch to
+  // a preempted offer is retargeted, so a chunk with neither needs no rewrite.
+  // ARM64EC and hybrid images keep rewriting every ARM64 relocation, as their
+  // local imports are bound through the x86-64 path.
+  bool arm64Rewrite = getArch() == Triple::aarch64 &&
+                      (referencesLocalImport ||
+                       !file->symtab.preemptedOffers.empty() ||
+                       getMachine() != ARM64 ||
+                       file->symtab.ctx.hybridSymtab.has_value());
+  return hasImportSlots || hasImportSites || relaxed || arm64Rewrite ||
+         file->hasLinkRecords() || !file->symtab.ctx.relaxations.empty();
 }
 
 void SectionChunk::applyRelocation(uint8_t *off, const coff_relocation &rel,
