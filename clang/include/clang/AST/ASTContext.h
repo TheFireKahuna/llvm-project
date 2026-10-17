@@ -3006,6 +3006,14 @@ public:
   /// the result of this computation can change.
   const CXXMethodDecl *getCurrentKeyFunction(const CXXRecordDecl *RD);
 
+  /// On Windows Itanium and NT-POSIX, whether another image may own the vtable
+  /// of RD, which the visibility mapping or its key function's DLL attribute
+  /// exports, and a derived class extend it, so that an image that does not
+  /// own it constructs the class through a copy of its own, which needs the
+  /// class's inline virtual functions. A class marked dllimport keeps the
+  /// imported vtable.
+  bool isVTableOwnedElsewhereAndExtensible(const CXXRecordDecl *RD);
+
   /// Observe that the given method cannot be a key function.
   /// Checks the key-function cache for the method's class and clears it
   /// if matches the given declaration.

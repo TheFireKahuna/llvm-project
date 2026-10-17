@@ -19552,15 +19552,11 @@ bool Sema::DefineUsedVTables() {
              TSK != TSK_ImplicitInstantiation &&
              "Instantiations don't have key functions");
       (void)TSK;
-      // On Windows Itanium and NT-POSIX an image constructs a class that is
-      // not final, whose key function it imports, through its own copy of the
-      // vtable, which needs the class's inline virtual functions: the image
-      // that owns the vtable does not export them.
-      if (Context.getTargetInfo()
-              .getTriple()
-              .isWindowsItaniumOrNTPOSIXEnvironment() &&
-          KeyFunction->hasAttr<DLLImportAttr>() &&
-          !Class->hasAttr<DLLImportAttr>() && !Class->isEffectivelyFinal())
+      // On Windows Itanium and NT-POSIX a unit may construct the class
+      // through its own copy of the vtable, which needs the class's inline
+      // virtual functions: the image that owns the vtable does not export
+      // them.
+      if (Context.isVTableOwnedElsewhereAndExtensible(Class))
         DefineVTable = true;
     } else if (!KeyFunction) {
       // If we have a class with no key function that is the subject
