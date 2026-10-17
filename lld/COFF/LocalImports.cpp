@@ -19,12 +19,19 @@
 // where it is a delay-loaded import's; a load that no call reads any longer is
 // disposed of.
 //
+// It may also describe the instructions that access data through the register
+// a load of the data's import pointer fills, and the add of a constant to
+// such a register. Where the data is in the image and the linker may resize
+// the code, each access reaches the data RIP-relative and the load goes; and
+// the load takes the sum, the add going, wherever the data is in the image.
+//
 //===----------------------------------------------------------------------===//
 
 #include "LocalImports.h"
 #include "COFFLinkerContext.h"
 #include "Chunks.h"
 #include "InputFiles.h"
+#include "Relax.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
 #include "lld/Common/ErrorHandler.h"
@@ -403,6 +410,241 @@ static const coff_relocation *getRel32At(const SectionChunk *sc,
   return &*it;
 }
 
+// Whether a fused call, access or add whose load's REL32 field is rel may
+// reach the data or function the load's pointer leads to directly: a local
+// import pointer to a symbol in the image.
+static bool reachesDirectly(ObjFile *file, const coff_relocation &rel) {
+  auto *li = dyn_cast_or_null<DefinedLocalImport>(
+      file->getSymbol(rel.SymbolTableIndex));
+  return li && canBypass(file, rel) && !isZeroPointer(li);
+}
+
+// Whether the bytes of the access f describes are its: the prefix it names,
+// REX without X, or three-byte VEX or EVEX with ~X set, holding the base
+// register's high bit; and ModRM addressing memory through reg, the register
+// its load fills, with the displacement and SIB byte given and no index, all
+// within the access's length.
+static bool isFusedAccess(ArrayRef<uint8_t> data, const ObjFile::LinkFusion &f,
+                          unsigned reg) {
+  if (!f.length || uint64_t(f.offset) + f.length > data.size() ||
+      f.modrm >= f.length || (f.prefix != 15 && f.prefix + 1u >= f.modrm) ||
+      f.disp == 3 || f.prefixKind > LinkAccessEVEX ||
+      (f.prefixKind != LinkAccessREX && f.prefix == 15))
+    return false;
+  const uint8_t *inst = &data[f.offset];
+  unsigned high = 0;
+  if (f.prefix != 15) {
+    uint8_t p = inst[f.prefix];
+    switch (f.prefixKind) {
+    case LinkAccessREX:
+      if ((p & 0xF2) != 0x40)
+        return false;
+      high = p & 1;
+      break;
+    case LinkAccessVEX:
+    case LinkAccessEVEX:
+      if (p != (f.prefixKind == LinkAccessVEX ? 0xC4 : 0x62) ||
+          !(inst[f.prefix + 1] & 0x40))
+        return false;
+      high = !(inst[f.prefix + 1] & 0x20);
+      break;
+    }
+  }
+  uint8_t modrm = inst[f.modrm];
+  unsigned mod = modrm >> 6, rm = modrm & 7, base = rm;
+  if (mod != f.disp || (rm == 4) != f.sib || (mod == 0 && rm == 5))
+    return false;
+  if (f.sib) {
+    if (f.modrm + 1u >= f.length)
+      return false;
+    uint8_t sib = inst[f.modrm + 1];
+    base = sib & 7;
+    if ((sib >> 3 & 7) != 4 || (mod == 0 && base == 5))
+      return false;
+  }
+  unsigned dispSize = f.disp == 1 ? 1 : f.disp == 2 ? 4 : 0;
+  return (base | high << 3) == reg &&
+         f.modrm + 1u + f.sib + dispSize <= f.length;
+}
+
+// The length of the add that f describes, if its bytes are a form it may
+// take, adding f's constant to reg, the register its load fills: add or sub
+// of an 8- or 32-bit immediate with REX.W, writing reg; or lea, with REX.W,
+// of reg plus an 8- or 32-bit displacement, writing f's register. Zero
+// otherwise.
+static unsigned getFusedAddLength(ArrayRef<uint8_t> data,
+                                  const ObjFile::LinkFusion &f, unsigned reg) {
+  uint64_t off = f.offset;
+  if (off + 3 > data.size() || reg >= 16 || f.reg >= 16)
+    return 0;
+  uint8_t rex = data[off], op = data[off + 1], modrm = data[off + 2];
+  if ((rex & 0xFA) != 0x48)
+    return 0;
+  auto readImm = [&](uint64_t at, unsigned size) -> std::optional<int64_t> {
+    if (at + size > data.size())
+      return std::nullopt;
+    if (size == 1)
+      return int8_t(data[at]);
+    return int32_t(read32le(&data[at]));
+  };
+  if (op == 0x83 || op == 0x81) {
+    unsigned ext = modrm >> 3 & 7;
+    if (modrm >> 6 != 3 || (ext != 0 && ext != 5) || (rex & 4) ||
+        unsigned((modrm & 7) | (rex & 1) << 3) != reg || f.reg != reg)
+      return 0;
+    unsigned size = op == 0x83 ? 1 : 4;
+    std::optional<int64_t> v = readImm(off + 3, size);
+    if (!v || (ext == 5 ? -*v : *v) != f.addend)
+      return 0;
+    return 3 + size;
+  }
+  if (op != 0x8D)
+    return 0;
+  unsigned mod = modrm >> 6, base = modrm & 7;
+  unsigned dest = (modrm >> 3 & 7) | (rex & 4) << 1;
+  if ((mod != 1 && mod != 2) || dest != f.reg)
+    return 0;
+  uint64_t at = off + 3;
+  if (base == 4) {
+    if (at >= data.size() || (data[at] >> 3 & 7) != 4)
+      return 0;
+    base = data[at++] & 7;
+  }
+  if ((base | (rex & 1) << 3) != reg)
+    return 0;
+  unsigned size = mod == 1 ? 1 : 4;
+  std::optional<int64_t> v = readImm(at, size);
+  if (!v || *v != f.addend)
+    return 0;
+  return at + size - off;
+}
+
+// The PAGEOFFSET_12L relocation of sc at off, if any: an ARM64 fused load's.
+static const coff_relocation *getPageOffsetAt(const SectionChunk *sc,
+                                              uint32_t off) {
+  ArrayRef<coff_relocation> relocs = sc->getRelocs();
+  auto it = llvm::partition_point(relocs, [&](const coff_relocation &r) {
+    return r.VirtualAddress < off;
+  });
+  if (it == relocs.end() || it->VirtualAddress != off ||
+      it->Type != IMAGE_REL_ARM64_PAGEOFFSET_12L)
+    return nullptr;
+  return &*it;
+}
+
+// The immediate offset of an ARM64 access through a base register: a load,
+// store or prefetch at an unsigned 12-bit offset, or a pair of loads or stores
+// at a signed 7-bit one, each scaled by the size of one register it accesses.
+struct Arm64Access {
+  unsigned scale = 0;
+  bool pair = false;
+  bool store = false;
+
+  explicit Arm64Access(uint32_t insn) {
+    bool simd = insn & 0x04000000;
+    unsigned opc = insn >> 30;
+    if ((insn & 0x3B000000) == 0x39000000) {
+      // A SIMD and floating-point access with opc bit 1 set is 128-bit.
+      scale = simd && (insn & 0x00800000) ? 16 : 1u << opc;
+      store = simd ? !(insn & 0x00400000) : !(insn & 0x00C00000);
+    } else if ((insn & 0x3B800000) == 0x29000000 && opc != 3 &&
+               !(opc == 1 && !simd && !(insn & 0x00400000))) {
+      // ldpsw, opc 01, has no store.
+      pair = true;
+      scale = simd ? 4u << opc : (opc == 2 ? 8 : 4);
+      store = !(insn & 0x00400000);
+    }
+  }
+  // The offset in bytes that insn's field holds.
+  int64_t getOffset(uint32_t insn) const {
+    if (pair)
+      return SignExtend64<7>(insn >> 15) * scale;
+    return int64_t(insn >> 10 & 0xFFF) * scale;
+  }
+  // Whether offset fits the field, a multiple of the scale.
+  bool fits(int64_t offset) const {
+    if (offset % scale)
+      return false;
+    return pair ? isInt<7>(offset / scale) : isUInt<12>(offset / scale);
+  }
+  uint32_t setOffset(uint32_t insn, int64_t offset) const {
+    if (pair)
+      return (insn & ~0x003F8000) | uint32_t(offset / scale & 0x7F) << 15;
+    return (insn & ~0x003FFC00) | uint32_t(offset / scale) << 10;
+  }
+};
+
+// Whether the bytes at off in data are those of the ARM64 fused access or add
+// f, given the register reg that its load, ldr xT, [xT, #:lo12:p], fills.
+static bool isArm64FusedUse(ArrayRef<uint8_t> data,
+                            const ObjFile::LinkFusion &f, unsigned reg) {
+  if (uint64_t(f.offset) + 4 > data.size())
+    return false;
+  uint32_t insn = read32le(&data[f.offset]);
+  unsigned rn = insn >> 5 & 31, rt = insn & 31;
+  if (f.use == ObjFile::LinkFusion::Access) {
+    Arm64Access access(insn);
+    unsigned rt2 = insn >> 10 & 31;
+    return access.scale && rn == reg &&
+           !(access.store && (rt == reg || (access.pair && rt2 == reg)));
+  }
+  // add or sub of an immediate, shifted by 0 or 12, to xT.
+  bool sub = (insn & 0xFF800000) == 0xD1000000;
+  if ((insn & 0xFF800000) != 0x91000000 && !sub)
+    return false;
+  int64_t imm = int64_t(insn >> 10 & 0xFFF) << (insn & 0x00400000 ? 12 : 0);
+  return rn == reg && rt == f.reg && (sub ? -imm : imm) == f.addend;
+}
+
+// The ARM64 fused accesses and adds of sc: each names a load of an import
+// pointer into its own base register, whose adrp the pointer's page fills. Where
+// the pointer is a local import pointer that every reference bypasses, the
+// adrp computes the page of the data instead, and each reaches the data
+// directly; the load is then dead where every access does.
+static void bindFusedArm64(SectionChunk *sc,
+                           MutableArrayRef<ObjFile::LinkFusion> fusions,
+                           function_ref<void(uint32_t)> mismatch,
+                           size_t &accesses, size_t &adds, size_t &direct,
+                           size_t &loads, size_t &dead) {
+  ObjFile *file = sc->file;
+  ArrayRef<uint8_t> data = sc->getContents();
+  DenseSet<uint32_t> keptLoads;
+  for (ObjFile::LinkFusion &f : fusions) {
+    if (f.isLoad || f.use == ObjFile::LinkFusion::Call)
+      continue;
+    const coff_relocation *loadRel = getPageOffsetAt(sc, f.load);
+    if (!loadRel)
+      continue;
+    uint32_t load = read32le(&data[f.load]);
+    unsigned reg = load & 31;
+    if (!isArm64PointerLoad(sc, *loadRel) || (load >> 5 & 31) != reg) {
+      mismatch(f.load);
+      continue;
+    }
+    if (!isArm64FusedUse(data, f, reg)) {
+      mismatch(f.offset);
+      continue;
+    }
+    auto *li = dyn_cast_or_null<DefinedLocalImport>(
+        file->getSymbol(loadRel->SymbolTableIndex));
+    // A bypassed pointer's adrp and load compute the data's page and
+    // address, as relaxLocalImport rewrites them.
+    if (li && li->getChunk()->bypassed && !isZeroPointer(li))
+      f.form = ObjFile::LinkFusion::Direct;
+    else
+      keptLoads.insert(f.load);
+    ++(f.use == ObjFile::LinkFusion::Access ? accesses : adds);
+    direct += f.form == ObjFile::LinkFusion::Direct;
+  }
+  for (ObjFile::LinkFusion &f : fusions) {
+    if (!f.isLoad)
+      continue;
+    ++loads;
+    f.dead = !keptLoads.contains(f.offset) && getPageOffsetAt(sc, f.offset);
+    dead += f.dead;
+  }
+}
+
 // A fused call names the load that fills its register. Each that stays a call
 // through the register keeps its load, and a fused load that none of them
 // keeps is dead. A fact that does not describe the code, a call that is not
@@ -410,10 +652,12 @@ static const coff_relocation *getRel32At(const SectionChunk *sc,
 // as a site whose bytes are not its form's is.
 void bindFusedCalls(SymbolTable &symtab) {
   COFFLinkerContext &ctx = symtab.ctx;
-  if (symtab.machine != AMD64 || ctx.hybridSymtab)
+  if ((symtab.machine != AMD64 && symtab.machine != ARM64) ||
+      ctx.hybridSymtab)
     return;
   llvm::TimeTraceScope timeScope("Bind fused calls");
-  size_t calls = 0, throughRegister = 0, loads = 0, dead = 0;
+  size_t calls = 0, throughRegister = 0, loads = 0, dead = 0, accesses = 0,
+         adds = 0, direct = 0;
   for (ObjFile *file : ctx.objFileInstances) {
     if (&file->symtab != &symtab || !file->hasLinkFusions())
       continue;
@@ -433,6 +677,11 @@ void bindFusedCalls(SymbolTable &symtab) {
       auto isLoad = [](std::optional<LinkSiteForm> form) {
         return form == LinkSiteLoad || form == LinkSiteLoadREX2;
       };
+      if (symtab.machine == ARM64) {
+        bindFusedArm64(sc, fusions, mismatch, accesses, adds, direct, loads,
+                       dead);
+        continue;
+      }
 
       DenseSet<uint32_t> keptLoads;
       for (ObjFile::LinkFusion &f : fusions) {
@@ -441,6 +690,44 @@ void bindFusedCalls(SymbolTable &symtab) {
         const coff_relocation *loadRel = getRel32At(sc, f.load);
         if (!loadRel)
           continue;
+        std::optional<LinkSiteForm> loadForm = getDescribedSite(sc, *loadRel);
+        Symbol *s = file->getSymbol(loadRel->SymbolTableIndex);
+        if (!isLoad(loadForm) || !s) {
+          mismatch(f.load);
+          continue;
+        }
+        unsigned reg = getLoadRegister(data, f.load, *loadForm);
+
+        // An access reaches the data directly only where the code may be
+        // resized, since a RIP-relative operand is longer than one with a
+        // base register and a small displacement.
+        if (f.use == ObjFile::LinkFusion::Access) {
+          if (!isFusedAccess(data, f, reg)) {
+            mismatch(f.offset);
+            continue;
+          }
+          if (file->isCovered(sc) && reachesDirectly(file, *loadRel))
+            f.form = ObjFile::LinkFusion::Direct;
+          else
+            keptLoads.insert(f.load);
+          ++accesses;
+          direct += f.form == ObjFile::LinkFusion::Direct;
+          continue;
+        }
+        if (f.use == ObjFile::LinkFusion::Add) {
+          if (!getFusedAddLength(data, f, reg)) {
+            mismatch(f.offset);
+            continue;
+          }
+          if (reachesDirectly(file, *loadRel)) {
+            f.form = ObjFile::LinkFusion::Direct;
+            ctx.fusedAdds[{sc, f.load}] = &f;
+          }
+          ++adds;
+          direct += f.form == ObjFile::LinkFusion::Direct;
+          continue;
+        }
+
         uint8_t bytes[7];
         size_t size = getFusedCallBytes(bytes, f.isJump, f.reg);
         if (!size || uint64_t(f.offset) + size > data.size() ||
@@ -448,10 +735,7 @@ void bindFusedCalls(SymbolTable &symtab) {
           mismatch(f.offset);
           continue;
         }
-        std::optional<LinkSiteForm> loadForm = getDescribedSite(sc, *loadRel);
-        Symbol *s = file->getSymbol(loadRel->SymbolTableIndex);
-        if (!isLoad(loadForm) || !s ||
-            getLoadRegister(data, f.load, *loadForm) != f.reg) {
+        if (reg != f.reg) {
           mismatch(f.load);
           continue;
         }
@@ -486,6 +770,9 @@ void bindFusedCalls(SymbolTable &symtab) {
     Log(ctx) << "Fused calls: " << throughRegister << " of " << calls
              << " through their register; fused loads: " << dead << " of "
              << loads << " dead";
+  if (accesses || adds)
+    Log(ctx) << "Fused accesses and adds: " << direct << " of "
+             << accesses + adds << " direct";
 }
 
 // Disposes of the dead load of size bytes at start, at RVA rva, without moving
@@ -532,6 +819,18 @@ void writeFusedCalls(const SectionChunk *sc, uint8_t *buf) {
     if (f.isLoad || f.form == ObjFile::LinkFusion::ThroughRegister)
       continue;
     const coff_relocation *loadRel = getRel32At(sc, f.load);
+    // An add whose sum the load takes is one no-operation of its length,
+    // and an access stays as it is where the code keeps its size.
+    if (f.use == ObjFile::LinkFusion::Add) {
+      ArrayRef<uint8_t> data = sc->getContents();
+      LinkSiteForm form = *sc->file->getLinkSiteForm(sc, f.load);
+      unsigned length =
+          getFusedAddLength(data, f, getLoadRegister(data, f.load, form));
+      writeNops(buf + f.offset, length, length);
+      continue;
+    }
+    if (f.use != ObjFile::LinkFusion::Call)
+      continue;
     auto *s = cast<Defined>(sc->file->getSymbol(loadRel->SymbolTableIndex));
     unsigned disp = f.isJump ? 3 : 2;
     uint8_t *off = buf + f.offset + disp;
@@ -550,6 +849,177 @@ void writeFusedCalls(const SectionChunk *sc, uint8_t *buf) {
     }
     write32le(off, target - p - 4);
   }
+}
+
+void writeFusedArm64(const SectionChunk *sc, uint8_t *buf) {
+  const uint32_t nop = 0xD503201F;
+  MutableArrayRef<ObjFile::LinkFusion> fusions = sc->file->getLinkFusions(sc);
+  auto getData = [&](uint32_t load) -> Defined * {
+    const coff_relocation *rel = getPageOffsetAt(sc, load);
+    auto *li = dyn_cast<DefinedLocalImport>(
+        sc->file->getSymbol(rel->SymbolTableIndex));
+    return li->getTarget();
+  };
+  for (const ObjFile::LinkFusion &f : fusions) {
+    // Where the data's offset in its page plus an add's constant fits 12
+    // bits, the load, which relaxLocalImport made an add of the offset,
+    // adds the sum into the add's register instead, and the add becomes a
+    // no-operation.
+    if (f.isLoad || f.form != ObjFile::LinkFusion::Direct)
+      continue;
+    if (f.use == ObjFile::LinkFusion::Add) {
+      int64_t sum = (getData(f.load)->getRVA() & 0xFFF) + f.addend;
+      if (sum < 0 || sum > 0xFFF)
+        continue;
+      uint32_t load = read32le(buf + f.load);
+      write32le(buf + f.load,
+                0x91000000 | uint32_t(sum) << 10 | (load & 0x3E0) | f.reg);
+      write32le(buf + f.offset, nop);
+    }
+  }
+  // A dead load whose accesses all take the data's offset in its page,
+  // within their fields and aligned to their scale, becomes a no-operation,
+  // its register keeping the page adrp gives it; otherwise the accesses keep
+  // their offsets from the data's address, which the load then computes.
+  for (const ObjFile::LinkFusion &l : fusions) {
+    if (!l.isLoad || !l.dead)
+      continue;
+    uint64_t lo12 = getData(l.offset)->getRVA() & 0xFFF;
+    auto accesses = llvm::make_filter_range(fusions, [&](auto &f) {
+      return !f.isLoad && f.use == ObjFile::LinkFusion::Access &&
+             f.load == l.offset;
+    });
+    auto fits = [&](const ObjFile::LinkFusion &f) {
+      uint32_t insn = read32le(buf + f.offset);
+      Arm64Access access(insn);
+      return access.fits(lo12 + access.getOffset(insn));
+    };
+    if (accesses.empty() || !llvm::all_of(accesses, fits))
+      continue;
+    for (const ObjFile::LinkFusion &f : accesses) {
+      uint32_t insn = read32le(buf + f.offset);
+      Arm64Access access(insn);
+      write32le(buf + f.offset,
+                access.setOffset(insn, lo12 + access.getOffset(insn)));
+    }
+    write32le(buf + l.offset, nop);
+  }
+}
+
+int64_t takeFusedAdd(const SectionChunk *sc, const coff_relocation &rel,
+                     uint8_t *off) {
+  const ObjFile::LinkFusion *f =
+      sc->file->symtab.ctx.fusedAdds.lookup({sc, rel.VirtualAddress});
+  if (!f)
+    return 0;
+  // ModRM.reg, and its high bits: REX.R, or REX2's R3 with R4 clear.
+  off[-1] = (off[-1] & 0xC7) | (f->reg & 7) << 3;
+  if (sc->file->getLinkSiteForm(sc, rel.VirtualAddress) == LinkSiteLoadREX2)
+    off[-3] = (off[-3] & ~0x44) | (f->reg & 8) >> 1;
+  else
+    off[-3] = (off[-3] & ~0x04) | (f->reg & 8) >> 1;
+  return f->addend;
+}
+
+void addSiteEdits(const SectionChunk *sc, std::vector<RelaxEdit> &edits) {
+  ObjFile *file = sc->file;
+  ArrayRef<uint8_t> data = sc->getContents();
+  // A call or jump through a local import pointer becomes the direct one.
+  for (const coff_relocation &rel : sc->getRelocs()) {
+    std::optional<LinkSiteForm> form = getLocalImportRewrite(sc, rel);
+    if (!form || *form == LinkSiteLoad || *form == LinkSiteLoadREX2)
+      continue;
+    auto *li = cast<DefinedLocalImport>(file->getSymbol(rel.SymbolTableIndex));
+    if (isZeroPointer(li))
+      continue;
+    uint32_t off = rel.VirtualAddress;
+    if (*form == LinkSiteCall)
+      edits.push_back(
+          {off - 2, 6, 5, 0, RelaxEdit::DirectCall, false, li->getTarget()});
+    else if (*form == LinkSiteJump)
+      edits.push_back(
+          {off - 2, 6, 5, 0, RelaxEdit::DirectJump, false, li->getTarget()});
+    else
+      edits.push_back(
+          {off - 3, 7, 5, 0, RelaxEdit::DirectJump, false, li->getTarget()});
+  }
+
+  for (const ObjFile::LinkFusion &f : file->getLinkFusions(sc)) {
+    if (f.isLoad) {
+      if (!f.dead)
+        continue;
+      LinkSiteForm form = *file->getLinkSiteForm(sc, f.offset);
+      uint32_t size = form == LinkSiteLoadREX2 ? 8 : 7;
+      edits.push_back({f.offset + 4 - size, size, 0, 0, RelaxEdit::Delete});
+      continue;
+    }
+    const coff_relocation *loadRel = getRel32At(sc, f.load);
+    if (!loadRel)
+      continue;
+    auto *s =
+        dyn_cast_or_null<Defined>(file->getSymbol(loadRel->SymbolTableIndex));
+    Defined *target = nullptr;
+    if (auto *li = dyn_cast_or_null<DefinedLocalImport>(s))
+      target = li->getTarget();
+    switch (f.use) {
+    case ObjFile::LinkFusion::Access: {
+      if (f.form != ObjFile::LinkFusion::Direct)
+        break;
+      unsigned dispSize = f.disp == 1 ? 1 : f.disp == 2 ? 4 : 0;
+      edits.push_back({f.offset, f.length,
+                       uint32_t(f.length - dispSize - f.sib + 4), 0,
+                       RelaxEdit::Access, false, target, &f});
+      break;
+    }
+    case ObjFile::LinkFusion::Add: {
+      if (f.form != ObjFile::LinkFusion::Direct)
+        break;
+      LinkSiteForm form = *file->getLinkSiteForm(sc, f.load);
+      unsigned length =
+          getFusedAddLength(data, f, getLoadRegister(data, f.load, form));
+      edits.push_back({f.offset, length, 0, 0, RelaxEdit::Delete});
+      break;
+    }
+    case ObjFile::LinkFusion::Call: {
+      uint32_t size = f.isJump ? 7 : 6;
+      if (f.form == ObjFile::LinkFusion::Direct) {
+        edits.push_back(
+            {f.offset, size, 5, 0,
+             f.isJump ? RelaxEdit::DirectJump : RelaxEdit::DirectCall, false,
+             target});
+      } else if (f.form == ObjFile::LinkFusion::ThroughPointer) {
+        edits.push_back(
+            {f.offset, size, size, 0,
+             f.isJump ? RelaxEdit::PointerJump : RelaxEdit::PointerCall, false,
+             s});
+      } else if (f.isJump) {
+        // The jump keeps its first three bytes, REX.W jmp through the
+        // register, and the int3 after it goes.
+        edits.push_back({f.offset, size, 3, 0, RelaxEdit::KeepHead});
+      } else {
+        // The call keeps its last bytes, the call through the register, and
+        // the segment overrides before it go.
+        uint32_t length = f.reg >= 16 ? 4 : f.reg >= 8 ? 3 : 2;
+        edits.push_back({f.offset, size, length, 0, RelaxEdit::KeepTail});
+      }
+      break;
+    }
+    }
+  }
+}
+
+void keepFusedAccesses(const SectionChunk *sc) {
+  MutableArrayRef<ObjFile::LinkFusion> fusions = sc->file->getLinkFusions(sc);
+  DenseSet<uint32_t> loads;
+  for (ObjFile::LinkFusion &f : fusions) {
+    if (f.use != ObjFile::LinkFusion::Access || f.isLoad)
+      continue;
+    f.form = ObjFile::LinkFusion::ThroughRegister;
+    loads.insert(f.load);
+  }
+  for (ObjFile::LinkFusion &f : fusions)
+    if (f.isLoad && loads.contains(f.offset))
+      f.dead = false;
 }
 
 // Whether the references of file to local import pointers are reported only if

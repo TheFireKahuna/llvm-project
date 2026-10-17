@@ -123,21 +123,19 @@
 
 ## A compiler's tail jump to ext through r11 stays, after REX.W with B; one to
 ## local becomes direct, and the load its test reads computes local's address.
+## The compiler's code is covered, so the int3 that padded each jump goes, and
+## the branch over it is shorter.
 # JUMP-LABEL: <.text>:
 # JUMP-NEXT:  4c 8b 1d {{.*}} movq {{.*}}(%rip), %r11
 # JUMP-NEXT:  4d 85 db testq %r11, %r11
-# JUMP-NEXT:  74 07 je
+# JUMP-NEXT:  74 03 je
 # JUMP-NEXT:  49 ff e3 jmpq *%r11
-# JUMP-NEXT:  cc int3
-# JUMP-NEXT:  cc int3
-# JUMP-NEXT:  cc int3
-# JUMP-NEXT:  cc int3
+# JUMP-NEXT:  c3 retq
 # JUMP:       4c 8d 1d {{.*}} leaq {{.*}}(%rip), %r11 # 0x[[#%x,JLOCAL:]]
 # JUMP-NEXT:  4d 85 db testq %r11, %r11
-# JUMP-NEXT:  74 07 je
+# JUMP-NEXT:  74 05 je
 # JUMP-NEXT:  e9 {{.*}} jmp 0x[[#JLOCAL]]
-# JUMP-NEXT:  cc int3
-# JUMP-NEXT:  cc int3
+# JUMP-NEXT:  c3 retq
 
 # BAD: error: bad.obj: the instruction at offset 0x3 in .text is not the one its link-only record describes
 
@@ -270,6 +268,10 @@ boundary:
   .p2align 4
 local:
   retq
+  # Alignment with data after the fused calls leaves .text uncovered, so the
+  # linker keeps the length of each call, which this test checks; relax.s
+  # checks the forms of covered code.
+  .p2align 0, 0
 
   .weak absent
 

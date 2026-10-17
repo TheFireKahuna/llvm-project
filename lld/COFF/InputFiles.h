@@ -282,19 +282,38 @@ public:
   // A site the object's records describe as a call or jump through a
   // register that a load filled with a pointer, padded to the length of the
   // same transfer through the pointer, or as such a load, which only those
-  // calls read. Once the linker knows where each pointer leads, it decides
-  // which calls stay as they are, become direct or read the pointer, and which
-  // loads nothing reads.
+  // calls read; or as an instruction that accesses data through such a
+  // register, or adds a constant to it. Once the linker knows where each
+  // pointer leads, it decides which calls stay as they are, become direct or
+  // read the pointer, which accesses and adds reach the data directly, and
+  // which loads nothing reads.
   struct LinkFusion {
     enum CallForm : uint8_t { ThroughRegister, Direct, ThroughPointer };
+    enum UseKind : uint8_t { Call, Access, Add };
 
     uint32_t section;
     uint32_t offset;
-    // For a call, the offset of the load's site, the register it fills, and
-    // whether the call is a jump.
+    // For a call, access or add, the offset of the load's site; for a call,
+    // the register the load fills, and whether the call is a jump; for an
+    // add, the register it writes.
     uint32_t load = 0;
     uint8_t reg = 0;
     bool isJump = false;
+    UseKind use = Call;
+    // For an access, the offsets in it of its ModRM byte and of the prefix
+    // that holds its base register's high bit (15 for none), that prefix's
+    // kind (a LinkAccessPrefix), its length, the size of its displacement (0,
+    // 1 for 8 bits, 2 for 32), whether a SIB byte follows ModRM, and the log2
+    // of the scale of an 8-bit displacement.
+    uint8_t modrm = 0;
+    uint8_t prefix = 15;
+    uint8_t prefixKind = 0;
+    uint8_t length = 0;
+    uint8_t disp = 0;
+    uint8_t scale = 0;
+    bool sib = false;
+    // For an add, the constant it adds.
+    int64_t addend = 0;
     // For a load, the length of the instruction that directly follows it, or
     // zero where none is known, and whether that one transfers control or may
     // fuse with a branch.
@@ -363,6 +382,43 @@ public:
   bool hasLinkFusions() const {
     return linkRecords && !linkRecords->fusions.empty();
   }
+
+  // A value or alignment that the object's link-only records say depends on
+  // where the code of a covered section lies (LinkRecordCoverage): in the
+  // section numbered field at offset, a value of the code of the section
+  // numbered target. For an alignment, a is the padding's length, b the most
+  // it may be, kind the log2 of the alignment and size the longest
+  // no-operation to fill it with; for an interior entry, a is the place in
+  // target that the relocation at offset refers to.
+  struct LinkCoverage {
+    uint32_t field;
+    uint32_t target;
+    uint32_t offset;
+    uint32_t a;
+    uint32_t b;
+    int64_t constant;
+    llvm::COFF::LinkCoverageEntry type;
+    uint8_t kind;
+    uint8_t size;
+  };
+
+  // Whether the object describes every layout relationship of the code of
+  // the section of sc, so that the linker may resize it.
+  bool isCovered(const SectionChunk *sc) const;
+  bool hasLinkCoverage() const {
+    return linkRecords && !linkRecords->coveredSections.empty();
+  }
+  // The values and alignments in the section of sc, by offset.
+  ArrayRef<LinkCoverage> getLinkCoverage(const SectionChunk *sc) const;
+  // Every value and alignment of the object.
+  ArrayRef<LinkCoverage> getAllLinkCoverage() const {
+    return linkRecords ? ArrayRef<LinkCoverage>(linkRecords->coverage)
+                       : ArrayRef<LinkCoverage>();
+  }
+  // The place that the relocation at offset in the section of sc refers to,
+  // where an interior entry gives it.
+  std::optional<uint32_t> getLinkInterior(const SectionChunk *sc,
+                                          uint32_t offset) const;
 
   // True if the object lists every 32-bit field in data through which a
   // symbol it leaves undefined is only called, so that any other such field
@@ -441,6 +497,7 @@ private:
   void initializeFlags();
   void readLinkRecords();
   bool readLinkSites(ArrayRef<uint8_t> payload);
+  bool readLinkCoverage(ArrayRef<uint8_t> payload);
   bool readLinkPins(ArrayRef<uint8_t> payload);
   bool readLinkVTables(ArrayRef<uint8_t> payload);
   bool readKCFIThunks(ArrayRef<uint8_t> payload);
@@ -509,6 +566,11 @@ private:
     bool listsBindings = false;
     std::vector<LinkSite> sites;
     std::vector<LinkFusion> fusions;
+    // The values and alignments that depend on where code a linker may
+    // resize lies, by section and offset, and the numbers of the sections
+    // whose code is covered, in order.
+    std::vector<LinkCoverage> coverage;
+    std::vector<uint32_t> coveredSections;
     std::vector<std::pair<uint32_t, uint32_t>> callOnlyRefs;
     std::vector<LinkPin> pins;
     std::vector<LinkVTable> vtables;

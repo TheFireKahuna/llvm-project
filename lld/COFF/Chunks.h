@@ -284,8 +284,16 @@ public:
 
   SectionChunk(ObjFile *file, const coff_section *header, Kind k = SectionKind);
   static bool classof(const Chunk *c) { return c->kind() <= SectionECKind; }
-  size_t getSize() const { return header->SizeOfRawData; }
+  size_t getSize() const {
+    return relaxed ? getRelaxedSize() : header->SizeOfRawData;
+  }
   ArrayRef<uint8_t> getContents() const;
+
+  // Where the place at offset in the section's contents is in the chunk as
+  // written, which differs where the linker resizes the chunk's code.
+  uint32_t getOutputOffset(uint32_t offset) const {
+    return relaxed ? getRelaxedOffset(offset) : offset;
+  }
   void writeTo(uint8_t *buf) const;
   MachineTypes getMachine() const;
 
@@ -447,6 +455,10 @@ public:
   bool hasImportSlots : 1;
   bool hasImportSites : 1;
 
+  // Whether the linker resizes code in this section, which its file's
+  // records cover (see Relax.h).
+  bool relaxed : 1;
+
   // The COMDAT selection if this is a COMDAT chunk.
   llvm::COFF::COMDATType selection = (llvm::COFF::COMDATType)0;
 
@@ -459,6 +471,9 @@ public:
   void replace(SectionChunk *other);
 
 private:
+  size_t getRelaxedSize() const;
+  uint32_t getRelaxedOffset(uint32_t offset) const;
+
   SectionChunk *assocChildren = nullptr;
 
   // Used for ICF (Identical COMDAT Folding)

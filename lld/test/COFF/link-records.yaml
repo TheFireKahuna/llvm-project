@@ -57,7 +57,7 @@
 # RUN: lld-link -entry:main -subsystem:console -out:%t.exe %t.sites.obj
 # RUN: yaml2obj -DDATA=4C4C524301010203000221 %s -o %t.sites-short.obj
 # RUN: yaml2obj -DDATA=4C4C524301010203020121 %s -o %t.sites-sym.obj
-# RUN: yaml2obj -DDATA=4C4C524301010203000150 %s -o %t.sites-end.obj
+# RUN: yaml2obj -DDATA=4C4C52430101020400018001 %s -o %t.sites-end.obj
 # RUN: yaml2obj -DDATA=4C4C52430101020400021000 %s -o %t.sites-order.obj
 # RUN: not lld-link -entry:main -subsystem:console -out:%t.exe \
 # RUN:   %t.sites-short.obj %t.sites-sym.obj %t.sites-end.obj \
@@ -68,6 +68,14 @@
 # SITES: error: {{.*}}.sites-sym.obj: .llvm_link_records is malformed: site group of symbol 2, which is not a section's symbol
 # SITES: error: {{.*}}.sites-end.obj: .llvm_link_records is malformed: site past the end of section 1
 # SITES: error: {{.*}}.sites-order.obj: .llvm_link_records is malformed: sites out of order in section 1
+
+## Coverage, kind 30: .text's own group with one difference that says it
+## repeats the previous entry's field, which there is none of.
+# RUN: yaml2obj -DDATA=4C4C524301001E0400000105 %s -o %t.coverage.obj
+# RUN: not lld-link -entry:main -subsystem:console -out:%t.exe \
+# RUN:   %t.coverage.obj 2>&1 | FileCheck --check-prefix=COVERAGE %s
+
+# COVERAGE: error: {{.*}}.coverage.obj: .llvm_link_records is malformed: coverage entry at offset 0x0 in section 1 repeats no field
 
 ## ABI contracts, kind 7: the contract of 1T, which the code of section 1
 ## (symbol 0) requires of the image that provides main (symbol 2); then a

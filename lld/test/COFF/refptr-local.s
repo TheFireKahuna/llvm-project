@@ -22,7 +22,7 @@
 # RUN: llvm-objdump -d b.exe | FileCheck %s
 
 # CHECK:      48 8d 05 {{.*}} leaq {{.*}}(%rip), %rax # 0x[[#%x,F:]]
-# CHECK-NEXT: 67 e8 {{.*}} addr32 callq 0x[[#F]]
+# CHECK-NEXT: e8 {{.*}} callq 0x[[#F]]
 # CHECK-NEXT: 48 8d 0d {{.*}} leaq {{.*}}(%rip), %rcx # 0x[[#%x,V:]]
 # CHECK-NEXT: 49 c7 c1 00 00 00 00 movq $0x0, %r9
 # CHECK-NEXT: 48 c7 c2 00 00 00 00 movq $0x0, %rdx

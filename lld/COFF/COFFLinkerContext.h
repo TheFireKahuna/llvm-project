@@ -17,6 +17,7 @@
 #include "InputFiles.h"
 #include "KCFI.h"
 #include "PDB.h"
+#include "Relax.h"
 #include "SymbolTable.h"
 #include "Writer.h"
 #include "lld/Common/CommonLinkerContext.h"
@@ -211,6 +212,19 @@ public:
   // offset of the relocation, which are rewritten to take it as static data
   // does (see SectionChunk::getImportSiteTarget).
   llvm::DenseSet<std::pair<const SectionChunk *, uint32_t>> importSites;
+
+  // The fused adds that a load takes the sum of, by section and the offset of
+  // the load's relocation.
+  llvm::DenseMap<std::pair<const SectionChunk *, uint32_t>,
+                 const ObjFile::LinkFusion *>
+      fusedAdds;
+
+  // How the code of each covered section chunk the linker resizes is laid
+  // out, and, by object and section number, the chunk whose layout each
+  // covered section takes, which identical code folding may make another.
+  llvm::DenseMap<const SectionChunk *, Relaxation> relaxations;
+  llvm::DenseMap<std::pair<const ObjFile *, uint32_t>, const SectionChunk *>
+      relaxedSections;
 
   // The state of the link's KCFI checks.
   KCFIState kcfi;

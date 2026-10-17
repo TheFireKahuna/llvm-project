@@ -567,8 +567,14 @@ void ObjFile::readLinkRecords() {
     uint64_t size = data.getULEB128(cur);
     uint64_t start = cur.tell();
     data.skip(cur, size);
-    if (cur && kind == LinkRecordSites && getMachineType() == AMD64) {
+    if (cur && kind == LinkRecordSites &&
+        (getMachineType() == AMD64 || getMachineType() == ARM64)) {
       if (!readLinkSites(contents.slice(start, size)))
+        return;
+      continue;
+    }
+    if (cur && kind == LinkRecordCoverage && getMachineType() == AMD64) {
+      if (!readLinkCoverage(contents.slice(start, size)))
         return;
       continue;
     }
@@ -948,7 +954,9 @@ bool ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
       unsigned form = site & 7;
       if (form > LinkSiteLoadREX2)
         form = LinkSiteOther;
-      if (offset + 4 > size)
+      // A site with a relocation holds its 4-byte field, which the linker
+      // checks with the site's bytes; one that facts describe may be shorter.
+      if (offset >= size)
         return malformed("site past the end of section " + Twine(section));
       sites.push_back(
           {section, uint32_t(offset), static_cast<LinkSiteForm>(form)});
@@ -968,10 +976,30 @@ bool ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
           f.load = std::min<uint64_t>(value >> 6, UINT32_MAX);
           f.isJump = value >> 5 & 1;
           f.reg = value & 31;
-        } else if (kind == LinkSiteFusedRead) {
+        } else if (kind == LinkSiteFusedRead || kind == LinkSiteAccessedRead) {
           f.isLoad = true;
           f.nextSize = std::min<uint64_t>(value >> 1, 15);
           f.nextTransfers = value & 1;
+        } else if (kind == LinkSiteFusedAccess) {
+          f.use = LinkFusion::Access;
+          f.load = std::min<uint64_t>(value >> 20, UINT32_MAX);
+          f.scale = value >> 17 & 7;
+          f.prefixKind = value >> 15 & 3;
+          f.sib = value >> 14 & 1;
+          f.disp = value >> 12 & 3;
+          f.length = value >> 8 & 15;
+          f.prefix = value >> 4 & 15;
+          f.modrm = value & 15;
+        } else if (kind == LinkSiteFusedAdd) {
+          f.use = LinkFusion::Add;
+          f.load = std::min<uint64_t>(value >> 5, UINT32_MAX);
+          f.reg = value & 31;
+        } else if (kind == LinkSiteFusedAddend) {
+          // The constant of the add the site's facts already describe.
+          if (fusions.size() != siteFusions &&
+              fusions.back().use == LinkFusion::Add)
+            fusions.back().addend = int64_t(value >> 1) ^ -int64_t(value & 1);
+          continue;
         } else {
           continue;
         }
@@ -1074,6 +1102,194 @@ const ObjFile::LinkFusion *ObjFile::getLinkFusion(const SectionChunk *sc,
   if (it == fusions.end() || it->section != section || it->offset != offset)
     return nullptr;
   return &*it;
+}
+
+// Reads a group of layout relationships. A section whose own group lists it
+// is covered. A field of a kind this linker does not know leaves the section
+// whose code the value depends on uncovered, since a value it cannot compute
+// keeps that code where it is.
+bool ObjFile::readLinkCoverage(ArrayRef<uint8_t> payload) {
+  std::vector<LinkCoverage> &coverage = linkRecords->coverage;
+  std::vector<uint32_t> &covered = linkRecords->coveredSections;
+  DataExtractor data(payload, /*IsLittleEndian=*/true);
+  DataExtractor::Cursor cur(0);
+  auto malformed = [&](const Twine &msg) {
+    consumeError(cur.takeError());
+    Err(symtab.ctx) << this << ": .llvm_link_records is malformed: " << msg;
+    coverage.clear();
+    covered.clear();
+    return false;
+  };
+  // The header of the section whose symbol is at index, and its number.
+  auto getSection = [&](uint64_t index,
+                        uint32_t &number) -> const coff_section * {
+    Expected<COFFSymbolRef> sym = coffObj->getSymbol(index);
+    if (!sym) {
+      consumeError(sym.takeError());
+      return nullptr;
+    }
+    if (!sym->isSectionDefinition() || sym->getSectionNumber() <= 0)
+      return nullptr;
+    number = sym->getSectionNumber();
+    Expected<const coff_section *> sec = coffObj->getSection(number);
+    if (!sec) {
+      consumeError(sec.takeError());
+      return nullptr;
+    }
+    return *sec;
+  };
+  // Whether a field of kind holds size bytes.
+  auto isKnownField = [](unsigned kind, unsigned size) {
+    switch (kind) {
+    case LinkFieldData:
+    case LinkFieldSigned:
+      return size == 1 || size == 2 || size == 4 || size == 8;
+    case LinkFieldJump:
+      return size == 1;
+    case LinkFieldULEB128:
+    case LinkFieldSLEB128:
+      return size >= 1 && size <= 10;
+    case LinkFieldCVAnnotation:
+      return size == 4;
+    default:
+      return false;
+    }
+  };
+
+  DenseSet<uint32_t> unknown;
+  while (cur && !data.eof(cur)) {
+    uint64_t fieldIndex = data.getULEB128(cur);
+    uint64_t targetIndex = data.getULEB128(cur);
+    uint64_t count = data.getULEB128(cur);
+    if (!cur)
+      break;
+    uint32_t field = 0, target = 0;
+    const coff_section *fieldSec = getSection(fieldIndex, field);
+    const coff_section *targetSec = getSection(targetIndex, target);
+    if (!fieldSec || !targetSec)
+      return malformed("coverage group of symbol " +
+                       Twine(fieldSec ? targetIndex : fieldIndex) +
+                       ", which is not a section's symbol");
+    if (!(targetSec->Characteristics & IMAGE_SCN_CNT_CODE))
+      return malformed("coverage of section " + Twine(target) +
+                       ", which holds no code");
+    bool own = field == target;
+    if (own)
+      covered.push_back(target);
+    // Places are delta-coded, and a field or constant left out is the
+    // previous entry's or the usual one.
+    uint64_t offset = 0, prevA = 0, prevB = 0, prevField = 0;
+    bool haveField = false;
+    for (uint64_t i = 0; cur && i != count; ++i) {
+      uint64_t head = data.getULEB128(cur);
+      offset += head >> 4;
+      bool same = head >> 2 & 1, implied = head >> 3 & 1;
+      LinkCoverage c = {};
+      c.field = field;
+      c.target = target;
+      c.offset = offset;
+      c.type = static_cast<LinkCoverageEntry>(head & 3);
+      uint64_t a = 0, b = 0, fieldInfo = 0;
+      if (c.type == LinkCoverageAlign) {
+        a = data.getULEB128(cur);
+        uint64_t info = data.getULEB128(cur);
+        b = data.getULEB128(cur);
+        c.kind = info & 31;
+        c.size = std::min<uint64_t>(info >> 5, 15);
+      } else if (c.type == LinkCoverageInterior) {
+        a = prevA += data.getSLEB128(cur);
+      } else {
+        if (same && !haveField)
+          return malformed("coverage entry at offset 0x" +
+                           Twine::utohexstr(offset) + " in section " +
+                           Twine(field) + " repeats no field");
+        fieldInfo = same ? prevField : data.getULEB128(cur);
+        prevField = fieldInfo;
+        haveField = true;
+        if (c.type == LinkCoveragePCRelative) {
+          a = offset + data.getSLEB128(cur);
+          b = offset;
+        } else {
+          a = prevA += data.getSLEB128(cur);
+          b = prevB += data.getSLEB128(cur);
+        }
+        c.kind = fieldInfo & 15;
+        c.size = fieldInfo >> 4;
+        if (!implied)
+          c.constant = data.getSLEB128(cur);
+        else if (c.type == LinkCoveragePCRelative)
+          c.constant = -int64_t(c.size);
+      }
+      if (!cur)
+        break;
+      uint64_t extent = c.type == LinkCoverageAlign      ? a
+                        : c.type == LinkCoverageInterior ? 1
+                                                         : c.size;
+      if (offset + extent > fieldSec->SizeOfRawData ||
+          a > targetSec->SizeOfRawData || b > targetSec->SizeOfRawData ||
+          (!own &&
+           (c.type == LinkCoverageAlign || c.type == LinkCoveragePCRelative)) ||
+          (c.type == LinkCoverageAlign && c.kind > 12))
+        return malformed("coverage entry at offset 0x" +
+                         Twine::utohexstr(offset) + " in section " +
+                         Twine(field) + " is out of range");
+      if ((c.type == LinkCoverageDifference ||
+           c.type == LinkCoveragePCRelative) &&
+          (!isKnownField(c.kind, c.size) ||
+           (c.kind == LinkFieldJump && c.type != LinkCoveragePCRelative))) {
+        unknown.insert(target);
+        continue;
+      }
+      c.a = a;
+      c.b = b;
+      coverage.push_back(c);
+    }
+  }
+  if (Error e = cur.takeError()) {
+    coverage.clear();
+    covered.clear();
+    Err(symtab.ctx) << this
+                    << ": .llvm_link_records is malformed: " << std::move(e);
+    return false;
+  }
+  llvm::stable_sort(coverage, [](const LinkCoverage &l, const LinkCoverage &r) {
+    return std::tie(l.field, l.offset) < std::tie(r.field, r.offset);
+  });
+  llvm::sort(covered);
+  covered.erase(std::unique(covered.begin(), covered.end()), covered.end());
+  llvm::erase_if(covered, [&](uint32_t sec) { return unknown.contains(sec); });
+  return true;
+}
+
+bool ObjFile::isCovered(const SectionChunk *sc) const {
+  return linkRecords && llvm::binary_search(linkRecords->coveredSections,
+                                            sc->getSectionNumber());
+}
+
+ArrayRef<ObjFile::LinkCoverage>
+ObjFile::getLinkCoverage(const SectionChunk *sc) const {
+  if (!linkRecords || linkRecords->coverage.empty())
+    return {};
+  ArrayRef<LinkCoverage> coverage = linkRecords->coverage;
+  uint32_t section = sc->getSectionNumber();
+  auto first = llvm::partition_point(
+      coverage, [&](const LinkCoverage &c) { return c.field < section; });
+  auto last =
+      std::partition_point(first, coverage.end(), [&](const LinkCoverage &c) {
+        return c.field == section;
+      });
+  return ArrayRef(first, last);
+}
+
+std::optional<uint32_t> ObjFile::getLinkInterior(const SectionChunk *sc,
+                                                 uint32_t offset) const {
+  ArrayRef<LinkCoverage> coverage = getLinkCoverage(sc);
+  auto it = llvm::partition_point(
+      coverage, [&](const LinkCoverage &c) { return c.offset < offset; });
+  for (; it != coverage.end() && it->offset == offset; ++it)
+    if (it->type == LinkCoverageInterior)
+      return it->a;
+  return std::nullopt;
 }
 
 bool ObjFile::isCallOnlyRef(const SectionChunk *sc, uint32_t offset) const {

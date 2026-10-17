@@ -30,8 +30,9 @@
 # CHECK:      140002050 0000696d 70006c69 622e646c 6c00a2ff
 # CHECK-NEXT: 140002060 ffffdeff ffff
 
-## The call through the pointer to f still reaches f directly.
-# CHECK: 67 e8 02 00 00 00 addr32 callq 0x140001008
+## The call through the pointer to f still reaches f directly, the five-byte
+## call, since the object covers its code.
+# CHECK: e8 03 00 00 00 callq 0x140001008
 
 # RELOC-COUNT-1: Type: DIR64
 # RELOC-NOT:     Type: DIR64

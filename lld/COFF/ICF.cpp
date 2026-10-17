@@ -181,7 +181,8 @@ bool ICF::sectionsEqual(const SectionChunk *a, const SectionChunk *b) {
            a->getSectionName() == b->getSectionName() &&
            a->header->SizeOfRawData == b->header->SizeOfRawData &&
            a->checksum == b->checksum && a->getContents() == b->getContents() &&
-           a->getMachine() == b->getMachine() && assocEquals(a, b);
+           a->getMachine() == b->getMachine() &&
+           a->file->isCovered(a) == b->file->isCovered(b) && assocEquals(a, b);
   } else {
     Symbol *e1 = a->getEntryThunk();
     Symbol *e2 = b->getEntryThunk();

@@ -22,7 +22,7 @@
 
 # CHECK:      <.text>:
 # CHECK-NEXT: c3 retq
-# CHECK-NEXT: 67 e8 {{.*}} callq 0x140001000
+# CHECK-NEXT: e8 {{.*}} callq 0x140001000
 # CHECK-NEXT: 48 8d 05 {{.*}} leaq
 # CHECK-NEXT: 48 8d 0d {{.*}} leaq
 

@@ -24,6 +24,7 @@ add_lld_library(lldCOFF
   MinGW.cpp
   OverrideTable.cpp
   PDB.cpp
+  Relax.cpp
   SymbolTable.cpp
   Symbols.cpp
   VagueEntities.cpp

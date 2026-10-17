@@ -67,6 +67,9 @@ main:
   .globl tail
 tail:
   rex64 jmpq *__imp_f(%rip)
+  # Alignment with data after the sites leaves .text uncovered, so the linker
+  # keeps the length of each instruction; relax.s checks covered code.
+  .p2align 0, 0
 
   .data
   .quad __imp_h

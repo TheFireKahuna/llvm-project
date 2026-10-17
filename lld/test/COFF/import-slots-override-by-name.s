@@ -37,16 +37,16 @@
 # BLOCK-NEXT: 0007f0 00000000 00000000 00000000 00000000
 ## hook takes its home bucket 46, hook133 its home bucket 47, and hook156,
 ## whose home bucket is 46 too, the next free one, 48.
-# BUCKETS:      000ae0 5a5e31d2 ba8e35e1 00001007 00000000
-# BUCKETS-NEXT: 000af0 f426618e bfc31fe3 0000100d 00000000
-# BUCKETS-NEXT: 000b00 5fc6c1dc bb8850b6 00001013 00000000
+# BUCKETS:      000ae0 5a5e31d2 ba8e35e1 00001006 00000000
+# BUCKETS-NEXT: 000af0 f426618e bfc31fe3 0000100c 00000000
+# BUCKETS-NEXT: 000b00 5fc6c1dc bb8850b6 00001012 00000000
 # SIZE: SizeOfHeaders: 3072
 ## The anchor holds three entries after its eight slots, each key with the
 ## address it names.
 # ANCHOR:      d5c23a7b 01000800 00000000 03000000
-# ANCHOR:      d2315e5a e1358eba 07100040 01000000
-# ANCHOR-NEXT: 8e6126f4 e31fc3bf 0d100040 01000000
-# ANCHOR-NEXT: dcc1c65f b65088bb 13100040 01000000
+# ANCHOR:      d2315e5a e1358eba 06100040 01000000
+# ANCHOR-NEXT: 8e6126f4 e31fc3bf 0c100040 01000000
+# ANCHOR-NEXT: dcc1c65f b65088bb 12100040 01000000
 
 ## Each body the block names is a target of the dispatch from its default, so
 ## the guard function table lists it.
@@ -55,9 +55,9 @@
 # RUN:   -entry:main -subsystem:console
 # RUN: llvm-readobj --coff-load-config guard.exe | FileCheck --check-prefix=GUARD %s
 # GUARD:      GuardFidTable [
-# GUARD-NEXT:   0x140001007
-# GUARD-NEXT:   0x14000100D
-# GUARD-NEXT:   0x140001013
+# GUARD-NEXT:   0x140001006
+# GUARD-NEXT:   0x14000100C
+# GUARD-NEXT:   0x140001012
 # GUARD-NEXT: ]
 
 ## An executable that replaces nothing writes no table.

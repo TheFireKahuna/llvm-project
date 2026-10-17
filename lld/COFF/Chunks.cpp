@@ -10,6 +10,7 @@
 #include "COFFLinkerContext.h"
 #include "InputFiles.h"
 #include "LocalImports.h"
+#include "Relax.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
 #include "Writer.h"
@@ -35,7 +36,7 @@ namespace lld::coff {
 
 SectionChunk::SectionChunk(ObjFile *f, const coff_section *h, Kind k)
     : Chunk(k), file(f), header(h), hasImportSlots(false),
-      hasImportSites(false), repl(this) {
+      hasImportSites(false), relaxed(false), repl(this) {
   // Initialize relocs.
   if (file)
     setRelocs(file->getCOFFObj()->getRelocations(header));
@@ -454,9 +455,52 @@ static void maybeReportRelocationToDiscarded(const SectionChunk *fromChunk,
   error(out);
 }
 
+size_t SectionChunk::getRelaxedSize() const {
+  return file->symtab.ctx.relaxations.find(this)->second.size;
+}
+
+uint32_t SectionChunk::getRelaxedOffset(uint32_t offset) const {
+  return file->symtab.ctx.relaxations.find(this)->second.getOutputOffset(
+      offset);
+}
+
+// Moves the addend that an x86-64 relocation of type holds at off, one whose
+// target is an address, by how far the place it reaches in target, code the
+// linker resizes, moves relative to its symbol, a definition at value.
+static void moveAddend(const SectionChunk *sc, const coff_relocation &rel,
+                       uint8_t *off, uint16_t type, const SectionChunk *target,
+                       uint32_t value) {
+  switch (type) {
+  case IMAGE_REL_AMD64_ADDR32:
+  case IMAGE_REL_AMD64_ADDR32NB:
+  case IMAGE_REL_AMD64_REL32:
+  case IMAGE_REL_AMD64_REL32_1:
+  case IMAGE_REL_AMD64_REL32_2:
+  case IMAGE_REL_AMD64_REL32_3:
+  case IMAGE_REL_AMD64_REL32_4:
+  case IMAGE_REL_AMD64_REL32_5:
+  case IMAGE_REL_AMD64_SECREL: {
+    int32_t addend = read32le(off);
+    add32(off, getAddendShift(sc, rel.VirtualAddress, target, value, addend));
+    break;
+  }
+  case IMAGE_REL_AMD64_ADDR64: {
+    int64_t addend = read64le(off);
+    add64(off, getAddendShift(sc, rel.VirtualAddress, target, value, addend));
+    break;
+  }
+  default:
+    break;
+  }
+}
+
 void SectionChunk::writeTo(uint8_t *buf) const {
   if (!hasData)
     return;
+  if (relaxed) {
+    writeRelaxed(this, buf);
+    return;
+  }
   // Copy section contents from source object file to output file, except the
   // bytes that overlap what precedes the section.
   ArrayRef<uint8_t> a = getContents().drop_front(getElidedSize());
@@ -480,6 +524,10 @@ void SectionChunk::writeTo(uint8_t *buf) const {
 
   if (getArch() == Triple::x86_64 && file->hasLinkFusions())
     writeFusedCalls(this, buf);
+  if (getArch() == Triple::aarch64 && file->hasLinkFusions())
+    writeFusedArm64(this, buf);
+  if (getArch() == Triple::x86_64 && file->hasLinkCoverage())
+    writeCoverageValues(this, buf, 0, inputSize);
 }
 
 bool SectionChunk::isSectionRelative(const coff_relocation &rel) const {
@@ -591,11 +639,16 @@ void SectionChunk::applyRelocation(uint8_t *off,
   }
 
   // A reference through the import pointer of a symbol in the image may reach
-  // the symbol directly instead.
+  // the symbol directly instead, with the constant of an add the linker folds
+  // into it.
   std::optional<LinkSiteForm> rewrite;
-  if (auto *li = dyn_cast_or_null<DefinedLocalImport>(sym))
+  int64_t foldedAddend = 0;
+  if (auto *li = dyn_cast_or_null<DefinedLocalImport>(sym)) {
     if (relaxLocalImport(this, rel, off, li, sym, type, rewrite))
       return;
+    if (rewrite && file->hasLinkFusions())
+      foldedAddend = takeFusedAdd(this, rel, off);
+  }
 
   // Get the output section of the symbol for this relocation.  The output
   // section is needed to compute SECREL and SECTION relocations used in debug
@@ -614,10 +667,15 @@ void SectionChunk::applyRelocation(uint8_t *off,
     return;
   }
 
-  uint64_t s = sym->getRVA();
+  uint64_t s = sym->getRVA() + foldedAddend;
+
+  // A place in code that the linker resizes moves relative to its symbol.
+  if (auto *d = dyn_cast<DefinedRegular>(sym))
+    if (SectionChunk *target = d->getChunk(); target && target->relaxed)
+      moveAddend(this, rel, off, type, target, d->getValue());
 
   // Compute the RVA of the relocation for relative relocations.
-  uint64_t p = rva + rel.VirtualAddress;
+  uint64_t p = rva + getOutputOffset(rel.VirtualAddress);
   if (rewrite && !rewriteLocalImportSite(off, *rewrite, s, p))
     return;
   uint64_t imageBase = ctx.config.imageBase;
@@ -680,6 +738,8 @@ void SectionChunk::writeAndRelocateSubsection(ArrayRef<uint8_t> sec,
       break;
     applyRelocation(&buf[rel.VirtualAddress - vaBegin], rel);
   }
+  if (file->hasLinkCoverage())
+    writeCoverageValues(this, buf, vaBegin, vaEnd);
 }
 
 void SectionChunk::addAssociative(SectionChunk *child) {
@@ -751,7 +811,7 @@ void SectionChunk::getBaserels(std::vector<Baserel> *res) {
     // The loader writes an in-place import slot as an absolute address.
     if (getImportSlot(rel))
       continue;
-    res->emplace_back(rva + rel.VirtualAddress, ty);
+    res->emplace_back(rva + getOutputOffset(rel.VirtualAddress), ty);
   }
 
   // Insert a 64-bit relocation for CHPEMetadataPointer in the native load

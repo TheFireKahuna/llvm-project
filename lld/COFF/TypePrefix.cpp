@@ -183,7 +183,14 @@ void TypePrefixContents::seal(const SymbolRVASet &addressTakenSyms,
   // where only padding precedes it in the chunk: the chunk then starts early,
   // over the end of what precedes it, and its entry lands as close to that
   // end as the chunk's alignment allows. No relocation may lie in the bytes
-  // left out; nothing refers to them, since the prefix's label is static.
+  // left out, nor any change the linker makes to code it resizes; nothing
+  // refers to them, since the prefix's label is static.
+  auto changesBefore = [&](const SectionChunk *sc, uint32_t entry) {
+    if (!sc->relaxed)
+      return false;
+    const Relaxation &r = ctx.relaxations.find(sc)->second;
+    return !r.edits.empty() && r.edits.front().offset < entry;
+  };
   for (const auto &[c, indices] : kcfiEntries) {
     const TypePrefix &p = typePrefixes[indices[0]];
     uint32_t align = p.chunk->getAlignment();
@@ -191,9 +198,11 @@ void TypePrefixContents::seal(const SymbolRVASet &addressTakenSyms,
     if (indices.size() == 1 && p.sealed && p.offset + p.size == p.entry &&
         !unalignedTargetChunks.contains(p.chunk) &&
         (alignedEntry || !openGranules) &&
-        llvm::none_of(p.chunk->getRelocs(), [&](const coff_relocation &r) {
-          return r.VirtualAddress < p.entry;
-        }))
+        llvm::none_of(p.chunk->getRelocs(),
+                      [&](const coff_relocation &r) {
+                        return r.VirtualAddress < p.entry;
+                      }) &&
+        !changesBefore(p.chunk, p.entry))
       p.chunk->elidedPrefix = getElidedPrefixKind(p.entry, align);
   }
   kcfiUnprefixedTargets =
@@ -258,8 +267,8 @@ void TypePrefixContents::write(uint8_t *buf) const {
     if (!p.sealed)
       continue;
     OutputSection *sec = ctx.getOutputSection(p.chunk);
-    uint8_t *loc =
-        buf + sec->getFileOff() + p.chunk->getRVA() - sec->getRVA() + p.offset;
+    uint8_t *loc = buf + sec->getFileOff() + p.chunk->getRVA() - sec->getRVA() +
+                   p.chunk->getOutputOffset(p.offset);
     if (p.chunk->getElidedSize()) {
       if (read32le(loc + p.size - 8) == getPattern() >> 32 ||
           read32le(loc + p.size - 12) == uint32_t(getPattern()))
