@@ -8,6 +8,8 @@
 
 #include "wincrt.h"
 
+WINCRT_WRAP_UCRT
+
 int main(int, char **, char **);
 
 static int invokeMain() {

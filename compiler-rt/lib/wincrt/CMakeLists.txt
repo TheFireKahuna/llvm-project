@@ -28,12 +28,17 @@ set(WINCRT_SOURCES
   ucrt_stdio.c
   )
 
-# The process's termination registries, which every image imports from
-# clang_rt.wincrt_dynamic.dll, and which clang_rt.wincrt_static.lib holds for a
-# program linked with -static.
+# The parts of wincrt that serve the whole process, the termination
+# registries, exit, raise, abort, the thread start and rand_s, which every
+# image imports from clang_rt.wincrt_dynamic.dll, and which
+# clang_rt.wincrt_static.lib holds for a program linked with -static.
 set(WINCRT_ATEXIT_SOURCES
   cxa_atexit.cpp
   cxa_thread_atexit.cpp
+  exit.cpp
+  rand_s.cpp
+  signal.cpp
+  thread.cpp
   )
 
 # wincrt's own indirect calls are guarded, and its objects list the functions

@@ -23,6 +23,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <winternl.h>
 
 #if !defined(__x86_64__) && !defined(__aarch64__)
 #error "wincrt supports x86-64 and AArch64 only"
@@ -35,10 +36,21 @@
 #define WINCRT_INCLUDE(Name)                                                   \
   __pragma(comment(linker, "/include:" WINCRT_STRINGIFY(Name)))
 
-// The process's termination registries. Every image imports them from
-// clang_rt.wincrt_dynamic.dll, which exports them, so that registration is
-// process-wide and finalization per image; a program linked with -static
-// keeps them in the executable, from clang_rt.wincrt_static.lib.
+// Every entry object wraps the Universal CRT functions that wincrt defines
+// again, so that each reference to them in the image, the Universal CRT's
+// import included, reaches wincrt's definitions.
+#define WINCRT_WRAP_UCRT                                                       \
+  __pragma(comment(linker,                                                     \
+                   "/wrap:exit /wrap:_exit /wrap:_Exit "                       \
+                   "/wrap:_beginthread /wrap:_beginthreadex "                  \
+                   "/wrap:_endthread /wrap:_endthreadex /wrap:rand_s "         \
+                   "/wrap:raise /wrap:abort"))
+
+// The parts of wincrt that serve the whole process: the termination
+// registries, exit, raise, abort, the thread start and rand_s. Every image
+// imports them from clang_rt.wincrt_dynamic.dll, which exports them, so that
+// registration is process-wide and finalization per image; a program linked
+// with -static keeps them in the executable, from clang_rt.wincrt_static.lib.
 #ifdef COMPILER_RT_SHARED_LIB
 #define WINCRT_ATEXIT_API __attribute__((visibility("default")))
 #else
@@ -82,8 +94,10 @@ WINCRT_ATEXIT_API void __wincrt_register_executable(void (*)(void));
 WINCRT_ATEXIT_API int __wincrt_detach_image(void *, int);
 }
 
-// An image without libc++abi has no active exception to report.
-WINCRT_ALTERNATENAME(__cxa_call_terminate, abort)
+// An image without libc++abi has no active exception to report. The alias
+// names wincrt's abort itself, since the wrap of abort renames references to
+// it but not the target of an alias.
+WINCRT_ALTERNATENAME(__cxa_call_terminate, __wrap_abort)
 
 // IMAGE_LOAD_CONFIG_DIRECTORY64, but with GuardFlags and the CodeIntegrity
 // flags and catalog, which are zero, as one 64-bit field. The guard flags are
@@ -279,6 +293,18 @@ inline void *crtAlloc(size_t Size) {
 }
 
 inline void crtFree(void *Memory) { HeapFree(GetProcessHeap(), 0, Memory); }
+
+// Whether this is a secure (IUM) process, whose process parameters carry
+// RTL_USER_PROC_SECURE_PROCESS, the top bit of the flags that winternl.h
+// leaves unnamed at offset 8. The Universal CRT asks no app model policy
+// there.
+inline bool isSecureProcess() {
+  const char *Parameters = reinterpret_cast<const char *>(
+      NtCurrentTeb()->ProcessEnvironmentBlock->ProcessParameters);
+  ULONG Flags;
+  __builtin_memcpy(&Flags, Parameters + 8, sizeof(Flags));
+  return Flags & 0x80000000;
+}
 
 // The body of an executable's entry point. Each entry point is a separate
 // translation unit that instantiates this with its own user entry, so that

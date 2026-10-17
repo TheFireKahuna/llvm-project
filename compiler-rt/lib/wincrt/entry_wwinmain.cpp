@@ -8,6 +8,8 @@
 
 #include "wincrt.h"
 
+WINCRT_WRAP_UCRT
+
 static int invokeMain() {
   return wWinMain(reinterpret_cast<HINSTANCE>(&__ImageBase), nullptr,
                   _get_wide_winmain_command_line(), wincrt::showWindowMode());

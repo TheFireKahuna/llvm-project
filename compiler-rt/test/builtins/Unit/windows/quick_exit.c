@@ -1,9 +1,10 @@
 // RUN: %clang_wincrt %s -o %t.exe
 // RUN: %run %t.exe quick_exit | FileCheck %s --check-prefix=QUICK
 // RUN: %run %t.exe _Exit | FileCheck %s --check-prefix=EXIT --allow-empty
+// RUN: %run %t.exe _exit | FileCheck %s --check-prefix=EXIT --allow-empty
 
 // quick_exit runs the at_quick_exit registrations in reverse order and no
-// atexit one; _Exit runs neither.
+// atexit one; _Exit and _exit run neither.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,6 +24,8 @@ int main(int argc, char **argv) {
   fflush(stdout);
   if (argc == 2 && !strcmp(argv[1], "_Exit"))
     _Exit(0);
+  if (argc == 2 && !strcmp(argv[1], "_exit"))
+    _exit(0);
   quick_exit(0);
 }
 
