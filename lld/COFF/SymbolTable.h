@@ -219,6 +219,29 @@ public:
   };
   std::vector<OverrideReplacement> overrideReplacements;
 
+  // The override table this executable writes, by slot: for each slot the body
+  // its entry names, or null, and whether the slot's default is replaced (so
+  // the anchor's mask records it) or only forwarded. Empty when the executable
+  // replaces nothing. overrideMask is the mask the anchor holds. overrideAnchor
+  // is the chunk that holds the anchor, which the runtime reaches by name.
+  struct OverrideSlot {
+    Defined *target = nullptr;
+    bool replaced = false;
+  };
+  std::vector<OverrideSlot> overrideSlots;
+  uint32_t overrideMask = 0;
+  Chunk *overrideAnchor = nullptr;
+
+  // Under -import-slots in the resolution loop, once records are loaded and an
+  // input defines a replacement, names __ovr_check, the executable's start-up
+  // validation, and defines __ovr_anchor at the anchor chunk the writer fills.
+  // Returns whether it added anything to the link.
+  bool nameOverrideCheck();
+
+  // Lays the replacements out by slot into overrideSlots for the writer, and
+  // marks each body a root.
+  void buildOverrideSlots();
+
   // The names of the overridable defaults that inputs define, from their
   // /overridable: directives.
   llvm::DenseSet<StringRef> overridables;

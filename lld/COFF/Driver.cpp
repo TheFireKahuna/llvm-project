@@ -2997,8 +2997,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
         loadedImports |= symtab.loadLocalImportMembers();
 
         // Under -import-slots, an executable that replaces an overridable
-        // default loads the C++ runtime's records member for its slots.
+        // default loads the C++ runtime's records member for its slots, then
+        // the runtime's start-up validation of the table it writes.
         loadedImports |= symtab.loadOverrideRecords();
+        loadedImports |= symtab.nameOverrideCheck();
       });
 
       ctx.forEachActiveSymtab([&](SymbolTable &symtab) {

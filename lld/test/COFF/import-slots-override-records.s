@@ -48,6 +48,12 @@
         .globl _Znwy
 _Znwy:
         retq
+        .data
+## Stands in for the C++ runtime's start-up validation, which a replacing link
+## names so its member, and the table it reads, come in together.
+        .globl __ovr_check
+__ovr_check:
+        .quad 0
         .section .drectve,"yn"
         .ascii " /OVERRIDABLE:_Znwy /INCLUDE:__llvm_overrides_v1"
 
