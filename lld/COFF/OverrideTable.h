@@ -39,6 +39,11 @@ inline constexpr uint32_t overrideTagBase = 0xC5E1A7F3;
 inline constexpr uint32_t overrideTableBase = 0x40;
 inline constexpr uint32_t overrideHeaderOffset = 0x80;
 
+// A DLL exports its own strong definition of an overridable default under this
+// prefix, so no importer binds to it as the ABI symbol: it is an offer the
+// executable's link selects for the program, not the program's replacement.
+inline constexpr llvm::StringLiteral overrideOfferPrefix = "__ovr_offer$";
+
 // The tag that marks slot k in use.
 inline uint32_t overrideTag(uint32_t k) { return overrideTagBase ^ k; }
 
