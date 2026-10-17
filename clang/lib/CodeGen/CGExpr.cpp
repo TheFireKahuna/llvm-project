@@ -3466,8 +3466,12 @@ static LValue EmitGlobalVarDeclLValue(CodeGenFunction &CGF,
                                       const Expr *E, const VarDecl *VD) {
   QualType T = E->getType();
 
-  // If it's thread_local, emit a call to its wrapper function instead.
-  if (VD->getTLSKind() == VarDecl::TLS_Dynamic &&
+  // If it's thread_local, emit a call to its wrapper function instead. On
+  // Windows Itanium and NT-POSIX a C thread-local of another image takes one
+  // too.
+  if ((VD->getTLSKind() == VarDecl::TLS_Dynamic ||
+       (VD->getTLSKind() == VarDecl::TLS_Static &&
+        CGF.getTarget().getTriple().isWindowsItaniumOrNTPOSIXEnvironment())) &&
       CGF.CGM.getCXXABI().usesThreadWrapperFunction(VD))
     return CGF.CGM.getCXXABI().EmitThreadLocalVarDeclLValue(CGF, VD, T);
   // Check if the variable is marked as declare target with link clause in

@@ -418,6 +418,8 @@ public:
       ArrayRef<const VarDecl *> CXXThreadLocalInitVars) override;
 
   bool usesThreadWrapperFunction(const VarDecl *VD) const override {
+    if (VD->getTLSKind() == VarDecl::TLS_Static)
+      return isImportedThreadLocal(VD);
     return !isEmittedWithConstantInitializer(VD) || mayNeedDestruction(VD) ||
            isImportedThreadLocal(VD);
   }
@@ -434,6 +436,8 @@ private:
   bool hasThreadLocalRecord(const VarDecl *VD,
                             const llvm::GlobalVariable *Var) const;
   bool isImportedThreadLocal(const VarDecl *VD) const;
+  llvm::Function *createEmptyThreadLocalInit(llvm::GlobalVariable *Var,
+                                             StringRef Name);
   void emitThreadLocalRecord(llvm::GlobalVariable *Var,
                              llvm::GlobalVariable *Guard,
                              llvm::GlobalValue *Init);
@@ -3368,9 +3372,24 @@ bool ItaniumCXXABI::hasThreadLocalRecord(
 // A declaration takes the record when an explicit default visibility marks it
 // as another image's, as it does a declaration of any other variable.
 bool ItaniumCXXABI::isImportedThreadLocal(const VarDecl *VD) const {
-  return hasThreadLocalRecords() && VD->getTLSKind() == VarDecl::TLS_Dynamic &&
+  return hasThreadLocalRecords() && VD->getTLSKind() != VarDecl::TLS_None &&
          !VD->hasDefinition() && VD->isExternallyVisible() &&
          CGM.isMappedImportVisibility(VD->getLinkageAndVisibility());
+}
+
+// An init function named Name that runs nothing, with the linkage of Var.
+llvm::Function *
+ItaniumCXXABI::createEmptyThreadLocalInit(llvm::GlobalVariable *Var,
+                                          StringRef Name) {
+  llvm::FunctionType *InitFnTy = llvm::FunctionType::get(CGM.VoidTy, false);
+  llvm::Function *Func = llvm::Function::Create(InitFnTy, Var->getLinkage(),
+                                                Name, &CGM.getModule());
+  const CGFunctionInfo &FI = CGM.getTypes().arrangeNullaryFunction();
+  CGM.SetLLVMFunctionAttributes(GlobalDecl(), FI, Func, /*IsThunk=*/false);
+  CGBuilderTy Builder(CGM,
+                      llvm::BasicBlock::Create(CGM.getLLVMContext(), "", Func));
+  Builder.CreateRetVoid();
+  return Func;
 }
 
 // Emits and exports VAR$tls, and exports the init function Init beside it.
@@ -3448,8 +3467,10 @@ llvm::Value *ItaniumCXXABI::emitImportedThreadLocalAddress(
 
   // As the defining image's wrapper does, run the initialization unless the
   // guard says it has run on this thread. A declaration that promises constant
-  // initialization and a trivial destructor needs no check.
-  if (!isEmittedWithConstantInitializer(VD) || mayNeedDestruction(VD)) {
+  // initialization and a trivial destructor needs no check, nor does a C
+  // thread-local, which has no initialization to run.
+  if (VD->getTLSKind() == VarDecl::TLS_Dynamic &&
+      (!isEmittedWithConstantInitializer(VD) || mayNeedDestruction(VD))) {
     llvm::Value *GuardOffset = LoadField(
         CGM.Int32Ty, Builder.CreateConstInBoundsGEP2_32(RecordTy, Record, 0, 2),
         CharUnits::fromQuantity(4));
@@ -3538,6 +3559,21 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
   // Create declarations for thread wrappers for all thread-local variables
   // with non-discardable definitions in this translation unit.
   for (const VarDecl *VD : CXXThreadLocals) {
+    // A C thread-local that another image may use has a record, and an empty
+    // init function for an importer in C++ to name.
+    if (VD->getTLSKind() == VarDecl::TLS_Static) {
+      auto *Var = cast<llvm::GlobalVariable>(
+          CGM.GetGlobalValue(CGM.getMangledName(VD)));
+      if (hasThreadLocalRecord(VD, Var)) {
+        SmallString<256> InitFnName;
+        llvm::raw_svector_ostream Out(InitFnName);
+        getMangleContext().mangleItaniumThreadLocalInit(VD, Out);
+        llvm::Function *Init = createEmptyThreadLocalInit(Var, InitFnName);
+        Init->setComdat(Var->getComdat());
+        emitThreadLocalRecord(Var, /*Guard=*/nullptr, Init);
+      }
+      continue;
+    }
     if (VD->hasDefinition() &&
         !isDiscardableGVALinkage(getContext().GetGVALinkageForVariable(VD))) {
       llvm::GlobalValue *GV = CGM.GetGlobalValue(CGM.getMangledName(VD));
@@ -3649,16 +3685,7 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
       // is elsewhere.
       assert(Init == nullptr && "Expected Init to be null.");
 
-      llvm::Function *Func = llvm::Function::Create(
-          InitFnTy, Var->getLinkage(), InitFnName.str(), &CGM.getModule());
-      const CGFunctionInfo &FI = CGM.getTypes().arrangeNullaryFunction();
-      CGM.SetLLVMFunctionAttributes(GlobalDecl(), FI,
-                                    cast<llvm::Function>(Func),
-                                    /*IsThunk=*/false);
-      // Create a function body that just returns
-      llvm::BasicBlock *Entry = llvm::BasicBlock::Create(Context, "", Func);
-      CGBuilderTy Builder(CGM, Entry);
-      Builder.CreateRetVoid();
+      llvm::Function *Func = createEmptyThreadLocalInit(Var, InitFnName);
       if (HasRecord) {
         Func->setComdat(Var->getComdat());
         emitThreadLocalRecord(Var, /*Guard=*/nullptr, Func);

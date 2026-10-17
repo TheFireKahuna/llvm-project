@@ -6365,7 +6365,7 @@ CodeGenModule::GetOrCreateLLVMGlobal(StringRef MangledName, llvm::Type *Ty,
     setLinkageForGV(GV, D);
 
     if (D->getTLSKind()) {
-      if (D->getTLSKind() == VarDecl::TLS_Dynamic)
+      if (D->getTLSKind() == VarDecl::TLS_Dynamic || hasCThreadLocalRecord(D))
         CXXThreadLocals.push_back(D);
       setTLSMode(GV, *D);
     }
@@ -7174,7 +7174,7 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D,
   setNonAliasAttributes(D, GV);
 
   if (D->getTLSKind() && !GV->isThreadLocal()) {
-    if (D->getTLSKind() == VarDecl::TLS_Dynamic)
+    if (D->getTLSKind() == VarDecl::TLS_Dynamic || hasCThreadLocalRecord(D))
       CXXThreadLocals.push_back(D);
     setTLSMode(GV, *D);
   }

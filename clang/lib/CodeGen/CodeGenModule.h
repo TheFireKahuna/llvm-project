@@ -1036,6 +1036,14 @@ public:
 
   void setDSOLocal(llvm::GlobalValue *GV) const;
 
+  /// On Windows Itanium and NT-POSIX a C thread-local that the visibility
+  /// mapping exports has a record, which the C++ ABI emits with those of C++
+  /// thread-locals.
+  bool hasCThreadLocalRecord(const VarDecl *D) const {
+    return D->getTLSKind() == VarDecl::TLS_Static &&
+           getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+           shouldMapVisibilityToDLLExport(D);
+  }
   bool shouldMapVisibilityToDLLExport(const NamedDecl *D) const {
     return getLangOpts().hasDefaultVisibilityExportMapping() && D &&
            (D->getLinkageAndVisibility().getVisibility() ==

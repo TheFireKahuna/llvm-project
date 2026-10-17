@@ -51,7 +51,9 @@ struct DEFAULT S {
 // MAPPED-DAG:   @marked_var = external dllimport global i32
 // UNMAPPED-DAG: @marked_var = external dso_local global i32
 // CHECK-DAG:    @plain_var = external dso_local global i32
-// CHECK-DAG:    @tls_var = external dso_local thread_local global i32
+// A marked thread-local declaration is reached through its record.
+// MAPPED-DAG:   @"tls_var$tls" = external dllimport constant
+// UNMAPPED-DAG: @tls_var = external dso_local thread_local global i32
 // MAPPED-DAG:   @_ZN1S13static_memberE = external dllimport global i32
 // UNMAPPED-DAG: @_ZN1S13static_memberE = external dso_local global i32
 
