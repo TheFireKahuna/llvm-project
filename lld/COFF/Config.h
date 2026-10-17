@@ -88,6 +88,8 @@ struct Export {
   // forwardTo is set to "dllname.bar" part. Usually empty.
   StringRef forwardTo;
   StringChunk *forwardChunk = nullptr;
+  // The export's name in the export table.
+  StringChunk *nameChunk = nullptr;
 
   ExportSource source = ExportSource::Unset;
   StringRef symbolName;

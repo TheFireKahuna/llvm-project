@@ -22,7 +22,7 @@
 ## At the first read-only cell to write, each range made writable: the
 ## pointer's, in .rdata, then .myro's, past .data; at the end each made
 ## read-only again.
-# CHECK:      testb $0x1, 0xc(%rbx)
+# CHECK:      testb $0x1, (%rbx)
 # CHECK:      leaq {{.*}}(%rip), %rax # 0x[[#%x,FIRST:]]
 # CHECK-NEXT: movq %rax, 0x30(%rsp)
 # CHECK-NEXT: movq $0x8, 0x38(%rsp)
@@ -46,7 +46,7 @@
 # RUN:   -merge:.myro=.rdata -out:merged.dll
 # RUN: llvm-objdump -d --print-imm-hex merged.dll | \
 # RUN:   FileCheck --check-prefix=MERGED %s
-# MERGED:      testb $0x1, 0xc(%rbx)
+# MERGED:      testb $0x1, (%rbx)
 # MERGED:      leaq {{.*}}(%rip), %rax # 0x[[#%x,BASE:]]
 # MERGED-NEXT: movq %rax, 0x30(%rsp)
 # MERGED-NEXT: movq $0x[[#%x,SIZE:]], 0x38(%rsp)

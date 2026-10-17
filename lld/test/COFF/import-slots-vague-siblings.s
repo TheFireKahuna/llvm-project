@@ -28,12 +28,12 @@
 # RUN: FileCheck --check-prefix=CELL --input-file=b.txt %s
 ## b's own reference reads its cell, which its fill of cells bound by name
 ## writes from the word the executable's block names for the entity's key: its
-## list holds the cell, read-only and a vague entity's.
-# CELL:      b65fec27 d80a3472 {{[0-9a-f]+}} 03000000
+## list holds the cell, read-only, with the name its export holds.
+# CELL:      b75fec27 d80a3472 {{[0-9a-f]+}} {{[0-9a-f]*[2-9a-f][0-9a-f]*}}
 # CELL:      <fb>:
 # CELL-NEXT: movq {{.*}}(%rip), %rax
 # CELL:      movq 0x8(%rax), %r13
-# CELL-NEXT: testb $0x2, 0xc(%rbx)
+# CELL-NEXT: cmpl $0x0, 0xc(%rbx)
 # CELL-NEXT: je
 # CELL-NEXT: movq (%r13), %r13
 

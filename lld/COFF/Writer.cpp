@@ -1267,9 +1267,7 @@ void Writer::createSections() {
   }
   if (Chunk *table = slots.getVagueOfferTable())
     createPartialSection(".rdata", data | r)->chunks.push_back(table);
-  if (!slots.getNamedCellNames().empty())
-    llvm::append_range(createPartialSection(".rdata", data | r)->chunks,
-                       slots.getNamedCellNames());
+
   if (Chunk *fill = slots.getFill()) {
     createPartialSection(".text", fill->getOutputCharacteristics())
         ->chunks.push_back(fill);
@@ -2365,8 +2363,12 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
       write32le(stub + 0x34, state->getRVA());
     }
     if (Chunk *table = slots.getVagueOfferTable()) {
-      write32le(stub + vagueOfferTableOffset, vagueOfferTableTag);
-      write32le(stub + vagueOfferTableOffset + 4, table->getRVA());
+      if (ctx.config.dll) {
+        write32le(stub + vagueOfferTableOffset, vagueOfferTableTag);
+        write32le(stub + vagueOfferTableOffset + 4, table->getRVA());
+      } else {
+        write32le(stub + executableOfferTableOffset, table->getRVA());
+      }
     }
     memcpy(stub + programOffset, dosProgram, sizeof(dosProgram));
     buf = stub + dosStubSize;

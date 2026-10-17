@@ -39,9 +39,13 @@ inline constexpr uint32_t threadLocalSlotCopyTag = 0x9E3779B9;
 // delay-loads a DLL, names its table of them in the reserved words of its MZ
 // header, as {tag u32, rva u32} at this offset, where a DLL that the
 // executable's link did not see finds it through the loader's list of modules.
-// An executable keeps its exit-list state's locator here instead.
+// An executable keeps its exit-list state's locator there instead, and names
+// its own table, of the vague entities it exports, by its RVA after it; the
+// table starts with a magic of its own.
 inline constexpr uint32_t vagueOfferTableOffset = 0x30;
 inline constexpr uint32_t vagueOfferTableTag = 0x6C8E9CF5;
+inline constexpr uint32_t executableOfferTableOffset = 0x38;
+inline constexpr uint32_t vagueOfferTableMagic = 0x4F7A1D2B;
 
 // The addend that the word of rel, an address as wide as the image's pointers,
 // holds; none if the word extends past the end of sc.
@@ -129,7 +133,7 @@ public:
   Chunk *getNamedCellFillPdata() const { return namedCellFillPdata; }
   Chunk *getNamedCellList() const { return namedCellList; }
   Chunk *getVagueOfferTable() const { return vagueOfferTable; }
-  ArrayRef<Chunk *> getNamedCellNames() const { return namedCellNames; }
+
   Chunk *getThreadLocalSlotCopy() const { return threadLocalSlotCopy; }
   Chunk *getThreadLocalSlotCopyPointer() const {
     return threadLocalSlotCopyPointer;
@@ -204,7 +208,7 @@ private:
   Chunk *namedCellFillPdata = nullptr;
   Chunk *namedCellList = nullptr;
   Chunk *vagueOfferTable = nullptr;
-  std::vector<Chunk *> namedCellNames;
+
   // The copy of an executable's thread-local slots and its pointer in the C
   // initializer table.
   Chunk *threadLocalSlotCopy = nullptr;

@@ -736,7 +736,6 @@ void IdataContents::create(COFFLinkerContext &ctx) {
   StringMap<std::vector<std::vector<ImportSlot *> *>> runsByDLL;
   for (std::vector<ImportSlot *> &run : slotRuns)
     runsByDLL[run[0]->sym->getDLLName().lower()].push_back(&run);
-  DenseMap<DefinedImportData *, HintNameChunk *> hintOf;
 
   // With in-place slots, lookup tables are written once each after every
   // descriptor is made, so that identical ones can be shared. The tables of
@@ -830,7 +829,7 @@ void IdataContents::create(COFFLinkerContext &ctx) {
       table.dir = make<ImportDirectoryChunk>(dllNames.back());
       for (ImportSlot *slot : *run) {
         DefinedImportData *s = slot->sym;
-        if (HintNameChunk *hint = hintOf.lookup(s))
+        if (Chunk *hint = hintOf.lookup(s))
           slot->lookup = make<LookupChunk>(ctx, hint);
         else
           slot->lookup = make<OrdinalOnlyChunk>(ctx, s->getOrdinal());
@@ -933,8 +932,7 @@ void IdataContents::create(COFFLinkerContext &ctx) {
         lookupsChunk = make<LookupChunk>(ctx, hintChunk);
         addressesChunk = make<LookupChunk>(ctx, hintChunk);
         hints.push_back(hintChunk);
-        if (pool)
-          hintOf[s] = hintChunk;
+        hintOf[s] = hintChunk;
       }
 
       // Detect the first EC-only import in the hybrid IAT. Emit null chunk
@@ -1306,7 +1304,7 @@ void createEdataChunks(SymbolTable &symtab, std::vector<Chunk *> &chunks) {
   std::vector<Chunk *> names;
   for (Export &e : symtab.exports)
     if (!e.noname)
-      names.push_back(make<StringChunk>(e.exportName));
+      names.push_back(e.nameChunk = make<StringChunk>(e.exportName));
 
   std::vector<Chunk *> forwards;
   for (Export &e : symtab.exports) {

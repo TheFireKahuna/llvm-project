@@ -90,21 +90,20 @@
 # FILL-NEXT: ImportLookupTableRVA:
 # FILL-NEXT: ImportAddressTableRVA: 0x3000
 # FILL-NEXT: Symbol: hook
-## Each entry is {key, rva, flags, name, length}, 24 bytes; a default has no
-## name.
+## Each entry is {key, rva, name}, the key's bit 0 marking a read-only cell;
+## a default has no name.
 # FILL:      180002000 d2315e5a e1358eba 00300000 00000000
-# FILL-NEXT: 180002010 00000000 00000000 d2315e5a e1358eba
-# FILL-NEXT: 180002020 {{[0-9a-f]+}} 01000000 00000000 00000000
+# FILL-NEXT: 180002010 d3315e5a e1358eba {{[0-9a-f]+}} 00000000
 # FILL:      cmpl $0x7b3ac2d5, 0x80(%rdi)
 # FILL:      leaq {{.*}}(%rip), %rbx # 0x180002000
 # FILL:      cmpq %r12, (%rax)
 # FILL-NEXT: je
-# FILL:      testb $0x1, 0xc(%rbx)
+# FILL:      testb $0x1, (%rbx)
 # FILL:      movl $0x4, %r9d
 # FILL:      callq *{{.*}}(%rip) # 0x[[#%x,0x180000000+PROTECT]]
 # FILL:      movq %r13, (%rcx,%rax)
 # FILL:      movq 0x8(%rax), %r13
-# FILL-NEXT: testb $0x2, 0xc(%rbx)
+# FILL-NEXT: cmpl $0x0, 0xc(%rbx)
 # RUN: FileCheck --check-prefix=NOSEARCH --input-file=use.txt %s
 # NOSEARCH-NOT: LdrAddRefDll
 # NOSEARCH-NOT: 0x6c8e9cf5

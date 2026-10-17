@@ -40,6 +40,8 @@ public:
   std::vector<Chunk *> dllNames;
   std::vector<Chunk *> auxIat;
   std::vector<Chunk *> auxIatCopy;
+  // The hint/name record of each named import.
+  llvm::DenseMap<DefinedImportData *, Chunk *> hintOf;
 };
 
 // Windows-specific.

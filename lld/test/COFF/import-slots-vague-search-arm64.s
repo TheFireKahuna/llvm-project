@@ -33,7 +33,6 @@
 # CHECK-NEXT: ImportLookupTableRVA:
 # CHECK-NEXT: ImportAddressTableRVA: 0x[[#%X,NTDLL:]]
 # CHECK-NEXT: Symbol: LdrAddRefDll
-# CHECK-NEXT: Symbol: LdrGetProcedureAddressForCaller
 # CHECK-NEXT: Symbol: NtProtectVirtualMemory
 
 ## The reference reads the cell.
@@ -42,29 +41,33 @@
 # CHECK-NEXT: ldr x0, [x0
 
 ## Bit 2 of w24 records a DLL loaded after the process initialized. For an
-## entity the executable's table does not name, such a DLL searches the
-## modules after the executable, each with the table's tag inside its image,
-## probed if loaded with the process, if delay-loaded within that scope, or if
-## it delay-loads this DLL.
+## entity the executable's table does not name, such a DLL searches the images
+## of its scope, the executable first through the table it names at 0x38, then
+## each module with a table's tag inside its image, probed if loaded with the
+## process, if delay-loaded within that scope, or if it delay-loads this DLL.
 # CHECK:      stp x29, x30, [sp, #-0x90]!
 # CHECK:      mov w24, #0x0
 # CHECK-NEXT: ldr x16, [x18, #0x60]
 # CHECK-NEXT: ldrb w9, [x16, #0x50]
 # CHECK-NEXT: tbnz w9, #0x1,
 # CHECK-NEXT: orr w24, w24, #0x4
-## First the executable, by the entity's exact name.
-# CHECK:      ldr w9, [x19, #0x10]
-# CHECK-NEXT: cbz w9,
-# CHECK:      ldr x0, [x9, #0x10]
-# CHECK:      ldr x23, [sp, #0x80]
-# CHECK-NEXT: cbnz x23,
+# CHECK:      ldr x22, [x19]
+# CHECK-NEXT: and x22, x22, #0xfffffffffffffffe
+# CHECK:      ldr w9, [x19, #0xc]
+# CHECK-NEXT: cmp w9, #0x1
+# CHECK-NEXT: b.ls
+# CHECK-NEXT: tbz w24, #0x2,
 # CHECK:      ldr x26, [x9, #0x18]
 # CHECK-NEXT: add x26, x26, #0x10
+# CHECK-NEXT: ldr x25, [x26]
 # CHECK:      ldr x10, [x25, #0x30]
+# CHECK:      ldr w11, [x10, #0x38]
 # CHECK:      ldr w11, [x10, #0x30]
 # CHECK-NEXT: mov w12, #0x9cf5
 # CHECK-NEXT: movk w12, #0x6c8e, lsl #16
 # CHECK:      ldr w12, [x25, #0x40]
+# CHECK:      mov w13, #0x1d2b
+# CHECK-NEXT: movk w13, #0x4f7a, lsl #16
 # CHECK:      ldr w12, [x25, #0x68]
 # CHECK-NEXT: tbnz w12, #0x5,
 # CHECK:      ldr w12, [x13, #0x10c]
@@ -72,26 +75,38 @@
 # CHECK:      ldr x14, [x13, #0xb8]
 # CHECK:      ldr x12, [x13, #0x30]
 # CHECK-NEXT: cmp x12, x14
-## On a hit, LdrAddRefDll(LDR_ADDREF_DLL_PIN, module), whose failure ends the
-## search with its status.
-## A bucket's key counts only if its name is the entity's.
+## Two of the key's bits in the filter's word.
+# CHECK:      lsr x12, x22, #13
+# CHECK:      ldr x12, [x12, #0x20]
+# CHECK:      lsr x14, x12, x13
+# CHECK-NEXT: tbz w14, #0x0,
+## A bucket's key counts only if its name is the entity's, up to its
+## terminator.
 # CHECK:      ldrb w16, [x12], #0x1
 # CHECK-NEXT: ldrb w17, [x14], #0x1
 # CHECK-NEXT: cmp w16, w17
-# CHECK:      ldr x23, [x10, x9]
+## The executable's entry names the instance itself, a DLL's a word holding
+## it. On a hit in a DLL, LdrAddRefDll(LDR_ADDREF_DLL_PIN, module), whose
+## failure ends the search with its status.
+# CHECK:      add x23, x10, x9
+# CHECK-NEXT: ldr w12, [x11, #0x4]
+# CHECK-NEXT: tbnz w12, #0x0,
+# CHECK-NEXT: ldr x23, [x23]
 # CHECK:      mov w0, #0x1
 # CHECK-NEXT: mov x1, x10
 # CHECK-NEXT: adrp x16, 0x[[#%x,mul(div(NTDLL + 0x180000000, 0x1000), 0x1000)]]
 # CHECK-NEXT: ldr x16, [x16, #0x[[#%x,sub(NTDLL, mul(div(NTDLL, 0x1000), 0x1000))]]]
 # CHECK-NEXT: blr x16
 # CHECK-NEXT: tbnz w0, #0x1f,
+# CHECK:      ldr w9, [x19]
+# CHECK-NEXT: tbz w9, #0x0,
 # CHECK:      str x23, [x27, x9]
-# CHECK-NEXT: add x19, x19, #0x18
+# CHECK-NEXT: add x19, x19, #0x10
 ## An entity the table names takes the word its entry names, then the
 ## instance from it.
 # CHECK:      ldr x23, [x11, #0x8]
 # CHECK-NEXT: ldr w9, [x19, #0xc]
-# CHECK-NEXT: tbz w9, #0x1,
+# CHECK-NEXT: cbz w9,
 # CHECK-NEXT: ldr x23, [x23]
 # CHECK-NEXT: b
 ## Nothing pins the DLL itself.

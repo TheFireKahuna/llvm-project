@@ -19,17 +19,16 @@
 
 ## The fill's list: the pointer, the writable word and the read-only word,
 ## under the default's key, the read-only ones marked.
-## Each entry is {key, rva, flags, name, length}, 24 bytes.
-# CHECK:      d2315e5a e1358eba {{[0-9a-f]+}} 01000000
-# CHECK-NEXT: 00000000 00000000 d2315e5a e1358eba
-# CHECK-NEXT: {{[0-9a-f]+}} 00000000 00000000 00000000
-# CHECK-NEXT: d2315e5a e1358eba {{[0-9a-f]+}} 01000000
+## Each entry is {key, rva, name}, the key's bit 0 marking a read-only cell.
+# CHECK:      d3315e5a e1358eba {{[0-9a-f]+}} 00000000
+# CHECK-NEXT: d2315e5a e1358eba {{[0-9a-f]+}} 00000000
+# CHECK-NEXT: d3315e5a e1358eba {{[0-9a-f]+}} 00000000
 # CHECK:      <take>:
 # CHECK-NEXT: movq    {{.*}}(%rip), %rax
 ## Each takes the address the anchor's entry names, the read-only ones once
 ## the first protection call has made them writable.
 # CHECK:      cmpq    %r12, (%rax)
-# CHECK:      testb   $0x1, 0xc(%rbx)
+# CHECK:      testb   $0x1, (%rbx)
 # CHECK:      movl    $0x4, %r9d
 # CHECK-NEXT: leaq
 # CHECK:      callq
