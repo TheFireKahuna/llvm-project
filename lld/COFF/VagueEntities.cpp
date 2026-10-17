@@ -497,9 +497,10 @@ void checkVagueEntities(COFFLinkerContext &ctx, StringRef imageName) {
             config.allowedVagueDuplicateDLLs.contains(y.name))
           continue;
         // Two images that keep the entity preemptible share one instance at
-        // run time, the one the executable's table names.
-        if (llvm::is_contained(x.preemptible, entity) &&
-            llvm::is_contained(y.preemptible, entity))
+        // run time, the one the executable's table names. Both lists are
+        // sorted, so a binary search answers each membership test.
+        if (llvm::binary_search(x.preemptible, entity) &&
+            llvm::binary_search(y.preemptible, entity))
           continue;
         // An image that keeps its copy while importing from one that keeps
         // the entity too predates the other's definition, or does not take
