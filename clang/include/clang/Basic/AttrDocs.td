@@ -7218,6 +7218,29 @@ See {doc}`LTOVisibility`.
   }];
 }
 
+def NoABIWitnessDocs : Documentation {
+  let Category = DocCatType;
+  let Content = [{
+On Windows Itanium and NT-POSIX, the linker checks that the layout of a class
+that one image's code uses is the layout of the class in the image that
+defines the functions or data the code reaches, so that a DLL rebuilt with a
+different layout fails to link or to load rather than corrupting memory. The
+``no_abi_witness`` attribute exempts a class or struct whose layout is
+deliberately extensible, such as a versioned struct that grows at its tail:
+its own layout is not checked, and a class that contains it checks only its
+size and alignment.
+
+.. code-block:: c++
+
+  struct [[clang::no_abi_witness]] Options {
+    unsigned Size; // sizeof(Options) when the caller was compiled
+    unsigned Flags;
+  };
+
+The attribute has no effect on other targets.
+  }];
+}
+
 def TypeVisibilityDocs : Documentation {
   let Category = DocCatType;
   let Content = [{

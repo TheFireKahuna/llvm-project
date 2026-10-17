@@ -13,6 +13,7 @@
 #ifndef LLVM_CLANG_LIB_CODEGEN_CODEGENMODULE_H
 #define LLVM_CLANG_LIB_CODEGEN_CODEGENMODULE_H
 
+#include "CGABIContracts.h"
 #include "CGKCFI.h"
 #include "CGVTables.h"
 #include "CodeGenTypeCache.h"
@@ -397,6 +398,7 @@ private:
   std::unique_ptr<CGCUDARuntime> CUDARuntime;
   std::unique_ptr<CGHLSLRuntime> HLSLRuntime;
   std::unique_ptr<CodeGenKCFI> KCFI;
+  std::unique_ptr<CodeGenABIContracts> ABIContracts;
   std::unique_ptr<CGDebugInfo> DebugInfo;
   std::unique_ptr<ObjCEntrypoints> ObjCData;
   llvm::MDNode *NoObjCARCExceptionsMetadata = nullptr;
@@ -1841,6 +1843,16 @@ public:
   /// The KCFI types of calls, vtable slots and destructors, and the link
   /// facts, when every function carries a type prefix with a marker.
   CodeGenKCFI *getKCFI() { return KCFI.get(); }
+
+  /// The ABI contracts that the module provides to other images and requires
+  /// of them, on Windows Itanium and NT-POSIX.
+  CodeGenABIContracts *getABIContracts() { return ABIContracts.get(); }
+
+  /// The declarations whose mangled names the module has computed, in the
+  /// order it first named them.
+  const llvm::MapVector<GlobalDecl, StringRef> &getMangledDeclNames() const {
+    return MangledDeclNames;
+  }
 
   /// Whether a virtual call checks a KCFI type salted by the class that
   /// introduces the vtable slot, as CodeGenKCFI::hasVTableSlotTypes says.

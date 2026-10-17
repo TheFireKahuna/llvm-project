@@ -42,6 +42,7 @@ CODEGENOPT(AssumeSaneOperatorNew , 1, 1, Benign) ///< implicit __attribute__((ma
 CODEGENOPT(DisableExactDynamicCast , 1, 0, Benign) ///< -fno-assume-unique-vtables: disable the exact dynamic_cast optimization.
 CODEGENOPT(Autolink          , 1, 1, Benign) ///< -fno-autolink
 CODEGENOPT(AutoImport        , 1, 1, Benign) ///< -fno-auto-import
+CODEGENOPT(ABIWitnessCTypes  , 1, 0, Benign) ///< -fabi-witness-c-types
 CODEGENOPT(ObjCAutoRefCountExceptions , 1, 0, Benign) ///< Whether ARC should be EH-safe.
 CODEGENOPT(Backchain         , 1, 0, Benign) ///< -mbackchain
 CODEGENOPT(ControlFlowGuardNoChecks  , 1, 0, Benign) ///< -cfguard-no-checks

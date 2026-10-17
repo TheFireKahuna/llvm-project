@@ -118,6 +118,7 @@
 // CHECK-NEXT: NSConsumesSelf (SubjectMatchRule_objc_method)
 // CHECK-NEXT: NSErrorDomain (SubjectMatchRule_enum)
 // CHECK-NEXT: Naked (SubjectMatchRule_function)
+// CHECK-NEXT: NoABIWitness (SubjectMatchRule_record)
 // CHECK-NEXT: NoBuiltin (SubjectMatchRule_function)
 // CHECK-NEXT: NoCommon (SubjectMatchRule_variable)
 // CHECK-NEXT: NoConvergent (SubjectMatchRule_function)

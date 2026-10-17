@@ -1799,6 +1799,14 @@ defm auto_import : BoolFOption<"auto-import",
   PosFlag<SetTrue, [], [], "MinGW specific. Enable code generation support for "
           "automatic dllimport, and enable support for it in the linker. "
           "Enabled by default.">>;
+defm abi_witness_c_types : BoolFOption<"abi-witness-c-types",
+  CodeGenOpts<"ABIWitnessCTypes">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Windows Itanium and NT-POSIX specific. Check the layouts of C "
+          "structs, and the types of extern \"C\" data, between images, as "
+          "the layouts of C++ classes and the types of C++ data are checked">,
+  NegFlag<SetFalse, [], [ClangOption], "Check the layouts of C++ classes "
+          "and the types of C++ data only. The default">>;
 } // let Flags = [TargetSpecific]
 
 // In the future this option will be supported by other offloading

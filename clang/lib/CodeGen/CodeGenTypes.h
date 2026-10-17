@@ -89,6 +89,17 @@ class CodeGenTypes {
 
   llvm::DenseMap<const Type *, llvm::Type *> RecordsWithOpaqueMemberPointers;
 
+  /// Whether the module records the records whose layout its code uses, which
+  /// Windows Itanium and NT-POSIX check between images.
+  bool RecordsLayoutUses;
+
+  /// The records whose layout the module's code uses: those it converts, but
+  /// not those it converts only to lay out another or for debug information.
+  llvm::SmallPtrSet<const RecordDecl *, 16> LayoutUses;
+
+  /// The number of records being laid out.
+  unsigned LayingOutRecords = 0;
+
   static constexpr unsigned FunctionInfosLog2InitSize = 9;
 
   /// Helper for ConvertType.
@@ -125,6 +136,17 @@ public:
 
   /// ConvertType - Convert type T into a llvm::Type.
   llvm::Type *ConvertType(QualType T);
+
+  /// Notes that the module's code uses the layout of T, a record or an array
+  /// of records, as sizeof does.
+  void noteLayoutUse(QualType T);
+
+  /// The records, as definitions, whose layout the module's code uses: those
+  /// it converts, other than to lay out another record, and those whose size,
+  /// alignment or field offsets it takes.
+  const llvm::SmallPtrSetImpl<const RecordDecl *> &getLayoutUses() const {
+    return LayoutUses;
+  }
 
   /// ConvertTypeForMem - Convert type T into a llvm::Type.  This differs from
   /// ConvertType in that it is used to convert to the memory representation for

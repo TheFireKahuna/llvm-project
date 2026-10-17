@@ -3755,6 +3755,8 @@ Value *ScalarExprEmitter::VisitUnaryLNot(const UnaryOperator *E) {
 }
 
 Value *ScalarExprEmitter::VisitOffsetOfExpr(OffsetOfExpr *E) {
+  CGF.CGM.getTypes().noteLayoutUse(E->getTypeSourceInfo()->getType());
+
   // Try folding the offsetof to a constant.
   Expr::EvalResult EVResult;
   if (E->EvaluateAsInt(EVResult, CGF.getContext())) {
@@ -3842,6 +3844,7 @@ Value *
 ScalarExprEmitter::VisitUnaryExprOrTypeTraitExpr(
                               const UnaryExprOrTypeTraitExpr *E) {
   QualType TypeToSize = E->getTypeOfArgument();
+  CGF.CGM.getTypes().noteLayoutUse(TypeToSize);
   if (auto Kind = E->getKind();
       Kind == UETT_SizeOf || Kind == UETT_DataSizeOf || Kind == UETT_CountOf) {
     if (const VariableArrayType *VAT =

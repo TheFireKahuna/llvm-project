@@ -617,6 +617,8 @@ CodeGenModule::CodeGenModule(ASTContext &C,
     createHLSLRuntime();
   if (LangOpts.FunctionTypePrefix)
     KCFI.reset(new CodeGenKCFI(*this));
+  if (getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    ABIContracts.reset(new CodeGenABIContracts(*this));
 
   // Enable TBAA unless it's suppressed. TSan and TySan need TBAA even at O0.
   if (LangOpts.Sanitize.hasOneOf(SanitizerKind::Thread | SanitizerKind::Type) ||
@@ -1288,6 +1290,8 @@ void CodeGenModule::Release() {
     finalizeKCFITypes();
   if (KCFI && KCFI->hasFacts())
     KCFI->emitFacts();
+  if (ABIContracts)
+    ABIContracts->emit();
   emitAtAvailableLinkGuard();
   if (Context.getTargetInfo().getTriple().isWasm())
     EmitMainVoidAlias();

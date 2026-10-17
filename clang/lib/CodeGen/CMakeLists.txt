@@ -61,6 +61,7 @@ add_clang_library(clangCodeGen
   ABIInfo.cpp
   ABIInfoImpl.cpp
   BackendUtil.cpp
+  CGABIContracts.cpp
   CGAtomic.cpp
   CGBlocks.cpp
   CGBuiltin.cpp

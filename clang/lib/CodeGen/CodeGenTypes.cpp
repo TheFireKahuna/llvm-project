@@ -37,6 +37,7 @@ CodeGenTypes::CodeGenTypes(CodeGenModule &cgm)
       Target(cgm.getTarget()) {
   SkippedLayout = false;
   LongDoubleReferenced = false;
+  RecordsLayoutUses = Target.getTriple().isWindowsItaniumOrNTPOSIXEnvironment();
 }
 
 CodeGenTypes::~CodeGenTypes() {
@@ -372,8 +373,11 @@ llvm::Type *CodeGenTypes::ConvertType(QualType T) {
   }
 
   // RecordTypes are cached and processed specially.
-  if (const auto *RT = dyn_cast<RecordType>(Ty))
+  if (const auto *RT = dyn_cast<RecordType>(Ty)) {
+    if (!LayingOutRecords)
+      noteLayoutUse(T);
     return ConvertRecordDeclType(RT->getDecl()->getDefinitionOrSelf());
+  }
 
   llvm::Type *CachedType = nullptr;
   auto TCI = TypeCache.find(Ty);
@@ -826,6 +830,7 @@ llvm::StructType *CodeGenTypes::ConvertRecordDeclType(const RecordDecl *RD) {
     return Ty;
 
   // Force conversion of non-virtual base classes recursively.
+  ++LayingOutRecords;
   if (const CXXRecordDecl *CRD = dyn_cast<CXXRecordDecl>(RD)) {
     for (const auto &I : CRD->bases()) {
       if (I.isVirtual()) continue;
@@ -836,6 +841,7 @@ llvm::StructType *CodeGenTypes::ConvertRecordDeclType(const RecordDecl *RD) {
   // Layout fields.
   std::unique_ptr<CGRecordLayout> Layout = ComputeRecordLayout(RD, Ty);
   CGRecordLayouts[Key] = std::move(Layout);
+  --LayingOutRecords;
 
   // If this struct blocked a FunctionType conversion, then recompute whatever
   // was derived from that.
@@ -844,6 +850,14 @@ llvm::StructType *CodeGenTypes::ConvertRecordDeclType(const RecordDecl *RD) {
     TypeCache.clear();
 
   return Ty;
+}
+
+void CodeGenTypes::noteLayoutUse(QualType T) {
+  if (!RecordsLayoutUses)
+    return;
+  if (const RecordDecl *RD = Context.getBaseElementType(T)->getAsRecordDecl())
+    if (const RecordDecl *Def = RD->getDefinition())
+      LayoutUses.insert(Def);
 }
 
 /// getCGRecordLayout - Return record layout info for the given record decl.

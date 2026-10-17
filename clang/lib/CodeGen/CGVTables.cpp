@@ -1342,8 +1342,11 @@ CodeGenVTables::GenerateClassData(const CXXRecordDecl *RD) {
 void CodeGenVTables::setVTableDSOLocal(llvm::GlobalValue *GV,
                                        const CXXRecordDecl *RD) const {
   if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
-      GV->isDeclarationForLinker() && CGM.shouldMapVisibilityToDLLExport(RD))
+      GV->isDeclarationForLinker() && CGM.shouldMapVisibilityToDLLExport(RD)) {
     GV->setDSOLocal(false);
+    if (CodeGenABIContracts *Contracts = CGM.getABIContracts())
+      Contracts->addVTableImport(GV, RD);
+  }
 }
 
 /// Pins the address point Offset bytes into VTable at Residue modulo

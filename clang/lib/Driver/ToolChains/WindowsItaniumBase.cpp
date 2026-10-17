@@ -314,6 +314,13 @@ void WindowsItaniumBaseToolChain::addClangTargetOptions(
                           options::OPT_fno_auto_import, false))
     CC1Args.push_back("-fno-auto-import");
 
+  // The layouts of C structs, and the types of extern "C" data, are checked
+  // between images only on request: a versioned C struct that grows at its
+  // tail is an accepted pattern.
+  if (DriverArgs.hasFlag(options::OPT_fabi_witness_c_types,
+                         options::OPT_fno_abi_witness_c_types, false))
+    CC1Args.push_back("-fabi-witness-c-types");
+
   // On x86-64 a call to a function the translation unit does not define goes
   // through the import table, as it goes through the GOT under -fno-plt on
   // ELF, and the linker makes it direct when the function is in the image.

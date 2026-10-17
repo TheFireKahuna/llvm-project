@@ -4040,6 +4040,13 @@ def LTOVisibilityPublic : InheritableAttr {
   let SimpleHandler = 1;
 }
 
+def NoABIWitness : InheritableAttr {
+  let Spellings = [Clang<"no_abi_witness">];
+  let Subjects = SubjectList<[Record]>;
+  let Documentation = [NoABIWitnessDocs];
+  let SimpleHandler = 1;
+}
+
 def AnyX86Interrupt : InheritableAttr, TargetSpecificAttr<TargetAnyX86> {
   // NOTE: If you add any additional spellings, ARMInterrupt's,
   // M68kInterrupt's, MSP430Interrupt's and MipsInterrupt's spellings must match.
