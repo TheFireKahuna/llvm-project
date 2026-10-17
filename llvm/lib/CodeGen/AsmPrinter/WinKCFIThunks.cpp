@@ -387,9 +387,12 @@ void AsmPrinter::emitKCFIThunks(Module &M) {
     AnyThunk = true;
     emitKCFIFunctionStart(getSymbol(&F), COFF::IMAGE_COMDAT_SELECT_ANY,
                           Align(16));
+    bool Owned = MD->getNumOperands() > 4 &&
+                 mdconst::extract<ConstantInt>(MD->getOperand(4))->isOne();
     emitVTableGuardThunk({getSymbol(&F), Range(COFF::VTableRangeStartPrefix),
                           Range(COFF::VTableRangeEndPrefix),
-                          Range(COFF::VTableRangeMaskPrefix), Off, Miss});
+                          Range(COFF::VTableRangeMaskPrefix), Off, Miss,
+                          Owned ? Range(COFF::VTableOwnerRunPrefix) : nullptr});
   }
 
   for (const KCFIRoutineKind &Routine : Routines) {

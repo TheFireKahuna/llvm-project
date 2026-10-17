@@ -31,6 +31,29 @@
 ; CHECK-NEXT:    movq 8(%rax), %rax
 ; CHECK-NEXT:    jmp __llvm_kcfi_dispatch_0001e240
 
+;; A class whose run another image may own too tests the run of the image
+;; that owns it, from the start, end and start plus mask that its three words
+;; hold, before the slow path.
+; CHECK:       __llvm_vcall_1B_8:
+; CHECK:         testl %r11d, __llvm_vtables_mask$1B(%rip)
+; CHECK-NEXT:    jne [[OWNER:\.L.*]]
+; CHECK-NEXT:    jmpq *8(%rax)
+; CHECK-NEXT:  [[OWNER]]:
+; CHECK-NEXT:    movq %rax, %r11
+; CHECK-NEXT:    subq __llvm_vtables_owner$1B(%rip), %r11
+; CHECK-NEXT:    movq __llvm_vtables_owner$1B+8(%rip), %r10
+; CHECK-NEXT:    subq __llvm_vtables_owner$1B(%rip), %r10
+; CHECK-NEXT:    cmpq %r10, %r11
+; CHECK-NEXT:    jae [[MISS2:\.L.*]]
+; CHECK-NEXT:    movq __llvm_vtables_owner$1B+16(%rip), %r10
+; CHECK-NEXT:    subq __llvm_vtables_owner$1B(%rip), %r10
+; CHECK-NEXT:    testq %r10, %r11
+; CHECK-NEXT:    jne [[MISS2]]
+; CHECK-NEXT:    jmpq *8(%rax)
+; CHECK-NEXT:  [[MISS2]]:
+; CHECK-NEXT:    movq 8(%rax), %rax
+; CHECK-NEXT:    jmp __llvm_kcfi_dispatch_0001e240
+
 ;; The dispatch thunk the miss path continues into is emitted even though only
 ;; the guard thunk's body reaches it (0x1e240 is the KCFI type).
 ; DISP: __llvm_kcfi_dispatch_0001e240:
@@ -44,9 +67,19 @@ entry:
   ret void
 }
 
+define void @owned(ptr %a) !kcfi_type !3 {
+entry:
+  %vtable = load ptr, ptr %a
+  %slot = getelementptr inbounds i8, ptr %vtable, i64 8
+  %f = load ptr, ptr %slot, !vtable_guard !5
+  call void %f(ptr %a) [ "kcfi"(i32 123456) ]
+  ret void
+}
+
 !llvm.module.flags = !{!0, !1, !2}
 !0 = !{i32 4, !"kcfi", i32 1}
 !1 = !{i32 4, !"function-type-prefix", i32 -559038737}
 !2 = !{i32 1, !"MaxTLSAlign", i32 65536}
 !3 = !{i32 123456}
 !4 = !{!"1A", i64 8}
+!5 = !{!"1B", i64 8, i1 true}

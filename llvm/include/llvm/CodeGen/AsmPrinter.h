@@ -546,6 +546,9 @@ public:
     MCSymbol *Mask;
     uint64_t Off;
     MCSymbol *Miss;
+    /// The three words of the owner's run, or null when no other image may
+    /// own the class.
+    MCSymbol *Owner;
   };
 
   /// Emits the per-type thunks the CFGuard pass routes a module's indirect

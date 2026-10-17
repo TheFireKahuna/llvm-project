@@ -2059,14 +2059,18 @@ llvm::Value *ItaniumCXXABI::emitTaggedExactCastCheck(
 }
 
 static std::string vtableRunName(CodeGenModule &CGM, const CXXRecordDecl *RD);
+static bool mayBeOwnedElsewhere(const CXXRecordDecl *RD);
 
 /// On Windows Itanium and NT-POSIX, checks a downcast to \p DestDecl: a class
 /// final in effect by the exact cast, any other by its run, the vtables of the
 /// class and of every class derived from it through primary bases, which the
 /// linker lays out as equal slots and describes by three symbols: the run's
 /// first address point, one past its last slot, and a word holding the slot
-/// size less one. A vtable pointer that misses, of an object built by another
-/// image, at a secondary address point or of a tagged class, is confirmed by
+/// size less one. A pointer that misses is tested against the run of the image
+/// that owns the class, when another may, which the linker binds through three
+/// words of the import table: the run's start, its end, and its start plus the
+/// slot size less one. One that misses both, at a secondary address point, of
+/// a tagged class or of an image that binds neither, is confirmed by
 /// __dynamic_cast, whose result must be the downcast's.
 void ItaniumCXXABI::emitDowncastCheck(CodeGenFunction &CGF, Address Base,
                                       QualType SrcRecordTy, Address Derived,
@@ -2109,7 +2113,32 @@ void ItaniumCXXABI::emitDowncastCheck(CodeGenFunction &CGF, Address Base,
                                                   CharUnits::fromQuantity(4));
     llvm::Value *OnSlot = Builder.CreateIsNull(
         Builder.CreateAnd(Builder.CreateTrunc(Offset, CGM.Int32Ty), Mask));
-    Builder.CreateCondBr(Builder.CreateAnd(InRun, OnSlot), Hit, Miss);
+    if (!mayBeOwnedElsewhere(DestDecl)) {
+      Builder.CreateCondBr(Builder.CreateAnd(InRun, OnSlot), Hit, Miss);
+    } else {
+      llvm::BasicBlock *Owner = CGF.createBasicBlock("cast.check.owner");
+      Builder.CreateCondBr(Builder.CreateAnd(InRun, OnSlot), Hit, Owner);
+      CGF.EmitBlock(Owner);
+      auto *Words = llvm::ArrayType::get(CGM.GlobalsInt8PtrTy, 3);
+      auto *OwnerRun = getRunSymbol(llvm::COFF::VTableOwnerRunPrefix, Words);
+      auto LoadWord = [&](unsigned I) {
+        llvm::Value *Word = Builder.CreateConstInBoundsGEP2_32(Words, OwnerRun,
+                                                               0, I);
+        return Builder.CreatePtrToInt(
+            Builder.CreateAlignedLoad(CGM.GlobalsInt8PtrTy, Word,
+                                      CGF.getPointerAlign()),
+            CGF.IntPtrTy);
+      };
+      llvm::Value *OwnerStart = LoadWord(0);
+      llvm::Value *OwnerOffset = Builder.CreateSub(
+          Builder.CreatePtrToInt(VTable, CGF.IntPtrTy), OwnerStart);
+      llvm::Value *InOwnerRun = Builder.CreateICmpULT(
+          OwnerOffset, Builder.CreateSub(LoadWord(1), OwnerStart));
+      llvm::Value *OnOwnerSlot = Builder.CreateIsNull(Builder.CreateAnd(
+          OwnerOffset, Builder.CreateSub(LoadWord(2), OwnerStart)));
+      Builder.CreateCondBr(Builder.CreateAnd(InOwnerRun, OnOwnerSlot), Hit,
+                           Miss);
+    }
   }
 
   CGF.EmitBlock(Miss);
@@ -2427,6 +2456,14 @@ static std::string vtableRunName(CodeGenModule &CGM, const CXXRecordDecl *RD) {
   if (!RD->isExternallyVisible())
     Name += CGM.getModuleNameHash();
   return Name;
+}
+
+/// Whether another image may own vtables of \p RD's run, which a fact of the
+/// class alone decides, so that every unit's guard thunk for it agrees: a
+/// class of hidden visibility or internal linkage is the image's own.
+static bool mayBeOwnedElsewhere(const CXXRecordDecl *RD) {
+  return RD->isExternallyVisible() &&
+         RD->getVisibility() == DefaultVisibility;
 }
 
 /// Tells the linker that \p VTable holds a vtable of \p RD whose primary
@@ -2759,17 +2796,21 @@ CGCallee ItaniumCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
                                                 CGF.getPointerAlign());
       // Mark the load so the call through it goes through the class's vtable
       // guard: a thunk that takes the vtable pointer, jumps through the slot
-      // when the pointer is in the class's run of vtables, and otherwise takes
+      // when the pointer is in the class's run of vtables, or in the run of the
+      // image that owns the class when another image may, and otherwise takes
       // the slow path that checks the slot's KCFI type. The guard adds nothing
       // where the type check already reads a vetted vtable (VTableChecked).
       if (auto *Load = dyn_cast<llvm::LoadInst>(VFuncLoad);
           Load && CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
           CGM.hasKCFIVTableSlotTypes() && !VTableChecked) {
         llvm::LLVMContext &Ctx = CGM.getLLVMContext();
+        const CXXRecordDecl *RD = MethodDecl->getParent();
         llvm::Metadata *Ops[] = {
-            llvm::MDString::get(Ctx, vtableRunName(CGM, MethodDecl->getParent())),
+            llvm::MDString::get(Ctx, vtableRunName(CGM, RD)),
             llvm::ConstantAsMetadata::get(
-                llvm::ConstantInt::get(CGM.Int64Ty, ByteOffset))};
+                llvm::ConstantInt::get(CGM.Int64Ty, ByteOffset)),
+            llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                llvm::Type::getInt1Ty(Ctx), mayBeOwnedElsewhere(RD)))};
         Load->setMetadata("vtable_guard", llvm::MDNode::get(Ctx, Ops));
       }
     }

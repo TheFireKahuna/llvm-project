@@ -3294,6 +3294,9 @@ void ImportSlotContents::resolve(SlotScan &scan) {
     scan.use(imp, SlotScan::Read);
   for (DefinedImportData *imp : kcfiOther)
     scan.use(imp, SlotScan::Other);
+  for (const COFFLinkerContext::VTableOwnerRun &r : ctx.vtableOwnerRuns)
+    for (DefinedImportData *imp : r.words)
+      scan.use(imp, SlotScan::Other);
   for (Export &e : ctx.symtab.exports)
     if (auto *imp = dyn_cast_or_null<DefinedImportData>(e.sym))
       scan.use(imp, SlotScan::Other);

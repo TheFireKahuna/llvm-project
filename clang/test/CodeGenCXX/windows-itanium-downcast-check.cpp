@@ -20,7 +20,10 @@
 // dynamic_cast, any other by the run of vtables the linker lays out for the
 // class and the classes derived from it through primary bases. A miss is
 // confirmed by __dynamic_cast, and a failure fails fast with code 65, or,
-// without trapping, calls a weak routine whose default reports the failure.
+// without trapping, calls a weak routine whose default reports the failure. A
+// class another image may own is first tested against the owner's run, which
+// the linker binds as three words: its start, its end, and its start plus the
+// slot size less one.
 
 struct A { virtual ~A(); };
 struct B : A { virtual void f(); };
@@ -39,6 +42,14 @@ struct P : private A { static P *down(A *a); };
 // CHECK: %[[MASK:.*]] = load i32, ptr @"__llvm_vtables_mask$1B"
 // CHECK: %[[LOW:.*]] = trunc i64 %[[OFF]] to i32
 // CHECK: and i32 %[[LOW]], %[[MASK]]
+// CHECK: cast.check.owner:
+// CHECK: %[[OSTART:.*]] = load ptr, ptr @"__llvm_vtables_owner$1B", align 8
+// CHECK: %[[OS:.*]] = ptrtoint ptr %[[OSTART]] to i64
+// CHECK: %[[OOFF:.*]] = sub i64 %{{.*}}, %[[OS]]
+// CHECK: load ptr, ptr getelementptr inbounds nuw (i8, ptr @"__llvm_vtables_owner$1B", i64 8)
+// CHECK: icmp ult i64 %[[OOFF]],
+// CHECK: load ptr, ptr getelementptr inbounds nuw (i8, ptr @"__llvm_vtables_owner$1B", i64 16)
+// CHECK: and i64 %[[OOFF]],
 // CHECK: cast.check.miss:
 // CHECK: %[[FOUND:.*]] = call ptr @__dynamic_cast(ptr %{{.*}}, ptr @_ZTI1A, ptr @_ZTI1B, i64 0)
 // CHECK: %[[OK:.*]] = icmp eq ptr %[[FOUND]], %{{.*}}
@@ -55,6 +66,14 @@ struct P : private A { static P *down(A *a); };
 // REPORT: %[[R:.*]] = load volatile ptr, ptr @__castguard_check_failure_os_handled_fptr
 // REPORT: call win64cc void %[[R]](ptr %0) #[[NOCF:[0-9]+]]
 B *to_base(A *a) { return static_cast<B *>(a); }
+
+// A class of hidden visibility is the image's own and has no owner's run.
+// CHECK-LABEL: define {{.*}} @_Z9to_hiddenP1A(
+// CHECK: @"__llvm_vtables$1H"
+// CHECK-NOT: __llvm_vtables_owner
+// CHECK: ret ptr
+struct __attribute__((visibility("hidden"))) H : A { virtual void h(); };
+H *to_hidden(A *a) { return static_cast<H *>(a); }
 
 // A reference cast takes the same check, without the null test.
 // CHECK-LABEL: define {{.*}} @_Z6to_refR1A(

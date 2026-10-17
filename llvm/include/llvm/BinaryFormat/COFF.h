@@ -436,6 +436,20 @@ inline constexpr char VTableRangeStartPrefix[] = "__llvm_vtables$";
 inline constexpr char VTableRangeEndPrefix[] = "__llvm_vtables_end$";
 inline constexpr char VTableRangeMaskPrefix[] = "__llvm_vtables_mask$";
 
+// Three pointer-sized words through which an image tests the range of a
+// class's vtables in the DLL that owns the class, followed by the class's
+// name: the range's start, its end, and its start plus S - 1, so that the
+// test takes the extent and the mask as differences and every load is
+// independent. A DLL exports the three for each class whose vtable or
+// type_info it exports, the start under the name of the class's primary
+// address point and the others under this prefix, the class's locator, and
+// 'e' or 'm'; its import library names them by the range symbols' names and
+// the DLL's. A linker defines the words as the importer's three import table
+// entries when it binds the class's owner, and otherwise as zeros, an empty
+// range.
+inline constexpr char VTableOwnerRunPrefix[] = "__llvm_vtables_owner$";
+inline constexpr char VTableRunExportPrefix[] = "__llvm_vtr$";
+
 // The thunk that a virtual call of a class's slot goes through, followed by
 // the class's name and then the slot's offset in decimal, after an
 // underscore. It takes the vtable pointer, and on x86-64 jumps through the

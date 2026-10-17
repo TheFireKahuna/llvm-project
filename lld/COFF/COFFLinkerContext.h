@@ -165,6 +165,29 @@ public:
   std::vector<VTableRun> vtableRuns;
   llvm::DenseMap<const Chunk *, std::pair<unsigned, unsigned>> runChunkRun;
 
+  // The runs a DLL exports, by class: the three words an importer reads, the
+  // start, the end, and the start plus the stride less one, of which the
+  // writer defines the last two once the runs are placed.
+  struct VTableRunExport {
+    std::string cls;
+    Chunk *chunk;
+    uint64_t apoff;
+    StringRef names[3];
+    Symbol *words[3];
+  };
+  std::vector<VTableRunExport> vtableRunExports;
+
+  // The runs of DLLs the image imports that its checks test, by the symbol
+  // they read them through and the imports of the three words, which the
+  // import address table holds consecutively; and the zero words that a
+  // class whose owner the image does not bind reads instead, an empty range.
+  struct VTableOwnerRun {
+    Symbol *sym;
+    DefinedImportData *words[3];
+  };
+  std::vector<VTableOwnerRun> vtableOwnerRuns;
+  Chunk *vtableOwnerEmpty = nullptr;
+
   // Whether an object says that its functions have KCFI prefixes with a
   // marker, which the writer then finds, seals and places.
   bool typePrefixRecords = false;

@@ -1245,6 +1245,7 @@ void LinkerDriver::createImportLibrary(bool asLib) {
   if (!asLib) {
     addKCFIRangeImports(ctx, libName, exports, extra, rangeRecord);
     addContractWitnessImports(ctx, libName, exports);
+    addVTableRunImports(ctx, libName, exports);
     addVagueEntityRecord(ctx, libName, extra, vagueRecord);
   }
 
@@ -3497,6 +3498,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   bindKCFIImportedRanges(ctx);
   addContractWitnessExports(ctx);
   bindContractWitnesses(ctx);
+  addVTableRunExports(ctx);
+  bindVTableOwnerRuns(ctx);
   checkVersionScriptGlobals();
   bool implibAfterImage = false;
   if (config->dll || !ctx.symtab.exports.empty() ||

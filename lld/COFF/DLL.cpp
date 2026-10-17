@@ -912,6 +912,17 @@ void IdataContents::create(COFFLinkerContext &ctx) {
       assert(at <= syms.size());
       syms.insert(syms.begin() + at, {first, second});
     }
+    // The three words of a DLL's vtable run that a check reads, which stay
+    // consecutive.
+    for (const COFFLinkerContext::VTableOwnerRun &r : ctx.vtableOwnerRuns) {
+      auto it = llvm::find(syms, r.words[0]);
+      if (it == syms.end())
+        continue;
+      llvm::erase(syms, r.words[1]);
+      llvm::erase(syms, r.words[2]);
+      it = llvm::find(syms, r.words[0]);
+      syms.insert(it + 1, {r.words[1], r.words[2]});
+    }
     // Create lookup and address tables. If they have external names,
     // we need to create hintName chunks to store the names.
     // If they don't (if they are import-by-ordinals), we store only

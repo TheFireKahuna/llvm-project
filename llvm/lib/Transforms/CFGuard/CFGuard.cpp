@@ -58,7 +58,8 @@ constexpr unsigned MaxIndexRangeDepth = 6;
 
 static bool canUseDispatch(const CallBase &CB);
 static Function *declareVTableGuardThunk(Module &M, StringRef Cls, uint64_t Off,
-                                         uint64_t Type, bool Local);
+                                         uint64_t Type, bool Local,
+                                         bool Owned);
 namespace {
 
 /// Adds Control Flow Guard (CFG) checks on indirect function calls/invokes.
@@ -387,6 +388,8 @@ bool CFGuardImpl::insertVTableGuard(CallBase *CB) {
   uint64_t Type = cast<ConstantInt>(Bundle->Inputs[0])->getZExtValue();
   StringRef Cls = cast<MDString>(MD->getOperand(0))->getString();
   uint64_t Off = mdconst::extract<ConstantInt>(MD->getOperand(1))->getZExtValue();
+  bool Owned = MD->getNumOperands() > 2 &&
+               mdconst::extract<ConstantInt>(MD->getOperand(2))->isOne();
 
   // The guard tests the vtable pointer, which is the base the slot is loaded
   // from. Only the plain pattern the frontend emits is guarded; anything else
@@ -404,7 +407,7 @@ bool CFGuardImpl::insertVTableGuard(CallBase *CB) {
   }
 
   bool Local = CB->getMetadata("kcfi_local");
-  Function *Thunk = declareVTableGuardThunk(M, Cls, Off, Type, Local);
+  Function *Thunk = declareVTableGuardThunk(M, Cls, Off, Type, Local, Owned);
 
   SmallVector<OperandBundleDef, 1> Bundles;
   CB->getOperandBundlesAsDefs(Bundles);
@@ -530,11 +533,13 @@ static Function *declareKCFIThunk(Module &M, StringRef Prefix, uint64_t Type) {
 // Returns the vtable guard thunk for a virtual call of class Cls through the
 // slot at byte offset Off, whose target of KCFI type Type the slow path checks.
 // The thunk takes a vtable pointer, jumps through the slot when the pointer is
-// in the class's run of vtables, and otherwise loads the slot and continues
-// into the type's KCFI dispatch thunk. Its name is unique to the class and the
-// slot; the backend emits the body from the !vcall_thunk metadata.
+// in the class's run of vtables, or, when Owned, in the run of the image that
+// owns the class, and otherwise loads the slot and continues into the type's
+// KCFI dispatch thunk. Its name is unique to the class and the slot, which
+// decide Owned; the backend emits the body from the !vcall_thunk metadata.
 static Function *declareVTableGuardThunk(Module &M, StringRef Cls, uint64_t Off,
-                                         uint64_t Type, bool Local) {
+                                         uint64_t Type, bool Local,
+                                         bool Owned) {
   std::string Name = (COFF::VTableGuardThunkPrefix + Cls + "_" + Twine(Off)).str();
   auto *Thunk = cast<Function>(
       M.getOrInsertFunction(Name, Type::getVoidTy(M.getContext())).getCallee());
@@ -546,7 +551,8 @@ static Function *declareVTableGuardThunk(Module &M, StringRef Cls, uint64_t Off,
       MDString::get(Ctx, Cls),
       ConstantAsMetadata::get(ConstantInt::get(I64, Off)),
       ConstantAsMetadata::get(ConstantInt::get(Type::getInt32Ty(Ctx), uint32_t(Type))),
-      ConstantAsMetadata::get(ConstantInt::get(Type::getInt1Ty(Ctx), Local))};
+      ConstantAsMetadata::get(ConstantInt::get(Type::getInt1Ty(Ctx), Local)),
+      ConstantAsMetadata::get(ConstantInt::get(Type::getInt1Ty(Ctx), Owned))};
   Thunk->setMetadata("vcall_thunk", MDNode::get(Ctx, Ops));
   // The slow path continues into the type's thunk, which the backend emits for
   // the type like any other: a dispatch thunk where the dispatch register

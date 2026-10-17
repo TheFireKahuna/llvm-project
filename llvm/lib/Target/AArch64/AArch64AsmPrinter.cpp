@@ -1193,18 +1193,26 @@ unsigned AArch64AsmPrinter::getKCFIPrefixByteScale() const { return 4; }
 /// tst x15, #mask; b.eq mismatch
 /// ldur x16, [x15, #-8]; mov x17, #expected; cmp x16, x17; b.ne mismatch
 /// Emits the body of a vtable guard thunk; see the header. The vtable pointer
-/// arrives in X15, the Guard check target register. The thunk frames itself so
-/// it can call the type's check thunk on the slow path, and branches to the
-/// slot on either path.
+/// arrives in X9. The thunk frames itself so it can call the type's check
+/// thunk on the slow path, and branches to the slot on either path.
 ///
 /// stp x29, x30, [sp, #-16]!; mov x29, sp
-/// adrp x16, start; add x16, x16, :lo12:start; cmp x15, x16; b.lo 1f
-/// sub x17, x15, x16
-/// adrp x16, end; add x16, x16, :lo12:end; cmp x15, x16; b.hs 1f
+/// adrp x16, start; add x16, x16, :lo12:start; cmp x9, x16; b.lo 1f
+/// sub x17, x9, x16
+/// adrp x16, end; add x16, x16, :lo12:end; cmp x9, x16; b.hs 1f
 /// adrp x16, mask; ldr w16, [x16, :lo12:mask]; tst w17, w16; b.ne 1f
-/// ldr x16, [x15, off]; ldp x29, x30, [sp], #16; br x16
-/// 1: ldr x15, [x15, off]; bl __llvm_kcfi_check_<h>
+/// ldr x16, [x9, off]; ldp x29, x30, [sp], #16; br x16
+/// 1: ldr x15, [x9, off]; bl __llvm_kcfi_check_<h>
 ///    ldp x29, x30, [sp], #16; br x15
+///
+/// With the owner's run, a pointer that misses the image's own is tested
+/// against it before the slow path, from the start, end and start plus mask
+/// that the owner words hold:
+/// adrp x16, owner; add x16, x16, :lo12:owner; ldp x16, x17, [x16]
+/// sub x17, x17, x16; sub x16, x9, x16; cmp x16, x17; b.hs 1f
+/// adrp x17, owner+16; ldr x17, [x17, :lo12:owner+16]
+/// sub x17, x17, x9; add x17, x17, x16; tst x16, x17; b.ne 1f
+/// ldr x16, [x9, off]; ldp x29, x30, [sp], #16; br x16
 void AArch64AsmPrinter::emitVTableGuardThunk(const VTableGuardThunkInfo &I) {
   const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
   auto &TS =
@@ -1228,9 +1236,10 @@ void AArch64AsmPrinter::emitVTableGuardThunk(const VTableGuardThunkInfo &I) {
   TS.emitARM64WinCFIPrologEnd();
 
   MCSymbol *Miss = OutContext.createTempSymbol();
+  MCSymbol *LocalMiss = I.Owner ? OutContext.createTempSymbol() : Miss;
   emitKCFIAddr(AArch64::X16, I.Start);
   emitKCFICmp(AArch64::X9, AArch64::X16);
-  emitKCFIBcc(AArch64CC::LO, Miss);
+  emitKCFIBcc(AArch64CC::LO, LocalMiss);
   OutStreamer->emitInstruction(MCInstBuilder(AArch64::SUBXrs)
                                    .addReg(AArch64::X17)
                                    .addReg(AArch64::X9)
@@ -1239,7 +1248,7 @@ void AArch64AsmPrinter::emitVTableGuardThunk(const VTableGuardThunkInfo &I) {
                                STI);
   emitKCFIAddr(AArch64::X16, I.End);
   emitKCFICmp(AArch64::X9, AArch64::X16);
-  emitKCFIBcc(AArch64CC::HS, Miss);
+  emitKCFIBcc(AArch64CC::HS, LocalMiss);
   // Load the stride mask word and test the offset's low bits.
   const MCExpr *Mask = MCSymbolRefExpr::create(I.Mask, OutContext);
   OutStreamer->emitInstruction(
@@ -1260,7 +1269,7 @@ void AArch64AsmPrinter::emitVTableGuardThunk(const VTableGuardThunkInfo &I) {
                                    .addReg(AArch64::W16)
                                    .addImm(0),
                                STI);
-  emitKCFIBcc(AArch64CC::NE, Miss);
+  emitKCFIBcc(AArch64CC::NE, LocalMiss);
 
   auto EmitEpilogueTo = [&](MCRegister Reg) {
     TS.emitARM64WinCFIEpilogStart();
@@ -1277,12 +1286,72 @@ void AArch64AsmPrinter::emitVTableGuardThunk(const VTableGuardThunkInfo &I) {
   };
 
   // A vetted vtable: load the slot and branch through it.
-  OutStreamer->emitInstruction(MCInstBuilder(AArch64::LDRXui)
-                                   .addReg(AArch64::X16)
-                                   .addReg(AArch64::X9)
-                                   .addImm(I.Off / 8),
-                               STI);
-  EmitEpilogueTo(AArch64::X16);
+  auto BranchThroughSlot = [&] {
+    OutStreamer->emitInstruction(MCInstBuilder(AArch64::LDRXui)
+                                     .addReg(AArch64::X16)
+                                     .addReg(AArch64::X9)
+                                     .addImm(I.Off / 8),
+                                 STI);
+    EmitEpilogueTo(AArch64::X16);
+  };
+  BranchThroughSlot();
+
+  if (I.Owner) {
+    OutStreamer->emitLabel(LocalMiss);
+    auto Sub = [&](MCRegister Dst, MCRegister LHS, MCRegister RHS) {
+      OutStreamer->emitInstruction(MCInstBuilder(AArch64::SUBXrs)
+                                       .addReg(Dst)
+                                       .addReg(LHS)
+                                       .addReg(RHS)
+                                       .addImm(0),
+                                   STI);
+    };
+    // x16, x17 = the owner's start and end; x17 = its extent, x16 the
+    // pointer's offset from its start.
+    emitKCFIAddr(AArch64::X16, I.Owner);
+    OutStreamer->emitInstruction(MCInstBuilder(AArch64::LDPXi)
+                                     .addReg(AArch64::X16)
+                                     .addReg(AArch64::X17)
+                                     .addReg(AArch64::X16)
+                                     .addImm(0),
+                                 STI);
+    Sub(AArch64::X17, AArch64::X17, AArch64::X16);
+    Sub(AArch64::X16, AArch64::X9, AArch64::X16);
+    emitKCFICmp(AArch64::X16, AArch64::X17);
+    emitKCFIBcc(AArch64CC::HS, Miss);
+    // x17 = the third word less the start, which is the pointer less the
+    // offset: the stride's mask.
+    const MCExpr *Third = MCBinaryExpr::createAdd(
+        MCSymbolRefExpr::create(I.Owner, OutContext),
+        MCConstantExpr::create(16, OutContext), OutContext);
+    OutStreamer->emitInstruction(
+        MCInstBuilder(AArch64::ADRP)
+            .addReg(AArch64::X17)
+            .addExpr(MCSpecifierExpr::create(Third, AArch64::S_ABS_PAGE,
+                                             OutContext)),
+        STI);
+    OutStreamer->emitInstruction(
+        MCInstBuilder(AArch64::LDRXui)
+            .addReg(AArch64::X17)
+            .addReg(AArch64::X17)
+            .addExpr(MCSpecifierExpr::create(Third, AArch64::S_LO12, OutContext)),
+        STI);
+    Sub(AArch64::X17, AArch64::X17, AArch64::X9);
+    OutStreamer->emitInstruction(MCInstBuilder(AArch64::ADDXrs)
+                                     .addReg(AArch64::X17)
+                                     .addReg(AArch64::X17)
+                                     .addReg(AArch64::X16)
+                                     .addImm(0),
+                                 STI);
+    OutStreamer->emitInstruction(MCInstBuilder(AArch64::ANDSXrs)
+                                     .addReg(AArch64::XZR)
+                                     .addReg(AArch64::X16)
+                                     .addReg(AArch64::X17)
+                                     .addImm(0),
+                                 STI);
+    emitKCFIBcc(AArch64CC::NE, Miss);
+    BranchThroughSlot();
+  }
 
   // The slow path loads the slot into the check register and lets the type's
   // check thunk decide, then branches through it.
