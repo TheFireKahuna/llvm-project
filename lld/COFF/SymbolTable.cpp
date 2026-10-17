@@ -1947,6 +1947,7 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
   llvm::TimeTraceScope timeScope("Resolve remaining undefined symbols");
   SmallPtrSet<Symbol *, 8> undefs;
   DenseMap<Symbol *, Symbol *> localImports;
+  SmallVector<DefinedLocalImport *, 0> newLocalImports;
 
   // A lookup below can enter a lazy symbol, so the loop visits a copy.
   SmallVector<Symbol *, 0> syms(llvm::make_second_range(symMap));
@@ -2019,7 +2020,7 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
       }
       if (imp) {
         replaceSymbol<DefinedLocalImport>(sym, ctx, name, imp);
-        localImportChunks.push_back(cast<DefinedLocalImport>(sym)->getChunk());
+        newLocalImports.push_back(cast<DefinedLocalImport>(sym));
         // A DLL's own address-take of its default replaced by name reads a
         // cell, as every other image's does, which its fill writes.
         if (ctx.config.importSlots && ctx.config.dll &&
@@ -2050,6 +2051,14 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
 
     undefs.insert(sym);
   }
+
+  // The loop walks the symbol table in the order of its hashing, which can
+  // differ between builds of the linker, so the pointers are laid out by name.
+  llvm::sort(newLocalImports, [](DefinedLocalImport *a, DefinedLocalImport *b) {
+    return a->getName() < b->getName();
+  });
+  for (DefinedLocalImport *d : newLocalImports)
+    localImportChunks.push_back(d->getChunk());
 
   // Remaining undefined symbols are not fatal if /force is specified.
   // They are replaced with dummy defined symbols, once the loop is done, so

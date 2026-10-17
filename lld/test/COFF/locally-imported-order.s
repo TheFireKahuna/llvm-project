@@ -1,43 +1,31 @@
 # REQUIRES: x86
 
-## The local import pointers that the image keeps are laid out by the names of
-## the symbols they hold, whatever order the symbol table holds them in.
+## The pointers made for references to __imp_ symbols that the image defines
+## are laid out by name, not in the order of the symbol table's hashing, which
+## can differ between builds of the linker.
 
-# RUN: rm -rf %t && split-file %s %t && cd %t
-# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium main.s -o main.obj
-# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium defs.s -o defs.obj
-# RUN: lld-link -entry:main -subsystem:console -debug:symtab -out:a.exe \
-# RUN:   main.obj defs.obj -ignore:4217
-# RUN: llvm-nm -n a.exe | FileCheck %s
+# RUN: llvm-mc -triple=x86_64-windows-msvc %s -filetype=obj -o %t.obj
+# RUN: lld-link -entry:main -out:%t.exe %t.obj 2>/dev/null
+# RUN: llvm-objdump -s -j .rdata %t.exe | FileCheck %s
 
-# CHECK:      R __imp_alpha
-# CHECK-NEXT: R __imp_bravo
-# CHECK-NEXT: R __imp_charlie
-# CHECK-NEXT: R __imp_delta
-# CHECK-NEXT: R __imp_echo
-# CHECK-NEXT: R __imp_foxtrot
+# CHECK:      140002000 00300040 01000000 08300040 01000000
+# CHECK-NEXT: 140002010 10300040 01000000 18300040 01000000
+# CHECK-NEXT: 140002020 20300040 01000000
 
-#--- main.s
-  .text
-  .globl main
+    .text
+    .globl main
 main:
-  retq
+    movq __imp_ccc(%rip), %rax
+    movq __imp_aaa(%rip), %rax
+    movq __imp_bbb(%rip), %rax
+    movq __imp_eee(%rip), %rax
+    movq __imp_ddd(%rip), %rax
+    ret
 
-  .data
-  .quad __imp_echo
-  .quad __imp_bravo
-  .quad __imp_foxtrot
-  .quad __imp_alpha
-  .quad __imp_delta
-  .quad __imp_charlie
-
-#--- defs.s
-  .text
-  .globl alpha, bravo, charlie, delta, echo, foxtrot
-alpha:
-bravo:
-charlie:
-delta:
-echo:
-foxtrot:
-  retq
+    .data
+    .globl aaa, bbb, ccc, ddd, eee
+aaa: .quad 1
+bbb: .quad 2
+ccc: .quad 3
+ddd: .quad 4
+eee: .quad 5
