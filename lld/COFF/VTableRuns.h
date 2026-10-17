@@ -9,9 +9,12 @@
 #ifndef LLD_COFF_VTABLERUNS_H
 #define LLD_COFF_VTABLERUNS_H
 
+#include "llvm/ADT/STLFunctionalExtras.h"
+
 namespace lld::coff {
 class COFFLinkerContext;
 class OutputSection;
+class SectionChunk;
 
 // Builds the vtable runs the objects' records ask for, in
 // COFFLinkerContext::vtableRuns, and chooses each run's stride. A run holds the
@@ -26,7 +29,8 @@ void registerVTableRunSymbols(COFFLinkerContext &ctx);
 // Reorders the read-only section so that each run's vtables are consecutive and
 // in the order their slots want, which assignAddresses then places at the run's
 // stride.
-void placeVTableRuns(COFFLinkerContext &ctx, OutputSection *rdataSec);
+void placeVTableRuns(COFFLinkerContext &ctx, OutputSection *rdataSec,
+                     llvm::function_ref<bool(const SectionChunk *)> heldBack);
 
 // Defines the range symbols the guard thunks test, once addresses are final: a
 // run whose vtables the layout did not place at its stride is given an empty

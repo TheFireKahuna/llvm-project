@@ -31,6 +31,7 @@
 #include "lld/Common/Memory.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/MathExtras.h"
@@ -205,33 +206,47 @@ void lld::coff::resolveVTableRuns(COFFLinkerContext &ctx) {
       break;
   }
 
-  // The writer places a run's vtables itself, so their advisory line pins,
-  // which would fix them one at a time, are dropped.
-  for (auto &[chunk, run] : ctx.runChunkRun)
-    ctx.chunkPins.erase(chunk);
 }
 
-void lld::coff::placeVTableRuns(COFFLinkerContext &ctx,
-                                OutputSection *rdataSec) {
+void lld::coff::placeVTableRuns(
+    COFFLinkerContext &ctx, OutputSection *rdataSec,
+    llvm::function_ref<bool(const SectionChunk *)> heldBack) {
   if (ctx.vtableRuns.empty())
     return;
   for (const VTableRun &run : ctx.vtableRuns)
     rdataSec->addChunk(run.maskChunk);
   std::vector<Chunk *> &chunks = rdataSec->chunks;
-  for (const VTableRun &run : ctx.vtableRuns) {
+  DenseSet<const Chunk *> inRdata(chunks.begin(), chunks.end());
+  for (VTableRun &run : ctx.vtableRuns) {
+    // A run the linker places needs all its vtables in plain read-only data,
+    // laid out as consecutive slots. A vtable held back into the import
+    // address table span, or otherwise not here, is left in place, and the run
+    // becomes an empty range so its class's calls take the slow path.
+    // A vtable held back into the import address table span keeps its in-place
+    // import slots inside that table, so it cannot move into a run; its class,
+    // and the run that would hold it, take the slow path.
+    bool whole = llvm::all_of(run.slots, [&](const VTableRun::Slot &s) {
+      return inRdata.contains(s.chunk) && !heldBack(s.chunk);
+    });
+    if (!whole) {
+      for (const VTableRun::Slot &slot : run.slots)
+        ctx.runChunkRun.erase(slot.chunk);
+      run.stride = 0;
+      continue;
+    }
+    // The writer places these vtables itself, so their advisory line pins,
+    // which would fix them one at a time, give way.
+    for (const VTableRun::Slot &slot : run.slots)
+      ctx.chunkPins.erase(slot.chunk);
     DenseSet<const Chunk *> members;
     for (const VTableRun::Slot &slot : run.slots)
       members.insert(slot.chunk);
-    // The run's vtables go where the first of them now is, in slot order, with
-    // nothing between, so assignAddresses can space them by the stride.
     size_t at = chunks.size();
     for (size_t i = 0; i != chunks.size(); ++i)
       if (members.contains(chunks[i])) {
         at = i;
         break;
       }
-    if (at == chunks.size())
-      continue;
     llvm::erase_if(chunks, [&](Chunk *c) { return members.contains(c); });
     std::vector<Chunk *> ordered;
     for (const VTableRun::Slot &slot : run.slots)

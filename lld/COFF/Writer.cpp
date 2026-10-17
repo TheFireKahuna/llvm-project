@@ -829,7 +829,8 @@ void Writer::run() {
     appendECImportTables();
     placeImportSlotSections();
     packPlacedChunks();
-    placeVTableRuns(ctx, rdataSec);
+    placeVTableRuns(ctx, rdataSec,
+                    [&](const SectionChunk *sc) { return slots.isHeldBack(sc); });
     createDynamicRelocs();
     removeUnusedSections();
     kcfi.layOut(textSec, rdataSec);
@@ -1654,8 +1655,6 @@ void Writer::packPlacedChunks() {
         continuedBy[run[i - 1]->chunk] = run[i]->chunk;
   std::vector<PackItem> items;
   auto addItem = [&](Chunk *c) {
-    if (ctx.runChunkRun.contains(c))
-      return;
     PackItem &item = items.emplace_back();
     item.chunks.push_back(c);
     item.size = c->getSize();
