@@ -39,14 +39,15 @@
 ; CHECK-NEXT:    jne [[OWNER:\.L.*]]
 ; CHECK-NEXT:    jmpq *8(%rax)
 ; CHECK-NEXT:  [[OWNER]]:
-; CHECK-NEXT:    movq %rax, %r11
-; CHECK-NEXT:    subq __llvm_vtables_owner$1B(%rip), %r11
-; CHECK-NEXT:    movq __llvm_vtables_owner$1B+8(%rip), %r10
-; CHECK-NEXT:    subq __llvm_vtables_owner$1B(%rip), %r10
-; CHECK-NEXT:    cmpq %r10, %r11
+; CHECK-NEXT:    leaq __llvm_vtables_owner$1B(%rip), %r10
+; CHECK-NEXT:    cmpq 8(%r10), %rax
 ; CHECK-NEXT:    jae [[MISS2:\.L.*]]
-; CHECK-NEXT:    movq __llvm_vtables_owner$1B+16(%rip), %r10
-; CHECK-NEXT:    subq __llvm_vtables_owner$1B(%rip), %r10
+; CHECK-NEXT:    movq %rax, %r11
+; CHECK-NEXT:    subq (%r10), %r11
+; CHECK-NEXT:    jb [[MISS2]]
+; CHECK-NEXT:    movq 16(%r10), %r10
+; CHECK-NEXT:    subq %rax, %r10
+; CHECK-NEXT:    addq %r11, %r10
 ; CHECK-NEXT:    testq %r10, %r11
 ; CHECK-NEXT:    jne [[MISS2]]
 ; CHECK-NEXT:    jmpq *8(%rax)

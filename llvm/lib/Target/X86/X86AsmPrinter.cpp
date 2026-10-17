@@ -373,10 +373,12 @@ void X86AsmPrinter::emitKCFIFastFail() {
 ///
 /// With the owner's run, a pointer that misses the image's own is tested
 /// against it before the slow path, from the start, end and start plus mask
-/// that the owner words hold:
-/// movq %rax, %r11; subq owner(%rip), %r11
-/// movq owner+8(%rip), %r10; subq owner(%rip), %r10; cmpq %r10, %r11; jae 1f
-/// movq owner+16(%rip), %r10; subq owner(%rip), %r10; testq %r10, %r11; jne 1f
+/// that the owner words hold; the mask, the third word less the start, is the
+/// third word less the pointer plus the offset:
+/// leaq owner(%rip), %r10; cmpq 8(%r10), %rax; jae 1f
+/// movq %rax, %r11; subq (%r10), %r11; jb 1f
+/// movq 16(%r10), %r10; subq %rax, %r10; addq %r11, %r10
+/// testq %r10, %r11; jne 1f
 /// jmpq *off(%rax)
 void X86AsmPrinter::emitVTableGuardThunk(const VTableGuardThunkInfo &I) {
   const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
@@ -419,39 +421,38 @@ void X86AsmPrinter::emitVTableGuardThunk(const VTableGuardThunkInfo &I) {
   JumpThroughSlot();
   if (I.Owner) {
     OutStreamer->emitLabel(LocalMiss);
-    auto Word = [&](int64_t Index) {
-      const MCExpr *E = MCSymbolRefExpr::create(I.Owner, OutContext);
-      if (Index)
-        E = MCBinaryExpr::createAdd(
-            E, MCConstantExpr::create(8 * Index, OutContext), OutContext);
-      return E;
-    };
-    auto Mem = [&](MCInstBuilder B, int64_t Index) {
-      return B.addReg(X86::RIP)
+    auto Mem = [&](MCInstBuilder B, int64_t Disp) {
+      return B.addReg(X86::R10)
           .addImm(1)
           .addReg(X86::NoRegister)
-          .addExpr(Word(Index))
+          .addImm(Disp)
           .addReg(X86::NoRegister);
     };
-    auto SubStart = [&](MCRegister Reg) {
-      OutStreamer->emitInstruction(
-          Mem(MCInstBuilder(X86::SUB64rm).addReg(Reg).addReg(Reg), 0), STI);
-    };
-    // r11 = pointer - the owner's start.
+    // At or past the owner's end, or below its start.
+    emitKCFILea(X86::R10, I.Owner);
+    OutStreamer->emitInstruction(
+        Mem(MCInstBuilder(X86::CMP64rm).addReg(X86::RAX), 8), STI);
+    emitKCFIJcc(Miss, X86::COND_AE);
     OutStreamer->emitInstruction(
         MCInstBuilder(X86::MOV64rr).addReg(X86::R11).addReg(X86::RAX), STI);
-    SubStart(X86::R11);
-    // At or past the owner's extent, end - start.
     OutStreamer->emitInstruction(
-        Mem(MCInstBuilder(X86::MOV64rm).addReg(X86::R10), 1), STI);
-    SubStart(X86::R10);
-    emitKCFICmp(X86::R11, X86::R10);
-    emitKCFIJcc(Miss, X86::COND_AE);
-    // Not a multiple of the owner's stride, whose mask is the third word less
-    // the start.
+        Mem(MCInstBuilder(X86::SUB64rm).addReg(X86::R11).addReg(X86::R11), 0),
+        STI);
+    emitKCFIJcc(Miss, X86::COND_B);
+    // Not a multiple of the owner's stride: r10 = the third word less the
+    // pointer plus the offset, the mask.
     OutStreamer->emitInstruction(
-        Mem(MCInstBuilder(X86::MOV64rm).addReg(X86::R10), 2), STI);
-    SubStart(X86::R10);
+        Mem(MCInstBuilder(X86::MOV64rm).addReg(X86::R10), 16), STI);
+    OutStreamer->emitInstruction(MCInstBuilder(X86::SUB64rr)
+                                     .addReg(X86::R10)
+                                     .addReg(X86::R10)
+                                     .addReg(X86::RAX),
+                                 STI);
+    OutStreamer->emitInstruction(MCInstBuilder(X86::ADD64rr)
+                                     .addReg(X86::R10)
+                                     .addReg(X86::R10)
+                                     .addReg(X86::R11),
+                                 STI);
     OutStreamer->emitInstruction(
         MCInstBuilder(X86::TEST64rr).addReg(X86::R11).addReg(X86::R10), STI);
     emitKCFIJcc(Miss, X86::COND_NE);
