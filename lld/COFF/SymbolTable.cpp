@@ -604,7 +604,10 @@ void SymbolTable::readImportReferences() {
   if (!strongImportPointers) {
     strongImportPointers.emplace();
     weakExternalNames.emplace();
-    functionNames.emplace();
+    // Only importUnresolvedFromHost needs the undefined function names, so
+    // collect them only when it will run.
+    if (ctx.config.unresolvedHostImports)
+      functionNames.emplace();
     for (ObjFile *file : ctx.objFileInstances) {
       if (&file->symtab != this)
         continue;
@@ -622,7 +625,7 @@ void SymbolTable::readImportReferences() {
           weak.insert(*symName);
         else if (sym.isUndefined() && symName->starts_with("__imp_"))
           pointers.push_back(symName->drop_front(strlen("__imp_")));
-        else if (sym.isUndefined() &&
+        else if (functionNames && sym.isUndefined() &&
                  sym.getComplexType() == IMAGE_SYM_DTYPE_FUNCTION)
           functionNames->insert(*symName);
       }
