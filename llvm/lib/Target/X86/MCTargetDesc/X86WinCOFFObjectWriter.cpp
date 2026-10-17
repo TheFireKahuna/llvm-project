@@ -113,7 +113,24 @@ unsigned X86WinCOFFObjectWriter::getRelocType(MCContext &Ctx,
     }
   }
 
+  // COFF has no relocation for an ELF specifier such as @GOTPCREL, and
+  // dropping it would change what the instruction reaches. @PLT on a call
+  // reaches the function either way.
   auto Spec = Target.getSpecifier();
+  switch (Spec) {
+  case X86::S_None:
+  case X86::S_COFF_SECREL:
+  case X86::S_PLT:
+  case MCSymbolRefExpr::VK_COFF_IMGREL32:
+    break;
+  default:
+    Ctx.reportError(Fixup.getLoc(),
+                    "relocation specifier @" +
+                        Ctx.getAsmInfo().getSpecifierName(Spec) +
+                        " unsupported on COFF targets");
+    return Is64Bit ? COFF::IMAGE_REL_AMD64_ABSOLUTE
+                   : COFF::IMAGE_REL_I386_ABSOLUTE;
+  }
   if (Is64Bit) {
     switch (FixupKind) {
     case X86::reloc_riprel_4byte:
