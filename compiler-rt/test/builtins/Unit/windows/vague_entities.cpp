@@ -15,7 +15,8 @@
 // RUN:   %t/d.dll.lib %t/p.dll.lib -Wl,-delayload:d.dll -Wl,-delayload:p.dll \
 // RUN:   -o %t/delay_host.exe
 // RUN: %run %t/host.exe %t/p.dll | FileCheck --check-prefix=HOST %s
-// RUN: %run %t/plugin_host.exe %t/q.dll | FileCheck --check-prefix=PLUGIN %s
+// RUN: %run %t/plugin_host.exe %t/q.dll %t/p.dll | \
+// RUN:   FileCheck --check-prefix=PLUGIN %s
 // RUN: %run %t/delay_host.exe | FileCheck --check-prefix=DELAY %s
 
 // An inline variable has one instance in the program, as on ELF. a.dll and
@@ -24,12 +25,14 @@
 // plugin that keeps it binds to that instance when loaded, and stays loaded
 // after FreeLibrary, since others use the instance it may have initialized. A
 // DLL that a plugin delay-loads joins the plugin's scope and binds to the
-// plugin's instance. Of two delay-loaded DLLs that keep it, the first to load
+// plugin's instance, which a plugin loaded later does not see, as under
+// RTLD_LOCAL. Of two delay-loaded DLLs that keep it, the first to load
 // keeps its instance and the second binds to it.
 
 // HOST: same 1 value 3
 // HOST: plugin same 1 value 4 pinned 1
 // PLUGIN: same 1 value 2
+// PLUGIN: other same 0 value 1
 // DELAY: same 1 value 2
 
 #include <stdio.h>
@@ -101,6 +104,14 @@ int main(int argc, char **argv) {
     return 3;
   int *q = bumpQ(), *d = viaD();
   printf("same %d value %d\n", q == d, *q);
+  HMODULE other = LoadLibraryA(argv[2]);
+  if (!other)
+    return 4;
+  int *(*bumpP)() = (int *(*)())GetProcAddress(other, "_Z5bumpPv");
+  if (!bumpP)
+    return 5;
+  int *p = bumpP();
+  printf("other same %d value %d\n", p == d, *p);
   return 0;
 }
 #endif

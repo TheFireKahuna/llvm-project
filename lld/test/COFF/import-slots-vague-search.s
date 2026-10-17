@@ -47,8 +47,9 @@
 
 ## Nothing while the process initializes; an entity the executable's table
 ## names is skipped; then the modules after the executable, each with the
-## table's tag inside its image, probed if loaded with the process or if it
-## delay-loads this DLL, by the key of this DLL's name.
+## table's tag inside its image, probed if loaded with the process, if
+## delay-loaded within that scope, or if it delay-loads this DLL, by the key of
+## this DLL's name.
 # CHECK:      pushq %rbx
 # CHECK:      testb $0x2, 0x50(%rax)
 # CHECK-NEXT: jne
@@ -61,6 +62,13 @@
 # CHECK:      movl 0x34(%rdx), %r8d
 # CHECK-NEXT: cmpl 0x40(%r15), %r8d
 # CHECK:      testb $0x20, 0x68(%r15)
+## A delay-loaded module counts if its importer, by the base the loader
+## records, is the executable or loaded with the process, in turn.
+# CHECK:      cmpl $0x3, 0x10c(%rax)
+# CHECK:      movq 0xb8(%rax), %r9
+# CHECK:      cmpq %r9, 0x30(%rax)
+# CHECK:      cmpq (%rbp), %rax
+# CHECK:      testb $0x20, 0x68(%rax)
 # CHECK:      movabsq $0x58a7bdf45370db42, %rax
 ## On a hit, LdrAddRefDll(LDR_ADDREF_DLL_PIN, module), then once this DLL; the
 ## pointer is written between two protection calls.

@@ -50,7 +50,8 @@
 
 ## The search: nothing while the process initializes; the modules after the
 ## executable, each with the table's tag inside its image, probed if loaded
-## with the process or if it delay-loads this DLL.
+## with the process, if delay-loaded within that scope, or if it delay-loads
+## this DLL.
 # CHECK:      stp x29, x30, [sp, #-0x70]!
 # CHECK:      ldrb w9, [x16, #0x50]
 # CHECK-NEXT: tbnz w9, #0x1,
@@ -63,6 +64,11 @@
 # CHECK:      ldr w12, [x25, #0x40]
 # CHECK:      ldr w12, [x25, #0x68]
 # CHECK-NEXT: tbnz w12, #0x5,
+# CHECK:      ldr w12, [x13, #0x10c]
+# CHECK-NEXT: cmp w12, #0x3
+# CHECK:      ldr x14, [x13, #0xb8]
+# CHECK:      ldr x12, [x13, #0x30]
+# CHECK-NEXT: cmp x12, x14
 ## On a hit, LdrAddRefDll(LDR_ADDREF_DLL_PIN, module), then once this DLL.
 # CHECK:      ldr x23, [x10, x9]
 # CHECK:      mov w0, #0x1

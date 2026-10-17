@@ -1477,6 +1477,7 @@ static constexpr uint32_t ldrEntryDllBase = 0x30;
 static constexpr uint32_t ldrEntrySizeOfImage = 0x40;
 static constexpr uint32_t ldrEntryFlags = 0x68;
 static constexpr uint32_t ldrProcessStaticImport = 0x20;
+static constexpr uint32_t ldrEntryParentDllBase = 0xB8;
 static constexpr uint32_t ldrEntryLoadReason = 0x10C;
 static constexpr uint32_t loadReasonDelayloadDependency = 3;
 static constexpr uint32_t pebLdr = 0x18;
@@ -1490,9 +1491,10 @@ static constexpr uint32_t ldrInLoadOrderModuleList = 0x10;
 // search returns at once. Otherwise, for each entity of the bind list that the
 // table's block does not name, it walks the loader's list of modules in load
 // order, after the executable: those loaded while the process initialized,
-// ELF's global scope, those delay-loaded, which join their importer's scope,
-// and those that delay-load this DLL, whose scope it joins as ELF loads a
-// dependency into its parent's. In each that names an offer
+// ELF's global scope; those that the executable or a module of that scope
+// delay-loaded, which join it as ELF loads a dependency into its parent's
+// scope, but not those a module loaded later delay-loaded; and those that
+// delay-load this DLL, whose scope it joins. In each that names an offer
 // table in its MZ header, it probes the table for the entity's key; on a hit
 // it writes the word the entry names, the instance that module uses, into each
 // cell of the entity, and pins the module. Once an entity is shared, found so
@@ -1596,7 +1598,8 @@ void VagueSearchFillChunk::writeAMD64(LabelledCode &a) const {
            probe = a.newLabel(), bucket = a.newLabel(), hit = a.newLabel(),
            next = a.newLabel(), store = a.newLabel(), skip = a.newLabel(),
            shared = a.newLabel(), finish = a.newLabel(), zero = a.newLabel(),
-           done = a.newLabel();
+           done = a.newLabel(), parent = a.newLabel(), importer = a.newLabel(),
+           found = a.newLabel(), delayLoaders = a.newLabel();
   // NtProtectVirtualMemory(-1, &base, &size, r9d, &old), with base, size and
   // old at rsp + 0x30, 0x38 and 0x40.
   auto callProtect = [&] {
@@ -1687,11 +1690,38 @@ void VagueSearchFillChunk::writeAMD64(LabelledCode &a) const {
   a.put({0x41, 0xF6, 0x47, uint8_t(ldrEntryFlags),
          uint8_t(ldrProcessStaticImport)});
   a.jcc(0x85, probe);
-  // cmp dword ptr [r15 + reason], LoadReasonDelayloadDependency; je .probe
-  a.put({0x41, 0x83, 0xBF, 0, 0, 0, 0, uint8_t(loadReasonDelayloadDependency)});
+  // A module delay-loaded by one in that scope, or by the executable, joins
+  // it; the loader records the importer's base in the module's entry. The
+  // entry tested in rax, the importer's base in r9, and a bound on the chain
+  // in ecx.
+  a.put({0x4C, 0x89, 0xF8});    // mov rax, r15
+  a.put({0xB9, 0x40, 0, 0, 0}); // mov ecx, 64
+  a.bind(parent);
+  // cmp dword ptr [rax + reason], LoadReasonDelayloadDependency
+  a.put({0x83, 0xB8, 0, 0, 0, 0, uint8_t(loadReasonDelayloadDependency)});
   write32le(a.buf + a.off - 5, ldrEntryLoadReason);
+  a.jcc(0x85, delayLoaders);
+  a.put({0xFF, 0xC9}); // dec ecx
+  a.jcc(0x84, delayLoaders);
+  a.put({0x4C, 0x8B, 0x88, 0, 0, 0, 0}); // mov r9, [rax + parent]
+  a.imm32(ldrEntryParentDllBase);
+  a.put({0x48, 0x8B, 0x45, 0x00}); // mov rax, [rbp]
+  a.bind(importer);
+  a.put({0x48, 0x39, 0xE8}); // cmp rax, rbp
+  a.jcc(0x84, delayLoaders);
+  a.put({0x4C, 0x39, 0x48, uint8_t(ldrEntryDllBase)}); // cmp [rax + base], r9
+  a.jcc(0x84, found);
+  a.put({0x48, 0x8B, 0x00}); // mov rax, [rax]
+  a.jmp(importer);
+  a.bind(found);
+  a.put({0x48, 0x3B, 0x45, 0x00}); // cmp rax, [rbp]   the executable's entry
   a.jcc(0x84, probe);
+  // test byte ptr [rax + flags], ProcessStaticImport
+  a.put({0xF6, 0x40, uint8_t(ldrEntryFlags), uint8_t(ldrProcessStaticImport)});
+  a.jcc(0x85, probe);
+  a.jmp(parent);
   // Otherwise, only if the module delay-loads this DLL.
+  a.bind(delayLoaders);
   a.put({0x41, 0x8B, 0x48, 0x08});             // mov ecx, [r8 + 8]
   a.put({0x45, 0x8B, 0x48, 0x0C});             // mov r9d, [r8 + 12]
   a.put({0x4D, 0x01, 0xC1});                   // add r9, r8
@@ -1820,7 +1850,8 @@ void VagueSearchFillChunk::writeARM64(LabelledCode &a) const {
            probe = a.newLabel(), bucket = a.newLabel(), hit = a.newLabel(),
            next = a.newLabel(), store = a.newLabel(), skip = a.newLabel(),
            shared = a.newLabel(), finish = a.newLabel(), zero = a.newLabel(),
-           done = a.newLabel();
+           done = a.newLabel(), parent = a.newLabel(), importer = a.newLabel(),
+           found = a.newLabel(), delayLoaders = a.newLabel();
   // The arguments of NtProtectVirtualMemory other than the protection, with
   // base, size and old at sp + 88, 96 and 104; then the call.
   auto callProtect = [&] {
@@ -1907,11 +1938,39 @@ void VagueSearchFillChunk::writeARM64(LabelledCode &a) const {
   a.put32(0xB940032C | ldrEntryFlags / 4 << 10);
   a.branch14(0x3700000C | llvm::countr_zero(ldrProcessStaticImport) << 19,
              probe);
-  // ldr w12, [x25, #reason]; cmp w12, #LoadReasonDelayloadDependency; b.eq
-  a.put32(0xB940032C | ldrEntryLoadReason / 4 << 10);
+  // A module delay-loaded by one in that scope, or by the executable, joins
+  // it. The entry tested in x13, the importer's base in x14, and a bound on
+  // the chain in w15.
+  a.put32(0xAA1903ED); // mov x13, x25
+  a.put32(0x5280080F); // mov w15, #64
+  a.bind(parent);
+  // ldr w12, [x13, #reason]; cmp w12, #LoadReasonDelayloadDependency
+  a.put32(0xB94001AC | ldrEntryLoadReason / 4 << 10);
   a.put32(0x7100019F | loadReasonDelayloadDependency << 10);
+  a.branch19(0x54000001, delayLoaders);                  // b.ne
+  a.put32(0x710005EF);                                   // subs w15, w15, #1
+  a.branch19(0x54000000, delayLoaders);                  // b.eq
+  a.put32(0xF94001AE | ldrEntryParentDllBase / 8 << 10); // ldr x14, [x13, #p]
+  a.put32(0xF940034D);                                   // ldr x13, [x26]
+  a.bind(importer);
+  a.put32(0xEB1A01BF);                             // cmp x13, x26
+  a.branch19(0x54000000, delayLoaders);            // b.eq
+  a.put32(0xF94001AC | ldrEntryDllBase / 8 << 10); // ldr x12, [x13, #base]
+  a.put32(0xEB0E019F);                             // cmp x12, x14
+  a.branch19(0x54000000, found);                   // b.eq
+  a.put32(0xF94001AD);                             // ldr x13, [x13]
+  a.branch26(0x14000000, importer);
+  a.bind(found);
+  a.put32(0xF940034C); // ldr x12, [x26]   the executable's entry
+  a.put32(0xEB0C01BF); // cmp x13, x12
   a.branch19(0x54000000, probe);
+  // ldr w12, [x13, #flags]; tbnz w12, #ProcessStaticImport, .probe
+  a.put32(0xB94001AC | ldrEntryFlags / 4 << 10);
+  a.branch14(0x3700000C | llvm::countr_zero(ldrProcessStaticImport) << 19,
+             probe);
+  a.branch26(0x14000000, parent);
   // Otherwise, only if the module delay-loads this DLL.
+  a.bind(delayLoaders);
   a.put32(0xB940096C); // ldr w12, [x11, #8]
   a.put32(0xB9400D6D); // ldr w13, [x11, #12]
   a.put32(0x8B0D016D); // add x13, x11, x13
