@@ -20,9 +20,9 @@
 #include "ICF.h"
 #include "COFFLinkerContext.h"
 #include "Chunks.h"
-#include "SymbolTable.h"
 #include "Symbols.h"
 #include "lld/Common/Timer.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/Parallel.h"
 #include "llvm/Support/TimeProfiler.h"
 #include "llvm/Support/xxhash.h"
@@ -85,13 +85,18 @@ bool ICF::isEligible(SectionChunk *c) {
   if (c->ineligibleForICF)
     return false;
 
+  // A program may enumerate the sections named with a C identifier through
+  // __start_X and __stop_X; folding one away would drop it from the run.
+  StringRef outSecName = c->getSectionName().split('$').first;
+  if (ctx.config.startStopSymbols && isValidCIdentifier(outSecName))
+    return false;
+
   // Under regular (not safe) ICF, all code sections are eligible.
   if ((ctx.config.doICF == ICFLevel::All) &&
       c->getOutputCharacteristics() & llvm::COFF::IMAGE_SCN_MEM_EXECUTE)
     return true;
 
   // .pdata and .xdata unwind info sections are eligible.
-  StringRef outSecName = c->getSectionName().split('$').first;
   if (outSecName == ".pdata" || outSecName == ".xdata")
     return true;
 
@@ -249,10 +254,9 @@ void ICF::run() {
 
   // Mark the sections ICF must keep distinct, so that isEligible tests one bit
   // instead of searching several side tables for every section: a pinned chunk
-  // or a vtable laid out in a run, whose address is load-bearing; a section a
-  // program enumerates through __start_X and __stop_X, so folding one away
-  // would drop an entry; and a function the guard tables mark suppressed, which
-  // differs from one they do not.
+  // or a vtable laid out in a run, whose address is load-bearing, and a
+  // function the guard tables mark suppressed, which differs from one they do
+  // not.
   auto keepDistinct = [](const Chunk *c) {
     if (auto *sc = dyn_cast_or_null<SectionChunk>(const_cast<Chunk *>(c)))
       sc->ineligibleForICF = true;
@@ -261,11 +265,6 @@ void ICF::run() {
     keepDistinct(pin.first);
   for (const auto &run : ctx.runChunkRun)
     keepDistinct(run.first);
-  ctx.forEachSymtab([&](SymbolTable &symtab) {
-    for (const SymbolTable::SectionRun &run : symtab.sectionRuns)
-      for (SectionChunk *sc : run.chunks)
-        sc->ineligibleForICF = true;
-  });
   for (Defined *d : ctx.guardSuppressed)
     keepDistinct(d->getChunk());
 
