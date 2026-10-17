@@ -81,6 +81,10 @@ class COFFAsmParser : public MCAsmParserExtension {
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFact>(
         ".linktypeprefixes");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFact>(
+        ".linkbindings");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkBinding>(
+        ".linkbinding");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFact>(
         ".linkprotecteddelayiat");
 
     // Win64 EH directives.
@@ -148,6 +152,7 @@ class COFFAsmParser : public MCAsmParserExtension {
   bool parseDirectiveLinkFact(StringRef, SMLoc);
   bool parseDirectiveLinkKCFIThunk(StringRef, SMLoc);
   bool parseDirectiveLinkKCFITag(StringRef, SMLoc);
+  bool parseDirectiveLinkBinding(StringRef, SMLoc);
   bool parseDirectiveSecNum(StringRef, SMLoc);
   bool parseDirectiveSecOffset(StringRef, SMLoc);
 
@@ -623,12 +628,14 @@ bool COFFAsmParser::parseDirectiveLinkPin(StringRef, SMLoc) {
 ///  ::= .linkkcfilists
 ///  ::= .linktypeprefixes
 ///  ::= .linkprotecteddelayiat
+///  ::= .linkbindings
 bool COFFAsmParser::parseDirectiveLinkFact(StringRef Directive, SMLoc) {
-  uint64_t Kind = StringSwitch<uint64_t>(Directive)
-                      .Case(".linkkcfilists", COFF::LinkRecordKCFIImportLists)
-                      .Case(".linktypeprefixes", COFF::LinkRecordTypePrefixes)
-                      .Case(".linkprotecteddelayiat",
-                            COFF::LinkRecordProtectedDelayIAT);
+  uint64_t Kind =
+      StringSwitch<uint64_t>(Directive)
+          .Case(".linkkcfilists", COFF::LinkRecordKCFIImportLists)
+          .Case(".linktypeprefixes", COFF::LinkRecordTypePrefixes)
+          .Case(".linkprotecteddelayiat", COFF::LinkRecordProtectedDelayIAT)
+          .Case(".linkbindings", COFF::LinkRecordBinding);
   if (parseEOL())
     return true;
   getStreamer().emitCOFFLinkFact(Kind);
@@ -684,6 +691,24 @@ bool COFFAsmParser::parseDirectiveLinkKCFIThunk(StringRef, SMLoc) {
   if (parseEOL())
     return true;
   getStreamer().emitCOFFKCFIThunk(Thunk, Kind, Type, Marker, Offset, Mismatch);
+  return false;
+}
+
+/// parseDirectiveLinkBinding
+///  ::= .linkbinding symbol, default
+bool COFFAsmParser::parseDirectiveLinkBinding(StringRef, SMLoc) {
+  MCSymbol *Symbol;
+  if (getParser().parseSymbol(Symbol))
+    return TokError("expected identifier in directive");
+  if (getParser().parseComma())
+    return true;
+  StringRef Role;
+  SMLoc RoleLoc = getLexer().getLoc();
+  if (getParser().parseIdentifier(Role) || Role != "default")
+    return Error(RoleLoc, "expected 'default'");
+  if (parseEOL())
+    return true;
+  getStreamer().emitCOFFLinkBinding(Symbol, COFF::LinkBindingDefault);
   return false;
 }
 

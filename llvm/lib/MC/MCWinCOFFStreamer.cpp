@@ -351,6 +351,11 @@ void MCWinCOFFStreamer::emitCOFFKCFIThunk(const MCSymbol *Thunk, unsigned Kind,
   getWriter().addKCFIThunk({Thunk, Kind, Type, Marker, Offset, Mismatch});
 }
 
+void MCWinCOFFStreamer::emitCOFFLinkBinding(const MCSymbol *Symbol,
+                                            unsigned Role) {
+  getWriter().addLinkBinding({Symbol, Role});
+}
+
 void MCWinCOFFStreamer::emitCOFFKCFIMemberTag(const MCSymbol *Prefix) {
   getWriter().addKCFIMemberTag(Prefix);
 }

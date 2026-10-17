@@ -127,6 +127,20 @@ enum LinkRecordKind : uint64_t {
   // section and delta are as for LinkRecordSites.
   LinkRecordCallOnly = 4,
 
+  // The roles of the object's external definitions in COMDATs, for a linker
+  // that shares a definition along import paths, as ELF shares a definition
+  // of default visibility among a program's shared objects:
+  //
+  //   payload := (symbol:ULEB128 role:ULEB128)*
+  //
+  // symbol is a symbol index, and role a LinkBindingRole. An object with this
+  // group lists every such definition with the role it has, so that a linker
+  // may take a definition it does not list as hidden; a linker takes a
+  // definition of an object without the group as having default visibility.
+  // The kind is critical, since a linker that ignored it would share hidden
+  // definitions.
+  LinkRecordBinding = 5,
+
   // The KCFI thunks the object defines, each a function in a COMDAT that
   // checks the KCFI type of a call's target, for a linker that replaces them
   // with a form of its own:
@@ -183,6 +197,12 @@ enum LinkRecordKind : uint64_t {
   // image's delay-load thunks call this object's helper. The payload is
   // empty.
   LinkRecordProtectedDelayIAT = 16,
+};
+
+// The role of a definition that a LinkRecordBinding group lists.
+enum LinkBindingRole : uint8_t {
+  // The definition has default visibility, so another image may share it.
+  LinkBindingDefault,
 };
 
 // The kind of a KCFI thunk.

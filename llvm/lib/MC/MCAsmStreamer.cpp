@@ -329,6 +329,7 @@ public:
   void emitCOFFKCFIThunk(const MCSymbol *Thunk, unsigned Kind, uint32_t Type,
                          uint32_t Marker, uint32_t Offset,
                          const MCSymbol *Mismatch) override;
+  void emitCOFFLinkBinding(const MCSymbol *Symbol, unsigned Role) override;
   void emitCOFFKCFIMemberTag(const MCSymbol *Prefix) override;
   void emitXCOFFLocalCommonSymbol(MCSymbol *LabelSym, uint64_t Size,
                                   MCSymbol *CsectSym, Align Alignment) override;
@@ -1059,6 +1060,9 @@ void MCAsmStreamer::emitCOFFLinkFact(uint64_t Kind) {
   case COFF::LinkRecordProtectedDelayIAT:
     OS << "\t.linkprotecteddelayiat";
     break;
+  case COFF::LinkRecordBinding:
+    OS << "\t.linkbindings";
+    break;
   default:
     llvm_unreachable("not a link record with an empty payload");
   }
@@ -1075,6 +1079,14 @@ void MCAsmStreamer::emitCOFFKCFIThunk(const MCSymbol *Thunk, unsigned Kind,
   OS << ", " << Kinds[Kind] << ", " << format_hex(Type, 10) << ", "
      << format_hex(Marker, 10) << ", " << Offset << ", ";
   Mismatch->print(OS, MAI);
+  EmitEOL();
+}
+
+void MCAsmStreamer::emitCOFFLinkBinding(const MCSymbol *Symbol, unsigned Role) {
+  assert(Role == COFF::LinkBindingDefault && "unknown binding role");
+  OS << "\t.linkbinding\t";
+  Symbol->print(OS, MAI);
+  OS << ", default";
   EmitEOL();
 }
 

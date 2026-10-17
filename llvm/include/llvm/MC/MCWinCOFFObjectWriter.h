@@ -9,6 +9,7 @@
 #ifndef LLVM_MC_MCWINCOFFOBJECTWRITER_H
 #define LLVM_MC_MCWINCOFFOBJECTWRITER_H
 
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/MC/MCObjectWriter.h"
 #include <memory>
 #include <optional>
@@ -90,6 +91,13 @@ public:
     const MCSymbol *Mismatch;
   };
 
+  /// The role of an external definition in a COMDAT, which the object's
+  /// link-only records carry (COFF::LinkRecordBinding).
+  struct LinkBinding {
+    const MCSymbol *Symbol;
+    unsigned Role;
+  };
+
 private:
   // The pins of the object's link-only records, in the order given.
   SmallVector<LinkPin, 0> LinkPins;
@@ -100,6 +108,8 @@ private:
   SmallVector<KCFIThunk, 0> KCFIThunks;
   // The KCFI prefixes whose word before the marker is a membership tag.
   SmallVector<const MCSymbol *, 0> KCFIMemberTags;
+  // The roles of the object's definitions in COMDATs, in the order given.
+  SmallVector<LinkBinding, 0> LinkBindings;
 
 public:
   WinCOFFObjectWriter(std::unique_ptr<MCWinCOFFObjectTargetWriter> MOTW,
@@ -117,7 +127,8 @@ public:
   // Whether the object has a .llvm_link_records section.
   bool hasLinkRecordsSection() const {
     return hasLinkRecords() || !LinkPins.empty() || !LinkFacts.empty() ||
-           !KCFIThunks.empty() || !KCFIMemberTags.empty();
+           !KCFIThunks.empty() || !KCFIMemberTags.empty() ||
+           !LinkBindings.empty();
   }
   void addLinkPin(const LinkPin &Pin) { LinkPins.push_back(Pin); }
   void addLinkFact(uint64_t Kind) {
@@ -128,6 +139,11 @@ public:
   void addKCFIThunk(const KCFIThunk &Thunk) { KCFIThunks.push_back(Thunk); }
   void addKCFIMemberTag(const MCSymbol *Prefix) {
     KCFIMemberTags.push_back(Prefix);
+  }
+  // A binding implies the fact that the object lists every binding.
+  void addLinkBinding(const LinkBinding &Binding) {
+    LinkBindings.push_back(Binding);
+    addLinkFact(COFF::LinkRecordBinding);
   }
   void executePostLayoutBinding() override;
   bool isSymbolRefDifferenceFullyResolvedImpl(const MCSymbol &SymA,

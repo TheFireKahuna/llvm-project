@@ -569,6 +569,12 @@ bool AsmPrinter::doInitialization(Module &M) {
       M.getModuleFlag("function-type-prefix"))
     OutStreamer->emitCOFFLinkFact(COFF::LinkRecordTypePrefixes);
 
+  // A COFF linker takes a definition in a COMDAT as having default visibility
+  // unless the object says it lists those that have it, as these targets'
+  // objects do.
+  if (Target.isWindowsItaniumOrNTPOSIXEnvironment())
+    OutStreamer->emitCOFFLinkFact(COFF::LinkRecordBinding);
+
   // Very minimal debug info. It is ignored if we emit actual debug info. If we
   // don't, this at least helps the user find where a global came from.
   if (MAI.hasSingleParameterDotFile()) {
@@ -752,6 +758,12 @@ void AsmPrinter::emitLinkage(const GlobalValue *GV, MCSymbol *GVSym) const {
       // .weak _foo
       OutStreamer->emitSymbolAttribute(GVSym, MCSA_Weak);
     }
+    // A COFF linker that shares a definition in a COMDAT along import paths,
+    // as ELF shares a definition of default visibility, learns which have it
+    // from the object's link records.
+    if (Linkage != GlobalValue::CommonLinkage && GV->hasDefaultVisibility() &&
+        TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+      OutStreamer->emitCOFFLinkBinding(GVSym, COFF::LinkBindingDefault);
     return;
   case GlobalValue::ExternalLinkage:
     OutStreamer->emitSymbolAttribute(GVSym, MCSA_Global);

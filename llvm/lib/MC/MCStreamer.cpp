@@ -1286,6 +1286,7 @@ void MCStreamer::emitCOFFKCFIThunk(const MCSymbol *Thunk, unsigned Kind,
                                    uint32_t Type, uint32_t Marker,
                                    uint32_t Offset, const MCSymbol *Mismatch) {}
 
+void MCStreamer::emitCOFFLinkBinding(const MCSymbol *Symbol, unsigned Role) {}
 void MCStreamer::emitCOFFKCFIMemberTag(const MCSymbol *Prefix) {}
 
 /// EmitRawText - If this file is backed by an assembly streamer, this dumps
