@@ -3825,6 +3825,35 @@ static void handleMinVectorWidthAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
   D->addAttr(::new (S.Context) MinVectorWidthAttr(S.Context, AL, VecWidth));
 }
 
+static void handleOverridableDefaultAttr(Sema &S, Decl *D,
+                                         const ParsedAttr &AL) {
+  uint32_t Slot;
+  if (!S.checkUInt32Argument(AL, AL.getArgAsExpr(0), Slot)) {
+    AL.setInvalid();
+    return;
+  }
+
+  // The table stays within the executable's first page: eight slots before
+  // its 24-byte header at 0x80, and the rest after the header from 0x98.
+  constexpr uint32_t MaxSlot = 8 + (0x1000 - 0x98) / 8 - 1;
+  if (Slot > MaxSlot) {
+    S.Diag(AL.getLoc(), diag::err_attribute_argument_out_of_range)
+        << AL << 0 << MaxSlot;
+    AL.setInvalid();
+    return;
+  }
+
+  OverridableDefaultAttr *Existing = D->getAttr<OverridableDefaultAttr>();
+  if (Existing && Existing->getSlot() != Slot) {
+    S.Diag(AL.getLoc(), diag::err_attributes_are_not_compatible)
+        << AL << Existing << AL.isRegularKeywordAttribute();
+    S.Diag(Existing->getLocation(), diag::note_conflicting_attribute);
+    return;
+  }
+
+  D->addAttr(::new (S.Context) OverridableDefaultAttr(S.Context, AL, Slot));
+}
+
 static void handleCleanupAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
   Expr *E = AL.getArgAsExpr(0);
   SourceLocation Loc = E->getExprLoc();
@@ -8066,6 +8095,9 @@ ProcessDeclAttribute(Sema &S, Decl *D, const ParsedAttr &AL,
     break;
   case ParsedAttr::AT_MinVectorWidth:
     handleMinVectorWidthAttr(S, D, AL);
+    break;
+  case ParsedAttr::AT_OverridableDefault:
+    handleOverridableDefaultAttr(S, D, AL);
     break;
   case ParsedAttr::AT_Unavailable:
     handleAttrWithMessage<UnavailableAttr>(S, D, AL);
