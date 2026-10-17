@@ -98,6 +98,13 @@ void *DynamicLibrary::HandleSet::DLSym(void *Handle, const char *Symbol) {
   if (HS->Process == &Invalid)
     return nullptr;
 
+#if defined(_MSC_VER) && !defined(_DLL)
+  // The process exits through this image's C runtime, whose exit also runs
+  // the system's that JIT'd code is given below.
+  if (!strcmp(Symbol, "exit"))
+    return reinterpret_cast<void *>(&exit);
+#endif
+
   // Trials indicate EnumProcessModulesEx is consistantly faster than using
   // EnumerateLoadedModules64 or CreateToolhelp32Snapshot.
   //
@@ -147,6 +154,28 @@ void *DynamicLibrary::HandleSet::DLSym(void *Handle, const char *Symbol) {
         return (void *)uintptr_t(Ptr);
     }
   }
+
+#if defined(_MSC_VER) && !defined(_DLL)
+  // A static C runtime is private to this image and exports nothing, so the C
+  // runtime functions JIT'd code calls come from the system's, which gives
+  // that code a C runtime of its own. That runtime's exit runs at this
+  // image's, while the code is still mapped, so that its exit handlers run
+  // and its streams are flushed.
+  static HMODULE UCRT = [] {
+    HMODULE M =
+        LoadLibraryExW(L"ucrtbase.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    static void(__cdecl *CExit)() = nullptr;
+    if (M)
+      CExit = reinterpret_cast<void(__cdecl *)()>(
+          reinterpret_cast<void *>(GetProcAddress(M, "_cexit")));
+    if (CExit)
+      atexit([] { CExit(); });
+    return M;
+  }();
+  if (UCRT)
+    if (FARPROC Ptr = GetProcAddress(UCRT, Symbol))
+      return (void *)uintptr_t(Ptr);
+#endif
 
   if (auto Fallback = ProcessSymbolFallback.load())
     return Fallback(Symbol);
