@@ -223,7 +223,10 @@ static void validateSpecialCaseListFormat(const Driver &D,
     D.Diag(MalformedSCLErrorDiagID) << BLError;
 }
 
+/// The ignorelist of CFI must be found when \p RequestedKinds, the sanitizers
+/// asked for rather than enabled by the toolchain, include it.
 static void addDefaultIgnorelists(const Driver &D, SanitizerMask Kinds,
+                                  SanitizerMask RequestedKinds,
                                   std::vector<std::string> &IgnorelistFiles,
                                   bool DiagnoseErrors) {
   struct Ignorelist {
@@ -252,7 +255,8 @@ static void addDefaultIgnorelists(const Driver &D, SanitizerMask Kinds,
     llvm::sys::path::append(Path, "share", BL.File);
     if (D.getVFS().exists(Path))
       IgnorelistFiles.push_back(std::string(Path));
-    else if (BL.Mask == SanitizerKind::CFI && DiagnoseErrors)
+    else if (BL.Mask == SanitizerKind::CFI && (RequestedKinds & BL.Mask) &&
+             DiagnoseErrors)
       // If cfi_ignorelist.txt cannot be found in the resource dir, driver
       // should fail.
       D.Diag(clang::diag::err_drv_missing_sanitizer_ignorelist) << Path;
@@ -784,6 +788,8 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
 
   // Enable toolchain specific default sanitizers if not explicitly disabled.
   SanitizerMask Default = TC.getDefaultSanitizers() & ~AllRemove;
+  if (TC.isUsingLTO(Args))
+    Default |= TC.getDefaultLTOSanitizers() & ~AllRemove;
 
   // Disable default sanitizers that are incompatible with explicitly requested
   // ones.
@@ -907,7 +913,8 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
   // Add default ignorelist from resource directory for activated sanitizers,
   // and validate special case lists format.
   if (!Args.hasArgNoClaim(options::OPT_fno_sanitize_ignorelist))
-    addDefaultIgnorelists(D, Kinds, SystemIgnorelistFiles, DiagnoseErrors);
+    addDefaultIgnorelists(D, Kinds, AllAddedKinds, SystemIgnorelistFiles,
+                          DiagnoseErrors);
 
   // Parse -f(no-)?sanitize-ignorelist options.
   // This also validates special case lists format.
@@ -1014,7 +1021,8 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
     if (const Arg *A = Args.getLastArg(options::OPT_fsanitize_kcfi_hash_EQ))
       KcfiHash = A->getValue();
 
-    if (AllAddedKinds & SanitizerKind::CFI && DiagnoseErrors)
+    if (AllAddedKinds & SanitizerKind::CFI && !TC.canCombineKCFIWithCFI() &&
+        DiagnoseErrors)
       D.Diag(diag::err_drv_argument_not_allowed_with)
           << "-fsanitize=kcfi"
           << lastArgumentForMask(D, Args, SanitizerKind::CFI);
@@ -1351,6 +1359,24 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
   NeedsMemProfRt = Args.hasFlag(options::OPT_fmemory_profile,
                                 options::OPT_fmemory_profile_EQ,
                                 options::OPT_fno_memory_profile, false);
+
+  // Without the runtimes, a failed check can only trap, and cross-DSO CFI has
+  // no slow path to call for a target outside the image.
+  if (!TC.hasSanitizerRuntimes() && DiagnoseErrors) {
+    if (SanitizerMask NonTrapping = Kinds & NeedsUbsanRt & ~TrappingKinds) {
+      if (const Arg *A = Args.getLastArg(options::OPT_fno_sanitize_trap_EQ))
+        D.Diag(diag::err_drv_unsupported_opt_for_target)
+            << A->getAsString(Args) << TC.getTripleString();
+      else if (NonTrapping & AllAddedKinds)
+        D.Diag(diag::err_drv_unsupported_opt_for_target)
+            << lastArgumentForMask(D, Args, NonTrapping & AllAddedKinds)
+            << TC.getTripleString();
+    }
+    if ((Kinds & SanitizerKind::CFI) && CfiCrossDso)
+      if (const Arg *A = Args.getLastArg(options::OPT_fsanitize_cfi_cross_dso))
+        D.Diag(diag::err_drv_unsupported_opt_for_target)
+            << A->getAsString(Args) << TC.getTripleString();
+  }
 
   // Finally, initialize the set of available and recoverable sanitizers.
   Sanitizers.Mask |= Kinds;

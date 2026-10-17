@@ -39,10 +39,12 @@
 
 // Use profile on lib and get bitcode. Explicitly skip ICP pass to test ICP happens as
 // expected in the IR module that imports functions from lib.
-// RUN: %clang -mllvm -disable-icp -fprofile-use=main.profdata -flto=thin -O2 -c lib.cpp -o lib.bc
+// A target that enables CFI by default under LTO splits each LTO unit into two
+// modules, and llvm-lto reads only one, so CFI is turned off.
+// RUN: %clang -mllvm -disable-icp -fprofile-use=main.profdata -flto=thin -fno-sanitize=cfi -O2 -c lib.cpp -o lib.bc
 
 // Use profile on main and get bitcode.
-// RUN: %clang -fprofile-use=main.profdata -flto=thin -O2 -c main.cpp -o main.bc
+// RUN: %clang -fprofile-use=main.profdata -flto=thin -fno-sanitize=cfi -O2 -c main.cpp -o main.bc
 
 // Run llvm-lto to get summary file.
 // RUN: llvm-lto -thinlto -o summary main.bc lib.bc

@@ -888,6 +888,23 @@ public:
     return SanitizerMask();
   }
 
+  /// Return sanitizers which are enabled by default when compiling for LTO,
+  /// which some of them need.
+  virtual SanitizerMask getDefaultLTOSanitizers() const {
+    return SanitizerMask();
+  }
+
+  /// Whether KCFI may be enabled with the CFI schemes, KCFI checking the
+  /// indirect calls they leave unchecked.
+  virtual bool canCombineKCFIWithCFI() const { return false; }
+
+  /// Whether -fwhole-program-vtables is on by default when compiling for LTO.
+  virtual bool defaultsToWholeProgramVTablesWithLTO() const { return false; }
+
+  /// Whether the toolchain links the sanitizer runtimes, without which a check
+  /// can only trap and cross-DSO CFI cannot work.
+  virtual bool hasSanitizerRuntimes() const { return true; }
+
   /// Returns true when it's possible to split LTO unit to use whole
   /// program devirtualization and CFI santiizers.
   virtual bool canSplitThinLTOUnit() const { return true; }

@@ -56,6 +56,28 @@ public:
   }
   bool isPICDefaultForced() const override { return true; }
 
+  /// KCFI checks indirect calls unless -fno-sanitize=kcfi.
+  SanitizerMask getDefaultSanitizers() const override {
+    return SanitizerKind::KCFI;
+  }
+
+  /// Under LTO, CFI checks the virtual and non-virtual member calls of the
+  /// classes LTO sees whole, and the indirect calls whose targets LTO tags,
+  /// beside KCFI.
+  SanitizerMask getDefaultLTOSanitizers() const override {
+    return SanitizerKind::CFIVCall | SanitizerKind::CFINVCall |
+           SanitizerKind::CFIICall | SanitizerKind::CFIMFCall;
+  }
+  bool canCombineKCFIWithCFI() const override { return true; }
+
+  /// Whole-program devirtualisation acts on the classes LTO sees whole, as
+  /// CFI does; -lto-whole-program-visibility at the link widens it to the
+  /// classes of default visibility that the image does not export.
+  bool defaultsToWholeProgramVTablesWithLTO() const override { return true; }
+
+  /// No sanitizer runtime is built for these targets.
+  bool hasSanitizerRuntimes() const override { return false; }
+
   /// -fstack-protector-strong, as /GS gives for MSVC.
   LangOptions::StackProtectorMode
   GetDefaultStackProtectorLevel(bool KernelOrKext) const override {
