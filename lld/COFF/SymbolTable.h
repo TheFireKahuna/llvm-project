@@ -16,6 +16,7 @@
 #include "llvm/ADT/DenseMapInfo.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/raw_ostream.h"
 #include <optional>
@@ -238,8 +239,10 @@ public:
   bool ignoresOffersOf(DefinedImportData *imp) const;
 
   // The symbols that preemptWeakData resolved to imports, whose addresses that
-  // code takes in a described instruction become loads of their imports.
-  llvm::DenseSet<Symbol *> preemptedData;
+  // code takes in a described instruction become loads of their imports. Kept
+  // in the order they were preempted, so the offers made from them do not
+  // depend on the hashing of a pointer set.
+  llvm::SetVector<Symbol *> preemptedData;
 
   // The imports that the sections preemptWeakData discarded refer to, which
   // need no entry if nothing else uses them.
