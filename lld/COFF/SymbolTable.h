@@ -460,6 +460,12 @@ public:
   // Returns a symbol for a given name. Returns a nullptr if not found.
   Symbol *find(StringRef name);
   Symbol *findUnderscore(StringRef name);
+  // Like find(), but does not enter an indexed archive's lazy symbol: it
+  // returns only a symbol the table already holds, so a probe for a symbol
+  // that is not expected to exist leaves the table unchanged.
+  Symbol *findNonInserting(StringRef name) {
+    return symMap.lookup(llvm::CachedHashStringRef(name));
+  }
 
   void addUndefinedGlob(StringRef arg);
 
@@ -607,12 +613,12 @@ public:
   void parseAlternateName(StringRef);
   void parseAligncomm(StringRef);
 
-  // Iterates symbols in non-determinstic hash table order. The callback may
-  // look up a symbol, which can enter an indexed archive's lazy symbol.
+  // Iterates symbols in non-determinstic hash table order. The callback must
+  // not enter a symbol; to look one up it uses findNonInserting, so the table
+  // is not mutated while it is walked.
   template <typename T> void forEachSymbol(T callback) {
-    SmallVector<Symbol *, 0> syms(llvm::make_second_range(symMap));
-    for (Symbol *sym : syms)
-      callback(sym);
+    for (auto &pair : symMap)
+      callback(pair.second);
   }
 
   std::vector<BitcodeFile *> bitcodeFileInstances;
@@ -659,6 +665,11 @@ private:
   // lacks is that of the lazy symbol of the first of them that defines it, as
   // if each had entered its lazy symbols when it was read.
   std::vector<ArchiveFile *> indexedArchives;
+  // Every name an indexed archive defines, keyed to the first archive that
+  // does and the position of its symbol there, so a name the table lacks is
+  // found with one probe rather than one per indexed archive.
+  llvm::DenseMap<llvm::CachedHashStringRef, std::pair<ArchiveFile *, uint32_t>>
+      indexedSymbols;
   // Symbols created undefined with the __imp_ prefix under -import-slots,
   // which loadLocalImportMembers visits instead of the whole table.
   std::vector<Symbol *> impUndefs;

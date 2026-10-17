@@ -2603,10 +2603,10 @@ Symbol *SymbolTable::find(StringRef name) {
 
 std::pair<ArchiveFile *, uint32_t>
 SymbolTable::findIndexed(CachedHashStringRef name) {
-  for (ArchiveFile *f : indexedArchives)
-    if (std::optional<uint32_t> i = f->findSymbol(name))
-      return {f, *i};
-  return {nullptr, 0};
+  auto it = indexedSymbols.find(name);
+  if (it == indexedSymbols.end())
+    return {nullptr, 0};
+  return it->second;
 }
 
 bool SymbolTable::addIndexedLazy(Symbol *s, StringRef name) {
@@ -2653,6 +2653,10 @@ void SymbolTable::addIndexedArchive(ArchiveFile *f) {
     s->pendingArchiveLoad = true;
     f->addMember(f->getSymbol(i));
   }
+  // Enter f's symbols into the merged index, first archive to define a name
+  // keeping it, so later lookups of a name the table lacks take one probe.
+  for (uint32_t i : f->getIndexedSymbols())
+    indexedSymbols.try_emplace(CachedHashStringRef(f->getSymbolName(i)), f, i);
   indexedArchives.push_back(f);
 }
 

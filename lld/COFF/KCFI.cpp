@@ -1733,8 +1733,8 @@ void KCFIContents::narrowMemberMisses() {
       // x86-64 stores a type that would spell an ENDBR instruction plus one.
       if (nativeTypes.contains(isX64 ? getX86KCFIType(type) : type))
         return;
-      auto *mismatch =
-          dyn_cast_or_null<Defined>(ctx.symtab.find((k.mismatch + hex).str()));
+      auto *mismatch = dyn_cast_or_null<Defined>(
+          ctx.symtab.findNonInserting((k.mismatch + hex).str()));
       if (!mismatch || (k.outside && isOutsideType(type, mismatch)))
         return;
       Chunk *c;
