@@ -19,6 +19,8 @@
 #include "AArch64Subtarget.h"
 #include "MCTargetDesc/AArch64AddressingModes.h"
 #include "Utils/AArch64BaseInfo.h"
+#include "llvm/BinaryFormat/COFF.h"
+#include "llvm/CodeGen/KCFI.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineConstantPool.h"
@@ -52,6 +54,7 @@ public:
 
 private:
   bool expandMBB(MachineBasicBlock &MBB);
+  bool elideProvenCallChecks(MachineFunction &MF);
   bool expandMI(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
                 MachineBasicBlock::iterator &NextMBBI);
   bool expandMultiVecPseudo(MachineBasicBlock &MBB,
@@ -2031,10 +2034,103 @@ bool AArch64ExpandPseudoImpl::expandMBB(MachineBasicBlock &MBB) {
   return Modified;
 }
 
+// Returns the instruction that defines Reg last before MI, if it is in MI's
+// block.
+static MachineInstr *getLastDef(MachineInstr &MI, Register Reg,
+                                const TargetRegisterInfo &TRI) {
+  for (MachineInstr *I = MI.getPrevNode(); I; I = I->getPrevNode())
+    if (I->modifiesRegister(Reg, &TRI))
+      return I;
+  return nullptr;
+}
+
+// Erases Def if nothing reads the register it defines after it.
+static bool eraseIfDead(MachineInstr *Def, const TargetRegisterInfo &TRI) {
+  if (!Def || !Def->getOperand(0).isReg())
+    return false;
+  MachineBasicBlock &MBB = *Def->getParent();
+  MachineBasicBlock::iterator Next = std::next(MachineBasicBlock::iterator(Def));
+  if (MBB.computeRegisterLiveness(&TRI, Def->getOperand(0).getReg(), Next) !=
+      MachineBasicBlock::LQR_Dead)
+    return false;
+  Def->eraseFromParent();
+  return true;
+}
+
+// Returns true if MI checks the target of an indirect call in X15 before the
+// call: a call of a KCFI check thunk, or of the guard check function loaded
+// from its pointer, which then sets Guard to that load.
+static bool isGuardCheck(MachineInstr &MI, MachineInstr *&Guard,
+                         const TargetRegisterInfo &TRI) {
+  const MachineOperand &Callee = MI.getOperand(0);
+  if (Callee.isGlobal()) {
+    StringRef Name = Callee.getGlobal()->getName();
+    return Name.starts_with(COFF::KCFICheckThunkPrefix) ||
+           Name.starts_with(COFF::KCFILocalCheckThunkPrefix);
+  }
+  if (!Callee.isReg())
+    return false;
+  MachineInstr *Def = getLastDef(MI, Callee.getReg(), TRI);
+  if (!Def || Def->getOpcode() != AArch64::LDRXui ||
+      !Def->getOperand(2).isGlobal() ||
+      Def->getOperand(2).getGlobal()->getName() != "__guard_check_icall_fptr")
+    return false;
+  Guard = Def;
+  return true;
+}
+
+// The CFGuard pass checks an indirect call whose target it proved to come from
+// a constant table of functions as it checks any other, and marks the load of
+// the target. Where the target stayed in its register from that load to the
+// call, the check before the call proves nothing the table does not, and is
+// dropped.
+bool AArch64ExpandPseudoImpl::elideProvenCallChecks(MachineFunction &MF) {
+  if (!MF.getTarget().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    return false;
+  const TargetRegisterInfo &TRI = *MF.getSubtarget().getRegisterInfo();
+  bool Changed = false;
+  for (MachineBasicBlock &MBB : MF) {
+    MachineInstr *Check = nullptr, *Guard = nullptr;
+    for (MachineInstr &MI : make_early_inc_range(MBB.instrs())) {
+      if (!MI.isCall())
+        continue;
+      MachineInstr *PrevCheck = std::exchange(Check, nullptr);
+      MachineInstr *PrevGuard = std::exchange(Guard, nullptr);
+      if (isGuardCheck(MI, Guard, TRI)) {
+        Check = &MI;
+        continue;
+      }
+      if (!PrevCheck || !MI.getOperand(0).isReg())
+        continue;
+      MachineInstr *Load =
+          findProvenCallTarget(MI, MI.getOperand(0).getReg(),
+                               MOProvenCallTarget, PrevCheck, *TII, TRI);
+      if (!Load ||
+          findProvenCallTarget(*PrevCheck, AArch64::X15, MOProvenCallTarget,
+                               nullptr, *TII, TRI) != Load)
+        continue;
+      MachineInstr *Arg = getLastDef(*PrevCheck, AArch64::X15, TRI);
+      PrevCheck->eraseFromParent();
+      if (Arg && Arg->isCopy())
+        eraseIfDead(Arg, TRI);
+      // The guard function's pointer, and its page.
+      if (PrevGuard) {
+        MachineInstr *Page =
+            getLastDef(*PrevGuard, PrevGuard->getOperand(1).getReg(), TRI);
+        if (eraseIfDead(PrevGuard, TRI) && Page &&
+            Page->getOpcode() == AArch64::ADRP)
+          eraseIfDead(Page, TRI);
+      }
+      Changed = true;
+    }
+  }
+  return Changed;
+}
+
 bool AArch64ExpandPseudoImpl::run(MachineFunction &MF) {
   TII = MF.getSubtarget<AArch64Subtarget>().getInstrInfo();
 
-  bool Modified = false;
+  bool Modified = elideProvenCallChecks(MF);
   for (auto &MBB : MF)
     Modified |= expandMBB(MBB);
   return Modified;

@@ -43,6 +43,11 @@ enum AsmComments : MachineInstr::AsmPrinterFlagTy {
   AC_EVEX_2_EVEX = AC_EVEX_2_VEX << 1
 };
 
+/// Marks the load of an indirect call's target that the CFGuard pass proved to
+/// come from a constant table of functions.
+static const MachineMemOperand::Flags MOProvenCallTarget =
+    MachineMemOperand::MOTargetFlag1;
+
 /// Return a pair of condition code for the given predicate and whether
 /// the instruction operands should be swaped to match the condition code.
 std::pair<CondCode, bool> getX86ConditionCode(CmpInst::Predicate Predicate);
@@ -640,6 +645,9 @@ public:
 
   ArrayRef<std::pair<unsigned, const char *>>
   getSerializableDirectMachineOperandTargetFlags() const override;
+
+  ArrayRef<std::pair<MachineMemOperand::Flags, const char *>>
+  getSerializableMachineMemOperandTargetFlags() const override;
 
   std::optional<std::unique_ptr<outliner::OutlinedFunction>>
   getOutliningCandidateInfo(

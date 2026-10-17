@@ -31,6 +31,10 @@ static const MachineMemOperand::Flags MOSuppressPair =
     MachineMemOperand::MOTargetFlag1;
 static const MachineMemOperand::Flags MOStridedAccess =
     MachineMemOperand::MOTargetFlag2;
+/// Marks the load of an indirect call's target that the CFGuard pass proved to
+/// come from a constant table of functions.
+static const MachineMemOperand::Flags MOProvenCallTarget =
+    MachineMemOperand::MOTargetFlag3;
 
 #define FALKOR_STRIDED_ACCESS_MD "falkor.strided.access"
 

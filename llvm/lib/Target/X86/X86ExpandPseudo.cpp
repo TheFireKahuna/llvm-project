@@ -17,6 +17,8 @@
 #include "X86InstrInfo.h"
 #include "X86MachineFunctionInfo.h"
 #include "X86Subtarget.h"
+#include "llvm/BinaryFormat/COFF.h"
+#include "llvm/CodeGen/KCFI.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFunctionAnalysisManager.h"
@@ -51,6 +53,7 @@ private:
                            MachineBasicBlock::iterator MBBI);
   bool expandMI(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI);
   bool expandMBB(MachineBasicBlock &MBB);
+  bool elideProvenCallChecks(MachineFunction &MF);
 
   /// This function expands pseudos which affects control flow.
   /// It is done in separate pass to simplify blocks navigation in main
@@ -919,6 +922,164 @@ void X86ExpandPseudoImpl::expandVastartSaveXmmRegs(
   VAStartPseudoInstr->eraseFromParent();
 }
 
+namespace {
+enum class GuardedCall { None, Dispatch, Check };
+} // namespace
+
+// Returns whether MI calls a KCFI thunk or a guard function that checks the
+// target of an indirect call: one that dispatches to the target in RAX, or one
+// that checks it in RCX before the call.
+static GuardedCall getGuardedCall(const MachineInstr &MI) {
+  const MachineOperand *Callee = nullptr;
+  switch (MI.getOpcode()) {
+  case X86::CALL64pcrel32:
+  case X86::TCRETURNdi64:
+    Callee = &MI.getOperand(0);
+    break;
+  case X86::CALL64m:
+  case X86::TCRETURNmi64:
+  case X86::TCRETURN_WINmi64:
+    if (MI.getOperand(X86::AddrBaseReg).getReg() == X86::RIP &&
+        !MI.getOperand(X86::AddrIndexReg).getReg())
+      Callee = &MI.getOperand(X86::AddrDisp);
+    break;
+  }
+  if (!Callee || !Callee->isGlobal())
+    return GuardedCall::None;
+  StringRef Name = Callee->getGlobal()->getName();
+  if (Name == "__guard_dispatch_icall_fptr" ||
+      Name.starts_with(COFF::KCFIDispatchThunkPrefix) ||
+      Name.starts_with(COFF::KCFILocalDispatchThunkPrefix))
+    return GuardedCall::Dispatch;
+  if (Name == "__guard_check_icall_fptr" ||
+      Name.starts_with(COFF::KCFICheckThunkPrefix) ||
+      Name.starts_with(COFF::KCFILocalCheckThunkPrefix))
+    return GuardedCall::Check;
+  return GuardedCall::None;
+}
+
+// Erases the copy into Reg before MI if nothing reads it after MI.
+static void eraseDeadCopy(MachineInstr &MI, Register Reg,
+                          const TargetRegisterInfo &TRI) {
+  MachineBasicBlock &MBB = *MI.getParent();
+  MachineInstr *Copy = MI.getPrevNode();
+  while (Copy && Copy->isDebugInstr())
+    Copy = Copy->getPrevNode();
+  if (Copy && Copy->isCopy() && Copy->getOperand(0).getReg() == Reg &&
+      MBB.computeRegisterLiveness(&TRI, Reg,
+                                  std::next(MachineBasicBlock::iterator(MI))) ==
+          MachineBasicBlock::LQR_Dead)
+    Copy->eraseFromParent();
+}
+
+// Folds Load into the indirect call MI that reads the register it defines, as
+// instruction selection would have without the guard, if the load is right
+// before the call and nothing reads the register after it.
+static void foldLoadIntoCall(MachineInstr &MI, MachineInstr &Load,
+                             const X86Subtarget &STI) {
+  MachineBasicBlock &MBB = *MI.getParent();
+  MachineFunction &MF = *MBB.getParent();
+  const X86InstrInfo &TII = *STI.getInstrInfo();
+  Register Reg = MI.getOperand(0).getReg();
+  if (Load.getOpcode() != X86::MOV64rm || Load.getOperand(0).getReg() != Reg ||
+      prev_nodbg(MachineBasicBlock::iterator(MI), MBB.begin()) !=
+          MachineBasicBlock::iterator(Load))
+    return;
+  unsigned Opc = X86::CALL64m;
+  if (MI.isReturn())
+    Opc = STI.isCallingConvWin64(MF.getFunction().getCallingConv())
+              ? X86::TCRETURN_WINmi64
+              : X86::TCRETURNmi64;
+  else if (none_of(MI.operands(), [&](const MachineOperand &MO) {
+             return MO.isRegMask() && MO.clobbersPhysReg(Reg);
+           }))
+    return;
+  // A tail call's address must be in registers the epilogue leaves alone.
+  const MCInstrDesc &Desc = TII.get(Opc);
+  for (unsigned I : {X86::AddrBaseReg, X86::AddrIndexReg}) {
+    Register AddrReg = Load.getOperand(1 + I).getReg();
+    if (AddrReg && AddrReg != X86::RIP &&
+        !TII.getRegClass(Desc, I)->contains(AddrReg))
+      return;
+  }
+  MachineInstrBuilder Call(
+      MF, MF.CreateMachineInstr(Desc, MI.getDebugLoc(), /*NoImplicit=*/true));
+  MBB.insert(MI, Call);
+  for (unsigned I = 0; I != X86::AddrNumOperands; ++I)
+    Call.add(Load.getOperand(1 + I));
+  for (const MachineOperand &MO : drop_begin(MI.operands()))
+    if (!(MO.isReg() && MO.isImplicit() && MO.isUse() && MO.getReg() == Reg))
+      Call.add(MO);
+  Call.cloneMemRefs(Load);
+  Call->setFlags(MI.getFlags());
+  if (MI.shouldUpdateAdditionalCallInfo())
+    MF.moveAdditionalCallInfo(&MI, Call);
+  MI.eraseFromParent();
+  Load.eraseFromParent();
+}
+
+// The CFGuard pass routes an indirect call whose target it proved to come from
+// a constant table of functions through the same KCFI thunk or guard function
+// as any other, and marks the load of the target. Where the target stayed in
+// its register from that load to the call, the check proves nothing the table
+// does not: a dispatched call becomes a plain indirect call, and a check
+// before a call is dropped.
+bool X86ExpandPseudoImpl::elideProvenCallChecks(MachineFunction &MF) {
+  // A call through a retpoline or another indirect thunk is formed before
+  // register allocation, so a call made here would bypass it.
+  if (!STI->getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() ||
+      STI->useIndirectThunkCalls())
+    return false;
+  bool Changed = false;
+  for (MachineBasicBlock &MBB : MF) {
+    MachineInstr *Check = nullptr;
+    for (MachineInstr &MI : make_early_inc_range(MBB.instrs())) {
+      if (!MI.isCall())
+        continue;
+      GuardedCall Kind = getGuardedCall(MI);
+      if (Kind == GuardedCall::Check) {
+        Check = &MI;
+        continue;
+      }
+      MachineInstr *PrevCheck = std::exchange(Check, nullptr);
+
+      MachineInstr *Load = nullptr;
+      if (Kind == GuardedCall::Dispatch) {
+        Load = findProvenCallTarget(MI, X86::RAX, X86::MOProvenCallTarget,
+                                    nullptr, *TII, *TRI);
+        if (!Load)
+          continue;
+        if (MI.mayLoad()) {
+          for (unsigned I = 1; I != X86::AddrNumOperands; ++I)
+            MI.removeOperand(1);
+          MI.dropMemRefs(MF);
+        }
+        MI.setDesc(TII->get(MI.isReturn() ? X86::TCRETURNri64 : X86::CALL64r));
+        MI.getOperand(0).ChangeToRegister(X86::RAX, /*isDef=*/false);
+      } else {
+        // A call checked in RCX right before it, by a check that reads the
+        // same proven load.
+        if (!PrevCheck || (MI.getOpcode() != X86::CALL64r &&
+                           MI.getOpcode() != X86::TCRETURNri64 &&
+                           MI.getOpcode() != X86::TCRETURN_WIN64ri))
+          continue;
+        Load = findProvenCallTarget(MI, MI.getOperand(0).getReg(),
+                                    X86::MOProvenCallTarget, PrevCheck, *TII,
+                                    *TRI);
+        if (!Load ||
+            findProvenCallTarget(*PrevCheck, X86::RCX, X86::MOProvenCallTarget,
+                                 nullptr, *TII, *TRI) != Load)
+          continue;
+        eraseDeadCopy(*PrevCheck, X86::RCX, *TRI);
+        PrevCheck->eraseFromParent();
+      }
+      foldLoadIntoCall(MI, *Load, *STI);
+      Changed = true;
+    }
+  }
+  return Changed;
+}
+
 /// Expand all pseudo instructions contained in \p MBB.
 /// \returns true if any expansion occurred for \p MBB.
 bool X86ExpandPseudoImpl::expandMBB(MachineBasicBlock &MBB) {
@@ -957,7 +1118,8 @@ bool X86ExpandPseudoImpl::runOnMachineFunction(MachineFunction &MF) {
   X86FI = MF.getInfo<X86MachineFunctionInfo>();
   X86FL = STI->getFrameLowering();
 
-  bool Modified = expandPseudosWhichAffectControlFlow(MF);
+  bool Modified = elideProvenCallChecks(MF);
+  Modified |= expandPseudosWhichAffectControlFlow(MF);
 
   for (MachineBasicBlock &MBB : MF)
     Modified |= expandMBB(MBB);

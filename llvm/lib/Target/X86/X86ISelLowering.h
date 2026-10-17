@@ -692,6 +692,9 @@ namespace llvm {
 
     bool supportKCFIBundles() const override { return true; }
 
+    MachineMemOperand::Flags
+    getTargetMMOFlags(const Instruction &I) const override;
+
     MachineInstr *EmitKCFICheck(MachineBasicBlock &MBB,
                                 MachineBasicBlock::instr_iterator &MBBI,
                                 const TargetInstrInfo *TII) const override;

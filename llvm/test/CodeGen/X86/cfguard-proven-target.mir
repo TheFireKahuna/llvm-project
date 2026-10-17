@@ -1,0 +1,109 @@
+# RUN: llc -mtriple=x86_64-unknown-windows-itanium -run-pass=x86-expand-pseudo \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s
+
+# A call through a KCFI thunk whose target was loaded from a table the CFGuard
+# pass proved is made directly only if the target stayed in its register from
+# the load to the call, and the load's address was not reloaded on the way.
+
+--- |
+  @table = internal constant [4 x ptr] zeroinitializer
+  declare void @__llvm_kcfi_dispatch_0000000c()
+  declare void @use()
+  define void @in_register() { ret void }
+  define void @copied() { ret void }
+  define void @target_reloaded() { ret void }
+  define void @index_reloaded() { ret void }
+  define void @call_between() { ret void }
+  define void @unmarked() { ret void }
+...
+---
+# CHECK-LABEL: name: in_register
+# CHECK:       CALL64m killed renamable $rax, 8, killed renamable $rcx, 0, $noreg, csr_win64
+# CHECK-NOT:   __llvm_kcfi_dispatch
+name: in_register
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $rcx
+    renamable $rax = LEA64r $rip, 1, $noreg, @table, $noreg
+    renamable $rax = MOV64rm killed renamable $rax, 8, killed renamable $rcx, 0, $noreg :: (invariant "x86-proven-call-target" load (s64))
+    CALL64pcrel32 @__llvm_kcfi_dispatch_0000000c, csr_win64, implicit $rsp, implicit $ssp, implicit $rax, implicit-def $rsp, implicit-def $ssp
+    RET 0
+...
+---
+# CHECK-LABEL: name: copied
+# CHECK:       $rax = COPY $rdx
+# CHECK-NEXT:  CALL64r $rax, csr_win64
+name: copied
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $rcx
+    renamable $rax = LEA64r $rip, 1, $noreg, @table, $noreg
+    renamable $rdx = MOV64rm killed renamable $rax, 8, killed renamable $rcx, 0, $noreg :: (invariant "x86-proven-call-target" load (s64))
+    $rax = COPY $rdx
+    CALL64pcrel32 @__llvm_kcfi_dispatch_0000000c, csr_win64, implicit $rsp, implicit $ssp, implicit $rax, implicit-def $rsp, implicit-def $ssp
+    RET 0
+...
+---
+# CHECK-LABEL: name: target_reloaded
+# CHECK:       CALL64pcrel32 @__llvm_kcfi_dispatch_0000000c
+name: target_reloaded
+tracksRegLiveness: true
+stack:
+  - { id: 0, type: spill-slot, offset: -16, size: 8, alignment: 8 }
+body: |
+  bb.0:
+    liveins: $rcx
+    renamable $rax = LEA64r $rip, 1, $noreg, @table, $noreg
+    renamable $rax = MOV64rm killed renamable $rax, 8, killed renamable $rcx, 0, $noreg :: (invariant "x86-proven-call-target" load (s64))
+    MOV64mr $rsp, 1, $noreg, 8, $noreg, killed $rax :: (store (s64) into %stack.0)
+    $rax = MOV64rm $rsp, 1, $noreg, 8, $noreg :: (load (s64) from %stack.0)
+    CALL64pcrel32 @__llvm_kcfi_dispatch_0000000c, csr_win64, implicit $rsp, implicit $ssp, implicit $rax, implicit-def $rsp, implicit-def $ssp
+    RET 0
+...
+---
+# CHECK-LABEL: name: index_reloaded
+# CHECK:       CALL64pcrel32 @__llvm_kcfi_dispatch_0000000c
+name: index_reloaded
+tracksRegLiveness: true
+stack:
+  - { id: 0, type: spill-slot, offset: -16, size: 8, alignment: 8 }
+body: |
+  bb.0:
+    liveins: $rcx
+    MOV64mr $rsp, 1, $noreg, 8, $noreg, killed $rcx :: (store (s64) into %stack.0)
+    renamable $rax = LEA64r $rip, 1, $noreg, @table, $noreg
+    $rcx = MOV64rm $rsp, 1, $noreg, 8, $noreg :: (load (s64) from %stack.0)
+    renamable $rax = MOV64rm killed renamable $rax, 8, killed renamable $rcx, 0, $noreg :: (invariant "x86-proven-call-target" load (s64))
+    CALL64pcrel32 @__llvm_kcfi_dispatch_0000000c, csr_win64, implicit $rsp, implicit $ssp, implicit $rax, implicit-def $rsp, implicit-def $ssp
+    RET 0
+...
+---
+# CHECK-LABEL: name: call_between
+# CHECK:       CALL64pcrel32 @__llvm_kcfi_dispatch_0000000c
+name: call_between
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $rcx
+    renamable $rax = LEA64r $rip, 1, $noreg, @table, $noreg
+    renamable $rbx = MOV64rm killed renamable $rax, 8, killed renamable $rcx, 0, $noreg :: (invariant "x86-proven-call-target" load (s64))
+    CALL64pcrel32 @use, csr_win64, implicit $rsp, implicit $ssp, implicit-def $rsp, implicit-def $ssp
+    $rax = COPY $rbx
+    CALL64pcrel32 @__llvm_kcfi_dispatch_0000000c, csr_win64, implicit $rsp, implicit $ssp, implicit $rax, implicit-def $rsp, implicit-def $ssp
+    RET 0
+...
+---
+# CHECK-LABEL: name: unmarked
+# CHECK:       CALL64pcrel32 @__llvm_kcfi_dispatch_0000000c
+name: unmarked
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $rcx
+    renamable $rax = LEA64r $rip, 1, $noreg, @table, $noreg
+    renamable $rax = MOV64rm killed renamable $rax, 8, killed renamable $rcx, 0, $noreg :: (invariant load (s64))
+    CALL64pcrel32 @__llvm_kcfi_dispatch_0000000c, csr_win64, implicit $rsp, implicit $ssp, implicit $rax, implicit-def $rsp, implicit-def $ssp
+    RET 0
+...

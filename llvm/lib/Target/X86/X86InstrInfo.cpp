@@ -10758,6 +10758,13 @@ X86InstrInfo::getSerializableDirectMachineOperandTargetFlags() const {
   return ArrayRef(TargetFlags);
 }
 
+ArrayRef<std::pair<MachineMemOperand::Flags, const char *>>
+X86InstrInfo::getSerializableMachineMemOperandTargetFlags() const {
+  static const std::pair<MachineMemOperand::Flags, const char *> TargetFlags[] =
+      {{X86::MOProvenCallTarget, "x86-proven-call-target"}};
+  return ArrayRef(TargetFlags);
+}
+
 /// Constants defining how certain sequences should be outlined.
 ///
 /// \p MachineOutlinerDefault implies that the function is called with a call

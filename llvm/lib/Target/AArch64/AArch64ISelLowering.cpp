@@ -19415,6 +19415,11 @@ AArch64TargetLowering::getTargetMMOFlags(const Instruction &I) const {
   if (Subtarget->getProcFamily() == AArch64Subtarget::Falkor &&
       I.hasMetadata(FALKOR_STRIDED_ACCESS_MD))
     return MOStridedAccess;
+  // The CFGuard pass marks the load of a target it proved, which the call may
+  // take unchecked if the target stays in its register.
+  if (Subtarget->getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      I.hasMetadata("cfguard_proven"))
+    return MOProvenCallTarget;
   return MachineMemOperand::MONone;
 }
 
