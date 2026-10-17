@@ -261,6 +261,13 @@ enum LinkSiteForm : uint8_t {
 // marked prefixes never assigns this type to a function or a call.
 const uint32_t SealedTypeId = 0;
 
+// The thunk that an indirect tail call goes through on AArch64 under Control
+// Flow Guard's check mechanism: it takes the target in the CFGuardTarget
+// register, checks it and branches to it, so that the function making the
+// tail call needs no frame for the call of the check. A compiler emits it in a
+// COMDAT of each object that uses it.
+inline constexpr char GuardTailCallThunk[] = "__llvm_guard_tailcall";
+
 // The names by which the KCFI checks of an object, the thunks and routines a
 // compiler emits for them, and a linker that rewrites both refer to each
 // other. A name that ends in an underscore is followed by a KCFI type in 8

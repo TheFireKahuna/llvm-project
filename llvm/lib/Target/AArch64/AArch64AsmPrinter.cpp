@@ -168,6 +168,7 @@ public:
   void LowerKCFI_CHECK(const MachineInstr &MI);
   void LowerHWASAN_CHECK_MEMACCESS(const MachineInstr &MI);
   void emitHwasanMemaccessSymbols(Module &M);
+  void emitGuardTailCallThunk();
 
   // Per-target emission of the KCFI thunks, scanners and open routines, which
   // AsmPrinter::emitKCFIThunks drives.
@@ -1465,11 +1466,86 @@ void AArch64AsmPrinter::emitKCFIOpenRoutine(const KCFIRoutineKind &Routine,
                                  STI);
 }
 
+/// Emits the thunk that an indirect tail call goes through under Control Flow
+/// Guard's check mechanism, which takes the target in x9:
+///
+/// stp x29, x30, [sp, #-16]!; mov x29, sp
+/// mov x15, x9; adrp x16, __guard_check_icall_fptr
+/// ldr x16, [x16, :lo12:__guard_check_icall_fptr]; blr x16
+/// ldp x29, x30, [sp], #16; br x15
+///
+/// The check takes its target in x15 and preserves it, the argument registers
+/// and x8, and the caller's stack arguments stay above the frame record, so
+/// the target receives the call as the function making the tail call made it.
+/// That function then needs no frame for a call of its own.
+void AArch64AsmPrinter::emitGuardTailCallThunk() {
+  const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
+  auto &TS =
+      static_cast<AArch64TargetStreamer &>(*OutStreamer->getTargetStreamer());
+  MCSymbol *Sym = OutContext.getOrCreateSymbol(COFF::GuardTailCallThunk);
+  emitKCFIFunctionStart(Sym, COFF::IMAGE_COMDAT_SELECT_ANY, Align(4));
+  OutStreamer->emitWinCFIStartProc(Sym);
+  OutStreamer->emitInstruction(MCInstBuilder(AArch64::STPXpre)
+                                   .addReg(AArch64::SP)
+                                   .addReg(AArch64::FP)
+                                   .addReg(AArch64::LR)
+                                   .addReg(AArch64::SP)
+                                   .addImm(-2),
+                               STI);
+  TS.emitARM64WinCFISaveFPLRX(16);
+  OutStreamer->emitInstruction(MCInstBuilder(AArch64::ADDXri)
+                                   .addReg(AArch64::FP)
+                                   .addReg(AArch64::SP)
+                                   .addImm(0)
+                                   .addImm(0),
+                               STI);
+  TS.emitARM64WinCFISetFP();
+  TS.emitARM64WinCFIPrologEnd();
+  OutStreamer->emitInstruction(MCInstBuilder(AArch64::ORRXrs)
+                                   .addReg(AArch64::X15)
+                                   .addReg(AArch64::XZR)
+                                   .addReg(AArch64::X9)
+                                   .addImm(0),
+                               STI);
+  const MCExpr *Guard = MCSymbolRefExpr::create(
+      OutContext.getOrCreateSymbol("__guard_check_icall_fptr"), OutContext);
+  OutStreamer->emitInstruction(MCInstBuilder(AArch64::ADRP)
+                                   .addReg(AArch64::X16)
+                                   .addExpr(MCSpecifierExpr::create(
+                                       Guard, AArch64::S_ABS_PAGE, OutContext)),
+                               STI);
+  OutStreamer->emitInstruction(
+      MCInstBuilder(AArch64::LDRXui)
+          .addReg(AArch64::X16)
+          .addReg(AArch64::X16)
+          .addExpr(MCSpecifierExpr::create(Guard, AArch64::S_LO12, OutContext)),
+      STI);
+  OutStreamer->emitInstruction(MCInstBuilder(AArch64::BLR).addReg(AArch64::X16),
+                               STI);
+  TS.emitARM64WinCFIEpilogStart();
+  OutStreamer->emitInstruction(MCInstBuilder(AArch64::LDPXpost)
+                                   .addReg(AArch64::SP)
+                                   .addReg(AArch64::FP)
+                                   .addReg(AArch64::LR)
+                                   .addReg(AArch64::SP)
+                                   .addImm(2),
+                               STI);
+  TS.emitARM64WinCFISaveFPLRX(16);
+  TS.emitARM64WinCFIEpilogEnd();
+  OutStreamer->emitInstruction(MCInstBuilder(AArch64::BR).addReg(AArch64::X15),
+                               STI);
+  OutStreamer->emitWinCFIEndProc();
+}
+
 void AArch64AsmPrinter::emitEndOfAsmFile(Module &M) {
   emitHwasanMemaccessSymbols(M);
 
-  if (TM.getTargetTriple().isOSBinFormatCOFF())
+  if (TM.getTargetTriple().isOSBinFormatCOFF()) {
     emitKCFIThunks(M);
+    if (const Function *F = M.getFunction(COFF::GuardTailCallThunk);
+        F && F->isDeclaration() && !F->use_empty())
+      emitGuardTailCallThunk();
+  }
 
   const Triple &TT = TM.getTargetTriple();
   if (TT.isOSBinFormatMachO()) {

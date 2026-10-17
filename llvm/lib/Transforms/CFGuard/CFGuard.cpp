@@ -109,6 +109,29 @@ public:
   /// \param CB indirect call to instrument.
   void insertCFGuardCheck(CallBase *CB);
 
+  /// Sends an indirect musttail call on AArch64 to the shared thunk that
+  /// checks its target and branches to it, so that the function needs no
+  /// frame for a call of the check.
+  ///
+  /// For example, the following LLVM IR:
+  /// \code
+  ///   %r = musttail call ptr %target(i64 %n)
+  ///   ret ptr %r
+  /// \endcode
+  ///
+  /// is transformed to:
+  /// \code
+  ///   %r = musttail call ptr @__llvm_guard_tailcall(i64 %n)
+  ///            [ "cfguardtarget"(ptr %target) ]
+  ///   ret ptr %r
+  /// \endcode
+  ///
+  /// \param CB indirect musttail call to instrument.
+  void insertCFGuardTailCallThunk(CallBase *CB);
+
+  /// Whether CB is a musttail call that goes through the thunk.
+  bool useTailCallThunk(const CallBase &CB) const;
+
   /// Inserts a Control Flow Guard (CFG) check on an indirect call using the CFG
   /// dispatch mechanism. When the image is loaded, the loader puts the
   /// appropriate guard check function pointer in the
@@ -260,6 +283,32 @@ void CFGuardImpl::insertCFGuardCheck(CallBase *CB) {
     return;
   CallBase *NewCB = CallBase::removeOperandBundle(CB, LLVMContext::OB_kcfi,
                                                   CB->getIterator());
+  CB->replaceAllUsesWith(NewCB);
+  CB->eraseFromParent();
+}
+
+bool CFGuardImpl::useTailCallThunk(const CallBase &CB) const {
+  const Triple &TT = CB.getModule()->getTargetTriple();
+  return CFGuardModuleFlag == ControlFlowGuardMode::Enabled && TT.isAArch64() &&
+         !TT.isWindowsArm64EC() && CB.isMustTailCall() &&
+         !(UseKCFIThunks && CB.getOperandBundle(LLVMContext::OB_kcfi));
+}
+
+void CFGuardImpl::insertCFGuardTailCallThunk(CallBase *CB) {
+  // The thunk takes the target in the CFGuardTarget register, outside the
+  // argument registers, and the call keeps its own type and arguments.
+  Module &M = *CB->getModule();
+  auto *Thunk = cast<Function>(
+      M.getOrInsertFunction(COFF::GuardTailCallThunk,
+                            FunctionType::get(Type::getVoidTy(M.getContext()),
+                                              /*isVarArg=*/false))
+          .getCallee());
+  Thunk->setDSOLocal(true);
+  SmallVector<OperandBundleDef, 1> Bundles;
+  CB->getOperandBundlesAsDefs(Bundles);
+  Bundles.emplace_back("cfguardtarget", CB->getCalledOperand());
+  CallBase *NewCB = CallBase::Create(CB, Bundles, CB->getIterator());
+  NewCB->setCalledOperand(Thunk);
   CB->replaceAllUsesWith(NewCB);
   CB->eraseFromParent();
 }
@@ -834,6 +883,8 @@ bool CFGuardImpl::runOnFunction(Function &F) {
   for (CallBase *CB : IndirectCalls) {
     if (GuardMechanism == Mechanism::Dispatch && canUseDispatch(*CB))
       insertCFGuardDispatch(CB);
+    else if (useTailCallThunk(*CB))
+      insertCFGuardTailCallThunk(CB);
     else
       insertCFGuardCheck(CB);
   }
