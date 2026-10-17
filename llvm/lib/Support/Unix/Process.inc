@@ -362,7 +362,13 @@ static bool terminalHasColors() {
         .Default(false);
   }
 
+#if defined(LLVM_RUNTIME_NTPOSIX)
+  // A Windows console sets no TERM, and the C library puts it in virtual
+  // terminal mode, which interprets ANSI color escapes.
+  return true;
+#else
   return false;
+#endif
 }
 
 bool Process::FileDescriptorHasColors(int fd) {

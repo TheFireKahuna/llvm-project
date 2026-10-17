@@ -39,7 +39,10 @@ else()
   set(gtest_main_src UnitTestMain/TestMain.cpp)
 endif()
 
-if(WIN32)
+if(LLVM_RUNTIME_NTPOSIX)
+  # The C library has no <regex.h>.
+  add_definitions(-DGTEST_HAS_POSIX_RE=0)
+elseif(WIN32)
   add_definitions(-DGTEST_OS_WINDOWS=1)
 endif()
 

@@ -62,15 +62,22 @@ ProcessInfo::ProcessInfo() : Pid(0), ReturnCode(0) {}
 ErrorOr<std::string> sys::findProgramByName(StringRef Name,
                                             ArrayRef<StringRef> Paths) {
   assert(!Name.empty() && "Must have a name!");
+#if defined(LLVM_RUNTIME_NTPOSIX)
+  // Either slash separates the components of a Windows path.
+  if (Name.find_first_of("/\\") != StringRef::npos)
+    return std::string(Name);
+#else
   // Use the given path verbatim if it contains any slashes; this matches
   // the behavior of sh(1) and friends.
   if (Name.contains('/'))
     return std::string(Name);
+#endif
 
   SmallVector<StringRef, 16> EnvironmentPaths;
   if (Paths.empty())
     if (const char *PathEnv = std::getenv("PATH")) {
-      SplitString(PathEnv, EnvironmentPaths, ":");
+      const char EnvPathSeparatorStr[] = {EnvPathSeparator, '\0'};
+      SplitString(PathEnv, EnvironmentPaths, EnvPathSeparatorStr);
       Paths = EnvironmentPaths;
     }
 
@@ -81,8 +88,20 @@ ErrorOr<std::string> sys::findProgramByName(StringRef Name,
     // Check to see if this first directory contains the executable...
     SmallString<128> FilePath(Path);
     sys::path::append(FilePath, Name);
+#if defined(LLVM_RUNTIME_NTPOSIX)
+    // The execute check succeeds for a directory on NT, so accept only a
+    // regular file, named as given or with the extension of a PE executable.
+    for (StringRef Ext : {"", ".exe"}) {
+      SmallString<128> Candidate(FilePath);
+      Candidate.append(Ext);
+      if (sys::fs::is_regular_file(Candidate) &&
+          !sys::fs::access(Candidate, sys::fs::AccessMode::Execute))
+        return std::string(Candidate); // Found the executable!
+    }
+#else
     if (sys::fs::can_execute(FilePath.c_str()))
       return std::string(FilePath); // Found the executable!
+#endif
   }
   return errc::no_such_file_or_directory;
 }
@@ -172,6 +191,11 @@ static bool Execute(ProcessInfo &PI, StringRef Program,
 
   BumpPtrAllocator Allocator;
   StringSaver Saver(Allocator);
+#if defined(LLVM_RUNTIME_NTPOSIX)
+  // A PE executable is named without its extension, as on Win32.
+  if (!sys::fs::exists(Program))
+    Program = Saver.save(Program + ".exe");
+#endif
   std::vector<const char *> ArgVector, EnvVector;
   const char **Argv = nullptr;
   const char **Envp = nullptr;

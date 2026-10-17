@@ -19,7 +19,7 @@
 #include "lldb/Version/Version.h"
 
 #if defined(__linux__) || defined(__FreeBSD__) || defined(__NetBSD__) ||       \
-    defined(__OpenBSD__)
+    defined(__OpenBSD__) || defined(LLVM_RUNTIME_NTPOSIX)
 #include "Plugins/Process/POSIX/ProcessPOSIXLog.h"
 #endif
 
@@ -83,7 +83,7 @@ llvm::Error SystemInitializerCommon::Initialize() {
   process_gdb_remote::ProcessGDBRemoteLog::Initialize();
 
 #if defined(__linux__) || defined(__FreeBSD__) || defined(__NetBSD__) ||       \
-    defined(__OpenBSD__)
+    defined(__OpenBSD__) || defined(LLVM_RUNTIME_NTPOSIX)
   ProcessPOSIXLog::Initialize();
 #endif
 #if defined(LLVM_RUNTIME_WIN32)
@@ -97,7 +97,7 @@ void SystemInitializerCommon::Terminate() {
   LLDB_SCOPED_TIMER();
 
 #if defined(__linux__) || defined(__FreeBSD__) || defined(__NetBSD__) ||       \
-    defined(__OpenBSD__)
+    defined(__OpenBSD__) || defined(LLVM_RUNTIME_NTPOSIX)
   ProcessPOSIXLog::Terminate();
 #endif
 #if defined(LLVM_RUNTIME_WIN32)

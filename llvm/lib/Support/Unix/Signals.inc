@@ -795,6 +795,27 @@ static bool printMarkupContext(llvm::raw_ostream &OS,
                                const char *MainExecutableName) {
   return false;
 }
+#elif ENABLE_BACKTRACES && defined(LLVM_RUNTIME_NTPOSIX)
+/// Each PE image is found by dladdr, and its offsets are relative to the
+/// image's load address, as llvm-symbolizer's --relative-address expects.
+static bool findModulesAndOffsets(void **StackTrace, int Depth,
+                                  const char **Modules, intptr_t *Offsets,
+                                  const char *MainExecutableName,
+                                  StringSaver &StrPool) {
+  for (int I = 0; I < Depth; ++I) {
+    Dl_info Info;
+    if (dladdr(StackTrace[I], &Info) && Info.dli_fname) {
+      Modules[I] = StrPool.save(Info.dli_fname).data();
+      Offsets[I] = (intptr_t)StackTrace[I] - (intptr_t)Info.dli_fbase;
+    }
+  }
+  return true;
+}
+
+static bool printMarkupContext(llvm::raw_ostream &OS,
+                               const char *MainExecutableName) {
+  return false;
+}
 #else
 /// Backtraces are not enabled or we don't yet know how to find all loaded DSOs
 /// on this platform.

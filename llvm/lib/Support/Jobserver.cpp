@@ -15,6 +15,10 @@
 #include <mutex>
 #include <new>
 
+#if defined(LLVM_RUNTIME_NTPOSIX)
+#include <semaphore.h>
+#endif
+
 #define DEBUG_TYPE "jobserver"
 
 using namespace llvm;
@@ -118,7 +122,10 @@ Expected<JobserverConfig> parseNativeMakeFlags(StringRef MakeFlags) {
   }
 
 // Perform platform-specific validation.
-#ifdef _WIN32
+#if defined(LLVM_RUNTIME_NTPOSIX)
+  // GNU make gives a program on Windows either a pipe or a named semaphore,
+  // and a POSIX program on NT can use both.
+#elif defined(LLVM_RUNTIME_WIN32)
   if (Config.TheMode == JobserverConfig::PosixFifo ||
       Config.TheMode == JobserverConfig::PosixPipe)
     return createStringError(
@@ -157,20 +164,23 @@ public:
 private:
   void initNumJobs();
 
-#if defined(LLVM_ON_UNIX)
+#if defined(LLVM_RUNTIME_POSIX)
   int ReadFD = -1;
   int WriteFD = -1;
   std::string FifoPath;
-#elif defined(_WIN32)
+#if defined(LLVM_RUNTIME_NTPOSIX)
+  sem_t *Semaphore = nullptr;
+#endif
+#elif defined(LLVM_RUNTIME_WIN32)
   void *Semaphore = nullptr;
 #endif
 };
 } // namespace llvm
 
 // Include the platform-specific parts of the class.
-#if defined(LLVM_ON_UNIX)
+#if defined(LLVM_RUNTIME_POSIX)
 #include "Unix/Jobserver.inc"
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
 #include "Windows/Jobserver.inc"
 #else
 // Dummy implementation for unsupported platforms.
@@ -240,7 +250,7 @@ JobserverClient *JobserverClient::getInstance() {
     }
 
     if (Config.TheMode == JobserverConfig::PosixPipe) {
-#if defined(LLVM_ON_UNIX)
+#if defined(LLVM_RUNTIME_POSIX)
       if (!areFdsValid(Config.PipeFDs.Read, Config.PipeFDs.Write)) {
         errs() << "Warning: failed to create jobserver client due to invalid "
                   "Pipe FDs in MAKEFLAGS environment variable\n";
