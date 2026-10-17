@@ -14,8 +14,17 @@
 #include "src/__support/macros/config.h"
 #include "src/__support/macros/macro-utils.h"
 #include "src/__support/macros/properties/compiler.h"
+#include "src/__support/macros/properties/os.h"
 
 #include <stddef.h> // For size_t
+
+// The Microsoft C runtime has no aligned_alloc, and its free cannot release an
+// over-aligned block: such blocks come from _aligned_malloc and go back to
+// _aligned_free. Windows Itanium's runtime provides an aligned_alloc whose
+// blocks free releases.
+#if defined(LIBC_TARGET_OS_IS_WINDOWS) && !defined(_WIN32_ITANIUM)
+#define LIBC_ALIGNED_ALLOC_NEEDS_ALIGNED_FREE
+#endif
 
 // Defining members in the std namespace is not preferred. But, we do it here
 // so that we can use it to define the operator new which takes std::align_val_t

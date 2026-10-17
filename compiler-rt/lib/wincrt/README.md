@@ -108,6 +108,14 @@ Under kcfi, clang's destructors carry the type `void(void *)` salted
 `__llvm_kcfi_` entry points instead, which take the same arguments, and each
 entry is called through the type of the entry point that registered it.
 
+## The segment heap
+
+A Windows Itanium executable runs on the segment heap. The driver embeds
+`segment_heap.manifest`, installed beside wincrt, in every executable, and the
+executable's start-up fails with an error if the process heap is not a
+segment heap, as it is not when the process was started without the
+executable's activation context.
+
 ## Uncaught exceptions
 
 The executable's start-up installs the filter ntdll runs for an exception that
