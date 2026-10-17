@@ -159,6 +159,9 @@ private:
   Chunk *kcfiCodeEndChunk = nullptr;
   // Whether a KCFI thunk the linker made tests the range by its size.
   bool kcfiThunksTestRange = false;
+  // The chunks the linker opened for KCFI types, by which a synthetic
+  // mismatch routine is recognised without a scan of them per thunk.
+  llvm::DenseSet<const Chunk *> openChunks;
 };
 } // namespace lld::coff
 

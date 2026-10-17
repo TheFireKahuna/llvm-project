@@ -1422,6 +1422,7 @@ void KCFIContents::listThunks() {
 // bounds, and those a DLL exports, at their chunks.
 void KCFIContents::layOut(OutputSection *textSec, OutputSection *rdataSec) {
   llvm::TimeTraceScope timeScope("Lay out KCFI");
+  openChunks.insert(ctx.kcfi.chunks.begin(), ctx.kcfi.chunks.end());
   defineCodeRange();
   placeMismatchRoutines();
   replaceThunks();
@@ -1811,7 +1812,7 @@ const Chunk *KCFIContents::getMismatchRoutine(Symbol *mismatch) const {
     return sc && sc->live && sc->sym == d && d->getValue() == 0 ? sc : nullptr;
   }
   if (auto *s = dyn_cast<DefinedSynthetic>(mismatch))
-    if (llvm::is_contained(ctx.kcfi.chunks, s->getChunk()))
+    if (openChunks.contains(s->getChunk()))
       return s->getChunk();
   return nullptr;
 }
