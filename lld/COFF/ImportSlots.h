@@ -28,6 +28,13 @@ struct SlotScan;
 // that resolved to its import; or null.
 DefinedImportData *getAddressedImport(Symbol *s);
 
+// An executable with a copy of its thread-local import slots names it in the
+// reserved words of its MZ header, as {tag u32, rva u32} at this offset, so
+// that the code of a DLL that may reach the executable while the process
+// initializes can run it first.
+inline constexpr uint32_t threadLocalSlotCopyOffset = 0x1C;
+inline constexpr uint32_t threadLocalSlotCopyTag = 0x9E3779B9;
+
 // The addend that the word of rel, an address as wide as the image's pointers,
 // holds; none if the word extends past the end of sc.
 std::optional<int64_t> getAddressWordAddend(SectionChunk *sc,

@@ -694,27 +694,30 @@ void OverrideCellFillChunk::writeTo(uint8_t *buf) const {
 }
 
 // The copy of an executable's thread-local import slots into the main thread's
-// block, which the C initializer table runs before every other initializer.
-// The loader copies the executable's template into the main thread's block
-// before it binds the executable's imports, so that block holds each slot's
-// import lookup entry, while every later thread copies the bound template. The
-// copy gives the main thread the bound words too. It is a leaf that returns 0.
-// The executable's own TLS callbacks, which run before it, still see the
-// unbound words in the main thread.
+// block. The loader copies the executable's template into the main thread's
+// block before it binds the executable's imports, and only then initializes
+// the DLLs and calls the executable's TLS callbacks, so the main thread's block
+// holds each slot's lookup entry while every later thread copies the bound
+// template. The copy runs as the executable's first TLS callback, and the
+// executable names it in its header for the code of a DLL that may reach the
+// executable while the DLLs initialize to run first. It acts only while the
+// process initializes, when no thread but the main one runs, and writes only a
+// word that still holds its lookup entry, so it may run any number of times and
+// never undoes an assignment. It is a leaf that returns 0.
 class ThreadLocalSlotCopyChunk : public NonSectionCodeChunk {
 public:
-  ThreadLocalSlotCopyChunk(
-      COFFLinkerContext &ctx,
-      std::vector<std::pair<SectionChunk *, uint32_t>> words, TLSTemplate tls)
-      : words(std::move(words)), tls(tls), ctx(ctx) {
+  ThreadLocalSlotCopyChunk(COFFLinkerContext &ctx,
+                           std::vector<const ImportSlot *> slots,
+                           TLSTemplate tls)
+      : slots(std::move(slots)), tls(tls), ctx(ctx) {
     setAlignment(16);
   }
   size_t getSize() const override {
-    // The block's address and, for each word, its load and its store; then the
-    // zero status and ret.
+    // The test of the process's initialization and the block's address; for
+    // each word, its test and its copy; then the zero status and ret.
     if (ctx.config.machine == ARM64)
-      return 16 + 20 * words.size() + 8;
-    return 19 + 14 * words.size() + 3;
+      return 28 + 48 * slots.size() + 8;
+    return 39 + 36 * slots.size() + 3;
   }
   void writeTo(uint8_t *buf) const override;
   uint32_t getOutputCharacteristics() const override {
@@ -725,11 +728,21 @@ public:
   MachineTypes getMachine() const override { return ctx.config.machine; }
 
 private:
-  // The chunk and offset of each slot in the template.
-  std::vector<std::pair<SectionChunk *, uint32_t>> words;
+  // The slots in the template, each with its lookup entry.
+  std::vector<const ImportSlot *> slots;
+  // The value of a slot's lookup entry, which the slot holds in the file.
+  uint64_t getLookupValue(const ImportSlot *s) const {
+    uint8_t value[8] = {};
+    s->lookup->writeTo(value);
+    return read64le(value);
+  }
   TLSTemplate tls;
   COFFLinkerContext &ctx;
 };
+
+// PEB->CrossProcessFlags, whose bit 1 the loader sets while it initializes the
+// process.
+static constexpr uint32_t pebCrossProcessFlags = 0x50;
 
 void ThreadLocalSlotCopyChunk::writeTo(uint8_t *buf) const {
   uint32_t off = 0;
@@ -746,18 +759,32 @@ void ThreadLocalSlotCopyChunk::writeTo(uint8_t *buf) const {
       applyArm64Ldr(buf + off + 4, target & 0xfff);
       off += 8;
     };
+    put(0xF9403249); // ldr x9, [x18, #0x60]   TEB->PEB
+    put(0xB9400129 | pebCrossProcessFlags / 4 << 10); // ldr w9, [x9, #flags]
+    uint32_t skip = off;
+    put(0x36080009);                        // tbz w9, #1, .done
     load(0xB9400000, 9, tls.getIndexRVA()); // the index into w9
     put(0xF9402E4B); // ldr x11, [x18, #0x58]   TEB->ThreadLocalStoragePointer
     put(0xF869796B); // ldr x11, [x11, x9, lsl #3]
-    for (auto [sc, offset] : words) {
-      // the word into x10; movz/movk w12, #offset; str x10, [x11, x12]
-      uint64_t word = sc->getRVA() + offset;
-      load(0xF9400000, 10, word);
+    for (const ImportSlot *s : slots) {
+      // movz/movk w12, #offset; ldr x13, [x11, x12]; movz/movk x14, #lookup
+      // value; cmp x13, x14; b.ne .next; the word into x10;
+      // str x10, [x11, x12]
+      uint64_t word = s->chunk->getRVA() + s->offset;
       uint32_t blockOff = tls.getOffset(word);
       put(0x5280000C | (blockOff & 0xFFFF) << 5);
       put(0x72A0000C | (blockOff >> 16) << 5);
+      put(0xF86C696D);
+      uint64_t value = getLookupValue(s);
+      put(0xD280000E | uint32_t(value & 0xFFFF) << 5);
+      for (uint32_t hw = 1; hw != 4; ++hw)
+        put(0xF280000E | hw << 21 | uint32_t(value >> (16 * hw) & 0xFFFF) << 5);
+      put(0xEB0E01BF);
+      put(0x54000081);
+      load(0xF9400000, 10, word);
       put(0xF82C696A);
     }
+    write32le(buf + skip, read32le(buf + skip) | (off - skip) / 4 << 5);
     put(0x52800000); // mov w0, #0
     put(0xD65F03C0); // ret
     return;
@@ -771,18 +798,31 @@ void ThreadLocalSlotCopyChunk::writeTo(uint8_t *buf) const {
   auto disp = [&](uint64_t target) {
     write32le(buf + off - 4, target - (rva + off));
   };
+  put({0x65, 0x48, 0x8B, 0x04, 0x25, 0x60, 0, 0, 0}); // mov rax, gs:[0x60]
+  // bt dword ptr [rax + flags], 1; jnc .done
+  put({0x0F, 0xBA, 0x60, uint8_t(pebCrossProcessFlags), 1});
+  put({0x0F, 0x83, 0, 0, 0, 0});
+  uint32_t skip = off - 4;
   put({0x8B, 0x0D, 0, 0, 0, 0}); // mov ecx, [rip + index]
   disp(tls.getIndexRVA());
   // mov rdx, gs:[0x58]   TEB->ThreadLocalStoragePointer
   put({0x65, 0x48, 0x8B, 0x14, 0x25, 0x58, 0, 0, 0});
   put({0x48, 0x8B, 0x14, 0xCA}); // mov rdx, [rdx + rcx * 8]
-  for (auto [sc, offset] : words) {
-    uint64_t word = sc->getRVA() + offset;
+  for (const ImportSlot *s : slots) {
+    uint64_t word = s->chunk->getRVA() + s->offset;
+    uint32_t blockOff = tls.getOffset(word);
+    put({0x48, 0x8B, 0x82, 0, 0, 0, 0}); // mov rax, [rdx + offset]
+    write32le(buf + off - 4, blockOff);
+    put({0x49, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0}); // mov r8, lookup value
+    write64le(buf + off - 8, getLookupValue(s));
+    put({0x4C, 0x39, 0xC0});             // cmp rax, r8
+    put({0x75, 14});                     // jne .next
     put({0x48, 0x8B, 0x05, 0, 0, 0, 0}); // mov rax, [rip + word]
     disp(word);
     put({0x48, 0x89, 0x82, 0, 0, 0, 0}); // mov [rdx + offset], rax
-    write32le(buf + off - 4, tls.getOffset(word));
+    write32le(buf + off - 4, blockOff);
   }
+  write32le(buf + skip, off - (skip + 4));
   put({0x31, 0xC0}); // xor eax, eax
   put({0xC3});       // ret
 }
@@ -1704,18 +1744,17 @@ void ImportSlotContents::createThreadLocalSlotCopy() {
   if (!config.importSlots || config.dll || ctx.hybridSymtab ||
       (config.machine != AMD64 && config.machine != ARM64))
     return;
-  std::vector<std::pair<SectionChunk *, uint32_t>> words;
-  for (auto &[sc, slots] : ctx.importSlots) {
-    auto *chunk = const_cast<SectionChunk *>(sc);
-    if (getPartialSectionName(chunk, config.mingw).starts_with(".tls"))
+  std::vector<const ImportSlot *> tlsSlots;
+  for (auto &[sc, slots] : ctx.importSlots)
+    if (getPartialSectionName(const_cast<SectionChunk *>(sc), config.mingw)
+            .starts_with(".tls"))
       for (const ImportSlot &slot : slots)
-        words.push_back({chunk, slot.offset});
-  }
+        tlsSlots.push_back(&slot);
   // Without a TLS directory the loader gives no thread a block.
-  if (words.empty() || !ctx.symtab.findUnderscore("_tls_used"))
+  if (tlsSlots.empty() || !ctx.symtab.findUnderscore("_tls_used"))
     return;
   auto fail = [&](const Twine &why) {
-    Err(ctx) << words.front().first->file
+    Err(ctx) << tlsSlots.front()->chunk->file
              << ": the address of an import in thread-local data needs a copy "
                 "into the main thread's block, but "
              << why;
@@ -1724,9 +1763,9 @@ void ImportSlotContents::createThreadLocalSlotCopy() {
   if (!tls.start || !tls.index)
     return fail("the image's TLS directory (_tls_used) names no template or "
                 "index");
-  if (!isa_and_nonnull<Defined>(ctx.symtab.findUnderscore("__xi_a")))
-    return fail("the image has no C initializer table (__xi_a) to run it");
-  auto *copy = make<ThreadLocalSlotCopyChunk>(ctx, std::move(words), tls);
+  if (!isa_and_nonnull<Defined>(ctx.symtab.findUnderscore("__xl_a")))
+    return fail("the image has no TLS callback array (__xl_a) to run it");
+  auto *copy = make<ThreadLocalSlotCopyChunk>(ctx, std::move(tlsSlots), tls);
   threadLocalSlotCopy = copy;
   threadLocalSlotCopyPointer = make<LocalImportChunk>(
       ctx, make<DefinedSynthetic>("__llvm_thread_local_slot_copy", copy));
