@@ -1,0 +1,56 @@
+# REQUIRES: libxml2
+## Under -import-slots, an executable embeds its manifest: it is the default,
+## /manifest:no is an error, and a side-by-side manifest is still written when
+## asked for. A manifest that a .res input gives the executable under the ID
+## of the embedded one merges into it instead of duplicating it, and the
+## input's other resources stay. A DLL and a link without -import-slots are
+## unchanged.
+
+# RUN: yaml2obj %p/Inputs/ret42.yaml -o %t.obj
+
+# RUN: lld-link -import-slots /out:%t.exe /entry:main %t.obj
+# RUN: llvm-readobj --coff-resources %t.exe | FileCheck --check-prefix=EMBED %s
+# EMBED:      Total Number of Resources: 1
+# EMBED:      Type: MANIFEST (ID 24) [
+# EMBED:        Name: (ID 1) [
+
+# RUN: not lld-link -import-slots /out:%t.exe /entry:main /manifest:no %t.obj \
+# RUN:   2>&1 | FileCheck --check-prefix=NO %s
+# NO: error: /manifest:no is not compatible with -import-slots, under which an executable embeds its manifest
+
+# RUN: rm -f %t.exe.manifest
+# RUN: lld-link -import-slots /out:%t.exe /entry:main /manifest %t.obj
+# RUN: test -e %t.exe.manifest
+# RUN: llvm-readobj --coff-resources %t.exe | FileCheck --check-prefix=NONE %s
+
+# RUN: lld-link -import-slots /dll /noentry /out:%t.dll %t.obj
+# RUN: llvm-readobj --coff-resources %t.dll | FileCheck --check-prefix=NONE %s
+# RUN: lld-link /out:%t.exe /entry:main %t.obj
+# RUN: llvm-readobj --coff-resources %t.exe | FileCheck --check-prefix=NONE %s
+# NONE-NOT: Type: MANIFEST
+
+# RUN: lld-link -import-slots /out:%t.exe /entry:main %t.obj \
+# RUN:   %p/Inputs/manifest-xml.res
+# RUN: llvm-readobj --coff-resources %t.exe | FileCheck --check-prefix=MERGE %s
+# MERGE:      Total Number of Resources: 2
+# MERGE:      Type: RCDATA (ID 10) [
+# MERGE:        0000: 6B657074 {{.*}}|kept|
+# MERGE:      Type: MANIFEST (ID 24) [
+# MERGE-NEXT:   Table Offset:
+# MERGE-NEXT:   Number of String Entries: 0
+# MERGE-NEXT:   Number of ID Entries: 1
+# MERGE-NEXT:   Name: (ID 1) [
+# MERGE:        |{{.*}}<trustInfo
+# MERGE:        |{{.*}}<windowsSettin
+
+# RUN: not lld-link /out:%t.exe /entry:main /manifest:embed %t.obj \
+# RUN:   %p/Inputs/manifest-xml.res 2>&1 | FileCheck --check-prefix=DUP %s
+# DUP: error: duplicate resource: type MANIFEST (ID 24)/name ID 1/language 1033
+
+## A .res manifest that gives a setting a value other than a /manifestinput:
+## file's, such as another heap than the segment heap that the Windows Itanium
+## driver requires, is an error rather than a manifest with both.
+# RUN: env LLD_IN_TEST=1 not lld-link -import-slots /out:%t.exe /entry:main \
+# RUN:   %t.obj /manifest:embed /manifestinput:%p/Inputs/segment-heap.manifest \
+# RUN:   %p/Inputs/manifest-ntheap.res 2>&1 | FileCheck --check-prefix=HEAP %s
+# HEAP: error: internal manifest tool failed on {{.*}}manifest-ntheap.res: conflicting values for heapType

@@ -205,6 +205,10 @@ private:
   std::list<std::function<void()>> taskQueue;
   std::vector<MemoryBufferRef> resources;
 
+  // The manifests that .res inputs gave the image, merged into the one it
+  // embeds.
+  std::vector<std::unique_ptr<MemoryBuffer>> resourceManifests;
+
   llvm::DenseSet<StringRef> excludedSymbols;
 
   COFFLinkerContext &ctx;
@@ -272,6 +276,7 @@ private:
 
   // Create a resource file containing a manifest XML.
   std::unique_ptr<MemoryBuffer> createManifestRes();
+  void takeManifestResources();
   void createSideBySideManifest();
   std::string createDefaultXml();
   std::string createManifestXmlWithInternalMt(StringRef defaultXml);
