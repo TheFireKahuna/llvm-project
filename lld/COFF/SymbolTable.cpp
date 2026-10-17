@@ -249,6 +249,12 @@ void SymbolTable::reportUndefinedSymbol(const UndefinedDiag &undefDiag) {
            << "' is available in " << toString(imp->getFile())
            << " but cannot be used because it is not an import library.";
     }
+  } else if (Symbol *record = find(("__imp_" + name + "$tls").str())) {
+    // A DLL exports a record of a thread-local variable in its place.
+    diag << "\nNOTE: " << toString(record->getFile()) << " provides " << name
+         << "$tls, the record of thread-local variable " << name
+         << "; a declaration of " << name
+         << " with default visibility reaches it";
   }
 }
 
@@ -358,11 +364,13 @@ static bool isLazyImport(Symbol *s) {
 
 bool isShareableVagueName(StringRef name) {
   // Vtables and type descriptors are bound by other rules, and data that MSVC
-  // mangles keeps the per-image copies its code expects.
-  if (name.starts_with("?") || name.starts_with("."))
+  // mangles keeps the per-image copies its code expects. A thread-local
+  // variable has an instance per image, which its record, init function and
+  // wrapper follow.
+  if (name.starts_with("?") || name.starts_with(".") || name.ends_with("$tls"))
     return false;
   return !(name.size() > 3 && name.starts_with("_ZT") &&
-           StringRef("VTCIS").contains(name[3]));
+           StringRef("VTCISHW").contains(name[3]));
 }
 
 // Whether the lazy symbol s is an import library's offer of data or code, as
