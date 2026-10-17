@@ -26,6 +26,9 @@
 #include "llvm/Support/raw_ostream.h"
 
 namespace llvm {
+
+struct NewArchiveMember;
+
 namespace object {
 
 constexpr std::string_view ImportDescriptorPrefix = "__IMPORT_DESCRIPTOR_";
@@ -136,10 +139,28 @@ struct COFFShortExport {
 /// linking both ARM64EC and pure ARM64 objects, and the linker will pick only
 /// the exports relevant to the target platform. For non-hybrid targets,
 /// the NativeExports parameter should not be used.
-LLVM_ABI Error writeImportLibrary(StringRef ImportName, StringRef Path,
-                                  ArrayRef<COFFShortExport> Exports,
-                                  COFF::MachineTypes Machine, bool MinGW,
-                                  ArrayRef<COFFShortExport> NativeExports = {});
+///
+/// ExtraMembers, such as objects that carry facts about the DLL for a linker,
+/// follow the import members with their names and contents. The caller keeps
+/// them, so it can write the same members to several libraries.
+LLVM_ABI Error writeImportLibrary(
+    StringRef ImportName, StringRef Path, ArrayRef<COFFShortExport> Exports,
+    COFF::MachineTypes Machine, bool MinGW,
+    ArrayRef<COFFShortExport> NativeExports = {},
+    ArrayRef<NewArchiveMember> ExtraMembers = {});
+
+/// Creates a member for the import library of \p ImportName that carries facts
+/// about the DLL for a linker: an object for \p Machine whose one section,
+/// \p SectionName, holds \p Contents and is removed by the linker, and which
+/// defines \p SymbolName as an absolute symbol, by which a linker finds the
+/// member without loading it. The member refers to \p Buffer, which holds the
+/// object.
+LLVM_ABI NewArchiveMember createLinkerFacts(StringRef ImportName,
+                                            COFF::MachineTypes Machine,
+                                            StringRef SectionName,
+                                            ArrayRef<uint8_t> Contents,
+                                            StringRef SymbolName,
+                                            std::vector<uint8_t> &Buffer);
 
 } // namespace object
 } // namespace llvm
