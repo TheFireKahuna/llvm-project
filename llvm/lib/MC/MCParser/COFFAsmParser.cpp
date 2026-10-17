@@ -353,11 +353,20 @@ bool COFFAsmParser::parseDirectiveSymbolAttribute(StringRef Directive, SMLoc) {
   assert(Attr != MCSA_Invalid && "unexpected symbol attribute directive!");
   if (getLexer().isNot(AsmToken::EndOfStatement)) {
     while (true) {
-      MCSymbol *Sym;
-
-      if (getParser().parseSymbol(Sym))
+      StringRef Name;
+      if (getParser().parseIdentifier(Name))
         return TokError("expected identifier in directive");
 
+      if (getParser().discardLTOSymbol(Name)) {
+        if (getLexer().is(AsmToken::EndOfStatement))
+          break;
+        if (getLexer().isNot(AsmToken::Comma))
+          return TokError("unexpected token in directive");
+        Lex();
+        continue;
+      }
+
+      MCSymbol *Sym = getContext().parseSymbol(Name);
       getStreamer().emitSymbolAttribute(Sym, Attr);
 
       if (getLexer().is(AsmToken::EndOfStatement))
