@@ -17,10 +17,10 @@
 #include "InputFiles.h"
 #include "LinkerScript.h"
 #include "OutputSections.h"
-#include "ScriptLexer.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
 #include "Target.h"
+#include "lld/Common/ScriptLexer.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
@@ -43,9 +43,22 @@ using namespace lld;
 using namespace lld::elf;
 
 namespace {
+// Returns whether a script opened as an absolute path lies under --sysroot.
+static bool computeUnderSysroot(Ctx &ctx, StringRef filename) {
+  if (ctx.arg.sysroot == "")
+    return false;
+  for (StringRef path = filename; !path.empty();
+       path = sys::path::parent_path(path))
+    if (sys::fs::equivalent(ctx.arg.sysroot, path))
+      return true;
+  return false;
+}
+
 class ScriptParser final : ScriptLexer {
 public:
-  ScriptParser(Ctx &ctx, MemoryBufferRef mb) : ScriptLexer(ctx, mb), ctx(ctx) {}
+  ScriptParser(Ctx &ctx, MemoryBufferRef mb) : ScriptLexer(mb), ctx(ctx) {
+    curBuf.isUnderSysroot = computeUnderSysroot(ctx, mb.getBufferIdentifier());
+  }
 
   void readLinkerScript();
   void readVersionScript();
@@ -128,6 +141,9 @@ private:
 
   std::pair<SmallVector<SymbolVersion, 0>, SmallVector<SymbolVersion, 0>>
   readSymbols();
+
+  bool hasError() const override { return errCount(ctx); }
+  void emitError(const Twine &msg) override { ErrAlways(ctx) << msg; }
 
   Ctx &ctx;
 
@@ -411,7 +427,9 @@ void ScriptParser::readInclude(llvm::function_ref<void()> parse) {
   if (!mb)
     return;
 
-  SaveAndRestore savedBuf(curBuf, Buffer(ctx, *mb));
+  Buffer nextBuf(*mb);
+  nextBuf.isUnderSysroot = computeUnderSysroot(ctx, mb->getBufferIdentifier());
+  SaveAndRestore savedBuf(curBuf, nextBuf);
   SaveAndRestore savedPrevTok(prevTok, StringRef());
   SaveAndRestore savedPrevTokLine(prevTokLine, size_t(1));
   parse();

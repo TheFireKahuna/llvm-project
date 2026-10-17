@@ -38,7 +38,7 @@
 
 # RUN: not lld-link -dll -noentry lib.obj -out:bad.dll -version-script:bad.map \
 # RUN:   2>&1 | FileCheck --check-prefix=BAD %s
-# BAD:     bad.map: ; expected, but got local
+# BAD:     bad.map:1: ; expected, but got local
 # BAD-NOT: error
 
 #--- lib.s

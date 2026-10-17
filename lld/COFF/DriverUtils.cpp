@@ -17,6 +17,7 @@
 #include "Symbols.h"
 #include "lld/Common/ErrorHandler.h"
 #include "lld/Common/Memory.h"
+#include "lld/Common/ScriptLexer.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/BinaryFormat/COFF.h"
@@ -273,56 +274,23 @@ void LinkerDriver::parseSectionLayout(StringRef path) {
   }
 }
 
-// Splits a version script into tokens: names and patterns, quoted strings, and
-// the punctuation "{", "}", ";" and ":", where a "::" inside a C++ name is not
-// a colon. Comments are /* */ and from # to the end of the line.
-static std::vector<StringRef> tokenizeVersionScript(COFFLinkerContext &ctx,
-                                                    StringRef s) {
-  constexpr StringRef nameChars =
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-      "0123456789_.$/\\~=+[]*?-!^:";
-  std::vector<StringRef> toks;
-  for (;;) {
-    s = s.ltrim();
-    if (s.empty())
-      return toks;
-    if (s.starts_with("/*")) {
-      size_t end = s.find("*/", 2);
-      if (end == StringRef::npos) {
-        Err(ctx) << "version script: unclosed comment";
-        return {};
-      }
-      s = s.substr(end + 2);
-      continue;
-    }
-    if (s.starts_with("#")) {
-      s = s.substr(std::min(s.find_first_of("\r\n"), s.size()));
-      continue;
-    }
-    size_t len = 1;
-    if (s[0] == '"') {
-      len = s.find('"', 1);
-      if (len == StringRef::npos) {
-        Err(ctx) << "version script: unclosed quote";
-        return {};
-      }
-      ++len;
-    } else {
-      for (len = 0; len != s.size(); ++len) {
-        if (s[len] == ':') {
-          if (len + 1 == s.size() || s[len + 1] != ':')
-            break;
-          ++len;
-        } else if (!nameChars.contains(s[len])) {
-          break;
-        }
-      }
-      len = std::max<size_t>(len, 1);
-    }
-    toks.push_back(s.take_front(len));
-    s = s.drop_front(len);
+namespace {
+// Lexes a version script with the shared linker-script lexer, in the version
+// node state, routing diagnostics to this linker's error handler.
+class VersionScriptLexer : public ScriptLexer {
+public:
+  VersionScriptLexer(COFFLinkerContext &ctx, MemoryBufferRef mb)
+      : ScriptLexer(mb), ctx(ctx) {
+    lexState = State::VersionNode;
   }
-}
+
+private:
+  bool hasError() const override { return errCount(ctx); }
+  void emitError(const Twine &msg) override { Err(ctx) << msg; }
+
+  COFFLinkerContext &ctx;
+};
+} // namespace
 
 // Reads a GNU version script, as ld.lld does: one anonymous node,
 // "{ global: ...; local: ...; };", or named nodes, "V1 { ... }; V2 { ... }
@@ -331,23 +299,13 @@ static std::vector<StringRef> tokenizeVersionScript(COFFLinkerContext &ctx,
 void LinkerDriver::parseVersionScript(StringRef path) {
   std::unique_ptr<MemoryBuffer> buf =
       CHECK(MemoryBuffer::getFile(path), "could not open " + path);
-  MemoryBufferRef mb = takeBuffer(std::move(buf));
-  std::vector<StringRef> toks = tokenizeVersionScript(ctx, mb.getBuffer());
-  size_t i = 0;
-  auto atEnd = [&] { return i == toks.size(); };
-  auto peek = [&] { return atEnd() ? StringRef() : toks[i]; };
-  auto consume = [&](StringRef tok) {
-    if (peek() != tok)
-      return false;
-    ++i;
-    return true;
-  };
+  VersionScriptLexer lex(ctx, takeBuffer(std::move(buf)));
+  auto atEnd = [&] { return lex.atEOF() || lex.peek().empty(); };
+  auto peek = [&] { return lex.peek(); };
+  auto consume = [&](StringRef tok) { return lex.consume(tok); };
   auto expect = [&](StringRef tok) {
-    if (consume(tok))
-      return true;
-    Err(ctx) << path << ": " << tok << " expected, but got "
-             << (atEnd() ? StringRef("end of file") : peek());
-    return false;
+    lex.expect(tok);
+    return !lex.atEOF();
   };
   auto unquote = [](StringRef tok) {
     return tok.size() > 1 && tok.starts_with("\"")
@@ -362,21 +320,21 @@ void LinkerDriver::parseVersionScript(StringRef path) {
   auto readNode = [&](VersionDefinition &v) {
     std::vector<SymbolVersion> *patterns = &v.globals;
     while (!atEnd() && peek() != "}") {
-      StringRef tok = toks[i++];
+      StringRef tok = lex.next();
       if ((tok == "global" || tok == "local") && consume(":")) {
         patterns = tok == "global" ? &v.globals : &v.locals;
         continue;
       }
       if (tok == "extern") {
-        StringRef lang = atEnd() ? StringRef() : toks[i++];
+        StringRef lang = atEnd() ? StringRef() : lex.next();
         if (lang != "\"C++\"" && lang != "\"C\"") {
-          Err(ctx) << path << ": unknown language " << lang;
+          lex.setError("unknown language " + lang);
           return false;
         }
         if (!expect("{"))
           return false;
         while (!atEnd() && peek() != "}") {
-          StringRef pat = toks[i++];
+          StringRef pat = lex.next();
           patterns->push_back(
               {unquote(pat), lang == "\"C++\"", hasWildcard(pat)});
           if (peek() != "}" && !expect(";"))
@@ -400,20 +358,20 @@ void LinkerDriver::parseVersionScript(StringRef path) {
   } else {
     while (!atEnd()) {
       VersionDefinition &v = defs.emplace_back();
-      v.name = toks[i++];
+      v.name = lex.next();
       if (!expect("{") || !readNode(v))
         return;
       // A node may name the node it inherits from, which only documents the
       // versions' order.
       if (!consume(";")) {
-        ++i;
+        lex.next();
         if (!expect(";"))
           return;
       }
     }
   }
   if (!atEnd())
-    Err(ctx) << path << ": end of file expected, but got " << peek();
+    lex.setError("end of file expected, but got " + peek());
 
   // Names decide before wildcards, by the first node that assigns them, and
   // wildcards from the last node to the first, with "*" last, as in GNU ld.
