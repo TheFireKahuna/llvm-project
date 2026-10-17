@@ -90,6 +90,23 @@
 # UNWIND:      0xe1                ; mov fp, sp
 # UNWIND-NEXT: 0x85                ; stp x29, x30, [sp, #-48]!
 
+## A thread-local cell is also written in the loading thread's block, at its
+## offset in the template, through the index the TLS directory names.
+# RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium tl.s -o tl.obj
+# RUN: lld-link -import-slots -dll -noentry tl.obj crt.obj rt.lib records.lib \
+# RUN:   -out:tl.dll
+# RUN: llvm-objdump -d --no-show-raw-insn tl.dll | FileCheck --check-prefix=TL %s
+# TL:      str     x17, [x9]
+# TL-NEXT: adrp    x9, 0x180003000
+# TL-NEXT: ldr     w9, [x9]
+# TL-NEXT: ldr     x11, [x18, #0x58]
+# TL-NEXT: ldr     x11, [x11, x9, lsl #3]
+# TL-NEXT: mov     w12, #0x8
+# TL-NEXT: movk    w12, #0x0, lsl #16
+# TL-NEXT: str     x17, [x11, x12]
+# TL-NEXT: mov     w0, #0x0
+# TL-NEXT: ret
+
 #--- rt.s
         .text
         .globl _Znwy
@@ -136,3 +153,36 @@ gnew:
         .p2align 3
 cnew:
         .xword _Znwy
+
+#--- tl.s
+        .text
+        .globl dllmain
+dllmain:
+        ret
+        .section .tls,"dw"
+        .globl _tls_start
+_tls_start:
+        .xword 0
+        .section .tls$,"dw"
+        .globl tnew
+        .p2align 3
+tnew:
+        .xword _Znwy
+        .section .tls$ZZZ,"dw"
+        .globl _tls_end
+_tls_end:
+        .xword 0
+        .data
+        .globl _tls_index
+_tls_index:
+        .word 0
+        .section .rdata,"dr"
+        .globl _tls_used
+        .p2align 3
+_tls_used:
+        .xword _tls_start
+        .xword _tls_end
+        .xword _tls_index
+        .xword 0
+        .word 0
+        .word 0
