@@ -52,6 +52,7 @@
 # CHECK-NEXT: }
 
 # CHECK:      <__llvm_kcfi_dispatch_11111111>:
+# CHECK-NEXT:   movabsq
 # CHECK-NEXT:   cmpq {{.*}}(%rip), %rax {{.*}}# 0x[[#%x,0x140000000+D1]]
 # CHECK-NEXT:   jb
 # CHECK-NEXT:   cmpq
@@ -67,20 +68,20 @@
 # CHECK-NEXT:   cmpq {{.*}}(%rip), %rax {{.*}}# 0x[[#%x,0x140000000+D0]]
 # CHECK-NEXT:   jb
 # CHECK-NEXT:   cmpq
-# CHECK-NEXT:   jb
-# CHECK-NEXT:   testl $0xff0, %eax
+# CHECK-NEXT:   jae
+# CHECK-NEXT:   cmpq %r11, -0x8(%rax)
 
 # CHECK:      <__llvm_kcfi_vfn_check_66666666>:
+# CHECK-NEXT:   movabsq
 # CHECK-NEXT:   cmpq {{.*}}(%rip), %rcx {{.*}}# 0x[[#%x,0x140000000+D2]]
 # CHECK-NEXT:   jb
 # CHECK-NEXT:   cmpq {{.*}}(%rip), %rcx {{.*}}# 0x[[#%x,0x140000008+D2]]
-# CHECK-NEXT:   jb
-# CHECK-NEXT:   testl $0xff0, %ecx
-# CHECK:        jmpq *{{.*}}(%rip) {{.*}}<__guard_check_icall_fptr>
-# CHECK-NEXT:   movabsq $0x6801f0f66666666, %r11
+# CHECK-NEXT:   jae
 # CHECK-NEXT:   cmpq %r11, -0x10(%rcx)
 # CHECK-NEXT:   jne
 # CHECK-NEXT:   retq
+# CHECK-NEXT:   testl $0xff0, %ecx
+# CHECK:        jmpq *{{.*}}(%rip) {{.*}}<__guard_check_icall_fptr>
 
 #--- d0.s
   .linktypeprefixes

@@ -1,9 +1,9 @@
 ; REQUIRES: x86
 
 ;; The KCFI thunks that llc emits carry the records by which the linker,
-;; in an image it seals, replaces them with its own form: the
-;; range test as one comparison of the target's offset from the start of .text
-;; with its size, then clang's type check, which it builds from the records.
+;; in an image it seals, replaces them with its own form: the range test as one
+;; comparison, of the distance from the target to the last byte of .text with
+;; its size, then clang's type check, which it builds from the records.
 
 ; RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 ; RUN: llc -filetype=obj main.ll -o main.obj
@@ -13,18 +13,16 @@
 ; RUN: llvm-objdump -d main.exe | FileCheck %s
 
 ; CHECK:      <__llvm_kcfi_dispatch_22222222>:
-; CHECK-NEXT:   leaq {{.*}}(%rip), %r10 {{.*}}0x140001000
-; CHECK-NEXT:   movq %rax, %r11
-; CHECK-NEXT:   subq %r10, %r11
-; CHECK-NEXT:   cmpq $0x{{[0-9a-f]+}}, %r11
-; CHECK-NEXT:   jae
 ; CHECK-NEXT:   movabsq $0x22222222b8071c5a, %r11
+; CHECK-NEXT:   leaq {{.*}}(%rip), %r10
+; CHECK-NEXT:   subq %rax, %r10
+; CHECK-NEXT:   cmpq $0x{{[0-9a-f]+}}, %r10
+; CHECK-NEXT:   jae
 ; CHECK-NEXT:   cmpq %r11, -0x8(%rax)
 ; CHECK-NEXT:   jne {{.*}}<__llvm_kcfi_trap>
 ; CHECK-NEXT:   jmpq *%rax
 ; CHECK-NEXT:   testl $0xff0, %eax
 ; CHECK-NEXT:   je {{.*}}<__llvm_kcfi_trap>
-; CHECK-NEXT:   movabsq $0x22222222b8071c5a, %r11
 ; CHECK-NEXT:   cmpq %r11, -0x8(%rax)
 ; CHECK-NEXT:   jne {{.*}}<__llvm_kcfi_trap>
 ; CHECK-NEXT:   jmpq *{{.*}}(%rip) {{.*}}<__guard_dispatch_icall_fptr>

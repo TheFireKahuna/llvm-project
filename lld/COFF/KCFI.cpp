@@ -11,6 +11,7 @@
 #include "Chunks.h"
 #include "Driver.h"
 #include "InputFiles.h"
+#include "LabelledCode.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
 #include "TypePrefix.h"
@@ -86,6 +87,14 @@ private:
 // type check and the guard function. A DLL's range is read from its two bounds
 // in the import address table, start then end.
 //
+// A local thunk serves a type whose every target is in the image. Where the
+// image has a code range, a target outside it fails fast, as clang's local
+// thunk does, and a target inside it takes the type check only if a function
+// of the type is in the range: any other function there has a sealed prefix,
+// which holds the type that no call expects, so the target goes straight to
+// the mismatch routine. Without a range, a target takes the page test, the
+// type check and the guard function, as clang's local thunk does.
+//
 // A thunk may also have an entry for a target outside the image's range whose
 // type a member thunk has checked: it takes the jump inside an imported range,
 // and the guard function outside every one.
@@ -95,12 +104,13 @@ public:
     Defined *start;
     Defined *end;
   };
-  KCFIThunkChunk(COFFLinkerContext &ctx, bool check, ArrayRef<uint8_t> compare,
-                 ArrayRef<uint8_t> pageTest, Symbol *mismatch, Symbol *guard,
-                 Defined *codeStart, Defined *codeEnd, ArrayRef<Range> imported,
+  KCFIThunkChunk(COFFLinkerContext &ctx, bool check, bool local,
+                 ArrayRef<uint8_t> compare, ArrayRef<uint8_t> pageTest,
+                 Symbol *mismatch, Symbol *guard, Defined *codeStart,
+                 Defined *codeEnd, bool typeInRange, ArrayRef<Range> imported,
                  bool checked);
-  size_t getSize() const override;
-  void writeTo(uint8_t *buf) const override;
+  size_t getSize() const override { return write(nullptr); }
+  void writeTo(uint8_t *buf) const override { write(buf); }
   uint32_t getOutputCharacteristics() const override {
     return llvm::COFF::IMAGE_SCN_CNT_CODE |
            NonSectionCodeChunk::getOutputCharacteristics();
@@ -108,19 +118,21 @@ public:
   StringRef getSectionName() const override { return ".text"; }
   MachineTypes getMachine() const override;
   // The offset of the entry for a target whose type is checked.
-  uint32_t getCheckedOffset() const { return getLayout().checked; }
+  uint32_t getCheckedOffset() const;
+  // Makes the thunk's branches to the mismatch routine reach it as the code
+  // right after the thunk, where the writer placed it.
+  void setMismatchFollows() { mismatchFollows = true; }
 
 private:
-  // The offsets of the parts of the thunk, in the order they are laid out
-  // in when the image's own range is tested, and of the entry for a checked
-  // target, which ends it.
-  struct Layout {
-    uint32_t own, hit, imported, outside, mismatch, checked, size;
-  };
-  Layout getLayout() const;
+  uint32_t write(uint8_t *buf, uint32_t *checkedOffset = nullptr) const;
+  void writeAMD64(LabelledCode &a, uint32_t &checkedOffset) const;
+  void writeARM64(LabelledCode &a, uint32_t &checkedOffset) const;
 
   bool check;
+  bool local;
   bool checked;
+  bool typeInRange;
+  bool mismatchFollows = false;
   // Clang's type check, without its branch, and its page test.
   SmallVector<uint8_t, 24> compare;
   SmallVector<uint8_t, 6> pageTest;
@@ -255,239 +267,295 @@ void KCFIOpenChunk::writeTo(uint8_t *buf) const {
     buf[off + 5] = 0xCC;
 }
 
-KCFIThunkChunk::KCFIThunkChunk(COFFLinkerContext &ctx, bool check,
+KCFIThunkChunk::KCFIThunkChunk(COFFLinkerContext &ctx, bool check, bool local,
                                ArrayRef<uint8_t> compare,
                                ArrayRef<uint8_t> pageTest, Symbol *mismatch,
                                Symbol *guard, Defined *codeStart,
-                               Defined *codeEnd, ArrayRef<Range> imported,
-                               bool checked)
-    : check(check), checked(checked), compare(compare), pageTest(pageTest),
-      mismatch(mismatch), guard(guard), codeStart(codeStart), codeEnd(codeEnd),
-      imported(imported), ctx(ctx) {
+                               Defined *codeEnd, bool typeInRange,
+                               ArrayRef<Range> imported, bool checked)
+    : check(check), local(local), checked(checked), typeInRange(typeInRange),
+      compare(compare), pageTest(pageTest), mismatch(mismatch), guard(guard),
+      codeStart(codeStart), codeEnd(codeEnd), imported(imported), ctx(ctx) {
   setAlignment(16);
 }
 
 MachineTypes KCFIThunkChunk::getMachine() const { return ctx.config.machine; }
 
+uint32_t KCFIThunkChunk::getCheckedOffset() const {
+  uint32_t offset = 0;
+  write(nullptr, &offset);
+  return offset;
+}
+
+uint32_t KCFIThunkChunk::write(uint8_t *buf, uint32_t *checkedOffset) const {
+  uint32_t checkedAt = 0;
+  uint32_t size = LabelledCode::layOut(buf, rva, [&](LabelledCode &a) {
+    if (ctx.config.machine == ARM64)
+      writeARM64(a, checkedAt);
+    else
+      writeAMD64(a, checkedAt);
+  });
+  if (checkedOffset)
+    *checkedOffset = checkedAt;
+  if (buf && mismatchFollows && cast<Defined>(mismatch)->getRVA() != rva + size)
+    Err(ctx) << "the KCFI mismatch routine " << mismatch->getName()
+             << " does not follow its thunk";
+  return size;
+}
+
 // With the image's own range tested, the thunk is laid out as: the range test,
 // the type check and jump that a target inside a range takes, the tests of the
 // imported ranges, and the path of a target outside every range. Without it,
-// the type check and jump follow that path instead, so that no branch skips
-// them. On ARM64 the branch to the mismatch routine, which may be far, ends
-// the thunk.
-KCFIThunkChunk::Layout KCFIThunkChunk::getLayout() const {
-  bool isARM64 = ctx.config.machine == ARM64;
-  bool own = codeStart;
-  bool hits = own || !imported.empty();
-  uint32_t ownSize = own ? (isARM64 ? 28 : 22) : 0;
-  uint32_t hitSize = 0;
-  if (hits)
-    hitSize = compare.size() + (isARM64 ? 8 : 6 + (check ? 1 : 2));
-  uint32_t importedSize = imported.size() * (isARM64 ? 28 : 18);
-  uint32_t outsideSize =
-      pageTest.size() + compare.size() + (isARM64 ? 4 + 4 + 12 : 6 + 6 + 6);
-  Layout l;
-  l.own = 0;
-  if (own) {
-    l.hit = ownSize;
-    l.imported = l.hit + hitSize;
-    l.outside = l.imported + importedSize;
-    l.mismatch = l.outside + outsideSize;
-  } else {
-    l.imported = 0;
-    l.outside = importedSize;
-    l.hit = l.outside + outsideSize;
-    l.mismatch = l.hit + hitSize;
-  }
-  l.checked = l.mismatch + (isARM64 ? 12 : 0);
-  l.size = l.checked;
-  if (checked)
-    l.size += isARM64 ? imported.size() * 28 + 16
-                      : imported.size() * 22 + 6 + (check ? 1 : 2);
-  return l;
-}
-
-size_t KCFIThunkChunk::getSize() const { return getLayout().size; }
-
-void KCFIThunkChunk::writeTo(uint8_t *buf) const {
-  Layout l = getLayout();
-  bool hits = codeStart || !imported.empty();
-  uint64_t mismatchRVA = cast<Defined>(mismatch)->getRVA();
-  uint64_t guardRVA = cast<Defined>(guard)->getRVA();
-  uint64_t codeSize = codeStart ? codeEnd->getRVA() - codeStart->getRVA() : 0;
-
-  if (ctx.config.machine == ARM64) {
-    // The target is in X15; X16 and X17 are free, as for the guard function.
-    auto insn = [&](uint32_t off, uint32_t v) { write32le(buf + off, v); };
-    auto branch19 = [&](uint32_t off, uint32_t cond, uint32_t to) {
-      int32_t delta = (int32_t(to) - int32_t(off)) / 4;
-      insn(off, 0x54000000 | cond | (delta & 0x7FFFF) << 5);
-    };
-    auto adrpAdd = [&](uint32_t off, uint32_t reg, uint64_t target) {
-      insn(off, 0x90000000 | reg);                // adrp reg, target
-      insn(off + 4, 0x91000000 | reg << 5 | reg); // add reg, reg, :lo12:target
-      applyArm64Addr(buf + off, target, rva + off, 12);
-      applyArm64Imm(buf + off + 4, target & 0xfff, 0);
-    };
-    if (codeStart) {
-      // adrp x16, start; add x16, x16, :lo12:start; sub x16, x15, x16
-      // mov x17, #size; movk x17, #size, lsl #16; cmp x16, x17; b.hs outside
-      adrpAdd(l.own, 16, codeStart->getRVA());
-      insn(l.own + 8, 0xCB1001F0);
-      insn(l.own + 12, 0xD2800011 | (codeSize & 0xFFFF) << 5);
-      insn(l.own + 16, 0xF2A00011 | (codeSize >> 16) << 5);
-      insn(l.own + 20, 0xEB11021F);
-      branch19(l.own + 24, 2, l.imported);
-    }
-    if (hits) {
-      // The type check; b.ne mismatch; ret
-      memcpy(buf + l.hit, compare.data(), compare.size());
-      uint32_t off = l.hit + compare.size();
-      branch19(off, 1, l.mismatch);
-      insn(off + 4, 0xD65F03C0);
-    }
-    for (size_t i = 0; i != imported.size(); ++i) {
-      // adrp x16, start; add x16, x16, :lo12:start; ldp x16, x17, [x16]
-      // cmp x15, x16; b.lo 1f; cmp x15, x17; b.lo hit; 1:
-      uint32_t off = l.imported + i * 28;
-      adrpAdd(off, 16, imported[i].start->getRVA());
-      insn(off + 8, 0xA9404610);
-      insn(off + 12, 0xEB1001FF);
-      branch19(off + 16, 3, off + 28);
-      insn(off + 20, 0xEB1101FF);
-      branch19(off + 24, 3, l.hit);
-    }
-    // The page test; b.eq mismatch; the type check; b.ne mismatch
-    // adrp x16, guard; ldr x16, [x16, :lo12:guard]; br x16
-    uint32_t off = l.outside;
-    memcpy(buf + off, pageTest.data(), pageTest.size());
-    off += pageTest.size();
-    branch19(off, 0, l.mismatch);
-    off += 4;
-    memcpy(buf + off, compare.data(), compare.size());
-    off += compare.size();
-    branch19(off, 1, l.mismatch);
-    insn(off + 4, 0x90000010);
-    insn(off + 8, 0xF9400210);
-    insn(off + 12, 0xD61F0200);
-    applyArm64Addr(buf + off + 4, guardRVA, rva + off + 4, 12);
-    applyArm64Ldr(buf + off + 8, guardRVA & 0xfff);
-    // adrp x17, mismatch; add x17, x17, :lo12:mismatch; br x17
-    adrpAdd(l.mismatch, 17, mismatchRVA);
-    insn(l.mismatch + 8, 0xD61F0220);
-    if (!checked)
-      return;
-    // The tests of the imported ranges, as above, each taking the return; then
-    // adrp x16, guard; ldr x16, [x16, :lo12:guard]; br x16; ret
-    uint32_t ret = l.size - 4;
-    for (size_t i = 0; i != imported.size(); ++i) {
-      uint32_t at = l.checked + i * 28;
-      adrpAdd(at, 16, imported[i].start->getRVA());
-      insn(at + 8, 0xA9404610);
-      insn(at + 12, 0xEB1001FF);
-      branch19(at + 16, 3, at + 28);
-      insn(at + 20, 0xEB1101FF);
-      branch19(at + 24, 3, ret);
-    }
-    off = l.checked + imported.size() * 28;
-    insn(off, 0x90000010);
-    insn(off + 4, 0xF9400210);
-    insn(off + 8, 0xD61F0200);
-    applyArm64Addr(buf + off, guardRVA, rva + off, 12);
-    applyArm64Ldr(buf + off + 4, guardRVA & 0xfff);
-    insn(ret, 0xD65F03C0);
-    return;
-  }
-
+// the tests of the imported ranges come first, and the last one falls through
+// into the type check and jump. The constant of the type check is loaded once,
+// before the range tests, which leave it alone, wherever two paths compare it.
+void KCFIThunkChunk::writeAMD64(LabelledCode &a,
+                                uint32_t &checkedOffset) const {
   // The target is in RAX for a dispatch thunk and in RCX for a check thunk;
   // R10 and R11 are free, as for the guard function.
-  uint8_t modrm = check ? 0x0D : 0x05;
-  auto rel32 = [&](uint32_t off, uint64_t target) {
-    write32le(buf + off, target - (rva + off + 4));
+  uint8_t reg = check ? 1 : 0;
+  uint32_t toMismatch = a.newLabel();
+  auto branchToMismatch = [&](uint8_t cc) {
+    if (mismatchFollows)
+      a.jcc(cc, toMismatch);
+    else
+      a.jccTo(cc, cast<Defined>(mismatch)->getRVA());
   };
-  auto rel8 = [&](uint32_t off, uint32_t target) {
-    buf[off] = target - (off + 1);
+  // Clang's type check loads the expected prefix into R11 with movabs, ten
+  // bytes, and compares the target's prefix with R11.
+  ArrayRef<uint8_t> load = ArrayRef(compare).take_front(10);
+  ArrayRef<uint8_t> compareR11 = ArrayRef(compare).drop_front(10);
+  auto typeCheck = [&] {
+    a.put(compareR11);
+    branchToMismatch(0x85); // jne mismatch
   };
-  if (codeStart) {
-    static const uint8_t ownTest[] = {
-        0x4C, 0x8D, 0x15, 0, 0, 0, 0, // lea r10, [rip + start]
-        0x49, 0x89, 0xC3,             // mov r11, rax
-        0x4D, 0x29, 0xD3,             // sub r11, r10
-        0x49, 0x81, 0xFB, 0, 0, 0, 0, // cmp r11, size
-        0x73, 0,                      // jae imported
-    };
-    memcpy(buf + l.own, ownTest, sizeof(ownTest));
-    rel32(l.own + 3, codeStart->getRVA());
+  // jmp rax, or ret
+  auto takeTarget = [&] {
     if (check)
-      buf[l.own + 9] = 0xCB; // mov r11, rcx
-    write32le(buf + l.own + 16, codeSize);
-    rel8(l.own + 21, l.imported);
-  }
-  if (hits) {
-    // The type check; jne mismatch; jmp rax or ret
-    uint32_t off = l.hit;
-    memcpy(buf + off, compare.data(), compare.size());
-    off += compare.size();
-    buf[off] = 0x0F;
-    buf[off + 1] = 0x85;
-    rel32(off + 2, mismatchRVA);
-    if (check) {
-      buf[off + 6] = 0xC3;
+      a.put({0xC3});
+    else
+      a.put({0xFF, 0xE0});
+  };
+  // lea r10, [rip + end - 1]; sub r10, reg; cmp r10, size; jcc label. The
+  // target is in the range exactly where end - 1 - target is below the size.
+  auto testRange = [&](uint8_t cc, uint32_t label, bool toRoutine) {
+    a.put({0x4C, 0x8D, 0x15, 0, 0, 0, 0});
+    a.disp(codeEnd->getRVA() - 1);
+    a.put({0x49, 0x29, uint8_t(0xC2 | reg << 3)});
+    a.put({0x49, 0x81, 0xFA, 0, 0, 0, 0});
+    a.imm32(codeEnd->getRVA() - codeStart->getRVA());
+    if (toRoutine)
+      branchToMismatch(cc);
+    else
+      a.jcc(cc, label);
+  };
+  // cmp reg, [rip + bound]; jb label, or jae label
+  auto testBound = [&](Defined *bound, uint8_t cc, uint32_t label) {
+    a.put({0x48, 0x3B, uint8_t(0x05 | reg << 3), 0, 0, 0, 0});
+    a.disp(bound->getRVA());
+    a.jcc(cc, label);
+  };
+  // jmp [rip + guard]
+  auto guardJump = [&] {
+    a.put({0xFF, 0x25, 0, 0, 0, 0});
+    a.disp(cast<Defined>(guard)->getRVA());
+  };
+  // The page test; je mismatch; the type check; jne mismatch;
+  // jmp [rip + guard]
+  auto outsidePath = [&](bool loaded) {
+    a.put(pageTest);
+    branchToMismatch(0x84);
+    if (!loaded)
+      a.put(load);
+    typeCheck();
+    guardJump();
+  };
+
+  if (local) {
+    if (!codeStart) {
+      outsidePath(/*loaded=*/false);
     } else {
-      buf[off + 6] = 0xFF;
-      buf[off + 7] = 0xE0;
+      uint32_t fail = a.newLabel();
+      if (typeInRange) {
+        testRange(0x83, fail, /*toRoutine=*/false);
+        a.put(load);
+        typeCheck();
+        takeTarget();
+      } else {
+        testRange(0x82, 0, /*toRoutine=*/true);
+      }
+      // mov ecx, FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG; int 0x29
+      a.bind(fail);
+      a.put({0xB9, 0x40, 0, 0, 0, 0xCD, 0x29});
+    }
+    if (mismatchFollows)
+      a.bind(toMismatch);
+    return;
+  }
+
+  bool own = codeStart;
+  bool hits = own || !imported.empty();
+  if (hits)
+    a.put(load);
+  uint32_t hit = a.newLabel(), outside = a.newLabel();
+  if (own) {
+    uint32_t imports = a.newLabel();
+    testRange(0x83, imports, /*toRoutine=*/false);
+    a.bind(hit);
+    typeCheck();
+    takeTarget();
+    a.bind(imports);
+  }
+  for (size_t i = 0; i != imported.size(); ++i) {
+    if (!own && i + 1 == imported.size()) {
+      testBound(imported[i].start, 0x82, outside);
+      testBound(imported[i].end, 0x83, outside);
+      a.bind(hit);
+      typeCheck();
+      takeTarget();
+      break;
+    }
+    uint32_t next = a.newLabel();
+    testBound(imported[i].start, 0x82, next);
+    testBound(imported[i].end, 0x82, hit);
+    a.bind(next);
+  }
+  a.bind(outside);
+  outsidePath(/*loaded=*/hits);
+
+  if (checked) {
+    // The tests of the imported ranges, each taking the target; then
+    // jmp [rip + guard]
+    checkedOffset = a.off;
+    uint32_t take = a.newLabel();
+    for (const Range &r : imported) {
+      uint32_t next = a.newLabel();
+      testBound(r.start, 0x82, next);
+      testBound(r.end, 0x82, take);
+      a.bind(next);
+    }
+    guardJump();
+    a.bind(take);
+    takeTarget();
+  }
+  if (mismatchFollows)
+    a.bind(toMismatch);
+}
+
+// As on x86-64, but the target is in X15, and X16 and X17 are free, as for the
+// guard function; clang's type check uses both, so its constant is not
+// hoisted. A branch to a mismatch routine that does not follow the thunk goes
+// through a jump at the thunk's end, which reaches it at any distance.
+void KCFIThunkChunk::writeARM64(LabelledCode &a,
+                                uint32_t &checkedOffset) const {
+  uint32_t toMismatch = a.newLabel();
+  // b.cond with a condition: eq 0, ne 1, hs 2, lo 3.
+  auto branchIf = [&](uint32_t cond, uint32_t label) {
+    a.branch19(0x54000000 | cond, label);
+  };
+  auto typeCheck = [&] {
+    a.put(compare);
+    branchIf(1, toMismatch);
+  };
+  // adrp x16, start; add x16, x16, :lo12:start; sub x16, x15, x16;
+  // mov x17, #size; movk x17, #size, lsl #16; cmp x16, x17; b.cond label
+  auto testRange = [&](uint32_t cond, uint32_t label) {
+    uint64_t codeSize = codeEnd->getRVA() - codeStart->getRVA();
+    a.address(16, codeStart->getRVA());
+    a.put32(0xCB1001F0);
+    a.put32(0xD2800011 | (codeSize & 0xFFFF) << 5);
+    a.put32(0xF2A00011 | (codeSize >> 16) << 5);
+    a.put32(0xEB11021F);
+    branchIf(cond, label);
+  };
+  // adrp x16, start; add x16, x16, :lo12:start; ldp x16, x17, [x16];
+  // cmp x15, x16; b.lo below; cmp x15, x17; b.cond label
+  auto testImported = [&](const Range &r, uint32_t below, uint32_t cond,
+                          uint32_t label) {
+    a.address(16, r.start->getRVA());
+    a.put32(0xA9404610);
+    a.put32(0xEB1001FF);
+    branchIf(3, below);
+    a.put32(0xEB1101FF);
+    branchIf(cond, label);
+  };
+  // adrp x16, guard; ldr x16, [x16, :lo12:guard]; br x16
+  auto guardJump = [&] {
+    a.loadImport(16, cast<Defined>(guard)->getRVA());
+    a.put32(0xD61F0200);
+  };
+  // The page test; b.eq mismatch; the type check; b.ne mismatch; the guard
+  // function
+  auto outsidePath = [&] {
+    a.put(pageTest);
+    branchIf(0, toMismatch);
+    typeCheck();
+    guardJump();
+  };
+  auto ret = [&] { a.put32(0xD65F03C0); };
+
+  if (local) {
+    if (!codeStart) {
+      outsidePath();
+    } else {
+      uint32_t fail = a.newLabel();
+      if (typeInRange) {
+        testRange(2, fail);
+        typeCheck();
+        ret();
+      } else {
+        testRange(3, toMismatch);
+      }
+      // mov w0, #FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG; brk #0xf003
+      a.bind(fail);
+      a.put32(0x52800800);
+      a.put32(0xD43E0060);
+    }
+  } else {
+    bool own = codeStart;
+    uint32_t hit = a.newLabel(), outside = a.newLabel();
+    if (own) {
+      uint32_t imports = a.newLabel();
+      testRange(2, imports);
+      a.bind(hit);
+      typeCheck();
+      ret();
+      a.bind(imports);
+    }
+    for (size_t i = 0; i != imported.size(); ++i) {
+      if (!own && i + 1 == imported.size()) {
+        testImported(imported[i], outside, 2, outside);
+        a.bind(hit);
+        typeCheck();
+        ret();
+        break;
+      }
+      uint32_t next = a.newLabel();
+      testImported(imported[i], next, 3, hit);
+      a.bind(next);
+    }
+    a.bind(outside);
+    outsidePath();
+    if (checked) {
+      // The tests of the imported ranges, each taking the return; then the
+      // guard function; ret
+      checkedOffset = a.off;
+      uint32_t take = a.newLabel();
+      for (const Range &r : imported) {
+        uint32_t next = a.newLabel();
+        testImported(r, next, 3, take);
+        a.bind(next);
+      }
+      guardJump();
+      a.bind(take);
+      ret();
     }
   }
-  for (size_t i = 0; i != imported.size(); ++i) {
-    // cmp rax, [rip + start]; jb 1f; cmp rax, [rip + end]; jb hit; 1:
-    uint32_t off = l.imported + i * 18;
-    const uint8_t test[] = {0x48, 0x3B, modrm, 0, 0, 0, 0, 0x72, 0x09,
-                            0x48, 0x3B, modrm, 0, 0, 0, 0, 0x72, 0};
-    memcpy(buf + off, test, sizeof(test));
-    rel32(off + 3, imported[i].start->getRVA());
-    rel32(off + 12, imported[i].end->getRVA());
-    rel8(off + 17, l.hit);
-  }
-  // The page test; je mismatch; the type check; jne mismatch; jmp [rip + guard]
-  uint32_t off = l.outside;
-  memcpy(buf + off, pageTest.data(), pageTest.size());
-  off += pageTest.size();
-  buf[off] = 0x0F;
-  buf[off + 1] = 0x84;
-  rel32(off + 2, mismatchRVA);
-  off += 6;
-  memcpy(buf + off, compare.data(), compare.size());
-  off += compare.size();
-  buf[off] = 0x0F;
-  buf[off + 1] = 0x85;
-  rel32(off + 2, mismatchRVA);
-  buf[off + 6] = 0xFF;
-  buf[off + 7] = 0x25;
-  rel32(off + 8, guardRVA);
-  if (!checked)
-    return;
-
-  // cmp rax, [rip + start]; jb 1f; cmp rax, [rip + end]; jb 2f; 1:
-  // for each imported range, then jmp [rip + guard]; 2: jmp rax or ret
-  uint32_t tail = l.checked + imported.size() * 22 + 6;
-  for (size_t i = 0; i != imported.size(); ++i) {
-    off = l.checked + i * 22;
-    const uint8_t test[] = {0x48, 0x3B, modrm, 0,     0, 0, 0, 0x72,
-                            0x0D, 0x48, 0x3B,  modrm, 0, 0, 0, 0,
-                            0x0F, 0x82, 0,     0,     0, 0};
-    memcpy(buf + off, test, sizeof(test));
-    rel32(off + 3, imported[i].start->getRVA());
-    rel32(off + 12, imported[i].end->getRVA());
-    write32le(buf + off + 18, tail - (off + 22));
-  }
-  buf[tail - 6] = 0xFF;
-  buf[tail - 5] = 0x25;
-  rel32(tail - 4, guardRVA);
-  if (check) {
-    buf[tail] = 0xC3;
-  } else {
-    buf[tail] = 0xFF;
-    buf[tail + 1] = 0xE0;
+  // adrp x17, mismatch; add x17, x17, :lo12:mismatch; br x17
+  a.bind(toMismatch);
+  if (!mismatchFollows) {
+    a.address(17, cast<Defined>(mismatch)->getRVA());
+    a.put32(0xD61F0220);
   }
 }
 
@@ -1174,6 +1242,15 @@ static bool readKCFIRangeRecord(COFFLinkerContext &ctx, MemoryBufferRef mb,
   return false;
 }
 
+// Whether a thunk of kind takes its target in RAX, and whether its type's
+// every target is in the image.
+static bool isDispatchThunk(LinkKCFIThunkKind kind) {
+  return kind == LinkKCFIThunkDispatch || kind == LinkKCFIThunkLocalDispatch;
+}
+static bool isLocalThunk(LinkKCFIThunkKind kind) {
+  return kind == LinkKCFIThunkLocalDispatch || kind == LinkKCFIThunkLocalCheck;
+}
+
 // In a sealed image, with a guard function table, the KCFI checks of an image
 // may take a target directly inside the code range of a DLL it imports
 // statically, whose import library records the range. The image imports the
@@ -1193,6 +1270,7 @@ void bindKCFIImportedRanges(COFFLinkerContext &ctx) {
   for (auto &[sym, thunk] : ctx.kcfi.thunks) {
     auto *d = dyn_cast<DefinedRegular>(sym);
     if (!d || !d->getChunk() || !d->getChunk()->live ||
+        isLocalThunk(thunk.kind) ||
         (thunk.kind == LinkKCFIThunkDispatch && !isX64))
       continue;
     checked[thunk.kind == LinkKCFIThunkVfnCheck].insert(
@@ -1336,10 +1414,12 @@ void KCFIContents::listThunks() {
 }
 
 // Once the sections are merged, and before they are laid out, defines the code
-// range of a sealed image, puts the linker's KCFI thunks in place of clang's,
-// and points the range's bounds, and those a DLL exports, at their chunks.
+// range of a sealed image, places each KCFI thunk's mismatch routine after it,
+// puts the linker's KCFI thunks in place of clang's, and points the range's
+// bounds, and those a DLL exports, at their chunks.
 void KCFIContents::layOut(OutputSection *textSec, OutputSection *rdataSec) {
   defineCodeRange();
+  placeMismatchRoutines();
   replaceThunks();
   placeCodeRange();
   defineRangeExports(textSec, rdataSec);
@@ -1696,7 +1776,7 @@ static bool buildKCFIThunkCheck(MachineTypes machine, const KCFIState::Thunk &t,
   }
 
   // movabs r11, expected; cmp [reg - offset], r11; test reg32, mask
-  bool rax = t.kind == LinkKCFIThunkDispatch;
+  bool rax = isDispatchThunk(t.kind);
   compare.append({0x49, 0xBB});
   compare.resize(compare.size() + 8);
   write64le(compare.end() - 8, expected);
@@ -1717,6 +1797,70 @@ static bool buildKCFIThunkCheck(MachineTypes machine, const KCFIState::Thunk &t,
   return true;
 }
 
+// The chunk of a KCFI thunk's mismatch routine, where the routine is the type's
+// own and starts its chunk: a compiled routine, the leader of its COMDAT, or
+// one that the linker opened in its place. The trap, to which a closed type's
+// routine defaults, serves every such type.
+const Chunk *KCFIContents::getMismatchRoutine(Symbol *mismatch) const {
+  if (auto *d = dyn_cast<DefinedRegular>(mismatch)) {
+    SectionChunk *sc = d->getChunk();
+    return sc && sc->live && sc->sym == d && d->getValue() == 0 ? sc : nullptr;
+  }
+  if (auto *s = dyn_cast<DefinedSynthetic>(mismatch))
+    if (llvm::is_contained(ctx.kcfi.chunks, s->getChunk()))
+      return s->getChunk();
+  return nullptr;
+}
+
+// Places each KCFI thunk's mismatch routine right after the thunk, so that the
+// thunk's branches to it take an 8-bit displacement, and a jump that ends
+// clang's thunk with it, which the thunk's object lists, is left out. A routine
+// that several thunks name follows the first; code that an order file places
+// stays where it is.
+void KCFIContents::placeMismatchRoutines() {
+  auto isOrdered = [&](const Chunk *c) {
+    auto *sc = dyn_cast<SectionChunk>(c);
+    return sc && sc->sym && ctx.config.order.count(sc->sym->getName());
+  };
+  DenseMap<const Chunk *, const Chunk *> routineOf;
+  for (auto &[sym, thunk] : ctx.kcfi.thunks) {
+    auto *d = dyn_cast<DefinedRegular>(sym);
+    SectionChunk *sc = d ? d->getChunk() : nullptr;
+    if (!sc || !sc->live || sc->sym != d || d->getValue() != 0 || isOrdered(sc))
+      continue;
+    const Chunk *routine = getMismatchRoutine(thunk.mismatch);
+    if (routine && !isOrdered(routine))
+      routineOf.try_emplace(sc, routine);
+  }
+  if (routineOf.empty())
+    return;
+  // Output sections are not yet indexed, so a routine moves only within the
+  // section that holds both it and its thunk.
+  for (OutputSection *sec : ctx.outputSections) {
+    std::vector<Chunk *> &chunks = sec->chunks;
+    DenseSet<const Chunk *> held(chunks.begin(), chunks.end());
+    DenseSet<const Chunk *> moved;
+    for (Chunk *c : chunks)
+      if (const Chunk *routine = routineOf.lookup(c))
+        if (routine != c && held.contains(routine))
+          moved.insert(routine);
+    if (moved.empty())
+      continue;
+    std::vector<Chunk *> placed;
+    placed.reserve(chunks.size());
+    DenseSet<const Chunk *> done;
+    for (Chunk *c : chunks) {
+      if (moved.contains(c))
+        continue;
+      placed.push_back(c);
+      if (const Chunk *routine = routineOf.lookup(c))
+        if (moved.contains(routine) && done.insert(routine).second)
+          placed.push_back(const_cast<Chunk *>(routine));
+    }
+    chunks = std::move(placed);
+  }
+}
+
 // Replaces each KCFI thunk that the image keeps and its object describes,
 // __llvm_kcfi_dispatch_<type> with the target in RAX, and
 // __llvm_kcfi_check_<type> and __llvm_kcfi_vfn_check_<type> with it in RCX or
@@ -1734,19 +1878,22 @@ void KCFIContents::replaceThunks() {
     return;
 
   DenseMap<const Chunk *, Chunk *> replacements;
+  // The chunk of each replacement's mismatch routine, which may follow it.
+  DenseMap<const Chunk *, const Chunk *> routines;
   SmallVector<std::pair<Symbol *, KCFIThunkChunk *>, 0> checkedMisses;
   SetVector<ObjFile *> files;
   for (auto &[sym, thunk] : ctx.kcfi.thunks) {
     // The record describes the thunk only if the chunk is the thunk's own.
     auto *d = dyn_cast<DefinedRegular>(sym);
     SectionChunk *sc = d ? d->getChunk() : nullptr;
+    bool dispatch = isDispatchThunk(thunk.kind);
+    bool local = isLocalThunk(thunk.kind);
     if (!sc || !sc->live || sc->sym != d || d->getValue() != 0 ||
-        (thunk.kind == LinkKCFIThunkDispatch && !isX64))
+        (dispatch && !isX64))
       continue;
     auto *mismatchSym = dyn_cast<Defined>(thunk.mismatch);
     auto *guardSym = dyn_cast_or_null<Defined>(ctx.symtab.find(
-        thunk.kind == LinkKCFIThunkDispatch ? "__guard_dispatch_icall_fptr"
-                                            : "__guard_check_icall_fptr"));
+        dispatch ? "__guard_dispatch_icall_fptr" : "__guard_check_icall_fptr"));
     SmallVector<uint8_t, 24> compare, pageTest;
     if (!mismatchSym || !guardSym ||
         !buildKCFIThunkCheck(ctx.config.machine, thunk, compare, pageTest))
@@ -1759,22 +1906,24 @@ void KCFIContents::replaceThunks() {
         kcfiCodeSec &&
         (vfn ? ctx.kcfi.rangeVfnTypes : ctx.kcfi.rangeTypes).count(stored);
     // The ranges of the DLLs with an unsealed function of the type that the
-    // thunk tests.
+    // thunk tests; every target of a local thunk is in the image.
     SmallVector<KCFIThunkChunk::Range, 4> imported;
     auto tested = ctx.kcfi.rangeHolders[vfn].find(stored);
-    if (tested != ctx.kcfi.rangeHolders[vfn].end())
+    if (!local && tested != ctx.kcfi.rangeHolders[vfn].end())
       for (uint32_t i : tested->second)
         imported.push_back(
             {ctx.kcfi.importedRanges[i].start, ctx.kcfi.importedRanges[i].end});
-    kcfiThunksTestRange |= own;
+    // A local thunk tests the range wherever the image has one.
+    bool testsRange = local ? kcfiCodeSec != nullptr : own;
+    kcfiThunksTestRange |= testsRange;
     // A member thunk's miss of a target outside the range that still
     // continues into this thunk, as for a type of which a function in another
     // image may be a valid target, takes its entry for a checked target.
-    StringRef outsidePrefix = thunk.kind == LinkKCFIThunkDispatch
-                                  ? KCFIMemberOutsideMissPrefix
-                                  : KCFIMemberCheckOutsideMissPrefix;
+    StringRef outsidePrefix = dispatch ? KCFIMemberOutsideMissPrefix
+                                       : KCFIMemberCheckOutsideMissPrefix;
     auto *outsideMiss = dyn_cast_or_null<DefinedRegular>(
-        vfn ? nullptr
+        vfn || local
+            ? nullptr
             : ctx.symtab.find((outsidePrefix + utohexstr(thunk.type,
                                                          /*LowerCase=*/true,
                                                          /*Width=*/8))
@@ -1782,10 +1931,11 @@ void KCFIContents::replaceThunks() {
     bool checked = outsideMiss && outsideMiss->getChunk() == sc &&
                    outsideMiss->getValue() == 0;
     auto *chunk = make<KCFIThunkChunk>(
-        ctx, thunk.kind != LinkKCFIThunkDispatch, compare, pageTest,
-        mismatchSym, guardSym, own ? kcfiCodeStart : nullptr,
-        own ? kcfiCodeEnd : nullptr, imported, checked);
+        ctx, !dispatch, local, compare, pageTest, mismatchSym, guardSym,
+        testsRange ? kcfiCodeStart : nullptr,
+        testsRange ? kcfiCodeEnd : nullptr, own, imported, checked);
     replacements[sc] = chunk;
+    routines[chunk] = getMismatchRoutine(thunk.mismatch);
     if (checked)
       checkedMisses.push_back({outsideMiss, chunk});
     files.insert(cast<ObjFile>(sc->file));
@@ -1795,11 +1945,23 @@ void KCFIContents::replaceThunks() {
 
   // Each chunk takes clang's place in its section, and every symbol defined
   // at clang's thunk, its own and those of other objects, such as a weak
-  // alias resolved to it, its address.
-  for (OutputSection *sec : ctx.outputSections)
-    for (Chunk *&c : sec->chunks)
-      if (Chunk *r = replacements.lookup(c))
-        c = r;
+  // alias resolved to it, its address. A mismatch routine that follows the
+  // thunk starts where the thunk ends, since it needs no more alignment than
+  // an instruction.
+  unsigned insnAlign = isX64 ? 1 : 4;
+  for (OutputSection *sec : ctx.outputSections) {
+    std::vector<Chunk *> &chunks = sec->chunks;
+    for (size_t i = 0; i != chunks.size(); ++i) {
+      Chunk *r = replacements.lookup(chunks[i]);
+      if (!r)
+        continue;
+      chunks[i] = r;
+      const Chunk *routine = routines.lookup(r);
+      if (routine && i + 1 != chunks.size() && chunks[i + 1] == routine &&
+          routine->getAlignment() <= insnAlign)
+        static_cast<KCFIThunkChunk *>(r)->setMismatchFollows();
+    }
+  }
   if (Chunk *r = replacements.lookup(kcfiCodeEndChunk))
     kcfiCodeEndChunk = r;
   auto repoint = [&](Symbol *s) {

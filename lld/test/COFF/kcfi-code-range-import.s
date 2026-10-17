@@ -7,7 +7,8 @@
 ## imports the bounds of each such range as data, start then end, in one
 ## 16-byte block of the DLL's existing import address table. A target inside
 ## any of the ranges takes the type check and the jump; one outside them all
-## takes the page test, the type check and the guard function.
+## takes the page test, the type check and the guard function. Both compare
+## with the constant loaded once on entry.
 
 # RUN: split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -triple x86_64-windows-msvc a.s -filetype=obj -o a.obj
@@ -50,13 +51,12 @@
 ## Type 0x11111111: the image's range, then a.dll's, with two functions of
 ## the type, then b.dll's, with one.
 # CHECK:      <__llvm_kcfi_dispatch_11111111>:
+# CHECK-NEXT:   movabsq $0x11111111b8071c5a, %r11
 # CHECK-NEXT:   leaq {{.*}}(%rip), %r10
-# CHECK-NEXT:   movq %rax, %r11
-# CHECK-NEXT:   subq %r10, %r11
-# CHECK-NEXT:   cmpq $0x{{[0-9a-f]+}}, %r11
+# CHECK-NEXT:   subq %rax, %r10
+# CHECK-NEXT:   cmpq $0x{{[0-9a-f]+}}, %r10
 # CHECK-NEXT:   jae 0x[[IMPORTED:[0-9a-f]+]]
-# CHECK-NEXT:   [[HIT:[0-9a-f]+]]: {{.*}}movabsq $0x11111111b8071c5a, %r11
-# CHECK-NEXT:   cmpq %r11, -0x8(%rax)
+# CHECK-NEXT:   [[HIT:[0-9a-f]+]]: {{.*}}cmpq %r11, -0x8(%rax)
 # CHECK-NEXT:   jne {{.*}}<__llvm_kcfi_open>
 # CHECK-NEXT:   jmpq *%rax
 # CHECK-NEXT:   [[IMPORTED]]: {{.*}}cmpq {{.*}}(%rip), %rax {{.*}}# 0x[[#%x,0x140000000+A_IAT]]
@@ -69,7 +69,6 @@
 # CHECK-NEXT:   jb 0x[[HIT]]
 # CHECK-NEXT:   testl $0xff0, %eax
 # CHECK-NEXT:   je {{.*}}<__llvm_kcfi_open>
-# CHECK-NEXT:   movabsq $0x11111111b8071c5a, %r11
 # CHECK-NEXT:   cmpq %r11, -0x8(%rax)
 # CHECK-NEXT:   jne {{.*}}<__llvm_kcfi_open>
 # CHECK-NEXT:   jmpq *{{.*}}(%rip) {{.*}}<__guard_dispatch_icall_fptr>
@@ -79,22 +78,22 @@
 # CHECK-NEXT:   testl $0xff0, %eax
 
 ## Type 0x44444444 has one only in b.dll's, so the image's own range is not
-## tested, and the type check and jump follow the guard function.
+## tested, and a target inside b.dll's falls through into the type check and
+## the jump, ahead of the guard function's path.
 # CHECK:      <__llvm_kcfi_dispatch_44444444>:
-# CHECK-NEXT:   cmpq {{.*}}(%rip), %rax {{.*}}# 0x[[#%x,0x140000000+B_IAT]]
-# CHECK-NEXT:   jb
-# CHECK-NEXT:   cmpq {{.*}}(%rip), %rax {{.*}}# 0x[[#%x,0x140000008+B_IAT]]
-# CHECK-NEXT:   jb 0x[[HIT44:[0-9a-f]+]]
-# CHECK-NEXT:   testl $0xff0, %eax
-# CHECK-NEXT:   je {{.*}}<__llvm_kcfi_open>
 # CHECK-NEXT:   movabsq $0x44444444b8071c5a, %r11
-# CHECK-NEXT:   cmpq %r11, -0x8(%rax)
-# CHECK-NEXT:   jne {{.*}}<__llvm_kcfi_open>
-# CHECK-NEXT:   jmpq *{{.*}}(%rip) {{.*}}<__guard_dispatch_icall_fptr>
-# CHECK-NEXT:   [[HIT44]]: {{.*}}movabsq $0x44444444b8071c5a, %r11
+# CHECK-NEXT:   cmpq {{.*}}(%rip), %rax {{.*}}# 0x[[#%x,0x140000000+B_IAT]]
+# CHECK-NEXT:   jb 0x[[OUT44:[0-9a-f]+]]
+# CHECK-NEXT:   cmpq {{.*}}(%rip), %rax {{.*}}# 0x[[#%x,0x140000008+B_IAT]]
+# CHECK-NEXT:   jae 0x[[OUT44]]
 # CHECK-NEXT:   cmpq %r11, -0x8(%rax)
 # CHECK-NEXT:   jne {{.*}}<__llvm_kcfi_open>
 # CHECK-NEXT:   jmpq *%rax
+# CHECK-NEXT:   [[OUT44]]: {{.*}}testl $0xff0, %eax
+# CHECK-NEXT:   je {{.*}}<__llvm_kcfi_open>
+# CHECK-NEXT:   cmpq %r11, -0x8(%rax)
+# CHECK-NEXT:   jne {{.*}}<__llvm_kcfi_open>
+# CHECK-NEXT:   jmpq *{{.*}}(%rip) {{.*}}<__guard_dispatch_icall_fptr>
 
 ## A member thunk misses a target outside its code range whose type it has
 ## checked, of a type of which a function in another image may be a valid

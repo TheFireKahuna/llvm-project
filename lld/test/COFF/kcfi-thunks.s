@@ -2,13 +2,14 @@
 
 ## In an image it seals, the linker replaces each KCFI
 ## thunk that its object's records describe with its own form: the range test
-## becomes one comparison of the target's offset from the start of .text with
-## its size, followed by clang's type check and the jump, or the return, for a
-## target inside it; a target outside it takes clang's page test, the type
-## check and the guard function, which the linker builds from the marker, the
-## patchable prefix and the type the record gives. A type that no unsealed
-## function in the image has goes straight to the page test. Without an object
-## that says it has KCFI prefixes, clang's form stays.
+## becomes one comparison, of the distance from the target to the last byte of
+## .text with its size, followed by clang's type check and the jump, or the
+## return, for a target inside it; a target outside it takes clang's page
+## test, the type check and the guard function, which the linker builds from
+## the marker, the patchable prefix and the type the record gives. The type
+## check's constant is loaded once, before the range test, for both paths. A
+## type that no unsealed function in the image has goes straight to the page
+## test. Without an object that says it has KCFI prefixes, clang's form stays.
 
 # RUN: llvm-mc -triple x86_64-windows-msvc %s -filetype=obj -o %t.obj
 # RUN: llvm-mc -triple x86_64-windows-msvc %s -filetype=obj --defsym NOREC=1 \
@@ -25,18 +26,16 @@
 ## listed is in the guard function table, so type 0x11111111 has an unsealed
 ## function and tests the range.
 # CHECK:      <__llvm_kcfi_dispatch_11111111>:
-# CHECK-NEXT:   leaq {{.*}}(%rip), %r10 {{.*}}0x140001000
-# CHECK-NEXT:   movq %rax, %r11
-# CHECK-NEXT:   subq %r10, %r11
-# CHECK-NEXT:   cmpq $0x[[#%x,SIZE]], %r11
-# CHECK-NEXT:   jae {{.*}}<__llvm_kcfi_dispatch_11111111+0x2c>
 # CHECK-NEXT:   movabsq $0x11111111b8071c5a, %r11
+# CHECK-NEXT:   leaq {{.*}}(%rip), %r10 {{.*}}0x[[#%x,5368713215+SIZE]]
+# CHECK-NEXT:   subq %rax, %r10
+# CHECK-NEXT:   cmpq $0x[[#%x,SIZE]], %r10
+# CHECK-NEXT:   jae {{.*}}<__llvm_kcfi_dispatch_11111111+0x29>
 # CHECK-NEXT:   cmpq %r11, -0x8(%rax)
 # CHECK-NEXT:   jne {{.*}}<__llvm_kcfi_open>
 # CHECK-NEXT:   jmpq *%rax
 # CHECK-NEXT:   testl $0xff0, %eax
 # CHECK-NEXT:   je {{.*}}<__llvm_kcfi_open>
-# CHECK-NEXT:   movabsq $0x11111111b8071c5a, %r11
 # CHECK-NEXT:   cmpq %r11, -0x8(%rax)
 # CHECK-NEXT:   jne {{.*}}<__llvm_kcfi_open>
 # CHECK-NEXT:   jmpq *{{.*}}(%rip) {{.*}}<__guard_dispatch_icall_fptr>
@@ -55,18 +54,16 @@
 
 ## The check thunk takes the target in RCX and returns in range.
 # CHECK:      <__llvm_kcfi_check_11111111>:
-# CHECK-NEXT:   leaq {{.*}}(%rip), %r10 {{.*}}0x140001000
-# CHECK-NEXT:   movq %rcx, %r11
-# CHECK-NEXT:   subq %r10, %r11
-# CHECK-NEXT:   cmpq $0x[[#%x,SIZE]], %r11
-# CHECK-NEXT:   jae {{.*}}<__llvm_kcfi_check_11111111+0x2b>
 # CHECK-NEXT:   movabsq $0x11111111b8071c5a, %r11
+# CHECK-NEXT:   leaq {{.*}}(%rip), %r10 {{.*}}0x[[#%x,5368713215+SIZE]]
+# CHECK-NEXT:   subq %rcx, %r10
+# CHECK-NEXT:   cmpq $0x[[#%x,SIZE]], %r10
+# CHECK-NEXT:   jae {{.*}}<__llvm_kcfi_check_11111111+0x28>
 # CHECK-NEXT:   cmpq %r11, -0x8(%rcx)
 # CHECK-NEXT:   jne {{.*}}<__llvm_kcfi_open>
 # CHECK-NEXT:   retq
 # CHECK-NEXT:   testl $0xff0, %ecx
 # CHECK-NEXT:   je {{.*}}<__llvm_kcfi_open>
-# CHECK-NEXT:   movabsq $0x11111111b8071c5a, %r11
 # CHECK-NEXT:   cmpq %r11, -0x8(%rcx)
 # CHECK-NEXT:   jne {{.*}}<__llvm_kcfi_open>
 # CHECK-NEXT:   jmpq *{{.*}}(%rip) {{.*}}<__guard_check_icall_fptr>
@@ -74,18 +71,16 @@
 ## A vfn thunk compares the second type of a function that can occupy a vtable
 ## slot, which vlisted has, unsealed.
 # CHECK:      <__llvm_kcfi_vfn_check_66666666>:
-# CHECK-NEXT:   leaq {{.*}}(%rip), %r10 {{.*}}0x140001000
-# CHECK-NEXT:   movq %rcx, %r11
-# CHECK-NEXT:   subq %r10, %r11
-# CHECK-NEXT:   cmpq $0x[[#%x,SIZE]], %r11
-# CHECK-NEXT:   jae
 # CHECK-NEXT:   movabsq $0x6801f0f66666666, %r11
+# CHECK-NEXT:   leaq {{.*}}(%rip), %r10 {{.*}}0x[[#%x,5368713215+SIZE]]
+# CHECK-NEXT:   subq %rcx, %r10
+# CHECK-NEXT:   cmpq $0x[[#%x,SIZE]], %r10
+# CHECK-NEXT:   jae
 # CHECK-NEXT:   cmpq %r11, -0x10(%rcx)
 # CHECK-NEXT:   jne {{.*}}<__llvm_kcfi_open>
 # CHECK-NEXT:   retq
 # CHECK-NEXT:   testl $0xff0, %ecx
 # CHECK-NEXT:   je {{.*}}<__llvm_kcfi_open>
-# CHECK-NEXT:   movabsq $0x6801f0f66666666, %r11
 # CHECK-NEXT:   cmpq %r11, -0x10(%rcx)
 # CHECK-NEXT:   jne {{.*}}<__llvm_kcfi_open>
 # CHECK-NEXT:   jmpq *{{.*}}(%rip) {{.*}}<__guard_check_icall_fptr>
@@ -93,7 +88,7 @@
 ## A type that would spell an ENDBR instruction is stored plus one, in the
 ## prefix and in the thunk's comparison, but not in the thunk's name.
 # CHECK:      <__llvm_kcfi_check_fa1e0ff3>:
-# CHECK-NEXT:   leaq {{.*}}(%rip), %r10 {{.*}}0x140001000
+# CHECK-NEXT:   movabsq $-0x5e1f00b47f8e3a6, %r11 # imm = 0xFA1E0FF4B8071C5A
 
 ## The record, not the thunk's bytes, decides: a thunk whose object describes
 ## it is replaced whatever its form. A thunk that its object does not describe,

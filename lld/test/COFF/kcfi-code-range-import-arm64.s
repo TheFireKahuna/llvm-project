@@ -22,17 +22,26 @@
 # CHECK-NEXT: Symbol: __llvm_code_end (0)
 # CHECK-NEXT: Symbol: d1 (2)
 
-## The image has no function of the type, so only the DLL's range is tested.
+## The image has no function of the type, so only the DLL's range is tested,
+## and a target inside it falls through into the type check and the return.
 # CHECK:      <__llvm_kcfi_check_11111111>:
 # CHECK-NEXT:   adrp x16, 0x140002000
 # CHECK-NEXT:   add x16, x16, #0x{{[0-9a-f]+}}
 # CHECK-NEXT:   ldp x16, x17, [x16]
 # CHECK-NEXT:   cmp x15, x16
-# CHECK-NEXT:   b.lo
+# CHECK-NEXT:   b.lo 0x[[OUT:[0-9a-f]+]]
 # CHECK-NEXT:   cmp x15, x17
-# CHECK-NEXT:   b.lo 0x[[HIT:[0-9a-f]+]]
-# CHECK-NEXT:   tst x15, #0xff0
-# CHECK-NEXT:   b.eq 0x[[MISMATCH:[0-9a-f]+]]
+# CHECK-NEXT:   b.hs 0x[[OUT]]
+# CHECK-NEXT:   ldur x16, [x15, #-0x8]
+# CHECK-NEXT:   mov x17, #0x1c5a
+# CHECK-NEXT:   movk x17, #0xb807, lsl #16
+# CHECK-NEXT:   movk x17, #0x1111, lsl #32
+# CHECK-NEXT:   movk x17, #0x1111, lsl #48
+# CHECK-NEXT:   cmp x16, x17
+# CHECK-NEXT:   b.ne 0x[[MISMATCH:[0-9a-f]+]]
+# CHECK-NEXT:   ret
+# CHECK-NEXT:   [[OUT]]: {{.*}}tst x15, #0xff0
+# CHECK-NEXT:   b.eq 0x[[MISMATCH]]
 # CHECK-NEXT:   ldur x16, [x15, #-0x8]
 # CHECK-NEXT:   mov x17, #0x1c5a
 # CHECK-NEXT:   movk x17, #0xb807, lsl #16
@@ -43,21 +52,11 @@
 # CHECK-NEXT:   adrp x16, {{.*}}<__guard_check_icall_fptr>
 # CHECK-NEXT:   ldr x16, [x16]
 # CHECK-NEXT:   br x16
-# CHECK-NEXT:   [[HIT]]: {{.*}}ldur x16, [x15, #-0x8]
-# CHECK-NEXT:   mov x17, #0x1c5a
-# CHECK-NEXT:   movk x17, #0xb807, lsl #16
-# CHECK-NEXT:   movk x17, #0x1111, lsl #32
-# CHECK-NEXT:   movk x17, #0x1111, lsl #48
-# CHECK-NEXT:   cmp x16, x17
-# CHECK-NEXT:   b.ne 0x[[MISMATCH]]
-# CHECK-NEXT:   ret
-# CHECK-NEXT:   [[MISMATCH]]: {{.*}}adrp x17, 0x140001000
-# CHECK-NEXT:   add x17, x17, #0x[[#%x,OPEN:]]
-# CHECK-NEXT:   br x17
 
 ## A member thunk's miss of a target outside its code range whose type it has
 ## checked takes the thunk's entry for such a target, which tests the ranges
-## alone.
+## alone. The branch to the mismatch routine, which does not follow the thunk,
+## ends it.
 # CHECK-EMPTY:
 # CHECK-NEXT: <__llvm_kcfi_member_check_outside_miss_11111111>:
 # CHECK-NEXT:   adrp x16, 0x140002000
@@ -71,6 +70,9 @@
 # CHECK-NEXT:   ldr x16, [x16]
 # CHECK-NEXT:   br x16
 # CHECK-NEXT:   [[RET]]: {{.*}}ret
+# CHECK-NEXT:   [[MISMATCH]]: {{.*}}adrp x17, 0x140001000
+# CHECK-NEXT:   add x17, x17, #0x[[#%x,OPEN:]]
+# CHECK-NEXT:   br x17
 # CHECK:      <__llvm_kcfi_check_open>:
 # CHECK-NEXT:   [[#%x,0x140001000+OPEN]]:
 

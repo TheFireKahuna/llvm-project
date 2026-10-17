@@ -142,6 +142,8 @@ private:
   void defineCodeRange();
   void placeCodeRange();
   void defineRangeExports(OutputSection *textSec, OutputSection *rdataSec);
+  const Chunk *getMismatchRoutine(Symbol *mismatch) const;
+  void placeMismatchRoutines();
   void replaceThunks();
   void boundMismatches(OutputSection *textSec, OutputSection *rdataSec);
   void narrowMemberMisses();

@@ -838,7 +838,7 @@ bool ObjFile::readKCFIThunks(ArrayRef<uint8_t> payload) {
       return malformed("KCFI thunk " + symbols[thunkIndex]->getName() +
                        " has an invalid offset");
     // A thunk of a kind this linker does not know is left as it is.
-    if (kind > LinkKCFIThunkVfnCheck)
+    if (kind > LinkKCFIThunkLocalCheck)
       continue;
     KCFIState::Thunk thunk{
         this,   LinkKCFIThunkKind(kind), type,

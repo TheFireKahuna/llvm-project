@@ -77,9 +77,9 @@
 ; RUN: llvm-objdump -t noguard.exe | FileCheck %s --check-prefix=NOGUARD-SYM
 
 ; FORMS:      <__llvm_kcfi_member_miss_22222222>:
+; FORMS-NEXT:   movabsq
 ; FORMS-NEXT:   leaq {{.*}}(%rip), %r10
-; FORMS-NEXT:   movq %rax, %r11
-; FORMS-NEXT:   subq %r10, %r11
+; FORMS-NEXT:   subq %rax, %r10
 ; FORMS:      <__llvm_kcfi_member_outside_miss_22222222>:
 ; FORMS-NEXT:   jmpq *{{.*}}(%rip) {{.*}}<__guard_dispatch_icall_fptr>
 ; FORMS-NEXT:   jmpq *%rax

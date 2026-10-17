@@ -94,6 +94,15 @@ public:
       put({0xEB, 0});
     addJump(label);
   }
+  // x86-64: jcc rel32 or jmp rel32 to target, an RVA outside the routine.
+  void jccTo(uint8_t cc, uint64_t target) {
+    put({0x0F, cc, 0, 0, 0, 0});
+    disp(target);
+  }
+  void jmpTo(uint64_t target) {
+    put({0xE9, 0, 0, 0, 0});
+    disp(target);
+  }
   // AArch64: an instruction with a 19-bit (b.cond, cbz, cbnz), 14-bit (tbz,
   // tbnz) or 26-bit (b) offset to label.
   void branch19(uint32_t insn, uint32_t label) { branch(insn, label, Imm19); }
@@ -112,17 +121,22 @@ public:
     applyArm64Imm(buf + off + 4, target & 0xfff, 0);
     off += 8;
   }
-  // adrp x16, imp; ldr x16, [x16, :lo12:imp]; blr x16
-  void callImport(uint64_t imp) {
+  // adrp xN, imp; ldr xN, [xN, :lo12:imp]
+  void loadImport(uint32_t reg, uint64_t imp) {
     if (!buf) {
-      off += 12;
+      off += 8;
       return;
     }
-    llvm::support::endian::write32le(buf + off, 0x90000010);
-    llvm::support::endian::write32le(buf + off + 4, 0xF9400210);
+    llvm::support::endian::write32le(buf + off, 0x90000000 | reg);
+    llvm::support::endian::write32le(buf + off + 4,
+                                     0xF9400000 | reg << 5 | reg);
     applyArm64Addr(buf + off, imp, rva + off, 12);
     applyArm64Ldr(buf + off + 4, imp & 0xfff);
     off += 8;
+  }
+  // adrp x16, imp; ldr x16, [x16, :lo12:imp]; blr x16
+  void callImport(uint64_t imp) {
+    loadImport(16, imp);
     put32(0xD63F0200);
   }
   // movz wN, #lo; movk wN, #hi, lsl 16
