@@ -477,6 +477,16 @@ public:
   }
 };
 
+/// A distance in an encoded CodeView record, at Offset in its fragment's
+/// variable part, from Begin to End less Bias, in a section whose code a
+/// linker may resize, which the linker computes once it knows where both are.
+struct MCCVLinkerRelaxedDistance {
+  uint32_t Offset;
+  const MCSymbol *Begin;
+  const MCSymbol *End;
+  uint32_t Bias;
+};
+
 /// Fragment representing the binary annotations produced by the
 /// .cv_inline_linetable directive.
 class MCCVInlineLineTableFragment : public MCFragment {
@@ -485,6 +495,7 @@ class MCCVInlineLineTableFragment : public MCFragment {
   unsigned StartLineNum;
   const MCSymbol *FnStartSym;
   const MCSymbol *FnEndSym;
+  SmallVector<MCCVLinkerRelaxedDistance, 0> LinkerRelaxedDistances;
 
   /// CodeViewContext has the real knowledge about this format, so let it access
   /// our members.
@@ -500,6 +511,11 @@ public:
 
   const MCSymbol *getFnStartSym() const { return FnStartSym; }
   const MCSymbol *getFnEndSym() const { return FnEndSym; }
+  /// The table's code offsets and lengths that a linker computes, each an
+  /// annotation operand in its four-byte form.
+  ArrayRef<MCCVLinkerRelaxedDistance> getLinkerRelaxedDistances() const {
+    return LinkerRelaxedDistances;
+  }
 
   static bool classof(const MCFragment *F) {
     return F->getKind() == MCFragment::FT_CVInlineLines;
@@ -510,6 +526,7 @@ public:
 class MCCVDefRangeFragment : public MCFragment {
   ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges;
   StringRef FixedSizePortion;
+  SmallVector<MCCVLinkerRelaxedDistance, 0> LinkerRelaxedDistances;
 
   /// CodeViewContext has the real knowledge about this format, so let it access
   /// our members.
@@ -527,6 +544,10 @@ public:
   }
 
   StringRef getFixedSizePortion() const { return FixedSizePortion; }
+  /// The record's 16-bit range lengths and gaps that a linker computes.
+  ArrayRef<MCCVLinkerRelaxedDistance> getLinkerRelaxedDistances() const {
+    return LinkerRelaxedDistances;
+  }
 
   static bool classof(const MCFragment *F) {
     return F->getKind() == MCFragment::FT_CVDefRange;

@@ -1299,6 +1299,9 @@ void MCStreamer::emitCOFFLinkContract(const MCSymbol *Owner,
                                       ArrayRef<uint8_t> Digest) {}
 void MCStreamer::emitCOFFLinkFusedCall(const MCSymbol *Load, MCRegister Reg) {}
 void MCStreamer::emitCOFFLinkFusedRead() {}
+void MCStreamer::emitCOFFLinkFusedAccess(const MCSymbol *Load, MCRegister Reg) {
+}
+void MCStreamer::emitCOFFLinkFusedAdd(const MCSymbol *Load, MCRegister Reg) {}
 
 /// EmitRawText - If this file is backed by an assembly streamer, this dumps
 /// the specified string in the output .s file.  This capability is

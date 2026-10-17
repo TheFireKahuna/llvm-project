@@ -150,6 +150,58 @@ public:
     bool NextTransfers;
   };
 
+  /// An instruction that reads or writes memory through the register that
+  /// the load at Load filled, as the base of its memory operand, which the
+  /// object's link-only records carry (COFF::LinkSiteFusedAccess). Start is
+  /// where the instruction begins, once a target's streamer has seen it in a
+  /// form the records describe, with the offsets in it of its ModRM byte and
+  /// of the prefix that holds its base register's high bit (15 for none),
+  /// that prefix's kind (a COFF::LinkAccessPrefix), its length, the size of its
+  /// displacement (0 for none, 1 for 8 bits, 2 for 32), whether a SIB byte
+  /// follows ModRM, and the log2 of the scale of an 8-bit displacement.
+  struct LinkFusedAccess {
+    const MCSymbol *Start;
+    const MCSymbol *Load;
+    uint8_t ModRM;
+    uint8_t Prefix;
+    uint8_t Length;
+    uint8_t Disp;
+    bool SIB;
+    uint8_t PrefixKind;
+    uint8_t Scale;
+  };
+
+  /// The instruction after the load at Load to read or write its register,
+  /// which adds Constant to it and writes the register numbered Register as
+  /// the instruction encoding numbers it, which the object's link-only
+  /// records carry (COFF::LinkSiteFusedAdd). Start is where it begins, once a
+  /// target's streamer has seen it in a form the records describe.
+  struct LinkFusedAdd {
+    const MCSymbol *Start;
+    const MCSymbol *Load;
+    unsigned Register;
+    int64_t Constant;
+  };
+
+  /// A value at Offset in Field that depends on where the code of Target, a
+  /// section whose code a linker may resize, lies, which the object's
+  /// link-only records carry (COFF::LinkRecordCoverage): A - B + Constant for
+  /// a difference, A - Offset + Constant for a PC-relative value, both in a
+  /// field of Kind (a COFF::LinkCoverageField) and Size bytes; or, for an
+  /// interior entry, the place A in Target to which the relocation at Offset
+  /// refers.
+  struct LinkCoverageValue {
+    const MCSection *Field;
+    uint32_t Offset;
+    const MCSection *Target;
+    uint32_t A;
+    uint32_t B;
+    int64_t Constant;
+    uint8_t Type; // A COFF::LinkCoverageEntry.
+    uint8_t Kind;
+    uint8_t Size;
+  };
+
 private:
   // The pins of the object's link-only records, in the order given.
   SmallVector<LinkPin, 0> LinkPins;
@@ -171,6 +223,10 @@ private:
   // The facts about the object's fused calls and the loads they read.
   SmallVector<LinkFusedCall, 0> LinkFusedCalls;
   SmallVector<LinkFusedRead, 0> LinkFusedReads;
+  SmallVector<LinkFusedAccess, 0> LinkFusedAccesses;
+  SmallVector<LinkFusedAdd, 0> LinkFusedAdds;
+  // The values that depend on where code a linker may resize lies.
+  SmallVector<LinkCoverageValue, 0> LinkCoverageValues;
 
 public:
   WinCOFFObjectWriter(std::unique_ptr<MCWinCOFFObjectTargetWriter> MOTW,
@@ -225,10 +281,23 @@ public:
   void addLinkFusedRead(const LinkFusedRead &Read) {
     LinkFusedReads.push_back(Read);
   }
+  void addLinkFusedAccess(const LinkFusedAccess &Access) {
+    LinkFusedAccesses.push_back(Access);
+  }
+  void addLinkFusedAdd(const LinkFusedAdd &Add) {
+    LinkFusedAdds.push_back(Add);
+  }
+  void addLinkCoverageValue(const LinkCoverageValue &Value) {
+    LinkCoverageValues.push_back(Value);
+  }
   /// The fused call and read added last, which a target's streamer completes
   /// once it has seen the call, or the instruction that follows the load.
   LinkFusedCall &getLastLinkFusedCall() { return LinkFusedCalls.back(); }
   LinkFusedRead &getLastLinkFusedRead() { return LinkFusedReads.back(); }
+  /// The fused access and add added last, which a target's streamer completes
+  /// once it has seen the instruction.
+  LinkFusedAccess &getLastLinkFusedAccess() { return LinkFusedAccesses.back(); }
+  LinkFusedAdd &getLastLinkFusedAdd() { return LinkFusedAdds.back(); }
   // A binding implies the fact that the object lists every binding.
   void addLinkBinding(const LinkBinding &Binding) {
     LinkBindings.push_back(Binding);

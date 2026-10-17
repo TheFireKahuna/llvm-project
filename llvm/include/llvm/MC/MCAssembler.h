@@ -167,6 +167,13 @@ public:
   /// Check whether a given symbol has been flagged with .thumb_func.
   LLVM_ABI bool isThumbFunc(const MCSymbol *Func) const;
 
+  /// Whether a linker-relaxable fragment lies between the places A and B, so
+  /// that the distance between them is the linker's to compute. Unlike the
+  /// folding of their difference, this does not depend on fragment sizes, and
+  /// so holds before layout is final.
+  LLVM_ABI bool isLinkerRelaxableBetween(const MCSymbol &A,
+                                         const MCSymbol &B) const;
+
   /// Flag a function symbol as the target of a .thumb_func directive.
   void setIsThumbFunc(const MCSymbol *Func) { ThumbFuncs.insert(Func); }
 

@@ -322,6 +322,76 @@ enum LinkRecordKind : uint64_t {
   //
   // image and index are indices of images of that group.
   LinkRecordDelayLoads = 28,
+
+  // The layout relationships of each code section in which a linker may
+  // change the size of an instruction its sites describe, so that it can
+  // change sizes there, moving what follows, and keep every value that
+  // depends on where the section's code is:
+  //
+  //   payload := group*
+  //   group   := field:ULEB128 target:ULEB128 count:ULEB128 entry{count}
+  //   entry   := (delta << 4 | implied << 3 | same << 2 | type):ULEB128
+  //              operands
+  //
+  // field and target are the symbol indices of two sections' symbols: target
+  // the code section whose layout the group's entries measure, and field the
+  // section that holds the values they describe. A group whose field is its
+  // target says that the target is covered, as a covered section always has,
+  // and lists the target's alignments and the values in it. A value or
+  // alignment of the target that no group lists does not depend on where
+  // anything a linker may resize is. delta is the offset of the entry's value
+  // or padding from the previous entry's in the group, or from the section's
+  // start for the first. type is a LinkCoverageEntry, which gives operands:
+  //
+  //   LinkCoverageAlign:       padding:ULEB128 info:ULEB128 maxskip:ULEB128
+  //   LinkCoverageDifference:  [kind:ULEB128] a:SLEB128 b:SLEB128
+  //                            [constant:SLEB128]
+  //   LinkCoveragePCRelative:  [kind:ULEB128] a:SLEB128 [constant:SLEB128]
+  //   LinkCoverageInterior:    a:SLEB128
+  //
+  // An alignment's padding is that many bytes of no-operations, aligning
+  // what follows to 2^(info & 31) if that takes at most maxskip bytes, in
+  // no-operations of at most info >> 5 bytes each. A difference is the value
+  // A - B + constant, where A and B are offsets in the target, in a field
+  // whose kind is that of kind & 15 (a LinkCoverageField) and whose size is
+  // kind >> 4 bytes; its a and b are A and B less those of the previous
+  // difference or interior entry in the group, or zero for the first. A
+  // PC-relative value is a difference whose B is the field's own offset and
+  // whose a is A less that offset. With same set, kind is that of the
+  // previous difference or PC-relative value in the group and is left out;
+  // with implied set, constant is left out, and is zero for a difference and
+  // minus the field's size for a PC-relative value. The value of the
+  // relocation at an interior entry's offset, which refers to the target, is
+  // relative to the place A in it, a being A less the previous A, rather than
+  // to the relocation's symbol with the addend the field holds. A linker that
+  // does not know the kind leaves every size as it is.
+  LinkRecordCoverage = 30,
+};
+
+// The type of an entry in a LinkRecordCoverage group.
+enum LinkCoverageEntry : uint8_t {
+  LinkCoverageAlign,
+  LinkCoverageDifference,
+  LinkCoveragePCRelative,
+  LinkCoverageInterior,
+};
+
+// The kind of the field that holds a value a LinkRecordCoverage group
+// describes.
+enum LinkCoverageField : uint8_t {
+  // A little-endian integer, of either signedness.
+  LinkFieldData,
+  // A signed little-endian displacement.
+  LinkFieldSigned,
+  // The 8-bit displacement of jmp rel8 or of a conditional jump, at the end
+  // of the instruction, which a linker may make the same jump with a 32-bit
+  // displacement if the value does not fit.
+  LinkFieldJump,
+  // An unsigned or signed LEB128 number, padded to the field's size.
+  LinkFieldULEB128,
+  LinkFieldSLEB128,
+  // A CodeView binary annotation's operand in its four-byte compressed form.
+  LinkFieldCVAnnotation,
 };
 
 // The role of a definition that a LinkRecordBinding group lists.
@@ -383,6 +453,53 @@ enum LinkSiteFact : uint8_t {
   // where none is known or it is another such load, and transfers says that
   // instruction transfers control or may fuse with a branch after it.
   LinkSiteFusedRead = 2,
+  // The site, of form LinkSiteOther and with no relocation, is an instruction
+  // that reads or writes memory through the register that a load at another
+  // site of its section filled with the address of data, as the base of its
+  // memory operand with no index or segment, so that a linker that finds the
+  // data in the image may make the operand RIP-relative:
+  //
+  //   value := load << 20 | scale << 17 | prefix << 15 | sib << 14 |
+  //            disp << 12 | length << 8 | at << 4 | modrm
+  //
+  // load is the index of the load's site among those of the section; modrm
+  // the offset in the instruction of its ModRM byte; at that of the prefix
+  // that holds the base register's high bit, or 15 where none does; prefix
+  // that prefix's kind, a LinkAccessPrefix; length the instruction's length;
+  // disp the size of its displacement, 0 for none, 1 for 8 bits and 2 for 32;
+  // sib whether a SIB byte follows ModRM; and scale the log2 of what an 8-bit
+  // displacement is multiplied by, which EVEX compresses.
+  LinkSiteFusedAccess = 3,
+  // The site, of form LinkSiteOther and with no relocation, is the next
+  // instruction to read or write the register that a load at another site of
+  // its section filled with the address of data, and adds a constant to it,
+  // add r64, imm with the flags dead or lea r64, [r64 + disp] with no index,
+  // so that a linker that finds the data in the image may make the load take
+  // the sum and this instruction dead:
+  //
+  //   value := load << 5 | register
+  //
+  // load is as for LinkSiteFusedAccess, and register is the number of the
+  // register that the instruction writes. A LinkSiteFusedAddend fact gives
+  // the constant.
+  LinkSiteFusedAdd = 4,
+  // The constant that the LinkSiteFusedAdd instruction of the site adds,
+  // value := constant << 1 ^ constant >> 63.
+  LinkSiteFusedAddend = 5,
+  // As LinkSiteFusedRead, for a load whose register only instructions that
+  // LinkSiteFusedCall and LinkSiteFusedAccess describe read.
+  LinkSiteAccessedRead = 6,
+};
+
+// The prefix of a fused access that holds the high bit of its base register.
+enum LinkAccessPrefix : uint8_t {
+  // REX, whose bit 0 is the bit; or none, the register being one of the
+  // first eight.
+  LinkAccessREX,
+  // Three-byte VEX (C4) or EVEX (62), the bit inverted in bit 5 of the byte
+  // after.
+  LinkAccessVEX,
+  LinkAccessEVEX,
 };
 
 // The KCFI type that a linker writes over the type words of a function's

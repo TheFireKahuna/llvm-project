@@ -21,6 +21,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/BinaryFormat/COFF.h"
+#include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAssembler.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
@@ -218,6 +219,11 @@ private:
   void setWeakDefaultNames();
   void assignSectionNumbers();
   void assignFileOffsets();
+
+  bool recordCoverageDifference(const MCFragment &F, const MCFixup &Fixup,
+                                const MCValue &Target, uint64_t &FixedValue);
+  bool isCovered(const MCSection &Sec) const;
+  void writeCoverage(raw_ostream &OS);
 };
 
 WinCOFFObjectWriter::WinCOFFObjectWriter(
@@ -897,6 +903,51 @@ void WinCOFFWriter::executePostLayoutBinding() {
   assignSectionNumbers();
 }
 
+// A difference of two places in a section whose code a linker may resize
+// depends on what the linker makes of the code between them, so the object's
+// records describe it for the linker to compute, and the field holds the
+// value the code has here.
+bool WinCOFFWriter::recordCoverageDifference(const MCFragment &F,
+                                             const MCFixup &Fixup,
+                                             const MCValue &Target,
+                                             uint64_t &FixedValue) {
+  const MCSymbol *A = Target.getAddSym(), *B = Target.getSubSym();
+  if (!B || !OWriter.hasLinkRecords() || Target.getSpecifier() ||
+      Fixup.isPCRel() || !A->isInSection() || !B->isInSection() ||
+      &A->getSection() != &B->getSection() ||
+      !A->getSection().isLinkerRelaxable())
+    return false;
+  uint8_t Kind = COFF::LinkFieldData, Size;
+  switch (Fixup.getKind()) {
+  case FK_Data_1:
+    Size = 1;
+    break;
+  case FK_Data_2:
+    Size = 2;
+    break;
+  case FK_Data_4:
+    Size = 4;
+    break;
+  case FK_Data_8:
+    Size = 8;
+    break;
+  case FK_Data_leb128:
+    Kind = F.isLEBSigned() ? COFF::LinkFieldSLEB128 : COFF::LinkFieldULEB128;
+    Size = F.getVarSize();
+    break;
+  default:
+    return false;
+  }
+  uint64_t OffsetA = Asm->getSymbolOffset(*A);
+  uint64_t OffsetB = Asm->getSymbolOffset(*B);
+  FixedValue = OffsetA - OffsetB + Target.getConstant();
+  OWriter.addLinkCoverageValue(
+      {F.getParent(), uint32_t(Asm->getFragmentOffset(F) + Fixup.getOffset()),
+       &A->getSection(), uint32_t(OffsetA), uint32_t(OffsetB),
+       Target.getConstant(), COFF::LinkCoverageDifference, Kind, Size});
+  return true;
+}
+
 void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
                                      MCValue Target, uint64_t &FixedValue) {
   assert(Target.getAddSym() && "Relocation must reference a symbol!");
@@ -919,6 +970,9 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
   // Mark this symbol as requiring an entry in the symbol table.
   assert(SectionMap.contains(MCSec) &&
          "Section must already have been defined in executePostLayoutBinding!");
+
+  if (recordCoverageDifference(F, Fixup, Target, FixedValue))
+    return;
 
   COFFSection *Sec = SectionMap[MCSec];
   if (const MCSymbol *B = Target.getSubSym()) {
@@ -962,6 +1016,10 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
   bool NeedsSecRelSymbol = false;
   bool UseSectionSymbol = A.isTemporary() && !SymbolMap.lookup(&A);
   uint64_t SecRelSymbolOffset = 0;
+  // The offset in its section of the symbol the relocation refers to, unless
+  // that is A itself.
+  uint64_t SymbolOffset = 0;
+  bool RefersToA = false;
   if (IsArm64SecRel12 && A.isInSection()) {
     uint64_t SecRelFixedValue = FixedValue;
     if (UseSectionSymbol)
@@ -978,6 +1036,7 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
     }
     Reloc.Symb = getOrCreateSecRelSymbol(A, SecRelSymbolOffset);
     FixedValue = 0;
+    SymbolOffset = SecRelSymbolOffset;
   } else if (UseSectionSymbol) {
     MCSection *TargetSection = &A.getSection();
     assert(
@@ -998,6 +1057,7 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
         else
           Reloc.Symb = Section->OffsetSymbols.back();
         FixedValue -= Reloc.Symb->Data.Value;
+        SymbolOffset = Reloc.Symb->Data.Value;
       }
     }
   } else {
@@ -1005,6 +1065,7 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
         SymbolMap.contains(&A) &&
         "Symbol must already have been defined in executePostLayoutBinding!");
     Reloc.Symb = SymbolMap[&A];
+    RefersToA = true;
   }
 
   ++Reloc.Symb->Relocations;
@@ -1066,6 +1127,23 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
     FixedValue = 0;
 
   if (OWriter.TargetObjectWriter->recordRelocation(Fixup)) {
+    // A relocation that refers to a place in code a linker may resize, by an
+    // addend that is not the place's offset from the relocation's symbol, as
+    // that of a difference with a place in its own section is not, says
+    // which place it is, which the linker moves the value with.
+    if (OWriter.hasLinkRecords() && A.isInSection() &&
+        A.getSection().isLinkerRelaxable() && Fixup.getKind() != FK_SecRel_2) {
+      uint64_t Place = Asm->getSymbolOffset(A);
+      if (!Fixup.isPCRel() && !Target.getSubSym())
+        Place += Target.getConstant();
+      if (RefersToA)
+        SymbolOffset = Asm->getSymbolOffset(A);
+      if (SymbolOffset + FixedValue != Place)
+        OWriter.addLinkCoverageValue({MCSec, Reloc.Data.VirtualAddress,
+                                      &A.getSection(), uint32_t(Place), 0, 0,
+                                      COFF::LinkCoverageInterior, 0, 0});
+    }
+
     // A site is described when its target may resolve to something other
     // than a definition the object fixes: a symbol it leaves undefined or
     // defines as weak, or one in a COMDAT that another section can replace.
@@ -1114,6 +1192,205 @@ static std::time_t getTime() {
   if (Now < 0 || !isUInt<32>(Now))
     return UINT32_MAX;
   return Now;
+}
+
+// Whether the object describes every layout relationship of Sec, a code
+// section whose code a linker may resize, so that the linker may resize it:
+// nothing after the first such instruction may depend on where it is in the
+// image but alignment by no-operations, which the linker redoes.
+bool WinCOFFWriter::isCovered(const MCSection &Sec) const {
+  if (!OWriter.hasLinkRecords() || !Sec.isLinkerRelaxable() ||
+      !(static_cast<const MCSectionCOFF &>(Sec).getCharacteristics() &
+        COFF::IMAGE_SCN_CNT_CODE))
+    return false;
+  for (const MCFragment &F : Sec) {
+    if (F.getLayoutOrder() <= Sec.firstLinkerRelaxable())
+      continue;
+    switch (F.getKind()) {
+    case MCFragment::FT_Align:
+      if (!F.hasAlignEmitNops())
+        return false;
+      break;
+    case MCFragment::FT_Org:
+    case MCFragment::FT_BoundaryAlign:
+    case MCFragment::FT_PrefAlign:
+      return false;
+    default:
+      break;
+    }
+  }
+  return true;
+}
+
+// Writes the group of the object's link-only records that describes the
+// layout relationships of the code sections a linker may resize: for each,
+// its alignments and the values that depend on where its code is, grouped by
+// the section that holds each value.
+void WinCOFFWriter::writeCoverage(raw_ostream &OS) {
+  // An entry's operands: for an alignment, A its padding, B its log2 and
+  // longest no-operation, and Constant its maximum skip.
+  struct Entry {
+    uint32_t Offset;
+    uint8_t Type;
+    uint8_t Field = 0;
+    uint64_t A = 0, B = 0;
+    int64_t Constant = 0;
+  };
+  // The entries for each section holding values, of each covered section,
+  // with the covered sections' own groups first, in the sections' order.
+  DenseMap<const MCSection *, bool> Covered;
+  auto IsCovered = [&](const MCSection *Sec) {
+    auto [It, Inserted] = Covered.try_emplace(Sec);
+    if (Inserted)
+      It->second = isCovered(*Sec);
+    return It->second;
+  };
+  MapVector<std::pair<const MCSection *, const MCSection *>,
+            SmallVector<Entry, 0>>
+      Groups;
+  for (const auto &Section : Sections) {
+    const MCSection *Sec = Section->MCSection;
+    if (!Sec || !IsCovered(Sec))
+      continue;
+    SmallVector<Entry, 0> &Own = Groups[{Sec, Sec}];
+    for (const MCFragment &F : *Sec) {
+      if (F.getKind() != MCFragment::FT_Align || !F.isLinkerRelaxable())
+        continue;
+      Entry &E = Own.emplace_back();
+      E.Offset = Asm->getFragmentOffset(F) + F.getFixedSize();
+      E.Type = COFF::LinkCoverageAlign;
+      E.A = F.getVarSize();
+      E.B = Log2(F.getAlignment()) |
+            Asm->getBackend().getMaximumNopSize(*F.getSubtargetInfo()) << 5;
+      E.Constant = F.getAlignMaxBytesToEmit();
+    }
+  }
+
+  auto Add = [&](const MCSection *Field, const MCSection *Target,
+                 uint32_t Offset, uint8_t Type) -> Entry & {
+    Entry &E = Groups[{Field, Target}].emplace_back();
+    E.Offset = Offset;
+    E.Type = Type;
+    return E;
+  };
+  for (const WinCOFFObjectWriter::LinkCoverageValue &V :
+       OWriter.LinkCoverageValues) {
+    if (!IsCovered(V.Target))
+      continue;
+    Entry &E = Add(V.Field, V.Target, V.Offset, V.Type);
+    E.Field = V.Kind | V.Size << 4;
+    E.A = V.A;
+    E.B = V.B;
+    E.Constant = V.Constant;
+  }
+
+  // CodeView's encoded records keep the distances a linker computes to
+  // themselves.
+  for (const auto &Section : Sections) {
+    const MCSectionCOFF *Sec = Section->MCSection;
+    if (!Sec || !Sec->getName().starts_with(".debug$S"))
+      continue;
+    for (const MCFragment &F : *Sec) {
+      ArrayRef<MCCVLinkerRelaxedDistance> Distances;
+      uint8_t Field;
+      if (const auto *IL = dyn_cast<MCCVInlineLineTableFragment>(&F)) {
+        Distances = IL->getLinkerRelaxedDistances();
+        Field = COFF::LinkFieldCVAnnotation | 4 << 4;
+      } else if (const auto *DR = dyn_cast<MCCVDefRangeFragment>(&F)) {
+        Distances = DR->getLinkerRelaxedDistances();
+        Field = COFF::LinkFieldData | 2 << 4;
+      } else {
+        continue;
+      }
+      for (const MCCVLinkerRelaxedDistance &D : Distances) {
+        const MCSection *Target = &D.Begin->getSection();
+        if (&D.End->getSection() != Target || !IsCovered(Target))
+          continue;
+        Entry &E =
+            Add(Sec, Target,
+                Asm->getFragmentOffset(F) + F.getFixedSize() + D.Offset,
+                COFF::LinkCoverageDifference);
+        E.Field = Field;
+        E.A = Asm->getSymbolOffset(*D.End);
+        E.B = Asm->getSymbolOffset(*D.Begin);
+        E.Constant = -int64_t(D.Bias);
+      }
+    }
+  }
+  if (Groups.empty())
+    return;
+
+  DenseMap<const MCSection *, size_t> Order;
+  for (const auto &[I, Section] : llvm::enumerate(Sections))
+    Order[Section->MCSection] = I;
+  auto Keys = llvm::to_vector(llvm::make_first_range(Groups));
+  llvm::sort(Keys, [&](const auto &L, const auto &R) {
+    return std::make_tuple(Order[L.second], L.first != L.second,
+                           Order[L.first]) <
+           std::make_tuple(Order[R.second], R.first != R.second,
+                           Order[R.first]);
+  });
+  // Each group's entries are delta-coded: a difference's places from the
+  // previous difference's, a PC-relative value's target from its field, and a
+  // field or constant that the previous entry's, or the usual one, implies is
+  // left out.
+  SmallString<0> Payload;
+  raw_svector_ostream POS(Payload);
+  for (const auto &Key : Keys) {
+    SmallVector<Entry, 0> &Entries = Groups[Key];
+    llvm::stable_sort(Entries, [](const Entry &L, const Entry &R) {
+      return L.Offset < R.Offset;
+    });
+    encodeULEB128(SectionMap.lookup(Key.first)->Symbol->getIndex(), POS);
+    encodeULEB128(SectionMap.lookup(Key.second)->Symbol->getIndex(), POS);
+    encodeULEB128(Entries.size(), POS);
+    uint32_t Prev = 0;
+    uint64_t PrevA = 0, PrevB = 0;
+    int PrevField = -1;
+    for (const Entry &E : Entries) {
+      uint64_t Head = uint64_t(E.Offset - Prev) << 4 | E.Type;
+      bool SameField = false, Implied = false;
+      if (E.Type == COFF::LinkCoverageDifference ||
+          E.Type == COFF::LinkCoveragePCRelative) {
+        SameField = E.Field == PrevField;
+        Implied = E.Type == COFF::LinkCoverageDifference
+                      ? E.Constant == 0
+                      : E.Constant == -int64_t(E.Field >> 4);
+        Head |= uint64_t(SameField) << 2 | uint64_t(Implied) << 3;
+        PrevField = E.Field;
+      }
+      encodeULEB128(Head, POS);
+      switch (E.Type) {
+      case COFF::LinkCoverageAlign:
+        encodeULEB128(E.A, POS);
+        encodeULEB128(E.B, POS);
+        encodeULEB128(E.Constant, POS);
+        break;
+      case COFF::LinkCoverageInterior:
+        encodeSLEB128(int64_t(E.A - PrevA), POS);
+        PrevA = E.A;
+        break;
+      default:
+        if (!SameField)
+          encodeULEB128(E.Field, POS);
+        if (E.Type == COFF::LinkCoveragePCRelative) {
+          encodeSLEB128(int64_t(E.A) - E.Offset, POS);
+        } else {
+          encodeSLEB128(int64_t(E.A - PrevA), POS);
+          encodeSLEB128(int64_t(E.B - PrevB), POS);
+          PrevA = E.A;
+          PrevB = E.B;
+        }
+        if (!Implied)
+          encodeSLEB128(E.Constant, POS);
+        break;
+      }
+      Prev = E.Offset;
+    }
+  }
+  encodeULEB128(COFF::LinkRecordCoverage, OS);
+  encodeULEB128(Payload.size(), OS);
+  OS << Payload;
 }
 
 uint64_t WinCOFFWriter::writeObject() {
@@ -1336,37 +1613,84 @@ uint64_t WinCOFFWriter::writeObject() {
       uint8_t Form = LinkSites[Sec][Index].Form;
       return Form == COFF::LinkSiteLoad || Form == COFF::LinkSiteLoadREX2;
     };
-    // A call's site comes before the index of its load's site is taken. A
-    // call not described goes on reading its register, so its load is not
-    // described as one that only described calls read.
-    SmallVector<std::pair<const WinCOFFObjectWriter::LinkFusedCall *,
-                          std::pair<const COFFSection *, uint32_t>>,
+    // Each fused call, access and add is a site of its own, which comes
+    // before the index of its load's site is taken. A call or access not
+    // described goes on reading its register, so its load is not described as
+    // one that only described instructions read.
+    using SiteKey = std::pair<const COFFSection *, uint32_t>;
+    SmallVector<std::pair<const WinCOFFObjectWriter::LinkFusedCall *, SiteKey>,
                 0>
         CallSites;
-    DenseSet<std::pair<const MCSection *, uint64_t>> LoadsReadElsewhere;
+    SmallVector<
+        std::pair<const WinCOFFObjectWriter::LinkFusedAccess *, SiteKey>, 0>
+        AccessSites;
+    SmallVector<std::pair<const WinCOFFObjectWriter::LinkFusedAdd *, SiteKey>,
+                0>
+        AddSites;
+    DenseSet<std::pair<const MCSection *, uint64_t>> LoadsReadElsewhere,
+        AccessedLoads;
+    auto LoadKey = [&](const MCSymbol *Load) {
+      return std::make_pair(&Load->getSection(), Asm->getSymbolOffset(*Load));
+    };
+    // The section of the load at Load that an instruction at At reads, if the
+    // load is a site of that section that the records can describe.
+    auto FindLoad = [&](const MCSymbol *Load,
+                        const MCSymbol *At) -> const COFFSection * {
+      auto [LoadSec, LoadIndex] = FindSite(Load);
+      if (!At || !At->isInSection() || !LoadSec ||
+          !IsLoad(LoadSec, LoadIndex) ||
+          SectionMap.lookup(&At->getSection()) != LoadSec)
+        return nullptr;
+      return LoadSec;
+    };
+    auto IsUndefined = [&](const MCSymbol *Load) {
+      if (Load->isInSection())
+        return false;
+      getContext().reportError(SMLoc(),
+                               "fused instruction reads the load at '" +
+                                   Load->getName() + "', which is not defined");
+      return true;
+    };
     for (const WinCOFFObjectWriter::LinkFusedCall &Call :
          OWriter.LinkFusedCalls) {
-      if (!Call.Load->isInSection()) {
-        getContext().reportError(SMLoc(), "fused call reads the load at '" +
-                                              Call.Load->getName() +
-                                              "', which is not defined");
+      if (IsUndefined(Call.Load))
         continue;
-      }
-      auto [LoadSec, LoadIndex] = FindSite(Call.Load);
-      if (!Call.End || !Call.End->isInSection() || Call.Register > 31 ||
-          !LoadSec || !IsLoad(LoadSec, LoadIndex) ||
-          SectionMap.lookup(&Call.End->getSection()) != LoadSec) {
-        LoadsReadElsewhere.insert(
-            {&Call.Load->getSection(), Asm->getSymbolOffset(*Call.Load)});
+      const COFFSection *LoadSec = FindLoad(Call.Load, Call.End);
+      if (!LoadSec || Call.Register > 31) {
+        LoadsReadElsewhere.insert(LoadKey(Call.Load));
         continue;
       }
       uint32_t Start =
           Asm->getSymbolOffset(*Call.End) - (Call.IsJump ? 3 : 6);
       CallSites.push_back({&Call, {LoadSec, Start}});
     }
+    for (const WinCOFFObjectWriter::LinkFusedAccess &Access :
+         OWriter.LinkFusedAccesses) {
+      if (IsUndefined(Access.Load))
+        continue;
+      const COFFSection *LoadSec = FindLoad(Access.Load, Access.Start);
+      if (!LoadSec) {
+        LoadsReadElsewhere.insert(LoadKey(Access.Load));
+        continue;
+      }
+      AccessedLoads.insert(LoadKey(Access.Load));
+      AccessSites.push_back(
+          {&Access, {LoadSec, uint32_t(Asm->getSymbolOffset(*Access.Start))}});
+    }
+    for (const WinCOFFObjectWriter::LinkFusedAdd &Add : OWriter.LinkFusedAdds) {
+      if (IsUndefined(Add.Load))
+        continue;
+      if (const COFFSection *LoadSec = FindLoad(Add.Load, Add.Start))
+        AddSites.push_back(
+            {&Add, {LoadSec, uint32_t(Asm->getSymbolOffset(*Add.Start))}});
+    }
     for (auto &[Call, Site] : CallSites)
       LinkSites[Site.first].push_back({Site.second, COFF::LinkSiteOther, 0});
-    if (!CallSites.empty())
+    for (auto &[Access, Site] : AccessSites)
+      LinkSites[Site.first].push_back({Site.second, COFF::LinkSiteOther, 0});
+    for (auto &[Add, Site] : AddSites)
+      LinkSites[Site.first].push_back({Site.second, COFF::LinkSiteOther, 0});
+    if (!CallSites.empty() || !AccessSites.empty() || !AddSites.empty())
       for (auto &[Sec, SecSites] : LinkSites)
         llvm::sort(SecSites);
     for (auto &[Call, Site] : CallSites) {
@@ -1377,12 +1701,32 @@ uint64_t WinCOFFWriter::writeObject() {
                         Call->Register,
                     DataOS);
     }
+    for (auto &[Access, Site] : AccessSites) {
+      size_t LoadIndex = FindSite(Access->Load).second;
+      raw_svector_ostream DataOS(SiteData[Site]);
+      encodeULEB128(COFF::LinkSiteFusedAccess, DataOS);
+      encodeULEB128(uint64_t(LoadIndex) << 20 | uint64_t(Access->Scale) << 17 |
+                        uint64_t(Access->PrefixKind) << 15 |
+                        uint64_t(Access->SIB) << 14 |
+                        uint64_t(Access->Disp) << 12 |
+                        uint64_t(Access->Length) << 8 |
+                        uint64_t(Access->Prefix) << 4 | Access->ModRM,
+                    DataOS);
+    }
+    for (auto &[Add, Site] : AddSites) {
+      size_t LoadIndex = FindSite(Add->Load).second;
+      raw_svector_ostream DataOS(SiteData[Site]);
+      encodeULEB128(COFF::LinkSiteFusedAdd, DataOS);
+      encodeULEB128(uint64_t(LoadIndex) << 5 | Add->Register, DataOS);
+      encodeULEB128(COFF::LinkSiteFusedAddend, DataOS);
+      encodeULEB128(
+          uint64_t(Add->Constant) << 1 ^ uint64_t(Add->Constant >> 63), DataOS);
+    }
     for (const WinCOFFObjectWriter::LinkFusedRead &Read :
          OWriter.LinkFusedReads) {
       auto [Sec, Index] = FindSite(Read.Site);
       if (!Sec || !IsLoad(Sec, Index) ||
-          LoadsReadElsewhere.contains(
-              {&Read.Site->getSection(), Asm->getSymbolOffset(*Read.Site)}))
+          LoadsReadElsewhere.contains(LoadKey(Read.Site)))
         continue;
       // The load's displacement ends it. What follows it is known only in
       // the same section and if the instruction is one a processor decodes.
@@ -1395,7 +1739,10 @@ uint64_t WinCOFFWriter::writeObject() {
           Length = End - LoadEnd;
       }
       raw_svector_ostream DataOS(SiteData[{Sec, LinkSites[Sec][Index].Offset}]);
-      encodeULEB128(COFF::LinkSiteFusedRead, DataOS);
+      encodeULEB128(AccessedLoads.contains(LoadKey(Read.Site))
+                        ? COFF::LinkSiteAccessedRead
+                        : COFF::LinkSiteFusedRead,
+                    DataOS);
       encodeULEB128(Length << 1 | (Length && Read.NextTransfers), DataOS);
     }
 
@@ -1427,6 +1774,8 @@ uint64_t WinCOFFWriter::writeObject() {
       encodeULEB128(Sites.size(), OS);
       OS << Sites;
     }
+
+    writeCoverage(OS);
 
     SmallString<0> CallOnly;
     raw_svector_ostream CallOnlyOS(CallOnly);
@@ -1642,6 +1991,9 @@ void WinCOFFObjectWriter::reset() {
   LinkContracts.clear();
   LinkFusedCalls.clear();
   LinkFusedReads.clear();
+  LinkFusedAccesses.clear();
+  LinkFusedAdds.clear();
+  LinkCoverageValues.clear();
   ObjWriter->reset();
   if (DwoWriter)
     DwoWriter->reset();

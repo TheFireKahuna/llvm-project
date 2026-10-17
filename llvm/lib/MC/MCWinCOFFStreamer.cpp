@@ -395,6 +395,18 @@ void MCWinCOFFStreamer::emitCOFFLinkFusedRead() {
   getWriter().addLinkFusedRead({Site, nullptr, false});
 }
 
+// A fused access or add is known only once a target's streamer has seen it in
+// a form the records describe.
+void MCWinCOFFStreamer::emitCOFFLinkFusedAccess(const MCSymbol *Load,
+                                                MCRegister Reg) {
+  getWriter().addLinkFusedAccess({nullptr, Load, 0, 0, 0, 0, false, 0, 0});
+}
+
+void MCWinCOFFStreamer::emitCOFFLinkFusedAdd(const MCSymbol *Load,
+                                             MCRegister Reg) {
+  getWriter().addLinkFusedAdd({nullptr, Load, 0, 0});
+}
+
 void MCWinCOFFStreamer::emitCommonSymbol(MCSymbol *S, uint64_t Size,
                                          Align ByteAlignment) {
   auto *Symbol = static_cast<MCSymbolCOFF *>(S);

@@ -422,6 +422,17 @@ static bool compressAnnotation(BinaryAnnotationsOpCode Annotation,
   return compressAnnotation(static_cast<uint32_t>(Annotation), Buffer);
 }
 
+// The four-byte form, which holds any operand a smaller form holds, so that a
+// linker can write a different value in its place.
+static void compressAnnotationFixed(uint32_t Data,
+                                    SmallVectorImpl<char> &Buffer) {
+  assert(isUInt<29>(Data) && "annotation operand out of range");
+  Buffer.push_back((Data >> 24) | 0xC0);
+  Buffer.push_back((Data >> 16) & 0xff);
+  Buffer.push_back((Data >> 8) & 0xff);
+  Buffer.push_back(Data & 0xff);
+}
+
 static uint32_t encodeSignedNumber(uint32_t Data) {
   if (Data >> 31)
     return ((-Data) << 1) | 1;
@@ -469,6 +480,13 @@ static unsigned computeLabelDiff(const MCAssembler &Asm, const MCSymbol *Begin,
   return unsigned(Result);
 }
 
+// Whether the distance from Begin to End depends on code that a linker may
+// resize, which leaves it to the linker.
+static bool isLinkerRelaxed(const MCAssembler &Asm, const MCSymbol *Begin,
+                            const MCSymbol *End) {
+  return Asm.isLinkerRelaxableBetween(*End, *Begin);
+}
+
 void CodeViewContext::encodeInlineLineTable(const MCAssembler &Asm,
                                             MCCVInlineLineTableFragment &Frag) {
   size_t LocBegin;
@@ -511,6 +529,19 @@ void CodeViewContext::encodeInlineLineTable(const MCAssembler &Asm,
   MCCVFunctionInfo *SiteInfo = getCVFunctionInfo(Frag.SiteFuncId);
 
   SmallVector<char, 0> Buffer;
+  Frag.LinkerRelaxedDistances.clear();
+  // Encodes the distance from Begin to End as the operand of a code offset or
+  // length annotation, in the four-byte form where a linker computes it.
+  auto CompressCodeDelta = [&](const MCSymbol *Begin, const MCSymbol *End,
+                               unsigned Delta) {
+    if (!isLinkerRelaxed(Asm, Begin, End)) {
+      compressAnnotation(Delta, Buffer);
+      return;
+    }
+    Frag.LinkerRelaxedDistances.push_back(
+        {uint32_t(Buffer.size()), Begin, End, 0});
+    compressAnnotationFixed(Delta, Buffer);
+  };
   for (const MCCVLoc &Loc : Locs) {
     // Exit early if our line table would produce an oversized InlineSiteSym
     // record. Account for the ChangeCodeLength annotation emitted after the
@@ -537,7 +568,7 @@ void CodeViewContext::encodeInlineLineTable(const MCAssembler &Asm,
         if (HaveOpenRange) {
           unsigned Length = computeLabelDiff(Asm, LastLabel, Loc.getLabel());
           compressAnnotation(BinaryAnnotationsOpCode::ChangeCodeLength, Buffer);
-          compressAnnotation(Length, Buffer);
+          CompressCodeDelta(LastLabel, Loc.getLabel(), Length);
           LastLabel = Loc.getLabel();
         }
         HaveOpenRange = false;
@@ -566,7 +597,8 @@ void CodeViewContext::encodeInlineLineTable(const MCAssembler &Asm,
     int LineDelta = CurSourceLoc.Line - LastSourceLoc.Line;
     unsigned EncodedLineDelta = encodeSignedNumber(LineDelta);
     unsigned CodeDelta = computeLabelDiff(Asm, LastLabel, Loc.getLabel());
-    if (EncodedLineDelta < 0x8 && CodeDelta <= 0xf) {
+    if (EncodedLineDelta < 0x8 && CodeDelta <= 0xf &&
+        !isLinkerRelaxed(Asm, LastLabel, Loc.getLabel())) {
       // The ChangeCodeOffsetAndLineOffset combination opcode is used when the
       // encoded line delta uses 3 or fewer set bits and the code offset fits
       // in one nibble.
@@ -581,7 +613,7 @@ void CodeViewContext::encodeInlineLineTable(const MCAssembler &Asm,
         compressAnnotation(EncodedLineDelta, Buffer);
       }
       compressAnnotation(BinaryAnnotationsOpCode::ChangeCodeOffset, Buffer);
-      compressAnnotation(CodeDelta, Buffer);
+      CompressCodeDelta(LastLabel, Loc.getLabel(), CodeDelta);
     }
 
     LastLabel = Loc.getLabel();
@@ -590,19 +622,24 @@ void CodeViewContext::encodeInlineLineTable(const MCAssembler &Asm,
 
   assert(HaveOpenRange);
 
-  unsigned EndSymLength =
-      computeLabelDiff(Asm, LastLabel, Frag.getFnEndSym());
-  unsigned LocAfterLength = ~0U;
+  const MCSymbol *EndSym = Frag.getFnEndSym();
+  unsigned Length = computeLabelDiff(Asm, LastLabel, EndSym);
   ArrayRef<MCCVLoc> LocAfter = getLinesForExtent(LocEnd, LocEnd + 1);
   if (!LocAfter.empty()) {
     // Only try to compute this difference if we're in the same section.
     const MCCVLoc &Loc = LocAfter[0];
-    if (&Loc.getLabel()->getSection() == &LastLabel->getSection())
-      LocAfterLength = computeLabelDiff(Asm, LastLabel, Loc.getLabel());
+    if (&Loc.getLabel()->getSection() == &LastLabel->getSection()) {
+      unsigned LocAfterLength =
+          computeLabelDiff(Asm, LastLabel, Loc.getLabel());
+      if (LocAfterLength < Length) {
+        Length = LocAfterLength;
+        EndSym = Loc.getLabel();
+      }
+    }
   }
 
   compressAnnotation(BinaryAnnotationsOpCode::ChangeCodeLength, Buffer);
-  compressAnnotation(std::min(EndSymLength, LocAfterLength), Buffer);
+  CompressCodeDelta(LastLabel, EndSym, Length);
   Frag.setVarContents(Buffer);
 }
 
@@ -612,6 +649,17 @@ void CodeViewContext::encodeDefRange(const MCAssembler &Asm,
   SmallVector<char, 0> Contents;
   SmallVector<MCFixup, 0> Fixups;
   raw_svector_ostream OS(Contents);
+
+  // A linker that may resize the code between a range's labels computes its
+  // length or gap.
+  Frag.LinkerRelaxedDistances.clear();
+  auto WriteDistance = [&](const MCSymbol *Begin, const MCSymbol *End,
+                           unsigned Bias, uint16_t Value) {
+    if (isLinkerRelaxed(Asm, Begin, End))
+      Frag.LinkerRelaxedDistances.push_back(
+          {uint32_t(Contents.size()), Begin, End, Bias});
+    support::endian::write<uint16_t>(OS, Value, llvm::endianness::little);
+  };
 
   // Compute all the sizes up front.
   SmallVector<std::pair<unsigned, unsigned>, 4> GapAndRangeSizes;
@@ -669,8 +717,11 @@ void CodeViewContext::encodeDefRange(const MCAssembler &Asm,
       // Make space for a fixup that will record the section index for the code.
       Fixups.push_back(MCFixup::create(Contents.size(), BE, FK_SecRel_2));
       LEWriter.write<uint16_t>(0); // Fixup for section index.
-      // Write down the range's extent.
-      LEWriter.write<uint16_t>(Chunk);
+      // Write down the range's extent, the rest of it in the last chunk.
+      if (Chunk == RangeSize)
+        WriteDistance(RangeBegin, Frag.getRanges()[J - 1].second, Bias, Chunk);
+      else
+        LEWriter.write<uint16_t>(Chunk);
 
       // Move on to the next range.
       Bias += Chunk;
@@ -685,8 +736,9 @@ void CodeViewContext::encodeDefRange(const MCAssembler &Asm,
       unsigned GapSize, RangeSize;
       assert(I < GapAndRangeSizes.size());
       std::tie(GapSize, RangeSize) = GapAndRangeSizes[I];
-      LEWriter.write<uint16_t>(GapStartOffset);
-      LEWriter.write<uint16_t>(GapSize);
+      const MCSymbol *GapStart = Frag.getRanges()[I - 1].second;
+      WriteDistance(RangeBegin, GapStart, 0, GapStartOffset);
+      WriteDistance(GapStart, Frag.getRanges()[I].first, 0, GapSize);
       GapStartOffset += GapSize + RangeSize;
     }
   }

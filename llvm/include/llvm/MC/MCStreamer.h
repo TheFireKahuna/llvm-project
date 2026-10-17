@@ -673,9 +673,19 @@ public:
   virtual void emitCOFFLinkFusedCall(const MCSymbol *Load, MCRegister Reg);
 
   /// Tells the linker that only calls and jumps that emitCOFFLinkFusedCall
-  /// describes read the register that the next instruction, a load of a
-  /// pointer, fills.
+  /// describes, and accesses that emitCOFFLinkFusedAccess describes, read the
+  /// register that the next instruction, a load of a pointer, fills.
   virtual void emitCOFFLinkFusedRead();
+
+  /// Tells the linker that the next instruction reads or writes memory
+  /// through \p Reg, which the load at \p Load filled with the address of
+  /// data, as the base of its memory operand.
+  virtual void emitCOFFLinkFusedAccess(const MCSymbol *Load, MCRegister Reg);
+
+  /// Tells the linker that the next instruction is the first after the load
+  /// at \p Load to read or write \p Reg, which the load filled with the
+  /// address of data, and adds a constant to it.
+  virtual void emitCOFFLinkFusedAdd(const MCSymbol *Load, MCRegister Reg);
 
   /// Emits an lcomm directive with XCOFF csect information.
   ///

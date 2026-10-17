@@ -98,6 +98,10 @@ class COFFAsmParser : public MCAsmParserExtension {
         ".linkfusedcall");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFusedRead>(
         ".linkfusedread");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFusedAccess>(
+        ".linkfusedaccess");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFusedAccess>(
+        ".linkfusedadd");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFact>(
         ".linkprotecteddelayiat");
 
@@ -172,6 +176,7 @@ class COFFAsmParser : public MCAsmParserExtension {
   bool parseDirectiveLinkContract(StringRef, SMLoc);
   bool parseDirectiveLinkFusedCall(StringRef, SMLoc);
   bool parseDirectiveLinkFusedRead(StringRef, SMLoc);
+  bool parseDirectiveLinkFusedAccess(StringRef, SMLoc);
   bool parseDirectiveSecNum(StringRef, SMLoc);
   bool parseDirectiveSecOffset(StringRef, SMLoc);
 
@@ -841,6 +846,28 @@ bool COFFAsmParser::parseDirectiveLinkFusedRead(StringRef, SMLoc) {
   if (parseEOL())
     return true;
   getStreamer().emitCOFFLinkFusedRead();
+  return false;
+}
+
+/// parseDirectiveLinkFusedAccess
+///  ::= .linkfusedaccess load, register
+///  ::= .linkfusedadd load, register
+bool COFFAsmParser::parseDirectiveLinkFusedAccess(StringRef Directive, SMLoc) {
+  MCSymbol *Load;
+  if (getParser().parseSymbol(Load))
+    return TokError("expected identifier in directive");
+  if (getParser().parseComma())
+    return true;
+  MCRegister Reg;
+  SMLoc Start, End;
+  if (getParser().getTargetParser().parseRegister(Reg, Start, End))
+    return true;
+  if (parseEOL())
+    return true;
+  if (Directive == ".linkfusedadd")
+    getStreamer().emitCOFFLinkFusedAdd(Load, Reg);
+  else
+    getStreamer().emitCOFFLinkFusedAccess(Load, Reg);
   return false;
 }
 

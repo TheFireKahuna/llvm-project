@@ -49,7 +49,7 @@
 // ASM-NEXT:   cs
 // ASM:        callq *%rsi
 
-// ERR: error: fused call reads the load at '.Lnone', which is not defined
+// ERR: error: fused instruction reads the load at '.Lnone', which is not defined
 
 .ifndef ERR
   .text

@@ -340,6 +340,8 @@ public:
                             ArrayRef<uint8_t> Digest) override;
   void emitCOFFLinkFusedCall(const MCSymbol *Load, MCRegister Reg) override;
   void emitCOFFLinkFusedRead() override;
+  void emitCOFFLinkFusedAccess(const MCSymbol *Load, MCRegister Reg) override;
+  void emitCOFFLinkFusedAdd(const MCSymbol *Load, MCRegister Reg) override;
   void emitXCOFFLocalCommonSymbol(MCSymbol *LabelSym, uint64_t Size,
                                   MCSymbol *CsectSym, Align Alignment) override;
   void emitXCOFFSymbolLinkageWithVisibility(MCSymbol *Symbol,
@@ -1151,6 +1153,23 @@ void MCAsmStreamer::emitCOFFLinkFusedCall(const MCSymbol *Load,
 
 void MCAsmStreamer::emitCOFFLinkFusedRead() {
   OS << "\t.linkfusedread";
+  EmitEOL();
+}
+
+void MCAsmStreamer::emitCOFFLinkFusedAccess(const MCSymbol *Load,
+                                            MCRegister Reg) {
+  OS << "\t.linkfusedaccess\t";
+  Load->print(OS, MAI);
+  OS << ", ";
+  InstPrinter->printRegName(OS, Reg);
+  EmitEOL();
+}
+
+void MCAsmStreamer::emitCOFFLinkFusedAdd(const MCSymbol *Load, MCRegister Reg) {
+  OS << "\t.linkfusedadd\t";
+  Load->print(OS, MAI);
+  OS << ", ";
+  InstPrinter->printRegName(OS, Reg);
   EmitEOL();
 }
 

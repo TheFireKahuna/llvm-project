@@ -266,6 +266,14 @@ static void EmitSymbolRefWithOfs(MCStreamer &streamer,
                                  const MCSymbol *Base,
                                  const MCSymbol *Other) {
   MCContext &Context = streamer.getContext();
+  // A linker may change the size of code between the two, which leaves
+  // Other's offset from Base unknown until the link.
+  if (Base->isInSection() && Base->getSection().isLinkerRelaxable()) {
+    streamer.emitValue(MCSymbolRefExpr::create(
+                           Other, MCSymbolRefExpr::VK_COFF_IMGREL32, Context),
+                       4);
+    return;
+  }
   const MCSymbolRefExpr *BaseRef = MCSymbolRefExpr::create(Base, Context);
   const MCSymbolRefExpr *OtherRef = MCSymbolRefExpr::create(Other, Context);
   const MCExpr *Ofs = MCBinaryExpr::createSub(OtherRef, BaseRef, Context);

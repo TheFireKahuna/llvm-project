@@ -75,6 +75,8 @@ public:
                             ArrayRef<uint8_t> Digest) override;
   void emitCOFFLinkFusedCall(const MCSymbol *Load, MCRegister Reg) override;
   void emitCOFFLinkFusedRead() override;
+  void emitCOFFLinkFusedAccess(const MCSymbol *Load, MCRegister Reg) override;
+  void emitCOFFLinkFusedAdd(const MCSymbol *Load, MCRegister Reg) override;
   void emitCommonSymbol(MCSymbol *Symbol, uint64_t Size,
                         Align ByteAlignment) override;
   void emitLocalCommonSymbol(MCSymbol *Symbol, uint64_t Size,

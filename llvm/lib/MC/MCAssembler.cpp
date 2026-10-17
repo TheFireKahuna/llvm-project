@@ -141,6 +141,33 @@ bool MCAssembler::isThumbFunc(const MCSymbol *Symbol) const {
   return true;
 }
 
+bool MCAssembler::isLinkerRelaxableBetween(const MCSymbol &A,
+                                           const MCSymbol &B) const {
+  if (A.isVariable() || B.isVariable())
+    return true;
+  const MCFragment *FA = A.getFragment(), *FB = B.getFragment();
+  if (!FA || !FB || FA->getParent() != FB->getParent() ||
+      !FA->getParent()->isLinkerRelaxable())
+    return false;
+  uint64_t OffsetA = A.getOffset(), OffsetB = B.getOffset();
+  // Walk from the earlier place, B, to the later, A. A linker-relaxable
+  // fragment may change size at its end, as MCExpr::evaluateSymbolicAdd takes
+  // it to.
+  if (FA->getLayoutOrder() < FB->getLayoutOrder() ||
+      (FA == FB && OffsetA < OffsetB)) {
+    std::swap(FA, FB);
+    std::swap(OffsetA, OffsetB);
+  }
+  for (const MCFragment *F = FB; F; F = F->getNext()) {
+    if (F->isLinkerRelaxable() && (F != FB || OffsetB != F->getSize()) &&
+        (F != FA || OffsetA == F->getSize()))
+      return true;
+    if (F == FA)
+      return false;
+  }
+  return false;
+}
+
 bool MCAssembler::evaluateFixup(const MCFragment &F, MCFixup &Fixup,
                                 MCValue &Target, uint64_t &Value,
                                 bool RecordReloc, uint8_t *Data) const {
