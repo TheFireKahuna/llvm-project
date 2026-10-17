@@ -66,46 +66,45 @@
 # RUN: llvm-readobj --sections plain.exe | FileCheck --check-prefix=PLAIN %s
 # PLAIN-NOT: .ovra
 
-## A DLL that reaches such a default has cells of it, which its fill writes
-## with the address the anchor's entry with the default's key names. Its
-## read-only cells are written whenever the table has a block.
+## A DLL that reaches such a default has cells of it, which its fill of cells
+## bound by name writes with the address the anchor's entry with the default's
+## key names: a list holds each cell under its key, the import's entry marked
+## read-only, and the fill writes that one between two protection calls, made
+## only once a cell is to be written. With nothing shared it does no search.
 # RUN: lld-link -import-slots -dll -noentry use.obj crt.obj l.lib ntdll.lib \
 # RUN:   -out:use.dll
 # RUN: llvm-readobj --coff-imports use.dll > use.txt
+# RUN: llvm-objdump -s -j .rdata use.dll >> use.txt
 # RUN: llvm-objdump -d --print-imm-hex use.dll >> use.txt
 # RUN: FileCheck --check-prefix=FILL --input-file=use.txt %s
 # FILL:      Name: l.dll
 # FILL-NEXT: ImportLookupTableRVA:
-# FILL-NEXT: ImportAddressTableRVA: 0x[[#%X,ENTRY:]]
+# FILL-NEXT: ImportAddressTableRVA: 0x2090
 # FILL-NEXT: Symbol: hook
+# FILL:      Name: ntdll.dll
+# FILL-NEXT: ImportLookupTableRVA:
+# FILL-NEXT: ImportAddressTableRVA: 0x[[#%X,PROTECT:]]
+# FILL-NEXT: Symbol: NtProtectVirtualMemory
+# FILL-NEXT: }
 # FILL:      Name: l.dll
 # FILL-NEXT: ImportLookupTableRVA:
-# FILL-NEXT: ImportAddressTableRVA: 0x[[#%X,SLOT:]]
+# FILL-NEXT: ImportAddressTableRVA: 0x3000
 # FILL-NEXT: Symbol: hook
-# FILL:      movq    %gs:0x60, %r11
-# FILL-NEXT: movq    0x10(%r11), %r11
-# FILL-NEXT: cmpl    $0x7b3ac2d5, 0x80(%r11)
-# FILL-NEXT: jne
-# FILL-NEXT: movl    0x88(%r11), %r10d
-# FILL-NEXT: movl    0x8(%r11,%r10), %r10d
-# FILL-NEXT: movl    0x88(%r11), %eax
-# FILL-NEXT: addq    %r11, %rax
-# FILL-NEXT: movl    0xc(%rax), %ecx
-# FILL-NEXT: movzwl  0x86(%r11), %edx
-# FILL-NEXT: leaq    0x10(%rax,%rdx,8), %rax
-# FILL-NEXT: movabsq $-0x4571ca1ea5a1ce2e, %rdx
-# FILL-NEXT: testl   %ecx, %ecx
-# FILL-NEXT: je      0x[[#%x,NEXT:]]
-# FILL-NEXT: cmpq    %rdx, (%rax)
+# FILL:      180002000 d2315e5a e1358eba 00300000 00000000
+# FILL-NEXT: 180002010 d2315e5a e1358eba 90200000 01000000
+# FILL:      cmpl $0x7b3ac2d5, 0x80(%rdi)
+# FILL:      leaq {{.*}}(%rip), %rbx # 0x180002000
+# FILL:      cmpq %r12, (%rax)
 # FILL-NEXT: je
-# FILL-NEXT: addq    $0x10, %rax
-# FILL-NEXT: decl    %ecx
-# FILL-NEXT: jmp
-# FILL-NEXT: movq    0x8(%rax), %rax
-# FILL-NEXT: movq    %rax, {{.*}}(%rip) # 0x[[#%x,0x180000000+SLOT]]
-# FILL-NEXT: [[#%x,NEXT]]:
-# FILL:      cmpl    $0x0, 0x8c(%r11)
-# FILL-NEXT: je
+# FILL:      testb $0x1, 0xc(%rbx)
+# FILL:      movl $0x4, %r9d
+# FILL:      callq *{{.*}}(%rip) # 0x[[#%x,0x180000000+PROTECT]]
+# FILL:      movq %r13, (%rcx,%rax)
+# FILL:      movq 0x8(%rax), %r13
+# FILL-NEXT: testb $0x2, 0xc(%rbx)
+# RUN: FileCheck --check-prefix=NOSEARCH --input-file=use.txt %s
+# NOSEARCH-NOT: LdrAddRefDll
+# NOSEARCH-NOT: 0x6c8e9cf5
 
 ## A DLL whose strong definition of such a function the image exports offers
 ## it, marked or not, and reaches it as every other image does: its described

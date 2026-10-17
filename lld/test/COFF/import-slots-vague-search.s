@@ -45,16 +45,23 @@
 # CHECK-NEXT: Symbol: LdrAddRefDll
 # CHECK-NEXT: Symbol: NtProtectVirtualMemory
 
-## Nothing while the process initializes; an entity the executable's table
-## names is skipped; then the modules after the executable, each with the
-## table's tag inside its image, probed if loaded with the process, if
-## delay-loaded within that scope, or if it delay-loads this DLL, by the key of
-## this DLL's name.
+## Bit 2 of r14 records a DLL loaded after the process initialized. For an
+## entity the executable's table does not name, such a DLL searches the
+## modules after the executable, each with the table's tag inside its image,
+## probed if loaded with the process, if delay-loaded within that scope, or if
+## it delay-loads this DLL, by the key of this DLL's name.
 # CHECK:      pushq %rbx
-# CHECK:      testb $0x2, 0x50(%rax)
+# CHECK:      xorl %r14d, %r14d
+# CHECK-NEXT: movq %gs:0x60, %rax
+# CHECK-NEXT: testb $0x2, 0x50(%rax)
 # CHECK-NEXT: jne
+# CHECK-NEXT: orl $0x4, %r14d
 # CHECK-NEXT: movq 0x10(%rax), %rdi
 # CHECK-NEXT: cmpl $0x7b3ac2d5, 0x80(%rdi)
+# CHECK:      testb $0x2, 0xc(%rbx)
+# CHECK-NEXT: je
+# CHECK-NEXT: btl $0x2, %r14d
+# CHECK-NEXT: jae
 # CHECK:      movq 0x18(%rax), %rbp
 # CHECK-NEXT: addq $0x10, %rbp
 # CHECK:      movq 0x30(%r15), %rdx
@@ -80,12 +87,21 @@
 # CHECK-NEXT: callq *{{.*}}(%rip) # 0x[[#%x,NTDLL + 0x180000000]]
 # CHECK:      movl $0x4, %r9d
 # CHECK:      movq %r13, (%rcx,%rax)
+## An entity the table names takes the word its entry names, then the
+## instance from it; such a DLL pins itself.
+# CHECK:      movq 0x8(%rax), %r13
+# CHECK-NEXT: testb $0x2, 0xc(%rbx)
+# CHECK-NEXT: je
+# CHECK-NEXT: movq (%r13), %r13
+# CHECK-NEXT: btl $0x2, %r14d
+# CHECK-NEXT: jae
+# CHECK-NEXT: btsl $0x1, %r14d
 # CHECK:      popq %rbx
 # CHECK-NEXT: retq
 
-## The bind list holds the pointer, read-only.
+## The fill's list holds the pointer, read-only and a vague entity's.
 # RUN: llvm-objdump -s -j .rdata a.dll | FileCheck --check-prefix=BIND %s
-# BIND: b65fec27 d80a3472 {{[0-9a-f]+}} 01000000
+# BIND: b65fec27 d80a3472 {{[0-9a-f]+}} 03000000
 
 ## An importer of an entity that its DLL keeps preemptible reaches it through
 ## a cell, the import's entry, which the fill writes from the executable's
@@ -100,11 +116,12 @@
 # IMPORTER:      000030 00000000 00000000
 # IMPORTER:      Name: a.dll
 # IMPORTER-NEXT: ImportLookupTableRVA:
-# IMPORTER-NEXT: ImportAddressTableRVA: 0x[[#%X,IAT:]]
+# IMPORTER-NEXT: ImportAddressTableRVA:
 # IMPORTER:      Symbol: LdrAddRefDll
-# IMPORTER:      movq (%rax), %rax
-# IMPORTER-NEXT: movq %rax, {{.*}}(%rip) # 0x[[#%x,IAT + 0x180000000]]
 # IMPORTER:      cmpl $0x6c8e9cf5, 0x30(%rdx)
+# IMPORTER:      movq (%r13), %r13
+# RUN: llvm-objdump -s -j .rdata c.dll | FileCheck --check-prefix=IMPLIST %s
+# IMPLIST: b65fec27 d80a3472 {{[0-9a-f]+}} 03000000
 
 ## -Bsymbolic keeps the DLL's references local: no cells, no search, and,
 ## without a delay-loaded DLL, no table.
@@ -124,7 +141,7 @@
 ## The search pins what it binds to.
 # RUN: not lld-link -import-slots -dll -noentry a.obj crt.obj x.lib \
 # RUN:   protect.lib -out:err.dll 2>&1 | FileCheck --check-prefix=ERR %s
-# ERR: error: the image binds its vague entities at run time, which needs LdrAddRefDll from ntdll.lib
+# ERR: error: the image binds cells by name at run time, which needs LdrAddRefDll from ntdll.lib
 
 #--- a.s
   .linkbindings

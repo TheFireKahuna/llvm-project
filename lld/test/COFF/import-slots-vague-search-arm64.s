@@ -37,24 +37,20 @@
 
 ## The reference reads the cell.
 # CHECK:      <fa>:
-# CHECK-NEXT: adrp x0, 0x[[#%x,CELLPAGE:]]
-# CHECK-NEXT: ldr x0, [x0, #0x[[#%x,CELLOFF:]]]
+# CHECK-NEXT: adrp x0
+# CHECK-NEXT: ldr x0, [x0
 
-## The fill finds the key among the anchor's entries, loads the word the entry
-## names, then the instance from it, and stores it in the cell.
-# CHECK:      ldr x17, [x11, #0x8]
-# CHECK-NEXT: ldr x17, [x17]
-# CHECK-NEXT: adrp x9, 0x[[#CELLPAGE]]
-# CHECK-NEXT: add x9, x9, #0x[[#CELLOFF]]
-# CHECK-NEXT: str x17, [x9]
-
-## The search: nothing while the process initializes; the modules after the
-## executable, each with the table's tag inside its image, probed if loaded
-## with the process, if delay-loaded within that scope, or if it delay-loads
-## this DLL.
+## Bit 2 of w24 records a DLL loaded after the process initialized. For an
+## entity the executable's table does not name, such a DLL searches the
+## modules after the executable, each with the table's tag inside its image,
+## probed if loaded with the process, if delay-loaded within that scope, or if
+## it delay-loads this DLL.
 # CHECK:      stp x29, x30, [sp, #-0x70]!
-# CHECK:      ldrb w9, [x16, #0x50]
+# CHECK:      mov w24, #0x0
+# CHECK-NEXT: ldr x16, [x18, #0x60]
+# CHECK-NEXT: ldrb w9, [x16, #0x50]
 # CHECK-NEXT: tbnz w9, #0x1,
+# CHECK-NEXT: orr w24, w24, #0x4
 # CHECK:      ldr x26, [x9, #0x18]
 # CHECK-NEXT: add x26, x26, #0x10
 # CHECK:      ldr x10, [x25, #0x30]
@@ -78,6 +74,13 @@
 # CHECK-NEXT: blr x16
 # CHECK:      mov x1, x27
 # CHECK:      str x23, [x27, x9]
+## An entity the table names takes the word its entry names, then the
+## instance from it; such a DLL pins itself.
+# CHECK:      ldr x23, [x11, #0x8]
+# CHECK-NEXT: ldr w9, [x19, #0xc]
+# CHECK-NEXT: tbz w9, #0x1,
+# CHECK-NEXT: ldr x23, [x23]
+# CHECK-NEXT: tbz w24, #0x2,
 # CHECK:      ldp x29, x30, [sp], #0x70
 # CHECK-NEXT: ret
 

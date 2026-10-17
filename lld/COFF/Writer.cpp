@@ -812,7 +812,7 @@ void Writer::run() {
     slots.bind();
     slots.createResidualFill();
     slots.createOverrideCellFill();
-    slots.createVagueSearch();
+    slots.createNamedCellFill();
     slots.createThreadLocalSlotCopy();
     slots.createThreadLocalSlotCopyCall();
     if (ctx.kcfi.listsImports || !ctx.kcfi.listedImports.empty())
@@ -1253,17 +1253,17 @@ void Writer::createSections() {
     createPartialSection(".CRT$XIA$fill", data | r)
         ->chunks.push_back(slots.getOverrideCellFillPointer());
   }
-  if (Chunk *fill = slots.getVagueSearchFill()) {
+  if (Chunk *fill = slots.getNamedCellFill()) {
     createPartialSection(".text", fill->getOutputCharacteristics())
         ->chunks.push_back(fill);
     createPartialSection(".CRT$XIA$fill", data | r)
-        ->chunks.push_back(slots.getVagueSearchFillPointer());
+        ->chunks.push_back(slots.getNamedCellFillPointer());
     createPartialSection(".rdata", data | r)
-        ->chunks.push_back(slots.getVagueBindList());
+        ->chunks.push_back(slots.getNamedCellList());
     createPartialSection(".xdata", data | r)
-        ->chunks.push_back(slots.getVagueSearchFillUnwind());
+        ->chunks.push_back(slots.getNamedCellFillUnwind());
     createPartialSection(".pdata", data | r)
-        ->chunks.push_back(slots.getVagueSearchFillPdata());
+        ->chunks.push_back(slots.getNamedCellFillPdata());
   }
   if (Chunk *table = slots.getVagueOfferTable())
     createPartialSection(".rdata", data | r)->chunks.push_back(table);
@@ -3078,7 +3078,7 @@ void Writer::createGuardCFTables() {
     addressTakenSyms.insert({fill, 0});
 
   // The C initializer table calls the search for a DLL's vague entities.
-  if (Chunk *fill = slots.getVagueSearchFill())
+  if (Chunk *fill = slots.getNamedCellFill())
     addressTakenSyms.insert({fill, 0});
 
   // The TLS callback array, and the DLLs the executable's header names it to,

@@ -23,15 +23,19 @@
 
 # RUN: lld-link -import-slots -dll -noentry a.obj crt.obj ntdll.lib -out:a.dll
 # RUN: lld-link -import-slots -dll -noentry b.obj crt.obj ntdll.lib -out:b.dll
-# RUN: llvm-objdump -d --print-imm-hex b.dll | FileCheck --check-prefix=CELL %s
-## b's own reference reads its cell, which its fill writes from the word the
-## executable's block names for the entity's key.
+# RUN: llvm-objdump -s -j .rdata b.dll > b.txt
+# RUN: llvm-objdump -d --print-imm-hex b.dll >> b.txt
+# RUN: FileCheck --check-prefix=CELL --input-file=b.txt %s
+## b's own reference reads its cell, which its fill of cells bound by name
+## writes from the word the executable's block names for the entity's key: its
+## list holds the cell, read-only and a vague entity's.
+# CELL:      b65fec27 d80a3472 {{[0-9a-f]+}} 03000000
 # CELL:      <fb>:
-# CELL-NEXT: movq {{.*}}(%rip), %rax # 0x[[#%x,CELLADDR:]]
-# CELL:      movabsq $0x{{[0-9a-f]+}}, %rdx
-# CELL:      movq 0x8(%rax), %rax
-# CELL-NEXT: movq (%rax), %rax
-# CELL:      movq %rax, {{.*}}(%rip) # 0x[[#CELLADDR]]
+# CELL-NEXT: movq {{.*}}(%rip), %rax
+# CELL:      movq 0x8(%rax), %r13
+# CELL-NEXT: testb $0x2, 0xc(%rbx)
+# CELL-NEXT: je
+# CELL-NEXT: movq (%r13), %r13
 
 ## The executable picks a.dll, first in link order, and imports its instance.
 # RUN: lld-link -import-slots -entry:main -subsystem:console main.obj \

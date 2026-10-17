@@ -4,8 +4,8 @@
 ## pointer its address-takes read, which no instruction bypasses, and the words
 ## of its static data that hold its address. Each holds the default until the
 ## DLL's fill writes the address the anchor's entry with the default's key
-## names. The read-only ones are written within the fill's protection bracket,
-## and the pointer draws no warning about a locally defined import.
+## names. The read-only ones are written between two protection calls, and
+## the pointer draws no warning about a locally defined import.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium l.s -o l.obj
@@ -13,23 +13,25 @@
 # RUN: lld-link -def:ntdll.def -out:ntdll.lib -machine:x64
 # RUN: lld-link -import-slots -dll -noentry l.obj crt.obj ntdll.lib -out:l.dll \
 # RUN:   2>&1 | count 0
-# RUN: llvm-objdump -d --print-imm-hex l.dll | FileCheck %s
+# RUN: llvm-objdump -s -j .rdata l.dll > l.txt
+# RUN: llvm-objdump -d --print-imm-hex l.dll >> l.txt
+# RUN: FileCheck --input-file=l.txt %s
 
+## The fill's list: the pointer, the writable word and the read-only word,
+## under the default's key, the read-only ones marked.
+# CHECK:      d2315e5a e1358eba {{[0-9a-f]+}} 01000000
+# CHECK-NEXT: d2315e5a e1358eba {{[0-9a-f]+}} 00000000
+# CHECK-NEXT: d2315e5a e1358eba {{[0-9a-f]+}} 01000000
 # CHECK:      <take>:
-# CHECK-NEXT: movq    {{.*}}(%rip), %rax # 0x[[#%x,POINTER:]]
-## The writable word is written in place.
-# CHECK:      movabsq $-0x4571ca1ea5a1ce2e, %rdx
-# CHECK:      movq    0x8(%rax), %rax
-# CHECK-NEXT: movq    %rax, {{.*}}(%rip) # 0x{{[0-9a-f]+}} <gw>
-## The pointer and the read-only word, within the bracket.
-# CHECK:      cmpl    $0x0, 0x8c(%r11)
+# CHECK-NEXT: movq    {{.*}}(%rip), %rax
+## Each takes the address the anchor's entry names, the read-only ones once
+## the first protection call has made them writable.
+# CHECK:      cmpq    %r12, (%rax)
+# CHECK:      testb   $0x1, 0xc(%rbx)
+# CHECK:      movl    $0x4, %r9d
+# CHECK-NEXT: leaq
 # CHECK:      callq
-# CHECK:      movabsq $-0x4571ca1ea5a1ce2e, %rdx
-# CHECK:      movq    0x8(%rax), %rax
-# CHECK-NEXT: movq    %rax, {{.*}}(%rip) # 0x[[#POINTER]]
-# CHECK:      movabsq $-0x4571ca1ea5a1ce2e, %rdx
-# CHECK:      movq    0x8(%rax), %rax
-# CHECK-NEXT: movq    %rax, {{.*}}(%rip) # 0x{{[0-9a-f]+}} <gr>
+# CHECK:      movq    %r13, (%rcx,%rax)
 
 #--- l.s
         .text

@@ -1365,15 +1365,16 @@ private:
   SmallVector<Fixup, 32> fixups;
 };
 
-// The cells of a DLL's vague entities that the search of the loaded modules
-// writes, as {key u64, rva u32, flags u32} in the order of their keys, a
-// flag's bit 0 set for a cell in read-only data, so that the search binds the
-// cells of one entity together.
-class VagueBindListChunk : public NonSectionChunk {
+// A DLL's cells bound by name, as {key u64, rva u32, flags u32} in the order
+// of their keys, so that the cells of one name are bound together: flags' bit
+// 0 is set for a cell in read-only data, and bit 1 for a vague entity's, whose
+// table entry names a word that holds the address and which a search of the
+// loaded modules binds where the executable's table does not name it.
+class NamedCellListChunk : public NonSectionChunk {
 public:
-  VagueBindListChunk(COFFLinkerContext &ctx, std::vector<OverrideCell> cells)
+  NamedCellListChunk(COFFLinkerContext &ctx, std::vector<OverrideCell> cells)
       : cells(std::move(cells)), ctx(ctx) {
-    setAlignment(8);
+    setAlignment(16);
     llvm::stable_sort(this->cells,
                       [](const OverrideCell &a, const OverrideCell &b) {
                         return a.key < b.key;
@@ -1384,7 +1385,7 @@ public:
     for (const OverrideCell &c : cells) {
       write64le(buf, c.key);
       write32le(buf + 8, c.getRVA());
-      write32le(buf + 12, c.readOnly);
+      write32le(buf + 12, c.readOnly | c.indirect << 1);
       buf += 16;
     }
   }
@@ -1395,6 +1396,10 @@ public:
   bool hasReadOnly() const {
     return llvm::any_of(cells,
                         [](const OverrideCell &c) { return c.readOnly; });
+  }
+  bool hasVague() const {
+    return llvm::any_of(cells,
+                        [](const OverrideCell &c) { return c.indirect; });
   }
   // The start and end of the read-only cells.
   std::pair<uint64_t, uint64_t> getReadOnlyRange() const {
@@ -1483,35 +1488,39 @@ static constexpr uint32_t loadReasonDelayloadDependency = 3;
 static constexpr uint32_t pebLdr = 0x18;
 static constexpr uint32_t ldrInLoadOrderModuleList = 0x10;
 
-// The search of the loaded modules for the instances of a DLL's vague
-// entities that the executable's table does not name, which the C initializer
-// table runs once, after the fill of overridable-default cells and before
-// every other initializer. A DLL loaded while the process initializes is one
-// the executable's link saw, which the executable's table covers, so the
-// search returns at once. Otherwise, for each entity of the bind list that the
-// table's block does not name, it walks the loader's list of modules in load
-// order, after the executable: those loaded while the process initialized,
-// ELF's global scope; those that the executable or a module of that scope
-// delay-loaded, which join it as ELF loads a dependency into its parent's
-// scope, but not those a module loaded later delay-loaded; and those that
-// delay-load this DLL, whose scope it joins. In each that names an offer
-// table in its MZ header, it probes the table for the entity's key; on a hit
-// it writes the word the entry names, the instance that module uses, into each
-// cell of the entity, and pins the module. Once an entity is shared, found so
-// or named by the executable's table, it pins this DLL too, as glibc keeps an
-// object that binds a unique symbol loaded: an instance others use must
-// outlive the image that may have registered its destructor. Read-only
-// cells are written between two protection calls, as the fill of
-// overridable-default cells writes them. The loader holds its lock over the
-// initializers and changes the list only under it. A table, its buckets and
-// the words it names are read only inside the image that names it, and a
-// probe visits each bucket at most once. It returns 0, or the status of a
+// The fill of a DLL's cells bound by name, which the C initializer table runs
+// once, after the fill of overridable-default cells and before every other
+// initializer. For each name of the list that the anchor's entries hold, it
+// writes the address the entry names, or for a vague entity the address held
+// by the word it names, into each cell of the name, so a program that
+// replaces nothing by name and shares nothing writes nothing.
+//
+// A DLL loaded after the process initializes is one the executable's link did
+// not see. For a vague entity the table does not name, such a DLL walks the
+// loader's list of modules in load order, after the executable: those loaded
+// while the process initialized, ELF's global scope; those that the
+// executable or a module of that scope delay-loaded, which join it as ELF
+// loads a dependency into its parent's scope, but not those a module loaded
+// later delay-loaded; and those that delay-load this DLL, whose scope it
+// joins. In each that names an offer table in its MZ header, it probes the
+// table for the entity's key; on a hit it writes the word the entry names,
+// the instance that module uses, into each cell of the entity, and pins the
+// module. Once such a DLL shares an entity, found so or named by the table,
+// it pins itself too, as glibc keeps an object that binds a unique symbol
+// loaded: an instance others use must outlive the image that may have
+// registered its destructor. The loader holds its lock over the initializers
+// and changes the list only under it. A table, its buckets and the words it
+// names are read only inside the image that names it, and a probe visits each
+// bucket at most once.
+//
+// Read-only cells are written between two protection calls, the first made
+// only once a cell is to be written. It returns 0, or the status of a
 // protection call or a pin that failed.
-class VagueSearchFillChunk : public NonSectionCodeChunk {
+class NamedCellFillChunk : public NonSectionCodeChunk {
 public:
-  VagueSearchFillChunk(COFFLinkerContext &ctx, VagueBindListChunk *list,
-                       DefinedImportData *protect, DefinedImportData *addRef,
-                       uint64_t selfKey)
+  NamedCellFillChunk(COFFLinkerContext &ctx, NamedCellListChunk *list,
+                     DefinedImportData *protect, DefinedImportData *addRef,
+                     uint64_t selfKey)
       : list(list), protect(protect), addRef(addRef), selfKey(selfKey),
         ctx(ctx) {
     setAlignment(16);
@@ -1533,7 +1542,7 @@ private:
   void writeAMD64(LabelledCode &a) const;
   void writeARM64(LabelledCode &a) const;
 
-  VagueBindListChunk *list;
+  NamedCellListChunk *list;
   DefinedImportData *protect;
   DefinedImportData *addRef;
   // The key of this DLL's name, by which a module that delay-loads it lists it.
@@ -1544,9 +1553,9 @@ private:
 // The unwind information of the search, whose prologue saves the registers
 // that hold its state across its calls and allocates its frame, and whose one
 // epilogue, at its end, restores them.
-class VagueSearchUnwindChunk : public NonSectionChunk {
+class NamedCellFillUnwindChunk : public NonSectionChunk {
 public:
-  VagueSearchUnwindChunk(COFFLinkerContext &ctx, Chunk *fill)
+  NamedCellFillUnwindChunk(COFFLinkerContext &ctx, Chunk *fill)
       : fill(fill), ctx(ctx) {
     setAlignment(4);
   }
@@ -1582,7 +1591,7 @@ private:
   COFFLinkerContext &ctx;
 };
 
-uint32_t VagueSearchFillChunk::write(uint8_t *buf) const {
+uint32_t NamedCellFillChunk::write(uint8_t *buf) const {
   LabelledCode a(buf, rva);
   if (ctx.config.machine == ARM64)
     writeARM64(a);
@@ -1591,15 +1600,16 @@ uint32_t VagueSearchFillChunk::write(uint8_t *buf) const {
   return a.finish();
 }
 
-void VagueSearchFillChunk::writeAMD64(LabelledCode &a) const {
+void NamedCellFillChunk::writeAMD64(LabelledCode &a) const {
   const uint32_t pageReadWrite = 4;
   bool readOnly = list->hasReadOnly();
+  bool vague = list->hasVague();
   auto [roStart, roEnd] = list->getReadOnlyRange();
   uint32_t outer = a.newLabel(), search = a.newLabel(), block = a.newLabel(),
            nextModule = a.newLabel(), delayLoad = a.newLabel(),
            probe = a.newLabel(), bucket = a.newLabel(), hit = a.newLabel(),
            next = a.newLabel(), store = a.newLabel(), skip = a.newLabel(),
-           shared = a.newLabel(), finish = a.newLabel(), zero = a.newLabel(),
+           tableHit = a.newLabel(), finish = a.newLabel(), zero = a.newLabel(),
            done = a.newLabel(), parent = a.newLabel(), importer = a.newLabel(),
            found = a.newLabel(), delayLoaders = a.newLabel(),
            pinFailed = a.newLabel(), pinStatus = a.newLabel();
@@ -1619,31 +1629,35 @@ void VagueSearchFillChunk::writeAMD64(LabelledCode &a) const {
   a.put(
       {0x53, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57});
   a.put({0x48, 0x83, 0xEC, 0x48});
+  // r14's bit 0 is set once the read-only cells are writable, bit 1 once
+  // this DLL is pinned, and bit 2 if it was loaded after the process
+  // initialized, outside the executable's link.
+  a.put({0x45, 0x31, 0xF6});                            // xor r14d, r14d
   a.put({0x65, 0x48, 0x8B, 0x04, 0x25, 0x60, 0, 0, 0}); // mov rax, gs:[0x60]
-  // test byte ptr [rax + flags], 2; jnz .zero   while the process initializes
-  a.put({0xF6, 0x40, uint8_t(pebCrossProcessFlags), 2});
-  a.jcc(0x85, zero);
+  if (vague) {
+    // test byte ptr [rax + flags], 2; jnz +4; or r14d, 4
+    a.put({0xF6, 0x40, uint8_t(pebCrossProcessFlags), 2});
+    a.put({0x75, 0x04});
+    a.put({0x41, 0x83, 0xCE, 0x04});
+  }
   // The executable's base in rdi, or zero if it has no table.
   a.put({0x48, 0x8B, 0x78, 0x10});                // mov rdi, [rax + 0x10]
   a.put({0x81, 0xBF, 0x80, 0, 0, 0, 0, 0, 0, 0}); // cmp [rdi + 0x80], magic
   a.imm32(overrideTableMagic);
   a.put({0x74, 0x02}); // je +2
   a.put({0x31, 0xFF}); // xor edi, edi
-  // The bind list's entry in rbx and its end in rsi; r14's bit 0 is set once
-  // the read-only cells are writable, and bit 1 once this DLL is pinned.
+  // The list's entry in rbx and its end in rsi.
   a.put({0x48, 0x8D, 0x1D, 0, 0, 0, 0}); // lea rbx, [rip + list]
   a.disp(list->getRVA());
   a.put({0x48, 0x8D, 0x35, 0, 0, 0, 0}); // lea rsi, [rip + end]
   a.disp(list->getRVA() + list->getSize());
-  a.put({0x45, 0x31, 0xF6}); // xor r14d, r14d
 
   // Each entity, its key in r12.
   a.bind(outer);
   a.put({0x48, 0x39, 0xF3}); // cmp rbx, rsi
   a.jcc(0x83, finish);       // jae .finish
   a.put({0x4C, 0x8B, 0x23}); // mov r12, [rbx]
-  // An entity the anchor's entries name is the fill of overridable-default
-  // cells' to write; the DLL shares it all the same.
+  // A name the anchor's entries hold.
   a.put({0x48, 0x85, 0xFF});       // test rdi, rdi
   a.jcc(0x84, search);             // jz .search
   a.put({0x8B, 0x87, 0, 0, 0, 0}); // mov eax, [rdi + anchor]
@@ -1659,150 +1673,165 @@ void VagueSearchFillChunk::writeAMD64(LabelledCode &a) const {
   a.put({0x85, 0xC9});             // test ecx, ecx
   a.jcc(0x84, search);             // jz .search
   a.put({0x4C, 0x39, 0x20});       // cmp [rax], r12
-  a.jcc(0x84, shared);             // je .shared
+  a.jcc(0x84, tableHit);           // je .tableHit
   a.put({0x48, 0x83, 0xC0, 0x10}); // add rax, 16
   a.put({0xFF, 0xC9});             // dec ecx
   a.jmp(block);
 
-  // The modules after the executable, the list's head in rbp and the entry in
-  // r15.
+  // A vague entity's name the table does not hold, in a DLL loaded outside
+  // the executable's link.
   a.bind(search);
-  a.put({0x65, 0x48, 0x8B, 0x04, 0x25, 0x60, 0, 0, 0}); // mov rax, gs:[0x60]
-  a.put({0x48, 0x8B, 0x68, uint8_t(pebLdr)});           // mov rbp, [rax + Ldr]
-  a.put({0x48, 0x83, 0xC5, uint8_t(ldrInLoadOrderModuleList)}); // add rbp, list
-  a.put({0x4C, 0x8B, 0x7D, 0x00}); // mov r15, [rbp]
-  a.bind(nextModule);
-  a.put({0x4D, 0x8B, 0x3F});                           // mov r15, [r15]
-  a.put({0x49, 0x39, 0xEF});                           // cmp r15, rbp
-  a.jcc(0x84, skip);                                   // je .skip
-  a.put({0x49, 0x8B, 0x57, uint8_t(ldrEntryDllBase)}); // mov rdx, [r15 + base]
-  a.put({0x48, 0x8D, 0x05, 0, 0, 0, 0}); // lea rax, [rip + __ImageBase]
-  a.disp(0);
-  a.put({0x48, 0x39, 0xC2}); // cmp rdx, rax
-  a.jcc(0x84, nextModule);
-  // cmp dword ptr [rdx + tag], tag; jne .nextModule
-  a.put({0x81, 0x7A, uint8_t(vagueOfferTableOffset), 0, 0, 0, 0});
-  a.imm32(vagueOfferTableTag);
-  a.jcc(0x85, nextModule);
-  // The table in r8, if inside the image, and the bytes of the image from it
-  // in r10, which its buckets and its list must fit in.
-  a.put({0x44, 0x8B, 0x42, uint8_t(vagueOfferTableOffset + 4)}); // mov r8d
-  a.put({0x45, 0x3B, 0x47, uint8_t(ldrEntrySizeOfImage)}); // cmp r8d, [r15+n]
-  a.jcc(0x83, nextModule);                                 // jae
-  a.put({0x45, 0x8B, 0x57, uint8_t(ldrEntrySizeOfImage)}); // mov r10d, [r15+n]
-  a.put({0x45, 0x29, 0xC2});                               // sub r10d, r8d
-  a.put({0x49, 0x01, 0xD0});                               // add r8, rdx
-  a.put({0x41, 0x8B, 0x40, 0x04}); // mov eax, [r8 + 4]   the mask
-  a.put({0x48, 0xFF, 0xC0});       // inc rax
-  a.put({0x48, 0xC1, 0xE0, 0x04}); // shl rax, 4
-  a.put({0x48, 0x83, 0xC0, 0x10}); // add rax, 16
-  a.put({0x4C, 0x39, 0xD0});       // cmp rax, r10
-  a.jcc(0x87, nextModule);         // ja
-  a.put({0x41, 0x8B, 0x40, 0x08}); // mov eax, [r8 + 8]
-  a.put({0x41, 0x8B, 0x48, 0x0C}); // mov ecx, [r8 + 12]
-  a.put({0x48, 0x8D, 0x04, 0xC1}); // lea rax, [rcx + rax * 8]
-  a.put({0x4C, 0x39, 0xD0});       // cmp rax, r10
-  a.jcc(0x87, nextModule);         // ja
-  // test byte ptr [r15 + flags], ProcessStaticImport; jnz .probe
-  a.put({0x41, 0xF6, 0x47, uint8_t(ldrEntryFlags),
-         uint8_t(ldrProcessStaticImport)});
-  a.jcc(0x85, probe);
-  // A module delay-loaded by one in that scope, or by the executable, joins
-  // it; the loader records the importer's base in the module's entry. The
-  // entry tested in rax, the importer's base in r9, and a bound on the chain
-  // in ecx.
-  a.put({0x4C, 0x89, 0xF8});    // mov rax, r15
-  a.put({0xB9, 0x40, 0, 0, 0}); // mov ecx, 64
-  a.bind(parent);
-  // cmp dword ptr [rax + reason], LoadReasonDelayloadDependency
-  a.put({0x83, 0xB8, 0, 0, 0, 0, uint8_t(loadReasonDelayloadDependency)});
-  write32le(a.buf + a.off - 5, ldrEntryLoadReason);
-  a.jcc(0x85, delayLoaders);
-  a.put({0xFF, 0xC9}); // dec ecx
-  a.jcc(0x84, delayLoaders);
-  a.put({0x4C, 0x8B, 0x88, 0, 0, 0, 0}); // mov r9, [rax + parent]
-  a.imm32(ldrEntryParentDllBase);
-  a.put({0x48, 0x8B, 0x45, 0x00}); // mov rax, [rbp]
-  a.bind(importer);
-  a.put({0x48, 0x39, 0xE8}); // cmp rax, rbp
-  a.jcc(0x84, delayLoaders);
-  a.put({0x4C, 0x39, 0x48, uint8_t(ldrEntryDllBase)}); // cmp [rax + base], r9
-  a.jcc(0x84, found);
-  a.put({0x48, 0x8B, 0x00}); // mov rax, [rax]
-  a.jmp(importer);
-  a.bind(found);
-  a.put({0x48, 0x3B, 0x45, 0x00}); // cmp rax, [rbp]   the executable's entry
-  a.jcc(0x84, probe);
-  // test byte ptr [rax + flags], ProcessStaticImport
-  a.put({0xF6, 0x40, uint8_t(ldrEntryFlags), uint8_t(ldrProcessStaticImport)});
-  a.jcc(0x85, probe);
-  a.jmp(parent);
-  // Otherwise, only if the module delay-loads this DLL.
-  a.bind(delayLoaders);
-  a.put({0x41, 0x8B, 0x48, 0x08});             // mov ecx, [r8 + 8]
-  a.put({0x45, 0x8B, 0x48, 0x0C});             // mov r9d, [r8 + 12]
-  a.put({0x4D, 0x01, 0xC1});                   // add r9, r8
-  a.put({0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0}); // mov rax, key
-  write64le(a.buf + a.off - 8, selfKey);
-  a.bind(delayLoad);
-  a.put({0x85, 0xC9}); // test ecx, ecx
-  a.jcc(0x84, nextModule);
-  a.put({0x49, 0x39, 0x01}); // cmp [r9], rax
-  a.jcc(0x84, probe);
-  a.put({0x49, 0x83, 0xC1, 0x08}); // add r9, 8
-  a.put({0xFF, 0xC9});             // dec ecx
-  a.jmp(delayLoad);
-  // The entity's home bucket, then each bucket until a free one, at most
-  // once each.
-  a.bind(probe);
-  a.put({0x41, 0x8B, 0x08});       // mov ecx, [r8]   the shift
-  a.put({0x4C, 0x89, 0xE0});       // mov rax, r12
-  a.put({0x48, 0xD3, 0xE8});       // shr rax, cl
-  a.put({0x45, 0x8B, 0x48, 0x04}); // mov r9d, [r8 + 4]   the mask
-  a.put({0x44, 0x89, 0xC9});       // mov ecx, r9d
-  a.bind(bucket);
-  a.put({0x44, 0x21, 0xC8});             // and eax, r9d
-  a.put({0x49, 0x89, 0xC2});             // mov r10, rax
-  a.put({0x49, 0xC1, 0xE2, 0x04});       // shl r10, 4
-  a.put({0x4F, 0x8D, 0x54, 0x10, 0x10}); // lea r10, [r8 + r10 + 16]
-  a.put({0x4D, 0x8B, 0x1A});             // mov r11, [r10]
-  a.put({0x4D, 0x85, 0xDB});             // test r11, r11
-  a.jcc(0x84, nextModule);
-  a.put({0x4D, 0x39, 0xE3}); // cmp r11, r12
-  a.jcc(0x84, hit);
-  a.put({0xFF, 0xC0});       // inc eax
-  a.put({0x83, 0xE9, 0x01}); // sub ecx, 1
-  a.jcc(0x82, nextModule);   // jb
-  a.jmp(bucket);
+  if (!vague) {
+    a.jmp(skip);
+  } else {
+    a.put({0xF6, 0x43, 0x0C, 0x02}); // test byte ptr [rbx + 12], 2
+    a.jcc(0x84, skip);
+    a.put({0x41, 0x0F, 0xBA, 0xE6, 0x02}); // bt r14d, 2
+    a.jcc(0x83, skip);                     // jnc .skip
+    // The modules after the executable, the list's head in rbp and the entry in
+    // r15.
+    a.put({0x65, 0x48, 0x8B, 0x04, 0x25, 0x60, 0, 0, 0}); // mov rax, gs:[0x60]
+    a.put({0x48, 0x8B, 0x68, uint8_t(pebLdr)}); // mov rbp, [rax + Ldr]
+    a.put(
+        {0x48, 0x83, 0xC5, uint8_t(ldrInLoadOrderModuleList)}); // add rbp, list
+    a.put({0x4C, 0x8B, 0x7D, 0x00}); // mov r15, [rbp]
+    a.bind(nextModule);
+    a.put({0x4D, 0x8B, 0x3F}); // mov r15, [r15]
+    a.put({0x49, 0x39, 0xEF}); // cmp r15, rbp
+    a.jcc(0x84, skip);         // je .skip
+    a.put(
+        {0x49, 0x8B, 0x57, uint8_t(ldrEntryDllBase)}); // mov rdx, [r15 + base]
+    a.put({0x48, 0x8D, 0x05, 0, 0, 0, 0}); // lea rax, [rip + __ImageBase]
+    a.disp(0);
+    a.put({0x48, 0x39, 0xC2}); // cmp rdx, rax
+    a.jcc(0x84, nextModule);
+    // cmp dword ptr [rdx + tag], tag; jne .nextModule
+    a.put({0x81, 0x7A, uint8_t(vagueOfferTableOffset), 0, 0, 0, 0});
+    a.imm32(vagueOfferTableTag);
+    a.jcc(0x85, nextModule);
+    // The table in r8, if inside the image, and the bytes of the image from it
+    // in r10, which its buckets and its list must fit in.
+    a.put({0x44, 0x8B, 0x42, uint8_t(vagueOfferTableOffset + 4)}); // mov r8d
+    a.put({0x45, 0x3B, 0x47, uint8_t(ldrEntrySizeOfImage)}); // cmp r8d, [r15+n]
+    a.jcc(0x83, nextModule);                                 // jae
+    a.put(
+        {0x45, 0x8B, 0x57, uint8_t(ldrEntrySizeOfImage)}); // mov r10d, [r15+n]
+    a.put({0x45, 0x29, 0xC2});                             // sub r10d, r8d
+    a.put({0x49, 0x01, 0xD0});                             // add r8, rdx
+    a.put({0x41, 0x8B, 0x40, 0x04}); // mov eax, [r8 + 4]   the mask
+    a.put({0x48, 0xFF, 0xC0});       // inc rax
+    a.put({0x48, 0xC1, 0xE0, 0x04}); // shl rax, 4
+    a.put({0x48, 0x83, 0xC0, 0x10}); // add rax, 16
+    a.put({0x4C, 0x39, 0xD0});       // cmp rax, r10
+    a.jcc(0x87, nextModule);         // ja
+    a.put({0x41, 0x8B, 0x40, 0x08}); // mov eax, [r8 + 8]
+    a.put({0x41, 0x8B, 0x48, 0x0C}); // mov ecx, [r8 + 12]
+    a.put({0x48, 0x8D, 0x04, 0xC1}); // lea rax, [rcx + rax * 8]
+    a.put({0x4C, 0x39, 0xD0});       // cmp rax, r10
+    a.jcc(0x87, nextModule);         // ja
+    // test byte ptr [r15 + flags], ProcessStaticImport; jnz .probe
+    a.put({0x41, 0xF6, 0x47, uint8_t(ldrEntryFlags),
+           uint8_t(ldrProcessStaticImport)});
+    a.jcc(0x85, probe);
+    // A module delay-loaded by one in that scope, or by the executable, joins
+    // it; the loader records the importer's base in the module's entry. The
+    // entry tested in rax, the importer's base in r9, and a bound on the chain
+    // in ecx.
+    a.put({0x4C, 0x89, 0xF8});    // mov rax, r15
+    a.put({0xB9, 0x40, 0, 0, 0}); // mov ecx, 64
+    a.bind(parent);
+    // cmp dword ptr [rax + reason], LoadReasonDelayloadDependency
+    a.put({0x83, 0xB8, 0, 0, 0, 0, uint8_t(loadReasonDelayloadDependency)});
+    write32le(a.buf + a.off - 5, ldrEntryLoadReason);
+    a.jcc(0x85, delayLoaders);
+    a.put({0xFF, 0xC9}); // dec ecx
+    a.jcc(0x84, delayLoaders);
+    a.put({0x4C, 0x8B, 0x88, 0, 0, 0, 0}); // mov r9, [rax + parent]
+    a.imm32(ldrEntryParentDllBase);
+    a.put({0x48, 0x8B, 0x45, 0x00}); // mov rax, [rbp]
+    a.bind(importer);
+    a.put({0x48, 0x39, 0xE8}); // cmp rax, rbp
+    a.jcc(0x84, delayLoaders);
+    a.put({0x4C, 0x39, 0x48, uint8_t(ldrEntryDllBase)}); // cmp [rax + base], r9
+    a.jcc(0x84, found);
+    a.put({0x48, 0x8B, 0x00}); // mov rax, [rax]
+    a.jmp(importer);
+    a.bind(found);
+    a.put({0x48, 0x3B, 0x45, 0x00}); // cmp rax, [rbp]   the executable's entry
+    a.jcc(0x84, probe);
+    // test byte ptr [rax + flags], ProcessStaticImport
+    a.put(
+        {0xF6, 0x40, uint8_t(ldrEntryFlags), uint8_t(ldrProcessStaticImport)});
+    a.jcc(0x85, probe);
+    a.jmp(parent);
+    // Otherwise, only if the module delay-loads this DLL.
+    a.bind(delayLoaders);
+    a.put({0x41, 0x8B, 0x48, 0x08});             // mov ecx, [r8 + 8]
+    a.put({0x45, 0x8B, 0x48, 0x0C});             // mov r9d, [r8 + 12]
+    a.put({0x4D, 0x01, 0xC1});                   // add r9, r8
+    a.put({0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0}); // mov rax, key
+    write64le(a.buf + a.off - 8, selfKey);
+    a.bind(delayLoad);
+    a.put({0x85, 0xC9}); // test ecx, ecx
+    a.jcc(0x84, nextModule);
+    a.put({0x49, 0x39, 0x01}); // cmp [r9], rax
+    a.jcc(0x84, probe);
+    a.put({0x49, 0x83, 0xC1, 0x08}); // add r9, 8
+    a.put({0xFF, 0xC9});             // dec ecx
+    a.jmp(delayLoad);
+    // The entity's home bucket, then each bucket until a free one, at most
+    // once each.
+    a.bind(probe);
+    a.put({0x41, 0x8B, 0x08});       // mov ecx, [r8]   the shift
+    a.put({0x4C, 0x89, 0xE0});       // mov rax, r12
+    a.put({0x48, 0xD3, 0xE8});       // shr rax, cl
+    a.put({0x45, 0x8B, 0x48, 0x04}); // mov r9d, [r8 + 4]   the mask
+    a.put({0x44, 0x89, 0xC9});       // mov ecx, r9d
+    a.bind(bucket);
+    a.put({0x44, 0x21, 0xC8});             // and eax, r9d
+    a.put({0x49, 0x89, 0xC2});             // mov r10, rax
+    a.put({0x49, 0xC1, 0xE2, 0x04});       // shl r10, 4
+    a.put({0x4F, 0x8D, 0x54, 0x10, 0x10}); // lea r10, [r8 + r10 + 16]
+    a.put({0x4D, 0x8B, 0x1A});             // mov r11, [r10]
+    a.put({0x4D, 0x85, 0xDB});             // test r11, r11
+    a.jcc(0x84, nextModule);
+    a.put({0x4D, 0x39, 0xE3}); // cmp r11, r12
+    a.jcc(0x84, hit);
+    a.put({0xFF, 0xC0});       // inc eax
+    a.put({0x83, 0xE9, 0x01}); // sub ecx, 1
+    a.jcc(0x82, nextModule);   // jb
+    a.jmp(bucket);
 
-  // The instance in r13, from a word inside the image; a null word binds
-  // nothing.
-  a.bind(hit);
-  a.put({0x41, 0x8B, 0x42, 0x08}); // mov eax, [r10 + 8]
-  a.put({0x48, 0x8D, 0x48, 0x08}); // lea rcx, [rax + 8]
-  a.put({0x45, 0x8B, 0x5F, uint8_t(ldrEntrySizeOfImage)}); // mov r11d, [r15+n]
-  a.put({0x4C, 0x39, 0xD9});                               // cmp rcx, r11
-  a.jcc(0x87, nextModule);                                 // ja
-  a.put({0x4C, 0x8B, 0x2C, 0x02}); // mov r13, [rdx + rax]
-  a.put({0x4D, 0x85, 0xED});       // test r13, r13
-  a.jcc(0x84, skip);
-  // LdrAddRefDll(LDR_ADDREF_DLL_PIN, module), then once this DLL.
-  // A pin that fails ends the search with its status, which fails the DLL's
-  // initialization rather than leave it free to unload.
-  a.put({0xB9, 0x01, 0, 0, 0});    // mov ecx, 1
-  a.put({0xFF, 0x15, 0, 0, 0, 0}); // call [rip + LdrAddRefDll]
-  a.disp(addRef->getRVA());
-  a.put({0x85, 0xC0});                   // test eax, eax
-  a.jcc(0x88, pinFailed);                // js .pinFailed
-  a.put({0x41, 0x0F, 0xBA, 0xEE, 0x01}); // bts r14d, 1
-  a.jcc(0x82, next);                     // jc .next
-  a.put({0xB9, 0x01, 0, 0, 0});          // mov ecx, 1
-  a.put({0x48, 0x8D, 0x15, 0, 0, 0, 0}); // lea rdx, [rip + __ImageBase]
-  a.disp(0);
-  a.put({0xFF, 0x15, 0, 0, 0, 0}); // call [rip + LdrAddRefDll]
-  a.disp(addRef->getRVA());
-  a.put({0x85, 0xC0});    // test eax, eax
-  a.jcc(0x88, pinFailed); // js .pinFailed
+    // The instance in r13, from a word inside the image; a null word binds
+    // nothing.
+    a.bind(hit);
+    a.put({0x41, 0x8B, 0x42, 0x08}); // mov eax, [r10 + 8]
+    a.put({0x48, 0x8D, 0x48, 0x08}); // lea rcx, [rax + 8]
+    a.put(
+        {0x45, 0x8B, 0x5F, uint8_t(ldrEntrySizeOfImage)}); // mov r11d, [r15+n]
+    a.put({0x4C, 0x39, 0xD9});                             // cmp rcx, r11
+    a.jcc(0x87, nextModule);                               // ja
+    a.put({0x4C, 0x8B, 0x2C, 0x02}); // mov r13, [rdx + rax]
+    a.put({0x4D, 0x85, 0xED});       // test r13, r13
+    a.jcc(0x84, skip);
+    // LdrAddRefDll(LDR_ADDREF_DLL_PIN, module), then once this DLL.
+    // A pin that fails ends the search with its status, which fails the DLL's
+    // initialization rather than leave it free to unload.
+    a.put({0xB9, 0x01, 0, 0, 0});    // mov ecx, 1
+    a.put({0xFF, 0x15, 0, 0, 0, 0}); // call [rip + LdrAddRefDll]
+    a.disp(addRef->getRVA());
+    a.put({0x85, 0xC0});                   // test eax, eax
+    a.jcc(0x88, pinFailed);                // js .pinFailed
+    a.put({0x41, 0x0F, 0xBA, 0xEE, 0x01}); // bts r14d, 1
+    a.jcc(0x82, next);                     // jc .next
+    a.put({0xB9, 0x01, 0, 0, 0});          // mov ecx, 1
+    a.put({0x48, 0x8D, 0x15, 0, 0, 0, 0}); // lea rdx, [rip + __ImageBase]
+    a.disp(0);
+    a.put({0xFF, 0x15, 0, 0, 0, 0}); // call [rip + LdrAddRefDll]
+    a.disp(addRef->getRVA());
+    a.put({0x85, 0xC0});    // test eax, eax
+    a.jcc(0x88, pinFailed); // js .pinFailed
+  }
 
   // Each cell of the entity.
   a.bind(next);
@@ -1843,31 +1872,43 @@ void VagueSearchFillChunk::writeAMD64(LabelledCode &a) const {
   a.jcc(0x84, skip);
   a.jmp(outer);
 
-  // An entity the executable's table names: pin this DLL once.
-  a.bind(shared);
-  a.put({0x41, 0x0F, 0xBA, 0xEE, 0x01}); // bts r14d, 1
-  a.jcc(0x82, skip);                     // jc .skip
-  a.put({0xB9, 0x01, 0, 0, 0});          // mov ecx, 1
-  a.put({0x48, 0x8D, 0x15, 0, 0, 0, 0}); // lea rdx, [rip + __ImageBase]
-  a.disp(0);
-  a.put({0xFF, 0x15, 0, 0, 0, 0}); // call [rip + LdrAddRefDll]
-  a.disp(addRef->getRVA());
-  a.put({0x85, 0xC0});    // test eax, eax
-  a.jcc(0x88, pinFailed); // js .pinFailed
-  a.jmp(skip);
-
-  // The pin's status, once the read-only cells are protected again.
-  a.bind(pinFailed);
-  a.put({0x89, 0xC3}); // mov ebx, eax
-  if (readOnly) {
-    a.put({0x41, 0xF6, 0xC6, 0x01}); // test r14b, 1
-    a.jcc(0x84, pinStatus);
-    a.put({0x44, 0x8B, 0x4C, 0x24, 0x40}); // mov r9d, [rsp + 0x40]
-    callProtect();
+  // The address the entry names, or for a vague entity the one held by the
+  // word it names. A DLL loaded outside the executable's link that shares
+  // the entity pins itself once.
+  a.bind(tableHit);
+  a.put({0x4C, 0x8B, 0x68, 0x08}); // mov r13, [rax + 8]
+  a.put({0xF6, 0x43, 0x0C, 0x02}); // test byte ptr [rbx + 12], 2
+  a.jcc(0x84, next);
+  a.put({0x4D, 0x8B, 0x6D, 0x00}); // mov r13, [r13]
+  if (vague) {
+    a.put({0x41, 0x0F, 0xBA, 0xE6, 0x02}); // bt r14d, 2
+    a.jcc(0x83, next);                     // jnc .next
+    a.put({0x41, 0x0F, 0xBA, 0xEE, 0x01}); // bts r14d, 1
+    a.jcc(0x82, next);                     // jc .next
+    a.put({0xB9, 0x01, 0, 0, 0});          // mov ecx, 1
+    a.put({0x48, 0x8D, 0x15, 0, 0, 0, 0}); // lea rdx, [rip + __ImageBase]
+    a.disp(0);
+    a.put({0xFF, 0x15, 0, 0, 0, 0}); // call [rip + LdrAddRefDll]
+    a.disp(addRef->getRVA());
+    a.put({0x85, 0xC0});    // test eax, eax
+    a.jcc(0x88, pinFailed); // js .pinFailed
   }
-  a.bind(pinStatus);
-  a.put({0x89, 0xD8}); // mov eax, ebx
-  a.jmp(done);
+  a.jmp(next);
+
+  if (vague) {
+    // The pin's status, once the read-only cells are protected again.
+    a.bind(pinFailed);
+    a.put({0x89, 0xC3}); // mov ebx, eax
+    if (readOnly) {
+      a.put({0x41, 0xF6, 0xC6, 0x01}); // test r14b, 1
+      a.jcc(0x84, pinStatus);
+      a.put({0x44, 0x8B, 0x4C, 0x24, 0x40}); // mov r9d, [rsp + 0x40]
+      callProtect();
+    }
+    a.bind(pinStatus);
+    a.put({0x89, 0xD8}); // mov eax, ebx
+    a.jmp(done);
+  }
 
   a.bind(finish);
   if (readOnly) {
@@ -1888,15 +1929,16 @@ void VagueSearchFillChunk::writeAMD64(LabelledCode &a) const {
          0xC3});
 }
 
-void VagueSearchFillChunk::writeARM64(LabelledCode &a) const {
+void NamedCellFillChunk::writeARM64(LabelledCode &a) const {
   const uint32_t pageReadWrite = 4;
   bool readOnly = list->hasReadOnly();
+  bool vague = list->hasVague();
   auto [roStart, roEnd] = list->getReadOnlyRange();
   uint32_t outer = a.newLabel(), search = a.newLabel(), block = a.newLabel(),
            nextModule = a.newLabel(), delayLoad = a.newLabel(),
            probe = a.newLabel(), bucket = a.newLabel(), hit = a.newLabel(),
            next = a.newLabel(), store = a.newLabel(), skip = a.newLabel(),
-           shared = a.newLabel(), finish = a.newLabel(), zero = a.newLabel(),
+           tableHit = a.newLabel(), finish = a.newLabel(), zero = a.newLabel(),
            done = a.newLabel(), parent = a.newLabel(), importer = a.newLabel(),
            found = a.newLabel(), delayLoaders = a.newLabel(),
            pinFailed = a.newLabel(), pinStatus = a.newLabel();
@@ -1917,23 +1959,27 @@ void VagueSearchFillChunk::writeARM64(LabelledCode &a) const {
   a.put32(0xA90363F7); // stp x23, x24, [sp, #48]
   a.put32(0xA9046BF9); // stp x25, x26, [sp, #64]
   a.put32(0xF9002BFB); // str x27, [sp, #80]
+  // w24's bit 0 is set once the read-only cells are writable, bit 1 once
+  // this DLL is pinned, and bit 2 if it was loaded after the process
+  // initialized, outside the executable's link.
+  a.put32(0x52800018); // mov w24, #0
   a.put32(0xF9403250); // ldr x16, [x18, #0x60]   TEB->PEB
-  // ldrb w9, [x16, #flags]; tbnz w9, #1, .zero   while the process initializes
-  a.put32(0x39400209 | pebCrossProcessFlags << 10);
-  a.branch14(0x37080009, zero);
+  if (vague) {
+    // ldrb w9, [x16, #flags]; tbnz w9, #1, +8; orr w24, w24, #4
+    a.put32(0x39400209 | pebCrossProcessFlags << 10);
+    a.put32(0x37080049);
+    a.put32(0x321E0318);
+  }
   // The executable's base in x21, or zero if it has no table.
   a.put32(0xF9400A15); // ldr x21, [x16, #0x10]
   a.put32(0xB94082A9); // ldr w9, [x21, #0x80]
   a.movImm32(10, overrideTableMagic);
   a.put32(0x6B0A013F); // cmp w9, w10
   a.put32(0x9A9F02B5); // csel x21, x21, xzr, eq
-  // The bind list's entry in x19 and its end in x20, this DLL's base in x27;
-  // w24's bit 0 is set once the read-only cells are writable, and bit 1 once
-  // this DLL is pinned.
+  // The list's entry in x19 and its end in x20, this DLL's base in x27.
   a.address(19, list->getRVA());
   a.address(20, list->getRVA() + list->getSize());
   a.address(27, 0);
-  a.put32(0x52800018); // mov w24, #0
 
   // Each entity, its key in x22.
   a.bind(outer);
@@ -1953,139 +1999,149 @@ void VagueSearchFillChunk::writeARM64(LabelledCode &a) const {
   a.branch19(0x3400000C, search); // cbz w12, .search
   a.put32(0xF940016D);            // ldr x13, [x11]
   a.put32(0xEB1601BF);            // cmp x13, x22
-  a.branch19(0x54000000, shared); // b.eq .shared
+  a.branch19(0x54000000, tableHit); // b.eq .tableHit
   a.put32(0x9100416B);            // add x11, x11, #16
   a.put32(0x5100058C);            // sub w12, w12, #1
   a.branch26(0x14000000, block);
 
-  // The modules after the executable, the list's head in x26 and the entry in
-  // x25.
+  // A vague entity's name the table does not hold, in a DLL loaded outside
+  // the executable's link.
   a.bind(search);
-  a.put32(0xF9403249);                                  // ldr x9, [x18, #0x60]
-  a.put32(0xF940013A | pebLdr / 8 << 10);               // ldr x26, [x9, #Ldr]
-  a.put32(0x9100035A | ldrInLoadOrderModuleList << 10); // add x26, x26, #list
-  a.put32(0xF9400359);                                  // ldr x25, [x26]
-  a.bind(nextModule);
-  a.put32(0xF9400339);                             // ldr x25, [x25]
-  a.put32(0xEB1A033F);                             // cmp x25, x26
-  a.branch19(0x54000000, skip);                    // b.eq .skip
-  a.put32(0xF940032A | ldrEntryDllBase / 8 << 10); // ldr x10, [x25, #base]
-  a.put32(0xEB1B015F);                             // cmp x10, x27
-  a.branch19(0x54000000, nextModule);              // b.eq
-  a.put32(0xB940014B | vagueOfferTableOffset / 4 << 10); // ldr w11, [x10, #tag]
-  a.movImm32(12, vagueOfferTableTag);
-  a.put32(0x6B0C017F);                // cmp w11, w12
-  a.branch19(0x54000001, nextModule); // b.ne
-  // The table in x11, if inside the image.
-  a.put32(0xB940014B | (vagueOfferTableOffset + 4) / 4 << 10); // ldr w11
-  a.put32(0xB940032C | ldrEntrySizeOfImage / 4 << 10); // ldr w12, [x25, #n]
-  a.put32(0x6B0C017F);                                 // cmp w11, w12
-  a.branch19(0x54000002, nextModule);                  // b.hs
-  // The bytes of the image from the table in w17, which its buckets and its
-  // list must fit in.
-  a.put32(0x4B0B0191);                // sub w17, w12, w11
-  a.put32(0x8B0B014B);                // add x11, x10, x11
-  a.put32(0xB940056C);                // ldr w12, [x11, #4]   the mask
-  a.put32(0x9100058C);                // add x12, x12, #1
-  a.put32(0xD37CED8C);                // lsl x12, x12, #4
-  a.put32(0x9100418C);                // add x12, x12, #16
-  a.put32(0xEB11019F);                // cmp x12, x17
-  a.branch19(0x54000008, nextModule); // b.hi
-  a.put32(0xB940096C);                // ldr w12, [x11, #8]
-  a.put32(0xB9400D6D);                // ldr w13, [x11, #12]
-  a.put32(0x8B0C0DAC);                // add x12, x13, x12, lsl #3
-  a.put32(0xEB11019F);                // cmp x12, x17
-  a.branch19(0x54000008, nextModule); // b.hi
-  // ldr w12, [x25, #flags]; tbnz w12, #ProcessStaticImport, .probe
-  a.put32(0xB940032C | ldrEntryFlags / 4 << 10);
-  a.branch14(0x3700000C | llvm::countr_zero(ldrProcessStaticImport) << 19,
-             probe);
-  // A module delay-loaded by one in that scope, or by the executable, joins
-  // it. The entry tested in x13, the importer's base in x14, and a bound on
-  // the chain in w15.
-  a.put32(0xAA1903ED); // mov x13, x25
-  a.put32(0x5280080F); // mov w15, #64
-  a.bind(parent);
-  // ldr w12, [x13, #reason]; cmp w12, #LoadReasonDelayloadDependency
-  a.put32(0xB94001AC | ldrEntryLoadReason / 4 << 10);
-  a.put32(0x7100019F | loadReasonDelayloadDependency << 10);
-  a.branch19(0x54000001, delayLoaders);                  // b.ne
-  a.put32(0x710005EF);                                   // subs w15, w15, #1
-  a.branch19(0x54000000, delayLoaders);                  // b.eq
-  a.put32(0xF94001AE | ldrEntryParentDllBase / 8 << 10); // ldr x14, [x13, #p]
-  a.put32(0xF940034D);                                   // ldr x13, [x26]
-  a.bind(importer);
-  a.put32(0xEB1A01BF);                             // cmp x13, x26
-  a.branch19(0x54000000, delayLoaders);            // b.eq
-  a.put32(0xF94001AC | ldrEntryDllBase / 8 << 10); // ldr x12, [x13, #base]
-  a.put32(0xEB0E019F);                             // cmp x12, x14
-  a.branch19(0x54000000, found);                   // b.eq
-  a.put32(0xF94001AD);                             // ldr x13, [x13]
-  a.branch26(0x14000000, importer);
-  a.bind(found);
-  a.put32(0xF940034C); // ldr x12, [x26]   the executable's entry
-  a.put32(0xEB0C01BF); // cmp x13, x12
-  a.branch19(0x54000000, probe);
-  // ldr w12, [x13, #flags]; tbnz w12, #ProcessStaticImport, .probe
-  a.put32(0xB94001AC | ldrEntryFlags / 4 << 10);
-  a.branch14(0x3700000C | llvm::countr_zero(ldrProcessStaticImport) << 19,
-             probe);
-  a.branch26(0x14000000, parent);
-  // Otherwise, only if the module delay-loads this DLL.
-  a.bind(delayLoaders);
-  a.put32(0xB940096C); // ldr w12, [x11, #8]
-  a.put32(0xB9400D6D); // ldr w13, [x11, #12]
-  a.put32(0x8B0D016D); // add x13, x11, x13
-  a.movImm64(14, selfKey);
-  a.bind(delayLoad);
-  a.branch19(0x3400000C, nextModule); // cbz w12
-  a.put32(0xF94001AF);                // ldr x15, [x13]
-  a.put32(0xEB0E01FF);                // cmp x15, x14
-  a.branch19(0x54000000, probe);      // b.eq
-  a.put32(0x910021AD);                // add x13, x13, #8
-  a.put32(0x5100058C);                // sub w12, w12, #1
-  a.branch26(0x14000000, delayLoad);
-  // The entity's home bucket, then each bucket until a free one, at most
-  // once each.
-  a.bind(probe);
-  a.put32(0xB940016C); // ldr w12, [x11]   the shift
-  a.put32(0x9ACC26CD); // lsr x13, x22, x12
-  a.put32(0xB940056E); // ldr w14, [x11, #4]   the mask
-  a.put32(0x2A0E03E9); // mov w9, w14
-  a.bind(bucket);
-  a.put32(0x0A0E01AD);                // and w13, w13, w14
-  a.put32(0x8B0D116F);                // add x15, x11, x13, lsl #4
-  a.put32(0xF94009F0);                // ldr x16, [x15, #16]
-  a.branch19(0xB4000010, nextModule); // cbz x16
-  a.put32(0xEB16021F);                // cmp x16, x22
-  a.branch19(0x54000000, hit);        // b.eq
-  a.put32(0x110005AD);                // add w13, w13, #1
-  a.put32(0x71000529);                // subs w9, w9, #1
-  a.branch19(0x54000003, nextModule); // b.lo
-  a.branch26(0x14000000, bucket);
+  if (!vague) {
+    a.branch26(0x14000000, skip);
+  } else {
+    a.put32(0xB9400E69);          // ldr w9, [x19, #12]
+    a.branch14(0x36080009, skip); // tbz w9, #1
+    a.branch14(0x36100018, skip); // tbz w24, #2
+    // The modules after the executable, the list's head in x26 and the entry in
+    // x25.
+    a.put32(0xF9403249);                    // ldr x9, [x18, #0x60]
+    a.put32(0xF940013A | pebLdr / 8 << 10); // ldr x26, [x9, #Ldr]
+    a.put32(0x9100035A | ldrInLoadOrderModuleList << 10); // add x26, x26, #list
+    a.put32(0xF9400359);                                  // ldr x25, [x26]
+    a.bind(nextModule);
+    a.put32(0xF9400339);                             // ldr x25, [x25]
+    a.put32(0xEB1A033F);                             // cmp x25, x26
+    a.branch19(0x54000000, skip);                    // b.eq .skip
+    a.put32(0xF940032A | ldrEntryDllBase / 8 << 10); // ldr x10, [x25, #base]
+    a.put32(0xEB1B015F);                             // cmp x10, x27
+    a.branch19(0x54000000, nextModule);              // b.eq
+    a.put32(0xB940014B | vagueOfferTableOffset / 4
+                             << 10); // ldr w11, [x10, #tag]
+    a.movImm32(12, vagueOfferTableTag);
+    a.put32(0x6B0C017F);                // cmp w11, w12
+    a.branch19(0x54000001, nextModule); // b.ne
+    // The table in x11, if inside the image.
+    a.put32(0xB940014B | (vagueOfferTableOffset + 4) / 4 << 10); // ldr w11
+    a.put32(0xB940032C | ldrEntrySizeOfImage / 4 << 10); // ldr w12, [x25, #n]
+    a.put32(0x6B0C017F);                                 // cmp w11, w12
+    a.branch19(0x54000002, nextModule);                  // b.hs
+    // The bytes of the image from the table in w17, which its buckets and its
+    // list must fit in.
+    a.put32(0x4B0B0191);                // sub w17, w12, w11
+    a.put32(0x8B0B014B);                // add x11, x10, x11
+    a.put32(0xB940056C);                // ldr w12, [x11, #4]   the mask
+    a.put32(0x9100058C);                // add x12, x12, #1
+    a.put32(0xD37CED8C);                // lsl x12, x12, #4
+    a.put32(0x9100418C);                // add x12, x12, #16
+    a.put32(0xEB11019F);                // cmp x12, x17
+    a.branch19(0x54000008, nextModule); // b.hi
+    a.put32(0xB940096C);                // ldr w12, [x11, #8]
+    a.put32(0xB9400D6D);                // ldr w13, [x11, #12]
+    a.put32(0x8B0C0DAC);                // add x12, x13, x12, lsl #3
+    a.put32(0xEB11019F);                // cmp x12, x17
+    a.branch19(0x54000008, nextModule); // b.hi
+    // ldr w12, [x25, #flags]; tbnz w12, #ProcessStaticImport, .probe
+    a.put32(0xB940032C | ldrEntryFlags / 4 << 10);
+    a.branch14(0x3700000C | llvm::countr_zero(ldrProcessStaticImport) << 19,
+               probe);
+    // A module delay-loaded by one in that scope, or by the executable, joins
+    // it. The entry tested in x13, the importer's base in x14, and a bound on
+    // the chain in w15.
+    a.put32(0xAA1903ED); // mov x13, x25
+    a.put32(0x5280080F); // mov w15, #64
+    a.bind(parent);
+    // ldr w12, [x13, #reason]; cmp w12, #LoadReasonDelayloadDependency
+    a.put32(0xB94001AC | ldrEntryLoadReason / 4 << 10);
+    a.put32(0x7100019F | loadReasonDelayloadDependency << 10);
+    a.branch19(0x54000001, delayLoaders);                  // b.ne
+    a.put32(0x710005EF);                                   // subs w15, w15, #1
+    a.branch19(0x54000000, delayLoaders);                  // b.eq
+    a.put32(0xF94001AE | ldrEntryParentDllBase / 8 << 10); // ldr x14, [x13, #p]
+    a.put32(0xF940034D);                                   // ldr x13, [x26]
+    a.bind(importer);
+    a.put32(0xEB1A01BF);                             // cmp x13, x26
+    a.branch19(0x54000000, delayLoaders);            // b.eq
+    a.put32(0xF94001AC | ldrEntryDllBase / 8 << 10); // ldr x12, [x13, #base]
+    a.put32(0xEB0E019F);                             // cmp x12, x14
+    a.branch19(0x54000000, found);                   // b.eq
+    a.put32(0xF94001AD);                             // ldr x13, [x13]
+    a.branch26(0x14000000, importer);
+    a.bind(found);
+    a.put32(0xF940034C); // ldr x12, [x26]   the executable's entry
+    a.put32(0xEB0C01BF); // cmp x13, x12
+    a.branch19(0x54000000, probe);
+    // ldr w12, [x13, #flags]; tbnz w12, #ProcessStaticImport, .probe
+    a.put32(0xB94001AC | ldrEntryFlags / 4 << 10);
+    a.branch14(0x3700000C | llvm::countr_zero(ldrProcessStaticImport) << 19,
+               probe);
+    a.branch26(0x14000000, parent);
+    // Otherwise, only if the module delay-loads this DLL.
+    a.bind(delayLoaders);
+    a.put32(0xB940096C); // ldr w12, [x11, #8]
+    a.put32(0xB9400D6D); // ldr w13, [x11, #12]
+    a.put32(0x8B0D016D); // add x13, x11, x13
+    a.movImm64(14, selfKey);
+    a.bind(delayLoad);
+    a.branch19(0x3400000C, nextModule); // cbz w12
+    a.put32(0xF94001AF);                // ldr x15, [x13]
+    a.put32(0xEB0E01FF);                // cmp x15, x14
+    a.branch19(0x54000000, probe);      // b.eq
+    a.put32(0x910021AD);                // add x13, x13, #8
+    a.put32(0x5100058C);                // sub w12, w12, #1
+    a.branch26(0x14000000, delayLoad);
+    // The entity's home bucket, then each bucket until a free one, at most
+    // once each.
+    a.bind(probe);
+    a.put32(0xB940016C); // ldr w12, [x11]   the shift
+    a.put32(0x9ACC26CD); // lsr x13, x22, x12
+    a.put32(0xB940056E); // ldr w14, [x11, #4]   the mask
+    a.put32(0x2A0E03E9); // mov w9, w14
+    a.bind(bucket);
+    a.put32(0x0A0E01AD);                // and w13, w13, w14
+    a.put32(0x8B0D116F);                // add x15, x11, x13, lsl #4
+    a.put32(0xF94009F0);                // ldr x16, [x15, #16]
+    a.branch19(0xB4000010, nextModule); // cbz x16
+    a.put32(0xEB16021F);                // cmp x16, x22
+    a.branch19(0x54000000, hit);        // b.eq
+    a.put32(0x110005AD);                // add w13, w13, #1
+    a.put32(0x71000529);                // subs w9, w9, #1
+    a.branch19(0x54000003, nextModule); // b.lo
+    a.branch26(0x14000000, bucket);
 
-  // The instance in x23, from a word inside the image; a null word binds
-  // nothing.
-  a.bind(hit);
-  a.put32(0xB94019E9);                                 // ldr w9, [x15, #24]
-  a.put32(0xB940032C | ldrEntrySizeOfImage / 4 << 10); // ldr w12, [x25, #n]
-  a.put32(0x91002130);                                 // add x16, x9, #8
-  a.put32(0xEB0C021F);                                 // cmp x16, x12
-  a.branch19(0x54000008, nextModule);                  // b.hi
-  a.put32(0xF8696957);          // ldr x23, [x10, x9]
-  a.branch19(0xB4000017, skip); // cbz x23
-  // LdrAddRefDll(LDR_ADDREF_DLL_PIN, module), then once this DLL; a pin that
-  // fails ends the search with its status.
-  a.put32(0x52800020); // mov w0, #1
-  a.put32(0xAA0A03E1); // mov x1, x10
-  a.callImport(addRef->getRVA());
-  a.branch14(0x37F80000, pinFailed); // tbnz w0, #31, .pinFailed
-  a.branch14(0x37080018, next);      // tbnz w24, #1, .next
-  a.put32(0x321F0318);               // orr w24, w24, #2
-  a.put32(0x52800020);               // mov w0, #1
-  a.put32(0xAA1B03E1);               // mov x1, x27
-  a.callImport(addRef->getRVA());
-  a.branch14(0x37F80000, pinFailed); // tbnz w0, #31, .pinFailed
+    // The instance in x23, from a word inside the image; a null word binds
+    // nothing.
+    a.bind(hit);
+    a.put32(0xB94019E9);                                 // ldr w9, [x15, #24]
+    a.put32(0xB940032C | ldrEntrySizeOfImage / 4 << 10); // ldr w12, [x25, #n]
+    a.put32(0x91002130);                                 // add x16, x9, #8
+    a.put32(0xEB0C021F);                                 // cmp x16, x12
+    a.branch19(0x54000008, nextModule);                  // b.hi
+    a.put32(0xF8696957);                                 // ldr x23, [x10, x9]
+    a.branch19(0xB4000017, skip);                        // cbz x23
+    // LdrAddRefDll(LDR_ADDREF_DLL_PIN, module), then once this DLL; a pin that
+    // fails ends the search with its status.
+    a.put32(0x52800020); // mov w0, #1
+    a.put32(0xAA0A03E1); // mov x1, x10
+    a.callImport(addRef->getRVA());
+    a.branch14(0x37F80000, pinFailed); // tbnz w0, #31, .pinFailed
+    a.branch14(0x37080018, next);      // tbnz w24, #1, .next
+    a.put32(0x321F0318);               // orr w24, w24, #2
+    a.put32(0x52800020);               // mov w0, #1
+    a.put32(0xAA1B03E1);               // mov x1, x27
+    a.callImport(addRef->getRVA());
+    a.branch14(0x37F80000, pinFailed); // tbnz w0, #31, .pinFailed
+  }
 
   // Each cell of the entity.
   a.bind(next);
@@ -2124,27 +2180,38 @@ void VagueSearchFillChunk::writeARM64(LabelledCode &a) const {
   a.branch19(0x54000000, skip);  // b.eq
   a.branch26(0x14000000, outer);
 
-  // An entity the executable's table names: pin this DLL once.
-  a.bind(shared);
-  a.branch14(0x37080018, skip); // tbnz w24, #1, .skip
-  a.put32(0x321F0318);          // orr w24, w24, #2
-  a.put32(0x52800020);          // mov w0, #1
-  a.put32(0xAA1B03E1);          // mov x1, x27
-  a.callImport(addRef->getRVA());
-  a.branch14(0x37F80000, pinFailed); // tbnz w0, #31, .pinFailed
-  a.branch26(0x14000000, skip);
-
-  // The pin's status, once the read-only cells are protected again.
-  a.bind(pinFailed);
-  a.put32(0x2A0003F3); // mov w19, w0
-  if (readOnly) {
-    a.branch14(0x36000018, pinStatus); // tbz w24, #0
-    a.put32(0xB9406BE3);               // ldr w3, [sp, #104]
-    callProtect();
+  // The address the entry names, or for a vague entity the one held by the
+  // word it names. A DLL loaded outside the executable's link that shares
+  // the entity pins itself once.
+  a.bind(tableHit);
+  a.put32(0xF9400577);          // ldr x23, [x11, #8]
+  a.put32(0xB9400E69);          // ldr w9, [x19, #12]
+  a.branch14(0x36080009, next); // tbz w9, #1
+  a.put32(0xF94002F7);          // ldr x23, [x23]
+  if (vague) {
+    a.branch14(0x36100018, next); // tbz w24, #2
+    a.branch14(0x37080018, next); // tbnz w24, #1
+    a.put32(0x321F0318);          // orr w24, w24, #2
+    a.put32(0x52800020);          // mov w0, #1
+    a.put32(0xAA1B03E1);          // mov x1, x27
+    a.callImport(addRef->getRVA());
+    a.branch14(0x37F80000, pinFailed); // tbnz w0, #31, .pinFailed
   }
-  a.bind(pinStatus);
-  a.put32(0x2A1303E0); // mov w0, w19
-  a.branch26(0x14000000, done);
+  a.branch26(0x14000000, next);
+
+  if (vague) {
+    // The pin's status, once the read-only cells are protected again.
+    a.bind(pinFailed);
+    a.put32(0x2A0003F3); // mov w19, w0
+    if (readOnly) {
+      a.branch14(0x36000018, pinStatus); // tbz w24, #0
+      a.put32(0xB9406BE3);               // ldr w3, [sp, #104]
+      callProtect();
+    }
+    a.bind(pinStatus);
+    a.put32(0x2A1303E0); // mov w0, w19
+    a.branch26(0x14000000, done);
+  }
 
   a.bind(finish);
   if (readOnly) {
@@ -3459,11 +3526,19 @@ void ImportSlotContents::createOverrideCellFill() {
       addImport(protect);
   }
 
-  std::vector<OverrideCell> vagueCells;
-  llvm::copy_if(cells, std::back_inserter(vagueCells),
-                [](const OverrideCell &c) { return c.indirect; });
-  if (!vagueCells.empty())
-    vagueBindList = make<VagueBindListChunk>(ctx, std::move(vagueCells));
+  // The cells bound by name, other than thread-local ones, are written by one
+  // loop over a list of them; the rest by this fill.
+  auto byName = std::stable_partition(
+      cells.begin(), cells.end(),
+      [](const OverrideCell &c) { return !c.key || c.threadLocal; });
+  if (byName != cells.end())
+    namedCellList = make<NamedCellListChunk>(
+        ctx, std::vector<OverrideCell>(byName, cells.end()));
+  cells.erase(byName, cells.end());
+  if (cells.empty())
+    return;
+  if (llvm::none_of(cells, [](const OverrideCell &c) { return c.readOnly; }))
+    protect = nullptr;
 
   std::stable_partition(cells.begin(), cells.end(),
                         [](const OverrideCell &c) { return !c.readOnly; });
@@ -3483,7 +3558,7 @@ void ImportSlotContents::createOverrideCellFill() {
 // opened RTLD_LOCAL resolves against the global scope, it binds its cells to
 // the instances that the modules loaded with the process, or one that
 // delay-loads it, use, through the offer table each names in its MZ header.
-void ImportSlotContents::createVagueSearch() {
+void ImportSlotContents::createNamedCellFill() {
   Configuration &config = ctx.config;
   if (!config.importSlots || !config.dll || ctx.hybridSymtab ||
       (config.machine != AMD64 && config.machine != ARM64))
@@ -3513,19 +3588,20 @@ void ImportSlotContents::createVagueSearch() {
     vagueOfferTable =
         make<VagueOfferTableChunk>(std::move(offers), std::move(delayLoads));
 
-  if (!vagueBindList)
+  if (!namedCellList)
     return;
+  // The read-only cells are written between two protection calls, and a
+  // search pins what it binds to.
+  auto *list = cast<NamedCellListChunk>(namedCellList);
   auto getImport = [&](StringRef name) -> DefinedImportData * {
     auto *imp = dyn_cast_or_null<DefinedImportData>(ctx.symtab.find(name));
     if (!imp) {
-      Err(ctx) << "the image binds its vague entities at run time, which "
-                  "needs "
+      Err(ctx) << "the image binds cells by name at run time, which needs "
                << name.drop_front(strlen("__imp_")) << " from ntdll.lib";
       return nullptr;
     }
     if (config.delayLoads.contains(imp->getDLLName().lower())) {
-      Err(ctx) << "the image binds its vague entities at run time, which "
-                  "needs "
+      Err(ctx) << "the image binds cells by name at run time, which needs "
                << name.drop_front(strlen("__imp_"))
                << ", but it is delay-loaded";
       return nullptr;
@@ -3534,20 +3610,21 @@ void ImportSlotContents::createVagueSearch() {
       addImport(imp);
     return imp;
   };
-  DefinedImportData *protect = getImport("__imp_NtProtectVirtualMemory");
-  DefinedImportData *addRef = getImport("__imp_LdrAddRefDll");
-  if (!protect || !addRef)
+  DefinedImportData *protect = nullptr, *addRef = nullptr;
+  if (list->hasReadOnly() &&
+      !(protect = getImport("__imp_NtProtectVirtualMemory")))
+    return;
+  if (list->hasVague() && !(addRef = getImport("__imp_LdrAddRefDll")))
     return;
   uint64_t selfKey =
       overrideNameKey(sys::path::filename(config.outputFile).lower());
-  auto *fill = make<VagueSearchFillChunk>(
-      ctx, cast<VagueBindListChunk>(vagueBindList), protect, addRef, selfKey);
-  vagueSearchFill = fill;
-  vagueSearchFillPointer = make<LocalImportChunk>(
-      ctx, make<DefinedSynthetic>("__llvm_vague_search", fill));
-  auto *unwind = make<VagueSearchUnwindChunk>(ctx, fill);
-  vagueSearchFillUnwind = unwind;
-  vagueSearchFillPdata = make<ResidualFillPdataChunk>(ctx, fill, unwind);
+  auto *fill = make<NamedCellFillChunk>(ctx, list, protect, addRef, selfKey);
+  namedCellFill = fill;
+  namedCellFillPointer = make<LocalImportChunk>(
+      ctx, make<DefinedSynthetic>("__llvm_named_cell_fill", fill));
+  auto *unwind = make<NamedCellFillUnwindChunk>(ctx, fill);
+  namedCellFillUnwind = unwind;
+  namedCellFillPdata = make<ResidualFillPdataChunk>(ctx, fill, unwind);
 }
 
 // The loader writes an in-place import slot with an absolute address, makes
