@@ -9,6 +9,7 @@
 #include "wincrt.h"
 
 WINCRT_WRAP_UCRT
+WINCRT_INCLUDE(__wincrt_exit_state)
 
 static int invokeMain() {
   return wWinMain(reinterpret_cast<HINSTANCE>(&__ImageBase), nullptr,

@@ -14,6 +14,8 @@ set(WINCRT_SOURCES
   entry_wmain.cpp
   entry_wwinmain.cpp
   winmain_main.cpp
+  # The process's exit-list state, which an executable's entry point links.
+  exit_block.cpp
   cfguard.cpp
   cfguard_dispatch.S
   delayload.cpp

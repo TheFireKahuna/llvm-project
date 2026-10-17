@@ -9,6 +9,7 @@
 #include "wincrt.h"
 
 WINCRT_WRAP_UCRT
+WINCRT_INCLUDE(__wincrt_exit_state)
 
 int main(int, char **, char **);
 

@@ -9,6 +9,7 @@
 #include "wincrt.h"
 
 WINCRT_WRAP_UCRT
+WINCRT_INCLUDE(__wincrt_exit_state)
 
 // A GUI program that defines main rather than WinMain gets this entry point
 // too, from the subsystem, and runs its main as a GUI application, as with
