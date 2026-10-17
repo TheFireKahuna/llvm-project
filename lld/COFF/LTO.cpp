@@ -250,6 +250,33 @@ static bool isOfferedByImage(BitcodeFile &f,
          isShareableVagueName(sym->getName());
 }
 
+// Returns whether another image's instance may preempt at run time what
+// objSym defines, in a DLL whose own references to such a vague entity read
+// cells, as an ELF shared object reaches its default-visibility definitions
+// through its GOT, so that LTO keeps them in import form: data with default
+// visibility in a COMDAT, and functions whose addresses are significant,
+// unless -Bsymbolic binds them locally (SymbolTable::isPreemptibleVagueEntity).
+static bool isPreemptibleInImage(BitcodeFile &f,
+                                 const lto::InputFile::Symbol &objSym,
+                                 Symbol *sym) {
+  const Configuration &config = f.symtab.ctx.config;
+  using B = Configuration::Bsymbolic;
+  if (!config.importSlots || !config.dll || f.symtab.isEC() ||
+      f.symtab.ctx.hybridSymtab || config.bsymbolic == B::All ||
+      objSym.isUndefined() || objSym.getComdatIndex() == -1 ||
+      f.obj->getComdatTable()[objSym.getComdatIndex()].second ==
+          Comdat::NoDeduplicate ||
+      objSym.getVisibility() != GlobalValue::DefaultVisibility ||
+      !isShareableVagueName(sym->getName()) ||
+      !isa_and_nonnull<Defined>(f.symtab.findUnderscore("__xi_a")))
+    return false;
+  if (objSym.isExecutable())
+    return config.bsymbolic != B::Functions &&
+           !objSym.canBeOmittedFromSymbolTable() &&
+           !isOfferedFunction(f, objSym, sym);
+  return !objSym.isTLS();
+}
+
 void BitcodeCompiler::add(BitcodeFile &f) {
   lto::InputFile &obj = *f.obj;
   unsigned symNum = 0;
@@ -333,7 +360,9 @@ void BitcodeCompiler::add(BitcodeFile &f) {
         (r.Prevailing && (isOfferedByImage(f, objSym, sym) ||
                           isOfferedFunction(f, objSym, sym)));
     r.ExportDynamic = exportedSyms && exportedSyms->contains(sym);
-    r.FinalDefinitionInLinkageUnit = !offered && isFinalInImage(f, objSym, sym);
+    r.FinalDefinitionInLinkageUnit = !offered &&
+                                     !isPreemptibleInImage(f, objSym, sym) &&
+                                     isFinalInImage(f, objSym, sym);
     // The object LTO generates defines the symbol again. It is undefined only
     // once every file is added, so that the files after this one still see
     // where it is defined.

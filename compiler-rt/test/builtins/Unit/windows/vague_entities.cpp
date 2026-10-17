@@ -18,6 +18,16 @@
 // RUN: %run %t/plugin_host.exe %t/q.dll %t/p.dll | \
 // RUN:   FileCheck --check-prefix=PLUGIN %s
 // RUN: %run %t/delay_host.exe | FileCheck --check-prefix=DELAY %s
+// RUN: mkdir %t/lto
+// RUN: %{cxx} -flto -shared -DDLL_A %s -o %t/lto/a.dll
+// RUN: %{cxx} -flto -shared -DDLL_B %s -o %t/lto/b.dll
+// RUN: %{cxx} -flto -shared -DDLL_C %s %t/lto/b.dll.lib -o %t/lto/c.dll
+// RUN: %{cxx} -flto -shared -DDLL_P %s -o %t/lto/p.dll
+// RUN: %{cxx} -flto -shared -DDLL_K %s -o %t/lto/k.dll
+// RUN: %{cxx} -DHOST %s %t/lto/a.dll.lib %t/lto/b.dll.lib %t/lto/c.dll.lib \
+// RUN:   -o %t/lto/host.exe
+// RUN: %run %t/lto/host.exe %t/lto/p.dll %t/lto/k.dll | \
+// RUN:   FileCheck --check-prefix=HOST %s
 
 // An inline variable has one instance in the program, as on ELF. a.dll and
 // b.dll, true siblings, each keep it preemptible, and the executable's link
@@ -30,7 +40,8 @@
 // DLL that a plugin delay-loads joins the plugin's scope and binds to the
 // plugin's instance, which a plugin loaded later does not see, as under
 // RTLD_LOCAL. Of two delay-loaded DLLs that keep it, the first to load
-// keeps its instance and the second binds to it.
+// keeps its instance and the second binds to it. DLLs built with LTO keep
+// their references to the instance in import form, and behave alike.
 
 // HOST: same 1 value 3
 // HOST: fixed same 1
