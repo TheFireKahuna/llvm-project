@@ -168,6 +168,19 @@
 // RPATH:         lld-link{{(.exe)?}}"
 // RPATH-SAME:    "-opt:ref" "-opt:icf"
 
+// A GNU version script is passed in lld-link's spelling, whichever spelling
+// it is given in.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium %s \
+// RUN:     -Wl,--version-script=a.map -Wl,--version-script,b.map \
+// RUN:     -Xlinker -version-script -Xlinker c.map 2>&1 \
+// RUN:   | FileCheck --check-prefix=VERSION-SCRIPT %s
+// RUN: %clang -### --target=x86_64-pc-windows-ntposix -nostdlib %s \
+// RUN:     -Wl,--version-script=a.map -Wl,--version-script,b.map \
+// RUN:     -Xlinker -version-script -Xlinker c.map 2>&1 \
+// RUN:   | FileCheck --check-prefix=VERSION-SCRIPT %s
+// VERSION-SCRIPT:      lld-link{{(.exe)?}}"
+// VERSION-SCRIPT-SAME: "-version-script:a.map" "-version-script:b.map" "-version-script:c.map"
+
 // A HIP link takes the HIP runtime from the ROCm installation, as with the
 // MSVC toolchain.
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium --hip-link \

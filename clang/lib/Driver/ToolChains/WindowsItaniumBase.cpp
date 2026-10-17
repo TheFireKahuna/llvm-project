@@ -176,8 +176,9 @@ void tools::windowsitanium::Linker::ConstructJob(
 
   // PE has no run-time library search path. Build systems written for ELF
   // pass -rpath, which lld-link would reject, so it is dropped with its value
-  // and a warning, as lld's MinGW driver does.
-  bool InRPath = false;
+  // and a warning, as lld's MinGW driver does. A GNU version script is passed
+  // in lld-link's spelling, as lld's MinGW driver passes it.
+  bool InRPath = false, InVersionScript = false;
   for (const auto &Input : Inputs) {
     if (Input.isFilename()) {
       CmdArgs.push_back(Input.getFilename());
@@ -199,6 +200,14 @@ void tools::windowsitanium::Linker::ConstructJob(
         StringRef V(Value);
         if (InRPath) {
           InRPath = false;
+        } else if (InVersionScript) {
+          CmdArgs.push_back(Args.MakeArgString("-version-script:" + V));
+          InVersionScript = false;
+        } else if (V == "--version-script" || V == "-version-script") {
+          InVersionScript = true;
+        } else if (V.consume_front("--version-script=") ||
+                   V.consume_front("-version-script=")) {
+          CmdArgs.push_back(Args.MakeArgString("-version-script:" + V));
         } else if (V == "-rpath" || V == "--rpath" ||
                    V.starts_with("-rpath=") || V.starts_with("--rpath=")) {
           D.Diag(diag::warn_drv_unsupported_option_for_target)
