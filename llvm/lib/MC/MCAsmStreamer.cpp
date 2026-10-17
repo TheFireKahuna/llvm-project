@@ -333,6 +333,9 @@ public:
   void emitCOFFLinkForwarder(const MCSymbol *Forwarder,
                              const MCSymbol *Pointer) override;
   void emitCOFFKCFIMemberTag(const MCSymbol *Prefix) override;
+  void emitCOFFLinkContract(const MCSymbol *Owner, const MCSymbol *Symbol,
+                            bool IsData, StringRef Identity,
+                            ArrayRef<uint8_t> Digest) override;
   void emitXCOFFLocalCommonSymbol(MCSymbol *LabelSym, uint64_t Size,
                                   MCSymbol *CsectSym, Align Alignment) override;
   void emitXCOFFSymbolLinkageWithVisibility(MCSymbol *Symbol,
@@ -1104,6 +1107,20 @@ void MCAsmStreamer::emitCOFFLinkForwarder(const MCSymbol *Forwarder,
 void MCAsmStreamer::emitCOFFKCFIMemberTag(const MCSymbol *Prefix) {
   OS << "\t.linkkcfitag\t";
   Prefix->print(OS, MAI);
+  EmitEOL();
+}
+
+void MCAsmStreamer::emitCOFFLinkContract(const MCSymbol *Owner,
+                                         const MCSymbol *Symbol, bool IsData,
+                                         StringRef Identity,
+                                         ArrayRef<uint8_t> Digest) {
+  OS << "\t.linkcontract\t";
+  Owner->print(OS, MAI);
+  OS << ", ";
+  Symbol->print(OS, MAI);
+  OS << (IsData ? ", data, " : ", type, ");
+  PrintQuotedString(Identity, OS);
+  OS << ", \"" << toHex(Digest, /*LowerCase=*/true) << '"';
   EmitEOL();
 }
 

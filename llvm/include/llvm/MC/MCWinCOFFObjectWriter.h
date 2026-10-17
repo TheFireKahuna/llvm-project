@@ -11,6 +11,7 @@
 
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/MC/MCObjectWriter.h"
+#include <array>
 #include <memory>
 #include <optional>
 
@@ -105,6 +106,17 @@ public:
     const MCSymbol *Pointer;
   };
 
+  /// An ABI contract that the code in the section of Owner requires of the
+  /// image that provides Symbol, which the object's link-only records carry
+  /// (COFF::LinkRecordContracts).
+  struct LinkContract {
+    const MCSymbol *Owner;
+    const MCSymbol *Symbol;
+    bool IsData;
+    std::string Identity;
+    std::array<uint8_t, 16> Digest;
+  };
+
 private:
   // The pins of the object's link-only records, in the order given.
   SmallVector<LinkPin, 0> LinkPins;
@@ -119,6 +131,8 @@ private:
   SmallVector<LinkBinding, 0> LinkBindings;
   // The object's forwarders, in the order given.
   SmallVector<LinkForwarder, 0> LinkForwarders;
+  // The ABI contracts the object's references require, in the order given.
+  SmallVector<LinkContract, 0> LinkContracts;
 
 public:
   WinCOFFObjectWriter(std::unique_ptr<MCWinCOFFObjectTargetWriter> MOTW,
@@ -137,7 +151,8 @@ public:
   bool hasLinkRecordsSection() const {
     return hasLinkRecords() || !LinkPins.empty() || !LinkFacts.empty() ||
            !KCFIThunks.empty() || !KCFIMemberTags.empty() ||
-           !LinkBindings.empty() || !LinkForwarders.empty();
+           !LinkBindings.empty() || !LinkForwarders.empty() ||
+           !LinkContracts.empty();
   }
   void addLinkPin(const LinkPin &Pin) { LinkPins.push_back(Pin); }
   void addLinkFact(uint64_t Kind) {
@@ -151,6 +166,17 @@ public:
   }
   void addLinkForwarder(const LinkForwarder &Forwarder) {
     LinkForwarders.push_back(Forwarder);
+  }
+  void addLinkContract(const MCSymbol *Owner, const MCSymbol *Symbol,
+                       bool IsData, StringRef Identity,
+                       ArrayRef<uint8_t> Digest) {
+    assert(Digest.size() == 16 && "a contract's digest has 16 bytes");
+    LinkContract &C = LinkContracts.emplace_back();
+    C.Owner = Owner;
+    C.Symbol = Symbol;
+    C.IsData = IsData;
+    C.Identity = Identity.str();
+    llvm::copy(Digest, C.Digest.begin());
   }
   // A binding implies the fact that the object lists every binding.
   void addLinkBinding(const LinkBinding &Binding) {

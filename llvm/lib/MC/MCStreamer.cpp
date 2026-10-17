@@ -1290,6 +1290,10 @@ void MCStreamer::emitCOFFLinkBinding(const MCSymbol *Symbol, unsigned Role) {}
 void MCStreamer::emitCOFFLinkForwarder(const MCSymbol *Forwarder,
                                        const MCSymbol *Pointer) {}
 void MCStreamer::emitCOFFKCFIMemberTag(const MCSymbol *Prefix) {}
+void MCStreamer::emitCOFFLinkContract(const MCSymbol *Owner,
+                                      const MCSymbol *Symbol, bool IsData,
+                                      StringRef Identity,
+                                      ArrayRef<uint8_t> Digest) {}
 
 /// EmitRawText - If this file is backed by an assembly streamer, this dumps
 /// the specified string in the output .s file.  This capability is

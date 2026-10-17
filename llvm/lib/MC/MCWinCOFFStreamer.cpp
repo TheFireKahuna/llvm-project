@@ -365,6 +365,13 @@ void MCWinCOFFStreamer::emitCOFFKCFIMemberTag(const MCSymbol *Prefix) {
   getWriter().addKCFIMemberTag(Prefix);
 }
 
+void MCWinCOFFStreamer::emitCOFFLinkContract(const MCSymbol *Owner,
+                                             const MCSymbol *Symbol,
+                                             bool IsData, StringRef Identity,
+                                             ArrayRef<uint8_t> Digest) {
+  getWriter().addLinkContract(Owner, Symbol, IsData, Identity, Digest);
+}
+
 void MCWinCOFFStreamer::emitCommonSymbol(MCSymbol *S, uint64_t Size,
                                          Align ByteAlignment) {
   auto *Symbol = static_cast<MCSymbolCOFF *>(S);

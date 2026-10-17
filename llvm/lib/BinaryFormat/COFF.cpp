@@ -7,8 +7,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/BinaryFormat/COFF.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Support/Base64.h"
+#include "llvm/Support/Endian.h"
+#include "llvm/Support/xxhash.h"
 
 // Maximum offsets for different string table entry encodings.
 enum : unsigned { Max7DecimalOffset = 9999999U };
@@ -54,4 +58,10 @@ bool llvm::COFF::encodeSectionName(char *Out, uint64_t Offset) {
 
   // The offset is too large to be encoded.
   return false;
+}
+
+std::string llvm::COFF::getABIContractLocator(StringRef Identity) {
+  uint8_t Hash[8];
+  support::endian::write64le(Hash, xxh3_64bits(Identity));
+  return encodeBase64URL(ArrayRef(Hash));
 }

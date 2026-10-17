@@ -12,9 +12,12 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/BinaryFormat/COFF.h"
@@ -1371,6 +1374,59 @@ uint64_t WinCOFFWriter::writeObject() {
       OS << Tags;
     }
 
+    // A contract row names the section whose code references its symbol by
+    // the section's symbol, so that a linker applies the row only while it
+    // keeps that code. Only the contracts that a written row names are listed.
+    StringMap<unsigned> ContractIndices;
+    SmallVector<const WinCOFFObjectWriter::LinkContract *, 0> ContractTable;
+    DenseMap<const COFFSection *,
+             MapVector<const MCSymbol *, SmallVector<unsigned, 2>>>
+        ContractRows;
+    for (const WinCOFFObjectWriter::LinkContract &C : OWriter.LinkContracts) {
+      if (C.Symbol->isTemporary() || !C.Symbol->isRegistered() ||
+          !C.Owner->isInSection())
+        continue;
+      std::string Key(1, C.IsData);
+      Key += C.Identity;
+      Key += '\0';
+      Key.append(C.Digest.begin(), C.Digest.end());
+      auto [It, Inserted] =
+          ContractIndices.try_emplace(Key, ContractTable.size());
+      if (Inserted)
+        ContractTable.push_back(&C);
+      SmallVector<unsigned, 2> &Row =
+          ContractRows[SectionMap[&C.Owner->getSection()]][C.Symbol];
+      if (!llvm::is_contained(Row, It->second))
+        Row.push_back(It->second);
+    }
+    if (!ContractTable.empty()) {
+      SmallString<0> Contracts;
+      raw_svector_ostream ContractsOS(Contracts);
+      encodeULEB128(ContractTable.size(), ContractsOS);
+      for (const WinCOFFObjectWriter::LinkContract *C : ContractTable) {
+        encodeULEB128(C->IsData, ContractsOS);
+        encodeULEB128(C->Identity.size(), ContractsOS);
+        ContractsOS << C->Identity;
+        ContractsOS << toStringRef(ArrayRef(C->Digest));
+      }
+      for (const auto &Section : Sections) {
+        auto It = ContractRows.find(Section.get());
+        if (It == ContractRows.end())
+          continue;
+        encodeULEB128(Section->Symbol->getIndex(), ContractsOS);
+        encodeULEB128(It->second.size(), ContractsOS);
+        for (const auto &[Symbol, Row] : It->second) {
+          encodeULEB128(Symbol->getIndex(), ContractsOS);
+          encodeULEB128(Row.size(), ContractsOS);
+          for (unsigned Index : Row)
+            encodeULEB128(Index, ContractsOS);
+        }
+      }
+      encodeULEB128(COFF::LinkRecordContracts, OS);
+      encodeULEB128(Contracts.size(), OS);
+      OS << Contracts;
+    }
+
     auto *Sec = getContext().getCOFFSection(".llvm_link_records",
                                             COFF::IMAGE_SCN_LNK_REMOVE);
     Sec->curFragList()->Tail->setVarContents(OS.str());
@@ -1440,6 +1496,7 @@ void WinCOFFObjectWriter::reset() {
   KCFIMemberTags.clear();
   LinkBindings.clear();
   LinkForwarders.clear();
+  LinkContracts.clear();
   ObjWriter->reset();
   if (DwoWriter)
     DwoWriter->reset();

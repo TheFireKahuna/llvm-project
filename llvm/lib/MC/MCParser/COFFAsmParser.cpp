@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Twine.h"
@@ -88,6 +89,8 @@ class COFFAsmParser : public MCAsmParserExtension {
         ".linkbinding");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkForwarder>(
         ".linkforwarder");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkContract>(
+        ".linkcontract");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFact>(
         ".linkprotecteddelayiat");
 
@@ -158,6 +161,7 @@ class COFFAsmParser : public MCAsmParserExtension {
   bool parseDirectiveLinkKCFITag(StringRef, SMLoc);
   bool parseDirectiveLinkBinding(StringRef, SMLoc);
   bool parseDirectiveLinkForwarder(StringRef, SMLoc);
+  bool parseDirectiveLinkContract(StringRef, SMLoc);
   bool parseDirectiveSecNum(StringRef, SMLoc);
   bool parseDirectiveSecOffset(StringRef, SMLoc);
 
@@ -762,6 +766,38 @@ bool COFFAsmParser::parseDirectiveLinkForwarder(StringRef, SMLoc) {
   if (parseEOL())
     return true;
   getStreamer().emitCOFFLinkForwarder(Forwarder, Pointer);
+  return false;
+}
+
+/// parseDirectiveLinkContract
+///  ::= .linkcontract owner, symbol, (type|data), "identity", "digest"
+bool COFFAsmParser::parseDirectiveLinkContract(StringRef, SMLoc) {
+  MCSymbol *Owner, *Symbol;
+  StringRef Kind;
+  std::string Identity, Digest, DigestBytes;
+  if (getParser().parseSymbol(Owner))
+    return TokError("expected identifier in directive");
+  if (getParser().parseComma())
+    return true;
+  if (getParser().parseSymbol(Symbol))
+    return TokError("expected identifier in directive");
+  if (getParser().parseComma())
+    return true;
+  SMLoc KindLoc = getLexer().getLoc();
+  if (getParser().parseIdentifier(Kind) || (Kind != "type" && Kind != "data"))
+    return Error(KindLoc, "expected 'type' or 'data'");
+  if (getParser().parseComma() || getParser().parseEscapedString(Identity) ||
+      getParser().parseComma())
+    return true;
+  SMLoc DigestLoc = getLexer().getLoc();
+  if (getParser().parseEscapedString(Digest))
+    return true;
+  if (Digest.size() != 32 || !tryGetFromHex(Digest, DigestBytes))
+    return Error(DigestLoc, "digest must be 32 hexadecimal digits");
+  if (parseEOL())
+    return true;
+  getStreamer().emitCOFFLinkContract(Owner, Symbol, Kind == "data", Identity,
+                                     arrayRefFromStringRef(DigestBytes));
   return false;
 }
 

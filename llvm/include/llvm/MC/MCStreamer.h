@@ -651,6 +651,15 @@ public:
   /// membership tag in the word before its marker, not a second type.
   virtual void emitCOFFKCFIMemberTag(const MCSymbol *Prefix);
 
+  /// Tells the linker that the section of \p Owner references \p Symbol, and
+  /// that the code there requires the ABI contract named \p Identity, whose
+  /// digest is \p Digest, of the image that provides \p Symbol: the layout of
+  /// a type or, with \p IsData, of the type of the datum \p Identity names.
+  virtual void emitCOFFLinkContract(const MCSymbol *Owner,
+                                    const MCSymbol *Symbol, bool IsData,
+                                    StringRef Identity,
+                                    ArrayRef<uint8_t> Digest);
+
   /// Emits an lcomm directive with XCOFF csect information.
   ///
   /// \param LabelSym - Label on the block of storage.

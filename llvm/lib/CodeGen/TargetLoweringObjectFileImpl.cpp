@@ -12,6 +12,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
+#include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
@@ -39,6 +41,7 @@
 #include "llvm/IR/GlobalObject.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/GlobalVariable.h"
+#include "llvm/IR/Instruction.h"
 #include "llvm/IR/Mangler.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
@@ -2022,6 +2025,7 @@ void TargetLoweringObjectFileCOFF::emitModuleMetadata(MCStreamer &Streamer,
   }
 
   emitCGProfileMetadata(Streamer, M);
+  emitABIRequirements(Streamer, M);
   emitPseudoProbeDescMetadata(Streamer, M, [](MCStreamer &Streamer) {
     if (MCSymbol *Sym =
             static_cast<MCSectionCOFF *>(Streamer.getCurrentSectionOnly())
@@ -2032,6 +2036,78 @@ void TargetLoweringObjectFileCOFF::emitModuleMetadata(MCStreamer &Streamer,
         Streamer.emitLabel(Sym);
       }
   });
+}
+
+// Adds to Owners the emitted functions and variables whose code or data uses
+// V.
+static void collectEmittedUsers(const Value *V,
+                                SmallSetVector<const GlobalObject *, 4> &Owners,
+                                SmallPtrSetImpl<const Value *> &Seen) {
+  for (const User *U : V->users()) {
+    if (!Seen.insert(U).second)
+      continue;
+    const GlobalObject *GO = nullptr;
+    if (const auto *I = dyn_cast<Instruction>(U))
+      GO = I->getFunction();
+    else if (const auto *GV = dyn_cast<GlobalVariable>(U))
+      GO = GV;
+    else if (isa<Constant>(U) && !isa<GlobalValue>(U))
+      collectEmittedUsers(U, Owners, Seen);
+    if (GO && !GO->isDeclarationForLinker())
+      Owners.insert(GO);
+  }
+}
+
+// Emits the ABI contracts that the module's references to symbols another
+// image may provide require, which abi.requirements lists, each operand a
+// symbol followed by its contracts: the layout of a type, !{identity, digest},
+// or of the type of the symbol's own datum, !{digest}. A contract is listed
+// with each section that references the symbol, so that a linker drops it with
+// them, and only while the reference remains and may bind to another image. A
+// reference through the symbol's import pointer names the pointer.
+void TargetLoweringObjectFileCOFF::emitABIRequirements(MCStreamer &Streamer,
+                                                       Module &M) const {
+  NamedMDNode *Requirements = M.getNamedMetadata("abi.requirements");
+  if (!Requirements)
+    return;
+  for (const MDNode *Row : Requirements->operands()) {
+    if (Row->getNumOperands() < 2)
+      continue;
+    auto *GV = mdconst::dyn_extract_or_null<GlobalValue>(Row->getOperand(0));
+    if (!GV || GV->use_empty() || GV->hasLocalLinkage() || GV->isDSOLocal())
+      continue;
+    SmallSetVector<const GlobalObject *, 4> Owners;
+    SmallPtrSet<const Value *, 8> Seen;
+    collectEmittedUsers(GV, Owners, Seen);
+    if (Owners.empty())
+      continue;
+    SmallString<128> Name;
+    getMangler().getNameWithPrefix(Name, GV, /*CannotUsePrivateLabel=*/false);
+    const MCSymbol *Symbol = getContext().lookupSymbol("__imp_" + Name);
+    if (!Symbol)
+      Symbol = TM->getSymbol(GV);
+    StringRef DataIdentity = GlobalValue::dropLLVMManglingEscape(GV->getName());
+    for (const MDOperand &Op : drop_begin(Row->operands())) {
+      auto *Contract = dyn_cast_or_null<MDNode>(Op.get());
+      if (!Contract || Contract->getNumOperands() < 1 ||
+          Contract->getNumOperands() > 2)
+        continue;
+      auto *Digest = dyn_cast_or_null<MDString>(
+          Contract->getOperand(Contract->getNumOperands() - 1).get());
+      auto *Identity =
+          Contract->getNumOperands() == 2
+              ? dyn_cast_or_null<MDString>(Contract->getOperand(0).get())
+              : nullptr;
+      if (!Digest || Digest->getLength() != 16 ||
+          (Contract->getNumOperands() == 2 && !Identity))
+        continue;
+      for (const GlobalObject *Owner : Owners)
+        Streamer.emitCOFFLinkContract(
+            TM->getSymbol(Owner), Symbol, /*IsData=*/!Identity,
+            Identity ? Identity->getString() : DataIdentity,
+            arrayRefFromStringRef(Digest->getString()));
+    }
+  }
 }
 
 void TargetLoweringObjectFileCOFF::emitLinkerDirectives(

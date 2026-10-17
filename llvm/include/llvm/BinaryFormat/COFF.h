@@ -22,9 +22,11 @@
 #ifndef LLVM_BINARYFORMAT_COFF_H
 #define LLVM_BINARYFORMAT_COFF_H
 
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/DataTypes.h"
 #include <cassert>
+#include <string>
 
 namespace llvm {
 namespace COFF {
@@ -159,6 +161,26 @@ enum LinkRecordKind : uint64_t {
   // import pointer it jumps through. A linker that does not know the kind
   // keeps the forwarders, which are correct as they are.
   LinkRecordForwarders = 6,
+
+  // The ABI contracts that the object's references to symbols another image
+  // may provide require, for a linker that checks each against the contracts
+  // the symbol's image provides:
+  //
+  //   payload  := count:ULEB128 contract{count} group*
+  //   contract := flags:ULEB128 size:ULEB128 identity{size} digest:u8[16]
+  //   group    := section:ULEB128 count:ULEB128 row{count}
+  //   row      := symbol:ULEB128 count:ULEB128 contract:ULEB128{count}
+  //
+  // A contract is the layout of a type, whose identity is its Itanium mangling
+  // as a type_info name spells it, or, with flags bit 0 set, that of the type
+  // of a datum, whose identity is the datum's symbol name; its digest is the
+  // first 16 bytes of the SHA-256 digest of the contract's canonical form.
+  // section is as for LinkRecordSites, a section that references symbol, so
+  // that a row applies only while the linker keeps the section, and each
+  // section appears once; a row's contracts are indices of contracts. The kind
+  // is critical, since a linker that ignored it would let the object bind to a
+  // layout it was not compiled for.
+  LinkRecordContracts = 7,
 
   // The KCFI thunks the object defines, each a function in a COMDAT that
   // checks the KCFI type of a call's target, for a linker that replaces them
@@ -1212,6 +1234,12 @@ inline bool isReservedSectionNumber(int32_t SectionNumber) {
 /// Encode section name based on string table offset.
 /// The size of Out must be at least COFF::NameSize.
 LLVM_ABI bool encodeSectionName(char *Out, uint64_t Offset);
+
+/// The locator of an ABI contract's identity, by which a DLL's exports name
+/// the contract together with its digest: the 64-bit xxh3 hash of the identity,
+/// little-endian, in unpadded base64url, 11 characters. It only locates the
+/// contract, whose digest covers the identity as well.
+LLVM_ABI std::string getABIContractLocator(StringRef Identity);
 
 } // End namespace COFF.
 } // End namespace llvm.

@@ -68,6 +68,9 @@ public:
   void emitCOFFLinkForwarder(const MCSymbol *Forwarder,
                              const MCSymbol *Pointer) override;
   void emitCOFFKCFIMemberTag(const MCSymbol *Prefix) override;
+  void emitCOFFLinkContract(const MCSymbol *Owner, const MCSymbol *Symbol,
+                            bool IsData, StringRef Identity,
+                            ArrayRef<uint8_t> Digest) override;
   void emitCommonSymbol(MCSymbol *Symbol, uint64_t Size,
                         Align ByteAlignment) override;
   void emitLocalCommonSymbol(MCSymbol *Symbol, uint64_t Size,

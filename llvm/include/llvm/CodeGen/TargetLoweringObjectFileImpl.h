@@ -224,6 +224,10 @@ public:
 
   void emitLinkerDirectives(MCStreamer &Streamer, Module &M) const override;
 
+  /// Emit the ABI contracts that the module's references to symbols of other
+  /// images require, which the abi.requirements metadata lists.
+  void emitABIRequirements(MCStreamer &Streamer, Module &M) const;
+
   MCSection *getStaticCtorSection(unsigned Priority,
                                   const MCSymbol *KeySym) const override;
   MCSection *getStaticDtorSection(unsigned Priority,
