@@ -202,6 +202,23 @@ static bool isValueRead(const MachineInstr &MI, Register Reg,
   return true;
 }
 
+// Whether Opcode, a load at an unsigned offset from its base, has a form that
+// reads from an offset from its own address instead, which a linker may give
+// it where it finds the data near enough.
+static bool hasLiteralForm(unsigned Opcode) {
+  switch (Opcode) {
+  case AArch64::LDRWui:
+  case AArch64::LDRXui:
+  case AArch64::LDRSWui:
+  case AArch64::LDRSui:
+  case AArch64::LDRDui:
+  case AArch64::LDRQui:
+    return true;
+  default:
+    return false;
+  }
+}
+
 // Whether MI, which follows Load in its block, adds an immediate to Reg, or
 // subtracts one from it, into a register that nothing between the two reads
 // or writes: the linker computes the sum at Load.
@@ -270,16 +287,15 @@ bool AArch64WindowsImportFusion::runOnMachineFunction(MachineFunction &MF) {
     return false;
   const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
 
-  // The loads of import pointers of data into the register that holds the
-  // pointer's page.
+  // The loads of import pointers of data, into the register that holds the
+  // pointer's page or another.
   SmallVector<MachineInstr *, 8> Loads;
   // The data whose import pointers an instruction other than such a load, or
   // an adrp of a pointer's page, names.
   SmallPtrSet<const GlobalValue *, 4> OtherUses;
   for (MachineBasicBlock &MBB : MF) {
     for (MachineInstr &MI : MBB) {
-      if (MI.getOpcode() == AArch64::LDRXui && !MI.isBundled() &&
-          MI.getOperand(0).getReg() == MI.getOperand(1).getReg())
+      if (MI.getOpcode() == AArch64::LDRXui && !MI.isBundled())
         if (const GlobalValue *GV =
                 getImportPointer(MI.getOperand(2), AArch64II::MO_PAGEOFF))
           if (isData(GV)) {
@@ -303,23 +319,34 @@ bool AArch64WindowsImportFusion::runOnMachineFunction(MachineFunction &MF) {
   using UseKind = AArch64FunctionInfo::ImportFusedUseKind;
   bool Changed = false;
   // The loads of import pointers of data that never changes, each with the
-  // adrp in its section that only it reads, and the data some of whose loads
-  // have no such adrp, which the linker would not find.
+  // adrp in its section whose every use is a load of the pointer, which
+  // several share where the adrp was hoisted out of a loop; the data some of
+  // whose loads have no such adrp, which the linker would not find; and the
+  // loads whose registers only reads of memory read.
+  SmallPtrSet<MachineInstr *, 8> LoadSet(llvm::from_range, Loads);
   SmallVector<std::pair<MachineInstr *, MachineInstr *>, 4> Paired;
   SmallPtrSet<const GlobalValue *, 4> Unpaired;
+  SmallPtrSet<MachineInstr *, 4> ReadOnly;
+  DenseMap<MachineInstr *, SmallPtrSet<MachineInstr *, 2>> AdrpLoads;
   for (MachineInstr *Load : Loads) {
     Register Reg = Load->getOperand(0).getReg();
+    Register Base = Load->getOperand(1).getReg();
     const GlobalValue *GV = Load->getOperand(2).getGlobal();
-    // The adrp of the pointer's page, which only this load reads.
-    MachineInstr *Adrp = RDI.getUniqueReachingMIDef(Load, Reg);
-    SmallPtrSet<MachineInstr *, 4> AdrpUses;
-    if (Adrp && Adrp->getOpcode() == AArch64::ADRP &&
+    MachineInstr *Adrp = RDI.getUniqueReachingMIDef(Load, Base);
+    SmallPtrSet<MachineInstr *, 2> &AdrpUses = AdrpLoads[Adrp];
+    if (AdrpUses.empty() && Adrp && Adrp->getOpcode() == AArch64::ADRP &&
         getImportPointer(Adrp->getOperand(1), AArch64II::MO_PAGE) == GV)
-      RDI.getGlobalUses(Adrp, Reg, AdrpUses);
-    if (AdrpUses.size() != 1 || !AdrpUses.contains(Load)) {
+      RDI.getGlobalUses(Adrp, Base, AdrpUses);
+    if (AdrpUses.empty() || !all_of(AdrpUses, [&](MachineInstr *Use) {
+          return LoadSet.contains(Use) &&
+                 Use->getOperand(1).getReg() == Base &&
+                 Use->getOperand(2).getGlobal() == GV &&
+                 RDI.getUniqueReachingMIDef(Use, Base) == Adrp;
+        })) {
       Unpaired.insert(GV);
       continue;
     }
+    bool OwnAdrp = AdrpUses.size() == 1;
     if (isImmutableData(GV)) {
       if (Adrp->getParent()->getSectionID() ==
           Load->getParent()->getSectionID())
@@ -336,12 +363,12 @@ bool AArch64WindowsImportFusion::runOnMachineFunction(MachineFunction &MF) {
     if (!Uses.empty() && !Paired.empty() && Paired.back().first == Load &&
         all_of(Uses, [&](MachineInstr *Use) {
           return isValueRead(*Use, Reg, TRI);
-        })) {
-      FI->addImportValueOnlyLoad(Load, Adrp);
-      ++NumValueOnly;
-      Changed = true;
-    }
-    if (Uses.empty() || any_of(Uses, [&](MachineInstr *Use) {
+        }))
+      ReadOnly.insert(Load);
+    // The accesses take the data's offset in its page, or the add folds into
+    // the load, only where the load's register is the adrp's alone.
+    if (!OwnAdrp || Reg != Base || Uses.empty() ||
+        any_of(Uses, [&](MachineInstr *Use) {
           return Use->getParent()->getSectionID() !=
                      Load->getParent()->getSectionID() ||
                  RDI.getUniqueReachingMIDef(Use, Reg) != Load;
@@ -368,10 +395,13 @@ bool AArch64WindowsImportFusion::runOnMachineFunction(MachineFunction &MF) {
     Changed = true;
   }
 
-  // Where the function only reads data that never changes through its
-  // address, or compares addresses within it, every load of the data's import
-  // pointer may read the image's own copy, all of them together, so that
-  // addresses that different loads lead to still compare as before.
+  // Where only reads of memory read the address in the register of every
+  // load that an adrp gives the page, the loads may take the address of the
+  // image's own copy, all of them together, since the linker makes the adrp
+  // give the copy's page. Where the function only reads data that never
+  // changes through its address, or compares addresses within it, every load
+  // of the data's import pointer may, so that addresses that different loads
+  // lead to still compare as before.
   DenseMap<const GlobalValue *, bool> ReadOnlyThrough;
   for (auto [Load, Adrp] : Paired) {
     const GlobalValue *GV = Load->getOperand(2).getGlobal();
@@ -381,7 +411,39 @@ bool AArch64WindowsImportFusion::runOnMachineFunction(MachineFunction &MF) {
           !Unpaired.contains(GV) && !OtherUses.contains(GV) &&
           (Load->getOperand(2).getTargetFlags() & AArch64II::MO_DLLIMPORT) &&
           !globalAddressMayBeCapturedIn(GV, MF.getFunction());
-    if (It->second && FI->addImportValueOnlyLoad(Load, Adrp)) {
+    bool AllReadOnly = all_of(AdrpLoads[Adrp], [&](MachineInstr *L) {
+      return ReadOnly.contains(L);
+    });
+    if ((It->second || AllReadOnly) && FI->addImportValueOnlyLoad(Load, Adrp)) {
+      ++NumValueOnly;
+      Changed = true;
+    }
+  }
+
+  // Where a load of such data stays for what else reads its register, each
+  // use that the load alone reaches and that only reads, in a form that a
+  // load from an offset from its own address can take, may read the copy
+  // directly. The load is described, if it is not already, as one that other
+  // instructions read too.
+  for (MachineInstr *Load : Loads) {
+    const MachineOperand &Pointer = Load->getOperand(2);
+    if (FI->getImportValueOnlyLoads().contains(Load) ||
+        !isImmutableData(Pointer.getGlobal()) ||
+        !(Pointer.getTargetFlags() & AArch64II::MO_DLLIMPORT))
+      continue;
+    Register Reg = Load->getOperand(0).getReg();
+    SmallPtrSet<MachineInstr *, 4> Uses;
+    RDI.getGlobalUses(Load, Reg, Uses);
+    for (MachineInstr *Use : Uses) {
+      if (!hasLiteralForm(Use->getOpcode()) ||
+          !isFusibleAccess(*Use, Reg, TRI) || !isValueRead(*Use, Reg, TRI) ||
+          Use->getParent()->getSectionID() !=
+              Load->getParent()->getSectionID() ||
+          RDI.getUniqueReachingMIDef(Use, Reg) != Load)
+        continue;
+      FI->addImportFusedLoad(Load, false);
+      FI->addImportFusedUse(Use, Load, Reg, UseKind::Access);
+      FI->addImportValueOnlyLoad(Use, nullptr);
       ++NumValueOnly;
       Changed = true;
     }

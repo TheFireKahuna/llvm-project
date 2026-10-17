@@ -146,3 +146,17 @@ define void @kept() {
   call void @keeps(ptr @tbl)
   ret void
 }
+
+; Where the load stays, since its address is stored, an access through its
+; register that only reads is described as such, so that the linker may make
+; it read the copy directly while the store keeps reaching the instance.
+; CHECK-LABEL: escapes:
+; CHECK:       .linkvalueonly{{$}}
+; CHECK-NEXT:  .linkfusedaccess .Lfused{{[0-9]+}}, x8
+; CHECK-NEXT:  ldr w0, [x8, #8]
+define i32 @escapes() {
+  store ptr @tbl, ptr @sink
+  %p = getelementptr inbounds i8, ptr @tbl, i64 8
+  %v = load i32, ptr %p
+  ret i32 %v
+}

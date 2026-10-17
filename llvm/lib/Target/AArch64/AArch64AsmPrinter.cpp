@@ -345,7 +345,8 @@ public:
     ImportFusionLabels.clear();
     ImportPageLabels.clear();
     for (auto [Load, Adrp] : AArch64FI->getImportValueOnlyLoads())
-      ImportPageLabels.try_emplace(Adrp, nullptr);
+      if (Adrp)
+        ImportPageLabels.try_emplace(Adrp, nullptr);
     STI = &MF.getSubtarget<AArch64Subtarget>();
 
     SetupMachineFunction(MF);
@@ -4131,10 +4132,14 @@ void AArch64AsmPrinter::emitImportFusion(const MachineInstr &MI) {
     return;
   }
   // The linker looks for the adrp only before the load.
+  // An access that only reads names no adrp.
   if (auto Load = AArch64FI->getImportValueOnlyLoads().find(&MI);
-      Load != AArch64FI->getImportValueOnlyLoads().end())
-    if (MCSymbol *Page = ImportPageLabels[Load->second])
+      Load != AArch64FI->getImportValueOnlyLoads().end()) {
+    if (!Load->second)
+      OutStreamer->emitCOFFLinkValueOnly(nullptr);
+    else if (MCSymbol *Page = ImportPageLabels[Load->second])
       OutStreamer->emitCOFFLinkValueOnly(Page);
+  }
   using UseKind = AArch64FunctionInfo::ImportFusedUseKind;
   auto Use = AArch64FI->getImportFusedUses().find(&MI);
   if (Use != AArch64FI->getImportFusedUses().end()) {

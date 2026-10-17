@@ -654,7 +654,8 @@ private:
   DenseMap<const MachineInstr *, bool> ImportFusedLoads;
   // The loads of import pointers of data whose registers only reads of memory
   // read, which the pass describes to the linker too, each with the adrp that
-  // gives it the pointer's page.
+  // gives it the pointer's page; and, with none, the accesses that only read
+  // through the register of such a load that stays.
   DenseMap<const MachineInstr *, const MachineInstr *> ImportValueOnlyLoads;
 };
 
