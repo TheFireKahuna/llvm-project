@@ -260,6 +260,18 @@ static std::vector<uint32_t> readImportedRecords(COFFLinkerContext &ctx,
   return direct;
 }
 
+StringMap<StringSet<>> getPreemptibleOffers(COFFLinkerContext &ctx,
+                                            bool liveOnly) {
+  StringMap<StringSet<>> offers;
+  Closure closure;
+  for (uint32_t i : readImportedRecords(ctx, closure, liveOnly)) {
+    const Image &image = closure.images[i];
+    if (!image.preemptible.empty())
+      offers[image.name].insert_range(image.preemptible);
+  }
+  return offers;
+}
+
 OverrideRecords readImportedOverrideRecords(COFFLinkerContext &ctx,
                                             ArrayRef<MemoryBufferRef> records,
                                             uint32_t version) {
@@ -383,6 +395,7 @@ chooseVagueOwners(COFFLinkerContext &ctx, const DenseSet<StringRef> &kept) {
     }
   };
   std::vector<uint32_t> delayed;
+  DenseSet<uint32_t> lazy;
   for (uint32_t i : direct) {
     if (ctx.config.delayLoads.contains(closure.images[i].name))
       delayed.push_back(i);
@@ -398,8 +411,10 @@ chooseVagueOwners(COFFLinkerContext &ctx, const DenseSet<StringRef> &kept) {
     }
     if (delayed.empty())
       break;
-    for (uint32_t i : delayed)
+    for (uint32_t i : delayed) {
       visit(i);
+      lazy.insert(i);
+    }
     delayed.clear();
   }
   // The first image to keep each entity preemptible, and how many do.
@@ -413,6 +428,11 @@ chooseVagueOwners(COFFLinkerContext &ctx, const DenseSet<StringRef> &kept) {
   for (auto &[name, keeper] : keepers) {
     bool own = kept.contains(name);
     if (keeper.second + own < 2)
+      continue;
+    // An entity that only delay-loaded DLLs keep has no instance at start-up
+    // for the executable to import; the first of them to load keeps its own,
+    // and the others' searches find it.
+    if (!own && lazy.contains(keeper.first))
       continue;
     owners.emplace_back(name.str(), own ? std::string()
                                         : closure.images[keeper.first].name);

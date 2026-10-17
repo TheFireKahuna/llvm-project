@@ -58,6 +58,12 @@
 # RUN:   check.obj b.lib a.lib -delayload:b.dll -out:d.exe -verbose 2>&1 | \
 # RUN:   FileCheck --check-prefix=OWNER %s
 
+## Nothing is imported for an entity only delay-loaded DLLs keep: the first
+## to load keeps its instance, which the other's search finds.
+# RUN: lld-link -import-slots -entry:main -subsystem:console main.obj \
+# RUN:   check.obj a.lib b.lib -delayload:a.dll -delayload:b.dll -out:l.exe
+# RUN: llvm-readobj --coff-imports l.exe | FileCheck --check-prefix=KEEP %s
+
 ## A DLL linked -Bsymbolic keeps its copy, and the pair is reported.
 # RUN: mkdir bsym
 # RUN: lld-link -import-slots -dll -noentry b.obj crt.obj ntdll.lib \
@@ -148,4 +154,5 @@ main:
 #--- ntdll.def
 LIBRARY ntdll.dll
 EXPORTS
+  LdrAddRefDll
   NtProtectVirtualMemory

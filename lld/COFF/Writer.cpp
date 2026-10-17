@@ -812,6 +812,7 @@ void Writer::run() {
     slots.bind();
     slots.createResidualFill();
     slots.createOverrideCellFill();
+    slots.createVagueSearch();
     slots.createThreadLocalSlotCopy();
     slots.createThreadLocalSlotCopyCall();
     if (ctx.kcfi.listsImports || !ctx.kcfi.listedImports.empty())
@@ -1232,8 +1233,9 @@ void Writer::createSections() {
   }
   // Right after the table's start, ahead of every other initializer: a DLL's
   // run of the executable's copy of its thread-local slots, the fill of the
-  // overridable-default cells, then the residual fill, which seals the section
-  // of the cells that share a chunk with residual words.
+  // overridable-default cells, the search of the loaded modules for the
+  // instances of its vague entities, then the residual fill, which seals the
+  // section of the cells that share a chunk with residual words.
   if (Chunk *call = slots.getThreadLocalSlotCopyCall()) {
     createPartialSection(".text", call->getOutputCharacteristics())
         ->chunks.push_back(call);
@@ -1251,6 +1253,20 @@ void Writer::createSections() {
     createPartialSection(".CRT$XIA$fill", data | r)
         ->chunks.push_back(slots.getOverrideCellFillPointer());
   }
+  if (Chunk *fill = slots.getVagueSearchFill()) {
+    createPartialSection(".text", fill->getOutputCharacteristics())
+        ->chunks.push_back(fill);
+    createPartialSection(".CRT$XIA$fill", data | r)
+        ->chunks.push_back(slots.getVagueSearchFillPointer());
+    createPartialSection(".rdata", data | r)
+        ->chunks.push_back(slots.getVagueBindList());
+    createPartialSection(".xdata", data | r)
+        ->chunks.push_back(slots.getVagueSearchFillUnwind());
+    createPartialSection(".pdata", data | r)
+        ->chunks.push_back(slots.getVagueSearchFillPdata());
+  }
+  if (Chunk *table = slots.getVagueOfferTable())
+    createPartialSection(".rdata", data | r)->chunks.push_back(table);
   if (Chunk *fill = slots.getFill()) {
     createPartialSection(".text", fill->getOutputCharacteristics())
         ->chunks.push_back(fill);
@@ -2345,6 +2361,10 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
       write32le(stub + 0x30, 0x7E1A5C03);
       write32le(stub + 0x34, state->getRVA());
     }
+    if (Chunk *table = slots.getVagueOfferTable()) {
+      write32le(stub + vagueOfferTableOffset, vagueOfferTableTag);
+      write32le(stub + vagueOfferTableOffset + 4, table->getRVA());
+    }
     memcpy(stub + programOffset, dosProgram, sizeof(dosProgram));
     buf = stub + dosStubSize;
   }
@@ -3055,6 +3075,10 @@ void Writer::createGuardCFTables() {
 
   // The C initializer table calls the overridable-default cell fill.
   if (Chunk *fill = slots.getOverrideCellFill())
+    addressTakenSyms.insert({fill, 0});
+
+  // The C initializer table calls the search for a DLL's vague entities.
+  if (Chunk *fill = slots.getVagueSearchFill())
     addressTakenSyms.insert({fill, 0});
 
   // The TLS callback array, and the DLLs the executable's header names it to,

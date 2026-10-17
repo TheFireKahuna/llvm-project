@@ -11,7 +11,9 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Object/ArchiveWriter.h"
 #include "llvm/Support/MemoryBufferRef.h"
 #include <optional>
@@ -42,6 +44,12 @@ void checkVagueEntities(COFFLinkerContext &ctx, llvm::StringRef imageName);
 std::vector<std::pair<std::string, std::string>>
 chooseVagueOwners(COFFLinkerContext &ctx,
                   const llvm::DenseSet<llvm::StringRef> &kept);
+
+// Under -import-slots, the vague entities that each DLL the image imports from
+// keeps preemptible, as its record describes them, by the DLL's name in lower
+// case; before liveness is decided, of every DLL an import was read from.
+llvm::StringMap<llvm::StringSet<>> getPreemptibleOffers(COFFLinkerContext &ctx,
+                                                        bool liveOnly = true);
 
 // The overridable defaults that the DLLs whose records records, the record
 // members of import libraries, describe defining: by name, with no fixed slot

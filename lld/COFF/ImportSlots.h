@@ -35,6 +35,14 @@ DefinedImportData *getAddressedImport(Symbol *s);
 inline constexpr uint32_t threadLocalSlotCopyOffset = 0x1C;
 inline constexpr uint32_t threadLocalSlotCopyTag = 0x9E3779B9;
 
+// A DLL whose vague entities another image may bind to at run time, or that
+// delay-loads a DLL, names its table of them in the reserved words of its MZ
+// header, as {tag u32, rva u32} at this offset, where a DLL that the
+// executable's link did not see finds it through the loader's list of modules.
+// An executable keeps its exit-list state's locator here instead.
+inline constexpr uint32_t vagueOfferTableOffset = 0x30;
+inline constexpr uint32_t vagueOfferTableTag = 0x6C8E9CF5;
+
 // The addend that the word of rel, an address as wide as the image's pointers,
 // holds; none if the word extends past the end of sc.
 std::optional<int64_t> getAddressWordAddend(SectionChunk *sc,
@@ -74,6 +82,12 @@ public:
   // Builds the fill of a DLL's overridable-default cells, the words through
   // which it reaches the defaults it imports.
   void createOverrideCellFill();
+  // Builds a DLL's table of the vague entities it keeps preemptible, through
+  // which a DLL loaded at run time binds to its instances, and, for the cells
+  // the fill of its overridable-default cells writes from the executable's
+  // table, the search of the loaded modules that binds them where that table
+  // does not name them.
+  void createVagueSearch();
   // Builds the copy of an executable's thread-local import slots into the main
   // thread's block.
   void createThreadLocalSlotCopy();
@@ -109,6 +123,12 @@ public:
   Chunk *getOverrideCellFillPointer() const { return overrideCellFillPointer; }
   Chunk *getOverrideCellFillUnwind() const { return overrideCellFillUnwind; }
   Chunk *getOverrideCellFillPdata() const { return overrideCellFillPdata; }
+  Chunk *getVagueSearchFill() const { return vagueSearchFill; }
+  Chunk *getVagueSearchFillPointer() const { return vagueSearchFillPointer; }
+  Chunk *getVagueSearchFillUnwind() const { return vagueSearchFillUnwind; }
+  Chunk *getVagueSearchFillPdata() const { return vagueSearchFillPdata; }
+  Chunk *getVagueBindList() const { return vagueBindList; }
+  Chunk *getVagueOfferTable() const { return vagueOfferTable; }
   Chunk *getThreadLocalSlotCopy() const { return threadLocalSlotCopy; }
   Chunk *getThreadLocalSlotCopyPointer() const {
     return threadLocalSlotCopyPointer;
@@ -172,6 +192,16 @@ private:
   Chunk *overrideCellFillPointer = nullptr;
   Chunk *overrideCellFillUnwind = nullptr;
   Chunk *overrideCellFillPdata = nullptr;
+  // The search of the loaded modules for the instances of this DLL's vague
+  // entities, its pointer in the C initializer table, its unwind information
+  // and exception table entry, and the list of the cells it writes; and the
+  // table through which another DLL's search finds this DLL's instances.
+  Chunk *vagueSearchFill = nullptr;
+  Chunk *vagueSearchFillPointer = nullptr;
+  Chunk *vagueSearchFillUnwind = nullptr;
+  Chunk *vagueSearchFillPdata = nullptr;
+  Chunk *vagueBindList = nullptr;
+  Chunk *vagueOfferTable = nullptr;
   // The copy of an executable's thread-local slots and its pointer in the C
   // initializer table.
   Chunk *threadLocalSlotCopy = nullptr;

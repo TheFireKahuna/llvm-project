@@ -611,6 +611,30 @@ bool SymbolTable::loadInteriorImports() {
         runTimeLazies.push_back(l);
   }
   bool canSeal = machine == AMD64 || machine == ARM64;
+  // A DLL that reaches vague entities through cells binds them, when loaded
+  // outside the executable's link, by a search of the loaded modules, which
+  // pins the module it binds to and writes the cells between two protection
+  // calls: those it keeps preemptible, and those the DLLs it imports from do.
+  if (canSeal && ctx.config.dll && ctx.config.importSlots) {
+    isPreemptibleVagueEntity(nullptr); // which computes the set
+    bool cells = !preemptibleVagueEntities->empty();
+    if (!cells && isa_and_nonnull<Defined>(findUnderscore("__xi_a"))) {
+      StringMap<StringSet<>> offers = getPreemptibleOffers(ctx, false);
+      cells = !offers.empty() &&
+              llvm::any_of(ctx.importFileInstances, [&](ImportFile *f) {
+                auto it = offers.find(StringRef(f->dllName).lower());
+                return &f->symtab == this && f->impSym && it != offers.end() &&
+                       it->second.contains(
+                           f->impSym->getName().drop_front(strlen("__imp_")));
+              });
+    }
+    if (cells)
+      for (StringRef name :
+           {"__imp_LdrAddRefDll", "__imp_NtProtectVirtualMemory"})
+        if (Symbol *l = find(name);
+            l && l->isLazy() && !l->pendingArchiveLoad && isLazyImport(l))
+          runTimeLazies.push_back(l);
+  }
   // The import that a word holding the address of s takes in place, if any.
   auto getImport = [&](Symbol *s) -> DefinedImportData * {
     DefinedImportData *imp = getAddressedImport(s);
