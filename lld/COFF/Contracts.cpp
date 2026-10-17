@@ -58,9 +58,19 @@ static std::string getWitnessName(bool data, StringRef locator,
   return (getWitnessPrefix(data) + locator + "$" + digest).str();
 }
 
+// What follows a type_info object's name in the name by which a DLL that owns
+// the object exports it qualified by its type's contract.
+static constexpr StringLiteral qualifiedTypeInfoTag = "$abi$";
+
+static std::string getQualifiedTypeInfoName(StringRef identity,
+                                            StringRef digest) {
+  return ("_ZTI" + identity + qualifiedTypeInfoTag + digest).str();
+}
+
 bool lld::coff::isContractWitnessName(StringRef name) {
   return name.starts_with(getWitnessPrefix(false)) ||
-         name.starts_with(getWitnessPrefix(true));
+         name.starts_with(getWitnessPrefix(true)) ||
+         (isTypeInfoName(name) && name.contains(qualifiedTypeInfoTag));
 }
 
 // The identity of a contract as a diagnostic names it: a type, which the
@@ -270,6 +280,46 @@ void lld::coff::addContractWitnessExports(COFFLinkerContext &ctx) {
       for (StringRef name : names)
         if (seen.insert(name).second)
           witnesses.push_back(name);
+
+  // A type_info object that the image owns, which it exports as its own
+  // definition rather than offering it, is exported under the name that its
+  // type's contract qualifies too, in place of the type's witness: an import of
+  // the object binds that name, which its import library gives it, and so
+  // checks the contract with no import of its own. The plain name stays in the
+  // export table.
+  StringMap<StringRef> typeDigests;
+  for (StringRef name : witnesses)
+    if (StringRef row = name; row.consume_front(getWitnessPrefix(false)))
+      typeDigests[row.take_front(locatorSize)] =
+          row.drop_front(locatorSize + 1);
+  StringSet<> replaced;
+  for (size_t i = 0, n = exports.size(); i != n; ++i) {
+    Export &e = exports[i];
+    StringRef name = e.extName.empty() ? e.name : e.extName;
+    if (!isa_and_nonnull<DefinedRegular>(e.sym) ||
+        e.source == ExportSource::ExportAll || e.isPrivate || e.noname ||
+        !e.forwardTo.empty() || !e.exportAs.empty() || !isTypeInfoName(name))
+      continue;
+    StringRef identity = name.drop_front(strlen("_ZTI"));
+    std::string locator = getABIContractLocator(identity);
+    auto it = typeDigests.find(locator);
+    if (it == typeDigests.end())
+      continue;
+    replaced.insert(getWitnessName(/*data=*/false, locator, it->second));
+    Export qualified = e;
+    qualified.extName =
+        saver().save(getQualifiedTypeInfoName(identity, it->second));
+    qualified.isPrivate = true;
+    e.isPrivate = true;
+    Export alias;
+    alias.name = name;
+    alias.exportAs = qualified.extName;
+    alias.data = e.data;
+    ctx.symtab.exportAsAliases.push_back(alias);
+    exports.push_back(qualified);
+  }
+  llvm::erase_if(witnesses,
+                 [&](StringRef name) { return replaced.contains(name); });
   if (witnesses.empty())
     return;
 
@@ -294,19 +344,23 @@ bool lld::coff::isContractWitness(COFFLinkerContext &ctx, const Defined *sym) {
 // The import library of a DLL with witnesses holds the import of each, named
 // for the DLL, <witness>$<dll>, and exported as the witness, so that no two
 // DLLs' meet in an importer's symbol table. A witness is imported as code, so
-// that the delay-load descriptor of a DLL may hold it.
+// that the delay-load descriptor of a DLL may hold it. A type_info object's
+// qualified name is such a witness too, for an image that does not import the
+// object.
 void lld::coff::addContractWitnessImports(
     COFFLinkerContext &ctx, StringRef dllName,
     std::vector<COFFShortExport> &exports) {
-  if (!ctx.contracts.witness)
+  if (!ctx.config.importSlots || ctx.hybridSymtab)
     return;
   std::string dll = dllName.lower();
   for (size_t i = 0, e = exports.size(); i != e; ++i) {
-    if (!exports[i].Private || !isContractWitnessName(exports[i].Name))
+    std::string name =
+        exports[i].ExtName.empty() ? exports[i].Name : exports[i].ExtName;
+    if (!exports[i].Private || !isContractWitnessName(name))
       continue;
     COFFShortExport w;
-    w.Name = exports[i].Name + "$" + dll;
-    w.ExportAs = exports[i].Name;
+    w.Name = name + "$" + dll;
+    w.ExportAs = name;
     w.Ordinal = exports[i].Ordinal;
     exports.push_back(std::move(w));
   }
@@ -337,35 +391,64 @@ void lld::coff::bindContractWitnesses(COFFLinkerContext &ctx) {
         continue;
       std::string dll = imp->getDLLName().lower();
       for (const ContractState::Contract *c : r.contracts) {
+        // A DLL that owns the type's type_info object vouches for the type by
+        // the object's qualified name, which an import of the object already
+        // binds.
+        std::string qualified;
+        if (!c->data && !c->identity.empty()) {
+          qualified = getQualifiedTypeInfoName(c->identity, c->digest);
+          auto *ti = dyn_cast_or_null<DefinedImportData>(
+              ctx.symtab.find(("__imp__ZTI" + c->identity).str()));
+          if (ti && ti->file->live && ti->getExternalName() == qualified &&
+              ti->getDLLName().equals_insensitive(dll))
+            continue;
+        }
         std::string name = getWitnessName(c->data, c->locator, c->digest);
-        std::string impName = "__imp_" + name + "$" + dll;
-        if (!bound.insert(impName).second)
-          continue;
-        Symbol *s = ctx.symtab.find(impName);
-        if (auto *lazy = dyn_cast_or_null<LazyArchive>(s)) {
-          Log(ctx) << "Importing " << name << " from " << imp->getDLLName()
-                   << " for " << file;
-          auto *impFile = make<ImportFile>(ctx, lazy->getMemberBuffer());
-          ctx.driver.addFile(impFile);
-          impFile->live = true;
-          continue;
+        bool vouched = false;
+        for (StringRef witness : {StringRef(qualified), StringRef(name)}) {
+          if (witness.empty())
+            continue;
+          std::string impName = ("__imp_" + witness + "$" + dll).str();
+          if (bound.contains(impName)) {
+            vouched = true;
+            break;
+          }
+          Symbol *s = ctx.symtab.find(impName);
+          if (auto *lazy = dyn_cast_or_null<LazyArchive>(s)) {
+            Log(ctx) << "Importing " << witness << " from " << imp->getDLLName()
+                     << " for " << file;
+            auto *impFile = make<ImportFile>(ctx, lazy->getMemberBuffer());
+            ctx.driver.addFile(impFile);
+            impFile->live = true;
+            vouched = true;
+          } else if (auto *w = dyn_cast_or_null<DefinedImportData>(s)) {
+            w->file->live = true;
+            vouched = true;
+          }
+          if (vouched) {
+            bound.insert(impName);
+            break;
+          }
         }
-        if (auto *witness = dyn_cast_or_null<DefinedImportData>(s)) {
-          witness->file->live = true;
-          continue;
-        }
-
         // A DLL that exports no witness for the identity does not vouch for
         // it; one that exports a witness of another contract was built with
-        // another layout.
-        std::string prefix =
-            ("__imp_" + getWitnessPrefix(c->data) + c->locator + "$").str();
+        // another layout, which is reported once.
         std::string suffix = "$" + dll;
-        bool other = llvm::any_of(
-            ctx.symtab.getArchiveSymbolNames(prefix), [&](StringRef n) {
-              return n.size() == prefix.size() + digestSize + suffix.size() &&
-                     n.ends_with_insensitive(suffix);
-            });
+        if (vouched || !bound.insert("__imp_" + name + suffix).second)
+          continue;
+        auto hasOther = [&](const std::string &prefix) {
+          return llvm::any_of(
+              ctx.symtab.getArchiveSymbolNames(prefix), [&](StringRef n) {
+                return n.size() == prefix.size() + digestSize + suffix.size() &&
+                       n.ends_with_insensitive(suffix);
+              });
+        };
+        bool other =
+            hasOther(("__imp_" + getWitnessPrefix(c->data) + c->locator + "$")
+                         .str()) ||
+            (!qualified.empty() &&
+             hasOther(
+                 ("__imp__ZTI" + c->identity + qualifiedTypeInfoTag).str()));
         if (other)
           Err(ctx) << "ABI mismatch for "
                    << describe(ctx, c->data, c->identity, c->locator) << ": "

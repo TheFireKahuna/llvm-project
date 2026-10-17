@@ -79,14 +79,17 @@ void addContractProvides(COFFLinkerContext &ctx, InputFile *file,
 bool readContractRequirements(ObjFile *file, ArrayRef<uint8_t> payload);
 
 // A DLL exports a witness of each contract that the objects whose definitions
-// it exports provide.
+// it exports provide, or the type_info object it owns of a type under the name
+// that the type's contract qualifies.
 void addContractWitnessExports(COFFLinkerContext &ctx);
 
 // Whether e is the export of a witness, which shares its ordinal with every
 // other.
 bool isContractWitness(COFFLinkerContext &ctx, const Defined *sym);
 
-// Whether name is that of a witness, which code never calls.
+// Whether name is that of a witness, which code never calls: a standalone one,
+// or a type_info object's name qualified by its type's contract, under which a
+// DLL that owns the object exports it too.
 bool isContractWitnessName(StringRef name);
 
 // Adds to the import library of a DLL, whose exports, as the writer would put
