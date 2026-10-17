@@ -32707,8 +32707,7 @@ void X86TargetLowering::emitBitTestAtomicRMWIntrinsic(AtomicRMWInst *AI) const {
     break;
   }
   Instruction *I = AI->user_back();
-  Value *Addr = Builder.CreatePointerCast(AI->getPointerOperand(),
-                                          PointerType::getUnqual(Ctx));
+  Value *Addr = AI->getPointerOperand();
   Value *Result = nullptr;
   auto BitTested = FindSingleBitChange(AI->getValOperand());
   assert(BitTested.first != nullptr);
@@ -32717,7 +32716,7 @@ void X86TargetLowering::emitBitTestAtomicRMWIntrinsic(AtomicRMWInst *AI) const {
     auto *C = cast<ConstantInt>(I->getOperand(I->getOperand(0) == AI ? 1 : 0));
 
     unsigned Imm = llvm::countr_zero(C->getZExtValue());
-    Result = Builder.CreateIntrinsic(IID_C, AI->getType(),
+    Result = Builder.CreateIntrinsic(IID_C, {AI->getType(), Addr->getType()},
                                      {Addr, Builder.getInt8(Imm)});
   } else {
     assert(BitTested.second == ShiftBit || BitTested.second == NotShiftBit);
@@ -32736,7 +32735,8 @@ void X86TargetLowering::emitBitTestAtomicRMWIntrinsic(AtomicRMWInst *AI) const {
     // << (X % sizeof_bits(X)) we can drop the shift mask and AGEN in
     // favor of just a raw BT{S|R|C}.
 
-    Result = Builder.CreateIntrinsic(IID_I, AI->getType(), {Addr, BitPos});
+    Result = Builder.CreateIntrinsic(IID_I, {Addr->getType(), AI->getType()},
+                                     {Addr, BitPos});
     Result = Builder.CreateZExtOrTrunc(Result, AI->getType());
 
     // If the result is only used for zero/non-zero status then we don't need to
@@ -32965,10 +32965,9 @@ void X86TargetLowering::emitCmpArithAtomicRMWIntrinsic(
     IID = Intrinsic::x86_atomic_xor_cc;
     break;
   }
-  Value *Addr = Builder.CreatePointerCast(AI->getPointerOperand(),
-                                          PointerType::getUnqual(Ctx));
+  Value *Addr = AI->getPointerOperand();
   Value *Call = Builder.CreateIntrinsic(
-      IID, AI->getType(),
+      IID, {Addr->getType(), AI->getType()},
       {Addr, AI->getValOperand(), Builder.getInt32((unsigned)CC)});
   Value *Result = Builder.CreateTrunc(Call, Type::getInt1Ty(Ctx));
   ICI->replaceAllUsesWith(Result);
