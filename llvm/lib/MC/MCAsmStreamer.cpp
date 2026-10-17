@@ -342,6 +342,7 @@ public:
   void emitCOFFLinkFusedRead() override;
   void emitCOFFLinkFusedAccess(const MCSymbol *Load, MCRegister Reg) override;
   void emitCOFFLinkFusedAdd(const MCSymbol *Load, MCRegister Reg) override;
+  void emitCOFFLinkValueOnly(const MCSymbol *Page) override;
   void emitXCOFFLocalCommonSymbol(MCSymbol *LabelSym, uint64_t Size,
                                   MCSymbol *CsectSym, Align Alignment) override;
   void emitXCOFFSymbolLinkageWithVisibility(MCSymbol *Symbol,
@@ -1170,6 +1171,15 @@ void MCAsmStreamer::emitCOFFLinkFusedAdd(const MCSymbol *Load, MCRegister Reg) {
   Load->print(OS, MAI);
   OS << ", ";
   InstPrinter->printRegName(OS, Reg);
+  EmitEOL();
+}
+
+void MCAsmStreamer::emitCOFFLinkValueOnly(const MCSymbol *Page) {
+  OS << "\t.linkvalueonly";
+  if (Page) {
+    OS << '\t';
+    Page->print(OS, MAI);
+  }
   EmitEOL();
 }
 

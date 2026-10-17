@@ -102,6 +102,8 @@ class COFFAsmParser : public MCAsmParserExtension {
         ".linkfusedaccess");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFusedAccess>(
         ".linkfusedadd");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkValueOnly>(
+        ".linkvalueonly");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFact>(
         ".linkprotecteddelayiat");
 
@@ -177,6 +179,7 @@ class COFFAsmParser : public MCAsmParserExtension {
   bool parseDirectiveLinkFusedCall(StringRef, SMLoc);
   bool parseDirectiveLinkFusedRead(StringRef, SMLoc);
   bool parseDirectiveLinkFusedAccess(StringRef, SMLoc);
+  bool parseDirectiveLinkValueOnly(StringRef, SMLoc);
   bool parseDirectiveSecNum(StringRef, SMLoc);
   bool parseDirectiveSecOffset(StringRef, SMLoc);
 
@@ -868,6 +871,19 @@ bool COFFAsmParser::parseDirectiveLinkFusedAccess(StringRef Directive, SMLoc) {
     getStreamer().emitCOFFLinkFusedAdd(Load, Reg);
   else
     getStreamer().emitCOFFLinkFusedAccess(Load, Reg);
+  return false;
+}
+
+/// parseDirectiveLinkValueOnly
+///  ::= .linkvalueonly [page]
+bool COFFAsmParser::parseDirectiveLinkValueOnly(StringRef, SMLoc) {
+  MCSymbol *Page = nullptr;
+  if (getLexer().isNot(AsmToken::EndOfStatement) &&
+      getParser().parseSymbol(Page))
+    return TokError("expected identifier in directive");
+  if (parseEOL())
+    return true;
+  getStreamer().emitCOFFLinkValueOnly(Page);
   return false;
 }
 

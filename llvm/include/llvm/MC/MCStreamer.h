@@ -687,6 +687,13 @@ public:
   /// address of data, and adds a constant to it.
   virtual void emitCOFFLinkFusedAdd(const MCSymbol *Load, MCRegister Reg);
 
+  /// Tells the linker that the next instruction, a load of the import pointer
+  /// of data, fills a register that only reads of memory read, as their base,
+  /// so that the load may take the address of the image's own copy of data
+  /// that never changes. On ARM64, \p Page is where the adrp that gives the
+  /// load the pointer's page begins, and is null elsewhere.
+  virtual void emitCOFFLinkValueOnly(const MCSymbol *Page);
+
   /// Emits an lcomm directive with XCOFF csect information.
   ///
   /// \param LabelSym - Label on the block of storage.

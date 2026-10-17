@@ -407,6 +407,14 @@ void MCWinCOFFStreamer::emitCOFFLinkFusedAdd(const MCSymbol *Load,
   getWriter().addLinkFusedAdd({nullptr, Load, 0, 0});
 }
 
+// A value-only load names the place where the load begins, as a fused read
+// does.
+void MCWinCOFFStreamer::emitCOFFLinkValueOnly(const MCSymbol *Page) {
+  MCSymbol *Site = getContext().createTempSymbol();
+  emitLabel(Site);
+  getWriter().addLinkValueOnly({Site, Page});
+}
+
 void MCWinCOFFStreamer::emitCommonSymbol(MCSymbol *S, uint64_t Size,
                                          Align ByteAlignment) {
   auto *Symbol = static_cast<MCSymbolCOFF *>(S);

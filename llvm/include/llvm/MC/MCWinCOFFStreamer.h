@@ -77,6 +77,7 @@ public:
   void emitCOFFLinkFusedRead() override;
   void emitCOFFLinkFusedAccess(const MCSymbol *Load, MCRegister Reg) override;
   void emitCOFFLinkFusedAdd(const MCSymbol *Load, MCRegister Reg) override;
+  void emitCOFFLinkValueOnly(const MCSymbol *Page) override;
   void emitCommonSymbol(MCSymbol *Symbol, uint64_t Size,
                         Align ByteAlignment) override;
   void emitLocalCommonSymbol(MCSymbol *Symbol, uint64_t Size,

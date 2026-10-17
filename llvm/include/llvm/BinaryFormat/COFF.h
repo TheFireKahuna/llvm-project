@@ -489,6 +489,18 @@ enum LinkSiteFact : uint8_t {
   // As LinkSiteFusedRead, for a load whose register only instructions that
   // LinkSiteFusedCall and LinkSiteFusedAccess describe read.
   LinkSiteAccessedRead = 6,
+  // The site, a load of the import pointer of data, fills a register that
+  // only reads of memory read, each as the base of its memory operand and none
+  // volatile or atomic, and that dies there, so that a linker may make the
+  // load take the address of the image's own copy of data that never changes,
+  // whichever image provides it:
+  //
+  //   value := page
+  //
+  // page is zero on x86-64. On ARM64, where the site is an ldr, it is the
+  // distance in instructions back to the adrp that gives the ldr the page of
+  // the pointer, which only that ldr reads.
+  LinkSiteValueOnly = 7,
 };
 
 // The prefix of a fused access that holds the high bit of its base register.

@@ -1745,6 +1745,28 @@ uint64_t WinCOFFWriter::writeObject() {
                     DataOS);
       encodeULEB128(Length << 1 | (Length && Read.NextTransfers), DataOS);
     }
+    // A value-only load names the place where its load begins, and on ARM64
+    // where the adrp before it in its section begins.
+    for (const WinCOFFObjectWriter::LinkValueOnly &Load :
+         OWriter.LinkValueOnlyLoads) {
+      auto [Sec, Index] = FindSite(Load.Site);
+      if (!Sec || !IsLoad(Sec, Index))
+        continue;
+      uint32_t Start = LinkSites[Sec][Index].getInstStart();
+      uint64_t Page = 0;
+      if (Load.Page) {
+        if (!Load.Page->isInSection() ||
+            SectionMap.lookup(&Load.Page->getSection()) != Sec)
+          continue;
+        uint64_t At = Asm->getSymbolOffset(*Load.Page);
+        if (At >= Start || (Start - At) % 4)
+          continue;
+        Page = (Start - At) / 4;
+      }
+      raw_svector_ostream DataOS(SiteData[{Sec, LinkSites[Sec][Index].Offset}]);
+      encodeULEB128(COFF::LinkSiteValueOnly, DataOS);
+      encodeULEB128(Page, DataOS);
+    }
 
     SmallString<0> Sites;
     raw_svector_ostream SitesOS(Sites);
@@ -1993,6 +2015,7 @@ void WinCOFFObjectWriter::reset() {
   LinkFusedReads.clear();
   LinkFusedAccesses.clear();
   LinkFusedAdds.clear();
+  LinkValueOnlyLoads.clear();
   LinkCoverageValues.clear();
   ObjWriter->reset();
   if (DwoWriter)

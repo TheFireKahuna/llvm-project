@@ -183,6 +183,15 @@ public:
     int64_t Constant;
   };
 
+  /// A load of the import pointer of data, the instruction at Site, whose
+  /// register only reads of memory read, as their base, which the object's
+  /// link-only records carry (COFF::LinkSiteValueOnly), with where the adrp
+  /// that gives it the pointer's page begins on ARM64.
+  struct LinkValueOnly {
+    const MCSymbol *Site;
+    const MCSymbol *Page;
+  };
+
   /// A value at Offset in Field that depends on where the code of Target, a
   /// section whose code a linker may resize, lies, which the object's
   /// link-only records carry (COFF::LinkRecordCoverage): A - B + Constant for
@@ -225,6 +234,7 @@ private:
   SmallVector<LinkFusedRead, 0> LinkFusedReads;
   SmallVector<LinkFusedAccess, 0> LinkFusedAccesses;
   SmallVector<LinkFusedAdd, 0> LinkFusedAdds;
+  SmallVector<LinkValueOnly, 0> LinkValueOnlyLoads;
   // The values that depend on where code a linker may resize lies.
   SmallVector<LinkCoverageValue, 0> LinkCoverageValues;
 
@@ -286,6 +296,9 @@ public:
   }
   void addLinkFusedAdd(const LinkFusedAdd &Add) {
     LinkFusedAdds.push_back(Add);
+  }
+  void addLinkValueOnly(const LinkValueOnly &Load) {
+    LinkValueOnlyLoads.push_back(Load);
   }
   void addLinkCoverageValue(const LinkCoverageValue &Value) {
     LinkCoverageValues.push_back(Value);
