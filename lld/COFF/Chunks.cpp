@@ -36,7 +36,8 @@ namespace lld::coff {
 
 SectionChunk::SectionChunk(ObjFile *f, const coff_section *h, Kind k)
     : Chunk(k), file(f), header(h), hasImportSlots(false),
-      hasImportSites(false), relaxed(false), repl(this) {
+      hasImportSites(false), relaxed(false), ineligibleForICF(false),
+      repl(this) {
   // Initialize relocs.
   if (file)
     setRelocs(file->getCOFFObj()->getRelocations(header));

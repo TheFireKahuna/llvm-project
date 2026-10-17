@@ -81,10 +81,8 @@ bool ICF::isEligible(SectionChunk *c) {
   if (!c->isCOMDAT() || !c->live || writable)
     return false;
 
-  // A pinned chunk's address is part of what it means, as is a vtable the
-  // linker lays out in a run, whose fold would serve one hierarchy's objects
-  // from another's run.
-  if (ctx.chunkPins.contains(c) || ctx.runChunkRun.contains(c))
+  // A section the linker was told to keep distinct is never folded.
+  if (c->ineligibleForICF)
     return false;
 
   // Under regular (not safe) ICF, all code sections are eligible.
@@ -249,23 +247,33 @@ void ICF::run() {
   llvm::TimeTraceScope timeScope("ICF");
   ScopedTimer t(ctx.icfTimer);
 
-  // A program enumerates a run of sections through __start_X and __stop_X, so
-  // folding one of them away would drop an entry. A function that the guard
-  // tables mark suppressed differs from one they do not.
-  DenseSet<SectionChunk *> uniqueChunks;
+  // Mark the sections ICF must keep distinct, so that isEligible tests one bit
+  // instead of searching several side tables for every section: a pinned chunk
+  // or a vtable laid out in a run, whose address is load-bearing; a section a
+  // program enumerates through __start_X and __stop_X, so folding one away
+  // would drop an entry; and a function the guard tables mark suppressed, which
+  // differs from one they do not.
+  auto keepDistinct = [](const Chunk *c) {
+    if (auto *sc = dyn_cast_or_null<SectionChunk>(const_cast<Chunk *>(c)))
+      sc->ineligibleForICF = true;
+  };
+  for (const auto &pin : ctx.chunkPins)
+    keepDistinct(pin.first);
+  for (const auto &run : ctx.runChunkRun)
+    keepDistinct(run.first);
   ctx.forEachSymtab([&](SymbolTable &symtab) {
     for (const SymbolTable::SectionRun &run : symtab.sectionRuns)
-      uniqueChunks.insert_range(run.chunks);
+      for (SectionChunk *sc : run.chunks)
+        sc->ineligibleForICF = true;
   });
   for (Defined *d : ctx.guardSuppressed)
-    if (auto *sc = dyn_cast_or_null<SectionChunk>(d->getChunk()))
-      uniqueChunks.insert(sc);
+    keepDistinct(d->getChunk());
 
   // Collect only mergeable sections and group by hash value.
   uint32_t nextId = 1;
   for (Chunk *c : ctx.driver.getChunks()) {
     if (auto *sc = dyn_cast<SectionChunk>(c)) {
-      if (isEligible(sc) && !uniqueChunks.contains(sc))
+      if (isEligible(sc))
         chunks.push_back(sc);
       else
         sc->eqClass[0] = nextId++;

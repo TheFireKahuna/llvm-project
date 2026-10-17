@@ -469,6 +469,12 @@ public:
   // records cover (see Relax.h).
   bool relaxed : 1;
 
+  // Whether ICF must keep this section distinct: its address is load-bearing
+  // (a pinned chunk, or a vtable laid out in a run), a program enumerates it
+  // through __start_X and __stop_X, or the guard tables mark its function
+  // suppressed.
+  bool ineligibleForICF : 1;
+
   // The COMDAT selection if this is a COMDAT chunk.
   llvm::COFF::COMDATType selection = (llvm::COFF::COMDATType)0;
 
