@@ -3015,12 +3015,18 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
                    << " is provided by " << imp->getDLLName()
                    << ", but is referenced as if it were local; recompile "
                       "the object, or give the symbol hidden visibility";
-        else
+        else {
+          // Assembly reaches it through its import pointer, which the GOT
+          // spellings of position-independent ELF assembly name.
+          StringRef name = imp->getName().drop_front(strlen("__imp_"));
           Err(ctx) << file << ": " << file->symtab.printSymbol(s)
                    << " is imported from " << imp->getDLLName()
                    << ", but the object was compiled as if it were "
                       "local; mark its declaration, or compile the object "
-                      "with -fauto-import";
+                      "with -fauto-import; in assembly, reach it through "
+                   << imp->getName() << " or "
+                   << (arm64 ? (":got:" + name).str() : (name + "@GOTPCREL").str());
+        }
         continue;
       }
       if (sc->isAddressWord(rel)) {
