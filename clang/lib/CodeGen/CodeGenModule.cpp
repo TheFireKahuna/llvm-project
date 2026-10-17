@@ -7518,8 +7518,14 @@ void CodeGenModule::EmitGlobalFunctionDefinition(GlobalDecl GD,
       !D->hasAttr<AsmLabelAttr>() &&
       (D->isReplaceableGlobalAllocationFunction() ||
        (D->isInStdNamespace() && D->getIdentifier() &&
-        D->getName() == "__libcpp_verbose_abort")))
+        D->getName() == "__libcpp_verbose_abort"))) {
     AppendLinkerOptions(("/OVERRIDABLE:" + Fn->getName()).str());
+    // The definition keeps its ABI name, but its address is the program's one
+    // replacement in every image, reached through its import pointer, so the
+    // back end emits an address-take in import form. The attribute marks the
+    // definition for the back end; calls to it stay direct.
+    Fn->addFnAttr("overridable-default");
+  }
 
   setNonAliasAttributes(GD, Fn);
 
