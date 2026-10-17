@@ -11203,6 +11203,12 @@ AArch64TargetLowering::LowerCall(CallLoweringInfo &CLI,
   } else
     Mask = TRI->getCallPreservedMask(MF, CallConv);
 
+  // A second return that lands preserving no register finds them all as the
+  // jump left them, so the call clobbers every register and the function's
+  // prologue saves its own callee-saved set.
+  if (TRI->hasReturnsTwiceLanding(MF, CLI.CB))
+    Mask = TRI->getNoPreservedMask();
+
   if (Subtarget->hasCustomCallingConv())
     TRI->UpdateCustomCallPreservedMask(MF, &Mask);
 

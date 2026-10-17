@@ -2691,6 +2691,12 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
       Mask = RegInfo->getNoPreservedMask();
   }
 
+  // A second return that lands preserving no register finds them all as the
+  // jump left them, so the call clobbers every register and the function's
+  // prologue saves its own callee-saved set.
+  if (RegInfo->hasReturnsTwiceLanding(MF, CLI.CB))
+    Mask = RegInfo->getNoPreservedMask();
+
   // Define a new register mask from the existing mask.
   uint32_t *RegMask = nullptr;
 

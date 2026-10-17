@@ -3279,8 +3279,14 @@ bool AArch64FastISel::fastLowerCall(CallLoweringInfo &CLI) {
 
   // Add a register mask with the call-preserved registers.
   // Proper defs for return values will be added by setPhysRegsDeadExcept().
-  MIB.addRegMask(RegInfo->getCallPreservedMask(*FuncInfo.MF, CC));
-  if (RegInfo->hasReturnsTwiceLanding(*FuncInfo.MF, CLI.CB))
+  // A call whose second return lands preserving no register clobbers them
+  // all.
+  bool ReturnsTwiceLanding =
+      RegInfo->hasReturnsTwiceLanding(*FuncInfo.MF, CLI.CB);
+  MIB.addRegMask(ReturnsTwiceLanding
+                     ? RegInfo->getNoPreservedMask()
+                     : RegInfo->getCallPreservedMask(*FuncInfo.MF, CC));
+  if (ReturnsTwiceLanding)
     BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD,
             TII.get(AArch64::RETURNS_TWICE_LANDING));
 

@@ -1510,6 +1510,10 @@ bool AArch64CallLowering::lowerCall(MachineIRBuilder &MIRBuilder,
     return false;
 
   Mask = getMaskForArgs(OutArgs, Info, *TRI, MF);
+  // A call whose second return lands preserving no register clobbers them
+  // all.
+  if (TRI->hasReturnsTwiceLanding(MF, Info.CB))
+    Mask = TRI->getNoPreservedMask();
 
   if (Opc == AArch64::BLRA || Opc == AArch64::BLRA_RVMARKER) {
     assert((Info.PAI->Key == AArch64PACKey::IA ||

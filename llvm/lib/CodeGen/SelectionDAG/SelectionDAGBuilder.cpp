@@ -99,6 +99,7 @@
 #include "llvm/Support/InstructionCost.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/MC/MCAsmInfo.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/TargetParser/Triple.h"
@@ -3618,13 +3619,6 @@ void SelectionDAGBuilder::visitCallBr(const CallBrInst &I) {
     for (BasicBlock *Dest : I.getIndirectDests()) {
       MachineBasicBlock *Target = FuncInfo.getMBB(Dest);
       Target->setIsInlineAsmBrIndirectTarget();
-      // On NT-POSIX an indirect target is also where a fault handler may
-      // resume the asm's own frame, so the kernel's continuation check needs
-      // it in the image's EH continuation table, like a landing pad.
-      if (TM.getTargetTriple().isWindowsNTPOSIXEnvironment()) {
-        Target->setIsEHContTarget(true);
-        DAG.getMachineFunction().setHasEHContTarget(true);
-      }
       // If we introduce a type of asm goto statement that is permitted to use
       // an indirect call instruction to jump to its labels, then we should add
       // a call to Target->setMachineBlockAddressTaken() here, to mark the
@@ -3652,9 +3646,12 @@ void SelectionDAGBuilder::visitLandingPad(const LandingPadInst &LP) {
   assert(FuncInfo.MBB->isEHPad() &&
          "Call to landingpad not in landing pad!");
 
-  // These targets use Itanium landing pads over SEH frame metadata. A
-  // continuation into such a pad needs the same guard entry as a funclet.
-  if (TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+  // Under EH continuation guard, a landing pad reached over SEH frame
+  // metadata is a continuation the kernel validates, like a funclet entry.
+  const MachineFunction &MF = DAG.getMachineFunction();
+  if (MF.getFunction().getParent()->getModuleFlag("ehcontguard") &&
+      TM.getMCAsmInfo().getExceptionHandlingType() ==
+          ExceptionHandling::WinEH) {
     FuncInfo.MBB->setIsEHContTarget(true);
     DAG.getMachineFunction().setHasEHContTarget(true);
   }

@@ -517,9 +517,7 @@ X86RegisterInfo::getNoPreservedMask() const {
 bool X86RegisterInfo::hasReturnsTwiceLanding(const MachineFunction &MF,
                                              const CallBase *CB) const {
   return CB && CB->hasFnAttr(Attribute::ReturnsTwice) &&
-         MF.getSubtarget<X86Subtarget>()
-             .getTargetTriple()
-             .isWindowsNTPOSIXEnvironment();
+         CB->hasFnAttr("returns-twice-landing");
 }
 
 const uint32_t *X86RegisterInfo::getDarwinTLSCallPreservedMask() const {

@@ -346,7 +346,9 @@ bool X86CallLowering::lowerCall(MachineIRBuilder &MIRBuilder,
 
   auto MIB = MIRBuilder.buildInstrNoInsert(CallOpc)
                  .add(Info.Callee)
-                 .addRegMask(TRI->getCallPreservedMask(MF, Info.CallConv));
+                 .addRegMask(TRI->hasReturnsTwiceLanding(MF, Info.CB)
+                                 ? TRI->getNoPreservedMask()
+                                 : TRI->getCallPreservedMask(MF, Info.CallConv));
 
   SmallVector<ArgInfo, 8> SplitArgs;
   for (const auto &OrigArg : Info.OrigArgs) {
