@@ -2619,11 +2619,13 @@ public:
   /// true when both vcall CFI and whole-program-vtables are enabled.
   bool ShouldEmitVTableTypeCheckedLoad(const CXXRecordDecl *RD);
 
-  /// Emit a type checked load from the given vtable.
+  /// Emit a type checked load from the given vtable. Sets \p Checked, when
+  /// given, to whether a failed check stops execution.
   llvm::Value *EmitVTableTypeCheckedLoad(const CXXRecordDecl *RD,
                                          llvm::Value *VTable,
                                          llvm::Type *VTableTy,
-                                         uint64_t VTableByteOffset);
+                                         uint64_t VTableByteOffset,
+                                         bool *Checked = nullptr);
 
   /// EnterDtorCleanups - Enter the cleanups necessary to complete the
   /// given phase of destruction for a destructor.  The end result

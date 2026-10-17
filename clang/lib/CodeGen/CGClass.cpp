@@ -2983,7 +2983,7 @@ bool CodeGenFunction::ShouldEmitVTableTypeCheckedLoad(const CXXRecordDecl *RD) {
 
 llvm::Value *CodeGenFunction::EmitVTableTypeCheckedLoad(
     const CXXRecordDecl *RD, llvm::Value *VTable, llvm::Type *VTableTy,
-    uint64_t VTableByteOffset) {
+    uint64_t VTableByteOffset, bool *Checked) {
   auto CheckOrdinal = SanitizerKind::SO_CFIVCall;
   auto CheckHandler = SanitizerHandler::CFICheckFail;
   SanitizerDebugLocation SanScope(this, {CheckOrdinal}, CheckHandler);
@@ -3008,6 +3008,8 @@ llvm::Value *CodeGenFunction::EmitVTableTypeCheckedLoad(
       !getContext().getNoSanitizeList().containsType(SanitizerKind::CFIVCall,
                                                      TypeName)) {
     EmitCheck(std::make_pair(CheckResult, CheckOrdinal), CheckHandler, {}, {});
+    if (Checked)
+      *Checked = !CGM.getCodeGenOpts().SanitizeRecover.has(CheckOrdinal);
   }
 
   return Builder.CreateBitCast(Builder.CreateExtractValue(CheckedLoad, 0),

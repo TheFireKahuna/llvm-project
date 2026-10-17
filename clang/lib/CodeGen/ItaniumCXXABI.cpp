@@ -844,6 +844,29 @@ CGCallee ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
     }
   } // End of sanitizer scope
 
+  // Under the KCFI marker scheme, a virtual function carries the type of its
+  // vtable slot, salted by a class this call cannot know, and every function
+  // that can occupy a slot carries a second type, salted "__vfn" alone, 16
+  // bytes before its entry, which the call checks instead. The non-virtual
+  // path checks the ordinary type, 4 bytes before the entry. Each check hands
+  // a target outside the image to Control Flow Guard, so the call itself
+  // checks nothing more.
+  llvm::ConstantInt *KCFIVfnTypeId = nullptr;
+  llvm::ConstantInt *KCFITypeId = nullptr;
+  if (CGM.hasKCFIVTableSlotTypes()) {
+    CodeGenKCFI &KCFI = *CGM.getKCFI();
+    QualType FnType = MPT->getPointeeType();
+    CodeGenKCFI::KCFITypeId VfnTypeIds = KCFI.createVfnTypeIds(FnType);
+    CodeGenKCFI::KCFITypeId TypeIds = KCFI.createCallTypeIds(FnType);
+    KCFIVfnTypeId = VfnTypeIds.first;
+    KCFITypeId = TypeIds.first;
+  }
+  bool ShouldEmitKCFICheck =
+      CGF.SanOpts.has(SanitizerKind::KCFI) && CGM.hasKCFIVTableSlotTypes();
+  if (ShouldEmitKCFICheck)
+    Builder.CreateCall(CGM.getIntrinsic(llvm::Intrinsic::kcfi_check),
+                       {VirtualFn, KCFIVfnTypeId, Builder.getInt32(16)});
+
   CGF.EmitBranch(FnEnd);
 
   // In the non-virtual path, the function pointer is actually a
@@ -888,6 +911,10 @@ CGCallee ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
     }
   }
 
+  if (ShouldEmitKCFICheck)
+    Builder.CreateCall(CGM.getIntrinsic(llvm::Intrinsic::kcfi_check),
+                       {NonVirtualFn, KCFITypeId, Builder.getInt32(4)});
+
   // We're done.
   CGF.EmitBlock(FnEnd);
   llvm::PHINode *CalleePtr = Builder.CreatePHI(CGF.DefaultPtrTy, 2);
@@ -913,6 +940,8 @@ CGCallee ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
   }
 
   CGCallee Callee(FPT, CalleePtr, PointerAuth);
+  if (ShouldEmitKCFICheck)
+    Callee.setKCFIChecked();
   return Callee;
 }
 
@@ -2325,11 +2354,13 @@ CGCallee ItaniumCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
   uint64_t ByteOffset =
       VTableIndex * CGM.getDataLayout().getTypeSizeInBits(ComponentTy) / 8;
 
+  bool VTableChecked = false;
   if (!Schema && CGF.ShouldEmitVTableTypeCheckedLoad(MethodDecl->getParent())) {
     VFunc = CGF.EmitVTableTypeCheckedLoad(MethodDecl->getParent(), VTable,
-                                          PtrTy, ByteOffset);
+                                          PtrTy, ByteOffset, &VTableChecked);
   } else {
-    CGF.EmitTypeMetadataCodeForVCall(MethodDecl->getParent(), VTable, Loc);
+    VTableChecked =
+        CGF.EmitTypeMetadataCodeForVCall(MethodDecl->getParent(), VTable, Loc);
 
     llvm::Value *VFuncLoad;
     if (CGM.getLangOpts().RelativeCXXABIVTables) {
@@ -2368,6 +2399,27 @@ CGCallee ItaniumCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
     PointerAuth = CGF.EmitPointerAuthInfo(Schema, VTableSlotPtr, GD, QualType());
   }
   CGCallee Callee(GD, VFunc, PointerAuth);
+
+  // The call checks the KCFI type of the slot, which every function that can
+  // occupy it carries. The type is salted by the class that introduces the
+  // slot, except for a destructor that does not delete; when that class has
+  // internal linkage, only this translation unit can implement the slot.
+  if (CGM.hasKCFIVTableSlotTypes()) {
+    CodeGenKCFI &KCFI = *CGM.getKCFI();
+    GlobalDecl Slot =
+        CGM.getItaniumVTableContext().findOriginalMethod(GD.getCanonicalDecl());
+    const auto *SlotMD = cast<CXXMethodDecl>(Slot.getDecl());
+    bool Local = !SlotMD->getParent()->isExternallyVisible() &&
+                 (!isa<CXXDestructorDecl>(SlotMD) ||
+                  Slot.getDtorType() == Dtor_Deleting);
+    CodeGenKCFI::KCFITypeId TypeId = KCFI.createVTableSlotTypeIds(Slot);
+    Callee.setKCFITypeId(TypeId.first, Local);
+    // A function read at a constant offset from a vtable that CFI vetted is
+    // one of the slot's overrides, which neither KCFI nor Control Flow Guard
+    // need check again.
+    if (VTableChecked)
+      Callee.setKCFIChecked();
+  }
   return Callee;
 }
 
