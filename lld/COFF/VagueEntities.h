@@ -23,6 +23,7 @@
 
 namespace lld::coff {
 class COFFLinkerContext;
+class DefinedRegular;
 
 // The prefix of the name by which an import library's record of the DLL it
 // imports from is found, which the DLL's name follows.
@@ -103,6 +104,10 @@ void addOffersEpoch(COFFLinkerContext &ctx);
 // of each DLL it imports from that exports one, so that a release of that DLL
 // with more offers refuses this DLL's load.
 void importOffersEpochs(COFFLinkerContext &ctx);
+
+// Whether a data definition in a COMDAT has default visibility, so that a
+// DLL's instance may preempt it, as on ELF.
+bool isDefaultVisibility(DefinedRegular *d);
 } // namespace lld::coff
 
 #endif
