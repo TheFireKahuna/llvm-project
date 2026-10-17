@@ -31,6 +31,7 @@
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/BinaryFormat/Magic.h"
 #include "llvm/Config/llvm-config.h"
+#include "llvm/Demangle/Demangle.h"
 #include "llvm/LTO/LTO.h"
 #include "llvm/Object/ArchiveWriter.h"
 #include "llvm/Object/COFFImportFile.h"
@@ -595,6 +596,8 @@ void LinkerDriver::parseDirectives(InputFile *file) {
         exp.extName = saver().save("_" + exp.extName);
     }
     exp.source = ExportSource::Directives;
+    if (isLocalByVersionScript(exp.name))
+      continue;
     file->symtab.exports.push_back(exp);
   }
 
@@ -1752,6 +1755,8 @@ void LinkerDriver::maybeExportMinGWSymbols(const opt::InputArgList &args) {
         ctx.config.gcroot.push_back(def);
       }
 
+      if (isLocalByVersionScript(def->getName()))
+        return;
       Export e;
       e.name = def->getName();
       e.sym = def;
@@ -1763,6 +1768,47 @@ void LinkerDriver::maybeExportMinGWSymbols(const opt::InputArgList &args) {
       symtab.exports.push_back(e);
     });
   });
+}
+
+bool LinkerDriver::isLocalByVersionScript(StringRef name) {
+  if (ctx.config.versionDefinitions.empty())
+    return false;
+  if (auto it = versionNames.find(name); it != versionNames.end())
+    return it->second;
+  std::optional<std::string> demangled;
+  auto getDemangled = [&]() -> StringRef {
+    if (!demangled)
+      demangled = llvm::demangle(name);
+    return *demangled;
+  };
+  if (!versionCppNames.empty())
+    if (auto it = versionCppNames.find(getDemangled());
+        it != versionCppNames.end())
+      return it->second;
+  for (const VersionPattern &pat : versionPatterns)
+    if (pat.matcher.match(pat.isExternCpp ? getDemangled() : name))
+      return pat.isLocal;
+  return false;
+}
+
+// The version script cannot export what the visibility mapping did not, so a
+// global name of it that names no export is a mistake in one or the other.
+void LinkerDriver::checkVersionScriptGlobals() {
+  if (versionNames.empty() && versionCppNames.empty())
+    return;
+  DenseSet<StringRef> names;
+  StringSet<> cppNames;
+  for (const Export &e : ctx.symtab.exports) {
+    names.insert(e.name);
+    if (!versionCppNames.empty())
+      cppNames.insert(llvm::demangle(e.name));
+  }
+  for (const VersionDefinition &v : ctx.config.versionDefinitions)
+    for (const SymbolVersion &pat : v.globals)
+      if (!pat.hasWildcard && !(pat.isExternCpp ? cppNames.contains(pat.name)
+                                                : names.contains(pat.name)))
+        Warn(ctx) << "version script assigns " << pat.name
+                  << " to a version, but no symbol of that name is exported";
 }
 
 // lld has a feature to create a tar file containing all input files as well as
@@ -2631,6 +2677,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     return false;
   };
 
+  // Read the version script before the inputs whose exports it narrows.
+  if (auto *arg = args.getLastArg(OPT_version_script))
+    parseVersionScript(arg->getValue());
+
   // Create a list of input files. These can be given as OPT_INPUT options
   // and OPT_wholearchive_file options, and we also need to track OPT_start_lib
   // and OPT_end_lib.
@@ -3308,6 +3358,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // image.
   addKCFIRangeExports(ctx);
   bindKCFIImportedRanges(ctx);
+  checkVersionScriptGlobals();
   bool implibAfterImage = false;
   if (config->dll || !ctx.symtab.exports.empty() ||
       (ctx.config.machine == ARM64X && !ctx.hybridSymtab->exports.empty())) {

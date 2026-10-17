@@ -54,6 +54,22 @@ enum class ExportSource {
 
 enum class EmitKind { Obj, LLVM, ASM };
 
+// A symbol name or glob pattern in a version script, which may name C++
+// symbols by their demangled names.
+struct SymbolVersion {
+  StringRef name;
+  bool isExternCpp;
+  bool hasWildcard;
+};
+
+// A version node of a version script, with its global and local patterns. An
+// anonymous node has no name.
+struct VersionDefinition {
+  StringRef name;
+  std::vector<SymbolVersion> globals;
+  std::vector<SymbolVersion> locals;
+};
+
 // Represents an /export option.
 struct Export {
   StringRef name;       // N in /export:N or /export:E=N
@@ -364,6 +380,9 @@ struct Configuration {
   bool warnLocallyDefinedImported = true;
   bool warnDebugInfoUnusable = true;
   bool warnLongSectionNames = true;
+  // The nodes of the version script, in order.
+  std::vector<VersionDefinition> versionDefinitions;
+
   // Warn of an instruction that may take the address of an imported function
   // that an object does not describe, which gives the function its import
   // thunk as its address.

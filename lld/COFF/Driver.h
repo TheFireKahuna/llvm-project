@@ -13,6 +13,7 @@
 #include "SymbolTable.h"
 #include "lld/Common/LLVM.h"
 #include "lld/Common/Reproduce.h"
+#include "lld/Common/Strings.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Object/Archive.h"
@@ -164,6 +165,14 @@ private:
   // sections int he same order as their names appear in the given file.
   void parseOrderFile(StringRef arg);
 
+  // Reads a GNU version script.
+  void parseVersionScript(StringRef path);
+  // Whether the version script makes the symbol Name local, which removes an
+  // export that the visibility mapping or -export-all-symbols gave it.
+  bool isLocalByVersionScript(StringRef name);
+  // Warns of a global name of the version script that names no export.
+  void checkVersionScriptGlobals();
+
   void parseCallGraphFile(StringRef path);
 
   void parsePDBAltPath();
@@ -288,6 +297,17 @@ private:
 
   // Used for dllexported symbols.
   Export parseExport(StringRef arg);
+
+  // The version script's patterns in the order in which they decide a
+  // symbol's scope: names, exact or demangled, by the first node that
+  // assigns them, then wildcards from the last node to the first, "*" last.
+  struct VersionPattern {
+    SingleStringMatcher matcher;
+    bool isExternCpp;
+    bool isLocal;
+  };
+  llvm::DenseMap<StringRef, bool> versionNames, versionCppNames;
+  std::vector<VersionPattern> versionPatterns;
 
   // Parses a string in the form of "key=value" and check
   // if value matches previous values for the key.

@@ -263,6 +263,8 @@ def export_all_symbols : F<"export-all-symbols">;
 defm demangle : B<"demangle",
     "Demangle symbols in output (default)",
     "Do not demangle symbols in output">;
+def version_script : P<"version-script",
+    "Narrow the exports to those a GNU version script leaves global">;
 def include_optional : Joined<["/", "-", "/?", "-?"], "includeoptional:">,
     HelpText<"Add symbol as undefined, but allow it to remain undefined">;
 def import_slots : F<"import-slots">;

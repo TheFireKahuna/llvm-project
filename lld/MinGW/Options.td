@@ -158,6 +158,9 @@ defm whole_archive: B<"whole-archive",
 def v: Flag<["-"], "v">, HelpText<"Display the version number">;
 def verbose: F<"verbose">, HelpText<"Verbose mode">;
 def version: F<"version">, HelpText<"Display the version number and exit">;
+defm version_script: Eq<"version-script",
+    "Narrow the exports to those a version script leaves global">,
+    MetaVarName<"<file>">;
 defm wrap: Eq<"wrap", "Use wrapper functions for symbol">,
      MetaVarName<"<symbol>">;
 

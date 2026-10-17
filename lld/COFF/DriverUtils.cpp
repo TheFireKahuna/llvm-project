@@ -273,6 +273,167 @@ void LinkerDriver::parseSectionLayout(StringRef path) {
   }
 }
 
+// Splits a version script into tokens: names and patterns, quoted strings, and
+// the punctuation "{", "}", ";" and ":", where a "::" inside a C++ name is not
+// a colon. Comments are /* */ and from # to the end of the line.
+static std::vector<StringRef> tokenizeVersionScript(COFFLinkerContext &ctx,
+                                                    StringRef s) {
+  constexpr StringRef nameChars =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+      "0123456789_.$/\\~=+[]*?-!^:";
+  std::vector<StringRef> toks;
+  for (;;) {
+    s = s.ltrim();
+    if (s.empty())
+      return toks;
+    if (s.starts_with("/*")) {
+      size_t end = s.find("*/", 2);
+      if (end == StringRef::npos) {
+        Err(ctx) << "version script: unclosed comment";
+        return {};
+      }
+      s = s.substr(end + 2);
+      continue;
+    }
+    if (s.starts_with("#")) {
+      s = s.substr(std::min(s.find_first_of("\r\n"), s.size()));
+      continue;
+    }
+    size_t len = 1;
+    if (s[0] == '"') {
+      len = s.find('"', 1);
+      if (len == StringRef::npos) {
+        Err(ctx) << "version script: unclosed quote";
+        return {};
+      }
+      ++len;
+    } else {
+      for (len = 0; len != s.size(); ++len) {
+        if (s[len] == ':') {
+          if (len + 1 == s.size() || s[len + 1] != ':')
+            break;
+          ++len;
+        } else if (!nameChars.contains(s[len])) {
+          break;
+        }
+      }
+      len = std::max<size_t>(len, 1);
+    }
+    toks.push_back(s.take_front(len));
+    s = s.drop_front(len);
+  }
+}
+
+// Reads a GNU version script, as ld.lld does: one anonymous node,
+// "{ global: ...; local: ...; };", or named nodes, "V1 { ... }; V2 { ... }
+// V1;". Patterns may be grouped in 'extern "C++" { ... };', which matches
+// demangled names; a quoted pattern is matched exactly.
+void LinkerDriver::parseVersionScript(StringRef path) {
+  std::unique_ptr<MemoryBuffer> buf =
+      CHECK(MemoryBuffer::getFile(path), "could not open " + path);
+  MemoryBufferRef mb = takeBuffer(std::move(buf));
+  std::vector<StringRef> toks = tokenizeVersionScript(ctx, mb.getBuffer());
+  size_t i = 0;
+  auto atEnd = [&] { return i == toks.size(); };
+  auto peek = [&] { return atEnd() ? StringRef() : toks[i]; };
+  auto consume = [&](StringRef tok) {
+    if (peek() != tok)
+      return false;
+    ++i;
+    return true;
+  };
+  auto expect = [&](StringRef tok) {
+    if (consume(tok))
+      return true;
+    Err(ctx) << path << ": " << tok << " expected, but got "
+             << (atEnd() ? StringRef("end of file") : peek());
+    return false;
+  };
+  auto unquote = [](StringRef tok) {
+    return tok.size() > 1 && tok.starts_with("\"")
+               ? tok.drop_front().drop_back()
+               : tok;
+  };
+  auto hasWildcard = [](StringRef tok) {
+    return !tok.starts_with("\"") &&
+           tok.find_first_of("?*[") != StringRef::npos;
+  };
+  // Reads the patterns of a node up to its closing brace.
+  auto readNode = [&](VersionDefinition &v) {
+    std::vector<SymbolVersion> *patterns = &v.globals;
+    while (!atEnd() && peek() != "}") {
+      StringRef tok = toks[i++];
+      if ((tok == "global" || tok == "local") && consume(":")) {
+        patterns = tok == "global" ? &v.globals : &v.locals;
+        continue;
+      }
+      if (tok == "extern") {
+        StringRef lang = atEnd() ? StringRef() : toks[i++];
+        if (lang != "\"C++\"" && lang != "\"C\"") {
+          Err(ctx) << path << ": unknown language " << lang;
+          return false;
+        }
+        if (!expect("{"))
+          return false;
+        while (!atEnd() && peek() != "}") {
+          StringRef pat = toks[i++];
+          patterns->push_back(
+              {unquote(pat), lang == "\"C++\"", hasWildcard(pat)});
+          if (peek() != "}" && !expect(";"))
+            return false;
+        }
+        if (!expect("}"))
+          return false;
+      } else {
+        patterns->push_back({unquote(tok), false, hasWildcard(tok)});
+      }
+      if (!expect(";"))
+        return false;
+    }
+    return expect("}");
+  };
+
+  std::vector<VersionDefinition> &defs = ctx.config.versionDefinitions;
+  if (consume("{")) {
+    if (!readNode(defs.emplace_back()) || !expect(";"))
+      return;
+  } else {
+    while (!atEnd()) {
+      VersionDefinition &v = defs.emplace_back();
+      v.name = toks[i++];
+      if (!expect("{") || !readNode(v))
+        return;
+      // A node may name the node it inherits from, which only documents the
+      // versions' order.
+      if (!consume(";")) {
+        ++i;
+        if (!expect(";"))
+          return;
+      }
+    }
+  }
+  if (!atEnd())
+    Err(ctx) << path << ": end of file expected, but got " << peek();
+
+  // Names decide before wildcards, by the first node that assigns them, and
+  // wildcards from the last node to the first, with "*" last, as in GNU ld.
+  std::vector<VersionPattern> asterisks;
+  for (const VersionDefinition &v : defs)
+    for (bool isLocal : {false, true})
+      for (const SymbolVersion &pat : isLocal ? v.locals : v.globals)
+        if (!pat.hasWildcard)
+          (pat.isExternCpp ? versionCppNames : versionNames)
+              .try_emplace(pat.name, isLocal);
+  for (const VersionDefinition &v : llvm::reverse(defs))
+    for (bool isLocal : {false, true})
+      for (const SymbolVersion &pat : isLocal ? v.locals : v.globals)
+        if (pat.hasWildcard)
+          (pat.name == "*" ? asterisks : versionPatterns)
+              .push_back(
+                  {SingleStringMatcher(pat.name), pat.isExternCpp, isLocal});
+  llvm::append_range(versionPatterns, asterisks);
+}
+
 void LinkerDriver::parseDosStub(StringRef path) {
   std::unique_ptr<MemoryBuffer> stub =
       CHECK(MemoryBuffer::getFile(path), "could not open " + path);
