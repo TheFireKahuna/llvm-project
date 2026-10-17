@@ -966,20 +966,6 @@ public:
     LongDoubleFormat = &llvm::APFloat::IEEEdouble();
     WCharType = WIntType = TargetInfo::SignedInt;
   }
-
-  BuiltinVaListKind getBuiltinVaListKind() const override {
-    return TargetInfo::X86_64ABIBuiltinVaList;
-  }
-
-  CallingConvCheckResult checkCallingConvention(CallingConv CC) const override {
-    if (CC == CC_Win64)
-      return CCCR_OK;
-    return WindowsX86_64TargetInfo::checkCallingConvention(CC);
-  }
-
-  CallingConv getDefaultCallingConv() const override {
-    return CC_X86_64SysV;
-  }
 };
 
 // x86-64 Windows Visual Studio target

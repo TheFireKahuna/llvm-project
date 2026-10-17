@@ -20,7 +20,7 @@ define void @keep(i32 %v, ptr %buf) {
 ; NTPOSIX: callq setjmp
 ; NTPOSIX-NOT: %e{{[bs]}}x
 ; NTPOSIX-NOT: %r1{{[2-5]}}d
-; NTPOSIX: movl [[SLOT]], %edi
+; NTPOSIX: movl [[SLOT]], %ecx
 ; NTPOSIX: callq use
 ;
 ; SYSV-LABEL: keep:
