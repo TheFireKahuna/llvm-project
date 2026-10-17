@@ -734,18 +734,11 @@ bool SymbolTable::loadInteriorImports() {
             l && l->isLazy() && !l->pendingArchiveLoad && isLazyImport(l))
           runTimeLazies.push_back(l);
   }
-  // The import that a word holding the address of s takes in place, if any.
-  auto getImport = [&](Symbol *s) -> DefinedImportData * {
-    DefinedImportData *imp = getAddressedImport(s);
-    if (!imp || ctx.config.delayLoads.contains(imp->getDLLName().lower()))
-      return nullptr;
-    return imp;
-  };
-
   std::vector<Symbol *> lazies;
   bool sealed = false;
   for (ObjFile *file : ctx.objFileInstances) {
-    if (&file->symtab != this || llvm::none_of(file->getSymbols(), getImport))
+    if (&file->symtab != this ||
+        llvm::none_of(file->getSymbols(), getInPlaceImport))
       continue;
     for (Chunk *c : file->getChunks()) {
       auto *sc = dyn_cast_or_null<SectionChunk>(c);
@@ -755,7 +748,7 @@ bool SymbolTable::loadInteriorImports() {
       bool readOnly = !(sc->header->Characteristics & IMAGE_SCN_MEM_WRITE);
       for (const coff_relocation &rel : sc->getRelocs()) {
         Symbol *s = file->getSymbol(rel.SymbolTableIndex);
-        DefinedImportData *imp = getImport(s);
+        DefinedImportData *imp = getInPlaceImport(s);
         if (!imp || !sc->isAddressWord(rel))
           continue;
         int64_t addend = getAddressWordAddend(sc, rel).value_or(0);
@@ -1270,18 +1263,20 @@ bool SymbolTable::isCanonicalCopy(SectionChunk *sc) {
     return false;
   for (const coff_relocation &rel : sc->getRelocs()) {
     // An address inside an object, or in the image alone, such as that of a
-    // string literal, differs from the instance's.
+    // string literal, differs from the instance's, unless the DLL that
+    // provides the object exports that address exactly.
     Symbol *s = sc->file->getSymbol(rel.SymbolTableIndex);
-    if (!sc->isAddressWord(rel) || getAddressWordAddend(sc, rel) != 0)
+    std::optional<int64_t> addend = getAddressWordAddend(sc, rel);
+    if (!sc->isAddressWord(rel) || !addend)
       return false;
     if (isa_and_nonnull<DefinedAbsolute>(s))
       continue;
-    if (DefinedImportData *imp = getAddressedImport(s);
-        imp && !ctx.config.delayLoads.contains(imp->getDLLName().lower()))
+    if (DefinedImportData *imp = getInPlaceImport(s);
+        imp && (!*addend || findInteriorImport(imp, *addend)))
       continue;
     // A copy kept for its reads must not name what liveness discarded.
-    if (!offeredFunctions.contains(s) &&
-        !(isPreemptibleVagueEntity(s) && s->isLive()))
+    if (*addend || (!offeredFunctions.contains(s) &&
+                    !(isPreemptibleVagueEntity(s) && s->isLive())))
       return false;
   }
   return true;

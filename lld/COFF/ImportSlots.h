@@ -28,6 +28,11 @@ struct SlotScan;
 // that resolved to its import; or null.
 DefinedImportData *getAddressedImport(Symbol *s);
 
+// The import that a word holding the address of s takes in place, if any,
+// which a delay-loaded import never is: its address is its thunk's until its
+// DLL is loaded.
+DefinedImportData *getInPlaceImport(Symbol *s);
+
 // An executable with a copy of its thread-local import slots names it in the
 // reserved words of its MZ header, as {tag u32, rva u32} at this offset, so
 // that the code of a DLL that may reach the executable while the process

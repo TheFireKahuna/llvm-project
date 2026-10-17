@@ -80,6 +80,33 @@
 # OWN-NEXT: 8b 04 88 movl (%rax,%rcx,4), %eax
 # OWN-NEXT: 48 8b 15 {{.*}} movq
 
+## A copy whose word holds an address inside another DLL's object serves where
+## that DLL exports the address exactly, the word taking that name in place,
+## and not otherwise.
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium interior.s \
+# RUN:   -o interior.obj
+# RUN: lld-link -import-slots -entry:h -subsystem:console interior.obj lib.lib \
+# RUN:   -out:interior.exe -verbose 2>&1 | FileCheck --check-prefix=ILOG %s
+# RUN: llvm-objdump -d interior.exe | FileCheck --check-prefix=INTERIOR %s
+# RUN: llvm-readobj --coff-imports interior.exe | \
+# RUN:   FileCheck --check-prefix=IIMPORTS %s
+# ILOG:     Keeping the copy of itbl in interior.obj for 1 value read
+# ILOG-NOT: Keeping the copy of xtbl
+# INTERIOR:      <.text>:
+# INTERIOR-NEXT: 48 8d 05 {{.*}} leaq
+# INTERIOR-NEXT: 48 8b 00 movq (%rax), %rax
+# INTERIOR-NEXT: 48 8b 15 {{.*}} movq
+# IIMPORTS:      Name: lib.dll
+# IIMPORTS-NEXT: ImportLookupTableRVA:
+# IIMPORTS-NEXT: ImportAddressTableRVA:
+# IIMPORTS-NEXT: Symbol: xtbl
+# IIMPORTS-NEXT: }
+# IIMPORTS:      Name: lib.dll
+# IIMPORTS-NEXT: ImportLookupTableRVA:
+# IIMPORTS-NEXT: ImportAddressTableRVA:
+# IIMPORTS-NEXT: Symbol: obj$so8
+# IIMPORTS-NEXT: }
+
 ## Without -import-slots, nothing is preempted, and the loads are kept.
 # RUN: lld-link -entry:main -subsystem:console main.obj lib.lib -out:plain.exe \
 # RUN:   -verbose 2>&1 | FileCheck --check-prefix=PLAIN %s
@@ -92,6 +119,10 @@ EXPORTS
   ftbl DATA
   stbl DATA
   mut DATA
+  itbl DATA
+  xtbl DATA
+  obj DATA
+  obj$so8 DATA
   f
 
 #--- ntdll.def
@@ -156,6 +187,30 @@ g:
   movq __imp_tbl(%rip), %rax
   .linkfusedaccess .Lr0, %rax
   movl 8(%rax), %eax
+  retq
+
+#--- interior.s
+  .section .rdata,"dr",discard,itbl
+  .globl itbl
+  .p2align 3
+itbl:
+  .quad obj+8
+
+  .section .rdata,"dr",discard,xtbl
+  .globl xtbl
+  .p2align 3
+xtbl:
+  .quad obj+4
+
+  .text
+  .globl h
+h:
+  .linkvalueonly
+  movq __imp_itbl(%rip), %rax
+  movq (%rax), %rax
+  .linkvalueonly
+  movq __imp_xtbl(%rip), %rdx
+  movq (%rdx), %rdx
   retq
 
 #--- only.s

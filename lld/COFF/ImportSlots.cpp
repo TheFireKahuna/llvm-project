@@ -2537,6 +2537,11 @@ DefinedImportData *getAddressedImport(Symbol *s) {
   return cast<DefinedImportData>(data->file->impSym);
 }
 
+DefinedImportData *getInPlaceImport(Symbol *s) {
+  DefinedImportData *imp = getAddressedImport(s);
+  return imp && !imp->file->isDelayLoaded() ? imp : nullptr;
+}
+
 std::optional<int64_t> getAddressWordAddend(SectionChunk *sc,
                                             const coff_relocation &rel) {
   const Configuration &config = sc->file->symtab.ctx.config;
