@@ -17,6 +17,13 @@
 # RUN: llvm-objdump -s --section=.data %t.exe | FileCheck %s --check-prefix=SEALED
 # SEALED: {{^ [0-9a-f]+}} 00100040 01000000 26100040 01000000
 
+## Identical code folding may fold the default's byte into an empty string
+## that comes first, and the bounds are still the default's.
+# RUN: llvm-mc -triple x86_64-windows-msvc %t.dir/str.s -filetype=obj -o %t.str.obj
+# RUN: lld-link %t.str.obj %t.main.obj -guard:cf -opt:icf -entry:main \
+# RUN:   -out:%t.icf.exe
+# RUN: llvm-objdump -s --section=.data %t.icf.exe | FileCheck %s --check-prefix=SEALED
+
 ## Without an object that says it has KCFI prefixes, or without a guard
 ## function table, the image is not sealed.
 # RUN: lld-link %t.main.norec.obj -guard:cf -entry:main -out:%t.norec.exe
@@ -69,6 +76,8 @@ __llvm_code_empty:
         .quad __llvm_code_start
         .quad __llvm_code_end
 
+        .addrsig
+
 #--- other.s
   .linktypeprefixes
         .globl @feat.00
@@ -89,3 +98,14 @@ g:
         .globl g_user
 g_user:
         jmp g
+
+#--- str.s
+        .section .rdata,"dr",discard,empty_str
+        .globl empty_str
+empty_str:
+        .byte 0
+
+        .section .rdata,"dr"
+        .quad empty_str
+
+        .addrsig

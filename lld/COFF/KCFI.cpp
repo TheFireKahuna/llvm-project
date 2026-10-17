@@ -1380,12 +1380,17 @@ void KCFIContents::defineCodeRange() {
     return;
   OutputSection *sec = *secIt;
   // Each bound is replaced only while it is the weak alias resolved to that
-  // default, the leader of its COMDAT. An image whose code references
-  // neither still has a range, which a DLL exports.
-  auto isEmptyDefault = [](Symbol *s) {
+  // default. Identical code folding may replace the default's byte with
+  // another read-only one, such as an empty string's, so the bound is
+  // compared with the default's own symbol, which follows it there too. An
+  // image whose code references neither still has a range, which a DLL
+  // exports.
+  auto *empty =
+      dyn_cast_or_null<DefinedRegular>(ctx.symtab.find(KCFICodeEmpty));
+  auto isEmptyDefault = [&](Symbol *s) {
     auto *d = dyn_cast_or_null<DefinedRegular>(s);
-    return d && d->getValue() == 0 && d->getChunk()->sym &&
-           d->getChunk()->sym->getName() == KCFICodeEmpty;
+    return d && empty && d->getChunk() == empty->getChunk() &&
+           d->getValue() == empty->getValue();
   };
   // An archive indexes a bound that a member references weakly, so a bound
   // that no loaded object references can be lazy, which defines nothing.
