@@ -3114,27 +3114,32 @@ static void checkEHContMetadata(COFFLinkerContext &ctx, ObjFile *file,
           unwind->getValue() + read32le(&pdata[rel.VirtualAddress]));
       if (!handlerOff)
         continue;
-      for (const coff_relocation &hrel : xdata->getRelocs()) {
-        if (hrel.VirtualAddress != *handlerOff)
-          continue;
-        Symbol *handler = file->getSymbol(hrel.SymbolTableIndex);
-        if (handler && handler->getName() == "__C_specific_handler" &&
-            xdata->isCOMDAT()) {
-          if (!warned)
-            Warn(ctx) << "/guard:ehcont: " << file
-                      << " has no EH continuation metadata; its SEH scope "
-                         "tables' __except blocks are listed instead";
-          warned = true;
-          addScopeTableTargets(file, xdata, *handlerOff, targets);
-          continue;
-        }
-        if (handler && handler->getName() != "__GSHandlerCheck") {
-          Err(ctx) << "/guard:ehcont: " << file
-                   << " has no EH continuation metadata but its unwind data "
-                      "names exception handler "
-                   << handler->getName();
-          return;
-        }
+      // Find the relocation that names the handler, at handlerOff. Relocations
+      // within a section are ordered by the address they apply to.
+      ArrayRef<coff_relocation> xrelocs = xdata->getRelocs();
+      const coff_relocation *hrel =
+          llvm::partition_point(xrelocs, [&](const coff_relocation &r) {
+            return r.VirtualAddress < *handlerOff;
+          });
+      if (hrel == xrelocs.end() || hrel->VirtualAddress != *handlerOff)
+        continue;
+      Symbol *handler = file->getSymbol(hrel->SymbolTableIndex);
+      if (handler && handler->getName() == "__C_specific_handler" &&
+          xdata->isCOMDAT()) {
+        if (!warned)
+          Warn(ctx) << "/guard:ehcont: " << file
+                    << " has no EH continuation metadata; its SEH scope "
+                       "tables' __except blocks are listed instead";
+        warned = true;
+        addScopeTableTargets(file, xdata, *handlerOff, targets);
+        continue;
+      }
+      if (handler && handler->getName() != "__GSHandlerCheck") {
+        Err(ctx) << "/guard:ehcont: " << file
+                 << " has no EH continuation metadata but its unwind data "
+                    "names exception handler "
+                 << handler->getName();
+        return;
       }
     }
   }
