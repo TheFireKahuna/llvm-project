@@ -3512,7 +3512,14 @@ void ImportSlotContents::createOverrideCellFill() {
     else if (!li->vagueEntity.empty())
       addVague(li->getTarget(), li, 0, true);
   }
+  // Static data reaches a cell only through an own default or a preemptible
+  // vague entity; with none the walk over every live word finds nothing.
+  bool scanStaticData = !ctx.symtab.overrideSlotFacts.empty() ||
+                        !ctx.symtab.overridablesByName.empty() ||
+                        !ctx.symtab.preemptibleVagueEntities->empty();
   for (ObjFile *file : ctx.objFileInstances) {
+    if (!scanStaticData)
+      break;
     if (&file->symtab != &ctx.symtab)
       continue;
     for (Chunk *c : file->getChunks()) {
