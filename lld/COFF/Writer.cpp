@@ -340,6 +340,10 @@ private:
   // List of Arm64EC export thunks.
   std::vector<std::pair<Chunk *, Defined *>> exportThunks;
 
+  // The relocations of each section that range extension thunks were added
+  // to, as they were before the first pass added any.
+  DenseMap<SectionChunk *, ArrayRef<coff_relocation>> relocsBeforeThunks;
+
   uint64_t fileSize;
   uint32_t pointerToSymbolTable = 0;
   uint64_t sizeOfImage;
@@ -543,8 +547,10 @@ bool Writer::createThunks(OutputSection *os, int margin) {
     size_t thunkInsertionRVA = sc->getRVA() + sc->getSize() + thunksSize;
     ObjFile *file = sc->file;
     std::vector<std::pair<uint32_t, uint32_t>> relocReplacements;
+    // A pass starts from the relocations as they were before the first, which
+    // the linker may already have made refer to other symbols.
     ArrayRef<coff_relocation> originalRelocs =
-        file->getCOFFObj()->getRelocations(sc->header);
+        relocsBeforeThunks.try_emplace(sc, sc->getRelocs()).first->second;
     for (size_t j = 0, e = originalRelocs.size(); j < e; ++j) {
       const coff_relocation &rel = originalRelocs[j];
       Symbol *relocTarget = file->getSymbol(rel.SymbolTableIndex);

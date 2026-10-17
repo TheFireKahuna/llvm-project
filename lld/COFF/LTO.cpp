@@ -310,7 +310,10 @@ void BitcodeCompiler::add(BitcodeFile &f) {
   // Under -import-slots, the COMDATs of data that a DLL offers whole, every
   // definition in them by the same DLL, are preempted before LTO, as the
   // native link preempts them after: LTO compiles no copy, and ThinLTO keeps
-  // one available for its value.
+  // one available for its value. Data that only a constant initializes, with
+  // no guard and no initializer, costs no code, and stays prevailing for the
+  // native link to preempt, which may keep its copy for loads that only read
+  // values through its address (SymbolTable::readImmutableDataLocally).
   SmallVector<DefinedImportData *, 0> offeredComdats;
   if (ctx.config.importSlots && !f.symtab.isEC() && !ctx.hybridSymtab) {
     size_t numComdats = obj.getComdatTable().size();
@@ -335,6 +338,24 @@ void BitcodeCompiler::add(BitcodeFile &f) {
       if (!offeredComdats[c])
         offeredComdats[c] = imp;
     }
+    // Only the offered COMDATs, which hold no code, need the test for a
+    // thread-local or a guard. Every member of one is defined here, and is
+    // thread-local only where objSym is.
+    SmallVector<bool, 0> initialized(numComdats, false);
+    i = 0;
+    for (const lto::InputFile::Symbol &objSym : obj.symbols()) {
+      Symbol *sym = symBodies[i++];
+      int c = objSym.getComdatIndex();
+      if (c == -1 || objSym.isUndefined() || !offeredComdats[c] ||
+          initialized[c])
+        continue;
+      if (objSym.isTLS() || sym->getName().starts_with("_ZGV") ||
+          isa_and_nonnull<Defined>(f.symtab.find(getGuardName(sym->getName()))))
+        initialized[c] = true;
+    }
+    for (size_t c = 0; c != numComdats; ++c)
+      if (!initialized[c])
+        offeredComdats[c] = nullptr;
   }
 
   // Provide a resolution to the LTO API for each symbol.

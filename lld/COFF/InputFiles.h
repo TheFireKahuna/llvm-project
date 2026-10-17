@@ -284,6 +284,17 @@ public:
     llvm::COFF::LinkSiteForm form;
   };
 
+  // A site the object's records describe as a load of an import pointer whose
+  // register only reads of memory read, with its form, and on ARM64 the
+  // distance in instructions back to the adrp that gives it the pointer's
+  // page.
+  struct LinkValueOnly {
+    uint32_t section;
+    uint32_t offset;
+    uint16_t page;
+    llvm::COFF::LinkSiteForm form;
+  };
+
   // A site the object's records describe as a call or jump through a
   // register that a load filled with a pointer, padded to the length of the
   // same transfer through the pointer, or as such a load, which only those
@@ -386,6 +397,12 @@ public:
 
   bool hasLinkFusions() const {
     return linkRecords && !linkRecords->fusions.empty();
+  }
+
+  // The loads the object describes as only read through.
+  ArrayRef<LinkValueOnly> getValueOnlyLoads() const {
+    return linkRecords ? ArrayRef(linkRecords->valueOnlyLoads)
+                       : ArrayRef<LinkValueOnly>();
   }
 
   // A value or alignment that the object's link-only records say depends on
@@ -571,6 +588,7 @@ private:
     bool listsBindings = false;
     std::vector<LinkSite> sites;
     std::vector<LinkFusion> fusions;
+    std::vector<LinkValueOnly> valueOnlyLoads;
     // The values and alignments that depend on where code a linker may
     // resize lies, by section and offset, and the numbers of the sections
     // whose code is covered, in order.

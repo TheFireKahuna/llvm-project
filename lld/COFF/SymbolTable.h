@@ -62,6 +62,9 @@ bool isShareableVagueName(StringRef name);
 // joins: those keep their own, which compare by name.
 bool isTypeInfoName(StringRef name);
 
+// The name of the guard variable of the variable named name.
+std::string getGuardName(StringRef name);
+
 // SymbolTable is a bucket of all known symbols, including defined,
 // undefined, or lazy symbols (the last one is symbols in archive
 // files whose archive members are not yet loaded).
@@ -175,6 +178,26 @@ public:
 
   // Makes sym, a definition of data, the instance that imp imports.
   void preemptSymbol(Symbol *sym, DefinedImportData *imp);
+
+  // Under -import-slots, keeps each read-only copy of data that
+  // preemptWeakData discarded, or that the DLL keeps preemptible, for the loads
+  // that its objects describe as only reading values through the address they
+  // load: those take the address of the copy, whose bytes are those of the
+  // instance that every other reference reaches, and the copy has no symbol.
+  // Runs once offered functions are bound.
+  void readImmutableDataLocally();
+
+  // Whether sc, a section of data, reads the same wherever an image holds a
+  // copy of it: read-only, with words that hold only addresses that are the
+  // same in every image.
+  bool isCanonicalCopy(SectionChunk *sc);
+
+  // A symbol for the copy of data that d defines, which no other file names.
+  static DefinedRegular *makeCopy(DefinedRegular *d);
+
+  // The copies of data that preemptWeakData discarded that may still serve
+  // value reads, a symbol for each by the import that preempted it.
+  llvm::DenseMap<DefinedImportData *, DefinedRegular *> immutableCopies;
 
   // Under -import-slots, binds each import library's __imp_X to the image's
   // own definition of X, which beats it, as a definition in an ELF executable

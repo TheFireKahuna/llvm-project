@@ -242,6 +242,42 @@ bool isArm64PointerLoad(const SectionChunk *sc, const coff_relocation &rel) {
   }
 }
 
+bool isValueOnlyLoad(const SectionChunk *sc, size_t i, LinkSiteForm form,
+                     uint16_t distance, size_t &page) {
+  ArrayRef<coff_relocation> relocs = sc->getRelocs();
+  const coff_relocation &rel = relocs[i];
+  if (sc->getArch() != Triple::aarch64) {
+    page = i;
+    return rel.Type == IMAGE_REL_AMD64_REL32 &&
+           (form == LinkSiteLoad || form == LinkSiteLoadREX2) &&
+           isSiteForm(sc->getContents(), rel.VirtualAddress, form);
+  }
+  // The adrp, before the ldr in its section, writes the register that is
+  // the ldr's base, and refers to the same symbol.
+  uint64_t dist = uint64_t(distance) * 4;
+  if (rel.Type != IMAGE_REL_ARM64_PAGEOFFSET_12L || !distance ||
+      dist > rel.VirtualAddress || !isArm64PointerLoad(sc, rel))
+    return false;
+  page = llvm::partition_point(relocs,
+                               [&](const coff_relocation &r) {
+                                 return r.VirtualAddress <
+                                        rel.VirtualAddress - dist;
+                               }) -
+         relocs.begin();
+  if (page == relocs.size() ||
+      relocs[page].VirtualAddress != rel.VirtualAddress - dist ||
+      relocs[page].Type != IMAGE_REL_ARM64_PAGEBASE_REL21 ||
+      relocs[page].SymbolTableIndex != rel.SymbolTableIndex ||
+      !isArm64PointerLoad(sc, relocs[page]))
+    return false;
+  ArrayRef<uint8_t> data = sc->getContents();
+  Adrp adrp;
+  Ldr ldr;
+  return parseAdrp(read32le(&data[relocs[page].VirtualAddress]), adrp) &&
+         parseLdr(read32le(&data[rel.VirtualAddress]), ldr) &&
+         adrp.destRegister == ldr.baseRegister;
+}
+
 // Rewrites the described load whose REL32 field is at off, `mov r64,
 // [rip+d]` with a REX or REX2 prefix, to materialise zero instead, in the same
 // length: `mov r/m64, imm32` with the register moved from ModRM.reg to
@@ -1227,15 +1263,17 @@ void bindLocalImports(SymbolTable &symtab) {
         it->second &= rewritable;
       }
     }
-    // A .refptr pointer is the compiler's, not a dllimport declaration, and
-    // a pointer to an absent weak symbol's zero imports nothing. The
-    // references of another object were reported with the undefined symbols.
+    // A .refptr pointer is the compiler's, not a dllimport declaration, nor is
+    // one to a copy of data, and a pointer to an absent weak symbol's zero
+    // imports nothing. The references of another object were reported with
+    // the undefined symbols.
     if (!defersLocalImportWarning(file, arm64))
       continue;
     for (auto [li, rewritable] : seen) {
       auto *abs = dyn_cast<DefinedAbsolute>(li->getTarget());
       if (!li->getName().starts_with(".refptr.") &&
-          !(abs && abs->getVA() == 0) && !li->getChunk()->isCell())
+          !(abs && abs->getVA() == 0) && !li->getChunk()->isCell() &&
+          !li->getChunk()->copy)
         refs.push_back({file, li, rewritable});
     }
   }

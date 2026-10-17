@@ -42,6 +42,16 @@ bool isArm64AddressPair(const SectionChunk *sc,
 bool isArm64PointerLoad(const SectionChunk *sc,
                         const llvm::object::coff_relocation &rel);
 
+// Whether the relocation at index i of sc, a code section, is the field of a
+// load of a pointer, of the form given, that the object describes as one whose
+// register only reads of memory read, so that the load may read another
+// pointer to equal data. On ARM64, where the load is an ldr, sets page to the
+// index of the relocation of the adrp distance instructions before it that
+// gives the ldr the pointer's page; otherwise to i.
+bool isValueOnlyLoad(const SectionChunk *sc, size_t i,
+                     llvm::COFF::LinkSiteForm form, uint16_t distance,
+                     size_t &page);
+
 // Whether the references of file to local import pointers are reported only
 // once local imports are bound, and only if they still read the pointer.
 bool defersLocalImportWarning(const ObjFile *file, bool arm64);

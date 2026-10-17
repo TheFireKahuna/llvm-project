@@ -693,6 +693,8 @@ void ObjFile::readLinkRecords() {
                                 getMachineType() == AMD64 && !symtab.isEC();
   if (!linkRecords->describesSites)
     linkRecords->sites.clear();
+  if (symtab.isEC())
+    linkRecords->valueOnlyLoads.clear();
   linkRecords->describesFunctionSites =
       linkRecords->describesSites && (capabilities & LinkRecordsFunctionSites);
   linkRecords->listsCallOnly =
@@ -922,6 +924,7 @@ bool ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
     Err(symtab.ctx) << this << ": .llvm_link_records is malformed: " << msg;
     sites.clear();
     fusions.clear();
+    linkRecords->valueOnlyLoads.clear();
     return false;
   };
   DataExtractor data(payload, /*IsLittleEndian=*/true);
@@ -977,6 +980,14 @@ bool ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
         uint64_t value = facts.getULEB128(factCur);
         if (!factCur)
           break;
+        // A distance no adrp can be at is a fact this linker cannot use.
+        if (kind == LinkSiteValueOnly) {
+          if (value <= UINT16_MAX)
+            linkRecords->valueOnlyLoads.push_back(
+                {section, uint32_t(offset), uint16_t(value),
+                 static_cast<LinkSiteForm>(form)});
+          continue;
+        }
         LinkFusion f{section, uint32_t(offset)};
         if (kind == LinkSiteFusedCall) {
           // The load's index, resolved once the section's sites are read.

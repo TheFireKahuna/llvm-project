@@ -439,10 +439,7 @@ static std::string getSpecialName(StringRef kind, StringRef name) {
   return ("_Z" + kind + Twine(name.size()) + name).str();
 }
 
-// The name of the guard variable of the variable named name.
-static std::string getGuardName(StringRef name) {
-  return getSpecialName("GV", name);
-}
+std::string getGuardName(StringRef name) { return getSpecialName("GV", name); }
 
 bool SymbolTable::isThreadLocal(Symbol *s) const {
   if (auto *d = dyn_cast_or_null<DefinedRegular>(s);
@@ -1174,6 +1171,13 @@ void SymbolTable::bindForwarders() {
   }
 }
 
+DefinedRegular *SymbolTable::makeCopy(DefinedRegular *d) {
+  auto *copy = make<DefinedRegular>(*d);
+  copy->isExternal = false;
+  copy->isCOMDAT = false;
+  return copy;
+}
+
 void SymbolTable::preemptWeakData() {
   if (!ctx.config.importSlots || ctx.hybridSymtab || isEC() || weakData.empty())
     return;
@@ -1213,6 +1217,12 @@ void SymbolTable::preemptWeakData() {
     if (imports.size() != members.size())
       continue;
 
+    // A copy that never changes may still serve the loads that only read
+    // values through its address, under a symbol of its own.
+    SectionChunk *sc = d->getChunk();
+    if (members.size() == 1 && !(sc->header->Characteristics &
+                                 (IMAGE_SCN_MEM_WRITE | IMAGE_SCN_CNT_CODE)))
+      immutableCopies[imports.front()] = makeCopy(d);
     for (auto [m, mi] : llvm::zip_equal(members, imports))
       preemptSymbol(m, mi);
     for (SectionChunk *c : chunks) {
@@ -1231,6 +1241,179 @@ void SymbolTable::preemptWeakData() {
   forwardExports([&](Symbol *s) -> DefinedImportData * {
     return preemptedData.contains(s) ? cast<DefinedImportData>(s) : nullptr;
   });
+}
+
+bool SymbolTable::isCanonicalCopy(SectionChunk *sc) {
+  if (sc->header->Characteristics & (IMAGE_SCN_MEM_WRITE | IMAGE_SCN_CNT_CODE))
+    return false;
+  for (const coff_relocation &rel : sc->getRelocs()) {
+    // An address inside an object, or in the image alone, such as that of a
+    // string literal, differs from the instance's.
+    Symbol *s = sc->file->getSymbol(rel.SymbolTableIndex);
+    if (!sc->isAddressWord(rel) || getAddressWordAddend(sc, rel) != 0)
+      return false;
+    if (isa_and_nonnull<DefinedAbsolute>(s))
+      continue;
+    if (DefinedImportData *imp = getAddressedImport(s);
+        imp && !ctx.config.delayLoads.contains(imp->getDLLName().lower()))
+      continue;
+    // A copy kept for its reads must not name what liveness discarded.
+    if (!offeredFunctions.contains(s) &&
+        !(isPreemptibleVagueEntity(s) && s->isLive()))
+      return false;
+  }
+  return true;
+}
+
+void SymbolTable::readImmutableDataLocally() {
+  if (!ctx.config.importSlots || ctx.hybridSymtab || isEC())
+    return;
+  llvm::TimeTraceScope timeScope("Read immutable data locally");
+  // By the symbol that value-only loads' relocations name, the copy they read
+  // instead, if there is one: that of data a DLL's instance preempts, named
+  // by its import, and the instance of data the DLL keeps preemptible, named
+  // by its cell.
+  struct Copy {
+    DefinedRegular *copy = nullptr;
+    // The definition that the copy was, if liveness discarded it, which a
+    // DLL's instance preempts once the copy is kept.
+    DefinedRegular *discarded = nullptr;
+    DefinedLocalImport *pointer = nullptr;
+    size_t sites = 0;
+  };
+  MapVector<Symbol *, Copy *> copies;
+  SmallVector<SectionChunk *, 4> chunks;
+  SmallVector<DefinedRegular *, 4> members;
+  auto findCopy = [&](Symbol *s, Copy &c) {
+    if (auto *imp = dyn_cast_or_null<DefinedImportData>(s)) {
+      if (DefinedRegular *copy = immutableCopies.lookup(imp)) {
+        if (isCanonicalCopy(copy->getChunk()))
+          c.copy = copy;
+        return;
+      }
+      // Import-form references never name the copy, which liveness then
+      // discards unless something else does.
+      auto *d = dyn_cast_or_null<DefinedRegular>(
+          find(imp->getName().drop_front(strlen("__imp_"))));
+      if (!d || !isa<ObjFile>(d->getFile()) || !d->isCOMDAT ||
+          d->getChunk()->live || isThreadLocal(d) || !isDefaultVisibility(d) ||
+          ignoresOffersOf(imp))
+        return;
+      collectWeakDataGroup(d, chunks, members, /*liveOnly=*/false);
+      if (members.size() != 1 || !isCanonicalCopy(d->getChunk()))
+        return;
+      c.copy = makeCopy(d);
+      c.discarded = d;
+    } else if (auto *cell = dyn_cast_or_null<DefinedLocalImport>(s);
+               cell && !cell->getChunk()->vagueEntity.empty()) {
+      auto *d = dyn_cast<DefinedRegular>(cell->getChunk()->getTarget());
+      if (d && d->isLive() && !isThreadLocal(d) &&
+          isCanonicalCopy(d->getChunk()))
+        c.copy = d;
+    }
+  };
+
+  // The loads of a function may lead to addresses that it compares, so the
+  // value-only loads of a symbol in an object read the copy together, or not
+  // at all where any of them is not the load its object describes.
+  struct Site {
+    SectionChunk *sc;
+    size_t i, page;
+    Symbol *sym;
+    Copy *copy;
+  };
+  SmallVector<Site, 0> sites;
+  SmallPtrSet<Copy *, 4> mismatched;
+  for (ObjFile *file : ctx.objFileInstances) {
+    ArrayRef<ObjFile::LinkValueOnly> loads = file->getValueOnlyLoads();
+    if (&file->symtab != this || loads.empty())
+      continue;
+    sites.clear();
+    mismatched.clear();
+    for (const ObjFile::LinkValueOnly &load : loads) {
+      SectionChunk *sc = file->getSectionChunk(load.section);
+      if (!sc || !sc->live ||
+          !(sc->header->Characteristics & IMAGE_SCN_CNT_CODE))
+        continue;
+      ArrayRef<coff_relocation> relocs = sc->getRelocs();
+      size_t i = llvm::partition_point(relocs,
+                                       [&](const coff_relocation &r) {
+                                         return r.VirtualAddress < load.offset;
+                                       }) -
+                 relocs.begin();
+      if (i == relocs.size() || relocs[i].VirtualAddress != load.offset)
+        continue;
+      Symbol *s = file->getSymbol(relocs[i].SymbolTableIndex);
+      auto [it, inserted] = copies.try_emplace(s, nullptr);
+      if (inserted) {
+        it->second = make<Copy>();
+        findCopy(s, *it->second);
+      }
+      Copy &copy = *it->second;
+      if (!copy.copy)
+        continue;
+      size_t page;
+      if (isValueOnlyLoad(sc, i, load.form, load.page, page))
+        sites.push_back({sc, i, page, s, &copy});
+      else
+        mismatched.insert(&copy);
+    }
+
+    DenseMap<Copy *, uint32_t> indices;
+    for (auto [sc, i, page, sym, copy] : sites) {
+      if (mismatched.contains(copy))
+        continue;
+      if (!copy->pointer) {
+        copy->pointer =
+            make<DefinedLocalImport>(ctx, sym->getName(), copy->copy);
+        copy->pointer->getChunk()->copy = true;
+        localImportChunks.push_back(copy->pointer->getChunk());
+      }
+      auto [index, added] = indices.try_emplace(copy, 0);
+      if (added)
+        index->second = file->addRangeThunkSymbol(copy->pointer);
+      // The relocations are made writable as range extension thunks make
+      // them.
+      ArrayRef<coff_relocation> relocs = sc->getRelocs();
+      if (relocs.data() ==
+          file->getCOFFObj()->getRelocations(sc->header).data()) {
+        auto *newRelocs = bAlloc().Allocate<coff_relocation>(relocs.size());
+        llvm::copy(relocs, newRelocs);
+        sc->setRelocs(ArrayRef(newRelocs, relocs.size()));
+        relocs = sc->getRelocs();
+      }
+      auto *writable = const_cast<coff_relocation *>(relocs.data());
+      writable[i].SymbolTableIndex = index->second;
+      writable[page].SymbolTableIndex = index->second;
+      ++copy->sites;
+    }
+  }
+
+  // A discarded copy is kept, with no symbol, while loads read it, and the
+  // imports whose addresses its words hold are kept with it.
+  for (auto [s, copy] : copies) {
+    if (!copy->sites)
+      continue;
+    Log(ctx) << "Keeping the copy of " << printSymbol(copy->copy) << " in "
+             << copy->copy->getFile() << " for " << copy->sites
+             << (copy->sites == 1 ? " value read" : " value reads");
+    SectionChunk *sc = copy->copy->getChunk();
+    if (sc->live)
+      continue;
+    sc->sym = nullptr;
+    auto keep = [&](SectionChunk *c) {
+      c->live = true;
+      for (const coff_relocation &rel : c->getRelocs())
+        if (DefinedImportData *imp =
+                getAddressedImport(c->file->getSymbol(rel.SymbolTableIndex)))
+          imp->file->live = true;
+    };
+    keep(sc);
+    for (SectionChunk &child : sc->children())
+      keep(&child);
+    if (copy->discarded)
+      preemptSymbol(copy->discarded, cast<DefinedImportData>(s));
+  }
 }
 
 static StringRef getForwardTarget(DefinedImportData *imp);

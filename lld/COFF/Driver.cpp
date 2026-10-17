@@ -3456,6 +3456,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   ctx.forEachSymtab([](SymbolTable &symtab) {
     symtab.preemptWeakData();
     symtab.bindOfferedFunctions();
+    symtab.readImmutableDataLocally();
     symtab.addOffers();
   });
   addOffersEpoch(ctx);

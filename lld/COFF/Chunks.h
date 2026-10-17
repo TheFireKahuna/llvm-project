@@ -818,6 +818,12 @@ public:
   // that instance's address when the executable's table names one.
   StringRef vagueEntity;
 
+  // Whether the pointer leads to the image's own copy of data that never
+  // changes, which loads read in place of the import of data another image
+  // provides where they only read values, so that no dllimport declaration
+  // names it.
+  bool copy = false;
+
   // Whether the pointer is a cell the image's fill may overwrite, which no
   // reference bypasses.
   bool isCell() const {
