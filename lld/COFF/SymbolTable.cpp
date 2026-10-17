@@ -1006,38 +1006,46 @@ bool SymbolTable::loadLocalImportMembers() {
   // group and of its guard, takes the data's place.
   std::vector<Symbol *> offers;
   if (ctx.config.importSlots && !ctx.hybridSymtab && !isEC()) {
+    // A new offer can appear only when a new object defines a weak definition
+    // or a new archive offers an import for one; otherwise a prior pass has
+    // already loaded every offer this one could, so the scan is skipped.
+    bool rescan = weakFunctionObjects != ctx.objFileInstances.size() ||
+                  offeredArchives != indexedArchives.size();
     for (; weakFunctionObjects != ctx.objFileInstances.size();
          ++weakFunctionObjects)
       if (ObjFile *file = ctx.objFileInstances[weakFunctionObjects];
           &file->symtab == this)
         collectWeakFunctions(file, weakFunctions);
-    for (Symbol *sym : weakFunctions)
-      if (isa<DefinedRegular>(sym))
-        if (Symbol *l = find(("__imp_" + sym->getName()).str());
-            l && isLazyImportOf(l, IMPORT_CODE))
-          offers.push_back(l);
+    offeredArchives = indexedArchives.size();
+    if (rescan) {
+      for (Symbol *sym : weakFunctions)
+        if (isa<DefinedRegular>(sym))
+          if (Symbol *l = find(("__imp_" + sym->getName()).str());
+              l && isLazyImportOf(l, IMPORT_CODE))
+            offers.push_back(l);
 
-    auto addOffer = [&](StringRef name) {
-      Symbol *l = find(("__imp_" + name).str());
-      if (l && isLazyDataImport(l))
-        offers.push_back(l);
-      return l && (isa<DefinedImportData>(l) || isLazyDataImport(l));
-    };
-    SmallVector<SectionChunk *, 4> chunks;
-    SmallVector<DefinedRegular *, 4> members;
-    for (Symbol *sym : weakData) {
-      auto *d = dyn_cast<DefinedRegular>(sym);
-      if (!d || !isDefaultVisibility(d) || !addOffer(getSharedName(d)))
-        continue;
-      addOffer(getSharedGuardName(d));
-      if (!isa<ObjFile>(d->getFile()))
-        continue;
-      chunks.clear();
-      members.clear();
-      collectComdatGroup(d, chunks, members);
-      for (DefinedRegular *m : members)
-        if (m != d)
-          addOffer(getSharedName(m));
+      auto addOffer = [&](StringRef name) {
+        Symbol *l = find(("__imp_" + name).str());
+        if (l && isLazyDataImport(l))
+          offers.push_back(l);
+        return l && (isa<DefinedImportData>(l) || isLazyDataImport(l));
+      };
+      SmallVector<SectionChunk *, 4> chunks;
+      SmallVector<DefinedRegular *, 4> members;
+      for (Symbol *sym : weakData) {
+        auto *d = dyn_cast<DefinedRegular>(sym);
+        if (!d || !isDefaultVisibility(d) || !addOffer(getSharedName(d)))
+          continue;
+        addOffer(getSharedGuardName(d));
+        if (!isa<ObjFile>(d->getFile()))
+          continue;
+        chunks.clear();
+        members.clear();
+        collectComdatGroup(d, chunks, members);
+        for (DefinedRegular *m : members)
+          if (m != d)
+            addOffer(getSharedName(m));
+      }
     }
   }
 

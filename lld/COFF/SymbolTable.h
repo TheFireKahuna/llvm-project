@@ -251,6 +251,9 @@ public:
   // address-significance tables have been read for them.
   std::vector<Symbol *> weakFunctions;
   size_t weakFunctionObjects = 0;
+  // The number of indexed archives loadLocalImportMembers has scanned the
+  // weak definitions against for offers to load.
+  size_t offeredArchives = 0;
 
   // Under -import-slots, the functions whose address is that of the instance
   // a DLL the image imports from offers, as an ELF shared object's definition
