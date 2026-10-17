@@ -27,10 +27,15 @@
 // A load of the import pointer of data is described with each instruction
 // that reads its register only as the base of a memory operand with no index:
 // where the data is in the image, the linker makes each such operand
-// RIP-relative, and the load dead where nothing else reads the register. One whose register is next given a
-// constant, by an add or an lea, is described with that instruction: where
-// the data is in the image, the linker makes the load take the sum and the
-// add dead.
+// RIP-relative, and the load dead where nothing else reads the register. One
+// whose register is next given a constant, by an add or an lea, is described
+// with that instruction: where the data is in the image, the linker makes the
+// load take the sum and the add dead.
+//
+// A load of the import pointer of data that never changes, whose register
+// only reads of memory read, is described as such: the linker may make it
+// take the address of the image's own copy of the data, which holds the same
+// value wherever the data's address leads.
 //
 //===----------------------------------------------------------------------===//
 
@@ -38,8 +43,10 @@
 #include "X86InstrInfo.h"
 #include "X86MachineFunctionInfo.h"
 #include "X86Subtarget.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/Analysis/CaptureTracking.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
@@ -54,6 +61,7 @@ STATISTIC(NumFused, "Number of calls described as fused with a load");
 STATISTIC(NumDeleted, "Number of import pointer loads folded into a call");
 STATISTIC(NumAccesses, "Number of accesses described as fused with a load");
 STATISTIC(NumAdds, "Number of adds described as fused with a load");
+STATISTIC(NumValueOnly, "Number of loads described as read only for values");
 
 namespace {
 
@@ -69,6 +77,7 @@ class X86WindowsImportFusion {
   void moveOffBlockEnd(MachineInstr &Load, Register Reg) const;
   bool isFusibleAccess(const MachineInstr &MI, Register Reg) const;
   bool isFusibleAdd(const MachineInstr &MI, Register Reg) const;
+  bool isValueRead(const MachineInstr &MI, Register Reg) const;
 
 public:
   bool run(MachineFunction &MF, function_ref<ReachingDefInfo &()> GetRDI);
@@ -175,6 +184,15 @@ static bool isDataPointer(const MachineOperand &Pointer) {
   if (const auto *GA = dyn_cast<GlobalAlias>(GV))
     GV = GA->getAliaseeObject();
   return GV && !isa<Function>(GV);
+}
+
+// Whether Pointer is the import pointer of data that never changes and whose
+// every definition holds the same value, so that a copy of it in any image
+// reads as the data itself does.
+static bool isImmutableData(const MachineOperand &Pointer) {
+  const auto *GV = dyn_cast<GlobalVariable>(Pointer.getGlobal());
+  return GV && GV->isConstant() && GV->hasDefinitiveInitializer() &&
+         (GV->isWeakForLinker() || GV->hasAvailableExternallyLinkage());
 }
 
 static bool isSamePointer(const MachineOperand &A, const MachineOperand &B) {
@@ -406,6 +424,35 @@ bool X86WindowsImportFusion::isFusibleAdd(const MachineInstr &MI,
   }
 }
 
+// Whether MI only reads memory through Reg, as the base of its memory operand
+// with no segment and any index but Reg: a load, neither volatile nor atomic,
+// that reads Reg nowhere else, so that the address in Reg does not escape.
+bool X86WindowsImportFusion::isValueRead(const MachineInstr &MI,
+                                         Register Reg) const {
+  if (!MI.mayLoad() || MI.mayStore() || MI.isCall() || MI.isBranch() ||
+      MI.hasUnmodeledSideEffects() || MI.isBundled() ||
+      MI.memoperands_empty() ||
+      any_of(MI.memoperands(), [](const MachineMemOperand *MMO) {
+        return MMO->isVolatile() || MMO->isAtomic();
+      }))
+    return false;
+  const MCInstrDesc &Desc = MI.getDesc();
+  int MemOp = X86II::getMemoryOperandNo(Desc.TSFlags);
+  if (MemOp < 0)
+    return false;
+  MemOp += X86II::getOperandBias(Desc);
+  const MachineOperand &Base = MI.getOperand(MemOp + X86::AddrBaseReg);
+  if (!Base.isReg() || Base.getReg() != Reg ||
+      MI.getOperand(MemOp + X86::AddrSegmentReg).getReg() ||
+      !MI.getOperand(MemOp + X86::AddrDisp).isImm())
+    return false;
+  for (const auto &[I, MO] : enumerate(MI.operands()))
+    if (I != unsigned(MemOp + X86::AddrBaseReg) && MO.isReg() && MO.getReg() &&
+        MO.readsReg() && TRI->regsOverlap(MO.getReg(), Reg))
+      return false;
+  return true;
+}
+
 bool X86WindowsImportFusion::run(MachineFunction &MF,
                                  function_ref<ReachingDefInfo &()> GetRDI) {
   const X86Subtarget &ST = MF.getSubtarget<X86Subtarget>();
@@ -422,11 +469,20 @@ bool X86WindowsImportFusion::run(MachineFunction &MF,
 
   SmallVector<MachineInstr *, 8> Loads, MemCalls;
   bool HasRegCalls = false, HasDataLoads = false;
+  // The globals whose import pointers an instruction other than a load of
+  // one into a register names.
+  SmallPtrSet<const GlobalValue *, 4> OtherUses;
   for (MachineBasicBlock &MBB : MF) {
     for (MachineInstr &MI : MBB) {
+      const MachineOperand *Pointer = getLoadedPointer(MI);
+      if (MI.isBundled() || !Pointer)
+        for (const MachineOperand &MO : MI.operands())
+          if (MO.isGlobal() && (MO.getTargetFlags() == X86II::MO_DLLIMPORT ||
+                                MO.getTargetFlags() == X86II::MO_COFFSTUB))
+            OtherUses.insert(MO.getGlobal());
       if (MI.isBundled())
         continue;
-      if (const MachineOperand *Pointer = getLoadedPointer(MI)) {
+      if (Pointer) {
         Loads.push_back(&MI);
         HasDataLoads |= isDataPointer(*Pointer);
       } else if (getUnfoldedOpcode(MI.getOpcode()) && getImportPointer(MI, 0))
@@ -455,6 +511,7 @@ bool X86WindowsImportFusion::run(MachineFunction &MF,
     MachineInstr *Add = nullptr;
   };
   SmallVector<Fusion, 4> Work;
+  SmallSetVector<MachineInstr *, 4> ValueOnly;
   SmallPtrSet<MachineInstr *, 4> FusedMemCalls;
   ReachingDefInfo *RDI = HasRegCalls || HasDataLoads ? &GetRDI() : nullptr;
   for (MachineInstr *Load : Loads) {
@@ -512,6 +569,11 @@ bool X86WindowsImportFusion::run(MachineFunction &MF,
     // takes the add's sum.
     if (!isDataPointer(Pointer) || Uses.empty())
       continue;
+    // Where only reads of memory read the address of data that never
+    // changes, the address may be that of the image's own copy.
+    if (isImmutableData(Pointer) &&
+        all_of(Uses, [&](MachineInstr *Use) { return isValueRead(*Use, Reg); }))
+      ValueOnly.insert(Load);
     auto IsFused = [&](MachineInstr *Use) {
       return !Use->isBundled() && isInSameSection(*Load, *Use) &&
              RDI->getUniqueReachingMIDef(Use, Reg) == Load;
@@ -540,10 +602,35 @@ bool X86WindowsImportFusion::run(MachineFunction &MF,
     if (!F.Accesses.empty())
       Work.push_back(std::move(F));
   }
-  if (Work.empty())
-    return false;
-
+  // Where the function only reads data that never changes through its
+  // address, or compares addresses within it, every load of the data's import
+  // pointer may read the image's own copy, all of them together, so that
+  // addresses that different loads lead to still compare as before.
+  DenseMap<const GlobalValue *, bool> ReadOnlyThrough;
+  for (MachineInstr *Load : Loads) {
+    const MachineOperand &Pointer = *getLoadedPointer(*Load);
+    if (!isImmutableData(Pointer) ||
+        Pointer.getTargetFlags() != X86II::MO_DLLIMPORT)
+      continue;
+    const GlobalValue *GV = Pointer.getGlobal();
+    auto [It, Inserted] = ReadOnlyThrough.try_emplace(GV, false);
+    if (Inserted) {
+      It->second = !OtherUses.contains(GV) &&
+                   !globalAddressMayBeCapturedIn(GV, MF.getFunction());
+      LLVM_DEBUG(dbgs() << "Loads of the import pointer of " << GV->getName()
+                        << (It->second ? " read only through it\n"
+                                       : " may give its address away\n"));
+    }
+    if (It->second)
+      ValueOnly.insert(Load);
+  }
   X86MachineFunctionInfo *FI = MF.getInfo<X86MachineFunctionInfo>();
+  for (MachineInstr *Load : ValueOnly)
+    FI->addImportValueOnlyLoad(Load);
+  NumValueOnly += ValueOnly.size();
+  if (Work.empty())
+    return !ValueOnly.empty();
+
   SmallVector<MachineBasicBlock *, 8> LiveInBlocks;
   using UseKind = X86MachineFunctionInfo::ImportFusedUseKind;
   for (Fusion &F : Work) {

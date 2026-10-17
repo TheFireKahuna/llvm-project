@@ -94,7 +94,10 @@ bool X86AsmPrinter::runOnMachineFunction(MachineFunction &MF) {
   IndCSPrefix = M->getModuleFlag("indirect_branch_cs_prefix");
 
   const auto *FI = MF.getInfo<X86MachineFunctionInfo>();
-  ImportFusion = FI->getImportFusedLoads().empty() ? nullptr : FI;
+  ImportFusion =
+      FI->getImportFusedLoads().empty() && FI->getImportValueOnlyLoads().empty()
+          ? nullptr
+          : FI;
   ImportFusionLabels.clear();
 
   SetupMachineFunction(MF);
@@ -138,7 +141,9 @@ MCSymbol *X86AsmPrinter::getImportFusionLabel(const MachineInstr *Load) {
 // same call through the pointer, which the linker may make it, or a direct
 // call: segment overrides, which a call through a register ignores, come
 // first, so that it pushes the same return address. An access through the
-// register, or an add of a constant to it, the linker may resize.
+// register, or an add of a constant to it, the linker may resize. A load whose
+// register only reads of memory read may take the address of the image's own
+// copy of the data.
 void X86AsmPrinter::emitImportFusion(const MachineInstr &MI) {
   using UseKind = X86MachineFunctionInfo::ImportFusedUseKind;
   auto Use = ImportFusion->getImportFusedUses().find(&MI);
@@ -164,6 +169,8 @@ void X86AsmPrinter::emitImportFusion(const MachineInstr &MI) {
     }
     return;
   }
+  if (ImportFusion->getImportValueOnlyLoads().contains(&MI))
+    OutStreamer->emitCOFFLinkValueOnly(nullptr);
   auto Load = ImportFusion->getImportFusedLoads().find(&MI);
   if (Load == ImportFusion->getImportFusedLoads().end())
     return;

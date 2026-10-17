@@ -14,6 +14,7 @@
 #define LLVM_LIB_TARGET_X86_X86MACHINEFUNCTIONINFO_H
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/CodeGen/CallingConvLower.h"
 #include "llvm/CodeGen/MIRYamlMapping.h"
@@ -177,6 +178,9 @@ private:
   /// each with whether only such instructions read it.
   DenseMap<const MachineInstr *, ImportFusedUse> ImportFusedUses;
   DenseMap<const MachineInstr *, bool> ImportFusedLoads;
+  /// The loads of import pointers of data whose registers only reads of
+  /// memory read, which the pass describes to the linker too.
+  SmallPtrSet<const MachineInstr *, 2> ImportValueOnlyLoads;
 
   std::optional<int> SwiftAsyncContextFrameIdx;
 
@@ -327,6 +331,12 @@ public:
   }
   const DenseMap<const MachineInstr *, bool> &getImportFusedLoads() const {
     return ImportFusedLoads;
+  }
+  void addImportValueOnlyLoad(const MachineInstr *Load) {
+    ImportValueOnlyLoads.insert(Load);
+  }
+  const SmallPtrSetImpl<const MachineInstr *> &getImportValueOnlyLoads() const {
+    return ImportValueOnlyLoads;
   }
 
   std::optional<int> getSwiftAsyncContextFrameIdx() const {
