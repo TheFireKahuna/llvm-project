@@ -1117,15 +1117,11 @@ void bindPointerCells(SymbolTable &symtab) {
 
 // The pointer, of those bound to the compiler's pointers in cells, whose
 // section s, a symbol of the file that holds them, is defined in.
-static LocalImportChunk *findCell(ArrayRef<LocalImportChunk *> cells,
-                                  Symbol *s) {
+static LocalImportChunk *
+findCell(const DenseMap<SectionChunk *, LocalImportChunk *> &cellOf,
+         Symbol *s) {
   auto *d = dyn_cast_or_null<DefinedRegular>(s);
-  if (!d)
-    return nullptr;
-  for (LocalImportChunk *c : cells)
-    if (d->getChunk() == c->cell)
-      return c;
-  return nullptr;
+  return d ? cellOf.lookup(d->getChunk()) : nullptr;
 }
 
 // A reference to a local import pointer is rewritten to reach the pointer's
@@ -1212,9 +1208,14 @@ void bindLocalImports(SymbolTable &symtab) {
     ArrayRef<LocalImportChunk *> cells;
     if (auto it = cellsByFile.find(file); it != cellsByFile.end())
       cells = it->second;
+    // The cells by the section that each holds, so a reference finds its cell
+    // without a scan; the first cell of a section wins, as the scan did.
+    DenseMap<SectionChunk *, LocalImportChunk *> cellOf;
+    for (LocalImportChunk *c : cells)
+      cellOf.try_emplace(c->cell, c);
     if (!cells.empty())
       for (Symbol *s : file->getSymbols())
-        if (LocalImportChunk *c = findCell(cells, s);
+        if (LocalImportChunk *c = findCell(cellOf, s);
             c && cast<DefinedRegular>(s)->getCOFFSymbol().isExternal())
           named.insert(c);
 
@@ -1228,7 +1229,7 @@ void bindLocalImports(SymbolTable &symtab) {
       for (const coff_relocation &rel : sc->getRelocs()) {
         Symbol *s = file->getSymbol(rel.SymbolTableIndex);
         if (!isa_and_nonnull<DefinedLocalImport>(s)) {
-          if (LocalImportChunk *c = findCell(cells, s))
+          if (LocalImportChunk *c = findCell(cellOf, s))
             named.insert(c);
           continue;
         }
