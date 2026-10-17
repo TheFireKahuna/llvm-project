@@ -694,7 +694,8 @@ void __cxa_decrement_exception_refcount(void *thrown_object) throw() {
         if (std::__libcpp_atomic_add(&exception_header->referenceCount, size_t(-1)) == 0)
         {
             if (NULL != exception_header->exceptionDestructor)
-                exception_header->exceptionDestructor(thrown_object);
+                reinterpret_cast<__cxa_kcfi_destructor>(
+                    exception_header->exceptionDestructor)(thrown_object);
             __cxa_free_exception(thrown_object);
         }
     }

@@ -17,5 +17,17 @@
 // ASM:        .linkprotecteddelayiat
 // ASM-NEXT:   .linkprotecteddelayiat
 
+// With another such fact, the groups are in increasing order of kind.
+// RUN: llvm-mc -triple x86_64-pc-windows-msvc -filetype=obj %s -o %t.both.o \
+// RUN:   --defsym BOTH=1
+// RUN: llvm-objdump -s -j .llvm_link_records %t.both.o | \
+// RUN:   FileCheck --check-prefix=BOTH %s
+
+// BOTH:      Contents of section .llvm_link_records:
+// BOTH-NEXT: 0000 4c4c5243 01000e00 1000
+
   .linkprotecteddelayiat
   .linkprotecteddelayiat
+.ifdef BOTH
+  .linktypeprefixes
+.endif

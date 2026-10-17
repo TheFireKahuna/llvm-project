@@ -1,16 +1,17 @@
 // RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fms-extensions \
-// RUN:     -D_DLL \
+// RUN:     -fno-function-type-prefix -D_DLL \
 // RUN:     -internal-isystem %resource_dir/win32_itanium_wrappers \
 // RUN:     -internal-isystem %S/Inputs/win32_itanium/ucrt \
 // RUN:     -internal-isystem %S/Inputs/win32_itanium/shared \
 // RUN:     -emit-llvm -o - %s | FileCheck %s
 // RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -fms-extensions \
-// RUN:     -D_DLL \
+// RUN:     -fno-function-type-prefix -D_DLL \
 // RUN:     -internal-isystem %resource_dir/win32_itanium_wrappers \
 // RUN:     -internal-isystem %S/Inputs/win32_itanium/ucrt \
 // RUN:     -internal-isystem %S/Inputs/win32_itanium/shared \
 // RUN:     -emit-llvm -o - %s | FileCheck %s
 // RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fms-extensions \
+// RUN:     -fno-function-type-prefix \
 // RUN:     -internal-isystem %resource_dir/win32_itanium_wrappers \
 // RUN:     -internal-isystem %S/Inputs/win32_itanium/ucrt \
 // RUN:     -internal-isystem %S/Inputs/win32_itanium/shared \

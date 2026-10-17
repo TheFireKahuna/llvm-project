@@ -97,18 +97,28 @@ _LIBCPP_HIDE_FROM_ABI exception_ptr make_exception_ptr(_Ep __e) _NOEXCEPT {
   using _Ep2 = __decay_t<_Ep>;
 
   void* __ex = __cxxabiv1::__cxa_allocate_exception(sizeof(_Ep));
-#      ifdef __wasm__
+#      if __has_feature(function_type_prefix) && !defined(__wasm__)
+  // Where functions carry type prefixes, the runtime calls the cleanup as it
+  // calls a destructor, through void(void *) salted "__cxa_dtor".
+  auto __salted_cleanup = [](void* __p) __attribute__((__cfi_salt__("__cxa_dtor"))) {
+    std::__destroy_at(static_cast<_Ep2*>(__p));
+  };
+  (void)__cxxabiv1::__cxa_init_primary_exception(
+      __ex, const_cast<std::type_info*>(&typeid(_Ep)), reinterpret_cast<void (*)(void*)>(+__salted_cleanup));
+#      else
+#        ifdef __wasm__
   // In Wasm, a destructor returns its argument
   (void)__cxxabiv1::__cxa_init_primary_exception(
       __ex, const_cast<std::type_info*>(&typeid(_Ep)), [](void* __p) -> void* {
-#      else
+#        else
   (void)__cxxabiv1::__cxa_init_primary_exception(__ex, const_cast<std::type_info*>(&typeid(_Ep)), [](void* __p) {
-#      endif
+#        endif
         std::__destroy_at(static_cast<_Ep2*>(__p));
-#      ifdef __wasm__
+#        ifdef __wasm__
         return __p;
-#      endif
+#        endif
       });
+#      endif
 
   try {
     ::new (__ex) _Ep2(__e);

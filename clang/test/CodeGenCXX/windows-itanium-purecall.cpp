@@ -1,7 +1,7 @@
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -emit-llvm -o - %s | FileCheck %s
-// RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -emit-llvm -o - %s | FileCheck %s
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fclang-abi-compat=23 -emit-llvm -o - %s | FileCheck %s --check-prefix=ITANIUM
-// RUN: %clang_cc1 -triple x86_64-pc-windows-ntposix -emit-llvm -o - %s | FileCheck %s --check-prefix=ITANIUM
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fno-function-type-prefix -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -fno-function-type-prefix -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fno-function-type-prefix -fclang-abi-compat=23 -emit-llvm -o - %s | FileCheck %s --check-prefix=ITANIUM
+// RUN: %clang_cc1 -triple x86_64-pc-windows-ntposix -fno-function-type-prefix -emit-llvm -o - %s | FileCheck %s --check-prefix=ITANIUM
 // RUN: %clang_cc1 -triple x86_64-w64-windows-gnu -emit-llvm -o - %s | FileCheck %s --check-prefix=ITANIUM
 // RUN: %clang_cc1 -triple x86_64-unknown-linux-gnu -emit-llvm -o - %s | FileCheck %s --check-prefix=ITANIUM
 

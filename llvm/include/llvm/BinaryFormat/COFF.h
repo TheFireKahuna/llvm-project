@@ -68,6 +68,13 @@ const uint64_t LinkRecordKindCritical = 1;
 
 enum LinkRecordKind : uint64_t {
 
+  // The object gives its functions KCFI prefixes with a marker, each after a
+  // static __cfi_ symbol, which a linker seals where no indirect call may
+  // reach the function and keeps out of a page's first bytes. A linker looks
+  // for the prefixes only in a link with such an object. The payload is
+  // empty.
+  LinkRecordTypePrefixes = 14,
+
   // The object defines a delay-load helper that writes a delay-load import
   // address table only while it has made the table writable, or leaves the
   // writes to the loader, which does the same. A linker may then give the
@@ -76,6 +83,12 @@ enum LinkRecordKind : uint64_t {
   // empty.
   LinkRecordProtectedDelayIAT = 16,
 };
+// The KCFI type that a linker writes over the type words of a function's
+// marked KCFI prefix when no indirect call may reach the function, so that a
+// call through a pointer to it fails its type check. A compiler that emits
+// marked prefixes never assigns this type to a function or a call.
+const uint32_t SealedTypeId = 0;
+
 // Sizes in bytes of various things in the COFF format.
 enum {
   Header16Size = 20,

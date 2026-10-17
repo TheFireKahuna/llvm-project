@@ -27,6 +27,13 @@ _LIBCXXABI_HIDDEN uint64_t __getExceptionClass  (const _Unwind_Exception*);
 _LIBCXXABI_HIDDEN void     __setExceptionClass  (      _Unwind_Exception*, uint64_t);
 _LIBCXXABI_HIDDEN bool     __isOurExceptionClass(const _Unwind_Exception*);
 
+// The type the runtime calls an exception's destructor through.
+#ifdef __wasm__
+typedef void *(_LIBCXXABI_DTOR_FUNC *__cxa_kcfi_destructor)(void *) _LIBCXXABI_KCFI_DTOR;
+#else
+typedef void (_LIBCXXABI_DTOR_FUNC *__cxa_kcfi_destructor)(void *) _LIBCXXABI_KCFI_DTOR;
+#endif
+
 struct _LIBCXXABI_HIDDEN __cxa_exception {
 #if defined(__LP64__) || defined(_WIN64) || defined(_LIBCXXABI_ARM_EHABI)
     // Now _Unwind_Exception is marked with __attribute__((aligned)),

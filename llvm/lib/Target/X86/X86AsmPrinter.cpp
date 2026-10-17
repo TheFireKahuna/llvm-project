@@ -152,17 +152,15 @@ uint32_t X86AsmPrinter::MaskKCFIType(uint32_t Value) {
 }
 
 void X86AsmPrinter::EmitKCFITypePadding(const MachineFunction &MF,
-                                        bool HasType) {
+                                        unsigned TypeBytes) {
   // Keep the function entry aligned, taking patchable-function-prefix into
   // account if set.
   int64_t PrefixBytes = MF.getFunction().getFnAttributeAsParsedInteger(
       "patchable-function-prefix");
 
   // Also take the type identifier into account if we're emitting
-  // one. Otherwise, just pad with nops. The X86::MOV32ri instruction emitted
-  // in X86AsmPrinter::emitKCFITypeId is 5 bytes long.
-  if (HasType)
-    PrefixBytes += 5;
+  // one. Otherwise, just pad with nops.
+  PrefixBytes += TypeBytes;
 
   emitNops(offsetToAlignment(PrefixBytes, MF.getPreferredAlignment()));
 }
@@ -171,7 +169,13 @@ void X86AsmPrinter::EmitKCFITypePadding(const MachineFunction &MF,
 /// format.
 void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
   const Function &F = MF.getFunction();
-  if (!F.getParent()->getModuleFlag("kcfi"))
+  // A Windows Itanium or NT-POSIX module with a marker gives every typed
+  // function a prefix, whether or not it checks its own indirect calls.
+  const ConstantInt *Marker = nullptr;
+  if (TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    Marker = mdconst::extract_or_null<ConstantInt>(
+        F.getParent()->getModuleFlag("function-type-prefix"));
+  if (!Marker && !F.getParent()->getModuleFlag("kcfi"))
     return;
 
   ConstantInt *Type = nullptr;
@@ -181,7 +185,7 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
   // If we don't have a type to emit, just emit padding if needed to maintain
   // the same alignment for all functions.
   if (!Type) {
-    EmitKCFITypePadding(MF, /*HasType=*/false);
+    EmitKCFITypePadding(MF, /*TypeBytes=*/0);
     return;
   }
 
@@ -196,11 +200,42 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
     emitLinkage(&MF.getFunction(), FnSym);
   if (MAI.hasDotTypeDotSizeDirective())
     OutStreamer->emitSymbolAttribute(FnSym, MCSA_ELF_TypeFunction);
-  OutStreamer->emitLabel(FnSym);
+  if (!Marker)
+    OutStreamer->emitLabel(FnSym);
 
   // Embed the type hash in the X86::MOV32ri instruction to avoid special
-  // casing object file parsers.
-  EmitKCFITypePadding(MF);
+  // casing object file parsers. The instruction is 5 bytes long.
+  unsigned TypeBytes = 5;
+  // The marker is the displacement of a 7-byte nopl, so that the 8 bytes
+  // before the hash are a fixed pattern: 0F 1F 80, the marker, and the B8 of
+  // the move. A second type the function carries, which a call through a
+  // member function pointer checks, precedes it.
+  ConstantInt *VfnType = nullptr;
+  if (Marker) {
+    TypeBytes += 7;
+    if (const MDNode *MD = F.getMetadata("kcfi_vfn_type")) {
+      VfnType = mdconst::extract<ConstantInt>(MD->getOperand(0));
+      TypeBytes += 4;
+    }
+  }
+  EmitKCFITypePadding(MF, TypeBytes);
+  // With a marker, the symbol follows the padding and marks the first type
+  // word, as on targets that emit the type as data, so that the layout after
+  // it tells a linker whether the prefix has a second type.
+  if (Marker)
+    OutStreamer->emitLabel(FnSym);
+  if (VfnType)
+    OutStreamer->emitInt32(VfnType->getZExtValue());
+  if (Marker) {
+    MCInst Nop = MCInstBuilder(X86::NOOPL)
+                     .addReg(X86::RAX)
+                     .addImm(1)
+                     .addReg(X86::NoRegister)
+                     .addImm(static_cast<int32_t>(Marker->getZExtValue()))
+                     .addReg(X86::NoRegister);
+    Nop.setFlags(X86::IP_USE_DISP32);
+    EmitAndCountInstruction(Nop);
+  }
   unsigned DestReg = X86::EAX;
 
   if (F.getParent()->getModuleFlag("kcfi-arity")) {

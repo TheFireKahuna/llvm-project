@@ -1206,6 +1206,14 @@ llvm::Function *CodeGenFunction::generateDestroyHelper(
   llvm::Function *fn = CGM.CreateGlobalInitOrCleanUpFunction(
       FTy, "__cxx_global_array_dtor", FI, VD->getLocation());
 
+  // The runtime calls the helper as it calls a destructor.
+  if (CGM.hasKCFIVTableSlotTypes())
+    fn->setMetadata(
+        llvm::LLVMContext::MD_kcfi_type,
+        llvm::MDNode::get(getLLVMContext(),
+                          llvm::ConstantAsMetadata::get(
+                              CGM.getKCFI()->createDestructorTypeIds().first)));
+
   CurEHLocation = VD->getBeginLoc();
 
   StartFunction(GlobalDecl(VD, DynamicInitKind::GlobalArrayDestructor),

@@ -4,7 +4,17 @@
 
 ;; On COFF, the symbol that marks the type data is local, even for a COMDAT
 ;; function: a linker treats an external symbol that only a discarded copy
-;; defines as undefined, and a prevailing copy may lack the type data.
+;; defines as undefined, and a prevailing copy may lack the type data. Without
+;; a marker, the symbol precedes the padding, as on ELF.
+
+; ASM:     .globl f1
+; ASM-NOT: .globl __cfi_f1
+; ASM:     .p2align 4
+; ASM:     __cfi_f1:
+; ASM-NEXT: nop
+; ASM-COUNT-10: nop
+; ASM-NEXT: movl $12345678, %eax
+; ASM-NEXT: f1:
 ; ASM:     .globl f2
 ; ASM-NOT: .globl __cfi_f2
 ; ASM:     __cfi_f2:

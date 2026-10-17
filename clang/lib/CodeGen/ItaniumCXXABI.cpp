@@ -2934,10 +2934,13 @@ void ItaniumCXXABI::EmitGuardedInit(CodeGenFunction &CGF,
   CGF.EmitBlock(EndBlock);
 }
 
-/// Register a global destructor using __cxa_atexit.
+/// Register a global destructor using __cxa_atexit. IsDestructor is false
+/// for a function with __attribute__((destructor)), which is not a destructor
+/// or a helper that destroys an object.
 static void emitGlobalDtorWithCXAAtExit(CodeGenFunction &CGF,
                                         llvm::FunctionCallee dtor,
-                                        llvm::Constant *addr, bool TLS) {
+                                        llvm::Constant *addr, bool TLS,
+                                        bool IsDestructor) {
   assert(!CGF.getTarget().getTriple().isOSAIX() &&
          "unexpected call to emitGlobalDtorWithCXAAtExit");
   assert((TLS || CGF.getTypes().getCodeGenOpts().CXAAtExit) &&
@@ -2947,6 +2950,14 @@ static void emitGlobalDtorWithCXAAtExit(CodeGenFunction &CGF,
     const llvm::Triple &T = CGF.getTarget().getTriple();
     Name = T.isOSDarwin() ?  "_tlv_atexit" : "__cxa_thread_atexit";
   }
+  // Under the KCFI marker scheme, destructors and the helpers that destroy
+  // objects carry the type the runtime calls a destructor through, which a
+  // plain void(void *) function passed to __cxa_atexit does not. These
+  // runtimes take them through sibling entry points, so that they can call
+  // each function through the type it carries.
+  if (IsDestructor && CGF.CGM.hasKCFIVTableSlotTypes() &&
+      CGF.getTarget().getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    Name = TLS ? "__llvm_kcfi_cxa_thread_atexit" : "__llvm_kcfi_cxa_atexit";
 
   // We're assuming that the destructor function is something we can
   // reasonably call with the default CC.
@@ -3087,7 +3098,8 @@ void CodeGenModule::registerGlobalDtorsWithAtExit() {
       // Register the destructor function calling __cxa_atexit if it is
       // available. Otherwise fall back on calling atexit.
       if (getCodeGenOpts().CXAAtExit) {
-        emitGlobalDtorWithCXAAtExit(CGF, Dtor, nullptr, false);
+        emitGlobalDtorWithCXAAtExit(CGF, Dtor, nullptr, false,
+                                    /*IsDestructor=*/false);
       } else {
         // We're assuming that the destructor function is something we can
         // reasonably call with the correct CC.
@@ -3127,7 +3139,8 @@ void ItaniumCXXABI::registerGlobalDtor(CodeGenFunction &CGF, const VarDecl &D,
   // or not. CXAAtExit controls only __cxa_atexit, so use it if it is enabled.
   // We can always use __cxa_thread_atexit.
   if (CGM.getCodeGenOpts().CXAAtExit || D.getTLSKind())
-    return emitGlobalDtorWithCXAAtExit(CGF, dtor, addr, D.getTLSKind());
+    return emitGlobalDtorWithCXAAtExit(CGF, dtor, addr, D.getTLSKind(),
+                                       /*IsDestructor=*/true);
 
   // In Apple kexts, we want to add a global destructor entry.
   // FIXME: shouldn't this be guarded by some variable?
