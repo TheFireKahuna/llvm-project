@@ -57,6 +57,11 @@ struct UndefinedDiag;
 // is the image's.
 bool isShareableVagueName(StringRef name);
 
+// Whether name is that of a type_info object. One is shared along import
+// paths, as other vague entities are, but not between images that no link
+// joins: those keep their own, which compare by name.
+bool isTypeInfoName(StringRef name);
+
 // SymbolTable is a bucket of all known symbols, including defined,
 // undefined, or lazy symbols (the last one is symbols in archive
 // files whose archive members are not yet loaded).

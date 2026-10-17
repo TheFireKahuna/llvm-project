@@ -365,15 +365,17 @@ static bool isLazyImport(Symbol *s) {
 }
 
 bool isShareableVagueName(StringRef name) {
-  // Vtables and type descriptors are bound by other rules, and data that MSVC
-  // mangles keeps the per-image copies its code expects. A thread-local
-  // variable is shared through its record, and its init function and wrapper
-  // stay per image.
+  // Vtables are bound by other rules, a type_info object's name is reached
+  // through the object, and data that MSVC mangles keeps the per-image copies
+  // its code expects. A thread-local variable is shared through its record,
+  // and its init function and wrapper stay per image.
   if (name.starts_with("?") || name.starts_with("."))
     return false;
   return !(name.size() > 3 && name.starts_with("_ZT") &&
-           StringRef("VTCISHW").contains(name[3]));
+           StringRef("VTCSHW").contains(name[3]));
 }
+
+bool isTypeInfoName(StringRef name) { return name.starts_with("_ZTI"); }
 
 // Whether the lazy symbol s is an import library's offer of data or code, as
 // type says.
@@ -1362,7 +1364,10 @@ bool SymbolTable::isPreemptibleVagueEntity(Symbol *s) {
     SmallVector<DefinedRegular *, 4> members;
     for (Symbol *sym : weakData) {
       auto *d = dyn_cast<DefinedRegular>(sym);
-      if (!d || !isa<ObjFile>(d->getFile()) || !isDefaultVisibility(d))
+      // A type_info object stays the DLL's own, which compares by name with
+      // that of an image no link joins.
+      if (!d || !isa<ObjFile>(d->getFile()) || !isDefaultVisibility(d) ||
+          isTypeInfoName(d->getName()))
         continue;
       collectWeakDataGroup(d, chunks, members, /*liveOnly=*/false);
       // Immutable data is preemptible too, since its address is the program's

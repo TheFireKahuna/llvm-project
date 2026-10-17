@@ -211,14 +211,16 @@ readRecord(COFFLinkerContext &ctx, MemoryBufferRef mb, Closure &closure) {
 // its record's name for a thread-local variable, and functions whose
 // addresses are significant and not a DLL's, from objects that list what has
 // default visibility. Names that MSVC mangles keep the per-image copies their
-// code expects.
+// code expects. A type_info object is left out: two images that keep one
+// compare it by name, which is correct.
 static std::vector<std::string> getKeptEntities(SymbolTable &symtab) {
   std::vector<std::string> kept;
   auto add = [&](Symbol *s) {
     auto *d = dyn_cast<DefinedRegular>(s);
     auto *file = d ? dyn_cast<ObjFile>(d->getFile()) : nullptr;
     if (!file || !d->getChunk()->live || !file->listsBindings() ||
-        !file->hasDefaultVisibility(d) || !isShareableVagueName(d->getName()))
+        !file->hasDefaultVisibility(d) || !isShareableVagueName(d->getName()) ||
+        isTypeInfoName(d->getName()))
       return;
     kept.push_back(symtab.getSharedName(d).str());
   };

@@ -3882,7 +3882,9 @@ void ImportSlotContents::createNamedCellFill() {
                << " have the same key in the offer table";
   };
   // The executable's table: the vague entities it exports, which are the
-  // instances it shares, as an ELF executable's dynamic symbols are.
+  // instances it shares, as an ELF executable's dynamic symbols are. No DLL
+  // searches for a type_info object, which images no link joins compare by
+  // name.
   if (!config.dll) {
     DenseSet<Symbol *> vague;
     vague.insert_range(ctx.symtab.weakData);
@@ -3893,7 +3895,7 @@ void ImportSlotContents::createNamedCellFill() {
       if (DefinedRegular *var = ctx.symtab.getRecordVariable(e.sym))
         d = var;
       if (d && d->isLive() && vague.contains(d) &&
-          isShareableVagueName(d->getName()))
+          isShareableVagueName(d->getName()) && !isTypeInfoName(d->getName()))
         offer(e.exportName, nullptr, cast<Defined>(e.sym));
     }
     if (!offers.empty())

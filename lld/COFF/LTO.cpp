@@ -260,8 +260,9 @@ static bool isOfferedByImage(BitcodeFile &f,
 // objSym defines, in a DLL whose own references to such a vague entity read
 // cells, as an ELF shared object reaches its default-visibility definitions
 // through its GOT, so that LTO keeps them in import form: data with default
-// visibility in a COMDAT, and functions whose addresses are significant,
-// unless -Bsymbolic binds them locally (SymbolTable::isPreemptibleVagueEntity).
+// visibility in a COMDAT but type_info objects, and functions whose addresses
+// are significant, unless -Bsymbolic binds them locally
+// (SymbolTable::isPreemptibleVagueEntity).
 static bool isPreemptibleInImage(BitcodeFile &f,
                                  const lto::InputFile::Symbol &objSym,
                                  Symbol *sym) {
@@ -273,7 +274,7 @@ static bool isPreemptibleInImage(BitcodeFile &f,
       f.obj->getComdatTable()[objSym.getComdatIndex()].second ==
           Comdat::NoDeduplicate ||
       objSym.getVisibility() != GlobalValue::DefaultVisibility ||
-      !isShareableVagueName(sym->getName()) ||
+      !isShareableVagueName(sym->getName()) || isTypeInfoName(sym->getName()) ||
       !isa_and_nonnull<Defined>(f.symtab.findUnderscore("__xi_a")))
     return false;
   if (objSym.isExecutable())
