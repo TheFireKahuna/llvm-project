@@ -154,3 +154,9 @@ uint32_t llvm::getTypePrefixMarker(bool NormalizeIntegers,
   return getKCFITypeID(Variant, KCFIHashAlgorithm::xxHash64);
 }
 
+bool llvm::isX86TypePrefixPadding(uint32_t Word) {
+  // Single-byte nops, a 4-byte nopl, or int3s.
+  const uint32_t Padding[] = {0x90909090, 0x00401F0F, 0xCCCCCCCC};
+  return llvm::is_contained(Padding, Word);
+}
+

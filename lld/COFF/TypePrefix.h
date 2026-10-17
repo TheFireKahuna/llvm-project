@@ -72,9 +72,9 @@ public:
             const SymbolRVAFlags &suppressed,
             const SymbolRVASet &foreignTakenSyms);
   // The offset in its output section, which starts at secRVA, at which c
-  // starts, where what precedes it ends at off: aligned for c, and later so
-  // that no entry of a function with a prefix in it starts in a page's first
-  // bytes.
+  // starts, where what precedes it ends at off: aligned for c, earlier where c
+  // leaves out its prefix, and later so that no entry of a function with a
+  // prefix in it starts in a page's first bytes.
   uint64_t place(Chunk *c, uint64_t secRVA, uint64_t off) const;
   void write(uint8_t *buf) const;
 

@@ -25,6 +25,7 @@
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/xxhash.h"
+#include "llvm/Transforms/Utils/KCFIHash.h"
 
 using namespace clang;
 using namespace CodeGen;
@@ -52,8 +53,14 @@ static std::string kcfiVfnSalt(QualType FnType) {
 KCFITypeId CodeGenKCFI::createVfnTypeIds(QualType FnType) {
   KCFITypeId &TypeId =
       TypeIds[{FnType.getCanonicalType().getAsOpaquePtr(), VfnKind}];
-  if (!TypeId.first)
+  if (!TypeId.first) {
     TypeId = createTypeIds(FnType, kcfiVfnSalt(FnType));
+    // A check of the second type reads, in a function without one on x86, the
+    // padding before its marker.
+    uint32_t Value = TypeId.first->getZExtValue();
+    if (CGM.getTriple().isX86() && llvm::isX86TypePrefixPadding(Value))
+      TypeId.first = llvm::ConstantInt::get(CGM.Int32Ty, Value + 1);
+  }
   return TypeId;
 }
 

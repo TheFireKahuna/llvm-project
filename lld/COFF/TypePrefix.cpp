@@ -129,6 +129,16 @@ void TypePrefixContents::find() {
   }
 }
 
+// The value of SectionChunk::elidedPrefix that leaves out the bytes before an
+// entry at offset entry in a chunk aligned to align, or 0 if none does.
+static uint8_t getElidedPrefixKind(uint32_t entry, uint32_t align) {
+  if (entry == 12)
+    return 1;
+  if (entry == 16)
+    return 2;
+  return entry == align ? 3 : 0;
+}
+
 // An image whose objects have KCFI prefixes is sealed: a function the table
 // omits has its KCFI type overwritten, so that a KCFI check never accepts a
 // function that Control Flow Guard would reject. Identical code folding can
@@ -153,6 +163,39 @@ void TypePrefixContents::seal(const SymbolRVASet &addressTakenSyms,
       kcfiSuppressedChunks.insert(p.chunk);
   }
   sealedPrefixes = true;
+  // Control Flow Guard accepts every address in the 16-byte granule of an
+  // entry the table lists off a 16-byte boundary, and only the boundary of a
+  // granule whose listed entry is on it. Without its prefix, an entry off a
+  // boundary shares its granule with the end of what precedes the chunk, which
+  // could hold such an entry where that entry's chunk ends within its granule;
+  // a chunk that holds such an entry would likewise move what precedes it into
+  // that entry's granule. Either way the guard would accept addresses it
+  // otherwise rejects.
+  bool openGranules = false;
+  DenseSet<const Chunk *> unalignedTargetChunks;
+  for (const ChunkAndOffset &c : addressTakenSyms) {
+    if (c.offset % 16 == 0)
+      continue;
+    unalignedTargetChunks.insert(c.inputChunk);
+    openGranules |= alignDown(c.offset, 16) + 16 > c.inputChunk->getSize();
+  }
+  // No call reads a sealed prefix as a match, so the image need not hold it
+  // where only padding precedes it in the chunk: the chunk then starts early,
+  // over the end of what precedes it, and its entry lands as close to that
+  // end as the chunk's alignment allows. No relocation may lie in the bytes
+  // left out; nothing refers to them, since the prefix's label is static.
+  for (const auto &[c, indices] : kcfiEntries) {
+    const TypePrefix &p = typePrefixes[indices[0]];
+    uint32_t align = p.chunk->getAlignment();
+    bool alignedEntry = align >= 16 && p.entry % 16 == 0;
+    if (indices.size() == 1 && p.sealed && p.offset + p.size == p.entry &&
+        !unalignedTargetChunks.contains(p.chunk) &&
+        (alignedEntry || !openGranules) &&
+        llvm::none_of(p.chunk->getRelocs(), [&](const coff_relocation &r) {
+          return r.VirtualAddress < p.entry;
+        }))
+      p.chunk->elidedPrefix = getElidedPrefixKind(p.entry, align);
+  }
   kcfiUnprefixedTargets =
       llvm::any_of(foreignTakenSyms, [&](const ChunkAndOffset &c) {
         auto it = kcfiEntries.find(c.inputChunk);
@@ -170,9 +213,15 @@ void TypePrefixContents::seal(const SymbolRVASet &addressTakenSyms,
 // second type word, and any patchable prefix. Padding by less than a page
 // tries every place the alignment allows. Where none works, a function no
 // pointer may reach can stay; any other could not be called through a pointer
-// of a closed type.
+// of a closed type. A chunk that leaves out its prefix starts early instead,
+// unless it is the first of its section, which has nothing to overlap.
 uint64_t TypePrefixContents::place(Chunk *c, uint64_t secRVA,
                                    uint64_t off) const {
+  if (uint32_t elided = c->getElidedSize()) {
+    if (off != 0)
+      return off > elided ? alignTo(off - elided, c->getAlignment()) : 0;
+    c->elidedPrefix = 0;
+  }
   off = alignTo(off, c->getAlignment());
   auto it = kcfiEntries.find(c);
   if (it == kcfiEntries.end())
@@ -195,6 +244,15 @@ uint64_t TypePrefixContents::place(Chunk *c, uint64_t secRVA,
                 "first bytes of a page";
   return off + padding;
 }
+
+// Overwrites the type words of each sealed KCFI prefix with the type that no
+// call expects.
+//
+// Where the image leaves out a sealed prefix, the bytes before the entry are
+// those of what precedes the chunk, which must not read as a prefix of ours,
+// since a KCFI check would then accept the function: neither as the end of the
+// marker, which a check of the type compares, nor as its start, which a check
+// of the second type word compares.
 void TypePrefixContents::write(uint8_t *buf) const {
   for (const TypePrefix &p : typePrefixes) {
     if (!p.sealed)
@@ -202,6 +260,14 @@ void TypePrefixContents::write(uint8_t *buf) const {
     OutputSection *sec = ctx.getOutputSection(p.chunk);
     uint8_t *loc =
         buf + sec->getFileOff() + p.chunk->getRVA() - sec->getRVA() + p.offset;
+    if (p.chunk->getElidedSize()) {
+      if (read32le(loc + p.size - 8) == getPattern() >> 32 ||
+          read32le(loc + p.size - 12) == uint32_t(getPattern()))
+        Err(ctx) << "cannot leave out the KCFI prefix of "
+                 << p.chunk->getDebugName()
+                 << ": the bytes before its entry read as one";
+      continue;
+    }
     if (p.size == 16)
       write32le(loc, COFF::SealedTypeId);
     write32le(loc + p.size - 4, COFF::SealedTypeId);

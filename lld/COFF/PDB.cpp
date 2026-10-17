@@ -711,8 +711,8 @@ static pdb::SectionContrib createSectionContrib(COFFLinkerContext &ctx,
   pdb::SectionContrib sc;
   memset(&sc, 0, sizeof(sc));
   sc.ISect = os ? os->sectionIndex : llvm::pdb::kInvalidStreamIndex;
-  sc.Off = c && os ? c->getRVA() - os->getRVA() : 0;
-  sc.Size = c ? c->getSize() : -1;
+  sc.Off = c && os ? c->getRVA() + c->getElidedSize() - os->getRVA() : 0;
+  sc.Size = c ? c->getSize() - c->getElidedSize() : -1;
   if (auto *secChunk = dyn_cast_or_null<SectionChunk>(c)) {
     sc.Characteristics = secChunk->header->Characteristics;
     sc.Imod = secChunk->file->moduleDBI->getModuleIndex();
@@ -1464,8 +1464,9 @@ static void addLinkerModuleCoffGroup(PartialSection *sec,
   CoffGroupSym cgs(SymbolRecordKind::CoffGroupSym);
   cgs.Name = sec->name;
   cgs.Segment = os.sectionIndex;
-  cgs.Offset = firstChunk->getRVA() - os.getRVA();
-  cgs.Size = lastChunk->getRVA() + lastChunk->getSize() - firstChunk->getRVA();
+  cgs.Offset = firstChunk->getRVA() + firstChunk->getElidedSize() - os.getRVA();
+  cgs.Size = lastChunk->getRVA() + lastChunk->getSize() - firstChunk->getRVA() -
+             firstChunk->getElidedSize();
   cgs.Characteristics = sec->characteristics;
 
   // Somehow .idata sections & sections groups in the debug symbol stream have

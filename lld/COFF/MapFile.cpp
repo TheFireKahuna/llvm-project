@@ -104,8 +104,10 @@ static void getSymbols(const COFFLinkerContext &ctx,
         continue;
       if (auto *sym = dyn_cast<DefinedCOFF>(b)) {
         COFFSymbolRef symRef = sym->getCOFFSymbol();
+        Chunk *c = sym->getChunk();
         if (!symRef.isSectionDefinition() &&
-            symRef.getStorageClass() != COFF::IMAGE_SYM_CLASS_LABEL) {
+            symRef.getStorageClass() != COFF::IMAGE_SYM_CLASS_LABEL &&
+            sym->getRVA() >= c->getRVA() + c->getElidedSize()) {
           if (symRef.getStorageClass() == COFF::IMAGE_SYM_CLASS_STATIC)
             staticSyms.push_back(sym);
           else
@@ -272,10 +274,11 @@ void lld::coff::writeMapFile(COFFLinkerContext &ctx) {
     StringRef SectionClass = (isCodeSection ? "CODE" : "DATA");
 
     for (auto &cr : ChunkRanges) {
-      size_t size =
-          cr.second->getRVA() + cr.second->getSize() - cr.first->getRVA();
+      size_t size = cr.second->getRVA() + cr.second->getSize() -
+                    cr.first->getRVA() - cr.first->getElidedSize();
 
-      auto address = cr.first->getRVA() - sec->header.VirtualAddress;
+      auto address = cr.first->getRVA() + cr.first->getElidedSize() -
+                     sec->header.VirtualAddress;
       writeHeader(os, sec->sectionIndex, address);
       os << " " << format_hex_no_prefix(size, 8) << "H";
       os << " " << left_justify(cr.first->getSectionName(), 23);

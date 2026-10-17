@@ -446,10 +446,11 @@ static void maybeReportRelocationToDiscarded(const SectionChunk *fromChunk,
 void SectionChunk::writeTo(uint8_t *buf) const {
   if (!hasData)
     return;
-  // Copy section contents from source object file to output file.
-  ArrayRef<uint8_t> a = getContents();
+  // Copy section contents from source object file to output file, except the
+  // bytes that overlap what precedes the section.
+  ArrayRef<uint8_t> a = getContents().drop_front(getElidedSize());
   if (!a.empty())
-    memcpy(buf, a.data(), a.size());
+    memcpy(buf + getElidedSize(), a.data(), a.size());
 
   // Apply relocations.
   size_t inputSize = getSize();
