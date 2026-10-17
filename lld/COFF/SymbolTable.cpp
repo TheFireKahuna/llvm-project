@@ -432,11 +432,19 @@ static void collectWeakFunctions(ObjFile *file,
 
 // The Itanium ABI's special name kind, such as GV, of the variable named
 // name: kind followed by the variable's name, with the length prefix of a
-// source name that the ABI leaves unmangled (_ZGV2iv for iv).
-static std::string getSpecialName(StringRef kind, StringRef name) {
+// source name that the ABI leaves unmangled (_ZGV2iv for iv), built in buf
+// for a lookup that keeps no copy of it.
+static StringRef getSpecialName(StringRef kind, StringRef name,
+                                SmallVectorImpl<char> &buf) {
+  buf.clear();
   if (name.consume_front("_Z"))
-    return ("_Z" + kind + name).str();
-  return ("_Z" + kind + Twine(name.size()) + name).str();
+    return ("_Z" + kind + name).toStringRef(buf);
+  return ("_Z" + kind + Twine(name.size()) + name).toStringRef(buf);
+}
+
+static std::string getSpecialName(StringRef kind, StringRef name) {
+  SmallString<128> buf;
+  return getSpecialName(kind, name, buf).str();
 }
 
 std::string getGuardName(StringRef name) { return getSpecialName("GV", name); }
@@ -529,8 +537,17 @@ static void collectComdatGroup(DefinedRegular *leader,
     chunks.push_back(&child);
   ArrayRef<SectionChunk *> group = ArrayRef(chunks).drop_front(begin);
   members.push_back(leader);
-  for (Symbol *s : cast<ObjFile>(leader->getFile())->getSymbols())
-    if (auto *d = dyn_cast_or_null<DefinedRegular>(s);
+  // Only the symbols that the object defines in the group's sections can be
+  // its members, taken in the order of its symbol table.
+  auto *file = cast<ObjFile>(leader->getFile());
+  SmallVector<uint32_t, 8> indices;
+  for (SectionChunk *c : group)
+    llvm::append_range(indices,
+                       file->getExternalDefinitions(c->getSectionNumber()));
+  if (group.size() > 1)
+    llvm::sort(indices);
+  for (uint32_t i : indices)
+    if (auto *d = dyn_cast_or_null<DefinedRegular>(file->getSymbol(i));
         d && d != leader && llvm::is_contained(group, d->getChunk()) &&
         d->getCOFFSymbol().isExternal())
       members.push_back(d);
@@ -545,7 +562,9 @@ void SymbolTable::collectWeakDataGroup(
   chunks.clear();
   members.clear();
   collectComdatGroup(d, chunks, members);
-  auto *g = dyn_cast_or_null<DefinedRegular>(find(getGuardName(d->getName())));
+  SmallString<128> buf;
+  auto *g = dyn_cast_or_null<DefinedRegular>(
+      find(getSpecialName("GV", d->getName(), buf)));
   if (g && g->isCOMDAT && isa<ObjFile>(g->getFile()) &&
       (!liveOnly || g->getChunk()->live) && !llvm::is_contained(members, g))
     collectComdatGroup(g, chunks, members);

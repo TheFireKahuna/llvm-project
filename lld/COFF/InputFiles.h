@@ -237,6 +237,10 @@ public:
     return symbols[symbolIndex];
   }
 
+  // The indices of the external symbols that the object's symbol table
+  // defines in the section numbered section, in order.
+  ArrayRef<uint32_t> getExternalDefinitions(uint32_t section);
+
   // Returns the underlying COFF file.
   COFFObjectFile *getCOFFObj() { return coffObj.get(); }
 
@@ -634,6 +638,12 @@ private:
   // null pointer.) This vector is only valid during initialization, but for
   // an object with link-only records.
   std::vector<SectionChunk *> sparseChunks;
+
+  // The indices of the external symbols that the object defines, in order,
+  // and where those of each section begin, by section number, which
+  // getExternalDefinitions builds when first asked.
+  std::vector<uint32_t> externalDefinitions;
+  std::vector<uint32_t> externalDefinitionStarts;
 
   DWARFCache *dwarf = nullptr;
 };

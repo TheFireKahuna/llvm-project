@@ -1952,6 +1952,35 @@ MachineTypes ObjFile::getMachineType() const {
   return static_cast<MachineTypes>(coffObj->getMachine());
 }
 
+ArrayRef<uint32_t> ObjFile::getExternalDefinitions(uint32_t section) {
+  uint32_t numSections = coffObj->getNumberOfSections();
+  if (externalDefinitionStarts.empty()) {
+    // Grouped by section, each section's in the order of the symbol table.
+    SmallVector<std::pair<uint32_t, uint32_t>, 0> defs;
+    for (uint32_t i = 0, e = coffObj->getNumberOfSymbols(); i < e; ++i) {
+      COFFSymbolRef sym = check(coffObj->getSymbol(i));
+      int32_t sec = sym.getSectionNumber();
+      if (sym.isExternal() && sec > 0 && uint32_t(sec) <= numSections)
+        defs.push_back({uint32_t(sec), i});
+      i += sym.getNumberOfAuxSymbols();
+    }
+    llvm::stable_sort(defs, llvm::less_first());
+    externalDefinitionStarts.assign(numSections + 2, 0);
+    externalDefinitions.reserve(defs.size());
+    for (auto [sec, i] : defs) {
+      ++externalDefinitionStarts[sec + 1];
+      externalDefinitions.push_back(i);
+    }
+    for (size_t s = 1, e = externalDefinitionStarts.size(); s != e; ++s)
+      externalDefinitionStarts[s] += externalDefinitionStarts[s - 1];
+  }
+  if (section == 0 || section > numSections)
+    return {};
+  uint32_t begin = externalDefinitionStarts[section];
+  return ArrayRef(externalDefinitions)
+      .slice(begin, externalDefinitionStarts[section + 1] - begin);
+}
+
 ArrayRef<uint8_t> ObjFile::getDebugSection(StringRef secName) {
   if (SectionChunk *sec = SectionChunk::findByName(debugChunks, secName))
     return sec->consumeDebugMagic();
