@@ -55,6 +55,22 @@ template <class InputBytes> std::string encodeBase64(InputBytes const &Bytes) {
   return Buffer;
 }
 
+/// Encodes Bytes in the URL and filename safe alphabet of RFC 4648, section 5,
+/// without padding, so that the result can be part of a symbol name.
+template <class InputBytes>
+std::string encodeBase64URL(InputBytes const &Bytes) {
+  std::string Buffer = encodeBase64(Bytes);
+  while (!Buffer.empty() && Buffer.back() == '=')
+    Buffer.pop_back();
+  for (char &C : Buffer) {
+    if (C == '+')
+      C = '-';
+    else if (C == '/')
+      C = '_';
+  }
+  return Buffer;
+}
+
 LLVM_ABI llvm::Error decodeBase64(llvm::StringRef Input,
                                   std::vector<char> &Output);
 

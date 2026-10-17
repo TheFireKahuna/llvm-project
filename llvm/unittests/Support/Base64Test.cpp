@@ -67,6 +67,17 @@ TEST(Base64Test, Base64) {
              "VGhlIHF1aWNrIGJyb3duIGZveCBqdW1wcyBvdmVyIDEzIGxhenkgZG9ncy4=");
 }
 
+TEST(Base64Test, Base64URL) {
+  EXPECT_EQ(encodeBase64URL(StringRef("")), "");
+  EXPECT_EQ(encodeBase64URL(StringRef("f")), "Zg");
+  EXPECT_EQ(encodeBase64URL(StringRef("fo")), "Zm8");
+  EXPECT_EQ(encodeBase64URL(StringRef("foobar")), "Zm9vYmFy");
+  // The two characters that differ from the standard alphabet.
+  EXPECT_EQ(encodeBase64URL(
+                StringRef(NonPrintableVector, sizeof(NonPrintableVector))),
+            "AAAARgAI_-4");
+}
+
 TEST(Base64Test, DecodeBase64) {
   std::vector<llvm::StringRef> Outputs = {"",     "f",     "fo",    "foo",
                                           "foob", "fooba", "foobar"};
