@@ -3225,6 +3225,7 @@ void ImportSlotContents::addImport(DefinedImportData *imp) {
 // initializer table, ahead of every initializer, and makes the pages of the
 // read-only words read-only once it has written them.
 void ImportSlotContents::createResidualFill() {
+  llvm::TimeTraceScope timeScope("Create residual fill");
   if (residualWords.empty() && runTimeCells.empty())
     return;
   Configuration &config = ctx.config;
@@ -3341,6 +3342,7 @@ static TLSTemplate findTLSTemplate(COFFLinkerContext &ctx) {
 // thread-local template are bound in the template only after the loader has
 // copied it into the main thread's block; the copy writes them there too.
 void ImportSlotContents::createThreadLocalSlotCopy() {
+  llvm::TimeTraceScope timeScope("Create thread-local slot copy");
   Configuration &config = ctx.config;
   if (!config.importSlots || config.dll || ctx.hybridSymtab ||
       (config.machine != AMD64 && config.machine != ARM64))
@@ -3414,6 +3416,7 @@ void ImportSlotContents::createThreadLocalSlotCopyCall() {
 // the replacement, so the DLL observes and calls the one the program chose, as
 // on ELF. An executable binds its own at link time, from the table it writes.
 void ImportSlotContents::createOverrideCellFill() {
+  llvm::TimeTraceScope timeScope("Create override cell fill");
   Configuration &config = ctx.config;
   if (!config.importSlots || !config.dll || ctx.hybridSymtab ||
       (config.machine != AMD64 && config.machine != ARM64))
@@ -3628,6 +3631,7 @@ void ImportSlotContents::createOverrideCellFill() {
 // the instances that the modules loaded with the process, or one that
 // delay-loads it, use, through the offer table each names in its MZ header.
 void ImportSlotContents::createNamedCellFill() {
+  llvm::TimeTraceScope timeScope("Create named cell fill");
   Configuration &config = ctx.config;
   if (!config.importSlots || ctx.hybridSymtab ||
       (config.machine != AMD64 && config.machine != ARM64))
@@ -3735,6 +3739,7 @@ void ImportSlotContents::createNamedCellFill() {
 // whose page-rounded range has one protection; each run must still be one word
 // a slot.
 void ImportSlotContents::check(Chunk *iatStart, uint64_t iatSize) {
+  llvm::TimeTraceScope timeScope("Check import slots");
   // A fill makes the pages of each range of its read-only cells writable and
   // then read-only again; every section those pages hold must therefore be
   // read-only data.

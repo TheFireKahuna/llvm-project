@@ -1807,6 +1807,7 @@ splitVersionedName(StringRef name) {
 // version it was linked against when a later release changes the default,
 // and fails to load against a release without it.
 void LinkerDriver::addVersionedExports(SymbolTable &symtab) {
+  llvm::TimeTraceScope timeScope("Add versioned exports");
   if (ctx.config.machine == I386)
     return;
   SmallVector<std::pair<Defined *, std::tuple<StringRef, StringRef, bool>>, 0>
@@ -1901,6 +1902,7 @@ bool LinkerDriver::isLocalByVersionScript(StringRef name) {
 // The version script cannot export what the visibility mapping did not, so a
 // global name of it that names no export is a mistake in one or the other.
 void LinkerDriver::checkVersionScriptGlobals() {
+  llvm::TimeTraceScope timeScope("Check version script globals");
   if (versionNames.empty() && versionCppNames.empty())
     return;
   DenseSet<StringRef> names;

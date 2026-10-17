@@ -169,6 +169,7 @@ static void walk(StringRef name, MapVector<StringRef, ClassNode> &classes,
 }
 
 void lld::coff::registerVTableRunSymbols(COFFLinkerContext &ctx) {
+  llvm::TimeTraceScope timeScope("Register vtable run symbols");
   ctx.symtab.forEachSymbol([&](Symbol *s) {
     if (!isa<Undefined>(s))
       return;
@@ -299,6 +300,7 @@ void lld::coff::resolveVTableRuns(COFFLinkerContext &ctx) {
 void lld::coff::placeVTableRuns(
     COFFLinkerContext &ctx, OutputSection *rdataSec,
     llvm::function_ref<bool(const SectionChunk *)> heldBack, bool packed) {
+  llvm::TimeTraceScope timeScope("Place vtable runs");
   if (ctx.vtableOwnerEmpty)
     rdataSec->addChunk(ctx.vtableOwnerEmpty);
   if (ctx.vtableRuns.empty())
@@ -351,6 +353,7 @@ void lld::coff::placeVTableRuns(
 }
 
 void lld::coff::defineVTableRuns(COFFLinkerContext &ctx) {
+  llvm::TimeTraceScope timeScope("Define vtable runs");
 
   // Where the end and the start plus the stride less one of each placed
   // class's run are, which a DLL exports.
@@ -449,6 +452,7 @@ static StringRef exportedName(const Export &e) {
 }
 
 void lld::coff::addVTableRunExports(COFFLinkerContext &ctx) {
+  llvm::TimeTraceScope timeScope("Add vtable run exports");
   if (!ctx.config.dll || !ctx.config.importSlots || ctx.hybridSymtab ||
       (ctx.config.machine != AMD64 && ctx.config.machine != ARM64))
     return;
@@ -556,6 +560,7 @@ void lld::coff::addVTableRunImports(
 }
 
 void lld::coff::bindVTableOwnerRuns(COFFLinkerContext &ctx) {
+  llvm::TimeTraceScope timeScope("Bind vtable owner runs");
   std::vector<Symbol *> owners;
   ctx.symtab.forEachSymbol([&](Symbol *s) {
     if (isa<DefinedSynthetic>(s) &&

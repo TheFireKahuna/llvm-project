@@ -640,6 +640,7 @@ void SymbolTable::readImportReferences() {
 // process's own; a function declared as one is imported as code, anything
 // else as data.
 bool SymbolTable::importUnresolvedFromHost() {
+  llvm::TimeTraceScope timeScope("Import unresolved from host");
   readImportReferences();
   DenseSet<StringRef> names;
   for (auto &[name, sym] : symMap) {
@@ -667,6 +668,7 @@ bool SymbolTable::importUnresolvedFromHost() {
 }
 
 bool SymbolTable::loadInteriorImports() {
+  llvm::TimeTraceScope timeScope("Load interior imports");
   if (ctx.hybridSymtab || isEC())
     return false;
 
@@ -892,6 +894,7 @@ bool SymbolTable::loadInteriorImports() {
 }
 
 void SymbolTable::exportInteriorNames() {
+  llvm::TimeTraceScope timeScope("Export interior names");
   // The compiler exports the names along with a definition that it exports;
   // only an export from elsewhere needs them added.
   if (llvm::all_of(exports, [](const Export &e) {
@@ -1132,6 +1135,7 @@ bool SymbolTable::ignoresOffersOf(DefinedImportData *imp) const {
 }
 
 void SymbolTable::bindImportsToDefinitions() {
+  llvm::TimeTraceScope timeScope("Bind imports to definitions");
   if (!ctx.config.importSlots || ctx.hybridSymtab || isEC())
     return;
   SmallPtrSet<Symbol *, 4> offers;
@@ -1196,6 +1200,7 @@ void SymbolTable::bindImportsToDefinitions() {
 }
 
 void SymbolTable::bindForwarders() {
+  llvm::TimeTraceScope timeScope("Bind forwarders");
   for (auto [file, sym, pointer] : forwarders) {
     auto *f = dyn_cast<DefinedRegular>(sym);
     auto *li = dyn_cast<DefinedLocalImport>(pointer);
@@ -1261,6 +1266,7 @@ void SymbolTable::keepThreadLocalRecord(Defined *record) {
 }
 
 void SymbolTable::bindOfferedFunctions() {
+  llvm::TimeTraceScope timeScope("Bind offered functions");
   if (!ctx.config.importSlots || ctx.hybridSymtab || isEC() ||
       weakFunctions.empty())
     return;
@@ -1300,6 +1306,7 @@ Defined *SymbolTable::getOverrideOffer(const Export &e) {
 }
 
 void SymbolTable::offerOverridableDefaults() {
+  llvm::TimeTraceScope timeScope("Offer overridable defaults");
   if (overridables.empty() && defaultsByName.empty())
     return;
   // Only the executable replaces an overridable default for every image of
@@ -1445,6 +1452,7 @@ std::optional<uint32_t> SymbolTable::overrideImportSlot(StringRef name) {
 }
 
 void SymbolTable::resolveOverridableReplacements() {
+  llvm::TimeTraceScope timeScope("Resolve overridable replacements");
   if (!ctx.config.importSlots || ctx.config.dll || ctx.hybridSymtab || isEC())
     return;
   readOverrideRecords();
@@ -1509,6 +1517,7 @@ void SymbolTable::resolveOverridableReplacements() {
 }
 
 bool SymbolTable::bindVagueSiblings() {
+  llvm::TimeTraceScope timeScope("Bind vague siblings");
   Configuration &config = ctx.config;
   if (!config.importSlots || config.dll || ctx.hybridSymtab || isEC() ||
       !vagueOwners.empty())
@@ -1859,6 +1868,7 @@ static bool isDefinableReference(Undefined *u) {
 }
 
 void SymbolTable::addStartStopSymbols() {
+  llvm::TimeTraceScope timeScope("Add start stop symbols");
   // An ordered map keeps the diagnostics in a stable order.
   std::map<StringRef, SectionRun> runs;
   for (auto &i : symMap) {
@@ -1912,6 +1922,7 @@ void SymbolTable::addStartStopSymbols() {
 }
 
 void SymbolTable::addBoundarySymbols() {
+  llvm::TimeTraceScope timeScope("Add boundary symbols");
   for (const char *n : {"_etext", "etext", "_edata", "edata", "_end", "end"}) {
     auto *undef = dyn_cast_or_null<Undefined>(find(mangle(n)));
     if (!undef || !undef->isUsedInRegularObj || !isDefinableReference(undef))

@@ -719,6 +719,7 @@ static bool isUnwindTable(const SectionChunk *sc);
 // pointer reaches, lies before where its chunk begins in the image.
 std::vector<std::tuple<SectionChunk *, uint32_t, Defined *>>
 Writer::findTailJumps() {
+  llvm::TimeTraceScope timeScope("Find tail jumps");
   std::vector<std::tuple<SectionChunk *, uint32_t, Defined *>> jumps;
   if (!identityKnown)
     return jumps;
@@ -1659,6 +1660,7 @@ bool Writer::iatStartsRdata() const {
 // slot, the $-groups of .rdata in their order, so that the import address
 // table directory covers every read-only slot with no other data between.
 void Writer::placeImportSlotSections() {
+  llvm::TimeTraceScope timeScope("Place import slot sections");
   if (!iatStartsRdata())
     return;
   const uint32_t rdata = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
@@ -1710,6 +1712,7 @@ void Writer::placeImportSlotSections() {
 // .rdata may fill their gaps, and move into the directory to do so. Nothing
 // else moves. assignAddresses honours the pins whatever the plan.
 void Writer::packPlacedChunks() {
+  llvm::TimeTraceScope timeScope("Pack placed chunks");
   if (!packRdata)
     return;
   const uint32_t rdata = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;

@@ -1158,6 +1158,7 @@ void addKCFIRangeImports(COFFLinkerContext &ctx, StringRef dllName,
 // without a range exports an empty one, so that an importer linked against a
 // release with one still loads. The names are reserved for these exports.
 void addKCFIRangeExports(COFFLinkerContext &ctx) {
+  llvm::TimeTraceScope timeScope("Add KCFI range exports");
   if (!ctx.config.dll || !ctx.typePrefixRecords || ctx.hybridSymtab ||
       (ctx.config.machine != AMD64 && ctx.config.machine != ARM64))
     return;
@@ -1259,6 +1260,7 @@ static bool isLocalThunk(LinkKCFIThunkKind kind) {
 // address table, which is read-only once the imports are bound. The imports
 // are named for the DLL, so that no two DLLs' meet in the symbol table.
 void bindKCFIImportedRanges(COFFLinkerContext &ctx) {
+  llvm::TimeTraceScope timeScope("Bind KCFI imported ranges");
   bool isX64 = ctx.config.machine == AMD64;
   if (!ctx.typePrefixRecords || !(ctx.config.guardCF & GuardCFLevel::CF) ||
       ctx.hybridSymtab || (!isX64 && ctx.config.machine != ARM64))
@@ -1375,6 +1377,7 @@ void getKCFIImportUses(COFFLinkerContext &ctx,
 // function. Both the linker's own lists and those of the objects whose records
 // ask for it are completed.
 void KCFIContents::listThunks() {
+  llvm::TimeTraceScope timeScope("List KCFI thunks");
   Configuration &config = ctx.config;
   auto thunkIsAddress = [&](DefinedImportData *imp) {
     auto *thunk = dyn_cast_or_null<DefinedImportThunk>(imp->file->thunkSym);
@@ -1418,6 +1421,7 @@ void KCFIContents::listThunks() {
 // puts the linker's KCFI thunks in place of clang's, and points the range's
 // bounds, and those a DLL exports, at their chunks.
 void KCFIContents::layOut(OutputSection *textSec, OutputSection *rdataSec) {
+  llvm::TimeTraceScope timeScope("Lay out KCFI");
   defineCodeRange();
   placeMismatchRoutines();
   replaceThunks();
@@ -1988,6 +1992,7 @@ void KCFIContents::replaceThunks() {
 // The KCFI thunks the linker made compare a target's offset from the start of
 // the code range with the range's size, as a sign-extended 32-bit immediate.
 void KCFIContents::checkCodeRange() {
+  llvm::TimeTraceScope timeScope("Check KCFI code range");
   if (kcfiThunksTestRange &&
       kcfiCodeEnd->getRVA() - kcfiCodeStart->getRVA() > INT32_MAX)
     Err(ctx) << "the code range of " << ctx.config.outputFile

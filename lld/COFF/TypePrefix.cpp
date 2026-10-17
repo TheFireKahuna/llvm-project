@@ -17,6 +17,7 @@
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/MathExtras.h"
+#include "llvm/Support/TimeProfiler.h"
 #include "llvm/Transforms/Utils/KCFIHash.h"
 
 using namespace llvm;
@@ -264,6 +265,7 @@ uint64_t TypePrefixContents::place(Chunk *c, uint64_t secRVA,
 // of the second type word compares. A function that another runs into, which
 // left out the jump to it, shares that function's entry and its prefix.
 void TypePrefixContents::write(uint8_t *buf) const {
+  llvm::TimeTraceScope timeScope("Write type prefixes");
   for (const TypePrefix &p : typePrefixes) {
     if (!p.sealed)
       continue;

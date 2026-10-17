@@ -35,6 +35,7 @@
 #include "llvm/Object/COFFImportFile.h"
 #include "llvm/Support/Base64.h"
 #include "llvm/Support/DataExtractor.h"
+#include "llvm/Support/TimeProfiler.h"
 
 using namespace llvm;
 using namespace llvm::COFF;
@@ -249,6 +250,7 @@ static bool definesExport(COFFLinkerContext &ctx, InputFile *file,
 }
 
 void lld::coff::addContractWitnessExports(COFFLinkerContext &ctx) {
+  llvm::TimeTraceScope timeScope("Add contract witness exports");
   if (!ctx.config.importSlots || ctx.hybridSymtab)
     return;
   std::vector<Export> &exports = ctx.symtab.exports;
@@ -376,6 +378,7 @@ static DefinedImportData *getImportOf(Symbol *sym) {
 }
 
 void lld::coff::bindContractWitnesses(COFFLinkerContext &ctx) {
+  llvm::TimeTraceScope timeScope("Bind contract witnesses");
   if (!ctx.config.importSlots || ctx.hybridSymtab)
     return;
   StringSet<> bound;

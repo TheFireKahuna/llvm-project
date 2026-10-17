@@ -448,6 +448,7 @@ chooseVagueOwners(COFFLinkerContext &ctx, const DenseSet<StringRef> &kept) {
 }
 
 void checkVagueEntities(COFFLinkerContext &ctx, StringRef imageName) {
+  llvm::TimeTraceScope timeScope("Check vague entities");
   Configuration &config = ctx.config;
   if (!config.importSlots || ctx.hybridSymtab || isArm64EC(config.machine))
     return;
@@ -526,6 +527,7 @@ void checkVagueEntities(COFFLinkerContext &ctx, StringRef imageName) {
 }
 
 void checkOfferAdditions(COFFLinkerContext &ctx, StringRef dllName) {
+  llvm::TimeTraceScope timeScope("Check offer additions");
   Configuration &config = ctx.config;
   if (!config.importSlots || config.offersBaseline.empty())
     return;
@@ -600,6 +602,7 @@ StringRef getOffersEpoch(COFFLinkerContext &ctx) {
 }
 
 void addOffersEpoch(COFFLinkerContext &ctx) {
+  llvm::TimeTraceScope timeScope("Add offers epoch");
   Configuration &config = ctx.config;
   SymbolTable &symtab = ctx.symtab;
   if (!config.importSlots || !config.offersEpoch || !config.dll ||
@@ -622,6 +625,7 @@ void addOffersEpoch(COFFLinkerContext &ctx) {
 }
 
 void importOffersEpochs(COFFLinkerContext &ctx) {
+  llvm::TimeTraceScope timeScope("Import offers epochs");
   Configuration &config = ctx.config;
   // A DLL that offers nothing, of its own or forwarded, needs no epoch.
   if (!config.importSlots || !config.dll || ctx.hybridSymtab ||
@@ -1153,6 +1157,7 @@ static StringRef getForwardTarget(DefinedImportData *imp) {
 }
 
 void SymbolTable::addOffers() {
+  llvm::TimeTraceScope timeScope("Add offers");
   if (!ctx.config.importSlots || ctx.hybridSymtab || isEC() ||
       (!ctx.config.dll && ctx.config.implib.empty()))
     return;
