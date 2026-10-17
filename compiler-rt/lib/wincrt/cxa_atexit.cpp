@@ -228,6 +228,7 @@ void release(Registry &R, uint32_t Current) {
     I->Live = makeHead(headTag(I->Live) + 1, NoSlot);
     I->Free = makeHead(headTag(I->Free) + 1, NoSlot);
     I->Bump = 0;
+    store(&I->Size, uintptr_t(0));
     store(&I->Dso, static_cast<void *>(nullptr));
     I = Next;
   }
@@ -456,14 +457,50 @@ bool postToken(ExitState &S, Registry &R, bool Executable = false) {
   return true;
 }
 
+// A destructor registered for an object outside the registering image is one
+// of a shared vague entity, an instance that another image owns and others
+// use, which the registering image's code initialized: its detach would
+// destroy the instance while others use it, so the image is kept loaded, as
+// it is only then that it must be. Every other static object is inside the
+// image that registers its destructor. Returns false if the image cannot be
+// kept loaded.
+bool keepRegistrar(Image *I, void *Dso, void *Object) {
+  uintptr_t Size = __atomic_load_n(&I->Size, __ATOMIC_ACQUIRE);
+  uintptr_t Begin;
+  if (Size) {
+    Begin = load(&I->Begin);
+  } else {
+    HMODULE Module;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            static_cast<LPCWSTR>(Dso), &Module))
+      return true;
+    Begin = reinterpret_cast<uintptr_t>(Module);
+    Size = imageSize(Module);
+    store(&I->Begin, Begin);
+    __atomic_store_n(&I->Size, Size, __ATOMIC_RELEASE);
+  }
+  if (reinterpret_cast<uintptr_t>(Object) - Begin < Size ||
+      reinterpret_cast<HMODULE>(Begin) == GetModuleHandleW(nullptr))
+    return true;
+  HMODULE Pinned;
+  return GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                GET_MODULE_HANDLE_EX_FLAG_PIN,
+                            static_cast<LPCWSTR>(Dso), &Pinned);
+}
+
+// Object is a static object for the C++ registrations, and an adaptor's
+// function for the C ones.
 int append(Registry ExitState::*Which, Destructor Function, void *Object,
-           void *Dso, bool Salted) {
+           void *Dso, bool Salted, bool Static) {
   ExitState &S = exitState();
   Registry &R = S.*Which;
   if (!Function || !postToken(S, R))
     return -1;
   Image *I = claimImage(R, Dso ? Dso : noDso());
   if (!I)
+    return -1;
+  if (Static && Object && Dso && !keepRegistrar(I, Dso, Object))
     return -1;
   Entry *E = allocateSlot(I);
   if (!E)
@@ -553,13 +590,20 @@ void releaseThreadExitState(ThreadExitState *T) {
 extern "C" {
 
 int __cdecl __cxa_atexit(void (*Function)(void *), void *Object, void *Dso) {
-  return append(&ExitState::Normal, Function, Object, Dso, false);
+  return append(&ExitState::Normal, Function, Object, Dso, false, true);
 }
 
 // Clang registers its destructors here, since they carry the salted type.
 int __cdecl __llvm_kcfi_cxa_atexit(void (*Function)(void *), void *Object,
                                    void *Dso) {
-  return append(&ExitState::Normal, Function, Object, Dso, true);
+  return append(&ExitState::Normal, Function, Object, Dso, true, true);
+}
+
+// atexit and _onexit register a C function through an adaptor, which carries
+// the salted destructor type.
+int __cdecl __wincrt_atexit(void (*Adaptor)(void *), void *Function,
+                            void *Dso) {
+  return append(&ExitState::Normal, Adaptor, Function, Dso, true, false);
 }
 
 void __cdecl __cxa_finalize(void *Dso) {
@@ -578,7 +622,7 @@ int __cxa_at_quick_exit(void (*Function)(void), void *Dso) {
   if (!Function)
     return -1;
   return append(&ExitState::Quick, reinterpret_cast<Destructor>(callVoid),
-                reinterpret_cast<void *>(Function), Dso, true);
+                reinterpret_cast<void *>(Function), Dso, true, false);
 }
 
 // Called by the executable's start-up only, and before any constructor,

@@ -62,6 +62,10 @@ struct ExitImage {
   ExitImage *Next; // every record, append-only
   ExitImage *NextRetired;
   uint32_t RetiredIn; // the drainer generation of its retirement
+  // The registering image's base and size, once a registration has looked
+  // them up; Size is zero until then.
+  uintptr_t Begin;
+  uintptr_t Size;
 };
 
 struct ExitRegistry {

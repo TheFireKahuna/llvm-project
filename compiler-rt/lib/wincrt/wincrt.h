@@ -101,6 +101,7 @@ void __cdecl __security_init_cookie(void);
 WINCRT_ATEXIT_API int __cdecl __cxa_atexit(void (*)(void *), void *, void *);
 WINCRT_ATEXIT_API int __cdecl __llvm_kcfi_cxa_atexit(void (*)(void *), void *,
                                                      void *);
+WINCRT_ATEXIT_API int __cdecl __wincrt_atexit(void (*)(void *), void *, void *);
 WINCRT_ATEXIT_API void __cdecl __cxa_finalize(void *);
 WINCRT_ATEXIT_API int __cxa_at_quick_exit(void (*)(void), void *);
 WINCRT_ATEXIT_API int __cxa_thread_atexit_impl(void (*)(void *), void *,
