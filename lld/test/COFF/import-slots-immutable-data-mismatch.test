@@ -1,0 +1,151 @@
+# REQUIRES: x86
+## Under -import-slots, the value-only loads of a symbol in an object read the
+## image's own copy of the data together, or not at all: the loads of a
+## function may lead to addresses that it compares. Here the object describes
+## two loads of tbl's import pointer as value-only, but the second is an lea,
+## not the load its record describes, so neither reads the copy, while the
+## value-only load of tbl2 in the same object does.
+
+# RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
+# RUN: yaml2obj main.yaml -o main.obj
+# RUN: lld-link -def:lib.def -out:lib.lib -machine:x64
+# RUN: lld-link -import-slots -entry:main -subsystem:console main.obj lib.lib \
+# RUN:   -out:main.exe -verbose 2>&1 | FileCheck --check-prefix=LOG %s
+# RUN: llvm-objdump -d --no-show-raw-insn main.exe | FileCheck %s
+
+# LOG-NOT: Keeping the copy of tbl in
+# LOG:     Keeping the copy of tbl2 in main.obj for 1 value read
+# LOG-NOT: Keeping the copy of tbl in
+
+## Both of tbl's instructions keep naming its import address table entry.
+# CHECK:      <.text>:
+# CHECK-NEXT: movq {{.*}}(%rip), %rax # 0x[[#%x,IAT:]]
+# CHECK-NEXT: movl (%rax,%rcx,4), %eax
+# CHECK-NEXT: leaq {{.*}}(%rip), %rdx # 0x[[#IAT]]
+# CHECK-NEXT: movl (%rdx,%rcx,4), %edx
+# CHECK-NEXT: leaq {{.*}}(%rip), %r8
+# CHECK-NEXT: movl (%r8,%rcx,4), %r8d
+
+#--- lib.def
+LIBRARY lib.dll
+EXPORTS
+  tbl DATA
+  tbl2 DATA
+
+#--- main.yaml
+## As llvm-mc assembles three loads, each after .linkvalueonly, two of
+## __imp_tbl and one of __imp_tbl2, each followed by an indexed read through
+## its register, with the second load's opcode 8B made 8D.
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_AMD64
+  Characteristics: [  ]
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     488B05000000008B0488488D15000000008B148A4C8B0500000000458B0488C3
+    Relocations:
+      - VirtualAddress:  3
+        SymbolName:      __imp_tbl
+        Type:            IMAGE_REL_AMD64_REL32
+      - VirtualAddress:  13
+        SymbolName:      __imp_tbl
+        Type:            IMAGE_REL_AMD64_REL32
+      - VirtualAddress:  23
+        SymbolName:      __imp_tbl2
+        Type:            IMAGE_REL_AMD64_REL32
+  - Name:            .rdata
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_LNK_COMDAT, IMAGE_SCN_MEM_READ ]
+    Alignment:       16
+    SectionData:     '01000000020000000300000004000000'
+  - Name:            .rdata
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_LNK_COMDAT, IMAGE_SCN_MEM_READ ]
+    Alignment:       16
+    SectionData:     '05000000060000000700000008000000'
+  - Name:            .llvm_link_records
+    Characteristics: [ IMAGE_SCN_LNK_REMOVE ]
+    Alignment:       1
+    SectionData:     4C4C52430107021000033B020700AB01020700AB01020700
+symbols:
+  - Name:            .text
+    Value:           0
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_STATIC
+    SectionDefinition:
+      Length:          32
+      NumberOfRelocations: 3
+      NumberOfLinenumbers: 0
+      CheckSum:        0
+      Number:          1
+  - Name:            .rdata
+    Value:           0
+    SectionNumber:   2
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_STATIC
+    SectionDefinition:
+      Length:          16
+      NumberOfRelocations: 0
+      NumberOfLinenumbers: 0
+      CheckSum:        1136566202
+      Number:          2
+      Selection:       IMAGE_COMDAT_SELECT_ANY
+  - Name:            tbl
+    Value:           0
+    SectionNumber:   2
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            .rdata
+    Value:           0
+    SectionNumber:   3
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_STATIC
+    SectionDefinition:
+      Length:          16
+      NumberOfRelocations: 0
+      NumberOfLinenumbers: 0
+      CheckSum:        1511348480
+      Number:          3
+      Selection:       IMAGE_COMDAT_SELECT_ANY
+  - Name:            tbl2
+    Value:           0
+    SectionNumber:   3
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            .llvm_link_records
+    Value:           0
+    SectionNumber:   4
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_STATIC
+    SectionDefinition:
+      Length:          24
+      NumberOfRelocations: 0
+      NumberOfLinenumbers: 0
+      CheckSum:        0
+      Number:          4
+  - Name:            main
+    Value:           0
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            __imp_tbl
+    Value:           0
+    SectionNumber:   0
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            __imp_tbl2
+    Value:           0
+    SectionNumber:   0
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+...
