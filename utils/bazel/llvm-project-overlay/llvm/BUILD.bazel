@@ -2284,6 +2284,7 @@ cc_library(
         ":Core",
         ":Support",
         ":TargetParser",
+        ":TransformUtils",
     ],
 )
 

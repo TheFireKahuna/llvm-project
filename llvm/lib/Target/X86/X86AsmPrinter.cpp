@@ -52,6 +52,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/Transforms/Utils/KCFIHash.h"
 
 using namespace llvm;
 
@@ -137,18 +138,7 @@ void X86AsmPrinter::emitFunctionBodyEnd() {
 }
 
 uint32_t X86AsmPrinter::MaskKCFIType(uint32_t Value) {
-  // If the type hash matches an invalid pattern, mask the value.
-  const uint32_t InvalidValues[] = {
-      0xFA1E0FF3, /* ENDBR64 */
-      0xFB1E0FF3, /* ENDBR32 */
-  };
-  for (uint32_t N : InvalidValues) {
-    // LowerKCFI_CHECK emits -Value for indirect call checks, so we must also
-    // mask that. Note that -(Value + 1) == ~Value.
-    if (N == Value || -N == Value)
-      return Value + 1;
-  }
-  return Value;
+  return getX86KCFIType(Value);
 }
 
 void X86AsmPrinter::EmitKCFITypePadding(const MachineFunction &MF,
@@ -225,7 +215,7 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
   if (Marker)
     OutStreamer->emitLabel(FnSym);
   if (VfnType)
-    OutStreamer->emitInt32(VfnType->getZExtValue());
+    OutStreamer->emitInt32(MaskKCFIType(VfnType->getZExtValue()));
   if (Marker) {
     MCInst Nop = MCInstBuilder(X86::NOOPL)
                      .addReg(X86::RAX)
@@ -283,6 +273,259 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
         MCSymbolRefExpr::create(FnSym, OutContext), OutContext);
     OutStreamer->emitELFSize(FnSym, SizeExp);
   }
+}
+
+ArrayRef<AsmPrinter::KCFIRoutineKind>
+X86AsmPrinter::getKCFIRoutineKinds() const {
+  static const KCFIRoutineKind Kinds[] = {
+      {KCFIThunkDispatch, COFF::KCFIMismatchPrefix, COFF::KCFIOpenScanner,
+       COFF::KCFIOpenDynamicScanner, "__guard_dispatch_icall_fptr", X86::RAX},
+      {KCFIThunkCheck, COFF::KCFICheckMismatchPrefix,
+       COFF::KCFICheckOpenScanner, COFF::KCFICheckOpenDynamicScanner,
+       "__guard_check_icall_fptr", X86::RCX}};
+  return Kinds;
+}
+
+void X86AsmPrinter::emitKCFILea(MCRegister Reg, MCSymbol *Sym) {
+  const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
+  OutStreamer->emitInstruction(
+      MCInstBuilder(X86::LEA64r)
+          .addReg(Reg)
+          .addReg(X86::RIP)
+          .addImm(1)
+          .addReg(X86::NoRegister)
+          .addExpr(MCSymbolRefExpr::create(Sym, OutContext))
+          .addReg(X86::NoRegister),
+      STI);
+}
+
+void X86AsmPrinter::emitKCFICmp(MCRegister LHS, MCRegister RHS) {
+  OutStreamer->emitInstruction(
+      MCInstBuilder(X86::CMP64rr).addReg(LHS).addReg(RHS),
+      TM.getMCSubtargetInfo());
+}
+
+void X86AsmPrinter::emitKCFIJcc(MCSymbol *Target, unsigned Cond) {
+  OutStreamer->emitInstruction(
+      MCInstBuilder(X86::JCC_1)
+          .addExpr(MCSymbolRefExpr::create(Target, OutContext))
+          .addImm(Cond),
+      TM.getMCSubtargetInfo());
+}
+
+// testl $mask, %reg32; jz Target
+//
+// The mask has the bits of a target's page offset that are zero when the
+// prefix read before it, at most PrefixNops + ReadBytes bytes, could start on
+// the page before.
+void X86AsmPrinter::emitKCFIPageTest(MCRegister Reg, MCSymbol *Target,
+                                     int64_t PrefixNops, unsigned ReadBytes) {
+  const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
+  uint32_t Mask = 0xFFF & ~(PowerOf2Ceil(PrefixNops + ReadBytes) - 1);
+  if (Reg == X86::RAX)
+    OutStreamer->emitInstruction(MCInstBuilder(X86::TEST32i32).addImm(Mask),
+                                 STI);
+  else
+    OutStreamer->emitInstruction(MCInstBuilder(X86::TEST32ri)
+                                     .addReg(getX86SubSuperRegister(Reg, 32))
+                                     .addImm(Mask),
+                                 STI);
+  emitKCFIJcc(Target, X86::COND_E);
+}
+
+void X86AsmPrinter::emitKCFIGuardJump(StringRef GuardFn) {
+  const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
+  OutStreamer->emitInstruction(
+      MCInstBuilder(X86::JMP64m)
+          .addReg(X86::RIP)
+          .addImm(1)
+          .addReg(X86::NoRegister)
+          .addExpr(MCSymbolRefExpr::create(
+              OutContext.getOrCreateSymbol(GuardFn), OutContext))
+          .addReg(X86::NoRegister),
+      STI);
+}
+// movl $FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG, %ecx; int $0x29
+void X86AsmPrinter::emitKCFIFastFail() {
+  const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
+  OutStreamer->emitInstruction(
+      MCInstBuilder(X86::MOV32ri).addReg(X86::ECX).addImm(64), STI);
+  OutStreamer->emitInstruction(MCInstBuilder(X86::INT).addImm(0x29), STI);
+}
+/// Emits the body of an ordinary, local or vfn KCFI thunk; see the header.
+///
+/// testl $mask, %reg32; jz mismatch
+/// movabsq $expected, %r11; cmpq %r11, -8(%reg); jne mismatch
+/// jmpq *guard(%rip)
+///
+/// A local thunk first tests the range:
+/// leaq __llvm_code_start(%rip), %r10; leaq __llvm_code_end(%rip), %r11
+/// cmpq %r10, %reg; jb 1f; cmpq %r11, %reg; jae 1f
+/// movabsq $expected, %r11; cmpq %r11, -8(%reg); jne mismatch
+/// jmpq *%reg (dispatch) or retq (check)
+/// 1: cmpq %r11, %r10; jne 2f, where 2: fails fast after the guard jump.
+///
+/// A vfn thunk compares the 8 bytes at -16(%reg) instead, and its page test
+/// allows for a prefix of 16 bytes rather than 12.
+void X86AsmPrinter::emitKCFIThunk(const KCFIThunkInfo &I) {
+  const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
+  MCRegister Reg = I.Routine->TargetReg;
+  uint64_t Expected = I.Pattern >> 32 | uint64_t(MaskKCFIType(I.Type)) << 32;
+  unsigned CompareOffset = 8, ReadBytes = 12;
+  if (I.Vfn) {
+    Expected = MaskKCFIType(I.Type) | I.Pattern << 32;
+    CompareOffset = ReadBytes = 16;
+  }
+  auto EmitCompare = [&] {
+    OutStreamer->emitInstruction(
+        MCInstBuilder(X86::MOV64ri).addReg(X86::R11).addImm(Expected), STI);
+    OutStreamer->emitInstruction(MCInstBuilder(X86::CMP64mr)
+                                     .addReg(Reg)
+                                     .addImm(1)
+                                     .addReg(X86::NoRegister)
+                                     .addImm(-(I.PrefixNops + CompareOffset))
+                                     .addReg(X86::NoRegister)
+                                     .addReg(X86::R11),
+                                 STI);
+    emitKCFIJcc(I.Mismatch, X86::COND_NE);
+  };
+  auto EmitTakeTarget = [&] {
+    if (Reg == X86::RAX)
+      OutStreamer->emitInstruction(MCInstBuilder(X86::JMP64r).addReg(X86::RAX),
+                                   STI);
+    else
+      OutStreamer->emitInstruction(MCInstBuilder(X86::RET64), STI);
+  };
+
+  MCSymbol *Trap = nullptr;
+  if (I.Local) {
+    MCSymbol *Outside = OutContext.createTempSymbol();
+    emitKCFILea(X86::R10, I.CodeStart);
+    emitKCFILea(X86::R11, I.CodeEnd);
+    emitKCFICmp(Reg, X86::R10);
+    emitKCFIJcc(Outside, X86::COND_B);
+    emitKCFICmp(Reg, X86::R11);
+    emitKCFIJcc(Outside, X86::COND_AE);
+    EmitCompare();
+    EmitTakeTarget();
+    // The bounds are equal in an image that was not sealed, where no target is
+    // in the range and the guard function decides.
+    Trap = OutContext.createTempSymbol();
+    emitKCFICmp(X86::R10, X86::R11);
+    emitKCFIJcc(Trap, X86::COND_NE);
+  }
+  emitKCFIPageTest(Reg, I.Mismatch, I.PrefixNops, ReadBytes);
+  EmitCompare();
+  emitKCFIGuardJump(I.Routine->GuardFn);
+  if (Trap) {
+    OutStreamer->emitLabel(Trap);
+    emitKCFIFastFail();
+  }
+}
+/// Emits the body of a KCFI scanner, which walks a type's list; see the header.
+///
+/// testl $mask, %reg32; jz 1f
+/// movabsq $pattern, %r11; cmpq %r11, -12(%reg); je 3f
+/// 1: movq (%r10), %r11; addq $8, %r10
+/// testq %r11, %r11; jz 1b
+/// testb $1, %r11b; jnz 2f
+/// cmpq (%r11), %reg; jne 1b
+/// jmpq *%rax (dispatch) or retq (check)
+/// 2: jmpq *guard(%rip) (dynamic)
+/// 3: movl $FAST_FAIL_GUARD_ICALL_CHECK_FAILURE_XFG, %ecx; int $0x29
+///
+/// A target that carries the marker is a function of another type; one in a
+/// page's first bytes has no prefix that can be read. R10 points at the first
+/// word of the type's list. A word is the address of a cell holding a valid
+/// target, or zero, or the odd word that ends the list. A listed target is the
+/// address the loader bound into a read-only import address table slot.
+void X86AsmPrinter::emitKCFIScanner(const KCFIRoutineKind &Routine,
+                                    bool Dynamic, uint64_t Pattern,
+                                    int64_t PrefixNops) {
+  const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
+  MCRegister Reg = Routine.TargetReg;
+  MCSymbol *Walk = OutContext.createTempSymbol();
+  MCSymbol *Trap = OutContext.createTempSymbol();
+  MCSymbol *Miss = Dynamic ? OutContext.createTempSymbol() : Trap;
+  emitKCFIPageTest(Reg, Walk, PrefixNops);
+  OutStreamer->emitInstruction(
+      MCInstBuilder(X86::MOV64ri).addReg(X86::R11).addImm(Pattern), STI);
+  OutStreamer->emitInstruction(MCInstBuilder(X86::CMP64mr)
+                                   .addReg(Reg)
+                                   .addImm(1)
+                                   .addReg(X86::NoRegister)
+                                   .addImm(-(PrefixNops + 12))
+                                   .addReg(X86::NoRegister)
+                                   .addReg(X86::R11),
+                               STI);
+  emitKCFIJcc(Trap, X86::COND_E);
+  OutStreamer->emitLabel(Walk);
+  OutStreamer->emitInstruction(MCInstBuilder(X86::MOV64rm)
+                                   .addReg(X86::R11)
+                                   .addReg(X86::R10)
+                                   .addImm(1)
+                                   .addReg(X86::NoRegister)
+                                   .addImm(0)
+                                   .addReg(X86::NoRegister),
+                               STI);
+  OutStreamer->emitInstruction(
+      MCInstBuilder(X86::ADD64ri8).addReg(X86::R10).addReg(X86::R10).addImm(8),
+      STI);
+  OutStreamer->emitInstruction(
+      MCInstBuilder(X86::TEST64rr).addReg(X86::R11).addReg(X86::R11), STI);
+  emitKCFIJcc(Walk, X86::COND_E);
+  OutStreamer->emitInstruction(
+      MCInstBuilder(X86::TEST8ri).addReg(X86::R11B).addImm(1), STI);
+  emitKCFIJcc(Miss, X86::COND_NE);
+  OutStreamer->emitInstruction(MCInstBuilder(X86::CMP64rm)
+                                   .addReg(Reg)
+                                   .addReg(X86::R11)
+                                   .addImm(1)
+                                   .addReg(X86::NoRegister)
+                                   .addImm(0)
+                                   .addReg(X86::NoRegister),
+                               STI);
+  emitKCFIJcc(Walk, X86::COND_NE);
+  if (Reg == X86::RAX)
+    OutStreamer->emitInstruction(MCInstBuilder(X86::JMP64r).addReg(X86::RAX),
+                                 STI);
+  else
+    OutStreamer->emitInstruction(MCInstBuilder(X86::RET64), STI);
+  if (Dynamic) {
+    OutStreamer->emitLabel(Miss);
+    emitKCFIGuardJump(Routine.GuardFn);
+  }
+  OutStreamer->emitLabel(Trap);
+  emitKCFIFastFail();
+}
+
+/// leaq __llvm_kcfi_list_<type>+8(%rip), %r10; jmp scanner
+///
+/// A dynamic opener's routine ends with an int3, so that the linker's choice of
+/// the largest definition prefers it to a static opener's.
+void X86AsmPrinter::emitKCFIOpenRoutine(const KCFIRoutineKind &Routine,
+                                        MCSymbol *List, bool Dynamic) {
+  const MCSubtargetInfo &STI = TM.getMCSubtargetInfo();
+  OutStreamer->emitInstruction(
+      MCInstBuilder(X86::LEA64r)
+          .addReg(X86::R10)
+          .addReg(X86::RIP)
+          .addImm(1)
+          .addReg(X86::NoRegister)
+          .addExpr(MCBinaryExpr::createAdd(
+              MCSymbolRefExpr::create(List, OutContext),
+              MCConstantExpr::create(8, OutContext), OutContext))
+          .addReg(X86::NoRegister),
+      STI);
+  OutStreamer->emitInstruction(
+      MCInstBuilder(X86::JMP_1)
+          .addExpr(MCSymbolRefExpr::create(
+              OutContext.getOrCreateSymbol(Dynamic ? Routine.DynamicScanner
+                                                   : Routine.Scanner),
+              OutContext)),
+      STI);
+  if (Dynamic)
+    OutStreamer->emitInstruction(MCInstBuilder(X86::INT3), STI);
 }
 
 /// PrintSymbolOperand - Print a raw symbol reference operand.  This handles
@@ -1117,6 +1360,8 @@ void X86AsmPrinter::emitEndOfAsmFile(Module &M) {
     // safe to set.
     OutStreamer->emitSubsectionsViaSymbols();
   } else if (TT.isOSBinFormatCOFF()) {
+    emitKCFIThunks(M);
+
     // If import call optimization is enabled, emit the appropriate section.
     // We do this whether or not we recorded any items.
     if (EnableImportCallOptimization) {

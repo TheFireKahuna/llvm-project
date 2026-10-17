@@ -23,6 +23,7 @@ add_llvm_component_library(LLVMAsmPrinter
   OcamlGCPrinter.cpp
   PseudoProbePrinter.cpp
   WinCFGuard.cpp
+  WinKCFIThunks.cpp
   WinException.cpp
   CodeViewDebug.cpp
   WasmException.cpp
