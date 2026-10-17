@@ -2766,6 +2766,8 @@ RValue CodeGenFunction::EmitBuiltinExpr(const GlobalDecl GD, unsigned BuiltinID,
          "Should not codegen for consteval builtins");
 
   const FunctionDecl *FD = GD.getDecl()->getAsFunction();
+  if (CodeGenKCFI *KCFI = CGM.getKCFI())
+    KCFI->addCallArguments(FD, E->arguments(), E->getNumArgs());
   // See if we can constant fold this builtin.  If so, don't emit it at all.
   // TODO: Extend this handling to all builtin calls that we can constant-fold.
   Expr::EvalResult Result;

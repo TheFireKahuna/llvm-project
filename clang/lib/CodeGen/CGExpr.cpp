@@ -1489,6 +1489,10 @@ static Address EmitPointerWithAlignment(const Expr *E, LValueBaseInfo *BaseInfo,
   if (const CastExpr *CE = dyn_cast<CastExpr>(E)) {
     if (const auto *ECE = dyn_cast<ExplicitCastExpr>(CE))
       CGF.CGM.EmitExplicitCastExprType(ECE, &CGF);
+    if (CodeGenKCFI *KCFI = CGF.CGM.getKCFI();
+        KCFI && CE->getCastKind() == CK_BitCast)
+      KCFI->addConversionType(CE->getSubExpr()->getType(), E->getType(),
+                              /*LValue=*/false, CE->getSubExpr());
 
     switch (CE->getCastKind()) {
     // Non-converting casts (but not C's implicit conversion from void*).
@@ -6500,6 +6504,9 @@ LValue CodeGenFunction::EmitCastLValue(const CastExpr *E) {
     const auto *CE = cast<ExplicitCastExpr>(E);
 
     CGM.EmitExplicitCastExprType(CE, this);
+    if (CodeGenKCFI *KCFI = CGM.getKCFI())
+      KCFI->addConversionType(E->getSubExpr()->getType(), E->getType(),
+                              /*LValue=*/true);
     LValue LV = EmitLValue(E->getSubExpr());
     Address V = LV.getAddress().withElementType(
         ConvertTypeForMem(CE->getTypeAsWritten()->getPointeeType()));
@@ -6790,6 +6797,8 @@ CGCallee CodeGenFunction::EmitCallee(const Expr *E) {
     // function pointers.
     if (ICE->getCastKind() == CK_LValueToRValue) {
       const Expr *SubExpr = ICE->getSubExpr();
+      if (CodeGenKCFI *KCFI = CGM.getKCFI())
+        KCFI->addUnionReadType(SubExpr);
       if (const auto *PtrType = SubExpr->getType()->getAs<PointerType>()) {
         std::pair<llvm::Value *, CGPointerAuthInfo> Result =
             EmitOrigPointerRValue(E);
@@ -7213,6 +7222,10 @@ RValue CodeGenFunction::EmitCall(QualType CalleeType,
   }
 
   const auto *FnType = cast<FunctionType>(PointeeType);
+
+  if (CodeGenKCFI *KCFI = CGM.getKCFI();
+      KCFI && !isa_and_nonnull<FunctionDecl>(TargetDecl))
+    KCFI->addCalledType(QualType(FnType, 0));
 
   if (const auto *FD = dyn_cast_or_null<FunctionDecl>(TargetDecl);
       FD && DeviceKernelAttr::isOpenCLSpelling(FD->getAttr<DeviceKernelAttr>()))

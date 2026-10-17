@@ -5115,6 +5115,12 @@ void CodeGenFunction::EmitCallArgs(
 #endif
   }
 
+  // The arguments past the prototype's parameters, or all of them without a
+  // prototype, are untyped.
+  if (CodeGenKCFI *KCFI = CGM.getKCFI())
+    if (const auto *FD = dyn_cast_if_present<FunctionDecl>(AC.getDecl()))
+      KCFI->addCallArguments(FD, ArgRange, ArgTypes.size());
+
   // If we still have any arguments, emit them using the type of the argument.
   for (auto *A : llvm::drop_begin(ArgRange, ArgTypes.size()))
     ArgTypes.push_back(IsVariadic ? getVarArgType(A) : A->getType());
@@ -6876,6 +6882,8 @@ RValue CodeGenFunction::EmitVAArg(VAArgExpr *VE, Address &VAListAddr,
   QualType Ty = VE->getType();
   if (Ty->isVariablyModifiedType())
     EmitVariablyModifiedType(Ty);
+  if (CodeGenKCFI *KCFI = CGM.getKCFI())
+    KCFI->addVAArgType(Ty, CurCodeDecl);
   if (VE->isMicrosoftABI())
     return CGM.getABIInfo().EmitMSVAArg(*this, VAListAddr, Ty, Slot);
   if (VE->isZOSABI())

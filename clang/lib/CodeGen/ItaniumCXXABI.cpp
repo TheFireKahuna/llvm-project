@@ -860,6 +860,13 @@ CGCallee ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
     CodeGenKCFI::KCFITypeId TypeIds = KCFI.createCallTypeIds(FnType);
     KCFIVfnTypeId = VfnTypeIds.first;
     KCFITypeId = TypeIds.first;
+    // Either path may reach a function of another image, which need not
+    // carry a prefix of ours, when that image may create objects of the
+    // class.
+    if (KCFI.hasFacts() && KCFI.isVTableOpen(RD)) {
+      KCFI.addDynamicType(VfnTypeIds, FnType);
+      KCFI.addDynamicType(TypeIds, FnType);
+    }
   }
   bool ShouldEmitKCFICheck =
       CGF.SanOpts.has(SanitizerKind::KCFI) && CGM.hasKCFIVTableSlotTypes();
@@ -2419,6 +2426,10 @@ CGCallee ItaniumCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
     // need check again.
     if (VTableChecked)
       Callee.setKCFIChecked();
+    // The object may come from another image, whose functions in the slot
+    // need not carry a prefix of ours.
+    if (!Local && KCFI.hasFacts() && KCFI.isVTableOpen(MethodDecl->getParent()))
+      KCFI.addDynamicType(TypeId, MethodDecl->getType());
   }
   return Callee;
 }

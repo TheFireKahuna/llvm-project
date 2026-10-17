@@ -2642,6 +2642,8 @@ Value *ScalarExprEmitter::VisitCastExpr(CastExpr *CE) {
 
   case CK_LValueBitCast:
   case CK_ObjCObjectLValueCast: {
+    if (CodeGenKCFI *KCFI = CGF.CGM.getKCFI())
+      KCFI->addConversionType(E->getType(), DestTy, /*LValue=*/true);
     Address Addr = EmitLValue(E).getAddress();
     Addr = Addr.withElementType(CGF.ConvertTypeForMem(DestTy));
     LValue LV = CGF.MakeAddrLValue(Addr, DestTy);
@@ -2649,6 +2651,8 @@ Value *ScalarExprEmitter::VisitCastExpr(CastExpr *CE) {
   }
 
   case CK_LValueToRValueBitCast: {
+    if (CodeGenKCFI *KCFI = CGF.CGM.getKCFI())
+      KCFI->addConversionType(E->getType(), DestTy);
     LValue SourceLVal = CGF.EmitLValue(E);
     Address Addr =
         SourceLVal.getAddress().withElementType(CGF.ConvertTypeForMem(DestTy));
@@ -2661,6 +2665,8 @@ Value *ScalarExprEmitter::VisitCastExpr(CastExpr *CE) {
   case CK_BlockPointerToObjCPointerCast:
   case CK_AnyPointerToBlockPointerCast:
   case CK_BitCast: {
+    if (CodeGenKCFI *KCFI = CGF.CGM.getKCFI())
+      KCFI->addConversionType(E->getType(), DestTy, /*LValue=*/false, E);
     Value *Src = Visit(E);
     llvm::Type *SrcTy = Src->getType();
     llvm::Type *DstTy = ConvertType(DestTy);
@@ -2973,9 +2979,13 @@ Value *ScalarExprEmitter::VisitCastExpr(CastExpr *CE) {
   case CK_LValueToRValue:
     assert(CGF.getContext().hasSameUnqualifiedType(E->getType(), DestTy));
     assert(E->isGLValue() && "lvalue-to-rvalue applied to r-value!");
+    if (CodeGenKCFI *KCFI = CGF.CGM.getKCFI())
+      KCFI->addUnionReadType(E);
     return Visit(E);
 
   case CK_IntegralToPointer: {
+    if (CodeGenKCFI *KCFI = CGF.CGM.getKCFI())
+      KCFI->addConversionType(E->getType(), DestTy);
     Value *Src = Visit(E);
 
     // First, convert to the correct width so that we control the kind of
@@ -5446,6 +5456,8 @@ llvm::Value *CodeGenFunction::EmitWithOriginalRHSBitfieldAssignment(
 Value *ScalarExprEmitter::VisitBinAssign(const BinaryOperator *E) {
   ApplyAtomGroup Grp(CGF.getDebugInfo());
   bool Ignore = TestAndClearIgnoreResultAssign();
+  if (CodeGenKCFI *KCFI = CGF.CGM.getKCFI())
+    KCFI->addAssignment(E->getLHS(), E->getRHS());
 
   Value *RHS;
   LValue LHS;

@@ -1279,6 +1279,8 @@ void CodeGenModule::Release() {
   }
   if (hasFunctionTypePrefix())
     finalizeKCFITypes();
+  if (KCFI && KCFI->hasFacts())
+    KCFI->emitFacts();
   emitAtAvailableLinkGuard();
   if (Context.getTargetInfo().getTriple().isWasm())
     EmitMainVoidAlias();
@@ -2988,9 +2990,9 @@ static QualType GeneralizeFunctionType(ASTContext &Ctx, QualType Ty,
   llvm_unreachable("Encountered unknown FunctionType");
 }
 
-llvm::ConstantInt *CodeGenModule::CreateKCFITypeId(QualType T, StringRef Salt) {
-  T = GeneralizeFunctionType(
-      getContext(), T, getCodeGenOpts().SanitizeCfiICallGeneralizePointers);
+llvm::ConstantInt *CodeGenModule::CreateKCFITypeId(QualType T, StringRef Salt,
+                                                   bool GeneralizePointers) {
+  T = GeneralizeFunctionType(getContext(), T, GeneralizePointers);
   if (auto *FnType = T->getAs<FunctionProtoType>())
     T = getContext().getFunctionType(
         FnType->getReturnType(), FnType->getParamTypes(),
@@ -3006,7 +3008,7 @@ llvm::ConstantInt *CodeGenModule::CreateKCFITypeId(QualType T, StringRef Salt) {
 
   if (getCodeGenOpts().SanitizeCfiICallNormalizeIntegers)
     Out << ".normalized";
-  if (getCodeGenOpts().SanitizeCfiICallGeneralizePointers)
+  if (GeneralizePointers)
     Out << ".generalized";
 
   uint32_t TypeId =
@@ -3016,6 +3018,11 @@ llvm::ConstantInt *CodeGenModule::CreateKCFITypeId(QualType T, StringRef Salt) {
   if (LangOpts.FunctionTypePrefix && TypeId == llvm::COFF::SealedTypeId)
     ++TypeId;
   return llvm::ConstantInt::get(Int32Ty, TypeId);
+}
+
+llvm::ConstantInt *CodeGenModule::CreateKCFITypeId(QualType T, StringRef Salt) {
+  return CreateKCFITypeId(
+      T, Salt, getCodeGenOpts().SanitizeCfiICallGeneralizePointers);
 }
 
 std::optional<uint8_t>
@@ -3872,7 +3879,7 @@ void CodeGenModule::setKCFIType(GlobalDecl GD, llvm::Function *F) {
                                             CreateKCFITypeId(FnType, Salt))));
 }
 
-static bool allowKCFIIdentifier(StringRef Name) {
+bool CodeGenModule::allowKCFIIdentifier(StringRef Name) {
   // KCFI type identifier constants are only necessary for external assembly
   // functions, which means it's safe to skip unusual names. Subset of
   // MCAsmInfo::isAcceptableChar() and MCAsmInfoXCOFF::isAcceptableChar().

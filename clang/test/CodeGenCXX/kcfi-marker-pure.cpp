@@ -21,6 +21,8 @@ void Der::f() {}
 // CHECK: @_ZTV4Base = {{.*}} [ptr null, ptr @_ZTI4Base, ptr @_purecall.kcfi.27ccb481, ptr @__cxa_deleted_virtual.kcfi.27ccb481, ptr @_ZN4Base1gEv]
 // CHECK: @_ZTV3Der = {{.*}} [ptr null, ptr @_ZTI3Der, ptr @_ZN3Der1fEv, ptr @__cxa_deleted_virtual.kcfi.27ccb481, ptr @_ZN4Base1gEv]
 // LINUX: @_ZTV4Base = {{.*}} [ptr null, ptr @_ZTI4Base, ptr @__cxa_pure_virtual.kcfi.27ccb481, ptr @__cxa_deleted_virtual.kcfi.27ccb481, ptr @_ZN4Base1gEv]
+/// The virtual call opens its type only on COFF.
+// LINUX-NOT: !kcfi.dynamic
 
 // CHECK-LABEL: define dso_local void @_Z4callP4Base(
 // CHECK:         call void %{{.*}} [ "kcfi"(i32 667726977) ]
