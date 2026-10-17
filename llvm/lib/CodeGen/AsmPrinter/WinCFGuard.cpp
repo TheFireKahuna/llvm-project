@@ -42,6 +42,25 @@ void WinCFGuard::endFunction(const MachineFunction *MF) {
 /// it an indirect call target. Function::hasAddressTaken gives different
 /// results when a function is called directly with a function prototype
 /// mismatch, which requires a cast.
+// Whether C is an entry of llvm.global_ctors or llvm.global_dtors whose key
+// is not defined in the module, which the AsmPrinter does not emit.
+static bool isDroppedStructor(const Constant *C) {
+  const auto *Entry = dyn_cast<ConstantStruct>(C);
+  if (!Entry || Entry->getNumOperands() != 3)
+    return false;
+  const auto *Key =
+      dyn_cast<GlobalValue>(Entry->getOperand(2)->stripPointerCasts());
+  if (!Key || !Key->isDeclarationForLinker())
+    return false;
+  return llvm::all_of(Entry->users(), [](const User *List) {
+    return llvm::all_of(List->users(), [](const User *U) {
+      const auto *GV = dyn_cast<GlobalVariable>(U);
+      return GV && (GV->getName() == "llvm.global_ctors" ||
+                    GV->getName() == "llvm.global_dtors");
+    });
+  });
+}
+
 static bool isPossibleIndirectCallTarget(const GlobalValue *GV) {
   SmallVector<const Value *, 4> Users{GV};
   while (!Users.empty()) {
@@ -75,6 +94,12 @@ static bool isPossibleIndirectCallTarget(const GlobalValue *GV) {
           continue;
         // Globals (for example, vtables) are escapes.
         return true;
+      } else if (isa<Constant>(FnUser) &&
+                 isDroppedStructor(cast<Constant>(FnUser))) {
+        // An initializer or finalizer whose key another module provides, as
+        // LTO leaves one of a COMDAT that another object prevails for, is not
+        // emitted.
+        continue;
       } else if (isa<Constant>(FnUser)) {
         // Constants which aren't a global are intermediate values; recursively
         // analyze the users to see if they actually escape.
