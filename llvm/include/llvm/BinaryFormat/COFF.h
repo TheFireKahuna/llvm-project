@@ -383,9 +383,11 @@ enum LinkCoverageField : uint8_t {
   LinkFieldData,
   // A signed little-endian displacement.
   LinkFieldSigned,
-  // The 8-bit displacement of jmp rel8 or of a conditional jump, at the end
-  // of the instruction, which a linker may make the same jump with a 32-bit
-  // displacement if the value does not fit.
+  // The displacement of jmp or of a conditional jump, at the end of the
+  // instruction: an 8-bit one, which a linker may make the same jump with a
+  // 32-bit displacement if the value does not fit; or a 32-bit one that the
+  // assembler gave the jump in place of 8 bits, which a linker may make the
+  // 8-bit form if the value fits.
   LinkFieldJump,
   // An unsigned or signed LEB128 number, padded to the field's size.
   LinkFieldULEB128,

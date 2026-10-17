@@ -1452,8 +1452,8 @@ bool WindowsX86AsmBackend::relaxDwarfCFA(MCFragment &F) const {
 }
 
 // A branch, or another reference within its section, across code a linker
-// may resize is described for the linker to compute, as is a jump with an
-// 8-bit displacement, which the linker may lengthen.
+// may resize is described for the linker to compute, as is a jump that the
+// assembler could relax, which the linker may lengthen, or shorten again.
 void WindowsX86AsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
                                       const MCValue &Target, uint8_t *Data,
                                       uint64_t Value, bool IsResolved) {
@@ -1470,8 +1470,9 @@ void WindowsX86AsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
     return;
   uint8_t Size = getFixupKindSize(Fixup.getKind());
   uint8_t Kind = COFF::LinkFieldSigned;
-  if (Size == 1 && F.getKind() == MCFragment::FT_Relaxable &&
-      (F.getOpcode() == X86::JCC_1 || F.getOpcode() == X86::JMP_1))
+  if (F.getKind() == MCFragment::FT_Relaxable &&
+      (F.getOpcode() == X86::JCC_1 || F.getOpcode() == X86::JMP_1 ||
+       F.getOpcode() == X86::JCC_4 || F.getOpcode() == X86::JMP_4))
     Kind = COFF::LinkFieldJump;
   static_cast<WinCOFFObjectWriter &>(Asm->getWriter())
       .addLinkCoverageValue(
