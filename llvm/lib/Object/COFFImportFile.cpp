@@ -13,6 +13,7 @@
 #include "llvm/Object/COFFImportFile.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Object/Archive.h"
@@ -731,6 +732,16 @@ NewArchiveMember createLinkerFacts(StringRef ImportName, MachineTypes Machine,
                                    std::vector<uint8_t> &Buffer) {
   ObjectFactory OF(llvm::sys::path::filename(ImportName), Machine);
   return OF.createLinkerFacts(Buffer, SectionName, Contents, SymbolName);
+}
+
+NewArchiveMember createImportMember(StringRef ImportName, MachineTypes Machine,
+                                    StringRef Sym, ImportType Type,
+                                    std::vector<uint8_t> &Buffer) {
+  ObjectFactory OF(llvm::sys::path::filename(ImportName), Machine);
+  NewArchiveMember Member =
+      OF.createShortImport(Sym, /*Ordinal=*/0, Type, IMPORT_NAME, "", Machine);
+  Buffer.assign(Member.Buf->getBufferStart(), Member.Buf->getBufferEnd());
+  return {MemoryBufferRef(toStringRef(Buffer), Member.MemberName)};
 }
 
 Error writeImportLibrary(StringRef ImportName, StringRef Path,
