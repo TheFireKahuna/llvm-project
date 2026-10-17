@@ -2223,6 +2223,25 @@ bool ImportFile::isSameImport(const ImportFile *other) const {
   return hdr->OrdinalHint == other->hdr->OrdinalHint;
 }
 
+void ImportFile::findDLLOptions() const {
+  std::string dll = StringRef(dllName).lower();
+  delayLoaded = symtab.ctx.config.delayLoads.contains(dll);
+  offersIgnored = delayLoaded || symtab.ctx.config.ignoredOffers.contains(dll);
+  dllOptionsFound = true;
+}
+
+bool ImportFile::isDelayLoaded() const {
+  if (!dllOptionsFound)
+    findDLLOptions();
+  return delayLoaded;
+}
+
+bool ImportFile::ignoresOffers() const {
+  if (!dllOptionsFound)
+    findDLLOptions();
+  return offersIgnored;
+}
+
 ImportThunkChunk *ImportFile::makeImportThunk() {
   switch (hdr->Machine) {
   case AMD64:

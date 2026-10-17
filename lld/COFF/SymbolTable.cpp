@@ -655,8 +655,7 @@ bool SymbolTable::loadInteriorImports() {
   // undefined symbol, null where its DLL lacks it. Both need ntdll's resolver,
   // and the seal of their cells.
   for (ImportFile *f : ctx.importFileInstances) {
-    if (&f->symtab != this || !f->impSym ||
-        ctx.config.delayLoads.contains(StringRef(f->dllName).lower()))
+    if (&f->symtab != this || !f->impSym || f->isDelayLoaded())
       continue;
     if (ctx.config.dll && StringRef(f->dllName).ends_with_insensitive(".exe"))
       f->isHostImport = true;
@@ -817,8 +816,7 @@ bool SymbolTable::loadInteriorImports() {
   if (!sealed && canSeal && ctx.config.dll) {
     readOverrideRecords();
     sealed = llvm::any_of(ctx.importFileInstances, [&](ImportFile *f) {
-      if (&f->symtab != this || !f->impSym ||
-          ctx.config.delayLoads.contains(StringRef(f->dllName).lower()))
+      if (&f->symtab != this || !f->impSym || f->isDelayLoaded())
         return false;
       StringRef name = f->impSym->getName().drop_front(strlen("__imp_"));
       return overrideImportSlot(name) || defaultsByName.contains(name);
@@ -1086,9 +1084,7 @@ void SymbolTable::preemptSymbol(Symbol *sym, DefinedImportData *imp) {
 }
 
 bool SymbolTable::ignoresOffersOf(DefinedImportData *imp) const {
-  std::string dll = imp->getDLLName().lower();
-  return ctx.config.delayLoads.contains(dll) ||
-         ctx.config.ignoredOffers.contains(dll);
+  return imp->file->ignoresOffers();
 }
 
 void SymbolTable::bindImportsToDefinitions() {
@@ -1112,8 +1108,7 @@ void SymbolTable::bindImportsToDefinitions() {
     // the loader binds and the fill writes with the program's choice, so a
     // definition the program does not select is preempted in the DLL too, as
     // a definition in an ELF shared object is.
-    if (offers.contains(d) &&
-        !ctx.config.delayLoads.contains(StringRef(file->dllName).lower())) {
+    if (offers.contains(d) && !file->isDelayLoaded()) {
       Log(ctx) << "Keeping " << name << " for " << printSymbol(d)
                << ", which the image offers";
       // Only an object that describes how its instructions use the

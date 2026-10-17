@@ -395,8 +395,7 @@ static bool goesThroughRegister(ObjFile *file, const coff_relocation &rel) {
   if (auto *li = dyn_cast_or_null<DefinedLocalImport>(s))
     return !canBypass(file, rel) || isZeroPointer(li);
   if (auto *imp = dyn_cast_or_null<DefinedImportData>(s))
-    return !file->symtab.ctx.config.delayLoads.contains(
-        imp->getDLLName().lower());
+    return !imp->file->isDelayLoaded();
   return isa_and_nonnull<Defined>(s);
 }
 

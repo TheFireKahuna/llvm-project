@@ -1212,8 +1212,7 @@ void bindKCFIImportedRanges(COFFLinkerContext &ctx) {
   StringSet<> seen;
   for (ImportFile *file : ctx.importFileInstances) {
     std::string dll = StringRef(file->dllName).lower();
-    if (!file->live || ctx.config.delayLoads.contains(dll) ||
-        !seen.insert(dll).second)
+    if (!file->live || file->isDelayLoaded() || !seen.insert(dll).second)
       continue;
     auto *lazy = dyn_cast_or_null<LazyArchive>(
         ctx.symtab.find("__llvm_code_range$" + dll));
@@ -1303,7 +1302,7 @@ void KCFIContents::listThunks() {
     auto *thunk = dyn_cast_or_null<DefinedImportThunk>(imp->file->thunkSym);
     return thunk && thunk->getChunk()->live &&
            (!config.importSlots || imp->file->thunkIsAddress ||
-            config.delayLoads.contains(imp->getDLLName().lower()));
+            imp->file->isDelayLoaded());
   };
   SetVector<std::pair<ImportFile *, StringRef>> listed;
   for (auto [imp, section] : ctx.kcfi.listedImports)

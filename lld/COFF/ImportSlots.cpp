@@ -2546,10 +2546,6 @@ std::optional<int64_t> getAddressWordAddend(SectionChunk *sc,
   return config.is64() ? int64_t(read64le(word)) : int32_t(read32le(word));
 }
 
-static bool isDelayLoaded(COFFLinkerContext &ctx, DefinedImportData *imp) {
-  return ctx.config.delayLoads.contains(imp->getDLLName().lower());
-}
-
 // Whether rel, a reference to an import address table entry, reads the whole
 // address the entry holds: a load that its object describes, an ARM64 adrp or
 // ldr of it, or an entry of a KCFI type's list, which is the address of a word
@@ -2961,7 +2957,7 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
                                                            : SlotScan::Other);
       // That of a delay-loaded function: a load of the address in code takes
       // the thunk's instead.
-      if (!data->file->thunkSym || !isDelayLoaded(ctx, data))
+      if (!data->file->thunkSym || !data->file->isDelayLoaded())
         continue;
       if (!code)
         scan.delayLoadsRead.insert(data);
@@ -3036,7 +3032,7 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
                  << imp->getDLLName();
         continue;
       }
-      if (isDelayLoaded(ctx, imp))
+      if (imp->file->isDelayLoaded())
         continue;
       if (arm64) {
         switch (rel.Type) {
@@ -3123,7 +3119,7 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
                  << ", which cannot reach another image";
       continue;
     }
-    if (isDelayLoaded(ctx, imp))
+    if (imp->file->isDelayLoaded())
       continue;
     std::optional<int64_t> addend = getAddressWordAddend(sc, rel);
     if (!addend) {
@@ -3181,7 +3177,7 @@ void ImportSlotContents::resolve(SlotScan &scan) {
       continue;
     ctx.importSites.insert({site.chunk, site.offset});
     site.chunk->hasImportSites = true;
-    if (isDelayLoaded(ctx, site.imp))
+    if (site.imp->file->isDelayLoaded())
       keepThunk(site.imp);
     else
       scan.use(site.imp, SlotScan::Read);
@@ -3207,7 +3203,7 @@ void ImportSlotContents::resolve(SlotScan &scan) {
   for (auto &[thunk, refs] : scan.thunkRefs)
     if (refs.first == refs.second && !thunk->wrappedSym->file->thunkIsAddress &&
         !thunk->wrappedSym->file->isBoundAtRunTime() &&
-        !isDelayLoaded(ctx, thunk->wrappedSym) && !named.contains(thunk))
+        !thunk->wrappedSym->file->isDelayLoaded() && !named.contains(thunk))
       thunk->getChunk()->live = false;
 
   // A function's copy that no call keeps is discarded, as one that no
@@ -3488,7 +3484,7 @@ void ImportSlotContents::createResidualFill() {
       fail("the image has no " + name + " from ntdll.lib");
       return nullptr;
     }
-    if (config.delayLoads.contains(imp->getDLLName().lower())) {
+    if (imp->file->isDelayLoaded()) {
       fail(name + " is delay-loaded");
       return nullptr;
     }
@@ -3518,7 +3514,7 @@ void ImportSlotContents::createResidualFill() {
     if (!protect)
       return fail("the image cannot make it read-only once written without "
                   "NtProtectVirtualMemory from ntdll.lib");
-    if (config.delayLoads.contains(protect->getDLLName().lower()))
+    if (protect->file->isDelayLoaded())
       return fail("NtProtectVirtualMemory, which makes it read-only once "
                   "written, is delay-loaded");
     if (!protect->file->live)
@@ -3821,7 +3817,7 @@ void ImportSlotContents::createOverrideCellFill() {
     if (!protect)
       return fail("that it cannot write without NtProtectVirtualMemory from "
                   "ntdll.lib");
-    if (config.delayLoads.contains(protect->getDLLName().lower()))
+    if (protect->file->isDelayLoaded())
       return fail("that it cannot write while NtProtectVirtualMemory is "
                   "delay-loaded");
     if (!protect->file->live)
@@ -3934,7 +3930,7 @@ void ImportSlotContents::createNamedCellFill() {
                << name.drop_front(strlen("__imp_")) << " from ntdll.lib";
       return nullptr;
     }
-    if (config.delayLoads.contains(imp->getDLLName().lower())) {
+    if (imp->file->isDelayLoaded()) {
       Err(ctx) << "the image binds cells by name at run time, which needs "
                << name.drop_front(strlen("__imp_"))
                << ", but it is delay-loaded";

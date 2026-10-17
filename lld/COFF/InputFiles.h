@@ -674,6 +674,13 @@ public:
   bool isSameImport(const ImportFile *other) const;
   bool isEC() const { return impECSym != nullptr; }
 
+  // Whether the link delay-loads the import's DLL, and whether it ignores the
+  // DLL's offers, as it does those of a DLL it delay-loads. An import library
+  // member may be read before /delayload and -ignore-offers are, so each is
+  // found when first asked, once every option is.
+  bool isDelayLoaded() const;
+  bool ignoresOffers() const;
+
   DefinedImportData *impSym = nullptr;
   Defined *thunkSym = nullptr;
   ImportThunkChunkARM64EC *impchkThunk = nullptr;
@@ -683,6 +690,11 @@ public:
 private:
   void parse() override;
   ImportThunkChunk *makeImportThunk();
+  void findDLLOptions() const;
+
+  mutable bool dllOptionsFound = false;
+  mutable bool delayLoaded = false;
+  mutable bool offersIgnored = false;
 
 public:
   StringRef externalName;
