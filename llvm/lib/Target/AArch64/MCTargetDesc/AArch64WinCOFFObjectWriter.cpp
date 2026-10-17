@@ -27,11 +27,21 @@ using namespace llvm;
 namespace {
 
 class AArch64WinCOFFObjectWriter : public MCWinCOFFObjectTargetWriter {
+  // Whether objects list their call-only references to the linker, which the
+  // Windows Itanium and NT-POSIX linkers rely on.
+  bool ListCallOnly;
+
 public:
   AArch64WinCOFFObjectWriter(const Triple &TheTriple)
       : MCWinCOFFObjectTargetWriter(TheTriple.isWindowsArm64EC()
                                         ? COFF::IMAGE_FILE_MACHINE_ARM64EC
-                                        : COFF::IMAGE_FILE_MACHINE_ARM64) {}
+                                        : COFF::IMAGE_FILE_MACHINE_ARM64),
+        ListCallOnly(!TheTriple.isWindowsArm64EC() &&
+                     TheTriple.isWindowsItaniumOrNTPOSIXEnvironment()) {}
+
+  uint64_t getLinkRecordCapabilities() const override {
+    return ListCallOnly ? COFF::LinkRecordsCallOnly : 0;
+  }
 
   ~AArch64WinCOFFObjectWriter() override = default;
 

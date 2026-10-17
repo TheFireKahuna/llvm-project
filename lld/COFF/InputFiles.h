@@ -303,6 +303,17 @@ public:
   std::optional<llvm::COFF::LinkSiteForm>
   getLinkSiteForm(const SectionChunk *sc, uint32_t offset) const;
 
+  // True if the object lists every 32-bit field in data through which a
+  // symbol it leaves undefined is only called, so that any other such field
+  // holds an address.
+  bool listsCallOnly() const {
+    return linkRecords && linkRecords->listsCallOnly;
+  }
+
+  // Whether the relocation at offset in the section of sc fills a field
+  // through which its symbol is only called.
+  bool isCallOnlyRef(const SectionChunk *sc, uint32_t offset) const;
+
   // When using Microsoft precompiled headers, this is the PCH's key.
   // The same key is used by both the precompiled object, and objects using the
   // precompiled object. Any difference indicates out-of-date objects.
@@ -342,6 +353,7 @@ private:
   void initializeFlags();
   void readLinkRecords();
   bool readLinkSites(ArrayRef<uint8_t> payload);
+  bool readCallOnlyRefs(ArrayRef<uint8_t> payload);
   void initializeDependencies();
   void initializeECThunks();
 
@@ -400,7 +412,9 @@ private:
     const coff_section *sec;
     bool describesSites = false;
     bool protectsDelayIat = false;
+    bool listsCallOnly = false;
     std::vector<LinkSite> sites;
+    std::vector<std::pair<uint32_t, uint32_t>> callOnlyRefs;
   };
   LinkRecords *linkRecords = nullptr;
 
@@ -504,6 +518,17 @@ public:
   // If the Live bit is turned off by MarkLive, Writer will ignore dllimported
   // symbols provided by this import library member.
   bool live;
+
+  // Under -import-slots, whether an object may take the imported function's
+  // address in an instruction it does not describe, so that the image uses
+  // the import thunk as the function's address everywhere.
+  bool thunkIsAddress = false;
+
+  // The offset of the import's address in location: 0 for an entry of an
+  // import address table, and the offset of the word for a word of static
+  // data that the loader writes in place. ARM64EC links have no such words,
+  // so the auxiliary locations need no offset.
+  uint32_t locationOffset = 0;
 };
 
 // Used for LTO.

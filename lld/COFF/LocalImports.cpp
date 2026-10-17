@@ -191,6 +191,13 @@ static bool parseLdr(uint32_t insn, Ldr &ldr) {
 bool isArm64AddressPair(const SectionChunk *sc, const coff_relocation &adrp,
                         const coff_relocation &add) {
   ArrayRef<uint8_t> data = sc->getContents();
+  if (adrp.Type != IMAGE_REL_ARM64_PAGEBASE_REL21 ||
+      add.Type != IMAGE_REL_ARM64_PAGEOFFSET_12A ||
+      adrp.SymbolTableIndex != add.SymbolTableIndex ||
+      uint64_t(adrp.VirtualAddress) + 4 != add.VirtualAddress ||
+      uint64_t(add.VirtualAddress) + 4 > data.size())
+    return false;
+  // adrp xd with no addend, then add xd, xd, #0.
   Adrp first;
   Add second;
   return parseAdrp(read32le(&data[adrp.VirtualAddress]), first) &&
@@ -202,6 +209,7 @@ bool isArm64AddressPair(const SectionChunk *sc, const coff_relocation &adrp,
 
 bool isArm64PointerLoad(const SectionChunk *sc, const coff_relocation &rel) {
   ArrayRef<uint8_t> data = sc->getContents();
+  if (uint64_t(rel.VirtualAddress) + 4 > data.size())
     return false;
   uint32_t insn = read32le(&data[rel.VirtualAddress]);
   switch (rel.Type) {

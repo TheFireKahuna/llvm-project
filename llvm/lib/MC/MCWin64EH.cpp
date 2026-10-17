@@ -275,6 +275,19 @@ static void EmitSymbolRefWithOfs(MCStreamer &streamer,
   streamer.emitValue(MCBinaryExpr::createAdd(BaseRefRel, Ofs, Context), 4);
 }
 
+// Emits the RVA of a frame's handler, through which the system only calls
+// it, never comparing its address; the fixup's use says so, for a linker that
+// may serve a handler in another image with a stand-in that calls it.
+static void EmitHandlerRVA(MCStreamer &Streamer, const MCSymbol *Handler) {
+  Streamer.emitValue(MCSymbolRefExpr::create(Handler,
+                                             MCSymbolRefExpr::VK_COFF_IMGREL32,
+                                             Streamer.getContext()),
+                     4);
+  if (MCFragment *F = Streamer.getCurrentFragment();
+      F && !F->getFixups().empty())
+    F->getFixups().back().setUse(MCFixupUse::Call, 0);
+}
+
 static void EmitRuntimeFunction(MCStreamer &streamer,
                                 const WinEH::FrameInfo *info) {
   MCContext &context = streamer.getContext();
@@ -858,10 +871,7 @@ static void EmitUnwindInfoV3(MCStreamer &Streamer, WinEH::FrameInfo *Info) {
     EmitRuntimeFunction(Streamer, Info->ChainedParent);
   else if (Flags &
            (Win64EH::UNW_TerminateHandler | Win64EH::UNW_ExceptionHandler))
-    Streamer.emitValue(
-        MCSymbolRefExpr::create(Info->ExceptionHandler,
-                                MCSymbolRefExpr::VK_COFF_IMGREL32, Context),
-        4);
+    EmitHandlerRVA(Streamer, Info->ExceptionHandler);
   else if (PayloadWords == 0) {
     // Minimum size: pad to 8 bytes total.
     Streamer.emitInt32(0);
@@ -1046,9 +1056,7 @@ static void EmitUnwindInfo(MCStreamer &streamer, WinEH::FrameInfo *info) {
     EmitRuntimeFunction(streamer, info->ChainedParent);
   else if (flags &
            ((Win64EH::UNW_TerminateHandler|Win64EH::UNW_ExceptionHandler) << 3))
-    streamer.emitValue(MCSymbolRefExpr::create(info->ExceptionHandler,
-                                              MCSymbolRefExpr::VK_COFF_IMGREL32,
-                                              context), 4);
+    EmitHandlerRVA(streamer, info->ExceptionHandler);
   else if (numCodes == 0) {
     // The minimum size of an UNWIND_INFO struct is 8 bytes. If we're not
     // a chained unwind info, if there is no handler, and if there are fewer
@@ -2297,10 +2305,7 @@ static void ARM64EmitUnwindInfoForSegment(MCStreamer &streamer,
     streamer.emitInt8(0xE3);
 
   if (info->HandlesExceptions)
-    streamer.emitValue(
-        MCSymbolRefExpr::create(info->ExceptionHandler,
-                                MCSymbolRefExpr::VK_COFF_IMGREL32, context),
-        4);
+    EmitHandlerRVA(streamer, info->ExceptionHandler);
 }
 
 // Populate the .xdata section.  The format of .xdata on ARM64 is documented at

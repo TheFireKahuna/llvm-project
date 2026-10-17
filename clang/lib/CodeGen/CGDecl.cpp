@@ -307,6 +307,9 @@ llvm::Constant *CodeGenModule::getOrCreateStaticVarDecl(
   setGVProperties(GV, &D);
   getTargetCodeGenInfo().setTargetAttributes(cast<Decl>(&D), GV, *this);
 
+  if (getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    emitSubobjectNames(D, GV);
+
   // Make sure the result is of the correct type.
   LangAS ExpectedAS = Ty.getAddressSpace();
   llvm::Constant *Addr = GV;

@@ -2867,6 +2867,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     // Needed for MSVC 2019 16.8 CRT.
     symtab.addAbsolute(symtab.mangle("__guard_eh_cont_count"), 0);
     symtab.addAbsolute(symtab.mangle("__guard_eh_cont_table"), 0);
+    // So does an object whose static data holds an imported address, which
+    // needs the loader to write the address there.
+    if (config->importSlots)
+      symtab.addAbsolute(symtab.mangle("__llvm_import_slots_v1"), 0);
 
     if (symtab.isEC()) {
       symtab.addAbsolute("__arm64x_extra_rfe_table", 0);
@@ -2962,6 +2966,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     } while (run() || loadedImports);
   }
 
+  if (config->importSlots)
+    ctx.symtab.exportInteriorNames();
+
   // Handle /includeglob
   for (StringRef pat : args::getStrings(args, OPT_incl_glob))
     ctx.forEachActiveSymtab(
@@ -2979,8 +2986,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
       } while (addReferencedWraps(symtab));
   });
 
-  if (config->autoImport || config->stdcallFixup) {
-    // MinGW specific.
+  if (config->autoImport || config->stdcallFixup || config->importSlots) {
+    // MinGW specific, and under -import-slots, where a reference to X that
+    // only an import offering __imp_X satisfies is bound in place.
     // Load any further object files that might be needed for doing automatic
     // imports, and do stdcall fixups.
     //
@@ -3001,15 +3009,6 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     // (and maybe doing more stdcall fixups along the way), this would need
     // to loop these two calls.
     ctx.forEachSymtab([](SymbolTable &symtab) { symtab.loadMinGWSymbols(); });
-    run();
-  } else if (config->importSlots) {
-    // LTO emits a bitcode file's reference to a symbol that is not dso_local
-    // in import form, so an import that offers only __imp_X is loaded for X,
-    // as for an automatic import.
-    ctx.forEachSymtab([](SymbolTable &symtab) {
-      if (!symtab.bitcodeFileInstances.empty())
-        symtab.loadMinGWSymbols();
-    });
     run();
   }
 
@@ -3097,6 +3096,16 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
 
   if (errorCount())
     return;
+
+  // Under -import-slots, a word of static data that holds an address inside
+  // imported data takes a name that no input references. The imports of such
+  // names load once automatic import has resolved the data, while what they
+  // bring in can still be resolved and its liveness decided.
+  if (config->importSlots)
+    for (bool loaded = true; loaded;) {
+      loaded = ctx.symtab.loadInteriorImports();
+      run();
+    }
 
   if (ctx.hybridSymtab) {
     // On ARM64X, merge tls chunks, there may be only one true _tls_start and
