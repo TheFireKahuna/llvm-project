@@ -110,6 +110,13 @@ enum LinkRecordKind : uint64_t {
   // skips.
   LinkRecordSites = 2,
 
+  // The object's KCFI lists name each imported function by its import
+  // address table entry alone. Where static data holds the function's import
+  // thunk as its address, the linker adds to the type's list the address of a
+  // cell holding the thunk, without which a call through such a pointer fails
+  // its check; the kind is critical for that reason. The payload is empty.
+  LinkRecordKCFIImportLists = 3,
+
   // The 32-bit fields in data sections through which the function they name
   // is only ever called, never compared, such as a frame's handler in its
   // unwind information, which a linker may serve with a stand-in that calls

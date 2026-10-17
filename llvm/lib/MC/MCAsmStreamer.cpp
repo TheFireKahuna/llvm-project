@@ -1046,8 +1046,12 @@ void MCAsmStreamer::emitCOFFLinkPin(MCSymbol const *Symbol,
     OS << ", required";
   EmitEOL();
 }
+
 void MCAsmStreamer::emitCOFFLinkFact(uint64_t Kind) {
   switch (Kind) {
+  case COFF::LinkRecordKCFIImportLists:
+    OS << "\t.linkkcfilists";
+    break;
   case COFF::LinkRecordTypePrefixes:
     OS << "\t.linktypeprefixes";
     break;
