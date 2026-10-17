@@ -641,6 +641,10 @@ private:
   /// A vector of metadata strings for linker options.
   SmallVector<llvm::MDNode *, 16> LinkerOptionsMetadata;
 
+  /// The linker options that the object needs to be linked correctly, which
+  /// -fno-autolink does not drop.
+  SmallVector<llvm::MDNode *, 4> LinkFactsMetadata;
+
   /// A vector of metadata strings for dependent libraries for ELF.
   SmallVector<llvm::MDNode *, 16> ELFDependentLibraries;
 
@@ -1614,6 +1618,11 @@ public:
 
   /// Appends Opts to the "llvm.linker.options" metadata value.
   void AppendLinkerOptions(StringRef Opts);
+
+  /// Appends Opts, a linker option that the object needs to be linked
+  /// correctly rather than one that names a library, to the
+  /// "llvm.linker.options" metadata value, whatever -fno-autolink says.
+  void AppendLinkFact(StringRef Opts);
 
   /// Appends a detect mismatch command to the linker options.
   void AddDetectMismatch(StringRef Name, StringRef Value);

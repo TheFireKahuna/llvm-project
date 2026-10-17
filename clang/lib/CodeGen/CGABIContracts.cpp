@@ -588,28 +588,20 @@ void CodeGenABIContracts::emit() {
       if (const RecordDecl *Def = RD->getDefinition())
         Require(GV, RecordSet(&Def, &Def + 1), nullptr);
 
+  // The provide rows travel as linker options, which the linker reads from
+  // every object it loads, bitcode included, before it selects among COMDAT
+  // copies.
+  auto AddRows = [&](StringRef Directive, ArrayRef<std::string> Rows) {
+    if (!Rows.empty())
+      CGM.AppendLinkFact((Directive + llvm::join(Rows, ",")).str());
+  };
+  SmallVector<std::string, 0> TypeRows;
+  for (const RecordDecl *RD : ProvidedTypes)
+    TypeRows.push_back(formatProvideRow(getIdentity(RD), getRecordDigest(RD)));
+  AddRows("/abiprovide:", TypeRows);
+  AddRows("/abiprovidedata:", ProvidedData);
+
   llvm::LLVMContext &Ctx = CGM.getLLVMContext();
-  if (!ProvidedTypes.empty() || !ProvidedData.empty()) {
-    // The rows travel as linker options, which the linker reads from every
-    // object it loads, bitcode included, before it selects among COMDAT
-    // copies; -fno-autolink does not drop them.
-    llvm::NamedMDNode *Options =
-        M.getOrInsertNamedMetadata("llvm.linker.options");
-    auto AddOption = [&](StringRef Directive, ArrayRef<std::string> Rows) {
-      if (Rows.empty())
-        return;
-      std::string Option = (Directive + llvm::join(Rows, ",")).str();
-      Options->addOperand(
-          llvm::MDNode::get(Ctx, llvm::MDString::get(Ctx, Option)));
-    };
-    SmallVector<std::string, 0> TypeRows;
-    for (const RecordDecl *RD : ProvidedTypes) {
-      Digest D = getRecordDigest(RD);
-      TypeRows.push_back(formatProvideRow(getIdentity(RD), D));
-    }
-    AddOption("/abiprovide:", TypeRows);
-    AddOption("/abiprovidedata:", ProvidedData);
-  }
 
   llvm::NamedMDNode *Requirements = nullptr;
   for (auto &[GV, Contracts] : Required) {

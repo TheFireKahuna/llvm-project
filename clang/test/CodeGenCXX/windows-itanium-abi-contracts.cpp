@@ -88,8 +88,8 @@ int use(Named *n, Sized *s, Grows *gr, CStruct *cs) {
 // Exported's own layout and Imported's, which its pointer reaches and the code
 // uses; the layouts of Dyn and DynFinal, whose inline constructors may be
 // offered; the type of the inline variable.
-// CHECK: !llvm.linker.options = !{![[#P:]], ![[#PD:]]}
 // CHECK: !abi.requirements = !{
+// CHECK: !llvm.linker.options = !{![[#P:]], ![[#PD:]]}
 // CHECK-DAG: ![[#P]] = !{!"/abiprovide:{{[[:alnum:]_-]+,[[:alnum:]_-]+,[[:alnum:]_-]+,[[:alnum:]_-]+}}"}
 // CHECK-DAG: ![[#PD]] = !{!"/abiprovidedata:{{[[:alnum:]_-]+}}"}
 

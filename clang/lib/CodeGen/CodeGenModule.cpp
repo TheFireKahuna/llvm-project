@@ -1220,14 +1220,14 @@ void CodeGenModule::Release() {
   // write the address of a thunk, or fail on data, so it fails to link the
   // object instead.
   if (llvm::any_of(ConstantDLLImportAddresses, isAddressInStaticData))
-    AppendLinkerOptions("/INCLUDE:__llvm_import_slots_v1");
+    AppendLinkFact("/INCLUDE:__llvm_import_slots_v1");
   // A strong definition of an overridable default replaces the runtime's weak
   // one for every image, which only the import-slots binding carries out: it
   // writes the override table and binds the replacement into it. A linker that
   // does not define this symbol would leave the program with a split heap, so
   // it fails to link the object instead.
   if (HasOverridableDefaultReplacement)
-    AppendLinkerOptions("/INCLUDE:__llvm_overrides_v1");
+    AppendLinkFact("/INCLUDE:__llvm_overrides_v1");
 
   if (Context.getLangOpts().IncrementalExtensions &&
       GlobalTopLevelStmtBlockInFlight.first) {
@@ -1384,6 +1384,12 @@ void CodeGenModule::Release() {
   if (CodeGenOpts.Autolink &&
       (Context.getLangOpts().Modules || !LinkerOptionsMetadata.empty())) {
     EmitModuleLinkOptions();
+  }
+  if (!LinkFactsMetadata.empty()) {
+    llvm::NamedMDNode *NMD =
+        getModule().getOrInsertNamedMetadata("llvm.linker.options");
+    for (llvm::MDNode *MD : LinkFactsMetadata)
+      NMD->addOperand(MD);
   }
 
   // On ELF we pass the dependent library specifiers directly to the linker
@@ -4142,11 +4148,23 @@ void CodeGenModule::AppendLinkerOptions(StringRef Opts) {
   LinkerOptionsMetadata.push_back(llvm::MDNode::get(getLLVMContext(), MDOpts));
 }
 
+void CodeGenModule::AppendLinkFact(StringRef Opts) {
+  auto *MDOpts = llvm::MDString::get(getLLVMContext(), Opts);
+  LinkFactsMetadata.push_back(llvm::MDNode::get(getLLVMContext(), MDOpts));
+}
+
 void CodeGenModule::AddDetectMismatch(StringRef Name, StringRef Value) {
   llvm::SmallString<32> Opt;
   getTargetCodeGenInfo().getDetectMismatchOption(Name, Value, Opt);
   if (Opt.empty())
     return;
+  // On Windows Itanium and NT-POSIX a mismatch record guards the ABI the
+  // object was compiled for, which no option drops; MSVC's /Zl drops only
+  // the names of default libraries too.
+  if (getTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+    AppendLinkFact(Opt);
+    return;
+  }
   auto *MDOpts = llvm::MDString::get(getLLVMContext(), Opt);
   LinkerOptionsMetadata.push_back(llvm::MDNode::get(getLLVMContext(), MDOpts));
 }
@@ -7669,7 +7687,7 @@ void CodeGenModule::EmitGlobalFunctionDefinition(GlobalDecl GD,
         Mark += "," + std::to_string(OD->getForward()) +
                 (OD->getDropsSecond() ? ",1" : "");
     }
-    AppendLinkerOptions(Mark);
+    AppendLinkFact(Mark);
     // The definition keeps its ABI name, but its address is the program's one
     // replacement in every image, reached through its import pointer, so the
     // back end emits an address-take in import form. The attribute marks the
@@ -7686,7 +7704,7 @@ void CodeGenModule::EmitGlobalFunctionDefinition(GlobalDecl GD,
     // replaces by name. The linker lists it in the image's import library, so
     // that the link of an image that replaces it, or reaches it, knows it. Its
     // address is the program's one replacement, as for the runtime's defaults.
-    AppendLinkerOptions(("/OVERRIDABLEBYNAME:" + Fn->getName()).str());
+    AppendLinkFact(("/OVERRIDABLEBYNAME:" + Fn->getName()).str());
     Fn->addFnAttr("overridable-default");
   }
 
