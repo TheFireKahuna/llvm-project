@@ -34,9 +34,10 @@ void registerVTableRunSymbols(COFFLinkerContext &ctx);
 
 // Reorders the read-only section so that each run's vtables are consecutive and
 // in the order their slots want, which assignAddresses then places at the run's
-// stride.
+// stride, unless the packing of the read-only section laid them out already.
 void placeVTableRuns(COFFLinkerContext &ctx, OutputSection *rdataSec,
-                     llvm::function_ref<bool(const SectionChunk *)> heldBack);
+                     llvm::function_ref<bool(const SectionChunk *)> heldBack,
+                     bool packed);
 
 // Defines the range symbols the guard thunks test, once addresses are final: a
 // run whose vtables the layout did not place at its stride is given an empty

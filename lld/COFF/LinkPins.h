@@ -21,6 +21,7 @@ namespace lld::coff {
 class Chunk;
 class COFFLinkerContext;
 struct ChunkPin;
+struct VTableRun;
 
 // Gives each chunk the address its objects' pins ask for, in
 // COFFLinkerContext::chunkPins.
@@ -34,7 +35,14 @@ struct PackItem {
   uint64_t size = 0;
   uint32_t align = 1;
   const ChunkPin *pin = nullptr;
-  bool isPlaced() const { return pin || align >= 64; }
+  // A vtable of a run, by its slot. The first slot's item stands for the run,
+  // its size the run's, and the others follow it at the run's stride, with
+  // other items in the gaps.
+  const VTableRun *run = nullptr;
+  unsigned slot = 0;
+  // A tagged vtable, which is offered the gaps of its primary base's run.
+  const VTableRun *baseRun = nullptr;
+  bool isPlaced() const { return pin || align >= 64 || run; }
   // The first offset at or after pos that the item may start at.
   uint64_t startAt(uint64_t pos) const;
 };
@@ -65,6 +73,9 @@ private:
     return std::make_pair(items[i].size, SIZE_MAX - i);
   }
   void fill(uint64_t &pos, uint64_t end, std::vector<size_t> &out);
+  uint64_t layOutRun(const VTableRun &run, ArrayRef<size_t> slots,
+                     uint64_t start, std::vector<size_t> &pinned,
+                     std::vector<size_t> &out);
 
   ArrayRef<PackItem> items;
   std::set<std::pair<uint64_t, size_t>> fillers;

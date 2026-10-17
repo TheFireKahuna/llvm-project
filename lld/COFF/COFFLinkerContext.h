@@ -164,6 +164,9 @@ public:
   // index and the vtable's slot in it.
   std::vector<VTableRun> vtableRuns;
   llvm::DenseMap<const Chunk *, std::pair<unsigned, unsigned>> runChunkRun;
+  // The tagged vtables, which a required pin places, by the run of their
+  // primary base, whose gaps the layout offers them first.
+  llvm::DenseMap<const Chunk *, unsigned> taggedRun;
 
   // The runs a DLL exports, by class: the three words an importer reads, the
   // start, the end, and the start plus the stride less one, of which the

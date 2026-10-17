@@ -44,28 +44,30 @@ struct Derived : VBased { virtual void g(); };
 void Derived::g() {}
 
 #ifndef NO_TAGS
-// Final in effect, with no key function: tagged, a required pin, and no place
-// in its base's run.
-// CHECK-DAG: @_ZTV6Tagged = linkonce_odr {{.*}} align 8, !pin ![[TAG:[0-9]+]]{{$}}
+// Final in effect, with no key function: tagged, a required pin, and no slot
+// in its base's run, though its record names the base, so that the linker can
+// place it among the run.
+// CHECK-DAG: @_ZTV6Tagged = linkonce_odr {{.*}} align 8, !pin ![[TAG:[0-9]+]], !vtable_hierarchy ![[TAGH:[0-9]+]]{{$}}
+// CHECK-DAG: ![[TAGH]] = !{i64 16, !"6Tagged", !"5Plain"}
 // The residue is 64 * line + 24 + 8 * k for xxh3_64bits("_ZTS6Tagged") = h,
 // line = h >> 58 = 6 and k = (5 * (h & (2^58 - 1))) >> 58 = 2.
 // CHECK-DAG: ![[TAG]] = !{i64 16, i64 12, i64 424, i64 1}
 struct Tagged final : Plain { void f() override {} };
 
 // Tagged with a virtual base: the pin is on the address point at 32.
-// CHECK-DAG: @_ZTV7TaggedV = linkonce_odr {{.*}} align 8, !pin ![[TAGV:[0-9]+]]{{$}}
+// CHECK-DAG: @_ZTV7TaggedV = linkonce_odr {{.*}} align 8, !pin ![[TAGV:[0-9]+]], !vtable_hierarchy {{![0-9]+$}}
 // CHECK-DAG: ![[TAGV]] = !{i64 32, i64 12, i64 544, i64 1}
 struct TaggedV final : virtual VI { virtual void g() {} };
 
 // Hidden classes are tagged too: visibility can differ between units.
-// CHECK-DAG: @_ZTV6Hidden = linkonce_odr hidden {{.*}} align 8, !pin ![[HID:[0-9]+]]{{$}}
+// CHECK-DAG: @_ZTV6Hidden = linkonce_odr hidden {{.*}} align 8, !pin ![[HID:[0-9]+]], !vtable_hierarchy {{![0-9]+$}}
 // CHECK-DAG: ![[HID]] = !{i64 16, i64 12, i64 3432, i64 1}
 struct __attribute__((visibility("hidden"))) Hidden final : Plain {
   void f() override {}
 };
 
 // A template instantiation has no key function.
-// CHECK-DAG: @_ZTV4TmplIiE = linkonce_odr {{.*}} align 8, !pin ![[TMPL:[0-9]+]]{{$}}
+// CHECK-DAG: @_ZTV4TmplIiE = linkonce_odr {{.*}} align 8, !pin ![[TMPL:[0-9]+]], !vtable_hierarchy {{![0-9]+$}}
 // CHECK-DAG: ![[TMPL]] = !{i64 16, i64 12, i64 2328, i64 1}
 template <typename T> struct Tmpl final : Plain { void f() override {} };
 

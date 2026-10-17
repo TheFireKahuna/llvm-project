@@ -2554,11 +2554,10 @@ void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
         VTable, VTLayout,
         VTLayout.getAddressPoint(BaseSubobject(RD, CharUnits::Zero())),
         TagResidue);
-    // A tagged vtable sits at its tag, not in a slot of its primary base's
-    // run, so the calls and downcasts that test the run take their slow path
-    // for its objects.
-    if (!TagResidue)
-      emitVTableHierarchy(CGM, VTable, RD, VTLayout);
+    // A tagged vtable's record tells the linker its primary base, so that it
+    // can place the vtable among its base's run and tell colliding tags of one
+    // hierarchy apart; its pin, not a slot of the run, decides where it sits.
+    emitVTableHierarchy(CGM, VTable, RD, VTLayout);
 
     // Name the address point of each vtable of the group, counted from the
     // start of the group, as getVTableAddressPoint computes it for the bases

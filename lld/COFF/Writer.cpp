@@ -324,6 +324,8 @@ private:
   // Whether packPlacedChunks lays out the pinned and 64-byte-aligned chunks of
   // .rdata.
   bool packRdata = false;
+  // Whether packPlacedChunks laid out the vtable runs.
+  bool runsPacked = false;
   DelayLoadContents delayIdata;
   TypePrefixContents prefixes;
   KCFIContents kcfi;
@@ -830,7 +832,8 @@ void Writer::run() {
     placeImportSlotSections();
     packPlacedChunks();
     placeVTableRuns(ctx, rdataSec,
-                    [&](const SectionChunk *sc) { return slots.isHeldBack(sc); });
+                    [&](const SectionChunk *sc) { return slots.isHeldBack(sc); },
+                    runsPacked);
     createDynamicRelocs();
     removeUnusedSections();
     kcfi.layOut(textSec, rdataSec);
@@ -1182,18 +1185,20 @@ void Writer::createSections() {
   if (Chunk *anchor = ctx.symtab.overrideAnchor)
     createSection(".ovra", data | r)->addChunk(anchor);
 
-  // Pinned and 64-byte-aligned read-only chunks are packed in an image whose
-  // objects pin chunks, as those of a target that places vtables do, where
-  // the layout's page residues are those of the sections' offsets.
+  // Pinned and 64-byte-aligned read-only chunks, and vtable runs, are packed
+  // in an image whose objects pin chunks or lay vtables out in runs, as those
+  // of a target that places vtables do, where the layout's page residues are
+  // those of the sections' offsets.
   const Configuration &config = ctx.config;
   packRdata =
-      !ctx.chunkPins.empty() && config.order.empty() &&
-      config.align % 4096 == 0 &&
+      (!ctx.chunkPins.empty() || !ctx.runChunkRun.empty()) &&
+      config.order.empty() && config.align % 4096 == 0 &&
       !ctx.hybridSymtab && !isArm64EC(config.machine) &&
       llvm::any_of(ctx.driver.getChunks(), [&](Chunk *c) {
         auto *sc = dyn_cast<SectionChunk>(c);
         if (!sc || !sc->live || sc->getOutputCharacteristics() != (data | r) ||
-            !(ctx.chunkPins.contains(sc) || sc->getAlignment() >= 64))
+            !(ctx.chunkPins.contains(sc) || sc->getAlignment() >= 64 ||
+              ctx.runChunkRun.contains(sc)))
           return false;
         return getPartialSectionName(sc, config.mingw) == ".rdata" ||
                slots.isHeldBack(sc);
@@ -1661,12 +1666,66 @@ void Writer::packPlacedChunks() {
     item.align = c->getAlignment();
     if (auto it = ctx.chunkPins.find(c); it != ctx.chunkPins.end())
       item.pin = &it->second;
+    if (auto it = ctx.taggedRun.find(c); it != ctx.taggedRun.end())
+      item.baseRun = &ctx.vtableRuns[it->second];
   };
+
+  // The vtable runs the plan lays out, each one item per slot that the plan
+  // places together at the run's stride, in the directory when a slot is held
+  // back there. A held-back slot whose import slots run on into a neighbour
+  // cannot leave it, so its run is left out, with an empty range.
+  DenseSet<Chunk *> inIat, inPlain;
+  if (iat)
+    inIat.insert(iat->chunks.begin(), iat->chunks.end());
+  if (plain)
+    inPlain.insert(plain->chunks.begin(), plain->chunks.end());
+  DenseSet<Chunk *> continued;
+  for (auto [from, to] : continuedBy) {
+    continued.insert(from);
+    continued.insert(to);
+  }
+  SmallVector<VTableRun *, 0> heldBackRuns, plainRuns;
+  for (VTableRun &run : ctx.vtableRuns) {
+    bool heldBack = false, whole = run.stride != 0;
+    for (const VTableRun::Slot &slot : run.slots) {
+      auto pin = ctx.chunkPins.find(slot.chunk);
+      bool back = inIat.contains(slot.chunk) && slots.isHeldBack(slot.chunk);
+      heldBack |= back;
+      whole &= (inPlain.contains(slot.chunk) || back) &&
+               !(back && continued.contains(slot.chunk)) &&
+               (pin == ctx.chunkPins.end() || !pin->second.required);
+    }
+    if (!whole) {
+      for (const VTableRun::Slot &slot : run.slots)
+        ctx.runChunkRun.erase(slot.chunk);
+      run.stride = 0;
+      continue;
+    }
+    // The plan places these vtables itself, so their advisory line pins,
+    // which would fix them one at a time, give way.
+    for (const VTableRun::Slot &slot : run.slots)
+      ctx.chunkPins.erase(slot.chunk);
+    (heldBack ? heldBackRuns : plainRuns).push_back(&run);
+  }
+  auto addRun = [&](VTableRun *run) {
+    for (auto [i, slot] : llvm::enumerate(run->slots)) {
+      addItem(slot.chunk);
+      items.back().run = run;
+      items.back().slot = i;
+    }
+    // The first slot stands for the whole run.
+    const VTableRun::Slot &first = run->slots.front(), &last = run->slots.back();
+    items[items.size() - run->slots.size()].size =
+        (run->slots.size() - 1) * run->stride + first.apoff - last.apoff +
+        last.chunk->getSize();
+  };
+  auto inRun = [&](Chunk *c) { return ctx.runChunkRun.count(c) != 0; };
+
   size_t numHeldBack = 0;
   if (iat) {
     for (Chunk *c : iat->chunks) {
       auto *sc = dyn_cast<SectionChunk>(c);
-      if (!sc || !slots.isHeldBack(sc))
+      if (!sc || !slots.isHeldBack(sc) || inRun(c))
         continue;
       if (numHeldBack && continuedBy.lookup(items.back().chunks.back()) == c) {
         items.back().chunks.push_back(c);
@@ -1677,9 +1736,16 @@ void Writer::packPlacedChunks() {
       numHeldBack = items.size();
     }
   }
+  for (VTableRun *run : heldBackRuns)
+    addRun(run);
+  numHeldBack = items.size();
   if (plain)
     for (Chunk *c : plain->chunks)
-      addItem(c);
+      if (!inRun(c))
+        addItem(c);
+  for (VTableRun *run : plainRuns)
+    addRun(run);
+  runsPacked = true;
   if (llvm::none_of(items, [](const PackItem &item) { return item.isPlaced(); }))
     return;
 
@@ -1736,15 +1802,21 @@ void Writer::packPlacedChunks() {
     for (size_t i = 0; i != numHeldBack; ++i)
       if (!items[i].isPlaced())
         packer.addFiller(i);
-    std::vector<size_t> order =
-        packer.pack(0, numHeldBack, offsetOf(items[0].chunks.front()));
+    // The directory's packing starts where its first held-back chunk is.
+    Chunk *first = *llvm::find_if(iat->chunks, [&](Chunk *c) {
+      auto *sc = dyn_cast<SectionChunk>(c);
+      return sc && slots.isHeldBack(sc);
+    });
+    std::vector<size_t> order = packer.pack(0, numHeldBack, offsetOf(first));
     for (size_t i = 0; i != numHeldBack; ++i)
       if (!items[i].isPlaced() && packer.takeFiller(i))
         order.push_back(i);
+    // A held-back run's vtables from plain .rdata move into the directory
+    // with it, as fillers do.
     DenseSet<Chunk *> heldBack, movedIn;
     for (size_t i : order)
-      (i < numHeldBack ? heldBack : movedIn)
-          .insert(items[i].chunks.begin(), items[i].chunks.end());
+      for (Chunk *c : items[i].chunks)
+        (i < numHeldBack && inIat.contains(c) ? heldBack : movedIn).insert(c);
     relayout(iat, order, [&](Chunk *c) { return heldBack.contains(c); });
     if (plain) {
       llvm::erase_if(plain->chunks,
@@ -2308,11 +2380,16 @@ void Writer::assignAddresses() {
         if (slot == 0)
           run.anchor = alignTo(rva + virtualSize + apoff - 16, 64) + 16;
         uint64_t start = run.anchor + uint64_t(slot) * run.stride - apoff;
-        c->setRVA(start);
-        virtualSize = start - rva + c->getSize();
-        if (c->hasData)
-          rawSize = alignTo(virtualSize, config->fileAlign);
-        continue;
+        // A plan the layout could not follow, which would overlap what comes
+        // before, leaves the run unplaced, with an empty range.
+        if (start >= rva + virtualSize) {
+          c->setRVA(start);
+          virtualSize = start - rva + c->getSize();
+          if (c->hasData)
+            rawSize = alignTo(virtualSize, config->fileAlign);
+          continue;
+        }
+        run.stride = 0;
       }
       virtualSize = alignTo(virtualSize, c->getAlignment());
       // A pinned chunk starts at its residue, whatever comes before it.

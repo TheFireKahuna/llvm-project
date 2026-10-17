@@ -1,9 +1,11 @@
 # REQUIRES: x86
 
 ## A vtable whose entry is an in-place import slot is held back into the import
-## address table span, so it cannot move into a run; its class takes the slow
-## path with an empty range. A class whose vtable holds no slot is laid out in
-## a run as usual, in the same link.
+## address table directory, and its run is laid out there, the address point
+## 16 bytes into a line as anywhere else. A class whose vtable holds no slot is
+## laid out in a run in plain read-only data, in the same link. A held-back
+## vtable whose slots run on into the next chunk cannot leave it, so its run is
+## left out, with an empty range.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium main.s -o main.obj
@@ -18,15 +20,24 @@
 # CHECK-DAG: [[#B+16]] R __llvm_vtables$1B
 # CHECK-DAG: [[#B+16+64]] R __llvm_vtables_end$1B
 
-## A holds an import slot and is held back near the import address table, so its
-## run is abandoned: its range symbols are an empty range at the image base,
-## which nm does not list, rather than a run address.
-# CHECK-NOT: R __llvm_vtables$1A
+## A holds an import slot and is held back into the directory, where its run
+## is placed: its slot is the first entry of the address table.
+# CHECK-DAG: [[#%x,A:]] R _ZTV1A
+# CHECK-DAG: [[#A+16]] R __llvm_vtables$1A
+# CHECK-DAG: [[#A+16+64]] R __llvm_vtables_end$1A
+# RUN: llvm-readobj --coff-imports out.exe | FileCheck %s --check-prefix=IAT
+# IAT: ImportAddressTableRVA: 0x2010
+
+## C's last entry is a slot whose run continues into the chunk after it, so
+## C's run is an empty range at the image base, which nm does not list.
+# RUN: llvm-nm out.exe | FileCheck %s --check-prefix=CONT
+# CONT-NOT: __llvm_vtables$1C
 
 #--- lib.def
 LIBRARY lib.dll
 EXPORTS
   vf
+  vf2
 
 #--- main.s
   .text
@@ -37,6 +48,8 @@ main:
   movq __llvm_vtables_end$1A(%rip), %rax
   movq __llvm_vtables$1B(%rip), %rax
   movq __llvm_vtables_end$1B(%rip), %rax
+  movq __llvm_vtables$1C(%rip), %rax
+  leaq next(%rip), %rax
   retq
 
   .section .rdata,"dr",discard,_ZTV1A
@@ -56,6 +69,20 @@ _ZTV1B:
   .quad _ZTI1B
   .quad g
   .linkvtable _ZTV1B, 16, "1B", ""
+
+  .section .rdata,"dr",discard,_ZTV1C
+  .globl _ZTV1C
+  .p2align 3
+_ZTV1C:
+  .quad 0
+  .quad _ZTI1A
+  .quad vf
+  .linkvtable _ZTV1C, 16, "1C", ""
+  .section .rdata,"dr",discard,next
+  .globl next
+  .p2align 3
+next:
+  .quad vf2
 
   .section .rdata,"dr",discard,_ZTI1A
   .globl _ZTI1A

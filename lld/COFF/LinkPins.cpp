@@ -137,6 +137,9 @@ uint64_t PackItem::startAt(uint64_t pos) const {
   pos = alignTo(pos, align);
   if (pin)
     pos = alignTo(pos, uint64_t(1) << pin->log2, pin->residue);
+  // A run starts so that its first address point is 16 bytes into a line.
+  if (run)
+    pos = alignTo(pos, 64, (16 - run->slots.front().apoff) % 64);
   return pos;
 }
 
@@ -166,11 +169,18 @@ void RdataPacker::fill(uint64_t &pos, uint64_t end, std::vector<size_t> &out) {
 std::vector<size_t> RdataPacker::pack(size_t begin, size_t end, uint64_t pos) {
   std::vector<size_t> out, pinned;
   std::map<uint32_t, std::deque<size_t>> aligned;
+  // The items of each run's later slots, which follow its first.
+  DenseMap<const VTableRun *, SmallVector<size_t, 0>> runSlots;
   for (size_t i = begin; i != end; ++i) {
-    if (items[i].pin)
+    if (items[i].run) {
+      runSlots[items[i].run].push_back(i);
+      if (items[i].slot == 0)
+        aligned[64].push_back(i);
+    } else if (items[i].pin) {
       pinned.push_back(i);
-    else if (items[i].isPlaced())
+    } else if (items[i].isPlaced()) {
       aligned[items[i].align].push_back(i);
+    }
   }
   for (;;) {
     size_t best = SIZE_MAX;
@@ -199,9 +209,43 @@ std::vector<size_t> RdataPacker::pack(size_t begin, size_t end, uint64_t pos) {
     fill(pos, bestStart, out);
     out.push_back(best);
     pos = bestStart + items[best].size;
-    if (items[best].pin)
+    if (const VTableRun *run = items[best].run) {
+      aligned[64].pop_front();
+      pos = layOutRun(*run, runSlots[run], bestStart, pinned, out);
+    } else if (items[best].pin) {
       llvm::erase(pinned, best);
-    else
+    } else {
       aligned[items[best].align].pop_front();
+    }
   }
+}
+
+// Lays out a run from its first slot's item at start: each later slot the
+// stride past the one before, and in each gap first the tagged vtables of
+// the run's classes that their pins place inside it, then fillers. Returns
+// where the run ends.
+uint64_t RdataPacker::layOutRun(const VTableRun &run, ArrayRef<size_t> slots,
+                                uint64_t start, std::vector<size_t> &pinned,
+                                std::vector<size_t> &out) {
+  uint64_t anchor = start + run.slots.front().apoff;
+  uint64_t pos = start + run.slots.front().chunk->getSize();
+  for (size_t i : slots.drop_front()) {
+    const VTableRun::Slot &slot = run.slots[items[i].slot];
+    uint64_t next = anchor + items[i].slot * run.stride - slot.apoff;
+    for (size_t t : std::vector<size_t>(pinned)) {
+      if (items[t].baseRun != &run)
+        continue;
+      uint64_t at = items[t].startAt(pos);
+      if (at + items[t].size > next)
+        continue;
+      fill(pos, at, out);
+      out.push_back(t);
+      pos = at + items[t].size;
+      llvm::erase(pinned, t);
+    }
+    fill(pos, next, out);
+    out.push_back(i);
+    pos = next + slot.chunk->getSize();
+  }
+  return pos;
 }

@@ -95,11 +95,22 @@ struct ClassNode {
 };
 } // namespace
 
+// A tagged vtable, which a required pin places rather than a slot of its
+// primary base's run.
+struct TaggedVTable {
+  SectionChunk *chunk;
+  uint64_t apoff;
+  StringRef cls;
+  StringRef base;
+};
+
 // Gathers the classes the live records name, keeping one vtable per class. A
 // chunk that holds more than one class's address point is a merged global,
-// whose classes are left out, since its vtables do not each have a slot.
+// whose classes are left out, since its vtables do not each have a slot. A
+// tagged vtable is gathered apart.
 static void gatherClasses(COFFLinkerContext &ctx,
-                          MapVector<StringRef, ClassNode> &classes) {
+                          MapVector<StringRef, ClassNode> &classes,
+                          std::vector<TaggedVTable> &tagged) {
   DenseMap<const Chunk *, unsigned> chunkUses;
   DenseSet<StringRef> merged;
   for (ObjFile *file : ctx.objFileInstances) {
@@ -110,6 +121,11 @@ static void gatherClasses(COFFLinkerContext &ctx,
       if (!vt.onSection)
         apoff += vt.vtable->getValue();
       StringRef name = vt.cls;
+      if (auto pin = ctx.chunkPins.find(vt.vtable->getChunk());
+          pin != ctx.chunkPins.end() && pin->second.required) {
+        tagged.push_back({vt.vtable->getChunk(), apoff, name, vt.base});
+        continue;
+      }
       auto [it, inserted] = classes.try_emplace(
           name, ClassNode{vt.vtable, apoff, vt.base});
       if (inserted)
@@ -165,10 +181,44 @@ void lld::coff::registerVTableRunSymbols(COFFLinkerContext &ctx) {
   });
 }
 
+// Two tagged vtables of one hierarchy whose address points share their page
+// offset share a tag, so that a failing cast between them takes the type_info
+// compare. Tags follow from the classes alone and are never moved, so a
+// program can only rename or restructure; the pairs are listed under /verbose
+// rather than warned about.
+static void reportTagCollisions(COFFLinkerContext &ctx,
+                                MapVector<StringRef, ClassNode> &classes,
+                                std::vector<TaggedVTable> &tagged) {
+  if (!ctx.config.verbose || tagged.size() < 2)
+    return;
+  // The root of a class's primary-base chain, as far as the records go.
+  auto rootOf = [&](StringRef name) {
+    for (unsigned depth = 0; depth != classes.size(); ++depth) {
+      auto it = classes.find(name);
+      if (it == classes.end() || it->second.base.empty())
+        break;
+      name = it->second.base;
+    }
+    return name;
+  };
+  std::map<std::pair<StringRef, uint64_t>, StringRef> seen;
+  for (const TaggedVTable &t : tagged) {
+    const ChunkPin &pin = ctx.chunkPins.find(t.chunk)->second;
+    uint64_t tag = (pin.residue + t.apoff) & 4095;
+    StringRef root = rootOf(t.base.empty() ? t.cls : t.base);
+    auto [it, inserted] = seen.try_emplace({root, tag}, t.cls);
+    if (!inserted && it->second != t.cls)
+      Log(ctx) << "tagged vtables of " << it->second << " and " << t.cls
+               << ", derived from " << root << ", share the tag " << tag;
+  }
+}
+
 void lld::coff::resolveVTableRuns(COFFLinkerContext &ctx) {
   llvm::TimeTraceScope timeScope("Resolve vtable runs");
   MapVector<StringRef, ClassNode> classes;
-  gatherClasses(ctx, classes);
+  std::vector<TaggedVTable> tagged;
+  gatherClasses(ctx, classes, tagged);
+  reportTagCollisions(ctx, classes, tagged);
   if (classes.empty())
     return;
 
@@ -234,17 +284,29 @@ void lld::coff::resolveVTableRuns(COFFLinkerContext &ctx) {
       break;
   }
 
+  // A tagged vtable is offered the gaps of its primary base's run first, so
+  // that a hierarchy's vtables share their pages.
+  StringMap<unsigned> runOf;
+  for (auto [i, run] : llvm::enumerate(ctx.vtableRuns))
+    for (const VTableRun::Class &c : run.classes)
+      runOf[c.name] = i;
+  for (const TaggedVTable &t : tagged)
+    if (auto it = runOf.find(t.base); it != runOf.end())
+      ctx.taggedRun[t.chunk] = it->second;
+
 }
 
 void lld::coff::placeVTableRuns(
     COFFLinkerContext &ctx, OutputSection *rdataSec,
-    llvm::function_ref<bool(const SectionChunk *)> heldBack) {
+    llvm::function_ref<bool(const SectionChunk *)> heldBack, bool packed) {
   if (ctx.vtableOwnerEmpty)
     rdataSec->addChunk(ctx.vtableOwnerEmpty);
   if (ctx.vtableRuns.empty())
     return;
   for (const VTableRun &run : ctx.vtableRuns)
     rdataSec->addChunk(run.maskChunk);
+  if (packed)
+    return;
   std::vector<Chunk *> &chunks = rdataSec->chunks;
   DenseSet<const Chunk *> inRdata(chunks.begin(), chunks.end());
   for (VTableRun &run : ctx.vtableRuns) {
@@ -289,6 +351,7 @@ void lld::coff::placeVTableRuns(
 }
 
 void lld::coff::defineVTableRuns(COFFLinkerContext &ctx) {
+
   // Where the end and the start plus the stride less one of each placed
   // class's run are, which a DLL exports.
   struct PlacedRun {
