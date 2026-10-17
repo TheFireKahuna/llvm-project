@@ -3,6 +3,7 @@
 // RUN: %clang_cc1 -std=c++20 -triple aarch64-unknown-windows-itanium -mdefault-visibility-export-mapping=explicit -emit-llvm -o - %s | FileCheck %s
 // RUN: %clang_cc1 -std=c++20 -triple x86_64-unknown-windows-itanium -mdefault-visibility-export-mapping=explicit -emit-llvm -o - %s | FileCheck %s --check-prefix=ABSENT
 // RUN: %clang_cc1 -std=c++20 -triple x86_64-unknown-windows-itanium -emit-llvm -o - %s | FileCheck %s --check-prefix=NOMAP
+// RUN: %clang_cc1 -std=c++20 -triple x86_64-unknown-windows-itanium -mdefault-visibility-export-mapping=explicit -fno-auto-import -emit-llvm -o - %s | FileCheck %s --check-prefix=NOAUTO
 
 // A native thread-local variable is its image's TLS index plus an offset in
 // that image's TLS template, which another image can know neither of. The
@@ -62,7 +63,8 @@ int use_local() { return use_unmarked; }
 // ABSENT-NOT: @use_const =
 // CHECK-DAG: @"use_plain$tls" = external dllimport constant { ptr, i32, i32 }
 // CHECK-DAG: @"use_const$tls" = external dllimport constant { ptr, i32, i32 }
-// CHECK-DAG: @use_unmarked = external dso_local thread_local global i32
+// CHECK-DAG: @use_unmarked = external thread_local global i32
+// NOAUTO-DAG: @use_unmarked = external dso_local thread_local global i32
 
 // CHECK-LABEL: define linkonce_odr hidden noundef ptr @_ZTW9use_plain()
 // CHECK:       [[IDXP:%.*]] = load ptr, ptr @"use_plain$tls", align 8, !invariant.load
@@ -99,7 +101,10 @@ int use_local() { return use_unmarked; }
 // CHECK-NEXT:  [[VAL:%.*]] = load ptr, ptr [[REF]], align 8
 // CHECK-NEXT:  ret ptr [[VAL]]
 
-// An unmarked declaration is this image's own, as before.
+// An unmarked declaration, under -fauto-import, may be another image's
+// variable, which the back end reaches through its record; the wrapper runs
+// the init function if there is one, as on ELF. Without -fauto-import it is
+// this image's own.
 // CHECK-LABEL: define linkonce_odr hidden noundef ptr @_ZTW12use_unmarked()
 // CHECK:       call {{.*}} @llvm.threadlocal.address.p0(ptr align 4 @use_unmarked)
 // CHECK:       declare dllimport void @_ZTH9use_plain()

@@ -1036,6 +1036,20 @@ public:
 
   void setDSOLocal(llvm::GlobalValue *GV) const;
 
+  /// A native thread-local variable on PE is its image's TLS index plus an
+  /// offset in that image's TLS template, and another image can know neither.
+  /// So on Windows Itanium and NT-POSIX, on x86-64 and AArch64, code reaches a
+  /// thread-local variable that another image may define through a record of
+  /// the wrapper's inputs, which that image exports in place of the variable:
+  /// the address of the image's _tls_index, the variable's offset and the
+  /// offset of the byte that guards its initialization.
+  bool hasThreadLocalRecords() const {
+    const llvm::Triple &T = getTriple();
+    return T.isWindowsItaniumOrNTPOSIXEnvironment() &&
+           (T.getArch() == llvm::Triple::x86_64 ||
+            T.getArch() == llvm::Triple::aarch64);
+  }
+
   /// On Windows Itanium and NT-POSIX a C thread-local that the visibility
   /// mapping exports has a record, which the C++ ABI emits with those of C++
   /// thread-locals.

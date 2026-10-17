@@ -2378,9 +2378,11 @@ static bool shouldAssumeDSOLocal(const CodeGenModule &CGM,
     // With EmulatedTLS, TLS variables can be autoimported from other DLLs
     // (and this actually happens in the public interface of libstdc++), so
     // such variables can't be marked as DSO local. (Native TLS variables
-    // can't be dllimported at all, though.)
+    // can't be dllimported at all, though.) Windows Itanium and NT-POSIX
+    // reach a native one through the record of its image.
     if (GV->isDeclarationForLinker() && isa<llvm::GlobalVariable>(GV) &&
-        (!GV->isThreadLocal() || CGM.getCodeGenOpts().EmulatedTLS) &&
+        (!GV->isThreadLocal() || CGM.getCodeGenOpts().EmulatedTLS ||
+         CGM.hasThreadLocalRecords()) &&
         CGOpts.AutoImport)
       return false;
   }
@@ -2582,10 +2584,12 @@ void CodeGenModule::setGVPropertiesAux(llvm::GlobalValue *GV,
   // instance along import paths, as ELF gives it one per process: code reaches
   // it through its import pointer, which the linker binds to the instance of a
   // DLL the image imports it from, or relaxes when the image keeps its own.
-  // Its guard follows it.
+  // Code reaches a thread-local one through its record alike. Its guard
+  // follows it.
   if (const auto *VD = dyn_cast_or_null<VarDecl>(D);
       VD && GV->isDSOLocal() && GV->isWeakForLinker() &&
-      GV->hasDefaultVisibility() && !VD->getTLSKind() &&
+      GV->hasDefaultVisibility() &&
+      (!VD->getTLSKind() || hasThreadLocalRecords()) &&
       getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
     GV->setDSOLocal(false);
   GV->setPartition(CodeGenOpts.SymbolPartition);

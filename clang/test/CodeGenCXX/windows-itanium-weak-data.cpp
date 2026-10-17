@@ -14,8 +14,8 @@
 /// its import pointer, and neither is its guard. Its dynamic initializer is in
 /// its COMDAT, so that the linker discards it with a copy that a DLL's
 /// instance preempts, and the variable is kept through the link as the key of
-/// its initializer. Thread-local and hidden variables, and definitions with
-/// unique linkage, stay dso_local.
+/// its initializer. A thread-local one is reached through its record alike.
+/// Hidden variables, and definitions with unique linkage, stay dso_local.
 
 int f();
 struct S { int n; S() : n(f()) {} };
@@ -40,7 +40,7 @@ int use() {
 // CHECK-DAG: @_ZGVN1AIiE1mE = linkonce_odr global i64 0, comdat
 // CHECK-DAG: @_ZZ3locvE1x = linkonce_odr global i32 0, comdat
 // CHECK-DAG: @_ZGVZ3locvE1x = linkonce_odr global i64 0, comdat
-// CHECK-DAG: @tls = linkonce_odr dso_local thread_local global i32 4, comdat
+// CHECK-DAG: @tls = linkonce_odr thread_local global i32 4, comdat
 // CHECK-DAG: @hidden = linkonce_odr hidden global i32 5, comdat
 // CHECK-DAG: @strong = dso_local global i32 6
 // CHECK-DAG: @llvm.global_ctors = appending global [2 x { i32, ptr, ptr }] [{ i32, ptr, ptr } { i32 65535, ptr @__cxx_global_var_init, ptr @s }, { i32, ptr, ptr } { i32 65535, ptr @__cxx_global_var_init.1, ptr @_ZN1AIiE1mE }]
@@ -54,6 +54,7 @@ int use() {
 // ASM-DAG:   movq __imp_iv(%rip),
 // ASM-DAG:   movq __imp__ZN1AIiE1mE(%rip),
 // ASM-DAG:   movq __imp__ZGVZ3locvE1x(%rip),
+// ASM-DAG:   movq __imp_tls$tls(%rip),
 // ASM-DAG:   addl hidden(%rip),
 // ASM-DAG:   addl strong(%rip),
 

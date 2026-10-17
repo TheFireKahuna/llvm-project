@@ -432,7 +432,6 @@ public:
   getOrCreateVirtualFunctionPointerThunk(const CXXMethodDecl *MD);
 
 private:
-  bool hasThreadLocalRecords() const;
   bool hasThreadLocalRecord(const VarDecl *VD,
                             const llvm::GlobalVariable *Var) const;
   bool isImportedThreadLocal(const VarDecl *VD) const;
@@ -3346,33 +3345,20 @@ ItaniumCXXABI::getOrCreateThreadLocalWrapper(const VarDecl *VD,
   return Wrapper;
 }
 
-// A native thread-local variable on PE is its image's TLS index plus an offset
-// in that image's TLS template, and another image can know neither. So an
-// image that defines a thread-local variable another image may use exports, in
-// place of the variable, a record of the wrapper's inputs: the address of the
-// image's _tls_index, the variable's offset and the offset of the byte that
-// guards its initialization. An importer's wrapper reads the record and does
-// what the defining image's wrapper does.
-bool ItaniumCXXABI::hasThreadLocalRecords() const {
-  const llvm::Triple &T = CGM.getTriple();
-  return T.isWindowsItaniumOrNTPOSIXEnvironment() &&
-         (T.getArch() == llvm::Triple::x86_64 ||
-          T.getArch() == llvm::Triple::aarch64);
-}
-
-// A definition has a record when the visibility mapping would export it. A
-// discardable one keeps an instance per image, as no image can promise it.
+// A definition has a record when the visibility mapping would export it. The
+// linker writes the record of any other, where a reference, an export or an
+// offer needs one.
 bool ItaniumCXXABI::hasThreadLocalRecord(
     const VarDecl *VD, const llvm::GlobalVariable *Var) const {
-  return hasThreadLocalRecords() && CGM.shouldMapVisibilityToDLLExport(VD) &&
-         !Var->isDeclaration() && !Var->hasLocalLinkage() &&
-         !Var->hasLinkOnceLinkage();
+  return CGM.hasThreadLocalRecords() &&
+         CGM.shouldMapVisibilityToDLLExport(VD) && !Var->isDeclaration() &&
+         !Var->hasLocalLinkage() && !Var->hasLinkOnceLinkage();
 }
 
 // A declaration takes the record when an explicit default visibility marks it
 // as another image's, as it does a declaration of any other variable.
 bool ItaniumCXXABI::isImportedThreadLocal(const VarDecl *VD) const {
-  return hasThreadLocalRecords() && VD->getTLSKind() != VarDecl::TLS_None &&
+  return CGM.hasThreadLocalRecords() && VD->getTLSKind() != VarDecl::TLS_None &&
          !VD->hasDefinition() && VD->isExternallyVisible() &&
          CGM.isMappedImportVisibility(VD->getLinkageAndVisibility());
 }
@@ -3661,9 +3647,13 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
 
     if (Init) {
       Init->setVisibility(Var->getVisibility());
-      // Don't mark an extern_weak function DSO local on windows.
+      // Don't mark an extern_weak function DSO local on windows. Where
+      // another image's instance of the variable may stand in for this one,
+      // reached through its record, the init function defined here stays the
+      // image's own.
       if (!CGM.getTriple().isOSWindows() || !Init->hasExternalWeakLinkage())
-        Init->setDSOLocal(Var->isDSOLocal());
+        Init->setDSOLocal(Var->isDSOLocal() || (CGM.hasThreadLocalRecords() &&
+                                                !Init->isDeclaration()));
     }
 
     llvm::LLVMContext &Context = CGM.getModule().getContext();
@@ -3690,18 +3680,30 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
         Func->setComdat(Var->getComdat());
         emitThreadLocalRecord(Var, /*Guard=*/nullptr, Func);
       }
-    } else if (HasRecord && Init) {
-      // The guard is the translation unit's for ordered initialization, and
-      // the variable's own for a template instantiation.
-      llvm::GlobalVariable *Guard = InitGuard;
-      if (isTemplateInstantiation(VD->getTemplateSpecializationKind())) {
-        SmallString<256> GuardName;
-        llvm::raw_svector_ostream Out(GuardName);
-        getMangleContext().mangleStaticGuardVariable(VD, Out);
-        Guard = CGM.getModule().getNamedGlobal(GuardName);
-      }
-      if (Guard)
+    } else if (InitIsInitFunc && Init &&
+               (HasRecord ||
+                (CGM.hasThreadLocalRecords() && !Var->hasLocalLinkage() &&
+                 Var->hasDefaultVisibility()))) {
+      // The guard is the variable's own, which a template instantiation and
+      // an inline variable have, and otherwise the translation unit's for
+      // ordered initialization.
+      SmallString<256> GuardName;
+      llvm::raw_svector_ostream Out(GuardName);
+      getMangleContext().mangleStaticGuardVariable(VD, Out);
+      llvm::GlobalVariable *Guard = CGM.getModule().getNamedGlobal(GuardName);
+      if (!Guard &&
+          !isTemplateInstantiation(VD->getTemplateSpecializationKind()))
+        Guard = InitGuard;
+      if (Guard && HasRecord) {
         emitThreadLocalRecord(Var, Guard, Init);
+      } else if (Guard && Guard == InitGuard) {
+        // Another unit or image may reach the variable through a record that
+        // the linker writes, which names the guard by the name the Itanium
+        // ABI gives the variable's own.
+        auto *Alias =
+            llvm::GlobalAlias::create(Var->getLinkage(), GuardName, InitGuard);
+        Alias->setVisibility(llvm::GlobalValue::HiddenVisibility);
+      }
     }
 
     llvm::BasicBlock *Entry = llvm::BasicBlock::Create(Context, "", Wrapper);
