@@ -1,0 +1,6 @@
+LIBRARY KERNEL32.dll
+EXPORTS
+    ; The app model's policy queries, under names of wincrt's own, so that
+    ; wincrt's imports of them name kernel32.dll whatever else is linked.
+    __wincrt_AppPolicyGetProcessTerminationMethod EXPORTAS AppPolicyGetProcessTerminationMethod
+    __wincrt_AppPolicyGetThreadInitializationType EXPORTAS AppPolicyGetThreadInitializationType

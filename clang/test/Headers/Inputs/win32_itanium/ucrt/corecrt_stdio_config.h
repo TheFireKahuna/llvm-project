@@ -1,8 +1,12 @@
 // A stand-in for the UCRT's corecrt_stdio_config.h, which defines the stdio
-// option functions __inline.
+// option functions __inline, and selects inline definitions or declarations of
+// the formatted I/O functions.
 #pragma once
 #include <corecrt.h>
-#ifndef _CRT_STDIO_INLINE
+#if defined(_NO_CRT_STDIO_INLINE)
+#undef _CRT_STDIO_INLINE
+#define _CRT_STDIO_INLINE
+#elif !defined(_CRT_STDIO_INLINE)
 #define _CRT_STDIO_INLINE __inline
 #endif
 #if defined(_CRT_STDIO_ISO_WIDE_SPECIFIERS) &&                                 \

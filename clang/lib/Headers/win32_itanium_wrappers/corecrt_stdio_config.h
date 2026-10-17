@@ -18,6 +18,24 @@
 #define _CRT_STDIO_ISO_WIDE_SPECIFIERS
 #endif
 
+/* The UCRT defines printf, scanf and the rest of its formatted I/O inline in
+ * these headers, and no DLL of it exports them. The compiler runtime defines
+ * and exports them, and they are declared imported from it, so that a program
+ * has one definition of each, as on other targets. A translation unit that
+ * defines _CRT_STDIO_INLINE itself keeps the inline definitions. */
+#if !defined(_CRT_STDIO_INLINE)
+#define __CLANG_UCRT_STDIO_IMPORT
+#ifndef _NO_CRT_STDIO_INLINE
+#define _NO_CRT_STDIO_INLINE
+#endif
+#endif
+
 #include_next <corecrt_stdio_config.h>
+
+#ifdef __CLANG_UCRT_STDIO_IMPORT
+#undef __CLANG_UCRT_STDIO_IMPORT
+#undef _CRT_STDIO_INLINE
+#define _CRT_STDIO_INLINE __declspec(dllimport)
+#endif
 
 #endif /* __CLANG_CORECRT_STDIO_CONFIG_H */

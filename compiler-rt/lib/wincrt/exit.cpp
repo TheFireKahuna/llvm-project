@@ -22,7 +22,6 @@
 
 #include "wincrt.h"
 
-#include <appmodel.h>
 #include <process.h>
 
 // Exported by ntdll; no SDK header declares it.
@@ -40,8 +39,8 @@ bool shouldTerminateProcess() {
     return false;
   AppPolicyProcessTerminationMethod Policy =
       AppPolicyProcessTerminationMethod_ExitProcess;
-  AppPolicyGetProcessTerminationMethod(GetCurrentThreadEffectiveToken(),
-                                       &Policy);
+  __wincrt_AppPolicyGetProcessTerminationMethod(
+      GetCurrentThreadEffectiveToken(), &Policy);
   // FLG_APPLICATION_VERIFIER, which no SDK header defines.
   constexpr ULONG ApplicationVerifier = 0x100;
   return Policy == AppPolicyProcessTerminationMethod_TerminateProcess &&
