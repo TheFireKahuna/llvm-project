@@ -311,6 +311,10 @@ void lld::coff::placeVTableRuns(
     return;
   std::vector<Chunk *> &chunks = rdataSec->chunks;
   DenseSet<const Chunk *> inRdata(chunks.begin(), chunks.end());
+  // The run each vtable of a whole run belongs to, so one pass over the section
+  // places every run, instead of a search and an erase over every chunk per
+  // run.
+  DenseMap<const Chunk *, VTableRun *> memberRun;
   for (VTableRun &run : ctx.vtableRuns) {
     // A run the linker places needs all its vtables in plain read-only data,
     // laid out as consecutive slots. A vtable held back into the import
@@ -332,24 +336,30 @@ void lld::coff::placeVTableRuns(
     }
     // The writer places these vtables itself, so their advisory line pins,
     // which would fix them one at a time, give way.
-    for (const VTableRun::Slot &slot : run.slots)
+    for (const VTableRun::Slot &slot : run.slots) {
       ctx.chunkPins.erase(slot.chunk);
-    DenseSet<const Chunk *> members;
-    for (const VTableRun::Slot &slot : run.slots)
-      members.insert(slot.chunk);
-    size_t at = chunks.size();
-    for (size_t i = 0; i != chunks.size(); ++i)
-      if (members.contains(chunks[i])) {
-        at = i;
-        break;
-      }
-    llvm::erase_if(chunks, [&](Chunk *c) { return members.contains(c); });
-    std::vector<Chunk *> ordered;
-    for (const VTableRun::Slot &slot : run.slots)
-      ordered.push_back(slot.chunk);
-    chunks.insert(chunks.begin() + std::min(at, chunks.size()), ordered.begin(),
-                  ordered.end());
+      memberRun[slot.chunk] = &run;
+    }
   }
+  if (memberRun.empty())
+    return;
+  // Lay each whole run's vtables out together where its first vtable sits in
+  // the section, in slot order, leaving every other chunk in place.
+  std::vector<Chunk *> placed;
+  placed.reserve(chunks.size());
+  DenseSet<VTableRun *> emitted;
+  for (Chunk *c : chunks) {
+    auto it = memberRun.find(c);
+    if (it == memberRun.end()) {
+      placed.push_back(c);
+      continue;
+    }
+    if (!emitted.insert(it->second).second)
+      continue;
+    for (const VTableRun::Slot &slot : it->second->slots)
+      placed.push_back(slot.chunk);
+  }
+  chunks = std::move(placed);
 }
 
 void lld::coff::defineVTableRuns(COFFLinkerContext &ctx) {
