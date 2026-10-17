@@ -189,6 +189,15 @@ public:
   // that DLL.
   void addOffers();
 
+  // In a DLL linked under -import-slots, reports each export that is a strong
+  // definition of an overridable default: only the executable replaces a
+  // default for every image of the program.
+  void checkOverridableExports();
+
+  // The names of the overridable defaults that inputs define, from their
+  // /overridable: directives.
+  llvm::DenseSet<StringRef> overridables;
+
   // The name of the epoch export of the entities the image keeps, if any.
   StringRef offersEpoch;
   llvm::MapVector<Symbol *, DefinedImportData *> offeredFunctions;

@@ -1002,6 +1002,29 @@ void SymbolTable::bindOfferedFunctions() {
     forwardExports([&](Symbol *s) { return offeredFunctions.lookup(s); });
 }
 
+void SymbolTable::checkOverridableExports() {
+  if (overridables.empty())
+    return;
+  for (const Export &e : exports) {
+    if (!e.sym || !overridables.contains(e.sym->getName()))
+      continue;
+    // The runtime's default is a weak definition, the fallback that the
+    // executable's replacement supersedes, so exporting it is what makes it
+    // the default of every image. Its definition is the weak external's
+    // .weak.<name>.* alias, or a weak definition from bitcode.
+    Symbol *def = e.sym;
+    if (auto *u = dyn_cast<Undefined>(def))
+      def = u->getWeakAlias();
+    auto *d = dyn_cast_or_null<Defined>(def);
+    if (!d || d->isWeak || d->getName().starts_with(".weak."))
+      continue;
+    Err(ctx) << d->getFile() << ": the DLL exports " << printSymbol(d)
+             << ", which replaces an overridable default for this DLL and its "
+                "importers only; replace it in the executable, which replaces "
+                "it for every image, or give the definition hidden visibility";
+  }
+}
+
 /// Helper function for reportUnresolvable and resolveRemainingUndefines.
 /// This function emits an "undefined symbol" diagnostic for each symbol in
 /// undefs. If localImports is not nullptr, it also emits a "locally
