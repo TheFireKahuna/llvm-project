@@ -1376,6 +1376,9 @@ bool SymbolTable::loadOverrideOffers() {
   for (auto &pair : symMap)
     if (pair.second->getName().starts_with(overrideOfferPrefix))
       offers.push_back(pair.second->getName());
+  // Rooting a lazy offer loads its member, so the order is by name, not by the
+  // table's hashing.
+  llvm::sort(offers);
   bool pulled = false;
   for (StringRef offer : offers) {
     StringRef name = offer.drop_front(overrideOfferPrefix.size());
