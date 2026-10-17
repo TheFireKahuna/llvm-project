@@ -214,6 +214,11 @@ public:
   void parseLazy();
   MachineTypes getMachineType() const override;
   ArrayRef<Chunk *> getChunks() { return chunks; }
+  // The chunk of the section numbered sectionNumber, or null if the object
+  // has no such section or did not keep it. Only an object with link-only
+  // records keeps the index after initialization, since only its records
+  // name sections by number.
+  SectionChunk *getSectionChunk(uint32_t sectionNumber) const;
   ArrayRef<SectionChunk *> getDebugChunks() { return debugChunks; }
   ArrayRef<SectionChunk *> getSXDataChunks() { return sxDataChunks; }
   ArrayRef<SectionChunk *> getGuardFidChunks() { return guardFidChunks; }
@@ -608,7 +613,8 @@ private:
   // indexed such that you can get a SectionChunk by section index.
   // Nonexistent section indices are filled with null pointers.
   // (Because section number is 1-based, the first slot is always a
-  // null pointer.) This vector is only valid during initialization.
+  // null pointer.) This vector is only valid during initialization, but for
+  // an object with link-only records.
   std::vector<SectionChunk *> sparseChunks;
 
   DWARFCache *dwarf = nullptr;

@@ -526,6 +526,13 @@ const coff_section *ObjFile::getSection(uint32_t i) {
 // valid SectionChunk for that section.
 static SectionChunk *const pendingComdat = reinterpret_cast<SectionChunk *>(1);
 
+SectionChunk *ObjFile::getSectionChunk(uint32_t sectionNumber) const {
+  if (sectionNumber >= sparseChunks.size() ||
+      sparseChunks[sectionNumber] == pendingComdat)
+    return nullptr;
+  return sparseChunks[sectionNumber];
+}
+
 void ObjFile::initializeChunks() {
   uint32_t numSections = coffObj->getNumberOfSections();
   sparseChunks.resize(numSections + 1);
@@ -1629,7 +1636,8 @@ void ObjFile::initializeSymbols() {
   }
 
   // Free the memory used by sparseChunks now that symbol loading is finished.
-  decltype(sparseChunks)().swap(sparseChunks);
+  if (!linkRecords)
+    decltype(sparseChunks)().swap(sparseChunks);
 }
 
 Symbol *ObjFile::createUndefined(COFFSymbolRef sym, bool overrideLazy) {

@@ -197,11 +197,10 @@ static void solve(Relaxation &r, ArrayRef<uint8_t> data) {
 // Decides how to lay out the code of sc, a covered chunk, or leaves it as it
 // is: where nothing changes size, or where the new layout leaves a value the
 // object describes out of its field's range, or in bytes the linker
-// rewrites. values are the values that measure sc's code, and chunks the
-// file's sections by number. Sets *misfit where a value leaves sc as it is.
+// rewrites. values are the values that measure sc's code. Sets *misfit where
+// a value leaves sc as it is.
 static bool relax(COFFLinkerContext &ctx, SectionChunk *sc,
                   ArrayRef<const ObjFile::LinkCoverage *> values,
-                  const DenseMap<uint32_t, SectionChunk *> &chunks,
                   bool *misfit) {
   ObjFile *file = sc->file;
   ArrayRef<uint8_t> data = sc->getContents();
@@ -251,7 +250,7 @@ static bool relax(COFFLinkerContext &ctx, SectionChunk *sc,
   // Each value must fit its field, and lie outside every rewritten
   // instruction but a jump that keeps its form, which it is a part of.
   for (const ObjFile::LinkCoverage *c : values) {
-    SectionChunk *field = chunks.lookup(c->field);
+    SectionChunk *field = file->getSectionChunk(c->field);
     if (!field || !field->live)
       continue;
     if (field == sc) {
@@ -283,10 +282,6 @@ void relaxSections(COFFLinkerContext &ctx) {
   for (ObjFile *file : ctx.objFileInstances) {
     if (!file->hasLinkCoverage())
       continue;
-    DenseMap<uint32_t, SectionChunk *> chunks;
-    for (Chunk *c : file->getChunks())
-      if (auto *sc = dyn_cast<SectionChunk>(c))
-        chunks[sc->getSectionNumber()] = sc;
     DenseMap<uint32_t, SmallVector<const ObjFile::LinkCoverage *, 0>> values;
     for (const ObjFile::LinkCoverage &c : file->getAllLinkCoverage())
       if (c.type == LinkCoverageDifference || c.type == LinkCoveragePCRelative)
@@ -300,7 +295,7 @@ void relaxSections(COFFLinkerContext &ctx) {
       if (auto it = values.find(sc->getSectionNumber()); it != values.end())
         chunkValues = it->second;
       bool misfit = false;
-      if (relax(ctx, sc, chunkValues, chunks, &misfit)) {
+      if (relax(ctx, sc, chunkValues, &misfit)) {
         ++relaxed;
         saved += int64_t(sc->getContents().size()) - ctx.relaxations[sc].size;
       } else {
