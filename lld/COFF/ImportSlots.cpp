@@ -12,6 +12,7 @@
 #include "InputFiles.h"
 #include "KCFI.h"
 #include "LocalImports.h"
+#include "OverrideTable.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
 #include "Writer.h"
@@ -1181,6 +1182,35 @@ void ImportSlotContents::createResidualFill() {
     residualFillUnwind = unwind;
     residualFillPdata = make<ResidualFillPdataChunk>(ctx, fill, unwind);
   }
+}
+
+void ImportSlotContents::createOverrideCellFill() {
+  // A word that holds an overridable default's address is a cell: an in-place
+  // import slot the loader fills with the runtime's entry, which the fill
+  // overwrites with the program's replacement from the executable's table. A
+  // writable cell is filled in place, with no section to re-seal.
+  std::vector<OverrideCell> cells;
+  for (auto &[sc, slots] : ctx.importSlots) {
+    if (!(sc->header->Characteristics & llvm::COFF::IMAGE_SCN_MEM_WRITE))
+      continue;
+    for (const ImportSlot &slot : slots) {
+      StringRef name = slot.sym->getName().drop_front(strlen("__imp_"));
+      if (std::optional<uint32_t> k = ctx.symtab.overrideImportSlot(name))
+        cells.push_back({const_cast<SectionChunk *>(sc), slot.offset, *k});
+    }
+  }
+  if (cells.empty())
+    return;
+  llvm::stable_sort(cells, [](const OverrideCell &a, const OverrideCell &b) {
+    return a.slot < b.slot;
+  });
+  auto *fill = make<OverrideCellFillChunk>(ctx, std::move(cells));
+  overrideCellFill = fill;
+  // The fill runs from the image's first TLS callback, before any of its own
+  // code, so a constructor or constinit datum that names a default's address
+  // already observes the program's replacement.
+  overrideCellFillPointer = make<LocalImportChunk>(
+      ctx, make<DefinedSynthetic>("__llvm_override_cell_fill", fill));
 }
 
 // The loader writes an in-place import slot with an absolute address, makes

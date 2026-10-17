@@ -1069,20 +1069,33 @@ bool SymbolTable::loadOverrideOffers() {
 }
 
 bool SymbolTable::loadOverrideRecords() {
-  if (!ctx.config.importSlots || ctx.config.dll || ctx.hybridSymtab ||
-      isEC() || (overridables.empty() && overrideOffers.empty()) ||
+  if (!ctx.config.importSlots || ctx.hybridSymtab || isEC() ||
       overrideRecordsLoaded)
     return false;
-  // The records member is a regular member of the C++ runtime's import or
-  // static library, loaded only when a link replaces a default. It is pulled
-  // by its format-version symbol, which defines every slot alongside it. A
-  // link whose runtime does not carry it, such as a freestanding one that
-  // happens to define a replaceable function, has nothing to override.
-  if (!find("__ovr_version") || !find("__ovr_version")->isLazy())
+  // The records member defines every slot. The executable pulls it to replace
+  // a default or select an offer; a DLL pulls it so its own fill can learn the
+  // slot of each default whose address it imports, the cell it fills from the
+  // executable's table. It is pulled by its format-version symbol, which
+  // defines every slot alongside it, and adds only absolute symbols and no
+  // image bytes, so an image that needs no slot pays nothing. A link whose
+  // runtime does not carry it, such as a freestanding one, has none to bind.
+  if (!ctx.config.dll && overridables.empty() && overrideOffers.empty())
+    return false;
+  Symbol *version = find("__ovr_version");
+  if (!version || !version->isLazy())
     return false;
   overrideRecordsLoaded = true;
   addGCRoot("__ovr_version");
   return true;
+}
+
+std::optional<uint32_t> SymbolTable::overrideImportSlot(StringRef name) {
+  if (!overrideRecordsLoaded)
+    return std::nullopt;
+  if (auto *a =
+          dyn_cast_or_null<DefinedAbsolute>(find(("__ovr_slot$" + name).str())))
+    return uint32_t(a->getVA());
+  return std::nullopt;
 }
 
 void SymbolTable::resolveOverridableReplacements() {
