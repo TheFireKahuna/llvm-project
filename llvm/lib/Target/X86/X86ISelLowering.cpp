@@ -32860,6 +32860,53 @@ FindSingleBitChange(const Value *V) {
   return {nullptr, UndefBit};
 }
 
+/// Whether \p AI's one use reads, at bit 0, only the bit its single-bit
+/// operand \p BitChange changes: a logical shift right of the result by the
+/// bit's position, every user of which is a truncation to i1 or an AND with
+/// 1, or for bit 0 a truncation of the result itself to i1. InstCombine gives
+/// the test (AtomicRMW(P, M) & M) != 0 of a single-bit M these forms.
+static bool
+isSingleBitShiftTest(const AtomicRMWInst *AI,
+                     std::pair<const Value *, BitTestKind> BitChange) {
+  using namespace llvm::PatternMatch;
+  if (BitChange.second == UndefBit || !AI->hasOneUse() ||
+      AI->getType()->getPrimitiveSizeInBits() == 8)
+    return false;
+  auto ReadsBitZero = [](const User *U, const Value *Of) {
+    if (auto *Trunc = dyn_cast<TruncInst>(U))
+      return Trunc->getDestTy()->isIntegerTy(1);
+    return match(U, m_c_And(m_Specific(Of), m_One()));
+  };
+  const Instruction *Read = AI->user_back();
+  if (Read->getParent() != AI->getParent())
+    return false;
+  const Value *Amount;
+  if (match(Read, m_LShr(m_Specific(AI), m_Value()))) {
+    if (!all_of(Read->users(),
+                [&](const User *U) { return ReadsBitZero(U, Read); }))
+      return false;
+    Amount = peekThroughTrivialPHI(Read->getOperand(1));
+  } else {
+    // Bit 0 is read in place: an AND with 1 is the plain AND test.
+    if (!isa<TruncInst>(Read) || !ReadsBitZero(Read, AI))
+      return false;
+    Amount = ConstantInt::get(AI->getType(), 0);
+  }
+  if (BitChange.second == ShiftBit || BitChange.second == NotShiftBit) {
+    // The shift amount, read past the mask a shift may carry, as for the bit.
+    Value *Masked;
+    uint64_t ShiftMask = AI->getType()->getPrimitiveSizeInBits() - 1;
+    if (match(Amount, m_c_And(m_Value(Masked), m_SpecificInt(ShiftMask))))
+      Amount = peekThroughTrivialPHI(Masked);
+    return Amount == BitChange.first;
+  }
+  // A constant bit: the shift is by its position.
+  APInt Bit = cast<ConstantInt>(BitChange.first)->getValue();
+  if (BitChange.second == NotConstantBit)
+    Bit = ~Bit;
+  return match(Amount, m_SpecificInt(Bit.countr_zero()));
+}
+
 TargetLowering::AtomicExpansionKind
 X86TargetLowering::shouldExpandLogicAtomicRMWInIR(
     const AtomicRMWInst *AI) const {
@@ -32878,12 +32925,19 @@ X86TargetLowering::shouldExpandLogicAtomicRMWInIR(
 
   // If the atomicrmw's result is used by a single bit AND, we may use
   // bts/btr/btc instruction for these operations.
-  // Note: InstCombinePass can cause a de-optimization here. It replaces the
-  // SETCC(And(AtomicRMW(P, power_of_2), power_of_2)) with LShr and Xor
-  // (depending on CC). This pattern can only use bts/btr/btc but we don't
-  // detect it.
   const Instruction *I = AI->user_back();
   auto BitChange = FindSingleBitChange(AI->getValOperand());
+
+  // The test of the bit shifted down to bit 0: an atomic AND must clear the
+  // one bit, an OR or XOR set or flip it.
+  if (isSingleBitShiftTest(AI, BitChange)) {
+    bool Not =
+        BitChange.second == NotShiftBit || BitChange.second == NotConstantBit;
+    return Not == (AI->getOperation() == AtomicRMWInst::And)
+               ? AtomicExpansionKind::BitTestIntrinsic
+               : AtomicExpansionKind::CmpXChg;
+  }
+
   if (BitChange.second == UndefBit || !AI->hasOneUse() ||
       I->getOpcode() != Instruction::And ||
       AI->getType()->getPrimitiveSizeInBits() == 8 ||
@@ -32970,12 +33024,18 @@ void X86TargetLowering::emitBitTestAtomicRMWIntrinsic(AtomicRMWInst *AI) const {
   assert(BitTested.first != nullptr);
 
   if (BitTested.second == ConstantBit || BitTested.second == NotConstantBit) {
-    auto *C = cast<ConstantInt>(
-        peekThroughTrivialPHI(I->getOperand(I->getOperand(0) == AI ? 1 : 0)));
-
-    unsigned Imm = llvm::countr_zero(C->getZExtValue());
+    APInt Bit = cast<ConstantInt>(BitTested.first)->getValue();
+    if (BitTested.second == NotConstantBit)
+      Bit = ~Bit;
+    unsigned Imm = Bit.countr_zero();
     Result = Builder.CreateIntrinsic(IID_C, {AI->getType(), Addr->getType()},
                                      {Addr, Builder.getInt8(Imm)});
+    // The bit in its place; a shift of it down to bit 0 takes it there, and a
+    // truncation of bit 0 reads it.
+    if (I->getOpcode() == Instruction::LShr)
+      Result = Builder.CreateLShr(Result, Imm);
+    else if (isa<TruncInst>(I))
+      Result = Builder.CreateTrunc(Result, I->getType());
   } else {
     assert(BitTested.second == ShiftBit || BitTested.second == NotShiftBit);
 
@@ -32996,6 +33056,15 @@ void X86TargetLowering::emitBitTestAtomicRMWIntrinsic(AtomicRMWInst *AI) const {
     Result = Builder.CreateIntrinsic(IID_I, {Addr->getType(), AI->getType()},
                                      {Addr, BitPos});
     Result = Builder.CreateZExtOrTrunc(Result, AI->getType());
+
+    // A shift of the old value's bit down to bit 0, read only there: the bit
+    // the instruction returns.
+    if (I->getOpcode() == Instruction::LShr) {
+      I->replaceAllUsesWith(Result);
+      I->eraseFromParent();
+      AI->eraseFromParent();
+      return;
+    }
 
     // If the result is only used for zero/non-zero status then we don't need to
     // shift value back. Otherwise do so.

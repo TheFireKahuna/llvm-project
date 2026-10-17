@@ -3570,37 +3570,17 @@ define zeroext i16 @atomic_shl1_or_16_const_valnz(ptr %v) nounwind {
 ; X86-LABEL: atomic_shl1_or_16_const_valnz:
 ; X86:       # %bb.0: # %entry
 ; X86-NEXT:    movl {{[0-9]+}}(%esp), %ecx
-; X86-NEXT:    movzwl (%ecx), %eax
-; X86-NEXT:    .p2align 4
-; X86-NEXT:  .LBB55_1: # %atomicrmw.start
-; X86-NEXT:    # =>This Inner Loop Header: Depth=1
-; X86-NEXT:    movl %eax, %edx
-; X86-NEXT:    orl $16, %edx
-; X86-NEXT:    # kill: def $ax killed $ax killed $eax
-; X86-NEXT:    lock cmpxchgw %dx, (%ecx)
-; X86-NEXT:    # kill: def $ax killed $ax def $eax
-; X86-NEXT:    jne .LBB55_1
-; X86-NEXT:  # %bb.2: # %atomicrmw.end
-; X86-NEXT:    shrl $4, %eax
-; X86-NEXT:    andl $1, %eax
+; X86-NEXT:    xorl %eax, %eax
+; X86-NEXT:    lock btsw $4, (%ecx)
+; X86-NEXT:    setb %al
 ; X86-NEXT:    # kill: def $ax killed $ax killed $eax
 ; X86-NEXT:    retl
 ;
 ; X64-LABEL: atomic_shl1_or_16_const_valnz:
 ; X64:       # %bb.0: # %entry
-; X64-NEXT:    movzwl (%rdi), %eax
-; X64-NEXT:    .p2align 4
-; X64-NEXT:  .LBB55_1: # %atomicrmw.start
-; X64-NEXT:    # =>This Inner Loop Header: Depth=1
-; X64-NEXT:    movl %eax, %ecx
-; X64-NEXT:    orl $16, %ecx
-; X64-NEXT:    # kill: def $ax killed $ax killed $eax
-; X64-NEXT:    lock cmpxchgw %cx, (%rdi)
-; X64-NEXT:    # kill: def $ax killed $ax def $eax
-; X64-NEXT:    jne .LBB55_1
-; X64-NEXT:  # %bb.2: # %atomicrmw.end
-; X64-NEXT:    shrl $4, %eax
-; X64-NEXT:    andl $1, %eax
+; X64-NEXT:    xorl %eax, %eax
+; X64-NEXT:    lock btsw $4, (%rdi)
+; X64-NEXT:    setb %al
 ; X64-NEXT:    # kill: def $ax killed $ax killed $eax
 ; X64-NEXT:    retq
 entry:
@@ -3678,40 +3658,18 @@ define zeroext i16 @atomic_shl1_and_16_const_valz(ptr %v) nounwind {
 ; X86-LABEL: atomic_shl1_and_16_const_valz:
 ; X86:       # %bb.0: # %entry
 ; X86-NEXT:    movl {{[0-9]+}}(%esp), %ecx
-; X86-NEXT:    movzwl (%ecx), %eax
-; X86-NEXT:    .p2align 4
-; X86-NEXT:  .LBB58_1: # %atomicrmw.start
-; X86-NEXT:    # =>This Inner Loop Header: Depth=1
-; X86-NEXT:    movl %eax, %edx
-; X86-NEXT:    andl $65519, %edx # imm = 0xFFEF
+; X86-NEXT:    xorl %eax, %eax
+; X86-NEXT:    lock btrw $4, (%ecx)
+; X86-NEXT:    setae %al
 ; X86-NEXT:    # kill: def $ax killed $ax killed $eax
-; X86-NEXT:    lock cmpxchgw %dx, (%ecx)
-; X86-NEXT:    # kill: def $ax killed $ax def $eax
-; X86-NEXT:    jne .LBB58_1
-; X86-NEXT:  # %bb.2: # %atomicrmw.end
-; X86-NEXT:    xorl %ecx, %ecx
-; X86-NEXT:    testb $16, %al
-; X86-NEXT:    sete %cl
-; X86-NEXT:    movl %ecx, %eax
 ; X86-NEXT:    retl
 ;
 ; X64-LABEL: atomic_shl1_and_16_const_valz:
 ; X64:       # %bb.0: # %entry
-; X64-NEXT:    movzwl (%rdi), %eax
-; X64-NEXT:    .p2align 4
-; X64-NEXT:  .LBB58_1: # %atomicrmw.start
-; X64-NEXT:    # =>This Inner Loop Header: Depth=1
-; X64-NEXT:    movl %eax, %ecx
-; X64-NEXT:    andl $65519, %ecx # imm = 0xFFEF
+; X64-NEXT:    xorl %eax, %eax
+; X64-NEXT:    lock btrw $4, (%rdi)
+; X64-NEXT:    setae %al
 ; X64-NEXT:    # kill: def $ax killed $ax killed $eax
-; X64-NEXT:    lock cmpxchgw %cx, (%rdi)
-; X64-NEXT:    # kill: def $ax killed $ax def $eax
-; X64-NEXT:    jne .LBB58_1
-; X64-NEXT:  # %bb.2: # %atomicrmw.end
-; X64-NEXT:    xorl %ecx, %ecx
-; X64-NEXT:    testb $16, %al
-; X64-NEXT:    sete %cl
-; X64-NEXT:    movl %ecx, %eax
 ; X64-NEXT:    retq
 entry:
   %0 = atomicrmw and ptr %v, i16 -17 monotonic, align 2
@@ -4297,47 +4255,20 @@ entry:
 define i32 @atomic_shl1_or_32_gpr_valnz(ptr %v, i32 %c) nounwind {
 ; X86-LABEL: atomic_shl1_or_32_gpr_valnz:
 ; X86:       # %bb.0: # %entry
-; X86-NEXT:    pushl %edi
-; X86-NEXT:    pushl %esi
 ; X86-NEXT:    movl {{[0-9]+}}(%esp), %ecx
 ; X86-NEXT:    movl {{[0-9]+}}(%esp), %edx
-; X86-NEXT:    movl $1, %esi
-; X86-NEXT:    shll %cl, %esi
-; X86-NEXT:    movl (%edx), %eax
-; X86-NEXT:    .p2align 4
-; X86-NEXT:  .LBB72_1: # %atomicrmw.start
-; X86-NEXT:    # =>This Inner Loop Header: Depth=1
-; X86-NEXT:    movl %eax, %edi
-; X86-NEXT:    orl %esi, %edi
-; X86-NEXT:    lock cmpxchgl %edi, (%edx)
-; X86-NEXT:    jne .LBB72_1
-; X86-NEXT:  # %bb.2: # %atomicrmw.end
-; X86-NEXT:    xorl %edx, %edx
-; X86-NEXT:    btl %ecx, %eax
-; X86-NEXT:    setb %dl
-; X86-NEXT:    movl %edx, %eax
-; X86-NEXT:    popl %esi
-; X86-NEXT:    popl %edi
+; X86-NEXT:    andl $31, %edx
+; X86-NEXT:    xorl %eax, %eax
+; X86-NEXT:    lock btsl %edx, (%ecx)
+; X86-NEXT:    setb %al
 ; X86-NEXT:    retl
 ;
 ; X64-LABEL: atomic_shl1_or_32_gpr_valnz:
 ; X64:       # %bb.0: # %entry
-; X64-NEXT:    movl %esi, %ecx
-; X64-NEXT:    movl $1, %edx
-; X64-NEXT:    shll %cl, %edx
-; X64-NEXT:    movl (%rdi), %eax
-; X64-NEXT:    .p2align 4
-; X64-NEXT:  .LBB72_1: # %atomicrmw.start
-; X64-NEXT:    # =>This Inner Loop Header: Depth=1
-; X64-NEXT:    movl %eax, %esi
-; X64-NEXT:    orl %edx, %esi
-; X64-NEXT:    lock cmpxchgl %esi, (%rdi)
-; X64-NEXT:    jne .LBB72_1
-; X64-NEXT:  # %bb.2: # %atomicrmw.end
-; X64-NEXT:    xorl %edx, %edx
-; X64-NEXT:    btl %ecx, %eax
-; X64-NEXT:    setb %dl
-; X64-NEXT:    movl %edx, %eax
+; X64-NEXT:    andl $31, %esi
+; X64-NEXT:    xorl %eax, %eax
+; X64-NEXT:    lock btsl %esi, (%rdi)
+; X64-NEXT:    setb %al
 ; X64-NEXT:    retq
 entry:
   %shl = shl nuw i32 1, %c
@@ -4350,49 +4281,20 @@ entry:
 define i32 @atomic_shl1_small_mask_or_32_gpr_valnz(ptr %v, i32 %c) nounwind {
 ; X86-LABEL: atomic_shl1_small_mask_or_32_gpr_valnz:
 ; X86:       # %bb.0: # %entry
-; X86-NEXT:    pushl %edi
-; X86-NEXT:    pushl %esi
-; X86-NEXT:    movl {{[0-9]+}}(%esp), %edx
 ; X86-NEXT:    movl {{[0-9]+}}(%esp), %ecx
-; X86-NEXT:    andl $15, %ecx
-; X86-NEXT:    movl $1, %esi
-; X86-NEXT:    shll %cl, %esi
-; X86-NEXT:    movl (%edx), %eax
-; X86-NEXT:    .p2align 4
-; X86-NEXT:  .LBB73_1: # %atomicrmw.start
-; X86-NEXT:    # =>This Inner Loop Header: Depth=1
-; X86-NEXT:    movl %eax, %edi
-; X86-NEXT:    orl %esi, %edi
-; X86-NEXT:    lock cmpxchgl %edi, (%edx)
-; X86-NEXT:    jne .LBB73_1
-; X86-NEXT:  # %bb.2: # %atomicrmw.end
-; X86-NEXT:    xorl %edx, %edx
-; X86-NEXT:    btl %ecx, %eax
-; X86-NEXT:    setb %dl
-; X86-NEXT:    movl %edx, %eax
-; X86-NEXT:    popl %esi
-; X86-NEXT:    popl %edi
+; X86-NEXT:    movl {{[0-9]+}}(%esp), %edx
+; X86-NEXT:    andl $15, %edx
+; X86-NEXT:    xorl %eax, %eax
+; X86-NEXT:    lock btsl %edx, (%ecx)
+; X86-NEXT:    setb %al
 ; X86-NEXT:    retl
 ;
 ; X64-LABEL: atomic_shl1_small_mask_or_32_gpr_valnz:
 ; X64:       # %bb.0: # %entry
-; X64-NEXT:    movl %esi, %ecx
-; X64-NEXT:    andl $15, %ecx
-; X64-NEXT:    movl $1, %edx
-; X64-NEXT:    shll %cl, %edx
-; X64-NEXT:    movl (%rdi), %eax
-; X64-NEXT:    .p2align 4
-; X64-NEXT:  .LBB73_1: # %atomicrmw.start
-; X64-NEXT:    # =>This Inner Loop Header: Depth=1
-; X64-NEXT:    movl %eax, %esi
-; X64-NEXT:    orl %edx, %esi
-; X64-NEXT:    lock cmpxchgl %esi, (%rdi)
-; X64-NEXT:    jne .LBB73_1
-; X64-NEXT:  # %bb.2: # %atomicrmw.end
-; X64-NEXT:    xorl %edx, %edx
-; X64-NEXT:    btl %ecx, %eax
-; X64-NEXT:    setb %dl
-; X64-NEXT:    movl %edx, %eax
+; X64-NEXT:    andl $15, %esi
+; X64-NEXT:    xorl %eax, %eax
+; X64-NEXT:    lock btsl %esi, (%rdi)
+; X64-NEXT:    setb %al
 ; X64-NEXT:    retq
 entry:
   %0 = and i32 %c, 15
@@ -4406,47 +4308,20 @@ entry:
 define i32 @atomic_shl1_mask0_or_32_gpr_valnz(ptr %v, i32 %c) nounwind {
 ; X86-LABEL: atomic_shl1_mask0_or_32_gpr_valnz:
 ; X86:       # %bb.0: # %entry
-; X86-NEXT:    pushl %edi
-; X86-NEXT:    pushl %esi
 ; X86-NEXT:    movl {{[0-9]+}}(%esp), %ecx
 ; X86-NEXT:    movl {{[0-9]+}}(%esp), %edx
-; X86-NEXT:    movl $1, %esi
-; X86-NEXT:    shll %cl, %esi
-; X86-NEXT:    movl (%edx), %eax
-; X86-NEXT:    .p2align 4
-; X86-NEXT:  .LBB74_1: # %atomicrmw.start
-; X86-NEXT:    # =>This Inner Loop Header: Depth=1
-; X86-NEXT:    movl %eax, %edi
-; X86-NEXT:    orl %esi, %edi
-; X86-NEXT:    lock cmpxchgl %edi, (%edx)
-; X86-NEXT:    jne .LBB74_1
-; X86-NEXT:  # %bb.2: # %atomicrmw.end
-; X86-NEXT:    xorl %edx, %edx
-; X86-NEXT:    btl %ecx, %eax
-; X86-NEXT:    setb %dl
-; X86-NEXT:    movl %edx, %eax
-; X86-NEXT:    popl %esi
-; X86-NEXT:    popl %edi
+; X86-NEXT:    andl $31, %edx
+; X86-NEXT:    xorl %eax, %eax
+; X86-NEXT:    lock btsl %edx, (%ecx)
+; X86-NEXT:    setb %al
 ; X86-NEXT:    retl
 ;
 ; X64-LABEL: atomic_shl1_mask0_or_32_gpr_valnz:
 ; X64:       # %bb.0: # %entry
-; X64-NEXT:    movl %esi, %ecx
-; X64-NEXT:    movl $1, %edx
-; X64-NEXT:    shll %cl, %edx
-; X64-NEXT:    movl (%rdi), %eax
-; X64-NEXT:    .p2align 4
-; X64-NEXT:  .LBB74_1: # %atomicrmw.start
-; X64-NEXT:    # =>This Inner Loop Header: Depth=1
-; X64-NEXT:    movl %eax, %esi
-; X64-NEXT:    orl %edx, %esi
-; X64-NEXT:    lock cmpxchgl %esi, (%rdi)
-; X64-NEXT:    jne .LBB74_1
-; X64-NEXT:  # %bb.2: # %atomicrmw.end
-; X64-NEXT:    xorl %edx, %edx
-; X64-NEXT:    btl %ecx, %eax
-; X64-NEXT:    setb %dl
-; X64-NEXT:    movl %edx, %eax
+; X64-NEXT:    andl $31, %esi
+; X64-NEXT:    xorl %eax, %eax
+; X64-NEXT:    lock btsl %esi, (%rdi)
+; X64-NEXT:    setb %al
 ; X64-NEXT:    retq
 entry:
   %0 = and i32 %c, 31
@@ -4460,47 +4335,20 @@ entry:
 define i32 @atomic_shl1_mask1_or_32_gpr_valnz(ptr %v, i32 %c) nounwind {
 ; X86-LABEL: atomic_shl1_mask1_or_32_gpr_valnz:
 ; X86:       # %bb.0: # %entry
-; X86-NEXT:    pushl %edi
-; X86-NEXT:    pushl %esi
 ; X86-NEXT:    movl {{[0-9]+}}(%esp), %ecx
 ; X86-NEXT:    movl {{[0-9]+}}(%esp), %edx
-; X86-NEXT:    movl $1, %esi
-; X86-NEXT:    shll %cl, %esi
-; X86-NEXT:    movl (%edx), %eax
-; X86-NEXT:    .p2align 4
-; X86-NEXT:  .LBB75_1: # %atomicrmw.start
-; X86-NEXT:    # =>This Inner Loop Header: Depth=1
-; X86-NEXT:    movl %eax, %edi
-; X86-NEXT:    orl %esi, %edi
-; X86-NEXT:    lock cmpxchgl %edi, (%edx)
-; X86-NEXT:    jne .LBB75_1
-; X86-NEXT:  # %bb.2: # %atomicrmw.end
-; X86-NEXT:    xorl %edx, %edx
-; X86-NEXT:    btl %ecx, %eax
-; X86-NEXT:    setb %dl
-; X86-NEXT:    movl %edx, %eax
-; X86-NEXT:    popl %esi
-; X86-NEXT:    popl %edi
+; X86-NEXT:    andl $31, %edx
+; X86-NEXT:    xorl %eax, %eax
+; X86-NEXT:    lock btsl %edx, (%ecx)
+; X86-NEXT:    setb %al
 ; X86-NEXT:    retl
 ;
 ; X64-LABEL: atomic_shl1_mask1_or_32_gpr_valnz:
 ; X64:       # %bb.0: # %entry
-; X64-NEXT:    movl %esi, %ecx
-; X64-NEXT:    movl $1, %edx
-; X64-NEXT:    shll %cl, %edx
-; X64-NEXT:    movl (%rdi), %eax
-; X64-NEXT:    .p2align 4
-; X64-NEXT:  .LBB75_1: # %atomicrmw.start
-; X64-NEXT:    # =>This Inner Loop Header: Depth=1
-; X64-NEXT:    movl %eax, %esi
-; X64-NEXT:    orl %edx, %esi
-; X64-NEXT:    lock cmpxchgl %esi, (%rdi)
-; X64-NEXT:    jne .LBB75_1
-; X64-NEXT:  # %bb.2: # %atomicrmw.end
-; X64-NEXT:    xorl %edx, %edx
-; X64-NEXT:    btl %ecx, %eax
-; X64-NEXT:    setb %dl
-; X64-NEXT:    movl %edx, %eax
+; X64-NEXT:    andl $31, %esi
+; X64-NEXT:    xorl %eax, %eax
+; X64-NEXT:    lock btsl %esi, (%rdi)
+; X64-NEXT:    setb %al
 ; X64-NEXT:    retq
 entry:
   %shl = shl nuw i32 1, %c
@@ -4514,49 +4362,20 @@ entry:
 define i32 @atomic_shl1_mask01_or_32_gpr_valnz(ptr %v, i32 %c) nounwind {
 ; X86-LABEL: atomic_shl1_mask01_or_32_gpr_valnz:
 ; X86:       # %bb.0: # %entry
-; X86-NEXT:    pushl %edi
-; X86-NEXT:    pushl %esi
-; X86-NEXT:    movl {{[0-9]+}}(%esp), %edx
 ; X86-NEXT:    movl {{[0-9]+}}(%esp), %ecx
-; X86-NEXT:    andl $31, %ecx
-; X86-NEXT:    movl $1, %esi
-; X86-NEXT:    shll %cl, %esi
-; X86-NEXT:    movl (%edx), %eax
-; X86-NEXT:    .p2align 4
-; X86-NEXT:  .LBB76_1: # %atomicrmw.start
-; X86-NEXT:    # =>This Inner Loop Header: Depth=1
-; X86-NEXT:    movl %eax, %edi
-; X86-NEXT:    orl %esi, %edi
-; X86-NEXT:    lock cmpxchgl %edi, (%edx)
-; X86-NEXT:    jne .LBB76_1
-; X86-NEXT:  # %bb.2: # %atomicrmw.end
-; X86-NEXT:    xorl %edx, %edx
-; X86-NEXT:    btl %ecx, %eax
-; X86-NEXT:    setb %dl
-; X86-NEXT:    movl %edx, %eax
-; X86-NEXT:    popl %esi
-; X86-NEXT:    popl %edi
+; X86-NEXT:    movl {{[0-9]+}}(%esp), %edx
+; X86-NEXT:    andl $31, %edx
+; X86-NEXT:    xorl %eax, %eax
+; X86-NEXT:    lock btsl %edx, (%ecx)
+; X86-NEXT:    setb %al
 ; X86-NEXT:    retl
 ;
 ; X64-LABEL: atomic_shl1_mask01_or_32_gpr_valnz:
 ; X64:       # %bb.0: # %entry
-; X64-NEXT:    movl %esi, %ecx
-; X64-NEXT:    andl $31, %ecx
-; X64-NEXT:    movl $1, %edx
-; X64-NEXT:    shll %cl, %edx
-; X64-NEXT:    movl (%rdi), %eax
-; X64-NEXT:    .p2align 4
-; X64-NEXT:  .LBB76_1: # %atomicrmw.start
-; X64-NEXT:    # =>This Inner Loop Header: Depth=1
-; X64-NEXT:    movl %eax, %esi
-; X64-NEXT:    orl %edx, %esi
-; X64-NEXT:    lock cmpxchgl %esi, (%rdi)
-; X64-NEXT:    jne .LBB76_1
-; X64-NEXT:  # %bb.2: # %atomicrmw.end
-; X64-NEXT:    xorl %edx, %edx
-; X64-NEXT:    btl %ecx, %eax
-; X64-NEXT:    setb %dl
-; X64-NEXT:    movl %edx, %eax
+; X64-NEXT:    andl $31, %esi
+; X64-NEXT:    xorl %eax, %eax
+; X64-NEXT:    lock btsl %esi, (%rdi)
+; X64-NEXT:    setb %al
 ; X64-NEXT:    retq
 entry:
   %0 = and i32 %c, 31
@@ -6569,36 +6388,16 @@ define i32 @atomic_shl1_xor_32_const_valz(ptr %v) nounwind {
 ; X86-LABEL: atomic_shl1_xor_32_const_valz:
 ; X86:       # %bb.0: # %entry
 ; X86-NEXT:    movl {{[0-9]+}}(%esp), %ecx
-; X86-NEXT:    movl (%ecx), %eax
-; X86-NEXT:    .p2align 4
-; X86-NEXT:  .LBB115_1: # %atomicrmw.start
-; X86-NEXT:    # =>This Inner Loop Header: Depth=1
-; X86-NEXT:    movl %eax, %edx
-; X86-NEXT:    xorl $16, %edx
-; X86-NEXT:    lock cmpxchgl %edx, (%ecx)
-; X86-NEXT:    jne .LBB115_1
-; X86-NEXT:  # %bb.2: # %atomicrmw.end
-; X86-NEXT:    xorl %ecx, %ecx
-; X86-NEXT:    testb $16, %al
-; X86-NEXT:    sete %cl
-; X86-NEXT:    movl %ecx, %eax
+; X86-NEXT:    xorl %eax, %eax
+; X86-NEXT:    lock btcl $4, (%ecx)
+; X86-NEXT:    setae %al
 ; X86-NEXT:    retl
 ;
 ; X64-LABEL: atomic_shl1_xor_32_const_valz:
 ; X64:       # %bb.0: # %entry
-; X64-NEXT:    movl (%rdi), %eax
-; X64-NEXT:    .p2align 4
-; X64-NEXT:  .LBB115_1: # %atomicrmw.start
-; X64-NEXT:    # =>This Inner Loop Header: Depth=1
-; X64-NEXT:    movl %eax, %ecx
-; X64-NEXT:    xorl $16, %ecx
-; X64-NEXT:    lock cmpxchgl %ecx, (%rdi)
-; X64-NEXT:    jne .LBB115_1
-; X64-NEXT:  # %bb.2: # %atomicrmw.end
-; X64-NEXT:    xorl %ecx, %ecx
-; X64-NEXT:    testb $16, %al
-; X64-NEXT:    sete %cl
-; X64-NEXT:    movl %ecx, %eax
+; X64-NEXT:    xorl %eax, %eax
+; X64-NEXT:    lock btcl $4, (%rdi)
+; X64-NEXT:    setae %al
 ; X64-NEXT:    retq
 entry:
   %0 = atomicrmw xor ptr %v, i32 16 monotonic, align 4
@@ -6612,32 +6411,16 @@ define i32 @atomic_shl1_xor_32_const_valnz(ptr %v) nounwind {
 ; X86-LABEL: atomic_shl1_xor_32_const_valnz:
 ; X86:       # %bb.0: # %entry
 ; X86-NEXT:    movl {{[0-9]+}}(%esp), %ecx
-; X86-NEXT:    movl (%ecx), %eax
-; X86-NEXT:    .p2align 4
-; X86-NEXT:  .LBB116_1: # %atomicrmw.start
-; X86-NEXT:    # =>This Inner Loop Header: Depth=1
-; X86-NEXT:    movl %eax, %edx
-; X86-NEXT:    xorl $16, %edx
-; X86-NEXT:    lock cmpxchgl %edx, (%ecx)
-; X86-NEXT:    jne .LBB116_1
-; X86-NEXT:  # %bb.2: # %atomicrmw.end
-; X86-NEXT:    shrl $4, %eax
-; X86-NEXT:    andl $1, %eax
+; X86-NEXT:    xorl %eax, %eax
+; X86-NEXT:    lock btcl $4, (%ecx)
+; X86-NEXT:    setb %al
 ; X86-NEXT:    retl
 ;
 ; X64-LABEL: atomic_shl1_xor_32_const_valnz:
 ; X64:       # %bb.0: # %entry
-; X64-NEXT:    movl (%rdi), %eax
-; X64-NEXT:    .p2align 4
-; X64-NEXT:  .LBB116_1: # %atomicrmw.start
-; X64-NEXT:    # =>This Inner Loop Header: Depth=1
-; X64-NEXT:    movl %eax, %ecx
-; X64-NEXT:    xorl $16, %ecx
-; X64-NEXT:    lock cmpxchgl %ecx, (%rdi)
-; X64-NEXT:    jne .LBB116_1
-; X64-NEXT:  # %bb.2: # %atomicrmw.end
-; X64-NEXT:    shrl $4, %eax
-; X64-NEXT:    andl $1, %eax
+; X64-NEXT:    xorl %eax, %eax
+; X64-NEXT:    lock btcl $4, (%rdi)
+; X64-NEXT:    setb %al
 ; X64-NEXT:    retq
 entry:
   %0 = atomicrmw xor ptr %v, i32 16 monotonic, align 4
@@ -6673,36 +6456,16 @@ define i32 @atomic_shl1_and_32_const_valz(ptr %v) nounwind {
 ; X86-LABEL: atomic_shl1_and_32_const_valz:
 ; X86:       # %bb.0: # %entry
 ; X86-NEXT:    movl {{[0-9]+}}(%esp), %ecx
-; X86-NEXT:    movl (%ecx), %eax
-; X86-NEXT:    .p2align 4
-; X86-NEXT:  .LBB118_1: # %atomicrmw.start
-; X86-NEXT:    # =>This Inner Loop Header: Depth=1
-; X86-NEXT:    movl %eax, %edx
-; X86-NEXT:    andl $-17, %edx
-; X86-NEXT:    lock cmpxchgl %edx, (%ecx)
-; X86-NEXT:    jne .LBB118_1
-; X86-NEXT:  # %bb.2: # %atomicrmw.end
-; X86-NEXT:    xorl %ecx, %ecx
-; X86-NEXT:    testb $16, %al
-; X86-NEXT:    sete %cl
-; X86-NEXT:    movl %ecx, %eax
+; X86-NEXT:    xorl %eax, %eax
+; X86-NEXT:    lock btrl $4, (%ecx)
+; X86-NEXT:    setae %al
 ; X86-NEXT:    retl
 ;
 ; X64-LABEL: atomic_shl1_and_32_const_valz:
 ; X64:       # %bb.0: # %entry
-; X64-NEXT:    movl (%rdi), %eax
-; X64-NEXT:    .p2align 4
-; X64-NEXT:  .LBB118_1: # %atomicrmw.start
-; X64-NEXT:    # =>This Inner Loop Header: Depth=1
-; X64-NEXT:    movl %eax, %ecx
-; X64-NEXT:    andl $-17, %ecx
-; X64-NEXT:    lock cmpxchgl %ecx, (%rdi)
-; X64-NEXT:    jne .LBB118_1
-; X64-NEXT:  # %bb.2: # %atomicrmw.end
-; X64-NEXT:    xorl %ecx, %ecx
-; X64-NEXT:    testb $16, %al
-; X64-NEXT:    sete %cl
-; X64-NEXT:    movl %ecx, %eax
+; X64-NEXT:    xorl %eax, %eax
+; X64-NEXT:    lock btrl $4, (%rdi)
+; X64-NEXT:    setae %al
 ; X64-NEXT:    retq
 entry:
   %0 = atomicrmw and ptr %v, i32 -17 monotonic, align 4
@@ -6716,32 +6479,16 @@ define i32 @atomic_shl1_and_32_const_valnz(ptr %v) nounwind {
 ; X86-LABEL: atomic_shl1_and_32_const_valnz:
 ; X86:       # %bb.0: # %entry
 ; X86-NEXT:    movl {{[0-9]+}}(%esp), %ecx
-; X86-NEXT:    movl (%ecx), %eax
-; X86-NEXT:    .p2align 4
-; X86-NEXT:  .LBB119_1: # %atomicrmw.start
-; X86-NEXT:    # =>This Inner Loop Header: Depth=1
-; X86-NEXT:    movl %eax, %edx
-; X86-NEXT:    andl $-17, %edx
-; X86-NEXT:    lock cmpxchgl %edx, (%ecx)
-; X86-NEXT:    jne .LBB119_1
-; X86-NEXT:  # %bb.2: # %atomicrmw.end
-; X86-NEXT:    shrl $4, %eax
-; X86-NEXT:    andl $1, %eax
+; X86-NEXT:    xorl %eax, %eax
+; X86-NEXT:    lock btrl $4, (%ecx)
+; X86-NEXT:    setb %al
 ; X86-NEXT:    retl
 ;
 ; X64-LABEL: atomic_shl1_and_32_const_valnz:
 ; X64:       # %bb.0: # %entry
-; X64-NEXT:    movl (%rdi), %eax
-; X64-NEXT:    .p2align 4
-; X64-NEXT:  .LBB119_1: # %atomicrmw.start
-; X64-NEXT:    # =>This Inner Loop Header: Depth=1
-; X64-NEXT:    movl %eax, %ecx
-; X64-NEXT:    andl $-17, %ecx
-; X64-NEXT:    lock cmpxchgl %ecx, (%rdi)
-; X64-NEXT:    jne .LBB119_1
-; X64-NEXT:  # %bb.2: # %atomicrmw.end
-; X64-NEXT:    shrl $4, %eax
-; X64-NEXT:    andl $1, %eax
+; X64-NEXT:    xorl %eax, %eax
+; X64-NEXT:    lock btrl $4, (%rdi)
+; X64-NEXT:    setb %al
 ; X64-NEXT:    retq
 entry:
   %0 = atomicrmw and ptr %v, i32 -17 monotonic, align 4

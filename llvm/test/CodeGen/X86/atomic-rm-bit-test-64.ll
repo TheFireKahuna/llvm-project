@@ -423,22 +423,10 @@ entry:
 define i64 @atomic_shl1_xor_64_gpr_valnz(ptr %v, i64 %c) nounwind {
 ; CHECK-LABEL: atomic_shl1_xor_64_gpr_valnz:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    movq %rsi, %rcx
-; CHECK-NEXT:    movl $1, %edx
-; CHECK-NEXT:    shlq %cl, %rdx
-; CHECK-NEXT:    movq (%rdi), %rax
-; CHECK-NEXT:    .p2align 4
-; CHECK-NEXT:  .LBB16_1: # %atomicrmw.start
-; CHECK-NEXT:    # =>This Inner Loop Header: Depth=1
-; CHECK-NEXT:    movq %rax, %rsi
-; CHECK-NEXT:    xorq %rdx, %rsi
-; CHECK-NEXT:    lock cmpxchgq %rsi, (%rdi)
-; CHECK-NEXT:    jne .LBB16_1
-; CHECK-NEXT:  # %bb.2: # %atomicrmw.end
-; CHECK-NEXT:    xorl %edx, %edx
-; CHECK-NEXT:    btq %rcx, %rax
-; CHECK-NEXT:    setb %dl
-; CHECK-NEXT:    movq %rdx, %rax
+; CHECK-NEXT:    andl $63, %esi
+; CHECK-NEXT:    xorl %eax, %eax
+; CHECK-NEXT:    lock btcq %rsi, (%rdi)
+; CHECK-NEXT:    setb %al
 ; CHECK-NEXT:    retq
 entry:
   %shl = shl nuw i64 1, %c
@@ -512,23 +500,10 @@ entry:
 define i64 @atomic_shl1_small_mask_xor_64_gpr_valnz(ptr %v, i64 %c) nounwind {
 ; CHECK-LABEL: atomic_shl1_small_mask_xor_64_gpr_valnz:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    movq %rsi, %rcx
-; CHECK-NEXT:    andl $31, %ecx
-; CHECK-NEXT:    movl $1, %edx
-; CHECK-NEXT:    shlq %cl, %rdx
-; CHECK-NEXT:    movq (%rdi), %rax
-; CHECK-NEXT:    .p2align 4
-; CHECK-NEXT:  .LBB19_1: # %atomicrmw.start
-; CHECK-NEXT:    # =>This Inner Loop Header: Depth=1
-; CHECK-NEXT:    movq %rax, %rsi
-; CHECK-NEXT:    xorq %rdx, %rsi
-; CHECK-NEXT:    lock cmpxchgq %rsi, (%rdi)
-; CHECK-NEXT:    jne .LBB19_1
-; CHECK-NEXT:  # %bb.2: # %atomicrmw.end
-; CHECK-NEXT:    xorl %edx, %edx
-; CHECK-NEXT:    btl %ecx, %eax
-; CHECK-NEXT:    setb %dl
-; CHECK-NEXT:    movq %rdx, %rax
+; CHECK-NEXT:    andl $31, %esi
+; CHECK-NEXT:    xorl %eax, %eax
+; CHECK-NEXT:    lock btcq %rsi, (%rdi)
+; CHECK-NEXT:    setb %al
 ; CHECK-NEXT:    retq
 entry:
   %rem = and i64 %c, 31
@@ -542,22 +517,10 @@ entry:
 define i64 @atomic_shl1_mask0_xor_64_gpr_valnz(ptr %v, i64 %c) nounwind {
 ; CHECK-LABEL: atomic_shl1_mask0_xor_64_gpr_valnz:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    movq %rsi, %rcx
-; CHECK-NEXT:    movl $1, %edx
-; CHECK-NEXT:    shlq %cl, %rdx
-; CHECK-NEXT:    movq (%rdi), %rax
-; CHECK-NEXT:    .p2align 4
-; CHECK-NEXT:  .LBB20_1: # %atomicrmw.start
-; CHECK-NEXT:    # =>This Inner Loop Header: Depth=1
-; CHECK-NEXT:    movq %rax, %rsi
-; CHECK-NEXT:    xorq %rdx, %rsi
-; CHECK-NEXT:    lock cmpxchgq %rsi, (%rdi)
-; CHECK-NEXT:    jne .LBB20_1
-; CHECK-NEXT:  # %bb.2: # %atomicrmw.end
-; CHECK-NEXT:    xorl %edx, %edx
-; CHECK-NEXT:    btq %rcx, %rax
-; CHECK-NEXT:    setb %dl
-; CHECK-NEXT:    movq %rdx, %rax
+; CHECK-NEXT:    andl $63, %esi
+; CHECK-NEXT:    xorl %eax, %eax
+; CHECK-NEXT:    lock btcq %rsi, (%rdi)
+; CHECK-NEXT:    setb %al
 ; CHECK-NEXT:    retq
 entry:
   %rem = and i64 %c, 63
@@ -571,22 +534,10 @@ entry:
 define i64 @atomic_shl1_mask1_xor_64_gpr_valnz(ptr %v, i64 %c) nounwind {
 ; CHECK-LABEL: atomic_shl1_mask1_xor_64_gpr_valnz:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    movq %rsi, %rcx
-; CHECK-NEXT:    movl $1, %edx
-; CHECK-NEXT:    shlq %cl, %rdx
-; CHECK-NEXT:    movq (%rdi), %rax
-; CHECK-NEXT:    .p2align 4
-; CHECK-NEXT:  .LBB21_1: # %atomicrmw.start
-; CHECK-NEXT:    # =>This Inner Loop Header: Depth=1
-; CHECK-NEXT:    movq %rax, %rsi
-; CHECK-NEXT:    xorq %rdx, %rsi
-; CHECK-NEXT:    lock cmpxchgq %rsi, (%rdi)
-; CHECK-NEXT:    jne .LBB21_1
-; CHECK-NEXT:  # %bb.2: # %atomicrmw.end
-; CHECK-NEXT:    xorl %edx, %edx
-; CHECK-NEXT:    btq %rcx, %rax
-; CHECK-NEXT:    setb %dl
-; CHECK-NEXT:    movq %rdx, %rax
+; CHECK-NEXT:    andl $63, %esi
+; CHECK-NEXT:    xorl %eax, %eax
+; CHECK-NEXT:    lock btcq %rsi, (%rdi)
+; CHECK-NEXT:    setb %al
 ; CHECK-NEXT:    retq
 entry:
   %shl = shl nuw i64 1, %c
@@ -600,23 +551,10 @@ entry:
 define i64 @atomic_shl1_mask01_xor_64_gpr_valnz(ptr %v, i64 %c) nounwind {
 ; CHECK-LABEL: atomic_shl1_mask01_xor_64_gpr_valnz:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    movq %rsi, %rcx
-; CHECK-NEXT:    andl $63, %ecx
-; CHECK-NEXT:    movl $1, %edx
-; CHECK-NEXT:    shlq %cl, %rdx
-; CHECK-NEXT:    movq (%rdi), %rax
-; CHECK-NEXT:    .p2align 4
-; CHECK-NEXT:  .LBB22_1: # %atomicrmw.start
-; CHECK-NEXT:    # =>This Inner Loop Header: Depth=1
-; CHECK-NEXT:    movq %rax, %rsi
-; CHECK-NEXT:    xorq %rdx, %rsi
-; CHECK-NEXT:    lock cmpxchgq %rsi, (%rdi)
-; CHECK-NEXT:    jne .LBB22_1
-; CHECK-NEXT:  # %bb.2: # %atomicrmw.end
-; CHECK-NEXT:    xorl %edx, %edx
-; CHECK-NEXT:    btq %rcx, %rax
-; CHECK-NEXT:    setb %dl
-; CHECK-NEXT:    movq %rdx, %rax
+; CHECK-NEXT:    andl $63, %esi
+; CHECK-NEXT:    xorl %eax, %eax
+; CHECK-NEXT:    lock btcq %rsi, (%rdi)
+; CHECK-NEXT:    setb %al
 ; CHECK-NEXT:    retq
 entry:
   %rem = and i64 %c, 63
@@ -849,22 +787,10 @@ entry:
 define i64 @atomic_shl1_and_64_gpr_valnz(ptr %v, i64 %c) nounwind {
 ; CHECK-LABEL: atomic_shl1_and_64_gpr_valnz:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    movq %rsi, %rcx
-; CHECK-NEXT:    movq $-2, %rdx
-; CHECK-NEXT:    rolq %cl, %rdx
-; CHECK-NEXT:    movq (%rdi), %rax
-; CHECK-NEXT:    .p2align 4
-; CHECK-NEXT:  .LBB32_1: # %atomicrmw.start
-; CHECK-NEXT:    # =>This Inner Loop Header: Depth=1
-; CHECK-NEXT:    movq %rax, %rsi
-; CHECK-NEXT:    andq %rdx, %rsi
-; CHECK-NEXT:    lock cmpxchgq %rsi, (%rdi)
-; CHECK-NEXT:    jne .LBB32_1
-; CHECK-NEXT:  # %bb.2: # %atomicrmw.end
-; CHECK-NEXT:    xorl %edx, %edx
-; CHECK-NEXT:    btq %rcx, %rax
-; CHECK-NEXT:    setb %dl
-; CHECK-NEXT:    movq %rdx, %rax
+; CHECK-NEXT:    andl $63, %esi
+; CHECK-NEXT:    xorl %eax, %eax
+; CHECK-NEXT:    lock btrq %rsi, (%rdi)
+; CHECK-NEXT:    setb %al
 ; CHECK-NEXT:    retq
 entry:
   %shl = shl nuw i64 1, %c
@@ -943,23 +869,10 @@ entry:
 define i64 @atomic_shl1_small_mask_and_64_gpr_valnz(ptr %v, i64 %c) nounwind {
 ; CHECK-LABEL: atomic_shl1_small_mask_and_64_gpr_valnz:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    movq %rsi, %rcx
-; CHECK-NEXT:    andl $31, %ecx
-; CHECK-NEXT:    movq $-2, %rdx
-; CHECK-NEXT:    rolq %cl, %rdx
-; CHECK-NEXT:    movq (%rdi), %rax
-; CHECK-NEXT:    .p2align 4
-; CHECK-NEXT:  .LBB35_1: # %atomicrmw.start
-; CHECK-NEXT:    # =>This Inner Loop Header: Depth=1
-; CHECK-NEXT:    movq %rax, %rsi
-; CHECK-NEXT:    andq %rdx, %rsi
-; CHECK-NEXT:    lock cmpxchgq %rsi, (%rdi)
-; CHECK-NEXT:    jne .LBB35_1
-; CHECK-NEXT:  # %bb.2: # %atomicrmw.end
-; CHECK-NEXT:    xorl %edx, %edx
-; CHECK-NEXT:    btl %ecx, %eax
-; CHECK-NEXT:    setb %dl
-; CHECK-NEXT:    movq %rdx, %rax
+; CHECK-NEXT:    andl $31, %esi
+; CHECK-NEXT:    xorl %eax, %eax
+; CHECK-NEXT:    lock btrq %rsi, (%rdi)
+; CHECK-NEXT:    setb %al
 ; CHECK-NEXT:    retq
 entry:
   %rem = and i64 %c, 31
@@ -974,22 +887,10 @@ entry:
 define i64 @atomic_shl1_mask0_and_64_gpr_valnz(ptr %v, i64 %c) nounwind {
 ; CHECK-LABEL: atomic_shl1_mask0_and_64_gpr_valnz:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    movq %rsi, %rcx
-; CHECK-NEXT:    movq $-2, %rdx
-; CHECK-NEXT:    rolq %cl, %rdx
-; CHECK-NEXT:    movq (%rdi), %rax
-; CHECK-NEXT:    .p2align 4
-; CHECK-NEXT:  .LBB36_1: # %atomicrmw.start
-; CHECK-NEXT:    # =>This Inner Loop Header: Depth=1
-; CHECK-NEXT:    movq %rax, %rsi
-; CHECK-NEXT:    andq %rdx, %rsi
-; CHECK-NEXT:    lock cmpxchgq %rsi, (%rdi)
-; CHECK-NEXT:    jne .LBB36_1
-; CHECK-NEXT:  # %bb.2: # %atomicrmw.end
-; CHECK-NEXT:    xorl %edx, %edx
-; CHECK-NEXT:    btq %rcx, %rax
-; CHECK-NEXT:    setb %dl
-; CHECK-NEXT:    movq %rdx, %rax
+; CHECK-NEXT:    andl $63, %esi
+; CHECK-NEXT:    xorl %eax, %eax
+; CHECK-NEXT:    lock btrq %rsi, (%rdi)
+; CHECK-NEXT:    setb %al
 ; CHECK-NEXT:    retq
 entry:
   %rem = and i64 %c, 63
@@ -1004,22 +905,10 @@ entry:
 define i64 @atomic_shl1_mask1_and_64_gpr_valnz(ptr %v, i64 %c) nounwind {
 ; CHECK-LABEL: atomic_shl1_mask1_and_64_gpr_valnz:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    movq %rsi, %rcx
-; CHECK-NEXT:    movq $-2, %rdx
-; CHECK-NEXT:    rolq %cl, %rdx
-; CHECK-NEXT:    movq (%rdi), %rax
-; CHECK-NEXT:    .p2align 4
-; CHECK-NEXT:  .LBB37_1: # %atomicrmw.start
-; CHECK-NEXT:    # =>This Inner Loop Header: Depth=1
-; CHECK-NEXT:    movq %rax, %rsi
-; CHECK-NEXT:    andq %rdx, %rsi
-; CHECK-NEXT:    lock cmpxchgq %rsi, (%rdi)
-; CHECK-NEXT:    jne .LBB37_1
-; CHECK-NEXT:  # %bb.2: # %atomicrmw.end
-; CHECK-NEXT:    xorl %edx, %edx
-; CHECK-NEXT:    btq %rcx, %rax
-; CHECK-NEXT:    setb %dl
-; CHECK-NEXT:    movq %rdx, %rax
+; CHECK-NEXT:    andl $63, %esi
+; CHECK-NEXT:    xorl %eax, %eax
+; CHECK-NEXT:    lock btrq %rsi, (%rdi)
+; CHECK-NEXT:    setb %al
 ; CHECK-NEXT:    retq
 entry:
   %shl = shl nuw i64 1, %c
@@ -1034,25 +923,10 @@ entry:
 define i64 @atomic_shl1_mask01_and_64_gpr_valnz(ptr %v, i64 %c) nounwind {
 ; CHECK-LABEL: atomic_shl1_mask01_and_64_gpr_valnz:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    movq %rsi, %rcx
-; CHECK-NEXT:    movl %ecx, %edx
-; CHECK-NEXT:    andl $63, %edx
-; CHECK-NEXT:    movq $-2, %rsi
-; CHECK-NEXT:    # kill: def $cl killed $cl killed $rcx
-; CHECK-NEXT:    rolq %cl, %rsi
-; CHECK-NEXT:    movq (%rdi), %rax
-; CHECK-NEXT:    .p2align 4
-; CHECK-NEXT:  .LBB38_1: # %atomicrmw.start
-; CHECK-NEXT:    # =>This Inner Loop Header: Depth=1
-; CHECK-NEXT:    movq %rax, %rcx
-; CHECK-NEXT:    andq %rsi, %rcx
-; CHECK-NEXT:    lock cmpxchgq %rcx, (%rdi)
-; CHECK-NEXT:    jne .LBB38_1
-; CHECK-NEXT:  # %bb.2: # %atomicrmw.end
-; CHECK-NEXT:    xorl %ecx, %ecx
-; CHECK-NEXT:    btq %rdx, %rax
-; CHECK-NEXT:    setb %cl
-; CHECK-NEXT:    movq %rcx, %rax
+; CHECK-NEXT:    andl $63, %esi
+; CHECK-NEXT:    xorl %eax, %eax
+; CHECK-NEXT:    lock btrq %rsi, (%rdi)
+; CHECK-NEXT:    setb %al
 ; CHECK-NEXT:    retq
 entry:
   %rem = and i64 %c, 63
