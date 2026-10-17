@@ -533,6 +533,24 @@ static Error treeMerge(xmlNodePtr OriginalRoot, xmlNodePtr AdditionalRoot) {
   xmlNodePtr AdditionalFirstChild = AdditionalRoot->children;
   xmlNode StoreNext;
   for (xmlNodePtr Child = AdditionalFirstChild; Child; Child = Child->next) {
+    // Each setting in windowsSettings has one value, and the loader reads one
+    // element of a name. A setting that both manifests give is kept once when
+    // they agree, and is an error when they do not.
+    if (Child->type == XML_ELEMENT_NODE &&
+        xmlStringsEqual(OriginalRoot->name, TO_XML_CHAR("windowsSettings"))) {
+      if (xmlNodePtr Setting =
+              getChildWithName(OriginalRoot, Child->name, Child->ns)) {
+        xmlChar *OriginalValue = xmlNodeGetContent(Setting);
+        xmlChar *AdditionalValue = xmlNodeGetContent(Child);
+        bool Same = xmlStringsEqual(OriginalValue, AdditionalValue);
+        xmlFree(OriginalValue);
+        xmlFree(AdditionalValue);
+        if (!Same)
+          return make_error<WindowsManifestError>(
+              Twine("conflicting values for ") + FROM_XML_CHAR(Child->name));
+        continue;
+      }
+    }
     xmlNodePtr OriginalChildWithName;
     if (!isMergeableElement(Child->name) ||
         !(OriginalChildWithName =
