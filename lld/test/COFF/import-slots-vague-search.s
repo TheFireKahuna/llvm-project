@@ -131,6 +131,14 @@
 # CHECK:      popq %rbx
 # CHECK-NEXT: retq
 
+## A jump of the search takes an 8-bit displacement where that reaches, and a
+## 32-bit one only where it does not.
+# RUN: FileCheck --check-prefix=JUMP --input-file=a.txt %s
+# JUMP:      cmpq %rsi, %rbx
+# JUMP-NEXT: 0f 83 {{.*}} jae
+# JUMP:      cmpq (%rbp), %r15
+# JUMP-NEXT: 75 {{[0-9a-f]+}} jne
+
 ## Nothing pins the DLL itself.
 # RUN: FileCheck --check-prefix=NOSELF --input-file=a.txt %s
 # NOSELF-NOT: leaq {{.*}}(%rip), %rdx # 0x180000000

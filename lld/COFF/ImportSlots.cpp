@@ -19,6 +19,7 @@
 #include "Writer.h"
 #include "lld/Common/ErrorHandler.h"
 #include "lld/Common/Memory.h"
+#include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/BinaryFormat/COFF.h"
@@ -1313,9 +1314,33 @@ void ThreadLocalSlotCopyCallChunk::writeTo(uint8_t *buf) const {
 }
 // A routine of fixed shape whose branches name labels bound before or after
 // them, patched once the routine is written; with no buffer, only measured.
+// An x86-64 jump takes an 8-bit displacement unless longJumps lists it.
 class LabelledCode {
 public:
-  LabelledCode(uint8_t *buf, uint64_t rva) : buf(buf), rva(rva) {}
+  LabelledCode(uint8_t *buf, uint64_t rva, const BitVector &longJumps)
+      : buf(buf), rva(rva), longJumps(longJumps) {}
+
+  // Writes the routine that emit puts at buf, or only measures it with no
+  // buffer. Its jumps start with 8-bit displacements and take 32 bits only
+  // where those do not reach, as an assembler relaxes them; a jump once
+  // lengthened stays so, which bounds the loop. The layout depends on no
+  // address, so measuring and writing the routine reach the same one.
+  static uint32_t layOut(uint8_t *buf, uint64_t rva,
+                         function_ref<void(LabelledCode &)> emit) {
+    BitVector longJumps;
+    for (;;) {
+      LabelledCode a(nullptr, rva, longJumps);
+      emit(a);
+      if (!a.lengthenJumps(longJumps)) {
+        if (!buf)
+          return a.off;
+        break;
+      }
+    }
+    LabelledCode a(buf, rva, longJumps);
+    emit(a);
+    return a.finish();
+  }
 
   uint32_t newLabel() {
     labels.push_back(UINT32_MAX);
@@ -1345,14 +1370,21 @@ public:
     if (buf)
       write64le(buf + off - 8, value);
   }
-  // x86-64: jcc rel32 or jmp rel32 to label.
+  // x86-64: jcc or jmp to label, where cc is the second opcode byte of the
+  // conditional jump with a 32-bit displacement.
   void jcc(uint8_t cc, uint32_t label) {
-    put({0x0F, cc, 0, 0, 0, 0});
-    fixups.push_back({off - 4, label, Rel32});
+    if (isLong(jumps))
+      put({0x0F, cc, 0, 0, 0, 0});
+    else
+      put({uint8_t(cc - 0x10), 0});
+    addJump(label);
   }
   void jmp(uint32_t label) {
-    put({0xE9, 0, 0, 0, 0});
-    fixups.push_back({off - 4, label, Rel32});
+    if (isLong(jumps))
+      put({0xE9, 0, 0, 0, 0});
+    else
+      put({0xEB, 0});
+    addJump(label);
   }
   // AArch64: an instruction with a 19-bit (b.cond, cbz, cbnz), 14-bit (tbz,
   // tbnz) or 26-bit (b) offset to label.
@@ -1404,6 +1436,9 @@ public:
       assert(target != UINT32_MAX && "unbound label");
       int64_t delta = int64_t(target) - int64_t(f.at);
       switch (f.kind) {
+      case Rel8:
+        buf[f.at] = uint8_t(delta - 1);
+        break;
       case Rel32:
         write32le(buf + f.at, uint32_t(delta - 4));
         break;
@@ -1429,16 +1464,44 @@ public:
   uint32_t off = 0;
 
 private:
-  enum Kind { Rel32, Imm19, Imm14, Imm26 };
+  enum Kind { Rel8, Rel32, Imm19, Imm14, Imm26 };
   struct Fixup {
     uint32_t at;
     uint32_t label;
     Kind kind;
+    // The number of the jump, counted in the order the routine puts them.
+    uint32_t jump = 0;
   };
   void branch(uint32_t insn, uint32_t label, Kind kind) {
     fixups.push_back({off, label, kind});
     put32(insn);
   }
+  bool isLong(uint32_t jump) const {
+    return jump < longJumps.size() && longJumps[jump];
+  }
+  // Records the displacement of the jump just put.
+  void addJump(uint32_t label) {
+    bool wide = isLong(jumps);
+    fixups.push_back(
+        {off - (wide ? 4 : 1), label, wide ? Rel32 : Rel8, jumps++});
+  }
+  // Adds to longJumps each jump whose 8-bit displacement does not reach its
+  // label, and returns whether there was one.
+  bool lengthenJumps(BitVector &longJumps) const {
+    bool lengthened = false;
+    for (const Fixup &f : fixups) {
+      if (f.kind != Rel8 ||
+          isInt<8>(int64_t(labels[f.label]) - int64_t(f.at + 1)))
+        continue;
+      if (longJumps.size() <= f.jump)
+        longJumps.resize(jumps);
+      longJumps.set(f.jump);
+      lengthened = true;
+    }
+    return lengthened;
+  }
+  const BitVector &longJumps;
+  uint32_t jumps = 0;
   SmallVector<uint32_t, 16> labels;
   SmallVector<Fixup, 32> fixups;
 };
@@ -1716,12 +1779,12 @@ private:
 };
 
 uint32_t NamedCellFillChunk::write(uint8_t *buf) const {
-  LabelledCode a(buf, rva);
-  if (ctx.config.machine == ARM64)
-    writeARM64(a);
-  else
-    writeAMD64(a);
-  return a.finish();
+  return LabelledCode::layOut(buf, rva, [&](LabelledCode &a) {
+    if (ctx.config.machine == ARM64)
+      writeARM64(a);
+    else
+      writeAMD64(a);
+  });
 }
 
 void NamedCellFillChunk::writeAMD64(LabelledCode &a) const {
