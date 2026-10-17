@@ -40,6 +40,68 @@
 # CHECK-NEXT: [[#DONE]]: {{.*}} mov w0, #0x0
 # CHECK-NEXT: ret
 
+## A DLL that imports from an executable runs the copy the executable names
+## from its C initializer table, after the guard's check, in a frame its unwind
+## information describes.
+# RUN: lld-link -def:host.def -out:host.lib -machine:arm64
+# RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium plug.s -o plug.obj
+# RUN: lld-link -import-slots -dll -noentry plug.obj host.lib -out:plug.dll
+# RUN: llvm-objdump -d --print-imm-hex plug.dll > plug.txt
+# RUN: llvm-readobj --unwind plug.dll >> plug.txt
+# RUN: FileCheck --check-prefix=CALL --input-file=plug.txt %s
+# CALL:      180001010: {{.*}} stp x29, x30, [sp, #-0x30]!
+# CALL-NEXT: mov x29, sp
+# CALL-NEXT: ldr x9, [x18, #0x60]
+# CALL-NEXT: ldr w10, [x9, #0x50]
+# CALL-NEXT: tbz w10, #0x1, 0x[[#%x,ZERO:]]
+# CALL-NEXT: ldr x9, [x9, #0x10]
+# CALL-NEXT: ldr w10, [x9, #0x1c]
+# CALL-NEXT: mov w11, #0x79b9
+# CALL-NEXT: movk w11, #0x9e37, lsl #16
+# CALL-NEXT: cmp w10, w11
+# CALL-NEXT: b.ne 0x[[#ZERO]]
+# CALL-NEXT: ldr w10, [x9, #0x20]
+# CALL-NEXT: add x15, x9, x10
+# CALL-NEXT: adrp x16, 0x180002000
+# CALL-NEXT: ldr x16, [x16]
+# CALL-NEXT: blr x16
+# CALL-NEXT: blr x15
+# CALL-NEXT: [[#ZERO]]: {{.*}} mov w0, #0x0
+# CALL-NEXT: mov sp, x29
+# CALL-NEXT: ldp x29, x30, [sp], #0x30
+# CALL-NEXT: ret
+# CALL:      Function: 0x180001010
+# CALL:      Prologue [
+# CALL-NEXT:   0xe1 ; mov fp, sp
+# CALL-NEXT:   0x85 ; stp x29, x30, [sp, #-48]!
+# CALL-NEXT:   0xe4 ; end
+
+#--- host.def
+LIBRARY host.exe
+EXPORTS
+  hostfn
+
+#--- plug.s
+  .text
+  .globl dllmain
+dllmain:
+  b hostfn
+## The guard's check pointer, as the load configuration provides it, at the
+## start of .rdata.
+  .section .rdata,"dr"
+  .globl __guard_check_icall_fptr
+  .p2align 3
+__guard_check_icall_fptr:
+  .quad 0
+  .section .CRT$XIA,"dr"
+  .globl __xi_a
+__xi_a:
+  .quad 0
+  .section .CRT$XIZ,"dr"
+  .globl __xi_z
+__xi_z:
+  .quad 0
+
 #--- lib.def
 LIBRARY lib.dll
 EXPORTS

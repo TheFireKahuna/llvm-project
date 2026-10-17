@@ -67,6 +67,9 @@ public:
   // Builds the copy of an executable's thread-local import slots into the main
   // thread's block.
   void createThreadLocalSlotCopy();
+  // Builds a DLL's run of the copy of the thread-local slots that the
+  // executable it imports from names.
+  void createThreadLocalSlotCopyCall();
   void check(Chunk *iatStart, uint64_t iatSize);
 
   // Whether sc is laid out apart from the other chunks of its section.
@@ -96,6 +99,16 @@ public:
   Chunk *getThreadLocalSlotCopy() const { return threadLocalSlotCopy; }
   Chunk *getThreadLocalSlotCopyPointer() const {
     return threadLocalSlotCopyPointer;
+  }
+  Chunk *getThreadLocalSlotCopyCall() const { return threadLocalSlotCopyCall; }
+  Chunk *getThreadLocalSlotCopyCallPointer() const {
+    return threadLocalSlotCopyCallPointer;
+  }
+  Chunk *getThreadLocalSlotCopyCallUnwind() const {
+    return threadLocalSlotCopyCallUnwind;
+  }
+  Chunk *getThreadLocalSlotCopyCallPdata() const {
+    return threadLocalSlotCopyCallPdata;
   }
 
 private:
@@ -146,6 +159,13 @@ private:
   // initializer table.
   Chunk *threadLocalSlotCopy = nullptr;
   Chunk *threadLocalSlotCopyPointer = nullptr;
+  // A DLL's run of that copy, its pointer in the C initializer table, and, on
+  // AArch64, where it has a frame, its unwind information and exception table
+  // entry.
+  Chunk *threadLocalSlotCopyCall = nullptr;
+  Chunk *threadLocalSlotCopyCallPointer = nullptr;
+  Chunk *threadLocalSlotCopyCallUnwind = nullptr;
+  Chunk *threadLocalSlotCopyCallPdata = nullptr;
   // The read-only output sections other than .rdata that hold in-place import
   // slots, which are laid out before .rdata, and whether a $-group of .rdata
   // holds one; either places the import address tables at the start of

@@ -811,6 +811,7 @@ void Writer::run() {
     slots.createResidualFill();
     slots.createOverrideCellFill();
     slots.createThreadLocalSlotCopy();
+    slots.createThreadLocalSlotCopyCall();
     if (ctx.kcfi.listsImports || !ctx.kcfi.listedImports.empty())
       kcfi.listThunks();
     createSections();
@@ -1227,9 +1228,21 @@ void Writer::createSections() {
     createPartialSection(".CRT$XLA$fill", data | r)
         ->chunks.push_back(slots.getThreadLocalSlotCopyPointer());
   }
-  // Right after the table's start, ahead of every other initializer: the
-  // fill of the overridable-default cells, then the residual fill, which seals
-  // the section of the cells that share a chunk with residual words.
+  // Right after the table's start, ahead of every other initializer: a DLL's
+  // run of the executable's copy of its thread-local slots, the fill of the
+  // overridable-default cells, then the residual fill, which seals the section
+  // of the cells that share a chunk with residual words.
+  if (Chunk *call = slots.getThreadLocalSlotCopyCall()) {
+    createPartialSection(".text", call->getOutputCharacteristics())
+        ->chunks.push_back(call);
+    createPartialSection(".CRT$XIA$fill", data | r)
+        ->chunks.push_back(slots.getThreadLocalSlotCopyCallPointer());
+  }
+  if (Chunk *pdata = slots.getThreadLocalSlotCopyCallPdata()) {
+    createPartialSection(".xdata", data | r)
+        ->chunks.push_back(slots.getThreadLocalSlotCopyCallUnwind());
+    createPartialSection(".pdata", data | r)->chunks.push_back(pdata);
+  }
   if (Chunk *fill = slots.getOverrideCellFill()) {
     createPartialSection(".text", fill->getOutputCharacteristics())
         ->chunks.push_back(fill);
@@ -3022,6 +3035,10 @@ void Writer::createGuardCFTables() {
   // call the copy of the thread-local slots.
   if (Chunk *copy = slots.getThreadLocalSlotCopy())
     addressTakenSyms.insert({copy, 0});
+
+  // The C initializer table calls a DLL's run of that copy.
+  if (Chunk *call = slots.getThreadLocalSlotCopyCall())
+    addressTakenSyms.insert({call, 0});
 
   // The override table's anchor names each replacement body, and each
   // forwarding thunk, whose checked dispatch from a default needs it in the
