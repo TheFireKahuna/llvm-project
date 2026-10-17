@@ -1746,22 +1746,29 @@ uint64_t WinCOFFWriter::writeObject() {
       encodeULEB128(Length << 1 | (Length && Read.NextTransfers), DataOS);
     }
     // A value-only load names the place where its load begins, and on ARM64
-    // where the adrp before it in its section begins.
+    // where the adrp before it in its section begins. An access that the
+    // records describe may be one that only reads.
+    DenseSet<SiteKey> Accesses;
+    for (auto &[Access, Site] : AccessSites)
+      Accesses.insert(Site);
     for (const WinCOFFObjectWriter::LinkValueOnly &Load :
          OWriter.LinkValueOnlyLoads) {
       auto [Sec, Index] = FindSite(Load.Site);
-      if (!Sec || !IsLoad(Sec, Index))
+      if (!Sec || (!IsLoad(Sec, Index) &&
+                   (Load.Page || !Accesses.contains(
+                                     {Sec, LinkSites[Sec][Index].Offset}))))
         continue;
+      // An ARM64 load whose adrp is not before it in its section keeps its
+      // fact with a page of zero, which no linker takes, so that it does not
+      // read the copy while other loads of the pointer that a function
+      // compares addresses from do.
       uint32_t Start = LinkSites[Sec][Index].getInstStart();
       uint64_t Page = 0;
-      if (Load.Page) {
-        if (!Load.Page->isInSection() ||
-            SectionMap.lookup(&Load.Page->getSection()) != Sec)
-          continue;
+      if (Load.Page && Load.Page->isInSection() &&
+          SectionMap.lookup(&Load.Page->getSection()) == Sec) {
         uint64_t At = Asm->getSymbolOffset(*Load.Page);
-        if (At >= Start || (Start - At) % 4)
-          continue;
-        Page = (Start - At) / 4;
+        if (At < Start && (Start - At) % 4 == 0)
+          Page = (Start - At) / 4;
       }
       raw_svector_ostream DataOS(SiteData[{Sec, LinkSites[Sec][Index].Offset}]);
       encodeULEB128(COFF::LinkSiteValueOnly, DataOS);

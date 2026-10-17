@@ -500,6 +500,13 @@ enum LinkSiteFact : uint8_t {
   // page is zero on x86-64. On ARM64, where the site is an ldr, it is the
   // distance in instructions back to the adrp that gives the ldr the page of
   // the pointer, which only that ldr reads.
+  //
+  // On a site that LinkSiteFusedAccess describes, with value zero, the access
+  // only reads memory, neither volatile nor atomic, through the register of a
+  // load of the import pointer of data that never changes, so that a linker
+  // may make it read the image's own copy directly while the load stays for
+  // what else reads the register: on ARM64 by a load from an offset from its
+  // own address.
   LinkSiteValueOnly = 7,
 };
 
