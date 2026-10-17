@@ -18,6 +18,7 @@
 // C-SAME: "-defaultlib:libunwind.dll.lib"
 // C-SAME: "-defaultlib:clang_rt.builtins{{[^"]*}}.lib"
 // C-SAME: "-defaultlib:clang_rt.wincrt{{(-x86_64)?}}.lib"
+// C-SAME: "-defaultlib:clang_rt.wincrt_dynamic{{[^"]*}}.lib"
 // C-SAME: "-defaultlib:clang_rt.ucrt_memory{{[^"]*}}.lib"
 // C-SAME: "-defaultlib:ucrt.lib" "-defaultlib:kernel32.lib"
 // C-SAME: "-defaultlib:ntdll.lib" "-defaultlib:oldnames.lib"
@@ -41,6 +42,15 @@
 // RUN:   | FileCheck --check-prefix=NO-UNWIND %s \
 // RUN:       --implicit-check-not=libunwind
 // NO-UNWIND: "-defaultlib:clang_rt.builtins{{[^"]*}}.lib"
+
+// -static links the runtimes' archives, wincrt's process-wide parts included,
+// in place of their DLLs' import libraries.
+// RUN: %clangxx -### --target=x86_64-unknown-windows-itanium %s -static 2>&1 \
+// RUN:   | FileCheck --check-prefix=STATIC %s --implicit-check-not=.dll.lib \
+// RUN:       --implicit-check-not=wincrt_dynamic
+// STATIC:      "-defaultlib:libc++.lib" "-defaultlib:libunwind.lib"
+// STATIC-SAME: "-defaultlib:clang_rt.wincrt{{(-x86_64)?}}.lib"
+// STATIC-SAME: "-defaultlib:clang_rt.wincrt_static{{[^"]*}}.lib"
 
 // A DLL's import library is named as the runtimes' are, beside its archive.
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium %s -shared \

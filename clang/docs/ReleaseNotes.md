@@ -948,7 +948,9 @@ features cannot lower the translation-unit ABI level;
   passing libc++, libunwind, compiler-rt, the Universal CRT and the system
   import libraries as default libraries, names a DLL's import library
   ``name.dll.lib``, and resolves ``-lname`` to ``libname.dll.lib`` or
-  ``libname.lib`` before ``name.lib``. 32-bit x86 and Arm ``windows-itanium``
+  ``libname.lib`` before ``name.lib``. Every image takes the process's
+  termination registries from compiler-rt's ``clang_rt.wincrt_dynamic.dll``,
+  or with ``-static`` from ``clang_rt.wincrt_static.lib``. 32-bit x86 and Arm ``windows-itanium``
   targets keep the cross-compiling toolchain.
 
 - Added a toolchain for the x86-64 and AArch64 ``windows-ntposix`` targets:

@@ -1,0 +1,35 @@
+LIBRARY ucrtbase.dll
+EXPORTS
+    ; Functions exported from ucrtbase.dll but absent from the SDK's ucrt.lib.
+    ; Microsoft supplies them through vcruntime.lib, which this target never
+    ; links. The driver adds this import library to every compiler-rt link.
+
+    ; Compiler-generated memory operations.
+    memcpy
+    memmove
+    memset
+    memcmp
+    memchr
+
+    ; String scans declared by the vcruntime_string.h wrapper.
+    strchr
+    strrchr
+    strstr
+    wcschr
+    wcsrchr
+    wcsstr
+
+    ; ucrtbase's setjmp is the vcruntime intrinsic implementation: it records
+    ; the frame address clang passes as the hidden second argument, and its
+    ; longjmp unwinds with RtlUnwindEx, which keeps CET shadow stacks
+    ; consistent. The setjmp.h wrapper names setjmp as _setjmp.
+    setjmp
+    longjmp
+    _setjmp EXPORTAS setjmp
+
+    ; SEH personality routine referenced by __try frames.
+    __C_specific_handler
+
+    ; Pure virtual call handler state, owned by UCRT.
+    _get_purecall_handler
+    _set_purecall_handler

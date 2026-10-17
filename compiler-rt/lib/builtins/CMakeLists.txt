@@ -74,7 +74,6 @@ include(builtin-config-ix)
 include(CMakeDependentOption)
 include(CMakePushCheckState)
 include(CheckAssemblerFlag)
-include(DetectWindowsItanium)
 
 option(COMPILER_RT_BUILTINS_HIDE_SYMBOLS
   "Do not export any symbols from the static library." ON)
@@ -1296,7 +1295,10 @@ endif()
 
 cmake_dependent_option(COMPILER_RT_BUILD_CRT "Build crtbegin.o/crtend.o" ON "COMPILER_RT_HAS_CRT" OFF)
 
-if (COMPILER_RT_BUILD_CRT)
+if (COMPILER_RT_BUILD_CRT AND WIN32_ITANIUM)
+  add_subdirectory(${COMPILER_RT_SOURCE_DIR}/lib/wincrt
+                   ${CMAKE_CURRENT_BINARY_DIR}/wincrt)
+elseif (COMPILER_RT_BUILD_CRT)
   add_compiler_rt_component(crt)
 
   option(COMPILER_RT_CRT_USE_EH_FRAME_REGISTRY "Use eh_frame in crtbegin.o/crtend.o" ON)
