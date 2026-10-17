@@ -1503,8 +1503,10 @@ static constexpr uint32_t ldrInLoadOrderModuleList = 0x10;
 // outlive the image that may have registered its destructor. Read-only
 // cells are written between two protection calls, as the fill of
 // overridable-default cells writes them. The loader holds its lock over the
-// initializers and changes the list only under it. It returns 0, or the
-// status of a protection call that failed.
+// initializers and changes the list only under it. A table, its buckets and
+// the words it names are read only inside the image that names it, and a
+// probe visits each bucket at most once. It returns 0, or the status of a
+// protection call or a pin that failed.
 class VagueSearchFillChunk : public NonSectionCodeChunk {
 public:
   VagueSearchFillChunk(COFFLinkerContext &ctx, VagueBindListChunk *list,
@@ -1599,7 +1601,8 @@ void VagueSearchFillChunk::writeAMD64(LabelledCode &a) const {
            next = a.newLabel(), store = a.newLabel(), skip = a.newLabel(),
            shared = a.newLabel(), finish = a.newLabel(), zero = a.newLabel(),
            done = a.newLabel(), parent = a.newLabel(), importer = a.newLabel(),
-           found = a.newLabel(), delayLoaders = a.newLabel();
+           found = a.newLabel(), delayLoaders = a.newLabel(),
+           pinFailed = a.newLabel(), pinStatus = a.newLabel();
   // NtProtectVirtualMemory(-1, &base, &size, r9d, &old), with base, size and
   // old at rsp + 0x30, 0x38 and 0x40.
   auto callProtect = [&] {
@@ -1681,11 +1684,25 @@ void VagueSearchFillChunk::writeAMD64(LabelledCode &a) const {
   a.put({0x81, 0x7A, uint8_t(vagueOfferTableOffset), 0, 0, 0, 0});
   a.imm32(vagueOfferTableTag);
   a.jcc(0x85, nextModule);
-  // The table in r8, if inside the image.
+  // The table in r8, if inside the image, and the bytes of the image from it
+  // in r10, which its buckets and its list must fit in.
   a.put({0x44, 0x8B, 0x42, uint8_t(vagueOfferTableOffset + 4)}); // mov r8d
   a.put({0x45, 0x3B, 0x47, uint8_t(ldrEntrySizeOfImage)}); // cmp r8d, [r15+n]
   a.jcc(0x83, nextModule);                                 // jae
+  a.put({0x45, 0x8B, 0x57, uint8_t(ldrEntrySizeOfImage)}); // mov r10d, [r15+n]
+  a.put({0x45, 0x29, 0xC2});                               // sub r10d, r8d
   a.put({0x49, 0x01, 0xD0});                               // add r8, rdx
+  a.put({0x41, 0x8B, 0x40, 0x04}); // mov eax, [r8 + 4]   the mask
+  a.put({0x48, 0xFF, 0xC0});       // inc rax
+  a.put({0x48, 0xC1, 0xE0, 0x04}); // shl rax, 4
+  a.put({0x48, 0x83, 0xC0, 0x10}); // add rax, 16
+  a.put({0x4C, 0x39, 0xD0});       // cmp rax, r10
+  a.jcc(0x87, nextModule);         // ja
+  a.put({0x41, 0x8B, 0x40, 0x08}); // mov eax, [r8 + 8]
+  a.put({0x41, 0x8B, 0x48, 0x0C}); // mov ecx, [r8 + 12]
+  a.put({0x48, 0x8D, 0x04, 0xC1}); // lea rax, [rcx + rax * 8]
+  a.put({0x4C, 0x39, 0xD0});       // cmp rax, r10
+  a.jcc(0x87, nextModule);         // ja
   // test byte ptr [r15 + flags], ProcessStaticImport; jnz .probe
   a.put({0x41, 0xF6, 0x47, uint8_t(ldrEntryFlags),
          uint8_t(ldrProcessStaticImport)});
@@ -1735,12 +1752,14 @@ void VagueSearchFillChunk::writeAMD64(LabelledCode &a) const {
   a.put({0x49, 0x83, 0xC1, 0x08}); // add r9, 8
   a.put({0xFF, 0xC9});             // dec ecx
   a.jmp(delayLoad);
-  // The entity's home bucket, then each bucket until a free one.
+  // The entity's home bucket, then each bucket until a free one, at most
+  // once each.
   a.bind(probe);
   a.put({0x41, 0x8B, 0x08});       // mov ecx, [r8]   the shift
   a.put({0x4C, 0x89, 0xE0});       // mov rax, r12
   a.put({0x48, 0xD3, 0xE8});       // shr rax, cl
   a.put({0x45, 0x8B, 0x48, 0x04}); // mov r9d, [r8 + 4]   the mask
+  a.put({0x44, 0x89, 0xC9});       // mov ecx, r9d
   a.bind(bucket);
   a.put({0x44, 0x21, 0xC8});             // and eax, r9d
   a.put({0x49, 0x89, 0xC2});             // mov r10, rax
@@ -1751,19 +1770,30 @@ void VagueSearchFillChunk::writeAMD64(LabelledCode &a) const {
   a.jcc(0x84, nextModule);
   a.put({0x4D, 0x39, 0xE3}); // cmp r11, r12
   a.jcc(0x84, hit);
-  a.put({0xFF, 0xC0}); // inc eax
+  a.put({0xFF, 0xC0});       // inc eax
+  a.put({0x83, 0xE9, 0x01}); // sub ecx, 1
+  a.jcc(0x82, nextModule);   // jb
   a.jmp(bucket);
 
-  // The instance in r13; a null word binds nothing.
+  // The instance in r13, from a word inside the image; a null word binds
+  // nothing.
   a.bind(hit);
   a.put({0x41, 0x8B, 0x42, 0x08}); // mov eax, [r10 + 8]
+  a.put({0x48, 0x8D, 0x48, 0x08}); // lea rcx, [rax + 8]
+  a.put({0x45, 0x8B, 0x5F, uint8_t(ldrEntrySizeOfImage)}); // mov r11d, [r15+n]
+  a.put({0x4C, 0x39, 0xD9});                               // cmp rcx, r11
+  a.jcc(0x87, nextModule);                                 // ja
   a.put({0x4C, 0x8B, 0x2C, 0x02}); // mov r13, [rdx + rax]
   a.put({0x4D, 0x85, 0xED});       // test r13, r13
   a.jcc(0x84, skip);
   // LdrAddRefDll(LDR_ADDREF_DLL_PIN, module), then once this DLL.
+  // A pin that fails ends the search with its status, which fails the DLL's
+  // initialization rather than leave it free to unload.
   a.put({0xB9, 0x01, 0, 0, 0});    // mov ecx, 1
   a.put({0xFF, 0x15, 0, 0, 0, 0}); // call [rip + LdrAddRefDll]
   a.disp(addRef->getRVA());
+  a.put({0x85, 0xC0});                   // test eax, eax
+  a.jcc(0x88, pinFailed);                // js .pinFailed
   a.put({0x41, 0x0F, 0xBA, 0xEE, 0x01}); // bts r14d, 1
   a.jcc(0x82, next);                     // jc .next
   a.put({0xB9, 0x01, 0, 0, 0});          // mov ecx, 1
@@ -1771,6 +1801,8 @@ void VagueSearchFillChunk::writeAMD64(LabelledCode &a) const {
   a.disp(0);
   a.put({0xFF, 0x15, 0, 0, 0, 0}); // call [rip + LdrAddRefDll]
   a.disp(addRef->getRVA());
+  a.put({0x85, 0xC0});    // test eax, eax
+  a.jcc(0x88, pinFailed); // js .pinFailed
 
   // Each cell of the entity.
   a.bind(next);
@@ -1820,7 +1852,22 @@ void VagueSearchFillChunk::writeAMD64(LabelledCode &a) const {
   a.disp(0);
   a.put({0xFF, 0x15, 0, 0, 0, 0}); // call [rip + LdrAddRefDll]
   a.disp(addRef->getRVA());
+  a.put({0x85, 0xC0});    // test eax, eax
+  a.jcc(0x88, pinFailed); // js .pinFailed
   a.jmp(skip);
+
+  // The pin's status, once the read-only cells are protected again.
+  a.bind(pinFailed);
+  a.put({0x89, 0xC3}); // mov ebx, eax
+  if (readOnly) {
+    a.put({0x41, 0xF6, 0xC6, 0x01}); // test r14b, 1
+    a.jcc(0x84, pinStatus);
+    a.put({0x44, 0x8B, 0x4C, 0x24, 0x40}); // mov r9d, [rsp + 0x40]
+    callProtect();
+  }
+  a.bind(pinStatus);
+  a.put({0x89, 0xD8}); // mov eax, ebx
+  a.jmp(done);
 
   a.bind(finish);
   if (readOnly) {
@@ -1851,7 +1898,8 @@ void VagueSearchFillChunk::writeARM64(LabelledCode &a) const {
            next = a.newLabel(), store = a.newLabel(), skip = a.newLabel(),
            shared = a.newLabel(), finish = a.newLabel(), zero = a.newLabel(),
            done = a.newLabel(), parent = a.newLabel(), importer = a.newLabel(),
-           found = a.newLabel(), delayLoaders = a.newLabel();
+           found = a.newLabel(), delayLoaders = a.newLabel(),
+           pinFailed = a.newLabel(), pinStatus = a.newLabel();
   // The arguments of NtProtectVirtualMemory other than the protection, with
   // base, size and old at sp + 88, 96 and 104; then the call.
   auto callProtect = [&] {
@@ -1933,7 +1981,21 @@ void VagueSearchFillChunk::writeARM64(LabelledCode &a) const {
   a.put32(0xB940032C | ldrEntrySizeOfImage / 4 << 10); // ldr w12, [x25, #n]
   a.put32(0x6B0C017F);                                 // cmp w11, w12
   a.branch19(0x54000002, nextModule);                  // b.hs
-  a.put32(0x8B0B014B);                                 // add x11, x10, x11
+  // The bytes of the image from the table in w17, which its buckets and its
+  // list must fit in.
+  a.put32(0x4B0B0191);                // sub w17, w12, w11
+  a.put32(0x8B0B014B);                // add x11, x10, x11
+  a.put32(0xB940056C);                // ldr w12, [x11, #4]   the mask
+  a.put32(0x9100058C);                // add x12, x12, #1
+  a.put32(0xD37CED8C);                // lsl x12, x12, #4
+  a.put32(0x9100418C);                // add x12, x12, #16
+  a.put32(0xEB11019F);                // cmp x12, x17
+  a.branch19(0x54000008, nextModule); // b.hi
+  a.put32(0xB940096C);                // ldr w12, [x11, #8]
+  a.put32(0xB9400D6D);                // ldr w13, [x11, #12]
+  a.put32(0x8B0C0DAC);                // add x12, x13, x12, lsl #3
+  a.put32(0xEB11019F);                // cmp x12, x17
+  a.branch19(0x54000008, nextModule); // b.hi
   // ldr w12, [x25, #flags]; tbnz w12, #ProcessStaticImport, .probe
   a.put32(0xB940032C | ldrEntryFlags / 4 << 10);
   a.branch14(0x3700000C | llvm::countr_zero(ldrProcessStaticImport) << 19,
@@ -1983,11 +2045,13 @@ void VagueSearchFillChunk::writeARM64(LabelledCode &a) const {
   a.put32(0x910021AD);                // add x13, x13, #8
   a.put32(0x5100058C);                // sub w12, w12, #1
   a.branch26(0x14000000, delayLoad);
-  // The entity's home bucket, then each bucket until a free one.
+  // The entity's home bucket, then each bucket until a free one, at most
+  // once each.
   a.bind(probe);
   a.put32(0xB940016C); // ldr w12, [x11]   the shift
   a.put32(0x9ACC26CD); // lsr x13, x22, x12
   a.put32(0xB940056E); // ldr w14, [x11, #4]   the mask
+  a.put32(0x2A0E03E9); // mov w9, w14
   a.bind(bucket);
   a.put32(0x0A0E01AD);                // and w13, w13, w14
   a.put32(0x8B0D116F);                // add x15, x11, x13, lsl #4
@@ -1996,22 +2060,32 @@ void VagueSearchFillChunk::writeARM64(LabelledCode &a) const {
   a.put32(0xEB16021F);                // cmp x16, x22
   a.branch19(0x54000000, hit);        // b.eq
   a.put32(0x110005AD);                // add w13, w13, #1
+  a.put32(0x71000529);                // subs w9, w9, #1
+  a.branch19(0x54000003, nextModule); // b.lo
   a.branch26(0x14000000, bucket);
 
-  // The instance in x23; a null word binds nothing.
+  // The instance in x23, from a word inside the image; a null word binds
+  // nothing.
   a.bind(hit);
-  a.put32(0xB94019E9);          // ldr w9, [x15, #24]
+  a.put32(0xB94019E9);                                 // ldr w9, [x15, #24]
+  a.put32(0xB940032C | ldrEntrySizeOfImage / 4 << 10); // ldr w12, [x25, #n]
+  a.put32(0x91002130);                                 // add x16, x9, #8
+  a.put32(0xEB0C021F);                                 // cmp x16, x12
+  a.branch19(0x54000008, nextModule);                  // b.hi
   a.put32(0xF8696957);          // ldr x23, [x10, x9]
   a.branch19(0xB4000017, skip); // cbz x23
-  // LdrAddRefDll(LDR_ADDREF_DLL_PIN, module), then once this DLL.
+  // LdrAddRefDll(LDR_ADDREF_DLL_PIN, module), then once this DLL; a pin that
+  // fails ends the search with its status.
   a.put32(0x52800020); // mov w0, #1
   a.put32(0xAA0A03E1); // mov x1, x10
   a.callImport(addRef->getRVA());
-  a.branch14(0x37080018, next); // tbnz w24, #1, .next
-  a.put32(0x321F0318);          // orr w24, w24, #2
-  a.put32(0x52800020);          // mov w0, #1
-  a.put32(0xAA1B03E1);          // mov x1, x27
+  a.branch14(0x37F80000, pinFailed); // tbnz w0, #31, .pinFailed
+  a.branch14(0x37080018, next);      // tbnz w24, #1, .next
+  a.put32(0x321F0318);               // orr w24, w24, #2
+  a.put32(0x52800020);               // mov w0, #1
+  a.put32(0xAA1B03E1);               // mov x1, x27
   a.callImport(addRef->getRVA());
+  a.branch14(0x37F80000, pinFailed); // tbnz w0, #31, .pinFailed
 
   // Each cell of the entity.
   a.bind(next);
@@ -2057,7 +2131,20 @@ void VagueSearchFillChunk::writeARM64(LabelledCode &a) const {
   a.put32(0x52800020);          // mov w0, #1
   a.put32(0xAA1B03E1);          // mov x1, x27
   a.callImport(addRef->getRVA());
+  a.branch14(0x37F80000, pinFailed); // tbnz w0, #31, .pinFailed
   a.branch26(0x14000000, skip);
+
+  // The pin's status, once the read-only cells are protected again.
+  a.bind(pinFailed);
+  a.put32(0x2A0003F3); // mov w19, w0
+  if (readOnly) {
+    a.branch14(0x36000018, pinStatus); // tbz w24, #0
+    a.put32(0xB9406BE3);               // ldr w3, [sp, #104]
+    callProtect();
+  }
+  a.bind(pinStatus);
+  a.put32(0x2A1303E0); // mov w0, w19
+  a.branch26(0x14000000, done);
 
   a.bind(finish);
   if (readOnly) {
