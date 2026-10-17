@@ -33,12 +33,22 @@
 // once; an import that does not resolve fails only when it is called, as the
 // loader's own whole-table resolution leaves it.
 //
+// The exception is an ABI contract witness, an import the linker adds so that
+// a library built with another layout of a type than the image's code uses
+// does not bind. Code never calls one, so a call through its descriptor first
+// resolves each witness that is not yet bound, as a call through it would,
+// and a witness that does not resolve fails that call, through the failure
+// hook and then the exception, before it reaches the library's code. A
+// witness that resolves stays bound, so a later call does not resolve it again.
+//
 // The hook types are those of delayimp.h, which ships with the MSVC tools
 // rather than the Windows SDK, so it is not included.
 //
 //===----------------------------------------------------------------------===//
 
 #include "wincrt.h"
+
+#include <string.h>
 
 // This file writes a protected table only while it has made the table
 // writable, and the loader brackets its own writes, so the linker may keep the
@@ -379,6 +389,17 @@ FARPROC resolveDescriptor(const IMAGE_DELAYLOAD_DESCRIPTOR *Descriptor,
   return Result;
 }
 
+// Whether a name table entry is that of an ABI contract witness, which names
+// a type's or datum's layout and its digest.
+bool isWitness(const IMAGE_THUNK_DATA &Name) {
+  if (IMAGE_SNAP_BY_ORDINAL(Name.u1.Ordinal))
+    return false;
+  const char *Proc =
+      fromRva<IMAGE_IMPORT_BY_NAME>(static_cast<DWORD>(Name.u1.AddressOfData))
+          ->Name;
+  return !strncmp(Proc, "__abiw$", 7) || !strncmp(Proc, "__abis$", 7);
+}
+
 bool hasHooks() { return __pfnDliNotifyHook2 || __pfnDliFailureHook2; }
 
 bool resolvesInImage(const IMAGE_DELAYLOAD_DESCRIPTOR *Descriptor) {
@@ -401,6 +422,9 @@ const IMAGE_DELAYLOAD_DESCRIPTOR *findDescriptor(LPCSTR DllName) {
   return nullptr;
 }
 
+bool resolveWitnesses(const IMAGE_DELAYLOAD_DESCRIPTOR *Descriptor,
+                      const IMAGE_THUNK_DATA *Slot);
+
 } // namespace
 
 extern "C" {
@@ -415,6 +439,8 @@ FARPROC WINAPI __delayLoadHelper2(const IMAGE_DELAYLOAD_DESCRIPTOR *Descriptor,
     Dli.ppfn = Entry;
     return raiseFailure(ERROR_INVALID_PARAMETER, Dli);
   }
+  if (!resolveWitnesses(Descriptor, Slot))
+    return nullptr;
 
   if (resolvesInImage(Descriptor)) {
     if (hasHooks())
@@ -496,3 +522,25 @@ HRESULT WINAPI __HrLoadAllImportsForDll(LPCSTR DllName) {
 }
 
 } // extern "C"
+
+namespace {
+
+// Resolves each ABI contract witness of the descriptor that is not yet bound,
+// unless Slot is itself one, as a call through it would. Returns false when
+// one did not resolve and no hook answered for it, after its failure was
+// reported.
+bool resolveWitnesses(const IMAGE_DELAYLOAD_DESCRIPTOR *Descriptor,
+                      const IMAGE_THUNK_DATA *Slot) {
+  auto *Iat = fromRva<IMAGE_THUNK_DATA>(Descriptor->ImportAddressTableRVA);
+  auto *Names = fromRva<const IMAGE_THUNK_DATA>(Descriptor->ImportNameTableRVA);
+  if (isWitness(Names[Slot - Iat]))
+    return true;
+  for (size_t I = 0; Names[I].u1.AddressOfData; ++I)
+    if (isUnbound(Iat[I]) && isWitness(Names[I]) &&
+        !__delayLoadHelper2(Descriptor,
+                            reinterpret_cast<FARPROC *>(&Iat[I].u1.Function)))
+      return false;
+  return true;
+}
+
+} // namespace
