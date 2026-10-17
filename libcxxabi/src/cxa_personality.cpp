@@ -1107,6 +1107,9 @@ extern "C" _LIBCXXABI_FUNC_VIS EXCEPTION_DISPOSITION
 __gxx_personality_seh0(PEXCEPTION_RECORD ms_exc, void *this_frame,
                        PCONTEXT ms_orig_context, PDISPATCHER_CONTEXT ms_disp)
 {
+#if defined(_WIN32_ITANIUM)
+  __cxxabiv1::registerSEHTranslator();
+#endif
   return _GCC_specific_handler(ms_exc, this_frame, ms_orig_context, ms_disp,
                                __gxx_personality_imp);
 }

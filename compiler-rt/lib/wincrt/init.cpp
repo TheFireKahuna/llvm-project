@@ -16,6 +16,12 @@ NTSYSAPI void NTAPI RtlSetUnhandledExceptionFilter(PTOP_LEVEL_EXCEPTION_FILTER);
 
 // A program's own math error handler, if it defines one.
 int __cdecl _matherr(struct _exception *) __attribute__((weak));
+
+// libunwind's raise functions, when it is linked into the executable, which
+// then exports neither. The array is hidden, so no import library offers it
+// for this weak reference to load.
+__attribute__((weak, visibility("hidden"))) extern const void
+    *const __unw_seh_raise_functions[2];
 }
 
 namespace {
