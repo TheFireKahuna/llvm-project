@@ -81,7 +81,11 @@ def main():
         new_syms_list, _ = util.filter_stdlib_symbols(new_syms_list)
 
     for symbol in new_syms_list:
-        if symbol["is_defined"] and 'B' in symbol["name"]:
+        # A PE export may repeat a mangled name with a suffix after a '$',
+        # which no mangled name contains, such as the digest of the layout of
+        # the type a type_info object describes.
+        mangled = symbol["name"].split("$")[0]
+        if symbol["is_defined"] and 'B' in mangled:
             print(f"Symbol {symbol['name']} contains an ABI tag!")
             sys.exit(1)
 
