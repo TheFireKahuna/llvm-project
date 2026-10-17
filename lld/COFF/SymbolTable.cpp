@@ -456,9 +456,16 @@ bool SymbolTable::isThreadLocal(Symbol *s) const {
   return threadLocalBitcodeData.contains(s);
 }
 
+StringRef SymbolTable::getRecordName(Symbol *s) {
+  StringRef &name = recordNames[s];
+  if (name.empty())
+    name = saver().save(s->getName() + "$tls");
+  return name;
+}
+
 StringRef SymbolTable::getSharedName(Symbol *s) {
   if (isThreadLocal(s))
-    return saver().save(s->getName() + "$tls");
+    return getRecordName(s);
   return s->getName();
 }
 
@@ -487,7 +494,7 @@ DefinedRegular *SymbolTable::getRecordVariable(Symbol *s) {
 }
 
 Defined *SymbolTable::getThreadLocalRecord(DefinedRegular *var) {
-  StringRef name = saver().save(var->getName() + "$tls");
+  StringRef name = getRecordName(var);
   if (auto *d = dyn_cast_or_null<Defined>(find(name)))
     return d;
   auto *index = dyn_cast_or_null<Defined>(findUnderscore("_tls_index"));
@@ -1895,9 +1902,8 @@ bool SymbolTable::bindVagueSiblings() {
     }
     // The import of the owner's instance, unless the executable imports the
     // entity from a DLL already, which is then the one it reaches.
-    StringRef imp = saver().save("__imp_" + entity);
     vagueOwners[entity] = nullptr;
-    if (isa_and_nonnull<DefinedImportData>(find(imp)))
+    if (isa_and_nonnull<DefinedImportData>(find(("__imp_" + entity).str())))
       continue;
     Log(ctx) << "Importing " << entity << " from " << dll
              << ", which owns it for the program";
@@ -1924,8 +1930,8 @@ void SymbolTable::buildOverrideSlots() {
   // The words of the vague entities' owners, once their imports are read.
   for (auto &[entity, word] : vagueOwners) {
     if (!word)
-      word = dyn_cast_or_null<DefinedImportData>(
-          find(saver().save("__imp_" + entity)));
+      word =
+          dyn_cast_or_null<DefinedImportData>(find(("__imp_" + entity).str()));
     if (word)
       overrideReplacementsByName.emplace_back(entity, word);
   }

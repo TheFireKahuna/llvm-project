@@ -619,6 +619,10 @@ private:
                             llvm::SmallVectorImpl<SectionChunk *> &chunks,
                             llvm::SmallVectorImpl<DefinedRegular *> &members,
                             bool liveOnly);
+  // The name of the record of the thread-local variable s, which the link
+  // keeps once, since every pass that shares s asks for it.
+  StringRef getRecordName(Symbol *s);
+  llvm::DenseMap<Symbol *, StringRef> recordNames;
   /// Inserts symbol if not already present.
   std::pair<Symbol *, bool> insert(StringRef name);
   /// Same as insert(Name), but also sets isUsedInRegularObj.
