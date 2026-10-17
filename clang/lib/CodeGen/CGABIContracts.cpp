@@ -310,6 +310,14 @@ void CodeGenABIContracts::encodeType(QualType T, llvm::raw_ostream &OS) {
     OS << (BT->isSigned() ? 'n' : 'N');
     encodeULEB128(BT->getNumBits(), OS);
     EncodeSize();
+  } else if (T->isSpecificBuiltinType(BuiltinType::Char_S) ||
+             T->isSpecificBuiltinType(BuiltinType::Char_U) ||
+             T->isWideCharType()) {
+    // Whether plain char and wchar_t are signed is an option that changes
+    // neither the type, its layout nor its mangling, so objects built with and
+    // without it agree, as they link together on ELF.
+    OS << 'h';
+    EncodeSize();
   } else if (T->isIntegerType()) {
     OS << (T->isSignedIntegerType() ? 'i' : 'u');
     EncodeSize();

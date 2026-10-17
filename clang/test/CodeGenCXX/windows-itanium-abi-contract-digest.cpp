@@ -18,7 +18,7 @@
 // else: a field's name does not change it, and a field more does. The locator,
 // the first 11 characters, is the hash of the class's name alone. The digest is
 // pinned, since an image built by one compiler binds to one another compiler
-// built: a change to the canonical form takes a new schema version. An
+// built. An
 // enumeration is its underlying type, whether the unit defines it or only
 // declares it with a fixed one.
 
