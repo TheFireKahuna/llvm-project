@@ -215,8 +215,19 @@ if (LIBCXX_SUPPORTS_SHARED_LIBRARY)
   endif()
 
   # The shared library checks the executable's override table when it loads.
+  # When it holds libc++abi, its import library carries libc++abi's copies of
+  # the type_info vtables, which every image linked against it takes.
   if (WIN32_ITANIUM OR WIN32_NTPOSIX)
     target_sources(cxx_shared PRIVATE support/win32/override_table.cpp)
+    if (LIBCXX_STATICALLY_LINK_ABI_IN_SHARED_LIBRARY AND TARGET cxxabi_support_vtables)
+      add_custom_command(TARGET cxx_shared POST_BUILD
+        COMMAND ${CMAKE_AR} rs $<TARGET_LINKER_FILE:cxx_shared> $<TARGET_OBJECTS:cxxabi_support_vtables>
+        COMMENT "Adding the type_info vtables to $<TARGET_LINKER_FILE_NAME:cxx_shared>"
+        VERBATIM)
+      set_property(TARGET cxx_shared APPEND PROPERTY
+        LINK_DEPENDS $<TARGET_OBJECTS:cxxabi_support_vtables>)
+      add_dependencies(cxx_shared cxxabi_support_vtables)
+    endif()
   endif()
 
   # Maybe force some symbols to be weak, not weak or not exported.

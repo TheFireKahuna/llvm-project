@@ -235,6 +235,24 @@ if (LIBCXXABI_SUPPORTS_SHARED_LIBRARY)
     PUBLIC cxxabi_shared_objects runtimes-libc-shared
     PRIVATE ${LIBCXXABI_LIBRARIES})
 
+  # On Windows Itanium and NT-POSIX, every image linked against the DLL takes
+  # its own copies of the type_info vtables from a regular member of the
+  # import library, which libc++'s import library also carries when its DLL
+  # holds libc++abi.
+  if (WIN32_ITANIUM OR WIN32_NTPOSIX)
+    add_library(cxxabi_support_vtables OBJECT EXCLUDE_FROM_ALL support_vtables.cpp)
+    set_target_properties(cxxabi_support_vtables
+      PROPERTIES COMPILE_FLAGS "${LIBCXXABI_COMPILE_FLAGS}")
+    target_link_libraries(cxxabi_support_vtables PRIVATE cxxabi-headers)
+    add_custom_command(TARGET cxxabi_shared POST_BUILD
+      COMMAND ${CMAKE_AR} rs $<TARGET_LINKER_FILE:cxxabi_shared> $<TARGET_OBJECTS:cxxabi_support_vtables>
+      COMMENT "Adding the type_info vtables to $<TARGET_LINKER_FILE_NAME:cxxabi_shared>"
+      VERBATIM)
+    set_property(TARGET cxxabi_shared APPEND PROPERTY
+      LINK_DEPENDS $<TARGET_OBJECTS:cxxabi_support_vtables>)
+    add_dependencies(cxxabi_shared cxxabi_support_vtables)
+  endif()
+
   # TODO: Move this to libc++'s HandleLibCXXABI.cmake since this is effectively trying to control
   #       what libc++ re-exports.
   add_library(cxxabi-reexports INTERFACE)
