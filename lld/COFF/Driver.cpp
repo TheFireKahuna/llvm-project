@@ -2000,6 +2000,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
         config->warnLongSectionNames = false;
       else if (s == "importeddllmain")
         config->warnImportedDllMain = false;
+      else if (s == "undescribedaddress")
+        config->warnUndescribedAddress = false;
       // Other warning numbers are ignored.
     }
   }

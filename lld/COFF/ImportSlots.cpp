@@ -1171,6 +1171,9 @@ struct SlotScan {
   DenseMap<Symbol *, size_t> localFunctionRefs;
   // The symbols of the object being scanned that have been reported.
   SmallPtrSet<Symbol *, 4> reported;
+  // The symbol table indices that the guard metadata of the object being
+  // scanned lists as address-taken, once read.
+  std::optional<DenseSet<uint32_t>> guardFids;
   // The fields of the section being checked.
   std::vector<Span> spans;
 };
@@ -1280,6 +1283,7 @@ void ImportSlotContents::bind() {
     if (&file->symtab != &ctx.symtab)
       continue;
     scan.reported.clear();
+    scan.guardFids.reset();
     for (Chunk *c : file->getChunks()) {
       auto *sc = dyn_cast_or_null<SectionChunk>(c);
       if (sc && sc->live &&
@@ -1288,6 +1292,34 @@ void ImportSlotContents::bind() {
     }
   }
   resolve(scan);
+}
+
+// x86-64 cl.exe has no inline assembly, and MSVC's control-flow guard fails at
+// run time if a function-typed address-take is missing from an object's
+// .gfids$y table. So in an object built with /guard:cf, a REL32 against a
+// function-typed symbol that the table does not list is a branch. A symbol
+// declared as data, which keeps a function out of the table, proves nothing.
+static bool isGuardMetadataBranch(std::optional<DenseSet<uint32_t>> &fids,
+                                  ObjFile *file, const coff_relocation &rel) {
+  if (!file->hasGuardCF())
+    return false;
+  Expected<COFFSymbolRef> sym =
+      file->getCOFFObj()->getSymbol(rel.SymbolTableIndex);
+  if (!sym) {
+    consumeError(sym.takeError());
+    return false;
+  }
+  if (sym->getComplexType() != COFF::IMAGE_SYM_DTYPE_FUNCTION)
+    return false;
+  if (!fids) {
+    fids.emplace();
+    for (SectionChunk *c : file->getGuardFidChunks()) {
+      ArrayRef<uint8_t> data = c->getContents();
+      for (size_t i = 0; i + 4 <= data.size(); i += 4)
+        fids->insert(support::endian::read32le(data.data() + i));
+    }
+  }
+  return !fids->contains(rel.SymbolTableIndex);
 }
 
 // A function that a DLL the image imports from offers, and whose address an
@@ -1301,6 +1333,7 @@ void ImportSlotContents::keepUndescribedFunctionAddresses() {
   for (ObjFile *file : ctx.objFileInstances) {
     if (&file->symtab != &ctx.symtab || (!arm64 && file->describesSites()))
       continue;
+    std::optional<DenseSet<uint32_t>> guardFids;
     for (Chunk *c : file->getChunks()) {
       auto *sc = dyn_cast_or_null<SectionChunk>(c);
       if (!sc || !sc->live ||
@@ -1311,7 +1344,8 @@ void ImportSlotContents::keepUndescribedFunctionAddresses() {
           continue;
         Symbol *s = file->getSymbol(rel.SymbolTableIndex);
         auto it = offered.find(s);
-        if (it == offered.end())
+        if (it == offered.end() ||
+            (!arm64 && isGuardMetadataBranch(guardFids, file, rel)))
           continue;
         Warn(ctx) << file << ": may take the address of "
                   << file->symtab.printSymbol(s) << ", which "
@@ -1341,7 +1375,7 @@ void ImportSlotContents::useThunkAsAddress(SlotScan &scan, ObjFile *file,
               << ", imported from " << imp->getDLLName()
               << ", in a 32-bit field, so the image uses its import thunk "
                  "as its address";
-  else
+  else if (ctx.config.warnUndescribedAddress)
     Warn(ctx) << file << ": may take the address of "
               << file->symtab.printSymbol(s) << ", imported from "
               << imp->getDLLName()
@@ -1535,7 +1569,8 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
       switch (rel.Type) {
       case IMAGE_REL_AMD64_REL32: {
         if (!file->describesSites()) {
-          useThunkAsAddress(scan, file, s, imp);
+          if (!isGuardMetadataBranch(scan.guardFids, file, rel))
+            useThunkAsAddress(scan, file, s, imp);
           break;
         }
         std::optional<LinkSiteForm> form =

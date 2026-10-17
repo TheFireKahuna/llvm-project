@@ -364,6 +364,10 @@ struct Configuration {
   bool warnLocallyDefinedImported = true;
   bool warnDebugInfoUnusable = true;
   bool warnLongSectionNames = true;
+  // Warn of an instruction that may take the address of an imported function
+  // that an object does not describe, which gives the function its import
+  // thunk as its address.
+  bool warnUndescribedAddress = true;
   bool warnStdcallFixup = true;
   bool warnImportedDllMain = true;
   bool incremental = true;
