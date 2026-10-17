@@ -1146,6 +1146,11 @@ void IRLinker::linkNamedMDNodes() {
     // Importing the metadata will cause duplication of the stats.
     if (IsPerformingImport && NMD.getName() == "llvm.stats")
       continue;
+    // The linker options apply to the whole of the source module, whose own
+    // object carries them; a copy in the importing module would attribute them
+    // to that module's object as well.
+    if (IsPerformingImport && NMD.getName() == "llvm.linker.options")
+      continue;
 
     NamedMDNode *DestNMD = DstM.getOrInsertNamedMetadata(NMD.getName());
 
