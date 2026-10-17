@@ -2828,11 +2828,22 @@ static void markAddressTake(Symbol *ref, SymbolRVASet &usedSymbols,
   maybeAddAddressTakenFunction(usedSymbols, ref);
 }
 
+// Whether rel is a site of a call or jump, which passes the pointer's value
+// nowhere, or of a fused load, whose register only such calls read.
+static bool takesNoAddress(ObjFile *file, const SectionChunk *sc,
+                           const coff_relocation &rel, LinkSiteForm form) {
+  if (isCallOrJump(form))
+    return true;
+  const ObjFile::LinkFusion *f = file->getLinkFusion(sc, rel.VirtualAddress);
+  return f && f->isLoad;
+}
+
 // The compiler lists the addresses an object takes, but not those taken by
 // instructions it did not generate, such as inline assembly, nor the one that
 // a load through a local import pointer takes once rewritten to compute the
 // address. An object that describes its instruction sites says which
-// instructions take one: every site that is not a call or jump.
+// instructions take one: every site that is not a call or jump, nor a load
+// that only fused calls read.
 void Writer::markDescribedAddressTakes(ObjFile *file,
                                        SymbolRVASet &usedSymbols,
                                        SymbolRVASet &usedImports) {
@@ -2845,7 +2856,7 @@ void Writer::markDescribedAddressTakes(ObjFile *file,
         continue;
       std::optional<LinkSiteForm> form =
           file->getLinkSiteForm(sc, reloc.VirtualAddress);
-      if (!form || isCallOrJump(*form))
+      if (!form || takesNoAddress(file, sc, reloc, *form))
         continue;
       // A site rewritten for an import takes the address of what it now
       // reaches.
@@ -2876,12 +2887,13 @@ void Writer::markSymbolsWithRelocations(ObjFile *file,
         continue;
 
       // Where the object describes its sites, a branch takes no address, and
-      // neither does a call or jump through a pointer, which passes the
-      // pointer's value nowhere.
+      // neither does a call or jump through a pointer, nor a load that only
+      // such calls read.
       if (described && reloc.Type == IMAGE_REL_AMD64_REL32) {
         std::optional<LinkSiteForm> form =
             file->getLinkSiteForm(sc, reloc.VirtualAddress);
-        if (form ? isCallOrJump(*form) : hasPreemptibleTarget(file, sc, reloc))
+        if (form ? takesNoAddress(file, sc, reloc, *form)
+                 : hasPreemptibleTarget(file, sc, reloc))
           continue;
       }
 

@@ -899,12 +899,16 @@ bool ObjFile::readCallOnlyRefs(ArrayRef<uint8_t> payload) {
 }
 
 // Reads a group of instruction sites. Sites are found from relocations, so a
-// site at an offset with no relocation is never used.
+// site at an offset with no relocation is never used. A site's data gives
+// facts about fused calls and loads; a fact of a kind this linker does not
+// know is skipped.
 bool ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
   std::vector<LinkSite> &sites = linkRecords->sites;
+  std::vector<LinkFusion> &fusions = linkRecords->fusions;
   auto malformed = [&](const Twine &msg) {
     Err(symtab.ctx) << this << ": .llvm_link_records is malformed: " << msg;
     sites.clear();
+    fusions.clear();
     return false;
   };
   DataExtractor data(payload, /*IsLittleEndian=*/true);
@@ -928,10 +932,12 @@ bool ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
     uint32_t section = sym->getSectionNumber();
     uint64_t size = (*sec)->SizeOfRawData;
     uint64_t offset = 0;
+    size_t first = sites.size(), firstFusion = fusions.size();
     for (uint64_t i = 0; cur && i != count; ++i) {
       uint64_t site = data.getULEB128(cur);
+      StringRef siteData;
       if (site & 8)
-        data.skip(cur, data.getULEB128(cur));
+        siteData = data.getBytes(cur, data.getULEB128(cur));
       if (!cur)
         break;
       if (i != 0 && site >> 4 == 0)
@@ -946,6 +952,47 @@ bool ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
         return malformed("site past the end of section " + Twine(section));
       sites.push_back(
           {section, uint32_t(offset), static_cast<LinkSiteForm>(form)});
+
+      // Data that is not facts is skipped, as the data of a site may be.
+      DataExtractor facts(siteData, /*IsLittleEndian=*/true);
+      DataExtractor::Cursor factCur(0);
+      size_t siteFusions = fusions.size();
+      while (factCur && !facts.eof(factCur)) {
+        uint64_t kind = facts.getULEB128(factCur);
+        uint64_t value = facts.getULEB128(factCur);
+        if (!factCur)
+          break;
+        LinkFusion f{section, uint32_t(offset)};
+        if (kind == LinkSiteFusedCall) {
+          // The load's index, resolved once the section's sites are read.
+          f.load = std::min<uint64_t>(value >> 6, UINT32_MAX);
+          f.isJump = value >> 5 & 1;
+          f.reg = value & 31;
+        } else if (kind == LinkSiteFusedRead) {
+          f.isLoad = true;
+          f.nextSize = std::min<uint64_t>(value >> 1, 15);
+          f.nextTransfers = value & 1;
+        } else {
+          continue;
+        }
+        fusions.push_back(f);
+      }
+      if (Error e = factCur.takeError()) {
+        consumeError(std::move(e));
+        fusions.resize(siteFusions);
+      }
+    }
+
+    // A fused call names its load by the index of the load's site among the
+    // section's.
+    for (LinkFusion &f : MutableArrayRef(fusions).drop_front(firstFusion)) {
+      if (f.isLoad)
+        continue;
+      if (f.load >= sites.size() - first)
+        return malformed("fused call at offset 0x" +
+                         Twine::utohexstr(f.offset) + " in section " +
+                         Twine(section) + " reads a site that does not exist");
+      f.load = sites[first + f.load].offset;
     }
   }
   if (Error e = cur.takeError()) {
@@ -964,6 +1011,16 @@ bool ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
         sites[i - 1].offset >= sites[i].offset)
       return malformed("sites out of order in section " +
                        Twine(sites[i].section));
+  // A site that two facts describe keeps the first.
+  llvm::stable_sort(fusions, [](const LinkFusion &a, const LinkFusion &b) {
+    return std::tie(a.section, a.offset) < std::tie(b.section, b.offset);
+  });
+  fusions.erase(std::unique(fusions.begin(), fusions.end(),
+                            [](const LinkFusion &a, const LinkFusion &b) {
+                              return a.section == b.section &&
+                                     a.offset == b.offset;
+                            }),
+                fusions.end());
   return true;
 }
 
@@ -989,6 +1046,34 @@ ObjFile::getLinkSiteForm(const SectionChunk *sc, uint32_t offset) const {
   if (it == sites.end() || it->offset != offset)
     return std::nullopt;
   return it->form;
+}
+
+MutableArrayRef<ObjFile::LinkFusion>
+ObjFile::getLinkFusions(const SectionChunk *sc) {
+  if (!linkRecords)
+    return {};
+  MutableArrayRef<LinkFusion> fusions = linkRecords->fusions;
+  uint32_t section = sc->getSectionNumber();
+  auto [b, e] =
+      std::equal_range(fusions.begin(), fusions.end(), LinkFusion{section, 0},
+                       [](const LinkFusion &a, const LinkFusion &b) {
+                         return a.section < b.section;
+                       });
+  return fusions.slice(b - fusions.begin(), e - b);
+}
+
+const ObjFile::LinkFusion *ObjFile::getLinkFusion(const SectionChunk *sc,
+                                                  uint32_t offset) const {
+  if (!linkRecords || linkRecords->fusions.empty())
+    return nullptr;
+  ArrayRef<LinkFusion> fusions = linkRecords->fusions;
+  uint32_t section = sc->getSectionNumber();
+  auto it = llvm::partition_point(fusions, [&](const LinkFusion &f) {
+    return std::tie(f.section, f.offset) < std::tie(section, offset);
+  });
+  if (it == fusions.end() || it->section != section || it->offset != offset)
+    return nullptr;
+  return &*it;
 }
 
 bool ObjFile::isCallOnlyRef(const SectionChunk *sc, uint32_t offset) const {

@@ -477,6 +477,9 @@ void SectionChunk::writeTo(uint8_t *buf) const {
 
     applyRelocation(buf + rel.VirtualAddress, rel);
   }
+
+  if (getArch() == Triple::x86_64 && file->hasLinkFusions())
+    writeFusedCalls(this, buf);
 }
 
 bool SectionChunk::isSectionRelative(const coff_relocation &rel) const {
@@ -556,6 +559,11 @@ void SectionChunk::applyRelocation(uint8_t *off,
     slot->lookup->writeTo(off);
     return;
   }
+
+  // A fused load nothing reads reaches no symbol.
+  if (getArch() == Triple::x86_64 && file->hasLinkFusions() &&
+      writeFusedSite(this, rel, off))
+    return;
 
   auto *sym = dyn_cast_or_null<Defined>(file->getSymbol(rel.SymbolTableIndex));
   uint16_t type = rel.Type;

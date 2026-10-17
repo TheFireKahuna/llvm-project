@@ -64,6 +64,21 @@ bool relaxLocalImport(const SectionChunk *sc,
                       DefinedLocalImport *li, Defined *&sym, uint16_t &type,
                       std::optional<llvm::COFF::LinkSiteForm> &rewrite);
 
+// Decides, once local imports are bound, which fused calls go through their
+// register and which fused loads nothing reads.
+void bindFusedCalls(SymbolTable &symtab);
+
+// Writes the instruction at off in sc holding rel, where bindFusedCalls
+// decided that nothing reads a fused load. Returns whether it did, in which
+// case the instruction needs no relocation.
+bool writeFusedSite(const SectionChunk *sc,
+                    const llvm::object::coff_relocation &rel, uint8_t *off);
+
+// Writes, into the contents of sc at buf, each fused call that bindFusedCalls
+// decided becomes direct or reads its pointer. A fused call has no
+// relocation of its own.
+void writeFusedCalls(const SectionChunk *sc, uint8_t *buf);
+
 // Rewrites the described instruction of form whose REL32 field is at off, at
 // RVA p, a reference through the import pointer of a symbol at RVA s, to
 // reach the symbol directly. Returns whether the field is left for the

@@ -279,6 +279,34 @@ public:
     llvm::COFF::LinkSiteForm form;
   };
 
+  // A site the object's records describe as a call or jump through a
+  // register that a load filled with a pointer, padded to the length of the
+  // same transfer through the pointer, or as such a load, which only those
+  // calls read. Once the linker knows where each pointer leads, it decides
+  // which calls stay as they are, become direct or read the pointer, and which
+  // loads nothing reads.
+  struct LinkFusion {
+    enum CallForm : uint8_t { ThroughRegister, Direct, ThroughPointer };
+
+    uint32_t section;
+    uint32_t offset;
+    // For a call, the offset of the load's site, the register it fills, and
+    // whether the call is a jump.
+    uint32_t load = 0;
+    uint8_t reg = 0;
+    bool isJump = false;
+    // For a load, the length of the instruction that directly follows it, or
+    // zero where none is known, and whether that one transfers control or may
+    // fuse with a branch.
+    uint8_t nextSize = 0;
+    bool isLoad = false;
+    bool nextTransfers = false;
+    // The form the linker writes a call in, and whether nothing reads the
+    // load.
+    CallForm form = ThroughRegister;
+    bool dead = false;
+  };
+
   // True if the object has link-only records.
   // Whether the definition d, which this object gives in a COMDAT, has
   // default visibility: listed with that role in the object's link records,
@@ -324,6 +352,17 @@ public:
   // the object describes one.
   std::optional<llvm::COFF::LinkSiteForm>
   getLinkSiteForm(const SectionChunk *sc, uint32_t offset) const;
+
+  // The fused calls and loads of the section of sc, by offset.
+  MutableArrayRef<LinkFusion> getLinkFusions(const SectionChunk *sc);
+
+  // The fused call or load at offset in the section of sc, if any.
+  const LinkFusion *getLinkFusion(const SectionChunk *sc,
+                                  uint32_t offset) const;
+
+  bool hasLinkFusions() const {
+    return linkRecords && !linkRecords->fusions.empty();
+  }
 
   // True if the object lists every 32-bit field in data through which a
   // symbol it leaves undefined is only called, so that any other such field
@@ -469,6 +508,7 @@ private:
     bool listsCallOnly = false;
     bool listsBindings = false;
     std::vector<LinkSite> sites;
+    std::vector<LinkFusion> fusions;
     std::vector<std::pair<uint32_t, uint32_t>> callOnlyRefs;
     std::vector<LinkPin> pins;
     std::vector<LinkVTable> vtables;

@@ -12,6 +12,13 @@
 // the symbol directly, and leaves out a pointer that only rewritten
 // instructions read.
 //
+// A compiler may also describe the calls through a register that a load of an
+// import pointer fills, which it pads to the length of the same call through
+// the pointer, and the load. A call stays as it is where the pointer leads out
+// of the image, becomes direct where it leads into it, and reads the pointer
+// where it is a delay-loaded import's; a load that no call reads any longer is
+// disposed of.
+//
 //===----------------------------------------------------------------------===//
 
 #include "LocalImports.h"
@@ -22,6 +29,7 @@
 #include "Symbols.h"
 #include "lld/Common/ErrorHandler.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -320,6 +328,228 @@ bool relaxLocalImport(const SectionChunk *sc, const coff_relocation &rel,
     sym = li->getTarget();
   }
   return false;
+}
+
+// The register that the described load whose REL32 field is at off fills:
+// ModRM.reg, with REX.R, or with REX2's R3 and R4.
+static unsigned getLoadRegister(ArrayRef<uint8_t> data, uint32_t off,
+                                LinkSiteForm form) {
+  uint8_t prefix = data[off - 3];
+  unsigned reg = (data[off - 1] >> 3 & 7) | (prefix & 0x04) << 1;
+  if (form == LinkSiteLoadREX2)
+    reg |= (prefix & 0x40) >> 2;
+  return reg;
+}
+
+// Whether a fused call whose load's REL32 field is rel stays a call through
+// the register that holds its pointer: wherever it cannot bypass the pointer
+// to reach its function directly, as when the pointer leads out of the image
+// or holds an absent weak function's zero, but not through a delay-loaded
+// import's pointer, which holds the loader's stub until the first call
+// through it.
+static bool goesThroughRegister(ObjFile *file, const coff_relocation &rel) {
+  Symbol *s = file->getSymbol(rel.SymbolTableIndex);
+  if (auto *li = dyn_cast_or_null<DefinedLocalImport>(s))
+    return !canBypass(file, rel) || isZeroPointer(li);
+  if (auto *imp = dyn_cast_or_null<DefinedImportData>(s))
+    return !file->symtab.ctx.config.delayLoads.contains(
+        imp->getDLLName().lower());
+  return isa_and_nonnull<Defined>(s);
+}
+
+// Writes at out the bytes of a fused call through register reg, and returns
+// how many, or zero for a jump through a register the unwinder does not take.
+// A call ends six bytes on, where the same call through memory does, so that
+// it pushes the same return address, with segment overrides, which a call
+// through a register ignores, in front. A jump begins where the same jump
+// through memory, with REX.W, does, since the unwinder finds an epilogue by
+// the instruction that ends it and takes a jump through a register there only
+// as REX.W jmp through one of the first sixteen; int3 follows to seven bytes.
+static size_t getFusedCallBytes(uint8_t *out, bool isJump, unsigned reg) {
+  if (isJump) {
+    if (reg >= 16)
+      return 0;
+    out[0] = 0x48 | (reg >> 3 & 1); // REX.W, with B
+    out[1] = 0xFF;
+    out[2] = 0xE0 | (reg & 7);
+    memset(out + 3, 0xCC, 4);
+    return 7;
+  }
+  uint8_t call[4];
+  size_t n = 0;
+  if (reg >= 16) {
+    call[n++] = 0xD5; // REX2, with B4 and B3
+    call[n++] = (reg & 16) | (reg >> 3 & 1);
+  } else if (reg >= 8) {
+    call[n++] = 0x41; // REX.B
+  }
+  call[n++] = 0xFF;
+  call[n++] = 0xD0 | (reg & 7);
+  memset(out, 0x2E, 6 - n);
+  memcpy(out + 6 - n, call, n);
+  return 6;
+}
+
+// The REL32 relocation of sc at off, if any.
+static const coff_relocation *getRel32At(const SectionChunk *sc,
+                                         uint32_t off) {
+  ArrayRef<coff_relocation> relocs = sc->getRelocs();
+  auto it = llvm::partition_point(relocs, [&](const coff_relocation &r) {
+    return r.VirtualAddress < off;
+  });
+  if (it == relocs.end() || it->VirtualAddress != off ||
+      it->Type != IMAGE_REL_AMD64_REL32)
+    return nullptr;
+  return &*it;
+}
+
+// A fused call names the load that fills its register. Each that stays a call
+// through the register keeps its load, and a fused load that none of them
+// keeps is dead. A fact that does not describe the code, a call that is not
+// in the form described, or a register the load does not fill, is an error,
+// as a site whose bytes are not its form's is.
+void bindFusedCalls(SymbolTable &symtab) {
+  COFFLinkerContext &ctx = symtab.ctx;
+  if (symtab.machine != AMD64 || ctx.hybridSymtab)
+    return;
+  llvm::TimeTraceScope timeScope("Bind fused calls");
+  size_t calls = 0, throughRegister = 0, loads = 0, dead = 0;
+  for (ObjFile *file : ctx.objFileInstances) {
+    if (&file->symtab != &symtab || !file->hasLinkFusions())
+      continue;
+    for (Chunk *c : file->getChunks()) {
+      auto *sc = dyn_cast_or_null<SectionChunk>(c);
+      if (!sc || !sc->live)
+        continue;
+      MutableArrayRef<ObjFile::LinkFusion> fusions = file->getLinkFusions(sc);
+      if (fusions.empty())
+        continue;
+      ArrayRef<uint8_t> data = sc->getContents();
+      auto mismatch = [&](uint32_t off) {
+        Err(ctx) << file << ": the instruction at offset 0x"
+                 << Twine::utohexstr(off) << " in " << sc->getSectionName()
+                 << " is not the one its link-only record describes";
+      };
+      auto isLoad = [](std::optional<LinkSiteForm> form) {
+        return form == LinkSiteLoad || form == LinkSiteLoadREX2;
+      };
+
+      DenseSet<uint32_t> keptLoads;
+      for (ObjFile::LinkFusion &f : fusions) {
+        if (f.isLoad)
+          continue;
+        const coff_relocation *loadRel = getRel32At(sc, f.load);
+        if (!loadRel)
+          continue;
+        uint8_t bytes[7];
+        size_t size = getFusedCallBytes(bytes, f.isJump, f.reg);
+        if (!size || uint64_t(f.offset) + size > data.size() ||
+            memcmp(&data[f.offset], bytes, size) != 0) {
+          mismatch(f.offset);
+          continue;
+        }
+        std::optional<LinkSiteForm> loadForm = getDescribedSite(sc, *loadRel);
+        Symbol *s = file->getSymbol(loadRel->SymbolTableIndex);
+        if (!isLoad(loadForm) || !s ||
+            getLoadRegister(data, f.load, *loadForm) != f.reg) {
+          mismatch(f.load);
+          continue;
+        }
+        if (goesThroughRegister(file, *loadRel))
+          keptLoads.insert(f.load);
+        else if (isa<DefinedLocalImport>(s))
+          f.form = ObjFile::LinkFusion::Direct;
+        else if (isa<Defined>(s))
+          f.form = ObjFile::LinkFusion::ThroughPointer;
+        else
+          keptLoads.insert(f.load);
+        ++calls;
+        throughRegister += f.form == ObjFile::LinkFusion::ThroughRegister;
+      }
+      for (ObjFile::LinkFusion &f : fusions) {
+        if (!f.isLoad)
+          continue;
+        ++loads;
+        if (keptLoads.contains(f.offset))
+          continue;
+        if (const coff_relocation *rel = getRel32At(sc, f.offset)) {
+          if (isLoad(getDescribedSite(sc, *rel)))
+            f.dead = true;
+          else
+            mismatch(f.offset);
+        }
+        dead += f.dead;
+      }
+    }
+  }
+  if (calls || loads)
+    Log(ctx) << "Fused calls: " << throughRegister << " of " << calls
+             << " through their register; fused loads: " << dead << " of "
+             << loads << " dead";
+}
+
+// Disposes of the dead load of size bytes at start, at RVA rva, without moving
+// anything. Segment overrides there are decoded as prefixes of the
+// instruction that follows, which then executes alone, if the two together
+// are fifteen bytes or fewer, the most a processor decodes; and if that
+// instruction transfers control, only if it then crosses no 32-byte boundary
+// it did not cross before, which a branch pays for on many processors.
+// Otherwise the load becomes one no-operation of its length.
+static void disposeOfLoad(uint8_t *start, uint64_t rva, unsigned size,
+                          const ObjFile::LinkFusion &f) {
+  if (f.nextSize && size + f.nextSize <= 15 &&
+      (!f.nextTransfers || rva / 32 == (rva + size) / 32)) {
+    memset(start, 0x2E, size);
+    return;
+  }
+  static const uint8_t nop7[] = {0x0F, 0x1F, 0x80, 0x00, 0x00, 0x00, 0x00};
+  static const uint8_t nop8[] = {0x0F, 0x1F, 0x84, 0x00,
+                                 0x00, 0x00, 0x00, 0x00};
+  memcpy(start, size == 7 ? nop7 : nop8, size);
+}
+
+bool writeFusedSite(const SectionChunk *sc, const coff_relocation &rel,
+                    uint8_t *off) {
+  const ObjFile::LinkFusion *f =
+      sc->file->getLinkFusion(sc, rel.VirtualAddress);
+  if (!f || !f->isLoad || !f->dead)
+    return false;
+  // The load's prefix, opcode and ModRM byte precede its displacement.
+  LinkSiteForm form = *sc->file->getLinkSiteForm(sc, rel.VirtualAddress);
+  unsigned size = form == LinkSiteLoadREX2 ? 8 : 7;
+  disposeOfLoad(off + 4 - size, sc->getRVA() + rel.VirtualAddress + 4 - size,
+                size, *f);
+  return true;
+}
+
+// A fused call that becomes direct is written as a call through its
+// function's local import pointer would be rewritten, and one that reads its
+// pointer as the same call through memory, each in the bytes of the call
+// through memory, whose displacement follows its opcode and ModRM byte, and a
+// jump's REX.W.
+void writeFusedCalls(const SectionChunk *sc, uint8_t *buf) {
+  for (const ObjFile::LinkFusion &f : sc->file->getLinkFusions(sc)) {
+    if (f.isLoad || f.form == ObjFile::LinkFusion::ThroughRegister)
+      continue;
+    const coff_relocation *loadRel = getRel32At(sc, f.load);
+    auto *s = cast<Defined>(sc->file->getSymbol(loadRel->SymbolTableIndex));
+    unsigned disp = f.isJump ? 3 : 2;
+    uint8_t *off = buf + f.offset + disp;
+    uint64_t p = sc->getRVA() + f.offset + disp;
+    uint64_t target;
+    if (f.form == ObjFile::LinkFusion::Direct) {
+      target = cast<DefinedLocalImport>(s)->getTarget()->getRVA();
+      if (!rewriteLocalImportSite(
+              off, f.isJump ? LinkSiteJumpOnePrefix : LinkSiteCall, target, p))
+        continue;
+    } else {
+      target = s->getRVA();
+      static const uint8_t call[] = {0xFF, 0x15};
+      static const uint8_t jump[] = {0x48, 0xFF, 0x25};
+      memcpy(off - disp, f.isJump ? jump : call, disp);
+    }
+    write32le(off, target - p - 4);
+  }
 }
 
 // Whether the references of file to local import pointers are reported only if
