@@ -21,7 +21,7 @@ $comdatvar = comdat any
 define i32 @getVar() {
 ; CHECK-LABEL: getVar:
 ; CHECK:         movq __imp_var(%rip), %rax
-; CHECK-NEXT:    movl (%rax), %eax
+; CHECK:         movl (%rax), %eax
 ; MSVC-LABEL:  getVar:
 ; MSVC:          movl var(%rip), %eax
   %v = load i32, ptr @var
@@ -38,7 +38,7 @@ define i32 @getDsoLocalVar() {
 define i32 @getWeakVar() {
 ; CHECK-LABEL: getWeakVar:
 ; CHECK:         movq __imp_weakvar(%rip), %rax
-; CHECK-NEXT:    movl (%rax), %eax
+; CHECK:         movl (%rax), %eax
   %v = load i32, ptr @weakvar
   ret i32 %v
 }
@@ -46,7 +46,7 @@ define i32 @getWeakVar() {
 define i32 @getComdatVar() {
 ; CHECK-LABEL: getComdatVar:
 ; CHECK:         movq __imp_comdatvar(%rip), %rax
-; CHECK-NEXT:    movl (%rax), %eax
+; CHECK:         movl (%rax), %eax
 ; MSVC-LABEL:  getComdatVar:
 ; MSVC:          movl comdatvar(%rip), %eax
   %v = load i32, ptr @comdatvar

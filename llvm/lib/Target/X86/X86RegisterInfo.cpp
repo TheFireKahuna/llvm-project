@@ -1181,6 +1181,36 @@ bool X86RegisterInfo::getRegAllocationHints(Register VirtReg,
   if (!VRM)
     return BaseImplRetVal;
 
+  // On Windows Itanium and NT-POSIX, data that may be in another image is
+  // reached through a load of its import pointer, which the linker removes,
+  // making each access through the register direct, where the data turns
+  // out to be in the image. Loading the pointer again after a call is then
+  // free, while a callee-saved register holding it is not, so the value is
+  // kept to registers that are not callee-saved, and a live range that
+  // crosses a call is loaded again. Live-range splitting copies such a value
+  // rather than loading it again, so the copies are looked through.
+  if (ST.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+    const MachineInstr *Def = MRI->getUniqueVRegDef(VirtReg);
+    for (unsigned Depth = 0; Def && Def->isFullCopy() && Depth != 8; ++Depth) {
+      Register Src = Def->getOperand(1).getReg();
+      Def = Src.isVirtual() ? MRI->getUniqueVRegDef(Src) : nullptr;
+    }
+    if (Def && Def->getOpcode() == X86::MOV64rm) {
+      const MachineOperand &Disp = Def->getOperand(1 + X86::AddrDisp);
+      if (Disp.isGlobal() && Disp.getTargetFlags() == X86II::MO_DLLIMPORT &&
+          !isa<Function>(Disp.getGlobal())) {
+        auto IsCalleeSaved = [&](MCPhysReg Reg) {
+          return isCalleeSavedPhysReg(Reg, MF);
+        };
+        erase_if(Hints, IsCalleeSaved);
+        for (MCPhysReg Reg : Order)
+          if (!IsCalleeSaved(Reg) && !is_contained(Hints, Reg))
+            Hints.push_back(Reg);
+        return true;
+      }
+    }
+  }
+
   if (ID != X86::TILERegClassID) {
     if (DisableRegAllocNDDHints || !ST.hasNDD() ||
         !TRI.isGeneralPurposeRegisterClass(&RC))

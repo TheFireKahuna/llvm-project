@@ -2288,12 +2288,14 @@ void X86AsmPrinter::emitInstruction(const MachineInstr *MI) {
     }
   }
 
+  // The directives that describe the instruction come before the comments
+  // about it.
+  if (ImportFusion)
+    emitImportFusion(*MI);
+
   // Add comments for values loaded from constant pool.
   if (OutStreamer->isVerboseAsm())
     addConstantComments(MI, *OutStreamer);
-
-  if (ImportFusion)
-    emitImportFusion(*MI);
 
   // Add a comment about EVEX compression
   if (TM.Options.MCOptions.ShowMCEncoding) {

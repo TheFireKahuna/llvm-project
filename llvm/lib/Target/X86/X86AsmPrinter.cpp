@@ -132,17 +132,28 @@ MCSymbol *X86AsmPrinter::getImportFusionLabel(const MachineInstr *Load) {
   return Label;
 }
 
-// Tells the linker about the next instruction, a call through a register
-// that a load filled with an import pointer, or such a load, which a label
-// names for the calls. The call takes as many bytes as the same call through
-// the pointer, which the linker may make it, or a direct call: segment
-// overrides, which a call through a register ignores, come first, so that it
-// pushes the same return address.
+// Tells the linker about the next instruction, one that uses a register a
+// load filled with an import pointer, or such a load, which a label names for
+// those that use it. A call through the register takes as many bytes as the
+// same call through the pointer, which the linker may make it, or a direct
+// call: segment overrides, which a call through a register ignores, come
+// first, so that it pushes the same return address. An access through the
+// register, or an add of a constant to it, the linker may resize.
 void X86AsmPrinter::emitImportFusion(const MachineInstr &MI) {
-  auto Call = ImportFusion->getImportFusedCalls().find(&MI);
-  if (Call != ImportFusion->getImportFusedCalls().end()) {
-    auto [Load, Reg] = Call->second;
-    OutStreamer->emitCOFFLinkFusedCall(getImportFusionLabel(Load), Reg);
+  using UseKind = X86MachineFunctionInfo::ImportFusedUseKind;
+  auto Use = ImportFusion->getImportFusedUses().find(&MI);
+  if (Use != ImportFusion->getImportFusedUses().end()) {
+    auto [Load, Reg, Kind] = Use->second;
+    MCSymbol *Label = getImportFusionLabel(Load);
+    if (Kind == UseKind::Access) {
+      OutStreamer->emitCOFFLinkFusedAccess(Label, Reg);
+      return;
+    }
+    if (Kind == UseKind::Add) {
+      OutStreamer->emitCOFFLinkFusedAdd(Label, Reg);
+      return;
+    }
+    OutStreamer->emitCOFFLinkFusedCall(Label, Reg);
     if (MI.getOpcode() == X86::CALL64r) {
       // call r64 takes REX.B for the next eight registers, and REX2 for the
       // rest.
@@ -167,7 +178,7 @@ void X86AsmPrinter::emitImportFusion(const MachineInstr &MI) {
 // that ends it, which must therefore begin where it begins, so int3 follows.
 void X86AsmPrinter::emitImportFusionTail(const MachineInstr &MI) {
   if (MI.getOpcode() != X86::TAILJMPr64_REX ||
-      !ImportFusion->getImportFusedCalls().count(&MI))
+      !ImportFusion->getImportFusedUses().count(&MI))
     return;
   for (unsigned I = 0; I != 4; ++I)
     EmitAndCountInstruction(MCInstBuilder(X86::INT3));

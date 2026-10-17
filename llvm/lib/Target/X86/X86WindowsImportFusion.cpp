@@ -24,6 +24,14 @@
 // one that serves a single call in its own block saves nothing, and is folded
 // into the call.
 //
+// A load of the import pointer of data is described with each instruction
+// that reads its register only as the base of a memory operand with no index:
+// where the data is in the image, the linker makes each such operand
+// RIP-relative, and the load dead where nothing else reads the register. One whose register is next given a
+// constant, by an add or an lea, is described with that instruction: where
+// the data is in the image, the linker makes the load take the sum and the
+// add dead.
+//
 //===----------------------------------------------------------------------===//
 
 #include "X86.h"
@@ -44,6 +52,8 @@ using namespace llvm;
 
 STATISTIC(NumFused, "Number of calls described as fused with a load");
 STATISTIC(NumDeleted, "Number of import pointer loads folded into a call");
+STATISTIC(NumAccesses, "Number of accesses described as fused with a load");
+STATISTIC(NumAdds, "Number of adds described as fused with a load");
 
 namespace {
 
@@ -57,6 +67,8 @@ class X86WindowsImportFusion {
                          SmallVectorImpl<MachineBasicBlock *> &Blocks) const;
   void undefDebugValues(MachineInstr &Load, Register Reg) const;
   void moveOffBlockEnd(MachineInstr &Load, Register Reg) const;
+  bool isFusibleAccess(const MachineInstr &MI, Register Reg) const;
+  bool isFusibleAdd(const MachineInstr &MI, Register Reg) const;
 
 public:
   bool run(MachineFunction &MF, function_ref<ReachingDefInfo &()> GetRDI);
@@ -155,6 +167,14 @@ static const MachineOperand *getLoadedPointer(const MachineInstr &MI) {
   if (MI.getOpcode() != X86::MOV64rm)
     return nullptr;
   return getImportPointer(MI, 1);
+}
+
+// Whether Pointer is the import pointer of data rather than of a function.
+static bool isDataPointer(const MachineOperand &Pointer) {
+  const GlobalValue *GV = Pointer.getGlobal();
+  if (const auto *GA = dyn_cast<GlobalAlias>(GV))
+    GV = GA->getAliaseeObject();
+  return GV && !isa<Function>(GV);
 }
 
 static bool isSamePointer(const MachineOperand &A, const MachineOperand &B) {
@@ -322,32 +342,100 @@ void X86WindowsImportFusion::moveOffBlockEnd(MachineInstr &Load,
   MBB->splice(Prev, MBB, Load.getIterator());
 }
 
+// The register that the base of MI's memory operand is, with no index or
+// segment and a displacement that needs no relocation, or none.
+static Register getAccessBase(const MachineInstr &MI) {
+  const MCInstrDesc &Desc = MI.getDesc();
+  int MemOp = X86II::getMemoryOperandNo(Desc.TSFlags);
+  if (MemOp < 0)
+    return Register();
+  MemOp += X86II::getOperandBias(Desc);
+  const MachineOperand &Base = MI.getOperand(MemOp + X86::AddrBaseReg);
+  if (!Base.isReg() || MI.getOperand(MemOp + X86::AddrIndexReg).getReg() ||
+      MI.getOperand(MemOp + X86::AddrSegmentReg).getReg() ||
+      !MI.getOperand(MemOp + X86::AddrDisp).isImm())
+    return Register();
+  return Base.getReg();
+}
+
+// Whether MI reads or writes memory through Reg in a form the linker can make
+// RIP-relative: a legacy, VEX or EVEX encoding outside APX's map 4, whose
+// memory operand has Reg as its base, with no index, and that reads Reg
+// nowhere else, which the linker leaves unfilled where it makes the operand
+// RIP-relative and drops the load.
+bool X86WindowsImportFusion::isFusibleAccess(const MachineInstr &MI,
+                                             Register Reg) const {
+  const MCInstrDesc &Desc = MI.getDesc();
+  uint64_t Encoding = Desc.TSFlags & X86II::EncodingMask;
+  if ((Encoding != X86II::LEGACY && Encoding != X86II::VEX &&
+       Encoding != X86II::EVEX) ||
+      (Desc.TSFlags & X86II::OpMapMask) == X86II::T_MAP4 || MI.isBundled() ||
+      MI.isPseudo() || getAccessBase(MI) != Reg ||
+      TRI->getEncodingValue(Reg) >= 16)
+    return false;
+  int MemOp =
+      X86II::getMemoryOperandNo(Desc.TSFlags) + X86II::getOperandBias(Desc);
+  for (const auto &[I, MO] : enumerate(MI.operands())) {
+    if (I >= unsigned(MemOp) && I < unsigned(MemOp) + X86::AddrNumOperands)
+      continue;
+    if (MO.isReg() && MO.getReg() && MO.readsReg() &&
+        TRI->regsOverlap(MO.getReg(), Reg))
+      return false;
+  }
+  return true;
+}
+
+// Whether MI adds a constant to Reg, writing the sum to a register the linker
+// can name: add or sub of an immediate with the flags dead, or lea of Reg plus
+// a displacement.
+bool X86WindowsImportFusion::isFusibleAdd(const MachineInstr &MI,
+                                          Register Reg) const {
+  switch (MI.getOpcode()) {
+  case X86::ADD64ri8:
+  case X86::ADD64ri32:
+  case X86::SUB64ri8:
+  case X86::SUB64ri32:
+    return MI.getOperand(0).getReg() == Reg &&
+           MI.getOperand(1).getReg() == Reg && MI.getOperand(2).isImm() &&
+           MI.registerDefIsDead(X86::EFLAGS, TRI);
+  case X86::LEA64r:
+    return getAccessBase(MI) == Reg &&
+           TRI->getEncodingValue(MI.getOperand(0).getReg()) < 16;
+  default:
+    return false;
+  }
+}
+
 bool X86WindowsImportFusion::run(MachineFunction &MF,
                                  function_ref<ReachingDefInfo &()> GetRDI) {
   const X86Subtarget &ST = MF.getSubtarget<X86Subtarget>();
   // A thunk must make every indirect call, and LVI hardening fences each load
   // it leaves. Import call optimization wants each call through the pointer.
+  // An outlined function does not say which registers its callers read once
+  // it returns.
   if (ST.useIndirectThunkCalls() || ST.useLVILoadHardening() ||
-      MF.getFunction().getParent()->getModuleFlag("import-call-optimization"))
+      MF.getFunction().getParent()->getModuleFlag("import-call-optimization") ||
+      MF.isOutlined())
     return false;
   TII = ST.getInstrInfo();
   TRI = ST.getRegisterInfo();
 
   SmallVector<MachineInstr *, 8> Loads, MemCalls;
-  bool HasRegCalls = false;
+  bool HasRegCalls = false, HasDataLoads = false;
   for (MachineBasicBlock &MBB : MF) {
     for (MachineInstr &MI : MBB) {
       if (MI.isBundled())
         continue;
-      if (getLoadedPointer(MI))
+      if (const MachineOperand *Pointer = getLoadedPointer(MI)) {
         Loads.push_back(&MI);
-      else if (getUnfoldedOpcode(MI.getOpcode()) && getImportPointer(MI, 0))
+        HasDataLoads |= isDataPointer(*Pointer);
+      } else if (getUnfoldedOpcode(MI.getOpcode()) && getImportPointer(MI, 0))
         MemCalls.push_back(&MI);
       else if (getFoldedOpcode(MI.getOpcode()))
         HasRegCalls = true;
     }
   }
-  if (Loads.empty() || (!HasRegCalls && MemCalls.empty()))
+  if (Loads.empty() || (!HasRegCalls && MemCalls.empty() && !HasDataLoads))
     return false;
 
   // Collected before anything changes, which leaves the reaching definitions
@@ -358,16 +446,21 @@ bool X86WindowsImportFusion::run(MachineFunction &MF,
     SmallVector<MachineInstr *, 2> MemCalls;
     // The blocks after the load's on the paths to MemCalls.
     SmallVector<MachineBasicBlock *, 4> MemCallBlocks;
-    // Whether only the calls read the load's register.
+    // Whether only the calls, or for a load of the pointer of data the
+    // accesses, read the load's register.
     bool OnlyCalls;
+    // For a load of the pointer of data, the accesses through its register,
+    // which are all that read it, or the add of a constant to it.
+    SmallVector<MachineInstr *, 4> Accesses;
+    MachineInstr *Add = nullptr;
   };
   SmallVector<Fusion, 4> Work;
   SmallPtrSet<MachineInstr *, 4> FusedMemCalls;
-  ReachingDefInfo *RDI = HasRegCalls ? &GetRDI() : nullptr;
+  ReachingDefInfo *RDI = HasRegCalls || HasDataLoads ? &GetRDI() : nullptr;
   for (MachineInstr *Load : Loads) {
     Register Reg = Load->getOperand(0).getReg();
     const MachineOperand &Pointer = *getLoadedPointer(*Load);
-    Fusion F{Load, {}, {}, {}, false};
+    Fusion F{Load, {}, {}, {}, false, {}, nullptr};
 
     // A call through the register is described where the load is the only
     // definition that reaches it; any other use, a call that also passes the
@@ -408,7 +501,43 @@ bool X86WindowsImportFusion::run(MachineFunction &MF,
       FusedMemCalls.insert(Call);
       append_range(F.MemCallBlocks, Blocks);
     }
-    if (!F.RegCalls.empty() || !F.MemCalls.empty())
+    if (!F.RegCalls.empty() || !F.MemCalls.empty()) {
+      Work.push_back(std::move(F));
+      continue;
+    }
+
+    // Each access through the register of a load of the pointer of data that
+    // the load alone reaches is described; the linker removes the load only
+    // where they are all that read it. A load whose register one add reads
+    // takes the add's sum.
+    if (!isDataPointer(Pointer) || Uses.empty())
+      continue;
+    auto IsFused = [&](MachineInstr *Use) {
+      return !Use->isBundled() && isInSameSection(*Load, *Use) &&
+             RDI->getUniqueReachingMIDef(Use, Reg) == Load;
+    };
+    MachineInstr *Only = *Uses.begin();
+    if (Uses.size() == 1 && IsFused(Only) && isFusibleAdd(*Only, Reg) &&
+        Only->getParent() == Load->getParent()) {
+      F.Add = Only;
+      Work.push_back(std::move(F));
+      continue;
+    }
+    F.OnlyCalls = true;
+    for (MachineInstr *Use : Uses) {
+      if (IsFused(Use) && isFusibleAccess(*Use, Reg))
+        F.Accesses.push_back(Use);
+      else
+        F.OnlyCalls = false;
+    }
+    // Where the load stays, a RIP-relative access saves only waiting for it,
+    // at the cost of a longer encoding, which pays only next to the load,
+    // not where a loop the load was hoisted out of repeats the access.
+    if (!F.OnlyCalls)
+      llvm::erase_if(F.Accesses, [&](MachineInstr *Access) {
+        return Access->getParent() != Load->getParent();
+      });
+    if (!F.Accesses.empty())
       Work.push_back(std::move(F));
   }
   if (Work.empty())
@@ -416,9 +545,25 @@ bool X86WindowsImportFusion::run(MachineFunction &MF,
 
   X86MachineFunctionInfo *FI = MF.getInfo<X86MachineFunctionInfo>();
   SmallVector<MachineBasicBlock *, 8> LiveInBlocks;
+  using UseKind = X86MachineFunctionInfo::ImportFusedUseKind;
   for (Fusion &F : Work) {
     MachineInstr *Load = F.Load;
     Register Reg = Load->getOperand(0).getReg();
+    if (F.Add) {
+      FI->addImportFusedUse(F.Add, Load, Reg, UseKind::Add);
+      FI->addImportFusedLoad(Load, false);
+      ++NumAdds;
+      continue;
+    }
+    if (!F.Accesses.empty()) {
+      for (MachineInstr *Access : F.Accesses)
+        FI->addImportFusedUse(Access, Load, Reg, UseKind::Access);
+      NumAccesses += F.Accesses.size();
+      if (F.OnlyCalls)
+        undefDebugValues(*Load, Reg);
+      FI->addImportFusedLoad(Load, F.OnlyCalls);
+      continue;
+    }
     // A load that serves one call, in its own block, is executed as often as
     // the call, so holding the pointer saves nothing: the load goes, and the
     // call is what a compiler that never hoisted it would have emitted. One
@@ -432,7 +577,7 @@ bool X86WindowsImportFusion::run(MachineFunction &MF,
         foldCall(*Call, *Load);
         continue;
       }
-      FI->addImportFusedCall(Call, Load, Reg);
+      FI->addImportFusedUse(Call, Load, Reg, UseKind::Call);
       noteCallee(*Call, *Load);
       ++NumFused;
     }
@@ -440,7 +585,7 @@ bool X86WindowsImportFusion::run(MachineFunction &MF,
     // becomes a call through it, past uses that killed it.
     for (MachineInstr *Call : F.MemCalls) {
       MachineInstr *New = callThroughRegister(*Call, Reg);
-      FI->addImportFusedCall(New, Load, Reg);
+      FI->addImportFusedUse(New, Load, Reg, UseKind::Call);
       noteCallee(*New, *Load);
       ++NumFused;
     }
