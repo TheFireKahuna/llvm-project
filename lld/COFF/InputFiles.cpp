@@ -602,6 +602,24 @@ void ObjFile::readLinkRecords() {
       }
       continue;
     }
+    if (cur && kind == LinkRecordForwarders) {
+      DataExtractor group(contents.slice(start, size), /*IsLittleEndian=*/true);
+      DataExtractor::Cursor c(0);
+      while (c && !group.eof(c)) {
+        uint64_t forwarder = group.getULEB128(c);
+        uint64_t pointer = group.getULEB128(c);
+        if (c && forwarder < symbols.size() && pointer < symbols.size() &&
+            symbols[forwarder] && symbols[pointer])
+          symtab.forwarders.push_back(
+              {this, symbols[forwarder], symbols[pointer]});
+      }
+      if (Error e = c.takeError()) {
+        Err(symtab.ctx) << this << ": .llvm_link_records is malformed: "
+                        << std::move(e);
+        return;
+      }
+      continue;
+    }
     if (cur && kind == LinkRecordBinding) {
       linkRecords->listsBindings = true;
       DataExtractor group(contents.slice(start, size), /*IsLittleEndian=*/true);

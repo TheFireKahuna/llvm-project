@@ -139,6 +139,21 @@ public:
   // liveness is decided, which keeps the definition.
   void bindImportsToDefinitions();
 
+  // The forwarders that objects' link records list, each a function that
+  // only jumps through an import pointer, with that pointer.
+  struct Forwarder {
+    ObjFile *file;
+    Symbol *forwarder;
+    Symbol *pointer;
+  };
+  std::vector<Forwarder> forwarders;
+
+  // Replaces each forwarder whose import pointer reaches a definition in the
+  // image by that definition, so that every reference to the forwarder
+  // reaches the definition directly, and liveness discards the forwarder; a
+  // forwarder to an import stays. Runs before liveness is decided.
+  void bindForwarders();
+
   // Whether the image does not take what imp's DLL offers: data is never
   // delay-bound, a delay-load thunk is not a function's address, and
   // -ignore-offers names DLLs whose offers the image keeps its copies of.
