@@ -22,12 +22,12 @@
 // SYM: [11](sec  5)(fl 0x00)(ty   0)(scl   3) (nx 0) 0x00000000 _ZTV1A
 // SYM: [12](sec  6)(fl 0x00)(ty   0)(scl   3) (nx 1) 0x00000000 .rdata$inner
 
-// "LLRC", version 1, the x86-64 capabilities (3), then a group of kind 1 and
-// 10 bytes: _ZTV1D (8), flags 12 << 1 | 1 = 0x19, residue 4072 (0xe8 0x1f);
-// _ZTV1A (11), flags 6 << 1 = 0x0c, residue 56 (0x38); .Linner, 8 bytes into
-// its section, as the section's symbol (12) with residue (40 - 8) mod 64 = 32.
+// "LLRC", version 1, the x86-64 capabilities (7), then a group of kind 1 and 10
+// bytes: _ZTV1D (8), flags 12 << 1 | 1 = 0x19, residue 4072 (0xe8 0x1f); _ZTV1A
+// (11), flags 6 << 1 = 0x0c, residue 56 (0x38); .Linner, 8 bytes into its
+// section, as the section's symbol (12) with residue (40 - 8) mod 64 = 32.
 // OBJ:      Contents of section .llvm_link_records:
-// OBJ-NEXT: 0000 4c4c5243 0103010a 0819e81f 0b0c380c
+// OBJ-NEXT: 0000 4c4c5243 0107010a 0819e81f 0b0c380c
 // OBJ-NEXT: 0010 0c20
 
 // The group is written for any target the directive is used on.

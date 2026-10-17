@@ -1834,15 +1834,6 @@ MCSection *TargetLoweringObjectFileCOFF::SelectSectionForGlobal(
   else
     EmitUniquedSection = TM.getDataSections();
 
-  // On Windows Itanium and NT-POSIX a replacement of an overridable default
-  // has a section of its own, so that the branches its own unit makes to it
-  // keep their relocations, which the link of a DLL whose replacement the
-  // program may not select redirects to the program's choice.
-  if (const auto *F = dyn_cast<Function>(GO);
-      F && TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
-      F->hasFnAttribute("overridable-default") && !F->isWeakForLinker())
-    EmitUniquedSection = true;
-
   // A section outside a COMDAT is never discarded, and /INCLUDE cannot name a
   // local symbol, so a retained local global goes to the shared section.
   bool RetainLocal = GO->hasLocalLinkage() && Used.count(GO);

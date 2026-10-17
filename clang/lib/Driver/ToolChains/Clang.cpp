@@ -6003,6 +6003,13 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       else if (!SupportsLocalAlias)
         CmdArgs.push_back("-fhalf-no-semantic-interposition");
     }
+  } else if (Triple.isWindowsItaniumOrNTPOSIXEnvironment()) {
+    // Windows Itanium and NT-POSIX keep a function preemptible in its own
+    // image only when asked, as ELF's -fsemantic-interposition does.
+    if (Arg *A = Args.getLastArg(options::OPT_fsemantic_interposition,
+                                 options::OPT_fno_semantic_interposition);
+        A && A->getOption().matches(options::OPT_fsemantic_interposition))
+      A->render(Args, CmdArgs);
   }
 
   {

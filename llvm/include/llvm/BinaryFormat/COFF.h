@@ -77,6 +77,13 @@ const uint64_t LinkRecordsX86_64Sites = 1;
 // linker may take such a reference without a record as an address.
 const uint64_t LinkRecordsCallOnly = 2;
 
+// The capability that says an x86-64 object that describes its sites also
+// describes each one whose REL32 relocation refers to an external function the
+// object defines, which a definition in another image may preempt, so that a
+// linker may also take such a reference without a record as a branch. An
+// assembler keeps every relocation to a function, in its own section too.
+const uint64_t LinkRecordsFunctionSites = 4;
+
 enum LinkRecordKind : uint64_t {
   // Addresses that symbols must take modulo a power of two, so that a value
   // computed from a symbol's address alone, such as a tag in the low bits of

@@ -108,10 +108,9 @@
 # FILL-NEXT: je
 
 ## A DLL whose strong definition of such a function the image exports offers
-## it, marked or not, and reaches it as every other image does: its
-## address-take through the import pointer keeps the default's import, whose
-## entry the fill writes. Without the library's import library the load is
-## direct.
+## it, marked or not, and reaches it as every other image does: its described
+## address-take loads the default's import entry, which the fill writes.
+## Without the library's import library the address stays direct.
 # RUN: lld-link -import-slots -dll -noentry offer.obj crt.obj l.lib ntdll.lib \
 # RUN:   -out:offer.dll
 # RUN: llvm-readobj --coff-exports --coff-imports offer.dll > offer.txt
@@ -211,8 +210,9 @@ __xi_z:
         .text
         .globl take
 take:
-        movq __imp_hook(%rip), %rax
+        leaq hook(%rip), %rax
         retq
+        .def hook; .scl 2; .type 32; .endef
         .globl hook
 hook:
         movl $4, %eax

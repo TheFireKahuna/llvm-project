@@ -2391,6 +2391,15 @@ static bool shouldAssumeDSOLocal(const CodeGenModule &CGM,
   if (TT.isOSBinFormatCOFF() && GV->hasExternalWeakLinkage())
     return false;
 
+  // Under -fsemantic-interposition, Windows Itanium and NT-POSIX treat a
+  // function with default visibility as ELF does: another image's definition
+  // may preempt it in its own image, so the optimizer neither inlines nor
+  // binds it locally, and the linker redirects its references.
+  if (TT.isWindowsItaniumOrNTPOSIXEnvironment() &&
+      CGM.getLangOpts().SemanticInterposition && isa<llvm::Function>(GV) &&
+      GV->hasDefaultVisibility() && !GV->hasLocalLinkage())
+    return false;
+
   // Every other GV is local on COFF.
   // Make an exception for windows OS in the triple: Some firmware builds use
   // *-win32-macho triples. This (accidentally?) produced windows relocations

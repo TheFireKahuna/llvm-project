@@ -517,8 +517,16 @@ Defined *SectionChunk::getImportSiteTarget(const coff_relocation &rel) const {
 
 Defined *SectionChunk::getBranchTarget(const coff_relocation &rel,
                                        Defined *sym) const {
-  if (rel.Type != IMAGE_REL_ARM64_BRANCH26 || getArch() != Triple::aarch64 ||
-      file->symtab.preemptedOffers.empty())
+  if (file->symtab.preemptedOffers.empty())
+    return sym;
+  bool branch = getArch() == Triple::aarch64
+                    ? rel.Type == IMAGE_REL_ARM64_BRANCH26
+                    : getArch() == Triple::x86_64 &&
+                          rel.Type == IMAGE_REL_AMD64_REL32 &&
+                          (header->Characteristics & IMAGE_SCN_CNT_CODE) &&
+                          file->describesFunctionSites() &&
+                          !file->getLinkSiteForm(this, rel.VirtualAddress);
+  if (!branch)
     return sym;
   if (DefinedImportData *imp = file->symtab.preemptedOffers.lookup(sym))
     if (auto *thunk = dyn_cast_or_null<DefinedImportThunk>(imp->file->thunkSym))

@@ -10,7 +10,7 @@
 // forms 3 (load) at 0x3, 6 (load with REX2) at 0xb, 4 (address) at 0x13 and
 // 1 (call) at 0x19.
 // CHECK:      Contents of section .llvm_link_records:
-// CHECK-NEXT: 0000 4c4c5243 01030208 00043386 01840161
+// CHECK-NEXT: 0000 4c4c5243 01070208 00043386 01840161
 // CHECK-EMPTY:
 
   .text

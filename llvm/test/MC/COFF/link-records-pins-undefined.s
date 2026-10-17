@@ -17,7 +17,7 @@
 // The records hold only the pin of a (symbol 9), at 8 modulo 64, and none of
 // the dropped pins.
 // OBJ:      Contents of section .llvm_link_records:
-// OBJ-NEXT: 0000 4c4c5243 01030103 090c08
+// OBJ-NEXT: 0000 4c4c5243 01070103 090c08
 
   .data
 a:
