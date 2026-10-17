@@ -19,6 +19,7 @@
 // CC1-DAG:     "-pthread"
 // CC1-DAG:     "-fdeclspec"
 // CC1-DAG:     "-exception-model=seh"
+// CC1-DAG:     "-cfguard"
 
 // A statically linked libc is not imported.
 // RUN: %clang -### --target=x86_64-pc-windows-ntposix -c %s -static 2>&1 \
@@ -43,6 +44,10 @@
 // RUN:       --implicit-check-not=-exception-model=sjlj
 // SJLJ: warning: ignoring '-fsjlj-exceptions' option as it is not currently supported for target 'x86_64-pc-windows-ntposix'
 // SJLJ: "-exception-model=seh"
+
+// RUN: %clang -### --target=x86_64-pc-windows-ntposix -c %s -mguard=cf 2>&1 \
+// RUN:   | FileCheck --check-prefix=CF %s
+// CF: "-cfguard"
 
 // The resource headers, then llvm-libc's.
 // RUN: %clang -### --target=x86_64-pc-windows-ntposix -c %s --sysroot=%t 2>&1 \

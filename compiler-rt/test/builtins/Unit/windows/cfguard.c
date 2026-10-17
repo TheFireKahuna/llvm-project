@@ -2,7 +2,7 @@
 // RUN: %run %t.exe
 // RUN: not --crash %run %t.exe invalid-target
 // RUN: %clang_wincrt -mguard=cf -c %s -o %t.o
-// RUN: %clang_wincrt %t.o -o %t-unguarded.exe
+// RUN: %clang_wincrt -mguard=none %t.o -o %t-unguarded.exe
 // RUN: %run %t-unguarded.exe
 // RUN: %run %t-unguarded.exe invalid-target
 

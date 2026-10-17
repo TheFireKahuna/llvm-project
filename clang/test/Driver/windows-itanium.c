@@ -157,6 +157,44 @@
 // LINK-A64-SAME: "-machine:arm64"
 // LINK-A64-SAME: "-dll"
 
+// Control Flow Guard is on by default, and an executable suppresses its
+
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium %s -shared 2>&1 \
+// RUN:   | FileCheck --check-prefix=CF-DLL %s
+// CF-DLL:      "-cc1"
+// CF-DLL-SAME: "-cfguard"
+// CF-DLL-NEXT: lld-link{{(.exe)?}}"
+
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium %s \
+// RUN:     -mguard=cf-nochecks 2>&1 \
+// RUN:   | FileCheck --check-prefix=CF-NOCHECKS %s
+// RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium \
+// RUN:     /guard:cf,nochecks -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CF-NOCHECKS %s
+// RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium /guard:cf \
+// RUN:     /d2guardnochecks -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CF-NOCHECKS %s
+// CF-NOCHECKS:      "-cc1"
+// CF-NOCHECKS-NOT:  "-cfguard"
+// CF-NOCHECKS-SAME: "-cfguard-no-checks"
+// CF-NOCHECKS-NOT:  "-cfguard"
+// CF-NOCHECKS-NEXT: lld-link{{(.exe)?}}"
+
+// /guard:ehcont and /guard:ehcont- leave the mode alone.
+// RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium /guard:ehcont- \
+// RUN:     /c -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CL-EHCONT %s
+// CL-EHCONT: "-cc1"
+// CL-EHCONT-SAME: "-cfguard"
+
+// RUN: not %clang -### --target=x86_64-unknown-windows-itanium %s \
+// RUN:     -mguard=ehcont 2>&1 \
+// RUN:   | FileCheck --check-prefix=CF-UNKNOWN %s
+// CF-UNKNOWN: error: unsupported argument 'ehcont' to option '-mguard='
+// RUN: not %clang_cl -### --target=x86_64-unknown-windows-itanium \
+// RUN:     /guard:foo /c -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CL-UNKNOWN %s
+// CL-UNKNOWN: error: invalid value 'foo' in '/guard:'
 
 //--- Windows Kits/10/Include/10.0.26100.0/ucrt/stdio.h
 int puts(const char *);
