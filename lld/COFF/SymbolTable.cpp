@@ -3547,6 +3547,12 @@ void SymbolTable::compileBitcodeFiles() {
     obj->parse();
     ctx.objFileInstances.push_back(obj);
   }
+  // The objects that LTO wrote list again the definitions of weak data that
+  // the bitcode listed, which every later pass would visit twice.
+  if (!weakData.empty()) {
+    DenseSet<Symbol *> seen;
+    llvm::erase_if(weakData, [&](Symbol *s) { return !seen.insert(s).second; });
+  }
 }
 
 void SymbolTable::waitForLTOCleanup() {
