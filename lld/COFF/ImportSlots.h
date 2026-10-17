@@ -80,6 +80,7 @@ public:
 private:
   void scanChunk(SlotScan &scan, SectionChunk *sc);
   void resolve(SlotScan &scan);
+  void keepUndescribedFunctionAddresses();
   void useThunkAsAddress(SlotScan &scan, ObjFile *file, Symbol *s,
                          DefinedImportData *imp, SectionChunk *data = nullptr);
   void addResidualWord(SectionChunk *sc, uint32_t offset, Symbol *s,

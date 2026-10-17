@@ -166,6 +166,9 @@ struct Configuration {
   StringRef implib;
   bool noimplib = false;
   llvm::StringSet<> delayLoads;
+  // The DLLs, in lowercase, whose offers of what the image also defines the
+  // image does not take: it keeps its own copies.
+  llvm::StringSet<> ignoredOffers;
   std::map<std::string, int> dllOrder;
   Symbol *arm64ECIcallHelper = nullptr;
 

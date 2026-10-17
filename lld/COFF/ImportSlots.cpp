@@ -396,6 +396,9 @@ struct SlotScan {
   // rewritten instruction bypasses.
   MapVector<DefinedImportThunk *, std::pair<size_t, size_t>> thunkRefs;
   DenseMap<ImportFile *, Use> uses;
+  // For each function whose address is a DLL's instance, the references that
+  // keep the image's copy, such as calls.
+  DenseMap<Symbol *, size_t> localFunctionRefs;
   // The symbols of the object being scanned that have been reported.
   SmallPtrSet<Symbol *, 4> reported;
   // The fields of the section being checked.
@@ -499,6 +502,9 @@ void ImportSlotContents::bind() {
                << ": it is imported from " << imp->getDLLName()
                << "; export a forwarder to it instead";
 
+  if (!ctx.symtab.offeredFunctions.empty())
+    keepUndescribedFunctionAddresses();
+
   SlotScan scan;
   for (ObjFile *file : ctx.objFileInstances) {
     if (&file->symtab != &ctx.symtab)
@@ -512,6 +518,41 @@ void ImportSlotContents::bind() {
     }
   }
   resolve(scan);
+}
+
+// A function that a DLL the image imports from offers, and whose address an
+// object may take in an instruction it does not describe, keeps the image's
+// copy as its address, which that instruction takes: the image does not split
+// the function's address, as link.exe would not.
+void ImportSlotContents::keepUndescribedFunctionAddresses() {
+  MapVector<Symbol *, DefinedImportData *> &offered =
+      ctx.symtab.offeredFunctions;
+  bool arm64 = ctx.config.machine == ARM64;
+  for (ObjFile *file : ctx.objFileInstances) {
+    if (&file->symtab != &ctx.symtab || (!arm64 && file->describesSites()))
+      continue;
+    for (Chunk *c : file->getChunks()) {
+      auto *sc = dyn_cast_or_null<SectionChunk>(c);
+      if (!sc || !sc->live ||
+          !(sc->header->Characteristics & IMAGE_SCN_CNT_CODE))
+        continue;
+      for (const coff_relocation &rel : sc->getRelocs()) {
+        if (rel.Type != (arm64 ? IMAGE_REL_ARM64_REL21 : IMAGE_REL_AMD64_REL32))
+          continue;
+        Symbol *s = file->getSymbol(rel.SymbolTableIndex);
+        auto it = offered.find(s);
+        if (it == offered.end())
+          continue;
+        Warn(ctx) << file << ": may take the address of "
+                  << file->symtab.printSymbol(s) << ", which "
+                  << it->second->getDLLName()
+                  << " provides, in an instruction it does not describe, so "
+                     "the image keeps its own copy as its address; rebuild "
+                     "the object with clang";
+        offered.erase(it);
+      }
+    }
+  }
 }
 
 // A function that an object may take the address of in an instruction it
@@ -582,6 +623,39 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
     if (thunk)
       ++scan.thunkRefs[thunk].first;
 
+    // The address of a function that a DLL offers is the DLL's instance:
+    // a described address-take loads it from the import's entry and a word of
+    // static data takes it in place. Calls, and any other reference from
+    // outside the function's own sections, keep the image's copy.
+    if (DefinedImportData *offer = ctx.symtab.offeredFunctions.lookup(s)) {
+      if (code && arm64 && rel.Type == IMAGE_REL_ARM64_PAGEBASE_REL21 &&
+          i + 1 != e && isArm64AddressPair(sc, rel, relocs[i + 1])) {
+        scan.addressSites.push_back({sc, rel.VirtualAddress, offer});
+        scan.addressSites.push_back({sc, relocs[i + 1].VirtualAddress, offer});
+        ++i;
+        continue;
+      }
+      if (code && !arm64 && rel.Type == IMAGE_REL_AMD64_REL32 &&
+          file->getLinkSiteForm(sc, rel.VirtualAddress) == LinkSiteAddress &&
+          getDescribedSite(sc, rel) == LinkSiteAddress) {
+        scan.addressSites.push_back({sc, rel.VirtualAddress, offer});
+        continue;
+      }
+      if (!code && !isExceptionData(sc) && sc->isAddressWord(rel) &&
+          getAddressWordAddend(sc, rel) == 0) {
+        p.slots.push_back({sc, rel.VirtualAddress, offer});
+        if (!p.firstRef)
+          p.firstRef = s;
+        continue;
+      }
+      SectionChunk *copy = cast<DefinedRegular>(s)->getChunk();
+      if (sc != copy && llvm::none_of(copy->children(), [&](SectionChunk &c) {
+            return &c == sc;
+          }))
+        ++scan.localFunctionRefs[s];
+      continue;
+    }
+
     // An import address table entry. The import's data itself is reached only
     // through its slots.
     if (data && !data->isRuntimePseudoReloc) {
@@ -619,7 +693,31 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
     }
     if (code) {
       if (!thunk) {
-        if (scan.reported.insert(s).second)
+        // The address of data that a DLL's instance preempted, which a
+        // described instruction takes, becomes a load of the import's entry,
+        // as that of a function does.
+        bool preempted = file->symtab.preemptedData.contains(s);
+        if (preempted && arm64 && rel.Type == IMAGE_REL_ARM64_PAGEBASE_REL21 &&
+            i + 1 != e && isArm64AddressPair(sc, rel, relocs[i + 1])) {
+          scan.addressSites.push_back({sc, rel.VirtualAddress, imp});
+          scan.addressSites.push_back({sc, relocs[i + 1].VirtualAddress, imp});
+          ++i;
+          continue;
+        }
+        if (preempted && !arm64 && rel.Type == IMAGE_REL_AMD64_REL32 &&
+            file->getLinkSiteForm(sc, rel.VirtualAddress) == LinkSiteAddress &&
+            getDescribedSite(sc, rel) == LinkSiteAddress) {
+          scan.addressSites.push_back({sc, rel.VirtualAddress, imp});
+          continue;
+        }
+        if (!scan.reported.insert(s).second)
+          continue;
+        if (preempted)
+          Err(ctx) << file << ": " << file->symtab.printSymbol(s)
+                   << " is provided by " << imp->getDLLName()
+                   << ", but is referenced as if it were local; recompile "
+                      "the object, or give the symbol hidden visibility";
+        else
           Err(ctx) << file << ": " << file->symtab.printSymbol(s)
                    << " is imported from " << imp->getDLLName()
                    << ", but the object was compiled as if it were "
@@ -804,6 +902,18 @@ void ImportSlotContents::resolve(SlotScan &scan) {
         !isDelayLoaded(ctx, thunk->wrappedSym) && !named.contains(thunk))
       thunk->getChunk()->live = false;
 
+  // A function's copy that no call keeps is discarded, as one that no
+  // reference reached would have been; a root names the function, whose
+  // address is the DLL's instance, not the copy.
+  for (auto &[sym, imp] : ctx.symtab.offeredFunctions) {
+    if (scan.localFunctionRefs.lookup(sym))
+      continue;
+    SectionChunk *copy = cast<DefinedRegular>(sym)->getChunk();
+    copy->live = false;
+    for (SectionChunk &child : copy->children())
+      child.live = false;
+  }
+
   std::vector<SectionChunk *> writable;
   for (SlotScan::Pending &p : scan.pending) {
     SectionChunk *sc = p.chunk;
@@ -859,8 +969,49 @@ void ImportSlotContents::resolve(SlotScan &scan) {
       slotSections.insert(outName);
     writable.push_back(sc);
   }
-  if (ctx.importSlots.empty())
+  // How the references other than slots use each import: an export or a root
+  // uses it otherwise, as KCFI's lists may, and the residual fill and a live
+  // import thunk read it.
+  SmallVector<DefinedImportData *, 0> kcfiRead, kcfiOther;
+  getKCFIImportUses(ctx, kcfiRead, kcfiOther);
+  for (DefinedImportData *imp : kcfiRead)
+    scan.use(imp, SlotScan::Read);
+  for (DefinedImportData *imp : kcfiOther)
+    scan.use(imp, SlotScan::Other);
+  for (Export &e : ctx.symtab.exports)
+    if (auto *imp = dyn_cast_or_null<DefinedImportData>(e.sym))
+      scan.use(imp, SlotScan::Other);
+  for (Symbol *s : config.gcroot)
+    if (auto *imp = dyn_cast<DefinedImportData>(s))
+      scan.use(imp, SlotScan::Other);
+  for (const ResidualWord &w : residualWords)
+    scan.use(w.imp, SlotScan::Read);
+  auto getUse = [&](ImportFile *file) {
+    SlotScan::Use u = scan.uses.lookup(file);
+    auto *thunk = dyn_cast_or_null<DefinedImportThunk>(file->thunkSym);
+    return thunk && thunk->getChunk()->live ? std::max(u, SlotScan::Read) : u;
+  };
+  // An import that only the discarded sections of preempted data used needs
+  // no entry.
+  auto omitPreemptedGroupImports =
+      [&](const DenseSet<ImportFile *> &slotted,
+          DenseSet<DefinedImportData *> &unneeded) {
+        for (ImportFile *file : ctx.symtab.preemptedGroupImports) {
+          if (!file->live || getUse(file) != SlotScan::Unused ||
+              slotted.contains(file) || interiorBases.contains(file))
+            continue;
+          file->live = false;
+          unneeded.insert(file->impSym);
+        }
+      };
+  if (ctx.importSlots.empty()) {
+    DenseSet<DefinedImportData *> unneeded;
+    omitPreemptedGroupImports({}, unneeded);
+    llvm::erase_if(idata.imports, [&](DefinedImportData *imp) {
+      return unneeded.contains(imp);
+    });
     return;
+  }
 
   // The slot chunks laid out together are ordered by the DLL of their first
   // slot, so that single-pointer chunks of one DLL form one run.
@@ -923,27 +1074,6 @@ void ImportSlotContents::resolve(SlotScan &scan) {
   // keeps its entry: a reference from data, an instruction that takes the
   // entry's address or reads part of it, an object that does not describe its
   // instructions, an export or a root.
-  SmallVector<DefinedImportData *, 0> kcfiRead, kcfiOther;
-  getKCFIImportUses(ctx, kcfiRead, kcfiOther);
-  for (DefinedImportData *imp : kcfiRead)
-    scan.use(imp, SlotScan::Read);
-  for (DefinedImportData *imp : kcfiOther)
-    scan.use(imp, SlotScan::Other);
-  for (Export &e : ctx.symtab.exports)
-    if (auto *imp = dyn_cast_or_null<DefinedImportData>(e.sym))
-      scan.use(imp, SlotScan::Other);
-  for (Symbol *s : config.gcroot)
-    if (auto *imp = dyn_cast<DefinedImportData>(s))
-      scan.use(imp, SlotScan::Other);
-  // The residual fill reads the address of each import it adds to.
-  for (const ResidualWord &w : residualWords)
-    scan.use(w.imp, SlotScan::Read);
-  // So does a live import thunk.
-  auto getUse = [&](ImportFile *file) {
-    SlotScan::Use u = scan.uses.lookup(file);
-    auto *thunk = dyn_cast_or_null<DefinedImportThunk>(file->thunkSym);
-    return thunk && thunk->getChunk()->live ? std::max(u, SlotScan::Read) : u;
-  };
   DenseSet<ImportFile *> slotted;
   for (const std::vector<ImportSlot *> &slotRun : idata.slotRuns)
     for (ImportSlot *slot : slotRun)
@@ -960,6 +1090,7 @@ void ImportSlotContents::resolve(SlotScan &scan) {
     file->impSym->setLocation(word.first, word.second);
     unneeded.insert(file->impSym);
   }
+  omitPreemptedGroupImports(slotted, unneeded);
   llvm::erase_if(idata.imports, [&](DefinedImportData *imp) {
     return unneeded.contains(imp);
   });

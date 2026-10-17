@@ -56,6 +56,7 @@
 #include "llvm/ToolDrivers/llvm-lib/LibDriver.h"
 #include <algorithm>
 #include <future>
+#include <list>
 #include <memory>
 #include <optional>
 #include <tuple>
@@ -1147,9 +1148,13 @@ std::string LinkerDriver::getImportName(bool asLib) {
 void LinkerDriver::createImportLibrary(bool asLib) {
   llvm::TimeTraceScope timeScope("Create import library");
   std::vector<COFFShortExport> exports, nativeExports;
+  std::vector<NewArchiveMember> extra;
+  // A member that imports from the image an export forwards to, in place of
+  // the export's own member, so that an importer binds to that image.
+  std::list<std::vector<uint8_t>> forwardedBuffers;
 
-  auto getExports = [](SymbolTable &symtab,
-                       std::vector<COFFShortExport> &exports) {
+  auto getExports = [&](SymbolTable &symtab,
+                        std::vector<COFFShortExport> &exports) {
     // A member that imports by name carries a hint rather than an ordinal:
     // the export's index in the export name table, whose order fixupExports
     // has already set.
@@ -1172,7 +1177,18 @@ void LinkerDriver::createImportLibrary(bool asLib) {
     for (Export &e1 : symtab.exports) {
       if (!e1.noname)
         hints[e1.exportName] = hint;
-      add(e1, e1.noname ? e1.ordinal : hint++);
+      uint16_t ordinal = e1.noname ? e1.ordinal : hint++;
+      if (DefinedImportData *imp = symtab.forwardedImports.lookup(e1.name);
+          imp && !asLib && !e1.noname &&
+          imp->file->hdr->getNameType() != IMPORT_ORDINAL &&
+          imp->getExternalName() == e1.exportName) {
+        extra.push_back(createImportMember(imp->getDLLName(),
+                                           ctx.config.machine, e1.exportName,
+                                           e1.data ? IMPORT_DATA : IMPORT_CODE,
+                                           forwardedBuffers.emplace_back()));
+        continue;
+      }
+      add(e1, ordinal);
     }
     // An alias imports the name of the export it repeats, and so its hint.
     for (Export &e1 : symtab.exportAsAliases)
@@ -1185,7 +1201,6 @@ void LinkerDriver::createImportLibrary(bool asLib) {
 
   std::string libName = getImportName(asLib);
   std::string path = getImplibPath();
-  std::vector<NewArchiveMember> extra;
   std::vector<uint8_t> rangeRecord;
   if (!asLib)
     addKCFIRangeImports(ctx, libName, exports, extra, rangeRecord);
@@ -2773,6 +2788,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     }
   });
 
+  for (auto *arg : args.filtered(OPT_ignore_offers))
+    config->ignoredOffers.insert(StringRef(arg->getValue()).lower());
+
   // Handle /delayload
   {
     llvm::TimeTraceScope timeScope("Delay load");
@@ -3140,6 +3158,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     symtab.initializeLoadConfig();
   });
 
+  ctx.forEachSymtab(
+      [](SymbolTable &symtab) { symtab.keepCopiesOfIgnoredOffers(); });
+
   // Identify unreferenced COMDAT sections.
   if (config->doGC) {
     if (config->mingw) {
@@ -3163,6 +3184,15 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
 
     markLive(ctx);
   }
+
+  // Under -import-slots, a DLL's offer of COMDAT data preempts the image's
+  // copy once liveness is decided, so that a root names the symbol rather than
+  // the copy.
+  ctx.forEachSymtab([](SymbolTable &symtab) {
+    symtab.preemptWeakData();
+    symtab.bindOfferedFunctions();
+    symtab.addOffers();
+  });
 
   ctx.forEachSymtab([](SymbolTable &symtab) { bindLocalImports(symtab); });
 

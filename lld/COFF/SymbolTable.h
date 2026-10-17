@@ -14,6 +14,8 @@
 #include "llvm/ADT/CachedHashString.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseMapInfo.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -46,6 +48,11 @@ struct WrappedSymbol {
 };
 
 struct UndefinedDiag;
+
+// Whether a definition in a COMDAT named name may be shared along import paths
+// under -import-slots, so that the instance of a DLL the image imports it from
+// is the image's.
+bool isShareableVagueName(StringRef name);
 
 // SymbolTable is a bucket of all known symbols, including defined,
 // undefined, or lazy symbols (the last one is symbols in archive
@@ -107,6 +114,69 @@ public:
   // shared object satisfies an ELF weak reference, though no archive member
   // does.
   std::vector<Symbol *> weakRefs;
+
+  // Under -import-slots, the leaders of the COMDAT groups of data definitions
+  // that the instance of a DLL the image imports from may preempt, which
+  // loadLocalImportMembers and preemptWeakData visit instead of the whole
+  // table.
+  std::vector<Symbol *> weakData;
+
+  // Under -import-slots, makes each COMDAT data definition that an import
+  // library offers the DLL's instance, as an ELF shared object's definition
+  // preempts another copy of vague-linkage data: every external symbol of its
+  // group, and its guard, resolve to the DLL's same-named imports, and the
+  // group's sections are discarded. Runs once liveness is decided.
+  void preemptWeakData();
+
+  // Makes sym, a definition of data, the instance that imp imports.
+  void preemptSymbol(Symbol *sym, DefinedImportData *imp);
+
+  // Under -import-slots, binds the import-form references to each COMDAT data
+  // definition, and to the other external symbols of its group and its guard,
+  // that a DLL offers whose offers the image does not take to the image's own
+  // copy. Runs before liveness is decided, which keeps the copy.
+  void keepCopiesOfIgnoredOffers();
+
+  // Whether the image does not take what imp's DLL offers: data is never
+  // delay-bound, a delay-load thunk is not a function's address, and
+  // -ignore-offers names DLLs whose offers the image keeps its copies of.
+  bool ignoresOffersOf(DefinedImportData *imp) const;
+
+  // The symbols that preemptWeakData resolved to imports, whose addresses that
+  // code takes in a described instruction become loads of their imports.
+  llvm::DenseSet<Symbol *> preemptedData;
+
+  // The imports that the sections preemptWeakData discarded refer to, which
+  // need no entry if nothing else uses them.
+  llvm::DenseSet<ImportFile *> preemptedGroupImports;
+
+  // Under -import-slots, the leaders of the COMDAT groups of functions with
+  // default visibility whose addresses objects take, which a DLL the image
+  // imports from may offer, and the number of objects whose
+  // address-significance tables have been read for them.
+  std::vector<Symbol *> weakFunctions;
+  size_t weakFunctionObjects = 0;
+
+  // Under -import-slots, the functions whose address is that of the instance
+  // a DLL the image imports from offers, as an ELF shared object's definition
+  // preempts another copy of an inline function: every address the image
+  // takes is the DLL's, while calls keep the image's copy. Runs once liveness
+  // is decided.
+  void bindOfferedFunctions();
+
+  // Under -import-slots, in a link that writes an import library, exports
+  // each definition with default visibility in a COMDAT that the image keeps
+  // and another image may observe, as an ELF shared object's dynamic symbol
+  // table gives it: data, and functions whose addresses are significant. What
+  // the image takes from a DLL that offers it is exported as a forwarder to
+  // that DLL.
+  void addOffers();
+  llvm::MapVector<Symbol *, DefinedImportData *> offeredFunctions;
+
+  // The exports that forward to the instance of a DLL the image imports, by
+  // the import of that instance, which the image's import library names in
+  // their place so that an importer binds to the DLL that holds it.
+  llvm::DenseMap<StringRef, DefinedImportData *> forwardedImports;
 
   // Define placeholders for the referenced, undefined __start_X and __stop_X
   // of each section run X, and for _etext, _edata and _end. The writer places
@@ -286,6 +356,14 @@ private:
   /// Given a name without "__imp_" prefix, returns a defined symbol
   /// with the "__imp_" prefix, if it exists.
   Defined *impSymbol(StringRef name);
+  // Makes each export of a symbol that getInstance gives a DLL's instance for
+  // a forwarder to that instance.
+  void
+  forwardExports(llvm::function_ref<DefinedImportData *(Symbol *)> getInstance);
+  void collectWeakDataGroup(DefinedRegular *d,
+                            llvm::SmallVectorImpl<SectionChunk *> &chunks,
+                            llvm::SmallVectorImpl<DefinedRegular *> &members,
+                            bool liveOnly);
   /// Inserts symbol if not already present.
   std::pair<Symbol *, bool> insert(StringRef name);
   /// Same as insert(Name), but also sets isUsedInRegularObj.

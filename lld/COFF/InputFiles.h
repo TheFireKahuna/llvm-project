@@ -280,6 +280,11 @@ public:
   };
 
   // True if the object has link-only records.
+  // Whether the definition d, which this object gives in a COMDAT, has
+  // default visibility: listed with that role in the object's link records,
+  // or any such definition of an object whose records list none.
+  bool hasDefaultVisibility(DefinedRegular *d) const;
+
   bool hasLinkRecords() const { return linkRecords; }
 
   // True if the object describes the form of every x86-64 instruction site
@@ -436,9 +441,12 @@ private:
     bool listsKCFIImports = false;
     bool protectsDelayIat = false;
     bool listsCallOnly = false;
+    bool listsBindings = false;
     std::vector<LinkSite> sites;
     std::vector<std::pair<uint32_t, uint32_t>> callOnlyRefs;
     std::vector<LinkPin> pins;
+    // The indices of the symbols the object gives default visibility.
+    llvm::DenseSet<uint32_t> defaultBindings;
   };
   LinkRecords *linkRecords = nullptr;
 
