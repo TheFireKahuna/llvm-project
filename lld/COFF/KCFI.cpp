@@ -32,6 +32,7 @@
 #include "llvm/Support/TimeProfiler.h"
 #include "llvm/Transforms/Utils/KCFIHash.h"
 #include <map>
+#include <optional>
 
 using namespace llvm;
 using namespace llvm::COFF;
@@ -109,7 +110,7 @@ public:
                  Symbol *mismatch, Symbol *guard, Defined *codeStart,
                  Defined *codeEnd, bool typeInRange, ArrayRef<Range> imported,
                  bool checked);
-  size_t getSize() const override { return write(nullptr); }
+  size_t getSize() const override { return measure().size; }
   void writeTo(uint8_t *buf) const override { write(buf); }
   uint32_t getOutputCharacteristics() const override {
     return llvm::COFF::IMAGE_SCN_CNT_CODE |
@@ -118,12 +119,31 @@ public:
   StringRef getSectionName() const override { return ".text"; }
   MachineTypes getMachine() const override;
   // The offset of the entry for a target whose type is checked.
-  uint32_t getCheckedOffset() const;
+  uint32_t getCheckedOffset() const { return measure().checked; }
   // Makes the thunk's branches to the mismatch routine reach it as the code
   // right after the thunk, where the writer placed it.
-  void setMismatchFollows() { mismatchFollows = true; }
+  void setMismatchFollows() {
+    mismatchFollows = true;
+    measured.reset();
+  }
 
 private:
+  // The thunk's size and checked-entry offset, which its fields and whether a
+  // mismatch routine follows decide, not any address, so one measurement
+  // serves the repeated layout queries.
+  struct Measured {
+    uint32_t size;
+    uint32_t checked;
+  };
+  const Measured &measure() const {
+    if (!measured) {
+      uint32_t checked = 0;
+      uint32_t size = write(nullptr, &checked);
+      measured = Measured{size, checked};
+    }
+    return *measured;
+  }
+  mutable std::optional<Measured> measured;
   uint32_t write(uint8_t *buf, uint32_t *checkedOffset = nullptr) const;
   void writeAMD64(LabelledCode &a, uint32_t &checkedOffset) const;
   void writeARM64(LabelledCode &a, uint32_t &checkedOffset) const;
@@ -280,12 +300,6 @@ KCFIThunkChunk::KCFIThunkChunk(COFFLinkerContext &ctx, bool check, bool local,
 }
 
 MachineTypes KCFIThunkChunk::getMachine() const { return ctx.config.machine; }
-
-uint32_t KCFIThunkChunk::getCheckedOffset() const {
-  uint32_t offset = 0;
-  write(nullptr, &offset);
-  return offset;
-}
 
 uint32_t KCFIThunkChunk::write(uint8_t *buf, uint32_t *checkedOffset) const {
   uint32_t checkedAt = 0;
