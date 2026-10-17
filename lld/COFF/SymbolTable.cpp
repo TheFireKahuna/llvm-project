@@ -1474,9 +1474,11 @@ bool SymbolTable::loadOverrideOfferImports() {
   return loaded;
 }
 
+// A strong definition in a bitcode file counts too: the check runs before LTO,
+// whose object then defines the replacement.
 bool SymbolTable::isLocalOverrideReplacement(StringRef name) {
   auto *d = dyn_cast_or_null<DefinedRegular>(find(name));
-  return d && !d->isWeak && isa<ObjFile>(d->getFile()) &&
+  return d && !d->isWeak && isa<ObjFile, BitcodeFile>(d->getFile()) &&
          !d->getName().starts_with(".weak.");
 }
 
