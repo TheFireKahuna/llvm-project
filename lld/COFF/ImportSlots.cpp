@@ -311,9 +311,10 @@ void ResidualFillPdataChunk::writeTo(uint8_t *buf) const {
 // loads its address. The loader writes it with the runtime's entry; the fill
 // writes the program's replacement over it when the executable replaces X.
 struct OverrideCell {
-  // The slot's chunk and offset, or null for the import's entry.
-  SectionChunk *chunk;
+  // The cell's chunk and offset, or null for the import's entry.
+  Chunk *chunk;
   uint32_t offset;
+  // The import of the default, or null for a cell of the image's own default.
   DefinedImportData *imp;
   // The default's slot in the table, or, for a default replaced by name, its
   // key in the table's block, which is never zero.
@@ -2092,14 +2093,58 @@ void ImportSlotContents::createOverrideCellFill() {
   for (DefinedImportData *imp : idata.imports)
     if (!idata.slotOnly.contains(imp))
       add(nullptr, 0, imp, true, false);
+  // The DLL's own default replaced by name has cells too, as on ELF its
+  // address in the defining object is the program's one: the pointer its
+  // address-takes read, and the words of its static data that hold its
+  // address. Each holds the default until the fill writes the replacement.
+  // Both are in read-only data beside the import address tables, or in
+  // writable data.
+  auto ownKey = [&](Symbol *s) -> uint64_t {
+    auto *d = dyn_cast_or_null<Defined>(s);
+    if (!d || !ctx.symtab.overridablesByName.contains(d->getName()))
+      return 0;
+    return overrideNameKey(d->getName());
+  };
+  for (Chunk *c : ctx.symtab.localImportChunks) {
+    auto *li = cast<LocalImportChunk>(c);
+    if (!li->overrideDefault.empty())
+      cells.push_back({li, 0, nullptr, 0, overrideNameKey(li->overrideDefault),
+                       true, false});
+  }
+  for (ObjFile *file : ctx.objFileInstances) {
+    if (&file->symtab != &ctx.symtab)
+      continue;
+    for (Chunk *c : file->getChunks()) {
+      auto *sc = dyn_cast_or_null<SectionChunk>(c);
+      if (!sc || !sc->live ||
+          (sc->header->Characteristics &
+           (IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_DISCARDABLE)) ||
+          isExceptionData(sc))
+        continue;
+      bool readOnly = !(sc->header->Characteristics & IMAGE_SCN_MEM_WRITE) &&
+                      !sealedChunks.contains(sc);
+      bool threadLocal =
+          getPartialSectionName(sc, config.mingw).starts_with(".tls");
+      for (const coff_relocation &rel : sc->getRelocs())
+        if (uint64_t key = ownKey(file->getSymbol(rel.SymbolTableIndex));
+            key && sc->isAddressWord(rel) && getAddressWordAddend(sc, rel) == 0)
+          cells.push_back({sc, uint32_t(rel.VirtualAddress), nullptr, 0, key,
+                           readOnly, threadLocal});
+    }
+  }
   if (cells.empty())
     return;
 
   const OverrideCell &first = cells.front();
   auto fail = [&](const Twine &why) {
-    Err(ctx) << "the image reaches " << ctx.symtab.printSymbol(first.imp)
-             << ", an overridable default imported from "
-             << first.imp->getDLLName() << ", through a cell " << why;
+    if (first.imp)
+      Err(ctx) << "the image reaches " << ctx.symtab.printSymbol(first.imp)
+               << ", an overridable default imported from "
+               << first.imp->getDLLName() << ", through a cell " << why;
+    else
+      Err(ctx) << "the image reaches its own overridable default through a "
+                  "cell "
+               << why;
   };
   // The anchor's mask, which the fill reads, has a bit for each of the first
   // 32 slots.
