@@ -50,7 +50,7 @@ uint32_t Relaxation::getOutputOffset(uint32_t offset) const {
     return offset;
   const RelaxEdit &e = *std::prev(it);
   if (offset < e.offset + e.oldSize)
-    return e.newOffset + std::min(offset - e.offset, e.newSize);
+    return e.newOffset + std::min<uint32_t>(offset - e.offset, e.newSize);
   return offset - (e.offset + e.oldSize) + e.newOffset + e.newSize;
 }
 
@@ -198,20 +198,20 @@ static void solve(Relaxation &r, ArrayRef<uint8_t> data) {
       e.newOffset = e.offset + delta;
       if (e.kind == RelaxEdit::Align) {
         uint64_t padding =
-            offsetToAlignment(e.newOffset, Align(1ULL << e.coverage->kind));
-        e.newSize = padding <= e.coverage->b ? padding : 0;
+            offsetToAlignment(e.newOffset, Align(1ULL << e.coverage()->kind));
+        e.newSize = padding <= e.coverage()->b ? padding : 0;
       }
       delta += int64_t(e.newSize) - int64_t(e.oldSize);
     }
     r.size = data.size() + delta;
     bool changed = false;
     for (RelaxEdit &e : r.edits) {
-      if (e.kind != RelaxEdit::Branch || e.promoted)
+      // A jump starts out with 8 bits, and once lengthened stays so.
+      if (e.kind != RelaxEdit::Branch || e.newSize != 2)
         continue;
-      int64_t value =
-          int64_t(r.getOutputOffset(e.coverage->a)) - (e.newOffset + e.newSize);
+      int64_t value = int64_t(r.getOutputOffset(e.coverage()->a)) -
+                      (e.newOffset + e.newSize);
       if (!isInt<8>(value)) {
-        e.promoted = true;
         e.newSize =
             e.oldSize == 2 ? getPromotedSize(data[e.offset]) : e.oldSize;
         changed = true;
@@ -229,29 +229,64 @@ static bool isLayoutEdit(const RelaxEdit &e) {
          e.kind == RelaxEdit::TailJump;
 }
 
-// Decides how to lay out the code of sc, a covered chunk, with the edits its
-// references' binding made in their shorter forms, and with the jump that
-// ends its function left out where tailJump is set; or leaves it as it is:
-// where nothing changes size, or where the new layout leaves a value the
-// object describes out of its field's range, or in bytes the linker rewrites.
-// values are the values that measure sc's code. Sets *misfit where a value
-// leaves sc as it is.
-static bool relax(COFFLinkerContext &ctx, SectionChunk *sc,
-                  ArrayRef<const ObjFile::LinkCoverage *> values, bool tailJump,
-                  bool *misfit) {
+// Leaves sc, which the linker does not resize, or not yet, at its size: each
+// edit takes the form of its old length. Where it is final, each fused
+// access, which only resized code changes, also keeps its register, and so
+// the load that fills it, rewritten as it would have been had it not been
+// dead.
+static void keepSize(COFFLinkerContext &ctx, SectionChunk *sc, bool final) {
+  sc->relaxed = false;
+  auto it = ctx.relaxations.find(sc);
+  if (it == ctx.relaxations.end())
+    return;
+  DenseSet<uint32_t> loads;
+  if (final)
+    for (const ObjFile::LinkFusion &f : sc->file->getLinkFusions(sc))
+      if (f.use == ObjFile::LinkFusion::Access && !f.isLoad)
+        loads.insert(f.load);
+  std::vector<RelaxEdit> &edits = it->second.edits;
+  auto revived = [&](const RelaxEdit &e) {
+    return e.kind == RelaxEdit::Dispose && e.fusion()->isLoad &&
+           loads.contains(e.fusion()->offset);
+  };
+  for (RelaxEdit &e : edits)
+    if (revived(e) && e.target) {
+      e.kind = RelaxEdit::LoadAddress;
+      e.entry = nullptr;
+    }
+  llvm::erase_if(edits, [&](const RelaxEdit &e) {
+    return isLayoutEdit(e) || (final && e.kind == RelaxEdit::Access) ||
+           revived(e);
+  });
+  for (RelaxEdit &e : edits) {
+    e.newOffset = e.offset;
+    e.newSize = e.oldSize;
+  }
+  if (edits.empty()) {
+    ctx.relaxations.erase(it);
+    sc->edited = false;
+  }
+}
+
+// Lays out the code of sc, a covered chunk, with the edits its references'
+// binding made in their shorter forms, and with the jump that ends its
+// function left out where tailJump is set. Fails where nothing changes size,
+// or where the new layout leaves a value the object describes out of its
+// field's range, or in bytes the linker rewrites. values are the values that
+// measure sc's code. Sets *misfit where a value fails it.
+static bool layOut(COFFLinkerContext &ctx, SectionChunk *sc, Relaxation &r,
+                   ArrayRef<const ObjFile::LinkCoverage *> values,
+                   bool tailJump, bool *misfit) {
   ObjFile *file = sc->file;
   ArrayRef<uint8_t> data = sc->getContents();
-  Relaxation r;
-  if (auto it = ctx.relaxations.find(sc); it != ctx.relaxations.end())
-    for (const RelaxEdit &e : it->second.edits)
-      if (!isLayoutEdit(e))
-        r.edits.push_back(e);
+  ArrayRef<ObjFile::LinkCoverage> coverage = file->getLinkCoverage(sc);
+  r.edits.reserve(r.edits.size() + coverage.size() + tailJump);
   if (tailJump)
     r.edits.push_back({uint32_t(data.size() - 5), 5, 0, RelaxEdit::TailJump});
-  for (const ObjFile::LinkCoverage &c : file->getLinkCoverage(sc)) {
+  for (const ObjFile::LinkCoverage &c : coverage) {
     if (c.type == LinkCoverageAlign) {
-      RelaxEdit e{c.offset, c.a, c.a, RelaxEdit::Align};
-      e.coverage = &c;
+      RelaxEdit e{c.offset, uint16_t(c.a), uint16_t(c.a), RelaxEdit::Align};
+      e.entry = &c;
       r.edits.push_back(e);
     } else if (c.type == LinkCoveragePCRelative && c.kind == LinkFieldJump) {
       // The opcode of jmp or of a conditional jump precedes its
@@ -274,8 +309,9 @@ static bool relax(COFFLinkerContext &ctx, SectionChunk *sc,
                  << " is not the jump its link-only record describes";
         return false;
       }
-      RelaxEdit e{start, c.offset + c.size - start, 2, RelaxEdit::Branch};
-      e.coverage = &c;
+      RelaxEdit e{start, uint16_t(c.offset + c.size - start), 2,
+                  RelaxEdit::Branch};
+      e.entry = &c;
       r.edits.push_back(e);
     }
   }
@@ -321,46 +357,27 @@ static bool relax(COFFLinkerContext &ctx, SectionChunk *sc,
       return false;
     }
   }
-  ctx.relaxations[sc] = std::move(r);
-  sc->relaxed = true;
-  sc->edited = true;
   return true;
 }
 
-// Leaves sc, which the linker does not resize after all, at its size: each
-// edit takes the form of its old length, and each fused access, which only
-// resized code changes, keeps its register, and so the load that fills it,
-// rewritten as it would have been had it not been dead.
-static void keepSize(COFFLinkerContext &ctx, SectionChunk *sc) {
-  sc->relaxed = false;
+// Resizes sc, a covered chunk, as layOut decides, or leaves it at its size. A
+// chunk with no edits yet has them only if it is resized.
+static bool relax(COFFLinkerContext &ctx, SectionChunk *sc,
+                  ArrayRef<const ObjFile::LinkCoverage *> values, bool tailJump,
+                  bool *misfit) {
+  keepSize(ctx, sc, /*final=*/false);
   auto it = ctx.relaxations.find(sc);
-  if (it == ctx.relaxations.end())
-    return;
-  DenseSet<uint32_t> loads;
-  for (const ObjFile::LinkFusion &f : sc->file->getLinkFusions(sc))
-    if (f.use == ObjFile::LinkFusion::Access && !f.isLoad)
-      loads.insert(f.load);
-  std::vector<RelaxEdit> &edits = it->second.edits;
-  auto revived = [&](const RelaxEdit &e) {
-    return e.kind == RelaxEdit::Dispose && e.fusion->isLoad &&
-           loads.contains(e.fusion->offset);
-  };
-  for (RelaxEdit &e : edits)
-    if (revived(e) && e.target) {
-      e.kind = RelaxEdit::Load;
-      e.fusion = nullptr;
-    }
-  llvm::erase_if(edits, [&](const RelaxEdit &e) {
-    return isLayoutEdit(e) || e.kind == RelaxEdit::Access || revived(e);
-  });
-  for (RelaxEdit &e : edits) {
-    e.newOffset = e.offset;
-    e.newSize = e.oldSize;
+  Relaxation added;
+  Relaxation &r = it == ctx.relaxations.end() ? added : it->second;
+  if (!layOut(ctx, sc, r, values, tailJump, misfit)) {
+    keepSize(ctx, sc, /*final=*/false);
+    return false;
   }
-  if (edits.empty()) {
-    ctx.relaxations.erase(it);
-    sc->edited = false;
-  }
+  if (&r == &added)
+    ctx.relaxations[sc] = std::move(added);
+  sc->relaxed = true;
+  sc->edited = true;
+  return true;
 }
 
 // The values that measure the code of each covered section of file, by
@@ -396,9 +413,13 @@ void leaveOutTailJumps(COFFLinkerContext &ctx,
     return relax(ctx, sc, values, tailJump, &misfit);
   };
   SmallVector<std::pair<SectionChunk *, Defined *>, 0> left;
-  for (auto [sc, target] : jumps)
+  for (auto [sc, target] : jumps) {
+    bool wasRelaxed = sc->relaxed;
     if (relaxAgain(sc, true))
       left.push_back({sc, target});
+    else if (wasRelaxed)
+      relaxAgain(sc, false);
+  }
   if (left.empty())
     return;
   // Padding, or where a function's prefix may be placed, may yet separate a
@@ -412,7 +433,7 @@ void leaveOutTailJumps(COFFLinkerContext &ctx,
       if (target->getRVA() == sc->getRVA() + sc->getSize())
         return false;
       if (!relaxAgain(sc, false))
-        keepSize(ctx, sc);
+        keepSize(ctx, sc, /*final=*/true);
       return true;
     });
     restored = left.size() != before;
@@ -449,7 +470,7 @@ void relaxSections(COFFLinkerContext &ctx) {
         saved += int64_t(sc->getContents().size()) - ctx.relaxations[sc].size;
       } else {
         misfits += misfit;
-        keepSize(ctx, sc);
+        keepSize(ctx, sc, /*final=*/true);
       }
     }
   }
@@ -503,14 +524,15 @@ static void writeEdit(const SectionChunk *sc, const RelaxEdit &e, uint8_t *buf,
     buf[2] = 0x25;
     write32le(buf + 3, e.target->getRVA() - (p + 7));
     break;
-  case RelaxEdit::Load: {
+  case RelaxEdit::LoadPointer:
+  case RelaxEdit::LoadAddress: {
     // The load of an add's sum writes the add's register: ModRM.reg, and its
     // high bits, REX.R, or REX2's R3 with R4 clear.
     memcpy(buf, old, e.newSize);
     uint8_t *off = buf + e.newSize - 4;
-    off[-2] = e.opcode;
+    off[-2] = e.kind == RelaxEdit::LoadPointer ? 0x8B : 0x8D;
     int64_t addend = 0;
-    if (const ObjFile::LinkFusion *f = e.fusion) {
+    if (const ObjFile::LinkFusion *f = e.fusion()) {
       off[-1] = (off[-1] & 0xC7) | (f->reg & 7) << 3;
       off[-3] =
           (off[-3] & (e.newSize == 8 ? ~0x44 : ~0x04)) | (f->reg & 8) >> 1;
@@ -552,20 +574,20 @@ static void writeEdit(const SectionChunk *sc, const RelaxEdit &e, uint8_t *buf,
   case RelaxEdit::Dispose:
     if (!e.newSize)
       break;
-    if (e.fusion->isLoad)
-      disposeOfLoad(buf, p, e.newSize, *e.fusion);
+    if (e.fusion()->isLoad)
+      disposeOfLoad(buf, p, e.newSize, *e.fusion());
     else
       writeNops(buf, e.newSize, e.newSize);
     break;
   case RelaxEdit::TailJump:
     break;
   case RelaxEdit::Align:
-    writeNops(buf, e.newSize, e.coverage->size);
+    writeNops(buf, e.newSize, e.coverage()->size);
     break;
   case RelaxEdit::Branch: {
     // A jump that keeps its form holds the value written with the others.
     int64_t value =
-        r.getOutputOffset(e.coverage->a) - (e.newOffset + e.newSize);
+        r.getOutputOffset(e.coverage()->a) - (e.newOffset + e.newSize);
     if (e.newSize == e.oldSize) {
       memcpy(buf, old, e.oldSize);
     } else if (e.newSize == 2) {
@@ -587,7 +609,7 @@ static void writeEdit(const SectionChunk *sc, const RelaxEdit &e, uint8_t *buf,
     // or VEX's or EVEX's inverted B set. Then ModRM addressing RIP plus a
     // 32-bit displacement, never scaled, with no SIB byte; then what followed
     // the old displacement, such as an immediate.
-    const ObjFile::LinkFusion &f = *e.fusion;
+    const ObjFile::LinkFusion &f = *e.fusion();
     unsigned dispSize = f.disp == 1 ? 1 : f.disp == 2 ? 4 : 0;
     int64_t disp = 0;
     if (dispSize == 1)

@@ -217,7 +217,7 @@ static void addSiteEdit(SectionChunk *sc, const coff_relocation &rel,
   bool zero = isZeroPointer(li);
   switch (form) {
   case LinkSiteCall:
-    addEdit(sc, {off - 2, 6, zero ? 6u : 5u,
+    addEdit(sc, {off - 2, 6, uint16_t(zero ? 6 : 5),
                  zero ? RelaxEdit::ZeroCall : RelaxEdit::DirectCall, target});
     break;
   case LinkSiteJump:
@@ -227,10 +227,9 @@ static void addSiteEdit(SectionChunk *sc, const coff_relocation &rel,
     addEdit(sc, {off - 3, 7, 5, RelaxEdit::DirectJump, target});
     break;
   default: {
-    uint32_t size = form == LinkSiteLoadREX2 ? 8 : 7;
+    uint16_t size = form == LinkSiteLoadREX2 ? 8 : 7;
     addEdit(sc, {off + 4 - size, size, size,
-                 zero ? RelaxEdit::ZeroLoad : RelaxEdit::Load, target, nullptr,
-                 0x8D});
+                 zero ? RelaxEdit::ZeroLoad : RelaxEdit::LoadAddress, target});
     break;
   }
   }
@@ -633,7 +632,7 @@ void bindFusedCalls(SymbolTable &symtab) {
               (reaches || (f.valueRead && symtab.immutableReads.contains(s)))) {
             unsigned dispSize = f.disp == 1 ? 1 : f.disp == 2 ? 4 : 0;
             addEdit(sc, {f.offset, f.length,
-                         uint32_t(f.length - dispSize - f.sib + 4),
+                         uint16_t(f.length - dispSize - f.sib + 4),
                          RelaxEdit::Access,
                          li ? li->getTarget() : symtab.immutableReads.lookup(s),
                          &f});
@@ -650,9 +649,10 @@ void bindFusedCalls(SymbolTable &symtab) {
             continue;
           }
           RelaxEdit *load = edits ? edits->findEdit(f.load) : nullptr;
-          if (reaches && load && load->kind == RelaxEdit::Load) {
-            load->fusion = &f;
-            addEdit(sc, {f.offset, length, 0, RelaxEdit::Dispose, nullptr, &f});
+          if (reaches && load && load->kind == RelaxEdit::LoadAddress) {
+            load->entry = &f;
+            addEdit(sc, {f.offset, uint16_t(length), 0, RelaxEdit::Dispose,
+                         nullptr, &f});
             ++direct;
           }
           ++adds;
@@ -673,12 +673,12 @@ void bindFusedCalls(SymbolTable &symtab) {
         ++calls;
         bool through = goesThroughRegister(file, *loadRel);
         if (!through && li) {
-          addEdit(sc, {f.offset, uint32_t(size), 5,
+          addEdit(sc, {f.offset, uint16_t(size), 5,
                        f.isJump ? RelaxEdit::DirectJump : RelaxEdit::DirectCall,
                        li->getTarget()});
         } else if (!through && isa<Defined>(s)) {
           addEdit(sc,
-                  {f.offset, uint32_t(size), uint32_t(size),
+                  {f.offset, uint16_t(size), uint16_t(size),
                    f.isJump ? RelaxEdit::PointerJump : RelaxEdit::PointerCall,
                    cast<Defined>(s)});
         } else {
@@ -692,9 +692,9 @@ void bindFusedCalls(SymbolTable &symtab) {
             addEdit(sc, {f.offset, 7, 3, RelaxEdit::KeepHead});
           else if (covered)
             addEdit(sc, {f.offset, 6,
-                         f.reg >= 16  ? 4u
-                         : f.reg >= 8 ? 3u
-                                      : 2u,
+                         uint16_t(f.reg >= 16  ? 4
+                                  : f.reg >= 8 ? 3
+                                               : 2),
                          RelaxEdit::KeepTail});
         }
       }
@@ -713,11 +713,11 @@ void bindFusedCalls(SymbolTable &symtab) {
           mismatch(f.offset);
           continue;
         }
-        uint32_t size = form == LinkSiteLoadREX2 ? 8 : 7;
+        uint16_t size = form == LinkSiteLoadREX2 ? 8 : 7;
         if (RelaxEdit *e = edits ? edits->findEdit(f.offset) : nullptr) {
           e->kind = RelaxEdit::Dispose;
           e->relaxedSize = 0;
-          e->fusion = &f;
+          e->entry = &f;
         } else {
           addEdit(sc, {f.offset + 4 - size, size, 0, RelaxEdit::Dispose,
                        nullptr, &f});

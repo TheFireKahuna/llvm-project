@@ -2663,7 +2663,7 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
   // becomes mov, and the add after an ARM64 adrp a 64-bit ldr.
   auto addressSite = [&](const coff_relocation &r, DefinedImportData *imp) {
     uint32_t off = r.VirtualAddress;
-    RelaxEdit edit{off - 3, 7, 7, RelaxEdit::Load, imp, nullptr, 0x8B};
+    RelaxEdit edit{off - 3, 7, 7, RelaxEdit::LoadPointer, imp};
     if (arm64)
       edit = {off, 4, 4,
               r.Type == IMAGE_REL_ARM64_PAGEBASE_REL21 ? RelaxEdit::Arm64Page
@@ -2741,11 +2741,11 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
         scan.delayLoadsRead.insert(data);
       } else if (std::optional<LinkSiteForm> form = getDescribedSite(sc, rel);
                  form == LinkSiteLoad || form == LinkSiteLoadREX2) {
-        uint32_t size = form == LinkSiteLoadREX2 ? 8 : 7;
-        scan.addressSites.push_back({sc,
-                                     {off + 4 - size, size, size,
-                                      RelaxEdit::Load, thunk, nullptr, 0x8D},
-                                     data});
+        uint16_t size = form == LinkSiteLoadREX2 ? 8 : 7;
+        scan.addressSites.push_back(
+            {sc,
+             {off + 4 - size, size, size, RelaxEdit::LoadAddress, thunk},
+             data});
       }
       continue;
     }

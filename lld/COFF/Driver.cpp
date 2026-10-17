@@ -3471,11 +3471,6 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     ctx.forEachSymtab(
         [](SymbolTable &symtab) { symtab.offerOverridableDefaults(); });
 
-  ctx.forEachSymtab([](SymbolTable &symtab) {
-    bindLocalImports(symtab);
-    bindFusedCalls(symtab);
-  });
-
   ctx.symtab.initializeSameAddressThunks();
   for (auto alias : aliases) {
     assert(alias->kind() == Symbol::UndefinedKind);

@@ -11,6 +11,7 @@
 
 #include "InputFiles.h"
 #include "lld/Common/LLVM.h"
+#include "llvm/ADT/PointerUnion.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include <cstdint>
 #include <utility>
@@ -38,10 +39,11 @@ struct RelaxEdit {
     // call [rip+d] or jmp [rip+d] with REX.W, through target, a pointer.
     PointerCall,
     PointerJump,
-    // A RIP-relative load whose opcode becomes opcode, mov or lea, of target,
-    // plus the constant of fusion, an add whose sum it then takes into the
-    // add's register.
-    Load,
+    // A RIP-relative mov or lea of target, which replaces the instruction's
+    // opcode, plus the constant of fusion, an add whose sum it then takes into
+    // the add's register.
+    LoadPointer,
+    LoadAddress,
     // The load or call through a pointer that holds zero, an absent weak
     // symbol's address, which materialises zero instead in the same length.
     ZeroLoad,
@@ -72,17 +74,29 @@ struct RelaxEdit {
     Arm64Zero,
   };
 
+  RelaxEdit(uint32_t offset, uint16_t oldSize, uint16_t relaxedSize, Kind kind,
+            Defined *target = nullptr,
+            const ObjFile::LinkFusion *fusion = nullptr)
+      : offset(offset), oldSize(oldSize), relaxedSize(relaxedSize), kind(kind),
+        target(target), entry(fusion) {}
+
+  const ObjFile::LinkFusion *fusion() const {
+    return llvm::dyn_cast_if_present<const ObjFile::LinkFusion *>(entry);
+  }
+  const ObjFile::LinkCoverage *coverage() const {
+    return llvm::dyn_cast_if_present<const ObjFile::LinkCoverage *>(entry);
+  }
+
   uint32_t offset;
-  uint32_t oldSize;
-  uint32_t relaxedSize;
-  Kind kind;
-  Defined *target = nullptr;
-  const ObjFile::LinkFusion *fusion = nullptr;
-  uint8_t opcode = 0;
-  const ObjFile::LinkCoverage *coverage = nullptr;
   uint32_t newOffset = 0;
-  uint32_t newSize = 0;
-  bool promoted = false;
+  uint16_t oldSize;
+  uint16_t relaxedSize;
+  uint16_t newSize = 0;
+  Kind kind;
+  Defined *target;
+  // The record entry the edit writes, as its kind says.
+  llvm::PointerUnion<const ObjFile::LinkFusion *, const ObjFile::LinkCoverage *>
+      entry;
 };
 
 // The changes the linker makes to the code of a section chunk, and how it

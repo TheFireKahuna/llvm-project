@@ -1328,7 +1328,8 @@ bool ObjFile::readLinkCoverage(ArrayRef<uint8_t> payload) {
           a > targetSec->SizeOfRawData || b > targetSec->SizeOfRawData ||
           (!own &&
            (c.type == LinkCoverageAlign || c.type == LinkCoveragePCRelative)) ||
-          (c.type == LinkCoverageAlign && c.kind > 12))
+          (c.type == LinkCoverageAlign &&
+           (c.kind > 12 || a >= uint64_t(1) << c.kind)))
         return malformed("coverage entry at offset 0x" +
                          Twine::utohexstr(offset) + " in section " +
                          Twine(field) + " is out of range");

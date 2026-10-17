@@ -16,6 +16,7 @@
 #include "KCFI.h"
 #include "LLDMapFile.h"
 #include "LinkPins.h"
+#include "LocalImports.h"
 #include "VTableRuns.h"
 #include "MapFile.h"
 #include "OverrideTable.h"
@@ -879,6 +880,10 @@ void Writer::run() {
     if (ctx.config.machine == ARM64X)
       ctx.dynamicRelocs = make<DynamicRelocsChunk>();
     createImportTables();
+    ctx.forEachSymtab([](SymbolTable &symtab) {
+      bindLocalImports(symtab);
+      bindFusedCalls(symtab);
+    });
     slots.bind();
     relaxSections(ctx);
     slots.createResidualFill();
