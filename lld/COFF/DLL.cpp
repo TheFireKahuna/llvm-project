@@ -797,6 +797,12 @@ void IdataContents::create(COFFLinkerContext &ctx) {
   for (const KCFIState::ImportedRange &r : ctx.kcfi.importedRanges)
     rangeEnds[r.start] = r.end;
 
+  // The vtable-owner runs keyed by the DLL of their first word, in their global
+  // order, so a DLL's group looks up only its own runs instead of scanning all.
+  StringMap<SmallVector<const COFFLinkerContext::VTableOwnerRun *, 0>> runsOfDLL;
+  for (const COFFLinkerContext::VTableOwnerRun &r : ctx.vtableOwnerRuns)
+    runsOfDLL[r.words[0]->getDLLName().lower()].push_back(&r);
+
   // Each run of in-place import slots of a DLL gets a descriptor of its own.
   // The runs' descriptors follow every DLL's own, so that the loader's work on
   // the DLLs in between lets a provider be mapped before the walk reaches the
@@ -898,15 +904,17 @@ void IdataContents::create(COFFLinkerContext &ctx) {
     }
     // The three words of a DLL's vtable run that a check reads, which stay
     // consecutive.
-    for (const COFFLinkerContext::VTableOwnerRun &r : ctx.vtableOwnerRuns) {
-      auto it = llvm::find(syms, r.words[0]);
-      if (it == syms.end())
-        continue;
-      llvm::erase(syms, r.words[1]);
-      llvm::erase(syms, r.words[2]);
-      it = llvm::find(syms, r.words[0]);
-      syms.insert(it + 1, {r.words[1], r.words[2]});
-    }
+    auto runsIt = runsOfDLL.find(dllName.lower());
+    if (runsIt != runsOfDLL.end())
+      for (const COFFLinkerContext::VTableOwnerRun *r : runsIt->second) {
+        auto it = llvm::find(syms, r->words[0]);
+        if (it == syms.end())
+          continue;
+        llvm::erase(syms, r->words[1]);
+        llvm::erase(syms, r->words[2]);
+        it = llvm::find(syms, r->words[0]);
+        syms.insert(it + 1, {r->words[1], r->words[2]});
+      }
     // Create lookup and address tables. If they have external names,
     // we need to create hintName chunks to store the names.
     // If they don't (if they are import-by-ordinals), we store only
