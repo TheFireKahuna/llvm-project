@@ -22,7 +22,7 @@ IMPORT-NEXT:     Symbol:  (50)
 IMPORT-NEXT:     Address: 0x140001072
 IMPORT-NEXT:   }
 IMPORT-NEXT:   Import {
-IMPORT-NEXT:     Symbol: MessageBoxA (0)
+IMPORT-NEXT:     Symbol: MessageBoxA (1)
 IMPORT-NEXT:     Address: 0x14000107E
 IMPORT-NEXT:   }
 IMPORT-NEXT: }

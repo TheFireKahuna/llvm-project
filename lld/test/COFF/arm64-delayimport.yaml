@@ -53,7 +53,7 @@
 # IMPORTS:   BoundDelayImportTable: 0x0
 # IMPORTS:   UnloadDelayImportTable: 0x0
 # IMPORTS:   Import {
-# IMPORTS:     Symbol: function (0)
+# IMPORTS:     Symbol: function (2)
 # IMPORTS:     Address: 0x140001014
 # IMPORTS:   }
 # IMPORTS: }

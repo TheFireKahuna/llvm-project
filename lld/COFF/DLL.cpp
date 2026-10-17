@@ -1171,7 +1171,9 @@ void DelayLoadContents::create() {
         if (extName.empty()) {
           names.push_back(make<OrdinalOnlyChunk>(ctx, s->getOrdinal()));
         } else {
-          auto *c = make<HintNameChunk>(extName, 0);
+          // The loader tries the import library's hint first, as for an
+          // ordinary import.
+          auto *c = make<HintNameChunk>(extName, s->getOrdinal());
           names.push_back(make<LookupChunk>(ctx, c));
           hintNames.push_back(c);
           // Add a synthetic symbol for this load thunk, using the
