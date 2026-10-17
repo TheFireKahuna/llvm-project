@@ -9,12 +9,20 @@
 #ifndef LLD_COFF_VAGUE_ENTITIES_H
 #define LLD_COFF_VAGUE_ENTITIES_H
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Object/ArchiveWriter.h"
+#include "llvm/Support/MemoryBufferRef.h"
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace lld::coff {
 class COFFLinkerContext;
+
+// The prefix of the name by which an import library's record of the DLL it
+// imports from is found, which the DLL's name follows.
+inline constexpr llvm::StringLiteral vagueRecordPrefix = "__llvm_vague$";
 
 // Under -import-slots, reports each pair of images of the load closure of the
 // image imageName, as the records of the DLLs it imports describe it, that
@@ -22,6 +30,14 @@ class COFFLinkerContext;
 // no import path joins, or an image that keeps its copy while importing from
 // one that defines the entity.
 void checkVagueEntities(COFFLinkerContext &ctx, llvm::StringRef imageName);
+
+// The overridable defaults that the DLLs of the load closure that records, the
+// record members of import libraries in link order, describe offer, each with
+// the name of its DLL, in breadth-first load order, leaving out those of the
+// DLLs whose import libraries hold the records.
+std::vector<std::pair<std::string, std::string>>
+getDependentOverrideOffers(COFFLinkerContext &ctx,
+                           llvm::ArrayRef<llvm::MemoryBufferRef> records);
 
 // Under -import-slots, adds to the import library of the DLL dllName a member
 // that records the entities it keeps, the DLLs it imports from and their

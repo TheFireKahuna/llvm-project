@@ -593,6 +593,13 @@ private:
   std::vector<Symbol *> symbols;
 };
 
+// A short import member that imports symbolName from dllName by name, as an
+// import library holds one.
+MemoryBufferRef makeShortImport(llvm::COFF::MachineTypes machine,
+                                StringRef dllName, StringRef symbolName,
+                                llvm::COFF::ImportType importType,
+                                llvm::COFF::ImportNameType nameType);
+
 // .dll file. MinGW only.
 class DLLFile : public InputFile {
 public:

@@ -2183,11 +2183,12 @@ MachineTypes DLLFile::getMachineType() const {
   return machine == ARM64X ? ARM64 : machine;
 }
 
-void DLLFile::makeImport(DLLFile::Symbol *s) {
-  if (!seen.insert(s->symbolName).second)
-    return;
-
-  size_t impSize = s->dllName.size() + s->symbolName.size() + 2; // +2 for NULs
+MemoryBufferRef lld::coff::makeShortImport(MachineTypes machine,
+                                           StringRef dllName,
+                                           StringRef symbolName,
+                                           ImportType importType,
+                                           ImportNameType nameType) {
+  size_t impSize = dllName.size() + symbolName.size() + 2; // +2 for NULs
   size_t size = sizeof(coff_import_header) + impSize;
   char *buf = bAlloc().Allocate<char>(size);
   memset(buf, 0, size);
@@ -2195,16 +2196,24 @@ void DLLFile::makeImport(DLLFile::Symbol *s) {
   auto *imp = reinterpret_cast<coff_import_header *>(p);
   p += sizeof(*imp);
   imp->Sig2 = 0xFFFF;
-  imp->Machine = static_cast<uint16_t>(getMachineType());
+  imp->Machine = static_cast<uint16_t>(machine);
   imp->SizeOfData = impSize;
   imp->OrdinalHint = 0; // Only linking by name
-  imp->TypeInfo = (s->nameType << 2) | s->importType;
+  imp->TypeInfo = (nameType << 2) | importType;
 
   // Write symbol name and DLL name.
-  memcpy(p, s->symbolName.data(), s->symbolName.size());
-  p += s->symbolName.size() + 1;
-  memcpy(p, s->dllName.data(), s->dllName.size());
-  MemoryBufferRef mbref = MemoryBufferRef(StringRef(buf, size), s->dllName);
+  memcpy(p, symbolName.data(), symbolName.size());
+  p += symbolName.size() + 1;
+  memcpy(p, dllName.data(), dllName.size());
+  return MemoryBufferRef(StringRef(buf, size), dllName);
+}
+
+void DLLFile::makeImport(DLLFile::Symbol *s) {
+  if (!seen.insert(s->symbolName).second)
+    return;
+
+  MemoryBufferRef mbref = makeShortImport(
+      getMachineType(), s->dllName, s->symbolName, s->importType, s->nameType);
   ImportFile *impFile = make<ImportFile>(symtab.ctx, mbref);
   symtab.ctx.driver.addFile(impFile);
 }

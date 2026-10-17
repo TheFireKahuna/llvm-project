@@ -224,6 +224,16 @@ enum LinkRecordKind : uint64_t {
   // payload it imports from. epoch is the name of the export whose import
   // refuses a load beside a release that offers more, or empty.
   LinkRecordVagueEntities = 18,
+
+  // The overridable defaults that the images of a LinkRecordVagueEntities
+  // group in the same member offer, each under its ABI name, so that the link
+  // of an executable selects an offer of a DLL whose import library it does
+  // not link in load order:
+  //
+  //   payload := (image:ULEB128 count:ULEB128 name{count})*
+  //
+  // image is the index of an image of that group.
+  LinkRecordOverrideOffers = 20,
 };
 
 // The role of a definition that a LinkRecordBinding group lists.

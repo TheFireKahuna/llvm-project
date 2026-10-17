@@ -16,6 +16,7 @@
 #include "OverrideTable.h"
 #include "PDB.h"
 #include "Symbols.h"
+#include "VagueEntities.h"
 #include "lld/Common/ErrorHandler.h"
 #include "lld/Common/Memory.h"
 #include "lld/Common/Strings.h"
@@ -1121,6 +1122,29 @@ bool SymbolTable::loadOverrideOffers() {
       addGCRoot(offer);
       pulled = true;
     }
+  }
+  // After the DLLs whose import libraries the link names come the DLLs they
+  // depend on, in ELF's breadth-first order, which the records of those
+  // import libraries describe. The executable imports the first such offer
+  // of a default that nothing before it offers or replaces from its DLL by
+  // name, as it would through that DLL's import library.
+  SmallVector<MemoryBufferRef, 4> records;
+  for (ArchiveFile *f : indexedArchives)
+    for (StringRef name : f->getSymbolNames(vagueRecordPrefix))
+      if (auto *lazy = dyn_cast_or_null<LazyArchive>(find(name)))
+        records.push_back(lazy->getMemberBuffer());
+  for (auto &[dll, name] : getDependentOverrideOffers(ctx, records)) {
+    if (overrideOffers.contains(name) || isLocalOverrideReplacement(name))
+      continue;
+    StringRef offer = saver().save(overrideOfferPrefix + name);
+    overrideOffers.insert(offer.drop_front(overrideOfferPrefix.size()));
+    Log(ctx) << "Importing " << offer << " from " << dll
+             << ", which a DLL the image imports depends on";
+    ctx.driver.addFile(
+        make<ImportFile>(ctx, makeShortImport(machine, saver().save(dll), offer,
+                                              IMPORT_CODE, IMPORT_NAME)));
+    addGCRoot(offer);
+    pulled = true;
   }
   return pulled;
 }
