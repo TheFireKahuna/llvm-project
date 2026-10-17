@@ -6,6 +6,7 @@ add_lld_library(lldCOFF
   CallGraphSort.cpp
   Chunks.cpp
   COFFLinkerContext.cpp
+  Contracts.cpp
   DebugTypes.cpp
   DLL.cpp
   Driver.cpp

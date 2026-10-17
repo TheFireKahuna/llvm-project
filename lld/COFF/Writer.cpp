@@ -1428,6 +1428,10 @@ void Writer::createMiscChunks() {
     }
   }
 
+  // The byte that the image's ABI contract witnesses name.
+  if (ctx.contracts.witness)
+    rdataSec->addChunk(ctx.contracts.witness->getChunk());
+
   // Create thunks for locally-dllimported symbols.
   ctx.forEachSymtab([&](SymbolTable &symtab) {
     if (!symtab.localImportChunks.empty()) {

@@ -587,6 +587,11 @@ void ObjFile::readLinkRecords() {
         return;
       continue;
     }
+    if (cur && kind == LinkRecordContracts) {
+      if (!readContractRequirements(this, contents.slice(start, size)))
+        return;
+      continue;
+    }
     if (cur && kind == LinkRecordKCFIMemberTags) {
       DataExtractor group(contents.slice(start, size), /*IsLittleEndian=*/true);
       DataExtractor::Cursor c(0);

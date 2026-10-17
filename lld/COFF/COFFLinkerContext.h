@@ -11,6 +11,7 @@
 
 #include "Chunks.h"
 #include "Config.h"
+#include "Contracts.h"
 #include "DebugTypes.h"
 #include "Driver.h"
 #include "InputFiles.h"
@@ -149,6 +150,9 @@ public:
 
   // The state of the link's KCFI checks.
   KCFIState kcfi;
+
+  // The ABI contracts of the link and their witnesses.
+  ContractState contracts;
 };
 
 } // namespace lld::coff

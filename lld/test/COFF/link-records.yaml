@@ -18,8 +18,8 @@
 # RUN: yaml2obj -DDATA=4C4C524301000300 %s -o %t.lists.obj
 # RUN: lld-link -entry:main -subsystem:console -out:%t.exe %t.lists.obj
 
-## A group of the critical kind 7.
-# RUN: yaml2obj -DDATA=4C4C5243010014010007020001 %s -o %t.critical.obj
+## A group of the critical kind 9.
+# RUN: yaml2obj -DDATA=4C4C5243010014010009020001 %s -o %t.critical.obj
 # RUN: not lld-link -entry:main -subsystem:console -out:%t.exe \
 # RUN:   %t.critical.obj 2>&1 | FileCheck --check-prefix=CRITICAL %s
 
@@ -29,7 +29,7 @@
 # RUN: lld-link -entry:main -subsystem:console -out:%t.exe %t.skip.obj \
 # RUN:   %t.critical.lib
 
-# CRITICAL: error: {{.*}}.critical.obj: .llvm_link_records has a record of critical kind 7, which this linker does not support; link the object with a newer linker
+# CRITICAL: error: {{.*}}.critical.obj: .llvm_link_records has a record of critical kind 9, which this linker does not support; link the object with a newer linker
 
 ## Version 2.
 # RUN: yaml2obj -DDATA=4C4C52430200 %s -o %t.version.obj
@@ -68,6 +68,26 @@
 # SITES: error: {{.*}}.sites-sym.obj: .llvm_link_records is malformed: site group of symbol 2, which is not a section's symbol
 # SITES: error: {{.*}}.sites-end.obj: .llvm_link_records is malformed: site past the end of section 1
 # SITES: error: {{.*}}.sites-order.obj: .llvm_link_records is malformed: sites out of order in section 1
+
+## ABI contracts, kind 7: the contract of 1T, which the code of section 1
+## (symbol 0) requires of the image that provides main (symbol 2); then a
+## contract cut short, a group of a symbol that is not a section's, and a row
+## naming a contract the object does not have.
+# RUN: yaml2obj -DDATA=4C4C52430100071A010002315400010203040506070809\
+# RUN:0A0B0C0D0E0F0001020100 %s -o %t.contracts.obj
+# RUN: lld-link -import-slots -entry:main -subsystem:console -out:%t.exe \
+# RUN:   %t.contracts.obj
+# RUN: yaml2obj -DDATA=4C4C5243010007040100053154 %s -o %t.contracts-short.obj
+# RUN: yaml2obj -DDATA=4C4C52430100070300020000 %s -o %t.contracts-sym.obj
+# RUN: yaml2obj -DDATA=4C4C524301000706000001020105 %s \
+# RUN:   -o %t.contracts-index.obj
+# RUN: not lld-link -entry:main -subsystem:console -out:%t.exe \
+# RUN:   %t.contracts-short.obj %t.contracts-sym.obj %t.contracts-index.obj \
+# RUN:   2>&1 | FileCheck --check-prefix=CONTRACTS %s
+
+# CONTRACTS: error: {{.*}}.contracts-short.obj: .llvm_link_records is malformed: unexpected end of data at offset 0x4 while reading [0x3, 0x8)
+# CONTRACTS: error: {{.*}}.contracts-sym.obj: .llvm_link_records is malformed: contract group of symbol 2, which is not a section's symbol
+# CONTRACTS: error: {{.*}}.contracts-index.obj: .llvm_link_records is malformed: contract row naming contract 5, which the object does not have
 
 --- !COFF
 header:

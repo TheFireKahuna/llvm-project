@@ -49,6 +49,8 @@ struct ParsedDirectives {
   std::vector<StringRef> includes;
   std::vector<StringRef> excludes;
   std::vector<StringRef> wraps;
+  std::vector<StringRef> abiProvides;
+  std::vector<StringRef> abiProvidesData;
   llvm::opt::InputArgList args;
 };
 

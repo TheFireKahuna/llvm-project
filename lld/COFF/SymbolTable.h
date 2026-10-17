@@ -463,6 +463,9 @@ public:
   // Enters the lazy symbols of indexed archives whose names start with
   // prefix, so that iterating the table sees them.
   void addIndexedLazies(StringRef prefix);
+  // The names of the indexed archives' symbols that start with prefix, which
+  // the table may not hold.
+  std::vector<StringRef> getArchiveSymbolNames(StringRef prefix);
   void addLazyObject(InputFile *f, StringRef n);
   void addLazyDLLSymbol(DLLFile *f, DLLFile::Symbol *sym, StringRef n);
   Symbol *addAbsolute(StringRef n, COFFSymbolRef s);

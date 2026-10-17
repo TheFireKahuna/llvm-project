@@ -1142,6 +1142,12 @@ ParsedDirectives ArgParser::parseDirectives(StringRef s) {
     else if (tok.starts_with_insensitive("/wrap:") ||
              tok.starts_with_insensitive("-wrap:"))
       result.wraps.push_back(tok.substr(strlen("/wrap:")));
+    else if (tok.starts_with_insensitive("/abiprovide:") ||
+             tok.starts_with_insensitive("-abiprovide:"))
+      result.abiProvides.push_back(tok.substr(strlen("/abiprovide:")));
+    else if (tok.starts_with_insensitive("/abiprovidedata:") ||
+             tok.starts_with_insensitive("-abiprovidedata:"))
+      result.abiProvidesData.push_back(tok.substr(strlen("/abiprovidedata:")));
     else {
       // Copy substrings that are not valid C strings. The tokenizer may have
       // already copied quoted arguments for us, so those do not need to be

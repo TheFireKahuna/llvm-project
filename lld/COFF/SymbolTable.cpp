@@ -2764,6 +2764,13 @@ void SymbolTable::addIndexedArchive(ArchiveFile *f) {
   indexedArchives.push_back(f);
 }
 
+std::vector<StringRef> SymbolTable::getArchiveSymbolNames(StringRef prefix) {
+  std::vector<StringRef> names;
+  for (ArchiveFile *f : indexedArchives)
+    llvm::append_range(names, f->getSymbolNames(prefix));
+  return names;
+}
+
 void SymbolTable::addIndexedLazies(StringRef prefix) {
   for (ArchiveFile *f : indexedArchives)
     for (StringRef name : f->getSymbolNames(prefix))
@@ -3123,9 +3130,18 @@ void SymbolTable::assignExportOrdinals() {
   uint32_t max = 0;
   for (Export &e : exports)
     max = std::max(max, (uint32_t)e.ordinal);
-  for (Export &e : exports)
-    if (e.ordinal == 0)
+  // The ABI contract witnesses name one byte, through one ordinal.
+  uint32_t witnessOrdinal = 0;
+  for (Export &e : exports) {
+    if (e.ordinal != 0)
+      continue;
+    if (!isContractWitness(ctx, dyn_cast_or_null<Defined>(e.sym)))
       e.ordinal = ++max;
+    else if (witnessOrdinal)
+      e.ordinal = witnessOrdinal;
+    else
+      e.ordinal = witnessOrdinal = ++max;
+  }
   if (max <= std::numeric_limits<uint16_t>::max())
     return;
 

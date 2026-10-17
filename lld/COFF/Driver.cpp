@@ -613,6 +613,12 @@ void LinkerDriver::parseDirectives(InputFile *file) {
       excludedSymbols.insert(file->symtab.mangle(sym));
   }
 
+  // The ABI contracts that the file's definitions provide.
+  for (StringRef rows : directives.abiProvides)
+    addContractProvides(ctx, file, rows, /*data=*/false);
+  for (StringRef rows : directives.abiProvidesData)
+    addContractProvides(ctx, file, rows, /*data=*/true);
+
   // https://docs.microsoft.com/en-us/cpp/preprocessor/comment-c-cpp?view=msvc-160
   for (auto *arg : directives.args) {
     switch (arg->getOption().getID()) {
@@ -1237,6 +1243,7 @@ void LinkerDriver::createImportLibrary(bool asLib) {
   std::vector<uint8_t> rangeRecord, vagueRecord;
   if (!asLib) {
     addKCFIRangeImports(ctx, libName, exports, extra, rangeRecord);
+    addContractWitnessImports(ctx, libName, exports);
     addVagueEntityRecord(ctx, libName, extra, vagueRecord);
   }
 
@@ -3482,6 +3489,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // image.
   addKCFIRangeExports(ctx);
   bindKCFIImportedRanges(ctx);
+  addContractWitnessExports(ctx);
+  bindContractWitnesses(ctx);
   checkVersionScriptGlobals();
   bool implibAfterImage = false;
   if (config->dll || !ctx.symtab.exports.empty() ||

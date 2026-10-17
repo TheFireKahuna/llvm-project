@@ -193,6 +193,9 @@ void lld::coff::writeDefFile(COFFLinkerContext &ctx, StringRef name,
 
   os << "EXPORTS\n";
   for (const Export &e : exports) {
+    // The witnesses share an ordinal, which a .def file cannot give twice.
+    if (isContractWitness(ctx, dyn_cast_or_null<Defined>(e.sym)))
+      continue;
     os << "    " << e.exportName << " "
        << "@" << e.ordinal;
     if (auto *def = dyn_cast_or_null<Defined>(e.sym)) {
