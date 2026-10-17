@@ -16,6 +16,7 @@
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCParser/AsmLexer.h"
 #include "llvm/MC/MCParser/MCAsmParserExtension.h"
+#include "llvm/MC/MCParser/MCTargetAsmParser.h"
 #include "llvm/MC/MCSectionCOFF.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/Support/SMLoc.h"
@@ -93,6 +94,10 @@ class COFFAsmParser : public MCAsmParserExtension {
         ".linkforwarder");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkContract>(
         ".linkcontract");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFusedCall>(
+        ".linkfusedcall");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFusedRead>(
+        ".linkfusedread");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFact>(
         ".linkprotecteddelayiat");
 
@@ -165,6 +170,8 @@ class COFFAsmParser : public MCAsmParserExtension {
   bool parseDirectiveLinkBinding(StringRef, SMLoc);
   bool parseDirectiveLinkForwarder(StringRef, SMLoc);
   bool parseDirectiveLinkContract(StringRef, SMLoc);
+  bool parseDirectiveLinkFusedCall(StringRef, SMLoc);
+  bool parseDirectiveLinkFusedRead(StringRef, SMLoc);
   bool parseDirectiveSecNum(StringRef, SMLoc);
   bool parseDirectiveSecOffset(StringRef, SMLoc);
 
@@ -807,6 +814,33 @@ bool COFFAsmParser::parseDirectiveLinkForwarder(StringRef, SMLoc) {
   if (parseEOL())
     return true;
   getStreamer().emitCOFFLinkForwarder(Forwarder, Pointer);
+  return false;
+}
+
+/// parseDirectiveLinkFusedCall
+///  ::= .linkfusedcall load, register
+bool COFFAsmParser::parseDirectiveLinkFusedCall(StringRef, SMLoc) {
+  MCSymbol *Load;
+  if (getParser().parseSymbol(Load))
+    return TokError("expected identifier in directive");
+  if (getParser().parseComma())
+    return true;
+  MCRegister Reg;
+  SMLoc Start, End;
+  if (getParser().getTargetParser().parseRegister(Reg, Start, End))
+    return true;
+  if (parseEOL())
+    return true;
+  getStreamer().emitCOFFLinkFusedCall(Load, Reg);
+  return false;
+}
+
+/// parseDirectiveLinkFusedRead
+///  ::= .linkfusedread
+bool COFFAsmParser::parseDirectiveLinkFusedRead(StringRef, SMLoc) {
+  if (parseEOL())
+    return true;
+  getStreamer().emitCOFFLinkFusedRead();
   return false;
 }
 

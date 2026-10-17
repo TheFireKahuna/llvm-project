@@ -25,6 +25,7 @@
 #include "llvm/MC/MCObjectFileInfo.h"
 #include "llvm/MC/MCObjectStreamer.h"
 #include "llvm/MC/MCObjectWriter.h"
+#include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSectionCOFF.h"
 #include "llvm/MC/MCSymbolCOFF.h"
 #include "llvm/MC/MCTargetOptions.h"
@@ -376,6 +377,22 @@ void MCWinCOFFStreamer::emitCOFFLinkContract(const MCSymbol *Owner,
                                              bool IsData, StringRef Identity,
                                              ArrayRef<uint8_t> Digest) {
   getWriter().addLinkContract(Owner, Symbol, IsData, Identity, Digest);
+}
+
+// A fused call is known only once a target's streamer has seen it in the form
+// the records describe. A fused read names the place where the load begins,
+// which the object's records match to the load's site.
+void MCWinCOFFStreamer::emitCOFFLinkFusedCall(const MCSymbol *Load,
+                                              MCRegister Reg) {
+  getWriter().addLinkFusedCall(
+      {nullptr, Load, getContext().getRegisterInfo()->getEncodingValue(Reg),
+       false});
+}
+
+void MCWinCOFFStreamer::emitCOFFLinkFusedRead() {
+  MCSymbol *Site = getContext().createTempSymbol();
+  emitLabel(Site);
+  getWriter().addLinkFusedRead({Site, nullptr, false});
 }
 
 void MCWinCOFFStreamer::emitCommonSymbol(MCSymbol *S, uint64_t Size,

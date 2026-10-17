@@ -666,6 +666,17 @@ public:
                                     StringRef Identity,
                                     ArrayRef<uint8_t> Digest);
 
+  /// Tells the linker that the next instruction, with the segment overrides
+  /// before it or the int3 after it, is a call or jump through \p Reg, which
+  /// the load at \p Load filled with a pointer and which still holds it, in
+  /// as many bytes as the same transfer through the pointer in memory.
+  virtual void emitCOFFLinkFusedCall(const MCSymbol *Load, MCRegister Reg);
+
+  /// Tells the linker that only calls and jumps that emitCOFFLinkFusedCall
+  /// describes read the register that the next instruction, a load of a
+  /// pointer, fills.
+  virtual void emitCOFFLinkFusedRead();
+
   /// Emits an lcomm directive with XCOFF csect information.
   ///
   /// \param LabelSym - Label on the block of storage.

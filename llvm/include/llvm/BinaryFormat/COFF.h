@@ -115,8 +115,9 @@ enum LinkRecordKind : uint64_t {
   // section, or from the section's start for the first, so offsets increase.
   // form is a LinkSiteForm; a linker takes a form it does not know for
   // LinkSiteOther, so a form can be added without a new kind. The attribute
-  // introduces data about the site, which a linker that does not use it
-  // skips.
+  // introduces data about the site, LinkSiteFact values, which a linker that
+  // does not use it skips. A site that its facts describe may have no
+  // relocation, and a linker that does not use them leaves it as it is.
   LinkRecordSites = 2,
 
   // The object's KCFI lists name each imported function by its import
@@ -350,6 +351,38 @@ enum LinkSiteForm : uint8_t {
   LinkSiteAddress,        // lea r64, [rip+X], with any prefixes
   LinkSiteJumpOnePrefix,  // jmp [rip+X] after one prefix byte, such as REX.W
   LinkSiteLoadREX2,       // mov r64, [rip+X], with a REX2 prefix
+};
+
+// The facts that the data of a site in a LinkRecordSites group gives, each a
+// kind and a value:
+//
+//   data := (kind:ULEB128 value:ULEB128)*
+//
+// A linker ignores a fact of a kind it does not know.
+enum LinkSiteFact : uint8_t {
+  // The site, of form LinkSiteOther and with no relocation, is a call or jump
+  // through a register that a load at another site of its section filled
+  // with a pointer and that still holds it, in as many bytes as the same
+  // transfer through the pointer in memory takes, so that a linker may make
+  // it that transfer, or a direct one:
+  //
+  //   value := load << 6 | jump << 5 | register
+  //
+  // load is the index of the load's site among those of the section, and
+  // register the register's number in the instruction encoding. A call is
+  // segment overrides and the call through the register, six bytes; a jump,
+  // REX.W jmp through the register and int3, seven.
+  LinkSiteFusedCall = 1,
+  // Only calls and jumps that LinkSiteFusedCall describes read the register
+  // that the site, a load of a pointer, fills, so that the load is dead where
+  // none of them reads the register:
+  //
+  //   value := length << 1 | transfers
+  //
+  // length is that of the instruction that directly follows the load, or zero
+  // where none is known or it is another such load, and transfers says that
+  // instruction transfers control or may fuse with a branch after it.
+  LinkSiteFusedRead = 2,
 };
 
 // The KCFI type that a linker writes over the type words of a function's

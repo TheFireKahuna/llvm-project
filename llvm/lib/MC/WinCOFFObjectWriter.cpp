@@ -151,10 +151,19 @@ class llvm::WinCOFFWriter {
   symbol_list WeakDefaults;
 
   // By section, the instruction sites the object's link-only records
-  // describe, as offsets and COFF::LinkSiteForm values, and the offsets of the
-  // 32-bit fields through which the symbol they name is only called.
-  DenseMap<const COFFSection *, SmallVector<std::pair<uint32_t, uint8_t>, 0>>
-      LinkSites;
+  // describe, and the offsets of the 32-bit fields through which the symbol
+  // they name is only called.
+  struct LinkSite {
+    uint32_t Offset;
+    uint8_t Form; // A COFF::LinkSiteForm.
+    uint8_t InstOffset;
+    bool operator<(const LinkSite &Other) const {
+      return Offset < Other.Offset;
+    }
+    // Where the instruction holding the site begins.
+    uint32_t getInstStart() const { return Offset - InstOffset; }
+  };
+  DenseMap<const COFFSection *, SmallVector<LinkSite, 0>> LinkSites;
   DenseMap<const COFFSection *, SmallVector<uint32_t, 0>> CallOnlyRefs;
 
   bool UseBigObj;
@@ -1080,7 +1089,8 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
         if (std::optional<unsigned> Form =
                 OWriter.TargetObjectWriter->getLinkSiteForm(Fixup,
                                                             Reloc.Data.Type))
-          LinkSites[Sec].push_back({Reloc.Data.VirtualAddress, *Form});
+          LinkSites[Sec].push_back({Reloc.Data.VirtualAddress, uint8_t(*Form),
+                                    uint8_t(Fixup.getInstOffset())});
     } else if ((OWriter.LinkRecordCapabilities & COFF::LinkRecordsCallOnly) &&
                Fixup.getUse() == MCFixupUse::Call && !Reloc.Symb->Section) {
       // A field in data through which an undefined symbol is only called.
@@ -1296,6 +1306,99 @@ uint64_t WinCOFFWriter::writeObject() {
       OS << VTables;
     }
 
+    // The facts about fused calls and loads, as data of their sites. A fused
+    // call has no relocation, and is a site of its own where its bytes begin;
+    // a fused read names the place where its load begins. A fact about an
+    // instruction without a site of the form it needs is dropped, which
+    // leaves the instruction as it is.
+    DenseMap<std::pair<const COFFSection *, uint32_t>, SmallString<4>> SiteData;
+    for (auto &[Sec, SecSites] : LinkSites)
+      llvm::sort(SecSites);
+    auto FindSite =
+        [&](const MCSymbol *S) -> std::pair<const COFFSection *, size_t> {
+      if (!S->isInSection())
+        return {nullptr, 0};
+      auto SecIt = SectionMap.find(&S->getSection());
+      if (SecIt == SectionMap.end())
+        return {nullptr, 0};
+      auto It = LinkSites.find(SecIt->second);
+      if (It == LinkSites.end())
+        return {nullptr, 0};
+      uint64_t Start = Asm->getSymbolOffset(*S);
+      auto SiteIt = llvm::partition_point(It->second, [&](const LinkSite &L) {
+        return L.getInstStart() < Start;
+      });
+      if (SiteIt == It->second.end() || SiteIt->getInstStart() != Start)
+        return {nullptr, 0};
+      return {SecIt->second, SiteIt - It->second.begin()};
+    };
+    auto IsLoad = [&](const COFFSection *Sec, size_t Index) {
+      uint8_t Form = LinkSites[Sec][Index].Form;
+      return Form == COFF::LinkSiteLoad || Form == COFF::LinkSiteLoadREX2;
+    };
+    // A call's site comes before the index of its load's site is taken. A
+    // call not described goes on reading its register, so its load is not
+    // described as one that only described calls read.
+    SmallVector<std::pair<const WinCOFFObjectWriter::LinkFusedCall *,
+                          std::pair<const COFFSection *, uint32_t>>,
+                0>
+        CallSites;
+    DenseSet<std::pair<const MCSection *, uint64_t>> LoadsReadElsewhere;
+    for (const WinCOFFObjectWriter::LinkFusedCall &Call :
+         OWriter.LinkFusedCalls) {
+      if (!Call.Load->isInSection()) {
+        getContext().reportError(SMLoc(), "fused call reads the load at '" +
+                                              Call.Load->getName() +
+                                              "', which is not defined");
+        continue;
+      }
+      auto [LoadSec, LoadIndex] = FindSite(Call.Load);
+      if (!Call.End || !Call.End->isInSection() || Call.Register > 31 ||
+          !LoadSec || !IsLoad(LoadSec, LoadIndex) ||
+          SectionMap.lookup(&Call.End->getSection()) != LoadSec) {
+        LoadsReadElsewhere.insert(
+            {&Call.Load->getSection(), Asm->getSymbolOffset(*Call.Load)});
+        continue;
+      }
+      uint32_t Start =
+          Asm->getSymbolOffset(*Call.End) - (Call.IsJump ? 3 : 6);
+      CallSites.push_back({&Call, {LoadSec, Start}});
+    }
+    for (auto &[Call, Site] : CallSites)
+      LinkSites[Site.first].push_back({Site.second, COFF::LinkSiteOther, 0});
+    if (!CallSites.empty())
+      for (auto &[Sec, SecSites] : LinkSites)
+        llvm::sort(SecSites);
+    for (auto &[Call, Site] : CallSites) {
+      size_t LoadIndex = FindSite(Call->Load).second;
+      raw_svector_ostream DataOS(SiteData[Site]);
+      encodeULEB128(COFF::LinkSiteFusedCall, DataOS);
+      encodeULEB128(uint64_t(LoadIndex) << 6 | uint64_t(Call->IsJump) << 5 |
+                        Call->Register,
+                    DataOS);
+    }
+    for (const WinCOFFObjectWriter::LinkFusedRead &Read :
+         OWriter.LinkFusedReads) {
+      auto [Sec, Index] = FindSite(Read.Site);
+      if (!Sec || !IsLoad(Sec, Index) ||
+          LoadsReadElsewhere.contains(
+              {&Read.Site->getSection(), Asm->getSymbolOffset(*Read.Site)}))
+        continue;
+      // The load's displacement ends it. What follows it is known only in
+      // the same section and if the instruction is one a processor decodes.
+      uint32_t LoadEnd = LinkSites[Sec][Index].Offset + 4;
+      uint64_t Length = 0;
+      if (Read.NextEnd && Read.NextEnd->isInSection() &&
+          SectionMap.lookup(&Read.NextEnd->getSection()) == Sec) {
+        uint64_t End = Asm->getSymbolOffset(*Read.NextEnd);
+        if (End > LoadEnd && End - LoadEnd <= 15)
+          Length = End - LoadEnd;
+      }
+      raw_svector_ostream DataOS(SiteData[{Sec, LinkSites[Sec][Index].Offset}]);
+      encodeULEB128(COFF::LinkSiteFusedRead, DataOS);
+      encodeULEB128(Length << 1 | (Length && Read.NextTransfers), DataOS);
+    }
+
     SmallString<0> Sites;
     raw_svector_ostream SitesOS(Sites);
     for (const auto &Section : Sections) {
@@ -1303,13 +1406,20 @@ uint64_t WinCOFFWriter::writeObject() {
       if (It == LinkSites.end())
         continue;
       auto &SecSites = It->second;
-      llvm::sort(SecSites);
       encodeULEB128(Section->Symbol->getIndex(), SitesOS);
       encodeULEB128(SecSites.size(), SitesOS);
       uint32_t Prev = 0;
-      for (auto [Offset, Form] : SecSites) {
-        encodeULEB128(uint64_t(Offset - Prev) << 4 | Form, SitesOS);
-        Prev = Offset;
+      for (const LinkSite &Site : SecSites) {
+        auto DataIt = SiteData.find({Section.get(), Site.Offset});
+        bool HasData = DataIt != SiteData.end();
+        encodeULEB128(uint64_t(Site.Offset - Prev) << 4 | HasData << 3 |
+                          Site.Form,
+                      SitesOS);
+        if (HasData) {
+          encodeULEB128(DataIt->second.size(), SitesOS);
+          SitesOS << DataIt->second;
+        }
+        Prev = Site.Offset;
       }
     }
     if (!Sites.empty()) {
@@ -1530,6 +1640,8 @@ void WinCOFFObjectWriter::reset() {
   LinkBindings.clear();
   LinkForwarders.clear();
   LinkContracts.clear();
+  LinkFusedCalls.clear();
+  LinkFusedReads.clear();
   ObjWriter->reset();
   if (DwoWriter)
     DwoWriter->reset();

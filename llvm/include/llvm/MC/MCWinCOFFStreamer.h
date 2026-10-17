@@ -73,6 +73,8 @@ public:
   void emitCOFFLinkContract(const MCSymbol *Owner, const MCSymbol *Symbol,
                             bool IsData, StringRef Identity,
                             ArrayRef<uint8_t> Digest) override;
+  void emitCOFFLinkFusedCall(const MCSymbol *Load, MCRegister Reg) override;
+  void emitCOFFLinkFusedRead() override;
   void emitCommonSymbol(MCSymbol *Symbol, uint64_t Size,
                         Align ByteAlignment) override;
   void emitLocalCommonSymbol(MCSymbol *Symbol, uint64_t Size,

@@ -13,6 +13,7 @@
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAssembler.h"
 #include "llvm/MC/MCCodeEmitter.h"
+#include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCObjectWriter.h"
 #include "llvm/MC/MCWin64EH.h"
@@ -39,6 +40,23 @@ class X86WinCOFFStreamer : public MCWinCOFFStreamer {
   // Whether a label follows or splits that run, which makes what follows the
   // label reachable without all of it.
   bool LabelInPrefixRun = false;
+  // A linker that finds a load nothing reads disposes of its bytes, which the
+  // instruction directly after it may take as its own prefixes, so the
+  // streamer measures that instruction for the last fused read described:
+  // first the load is awaited, then what follows it.
+  enum { NoFusedRead, AwaitingLoad, AwaitingNext } FusedRead = NoFusedRead;
+  // A fused call is a call through a register after segment overrides that
+  // pad it to six bytes, or REX.W jmp through a register followed by int3
+  // that pads it to seven. The streamer marks where the call or jump ends once
+  // it has seen it whole in that form: first the overrides and the call or
+  // jump are awaited, then a jump's int3.
+  enum { NoFusedCall, AwaitingCall, AwaitingInt3 } FusedCall = NoFusedCall;
+  MCRegister FusedCallReg;
+  unsigned FusedCallOverrides = 0;
+  MCSymbol *FusedJumpEnd = nullptr;
+
+  void continueFusedCall(const MCInst &Inst, bool Follows, int Preceding,
+                         size_t Size);
 
   bool followsLastInstruction() const;
   bool startsSection() const;
@@ -58,9 +76,14 @@ public:
     LastInstEnd = 0;
     PrefixRun = 0;
     LabelInPrefixRun = false;
+    FusedRead = NoFusedRead;
+    FusedCall = NoFusedCall;
+    FusedJumpEnd = nullptr;
     MCWinCOFFStreamer::reset();
   }
   void emitInstruction(const MCInst &Inst, const MCSubtargetInfo &STI) override;
+  void emitCOFFLinkFusedCall(const MCSymbol *Load, MCRegister Reg) override;
+  void emitCOFFLinkFusedRead() override;
   void emitLabel(MCSymbol *Symbol, SMLoc Loc = SMLoc()) override;
   void emitWinEHHandlerData(SMLoc Loc) override;
   void emitWindowsUnwindTables(WinEH::FrameInfo *Frame) override;
@@ -183,6 +206,97 @@ void X86WinCOFFStreamer::emitInstruction(const MCInst &Inst,
   }
   LastInstFrag = After;
   LastInstEnd = getCurFragSize();
+
+  if (FusedCall != NoFusedCall)
+    continueFusedCall(Inst, Follows, Preceding, Size);
+
+  // The instruction after a fused read, with the prefixes before it, carries
+  // the read's bytes only if nothing lies between them; one that transfers
+  // control, or may fuse with a branch, then begins earlier, which the linker
+  // weighs.
+  if (FusedRead == AwaitingLoad) {
+    FusedRead = AwaitingNext;
+  } else if (FusedRead == AwaitingNext) {
+    bool IsPrefix = X86II::isPrefix(MCII->get(Inst.getOpcode()).TSFlags);
+    if (!Follows || !IsPrefix)
+      FusedRead = NoFusedRead;
+    if (Follows && !IsPrefix) {
+      const MCInstrDesc &Desc = MCII->get(Inst.getOpcode());
+      MCSymbol *End = getContext().createTempSymbol();
+      emitLabel(End);
+      WinCOFFObjectWriter::LinkFusedRead &Read =
+          getWriter().getLastLinkFusedRead();
+      Read.NextEnd = End;
+      Read.NextTransfers =
+          Desc.isBranch() || Desc.isCall() || Desc.isReturn() ||
+          X86::classifyFirstOpcodeInMacroFusion(Inst.getOpcode()) !=
+              X86::FirstMacroFusionInstKind::Invalid;
+    }
+  }
+}
+
+// Takes the next instruction of a fused call, whose description is dropped
+// unless the call or jump is in the form it describes, all its bytes
+// following one another: overrides that only it reads and a call that end six
+// bytes after the first override, or a jump of three bytes with REX.W, which
+// assembly gives as rex64, that int3 follows to seven. A jump's region begins
+// with the jump, wherever padding puts it.
+void X86WinCOFFStreamer::continueFusedCall(const MCInst &Inst, bool Follows,
+                                           int Preceding, size_t Size) {
+  unsigned Opcode = Inst.getOpcode();
+  WinCOFFObjectWriter::LinkFusedCall &Call = getWriter().getLastLinkFusedCall();
+  if (FusedCall == AwaitingInt3) {
+    if (Opcode != X86::INT3 || !Follows) {
+      FusedCall = NoFusedCall;
+    } else if (++FusedCallOverrides == 4) {
+      FusedCall = NoFusedCall;
+      Call.End = FusedJumpEnd;
+      Call.IsJump = true;
+    }
+    return;
+  }
+  if (Opcode == X86::CS_PREFIX) {
+    ++FusedCallOverrides;
+    return;
+  }
+  FusedCall = NoFusedCall;
+  bool ThroughReg = Inst.getNumOperands() && Inst.getOperand(0).isReg() &&
+                    Inst.getOperand(0).getReg() == FusedCallReg;
+  if (!ThroughReg || Preceding != int(FusedCallOverrides))
+    return;
+  bool HasREXW = Inst.getFlags() & X86::IP_HAS_REX_W;
+  bool IsCall = Opcode == X86::CALL64r;
+  bool IsJump = !FusedCallOverrides && (Opcode == X86::JMP64r_REX ||
+                                        (Opcode == X86::JMP64r && HasREXW));
+  if ((IsCall && FusedCallOverrides + Size == 6) || (IsJump && Size == 3)) {
+    MCSymbol *End = getContext().createTempSymbol();
+    emitLabel(End);
+    if (IsCall) {
+      Call.End = End;
+    } else {
+      FusedJumpEnd = End;
+      FusedCallOverrides = 0;
+      FusedCall = AwaitingInt3;
+    }
+  }
+}
+
+void X86WinCOFFStreamer::emitCOFFLinkFusedCall(const MCSymbol *Load,
+                                               MCRegister Reg) {
+  MCWinCOFFStreamer::emitCOFFLinkFusedCall(Load, Reg);
+  if (!MCII)
+    return;
+  FusedCall = AwaitingCall;
+  FusedCallReg = Reg;
+  FusedCallOverrides = 0;
+}
+
+// A fused read that directly follows another leaves the first without an
+// instruction to carry its bytes.
+void X86WinCOFFStreamer::emitCOFFLinkFusedRead() {
+  MCWinCOFFStreamer::emitCOFFLinkFusedRead();
+  if (MCII)
+    FusedRead = AwaitingLoad;
 }
 
 void X86WinCOFFStreamer::emitLabel(MCSymbol *Symbol, SMLoc Loc) {

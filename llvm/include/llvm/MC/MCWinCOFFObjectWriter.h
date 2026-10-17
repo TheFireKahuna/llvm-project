@@ -127,6 +127,29 @@ public:
     std::array<uint8_t, 16> Digest;
   };
 
+  /// A call or jump through the register, numbered as the instruction
+  /// encoding numbers it, that the load at Load filled with a pointer, padded
+  /// to the length of the same transfer through the pointer in memory, which
+  /// the object's link-only records carry (COFF::LinkSiteFusedCall). End is
+  /// where the call or jump ends, once a target's streamer has seen it in the
+  /// form the records describe.
+  struct LinkFusedCall {
+    const MCSymbol *End;
+    const MCSymbol *Load;
+    unsigned Register;
+    bool IsJump;
+  };
+
+  /// A load of a pointer, the instruction at Site, whose register only fused
+  /// calls read, with the end of the instruction that directly follows it, if
+  /// known, and whether that one transfers control or may fuse with a branch,
+  /// which the object's link-only records carry (COFF::LinkSiteFusedRead).
+  struct LinkFusedRead {
+    const MCSymbol *Site;
+    const MCSymbol *NextEnd;
+    bool NextTransfers;
+  };
+
 private:
   // The pins of the object's link-only records, in the order given.
   SmallVector<LinkPin, 0> LinkPins;
@@ -145,6 +168,9 @@ private:
   SmallVector<LinkForwarder, 0> LinkForwarders;
   // The ABI contracts the object's references require, in the order given.
   SmallVector<LinkContract, 0> LinkContracts;
+  // The facts about the object's fused calls and the loads they read.
+  SmallVector<LinkFusedCall, 0> LinkFusedCalls;
+  SmallVector<LinkFusedRead, 0> LinkFusedReads;
 
 public:
   WinCOFFObjectWriter(std::unique_ptr<MCWinCOFFObjectTargetWriter> MOTW,
@@ -193,6 +219,16 @@ public:
     C.Identity = Identity.str();
     llvm::copy(Digest, C.Digest.begin());
   }
+  void addLinkFusedCall(const LinkFusedCall &Call) {
+    LinkFusedCalls.push_back(Call);
+  }
+  void addLinkFusedRead(const LinkFusedRead &Read) {
+    LinkFusedReads.push_back(Read);
+  }
+  /// The fused call and read added last, which a target's streamer completes
+  /// once it has seen the call, or the instruction that follows the load.
+  LinkFusedCall &getLastLinkFusedCall() { return LinkFusedCalls.back(); }
+  LinkFusedRead &getLastLinkFusedRead() { return LinkFusedReads.back(); }
   // A binding implies the fact that the object lists every binding.
   void addLinkBinding(const LinkBinding &Binding) {
     LinkBindings.push_back(Binding);

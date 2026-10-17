@@ -338,6 +338,8 @@ public:
   void emitCOFFLinkContract(const MCSymbol *Owner, const MCSymbol *Symbol,
                             bool IsData, StringRef Identity,
                             ArrayRef<uint8_t> Digest) override;
+  void emitCOFFLinkFusedCall(const MCSymbol *Load, MCRegister Reg) override;
+  void emitCOFFLinkFusedRead() override;
   void emitXCOFFLocalCommonSymbol(MCSymbol *LabelSym, uint64_t Size,
                                   MCSymbol *CsectSym, Align Alignment) override;
   void emitXCOFFSymbolLinkageWithVisibility(MCSymbol *Symbol,
@@ -1135,6 +1137,20 @@ void MCAsmStreamer::emitCOFFLinkContract(const MCSymbol *Owner,
   OS << (IsData ? ", data, " : ", type, ");
   PrintQuotedString(Identity, OS);
   OS << ", \"" << toHex(Digest, /*LowerCase=*/true) << '"';
+  EmitEOL();
+}
+
+void MCAsmStreamer::emitCOFFLinkFusedCall(const MCSymbol *Load,
+                                          MCRegister Reg) {
+  OS << "\t.linkfusedcall\t";
+  Load->print(OS, MAI);
+  OS << ", ";
+  InstPrinter->printRegName(OS, Reg);
+  EmitEOL();
+}
+
+void MCAsmStreamer::emitCOFFLinkFusedRead() {
+  OS << "\t.linkfusedread";
   EmitEOL();
 }
 
