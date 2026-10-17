@@ -503,7 +503,7 @@ struct OverrideCell {
   bool indirect = false;
   // For a vague entity, its name, by which a DLL loaded outside the
   // executable's link finds the instance it binds to.
-  StringRef name;
+  StringRef name = {};
 
   uint64_t getRVA() const {
     return chunk ? chunk->getRVA() + offset : imp->getRVA();
@@ -1733,15 +1733,15 @@ void NamedCellFillChunk::writeAMD64(LabelledCode &a) const {
                : std::vector<std::pair<uint64_t, uint64_t>>();
   uint32_t outer = a.newLabel(), search = a.newLabel(), block = a.newLabel(),
            nextModule = a.newLabel(), delayLoad = a.newLabel(),
-           probe = a.newLabel(), bucket = a.newLabel(), hit = a.newLabel(),
-           next = a.newLabel(), store = a.newLabel(), skip = a.newLabel(),
-           tableHit = a.newLabel(), finish = a.newLabel(), zero = a.newLabel(),
-           done = a.newLabel(), parent = a.newLabel(), importer = a.newLabel(),
-           found = a.newLabel(), delayLoaders = a.newLabel(),
-           pinFailed = a.newLabel(), pinStatus = a.newLabel(),
-           walk = a.newLabel(), compare = a.newLabel(), module = a.newLabel(),
-           dllTable = a.newLabel(), haveTable = a.newLabel(),
-           filter = a.newLabel(), matched = a.newLabel(), direct = a.newLabel();
+           bucket = a.newLabel(), hit = a.newLabel(), next = a.newLabel(),
+           store = a.newLabel(), skip = a.newLabel(), tableHit = a.newLabel(),
+           finish = a.newLabel(), zero = a.newLabel(), done = a.newLabel(),
+           parent = a.newLabel(), importer = a.newLabel(), found = a.newLabel(),
+           delayLoaders = a.newLabel(), pinFailed = a.newLabel(),
+           pinStatus = a.newLabel(), compare = a.newLabel(),
+           module = a.newLabel(), dllTable = a.newLabel(),
+           haveTable = a.newLabel(), filter = a.newLabel(),
+           matched = a.newLabel(), direct = a.newLabel();
   // NtProtectVirtualMemory(-1, &base, &size, r9d, &old), with base, size and
   // old at rsp + 0x30, 0x38 and 0x40.
   auto callProtect = [&] {
@@ -2140,15 +2140,15 @@ void NamedCellFillChunk::writeARM64(LabelledCode &a) const {
                : std::vector<std::pair<uint64_t, uint64_t>>();
   uint32_t outer = a.newLabel(), search = a.newLabel(), block = a.newLabel(),
            nextModule = a.newLabel(), delayLoad = a.newLabel(),
-           probe = a.newLabel(), bucket = a.newLabel(), hit = a.newLabel(),
-           next = a.newLabel(), store = a.newLabel(), skip = a.newLabel(),
-           tableHit = a.newLabel(), finish = a.newLabel(), zero = a.newLabel(),
-           done = a.newLabel(), parent = a.newLabel(), importer = a.newLabel(),
-           found = a.newLabel(), delayLoaders = a.newLabel(),
-           pinFailed = a.newLabel(), pinStatus = a.newLabel(),
-           walk = a.newLabel(), compare = a.newLabel(), module = a.newLabel(),
-           dllTable = a.newLabel(), haveTable = a.newLabel(),
-           filter = a.newLabel(), matched = a.newLabel(), direct = a.newLabel();
+           bucket = a.newLabel(), hit = a.newLabel(), next = a.newLabel(),
+           store = a.newLabel(), skip = a.newLabel(), tableHit = a.newLabel(),
+           finish = a.newLabel(), zero = a.newLabel(), done = a.newLabel(),
+           parent = a.newLabel(), importer = a.newLabel(), found = a.newLabel(),
+           delayLoaders = a.newLabel(), pinFailed = a.newLabel(),
+           pinStatus = a.newLabel(), compare = a.newLabel(),
+           module = a.newLabel(), dllTable = a.newLabel(),
+           haveTable = a.newLabel(), filter = a.newLabel(),
+           matched = a.newLabel(), direct = a.newLabel();
   // The arguments of NtProtectVirtualMemory other than the protection, with
   // base, size and old at sp + 88, 96 and 104; then the call.
   auto callProtect = [&] {

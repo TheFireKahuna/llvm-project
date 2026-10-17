@@ -1451,7 +1451,9 @@ static void markAddrsig(Symbol *s) {
 // the object that gives it, which may be local to it, and the command line a
 // global symbol.
 static void findGuardSuppressed(COFFLinkerContext &ctx) {
-  for (auto [file, name] : ctx.config.guardSymArgs) {
+  for (const auto &arg : ctx.config.guardSymArgs) {
+    InputFile *file = arg.first;
+    StringRef name = arg.second;
     Symbol *s = nullptr;
     if (auto *obj = dyn_cast_or_null<ObjFile>(file))
       for (Symbol *sym : obj->getSymbols())

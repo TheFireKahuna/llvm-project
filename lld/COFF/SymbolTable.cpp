@@ -1875,7 +1875,6 @@ bool SymbolTable::bindVagueSiblings() {
     if (auto *d = dyn_cast<DefinedRegular>(sym); keeps(d))
       kept.insert(d->getName());
 
-  bool added = false;
   for (auto &[name, dll] : chooseVagueOwners(ctx, kept)) {
     StringRef entity = saver().save(name);
     if (dll.empty()) {
@@ -1905,7 +1904,6 @@ bool SymbolTable::bindVagueSiblings() {
     ctx.driver.addFile(make<ImportFile>(
         ctx, makeShortImport(machine, saver().save(dll), entity, IMPORT_DATA,
                              IMPORT_NAME)));
-    added = true;
   }
   if (vagueOwners.empty())
     return false;
