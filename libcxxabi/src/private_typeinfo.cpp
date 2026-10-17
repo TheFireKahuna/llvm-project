@@ -68,8 +68,16 @@ static inline T* strip_vtable(T* vtable) {
 static inline bool is_equal(const std::type_info* x, const std::type_info* y, bool use_strcmp) {
   // Use std::type_info's default comparison unless we've explicitly asked
   // for strcmp.
-  if (!use_strcmp)
+  if (!use_strcmp) {
+#if defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
+    // Images that an import path joins share one type_info object of each
+    // type, so the address decides most comparisons that hold without reading
+    // either name.
+    if (x == y)
+      return true;
+#endif
     return *x == *y;
+  }
   // Still allow pointer equality to short circut.
   return x == y || strcmp(x->name(), y->name()) == 0;
 }
