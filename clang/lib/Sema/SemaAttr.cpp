@@ -88,7 +88,9 @@ void Sema::AddAlignmentAttributesForRecord(RecordDecl *RD) {
 }
 
 void Sema::AddMsStructLayoutForRecord(RecordDecl *RD) {
-  if (MSStructPragmaOn)
+  // A record a Win32 region defines has MSVC's layout, which its users across
+  // the Windows ABI expect, whatever layout the unit gives its own records.
+  if (MSStructPragmaOn || PP.isInWin32Region(RD->getLocation()))
     RD->addAttr(MSStructAttr::CreateImplicit(Context));
 
   // FIXME: We should merge AddAlignmentAttributesForRecord with

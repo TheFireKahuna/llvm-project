@@ -13,6 +13,7 @@
 
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/SourceManager.h"
+#include "clang/Basic/TargetInfo.h"
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Lex/LexDiagnostic.h"
 #include "clang/Lex/MacroInfo.h"
@@ -138,6 +139,50 @@ void Preprocessor::EnterSourceFileWithLexer(std::unique_ptr<Lexer> TheLexer,
                                 PPCallbacks::LexedFileChangeReason::EnterFile,
                                 FileType, PrevFID, EnterLoc);
   }
+
+  if (!CurLexer->Is_PragmaLexer)
+    updateWin32Macros();
+}
+
+void Preprocessor::updateWin32Macros() {
+  if (!CurPPLexer || !getTargetInfo().getTriple().isWindowsNTPOSIXEnvironment())
+    return;
+  bool Region = isWin32RegionFile(CurPPLexer->getFileID());
+  if (Region == Win32MacrosDefined)
+    return;
+  Win32MacrosDefined = Region;
+  SourceLocation Loc = CurPPLexer->getSourceLocation();
+  if (!Region) {
+    for (IdentifierInfo *II : Win32Macros)
+      appendMacroDirective(II, AllocateUndefMacroDirective(Loc));
+    Win32Macros.clear();
+    return;
+  }
+  // The Windows SDK's view of the target, as Windows Itanium gives it: a
+  // macro the unit already defines is left as it is.
+  const llvm::Triple &T = getTargetInfo().getTriple();
+  auto Define = [&](StringRef Name, StringRef Value) {
+    IdentifierInfo *II = getIdentifierInfo(Name);
+    if (isMacroDefined(II))
+      return;
+    Token Tok;
+    Tok.startToken();
+    Tok.setKind(tok::numeric_constant);
+    CreateString(Value, Tok);
+    MacroInfo *MI = AllocateMacroInfo(Loc);
+    MI->setTokens(Tok, getPreprocessorAllocator());
+    MI->setDefinitionEndLoc(Loc);
+    appendDefMacroDirective(II, MI, Loc);
+    Win32Macros.push_back(II);
+  };
+  Define("_WIN32", "1");
+  if (T.isArch64Bit())
+    Define("_WIN64", "1");
+  Define("WINVER", "0x0A00");
+  Define("_WIN32_WINNT", "0x0A00");
+  Define(T.getArch() == llvm::Triple::x86_64 ? "_AMD64_" : "_ARM64_", "1");
+  Define("_STDCALL_SUPPORTED", "1");
+  Define("_FORCENAMELESSUNION", "1");
 }
 
 /// EnterMacro - Add a Macro to the top of the include stack and start lexing
@@ -494,6 +539,9 @@ bool Preprocessor::HandleEndOfFile(Token &Result, bool isEndOfMacro) {
 
     // Propagate info about start-of-line/leading white-space/etc.
     PropagateLineStartLeadingSpaceInfo(Result);
+
+    if (!isEndOfMacro)
+      updateWin32Macros();
 
     // Notify the client, if desired, that we are in a new source file.
     if (Callbacks && !isEndOfMacro && CurPPLexer) {

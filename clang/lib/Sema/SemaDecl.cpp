@@ -3953,9 +3953,12 @@ bool Sema::MergeFunctionDecl(FunctionDecl *New, NamedDecl *&OldD, Scope *S,
       // Calling Conventions on a Builtin aren't really useful and setting a
       // default calling convention and cdecl'ing some builtin redeclarations is
       // common, so warn and ignore the calling convention on the redeclaration.
-      Diag(New->getLocation(), diag::warn_cconv_unsupported)
-          << FunctionType::getNameForCallConv(NewTypeInfo.getCC())
-          << (int)CallingConventionIgnoredReason::BuiltinFunction;
+      // A Win32 region's spellings name the convention Windows's default is,
+      // as on Windows they do, so its redeclarations are not warned about.
+      if (!PP.isInWin32Region(New->getLocation()))
+        Diag(New->getLocation(), diag::warn_cconv_unsupported)
+            << FunctionType::getNameForCallConv(NewTypeInfo.getCC())
+            << (int)CallingConventionIgnoredReason::BuiltinFunction;
       NewTypeInfo = NewTypeInfo.withCallingConv(OldTypeInfo.getCC());
       RequiresAdjustment = true;
     } else {
@@ -4132,6 +4135,9 @@ bool Sema::MergeFunctionDecl(FunctionDecl *New, NamedDecl *&OldD, Scope *S,
     QualType OldDeclaredReturnType = Old->getDeclaredReturnType();
     QualType NewDeclaredReturnType = New->getDeclaredReturnType();
     if (!Context.hasSameType(OldDeclaredReturnType, NewDeclaredReturnType) &&
+        !(Old->isImplicit() && Old->getBuiltinID() &&
+          Context.areWin32Twins(OldDeclaredReturnType,
+                                NewDeclaredReturnType)) &&
         canFullyTypeCheckRedeclaration(New, Old, NewDeclaredReturnType,
                                        OldDeclaredReturnType)) {
       QualType ResQT;
@@ -4338,6 +4344,24 @@ bool Sema::MergeFunctionDecl(FunctionDecl *New, NamedDecl *&OldD, Scope *S,
     if (Context.hasSameFunctionTypeIgnoringExceptionSpec(OldQTypeForComparison,
                                                          NewQType))
       return MergeCompatibleFunctionDecls(New, Old, S, MergeTypeWithOld);
+
+    // A Win32 region declares a builtin with its own types where the builtin
+    // has their standard twins, as excpt.h declares _exception_code.
+    if (Old->isImplicit() && Old->getBuiltinID()) {
+      const auto *OldFT = OldQTypeForComparison->getAs<FunctionProtoType>();
+      const auto *NewFT = NewQType->getAs<FunctionProtoType>();
+      auto Same = [&](QualType A, QualType B) {
+        return Context.hasSameType(A, B) || Context.areWin32Twins(A, B);
+      };
+      if (OldFT && NewFT && OldFT->getNumParams() == NewFT->getNumParams() &&
+          OldFT->isVariadic() == NewFT->isVariadic() &&
+          OldFT->getCallConv() == NewFT->getCallConv() &&
+          Same(OldFT->getReturnType(), NewFT->getReturnType()) &&
+          llvm::all_of(llvm::zip_equal(OldFT->param_types(),
+                                       NewFT->param_types()),
+                       [&](auto P) { return Same(std::get<0>(P), std::get<1>(P)); }))
+        return MergeCompatibleFunctionDecls(New, Old, S, MergeTypeWithOld);
+    }
 
     // If the types are imprecise (due to dependent constructs in friends or
     // local extern declarations), it's OK if they differ. We'll check again

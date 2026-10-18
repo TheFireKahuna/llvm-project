@@ -8641,8 +8641,8 @@ ExprResult InitializationSequence::Perform(Sema &S,
       break;
 
     case SK_Win32TwinConversion:
-      CurInit = S.ImpCastExprToType(CurInit.get(), Step->Type,
-                                    CK_LValueBitCast,
+      // The twins share one representation, so the binding is a no-op.
+      CurInit = S.ImpCastExprToType(CurInit.get(), Step->Type, CK_NoOp,
                                     CurInit.get()->getValueKind());
       break;
 

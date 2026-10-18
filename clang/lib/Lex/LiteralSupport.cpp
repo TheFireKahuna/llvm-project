@@ -1829,6 +1829,14 @@ CharLiteralParser::CharLiteralParser(const char *begin, const char *end,
 
   Kind = kind;
 
+  // A wide literal written in a Win32 region of a translation unit whose
+  // wchar_t is 32 bits holds the region's 16-bit wchar_t, as UTF-16.
+  if (Kind == tok::wide_char_constant &&
+      PP.getTargetInfo().getWCharWidth() == 32 && PP.isInWin32Region(Loc)) {
+    Kind = tok::utf16_char_constant;
+    Win32Wide = true;
+  }
+
   const char *TokBegin = begin;
 
   // Skip over wide character determinant.
@@ -2104,8 +2112,9 @@ StringLiteralParser::StringLiteralParser(ArrayRef<Token> StringToks,
                                          ConversionAction Action)
     : SM(PP.getSourceManager()), Features(PP.getLangOpts()),
       Target(PP.getTargetInfo()), Diags(&PP.getDiagnostics()),
-      TE(&PP.getTextEncoding()), MaxTokenLength(0), SizeBound(0),
-      CharByteWidth(0), Kind(tok::unknown), ResultPtr(ResultBuf.data()),
+      TE(&PP.getTextEncoding()), PP(&PP), Win32Wide(false), MaxTokenLength(0),
+      SizeBound(0), CharByteWidth(0), Kind(tok::unknown),
+      ResultPtr(ResultBuf.data()),
       EvalMethod(EvalMethod), hadError(false), Pascal(false) {
   init(StringToks, Action);
 }
@@ -2172,6 +2181,20 @@ void StringLiteralParser::init(ArrayRef<Token> StringToks,
         hadError = true;
       }
     }
+  }
+
+  // A wide literal written in a Win32 region of a translation unit whose
+  // wchar_t is 32 bits holds the region's 16-bit wchar_t, as UTF-16; the first
+  // wide piece of a concatenation decides.
+  if (Kind == tok::wide_string_literal && Target.getWCharWidth() == 32) {
+    if (PP) {
+      const Token *Wide = llvm::find_if(StringToks, [](const Token &Tok) {
+        return Tok.is(tok::wide_string_literal);
+      });
+      Win32Wide = PP->isInWin32Region(Wide->getLocation());
+    }
+    if (Win32Wide)
+      Kind = tok::utf16_string_literal;
   }
 
   // Include space for the null terminator.

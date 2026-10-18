@@ -200,6 +200,7 @@ class CharLiteralParser {
   tok::TokenKind Kind;
   bool IsMultiChar;
   bool HadError;
+  bool Win32Wide = false;
   SmallString<32> UDSuffixBuf;
   unsigned UDSuffixOffset;
 public:
@@ -213,6 +214,10 @@ public:
   bool isUTF8() const { return Kind == tok::utf8_char_constant; }
   bool isUTF16() const { return Kind == tok::utf16_char_constant; }
   bool isUTF32() const { return Kind == tok::utf32_char_constant; }
+  /// Whether this is a wide literal written in a Win32 region of a
+  /// translation unit whose wchar_t is 32 bits: a UTF-16 literal of the
+  /// region's 16-bit wchar_t.
+  bool isWin32Wide() const { return Win32Wide; }
   bool isMultiChar() const { return IsMultiChar; }
   uint64_t getValue() const { return Value; }
   StringRef getUDSuffix() const { return UDSuffixBuf; }
@@ -236,6 +241,8 @@ class StringLiteralParser {
   const TargetInfo &Target;
   DiagnosticsEngine *Diags;
   TextEncoding *TE;
+  const Preprocessor *PP = nullptr;
+  bool Win32Wide;
 
   unsigned MaxTokenLength;
   unsigned SizeBound;
@@ -253,10 +260,14 @@ public:
       ArrayRef<Token> StringToks, Preprocessor &PP,
       StringLiteralEvalMethod StringMethod = StringLiteralEvalMethod::Evaluated,
       ConversionAction Action = CA_NoConversion);
+  /// \p Win32Wide says that a wide literal is a Win32 region's, as the
+  /// literal parsed with a preprocessor found.
   StringLiteralParser(ArrayRef<Token> StringToks, const SourceManager &sm,
                       const LangOptions &features, const TargetInfo &target,
-                      DiagnosticsEngine *diags = nullptr)
+                      DiagnosticsEngine *diags = nullptr,
+                      bool Win32Wide = false)
       : SM(sm), Features(features), Target(target), Diags(diags), TE(nullptr),
+        Win32Wide(Win32Wide),
         MaxTokenLength(0), SizeBound(0), CharByteWidth(0), Kind(tok::unknown),
         ResultPtr(ResultBuf.data()),
         EvalMethod(StringLiteralEvalMethod::Evaluated), hadError(false),
@@ -288,6 +299,10 @@ public:
   bool isUTF8() const { return Kind == tok::utf8_string_literal; }
   bool isUTF16() const { return Kind == tok::utf16_string_literal; }
   bool isUTF32() const { return Kind == tok::utf32_string_literal; }
+  /// Whether this is a wide literal written in a Win32 region of a
+  /// translation unit whose wchar_t is 32 bits: a UTF-16 literal of the
+  /// region's 16-bit wchar_t.
+  bool isWin32Wide() const { return Win32Wide; }
   bool isPascal() const { return Pascal; }
   bool isUnevaluated() const {
     return EvalMethod == StringLiteralEvalMethod::Unevaluated;

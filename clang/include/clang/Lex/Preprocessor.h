@@ -37,6 +37,7 @@
 #include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/FunctionExtras.h"
 #include "llvm/ADT/PointerUnion.h"
@@ -3030,11 +3031,33 @@ private:
   // Cached identifiers used to implement __set_pp_state.
   IdentifierInfo *Ident__GLIBCXX__;
 
+  /// The files that '#pragma clang win32_header' marks as Win32 declaration
+  /// regions, and whether each file is one.
+  llvm::DenseSet<FileID> Win32HeaderFiles;
+  mutable llvm::DenseMap<FileID, bool> Win32RegionFiles;
+
+  bool isWin32RegionFile(FileID FID) const;
+
+  /// The Win32 predefines in effect while the lexer is in a Win32 region, and
+  /// whether they are in effect now.
+  SmallVector<IdentifierInfo *, 8> Win32Macros;
+  bool Win32MacrosDefined = false;
+
+  /// Defines the Win32 predefines when the lexer enters a Win32 region, and
+  /// removes them when it leaves for a file that is not one.
+  void updateWin32Macros();
+
 public:
+  /// Whether the token at \p Loc was written in a Win32 declaration region of
+  /// an NT-POSIX translation unit: spelled in a region's file, or pasted by a
+  /// macro that such a file defines.
+  bool isInWin32Region(SourceLocation Loc) const;
+
   void HandlePragmaOnce(Token &OnceTok);
   void HandlePragmaMark(Token &MarkTok);
   void HandlePragmaPoison();
   void HandlePragmaSystemHeader(Token &SysHeaderTok);
+  void HandlePragmaWin32Header(Token &Tok);
   void HandlePragmaDependency(Token &DependencyTok);
   void HandlePragmaPushMacro(Token &Tok);
   void HandlePragmaPopMacro(Token &Tok);

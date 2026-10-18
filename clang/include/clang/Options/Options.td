@@ -5467,6 +5467,14 @@ def iapinotes_modules : JoinedOrSeparate<["-"], "iapinotes-modules">, Group<clan
 def idirafter : JoinedOrSeparate<["-"], "idirafter">, Group<clang_i_Group>,
   Visibility<[ClangOption, CC1Option]>,
   HelpText<"Add directory to AFTER include search path">;
+def iwin32 : JoinedOrSeparate<["-"], "iwin32">, Group<clang_i_Group>,
+  Visibility<[ClangOption]>, MetaVarName<"<directory>">,
+  HelpText<"Add directory to AFTER include search path as Win32 headers, whose "
+           "declarations are a Win32 region (NT-POSIX only)">;
+def fwin32_header_root_EQ : Joined<["-"], "fwin32-header-root=">,
+  Visibility<[CC1Option]>, MetaVarName<"<directory>">,
+  HelpText<"Make the headers under <directory> Win32 declaration regions">,
+  MarshallingInfoStringVector<LangOpts<"Win32HeaderRoots">>;
 def iframework : JoinedOrSeparate<["-"], "iframework">, Group<clang_i_Group>,
   Visibility<[ClangOption, CC1Option]>,
   HelpText<"Add directory to SYSTEM framework search path">;
@@ -5647,6 +5655,11 @@ def mno_default_build_attributes : Joined<["-"], "mno-default-build-attributes">
 let Flags = [TargetSpecific] in {
 def mconstant_cfstrings : Flag<["-"], "mconstant-cfstrings">, Group<clang_ignored_m_Group>;
 def mconsole : Joined<["-"], "mconsole">, Group<m_Group>;
+def mwin32 : Flag<["-"], "mwin32">, Group<m_Group>,
+  Visibility<[ClangOption, CC1Option]>,
+  HelpText<"Compile the translation unit in the Win32 face: its own code is a "
+           "Win32 declaration region, and wchar_t is 16 bits (NT-POSIX only)">,
+  MarshallingInfoFlag<LangOpts<"Win32Face">>;
 def mwindows : Joined<["-"], "mwindows">, Group<m_Group>;
 def mdll : Joined<["-"], "mdll">, Group<m_Group>;
 def municode : Joined<["-"], "municode">, Group<m_Group>;

@@ -508,6 +508,10 @@ public:
   /// (files, functions) should or should not be instrumented.
   std::vector<std::string> ProfileListFiles;
 
+  /// The directories whose headers are Win32 declaration regions of an
+  /// NT-POSIX translation unit.
+  std::vector<std::string> Win32HeaderRoots;
+
   clang::ObjCRuntime ObjCRuntime;
 
   CoreFoundationABI CFRuntime = CoreFoundationABI::Unspecified;

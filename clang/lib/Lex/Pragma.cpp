@@ -20,6 +20,7 @@
 #include "clang/Basic/Module.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/SourceManager.h"
+#include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/TokenKinds.h"
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Lex/LexDiagnostic.h"
@@ -35,10 +36,13 @@
 #include "clang/Lex/TokenLexer.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/Timer.h"
 #include <algorithm>
 #include <cassert>
@@ -478,6 +482,59 @@ void Preprocessor::HandlePragmaPoison() {
 
 /// HandlePragmaSystemHeader - Implement \#pragma GCC system_header.  We know
 /// that the whole directive has been parsed.
+void Preprocessor::HandlePragmaWin32Header(Token &Tok) {
+  FileID FID = SourceMgr.getFileID(SourceMgr.getExpansionLoc(Tok.getLocation()));
+  Win32HeaderFiles.insert(FID);
+  Win32RegionFiles[FID] = true;
+  updateWin32Macros();
+}
+
+// Whether Path names a file under the directory Root.
+static bool isUnderDirectory(StringRef Path, StringRef Root) {
+  SmallString<256> P(Path), R(Root);
+  llvm::sys::path::native(P, llvm::sys::path::Style::posix);
+  llvm::sys::path::native(R, llvm::sys::path::Style::posix);
+  llvm::sys::path::remove_dots(P, /*remove_dot_dot=*/true,
+                               llvm::sys::path::Style::posix);
+  llvm::sys::path::remove_dots(R, /*remove_dot_dot=*/true,
+                               llvm::sys::path::Style::posix);
+  StringRef PS = P, RS = StringRef(R).rtrim('/');
+  return PS.size() > RS.size() && PS[RS.size()] == '/' &&
+         PS.take_front(RS.size()).equals_insensitive(RS);
+}
+
+bool Preprocessor::isWin32RegionFile(FileID FID) const {
+  auto [It, Inserted] = Win32RegionFiles.try_emplace(FID, false);
+  if (!Inserted)
+    return It->second;
+  bool Region = false;
+  if (OptionalFileEntryRef File = SourceMgr.getFileEntryRefForID(FID)) {
+    // A file under a Win32 root is a region; any other system header,
+    // including a C runtime header that a Win32 header includes, is not; and
+    // in the Win32 face the translation unit's own files are.
+    Region = llvm::any_of(LangOpts.Win32HeaderRoots, [&](StringRef Root) {
+      return isUnderDirectory(File->getName(), Root);
+    });
+    if (!Region && LangOpts.Win32Face)
+      Region = !SrcMgr::isSystem(
+          SourceMgr.getFileCharacteristic(SourceMgr.getLocForStartOfFile(FID)));
+  }
+  // The entry may have moved if the map grew.
+  return Win32RegionFiles[FID] = Region;
+}
+
+bool Preprocessor::isInWin32Region(SourceLocation Loc) const {
+  if (!getTargetInfo().getTriple().isWindowsNTPOSIXEnvironment() ||
+      Loc.isInvalid())
+    return false;
+  // A token formed by pasting is spelled in scratch space: it was written by
+  // the macro that pasted it.
+  while (Loc.isMacroID() &&
+         SourceMgr.isWrittenInScratchSpace(SourceMgr.getSpellingLoc(Loc)))
+    Loc = SourceMgr.getImmediateMacroCallerLoc(Loc);
+  return isWin32RegionFile(SourceMgr.getFileID(SourceMgr.getSpellingLoc(Loc)));
+}
+
 void Preprocessor::HandlePragmaSystemHeader(Token &SysHeaderTok) {
   if (isInPrimaryFile()) {
     Diag(SysHeaderTok, diag::pp_pragma_sysheader_in_main_file);
@@ -1079,6 +1136,18 @@ struct PragmaSystemHeaderHandler : public PragmaHandler {
   void HandlePragma(Preprocessor &PP, PragmaIntroducer Introducer,
                     Token &SHToken) override {
     PP.HandlePragmaSystemHeader(SHToken);
+    PP.CheckEndOfDirective("pragma");
+  }
+};
+
+/// PragmaWin32HeaderHandler - "\#pragma clang win32_header" marks the
+/// current file as a Win32 declaration region.
+struct PragmaWin32HeaderHandler : public PragmaHandler {
+  PragmaWin32HeaderHandler() : PragmaHandler("win32_header") {}
+
+  void HandlePragma(Preprocessor &PP, PragmaIntroducer Introducer,
+                    Token &Tok) override {
+    PP.HandlePragmaWin32Header(Tok);
     PP.CheckEndOfDirective("pragma");
   }
 };
@@ -2231,6 +2300,7 @@ void Preprocessor::RegisterBuiltinPragmas() {
   // #pragma clang ...
   AddPragmaHandler("clang", new PragmaPoisonHandler());
   AddPragmaHandler("clang", new PragmaSystemHeaderHandler());
+  AddPragmaHandler("clang", new PragmaWin32HeaderHandler());
   AddPragmaHandler("clang", new PragmaDebugHandler());
   AddPragmaHandler("clang", new PragmaDependencyHandler());
   AddPragmaHandler("clang", new PragmaDiagnosticHandler("clang"));

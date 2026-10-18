@@ -1383,7 +1383,9 @@ StringLiteral::getLocationOfByte(unsigned ByteNo, const SourceManager &SM,
     TheLexer.LexFromRawLexer(TheTok);
 
     // Use the StringLiteralParser to compute the length of the string in bytes.
-    StringLiteralParser SLP(TheTok, SM, Features, Target);
+    // A wide token of a UTF-16 literal is a Win32 region's.
+    StringLiteralParser SLP(TheTok, SM, Features, Target, /*Diags=*/nullptr,
+                            isUTF16() && TheTok.is(tok::wide_string_literal));
     unsigned TokNumBytes = SLP.GetStringLength();
 
     // If the byte is in this token, return the location of the byte.

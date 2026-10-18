@@ -2289,7 +2289,8 @@ Sema::ActOnStringLiteral(ArrayRef<Token> StringToks, Scope *UDLScope) {
       CharTy = Context.UnsignedCharTy;
     Kind = StringLiteralKind::UTF8;
   } else if (Literal.isUTF16()) {
-    CharTy = Context.Char16Ty;
+    // L"..." in a Win32 region holds the region's 16-bit wchar_t.
+    CharTy = Literal.isWin32Wide() ? Context.Win32WCharTy : Context.Char16Ty;
     Kind = StringLiteralKind::UTF16;
   } else if (Literal.isUTF32()) {
     CharTy = Context.Char32Ty;
@@ -3760,6 +3761,8 @@ ExprResult Sema::ActOnCharacterConstant(const Token &Tok, Scope *UDLScope) {
     Ty = Context.UnsignedCharTy; // u8'x' -> unsigned char in C23
   else if (Literal.isUTF8() && getLangOpts().Char8)
     Ty = Context.Char8Ty; // u8'x' -> char8_t when it exists.
+  else if (Literal.isWin32Wide())
+    Ty = Context.Win32WCharTy; // L'x' in a Win32 region -> its 16-bit wchar_t.
   else if (Literal.isUTF16())
     Ty = Context.Char16Ty; // u'x' -> char16_t in C11 and C++11.
   else if (Literal.isUTF32())
@@ -4069,7 +4072,10 @@ ExprResult Sema::ActOnNumericConstant(const Token &Tok, Scope *UDLScope) {
     } else if (Literal.isFloat)
       Ty = Context.FloatTy;
     else if (Literal.isLong)
-      Ty = !getLangOpts().HLSL ? Context.LongDoubleTy : Context.DoubleTy;
+      Ty = getLangOpts().HLSL ? Context.DoubleTy
+           : PP.isInWin32Region(Tok.getLocation())
+               ? Context.Win32LongDoubleTy
+               : Context.LongDoubleTy;
     else if (Literal.isFloat16)
       Ty = Context.Float16Ty;
     else if (Literal.isFloat128)
@@ -4241,17 +4247,22 @@ ExprResult Sema::ActOnNumericConstant(const Token &Tok, Scope *UDLScope) {
         }
       }
 
-      // Are long/unsigned long possibilities?
+      // Are long/unsigned long possibilities? In a Win32 region they are the
+      // region's 32-bit long and unsigned long.
       if (Ty.isNull() && !Literal.isLongLong && !Literal.isSizeT) {
-        unsigned LongSize = Context.getTargetInfo().getLongWidth();
+        bool Win32 = PP.isInWin32Region(Tok.getLocation());
+        QualType LongTy = Win32 ? Context.Win32LongTy : Context.LongTy;
+        QualType UnsignedLongTy =
+            Win32 ? Context.Win32UnsignedLongTy : Context.UnsignedLongTy;
+        unsigned LongSize = Context.getIntWidth(LongTy);
 
         // Does it fit in a unsigned long?
         if (ResultVal.isIntN(LongSize)) {
           // Does it fit in a signed long?
           if (!Literal.isUnsigned && ResultVal[LongSize-1] == 0)
-            Ty = Context.LongTy;
+            Ty = LongTy;
           else if (AllowUnsigned)
-            Ty = Context.UnsignedLongTy;
+            Ty = UnsignedLongTy;
           // Check according to the rules of C90 6.1.3.2p5. C++03 [lex.icon]p2
           // is compatible.
           else if (!getLangOpts().C99 && !getLangOpts().CPlusPlus11) {
@@ -4266,7 +4277,7 @@ ExprResult Sema::ActOnNumericConstant(const Token &Tok, Scope *UDLScope) {
                      : diag::warn_old_implicitly_unsigned_long)
                 << (LongLongSize > LongSize ? /*will have type 'long long'*/ 0
                                             : /*will be ill-formed*/ 1);
-            Ty = Context.UnsignedLongTy;
+            Ty = UnsignedLongTy;
           }
           Width = LongSize;
         }

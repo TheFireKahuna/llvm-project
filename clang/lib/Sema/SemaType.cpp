@@ -934,7 +934,11 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
     break;
   case DeclSpec::TST_wchar:
     if (DS.getTypeSpecSign() == TypeSpecifierSign::Unspecified)
-      Result = Context.WCharTy;
+      // A Win32 region's wchar_t is 16 bits where the unit's is 32.
+      Result = Context.getTypeSize(Context.WCharTy) == 32 &&
+                       S.PP.isInWin32Region(DS.getTypeSpecTypeLoc())
+                   ? Context.Win32WCharTy
+                   : Context.WCharTy;
     else if (DS.getTypeSpecSign() == TypeSpecifierSign::Signed) {
       S.Diag(DS.getTypeSpecSignLoc(), diag::ext_wchar_t_sign_spec)
         << DS.getSpecifierName(DS.getTypeSpecType(),
@@ -1039,7 +1043,9 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
         Result = Context.ShortTy;
         break;
       case TypeSpecifierWidth::Long:
-        Result = Context.LongTy;
+        Result = S.PP.isInWin32Region(DS.getTypeSpecWidthLoc())
+                     ? Context.Win32LongTy
+                     : Context.LongTy;
         break;
       case TypeSpecifierWidth::LongLong:
         Result = Context.LongLongTy;
@@ -1067,7 +1073,9 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
         Result = Context.UnsignedShortTy;
         break;
       case TypeSpecifierWidth::Long:
-        Result = Context.UnsignedLongTy;
+        Result = S.PP.isInWin32Region(DS.getTypeSpecWidthLoc())
+                     ? Context.Win32UnsignedLongTy
+                     : Context.UnsignedLongTy;
         break;
       case TypeSpecifierWidth::LongLong:
         Result = Context.UnsignedLongLongTy;
@@ -1178,7 +1186,9 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
   case DeclSpec::TST_float:   Result = Context.FloatTy; break;
   case DeclSpec::TST_double:
     if (DS.getTypeSpecWidth() == TypeSpecifierWidth::Long)
-      Result = Context.LongDoubleTy;
+      Result = S.PP.isInWin32Region(DS.getTypeSpecWidthLoc())
+                   ? Context.Win32LongDoubleTy
+                   : Context.LongDoubleTy;
     else
       Result = Context.DoubleTy;
     if (S.getLangOpts().OpenCL) {
@@ -1252,6 +1262,14 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
     Result = S.GetTypeFromParser(DS.getRepAsType());
     if (Result.isNull()) {
       declarator.setInvalidType(true);
+    } else if (!S.getLangOpts().CPlusPlus &&
+               Context.getTypeSize(Context.WCharTy) == 32) {
+      // C's wchar_t is a typedef; written in a Win32 region of a unit whose
+      // wchar_t is 32 bits, it names the region's 16-bit wchar_t.
+      if (const auto *TT = Result->getAs<TypedefType>())
+        if (TT->getDecl()->getName() == "wchar_t" &&
+            S.PP.isInWin32Region(DS.getTypeSpecTypeLoc()))
+          Result = Context.Win32WCharTy;
     }
 
     // TypeQuals handled by caller.
@@ -3844,6 +3862,12 @@ static CallingConv getCCForDeclaratorChunk(
 
   CallingConv CC = S.Context.getDefaultCallingConvention(FTI.isVariadic,
                                                          IsCXXInstanceMethod);
+
+  // A function type written in a Win32 region of an x86-64 NT-POSIX unit takes
+  // the MS x64 convention, as every Windows declaration expects.
+  if (S.Context.getTargetInfo().getTriple().getArch() == llvm::Triple::x86_64 &&
+      S.PP.isInWin32Region(D.getTypeObject(ChunkIndex).Loc))
+    CC = CC_Win64;
 
   if (S.getLangOpts().CUDA) {
     // If we're compiling CUDA/HIP code and targeting HIPSPV we need to make
