@@ -164,8 +164,9 @@ public:
   /// How an instruction that the import fusion pass describes to the linker
   /// uses the register a load of an import pointer filled: as the target of
   /// a call or jump, as the base of a memory operand, or by adding a
-  /// constant to it.
-  enum class ImportFusedUseKind : uint8_t { Call, Access, Add };
+  /// constant to it; or, for an offset that an access of a thread-local
+  /// variable's record loaded, as an addend of a memory operand.
+  enum class ImportFusedUseKind : uint8_t { Call, Access, Add, Index };
   struct ImportFusedUse {
     const MachineInstr *Load;
     MCRegister Reg;
@@ -175,7 +176,8 @@ public:
 private:
   /// The instructions that the import fusion pass describes to the linker,
   /// each with the load that filled the register it uses, and those loads,
-  /// each with whether only such instructions read it.
+  /// each with whether only such instructions read it. A load may itself be a
+  /// described access, of a thread-local variable's record.
   DenseMap<const MachineInstr *, ImportFusedUse> ImportFusedUses;
   DenseMap<const MachineInstr *, bool> ImportFusedLoads;
   /// The loads of import pointers of data whose registers only reads of

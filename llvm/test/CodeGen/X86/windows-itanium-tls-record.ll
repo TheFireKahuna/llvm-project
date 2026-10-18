@@ -9,8 +9,13 @@
 ; reached through the record whose address the import pointer of <name>$tls
 ; holds: the address of the defining image's TLS index, then the variable's
 ; offset in that image's template. The record's loads are invariant, so they
-; leave a loop, while the thread's TLS array is reloaded at each access. A
-; dso_local variable is reached directly, and the MSVC target is unchanged.
+; leave a loop, while the thread's TLS array is reloaded at each access. Each
+; load from the record is described to the linker as an access of the record's
+; load and as a load itself, with the instructions that read its register:
+; the load of the TLS index through the address, and the memory operands that
+; add the offset, so that where the record is in the image the linker can make
+; the code a variable of the image gets. A dso_local variable is reached
+; directly, and the MSVC target is unchanged.
 
 $comdatvar = comdat any
 
@@ -21,12 +26,22 @@ $comdatvar = comdat any
 
 define i32 @getVar() {
 ; CHECK-LABEL: getVar:
-; CHECK:         movq __imp_var$tls(%rip), %rax
+; CHECK:       [[REC:\.Lfused[0-9]+]]:
+; CHECK-NEXT:    .linkfusedread
+; CHECK-NEXT:    movq __imp_var$tls(%rip), %rax
+; CHECK-NEXT:    .linkfusedaccess [[REC]], %rax
+; CHECK-NEXT:  [[ADDR:\.Lfused[0-9]+]]:
+; CHECK-NEXT:    .linkfusedread
 ; CHECK-NEXT:    movq (%rax), %rcx
+; CHECK-NEXT:    .linkfusedaccess [[ADDR]], %rcx
 ; CHECK-NEXT:    movl (%rcx), %ecx
 ; CHECK-NEXT:    movq %gs:88, %rdx
 ; CHECK-NEXT:    movq (%rdx,%rcx,8), %rcx
+; CHECK-NEXT:    .linkfusedaccess [[REC]], %rax
+; CHECK-NEXT:  [[OFF:\.Lfused[0-9]+]]:
+; CHECK-NEXT:    .linkfusedread
 ; CHECK-NEXT:    movl 8(%rax), %eax
+; CHECK-NEXT:    .linkfusedindex [[OFF]], %rax
 ; CHECK-NEXT:    movl (%rcx,%rax), %eax
 ; O0-LABEL:    getVar:
 ; O0:            movq __imp_var$tls(%rip), %rcx
@@ -46,11 +61,9 @@ define i32 @getVar() {
 define i32 @getComdatVar() {
 ; CHECK-LABEL: getComdatVar:
 ; CHECK:         movq __imp_comdatvar$tls(%rip), %rax
-; CHECK-NEXT:    movq (%rax), %rcx
-; CHECK-NEXT:    movl (%rcx), %ecx
-; CHECK-NEXT:    movq %gs:88, %rdx
-; CHECK-NEXT:    movq (%rdx,%rcx,8), %rcx
-; CHECK-NEXT:    movl 8(%rax), %eax
+; CHECK:         movq (%rax), %rcx
+; CHECK:         movl 8(%rax), %eax
+; CHECK-NEXT:    .linkfusedindex {{.*}}, %rax
 ; CHECK-NEXT:    movl (%rcx,%rax), %eax
   %p = call ptr @llvm.threadlocal.address.p0(ptr @comdatvar)
   %v = load i32, ptr %p
@@ -72,6 +85,7 @@ define i32 @getElement() {
 ; CHECK-LABEL: getElement:
 ; CHECK:         movq __imp_array$tls(%rip), %rax
 ; CHECK:         movl 8(%rax), %eax
+; CHECK-NEXT:    .linkfusedindex {{.*}}, %rax
 ; CHECK-NEXT:    movl 8(%rcx,%rax), %eax
   %p = call ptr @llvm.threadlocal.address.p0(ptr @array)
   %e = getelementptr inbounds [4 x i32], ptr %p, i64 0, i64 2
@@ -80,14 +94,19 @@ define i32 @getElement() {
 }
 
 define i32 @sum(i32 %n) {
+; The offset, loaded once, is described with the access in the loop that adds
+; it.
 ; CHECK-LABEL: sum:
 ; CHECK:         movq __imp_var$tls(%rip), %[[REC:r[a-z0-9]+]]
-; CHECK-NEXT:    movq (%[[REC]]), %[[IDX:r[a-z0-9]+]]
-; CHECK-NEXT:    movl (%[[IDX]]), %[[IDX32:e[a-z0-9]+|r[0-9]+d]]
-; CHECK-NEXT:    movl 8(%[[REC]]), %[[OFF:e[a-z0-9]+|r[0-9]+d]]
+; CHECK:         movq (%[[REC]]), %[[IDX:r[a-z0-9]+]]
+; CHECK:         movl (%[[IDX]]), %[[IDX32:e[a-z0-9]+|r[0-9]+d]]
+; CHECK:       [[OFF:\.Lfused[0-9]+]]:
+; CHECK-NEXT:    .linkfusedread
+; CHECK-NEXT:    movl 8(%[[REC]]), %[[OFF32:e[a-z0-9]+|r[0-9]+d]]
 ; CHECK:       .LBB4_1:
 ; CHECK:         movq %gs:88, %[[BLK:r[a-z0-9]+]]
 ; CHECK-NEXT:    movq (%[[BLK]],%[[IDX]],8), %[[BLK]]
+; CHECK-NEXT:    .linkfusedindex [[OFF]], %[[REC]]
 ; CHECK-NEXT:    addl (%[[BLK]],%[[REC]]), %eax
 ; CHECK:         jb .LBB4_1
 entry:

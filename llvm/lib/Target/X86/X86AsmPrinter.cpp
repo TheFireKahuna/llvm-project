@@ -143,17 +143,28 @@ MCSymbol *X86AsmPrinter::getImportFusionLabel(const MachineInstr *Load) {
 // first, so that it pushes the same return address. An access through the
 // register, or an add of a constant to it, the linker may resize. A load whose
 // register only reads of memory read may take the address of the image's own
-// copy of the data, and an access that only reads may read that copy.
+// copy of the data, and an access that only reads may read that copy. An
+// access of a thread-local variable's record is also a load, which the
+// accesses or indexes through its register name.
 void X86AsmPrinter::emitImportFusion(const MachineInstr &MI) {
   using UseKind = X86MachineFunctionInfo::ImportFusedUseKind;
   auto Use = ImportFusion->getImportFusedUses().find(&MI);
   if (Use != ImportFusion->getImportFusedUses().end()) {
     auto [Load, Reg, Kind] = Use->second;
     MCSymbol *Label = getImportFusionLabel(Load);
-    if (Kind == UseKind::Access) {
-      OutStreamer->emitCOFFLinkFusedAccess(Label, Reg);
+    if (Kind == UseKind::Access || Kind == UseKind::Index) {
+      if (Kind == UseKind::Index)
+        OutStreamer->emitCOFFLinkFusedIndex(Label, Reg);
+      else
+        OutStreamer->emitCOFFLinkFusedAccess(Label, Reg);
       if (ImportFusion->getImportValueOnlyLoads().contains(&MI))
         OutStreamer->emitCOFFLinkValueOnly(nullptr);
+      auto Loading = ImportFusion->getImportFusedLoads().find(&MI);
+      if (Loading != ImportFusion->getImportFusedLoads().end()) {
+        OutStreamer->emitLabel(getImportFusionLabel(&MI));
+        if (Loading->second)
+          OutStreamer->emitCOFFLinkFusedRead();
+      }
       return;
     }
     if (Kind == UseKind::Add) {

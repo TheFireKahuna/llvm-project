@@ -37,6 +37,15 @@
 // take the address of the image's own copy of the data, which holds the same
 // value wherever the data's address leads.
 //
+// A thread-local variable that may be in another image is reached through
+// the import pointer of its record: the address of the image's TLS index, then
+// the variable's offset in the image's TLS template. Where the record turns
+// out to be in the image, the linker knows both, and makes the access the one
+// a variable of the image gets. Each load from the record is described as an
+// access, and as a load with the instructions that read its register: those
+// that load the index through the address, and those that add the offset to
+// another register in their memory operand.
+//
 //===----------------------------------------------------------------------===//
 
 #include "X86.h"
@@ -69,6 +78,12 @@ class X86WindowsImportFusion {
   const TargetInstrInfo *TII = nullptr;
   const TargetRegisterInfo *TRI = nullptr;
 
+  // An instruction and the register through which it reads a load's value.
+  using Reader = std::pair<MachineInstr *, Register>;
+  bool getReaders(MachineInstr &Load, Register Reg, ReachingDefInfo &RDI,
+                  SmallVectorImpl<Reader> &Readers,
+                  SmallVectorImpl<Reader> &Copies) const;
+
   void foldCall(MachineInstr &Call, const MachineInstr &Load);
   MachineInstr *callThroughRegister(MachineInstr &Call, Register Reg);
   bool reachesUnmodified(MachineInstr &Load, MachineInstr &Call, Register Reg,
@@ -76,6 +91,7 @@ class X86WindowsImportFusion {
   void undefDebugValues(MachineInstr &Load, Register Reg) const;
   void moveOffBlockEnd(MachineInstr &Load, Register Reg) const;
   bool isFusibleAccess(const MachineInstr &MI, Register Reg) const;
+  bool isFusibleIndex(const MachineInstr &MI, Register Reg) const;
   bool isFusibleAdd(const MachineInstr &MI, Register Reg) const;
   bool isValueRead(const MachineInstr &MI, Register Reg) const;
 
@@ -152,6 +168,15 @@ static bool canGoThrough(unsigned Opcode, Register Reg,
   return RC && RC->contains(Reg);
 }
 
+// Whether Pointer names the record of a thread-local variable, <name>$tls,
+// which the back end reaches through its import pointer by name and C++
+// code through a declaration.
+static bool isThreadLocalRecord(const MachineOperand &Pointer) {
+  return (Pointer.isSymbol() ? StringRef(Pointer.getSymbolName())
+                             : Pointer.getGlobal()->getName())
+      .ends_with("$tls");
+}
+
 // The import pointer, or the stub standing in for one, that the address
 // operands of MI starting at Op are exactly, which the linker can tell from
 // the relocation alone.
@@ -164,10 +189,13 @@ static const MachineOperand *getImportPointer(const MachineInstr &MI,
   const MachineOperand &Segment = MI.getOperand(Op + X86::AddrSegmentReg);
   if (!Base.isReg() || Base.getReg() != X86::RIP || !Scale.isImm() ||
       Scale.getImm() != 1 || Index.getReg() || Segment.getReg() ||
-      !Disp.isGlobal() || Disp.getOffset() != 0)
+      !(Disp.isGlobal() || Disp.isSymbol()) || Disp.getOffset() != 0)
     return nullptr;
   unsigned Flags = Disp.getTargetFlags();
-  if (Flags != X86II::MO_DLLIMPORT && Flags != X86II::MO_COFFSTUB)
+  if (Flags != X86II::MO_DLLIMPORT &&
+      (Flags != X86II::MO_COFFSTUB || Disp.isSymbol()))
+    return nullptr;
+  if (Disp.isSymbol() && !isThreadLocalRecord(Disp))
     return nullptr;
   return &Disp;
 }
@@ -180,6 +208,8 @@ static const MachineOperand *getLoadedPointer(const MachineInstr &MI) {
 
 // Whether Pointer is the import pointer of data rather than of a function.
 static bool isDataPointer(const MachineOperand &Pointer) {
+  if (Pointer.isSymbol())
+    return true;
   const GlobalValue *GV = Pointer.getGlobal();
   if (const auto *GA = dyn_cast<GlobalAlias>(GV))
     GV = GA->getAliaseeObject();
@@ -190,12 +220,17 @@ static bool isDataPointer(const MachineOperand &Pointer) {
 // every definition holds the same value, so that a copy of it in any image
 // reads as the data itself does.
 static bool isImmutableData(const MachineOperand &Pointer) {
+  if (Pointer.isSymbol())
+    return false;
   const auto *GV = dyn_cast<GlobalVariable>(Pointer.getGlobal());
   return GV && GV->isConstant() && GV->hasDefinitiveInitializer() &&
          (GV->isWeakForLinker() || GV->hasAvailableExternallyLinkage());
 }
 
 static bool isSamePointer(const MachineOperand &A, const MachineOperand &B) {
+  if (A.isSymbol() || B.isSymbol())
+    return A.isSymbol() && B.isSymbol() &&
+           StringRef(A.getSymbolName()) == B.getSymbolName();
   return A.getGlobal() == B.getGlobal() &&
          A.getTargetFlags() == B.getTargetFlags();
 }
@@ -241,6 +276,8 @@ void X86WindowsImportFusion::foldCall(MachineInstr &Call,
 // pointer Load reads, which the call itself no longer names.
 static void noteCallee(MachineInstr &Call, const MachineInstr &Load) {
   const MachineOperand &Pointer = *getLoadedPointer(Load);
+  if (!Pointer.isGlobal())
+    return;
   Call.getMF()->addCalledGlobal(
       &Call, {Pointer.getGlobal(), Pointer.getTargetFlags()});
 }
@@ -304,6 +341,57 @@ bool X86WindowsImportFusion::reachesUnmodified(
     append_range(Work, MBB->predecessors());
   }
   return !CallMBB->pred_empty() && !CallMBB->isEHPad();
+}
+
+// Collects the instructions that read the value Load gives Reg, each with the
+// register it reads and reached by no other value, following the copies of
+// the value from register to register, which the register allocator makes
+// around a call, into Copies. Where the linker deletes Load, a copy copies
+// nothing that a reader still reads. Returns whether Readers holds every
+// instruction that reads the value; where a copy may copy another value too,
+// none is followed, and the copies are among the readers.
+bool X86WindowsImportFusion::getReaders(MachineInstr &Load, Register Reg,
+                                        ReachingDefInfo &RDI,
+                                        SmallVectorImpl<Reader> &Readers,
+                                        SmallVectorImpl<Reader> &Copies) const {
+  SmallPtrSet<MachineInstr *, 4> Defs = {&Load}, Seen;
+  SmallVector<Reader, 4> Work = {{&Load, Reg}}, Uses;
+  while (!Work.empty()) {
+    auto [Def, R] = Work.pop_back_val();
+    SmallPtrSet<MachineInstr *, 4> DefUses;
+    RDI.getGlobalUses(Def, R, DefUses);
+    for (MachineInstr *Use : DefUses) {
+      if (Use->getOpcode() == X86::MOV64rr && !Use->isBundled() &&
+          Use->getOperand(1).getReg() == R &&
+          Use->getOperand(0).getReg() != R) {
+        if (Defs.insert(Use).second) {
+          Copies.push_back({Use, R});
+          Work.push_back({Use, Use->getOperand(0).getReg()});
+        }
+      } else if (Seen.insert(Use).second) {
+        Uses.push_back({Use, R});
+      }
+    }
+  }
+  auto IsReached = [&](const Reader &U) {
+    SmallPtrSet<MachineInstr *, 2> Reaching;
+    RDI.getGlobalReachingDefs(U.first, U.second, Reaching);
+    return !Reaching.empty() &&
+           all_of(Reaching, [&](MachineInstr *D) { return Defs.contains(D); });
+  };
+  if (!all_of(Copies, IsReached)) {
+    Copies.clear();
+    Defs = {&Load};
+    Uses.clear();
+    SmallPtrSet<MachineInstr *, 4> DefUses;
+    RDI.getGlobalUses(&Load, Reg, DefUses);
+    for (MachineInstr *Use : DefUses)
+      Uses.push_back({Use, Reg});
+  }
+  for (const Reader &U : Uses)
+    if (IsReached(U))
+      Readers.push_back(U);
+  return Readers.size() == Uses.size();
 }
 
 // The linker may dispose of Load, which leaves Reg holding nothing where the
@@ -393,6 +481,40 @@ bool X86WindowsImportFusion::isFusibleAccess(const MachineInstr &MI,
     return false;
   int MemOp =
       X86II::getMemoryOperandNo(Desc.TSFlags) + X86II::getOperandBias(Desc);
+  for (const auto &[I, MO] : enumerate(MI.operands())) {
+    if (I >= unsigned(MemOp) && I < unsigned(MemOp) + X86::AddrNumOperands)
+      continue;
+    if (MO.isReg() && MO.getReg() && MO.readsReg() &&
+        TRI->regsOverlap(MO.getReg(), Reg))
+      return false;
+  }
+  return true;
+}
+
+// Whether MI reads or writes memory, or computes an address, with a memory
+// operand that adds Reg, with scale 1, to another register below the first
+// sixteen, in a legacy or VEX encoding outside APX's map 4, and reads Reg
+// nowhere else: the linker adds the value in Reg to the displacement and
+// leaves Reg out.
+bool X86WindowsImportFusion::isFusibleIndex(const MachineInstr &MI,
+                                            Register Reg) const {
+  const MCInstrDesc &Desc = MI.getDesc();
+  uint64_t Encoding = Desc.TSFlags & X86II::EncodingMask;
+  int MemOp = X86II::getMemoryOperandNo(Desc.TSFlags);
+  if ((Encoding != X86II::LEGACY && Encoding != X86II::VEX) ||
+      (Desc.TSFlags & X86II::OpMapMask) == X86II::T_MAP4 || MI.isBundled() ||
+      MI.isPseudo() || MemOp < 0 || TRI->getEncodingValue(Reg) >= 16)
+    return false;
+  MemOp += X86II::getOperandBias(Desc);
+  Register Base = MI.getOperand(MemOp + X86::AddrBaseReg).getReg();
+  Register Index = MI.getOperand(MemOp + X86::AddrIndexReg).getReg();
+  Register Other = Base == Reg ? Index : Index == Reg ? Base : Register();
+  if (!Other || Other == X86::RIP || TRI->regsOverlap(Other, Reg) ||
+      TRI->getEncodingValue(Other) >= 16 ||
+      MI.getOperand(MemOp + X86::AddrScaleAmt).getImm() != 1 ||
+      MI.getOperand(MemOp + X86::AddrSegmentReg).getReg() ||
+      !MI.getOperand(MemOp + X86::AddrDisp).isImm())
+    return false;
   for (const auto &[I, MO] : enumerate(MI.operands())) {
     if (I >= unsigned(MemOp) && I < unsigned(MemOp) + X86::AddrNumOperands)
       continue;
@@ -505,10 +627,23 @@ bool X86WindowsImportFusion::run(MachineFunction &MF,
     // Whether only the calls, or for a load of the pointer of data the
     // accesses, read the load's register.
     bool OnlyCalls;
-    // For a load of the pointer of data, the accesses through its register,
-    // which are all that read it, or the add of a constant to it.
-    SmallVector<MachineInstr *, 4> Accesses;
+    // For a load of the pointer of data, the accesses through its register
+    // or a copy of it, each with the register it reads, which are all that
+    // read it, with the copies; or the add of a constant to it.
+    SmallVector<Reader, 4> Accesses, Copies;
     MachineInstr *Add = nullptr;
+    // For a load of the pointer of a thread-local variable's record, the
+    // accesses that load from the record and the instructions that read what
+    // each loads: accesses through the address of the TLS index, or memory
+    // operands that add an offset; with whether they alone read it.
+    struct Chain {
+      MachineInstr *Load;
+      Register Reg;
+      bool Index;
+      bool OnlyUses;
+      SmallVector<Reader, 4> Uses, Copies;
+    };
+    SmallVector<Chain, 2> Chains;
   };
   SmallVector<Fusion, 4> Work;
   SmallSetVector<MachineInstr *, 4> ValueOnly;
@@ -517,7 +652,7 @@ bool X86WindowsImportFusion::run(MachineFunction &MF,
   for (MachineInstr *Load : Loads) {
     Register Reg = Load->getOperand(0).getReg();
     const MachineOperand &Pointer = *getLoadedPointer(*Load);
-    Fusion F{Load, {}, {}, {}, false, {}, nullptr};
+    Fusion F{Load, {}, {}, {}, false, {}, {}, nullptr, {}};
 
     // A call through the register is described where the load is the only
     // definition that reaches it; any other use, a call that also passes the
@@ -574,21 +709,23 @@ bool X86WindowsImportFusion::run(MachineFunction &MF,
     if (isImmutableData(Pointer) &&
         all_of(Uses, [&](MachineInstr *Use) { return isValueRead(*Use, Reg); }))
       ValueOnly.insert(Load);
-    auto IsFused = [&](MachineInstr *Use) {
-      return !Use->isBundled() && isInSameSection(*Load, *Use) &&
-             RDI->getUniqueReachingMIDef(Use, Reg) == Load;
-    };
     MachineInstr *Only = *Uses.begin();
-    if (Uses.size() == 1 && IsFused(Only) && isFusibleAdd(*Only, Reg) &&
-        Only->getParent() == Load->getParent()) {
+    if (Uses.size() == 1 && !Only->isBundled() &&
+        isInSameSection(*Load, *Only) &&
+        RDI->getUniqueReachingMIDef(Only, Reg) == Load &&
+        isFusibleAdd(*Only, Reg) && Only->getParent() == Load->getParent()) {
       F.Add = Only;
       Work.push_back(std::move(F));
       continue;
     }
-    F.OnlyCalls = true;
-    for (MachineInstr *Use : Uses) {
-      if (IsFused(Use) && isFusibleAccess(*Use, Reg))
-        F.Accesses.push_back(Use);
+    // The accesses are found through the copies of the load's value, each
+    // through the register it reads.
+    SmallVector<Reader, 4> Readers;
+    F.OnlyCalls = getReaders(*Load, Reg, *RDI, Readers, F.Copies);
+    for (auto [Use, R] : Readers) {
+      if (!Use->isBundled() && isInSameSection(*Load, *Use) &&
+          isFusibleAccess(*Use, R))
+        F.Accesses.push_back({Use, R});
       else
         F.OnlyCalls = false;
     }
@@ -596,9 +733,46 @@ bool X86WindowsImportFusion::run(MachineFunction &MF,
     // at the cost of a longer encoding, which pays only next to the load,
     // not where a loop the load was hoisted out of repeats the access.
     if (!F.OnlyCalls)
-      llvm::erase_if(F.Accesses, [&](MachineInstr *Access) {
-        return Access->getParent() != Load->getParent();
+      llvm::erase_if(F.Accesses, [&](const Reader &Access) {
+        return Access.first->getParent() != Load->getParent();
       });
+    // The record's first word is the address of the TLS index, and its next
+    // two the 32-bit offsets of the variable and its guard. An offset is
+    // described only where its every reader adds it in a memory operand, since
+    // the linker otherwise keeps the register.
+    if (isThreadLocalRecord(Pointer)) {
+      for (auto [Access, AccessReg] : F.Accesses) {
+        unsigned Opcode = Access->getOpcode();
+        if (Opcode != X86::MOV32rm && Opcode != X86::MOV64rm)
+          continue;
+        int64_t Disp = Access->getOperand(1 + X86::AddrDisp).getImm();
+        bool Index = Opcode == X86::MOV32rm && (Disp == 8 || Disp == 12);
+        if (!Index && (Opcode != X86::MOV64rm || Disp != 0))
+          continue;
+        Register Def = Access->getOperand(0).getReg();
+        Register Reg = Def;
+        if (Index)
+          Reg =
+              TRI->getMatchingSuperReg(Def, X86::sub_32bit, &X86::GR64RegClass);
+        // The 64-bit register, which blocks list as live-in.
+        Fusion::Chain C{Access, Reg, Index, true, {}, {}};
+        SmallVector<Reader, 4> Readers;
+        C.OnlyUses = getReaders(*Access, Reg, *RDI, Readers, C.Copies);
+        for (auto [Use, R] : Readers) {
+          if (!Use->isBundled() && isInSameSection(*Access, *Use) &&
+              (Index ? isFusibleIndex(*Use, R) : isFusibleAccess(*Use, R)))
+            C.Uses.push_back({Use, R});
+          else
+            C.OnlyUses = false;
+        }
+        if (!C.OnlyUses)
+          llvm::erase_if(C.Uses, [&](const Reader &Use) {
+            return Index || Use.first->getParent() != Access->getParent();
+          });
+        if (!C.Uses.empty())
+          F.Chains.push_back(std::move(C));
+      }
+    }
     if (!F.Accesses.empty())
       Work.push_back(std::move(F));
   }
@@ -632,8 +806,7 @@ bool X86WindowsImportFusion::run(MachineFunction &MF,
         !isImmutableData(Pointer) ||
         Pointer.getTargetFlags() != X86II::MO_DLLIMPORT)
       continue;
-    Register Reg = F.Load->getOperand(0).getReg();
-    for (MachineInstr *Access : F.Accesses)
+    for (auto [Access, Reg] : F.Accesses)
       if (isValueRead(*Access, Reg))
         ValueOnly.insert(Access);
   }
@@ -656,11 +829,26 @@ bool X86WindowsImportFusion::run(MachineFunction &MF,
       continue;
     }
     if (!F.Accesses.empty()) {
-      for (MachineInstr *Access : F.Accesses)
-        FI->addImportFusedUse(Access, Load, Reg, UseKind::Access);
+      for (auto [Access, R] : F.Accesses)
+        FI->addImportFusedUse(Access, Load, R, UseKind::Access);
       NumAccesses += F.Accesses.size();
-      if (F.OnlyCalls)
+      for (Fusion::Chain &C : F.Chains) {
+        for (auto [Use, R] : C.Uses)
+          FI->addImportFusedUse(Use, C.Load, R,
+                                C.Index ? UseKind::Index : UseKind::Access);
+        NumAccesses += C.Uses.size();
+        if (C.OnlyUses) {
+          undefDebugValues(*C.Load, C.Reg);
+          for (auto [Copy, R] : C.Copies)
+            undefDebugValues(*Copy, Copy->getOperand(0).getReg());
+        }
+        FI->addImportFusedLoad(C.Load, C.OnlyUses);
+      }
+      if (F.OnlyCalls) {
         undefDebugValues(*Load, Reg);
+        for (auto [Copy, R] : F.Copies)
+          undefDebugValues(*Copy, Copy->getOperand(0).getReg());
+      }
       FI->addImportFusedLoad(Load, F.OnlyCalls);
       continue;
     }
