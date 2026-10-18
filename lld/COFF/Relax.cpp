@@ -640,11 +640,37 @@ static void writeEdit(const SectionChunk *sc, const RelaxEdit &e, uint8_t *buf,
     break;
   }
   case RelaxEdit::Index: {
+    const ObjFile::LinkFusion &f = *e.fusion();
+    if (f.add) {
+      // add r64, r64 is REX.W 01 (ModRM.rm the destination) or 03 (ModRM.reg
+      // the destination). An add of the register, its source, becomes add of
+      // the offset, REX.W 81 /0 id, which sets the same flags; an add to it,
+      // whose flags are dead, becomes lea of the source plus the offset, REX.W
+      // 8D with a disp32, the destination in ModRM.reg.
+      uint8_t rex = old[0], modrm = old[2];
+      unsigned reg = (modrm >> 3 & 7) | (rex & 4) << 1;
+      unsigned rm = (modrm & 7) | (rex & 1) << 3;
+      bool regIsDst = old[1] == 0x03;
+      unsigned dst = regIsDst ? reg : rm, src = regIsDst ? rm : reg;
+      uint8_t *inst = buf;
+      if (!f.base) {
+        *inst++ = 0x48 | dst >> 3;
+        *inst++ = 0x81;
+        *inst++ = 0xC0 | (dst & 7);
+      } else {
+        *inst++ = 0x48 | (dst & 8) >> 1 | src >> 3;
+        *inst++ = 0x8D;
+        *inst++ = 0x80 | (dst & 7) << 3 | (src & 7);
+        if ((src & 7) == 4)
+          *inst++ = 0x24;
+      }
+      write32le(inst, getSectionOffset(sc, e.target));
+      break;
+    }
     // The bytes before ModRM; then ModRM addressing the register kept plus a
     // 32-bit displacement, with a SIB byte only where that register is RSP or
     // R12; then what followed the old displacement. The kept register's high
     // bit moves to REX.B, or VEX's inverted B, and the index's is cleared.
-    const ObjFile::LinkFusion &f = *e.fusion();
     unsigned dispSize = f.disp == 1 ? 1 : f.disp == 2 ? 4 : 0;
     uint8_t sib = old[f.modrm + 1];
     int64_t disp = dispSize == 1   ? int8_t(old[f.modrm + 2])

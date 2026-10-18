@@ -312,7 +312,7 @@ public:
   // read the pointer, which accesses and adds go direct, and which loads are
   // dead.
   struct LinkFusion {
-    enum CallForm : uint8_t { ThroughRegister, Direct, ThroughPointer };
+    enum CallForm : uint8_t { ThroughRegister, Direct, ThroughPointer, Record };
     enum UseKind : uint8_t { None, Call, Access, Add, Index };
 
     uint32_t section;
@@ -329,7 +329,9 @@ public:
     // kind (a LinkAccessPrefix), its length, the size of its displacement (0,
     // 1 for 8 bits, 2 for 32), whether a SIB byte follows ModRM, and the log2
     // of the scale of an 8-bit displacement. An index has a SIB byte, and
-    // base says whether the register is its base rather than its index.
+    // base says whether the register is its base rather than its index; or,
+    // where add is set, it is add r64, r64, and base says whether the
+    // register is its destination rather than its source.
     uint8_t modrm = 0;
     uint8_t prefix = 15;
     uint8_t prefixKind = 0;
@@ -338,6 +340,7 @@ public:
     uint8_t scale = 0;
     bool sib = false;
     bool base = false;
+    bool add = false;
     // For an add, the constant it adds.
     int64_t addend = 0;
     // For an access, whether it only reads memory (not volatile or atomic),
@@ -350,7 +353,9 @@ public:
     bool isLoad = false;
     bool nextTransfers = false;
     // The form the linker writes a call in, and whether nothing reads the
-    // load.
+    // load. On ARM64 an access of a thread-local variable's record, or a load
+    // of a record all of whose accesses are such, that takes what the record
+    // holds wherever the code lies, is of form Record.
     CallForm form = ThroughRegister;
     bool dead = false;
   };

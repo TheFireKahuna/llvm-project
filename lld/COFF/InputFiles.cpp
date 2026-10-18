@@ -1075,9 +1075,10 @@ Error ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
           f.use = index ? LinkFusion::Index : LinkFusion::Access;
           f.load = std::min<uint64_t>(value >> 20, UINT32_MAX);
           f.scale = index ? 0 : value >> 17 & 7;
+          f.add = index && (value >> 17 & 1);
           f.prefixKind = value >> 15 & 3;
           (index ? f.base : f.sib) = value >> 14 & 1;
-          f.sib |= index;
+          f.sib |= index && !f.add;
           f.disp = value >> 12 & 3;
           f.length = value >> 8 & 15;
           f.prefix = value >> 4 & 15;

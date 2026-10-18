@@ -30,6 +30,8 @@
 ## The memory operands that added strong's offset, or its guard's, add it to
 ## their displacements, keeping the other register as their base: with a SIB
 ## byte where that is R12 or RSP, R12's high bit moving to VEX's inverted B.
+## An add of the offset to another register adds it as an immediate, and an
+## add of another register to it, whose flags are dead, becomes an lea.
 # CHECK:      <.text>:
 # CHECK:      8b 0d {{.*}} movl {{.*}}(%rip), %ecx # 0x140003000
 # CHECK-NEXT: 65 48 8b 14 25 58 00 00 00 movq %gs:0x58, %rdx
@@ -37,7 +39,9 @@
 # CHECK-NEXT: 40 8b 81 0c 00 00 00 movl 0xc(%rcx), %eax
 # CHECK-NEXT: c4 c1 7a 10 84 24 08 00 00 00 vmovss 0x8(%r12), %xmm0
 # CHECK-NEXT: 48 8d 94 24 08 00 00 00 leaq 0x8(%rsp), %rdx
+# CHECK-NEXT: 48 81 c3 08 00 00 00 addq $0x8, %rbx
 # CHECK-NEXT: 40 80 b9 0c 00 00 00 00 cmpb $0x0, 0xc(%rcx)
+# CHECK-NEXT: 4d 8d 94 24 0c 00 00 00 leaq 0xc(%r12), %r10
 # CHECK-NEXT: c3 retq
 
 ## A value that the longer load of the index would take past 255 keeps
@@ -100,12 +104,16 @@ direct:
   vmovss (%r9,%r12), %xmm0
   .linkfusedindex .Lc, %r9
   leaq (%rsp,%r9), %rdx
+  .linkfusedindex .Lc, %r9
+  addq %r9, %rbx
   .linkfusedaccess .La, %rax
 .Ld:
   .linkfusedread
   movl 12(%rax), %r10d
   .linkfusedindex .Ld, %r10
   cmpb $0, (%rcx,%r10)
+  .linkfusedindex .Ld, %r10
+  addq %r12, %r10
   retq
 
   .section .text$partial,"xr"

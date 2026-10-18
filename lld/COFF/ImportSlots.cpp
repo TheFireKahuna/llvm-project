@@ -1256,34 +1256,51 @@ static Defined *useBuiltin(COFFLinkerContext &ctx, StringRef name,
   return f;
 }
 
-// On x86-64, where code that loaded a record's words now reaches the variable
-// directly, a record the image writes is still read only through a pointer to
-// it, an instruction the linker rewrote to it (a deleted load names what it
-// would read if revived, which resized code no longer does), an export or a GC
-// root, unless the link keeps it. On ARM64 the adrp that gave a record's page
-// names it whatever the code then reads.
+// Where code that loaded a record's words now reaches the variable directly,
+// a record the image writes is still read only through a pointer to it, an
+// instruction the linker rewrote to it, an export or a GC root, unless the
+// link keeps it. A deleted load names what it would read if revived, which
+// resized code no longer does. On ARM64 a load of a record that takes what it
+// holds becomes a no-op, and the adrps that gave the record's page, which then
+// give it to nothing, give the TLS index's instead.
 void ImportSlotContents::leaveOutUnreadRecords() {
   SymbolTable &symtab = ctx.symtab;
-  if (symtab.machine != AMD64 || symtab.threadLocalRecords.empty())
+  if (symtab.threadLocalRecords.empty())
     return;
   DenseSet<const Chunk *> read;
+  DenseMap<const Chunk *, SmallVector<RelaxEdit *, 2>> pages;
   auto add = [&](Symbol *s) {
     if (auto *d = dyn_cast_or_null<Defined>(s))
       read.insert(d->getChunk());
   };
   for (Chunk *c : symtab.localImportChunks)
     add(cast<LocalImportChunk>(c)->getTarget());
-  for (auto &[sc, r] : ctx.relaxations)
-    for (const RelaxEdit &e : r.edits)
-      if (e.kind != RelaxEdit::Dispose)
+  for (auto &[sc, r] : ctx.relaxations) {
+    for (RelaxEdit &e : r.edits) {
+      if (!e.target || e.kind == RelaxEdit::Dispose)
+        continue;
+      auto *c = dyn_cast_or_null<ThreadLocalRecordChunk>(e.target->getChunk());
+      const ObjFile::LinkFusion *f;
+      if (c && (e.kind == RelaxEdit::Arm64Page ||
+                (e.kind == RelaxEdit::Arm64Add &&
+                 (f = sc->file->getLinkFusion(sc, e.offset)) &&
+                 f->form == ObjFile::LinkFusion::Record)))
+        pages[c].push_back(&e);
+      else
         add(e.target);
+    }
+  }
   for (Export &e : symtab.exports)
     add(e.sym);
   for (Symbol *s : ctx.config.gcroot)
     add(s);
-  for (ThreadLocalRecordChunk *c : symtab.threadLocalRecords)
-    if (!c->pinned && !read.contains(c))
-      c->live = false;
+  for (ThreadLocalRecordChunk *c : symtab.threadLocalRecords) {
+    if (c->pinned || read.contains(c))
+      continue;
+    c->live = false;
+    for (RelaxEdit *e : pages.lookup(c))
+      e->target = c->index;
+  }
 }
 
 // A DLL's cells: the slots and entries of the overridable defaults it imports,
@@ -1715,17 +1732,32 @@ static bool bindRecordAccess(SectionChunk *sc,
                                              : ObjFile::LinkFusion::Index))
       readers.push_back(&r);
   // An index keeps the other register as its base, which takes a SIB byte if
-  // it is RSP or R12.
+  // it is RSP or R12; an add of the register to another becomes add of an
+  // imm32, and one of another to it lea of that one plus a disp32.
   ArrayRef<uint8_t> data = sc->getContents();
-  auto keepsSIB = [&](const ObjFile::LinkFusion &r) {
-    uint8_t sib = data[r.offset + r.modrm + 1];
-    return ((r.base ? sib >> 3 : sib) & 7) == 4;
+  auto getIndexSize = [&](const ObjFile::LinkFusion &r) -> unsigned {
+    const uint8_t *inst = data.data() + r.offset;
+    if (r.add) {
+      unsigned other =
+          (inst[1] == 0x03) == r.base ? inst[2] & 7 : inst[2] >> 3 & 7;
+      return r.base ? 7 + (other == 4) : 7;
+    }
+    uint8_t sib = inst[r.modrm + 1];
+    return r.length - 1 - getDispSize(r) + 4 +
+           (((r.base ? sib >> 3 : sib) & 7) == 4);
   };
   bool direct = f.isLoad && !readers.empty() &&
                 llvm::all_of(readers, [&](ObjFile::LinkFusion *r) {
-                  uint8_t modrm = data[r->offset + r->modrm];
-                  return wide || ((modrm & 7) == 4 && modrm >> 6 != 3 &&
-                                  data[r->offset + r->modrm + 1] >> 6 == 0);
+                  const uint8_t *inst = data.data() + r->offset;
+                  if (wide)
+                    return true;
+                  if (r->add)
+                    return r->length == 3 && (inst[0] & 0xF8) == 0x48 &&
+                           (inst[1] == 0x01 || inst[1] == 0x03) &&
+                           inst[2] >> 6 == 3;
+                  uint8_t modrm = inst[r->modrm];
+                  return (modrm & 7) == 4 && modrm >> 6 != 3 &&
+                         inst[r->modrm + 1] >> 6 == 0;
                 });
   if (!direct) {
     addEdit(sc, {f.offset, f.length,
@@ -1737,11 +1769,50 @@ static bool bindRecordAccess(SectionChunk *sc,
   }
   for (ObjFile::LinkFusion *r : readers)
     addEdit(sc, {r->offset, r->length,
-                 uint16_t(r->length - getDispSize(*r) - r->sib + 4 +
-                          (!wide && keepsSIB(*r))),
+                 uint16_t(wide ? r->length - getDispSize(*r) - r->sib + 4
+                               : getIndexSize(*r)),
                  wide ? RelaxEdit::Access : RelaxEdit::Index, target, r});
   addEdit(sc, {f.offset, f.length, 0, RelaxEdit::Dispose, nullptr, &f});
   return true;
+}
+
+// On ARM64, whether f, an access of record, a thread-local variable's record
+// in the image, takes what the word it loads holds wherever the image lays the
+// code out: a load of the address of the TLS index, adrp of the index's page,
+// where every access through its register, all described, takes any offset in
+// the page that the index's alignment allows; a load of an offset, movz of it,
+// where the image's TLS template, of at most templateSize bytes, fits 16 bits.
+static bool isArm64RecordAccess(SectionChunk *sc,
+                                ArrayRef<ObjFile::LinkFusion> fusions,
+                                const ObjFile::LinkFusion &f, Defined *record,
+                                uint64_t templateSize) {
+  std::optional<SymbolTable::ThreadLocalRecordWords> words =
+      sc->file->symtab.getThreadLocalRecordWords(record);
+  ArrayRef<uint8_t> data = sc->getContents();
+  if (!words || uint64_t(f.offset) + 4 > data.size())
+    return false;
+  uint32_t insn = read32le(&data[f.offset]);
+  if ((insn & 0xFFFFFC00) == 0xB9400800 || (insn & 0xFFFFFC00) == 0xB9400C00)
+    return templateSize <= 0xFFFF;
+  auto *index = dyn_cast<DefinedRegular>(words->index);
+  if ((insn & 0xFFFFFC00) != 0xF9400000 || !f.isLoad || !index)
+    return false;
+  uint64_t align = index->getChunk()->getAlignment();
+  if (uint64_t value = index->getValue())
+    align = std::min<uint64_t>(align, value & -value);
+  bool any = false;
+  for (const ObjFile::LinkFusion &r : fusions) {
+    if (r.use != ObjFile::LinkFusion::Access || r.load != f.offset)
+      continue;
+    uint32_t access = read32le(&data[r.offset]);
+    Arm64Access a(access);
+    int64_t offset = a.getOffset(access);
+    if (!a.scale || align % a.scale || !a.fits(offset) ||
+        !a.fits(4096 - a.scale + offset))
+      return false;
+    any = true;
+  }
+  return any;
 }
 
 // Binds the uses that an object fuses with its loads of pointers, once the
@@ -1754,7 +1825,8 @@ static bool bindRecordAccess(SectionChunk *sc,
 // register. A load no use keeps is dead. On ARM64, writeFusedArm64 writes the
 // direct forms once addresses are known.
 static void bindFusedUses(SectionChunk *sc,
-                          MutableArrayRef<ObjFile::LinkFusion> fusions) {
+                          MutableArrayRef<ObjFile::LinkFusion> fusions,
+                          uint64_t templateSize) {
   ObjFile *file = sc->file;
   SymbolTable &symtab = file->symtab;
   bool arm64 = symtab.machine == ARM64;
@@ -1784,7 +1856,11 @@ static void bindFusedUses(SectionChunk *sc,
       if (!reaches)
         keptLoads.insert(f.load);
       if (reaches || immutable)
-        f.form = ObjFile::LinkFusion::Direct;
+        f.form = reaches && f.use == ObjFile::LinkFusion::Access &&
+                         isArm64RecordAccess(sc, fusions, f, li->getTarget(),
+                                             templateSize)
+                     ? ObjFile::LinkFusion::Record
+                     : ObjFile::LinkFusion::Direct;
       continue;
     }
     if (f.use == ObjFile::LinkFusion::Access) {
@@ -1856,10 +1932,27 @@ static void bindFusedUses(SectionChunk *sc,
                    &f});
     }
   }
-  if (arm64)
-    sc->edited |= llvm::any_of(fusions, [](const ObjFile::LinkFusion &f) {
-      return f.dead || f.form == ObjFile::LinkFusion::Direct;
-    });
+  if (!arm64)
+    return;
+  // A dead load of a record whose accesses all take what it holds is read by
+  // nothing.
+  for (ObjFile::LinkFusion &l : fusions)
+    if (l.dead &&
+        llvm::all_of(fusions,
+                     [&](const ObjFile::LinkFusion &f) {
+                       return f.use != ObjFile::LinkFusion::Access ||
+                              f.load != l.offset ||
+                              f.form == ObjFile::LinkFusion::Record;
+                     }) &&
+        llvm::any_of(fusions, [&](const ObjFile::LinkFusion &f) {
+          return f.use == ObjFile::LinkFusion::Access && f.load == l.offset &&
+                 f.form == ObjFile::LinkFusion::Record;
+        }))
+      l.form = ObjFile::LinkFusion::Record;
+  sc->edited |= llvm::any_of(fusions, [](const ObjFile::LinkFusion &f) {
+    return f.dead || f.form == ObjFile::LinkFusion::Direct ||
+           f.form == ObjFile::LinkFusion::Record;
+  });
 }
 
 void bindFusedCalls(SymbolTable &symtab) {
@@ -1867,13 +1960,23 @@ void bindFusedCalls(SymbolTable &symtab) {
   if ((symtab.machine != AMD64 && symtab.machine != ARM64) || ctx.hybridSymtab)
     return;
   llvm::TimeTraceScope timeScope("Bind fused calls");
+  // On ARM64, a bound on the size of the image's TLS template, which the
+  // offsets in it a movz can hold depend on.
+  uint64_t templateSize = 0;
+  if (symtab.machine == ARM64)
+    for (ObjFile *file : ctx.objFileInstances)
+      if (&file->symtab == &symtab)
+        for (Chunk *c : file->getChunks())
+          if (auto *sc = dyn_cast_or_null<SectionChunk>(c);
+              sc && sc->live && sc->getSectionName().starts_with(".tls"))
+            templateSize += sc->getSize() + sc->getAlignment() - 1;
   for (ObjFile *file : ctx.objFileInstances)
     if (&file->symtab == &symtab && file->hasLinkFusions())
       for (Chunk *c : file->getChunks())
         if (auto *sc = dyn_cast_or_null<SectionChunk>(c); sc && sc->live)
           if (MutableArrayRef<ObjFile::LinkFusion> f = file->getLinkFusions(sc);
               !f.empty())
-            bindFusedUses(sc, f);
+            bindFusedUses(sc, f, templateSize);
 }
 
 void writeFusedArm64(const SectionChunk *sc, uint8_t *buf) {
@@ -1886,12 +1989,15 @@ void writeFusedArm64(const SectionChunk *sc, uint8_t *buf) {
   auto getData = [&](uint32_t load) {
     return cast<DefinedLocalImport>(getSymbol(load))->getTarget();
   };
-  DenseMap<uint32_t, SmallVector<const ObjFile::LinkFusion *, 2>> accessesOf;
+  DenseMap<uint32_t, SmallVector<const ObjFile::LinkFusion *, 2>> accessesOf,
+      indexesOf;
   for (const ObjFile::LinkFusion &f : fusions) {
     if (f.use == ObjFile::LinkFusion::None)
       continue;
     if (f.use == ObjFile::LinkFusion::Access)
       accessesOf[f.load].push_back(&f);
+    if (f.use == ObjFile::LinkFusion::Index)
+      indexesOf[f.load].push_back(&f);
     if (f.form != ObjFile::LinkFusion::Direct)
       continue;
     if (f.use == ObjFile::LinkFusion::Add) {
@@ -1930,11 +2036,47 @@ void writeFusedArm64(const SectionChunk *sc, uint8_t *buf) {
     write32le(buf + f->offset,
               access.setOffset(insn, lo12 + access.getOffset(insn)));
   };
+  // Makes r, which adds the register a load of an offset filled to another
+  // register (its base where r->base is set), take the offset c as its
+  // immediate instead, where c fits: add xd, xn, xm becomes add xd, xn, #c,
+  // and a load, store or prefetch at the unshifted sum of the two registers
+  // one at an unsigned offset. Only checks where write is clear.
+  auto foldIndex = [&](uint64_t c, const ObjFile::LinkFusion *r, bool write) {
+    uint32_t insn = read32le(buf + r->offset);
+    unsigned rn = insn >> 5 & 31, rm = insn >> 16 & 31;
+    unsigned other = r->base ? rm : rn;
+    uint32_t folded;
+    if ((insn & 0xFFE0FC00) == 0x8B000000) {
+      if (other == 31)
+        return false;
+      if (c <= 0xFFF)
+        folded = 0x91000000 | c << 10;
+      else if (!(c & 0xFFF) && c <= 0xFFF000)
+        folded = 0x91400000 | (c >> 12) << 10;
+      else
+        return false;
+      folded |= other << 5 | (insn & 0x1F);
+    } else if ((insn & 0x3B201C00) == 0x38200800 && (insn >> 13 & 3) == 3) {
+      if (r->base && rm == 31)
+        return false;
+      uint32_t imm = (insn & 0xC4C0001F) | 0x39000000 | other << 5;
+      Arm64Access a(imm);
+      if (!a.scale || !a.fits(c))
+        return false;
+      folded = a.setOffset(imm, c);
+    } else {
+      return false;
+    }
+    if (write)
+      write32le(buf + r->offset, folded);
+    return true;
+  };
   // A load of a word of a thread-local variable's record in the image takes
   // what it holds: the load of the address of the TLS index becomes adrp of
   // its page where every access through its register, all described, takes
-  // its offset in the page; the load of an offset becomes movz of it where it
-  // fits 16 bits.
+  // its offset in the page; the load of an offset goes where every
+  // instruction that adds it, all described, takes it as an immediate, and
+  // otherwise becomes movz of it where it fits 16 bits.
   auto writeRecordAccess = [&](const SymbolTable::ThreadLocalRecordWords &words,
                                const ObjFile::LinkFusion *f) {
     uint32_t insn = read32le(buf + f->offset);
@@ -1957,6 +2099,16 @@ void writeFusedArm64(const SectionChunk *sc, uint8_t *buf) {
       return false;
     uint32_t offset = getSectionOffset(
         sc, (insn & 0xFFFFFC00) == 0xB9400800 ? words.var : words.guard);
+    auto it = indexesOf.find(f->offset);
+    if (f->isLoad && it != indexesOf.end() &&
+        llvm::all_of(it->second, [&](const ObjFile::LinkFusion *r) {
+          return foldIndex(offset, r, false);
+        })) {
+      for (const ObjFile::LinkFusion *r : it->second)
+        foldIndex(offset, r, true);
+      write32le(buf + f->offset, nop);
+      return true;
+    }
     if (offset > 0xFFFF)
       return false;
     write32le(buf + f->offset, 0x52800000 | offset << 5 | (insn & 0x1F));
