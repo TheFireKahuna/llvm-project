@@ -29,6 +29,14 @@
 // may make the pair take the address of the image's own copy of the data,
 // which holds the same value wherever the data's address leads.
 //
+// A thread-local variable that may be in another image is reached through
+// the import pointer of its record: the address of the image's TLS index, then
+// the variable's offset in the image's TLS template. Where the record turns
+// out to be in the image, the linker knows both: the load of the address can
+// become adrp of the index's page, where each load of the index through it is
+// described and takes the index's offset in the page, and the load of the
+// offset can become a move of it.
+//
 //===----------------------------------------------------------------------===//
 
 #include "AArch64.h"
@@ -93,6 +101,16 @@ static const GlobalValue *getImportPointer(const MachineOperand &MO,
       !(MO.getTargetFlags() & (AArch64II::MO_DLLIMPORT | AArch64II::MO_COFFSTUB)))
     return nullptr;
   return MO.getGlobal();
+}
+
+// Whether MO names, with the flags of the half that Fragment is of an adrp
+// and ldr pair, the import pointer of a thread-local variable's record,
+// <name>$tls, which the back end reaches by name.
+static bool isThreadLocalRecordPointer(const MachineOperand &MO,
+                                       unsigned Fragment) {
+  return MO.isSymbol() && (MO.getTargetFlags() & AArch64II::MO_GOT) &&
+         (MO.getTargetFlags() & AArch64II::MO_FRAGMENT) == Fragment &&
+         StringRef(MO.getSymbolName()).ends_with("$tls");
 }
 
 // Whether GV is data rather than a function.
@@ -288,20 +306,26 @@ bool AArch64WindowsImportFusion::runOnMachineFunction(MachineFunction &MF) {
   const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
 
   // The loads of import pointers of data, into the register that holds the
-  // pointer's page or another.
-  SmallVector<MachineInstr *, 8> Loads;
+  // pointer's page or another, and of thread-local variables' records.
+  SmallVector<MachineInstr *, 8> Loads, RecordLoads;
   // The data whose import pointers an instruction other than such a load, or
   // an adrp of a pointer's page, names.
   SmallPtrSet<const GlobalValue *, 4> OtherUses;
   for (MachineBasicBlock &MBB : MF) {
     for (MachineInstr &MI : MBB) {
-      if (MI.getOpcode() == AArch64::LDRXui && !MI.isBundled())
+      if (MI.getOpcode() == AArch64::LDRXui && !MI.isBundled()) {
         if (const GlobalValue *GV =
                 getImportPointer(MI.getOperand(2), AArch64II::MO_PAGEOFF))
           if (isData(GV)) {
             Loads.push_back(&MI);
             continue;
           }
+        if (isThreadLocalRecordPointer(MI.getOperand(2),
+                                       AArch64II::MO_PAGEOFF)) {
+          RecordLoads.push_back(&MI);
+          continue;
+        }
+      }
       if (MI.getOpcode() == AArch64::ADRP && !MI.isBundled())
         continue;
       for (const MachineOperand &MO : MI.operands())
@@ -310,7 +334,7 @@ bool AArch64WindowsImportFusion::runOnMachineFunction(MachineFunction &MF) {
           OtherUses.insert(MO.getGlobal());
     }
   }
-  if (Loads.empty())
+  if (Loads.empty() && RecordLoads.empty())
     return false;
 
   ReachingDefInfo RDI;
@@ -318,6 +342,89 @@ bool AArch64WindowsImportFusion::runOnMachineFunction(MachineFunction &MF) {
   AArch64FunctionInfo *FI = MF.getInfo<AArch64FunctionInfo>();
   using UseKind = AArch64FunctionInfo::ImportFusedUseKind;
   bool Changed = false;
+
+  // The instructions that read what Load puts in Reg, each with the register
+  // it reads, following the copies of the value from register to register,
+  // which the register allocator makes around a call and which copy nothing
+  // that is read once the linker leaves out what Load loads; if Load or such a
+  // copy alone reaches each in Load's section and each accesses memory at an
+  // immediate offset from its register.
+  using Reader = std::pair<MachineInstr *, Register>;
+  auto GetAccesses = [&](MachineInstr *Load, Register Reg,
+                         SmallVectorImpl<Reader> &Accesses) {
+    SmallPtrSet<MachineInstr *, 4> Defs = {Load};
+    SmallVector<Reader, 4> Work = {{Load, Reg}}, Copies;
+    while (!Work.empty()) {
+      auto [Def, R] = Work.pop_back_val();
+      SmallPtrSet<MachineInstr *, 4> Uses;
+      RDI.getGlobalUses(Def, R, Uses);
+      for (MachineInstr *Use : Uses) {
+        if (Use->getOpcode() == AArch64::ORRXrs && !Use->isBundled() &&
+            Use->getOperand(1).getReg() == AArch64::XZR &&
+            Use->getOperand(2).getReg() == R && !Use->getOperand(3).getImm() &&
+            Use->getOperand(0).getReg() != R) {
+          if (Defs.insert(Use).second) {
+            Copies.push_back({Use, R});
+            Work.push_back({Use, Use->getOperand(0).getReg()});
+          }
+        } else if (!is_contained(Accesses, Reader{Use, R})) {
+          Accesses.push_back({Use, R});
+        }
+      }
+    }
+    auto IsReached = [&](const Reader &U) {
+      SmallPtrSet<MachineInstr *, 2> Reaching;
+      RDI.getGlobalReachingDefs(U.first, U.second, Reaching);
+      return !Reaching.empty() && all_of(Reaching, [&](MachineInstr *D) {
+        return Defs.contains(D);
+      });
+    };
+    if (Accesses.empty() || !all_of(Copies, IsReached) ||
+        !all_of(Accesses, [&](const Reader &U) {
+          return U.first->getParent()->getSectionID() ==
+                     Load->getParent()->getSectionID() &&
+                 IsReached(U) && isFusibleAccess(*U.first, U.second, TRI);
+        }))
+      return false;
+    // The linker may leave out what Load loads, and so what the copies copy.
+    undefDebugValues(*Load, Reg, TRI);
+    for (auto [Copy, R] : Copies)
+      undefDebugValues(*Copy, Copy->getOperand(0).getReg(), TRI);
+    return true;
+  };
+  // A record's loads are described as data's are, where the load's register
+  // is its adrp's alone. Of them, the load of the record's first word, the
+  // address of the TLS index, is a load of each access through its register.
+  for (MachineInstr *Load : RecordLoads) {
+    Register Reg = Load->getOperand(0).getReg();
+    MachineInstr *Adrp = RDI.getUniqueReachingMIDef(Load, Reg);
+    SmallPtrSet<MachineInstr *, 2> AdrpUses;
+    if (Load->getOperand(1).getReg() != Reg || !Adrp ||
+        Adrp->getOpcode() != AArch64::ADRP ||
+        !isThreadLocalRecordPointer(Adrp->getOperand(1), AArch64II::MO_PAGE) ||
+        StringRef(Adrp->getOperand(1).getSymbolName()) !=
+            Load->getOperand(2).getSymbolName())
+      continue;
+    RDI.getGlobalUses(Adrp, Reg, AdrpUses);
+    SmallVector<Reader, 4> Accesses;
+    if (AdrpUses.size() != 1 || !GetAccesses(Load, Reg, Accesses))
+      continue;
+    for (auto [Use, R] : Accesses) {
+      FI->addImportFusedUse(Use, Load, R, UseKind::Access);
+      SmallVector<Reader, 4> Indexes;
+      Register Address = Use->getOperand(0).getReg();
+      if (Use->getOpcode() != AArch64::LDRXui || Use->getOperand(2).getImm() ||
+          !GetAccesses(Use, Address, Indexes))
+        continue;
+      for (auto [Index, IndexReg] : Indexes)
+        FI->addImportFusedUse(Index, Use, IndexReg, UseKind::Access);
+      FI->addImportFusedLoad(Use, true);
+      NumAccesses += Indexes.size();
+    }
+    FI->addImportFusedLoad(Load, true);
+    NumAccesses += Accesses.size();
+    Changed = true;
+  }
   // The loads of import pointers of data that never changes, each with the
   // adrp in its section whose every use is a load of the pointer, which
   // several share where the adrp was hoisted out of a loop; the data some of

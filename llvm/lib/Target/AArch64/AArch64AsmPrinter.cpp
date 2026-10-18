@@ -4141,6 +4141,7 @@ void AArch64AsmPrinter::emitImportFusion(const MachineInstr &MI) {
       OutStreamer->emitCOFFLinkValueOnly(Page);
   }
   using UseKind = AArch64FunctionInfo::ImportFusedUseKind;
+  // An access of a thread-local variable's record may itself be a load.
   auto Use = AArch64FI->getImportFusedUses().find(&MI);
   if (Use != AArch64FI->getImportFusedUses().end()) {
     auto [Load, Reg, Kind] = Use->second;
@@ -4148,7 +4149,8 @@ void AArch64AsmPrinter::emitImportFusion(const MachineInstr &MI) {
       OutStreamer->emitCOFFLinkFusedAdd(GetLabel(Load), Reg);
     else
       OutStreamer->emitCOFFLinkFusedAccess(GetLabel(Load), Reg);
-    return;
+    if (!AArch64FI->getImportFusedLoads().count(&MI))
+      return;
   }
   auto Load = AArch64FI->getImportFusedLoads().find(&MI);
   if (Load == AArch64FI->getImportFusedLoads().end())

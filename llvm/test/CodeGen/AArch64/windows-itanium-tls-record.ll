@@ -7,8 +7,12 @@
 ; another image's, whether it is declared or defined weakly, and is reached
 ; through the record whose address the import pointer of <name>$tls holds: the
 ; address of the defining image's TLS index, then the variable's offset in
-; that image's template. A dso_local variable is reached directly, and the
-; MSVC target is unchanged.
+; that image's template. The loads from the record are described to the
+; linker as accesses of the record's load, and the load of the address as a
+; load itself, with the loads of the TLS index through it, so that where the
+; record is in the image the linker can take the index's page and the offset
+; in their place. A dso_local variable is reached directly, and the MSVC target
+; is unchanged.
 
 $comdatvar = comdat any
 
@@ -19,10 +23,17 @@ $comdatvar = comdat any
 define i32 @getVar() {
 ; CHECK-LABEL: getVar:
 ; CHECK:         adrp x8, __imp_var$tls
+; CHECK-NEXT:  [[REC:\.Lfused[0-9]+]]:
+; CHECK-NEXT:    .linkfusedread
 ; CHECK-NEXT:    ldr x8, [x8, :lo12:__imp_var$tls]
 ; CHECK-NEXT:    ldr x10, [x18, #88]
+; CHECK-NEXT:    .linkfusedaccess [[REC]], x8
+; CHECK-NEXT:  [[ADDR:\.Lfused[0-9]+]]:
+; CHECK-NEXT:    .linkfusedread
 ; CHECK-NEXT:    ldr x9, [x8]
+; CHECK-NEXT:    .linkfusedaccess [[REC]], x8
 ; CHECK-NEXT:    ldr w8, [x8, #8]
+; CHECK-NEXT:    .linkfusedaccess [[ADDR]], x9
 ; CHECK-NEXT:    ldr w9, [x9]
 ; CHECK-NEXT:    ldr x9, [x10, x9, lsl #3]
 ; CHECK-NEXT:    ldr w0, [x9, x8]
