@@ -3761,6 +3761,54 @@ resolveAssumedTemplateNameAsType(Sema &S, Scope *Scope,
   return TemplateName();
 }
 
+// Whether Args select an explicit or a partial specialization of Template
+// rather than its primary template.
+static bool selectsSpecialization(Sema &S, ClassTemplateDecl *Template,
+                                  ArrayRef<TemplateArgument> Args,
+                                  SourceLocation Loc) {
+  llvm::FoldingSetInsertToken InsertToken;
+  if (ClassTemplateSpecializationDecl *Spec =
+          Template->findSpecialization(Args, InsertToken))
+    if (Spec->isExplicitSpecialization())
+      return true;
+  SmallVector<ClassTemplatePartialSpecializationDecl *, 4> Partials;
+  Template->getPartialSpecializations(Partials);
+  for (ClassTemplatePartialSpecializationDecl *Partial : Partials) {
+    TemplateDeductionInfo Info(Loc);
+    Sema::SFINAETrap Trap(S, Info);
+    if (S.DeduceTemplateArguments(Partial, Args, Info) ==
+        TemplateDeductionResult::Success)
+      return true;
+  }
+  return false;
+}
+
+// A class template specialization whose arguments include a Win32 region type
+// that no explicit or partial specialization names takes its standard twin's,
+// when the twin has one: std::hash<DWORD> is std::hash<unsigned>. An exact
+// specialization always wins, and a standard type never takes a region type's.
+static void adoptWin32TwinSpecialization(Sema &S, ClassTemplateDecl *Template,
+                                         SmallVectorImpl<TemplateArgument> &Args,
+                                         SourceLocation Loc) {
+  ASTContext &Context = S.getASTContext();
+  SmallVector<TemplateArgument, 4> TwinArgs(Args.begin(), Args.end());
+  bool HasRegionType = false;
+  for (TemplateArgument &Arg : TwinArgs) {
+    if (Arg.getKind() != TemplateArgument::Type)
+      continue;
+    QualType Twin = Context.getWin32Twin(Arg.getAsType());
+    if (Twin.isNull())
+      continue;
+    Arg = TemplateArgument(Context.getCanonicalType(Context.getQualifiedType(
+        Twin, Arg.getAsType().getQualifiers())));
+    HasRegionType = true;
+  }
+  if (!HasRegionType || selectsSpecialization(S, Template, Args, Loc) ||
+      !selectsSpecialization(S, Template, TwinArgs, Loc))
+    return;
+  Args.assign(TwinArgs.begin(), TwinArgs.end());
+}
+
 QualType Sema::CheckTemplateIdType(ElaboratedTypeKeyword Keyword,
                                    TemplateName Name,
                                    SourceLocation TemplateLoc,
@@ -3976,6 +4024,9 @@ QualType Sema::CheckTemplateIdType(ElaboratedTypeKeyword Keyword,
     }
   } else if (ClassTemplateDecl *ClassTemplate =
                  dyn_cast<ClassTemplateDecl>(Template)) {
+    adoptWin32TwinSpecialization(*this, ClassTemplate, CTAI.CanonicalConverted,
+                                 TemplateLoc);
+
     // Find the class template specialization declaration that
     // corresponds to these arguments.
     llvm::FoldingSetInsertToken InsertToken;

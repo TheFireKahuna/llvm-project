@@ -10493,8 +10493,9 @@ public:
       DerivedToBase = 0x8,
       ObjC = 0x10,
       ObjCLifetime = 0x20,
+      Win32Twin = 0x40,
 
-      LLVM_MARK_AS_BITMASK_ENUM(/*LargestValue=*/ObjCLifetime)
+      LLVM_MARK_AS_BITMASK_ENUM(/*LargestValue=*/Win32Twin)
     };
   };
   using ReferenceConversions = ReferenceConversionsScope::ReferenceConversions;

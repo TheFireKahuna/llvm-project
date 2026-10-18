@@ -939,6 +939,10 @@ public:
     /// (not a point to an object) to another Objective-C object type.
     SK_ObjCObjectConversion,
 
+    /// A reference binding that converts a glvalue of a Win32 region type to
+    /// its standard twin, or the reverse, with the same representation.
+    SK_Win32TwinConversion,
+
     /// Array indexing for initialization by elementwise copy.
     SK_ArrayLoopIndex,
 
@@ -1396,6 +1400,9 @@ public:
   /// Add an Objective-C object conversion step, which is
   /// always a no-op.
   void AddObjCObjectConversionStep(QualType T);
+
+  /// Add a Win32 twin conversion step, which is always a no-op.
+  void AddWin32TwinConversionStep(QualType T);
 
   /// Add an array initialization loop step.
   void AddArrayInitLoopStep(QualType T, QualType EltTy);

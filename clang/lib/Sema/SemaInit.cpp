@@ -3961,6 +3961,7 @@ void InitializationSequence::Step::Destroy() {
   case SK_CAssignment:
   case SK_StringInit:
   case SK_ObjCObjectConversion:
+  case SK_Win32TwinConversion:
   case SK_ArrayLoopIndex:
   case SK_ArrayLoopInit:
   case SK_ArrayInit:
@@ -4206,6 +4207,13 @@ void InitializationSequence::AddStringInitStep(QualType T) {
 void InitializationSequence::AddObjCObjectConversionStep(QualType T) {
   Step S;
   S.Kind = SK_ObjCObjectConversion;
+  S.Type = T;
+  Steps.push_back(S);
+}
+
+void InitializationSequence::AddWin32TwinConversionStep(QualType T) {
+  Step S;
+  S.Kind = SK_Win32TwinConversion;
   S.Type = T;
   Steps.push_back(S);
 }
@@ -5436,6 +5444,8 @@ static OverloadingResult TryRefInitWithConversionFunction(
     Sequence.AddDerivedToBaseCastStep(cv1T1, VK);
   else if (RefConv & Sema::ReferenceConversions::ObjC)
     Sequence.AddObjCObjectConversionStep(cv1T1);
+  else if (RefConv & Sema::ReferenceConversions::Win32Twin)
+    Sequence.AddWin32TwinConversionStep(cv1T1);
   else if (RefConv & Sema::ReferenceConversions::Function)
     Sequence.AddFunctionReferenceConversionStep(cv1T1);
   else if (RefConv & Sema::ReferenceConversions::Qualification) {
@@ -5530,7 +5540,8 @@ static void TryReferenceInitializationCore(Sema &S,
       //   - is an lvalue (but is not a bit-field), and "cv1 T1" is
       //     reference-compatible with "cv2 T2," or
       if (RefConv & (Sema::ReferenceConversions::DerivedToBase |
-                     Sema::ReferenceConversions::ObjC)) {
+                     Sema::ReferenceConversions::ObjC |
+                     Sema::ReferenceConversions::Win32Twin)) {
         // If we're converting the pointee, add any qualifiers first;
         // these qualifiers must all be top-level, so just convert to "cv1 T2".
         if (RefConv & (Sema::ReferenceConversions::Qualification))
@@ -5539,6 +5550,8 @@ static void TryReferenceInitializationCore(Sema &S,
               Initializer->getValueKind());
         if (RefConv & Sema::ReferenceConversions::DerivedToBase)
           Sequence.AddDerivedToBaseCastStep(cv1T1, VK_LValue);
+        else if (RefConv & Sema::ReferenceConversions::Win32Twin)
+          Sequence.AddWin32TwinConversionStep(cv1T1);
         else
           Sequence.AddObjCObjectConversionStep(cv1T1);
       } else if (RefConv & Sema::ReferenceConversions::Qualification) {
@@ -5705,6 +5718,8 @@ static void TryReferenceInitializationCore(Sema &S,
       Sequence.AddDerivedToBaseCastStep(cv1T1, ValueKind);
     else if (RefConv & Sema::ReferenceConversions::ObjC)
       Sequence.AddObjCObjectConversionStep(cv1T1);
+    else if (RefConv & Sema::ReferenceConversions::Win32Twin)
+      Sequence.AddWin32TwinConversionStep(cv1T1);
     else if (RefConv & Sema::ReferenceConversions::Qualification) {
       if (!S.Context.hasSameType(cv1T4, cv1T1))
         Sequence.AddQualificationConversionStep(cv1T1, ValueKind);
@@ -8076,6 +8091,7 @@ ExprResult InitializationSequence::Perform(Sema &S,
   case SK_CAssignment:
   case SK_StringInit:
   case SK_ObjCObjectConversion:
+  case SK_Win32TwinConversion:
   case SK_ArrayLoopIndex:
   case SK_ArrayLoopInit:
   case SK_ArrayInit:
@@ -8622,6 +8638,12 @@ ExprResult InitializationSequence::Perform(Sema &S,
       CurInit = S.ImpCastExprToType(CurInit.get(), Step->Type,
                           CK_ObjCObjectLValueCast,
                           CurInit.get()->getValueKind());
+      break;
+
+    case SK_Win32TwinConversion:
+      CurInit = S.ImpCastExprToType(CurInit.get(), Step->Type,
+                                    CK_LValueBitCast,
+                                    CurInit.get()->getValueKind());
       break;
 
     case SK_ArrayLoopIndex: {
@@ -9839,6 +9861,10 @@ void InitializationSequence::dump(raw_ostream &OS) const {
 
     case SK_ObjCObjectConversion:
       OS << "Objective-C object conversion";
+      break;
+
+    case SK_Win32TwinConversion:
+      OS << "Win32 twin conversion";
       break;
 
     case SK_ArrayLoopIndex:

@@ -3534,6 +3534,15 @@ public:
   // a given fixed point type.
   QualType getCorrespondingSignedType(QualType T) const;
 
+  /// The standard twin of a type a Win32 region names on NT-POSIX: the
+  /// standard type with its width, signedness and representation. Null for
+  /// any other type.
+  QualType getWin32Twin(QualType T) const;
+
+  /// Whether A and B, ignoring qualifiers, are a Win32 region type and its
+  /// standard twin, in either order.
+  bool areWin32Twins(QualType A, QualType B) const;
+
   // Per ISO N1169, this method accepts fixed point types and returns the
   // corresponding saturated type for a given fixed point type.
   QualType getCorrespondingSaturatedType(QualType Ty) const;

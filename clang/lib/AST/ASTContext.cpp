@@ -12009,6 +12009,11 @@ QualType ASTContext::mergeTypes(QualType LHS, QualType RHS, bool OfBlockPointer,
 
   // Okay, qualifiers are equal.
 
+  // In C a Win32 region type is compatible with its standard twin, as an
+  // enumeration is with its underlying type.
+  if (!getLangOpts().CPlusPlus && areWin32Twins(LHSCan, RHSCan))
+    return LHS;
+
   Type::TypeClass LHSClass = LHSCan->getTypeClass();
   Type::TypeClass RHSClass = RHSCan->getTypeClass();
 
@@ -12560,6 +12565,32 @@ QualType ASTContext::getCorrespondingUnsignedType(QualType T) const {
            "Unexpected signed integer or fixed point type");
     return T;
   }
+}
+
+QualType ASTContext::getWin32Twin(QualType T) const {
+  const auto *BT = T->getAs<BuiltinType>();
+  if (!BT)
+    return QualType();
+  switch (BT->getKind()) {
+  case BuiltinType::Win32Long:
+    return IntTy;
+  case BuiltinType::Win32ULong:
+    return UnsignedIntTy;
+  case BuiltinType::Win32WChar:
+    return Char16Ty;
+  case BuiltinType::Win32LongDouble:
+    return DoubleTy;
+  default:
+    return QualType();
+  }
+}
+
+bool ASTContext::areWin32Twins(QualType A, QualType B) const {
+  if (QualType Twin = getWin32Twin(A); !Twin.isNull())
+    return hasSameUnqualifiedType(Twin, B);
+  if (QualType Twin = getWin32Twin(B); !Twin.isNull())
+    return hasSameUnqualifiedType(Twin, A);
+  return false;
 }
 
 QualType ASTContext::getCorrespondingSignedType(QualType T) const {

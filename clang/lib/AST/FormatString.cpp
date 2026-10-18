@@ -465,6 +465,10 @@ ArgType::matchesType(ASTContext &C, QualType argTy) const {
   if (const auto *OBT = argTy->getAs<OverflowBehaviorType>())
     argTy = OBT->getUnderlyingType();
 
+  // A Win32 region type is formatted as its standard twin is.
+  if (QualType Twin = C.getWin32Twin(argTy); !Twin.isNull())
+    argTy = C.getQualifiedType(Twin, argTy.getQualifiers());
+
   switch (K) {
   case InvalidTy:
     llvm_unreachable("ArgType must be valid");

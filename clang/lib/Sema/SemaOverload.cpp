@@ -2767,6 +2767,11 @@ bool Sema::IsIntegralPromotion(Expr *From, QualType FromType, QualType ToType) {
     return false;
   }
 
+  // A Win32 region type and its standard twin share one representation, so a
+  // conversion between them ranks as a promotion.
+  if (FromType->isIntegerType() && Context.areWin32Twins(FromType, ToType))
+    return true;
+
   // An rvalue of type char, signed char, unsigned char, short int, or
   // unsigned short int can be converted to an rvalue of type int if
   // int can represent all the values of the source type; otherwise,
@@ -2925,6 +2930,11 @@ bool Sema::IsIntegralPromotion(Expr *From, QualType FromType, QualType ToType) {
 }
 
 bool Sema::IsFloatingPointPromotion(QualType FromType, QualType ToType) {
+  // A Win32 region's long double and double share one representation, so a
+  // conversion between them ranks as a promotion.
+  if (Context.areWin32Twins(FromType, ToType))
+    return true;
+
   if (const BuiltinType *FromBuiltin = FromType->getAs<BuiltinType>())
     if (const BuiltinType *ToBuiltin = ToType->getAs<BuiltinType>()) {
       /// An rvalue of type float can be converted to an rvalue of type
@@ -3143,6 +3153,15 @@ bool Sema::IsPointerConversion(Expr *From, QualType FromType, QualType ToType,
   // pointer conversion, so don't do all of the work below.
   if (Context.hasSameUnqualifiedType(FromPointeeType, ToPointeeType))
     return false;
+
+  // A pointer to a Win32 region type and a pointer to its standard twin
+  // convert to each other: the two share one representation.
+  if (Context.areWin32Twins(FromPointeeType, ToPointeeType)) {
+    ConvertedType = BuildSimilarlyQualifiedPointerType(FromTypePtr,
+                                                       ToPointeeType,
+                                                       ToType, Context);
+    return true;
+  }
 
   // An rvalue of type "pointer to cv T," where T is an object type,
   // can be converted to an rvalue of type "pointer to cv void" (C++
@@ -5322,6 +5341,8 @@ Sema::CompareReferenceRelationship(SourceLocation Loc,
            UnqualT2->isObjCObjectOrInterfaceType() &&
            Context.canBindObjCObjectType(UnqualT1, UnqualT2))
     Conv |= ReferenceConversions::ObjC;
+  else if (Context.areWin32Twins(UnqualT1, UnqualT2))
+    Conv |= ReferenceConversions::Win32Twin;
   else if (UnqualT2->isFunctionType() &&
            IsFunctionConversion(UnqualT2, UnqualT1)) {
     Conv |= ReferenceConversions::Function;
@@ -5534,11 +5555,17 @@ TryReferenceInit(Sema &S, Expr *Init, QualType DeclType,
     ICS.Standard.First = ICK_Identity;
     // FIXME: A reference binding can be a function conversion too. We should
     // consider that when ordering reference-to-function bindings.
-    ICS.Standard.Second = (RefConv & Sema::ReferenceConversions::DerivedToBase)
-                              ? ICK_Derived_To_Base
-                              : (RefConv & Sema::ReferenceConversions::ObjC)
-                                    ? ICK_Compatible_Conversion
-                                    : ICK_Identity;
+    // Binding to a Win32 region type's twin ranks as the promotion between
+    // the two, below an exact binding.
+    ICS.Standard.Second =
+        (RefConv & Sema::ReferenceConversions::DerivedToBase)
+            ? ICK_Derived_To_Base
+        : (RefConv & Sema::ReferenceConversions::ObjC)
+            ? ICK_Compatible_Conversion
+        : (RefConv & Sema::ReferenceConversions::Win32Twin)
+            ? (T1->isRealFloatingType() ? ICK_Floating_Promotion
+                                        : ICK_Integral_Promotion)
+            : ICK_Identity;
     ICS.Standard.Dimension = ICK_Identity;
     // FIXME: As a speculative fix to a defect introduced by CWG2352, we rank
     // a reference binding that performs a non-top-level qualification
