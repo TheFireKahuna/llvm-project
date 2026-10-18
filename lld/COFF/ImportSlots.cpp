@@ -2005,7 +2005,7 @@ static bool validate(COFFLinkerContext &ctx, SlotScan::Pending &p) {
 // addresses, on which every slot and rewritten instruction depends.
 void ImportSlotContents::bind() {
   Configuration &config = ctx.config;
-  if (!config.importSlots || ctx.hybridSymtab || isArm64EC(config.machine))
+  if (!config.importSlots)
     return;
   llvm::TimeTraceScope timeScope("Import slots");
 
@@ -2182,12 +2182,8 @@ void ImportSlotContents::addResidualWord(SectionChunk *sc, uint32_t offset,
   Configuration &config = ctx.config;
   StringRef name = getPartialSectionName(sc, config.mingw);
   bool readOnly = !(sc->header->Characteristics & IMAGE_SCN_MEM_WRITE);
-  StringRef why;
-  if (name.starts_with(".tls")) {
-    why = ", in thread-local data";
-  } else if (readOnly && name != ".rdata") {
-    why = ", in a read-only section that cannot move";
-  } else if (config.machine == AMD64 || config.machine == ARM64) {
+  bool tls = name.starts_with(".tls");
+  if (!tls && (!readOnly || name == ".rdata")) {
     if (readOnly)
       sealedChunks.insert(sc);
     residualWords.push_back({sc, offset, imp, addend, s});
@@ -2196,7 +2192,9 @@ void ImportSlotContents::addResidualWord(SectionChunk *sc, uint32_t offset,
   Err(ctx) << sc->file << ": " << sc->getSectionName()
            << " holds the address of " << sc->file->symtab.printSymbol(s)
            << " plus " << addend << ", imported from " << imp->getDLLName()
-           << ", which exports no name for it" << why;
+           << ", which exports no name for it"
+           << (tls ? ", in thread-local data"
+                   : ", in a read-only section that cannot move");
 }
 
 void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
@@ -2799,8 +2797,7 @@ void ImportSlotContents::createFill() {
   // A DLL that imports from an executable runs the executable's copy, unless
   // it has no C initializer table, in which case nothing could.
   bool callsCopy =
-      config.importSlots && config.dll && !ctx.hybridSymtab && hasXIA &&
-      (config.machine == AMD64 || config.machine == ARM64) &&
+      config.importSlots && config.dll && hasXIA &&
       llvm::any_of(ctx.importFileInstances, [](ImportFile *f) {
         return f->live && StringRef(f->dllName).ends_with_insensitive(".exe");
       });
@@ -2920,8 +2917,7 @@ static TLSTemplate findTLSTemplate(COFFLinkerContext &ctx) {
 void ImportSlotContents::createThreadLocalSlotCopy() {
   llvm::TimeTraceScope timeScope("Create thread-local slot copy");
   Configuration &config = ctx.config;
-  if (!config.importSlots || config.dll || ctx.hybridSymtab ||
-      (config.machine != AMD64 && config.machine != ARM64))
+  if (!config.importSlots || config.dll)
     return;
   std::vector<const ImportSlot *> tlsSlots;
   for (auto &[sc, slots] : ctx.importSlots)
@@ -2959,8 +2955,7 @@ void ImportSlotContents::createThreadLocalSlotCopy() {
 void ImportSlotContents::collectCells() {
   llvm::TimeTraceScope timeScope("Collect cells");
   Configuration &config = ctx.config;
-  if (!config.importSlots || !config.dll || ctx.hybridSymtab ||
-      (config.machine != AMD64 && config.machine != ARM64))
+  if (!config.importSlots || !config.dll)
     return;
   std::vector<OverrideCell> cells;
   ctx.symtab.readOverrideRecords();
@@ -3145,8 +3140,7 @@ void ImportSlotContents::collectCells() {
 void ImportSlotContents::createOfferTable() {
   llvm::TimeTraceScope timeScope("Create offer table");
   Configuration &config = ctx.config;
-  if (!config.importSlots || ctx.hybridSymtab ||
-      (config.machine != AMD64 && config.machine != ARM64))
+  if (!config.importSlots)
     return;
   // The exports by name, whose names those of the image's vague entities are.
   DenseMap<StringRef, const Export *> exports;

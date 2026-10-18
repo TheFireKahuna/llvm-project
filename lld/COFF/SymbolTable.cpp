@@ -672,8 +672,6 @@ bool SymbolTable::importUnresolvedFromHost() {
 
 bool SymbolTable::loadInteriorImports() {
   llvm::TimeTraceScope timeScope("Load interior imports");
-  if (ctx.hybridSymtab || isEC())
-    return false;
 
   // An import from an executable is bound at run time against the process's
   // own, and one that only weak references name, as ELF binds a weak
@@ -707,12 +705,11 @@ bool SymbolTable::loadInteriorImports() {
           l && l->isLazy() && !l->pendingArchiveLoad && isLazyImport(l))
         runTimeLazies.push_back(l);
   }
-  bool canSeal = machine == AMD64 || machine == ARM64;
   // A DLL that reaches vague entities through cells binds them, when loaded
   // outside the executable's link, by a search of the loaded modules, which
   // pins the module it binds to and writes the cells between two protection
   // calls: those it keeps preemptible, and those the DLLs it imports from do.
-  if (canSeal && ctx.config.dll && ctx.config.importSlots) {
+  if (ctx.config.dll) {
     isPreemptibleVagueEntity(nullptr); // which computes the set
     bool cells = !preemptibleVagueEntities->empty();
     if (!cells && isa_and_nonnull<Defined>(findUnderscore("__xi_a"))) {
@@ -765,7 +762,7 @@ bool SymbolTable::loadInteriorImports() {
         }
       }
     bool readOnly = !(sc->header->Characteristics & IMAGE_SCN_MEM_WRITE);
-    if (!pending && readOnly && canSeal && isa<DefinedImportData>(s) &&
+    if (!pending && readOnly && isa<DefinedImportData>(s) &&
         !findInteriorImport(imp, addend))
       sealed = true;
     return pending;
@@ -794,7 +791,7 @@ bool SymbolTable::loadInteriorImports() {
   // defaults it imports, and the read-only cells of its own defaults, between
   // two protection calls. Its own default has cells only where the DLL takes
   // its address, through the import pointer or in a word of its static data.
-  if (!sealed && canSeal && ctx.config.dll && ctx.config.importSlots) {
+  if (!sealed && ctx.config.dll) {
     auto isOwnDefault = [&](StringRef name) {
       return overridablesByName.contains(name) || isOwnSlotDefault(name);
     };
@@ -831,7 +828,7 @@ bool SymbolTable::loadInteriorImports() {
   // A DLL's cells of its own preemptible vague entities: the pointers its
   // import-form references read, in read-only data, and read-only words of
   // its static data.
-  if (!sealed && canSeal && ctx.config.dll && ctx.config.importSlots) {
+  if (!sealed && ctx.config.dll) {
     sealed = llvm::any_of(localImportChunks, [](Chunk *c) {
       return !cast<LocalImportChunk>(c)->vagueEntity.empty();
     });
@@ -854,7 +851,7 @@ bool SymbolTable::loadInteriorImports() {
       }
     }
   }
-  if (!sealed && canSeal && ctx.config.dll) {
+  if (!sealed && ctx.config.dll) {
     readOverrideRecords();
     sealed = llvm::any_of(ctx.importFileInstances, [&](ImportFile *f) {
       if (&f->symtab != this || !f->impSym || f->isDelayLoaded())
@@ -1005,7 +1002,7 @@ bool SymbolTable::loadLocalImportMembers() {
   // address-take, and data's, with those of the other external symbols of its
   // group and of its guard, takes the data's place.
   std::vector<Symbol *> offers;
-  if (ctx.config.importSlots && !ctx.hybridSymtab && !isEC()) {
+  if (ctx.config.importSlots) {
     // A new offer can appear only when a new object defines a weak definition
     // or a new archive offers an import for one; otherwise a prior pass has
     // already loaded every offer this one could, so the scan is skipped.
@@ -1147,7 +1144,7 @@ bool SymbolTable::ignoresOffersOf(DefinedImportData *imp) const {
 
 void SymbolTable::bindImportsToDefinitions() {
   llvm::TimeTraceScope timeScope("Bind imports to definitions");
-  if (!ctx.config.importSlots || ctx.hybridSymtab || isEC())
+  if (!ctx.config.importSlots)
     return;
   SmallPtrSet<Symbol *, 4> offers;
   for (const Export &e : exports)
@@ -1233,8 +1230,7 @@ bool SymbolTable::isPreemptibleVagueEntity(Symbol *s) {
     using B = Configuration::Bsymbolic;
     // The cells are written by the image's fill, which its C initializer
     // table runs.
-    if (!config.importSlots || !config.dll || ctx.hybridSymtab || isEC() ||
-        config.bsymbolic == B::All ||
+    if (!config.importSlots || !config.dll || config.bsymbolic == B::All ||
         !isa_and_nonnull<Defined>(findUnderscore("__xi_a")))
       return false;
     // Asked before liveness is decided, which a cell's reference keeps.
@@ -1278,8 +1274,7 @@ void SymbolTable::keepThreadLocalRecord(Defined *record) {
 
 void SymbolTable::bindOfferedFunctions() {
   llvm::TimeTraceScope timeScope("Bind offered functions");
-  if (!ctx.config.importSlots || ctx.hybridSymtab || isEC() ||
-      weakFunctions.empty())
+  if (!ctx.config.importSlots || weakFunctions.empty())
     return;
   for (Symbol *sym : weakFunctions) {
     auto *d = dyn_cast<DefinedRegular>(sym);
@@ -1332,7 +1327,7 @@ void SymbolTable::offerOverridableDefaults() {
 }
 
 bool SymbolTable::loadOverrideOfferImports() {
-  if (!ctx.config.importSlots || !ctx.config.dll || ctx.hybridSymtab || isEC())
+  if (!ctx.config.importSlots || !ctx.config.dll)
     return false;
   readOverrideRecords();
   if (overridables.empty() && defaultsByName.empty())
@@ -1363,8 +1358,7 @@ bool SymbolTable::isLocalOverrideReplacement(StringRef name) {
 }
 
 bool SymbolTable::loadOverrideOffers() {
-  if (!ctx.config.importSlots || ctx.config.dll || ctx.hybridSymtab ||
-      isEC() || overrideOffersLoaded)
+  if (!ctx.config.importSlots || ctx.config.dll || overrideOffersLoaded)
     return false;
   overrideOffersLoaded = true;
   // A DLL that defines its own overridable default exports it under the offer
@@ -1407,9 +1401,8 @@ bool SymbolTable::loadOverrideOffers() {
     overrideOffers.insert(offer.drop_front(overrideOfferPrefix.size()));
     Log(ctx) << "Importing " << offer << " from " << dll
              << ", which a DLL the image imports depends on";
-    ctx.driver.addFile(
-        make<ImportFile>(ctx, makeShortImport(machine, saver().save(dll), offer,
-                                              IMPORT_CODE, IMPORT_NAME)));
+    ctx.driver.addFile(make<ImportFile>(
+        ctx, makeShortImport(machine, dll, offer, IMPORT_CODE, IMPORT_NAME)));
     addGCRoot(offer);
     pulled = true;
   }
@@ -1423,23 +1416,6 @@ SmallVector<MemoryBufferRef, 4> SymbolTable::getImportLibraryRecords() {
       if (auto *lazy = dyn_cast_or_null<LazyArchive>(find(name)))
         records.push_back(lazy->getMemberBuffer());
   return records;
-}
-
-void SymbolTable::readOverrideRecords() {
-  // The records come only with the import libraries, so they are read again
-  // only once more libraries have been read.
-  if (!ctx.config.importSlots || ctx.hybridSymtab || isEC() ||
-      indexedArchives.size() == overrideRecordsArchives)
-    return;
-  overrideRecordsArchives = indexedArchives.size();
-  OverrideRecords records = readImportedOverrideRecords(
-      ctx, getImportLibraryRecords(), overrideTableVersion);
-  for (std::string &name : records.byName)
-    defaultsByName.insert(saver().save(name));
-  for (OverrideRecords::Slot &s : records.slots)
-    addOverrideSlotFacts(saver().save(s.name),
-                         {s.slot, s.forward, s.dropsSecond, /*own=*/false},
-                         "an import library");
 }
 
 void SymbolTable::addOverrideSlotFacts(StringRef name, OverrideSlotFacts facts,
@@ -1467,7 +1443,7 @@ std::optional<uint32_t> SymbolTable::overrideImportSlot(StringRef name) {
 
 void SymbolTable::resolveOverridableReplacements() {
   llvm::TimeTraceScope timeScope("Resolve overridable replacements");
-  if (!ctx.config.importSlots || ctx.config.dll || ctx.hybridSymtab || isEC())
+  if (!ctx.config.importSlots || ctx.config.dll)
     return;
   readOverrideRecords();
   if (overridables.empty() && overrideOffers.empty() &&
@@ -1533,8 +1509,7 @@ void SymbolTable::resolveOverridableReplacements() {
 bool SymbolTable::bindVagueSiblings() {
   llvm::TimeTraceScope timeScope("Bind vague siblings");
   Configuration &config = ctx.config;
-  if (!config.importSlots || config.dll || ctx.hybridSymtab || isEC() ||
-      !vagueOwners.empty())
+  if (!config.importSlots || config.dll || !vagueOwners.empty())
     return false;
   // What the executable keeps: its default-visibility vague data, with the
   // other external symbols of its group and its guard, and functions whose
@@ -1560,8 +1535,7 @@ bool SymbolTable::bindVagueSiblings() {
     if (auto *d = dyn_cast<DefinedRegular>(sym); keeps(d))
       kept.insert(d->getName());
 
-  for (auto &[name, dll] : chooseVagueOwners(ctx, kept)) {
-    StringRef entity = saver().save(name);
+  for (auto [entity, dll] : chooseVagueOwners(ctx, kept)) {
     if (dll.empty()) {
       auto *d = dyn_cast_or_null<Defined>(findVagueEntity(entity));
       // A thread-local variable's instance is its record, which the pointer
@@ -1587,8 +1561,7 @@ bool SymbolTable::bindVagueSiblings() {
     Log(ctx) << "Importing " << entity << " from " << dll
              << ", which owns it for the program";
     ctx.driver.addFile(make<ImportFile>(
-        ctx, makeShortImport(machine, saver().save(dll), entity, IMPORT_DATA,
-                             IMPORT_NAME)));
+        ctx, makeShortImport(machine, dll, entity, IMPORT_DATA, IMPORT_NAME)));
   }
   if (vagueOwners.empty())
     return false;
@@ -1730,8 +1703,7 @@ void SymbolTable::buildOverrideSlots() {
 }
 
 bool SymbolTable::nameOverrideCheck() {
-  if (!ctx.config.importSlots || ctx.config.dll || ctx.hybridSymtab || isEC() ||
-      overrideAnchor)
+  if (!ctx.config.importSlots || ctx.config.dll || overrideAnchor)
     return false;
   readOverrideRecords();
   if (overrideSlotFacts.empty() && defaultsByName.empty())

@@ -2856,6 +2856,11 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     setMachine(AMD64);
   }
   config->wordsize = config->is64() ? 8 : 4;
+  // The import slots and the code the linker writes for them exist for x64
+  // and ARM64 images, so every pass behind the option may assume one.
+  if (config->importSlots && config->machine != AMD64 &&
+      config->machine != ARM64)
+    Fatal(ctx) << "-import-slots is supported only for x64 and ARM64";
 
   if (config->printSearchPaths) {
     SmallString<256> buffer;

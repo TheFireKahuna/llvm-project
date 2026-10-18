@@ -250,7 +250,7 @@ static bool isOfferedByImage(BitcodeFile &f,
                              Symbol *sym) {
   const Configuration &config = f.symtab.ctx.config;
   return config.importSlots && (config.dll || !config.implib.empty()) &&
-         !f.symtab.isEC() && !objSym.isUndefined() &&
+         !objSym.isUndefined() &&
          objSym.getComdatIndex() != -1 &&
          objSym.getVisibility() == GlobalValue::DefaultVisibility &&
          (!objSym.isExecutable() || !objSym.canBeOmittedFromSymbolTable()) &&
@@ -270,8 +270,7 @@ static bool isPreemptibleInImage(BitcodeFile &f,
                                  Symbol *sym, bool hasCInitializers) {
   const Configuration &config = f.symtab.ctx.config;
   using B = Configuration::Bsymbolic;
-  if (!config.importSlots || !config.dll || f.symtab.isEC() ||
-      f.symtab.ctx.hybridSymtab || config.bsymbolic == B::All ||
+  if (!config.importSlots || !config.dll || config.bsymbolic == B::All ||
       objSym.isUndefined() || objSym.getComdatIndex() == -1 ||
       f.obj->getComdatTable()[objSym.getComdatIndex()].second ==
           Comdat::NoDeduplicate ||
@@ -326,7 +325,7 @@ void BitcodeCompiler::add(BitcodeFile &f) {
   // native link to preempt, which may keep its copy for loads that only read
   // values through its address (SymbolTable::readImmutableDataLocally).
   SmallVector<DefinedImportData *, 0> offeredComdats;
-  if (ctx.config.importSlots && !f.symtab.isEC() && !ctx.hybridSymtab) {
+  if (ctx.config.importSlots) {
     size_t numComdats = obj.getComdatTable().size();
     offeredComdats.assign(numComdats, nullptr);
     SmallVector<bool, 0> partial(numComdats, false);

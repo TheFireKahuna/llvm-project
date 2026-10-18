@@ -42,7 +42,7 @@ void checkVagueEntities(COFFLinkerContext &ctx, llvm::StringRef imageName);
 // with its owner's DLL name, or an empty name for the executable, which owns
 // what it keeps, and otherwise the first to keep it in breadth-first load
 // order, as ELF's global scope gives.
-std::vector<std::pair<std::string, std::string>>
+std::vector<std::pair<llvm::StringRef, llvm::StringRef>>
 chooseVagueOwners(COFFLinkerContext &ctx,
                   const llvm::DenseSet<llvm::StringRef> &kept);
 
@@ -52,31 +52,11 @@ chooseVagueOwners(COFFLinkerContext &ctx,
 llvm::StringMap<llvm::StringSet<>> getPreemptibleOffers(COFFLinkerContext &ctx,
                                                         bool liveOnly = true);
 
-// The overridable defaults that the DLLs whose records records, the record
-// members of import libraries, describe defining: by name, with no fixed slot
-// in the override table, and by slot, with the slot each records and the slot
-// of the default it forwards to. A record of a table format other than
-// version is an error.
-struct OverrideRecords {
-  struct Slot {
-    std::string name;
-    uint32_t slot;
-    std::optional<uint32_t> forward;
-    bool dropsSecond;
-  };
-  std::vector<std::string> byName;
-  std::vector<Slot> slots;
-};
-OverrideRecords
-readImportedOverrideRecords(COFFLinkerContext &ctx,
-                            llvm::ArrayRef<llvm::MemoryBufferRef> records,
-                            uint32_t version);
-
 // The overridable defaults that the DLLs of the load closure that records, the
 // record members of import libraries in link order, describe offer, each with
 // the name of its DLL, in breadth-first load order, leaving out those of the
 // DLLs whose import libraries hold the records.
-std::vector<std::pair<std::string, std::string>>
+std::vector<std::pair<llvm::StringRef, llvm::StringRef>>
 getDependentOverrideOffers(COFFLinkerContext &ctx,
                            llvm::ArrayRef<llvm::MemoryBufferRef> records);
 

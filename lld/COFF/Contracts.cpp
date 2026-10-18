@@ -245,7 +245,7 @@ static bool definesExport(COFFLinkerContext &ctx, InputFile *file,
 
 void lld::coff::addContractWitnessExports(COFFLinkerContext &ctx) {
   llvm::TimeTraceScope timeScope("Add contract witness exports");
-  if (!ctx.config.importSlots || ctx.hybridSymtab)
+  if (!ctx.config.importSlots)
     return;
   std::vector<Export> &exports = ctx.symtab.exports;
   llvm::erase_if(exports, [&](const Export &e) {
@@ -346,7 +346,7 @@ bool lld::coff::isContractWitness(COFFLinkerContext &ctx, const Defined *sym) {
 void lld::coff::addContractWitnessImports(
     COFFLinkerContext &ctx, StringRef dllName,
     std::vector<COFFShortExport> &exports) {
-  if (!ctx.config.importSlots || ctx.hybridSymtab)
+  if (!ctx.config.importSlots)
     return;
   std::string dll = dllName.lower();
   for (size_t i = 0, e = exports.size(); i != e; ++i) {
@@ -373,7 +373,7 @@ static DefinedImportData *getImportOf(Symbol *sym) {
 
 void lld::coff::bindContractWitnesses(COFFLinkerContext &ctx) {
   llvm::TimeTraceScope timeScope("Bind contract witnesses");
-  if (!ctx.config.importSlots || ctx.hybridSymtab)
+  if (!ctx.config.importSlots)
     return;
   StringSet<> bound;
   for (auto &[file, requirements] : ctx.contracts.requirements) {

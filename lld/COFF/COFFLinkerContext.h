@@ -29,7 +29,7 @@
 
 namespace lld::coff {
 struct TypePrefixLabels;
-struct ParsedVagueRecord;
+struct LoadClosure;
 
 // A run of the vtables of one class and of the classes derived from it through
 // primary bases, laid out as consecutive stride-byte slots so that a vtable
@@ -212,7 +212,7 @@ public:
   // Each import library member's vague-entity record, parsed once and keyed by
   // the member's buffer, so the closures the passes build read it without a
   // reparse.
-  llvm::DenseMap<const char *, ParsedVagueRecord *> vagueRecordCache;
+  llvm::DenseMap<const char *, LoadClosure *> vagueRecordCache;
 
   // The changes the linker makes to the code of each section chunk it
   // changes, and how it lays out the code of each it resizes.

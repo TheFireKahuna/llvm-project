@@ -463,8 +463,7 @@ static StringRef exportedName(const Export &e) {
 
 void lld::coff::addVTableRunExports(COFFLinkerContext &ctx) {
   llvm::TimeTraceScope timeScope("Add vtable run exports");
-  if (!ctx.config.dll || !ctx.config.importSlots || ctx.hybridSymtab ||
-      (ctx.config.machine != AMD64 && ctx.config.machine != ARM64))
+  if (!ctx.config.dll || !ctx.config.importSlots)
     return;
   std::vector<Export> &exports = ctx.symtab.exports;
   llvm::erase_if(exports, [&](const Export &e) {
@@ -586,8 +585,7 @@ void lld::coff::bindVTableOwnerRuns(COFFLinkerContext &ctx) {
   // The DLLs the image imports statically, in load order. A delay-loaded DLL
   // may be unloaded, and an image of mixed machines is not served.
   SmallVector<std::string, 0> dlls;
-  if (ctx.config.importSlots && !ctx.hybridSymtab &&
-      (ctx.config.machine == AMD64 || ctx.config.machine == ARM64)) {
+  if (ctx.config.importSlots) {
     StringSet<> seen;
     for (ImportFile *file : ctx.importFileInstances) {
       std::string dll = StringRef(file->dllName).lower();
