@@ -18,12 +18,14 @@
 # RUN: llvm-objdump -s -j .rdata rt.dll >> rt.txt
 # RUN: FileCheck --input-file=rt.txt %s
 # CHECK:      <take>:
-# CHECK-NEXT: movq {{.*}}(%rip), %rax # 0x180002020
-# CHECK:      leaq {{.*}}(%rip), %rbx # 0x[[#%x,LIST:]]
-## The cells, {key, rva, kind}, each of slot 0, whose RVA is at 0x44 in the
-## executable's header: the read-only pointer and the writable word.
-# CHECK:      [[#%x,LIST]] 01000000 44000000 20200000 02000000
-# CHECK-NEXT: [[#%x,LIST+0x10]] 00000000 44000000 00300000 02000000
+# CHECK-NEXT: movq {{.*}}(%rip), %rax # 0x180002058
+# CHECK:      leaq {{.*}}(%rip), %rax # 0x[[#%x,LIST:]]
+## One read-only range over the read-only pointer at 0x2058, then the cells,
+## {key, rva, kind}, each of slot 0, whose RVA is at 0x44 in the executable's
+## header: the read-only pointer, bit 0 of its key set, and the writable word.
+# CHECK:      [[#%x,LIST+0x30]] 58200000 08000000 01000000 44000000
+# CHECK-NEXT: [[#%x,LIST+0x40]] 58200000 02000000 00000000 44000000
+# CHECK-NEXT: [[#%x,LIST+0x50]] 00300000 02000000
 
 ## Without an address-take there is no cell, no fill and no import of
 ## NtProtectVirtualMemory.
@@ -67,3 +69,14 @@ __xi_a:
         .globl __xi_z
 __xi_z:
         .quad 0
+
+        .def __llvm_fill
+        .scl 2
+        .type 32
+        .endef
+        .section .text,"xr",one_only,__llvm_fill
+        .globl __llvm_fill
+__llvm_fill:
+        leaq __llvm_fill_list(%rip), %rax
+        callq *__imp_NtProtectVirtualMemory(%rip)
+        retq

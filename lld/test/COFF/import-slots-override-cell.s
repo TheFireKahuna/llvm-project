@@ -2,14 +2,13 @@
 ## Under -import-slots, a DLL's cells of an overridable default it imports are
 ## the words through which it reaches the default: each in-place import slot of
 ## it, and its import's entry, through which the DLL calls it and loads its
-## address. The loader writes them with the runtime's entry. The DLL's fill,
-## which its C initializer table runs before every other initializer, reads the
-## executable's override table through the PEB and, for a slot the anchor's
-## mask names replaced, writes the executable's image base plus the slot's RVA
-## into each of its cells, so every image observes and calls the one
-## replacement. A forwarded or unreplaced slot, or an executable with no table,
-## leaves every cell the loader's value. A DLL reads its imports' slots from
-## the runtime's import library, which records them as its defaults do.
+## address. The loader writes them with the runtime's entry. The DLL's fill, the
+## builtins' __llvm_fill, which its C initializer table runs before every other
+## initializer, writes the program's replacement over each cell of a replaced
+## slot, from a list the linker builds: the cells ordered by key, each {key u64
+## (bit 0 the read-only mark), rva u32, kind u32}, preceded by the read-only
+## ranges it makes writable. The executable binds its own references at link
+## time and carries no fill.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium rt.s -o rt.obj
@@ -20,7 +19,7 @@
 
 ## The DLL calls the default, and holds its address in writable and in
 ## read-only data. The read-only word is the slot its import is read from, so
-## the call's thunk reads it too.
+## the call's thunk reads it too. The fill imports NtProtectVirtualMemory.
 # RUN: lld-link -import-slots -dll -noentry use.obj crt.obj rt.lib \
 # RUN:   ntdll.lib -out:use.dll
 # RUN: llvm-readobj --coff-imports use.dll > use.txt
@@ -29,119 +28,76 @@
 # RUN: FileCheck --check-prefixes=IMPORT,FILL --input-file=use.txt %s
 # IMPORT:      Name: rt.dll
 # IMPORT-NEXT: ImportLookupTableRVA:
-# IMPORT-NEXT: ImportAddressTableRVA: 0x2090
+# IMPORT-NEXT: ImportAddressTableRVA: 0x20C8
 # IMPORT-NEXT: Symbol: _Znwy
 # IMPORT:      Name: ntdll.dll
 # IMPORT-NEXT: ImportLookupTableRVA:
-# IMPORT-NEXT: ImportAddressTableRVA: 0x20A0
+# IMPORT-NEXT: ImportAddressTableRVA: 0x20D8
 # IMPORT-NEXT: Symbol: NtProtectVirtualMemory
 # IMPORT:      Name: rt.dll
 # IMPORT-NEXT: ImportLookupTableRVA:
 # IMPORT-NEXT: ImportAddressTableRVA: 0x3000
 # IMPORT-NEXT: Symbol: _Znwy
 
-## The fill reads the executable's base, zero where it has no table, and for
-## each cell of its list whose slot the anchor's mask names replaced, writes
-## the base plus the slot's RVA. Before the first read-only cell it makes
-## their range writable; it makes it read-only again at its end, as read-only
-## cells are only in read-only data. It returns 0, or the status of a failed
-## protection call, which fails start-up.
-# FILL:      movq %gs:0x60, %rax
-# FILL-NEXT: movq 0x10(%rax), %rdi
-# FILL-NEXT: cmpl $0x7b3ac2d5, 0x80(%rdi)
-# FILL-NEXT: je
-# FILL-NEXT: xorl %edi, %edi
-# FILL-NEXT: leaq {{.*}}(%rip), %rbx # 0x[[#%x,LIST:]]
-# FILL-NEXT: leaq {{.*}}(%rip), %rsi # 0x[[#%x,LIST+0x20]]
-# FILL-NEXT: cmpq %rsi, %rbx
-# FILL-NEXT: jae
-# FILL-NEXT: movq (%rbx), %r12
-# FILL-NEXT: andq $-0x2, %r12
-# FILL-NEXT: testq %rdi, %rdi
-# FILL-NEXT: je 0x[[#%x,SKIP:]]
-# FILL-NEXT: movl 0x88(%rdi), %eax
-# FILL-NEXT: movl 0x8(%rdi,%rax), %eax
-# FILL-NEXT: movl %r12d, %ecx
-# FILL-NEXT: shrl %ecx
-# FILL-NEXT: btl %ecx, %eax
-# FILL-NEXT: jae
-# FILL-NEXT: movq %r12, %rax
-# FILL-NEXT: shrq $0x20, %rax
-# FILL-NEXT: movl (%rdi,%rax), %eax
-# FILL-NEXT: leaq (%rdi,%rax), %r13
-# FILL-NEXT: jmp 0x[[#%x,NEXT:]]
-# FILL-NEXT: [[#%x,SKIP]]:
-# FILL-NEXT: [[#%x,NEXT]]: {{.*}} testb $0x1, (%rbx)
-# FILL-NEXT: je 0x[[#%x,STORE:]]
-# FILL-NEXT: btsl $0x0, %r14d
-# FILL-NEXT: jb 0x[[#%x,STORE]]
-# FILL-NEXT: leaq {{.*}}(%rip), %rax # 0x180002090
-# FILL-NEXT: movq %rax, 0x30(%rsp)
-# FILL-NEXT: movq $0x8, 0x38(%rsp)
-# FILL-NEXT: movl $0x4, %r9d
-# FILL:      callq *{{.*}}(%rip) # 0x1800020a0
-# FILL-NEXT: testl %eax, %eax
-# FILL-NEXT: jne
-# FILL-NEXT: [[#%x,STORE]]: {{.*}} movl 0x8(%rbx), %eax
-# FILL-NEXT: leaq {{.*}}(%rip), %rcx # 0x180000000
-# FILL-NEXT: movq %r13, (%rcx,%rax)
-# FILL:      testb $0x1, %r14b
-# FILL-NEXT: je
-# FILL-NEXT: leaq {{.*}}(%rip), %rax # 0x180002090
-# FILL-NEXT: movq %rax, 0x30(%rsp)
-# FILL-NEXT: movq $0x8, 0x38(%rsp)
-# FILL-NEXT: movl $0x2, %r9d
-# FILL:      jmpq *{{.*}}(%rip) # 0x180002090
+## __llvm_fill loads its list.
+# FILL:      leaq {{.*}}(%rip), %rax # 0x[[#%x,LIST:]]
 
-## The cells, {key, rva, kind}: the writable one in .data and the read-only
-## import entry, bit 0 of whose key is set, each of slot 0, whose RVA is at
-## 0x44 in the executable's header.
-# FILL:      [[#%x,LIST]] 00000000 44000000 00300000 02000000
-# FILL-NEXT: [[#%x,LIST+0x10]] 01000000 44000000 90200000 02000000
+## The list header: one read-only range, two cells; no TLS; no section to seal;
+## the key of this DLL's name and a flag word that runs no copy. The range
+## spans the read-only cell, the import entry at 0x20C8.
+# FILL:      [[#%x,LIST]]      01000000 02000000 00000000 00000000
+# FILL-NEXT: [[#%x,LIST+0x10]] 00000000 00000000 00000000 00000000
+# FILL-NEXT: [[#%x,LIST+0x20]] {{[0-9a-f]+ [0-9a-f]+}} 00000000 00000000
+## Then the range, {rva, size}, and the cells, {key, rva, kind}: the writable
+## one in .data, and the read-only import entry whose key has bit 0 set, each of
+## slot 0, whose RVA is at 0x44 in the executable's header, each of kind 2.
+# FILL-NEXT: [[#%x,LIST+0x30]] c8200000 08000000 00000000 44000000
+# FILL-NEXT: [[#%x,LIST+0x40]] 00300000 02000000 01000000 44000000
+# FILL-NEXT: [[#%x,LIST+0x50]] c8200000 02000000
 
-## The fill's unwind information describes its frame, and the C initializer
-## table holds its pointer right after the table's start.
-# RUN: llvm-readobj --unwind use.dll | FileCheck --check-prefix=UNWIND %s
-# UNWIND:      StartAddress: (0x180001010)
-# UNWIND:      PrologSize: 16
+## The C initializer table holds the fill's pointer right after the table's
+## start.
 # RUN: llvm-objdump -s -j .CRT use.dll | FileCheck --check-prefix=CRT %s
 # CRT:      Contents of section .CRT:
-# CRT-NEXT: 00000000 00000000 10100080 01000000
+# CRT-NEXT: 00000000 00000000 {{[0-9a-f]+}} 01000000
 
 ## With only a writable cell, which is then the slot its import is read from,
-## the fill needs no protection call, and so no ntdll.lib.
+## the fill names no read-only range.
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium rw.s -o rw.obj
-# RUN: lld-link -import-slots -dll -noentry rw.obj crt.obj rt.lib \
+# RUN: lld-link -import-slots -dll -noentry rw.obj crt.obj rt.lib ntdll.lib \
 # RUN:   -out:rw.dll
-# RUN: llvm-objdump -d --print-imm-hex rw.dll | FileCheck --check-prefix=LEAF %s
-# LEAF:     btl %ecx, %eax
-# LEAF-NOT: callq
+# RUN: llvm-objdump -d --print-imm-hex rw.dll > rw.txt
+# RUN: llvm-objdump -s -j .rdata rw.dll >> rw.txt
+# RUN: FileCheck --check-prefix=LEAF --input-file=rw.txt %s
+# LEAF:      leaq {{.*}}(%rip), %rax # 0x[[#%x,LLIST:]]
+## No range, one cell.
+# LEAF:      [[#%x,LLIST]] 00000000 01000000 00000000 00000000
 
-## A DLL that reaches no overridable default carries no fill.
+## A DLL that reaches no overridable default carries no fill, so nothing
+## references NtProtectVirtualMemory.
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium plain.s -o plain.obj
-# RUN: lld-link -import-slots -dll -noentry plain.obj crt.obj rt.lib \
+# RUN: lld-link -import-slots -dll -noentry plain.obj crt.obj rt.lib ntdll.lib \
 # RUN:   -out:plain.dll
-# RUN: llvm-objdump -d plain.dll | FileCheck --check-prefix=NONE %s
-# NONE-NOT: %gs:0x60
+# RUN: llvm-readobj --coff-imports plain.dll | FileCheck --check-prefix=NONE %s
+# NONE-NOT: NtProtectVirtualMemory
 
 ## Without a C initializer table nothing runs the fill, and without
-## NtProtectVirtualMemory it cannot write a read-only cell: either is an error,
-## not a silently unreplaced default.
+## NtProtectVirtualMemory the fill's own reference to it is undefined: either is
+## an error, not a silently unreplaced default.
 # RUN: not lld-link -import-slots -dll -noentry use.obj rt.lib \
 # RUN:   ntdll.lib -out:nocrt.dll 2>&1 | FileCheck --check-prefix=NOCRT %s
 # NOCRT: error: the image reaches __declspec(dllimport) operator new(unsigned long long), an overridable default imported from rt.dll, through a cell that the image has no C initializer table (__xi_a) to fill
 # RUN: not lld-link -import-slots -dll -noentry use.obj crt.obj rt.lib \
 # RUN:   -out:noprotect.dll 2>&1 | \
 # RUN:   FileCheck --check-prefix=NOPROTECT %s
-# NOPROTECT: error: the image's fill needs NtProtectVirtualMemory from ntdll.lib
+# NOPROTECT: error: undefined symbol: {{.*}}NtProtectVirtualMemory
+# NOPROTECT: referenced by crt.obj:(__llvm_fill)
 
-## A thread-local cell is a slot in the template of the DLL's thread-local
-## data, which the loader binds before it copies the template into any thread's
-## block. A replaced one is written in the template, which later threads copy,
-## and in the loading thread's block, found through the index and the template
-## start that the TLS directory names.
+## A thread-local cell is a slot in the template of the DLL's thread-local data.
+## Its list names the TLS index and template start, and its kind is a slot in
+## the template (fillCellSlot | fillCellThreadLocal = 6).
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium tl.s -o tl.obj
-# RUN: lld-link -import-slots -dll -noentry tl.obj crt.obj rt.lib \
+# RUN: lld-link -import-slots -dll -noentry tl.obj crt.obj rt.lib ntdll.lib \
 # RUN:   -out:tl.dll
 # RUN: llvm-readobj --coff-imports --sections tl.dll > tl.txt
 # RUN: llvm-objdump -d --print-imm-hex tl.dll >> tl.txt
@@ -152,37 +108,30 @@
 # TL-NEXT: VirtualAddress: 0x3000
 # TL:      Name: .tls
 # TL-NEXT: VirtualSize:
-# TL-NEXT: VirtualAddress: 0x6000
+# TL-NEXT: VirtualAddress: 0x5000
 # TL:      Name: rt.dll
 # TL-NEXT: ImportLookupTableRVA:
-# TL-NEXT: ImportAddressTableRVA: 0x6008
+# TL-NEXT: ImportAddressTableRVA: 0x5008
 # TL-NEXT: Symbol: _Znwy
-# TL:      leaq {{.*}}(%rip), %rbx # 0x[[#%x,LIST:]]
-# TL:      movq %r13, (%rcx,%rax)
-# TL-NEXT: movl 0xc(%rbx), %ecx
-# TL-NEXT: cmpl $0x1000, %ecx
-# TL-NEXT: jae
-# TL-NEXT: testb $0x4, %cl
-# TL-NEXT: je
-# TL-NEXT: movl {{.*}}(%rip), %ecx # 0x180003000
-# TL-NEXT: movq %gs:0x58, %rdx
-# TL-NEXT: movq (%rdx,%rcx,8), %rdx
-# TL-NEXT: addl $0xffffa000, %eax
-# TL-NEXT: movq %r13, (%rdx,%rax)
-## The cell, of kind 6, a slot in the template.
-# TL:      [[#%x,LIST]] 00000000 44000000 08600000 06000000
+# TL:      leaq {{.*}}(%rip), %rax # 0x[[#%x,LIST:]]
+## One cell; the TLS index 0x3000 and template start 0x5000; then the cell, a
+## slot in the template at 0x5008, of kind 6.
+# TL:      [[#%x,LIST]]      00000000 01000000 00000000 00000000
+# TL-NEXT: [[#%x,LIST+0x10]] 00300000 00500000 00000000 00000000
+# TL-NEXT: [[#%x,LIST+0x20]] {{[0-9a-f]+ [0-9a-f]+}} 00000000 00000000
+# TL-NEXT: [[#%x,LIST+0x30]] 00000000 44000000 08500000 06000000
 
 ## A TLS directory that names no template or index leaves no thread's block
 ## to write.
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium tlbad.s -o tlbad.obj
 # RUN: not lld-link -import-slots -dll -noentry tlbad.obj crt.obj rt.lib \
-# RUN:   -out:tlbad.dll 2>&1 | FileCheck --check-prefix=TLBAD %s
+# RUN:   ntdll.lib -out:tlbad.dll 2>&1 | FileCheck --check-prefix=TLBAD %s
 # TLBAD: error: the image reaches __declspec(dllimport) operator new(unsigned long long), an overridable default imported from rt.dll, through a cell in thread-local data, but the image's TLS directory (_tls_used) names no template or index
 
 ## An executable binds its own references at link time and carries no fill.
 # RUN: lld-link -import-slots -entry:dllmain -subsystem:console use.obj crt.obj \
 # RUN:   rt.lib ntdll.lib -out:use.exe
-# RUN: llvm-objdump -d use.exe | FileCheck --check-prefix=NONE %s
+# RUN: llvm-readobj --coff-imports use.exe | FileCheck --check-prefix=NONE %s
 
 #--- rt.s
         .text
@@ -202,7 +151,9 @@ EXPORTS
 
 #--- crt.s
 ## The C initializer table's bounds, as the C runtime provides them, so the
-## linker's fill joins the table the runtime's start-up runs.
+## linker names the fill to the table the runtime's start-up runs, and a
+## stand-in for the builtins' __llvm_fill: it loads its list and references the
+## NtProtectVirtualMemory it makes read-only cells writable with.
         .section .CRT$XIA,"dr"
         .globl __xi_a
 __xi_a:
@@ -211,6 +162,17 @@ __xi_a:
         .globl __xi_z
 __xi_z:
         .quad 0
+
+        .def __llvm_fill
+        .scl 2
+        .type 32
+        .endef
+        .section .text,"xr",one_only,__llvm_fill
+        .globl __llvm_fill
+__llvm_fill:
+        leaq __llvm_fill_list(%rip), %rax
+        callq *__imp_NtProtectVirtualMemory(%rip)
+        retq
 
 #--- use.s
         .text

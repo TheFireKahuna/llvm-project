@@ -1,11 +1,9 @@
 # REQUIRES: aarch64
-## The AArch64 form of a DLL's fill of its overridable-default cells, which its
-## C initializer table runs: it reads the executable's image base through the
-## PEB and the anchor's mask, and for each cell of its list whose slot the mask
-## names replaced writes the base plus the slot's RVA, making the read-only
-## cells writable before the first and read-only again at its end through
-## NtProtectVirtualMemory, from a frame that its unwind information describes.
-## It returns 0, or the status of a failed protection call.
+## The AArch64 form of a DLL's fill of its overridable-default cells: the
+## builtins' __llvm_fill, which the C initializer table runs, loads a list the
+## linker builds, the cells ordered by key, each {key u64 (bit 0 the read-only
+## mark), rva u32, kind u32}, preceded by the read-only ranges. The linker names
+## the fill to the table and keeps it only where it is needed.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium rt.s -o rt.obj
@@ -18,90 +16,40 @@
 # RUN: llvm-objdump -d --no-show-raw-insn use.dll > use.txt
 # RUN: llvm-objdump -s -j .rdata use.dll >> use.txt
 # RUN: FileCheck --input-file=use.txt %s
-# RUN: llvm-readobj --unwind use.dll | FileCheck --check-prefix=UNWIND %s
 
-# CHECK:      ldr x16, [x18, #0x60]
-# CHECK-NEXT: ldr x21, [x16, #0x10]
-# CHECK-NEXT: ldr w9, [x21, #0x80]
-# CHECK-NEXT: mov w10, #0xc2d5
-# CHECK-NEXT: movk w10, #0x7b3a, lsl #16
-# CHECK-NEXT: cmp w9, w10
-# CHECK-NEXT: csel x21, x21, xzr, eq
-# CHECK-NEXT: adrp x19, 0x[[#%x,PAGE:]]
-# CHECK-NEXT: add x19, x19, #0x[[#%x,OFF:]]
-# CHECK-NEXT: adrp x20,
-# CHECK-NEXT: add x20, x20, #0x[[#%x,OFF+0x20]]
-# CHECK-NEXT: cmp x19, x20
-# CHECK-NEXT: b.hs
-# CHECK-NEXT: ldr x22, [x19]
-# CHECK-NEXT: and x22, x22, #0xfffffffffffffffe
-# CHECK-NEXT: cbz x21,
-# CHECK-NEXT: ldr w11, [x21, #0x88]
-# CHECK-NEXT: add x11, x21, x11
-# CHECK-NEXT: ldr w12, [x11, #0x8]
-# CHECK-NEXT: lsr x13, x22, #1
-# CHECK-NEXT: lsr w12, w12, w13
-# CHECK-NEXT: tbz w12, #0x0,
-# CHECK-NEXT: lsr x13, x22, #32
-# CHECK-NEXT: ldr w13, [x21, x13]
-# CHECK-NEXT: add x23, x21, x13
-# CHECK-NEXT: b 0x[[#%x,NEXT:]]
-# CHECK-NEXT: b
-# CHECK-NEXT: [[#%x,NEXT]]: ldr w9, [x19]
-# CHECK-NEXT: tbz w9, #0x0, 0x[[#%x,STORE:]]
-# CHECK-NEXT: tbnz w24, #0x0, 0x[[#%x,STORE]]
-# CHECK-NEXT: orr w24, w24, #0x1
-# CHECK-NEXT: adrp x0, 0x180002000
-# CHECK-NEXT: add x0, x0, #0x90
-# CHECK-NEXT: str x0, [sp, #0x58]
-# CHECK-NEXT: mov x1, #0x8
-# CHECK-NEXT: movk x1, #0x0, lsl #16
-# CHECK-NEXT: str x1, [sp, #0x60]
-# CHECK-NEXT: mov w3, #0x4
-# CHECK:      blr x16
-# CHECK-NEXT: cbnz w0,
-# CHECK-NEXT: [[#%x,STORE]]: ldr w9, [x19, #0x8]
-# CHECK-NEXT: str x23, [x27, x9]
-# CHECK:      tbz w24, #0x0,
-# CHECK-NEXT: adrp x0, 0x180002000
-# CHECK-NEXT: add x0, x0, #0x90
-# CHECK:      mov w3, #0x2
+## __llvm_fill loads its list, whose address its adrp and add name.
+# CHECK:      adrp x0, 0x[[#%x,PAGE:]]
+# CHECK-NEXT: add x0, x0, #0x[[#%x,OFF:]]
 
-## The cells, {key, rva, kind}: the writable one in .data and the read-only
-## import entry, bit 0 of whose key is set, each of slot 0, whose RVA is at
-## 0x44 in the executable's header.
-# CHECK:      [[#%x,PAGE+OFF]] 00000000 44000000 00300000 02000000
-# CHECK-NEXT: [[#%x,PAGE+OFF+0x10]] 01000000 44000000 90200000 02000000
+## The list header: one read-only range, two cells; no TLS; no section to seal;
+## then the range {rva, size} over the read-only import entry at 0x20C8, and the
+## cells, {key, rva, kind}: the writable one in .data and the read-only import
+## entry whose key has bit 0 set, each of slot 0, whose RVA is at 0x44 in the
+## executable's header, each of kind 2.
+# CHECK:      [[#%x,PAGE+OFF]]      01000000 02000000 00000000 00000000
+# CHECK-NEXT: [[#%x,PAGE+OFF+0x10]] 00000000 00000000 00000000 00000000
+# CHECK-NEXT: [[#%x,PAGE+OFF+0x20]] {{[0-9a-f]+ [0-9a-f]+}} 00000000 00000000
+# CHECK-NEXT: [[#%x,PAGE+OFF+0x30]] c8200000 08000000 00000000 44000000
+# CHECK-NEXT: [[#%x,PAGE+OFF+0x40]] 00300000 02000000 01000000 44000000
+# CHECK-NEXT: [[#%x,PAGE+OFF+0x50]] c8200000 02000000
 
-# UNWIND:      EpiloguePacked: Yes
-# UNWIND:      0xe1                ; mov fp, sp
-# UNWIND-NEXT: 0x91                ; stp x29, x30, [sp, #-144]!
-
-## A thread-local cell is also written in the loading thread's block, at its
-## offset in the template, through the index the TLS directory names.
+## A thread-local cell is a slot in the template of the DLL's thread-local data.
+## Its list names the TLS index and template start, and its kind is a slot in
+## the template (fillCellSlot | fillCellThreadLocal = 6).
 # RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium tl.s -o tl.obj
 # RUN: lld-link -import-slots -dll -noentry tl.obj crt.obj rt.lib \
-# RUN:   -out:tl.dll
+# RUN:   ntdll.lib -out:tl.dll
 # RUN: llvm-objdump -d --no-show-raw-insn tl.dll > tl.txt
 # RUN: llvm-objdump -s -j .rdata tl.dll >> tl.txt
 # RUN: FileCheck --check-prefix=TL --input-file=tl.txt %s
-# TL:      adrp x19, 0x[[#%x,PAGE:]]
-# TL-NEXT: add x19, x19, #0x[[#%x,OFF:]]
-# TL:      str x23, [x27, x9]
-# TL-NEXT: ldr w10, [x19, #0xc]
-# TL-NEXT: cmp w10, #0x1, lsl #12
-# TL-NEXT: b.hs
-# TL-NEXT: tbz w10, #0x2,
-# TL-NEXT: adrp x10, 0x180003000
-# TL-NEXT: ldr w10, [x10]
-# TL-NEXT: ldr x11, [x18, #0x58]
-# TL-NEXT: ldr x11, [x11, x10, lsl #3]
-# TL-NEXT: mov w12, #0xa000
-# TL-NEXT: movk w12, #0xffff, lsl #16
-# TL-NEXT: add w9, w9, w12
-# TL-NEXT: str x23, [x11, x9]
-## The cell, of kind 6, a slot in the template.
-# TL:      [[#%x,PAGE+OFF]] 00000000 44000000 08600000 06000000
+# TL:      adrp x0, 0x[[#%x,PAGE:]]
+# TL-NEXT: add x0, x0, #0x[[#%x,OFF:]]
+## One cell; the TLS index 0x3000 and template start 0x5000; then the cell, a
+## slot in the template at 0x5008, of kind 6.
+# TL:      [[#%x,PAGE+OFF]]      00000000 01000000 00000000 00000000
+# TL-NEXT: [[#%x,PAGE+OFF+0x10]] 00300000 00500000 00000000 00000000
+# TL-NEXT: [[#%x,PAGE+OFF+0x20]] {{[0-9a-f]+ [0-9a-f]+}} 00000000 00000000
+# TL-NEXT: [[#%x,PAGE+OFF+0x30]] 00000000 44000000 08500000 06000000
 
 #--- rt.s
         .text
@@ -118,7 +66,9 @@ EXPORTS
 
 #--- crt.s
 ## The C initializer table's bounds, as the C runtime provides them, so the
-## linker's fill joins the table the runtime's start-up runs.
+## linker names the fill to the table the runtime's start-up runs, and a
+## stand-in for the builtins' __llvm_fill: it loads its list and references the
+## NtProtectVirtualMemory it makes read-only cells writable with.
         .section .CRT$XIA,"dr"
         .globl __xi_a
 __xi_a:
@@ -127,6 +77,20 @@ __xi_a:
         .globl __xi_z
 __xi_z:
         .xword 0
+
+        .def __llvm_fill
+        .scl 2
+        .type 32
+        .endef
+        .section .text,"xr",one_only,__llvm_fill
+        .globl __llvm_fill
+__llvm_fill:
+        adrp x0, __llvm_fill_list
+        add x0, x0, :lo12:__llvm_fill_list
+        adrp x1, __imp_NtProtectVirtualMemory
+        ldr x1, [x1, :lo12:__imp_NtProtectVirtualMemory]
+        blr x1
+        ret
 
 #--- use.s
         .text

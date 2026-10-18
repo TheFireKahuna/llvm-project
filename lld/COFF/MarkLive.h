@@ -14,9 +14,11 @@
 namespace lld::coff {
 
 class COFFLinkerContext;
+class Symbol;
 
-void markLive(COFFLinkerContext &ctx);
-
+// Marks the chunks reachable from the GC roots live, or, given roots, those
+// reachable from them.
+void markLive(COFFLinkerContext &ctx, ArrayRef<Symbol *> roots = {});
 } // namespace lld::coff
 
 #endif // LLD_COFF_MARKLIVE_H

@@ -98,6 +98,17 @@ __xi_a:
 __xi_z:
   .quad 0
 
+## A stand-in for the builtins' __llvm_fill, which writes the vague cells.
+  .def __llvm_fill
+  .scl 2
+  .type 32
+  .endef
+  .section .text,"xr",one_only,__llvm_fill
+  .globl __llvm_fill
+__llvm_fill:
+  leaq __llvm_fill_list(%rip), %rax
+  retq
+
 #--- check.s
 ## Stands in for the C runtime's validation of the table, which the link
 ## names.

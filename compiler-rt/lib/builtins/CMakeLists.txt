@@ -401,12 +401,17 @@ if (NOT FUCHSIA)
 endif()
 
 # These targets link no MSVC startup objects, which would otherwise define the
-# CRT table bounds, __dso_handle and _fltused.
+# CRT table bounds, __dso_handle and _fltused. The linker keeps each function
+# of the import-slots fill only in an image that needs it, so each needs a
+# section of its own, and none may put constants in a section it cannot drop.
 if(WIN32_ITANIUM)
   set(GENERIC_SOURCES
     ${GENERIC_SOURCES}
     crt_windows.c
+    fill_windows.c
   )
+  set_source_files_properties(fill_windows.c PROPERTIES
+    COMPILE_OPTIONS "-ffunction-sections;-fno-slp-vectorize")
 endif()
 
 # These files are used on 32-bit and 64-bit x86.

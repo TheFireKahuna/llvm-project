@@ -36,7 +36,8 @@
 # CHECK-NEXT: br      x16
 
 ## Without the runtime's import library the branches reach the definition.
-# RUN: lld-link -import-slots -dll -noentry offer.obj crt.obj -out:own.dll
+# RUN: lld-link -import-slots -dll -noentry offer.obj crt.obj ntdll.lib \
+# RUN:   -out:own.dll
 # RUN: llvm-readobj --coff-exports own.dll > own.txt
 # RUN: llvm-objdump -d --no-show-raw-insn own.dll >> own.txt
 # RUN: FileCheck --check-prefix=OWN --input-file=own.txt %s
@@ -67,6 +68,22 @@ __xi_a:
         .globl __xi_z
 __xi_z:
         .xword 0
+
+## A stand-in for the builtins' __llvm_fill: it loads its list and references
+## the NtProtectVirtualMemory it makes read-only cells writable with.
+        .def __llvm_fill
+        .scl 2
+        .type 32
+        .endef
+        .section .text,"xr",one_only,__llvm_fill
+        .globl __llvm_fill
+__llvm_fill:
+        adrp x0, __llvm_fill_list
+        add x0, x0, :lo12:__llvm_fill_list
+        adrp x1, __imp_NtProtectVirtualMemory
+        ldr x1, [x1, :lo12:__imp_NtProtectVirtualMemory]
+        blr x1
+        ret
 
 #--- offer.s
         .text

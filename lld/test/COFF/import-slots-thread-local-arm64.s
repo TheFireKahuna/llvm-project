@@ -1,9 +1,10 @@
 # REQUIRES: aarch64
-## Under -import-slots, an executable's first TLS callback copies each in-place
-## import slot in its thread-local template into the main thread's block, which
-## the loader copied from the template before it bound the executable's
-## imports: only while PEB->CrossProcessFlags says the process is initializing,
-## and only a word that still holds its lookup entry.
+## The AArch64 form of the executable's copy of its thread-local import slots,
+## the builtins' __llvm_thread_local_slot_copy, which the linker makes the
+## executable's first TLS callback. The linker builds its list, naming the TLS
+## index and template start and, for each slot, its RVA and the lookup entry the
+## template holds for it, and names the list in the MZ header for a DLL that may
+## reach the executable first.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: lld-link -def:lib.def -out:lib.lib -machine:arm64
@@ -11,77 +12,49 @@
 # RUN: lld-link -import-slots -entry:main -subsystem:console tl.obj lib.lib \
 # RUN:   -out:tl.exe
 # RUN: llvm-readobj --coff-tls-directory tl.exe > tl.txt
-# RUN: llvm-objdump -d --print-imm-hex tl.exe >> tl.txt
+# RUN: llvm-objdump -s -j .CRT tl.exe >> tl.txt
+# RUN: llvm-objdump -s -j .rdata tl.exe >> tl.txt
+# RUN: od -A x -t x4 -j 0x1c -N 8 tl.exe >> tl.txt
 # RUN: FileCheck --input-file=tl.txt %s
 
-## The slot is at offset 8 in the template, after another thread-local datum;
-## the template holds its lookup entry, 0x2060.
-# CHECK:      StartAddressOfRawData: 0x[[#%x,START:]]
-# CHECK:      AddressOfIndex: 0x[[#%x,INDEX:]]
-# CHECK:      ldr x9, [x18, #0x60]
-# CHECK-NEXT: ldr w9, [x9, #0x50]
-# CHECK-NEXT: tbz w9, #0x1, 0x[[#%x,DONE:]]
-# CHECK-NEXT: adrp x9, 0x[[#INDEX]]
-# CHECK-NEXT: ldr w9, [x9]
-# CHECK-NEXT: ldr x11, [x18, #0x58]
-# CHECK-NEXT: ldr x11, [x11, x9, lsl #3]
-# CHECK-NEXT: mov w12, #0x8
-# CHECK-NEXT: movk w12, #0x0, lsl #16
-# CHECK-NEXT: ldr x13, [x11, x12]
-# CHECK-NEXT: mov x14, #0x2060
-# CHECK-NEXT: movk x14, #0x0, lsl #16
-# CHECK-NEXT: movk x14, #0x0, lsl #32
-# CHECK-NEXT: movk x14, #0x0, lsl #48
-# CHECK-NEXT: cmp x13, x14
-# CHECK-NEXT: b.ne 0x[[#DONE]]
-# CHECK-NEXT: adrp x10, 0x[[#START]]
-# CHECK-NEXT: ldr x10, [x10, #0x8]
-# CHECK-NEXT: str x10, [x11, x12]
-# CHECK-NEXT: [[#DONE]]: {{.*}} mov w0, #0x0
-# CHECK-NEXT: ret
+## The template holds its index and start RVAs; the slot is at offset 8 in it.
+# CHECK:      StartAddressOfRawData: 0x140005000
+# CHECK:      AddressOfIndex: 0x140003000
+
+## The TLS callback array, after its opening null, holds the copy's pointer.
+# CHECK:      Contents of section .CRT:
+# CHECK-NEXT: 00000000 00000000 {{[0-9a-f]+}} 01000000
+# CHECK-NEXT: 00000000 00000000
+
+## The copy list: one slot; the TLS index 0x3000 and template start 0x5000; then
+## the slot's RVA, the template start plus 8, and the lookup entry 0x2080 the
+## template holds for it.
+# CHECK:      {{.*}} 01000000 00300000
+# CHECK-NEXT: {{.*}} 00500000 00000000 08500000 00000000
+# CHECK-NEXT: {{.*}} 80200000
+
+## The MZ header names the copy list: the tag 0x9E3779B9 and its RVA.
+# CHECK:      9e3779b9 00002028
 
 ## A DLL that imports from an executable first runs the copy the executable
-## names from its fill, after the guard's check, in a frame its unwind
-## information describes.
+## names from its fill: the linker sets bit 0 of its fill list's flag word.
 # RUN: lld-link -def:host.def -out:host.lib -machine:arm64
-# RUN: lld-link -def:ntdll.def -out:ntdll.lib -machine:arm64
 # RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium plug.s -o plug.obj
-# RUN: lld-link -import-slots -dll -noentry plug.obj host.lib ntdll.lib \
-# RUN:   -out:plug.dll
-# RUN: llvm-objdump -d --print-imm-hex plug.dll > plug.txt
-# RUN: llvm-readobj --unwind plug.dll >> plug.txt
+# RUN: lld-link -import-slots -dll -noentry plug.obj host.lib -out:plug.dll
+# RUN: llvm-objdump -d --no-show-raw-insn plug.dll > plug.txt
+# RUN: llvm-objdump -s -j .rdata plug.dll >> plug.txt
 # RUN: FileCheck --check-prefix=CALL --input-file=plug.txt %s
-# CALL:      180001010: {{.*}} stp x29, x30, [sp, #-0x90]!
-# CALL:      mov w24, #0x0
-# CALL-NEXT: adrp x27, 0x180000000
-# CALL-NEXT: add x27, x27, #0x0
-# CALL-NEXT: ldr x9, [x18, #0x60]
-# CALL-NEXT: ldr w10, [x9, #0x50]
-# CALL-NEXT: tbz w10, #0x1, 0x[[#%x,SKIP:]]
-# CALL-NEXT: ldr x9, [x9, #0x10]
-# CALL-NEXT: ldr w10, [x9, #0x1c]
-# CALL-NEXT: mov w11, #0x79b9
-# CALL-NEXT: movk w11, #0x9e37, lsl #16
-# CALL-NEXT: cmp w10, w11
-# CALL-NEXT: b.ne 0x[[#SKIP]]
-# CALL-NEXT: ldr w10, [x9, #0x20]
-# CALL-NEXT: add x15, x9, x10
-# CALL-NEXT: adrp x16, 0x180002000
-# CALL-NEXT: ldr x16, [x16]
-# CALL-NEXT: blr x16
-# CALL-NEXT: blr x15
-# CALL-NEXT: [[#SKIP]]:
-# CALL:      Function: 0x180001010
-# CALL:      Prologue [
-# CALL:        0xe1 ; mov fp, sp
-# CALL-NEXT:   0x91 ; stp x29, x30, [sp, #-144]!
-# CALL-NEXT:   0xe4 ; end
 
-#--- ntdll.def
-LIBRARY ntdll.dll
-EXPORTS
-  LdrGetProcedureAddressForCaller
-  NtProtectVirtualMemory
+## __llvm_fill loads its list, whose address its adrp and add name.
+# CALL:      adrp x0, 0x[[#%x,PAGE:]]
+# CALL-NEXT: add x0, x0, #0x[[#%x,OFF:]]
+## One run-time cell, the cell in .sealed at 0x4000; the flag word's bit 0 set
+## to run the executable's copy; the run-time cell for hostfn, bound in the
+## executable (dll word 0) by a name of length 6.
+# CALL:      [[#%x,PAGE+OFF]]      00000000 00000000 01000000 00000000
+# CALL-NEXT: [[#%x,PAGE+OFF+0x10]] 00000000 00000000 00400000 08000000
+# CALL-NEXT: [[#%x,PAGE+OFF+0x20]] {{[0-9a-f]+ [0-9a-f]+}} 01000000 00000000
+# CALL-NEXT: [[#%x,PAGE+OFF+0x30]] 00400000 {{[0-9a-f]+}} 00000000 06000000
 
 #--- host.def
 LIBRARY host.exe
@@ -93,13 +66,6 @@ EXPORTS
   .globl dllmain
 dllmain:
   b hostfn
-## The guard's check pointer, as the load configuration provides it, at the
-## start of .rdata.
-  .section .rdata,"dr"
-  .globl __guard_check_icall_fptr
-  .p2align 3
-__guard_check_icall_fptr:
-  .quad 0
   .section .CRT$XIA,"dr"
   .globl __xi_a
 __xi_a:
@@ -108,6 +74,17 @@ __xi_a:
   .globl __xi_z
 __xi_z:
   .quad 0
+
+  .def __llvm_fill
+  .scl 2
+  .type 32
+  .endef
+  .section .text,"xr",one_only,__llvm_fill
+  .globl __llvm_fill
+__llvm_fill:
+  adrp x0, __llvm_fill_list
+  add x0, x0, :lo12:__llvm_fill_list
+  ret
 
 #--- lib.def
 LIBRARY lib.dll
@@ -152,3 +129,14 @@ __xl_a:
   .globl __xl_z
 __xl_z:
   .quad 0
+
+  .def __llvm_thread_local_slot_copy
+  .scl 2
+  .type 32
+  .endef
+  .section .text,"xr",one_only,__llvm_thread_local_slot_copy
+  .globl __llvm_thread_local_slot_copy
+__llvm_thread_local_slot_copy:
+  adrp x0, __llvm_thread_local_slot_copy_list
+  add x0, x0, :lo12:__llvm_thread_local_slot_copy_list
+  ret

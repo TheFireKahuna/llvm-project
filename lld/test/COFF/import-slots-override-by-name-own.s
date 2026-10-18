@@ -3,9 +3,10 @@
 ## address in the object that defines it is the program's one on ELF: the
 ## pointer its address-takes read, which no instruction bypasses, and the words
 ## of its static data that hold its address. Each holds the default until the
-## DLL's fill writes the address the anchor's entry with the default's key
-## names. The read-only ones are written between two protection calls, and
-## the pointer draws no warning about a locally defined import.
+## DLL's fill, the builtins' __llvm_fill, writes the address the anchor's entry
+## with the default's key names, from a list the linker builds under the
+## default's key, the read-only cells marked. The pointer draws no warning about
+## a locally defined import.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium l.s -o l.obj
@@ -17,22 +18,15 @@
 # RUN: llvm-objdump -d --print-imm-hex l.dll >> l.txt
 # RUN: FileCheck --input-file=l.txt %s
 
-## The fill's list: the pointer, the writable word and the read-only word,
-## under the default's key, the read-only ones marked.
-## Each entry is {key, rva, name}, the key's bit 0 marking a read-only cell.
-# CHECK:      d3315e5a e1358eba {{[0-9a-f]+}} 00000000
-# CHECK-NEXT: d2315e5a e1358eba {{[0-9a-f]+}} 00000000
-# CHECK-NEXT: d3315e5a e1358eba {{[0-9a-f]+}} 00000000
+## The fill's list holds three cells under the default's key, each {key u64, rva
+## u32, kind u32}, the key's bit 0 marking a read-only cell and a default bound
+## by name being of kind 0: the read-only pointer, the writable word, and the
+## read-only word.
+# CHECK:      {{.*}} d3315e5a e1358eba
+# CHECK-NEXT: {{.*}} 00000000 d2315e5a e1358eba
+# CHECK-NEXT: {{.*}} 00000000 d3315e5a e1358eba
 # CHECK:      <take>:
 # CHECK-NEXT: movq    {{.*}}(%rip), %rax
-## Each takes the address the anchor's entry names, the read-only ones once
-## the first protection call has made them writable.
-# CHECK:      cmpq    %r12, (%rax)
-# CHECK:      testb   $0x1, (%rbx)
-# CHECK:      movl    $0x4, %r9d
-# CHECK-NEXT: leaq
-# CHECK:      callq
-# CHECK:      movq    %r13, (%rcx,%rax)
 
 #--- l.s
         .text
@@ -71,3 +65,14 @@ __xi_a:
         .globl __xi_z
 __xi_z:
         .quad 0
+
+        .def __llvm_fill
+        .scl 2
+        .type 32
+        .endef
+        .section .text,"xr",one_only,__llvm_fill
+        .globl __llvm_fill
+__llvm_fill:
+        leaq __llvm_fill_list(%rip), %rax
+        callq *__imp_NtProtectVirtualMemory(%rip)
+        retq

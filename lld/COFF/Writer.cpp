@@ -1305,28 +1305,21 @@ void Writer::createSections() {
     createPartialSection(c->getSectionName(), c->getOutputCharacteristics())
         ->chunks.push_back(c);
   // The executable's first TLS callback, right after the callback array's
-  // opening null: the copy of the thread-local slots.
-  if (Chunk *copy = slots.getThreadLocalSlotCopy()) {
-    createPartialSection(".text", copy->getOutputCharacteristics())
-        ->chunks.push_back(copy);
+  // opening null: the copy of the thread-local slots, with its list.
+  if (slots.getThreadLocalSlotCopy()) {
     createPartialSection(".CRT$XLA$fill", data | r)
         ->chunks.push_back(slots.getThreadLocalSlotCopyPointer());
+    createPartialSection(".rdata", data | r)
+        ->chunks.push_back(slots.getThreadLocalSlotCopyList());
   }
   // Right after the table's start, ahead of every other initializer: the
-  // image's fill, with its lists, the names it binds imports by, and its unwind
-  // information.
-  if (Chunk *fill = slots.getFill()) {
-    createPartialSection(".text", fill->getOutputCharacteristics())
-        ->chunks.push_back(fill);
+  // image's fill, with its list and the names it binds imports by.
+  if (slots.getFill()) {
     createPartialSection(".CRT$XIA$fill", data | r)
         ->chunks.push_back(slots.getFillPointer());
     PartialSection *rdata = createPartialSection(".rdata", data | r);
     rdata->chunks.push_back(slots.getFillList());
     llvm::append_range(rdata->chunks, slots.getRunTimeNames());
-    createPartialSection(".xdata", data | r)
-        ->chunks.push_back(slots.getFillUnwind());
-    createPartialSection(".pdata", data | r)
-        ->chunks.push_back(slots.getFillPdata());
   }
   if (Chunk *table = slots.getVagueOfferTable())
     createPartialSection(".rdata", data | r)->chunks.push_back(table);
@@ -2497,7 +2490,7 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
           alignTo(overrideTableEnd(ctx.symtab.overrideSlots.size()), 16);
     }
     dos->HeaderSizeInParagraphs = programOffset / 16;
-    if (Chunk *copy = slots.getThreadLocalSlotCopy()) {
+    if (Chunk *copy = slots.getThreadLocalSlotCopyList()) {
       write32le(stub + threadLocalSlotCopyOffset, threadLocalSlotCopyTag);
       write32le(stub + threadLocalSlotCopyOffset + 4, copy->getRVA());
     }
@@ -3262,14 +3255,12 @@ void Writer::createGuardCFTables() {
       if (s.sym->file->thunkSym)
         giatsRVASet.insert({s.chunk, s.offset});
 
-  // The C initializer table calls the fill.
-  if (Chunk *fill = slots.getFill())
-    addressTakenSyms.insert({fill, 0});
-
-  // The TLS callback array, and the DLLs the executable's header names it to,
-  // call the copy of the thread-local slots.
-  if (Chunk *copy = slots.getThreadLocalSlotCopy())
-    addressTakenSyms.insert({copy, 0});
+  // The C initializer table calls the fill, and the TLS callback array and
+  // the DLLs the executable's header names it to call the copy of the
+  // thread-local slots.
+  maybeAddAddressTakenFunction(addressTakenSyms, slots.getFill());
+  maybeAddAddressTakenFunction(addressTakenSyms,
+                               slots.getThreadLocalSlotCopy());
 
   // The override table's anchor names each replacement body, and each
   // forwarding thunk, whose checked dispatch from a default needs it in the

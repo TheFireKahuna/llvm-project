@@ -33,10 +33,10 @@ DefinedImportData *getAddressedImport(Symbol *s);
 // DLL is loaded.
 DefinedImportData *getInPlaceImport(Symbol *s);
 
-// An executable with a copy of its thread-local import slots names it in the
-// reserved words of its MZ header, as {tag u32, rva u32} at this offset, so
-// that the code of a DLL that may reach the executable while the process
-// initializes can run it first.
+// An executable with a copy of its thread-local import slots names the copy's
+// list in the reserved words of its MZ header, as {tag u32, rva u32} at this
+// offset, so that the fill of a DLL that may reach the executable while the
+// process initializes can run the copy first.
 inline constexpr uint32_t threadLocalSlotCopyOffset = 0x1C;
 inline constexpr uint32_t threadLocalSlotCopyTag = 0x9E3779B9;
 
@@ -120,17 +120,16 @@ public:
   ArrayRef<RunTimeCell> getRunTimeCells() const { return runTimeCells; }
   // The names the fill resolves its cells by.
   ArrayRef<Chunk *> getRunTimeNames() const { return runTimeNames; }
-  Chunk *getFill() const { return fill; }
+  Defined *getFill() const { return fill; }
   Chunk *getFillPointer() const { return fillPointer; }
-  Chunk *getFillUnwind() const { return fillUnwind; }
-  Chunk *getFillPdata() const { return fillPdata; }
   Chunk *getFillList() const { return fillList; }
   Chunk *getVagueOfferTable() const { return vagueOfferTable; }
 
-  Chunk *getThreadLocalSlotCopy() const { return threadLocalSlotCopy; }
+  Defined *getThreadLocalSlotCopy() const { return threadLocalSlotCopy; }
   Chunk *getThreadLocalSlotCopyPointer() const {
     return threadLocalSlotCopyPointer;
   }
+  Chunk *getThreadLocalSlotCopyList() const { return threadLocalSlotCopyList; }
 
 private:
   void scanChunk(SlotScan &scan, SectionChunk *sc);
@@ -167,20 +166,19 @@ private:
   // first such word.
   llvm::MapVector<ImportFile *, std::pair<SectionChunk *, uint32_t>>
       interiorBases;
-  // The fill, its pointer in the C initializer table, its unwind information
-  // and exception table entry, and the lists it works through; and the table
-  // through which another DLL's search finds this image's instances.
-  Chunk *fill = nullptr;
+  // The builtins' fill, its pointer in the C initializer table and the list it
+  // works through; and the table through which another DLL's search finds
+  // this image's instances.
+  Defined *fill = nullptr;
   Chunk *fillPointer = nullptr;
-  Chunk *fillUnwind = nullptr;
-  Chunk *fillPdata = nullptr;
   Chunk *fillList = nullptr;
   Chunk *vagueOfferTable = nullptr;
 
-  // The copy of an executable's thread-local slots and its pointer in the C
-  // initializer table.
-  Chunk *threadLocalSlotCopy = nullptr;
+  // The builtins' copy of an executable's thread-local slots, its pointer in
+  // the TLS callback array and its list.
+  Defined *threadLocalSlotCopy = nullptr;
   Chunk *threadLocalSlotCopyPointer = nullptr;
+  Chunk *threadLocalSlotCopyList = nullptr;
   // The read-only output sections other than .rdata that hold in-place import
   // slots, which are laid out before .rdata, and whether a $-group of .rdata
   // holds one; either places the import address tables at the start of

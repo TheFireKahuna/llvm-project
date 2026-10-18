@@ -66,6 +66,20 @@ __xi_z:
 _tls_index:
   .long 0
 
+## A stand-in for the builtins' __llvm_fill: it loads its list and references
+## the ntdll functions it pins a searched module and seals with.
+  .def __llvm_fill
+  .scl 2
+  .type 32
+  .endef
+  .section .text,"xr",one_only,__llvm_fill
+  .globl __llvm_fill
+__llvm_fill:
+  leaq __llvm_fill_list(%rip), %rax
+  callq *__imp_NtProtectVirtualMemory(%rip)
+  callq *__imp_LdrAddRefDll(%rip)
+  retq
+
 ;--- ntdll.def
 LIBRARY ntdll.dll
 EXPORTS

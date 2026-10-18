@@ -1,21 +1,16 @@
 # REQUIRES: x86
 ## Under -import-slots, the names that a word of static data may take for an
-## address inside imported data, and NtProtectVirtualMemory for the residual
-## fill, are loaded only from an import. A regular archive member that defines
-## such a name is not loaded: the word is the residual fill's to write, as if
-## nothing defined the name.
+## address inside imported data are loaded only from an import. A regular
+## archive member that defines such a name is not loaded: the word is the
+## residual fill's to write, as if nothing defined the name.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: lld-link -def:lib.def -out:lib.lib -machine:x64
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium crt.s -o crt.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium rw.s -o rw.obj
-# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium ro.s -o ro.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium interior.s \
 # RUN:   -o interior.obj
-# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium protect.s \
-# RUN:   -o protect.obj
 # RUN: llvm-lib -out:interior.lib interior.obj
-# RUN: llvm-lib -out:protect.lib protect.obj
 
 # RUN: lld-link -dll -noentry -import-slots -out:out.dll crt.obj rw.obj \
 # RUN:   interior.lib lib.lib
@@ -32,11 +27,6 @@
 # CHECK-NEXT: }
 # CHECK-NOT:  Symbol:
 
-# RUN: not lld-link -dll -noentry -import-slots -out:out.dll crt.obj ro.obj \
-# RUN:   protect.lib lib.lib 2>&1 | FileCheck --check-prefix=PROTECT %s
-
-# PROTECT: error: the image's fill needs NtProtectVirtualMemory from ntdll.lib
-
 #--- lib.def
 LIBRARY lib.dll
 EXPORTS
@@ -52,13 +42,19 @@ __xi_a:
 __xi_z:
   .quad 0
 
+## A stand-in for the builtins' __llvm_fill, which writes the residual word.
+  .def __llvm_fill
+  .scl 2
+  .type 32
+  .endef
+  .section .text,"xr",one_only,__llvm_fill
+  .globl __llvm_fill
+__llvm_fill:
+  leaq __llvm_fill_list(%rip), %rax
+  retq
+
 #--- rw.s
   .data
-  .p2align 3
-  .quad obj+8
-
-#--- ro.s
-  .section .rdata,"dr"
   .p2align 3
   .quad obj+8
 
@@ -66,10 +62,4 @@ __xi_z:
   .section .member,"dw"
   .globl "__imp_obj$so8"
 "__imp_obj$so8":
-  .quad 0
-
-#--- protect.s
-  .section .member,"dw"
-  .globl __imp_NtProtectVirtualMemory
-__imp_NtProtectVirtualMemory:
   .quad 0

@@ -49,14 +49,19 @@
 # OFFER-NEXT: 48 8b 05 {{.*}} movq {{.*}}(%rip), %rax # 0x[[#%x,0x180000000+ENTRY]]
 # OFFER-NEXT: c3 retq
 # OFFER:      [[#%x,0x180000000+BODY]] <__ovr_offer$_Znwy>:
-# OFFER:      leaq {{.*}}(%rip), %rbx # 0x[[#%x,LIST:]]
+# OFFER:      leaq {{.*}}(%rip), %rax # 0x[[#%x,LIST:]]
 # OFFER:      [[#THUNK]]: ff 25 {{.*}} jmpq *{{.*}}(%rip) # 0x[[#%x,0x180000000+ENTRY]]
-# OFFER:      [[#%x,LIST]] 00000000 44000000 00300000 02000000
-# OFFER-NEXT: [[#%x,LIST+0x10]] 01000000 44000000 e0200000 02000000
+## One read-only range over the import entry, then the cells {key, rva, kind},
+## each of slot 0, whose RVA is at 0x44 in the executable's header, each of kind
+## 2: the writable word in .data, then the read-only import entry.
+# OFFER:      [[#%x,LIST+0x30]] {{[0-9a-f]+}} 08000000 00000000 44000000
+# OFFER-NEXT: [[#%x,LIST+0x40]] 00300000 02000000 01000000 44000000
+# OFFER-NEXT: [[#%x,LIST+0x50]] {{[0-9a-f]+}} 02000000
 
 ## Without the runtime's import library there is no import to reach, and the
 ## definition stays the DLL's own.
-# RUN: lld-link -import-slots -dll -noentry offer.obj crt.obj -out:own.dll
+# RUN: lld-link -import-slots -dll -noentry offer.obj crt.obj ntdll.lib \
+# RUN:   -out:own.dll
 # RUN: llvm-objdump -d own.dll | FileCheck --check-prefix=OWN %s
 # OWN:      <.text>:
 # OWN-NEXT: e8 {{.*}} callq 0x[[#%x,OWNBODY:]]
@@ -94,6 +99,19 @@ __xi_a:
         .globl __xi_z
 __xi_z:
         .quad 0
+
+## A stand-in for the builtins' __llvm_fill: it loads its list and references
+## the NtProtectVirtualMemory it makes read-only cells writable with.
+        .def __llvm_fill
+        .scl 2
+        .type 32
+        .endef
+        .section .text,"xr",one_only,__llvm_fill
+        .globl __llvm_fill
+__llvm_fill:
+        leaq __llvm_fill_list(%rip), %rax
+        callq *__imp_NtProtectVirtualMemory(%rip)
+        retq
 
 #--- check.s
 ## The executable's start-up validation, which the C++ runtime provides.

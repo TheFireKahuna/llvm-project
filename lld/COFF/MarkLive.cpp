@@ -18,7 +18,7 @@ namespace lld::coff {
 // Set live bit on for each reachable chunk. Unmarked (unreachable)
 // COMDAT chunks will be ignored by Writer, so they will be excluded
 // from the final output.
-void markLive(COFFLinkerContext &ctx) {
+void markLive(COFFLinkerContext &ctx, ArrayRef<Symbol *> roots) {
   llvm::TimeTraceScope timeScope("Mark live");
   ScopedTimer t(ctx.gcTimer);
 
@@ -30,10 +30,11 @@ void markLive(COFFLinkerContext &ctx) {
   // COMDAT section chunks are dead by default. Add non-COMDAT chunks. Do not
   // traverse DWARF sections. They are live, but they should not keep other
   // sections alive.
-  for (Chunk *c : ctx.driver.getChunks())
-    if (auto *sc = dyn_cast<SectionChunk>(c))
-      if (sc->live && !sc->isDWARF())
-        worklist.push_back(sc);
+  if (roots.empty())
+    for (Chunk *c : ctx.driver.getChunks())
+      if (auto *sc = dyn_cast<SectionChunk>(c))
+        if (sc->live && !sc->isDWARF())
+          worklist.push_back(sc);
 
   auto enqueue = [&](SectionChunk *c) {
     if (c->live)
@@ -95,7 +96,7 @@ void markLive(COFFLinkerContext &ctx) {
   };
 
   // Add GC root chunks.
-  for (Symbol *b : ctx.config.gcroot)
+  for (Symbol *b : roots.empty() ? ArrayRef(ctx.config.gcroot) : roots)
     addSym(b);
 
   while (!worklist.empty()) {

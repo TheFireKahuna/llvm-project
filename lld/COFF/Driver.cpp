@@ -3140,6 +3140,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
       // program does not keep a split heap; a link that does not define this
       // fails.
       symtab.addAbsolute(symtab.mangle("__llvm_overrides_v1"), 0);
+      // The lists of the builtins' fill and copy, which the writer defines
+      // where the image has them.
+      symtab.addAbsolute("__llvm_fill_list", 0);
+      symtab.addAbsolute("__llvm_thread_local_slot_copy_list", 0);
     }
 
     if (symtab.isEC()) {
@@ -3245,8 +3249,15 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     } while (run() || loadedImports);
   }
 
-  if (config->importSlots)
+  if (config->importSlots) {
     ctx.symtab.exportInteriorNames();
+    // The builtins' fill and copy of thread-local slots, which the writer keeps
+    // where the image needs them.
+    if (Symbol *s = ctx.symtab.find("__llvm_fill"); s && s->isLazy()) {
+      ctx.symtab.addUndefined("__llvm_fill");
+      run();
+    }
+  }
 
   // Handle /includeglob
   for (StringRef pat : args::getStrings(args, OPT_incl_glob))

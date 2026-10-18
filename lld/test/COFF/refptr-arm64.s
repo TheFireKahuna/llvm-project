@@ -82,6 +82,26 @@ __xi_a:
 __xi_z:
   .xword 0
 
+## A stand-in for the builtins' __llvm_fill: it loads its list and references
+## the ntdll functions it binds run-time imports and seals with.
+  .def __llvm_fill
+  .scl 2
+  .type 32
+  .endef
+  .section .text,"xr",one_only,__llvm_fill
+  .globl __llvm_fill
+__llvm_fill:
+  adrp x0, __llvm_fill_list
+  add x0, x0, :lo12:__llvm_fill_list
+  adrp x1, __imp_NtProtectVirtualMemory
+  ldr x1, [x1, :lo12:__imp_NtProtectVirtualMemory]
+  adrp x2, __imp_LdrGetDllHandleEx
+  ldr x2, [x2, :lo12:__imp_LdrGetDllHandleEx]
+  adrp x3, __imp_LdrGetProcedureAddressForCaller
+  ldr x3, [x3, :lo12:__imp_LdrGetProcedureAddressForCaller]
+  blr x1
+  ret
+
 #--- ntdll.def
 LIBRARY ntdll.dll
 EXPORTS

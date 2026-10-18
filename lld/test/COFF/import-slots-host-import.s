@@ -2,13 +2,13 @@
 ## Under -import-slots, an import of a DLL from an executable can only mean the
 ## process's own executable, whatever its file name, so it is bound by name
 ## when the DLL starts rather than by a descriptor naming the file: its pointer
-## is a cell in .sealed, which the image's fill writes through
-## LdrGetProcedureAddressForCaller against PEB->ImageBaseAddress, failing the
-## DLL's initialization with the resolver's status when the executable lacks
-## the name, and a word of static data holding the address is written from the
-## cell. -unresolved-host-imports imports what nothing defines from the
-## executable, as code where an object declares it a function and as data
-## otherwise. Without -import-slots the import is the loader's.
+## is a cell in .sealed, which the image's fill, the builtins' __llvm_fill,
+## writes at run time against PEB->ImageBaseAddress, and a word of static data
+## holding the address is written from the cell. The run-time cells and residual
+## word sit in a list the linker builds. -unresolved-host-imports imports what
+## nothing defines from the executable, as code where an object declares it a
+## function and as data otherwise. Without -import-slots the import is the
+## loader's.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium plug.s -o plug.obj
@@ -25,60 +25,34 @@
 
 # CHECK:      Name: .sealed
 # CHECK-NEXT: VirtualSize: 0x10
-# CHECK-NEXT: VirtualAddress: 0x6000
+# CHECK-NEXT: VirtualAddress: 0x5000
 # CHECK-NOT:  Name: host.exe
 # CHECK:      Name: ntdll.dll
 # CHECK:      Symbol: LdrGetProcedureAddressForCaller
 # CHECK-NEXT: Symbol: NtProtectVirtualMemory
 # CHECK-NOT:  Name: host.exe
 
+## hostfn and hostvar read their cells in .sealed.
 # CHECK:      <.text>:
-# CHECK-NEXT: callq *{{.*}}(%rip) # 0x180006000
-# CHECK-NEXT: movq {{.*}}(%rip), %rax # 0x180006008
+# CHECK-NEXT: callq *{{.*}}(%rip) # 0x180005000
+# CHECK-NEXT: movq {{.*}}(%rip), %rax # 0x180005008
 
-## Each name of the list's imports is resolved in the executable, the PEB's
-## ImageBaseAddress, with flag 1, which binds without initializing it; a
-## failure ends the fill with its status.
-# CHECK:      leaq {{.*}}(%rip), %rbx # 0x[[#%x,CELLS:]]
-# CHECK-NEXT: leaq {{.*}}(%rip), %rsi # 0x[[#%x,CELLS+0x20]]
-# CHECK-NEXT: cmpq %rsi, %rbx
-# CHECK-NEXT: jae
-# CHECK-NEXT: movq %gs:0x60, %rcx
-# CHECK-NEXT: movq 0x10(%rcx), %rcx
-# CHECK-NEXT: movl 0x4(%rbx), %eax
-# CHECK-NEXT: leaq {{.*}}(%rip), %rdx # 0x180000000
-# CHECK-NEXT: addq %rdx, %rax
-# CHECK-NEXT: movq %rax, 0x50(%rsp)
-# CHECK-NEXT: movzwl 0xc(%rbx), %eax
-# CHECK-NEXT: leal 0x1(%rax), %edx
-# CHECK-NEXT: shll $0x10, %edx
-# CHECK-NEXT: orl %edx, %eax
-# CHECK-NEXT: movl %eax, 0x48(%rsp)
-# CHECK-NEXT: leaq 0x48(%rsp), %rdx
-# CHECK-NEXT: xorl %r8d, %r8d
-# CHECK-NEXT: movl (%rbx), %r9d
-# CHECK-NEXT: leaq {{.*}}(%rip), %rax # 0x180000000
-# CHECK-NEXT: addq %rax, %r9
-# CHECK-NEXT: movl $0x1, 0x20(%rsp)
-# CHECK-NEXT: leaq {{.*}}(%rip), %rax # 0x180001010
-# CHECK-NEXT: movq %rax, 0x28(%rsp)
-# CHECK-NEXT: callq *{{.*}}(%rip)
-# CHECK-NEXT: cmpl $0x0, 0x8(%rbx)
-# CHECK-NEXT: jne
-# CHECK-NEXT: testl %eax, %eax
-# CHECK-NEXT: js 0x[[#%x,FAIL:]]
-## Then the word of .data holding hostfn's address, from its cell, and the
-## seal.
-# CHECK:      leaq {{.*}}(%rip), %rbx # 0x[[#%x,CELLS+0x20]]
-# CHECK:      [[#%x,FAIL]]: {{.*}} movl %eax, %r12d
-# CHECK:      movl $0x2, %r9d
+## __llvm_fill loads its list.
+# CHECK:      leaq {{.*}}(%rip), %rax # 0x[[#%x,LIST:]]
 
-## The imports, {cell, name, 0 for one from the executable that is not weak,
-## the name's length}: hostfn and hostvar; then the word, {word, cell, 0}.
-# CHECK:      [[#%x,CELLS]] 00600000 30200000 00000000 06000000
-# CHECK-NEXT: [[#%x,CELLS+0x10]] 08600000 37200000 00000000 07000000
-# CHECK-NEXT: [[#%x,CELLS+0x20]] 00300000 00600000 00000000 00000000
-# CHECK-NEXT: 686f7374 666e0068 6f737476 61720000  hostfn.hostvar..
+## The list: no cells, two run-time cells, one residual word; the section it
+## seals is .sealed at 0x5000, size 0x10; its flag word's bit 0 set, since the
+## DLL imports from the executable and runs its copy.
+# CHECK:      [[#%x,LIST]]      00000000 00000000 02000000 01000000
+# CHECK-NEXT: [[#%x,LIST+0x10]] 00000000 00000000 00500000 10000000
+# CHECK-NEXT: [[#%x,LIST+0x20]] {{[0-9a-f]+ [0-9a-f]+}} 01000000 00000000
+## The run-time cells, {cell, name, 0 for one from the executable that is not
+## weak, the name's length}: hostfn and hostvar; then the residual word {word,
+## cell, addend} for the .data copy.
+# CHECK-NEXT: [[#%x,LIST+0x30]] 00500000 60200000 00000000 06000000
+# CHECK-NEXT: [[#%x,LIST+0x40]] 08500000 67200000 00000000 07000000
+# CHECK-NEXT: [[#%x,LIST+0x50]] 00300000 00500000 00000000 00000000
+# CHECK-NEXT: [[#%x,LIST+0x60]] 686f7374 666e0068 6f737476 61720000  hostfn.hostvar..
 
 ## The names are imported from the executable that loads the DLL.
 # RUN: lld-link -import-slots -dll -noentry plug.obj crt.obj ntdll.lib \
@@ -95,7 +69,9 @@
 # RUN:   -out:undefined.dll 2>&1 | FileCheck --check-prefix=UNDEFINED %s
 # UNDEFINED: undefined symbol: __declspec(dllimport) hostfn
 
-# RUN: lld-link -dll -noentry plug.obj crt.obj host.lib -out:loader.dll
+## Without -import-slots the import is the loader's, through a descriptor
+## naming host.exe.
+# RUN: lld-link -dll -noentry plug.obj host.lib -out:loader.dll
 # RUN: llvm-readobj --coff-imports loader.dll | FileCheck --check-prefix=LOADER %s
 # LOADER: Name: host.exe
 
@@ -122,6 +98,20 @@ __xi_a:
         .globl __xi_z
 __xi_z:
         .quad 0
+
+## A stand-in for the builtins' __llvm_fill: it loads its list and references
+## the ntdll functions it binds run-time host imports and seals with.
+        .def __llvm_fill
+        .scl 2
+        .type 32
+        .endef
+        .section .text,"xr",one_only,__llvm_fill
+        .globl __llvm_fill
+__llvm_fill:
+        leaq __llvm_fill_list(%rip), %rax
+        callq *__imp_NtProtectVirtualMemory(%rip)
+        callq *__imp_LdrGetProcedureAddressForCaller(%rip)
+        retq
 
 #--- host.def
 LIBRARY host.exe

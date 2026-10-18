@@ -74,11 +74,7 @@ public:
     if (buf)
       llvm::support::endian::write32le(buf + off - back, value);
   }
-  void imm64(uint64_t value) {
-    if (buf)
-      llvm::support::endian::write64le(buf + off - 8, value);
-  }
-  // x86-64: jcc or jmp to label, where cc is the second opcode byte of the
+  // x86-64: jcc to label, where cc is the second opcode byte of the
   // conditional jump with a 32-bit displacement.
   void jcc(uint8_t cc, uint32_t label) {
     if (isLong(jumps))
@@ -87,27 +83,16 @@ public:
       put({uint8_t(cc - 0x10), 0});
     addJump(label);
   }
-  void jmp(uint32_t label) {
-    if (isLong(jumps))
-      put({0xE9, 0, 0, 0, 0});
-    else
-      put({0xEB, 0});
-    addJump(label);
-  }
-  // x86-64: jcc rel32 or jmp rel32 to target, an RVA outside the routine.
+  // x86-64: jcc rel32 to target, an RVA outside the routine.
   void jccTo(uint8_t cc, uint64_t target) {
     put({0x0F, cc, 0, 0, 0, 0});
     disp(target);
   }
-  void jmpTo(uint64_t target) {
-    put({0xE9, 0, 0, 0, 0});
-    disp(target);
+  // AArch64: an instruction with a 19-bit offset to label (b.cond, cbz, cbnz).
+  void branch19(uint32_t insn, uint32_t label) {
+    fixups.push_back({off, label, Imm19});
+    put32(insn);
   }
-  // AArch64: an instruction with a 19-bit (b.cond, cbz, cbnz), 14-bit (tbz,
-  // tbnz) or 26-bit (b) offset to label.
-  void branch19(uint32_t insn, uint32_t label) { branch(insn, label, Imm19); }
-  void branch14(uint32_t insn, uint32_t label) { branch(insn, label, Imm14); }
-  void branch26(uint32_t insn, uint32_t label) { branch(insn, label, Imm26); }
   // adrp xN, target; add xN, xN, :lo12:target
   void address(uint32_t reg, uint64_t target) {
     if (!buf) {
@@ -133,23 +118,6 @@ public:
     applyArm64Ldr(buf + off + 4, target & 0xfff);
     off += 8;
   }
-  // adrp x16, imp; ldr x16, [x16, :lo12:imp]; blr x16
-  void callImport(uint64_t imp) {
-    loadImport(16, imp);
-    put32(0xD63F0200);
-  }
-  // movz wN, #lo; movk wN, #hi, lsl 16
-  void movImm32(uint32_t reg, uint32_t value) {
-    put32(0x52800000 | reg | (value & 0xFFFF) << 5);
-    put32(0x72A00000 | reg | (value >> 16 & 0xFFFF) << 5);
-  }
-  // movz xN, #0; movk xN, #hw, lsl 16 * k for the four half-words
-  void movImm64(uint32_t reg, uint64_t value) {
-    put32(0xD2800000 | reg | uint32_t(value & 0xFFFF) << 5);
-    for (uint32_t hw = 1; hw != 4; ++hw)
-      put32(0xF2800000 | reg | hw << 21 |
-            uint32_t(value >> (16 * hw) & 0xFFFF) << 5);
-  }
   uint32_t finish() {
     if (!buf)
       return off;
@@ -169,16 +137,6 @@ public:
             buf + f.at, llvm::support::endian::read32le(buf + f.at) |
                             uint32_t(delta / 4 & 0x7FFFF) << 5);
         break;
-      case Imm14:
-        llvm::support::endian::write32le(
-            buf + f.at, llvm::support::endian::read32le(buf + f.at) |
-                            uint32_t(delta / 4 & 0x3FFF) << 5);
-        break;
-      case Imm26:
-        llvm::support::endian::write32le(
-            buf + f.at, llvm::support::endian::read32le(buf + f.at) |
-                            uint32_t(delta / 4 & 0x3FFFFFF));
-        break;
       }
     }
     return off;
@@ -189,7 +147,7 @@ public:
   uint32_t off = 0;
 
 private:
-  enum Kind { Rel8, Rel32, Imm19, Imm14, Imm26 };
+  enum Kind { Rel8, Rel32, Imm19 };
   struct Fixup {
     uint32_t at;
     uint32_t label;
@@ -197,10 +155,6 @@ private:
     // The number of the jump, counted in the order the routine puts them.
     uint32_t jump = 0;
   };
-  void branch(uint32_t insn, uint32_t label, Kind kind) {
-    fixups.push_back({off, label, kind});
-    put32(insn);
-  }
   bool isLong(uint32_t jump) const {
     return jump < longJumps.size() && longJumps[jump];
   }

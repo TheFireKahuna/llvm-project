@@ -90,20 +90,16 @@
 # FILL-NEXT: ImportLookupTableRVA:
 # FILL-NEXT: ImportAddressTableRVA: 0x3000
 # FILL-NEXT: Symbol: hook
-## Each entry is {key, rva, kind}, the key's bit 0 marking a read-only cell;
-## a default bound by name is of kind 0.
-# FILL:      180002000 d2315e5a e1358eba 00300000 00000000
-# FILL-NEXT: 180002010 d3315e5a e1358eba {{[0-9a-f]+}} 00000000
-# FILL:      cmpl $0x7b3ac2d5, 0x80(%rdi)
-# FILL:      leaq {{.*}}(%rip), %rbx # 0x180002000
-# FILL:      cmpq %r12, (%rax)
-# FILL-NEXT: je
-# FILL:      testb $0x1, (%rbx)
-# FILL:      movl $0x4, %r9d
-# FILL:      callq *{{.*}}(%rip) # 0x[[#%x,0x180000000+PROTECT]]
-# FILL:      movq %r13, (%rcx,%rax)
-# FILL:      movq 0x8(%rax), %r13
-# FILL-NEXT: jmp
+## The list: one read-only range over the import entry at 0x20C8, then the
+## cells {key, rva, kind}, the key's bit 0 marking a read-only cell; a default
+## bound by name is of kind 0: the writable word under hook's key, then the
+## read-only import entry under the key with bit 0 set.
+# FILL:      180002000 01000000 02000000 00000000 00000000
+# FILL-NEXT: 180002010 00000000 00000000 00000000 00000000
+# FILL-NEXT: 180002020 {{[0-9a-f]+ [0-9a-f]+}} 00000000 00000000
+# FILL-NEXT: 180002030 c8200000 08000000 d2315e5a e1358eba
+# FILL-NEXT: 180002040 00300000 00000000 d3315e5a e1358eba
+# FILL-NEXT: 180002050 c8200000 00000000
 # RUN: FileCheck --check-prefix=NOSEARCH --input-file=use.txt %s
 # NOSEARCH-NOT: LdrAddRefDll
 # NOSEARCH-NOT: 0x6c8e9cf5
@@ -124,7 +120,8 @@
 # OFFER:      Name: __ovr_offer$hook
 # OFFER:      <take>:
 # OFFER-NEXT: 48 8b 05 {{.*}} movq {{.*}}(%rip), %rax # 0x[[#%x,0x180000000+OENTRY]]
-# RUN: lld-link -import-slots -dll -noentry offer.obj crt.obj -out:own.dll
+# RUN: lld-link -import-slots -dll -noentry offer.obj crt.obj ntdll.lib \
+# RUN:   -out:own.dll
 # RUN: llvm-objdump -d own.dll | FileCheck --check-prefix=OWN %s
 # OWN:      <take>:
 # OWN-NEXT: 48 8d 05 {{.*}} leaq {{.*}}(%rip), %rax
@@ -206,6 +203,17 @@ __xi_a:
         .globl __xi_z
 __xi_z:
         .quad 0
+
+        .def __llvm_fill
+        .scl 2
+        .type 32
+        .endef
+        .section .text,"xr",one_only,__llvm_fill
+        .globl __llvm_fill
+__llvm_fill:
+        leaq __llvm_fill_list(%rip), %rax
+        callq *__imp_NtProtectVirtualMemory(%rip)
+        retq
 
 #--- offer.s
         .text

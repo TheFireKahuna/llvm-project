@@ -3,13 +3,12 @@
 ## into the main thread's block before it binds the executable's imports, and
 ## initializes the DLLs before it calls the executable's TLS callbacks, so an
 ## in-place import slot in the template is bound in every later thread's block
-## but not in the main thread's. The executable's first TLS callback copies each
-## such slot from the template into the main thread's block, found through the
-## index and the template start that the TLS directory names. It acts only
-## while PEB->CrossProcessFlags says the process is initializing, and only on a
-## word that still holds its lookup entry, so it may run again. The executable
-## names it as {tag, rva} at 0x1C in its MZ header for code that may reach the
-## executable while the DLLs initialize.
+## but not in the main thread's. The builtins' __llvm_thread_local_slot_copy,
+## which the linker makes the executable's first TLS callback, copies each such
+## slot from the template into the main thread's block, from a list that names
+## the TLS index and template start, and for each slot its RVA and the lookup
+## entry the template holds for it. The executable names that list as {tag, rva}
+## at 0x1C in its MZ header for the fill of a DLL that may reach it first.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: lld-link -def:lib.def -out:lib.lib -machine:x64
@@ -23,103 +22,77 @@
 # RUN: lld-link -import-slots -entry:main -subsystem:console main.obj crt.obj \
 # RUN:   tl.obj dir.obj res.obj lib.lib -out:tl.exe
 # RUN: llvm-readobj --coff-tls-directory tl.exe > tl.txt
-# RUN: llvm-objdump -d --print-imm-hex tl.exe >> tl.txt
 # RUN: llvm-objdump -s -j .CRT tl.exe >> tl.txt
-# RUN: od -A x -t x1 -j 0x1c -N 8 tl.exe >> tl.txt
+# RUN: llvm-objdump -s -j .rdata tl.exe >> tl.txt
+# RUN: od -A x -t x4 -j 0x1c -N 8 tl.exe >> tl.txt
 # RUN: FileCheck --input-file=tl.txt %s
 
-## The slot is at offset 8 in the template, after another thread-local datum;
-## the template holds its lookup entry, 0x20b0.
-# CHECK:      StartAddressOfRawData: 0x[[#%x,START:]]
-# CHECK:      AddressOfIndex: 0x[[#%x,INDEX:]]
-# CHECK:      140001010: {{.*}} movq %gs:0x60, %rax
-# CHECK-NEXT: btl $0x1, 0x50(%rax)
-# CHECK-NEXT: jae 0x[[#%x,DONE:]]
-# CHECK-NEXT: movl {{.*}}(%rip), %ecx # 0x[[#INDEX]]
-# CHECK-NEXT: movq %gs:0x58, %rdx
-# CHECK-NEXT: movq (%rdx,%rcx,8), %rdx
-# CHECK-NEXT: movq 0x8(%rdx), %rax
-# CHECK-NEXT: movabsq $0x20b0, %r8
-# CHECK-NEXT: cmpq %r8, %rax
-# CHECK-NEXT: jne 0x[[#DONE]]
-# CHECK-NEXT: movq {{.*}}(%rip), %rax # 0x[[#START + 8]]
-# CHECK-NEXT: movq %rax, 0x8(%rdx)
-# CHECK-NEXT: [[#DONE]]: {{.*}} xorl %eax, %eax
-# CHECK-NEXT: retq
+## The template holds its index and start RVAs; the slot is at offset 8 in it.
+# CHECK:      StartAddressOfRawData: 0x140005000
+# CHECK:      AddressOfIndex: 0x140003000
 
-## The copy's pointer follows the TLS callback array's opening null; the C
-## initializer table holds only the fill's.
+## The C initializer table holds the fill's pointer, and the TLS callback array,
+## after its opening null, the copy's; both point into the image's code.
 # CHECK:      Contents of section .CRT:
-# CHECK-NEXT: 11111111 11111111 60100040 01000000
+# CHECK-NEXT: 11111111 11111111 {{[0-9a-f]+}} 01000000
 # CHECK-NEXT: 33333333 33333333 00000000 00000000
-# CHECK-NEXT: 10100040 01000000 00000000 00000000
+# CHECK-NEXT: {{[0-9a-f]+}} 01000000 00000000 00000000
 
-## The MZ header names the copy: the tag 0x9E3779B9 and its RVA.
-# CHECK:      b9 79 37 9e 10 10 00 00
+## The copy list: one slot; the TLS index 0x3000 and template start 0x5000; then
+## the slot's RVA, the template start plus 8, and the lookup entry 0x2100 the
+## template holds for it.
+# CHECK:      {{.*}} 01000000 00300000
+# CHECK-NEXT: {{.*}} 00500000 00000000 08500000 00000000
+# CHECK-NEXT: {{.*}} 00210000
+
+## The MZ header names the copy list: the tag 0x9E3779B9 and its RVA.
+# CHECK:      9e3779b9 00002028
 
 ## A DLL's template is bound before any thread's block is copied from it, an
 ## executable with no TLS directory gives no thread a block, and one with no
-## slot in its template has nothing to copy: none carries a copy, and none
-## names one.
+## slot in its template has nothing to copy: none carries a copy, and none names
+## one in its header.
 # RUN: lld-link -import-slots -dll -noentry crt.obj tl.obj dir.obj lib.lib \
 # RUN:   -out:tl.dll
-# RUN: llvm-objdump -d tl.dll | FileCheck --check-prefix=NONE %s
-# RUN: od -A x -t x1 -j 0x1c -N 8 tl.dll | FileCheck --check-prefix=NOTAG %s
+# RUN: od -A x -t x4 -j 0x1c -N 8 tl.dll | FileCheck --check-prefix=NOTAG %s
 # RUN: lld-link -import-slots -entry:main -subsystem:console main.obj crt.obj \
 # RUN:   tl.obj lib.lib -out:nodir.exe
-# RUN: llvm-objdump -d nodir.exe | FileCheck --check-prefix=NONE %s
+# RUN: od -A x -t x4 -j 0x1c -N 8 nodir.exe | FileCheck --check-prefix=NOTAG %s
 # RUN: lld-link -import-slots -entry:main -subsystem:console main.obj crt.obj \
 # RUN:   dir.obj res.obj lib.lib -out:noslot.exe
-# RUN: llvm-objdump -d noslot.exe | FileCheck --check-prefix=NONE %s
-# RUN: od -A x -t x1 -j 0x1c -N 8 noslot.exe | FileCheck --check-prefix=NOTAG %s
-# NONE-NOT: %gs:0x58
-# NOTAG: 00 00 00 00 00 00 00 00
+# RUN: od -A x -t x4 -j 0x1c -N 8 noslot.exe | FileCheck --check-prefix=NOTAG %s
+# NOTAG: 00000000 00000000
+
+## A DLL that imports from no executable keeps no fill pointer in its C
+## initializer table, so nothing runs a copy.
+# RUN: llvm-objdump -s -j .CRT tl.dll | FileCheck --check-prefix=NOCALL %s
+# NOCALL:      Contents of section .CRT:
+# NOCALL-NEXT: 11111111 11111111 33333333 33333333
 
 ## A DLL that imports from an executable may call it from its initializers
-## before the executable's TLS callbacks run, so its fill, which its C
-## initializer table runs ahead of every other initializer, first calls the
-## copy the executable names, while the process initializes; through the
-## guard's dispatch where the image has it, here the first word of .rdata, or
-## directly where it has none.
+## before the executable's TLS callbacks run, so the linker sets bit 0 of its
+## fill list's flag word; the fill runs the copy the executable's header names
+## while the process initializes.
 # RUN: lld-link -def:host.def -out:host.lib -machine:x64
-# RUN: lld-link -def:ntdll.def -out:ntdll.lib -machine:x64
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium plug.s -o plug.obj
-# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium guard.s -o guard.obj
-# RUN: lld-link -import-slots -dll -noentry crt.obj plug.obj guard.obj \
-# RUN:   host.lib ntdll.lib -out:plug.dll
-# RUN: llvm-readobj --sections plug.dll > plug.txt
-# RUN: llvm-objdump -d --print-imm-hex plug.dll >> plug.txt
-# RUN: llvm-objdump -s -j .CRT plug.dll >> plug.txt
+# RUN: lld-link -import-slots -dll -noentry crt.obj plug.obj host.lib \
+# RUN:   -out:plug.dll
+# RUN: llvm-objdump -d --no-show-raw-insn plug.dll > plug.txt
+# RUN: llvm-objdump -s -j .rdata plug.dll >> plug.txt
 # RUN: FileCheck --check-prefix=CALL --input-file=plug.txt %s
-# CALL:      Name: .rdata
-# CALL-NEXT: VirtualSize:
-# CALL-NEXT: VirtualAddress: 0x[[#%x,RDATA:]]
-# CALL:      180001010: {{.*}} pushq %rbx
-# CALL:      xorl %r14d, %r14d
-# CALL-NEXT: movq %gs:0x60, %rax
-# CALL-NEXT: btl $0x1, 0x50(%rax)
-# CALL-NEXT: jae 0x[[#%x,SKIP:]]
-# CALL-NEXT: movq 0x10(%rax), %rax
-# CALL-NEXT: cmpl $0x9e3779b9, 0x1c(%rax)
-# CALL-NEXT: jne 0x[[#SKIP]]
-# CALL-NEXT: movl 0x20(%rax), %ecx
-# CALL-NEXT: addq %rcx, %rax
-# CALL-NEXT: callq *{{.*}}(%rip) # 0x[[#RDATA + 0x180000000]]
-# CALL-NEXT: [[#SKIP]]:
-# CALL:      Contents of section .CRT:
-# CALL-NEXT: 11111111 11111111 10100080 01000000
 
-# RUN: lld-link -import-slots -dll -noentry crt.obj plug.obj host.lib ntdll.lib \
-# RUN:   -out:noguard.dll
-# RUN: llvm-objdump -d noguard.dll | FileCheck --check-prefix=NOGUARD %s
-# NOGUARD:      addq %rcx, %rax
-# NOGUARD-NEXT: callq *%rax
+# CALL:      <.text>:
+# CALL-NEXT: leaq {{.*}}(%rip), %rax # 0x[[#%x,LIST:]]
+## One run-time cell, no cell or residual word; the cell in .sealed at 0x4000;
+## the flag word's bit 0 set to run the executable's copy; the run-time cell for
+## hostfn, bound in the executable (dll word 0) by a name of length 6.
+# CALL:      [[#%x,LIST]]      00000000 00000000 01000000 00000000
+# CALL-NEXT: [[#%x,LIST+0x10]] 00000000 00000000 00400000 08000000
+# CALL-NEXT: [[#%x,LIST+0x20]] {{[0-9a-f]+ [0-9a-f]+}} 01000000 00000000
+# CALL-NEXT: [[#%x,LIST+0x30]] 00400000 {{[0-9a-f]+}} 00000000 06000000
 
-## A DLL that imports from no executable carries none, and one with no C
-## initializer table has nothing to bind its import from the executable.
-# RUN: llvm-objdump -d tl.dll | FileCheck --check-prefix=NOCALL %s
-# NOCALL-NOT: 0x9e3779b9
-# RUN: not lld-link -import-slots -dll -noentry plug.obj host.lib ntdll.lib \
+## A DLL with a run-time host import but no C initializer table cannot bind it.
+# RUN: not lld-link -import-slots -dll -noentry plug.obj host.lib \
 # RUN:   -out:nocrt.dll 2>&1 | FileCheck --check-prefix=NOCRTDLL %s
 # NOCRTDLL: error: cannot bind __declspec(dllimport) hostfn, imported from host.exe, at run time: the image has no C initializer table (__xi_a) to write it
 
@@ -142,7 +115,8 @@ EXPORTS
 
 #--- crt.s
 ## The C initializer table's bounds and the TLS callback array's, as the C
-## runtime provides them.
+## runtime provides them, and stand-ins for the builtins' fill and copy, each
+## loading its list.
   .section .CRT$XIA,"dr"
   .globl __xi_a
 __xi_a:
@@ -159,6 +133,26 @@ __xl_a:
   .globl __xl_z
 __xl_z:
   .quad 0
+
+  .def __llvm_fill
+  .scl 2
+  .type 32
+  .endef
+  .section .text,"xr",one_only,__llvm_fill
+  .globl __llvm_fill
+__llvm_fill:
+  leaq __llvm_fill_list(%rip), %rax
+  retq
+
+  .def __llvm_thread_local_slot_copy
+  .scl 2
+  .type 32
+  .endef
+  .section .text,"xr",one_only,__llvm_thread_local_slot_copy
+  .globl __llvm_thread_local_slot_copy
+__llvm_thread_local_slot_copy:
+  leaq __llvm_thread_local_slot_copy_list(%rip), %rax
+  retq
 
 #--- main.s
   .text
@@ -202,12 +196,6 @@ _tls_used:
   .p2align 3
   .quad arr+8
 
-#--- ntdll.def
-LIBRARY ntdll.dll
-EXPORTS
-  LdrGetProcedureAddressForCaller
-  NtProtectVirtualMemory
-
 #--- host.def
 LIBRARY host.exe
 EXPORTS
@@ -218,14 +206,6 @@ EXPORTS
   .globl dllmain
 dllmain:
   jmp hostfn
-
-#--- guard.s
-## The guard's dispatch pointer, as the load configuration provides it.
-  .section .rdata,"dr"
-  .globl __guard_dispatch_icall_fptr
-  .p2align 3
-__guard_dispatch_icall_fptr:
-  .quad 0
 
 #--- bad.s
   .section .rdata,"dr"

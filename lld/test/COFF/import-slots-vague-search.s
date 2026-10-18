@@ -50,104 +50,12 @@
 # CHECK-NEXT: Symbol: LdrAddRefDll
 # CHECK-NEXT: Symbol: NtProtectVirtualMemory
 
-## Bit 2 of r14 records a DLL loaded after the process initialized. For an
-## entity the executable's table does not name, such a DLL searches the images
-## of its scope, the executable first through the table it names at 0x38, then
-## each module with a table's tag inside its image, probed if loaded with the
-## process, if delay-loaded within that scope, or if it delay-loads this DLL,
-## by the key of this DLL's name.
-# CHECK:      pushq %rbx
-# CHECK:      xorl %r14d, %r14d
-# CHECK-NEXT: movq %gs:0x60, %rax
-# CHECK-NEXT: testb $0x2, 0x50(%rax)
-# CHECK-NEXT: jne
-# CHECK-NEXT: orl $0x4, %r14d
-# CHECK-NEXT: movq 0x10(%rax), %rdi
-# CHECK-NEXT: cmpl $0x7b3ac2d5, 0x80(%rdi)
-# CHECK:      movq (%rbx), %r12
-# CHECK-NEXT: andq $-0x2, %r12
-# CHECK:      cmpl $0x1000, 0xc(%rbx)
-# CHECK-NEXT: jb
-# CHECK-NEXT: btl $0x2, %r14d
-# CHECK-NEXT: jae
-# CHECK-NEXT: movq %gs:0x60, %rax
-# CHECK-NEXT: movq 0x18(%rax), %rbp
-# CHECK-NEXT: addq $0x10, %rbp
-# CHECK-NEXT: movq (%rbp), %r15
-# CHECK:      movq 0x30(%r15), %rdx
-# CHECK:      cmpq (%rbp), %r15
-# CHECK-NEXT: jne
-# CHECK-NEXT: movl 0x38(%rdx), %r8d
-# CHECK:      cmpl $0x6c8e9cf5, 0x30(%rdx)
-# CHECK:      movl 0x34(%rdx), %r8d
-# CHECK-NEXT: movl 0x40(%r15), %r10d
-# CHECK-NEXT: cmpl %r10d, %r8d
-# CHECK:      cmpl $0x4f7a1d2b, (%r8)
-# CHECK:      testb $0x20, 0x68(%r15)
-## A delay-loaded module counts if its importer, by the base the loader
-## records, is the executable or loaded with the process, in turn.
-# CHECK:      cmpl $0x3, 0x10c(%rax)
-# CHECK:      movq 0xb8(%rax), %r9
-# CHECK:      cmpq %r9, 0x30(%rax)
-# CHECK:      cmpq (%rbp), %rax
-# CHECK:      testb $0x20, 0x68(%rax)
-# CHECK:      movabsq $0x58a7bdf45370db42, %rax
-## Two of the key's bits in the filter's word, then the buckets.
-# CHECK:      andl 0x10(%r8), %eax
-# CHECK-NEXT: movq 0x20(%r8,%rax,8), %rax
-# CHECK:      btq %rcx, %rax
-# CHECK:      btq %rcx, %rax
-## A bucket's key counts only if its name, inside the image, is the
-## entity's, up to its terminator.
-# CHECK:      movzbl (%rax), %r11d
-# CHECK-NEXT: cmpb (%r9), %r11b
-# CHECK-NEXT: jne
-# CHECK-NEXT: testb %r11b, %r11b
-## The executable's entry names the instance itself, a DLL's a word holding
-## it. On a hit in a DLL, LdrAddRefDll(LDR_ADDREF_DLL_PIN, module), whose
-## failure ends the search with its status; the executable is never unloaded.
-## The pointer is written between two protection calls.
-# CHECK:      leaq (%rdx,%rax), %r13
-# CHECK-NEXT: testb $0x1, 0x4(%r8)
-# CHECK-NEXT: jne
-# CHECK-NEXT: movq (%r13), %r13
-# CHECK:      cmpq (%rbp), %r15
-# CHECK-NEXT: je
-# CHECK-NEXT: movl $0x1, %ecx
-# CHECK-NEXT: callq *{{.*}}(%rip) # 0x[[#%x,NTDLL + 0x180000000]]
-# CHECK-NEXT: testl %eax, %eax
-# CHECK-NEXT: js
-# CHECK:      testb $0x1, (%rbx)
-# CHECK:      movl $0x4, %r9d
-# CHECK:      movq %r13, (%rcx,%rax)
-# CHECK-NEXT: addq $0x10, %rbx
-## An entity the table names takes the word its entry names, then the
-## instance from it.
-# CHECK:      movq 0x8(%rax), %r13
-# CHECK-NEXT: cmpl $0x1, 0xc(%rbx)
-# CHECK-NEXT: je
-# CHECK-NEXT: cmpl $0x1000, 0xc(%rbx)
-# CHECK-NEXT: jb
-# CHECK-NEXT: movq (%r13), %r13
-# CHECK-NEXT: jmp
-# CHECK:      popq %rbx
-# CHECK-NEXT: retq
-
-## A jump of the search takes an 8-bit displacement where that reaches, and a
-## 32-bit one only where it does not.
-# RUN: FileCheck --check-prefix=JUMP --input-file=a.txt %s
-# JUMP:      cmpq %rsi, %rbx
-# JUMP-NEXT: 0f 83 {{.*}} jae
-# JUMP:      cmpq (%rbp), %r15
-# JUMP-NEXT: 75 {{[0-9a-f]+}} jne
-
-## Nothing pins the DLL itself.
-# RUN: FileCheck --check-prefix=NOSELF --input-file=a.txt %s
-# NOSELF-NOT: leaq {{.*}}(%rip), %rdx # 0x180000000
-
-## The fill's list holds the pointer, read-only, with its name.
+## The fill's list holds the entity's cell, read-only, keyed by the entity and
+## of a kind that is the RVA of the name its export holds, never zero, by which
+## the search binds it.
 # RUN: llvm-objdump -s -j .rdata a.dll | FileCheck --check-prefix=BIND %s
-# BIND: b75fec27 d80a3472 {{[0-9a-f]+}} {{[0-9a-f]*[2-9a-f][0-9a-f]*}}
+# BIND:      {{.*}} b75fec27 d80a3472
+# BIND-NEXT: {{[0-9a-f]+}} {{[0-9a-f]*[2-9a-f][0-9a-f]*}}
 
 ## An importer of an entity that its DLL keeps preemptible reaches it through
 ## a cell, the import's entry, which the fill writes from the executable's
@@ -164,10 +72,9 @@
 # IMPORTER-NEXT: ImportLookupTableRVA:
 # IMPORTER-NEXT: ImportAddressTableRVA:
 # IMPORTER:      Symbol: LdrAddRefDll
-# IMPORTER:      cmpl $0x6c8e9cf5, 0x30(%rdx)
-# IMPORTER:      movq (%r13), %r13
 # RUN: llvm-objdump -s -j .rdata c.dll | FileCheck --check-prefix=IMPLIST %s
-# IMPLIST: b75fec27 d80a3472 {{[0-9a-f]+}} {{[0-9a-f]*[2-9a-f][0-9a-f]*}}
+# IMPLIST:      {{.*}} b75fec27 d80a3472
+# IMPLIST-NEXT: {{[0-9a-f]+}} {{[0-9a-f]*[2-9a-f][0-9a-f]*}}
 
 ## -Bsymbolic keeps the DLL's references local: no cells, no search, and,
 ## without a delay-loaded DLL, no table.
@@ -184,7 +91,7 @@
 ## each entry names the instance itself.
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium owner.s -o owner.obj
 # RUN: lld-link -import-slots -entry:main -subsystem:console owner.obj crt.obj \
-# RUN:   -out:owner.exe
+# RUN:   ntdll.lib -out:owner.exe
 # RUN: od -A x -t x4 -j 0x38 -N 4 owner.exe > owner.txt
 # RUN: llvm-readobj --coff-exports owner.exe >> owner.txt
 # RUN: llvm-objdump -s -j .rdata owner.exe >> owner.txt
@@ -200,13 +107,15 @@
 ## An executable that exports no vague entity has no table there.
 
 # RUN: lld-link -import-slots -entry:main -subsystem:console main.obj crt.obj \
-# RUN:   x.lib -delayload:x.dll -out:main.exe
+# RUN:   x.lib ntdll.lib -delayload:x.dll -out:main.exe
 # RUN: od -A x -t x4 -j 0x30 -N 8 main.exe | FileCheck --check-prefix=NONE %s
 
-## The search pins what it binds to.
+## The search needs LdrAddRefDll to pin what it binds to; without it the fill's
+## own reference is undefined.
 # RUN: not lld-link -import-slots -dll -noentry a.obj crt.obj x.lib \
 # RUN:   protect.lib -out:err.dll 2>&1 | FileCheck --check-prefix=ERR %s
-# ERR: error: the image's fill needs LdrAddRefDll from ntdll.lib
+# ERR: error: undefined symbol: {{.*}}LdrAddRefDll
+# ERR: referenced by crt.obj:(__llvm_fill)
 
 #--- a.s
   .linkbindings
@@ -276,6 +185,20 @@ __xi_z:
   .text
   .globl __delayLoadHelper2
 __delayLoadHelper2:
+  retq
+
+## A stand-in for the builtins' __llvm_fill: it loads its list and references
+## the ntdll functions it pins a searched module and seals with.
+  .def __llvm_fill
+  .scl 2
+  .type 32
+  .endef
+  .section .text,"xr",one_only,__llvm_fill
+  .globl __llvm_fill
+__llvm_fill:
+  leaq __llvm_fill_list(%rip), %rax
+  callq *__imp_NtProtectVirtualMemory(%rip)
+  callq *__imp_LdrAddRefDll(%rip)
   retq
 
 #--- ntdll.def
