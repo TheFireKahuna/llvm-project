@@ -20254,13 +20254,18 @@ X86TargetLowering::LowerGlobalTLSAddress(SDValue Op, SelectionDAG &DAG) const {
     if (GV->getThreadLocalMode() == GlobalVariable::LocalExecTLSModel) {
       res = ThreadPointer;
     } else {
-      // Load the _tls_index variable
+      // Load the _tls_index variable, which the loader sets before any of
+      // the image's code runs and which never changes.
       SDValue IDX = DAG.getExternalSymbol("_tls_index", PtrVT);
+      auto Invariant =
+          MachineMemOperand::MOInvariant | MachineMemOperand::MODereferenceable;
       if (Subtarget.is64Bit())
-        IDX = DAG.getExtLoad(ISD::ZEXTLOAD, dl, PtrVT, Chain, IDX,
-                             MachinePointerInfo(), MVT::i32);
+        IDX =
+            DAG.getExtLoad(ISD::ZEXTLOAD, dl, PtrVT, Chain, IDX,
+                           MachinePointerInfo(), MVT::i32, Align(4), Invariant);
       else
-        IDX = DAG.getLoad(PtrVT, dl, Chain, IDX, MachinePointerInfo());
+        IDX = DAG.getLoad(PtrVT, dl, Chain, IDX, MachinePointerInfo(), Align(4),
+                          Invariant);
 
       const DataLayout &DL = DAG.getDataLayout();
       SDValue Scale =

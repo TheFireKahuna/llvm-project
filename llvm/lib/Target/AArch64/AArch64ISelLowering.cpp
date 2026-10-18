@@ -12003,7 +12003,11 @@ AArch64TargetLowering::LowerWindowsGlobalTLSAddress(SDValue Op,
   SDValue ADRP = DAG.getNode(AArch64ISD::ADRP, DL, PtrVT, TLSIndexHi);
   SDValue TLSIndex =
       DAG.getNode(AArch64ISD::ADDlow, DL, PtrVT, ADRP, TLSIndexLo);
-  TLSIndex = DAG.getLoad(MVT::i32, DL, Chain, TLSIndex, MachinePointerInfo());
+  // The loader sets the TLS index before any of the image's code runs, and it
+  // never changes.
+  TLSIndex = DAG.getLoad(
+      MVT::i32, DL, Chain, TLSIndex, MachinePointerInfo(), Align(4),
+      MachineMemOperand::MOInvariant | MachineMemOperand::MODereferenceable);
   Chain = TLSIndex.getValue(1);
 
   // The pointer to the thread's TLS data area is at the TLS Index scaled by 8
