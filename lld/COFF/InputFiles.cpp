@@ -26,6 +26,7 @@
 #include "llvm/DebugInfo/PDB/Native/PDBFile.h"
 #include "llvm/IR/Mangler.h"
 #include "llvm/LTO/LTO.h"
+#include "llvm/Object/ArchiveWriter.h"
 #include "llvm/Object/Binary.h"
 #include "llvm/Object/COFF.h"
 #include "llvm/Object/COFFImportFile.h"
@@ -34,6 +35,7 @@
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/LEB128.h"
 #include "llvm/Support/Path.h"
 #include "llvm/TargetParser/Triple.h"
 #include <cstring>
@@ -545,175 +547,214 @@ void ObjFile::initializeChunks() {
   }
 }
 
-// Reads the object's link-only records. A record of a critical kind is needed
-// to link the object correctly, so an object holding one this linker does not
-// support, or whose records it cannot read, is an error.
-void ObjFile::readLinkRecords() {
-  ArrayRef<uint8_t> contents;
-  cantFail(coffObj->getSectionContents(linkRecords->sec, contents));
+Error lld::coff::malformedLinkRecords(const Twine &msg) {
+  return createStringError("is malformed: " + msg);
+}
+
+// The error of the extraction cur made, if any.
+static Error malformed(DataExtractor::Cursor &cur) {
+  Error e = cur.takeError();
+  return e ? malformedLinkRecords(toString(std::move(e))) : Error::success();
+}
+
+Error lld::coff::forEachLinkRecordGroup(
+    ArrayRef<uint8_t> contents,
+    function_ref<Error(uint64_t kind, ArrayRef<uint8_t> payload)> fn,
+    function_ref<void(uint64_t capabilities)> header) {
   DataExtractor data(contents, /*IsLittleEndian=*/true);
   DataExtractor::Cursor cur(0);
   StringRef magic = data.getBytes(cur, sizeof(LinkRecordsMagic));
-  if (cur && magic != StringRef(LinkRecordsMagic, sizeof(LinkRecordsMagic))) {
-    consumeError(cur.takeError());
-    Err(symtab.ctx) << this
-                    << ": .llvm_link_records is malformed: invalid signature";
-    return;
-  }
+  if (cur && magic != StringRef(LinkRecordsMagic, sizeof(LinkRecordsMagic)))
+    return malformedLinkRecords("invalid signature");
   uint64_t version = data.getULEB128(cur);
-  if (cur && version != LinkRecordsVersion) {
-    consumeError(cur.takeError());
-    Err(symtab.ctx) << this << ": .llvm_link_records has version " << version
-                    << ", which this linker does not support; link the "
-                       "object with a newer linker";
-    return;
-  }
+  if (cur && version != LinkRecordsVersion)
+    return createStringError("has version " + Twine(version) +
+                             ", which this linker does not support; link the "
+                             "object with a newer linker");
   uint64_t capabilities = data.getULEB128(cur);
-  // ARM64EC gives an import two pointers, which the sites do not describe.
-  linkRecords->describesSites = (capabilities & LinkRecordsX86_64Sites) &&
-                                getMachineType() == AMD64 && !symtab.isEC();
-  linkRecords->describesFunctionSites =
-      linkRecords->describesSites && (capabilities & LinkRecordsFunctionSites);
-  linkRecords->listsCallOnly =
-      (capabilities & LinkRecordsCallOnly) && !symtab.isEC();
-  // The records place their per-relocation facts straight into a slot for each
-  // relocation of the object as they are read, so size it up front from the
-  // sections' relocation counts.
-  if (linkRecords->describesSites || linkRecords->listsCallOnly) {
-    uint32_t numSections = coffObj->getNumberOfSections();
-    linkRecords->relocFactStarts.assign(numSections + 2, 0);
-    for (uint32_t sec = 1; sec <= numSections; ++sec)
-      if (SectionChunk *sc = getSectionChunk(sec))
-        linkRecords->relocFactStarts[sec + 1] = sc->getRelocs().size();
-    for (uint32_t sec = 1; sec <= numSections + 1; ++sec)
-      linkRecords->relocFactStarts[sec] += linkRecords->relocFactStarts[sec - 1];
-    linkRecords->relocFacts.assign(linkRecords->relocFactStarts[numSections + 1],
-                                   RelocFact());
-  }
+  if (cur && header)
+    header(capabilities);
   while (cur && !data.eof(cur)) {
     uint64_t kind = data.getULEB128(cur);
     uint64_t size = data.getULEB128(cur);
     uint64_t start = cur.tell();
     data.skip(cur, size);
-    if (cur && kind == LinkRecordSites &&
-        (getMachineType() == AMD64 || getMachineType() == ARM64)) {
-      if (!readLinkSites(contents.slice(start, size)))
-        return;
-      continue;
-    }
-    if (cur && kind == LinkRecordCoverage && getMachineType() == AMD64) {
-      if (!readLinkCoverage(contents.slice(start, size)))
-        return;
-      continue;
-    }
-    if (cur && kind == LinkRecordCallOnly) {
-      if (!readCallOnlyRefs(contents.slice(start, size)))
-        return;
-      continue;
-    }
-    if (cur && kind == LinkRecordTailJumps) {
-      if (!readTailJumps(contents.slice(start, size)))
-        return;
-      continue;
-    }
-    if (cur && kind == LinkRecordPins) {
-      if (!readLinkPins(contents.slice(start, size)))
-        return;
-      continue;
-    }
-    if (cur && kind == LinkRecordVTables) {
-      if (!readLinkVTables(contents.slice(start, size)))
-        return;
-      continue;
-    }
-    if (cur && kind == LinkRecordKCFIThunks) {
-      if (!readKCFIThunks(contents.slice(start, size)))
-        return;
-      continue;
-    }
-    if (cur && kind == LinkRecordContracts) {
-      if (!readContractRequirements(this, contents.slice(start, size)))
-        return;
-      continue;
-    }
-    if (cur && kind == LinkRecordKCFIMemberTags) {
-      DataExtractor group(contents.slice(start, size), /*IsLittleEndian=*/true);
-      DataExtractor::Cursor c(0);
-      while (c && !group.eof(c)) {
-        uint64_t index = group.getULEB128(c);
-        if (c && index < symbols.size() && symbols[index])
-          symtab.ctx.kcfi.memberTags.push_back(symbols[index]);
-      }
-      if (Error e = c.takeError()) {
-        Err(symtab.ctx) << this << ": .llvm_link_records is malformed: "
-                        << std::move(e);
-        return;
-      }
-      continue;
-    }
-    if (cur && kind == LinkRecordForwarders) {
-      DataExtractor group(contents.slice(start, size), /*IsLittleEndian=*/true);
-      DataExtractor::Cursor c(0);
-      while (c && !group.eof(c)) {
-        uint64_t forwarder = group.getULEB128(c);
-        uint64_t pointer = group.getULEB128(c);
-        if (c && forwarder < symbols.size() && pointer < symbols.size() &&
-            symbols[forwarder] && symbols[pointer])
-          symtab.forwarders.push_back(
-              {this, symbols[forwarder], symbols[pointer]});
-      }
-      if (Error e = c.takeError()) {
-        Err(symtab.ctx) << this << ": .llvm_link_records is malformed: "
-                        << std::move(e);
-        return;
-      }
-      continue;
-    }
-    if (cur && kind == LinkRecordBinding) {
-      linkRecords->listsBindings = true;
-      DataExtractor group(contents.slice(start, size), /*IsLittleEndian=*/true);
-      DataExtractor::Cursor c(0);
-      while (c && !group.eof(c)) {
-        uint64_t index = group.getULEB128(c);
-        uint64_t role = group.getULEB128(c);
-        if (c && role == LinkBindingDefault)
-          linkRecords->defaultBindings.insert(index);
-      }
-      if (Error e = c.takeError()) {
-        Err(symtab.ctx) << this << ": .llvm_link_records is malformed: "
-                        << std::move(e);
-        return;
-      }
-      continue;
-    }
-    if (cur && kind == LinkRecordKCFIImportLists) {
-      linkRecords->listsKCFIImports = true;
-      symtab.ctx.kcfi.listsImports = true;
-      continue;
-    }
-    if (cur && kind == LinkRecordTypePrefixes) {
-      symtab.ctx.typePrefixRecords = true;
-      continue;
-    }
-    if (cur && kind == LinkRecordProtectedDelayIAT) {
-      linkRecords->protectsDelayIat = true;
-      continue;
-    }
-    if (cur && (kind & LinkRecordKindCritical)) {
-      consumeError(cur.takeError());
-      Err(symtab.ctx) << this
-                      << ": .llvm_link_records has a record of critical kind "
-                      << kind
-                      << ", which this linker does not support; link "
-                         "the object with a newer linker";
-      return;
-    }
+    if (!cur)
+      break;
+    if (Error e = fn(kind, contents.slice(start, size)))
+      return e;
   }
-  if (Error e = cur.takeError()) {
-    Err(symtab.ctx) << this
-                    << ": .llvm_link_records is malformed: " << std::move(e);
+  return malformed(cur);
+}
+
+void lld::coff::forEachLinkRecordGroup(
+    MemoryBufferRef mb, MachineTypes machine,
+    function_ref<void(uint64_t kind, ArrayRef<uint8_t> payload)> fn) {
+  Expected<std::unique_ptr<COFFObjectFile>> obj = COFFObjectFile::create(mb);
+  if (!obj) {
+    consumeError(obj.takeError());
     return;
   }
+  if (machine != IMAGE_FILE_MACHINE_UNKNOWN && (*obj)->getMachine() != machine)
+    return;
+  for (const SectionRef &sec : (*obj)->sections()) {
+    Expected<StringRef> name = sec.getName();
+    Expected<StringRef> contents = sec.getContents();
+    if (name && contents && *name == ".llvm_link_records") {
+      consumeError(
+          forEachLinkRecordGroup(arrayRefFromStringRef(*contents),
+                                 [&](uint64_t kind, ArrayRef<uint8_t> payload) {
+                                   fn(kind, payload);
+                                   return Error::success();
+                                 }));
+      return;
+    }
+    consumeError(name.takeError());
+    consumeError(contents.takeError());
+  }
+}
+
+NewArchiveMember lld::coff::createLinkRecordMember(
+    COFFLinkerContext &ctx, StringRef dllName, StringRef symbolName,
+    ArrayRef<std::pair<uint64_t, std::string>> groups,
+    std::vector<uint8_t> &buffer) {
+  std::string records(LinkRecordsMagic, sizeof(LinkRecordsMagic));
+  raw_string_ostream os(records);
+  encodeULEB128(LinkRecordsVersion, os);
+  encodeULEB128(0, os);
+  for (const auto &[kind, payload] : groups) {
+    encodeULEB128(kind, os);
+    encodeULEB128(payload.size(), os);
+    os << payload;
+  }
+  return createLinkerFacts(dllName, ctx.config.machine, ".llvm_link_records",
+                           arrayRefFromStringRef(records), symbolName, buffer);
+}
+
+// Reads payload as tuples of n symbol indices, giving each to fn.
+static Error readIndices(ArrayRef<uint8_t> payload, unsigned n,
+                         function_ref<void(ArrayRef<uint64_t>)> fn) {
+  DataExtractor data(payload, /*IsLittleEndian=*/true);
+  DataExtractor::Cursor cur(0);
+  uint64_t tuple[2];
+  while (cur && !data.eof(cur)) {
+    for (unsigned i = 0; i != n; ++i)
+      tuple[i] = data.getULEB128(cur);
+    if (cur)
+      fn(ArrayRef(tuple, n));
+  }
+  return malformed(cur);
+}
+
+// Reads the object's link-only records. A record of a critical kind is needed
+// to link the object correctly, so an object holding one this linker does not
+// support, or whose records it cannot read, is an error, and what they said
+// before it is dropped.
+void ObjFile::readLinkRecords() {
+  ArrayRef<uint8_t> contents;
+  cantFail(coffObj->getSectionContents(linkRecords->sec, contents));
+  MachineTypes machine = getMachineType();
+  auto header = [&](uint64_t capabilities) {
+    // ARM64EC gives an import two pointers, which the sites do not describe.
+    linkRecords->describesSites = (capabilities & LinkRecordsX86_64Sites) &&
+                                  machine == AMD64 && !symtab.isEC();
+    linkRecords->describesFunctionSites =
+        linkRecords->describesSites &&
+        (capabilities & LinkRecordsFunctionSites);
+    linkRecords->listsCallOnly =
+        (capabilities & LinkRecordsCallOnly) && !symtab.isEC();
+    // The records place their per-relocation facts straight into a slot for
+    // each relocation of the object as they are read, so size it up front
+    // from the sections' relocation counts.
+    if (!linkRecords->describesSites && !linkRecords->listsCallOnly)
+      return;
+    uint32_t numSections = coffObj->getNumberOfSections();
+    std::vector<uint32_t> &starts = linkRecords->relocFactStarts;
+    starts.assign(numSections + 2, 0);
+    for (uint32_t sec = 1; sec <= numSections; ++sec)
+      if (SectionChunk *sc = getSectionChunk(sec))
+        starts[sec + 1] = sc->getRelocs().size();
+    for (uint32_t sec = 1; sec <= numSections + 1; ++sec)
+      starts[sec] += starts[sec - 1];
+    linkRecords->relocFacts.assign(starts[numSections + 1], RelocFact());
+  };
+  auto symbol = [&](uint64_t index) {
+    return index < symbols.size() ? symbols[index] : nullptr;
+  };
+  auto read = [&](uint64_t kind, ArrayRef<uint8_t> payload) -> Error {
+    switch (kind) {
+    case LinkRecordSites:
+      if (machine == AMD64 || machine == ARM64)
+        return readLinkSites(payload);
+      break;
+    case LinkRecordCoverage:
+      if (machine == AMD64)
+        return readLinkCoverage(payload);
+      break;
+    case LinkRecordCallOnly:
+      return readCallOnlyRefs(payload);
+    case LinkRecordTailJumps:
+      return readTailJumps(payload);
+    case LinkRecordPins:
+      return readLinkPins(payload);
+    case LinkRecordVTables:
+      return readLinkVTables(payload);
+    case LinkRecordKCFIThunks:
+      return readKCFIThunks(payload);
+    case LinkRecordContracts:
+      return readContractRequirements(this, payload);
+    case LinkRecordKCFIMemberTags:
+      return readIndices(payload, 1, [&](ArrayRef<uint64_t> t) {
+        if (Symbol *s = symbol(t[0]))
+          symtab.ctx.kcfi.memberTags.push_back(s);
+      });
+    case LinkRecordForwarders:
+      return readIndices(payload, 2, [&](ArrayRef<uint64_t> t) {
+        if (symbol(t[0]) && symbol(t[1]))
+          symtab.forwarders.push_back({this, symbol(t[0]), symbol(t[1])});
+      });
+    case LinkRecordBinding:
+      linkRecords->listsBindings = true;
+      return readIndices(payload, 2, [&](ArrayRef<uint64_t> t) {
+        if (t[1] == LinkBindingDefault)
+          linkRecords->defaultBindings.insert(t[0]);
+      });
+    case LinkRecordKCFIImportLists:
+      linkRecords->listsKCFIImports = true;
+      symtab.ctx.kcfi.listsImports = true;
+      break;
+    case LinkRecordTypePrefixes:
+      symtab.ctx.typePrefixRecords = true;
+      break;
+    case LinkRecordProtectedDelayIAT:
+      linkRecords->protectsDelayIat = true;
+      break;
+    default:
+      if (kind & LinkRecordKindCritical)
+        return createStringError("has a record of critical kind " +
+                                 Twine(kind) +
+                                 ", which this linker does not support; link "
+                                 "the object with a newer linker");
+    }
+    return Error::success();
+  };
+  if (Error e = forEachLinkRecordGroup(contents, read, header)) {
+    Err(symtab.ctx) << this << ": .llvm_link_records " << std::move(e);
+    const coff_section *sec = linkRecords->sec;
+    *linkRecords = LinkRecords();
+    linkRecords->sec = sec;
+  }
+}
+
+Expected<uint32_t> ObjFile::getRecordSection(uint64_t index,
+                                             const Twine &group) {
+  Expected<COFFSymbolRef> sym = coffObj->getSymbol(index);
+  if (sym && sym->isSectionDefinition() && sym->getSectionNumber() > 0 &&
+      uint32_t(sym->getSectionNumber()) <= coffObj->getNumberOfSections())
+    return sym->getSectionNumber();
+  consumeError(sym.takeError());
+  return malformedLinkRecords(group + " of symbol " + Twine(index) +
+                              ", which is not a section's symbol");
 }
 
 // Advances r over the relocations of relocs, which a record group reads in
@@ -760,13 +801,7 @@ bool ObjFile::hasDefaultVisibility(DefinedRegular *d) const {
 // Reads a group of pins. A pin naming a section's symbol pins the start of the
 // section; any other names a symbol, which the link resolves. A pin of a
 // section or symbol that COMDAT selection discarded applies to nothing.
-bool ObjFile::readLinkPins(ArrayRef<uint8_t> payload) {
-  std::vector<LinkPin> &pins = linkRecords->pins;
-  auto malformed = [&](const Twine &msg) {
-    Err(symtab.ctx) << this << ": .llvm_link_records is malformed: " << msg;
-    pins.clear();
-    return false;
-  };
+Error ObjFile::readLinkPins(ArrayRef<uint8_t> payload) {
   DataExtractor data(payload, /*IsLittleEndian=*/true);
   DataExtractor::Cursor cur(0);
   while (cur && !data.eof(cur)) {
@@ -777,13 +812,13 @@ bool ObjFile::readLinkPins(ArrayRef<uint8_t> payload) {
       break;
     uint64_t log2 = flags >> 1;
     if (log2 > 63 || residue >> log2)
-      return malformed("pin of symbol " + Twine(symIndex) +
-                       " has an invalid residue");
+      return malformedLinkRecords("pin of symbol " + Twine(symIndex) +
+                                  " has an invalid residue");
     Expected<COFFSymbolRef> sym = coffObj->getSymbol(symIndex);
     if (!sym || symIndex >= symbols.size()) {
       consumeError(sym.takeError());
-      return malformed("pin of symbol " + Twine(symIndex) +
-                       ", which does not exist");
+      return malformedLinkRecords("pin of symbol " + Twine(symIndex) +
+                                  ", which does not exist");
     }
     LinkPin pin{symbols[symIndex], nullptr, residue, uint8_t(log2),
                 bool(flags & 1)};
@@ -797,15 +832,9 @@ bool ObjFile::readLinkPins(ArrayRef<uint8_t> payload) {
     } else if (!pin.sym) {
       continue;
     }
-    pins.push_back(pin);
+    linkRecords->pins.push_back(pin);
   }
-  if (Error e = cur.takeError()) {
-    pins.clear();
-    Err(symtab.ctx) << this
-                    << ": .llvm_link_records is malformed: " << std::move(e);
-    return false;
-  }
-  return true;
+  return malformed(cur);
 }
 
 // Reads a group of vtables: the primary address point of each vtable the
@@ -813,13 +842,7 @@ bool ObjFile::readLinkPins(ArrayRef<uint8_t> payload) {
 // section's symbol is at the start of the section; any other names a symbol
 // the link resolves. A vtable of a section or symbol that COMDAT selection
 // discarded applies to nothing.
-bool ObjFile::readLinkVTables(ArrayRef<uint8_t> payload) {
-  std::vector<LinkVTable> &vtables = linkRecords->vtables;
-  auto malformed = [&](const Twine &msg) {
-    Err(symtab.ctx) << this << ": .llvm_link_records is malformed: " << msg;
-    vtables.clear();
-    return false;
-  };
+Error ObjFile::readLinkVTables(ArrayRef<uint8_t> payload) {
   DataExtractor data(payload, /*IsLittleEndian=*/true);
   DataExtractor::Cursor cur(0);
   while (cur && !data.eof(cur)) {
@@ -830,37 +853,25 @@ bool ObjFile::readLinkVTables(ArrayRef<uint8_t> payload) {
     if (!cur)
       break;
     if (cls.empty())
-      return malformed("vtable of symbol " + Twine(symIndex) +
-                       " has an empty class");
+      return malformedLinkRecords("vtable of symbol " + Twine(symIndex) +
+                                  " has an empty class");
     Expected<COFFSymbolRef> sym = coffObj->getSymbol(symIndex);
     if (!sym || symIndex >= symbols.size()) {
       consumeError(sym.takeError());
-      return malformed("vtable of symbol " + Twine(symIndex) +
-                       ", which does not exist");
+      return malformedLinkRecords("vtable of symbol " + Twine(symIndex) +
+                                  ", which does not exist");
     }
-    auto *d = dyn_cast_or_null<DefinedRegular>(symbols[symIndex]);
-    if (!d)
-      continue;
-    vtables.push_back(
-        {d, offset, cls.str(), base.str(), sym->isSectionDefinition()});
+    if (auto *d = dyn_cast_or_null<DefinedRegular>(symbols[symIndex]))
+      linkRecords->vtables.push_back(
+          {d, offset, cls.str(), base.str(), sym->isSectionDefinition()});
   }
-  if (Error e = cur.takeError()) {
-    vtables.clear();
-    Err(symtab.ctx) << this
-                    << ": .llvm_link_records is malformed: " << std::move(e);
-    return false;
-  }
-  return true;
+  return malformed(cur);
 }
 
 // Reads a group of KCFI thunks. The copies of a thunk's COMDAT in different
 // objects are interchangeable only if they compare the same prefixes, so
 // copies whose marker or offset differ are an error.
-bool ObjFile::readKCFIThunks(ArrayRef<uint8_t> payload) {
-  auto malformed = [&](const Twine &msg) {
-    Err(symtab.ctx) << this << ": .llvm_link_records is malformed: " << msg;
-    return false;
-  };
+Error ObjFile::readKCFIThunks(ArrayRef<uint8_t> payload) {
   DataExtractor data(payload, /*IsLittleEndian=*/true);
   DataExtractor::Cursor cur(0);
   while (cur && !data.eof(cur)) {
@@ -874,11 +885,12 @@ bool ObjFile::readKCFIThunks(ArrayRef<uint8_t> payload) {
       break;
     for (uint64_t index : {thunkIndex, mismatchIndex})
       if (index >= symbols.size() || !symbols[index])
-        return malformed("KCFI thunk of symbol " + Twine(index) +
-                         ", which does not exist");
+        return malformedLinkRecords("KCFI thunk of symbol " + Twine(index) +
+                                    ", which does not exist");
     if (offset > UINT32_MAX)
-      return malformed("KCFI thunk " + symbols[thunkIndex]->getName() +
-                       " has an invalid offset");
+      return malformedLinkRecords("KCFI thunk " +
+                                  symbols[thunkIndex]->getName() +
+                                  " has an invalid offset");
     // A thunk of a kind this linker does not know is left as it is.
     if (kind > LinkKCFIThunkLocalCheck)
       continue;
@@ -898,18 +910,12 @@ bool ObjFile::readKCFIThunks(ArrayRef<uint8_t> payload) {
                       << utohexstr(other.marker, /*LowerCase=*/true)
                       << " and offset " << other.offset;
   }
-  if (Error e = cur.takeError()) {
-    Err(symtab.ctx) << this
-                    << ": .llvm_link_records is malformed: " << std::move(e);
-    return false;
-  }
-  return true;
+  return malformed(cur);
 }
 
-// Reads a group of fields through which their symbols are only called.
 // Reads the sections that end in a jump that also ends the function each
 // holds.
-bool ObjFile::readTailJumps(ArrayRef<uint8_t> payload) {
+Error ObjFile::readTailJumps(ArrayRef<uint8_t> payload) {
   std::vector<uint32_t> &tailJumps = linkRecords->tailJumps;
   DataExtractor data(payload, /*IsLittleEndian=*/true);
   DataExtractor::Cursor cur(0);
@@ -917,33 +923,17 @@ bool ObjFile::readTailJumps(ArrayRef<uint8_t> payload) {
     uint64_t symIndex = data.getULEB128(cur);
     if (!cur)
       break;
-    Expected<COFFSymbolRef> sym = coffObj->getSymbol(symIndex);
-    if (!sym || !sym->isSectionDefinition() || sym->getSectionNumber() <= 0) {
-      consumeError(sym.takeError());
-      Err(symtab.ctx) << this
-                      << ": .llvm_link_records is malformed: tail jump of "
-                         "symbol "
-                      << symIndex << ", which is not a section's symbol";
-      tailJumps.clear();
-      return false;
-    }
-    tailJumps.push_back(sym->getSectionNumber());
-  }
-  if (Error e = cur.takeError()) {
-    tailJumps.clear();
-    Err(symtab.ctx) << this
-                    << ": .llvm_link_records is malformed: " << std::move(e);
-    return false;
+    Expected<uint32_t> section = getRecordSection(symIndex, "tail jump");
+    if (!section)
+      return section.takeError();
+    tailJumps.push_back(*section);
   }
   llvm::sort(tailJumps);
-  return true;
+  return malformed(cur);
 }
 
-bool ObjFile::readCallOnlyRefs(ArrayRef<uint8_t> payload) {
-  auto malformed = [&](const Twine &msg) {
-    Err(symtab.ctx) << this << ": .llvm_link_records is malformed: " << msg;
-    return false;
-  };
+// Reads a group of fields through which their symbols are only called.
+Error ObjFile::readCallOnlyRefs(ArrayRef<uint8_t> payload) {
   DataExtractor data(payload, /*IsLittleEndian=*/true);
   DataExtractor::Cursor cur(0);
   while (cur && !data.eof(cur)) {
@@ -951,63 +941,43 @@ bool ObjFile::readCallOnlyRefs(ArrayRef<uint8_t> payload) {
     uint64_t count = data.getULEB128(cur);
     if (!cur)
       break;
-    Expected<COFFSymbolRef> sym = coffObj->getSymbol(symIndex);
-    Expected<const coff_section *> sec =
-        sym && sym->isSectionDefinition() && sym->getSectionNumber() > 0
-            ? coffObj->getSection(sym->getSectionNumber())
-            : Expected<const coff_section *>(nullptr);
-    if (!sym || !sec || !*sec) {
-      consumeError(sym.takeError());
-      consumeError(sec.takeError());
-      return malformed("call-only group of symbol " + Twine(symIndex) +
-                       ", which is not a section's symbol");
-    }
-    uint32_t section = sym->getSectionNumber();
-    uint64_t size = (*sec)->SizeOfRawData;
+    Expected<uint32_t> section = getRecordSection(symIndex, "call-only group");
+    if (!section)
+      return section.takeError();
+    uint64_t size = getSection(*section)->SizeOfRawData;
     uint64_t offset = 0;
-    SectionChunk *sc = linkRecords->listsCallOnly ? getSectionChunk(section)
-                                                  : nullptr;
+    SectionChunk *sc =
+        linkRecords->listsCallOnly ? getSectionChunk(*section) : nullptr;
     ArrayRef<coff_relocation> relocs =
         sc ? sc->getRelocs() : ArrayRef<coff_relocation>();
-    uint32_t base = sc ? linkRecords->relocFactStarts[section] : 0;
+    uint32_t base = sc ? linkRecords->relocFactStarts[*section] : 0;
     size_t r = 0;
     for (uint64_t i = 0; cur && i != count; ++i) {
       uint64_t delta = data.getULEB128(cur);
       if (!cur)
         break;
       if (i != 0 && delta == 0)
-        return malformed("call-only references out of order in section " +
-                         Twine(section));
+        return malformedLinkRecords(
+            "call-only references out of order in section " + Twine(*section));
       offset += delta;
       if (offset + 4 > size)
-        return malformed("call-only reference past the end of section " +
-                         Twine(section));
+        return malformedLinkRecords(
+            "call-only reference past the end of section " + Twine(*section));
       if (int64_t j = placeReloc(relocs, r, offset); j >= 0)
         linkRecords->relocFacts[base + j].callOnly = true;
     }
   }
-  if (Error e = cur.takeError()) {
-    Err(symtab.ctx) << this
-                    << ": .llvm_link_records is malformed: " << std::move(e);
-    return false;
-  }
-  return true;
+  return malformed(cur);
 }
 
 // Reads a group of instruction sites. Sites are found from relocations, so a
 // site at an offset with no relocation is never used. A site's data gives
 // facts about fused calls and loads; a fact of a kind this linker does not
 // know is skipped.
-bool ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
+Error ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
   std::vector<LinkFusion> &fusions = linkRecords->fusions;
   bool describes = linkRecords->describesSites;
   bool ec = symtab.isEC();
-  auto malformed = [&](const Twine &msg) {
-    Err(symtab.ctx) << this << ": .llvm_link_records is malformed: " << msg;
-    fusions.clear();
-    linkRecords->valueOnlyLoads.clear();
-    return false;
-  };
   DataExtractor data(payload, /*IsLittleEndian=*/true);
   DataExtractor::Cursor cur(0);
   while (cur && !data.eof(cur)) {
@@ -1015,29 +985,20 @@ bool ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
     uint64_t count = data.getULEB128(cur);
     if (!cur)
       break;
-    Expected<COFFSymbolRef> sym = coffObj->getSymbol(symIndex);
-    Expected<const coff_section *> sec =
-        sym && sym->isSectionDefinition() && sym->getSectionNumber() > 0
-            ? coffObj->getSection(sym->getSectionNumber())
-            : Expected<const coff_section *>(nullptr);
-    if (!sym || !sec || !*sec) {
-      consumeError(sym.takeError());
-      consumeError(sec.takeError());
-      return malformed("site group of symbol " + Twine(symIndex) +
-                       ", which is not a section's symbol");
-    }
-    uint32_t section = sym->getSectionNumber();
-    uint64_t size = (*sec)->SizeOfRawData;
+    Expected<uint32_t> section = getRecordSection(symIndex, "site group");
+    if (!section)
+      return section.takeError();
+    uint64_t size = getSection(*section)->SizeOfRawData;
     uint64_t offset = 0;
     size_t firstFusion = fusions.size();
     // The offset of each site in the group, by its index, so a fused call
     // finds its load; and a forward cursor over the section's relocations that
     // places each site's form in its relocation's slot.
     SmallVector<uint32_t, 0> siteOffsets;
-    SectionChunk *sc = describes ? getSectionChunk(section) : nullptr;
+    SectionChunk *sc = describes ? getSectionChunk(*section) : nullptr;
     ArrayRef<coff_relocation> relocs =
         sc ? sc->getRelocs() : ArrayRef<coff_relocation>();
-    uint32_t base = describes ? linkRecords->relocFactStarts[section] : 0;
+    uint32_t base = describes ? linkRecords->relocFactStarts[*section] : 0;
     size_t r = 0;
     for (uint64_t i = 0; cur && i != count; ++i) {
       uint64_t site = data.getULEB128(cur);
@@ -1047,7 +1008,8 @@ bool ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
       if (!cur)
         break;
       if (i != 0 && site >> 4 == 0)
-        return malformed("sites out of order in section " + Twine(section));
+        return malformedLinkRecords("sites out of order in section " +
+                                    Twine(*section));
       offset += site >> 4;
       // A form this linker does not know is still a site that is not a
       // branch, which it leaves as it is.
@@ -1057,7 +1019,8 @@ bool ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
       // A site with a relocation holds its 4-byte field, which the linker
       // checks with the site's bytes; one that facts describe may be shorter.
       if (offset >= size)
-        return malformed("site past the end of section " + Twine(section));
+        return malformedLinkRecords("site past the end of section " +
+                                    Twine(*section));
       siteOffsets.push_back(offset);
       if (describes)
         if (int64_t j = placeReloc(relocs, r, offset); j >= 0) {
@@ -1086,12 +1049,12 @@ bool ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
             fusions.back().valueRead = !value;
           if (!ec)
             linkRecords->valueOnlyLoads.push_back(
-                {section, uint32_t(offset),
+                {*section, uint32_t(offset),
                  uint16_t(value > UINT16_MAX ? 0 : value),
                  static_cast<LinkSiteForm>(form)});
           continue;
         }
-        LinkFusion f{section, uint32_t(offset)};
+        LinkFusion f{*section, uint32_t(offset)};
         if (kind == LinkSiteFusedCall) {
           // The load's index, resolved once the section's sites are read.
           f.load = std::min<uint64_t>(value >> 6, UINT32_MAX);
@@ -1138,16 +1101,12 @@ bool ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
       if (f.isLoad)
         continue;
       if (f.load >= siteOffsets.size())
-        return malformed("fused call at offset 0x" +
-                         Twine::utohexstr(f.offset) + " in section " +
-                         Twine(section) + " reads a site that does not exist");
+        return malformedLinkRecords("fused call at offset 0x" +
+                                    Twine::utohexstr(f.offset) +
+                                    " in section " + Twine(*section) +
+                                    " reads a site that does not exist");
       f.load = siteOffsets[f.load];
     }
-  }
-  if (Error e = cur.takeError()) {
-    Err(symtab.ctx) << this
-                    << ": .llvm_link_records is malformed: " << std::move(e);
-    return false;
   }
   // A site that two facts describe keeps the first.
   llvm::stable_sort(fusions, [](const LinkFusion &a, const LinkFusion &b) {
@@ -1159,7 +1118,7 @@ bool ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
                                      a.offset == b.offset;
                             }),
                 fusions.end());
-  return true;
+  return malformed(cur);
 }
 
 bool ObjFile::endsInTailJump(const SectionChunk *sc) const {
@@ -1199,36 +1158,9 @@ const ObjFile::LinkFusion *ObjFile::getLinkFusion(const SectionChunk *sc,
 // is covered. A field of a kind this linker does not know leaves the section
 // whose code the value depends on uncovered, since a value it cannot compute
 // keeps that code where it is.
-bool ObjFile::readLinkCoverage(ArrayRef<uint8_t> payload) {
+Error ObjFile::readLinkCoverage(ArrayRef<uint8_t> payload) {
   std::vector<LinkCoverage> &coverage = linkRecords->coverage;
   std::vector<uint32_t> &covered = linkRecords->coveredSections;
-  DataExtractor data(payload, /*IsLittleEndian=*/true);
-  DataExtractor::Cursor cur(0);
-  auto malformed = [&](const Twine &msg) {
-    consumeError(cur.takeError());
-    Err(symtab.ctx) << this << ": .llvm_link_records is malformed: " << msg;
-    coverage.clear();
-    covered.clear();
-    return false;
-  };
-  // The header of the section whose symbol is at index, and its number.
-  auto getSection = [&](uint64_t index,
-                        uint32_t &number) -> const coff_section * {
-    Expected<COFFSymbolRef> sym = coffObj->getSymbol(index);
-    if (!sym) {
-      consumeError(sym.takeError());
-      return nullptr;
-    }
-    if (!sym->isSectionDefinition() || sym->getSectionNumber() <= 0)
-      return nullptr;
-    number = sym->getSectionNumber();
-    Expected<const coff_section *> sec = coffObj->getSection(number);
-    if (!sec) {
-      consumeError(sec.takeError());
-      return nullptr;
-    }
-    return *sec;
-  };
   // Whether a field of kind holds size bytes.
   auto isKnownField = [](unsigned kind, unsigned size) {
     switch (kind) {
@@ -1247,6 +1179,8 @@ bool ObjFile::readLinkCoverage(ArrayRef<uint8_t> payload) {
     }
   };
 
+  DataExtractor data(payload, /*IsLittleEndian=*/true);
+  DataExtractor::Cursor cur(0);
   DenseSet<uint32_t> unknown;
   while (cur && !data.eof(cur)) {
     uint64_t fieldIndex = data.getULEB128(cur);
@@ -1254,16 +1188,20 @@ bool ObjFile::readLinkCoverage(ArrayRef<uint8_t> payload) {
     uint64_t count = data.getULEB128(cur);
     if (!cur)
       break;
-    uint32_t field = 0, target = 0;
-    const coff_section *fieldSec = getSection(fieldIndex, field);
-    const coff_section *targetSec = getSection(targetIndex, target);
-    if (!fieldSec || !targetSec)
-      return malformed("coverage group of symbol " +
-                       Twine(fieldSec ? targetIndex : fieldIndex) +
-                       ", which is not a section's symbol");
+    Expected<uint32_t> fieldNumber =
+        getRecordSection(fieldIndex, "coverage group");
+    if (!fieldNumber)
+      return fieldNumber.takeError();
+    Expected<uint32_t> targetNumber =
+        getRecordSection(targetIndex, "coverage group");
+    if (!targetNumber)
+      return targetNumber.takeError();
+    uint32_t field = *fieldNumber, target = *targetNumber;
+    const coff_section *fieldSec = getSection(field);
+    const coff_section *targetSec = getSection(target);
     if (!(targetSec->Characteristics & IMAGE_SCN_CNT_CODE))
-      return malformed("coverage of section " + Twine(target) +
-                       ", which holds no code");
+      return malformedLinkRecords("coverage of section " + Twine(target) +
+                                  ", which holds no code");
     bool own = field == target;
     if (own)
       covered.push_back(target);
@@ -1298,10 +1236,12 @@ bool ObjFile::readLinkCoverage(ArrayRef<uint8_t> payload) {
       } else if (c.type == LinkCoverageInterior) {
         a = prevA += data.getSLEB128(cur);
       } else {
-        if (same && !haveField)
-          return malformed("coverage entry at offset 0x" +
-                           Twine::utohexstr(offset) + " in section " +
-                           Twine(field) + " repeats no field");
+        if (same && !haveField) {
+          consumeError(cur.takeError());
+          return malformedLinkRecords(
+              "coverage entry at offset 0x" + Twine::utohexstr(offset) +
+              " in section " + Twine(field) + " repeats no field");
+        }
         fieldInfo = same ? prevField : data.getULEB128(cur);
         prevField = fieldInfo;
         haveField = true;
@@ -1330,9 +1270,9 @@ bool ObjFile::readLinkCoverage(ArrayRef<uint8_t> payload) {
            (c.type == LinkCoverageAlign || c.type == LinkCoveragePCRelative)) ||
           (c.type == LinkCoverageAlign &&
            (c.kind > 12 || a >= uint64_t(1) << c.kind)))
-        return malformed("coverage entry at offset 0x" +
-                         Twine::utohexstr(offset) + " in section " +
-                         Twine(field) + " is out of range");
+        return malformedLinkRecords("coverage entry at offset 0x" +
+                                    Twine::utohexstr(offset) + " in section " +
+                                    Twine(field) + " is out of range");
       if ((c.type == LinkCoverageDifference ||
            c.type == LinkCoveragePCRelative) &&
           (!isKnownField(c.kind, c.size) ||
@@ -1351,20 +1291,13 @@ bool ObjFile::readLinkCoverage(ArrayRef<uint8_t> payload) {
       coverage.push_back(c);
     }
   }
-  if (Error e = cur.takeError()) {
-    coverage.clear();
-    covered.clear();
-    Err(symtab.ctx) << this
-                    << ": .llvm_link_records is malformed: " << std::move(e);
-    return false;
-  }
   llvm::stable_sort(coverage, [](const LinkCoverage &l, const LinkCoverage &r) {
     return std::tie(l.field, l.offset) < std::tie(r.field, r.offset);
   });
   llvm::sort(covered);
   covered.erase(std::unique(covered.begin(), covered.end()), covered.end());
   llvm::erase_if(covered, [&](uint32_t sec) { return unknown.contains(sec); });
-  return true;
+  return malformed(cur);
 }
 
 bool ObjFile::isCovered(const SectionChunk *sc) const {

@@ -26,6 +26,7 @@
 
 namespace llvm {
 struct DILineInfo;
+struct NewArchiveMember;
 namespace pdb {
 class DbiModuleDescriptorBuilder;
 class NativeSession;
@@ -490,6 +491,11 @@ public:
   };
   ArrayRef<LinkVTable> getLinkVTables() const;
 
+  // The number of the section whose symbol is the object's symbol of index,
+  // which a group of its link-only records, group, names.
+  llvm::Expected<uint32_t> getRecordSection(uint64_t index,
+                                            const llvm::Twine &group);
+
   // When using Microsoft precompiled headers, this is the PCH's key.
   // The same key is used by both the precompiled object, and objects using the
   // precompiled object. Any difference indicates out-of-date objects.
@@ -528,13 +534,13 @@ private:
   void initializeSymbols();
   void initializeFlags();
   void readLinkRecords();
-  bool readLinkSites(ArrayRef<uint8_t> payload);
-  bool readLinkCoverage(ArrayRef<uint8_t> payload);
-  bool readLinkPins(ArrayRef<uint8_t> payload);
-  bool readLinkVTables(ArrayRef<uint8_t> payload);
-  bool readKCFIThunks(ArrayRef<uint8_t> payload);
-  bool readCallOnlyRefs(ArrayRef<uint8_t> payload);
-  bool readTailJumps(ArrayRef<uint8_t> payload);
+  llvm::Error readLinkSites(ArrayRef<uint8_t> payload);
+  llvm::Error readLinkCoverage(ArrayRef<uint8_t> payload);
+  llvm::Error readLinkPins(ArrayRef<uint8_t> payload);
+  llvm::Error readLinkVTables(ArrayRef<uint8_t> payload);
+  llvm::Error readKCFIThunks(ArrayRef<uint8_t> payload);
+  llvm::Error readCallOnlyRefs(ArrayRef<uint8_t> payload);
+  llvm::Error readTailJumps(ArrayRef<uint8_t> payload);
   void initializeDependencies();
   void initializeECThunks();
 
@@ -824,6 +830,36 @@ inline bool isBitcode(MemoryBufferRef mb) {
 
 std::string replaceThinLTOSuffix(StringRef path, StringRef suffix,
                                  StringRef repl);
+
+// The error of malformed link-only records, whose message follows the name of
+// their section.
+llvm::Error malformedLinkRecords(const llvm::Twine &msg);
+
+// Calls fn with the kind and payload of each group of contents, the contents
+// of an .llvm_link_records section, and returns the first error, whose
+// message follows the section's name. header, if given, receives what the
+// records say the object describes before any group.
+llvm::Error forEachLinkRecordGroup(
+    ArrayRef<uint8_t> contents,
+    llvm::function_ref<llvm::Error(uint64_t kind, ArrayRef<uint8_t> payload)>
+        fn,
+    llvm::function_ref<void(uint64_t capabilities)> header = nullptr);
+
+// Calls fn with each group of the link-only records that mb, a member of an
+// import library, holds, if it is an object for machine, or for any machine
+// when that is unknown. A member it cannot read holds none.
+void forEachLinkRecordGroup(
+    MemoryBufferRef mb, llvm::COFF::MachineTypes machine,
+    llvm::function_ref<void(uint64_t kind, ArrayRef<uint8_t> payload)> fn);
+
+// A member of the import library of the DLL dllName whose link-only records
+// are groups, each a kind and its payload, and which defines the absolute
+// symbol symbolName, by which an importer's link finds it.
+llvm::NewArchiveMember
+createLinkRecordMember(COFFLinkerContext &ctx, StringRef dllName,
+                       StringRef symbolName,
+                       ArrayRef<std::pair<uint64_t, std::string>> groups,
+                       std::vector<uint8_t> &buffer);
 } // namespace coff
 
 std::string toString(const coff::InputFile *file);

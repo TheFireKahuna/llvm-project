@@ -153,18 +153,14 @@ void lld::coff::addContractProvides(COFFLinkerContext &ctx, InputFile *file,
   }
 }
 
-bool lld::coff::readContractRequirements(ObjFile *file,
-                                         ArrayRef<uint8_t> payload) {
+Error lld::coff::readContractRequirements(ObjFile *file,
+                                          ArrayRef<uint8_t> payload) {
   COFFLinkerContext &ctx = file->symtab.ctx;
-  auto malformed = [&](const Twine &msg) {
-    Err(ctx) << file << ": .llvm_link_records is malformed: " << msg;
-    return false;
-  };
   DataExtractor data(payload, /*IsLittleEndian=*/true);
   DataExtractor::Cursor cur(0);
   uint64_t count = data.getULEB128(cur);
   if (cur && count > payload.size())
-    return malformed("too many contracts");
+    return malformedLinkRecords("too many contracts");
   SmallVector<ContractState::Contract *, 0> contracts;
   for (uint64_t i = 0; cur && i != count; ++i) {
     uint64_t flags = data.getULEB128(cur);
@@ -188,38 +184,36 @@ bool lld::coff::readContractRequirements(ObjFile *file,
     uint64_t rows = data.getULEB128(cur);
     if (!cur)
       break;
-    Expected<COFFSymbolRef> sym = file->getCOFFObj()->getSymbol(symIndex);
-    if (!sym || !sym->isSectionDefinition() || sym->getSectionNumber() <= 0) {
-      consumeError(sym.takeError());
-      return malformed("contract group of symbol " + Twine(symIndex) +
-                       ", which is not a section's symbol");
-    }
-    uint32_t section = sym->getSectionNumber();
+    Expected<uint32_t> section =
+        file->getRecordSection(symIndex, "contract group");
+    if (!section)
+      return section.takeError();
     for (uint64_t i = 0; cur && i != rows; ++i) {
       uint64_t index = data.getULEB128(cur);
       uint64_t n = data.getULEB128(cur);
       if (!cur)
         break;
       if (index >= symbols.size() || !symbols[index])
-        return malformed("contract row of symbol " + Twine(index) +
-                         ", which the object does not have");
+        return malformedLinkRecords("contract row of symbol " + Twine(index) +
+                                    ", which the object does not have");
       ContractState::Requirement &r = requirements.emplace_back(
-          ContractState::Requirement{section, symbols[index], {}});
+          ContractState::Requirement{*section, symbols[index], {}});
       for (uint64_t j = 0; cur && j != n; ++j) {
         uint64_t c = data.getULEB128(cur);
         if (cur && c >= contracts.size())
-          return malformed("contract row naming contract " + Twine(c) +
-                           ", which the object does not have");
+          return malformedLinkRecords("contract row naming contract " +
+                                      Twine(c) +
+                                      ", which the object does not have");
         if (cur)
           r.contracts.push_back(contracts[c]);
       }
     }
   }
   if (Error e = cur.takeError())
-    return malformed(toString(std::move(e)));
+    return malformedLinkRecords(toString(std::move(e)));
 
   if (!ctx.config.importSlots)
-    return true;
+    return Error::success();
   for (const ContractState::Contract *c : contracts)
     checkContract(ctx, c->data, c->locator, c->digest, file, c->identity);
   if (!requirements.empty()) {
@@ -227,7 +221,7 @@ bool lld::coff::readContractRequirements(ObjFile *file,
         ctx.contracts.requirements[file];
     llvm::append_range(v, requirements);
   }
-  return true;
+  return Error::success();
 }
 
 // Whether a definition of file is exported, which for bitcode its symbol

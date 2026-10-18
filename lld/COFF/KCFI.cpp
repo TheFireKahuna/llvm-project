@@ -1153,17 +1153,9 @@ void addKCFIRangeImports(COFFLinkerContext &ctx, StringRef dllName,
       encodeULEB128(functions, g);
     }
   }
-  std::string records;
-  raw_string_ostream r(records);
-  r.write(LinkRecordsMagic, sizeof(LinkRecordsMagic));
-  encodeULEB128(LinkRecordsVersion, r);
-  encodeULEB128(0, r);
-  encodeULEB128(LinkRecordImageCode, r);
-  encodeULEB128(group.size(), r);
-  r << group;
-  members.push_back(createLinkerFacts(
-      dllName, ctx.config.machine, ".llvm_link_records",
-      arrayRefFromStringRef(records), "__llvm_code_range$" + dll, buffer));
+  members.push_back(
+      createLinkRecordMember(ctx, dllName, "__llvm_code_range$" + dll,
+                             {{LinkRecordImageCode, group}}, buffer));
 }
 
 // A DLL whose objects have KCFI prefixes exports the bounds of its KCFI code
@@ -1207,54 +1199,24 @@ void addKCFIRangeExports(COFFLinkerContext &ctx) {
 // can read.
 static bool readKCFIRangeRecord(COFFLinkerContext &ctx, MemoryBufferRef mb,
                                 DenseMap<uint32_t, uint32_t> (&types)[2]) {
-  Expected<std::unique_ptr<COFFObjectFile>> obj = COFFObjectFile::create(mb);
-  if (!obj) {
-    consumeError(obj.takeError());
-    return false;
-  }
-  if ((*obj)->getMachine() != ctx.config.machine)
-    return false;
-  for (const SectionRef &sec : (*obj)->sections()) {
-    Expected<StringRef> name = sec.getName();
-    Expected<StringRef> contents = sec.getContents();
-    if (!name || !contents || *name != ".llvm_link_records") {
-      consumeError(name.takeError());
-      consumeError(contents.takeError());
-      continue;
-    }
-    DataExtractor data(*contents, /*IsLittleEndian=*/true);
-    DataExtractor::Cursor cur(0);
-    if (data.getBytes(cur, sizeof(LinkRecordsMagic)) !=
-            StringRef(LinkRecordsMagic, sizeof(LinkRecordsMagic)) ||
-        data.getULEB128(cur) != LinkRecordsVersion) {
-      consumeError(cur.takeError());
-      return false;
-    }
-    data.getULEB128(cur);
-    while (cur && !data.eof(cur)) {
-      uint64_t kind = data.getULEB128(cur);
-      uint64_t size = data.getULEB128(cur);
-      uint64_t start = cur.tell();
-      data.skip(cur, size);
-      if (!cur || kind != LinkRecordImageCode)
-        continue;
-      DataExtractor group(contents->substr(start, size), true);
-      DataExtractor::Cursor c(0);
-      for (DenseMap<uint32_t, uint32_t> &map : types) {
-        uint64_t count = group.getULEB128(c);
-        for (uint64_t i = 0; c && i != count; ++i) {
-          uint32_t type = group.getU32(c);
-          map[type] = group.getULEB128(c);
+  bool ok = false;
+  forEachLinkRecordGroup(
+      mb, ctx.config.machine, [&](uint64_t kind, ArrayRef<uint8_t> payload) {
+        if (kind != LinkRecordImageCode)
+          return;
+        DataExtractor group(payload, /*IsLittleEndian=*/true);
+        DataExtractor::Cursor c(0);
+        for (DenseMap<uint32_t, uint32_t> &map : types) {
+          uint64_t count = group.getULEB128(c);
+          for (uint64_t i = 0; c && i != count; ++i) {
+            uint32_t type = group.getU32(c);
+            map[type] = group.getULEB128(c);
+          }
         }
-      }
-      bool ok = c && group.eof(c);
-      consumeError(c.takeError());
-      consumeError(cur.takeError());
-      return ok;
-    }
-    consumeError(cur.takeError());
-  }
-  return false;
+        ok = c && group.eof(c);
+        consumeError(c.takeError());
+      });
+  return ok;
 }
 
 // Whether a thunk of kind takes its target in RAX, and whether its type's

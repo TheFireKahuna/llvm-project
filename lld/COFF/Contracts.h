@@ -75,8 +75,8 @@ void addContractProvides(COFFLinkerContext &ctx, InputFile *file,
                          StringRef rows, bool data);
 
 // Reads the contracts that an object's references require, from its
-// LinkRecordContracts group, returning false if the group is malformed.
-bool readContractRequirements(ObjFile *file, ArrayRef<uint8_t> payload);
+// LinkRecordContracts group, or returns why the group is malformed.
+llvm::Error readContractRequirements(ObjFile *file, ArrayRef<uint8_t> payload);
 
 // A DLL exports a witness of each contract that the objects whose definitions
 // it exports provide, or the type_info object it owns of a type under the name

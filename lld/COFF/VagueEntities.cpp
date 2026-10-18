@@ -86,137 +86,117 @@ struct ParsedVagueRecord {
   std::vector<Image> images;
 };
 
+// Reads a string, its length and then its bytes.
+static StringRef getString(DataExtractor &data, DataExtractor::Cursor &cur) {
+  return data.getBytes(cur, data.getULEB128(cur));
+}
+
+// Writes s as getString reads it.
+static void putString(raw_ostream &os, StringRef s) {
+  encodeULEB128(s.size(), os);
+  os << s;
+}
+
 // Parses the record that mb, a member of an import library, holds into a
 // closure of its own images, or returns null if it holds none or is
 // malformed.
 static ParsedVagueRecord *parseRecord(COFFLinkerContext &ctx,
                                       MemoryBufferRef mb) {
-  Expected<std::unique_ptr<COFFObjectFile>> obj = COFFObjectFile::create(mb);
-  if (!obj) {
-    consumeError(obj.takeError());
-    return nullptr;
-  }
-  for (const SectionRef &sec : (*obj)->sections()) {
-    Expected<StringRef> name = sec.getName();
-    Expected<StringRef> contents = sec.getContents();
-    if (!name || !contents || *name != ".llvm_link_records") {
-      consumeError(name.takeError());
-      consumeError(contents.takeError());
-      continue;
-    }
-    DataExtractor data(*contents, /*IsLittleEndian=*/true);
-    DataExtractor::Cursor cur(0);
-    if (data.getBytes(cur, sizeof(LinkRecordsMagic)) !=
-            StringRef(LinkRecordsMagic, sizeof(LinkRecordsMagic)) ||
-        data.getULEB128(cur) != LinkRecordsVersion) {
-      consumeError(cur.takeError());
-      return nullptr;
-    }
-    data.getULEB128(cur);
-    Closure member;
-    SmallVector<uint32_t, 0> index;
-    while (cur && !data.eof(cur)) {
-      uint64_t kind = data.getULEB128(cur);
-      uint64_t size = data.getULEB128(cur);
-      uint64_t start = cur.tell();
-      data.skip(cur, size);
-      if (!cur || (kind != LinkRecordVagueEntities &&
-                   kind != LinkRecordOverrideOffers &&
-                   kind != LinkRecordPreemptibleEntities &&
-                   kind != LinkRecordDelayLoads))
-        continue;
-      DataExtractor group(contents->substr(start, size), true);
-      DataExtractor::Cursor c(0);
-      auto getString = [&] {
-        uint64_t n = group.getULEB128(c);
-        return group.getBytes(c, n);
-      };
-      // The DLLs the images the closure group listed delay-load, by index.
-      if (kind == LinkRecordDelayLoads) {
-        while (c && !group.eof(c) && !index.empty()) {
-          uint64_t image = group.getULEB128(c);
-          uint64_t count = group.getULEB128(c);
-          for (uint64_t j = 0; c && j != count; ++j) {
-            uint64_t to = group.getULEB128(c);
-            if (image < index.size() && to < index.size() &&
-                !llvm::is_contained(member.images[index[image]].delayLoads,
-                                    index[to]))
-              member.images[index[image]].delayLoads.push_back(index[to]);
+  Closure member;
+  SmallVector<uint32_t, 0> index;
+  bool malformed = false;
+  forEachLinkRecordGroup(
+      mb, IMAGE_FILE_MACHINE_UNKNOWN,
+      [&](uint64_t kind, ArrayRef<uint8_t> payload) {
+        if (malformed || (kind != LinkRecordVagueEntities &&
+                          kind != LinkRecordOverrideOffers &&
+                          kind != LinkRecordPreemptibleEntities &&
+                          kind != LinkRecordDelayLoads))
+          return;
+        DataExtractor group(payload, /*IsLittleEndian=*/true);
+        DataExtractor::Cursor c(0);
+        // The DLLs the images the closure group listed delay-load, by index.
+        if (kind == LinkRecordDelayLoads) {
+          while (c && !group.eof(c) && !index.empty()) {
+            uint64_t image = group.getULEB128(c);
+            uint64_t count = group.getULEB128(c);
+            for (uint64_t j = 0; c && j != count; ++j) {
+              uint64_t to = group.getULEB128(c);
+              if (image < index.size() && to < index.size() &&
+                  !llvm::is_contained(member.images[index[image]].delayLoads,
+                                      index[to]))
+                member.images[index[image]].delayLoads.push_back(index[to]);
+            }
           }
+          consumeError(c.takeError());
+          return;
         }
-        consumeError(c.takeError());
-        continue;
-      }
-      // The offers, or the preemptible entities, of the images the closure
-      // group listed, by their index.
-      if (kind == LinkRecordOverrideOffers ||
-          kind == LinkRecordPreemptibleEntities) {
-        auto field = kind == LinkRecordOverrideOffers ? &Image::offers
-                                                      : &Image::preemptible;
-        while (c && !group.eof(c) && !index.empty()) {
-          uint64_t image = group.getULEB128(c);
-          uint64_t count = group.getULEB128(c);
-          std::vector<std::string> *offers =
-              image < index.size() ? &(member.images[index[image]].*field)
-                                   : nullptr;
-          bool known = offers && !offers->empty();
-          for (uint64_t j = 0; c && j != count; ++j) {
-            StringRef offer = getString();
-            if (offers && !known)
-              offers->push_back(offer.str());
+        // The offers, or the preemptible entities, of the images the closure
+        // group listed, by their index.
+        if (kind == LinkRecordOverrideOffers ||
+            kind == LinkRecordPreemptibleEntities) {
+          auto field = kind == LinkRecordOverrideOffers ? &Image::offers
+                                                        : &Image::preemptible;
+          while (c && !group.eof(c) && !index.empty()) {
+            uint64_t image = group.getULEB128(c);
+            uint64_t count = group.getULEB128(c);
+            std::vector<std::string> *offers =
+                image < index.size() ? &(member.images[index[image]].*field)
+                                     : nullptr;
+            bool known = offers && !offers->empty();
+            for (uint64_t j = 0; c && j != count; ++j) {
+              StringRef offer = getString(group, c);
+              if (offers && !known)
+                offers->push_back(offer.str());
+            }
           }
+          consumeError(c.takeError());
+          return;
         }
-        consumeError(c.takeError());
-        continue;
-      }
-      uint64_t count = group.getULEB128(c);
-      SmallVector<SmallVector<uint64_t, 0>, 0> imports;
-      for (uint64_t i = 0; c && i != count; ++i) {
-        uint32_t image = member.add(getString());
-        index.push_back(image);
-        imports.emplace_back();
-        uint64_t numImports = group.getULEB128(c);
-        for (uint64_t j = 0; c && j != numImports; ++j)
-          imports.back().push_back(group.getULEB128(c));
-        uint64_t numEntities = group.getULEB128(c);
-        // An image that several records hold is described alike by each.
-        bool known = !member.images[image].entities.empty();
-        for (uint64_t j = 0; c && j != numEntities; ++j) {
-          StringRef entity = getString();
+        uint64_t count = group.getULEB128(c);
+        SmallVector<SmallVector<uint64_t, 0>, 0> imports;
+        for (uint64_t i = 0; c && i != count; ++i) {
+          uint32_t image = member.add(getString(group, c));
+          index.push_back(image);
+          imports.emplace_back();
+          uint64_t numImports = group.getULEB128(c);
+          for (uint64_t j = 0; c && j != numImports; ++j)
+            imports.back().push_back(group.getULEB128(c));
+          uint64_t numEntities = group.getULEB128(c);
+          // An image that several records hold is described alike by each.
+          bool known = !member.images[image].entities.empty();
+          for (uint64_t j = 0; c && j != numEntities; ++j) {
+            StringRef entity = getString(group, c);
+            if (!known)
+              member.images[image].entities.push_back(entity.str());
+          }
+          StringRef epoch = getString(group, c);
           if (!known)
-            member.images[image].entities.push_back(entity.str());
+            member.images[image].epoch = epoch.str();
         }
-        StringRef epoch = getString();
-        if (!known)
-          member.images[image].epoch = epoch.str();
-      }
-      bool ok = c && group.eof(c) && !index.empty();
-      for (size_t i = 0; ok && i != index.size(); ++i)
-        for (uint64_t j : imports[i]) {
-          if (j >= index.size()) {
-            ok = false;
-            break;
+        bool ok = c && group.eof(c) && !index.empty();
+        for (size_t i = 0; ok && i != index.size(); ++i)
+          for (uint64_t j : imports[i]) {
+            if (j >= index.size()) {
+              ok = false;
+              break;
+            }
+            std::vector<uint32_t> &to = member.images[index[i]].imports;
+            if (!llvm::is_contained(to, index[j]))
+              to.push_back(index[j]);
           }
-          std::vector<uint32_t> &to = member.images[index[i]].imports;
-          if (!llvm::is_contained(to, index[j]))
-            to.push_back(index[j]);
+        consumeError(c.takeError());
+        if (!ok) {
+          Warn(ctx) << mb.getBufferIdentifier()
+                    << ": the record of vague entities is malformed";
+          malformed = true;
         }
-      consumeError(c.takeError());
-      consumeError(cur.takeError());
-      if (!ok) {
-        Warn(ctx) << mb.getBufferIdentifier()
-                  << ": the record of vague entities is malformed";
-        return nullptr;
-      }
-    }
-    consumeError(cur.takeError());
-    if (!index.empty()) {
-      auto *parsed = make<ParsedVagueRecord>();
-      parsed->images = std::move(member.images);
-      return parsed;
-    }
-  }
-  return nullptr;
+      });
+  if (malformed || index.empty())
+    return nullptr;
+  auto *parsed = make<ParsedVagueRecord>();
+  parsed->images = std::move(member.images);
+  return parsed;
 }
 
 // The parsed record of the import library member mb, parsed on the first
@@ -338,75 +318,44 @@ OverrideRecords readImportedOverrideRecords(COFFLinkerContext &ctx,
                                             ArrayRef<MemoryBufferRef> records,
                                             uint32_t version) {
   OverrideRecords result;
-  for (MemoryBufferRef mb : records) {
-    Expected<std::unique_ptr<COFFObjectFile>> obj = COFFObjectFile::create(mb);
-    if (!obj) {
-      consumeError(obj.takeError());
-      continue;
-    }
-    for (const SectionRef &sec : (*obj)->sections()) {
-      Expected<StringRef> name = sec.getName();
-      Expected<StringRef> contents = sec.getContents();
-      if (!name || !contents || *name != ".llvm_link_records") {
-        consumeError(name.takeError());
-        consumeError(contents.takeError());
-        continue;
-      }
-      DataExtractor data(*contents, /*IsLittleEndian=*/true);
-      DataExtractor::Cursor cur(0);
-      if (data.getBytes(cur, sizeof(LinkRecordsMagic)) !=
-              StringRef(LinkRecordsMagic, sizeof(LinkRecordsMagic)) ||
-          data.getULEB128(cur) != LinkRecordsVersion) {
-        consumeError(cur.takeError());
-        continue;
-      }
-      data.getULEB128(cur);
-      while (cur && !data.eof(cur)) {
-        uint64_t kind = data.getULEB128(cur);
-        uint64_t size = data.getULEB128(cur);
-        uint64_t start = cur.tell();
-        data.skip(cur, size);
-        if (!cur || (kind != LinkRecordOverridableByName &&
-                     kind != LinkRecordOverrideSlots))
-          continue;
-        DataExtractor group(contents->substr(start, size), true);
-        DataExtractor::Cursor c(0);
-        auto getString = [&] {
-          uint64_t n = group.getULEB128(c);
-          return group.getBytes(c, n);
-        };
-        if (kind == LinkRecordOverrideSlots) {
-          uint64_t format = group.getULEB128(c);
-          if (c && format != version) {
-            Err(ctx) << mb.getBufferIdentifier()
-                     << ": the C++ runtime's override table format (version "
-                     << format << ") is not the one this linker writes "
-                     << "(version " << version << ")";
-            consumeError(c.takeError());
-            continue;
+  for (MemoryBufferRef mb : records)
+    forEachLinkRecordGroup(
+        mb, IMAGE_FILE_MACHINE_UNKNOWN,
+        [&](uint64_t kind, ArrayRef<uint8_t> payload) {
+          if (kind != LinkRecordOverridableByName &&
+              kind != LinkRecordOverrideSlots)
+            return;
+          DataExtractor group(payload, /*IsLittleEndian=*/true);
+          DataExtractor::Cursor c(0);
+          if (kind == LinkRecordOverrideSlots) {
+            uint64_t format = group.getULEB128(c);
+            if (c && format != version) {
+              Err(ctx) << mb.getBufferIdentifier()
+                       << ": the C++ runtime's override table format (version "
+                       << format << ") is not the one this linker writes "
+                       << "(version " << version << ")";
+              return;
+            }
           }
-        }
-        while (c && !group.eof(c)) {
-          StringRef s = getString();
-          if (kind == LinkRecordOverridableByName) {
+          while (c && !group.eof(c)) {
+            StringRef s = getString(group, c);
+            if (kind == LinkRecordOverridableByName) {
+              if (c)
+                result.byName.push_back(s.str());
+              continue;
+            }
+            uint64_t slot = group.getULEB128(c);
+            uint64_t forward = group.getULEB128(c);
+            uint64_t flags = group.getULEB128(c);
             if (c)
-              result.byName.push_back(s.str());
-            continue;
+              result.slots.push_back({s.str(), uint32_t(slot),
+                                      forward
+                                          ? std::optional<uint32_t>(forward - 1)
+                                          : std::nullopt,
+                                      (flags & 1) != 0});
           }
-          uint64_t slot = group.getULEB128(c);
-          uint64_t forward = group.getULEB128(c);
-          uint64_t flags = group.getULEB128(c);
-          if (c)
-            result.slots.push_back(
-                {s.str(), uint32_t(slot),
-                 forward ? std::optional<uint32_t>(forward - 1) : std::nullopt,
-                 (flags & 1) != 0});
-        }
-        consumeError(c.takeError());
-      }
-      consumeError(cur.takeError());
-    }
-  }
+          consumeError(c.takeError());
+        });
   return result;
 }
 
@@ -742,86 +691,50 @@ void addVagueEntityRecord(COFFLinkerContext &ctx, StringRef dllName,
       closure.images[self].preemptible.push_back(e.sym->getName().str());
   llvm::sort(closure.images[self].preemptible);
 
-  std::string group;
-  raw_string_ostream g(group);
-  auto putString = [&](StringRef s) {
-    encodeULEB128(s.size(), g);
-    g << s;
+  std::vector<std::pair<uint64_t, std::string>> groups;
+  // A group of kind holding what put writes, unless that is nothing.
+  auto addGroup = [&](uint64_t kind, function_ref<void(raw_ostream &)> put) {
+    std::string payload;
+    raw_string_ostream os(payload);
+    put(os);
+    if (!payload.empty())
+      groups.emplace_back(kind, std::move(payload));
   };
-  encodeULEB128(closure.images.size(), g);
-  for (const Image &image : closure.images) {
-    putString(image.name);
-    encodeULEB128(image.imports.size(), g);
-    for (uint32_t i : image.imports)
-      encodeULEB128(i, g);
-    encodeULEB128(image.entities.size(), g);
-    for (const std::string &entity : image.entities)
-      putString(entity);
-    putString(image.epoch);
-  }
-  std::string records;
-  raw_string_ostream r(records);
-  r.write(LinkRecordsMagic, sizeof(LinkRecordsMagic));
-  encodeULEB128(LinkRecordsVersion, r);
-  encodeULEB128(0, r);
-  encodeULEB128(LinkRecordVagueEntities, r);
-  encodeULEB128(group.size(), r);
-  r << group;
-  // The overridable defaults each image of the closure offers, so that an
-  // executable that does not link the import library of a DLL its imports
-  // depend on still selects that DLL's offer in load order.
-  std::string offers;
-  raw_string_ostream o(offers);
-  for (auto [i, image] : llvm::enumerate(closure.images)) {
-    if (image.offers.empty())
-      continue;
-    encodeULEB128(i, o);
-    encodeULEB128(image.offers.size(), o);
-    for (const std::string &offer : image.offers) {
-      encodeULEB128(offer.size(), o);
-      o << offer;
+  addGroup(LinkRecordVagueEntities, [&](raw_ostream &os) {
+    encodeULEB128(closure.images.size(), os);
+    for (const Image &image : closure.images) {
+      putString(os, image.name);
+      encodeULEB128(image.imports.size(), os);
+      for (uint32_t i : image.imports)
+        encodeULEB128(i, os);
+      encodeULEB128(image.entities.size(), os);
+      for (const std::string &entity : image.entities)
+        putString(os, entity);
+      putString(os, image.epoch);
     }
-  }
-  if (!offers.empty()) {
-    encodeULEB128(LinkRecordOverrideOffers, r);
-    encodeULEB128(offers.size(), r);
-    r << offers;
-  }
-  // The entities each image of the closure keeps preemptible, so that an
-  // executable that sees two images keeping one picks its owner.
-  std::string preemptible;
-  raw_string_ostream p(preemptible);
-  for (auto [i, image] : llvm::enumerate(closure.images)) {
-    if (image.preemptible.empty())
-      continue;
-    encodeULEB128(i, p);
-    encodeULEB128(image.preemptible.size(), p);
-    for (const std::string &name : image.preemptible) {
-      encodeULEB128(name.size(), p);
-      p << name;
-    }
-  }
-  if (!preemptible.empty()) {
-    encodeULEB128(LinkRecordPreemptibleEntities, r);
-    encodeULEB128(preemptible.size(), r);
-    r << preemptible;
-  }
-  // The DLLs each image of the closure delay-loads.
-  std::string delayLoads;
-  raw_string_ostream d(delayLoads);
-  for (auto [i, image] : llvm::enumerate(closure.images)) {
-    if (image.delayLoads.empty())
-      continue;
-    encodeULEB128(i, d);
-    encodeULEB128(image.delayLoads.size(), d);
-    for (uint32_t j : image.delayLoads)
-      encodeULEB128(j, d);
-  }
-  if (!delayLoads.empty()) {
-    encodeULEB128(LinkRecordDelayLoads, r);
-    encodeULEB128(delayLoads.size(), r);
-    r << delayLoads;
-  }
+  });
+  // A group listing field of each image of the closure that has one, by the
+  // image's index: the overridable defaults it offers, so that an executable
+  // that does not link the import library of a DLL its imports depend on
+  // still selects that DLL's offer in load order; the entities it keeps
+  // preemptible, so that an executable that sees two images keeping one picks
+  // its owner; and the DLLs it delay-loads.
+  auto addPerImage = [&](uint64_t kind, auto field, auto put) {
+    addGroup(kind, [&](raw_ostream &os) {
+      for (auto [i, image] : llvm::enumerate(closure.images)) {
+        if ((image.*field).empty())
+          continue;
+        encodeULEB128(i, os);
+        encodeULEB128((image.*field).size(), os);
+        for (const auto &x : image.*field)
+          put(os, x);
+      }
+    });
+  };
+  auto putIndex = [](raw_ostream &os, uint32_t i) { encodeULEB128(i, os); };
+  addPerImage(LinkRecordOverrideOffers, &Image::offers, putString);
+  addPerImage(LinkRecordPreemptibleEntities, &Image::preemptible, putString);
+  addPerImage(LinkRecordDelayLoads, &Image::delayLoads, putIndex);
   // The defaults the DLL defines and exports with no fixed slot, which an
   // image that links its import library replaces, offers or reaches by name.
   std::vector<StringRef> byName;
@@ -831,17 +744,10 @@ void addVagueEntityRecord(COFFLinkerContext &ctx, StringRef dllName,
       byName.push_back(e.sym->getName());
   llvm::sort(byName);
   byName.erase(llvm::unique(byName), byName.end());
-  if (!byName.empty()) {
-    std::string names;
-    raw_string_ostream n(names);
-    for (StringRef name : byName) {
-      encodeULEB128(name.size(), n);
-      n << name;
-    }
-    encodeULEB128(LinkRecordOverridableByName, r);
-    encodeULEB128(names.size(), r);
-    r << names;
-  }
+  addGroup(LinkRecordOverridableByName, [&](raw_ostream &os) {
+    for (StringRef name : byName)
+      putString(os, name);
+  });
   // The defaults the DLL defines and exports with a fixed slot, as their
   // definitions record it, which an image that links its import library
   // replaces or reaches through that slot.
@@ -856,24 +762,18 @@ void addVagueEntityRecord(COFFLinkerContext &ctx, StringRef dllName,
       llvm::unique(bySlot, [](const auto &a,
                               const auto &b) { return a.first == b.first; }),
       bySlot.end());
-  if (!bySlot.empty()) {
-    std::string slots;
-    raw_string_ostream o(slots);
-    encodeULEB128(overrideTableVersion, o);
-    for (auto &[name, facts] : bySlot) {
-      encodeULEB128(name.size(), o);
-      o << name;
-      encodeULEB128(facts.slot, o);
-      encodeULEB128(facts.forward ? *facts.forward + 1 : 0, o);
-      encodeULEB128(facts.dropsSecond, o);
-    }
-    encodeULEB128(LinkRecordOverrideSlots, r);
-    encodeULEB128(slots.size(), r);
-    r << slots;
-  }
-  members.push_back(createLinkerFacts(
-      dllName, config.machine, ".llvm_link_records",
-      arrayRefFromStringRef(records), getRecordSymbol(dllName), buffer));
+  if (!bySlot.empty())
+    addGroup(LinkRecordOverrideSlots, [&](raw_ostream &os) {
+      encodeULEB128(overrideTableVersion, os);
+      for (auto &[name, facts] : bySlot) {
+        putString(os, name);
+        encodeULEB128(facts.slot, os);
+        encodeULEB128(facts.forward ? *facts.forward + 1 : 0, os);
+        encodeULEB128(facts.dropsSecond, os);
+      }
+    });
+  members.push_back(createLinkRecordMember(
+      ctx, dllName, getRecordSymbol(dllName), groups, buffer));
 }
 
 // Whether a data definition in a COMDAT has default visibility, so that a
