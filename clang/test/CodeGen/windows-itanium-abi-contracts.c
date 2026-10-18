@@ -36,11 +36,11 @@ int use(struct S *s, Anon *a) {
 
 // CHECK: !abi.requirements = !{![[#TAKES:]], ![[#TAKEANON:]], ![[#CDATA:]], ![[#ANONDATA:]]}
 // CHECK: !llvm.linker.options = !{![[#P:]]}
-// CHECK: ![[#TAKES]] = !{ptr @takeS, ![[#S:]]}
+// CHECK: ![[#TAKES]] = !{ptr @takeS, ![[#S:]]{{(, ![0-9]+)?}}}
 // CHECK: ![[#S]] = !{!"1S", !"{{.+}}"}
-// CHECK: ![[#TAKEANON]] = !{ptr @takeAnon, ![[#ANON:]]}
+// CHECK: ![[#TAKEANON]] = !{ptr @takeAnon, ![[#ANON:]]{{(, ![0-9]+)?}}}
 // CHECK: ![[#ANON]] = !{!"4Anon", !"{{.+}}"}
 // CHECK: ![[#CDATA]] = !{ptr @cdata, ![[#INT:]]}
 // CHECK: ![[#INT]] = !{!"{{.+}}"}
 // CHECK: ![[#ANONDATA]] = !{ptr @anonData, ![[#ANON]]}
-// CHECK: ![[#P]] = !{!"/abiprovide:{{[[:alnum:]_-]+}}"}
+// CHECK: ![[#P]] = !{!"/abiprovide:{{[[:alnum:]_,-]+}}"}

@@ -476,6 +476,83 @@ void CodeGenABIContracts::encodeVTable(const CXXRecordDecl *RD,
   }
 }
 
+// Encodes what of T a translation unit's face decides: the width of long and
+// wchar_t and the format of long double, each where T or what it points to
+// holds one, and the calling convention of each function type. Every other
+// type is a placeholder that keeps the positions.
+void CodeGenABIContracts::encodeFace(QualType T, llvm::raw_ostream &OS) const {
+  T = Context.getCanonicalType(T).getUnqualifiedType();
+  if (T->isPointerType() || T->isReferenceType() || T->isBlockPointerType()) {
+    OS << 'p';
+    return encodeFace(T->getPointeeType(), OS);
+  }
+  if (const ArrayType *AT = Context.getAsArrayType(T)) {
+    OS << 'a';
+    return encodeFace(AT->getElementType(), OS);
+  }
+  if (const auto *FT = T->getAs<FunctionType>()) {
+    OS << 'F' << unsigned(FT->getCallConv()) << ':';
+    encodeFace(FT->getReturnType(), OS);
+    if (const auto *FPT = dyn_cast<FunctionProtoType>(FT))
+      for (QualType P : FPT->param_types())
+        encodeFace(P, OS);
+    OS << 'E';
+    return;
+  }
+  if (const auto *BT = T->getAs<BuiltinType>()) {
+    switch (BT->getKind()) {
+    case BuiltinType::Long:
+    case BuiltinType::ULong:
+    case BuiltinType::Win32Long:
+    case BuiltinType::Win32ULong:
+      OS << 'l' << Context.getTypeSize(T);
+      return;
+    case BuiltinType::WChar_S:
+    case BuiltinType::WChar_U:
+    case BuiltinType::Win32WChar:
+      OS << 'w' << Context.getTypeSize(T);
+      return;
+    case BuiltinType::LongDouble:
+    case BuiltinType::Win32LongDouble:
+      OS << 'e' << Context.getTypeSize(T);
+      return;
+    default:
+      break;
+    }
+  }
+  OS << '.';
+}
+
+// The contract of the face an external extern "C" function or datum D was
+// declared in, on NT-POSIX, where two faces meet in one image: its identity,
+// the symbol's name with "$face", and the digest of its encoding. A function
+// always has one, for its calling convention; a datum has one where its type
+// holds something the face decides.
+bool CodeGenABIContracts::getFaceContract(const NamedDecl *D, StringRef Name,
+                                          std::string &Identity,
+                                          Digest &FaceDigest) {
+  if (!Context.getTargetInfo().getTriple().isWindowsNTPOSIXEnvironment())
+    return false;
+  std::string Face;
+  llvm::raw_string_ostream OS(Face);
+  if (const auto *FD = dyn_cast<FunctionDecl>(D)) {
+    if (!FD->isExternC())
+      return false;
+    encodeFace(FD->getType(), OS);
+  } else if (const auto *VD = dyn_cast<VarDecl>(D)) {
+    if (!VD->isExternC())
+      return false;
+    encodeFace(VD->getType(), OS);
+    if (Face.find_first_not_of(".pa") == std::string::npos)
+      return false;
+  } else {
+    return false;
+  }
+  Identity = (Name + "$face").str();
+  FaceDigest = finishDigest(Identity, Face);
+  return true;
+}
+
 llvm::MDNode *CodeGenABIContracts::getTypeContract(const RecordDecl *RD) {
   llvm::LLVMContext &Ctx = CGM.getLLVMContext();
   Digest D = getRecordDigest(RD);
@@ -535,6 +612,8 @@ void CodeGenABIContracts::emit() {
   RecordSet ProvidedTypes;
   SmallVector<std::string, 0> ProvidedData;
   llvm::StringSet<> ProvidedDataRows;
+  SmallVector<std::string, 0> ProvidedFaces;
+  llvm::StringSet<> ProvidedFaceRows;
   llvm::MapVector<llvm::GlobalValue *, SmallVector<llvm::MDNode *, 2>> Required;
 
   auto Require = [&](llvm::GlobalValue *GV, const RecordSet &Related,
@@ -585,6 +664,22 @@ void CodeGenABIContracts::emit() {
     if (ImportForm && (Datum || !Related.empty()))
       Require(GV, Related, Datum);
 
+    // An extern "C" symbol on NT-POSIX carries the face it was declared in, so
+    // that a definition and its references, in the image or across DLLs, agree
+    // on its convention and on the widths the face decides.
+    std::string FaceIdentity;
+    Digest FaceDigest;
+    bool HasFace = getFaceContract(
+        D, llvm::GlobalValue::dropLLVMManglingEscape(GV->getName()),
+        FaceIdentity, FaceDigest);
+    if (HasFace && ImportForm) {
+      llvm::LLVMContext &Ctx = CGM.getLLVMContext();
+      llvm::Metadata *Ops[] = {
+          llvm::MDString::get(Ctx, FaceIdentity),
+          llvm::MDString::get(Ctx, llvm::toStringRef(llvm::ArrayRef(FaceDigest)))};
+      Required[GV].push_back(llvm::MDNode::get(Ctx, Ops));
+    }
+
     // A definition that the image may export, or that a DLL may offer to the
     // images that import from it, provides the contracts of the records it is
     // about.
@@ -593,6 +688,11 @@ void CodeGenABIContracts::emit() {
           (isWeakForLinker(GV) && GV->hasDefaultVisibility())))
       continue;
     addCoveredRecords(Related, /*UsedOnly=*/false, ProvidedTypes);
+    if (HasFace) {
+      std::string Row = formatProvideRow(FaceIdentity, FaceDigest);
+      if (ProvidedFaceRows.insert(Row).second)
+        ProvidedFaces.push_back(std::move(Row));
+    }
     if (Datum) {
       StringRef Identity =
           llvm::GlobalValue::dropLLVMManglingEscape(GV->getName());
@@ -632,6 +732,7 @@ void CodeGenABIContracts::emit() {
   SmallVector<std::string, 0> TypeRows;
   for (const RecordDecl *RD : ProvidedTypes)
     TypeRows.push_back(formatProvideRow(getIdentity(RD), getRecordDigest(RD)));
+  llvm::append_range(TypeRows, ProvidedFaces);
   AddRows("/abiprovide:", TypeRows);
   AddRows("/abiprovidedata:", ProvidedData);
 

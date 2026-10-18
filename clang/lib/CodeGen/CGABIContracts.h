@@ -79,6 +79,9 @@ private:
   void encodeRecord(const RecordDecl *RD, llvm::raw_ostream &OS);
   void encodeType(QualType T, llvm::raw_ostream &OS);
   void encodeVTable(const CXXRecordDecl *RD, llvm::raw_ostream &OS);
+  void encodeFace(QualType T, llvm::raw_ostream &OS) const;
+  bool getFaceContract(const NamedDecl *D, StringRef Name,
+                       std::string &Identity, Digest &FaceDigest);
 
   llvm::MDNode *getTypeContract(const RecordDecl *RD);
   llvm::MDNode *getDataContract(const VarDecl *VD, StringRef Identity);

@@ -55,7 +55,7 @@ __attribute__((visibility("default"))) void strong(void) {}
 
 // CHECK:       attributes #{{[0-9]+}} = { {{.*}}"overridable-default"
 // CHECK:       attributes [[FIND]] = { cold {{.*}}memory(read)
-// CHECK:       !llvm.linker.options = !{![[HOOK:[0-9]+]], ![[HOOK2:[0-9]+]]}
+// CHECK:       !llvm.linker.options = !{![[HOOK:[0-9]+]], ![[HOOK2:[0-9]+]]{{(, ![0-9]+)*}}}
 // CHECK:       ![[HOOK]] = !{!"/OVERRIDABLEBYNAME:hook"}
 // CHECK:       ![[HOOK2]] = !{!"/OVERRIDABLEBYNAME:hook2"}
 
