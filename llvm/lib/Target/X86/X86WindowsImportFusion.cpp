@@ -495,9 +495,18 @@ bool X86WindowsImportFusion::isFusibleAccess(const MachineInstr &MI,
 // operand that adds Reg, with scale 1, to another register below the first
 // sixteen, in a legacy or VEX encoding outside APX's map 4, and reads Reg
 // nowhere else: the linker adds the value in Reg to the displacement and
-// leaves Reg out.
+// leaves Reg out. Or whether MI adds Reg to another such register, which the
+// linker makes an add of the value; or, with the flags dead, adds another
+// such register to Reg, which it makes an lea of the other plus the value.
 bool X86WindowsImportFusion::isFusibleIndex(const MachineInstr &MI,
                                             Register Reg) const {
+  if (MI.getOpcode() == X86::ADD64rr) {
+    Register Dst = MI.getOperand(0).getReg(), Src = MI.getOperand(2).getReg();
+    return !MI.isBundled() && TRI->getEncodingValue(Dst) < 16 &&
+           TRI->getEncodingValue(Src) < 16 && !TRI->regsOverlap(Dst, Src) &&
+           (Src == Reg ||
+            (Dst == Reg && MI.registerDefIsDead(X86::EFLAGS, TRI)));
+  }
   const MCInstrDesc &Desc = MI.getDesc();
   uint64_t Encoding = Desc.TSFlags & X86II::EncodingMask;
   int MemOp = X86II::getMemoryOperandNo(Desc.TSFlags);
