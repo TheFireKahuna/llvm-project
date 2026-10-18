@@ -406,6 +406,45 @@ static bool readsWholeEntry(SectionChunk *sc, const coff_relocation &rel,
   return isKCFIListEntry(sc, rel);
 }
 
+static bool isLoadForm(std::optional<LinkSiteForm> form) {
+  return form == LinkSiteLoad || form == LinkSiteLoadREX2;
+}
+
+// The rewrite that makes the instruction at rel, of the given form, reach
+// target, as lld/ELF's relaxGot rewrites a GOT reference: a load (or adrp and
+// ldr) becomes an address-take, an address-take (or adrp and add) a load of
+// target, a pointer, and a call or jump through a pointer a direct one; with
+// zero, the instruction materialises zero. Resized code drops the padding a
+// direct call or jump leaves. The form is ignored on ARM64.
+static RelaxEdit getRetarget(const SectionChunk *sc, const coff_relocation &rel,
+                             LinkSiteForm form, Defined *target, bool zero) {
+  uint32_t off = rel.VirtualAddress;
+  if (sc->getArch() == Triple::aarch64)
+    return {off, 4, 4,
+            zero ? RelaxEdit::Arm64Zero
+            : rel.Type == IMAGE_REL_ARM64_PAGEBASE_REL21 ? RelaxEdit::Arm64Page
+            : rel.Type == IMAGE_REL_ARM64_PAGEOFFSET_12L ? RelaxEdit::Arm64Add
+                                                         : RelaxEdit::Arm64Load,
+            target};
+  switch (form) {
+  case LinkSiteCall:
+    return {off - 2, 6, uint16_t(zero ? 6 : 5),
+            zero ? RelaxEdit::ZeroCall : RelaxEdit::DirectCall, target};
+  case LinkSiteJump:
+  case LinkSiteJumpOnePrefix: {
+    uint16_t size = form == LinkSiteJump ? 6 : 7;
+    return {off + 4 - size, size, 5, RelaxEdit::DirectJump, target};
+  }
+  case LinkSiteAddress:
+    return {off - 3, 7, 7, RelaxEdit::LoadPointer, target};
+  default: {
+    uint16_t size = form == LinkSiteLoadREX2 ? 8 : 7;
+    return {off + 4 - size, size, size,
+            zero ? RelaxEdit::ZeroLoad : RelaxEdit::LoadAddress, target};
+  }
+  }
+}
+
 // What the scan of the image's relocations gathers for the decisions after it.
 struct SlotScan {
   // A section's candidate slots.
@@ -648,16 +687,9 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
   bool code = sc->header->Characteristics & IMAGE_SCN_CNT_CODE;
   ArrayRef<coff_relocation> relocs = sc->getRelocs();
   SlotScan::Pending p{sc, {}, nullptr};
-  // lea becomes mov; the add after an ARM64 adrp becomes ldr.
   auto addressSite = [&](const coff_relocation &r, DefinedImportData *imp) {
-    uint32_t off = r.VirtualAddress;
-    RelaxEdit edit{off - 3, 7, 7, RelaxEdit::LoadPointer, imp};
-    if (arm64)
-      edit = {off, 4, 4,
-              r.Type == IMAGE_REL_ARM64_PAGEBASE_REL21 ? RelaxEdit::Arm64Page
-                                                       : RelaxEdit::Arm64Load,
-              imp};
-    scan.addressSites.push_back({sc, edit, imp});
+    scan.addressSites.push_back(
+        {sc, getRetarget(sc, r, LinkSiteAddress, imp, false), imp});
   };
   size_t e = relocs.size();
   auto importedBut = [&](Symbol *s, DefinedImportData *imp) {
@@ -727,26 +759,15 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
       if (!data->file->thunkSym || !data->file->isDelayLoaded())
         continue;
       auto *thunk = cast<Defined>(data->file->thunkSym);
-      uint32_t off = rel.VirtualAddress;
-      if (!code) {
-        scan.delayLoadsRead.insert(data);
-      } else if (arm64 && isArm64PointerLoad(sc, rel)) {
+      std::optional<LinkSiteForm> form;
+      if (code && arm64 && isArm64PointerLoad(sc, rel))
         scan.delayLoads[data].push_back(
-            {sc,
-             {off, 4, 4,
-              rel.Type == IMAGE_REL_ARM64_PAGEBASE_REL21 ? RelaxEdit::Arm64Page
-                                                         : RelaxEdit::Arm64Add,
-              thunk}});
-      } else if (arm64) {
+            {sc, getRetarget(sc, rel, LinkSiteOther, thunk, false)});
+      else if (!code || arm64)
         scan.delayLoadsRead.insert(data);
-      } else if (std::optional<LinkSiteForm> form = getDescribedSite(sc, rel);
-                 form == LinkSiteLoad || form == LinkSiteLoadREX2) {
-        uint16_t size = form == LinkSiteLoadREX2 ? 8 : 7;
+      else if (isLoadForm(form = getDescribedSite(sc, rel)))
         scan.addressSites.push_back(
-            {sc,
-             {off + 4 - size, size, size, RelaxEdit::LoadAddress, thunk},
-             data});
-      }
+            {sc, getRetarget(sc, rel, *form, thunk, false), data});
       continue;
     }
 
@@ -1695,9 +1716,6 @@ std::optional<LinkSiteForm> getDescribedSite(const SectionChunk *sc,
   return std::nullopt;
 }
 
-static bool isLoadForm(std::optional<LinkSiteForm> form) {
-  return form == LinkSiteLoad || form == LinkSiteLoadREX2;
-}
 
 // A pointer holding zero, an absent weak symbol's address, which an
 // instruction can materialise instead of loading.
@@ -1786,28 +1804,6 @@ bool isValueOnlyLoad(const SectionChunk *sc, size_t i, LinkSiteForm form,
   return parseAdrp(read32le(&data[adrp->VirtualAddress]), a) &&
          parseLdr(read32le(&data[rel.VirtualAddress]), ldr) &&
          a.destRegister == ldr.baseRegister;
-}
-
-// Rewrites the described instruction of form at rel to reach li's symbol
-// directly: a load becomes lea, a call addr32 call, a jump jmp and int3, or
-// each materialises zero for a zero pointer. Resized code drops the padding.
-static void addSiteEdit(SectionChunk *sc, const coff_relocation &rel,
-                        LinkSiteForm form, DefinedLocalImport *li) {
-  uint32_t off = rel.VirtualAddress;
-  Defined *target = li->getTarget();
-  bool zero = isZeroPointer(li);
-  if (form == LinkSiteCall)
-    addEdit(sc, {off - 2, 6, uint16_t(zero ? 6 : 5),
-                 zero ? RelaxEdit::ZeroCall : RelaxEdit::DirectCall, target});
-  else if (form == LinkSiteJump || form == LinkSiteJumpOnePrefix)
-    addEdit(sc, {off + 4 - (form == LinkSiteJump ? 6 : 7),
-                 uint16_t(form == LinkSiteJump ? 6 : 7), 5,
-                 RelaxEdit::DirectJump, target});
-  else {
-    uint16_t size = form == LinkSiteLoadREX2 ? 8 : 7;
-    addEdit(sc, {off + 4 - size, size, size,
-                 zero ? RelaxEdit::ZeroLoad : RelaxEdit::LoadAddress, target});
-  }
 }
 
 // The register a described load fills: ModRM.reg with REX.R, or with REX2's
@@ -2212,7 +2208,8 @@ void bindLocalImports(SymbolTable &symtab) {
                    isLoadForm(form))
             rewritable = true;
           if (rewritable)
-            addSiteEdit(sc, rel, *form, li);
+            addEdit(sc, getRetarget(sc, rel, *form, li->getTarget(),
+                                    isZeroPointer(li)));
         }
         (rewritable ? bypassed : read).insert(li);
         auto [it, inserted] = seen.try_emplace(li, rewritable);
@@ -2251,12 +2248,8 @@ void bindLocalImports(SymbolTable &symtab) {
   for (auto [sc, rel] : arm64Sites) {
     auto *li = cast<DefinedLocalImport>(sc->file->getSymbol(rel->SymbolTableIndex));
     if (li->getChunk()->bypassed)
-      addEdit(sc, {rel->VirtualAddress, 4, 4,
-                   isZeroPointer(li) ? RelaxEdit::Arm64Zero
-                   : rel->Type == IMAGE_REL_ARM64_PAGEBASE_REL21
-                       ? RelaxEdit::Arm64Page
-                       : RelaxEdit::Arm64Add,
-                   li->getTarget()});
+      addEdit(sc, getRetarget(sc, *rel, LinkSiteOther, li->getTarget(),
+                              isZeroPointer(li)));
   }
   llvm::erase_if(localImportChunks, [](Chunk *c) {
     auto *li = cast<LocalImportChunk>(c);
