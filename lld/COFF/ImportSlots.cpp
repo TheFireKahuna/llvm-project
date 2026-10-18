@@ -53,36 +53,30 @@ private:
   SmallVector<UTF16, 0> str;
 };
 
-// A word of this image that holds the address of an overridable default X: an
-// in-place import slot of X, or the entry through which the image calls X and
-// loads its address. The loader writes it with the runtime's entry; the fill
-// writes the program's replacement over it when the executable replaces X.
+// A word through which the image reaches what the program may give another
+// image's instance of: an overridable default or a preemptible vague entity.
+// The fill writes the program's choice over the loader's value.
 struct OverrideCell {
-  // The cell's chunk and offset, or null for the import's entry.
+  // The word, or null for the import's own entry.
   Chunk *chunk;
   uint32_t offset;
-  // The import of the default, or null for a cell of the image's own default.
+  // The import, or null for the image's own default or entity.
   DefinedImportData *imp;
-  // The default's slot in the table, or, for a default replaced by name, its
-  // key in the table's block, which is never zero.
+  // The override table's slot, or the name's key where the key is nonzero.
   uint32_t slot;
   uint64_t key;
   bool readOnly;
-  // Whether the slot is in the template of the image's thread-local data.
   bool threadLocal;
-  // Whether the block's entry for the key names a word that holds the
-  // address, as for a vague entity, whose instance the executable imports,
-  // rather than the address itself.
+  // A vague entity, whose table entry names a word holding the instance, and
+  // the name by which a DLL loaded at run time searches for it.
   bool indirect = false;
-  // For a vague entity, its name, by which a DLL loaded outside the
-  // executable's link finds the instance it binds to.
   StringRef name = {};
 
   uint64_t getRVA() const {
     return chunk ? chunk->getRVA() + offset : imp->getRVA();
   }
-  // The key the fill's list orders the cell by: its name's, or for a slot
-  // the offset of the slot's RVA in the executable's header and the slot.
+  // A slot's key is the offset of its RVA in the executable's header and the
+  // slot, so that the fill's list sorts by key.
   uint64_t getKey() const {
     return key ? key
                : uint64_t(overrideSlotOffset(slot) + 4) << 32 | uint64_t(slot)
@@ -90,9 +84,7 @@ struct OverrideCell {
   }
 };
 
-// Where the TLS directory says the template of the image's thread-local data
-// starts, and the index the loader writes for the image's thread-local blocks:
-// a symbol and an addend each.
+// The template start and index that the TLS directory names.
 struct TLSTemplate {
   Defined *start = nullptr;
   int64_t startAddend = 0;
@@ -103,10 +95,8 @@ struct TLSTemplate {
   uint64_t getStartRVA() const { return start->getRVA() + startAddend; }
 };
 
-// The list of the builtins' __llvm_thread_local_slot_copy: the number of
-// slots, the RVAs of the TLS index and of the template's start, and a reserved
-// word; then for each slot its RVA, a reserved word, and the value of its
-// lookup entry, which the slot holds in the file.
+// The list that the builtins' __llvm_thread_local_slot_copy reads, laid out as
+// fill_windows.c describes.
 class CopyListChunk : public NonSectionChunk {
 public:
   CopyListChunk(std::vector<const ImportSlot *> slots, TLSTemplate tls)
@@ -134,39 +124,10 @@ private:
   TLSTemplate tls;
 };
 
-// The list of the builtins' __llvm_fill, which works through it in order.
-//
-// The header holds the number of read-only ranges, of cells, of imports bound
-// at run time and of residual words; the RVAs of the TLS index and template;
-// the RVA and size of the section the fill seals; the key of this DLL's name,
-// by which an image that delay-loads it lists it; and a flag word, bit 0 set
-// where the fill first runs the executable's copy of its thread-local slots.
-//
-// A range of the read-only cells is {rva u32, size u32}, one for each output
-// section that holds any, which the fill makes writable and read-only again:
-// one range across sections would give those between them the protection of
-// the first page. Room is left for as many as the output sections the cells'
-// input sections are named for, which merging can only reduce.
-//
-// A cell is {key u64, rva u32, kind u32}, in the order of the keys, so that
-// the cells of one key are written together; bit 0 of the key marks a cell in
-// read-only data. A cell bound by name has its name's key, which never has bit
-// 0 set; a cell of an overridable default with a slot has the offset of the
-// slot's RVA in the executable's header in the top half of its key and the
-// slot shifted left by one in the bottom. kind is fillCellByName for a default
-// bound by name and fillCellSlot for one with a slot, each with
-// fillCellThreadLocal set for a cell in the thread-local template; or, for a
-// vague entity, whose table entry names a word that holds the address, the RVA
-// of its name, the string its export or its import already holds, by which a
-// search of the loaded modules binds a cell the executable's table does not
-// name, or fillCellNoName if it has none to search by.
-//
-// An import bound at run time is {cell u32, name u32, dll u32, name length
-// u16, dll length u16}: dll is the RVA of the UTF-16 name of the DLL a weak
-// import is resolved in, or for an import from the executable, 1 if it is
-// weak and 0 if not.
-//
-// A residual word is {word u32, import u32, addend i64}.
+// The list that the builtins' __llvm_fill works through, laid out as
+// fill_windows.c describes. It leaves room for a range of read-only cells for
+// each output section their input sections name, which merging can only
+// reduce.
 enum : uint32_t {
   fillCellByName = 0,
   fillCellNoName = 1,
@@ -183,7 +144,7 @@ public:
                       [](const OverrideCell &a, const OverrideCell &b) {
                         return a.getKey() < b.getKey();
                       });
-    // The pointers and the import address tables are in .rdata.
+    // An import's own entry is in .rdata.
     StringSet<> names;
     for (const OverrideCell &c : this->cells)
       if (auto *sc = dyn_cast_or_null<SectionChunk>(c.chunk); c.readOnly)
@@ -203,8 +164,9 @@ public:
     return llvm::COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
            llvm::COFF::IMAGE_SCN_MEM_READ;
   }
-  // The ranges of the read-only cells, one for each output section that holds
-  // any, in address order.
+  // One range of read-only cells for each output section, which the fill makes
+  // writable and read-only again: a range across sections would change those
+  // between them.
   SmallVector<std::pair<uint64_t, uint64_t>, 0> getReadOnlyRanges() const;
 
   std::vector<OverrideCell> cells;
@@ -212,11 +174,10 @@ public:
   std::vector<ResidualWord> words;
   size_t maxRanges;
   TLSTemplate tls;
-  // The exports by name, whose names those of the DLL's own vague entities
-  // are, and the hint/name records of the imports.
+  // Where a vague entity's name is: its export's, or its hint/name record's.
   DenseMap<StringRef, const Export *> exports;
   const DenseMap<DefinedImportData *, Chunk *> *hintOf = nullptr;
-  // A chunk of the section the fill makes read-only at its end, or null.
+  // A chunk of the section the fill seals, or null.
   Chunk *sealed = nullptr;
   uint64_t selfKey = 0;
   bool callsCopy = false;
@@ -308,23 +269,14 @@ void FillListChunk::writeTo(uint8_t *buf) const {
   }
 }
 
-// An image's table of the vague entities it shares, through which the search
-// of a DLL loaded at run time finds the instances it uses: a DLL's, which its
-// MZ header names, of the entities it keeps preemptible, and the executable's,
-// of those it exports. Its header holds the magic, its flags, bit 0 set where
-// an entry names the instance itself rather than a word that holds it, the
-// number of buckets, a reserved word, the mask of the number of words of its
-// filter, a power of two, the number and offset of the keys of the names of
-// the DLLs it delay-loads, and the offset of the buckets. The filter follows,
-// as ELF's DT_GNU_HASH has one, two bits of each key in one of its words, so
-// that a probe of an image that lacks the entity seldom reads a bucket; then
-// the buckets, each {key u32, rva u32, name u32}: the top half of the key, the
-// entry's RVA, zero for a free bucket, which ends a probe, and the RVA of the
-// entity's name, the string its export holds, which a search compares, so
-// that the key's half only filters; then those keys. An entity's home bucket
-// is the top half of its key times the number of buckets, shifted right by 32,
-// so that the number is the entities' and a third, a quarter of the buckets
-// free.
+// The table of the vague entities an image shares, which the fill of a DLL
+// loaded at run time searches: a DLL's, which its MZ header names, holds the
+// words of the entities it keeps preemptible, and the executable's the
+// entities it exports. The header {magic, flags, buckets, 0, filter mask,
+// delay loads, their offset, the buckets' offset} is followed by a filter of
+// two bits per key, as in ELF's DT_GNU_HASH, the buckets {key's top half, RVA,
+// name's RVA}, and the keys of the DLLs the image delay-loads. A quarter of the
+// buckets are free, so a probe ends at one.
 class VagueOfferTableChunk : public NonSectionChunk {
 public:
   struct Offer {
@@ -405,8 +357,7 @@ private:
 };
 } // namespace
 
-// Whether a section is unwind or exception-handling data, which the PE format
-// defines as RVAs of the image's own code and handlers.
+// Unwind and exception data, which hold RVAs of the image's own code.
 static bool isExceptionData(SectionChunk *sc) {
   StringRef name = sc->getSectionName();
   return name == ".xdata" || name == ".pdata" || name.starts_with(".xdata$") ||
@@ -416,8 +367,7 @@ static bool isExceptionData(SectionChunk *sc) {
 DefinedImportData *getAddressedImport(Symbol *s) {
   if (auto *thunk = dyn_cast_or_null<DefinedImportThunk>(s))
     return thunk->wrappedSym;
-  // Data that resolved to its import is a copy of the import's symbol; the
-  // import tables know the original.
+  // Data resolved to its import is a copy of the import's symbol.
   auto *data = dyn_cast_or_null<DefinedImportData>(s);
   if (!data || !data->isRuntimePseudoReloc)
     return nullptr;
@@ -438,10 +388,8 @@ std::optional<int64_t> getAddressWordAddend(SectionChunk *sc,
   return config.is64() ? int64_t(read64le(word)) : int32_t(read32le(word));
 }
 
-// Whether rel, a reference to an import address table entry, reads the whole
-// address the entry holds: a load that its object describes, an ARM64 adrp or
-// ldr of it, or an entry of a KCFI type's list, which is the address of a word
-// that the type's open routine reads whole.
+// Whether rel, a reference to an import's entry, reads the whole address:
+// a described load, an ARM64 adrp or ldr, or a KCFI list entry.
 static bool readsWholeEntry(SectionChunk *sc, const coff_relocation &rel,
                             bool code, bool arm64) {
   if (code && arm64)
@@ -453,8 +401,7 @@ static bool readsWholeEntry(SectionChunk *sc, const coff_relocation &rel,
   return isKCFIListEntry(sc, rel);
 }
 
-// What the scan of the relocations of the image's sections gathers for the
-// decisions that follow it.
+// What the scan of the image's relocations gathers for the decisions after it.
 struct SlotScan {
   // A field that a relocation writes.
   struct Span {
@@ -463,23 +410,20 @@ struct SlotScan {
     const coff_relocation *rel;
     bool word;
   };
-  // A section's candidate slots, and the pairs of its fields that overlap,
-  // each field after the one before it that reaches furthest.
+  // A section's candidate slots, and its overlapping pairs of fields.
   struct Pending {
     SectionChunk *chunk;
     std::vector<ImportSlot> slots;
     Symbol *firstRef = nullptr;
     std::vector<std::pair<Span, Span>> overlaps;
   };
-  // An instruction rewritten for imp, unless the import's thunk is its
-  // address.
+  // An instruction rewritten for imp, unless its thunk becomes its address.
   struct Site {
     SectionChunk *chunk;
     RelaxEdit edit;
     DefinedImportData *imp;
   };
-  // How the references other than its slots use an import's address: not at
-  // all, only to read it whole, or otherwise.
+  // How references other than slots use an import's address.
   enum Use : uint8_t { Unused, Read, Other };
 
   void use(DefinedImportData *imp, Use u) {
@@ -489,30 +433,26 @@ struct SlotScan {
 
   std::vector<Pending> pending;
   std::vector<Site> addressSites;
-  // On ARM64 the loads of a delay-loaded function's entry are rewritten for
-  // the symbol as a whole, since an adrp may serve several loads.
+  // ARM64 loads of a delay-loaded function's entry, rewritten all or none,
+  // since an adrp may serve several loads.
   MapVector<DefinedImportData *,
             std::vector<std::pair<SectionChunk *, RelaxEdit>>>
       delayLoads;
   DenseSet<DefinedImportData *> delayLoadsRead;
-  // For each import thunk, the references to it, and those that a slot or a
-  // rewritten instruction bypasses.
+  // For each import thunk, its references and those that bypass it.
   MapVector<DefinedImportThunk *, std::pair<size_t, size_t>> thunkRefs;
   DenseMap<ImportFile *, Use> uses;
-  // For each function whose address is a DLL's instance, the references that
-  // keep the image's copy, such as calls.
+  // For each offered function, the references that keep the image's copy.
   DenseMap<Symbol *, size_t> localFunctionRefs;
-  // The symbols of the object being scanned that have been reported.
+  // Per object: the symbols reported, and the indices its guard metadata
+  // lists as address-taken, once read.
   SmallPtrSet<Symbol *, 4> reported;
-  // The symbol table indices that the guard metadata of the object being
-  // scanned lists as address-taken, once read.
   std::optional<DenseSet<uint32_t>> guardFids;
-  // The fields of the section being checked.
   std::vector<Span> spans;
 };
 
-// Collects into overlaps the pairs of fields of sc that overlap, which may not
-// cover a slot.
+// Collects the pairs of sc's fields that overlap, each with the one before it
+// that reaches furthest.
 static void
 findOverlaps(SlotScan &scan, SectionChunk *sc,
              std::vector<std::pair<SlotScan::Span, SlotScan::Span>> &overlaps) {
@@ -539,9 +479,7 @@ findOverlaps(SlotScan &scan, SectionChunk *sc,
   }
 }
 
-// Every word that an in-place import slot covers has that slot as its only
-// writer: a relocation overlapping it, which would also be a second writer of
-// a base relocation, is an error. An identical duplicate is one binding.
+// A slot must be its word's only writer; an identical duplicate is one.
 static bool validate(COFFLinkerContext &ctx, SlotScan::Pending &p) {
   auto isSlot = [&](const SlotScan::Span &s) {
     auto it = llvm::partition_point(
@@ -574,33 +512,23 @@ static bool validate(COFFLinkerContext &ctx, SlotScan::Pending &p) {
   return true;
 }
 
-// Under -import-slots, a word of static data that holds the address of an
-// import is an in-place import slot: the loader writes the address there
-// through an import descriptor whose address table is the run of such words
-// the word belongs to, so the word needs no base relocation, and a function's
-// address is the function's, not its import thunk's. Code that takes the
-// address of an imported function in an instruction its object describes, or
-// in an ARM64 adrp and add pair, is rewritten to load it from the import
-// address table, so that code and static data agree. An object that may take
-// it in an instruction it does not describe makes the image use the import
-// thunk as the function's address everywhere, with a warning. A delay-loaded
-// function keeps its thunk, and code that loads its address from the import
-// address table is rewritten to take the thunk's. A reference to data that
-// resolved to its import other than by such a word cannot reach the data, and
-// is an error.
-//
-// One scan of the relocations gathers what each decision needs, as MinGW's
-// runtime pseudo-relocations and ELF's relocation scan do; the decisions are
-// taken once it has settled which functions keep their thunks as their
-// addresses, on which every slot and rewritten instruction depends.
+// Under -import-slots, a word of static data holding an import's address is an
+// in-place import slot, which the loader writes as an entry of an import
+// address table made of the run the word belongs to. Code taking an imported
+// function's address in a described instruction, or an ARM64 adrp and add, is
+// rewritten to load it from the import's entry, so code and data agree; an
+// object that may take it otherwise makes the thunk the function's address
+// image-wide. A delay-loaded function keeps its thunk. Any other reference to
+// data resolved to its import is an error. One scan gathers what the decisions
+// need, as ELF's relocation scan does, and they are taken once it is known
+// which functions keep their thunks as their addresses.
 void ImportSlotContents::bind() {
   Configuration &config = ctx.config;
   if (!config.importSlots)
     return;
   llvm::TimeTraceScope timeScope("Import slots");
 
-  // An export of data that resolved to its import would publish the address
-  // of the import address table entry.
+  // An export of data resolved to its import would publish its entry.
   for (Export &e : ctx.symtab.exports)
     if (auto *imp = dyn_cast_or_null<DefinedImportData>(e.sym);
         imp && imp->isRuntimePseudoReloc)
@@ -608,10 +536,9 @@ void ImportSlotContents::bind() {
                << ": it is imported from " << imp->getDLLName()
                << "; export a forwarder to it instead";
 
-  // An import bound at run time has a cell in .sealed in place of an entry of
-  // an import address table, which code reads unchanged, and no descriptor.
-  // The bounds of a DLL's KCFI code range, which a KCFI thunk loads together,
-  // take one 16-byte block, start then end.
+  // An import bound at run time has a cell in .sealed instead of an entry.
+  // A DLL's KCFI code range bounds, which a thunk loads together, share a
+  // 16-byte block.
   DenseMap<DefinedImportData *, DefinedImportData *> rangeEnds;
   DenseSet<DefinedImportData *> rangeEndSet;
   for (const KCFIState::ImportedRange &r : ctx.kcfi.importedRanges) {
@@ -632,7 +559,6 @@ void ImportSlotContents::bind() {
                       : make<WideStringChunk>(imp->getDLLName())};
     c.cell->setAlignment(std::max<uint32_t>(align, c.cell->getAlignment()));
     imp->setLocation(c.cell);
-    // A .refptr pointer to the function reads the cell instead.
     StringRef name = imp->getName().drop_front(strlen("__imp_"));
     if (Symbol *s = ctx.symtab.find(name))
       ctx.symtab.replaceRefPtr(s, name, imp);
@@ -671,11 +597,9 @@ void ImportSlotContents::bind() {
   resolve(scan);
 }
 
-// x86-64 cl.exe has no inline assembly, and MSVC's control-flow guard fails at
-// run time if a function-typed address-take is missing from an object's
-// .gfids$y table. So in an object built with /guard:cf, a REL32 against a
-// function-typed symbol that the table does not list is a branch. A symbol
-// declared as data, which keeps a function out of the table, proves nothing.
+// In an object built with /guard:cf by cl.exe, which has no x86-64 inline
+// assembly, a REL32 to a function-typed symbol its .gfids$y table does not
+// list is a branch: a missing address-take would fail at run time.
 static bool isGuardMetadataBranch(std::optional<DenseSet<uint32_t>> &fids,
                                   ObjFile *file, const coff_relocation &rel) {
   if (!file->hasGuardCF())
@@ -699,10 +623,9 @@ static bool isGuardMetadataBranch(std::optional<DenseSet<uint32_t>> &fids,
   return !fids->contains(rel.SymbolTableIndex);
 }
 
-// A function that a DLL the image imports from offers, and whose address an
-// object may take in an instruction it does not describe, keeps the image's
-// copy as its address, which that instruction takes: the image does not split
-// the function's address, as link.exe would not.
+// An offered function whose address an object may take in an undescribed
+// instruction keeps the image's copy as its address, so the address is not
+// split.
 void ImportSlotContents::keepUndescribedFunctionAddresses() {
   MapVector<Symbol *, DefinedImportData *> &offered =
       ctx.symtab.offeredFunctions;
@@ -736,10 +659,8 @@ void ImportSlotContents::keepUndescribedFunctionAddresses() {
   }
 }
 
-// A function that an object may take the address of in an instruction it
-// does not describe, or in a 32-bit field of data, keeps its thunk as its
-// address: its words in static data name the thunk, and the instructions that
-// take its address are left as they are.
+// A function whose address an object may take in an undescribed instruction,
+// or in a 32-bit field, keeps its thunk as its address everywhere.
 void ImportSlotContents::useThunkAsAddress(SlotScan &scan, ObjFile *file,
                                            Symbol *s, DefinedImportData *imp,
                                            SectionChunk *data) {
@@ -761,11 +682,9 @@ void ImportSlotContents::useThunkAsAddress(SlotScan &scan, ObjFile *file,
                  "imported, or rebuild the object with clang";
 }
 
-// A word that holds an address inside an import's data for which its DLL
-// exports no name is the fill's to write. A read-only one moves with its chunk
-// to pages that the fill makes read-only again once written, which a read-only
-// section that may not move cannot give it. Thread-local data is the
-// loader's to copy before any initializer runs.
+// A word holding an address inside an import that its DLL exports no name for
+// is the fill's to write; a read-only one moves with its chunk to .sealed.
+// Thread-local data is copied before the fill runs.
 void ImportSlotContents::addResidualWord(SectionChunk *sc, uint32_t offset,
                                          Symbol *s, DefinedImportData *imp,
                                          int64_t addend) {
@@ -794,9 +713,7 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
   bool code = sc->header->Characteristics & IMAGE_SCN_CNT_CODE;
   ArrayRef<coff_relocation> relocs = sc->getRelocs();
   SlotScan::Pending p{sc, {}, nullptr, {}};
-  // An instruction that takes the address of an import thunk, or of what a
-  // DLL provides, is rewritten to load it from the import's entry: lea
-  // becomes mov, and the add after an ARM64 adrp a 64-bit ldr.
+  // lea becomes mov; the add after an ARM64 adrp becomes ldr.
   auto addressSite = [&](const coff_relocation &r, DefinedImportData *imp) {
     uint32_t off = r.VirtualAddress;
     RelaxEdit edit{off - 3, 7, 7, RelaxEdit::LoadPointer, imp};
@@ -807,7 +724,28 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
               imp};
     scan.addressSites.push_back({sc, edit, imp});
   };
-  for (size_t i = 0, e = relocs.size(); i != e; ++i) {
+  size_t e = relocs.size();
+  // An ARM64 adrp and add pair, or an instruction its object describes, that
+  // takes an address, which the import's entry then gives.
+  auto rewriteAddress = [&](size_t &i, DefinedImportData *imp) {
+    const coff_relocation &r = relocs[i];
+    if (arm64) {
+      if (r.Type != IMAGE_REL_ARM64_PAGEBASE_REL21 || i + 1 == e ||
+          !isArm64AddressPair(sc, r, relocs[i + 1]))
+        return false;
+      addressSite(r, imp);
+      addressSite(relocs[++i], imp);
+      return true;
+    }
+    const ObjFile::RelocFact *fact = file->relocFact(sc, r);
+    if (r.Type != IMAGE_REL_AMD64_REL32 || !fact || !fact->hasSite ||
+        fact->form != LinkSiteAddress ||
+        !isSiteForm(sc->getContents(), r.VirtualAddress, LinkSiteAddress))
+      return false;
+    addressSite(r, imp);
+    return true;
+  };
+  for (size_t i = 0; i != e; ++i) {
     const coff_relocation &rel = relocs[i];
     Symbol *s = file->getSymbol(rel.SymbolTableIndex);
     auto *thunk = dyn_cast_or_null<DefinedImportThunk>(s);
@@ -815,29 +753,15 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
     if (thunk)
       ++scan.thunkRefs[thunk].first;
 
-    // The address of a function that a DLL offers is the DLL's instance:
-    // a described address-take loads it from the import's entry and a word of
-    // static data takes it in place. Calls, and any other reference from
-    // outside the function's own sections, keep the image's copy. The address
-    // of a definition this DLL offers as an overridable default is the
-    // program's choice, which the default's import holds, alike.
+    // The address of a function a DLL offers is the DLL's instance, and that
+    // of an overridable default this DLL offers the program's choice; calls
+    // and other references keep the image's copy.
     DefinedImportData *offer = ctx.symtab.offeredFunctions.lookup(s);
     if (!offer)
       offer = ctx.symtab.preemptedOffers.lookup(s);
     if (offer) {
-      if (code && arm64 && rel.Type == IMAGE_REL_ARM64_PAGEBASE_REL21 &&
-          i + 1 != e && isArm64AddressPair(sc, rel, relocs[i + 1])) {
-        addressSite(rel, offer);
-        addressSite(relocs[++i], offer);
+      if (code && rewriteAddress(i, offer))
         continue;
-      }
-      if (const ObjFile::RelocFact *fact = file->relocFact(sc, rel);
-          code && !arm64 && rel.Type == IMAGE_REL_AMD64_REL32 && fact &&
-          fact->hasSite && fact->form == LinkSiteAddress &&
-          isSiteForm(sc->getContents(), rel.VirtualAddress, LinkSiteAddress)) {
-        addressSite(rel, offer);
-        continue;
-      }
       if (!code && !isExceptionData(sc) && sc->isAddressWord(rel) &&
           getAddressWordAddend(sc, rel) == 0) {
         p.slots.push_back({sc, rel.VirtualAddress, offer});
@@ -853,13 +777,12 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
       continue;
     }
 
-    // An import address table entry. The import's data itself is reached only
-    // through its slots.
+    // An import's entry; its data is reached only through slots.
     if (data && !data->isRuntimePseudoReloc) {
       scan.use(data, readsWholeEntry(sc, rel, code, arm64) ? SlotScan::Read
                                                            : SlotScan::Other);
-      // That of a delay-loaded function: a load of the address in code takes
-      // the thunk's instead, mov becoming lea, and ldr add.
+      // A delay-loaded function's: a load in code takes the thunk's address,
+      // mov becoming lea and ldr add.
       if (!data->file->thunkSym || !data->file->isDelayLoaded())
         continue;
       auto *thunk = cast<Defined>(data->file->thunkSym);
@@ -902,24 +825,10 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
     }
     if (code) {
       if (!thunk) {
-        // The address of data that a DLL's instance preempted, which a
-        // described instruction takes, becomes a load of the import's entry,
-        // as that of a function does.
+        // Data a DLL's instance preempted is reached as a function's is.
         bool preempted = file->symtab.preemptedData.contains(s);
-        if (preempted && arm64 && rel.Type == IMAGE_REL_ARM64_PAGEBASE_REL21 &&
-            i + 1 != e && isArm64AddressPair(sc, rel, relocs[i + 1])) {
-          addressSite(rel, imp);
-          addressSite(relocs[++i], imp);
+        if (preempted && rewriteAddress(i, imp))
           continue;
-        }
-        const ObjFile::RelocFact *fact = file->relocFact(sc, rel);
-        if (preempted && !arm64 && rel.Type == IMAGE_REL_AMD64_REL32 && fact &&
-            fact->hasSite && fact->form == LinkSiteAddress &&
-            isSiteForm(sc->getContents(), rel.VirtualAddress,
-                       LinkSiteAddress)) {
-          addressSite(rel, imp);
-          continue;
-        }
         if (!scan.reported.insert(s).second)
           continue;
         if (preempted)
@@ -928,8 +837,6 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
                    << ", but is referenced as if it were local; recompile "
                       "the object, or give the symbol hidden visibility";
         else {
-          // Assembly reaches it through its import pointer, which the GOT
-          // spellings of position-independent ELF assembly name.
           StringRef name = imp->getName().drop_front(strlen("__imp_"));
           Err(ctx) << file << ": " << file->symtab.printSymbol(s)
                    << " is imported from " << imp->getDLLName()
@@ -954,9 +861,7 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
       if (arm64) {
         switch (rel.Type) {
         case IMAGE_REL_ARM64_PAGEBASE_REL21:
-          if (i + 1 != e && isArm64AddressPair(sc, rel, relocs[i + 1])) {
-            addressSite(rel, imp);
-            addressSite(relocs[++i], imp);
+          if (rewriteAddress(i, imp)) {
             ++scan.thunkRefs[thunk].first;
             scan.thunkRefs[thunk].second += 2;
           } else {
@@ -1015,13 +920,10 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
       continue;
     }
 
-    // A 32-bit field cannot hold another image's address. A field through
-    // which the function is only called, as a frame's handler is in unwind
-    // data, is served by its import thunk; any other function address there
-    // makes the thunk the function's address image-wide. An object that lists
-    // its call-only fields says which they are; otherwise they are those of
-    // exception data, which the PE format defines as RVAs that the system
-    // calls.
+    // A 32-bit field cannot hold another image's address. One the function is
+    // only called through, which the object lists or, failing that, any in
+    // exception data, is served by the thunk; any other makes the thunk the
+    // function's address.
     if (!sc->isAddressWord(rel)) {
       const ObjFile::RelocFact *fact = file->relocFact(sc, rel);
       bool callOnly = file->listsCallOnly() ? fact && fact->callOnly
@@ -1047,9 +949,8 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
                << " (size 0x" << Twine::utohexstr(sc->getSize()) << ")";
       continue;
     }
-    // The loader adds nothing to the address it writes, so a word that holds
-    // an address inside the import's data takes the name that its DLL exports
-    // for that address.
+    // The loader adds no addend: a word inside the import takes the name its
+    // DLL exports for that address.
     if (*addend) {
       DefinedImportData *interior = ctx.symtab.findInteriorImport(imp, *addend);
       if (!interior) {
@@ -1084,13 +985,11 @@ void ImportSlotContents::resolve(SlotScan &scan) {
   Configuration &config = ctx.config;
   heldBackChunks.insert(sealedChunks.begin(), sealedChunks.end());
 
-  // The thunk whose address a rewritten load takes is kept in the image. An
-  // instruction that takes an imported function's address loads it from the
-  // import's entry once rewritten.
+  // A rewritten load of a delay-loaded function takes its thunk's address.
   auto keepThunk = [](DefinedImportData *imp) {
     cast<DefinedImportThunk>(imp->file->thunkSym)->getChunk()->live = true;
   };
-  // A load that the linker disposes of, which nothing reads, needs no rewrite.
+  // A load the linker already disposes of needs no rewrite.
   auto addSite = [&](SectionChunk *sc, const RelaxEdit &edit) {
     auto it = ctx.relaxations.find(sc);
     if (it == ctx.relaxations.end() || !it->second.findEdit(edit.offset))
@@ -1113,23 +1012,19 @@ void ImportSlotContents::resolve(SlotScan &scan) {
     keepThunk(imp);
   }
 
-  // An import thunk that every reference bypasses is left out of the image,
-  // and so out of the Control Flow Guard tables, unless something other than
-  // a relocation names it.
+  // A thunk every reference bypasses is left out, unless a root or an export
+  // names it.
   DenseSet<Symbol *> named(config.gcroot.begin(), config.gcroot.end());
   for (Export &e : ctx.symtab.exports)
     named.insert(e.sym);
-  // The words of static data that hold the address of an import bound at run
-  // time name its thunk until the fill writes them.
+  // Words holding an import bound at run time name its thunk until the fill.
   for (auto &[thunk, refs] : scan.thunkRefs)
     if (refs.first == refs.second && !thunk->wrappedSym->file->thunkIsAddress &&
         !thunk->wrappedSym->file->isBoundAtRunTime() &&
         !thunk->wrappedSym->file->isDelayLoaded() && !named.contains(thunk))
       thunk->getChunk()->live = false;
 
-  // A function's copy that no call keeps is discarded, as one that no
-  // reference reached would have been; a root names the function, whose
-  // address is the DLL's instance, not the copy.
+  // An offered function's copy that no call keeps is discarded.
   for (auto &[sym, imp] : ctx.symtab.offeredFunctions) {
     if (scan.localFunctionRefs.lookup(sym))
       continue;
@@ -1142,8 +1037,7 @@ void ImportSlotContents::resolve(SlotScan &scan) {
   std::vector<SectionChunk *> writable;
   for (SlotScan::Pending &p : scan.pending) {
     SectionChunk *sc = p.chunk;
-    // A word holding the address of an import bound at run time is the fill's
-    // to write, from the import's cell.
+    // The fill writes a word of an import bound at run time from its cell.
     llvm::erase_if(p.slots, [&](const ImportSlot &s) {
       if (!s.sym->file->isBoundAtRunTime() || s.sym->file->thunkIsAddress)
         return false;
@@ -1160,12 +1054,9 @@ void ImportSlotContents::resolve(SlotScan &scan) {
     });
     if (!validate(ctx, p))
       continue;
-    // A read-only slot can be written only inside the range the loader
-    // makes writable while it binds imports. A chunk of .rdata is moved
-    // there. A read-only section whose order or bounds its program may rely
-    // on keeps its place: another section is laid out beside that range, and
-    // the $-groups of .rdata, together and in their order, at its start.
-    // Exception data never holds an import's address.
+    // The loader writes read-only slots only inside the import address table
+    // directory: a .rdata chunk moves there, while another read-only section,
+    // or a $-group of .rdata, keeps its order and is laid out beside it.
     bool readOnly = !(sc->header->Characteristics & IMAGE_SCN_MEM_WRITE);
     StringRef name = getPartialSectionName(sc, config.mingw);
     StringRef outName = getOutputSectionName(name, config.mingw);
@@ -1179,8 +1070,7 @@ void ImportSlotContents::resolve(SlotScan &scan) {
     }
     sc->hasImportSlots = true;
     ctx.importSlots[sc] = std::move(p.slots);
-    // A chunk that also holds residual words is writable until they are
-    // written.
+    // A chunk with residual words stays writable until the fill seals it.
     if (sealedChunks.contains(sc)) {
       writable.push_back(sc);
       continue;
@@ -1202,9 +1092,8 @@ void ImportSlotContents::resolve(SlotScan &scan) {
       slotSections.insert(outName);
     writable.push_back(sc);
   }
-  // How the references other than slots use each import: an export or a root
-  // uses it otherwise, as KCFI's lists may, and the fill and a live import
-  // thunk read it.
+  // Exports, roots and KCFI lists use imports otherwise; the fill and a live
+  // thunk read them.
   SmallVector<DefinedImportData *, 0> kcfiRead, kcfiOther;
   getKCFIImportUses(ctx, kcfiRead, kcfiOther);
   for (DefinedImportData *imp : kcfiRead)
@@ -1227,8 +1116,7 @@ void ImportSlotContents::resolve(SlotScan &scan) {
     auto *thunk = dyn_cast_or_null<DefinedImportThunk>(file->thunkSym);
     return thunk && thunk->getChunk()->live ? std::max(u, SlotScan::Read) : u;
   };
-  // An import that only the discarded sections of preempted data used needs
-  // no entry.
+  // An import only discarded preempted data used needs no entry.
   auto omitPreemptedGroupImports =
       [&](const DenseSet<ImportFile *> &slotted,
           DenseSet<DefinedImportData *> &unneeded) {
@@ -1249,9 +1137,8 @@ void ImportSlotContents::resolve(SlotScan &scan) {
     return;
   }
 
-  // The slot chunks laid out together are ordered by the DLL of their first
-  // slot, so that single-pointer chunks of one DLL form one run. The DLL order
-  // of a chunk is found and lower-cased once, not for each comparison.
+  // Chunks laid out together are ordered by their first slot's DLL, so that
+  // one DLL's single-pointer chunks form one run.
   DenseMap<SectionChunk *, int> dllIndexOf;
   auto dllIndex = [&](SectionChunk *sc) {
     auto [it, inserted] = dllIndexOf.try_emplace(sc, 0);
@@ -1268,8 +1155,8 @@ void ImportSlotContents::resolve(SlotScan &scan) {
     heldBackChunks.insert(v->begin(), v->end());
   }
 
-  // Slots of one DLL one word apart form a run: within a chunk, and across
-  // two chunks laid out together with no padding between them.
+  // Slots of one DLL one word apart form a run, also across adjacent chunks
+  // laid out together.
   std::vector<ImportSlot *> *run = nullptr;
   ImportSlot *prev = nullptr;
   auto follows = [&](ImportSlot &s) {
@@ -1305,25 +1192,16 @@ void ImportSlotContents::resolve(SlotScan &scan) {
       addRuns(sc);
   }
 
-  // An import whose address the image keeps in in-place slots needs no entry of
-  // its own in its DLL's import address table when nothing else needs one. Its
-  // address is then taken to be one of its slots, which every other user reads
-  // instead: code that loads the whole address through an instruction its
-  // object describes, or through ARM64 adrp and ldr, the import thunk, and the
-  // lists of KCFI's open routines. Such a slot must be naturally aligned and in
-  // a read-only section that no /merge or /section option changes, so that the
-  // image cannot write what they read. An import that anything uses otherwise
-  // keeps its entry: a reference from data, an instruction that takes the
-  // entry's address or reads part of it, an object that does not describe its
-  // instructions, an export or a root.
+  // An import with slots whose other users only read its whole address takes
+  // one of its slots as its entry: an aligned one in read-only data that no
+  // /merge or /section changes, so nothing writes what they read.
   DenseSet<ImportFile *> slotted;
   for (const std::vector<ImportSlot *> &slotRun : idata.slotRuns)
     for (ImportSlot *slot : slotRun)
       slotted.insert(slot->sym->file);
 
   // An import whose words all take interior names, and that nothing else
-  // uses, needs no entry at all. What still names it, such as debug
-  // information, is given the place of its first such word.
+  // uses, needs no entry; debug information names its first word.
   DenseSet<DefinedImportData *> unneeded;
   for (auto &[file, word] : interiorBases) {
     if (getUse(file) != SlotScan::Unused || slotted.contains(file))
@@ -1347,8 +1225,7 @@ void ImportSlotContents::resolve(SlotScan &scan) {
            s.offset % config.wordsize == 0 && !config.merge.count(outName) &&
            !config.section.count(outName);
   };
-  // The first readable slot of each import in the order of the runs, and
-  // for an import that nothing else uses, its first slot if none is.
+  // Each import's first readable slot, or for an unused import its first.
   MapVector<ImportFile *, ImportSlot *> chosen;
   for (bool any : {false, true})
     for (const std::vector<ImportSlot *> &slotRun : idata.slotRuns)
@@ -1366,8 +1243,7 @@ void ImportSlotContents::resolve(SlotScan &scan) {
   }
 }
 
-// Adds an import that nothing else made live to the import tables, for a pass
-// after createImportTables that needs it.
+// Adds an import to the import tables after createImportTables.
 void ImportSlotContents::addImport(DefinedImportData *imp) {
   imp->file->live = true;
   ctx.config.dllOrder.try_emplace(StringRef(imp->file->dllName).lower(),
@@ -1375,17 +1251,14 @@ void ImportSlotContents::addImport(DefinedImportData *imp) {
   idata.add(imp);
 }
 
-// Under -import-slots, the image's fill writes what the loader cannot: the
-// cells, the imports bound at run time and the residual words, and in a DLL
-// that may reach the executable while the DLLs initialize, it first runs the
-// executable's copy of its thread-local slots.
+// Under -import-slots, the fill writes what the loader cannot: the cells, the
+// imports bound at run time and the residual words.
 void ImportSlotContents::createFill() {
   llvm::TimeTraceScope timeScope("Create fill");
   Configuration &config = ctx.config;
   auto *list = cast_or_null<FillListChunk>(fillList);
   bool hasXIA = isa_and_nonnull<Defined>(ctx.symtab.findUnderscore("__xi_a"));
-  // A DLL that imports from an executable runs the executable's copy, unless
-  // it has no C initializer table, in which case nothing could.
+  // A DLL that imports from an executable first runs the executable's copy.
   bool callsCopy =
       config.importSlots && config.dll && hasXIA &&
       llvm::any_of(ctx.importFileInstances, [](ImportFile *f) {
@@ -1434,8 +1307,6 @@ void ImportSlotContents::createFill() {
   list->selfKey =
       overrideNameKey(sys::path::filename(config.outputFile).lower());
 
-  // The fill calls ntdll: NtProtectVirtualMemory, and the loader's functions
-  // that resolve an import, find a loaded DLL and pin it.
   for (Chunk *c : cast<ObjFile>(f->getFile())->getChunks())
     if (auto *sc = dyn_cast<SectionChunk>(c))
       for (Symbol *sym : sc->symbols())
@@ -1449,9 +1320,8 @@ void ImportSlotContents::createFill() {
   replaceSymbol<DefinedSynthetic>(s, s->getName(), list);
 }
 
-// The TLS directory's template start and index: the targets of the
-// relocations of its first and third fields. Either is null when the image has
-// no directory or the directory names none.
+// The targets of the relocations of the TLS directory's first and third
+// fields.
 static TLSTemplate findTLSTemplate(COFFLinkerContext &ctx) {
   TLSTemplate tls;
   auto *dir =
@@ -1477,9 +1347,8 @@ static TLSTemplate findTLSTemplate(COFFLinkerContext &ctx) {
   return tls;
 }
 
-// Under -import-slots, an executable's in-place import slots in its
-// thread-local template are bound in the template only after the loader has
-// copied it into the main thread's block; the copy writes them there too.
+// The loader copies an executable's thread-local template into the main
+// thread's block before it binds the template's slots; the copy rebinds them.
 void ImportSlotContents::createThreadLocalSlotCopy() {
   llvm::TimeTraceScope timeScope("Create thread-local slot copy");
   Configuration &config = ctx.config;
@@ -1519,12 +1388,10 @@ void ImportSlotContents::createThreadLocalSlotCopy() {
   replaceSymbol<DefinedSynthetic>(s, s->getName(), threadLocalSlotCopyList);
 }
 
-// Under -import-slots, a DLL's cells of the overridable defaults it imports
-// are the words through which it reaches them: each in-place import slot of a
-// default, and the default's own entry, which its calls and the instructions
-// that take its address read. The fill writes those of a replaced default with
-// the replacement, so the DLL observes and calls the one the program chose, as
-// on ELF. An executable binds its own at link time, from the table it writes.
+// A DLL's cells: the slots and entries of the overridable defaults it imports,
+// and the words through which it reaches its own defaults and the vague
+// entities another image's instance may preempt, as an ELF object reaches
+// them through its GOT. An executable binds its own from its table.
 void ImportSlotContents::collectCells() {
   llvm::TimeTraceScope timeScope("Collect cells");
   Configuration &config = ctx.config;
@@ -1532,10 +1399,6 @@ void ImportSlotContents::collectCells() {
     return;
   std::vector<OverrideCell> cells;
   ctx.symtab.readOverrideRecords();
-  // As on ELF, where an importer reaches another object's preemptible data
-  // through its GOT, the words through which the DLL reaches a vague entity
-  // that the DLL it imports it from keeps preemptible are cells too, keyed by
-  // the entity's name, since the program may use another image's instance.
   StringMap<StringSet<>> preemptibleOffers;
   if (isa_and_nonnull<Defined>(ctx.symtab.findUnderscore("__xi_a")))
     preemptibleOffers = getPreemptibleOffers(ctx);
@@ -1554,8 +1417,7 @@ void ImportSlotContents::collectCells() {
                          false, /*indirect=*/true, name});
     }
   };
-  // A slot in a chunk with residual words is in a section that stays writable
-  // until the fill seals it, after it writes the cells.
+  // A chunk with residual words is writable until the fill seals it.
   for (auto &[sc, slots] : ctx.importSlots) {
     auto *chunk = const_cast<SectionChunk *>(sc);
     bool readOnly = !(sc->header->Characteristics & IMAGE_SCN_MEM_WRITE) &&
@@ -1569,13 +1431,6 @@ void ImportSlotContents::collectCells() {
   for (DefinedImportData *imp : idata.imports)
     if (!idata.slotOnly.contains(imp))
       add(nullptr, 0, imp, true, false);
-  // The DLL's own defaults have cells too, as on ELF its address in the
-  // defining object is the program's one: the pointer its address-takes read,
-  // and the words of its static data that hold its address. Each holds the
-  // default until the fill writes the replacement. Both are in read-only data
-  // beside the import address tables, or in writable data. A default with a
-  // slot is keyed by the slot its definition records, and one without by its
-  // name.
   auto addOwn = [&](StringRef name, Chunk *c, uint32_t offset, bool readOnly,
                     bool threadLocal) {
     if (ctx.symtab.isOwnSlotDefault(name))
@@ -1585,20 +1440,12 @@ void ImportSlotContents::collectCells() {
       cells.push_back({c, offset, nullptr, 0, overrideNameKey(name), readOnly,
                        threadLocal});
   };
-  // As on ELF, where a shared object's own references to its preemptible
-  // data go through its GOT, its references to a vague entity another image's
-  // instance may preempt read a cell: the pointer its import-form references
-  // read, and the words of its static data that hold its address, keyed by
-  // the entity's name. The executable's block names a word holding the
-  // instance's address.
   auto addVague = [&](Defined *d, Chunk *c, uint32_t offset, bool readOnly) {
     cells.push_back({c, offset, nullptr, 0, overrideNameKey(d->getName()),
                      readOnly, false, /*indirect=*/true, d->getName()});
   };
-  // Each live entity the DLL keeps preemptible has a pointer that its offer
-  // table names to the search of a DLL loaded later, made here where no
-  // import-form reference of its own made one. A thread-local variable's
-  // instance is its record.
+  // Each preemptible entity gets a pointer, which the offer table names; a
+  // thread-local variable's instance is its record.
   ctx.symtab.isPreemptibleVagueEntity(nullptr); // which computes the set
   if (!ctx.symtab.preemptibleVagueEntities->empty()) {
     DenseSet<Defined *> pointed;
@@ -1636,8 +1483,7 @@ void ImportSlotContents::collectCells() {
     else if (!li->vagueEntity.empty())
       addVague(li->getTarget(), li, 0, true);
   }
-  // Static data reaches a cell only through an own default or a preemptible
-  // vague entity; with none the walk over every live word finds nothing.
+  // Static data holds cells only of own defaults and preemptible entities.
   bool scanStaticData = !ctx.symtab.overrideSlotFacts.empty() ||
                         !ctx.symtab.overridablesByName.empty() ||
                         !ctx.symtab.preemptibleVagueEntities->empty();
@@ -1683,15 +1529,12 @@ void ImportSlotContents::collectCells() {
                   "cell "
                << why;
   };
-  // The anchor's mask, which the fill reads, has a bit for each of the first
-  // 32 slots.
+  // The anchor's mask covers 32 slots.
   for (const OverrideCell &c : cells)
     if (!c.key && c.slot >= 32)
       return fail("that the override table's mask cannot name");
   if (!isa_and_nonnull<Defined>(ctx.symtab.findUnderscore("__xi_a")))
     return fail("that the image has no C initializer table (__xi_a) to fill");
-  // A thread-local cell is written in the template and in the loading thread's
-  // block.
   TLSTemplate tls;
   if (llvm::any_of(cells,
                    [](const OverrideCell &c) { return c.threadLocal; })) {
@@ -1705,17 +1548,14 @@ void ImportSlotContents::collectCells() {
   fillList = list;
 }
 
-// A DLL loaded after the process initializes, or delay-loaded by such a DLL,
-// is outside the executable's link, and so outside its table: as an ELF object
-// opened RTLD_LOCAL resolves against the global scope, it binds its cells to
-// the instances that the modules loaded with the process, or one that
-// delay-loads it, use, through the offer table each names in its MZ header.
+// A DLL loaded at run time is outside the executable's table; as an object
+// opened RTLD_LOCAL resolves against the global scope, it binds its cells
+// through the offer tables of the modules in that scope.
 void ImportSlotContents::createOfferTable() {
   llvm::TimeTraceScope timeScope("Create offer table");
   Configuration &config = ctx.config;
   if (!config.importSlots)
     return;
-  // The exports by name, whose names those of the image's vague entities are.
   DenseMap<StringRef, const Export *> exports;
   for (const Export &e : ctx.symtab.exports)
     if (!e.noname && e.forwardTo.empty())
@@ -1734,10 +1574,8 @@ void ImportSlotContents::createOfferTable() {
       Err(ctx) << "vague entities " << it->second << " and " << name
                << " have the same key in the offer table";
   };
-  // The executable's table: the vague entities it exports, which are the
-  // instances it shares, as an ELF executable's dynamic symbols are. No DLL
-  // searches for a type_info object, which images no link joins compare by
-  // name.
+  // The executable offers the vague entities it exports, but no type_info,
+  // which such images compare by name.
   if (!config.dll) {
     DenseSet<Symbol *> vague;
     vague.insert_range(ctx.symtab.weakData);
@@ -1756,9 +1594,8 @@ void ImportSlotContents::createOfferTable() {
           std::move(offers), std::vector<uint64_t>(), /*direct=*/true);
     return;
   }
-  // A DLL's: the pointer of each entity it keeps preemptible and exports,
-  // which holds the instance it uses, and the keys of the names of the DLLs it
-  // delay-loads.
+  // A DLL offers the pointers of its exported preemptible entities, and lists
+  // the DLLs it delay-loads.
   for (Chunk *c : ctx.symtab.localImportChunks)
     if (auto *li = cast<LocalImportChunk>(c); !li->vagueEntity.empty())
       offer(li->vagueEntity, li, nullptr);
@@ -1776,17 +1613,12 @@ void ImportSlotContents::createOfferTable() {
   }
 }
 
-// The loader writes an in-place import slot with an absolute address, makes
-// only the import address table directory writable while it binds imports, and
-// restores one protection over all of it. Each slot's word must therefore be
-// in a section that is not executable, a read-only one inside the directory,
-// whose page-rounded range has one protection; each run must still be one word
-// a slot.
+// The loader makes only the import address table directory writable while it
+// binds, and restores one protection over it: a slot must be outside code, and
+// a read-only one inside the directory, which only read-only data may share.
 void ImportSlotContents::check(Chunk *iatStart, uint64_t iatSize) {
   llvm::TimeTraceScope timeScope("Check import slots");
-  // A fill makes the pages of each range of its read-only cells writable and
-  // then read-only again; every section those pages hold must therefore be
-  // read-only data.
+  // Pages the fill makes writable must hold only read-only data.
   auto checkCells = [&](ArrayRef<std::pair<uint64_t, uint64_t>> ranges) {
     for (auto [start, end] : ranges) {
       uint64_t pageBegin = alignDown(start, ctx.config.align);
