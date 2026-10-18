@@ -408,19 +408,11 @@ static bool readsWholeEntry(SectionChunk *sc, const coff_relocation &rel,
 
 // What the scan of the image's relocations gathers for the decisions after it.
 struct SlotScan {
-  // A field that a relocation writes.
-  struct Span {
-    uint32_t offset;
-    uint32_t size;
-    const coff_relocation *rel;
-    bool word;
-  };
-  // A section's candidate slots, and its overlapping pairs of fields.
+  // A section's candidate slots.
   struct Pending {
     SectionChunk *chunk;
     std::vector<ImportSlot> slots;
     Symbol *firstRef = nullptr;
-    std::vector<std::pair<Span, Span>> overlaps;
   };
   // An instruction rewritten for imp, unless its thunk becomes its address.
   struct Site {
@@ -453,69 +445,7 @@ struct SlotScan {
   // lists as address-taken, once read.
   SmallPtrSet<Symbol *, 4> reported;
   std::optional<DenseSet<uint32_t>> guardFids;
-  std::vector<Span> spans;
 };
-
-// Collects the pairs of sc's fields that overlap, each with the one before it
-// that reaches furthest.
-static void
-findOverlaps(SlotScan &scan, SectionChunk *sc,
-             std::vector<std::pair<SlotScan::Span, SlotScan::Span>> &overlaps) {
-  uint32_t wordsize = sc->file->symtab.ctx.config.wordsize;
-  std::vector<SlotScan::Span> &spans = scan.spans;
-  spans.clear();
-  for (const coff_relocation &rel : sc->getRelocs()) {
-    if (rel.Type == 0) // IMAGE_REL_*_ABSOLUTE writes nothing.
-      continue;
-    bool word = sc->isAddressWord(rel);
-    spans.push_back({rel.VirtualAddress, word ? wordsize : 4u, &rel, word});
-  }
-  llvm::stable_sort(spans,
-                    [](const SlotScan::Span &a, const SlotScan::Span &b) {
-                      return a.offset < b.offset;
-                    });
-  const SlotScan::Span *last = nullptr;
-  for (const SlotScan::Span &s : spans) {
-    if (last && uint64_t(last->offset) + last->size > s.offset)
-      overlaps.push_back({*last, s});
-    if (!last ||
-        uint64_t(s.offset) + s.size > uint64_t(last->offset) + last->size)
-      last = &s;
-  }
-}
-
-// A slot must be its word's only writer; an identical duplicate is one.
-static bool validate(COFFLinkerContext &ctx, SlotScan::Pending &p) {
-  auto isSlot = [&](const SlotScan::Span &s) {
-    auto it = llvm::partition_point(
-        p.slots, [&](const ImportSlot &x) { return x.offset < s.offset; });
-    return s.word && it != p.slots.end() && it->offset == s.offset;
-  };
-  bool ok = true;
-  for (auto &[last, s] : p.overlaps) {
-    bool lastSlot = isSlot(last);
-    if (!lastSlot && !isSlot(s))
-      continue;
-    if (last.offset == s.offset && last.size == s.size &&
-        last.rel->Type == s.rel->Type &&
-        last.rel->SymbolTableIndex == s.rel->SymbolTableIndex)
-      continue;
-    Err(ctx) << p.chunk->file << ": the address of an import at offset 0x"
-             << Twine::utohexstr(lastSlot ? last.offset : s.offset) << " in "
-             << p.chunk->getSectionName()
-             << " overlaps the relocation at offset 0x"
-             << Twine::utohexstr(lastSlot ? s.offset : last.offset);
-    ok = false;
-  }
-  if (!ok)
-    return false;
-  p.slots.erase(llvm::unique(p.slots,
-                             [](const ImportSlot &a, const ImportSlot &b) {
-                               return a.offset == b.offset;
-                             }),
-                p.slots.end());
-  return true;
-}
 
 // Under -import-slots, a word of static data holding an import's address is an
 // in-place import slot, which the loader writes as an entry of an import
@@ -717,7 +647,7 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
   bool arm64 = config.machine == ARM64;
   bool code = sc->header->Characteristics & IMAGE_SCN_CNT_CODE;
   ArrayRef<coff_relocation> relocs = sc->getRelocs();
-  SlotScan::Pending p{sc, {}, nullptr, {}};
+  SlotScan::Pending p{sc, {}, nullptr};
   // lea becomes mov; the add after an ARM64 adrp becomes ldr.
   auto addressSite = [&](const coff_relocation &r, DefinedImportData *imp) {
     uint32_t off = r.VirtualAddress;
@@ -730,6 +660,12 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
     scan.addressSites.push_back({sc, edit, imp});
   };
   size_t e = relocs.size();
+  auto importedBut = [&](Symbol *s, DefinedImportData *imp) {
+    COFFSyncStream err = Err(ctx);
+    err << file << ": " << file->symtab.printSymbol(s) << " is imported from "
+        << imp->getDLLName() << ", but ";
+    return err;
+  };
   // An ARM64 adrp and add pair, or an instruction its object describes, that
   // takes an address, which the import's entry then gives.
   auto rewriteAddress = [&](size_t &i, DefinedImportData *imp) {
@@ -820,12 +756,10 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
     // A section-relative offset names a section of this image.
     if (sc->isSectionRelative(rel)) {
       if (scan.reported.insert(s).second)
-        Err(ctx) << file << ": " << file->symtab.printSymbol(s)
-                 << " is imported from " << imp->getDLLName() << ", but "
-                 << sc->getSectionName()
-                 << " refers to it with relocation type "
-                 << file->getCOFFObj()->getRelocationTypeName(rel.Type)
-                 << ", which names a section of this image";
+        importedBut(s, imp)
+            << sc->getSectionName() << " refers to it with relocation type "
+            << file->getCOFFObj()->getRelocationTypeName(rel.Type)
+            << ", which names a section of this image";
       continue;
     }
     if (code) {
@@ -843,14 +777,13 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
                       "the object, or give the symbol hidden visibility";
         else {
           StringRef name = imp->getName().drop_front(strlen("__imp_"));
-          Err(ctx) << file << ": " << file->symtab.printSymbol(s)
-                   << " is imported from " << imp->getDLLName()
-                   << ", but the object was compiled as if it were "
-                      "local; mark its declaration, or compile the object "
-                      "with -fno-direct-access-external-data; in assembly, "
-                      "reach it through "
-                   << imp->getName() << " or "
-                   << (arm64 ? (":got:" + name).str() : (name + "@GOTPCREL").str());
+          importedBut(s, imp)
+              << "the object was compiled as if it were local; mark its "
+                 "declaration, or compile the object with "
+                 "-fno-direct-access-external-data; in assembly, reach it "
+                 "through "
+              << imp->getName() << " or "
+              << (arm64 ? (":got:" + name).str() : (name + "@GOTPCREL").str());
         }
         continue;
       }
@@ -914,10 +847,9 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
       case IMAGE_REL_AMD64_REL32_3:
       case IMAGE_REL_AMD64_REL32_4:
       case IMAGE_REL_AMD64_REL32_5:
-        Err(ctx) << file << ": " << file->symtab.printSymbol(s)
-                 << " is imported from " << imp->getDLLName()
-                 << ", but an instruction in " << sc->getSectionName()
-                 << " reads its bytes, which its import thunk's are not";
+        importedBut(s, imp) << "an instruction in " << sc->getSectionName()
+                            << " reads its bytes, which its import thunk's "
+                               "are not";
         break;
       default:
         break;
@@ -936,12 +868,10 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
       if (thunk && !callOnly)
         useThunkAsAddress(scan, file, s, imp, sc);
       else if (!thunk && scan.reported.insert(s).second)
-        Err(ctx) << file << ": " << file->symtab.printSymbol(s)
-                 << " is imported from " << imp->getDLLName() << ", but "
-                 << sc->getSectionName()
-                 << " refers to it with relocation type "
-                 << file->getCOFFObj()->getRelocationTypeName(rel.Type)
-                 << ", which cannot reach another image";
+        importedBut(s, imp)
+            << sc->getSectionName() << " refers to it with relocation type "
+            << file->getCOFFObj()->getRelocationTypeName(rel.Type)
+            << ", which cannot reach another image";
       continue;
     }
     if (imp->file->isDelayLoaded())
@@ -980,10 +910,8 @@ void ImportSlotContents::scanChunk(SlotScan &scan, SectionChunk *sc) {
     if (!p.firstRef)
       p.firstRef = s;
   }
-  if (p.slots.empty())
-    return;
-  findOverlaps(scan, sc, p.overlaps);
-  scan.pending.push_back(std::move(p));
+  if (!p.slots.empty())
+    scan.pending.push_back(std::move(p));
 }
 
 void ImportSlotContents::resolve(SlotScan &scan) {
@@ -1054,11 +982,15 @@ void ImportSlotContents::resolve(SlotScan &scan) {
     });
     if (p.slots.empty())
       continue;
+    // An identical duplicate relocation is one slot.
     llvm::stable_sort(p.slots, [](const ImportSlot &a, const ImportSlot &b) {
       return a.offset < b.offset;
     });
-    if (!validate(ctx, p))
-      continue;
+    p.slots.erase(llvm::unique(p.slots,
+                               [](const ImportSlot &a, const ImportSlot &b) {
+                                 return a.offset == b.offset;
+                               }),
+                  p.slots.end());
     // The loader writes read-only slots only inside the import address table
     // directory: a .rdata chunk moves there, while another read-only section,
     // or a $-group of .rdata, keeps its order and is laid out beside it.
