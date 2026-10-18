@@ -67,7 +67,7 @@ int use_local() { return use_unmarked; }
 // DIRECT-DAG: @use_unmarked = external dso_local thread_local global i32
 
 // CHECK-LABEL: define linkonce_odr hidden noundef ptr @_ZTW9use_plain()
-// CHECK:       [[IDXP:%.*]] = load ptr, ptr @"use_plain$tls", align 8, !invariant.load
+// CHECK:       [[IDXP:%.*]] = load ptr, ptr @"use_plain$tls", align 8, !invariant.load ![[#]], !dereferenceable ![[FOUR:[0-9]+]], !align ![[FOUR]], !noundef
 // CHECK-NEXT:  [[IDX:%.*]] = load i32, ptr [[IDXP]], align 4, !invariant.load
 // CHECK-NEXT:  [[OFF:%.*]] = load i32, ptr getelementptr inbounds nuw (i8, ptr @"use_plain$tls", i64 8), align 8, !invariant.load
 // CHECK-NEXT:  [[ARR:%.*]] = call ptr @llvm.thread.pointer.p0()
@@ -115,3 +115,6 @@ int use_local() { return use_unmarked; }
 // NOMAP-NOT: $tls
 // NOMAP-NOT: dllexport
 // NOMAP-NOT: dllimport void @_ZTH
+
+// The address of the TLS index is of four bytes that never change.
+// CHECK: ![[FOUR]] = !{i64 4}

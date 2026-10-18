@@ -3844,10 +3844,19 @@ llvm::Value *ItaniumCXXABI::emitImportedThreadLocalAddress(
     Load->setMetadata(llvm::LLVMContext::MD_invariant_load, Invariant);
     return Load;
   };
+  // The record's first word is the address of the defining image's TLS
+  // index, four bytes that never change, which lets the index be loaded again
+  // in place of a spill.
+  llvm::LoadInst *IndexAddr =
+      LoadField(CGM.DefaultPtrTy, Record, CharUnits::fromQuantity(8));
+  llvm::MDNode *Four = llvm::MDNode::get(
+      Context, llvm::ConstantAsMetadata::get(Builder.getInt64(4)));
+  IndexAddr->setMetadata(llvm::LLVMContext::MD_dereferenceable, Four);
+  IndexAddr->setMetadata(llvm::LLVMContext::MD_align, Four);
+  IndexAddr->setMetadata(llvm::LLVMContext::MD_noundef,
+                         llvm::MDNode::get(Context, {}));
   llvm::Value *Index =
-      LoadField(CGM.Int32Ty,
-                LoadField(CGM.DefaultPtrTy, Record, CharUnits::fromQuantity(8)),
-                CharUnits::fromQuantity(4));
+      LoadField(CGM.Int32Ty, IndexAddr, CharUnits::fromQuantity(4));
   llvm::Value *Offset = LoadField(
       CGM.Int32Ty, Builder.CreateConstInBoundsGEP2_32(RecordTy, Record, 0, 1),
       CharUnits::fromQuantity(8));
