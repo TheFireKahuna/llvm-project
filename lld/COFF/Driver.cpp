@@ -14,7 +14,7 @@
 #include "VTableRuns.h"
 #include "InputFiles.h"
 #include "LinkPins.h"
-#include "LocalImports.h"
+#include "ImportSlots.h"
 #include "MarkLive.h"
 #include "MinGW.h"
 #include "SymbolTable.h"

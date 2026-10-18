@@ -19,7 +19,6 @@
 #include "Driver.h"
 #include "ImportSlots.h"
 #include "InputFiles.h"
-#include "LocalImports.h"
 #include "OverrideTable.h"
 #include "SymbolTable.h"
 #include "Symbols.h"

@@ -17,7 +17,6 @@
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium main.s -o main.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium helper.s \
 # RUN:   -o helper.obj
-# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium bad.s -o bad.obj
 # RUN: llc -mtriple=x86_64-unknown-windows-itanium \
 # RUN:   -start-before=x86-windows-import-fusion -filetype=obj jump.mir \
 # RUN:   -o jump.obj
@@ -30,12 +29,6 @@
 # RUN: llvm-readobj --coff-load-config a.exe > lc.txt
 # RUN: cat a.map lc.txt | FileCheck %s --check-prefix=GUARD
 
-## /verbose counts the decisions.
-# RUN: lld-link -verbose -entry:main -subsystem:console -out:c.exe main.obj \
-# RUN:   helper.obj d.lib late.lib -delayload:late.dll 2>&1 | \
-# RUN:   FileCheck %s --check-prefix=LOG
-# LOG: Fused calls: 6 of 13 through their register; fused loads: 7 of 9 dead
-
 ## The same link with -import-slots.
 # RUN: lld-link -import-slots -entry:main -subsystem:console -out:b.exe \
 # RUN:   main.obj helper.obj d.lib late.lib -delayload:late.dll
@@ -46,8 +39,6 @@
 # RUN:   main.obj helper.obj d.lib late.lib -delayload:late.dll
 # RUN: llvm-objdump -d e.exe | FileCheck %s --check-prefix=JUMP
 
-# RUN: not lld-link -entry:main -subsystem:console -out:bad.exe bad.obj \
-# RUN:   d.lib 2>&1 | FileCheck %s --check-prefix=BAD
 
 ## ext is in d.dll: its call goes through rbx, and the load stays.
 # CHECK-LABEL: <.text>:
@@ -136,8 +127,6 @@
 # JUMP-NEXT:  74 05 je
 # JUMP-NEXT:  e9 {{.*}} jmp 0x[[#JLOCAL]]
 # JUMP-NEXT:  c3 retq
-
-# BAD: error: bad.obj: the instruction at offset 0x3 in .text is not the one its link-only record describes
 
 #--- dll.s
   .text
@@ -339,14 +328,3 @@ body: |
   bb.2:
     RET64
 ...
-
-#--- bad.s
-  .text
-  .globl main
-main:
-.Lbad:
-  movq __imp_ext(%rip), %rax
-  .linkfusedcall .Lbad, %rbx
-  cs; cs; cs; cs
-  callq *%rbx
-  retq

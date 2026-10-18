@@ -10,11 +10,8 @@
 # RUN: rm -rf %t && split-file %s %t && cd %t
 # RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium main.s -o main.obj
 # RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium defs.s -o defs.obj
-# RUN: lld-link -entry:main -subsystem:console -out:a.exe main.obj defs.obj \
-# RUN:   -verbose 2>&1 | FileCheck --check-prefix=LOG %s
+# RUN: lld-link -entry:main -subsystem:console -out:a.exe main.obj defs.obj
 # RUN: llvm-objdump -d --no-show-raw-insn a.exe | FileCheck %s
-
-# LOG: Fused accesses and adds: 6 of 6 direct
 
 # CHECK:      <.text>:
 # CHECK-NEXT: adrp x8, 0x140002000

@@ -11,7 +11,6 @@
 #include "DLL.h"
 #include "InputFiles.h"
 #include "KCFI.h"
-#include "LocalImports.h"
 #include "MarkLive.h"
 #include "OverrideTable.h"
 #include "SymbolTable.h"
@@ -27,11 +26,17 @@
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/TimeProfiler.h"
+#include "Relax.h"
+#include "lld/Common/AArch64Instructions.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/TinyPtrVector.h"
 
 using namespace llvm;
 using namespace llvm::COFF;
 using namespace llvm::object;
 using namespace llvm::support::endian;
+using namespace lld::aarch64;
 
 namespace lld::coff {
 namespace {
@@ -1696,5 +1701,647 @@ void ImportSlotContents::check(Chunk *iatStart, uint64_t iatSize) {
                << " from an in-place import slot in " << os->name
                << " that is misaligned or writable";
   }
+}
+
+// Local imports: a reference to the import pointer of a symbol the image
+// defines reads a pointer the linker makes. Where the linker knows the
+// instruction holding the reference, it rewrites it to reach the symbol
+// directly, as ELF relaxes a GOT load, and leaves out a pointer only rewritten
+// instructions read.
+
+bool isSiteForm(ArrayRef<uint8_t> data, uint32_t off, LinkSiteForm form) {
+  // A displacement that names the pointer itself has no addend.
+  if (off < 2 || off + 4 > data.size() || read32le(&data[off]) != 0)
+    return false;
+  uint8_t opcode = data[off - 2], modrm = data[off - 1];
+  uint8_t prefix = off >= 3 ? data[off - 3] : 0;
+  switch (form) {
+  case LinkSiteCall:
+    return opcode == 0xFF && modrm == 0x15;
+  case LinkSiteJump:
+    return opcode == 0xFF && modrm == 0x25;
+  case LinkSiteJumpOnePrefix:
+    // A REX prefix, or a legacy prefix.
+    return off >= 3 && opcode == 0xFF && modrm == 0x25 &&
+           ((prefix & 0xF0) == 0x40 ||
+            is_contained(
+                {0x26, 0x2E, 0x36, 0x3E, 0x64, 0x65, 0x66, 0x67, 0xF2, 0xF3},
+                prefix));
+  case LinkSiteLoad:
+  case LinkSiteLoadREX2:
+  case LinkSiteAddress: {
+    // mov or lea r64, [rip+d], with REX.W or with REX2's W bit.
+    bool rex = (prefix & 0xF8) == 0x48;
+    bool rex2 = off >= 4 && data[off - 4] == 0xD5 && (prefix & 0x88) == 0x08;
+    return off >= 3 && opcode == (form == LinkSiteAddress ? 0x8D : 0x8B) &&
+           (modrm & 0xC7) == 0x05 &&
+           (form == LinkSiteLoad       ? rex
+            : form == LinkSiteLoadREX2 ? rex2
+                                       : rex || rex2);
+  }
+  default:
+    return false;
+  }
+}
+
+// The form sc's object describes for rel, a REL32 field.
+static std::optional<LinkSiteForm> getSiteForm(const SectionChunk *sc,
+                                               const coff_relocation &rel) {
+  if (!sc->file->describesSites() || rel.Type != IMAGE_REL_AMD64_REL32)
+    return std::nullopt;
+  const ObjFile::RelocFact *f = sc->file->relocFact(sc, rel);
+  if (!f || !f->hasSite)
+    return std::nullopt;
+  return f->form;
+}
+
+std::optional<LinkSiteForm> getDescribedSite(const SectionChunk *sc,
+                                             const coff_relocation &rel) {
+  std::optional<LinkSiteForm> form = getSiteForm(sc, rel);
+  if (form && isSiteForm(sc->getContents(), rel.VirtualAddress, *form))
+    return form;
+  return std::nullopt;
+}
+
+static bool isLoadForm(std::optional<LinkSiteForm> form) {
+  return form == LinkSiteLoad || form == LinkSiteLoadREX2;
+}
+
+// A pointer holding zero, an absent weak symbol's address, which an
+// instruction can materialise instead of loading.
+static bool isZeroPointer(DefinedLocalImport *li) {
+  auto *abs = dyn_cast<DefinedAbsolute>(li->getTarget());
+  return abs && abs->getVA() == 0;
+}
+
+// Whether a reference through s can reach its symbol directly: a local import
+// pointer to something with an image-relative address, or to zero.
+static bool canBypass(Symbol *s) {
+  auto *li = dyn_cast_or_null<DefinedLocalImport>(s);
+  return li && !li->getChunk()->isCell() &&
+         (!isa<DefinedAbsolute>(li->getTarget()) || isZeroPointer(li));
+}
+
+bool isArm64AddressPair(const SectionChunk *sc, const coff_relocation &adrp,
+                        const coff_relocation &add) {
+  ArrayRef<uint8_t> data = sc->getContents();
+  if (adrp.Type != IMAGE_REL_ARM64_PAGEBASE_REL21 ||
+      add.Type != IMAGE_REL_ARM64_PAGEOFFSET_12A ||
+      adrp.SymbolTableIndex != add.SymbolTableIndex ||
+      uint64_t(adrp.VirtualAddress) + 4 != add.VirtualAddress ||
+      uint64_t(add.VirtualAddress) + 4 > data.size())
+    return false;
+  // adrp xd with no addend, then add xd, xd, #0.
+  Adrp first;
+  Add second;
+  return parseAdrp(read32le(&data[adrp.VirtualAddress]), first) &&
+         first.addend == 0 &&
+         parseAdd(read32le(&data[add.VirtualAddress]), second) &&
+         second.addend == 0 && second.destRegister == first.destRegister &&
+         second.srcRegister == first.destRegister;
+}
+
+// adrp with no addend, or a 64-bit integer ldr with no offset.
+bool isArm64PointerLoad(const SectionChunk *sc, const coff_relocation &rel) {
+  ArrayRef<uint8_t> data = sc->getContents();
+  if (uint64_t(rel.VirtualAddress) + 4 > data.size())
+    return false;
+  uint32_t insn = read32le(&data[rel.VirtualAddress]);
+  Adrp adrp;
+  Ldr ldr;
+  if (rel.Type == IMAGE_REL_ARM64_PAGEBASE_REL21)
+    return parseAdrp(insn, adrp) && adrp.addend == 0;
+  return rel.Type == IMAGE_REL_ARM64_PAGEOFFSET_12L && parseLdr(insn, ldr) &&
+         ldr.p2Size == 3 && !ldr.isFloat && ldr.extendType == ZeroExtend &&
+         ldr.offset == 0;
+}
+
+// The relocation of sc of type at off, if any.
+static const coff_relocation *findReloc(const SectionChunk *sc, uint32_t off,
+                                        uint16_t type) {
+  ArrayRef<coff_relocation> relocs = sc->getRelocs();
+  auto it = llvm::partition_point(relocs, [&](const coff_relocation &r) {
+    return r.VirtualAddress < off;
+  });
+  return it != relocs.end() && it->VirtualAddress == off && it->Type == type
+             ? &*it
+             : nullptr;
+}
+
+bool isValueOnlyLoad(const SectionChunk *sc, size_t i, LinkSiteForm form,
+                     uint16_t distance, size_t &page) {
+  ArrayRef<coff_relocation> relocs = sc->getRelocs();
+  const coff_relocation &rel = relocs[i];
+  if (sc->getArch() != Triple::aarch64) {
+    page = i;
+    return rel.Type == IMAGE_REL_AMD64_REL32 && isLoadForm(form) &&
+           isSiteForm(sc->getContents(), rel.VirtualAddress, form);
+  }
+  // The adrp before the ldr fills the ldr's base and names the same symbol.
+  uint64_t dist = uint64_t(distance) * 4;
+  if (rel.Type != IMAGE_REL_ARM64_PAGEOFFSET_12L || !distance ||
+      dist > rel.VirtualAddress || !isArm64PointerLoad(sc, rel))
+    return false;
+  const coff_relocation *adrp = findReloc(sc, rel.VirtualAddress - dist,
+                                          IMAGE_REL_ARM64_PAGEBASE_REL21);
+  if (!adrp || adrp->SymbolTableIndex != rel.SymbolTableIndex ||
+      !isArm64PointerLoad(sc, *adrp))
+    return false;
+  page = adrp - relocs.begin();
+  ArrayRef<uint8_t> data = sc->getContents();
+  Adrp a;
+  Ldr ldr;
+  return parseAdrp(read32le(&data[adrp->VirtualAddress]), a) &&
+         parseLdr(read32le(&data[rel.VirtualAddress]), ldr) &&
+         a.destRegister == ldr.baseRegister;
+}
+
+// Rewrites the described instruction of form at rel to reach li's symbol
+// directly: a load becomes lea, a call addr32 call, a jump jmp and int3, or
+// each materialises zero for a zero pointer. Resized code drops the padding.
+static void addSiteEdit(SectionChunk *sc, const coff_relocation &rel,
+                        LinkSiteForm form, DefinedLocalImport *li) {
+  uint32_t off = rel.VirtualAddress;
+  Defined *target = li->getTarget();
+  bool zero = isZeroPointer(li);
+  if (form == LinkSiteCall)
+    addEdit(sc, {off - 2, 6, uint16_t(zero ? 6 : 5),
+                 zero ? RelaxEdit::ZeroCall : RelaxEdit::DirectCall, target});
+  else if (form == LinkSiteJump || form == LinkSiteJumpOnePrefix)
+    addEdit(sc, {off + 4 - (form == LinkSiteJump ? 6 : 7),
+                 uint16_t(form == LinkSiteJump ? 6 : 7), 5,
+                 RelaxEdit::DirectJump, target});
+  else {
+    uint16_t size = form == LinkSiteLoadREX2 ? 8 : 7;
+    addEdit(sc, {off + 4 - size, size, size,
+                 zero ? RelaxEdit::ZeroLoad : RelaxEdit::LoadAddress, target});
+  }
+}
+
+// The register a described load fills: ModRM.reg with REX.R, or with REX2's
+// R3 and R4.
+static unsigned getLoadRegister(ArrayRef<uint8_t> data, uint32_t off,
+                                LinkSiteForm form) {
+  uint8_t prefix = data[off - 3];
+  unsigned reg = (data[off - 1] >> 3 & 7) | (prefix & 0x04) << 1;
+  if (form == LinkSiteLoadREX2)
+    reg |= (prefix & 0x40) >> 2;
+  return reg;
+}
+
+// The length of a fused add: add or sub of an 8- or 32-bit immediate, or lea
+// of a base plus an 8- or 32-bit displacement, with a SIB byte or not.
+static unsigned getAddLength(ArrayRef<uint8_t> data, uint32_t off) {
+  uint8_t op = data[off + 1], modrm = data[off + 2];
+  if (op == 0x83 || op == 0x81)
+    return op == 0x83 ? 4 : 7;
+  return 3 + ((modrm & 7) == 4) + (modrm >> 6 == 1 ? 1 : 4);
+}
+
+// The scaled immediate offset of an ARM64 load, store or prefetch at an
+// unsigned 12-bit offset, or of a pair at a signed 7-bit one.
+struct Arm64Access {
+  unsigned scale = 0;
+  bool pair = false;
+
+  explicit Arm64Access(uint32_t insn) {
+    bool simd = insn & 0x04000000;
+    unsigned opc = insn >> 30;
+    if ((insn & 0x3B000000) == 0x39000000) {
+      // A SIMD and floating-point access with opc bit 1 set is 128-bit.
+      scale = simd && (insn & 0x00800000) ? 16 : 1u << opc;
+    } else if ((insn & 0x3B800000) == 0x29000000) {
+      pair = true;
+      scale = simd ? 4u << opc : (opc == 2 ? 8 : 4);
+    }
+  }
+  int64_t getOffset(uint32_t insn) const {
+    return pair ? SignExtend64<7>(insn >> 15) * scale
+                : int64_t(insn >> 10 & 0xFFF) * scale;
+  }
+  bool fits(int64_t offset) const {
+    return offset % scale == 0 &&
+           (pair ? isInt<7>(offset / scale) : isUInt<12>(offset / scale));
+  }
+  uint32_t setOffset(uint32_t insn, int64_t offset) const {
+    if (pair)
+      return (insn & ~0x003F8000) | uint32_t(offset / scale & 0x7F) << 15;
+    return (insn & ~0x003FFC00) | uint32_t(offset / scale) << 10;
+  }
+};
+
+// Binds the fused uses of sc's pointer loads once the pointers are bound. A
+// call goes direct into the image, through the pointer to a defined import
+// entry, or stays through its register, keeping its load; an access or add
+// reaches data in the image directly where the code may change, or the access
+// reads the image's copy of immutable data; a load nothing keeps is dead. On
+// ARM64 writeFusedArm64 writes the direct forms once addresses are known.
+static void bindFusedUses(SectionChunk *sc,
+                          MutableArrayRef<ObjFile::LinkFusion> fusions) {
+  ObjFile *file = sc->file;
+  SymbolTable &symtab = file->symtab;
+  bool arm64 = symtab.machine == ARM64;
+  uint16_t loadType =
+      arm64 ? IMAGE_REL_ARM64_PAGEOFFSET_12L : IMAGE_REL_AMD64_REL32;
+  ArrayRef<uint8_t> data = sc->getContents();
+  bool covered = file->isCovered(sc);
+  auto it = sc->file->symtab.ctx.relaxations.find(sc);
+  Relaxation *edits =
+      it == sc->file->symtab.ctx.relaxations.end() ? nullptr : &it->second;
+  DenseSet<uint32_t> keptLoads;
+  for (ObjFile::LinkFusion &f : fusions) {
+    const coff_relocation *rel;
+    if (f.isLoad || (arm64 && f.use == ObjFile::LinkFusion::Call) ||
+        !(rel = findReloc(sc, f.load, loadType)))
+      continue;
+    Symbol *s = file->getSymbol(rel->SymbolTableIndex);
+    auto *li = dyn_cast_or_null<DefinedLocalImport>(s);
+    if (!s || (arm64 ? !isArm64PointerLoad(sc, *rel)
+                     : !isLoadForm(getDescribedSite(sc, *rel)))) {
+      Err(symtab.ctx) << file << ": the instruction at offset 0x"
+                      << Twine::utohexstr(f.load) << " in "
+                      << sc->getSectionName()
+                      << " is not the one its link-only record describes";
+      continue;
+    }
+    bool zero = li && isZeroPointer(li);
+    bool reaches = li && !zero &&
+                   (arm64 ? li->getChunk()->bypassed : canBypass(li));
+    bool immutable = f.use == ObjFile::LinkFusion::Access && f.valueRead &&
+                     symtab.immutableReads.contains(s);
+    if (arm64) {
+      if (!reaches)
+        keptLoads.insert(f.load);
+      if (reaches || immutable)
+        f.form = ObjFile::LinkFusion::Direct;
+      continue;
+    }
+    switch (f.use) {
+    case ObjFile::LinkFusion::Access:
+      if (!covered || !reaches)
+        keptLoads.insert(f.load);
+      if (covered && (reaches || immutable))
+        addEdit(sc, {f.offset, f.length,
+                     uint16_t(f.length - (f.disp == 1 ? 1 : f.disp == 2 ? 4 : 0) -
+                              f.sib + 4),
+                     RelaxEdit::Access,
+                     li ? li->getTarget() : symtab.immutableReads.lookup(s),
+                     &f});
+      break;
+    case ObjFile::LinkFusion::Add:
+      // The load takes the sum of the add, which then goes.
+      if (RelaxEdit *load = edits ? edits->findEdit(f.load) : nullptr;
+          reaches && load && load->kind == RelaxEdit::LoadAddress) {
+        load->entry = &f;
+        addEdit(sc, {f.offset, uint16_t(getAddLength(data, f.offset)), 0,
+                     RelaxEdit::Dispose, nullptr, &f});
+      }
+      break;
+    case ObjFile::LinkFusion::Call: {
+      // A call through a delay-loaded import's pointer stays through its
+      // register: the pointer holds the loader's stub until the first call.
+      auto *imp = dyn_cast_or_null<DefinedImportData>(s);
+      uint16_t size = f.isJump ? 7 : 6;
+      if (reaches)
+        addEdit(sc, {f.offset, size, 5,
+                     f.isJump ? RelaxEdit::DirectJump : RelaxEdit::DirectCall,
+                     li->getTarget()});
+      else if (imp && imp->file->isDelayLoaded())
+        addEdit(sc, {f.offset, size, size,
+                     f.isJump ? RelaxEdit::PointerJump : RelaxEdit::PointerCall,
+                     cast<Defined>(s)});
+      else {
+        // Resized, a jump keeps REX.W jmp through the register and drops the
+        // int3; a call drops the segment overrides before the register call.
+        keptLoads.insert(f.load);
+        if (covered)
+          addEdit(sc, f.isJump ? RelaxEdit(f.offset, 7, 3, RelaxEdit::KeepHead)
+                               : RelaxEdit(f.offset, 6,
+                                           f.reg >= 16  ? 4
+                                           : f.reg >= 8 ? 3
+                                                        : 2,
+                                           RelaxEdit::KeepTail));
+      }
+      break;
+    }
+    }
+  }
+  for (ObjFile::LinkFusion &f : fusions) {
+    if (!f.isLoad || keptLoads.contains(f.offset) ||
+        !findReloc(sc, f.offset, loadType))
+      continue;
+    if (arm64) {
+      f.dead = true;
+      continue;
+    }
+    uint16_t size = getDescribedSite(sc, *findReloc(sc, f.offset, loadType)) ==
+                            LinkSiteLoadREX2
+                        ? 8
+                        : 7;
+    if (RelaxEdit *e = edits ? edits->findEdit(f.offset) : nullptr) {
+      e->kind = RelaxEdit::Dispose;
+      e->relaxedSize = 0;
+      e->entry = &f;
+    } else {
+      addEdit(sc, {f.offset + 4 - size, size, 0, RelaxEdit::Dispose, nullptr,
+                   &f});
+    }
+  }
+  if (arm64)
+    sc->edited |= llvm::any_of(fusions, [](const ObjFile::LinkFusion &f) {
+      return f.dead || f.form == ObjFile::LinkFusion::Direct;
+    });
+}
+
+void bindFusedCalls(SymbolTable &symtab) {
+  COFFLinkerContext &ctx = symtab.ctx;
+  if ((symtab.machine != AMD64 && symtab.machine != ARM64) || ctx.hybridSymtab)
+    return;
+  llvm::TimeTraceScope timeScope("Bind fused calls");
+  for (ObjFile *file : ctx.objFileInstances)
+    if (&file->symtab == &symtab && file->hasLinkFusions())
+      for (Chunk *c : file->getChunks())
+        if (auto *sc = dyn_cast_or_null<SectionChunk>(c); sc && sc->live)
+          if (MutableArrayRef<ObjFile::LinkFusion> f = file->getLinkFusions(sc);
+              !f.empty())
+            bindFusedUses(sc, f);
+}
+
+void writeFusedArm64(const SectionChunk *sc, uint8_t *buf) {
+  const uint32_t nop = 0xD503201F;
+  MutableArrayRef<ObjFile::LinkFusion> fusions = sc->file->getLinkFusions(sc);
+  auto getSymbol = [&](uint32_t load) {
+    return sc->file->getSymbol(
+        findReloc(sc, load, IMAGE_REL_ARM64_PAGEOFFSET_12L)->SymbolTableIndex);
+  };
+  auto getData = [&](uint32_t load) {
+    return cast<DefinedLocalImport>(getSymbol(load))->getTarget();
+  };
+  DenseMap<uint32_t, SmallVector<const ObjFile::LinkFusion *, 2>> accessesOf;
+  for (const ObjFile::LinkFusion &f : fusions) {
+    if (f.isLoad)
+      continue;
+    if (f.use == ObjFile::LinkFusion::Access)
+      accessesOf[f.load].push_back(&f);
+    if (f.form != ObjFile::LinkFusion::Direct)
+      continue;
+    if (f.use == ObjFile::LinkFusion::Add) {
+      // Where the data's page offset plus the constant fits, the load (which
+      // the pointer's bypass made an add of the offset) adds the sum into the
+      // add's register, and the add becomes a no-op.
+      int64_t sum = (getData(f.load)->getRVA() & 0xFFF) + f.addend;
+      if (sum >= 0 && sum <= 0xFFF) {
+        uint32_t load = read32le(buf + f.load);
+        write32le(buf + f.load,
+                  0x91000000 | uint32_t(sum) << 10 | (load & 0x3E0) | f.reg);
+        write32le(buf + f.offset, nop);
+      }
+    }
+  }
+  // An access that only reads immutable data, whose load stays, reads the
+  // image's copy PC-relative where it is near enough and aligned.
+  for (const ObjFile::LinkFusion &f : fusions) {
+    if (f.isLoad || f.use != ObjFile::LinkFusion::Access || !f.valueRead ||
+        f.form != ObjFile::LinkFusion::Direct)
+      continue;
+    Defined *copy = sc->file->symtab.immutableReads.lookup(getSymbol(f.load));
+    Ldr ldr;
+    if (!copy || !parseLdr(read32le(buf + f.offset), ldr))
+      continue;
+    ldr.offset += int64_t(copy->getRVA()) - int64_t(sc->getRVA() + f.offset);
+    if (isLiteralLdrEligible(ldr))
+      writeLiteralLdr(buf + f.offset, ldr);
+  }
+  // A dead load whose accesses all take the data's page offset in their
+  // fields becomes a no-op, its register keeping the adrp's page.
+  for (const ObjFile::LinkFusion &l : fusions) {
+    auto it = accessesOf.find(l.offset);
+    if (!l.isLoad || !l.dead || it == accessesOf.end())
+      continue;
+    uint64_t lo12 = getData(l.offset)->getRVA() & 0xFFF;
+    if (!llvm::all_of(it->second, [&](const ObjFile::LinkFusion *f) {
+          uint32_t insn = read32le(buf + f->offset);
+          Arm64Access access(insn);
+          return access.fits(lo12 + access.getOffset(insn));
+        }))
+      continue;
+    for (const ObjFile::LinkFusion *f : it->second) {
+      uint32_t insn = read32le(buf + f->offset);
+      Arm64Access access(insn);
+      write32le(buf + f->offset,
+                access.setOffset(insn, lo12 + access.getOffset(insn)));
+    }
+    write32le(buf + l.offset, nop);
+  }
+}
+
+// Our compiler reaches every symbol it cannot place in the image through its
+// import pointer, which the linker rewrites, so only references that keep the
+// pointer warrant LNK4217: on x86-64 these objects describe their sites, on
+// ARM64 they carry link-only records.
+bool defersLocalImportWarning(const ObjFile *file, bool arm64) {
+  return file->describesSites() || (arm64 && file->hasLinkRecords());
+}
+
+// A .refptr.X section holds only a pointer to X. Where X is in the image or an
+// absent weak reference, and references can be rewritten, the pointer binds a
+// local import to X or zero; it stays wherever the image still needs it.
+void bindPointerCells(SymbolTable &symtab) {
+  COFFLinkerContext &ctx = symtab.ctx;
+  if (symtab.pointerCells.empty() || symtab.isEC() || ctx.hybridSymtab)
+    return;
+  if (symtab.machine != ARM64 &&
+      (symtab.machine != AMD64 ||
+       llvm::none_of(ctx.objFileInstances,
+                     [](ObjFile *f) { return f->describesSites(); })))
+    return;
+  llvm::TimeTraceScope timeScope("Bind pointer cells");
+  for (Symbol *s : symtab.pointerCells) {
+    auto *cell = dyn_cast<DefinedRegular>(s);
+    SectionChunk *sc = cell ? cell->getChunk() : nullptr;
+    if (!sc || sc->getSize() != ctx.config.wordsize ||
+        sc->getRelocs().size() != 1 || sc->getRelocs()[0].VirtualAddress != 0 ||
+        !sc->children().empty())
+      continue;
+    Symbol *x = sc->file->getSymbol(sc->getRelocs()[0].SymbolTableIndex);
+    if (!x || x->getName() != cell->getName().substr(strlen(".refptr.")))
+      continue;
+    // An unresolved weak reference resolves to its default after mark-live.
+    Defined *target = x->getDefined();
+    auto *abs = dyn_cast_or_null<DefinedAbsolute>(target);
+    bool absentWeak = isa<Undefined>(x) && abs && abs->getVA() == 0;
+    if (!target || isa<DefinedImportThunk, DefinedImportData>(target) ||
+        (abs && !absentWeak))
+      continue;
+    replaceSymbol<DefinedLocalImport>(cell, ctx, cell->getName(), target);
+    LocalImportChunk *c = cast<DefinedLocalImport>(cell)->getChunk();
+    c->cell = sc;
+    // Mark-live keeps the pointer when something live refers to it.
+    c->live = !ctx.config.doGC;
+    symtab.localImportChunks.push_back(c);
+  }
+}
+
+// Decides which local import pointers a reference still reads. On x86-64 a
+// described call, jump or load is rewritten per reference; on ARM64 every adrp
+// and 64-bit ldr of a pointer is, per symbol, since an adrp may serve several
+// loads. Other references, GC roots and objects that describe nothing read the
+// pointer; under -import-slots a data reference reads it but blocks no
+// rewrite.
+void bindLocalImports(SymbolTable &symtab) {
+  COFFLinkerContext &ctx = symtab.ctx;
+  std::vector<Chunk *> &localImportChunks = symtab.localImportChunks;
+  if (localImportChunks.empty())
+    return;
+  bool arm64 = symtab.machine == ARM64 && !ctx.hybridSymtab;
+  if (!arm64 && llvm::none_of(ctx.objFileInstances, [&](ObjFile *f) {
+        return &f->symtab == &symtab && f->describesSites();
+      }))
+    return;
+  llvm::TimeTraceScope timeScope("Bind local imports");
+  SmallPtrSet<DefinedLocalImport *, 8> bypassed, read, readByData;
+  for (Symbol *b : ctx.config.gcroot)
+    if (auto *li = dyn_cast<DefinedLocalImport>(b))
+      read.insert(li);
+  // The references to warn about if they still read the pointer.
+  SmallVector<std::tuple<ObjFile *, DefinedLocalImport *, bool>, 0> refs;
+  SmallVector<std::pair<SectionChunk *, const coff_relocation *>, 0>
+      arm64Sites;
+
+  // Without mark-live, a compiler pointer stays if another name reaches its
+  // section: any symbol in it a relocation names, or an external one.
+  DenseMap<SectionChunk *, LocalImportChunk *> cellOf;
+  if (!ctx.config.doGC)
+    for (Chunk *c : localImportChunks)
+      if (SectionChunk *cell = cast<LocalImportChunk>(c)->cell)
+        cellOf.try_emplace(cell, cast<LocalImportChunk>(c));
+  SmallPtrSet<LocalImportChunk *, 4> named;
+  auto findCell = [&](Symbol *s) -> LocalImportChunk * {
+    auto *d = dyn_cast_or_null<DefinedRegular>(s);
+    return d && !cellOf.empty() ? cellOf.lookup(d->getChunk()) : nullptr;
+  };
+
+  for (ObjFile *file : ctx.objFileInstances) {
+    if (&file->symtab != &symtab)
+      continue;
+    // An object that describes nothing reads every pointer it names; it is
+    // scanned only for a compiler pointer it names, which may stay.
+    bool describes = file->describesSites() || arm64;
+    if (llvm::none_of(file->getSymbols(), [&](Symbol *s) {
+          auto *li = dyn_cast_or_null<DefinedLocalImport>(s);
+          return li && (describes || li->getChunk()->cell);
+        })) {
+      if (!describes)
+        for (Symbol *s : file->getSymbols())
+          if (auto *li = dyn_cast_or_null<DefinedLocalImport>(s))
+            read.insert(li);
+      continue;
+    }
+    for (Symbol *s : file->getSymbols())
+      if (LocalImportChunk *c = findCell(s);
+          c && c->cell->file == file &&
+          cast<DefinedRegular>(s)->getCOFFSymbol().isExternal())
+        named.insert(c);
+
+    MapVector<DefinedLocalImport *, bool> seen;
+    for (Chunk *c : file->getChunks()) {
+      auto *sc = dyn_cast_or_null<SectionChunk>(c);
+      if (!sc || !sc->live)
+        continue;
+      bool fromData = ctx.config.importSlots &&
+                      !(sc->header->Characteristics & IMAGE_SCN_CNT_CODE);
+      for (const coff_relocation &rel : sc->getRelocs()) {
+        Symbol *s = file->getSymbol(rel.SymbolTableIndex);
+        auto *li = dyn_cast_or_null<DefinedLocalImport>(s);
+        if (!li) {
+          if (LocalImportChunk *c = findCell(s); c && c->cell->file == file)
+            named.insert(c);
+          continue;
+        }
+        if (fromData || !describes) {
+          (fromData ? readByData : read).insert(li);
+          continue;
+        }
+        bool rewritable = false;
+        if (arm64) {
+          rewritable = canBypass(li) && isArm64PointerLoad(sc, rel);
+          if (rewritable)
+            arm64Sites.push_back({sc, &rel});
+        } else if (std::optional<LinkSiteForm> form = getSiteForm(sc, rel);
+                   canBypass(li) && form && *form != LinkSiteOther &&
+                   *form != LinkSiteAddress) {
+          // A jump through a zero pointer keeps reading it.
+          if (!isSiteForm(sc->getContents(), rel.VirtualAddress, *form))
+            Err(ctx) << file << ": the instruction at offset 0x"
+                     << Twine::utohexstr(rel.VirtualAddress) << " in "
+                     << sc->getSectionName()
+                     << " is not the one its link-only record describes";
+          else if (!isZeroPointer(li) || *form == LinkSiteCall ||
+                   isLoadForm(form))
+            rewritable = true;
+          if (rewritable)
+            addSiteEdit(sc, rel, *form, li);
+        }
+        (rewritable ? bypassed : read).insert(li);
+        auto [it, inserted] = seen.try_emplace(li, rewritable);
+        it->second &= rewritable;
+      }
+    }
+    // A .refptr pointer, a pointer to a data copy, and one to an absent weak
+    // symbol's zero import nothing; other objects' references were reported
+    // with the undefined symbols.
+    if (defersLocalImportWarning(file, arm64))
+      for (auto [li, rewritable] : seen)
+        if (!li->getName().starts_with(".refptr.") && !isZeroPointer(li) &&
+            !li->getChunk()->isCell() && !li->getChunk()->copy)
+          refs.push_back({file, li, rewritable});
+  }
+
+  // A compiler pointer stays if something live reads it other than through a
+  // rewritten instruction, or another name reaches its section.
+  if (!ctx.config.doGC)
+    for (Chunk *c : localImportChunks)
+      if (SectionChunk *cell = cast<LocalImportChunk>(c)->cell)
+        cell->live = named.contains(cast<LocalImportChunk>(c));
+  for (SmallPtrSet<DefinedLocalImport *, 8> *set : {&read, &readByData})
+    for (DefinedLocalImport *li : *set)
+      if (LocalImportChunk *c = li->getChunk(); c->cell && c->live)
+        c->cell->live = true;
+  for (DefinedLocalImport *li : bypassed) {
+    if (read.contains(li))
+      continue;
+    li->getChunk()->bypassed = true;
+    if (!readByData.contains(li))
+      li->getChunk()->live = false;
+  }
+  // The adrp and ldr of a bypassed pointer become adrp and add of its symbol,
+  // or movz of zero.
+  for (auto [sc, rel] : arm64Sites) {
+    auto *li = cast<DefinedLocalImport>(sc->file->getSymbol(rel->SymbolTableIndex));
+    if (li->getChunk()->bypassed)
+      addEdit(sc, {rel->VirtualAddress, 4, 4,
+                   isZeroPointer(li) ? RelaxEdit::Arm64Zero
+                   : rel->Type == IMAGE_REL_ARM64_PAGEBASE_REL21
+                       ? RelaxEdit::Arm64Page
+                       : RelaxEdit::Arm64Add,
+                   li->getTarget()});
+  }
+  llvm::erase_if(localImportChunks, [](Chunk *c) {
+    auto *li = cast<LocalImportChunk>(c);
+    if (li->cell)
+      li->live = li->cell->live;
+    return !li->live || li->cell;
+  });
+  // Laid out by their targets' names, not by symbol-table order.
+  llvm::stable_sort(localImportChunks, [](Chunk *a, Chunk *b) {
+    return cast<LocalImportChunk>(a)->getTarget()->getName() <
+           cast<LocalImportChunk>(b)->getTarget()->getName();
+  });
+  if (ctx.config.warnLocallyDefinedImported)
+    for (auto [file, li, rewritable] : refs)
+      if (!rewritable || (arm64 && !li->getChunk()->bypassed))
+        Warn(ctx) << file << ": locally defined symbol imported: "
+                  << symtab.printSymbol(li->getTarget()) << " (defined in "
+                  << li->getTarget()->getFile() << ") [LNK4217]";
 }
 } // namespace lld::coff

@@ -12,7 +12,6 @@
 #include "Driver.h"
 #include "ImportSlots.h"
 #include "LTO.h"
-#include "LocalImports.h"
 #include "OverrideTable.h"
 #include "PDB.h"
 #include "Symbols.h"

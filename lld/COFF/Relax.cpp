@@ -20,7 +20,7 @@
 #include "COFFLinkerContext.h"
 #include "Chunks.h"
 #include "InputFiles.h"
-#include "LocalImports.h"
+#include "ImportSlots.h"
 #include "Symbols.h"
 #include "lld/Common/ErrorHandler.h"
 #include "llvm/ADT/DenseMap.h"

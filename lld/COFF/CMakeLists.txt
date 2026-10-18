@@ -17,7 +17,6 @@ add_lld_library(lldCOFF
   KCFI.cpp
   LinkPins.cpp
   LLDMapFile.cpp
-  LocalImports.cpp
   LTO.cpp
   MapFile.cpp
   MarkLive.cpp

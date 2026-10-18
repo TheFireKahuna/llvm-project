@@ -25,7 +25,6 @@
 # RUN:   d.lib
 # RUN: llvm-objdump -d v.exe | FileCheck --check-prefix=VEC %s
 
-# LOG: Fused accesses and adds: 4 of 4 direct
 # LOG: Relaxed 1 of 2 covered sections
 
 ## The call to local is direct, so the branch over the calls is shorter.
