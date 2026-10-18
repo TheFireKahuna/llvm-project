@@ -732,6 +732,16 @@ public:
   // everywhere.
   bool thunkIsAddress = false;
 
+  // Under -import-slots, how references other than in-place slots use the
+  // import's entry: not at all, only to read the whole address, or otherwise;
+  // whether data reads a delay-loaded entry, which keeps ARM64 loads of it;
+  // and how many references name the thunk and how many of those bypass it.
+  enum EntryUse : uint8_t { Unused, ReadWhole, UsedOtherwise };
+  EntryUse entryUse = Unused;
+  bool delayLoadRead = false;
+  uint32_t thunkRefs = 0;
+  uint32_t thunkBypasses = 0;
+
   // Under -import-slots, whether the import is bound by name at image start,
   // into a cell its fill writes, rather than by the loader: an import from an
   // executable (always the process's own, whatever its file name) and one only

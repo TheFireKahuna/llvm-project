@@ -113,12 +113,6 @@ void addKCFIRangeImports(COFFLinkerContext &ctx, StringRef dllName,
 bool isKCFIListEntry(SectionChunk *sc,
                      const llvm::object::coff_relocation &rel);
 
-// The imports whose import address table entries KCFI's routines read whole,
-// and those whose entries its thunks use otherwise.
-void getKCFIImportUses(COFFLinkerContext &ctx,
-                       llvm::SmallVectorImpl<DefinedImportData *> &read,
-                       llvm::SmallVectorImpl<DefinedImportData *> &other);
-
 // The KCFI thunks, routines and lists the writer adds, replaces and completes,
 // and the code range it defines, in an image whose prefixes it seals.
 class KCFIContents {

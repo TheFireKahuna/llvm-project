@@ -84,32 +84,31 @@ struct cell {
   uint32_t rva, kind;
 };
 
-// dll is the RVA of a weak import's UTF-16 DLL name, or, for an import from
-// the executable, 1 if it is weak and 0 if not.
-struct runTimeCell {
-  uint32_t cell, name, dll;
-  uint16_t nameLength, dllLength;
-};
-
 struct residualWord {
   uint32_t word, import;
   int64_t addend;
 };
 
-// The fill's list: the number of each kind of entry, the TLS index and
-// template, the section it seals, and this DLL's key, by which an image that
-// delay-loads it lists it. The ranges, the cells, the run-time cells and the
-// residual words follow, in that order.
+// name is the RVA of the import's name, and dll that of the UTF-16 name of the
+// DLL a weak import is resolved in, or, for an import from the executable, 1 if it
+// is weak and 0 if not.
+struct runTimeCell {
+  uint32_t cell, name, dll;
+};
+
+// The fill's list: the number of each kind of entry, the section it seals,
+// and this DLL's key, by which an image that delay-loads it lists it. The
+// ranges, the cells, the residual words and the run-time cells follow, in
+// that order.
 struct fillList {
-  uint32_t ranges, cells, runTimeCells, words;
-  uint32_t tlsIndex, tlsTemplate;
+  uint32_t ranges, cells, words, runTimeCells;
   uint32_t sealed, sealedSize;
   uint64_t selfKey;
   uint32_t flags, reserved;
 };
 
 struct copyList {
-  uint32_t slots, tlsIndex, tlsTemplate, reserved;
+  uint64_t slots;
   struct {
     uint32_t rva, reserved;
     uint64_t lookup;
@@ -161,11 +160,21 @@ static char *getTEB(void) {
 static uint32_t read32(const char *p) { return *(const uint32_t *)p; }
 static char *readPointer(const char *p) { return *(char *const *)p; }
 
-// The current thread's block of image's thread-local data, at the RVA of the
-// template's start.
-static char *threadBlock(char *image, uint32_t tlsIndex, uint32_t tlsTemplate) {
+// The current thread's block of image's thread-local data, offset so that an
+// RVA in the template indexes it: the TLS directory gives the template's
+// start and the index, as addresses.
+static char *threadBlock(char *image) {
+  const char *nt = image + read32(image + 0x3C);
+  const char *dir = image + read32(nt + 24 + 112 + 9 * 8);
   char **blocks = (char **)readPointer(getTEB() + tebThreadLocalStoragePointer);
-  return blocks[read32(image + tlsIndex)] - tlsTemplate;
+  return blocks[read32(readPointer(dir + 16))] - (readPointer(dir) - image);
+}
+
+static uint16_t length(const char *s) {
+  uint16_t n = 0;
+  while (s[n])
+    ++n;
+  return n;
 }
 
 // Writes each of image's thread-local import slots into the main thread's
@@ -173,7 +182,7 @@ static char *threadBlock(char *image, uint32_t tlsIndex, uint32_t tlsTemplate) {
 // the block's word still holds the slot's lookup entry. The process is still
 // initializing, so no other thread runs.
 static void copySlots(char *image, const struct copyList *l) {
-  char *block = threadBlock(image, l->tlsIndex, l->tlsTemplate);
+  char *block = threadBlock(image);
   for (uint32_t i = 0; i != l->slots; ++i) {
     uint64_t *word = (uint64_t *)(block + l->slot[i].rva);
     if (*word == l->slot[i].lookup)
@@ -365,8 +374,7 @@ int __llvm_fill(void) {
       }
       *(char **)(__ImageBase + c->rva) = value;
       if (c->kind < cellName && c->kind & cellThreadLocal)
-        *(char **)(threadBlock(__ImageBase, l->tlsIndex, l->tlsTemplate) +
-                   c->rva) = value;
+        *(char **)(threadBlock(__ImageBase) + c->rva) = value;
     }
   }
 
@@ -374,15 +382,22 @@ int __llvm_fill(void) {
   // own, failing the fill where it is missing and not weak, and a weak one
   // from a DLL in that DLL if it is loaded. Flag 1 binds without initializing
   // the module, as the loader's snap does.
-  const struct runTimeCell *r = (const struct runTimeCell *)cellsEnd;
+  const struct residualWord *w = (const struct residualWord *)cellsEnd;
+  const struct runTimeCell *r = (const struct runTimeCell *)(w + l->words);
   for (uint32_t i = 0; i != l->runTimeCells; ++i, ++r) {
     void *module = readPointer(peb + pebImageBase);
     if (r->dll > 1) {
-      String dll = {r->dllLength, r->dllLength + 2, __ImageBase + r->dll};
+      const uint16_t *wide = (const uint16_t *)(__ImageBase + r->dll);
+      uint16_t n = 0;
+      while (wide[n])
+        ++n;
+      String dll = {(uint16_t)(2 * n), (uint16_t)(2 * n), (const char *)wide};
       if (LdrGetDllHandleEx(1, NULL, NULL, &dll, &module) < 0)
         continue;
     }
-    String name = {r->nameLength, r->nameLength + 1, __ImageBase + r->name};
+    String name = {length(__ImageBase + r->name),
+                   (uint16_t)(length(__ImageBase + r->name) + 1),
+                   __ImageBase + r->name};
     int32_t lookup = LdrGetProcedureAddressForCaller(
         module, &name, 0, (void **)(__ImageBase + r->cell), 1, __llvm_fill);
     if (lookup < 0 && !r->dll) {
@@ -391,7 +406,6 @@ int __llvm_fill(void) {
     }
   }
 
-  const struct residualWord *w = (const struct residualWord *)r;
   for (uint32_t i = 0; i != l->words; ++i, ++w)
     *(uint64_t *)(__ImageBase + w->word) =
         *(uint64_t *)(__ImageBase + w->import) + w->addend;

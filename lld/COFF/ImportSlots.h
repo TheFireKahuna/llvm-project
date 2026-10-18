@@ -22,6 +22,7 @@ class IdataContents;
 class ImportFile;
 class ObjFile;
 struct SlotScan;
+struct SlotScanPending;
 
 // Under -import-slots, the import a word holding s's address takes in place:
 // an import thunk's import, or data resolved to its import; else null.
@@ -63,8 +64,7 @@ struct ResidualWord {
 };
 
 // Under -import-slots, an import bound by name at image start: its cell (read
-// in place of an IAT entry), its name, and, for a weak DLL import, the DLL
-// name in UTF-16.
+// in place of an IAT entry), its name, and, for a weak DLL import, the DLL's.
 struct RunTimeCell {
   DefinedImportData *imp;
   Chunk *cell;
@@ -79,6 +79,11 @@ class ImportSlotContents {
 public:
   ImportSlotContents(COFFLinkerContext &ctx, IdataContents &idata)
       : ctx(ctx), idata(idata) {}
+  // Scans symtab's relocations once: decides which local import pointers a
+  // reference still reads, and under -import-slots gathers what bind needs.
+  void scan(SymbolTable &symtab);
+  // Decides, once fused uses are bound, the in-place slots, the rewritten
+  // address-takes and the imports' entries.
   void bind();
   // Collects a DLL's cells: the words through which it reaches imported
   // overridable defaults and vague entities another image may preempt.
@@ -124,9 +129,10 @@ public:
   Chunk *getThreadLocalSlotCopyList() const { return threadLocalSlotCopyList; }
 
 private:
-  void scanChunk(SlotScan &scan, SectionChunk *sc);
+  void addRunTimeCells();
+  void scanReference(SlotScan &scan, SectionChunk *sc, size_t &i,
+                     SlotScanPending &p);
   void resolve(SlotScan &scan);
-  void keepUndescribedFunctionAddresses();
   void useThunkAsAddress(SlotScan &scan, ObjFile *file, Symbol *s,
                          DefinedImportData *imp, SectionChunk *data = nullptr);
   void addResidualWord(SectionChunk *sc, uint32_t offset, Symbol *s,
@@ -135,6 +141,7 @@ private:
 
   COFFLinkerContext &ctx;
   IdataContents &idata;
+  SlotScan *slotScan = nullptr;
   // Read-only chunks holding in-place import slots, laid out with the address
   // tables; writable ones go together at .data's end. In their order there.
   std::vector<SectionChunk *> slotChunks;
@@ -214,10 +221,6 @@ bool defersLocalImportWarning(const ObjFile *file, bool arm64);
 // Binds each .refptr.X pointer to a local import to X (in the image) or to
 // zero (absent weak X), whose references bindLocalImports rewrites directly.
 void bindPointerCells(SymbolTable &symtab);
-
-// Decides, after mark-live, which local import pointers a reference still
-// reads.
-void bindLocalImports(SymbolTable &symtab);
 
 // Decides, once local imports are bound, which fused calls go through their
 // register, which accesses and adds reach data directly, and which loads are

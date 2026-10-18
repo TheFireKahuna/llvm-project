@@ -870,8 +870,8 @@ void Writer::run() {
     if (ctx.config.machine == ARM64X)
       ctx.dynamicRelocs = make<DynamicRelocsChunk>();
     createImportTables();
-    ctx.forEachSymtab([](SymbolTable &symtab) {
-      bindLocalImports(symtab);
+    ctx.forEachSymtab([&](SymbolTable &symtab) {
+      slots.scan(symtab);
       bindFusedCalls(symtab);
     });
     slots.bind();

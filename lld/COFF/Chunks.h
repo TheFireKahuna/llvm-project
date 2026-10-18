@@ -808,6 +808,12 @@ public:
   // rewritten to reach the symbol directly. Data may still read the pointer.
   bool bypassed = false;
 
+  // Whether an instruction or a root reads the pointer, data reads it, and an
+  // instruction that refers to it is rewritten.
+  bool readByCode = false;
+  bool readByData = false;
+  bool rewritten = false;
+
   // The name of the image's own overridable default whose address the pointer
   // holds, if any, which the fill overwrites with the program's choice when the
   // executable replaces the default. No reference to it reaches the symbol.

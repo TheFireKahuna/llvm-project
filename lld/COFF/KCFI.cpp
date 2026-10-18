@@ -1259,17 +1259,6 @@ bool isKCFIListEntry(SectionChunk *sc, const coff_relocation &rel) {
          sc->isAddressWord(rel);
 }
 
-void getKCFIImportUses(COFFLinkerContext &ctx,
-                       SmallVectorImpl<DefinedImportData *> &read,
-                       SmallVectorImpl<DefinedImportData *> &other) {
-  for (auto [imp, section] : ctx.kcfi.listedImports)
-    read.push_back(imp);
-  for (const KCFIState::ImportedRange &r : ctx.kcfi.importedRanges) {
-    other.push_back(r.start);
-    other.push_back(r.end);
-  }
-}
-
 // A KCFI type's list names an imported function by its import-table entry,
 // which holds the address. Where static data holds the import thunk as the
 // address instead, a call through such a pointer reaches the thunk, so the list
