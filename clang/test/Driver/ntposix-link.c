@@ -10,10 +10,9 @@
 // RUN:       --implicit-check-not=oldnames \
 // RUN:       --implicit-check-not=dllcrt.obj \
 // RUN:       --implicit-check-not=-defaultlib:ucrt \
-// RUN:       --implicit-check-not=libc.lib \
-// RUN:       --implicit-check-not=-cetcompat
+// RUN:       --implicit-check-not=libc.lib
 // EXE:      lld-link{{(.exe)?}}" "-out:a.exe" "-machine:x64" "-nologo" "-lldignoreenv"
-// EXE-SAME: "-import-slots" "-guard:cf,exportsuppress"
+// EXE-SAME: "-import-slots" "-cetcompat" "-guard:cf,ehcont,exportsuppress"
 // EXE-SAME: "-start-stop-symbols" "-boundary-symbols" "-manifest:embed"
 // EXE-SAME: "[[LIB:[^"]*]]{{/|\\\\}}crt1.obj" "[[LIB]]{{/|\\\\}}crt_do_start.obj"
 // EXE-SAME: "[[LIB]]{{/|\\\\}}crt_tls.obj" "[[LIB]]{{/|\\\\}}crt_tls_cleanup.obj"
@@ -37,9 +36,11 @@
 // RUN:   | FileCheck --check-prefix=DLL %s \
 // RUN:       --implicit-check-not=crt1.obj \
 // RUN:       --implicit-check-not=crt_do_start.obj \
-// RUN:       --implicit-check-not=crt_tls_cleanup.obj
+// RUN:       --implicit-check-not=crt_tls_cleanup.obj \
+// RUN:       --implicit-check-not=-cetcompat
 // DLL:      "-machine:arm64"
 // DLL-SAME: "-dll" "-implib:foo.dll.lib"
+// DLL-SAME: "-guard:cf,ehcont"
 // DLL-SAME: "{{[^"]*}}dllcrt.obj" "{{[^"]*}}crt_tls.obj" "{{[^"]*}}crt_gs.obj"
 // DLL-SAME: "{{[^"]*}}crt_cfg.obj" "{{[^"]*}}crt_loadcfg.obj"
 // DLL-SAME: "-defaultlib:libc++.dll.lib" "-defaultlib:libunwind.dll.lib"

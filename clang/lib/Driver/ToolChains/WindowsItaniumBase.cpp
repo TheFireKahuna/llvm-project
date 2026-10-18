@@ -84,11 +84,14 @@ void tools::windowsitanium::Linker::ConstructJob(
   // The import binding model of these targets.
   CmdArgs.push_back("-import-slots");
 
-  // On x86-64 Windows Itanium, the image runs with the hardware shadow stack.
-  bool ShadowStack = TC.getTriple().isWindowsItaniumEnvironment() &&
-                     TC.getArch() == llvm::Triple::x86_64;
+  // On x86-64, the image runs with the hardware shadow stack.
+  bool ShadowStack = TC.getArch() == llvm::Triple::x86_64;
   if (ShadowStack)
     CmdArgs.push_back("-cetcompat");
+
+  // NT-POSIX's unwinder transfers only through NtContinueEx, which checks every
+  // continuation against the image's table on both architectures.
+  bool EHCont = ShadowStack || TC.getTriple().isWindowsNTPOSIXEnvironment();
 
   bool IsDLL = Args.hasArg(options::OPT_shared, options::OPT__SLASH_LD,
                            options::OPT__SLASH_LDd);
@@ -115,15 +118,15 @@ void tools::windowsitanium::Linker::ConstructJob(
 
   // Control Flow Guard is on unless -mguard=none, and an executable suppresses
   // its exports as call targets until GetProcAddress returns them. An image
-  // that runs with the shadow stack has the table of EH continuation targets,
-  // which the shadow stack checks a continuation against whether or not Control
-  // Flow Guard is on; lld-link's ehcont turns it on, and nocf off again.
-  // lld-link honors only the last -guard: option, so they go together.
+  // that runs with the shadow stack, and every NT-POSIX image, has the table of
+  // EH continuation targets, which a continuation is checked against whether or
+  // not Control Flow Guard is on; lld-link's ehcont turns it on, and nocf off
+  // again. lld-link honors only the last -guard: option, so they go together.
   bool CFGuard = TC.getGuardMode(Args) != "none";
   SmallVector<StringRef, 3> Guard;
   if (CFGuard)
     Guard.push_back("cf");
-  if (ShadowStack)
+  if (EHCont)
     Guard.push_back(CFGuard ? "ehcont" : "ehcont,nocf");
   if (CFGuard && !IsDLL)
     Guard.push_back("exportsuppress");

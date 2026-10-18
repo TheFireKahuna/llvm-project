@@ -8,7 +8,6 @@
 // RUN:       --implicit-check-not=-fwchar-type \
 // RUN:       --implicit-check-not=-D_DLL \
 // RUN:       --implicit-check-not=-fno-use-cxa-atexit \
-// RUN:       --implicit-check-not=-ehcontguard \
 // RUN:       --implicit-check-not=-disable-red-zone
 // RUN: %clang -### --target=aarch64-pc-windows-ntposix -c %s 2>&1 \
 // RUN:   | FileCheck --check-prefix=CC1 %s \
@@ -23,6 +22,7 @@
 // CC1-DAG:     "-fdeclspec"
 // CC1-DAG:     "-exception-model=seh"
 // CC1-DAG:     "-cfguard"
+// CC1-DAG:     "-ehcontguard"
 // CC1-DAG:     "-ffunction-sections"
 // CC1-DAG:     "-fdata-sections"
 // CC1-DAG:     "-funwind-tables=2"

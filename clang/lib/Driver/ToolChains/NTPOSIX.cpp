@@ -57,6 +57,10 @@ void NTPOSIXToolChain::addClangTargetOptions(
   // The C library is always thread-capable.
   CC1Args.push_back("-pthread");
 
+  // Every object lists its EH continuation targets, since nt.dll's unwinder
+  // lands only on the targets an image's table lists.
+  CC1Args.push_back("-ehcontguard");
+
   // A 16-bit wchar_t would bind to the 32-bit one's C and C++ interfaces.
   // Until the interfaces of the two widths are kept apart, so that a crossing
   // between them fails to build or to load, it is rejected.
