@@ -128,6 +128,9 @@ public:
   /// operand node N of U during instruction selection that starts at Root.
   virtual bool IsProfitableToFold(SDValue N, SDNode *U, SDNode *Root) const;
 
+  /// Whether N loads a GOT entry or import slot.
+  static bool isGOTLoad(SDValue N);
+
   /// IsLegalToFold - Returns true if the specific operand node N of
   /// U can be folded during instruction selection that starts at Root.
   /// FIXME: This is a static member function because the MSP430/X86

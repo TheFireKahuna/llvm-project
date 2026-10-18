@@ -2518,12 +2518,22 @@ bool SelectionDAGISel::IsProfitableToFold(SDValue N, SDNode *U,
   return N.hasOneUse();
 }
 
+/// Whether N loads a GOT entry or import slot.
+bool SelectionDAGISel::isGOTLoad(SDValue N) {
+  const auto *Ld = dyn_cast<LoadSDNode>(N);
+  const PseudoSourceValue *PSV =
+      Ld ? Ld->getMemOperand()->getPseudoValue() : nullptr;
+  return PSV && PSV->kind() == PseudoSourceValue::GOT;
+}
+
 /// IsLegalToFold - Returns true if the specific operand node N of
 /// U can be folded during instruction selection that starts at Root.
 bool SelectionDAGISel::IsLegalToFold(SDValue N, SDNode *U, SDNode *Root,
                                      CodeGenOptLevel OptLevel,
                                      bool IgnoreChains) {
-  if (OptLevel == CodeGenOptLevel::None)
+  // Without optimization only a GOT load folds, where the target finds it
+  // profitable: a linker relaxes the folded access alone.
+  if (OptLevel == CodeGenOptLevel::None && !isGOTLoad(N))
     return false;
 
   // A fault probe stays the one access its landing describes.

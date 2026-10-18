@@ -690,8 +690,13 @@ bool X86DAGToDAGISel::isMaskZeroExtended(SDNode *N) const {
 
 bool
 X86DAGToDAGISel::IsProfitableToFold(SDValue N, SDNode *U, SDNode *Root) const {
+  // Without optimization a callee's GOT load still folds into its call or
+  // jump, the form a linker relaxes to a direct one.
   if (OptLevel == CodeGenOptLevel::None)
-    return false;
+    return isGOTLoad(N) && N.hasOneUse() &&
+           (U->getOpcode() == X86ISD::CALL ||
+            U->getOpcode() == X86ISD::NT_CALL ||
+            U->getOpcode() == X86ISD::TC_RETURN);
 
   if (!N.hasOneUse())
     return false;
@@ -1417,15 +1422,15 @@ void X86DAGToDAGISel::PreprocessISelDAG() {
     }
     }
 
-    if (OptLevel != CodeGenOptLevel::None &&
-        // Only do this when the target can fold the load into the call or
-        // jmp.
-        !Subtarget->useIndirectThunkCalls() &&
+    // Only do this when the target can fold the load into the call or jmp,
+    // which without optimization it does for a GOT load alone.
+    if (!Subtarget->useIndirectThunkCalls() &&
         ((N->getOpcode() == X86ISD::CALL && !Subtarget->slowTwoMemOps() &&
           !Subtarget->slowIndirectCall()) ||
          (N->getOpcode() == X86ISD::TC_RETURN &&
           (Subtarget->is64Bit() ||
-           !getTargetMachine().isPositionIndependent())))) {
+           !getTargetMachine().isPositionIndependent()))) &&
+        (OptLevel != CodeGenOptLevel::None || isGOTLoad(N->getOperand(1)))) {
       /// Also try moving call address load from outside callseq_start to just
       /// before the call to allow it to be folded.
       ///
