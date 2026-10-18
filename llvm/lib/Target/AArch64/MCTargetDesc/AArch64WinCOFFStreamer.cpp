@@ -29,7 +29,12 @@ class AArch64WinCOFFStreamer : public MCWinCOFFStreamer {
   Win64EH::ARM64UnwindEmitter EHStreamer;
   // A fused access or add is the next instruction, which the streamer
   // describes once it has seen that it is in a form the records describe.
-  enum { NoFusedUse, AwaitingAccess, AwaitingAdd } FusedUse = NoFusedUse;
+  enum {
+    NoFusedUse,
+    AwaitingAccess,
+    AwaitingAdd,
+    AwaitingIndex
+  } FusedUse = NoFusedUse;
   MCRegister FusedUseReg;
 
   bool describeFusedUse(const MCInst &Inst, MCSymbol *Start);
@@ -67,6 +72,11 @@ public:
     FusedUse = AwaitingAdd;
     FusedUseReg = Reg;
   }
+  void emitCOFFLinkFusedIndex(const MCSymbol *Load, MCRegister Reg) override {
+    MCWinCOFFStreamer::emitCOFFLinkFusedIndex(Load, Reg);
+    FusedUse = AwaitingIndex;
+    FusedUseReg = Reg;
+  }
 
   void emitWinEHHandlerData(SMLoc Loc) override;
   void emitWindowsUnwindTables() override;
@@ -82,6 +92,22 @@ public:
 bool AArch64WinCOFFStreamer::describeFusedUse(const MCInst &Inst,
                                               MCSymbol *Start) {
   const MCRegisterInfo &MRI = *getContext().getRegisterInfo();
+  // An index, a load, store or prefetch at the sum of two registers or an
+  // add of them, names the register as its first (base) or second; the
+  // linker decodes the rest.
+  if (FusedUse == AwaitingIndex) {
+    if (Inst.getNumOperands() < 3 || !Inst.getOperand(1).isReg() ||
+        !Inst.getOperand(2).isReg())
+      return false;
+    bool IsBase = Inst.getOperand(1).getReg() == FusedUseReg;
+    if (!IsBase && Inst.getOperand(2).getReg() != FusedUseReg)
+      return false;
+    WinCOFFObjectWriter::LinkFusedAccess &Access =
+        getWriter().getLastLinkFusedAccess();
+    Access.Start = Start;
+    Access.SIB = IsBase;
+    return true;
+  }
   if (FusedUse == AwaitingAdd) {
     unsigned Opcode = Inst.getOpcode();
     if ((Opcode != AArch64::ADDXri && Opcode != AArch64::SUBXri) ||

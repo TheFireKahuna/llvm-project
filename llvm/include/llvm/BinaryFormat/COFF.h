@@ -548,12 +548,19 @@ enum LinkSiteFact : uint8_t {
   // linker that finds the record in the image, and so knows the offset, may
   // add it to the displacement and leave the register out of the operand:
   //
-  //   value := load << 20 | prefix << 15 | base << 14 | disp << 12 |
-  //            length << 8 | at << 4 | modrm
+  //   value := load << 20 | add << 17 | prefix << 15 | base << 14 |
+  //            disp << 12 | length << 8 | at << 4 | modrm
   //
   // as for LinkSiteFusedAccess, with base whether the register is the SIB
   // byte's base rather than its index, and at the offset of the prefix that
-  // holds both registers' high bits, REX or three-byte VEX.
+  // holds both registers' high bits, REX or three-byte VEX. Where add is set,
+  // the instruction is instead add r64, r64 with REX.W, whose source is the
+  // register, so that it may add the offset; or, with base set and the flags
+  // dead after it, whose destination is the register, so that it may become an
+  // lea of the source plus the offset. On ARM64 the value is load << 20, and
+  // the instruction a load or store with the register as its offset or base,
+  // or an add of it to another register, unshifted, so that it may take the
+  // offset as its immediate.
   LinkSiteFusedIndex = 8,
   // As LinkSiteAccessedRead, for instructions that LinkSiteFusedIndex
   // describes.

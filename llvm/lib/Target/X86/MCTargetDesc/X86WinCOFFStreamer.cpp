@@ -380,6 +380,26 @@ bool X86WinCOFFStreamer::describeFusedUse(const MCInst &Inst, MCSymbol *Start,
 
   WinCOFFObjectWriter::LinkFusedAccess &Access =
       getWriter().getLastLinkFusedAccess();
+  // An index may be an add of the register to another, or, of another to it:
+  // REX.W, then 01 or 03, then ModRM naming both registers.
+  if (IsIndex && (Inst.getOpcode() == X86::ADD64rr ||
+                  Inst.getOpcode() == X86::ADD64rr_REV)) {
+    MCRegister Dst = Inst.getOperand(0).getReg();
+    MCRegister Src = Inst.getOperand(2).getReg();
+    if ((Src != FusedUseReg && Dst != FusedUseReg) || Dst == Src ||
+        MRI.getEncodingValue(Dst) >= 16 || MRI.getEncodingValue(Src) >= 16 ||
+        Bytes.size() != 3 || (uint8_t(Bytes[0]) & 0xF8) != 0x48)
+      return false;
+    Access.Start = Start;
+    Access.ModRM = 2;
+    Access.Prefix = 0;
+    Access.Length = 3;
+    Access.Disp = 0;
+    Access.SIB = Dst == FusedUseReg;
+    Access.PrefixKind = COFF::LinkAccessREX;
+    Access.Scale = 1;
+    return true;
+  }
   uint64_t Encoding = Desc.TSFlags & X86II::EncodingMask;
   uint64_t Map = Desc.TSFlags & X86II::OpMapMask;
   if ((Encoding != X86II::LEGACY && Encoding != X86II::VEX &&
