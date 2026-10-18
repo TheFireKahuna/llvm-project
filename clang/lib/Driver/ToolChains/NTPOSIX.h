@@ -48,6 +48,17 @@ public:
                            llvm::opt::ArgStringList &CmdArgs) const override;
 
 private:
+  /// The directories whose headers are Win32 declaration regions: the Windows
+  /// SDK's, found as the MSVC toolchain finds them, and those -iwin32 names.
+  std::vector<std::string>
+  getWin32HeaderRoots(const llvm::opt::ArgList &Args) const;
+
+  /// The Windows SDK's include directories, unless -nostdinc or -nostdlibinc.
+  std::vector<std::string>
+  getWindowsSDKIncludeDirs(const llvm::opt::ArgList &Args) const;
+
+  std::optional<llvm::StringRef> WinSdkDir, WinSdkVersion, WinSysRoot;
+
   /// Adds a file of the C runtime or the static runtimes, or diagnoses its
   /// absence.
   void addRequiredFile(const llvm::opt::ArgList &Args,

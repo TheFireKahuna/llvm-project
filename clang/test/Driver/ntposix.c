@@ -2,14 +2,17 @@
 
 // RUN: rm -rf %t && split-file %s %t
 
-// RUN: %clang -### --target=x86_64-pc-windows-ntposix -c %s 2>&1 \
+// RUN: %clang -### --target=x86_64-pc-windows-ntposix -c %s \
+// RUN:     -Xmicrosoft-windows-sys-root %t/none 2>&1 \
 // RUN:   | FileCheck --check-prefixes=CC1,CC1-X64 %s \
 // RUN:       --implicit-check-not=-fms-extensions \
+// RUN:       --implicit-check-not=-fwin32-header-root \
 // RUN:       --implicit-check-not=-fwchar-type \
 // RUN:       --implicit-check-not=-D_DLL \
 // RUN:       --implicit-check-not=-fno-use-cxa-atexit \
 // RUN:       --implicit-check-not=-disable-red-zone
-// RUN: %clang -### --target=aarch64-pc-windows-ntposix -c %s 2>&1 \
+// RUN: %clang -### --target=aarch64-pc-windows-ntposix -c %s \
+// RUN:     -Xmicrosoft-windows-sys-root %t/none 2>&1 \
 // RUN:   | FileCheck --check-prefix=CC1 %s \
 // RUN:       --implicit-check-not=-disable-red-zone --implicit-check-not=-fno-plt
 // CC1:         "-cc1" "-triple" "{{x86_64|aarch64}}-pc-windows-ntposix"

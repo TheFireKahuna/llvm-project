@@ -12,6 +12,7 @@
 #include "llvm/Option/ArgList.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/VirtualFileSystem.h"
+#include "llvm/WindowsDriver/MSVCPaths.h"
 
 using namespace clang::driver;
 using namespace clang::driver::toolchains;
@@ -21,6 +22,12 @@ using namespace llvm::opt;
 NTPOSIXToolChain::NTPOSIXToolChain(const Driver &D, const llvm::Triple &Triple,
                                    const ArgList &Args)
     : WindowsItaniumBaseToolChain(D, Triple, Args) {
+  if (Arg *A = Args.getLastArg(options::OPT__SLASH_winsdkdir))
+    WinSdkDir = A->getValue();
+  if (Arg *A = Args.getLastArg(options::OPT__SLASH_winsdkversion))
+    WinSdkVersion = A->getValue();
+  if (Arg *A = Args.getLastArg(options::OPT__SLASH_winsysroot))
+    WinSysRoot = A->getValue();
   if (!D.SysRoot.empty()) {
     SmallString<128> LibPath(D.SysRoot);
     llvm::sys::path::append(LibPath, "lib", Triple.str());
@@ -61,12 +68,67 @@ void NTPOSIXToolChain::addClangTargetOptions(
   // lands only on the targets an image's table lists.
   CC1Args.push_back("-ehcontguard");
 
-  // A 16-bit wchar_t would bind to the 32-bit one's C and C++ interfaces.
-  // Until the interfaces of the two widths are kept apart, so that a crossing
-  // between them fails to build or to load, it is rejected.
+  // wchar_t is 16 bits in the Win32 face, which keeps it apart from the POSIX
+  // face's 32-bit one; alone, -fshort-wchar would not.
   if (const Arg *A = DriverArgs.getLastArg(options::OPT_fshort_wchar))
     getDriver().Diag(diag::err_drv_unsupported_opt_for_target)
         << A->getAsString(DriverArgs) << getTriple().str();
+  bool Win32Face = DriverArgs.hasArg(options::OPT_mwin32);
+  if (Win32Face) {
+    CC1Args.push_back("-mwin32");
+    CC1Args.push_back("-fwchar-type=short");
+    CC1Args.push_back("-fno-signed-wchar");
+  }
+
+  // Headers under a Win32 root are Win32 declaration regions. A unit that can
+  // reach one, or is in the Win32 face, takes the Microsoft syntax extensions
+  // the Windows headers use, such as __uuidof and __declspec(uuid).
+  std::vector<std::string> Roots = getWin32HeaderRoots(DriverArgs);
+  for (const std::string &Root : Roots)
+    CC1Args.push_back(DriverArgs.MakeArgString("-fwin32-header-root=" + Root));
+  for (const std::string &Dir : DriverArgs.getAllArgValues(options::OPT_iwin32)) {
+    CC1Args.push_back("-idirafter");
+    CC1Args.push_back(DriverArgs.MakeArgString(Dir));
+  }
+  if (Win32Face || !Roots.empty())
+    CC1Args.push_back("-fms-extensions");
+}
+
+std::vector<std::string>
+NTPOSIXToolChain::getWindowsSDKIncludeDirs(const ArgList &Args) const {
+  std::vector<std::string> Dirs;
+  std::string SDKDir, IncludeVersion, LibVersion;
+  int Major = 0;
+  if (Args.hasArg(options::OPT_nostdinc, options::OPT_nostdlibinc) ||
+      !llvm::getWindowsSDKDir(getVFS(), WinSdkDir, WinSdkVersion, WinSysRoot,
+                              SDKDir, Major, IncludeVersion, LibVersion) ||
+      Major < 10)
+    return Dirs;
+  if (!WinSdkDir && !WinSysRoot && WinSdkVersion)
+    IncludeVersion = std::string(*WinSdkVersion);
+  // The SDK's headers expect Visual C++'s vcruntime headers. Windows Itanium's
+  // wrappers, ahead of the SDK, supply them and adapt the SDK to clang; behind
+  // the C library, they never stand in for one of its headers.
+  if (!Args.hasArg(options::OPT_nobuiltininc)) {
+    SmallString<128> Dir(getDriver().ResourceDir);
+    llvm::sys::path::append(Dir, "include", "win32_itanium_wrappers");
+    Dirs.push_back(std::string(Dir));
+  }
+  for (const char *Sub : {"shared", "um", "winrt", "cppwinrt"}) {
+    SmallString<128> Dir(SDKDir);
+    llvm::sys::path::append(Dir, "Include", IncludeVersion, Sub);
+    if (getVFS().exists(Dir))
+      Dirs.push_back(std::string(Dir));
+  }
+  return Dirs;
+}
+
+std::vector<std::string>
+NTPOSIXToolChain::getWin32HeaderRoots(const ArgList &Args) const {
+  std::vector<std::string> Roots = getWindowsSDKIncludeDirs(Args);
+  for (const std::string &Dir : Args.getAllArgValues(options::OPT_iwin32))
+    Roots.push_back(Dir);
+  return Roots;
 }
 
 static void addLibCIncludeArgs(const ToolChain &TC, const ArgList &DriverArgs,
@@ -101,6 +163,11 @@ void NTPOSIXToolChain::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
   SmallString<128> Root(getDriver().Dir);
   llvm::sys::path::append(Root, "..");
   addLibCIncludeArgs(*this, DriverArgs, CC1Args, Root);
+
+  // The Windows SDK's headers, after the C library's, so that a POSIX header
+  // is never found among them.
+  for (const std::string &Dir : getWindowsSDKIncludeDirs(DriverArgs))
+    addSystemInclude(DriverArgs, CC1Args, Dir);
 }
 
 void NTPOSIXToolChain::addRequiredFile(const ArgList &Args,
