@@ -19201,12 +19201,11 @@ bool Sema::CheckOverridingFunctionAttributes(CXXMethodDecl *New,
   if (NewCC == OldCC)
     return false;
 
-  // On Windows Itanium an override that spells no calling convention takes
-  // Microsoft's from the function it overrides, as a COM method implemented
-  // without the SDK's macro does.
+  // On Windows Itanium and NT-POSIX an override that spells no calling
+  // convention takes Microsoft's from the function it overrides, as a COM
+  // method implemented without the SDK's macro does.
   const llvm::Triple &Triple = Context.getTargetInfo().getTriple();
   if (OldCC == CC_Win64 && Triple.isWindowsItaniumOrNTPOSIXEnvironment() &&
-      !Triple.isWindowsNTPOSIXEnvironment() &&
       !getCallingConvAttributedType(New->getType()) && !New->isStatic()) {
     New->setType(
         QualType(Context.adjustFunctionType(

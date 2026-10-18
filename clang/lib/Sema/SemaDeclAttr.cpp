@@ -5886,10 +5886,16 @@ bool Sema::CheckCallingConvAttr(const ParsedAttr &Attrs, CallingConv &CC,
 
   bool IsTargetDefaultMSABI =
       Context.getTargetInfo().hasMicrosoftDefaultCallingConv();
+  // On x86-64 NT-POSIX the Windows conventions' spellings, __cdecl included,
+  // name the MS x64 convention: a Windows declaration means it whatever
+  // header it is written in.
+  const llvm::Triple &TT = Context.getTargetInfo().getTriple();
+  bool WindowsSpellingsAreMS =
+      TT.isWindowsNTPOSIXEnvironment() && TT.getArch() == llvm::Triple::x86_64;
   // TODO: diagnose uses of these conventions on the wrong target.
   switch (Attrs.getKind()) {
   case ParsedAttr::AT_CDecl:
-    CC = CC_C;
+    CC = WindowsSpellingsAreMS ? CC_Win64 : CC_C;
     break;
   case ParsedAttr::AT_FastCall:
     CC = CC_X86FastCall;
@@ -6062,8 +6068,9 @@ bool Sema::CheckCallingConvAttr(const ParsedAttr &Attrs, CallingConv &CC,
     // Treat an ignored convention as if it was an explicit C calling convention
     // attribute. For example, __stdcall on Win x64 functions as __cdecl, so
     // that command line flags that change the default convention to
-    // __vectorcall don't affect declarations marked __stdcall.
-    CC = CC_C;
+    // __vectorcall don't affect declarations marked __stdcall. On x86-64
+    // NT-POSIX, whose C convention is SysV, Windows's C convention is MS x64.
+    CC = WindowsSpellingsAreMS ? CC_Win64 : CC_C;
     break;
 
   case TargetInfo::CCCR_Error:

@@ -4,7 +4,8 @@
 
 // x86-64 NT-POSIX uses the System V convention by default, which the backend
 // lowers the C calling convention to, so no function carries x86_64_sysvcc.
-// ms_abi selects the Microsoft x64 convention. Linker directives and stack
+// ms_abi, and Windows's own convention spellings, select the Microsoft x64
+// convention. Linker directives and stack
 // probe options are those of Windows.
 
 #pragma comment(lib, "ntdll")
@@ -40,6 +41,15 @@ int __attribute__((ms_abi)) ms_variadic(int n, ...) {
 }
 // CHECK-LABEL: define dso_local win64cc i32 @ms_variadic(i32 noundef %n, ...)
 // CHECK:         %ap = alloca ptr, align 8
+
+// Windows's convention spellings mean the MS x64 convention wherever they are
+// written, so code implementing a Windows callback or COM method matches it.
+long long __stdcall std_call(struct S s) { return s.a; }
+// CHECK-LABEL: define dso_local win64cc i64 @std_call(ptr {{.*}}%s)
+long long __cdecl c_decl(struct S s) { return s.a; }
+// CHECK-LABEL: define dso_local win64cc i64 @c_decl(ptr {{.*}}%s)
+long long __fastcall fast_call(struct S s) { return s.a; }
+// CHECK-LABEL: define dso_local win64cc i64 @fast_call(ptr {{.*}}%s)
 
 // A call without a prototype sets %al, as System V requires.
 int no_proto();

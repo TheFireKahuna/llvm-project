@@ -1494,14 +1494,14 @@ bool ItaniumCXXABI::classifyReturnType(CGFunctionInfo &FI) const {
   if (!RD)
     return false;
 
-  // On Windows Itanium a non-static member function with Microsoft's calling
-  // convention, which COM methods spell, returns every class through a
-  // pointer that follows 'this', as MSVC-built code implementing or calling
-  // it does. Every other function keeps the Itanium rule.
+  // On Windows Itanium and NT-POSIX a non-static member function with
+  // Microsoft's calling convention, which COM methods spell, returns every
+  // class through a pointer that follows 'this', as MSVC-built code
+  // implementing or calling it does. Every other function keeps the Itanium
+  // rule.
   bool IsWindowsItaniumMethod =
       CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
-      !CGM.getTriple().isWindowsNTPOSIXEnvironment() && FI.isInstanceMethod() &&
-      FI.getASTCallingConvention() == CC_Win64;
+      FI.isInstanceMethod() && FI.getASTCallingConvention() == CC_Win64;
 
   // If C++ prohibits us from making a copy, return by address using the target
   // hook getSRetAddrSpace to decide the AS.

@@ -1005,7 +1005,17 @@ public:
   }
 
   CallingConvCheckResult checkCallingConvention(CallingConv CC) const override {
-    return X86_64TargetInfo::checkCallingConvention(CC);
+    switch (CC) {
+    // The 32-bit Windows conventions name the MS x64 one here, as every
+    // Windows declaration that spells them means.
+    case CC_X86StdCall:
+    case CC_X86ThisCall:
+    case CC_X86FastCall:
+    case CC_X86Pascal:
+      return CCCR_Ignore;
+    default:
+      return X86_64TargetInfo::checkCallingConvention(CC);
+    }
   }
 };
 

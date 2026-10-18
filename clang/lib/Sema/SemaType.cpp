@@ -8510,7 +8510,6 @@ std::optional<CallingConv>
 Sema::getMicrosoftMemberCallingConv(QualType T) const {
   const llvm::Triple &Triple = Context.getTargetInfo().getTriple();
   if (!Triple.isWindowsItaniumOrNTPOSIXEnvironment() ||
-      Triple.isWindowsNTPOSIXEnvironment() ||
       getLangOpts().isCompatibleWith(LangOptions::ClangABI::Ver23))
     return std::nullopt;
   const AttributedType *AT = getCallingConvAttributedType(T);
@@ -8518,7 +8517,12 @@ Sema::getMicrosoftMemberCallingConv(QualType T) const {
       (AT->getAttrKind() != attr::StdCall &&
        AT->getAttrKind() != attr::ThisCall && AT->getAttrKind() != attr::MSABI))
     return std::nullopt;
-  // The convention differs from the default only in how a class is returned.
+  // On x86-64 NT-POSIX the default is SysV's, so Microsoft's convention is
+  // the method's whatever it returns. Elsewhere it differs from the default
+  // only in how a class is returned.
+  if (Triple.isWindowsNTPOSIXEnvironment() &&
+      Triple.getArch() == llvm::Triple::x86_64)
+    return CC_Win64;
   const auto *FT = T->castAs<FunctionType>();
   if (FT->getReturnType()->isRecordType() ||
       FT->getReturnType()->isDependentType())
