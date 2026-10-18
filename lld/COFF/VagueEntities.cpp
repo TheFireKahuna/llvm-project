@@ -548,9 +548,7 @@ void importOffersEpochs(COFFLinkerContext &ctx) {
                                      ("__imp_" + epoch).str()));
     if (!lazy)
       continue;
-    auto *file = make<ImportFile>(ctx, lazy->getMemberBuffer());
-    ctx.driver.addFile(file);
-    file->live = true;
+    ctx.symtab.loadImportMember(lazy);
   }
 }
 

@@ -54,12 +54,12 @@
 
 # IMPORTS:      Type: data
 # IMPORTS-NEXT: Name type: export as
-# IMPORTS-NEXT: Export name: __llvm_code_start
-# IMPORTS-NEXT: Symbol: __imp___llvm_code_start$kcfi-code-range-export.s.tmp.dll
-# IMPORTS:      Type: data
-# IMPORTS-NEXT: Name type: export as
 # IMPORTS-NEXT: Export name: __llvm_code_end
 # IMPORTS-NEXT: Symbol: __imp___llvm_code_end$kcfi-code-range-export.s.tmp.dll
+# IMPORTS:      Type: data
+# IMPORTS-NEXT: Name type: export as
+# IMPORTS-NEXT: Export name: __llvm_code_start
+# IMPORTS-NEXT: Symbol: __imp___llvm_code_start$kcfi-code-range-export.s.tmp.dll
 
 ## Type 0x11111111 has two functions in the range, and type 0x33333333 and
 ## second type 0x66666666 one each.

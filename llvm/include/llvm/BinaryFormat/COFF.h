@@ -196,7 +196,9 @@ enum LinkRecordKind : uint64_t {
   // gives the register holding the target; a linker skips a thunk of a kind it
   // does not know. type is the KCFI type the thunk checks, marker the marker of
   // the prefixes it compares, and offset the bytes of any patchable prefix
-  // between a prefix and its function's entry.
+  // between a prefix and its function's entry. The kinds of a member thunk's
+  // miss describe instead the weak symbol through which the thunk continues
+  // into the type's thunk, and the type's mismatch routine.
   LinkRecordKCFIThunks = 8,
 
   // The primary address points of the vtables the object defines, each with
@@ -427,6 +429,12 @@ enum LinkKCFIThunkKind : uint8_t {
   // fast on a target outside it where the linker defined the range.
   LinkKCFIThunkLocalDispatch,
   LinkKCFIThunkLocalCheck,
+  // The weak symbol through which a member thunk of the type continues on a
+  // target that carries none of its tags, which a linker that knows the
+  // image's targets may point at the mismatch routine; the second for a target
+  // outside the image's code range.
+  LinkKCFIThunkMemberMiss,
+  LinkKCFIThunkMemberOutsideMiss,
 };
 
 // The form of an instruction site, which a linker verifies against the

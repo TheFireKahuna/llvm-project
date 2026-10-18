@@ -1192,6 +1192,9 @@ void LinkerDriver::createImportLibrary(bool asLib) {
   // the export's own member, so that an importer binds to that image.
   std::list<std::vector<uint8_t>> forwardedBuffers;
 
+  std::string libName = getImportName(asLib);
+  std::string dll = StringRef(libName).lower();
+  std::vector<COFFShortExport> qualified;
   auto getExports = [&](SymbolTable &symtab,
                         std::vector<COFFShortExport> &exports) {
     // A member that imports by name carries a hint, not an ordinal: the
@@ -1212,6 +1215,14 @@ void LinkerDriver::createImportLibrary(bool asLib) {
       e2.Private = e1.isPrivate;
       e2.Constant = e1.constant;
       exports.push_back(e2);
+      if (e1.qualifiedName.empty() || asLib || &symtab != &ctx.symtab)
+        return;
+      COFFShortExport q;
+      q.Name = (e1.qualifiedName + "$" + dll).str();
+      q.ExportAs = e1.exportName.str();
+      q.Ordinal = ordinal;
+      q.Data = !e1.qualifiedCode;
+      qualified.push_back(std::move(q));
     };
     for (Export &e1 : symtab.exports) {
       if (!e1.noname)
@@ -1235,16 +1246,14 @@ void LinkerDriver::createImportLibrary(bool asLib) {
   };
 
   getExports(ctx.symtab, exports);
+  llvm::append_range(exports, qualified);
   if (ctx.config.machine == ARM64X)
     getExports(*ctx.hybridSymtab, nativeExports);
 
-  std::string libName = getImportName(asLib);
   std::string path = getImplibPath();
   std::vector<uint8_t> rangeRecord, vagueRecord;
   if (!asLib) {
-    addKCFIRangeImports(ctx, libName, exports, extra, rangeRecord);
-    addContractWitnessImports(ctx, libName, exports);
-    addVTableRunImports(ctx, libName, exports);
+    addKCFIRangeRecord(ctx, libName, extra, rangeRecord);
     addVagueEntityRecord(ctx, libName, extra, vagueRecord);
   }
 

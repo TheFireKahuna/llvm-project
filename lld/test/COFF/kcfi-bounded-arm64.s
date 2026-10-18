@@ -16,51 +16,51 @@
 # RUN: llvm-objdump -d main.exe | FileCheck %s
 # RUN: llvm-objdump -s -j .rdata main.exe | FileCheck %s --check-prefix=DATA
 
-# CHECK:      <__llvm_kcfi_trap>:
-# CHECK-NEXT:   140001050:
-# CHECK:      <static_scanner>:
-# CHECK-NEXT:   140001058:
-# CHECK:      <__llvm_kcfi_check_open_dynamic>:
-# CHECK-NEXT:   14000105c:
 # CHECK:      <__llvm_kcfi_check_mismatch_11111111>:
 # CHECK-NEXT:   adrp x16, 0x140002000
 # CHECK-NEXT:   add x16, x16, #0x10
 # CHECK-NEXT:   adrp x17, 0x140001000
-# CHECK-NEXT:   add x17, x17, #0xb0
+# CHECK-NEXT:   add x17, x17, #0xbc
 # CHECK-NEXT:   br x17
+# CHECK:      <__llvm_kcfi_trap>:
+# CHECK-NEXT:   140001064:
+# CHECK:      <static_scanner>:
+# CHECK-NEXT:   14000106c:
+# CHECK:      <__llvm_kcfi_check_open_dynamic>:
+# CHECK-NEXT:   140001070:
 # CHECK:      <__llvm_kcfi_check_mismatch_22222222>:
 # CHECK-NEXT:   adrp x17, 0x140000000
 # CHECK-NEXT:   cmp x15, x17
-# CHECK-NEXT:   b.lo 0x1400010a4
+# CHECK-NEXT:   b.lo 0x1400010b0
 # CHECK-NEXT:   adrp x17, 0x140005000
 # CHECK-NEXT:   cmp x15, x17
-# CHECK-NEXT:   b.hs 0x1400010a4
+# CHECK-NEXT:   b.hs 0x1400010b0
 # CHECK-NEXT:   adrp x16, 0x140002000
 # CHECK-NEXT:   add x16, x16, #0x30
 # CHECK-NEXT:   adrp x17, 0x140001000
-# CHECK-NEXT:   add x17, x17, #0x5c
+# CHECK-NEXT:   add x17, x17, #0x70
 # CHECK-NEXT:   br x17
-# CHECK-NEXT:   1400010a4: {{.*}} adrp x17, 0x140001000
-# CHECK-NEXT:   add x17, x17, #0x50
+# CHECK-NEXT:   1400010b0: {{.*}} adrp x17, 0x140001000
+# CHECK-NEXT:   add x17, x17, #0x64
 # CHECK-NEXT:   br x17
 # CHECK-EMPTY:
 # CHECK-NEXT: <__llvm_kcfi_check_open>:
 # CHECK-NEXT:   adrp x17, 0x140000000
 # CHECK-NEXT:   cmp x15, x17
-# CHECK-NEXT:   b.lo 0x1400010d4
+# CHECK-NEXT:   b.lo 0x1400010e0
 # CHECK-NEXT:   adrp x17, 0x140005000
 # CHECK-NEXT:   cmp x15, x17
-# CHECK-NEXT:   b.hs 0x1400010d4
+# CHECK-NEXT:   b.hs 0x1400010e0
 # CHECK-NEXT:   adrp x17, 0x140001000
-# CHECK-NEXT:   add x17, x17, #0x5c
+# CHECK-NEXT:   add x17, x17, #0x70
 # CHECK-NEXT:   br x17
-# CHECK-NEXT:   1400010d4: {{.*}} adrp x17, 0x140001000
-# CHECK-NEXT:   add x17, x17, #0x58
+# CHECK-NEXT:   1400010e0: {{.*}} adrp x17, 0x140001000
+# CHECK-NEXT:   add x17, x17, #0x6c
 # CHECK-NEXT:   br x17
 
 ## The empty list, after the guard function table: its head, then the odd word
 ## that ends it.
-# DATA: 140002020 1c100000 60100000 00000000 00000000
+# DATA: 140002020 1c100000 80100000 00000000 00000000
 # DATA-NEXT: 140002030 01000000 00000000
 
 ## Without plain, the table lists only functions with a prefix, and the closed
@@ -116,6 +116,7 @@ __llvm_kcfi_check_mismatch_22222222 = __llvm_kcfi_trap
         .globl __llvm_kcfi_check_11111111
         .p2align 2
 __llvm_kcfi_check_11111111:
+        .linkkcfithunk __llvm_kcfi_check_11111111, check, 0x11111111, 0x071c5a06, 0, __llvm_kcfi_check_mismatch_11111111
         ldur w16, [x15, #-4]
         mov w17, #0x1111
         cmp w16, w17
@@ -126,6 +127,7 @@ __llvm_kcfi_check_11111111:
         .globl __llvm_kcfi_check_22222222
         .p2align 2
 __llvm_kcfi_check_22222222:
+        .linkkcfithunk __llvm_kcfi_check_22222222, check, 0x22222222, 0x071c5a06, 0, __llvm_kcfi_check_mismatch_22222222
         ldur w16, [x15, #-4]
         mov w17, #0x2222
         cmp w16, w17

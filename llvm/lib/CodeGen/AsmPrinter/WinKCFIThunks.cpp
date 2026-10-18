@@ -327,24 +327,29 @@ void AsmPrinter::emitKCFIThunks(Module &M) {
                     : (Local ? COFF::KCFILocalCheckThunkPrefix
                              : COFF::KCFICheckThunkPrefix)) +
           Hex);
-      auto GetMiss = [&](StringRef Prefix) {
+      Mismatch = OutContext.getOrCreateSymbol(Routine->MismatchPrefix + Hex);
+      auto GetMiss = [&](StringRef Prefix, unsigned Kind) {
         MCSymbol *Sym = OutContext.getOrCreateSymbol(Prefix + Hex);
         if (!Sym->isVariable()) {
           OutStreamer->emitSymbolAttribute(Sym, MCSA_Weak);
           OutStreamer->emitAssignment(
               Sym, MCSymbolRefExpr::create(Thunk, OutContext));
+          OutStreamer->emitCOFFKCFIThunk(
+              Sym, Kind, MD->Type, Marker->getZExtValue(),
+              PrefixNops * getKCFIPrefixByteScale(), Mismatch);
         }
         return Sym;
       };
-      Mismatch = OutContext.getOrCreateSymbol(Routine->MismatchPrefix + Hex);
       Miss = GetMiss(Dispatch ? (Local ? COFF::KCFIMemberLocalMissPrefix
                                        : COFF::KCFIMemberMissPrefix)
                               : (Local ? COFF::KCFIMemberLocalCheckMissPrefix
-                                       : COFF::KCFIMemberCheckMissPrefix));
+                                       : COFF::KCFIMemberCheckMissPrefix),
+                     COFF::LinkKCFIThunkMemberMiss);
       OutsideMiss =
           Local ? Miss
                 : GetMiss(Dispatch ? COFF::KCFIMemberOutsideMissPrefix
-                                   : COFF::KCFIMemberCheckOutsideMissPrefix);
+                                   : COFF::KCFIMemberCheckOutsideMissPrefix,
+                          COFF::LinkKCFIThunkMemberOutsideMiss);
     } else {
       NeedsTrap = true;
     }

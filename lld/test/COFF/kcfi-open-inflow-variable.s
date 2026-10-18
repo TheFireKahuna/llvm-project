@@ -19,15 +19,15 @@
 # RUN: llvm-objdump -s -j .rdata main.exe | FileCheck %s --check-prefix=DATA
 
 # CHECK:      <__llvm_kcfi_dispatch_22222222>:
-# CHECK:        jne 0x140001085 <__llvm_kcfi_mismatch_22222222>
-# CHECK:      <__llvm_kcfi_dispatch_33333333>:
-# CHECK:        jne 0x140001070 <__llvm_kcfi_trap>
-# CHECK:      <__llvm_kcfi_dispatch_44444444>:
-# CHECK:        jne 0x140001070 <__llvm_kcfi_trap>
+# CHECK:        jne 0x14000104f <__llvm_kcfi_mismatch_22222222>
 # CHECK:      <__llvm_kcfi_mismatch_22222222>:
-# CHECK-NEXT:   4c 8d 15 7c 0f 00 00 leaq 0xf7c(%rip), %r10 # 0x140002008
-# CHECK-NEXT:   e9 ef ff ff ff       jmp 0x140001080 <__llvm_kcfi_open_dynamic>
+# CHECK-NEXT:   4c 8d 15 b2 0f 00 00 leaq 0xfb2(%rip), %r10 # 0x140002008
+# CHECK-NEXT:   e9 35 00 00 00       jmp 0x140001090 <__llvm_kcfi_open_dynamic>
 # CHECK-NEXT:   cc                   int3
+# CHECK:      <__llvm_kcfi_dispatch_33333333>:
+# CHECK:        jne 0x140001080 <__llvm_kcfi_trap>
+# CHECK:      <__llvm_kcfi_dispatch_44444444>:
+# CHECK:        jne 0x140001080 <__llvm_kcfi_trap>
 
 # DATA: 140002000 22222222 00000000 45444444 00000000
 
@@ -41,10 +41,10 @@
 # IMP:      <main>:
 # IMP-NEXT:   movq 0x1051(%rip), %rax # 0x140002068 <.refptr.vimp>
 # IMP:      <__llvm_kcfi_dispatch_11111111>:
-# IMP:        jne 0x140001035 <__llvm_kcfi_mismatch_11111111>
+# IMP:        jne 0x14000102f <__llvm_kcfi_mismatch_11111111>
 # IMP:      <__llvm_kcfi_mismatch_11111111>:
-# IMP-NEXT:   4c 8d 15 cc 0f 00 00 leaq 0xfcc(%rip), %r10 # 0x140002008
-# IMP-NEXT:   e9 ef ff ff ff       jmp 0x140001030 <__llvm_kcfi_open_dynamic>
+# IMP-NEXT:   4c 8d 15 d2 0f 00 00 leaq 0xfd2(%rip), %r10 # 0x140002008
+# IMP-NEXT:   e9 05 00 00 00       jmp 0x140001040 <__llvm_kcfi_open_dynamic>
 # IMP-NEXT:   cc                   int3
 
 #--- lib.def
@@ -136,6 +136,7 @@ __llvm_kcfi_mismatch_\t = __llvm_kcfi_trap
         .globl __llvm_kcfi_dispatch_\t
         .p2align 4
 __llvm_kcfi_dispatch_\t:
+        .linkkcfithunk __llvm_kcfi_dispatch_\t, dispatch, 0x\t, 0x071c5a06, 0, __llvm_kcfi_mismatch_\t
         cmpl $0x\t, -4(%rax)
         jne __llvm_kcfi_mismatch_\t
         jmpq *%rax

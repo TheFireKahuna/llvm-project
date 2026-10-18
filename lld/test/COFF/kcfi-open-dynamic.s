@@ -21,28 +21,28 @@
 # RUN: llvm-objdump -s -j .rdata main.exe | FileCheck %s --check-prefix=DATA
 
 # CHECK:      <__llvm_kcfi_dispatch_44444444>:
-# CHECK:        jne 0x1400010b9 <__llvm_kcfi_mismatch_44444444>
+# CHECK:        jne 0x14000105f <__llvm_kcfi_mismatch_44444444>
+# CHECK:      <__llvm_kcfi_mismatch_44444444>:
+# CHECK-NEXT:   4c 8d 15 a2 0f 00 00 leaq 0xfa2(%rip), %r10 # 0x140002008
+# CHECK-NEXT:   e9 65 00 00 00       jmp 0x1400010d0 <__llvm_kcfi_open_dynamic>
+# CHECK-NEXT:   cc                   int3
 # CHECK:      <__llvm_kcfi_check_44444444>:
-# CHECK:        jne 0x1400010c6 <__llvm_kcfi_check_mismatch_44444444>
+# CHECK:        jne 0x14000107e <__llvm_kcfi_check_mismatch_44444444>
+# CHECK:      <__llvm_kcfi_check_mismatch_44444444>:
+# CHECK-NEXT:   4c 8d 15 83 0f 00 00 leaq 0xf83(%rip), %r10 # 0x140002008
+# CHECK-NEXT:   e9 56 00 00 00 jmp 0x1400010e0 <__llvm_kcfi_check_open_dynamic>
+# CHECK-NEXT:   cc                   int3
 # CHECK:      <__llvm_kcfi_dispatch_55555555>:
-# CHECK:        jne 0x1400010d3 <__llvm_kcfi_mismatch_55555555>
+# CHECK:        jne 0x14000109f <__llvm_kcfi_mismatch_55555555>
+# CHECK:      <__llvm_kcfi_mismatch_55555555>:
+# CHECK-NEXT:   4c 8d 15 72 0f 00 00 leaq 0xf72(%rip), %r10 # 0x140002018
+# CHECK-NEXT:   e9 25 00 00 00       jmp 0x1400010d0 <__llvm_kcfi_open_dynamic>
+# CHECK-NEXT:   cc                   int3
 # CHECK:      <__llvm_kcfi_dispatch_66666666>:
-# CHECK:        jne 0x140001090 <__llvm_kcfi_trap>
+# CHECK:        jne 0x1400010c0 <__llvm_kcfi_trap>
 # CHECK:      <__llvm_kcfi_open_dynamic>:
 # CHECK:      <__llvm_kcfi_check_open_dynamic>:
 # CHECK:      <getter2>:
-# CHECK:      <__llvm_kcfi_mismatch_44444444>:
-# CHECK-NEXT:   4c 8d 15 48 0f 00 00 leaq 0xf48(%rip), %r10 # 0x140002008
-# CHECK-NEXT:   e9 db ff ff ff       jmp 0x1400010a0 <__llvm_kcfi_open_dynamic>
-# CHECK-NEXT:   cc                   int3
-# CHECK:      <__llvm_kcfi_check_mismatch_44444444>:
-# CHECK-NEXT:   4c 8d 15 3b 0f 00 00 leaq 0xf3b(%rip), %r10 # 0x140002008
-# CHECK-NEXT:   e9 de ff ff ff jmp 0x1400010b0 <__llvm_kcfi_check_open_dynamic>
-# CHECK-NEXT:   cc                   int3
-# CHECK:      <__llvm_kcfi_mismatch_55555555>:
-# CHECK-NEXT:   4c 8d 15 3e 0f 00 00 leaq 0xf3e(%rip), %r10 # 0x140002018
-# CHECK-NEXT:   e9 c1 ff ff ff       jmp 0x1400010a0 <__llvm_kcfi_open_dynamic>
-# CHECK-NEXT:   cc                   int3
 
 ## Once the compiled routine is replaced, nothing keeps the static scanners.
 # GC-NOT: <__llvm_kcfi_open>:
@@ -123,6 +123,7 @@ __llvm_kcfi_list_55555555:
         .globl __llvm_kcfi_dispatch_44444444
         .p2align 4
 __llvm_kcfi_dispatch_44444444:
+        .linkkcfithunk __llvm_kcfi_dispatch_44444444, dispatch, 0x44444444, 0x071c5a06, 0, __llvm_kcfi_mismatch_44444444
         cmpl $0x44444444, -4(%rax)
         jne __llvm_kcfi_mismatch_44444444
         jmpq *%rax
@@ -131,6 +132,7 @@ __llvm_kcfi_dispatch_44444444:
         .globl __llvm_kcfi_check_44444444
         .p2align 4
 __llvm_kcfi_check_44444444:
+        .linkkcfithunk __llvm_kcfi_check_44444444, check, 0x44444444, 0x071c5a06, 0, __llvm_kcfi_check_mismatch_44444444
         cmpl $0x44444444, -4(%rcx)
         jne __llvm_kcfi_check_mismatch_44444444
         retq
@@ -139,6 +141,7 @@ __llvm_kcfi_check_44444444:
         .globl __llvm_kcfi_dispatch_55555555
         .p2align 4
 __llvm_kcfi_dispatch_55555555:
+        .linkkcfithunk __llvm_kcfi_dispatch_55555555, dispatch, 0x55555555, 0x071c5a06, 0, __llvm_kcfi_mismatch_55555555
         cmpl $0x55555555, -4(%rax)
         jne __llvm_kcfi_mismatch_55555555
         jmpq *%rax
@@ -147,6 +150,7 @@ __llvm_kcfi_dispatch_55555555:
         .globl __llvm_kcfi_dispatch_66666666
         .p2align 4
 __llvm_kcfi_dispatch_66666666:
+        .linkkcfithunk __llvm_kcfi_dispatch_66666666, dispatch, 0x66666666, 0x071c5a06, 0, __llvm_kcfi_mismatch_66666666
         cmpl $0x66666666, -4(%rax)
         jne __llvm_kcfi_mismatch_66666666
         jmpq *%rax

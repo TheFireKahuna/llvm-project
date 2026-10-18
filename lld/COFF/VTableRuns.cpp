@@ -440,14 +440,9 @@ void lld::coff::addVTableRunExports(COFFLinkerContext &ctx) {
   if (!ctx.config.dll || !ctx.config.importSlots)
     return;
   std::vector<Export> &exports = ctx.symtab.exports;
-  llvm::erase_if(exports, [&](const Export &e) {
-    if (!exportedName(e).starts_with(VTableRunExportPrefix))
-      return false;
-    if (e.source != ExportSource::ExportAll)
-      Err(ctx) << "cannot export " << exportedName(e)
-               << ": the name is reserved for the vtable runs";
-    return true;
-  });
+  ctx.symtab.reserveExportNames(
+      [](StringRef name) { return name.starts_with(VTableRunExportPrefix); },
+      "the vtable runs");
   StringSet<> names;
   for (const Export &e : exports)
     names.insert(exportedName(e));
@@ -493,10 +488,20 @@ void lld::coff::addVTableRunExports(COFFLinkerContext &ctx) {
     e.names[0] = saver().save(c.start);
     e.names[1] = saver().save(runWordExportName(c.cls, 'e'));
     e.names[2] = saver().save(runWordExportName(c.cls, 'm'));
-    // The start is the address point, which may already be exported by name.
+    // The import library imports each word under the class's range symbol's
+    // name. The start is the address point, which may already be exported by
+    // name.
+    static const StringRef prefixes[] = {VTableRangeStartPrefix,
+                                         VTableRangeEndPrefix,
+                                         VTableRangeMaskPrefix};
     for (int w : {0, 1, 2}) {
-      if (w == 0 && names.contains(e.names[0]))
+      StringRef qualified = saver().save(prefixes[w] + c.cls);
+      if (w == 0 && names.contains(e.names[0])) {
+        for (Export &x : exports)
+          if (exportedName(x) == e.names[0])
+            x.qualifiedName = qualified;
         continue;
+      }
       e.words[w] = make<DefinedSynthetic>(e.names[w], c.chunk, c.apoff);
       Export x;
       x.name = e.names[w];
@@ -504,39 +509,10 @@ void lld::coff::addVTableRunExports(COFFLinkerContext &ctx) {
       x.data = true;
       x.isPrivate = w != 0;
       x.source = ExportSource::Export;
+      x.qualifiedName = qualified;
       exports.push_back(x);
     }
     ctx.vtableRunExports.push_back(std::move(e));
-  }
-}
-
-void lld::coff::addVTableRunImports(
-    COFFLinkerContext &ctx, StringRef dllName,
-    std::vector<llvm::object::COFFShortExport> &exports) {
-  if (ctx.vtableRunExports.empty())
-    return;
-  std::string dll = dllName.lower();
-  StringMap<uint32_t> hints;
-  for (const llvm::object::COFFShortExport &e : exports)
-    hints.try_emplace(!e.ExportAs.empty() ? e.ExportAs
-                      : !e.ExtName.empty() ? e.ExtName
-                                           : e.Name,
-                      e.Ordinal);
-  static const StringRef prefixes[] = {VTableRangeStartPrefix,
-                                       VTableRangeEndPrefix,
-                                       VTableRangeMaskPrefix};
-  for (const COFFLinkerContext::VTableRunExport &r : ctx.vtableRunExports) {
-    for (int w : {0, 1, 2}) {
-      auto it = hints.find(r.names[w]);
-      if (it == hints.end())
-        break;
-      llvm::object::COFFShortExport e;
-      e.Name = (prefixes[w] + r.cls + "$" + dll).str();
-      e.ExportAs = r.names[w].str();
-      e.Ordinal = it->second;
-      e.Data = true;
-      exports.push_back(std::move(e));
-    }
   }
 }
 
@@ -593,12 +569,8 @@ void lld::coff::bindVTableOwnerRuns(COFFLinkerContext &ctx) {
           !importsClassFrom(cls, dll))
         continue;
       COFFLinkerContext::VTableOwnerRun r{sym, {}};
-      for (int w : {0, 1, 2}) {
-        auto *file = make<ImportFile>(ctx, members[w]->getMemberBuffer());
-        ctx.driver.addFile(file);
-        file->live = true;
-        r.words[w] = file->impSym;
-      }
+      for (int w : {0, 1, 2})
+        r.words[w] = ctx.symtab.loadImportMember(members[w]);
       ctx.vtableOwnerRuns.push_back(r);
       bound = true;
       break;

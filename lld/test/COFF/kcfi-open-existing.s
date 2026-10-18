@@ -21,11 +21,11 @@
 
 # CHECK:      <main>:
 # CHECK-NEXT:   movq {{.*}} # 0x140002060 <__imp_known>
-# CHECK:      <__llvm_kcfi_mismatch_33333333>:
-# CHECK-NEXT:   leaq 0xffc(%rip), %r10 # 0x140002010
-# CHECK-NEXT:   jmp {{.*}} <__llvm_kcfi_open>
 # CHECK:      <__llvm_kcfi_dispatch_33333333>:
-# CHECK:        jne 0x14000100d <__llvm_kcfi_mismatch_33333333>
+# CHECK:        jne 0x14000101f <__llvm_kcfi_mismatch_33333333>
+# CHECK:      <__llvm_kcfi_mismatch_33333333>:
+# CHECK-NEXT:   leaq 0xfea(%rip), %r10 # 0x140002010
+# CHECK-NEXT:   jmp {{.*}} <__llvm_kcfi_open>
 # CHECK:      <plain>:
 # CHECK-NEXT:   140001034:
 
@@ -91,6 +91,7 @@ __llvm_kcfi_list_33333333:
         .globl __llvm_kcfi_dispatch_33333333
         .p2align 4
 __llvm_kcfi_dispatch_33333333:
+        .linkkcfithunk __llvm_kcfi_dispatch_33333333, dispatch, 0x33333333, 0x071c5a06, 0, __llvm_kcfi_mismatch_33333333
         cmpl $0x33333333, -4(%rax)
         jne __llvm_kcfi_mismatch_33333333
         jmpq *%rax

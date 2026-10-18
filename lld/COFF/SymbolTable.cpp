@@ -2492,6 +2492,29 @@ void SymbolTable::addLibcall(StringRef name) {
   }
 }
 
+DefinedImportData *SymbolTable::loadImportMember(LazyArchive *lazy) {
+  auto *file = make<ImportFile>(ctx, lazy->getMemberBuffer());
+  ctx.driver.addFile(file);
+  file->live = true;
+  return file->impSym;
+}
+
+void SymbolTable::reserveExportNames(function_ref<bool(StringRef)> isReserved,
+                                     StringRef purpose) {
+  llvm::erase_if(exports, [&](const Export &e) {
+    StringRef name = !e.exportAs.empty()  ? e.exportAs
+                     : !e.extName.empty() ? e.extName
+                                          : e.name;
+    if (!isReserved(name) && !isReserved(e.name))
+      return false;
+    if (e.source != ExportSource::ExportAll)
+      Err(ctx) << "cannot export " << e.name
+               << (name == e.name ? "" : " as " + name.str())
+               << ": the name is reserved for " << purpose;
+    return true;
+  });
+}
+
 Symbol *SymbolTable::find(StringRef name) {
   CachedHashStringRef key(name);
   if (Symbol *s = symMap.lookup(key))

@@ -238,18 +238,7 @@ void lld::coff::addContractWitnessExports(COFFLinkerContext &ctx) {
   if (!ctx.config.importSlots)
     return;
   std::vector<Export> &exports = ctx.symtab.exports;
-  llvm::erase_if(exports, [&](const Export &e) {
-    StringRef name = !e.exportAs.empty()  ? StringRef(e.exportAs)
-                     : !e.extName.empty() ? StringRef(e.extName)
-                                          : StringRef(e.name);
-    if (!isContractWitnessName(name) && !isContractWitnessName(e.name))
-      return false;
-    if (e.source != ExportSource::ExportAll)
-      Err(ctx) << "cannot export " << e.name
-               << (name == e.name ? "" : " as " + name.str())
-               << ": the name is reserved for ABI contract witnesses";
-    return true;
-  });
+  ctx.symtab.reserveExportNames(isContractWitnessName, "ABI contract witnesses");
   if (exports.empty() || ctx.contracts.provides.empty())
     return;
 
@@ -293,6 +282,8 @@ void lld::coff::addContractWitnessExports(COFFLinkerContext &ctx) {
     qualified.extName =
         saver().save(getQualifiedTypeInfoName(identity, it->second));
     qualified.isPrivate = true;
+    qualified.qualifiedName = qualified.extName;
+    qualified.qualifiedCode = true;
     e.isPrivate = true;
     Export alias;
     alias.name = name;
@@ -316,35 +307,15 @@ void lld::coff::addContractWitnessExports(COFFLinkerContext &ctx) {
     e.data = true;
     e.isPrivate = true;
     e.source = ExportSource::Export;
+    // Imported as code, so that a delay-load descriptor can hold it.
+    e.qualifiedName = name;
+    e.qualifiedCode = true;
     exports.push_back(e);
   }
 }
 
 bool lld::coff::isContractWitness(COFFLinkerContext &ctx, const Defined *sym) {
   return sym && sym == ctx.contracts.witness;
-}
-
-// Holds in a DLL's import library the import of each witness, named
-// <witness>$<dll> so two DLLs' witnesses never collide in an importer, and
-// exported as the witness. A witness is imported as code so a delay-load
-// descriptor can hold it; a qualified type_info name is a witness too.
-void lld::coff::addContractWitnessImports(
-    COFFLinkerContext &ctx, StringRef dllName,
-    std::vector<COFFShortExport> &exports) {
-  if (!ctx.config.importSlots)
-    return;
-  std::string dll = dllName.lower();
-  for (size_t i = 0, e = exports.size(); i != e; ++i) {
-    std::string name =
-        exports[i].ExtName.empty() ? exports[i].Name : exports[i].ExtName;
-    if (!exports[i].Private || !isContractWitnessName(name))
-      continue;
-    COFFShortExport w;
-    w.Name = name + "$" + dll;
-    w.ExportAs = name;
-    w.Ordinal = exports[i].Ordinal;
-    exports.push_back(std::move(w));
-  }
 }
 
 // The import that a reference to sym binds to, if any.
@@ -398,9 +369,7 @@ void lld::coff::bindContractWitnesses(COFFLinkerContext &ctx) {
           if (auto *lazy = dyn_cast_or_null<LazyArchive>(s)) {
             Log(ctx) << "Importing " << witness << " from " << imp->getDLLName()
                      << " for " << file;
-            auto *impFile = make<ImportFile>(ctx, lazy->getMemberBuffer());
-            ctx.driver.addFile(impFile);
-            impFile->live = true;
+            ctx.symtab.loadImportMember(lazy);
             vouched = true;
           } else if (auto *w = dyn_cast_or_null<DefinedImportData>(s)) {
             w->file->live = true;

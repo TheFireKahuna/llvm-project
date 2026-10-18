@@ -17,40 +17,39 @@
 
 # CHECK:      <__llvm_kcfi_check_11111111>:
 # CHECK:        b.ne 0x{{[0-9a-f]+}} <__llvm_kcfi_check_mismatch_11111111>
-# CHECK:      <__llvm_kcfi_check_22222222>:
-# CHECK:        b.ne 0x{{[0-9a-f]+}} <__llvm_kcfi_check_mismatch_22222222>
-# CHECK:      <__llvm_kcfi_check_33333333>:
-# CHECK:        b.ne 0x{{[0-9a-f]+}} <__llvm_kcfi_check_mismatch_33333333>
-# CHECK:      <__llvm_kcfi_check_44444444>:
-# CHECK:        b.ne 0x{{[0-9a-f]+}} <__llvm_kcfi_check_mismatch_44444444>
-# CHECK:      <__llvm_kcfi_check_55555555>:
-# CHECK:        b.ne 0x{{[0-9a-f]+}} <__llvm_kcfi_trap>
-# CHECK:      <__llvm_kcfi_check_66666666>:
-# CHECK:        b.ne 0x{{[0-9a-f]+}} <__llvm_kcfi_trap>
-# CHECK:      [[#%x,DYN:]] <__llvm_kcfi_check_open_dynamic>:
 # CHECK:      <__llvm_kcfi_check_mismatch_11111111>:
 # CHECK-NEXT:   adrp x16
 # CHECK-NEXT:   add x16, x16
-# CHECK-NEXT:   b 0x{{[0-9a-f]+}} <__llvm_kcfi_check_open_dynamic>
+# CHECK-NEXT:   b 0x[[#%x,DYN:]] <__llvm_kcfi_check_open_dynamic>
 # CHECK-NEXT:   brk #0xf003
+# CHECK:      <__llvm_kcfi_check_22222222>:
+# CHECK:        b.ne 0x{{[0-9a-f]+}} <__llvm_kcfi_check_mismatch_22222222>
 # CHECK:      <__llvm_kcfi_check_mismatch_22222222>:
 # CHECK-NEXT:   adrp x16
 # CHECK-NEXT:   add x16, x16
 # CHECK-NEXT:   adrp x17, 0x[[#%x,PAGE:]]
 # CHECK-NEXT:   add x17, x17, #[[#%#x,DYN - PAGE]]
 # CHECK-NEXT:   br x17
+# CHECK:      <__llvm_kcfi_check_33333333>:
+# CHECK:        b.ne 0x{{[0-9a-f]+}} <__llvm_kcfi_check_mismatch_33333333>
 # CHECK:      <__llvm_kcfi_check_mismatch_33333333>:
 # CHECK-NEXT:   adrp x16
 # CHECK-NEXT:   add x16, x16
 # CHECK-NEXT:   adrp x17, 0x[[#%x,PAGE:]]
 # CHECK-NEXT:   add x17, x17, #[[#%#x,DYN - PAGE]]
 # CHECK-NEXT:   br x17
+# CHECK:      <__llvm_kcfi_check_44444444>:
+# CHECK:        b.ne 0x{{[0-9a-f]+}} <__llvm_kcfi_check_mismatch_44444444>
 # CHECK:      <__llvm_kcfi_check_mismatch_44444444>:
 # CHECK-NEXT:   adrp x16
 # CHECK-NEXT:   add x16, x16
 # CHECK-NEXT:   adrp x17, 0x[[#%x,PAGE:]]
 # CHECK-NEXT:   add x17, x17, #[[#%#x,DYN - PAGE]]
 # CHECK-NEXT:   br x17
+# CHECK:      <__llvm_kcfi_check_55555555>:
+# CHECK:        b.ne 0x{{[0-9a-f]+}} <__llvm_kcfi_trap>
+# CHECK:      <__llvm_kcfi_check_66666666>:
+# CHECK:        b.ne 0x{{[0-9a-f]+}} <__llvm_kcfi_trap>
 # CHECK-NOT:  <__llvm_kcfi_check_mismatch_
 
 ## The compiler's head and trailer for 0x11111111, then the linker's for each
@@ -107,6 +106,7 @@ __llvm_kcfi_check_mismatch_\d\d\d\d\d\d\d\d = __llvm_kcfi_trap
         .globl __llvm_kcfi_check_\d\d\d\d\d\d\d\d
         .p2align 2
 __llvm_kcfi_check_\d\d\d\d\d\d\d\d:
+        .linkkcfithunk __llvm_kcfi_check_\d\d\d\d\d\d\d\d, check, 0x\d\d\d\d\d\d\d\d, 0x071c5a06, 0, __llvm_kcfi_check_mismatch_\d\d\d\d\d\d\d\d
         ldur w16, [x15, #-4]
         mov w17, #0x\d\d\d\d
         cmp w16, w17

@@ -33,8 +33,7 @@
 # CHECK:      <__llvm_kcfi_mismatch_22222222>:
 # CHECK-NEXT:   leaq {{.*}}(%rip), %r10
 # CHECK-NEXT:   jmp {{.*}} <__llvm_kcfi_open>
-# CHECK-EMPTY:
-# CHECK-NEXT: <__llvm_kcfi_mismatch_33333333>:
+# CHECK:      <__llvm_kcfi_mismatch_33333333>:
 # CHECK-NEXT:   leaq {{.*}}(%rip), %r10
 # CHECK-NEXT:   jmp {{.*}} <__llvm_kcfi_open>
 # CHECK:      <__llvm_kcfi_open>:
@@ -66,8 +65,7 @@
 # DYNAMIC-NEXT:   leaq {{.*}}(%rip), %r10
 # DYNAMIC-NEXT:   jmp {{.*}} <__llvm_kcfi_open_dynamic>
 # DYNAMIC-NEXT:   int3
-# DYNAMIC-EMPTY:
-# DYNAMIC-NEXT: <__llvm_kcfi_mismatch_33333333>:
+# DYNAMIC:      <__llvm_kcfi_mismatch_33333333>:
 # DYNAMIC-NEXT:   leaq {{.*}}(%rip), %r10
 # DYNAMIC-NEXT:   jmp {{.*}} <__llvm_kcfi_open_dynamic>
 # DYNAMIC-NEXT:   int3
@@ -183,6 +181,7 @@ __llvm_kcfi_mismatch_\d\d\d\d\d\d\d\d = __llvm_kcfi_trap
         .globl __llvm_kcfi_dispatch_\d\d\d\d\d\d\d\d
         .p2align 4
 __llvm_kcfi_dispatch_\d\d\d\d\d\d\d\d:
+        .linkkcfithunk __llvm_kcfi_dispatch_\d\d\d\d\d\d\d\d, dispatch, 0x\d\d\d\d\d\d\d\d, 0x071c5a06, 0, __llvm_kcfi_mismatch_\d\d\d\d\d\d\d\d
         cmpl $0x\d\d\d\d\d\d\d\d, -4(%rax)
         jne __llvm_kcfi_mismatch_\d\d\d\d\d\d\d\d
         jmpq *%rax

@@ -744,7 +744,8 @@ bool COFFAsmParser::parseDirectiveLinkFact(StringRef Directive, SMLoc) {
 
 /// parseDirectiveLinkKCFIThunk
 ///  ::= .linkkcfithunk thunk, (dispatch|check|vfn_check|local_dispatch|
-///                             local_check), type, marker, offset, mismatch
+///                             local_check|member_miss|member_outside_miss),
+///                      type, marker, offset, mismatch
 bool COFFAsmParser::parseDirectiveLinkKCFIThunk(StringRef, SMLoc) {
   MCSymbol *Thunk, *Mismatch;
   StringRef KindName;
@@ -762,10 +763,14 @@ bool COFFAsmParser::parseDirectiveLinkKCFIThunk(StringRef, SMLoc) {
                       .Case("vfn_check", COFF::LinkKCFIThunkVfnCheck)
                       .Case("local_dispatch", COFF::LinkKCFIThunkLocalDispatch)
                       .Case("local_check", COFF::LinkKCFIThunkLocalCheck)
+                      .Case("member_miss", COFF::LinkKCFIThunkMemberMiss)
+                      .Case("member_outside_miss",
+                            COFF::LinkKCFIThunkMemberOutsideMiss)
                       .Default(~0u);
   if (Kind == ~0u)
     return Error(KindLoc, "expected 'dispatch', 'check', 'vfn_check', "
-                          "'local_dispatch' or 'local_check'");
+                          "'local_dispatch', 'local_check', 'member_miss' or "
+                          "'member_outside_miss'");
   if (getParser().parseComma())
     return true;
   SMLoc TypeLoc = getLexer().getLoc();

@@ -344,6 +344,7 @@ __llvm_kcfi_dispatch_22222222:
 __llvm_kcfi_mismatch_44444444 = __llvm_kcfi_open
         .weak __llvm_kcfi_member_outside_miss_44444444
 __llvm_kcfi_member_outside_miss_44444444 = __llvm_kcfi_dispatch_44444444
+        .linkkcfithunk __llvm_kcfi_member_outside_miss_44444444, member_outside_miss, 0x44444444, 0x071c5a06, 0, __llvm_kcfi_mismatch_44444444
         .section .text,"xr",discard,__llvm_kcfi_dispatch_44444444
         .globl __llvm_kcfi_dispatch_44444444
         .p2align 4

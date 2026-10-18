@@ -38,6 +38,7 @@ __llvm_kcfi_mismatch_11111111 = __llvm_kcfi_trap
         .globl __llvm_kcfi_dispatch_11111111
         .p2align 4
 __llvm_kcfi_dispatch_11111111:
+        .linkkcfithunk __llvm_kcfi_dispatch_11111111, dispatch, 0x11111111, 0x071c5a06, 0, __llvm_kcfi_mismatch_11111111
         cmpl $0x11111111, -4(%rax)
         jne __llvm_kcfi_mismatch_11111111
         jmpq *%rax

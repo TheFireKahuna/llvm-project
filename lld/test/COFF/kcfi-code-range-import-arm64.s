@@ -146,6 +146,7 @@ __llvm_code_empty:
 __llvm_kcfi_check_mismatch_11111111 = __llvm_kcfi_check_open
         .weak __llvm_kcfi_member_check_outside_miss_11111111
 __llvm_kcfi_member_check_outside_miss_11111111 = __llvm_kcfi_check_11111111
+        .linkkcfithunk __llvm_kcfi_member_check_outside_miss_11111111, member_outside_miss, 0x11111111, 0x071c5a06, 0, __llvm_kcfi_check_mismatch_11111111
 
         .section .text,"xr",discard,__llvm_kcfi_check_11111111
         .globl __llvm_kcfi_check_11111111

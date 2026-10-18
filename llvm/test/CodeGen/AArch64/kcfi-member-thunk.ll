@@ -66,8 +66,10 @@ cont:
 ; CHECK:      __llvm_kcfi_check_12345678:
 ; CHECK:      .weak __llvm_kcfi_member_check_miss_12345678
 ; CHECK-NEXT: __llvm_kcfi_member_check_miss_12345678 = __llvm_kcfi_check_12345678
+; CHECK-NEXT: .linkkcfithunk __llvm_kcfi_member_check_miss_12345678, member_miss, 0x12345678, {{.*}}, {{[0-9]+}}, __llvm_kcfi_check_mismatch_12345678
 ; CHECK-NEXT: .weak __llvm_kcfi_member_check_outside_miss_12345678
 ; CHECK-NEXT: __llvm_kcfi_member_check_outside_miss_12345678 = __llvm_kcfi_check_12345678
+; CHECK-NEXT: .linkkcfithunk __llvm_kcfi_member_check_outside_miss_12345678, member_outside_miss, 0x12345678, {{.*}}, {{[0-9]+}}, __llvm_kcfi_check_mismatch_12345678
 ; CHECK:      __llvm_kcfi_member_check_12345678_0000abcd:
 ; CHECK-NEXT:   adrp x16, __llvm_code_start
 ; CHECK-NEXT:   add x16, x16, :lo12:__llvm_code_start
@@ -111,6 +113,7 @@ cont:
 ;; and misses into the local thunk, within the range and outside an empty one.
 ; CHECK:      .weak __llvm_kcfi_member_local_check_miss_12345678
 ; CHECK-NEXT: __llvm_kcfi_member_local_check_miss_12345678 = __llvm_kcfi_local_check_12345678
+; CHECK-NEXT: .linkkcfithunk __llvm_kcfi_member_local_check_miss_12345678, member_miss, 0x12345678, {{.*}}, {{[0-9]+}}, __llvm_kcfi_check_mismatch_12345678
 ; CHECK:      __llvm_kcfi_member_local_check_12345678_0000abcd:
 ; CHECK-NEXT:   adrp x16, __llvm_code_start
 ; CHECK-NEXT:   add x16, x16, :lo12:__llvm_code_start

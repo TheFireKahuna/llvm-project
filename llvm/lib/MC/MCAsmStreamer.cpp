@@ -1098,8 +1098,9 @@ void MCAsmStreamer::emitCOFFKCFIThunk(const MCSymbol *Thunk, unsigned Kind,
                                       uint32_t Type, uint32_t Marker,
                                       uint32_t Offset,
                                       const MCSymbol *Mismatch) {
-  static const char *const Kinds[] = {"dispatch", "check", "vfn_check",
-                                      "local_dispatch", "local_check"};
+  static const char *const Kinds[] = {
+      "dispatch",    "check",       "vfn_check",          "local_dispatch",
+      "local_check", "member_miss", "member_outside_miss"};
   OS << "\t.linkkcfithunk\t";
   Thunk->print(OS, MAI);
   OS << ", " << Kinds[Kind] << ", " << format_hex(Type, 10) << ", "

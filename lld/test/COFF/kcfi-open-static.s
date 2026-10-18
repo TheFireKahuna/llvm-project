@@ -26,21 +26,21 @@
 # RUN:   FileCheck %s --check-prefix=RELOC
 
 # CHECK:      <__llvm_kcfi_dispatch_11111111>:
-# CHECK:        jne 0x140001075 <__llvm_kcfi_mismatch_11111111>
+# CHECK:        jne 0x14000104f <__llvm_kcfi_mismatch_11111111>
+# CHECK:      <__llvm_kcfi_mismatch_11111111>:
+# CHECK-NEXT:   4c 8d 15 c2 0f 00 00 leaq 0xfc2(%rip), %r10 # 0x140002018
+# CHECK-NEXT:   e9 25 00 00 00       jmp 0x140001080 <__llvm_kcfi_open>
 # CHECK:      <__llvm_kcfi_dispatch_22222222>:
-# CHECK:        jne 0x140001060 <__llvm_kcfi_trap>
+# CHECK:        jne 0x140001070 <__llvm_kcfi_trap>
 # CHECK:      <__llvm_kcfi_open>:
 # CHECK:      <plain>:
-# CHECK:      <__llvm_kcfi_mismatch_11111111>:
-# CHECK-NEXT:   4c 8d 15 9c 0f 00 00 leaq 0xf9c(%rip), %r10 # 0x140002018
-# CHECK-NEXT:   e9 ef ff ff ff       jmp 0x140001070 <__llvm_kcfi_open>
 # CHECK:      <imported>:
 # CHECK-NEXT:   140001090:
 
 ## The cells come first: plain's, then imported's thunk's. Then the head, the
 ## entries, __imp_imported, __imp_imported2, plain's cell and the thunk's cell,
 ## and the trailer, before the import tables.
-# DATA:      140002000 74100040 01000000 90100040 01000000
+# DATA:      140002000 84100040 01000000 90100040 01000000
 # DATA-NEXT: 140002010 11111111 00000000 80200040 01000000
 # DATA-NEXT: 140002020 88200040 01000000 00200040 01000000
 # DATA-NEXT: 140002030 08200040 01000000 23222222 00000000
@@ -124,6 +124,7 @@ __llvm_kcfi_mismatch_22222222 = __llvm_kcfi_trap
         .globl __llvm_kcfi_dispatch_11111111
         .p2align 4
 __llvm_kcfi_dispatch_11111111:
+        .linkkcfithunk __llvm_kcfi_dispatch_11111111, dispatch, 0x11111111, 0x071c5a06, 0, __llvm_kcfi_mismatch_11111111
         cmpl $0x11111111, -4(%rax)
         jne __llvm_kcfi_mismatch_11111111
         jmpq *%rax
@@ -132,6 +133,7 @@ __llvm_kcfi_dispatch_11111111:
         .globl __llvm_kcfi_dispatch_22222222
         .p2align 4
 __llvm_kcfi_dispatch_22222222:
+        .linkkcfithunk __llvm_kcfi_dispatch_22222222, dispatch, 0x22222222, 0x071c5a06, 0, __llvm_kcfi_mismatch_22222222
         cmpl $0x22222222, -4(%rax)
         jne __llvm_kcfi_mismatch_22222222
         jmpq *%rax

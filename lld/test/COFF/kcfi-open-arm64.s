@@ -16,25 +16,25 @@
 # RUN: llvm-objdump -s -j .rdata main.exe | FileCheck %s --check-prefix=DATA
 
 # CHECK:      <__llvm_kcfi_check_11111111>:
-# CHECK:        b.ne 0x140001048 <__llvm_kcfi_check_mismatch_11111111>
-# CHECK:      <__llvm_kcfi_check_22222222>:
-# CHECK:        b.ne 0x14000105c <__llvm_kcfi_check_mismatch_22222222>
+# CHECK:        b.ne 0x140001024 <__llvm_kcfi_check_mismatch_11111111>
 # CHECK:      <__llvm_kcfi_check_mismatch_11111111>:
 # CHECK-NEXT:   adrp x16, 0x140002000
 # CHECK-NEXT:   add x16, x16, #0x10
 # CHECK-NEXT:   adrp x17, 0x140001000
-# CHECK-NEXT:   add x17, x17, #0x38
+# CHECK-NEXT:   add x17, x17, #0x60
 # CHECK-NEXT:   br x17
+# CHECK:      <__llvm_kcfi_check_22222222>:
+# CHECK:        b.ne 0x14000104c <__llvm_kcfi_check_mismatch_22222222>
 # CHECK:      <__llvm_kcfi_check_mismatch_22222222>:
 # CHECK-NEXT:   adrp x16, 0x140002000
 # CHECK-NEXT:   add x16, x16, #0x28
 # CHECK-NEXT:   adrp x17, 0x140001000
-# CHECK-NEXT:   add x17, x17, #0x3c
+# CHECK-NEXT:   add x17, x17, #0x64
 # CHECK-NEXT:   br x17
 
 ## plain's cell; the head, plain's entry and the trailer of 0x11111111; and
 ## the head and the trailer of 0x22222222.
-# DATA:      140002000 40100040 01000000 11111111 00000000
+# DATA:      140002000 68100040 01000000 11111111 00000000
 # DATA-NEXT: 140002010 00200040 01000000 23222222 00000000
 # DATA-NEXT: 140002020 22222222 00000000 45444444 00000000
 
@@ -78,6 +78,7 @@ __llvm_kcfi_check_mismatch_22222222 = __llvm_kcfi_trap
         .globl __llvm_kcfi_check_11111111
         .p2align 2
 __llvm_kcfi_check_11111111:
+        .linkkcfithunk __llvm_kcfi_check_11111111, check, 0x11111111, 0x071c5a06, 0, __llvm_kcfi_check_mismatch_11111111
         ldur w16, [x15, #-4]
         mov w17, #0x1111
         cmp w16, w17
@@ -88,6 +89,7 @@ __llvm_kcfi_check_11111111:
         .globl __llvm_kcfi_check_22222222
         .p2align 2
 __llvm_kcfi_check_22222222:
+        .linkkcfithunk __llvm_kcfi_check_22222222, check, 0x22222222, 0x071c5a06, 0, __llvm_kcfi_check_mismatch_22222222
         ldur w16, [x15, #-4]
         mov w17, #0x2222
         cmp w16, w17

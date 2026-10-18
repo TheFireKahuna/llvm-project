@@ -16,26 +16,27 @@
 # RUN: llvm-objdump -d main.exe | FileCheck %s
 
 # CHECK:      <__llvm_kcfi_dispatch_11111111>:
-# CHECK:        jne 0x140001081 <__llvm_kcfi_mismatch_11111111>
+# CHECK:        jne 0x14000103f <__llvm_kcfi_mismatch_11111111>
+# CHECK:      <__llvm_kcfi_mismatch_11111111>:
+# CHECK-NEXT:   leaq {{.*}}(%rip), %r10 # 0x140002120
+# CHECK-NEXT:   jmp 0x140001091 <__llvm_kcfi_open>
+# CHECK:      <__llvm_kcfi_dispatch_33333333>:
+# CHECK:        jne 0x14000105f <__llvm_kcfi_mismatch_33333333>
 # CHECK:      <__llvm_kcfi_mismatch_33333333>:
 # CHECK-NEXT:   leaq {{.*}}(%rip), %r10 # 0x140002138 <__llvm_kcfi_list_33333333+0x8>
-# CHECK-NEXT:   jmp 0x14000108d <__llvm_kcfi_open>
+# CHECK-NEXT:   jmp 0x140001091 <__llvm_kcfi_open>
 # CHECK:      <static_scanner>:
 # CHECK-NEXT:   int3
 # CHECK:      <__llvm_kcfi_open_dynamic>:
 # CHECK-NEXT:   ud2
-# CHECK:      <__llvm_kcfi_mismatch_11111111>:
-# CHECK-NEXT:   leaq {{.*}}(%rip), %r10 # 0x140002120
-# CHECK-NEXT:   jmp 0x14000108d <__llvm_kcfi_open>
-# CHECK-EMPTY:
-# CHECK-NEXT: <__llvm_kcfi_open>:
-# CHECK-NEXT:   leaq -0x1094(%rip), %r11 # 0x140000000
+# CHECK:      <__llvm_kcfi_open>:
+# CHECK-NEXT:   leaq -0x1098(%rip), %r11 # 0x140000000
 # CHECK-NEXT:   cmpq %r11, %rax
-# CHECK-NEXT:   jb 0x140001060 <static_scanner>
-# CHECK-NEXT:   leaq 0x3f5c(%rip), %r11 # 0x140005000
+# CHECK-NEXT:   jb 0x140001070 <static_scanner>
+# CHECK-NEXT:   leaq 0x3f58(%rip), %r11 # 0x140005000
 # CHECK-NEXT:   cmpq %r11, %rax
-# CHECK-NEXT:   jae 0x140001060 <static_scanner>
-# CHECK-NEXT:   jmp 0x140001070 <__llvm_kcfi_open_dynamic>
+# CHECK-NEXT:   jae 0x140001070 <static_scanner>
+# CHECK-NEXT:   jmp 0x140001080 <__llvm_kcfi_open_dynamic>
 
 ## Where the table lists only functions with a prefix, the routines jump to the
 ## static scanner directly.
@@ -43,12 +44,12 @@
 # RUN:   -debug:symtab -opt:ref -out:prefixed.exe
 # RUN: llvm-objdump -d prefixed.exe | FileCheck %s --check-prefix=DIRECT
 
-# DIRECT:      <__llvm_kcfi_mismatch_33333333>:
-# DIRECT-NEXT:   leaq
-# DIRECT-NEXT:   jmp 0x140001060 <static_scanner>
 # DIRECT:      <__llvm_kcfi_mismatch_11111111>:
 # DIRECT-NEXT:   leaq
-# DIRECT-NEXT:   jmp 0x140001060 <static_scanner>
+# DIRECT-NEXT:   jmp 0x140001070 <static_scanner>
+# DIRECT:      <__llvm_kcfi_mismatch_33333333>:
+# DIRECT-NEXT:   leaq
+# DIRECT-NEXT:   jmp 0x140001070 <static_scanner>
 # DIRECT-NOT:  <__llvm_kcfi_open_dynamic>:
 
 #--- lib.def
@@ -95,6 +96,7 @@ __llvm_kcfi_mismatch_11111111 = __llvm_kcfi_trap
         .globl __llvm_kcfi_dispatch_11111111
         .p2align 4
 __llvm_kcfi_dispatch_11111111:
+        .linkkcfithunk __llvm_kcfi_dispatch_11111111, dispatch, 0x11111111, 0x071c5a06, 0, __llvm_kcfi_mismatch_11111111
         cmpl $0x11111111, -4(%rax)
         jne __llvm_kcfi_mismatch_11111111
         jmpq *%rax
@@ -103,6 +105,7 @@ __llvm_kcfi_dispatch_11111111:
         .globl __llvm_kcfi_dispatch_33333333
         .p2align 4
 __llvm_kcfi_dispatch_33333333:
+        .linkkcfithunk __llvm_kcfi_dispatch_33333333, dispatch, 0x33333333, 0x071c5a06, 0, __llvm_kcfi_mismatch_33333333
         cmpl $0x33333333, -4(%rax)
         jne __llvm_kcfi_mismatch_33333333
         jmpq *%rax

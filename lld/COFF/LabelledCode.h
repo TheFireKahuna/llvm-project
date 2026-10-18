@@ -91,6 +91,14 @@ public:
     fixups.push_back({off, label, Imm19});
     put32(insn);
   }
+  // adrp xN, target
+  void page(uint32_t reg, uint64_t target) {
+    if (buf) {
+      llvm::support::endian::write32le(buf + off, 0x90000000 | reg);
+      applyArm64Addr(buf + off, target, rva + off, 12);
+    }
+    off += 4;
+  }
   // adrp xN, target; add xN, xN, :lo12:target
   void address(uint32_t reg, uint64_t target) {
     if (!buf) {

@@ -13,10 +13,6 @@
 #include "llvm/ADT/StringRef.h"
 #include <vector>
 
-namespace llvm::object {
-struct COFFShortExport;
-} // namespace llvm::object
-
 namespace lld::coff {
 class COFFLinkerContext;
 class OutputSection;
@@ -49,11 +45,6 @@ void defineVTableRuns(COFFLinkerContext &ctx);
 // an importer tests vtable pointers of the DLL's objects against. Start is
 // named by the class's address point, the others by names hashed from class.
 void addVTableRunExports(COFFLinkerContext &ctx);
-
-// Adds to a DLL's import library the imports of each exported run's words,
-// named for the class's range symbols so an importer finds them by class.
-void addVTableRunImports(COFFLinkerContext &ctx, llvm::StringRef dllName,
-                         std::vector<llvm::object::COFFShortExport> &exports);
 
 // Binds the owner run of each class the image's checks read to the first DLL it
 // imports statically whose import library holds it and from which it imports

@@ -18,16 +18,15 @@
 # RUN: llvm-objdump -s -j .rdata main.exe | FileCheck %s --check-prefix=DATA
 
 # CHECK:      <__llvm_kcfi_dispatch_77777777>:
-# CHECK:        jne 0x1400010f8 <__llvm_kcfi_mismatch_77777777>
-# CHECK:      <__llvm_kcfi_dispatch_88888888>:
-# CHECK:        jne 0x1400010c0 <__llvm_kcfi_trap>
-# CHECK:      <__llvm_kcfi_dispatch_99999999>:
-# CHECK:        jne 0x1400010c0 <__llvm_kcfi_trap>
-# CHECK:      <ours2>:
+# CHECK:        jne 0x14000109f <__llvm_kcfi_mismatch_77777777>
 # CHECK:      <__llvm_kcfi_mismatch_77777777>:
-# CHECK-NEXT:   4c 8d 15 09 0f 00 00 leaq 0xf09(%rip), %r10 # 0x140002008
-# CHECK-NEXT:   e9 cc ff ff ff       jmp 0x1400010d0 <__llvm_kcfi_open_dynamic>
+# CHECK-NEXT:   4c 8d 15 62 0f 00 00 leaq 0xf62(%rip), %r10 # 0x140002008
+# CHECK-NEXT:   e9 35 00 00 00       jmp 0x1400010e0 <__llvm_kcfi_open_dynamic>
 # CHECK-NEXT:   cc                   int3
+# CHECK:      <__llvm_kcfi_dispatch_88888888>:
+# CHECK:        jne 0x1400010d0 <__llvm_kcfi_trap>
+# CHECK:      <__llvm_kcfi_dispatch_99999999>:
+# CHECK:        jne 0x1400010d0 <__llvm_kcfi_trap>
 
 # DATA: 140002000 77777777 00000000 efeeeeee 00000000
 
@@ -122,6 +121,7 @@ __llvm_kcfi_mismatch_\t = __llvm_kcfi_trap
         .globl __llvm_kcfi_dispatch_\t
         .p2align 4
 __llvm_kcfi_dispatch_\t:
+        .linkkcfithunk __llvm_kcfi_dispatch_\t, dispatch, 0x\t, 0x071c5a06, 0, __llvm_kcfi_mismatch_\t
         cmpl $0x\t, -4(%rax)
         jne __llvm_kcfi_mismatch_\t
         jmpq *%rax

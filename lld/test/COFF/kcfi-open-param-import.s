@@ -17,25 +17,25 @@
 # RUN: llvm-objdump -s -j .rdata main.exe | FileCheck %s --check-prefix=DATA
 
 # CHECK:      <__llvm_kcfi_dispatch_aaaaaaaa>:
-# CHECK:        jne 0x1400010d8 <__llvm_kcfi_mismatch_aaaaaaaa>
-# CHECK:      <__llvm_kcfi_dispatch_bbbbbbbb>:
-# CHECK:        jne 0x1400010e5 <__llvm_kcfi_mismatch_bbbbbbbb>
-# CHECK:      <__llvm_kcfi_dispatch_cccccccc>:
-# CHECK:        jne 0x1400010f2 <__llvm_kcfi_mismatch_cccccccc>
-# CHECK:      <__llvm_kcfi_dispatch_dddddddd>:
-# CHECK:        jne 0x140001090 <__llvm_kcfi_trap>
+# CHECK:        jne 0x14000105f <__llvm_kcfi_mismatch_aaaaaaaa>
 # CHECK:      <__llvm_kcfi_mismatch_aaaaaaaa>:
-# CHECK-NEXT:   4c 8d 15 29 0f 00 00 leaq 0xf29(%rip), %r10 # 0x140002008
-# CHECK-NEXT:   e9 bc ff ff ff       jmp 0x1400010a0 <__llvm_kcfi_open_dynamic>
+# CHECK-NEXT:   4c 8d 15 a2 0f 00 00 leaq 0xfa2(%rip), %r10 # 0x140002008
+# CHECK-NEXT:   e9 65 00 00 00       jmp 0x1400010d0 <__llvm_kcfi_open_dynamic>
 # CHECK-NEXT:   cc                   int3
+# CHECK:      <__llvm_kcfi_dispatch_bbbbbbbb>:
+# CHECK:        jne 0x14000107f <__llvm_kcfi_mismatch_bbbbbbbb>
 # CHECK:      <__llvm_kcfi_mismatch_bbbbbbbb>:
-# CHECK-NEXT:   4c 8d 15 2c 0f 00 00 leaq 0xf2c(%rip), %r10 # 0x140002018
-# CHECK-NEXT:   e9 af ff ff ff       jmp 0x1400010a0 <__llvm_kcfi_open_dynamic>
+# CHECK-NEXT:   4c 8d 15 92 0f 00 00 leaq 0xf92(%rip), %r10 # 0x140002018
+# CHECK-NEXT:   e9 45 00 00 00       jmp 0x1400010d0 <__llvm_kcfi_open_dynamic>
 # CHECK-NEXT:   cc                   int3
+# CHECK:      <__llvm_kcfi_dispatch_cccccccc>:
+# CHECK:        jne 0x14000109f <__llvm_kcfi_mismatch_cccccccc>
 # CHECK:      <__llvm_kcfi_mismatch_cccccccc>:
-# CHECK-NEXT:   4c 8d 15 2f 0f 00 00 leaq 0xf2f(%rip), %r10 # 0x140002028
-# CHECK-NEXT:   e9 a2 ff ff ff       jmp 0x1400010a0 <__llvm_kcfi_open_dynamic>
+# CHECK-NEXT:   4c 8d 15 82 0f 00 00 leaq 0xf82(%rip), %r10 # 0x140002028
+# CHECK-NEXT:   e9 25 00 00 00       jmp 0x1400010d0 <__llvm_kcfi_open_dynamic>
 # CHECK-NEXT:   cc                   int3
+# CHECK:      <__llvm_kcfi_dispatch_dddddddd>:
+# CHECK:        jne 0x1400010c0 <__llvm_kcfi_trap>
 
 ## The linker's heads and trailers, then the local import pointers.
 # DATA:      140002000 aaaaaaaa 00000000 55555555 01000000
@@ -126,6 +126,7 @@ __llvm_kcfi_mismatch_\t = __llvm_kcfi_trap
         .globl __llvm_kcfi_dispatch_\t
         .p2align 4
 __llvm_kcfi_dispatch_\t:
+        .linkkcfithunk __llvm_kcfi_dispatch_\t, dispatch, 0x\t, 0x071c5a06, 0, __llvm_kcfi_mismatch_\t
         cmpl $0x\t, -4(%rax)
         jne __llvm_kcfi_mismatch_\t
         jmpq *%rax

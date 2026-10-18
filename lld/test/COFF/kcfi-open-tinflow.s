@@ -24,39 +24,39 @@
 
 # CHECK:      <__llvm_kcfi_dispatch_11111111>:
 # CHECK:        jne 0x{{[0-9a-f]+}} <__llvm_kcfi_mismatch_11111111>
-# CHECK:      <__llvm_kcfi_dispatch_22222222>:
-# CHECK:        jne 0x{{[0-9a-f]+}} <__llvm_kcfi_mismatch_22222222>
-# CHECK:      <__llvm_kcfi_dispatch_33333333>:
-# CHECK:        jne 0x{{[0-9a-f]+}} <__llvm_kcfi_mismatch_33333333>
-# CHECK:      <__llvm_kcfi_dispatch_44444444>:
-# CHECK:        jne 0x{{[0-9a-f]+}} <__llvm_kcfi_mismatch_44444444>
-# CHECK:      <__llvm_kcfi_dispatch_55555555>:
-# CHECK:        jne 0x{{[0-9a-f]+}} <__llvm_kcfi_mismatch_55555555>
-# CHECK:      <__llvm_kcfi_dispatch_66666666>:
-# CHECK:        jne 0x{{[0-9a-f]+}} <__llvm_kcfi_mismatch_66666666>
-# CHECK:      <__llvm_kcfi_dispatch_77777777>:
-# CHECK:        jne 0x{{[0-9a-f]+}} <__llvm_kcfi_trap>
-# CHECK:      <__llvm_kcfi_dispatch_88888888>:
-# CHECK:        jne 0x{{[0-9a-f]+}} <__llvm_kcfi_trap>
 # CHECK:      <__llvm_kcfi_mismatch_11111111>:
 # CHECK-NEXT:   leaq {{.*}}(%rip), %r10
 # CHECK-NEXT:   jmp 0x{{[0-9a-f]+}} <__llvm_kcfi_open_dynamic>
 # CHECK-NEXT:   int3
+# CHECK:      <__llvm_kcfi_dispatch_22222222>:
+# CHECK:        jne 0x{{[0-9a-f]+}} <__llvm_kcfi_mismatch_22222222>
 # CHECK:      <__llvm_kcfi_mismatch_22222222>:
 # CHECK-NEXT:   leaq {{.*}}(%rip), %r10
 # CHECK-NEXT:   jmp 0x{{[0-9a-f]+}} <__llvm_kcfi_open_dynamic>
+# CHECK:      <__llvm_kcfi_dispatch_33333333>:
+# CHECK:        jne 0x{{[0-9a-f]+}} <__llvm_kcfi_mismatch_33333333>
 # CHECK:      <__llvm_kcfi_mismatch_33333333>:
 # CHECK-NEXT:   leaq {{.*}}(%rip), %r10
 # CHECK-NEXT:   jmp 0x{{[0-9a-f]+}} <__llvm_kcfi_open_dynamic>
+# CHECK:      <__llvm_kcfi_dispatch_44444444>:
+# CHECK:        jne 0x{{[0-9a-f]+}} <__llvm_kcfi_mismatch_44444444>
 # CHECK:      <__llvm_kcfi_mismatch_44444444>:
 # CHECK-NEXT:   leaq {{.*}}(%rip), %r10
 # CHECK-NEXT:   jmp 0x{{[0-9a-f]+}} <__llvm_kcfi_open_dynamic>
+# CHECK:      <__llvm_kcfi_dispatch_55555555>:
+# CHECK:        jne 0x{{[0-9a-f]+}} <__llvm_kcfi_mismatch_55555555>
 # CHECK:      <__llvm_kcfi_mismatch_55555555>:
 # CHECK-NEXT:   leaq {{.*}}(%rip), %r10
 # CHECK-NEXT:   jmp 0x{{[0-9a-f]+}} <__llvm_kcfi_open_dynamic>
+# CHECK:      <__llvm_kcfi_dispatch_66666666>:
+# CHECK:        jne 0x{{[0-9a-f]+}} <__llvm_kcfi_mismatch_66666666>
 # CHECK:      <__llvm_kcfi_mismatch_66666666>:
 # CHECK-NEXT:   leaq {{.*}}(%rip), %r10
 # CHECK-NEXT:   jmp 0x{{[0-9a-f]+}} <__llvm_kcfi_open_dynamic>
+# CHECK:      <__llvm_kcfi_dispatch_77777777>:
+# CHECK:        jne 0x{{[0-9a-f]+}} <__llvm_kcfi_trap>
+# CHECK:      <__llvm_kcfi_dispatch_88888888>:
+# CHECK:        jne 0x{{[0-9a-f]+}} <__llvm_kcfi_trap>
 # CHECK-NOT:  <__llvm_kcfi_mismatch_
 
 ## The compiler's head and trailer for 0x11111111, then the linker's for each
@@ -151,6 +151,7 @@ __llvm_kcfi_mismatch_\d\d\d\d\d\d\d\d = __llvm_kcfi_trap
         .globl __llvm_kcfi_dispatch_\d\d\d\d\d\d\d\d
         .p2align 4
 __llvm_kcfi_dispatch_\d\d\d\d\d\d\d\d:
+        .linkkcfithunk __llvm_kcfi_dispatch_\d\d\d\d\d\d\d\d, dispatch, 0x\d\d\d\d\d\d\d\d, 0x071c5a06, 0, __llvm_kcfi_mismatch_\d\d\d\d\d\d\d\d
         cmpl $0x\d\d\d\d\d\d\d\d, -4(%rax)
         jne __llvm_kcfi_mismatch_\d\d\d\d\d\d\d\d
         jmpq *%rax

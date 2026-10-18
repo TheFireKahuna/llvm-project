@@ -234,6 +234,7 @@ __llvm_kcfi_check_mismatch_22222222 = __llvm_kcfi_trap
         .globl __llvm_kcfi_dispatch_22222222
         .p2align 4
 __llvm_kcfi_dispatch_22222222:
+        .linkkcfithunk __llvm_kcfi_dispatch_22222222, dispatch, 0x22222222, 0x071c5a06, 0, __llvm_kcfi_mismatch_22222222
         cmpl $0x22222222, -4(%rax)
         jne __llvm_kcfi_mismatch_22222222
         jmpq *%rax
@@ -242,6 +243,7 @@ __llvm_kcfi_dispatch_22222222:
         .globl __llvm_kcfi_check_22222222
         .p2align 4
 __llvm_kcfi_check_22222222:
+        .linkkcfithunk __llvm_kcfi_check_22222222, check, 0x22222222, 0x071c5a06, 0, __llvm_kcfi_check_mismatch_22222222
         cmpl $0x22222222, -4(%rcx)
         jne __llvm_kcfi_check_mismatch_22222222
         retq

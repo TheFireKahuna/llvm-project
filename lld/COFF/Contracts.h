@@ -17,10 +17,6 @@
 #include "llvm/ADT/StringMap.h"
 #include <vector>
 
-namespace llvm::object {
-struct COFFShortExport;
-} // namespace llvm::object
-
 namespace lld::coff {
 class COFFLinkerContext;
 class Defined;
@@ -81,12 +77,6 @@ bool isContractWitness(COFFLinkerContext &ctx, const Defined *sym);
 // Whether name names a witness, which code never calls: a plain witness or a
 // type_info name qualified by its type's contract.
 bool isContractWitnessName(StringRef name);
-
-// Adds the imports of a DLL's witnesses, named for the DLL, to the exports the
-// writer puts in its import library.
-void addContractWitnessImports(
-    COFFLinkerContext &ctx, StringRef dllName,
-    std::vector<llvm::object::COFFShortExport> &exports);
 
 // Imports the witness of each contract the image's code requires of a DLL that
 // exports one; a DLL built with another layout makes the link fail.

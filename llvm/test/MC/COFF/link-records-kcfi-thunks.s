@@ -49,7 +49,7 @@ __llvm_kcfi_local_check_00000010:
   retq
 
 .ifdef ERR
-// ERR: error: expected 'dispatch', 'check', 'vfn_check', 'local_dispatch' or 'local_check'
+// ERR: error: expected 'dispatch', 'check', 'vfn_check', 'local_dispatch', 'local_check', 'member_miss' or 'member_outside_miss'
   .linkkcfithunk __llvm_kcfi_dispatch_12345678, member, 0, 0, 0, __llvm_kcfi_mismatch_12345678
 // ERR: error: type must be a 32-bit unsigned value
   .linkkcfithunk __llvm_kcfi_dispatch_12345678, dispatch, 0x100000000, 0, 0, __llvm_kcfi_mismatch_12345678

@@ -406,6 +406,13 @@ public:
   Symbol *findNonInserting(StringRef name) {
     return symMap.lookup(llvm::CachedHashStringRef(name));
   }
+  // Loads, after resolution, the import member that lazy names, keeping its
+  // import in the image, and returns the import.
+  DefinedImportData *loadImportMember(LazyArchive *lazy);
+  // Drops the exports whose names isReserved accepts, an error unless they
+  // come from exporting everything.
+  void reserveExportNames(llvm::function_ref<bool(StringRef)> isReserved,
+                          StringRef purpose);
 
   void addUndefinedGlob(StringRef arg);
 

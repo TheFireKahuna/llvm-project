@@ -94,6 +94,11 @@ struct Export {
   ExportSource source = ExportSource::Unset;
   StringRef symbolName;
   StringRef exportName; // Name in DLL
+  // A name under which the DLL's import library also imports the export,
+  // followed by $ and the DLL's name so that two DLLs' never meet in an
+  // importer, as data unless qualifiedCode.
+  StringRef qualifiedName;
+  bool qualifiedCode = false;
 
   bool operator==(const Export &e) const {
     return (name == e.name && extName == e.extName && exportAs == e.exportAs &&
