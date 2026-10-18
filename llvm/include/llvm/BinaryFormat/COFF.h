@@ -481,9 +481,10 @@ enum LinkSiteFact : uint8_t {
   LinkSiteFusedRead = 2,
   // The site, of form LinkSiteOther and with no relocation, is an instruction
   // that reads or writes memory through the register that a load at another
-  // site of its section filled with the address of data, as the base of its
-  // memory operand with no index or segment, so that a linker that finds the
-  // data in the image may make the operand RIP-relative:
+  // site of its section filled with the address of data, or a register that
+  // copies of it filled, as the base of its memory operand with no index or
+  // segment, so that a linker that finds the data in the image may make the
+  // operand RIP-relative:
   //
   //   value := load << 20 | scale << 17 | prefix << 15 | sib << 14 |
   //            disp << 12 | length << 8 | at << 4 | modrm
@@ -495,6 +496,10 @@ enum LinkSiteFact : uint8_t {
   // disp the size of its displacement, 0 for none, 1 for 8 bits and 2 for 32;
   // sib whether a SIB byte follows ModRM; and scale the log2 of what an 8-bit
   // displacement is multiplied by, which EVEX compresses.
+  //
+  // The load may itself be such an access, of a thread-local variable's
+  // record, that loads the record's first word, the address of the image's TLS
+  // index: a linker that finds the record in the image then knows the address.
   LinkSiteFusedAccess = 3,
   // The site, of form LinkSiteOther and with no relocation, is the next
   // instruction to read or write the register that a load at another site of
@@ -513,7 +518,9 @@ enum LinkSiteFact : uint8_t {
   // value := constant << 1 ^ constant >> 63.
   LinkSiteFusedAddend = 5,
   // As LinkSiteFusedRead, for a load whose register only instructions that
-  // LinkSiteFusedCall and LinkSiteFusedAccess describe read.
+  // LinkSiteFusedCall and LinkSiteFusedAccess describe read, or copies of it
+  // to other registers that only such instructions read, which copy nothing
+  // that is read where the load is deleted.
   LinkSiteAccessedRead = 6,
   // The site, a load of the import pointer of data, fills a register that
   // only reads of memory read, each as the base of its memory operand and none
@@ -534,6 +541,23 @@ enum LinkSiteFact : uint8_t {
   // what else reads the register: on ARM64 by a load from an offset from its
   // own address.
   LinkSiteValueOnly = 7,
+  // The site, of form LinkSiteOther and with no relocation, is an instruction
+  // whose memory operand adds, with scale 1, the register that a
+  // LinkSiteFusedAccess load of a thread-local variable's record filled with
+  // a 32-bit offset from the record, or that copies of it filled, so that a
+  // linker that finds the record in the image, and so knows the offset, may
+  // add it to the displacement and leave the register out of the operand:
+  //
+  //   value := load << 20 | prefix << 15 | base << 14 | disp << 12 |
+  //            length << 8 | at << 4 | modrm
+  //
+  // as for LinkSiteFusedAccess, with base whether the register is the SIB
+  // byte's base rather than its index, and at the offset of the prefix that
+  // holds both registers' high bits, REX or three-byte VEX.
+  LinkSiteFusedIndex = 8,
+  // As LinkSiteAccessedRead, for instructions that LinkSiteFusedIndex
+  // describes.
+  LinkSiteIndexedRead = 9,
 };
 
 // The prefix of a fused access that holds the high bit of its base register.

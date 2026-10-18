@@ -159,6 +159,10 @@ public:
   /// that prefix's kind (a COFF::LinkAccessPrefix), its length, the size of its
   /// displacement (0 for none, 1 for 8 bits, 2 for 32), whether a SIB byte
   /// follows ModRM, and the log2 of the scale of an 8-bit displacement.
+  /// Where Index is set, the register is instead added with scale 1, as the
+  /// SIB byte's base where SIB is set and its index otherwise, and the load is
+  /// a fused access of a thread-local variable's record
+  /// (COFF::LinkSiteFusedIndex).
   struct LinkFusedAccess {
     const MCSymbol *Start;
     const MCSymbol *Load;
@@ -169,6 +173,7 @@ public:
     bool SIB;
     uint8_t PrefixKind;
     uint8_t Scale;
+    bool Index = false;
   };
 
   /// The instruction after the load at Load to read or write its register,

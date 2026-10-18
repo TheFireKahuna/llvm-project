@@ -673,19 +673,25 @@ public:
   virtual void emitCOFFLinkFusedCall(const MCSymbol *Load, MCRegister Reg);
 
   /// Tells the linker that only calls and jumps that emitCOFFLinkFusedCall
-  /// describes, and accesses that emitCOFFLinkFusedAccess describes, read the
-  /// register that the next instruction, a load of a pointer, fills.
+  /// describes, and accesses that emitCOFFLinkFusedAccess and
+  /// emitCOFFLinkFusedIndex describe, read the register that the next
+  /// instruction, a load of a pointer or a fused access, fills.
   virtual void emitCOFFLinkFusedRead();
 
   /// Tells the linker that the next instruction reads or writes memory
-  /// through \p Reg, which the load at \p Load filled with the address of
-  /// data, as the base of its memory operand.
+  /// through \p Reg, which holds the address of data that the load at
+  /// \p Load loaded, as the base of its memory operand.
   virtual void emitCOFFLinkFusedAccess(const MCSymbol *Load, MCRegister Reg);
 
   /// Tells the linker that the next instruction is the first after the load
   /// at \p Load to read or write \p Reg, which the load filled with the
   /// address of data, and adds a constant to it.
   virtual void emitCOFFLinkFusedAdd(const MCSymbol *Load, MCRegister Reg);
+
+  /// Tells the linker that the memory operand of the next instruction adds
+  /// \p Reg, with scale 1, which holds an offset that the fused access at
+  /// \p Load loaded from a thread-local variable's record.
+  virtual void emitCOFFLinkFusedIndex(const MCSymbol *Load, MCRegister Reg);
 
   /// Tells the linker that the next instruction, a load of the import pointer
   /// of data, fills a register that only reads of memory read, as their base,

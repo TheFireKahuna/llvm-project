@@ -55,9 +55,14 @@ class X86WinCOFFStreamer : public MCWinCOFFStreamer {
   MCRegister FusedCallReg;
   unsigned FusedCallOverrides = 0;
   MCSymbol *FusedJumpEnd = nullptr;
-  // A fused access or add is the next instruction, which the streamer
+  // A fused access, add or index is the next instruction, which the streamer
   // describes once it has seen that it is in a form the records describe.
-  enum { NoFusedUse, AwaitingAccess, AwaitingAdd } FusedUse = NoFusedUse;
+  enum {
+    NoFusedUse,
+    AwaitingAccess,
+    AwaitingAdd,
+    AwaitingIndex
+  } FusedUse = NoFusedUse;
   MCRegister FusedUseReg;
   // The next instruction is a jump that ends its function, which a linker may
   // leave out, so that what its function's length depends on is described.
@@ -99,6 +104,7 @@ public:
   void emitCOFFLinkFusedRead() override;
   void emitCOFFLinkFusedAccess(const MCSymbol *Load, MCRegister Reg) override;
   void emitCOFFLinkFusedAdd(const MCSymbol *Load, MCRegister Reg) override;
+  void emitCOFFLinkFusedIndex(const MCSymbol *Load, MCRegister Reg) override;
   void emitCOFFLinkTailJump() override {
     MCWinCOFFStreamer::emitCOFFLinkTailJump();
     TailJump = true;
@@ -317,14 +323,18 @@ static MCRegister getMemoryBase(const MCInst &Inst, unsigned MemOp) {
 }
 
 // Describes Inst, whose bytes are Bytes and which Start labels, as the fused
-// access or add the streamer awaits, if it is in a form the records describe:
-// an access with a legacy, VEX or EVEX encoding, outside APX's map 4, and no
-// prefix that changes how its memory operand is addressed, whose memory operand has the register as its
-// base with no index, and that reads the register nowhere else; an add of a
-// constant to the register, or an lea of the register plus a constant.
+// access, add or index the streamer awaits, if it is in a form the records
+// describe: an access with a legacy, VEX or EVEX encoding, outside APX's map 4,
+// and no prefix that changes how its memory operand is addressed, whose memory
+// operand has the register as its base with no index, and that reads the
+// register nowhere else; an add of a constant to the register, or an lea of
+// the register plus a constant; or an access with a legacy or VEX encoding
+// whose memory operand adds the register, with scale 1, to another, as its
+// base or its index, and that reads it nowhere else.
 bool X86WinCOFFStreamer::describeFusedUse(const MCInst &Inst, MCSymbol *Start,
                                           ArrayRef<char> Bytes) {
-  bool IsAccess = FusedUse == AwaitingAccess;
+  bool IsAccess = FusedUse != AwaitingAdd;
+  bool IsIndex = FusedUse == AwaitingIndex;
   FusedUse = NoFusedUse;
   const MCInstrDesc &Desc = MCII->get(Inst.getOpcode());
   const MCRegisterInfo &MRI = *getContext().getRegisterInfo();
@@ -373,15 +383,33 @@ bool X86WinCOFFStreamer::describeFusedUse(const MCInst &Inst, MCSymbol *Start,
   uint64_t Encoding = Desc.TSFlags & X86II::EncodingMask;
   uint64_t Map = Desc.TSFlags & X86II::OpMapMask;
   if ((Encoding != X86II::LEGACY && Encoding != X86II::VEX &&
-       Encoding != X86II::EVEX) ||
+       (Encoding != X86II::EVEX || IsIndex)) ||
       Map == X86II::T_MAP4 || Bytes.size() > 15)
     return false;
   int MemOp = X86II::getMemoryOperandNo(Desc.TSFlags);
   if (MemOp < 0)
     return false;
   MemOp += X86II::getOperandBias(Desc);
-  if (getMemoryBase(Inst, MemOp) != FusedUseReg)
+  // An index is the other register of the operand, which the linker keeps as
+  // its base.
+  bool IsBase = false;
+  if (IsIndex) {
+    MCRegister Base = Inst.getOperand(MemOp + X86::AddrBaseReg).getReg();
+    MCRegister Index = Inst.getOperand(MemOp + X86::AddrIndexReg).getReg();
+    if (Inst.getOperand(MemOp + X86::AddrScaleAmt).getImm() != 1 ||
+        Inst.getOperand(MemOp + X86::AddrSegmentReg).getReg() ||
+        !Inst.getOperand(MemOp + X86::AddrDisp).isImm() || !Base || !Index ||
+        Base == X86::RIP)
+      return false;
+    IsBase = Base == FusedUseReg;
+    MCRegister Other = IsBase ? Index : Base;
+    if ((!IsBase && Index != FusedUseReg) ||
+        MRI.regsOverlap(Other, FusedUseReg) ||
+        MRI.getEncodingValue(Other) >= 16)
+      return false;
+  } else if (getMemoryBase(Inst, MemOp) != FusedUseReg) {
     return false;
+  }
   // Nothing else may read the register, which the linker leaves unfilled.
   for (unsigned I = 0, E = Inst.getNumOperands(); I != E; ++I) {
     const MCOperand &MO = Inst.getOperand(I);
@@ -400,21 +428,23 @@ bool X86WinCOFFStreamer::describeFusedUse(const MCInst &Inst, MCSymbol *Start,
   // The encoder's bytes: prefixes that do not change addressing, then REX
   // and the opcode in its map, or VEX or EVEX and the opcode, then ModRM,
   // which must address memory through the register, with a SIB byte that
-  // names no index. The base register's high bit is REX.B, or VEX's or EVEX's
-  // inverted B; two-byte VEX holds none, its base being one of the first
-  // eight.
+  // names no index, or for an index the register and the other one. The base
+  // register's high bit is REX.B, or VEX's or EVEX's inverted B, and the
+  // index's REX.X or the inverted X; two-byte VEX holds neither, its
+  // registers being among the first eight.
   size_t I = 0;
   while (I < Bytes.size() &&
          is_contained({0x66, 0xF0, 0xF2, 0xF3}, uint8_t(Bytes[I])))
     ++I;
-  unsigned Prefix = 15, HighBit = 0;
+  unsigned Prefix = 15, HighBit = 0, IndexHighBit = 0;
   uint8_t PrefixKind = COFF::LinkAccessREX;
   unsigned ModRMOffset;
   if (Encoding == X86II::LEGACY) {
     if (I < Bytes.size() && (uint8_t(Bytes[I]) & 0xF0) == 0x40) {
       Prefix = I;
       HighBit = Bytes[I] & 1;
-      if (Bytes[I] & 2)
+      IndexHighBit = Bytes[I] >> 1 & 1;
+      if (IndexHighBit && !IsIndex)
         return false;
       ++I;
     }
@@ -439,8 +469,9 @@ bool X86WinCOFFStreamer::describeFusedUse(const MCInst &Inst, MCSymbol *Start,
     if (Lead == 0xC5) {
       ModRMOffset = I + 3;
     } else if (Lead == 0xC4 || Lead == 0x62) {
-      // ~X must be set, since there is no index.
-      if (!(Bytes[I + 1] & 0x40))
+      // ~X must be set unless the register is an index.
+      IndexHighBit = !(Bytes[I + 1] & 0x40);
+      if (IndexHighBit && !IsIndex)
         return false;
       Prefix = I;
       PrefixKind = Lead == 0xC4 ? COFF::LinkAccessVEX : COFF::LinkAccessEVEX;
@@ -453,19 +484,24 @@ bool X86WinCOFFStreamer::describeFusedUse(const MCInst &Inst, MCSymbol *Start,
   if (ModRMOffset >= Bytes.size())
     return false;
   uint8_t ModRM = Bytes[ModRMOffset];
-  unsigned Mod = ModRM >> 6, RM = ModRM & 7, Base = RM;
+  unsigned Mod = ModRM >> 6, RM = ModRM & 7, Base = RM, Index = 4;
   bool SIB = RM == 4;
-  if (Mod == 3 || (Mod == 0 && RM == 5))
+  if (Mod == 3 || (Mod == 0 && RM == 5) || (IsIndex && !SIB))
     return false;
   if (SIB) {
     if (ModRMOffset + 1 >= Bytes.size())
       return false;
     uint8_t SIBByte = Bytes[ModRMOffset + 1];
     Base = SIBByte & 7;
-    if ((SIBByte >> 3 & 7) != 4 || (Mod == 0 && Base == 5))
+    Index = SIBByte >> 3 & 7;
+    // An index field of 4 names no index unless its high bit makes it r12.
+    if ((Index != 4 || IndexHighBit) != IsIndex || (Mod == 0 && Base == 5) ||
+        (IsIndex && SIBByte >> 6))
       return false;
   }
-  if ((Base | HighBit << 3) != Reg)
+  if (IsIndex ? (IsBase ? (Base | HighBit << 3)
+                        : (Index | IndexHighBit << 3)) != Reg
+              : (Base | HighBit << 3) != Reg)
     return false;
   // EVEX multiplies an 8-bit displacement by a scale the instruction
   // implies, which the operand's displacement and the byte give.
@@ -484,7 +520,7 @@ bool X86WinCOFFStreamer::describeFusedUse(const MCInst &Inst, MCSymbol *Start,
   Access.Prefix = Prefix;
   Access.Length = Bytes.size();
   Access.Disp = Mod == 1 ? 1 : Mod == 2 ? 2 : 0;
-  Access.SIB = SIB;
+  Access.SIB = IsIndex ? IsBase : SIB;
   Access.PrefixKind = PrefixKind;
   Access.Scale = Scale;
   return true;
@@ -563,6 +599,15 @@ void X86WinCOFFStreamer::emitCOFFLinkFusedAdd(const MCSymbol *Load,
   if (!MCII)
     return;
   FusedUse = AwaitingAdd;
+  FusedUseReg = Reg;
+}
+
+void X86WinCOFFStreamer::emitCOFFLinkFusedIndex(const MCSymbol *Load,
+                                                MCRegister Reg) {
+  MCWinCOFFStreamer::emitCOFFLinkFusedIndex(Load, Reg);
+  if (!MCII)
+    return;
+  FusedUse = AwaitingIndex;
   FusedUseReg = Reg;
 }
 

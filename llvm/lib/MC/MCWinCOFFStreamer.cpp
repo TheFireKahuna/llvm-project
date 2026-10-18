@@ -402,6 +402,12 @@ void MCWinCOFFStreamer::emitCOFFLinkFusedAccess(const MCSymbol *Load,
   getWriter().addLinkFusedAccess({nullptr, Load, 0, 0, 0, 0, false, 0, 0});
 }
 
+void MCWinCOFFStreamer::emitCOFFLinkFusedIndex(const MCSymbol *Load,
+                                               MCRegister Reg) {
+  getWriter().addLinkFusedAccess(
+      {nullptr, Load, 0, 0, 0, 0, false, 0, 0, /*Index=*/true});
+}
+
 void MCWinCOFFStreamer::emitCOFFLinkFusedAdd(const MCSymbol *Load,
                                              MCRegister Reg) {
   getWriter().addLinkFusedAdd({nullptr, Load, 0, 0});

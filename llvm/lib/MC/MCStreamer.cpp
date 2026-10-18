@@ -1302,6 +1302,7 @@ void MCStreamer::emitCOFFLinkFusedRead() {}
 void MCStreamer::emitCOFFLinkFusedAccess(const MCSymbol *Load, MCRegister Reg) {
 }
 void MCStreamer::emitCOFFLinkFusedAdd(const MCSymbol *Load, MCRegister Reg) {}
+void MCStreamer::emitCOFFLinkFusedIndex(const MCSymbol *Load, MCRegister Reg) {}
 void MCStreamer::emitCOFFLinkValueOnly(const MCSymbol *Page) {}
 void MCStreamer::emitCOFFLinkTailJump() {}
 

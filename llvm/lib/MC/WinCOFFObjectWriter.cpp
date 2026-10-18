@@ -1664,18 +1664,45 @@ uint64_t WinCOFFWriter::writeObject() {
           Asm->getSymbolOffset(*Call.End) - (Call.IsJump ? 3 : 6);
       CallSites.push_back({&Call, {LoadSec, Start}});
     }
+    // An access whose load is itself an access of a thread-local variable's
+    // record waits until the sites of the accesses of loads are known.
+    SmallVector<const WinCOFFObjectWriter::LinkFusedAccess *, 0> Chained;
     for (const WinCOFFObjectWriter::LinkFusedAccess &Access :
          OWriter.LinkFusedAccesses) {
       if (IsUndefined(Access.Load))
         continue;
-      const COFFSection *LoadSec = FindLoad(Access.Load, Access.Start);
+      const COFFSection *LoadSec =
+          Access.Index ? nullptr : FindLoad(Access.Load, Access.Start);
       if (!LoadSec) {
-        LoadsReadElsewhere.insert(LoadKey(Access.Load));
+        if (Access.Start)
+          Chained.push_back(&Access);
+        else
+          LoadsReadElsewhere.insert(LoadKey(Access.Load));
         continue;
       }
       AccessedLoads.insert(LoadKey(Access.Load));
       AccessSites.push_back(
           {&Access, {LoadSec, uint32_t(Asm->getSymbolOffset(*Access.Start))}});
+    }
+    DenseSet<std::pair<const MCSection *, uint64_t>> IndexedLoads,
+        LoadingAccesses;
+    if (!Chained.empty()) {
+      for (auto &[Access, Site] : AccessSites)
+        LoadingAccesses.insert(LoadKey(Access->Start));
+      for (const WinCOFFObjectWriter::LinkFusedAccess *Access : Chained) {
+        const COFFSection *LoadSec =
+            SectionMap.lookup(&Access->Start->getSection());
+        if (!LoadingAccesses.contains(LoadKey(Access->Load)) ||
+            SectionMap.lookup(&Access->Load->getSection()) != LoadSec) {
+          LoadsReadElsewhere.insert(LoadKey(Access->Load));
+          continue;
+        }
+        (Access->Index ? IndexedLoads : AccessedLoads)
+            .insert(LoadKey(Access->Load));
+        AccessSites.push_back(
+            {Access,
+             {LoadSec, uint32_t(Asm->getSymbolOffset(*Access->Start))}});
+      }
     }
     for (const WinCOFFObjectWriter::LinkFusedAdd &Add : OWriter.LinkFusedAdds) {
       if (IsUndefined(Add.Load))
@@ -1704,7 +1731,9 @@ uint64_t WinCOFFWriter::writeObject() {
     for (auto &[Access, Site] : AccessSites) {
       size_t LoadIndex = FindSite(Access->Load).second;
       raw_svector_ostream DataOS(SiteData[Site]);
-      encodeULEB128(COFF::LinkSiteFusedAccess, DataOS);
+      encodeULEB128(Access->Index ? COFF::LinkSiteFusedIndex
+                                  : COFF::LinkSiteFusedAccess,
+                    DataOS);
       encodeULEB128(uint64_t(LoadIndex) << 20 | uint64_t(Access->Scale) << 17 |
                         uint64_t(Access->PrefixKind) << 15 |
                         uint64_t(Access->SIB) << 14 |
@@ -1725,21 +1754,27 @@ uint64_t WinCOFFWriter::writeObject() {
     for (const WinCOFFObjectWriter::LinkFusedRead &Read :
          OWriter.LinkFusedReads) {
       auto [Sec, Index] = FindSite(Read.Site);
-      if (!Sec || !IsLoad(Sec, Index) ||
+      // A fused access that loads from a thread-local variable's record is a
+      // load only the accesses or indexes that name it read, deleted only
+      // where the linker resizes its code.
+      bool Loading = LoadingAccesses.contains(LoadKey(Read.Site));
+      if (!Sec || (!IsLoad(Sec, Index) && !Loading) ||
           LoadsReadElsewhere.contains(LoadKey(Read.Site)))
         continue;
       // The load's displacement ends it. What follows it is known only in
       // the same section and if the instruction is one a processor decodes.
       uint32_t LoadEnd = LinkSites[Sec][Index].Offset + 4;
       uint64_t Length = 0;
-      if (Read.NextEnd && Read.NextEnd->isInSection() &&
+      if (!Loading && Read.NextEnd && Read.NextEnd->isInSection() &&
           SectionMap.lookup(&Read.NextEnd->getSection()) == Sec) {
         uint64_t End = Asm->getSymbolOffset(*Read.NextEnd);
         if (End > LoadEnd && End - LoadEnd <= 15)
           Length = End - LoadEnd;
       }
       raw_svector_ostream DataOS(SiteData[{Sec, LinkSites[Sec][Index].Offset}]);
-      encodeULEB128(AccessedLoads.contains(LoadKey(Read.Site))
+      encodeULEB128(IndexedLoads.contains(LoadKey(Read.Site))
+                        ? COFF::LinkSiteIndexedRead
+                    : AccessedLoads.contains(LoadKey(Read.Site))
                         ? COFF::LinkSiteAccessedRead
                         : COFF::LinkSiteFusedRead,
                     DataOS);
