@@ -193,6 +193,62 @@ static bool isFusibleAccess(const MachineInstr &MI, Register Reg,
   return true;
 }
 
+// Whether MI adds Reg to another register, unshifted and with neither of them
+// the zero register, and reads Reg nowhere else: a load, store or prefetch at
+// the sum of the two, or an add of them, which the linker makes take the
+// value in Reg as an immediate.
+static bool isFusibleIndex(const MachineInstr &MI, Register Reg,
+                           const TargetRegisterInfo *TRI) {
+  switch (MI.getOpcode()) {
+  case AArch64::LDRBBroX:
+  case AArch64::LDRHHroX:
+  case AArch64::LDRWroX:
+  case AArch64::LDRXroX:
+  case AArch64::LDRSBWroX:
+  case AArch64::LDRSBXroX:
+  case AArch64::LDRSHWroX:
+  case AArch64::LDRSHXroX:
+  case AArch64::LDRSWroX:
+  case AArch64::LDRBroX:
+  case AArch64::LDRHroX:
+  case AArch64::LDRSroX:
+  case AArch64::LDRDroX:
+  case AArch64::LDRQroX:
+  case AArch64::STRBBroX:
+  case AArch64::STRHHroX:
+  case AArch64::STRWroX:
+  case AArch64::STRXroX:
+  case AArch64::STRBroX:
+  case AArch64::STRHroX:
+  case AArch64::STRSroX:
+  case AArch64::STRDroX:
+  case AArch64::STRQroX:
+  case AArch64::PRFMroX:
+  case AArch64::ADDXrs:
+    break;
+  default:
+    return false;
+  }
+  // The operands after the destination or data are the two registers and
+  // the shift or extension, which must be none; an add's second register
+  // and an access's offset must not be the zero register.
+  if (MI.isBundled() || MI.getNumExplicitOperands() < 4 ||
+      !MI.getOperand(1).isReg() || !MI.getOperand(2).isReg() ||
+      MI.getOperand(MI.getOpcode() == AArch64::ADDXrs ? 3 : 4).getImm())
+    return false;
+  Register Rn = MI.getOperand(1).getReg(), Rm = MI.getOperand(2).getReg();
+  Register Other = Rn == Reg ? Rm : Rm == Reg ? Rn : Register();
+  if (!Other || TRI->regsOverlap(Other, Reg) || Other == AArch64::XZR ||
+      (MI.getOpcode() == AArch64::ADDXrs &&
+       MI.getOperand(0).getReg() == AArch64::XZR))
+    return false;
+  for (const auto &[I, MO] : enumerate(MI.operands()))
+    if (I != 1 && I != 2 && MO.isReg() && MO.getReg() && MO.readsReg() &&
+        TRI->regsOverlap(MO.getReg(), Reg))
+      return false;
+  return true;
+}
+
 // Whether MI only reads memory through Reg, as the base of its address with
 // any offset or index register but Reg: a load, neither volatile nor atomic,
 // that neither writes an address back to Reg nor reads it elsewhere, so that
@@ -351,7 +407,8 @@ bool AArch64WindowsImportFusion::runOnMachineFunction(MachineFunction &MF) {
   // immediate offset from its register.
   using Reader = std::pair<MachineInstr *, Register>;
   auto GetAccesses = [&](MachineInstr *Load, Register Reg,
-                         SmallVectorImpl<Reader> &Accesses) {
+                         SmallVectorImpl<Reader> &Accesses,
+                         bool Index = false) {
     SmallPtrSet<MachineInstr *, 4> Defs = {Load};
     SmallVector<Reader, 4> Work = {{Load, Reg}}, Copies;
     while (!Work.empty()) {
@@ -383,7 +440,9 @@ bool AArch64WindowsImportFusion::runOnMachineFunction(MachineFunction &MF) {
         !all_of(Accesses, [&](const Reader &U) {
           return U.first->getParent()->getSectionID() ==
                      Load->getParent()->getSectionID() &&
-                 IsReached(U) && isFusibleAccess(*U.first, U.second, TRI);
+                 IsReached(U) &&
+                 (Index ? isFusibleIndex(*U.first, U.second, TRI)
+                        : isFusibleAccess(*U.first, U.second, TRI));
         }))
       return false;
     // The linker may leave out what Load loads, and so what the copies copy.
@@ -394,7 +453,9 @@ bool AArch64WindowsImportFusion::runOnMachineFunction(MachineFunction &MF) {
   };
   // A record's loads are described as data's are, where the load's register
   // is its adrp's alone. Of them, the load of the record's first word, the
-  // address of the TLS index, is a load of each access through its register.
+  // address of the TLS index, is a load of each access through its register,
+  // and the load of an offset, the variable's or its guard's, a load of each
+  // instruction that adds it to another register.
   for (MachineInstr *Load : RecordLoads) {
     Register Reg = Load->getOperand(0).getReg();
     MachineInstr *Adrp = RDI.getUniqueReachingMIDef(Load, Reg);
@@ -411,15 +472,24 @@ bool AArch64WindowsImportFusion::runOnMachineFunction(MachineFunction &MF) {
       continue;
     for (auto [Use, R] : Accesses) {
       FI->addImportFusedUse(Use, Load, R, UseKind::Access);
-      SmallVector<Reader, 4> Indexes;
-      Register Address = Use->getOperand(0).getReg();
-      if (Use->getOpcode() != AArch64::LDRXui || Use->getOperand(2).getImm() ||
-          !GetAccesses(Use, Address, Indexes))
+      SmallVector<Reader, 4> Readers;
+      Register Def = Use->getOperand(0).getReg();
+      int64_t Word = Use->getOperand(2).getImm();
+      bool Index =
+          Use->getOpcode() == AArch64::LDRWui && (Word == 2 || Word == 3);
+      // The 64-bit register, which blocks list as live-in.
+      if (Index)
+        Def = TRI->getMatchingSuperReg(Def, AArch64::sub_32,
+                                       &AArch64::GPR64RegClass);
+      else if (Use->getOpcode() != AArch64::LDRXui || Word)
         continue;
-      for (auto [Index, IndexReg] : Indexes)
-        FI->addImportFusedUse(Index, Use, IndexReg, UseKind::Access);
+      if (!GetAccesses(Use, Def, Readers, Index))
+        continue;
+      for (auto [Reader, ReaderReg] : Readers)
+        FI->addImportFusedUse(Reader, Use, ReaderReg,
+                              Index ? UseKind::Index : UseKind::Access);
       FI->addImportFusedLoad(Use, true);
-      NumAccesses += Indexes.size();
+      NumAccesses += Readers.size();
     }
     FI->addImportFusedLoad(Load, true);
     NumAccesses += Accesses.size();

@@ -605,8 +605,10 @@ public:
 
   /// How an instruction that the import fusion pass describes to the linker
   /// uses the register a load of an import pointer filled: as the base of a
-  /// memory operand, or by adding a constant to it.
-  enum class ImportFusedUseKind : uint8_t { Access, Add };
+  /// memory operand, or by adding a constant to it; or, for an offset that an
+  /// access of a thread-local variable's record loaded, by adding it to
+  /// another register, in an address or an add.
+  enum class ImportFusedUseKind : uint8_t { Access, Add, Index };
   struct ImportFusedUse {
     const MachineInstr *Load;
     MCRegister Reg;

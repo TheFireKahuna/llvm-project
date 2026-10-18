@@ -4147,6 +4147,8 @@ void AArch64AsmPrinter::emitImportFusion(const MachineInstr &MI) {
     auto [Load, Reg, Kind] = Use->second;
     if (Kind == UseKind::Add)
       OutStreamer->emitCOFFLinkFusedAdd(GetLabel(Load), Reg);
+    else if (Kind == UseKind::Index)
+      OutStreamer->emitCOFFLinkFusedIndex(GetLabel(Load), Reg);
     else
       OutStreamer->emitCOFFLinkFusedAccess(GetLabel(Load), Reg);
     if (!AArch64FI->getImportFusedLoads().count(&MI))

@@ -9,10 +9,11 @@
 ; address of the defining image's TLS index, then the variable's offset in
 ; that image's template. The loads from the record are described to the
 ; linker as accesses of the record's load, and the load of the address as a
-; load itself, with the loads of the TLS index through it, so that where the
-; record is in the image the linker can take the index's page and the offset
-; in their place. A dso_local variable is reached directly, and the MSVC target
-; is unchanged.
+; load itself, with the loads of the TLS index through it, and the load of the
+; offset with the instructions that add it to another register, so that where
+; the record is in the image the linker can take the index's page and the
+; offset in their place. A dso_local variable is reached directly, and the
+; MSVC target is unchanged.
 
 $comdatvar = comdat any
 
@@ -32,10 +33,13 @@ define i32 @getVar() {
 ; CHECK-NEXT:    .linkfusedread
 ; CHECK-NEXT:    ldr x9, [x8]
 ; CHECK-NEXT:    .linkfusedaccess [[REC]], x8
+; CHECK-NEXT:  [[OFF:\.Lfused[0-9]+]]:
+; CHECK-NEXT:    .linkfusedread
 ; CHECK-NEXT:    ldr w8, [x8, #8]
 ; CHECK-NEXT:    .linkfusedaccess [[ADDR]], x9
 ; CHECK-NEXT:    ldr w9, [x9]
 ; CHECK-NEXT:    ldr x9, [x10, x9, lsl #3]
+; CHECK-NEXT:    .linkfusedindex [[OFF]], x8
 ; CHECK-NEXT:    ldr w0, [x9, x8]
 ; O0-LABEL:    getVar:
 ; O0:            adrp x9, __imp_var$tls
