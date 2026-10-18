@@ -443,6 +443,15 @@ public:
   /// Enable the MachineScheduler pass for all X86 subtargets.
   bool enableMachineScheduler() const override { return true; }
 
+  // On Windows Itanium and NT-POSIX, a thread-local variable's offset is
+  // loaded from its record through the record's import pointer, and its TLS
+  // index two loads further, which the linker removes where the variable is
+  // in the image: rematerialized rather than spilled, they go too.
+  unsigned getRematerializationChainDepth() const override {
+    return is64Bit() && TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment() ? 2
+                                                                            : 0;
+  }
+
   bool enableEarlyIfConversion() const override;
 
   void getPostRAMutations(std::vector<std::unique_ptr<ScheduleDAGMutation>>
