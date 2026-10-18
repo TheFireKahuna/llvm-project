@@ -233,7 +233,7 @@ void lld::coff::addWrappedSymbols(SymbolTable &symtab,
 
 // Binds __real_X, which something references, to X. As with GNU ld and lld's
 // ELF port, the reference loads X if only an archive or import library offers
-// it, since nothing else might.
+// it.
 static void addWrappedReal(SymbolTable &symtab, WrappedSymbol &w,
                            Symbol *real) {
   w.real = real;
@@ -254,12 +254,11 @@ void lld::coff::addWrappedSymbol(SymbolTable &symtab, StringRef name) {
       }))
     return;
 
-  // As with GNU ld, a wrap renames references and nothing else: if neither
-  // the symbol, nor its import nor its __real_ name is referenced, the wrapper
-  // is not loaded, and none of its imports is added. A runtime library
-  // function counts as referenced when there is bitcode, because the LTO code
-  // generator may call it although no bitcode symbol names it yet. Most wraps
-  // are skipped, so the names looked up are built on the stack.
+  // As with GNU ld, a wrap renames references and nothing else: if neither the
+  // symbol, its import, nor its __real_ name is referenced, the wrapper is not
+  // loaded and none of its imports is added. A runtime library function counts
+  // as referenced when there is bitcode, since the LTO code generator may call
+  // it before any bitcode symbol names it. Most wraps are skipped.
   SmallString<128> impName("__imp_");
   impName += sym->getName();
   SmallString<128> realName(symtab.machine == I386 ? "___real_" : "__real_");
@@ -361,13 +360,12 @@ void lld::coff::wrapSymbols(SymbolTable &symtab) {
   });
 
   // Without the garbage collector, every import loaded stays in the image.
-  // Two kinds that a wrap leaves unreachable are dropped here instead, as the
-  // collector would drop them: an import of the wrapped symbol that a
-  // reference loaded before the wrap applied, once every reference to the
-  // symbol and to its import pointer is renamed; and an imported wrapper that
-  // a wrap of a runtime library function loaded for an LTO link whose code
-  // never called it. The symbol of the latter is still lazy, and a scan of
-  // the objects finds any reference to the wrapper itself.
+  // Two kinds a wrap leaves unreachable are dropped here, as the collector
+  // would: an import of the wrapped symbol a reference loaded before the wrap
+  // applied, once every reference to the symbol and its import pointer is
+  // renamed; and an imported wrapper a wrap of a runtime function loaded for an
+  // LTO link that never called it (its symbol is still lazy; a scan finds any
+  // reference to the wrapper).
   if (symtab.ctx.config.doGC)
     return;
   DenseSet<Symbol *> roots;

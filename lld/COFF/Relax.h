@@ -22,26 +22,21 @@ class COFFLinkerContext;
 class Defined;
 class SectionChunk;
 
-// A change the linker makes to the code of a section chunk: the oldSize bytes
-// at offset become newSize bytes at newOffset in the chunk as written. Every
-// instruction the linker rewrites is one, decided when its reference is bound,
-// and so is every alignment and jump that coverage lets it lay out again. An
-// edit keeps its length in code the linker does not resize, and takes
-// relaxedSize bytes in code it does. The relocations inside an edit are its
-// own to write.
+// A change the linker makes to a section chunk's code: oldSize bytes at offset
+// become newSize bytes at newOffset as written. Covers rewritten instructions
+// and the alignments and jumps coverage lets it re-lay-out; takes relaxedSize
+// bytes where the chunk is resized, else its own length, and writes its relocs.
 struct RelaxEdit {
   enum Kind : uint8_t {
-    // call rel32 or jmp rel32 to target. At its old length, a call takes an
-    // addr32 prefix and a jump int3 after it, as a jump ends an epilogue only
-    // in the forms the unwinder knows.
+    // call rel32 or jmp rel32 to target; at old length a call gets an addr32
+    // prefix, a jump a trailing int3 (a jump ends an epilogue only so).
     DirectCall,
     DirectJump,
     // call [rip+d] or jmp [rip+d] with REX.W, through target, a pointer.
     PointerCall,
     PointerJump,
-    // A RIP-relative mov or lea of target, which replaces the instruction's
-    // opcode, plus the constant of fusion, an add whose sum it then takes into
-    // the add's register.
+    // A RIP-relative mov or lea of target in place of the instruction's opcode,
+    // plus fusion's constant, an add whose sum it takes into that register.
     LoadPointer,
     LoadAddress,
     // The load or call through a pointer that holds zero, an absent weak
@@ -61,13 +56,11 @@ struct RelaxEdit {
     Access,
     // No-operations that align what follows, as coverage describes.
     Align,
-    // The jump whose displacement coverage describes: an 8-bit one, with a
-    // 32-bit displacement once promoted; or a 32-bit one, with 8 bits until
-    // promoted back.
+    // The jump whose displacement coverage describes: 8-bit, widened to 32 when
+    // promoted; or 32-bit, held at 8 bits until promoted back.
     Branch,
-    // On ARM64: adrp of target's page; add of target's offset in its page, or
-    // a 64-bit ldr from it, in place of the instruction's opcode; movz of
-    // zero.
+    // ARM64: adrp of target's page; add of its offset, or a 64-bit ldr from it,
+    // in place of the opcode; movz of zero.
     Arm64Page,
     Arm64Add,
     Arm64Load,
@@ -99,16 +92,15 @@ struct RelaxEdit {
       entry;
 };
 
-// The changes the linker makes to the code of a section chunk, and how it
-// lays the code out where it resizes it.
+// The changes to a section chunk's code, and how it is laid out where resized.
 struct Relaxation {
   // The changes, by offset, none overlapping another.
   std::vector<RelaxEdit> edits;
   // The chunk's size as written, where the linker resizes it.
   uint32_t size = 0;
 
-  // Where the place at offset in the chunk's contents is in the chunk as
-  // written. A place inside a change maps into the bytes that replace it.
+  // Where offset in the chunk's contents lands in the chunk as written; a place
+  // inside a change maps into the bytes that replace it.
   uint32_t getOutputOffset(uint32_t offset) const;
   // The change whose bytes include offset, if any.
   const RelaxEdit *findEdit(uint32_t offset) const;
@@ -117,20 +109,17 @@ struct Relaxation {
   }
 };
 
-// Adds e, a change to an instruction of sc, to the changes the linker makes
-// there, unless it overlaps one already made, which is an error.
+// Adds edit e to sc's changes; an overlap with an existing one is an error.
 void addEdit(SectionChunk *sc, RelaxEdit e);
 
 // Writes n bytes of no-operations at buf, each at most maxNop bytes long.
 void writeNops(uint8_t *buf, size_t n, unsigned maxNop);
 
-// Decides, once every reference is bound, which covered section chunks the
-// linker resizes, and how.
+// Decides, once references are bound, which covered chunks to resize and how.
 void relaxSections(COFFLinkerContext &ctx);
 
-// Leaves out each jump that ends its function, its chunk with its target,
-// where the target begins right after the jump's chunk in the layout that
-// layOut gives, so that the jump's function runs into it.
+// Leaves out each function-ending jump whose target, in the layout layOut
+// gives, begins right after the jump's chunk, so the function runs into it.
 void leaveOutTailJumps(
     COFFLinkerContext &ctx,
     llvm::ArrayRef<std::pair<SectionChunk *, Defined *>> jumps,
@@ -139,15 +128,13 @@ void leaveOutTailJumps(
 // Writes sc, whose code the linker changes, at buf.
 void writeEdited(const SectionChunk *sc, uint8_t *buf);
 
-// Writes into buf, the contents of sc from its offset begin, each value of
-// sc's coverage between begin and end that depends on code the linker
-// resizes.
+// Writes, into buf holding sc's contents from offset begin, each coverage value
+// between begin and end that depends on code the linker resizes.
 void writeCoverageValues(const SectionChunk *sc, uint8_t *buf, uint32_t begin,
                          uint32_t end);
 
-// How far the place that rel, a relocation in sc, reaches moves relative to
-// the relocation's symbol, a definition at value in the chunk target, whose
-// code the linker resizes, which the relocation's addend, addend, moves by.
+// How far rel's place (in sc) moves relative to its symbol, defined at value in
+// target, when the linker resizes target and the addend moves the place in it.
 int64_t getAddendShift(const SectionChunk *sc,
                        const llvm::object::coff_relocation &rel,
                        const SectionChunk *target, uint32_t value,

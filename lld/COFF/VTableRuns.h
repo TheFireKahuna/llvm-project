@@ -22,46 +22,42 @@ class COFFLinkerContext;
 class OutputSection;
 class SectionChunk;
 
-// Builds the vtable runs the objects' records ask for, in
-// COFFLinkerContext::vtableRuns, and chooses each run's stride. A run holds the
-// vtables of a class and of the classes derived from it through primary bases.
+// Builds the vtable runs the objects' records ask for in ctx.vtableRuns and
+// chooses each run's stride. A run holds a class's vtables and those of the
+// classes derived from it through primary bases.
 void resolveVTableRuns(COFFLinkerContext &ctx);
 
-// Defines, as an empty range, each vtable range symbol an object references
-// before the runs are known, so a guard thunk's reference is not undefined.
-// defineVTableRuns gives the ranges the runs place their real values.
+// Defines each referenced vtable range symbol as an empty range before the runs
+// are known, so a guard thunk's reference is not undefined; defineVTableRuns
+// gives them their real values.
 void registerVTableRunSymbols(COFFLinkerContext &ctx);
 
-// Reorders the read-only section so that each run's vtables are consecutive and
-// in the order their slots want, which assignAddresses then places at the run's
-// stride, unless the packing of the read-only section laid them out already.
+// Reorders the read-only section so each run's vtables are consecutive in slot
+// order for assignAddresses to place at the run's stride, unless packing laid
+// them out already.
 void placeVTableRuns(COFFLinkerContext &ctx, OutputSection *rdataSec,
                      llvm::function_ref<bool(const SectionChunk *)> heldBack,
                      bool packed);
 
-// Defines the range symbols the guard thunks test, once addresses are final: a
-// run whose vtables the layout did not place at its stride is given an empty
-// range, so its calls fall back to the slow path. Any range symbol no run
-// defines is made an empty range too.
+// Defines the range symbols the guard thunks test, once addresses are final. A
+// run the layout did not place at its stride, or a symbol no run defines, gets
+// an empty range, so its calls take the slow path.
 void defineVTableRuns(COFFLinkerContext &ctx);
 
 // Under -import-slots, a DLL exports the run of each class whose vtable or
-// type_info it exports, as three words that an importer tests a vtable pointer
-// of an object the DLL built against: the run's start, under the name of the
-// class's primary address point, and its end and its start plus the stride
-// less one, under names hashed from the class.
+// type_info it exports, as three words (start, end, start plus stride less one)
+// an importer tests vtable pointers of the DLL's objects against. Start is
+// named by the class's address point, the others by names hashed from class.
 void addVTableRunExports(COFFLinkerContext &ctx);
 
 // Adds to a DLL's import library the imports of each exported run's words,
-// named for the class's range symbols and the DLL, so that an importer finds
-// them by the class's name.
+// named for the class's range symbols so an importer finds them by class.
 void addVTableRunImports(COFFLinkerContext &ctx, llvm::StringRef dllName,
                          std::vector<llvm::object::COFFShortExport> &exports);
 
-// Binds the run of each class whose owner run the image's checks read from the
-// first DLL it imports statically whose import library holds it and from which
-// it imports the class's vtable or type_info, and gives every other class an
-// empty range.
+// Binds the owner run of each class the image's checks read to the first DLL it
+// imports statically whose import library holds it and from which it imports
+// the class's vtable or type_info; every other class gets an empty range.
 void bindVTableOwnerRuns(COFFLinkerContext &ctx);
 
 } // namespace lld::coff

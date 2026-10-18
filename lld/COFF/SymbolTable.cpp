@@ -271,8 +271,7 @@ void SymbolTable::loadMinGWSymbols() {
       continue;
     undefs.push_back(sym);
   }
-  // Loading may bring in regular archive members, such as those of a GNU
-  // import library, so the order is by name rather than by hash.
+  // Load order is by name, not hash, since loading may pull archive members.
   llvm::sort(undefs, [](Symbol *a, Symbol *b) {
     return a->getName() < b->getName();
   });
@@ -334,14 +333,11 @@ void SymbolTable::loadMinGWSymbols() {
   }
 }
 
-// The kinds of name that an image built by clang for Windows Itanium or
-// NT-POSIX defines for the addresses inside an object that static data in
-// another image can hold: X$apK for the address point K bytes into vtable X,
-// and X$soK for the subobject K bytes into variable X.
+// Suffixes naming an address interior to an exported object: X$apK is the
+// address point K bytes into vtable X, X$soK the subobject K bytes into X.
 static constexpr StringLiteral interiorKinds[] = {"$so", "$ap"};
 
-// The name of the object into which the interior name Name points, or an empty
-// string if Name is not one.
+// The object name an interior name points into, or empty if name is not one.
 static StringRef getInteriorBase(StringRef name) {
   size_t i = name.rfind('$');
   if (i == StringRef::npos)
@@ -355,8 +351,8 @@ static StringRef getInteriorBase(StringRef name) {
   return {};
 }
 
-// Whether the lazy symbol s is offered by an import, an import library's member
-// or a DLL's export, whose loading adds no reference to the link.
+// Whether loading lazy symbol s adds no reference: an import, import-library
+// member or DLL export.
 static bool isLazyImport(Symbol *s) {
   if (auto *a = dyn_cast<LazyArchive>(s))
     return identify_magic(a->getMemberBuffer().getBuffer()) ==
@@ -365,10 +361,8 @@ static bool isLazyImport(Symbol *s) {
 }
 
 bool isShareableVagueName(StringRef name) {
-  // Vtables are bound by other rules, a type_info object's name is reached
-  // through the object, and data that MSVC mangles keeps the per-image copies
-  // its code expects. A thread-local variable is shared through its record,
-  // and its init function and wrapper stay per image.
+  // MSVC-mangled (?) and local (.) names keep per-image copies. Vtables,
+  // type_info and TLS init/wrapper (_ZT[VTCSHW]) are shared by other rules.
   if (name.starts_with("?") || name.starts_with("."))
     return false;
   return !(name.size() > 3 && name.starts_with("_ZT") &&
@@ -377,8 +371,7 @@ bool isShareableVagueName(StringRef name) {
 
 bool isTypeInfoName(StringRef name) { return name.starts_with("_ZTI"); }
 
-// Whether the lazy symbol s is an import library's offer of data or code, as
-// type says.
+// Whether lazy symbol s is an import library's offer of the given type.
 static bool isLazyImportOf(Symbol *s, ImportType type) {
   auto *a = dyn_cast<LazyArchive>(s);
   if (!a || a->pendingArchiveLoad)
@@ -394,9 +387,8 @@ static bool isLazyDataImport(Symbol *s) {
   return isLazyImportOf(s, IMPORT_DATA);
 }
 
-// Adds to functions the leaders of the COMDAT groups of functions with default
-// visibility that file defines and whose addresses are significant: listed in
-// its address-significance table, or any if it has none.
+// Adds the leaders of file's default-visibility COMDAT function groups whose
+// addresses are significant (its address-significance table, or all if none).
 static void collectWeakFunctions(ObjFile *file,
                                  std::vector<Symbol *> &functions) {
   ArrayRef<Symbol *> syms = file->getSymbols();
@@ -430,10 +422,8 @@ static void collectWeakFunctions(ObjFile *file,
   consumeError(cur.takeError());
 }
 
-// The Itanium ABI's special name kind, such as GV, of the variable named
-// name: kind followed by the variable's name, with the length prefix of a
-// source name that the ABI leaves unmangled (_ZGV2iv for iv), built in buf
-// for a lookup that keeps no copy of it.
+// The Itanium special name of the given kind (e.g. GV) for variable name,
+// built in buf, which the caller need not keep (_ZGV2iv for iv).
 static StringRef getSpecialName(StringRef kind, StringRef name,
                                 SmallVectorImpl<char> &buf) {
   buf.clear();
@@ -469,8 +459,7 @@ StringRef SymbolTable::getSharedName(Symbol *s) {
   return s->getName();
 }
 
-// The name under which the guard of the vague variable d is shared, which
-// only lookups read, so that the link keeps no copy of it.
+// Returns a fresh string: only lookups read the shared guard name.
 std::string SymbolTable::getSharedGuardName(Symbol *d) {
   std::string name = getGuardName(d->getName());
   if (isThreadLocal(d))
@@ -504,11 +493,8 @@ Defined *SymbolTable::getThreadLocalRecord(DefinedRegular *var) {
                 "defines";
     return nullptr;
   }
-  // The byte that says on a thread whether the variable's initialization has
-  // begun there, under the name the Itanium ABI gives the variable's guard. A
-  // variable without one has no init function, which a reader that tests the
-  // guard would call, and so is never tested; its record names the variable
-  // itself.
+  // The variable's Itanium guard byte. A variable without a guard has no init
+  // function, so its guard is never tested; its record names the variable.
   Defined *guard = var;
   if (auto *g = dyn_cast_or_null<Defined>(find(getGuardName(var->getName())))) {
     guard = g;
@@ -538,8 +524,7 @@ static void collectComdatGroup(DefinedRegular *leader,
     chunks.push_back(&child);
   ArrayRef<SectionChunk *> group = ArrayRef(chunks).drop_front(begin);
   members.push_back(leader);
-  // Only the symbols that the object defines in the group's sections can be
-  // its members, taken in the order of its symbol table.
+  // Members are the object's own symbols in the group, in symbol-table order.
   auto *file = cast<ObjFile>(leader->getFile());
   SmallVector<uint32_t, 8> indices;
   for (SectionChunk *c : group)
@@ -554,9 +539,8 @@ static void collectComdatGroup(DefinedRegular *leader,
       members.push_back(d);
 }
 
-// Adds to chunks and members the COMDAT group of the data definition d, and
-// that of its guard where its group does not hold the guard, as clang emits
-// it for COFF. Once liveness is decided, a guard the image discards is left.
+// Adds d's COMDAT group, and its guard's group where that is separate (as
+// clang emits for COFF). Once liveness is decided, a discarded guard is left.
 void SymbolTable::collectWeakDataGroup(
     DefinedRegular *d, SmallVectorImpl<SectionChunk *> &chunks,
     SmallVectorImpl<DefinedRegular *> &members, bool liveOnly) {
@@ -586,11 +570,9 @@ DefinedImportData *SymbolTable::findInteriorImport(DefinedImportData *imp,
   return nullptr;
 }
 
-// Whether a reference other than a weak one names the import of Name: one to
-// Name that is not a weak external, or one to its import pointer from an
-// object in which Name is not a weak external, as a declaration marked
-// dllimport gives. A compiler reaches a weak Name through its import pointer
-// in an object that keeps Name a weak external.
+// Whether a reference other than a weak external names Name's import: a use of
+// __imp_Name from an object where Name is not a weak external, as dllimport
+// gives.
 bool SymbolTable::isImportedStrongly(StringRef name) {
   if (Symbol *s = find(name); s && stronglyReferenced.contains(s))
     return true;
@@ -598,14 +580,14 @@ bool SymbolTable::isImportedStrongly(StringRef name) {
   return strongImportPointers->contains(name);
 }
 
-// Reads which names the objects' weak externals name, and which import
-// pointers a reference other than a weak one names.
+// Reads the objects' weak-external names and the import pointers that a
+// reference other than a weak one names.
 void SymbolTable::readImportReferences() {
   if (!strongImportPointers) {
     strongImportPointers.emplace();
     weakExternalNames.emplace();
-    // Only importUnresolvedFromHost needs the undefined function names, so
-    // collect them only when it will run.
+    // Only importUnresolvedFromHost needs the function names, so gather them
+    // only when it will run.
     if (ctx.config.unresolvedHostImports)
       functionNames.emplace();
     for (ObjFile *file : ctx.objFileInstances) {
@@ -637,11 +619,8 @@ void SymbolTable::readImportReferences() {
   }
 }
 
-// An ELF shared object may leave symbols for the executable that loads it to
-// define. Under -unresolved-host-imports, a DLL imports each symbol nothing
-// defines from the executable, which the fill binds by name against the
-// process's own; a function declared as one is imported as code, anything
-// else as data.
+// Under -unresolved-host-imports a DLL imports each symbol nothing defines from
+// the executable, as an ELF shared object does: a function as code, else data.
 bool SymbolTable::importUnresolvedFromHost() {
   llvm::TimeTraceScope timeScope("Import unresolved from host");
   readImportReferences();
@@ -673,10 +652,8 @@ bool SymbolTable::importUnresolvedFromHost() {
 bool SymbolTable::loadInteriorImports() {
   llvm::TimeTraceScope timeScope("Load interior imports");
 
-  // An import from an executable is bound at run time against the process's
-  // own, and one that only weak references name, as ELF binds a weak
-  // undefined symbol, null where its DLL lacks it. Both need ntdll's resolver,
-  // and the seal of their cells.
+  // Host and weak-only imports are bound at run time (a weak one is null where
+  // its DLL lacks it); both need ntdll's resolver and the seal of their cells.
   for (ImportFile *f : ctx.importFileInstances) {
     if (&f->symtab != this || !f->impSym || f->isDelayLoaded())
       continue;
@@ -705,12 +682,10 @@ bool SymbolTable::loadInteriorImports() {
           l && l->isLazy() && !l->pendingArchiveLoad && isLazyImport(l))
         runTimeLazies.push_back(l);
   }
-  // A DLL that reaches vague entities through cells binds them, when loaded
-  // outside the executable's link, by a search of the loaded modules, which
-  // pins the module it binds to and writes the cells between two protection
-  // calls: those it keeps preemptible, and those the DLLs it imports from do.
+  // A DLL loaded outside the executable's link binds its vague-entity cells by
+  // searching loaded modules, pinning each, between two protection calls.
   if (ctx.config.dll) {
-    isPreemptibleVagueEntity(nullptr); // which computes the set
+    isPreemptibleVagueEntity(nullptr); // computes the set
     bool cells = !preemptibleVagueEntities->empty();
     if (!cells && isa_and_nonnull<Defined>(findUnderscore("__xi_a"))) {
       StringMap<StringSet<>> offers = getPreemptibleOffers(ctx, false);
@@ -731,19 +706,15 @@ bool SymbolTable::loadInteriorImports() {
   }
   std::vector<Symbol *> lazies;
   bool sealed = false;
-  // Nothing that loads between calls adds an object or an archive, so a word
-  // of an object that an earlier call walked names and takes what it did
-  // then, unless a name it was to take was still to be loaded, or a member
-  // loaded since defines a symbol that an object references. Such a word
-  // loads nothing more, and what it seals mattered only then: had any walk
-  // sealed the image, NtProtectVirtualMemory's import was loaded then.
+  // Loading between calls adds no object or archive, so an earlier walk's word
+  // takes what it did then; revisit only words whose name was still to be
+  // loaded, or when a member loaded since defines a referenced symbol.
   size_t first = interiorImportsRewalk ? 0 : interiorImportObjects;
   interiorImportObjects = ctx.objFileInstances.size();
   interiorImportsRewalk = false;
-  // Loads the names that the DLL providing an import may export for the
-  // address that the word at rel in sc holds inside the import's object, and
-  // finds whether the word is read-only and takes none. Returns whether a name
-  // it may take is still to be loaded.
+  // Loads any interior names the import's DLL exports for the address the word
+  // at rel in sc holds; seals read-only words that take none. Returns whether a
+  // name it may take is still to be loaded.
   auto walkWord = [&](SectionChunk *sc, const coff_relocation &rel) {
     Symbol *s = sc->file->getSymbol(rel.SymbolTableIndex);
     DefinedImportData *imp = getInPlaceImport(s);
@@ -787,10 +758,9 @@ bool SymbolTable::loadInteriorImports() {
     }
   }
   pendingInteriorWords = std::move(pendingWords);
-  // A DLL's fill writes the entries and read-only slots of the overridable
-  // defaults it imports, and the read-only cells of its own defaults, between
-  // two protection calls. Its own default has cells only where the DLL takes
-  // its address, through the import pointer or in a word of its static data.
+  // A DLL's fill writes the imported defaults' entries and read-only slots and
+  // its own defaults' read-only cells between two protection calls. Its own
+  // default has cells only where the DLL takes its address.
   if (!sealed && ctx.config.dll) {
     auto isOwnDefault = [&](StringRef name) {
       return overridablesByName.contains(name) || isOwnSlotDefault(name);
@@ -825,9 +795,8 @@ bool SymbolTable::loadInteriorImports() {
         }
       }
   }
-  // A DLL's cells of its own preemptible vague entities: the pointers its
-  // import-form references read, in read-only data, and read-only words of
-  // its static data.
+  // A DLL's cells for its own preemptible vague entities: the pointers its
+  // import-form references read, and read-only words of its static data.
   if (!sealed && ctx.config.dll) {
     sealed = llvm::any_of(localImportChunks, [](Chunk *c) {
       return !cast<LocalImportChunk>(c)->vagueEntity.empty();
@@ -865,8 +834,6 @@ bool SymbolTable::loadInteriorImports() {
         l && l->isLazy() && !l->pendingArchiveLoad && isLazyImport(l))
       lazies.push_back(l);
 
-  // Each lazy is an import pointer, which no object references, or it would
-  // not be lazy; the member also defines the import's own name, which one may.
   auto load = [&](Symbol *l) {
     if (isa_and_nonnull<Undefined>(
             find(l->getName().drop_front(strlen("__imp_")))))
@@ -895,8 +862,7 @@ bool SymbolTable::loadInteriorImports() {
 
 void SymbolTable::exportInteriorNames() {
   llvm::TimeTraceScope timeScope("Export interior names");
-  // The compiler exports the names along with a definition that it exports;
-  // only an export from elsewhere needs them added.
+  // The compiler exports these with the definition; only others add them.
   if (llvm::all_of(exports, [](const Export &e) {
         return e.source == ExportSource::Directives;
       }))
@@ -941,17 +907,16 @@ bool SymbolTable::loadLocalImportMembers() {
     auto *u = dyn_cast<Undefined>(sym);
     if (!u)
       return true;
-    // An archive offering __imp_X itself, such as an import library, takes
-    // precedence; its member was requested when the reference was added.
+    // An archive that offers __imp_X itself takes precedence; its member was
+    // requested when the reference was added.
     if (u->pendingArchiveLoad || u->getWeakAlias())
       return false;
     StringRef name = sym->getName().substr(strlen("__imp_"));
     Symbol *l = find(name);
     if (l && l->isLazy() && !l->pendingArchiveLoad)
       lazies.push_back(l);
-    // The record of a thread-local variable, which the image writes where no
-    // input defines it, needs the variable and the image's TLS index, which
-    // the reference loads, as a direct reference to the variable would.
+    // A thread-local variable's record, written where no input defines it,
+    // needs the variable and the image's TLS index, which the reference loads.
     if (!l && name.ends_with("$tls")) {
       if (Symbol *var = find(name.drop_back(strlen("$tls")))) {
         if (var->isLazy() && !var->pendingArchiveLoad)
@@ -964,9 +929,8 @@ bool SymbolTable::loadLocalImportMembers() {
       }
       return false;
     }
-    // /alternatename defines X only when something references X, so
-    // __imp_X references it, as a direct reference would; when the alternate
-    // is an import, __imp_X is that import's pointer.
+    // /alternatename defines X only when something references X, so __imp_X
+    // references it; when the alternate is an import, __imp_X is its pointer.
     if (!l) {
       auto it = alternateNames.find(name);
       if (it == alternateNames.end())
@@ -985,9 +949,8 @@ bool SymbolTable::loadLocalImportMembers() {
     }
     return false;
   });
-  // A weak reference loads the import an import library offers for it, which
-  // defines X for a function and __imp_X in every case. A weak reference
-  // loads no other member, so an archive's definition does not satisfy it.
+  // A weak reference loads only the import an import library offers for it
+  // (which defines X for a function and __imp_X always), not an archive member.
   for (Symbol *sym : weakRefs) {
     if (!isa<Undefined>(sym) || sym->pendingArchiveLoad)
       continue;
@@ -996,16 +959,13 @@ bool SymbolTable::loadLocalImportMembers() {
       lazies.push_back(l);
   }
 
-  // What an import library offers of the COMDAT definitions of the link loads
-  // the offer, as ELF's definition in a shared object preempts the same
-  // definition: a function's gives the function's address to every
-  // address-take, and data's, with those of the other external symbols of its
-  // group and of its guard, takes the data's place.
+  // An import library's offer of a COMDAT definition preempts it, as on ELF: a
+  // function's gives its address to every address-take; data's takes the place
+  // of the group and its guard.
   std::vector<Symbol *> offers;
   if (ctx.config.importSlots) {
-    // A new offer can appear only when a new object defines a weak definition
-    // or a new archive offers an import for one; otherwise a prior pass has
-    // already loaded every offer this one could, so the scan is skipped.
+    // A new offer appears only with a new object's weak definition or a new
+    // archive; otherwise a prior pass loaded every offer, so skip the scan.
     bool rescan = weakFunctionObjects != ctx.objFileInstances.size() ||
                   offeredArchives != indexedArchives.size();
     for (; weakFunctionObjects != ctx.objFileInstances.size();
@@ -1104,9 +1064,8 @@ bool SymbolTable::handleMinGWAutomaticImport(Symbol *sym, StringRef name) {
   // but we mark the symbol as isRuntimePseudoReloc, and a later pass
   // will add runtime pseudo relocations for every relocation against
   // this Symbol. The runtime pseudo relocation framework expects the
-  // reference itself to point at the IAT entry. Under -import-slots, the
-  // later pass binds each word of static data holding the variable's address
-  // in place instead, and reports every other reference.
+  // reference itself to point at the IAT entry. Under -import-slots a later
+  // pass binds the address in place in each word of static data instead.
   size_t impSize = 0;
   if (isa<DefinedImportData>(imp)) {
     Log(ctx) << "Automatically importing " << name << " from "
@@ -1160,10 +1119,8 @@ void SymbolTable::bindImportsToDefinitions() {
     if (!d || !isa<ObjFile>(d->getFile()))
       continue;
     // A definition the DLL offers is the program's only if the executable
-    // selects it. The DLL's own references keep the default's import, which
-    // the loader binds and the fill writes with the program's choice, so a
-    // definition the program does not select is preempted in the DLL too, as
-    // a definition in an ELF shared object is.
+    // selects it, so the DLL's own references keep the default's import; an
+    // unselected definition is preempted, as on ELF.
     if (offers.contains(d) && !file->isDelayLoaded()) {
       Log(ctx) << "Keeping " << name << " for " << printSymbol(d)
                << ", which the image offers";
@@ -1185,9 +1142,8 @@ void SymbolTable::bindImportsToDefinitions() {
       }
       continue;
     }
-    // What the image takes from a DLL that offers it keeps the import: a
-    // shared vague definition, which the DLL's instance preempts, or whose
-    // address it gives.
+    // What the image takes from an offering DLL keeps the import: a shared
+    // vague definition the DLL's instance preempts, or whose address it gives.
     DefinedRegular *leader = d->getChunk()->sym;
     if (leader && leader->isCOMDAT && isShareableVagueName(leader->getName()) &&
         isDefaultVisibility(leader) && !ignoresOffersOf(imp))
@@ -1228,8 +1184,8 @@ bool SymbolTable::isPreemptibleVagueEntity(Symbol *s) {
     preemptibleVagueEntities.emplace();
     Configuration &config = ctx.config;
     using B = Configuration::Bsymbolic;
-    // The cells are written by the image's fill, which its C initializer
-    // table runs.
+    // The cells are written by the image's fill, run by its C initializer
+    // table.
     if (!config.importSlots || !config.dll || config.bsymbolic == B::All ||
         !isa_and_nonnull<Defined>(findUnderscore("__xi_a")))
       return false;
@@ -1244,10 +1200,9 @@ bool SymbolTable::isPreemptibleVagueEntity(Symbol *s) {
           isTypeInfoName(d->getName()))
         continue;
       collectWeakDataGroup(d, chunks, members, /*liveOnly=*/false);
-      // Immutable data is preemptible too, since its address is the program's
-      // one; its value reads go through the cell with its address-takes,
-      // which nothing yet tells apart. A thread-local variable is preempted
-      // with its record.
+      // Immutable data is preemptible too: its value reads go through the cell
+      // with its address-takes, which nothing yet tells apart. TLS is
+      // preempted with its record.
       preemptibleVagueEntities->insert_range(members);
     }
     if (config.bsymbolic != B::Functions)
@@ -1266,8 +1221,7 @@ void SymbolTable::keepThreadLocalRecord(Defined *record) {
   if (!c)
     return;
   c->live = true;
-  // A guard that liveness discarded is set by nothing live, and so is never
-  // tested.
+  // A guard liveness discarded is set by nothing live, so is never tested.
   if (auto *g = dyn_cast<DefinedRegular>(c->guard); g && !g->isLive())
     c->guard = c->var;
 }
@@ -1298,10 +1252,9 @@ Defined *SymbolTable::getOverrideOffer(const Export &e) {
       (!overridables.contains(e.sym->getName()) &&
        !defaultsByName.contains(e.sym->getName())))
     return nullptr;
-  // The runtime's default is a weak definition, the fallback that the
-  // executable's replacement supersedes, so exporting it is what makes it
-  // the default of every image. Its definition is the weak external's
-  // .weak.<name>.* alias, or a weak definition from bitcode.
+  // The runtime's default is a weak definition the executable's replacement
+  // supersedes; exporting it makes it every image's default. Its definition is
+  // the weak external's .weak.<name>.* alias, or a weak bitcode definition.
   Symbol *def = e.sym;
   if (auto *u = dyn_cast<Undefined>(def))
     def = u->getWeakAlias();
@@ -1315,12 +1268,9 @@ void SymbolTable::offerOverridableDefaults() {
   llvm::TimeTraceScope timeScope("Offer overridable defaults");
   if (overridables.empty() && defaultsByName.empty())
     return;
-  // Only the executable replaces an overridable default for every image of
-  // the program. A DLL's strong definition is an offer the executable's link
-  // may select instead, so the DLL exports the body under the offer name
-  // rather than its own: no importer binds to it as the ABI symbol, which
-  // would split the heap, and an executable that links the DLL discovers the
-  // offer and picks the winner for each slot.
+  // Only the executable replaces a default for every image. A DLL's strong
+  // definition is an offer, so it exports the body under the offer name, not
+  // the ABI symbol (which would split the heap), for the executable to select.
   for (Export &e : exports)
     if (getOverrideOffer(e))
       e.extName = saver().save(overrideOfferPrefix + e.sym->getName());
@@ -1332,10 +1282,9 @@ bool SymbolTable::loadOverrideOfferImports() {
   readOverrideRecords();
   if (overridables.empty() && defaultsByName.empty())
     return false;
-  // The DLL's own references to a definition it offers go through the
-  // default's import, which nothing else may have loaded, since the DLL
-  // defines the name. A link without the runtime's import library has no
-  // import, and the DLL keeps its definition to itself.
+  // The DLL's own references to a definition it offers go through the default's
+  // import, which nothing else loads since the DLL defines the name. Without
+  // the runtime's import library there is none, and the DLL keeps its own.
   bool loaded = false;
   for (const Export &e : exports) {
     if (!getOverrideOffer(e))
@@ -1361,26 +1310,23 @@ bool SymbolTable::loadOverrideOffers() {
   if (!ctx.config.importSlots || ctx.config.dll || overrideOffersLoaded)
     return false;
   overrideOffersLoaded = true;
-  // A DLL that defines its own overridable default exports it under the offer
-  // name, so its import library carries an offer symbol. Materialise the offer
-  // symbols the linked import libraries hold, so this link can see them by
-  // name; each names an offered default's ABI symbol after the prefix.
+  // A DLL defining its own default exports it under the offer name, so its
+  // import library carries an offer symbol. Materialise those so this link sees
+  // them by name.
   addIndexedLazies(overrideOfferPrefix);
   SmallVector<StringRef, 8> offers;
   for (auto &pair : symMap)
     if (pair.second->getName().starts_with(overrideOfferPrefix))
       offers.push_back(pair.second->getName());
-  // Rooting a lazy offer loads its member, so the order is by name, not by the
-  // table's hashing.
+  // Rooting a lazy offer loads its member, so sort by name, not table hashing.
   llvm::sort(offers);
   bool pulled = false;
   for (StringRef offer : offers) {
     StringRef name = offer.drop_front(overrideOfferPrefix.size());
     overrideOffers.insert(name);
-    // The executable's own replacement wins its slot, so an offer of a default
-    // the executable replaces itself is left unpulled. The first offer in link
-    // order, which find resolves, wins among several, as ELF selects the first
-    // in breadth-first order.
+    // The executable's own replacement wins its slot, so an offer it replaces
+    // itself is left unpulled. Among several, find resolves the first in link
+    // order.
     if (isLocalOverrideReplacement(name))
       continue;
     if (Symbol *s = find(offer); s && s->isLazy()) {
@@ -1388,11 +1334,9 @@ bool SymbolTable::loadOverrideOffers() {
       pulled = true;
     }
   }
-  // After the DLLs whose import libraries the link names come the DLLs they
-  // depend on, in ELF's breadth-first order, which the records of those
-  // import libraries describe. The executable imports the first such offer
-  // of a default that nothing before it offers or replaces from its DLL by
-  // name, as it would through that DLL's import library.
+  // After the named DLLs come their dependencies, in ELF's breadth-first order,
+  // which their import libraries' records describe. Import the first such offer
+  // that nothing before it offers or replaces, by name from its DLL.
   for (auto &[dll, name] :
        getDependentOverrideOffers(ctx, getImportLibraryRecords())) {
     if (overrideOffers.contains(name) || isLocalOverrideReplacement(name))
@@ -1449,12 +1393,10 @@ void SymbolTable::resolveOverridableReplacements() {
   if (overridables.empty() && overrideOffers.empty() &&
       defaultsByName.empty() && vagueOwners.empty())
     return;
-  // An overridable default this executable replaces is one an input defines
-  // with a strong definition, the body B, superseding the runtime's weak
-  // default for every image. A default a DLL defines with no fixed slot is
-  // replaced by name, through the table's block, by any such definition,
-  // whether or not its object marks it, as an executable's definition
-  // preempts a shared object's on ELF.
+  // A default this executable replaces is one an input strongly defines,
+  // superseding the runtime's weak default for every image. A DLL's slotless
+  // default is replaced by name through the table's block, as an executable's
+  // definition preempts a shared object's on ELF.
   SmallVector<std::pair<StringRef, Defined *>, 8> replaced;
   auto add = [&](StringRef name, Defined *body) {
     if (defaultsByName.contains(name))
@@ -1469,8 +1411,8 @@ void SymbolTable::resolveOverridableReplacements() {
     if (isLocalOverrideReplacement(name))
       add(name, cast<Defined>(find(name)));
   // A default the executable does not replace itself but a linked DLL offers is
-  // replaced for every image by that offer, reached through an import thunk to
-  // the DLL's instance that loadOverrideOffers pulled.
+  // replaced for every image by that offer, through an import thunk to the
+  // DLL's instance.
   for (StringRef name : overrideOffers) {
     if (isLocalOverrideReplacement(name))
       continue;
@@ -1484,11 +1426,9 @@ void SymbolTable::resolveOverridableReplacements() {
     buildOverrideSlots();
     return;
   }
-  // The slots, which the C++ runtime's definitions of its defaults record, in
-  // its objects or in its import library. Without them there is no default to
-  // override: a program that defines a replaceable function with no such
-  // runtime, as a freestanding one may, keeps its own definition and needs no
-  // table.
+  // The slots are recorded by the C++ runtime's defaults, in its objects or
+  // import library. Without them there is nothing to override, and a
+  // freestanding program keeps its own definition and needs no table.
   if (overrideSlotFacts.empty()) {
     buildOverrideSlots();
     return;
@@ -1511,10 +1451,9 @@ bool SymbolTable::bindVagueSiblings() {
   Configuration &config = ctx.config;
   if (!config.importSlots || config.dll || !vagueOwners.empty())
     return false;
-  // What the executable keeps: its default-visibility vague data, with the
-  // other external symbols of its group and its guard, and functions whose
-  // addresses are significant, that no DLL it imports from offers, a
-  // delay-loaded one's offer not being taken.
+  // What the executable keeps: its default-visibility vague data (group and
+  // guard) and address-significant functions that no non-delay-loaded DLL it
+  // imports from offers.
   DenseSet<StringRef> kept;
   auto keeps = [&](DefinedRegular *d) {
     if (!d || !isa<ObjFile>(d->getFile()) || !isDefaultVisibility(d))
@@ -1578,7 +1517,6 @@ bool SymbolTable::bindVagueSiblings() {
 }
 
 void SymbolTable::buildOverrideSlots() {
-  // The words of the vague entities' owners, once their imports are read.
   for (auto &[entity, word] : vagueOwners) {
     if (!word)
       word =
@@ -1595,9 +1533,8 @@ void SymbolTable::buildOverrideSlots() {
       ctx.config.gcroot.push_back(d);
     }
   };
-  // The block's entries: each takes the first free bucket from its home
-  // bucket, in the order of their names, so that the layout does not depend
-  // on the order of the inputs, and the rest go to the overflow list.
+  // Each entry takes the first free bucket from its home bucket, in name order
+  // so the layout is input-independent; the rest go to the overflow list.
   DenseMap<uint64_t, StringRef> keys;
   std::array<bool, overrideBucketCount> taken = {};
   std::vector<OverrideByName> overflow;
@@ -1630,16 +1567,13 @@ void SymbolTable::buildOverrideSlots() {
                return a.bucket < b.bucket;
              });
   llvm::append_range(overrideBlock, overflow);
-  // The slot each replacement names, its body.
   DenseMap<uint32_t, Defined *> replaced;
   for (const OverrideReplacement &r : overrideReplacements)
     replaced[r.slot] = r.body;
 
-  // The forwarding graph the runtime's defaults record: the standard specifies
-  // most defaults as calling another, and each such default records that
-  // other's slot, and whether the other takes its arguments without the
-  // second. A default forwarded to a replaced default runs the replacement's
-  // body.
+  // The forwarding graph the runtime's defaults record: a default calling
+  // another records its slot and whether it drops the second argument, and runs
+  // the replacement's body when forwarded to a replaced default.
   struct Edge {
     uint32_t target;
     bool dropsSecond;
@@ -1648,9 +1582,8 @@ void SymbolTable::buildOverrideSlots() {
   for (auto &[name, facts] : overrideSlotFacts)
     if (facts.forward)
       edges[facts.slot] = {*facts.forward, facts.dropsSecond};
-  // Each forwarding slot that is not replaced resolves to the nearest replaced
-  // slot its chain reaches, through a thunk when an edge on the way drops the
-  // second argument.
+  // An unreplaced forwarding slot resolves to the nearest replaced slot its
+  // chain reaches, through a thunk if an edge on the way drops the second arg.
   DenseMap<uint32_t, std::pair<Defined *, bool>> forwarded;
   for (const auto &edge : edges) {
     uint32_t from = edge.first;
@@ -1670,10 +1603,8 @@ void SymbolTable::buildOverrideSlots() {
     }
   }
 
-  // The table runs from slot zero to the highest slot it writes, and never
-  // fewer than its first eight, the hot line, which is always present, so a
-  // hot-line slot's check needs no bound. A table with no slot replaced still
-  // holds them, beside its block.
+  // The table spans slot zero to the highest it writes, never fewer than the
+  // first eight (the always-present hot line, whose checks need no bound).
   uint32_t count = 8;
   for (const auto &r : replaced)
     count = std::max(count, r.first + 1);
@@ -1687,9 +1618,8 @@ void SymbolTable::buildOverrideSlots() {
       overrideMask |= 1u << r.first;
     root(r.second);
   }
-  // A forwarded slot names the replacement's body, or the thunk to it, and
-  // sets no mask bit. Each body is a root already; a thunk is kept because the
-  // code section holds it.
+  // A forwarded slot names the body, or a thunk to it, and sets no mask bit.
+  // The body is already a root; a thunk is kept by the code section.
   for (const auto &f : forwarded) {
     Defined *target = f.second.first;
     if (f.second.second) {
@@ -1708,10 +1638,9 @@ bool SymbolTable::nameOverrideCheck() {
   readOverrideRecords();
   if (overrideSlotFacts.empty() && defaultsByName.empty())
     return false;
-  // Not until a replacement supersedes the runtime's weak default: an input's
-  // strong definition, or a linked DLL's offer the executable selects for a
-  // slot it does not replace itself. A link with no replacement writes no
-  // table.
+  // Only once a replacement supersedes the runtime's weak default: an input's
+  // strong definition, or a linked DLL's offer for a slot the executable does
+  // not replace itself. A link with no replacement writes no table.
   bool replaces =
       (!overrideSlotFacts.empty() &&
        llvm::any_of(
@@ -1728,9 +1657,9 @@ bool SymbolTable::nameOverrideCheck() {
       });
   if (!replaces)
     return false;
-  // The executable's start-up validation, whose TLS callback the C++ runtime
-  // provides runs before any of the executable's code. It reads the anchor the
-  // writer fills beside the table, which the runtime reaches by this name.
+  // The executable's start-up validation, run by a C++ runtime TLS callback
+  // before any executable code; it reads the anchor the writer fills beside the
+  // table, reached by this name.
   overrideAnchor = make<OverrideAnchorChunk>(ctx, *this);
   addSynthetic("__ovr_anchor", overrideAnchor);
   addGCRoot(mangle("__ovr_check"));
@@ -1819,9 +1748,8 @@ void SymbolTable::reportUnresolvable() {
         continue;
       }
     }
-    // The record of a thread-local variable that the link defines, which the
-    // image writes once LTO is done, and which needs the variable and its
-    // guard.
+    // A thread-local variable's record, written after LTO, needs the variable
+    // and its guard.
     if (ctx.config.importSlots) {
       StringRef record = name;
       record.consume_front("__imp_");
@@ -1844,9 +1772,8 @@ void SymbolTable::reportUnresolvable() {
   reportProblemSymbols(undefs, /*localImports=*/nullptr, true);
 }
 
-// Whether the linker may define the symbol u refers to: a plain reference, or
-// a weak one whose alias is zero, as a weak declaration makes it. A weak alias
-// to anything else is the definition the program chose.
+// Whether the linker may define what u refers to: a plain reference, or a weak
+// one whose alias is zero. Any other weak alias is the program's own choice.
 static bool isDefinableReference(Undefined *u) {
   Symbol *alias = u->getWeakAlias();
   auto *abs = dyn_cast_or_null<DefinedAbsolute>(alias);
@@ -1936,11 +1863,9 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
     StringRef name = undef->getName();
 
     // A weak alias may have been resolved, so check for that. Under
-    // -import-slots, an extern_weak X whose import an import library offered
-    // is that import, as a shared object satisfies an ELF weak reference: a
-    // function's import defines X, and imported data is reached as automatic
-    // import reaches it, so that static data holding X's address holds the
-    // address code reads through __imp_X.
+    // -import-slots an extern_weak X whose import an import library offered is
+    // that import, as a shared object satisfies an ELF weak reference: a
+    // function's import defines X, data's is reached as automatic import is.
     if (undef->getWeakAlias()) {
       if (ctx.config.importSlots) {
         auto *abs =
@@ -1955,9 +1880,9 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
       continue;
     }
 
-    // Under -import-slots, the record of a thread-local variable that the
-    // image defines, which code reaches through its import pointer where
-    // another image may define the variable, is the one the image writes.
+    // Under -import-slots a thread-local variable's record, reached through its
+    // import pointer where another image may define the variable, is the one
+    // the image writes.
     if (ctx.config.importSlots) {
       StringRef record = name;
       record.consume_front("__imp_");
@@ -2027,18 +1952,16 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
     undefs.insert(sym);
   }
 
-  // The loop walks the symbol table in the order of its hashing, which can
-  // differ between builds of the linker, so the pointers are laid out by name.
+  // symMap order is nondeterministic, so lay the pointers out by name.
   llvm::sort(newLocalImports, [](DefinedLocalImport *a, DefinedLocalImport *b) {
     return a->getName() < b->getName();
   });
   for (DefinedLocalImport *d : newLocalImports)
     localImportChunks.push_back(d->getChunk());
 
-  // Remaining undefined symbols are not fatal if /force is specified.
-  // They are replaced with dummy defined symbols, once the loop is done, so
-  // that automatic import of X does not depend on whether __imp_X was
-  // visited first.
+  // Remaining undefined symbols are not fatal if /force is specified; they are
+  // replaced with dummy defined symbols after the loop, so automatic import of
+  // X does not depend on whether __imp_X was visited first.
   if (ctx.config.forceUnresolved)
     for (Symbol *sym : undefs)
       replaceSymbol<DefinedAbsolute>(sym, ctx, sym->getName(), 0);
@@ -2214,7 +2137,7 @@ Symbol *SymbolTable::addUndefined(StringRef name, InputFile *f,
   if (wasInserted && addIndexedLazy(s, name))
     wasInserted = false;
   // Only a weak external passes overrideLazy; any other reference is one a
-  // weak fallback must not shadow (question 136).
+  // weak fallback must not shadow.
   if (ctx.config.importSlots && !overrideLazy)
     stronglyReferenced.insert(s);
   if (wasInserted || (s->isLazy() && overrideLazy)) {
@@ -2331,12 +2254,10 @@ void SymbolTable::addLazyArchive(ArchiveFile *f, const Archive::Symbol &sym) {
   if (!u || s->pendingArchiveLoad)
     return;
   if (u->weakAlias && !u->isECAlias(machine)) {
-    // A weak external shadows the symbol. link.exe, and this linker without
-    // -import-slots, drop the member, so a later strong reference resolves to
-    // the weak fallback where ELF would pull the member. Under -import-slots
-    // the member stays reachable: pull it now if a reference other than a weak
-    // external has named the symbol, otherwise keep it for one that may
-    // (question 136).
+    // A weak external shadows the symbol. Without -import-slots, as link.exe
+    // does, the member is dropped and a later strong reference gets the weak
+    // fallback. Under -import-slots the member stays reachable: pull it now if
+    // a non-weak reference has named the symbol, else keep it for one that may.
     if (!ctx.config.importSlots)
       return;
     if (!stronglyReferenced.count(s)) {
@@ -2579,7 +2500,6 @@ Symbol *SymbolTable::find(StringRef name) {
   auto [f, i] = findIndexed(key);
   if (!f)
     return nullptr;
-  // The table keeps the name, which the archive holds for the link.
   Symbol *s = insert(f->getSymbolName(i)).first;
   replaceSymbol<LazyArchive>(s, f, f->getSymbol(i));
   return s;
@@ -2610,17 +2530,15 @@ void SymbolTable::addIndexedArchive(ArchiveFile *f) {
     auto *u = dyn_cast<Undefined>(s);
     if (!u || s->pendingArchiveLoad)
       return false;
-    // A weak external shadows the symbol. link.exe, and this linker without
-    // -import-slots, leave it so and the member stays unloaded; under
-    // -import-slots a reference other than the weak external still pulls the
-    // member, as ELF pulls it for the strong reference (question 136).
+    // A weak external shadows the symbol: without -import-slots the member
+    // stays unloaded, as in link.exe; with it a non-weak reference still pulls
+    // the member, as ELF does for the strong reference.
     if (u->weakAlias && !u->isECAlias(machine))
       return ctx.config.importSlots && stronglyReferenced.contains(s);
     return true;
   };
   SmallVector<std::pair<uint32_t, Symbol *>, 0> loads;
-  // Look the table's symbols up in the archive, or the archive's in the
-  // table, whichever is fewer; a lookup in the table costs more.
+  // Iterate whichever set is smaller; a table lookup costs more than one in f.
   if (symMap.size() < f->getNumIndexed() * 4) {
     for (auto &[key, s] : symMap)
       if (isWaiting(s))
@@ -2956,9 +2874,8 @@ void SymbolTable::fixupExports() {
     if (e == *existing)
       continue;
     if (e.name != existing->name) {
-      // As link.exe does, an import library offers the symbol of an export
-      // that takes another's name through EXPORTAS, importing that name. The
-      // export table needs the name once, for the other export.
+      // As link.exe does, an import library offers the symbol of an EXPORTAS
+      // export under the aliased name; the export table needs the name once.
       if (!e.exportAs.empty()) {
         exportAsAliases.push_back(e);
       } else if (!existing->exportAs.empty()) {
@@ -3025,8 +2942,7 @@ void SymbolTable::assignExportOrdinals() {
   if (max <= std::numeric_limits<uint16_t>::max())
     return;
 
-  // Name the files that define the most exported symbols, which are where the
-  // export set has to be narrowed.
+  // Name the files with the most exported symbols, where to narrow the set.
   MapVector<InputFile *, uint32_t> counts;
   for (Export &e : exports)
     if (e.sym)

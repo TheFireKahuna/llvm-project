@@ -28,10 +28,8 @@ class InputFile;
 class ObjFile;
 class Symbol;
 
-// What the ABI contracts of a link need from one phase to the next. A contract
-// is the layout of a type, or of the type of a datum, that an object provides
-// to other images or requires of them; its locator and digest are the
-// base64url text by which a DLL's exports name it.
+// ABI-contract state carried across link phases. A contract is a type's (or a
+// datum type's) layout, named by base64url locator and digest in DLL witnesses.
 struct ContractState {
   struct Contract {
     bool data;
@@ -40,8 +38,7 @@ struct ContractState {
     StringRef digest;
   };
 
-  // The contract of each identity that the link's objects provide or
-  // require, by kind and locator, with the first file to give it.
+  // A provided or required contract by kind and locator, with its first file.
   struct Known {
     StringRef digest;
     InputFile *file;
@@ -49,16 +46,13 @@ struct ContractState {
   };
   llvm::StringMap<Known> known;
 
-  // The witnesses of the contracts that each file's definitions provide, the
-  // names a DLL exports them by, in the order the files were loaded.
+  // Per file, the witness names its definitions provide, in load order.
   llvm::MapVector<InputFile *, SmallVector<StringRef, 0>> provides;
 
-  // Which of the symbols of each bitcode file that provides contracts the file
-  // defines, as its symbol table says, which LTO takes.
+  // Which symbols each bitcode file defines, recorded before LTO consumes it.
   llvm::DenseMap<InputFile *, llvm::BitVector> bitcodeDefinitions;
 
-  // The contracts that the code in each section of an object requires of the
-  // image that provides a symbol, by section number.
+  // Per object, the contracts its code requires of a provider, by section.
   struct Requirement {
     uint32_t section;
     Symbol *sym;
@@ -66,42 +60,36 @@ struct ContractState {
   };
   llvm::MapVector<ObjFile *, std::vector<Requirement>> requirements;
 
-  // The byte that every witness the image exports names.
+  // The read-only byte every exported witness names.
   Defined *witness = nullptr;
 };
 
-// Reads a /abiprovide: or, with data, /abiprovidedata: directive of file.
+// Reads a /abiprovide: (or /abiprovidedata: when data) directive.
 void addContractProvides(COFFLinkerContext &ctx, InputFile *file,
                          StringRef rows, bool data);
 
-// Reads the contracts that an object's references require, from its
-// LinkRecordContracts group, or returns why the group is malformed.
+// Reads an object's required contracts from its link records, or the error.
 llvm::Error readContractRequirements(ObjFile *file, ArrayRef<uint8_t> payload);
 
-// A DLL exports a witness of each contract that the objects whose definitions
-// it exports provide, or the type_info object it owns of a type under the name
-// that the type's contract qualifies.
+// Exports a witness for each contract the image's exported definitions
+// provide; a type_info object it owns is exported under its qualified name.
 void addContractWitnessExports(COFFLinkerContext &ctx);
 
-// Whether e is the export of a witness, which shares its ordinal with every
-// other.
+// Whether sym is the witness byte all witnesses export through one ordinal.
 bool isContractWitness(COFFLinkerContext &ctx, const Defined *sym);
 
-// Whether name is that of a witness, which code never calls: a standalone one,
-// or a type_info object's name qualified by its type's contract, under which a
-// DLL that owns the object exports it too.
+// Whether name names a witness, which code never calls: a plain witness or a
+// type_info name qualified by its type's contract.
 bool isContractWitnessName(StringRef name);
 
-// Adds to the import library of a DLL, whose exports, as the writer would put
-// them in the library, describe, the imports of its witnesses, named for the
-// DLL.
+// Adds the imports of a DLL's witnesses, named for the DLL, to the exports the
+// writer puts in its import library.
 void addContractWitnessImports(
     COFFLinkerContext &ctx, StringRef dllName,
     std::vector<llvm::object::COFFShortExport> &exports);
 
-// An image imports the witness of each contract that its code requires of a
-// DLL that exports one for the contract's identity, and a link that requires
-// a contract a DLL exports another for is an error.
+// Imports the witness of each contract the image's code requires of a DLL that
+// exports one; a DLL built with another layout makes the link fail.
 void bindContractWitnesses(COFFLinkerContext &ctx);
 } // namespace lld::coff
 

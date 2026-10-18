@@ -155,10 +155,9 @@ struct Configuration {
   bool forceUnresolved = false;
   // Import what nothing defines from the executable that loads the DLL.
   bool unresolvedHostImports = false;
-  // Under -import-slots, which of a DLL's own references to the vague entities
-  // it offers bind locally rather than through cells another image's instance
-  // may preempt, as ld.lld's -Bsymbolic family: none, functions, all, or the
-  // non-weak ones (functions only), which leaves vague entities preemptible.
+  // Under -import-slots, which of a DLL's own references to vague entities it
+  // offers bind locally rather than through preemptible cells, as ld.lld's
+  // -Bsymbolic family: none, functions, all, or non-weak (functions only).
   enum class Bsymbolic { None, Functions, NonWeakFunctions, NonWeak, All };
   Bsymbolic bsymbolic = Bsymbolic::None;
   bool debug = false;
@@ -199,9 +198,8 @@ struct Configuration {
   // closure may both keep without an error.
   llvm::StringSet<> allowedVagueDuplicates;
   llvm::StringSet<> allowedVagueDuplicateDLLs;
-  // The previous release's import library, whose record the entities the
-  // image newly keeps are compared with, and whether the image exports an
-  // epoch of the entities it keeps.
+  // The previous release's import library, against whose record the image's
+  // newly kept entities are compared, and whether the image exports an epoch.
   StringRef offersBaseline;
   bool offersEpoch = false;
   std::map<std::string, int> dllOrder;
@@ -393,9 +391,8 @@ struct Configuration {
   // The nodes of the version script, in order.
   std::vector<VersionDefinition> versionDefinitions;
 
-  // Warn of an instruction that may take the address of an imported function
-  // that an object does not describe, which gives the function its import
-  // thunk as its address.
+  // Warn of an undescribed instruction that may take an imported function's
+  // address, which gives the function its import thunk as its address.
   bool warnUndescribedAddress = true;
   bool warnStdcallFixup = true;
   bool warnImportedDllMain = true;

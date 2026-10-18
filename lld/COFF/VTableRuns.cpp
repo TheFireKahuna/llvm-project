@@ -6,19 +6,14 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// The vtable records say where each vtable's primary address point is, which
-// class it belongs to and that class's primary base. From them this file lays
-// out the vtables of a class and of every class derived from it through primary
-// bases as one run of equal slots, so that a vtable pointer is one of the
-// class's exactly when its offset from the run's start is a multiple of the
-// slot size below the run's extent. A guard thunk tests a virtual call's vtable
-// pointer that way, and a checked downcast tests the target class's run.
-//
-// The slot size, a power of two of at least a cache line, is the run's and
-// covers its largest vtable, so that between two slots' address points no other
-// address point and no filler falls on a slot boundary. A vtable too large for
-// any run's slot, or merged with others into one chunk, is left out, and the
-// calls on its objects take the slow path.
+// Lays out the vtables of a class and of every class derived from it through
+// primary bases as one run of equal-sized slots: a vtable pointer belongs to
+// the class exactly when its offset from the run's start is a multiple of the
+// slot size and below the run's extent, which is how guard thunks and checked
+// downcasts test pointers. The slot size is a power of two of at least a cache
+// line covering the run's largest vtable, so no boundary but an address point
+// falls inside a run. A vtable too large for any slot, or merged with others
+// into one chunk, is left out and its objects take the slow path.
 //
 //===----------------------------------------------------------------------===//
 
@@ -49,15 +44,13 @@ using namespace llvm::COFF;
 using namespace lld;
 using namespace lld::coff;
 
-// A vtable larger than this, with its address point, is left out of the runs:
-// giving a run a slot this large to hold it would waste a page or more on every
-// other class of the run. Vtables are far smaller in practice.
+// A vtable larger than this is left out of the runs: a slot this large would
+// waste a page or more on every other class of the run.
 static const uint64_t maxSlot = 1 << 16;
 
 namespace {
-// A 4-byte read-only word holding a run's stride less one, which a guard thunk
-// loads to mask a vtable pointer's offset, since a constant cannot be an
-// immediate on COFF without a relocation that adds the image base.
+// A read-only word holding a run's stride less one, which a guard thunk loads
+// to mask a pointer offset: a COFF immediate would need an image-base reloc.
 class MaskChunk : public NonSectionChunk {
 public:
   explicit MaskChunk(uint32_t mask) : mask(mask) { setAlignment(4); }
@@ -75,8 +68,8 @@ private:
   uint32_t mask;
 };
 
-// Three zero words in read-only data, the owner's run of a class whose owner
-// the image does not bind: its extent is zero, so every pointer misses it.
+// The owner's run of a class whose owner the image does not bind: three zero
+// words, so its extent is zero and every pointer misses it.
 class EmptyOwnerRunChunk : public NonSectionChunk {
 public:
   EmptyOwnerRunChunk() { setAlignment(8); }
@@ -86,8 +79,7 @@ public:
 } // namespace
 
 namespace {
-// A class the records name, before the runs are formed: the kept chunk of its
-// vtable, the address point's offset into it, and its primary base's name.
+// A class named by the records, before the runs are formed.
 struct ClassNode {
   DefinedRegular *vtable;
   uint64_t apoff;
@@ -95,8 +87,7 @@ struct ClassNode {
 };
 } // namespace
 
-// A tagged vtable, which a required pin places rather than a slot of its
-// primary base's run.
+// A tagged vtable: placed by a required pin, not a slot of its base's run.
 struct TaggedVTable {
   SectionChunk *chunk;
   uint64_t apoff;
@@ -104,10 +95,10 @@ struct TaggedVTable {
   StringRef base;
 };
 
-// Gathers the classes the live records name, keeping one vtable per class. A
-// chunk that holds more than one class's address point is a merged global,
-// whose classes are left out, since its vtables do not each have a slot. A
-// tagged vtable is gathered apart.
+// Gathers the classes the live records name, one vtable per class. A chunk
+// holding more than one class's address point is a merged global whose classes
+// are left out, since their vtables have no slot of their own; tagged vtables
+// are gathered apart.
 static void gatherClasses(COFFLinkerContext &ctx,
                           MapVector<StringRef, ClassNode> &classes,
                           std::vector<TaggedVTable> &tagged) {
@@ -131,8 +122,7 @@ static void gatherClasses(COFFLinkerContext &ctx,
       if (inserted)
         ++chunkUses[vt.vtable->getChunk()];
       else if (it->second.vtable->getChunk() != vt.vtable->getChunk())
-        // Two kept chunks for one class: keep the first and do not count the
-        // other against the chunk it names.
+        // Two kept chunks for one class: mark it merged, it has no single slot.
         merged.insert(name);
     }
   }
@@ -145,10 +135,9 @@ static void gatherClasses(COFFLinkerContext &ctx,
 }
 
 // Visits name and its primary-base descendants in pre-order, appending a slot
-// for each to run and recording, for each class, its slot and its subtree's
-// size, which is contiguous in pre-order. A class with no vtable here, a base
-// that only its derived classes name or one left out, has no slot of its own,
-// and its run is its descendants'.
+// per class and recording each class's slot and subtree size (contiguous in
+// pre-order). A class with no vtable here has no slot of its own; its run is
+// its descendants'.
 static void walk(StringRef name, MapVector<StringRef, ClassNode> &classes,
                  const DenseSet<StringRef> &excluded,
                  DenseMap<StringRef, std::vector<StringRef>> &children,
@@ -182,11 +171,10 @@ void lld::coff::registerVTableRunSymbols(COFFLinkerContext &ctx) {
   });
 }
 
-// Two tagged vtables of one hierarchy whose address points share their page
-// offset share a tag, so that a failing cast between them takes the type_info
-// compare. Tags follow from the classes alone and are never moved, so a
-// program can only rename or restructure; the pairs are listed under /verbose
-// rather than warned about.
+// Lists under /verbose the tagged vtables of one hierarchy whose address points
+// share a page offset, hence a tag: a failing cast between them falls back to
+// the type_info compare. Tags follow from the classes alone, so this is advice
+// to rename or restructure, not a warning.
 static void reportTagCollisions(COFFLinkerContext &ctx,
                                 MapVector<StringRef, ClassNode> &classes,
                                 std::vector<TaggedVTable> &tagged) {
@@ -223,15 +211,13 @@ void lld::coff::resolveVTableRuns(COFFLinkerContext &ctx) {
   if (classes.empty())
     return;
 
-  // A class whose vtable is too large for a slot is left out; its children
-  // then head their own runs. The exclusion repeats until every run's slot
-  // fits, which the first pass almost always reaches.
+  // A class whose vtable is too large for a slot is left out and its children
+  // head their own runs; repeat until every run's slot fits.
   DenseSet<StringRef> excluded;
   for (;;) {
-    // Each class is a child of its primary base, and one with none heads a
-    // run. A base with no vtable here heads its derived classes' run, so that
-    // a check of it still finds them, as for a class the image derives from
-    // another image's; it, and a class left out, has no slot of its own.
+    // Each class is a child of its primary base; one with none heads a run. A
+    // base with no vtable here heads its derived classes' run so a check of it
+    // still finds them, as for a class derived from another image's.
     DenseMap<StringRef, std::vector<StringRef>> children;
     std::vector<StringRef> roots;
     DenseSet<StringRef> absentRoots;
@@ -255,8 +241,8 @@ void lld::coff::resolveVTableRuns(COFFLinkerContext &ctx) {
       walk(root, classes, excluded, children, visited, run);
       if (run.slots.empty())
         continue;
-      // The slot covers the largest vtable, with its address point, so that no
-      // slot boundary but an address point falls in the run.
+      // The slot covers the largest vtable with its address point, so no slot
+      // boundary but an address point falls in the run.
       uint64_t widest = 0;
       StringRef widestClass;
       for (const VTableRun::Class &c : run.classes) {
@@ -285,8 +271,8 @@ void lld::coff::resolveVTableRuns(COFFLinkerContext &ctx) {
       break;
   }
 
-  // A tagged vtable is offered the gaps of its primary base's run first, so
-  // that a hierarchy's vtables share their pages.
+  // Offer a tagged vtable the gaps of its base's run, so a hierarchy's vtables
+  // share pages.
   StringMap<unsigned> runOf;
   for (auto [i, run] : llvm::enumerate(ctx.vtableRuns))
     for (const VTableRun::Class &c : run.classes)
@@ -311,18 +297,14 @@ void lld::coff::placeVTableRuns(
     return;
   std::vector<Chunk *> &chunks = rdataSec->chunks;
   DenseSet<const Chunk *> inRdata(chunks.begin(), chunks.end());
-  // The run each vtable of a whole run belongs to, so one pass over the section
-  // places every run, instead of a search and an erase over every chunk per
-  // run.
+  // The run each vtable belongs to, so one pass over the section places every
+  // run rather than a search per run.
   DenseMap<const Chunk *, VTableRun *> memberRun;
   for (VTableRun &run : ctx.vtableRuns) {
-    // A run the linker places needs all its vtables in plain read-only data,
-    // laid out as consecutive slots. A vtable held back into the import
-    // address table span keeps its in-place import slots inside that table,
-    // and one that a required pin places, as a tagged vtable is, sits at its
-    // pin, so neither can move into a run. Such a vtable, or one otherwise not
-    // here, is left in place, and the run becomes an empty range so that its
-    // classes' calls take the slow path.
+    // The linker can place a run only if all its vtables are in plain read-only
+    // data and free to move: a vtable held back into the import address table,
+    // or pinned (as a tagged vtable is), stays put. Otherwise the run becomes
+    // an empty range and its classes' calls take the slow path.
     bool whole = llvm::all_of(run.slots, [&](const VTableRun::Slot &s) {
       auto pin = ctx.chunkPins.find(s.chunk);
       return inRdata.contains(s.chunk) && !heldBack(s.chunk) &&
@@ -334,8 +316,7 @@ void lld::coff::placeVTableRuns(
       run.stride = 0;
       continue;
     }
-    // The writer places these vtables itself, so their advisory line pins,
-    // which would fix them one at a time, give way.
+    // The writer places these vtables, so drop their advisory line pins.
     for (const VTableRun::Slot &slot : run.slots) {
       ctx.chunkPins.erase(slot.chunk);
       memberRun[slot.chunk] = &run;
@@ -343,8 +324,8 @@ void lld::coff::placeVTableRuns(
   }
   if (memberRun.empty())
     return;
-  // Lay each whole run's vtables out together where its first vtable sits in
-  // the section, in slot order, leaving every other chunk in place.
+  // Lay each whole run's vtables out in slot order where its first vtable sits,
+  // leaving every other chunk in place.
   std::vector<Chunk *> placed;
   placed.reserve(chunks.size());
   DenseSet<VTableRun *> emitted;
@@ -365,8 +346,7 @@ void lld::coff::placeVTableRuns(
 void lld::coff::defineVTableRuns(COFFLinkerContext &ctx) {
   llvm::TimeTraceScope timeScope("Define vtable runs");
 
-  // Where the end and the start plus the stride less one of each placed
-  // class's run are, which a DLL exports.
+  // The end and the start-plus-stride-less-one of each placed run, for export.
   struct PlacedRun {
     Chunk *chunk;
     uint64_t end;
@@ -374,9 +354,8 @@ void lld::coff::defineVTableRuns(COFFLinkerContext &ctx) {
   };
   StringMap<PlacedRun> placedRuns;
   for (const VTableRun &run : ctx.vtableRuns) {
-    // The run holds if each slot's address point is the stride past the one
-    // before, and the first is 16 bytes into a line; assignAddresses places it
-    // so, but a packing it could not meet leaves it unplaced.
+    // The run holds only if each address point is one stride past the previous
+    // and the first is 16 bytes into a line; a packing may leave it unplaced.
     bool placed = run.stride != 0;
     uint64_t prev = 0;
     for (unsigned i = 0; placed && i != run.slots.size(); ++i) {
@@ -388,8 +367,7 @@ void lld::coff::defineVTableRuns(COFFLinkerContext &ctx) {
       prev = point;
     }
     for (const VTableRun::Class &cls : run.classes) {
-      // A class with no vtable here whose derived classes have none either
-      // has an empty range.
+      // A class with no vtables in its subtree has an empty range.
       if (cls.count == 0)
         continue;
       const VTableRun::Slot &slot = run.slots[cls.first];
@@ -399,11 +377,9 @@ void lld::coff::defineVTableRuns(COFFLinkerContext &ctx) {
             s && isa<Defined>(s))
           replaceSymbol<DefinedSynthetic>(s, s->getName(), c, off);
       };
-      // The guard thunk tests a vtable pointer through addresses: the start is
-      // the class's own address point, the end one past its subtree's last
-      // slot, and the mask the read-only word holding the stride less one. An
-      // unplaced run gives an empty range at the image base, so a pointer
-      // misses it.
+      // Start is the class's address point, end one past its subtree's last
+      // slot, mask the stride-less-one word. An unplaced run gives an empty
+      // range at the image base, which no pointer matches.
       if (placed) {
         define(VTableRangeStartPrefix, slot.chunk, slot.apoff);
         define(VTableRangeEndPrefix, slot.chunk, slot.apoff + bytes);
@@ -419,11 +395,11 @@ void lld::coff::defineVTableRuns(COFFLinkerContext &ctx) {
     }
   }
 
-  // A range symbol whose class has no run keeps the empty range that
-  // registerVTableRunSymbols gave it, so every vtable pointer misses it.
+  // A range symbol whose class has no run keeps its empty range from
+  // registerVTableRunSymbols.
 
-  // An exported run that the layout did not place has its end and its last
-  // word at its start, an extent of zero.
+  // An exported run the layout did not place gets its end and last word at its
+  // start, an extent of zero.
   for (COFFLinkerContext::VTableRunExport &e : ctx.vtableRunExports) {
     auto it = placedRuns.find(e.cls);
     for (int w : {1, 2}) {
@@ -437,8 +413,7 @@ void lld::coff::defineVTableRuns(COFFLinkerContext &ctx) {
     }
   }
 
-  // A class whose owner the image binds reads the three words from the
-  // import address table.
+  // A class whose owner the image binds reads its three words from the IAT.
   for (COFFLinkerContext::VTableOwnerRun &r : ctx.vtableOwnerRuns)
     replaceSymbol<DefinedSynthetic>(r.sym, r.sym->getName(),
                                     r.words[0]->getChunk(),
@@ -446,9 +421,8 @@ void lld::coff::defineVTableRuns(COFFLinkerContext &ctx) {
                                         r.words[0]->getChunk()->getRVA());
 }
 
-// The name a DLL exports a word of a class's run under, hashed from the
-// class's name, which may be long, as the contract witnesses' are: the end
-// ('e') or the start plus the stride less one ('m').
+// The export name for a run word, hashed from the class name (which may be
+// long): the end ('e') or the start plus the stride less one ('m').
 static std::string runWordExportName(StringRef cls, char word) {
   return (VTableRunExportPrefix + getABIContractLocator(cls) + Twine(word))
       .str();
@@ -479,8 +453,7 @@ void lld::coff::addVTableRunExports(COFFLinkerContext &ctx) {
     names.insert(exportedName(e));
 
   // Each class of a live record whose vtable or type_info the image exports,
-  // with its own vtable's address point, the run's first slot whether or not
-  // the layout places the run.
+  // with its own vtable's address point (the run's first slot).
   struct Class {
     std::string cls;
     Chunk *chunk;
@@ -500,8 +473,8 @@ void lld::coff::addVTableRunExports(COFFLinkerContext &ctx) {
         continue;
       uint64_t apoff = vt.offset + (vt.onSection ? 0 : vt.vtable->getValue());
       uint64_t point = apoff - vt.vtable->getValue();
-      // Two classes whose hashed names clash export neither's, so that an
-      // importer never reads one class's run for another's.
+      // Two classes whose hashed names clash export neither, so an importer
+      // never reads one class's run for another's.
       auto [it, inserted] = locators.try_emplace(
           getABIContractLocator(vt.cls), classes.size());
       if (!inserted) {
@@ -520,8 +493,7 @@ void lld::coff::addVTableRunExports(COFFLinkerContext &ctx) {
     e.names[0] = saver().save(c.start);
     e.names[1] = saver().save(runWordExportName(c.cls, 'e'));
     e.names[2] = saver().save(runWordExportName(c.cls, 'm'));
-    // The start is the class's address point, which the image exports by
-    // that name already when another image may refer to it.
+    // The start is the address point, which may already be exported by name.
     for (int w : {0, 1, 2}) {
       if (w == 0 && names.contains(e.names[0]))
         continue;
@@ -582,8 +554,8 @@ void lld::coff::bindVTableOwnerRuns(COFFLinkerContext &ctx) {
     return a->getName() < b->getName();
   });
 
-  // The DLLs the image imports statically, in load order. A delay-loaded DLL
-  // may be unloaded, and an image of mixed machines is not served.
+  // The DLLs the image imports statically, in load order; a delay-loaded DLL
+  // may be unloaded.
   SmallVector<std::string, 0> dlls;
   if (ctx.config.importSlots) {
     StringSet<> seen;
@@ -594,8 +566,8 @@ void lld::coff::bindVTableOwnerRuns(COFFLinkerContext &ctx) {
         dlls.push_back(dll);
     }
   }
-  // Whether the image imports the class's vtable or type_info from dll, so
-  // that the DLL's run of it adds no import that could fail to load.
+  // Whether the image imports the class's vtable or type_info from dll, so its
+  // run adds no import that could fail to load.
   auto importsClassFrom = [&](StringRef cls, StringRef dll) {
     for (StringRef prefix : {"__imp__ZTV", "__imp__ZTI"}) {
       auto *imp =

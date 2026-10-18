@@ -118,9 +118,8 @@ public:
   bool lazy = false;
 };
 
-// An archive's symbol table indexed by name: the first of its symbols with
-// each name is in a hash table, by its position in the symbol table. The
-// thread that reads an archive builds its index.
+// An archive's symbol table indexed by name: the first symbol with each name,
+// in a hash table by its position. The archive's reader thread builds it.
 class ArchiveIndex {
 public:
   // Creates the archive in mb and indexes it, or leaves the index unbuilt if
@@ -216,10 +215,10 @@ public:
   void parseLazy();
   MachineTypes getMachineType() const override;
   ArrayRef<Chunk *> getChunks() { return chunks; }
-  // The chunk of the section numbered sectionNumber, or null if the object
-  // has no such section or did not keep it. Only an object with link-only
-  // records keeps the index after initialization, since only its records
-  // name sections by number.
+  // The chunk of the section numbered sectionNumber, or null if the object has
+  // no such section or did not keep it. Only an object with link-only records
+  // keeps the index past initialization, since only its records number
+  // sections.
   SectionChunk *getSectionChunk(uint32_t sectionNumber) const;
   ArrayRef<SectionChunk *> getDebugChunks() { return debugChunks; }
   ArrayRef<SectionChunk *> getSXDataChunks() { return sxDataChunks; }
@@ -282,10 +281,9 @@ public:
 
   const coff_section *callgraphSec = nullptr;
 
-  // The facts the object's link-only records describe about one relocation,
-  // joined to it when the chunk is read so consumers need no search: the form
-  // of its instruction site, whether its symbol is only called through it, and
-  // the place inside code the linker resizes that it refers to.
+  // Facts the object's link-only records describe about one relocation, joined
+  // to it at read time so consumers need no search: its site's form, whether
+  // its symbol is only called through it, and any interior place it refers to.
   struct RelocFact {
     uint32_t interior = 0;
     llvm::COFF::LinkSiteForm form = llvm::COFF::LinkSiteOther;
@@ -294,11 +292,10 @@ public:
     bool callOnly = false;
   };
 
-  // A site the object's records describe as a load of an import pointer whose
-  // register only reads of memory read, with its form, and on ARM64 the
-  // distance in instructions back to the adrp that gives it the pointer's
-  // page; or, of form LinkSiteOther, as an access through such a load's
-  // register that only reads.
+  // A site the records describe as a load of an import pointer whose register
+  // only memory reads read, with its form and (on ARM64) the distance back to
+  // the adrp giving the pointer's page; or, of form LinkSiteOther, an access
+  // through such a load's register that only reads.
   struct LinkValueOnly {
     uint32_t section;
     uint32_t offset;
@@ -306,14 +303,12 @@ public:
     llvm::COFF::LinkSiteForm form;
   };
 
-  // A site the object's records describe as a call or jump through a
-  // register that a load filled with a pointer, padded to the length of the
-  // same transfer through the pointer, or as such a load, which only those
-  // calls read; or as an instruction that accesses data through such a
-  // register, or adds a constant to it. Once the linker knows where each
-  // pointer leads, it decides which calls stay as they are, become direct or
-  // read the pointer, which accesses and adds reach the data directly, and
-  // which loads nothing reads.
+  // A site the records describe as a call or jump through a register a load
+  // filled with a pointer (padded to the memory transfer's length), as such a
+  // load only those calls read, or as an access or add through that register.
+  // Once the linker knows where each pointer leads it decides which calls stay,
+  // go direct or read the pointer, which accesses and adds go direct, and which
+  // loads are dead.
   struct LinkFusion {
     enum CallForm : uint8_t { ThroughRegister, Direct, ThroughPointer };
     enum UseKind : uint8_t { Call, Access, Add };
@@ -341,9 +336,8 @@ public:
     bool sib = false;
     // For an add, the constant it adds.
     int64_t addend = 0;
-    // For an access, whether it only reads memory, neither volatile nor
-    // atomic, so that it may read the image's own copy of data that never
-    // changes.
+    // For an access, whether it only reads memory (not volatile or atomic),
+    // so it may read the image's own copy of immutable data.
     bool valueRead = false;
     // For a load, the length of the instruction that directly follows it, or
     // zero where none is known, and whether that one transfers control or may
@@ -357,10 +351,8 @@ public:
     bool dead = false;
   };
 
-  // True if the object has link-only records.
-  // Whether the definition d, which this object gives in a COMDAT, has
-  // default visibility: listed with that role in the object's link records,
-  // or any such definition of an object whose records list none.
+  // Whether the COMDAT definition d has default visibility: listed with that
+  // role in the object's link records, or any such definition when none list.
   bool hasDefaultVisibility(DefinedRegular *d) const;
   // Whether the object's link records list its definitions with default
   // visibility, as a compiler that shares them along import paths emits.
@@ -370,9 +362,8 @@ public:
 
   bool hasLinkRecords() const { return linkRecords; }
 
-  // True if the object describes the form of every x86-64 instruction site
-  // that its records must, so that any other REL32 relocation in code against
-  // a symbol that the link may resolve elsewhere is a branch.
+  // True if the object describes every x86-64 instruction site its records
+  // must, so any other code REL32 to a preemptible symbol is a branch.
   bool describesSites() const {
     return linkRecords && linkRecords->describesSites;
   }
@@ -382,9 +373,8 @@ public:
     return linkRecords && linkRecords->describesFunctionSites;
   }
 
-  // True if the object's KCFI lists name each imported function by its import
-  // address table entry alone, so that the linker lists the function's import
-  // thunk where static data holds the thunk.
+  // True if the object's KCFI lists name each imported function by its IAT
+  // entry alone, so the linker lists the import thunk where data holds it.
   bool listsKCFIImports() const {
     return linkRecords && linkRecords->listsKCFIImports;
   }
@@ -424,13 +414,11 @@ public:
                        : ArrayRef<LinkValueOnly>();
   }
 
-  // A value or alignment that the object's link-only records say depends on
-  // where the code of a covered section lies (LinkRecordCoverage): in the
-  // section numbered field at offset, a value of the code of the section
-  // numbered target. For an alignment, a is the padding's length, b the most
-  // it may be, kind the log2 of the alignment and size the longest
-  // no-operation to fill it with; for an interior entry, a is the place in
-  // target that the relocation at offset refers to.
+  // A value or alignment the records say depends on where a covered section's
+  // code lies: at offset in section field, a value of section target's code.
+  // For an alignment, a is the padding length, b its max, kind the log2
+  // alignment and size the longest no-op to fill it; for an interior entry, a
+  // is the place in target the relocation at offset refers to.
   struct LinkCoverage {
     uint32_t field;
     uint32_t target;
@@ -478,10 +466,9 @@ public:
   ArrayRef<LinkPin> getLinkPins() const;
 
   // A vtable of the object's link-only records: vtable->getValue() + offset is
-  // the primary address point of a vtable of class cls, whose primary base is
-  // base, or which has none when base is empty. onSection is set when the
-  // record named a section rather than the vtable's own symbol. The facts a
-  // discarded COMDAT copy carries describe the copy the link keeps.
+  // the primary address point of a vtable of class cls with primary base base
+  // (empty if none). onSection is set when the record named a section, not the
+  // vtable's symbol. A discarded COMDAT copy's facts describe the kept copy.
   struct LinkVTable {
     DefinedRegular *vtable;
     uint64_t offset;
@@ -591,10 +578,9 @@ private:
   // chunks and non-section chunks for common symbols.
   std::vector<Chunk *> chunks;
 
-  // What the object's link-only records hold, which only an object that has
-  // them allocates: their section; what they say of the object; the
-  // instruction sites it describes, by section and offset; its call-only
-  // fields; its pins.
+  // What the object's link-only records hold, allocated only for an object that
+  // has them: their section, what they say of the object, and its described
+  // data.
   struct LinkRecords {
     const coff_section *sec;
     bool describesSites = false;
@@ -605,9 +591,8 @@ private:
     bool listsBindings = false;
     std::vector<LinkFusion> fusions;
     std::vector<LinkValueOnly> valueOnlyLoads;
-    // The values and alignments that depend on where code a linker may
-    // resize lies, by section and offset, and the numbers of the sections
-    // whose code is covered, in order.
+    // Values and alignments depending on where resizable code lies, by section
+    // and offset, and the covered sections' numbers, in order.
     std::vector<LinkCoverage> coverage;
     std::vector<uint32_t> coveredSections;
     // The numbers of the sections that end in a jump that also ends the
@@ -617,9 +602,8 @@ private:
     std::vector<LinkVTable> vtables;
     // The indices of the symbols the object gives default visibility.
     llvm::DenseSet<uint32_t> defaultBindings;
-    // The facts joined to each relocation of the object, and where each
-    // section's begin, by section number, which the readers fill directly as
-    // the records are read.
+    // Facts joined to each relocation, and where each section's begin by
+    // section number, filled directly as the records are read.
     std::vector<RelocFact> relocFacts;
     std::vector<uint32_t> relocFactStarts;
   };
@@ -658,9 +642,8 @@ private:
   // an object with link-only records.
   std::vector<SectionChunk *> sparseChunks;
 
-  // The indices of the external symbols that the object defines, in order,
-  // and where those of each section begin, by section number, which
-  // getExternalDefinitions builds when first asked.
+  // Indices of the external symbols the object defines, in order, and where
+  // each section's begin by section number; getExternalDefinitions fills these.
   std::vector<uint32_t> externalDefinitions;
   std::vector<uint32_t> externalDefinitionStarts;
 
@@ -703,10 +686,9 @@ public:
   bool isSameImport(const ImportFile *other) const;
   bool isEC() const { return impECSym != nullptr; }
 
-  // Whether the link delay-loads the import's DLL, and whether it ignores the
-  // DLL's offers, as it does those of a DLL it delay-loads. An import library
-  // member may be read before /delayload and -ignore-offers are, so each is
-  // found when first asked, once every option is.
+  // Whether the link delay-loads the import's DLL, and whether it ignores its
+  // offers (as it does a delay-loaded DLL's). A member may be read before
+  // /delayload and -ignore-offers are, so each is found when first asked.
   bool isDelayLoaded() const;
   bool ignoresOffers() const;
 
@@ -746,24 +728,22 @@ public:
   bool live;
 
   // Under -import-slots, whether an object may take the imported function's
-  // address in an instruction it does not describe, so that the image uses
-  // the import thunk as the function's address everywhere.
+  // address in an undescribed instruction, so the thunk is its address
+  // everywhere.
   bool thunkIsAddress = false;
 
-  // Under -import-slots, whether the import is bound by name when the image
-  // starts, into a cell its fill writes, rather than by the loader through a
-  // descriptor: an import from an executable, which can only mean the
-  // process's own whatever its file name, and binds against it; and one that
-  // only weak references name, which is null where its DLL lacks it, and does
-  // not make its DLL a dependency.
+  // Under -import-slots, whether the import is bound by name at image start,
+  // into a cell its fill writes, rather than by the loader: an import from an
+  // executable (always the process's own, whatever its file name) and one only
+  // weak references name (null where its DLL lacks it, and no dependency on the
+  // DLL).
   bool isHostImport = false;
   bool isWeakImport = false;
   bool isBoundAtRunTime() const { return isHostImport || isWeakImport; }
 
-  // The offset of the import's address in location: 0 for an entry of an
-  // import address table, and the offset of the word for a word of static
-  // data that the loader writes in place. ARM64EC links have no such words,
-  // so the auxiliary locations need no offset.
+  // The offset of the import's address in location: 0 for an IAT entry, the
+  // word's offset for a word of static data the loader writes in place. ARM64EC
+  // has no such words, so the auxiliary locations need no offset.
   uint32_t locationOffset = 0;
 };
 
@@ -835,10 +815,9 @@ std::string replaceThinLTOSuffix(StringRef path, StringRef suffix,
 // their section.
 llvm::Error malformedLinkRecords(const llvm::Twine &msg);
 
-// Calls fn with the kind and payload of each group of contents, the contents
-// of an .llvm_link_records section, and returns the first error, whose
-// message follows the section's name. header, if given, receives what the
-// records say the object describes before any group.
+// Calls fn with the kind and payload of each group in contents, an
+// .llvm_link_records section, returning the first error (message after the
+// section name). header, if given, receives the capabilities before any group.
 llvm::Error forEachLinkRecordGroup(
     ArrayRef<uint8_t> contents,
     llvm::function_ref<llvm::Error(uint64_t kind, ArrayRef<uint8_t> payload)>

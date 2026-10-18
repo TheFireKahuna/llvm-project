@@ -25,68 +25,59 @@ namespace lld::coff {
 class COFFLinkerContext;
 class DefinedRegular;
 
-// The prefix of the name by which an import library's record of the DLL it
-// imports from is found, which the DLL's name follows.
+// Prefix of the symbol naming an import library's record of a DLL.
 inline constexpr llvm::StringLiteral vagueRecordPrefix = "__llvm_vague$";
 
-// Under -import-slots, reports each pair of images of the load closure of the
-// image imageName, as the records of the DLLs it imports describe it, that
-// both keep an observable vague entity with default visibility: siblings that
-// no import path joins, or an image that keeps its copy while importing from
-// one that defines the entity.
+// Under -import-slots, reports each pair of images in imageName's load closure
+// that both keep an observable default-visibility vague entity, which ELF
+// unifies: siblings no import path joins, or an importer keeping its own copy.
 void checkVagueEntities(COFFLinkerContext &ctx, llvm::StringRef imageName);
 
-// Under -import-slots, the vague entities that an executable's link sees two
-// images keep preemptible, among the images of its load closure, whose records
-// the link reads, and the executable itself, which keeps those in kept: each
-// with its owner's DLL name, or an empty name for the executable, which owns
-// what it keeps, and otherwise the first to keep it in breadth-first load
-// order, as ELF's global scope gives.
+// Under -import-slots, the vague entities two images of an executable's load
+// closure keep preemptible (the executable's own are in kept), each with its
+// owner's DLL name: empty for the executable, else the first keeper in
+// breadth-first load order, as ELF's global scope gives.
 std::vector<std::pair<llvm::StringRef, llvm::StringRef>>
 chooseVagueOwners(COFFLinkerContext &ctx,
                   const llvm::DenseSet<llvm::StringRef> &kept);
 
-// Under -import-slots, the vague entities that each DLL the image imports from
-// keeps preemptible, as its record describes them, by the DLL's name in lower
-// case; before liveness is decided, of every DLL an import was read from.
+// Under -import-slots, the preemptible vague entities of each DLL the image
+// imports from, by lower-case DLL name; before liveness, every DLL read from.
 llvm::StringMap<llvm::StringSet<>> getPreemptibleOffers(COFFLinkerContext &ctx,
                                                         bool liveOnly = true);
 
-// The overridable defaults that the DLLs of the load closure that records, the
-// record members of import libraries in link order, describe offer, each with
-// the name of its DLL, in breadth-first load order, leaving out those of the
-// DLLs whose import libraries hold the records.
+// The overridable defaults offered by the DLLs of the load closure described by
+// records (import-library members in link order), each with its DLL's name, in
+// breadth-first load order, excluding the DLLs whose libraries hold records.
 std::vector<std::pair<llvm::StringRef, llvm::StringRef>>
 getDependentOverrideOffers(COFFLinkerContext &ctx,
                            llvm::ArrayRef<llvm::MemoryBufferRef> records);
 
-// Under -import-slots, adds to the import library of the DLL dllName a member
-// that records the entities it keeps, the DLLs it imports from and their
-// records. The member refers to buffer, which holds it.
+// Under -import-slots, adds to dllName's import library a member recording the
+// entities it keeps and the DLLs it imports from with their records; buffer
+// holds the member.
 void addVagueEntityRecord(COFFLinkerContext &ctx, llvm::StringRef dllName,
                           std::vector<llvm::NewArchiveMember> &members,
                           std::vector<uint8_t> &buffer);
 
-// Under -import-slots and -offers-baseline, reports each entity the DLL dllName
-// keeps that the previous release, whose import library the option names, did
-// not: a DLL linked against that import library keeps its own copy.
+// Under -import-slots and -offers-baseline, reports each entity dllName now
+// keeps that the previous release (named by the option) did not: a DLL linked
+// against that release keeps its own copy.
 void checkOfferAdditions(COFFLinkerContext &ctx, llvm::StringRef dllName);
 
-// The name of the epoch export of the DLL, which changes when the entities it
-// keeps change, for -offers-epoch.
+// The DLL's epoch export for -offers-epoch, changed when its entities change.
 llvm::StringRef getOffersEpoch(COFFLinkerContext &ctx);
 
-// Under -import-slots and -offers-epoch, in a DLL that offers data, exports
-// the epoch of the entities it keeps.
+// Under -import-slots and -offers-epoch, a DLL that offers data exports the
+// epoch of the entities it keeps.
 void addOffersEpoch(COFFLinkerContext &ctx);
 
-// Under -import-slots, in a DLL that offers a shared entity, imports the epoch
-// of each DLL it imports from that exports one, so that a release of that DLL
-// with more offers refuses this DLL's load.
+// Under -import-slots, a DLL that offers a shared entity imports each imported
+// DLL's epoch, so a release of that DLL with more offers refuses its load.
 void importOffersEpochs(COFFLinkerContext &ctx);
 
-// Whether a data definition in a COMDAT has default visibility, so that a
-// DLL's instance may preempt it, as on ELF.
+// Whether a COMDAT data definition has default visibility, so a DLL's instance
+// may preempt it, as on ELF.
 bool isDefaultVisibility(DefinedRegular *d);
 } // namespace lld::coff
 

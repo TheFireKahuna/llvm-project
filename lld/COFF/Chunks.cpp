@@ -292,10 +292,9 @@ void applyArm64Ldr(uint8_t *off, uint64_t imm) {
   applyArm64Imm(off, imm >> size, size);
 }
 
-// Replaces the instruction at off with opcode, an add or a 64-bit ldr of an
-// immediate or a movz, all of whose immediates are zero, keeping the
-// registers that the instruction names: its destination, and for an add or a
-// ldr, its base.
+// Replaces the instruction at off with opcode (an add, 64-bit ldr immediate,
+// or movz, all with zero immediates), keeping the registers it names: its
+// destination, and an add's or ldr's base.
 void setArm64Opcode(uint8_t *off, uint32_t opcode) {
   bool movz = (opcode & 0x1F800000) == 0x12800000;
   write32le(off, opcode | (read32le(off) & (movz ? 0x1F : 0x3FF)));

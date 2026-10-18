@@ -320,14 +320,12 @@ private:
   uint64_t importTableSize = 0;
   Chunk *iatStart = nullptr;
   uint64_t iatSize = 0;
-  // The last chunk the import address table directory covers, when read-only
-  // in-place import slots extend it past the address tables.
+  // Last chunk the IAT directory covers when in-place import slots extend it
+  // past the address tables.
   Chunk *iatEnd = nullptr;
   ImportSlotContents slots;
-  // Whether packPlacedChunks lays out the pinned and 64-byte-aligned chunks of
-  // .rdata.
+  // packPlacedChunks lays out pinned and 64-byte-aligned .rdata chunks.
   bool packRdata = false;
-  // Whether packPlacedChunks laid out the vtable runs.
   bool runsPacked = false;
   DelayLoadContents delayIdata;
   TypePrefixContents prefixes;
@@ -343,13 +341,12 @@ private:
   // List of Arm64EC export thunks.
   std::vector<std::pair<Chunk *, Defined *>> exportThunks;
 
-  // The functions whose addresses the image or another one may take, which
-  // only the guard tables collect, and whether they did.
+  // Functions whose address the image or another may take, as the guard tables
+  // collect them, and whether they have been collected yet.
   SymbolRVASet identityTaken;
   bool identityKnown = false;
 
-  // The relocations of each section that range extension thunks were added
-  // to, as they were before the first pass added any.
+  // Each thunked section's relocations as they were before thunks were added.
   DenseMap<SectionChunk *, ArrayRef<coff_relocation>> relocsBeforeThunks;
 
   uint64_t fileSize;
@@ -555,8 +552,8 @@ bool Writer::createThunks(OutputSection *os, int margin) {
     size_t thunkInsertionRVA = sc->getRVA() + sc->getSize() + thunksSize;
     ObjFile *file = sc->file;
     std::vector<std::pair<uint32_t, uint32_t>> relocReplacements;
-    // A pass starts from the relocations as they were before the first, which
-    // the linker may already have made refer to other symbols.
+    // Each pass starts from the relocations before the first, which may
+    // already refer to other symbols.
     ArrayRef<coff_relocation> originalRelocs =
         relocsBeforeThunks.try_emplace(sc, sc->getRelocs()).first->second;
     for (size_t j = 0, e = originalRelocs.size(); j < e; ++j) {
@@ -710,13 +707,9 @@ bool Writer::verifyRanges(const std::vector<Chunk *> chunks) {
 // Assign addresses and add thunks if necessary.
 static bool isUnwindTable(const SectionChunk *sc);
 
-// The jumps that end their functions, each with the offset of its
-// displacement, where the next chunk of the output section begins with its
-// target, which the linker may then leave out: in a chunk it may resize, which
-// no unwind data covers, to a target whose address neither the image nor
-// another one takes, since the function and its target then share theirs. A
-// target's prefix that the image leaves out, as it does a type prefix that no
-// pointer reaches, lies before where its chunk begins in the image.
+// Finds tail jumps the linker can leave out: a jmp rel32 ending a function
+// where the next chunk begins with its target, in a resizable chunk no unwind
+// data covers, to a target nothing else takes, so the two share an address.
 std::vector<std::pair<SectionChunk *, Defined *>> Writer::findTailJumps() {
   llvm::TimeTraceScope timeScope("Find tail jumps");
   std::vector<std::pair<SectionChunk *, Defined *>> jumps;
@@ -732,8 +725,7 @@ std::vector<std::pair<SectionChunk *, Defined *>> Writer::findTailJumps() {
           !sc->file->isCovered(sc) ||
           next->getAlignment() > sc->getAlignment())
         continue;
-      // jmp rel32, whose displacement holds the section's last relocation and
-      // names the target itself.
+      // jmp rel32 whose displacement is the section's last relocation.
       ArrayRef<coff_relocation> relocs = sc->getRelocs();
       ArrayRef<uint8_t> data = sc->getContents();
       uint32_t field = data.size() - 4;
@@ -742,8 +734,7 @@ std::vector<std::pair<SectionChunk *, Defined *>> Writer::findTailJumps() {
           relocs.back().Type != IMAGE_REL_AMD64_REL32 ||
           data[field - 1] != 0xE9 || read32le(&data[field]) != 0)
         continue;
-      // The guard tables collect the addresses taken only of what objects
-      // say are functions.
+      // The guard tables take the address only of what objects call functions.
       auto *target = dyn_cast_or_null<DefinedRegular>(
           sc->file->getSymbol(relocs.back().SymbolTableIndex));
       if (!target || target->getChunk() != next ||
@@ -1257,10 +1248,9 @@ void Writer::createSections() {
   if (Chunk *anchor = ctx.symtab.overrideAnchor)
     createSection(".ovra", data | r)->addChunk(anchor);
 
-  // Pinned and 64-byte-aligned read-only chunks, and vtable runs, are packed
-  // in an image whose objects pin chunks or lay vtables out in runs, as those
-  // of a target that places vtables do, where the layout's page residues are
-  // those of the sections' offsets.
+  // Packs pinned and 64-byte-aligned read-only .rdata chunks and vtable runs
+  // when objects pin chunks or lay out vtable runs and the image is page
+  // aligned.
   const Configuration &config = ctx.config;
   packRdata =
       (!ctx.chunkPins.empty() || !ctx.runChunkRun.empty()) &&
@@ -1304,16 +1294,16 @@ void Writer::createSections() {
   for (Chunk *c : ctx.kcfi.chunks)
     createPartialSection(c->getSectionName(), c->getOutputCharacteristics())
         ->chunks.push_back(c);
-  // The executable's first TLS callback, right after the callback array's
-  // opening null: the copy of the thread-local slots, with its list.
+  // The executable's first TLS callback (after the array's opening null): the
+  // thread-local slot copy, with its list.
   if (slots.getThreadLocalSlotCopy()) {
     createPartialSection(".CRT$XLA$fill", data | r)
         ->chunks.push_back(slots.getThreadLocalSlotCopyPointer());
     createPartialSection(".rdata", data | r)
         ->chunks.push_back(slots.getThreadLocalSlotCopyList());
   }
-  // Right after the table's start, ahead of every other initializer: the
-  // image's fill, with its list and the names it binds imports by.
+  // Ahead of every other C initializer: the image's fill, with its list and
+  // the names it binds imports by.
   if (slots.getFill()) {
     createPartialSection(".CRT$XIA$fill", data | r)
         ->chunks.push_back(slots.getFillPointer());
@@ -1337,9 +1327,8 @@ void Writer::createSections() {
 
   sortSections();
 
-  // The read-only chunks holding in-place import slots follow the import
-  // address tables, inside the range the loader makes writable while it
-  // binds imports. Section ordering has run, so it cannot separate them.
+  // Read-only in-place import slots follow the address tables, inside the range
+  // the loader makes writable while binding. Section ordering has already run.
   if (ArrayRef<SectionChunk *> held = slots.getReadOnlyChunks();
       !held.empty()) {
     PartialSection *pSec = findPartialSection(
@@ -1390,18 +1379,16 @@ void Writer::createSections() {
         (pSec->name == ".idata$5" || pSec->name == ".idata$9"))
       continue;
 
-    // Delay the chunks that placeImportSlotSections puts at the start of
-    // .rdata.
+    // Delay the chunks placeImportSlotSections puts at .rdata's start.
     if (iatStartsRdata() &&
         (pSec->name == ".idata$5" ||
          (slots.hasRdataGroupSlots() && name == ".rdata" &&
           pSec->name.starts_with(".rdata$"))))
       continue;
 
-    // Sections named .didat join the protected delay-load import address
-    // table's section, after the table and on pages of their own. The loader
-    // makes the whole section read-only at load and reopens only the table's
-    // pages, so the data in them is read-only once the image is loaded.
+    // .didat sections join the protected delay-load table's section after the
+    // table, on their own pages: the loader makes the section read-only and
+    // reopens only the table's pages, so this data is read-only once loaded.
     if (name == ".didat" && protectDelayIat())
       outChars = data | r | w;
 
@@ -1417,9 +1404,8 @@ void Writer::createSections() {
       sec->splitECChunks();
   }
 
-  // The read-only chunks holding residual words, and the cells of imports
-  // bound at run time, get pages of their own, which the image maps writable
-  // and the fill makes read-only.
+  // Residual words and run-time-bound import cells get their own pages, mapped
+  // writable and made read-only by the fill.
   if (!slots.getSealedChunks().empty() || !slots.getRunTimeCells().empty()) {
     OutputSection *sec = createSection(".sealed", data | r | w);
     for (const RunTimeCell &c : slots.getRunTimeCells())
@@ -1475,9 +1461,8 @@ void Writer::createMiscChunks() {
       for (Chunk *c : symtab.localImportChunks)
         rdataSec->addChunk(c);
     }
-    // The records of thread-local variables that the image writes, which it
-    // keeps if something live refers to them, laid out by their variables'
-    // names rather than in the order of a walk of the symbol table.
+    // Thread-local variable records the image writes, ordered by variable name
+    // so layout does not depend on symbol-table walk order.
     llvm::stable_sort(symtab.threadLocalRecords, [](Chunk *a, Chunk *b) {
       return cast<ThreadLocalRecordChunk>(a)->var->getName() <
              cast<ThreadLocalRecordChunk>(b)->var->getName();
@@ -1604,20 +1589,16 @@ void Writer::createImportTables() {
   }
 }
 
-// Whether the import address tables, and the read-only chunks holding
-// in-place import slots after them, start .rdata: when other sections holding
-// slots must lie next to them, and when they are packed before the rest of
-// .rdata.
+// Whether the import address tables and the read-only in-place import slots
+// after them start .rdata.
 bool Writer::iatStartsRdata() const {
   return slots.hasRdataGroupSlots() || !slots.getSlotSections().empty() ||
          (packRdata && !slots.getReadOnlyChunks().empty());
 }
 
-// A read-only section other than .rdata that holds in-place import slots is
-// laid out before .rdata, whose start holds the import address tables, the
-// read-only chunks laid out with them, and then, when one of them holds a
-// slot, the $-groups of .rdata in their order, so that the import address
-// table directory covers every read-only slot with no other data between.
+// Lays out read-only in-place import slots so the import address table
+// directory covers them with no other data between: slot-holding sections
+// other than .rdata first, then the tables and .rdata's $-groups.
 void Writer::placeImportSlotSections() {
   llvm::TimeTraceScope timeScope("Place import slot sections");
   if (!iatStartsRdata())
@@ -1637,8 +1618,8 @@ void Writer::placeImportSlotSections() {
   rdataSec->chunks.insert(rdataSec->chunks.begin(), start.begin(), start.end());
   rdataSec->contribSections.insert(rdataSec->contribSections.begin(),
                                    contribs.begin(), contribs.end());
-  // Every import may be kept in slots alone, leaving no address table, and
-  // then the directory starts with the first $-group.
+  // With every import kept in slots, there is no address table and the
+  // directory starts at the first $-group.
   if (!start.empty()) {
     iatStart = start.front();
     iatEnd = start.back();
@@ -1662,14 +1643,11 @@ void Writer::placeImportSlotSections() {
 }
 
 
-// Lays out the pinned and 64-byte-aligned chunks of .rdata, vtables in
-// practice, so that the padding before each holds other read-only data
-// rather than zeros. Each in turn is the one that needs the least padding from
-// where the layout has reached, and its padding is filled with the largest
-// unplaced chunks that fit. The chunks held back into the import address
-// table directory are packed first, at the start of .rdata; chunks of plain
-// .rdata may fill their gaps, and move into the directory to do so. Nothing
-// else moves. assignAddresses honours the pins whatever the plan.
+// Packs the pinned and 64-byte-aligned .rdata chunks (vtables, in practice) so
+// their alignment padding holds other read-only data rather than zeros, each
+// gap filled with the largest unplaced chunks that fit. Held-back chunks pack
+// first at .rdata's start; plain .rdata chunks may move into the directory to
+// fill their gaps. assignAddresses honours the pins regardless.
 void Writer::packPlacedChunks() {
   llvm::TimeTraceScope timeScope("Pack placed chunks");
   if (!packRdata)
@@ -1682,7 +1660,6 @@ void Writer::packPlacedChunks() {
   if (plain && !is_contained(rdataSec->contribSections, plain))
     plain = nullptr;
 
-  // The items, held-back ones first, in their current order.
   DenseMap<Chunk *, Chunk *> continuedBy;
   for (std::vector<ImportSlot *> &run : idata.slotRuns)
     for (size_t i = 1; i < run.size(); ++i)
@@ -1700,10 +1677,9 @@ void Writer::packPlacedChunks() {
       item.baseRun = &ctx.vtableRuns[it->second];
   };
 
-  // The vtable runs the plan lays out, each one item per slot that the plan
-  // places together at the run's stride, in the directory when a slot is held
-  // back there. A held-back slot whose import slots run on into a neighbour
-  // cannot leave it, so its run is left out, with an empty range.
+  // The vtable runs the plan lays out, one item per slot at the run's stride.
+  // A held-back slot whose import slots run into a neighbour cannot leave it,
+  // so its run is dropped with an empty range.
   DenseSet<Chunk *> inIat, inPlain;
   if (iat)
     inIat.insert(iat->chunks.begin(), iat->chunks.end());
@@ -1731,8 +1707,7 @@ void Writer::packPlacedChunks() {
       run.stride = 0;
       continue;
     }
-    // The plan places these vtables itself, so their advisory line pins,
-    // which would fix them one at a time, give way.
+    // The plan places these vtables itself, so their per-chunk line pins yield.
     for (const VTableRun::Slot &slot : run.slots)
       ctx.chunkPins.erase(slot.chunk);
     (heldBack ? heldBackRuns : plainRuns).push_back(&run);
@@ -1795,9 +1770,8 @@ void Writer::packPlacedChunks() {
 
   RdataPacker packer(items);
 
-  // Lays out the chunks of the items that order lists where the chunks of
-  // pSec that isReplaced selects were, in pSec and in .rdata; any other chunk
-  // of those items leaves the place it had.
+  // Relays the items' chunks in order where isReplaced's chunks of pSec were,
+  // in pSec and .rdata; the items' other chunks leave their place.
   auto relayout = [&](PartialSection *pSec, ArrayRef<size_t> order,
                       function_ref<bool(Chunk *)> isReplaced) {
     std::vector<Chunk *> chunks;
@@ -1826,8 +1800,8 @@ void Writer::packPlacedChunks() {
     if (!items[i].isPlaced())
       packer.addFiller(i);
 
-  // The held-back items stay in the directory, after the address tables. The
-  // fillers of their gaps join them, and their unplaced items follow.
+  // Held-back items stay in the directory after the address tables; their gap
+  // fillers and remaining unplaced items follow.
   if (numHeldBack) {
     for (size_t i = 0; i != numHeldBack; ++i)
       if (!items[i].isPlaced())
@@ -1841,8 +1815,7 @@ void Writer::packPlacedChunks() {
     for (size_t i = 0; i != numHeldBack; ++i)
       if (!items[i].isPlaced() && packer.takeFiller(i))
         order.push_back(i);
-    // A held-back run's vtables from plain .rdata move into the directory
-    // with it, as fillers do.
+    // A held-back run's vtables from plain .rdata move into the directory too.
     DenseSet<Chunk *> heldBack, movedIn;
     for (size_t i : order)
       for (Chunk *c : items[i].chunks)
@@ -1915,10 +1888,9 @@ void Writer::appendImportThunks() {
 
   if (!delayIdata.empty()) {
     delayIdata.create();
-    // A protected delay-load import address table starts .didat, as link.exe
-    // lays it out: the loader keeps the section read-only and makes the
-    // table writable only while it resolves an import. The descriptors and the
-    // name table are never written and go with the other read-only data.
+    // A protected delay-load IAT starts .didat: the loader makes only the
+    // table writable while resolving an import, keeping the section read-only.
+    // The descriptors and name table never change and stay with read-only data.
     OutputSection *tableSec = didatSec;
     OutputSection *iatSec = dataSec;
     if (protectDelayIat()) {
@@ -1944,8 +1916,7 @@ void Writer::appendImportThunks() {
     for (Chunk *c : delayIdata.getDataChunks())
       dataSec->addChunk(c);
     if (iatSec == didatSec) {
-      // The table starts .didat, and the input sections in it start on the
-      // next page.
+      // The table starts .didat; its input sections start on the next page.
       if (!didatSec->chunks.empty())
         didatSec->chunks.front()->setAlignment(
             std::max(0x1000u, didatSec->chunks.front()->getAlignment()));
@@ -2394,15 +2365,13 @@ void Writer::assignAddresses() {
       // thunk.
       if (c->getEntryThunk())
         virtualSize += sizeof(uint32_t);
-      // The KCFI prefix of a function no pointer reaches overlaps what precedes
-      // it, and no other entry of a function with one starts in a page's first
-      // bytes.
+      // A KCFI prefix no pointer reaches overlaps what precedes it; no entry of
+      // a function with one starts in a page's first bytes.
       if (ctx.typePrefixRecords)
         virtualSize = prefixes.place(c, rva, virtualSize);
-      // A vtable the linker lays out in a run is placed so its address point
-      // is the run's stride past the one before it, the first 16 bytes into a
-      // line, which spaces the points by the stride with nothing else on a
-      // boundary.
+      // A vtable laid out in a run is placed so its address point is the run's
+      // stride past the previous one, 16 bytes into a line, spacing the points
+      // by the stride with nothing else on a boundary.
       if (auto it = ctx.runChunkRun.find(c); it != ctx.runChunkRun.end()) {
         VTableRun &run = ctx.vtableRuns[it->second.first];
         unsigned slot = it->second.second;
@@ -2410,8 +2379,8 @@ void Writer::assignAddresses() {
         if (slot == 0)
           run.anchor = alignTo(rva + virtualSize + apoff - 16, 64) + 16;
         uint64_t start = run.anchor + uint64_t(slot) * run.stride - apoff;
-        // A plan the layout could not follow, which would overlap what comes
-        // before, leaves the run unplaced, with an empty range.
+        // A plan that would overlap what comes before leaves the run unplaced,
+        // with an empty range.
         if (start >= rva + virtualSize) {
           c->setRVA(start);
           virtualSize = start - rva + c->getSize();
@@ -2479,10 +2448,9 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
     dos->AddressOfRelocationTable = sizeof(dos_header);
     dos->AddressOfNewExeHeader = dosStubSize;
 
-    // A replacing link holds the override table after the MZ header, so that
-    // the C++ runtime's defaults reach it through the PEB at a fixed offset
-    // from the image base, and moves the DOS program past it. Covering the
-    // table with the header size leaves the program where it still runs.
+    // A replacing link holds the override table after the MZ header, where the
+    // C++ runtime reaches it through the PEB at a fixed offset from the image
+    // base, and moves the DOS program past it so it still runs.
     uint32_t programOffset = sizeof(dos_header);
     if (ctx.symtab.overrideAnchor) {
       writeOverrideTable(ctx, ctx.symtab, stub);
@@ -2494,10 +2462,9 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
       write32le(stub + threadLocalSlotCopyOffset, threadLocalSlotCopyTag);
       write32le(stub + threadLocalSlotCopyOffset + 4, copy->getRVA());
     }
-    // An executable that reserves the process's exit-list state names it as
-    // {tag, rva} at 0x30, in the MZ header's reserved words, where every copy
-    // of the C runtime's termination registries in the process finds it
-    // through PEB->ImageBaseAddress.
+    // An executable reserving the process exit-list state names it as {tag,rva}
+    // at 0x30 in the MZ header's reserved words, where every C runtime copy
+    // finds it through PEB->ImageBaseAddress.
     if (auto *state = dyn_cast_or_null<DefinedRegular>(
             ctx.symtab.findUnderscore("__wincrt_exit_state"));
         state && state->isLive() && !ctx.config.dll) {
@@ -2815,11 +2782,10 @@ static bool isCallOrJump(LinkSiteForm form) {
          form == LinkSiteJumpOnePrefix;
 }
 
-// Whether the target of rel, as its object sees it, may resolve to something
-// other than a definition the object fixes: a symbol it leaves undefined or
-// weak, or a symbol in a COMDAT other than the section of rel. An object that
-// describes its instruction sites gives every such REL32 in code that is not a
-// branch a site, so such a REL32 without one is a branch.
+// Whether rel's target may resolve to something other than a definition the
+// object fixes: an undefined or weak symbol, or one in a COMDAT other than
+// rel's section. An object that describes its sites gives every non-branch
+// REL32 a site, so such a REL32 without one is a branch.
 static bool hasPreemptibleTarget(ObjFile *file, const SectionChunk *sc,
                                  const coff_relocation &rel) {
   COFFObjectFile *obj = file->getCOFFObj();
@@ -2841,9 +2807,8 @@ static bool hasPreemptibleTarget(ObjFile *file, const SectionChunk *sc,
   return (*sec)->Characteristics & IMAGE_SCN_LNK_COMDAT;
 }
 
-// Adds the address that a reference other than a call takes: a function's, the
-// symbol's that a local import pointer holds, or an import address table
-// entry's, with the delay-load thunk the entry holds until resolved.
+// Adds the address a non-call reference takes: a function's, a local import
+// pointer's target, or an IAT entry's with the delay-load thunk it holds.
 static void markAddressTake(Symbol *ref, SymbolRVASet &usedSymbols,
                             SymbolRVASet &usedImports) {
   if (auto *li = dyn_cast_or_null<DefinedLocalImport>(ref)) {
@@ -2868,12 +2833,10 @@ static bool takesNoAddress(ObjFile *file, const SectionChunk *sc,
   return f && f->isLoad;
 }
 
-// The compiler lists the addresses an object takes, but not those taken by
-// instructions it did not generate, such as inline assembly, nor the one that
-// a load through a local import pointer takes once rewritten to compute the
-// address. An object that describes its instruction sites says which
-// instructions take one: every site that is not a call or jump, nor a load
-// that only fused calls read.
+// The compiler lists the addresses an object takes, but not those from
+// instructions it did not generate (inline asm) or from a rewritten local
+// import load. An object that describes its sites marks the rest: every site
+// that is not a call, jump, or a load only fused calls read.
 void Writer::markDescribedAddressTakes(ObjFile *file,
                                        SymbolRVASet &usedSymbols,
                                        SymbolRVASet &usedImports) {
@@ -2917,15 +2880,13 @@ void Writer::markSymbolsWithRelocations(ObjFile *file,
         // since they're also used to compute absolute addresses.
         continue;
 
-      // A jump that ends its function, which the object lists, takes no
-      // address.
+      // A tail jump the object lists takes no address.
       if (reloc.Type == IMAGE_REL_AMD64_REL32 &&
           &reloc == &sc->getRelocs().back() && file->endsInTailJump(sc))
         continue;
 
-      // Where the object describes its sites, a branch takes no address, and
-      // neither does a call or jump through a pointer, nor a load that only
-      // such calls read.
+      // Where the object describes its sites, branches, indirect calls and
+      // jumps, and loads only such calls read take no address.
       if (described && reloc.Type == IMAGE_REL_AMD64_REL32) {
         const ObjFile::RelocFact *fact = file->relocFact(sc, reloc);
         std::optional<LinkSiteForm> form;
@@ -2936,29 +2897,24 @@ void Writer::markSymbolsWithRelocations(ObjFile *file,
           continue;
       }
 
-      // An in-place import slot reads no import address table entry, and is
-      // listed itself.
+      // An in-place import slot reads no IAT entry and is listed itself.
       if (sc->getImportSlot(reloc))
         continue;
 
       Symbol *ref = sc->getEditTarget(reloc);
       if (!ref)
         ref = sc->file->getSymbol(reloc.SymbolTableIndex);
-      // An object without guard metadata does not say which import address
-      // table entries it passes the value of, so every entry it references is
-      // listed.
+      // An object without guard metadata does not say which IAT entries it
+      // passes on, so every entry it references is listed.
       markAddressTake(ref, usedSymbols, usedImports);
     }
   }
 }
 
-// Whether the delay-load import address table gets a section of its own,
-// which the loader keeps read-only. A call through the table is not checked by
-// Control Flow Guard, so it must not stay writable. mingw-w64's delay-load
-// helper stores to the table directly, so /guard:cf leaves MinGW images with
-// the old layout. A writable table is a target for overwriting whether or not
-// other calls are checked, so a helper whose object says that it writes the
-// table only while the table is writable gets it with or without /guard:cf.
+// Whether the delay-load IAT gets its own section the loader keeps read-only.
+// A call through the table is not CFG-checked, so it must not stay writable.
+// mingw-w64's helper stores to the table directly, so /guard:cf leaves MinGW
+// images unprotected; a helper that writes it only while writable is protected.
 bool Writer::protectDelayIat() {
   if (delayIdata.empty())
     return false;
@@ -3028,13 +2984,10 @@ static void addScopeTableTargets(ObjFile *file, SectionChunk *xdata,
   }
 }
 
-// Reports an object without EH continuation metadata that has continuation
-// targets no table would list, where link.exe fails with LNK2046 or LNK2047:
-// an unwind record naming a language handler other than __GSHandlerCheck,
-// which only checks the stack cookie, or a reference to _local_unwind. For
-// SEH in a COMDAT, link.exe warns (LNK4291) and lists the scope tables'
-// __except blocks instead, which are the targets __C_specific_handler can
-// continue at.
+// Reports an object lacking EH continuation metadata whose continuation targets
+// no table would list (link.exe fails with LNK2046/LNK2047): an unwind record
+// naming a handler other than __GSHandlerCheck, or a _local_unwind reference.
+// For SEH in a COMDAT, lists the scope tables' __except blocks instead.
 static void checkEHContMetadata(COFFLinkerContext &ctx, ObjFile *file,
                                 SymbolRVASet &targets) {
   MachineTypes machine = file->getMachineType();
@@ -3107,10 +3060,8 @@ static void checkEHContMetadata(COFFLinkerContext &ctx, ObjFile *file,
   }
 }
 
-// Returns the EH continuation targets, which objects compiled with
-// /guard:ehcont list in .gehcont$y sections, and reports each object without
-// that metadata whose continuation targets would be missing or are found
-// otherwise.
+// Returns the EH continuation targets, which /guard:ehcont objects list in
+// .gehcont$y sections, and checks objects without that metadata.
 SymbolRVASet Writer::getEHContTargets() {
   SymbolRVASet ehContTargets;
   for (ObjFile *file : ctx.objFileInstances) {
@@ -3122,13 +3073,11 @@ SymbolRVASet Writer::getEHContTargets() {
   return ehContTargets;
 }
 
-// A guard pointer holds a stub until the loader replaces it with its validator,
-// which the loader does whenever it enforces the guard. The stub is reached
-// only through a call made through the pointer, which nothing checks, so a
-// function whose address does no more than initialize a guard pointer is not a
-// valid call target; a dispatch stub jumps to whatever target it is passed.
-// Returns each such function with the object whose guard pointer holds it,
-// unless the object also references it from another section of the image.
+// A guard pointer holds a stub until the loader replaces it with its validator.
+// The stub is reached only through the unchecked call the pointer makes, so a
+// function used only to initialize a guard pointer is not a valid call target.
+// Returns each such function with its object, unless the object references it
+// elsewhere.
 DenseSet<std::pair<ObjFile *, Symbol *>> Writer::getGuardPointerStubs() {
   DenseMap<ObjFile *, DenseSet<Symbol *>> refs;
   for (auto &[key, pSec] : partialSections) {
@@ -3156,10 +3105,8 @@ DenseSet<std::pair<ObjFile *, Symbol *>> Writer::getGuardPointerStubs() {
   return stubs;
 }
 
-// The guard flags that the image's own definitions add: CastGuard is present
-// when the image holds the slot that a compiler's report routine for failed
-// cast checks reads, which the load configuration names and the loader binds
-// only under this flag.
+// Guard flags the image's own definitions add: CASTGUARD_PRESENT when the image
+// holds the slot a failed-cast report routine reads.
 static uint32_t getDefinedGuardFlags(SymbolTable &symtab) {
   auto *slot =
       dyn_cast_or_null<DefinedRegular>(symtab.find(CastGuardFailureSlot));
@@ -3205,8 +3152,8 @@ void Writer::createGuardCFTables() {
   SymbolRVASet giatsRVASet;
   std::vector<Symbol *> giatsSymbols;
   SymbolRVASet longJmpTargets;
-  // What foreign objects list is collected apart first, as foreign code can
-  // hand ours any function it lists.
+  // What foreign objects list is collected apart, as foreign code can hand ours
+  // any function it lists.
   SymbolRVASet foreignTakenSyms;
   DenseSet<std::pair<ObjFile *, Symbol *>> guardPointerStubs =
       getGuardPointerStubs();
@@ -3221,8 +3168,7 @@ void Writer::createGuardCFTables() {
     if (file->hasGuardCF()) {
       std::vector<Symbol *> fids;
       getSymbolsFromSections(file, file->getGuardFidChunks(), fids);
-      // A function whose address is a DLL's instance has no address taken
-      // in the image.
+      // A function bound to a DLL's instance has no address taken in the image.
       for (Symbol *s : fids)
         if (!guardPointerStubs.contains({file, s}) &&
             !file->symtab.offeredFunctions.contains(s))
@@ -3230,8 +3176,8 @@ void Writer::createGuardCFTables() {
       std::vector<Symbol *> giats;
       getSymbolsFromSections(file, file->getGuardIATChunks(), giats);
       for (Symbol *s : giats) {
-        // The pointer the linker makes for a symbol in the image is no import
-        // address table entry; the address it holds is taken.
+        // A local import pointer is no IAT entry; the address it holds is
+        // taken.
         if (auto *li = dyn_cast<DefinedLocalImport>(s)) {
           maybeAddAddressTakenFunction(takenSyms, li->getTarget());
           continue;
@@ -3248,23 +3194,21 @@ void Writer::createGuardCFTables() {
   }
   addressTakenSyms.insert(foreignTakenSyms.begin(), foreignTakenSyms.end());
 
-  // An in-place import slot that holds a function's address is an entry the
-  // loader fills with an address the image passes on.
+  // An in-place import slot holding a function's address is an entry the loader
+  // fills with an address the image passes on.
   for (auto &kv : ctx.importSlots)
     for (const ImportSlot &s : kv.second)
       if (s.sym->file->thunkSym)
         giatsRVASet.insert({s.chunk, s.offset});
 
-  // The C initializer table calls the fill, and the TLS callback array and
-  // the DLLs the executable's header names it to call the copy of the
-  // thread-local slots.
+  // The C initializer table calls the fill; the TLS callback array and the DLLs
+  // the executable's header names call the thread-local slot copy.
   maybeAddAddressTakenFunction(addressTakenSyms, slots.getFill());
   maybeAddAddressTakenFunction(addressTakenSyms,
                                slots.getThreadLocalSlotCopy());
 
-  // The override table's anchor names each replacement body, and each
-  // forwarding thunk, whose checked dispatch from a default needs it in the
-  // guard table.
+  // The override table's anchor names each replacement body and forwarding
+  // thunk, which checked dispatch from a default needs in the guard table.
   for (const auto &slot : ctx.symtab.overrideSlots)
     maybeAddAddressTakenFunction(addressTakenSyms, slot.target);
   for (const auto &entry : ctx.symtab.overrideBlock)
@@ -3294,20 +3238,17 @@ void Writer::createGuardCFTables() {
   }
 
   // An exported function that is a target for no other reason is marked
-  // export-suppressed: in a process that suppresses exports, it becomes a valid
-  // target only once GetProcAddress returns it. The loader can record that
-  // only for a 16-byte aligned entry.
+  // export-suppressed: it becomes a valid target only once GetProcAddress
+  // returns it. The loader records that only for a 16-byte aligned entry.
   SymbolRVASet exportSuppressed;
   for (const ChunkAndOffset &c : exportedSyms)
     if (addressTakenSyms.insert(c).second && c.offset % 16 == 0)
       exportSuppressed.insert(c);
-  // Sealing may yet leave out of the table a function whose address is
-  // taken.
+  // Sealing may yet drop from the table a function whose address is taken.
   identityTaken = addressTakenSyms;
   identityKnown = true;
 
-  // A function that /guardsym suppresses stays listed, but is not a valid
-  // target.
+  // A /guardsym-suppressed function stays listed but is not a valid target.
   SymbolRVASet fidSuppressed;
   for (Defined *d : ctx.guardSuppressed)
     addSymbolToRVASet(fidSuppressed, d);
@@ -3361,15 +3302,13 @@ void Writer::createGuardCFTables() {
     guardFlags |= uint32_t(GuardFlags::EH_CONTINUATION_TABLE_PRESENT);
   if (config->guardCF & GuardCFLevel::ExportSuppress)
     guardFlags |= uint32_t(GuardFlags::CF_ENABLE_EXPORT_SUPPRESSION);
-  // The loader resolves a protected table's imports in a buffer and copies
-  // them in under one reprotection, restoring read-only whether or not the
-  // section was protected at load, so the two flags go together.
+  // The loader resolves a protected table's imports in a buffer and copies them
+  // in under one reprotection, so the two flags go together.
   if (protectDelayIat())
     guardFlags |= uint32_t(GuardFlags::PROTECT_DELAYLOAD_IAT) |
                   uint32_t(GuardFlags::DELAYLOAD_IAT_IN_ITS_OWN_SECTION);
-  // The export-suppressed marks and the address-taken IAT table are complete,
-  // but the loader can rely on that only where the load configuration reaches
-  // the table.
+  // The export-suppressed marks and address-taken IAT table are complete, but
+  // the loader relies on that only where the load config reaches the table.
   size_t giatsEnd =
       config->is64()
           ? offsetof(coff_load_configuration64, GuardLongJumpTargetTable)
@@ -3383,10 +3322,9 @@ void Writer::createGuardCFTables() {
   });
 }
 
-// Places the symbols that SymbolTable::addStartStopSymbols and
-// addBoundarySymbols defined: __start_X at the first section of run X and
-// __stop_X at the end of its last, and _etext, _edata and _end at the ends of
-// .text, of .data's initialized data and of .data.
+// Places the symbols addStartStopSymbols and addBoundarySymbols defined:
+// __start_X/__stop_X at the ends of run X, and _etext, _edata and _end at the
+// ends of .text, .data's initialized data, and .data.
 void Writer::placeLinkerDefinedSymbols() {
   ctx.forEachSymtab([&](SymbolTable &symtab) {
     for (SymbolTable::SectionRun &run : symtab.sectionRuns) {

@@ -6,24 +6,18 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// A reference to the import pointer of a symbol that the image defines reads
-// a local import pointer, which the linker makes. Where the linker knows the
-// instruction holding such a reference, it rewrites the instruction to reach
-// the symbol directly, and leaves out a pointer that only rewritten
-// instructions read.
+// A reference to the import pointer of a symbol the image defines reads a local
+// import pointer the linker makes. Where the linker knows the instruction
+// holding the reference, it rewrites it to reach the symbol directly and leaves
+// out a pointer only rewritten instructions read.
 //
-// A compiler may also describe the calls through a register that a load of an
-// import pointer fills, which it pads to the length of the same call through
-// the pointer, and the load. A call stays as it is where the pointer leads out
-// of the image, becomes direct where it leads into it, and reads the pointer
-// where it is a delay-loaded import's; a load that no call reads any longer is
-// disposed of.
-//
-// It may also describe the instructions that access data through the register
-// a load of the data's import pointer fills, and the add of a constant to
-// such a register. Where the data is in the image and the linker may resize
-// the code, each access reaches the data RIP-relative and the load goes; and
-// the load takes the sum, the add going, wherever the data is in the image.
+// A compiler may also describe fused calls through the register a pointer load
+// fills, and the load. A call becomes direct into the image, stays through the
+// register out of it or for a delay-loaded import, and a load no call reads is
+// disposed of. Described data accesses and the add of a constant to such a
+// register are handled likewise: where the data is in the image and the code
+// may be resized, each access reaches it RIP-relative and the load, taking any
+// add's sum, goes.
 //
 //===----------------------------------------------------------------------===//
 
@@ -106,9 +100,8 @@ static bool isZeroPointer(DefinedLocalImport *li) {
   return abs && abs->getVA() == 0;
 }
 
-// Whether a reference to a local import pointer can reach the pointer's
-// symbol directly instead. An absolute symbol is not at an address relative to
-// the image, but zero can be materialised.
+// Whether a reference to a local import pointer can reach its symbol directly.
+// An absolute symbol has no image-relative address, but zero works.
 static bool canBypass(ObjFile *file, const coff_relocation &rel) {
   auto *li = dyn_cast_or_null<DefinedLocalImport>(
       file->getSymbol(rel.SymbolTableIndex));
@@ -204,12 +197,11 @@ bool isValueOnlyLoad(const SectionChunk *sc, size_t i, LinkSiteForm form,
          adrp.destRegister == ldr.baseRegister;
 }
 
-// Rewrites the described instruction of form whose REL32 field is rel, a
-// reference through li, to reach li's symbol directly in the same length: a
-// load becomes lea and a call addr32 call rel32, or each materialises zero
-// for a pointer that holds it, and a jump becomes jmp rel32 at its first
-// byte, followed by int3. Where the linker resizes the code, a call or jump
-// drops the bytes after the direct one.
+// Rewrites the described instruction of form whose REL32 field is rel to reach
+// li's symbol directly in the same length: a load becomes lea, a call addr32
+// call rel32, a jump jmp rel32 then int3, or each materialises zero for a
+// zero-holding pointer. Where the code is resized, a call or jump drops the
+// bytes after the direct one.
 static void addSiteEdit(SectionChunk *sc, const coff_relocation &rel,
                         LinkSiteForm form, DefinedLocalImport *li) {
   uint32_t off = rel.VirtualAddress;
@@ -246,12 +238,11 @@ static unsigned getLoadRegister(ArrayRef<uint8_t> data, uint32_t off,
   return reg;
 }
 
-// Whether a fused call whose load's REL32 field is rel stays a call through
-// the register that holds its pointer: wherever it cannot bypass the pointer
-// to reach its function directly, as when the pointer leads out of the image
-// or holds an absent weak function's zero, but not through a delay-loaded
-// import's pointer, which holds the loader's stub until the first call
-// through it.
+// Whether a fused call stays a call through the register holding its pointer:
+// where it cannot bypass the pointer to reach its function directly (the
+// pointer leads out of the image, or holds an absent weak function's zero),
+// but not through a delay-loaded import's pointer, which holds the loader's
+// stub until the first call.
 static bool goesThroughRegister(ObjFile *file, const coff_relocation &rel) {
   Symbol *s = file->getSymbol(rel.SymbolTableIndex);
   if (auto *li = dyn_cast_or_null<DefinedLocalImport>(s))
@@ -261,14 +252,12 @@ static bool goesThroughRegister(ObjFile *file, const coff_relocation &rel) {
   return isa_and_nonnull<Defined>(s);
 }
 
-// Writes at out the bytes of a fused call through register reg, and returns
-// how many, or zero for a jump through a register the unwinder does not take.
-// A call ends six bytes on, where the same call through memory does, so that
-// it pushes the same return address, with segment overrides, which a call
-// through a register ignores, in front. A jump begins where the same jump
-// through memory, with REX.W, does, since the unwinder finds an epilogue by
-// the instruction that ends it and takes a jump through a register there only
-// as REX.W jmp through one of the first sixteen; int3 follows to seven bytes.
+// Writes at out the bytes of a fused call through register reg and returns how
+// many, or zero for a jump through a register the unwinder cannot take. A call
+// ends six bytes on, where the memory call does, so it pushes the same return
+// address, segment overrides padding the front. A jump begins as the REX.W
+// memory jump, since the unwinder takes a register jump ending an epilogue only
+// as REX.W jmp through one of the first sixteen; int3 pads to seven bytes.
 static size_t getFusedCallBytes(uint8_t *out, bool isJump, unsigned reg) {
   if (isJump) {
     if (reg >= 16)
@@ -307,20 +296,18 @@ static const coff_relocation *getRel32At(const SectionChunk *sc,
   return &*it;
 }
 
-// Whether a fused call, access or add whose load's REL32 field is rel may
-// reach the data or function the load's pointer leads to directly: a local
-// import pointer to a symbol in the image.
+// Whether a fused call, access or add may reach the data or function its
+// load's pointer leads to directly: a local import pointer into the image.
 static bool reachesDirectly(ObjFile *file, const coff_relocation &rel) {
   auto *li = dyn_cast_or_null<DefinedLocalImport>(
       file->getSymbol(rel.SymbolTableIndex));
   return li && canBypass(file, rel) && !isZeroPointer(li);
 }
 
-// Whether the bytes of the access f describes are its: the prefix it names,
-// REX without X, or three-byte VEX or EVEX with ~X set, holding the base
-// register's high bit; and ModRM addressing memory through reg, the register
-// its load fills, with the displacement and SIB byte given and no index, all
-// within the access's length.
+// Whether the bytes at f are the access it describes: the prefix it names (REX
+// without X, or three-byte VEX/EVEX with ~X set, holding the base register's
+// high bit) and a ModRM addressing memory through reg, the load's register,
+// with the given displacement and SIB byte, no index, within f's length.
 static bool isFusedAccess(ArrayRef<uint8_t> data, const ObjFile::LinkFusion &f,
                           unsigned reg) {
   if (!f.length || uint64_t(f.offset) + f.length > data.size() ||
@@ -364,11 +351,10 @@ static bool isFusedAccess(ArrayRef<uint8_t> data, const ObjFile::LinkFusion &f,
          f.modrm + 1u + f.sib + dispSize <= f.length;
 }
 
-// The length of the add that f describes, if its bytes are a form it may
-// take, adding f's constant to reg, the register its load fills: add or sub
-// of an 8- or 32-bit immediate with REX.W, writing reg; or lea, with REX.W,
-// of reg plus an 8- or 32-bit displacement, writing f's register. Zero
-// otherwise.
+// The length of the add f describes if its bytes are a form it may take: add
+// or sub of an 8- or 32-bit immediate with REX.W writing reg (the load's
+// register), or lea with REX.W of reg plus an 8- or 32-bit displacement
+// writing f's register. Zero otherwise.
 static unsigned getFusedAddLength(ArrayRef<uint8_t> data,
                                   const ObjFile::LinkFusion &f, unsigned reg) {
   uint64_t off = f.offset;
@@ -493,11 +479,10 @@ static bool isArm64FusedUse(ArrayRef<uint8_t> data,
   return rn == reg && rt == f.reg && (sub ? -imm : imm) == f.addend;
 }
 
-// The ARM64 fused accesses and adds of sc: each names a load of an import
-// pointer into its own base register, whose adrp the pointer's page fills. Where
-// the pointer is a local import pointer that every reference bypasses, the
-// adrp computes the page of the data instead, and each reaches the data
-// directly; the load is then dead where every access does.
+// Binds the ARM64 fused accesses and adds of sc: each names a load of an import
+// pointer into its base register, with the adrp the pointer's page fills. Where
+// the pointer is a local import every reference bypasses, the adrp computes the
+// data's page and each reaches it directly; the load is then dead.
 static void bindFusedArm64(SectionChunk *sc,
                            MutableArrayRef<ObjFile::LinkFusion> fusions,
                            function_ref<void(uint32_t)> mismatch,
@@ -512,9 +497,8 @@ static void bindFusedArm64(SectionChunk *sc,
     const coff_relocation *loadRel = getPageOffsetAt(sc, f.load);
     if (!loadRel)
       continue;
-    // The page that adrp gives the load's register is what the accesses
-    // take the data's offset in; an access that only reads, which may read
-    // the copy instead, takes nothing from it.
+    // The accesses take the data's offset in the page adrp gives the load's
+    // register; an access that only reads may read the copy and take nothing.
     uint32_t load = read32le(&data[f.load]);
     unsigned reg = load & 31;
     if (!isArm64PointerLoad(sc, *loadRel) ||
@@ -528,10 +512,9 @@ static void bindFusedArm64(SectionChunk *sc,
     }
     auto *li = dyn_cast_or_null<DefinedLocalImport>(
         file->getSymbol(loadRel->SymbolTableIndex));
-    // A bypassed pointer's adrp and load compute the data's page and
-    // address, as relaxLocalImport rewrites them. Where the load stays, an
-    // access that only reads data that never changes may read the image's
-    // copy of it.
+    // A bypassed pointer's adrp and load compute the data's page and address,
+    // as relaxLocalImport rewrites them. Where the load stays, an access that
+    // only reads immutable data may read the image's copy.
     if (li && li->getChunk()->bypassed && !isZeroPointer(li)) {
       f.form = ObjFile::LinkFusion::Direct;
     } else {
@@ -557,11 +540,10 @@ static void bindFusedArm64(SectionChunk *sc,
   });
 }
 
-// A fused call names the load that fills its register. Each that stays a call
-// through the register keeps its load, and a fused load that none of them
-// keeps is dead. A fact that does not describe the code, a call that is not
-// in the form described, or a register the load does not fill, is an error,
-// as a site whose bytes are not its form's is.
+// A fused call names the load that fills its register. Each call that stays
+// through the register keeps its load; a fused load no call keeps is dead. A
+// fact whose bytes are not the described code, call form, or load register is
+// an error.
 void bindFusedCalls(SymbolTable &symtab) {
   COFFLinkerContext &ctx = symtab.ctx;
   if ((symtab.machine != AMD64 && symtab.machine != ARM64) ||
@@ -595,11 +577,10 @@ void bindFusedCalls(SymbolTable &symtab) {
         continue;
       }
 
-      // An access reaches the data directly only where the code may be
-      // resized, since a RIP-relative operand is longer than one with a base
-      // register and a small displacement; so does one that only reads data
-      // that never changes, reading the image's copy of it while the load
-      // stays for what else reads it.
+      // An access reaches the data directly only where the code may be resized,
+      // since a RIP-relative operand is longer; one that only reads immutable
+      // data reads the image's copy while the load stays for whatever else
+      // reads it.
       bool covered = file->isCovered(sc);
       Relaxation *edits = nullptr;
       if (auto it = ctx.relaxations.find(sc); it != ctx.relaxations.end())
@@ -682,10 +663,9 @@ void bindFusedCalls(SymbolTable &symtab) {
                    f.isJump ? RelaxEdit::PointerJump : RelaxEdit::PointerCall,
                    cast<Defined>(s)});
         } else {
-          // Resized, a jump keeps its first three bytes, REX.W jmp through
-          // the register, and the int3 after it goes; a call keeps its last
-          // bytes, the call through the register, and the segment overrides
-          // before it go.
+          // Resized, a jump keeps its first three bytes (REX.W jmp through the
+          // register) and drops the int3; a call keeps its last bytes (the
+          // register call) and drops the segment overrides before them.
           keptLoads.insert(f.load);
           ++throughRegister;
           if (covered && f.isJump)
@@ -698,9 +678,9 @@ void bindFusedCalls(SymbolTable &symtab) {
                          RelaxEdit::KeepTail});
         }
       }
-      // A load that nothing reads goes. One rewritten to reach its data
-      // directly keeps what it becomes should the code keep its size after
-      // all, and its accesses their register.
+      // A load nothing reads goes. One rewritten to reach its data directly
+      // keeps what it becomes if the code keeps its size, and its accesses
+      // their register.
       for (ObjFile::LinkFusion &f : fusions) {
         if (!f.isLoad)
           continue;
@@ -745,10 +725,9 @@ void writeFusedArm64(const SectionChunk *sc, uint8_t *buf) {
     return li->getTarget();
   };
   for (const ObjFile::LinkFusion &f : fusions) {
-    // Where the data's offset in its page plus an add's constant fits 12
-    // bits, the load, which relaxLocalImport made an add of the offset,
-    // adds the sum into the add's register instead, and the add becomes a
-    // no-operation.
+    // Where the data's page offset plus an add's constant fits 12 bits, the
+    // load (which relaxLocalImport made an add of the offset) adds the sum into
+    // the add's register, and the add becomes a no-op.
     if (f.isLoad || f.form != ObjFile::LinkFusion::Direct)
       continue;
     if (f.use == ObjFile::LinkFusion::Add) {
@@ -761,9 +740,8 @@ void writeFusedArm64(const SectionChunk *sc, uint8_t *buf) {
       write32le(buf + f.offset, nop);
     }
   }
-  // An access that only reads data that never changes, whose load stays,
-  // reads the image's copy of it from an offset from its own address, as
-  // lld/MachO makes a load after adrp and add one, where the copy is near
+  // An access that only reads immutable data, whose load stays, reads the
+  // image's copy at an offset from its own address where the copy is near
   // enough and aligned; otherwise it reads through its register.
   for (const ObjFile::LinkFusion &f : fusions) {
     if (f.isLoad || f.use != ObjFile::LinkFusion::Access || !f.valueRead ||
@@ -785,10 +763,9 @@ void writeFusedArm64(const SectionChunk *sc, uint8_t *buf) {
   for (const ObjFile::LinkFusion &f : fusions)
     if (!f.isLoad && f.use == ObjFile::LinkFusion::Access)
       accessesOf[f.load].push_back(&f);
-  // A dead load whose accesses all take the data's offset in its page,
-  // within their fields and aligned to their scale, becomes a no-operation,
-  // its register keeping the page adrp gives it; otherwise the accesses keep
-  // their offsets from the data's address, which the load then computes.
+  // A dead load whose accesses all take the data's page offset, within their
+  // fields and aligned to their scale, becomes a no-op, its register keeping
+  // the adrp page; otherwise the accesses keep offsets the load then computes.
   for (const ObjFile::LinkFusion &l : fusions) {
     if (!l.isLoad || !l.dead)
       continue;
@@ -814,27 +791,22 @@ void writeFusedArm64(const SectionChunk *sc, uint8_t *buf) {
   }
 }
 
-// Whether the references of file to local import pointers are reported only if
-// they still read the pointer once local imports are bound, rather than each,
-// as link.exe reports them. A compiler for the Windows Itanium and NT-POSIX
-// targets reaches every symbol it cannot place in the image through its
-// import pointer, which the linker rewrites, so for its objects the
-// diagnostic is only about the references that keep the pointer. On x86-64
-// those objects describe their sites, the only references rewritten there; on
-// ARM64, where any object's loads of a pointer are rewritten, they carry
-// link-only records.
+// Whether file's references to local import pointers are reported only when
+// they still read the pointer after binding, rather than each as link.exe
+// reports them. Our compiler reaches every symbol it cannot place in the image
+// through its import pointer, which the linker rewrites, so only the references
+// that keep the pointer warrant the warning: on x86-64 these objects describe
+// their sites, on ARM64 they carry link-only records.
 bool defersLocalImportWarning(const ObjFile *file, bool arm64) {
   return file->describesSites() || (arm64 && file->hasLinkRecords());
 }
 
-// A .refptr.X section holds only a pointer to X, which the compiler reads
-// where X may be outside the image or absent. When X is defined in the image,
-// or is an absent weak reference, the pointer binds a local import pointer to
-// X or to zero, whose rewritten references reach X or zero directly. That
-// costs nothing and changes no value, but pays only where references can be
-// rewritten: on ARM64, and on x86-64 in objects that describe their sites. The
-// section stays the pointer whenever the image needs one, as bindLocalImports
-// decides.
+// A .refptr.X section holds only a pointer to X, read where X may be outside
+// the image or absent. When X is in the image or is an absent weak reference,
+// the pointer binds a local import to X or to zero, whose rewritten references
+// reach it directly. This pays only where references can be rewritten: ARM64,
+// and x86-64 objects that describe their sites. The section stays a pointer
+// wherever the image still needs one.
 void bindPointerCells(SymbolTable &symtab) {
   COFFLinkerContext &ctx = symtab.ctx;
   if (symtab.pointerCells.empty() || symtab.isEC() || ctx.hybridSymtab)
@@ -876,8 +848,8 @@ void bindPointerCells(SymbolTable &symtab) {
   }
 }
 
-// The pointer, of those bound to the compiler's pointers in cells, whose
-// section s, a symbol of the file that holds them, is defined in.
+// The cell, among those bound to compiler pointers, whose section s is defined
+// in.
 static LocalImportChunk *
 findCell(const DenseMap<SectionChunk *, LocalImportChunk *> &cellOf,
          Symbol *s) {
@@ -885,21 +857,14 @@ findCell(const DenseMap<SectionChunk *, LocalImportChunk *> &cellOf,
   return d ? cellOf.lookup(d->getChunk()) : nullptr;
 }
 
-// A reference to a local import pointer is rewritten to reach the pointer's
-// symbol directly where the linker knows the instruction holding it, and a
-// pointer that only rewritten references read is left out of the image.
-// On x86-64 that is a described call, jump or pointer load, in an object
-// that describes its instruction sites, decided per reference. On ARM64 it
-// is every adrp and 64-bit ldr of a pointer, known from the relocation types,
-// decided per symbol, since an adrp may serve several loads: one other
-// reference keeps them all. Every other reference reads the pointer, as do
-// a GC root and any reference from an x86-64 object that does not describe
-// its sites. Under -import-slots, a reference from data reads the pointer but
-// keeps no instruction from being rewritten, and is not reported: it is a
-// pointer that the compiler made, such as a catch-type entry, never a
-// dllimport declaration. Only the objects that refer to a local import are
-// scanned, and only when the link has one; of those that do not describe
-// their sites, only the ones that list a pointer bound to a compiler's.
+// A reference to a local import pointer is rewritten to reach its symbol
+// directly where the linker knows the instruction holding it, and a pointer
+// only rewritten references read is left out. On x86-64 that is a described
+// call, jump or pointer load, decided per reference; on ARM64 it is every adrp
+// and 64-bit ldr of a pointer, decided per symbol, since an adrp may serve
+// several loads. Every other reference reads the pointer, as do a GC root and
+// references from objects that do not describe their sites. Under -import-slots
+// a data reference reads the pointer but blocks no rewrite and is not warned.
 void bindLocalImports(SymbolTable &symtab) {
   COFFLinkerContext &ctx = symtab.ctx;
   std::vector<Chunk *> &localImportChunks = symtab.localImportChunks;
@@ -927,11 +892,10 @@ void bindLocalImports(SymbolTable &symtab) {
   };
   std::vector<Ref> refs;
 
-  // Without mark-live, the pointers bound to a compiler's pointers, by the
-  // file that holds each compiler's pointer. A scan of that file finds whether
-  // another name reaches the pointer's section: a reference to a local symbol
-  // in it, since no other file can refer to one, or any external symbol
-  // defined in it.
+  // Without mark-live, the pointers bound to compiler pointers, keyed by the
+  // file holding each. A scan of that file finds whether another name reaches
+  // the pointer's section: a local symbol in it (no other file can refer to
+  // one), or any external symbol defined in it.
   DenseMap<ObjFile *, TinyPtrVector<LocalImportChunk *>> cellsByFile;
   if (!ctx.config.doGC)
     for (Chunk *c : localImportChunks)
@@ -953,9 +917,8 @@ void bindLocalImports(SymbolTable &symtab) {
     if (&file->symtab != &symtab)
       continue;
     // An object that does not describe its sites reads every local import
-    // pointer it refers to. Its references are scanned only if it lists the
-    // symbol of a pointer bound to a compiler's pointer, which is left out
-    // unless something live reads it.
+    // pointer it refers to. It is scanned only if it lists a pointer bound to a
+    // compiler pointer, which is left out unless something live reads it.
     bool describes = file->describesSites() || arm64;
     if (describes) {
       if (llvm::none_of(file->getSymbols(),
@@ -1020,8 +983,8 @@ void bindLocalImports(SymbolTable &symtab) {
             arm64Sites.push_back({sc, &rel, li});
         } else {
           // A call, jump or pointer load through a bypassable local import,
-          // whose bytes are its form's, is rewritten. A jump through a
-          // pointer that holds zero keeps reading it.
+          // with the form's bytes, is rewritten; a jump through a zero-holding
+          // pointer keeps reading it.
           std::optional<LinkSiteForm> form;
           if (canBypass(file, rel)) {
             form = getSiteForm(sc, rel);
@@ -1051,10 +1014,9 @@ void bindLocalImports(SymbolTable &symtab) {
         it->second &= rewritable;
       }
     }
-    // A .refptr pointer is the compiler's, not a dllimport declaration, nor is
-    // one to a copy of data, and a pointer to an absent weak symbol's zero
-    // imports nothing. The references of another object were reported with
-    // the undefined symbols.
+    // A .refptr pointer is the compiler's, not a dllimport; nor is one to a
+    // data copy, and a pointer to an absent weak symbol's zero imports nothing.
+    // Other objects' references were reported with the undefined symbols.
     if (!defersLocalImportWarning(file, arm64))
       continue;
     for (auto [li, rewritable] : seen) {
@@ -1066,9 +1028,8 @@ void bindLocalImports(SymbolTable &symtab) {
     }
   }
 
-  // A pointer that a compiler made stays where it is, as the pointer, if
-  // something live reads it other than through a rewritten instruction, or if
-  // another name reaches its section, as mark-live or else the scan finds.
+  // A compiler-made pointer stays a pointer if something live reads it other
+  // than through a rewritten instruction, or another name reaches its section.
   for (auto &[file, cells] : cellsByFile)
     for (LocalImportChunk *c : cells)
       c->cell->live = named.contains(c);
@@ -1100,9 +1061,8 @@ void bindLocalImports(SymbolTable &symtab) {
       li->live = li->cell->live;
     return !li->live || li->cell;
   });
-  // The pointers were made in the order of a walk of the symbol table, which
-  // depends on its hash function; the image lays them out by their targets'
-  // names instead.
+  // The pointers were made in symbol-table walk order, which depends on the
+  // hash function; the image lays them out by their targets' names instead.
   llvm::stable_sort(localImportChunks, [](Chunk *a, Chunk *b) {
     return cast<LocalImportChunk>(a)->getTarget()->getName() <
            cast<LocalImportChunk>(b)->getTarget()->getName();

@@ -252,11 +252,10 @@ void ICF::run() {
   llvm::TimeTraceScope timeScope("ICF");
   ScopedTimer t(ctx.icfTimer);
 
-  // Mark the sections ICF must keep distinct, so that isEligible tests one bit
-  // instead of searching several side tables for every section: a pinned chunk
-  // or a vtable laid out in a run, whose address is load-bearing, and a
-  // function the guard tables mark suppressed, which differs from one they do
-  // not.
+  // Mark the sections ICF must keep distinct, so isEligible tests one bit
+  // instead of searching several side tables per section: a pinned chunk or a
+  // vtable in a run (load-bearing address), and a function the guard tables
+  // mark suppressed (differs from one they do not).
   auto keepDistinct = [](const Chunk *c) {
     if (auto *sc = dyn_cast_or_null<SectionChunk>(const_cast<Chunk *>(c)))
       sc->ineligibleForICF = true;

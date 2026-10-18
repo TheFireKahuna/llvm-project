@@ -21,21 +21,19 @@ class ObjFile;
 class SectionChunk;
 class SymbolTable;
 
-// Whether the bytes around a REL32 field at off are those of the form an
-// object describes there. They verify the description, which is the only
-// means of finding the instruction.
+// Whether the bytes around the REL32 field at off match the form an object
+// describes there, verifying the description that locates the instruction.
 bool isSiteForm(ArrayRef<uint8_t> data, uint32_t off,
                 llvm::COFF::LinkSiteForm form);
 
-// The form that the object of sc describes for the instruction whose field
-// rel is, if its bytes are that form's; none for a site of no form.
+// The form the object of sc describes for rel's instruction, if its bytes
+// match; none for a site of no form.
 std::optional<llvm::COFF::LinkSiteForm>
 getDescribedSite(const SectionChunk *sc,
                  const llvm::object::coff_relocation &rel);
 
-// Whether adrp and add, ARM64 relocations in sc against one symbol, are an
-// adrp and the add after it computing the symbol's address with no addend, as
-// lld/ELF requires to relax such a pair.
+// Whether adrp and add (ARM64 relocations in sc against one symbol) compute
+// the symbol's address with no addend, the pair lld/ELF can relax.
 bool isArm64AddressPair(const SectionChunk *sc,
                         const llvm::object::coff_relocation &adrp,
                         const llvm::object::coff_relocation &add);
@@ -46,11 +44,9 @@ bool isArm64PointerLoad(const SectionChunk *sc,
                         const llvm::object::coff_relocation &rel);
 
 // Whether the relocation at index i of sc, a code section, is the field of a
-// load of a pointer, of the form given, that the object describes as one whose
-// register only reads of memory read, so that the load may read another
-// pointer to equal data. On ARM64, where the load is an ldr, sets page to the
-// index of the relocation of the adrp distance instructions before it that
-// gives the ldr the pointer's page; otherwise to i.
+// pointer load of the given form whose register only memory reads read, so the
+// load may read another pointer to equal data. On ARM64 (an ldr) sets page to
+// the adrp relocation distance instructions before it; otherwise to i.
 bool isValueOnlyLoad(const SectionChunk *sc, size_t i,
                      llvm::COFF::LinkSiteForm form, uint16_t distance,
                      size_t &page);
@@ -59,9 +55,8 @@ bool isValueOnlyLoad(const SectionChunk *sc, size_t i,
 // once local imports are bound, and only if they still read the pointer.
 bool defersLocalImportWarning(const ObjFile *file, bool arm64);
 
-// Binds each .refptr.X pointer to a local import pointer to X when X is in
-// the image, or to zero when a weak X is absent, whose references
-// bindLocalImports rewrites to reach X, or zero, directly.
+// Binds each .refptr.X pointer to a local import to X (in the image) or to
+// zero (absent weak X), whose references bindLocalImports rewrites directly.
 void bindPointerCells(SymbolTable &symtab);
 
 // Decides, after mark-live, which local import pointers a reference still
@@ -69,13 +64,13 @@ void bindPointerCells(SymbolTable &symtab);
 void bindLocalImports(SymbolTable &symtab);
 
 // Decides, once local imports are bound, which fused calls go through their
-// register, which fused accesses and adds reach their data directly and which
-// fused loads nothing reads, and makes the edits of each.
+// register, which accesses and adds reach data directly, and which loads are
+// dead; makes the edits of each.
 void bindFusedCalls(SymbolTable &symtab);
 
-// Writes, into the contents of sc at buf, an ARM64 chunk, each fused access
-// and add that bindFusedCalls decided reaches the data directly, where the
-// offsets the data's address gives them fit their fields.
+// Writes into the ARM64 chunk sc's contents at buf the fused accesses and adds
+// bindFusedCalls decided reach the data directly, where the data-address
+// offsets fit their fields.
 void writeFusedArm64(const SectionChunk *sc, uint8_t *buf);
 } // namespace lld::coff
 

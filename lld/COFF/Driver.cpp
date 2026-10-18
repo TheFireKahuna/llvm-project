@@ -742,9 +742,8 @@ void LinkerDriver::parseDirectives(InputFile *file) {
   }
 }
 
-// LTO's output repeats in its directives what the bitcode gave, except for
-// what code generation adds: the functions it suppresses as Control Flow Guard
-// targets.
+// LTO's output repeats in its directives what the bitcode gave, plus what code
+// generation adds: the functions it suppresses as CFG targets.
 void LinkerDriver::parseGuardSymDirectives(ObjFile *file) {
   StringRef s = file->getDirectives();
   if (s.empty())
@@ -874,10 +873,10 @@ void LinkerDriver::setMachine(MachineTypes machine) {
   addWinSysRootLibSearchPaths();
 }
 
-// The MSVC and Windows SDK library directories come last in the search order,
-// so they are needed only once a search misses every other path. Detecting
-// them can query the registry and the Visual Studio setup COM server, so
-// unless the command line names them, it waits for that miss.
+// The MSVC and Windows SDK library directories come last, needed only once a
+// search misses every other path. Detecting them can query the registry and VS
+// setup COM server, so it waits for that miss unless the command line names
+// them.
 bool LinkerDriver::addPendingWinSysRootLibSearchPaths() {
   // The directories depend on the machine type.
   if (!pendingWinSysRootArgs ||
@@ -1195,9 +1194,9 @@ void LinkerDriver::createImportLibrary(bool asLib) {
 
   auto getExports = [&](SymbolTable &symtab,
                         std::vector<COFFShortExport> &exports) {
-    // A member that imports by name carries a hint rather than an ordinal:
-    // the export's index in the export name table, whose order fixupExports
-    // has already set.
+    // A member that imports by name carries a hint, not an ordinal: the
+    // export's index in the export name table, whose order fixupExports has
+    // set.
     uint16_t hint = 0;
     StringMap<uint16_t> hints;
     auto add = [&](const Export &e1, uint16_t ordinal) {
@@ -1446,9 +1445,8 @@ static void markAddrsig(Symbol *s) {
       c->keepUnique = true;
 }
 
-// Finds the functions that /guardsym suppresses. A directive names a symbol of
-// the object that gives it, which may be local to it, and the command line a
-// global symbol.
+// Finds the functions /guardsym suppresses. A directive names a symbol of the
+// object giving it (possibly local); the command line names a global symbol.
 static void findGuardSuppressed(COFFLinkerContext &ctx) {
   for (const auto &arg : ctx.config.guardSymArgs) {
     InputFile *file = arg.first;
@@ -1664,10 +1662,9 @@ void LinkerDriver::pullArm64ECIcallHelper() {
         ctx.symtab.addGCRoot("__icall_helper_arm64ec");
 }
 
-// Whole-program visibility upgrades the visibility of a class whose vtables
-// are all in the bitcode; a class with a vtable in a native object or a DLL
-// shows itself there by its type info, unless it has none. Such a vtable
-// disables the upgrade, as in the ELF port.
+// Whole-program visibility upgrades a class whose vtables are all in bitcode; a
+// class with a vtable in a native object or DLL shows itself there by its type
+// info (unless it has none), and such a vtable disables the upgrade, as on ELF.
 void LinkerDriver::ltoValidateAllVtablesHaveTypeInfos(
     const opt::InputArgList &args) {
   DenseSet<StringRef> typeInfoSymbols;
@@ -1781,10 +1778,9 @@ void LinkerDriver::maybeExportMinGWSymbols(const opt::InputArgList &args) {
   });
 }
 
-// Splits a symbol name of the form "f@V", or "f@@V" for f's default version,
-// into f, V and whether V is the default, as ld.lld parses a versioned name.
-// A Microsoft C++ name, which starts with '?', and a vectorcall name, whose
-// suffix is a size, carry no version.
+// Splits a symbol name "f@V", or "f@@V" for f's default version, into f, V and
+// whether V is the default, as ld.lld parses one. A Microsoft C++ name (starts
+// with '?') and a vectorcall name (size suffix) carry no version.
 static std::optional<std::tuple<StringRef, StringRef, bool>>
 splitVersionedName(StringRef name) {
   size_t at = name.find('@');
@@ -1798,13 +1794,11 @@ splitVersionedName(StringRef name) {
   return std::make_tuple(name.take_front(at), version, isDefault);
 }
 
-// A symbol whose name carries a version, as .symver gives it, is exported
-// under the name "f@V", as on ELF, where such a symbol exists to be exported.
-// A default version is also exported as plain f for GetProcAddress, defines f
-// in the image unless something else does, and the import library binds a
-// reference to f to the default version's name, so that a binary keeps the
-// version it was linked against when a later release changes the default,
-// and fails to load against a release without it.
+// A symbol whose name carries a version (.symver) is exported as "f@V", as on
+// ELF. A default version is also exported as plain f for GetProcAddress,
+// defines f unless something else does, and the import library binds a
+// reference to f to the versioned name, so a binary keeps the version it linked
+// against and fails to load against a release that drops it.
 void LinkerDriver::addVersionedExports(SymbolTable &symtab) {
   llvm::TimeTraceScope timeScope("Add versioned exports");
   if (ctx.config.machine == I386)
@@ -1817,10 +1811,9 @@ void LinkerDriver::addVersionedExports(SymbolTable &symtab) {
         versioned.push_back({d, *v});
   });
   bool hasDefault = false;
-  // A global name of a named node of the version script gives an exported
-  // symbol that carries no version of its own that node as its default: its
-  // export keeps its name in the export table, and the import library binds
-  // it to the versioned name.
+  // A global name of a named version-script node gives an unversioned exported
+  // symbol that node as its default: its export keeps its name in the table,
+  // and the import library binds it to the versioned name.
   std::vector<VersionDefinition> &nodes = ctx.config.versionDefinitions;
   for (size_t i = 0, e = symtab.exports.size(); i != e; ++i) {
     Export &exp = symtab.exports[i];
@@ -2123,9 +2116,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
       // Don't automatically deduce the lib path from the environment or MSVC
       // installations when operating in mingw mode. (This also makes LLD ignore
       // winsysroot and vctoolsdir arguments.)
-      // A link with import slots takes every library directory from its
-      // command line. Its targets link none of the Visual C++ libraries, so
-      // the MSVC directory must not be searched.
+      // A link with import slots takes every library directory from the
+      // command line; its targets link no Visual C++ libraries, so skip the
+      // MSVC directory.
       if (args.hasArg(OPT_winsysroot, OPT_vctoolsdir, OPT_winsdkdir))
         detectWinSysRoot(args);
       else if (!args.hasArg(OPT_import_slots))
@@ -2613,10 +2606,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
       parseManifest(arg->getValue());
   }
 
-  // Under -import-slots, an executable embeds its manifest. The loader then
-  // ignores .local redirection for it, no loose manifest file applies to it,
-  // and its signature covers the manifest. A side-by-side manifest is written
-  // when asked for.
+  // Under -import-slots, an executable embeds its manifest: the loader ignores
+  // .local redirection for it, no loose manifest applies, and its signature
+  // covers the manifest. A side-by-side manifest is still written when asked.
   if (args.hasArg(OPT_import_slots) && !config->dll) {
     if (config->manifest == Configuration::No)
       Err(ctx) << "/manifest:no is not compatible with -import-slots, under "
@@ -3136,9 +3128,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
       // needs the loader to write the address there.
       symtab.addAbsolute(symtab.mangle("__llvm_import_slots_v1"), 0);
       // An object that replaces an overridable default needs the linker to
-      // write the override table and bind the replacement into it, so that the
-      // program does not keep a split heap; a link that does not define this
-      // fails.
+      // write the override table and bind the replacement in, so the program
+      // keeps no split heap; a link that does not define this fails.
       symtab.addAbsolute(symtab.mangle("__llvm_overrides_v1"), 0);
       // The lists of the builtins' fill and copy, which the writer defines
       // where the image has them.
@@ -3207,8 +3198,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
         symtab.resolveAlternateNames();
 
         // Under -import-slots, an import-form reference loads the archive
-        // member that defines its symbol, as a direct reference would, when
-        // nothing provides it in import form.
+        // member defining its symbol, as a direct reference would, when
+        // nothing provides it.
         loadedImports |= symtab.loadLocalImportMembers();
 
         // Under -import-slots, an executable that replaces an overridable
@@ -3361,8 +3352,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // references to the symbols we use from them.
   run();
 
-  // The LTO step may have added import-form references, such as calls to the
-  // library functions it introduces, whose members input resolution could not
+  // The LTO step may have added import-form references (such as calls to
+  // library functions it introduces) whose members input resolution could not
   // load.
   loadLocalImportMembers();
 
@@ -3394,9 +3385,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   if (ctx.symtab.bindVagueSiblings())
     run();
 
-  // Define the vtable range symbols a guard thunk and a checked downcast
-  // reference, as empty until the runs are laid out, so they do not read as
-  // undefined.
+  // Define the vtable range symbols a guard thunk and checked downcast
+  // reference, empty until the runs are laid out, so they are not undefined.
   registerVTableRunSymbols(ctx);
 
   // Resolve remaining undefined symbols and warn about imported locals.
@@ -3408,10 +3398,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   if (errorCount())
     return;
 
-  // Under -import-slots, a word of static data that holds an address inside
-  // imported data takes a name that no input references. The imports of such
-  // names load once automatic import has resolved the data, while what they
-  // bring in can still be resolved and its liveness decided.
+  // Under -import-slots, a word of static data holding an address inside
+  // imported data takes a name no input references. Such imports load once
+  // automatic import resolves the data, while liveness can still be decided.
   if (config->importSlots)
     for (bool loaded = true; loaded;) {
       loaded = ctx.symtab.loadInteriorImports();
@@ -3469,9 +3458,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     markLive(ctx);
   }
 
-  // Under -import-slots, a DLL's offer of COMDAT data preempts the image's
-  // copy once liveness is decided, so that a root names the symbol rather than
-  // the copy.
+  // Under -import-slots, a DLL's offer of COMDAT data preempts the image's copy
+  // once liveness is decided, so a root names the symbol, not the copy.
   ctx.forEachSymtab([](SymbolTable &symtab) {
     symtab.preemptWeakData();
     symtab.bindOfferedFunctions();
@@ -3514,9 +3502,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // Windows specific -- when we are creating a .dll file, we also
   // need to create a .lib file. In MinGW mode, we only do that when the
   // -implib option is given explicitly, for compatibility with GNU ld.
-  // The import library of a DLL that exports the bounds of its KCFI code range
-  // describes the range, which the writer decides, so it is written after the
-  // image.
+  // The import library of a DLL that exports its KCFI code-range bounds
+  // describes the range, which the writer decides, so it is written afterward.
   addKCFIRangeExports(ctx);
   bindKCFIImportedRanges(ctx);
   addContractWitnessExports(ctx);

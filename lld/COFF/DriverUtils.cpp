@@ -123,10 +123,9 @@ void LinkerDriver::parseGuard(StringRef fullArg) {
   }
 }
 
-// Parses a string in the form of "<symbol>,S", which keeps the function the
-// symbol names listed as a control flow guard target but suppressed. A flag
-// this linker does not know leaves the symbol as it is. file is the object
-// whose directives give the string, if any.
+// Parses "<symbol>,S", which keeps the named function listed as a CFG target
+// but suppressed. An unknown flag leaves the symbol as it is. file is the
+// object whose directives give the string, if any.
 void LinkerDriver::parseGuardSym(InputFile *file, StringRef arg) {
   auto [name, flags] = arg.split(',');
   if (name.empty() || !flags.equals_insensitive("s")) {
@@ -747,10 +746,9 @@ static void writeResEntryHeader(char *&buf, size_t manifestSize,
   buf += sizeof(object::WinResHeaderSuffix);
 }
 
-// Takes the manifest resources that .res inputs give the image under the ID of
-// the one the linker embeds, to merge them into it: the image then has one
-// manifest, which carries what the linker requires as well as what the inputs
-// add.
+// Takes the manifest resources .res inputs give the image under the ID of the
+// one the linker embeds, merging them into it, so the image has one manifest
+// carrying what the linker requires and what the inputs add.
 void LinkerDriver::takeManifestResources() {
   for (MemoryBufferRef &mb : resources) {
     std::unique_ptr<object::Binary> bin = check(object::createBinary(mb));

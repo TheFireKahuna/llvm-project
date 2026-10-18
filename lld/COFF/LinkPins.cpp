@@ -6,9 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Pins ask for an object's address modulo a power of two. This file resolves
-// the pins the objects carry into one per chunk, and plans the layout of
-// .rdata that fills the padding the pins and wide alignments leave.
+// Pins ask for an object's address modulo a power of two. This resolves them
+// into one per chunk and lays out .rdata to fill the padding they leave.
 //
 //===----------------------------------------------------------------------===//
 
@@ -29,12 +28,10 @@ using namespace llvm::COFF;
 using namespace lld;
 using namespace lld::coff;
 
-// Gives each chunk the address its objects' pins ask for. Required pins of
-// one chunk must agree, modulo the smaller of their moduli, or the link
-// fails; pins that are not required apply only if they all agree with each
-// other and with the required ones, and are otherwise left out with a
-// warning. The pin with the largest modulus gives the chunk its residue. The
-// outcome does not depend on the order of the inputs.
+// Gives each chunk the address its objects' pins ask for. Required pins of a
+// chunk must agree modulo the smaller of their moduli, or the link fails;
+// advisory pins apply only if they all agree, and are dropped with a warning
+// otherwise. The largest modulus sets the residue, independent of input order.
 void lld::coff::resolveLinkPins(COFFLinkerContext &ctx) {
   llvm::TimeTraceScope timeScope("Resolve link pins");
   struct Given {
@@ -68,14 +65,14 @@ void lld::coff::resolveLinkPins(COFFLinkerContext &ctx) {
       if (!sc || !sc->live)
         continue;
       Given g{file, &pin, residue & maskTrailingOnes<uint64_t>(pin.log2)};
-      // Code has placement rules of its own, such as keeping functions with
-      // type prefixes out of a page's first bytes, which a pin would undo.
+      // Code has placement rules of its own (e.g. keeping prefixed functions
+      // out of a page's first bytes) that a pin would undo.
       if (sc->getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE) {
         report(pin.required, g, "is in executable code, which is not pinned");
         continue;
       }
-      // Bits 0 to 11 of an address are those of its RVA, since the image
-      // base is page-aligned.
+      // The image base is page-aligned, so bits 0-11 of an address are its
+      // RVA's.
       if (pin.log2 > 12) {
         report(pin.required, g, "asks for a modulus larger than a page");
         continue;
@@ -220,18 +217,16 @@ std::vector<size_t> RdataPacker::pack(size_t begin, size_t end, uint64_t pos) {
   }
 }
 
-// Lays out a run from its first slot's item at start: each later slot the
-// stride past the one before, and in each gap first the tagged vtables of
-// the run's classes that their pins place inside it, then fillers. Returns
-// where the run ends.
+// Lays out a run from its first slot's item at start: each later slot a stride
+// on, each gap filled first with the run's tagged vtables that their pins place
+// inside it, then with fillers. Returns where the run ends.
 uint64_t RdataPacker::layOutRun(const VTableRun &run, ArrayRef<size_t> slots,
                                 uint64_t start, std::vector<size_t> &pinned,
                                 std::vector<size_t> &out) {
   uint64_t anchor = start + run.slots.front().apoff;
   uint64_t pos = start + run.slots.front().chunk->getSize();
-  // The pinned items this run places in its gaps, filtered once in pinned
-  // order; a slot reconsiders those it could not yet fit, and drops each as it
-  // places it, without copying all of pinned per slot.
+  // The run's own tagged vtables, in pinned order; a slot retries those it
+  // could not fit and drops each as it places it, without rescanning pinned.
   SmallVector<size_t, 0> runPinned;
   for (size_t t : pinned)
     if (items[t].baseRun == &run)

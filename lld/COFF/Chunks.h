@@ -239,10 +239,10 @@ public:
   int flags;
 };
 
-// A word of static data that holds the address of an import, which the loader
-// writes in place through an import descriptor whose address table is the run
-// of such words the word belongs to. The word holds the value of its run's
-// lookup table entry until then, and needs no base relocation.
+// A word of static data holding an import's address, which the loader writes
+// in place through a descriptor whose table is the run of such words it
+// belongs to. Until then it holds its lookup entry's value, needing no base
+// relocation.
 struct ImportSlot {
   SectionChunk *chunk;
   uint32_t offset;
@@ -329,11 +329,11 @@ public:
   // The in-place import slot that rel fills, or null.
   const ImportSlot *getImportSlot(const coff_relocation &rel) const;
 
-  // The symbol that rel, a relocation against sym, branches to: for a branch
-  // to a definition this DLL offers, the import thunk of the default it stands
-  // in for, through which the DLL's own calls reach the program's choice; else
-  // sym itself. A branch is ARM64's BRANCH26, or a REL32 of an object that
-  // describes its sites without a site.
+  // The symbol rel (a relocation against sym) branches to: for a branch to a
+  // definition this DLL offers, the import thunk of the default it stands in
+  // for, through which the DLL's own calls reach the program's choice; else
+  // sym. A branch is ARM64 BRANCH26, or a REL32 of a site-describing object
+  // with no site.
   Defined *getBranchTarget(const coff_relocation &rel, Defined *sym) const;
   void applyRelX64(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
                    uint64_t p, uint64_t imageBase) const;
@@ -450,15 +450,14 @@ public:
   // Whether a word of this section is an in-place import slot.
   bool hasImportSlots : 1;
 
-  // Whether the linker changes code in this section, and whether it resizes
-  // it, which its file's records cover (see Relax.h).
+  // Whether the linker changes this section's code, and whether it resizes it,
+  // which the file's records cover.
   bool edited : 1;
   bool relaxed : 1;
 
-  // Whether ICF must keep this section distinct: its address is load-bearing
-  // (a pinned chunk, or a vtable laid out in a run), a program enumerates it
-  // through __start_X and __stop_X, or the guard tables mark its function
-  // suppressed.
+  // Whether ICF must keep this section distinct: its address is load-bearing (a
+  // pinned chunk or a vtable in a run), a program enumerates it through
+  // __start_X/__stop_X, or the guard tables mark its function suppressed.
   bool ineligibleForICF : 1;
 
   // The COMDAT selection if this is a COMDAT chunk.
@@ -810,20 +809,18 @@ public:
   bool bypassed = false;
 
   // The name of the image's own overridable default whose address the pointer
-  // holds, if it is one, which the image's fill overwrites with the program's
-  // choice when the executable replaces the default. No reference to such a
-  // pointer reaches the symbol directly.
+  // holds, if any, which the fill overwrites with the program's choice when the
+  // executable replaces the default. No reference to it reaches the symbol.
   StringRef overrideDefault;
 
   // The name of the vague entity whose address the pointer holds, if another
-  // image's instance may preempt it, which the image's fill overwrites with
-  // that instance's address when the executable's table names one.
+  // image may preempt it; the fill writes that instance's address when the
+  // executable's table names one.
   StringRef vagueEntity;
 
-  // Whether the pointer leads to the image's own copy of data that never
-  // changes, which loads read in place of the import of data another image
-  // provides where they only read values, so that no dllimport declaration
-  // names it.
+  // Whether the pointer leads to the image's own copy of immutable data, which
+  // value-only loads read instead of the import another image provides, so no
+  // dllimport declaration names it.
   bool copy = false;
 
   // Whether the pointer is a cell the image's fill may overwrite, which no
@@ -832,10 +829,9 @@ public:
     return !overrideDefault.empty() || !vagueEntity.empty();
   }
 
-  // The pointer that a compiler made for the symbol, such as .refptr.X, if
-  // this one binds it. That pointer, where it is, stays the pointer whenever
-  // the image needs one, so that every name of it gives one address, and this
-  // one is never written.
+  // The compiler-made pointer for the symbol (such as .refptr.X) this one
+  // binds, if any. That pointer stays a pointer wherever the image needs one,
+  // so every name of it gives one address, and this one is never written.
   SectionChunk *cell = nullptr;
 
 private:
@@ -843,10 +839,9 @@ private:
   COFFLinkerContext &ctx;
 };
 
-// The record through which code reaches a thread-local variable that another
-// image may define, written by the linker where no object defines it: the
-// address of the image's TLS index, the variable's offset in the image's TLS
-// template, and the offset of the byte that guards its initialization.
+// The record through which code reaches a thread-local variable another image
+// may define, written by the linker where no object defines it: the image's
+// TLS index address, the variable's template offset, and its init-guard offset.
 class ThreadLocalRecordChunk : public NonSectionChunk {
 public:
   ThreadLocalRecordChunk(COFFLinkerContext &ctx, Defined *index, Defined *var,
@@ -900,9 +895,8 @@ private:
   SymbolRVASet syms;
 };
 
-// Table which contains symbol RVAs with flags. Used for the /guard:cf tables
-// when an entry of any of them has a flag, which entryFlags gives for the
-// entries that have one.
+// Table of symbol RVAs with flags, used for the /guard:cf tables when any
+// entry has a flag; entryFlags gives the flag for each entry that has one.
 class RVAFlagTableChunk : public NonSectionChunk {
 public:
   explicit RVAFlagTableChunk(SymbolRVASet s, SymbolRVAFlags f)

@@ -41,17 +41,10 @@ using namespace llvm::support;
 using namespace llvm::support::endian;
 
 namespace lld::coff {
-// The routine that a KCFI type check reaches on a mismatch when the linker
-// opens the type: it points R10 or X16 at the type's list and jumps to the
-// compiled scanner, which fails fast on a target the list does not hold for a
-// statically open type, and continues into the guard function for a
-// dynamically open one. On x86-64 the latter ends in a trap, as the compiler
-// emits it.
-//
-// With an outside routine, it first jumps there with a target outside the
-// image, which it finds in RCX for a check routine on x86-64, in RAX for a
-// dispatch routine and in X15 on ARM64. Without a list, it leaves R10 or X16
-// as it finds it.
+// The routine a KCFI type check reaches on a mismatch when the linker opens the
+// type: points R10/X16 at the type's list and jumps to the compiled scanner,
+// which fails fast for a static opening and continues into the guard function
+// for a dynamic one. An outside routine first diverts an out-of-image target.
 class KCFIOpenChunk : public NonSectionCodeChunk {
 public:
   KCFIOpenChunk(COFFLinkerContext &ctx, Defined *list, Defined *scanner,
@@ -80,25 +73,12 @@ private:
   COFFLinkerContext &ctx;
 };
 
-// The linker's form of one of clang's KCFI thunks, which replaces it in an
-// image the linker sealed. A target inside a code range the image vouches for,
-// its own if a function of the thunk's type is in it and that of each DLL it
-// imports whose code holds one, takes clang's type check and then the jump, or
-// the return of a check thunk. Any other target takes clang's page test, the
-// type check and the guard function. A DLL's range is read from its two bounds
-// in the import address table, start then end.
-//
-// A local thunk serves a type whose every target is in the image. Where the
-// image has a code range, a target outside it fails fast, as clang's local
-// thunk does, and a target inside it takes the type check only if a function
-// of the type is in the range: any other function there has a sealed prefix,
-// which holds the type that no call expects, so the target goes straight to
-// the mismatch routine. Without a range, a target takes the page test, the
-// type check and the guard function, as clang's local thunk does.
-//
-// A thunk may also have an entry for a target outside the image's range whose
-// type a member thunk has checked: it takes the jump inside an imported range,
-// and the guard function outside every one.
+// The linker's form of one of clang's KCFI thunks, replacing it in a sealed
+// image. A target inside a code range the image vouches for -- its own, and
+// each imported DLL's whose record lists a function of the type -- takes
+// clang's type check then the jump; any other takes clang's page-test path.
+// A local thunk serves a type with no out-of-image target. A member thunk's
+// extra entry (for a checked outside target) jumps inside an imported range.
 class KCFIThunkChunk : public NonSectionCodeChunk {
 public:
   struct Range {
@@ -128,9 +108,8 @@ public:
   }
 
 private:
-  // The thunk's size and checked-entry offset, which its fields and whether a
-  // mismatch routine follows decide, not any address, so one measurement
-  // serves the repeated layout queries.
+  // Size and checked-entry offset, fixed by the thunk's fields and whether a
+  // mismatch routine follows (not by any address), so measured once.
   struct Measured {
     uint32_t size;
     uint32_t checked;
@@ -166,9 +145,8 @@ private:
 };
 
 // A word of a KCFI type's list, in the section that sorts it among the
-// compiler's pieces of the list, or a cell that an entry points to. It holds
-// a value, or the address of a symbol, which is zero if the symbol is not in
-// the image.
+// compiler's pieces, or a cell an entry points to. It holds a value, or a
+// symbol's address (zero if the symbol is not in the image).
 class KCFIListChunk : public NonSectionChunk {
 public:
   KCFIListChunk(COFFLinkerContext &ctx, StringRef sectionName, Defined *sym,
@@ -208,8 +186,7 @@ MachineTypes KCFIOpenChunk::getMachine() const { return ctx.config.machine; }
 void KCFIOpenChunk::writeTo(uint8_t *buf) const {
   // The scanner reads the list from its first word after the head.
   uint64_t first = list ? list->getRVA() + 8 : 0;
-  // The image ends where its last section does, rounded up to the page that
-  // the loader maps it in.
+  // The image ends at its last section, rounded up to its mapping page.
   uint64_t end = 0;
   if (outside) {
     for (OutputSection *sec : ctx.outputSections)
@@ -317,12 +294,9 @@ uint32_t KCFIThunkChunk::write(uint8_t *buf, uint32_t *checkedOffset) const {
   return size;
 }
 
-// With the image's own range tested, the thunk is laid out as: the range test,
-// the type check and jump that a target inside a range takes, the tests of the
-// imported ranges, and the path of a target outside every range. Without it,
-// the tests of the imported ranges come first, and the last one falls through
-// into the type check and jump. The constant of the type check is loaded once,
-// before the range tests, which leave it alone, wherever two paths compare it.
+// With the own range tested, the thunk is: the range test, the inside-range
+// type check and jump, the imported-range tests, then the outside path. The
+// type-check constant is loaded once before the range tests, which leave it.
 void KCFIThunkChunk::writeAMD64(LabelledCode &a,
                                 uint32_t &checkedOffset) const {
   // The target is in RAX for a dispatch thunk and in RCX for a check thunk;
@@ -456,10 +430,9 @@ void KCFIThunkChunk::writeAMD64(LabelledCode &a,
     a.bind(toMismatch);
 }
 
-// As on x86-64, but the target is in X15, and X16 and X17 are free, as for the
-// guard function; clang's type check uses both, so its constant is not
-// hoisted. A branch to a mismatch routine that does not follow the thunk goes
-// through a jump at the thunk's end, which reaches it at any distance.
+// As on x86-64, but the target is in X15 and X16/X17 are free; clang's type
+// check uses both, so its constant is not hoisted. A branch to a mismatch
+// routine not following the thunk uses a jump at the thunk's end.
 void KCFIThunkChunk::writeARM64(LabelledCode &a,
                                 uint32_t &checkedOffset) const {
   uint32_t toMismatch = a.newLabel();
@@ -591,10 +564,9 @@ void KCFIListChunk::writeTo(uint8_t *buf) const {
   write64le(buf, v);
 }
 
-// The kinds of mismatch routine, one for each kind of thunk, with the target in
-// the thunk's register, and the scanners they pass a type's list to: a static
-// scanner fails fast where a dynamic one continues into the guard function.
-// ARM64 has only check thunks.
+// The kinds of mismatch routine, one per thunk kind, with the scanners they
+// pass a type's list to: a static scanner fails fast, a dynamic one continues
+// into the guard function. ARM64 has only check thunks.
 struct RoutineKind {
   StringRef mismatch, staticScanner, dynamicScanner;
   bool check;
@@ -608,10 +580,9 @@ static ArrayRef<RoutineKind> getRoutineKinds(COFFLinkerContext &ctx) {
   return ArrayRef(kinds).drop_front(ctx.config.machine == AMD64 ? 0 : 1);
 }
 
-// Whether s, which an object references, reaches code without a prefix of
-// ours, which the guard function table lists for an object without guard
-// metadata. A reference through __imp_X, which may become a pointer the linker
-// makes, reaches X.
+// Whether s, which an object references, reaches code without a prefix of ours
+// (which the guard table lists for an object lacking guard metadata). A
+// reference through __imp_X, which may become a linker-made pointer, reaches X.
 static bool isUnprefixedCode(SymbolTable &symtab, Symbol *s,
                              function_ref<bool(Symbol *)> isPrefixedEntry) {
   if (auto *u = dyn_cast_or_null<Undefined>(s);
@@ -628,11 +599,10 @@ static bool isUnprefixedCode(SymbolTable &symtab, Symbol *s,
 }
 
 // Whether the guard function table may list, for file, a target without a
-// prefix of ours: anything but such an entry that its guard metadata lists, a
-// function its address-taken import table reaches, or, where it has no guard
-// metadata, or describes the sites that take addresses, a function any of its
-// relocations reaches, as the writer lists every function such references
-// reach. Liveness, which the writer also asks, is not yet known.
+// prefix of ours: an entry its guard metadata lists, a function its
+// address-taken import table reaches, or -- lacking guard metadata, or
+// describing address-taking sites -- a function any relocation reaches.
+// Liveness, which the writer also checks, is not yet known.
 static bool mayListUnprefixed(SymbolTable &symtab, ObjFile *file,
                               function_ref<bool(Symbol *)> isPrefixedEntry) {
   auto readIndices = [&](SectionChunk *c, auto f) {
@@ -667,50 +637,20 @@ static bool mayListUnprefixed(SymbolTable &symtab, ObjFile *file,
   return false;
 }
 
-// Opens a KCFI type where the compiler could not see that code without a KCFI
-// prefix of ours reaches it, because the link brings that code in. Clang
-// gives the facts as weak externals that name the type, in 8 lowercase hex
-// digits, and a function:
+// Opens a KCFI type where the compiler could not see that unprefixed code
+// reaches it, because the link brings that code in. Clang gives the facts as
+// weak externals naming the type (8 hex digits) and a function; each opens the
+// type statically or dynamically by how its symbol resolves:
 //
-// - __kcfi_typeid_<f> = <type>, for a declaration f whose address an object
-//   takes. If f resolves to an import or to a definition without a prefix,
-//   the type is open statically and f is added to its list of targets.
-// - __kcfi_inflow_<type>_<g>, for a declaration g through which a pointer of
-//   the type can come back. If g resolves so, or g is a variable that a DLL
-//   provides or that an object with code and no prefix defines, the type is
-//   open dynamically.
-// - __kcfi_param_<type>_<g>, for a definition g that can receive a pointer of
-//   the type. If an object with code and no prefix references g, directly or
-//   through __imp_g, the type is open dynamically.
+// - __kcfi_typeid_<f> = <type>: f's address is taken (static, f listed).
+// - __kcfi_inflow_<type>_<g>: a pointer of the type can return through g.
+// - __kcfi_param_<type>_<g>: g can receive such a pointer.
+// - __kcfi_tinflow_<type>_<called>: a call through the called type returns one
+//   of the type, opening it transitively.
 //
-// Foreign code in the image that references no import can hand ours only
-// functions in the image, where the writer may bound the mismatch. So a type
-// that only parameter facts and inflow facts whose g is defined in the image
-// open dynamically, directly or through tinflow facts, is remembered, for the
-// writer to open statically instead.
-//
-// An inflow or parameter fact may name a node, n<node> in 16 lowercase hex
-// digits, in place of a type, as __kcfi_inflow_n<node>_<g>, so that an object
-// names the types a record holds once rather than once per function that
-// reaches the record. It stands for the facts of each type the node holds,
-// which __kcfi_node_<node>_<type> gives, and names nothing when the node holds
-// no type.
-//
-// - __kcfi_tinflow_<type>_<called>, or __kcfi_tinflow_n<node>_<called>, for a
-//   type that an object calls: a pointer of the type can come back from a
-//   call through a pointer of the called type. If the called type is open
-//   dynamically, because a compiled mismatch routine of it jumps to a dynamic
-//   scanner or because a fact here opens it, the type is open dynamically,
-//   and so on until nothing more opens.
-//
-// A type is opened only where a KCFI thunk refers to its mismatch routine,
-// __llvm_kcfi_mismatch_<type> or __llvm_kcfi_check_mismatch_<type>. While the
-// routine is the weak default that fails fast, it becomes one that points at
-// the type's list and jumps to the compiled scanner of the type's kind, and a
-// dynamic opening replaces a static routine too. The lists' words go in the
-// sections that sort them among the compiler's. This runs after LTO, whose
-// objects carry the facts, and before the garbage collector, so that what the
-// routines refer to is kept.
+// A fact may name a node (n<node>) for a record's whole type set instead of a
+// type; __kcfi_node_<node>_<type> gives its types. A type opens only where a
+// KCFI thunk names its mismatch routine; the opened routines are kept past GC.
 void openKCFITypes(SymbolTable &symtab) {
   COFFLinkerContext &ctx = symtab.ctx;
   bool isX64 = ctx.config.machine == AMD64;
@@ -722,9 +662,8 @@ void openKCFITypes(SymbolTable &symtab) {
     return;
   llvm::TimeTraceScope timeScope("Open KCFI types");
 
-  // Whether each object is foreign, and the functions with a KCFI prefix with
-  // a marker: each the first function to follow its static __cfi_ label in
-  // its chunk.
+  // Whether each object is foreign, and the marked-prefix functions: each the
+  // first to follow its static __cfi_ label in its chunk.
   DenseSet<std::pair<SectionChunk *, uint32_t>> prefixed;
   DenseMap<ObjFile *, bool> objInfo;
   auto scan = [&](ObjFile *file) {
@@ -766,10 +705,9 @@ void openKCFITypes(SymbolTable &symtab) {
     return foreign;
   };
 
-  // For each type, whether it is open dynamically, and whether only through
-  // foreign code in the image, and the symbols to add to its list, each with
-  // whether the entry points at a cell holding it rather than at the symbol
-  // itself.
+  // Per type: whether it opens dynamically, whether only through in-image
+  // foreign code, and the symbols to add to its list, each flagged if its entry
+  // points at a cell holding it rather than at the symbol.
   struct Opening {
     bool dynamic = false;
     bool local = false;
@@ -777,18 +715,15 @@ void openKCFITypes(SymbolTable &symtab) {
   };
   std::map<uint32_t, Opening> openings;
   std::vector<Symbol *> typeids;
-  // A fact names its precise key, 16 hex digits, and its value is the check
-  // identifier, which a COFF absolute symbol holds.
+  // A fact's value is the check identifier, held in a COFF absolute symbol.
   auto factCheck = [&](Symbol *s) -> uint32_t {
     if (auto *d = dyn_cast_or_null<DefinedAbsolute>(s->getDefined()))
       return d->getVA();
     return 0;
   };
-  // The types that the inflow and parameter facts name, by the symbol each
-  // names, the nodes that they name, and the types of each node, each as
-  // (check, precise key). The precise types each object opens, keyed, with the
-  // check identifier. The types that a call through a precise key can hand
-  // back.
+  // Inflow and param facts by the symbol named, and the nodes they name; each
+  // node's types as (check, precise key); the precise types each object opens;
+  // and the types a call through a precise key can hand back.
   DenseMap<Symbol *, SmallVector<std::pair<uint32_t, uint64_t>, 1>> inflows,
       params;
   SmallVector<std::pair<Symbol *, uint64_t>, 0> inflowNodes, paramNodes;
@@ -819,9 +754,8 @@ void openKCFITypes(SymbolTable &symtab) {
       params[imp].push_back({check, key});
   };
   symtab.forEachSymbol([&](Symbol *s) {
-    // A lazy fact is an archive member's that is not in the link. Its value
-    // reads as zero, but its precise key would still reach types through the
-    // facts of the objects that are.
+    // A lazy fact belongs to an archive member not in the link; its value reads
+    // as zero but its precise key could still reach types via loaded objects.
     if (s->isLazy())
       return;
     StringRef name = s->getName();
@@ -879,11 +813,11 @@ void openKCFITypes(SymbolTable &symtab) {
     if (auto it = nodes.find(node); it != nodes.end())
       llvm::append_range(tinflows[called], it->second);
 
-  // A type is open dynamically where a precise key reaches it; its routine is
-  // keyed by the check identifier. The key is remembered, with whether only
-  // local facts reached it, so that a call through it follows its tinflow
-  // facts, again when a non-local fact reaches it later; a type is local,
-  // narrowable by the writer, only where every precise key that reached it is.
+  // A type opens dynamically where a precise key reaches it; its routine is
+  // keyed by the check identifier. Each key is remembered with whether only
+  // local facts reached it, so a call through it follows its tinflow facts
+  // (again if a non-local fact arrives later); a type is local only where every
+  // key that reached it is.
   DenseMap<uint64_t, bool> reached;
   SmallVector<uint64_t, 0> worklist;
   auto reach = [&](uint32_t check, uint64_t key, bool local) {
@@ -907,9 +841,9 @@ void openKCFITypes(SymbolTable &symtab) {
           types,
           !isa_and_nonnull<DefinedImportThunk, DefinedImportData>(resolve(g)));
 
-  // An import is listed by its import address table entry, and the writer adds
-  // a cell holding its thunk where static data holds the thunk; a definition
-  // without a prefix is listed by a cell holding its address.
+  // An import is listed by its import-table entry (the writer adds a cell for
+  // its thunk where static data holds one); an unprefixed definition by a cell
+  // holding its address.
   llvm::sort(typeids,
              [](Symbol *a, Symbol *b) { return a->getName() < b->getName(); });
   for (Symbol *s : typeids) {
@@ -943,8 +877,7 @@ void openKCFITypes(SymbolTable &symtab) {
   }
 
   ArrayRef<RoutineKind> machineKinds = getRoutineKinds(ctx);
-  // The scanner that m jumps to, if m is a compiled mismatch routine of the
-  // kind.
+  // The scanner m jumps to, if m is a compiled mismatch routine of the kind.
   auto compiledScanner = [&](Symbol *m, const RoutineKind &k) -> Symbol * {
     auto *r = dyn_cast_or_null<DefinedRegular>(m);
     if (!r)
@@ -958,9 +891,9 @@ void openKCFITypes(SymbolTable &symtab) {
   };
 
   // Each object publishes the precise types it opens dynamically; a call
-  // through one of them can hand back a foreign function too, and so on until
-  // nothing more opens. An object opening is never local: it is a cast or an
-  // import, which may carry a run-time address from any image.
+  // through one can hand back a foreign function, transitively. Such an opening
+  // is never local: a cast or import may carry a run-time address from any
+  // image.
   for (auto [key, check] : popens)
     reach(check, key, /*local=*/false);
   while (!worklist.empty()) {
@@ -996,9 +929,8 @@ void openKCFITypes(SymbolTable &symtab) {
           symtab.addSynthetic(saver().save(KCFIListPrefix + hex), c));
     };
 
-    // The mismatch routine is the weak default, the trap, or a compiled
-    // routine, which jumps to one of the scanners. Anything else, such as a
-    // routine of another form, is left as it is.
+    // The mismatch routine is the weak default (the trap) or a compiled routine
+    // that jumps to a scanner; anything else is left as it is.
     bool opened = false;
     for (const RoutineKind &k : machineKinds) {
       Symbol *m = symtab.find((Twine(k.mismatch) + hex).str());
@@ -1037,9 +969,9 @@ void openKCFITypes(SymbolTable &symtab) {
     }
     if (!opened)
       continue;
-    // A function in another image may be a valid target of a type listed for
-    // an import, and of one open dynamically, unless only foreign code in the
-    // image that references no import opened it.
+    // A function in another image may validly target a type listed for an
+    // import or open dynamically, unless only in-image foreign code that
+    // references no import opened it.
     bool imported = llvm::any_of(opening.entries, [](auto entry) {
       return isa<DefinedImportData>(entry.first);
     });
@@ -1065,12 +997,11 @@ void openKCFITypes(SymbolTable &symtab) {
     }
   }
 
-  // In an image whose guard function table lists a function without a prefix
-  // that foreign code in the image lists, the writer sends a mismatch that
-  // would fail fast to the dynamic scanner, and the routines that only such
-  // code opened, where it references no import, to the static scanner. The
-  // table is known only once the garbage collector has run, so the scanners
-  // are kept wherever a foreign object may list such a function.
+  // Where the guard table may list an unprefixed function that foreign code
+  // lists, a fail-fast mismatch is sent to the dynamic scanner, and routines
+  // opened only by import-free foreign code to the static scanner. The table is
+  // known only after GC, so the scanners are kept wherever a foreign object may
+  // list such a function.
   if (!(ctx.config.guardCF & GuardCFLevel::CF))
     return;
   // A function with a prefix of ours is the entry that follows the prefix.
@@ -1095,10 +1026,9 @@ void openKCFITypes(SymbolTable &symtab) {
     if (auto *scanner =
             dyn_cast_or_null<Defined>(symtab.find(k.dynamicScanner)))
       keep(scanner);
-  // Foreign code that references no import can hand ours only functions in
-  // the image, which the bound accepts, so a type that only such code opened
-  // need not be open dynamically. Foreign code that references one can hand
-  // on pointers that it obtained from any DLL at run time.
+  // Import-free foreign code can hand ours only in-image functions, which the
+  // bound accepts, so a type opened only by such code need not be dynamic.
+  // Foreign code that references an import can pass on pointers from any DLL.
   if (llvm::any_of(foreign, [](ObjFile *file) {
         return llvm::any_of(file->getSymbols(), [](Symbol *s) {
           return isa_and_nonnull<DefinedImportData, DefinedImportThunk>(s);
@@ -1109,17 +1039,16 @@ void openKCFITypes(SymbolTable &symtab) {
   }
   for (auto [routine, staticScanner] : ctx.kcfi.localRoutines)
     keep(staticScanner);
-  // Foreign code that references no import hands ours only functions in the
-  // image.
+  // Import-free foreign code hands ours only in-image functions.
   for (uint32_t type : localTypes)
     ctx.kcfi.outsideTypes.erase(type);
 }
 
-// The import library of a DLL with a code range holds the record of the range
-// in a member that defines one absolute symbol, named for the DLL, by which
-// the linker of an image that imports the DLL finds it without loading it,
-// and imports of the range's bounds named for the DLL, <bound>$<dll>, exported
-// as the bounds, so that no two DLLs' meet in an importer's symbol table.
+// The import library of a DLL with a code range holds the range record in a
+// member defining one absolute symbol named for the DLL, which an importer's
+// linker finds without loading the member, and imports of the range's bounds
+// named <bound>$<dll> so that no two DLLs' bounds meet in an importer's symbol
+// table.
 void addKCFIRangeImports(COFFLinkerContext &ctx, StringRef dllName,
                          std::vector<COFFShortExport> &exports,
                          std::vector<NewArchiveMember> &members,
@@ -1158,11 +1087,10 @@ void addKCFIRangeImports(COFFLinkerContext &ctx, StringRef dllName,
                              {{LinkRecordImageCode, group}}, buffer));
 }
 
-// A DLL whose objects have KCFI prefixes exports the bounds of its KCFI code
-// range, which the writer defines, as private data, so that the KCFI checks of
-// an image that imports it can take a target inside the range directly. A DLL
-// without a range exports an empty one, so that an importer linked against a
-// release with one still loads. The names are reserved for these exports.
+// A DLL whose objects have KCFI prefixes exports the bounds of its code range
+// as private data, so an importer's KCFI checks can take a target inside the
+// range directly. A DLL without a range exports an empty one, so an importer
+// linked against a release that had one still loads. The names are reserved.
 void addKCFIRangeExports(COFFLinkerContext &ctx) {
   llvm::TimeTraceScope timeScope("Add KCFI range exports");
   if (!ctx.config.dll || !ctx.typePrefixRecords || ctx.hybridSymtab ||
@@ -1194,9 +1122,8 @@ void addKCFIRangeExports(COFFLinkerContext &ctx) {
   }
 }
 
-// Reads the record of a DLL's KCFI code range from the member of its import
-// library that holds it, returning false if the member holds none this linker
-// can read.
+// Reads a DLL's KCFI code-range record from the import-library member holding
+// it, returning false if it holds none this linker can read.
 static bool readKCFIRangeRecord(COFFLinkerContext &ctx, MemoryBufferRef mb,
                                 DenseMap<uint32_t, uint32_t> (&types)[2]) {
   bool ok = false;
@@ -1228,13 +1155,12 @@ static bool isLocalThunk(LinkKCFIThunkKind kind) {
   return kind == LinkKCFIThunkLocalDispatch || kind == LinkKCFIThunkLocalCheck;
 }
 
-// In a sealed image, with a guard function table, the KCFI checks of an image
-// may take a target directly inside the code range of a DLL it imports
-// statically, whose import library records the range. The image imports the
-// range's bounds from each such DLL whose unsealed functions there have a type
-// that one of its thunks checks, as data the loader binds into the import
-// address table, which is read-only once the imports are bound. The imports
-// are named for the DLL, so that no two DLLs' meet in the symbol table.
+// In a sealed image with a guard table, the KCFI checks may take a target
+// directly inside the code range of a statically imported DLL whose import
+// library records the range. The image imports the range's bounds from each
+// such DLL whose unsealed functions there have a type one of its thunks checks,
+// as data the loader binds into the (read-only) import address table. The
+// imports are named for the DLL so no two DLLs' meet in the symbol table.
 void bindKCFIImportedRanges(COFFLinkerContext &ctx) {
   llvm::TimeTraceScope timeScope("Bind KCFI imported ranges");
   bool isX64 = ctx.config.machine == AMD64;
@@ -1344,14 +1270,10 @@ void getKCFIImportUses(COFFLinkerContext &ctx,
   }
 }
 
-// A KCFI type's list names an imported function by its import address table
-// entry, which holds the function's address. Where static data holds the
-// function's import thunk as its address instead, a call through such a
-// pointer reaches the thunk, so the list names a cell holding the thunk too:
-// without -import-slots, with it for a function an object may take the
-// address of in an instruction it does not describe, and for a delay-loaded
-// function. Both the linker's own lists and those of the objects whose records
-// ask for it are completed.
+// A KCFI type's list names an imported function by its import-table entry,
+// which holds the address. Where static data holds the import thunk as the
+// address instead, a call through such a pointer reaches the thunk, so the list
+// also names a cell holding it. Completes the linker's lists and objects' own.
 void KCFIContents::listThunks() {
   llvm::TimeTraceScope timeScope("List KCFI thunks");
   Configuration &config = ctx.config;
@@ -1392,10 +1314,10 @@ void KCFIContents::listThunks() {
   }
 }
 
-// Once the sections are merged, and before they are laid out, defines the code
-// range of a sealed image, places each KCFI thunk's mismatch routine after it,
-// puts the linker's KCFI thunks in place of clang's, and points the range's
-// bounds, and those a DLL exports, at their chunks.
+// After the sections are merged and before they are laid out: defines the code
+// range of a sealed image, places each thunk's mismatch routine after it, puts
+// the linker's KCFI thunks in place of clang's, and points the range's bounds,
+// and those a DLL exports, at their chunks.
 void KCFIContents::layOut(OutputSection *textSec, OutputSection *rdataSec) {
   llvm::TimeTraceScope timeScope("Lay out KCFI");
   openChunks.insert(ctx.kcfi.chunks.begin(), ctx.kcfi.chunks.end());
@@ -1413,16 +1335,11 @@ void KCFIContents::bound(OutputSection *textSec, OutputSection *rdataSec) {
   narrowMemberMisses();
 }
 
-// Defines __llvm_code_start and __llvm_code_end, which clang's KCFI thunks test
-// to take a target inside the image directly, as the bounds of the code in the
-// output section that holds the KCFI prefixes of a sealed image. They keep
-// clang's weak default, __llvm_code_empty, a byte in a COMDAT, and so an empty
-// range, unless every prefix is in one output section.
-//
-// The range ends before the first chunk holding an export-suppressed function.
-// Such chunks of the section's plain .text group follow its other chunks, where
-// /order does not place them, so that the range keeps the rest; the groups
-// with a $ suffix keep their order after it.
+// Defines __llvm_code_start/__llvm_code_end, which clang's KCFI thunks test to
+// take an in-image target directly, as the bounds of the code in the output
+// section holding a sealed image's prefixes; they keep clang's empty-range weak
+// default unless every prefix is in one section. The range ends before the
+// first export-suppressed function, whose chunks are moved after the rest.
 void KCFIContents::defineCodeRange() {
   if (!prefixes.isSealed() || prefixes.get().empty())
     return;
@@ -1440,12 +1357,9 @@ void KCFIContents::defineCodeRange() {
   if (secIt == ctx.outputSections.end())
     return;
   OutputSection *sec = *secIt;
-  // Each bound is replaced only while it is the weak alias resolved to that
-  // default. Identical code folding may replace the default's byte with
-  // another read-only one, such as an empty string's, so the bound is
-  // compared with the default's own symbol, which follows it there too. An
-  // image whose code references neither still has a range, which a DLL
-  // exports.
+  // A bound is replaced only while still the weak alias to that default; since
+  // folding may fold the default's byte onto another, it is compared with the
+  // default's own symbol. Code referencing neither still has a range.
   auto *empty =
       dyn_cast_or_null<DefinedRegular>(ctx.symtab.find(KCFICodeEmpty));
   auto isEmptyDefault = [&](Symbol *s) {
@@ -1487,10 +1401,9 @@ void KCFIContents::defineCodeRange() {
   if (limit == chunks.begin())
     return;
   DenseSet<const Chunk *> kcfiInRange(chunks.begin(), limit);
-  // The types, and the second types of functions that can occupy a vtable
-  // slot, that an unsealed prefix in the range has, with how many do. Where
-  // the word before the marker is a membership tag, which LTO gives, it is no
-  // second type.
+  // The types, and the vtable-slot second types, of unsealed prefixes in the
+  // range, with how many carry each. A word before the marker that is a
+  // membership tag (which LTO gives) is no second type.
   DenseSet<std::pair<const Chunk *, uint32_t>> tags;
   for (Symbol *s : ctx.kcfi.memberTags)
     if (auto *d = dyn_cast<DefinedRegular>(s))
@@ -1528,10 +1441,10 @@ void KCFIContents::placeCodeRange() {
                                     chunks.back(), chunks.back()->getSize());
 }
 
-// Points the bounds that a DLL exports for its importers' KCFI checks at its
-// code range, or, where it has none, both at one address, an empty range. That
-// address is not in the export directory, where the loader would take it for
-// the name of a forwarded export.
+// Points the bounds a DLL exports for its importers' KCFI checks at its code
+// range, or, lacking one, both at one address, an empty range. That address is
+// kept out of the export directory, where the loader would read it as a
+// forwarded export's name.
 void KCFIContents::defineRangeExports(OutputSection *textSec,
                                       OutputSection *rdataSec) {
   auto [start, end] = ctx.kcfi.rangeExports;
@@ -1565,18 +1478,12 @@ void KCFIContents::defineRangeExports(OutputSection *textSec,
   replaceSymbol<DefinedSynthetic>(end, end->getName(), c);
 }
 
-// In an image whose guard function table lists a function without a KCFI
-// prefix, foreign code linked into the image can hand ours one of its
-// functions through a channel that no type rule sees. Where a mismatch would
-// fail fast, at the routine of a closed type or at the end of a statically
-// open type's list, a target in the image then goes to the dynamic scanner
-// instead: the scanner fails fast on a target with our marker, and the guard
-// function it continues into accepts only what this image's table lists. A
-// target outside the image fails fast as before. A closed type's routine
-// points the scanner at an empty list, and the static scanner is entered
-// through a routine that gives it only targets outside the image, and the
-// dynamic scanner the rest, with the same list. The scanners are clang's, as
-// only clang knows the marker and the prefix offset it compares.
+// Where the guard table lists an unprefixed function, foreign code hands ours
+// one of its functions through a channel no type rule sees. So a fail-fast
+// mismatch (a closed type's routine, or the end of a static type's list) sends
+// an in-image target to the dynamic scanner, which fails fast on our marker and
+// continues into the guard function; an out-of-image target still fails fast.
+// The scanners are clang's, as only clang knows the marker and prefix offset.
 void KCFIContents::boundMismatches(OutputSection *textSec,
                                    OutputSection *rdataSec) {
   bool isX64 = ctx.config.machine == AMD64;
@@ -1637,19 +1544,13 @@ void KCFIContents::boundMismatches(OutputSection *textSec,
   }
 }
 
-// A member thunk, which takes a target that carries one of its type's
-// membership tags, continues on a miss into the type's ordinary thunk through
-// a weak symbol: a function of the type that LTO did not compile carries no
-// tag, but may be a valid target. In a sealed image the guard function table
-// names every function of the image a pointer can reach, so where no unsealed
-// prefix of the type is in an object LTO did not generate, a target in the
-// image that misses the tag is no member, and the miss goes straight to the
-// type's mismatch routine. A function in another image carries none of the
-// image's tags and is outside the range, so a member thunk misses it through
-// its outside miss. Where such a function may be a valid target of the type,
-// that miss keeps the ordinary thunk, and takes the entry for a checked
-// target where the linker builds the thunk's form; otherwise it is narrowed
-// as the other. Every target of a local member thunk is in the image.
+// A member thunk takes a target carrying one of its type's membership tags and
+// on a miss continues into the ordinary thunk through a weak symbol, since a
+// function of the type that LTO did not compile has no tag but may be valid.
+// In a sealed image the guard table names every reachable function, so where no
+// unsealed non-LTO prefix of the type exists, an in-image miss is no member and
+// goes straight to the mismatch routine; a target in another image is caught by
+// its outside miss, narrowed likewise unless it may validly target the type.
 void KCFIContents::narrowMemberMisses() {
   bool isX64 = ctx.config.machine == AMD64;
   if (!prefixes.isSealed() || (!isX64 && ctx.config.machine != ARM64))
@@ -1660,9 +1561,9 @@ void KCFIContents::narrowMemberMisses() {
       nativeTypes.insert(
           read32le(p.chunk->getContents().data() + p.offset + p.size - 4));
 
-  // A function in another image may be a valid target of a type that an
-  // object opens, which may give it the object's mismatch routine where the
-  // linker found no fact of it, or that the linker opens for one.
+  // A function in another image may validly target a type an object opens
+  // (which may give it the object's mismatch routine where the linker found no
+  // fact of it) or that the linker opens for one.
   auto *trap = dyn_cast_or_null<DefinedRegular>(ctx.symtab.find(KCFITrap));
   auto isOutsideType = [&](uint32_t type, Defined *mismatch) {
     if (ctx.kcfi.outsideTypes.contains(type))
@@ -1715,18 +1616,17 @@ void KCFIContents::narrowMemberMisses() {
   });
 }
 
-// Builds the type check of one of clang's KCFI thunks without its branch, and
-// its page test, from the facts the thunk's object records, as clang encodes
-// them. Returns false where the thunk's form cannot be built.
+// Builds clang's KCFI thunk type check (without its branch) and page test from
+// the facts the thunk's object records. Returns false where the form cannot be
+// built.
 static bool buildKCFIThunkCheck(MachineTypes machine, const KCFIState::Thunk &t,
                                 SmallVectorImpl<uint8_t> &compare,
                                 SmallVectorImpl<uint8_t> &pageTest) {
   bool vfn = t.kind == LinkKCFIThunkVfnCheck;
-  // A vfn thunk compares the second type and the start of the marker, 16
-  // bytes before the entry; any other the end of the marker and the type, 8
-  // bytes before it. A target outside the code range is compared only where
-  // the prefix read, 16 or 12 bytes and any patchable prefix, cannot start on
-  // the page before.
+  // A vfn thunk compares the second type and the marker's start, 16 bytes
+  // before the entry; any other the marker's end and the type, 8 bytes before.
+  // A target outside the code range is compared only where the prefix read (16
+  // or 12 bytes plus any patchable prefix) cannot start on the page before.
   uint32_t compareOffset = t.offset + (vfn ? 16 : 8);
   uint32_t readLog2 = Log2_64_Ceil(t.offset + (vfn ? 16 : 12));
   uint32_t pageMask = readLog2 < 12 ? 0xFFF & ~((1u << readLog2) - 1) : 0;
@@ -1778,10 +1678,10 @@ static bool buildKCFIThunkCheck(MachineTypes machine, const KCFIState::Thunk &t,
   return true;
 }
 
-// The chunk of a KCFI thunk's mismatch routine, where the routine is the type's
-// own and starts its chunk: a compiled routine, the leader of its COMDAT, or
-// one that the linker opened in its place. The trap, to which a closed type's
-// routine defaults, serves every such type.
+// The chunk of a KCFI thunk's mismatch routine where the routine is the type's
+// own and starts its chunk: a compiled routine (its COMDAT leader) or one the
+// linker opened in its place. The trap, which a closed type's routine defaults
+// to, serves every such type.
 const Chunk *KCFIContents::getMismatchRoutine(Symbol *mismatch) const {
   if (auto *d = dyn_cast<DefinedRegular>(mismatch)) {
     SectionChunk *sc = d->getChunk();
@@ -1793,11 +1693,10 @@ const Chunk *KCFIContents::getMismatchRoutine(Symbol *mismatch) const {
   return nullptr;
 }
 
-// Places each KCFI thunk's mismatch routine right after the thunk, so that the
-// thunk's branches to it take an 8-bit displacement, and a jump that ends
-// clang's thunk with it, which the thunk's object lists, is left out. A routine
-// that several thunks name follows the first; code that an order file places
-// stays where it is.
+// Places each KCFI thunk's mismatch routine right after the thunk, so the
+// thunk's branches to it take an 8-bit displacement and the jump that ends
+// clang's thunk (which its object lists) is left out. A routine several thunks
+// name follows the first; code an order file places stays put.
 void KCFIContents::placeMismatchRoutines() {
   auto isOrdered = [&](const Chunk *c) {
     auto *sc = dyn_cast<SectionChunk>(c);
@@ -1842,17 +1741,11 @@ void KCFIContents::placeMismatchRoutines() {
   }
 }
 
-// Replaces each KCFI thunk that the image keeps and its object describes,
-// __llvm_kcfi_dispatch_<type> with the target in RAX, and
-// __llvm_kcfi_check_<type> and __llvm_kcfi_vfn_check_<type> with it in RCX or
-// X15, with a KCFIThunkChunk in its place, in an image the linker sealed. The
-// chunk tests the image's own range as one comparison of the target's offset
-// from its start with its size, which the linker knows, and only for a type
-// that an unsealed prefix in the range has, since no other target in the image
-// can match; then the ranges of the DLLs the image imports whose records list
-// an unsealed function of the type, for the same reason. It builds clang's
-// type check and page test from the marker, the patchable prefix and the type
-// that the thunk's record gives.
+// In a sealed image, replaces each KCFI thunk the image keeps and its object
+// describes with a KCFIThunkChunk. The chunk tests the image's own range as one
+// compare of the target's offset against its size, only for a type an unsealed
+// prefix in the range has; then the ranges of imported DLLs whose records list
+// one. It builds clang's type check and page test from the thunk's record.
 void KCFIContents::replaceThunks() {
   bool isX64 = ctx.config.machine == AMD64;
   if (!prefixes.isSealed() || (!isX64 && ctx.config.machine != ARM64))
@@ -1897,9 +1790,8 @@ void KCFIContents::replaceThunks() {
     // A local thunk tests the range wherever the image has one.
     bool testsRange = local ? kcfiCodeSec != nullptr : own;
     kcfiThunksTestRange |= testsRange;
-    // A member thunk's miss of a target outside the range that still
-    // continues into this thunk, as for a type of which a function in another
-    // image may be a valid target, takes its entry for a checked target.
+    // A member thunk's miss of an outside target that still continues into this
+    // thunk (its type may be valid in another image) takes its checked entry.
     StringRef outsidePrefix = dispatch ? KCFIMemberOutsideMissPrefix
                                        : KCFIMemberCheckOutsideMissPrefix;
     auto *outsideMiss = dyn_cast_or_null<DefinedRegular>(
@@ -1924,11 +1816,9 @@ void KCFIContents::replaceThunks() {
   if (replacements.empty())
     return;
 
-  // Each chunk takes clang's place in its section, and every symbol defined
-  // at clang's thunk, its own and those of other objects, such as a weak
-  // alias resolved to it, its address. A mismatch routine that follows the
-  // thunk starts where the thunk ends, since it needs no more alignment than
-  // an instruction.
+  // Each chunk takes clang's place, and every symbol at clang's thunk (its own
+  // and others', e.g. a weak alias) takes its address. A following mismatch
+  // routine starts where the thunk ends, needing only instruction alignment.
   unsigned insnAlign = isX64 ? 1 : 4;
   for (OutputSection *sec : ctx.outputSections) {
     std::vector<Chunk *> &chunks = sec->chunks;

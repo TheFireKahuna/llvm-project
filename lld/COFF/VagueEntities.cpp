@@ -6,12 +6,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Under -import-slots, a DLL's import library records the observable vague
-// entities with default visibility that the DLL keeps, the DLLs it imports
-// from, and their records in turn, so that a link sees the whole static load
-// closure of what it imports. A link reports two images of that closure that
-// both keep an entity: ELF, which gives a program one instance of each such
-// entity among the shared objects it needs, would have unified them.
+// Under -import-slots, a DLL's import library records the default-visibility
+// vague entities it keeps and the DLLs it imports from (with their records in
+// turn), so a link sees the whole static load closure. A link reports two
+// images of that closure that both keep an entity, which ELF would have unified
+// into one instance among the shared objects a program needs.
 //
 //===----------------------------------------------------------------------===//
 
@@ -43,24 +42,18 @@ using namespace llvm::COFF;
 using namespace llvm::object;
 
 namespace lld::coff {
-// The name by which an import library's record of the DLL dll is found.
 static std::string getRecordSymbol(StringRef dll) {
   return (vagueRecordPrefix + dll.lower()).str();
 }
 
-// One image of a load closure: its name in lower case, the entities it keeps
-// and the name of the epoch it exports, if any, the entities it keeps
-// preemptible, with the other external symbols of their groups and their
-// guards, the overridable defaults it offers, and the images it imports from
-// and delay-loads, by index. The names point into the import libraries and
-// the link's strings, which outlive every closure.
+// One image of a load closure. The names point into the import libraries and
+// link strings, which outlive every closure.
 struct Image {
   StringRef name, epoch;
   std::vector<StringRef> entities, preemptible, offers;
   SmallVector<uint32_t, 0> imports, delayLoads;
 };
 
-// The images of a load closure, by name.
 struct LoadClosure {
   std::vector<Image> images;
   StringMap<uint32_t> byName;
@@ -72,12 +65,10 @@ struct LoadClosure {
     return it->second;
   }
 
-  // Adds what src, a description of the image i whose image indices idx maps
-  // to these, says of it. An image that several records describe keeps the
-  // first description of its entities and epoch, of its offers and of its
-  // preemptible entities, each independently, and the union of every
-  // description's imports and delay-loads. src describes the entities only
-  // where it names the image.
+  // Merges src's description of image i (idx maps src's indices to the
+  // closure's): the first description of its entities, epoch, offers and
+  // preemptible entities wins, each independently, while imports and
+  // delay-loads accumulate the union.
   void merge(uint32_t i, const Image &src, ArrayRef<uint32_t> idx) {
     Image &image = images[i];
     if (!src.name.empty() && image.entities.empty()) {
@@ -95,8 +86,7 @@ struct LoadClosure {
           to->push_back(idx[j]);
   }
 
-  // The images that roots reach through their imports, roots first, in
-  // breadth-first order.
+  // The images roots reach through imports, roots first, breadth-first.
   std::vector<uint32_t> walk(ArrayRef<uint32_t> roots) const {
     std::vector<uint32_t> order;
     BitVector seen(images.size());
@@ -115,23 +105,21 @@ struct LoadClosure {
   }
 };
 
-// Reads a string, its length and then its bytes.
 static StringRef getString(DataExtractor &data, DataExtractor::Cursor &cur) {
   return data.getBytes(cur, data.getULEB128(cur));
 }
 
-// Writes s as getString reads it.
+// Writes a string as a ULEB128 length and its bytes; getString reads it.
 static void putString(raw_ostream &os, StringRef s) {
   encodeULEB128(s.size(), os);
   os << s;
 }
 
-// Parses the record that mb, a member of an import library, holds into a
-// closure of its own, whose first image is the DLL, or returns null if it
-// holds none or is malformed.
+// Parses the record held by mb, an import-library member, into its own closure
+// whose first image is the DLL, or null if it holds none or is malformed.
 static LoadClosure *parseRecord(COFFLinkerContext &ctx, MemoryBufferRef mb) {
   auto *member = make<LoadClosure>();
-  // The member's image of each image the record lists.
+  // Maps each image index the record uses to its image in member.
   SmallVector<uint32_t, 0> index;
   bool malformed = false;
   forEachLinkRecordGroup(
@@ -144,8 +132,7 @@ static LoadClosure *parseRecord(COFFLinkerContext &ctx, MemoryBufferRef mb) {
           return;
         DataExtractor group(payload, /*IsLittleEndian=*/true);
         DataExtractor::Cursor c(0);
-        // The offers, preemptible entities or delay-loads of the images that
-        // the closure group listed, by their index.
+        // Per-image offers, preemptible entities or delay-loads, by index.
         if (kind != LinkRecordVagueEntities) {
           while (c && !group.eof(c) && !index.empty()) {
             uint64_t i = group.getULEB128(c);
@@ -195,8 +182,8 @@ static LoadClosure *parseRecord(COFFLinkerContext &ctx, MemoryBufferRef mb) {
   return malformed || index.empty() ? nullptr : member;
 }
 
-// Adds the images of mb's record, which is parsed on the first request and
-// kept on the context, to closure, and returns the index of the DLL itself.
+// Adds mb's record (parsed once and cached on the context) to closure, and
+// returns the index of the DLL itself.
 static std::optional<uint32_t>
 readRecord(COFFLinkerContext &ctx, MemoryBufferRef mb, LoadClosure &closure) {
   auto [it, inserted] = ctx.vagueRecordCache.try_emplace(mb.getBufferStart());
@@ -213,13 +200,9 @@ readRecord(COFFLinkerContext &ctx, MemoryBufferRef mb, LoadClosure &closure) {
   return idx[0];
 }
 
-// The entities that the image keeps and may share: data with default
-// visibility in a COMDAT that it keeps and no DLL's instance preempted, under
-// its record's name for a thread-local variable, and functions whose
-// addresses are significant and not a DLL's, from objects that list what has
-// default visibility. Names that MSVC mangles keep the per-image copies their
-// code expects. A type_info object is left out: two images that keep one
-// compare it by name, which is correct.
+// The entities the image keeps and may share: default-visibility data in a
+// COMDAT it keeps (its record's name if thread-local) and address-significant
+// functions not a DLL's. A type_info is left out: two keepers compare by name.
 static std::vector<StringRef> getKeptEntities(SymbolTable &symtab) {
   std::vector<StringRef> kept;
   auto add = [&](Symbol *s) {
@@ -240,8 +223,8 @@ static std::vector<StringRef> getKeptEntities(SymbolTable &symtab) {
   return kept;
 }
 
-// The DLLs the image imports statically, which its load closure holds; before
-// liveness is decided, every DLL an import was read from.
+// The DLLs the image imports statically; before liveness is decided, every DLL
+// an import was read from.
 static std::vector<std::string> getImportedDLLs(COFFLinkerContext &ctx,
                                                 bool liveOnly = true) {
   std::vector<std::string> dlls;
@@ -254,8 +237,8 @@ static std::vector<std::string> getImportedDLLs(COFFLinkerContext &ctx,
   return dlls;
 }
 
-// Reads the records of the DLLs the image imports, which their import
-// libraries hold, into closure, and returns the indices of those it read.
+// Reads the records of the DLLs the image imports into closure, returning the
+// indices of those read.
 static std::vector<uint32_t> readImportedRecords(COFFLinkerContext &ctx,
                                                  LoadClosure &closure,
                                                  bool liveOnly = true) {
@@ -282,8 +265,7 @@ StringMap<StringSet<>> getPreemptibleOffers(COFFLinkerContext &ctx,
 }
 
 void SymbolTable::readOverrideRecords() {
-  // The records come only with the import libraries, so they are read again
-  // only once more libraries have been read.
+  // The records arrive only with import libraries; re-read once more are read.
   if (!ctx.config.importSlots ||
       indexedArchives.size() == overrideRecordsArchives)
     return;
@@ -338,8 +320,8 @@ getDependentOverrideOffers(COFFLinkerContext &ctx,
   for (MemoryBufferRef mb : records)
     if (std::optional<uint32_t> i = readRecord(ctx, mb, closure))
       roots.push_back(*i);
-  // Breadth first from the DLLs whose records the import libraries hold,
-  // which make their own offers through their offer symbols.
+  // Breadth-first from the DLLs whose records the import libraries hold; they
+  // make their own offers through their offer symbols.
   std::vector<std::pair<StringRef, StringRef>> offers;
   for (uint32_t i : closure.walk(roots))
     if (!llvm::is_contained(roots, i))
@@ -353,9 +335,8 @@ chooseVagueOwners(COFFLinkerContext &ctx, const DenseSet<StringRef> &kept) {
   LoadClosure closure;
   std::vector<uint32_t> direct =
       readImportedRecords(ctx, closure, /*liveOnly=*/false);
-  // The images in ELF's breadth-first load order from the executable: those
-  // loaded eagerly, then those delay-loaded, which join their importer's scope
-  // when they load, so that lazy loading never moves an instance.
+  // ELF's breadth-first load order: eager images, then delay-loaded ones that
+  // join their importer's scope on load, so lazy loading never moves instances.
   std::vector<uint32_t> order, delayed;
   for (uint32_t i : direct)
     (ctx.config.delayLoads.contains(closure.images[i].name) ? delayed : order)
@@ -380,9 +361,8 @@ chooseVagueOwners(COFFLinkerContext &ctx, const DenseSet<StringRef> &kept) {
   std::vector<std::pair<StringRef, StringRef>> owners;
   for (auto &[name, keeper] : keepers) {
     bool own = kept.contains(name);
-    // An entity that only delay-loaded DLLs keep has no instance at start-up
-    // for the executable to import; the first of them to load keeps its own,
-    // and the others' searches find it.
+    // An entity only delay-loaded DLLs keep has no start-up instance to import;
+    // the first to load keeps its own and the others find it.
     if (keeper.second + own < 2 || (!own && lazy.contains(keeper.first)))
       continue;
     owners.emplace_back(name, own ? StringRef()
@@ -405,8 +385,7 @@ void checkVagueEntities(COFFLinkerContext &ctx, StringRef imageName) {
   Image &me = closure.images[self];
   me.entities = getKeptEntities(ctx.symtab);
   me.imports.assign(direct.begin(), direct.end());
-  // An executable owns what it keeps, through the table it writes for the
-  // entities two images keep.
+  // An executable owns what it keeps, via the table it writes.
   for (StringRef entity : me.entities)
     if (!config.dll ||
         ctx.symtab.isPreemptibleVagueEntity(ctx.symtab.findVagueEntity(entity)))
@@ -429,15 +408,13 @@ void checkVagueEntities(COFFLinkerContext &ctx, StringRef imageName) {
         if (config.allowedVagueDuplicateDLLs.contains(x.name) ||
             config.allowedVagueDuplicateDLLs.contains(y.name))
           continue;
-        // Two images that keep the entity preemptible share one instance at
-        // run time, the one the executable's table names. Both lists are
-        // sorted, so a binary search answers each membership test.
+        // Two images that keep the entity preemptible share the one instance
+        // the executable's table names. Both lists are sorted for the search.
         if (llvm::binary_search(x.preemptible, entity) &&
             llvm::binary_search(y.preemptible, entity))
           continue;
-        // An image that keeps its copy while importing from one that keeps
-        // the entity too predates the other's definition, or does not take
-        // its offer.
+        // An importer that keeps its own copy predates the other's definition
+        // or declines its offer.
         const Image *importer = reaches(images[a], images[b])   ? &x
                                 : reaches(images[b], images[a]) ? &y
                                                                 : nullptr;
@@ -480,8 +457,7 @@ void checkOfferAdditions(COFFLinkerContext &ctx, StringRef dllName) {
     Err(ctx) << config.offersBaseline << ": " << archive.takeError();
     return;
   }
-  // The previous release's record, which its import library holds whatever
-  // the DLL was named, and the names it exported.
+  // The previous release's record and exported names, whatever the DLL's name.
   StringSet<> exported;
   std::optional<MemoryBufferRef> record;
   for (const Archive::Symbol &sym : (*archive)->symbols()) {
@@ -509,7 +485,7 @@ void checkOfferAdditions(COFFLinkerContext &ctx, StringRef dllName) {
     return;
   }
   // A DLL linked against the previous release keeps its own copy of an entity
-  // that this release starts to define until it is relinked.
+  // this release starts to define, until relinked.
   const std::vector<StringRef> &entities = closure.images[*previous].entities;
   DenseSet<StringRef> before(entities.begin(), entities.end());
   for (StringRef entity : getKeptEntities(ctx.symtab))
@@ -566,8 +542,7 @@ void importOffersEpochs(COFFLinkerContext &ctx) {
     return;
   LoadClosure closure;
   for (uint32_t i : readImportedRecords(ctx, closure)) {
-    // The import refuses this DLL's load beside a release of the owner whose
-    // offers have grown.
+    // The import refuses this DLL's load beside an owner whose offers grew.
     StringRef epoch = closure.images[i].epoch;
     auto *lazy = epoch.empty() ? nullptr
                                : dyn_cast_or_null<LazyArchive>(ctx.symtab.find(
@@ -590,8 +565,8 @@ void addVagueEntityRecord(COFFLinkerContext &ctx, StringRef dllName,
   LoadClosure closure;
   uint32_t self = closure.add(dllName);
   std::vector<uint32_t> direct = readImportedRecords(ctx, closure);
-  // The DLLs the image imports without a record are listed with no entities,
-  // so that the closure keeps the path through them.
+  // DLLs imported without a record are listed with no entities, to keep the
+  // closure path through them.
   for (const std::string &dll : getImportedDLLs(ctx))
     if (uint32_t i = closure.add(dll); !llvm::is_contained(direct, i))
       direct.push_back(i);
@@ -634,12 +609,10 @@ void addVagueEntityRecord(COFFLinkerContext &ctx, StringRef dllName,
       putString(os, image.epoch);
     }
   });
-  // A group listing field of each image of the closure that has one, by the
-  // image's index: the overridable defaults it offers, so that an executable
-  // that does not link the import library of a DLL its imports depend on
-  // still selects that DLL's offer in load order; the entities it keeps
-  // preemptible, so that an executable that sees two images keeping one picks
-  // its owner; and the DLLs it delay-loads.
+  // A group listing a per-image field by image index: offers, so an executable
+  // that does not link a transitively-needed DLL's import library still picks
+  // that DLL's offer in load order; preemptible entities, so an executable that
+  // sees two images keep one picks its owner; and delay-loads.
   auto addPerImage = [&](uint64_t kind, auto field, auto put) {
     addGroup(kind, [&](raw_ostream &os) {
       for (auto [i, image] : llvm::enumerate(closure.images)) {
@@ -656,8 +629,8 @@ void addVagueEntityRecord(COFFLinkerContext &ctx, StringRef dllName,
   addPerImage(LinkRecordOverrideOffers, &Image::offers, putString);
   addPerImage(LinkRecordPreemptibleEntities, &Image::preemptible, putString);
   addPerImage(LinkRecordDelayLoads, &Image::delayLoads, putIndex);
-  // The defaults the DLL defines and exports with no fixed slot, which an
-  // image that links its import library replaces, offers or reaches by name.
+  // Defaults the DLL defines and exports with no fixed slot, replaced, offered
+  // or reached by name by an image that links its import library.
   std::vector<StringRef> byName;
   for (const Export &e : symtab.exports)
     if (e.sym && e.extName.empty() &&
@@ -669,9 +642,8 @@ void addVagueEntityRecord(COFFLinkerContext &ctx, StringRef dllName,
     for (StringRef name : byName)
       putString(os, name);
   });
-  // The defaults the DLL defines and exports with a fixed slot, as their
-  // definitions record it, which an image that links its import library
-  // replaces or reaches through that slot.
+  // Defaults the DLL defines and exports with a fixed slot, replaced or reached
+  // through that slot by an image that links its import library.
   std::vector<std::pair<StringRef, SymbolTable::OverrideSlotFacts>> bySlot;
   for (const Export &e : symtab.exports)
     if (e.sym && isa<Defined>(e.sym) && !isa<DefinedImportData>(e.sym))
@@ -697,8 +669,8 @@ void addVagueEntityRecord(COFFLinkerContext &ctx, StringRef dllName,
       ctx, dllName, getRecordSymbol(dllName), groups, buffer));
 }
 
-// Whether a data definition in a COMDAT has default visibility, so that a
-// DLL's instance may preempt it, as on ELF.
+// Whether a COMDAT data definition has default visibility, so a DLL's instance
+// may preempt it, as on ELF.
 bool isDefaultVisibility(DefinedRegular *d) {
   auto *file = dyn_cast<ObjFile>(d->getFile());
   return !file || file->hasDefaultVisibility(d);
@@ -750,9 +722,8 @@ void SymbolTable::preemptWeakData() {
     if (imports.size() != members.size())
       continue;
 
-    // A copy that never changes may still serve the loads that only read
-    // values through its address, under a symbol of its own for each member
-    // of a group that lies in one section.
+    // A never-changing copy may still serve value-only reads through its
+    // address, with its own symbol per member of a single-section group.
     SectionChunk *sc = d->getChunk();
     if (chunks.size() == 1 && !(sc->header->Characteristics &
                                 (IMAGE_SCN_MEM_WRITE | IMAGE_SCN_CNT_CODE)))
@@ -782,9 +753,8 @@ bool SymbolTable::isCanonicalCopy(SectionChunk *sc) {
   if (sc->header->Characteristics & (IMAGE_SCN_MEM_WRITE | IMAGE_SCN_CNT_CODE))
     return false;
   for (const coff_relocation &rel : sc->getRelocs()) {
-    // An address inside an object, or in the image alone, such as that of a
-    // string literal, differs from the instance's, unless the DLL that
-    // provides the object exports that address exactly.
+    // An address inside an object or the image alone (e.g. a string literal)
+    // differs from the instance's, unless the DLL exports it exactly.
     Symbol *s = sc->file->getSymbol(rel.SymbolTableIndex);
     std::optional<int64_t> addend = getAddressWordAddend(sc, rel);
     if (!sc->isAddressWord(rel) || !addend)
@@ -806,10 +776,9 @@ void SymbolTable::readImmutableDataLocally() {
   if (!ctx.config.importSlots)
     return;
   llvm::TimeTraceScope timeScope("Read immutable data locally");
-  // By the symbol that value-only loads' relocations name, the copy they read
-  // instead, if there is one: that of data a DLL's instance preempts, named
-  // by its import, and the instance of data the DLL keeps preemptible, named
-  // by its cell.
+  // Keyed by the symbol a value-only load's relocation names: the copy it may
+  // read instead, preempted data (named by its import) or a preemptible
+  // instance (named by its cell).
   struct Copy {
     DefinedRegular *copy = nullptr;
     // If liveness discarded the copy, the definitions of its group, each with
@@ -828,8 +797,8 @@ void SymbolTable::readImmutableDataLocally() {
           c.copy = copy;
         return;
       }
-      // Import-form references never name the copy, which liveness then
-      // discards unless something else does.
+      // Import-form references never name the copy, so liveness discards it
+      // unless something else does.
       auto *d = dyn_cast_or_null<DefinedRegular>(
           find(imp->getName().drop_front(strlen("__imp_"))));
       if (!d || !isa<ObjFile>(d->getFile()) || !d->isCOMDAT ||
@@ -860,9 +829,8 @@ void SymbolTable::readImmutableDataLocally() {
     }
   };
 
-  // The loads of a function may lead to addresses that it compares, so the
-  // value-only loads of a symbol in an object read the copy together, or not
-  // at all where any of them is not the load its object describes.
+  // A function's loads may yield addresses it compares, so a symbol's
+  // value-only loads read the copy together, or none if any is not described.
   struct Site {
     SectionChunk *sc;
     size_t i, page;
@@ -879,8 +847,7 @@ void SymbolTable::readImmutableDataLocally() {
     }
     return *it->second;
   };
-  // The index of the relocation at offset in sc, or the number of its
-  // relocations if none is there.
+  // The index of the relocation at offset in sc, or the count if none.
   auto findReloc = [](SectionChunk *sc, uint32_t offset) {
     ArrayRef<coff_relocation> relocs = sc->getRelocs();
     size_t i = llvm::partition_point(relocs,
@@ -903,10 +870,9 @@ void SymbolTable::readImmutableDataLocally() {
       if (!sc || !sc->live ||
           !(sc->header->Characteristics & IMAGE_SCN_CNT_CODE))
         continue;
-      // An access that only reads, through the register of a load that
-      // stays, may read the copy directly: on x86-64 where its code may be
-      // resized, since a RIP-relative operand is longer than one through a
-      // register, and on ARM64, where nothing changes size, anywhere.
+      // An access that only reads through a staying load's register may read
+      // the copy directly: on x86-64 only where code may be resized (a
+      // RIP-relative operand is longer than a register one), on ARM64 anywhere.
       if (load.form == LinkSiteOther) {
         const ObjFile::LinkFusion *f = file->getLinkFusion(sc, load.offset);
         if (!f || f->use != ObjFile::LinkFusion::Access || !f->valueRead ||
@@ -950,8 +916,7 @@ void SymbolTable::readImmutableDataLocally() {
       auto [index, added] = indices.try_emplace(copy, 0);
       if (added)
         index->second = file->addRangeThunkSymbol(copy->pointer);
-      // The relocations are made writable as range extension thunks make
-      // them.
+      // Make the relocations writable, as range extension thunks do.
       ArrayRef<coff_relocation> relocs = sc->getRelocs();
       if (relocs.data() ==
           file->getCOFFObj()->getRelocations(sc->header).data()) {
@@ -974,8 +939,7 @@ void SymbolTable::readImmutableDataLocally() {
       continue;
     SectionChunk *sc = copy->copy->getChunk();
     if (ctx.config.verbose) {
-      // Each word that holds an address in another image is a slot the
-      // loader binds by name.
+      // Each word holding a cross-image address is a slot the loader binds.
       size_t inPlace = llvm::count_if(sc->getRelocs(), [&](auto &rel) {
         return getInPlaceImport(sc->file->getSymbol(rel.SymbolTableIndex));
       });
@@ -1038,14 +1002,12 @@ void SymbolTable::addOffers() {
   llvm::TimeTraceScope timeScope("Add offers");
   if (!ctx.config.importSlots || (!ctx.config.dll && ctx.config.implib.empty()))
     return;
-  // The names exported already, which an offer does not export again. An
-  // offer is generated by the linker, and gives way to any other export.
+  // Names already exported; a linker-generated offer gives way to any of them.
   DenseSet<StringRef> exported;
   for (Export &e : exports)
     exported.insert(e.extName.empty() ? e.name : e.extName);
   auto offer = [&](Symbol *s, bool data, DefinedImportData *forward) {
-    // A forwarded offer has the name the DLL offers it under, which is a
-    // thread-local variable's record's.
+    // A forwarded offer uses the name the DLL offers it under (a TLS record's).
     StringRef name =
         forward ? forward->file->impSym->getName().drop_front(strlen("__imp_"))
                 : s->getName();
@@ -1065,9 +1027,8 @@ void SymbolTable::addOffers() {
     exports.push_back(e);
   };
 
-  // The data with default visibility in a COMDAT that the image keeps, with
-  // the other external symbols of its group and its guard; a thread-local
-  // variable's record, which the image then keeps too.
+  // Default-visibility COMDAT data the image keeps, with its group's other
+  // externals and its guard; for a thread-local, its record, kept too.
   SmallVector<SectionChunk *, 4> chunks;
   SmallVector<DefinedRegular *, 4> members;
   for (Symbol *sym : weakData) {
@@ -1090,9 +1051,8 @@ void SymbolTable::addOffers() {
     if (auto *d = dyn_cast<DefinedRegular>(sym);
         d && d->getChunk()->live && !offeredFunctions.contains(d))
       offer(d, /*data=*/false, nullptr);
-  // What the image imports from a DLL that offers it, forwarded to that DLL,
-  // so that a path through this image reaches the instance, whether or not
-  // the image kept a copy.
+  // What the image imports from a DLL that offers it, forwarded to that DLL so
+  // a path through this image reaches the instance, copy kept or not.
   auto getOffer = [&](StringRef name) -> DefinedImportData * {
     auto *imp = dyn_cast_or_null<DefinedImportData>(impSymbol(name));
     if (!imp || !imp->file->live || ignoresOffersOf(imp))

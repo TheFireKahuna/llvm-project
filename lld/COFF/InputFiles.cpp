@@ -87,9 +87,9 @@ static void checkAndSetWeakAlias(SymbolTable &symtab, InputFile *f,
       if (isAntiDep)
         return;
       if (!u->isAntiDep) {
-        // Weak aliases to absolute symbols of the same value, as each object
-        // that takes the address of a declaration gives
-        // __kcfi_typeid_<name>, are the same alias.
+        // Weak aliases to absolute symbols of the same value are the same
+        // alias, as __kcfi_typeid_<name> from each object taking a
+        // declaration's address is.
         auto *oldAbs = dyn_cast<DefinedAbsolute>(u->weakAlias);
         auto *newAbs = dyn_cast_or_null<DefinedAbsolute>(target);
         if (oldAbs && newAbs && oldAbs->getVA() == newAbs->getVA())
@@ -231,12 +231,11 @@ void ArchiveFile::parse() {
     impMangledDllMain = uniqueSaver().save("__imp_" + mangledDllMain);
   }
 
-  // The symbol table looks the archive's symbols up when it needs them rather
-  // than holding a lazy symbol for each: most symbols of a large import
-  // library are never referenced, and creating their lazy symbols is most of
-  // the cost of reading it. On ARM64EC, where a lazy symbol is checked against
-  // its counterpart in the other symbol table as it is entered, and before the
-  // machine is known, the archive enters them all now.
+  // The symbol table looks the archive's symbols up on demand rather than
+  // holding a lazy symbol for each: most symbols of a large import library are
+  // never referenced, and their lazy symbols are most of the cost of reading
+  // it. ARM64EC enters them all now, since each lazy symbol is checked against
+  // the other symbol table as it is entered, before the machine is known.
   if (!ctx.symtab.isEC() && ctx.config.machine != IMAGE_FILE_MACHINE_UNKNOWN) {
     if (!index.isBuilt())
       index.build(*file);
@@ -646,10 +645,9 @@ static Error readIndices(ArrayRef<uint8_t> payload, unsigned n,
   return malformed(cur);
 }
 
-// Reads the object's link-only records. A record of a critical kind is needed
-// to link the object correctly, so an object holding one this linker does not
-// support, or whose records it cannot read, is an error, and what they said
-// before it is dropped.
+// Reads the object's link-only records. A critical-kind record is needed to
+// link correctly, so an object with one this linker cannot support or read is
+// an error, and what its records said before it is dropped.
 void ObjFile::readLinkRecords() {
   ArrayRef<uint8_t> contents;
   cantFail(coffObj->getSectionContents(linkRecords->sec, contents));
@@ -663,9 +661,9 @@ void ObjFile::readLinkRecords() {
         (capabilities & LinkRecordsFunctionSites);
     linkRecords->listsCallOnly =
         (capabilities & LinkRecordsCallOnly) && !symtab.isEC();
-    // The records place their per-relocation facts straight into a slot for
-    // each relocation of the object as they are read, so size it up front
-    // from the sections' relocation counts.
+    // Per-relocation facts go straight into a slot for each relocation as the
+    // records are read, so size that up front from the sections' relocation
+    // counts.
     if (!linkRecords->describesSites && !linkRecords->listsCallOnly)
       return;
     uint32_t numSections = coffObj->getNumberOfSections();
@@ -757,9 +755,8 @@ Expected<uint32_t> ObjFile::getRecordSection(uint64_t index,
                               ", which is not a section's symbol");
 }
 
-// Advances r over the relocations of relocs, which a record group reads in
-// offset order, to the one at off, and returns its index, or -1 if none is
-// there. A fact at an offset with no relocation is never used.
+// Advances r over relocs (read in offset order) to the one at off, returning
+// its index or -1 if none. A fact at an offset with no relocation is unused.
 static int64_t placeReloc(ArrayRef<coff_relocation> relocs, size_t &r,
                           uint32_t off) {
   while (r < relocs.size() && relocs[r].VirtualAddress < off)
@@ -838,10 +835,9 @@ Error ObjFile::readLinkPins(ArrayRef<uint8_t> payload) {
 }
 
 // Reads a group of vtables: the primary address point of each vtable the
-// object defines, with its class and the class's primary base. A vtable on a
-// section's symbol is at the start of the section; any other names a symbol
-// the link resolves. A vtable of a section or symbol that COMDAT selection
-// discarded applies to nothing.
+// object defines, with its class and primary base. A vtable on a section's
+// symbol is at the section start; any other names a symbol the link resolves.
+// One of a section or symbol COMDAT selection discarded applies to nothing.
 Error ObjFile::readLinkVTables(ArrayRef<uint8_t> payload) {
   DataExtractor data(payload, /*IsLittleEndian=*/true);
   DataExtractor::Cursor cur(0);
@@ -970,10 +966,9 @@ Error ObjFile::readCallOnlyRefs(ArrayRef<uint8_t> payload) {
   return malformed(cur);
 }
 
-// Reads a group of instruction sites. Sites are found from relocations, so a
-// site at an offset with no relocation is never used. A site's data gives
-// facts about fused calls and loads; a fact of a kind this linker does not
-// know is skipped.
+// Reads a group of instruction sites. Sites are found from relocations, so one
+// at an offset with no relocation is unused. A site's data gives facts about
+// fused calls and loads; a fact of an unknown kind is skipped.
 Error ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
   std::vector<LinkFusion> &fusions = linkRecords->fusions;
   bool describes = linkRecords->describesSites;
@@ -991,9 +986,9 @@ Error ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
     uint64_t size = getSection(*section)->SizeOfRawData;
     uint64_t offset = 0;
     size_t firstFusion = fusions.size();
-    // The offset of each site in the group, by its index, so a fused call
-    // finds its load; and a forward cursor over the section's relocations that
-    // places each site's form in its relocation's slot.
+    // Each site's offset by index, so a fused call finds its load; and a
+    // forward cursor over the section's relocations placing each site's form
+    // in its slot.
     SmallVector<uint32_t, 0> siteOffsets;
     SectionChunk *sc = describes ? getSectionChunk(*section) : nullptr;
     ArrayRef<coff_relocation> relocs =
@@ -1038,11 +1033,10 @@ Error ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
         uint64_t value = facts.getULEB128(factCur);
         if (!factCur)
           break;
-        // On an access that the site's facts already describe, the fact
-        // says that the access only reads. A load whose adrp is at a distance
-        // no field holds is kept with none, as one whose adrp the linker does
-        // not find, so that its pointer's other loads do not read the copy
-        // either.
+        // On an access the site's facts already describe, the fact says the
+        // access only reads. A load whose adrp is at a distance no field holds
+        // is kept with none, as one whose adrp the linker cannot find, so its
+        // pointer's other loads do not read the copy either.
         if (kind == LinkSiteValueOnly) {
           if (fusions.size() != siteFusions &&
               fusions.back().use == LinkFusion::Access)
@@ -1154,10 +1148,9 @@ const ObjFile::LinkFusion *ObjFile::getLinkFusion(const SectionChunk *sc,
   return &*it;
 }
 
-// Reads a group of layout relationships. A section whose own group lists it
-// is covered. A field of a kind this linker does not know leaves the section
-// whose code the value depends on uncovered, since a value it cannot compute
-// keeps that code where it is.
+// Reads a group of layout relationships. A section whose own group lists it is
+// covered. An unknown field kind leaves the section whose code the value
+// depends on uncovered, since a value it cannot compute keeps that code put.
 Error ObjFile::readLinkCoverage(ArrayRef<uint8_t> payload) {
   std::vector<LinkCoverage> &coverage = linkRecords->coverage;
   std::vector<uint32_t> &covered = linkRecords->coveredSections;
@@ -1555,10 +1548,9 @@ void ObjFile::initializeSymbols() {
       coffObj->getNumberOfSections() + 1);
   COFFLinkerContext &ctx = symtab.ctx;
 
-  // The .refptr.X pointers that bindPointerCells may bind: any on ARM64, and
-  // on x86-64 those that objects which describe their sites, and so carry
-  // link records, define or refer to, since only their references to one can
-  // be rewritten.
+  // The .refptr.X pointers bindPointerCells may bind: any on ARM64, and on
+  // x86-64 those defined or referenced by objects that describe their sites
+  // (and so carry link records), since only their references can be rewritten.
   bool listCells =
       getMachineType() == ARM64 || (getMachineType() == AMD64 && linkRecords);
 
@@ -2373,9 +2365,9 @@ void ImportFile::parse() {
   // address pointed by the __imp_ symbol. (This allows you to call
   // DLL functions just like regular non-DLL functions.)
   if (isCode) {
-    // Under -import-slots, a definition of the function in the link beats the
-    // import, or takes only the function's address from it where the DLL
-    // offers what the image shares, so the thunk takes no name.
+    // Under -import-slots, a definition in the link beats the import, or takes
+    // only its address where the DLL offers what the image shares; the thunk
+    // gets no name.
     if (symtab.ctx.config.importSlots && !symtab.isEC() &&
         isa_and_nonnull<DefinedRegular>(symtab.find(name))) {
       thunkSym =
@@ -2446,10 +2438,9 @@ void BitcodeFile::parse() {
     // FIXME: Check nodeduplicate
     comdat[i] =
         symtab.addComdat(this, saver.save(obj->getComdatTable()[i].first));
-  // Whether the module has a symbol named name. The target of a weak alias
-  // that is local to the module, such as the init function of an inline
-  // thread-local variable, is not one, and the alias is then a weak
-  // definition of the module.
+  // Whether the module has a symbol named name. A weak alias's module-local
+  // target (such as an inline thread-local's init function) is not one, so the
+  // alias is then a weak definition of the module.
   std::optional<DenseSet<StringRef>> names;
   auto isModuleSymbol = [&](StringRef name) {
     if (!names) {
@@ -2534,9 +2525,9 @@ void BitcodeFile::parse() {
 }
 
 void BitcodeFile::parseLazy() {
-  // The names may be in a symbol table that obj built for the file, such as
-  // for bitcode from another producer, which LTO frees with obj, so the symbol
-  // table keeps copies, as BitcodeFile::parse does.
+  // The names may live in a symbol table obj built (such as for bitcode from
+  // another producer) and LTO frees with obj, so keep copies, as
+  // BitcodeFile::parse does.
   for (const lto::InputFile::Symbol &sym : obj->symbols())
     if (!sym.isUndefined()) {
       symtab.addLazyObject(this, saver().save(sym.getName()));

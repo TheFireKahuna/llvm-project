@@ -28,11 +28,10 @@ public:
   LabelledCode(uint8_t *buf, uint64_t rva, const llvm::BitVector &longJumps)
       : buf(buf), rva(rva), longJumps(longJumps) {}
 
-  // Writes the routine that emit puts at buf, or only measures it with no
-  // buffer. Its jumps start with 8-bit displacements and take 32 bits only
-  // where those do not reach, as an assembler relaxes them; a jump once
-  // lengthened stays so, which bounds the loop. The layout depends on no
-  // address, so measuring and writing the routine reach the same one.
+  // Writes the routine emit puts at buf, or only measures it with no buffer.
+  // Jumps start 8-bit and widen to 32 only where those do not reach (once
+  // widened, staying so, bounding the loop); the layout uses no address, so
+  // measuring and writing agree.
   static uint32_t layOut(uint8_t *buf, uint64_t rva,
                          llvm::function_ref<void(LabelledCode &)> emit) {
     llvm::BitVector longJumps;
@@ -74,8 +73,7 @@ public:
     if (buf)
       llvm::support::endian::write32le(buf + off - back, value);
   }
-  // x86-64: jcc to label, where cc is the second opcode byte of the
-  // conditional jump with a 32-bit displacement.
+  // x86-64: jcc to label; cc is the conditional jump's second opcode byte.
   void jcc(uint8_t cc, uint32_t label) {
     if (isLong(jumps))
       put({0x0F, cc, 0, 0, 0, 0});

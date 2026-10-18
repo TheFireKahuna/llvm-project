@@ -39,16 +39,15 @@ class TypePrefixContents;
 
 // What the KCFI checks of a link need from one phase to the next.
 struct KCFIState {
-  // Whether an object's KCFI lists name imports by their import address
-  // table entries alone.
+  // Whether objects' KCFI lists name imports by their IAT entry alone.
   bool listsImports = false;
 
-  // The __cfi_ symbols of the KCFI prefixes whose word before the marker is a
-  // membership tag rather than a second type.
+  // __cfi_ symbols whose word before the marker is a membership tag, not a
+  // second type.
   std::vector<Symbol *> memberTags;
 
-  // The KCFI thunks that objects' records describe, in the order the objects
-  // were read, with the facts of the first copy of each.
+  // The KCFI thunks objects' records describe, in read order, with the first
+  // copy's facts.
   struct Thunk {
     ObjFile *file;
     llvm::COFF::LinkKCFIThunkKind kind;
@@ -59,35 +58,30 @@ struct KCFIState {
   };
   llvm::MapVector<Symbol *, Thunk> thunks;
 
-  // The routines and list words of the KCFI types that openKCFITypes opened,
-  // each to be placed in its section.
+  // The routines and list words openKCFITypes opened, each for its section.
   std::vector<Chunk *> chunks;
-  // The imports whose address those lists name by its import address table
-  // entry, which the open routines read, each with its list's section.
+  // The imports those lists name by IAT entry (read by the open routines), each
+  // with its list's section.
   std::vector<std::pair<DefinedImportData *, StringRef>> listedImports;
-  // The KCFI types of which a function in another image may be a valid
-  // target: those that an object opens, and those that the linker opens for
-  // an import, or dynamically other than only for foreign code in the image
-  // that references no import.
+  // The KCFI types a function in another image may validly target (opened for
+  // an import, or dynamically beyond just import-free in-image foreign code).
   llvm::DenseSet<uint32_t> outsideTypes;
-  // The routines that openKCFITypes made dynamic only because foreign code in
-  // the image, which references no import, reaches them, each with the static
-  // scanner of its kind.
+  // Routines made dynamic only because import-free in-image foreign code
+  // reaches them, each with the static scanner of its kind.
   std::vector<std::pair<KCFIOpenChunk *, Defined *>> localRoutines;
 
-  // A DLL whose objects have KCFI prefixes exports the bounds of its KCFI code
-  // range, which these symbols take, and its import library describes the
-  // range by the KCFI types, and second types, of the unsealed functions in
-  // it, with how many carry each, when the range is not empty.
+  // A DLL with KCFI prefixes exports its code-range bounds (these symbols) and,
+  // when the range is non-empty, its import library records the types and
+  // second types of the unsealed functions in it, with how many carry each.
   Defined *rangeExports[2] = {};
   bool rangeDefined = false;
   llvm::MapVector<uint32_t, uint32_t> rangeTypes;
   llvm::MapVector<uint32_t, uint32_t> rangeVfnTypes;
 
-  // The KCFI code ranges of the DLLs the image imports statically, in load
-  // order, that its KCFI checks may take a target inside directly, by the
-  // imports of each range's bounds; and by type, and by second type, the
-  // ranges that a thunk of the type tests, as indices of those.
+  // The code ranges of statically imported DLLs, in load order, that KCFI
+  // checks may take a target inside directly, by each range's bound imports;
+  // and, by type and second type, the ranges a thunk of the type tests, as
+  // indices.
   struct ImportedRange {
     DefinedImportData *start;
     DefinedImportData *end;
@@ -100,24 +94,22 @@ struct KCFIState {
 // which code without a prefix, which the link brings in, can be reached.
 void openKCFITypes(SymbolTable &symtab);
 
-// A DLL whose objects have KCFI prefixes exports the bounds of its KCFI code
-// range.
+// A DLL with KCFI prefixes exports the bounds of its KCFI code range.
 void addKCFIRangeExports(COFFLinkerContext &ctx);
 
 // A sealed image imports the bounds of the KCFI code ranges of the DLLs it
 // imports statically, where its thunks may test them.
 void bindKCFIImportedRanges(COFFLinkerContext &ctx);
 
-// Adds to the import library of a DLL with a KCFI code range, which exports,
-// as the writer would put them in the library, describe, the record of the
-// range and the imports of its bounds, the first held in buffer.
+// Adds to a DLL's import library the record of its KCFI code range and the
+// imports of its bounds (the record held in buffer), given its exports.
 void addKCFIRangeImports(COFFLinkerContext &ctx, StringRef dllName,
                          std::vector<llvm::object::COFFShortExport> &exports,
                          std::vector<llvm::NewArchiveMember> &members,
                          std::vector<uint8_t> &buffer);
 
-// Whether rel, in sc, is an entry of a KCFI type's list, the address of a word
-// that the type's open routine reads whole.
+// Whether rel in sc is a KCFI list entry: the address of a word the type's open
+// routine reads whole.
 bool isKCFIListEntry(SectionChunk *sc,
                      const llvm::object::coff_relocation &rel);
 
@@ -150,8 +142,7 @@ private:
 
   COFFLinkerContext &ctx;
   TypePrefixContents &prefixes;
-  // The output section that holds the code range, if there is one, and the
-  // bounds of the range in it.
+  // The output section holding the code range, if any, with its bounds in it.
   OutputSection *kcfiCodeSec = nullptr;
   Defined *kcfiCodeStart = nullptr;
   Defined *kcfiCodeEnd = nullptr;
@@ -159,8 +150,8 @@ private:
   Chunk *kcfiCodeEndChunk = nullptr;
   // Whether a KCFI thunk the linker made tests the range by its size.
   bool kcfiThunksTestRange = false;
-  // The chunks the linker opened for KCFI types, by which a synthetic
-  // mismatch routine is recognised without a scan of them per thunk.
+  // The chunks the linker opened for KCFI types, used to recognise a synthetic
+  // mismatch routine without a per-thunk scan.
   llvm::DenseSet<const Chunk *> openChunks;
 };
 } // namespace lld::coff

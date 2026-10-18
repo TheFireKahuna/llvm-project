@@ -43,11 +43,11 @@ void markLive(COFFLinkerContext &ctx, ArrayRef<Symbol *> roots) {
     worklist.push_back(c);
   };
 
-  // A section of a run is kept by references to it or by a retained symbol
-  // it defines, not by references to the run's bounds, as under ELF's
-  // -z start-stop-gc. Runs named __libc_* are kept whole while their bounds
-  // are referenced, as ELF linkers keep them: C libraries fill sections such
-  // as __libc_atexit with entries that nothing references or retains.
+  // A section of a run is kept by references to it or a retained symbol it
+  // defines, not by references to the run's bounds, as under ELF's
+  // -z start-stop-gc. Runs named __libc_* are kept whole while their bounds are
+  // referenced, as ELF linkers do: C libraries fill e.g. __libc_atexit with
+  // entries nothing references.
   llvm::DenseMap<Symbol *, ArrayRef<SectionChunk *>> runChunks;
   ctx.forEachSymtab([&](SymbolTable &symtab) {
     for (const SymbolTable::SectionRun &run : symtab.sectionRuns)

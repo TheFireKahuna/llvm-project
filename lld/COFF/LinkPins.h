@@ -23,35 +23,31 @@ class COFFLinkerContext;
 struct ChunkPin;
 struct VTableRun;
 
-// Gives each chunk the address its objects' pins ask for, in
-// COFFLinkerContext::chunkPins.
+// Resolves each chunk's pins into its address, in COFFLinkerContext::chunkPins.
 void resolveLinkPins(COFFLinkerContext &ctx);
 
-// What the layout of .rdata places: a chunk, or chunks that a run of in-place
-// import slots crossing from one to the next binds together with no padding
-// between them. Its alignment and pin are its first chunk's.
+// A unit of .rdata layout: one chunk, or several that in-place import slots
+// cross and so bind together with no padding. Its align and pin are the first
+// chunk's.
 struct PackItem {
   SmallVector<Chunk *, 1> chunks;
   uint64_t size = 0;
   uint32_t align = 1;
   const ChunkPin *pin = nullptr;
-  // A vtable of a run, by its slot. The first slot's item stands for the run,
-  // its size the run's, and the others follow it at the run's stride, with
-  // other items in the gaps.
+  // A vtable in a run, at slot. The first slot's item stands for the whole run;
+  // later slots follow at the run's stride, with other items in the gaps.
   const VTableRun *run = nullptr;
   unsigned slot = 0;
-  // A tagged vtable, which is offered the gaps of its primary base's run.
+  // A tagged vtable, offered the gaps of its primary base's run.
   const VTableRun *baseRun = nullptr;
   bool isPlaced() const { return pin || align >= 64 || run; }
   // The first offset at or after pos that the item may start at.
   uint64_t startAt(uint64_t pos) const;
 };
 
-// Plans the layout of pinned and 64-byte-aligned items, vtables in practice,
-// so that the padding before each holds other items rather than zeros. Each in
-// turn is the one that needs the least padding from where the layout has
-// reached, and its padding is filled with the largest available items that
-// fit.
+// Lays out pinned and 64-byte-aligned items (vtables, in practice) so that the
+// padding before each holds other items rather than zeros: items are placed
+// least-padding-first, each gap filled with the largest items that fit.
 class RdataPacker {
 public:
   explicit RdataPacker(ArrayRef<PackItem> items) : items(items) {}
@@ -66,9 +62,8 @@ public:
   std::vector<size_t> pack(size_t begin, size_t end, uint64_t pos);
 
 private:
-  // The available items are ordered by size and then by reverse order, so
-  // that the search down from the largest that fits meets equal sizes in
-  // input order.
+  // Orders items by size, then reverse index, so the search down from the
+  // largest that fits meets equal sizes in input order.
   std::pair<uint64_t, size_t> fillerKey(size_t i) const {
     return std::make_pair(items[i].size, SIZE_MAX - i);
   }

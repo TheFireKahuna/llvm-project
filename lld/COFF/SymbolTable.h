@@ -53,14 +53,12 @@ struct WrappedSymbol {
 
 struct UndefinedDiag;
 
-// Whether a definition in a COMDAT named name may be shared along import paths
-// under -import-slots, so that the instance of a DLL the image imports it from
-// is the image's.
+// Whether a COMDAT definition named name may be shared along import paths under
+// -import-slots, so the image uses its importing DLL's instance.
 bool isShareableVagueName(StringRef name);
 
-// Whether name is that of a type_info object. One is shared along import
-// paths, as other vague entities are, but not between images that no link
-// joins: those keep their own, which compare by name.
+// Whether name is a type_info object: shared along import paths like other
+// vague entities, but images no link joins keep their own, compared by name.
 bool isTypeInfoName(StringRef name);
 
 // The name of the guard variable of the variable named name.
@@ -95,107 +93,84 @@ public:
   // Try to resolve undefined symbols with alternate names.
   void resolveAlternateNames();
 
-  // Under -import-slots, load the archive member behind each undefined __imp_X
-  // that no input defines under that name and whose X is lazy, and reference
-  // an X that /alternatename defines, as a direct reference to X would; and
-  // load the import that an import library offers for each weak reference.
-  // Returns whether any member was loaded or X referenced.
+  // Under -import-slots, loads the archive member behind each undefined __imp_X
+  // whose lazy X no input defines, references an X that /alternatename defines,
+  // and loads the import an import library offers for each weak reference.
   bool loadLocalImportMembers();
 
-  // Under -import-slots, loads the import of each name that a DLL exports for
-  // an address inside its data which a word of static data holds, and
-  // NtProtectVirtualMemory's where the fill would make a read-only word, for
-  // which no name is exported, read-only again once it writes it, or would
-  // write the read-only cells of an overridable default the DLL imports.
-  // Returns whether it loaded any, which may change what a word needs.
+  // Under -import-slots, loads each DLL-exported import for an interior address
+  // a word of static data holds, and NtProtectVirtualMemory to reseal read-only
+  // words. Loading may change what a word needs.
   bool loadInteriorImports();
-  // The objects that loadInteriorImports has walked, the words among theirs
-  // whose names were still to be loaded, by section and relocation, and
-  // whether a member it loaded since defines a symbol an object references.
+  // Incremental loadInteriorImports state: objects walked, pending words (by
+  // section and relocation), and whether a loaded member defines a referenced
+  // symbol.
   size_t interiorImportObjects = 0;
   std::vector<std::pair<SectionChunk *, size_t>> pendingInteriorWords;
   bool interiorImportsRewalk = false;
   bool importUnresolvedFromHost();
-  // Redirects the accesses to a .refptr.<name> pointer to the symbol sym to
-  // imp, which holds the same address, dropping the pointer.
+  // Redirects accesses to the .refptr.<name> pointer to sym's import imp, which
+  // holds the same address, and drops the pointer.
   void replaceRefPtr(Symbol *sym, StringRef name, Defined *imp);
 
   // Under -import-slots, the import of the name that the DLL of imp exports
   // for the address offset bytes into imp's data, or null if it exports none.
   DefinedImportData *findInteriorImport(DefinedImportData *imp, int64_t offset);
 
-  // Under -import-slots, exports the names of the addresses inside each
-  // exported definition along with it, whatever exported the definition.
+  // Under -import-slots, exports the interior-address names of each exported
+  // definition, whatever exported it.
   void exportInteriorNames();
 
-  // The .refptr.X symbols that objects define where bindPointerCells may
-  // bind them, which it visits instead of the whole table.
+  // The .refptr.X symbols objects define, visited by bindPointerCells.
   std::vector<Symbol *> pointerCells;
 
-  // Under -import-slots, the weak externals of extern_weak declarations, whose
-  // default is absolute zero: an import library's offer satisfies them, as a
-  // shared object satisfies an ELF weak reference, though no archive member
-  // does.
+  // Under -import-slots, the extern_weak weak externals. An import library's
+  // offer satisfies them, as an ELF shared object does, though no member does.
   std::vector<Symbol *> weakRefs;
 
-  // Under -import-slots, the leaders of the COMDAT groups of data definitions
-  // that the instance of a DLL the image imports from may preempt, which
-  // loadLocalImportMembers and preemptWeakData visit instead of the whole
-  // table.
+  // Under -import-slots, the leaders of the data COMDAT groups a DLL's instance
+  // may preempt, visited by loadLocalImportMembers and preemptWeakData.
   std::vector<Symbol *> weakData;
-  // The thread-local variables that bitcode defines, which no section shows
-  // to be thread-local before LTO.
+  // The thread-local variables bitcode defines, not shown thread-local pre-LTO.
   llvm::DenseSet<Symbol *> threadLocalBitcodeData;
 
-  // Whether s is a thread-local variable, which code reaches through its
-  // record where another image may define it, and which is shared along
-  // import paths under its record's name.
+  // Whether s is a thread-local variable: reached through its record where
+  // another image may define it, and shared along import paths by that name.
   bool isThreadLocal(Symbol *s) const;
   // The name under which the vague entity s is shared along import paths.
   StringRef getSharedName(Symbol *s);
   // The name under which the guard of the vague variable d is shared.
   std::string getSharedGuardName(Symbol *d);
-  // The vague entity shared under name: the thread-local variable whose
-  // record has that name, where the image writes the record, or else the
-  // symbol of that name.
+  // The vague entity shared under name: the thread-local variable whose record
+  // has that name, where the image writes it, or else the symbol of that name.
   Symbol *findVagueEntity(StringRef name);
 
-  // Under -import-slots, the record of the thread-local variable var through
-  // which code reaches the variable where another image may define it: the
-  // one an input defines, or else one the image writes, where a reference, an
-  // export or an offer needs one. Reports an error and returns null if the
-  // image cannot write it.
+  // Under -import-slots, var's record, through which code reaches it where
+  // another image may define it: the one an input defines, or one the image
+  // writes. Reports an error and returns null if the image cannot write it.
   Defined *getThreadLocalRecord(DefinedRegular *var);
   // The thread-local variable whose record the image writes as s, if any.
   DefinedRegular *getRecordVariable(Symbol *s);
-  // Keeps a record that the image writes, which the link needs once liveness
-  // is decided.
+  // Keeps a record the image writes, once liveness shows the link needs it.
   void keepThreadLocalRecord(Defined *record);
-  // The records the image writes, which it keeps if something live refers to
-  // them.
+  // The records the image writes, kept if something live refers to them.
   std::vector<ThreadLocalRecordChunk *> threadLocalRecords;
 
-  // Under -import-slots, makes each COMDAT data definition that an import
-  // library offers the DLL's instance, as an ELF shared object's definition
-  // preempts another copy of vague-linkage data: every external symbol of its
-  // group, and its guard, resolve to the DLL's same-named imports, and the
-  // group's sections are discarded. Runs once liveness is decided.
+  // Under -import-slots, makes each offered COMDAT data definition the DLL's
+  // instance, as on ELF: its group's external symbols and guard resolve to the
+  // DLL's imports and its sections are discarded. Runs once liveness decided.
   void preemptWeakData();
 
   // Makes sym, a definition of data, the instance that imp imports.
   void preemptSymbol(Symbol *sym, DefinedImportData *imp);
 
-  // Under -import-slots, keeps each read-only copy of data that
-  // preemptWeakData discarded, or that the DLL keeps preemptible, for the loads
-  // that its objects describe as only reading values through the address they
-  // load: those take the address of the copy, whose bytes are those of the
-  // instance that every other reference reaches, and the copy has no symbol.
-  // Runs once offered functions are bound.
+  // Under -import-slots, keeps each read-only copy of preempted data for the
+  // loads its objects describe as only reading values: those take the copy's
+  // address, whose bytes match the instance. Runs once offered functions bind.
   void readImmutableDataLocally();
 
-  // Whether sc, a section of data, reads the same wherever an image holds a
-  // copy of it: read-only, with words that hold only addresses that are the
-  // same in every image.
+  // Whether data section sc reads the same in every image: read-only, with
+  // words holding only addresses that are the same everywhere.
   bool isCanonicalCopy(SectionChunk *sc);
 
   // A symbol for the copy of data that d defines, which no other file names.
@@ -209,16 +184,14 @@ public:
   // load stays, by the symbol that the load's relocation names.
   llvm::DenseMap<Symbol *, Defined *> immutableReads;
 
-  // Under -import-slots, binds each import library's __imp_X to the image's
-  // own definition of X, which beats it, as a definition in an ELF executable
-  // beats a shared object's: the import-form references reach the definition
-  // locally. What the image takes from a DLL that offers it keeps the import;
-  // an offer of a delay-loaded or ignored DLL is not taken. Runs before
-  // liveness is decided, which keeps the definition.
+  // Under -import-slots, binds each import library's __imp_X to the image's own
+  // definition of X, which beats it as on ELF, so import-form references reach
+  // it locally. What the image takes from an offering DLL keeps the import; an
+  // offer of a delay-loaded or ignored DLL is not taken. Runs before liveness.
   void bindImportsToDefinitions();
 
-  // The forwarders that objects' link records list, each a function that
-  // only jumps through an import pointer, with that pointer.
+  // The forwarders objects' link records list, each jumping only through an
+  // import pointer, with that pointer.
   struct Forwarder {
     ObjFile *file;
     Symbol *forwarder;
@@ -226,80 +199,62 @@ public:
   };
   std::vector<Forwarder> forwarders;
 
-  // Replaces each forwarder whose import pointer reaches a definition in the
-  // image by that definition, so that every reference to the forwarder
-  // reaches the definition directly, and liveness discards the forwarder; a
-  // forwarder to an import stays. Runs before liveness is decided.
+  // Replaces each forwarder whose import pointer reaches an image definition by
+  // that definition, so references reach it directly and liveness discards the
+  // forwarder; one to an import stays. Runs before liveness.
   void bindForwarders();
 
-  // Whether the image does not take what imp's DLL offers: data is never
-  // delay-bound, a delay-load thunk is not a function's address, and
-  // -ignore-offers names DLLs whose offers the image keeps its copies of.
+  // Whether the image does not take imp's DLL's offers: a delay-load thunk is
+  // not a function's address, and -ignore-offers names DLLs whose offers the
+  // image keeps its own copies of.
   bool ignoresOffersOf(DefinedImportData *imp) const;
 
-  // The symbols that preemptWeakData resolved to imports, whose addresses that
-  // code takes in a described instruction become loads of their imports. Kept
-  // in the order they were preempted, so the offers made from them do not
-  // depend on the hashing of a pointer set.
+  // The symbols preemptWeakData resolved to imports, whose described
+  // address-takes become loads of the imports. Kept in preemption order so the
+  // offers made from them do not depend on pointer-set hashing.
   llvm::SetVector<Symbol *> preemptedData;
 
-  // The imports that the sections preemptWeakData discarded refer to, which
-  // need no entry if nothing else uses them.
+  // Imports preemptWeakData's discarded sections refer to; dropped if unused.
   llvm::DenseSet<ImportFile *> preemptedGroupImports;
 
-  // Under -import-slots, the leaders of the COMDAT groups of functions with
-  // default visibility whose addresses objects take, which a DLL the image
-  // imports from may offer, and the number of objects whose
-  // address-significance tables have been read for them.
+  // Under -import-slots, the leaders of the default-visibility function COMDAT
+  // groups whose addresses objects take, which a DLL may offer, and the count
+  // of objects whose address-significance tables have been read for them.
   std::vector<Symbol *> weakFunctions;
   size_t weakFunctionObjects = 0;
-  // The number of indexed archives loadLocalImportMembers has scanned the
-  // weak definitions against for offers to load.
+  // The count of indexed archives loadLocalImportMembers has scanned for
+  // offers.
   size_t offeredArchives = 0;
 
-  // Under -import-slots, the functions whose address is that of the instance
-  // a DLL the image imports from offers, as an ELF shared object's definition
-  // preempts another copy of an inline function: every address the image
-  // takes is the DLL's, while calls keep the image's copy. Runs once liveness
-  // is decided.
+  // Under -import-slots, binds to a DLL's offered instance each function whose
+  // address the image takes, as on ELF: the address is the DLL's, while calls
+  // keep the image's copy. Runs once liveness is decided.
   void bindOfferedFunctions();
 
-  // Under -import-slots in a DLL, whether s is one of the vague entities the
-  // DLL offers whose instance another image may preempt at run time, as an ELF
-  // shared object's own references to its default-visibility data go through
-  // its GOT: data, with the other external symbols of its group and its
-  // guard, and functions whose addresses are significant. The DLL's own
-  // references reach such an entity through cells its fill writes from the
-  // executable's table, unless -Bsymbolic keeps them local. A thread-local
-  // variable is preemptible with its record, which s may be. Calls stay
-  // direct.
+  // Under -import-slots in a DLL, whether s is a vague entity another image may
+  // preempt at run time: data (with its group and guard) and address-
+  // significant functions, as on ELF. The DLL reaches it through cells its fill
+  // writes, unless -Bsymbolic keeps it local; TLS is preemptible with its
+  // record. Calls stay direct.
   bool isPreemptibleVagueEntity(Symbol *s);
   std::optional<llvm::DenseSet<Symbol *>> preemptibleVagueEntities;
 
-  // Under -import-slots in an executable, for each vague entity that two
-  // images of its load closure keep preemptible, or one of them and the
-  // executable, imports the instance of its owner, which chooseVagueOwners
-  // gives, or makes a pointer to its own, and names the entity in the
-  // override table's block, whose entry names that import's entry or pointer:
-  // a word holding the instance's address, which every DLL's fill copies into
-  // its cells. Returns whether it added anything to the link.
+  // Under -import-slots in an executable, for each vague entity two images of
+  // its load closure keep preemptible, imports its owner's instance (from
+  // chooseVagueOwners) or points to its own, and names it in the override
+  // table's block, whose entry every DLL's fill copies into its cells.
   bool bindVagueSiblings();
-  // The words that the block's entries for vague entities name, by name.
   llvm::MapVector<StringRef, Defined *> vagueOwners;
 
-  // Under -import-slots, in a link that writes an import library, exports
-  // each definition with default visibility in a COMDAT that the image keeps
-  // and another image may observe, as an ELF shared object's dynamic symbol
-  // table gives it: data, and functions whose addresses are significant. What
-  // the image takes from a DLL that offers it is exported as a forwarder to
-  // that DLL.
+  // Under -import-slots, in a link that writes an import library, exports each
+  // kept default-visibility COMDAT definition another image may observe (data
+  // and address-significant functions), as an ELF dynamic symbol table does.
+  // What the image takes from an offering DLL is exported as a forwarder to it.
   void addOffers();
 
-  // In a DLL linked under -import-slots, turns each export that is a strong
-  // definition of an overridable default into an offer under the offer name:
-  // only the executable replaces a default for every image of the program, so
-  // the executable's link selects a DLL's offer rather than the DLL binding
-  // its importers to its own definition.
+  // In a DLL under -import-slots, turns each export that strongly defines an
+  // overridable default into an offer under the offer name, so the executable's
+  // link selects it rather than the DLL binding importers to its own.
   void offerOverridableDefaults();
 
   // The strong definition of an overridable default that e exports, which a
@@ -308,25 +263,23 @@ public:
 
   // Under -import-slots in a DLL that offers an overridable default, loads the
   // default's import, through which the DLL's own references reach the
-  // program's choice. Called in the resolution loop; returns whether it loaded
-  // anything.
+  // program's choice. Called in the resolution loop.
   bool loadOverrideOfferImports();
 
-  // The definitions this DLL offers, each with the import of the default it
-  // offers. The DLL's own references to one reach that import, as any other
-  // image's do, so a definition that the program does not select is
-  // preempted, as ELF preempts a shared object's definition.
+  // The definitions this DLL offers, each with the default's import its own
+  // references reach, so a definition the program does not select is preempted,
+  // as on ELF.
   llvm::MapVector<Symbol *, DefinedImportData *> preemptedOffers;
 
-  // Under -import-slots in an executable, materialises the offer symbols its
-  // linked import libraries carry, records each offered default's ABI name in
-  // overrideOffers, and pulls the offer the executable does not itself replace.
-  // Called in the resolution loop; returns whether it pulled anything.
+  // Under -import-slots in an executable, materialises its import libraries'
+  // offer symbols, records each offered default's ABI name in overrideOffers,
+  // and pulls the offers the executable does not itself replace. Called in the
+  // resolution loop.
   bool loadOverrideOffers();
 
-  // Under -import-slots in an executable, reads each replaced overridable
-  // default's slot, which the runtime's definitions or import library record,
-  // after resolution, into overrideReplacements.
+  // Under -import-slots in an executable, after resolution reads each replaced
+  // default's slot (recorded by the runtime's definitions or import library)
+  // into overrideReplacements.
   void resolveOverridableReplacements();
 
   // An overridable default that this executable replaces: the body B of the
@@ -341,11 +294,10 @@ public:
   // lays them out in overrideBlock.
   std::vector<std::pair<StringRef, Defined *>> overrideReplacementsByName;
 
-  // The override table this executable writes, by slot: for each slot the body
-  // its entry names, or null, and whether the slot's default is replaced (so
-  // the anchor's mask records it) or only forwarded. Empty when the executable
-  // replaces nothing. overrideMask is the mask the anchor holds. overrideAnchor
-  // is the chunk that holds the anchor, which the runtime reaches by name.
+  // The override table this executable writes, by slot: each entry's body (or
+  // null) and whether its default is replaced (recorded in the anchor's mask)
+  // or only forwarded. Empty when nothing is replaced. overrideMask is the
+  // anchor's mask; overrideAnchor holds the anchor, reached by name at runtime.
   struct OverrideSlot {
     Defined *target = nullptr;
     bool replaced = false;
@@ -353,28 +305,23 @@ public:
   std::vector<OverrideSlot> overrideSlots;
   uint32_t overrideMask = 0;
   Chunk *overrideAnchor = nullptr;
-  // The thunks that forwarded slots whose target drops the second argument
-  // name, which the writer lays out in the code section.
+  // The thunks for forwarded slots whose target drops the second argument.
   std::vector<Chunk *> overrideThunks;
 
-  // Under -import-slots in the resolution loop, once records are loaded and an
-  // input defines a replacement, names __ovr_check, the executable's start-up
-  // validation, and defines __ovr_anchor at the anchor chunk the writer fills.
-  // Returns whether it added anything to the link.
+  // Under -import-slots, once records are loaded and an input defines a
+  // replacement, names __ovr_check (the start-up validation) and defines
+  // __ovr_anchor at the anchor chunk the writer fills.
   bool nameOverrideCheck();
 
-  // Lays the replacements out by slot into overrideSlots for the writer, and
-  // marks each body a root.
+  // Lays the replacements out by slot for the writer, marking each body a root.
   void buildOverrideSlots();
 
-  // The names of the overridable defaults that inputs define, from their
-  // /overridable: directives.
+  // The overridable defaults inputs define, from /overridable: directives.
   llvm::DenseSet<StringRef> overridables;
 
-  // A default's fixed slot in the override table and, for a default the
-  // standard specifies as calling another, that other's slot, with whether it
-  // takes this one's arguments without the second; and whether an input of
-  // this link defines the default, rather than an import library recording it.
+  // A default's fixed slot and, for a default the standard specifies as calling
+  // another, that other's slot and whether it drops the second argument; and
+  // whether an input defines the default rather than an import library.
   struct OverrideSlotFacts {
     uint32_t slot;
     std::optional<uint32_t> forward;
@@ -392,10 +339,9 @@ public:
     return it != overrideSlotFacts.end() && it->second.own;
   }
 
-  // The overridable defaults that inputs define with no fixed slot, which a
-  // definition in another image replaces by name, from their
-  // /overridablebyname: directives, and those that the DLLs whose import
-  // libraries the link names define, from the records of those libraries.
+  // Overridable defaults with no fixed slot, replaced by name: those inputs
+  // define (from /overridablebyname: directives) and those the linked import
+  // libraries' DLLs define (from their records).
   llvm::DenseSet<StringRef> overridablesByName;
   llvm::DenseSet<StringRef> defaultsByName;
   // Reads the overridable defaults that the import libraries the link names
@@ -406,10 +352,9 @@ public:
   // The record members of the import libraries the link names, in link order.
   SmallVector<MemoryBufferRef, 4> getImportLibraryRecords();
 
-  // A default replaced by name in the table's block: the body its entry names,
-  // its key and its bucket, or -1 for an entry in the overflow list. The block
-  // holds them in this order, the buckets' in increasing order of bucket, then
-  // the overflow list's.
+  // A default replaced by name in the table's block: its body, key and bucket,
+  // or -1 for the overflow list, which follows the bucketed entries in bucket
+  // order.
   struct OverrideByName {
     Defined *target;
     StringRef name;
@@ -420,9 +365,8 @@ public:
   };
   std::vector<OverrideByName> overrideBlock;
 
-  // The ABI names of the overridable defaults that linked import libraries
-  // offer, from their offer symbols. The executable selects an offer for a
-  // slot it does not replace itself.
+  // The ABI names of the overridable defaults linked import libraries offer.
+  // The executable selects an offer for a slot it does not replace itself.
   llvm::DenseSet<StringRef> overrideOffers;
   bool overrideOffersLoaded = false;
 
@@ -430,24 +374,22 @@ public:
   // definition, the body that replaces the runtime's weak overridable default.
   bool isLocalOverrideReplacement(StringRef name);
 
-  // The override table slot of a default, from the facts its definition or
-  // its import library records, or none if name is not such a default. An image
-  // whose static data or code takes such an import's address carries a cell for
-  // that slot, which its fill writes from the executable's table.
+  // A default's override-table slot, from the facts its definition or import
+  // library records, or none if name is not such a default. An image taking
+  // such an import's address carries a cell for the slot, written by its fill.
   std::optional<uint32_t> overrideImportSlot(StringRef name);
 
   // The name of the epoch export of the entities the image keeps, if any.
   StringRef offersEpoch;
   llvm::MapVector<Symbol *, DefinedImportData *> offeredFunctions;
 
-  // The exports that forward to the instance of a DLL the image imports, by
-  // the import of that instance, which the image's import library names in
-  // their place so that an importer binds to the DLL that holds it.
+  // Exports that forward to a DLL's instance, by its import, which the image's
+  // import library names in their place so an importer binds to that DLL.
   llvm::DenseMap<StringRef, DefinedImportData *> forwardedImports;
 
-  // Define placeholders for the referenced, undefined __start_X and __stop_X
-  // of each section run X, and for _etext, _edata and _end. The writer places
-  // them once the output sections are laid out.
+  // Define placeholders for referenced, undefined __start_X/__stop_X of each
+  // section run X, and for _etext, _edata and _end; the writer places them once
+  // the output sections are laid out.
   void addStartStopSymbols();
   void addBoundarySymbols();
 
@@ -459,9 +401,8 @@ public:
   // Returns a symbol for a given name. Returns a nullptr if not found.
   Symbol *find(StringRef name);
   Symbol *findUnderscore(StringRef name);
-  // Like find(), but does not enter an indexed archive's lazy symbol: it
-  // returns only a symbol the table already holds, so a probe for a symbol
-  // that is not expected to exist leaves the table unchanged.
+  // Like find(), but returns only a symbol the table already holds, without
+  // entering an indexed archive's lazy symbol, so a probe leaves it unchanged.
   Symbol *findNonInserting(StringRef name) {
     return symMap.lookup(llvm::CachedHashStringRef(name));
   }
@@ -566,8 +507,7 @@ public:
     std::vector<SectionChunk *> chunks;
   };
   std::vector<SectionRun> sectionRuns;
-  // The placeholders addBoundarySymbols defined, each with whether its
-  // reference was weak.
+  // The placeholders addBoundarySymbols defined, with whether its ref was weak.
   std::vector<std::pair<Symbol *, bool>> boundarySymbols;
 
   // A list of DLL exports.
@@ -613,8 +553,7 @@ public:
   void parseAligncomm(StringRef);
 
   // Iterates symbols in non-determinstic hash table order. The callback must
-  // not enter a symbol; to look one up it uses findNonInserting, so the table
-  // is not mutated while it is walked.
+  // not enter a symbol; it uses findNonInserting, which does not mutate it.
   template <typename T> void forEachSymbol(T callback) {
     for (auto &pair : symMap)
       callback(pair.second);
@@ -660,24 +599,21 @@ private:
   bool addIndexedLazy(Symbol *s, StringRef name);
 
   llvm::DenseMap<llvm::CachedHashStringRef, Symbol *> symMap;
-  // The indexed archives, in the order they were read. A name that the table
-  // lacks is that of the lazy symbol of the first of them that defines it, as
-  // if each had entered its lazy symbols when it was read.
+  // The indexed archives, in read order. A name the table lacks is the lazy
+  // symbol of the first of them that defines it.
   std::vector<ArchiveFile *> indexedArchives;
-  // Every name an indexed archive defines, keyed to the first archive that
-  // does and the position of its symbol there, so a name the table lacks is
-  // found with one probe rather than one per indexed archive.
+  // Every name an indexed archive defines, keyed to the first archive that does
+  // and its symbol's position, so a name the table lacks is found in one probe.
   llvm::DenseMap<llvm::CachedHashStringRef, std::pair<ArchiveFile *, uint32_t>>
       indexedSymbols;
   // Symbols created undefined with the __imp_ prefix under -import-slots,
   // which loadLocalImportMembers visits instead of the whole table.
   std::vector<Symbol *> impUndefs;
-  // Under -import-slots: symbols a reference other than a weak external made,
-  // and the lazy archive member a weak external's consumption of a symbol kept
-  // reachable for such a reference. COFF records no per-reference strength and
-  // a weak external consumes the lazy symbol, so without this a later strong
-  // reference could not pull a member ELF would, resolving the symbol to the
-  // weak fallback instead (question 136).
+  // Under -import-slots: symbols a non-weak-external reference made, and the
+  // lazy archive member a weak external kept reachable for one. COFF records no
+  // per-reference strength and a weak external consumes the lazy symbol, so
+  // without this a later strong reference would resolve to the weak fallback
+  // instead of pulling the member ELF would.
   llvm::DenseSet<Symbol *> stronglyReferenced;
   llvm::DenseMap<Symbol *, std::pair<ArchiveFile *, llvm::object::Archive::Symbol>>
       weakFallbackLazy;

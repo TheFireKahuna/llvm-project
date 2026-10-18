@@ -174,19 +174,18 @@ void BitcodeCompiler::waitForLTOCleanup() {
 
 static void undefine(Symbol *s) { replaceSymbol<Undefined>(s, s->getName()); }
 
-// Returns whether s resolves to an address in the image that nothing replaces
-// after LTO. Imports and absolute symbols are outside the image, and -wrap
-// redirects references only after LTO.
+// Whether s resolves to an address in the image that nothing replaces after
+// LTO. Imports and absolute symbols are outside it; -wrap redirects only
+// after LTO.
 static bool isDefinedInImage(Symbol *s) {
   Defined *d = s ? s->getDefined() : nullptr;
   return d && s->canInline &&
          !isa<DefinedAbsolute, DefinedImportData, DefinedImportThunk>(d);
 }
 
-// A PE image has no symbol preemption, so a definition in the image is final
-// for every reference from it. An undefined __imp_X is a dllimport reference
-// to X; when X is in the image, the linker would point a local import at it,
-// so the reference is final too, and LTO emits it as a direct reference.
+// A PE image has no symbol preemption, so a definition in it is final for
+// every reference from it. An undefined __imp_X is a dllimport reference to X;
+// when X is in the image the reference is final too, emitted as a direct one.
 static bool isFinalInImage(BitcodeFile &f, const lto::InputFile::Symbol &objSym,
                            Symbol *sym) {
   // ARM64EC binds symbols through anti-dependencies and thunks, some of
@@ -210,9 +209,8 @@ static Symbol *findOffer(BitcodeFile &f, const lto::InputFile::Symbol &objSym,
       ("__imp_" + sym->getName() + (objSym.isTLS() ? "$tls" : "")).str());
 }
 
-// Returns the import of a DLL the image imports from that offers the COMDAT
-// data objSym defines, whose instance preempts the definition after LTO, if
-// one does.
+// The import of a DLL the image imports from that offers the COMDAT data
+// objSym defines, whose instance preempts the definition after LTO; else null.
 static DefinedImportData *
 findOfferedWeakData(BitcodeFile &f, const lto::InputFile::Symbol &objSym,
                     Symbol *sym) {
@@ -225,9 +223,8 @@ findOfferedWeakData(BitcodeFile &f, const lto::InputFile::Symbol &objSym,
   return imp && !f.symtab.ignoresOffersOf(imp) ? imp : nullptr;
 }
 
-// Returns whether a DLL the image imports from offers the function that objSym
-// defines in a COMDAT, whose address-takes the native link binds to the offer
-// while calls keep the image's copy.
+// Whether a DLL the image imports from offers the function objSym defines in a
+// COMDAT, whose address-takes bind to the offer while calls keep the copy.
 static bool isOfferedFunction(BitcodeFile &f,
                               const lto::InputFile::Symbol &objSym,
                               Symbol *sym) {
@@ -240,11 +237,11 @@ static bool isOfferedFunction(BitcodeFile &f,
   return imp && imp->file->thunkSym && !f.symtab.ignoresOffersOf(imp);
 }
 
-// Returns whether the image offers what objSym defines once LTO is done, as
-// ld.lld exports a definition of default visibility from a shared object, so
-// that LTO keeps it: under -import-slots, in a link that writes an import
-// library, a definition with default visibility in a COMDAT that another image
-// may observe, data or a function whose address is significant.
+// Whether the image offers what objSym defines once LTO is done, so LTO keeps
+// it as ld.lld keeps a shared object's default-visibility definition: under
+// -import-slots, writing an import library, a default-visibility COMDAT
+// definition another image may observe (data, or an address-significant
+// function).
 static bool isOfferedByImage(BitcodeFile &f,
                              const lto::InputFile::Symbol &objSym,
                              Symbol *sym) {
@@ -257,14 +254,11 @@ static bool isOfferedByImage(BitcodeFile &f,
          isShareableVagueName(sym->getName());
 }
 
-// Returns whether another image's instance may preempt at run time what
-// objSym defines, in a DLL whose own references to such a vague entity read
-// cells, as an ELF shared object reaches its default-visibility definitions
-// through its GOT, so that LTO keeps them in import form: data with default
-// visibility in a COMDAT but type_info objects, and functions whose addresses
-// are significant, unless -Bsymbolic binds them locally
-// (SymbolTable::isPreemptibleVagueEntity). The cells are written by the
-// image's fill, which runs only where the image has a C initializer table.
+// Whether another image's instance may preempt at run time what objSym defines
+// in a DLL whose own references to such a vague entity read cells, as an ELF
+// shared object reaches default-visibility definitions through its GOT, so LTO
+// keeps them in import form: default-visibility COMDAT data but type_info, and
+// address-significant functions, unless -Bsymbolic binds them locally.
 static bool isPreemptibleInImage(BitcodeFile &f,
                                  const lto::InputFile::Symbol &objSym,
                                  Symbol *sym, bool hasCInitializers) {
@@ -295,9 +289,8 @@ void BitcodeCompiler::add(BitcodeFile &f) {
     thinIndices.insert(obj.getName());
 
   // Another image may reference what this one exports, so whole-program
-  // visibility leaves the vtables it exports public, and where KCFI checks go
-  // through per-type thunks an exported function may have its address taken
-  // there.
+  // visibility leaves exported vtables public, and an exported function may
+  // have its address taken through a per-type KCFI thunk.
   if (!addedFile &&
       (ctx.config.ltoWholeProgramVisibility ||
        Triple(obj.getTargetTriple()).isWindowsItaniumOrNTPOSIXEnvironment())) {
@@ -317,13 +310,12 @@ void BitcodeCompiler::add(BitcodeFile &f) {
       dataOffers[i] = findOfferedWeakData(f, objSym, symBodies[i]);
   }
 
-  // Under -import-slots, the COMDATs of data that a DLL offers whole, every
-  // definition in them by the same DLL, are preempted before LTO, as the
-  // native link preempts them after: LTO compiles no copy, and ThinLTO keeps
-  // one available for its value. Data that only a constant initializes, with
-  // no guard and no initializer, costs no code, and stays prevailing for the
-  // native link to preempt, which may keep its copy for loads that only read
-  // values through its address (SymbolTable::readImmutableDataLocally).
+  // Under -import-slots, COMDATs of data a DLL offers whole (every definition
+  // by the same DLL) are preempted before LTO, as the native link preempts
+  // them after: LTO compiles no copy, ThinLTO keeps one for its value.
+  // Constant-only data with no guard or initializer costs no code and stays
+  // prevailing for the native link to preempt, which may keep its copy for
+  // value-only reads.
   SmallVector<DefinedImportData *, 0> offeredComdats;
   if (ctx.config.importSlots) {
     size_t numComdats = obj.getComdatTable().size();
@@ -347,9 +339,9 @@ void BitcodeCompiler::add(BitcodeFile &f) {
       if (!offeredComdats[c])
         offeredComdats[c] = imp;
     }
-    // Only the offered COMDATs, which hold no code, need the test for a
-    // thread-local or a guard. Every member of one is defined here, and is
-    // thread-local only where objSym is.
+    // Only the offered COMDATs, which hold no code, need the thread-local or
+    // guard test. Every member of one is defined here, thread-local only where
+    // objSym is.
     SmallVector<bool, 0> initialized(numComdats, false);
     i = 0;
     for (const lto::InputFile::Symbol &objSym : obj.symbols()) {
@@ -400,19 +392,16 @@ void BitcodeCompiler::add(BitcodeFile &f) {
         (r.Prevailing && (isOfferedByImage(f, objSym, sym) ||
                           isOfferedFunction(f, objSym, sym)));
     r.ExportDynamic = exportedSyms && exportedSyms->contains(sym);
-    // A PE image has no symbol preemption, so a definition in the image is
-    // final for every reference from it, and LTO may resolve references to it
-    // directly.
+    // A PE image has no symbol preemption, so a definition in it is final for
+    // every reference from it, and LTO may resolve references directly.
     r.FinalDefinitionInLinkageUnit = isFinalInImage(f, objSym, sym);
-    // Under -import-slots a definition a DLL the image imports from offers, or
-    // one this DLL reaches through a cell so another image may preempt it at
-    // run time, is not final. Both are definitions, so isFinalInImage did not
-    // look an undefined __imp_ reference up to reach this point.
+    // Under -import-slots a definition a DLL offers, or one this DLL reaches
+    // through a cell so another image may preempt it at run time, is not final.
+    // Both are definitions, so isFinalInImage saw no undefined __imp_ ref.
     if (offered || isPreemptibleInImage(f, objSym, sym, hasCInitializers))
       r.FinalDefinitionInLinkageUnit = false;
     // The object LTO generates defines the symbol again. It is undefined only
-    // once every file is added, so that the files after this one still see
-    // where it is defined.
+    // once every file is added, so later files still see where it is defined.
     if (r.Prevailing)
       prevailingSyms.push_back(sym);
 

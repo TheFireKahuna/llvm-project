@@ -23,30 +23,25 @@ class ImportFile;
 class ObjFile;
 struct SlotScan;
 
-// Under -import-slots, the import whose address a word of static data holding
-// the address of s takes in place: the import of an import thunk, or of data
-// that resolved to its import; or null.
+// Under -import-slots, the import a word holding s's address takes in place:
+// an import thunk's import, or data resolved to its import; else null.
 DefinedImportData *getAddressedImport(Symbol *s);
 
-// The import that a word holding the address of s takes in place, if any,
-// which a delay-loaded import never is: its address is its thunk's until its
-// DLL is loaded.
+// The import a word holding s's address takes in place, if any. Never a
+// delay-loaded import: its address is its thunk's until the DLL is loaded.
 DefinedImportData *getInPlaceImport(Symbol *s);
 
 // An executable with a copy of its thread-local import slots names the copy's
-// list in the reserved words of its MZ header, as {tag u32, rva u32} at this
-// offset, so that the fill of a DLL that may reach the executable while the
-// process initializes can run the copy first.
+// list in its MZ header reserved words as {tag u32, rva u32} at this offset,
+// so a DLL reaching it during process init can run the copy first.
 inline constexpr uint32_t threadLocalSlotCopyOffset = 0x1C;
 inline constexpr uint32_t threadLocalSlotCopyTag = 0x9E3779B9;
 
-// A DLL whose vague entities another image may bind to at run time, or that
-// delay-loads a DLL, names its table of them in the reserved words of its MZ
-// header, as {tag u32, rva u32} at this offset, where a DLL that the
-// executable's link did not see finds it through the loader's list of modules.
-// An executable keeps its exit-list state's locator there instead, and names
-// its own table, of the vague entities it exports, by its RVA after it; the
-// table starts with a magic of its own.
+// A DLL whose vague entities another image may bind at run time, or that
+// delay-loads a DLL, names its table of them in its MZ header reserved words as
+// {tag u32, rva u32} at this offset, found through the loader's module list. An
+// executable keeps its exit-list locator there and names its own table by RVA
+// after it; the table starts with a magic of its own.
 inline constexpr uint32_t vagueOfferTableOffset = 0x30;
 inline constexpr uint32_t vagueOfferTableTag = 0x6C8E9CF5;
 inline constexpr uint32_t executableOfferTableOffset = 0x38;
@@ -57,9 +52,8 @@ inline constexpr uint32_t vagueOfferTableMagic = 0x4F7A1D2B;
 std::optional<int64_t> getAddressWordAddend(SectionChunk *sc,
                                             const coff_relocation &rel);
 
-// A word of static data that holds an address inside an import for which the
-// import's DLL exports no name: the import's address plus addend. Sym is the
-// symbol that the word's relocation names.
+// A word of static data holding an address inside an import whose DLL exports
+// no name: the import's address plus addend. sym names the word's relocation.
 struct ResidualWord {
   SectionChunk *chunk;
   uint32_t offset;
@@ -68,9 +62,9 @@ struct ResidualWord {
   Symbol *sym;
 };
 
-// Under -import-slots, an import bound by name when the image starts: its
-// cell, which code reads in place of an import address table entry, the
-// import's name, and, for a weak import from a DLL, the DLL's name in UTF-16.
+// Under -import-slots, an import bound by name at image start: its cell (read
+// in place of an IAT entry), its name, and, for a weak DLL import, the DLL
+// name in UTF-16.
 struct RunTimeCell {
   DefinedImportData *imp;
   Chunk *cell;
@@ -78,18 +72,16 @@ struct RunTimeCell {
   Chunk *dllName;
 };
 
-// Under -import-slots, the words of static data that hold imports' addresses:
-// the in-place import slots, which the loader writes, and the residual words,
-// which the image's fill writes. The writer lays out the chunks it holds back,
-// and the fill's.
+// Under -import-slots, the words of static data holding imports' addresses:
+// in-place import slots the loader writes, and residual words the image's fill
+// writes. The writer lays out the held-back chunks and the fill's.
 class ImportSlotContents {
 public:
   ImportSlotContents(COFFLinkerContext &ctx, IdataContents &idata)
       : ctx(ctx), idata(idata) {}
   void bind();
-  // Collects a DLL's cells, the words through which it reaches the
-  // overridable defaults it imports and the vague entities another image's
-  // instance may preempt.
+  // Collects a DLL's cells: the words through which it reaches imported
+  // overridable defaults and vague entities another image may preempt.
   void collectCells();
   // Builds the table of the vague entities the image shares, through which a
   // DLL loaded at run time binds to its instances.
@@ -143,9 +135,8 @@ private:
 
   COFFLinkerContext &ctx;
   IdataContents &idata;
-  // The read-only chunks holding in-place import slots that are laid out with
-  // the import address tables, and the writable ones of .data that are laid
-  // out together at its end, in their order there.
+  // Read-only chunks holding in-place import slots, laid out with the address
+  // tables; writable ones go together at .data's end. In their order there.
   std::vector<SectionChunk *> slotChunks;
   std::vector<SectionChunk *> writableSlotChunks;
   // The imports whose address code reads from one of their in-place slots
@@ -179,10 +170,10 @@ private:
   Defined *threadLocalSlotCopy = nullptr;
   Chunk *threadLocalSlotCopyPointer = nullptr;
   Chunk *threadLocalSlotCopyList = nullptr;
-  // The read-only output sections other than .rdata that hold in-place import
-  // slots, which are laid out before .rdata, and whether a $-group of .rdata
-  // holds one; either places the import address tables at the start of
-  // .rdata, so that the directory covers them all.
+  // Read-only output sections other than .rdata that hold in-place import
+  // slots, laid out before .rdata, and whether a .rdata $-group holds one.
+  // Either puts the address tables at .rdata's start so the directory covers
+  // them all.
   llvm::SetVector<StringRef> slotSections;
   bool slotRdataGroups = false;
 };

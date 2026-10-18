@@ -31,11 +31,10 @@ namespace lld::coff {
 struct TypePrefixLabels;
 struct LoadClosure;
 
-// A run of the vtables of one class and of the classes derived from it through
-// primary bases, laid out as consecutive stride-byte slots so that a vtable
-// pointer is one of the run's exactly when its offset from the run's start is a
-// multiple of the stride below the run's extent. Each slot holds one vtable,
-// whose primary address point is apoff bytes into its chunk.
+// A run of the vtables of one class and the classes derived from it through
+// primary bases, laid out as consecutive stride-byte slots: a vtable pointer is
+// in the run exactly when its offset from the start is a multiple of the stride
+// below the extent. Each slot holds one vtable, address point apoff bytes in.
 struct VTableRun {
   uint64_t stride = 0;
   // The address point of the run's first slot, which assignAddresses sets and
@@ -48,9 +47,9 @@ struct VTableRun {
     uint64_t apoff;
   };
   std::vector<Slot> slots;
-  // Each class the run covers, with the index of its own slot and the number
-  // of consecutive slots its subtree spans, since a subtree is contiguous in
-  // the depth-first slot order.
+  // Each class the run covers, with its own slot's index and the number of
+  // consecutive slots its subtree spans (a subtree is contiguous in slot
+  // order).
   struct Class {
     std::string name;
     unsigned first;
@@ -161,9 +160,8 @@ public:
   llvm::DenseMap<const Chunk *, ChunkPin> chunkPins;
 
   // The runs the vtable records ask the writer to lay out, each the vtables of
-  // a class and of the classes derived from it through primary bases, placed
-  // as consecutive slots. runChunkRun maps each vtable in a run to the run's
-  // index and the vtable's slot in it.
+  // a class and the classes derived through primary bases, as consecutive
+  // slots. runChunkRun maps each vtable in a run to its run index and slot.
   std::vector<VTableRun> vtableRuns;
   llvm::DenseMap<const Chunk *, std::pair<unsigned, unsigned>> runChunkRun;
   // The tagged vtables, which a required pin places, by the run of their
@@ -182,10 +180,9 @@ public:
   };
   std::vector<VTableRunExport> vtableRunExports;
 
-  // The runs of DLLs the image imports that its checks test, by the symbol
-  // they read them through and the imports of the three words, which the
-  // import address table holds consecutively; and the zero words that a
-  // class whose owner the image does not bind reads instead, an empty range.
+  // The runs of imported DLLs the image's checks test, by the symbol they read
+  // through and the imports of the three words the IAT holds consecutively; and
+  // the zero words a class whose owner the image does not bind reads instead.
   struct VTableOwnerRun {
     Symbol *sym;
     DefinedImportData *words[3];
@@ -210,8 +207,7 @@ public:
   llvm::MapVector<const SectionChunk *, std::vector<ImportSlot>> importSlots;
 
   // Each import library member's vague-entity record, parsed once and keyed by
-  // the member's buffer, so the closures the passes build read it without a
-  // reparse.
+  // the member's buffer, so the passes read it without a reparse.
   llvm::DenseMap<const char *, LoadClosure *> vagueRecordCache;
 
   // The changes the linker makes to the code of each section chunk it

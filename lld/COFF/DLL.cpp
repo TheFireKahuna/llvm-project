@@ -790,9 +790,8 @@ void IdataContents::create(COFFLinkerContext &ctx) {
     }
   }
 
-  // The bounds of each DLL's KCFI code range that the image imports, which a
-  // KCFI thunk loads together: start, then end, in one 16-byte block of the
-  // import address table.
+  // The bounds of each imported DLL's KCFI code range, which a KCFI thunk loads
+  // together: start then end, in one 16-byte block of the import address table.
   DenseMap<DefinedImportData *, DefinedImportData *> rangeEnds;
   for (const KCFIState::ImportedRange &r : ctx.kcfi.importedRanges)
     rangeEnds[r.start] = r.end;
@@ -804,12 +803,11 @@ void IdataContents::create(COFFLinkerContext &ctx) {
     runsOfDLL[r.words[0]->getDLLName().lower()].push_back(&r);
 
   // Each run of in-place import slots of a DLL gets a descriptor of its own.
-  // The runs' descriptors follow every DLL's own, so that the loader's work on
-  // the DLLs in between lets a provider be mapped before the walk reaches the
-  // first of its runs, which would otherwise wait on a search for it. A DLL
-  // with no descriptor of its own keeps its first run's in its place, so that
-  // the DLL load order is unchanged. A run's lookup table shares the
-  // hint/name records, and each slot holds the value of its lookup entry.
+  // The runs' descriptors follow every DLL's own, so the loader's work on the
+  // DLLs in between can map a provider before the walk reaches the first of its
+  // runs. A DLL with no descriptor of its own keeps its first run's in its
+  // place, so the load order is unchanged. A run's lookup table shares the
+  // hint/name records, and each slot holds its lookup entry's value.
   std::vector<Chunk *> runDirs;
   auto addSlotRuns = [&](StringRef dllName, bool firstInPlace) {
     auto it = runsByDLL.find(dllName.lower());
@@ -846,15 +844,13 @@ void IdataContents::create(COFFLinkerContext &ctx) {
         keyOf[s] = key;
       }
     }
-    // An import that the image keeps only in in-place slots has no entry in
-    // the DLL's own tables, only the hint/name record that its slots' lookup
-    // entries share. A DLL left with no such entry has no descriptor of its
-    // own, only those of its runs.
+    // An import kept only in in-place slots has no entry in the DLL's own
+    // tables, only the hint/name record its slots' lookup entries share. A DLL
+    // left with no entry has no descriptor of its own, only its runs'.
     if (!slotOnly.empty()) {
-      // The bounds of a KCFI code range, which always keep their entries,
-      // take a 16-byte block of the table, so a table that starts at an odd
-      // entry needs one entry before them; an import kept only in slots then
-      // keeps its entry too.
+      // A KCFI code range's bounds, which always keep their entries, take a
+      // 16-byte block, so a table starting at an odd entry needs one entry
+      // before them; an import kept only in slots then keeps its entry too.
       DefinedImportData *keep = nullptr;
       bool range =
           !rangeEnds.empty() && llvm::any_of(syms, [&](DefinedImportData *s) {
@@ -894,10 +890,10 @@ void IdataContents::create(COFFLinkerContext &ctx) {
       DefinedImportData *first = *start, *second = rangeEnds.lookup(first);
       llvm::erase(syms, first);
       llvm::erase(syms, second);
-      // The table starts 16-byte aligned, and every entry is 8 bytes. The
-      // image imports something else from the DLL, which is why it binds the
-      // range, and that import keeps an entry when the pair needs one before
-      // it, so the pair goes first or second.
+      // The table starts 16-byte aligned, every entry 8 bytes. The image
+      // imports something else from the DLL (why it binds the range), and that
+      // import keeps an entry when the pair needs one before it, so the pair
+      // goes first or second.
       size_t at = addresses.size() % 2;
       assert(at <= syms.size());
       syms.insert(syms.begin() + at, {first, second});
@@ -1151,9 +1147,9 @@ void DelayLoadContents::create() {
       }
 
       Chunk *tm = nullptr;
-      // Code never calls an ABI contract witness, so the witnesses of a DLL
-      // share one thunk, which gives their slots an initial value in the
-      // image and is no call target.
+      // Code never calls an ABI contract witness, so a DLL's witnesses share
+      // one thunk, which gives their slots an initial value and is no call
+      // target.
       Chunk *witnessThunk = nullptr;
 
       for (DefinedImportData *s : syms) {

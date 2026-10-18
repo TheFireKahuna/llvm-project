@@ -6,15 +6,12 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// ABI contracts and their witnesses. An object names the contracts that its
-// exported and offered definitions provide in directives, and those that its
-// references to symbols another image may provide require in its link-only
-// records. Within an image every contract of one identity must agree. A DLL
-// exports a witness of each contract it provides, a name holding the
-// contract's locator and digest; an image whose code requires a contract of a
-// DLL that exports a witness for the contract's identity imports the witness
-// of the contract it requires, so that a DLL rebuilt with another layout fails
-// to load, and a link against a DLL built with another layout fails.
+// ABI contracts and their witnesses. An object names the contracts its
+// definitions provide (in directives) and those its references require (in
+// link records); within an image all contracts of one identity must agree. A
+// DLL exports a witness per provided contract, a name holding its locator and
+// digest. An image imports the witness of each contract its code requires, so
+// a DLL rebuilt with another layout fails to load and a link against one fails.
 //
 //===----------------------------------------------------------------------===//
 
@@ -43,13 +40,11 @@ using namespace llvm::object;
 using namespace lld;
 using namespace lld::coff;
 
-// The text sizes of a contract's locator, 64 bits, and of its digest, 128
-// bits, in unpadded base64url.
+// Unpadded base64url text sizes of a 64-bit locator and a 128-bit digest.
 static constexpr size_t locatorSize = 11;
 static constexpr size_t digestSize = 22;
 
-// The prefix of the name of a witness, by which a DLL exports it, of the
-// contract of a type or of the type of a datum.
+// Witness name prefix, for a type's contract or a datum type's contract.
 static StringRef getWitnessPrefix(bool data) {
   return data ? "__abis$" : "__abiw$";
 }
@@ -59,8 +54,7 @@ static std::string getWitnessName(bool data, StringRef locator,
   return (getWitnessPrefix(data) + locator + "$" + digest).str();
 }
 
-// What follows a type_info object's name in the name by which a DLL that owns
-// the object exports it qualified by its type's contract.
+// Separator in a type_info name qualified by its type's contract.
 static constexpr StringLiteral qualifiedTypeInfoTag = "$abi$";
 
 static std::string getQualifiedTypeInfoName(StringRef identity,
@@ -74,8 +68,7 @@ bool lld::coff::isContractWitnessName(StringRef name) {
          (isTypeInfoName(name) && name.contains(qualifiedTypeInfoTag));
 }
 
-// The identity of a contract as a diagnostic names it: a type, which the
-// identity spells as a type_info name does, or the datum it is the type of.
+// How a diagnostic names a contract's identity: the type, or the datum.
 static std::string describe(const COFFLinkerContext &ctx, bool data,
                             StringRef identity, StringRef locator) {
   if (identity.empty())
@@ -91,9 +84,7 @@ static std::string describe(const COFFLinkerContext &ctx, bool data,
   return ("'" + type + "'").str();
 }
 
-// Checks that a contract an input file gives agrees with any other the image's
-// files give for its identity, which, as the identities of two types with one
-// name are, must be one.
+// Checks that a contract a file gives agrees with any other for its identity.
 static void checkContract(COFFLinkerContext &ctx, bool data, StringRef locator,
                           StringRef digest, InputFile *file,
                           StringRef identity) {
@@ -224,8 +215,7 @@ Error lld::coff::readContractRequirements(ObjFile *file,
   return Error::success();
 }
 
-// Whether a definition of file is exported, which for bitcode its symbol
-// table told, since LTO's output defines the symbols.
+// Whether file defines an exported symbol (bitcode: the pre-LTO symbols).
 static bool definesExport(COFFLinkerContext &ctx, InputFile *file,
                           const DenseSet<Symbol *> &exported) {
   if (auto *bitcode = dyn_cast<BitcodeFile>(file)) {
@@ -263,8 +253,7 @@ void lld::coff::addContractWitnessExports(COFFLinkerContext &ctx) {
   if (exports.empty() || ctx.contracts.provides.empty())
     return;
 
-  // The witnesses of the contracts that the files whose definitions the image
-  // exports provide, each once.
+  // The witnesses of contracts provided by files with an exported definition.
   DenseSet<Symbol *> exported;
   for (const Export &e : exports)
     if (e.sym)
@@ -277,12 +266,10 @@ void lld::coff::addContractWitnessExports(COFFLinkerContext &ctx) {
         if (seen.insert(name).second)
           witnesses.push_back(name);
 
-  // A type_info object that the image owns, which it exports as its own
-  // definition rather than offering it, is exported under the name that its
-  // type's contract qualifies too, in place of the type's witness: an import of
-  // the object binds that name, which its import library gives it, and so
-  // checks the contract with no import of its own. The plain name stays in the
-  // export table.
+  // A type_info object the image owns is also exported under its contract-
+  // qualified name, replacing the type's witness: an importer binds that name
+  // and checks the contract with no separate witness import. The plain name
+  // stays in the export table.
   StringMap<StringRef> typeDigests;
   for (StringRef name : witnesses)
     if (StringRef row = name; row.consume_front(getWitnessPrefix(false)))
@@ -337,12 +324,10 @@ bool lld::coff::isContractWitness(COFFLinkerContext &ctx, const Defined *sym) {
   return sym && sym == ctx.contracts.witness;
 }
 
-// The import library of a DLL with witnesses holds the import of each, named
-// for the DLL, <witness>$<dll>, and exported as the witness, so that no two
-// DLLs' meet in an importer's symbol table. A witness is imported as code, so
-// that the delay-load descriptor of a DLL may hold it. A type_info object's
-// qualified name is such a witness too, for an image that does not import the
-// object.
+// Holds in a DLL's import library the import of each witness, named
+// <witness>$<dll> so two DLLs' witnesses never collide in an importer, and
+// exported as the witness. A witness is imported as code so a delay-load
+// descriptor can hold it; a qualified type_info name is a witness too.
 void lld::coff::addContractWitnessImports(
     COFFLinkerContext &ctx, StringRef dllName,
     std::vector<COFFShortExport> &exports) {
@@ -388,9 +373,8 @@ void lld::coff::bindContractWitnesses(COFFLinkerContext &ctx) {
         continue;
       std::string dll = imp->getDLLName().lower();
       for (const ContractState::Contract *c : r.contracts) {
-        // A DLL that owns the type's type_info object vouches for the type by
-        // the object's qualified name, which an import of the object already
-        // binds.
+        // A DLL owning the type's type_info object vouches for the type by the
+        // object's qualified name, which an import of the object already binds.
         std::string qualified;
         if (!c->data && !c->identity.empty()) {
           qualified = getQualifiedTypeInfoName(c->identity, c->digest);
@@ -427,9 +411,9 @@ void lld::coff::bindContractWitnesses(COFFLinkerContext &ctx) {
             break;
           }
         }
-        // A DLL that exports no witness for the identity does not vouch for
-        // it; one that exports a witness of another contract was built with
-        // another layout, which is reported once.
+        // A DLL exporting no witness for the identity does not vouch; one
+        // exporting a witness of another contract was built with another
+        // layout, reported once.
         std::string suffix = "$" + dll;
         if (vouched || !bound.insert("__imp_" + name + suffix).second)
           continue;
