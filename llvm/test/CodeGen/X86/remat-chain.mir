@@ -1,0 +1,54 @@
+# RUN: llc -mtriple=x86_64-unknown-windows-itanium -run-pass=greedy,virtregrewriter -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: llc -mtriple=x86_64-unknown-windows-itanium -remat-chain-depth=1 -run-pass=greedy,virtregrewriter -verify-machineinstrs %s -o - | FileCheck --check-prefix=DEPTH1 %s
+# RUN: llc -mtriple=x86_64-pc-windows-msvc -run-pass=greedy,virtregrewriter -verify-machineinstrs %s -o - | FileCheck --check-prefix=NONE %s
+
+# Where a value the register allocator would spill is the load of a word
+# through a register whose value is no longer live where the value is used,
+# the instructions that define that register, themselves rematerializable,
+# are rematerialized first, up to the subtarget's depth: on Windows Itanium,
+# a thread-local variable's TLS index three loads from its record's import
+# pointer (depth 2) and its offset two loads from it (depth 1). The original
+# loads, read by nothing else, go. Elsewhere the values are spilled.
+
+# CHECK-LABEL: name: f
+# CHECK:       bb.0:
+# CHECK-NEXT:    INLINEASM
+# CHECK-NEXT:    renamable $rax = MOV64rm $rip, 1, $noreg, @"v$tls", $noreg
+# CHECK-NEXT:    renamable $rax = MOV64rm killed renamable $rax, 1, $noreg, 0, $noreg
+# CHECK-NEXT:    renamable $eax = MOV32rm killed renamable $rax, 1, $noreg, 0, $noreg
+# CHECK-NEXT:    renamable $rcx = MOV64rm $rip, 1, $noreg, @"v$tls", $noreg
+# CHECK-NEXT:    renamable $ecx = MOV32rm killed renamable $rcx, 1, $noreg, 8, $noreg
+# CHECK-NEXT:    RET 0, $eax, $ecx
+
+# DEPTH1-LABEL: name: f
+# DEPTH1:         MOV32mr %stack.0
+# DEPTH1-NEXT:    INLINEASM
+# DEPTH1-NEXT:    $eax = MOV32rm %stack.0
+# DEPTH1-NEXT:    renamable $rcx = MOV64rm $rip, 1, $noreg, @"v$tls", $noreg
+# DEPTH1-NEXT:    renamable $ecx = MOV32rm killed renamable $rcx, 1, $noreg, 8, $noreg
+
+# NONE-LABEL: name: f
+# NONE:         MOV32mr %stack.0
+# NONE:         MOV32mr %stack.1
+# NONE-NEXT:    INLINEASM
+# NONE-NEXT:    $eax = MOV32rm %stack.0
+# NONE-NEXT:    $ecx = MOV32rm %stack.1
+
+--- |
+  @"v$tls" = external constant { ptr, i32, i32 }
+  define void @f() { ret void }
+...
+---
+name: f
+tracksRegLiveness: true
+body: |
+  bb.0:
+    %0:gr64 = MOV64rm $rip, 1, $noreg, @"v$tls", $noreg :: (load (s64) from got)
+    %1:gr64 = MOV64rm %0, 1, $noreg, 0, $noreg :: (dereferenceable invariant load (s64))
+    %2:gr32 = MOV32rm %1, 1, $noreg, 0, $noreg :: (dereferenceable invariant load (s32))
+    %3:gr32 = MOV32rm %0, 1, $noreg, 8, $noreg :: (dereferenceable invariant load (s32))
+    INLINEASM &"", 1 /* sideeffect attdialect */, 12 /* clobber */, implicit-def dead early-clobber $rax, 12 /* clobber */, implicit-def dead early-clobber $rbx, 12 /* clobber */, implicit-def dead early-clobber $rcx, 12 /* clobber */, implicit-def dead early-clobber $rdx, 12 /* clobber */, implicit-def dead early-clobber $rsi, 12 /* clobber */, implicit-def dead early-clobber $rdi, 12 /* clobber */, implicit-def dead early-clobber $rbp, 12 /* clobber */, implicit-def dead early-clobber $r8, 12 /* clobber */, implicit-def dead early-clobber $r9, 12 /* clobber */, implicit-def dead early-clobber $r10, 12 /* clobber */, implicit-def dead early-clobber $r11, 12 /* clobber */, implicit-def dead early-clobber $r12, 12 /* clobber */, implicit-def dead early-clobber $r13, 12 /* clobber */, implicit-def dead early-clobber $r14, 12 /* clobber */, implicit-def dead early-clobber $r15
+    $eax = COPY %2
+    $ecx = COPY %3
+    RET 0, $eax, $ecx
+...

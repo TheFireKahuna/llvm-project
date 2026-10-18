@@ -21,6 +21,7 @@
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/CodeGen/VirtRegMap.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
@@ -146,20 +147,33 @@ bool VirtRegAuxInfo::isRematerializable(const LiveInterval &LI,
     SlotIndex UseIdx = LIS.getInstructionIndex(*MO.getParent());
     MachineInstr *Def = VNIDefs[LI.getVNInfoAt(UseIdx)->id];
     assert(Def && "Use with no def");
-    if (!allUsesAvailableAt(Def, UseIdx, LIS, MRI, TII))
+    if (!allUsesAvailableAt(Def, UseIdx, LIS, MRI, TII,
+                            getRematChainDepth(*Def->getMF())))
       return false;
   }
 
   return true;
 }
 
-bool VirtRegAuxInfo::allUsesAvailableAt(const MachineInstr *MI,
-                                        SlotIndex UseIdx,
-                                        const LiveIntervals &LIS,
-                                        const MachineRegisterInfo &MRI,
-                                        const TargetInstrInfo &TII) {
+static cl::opt<int> RematChainDepth(
+    "remat-chain-depth", cl::Hidden, cl::init(-1),
+    cl::desc("How many instructions the register allocator may rematerialize "
+             "ahead of a value whose registers are not available (default: "
+             "the subtarget's)"));
+
+unsigned VirtRegAuxInfo::getRematChainDepth(const MachineFunction &MF) {
+  if (RematChainDepth >= 0)
+    return RematChainDepth;
+  return MF.getSubtarget().getRematerializationChainDepth();
+}
+
+bool VirtRegAuxInfo::allUsesAvailableAt(
+    const MachineInstr *MI, SlotIndex UseIdx, const LiveIntervals &LIS,
+    const MachineRegisterInfo &MRI, const TargetInstrInfo &TII,
+    unsigned ChainDepth, SmallVectorImpl<const MachineInstr *> *Chain) {
   SlotIndex OrigIdx = LIS.getInstructionIndex(*MI).getRegSlot(true);
   UseIdx = std::max(UseIdx, UseIdx.getRegSlot(true));
+  bool Rematted = false;
   for (const MachineOperand &MO : MI->operands()) {
     if (!MO.isReg() || !MO.getReg() || !MO.readsReg())
       continue;
@@ -184,8 +198,22 @@ bool VirtRegAuxInfo::allUsesAvailableAt(const MachineInstr *MI,
     if (SlotIndex::isSameInstr(OrigIdx, UseIdx))
       return false;
 
-    if (OVNI != li.getVNInfoAt(UseIdx))
-      return false;
+    if (OVNI != li.getVNInfoAt(UseIdx)) {
+      // One register's value may be rematerialized at UseIdx first, by the
+      // instruction that defined it, in full.
+      const MachineInstr *Def = LIS.getInstructionFromIndex(OVNI->def);
+      if (!ChainDepth || Rematted || MO.getSubReg() || li.hasSubRanges() ||
+          !Def || !TII.isReMaterializable(*Def) ||
+          Def->getOperand(0).getReg() != MO.getReg() ||
+          Def->getOperand(0).getSubReg() ||
+          !allUsesAvailableAt(Def, UseIdx, LIS, MRI, TII, ChainDepth - 1,
+                              Chain))
+        return false;
+      Rematted = true;
+      if (Chain)
+        Chain->push_back(Def);
+      continue;
+    }
 
     // Check that subrange is live at UseIdx.
     if (li.hasSubRanges()) {

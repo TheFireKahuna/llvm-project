@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "RegAllocBase.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/CodeGen/LiveInterval.h"
@@ -160,11 +161,44 @@ void RegAllocBase::postOptimization() {
   // Verify LiveRegMatrix after spilling (no dangling pointers).
   assert(Matrix->isValid() && "LiveRegMatrix validation failed");
 
-  for (auto *DeadInst : DeadRemats) {
+  // A dead remat may read the last value of a register that rematerializing
+  // a chain left without other uses: its live range then shrinks, and the
+  // instruction that defined it, which only the remat read, goes too.
+  SmallVector<MachineInstr *, 4> Dead(DeadRemats.begin(), DeadRemats.end());
+  DeadRemats.clear();
+  while (!Dead.empty()) {
+    MachineInstr *DeadInst = Dead.pop_back_val();
+    SmallSetVector<Register, 2> Uses, Defs;
+    for (const MachineOperand &MO : DeadInst->operands())
+      if (MO.isReg() && MO.getReg().isVirtual() &&
+          LIS->hasInterval(MO.getReg()))
+        (MO.isDef() ? Defs : Uses).insert(MO.getReg());
     LIS->RemoveMachineInstrFromMaps(*DeadInst);
     DeadInst->eraseFromParent();
+    for (Register Reg : Defs) {
+      if (!MRI->reg_nodbg_empty(Reg) || Uses.contains(Reg))
+        continue;
+      if (VRM->hasPhys(Reg))
+        Matrix->unassign(LIS->getInterval(Reg));
+      LIS->removeInterval(Reg);
+    }
+    for (Register Reg : Uses) {
+      LiveInterval &LI = LIS->getInterval(Reg);
+      MCRegister PhysReg = VRM->hasPhys(Reg) ? VRM->getPhys(Reg) : MCRegister();
+      if (PhysReg)
+        Matrix->unassign(LI);
+      SmallVector<MachineInstr *, 2> NewDead;
+      LIS->shrinkToUses(&LI, &NewDead);
+      if (PhysReg && !LI.empty())
+        Matrix->assign(LI, PhysReg);
+      for (MachineInstr *MI : NewDead) {
+        bool SawStore = false;
+        if (MI->allDefsAreDead() && MI->isSafeToMove(SawStore) &&
+            !MI->isBundled() && !is_contained(Dead, MI))
+          Dead.push_back(MI);
+      }
+    }
   }
-  DeadRemats.clear();
 }
 
 void RegAllocBase::cleanupFailedVReg(Register FailedReg, MCRegister PhysReg,

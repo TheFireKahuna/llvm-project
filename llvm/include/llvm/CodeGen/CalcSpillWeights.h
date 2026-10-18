@@ -92,12 +92,20 @@ class VirtRegMap;
                                             const TargetInstrInfo &TII);
 
     /// \returns true if all registers used by \p MI are also available with the
-    /// same value at \p UseIdx.
-    LLVM_ABI static bool allUsesAvailableAt(const MachineInstr *MI,
-                                            SlotIndex UseIdx,
-                                            const LiveIntervals &LIS,
-                                            const MachineRegisterInfo &MRI,
-                                            const TargetInstrInfo &TII);
+    /// same value at \p UseIdx. With \p ChainDepth, one register that is not
+    /// may instead be defined by a rematerializable instruction for which the
+    /// same holds at \p UseIdx with \p ChainDepth less one, so that it can be
+    /// rematerialized there first; \p Chain receives those instructions,
+    /// each before the one that reads what it defines.
+    LLVM_ABI static bool
+    allUsesAvailableAt(const MachineInstr *MI, SlotIndex UseIdx,
+                       const LiveIntervals &LIS, const MachineRegisterInfo &MRI,
+                       const TargetInstrInfo &TII, unsigned ChainDepth = 0,
+                       SmallVectorImpl<const MachineInstr *> *Chain = nullptr);
+
+    /// \returns how many instructions the register allocator may rematerialize
+    /// ahead of a value in \p MF whose registers are not available.
+    LLVM_ABI static unsigned getRematChainDepth(const MachineFunction &MF);
 
   protected:
     /// Helper function for weight calculations.

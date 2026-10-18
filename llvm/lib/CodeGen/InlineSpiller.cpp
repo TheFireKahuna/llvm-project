@@ -21,6 +21,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/CodeGen/CalcSpillWeights.h"
 #include "llvm/CodeGen/LiveInterval.h"
 #include "llvm/CodeGen/LiveIntervals.h"
 #include "llvm/CodeGen/LiveRangeEdit.h"
@@ -755,7 +756,14 @@ bool InlineSpiller::reMaterializeFor(LiveInterval &VirtReg, MachineInstr &MI) {
 
   LiveRangeEdit::Remat RM(ParentVNI);
   RM.OrigMI = DefMI;
-  if (!Edit->canRematerializeAt(RM, UseIdx)) {
+  // Where a register DefMI reads is not available at MI, the instructions
+  // that define it may be rematerialized first.
+  SmallVector<const MachineInstr *, 2> Chain;
+  if (!Edit->canRematerializeAt(RM, UseIdx) &&
+      !(TII.isReMaterializable(*DefMI) &&
+        VirtRegAuxInfo::allUsesAvailableAt(
+            DefMI, UseIdx, LIS, MRI, TII,
+            VirtRegAuxInfo::getRematChainDepth(MF), &Chain))) {
     markValueUsed(&VirtReg, ParentVNI);
     LLVM_DEBUG(dbgs() << "\tcannot remat for " << UseIdx << '\t' << MI);
     return false;
@@ -771,7 +779,8 @@ bool InlineSpiller::reMaterializeFor(LiveInterval &VirtReg, MachineInstr &MI) {
 
   // Before rematerializing into a register for a single instruction, try to
   // fold a load into the instruction. That avoids allocating a new register.
-  if (RM.OrigMI->canFoldAsLoad() &&
+  // A load whose address the chain computes is not folded.
+  if (Chain.empty() && RM.OrigMI->canFoldAsLoad() &&
       (RM.OrigMI->mayLoad() || !hasPhysRegAvailable(MI)) &&
       foldMemoryOperand(Ops, RM.OrigMI)) {
     Edit->markRematerialized(RM.ParentVNI);
@@ -802,6 +811,30 @@ bool InlineSpiller::reMaterializeFor(LiveInterval &VirtReg, MachineInstr &MI) {
         UsedLanes |= SR.LaneMask;
   }
 
+  // The chain goes first, each instruction into a register of its own that
+  // the next reads, and that dies there, in place of the original one.
+  SmallDenseMap<Register, Register, 2> ChainRegs;
+  auto ReadChainRegs = [&](MachineInstr &Clone) {
+    for (MachineOperand &MO : Clone.all_uses())
+      if (Register R = ChainRegs.lookup(MO.getReg())) {
+        MO.setReg(R);
+        MO.setIsKill();
+      }
+  };
+  for (const MachineInstr *Dep : Chain) {
+    Register DepReg = Edit->createFrom(Dep->getOperand(0).getReg());
+    MachineBasicBlock::iterator At = MI;
+    TII.reMaterialize(*MI.getParent(), At, DepReg, 0, *Dep);
+    MachineInstr &Clone = *std::prev(At);
+    Clone.clearRegisterDeads(DepReg);
+    Clone.setDebugLoc(MI.getDebugLoc());
+    ReadChainRegs(Clone);
+    LIS.InsertMachineInstrInMaps(Clone);
+    ChainRegs[Dep->getOperand(0).getReg()] = DepReg;
+    ++NumRemats;
+    LLVM_DEBUG(dbgs() << "\tremat chain: " << Clone);
+  }
+
   // Finally we can rematerialize OrigMI before MI.
   SlotIndex DefIdx = Edit->rematerializeAt(*MI.getParent(), MI, NewVReg, RM,
                                            TRI, false, 0, nullptr, UsedLanes);
@@ -810,6 +843,7 @@ bool InlineSpiller::reMaterializeFor(LiveInterval &VirtReg, MachineInstr &MI) {
   // different source location.
   auto *NewMI = LIS.getInstructionFromIndex(DefIdx);
   NewMI->setDebugLoc(MI.getDebugLoc());
+  ReadChainRegs(*NewMI);
 
   (void)DefIdx;
   LLVM_DEBUG(dbgs() << "\tremat:  " << DefIdx << '\t'

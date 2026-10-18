@@ -350,6 +350,13 @@ public:
     return nullptr;
   }
 
+  /// The number of instructions the register allocator may rematerialize
+  /// ahead of a value it rematerializes in place of a spill, where a register
+  /// the value's instruction reads is no longer available: the instruction
+  /// that defined it, itself rematerializable, then the one that defined a
+  /// register that one reads, and so on.
+  virtual unsigned getRematerializationChainDepth() const { return 0; }
+
   /// Enable tracking of subregister liveness in register allocator.
   /// Please use MachineRegisterInfo::subRegLivenessEnabled() instead where
   /// possible.
