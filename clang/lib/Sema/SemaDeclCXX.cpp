@@ -17698,6 +17698,7 @@ static void WriteCharTypePrefix(BuiltinType::Kind BTK, llvm::raw_ostream &OS) {
     break;
   case BuiltinType::WChar_S:
   case BuiltinType::WChar_U:
+  case BuiltinType::Win32WChar:
     OS << 'L';
     break;
   default:
@@ -17732,7 +17733,8 @@ static void WriteCharValueForDiagnostic(uint32_t Value, const BuiltinType *BTy,
   case BuiltinType::Char16:
   case BuiltinType::Char32:
   case BuiltinType::WChar_S:
-  case BuiltinType::WChar_U: {
+  case BuiltinType::WChar_U:
+  case BuiltinType::Win32WChar: {
     if (llvm::ConvertCodePointToUTF8(Value, Ptr))
       EscapeStringForDiagnostic(StringRef(Arr, Ptr - Arr), Str);
     else
@@ -17777,7 +17779,8 @@ static bool ConvertAPValueToString(const APValue &V, QualType T,
         case BuiltinType::Char16:
         case BuiltinType::Char32:
         case BuiltinType::WChar_S:
-        case BuiltinType::WChar_U: {
+        case BuiltinType::WChar_U:
+        case BuiltinType::Win32WChar: {
           unsigned TyWidth = Context.getIntWidth(T);
           assert(8 <= TyWidth && TyWidth <= 32 && "Unexpected integer width");
           uint32_t CodeUnit = static_cast<uint32_t>(V.getInt().getZExtValue());

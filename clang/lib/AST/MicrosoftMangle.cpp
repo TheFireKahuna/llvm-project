@@ -2725,10 +2725,14 @@ void MicrosoftCXXNameMangler::mangleType(const BuiltinType *T, Qualifiers,
   case BuiltinType::UInt:
     Out << 'I';
     break;
+  // A Win32 declaration region's types are MSVC's long, unsigned long,
+  // long double and wchar_t.
   case BuiltinType::Long:
+  case BuiltinType::Win32Long:
     Out << 'J';
     break;
   case BuiltinType::ULong:
+  case BuiltinType::Win32ULong:
     Out << 'K';
     break;
   case BuiltinType::Float:
@@ -2739,6 +2743,7 @@ void MicrosoftCXXNameMangler::mangleType(const BuiltinType *T, Qualifiers,
     break;
   // TODO: Determine size and mangle accordingly
   case BuiltinType::LongDouble:
+  case BuiltinType::Win32LongDouble:
     Out << 'O';
     break;
   case BuiltinType::LongLong:
@@ -2767,6 +2772,7 @@ void MicrosoftCXXNameMangler::mangleType(const BuiltinType *T, Qualifiers,
     break;
   case BuiltinType::WChar_S:
   case BuiltinType::WChar_U:
+  case BuiltinType::Win32WChar:
     Out << "_W";
     break;
 

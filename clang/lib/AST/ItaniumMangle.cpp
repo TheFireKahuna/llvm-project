@@ -3332,7 +3332,13 @@ void CXXNameMangler::mangleType(const BuiltinType *T) {
     break;
   case BuiltinType::WChar_S:
   case BuiltinType::WChar_U:
-    Out << 'w';
+    // A 16-bit wchar_t on NT-POSIX is a Win32-face TU's, the type a Win32
+    // region names in a TU whose wchar_t is 32 bits, and mangles as that does.
+    if (getASTContext().getTargetInfo().getTriple().isWindowsNTPOSIXEnvironment() &&
+        getASTContext().getTypeSize(T) == 16)
+      Out << "u15__win32_wchar_t";
+    else
+      Out << 'w';
     break;
   case BuiltinType::Char8:
     Out << "Du";
@@ -3357,6 +3363,20 @@ void CXXNameMangler::mangleType(const BuiltinType *T) {
     break;
   case BuiltinType::Int128:
     Out << 'n';
+    break;
+  // A Win32 declaration region's types are vendor-extended, so that no name,
+  // template instance, RTTI or KCFI type id binds across the two faces.
+  case BuiltinType::Win32Long:
+    Out << "u12__win32_long";
+    break;
+  case BuiltinType::Win32ULong:
+    Out << "u13__win32_ulong";
+    break;
+  case BuiltinType::Win32WChar:
+    Out << "u15__win32_wchar_t";
+    break;
+  case BuiltinType::Win32LongDouble:
+    Out << "u19__win32_long_double";
     break;
   case BuiltinType::Float16:
     Out << "DF16_";

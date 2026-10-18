@@ -80,6 +80,9 @@ UNSIGNED_TYPE(Char16, Char16Ty)
 // 'char32_t' in C++
 UNSIGNED_TYPE(Char32, Char32Ty)
 
+// 'wchar_t' in a Win32 declaration region on NT-POSIX: 16 bits
+UNSIGNED_TYPE(Win32WChar, Win32WCharTy)
+
 // 'unsigned short'
 UNSIGNED_TYPE(UShort, UnsignedShortTy)
 
@@ -88,6 +91,9 @@ UNSIGNED_TYPE(UInt, UnsignedIntTy)
 
 // 'unsigned long'
 UNSIGNED_TYPE(ULong, UnsignedLongTy)
+
+// 'unsigned long' in a Win32 declaration region on NT-POSIX: 32 bits
+UNSIGNED_TYPE(Win32ULong, Win32UnsignedLongTy)
 
 // 'unsigned long long'
 UNSIGNED_TYPE(ULongLong, UnsignedLongLongTy)
@@ -114,6 +120,9 @@ SIGNED_TYPE(Int, IntTy)
 
 // 'long' or 'signed long'
 SIGNED_TYPE(Long, LongTy)
+
+// 'long' in a Win32 declaration region on NT-POSIX: 32 bits
+SIGNED_TYPE(Win32Long, Win32LongTy)
 
 // 'long long' or 'signed long long'
 SIGNED_TYPE(LongLong, LongLongTy)
@@ -208,6 +217,9 @@ FLOATING_TYPE(Double, DoubleTy)
 
 // 'long double'
 FLOATING_TYPE(LongDouble, LongDoubleTy)
+
+// 'long double' in a Win32 declaration region on NT-POSIX: IEEE double
+FLOATING_TYPE(Win32LongDouble, Win32LongDoubleTy)
 
 // '_Float16'
 FLOATING_TYPE(Float16, HalfTy)

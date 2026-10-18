@@ -111,6 +111,7 @@ enum FloatingRank {
   HalfRank,
   FloatRank,
   DoubleRank,
+  Win32LongDoubleRank,
   LongDoubleRank,
   Float128Rank,
   Ibm128Rank
@@ -1321,6 +1322,13 @@ void ASTContext::InitBuiltinTypes(const TargetInfo &Target,
   // __ibm128 for IBM extended precision
   InitBuiltinType(Ibm128Ty, BuiltinType::Ibm128);
 
+  // What long, unsigned long, wchar_t and long double name in a Win32
+  // declaration region on NT-POSIX.
+  InitBuiltinType(Win32LongTy, BuiltinType::Win32Long);
+  InitBuiltinType(Win32UnsignedLongTy, BuiltinType::Win32ULong);
+  InitBuiltinType(Win32WCharTy, BuiltinType::Win32WChar);
+  InitBuiltinType(Win32LongDoubleTy, BuiltinType::Win32LongDouble);
+
   // C11 extension ISO/IEC TS 18661-3
   InitBuiltinType(Float16Ty,           BuiltinType::Float16);
 
@@ -1846,6 +1854,8 @@ const llvm::fltSemantics &ASTContext::getFloatTypeSemantics(QualType T) const {
     return Target->getHalfFormat();
   case BuiltinType::Float:      return Target->getFloatFormat();
   case BuiltinType::Double:     return Target->getDoubleFormat();
+  case BuiltinType::Win32LongDouble:
+    return llvm::APFloat::IEEEdouble();
   case BuiltinType::Ibm128:
     return Target->getIbm128Format();
   case BuiltinType::LongDouble:
@@ -2034,6 +2044,7 @@ bool ASTContext::isPromotableIntegerType(QualType T) const {
     case BuiltinType::Char8:
     case BuiltinType::Char16:
     case BuiltinType::Char32:
+    case BuiltinType::Win32WChar:
       return true;
     default:
       return false;
@@ -2234,6 +2245,16 @@ TypeInfo ASTContext::getTypeInfoImpl(const Type *T) const {
     case BuiltinType::Char32:
       Width = Target->getChar32Width();
       Align = Target->getChar32Align();
+      break;
+    case BuiltinType::Win32WChar:
+      Width = Align = 16;
+      break;
+    case BuiltinType::Win32Long:
+    case BuiltinType::Win32ULong:
+      Width = Align = 32;
+      break;
+    case BuiltinType::Win32LongDouble:
+      Width = Align = 64;
       break;
     case BuiltinType::UShort:
     case BuiltinType::Short:
@@ -3587,6 +3608,7 @@ static void encodeTypeForFunctionPointerAuth(const ASTContext &Ctx,
 
     // Don't bother discriminating based on these seldom-used types.
     case BuiltinType::Ibm128:
+    case BuiltinType::Win32LongDouble:
       return;
 #define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix)                   \
   case BuiltinType::Id:                                                        \
@@ -8228,6 +8250,7 @@ static FloatingRank getFloatingRank(QualType T) {
   case BuiltinType::Half:       return HalfRank;
   case BuiltinType::Float:      return FloatRank;
   case BuiltinType::Double:     return DoubleRank;
+  case BuiltinType::Win32LongDouble: return Win32LongDoubleRank;
   case BuiltinType::LongDouble: return LongDoubleRank;
   case BuiltinType::Float128:   return Float128Rank;
   case BuiltinType::BFloat16:   return BFloat16Rank;
@@ -8288,6 +8311,10 @@ unsigned ASTContext::getIntegerRank(const Type *T) const {
   case BuiltinType::Long:
   case BuiltinType::ULong:
     return 5 + (getIntWidth(LongTy) << 3);
+  // A Win32 region's 32-bit long ranks above int, as long does on LLP64.
+  case BuiltinType::Win32Long:
+  case BuiltinType::Win32ULong:
+    return 5 + (32 << 3);
   case BuiltinType::LongLong:
   case BuiltinType::ULongLong:
     return 6 + (getIntWidth(LongLongTy) << 3);
@@ -8309,6 +8336,8 @@ unsigned ASTContext::getIntegerRank(const Type *T) const {
   case BuiltinType::WChar_U:
     return getIntegerRank(
         getFromTargetType(Target->getWCharType()).getTypePtr());
+  case BuiltinType::Win32WChar:
+    return getIntegerRank(UnsignedShortTy.getTypePtr());
   }
 }
 
@@ -8405,7 +8434,8 @@ QualType ASTContext::getPromotedIntegerType(QualType Promotable) const {
         BT->getKind() == BuiltinType::WChar_U ||
         BT->getKind() == BuiltinType::Char8 ||
         BT->getKind() == BuiltinType::Char16 ||
-        BT->getKind() == BuiltinType::Char32) {
+        BT->getKind() == BuiltinType::Char32 ||
+        BT->getKind() == BuiltinType::Win32WChar) {
       bool FromIsSigned = BT->getKind() == BuiltinType::WChar_S;
       uint64_t FromSize = getTypeSize(BT);
       QualType PromoteTypes[] = { IntTy, UnsignedIntTy, LongTy, UnsignedLongTy,
@@ -9221,11 +9251,13 @@ static char getObjCEncodingForPrimitiveType(const ASTContext *C,
     case BuiltinType::Char_U:
     case BuiltinType::UChar:      return 'C';
     case BuiltinType::Char16:
+    case BuiltinType::Win32WChar:
     case BuiltinType::UShort:     return 'S';
     case BuiltinType::Char32:
     case BuiltinType::UInt:       return 'I';
     case BuiltinType::ULong:
         return C->getTargetInfo().getLongWidth() == 32 ? 'L' : 'Q';
+    case BuiltinType::Win32ULong: return 'L';
     case BuiltinType::UInt128:    return 'T';
     case BuiltinType::ULongLong:  return 'Q';
     case BuiltinType::Char_S:
@@ -9236,10 +9268,12 @@ static char getObjCEncodingForPrimitiveType(const ASTContext *C,
     case BuiltinType::Int:        return 'i';
     case BuiltinType::Long:
       return C->getTargetInfo().getLongWidth() == 32 ? 'l' : 'q';
+    case BuiltinType::Win32Long:  return 'l';
     case BuiltinType::LongLong:   return 'q';
     case BuiltinType::Int128:     return 't';
     case BuiltinType::Float:      return 'f';
-    case BuiltinType::Double:     return 'd';
+    case BuiltinType::Double:
+    case BuiltinType::Win32LongDouble: return 'd';
     case BuiltinType::LongDouble: return 'D';
     case BuiltinType::NullPtr:    return '*'; // like char*
 
@@ -12484,6 +12518,8 @@ QualType ASTContext::getCorrespondingUnsignedType(QualType T) const {
     return UnsignedIntTy;
   case BuiltinType::Long:
     return UnsignedLongTy;
+  case BuiltinType::Win32Long:
+    return Win32UnsignedLongTy;
   case BuiltinType::LongLong:
     return UnsignedLongLongTy;
   case BuiltinType::Int128:
@@ -12558,6 +12594,8 @@ QualType ASTContext::getCorrespondingSignedType(QualType T) const {
     return IntTy;
   case BuiltinType::ULong:
     return LongTy;
+  case BuiltinType::Win32ULong:
+    return Win32LongTy;
   case BuiltinType::ULongLong:
     return LongLongTy;
   case BuiltinType::UInt128:

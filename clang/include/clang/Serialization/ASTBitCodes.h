@@ -1129,6 +1129,13 @@ enum PredefinedTypeIDs {
   /// \brief The '__ibm128' type
   PREDEF_TYPE_IBM128_ID = 74,
 
+  /// The types long, unsigned long, wchar_t and long double name in a Win32
+  /// declaration region on NT-POSIX.
+  PREDEF_TYPE_WIN32_LONG_ID = 75,
+  PREDEF_TYPE_WIN32_ULONG_ID = 76,
+  PREDEF_TYPE_WIN32_WCHAR_ID = 77,
+  PREDEF_TYPE_WIN32_LONG_DOUBLE_ID = 78,
+
 /// OpenCL image types with auto numeration
 #define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix)                   \
   PREDEF_TYPE_##Id##_ID,
@@ -1169,7 +1176,7 @@ enum PredefinedTypeIDs {
 ///
 /// Type IDs for non-predefined types will start at
 /// NUM_PREDEF_TYPE_IDs.
-const unsigned NUM_PREDEF_TYPE_IDS = 530;
+const unsigned NUM_PREDEF_TYPE_IDS = 534;
 
 // Ensure we do not overrun the predefined types we reserved
 // in the enum PredefinedTypeIDs above.

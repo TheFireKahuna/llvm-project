@@ -2361,6 +2361,7 @@ bool Type::isAnyCharacterType() const {
   case BuiltinType::Char8:
   case BuiltinType::Char16:
   case BuiltinType::Char32:
+  case BuiltinType::Win32WChar:
   case BuiltinType::Char_S:
   case BuiltinType::SChar:
   case BuiltinType::WChar_S:
@@ -3628,6 +3629,8 @@ StringRef BuiltinType::getName(const PrintingPolicy &Policy) const {
     return "int";
   case Long:
     return "long";
+  case Win32Long:
+    return "__win32_long";
   case LongLong:
     return "long long";
   case Int128:
@@ -3640,6 +3643,8 @@ StringRef BuiltinType::getName(const PrintingPolicy &Policy) const {
     return "unsigned int";
   case ULong:
     return "unsigned long";
+  case Win32ULong:
+    return "unsigned __win32_long";
   case ULongLong:
     return "unsigned long long";
   case UInt128:
@@ -3654,6 +3659,8 @@ StringRef BuiltinType::getName(const PrintingPolicy &Policy) const {
     return "double";
   case LongDouble:
     return "long double";
+  case Win32LongDouble:
+    return "__win32_long_double";
   case ShortAccum:
     return "short _Accum";
   case Accum:
@@ -3717,6 +3724,8 @@ StringRef BuiltinType::getName(const PrintingPolicy &Policy) const {
     return "char16_t";
   case Char32:
     return "char32_t";
+  case Win32WChar:
+    return "__win32_wchar_t";
   case NullPtr:
     return Policy.NullptrTypeInNamespace ? "std::nullptr_t" : "nullptr_t";
   case Overload:

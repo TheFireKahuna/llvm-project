@@ -337,23 +337,27 @@ TypeSpecifierType BuiltinTypeLoc::getWrittenTypeSpec() const {
     return TST_char32;
   case BuiltinType::WChar_S:
   case BuiltinType::WChar_U:
+  case BuiltinType::Win32WChar:
     return TST_wchar;
   case BuiltinType::UChar:
   case BuiltinType::UShort:
   case BuiltinType::UInt:
   case BuiltinType::ULong:
+  case BuiltinType::Win32ULong:
   case BuiltinType::ULongLong:
   case BuiltinType::UInt128:
   case BuiltinType::SChar:
   case BuiltinType::Short:
   case BuiltinType::Int:
   case BuiltinType::Long:
+  case BuiltinType::Win32Long:
   case BuiltinType::LongLong:
   case BuiltinType::Int128:
   case BuiltinType::Half:
   case BuiltinType::Float:
   case BuiltinType::Double:
   case BuiltinType::LongDouble:
+  case BuiltinType::Win32LongDouble:
   case BuiltinType::Float16:
   case BuiltinType::Float128:
   case BuiltinType::Ibm128:

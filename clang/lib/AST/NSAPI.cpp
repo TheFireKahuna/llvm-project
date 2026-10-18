@@ -398,8 +398,12 @@ NSAPI::getNSNumberFactoryMethodKind(QualType T) const {
   case BuiltinType::Char8:
   case BuiltinType::Char16:
   case BuiltinType::Char32:
+  case BuiltinType::Win32WChar:
+  case BuiltinType::Win32Long:
+  case BuiltinType::Win32ULong:
   case BuiltinType::Int128:
   case BuiltinType::LongDouble:
+  case BuiltinType::Win32LongDouble:
   case BuiltinType::ShortAccum:
   case BuiltinType::Accum:
   case BuiltinType::LongAccum:

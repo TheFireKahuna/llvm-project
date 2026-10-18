@@ -1159,6 +1159,8 @@ llvm::DIType *CGDebugInfo::CreateType(const BuiltinType *BT) {
   case BuiltinType::UInt:
   case BuiltinType::UInt128:
   case BuiltinType::ULong:
+  case BuiltinType::Win32ULong:
+  case BuiltinType::Win32WChar:
   case BuiltinType::WChar_U:
   case BuiltinType::ULongLong:
     Encoding = llvm::dwarf::DW_ATE_unsigned;
@@ -1167,6 +1169,7 @@ llvm::DIType *CGDebugInfo::CreateType(const BuiltinType *BT) {
   case BuiltinType::Int:
   case BuiltinType::Int128:
   case BuiltinType::Long:
+  case BuiltinType::Win32Long:
   case BuiltinType::WChar_S:
   case BuiltinType::LongLong:
     Encoding = llvm::dwarf::DW_ATE_signed;
@@ -1181,6 +1184,7 @@ llvm::DIType *CGDebugInfo::CreateType(const BuiltinType *BT) {
   case BuiltinType::BFloat16:
   case BuiltinType::Float128:
   case BuiltinType::Double:
+  case BuiltinType::Win32LongDouble:
   case BuiltinType::Ibm128:
     // FIXME: For targets where long double, __ibm128 and __float128 have the
     // same size, they are currently indistinguishable in the debugger without

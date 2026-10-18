@@ -193,12 +193,15 @@ QualTypeMapper::convertBuiltinType(const BuiltinType *BT) {
   case BuiltinType::Char8:
   case BuiltinType::Char16:
   case BuiltinType::Char32:
+  case BuiltinType::Win32WChar:
   case BuiltinType::Short:
   case BuiltinType::UShort:
   case BuiltinType::Int:
   case BuiltinType::UInt:
   case BuiltinType::Long:
   case BuiltinType::ULong:
+  case BuiltinType::Win32Long:
+  case BuiltinType::Win32ULong:
   case BuiltinType::LongLong:
   case BuiltinType::ULongLong:
   case BuiltinType::Int128:
@@ -213,6 +216,7 @@ QualTypeMapper::convertBuiltinType(const BuiltinType *BT) {
   case BuiltinType::Float:
   case BuiltinType::Double:
   case BuiltinType::LongDouble:
+  case BuiltinType::Win32LongDouble:
   case BuiltinType::Float128:
     return Builder.getFloatType(ASTCtx.getFloatTypeSemantics(QT),
                                 getTypeAlign(QT));

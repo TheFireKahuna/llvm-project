@@ -898,6 +898,7 @@ bool PrintfSpecifier::fixType(QualType QT, const LangOptions &LangOpt,
   case BuiltinType::Char8: // FIXME: Treat like 'char'?
   case BuiltinType::Char16:
   case BuiltinType::Char32:
+  case BuiltinType::Win32WChar:
   case BuiltinType::UInt128:
   case BuiltinType::Int128:
   case BuiltinType::Half:
@@ -975,6 +976,12 @@ bool PrintfSpecifier::fixType(QualType QT, const LangOptions &LangOpt,
     LM.setKind(VectorNumElts.isInvalid() ? LengthModifier::None
                                          : LengthModifier::AsShortLong);
     break;
+  // A Win32 region's long is int-sized, so POSIX printf takes it unmodified.
+  case BuiltinType::Win32Long:
+  case BuiltinType::Win32ULong:
+    LM.setKind(LengthModifier::None);
+    break;
+  case BuiltinType::Win32LongDouble:
   case BuiltinType::Double:
     LM.setKind(VectorNumElts.isInvalid() ? LengthModifier::None
                                          : LengthModifier::AsLong);

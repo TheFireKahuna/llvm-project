@@ -435,6 +435,9 @@ llvm::Type *CodeGenTypes::ConvertType(QualType T) {
     case BuiltinType::Char8:
     case BuiltinType::Char16:
     case BuiltinType::Char32:
+    case BuiltinType::Win32WChar:
+    case BuiltinType::Win32Long:
+    case BuiltinType::Win32ULong:
     case BuiltinType::ShortAccum:
     case BuiltinType::Accum:
     case BuiltinType::LongAccum:
@@ -480,6 +483,7 @@ llvm::Type *CodeGenTypes::ConvertType(QualType T) {
     case BuiltinType::BFloat16:
     case BuiltinType::Float:
     case BuiltinType::Double:
+    case BuiltinType::Win32LongDouble:
     case BuiltinType::Float128:
     case BuiltinType::Ibm128:
       ResultType = llvm::Type::getFloatingPointTy(

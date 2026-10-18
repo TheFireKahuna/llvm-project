@@ -171,6 +171,18 @@ serialization::TypeIdxFromBuiltin(const BuiltinType *BT) {
   case BuiltinType::Ibm128:
     ID = PREDEF_TYPE_IBM128_ID;
     break;
+  case BuiltinType::Win32Long:
+    ID = PREDEF_TYPE_WIN32_LONG_ID;
+    break;
+  case BuiltinType::Win32ULong:
+    ID = PREDEF_TYPE_WIN32_ULONG_ID;
+    break;
+  case BuiltinType::Win32WChar:
+    ID = PREDEF_TYPE_WIN32_WCHAR_ID;
+    break;
+  case BuiltinType::Win32LongDouble:
+    ID = PREDEF_TYPE_WIN32_LONG_DOUBLE_ID;
+    break;
   case BuiltinType::NullPtr:
     ID = PREDEF_TYPE_NULLPTR_ID;
     break;

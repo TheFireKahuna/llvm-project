@@ -1564,8 +1564,10 @@ void StmtPrinter::VisitIntegerLiteral(IntegerLiteral *Node) {
   case BuiltinType::UShort:    OS << "Ui16"; break;
   case BuiltinType::Int:       break; // no suffix.
   case BuiltinType::UInt:      OS << 'U'; break;
-  case BuiltinType::Long:      OS << 'L'; break;
-  case BuiltinType::ULong:     OS << "UL"; break;
+  case BuiltinType::Long:
+  case BuiltinType::Win32Long: OS << 'L'; break;
+  case BuiltinType::ULong:
+  case BuiltinType::Win32ULong: OS << "UL"; break;
   case BuiltinType::LongLong:  OS << "LL"; break;
   case BuiltinType::ULongLong: OS << "ULL"; break;
   case BuiltinType::Int128:
@@ -1619,7 +1621,8 @@ static void PrintFloatingLiteral(raw_ostream &OS, FloatingLiteral *Node,
   case BuiltinType::Double:     break; // no suffix.
   case BuiltinType::Float16:    OS << "F16"; break;
   case BuiltinType::Float:      OS << 'F'; break;
-  case BuiltinType::LongDouble: OS << 'L'; break;
+  case BuiltinType::LongDouble:
+  case BuiltinType::Win32LongDouble: OS << 'L'; break;
   case BuiltinType::Float128:   OS << 'Q'; break;
   }
 }

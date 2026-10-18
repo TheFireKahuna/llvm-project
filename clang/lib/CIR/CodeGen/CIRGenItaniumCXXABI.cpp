@@ -782,6 +782,10 @@ static bool typeInfoIsInStandardLibrary(const BuiltinType *ty) {
   case BuiltinType::SatUFract:
   case BuiltinType::SatULongFract:
   case BuiltinType::BFloat16:
+  case BuiltinType::Win32Long:
+  case BuiltinType::Win32ULong:
+  case BuiltinType::Win32WChar:
+  case BuiltinType::Win32LongDouble:
     return false;
 
   case BuiltinType::Dependent:

@@ -182,6 +182,15 @@ llvm::MDNode *CodeGenTBAA::getTypeInfoHelper(const Type *Ty) {
       return getTypeInfo(Context.LongTy);
     case BuiltinType::ULongLong:
       return getTypeInfo(Context.LongLongTy);
+
+    // A Win32 region's types alias their standard twins.
+    case BuiltinType::Win32Long:
+    case BuiltinType::Win32ULong:
+      return getTypeInfo(Context.IntTy);
+    case BuiltinType::Win32WChar:
+      return getTypeInfo(Context.Char16Ty);
+    case BuiltinType::Win32LongDouble:
+      return getTypeInfo(Context.DoubleTy);
     case BuiltinType::UInt128:
       return getTypeInfo(Context.Int128Ty);
 

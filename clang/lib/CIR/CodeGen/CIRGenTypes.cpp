@@ -352,6 +352,7 @@ mlir::Type CIRGenTypes::convertType(QualType type) {
     // Signed integral types.
     case BuiltinType::Char_S:
     case BuiltinType::Int:
+    case BuiltinType::Win32Long:
     case BuiltinType::Int128:
     case BuiltinType::Long:
     case BuiltinType::LongLong:
@@ -434,11 +435,13 @@ mlir::Type CIRGenTypes::convertType(QualType type) {
     case BuiltinType::Char8:
     case BuiltinType::Char16:
     case BuiltinType::Char32:
+    case BuiltinType::Win32WChar:
     case BuiltinType::Char_U:
     case BuiltinType::UChar:
     case BuiltinType::UInt:
     case BuiltinType::UInt128:
     case BuiltinType::ULong:
+    case BuiltinType::Win32ULong:
     case BuiltinType::ULongLong:
     case BuiltinType::UShort:
     case BuiltinType::WChar_U:
@@ -480,6 +483,7 @@ mlir::Type CIRGenTypes::convertType(QualType type) {
       resultType = cgm.floatTy;
       break;
     case BuiltinType::Double:
+    case BuiltinType::Win32LongDouble:
       assert(&astContext.getFloatTypeSemantics(type) ==
                  &llvm::APFloat::IEEEdouble() &&
              "ClangIR NYI: 'double' in a format other than IEEE 64-bit");

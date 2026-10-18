@@ -8053,6 +8053,18 @@ QualType ASTReader::GetType(TypeID ID) {
     case PREDEF_TYPE_IBM128_ID:
       T = Context.Ibm128Ty;
       break;
+    case PREDEF_TYPE_WIN32_LONG_ID:
+      T = Context.Win32LongTy;
+      break;
+    case PREDEF_TYPE_WIN32_ULONG_ID:
+      T = Context.Win32UnsignedLongTy;
+      break;
+    case PREDEF_TYPE_WIN32_WCHAR_ID:
+      T = Context.Win32WCharTy;
+      break;
+    case PREDEF_TYPE_WIN32_LONG_DOUBLE_ID:
+      T = Context.Win32LongDoubleTy;
+      break;
     case PREDEF_TYPE_OVERLOAD_ID:
       T = Context.OverloadTy;
       break;

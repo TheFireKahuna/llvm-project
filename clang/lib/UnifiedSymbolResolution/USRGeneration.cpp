@@ -941,6 +941,18 @@ void USRGenerator::VisitType(QualType T) {
       case BuiltinType::Ibm128:
         Out << "@BT@__ibm128";
         break;
+      case BuiltinType::Win32Long:
+        Out << "@BT@__win32_long";
+        break;
+      case BuiltinType::Win32ULong:
+        Out << "@BT@__win32_ulong";
+        break;
+      case BuiltinType::Win32WChar:
+        Out << "@BT@__win32_wchar_t";
+        break;
+      case BuiltinType::Win32LongDouble:
+        Out << "@BT@__win32_long_double";
+        break;
       case BuiltinType::ObjCId:
         Out << 'o';
         break;

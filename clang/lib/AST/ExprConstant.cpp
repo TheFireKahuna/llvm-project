@@ -16352,9 +16352,11 @@ GCCTypeClass EvaluateBuiltinClassifyType(QualType T,
     case BuiltinType::Char8:
     case BuiltinType::Char16:
     case BuiltinType::Char32:
+    case BuiltinType::Win32WChar:
     case BuiltinType::UShort:
     case BuiltinType::UInt:
     case BuiltinType::ULong:
+    case BuiltinType::Win32ULong:
     case BuiltinType::ULongLong:
     case BuiltinType::UInt128:
       return GCCTypeClass::Integer;

@@ -1374,6 +1374,9 @@ public:
   CanQualType UnsignedCharTy, UnsignedShortTy, UnsignedIntTy, UnsignedLongTy;
   CanQualType UnsignedLongLongTy, UnsignedInt128Ty;
   CanQualType FloatTy, DoubleTy, LongDoubleTy, Float128Ty, Ibm128Ty;
+  // The types the spellings long, unsigned long, wchar_t and long double name
+  // in a Win32 declaration region on NT-POSIX.
+  CanQualType Win32LongTy, Win32UnsignedLongTy, Win32WCharTy, Win32LongDoubleTy;
   CanQualType ShortAccumTy, AccumTy,
       LongAccumTy;  // ISO/IEC JTC1 SC22 WG14 N1169 Extension
   CanQualType UnsignedShortAccumTy, UnsignedAccumTy, UnsignedLongAccumTy;

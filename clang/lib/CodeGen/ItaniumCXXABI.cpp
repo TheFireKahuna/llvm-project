@@ -4576,6 +4576,12 @@ static bool TypeInfoIsInStandardLibrary(const BuiltinType *Ty) {
     case BuiltinType::SatUFract:
     case BuiltinType::SatULongFract:
     case BuiltinType::BFloat16:
+    // No runtime holds the type_info of a Win32 region's types, so a module
+    // that needs one emits it.
+    case BuiltinType::Win32Long:
+    case BuiltinType::Win32ULong:
+    case BuiltinType::Win32WChar:
+    case BuiltinType::Win32LongDouble:
       return false;
 
     case BuiltinType::Dependent:
