@@ -151,6 +151,14 @@ public:
   Defined *getThreadLocalRecord(DefinedRegular *var);
   // The thread-local variable whose record the image writes as s, if any.
   DefinedRegular *getRecordVariable(Symbol *s);
+  // What the words of record, a thread-local variable's record in the image,
+  // hold: the address of the image's TLS index, then the offsets in the TLS
+  // template of the variable and of its guard. Empty for any other symbol.
+  struct ThreadLocalRecordWords {
+    Defined *index, *var, *guard;
+  };
+  std::optional<ThreadLocalRecordWords>
+  getThreadLocalRecordWords(Defined *record);
   // Keeps a record the image writes, once liveness shows the link needs it.
   void keepThreadLocalRecord(Defined *record);
   // The records the image writes, kept if something live refers to them.

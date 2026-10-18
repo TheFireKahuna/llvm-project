@@ -481,6 +481,30 @@ DefinedRegular *SymbolTable::getRecordVariable(Symbol *s) {
   return c ? cast<DefinedRegular>(c->var) : nullptr;
 }
 
+std::optional<SymbolTable::ThreadLocalRecordWords>
+SymbolTable::getThreadLocalRecordWords(Defined *record) {
+  if (auto *c = dyn_cast_or_null<ThreadLocalRecordChunk>(record->getChunk()))
+    return ThreadLocalRecordWords{c->index, c->var, c->guard};
+  // An object's record names them in its relocations.
+  auto *d = dyn_cast<DefinedRegular>(record);
+  if (!d || !d->getName().ends_with("$tls"))
+    return std::nullopt;
+  bool arm64 = machine == ARM64;
+  uint16_t addr64 = arm64 ? IMAGE_REL_ARM64_ADDR64 : IMAGE_REL_AMD64_ADDR64;
+  uint16_t secRel = arm64 ? IMAGE_REL_ARM64_SECREL : IMAGE_REL_AMD64_SECREL;
+  Defined *words[3] = {};
+  for (const coff_relocation &rel : d->getChunk()->getRelocs()) {
+    uint64_t off = uint64_t(rel.VirtualAddress) - d->getValue();
+    unsigned word = off == 0 ? 0 : off == 8 ? 1 : off == 12 ? 2 : 3;
+    if (word < 3 && rel.Type == (word ? secRel : addr64))
+      words[word] = dyn_cast_or_null<Defined>(
+          d->getChunk()->file->getSymbol(rel.SymbolTableIndex));
+  }
+  if (!words[0] || !words[1] || !words[2])
+    return std::nullopt;
+  return ThreadLocalRecordWords{words[0], words[1], words[2]};
+}
+
 Defined *SymbolTable::getThreadLocalRecord(DefinedRegular *var) {
   StringRef name = getRecordName(var);
   if (auto *d = dyn_cast_or_null<Defined>(find(name)))
@@ -1220,6 +1244,7 @@ void SymbolTable::keepThreadLocalRecord(Defined *record) {
   if (!c)
     return;
   c->live = true;
+  c->pinned = true;
   // A guard liveness discarded is set by nothing live, so is never tested.
   if (auto *g = dyn_cast<DefinedRegular>(c->guard); g && !g->isLive())
     c->guard = c->var;

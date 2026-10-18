@@ -862,8 +862,11 @@ public:
   Defined *index;
   Defined *var;
   Defined *guard;
-  // Whether something live refers to the record, as mark-live finds.
+  // Whether something live refers to the record, as mark-live finds, and
+  // whether the link keeps it whatever code then reads: an object names it,
+  // or another image may bind to it.
   bool live;
+  bool pinned = false;
 
 private:
   COFFLinkerContext &ctx;

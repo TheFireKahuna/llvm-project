@@ -1024,10 +1024,12 @@ Error ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
           linkRecords->relocFacts[base + j].hasSite = true;
         }
 
-      // Data that is not facts is skipped, as the data of a site may be.
+      // Data that is not facts is skipped, as the data of a site may be. The
+      // site's facts describe one instruction, a use of a load's register
+      // (the first such fact) or a load, or both.
       DataExtractor facts(siteData, /*IsLittleEndian=*/true);
       DataExtractor::Cursor factCur(0);
-      size_t siteFusions = fusions.size();
+      LinkFusion f{*section, uint32_t(offset)};
       while (factCur && !facts.eof(factCur)) {
         uint64_t kind = facts.getULEB128(factCur);
         uint64_t value = facts.getULEB128(factCur);
@@ -1038,9 +1040,8 @@ Error ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
         // is kept with none, as one whose adrp the linker cannot find, so its
         // pointer's other loads do not read the copy either.
         if (kind == LinkSiteValueOnly) {
-          if (fusions.size() != siteFusions &&
-              fusions.back().use == LinkFusion::Access)
-            fusions.back().valueRead = !value;
+          if (f.use == LinkFusion::Access)
+            f.valueRead = !value;
           if (!ec)
             linkRecords->valueOnlyLoads.push_back(
                 {*section, uint32_t(offset),
@@ -1048,22 +1049,35 @@ Error ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
                  static_cast<LinkSiteForm>(form)});
           continue;
         }
-        LinkFusion f{*section, uint32_t(offset)};
-        if (kind == LinkSiteFusedCall) {
-          // The load's index, resolved once the section's sites are read.
-          f.load = std::min<uint64_t>(value >> 6, UINT32_MAX);
-          f.isJump = value >> 5 & 1;
-          f.reg = value & 31;
-        } else if (kind == LinkSiteFusedRead || kind == LinkSiteAccessedRead) {
+        if (kind == LinkSiteFusedRead || kind == LinkSiteAccessedRead ||
+            kind == LinkSiteIndexedRead) {
           f.isLoad = true;
           f.nextSize = std::min<uint64_t>(value >> 1, 15);
           f.nextTransfers = value & 1;
-        } else if (kind == LinkSiteFusedAccess) {
-          f.use = LinkFusion::Access;
+          continue;
+        }
+        // The constant of the add the site's facts already describe.
+        if (kind == LinkSiteFusedAddend) {
+          if (f.use == LinkFusion::Add)
+            f.addend = int64_t(value >> 1) ^ -int64_t(value & 1);
+          continue;
+        }
+        if (f.use != LinkFusion::None)
+          continue;
+        if (kind == LinkSiteFusedCall) {
+          // The load's index, resolved once the section's sites are read.
+          f.use = LinkFusion::Call;
+          f.load = std::min<uint64_t>(value >> 6, UINT32_MAX);
+          f.isJump = value >> 5 & 1;
+          f.reg = value & 31;
+        } else if (kind == LinkSiteFusedAccess || kind == LinkSiteFusedIndex) {
+          bool index = kind == LinkSiteFusedIndex;
+          f.use = index ? LinkFusion::Index : LinkFusion::Access;
           f.load = std::min<uint64_t>(value >> 20, UINT32_MAX);
-          f.scale = value >> 17 & 7;
+          f.scale = index ? 0 : value >> 17 & 7;
           f.prefixKind = value >> 15 & 3;
-          f.sib = value >> 14 & 1;
+          (index ? f.base : f.sib) = value >> 14 & 1;
+          f.sib |= index;
           f.disp = value >> 12 & 3;
           f.length = value >> 8 & 15;
           f.prefix = value >> 4 & 15;
@@ -1072,27 +1086,18 @@ Error ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
           f.use = LinkFusion::Add;
           f.load = std::min<uint64_t>(value >> 5, UINT32_MAX);
           f.reg = value & 31;
-        } else if (kind == LinkSiteFusedAddend) {
-          // The constant of the add the site's facts already describe.
-          if (fusions.size() != siteFusions &&
-              fusions.back().use == LinkFusion::Add)
-            fusions.back().addend = int64_t(value >> 1) ^ -int64_t(value & 1);
-          continue;
-        } else {
-          continue;
         }
-        fusions.push_back(f);
       }
-      if (Error e = factCur.takeError()) {
+      if (Error e = factCur.takeError())
         consumeError(std::move(e));
-        fusions.resize(siteFusions);
-      }
+      else if (f.isLoad || f.use != LinkFusion::None)
+        fusions.push_back(f);
     }
 
     // A fused call names its load by the index of the load's site among the
     // section's.
     for (LinkFusion &f : MutableArrayRef(fusions).drop_front(firstFusion)) {
-      if (f.isLoad)
+      if (f.use == LinkFusion::None)
         continue;
       if (f.load >= siteOffsets.size())
         return malformedLinkRecords("fused call at offset 0x" +

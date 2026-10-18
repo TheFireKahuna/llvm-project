@@ -22,6 +22,7 @@
 #include "InputFiles.h"
 #include "ImportSlots.h"
 #include "Symbols.h"
+#include "Writer.h"
 #include "lld/Common/ErrorHandler.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -219,10 +220,16 @@ static bool isLayoutEdit(const RelaxEdit &e) {
          e.kind == RelaxEdit::TailJump;
 }
 
+// Whether e changes a fused access or index, which only resized code does.
+static bool isAccessEdit(const RelaxEdit &e) {
+  return e.kind == RelaxEdit::Access || e.kind == RelaxEdit::AccessAddress ||
+         e.kind == RelaxEdit::AccessOffset || e.kind == RelaxEdit::Index;
+}
+
 // Leaves sc at its size, not resizing it (yet): each edit takes its old-length
 // form. When final, a fused access keeps its register -- as does the load that
-// fills it, revived and rewritten as if it had not been dead -- since only
-// resized code changes it.
+// fills it, revived and rewritten as if it had not been dead, or as it was
+// where the load is an access itself -- since only resized code changes it.
 static void keepSize(COFFLinkerContext &ctx, SectionChunk *sc, bool final) {
   sc->relaxed = false;
   auto it = ctx.relaxations.find(sc);
@@ -231,7 +238,8 @@ static void keepSize(COFFLinkerContext &ctx, SectionChunk *sc, bool final) {
   DenseSet<uint32_t> loads;
   if (final)
     for (const ObjFile::LinkFusion &f : sc->file->getLinkFusions(sc))
-      if (f.use == ObjFile::LinkFusion::Access && !f.isLoad)
+      if (f.use == ObjFile::LinkFusion::Access ||
+          f.use == ObjFile::LinkFusion::Index)
         loads.insert(f.load);
   std::vector<RelaxEdit> &edits = it->second.edits;
   auto revived = [&](const RelaxEdit &e) {
@@ -244,8 +252,7 @@ static void keepSize(COFFLinkerContext &ctx, SectionChunk *sc, bool final) {
       e.entry = nullptr;
     }
   llvm::erase_if(edits, [&](const RelaxEdit &e) {
-    return isLayoutEdit(e) || (final && e.kind == RelaxEdit::Access) ||
-           revived(e);
+    return isLayoutEdit(e) || (final && isAccessEdit(e)) || revived(e);
   });
   for (RelaxEdit &e : edits) {
     e.newOffset = e.offset;
@@ -481,6 +488,11 @@ static void disposeOfLoad(uint8_t *start, uint64_t rva, unsigned size,
   writeNops(start, size, size);
 }
 
+uint32_t getSectionOffset(const SectionChunk *sc, Defined *d) {
+  OutputSection *os = sc->file->symtab.ctx.getOutputSection(d->getChunk());
+  return os ? d->getRVA() - os->getRVA() : 0;
+}
+
 // Writes the instruction or padding that e makes of the bytes it changes, at
 // buf in sc's contents as written, whose original contents are data.
 static void writeEdit(const SectionChunk *sc, const RelaxEdit &e, uint8_t *buf,
@@ -588,18 +600,22 @@ static void writeEdit(const SectionChunk *sc, const RelaxEdit &e, uint8_t *buf,
     }
     break;
   }
-  case RelaxEdit::Access: {
+  case RelaxEdit::Access:
+  case RelaxEdit::AccessAddress: {
     // The bytes before ModRM, with the base register's high bit cleared (REX.B,
     // or VEX/EVEX's inverted B set); then ModRM addressing RIP plus a 32-bit
-    // displacement, no SIB; then what followed the old displacement.
+    // displacement, no SIB; then what followed the old displacement. A load
+    // of an address becomes lea of it.
     const ObjFile::LinkFusion &f = *e.fusion();
     unsigned dispSize = f.disp == 1 ? 1 : f.disp == 2 ? 4 : 0;
     int64_t disp = 0;
-    if (dispSize == 1)
+    if (e.kind == RelaxEdit::Access && dispSize == 1)
       disp = int64_t(int8_t(old[f.modrm + 1 + f.sib])) * (1 << f.scale);
-    else if (dispSize == 4)
+    else if (e.kind == RelaxEdit::Access && dispSize == 4)
       disp = int32_t(read32le(old + f.modrm + 1 + f.sib));
     memcpy(buf, old, f.modrm);
+    if (e.kind == RelaxEdit::AccessAddress)
+      buf[f.modrm - 1] = 0x8D;
     if (f.prefix != 15) {
       if (f.prefixKind == LinkAccessREX)
         buf[f.prefix] &= ~1;
@@ -610,6 +626,52 @@ static void writeEdit(const SectionChunk *sc, const RelaxEdit &e, uint8_t *buf,
     unsigned tail = f.modrm + 1 + f.sib + dispSize;
     memcpy(buf + f.modrm + 5, old + tail, f.length - tail);
     write32le(buf + f.modrm + 1, e.target->getRVA() + disp - (p + e.newSize));
+    break;
+  }
+  case RelaxEdit::AccessOffset: {
+    // mov r32, imm32, the register moving from ModRM.reg, and its high bit
+    // from REX.R to REX.B.
+    const ObjFile::LinkFusion &f = *e.fusion();
+    uint8_t *inst = buf;
+    if (f.prefix != 15 && (old[f.prefix] & 4))
+      *inst++ = 0x41;
+    *inst++ = 0xB8 | (old[f.modrm] >> 3 & 7);
+    write32le(inst, getSectionOffset(sc, e.target));
+    break;
+  }
+  case RelaxEdit::Index: {
+    // The bytes before ModRM; then ModRM addressing the register kept plus a
+    // 32-bit displacement, with a SIB byte only where that register is RSP or
+    // R12; then what followed the old displacement. The kept register's high
+    // bit moves to REX.B, or VEX's inverted B, and the index's is cleared.
+    const ObjFile::LinkFusion &f = *e.fusion();
+    unsigned dispSize = f.disp == 1 ? 1 : f.disp == 2 ? 4 : 0;
+    uint8_t sib = old[f.modrm + 1];
+    int64_t disp = dispSize == 1   ? int8_t(old[f.modrm + 2])
+                   : dispSize == 4 ? int32_t(read32le(old + f.modrm + 2))
+                                   : 0;
+    bool vex = f.prefixKind == LinkAccessVEX;
+    // The X and B bits, X above B.
+    unsigned xb = f.prefix == 15 ? 0
+                  : vex          ? ~old[f.prefix + 1] >> 5 & 3
+                                 : old[f.prefix] & 3;
+    unsigned reg =
+        f.base ? (sib >> 3 & 7) | (xb & 2) << 2 : (sib & 7) | (xb & 1) << 3;
+    memcpy(buf, old, f.modrm);
+    if (f.prefix != 15) {
+      if (vex)
+        buf[f.prefix + 1] =
+            (old[f.prefix + 1] & ~0x20) | 0x40 | (reg & 8 ? 0 : 0x20);
+      else
+        buf[f.prefix] = (old[f.prefix] & ~3) | reg >> 3;
+    }
+    uint8_t *inst = buf + f.modrm;
+    *inst++ = (old[f.modrm] & 0x38) | 0x80 | (reg & 7);
+    if ((reg & 7) == 4)
+      *inst++ = 0x24;
+    write32le(inst, disp + getSectionOffset(sc, e.target));
+    unsigned tail = f.modrm + 2 + dispSize;
+    memcpy(inst + 4, old + tail, f.length - tail);
     break;
   }
   case RelaxEdit::Arm64Page:

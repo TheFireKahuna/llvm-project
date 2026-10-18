@@ -54,6 +54,16 @@ struct RelaxEdit {
     // The access that fusion describes, its memory operand made RIP-relative
     // to target plus its displacement.
     Access,
+    // The access of a thread-local variable's record that fusion describes, a
+    // load of a word the linker knows: of the address of target, the TLS
+    // index, made lea of it; of target's offset in its section, made a move
+    // of the offset.
+    AccessAddress,
+    AccessOffset,
+    // The memory operand that fusion describes, which added target's offset
+    // in its section from a register: the register left out and the offset
+    // added to the displacement.
+    Index,
     // No-operations that align what follows, as coverage describes.
     Align,
     // The jump whose displacement coverage describes: 8-bit, widened to 32 when
@@ -111,6 +121,10 @@ struct Relaxation {
 
 // Adds edit e to sc's changes; an overlap with an existing one is an error.
 void addEdit(SectionChunk *sc, RelaxEdit e);
+
+// The offset of d in its output section, which a section-relative relocation
+// to it in sc holds.
+uint32_t getSectionOffset(const SectionChunk *sc, Defined *d);
 
 // Writes n bytes of no-operations at buf, each at most maxNop bytes long.
 void writeNops(uint8_t *buf, size_t n, unsigned maxNop);

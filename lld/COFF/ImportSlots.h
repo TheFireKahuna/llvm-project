@@ -85,6 +85,9 @@ public:
   // Decides, once fused uses are bound, the in-place slots, the rewritten
   // address-takes and the imports' entries.
   void bind();
+  // Leaves out, once code is relaxed, each thread-local variable's record the
+  // image writes that nothing reads any longer.
+  void leaveOutUnreadRecords();
   // Collects a DLL's cells: the words through which it reaches imported
   // overridable defaults and vague entities another image may preempt.
   void collectCells();

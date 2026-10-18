@@ -1256,6 +1256,36 @@ static Defined *useBuiltin(COFFLinkerContext &ctx, StringRef name,
   return f;
 }
 
+// On x86-64, where code that loaded a record's words now reaches the variable
+// directly, a record the image writes is still read only through a pointer to
+// it, an instruction the linker rewrote to it (a deleted load names what it
+// would read if revived, which resized code no longer does), an export or a GC
+// root, unless the link keeps it. On ARM64 the adrp that gave a record's page
+// names it whatever the code then reads.
+void ImportSlotContents::leaveOutUnreadRecords() {
+  SymbolTable &symtab = ctx.symtab;
+  if (symtab.machine != AMD64 || symtab.threadLocalRecords.empty())
+    return;
+  DenseSet<const Chunk *> read;
+  auto add = [&](Symbol *s) {
+    if (auto *d = dyn_cast_or_null<Defined>(s))
+      read.insert(d->getChunk());
+  };
+  for (Chunk *c : symtab.localImportChunks)
+    add(cast<LocalImportChunk>(c)->getTarget());
+  for (auto &[sc, r] : ctx.relaxations)
+    for (const RelaxEdit &e : r.edits)
+      if (e.kind != RelaxEdit::Dispose)
+        add(e.target);
+  for (Export &e : symtab.exports)
+    add(e.sym);
+  for (Symbol *s : ctx.config.gcroot)
+    add(s);
+  for (ThreadLocalRecordChunk *c : symtab.threadLocalRecords)
+    if (!c->pinned && !read.contains(c))
+      c->live = false;
+}
+
 // A DLL's cells: the slots and entries of the overridable defaults it imports,
 // and the words through which it reaches its own defaults and the vague
 // entities another image's instance may preempt, as an ELF object reaches
@@ -1653,6 +1683,67 @@ struct Arm64Access {
   }
 };
 
+// The size of the displacement of f, an access or index.
+static unsigned getDispSize(const ObjFile::LinkFusion &f) {
+  return f.disp == 1 ? 1 : f.disp == 2 ? 4 : 0;
+}
+
+// Binds f, an access of record, a thread-local variable's record in the
+// image, that loads one of its words, [REX] mov r, [base + disp8]. The address
+// of the TLS index becomes lea of it, or where only accesses through it read
+// it, they access the index directly and f is deleted; an offset becomes a
+// move of it, or where only memory operands that add it read it, they add it
+// to their displacements and f is deleted. Returns false for another access.
+static bool bindRecordAccess(SectionChunk *sc,
+                             MutableArrayRef<ObjFile::LinkFusion> fusions,
+                             ObjFile::LinkFusion &f, Defined *record) {
+  std::optional<SymbolTable::ThreadLocalRecordWords> words =
+      sc->file->symtab.getThreadLocalRecordWords(record);
+  const uint8_t *inst = sc->getContents().data() + f.offset;
+  bool rex = f.prefix == 0 && f.prefixKind == LinkAccessREX;
+  if (!words || f.modrm != (rex ? 2 : 1) || (f.prefix != 15 && !rex) || f.sib ||
+      f.disp == 2 || inst[f.modrm - 1] != 0x8B)
+    return false;
+  unsigned disp = f.disp ? inst[f.modrm + 1] : 0;
+  bool wide = rex && (inst[0] & 8);
+  if (wide ? disp != 0 : disp != 8 && disp != 12)
+    return false;
+  Defined *target = wide ? words->index : disp == 8 ? words->var : words->guard;
+  SmallVector<ObjFile::LinkFusion *, 4> readers;
+  for (ObjFile::LinkFusion &r : fusions)
+    if (r.load == f.offset && r.use == (wide ? ObjFile::LinkFusion::Access
+                                             : ObjFile::LinkFusion::Index))
+      readers.push_back(&r);
+  // An index keeps the other register as its base, which takes a SIB byte if
+  // it is RSP or R12.
+  ArrayRef<uint8_t> data = sc->getContents();
+  auto keepsSIB = [&](const ObjFile::LinkFusion &r) {
+    uint8_t sib = data[r.offset + r.modrm + 1];
+    return ((r.base ? sib >> 3 : sib) & 7) == 4;
+  };
+  bool direct = f.isLoad && !readers.empty() &&
+                llvm::all_of(readers, [&](ObjFile::LinkFusion *r) {
+                  uint8_t modrm = data[r->offset + r->modrm];
+                  return wide || ((modrm & 7) == 4 && modrm >> 6 != 3 &&
+                                  data[r->offset + r->modrm + 1] >> 6 == 0);
+                });
+  if (!direct) {
+    addEdit(sc, {f.offset, f.length,
+                 uint16_t(wide ? f.length - getDispSize(f) + 4
+                               : 5 + (rex && (inst[0] & 4))),
+                 wide ? RelaxEdit::AccessAddress : RelaxEdit::AccessOffset,
+                 target, &f});
+    return true;
+  }
+  for (ObjFile::LinkFusion *r : readers)
+    addEdit(sc, {r->offset, r->length,
+                 uint16_t(r->length - getDispSize(*r) - r->sib + 4 +
+                          (!wide && keepsSIB(*r))),
+                 wide ? RelaxEdit::Access : RelaxEdit::Index, target, r});
+  addEdit(sc, {f.offset, f.length, 0, RelaxEdit::Dispose, nullptr, &f});
+  return true;
+}
+
 // Binds the uses that an object fuses with its loads of pointers, once the
 // pointers are bound. A use whose pointer leads to a definition in the image
 // reaches it directly: a call becomes a direct call, and an access or add
@@ -1674,7 +1765,8 @@ static void bindFusedUses(SectionChunk *sc,
   DenseSet<uint32_t> keptLoads;
   for (ObjFile::LinkFusion &f : fusions) {
     const coff_relocation *rel;
-    if (f.isLoad || (arm64 && f.use == ObjFile::LinkFusion::Call) ||
+    if (f.use == ObjFile::LinkFusion::None ||
+        (arm64 && f.use == ObjFile::LinkFusion::Call) ||
         !(rel = findReloc(sc, f.load, loadType)))
       continue;
     Symbol *s = file->getSymbol(rel->SymbolTableIndex);
@@ -1698,12 +1790,15 @@ static void bindFusedUses(SectionChunk *sc,
     if (f.use == ObjFile::LinkFusion::Access) {
       if (!covered || !reaches)
         keptLoads.insert(f.load);
-      unsigned disp = f.disp == 1 ? 1 : f.disp == 2 ? 4 : 0;
+      if (covered && reaches &&
+          bindRecordAccess(sc, fusions, f, li->getTarget()))
+        continue;
       if (covered && (reaches || immutable))
-        addEdit(sc, {f.offset, f.length, uint16_t(f.length - disp - f.sib + 4),
-                     RelaxEdit::Access,
-                     li ? li->getTarget() : symtab.immutableReads.lookup(s),
-                     &f});
+        addEdit(sc,
+                {f.offset, f.length,
+                 uint16_t(f.length - getDispSize(f) - f.sib + 4),
+                 RelaxEdit::Access,
+                 li ? li->getTarget() : symtab.immutableReads.lookup(s), &f});
     } else if (f.use == ObjFile::LinkFusion::Add) {
       // The add is add or sub of an 8- or 32-bit immediate, or lea of a base
       // and an 8- or 32-bit displacement, with or without a SIB byte.
@@ -1793,7 +1888,7 @@ void writeFusedArm64(const SectionChunk *sc, uint8_t *buf) {
   };
   DenseMap<uint32_t, SmallVector<const ObjFile::LinkFusion *, 2>> accessesOf;
   for (const ObjFile::LinkFusion &f : fusions) {
-    if (f.isLoad)
+    if (f.use == ObjFile::LinkFusion::None)
       continue;
     if (f.use == ObjFile::LinkFusion::Access)
       accessesOf[f.load].push_back(&f);
@@ -1825,25 +1920,69 @@ void writeFusedArm64(const SectionChunk *sc, uint8_t *buf) {
         writeLiteralLdr(buf + f.offset, ldr);
     }
   }
+  auto fits = [&](uint64_t lo12, const ObjFile::LinkFusion *f) {
+    uint32_t insn = read32le(buf + f->offset);
+    return Arm64Access(insn).fits(lo12 + Arm64Access(insn).getOffset(insn));
+  };
+  auto addOffset = [&](uint64_t lo12, const ObjFile::LinkFusion *f) {
+    uint32_t insn = read32le(buf + f->offset);
+    Arm64Access access(insn);
+    write32le(buf + f->offset,
+              access.setOffset(insn, lo12 + access.getOffset(insn)));
+  };
+  // A load of a word of a thread-local variable's record in the image takes
+  // what it holds: the load of the address of the TLS index becomes adrp of
+  // its page where every access through its register, all described, takes
+  // its offset in the page; the load of an offset becomes movz of it where it
+  // fits 16 bits.
+  auto writeRecordAccess = [&](const SymbolTable::ThreadLocalRecordWords &words,
+                               const ObjFile::LinkFusion *f) {
+    uint32_t insn = read32le(buf + f->offset);
+    if ((insn & 0xFFFFFC00) == 0xF9400000) {
+      auto it = accessesOf.find(f->offset);
+      uint64_t lo12 = words.index->getRVA() & 0xFFF;
+      if (!f->isLoad || it == accessesOf.end() ||
+          !llvm::all_of(it->second, [&](const ObjFile::LinkFusion *r) {
+            return fits(lo12, r);
+          }))
+        return false;
+      write32le(buf + f->offset, 0x90000000 | (insn & 0x1F));
+      applyArm64Addr(buf + f->offset, words.index->getRVA(),
+                     sc->getRVA() + f->offset, 12);
+      for (const ObjFile::LinkFusion *r : it->second)
+        addOffset(lo12, r);
+      return true;
+    }
+    if ((insn & 0xFFFFFC00) != 0xB9400800 && (insn & 0xFFFFFC00) != 0xB9400C00)
+      return false;
+    uint32_t offset = getSectionOffset(
+        sc, (insn & 0xFFFFFC00) == 0xB9400800 ? words.var : words.guard);
+    if (offset > 0xFFFF)
+      return false;
+    write32le(buf + f->offset, 0x52800000 | offset << 5 | (insn & 0x1F));
+    return true;
+  };
   // A dead load whose accesses all take the data's page offset in their
   // fields becomes a no-op, its register keeping the adrp's page.
   for (const ObjFile::LinkFusion &l : fusions) {
     auto it = accessesOf.find(l.offset);
     if (!l.isLoad || !l.dead || it == accessesOf.end())
       continue;
-    uint64_t lo12 = getData(l.offset)->getRVA() & 0xFFF;
-    auto fits = [&](const ObjFile::LinkFusion *f) {
-      uint32_t insn = read32le(buf + f->offset);
-      return Arm64Access(insn).fits(lo12 + Arm64Access(insn).getOffset(insn));
-    };
-    if (!llvm::all_of(it->second, fits))
+    Defined *data = getData(l.offset);
+    SmallVector<const ObjFile::LinkFusion *, 4> accesses(it->second.begin(),
+                                                         it->second.end());
+    if (std::optional<SymbolTable::ThreadLocalRecordWords> words =
+            sc->file->symtab.getThreadLocalRecordWords(data))
+      llvm::erase_if(accesses, [&](const ObjFile::LinkFusion *f) {
+        return writeRecordAccess(*words, f);
+      });
+    uint64_t lo12 = data->getRVA() & 0xFFF;
+    if (!llvm::all_of(accesses, [&](const ObjFile::LinkFusion *f) {
+          return fits(lo12, f);
+        }))
       continue;
-    for (const ObjFile::LinkFusion *f : it->second) {
-      uint32_t insn = read32le(buf + f->offset);
-      Arm64Access access(insn);
-      write32le(buf + f->offset,
-                access.setOffset(insn, lo12 + access.getOffset(insn)));
-    }
+    for (const ObjFile::LinkFusion *f : accesses)
+      addOffset(lo12, f);
     write32le(buf + l.offset, nop);
   }
 }
@@ -1974,6 +2113,9 @@ void ImportSlotContents::scan(SymbolTable &symtab) {
       if (auto *li = dyn_cast_or_null<DefinedLocalImport>(s);
           locals && !describes && !localFile && li)
         li->getChunk()->readByCode = true;
+      if (auto *d = dyn_cast_or_null<DefinedSynthetic>(s))
+        if (auto *c = dyn_cast_or_null<ThreadLocalRecordChunk>(d->getChunk()))
+          c->pinned = true;
       if (LocalImportChunk *c = localFile ? findCell(file, s) : nullptr;
           c && cast<DefinedRegular>(s)->getCOFFSymbol().isExternal())
         named.insert(c);

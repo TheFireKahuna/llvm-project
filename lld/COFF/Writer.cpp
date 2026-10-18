@@ -876,6 +876,7 @@ void Writer::run() {
     });
     slots.bind();
     relaxSections(ctx);
+    slots.leaveOutUnreadRecords();
     slots.collectCells();
     slots.createOfferTable();
     slots.createFill();

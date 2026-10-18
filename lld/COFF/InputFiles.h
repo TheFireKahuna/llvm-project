@@ -305,13 +305,15 @@ public:
 
   // A site the records describe as a call or jump through a register a load
   // filled with a pointer (padded to the memory transfer's length), as such a
-  // load only those calls read, or as an access or add through that register.
-  // Once the linker knows where each pointer leads it decides which calls stay,
-  // go direct or read the pointer, which accesses and adds go direct, and which
-  // loads are dead.
+  // load only those calls read, or as an access or add through that register;
+  // or as an index, adding an offset an access of a thread-local variable's
+  // record loaded. An access of a record may itself be a load. Once the linker
+  // knows where each pointer leads it decides which calls stay, go direct or
+  // read the pointer, which accesses and adds go direct, and which loads are
+  // dead.
   struct LinkFusion {
     enum CallForm : uint8_t { ThroughRegister, Direct, ThroughPointer };
-    enum UseKind : uint8_t { Call, Access, Add };
+    enum UseKind : uint8_t { None, Call, Access, Add, Index };
 
     uint32_t section;
     uint32_t offset;
@@ -321,12 +323,13 @@ public:
     uint32_t load = 0;
     uint8_t reg = 0;
     bool isJump = false;
-    UseKind use = Call;
+    UseKind use = None;
     // For an access, the offsets in it of its ModRM byte and of the prefix
     // that holds its base register's high bit (15 for none), that prefix's
     // kind (a LinkAccessPrefix), its length, the size of its displacement (0,
     // 1 for 8 bits, 2 for 32), whether a SIB byte follows ModRM, and the log2
-    // of the scale of an 8-bit displacement.
+    // of the scale of an 8-bit displacement. An index has a SIB byte, and
+    // base says whether the register is its base rather than its index.
     uint8_t modrm = 0;
     uint8_t prefix = 15;
     uint8_t prefixKind = 0;
@@ -334,6 +337,7 @@ public:
     uint8_t disp = 0;
     uint8_t scale = 0;
     bool sib = false;
+    bool base = false;
     // For an add, the constant it adds.
     int64_t addend = 0;
     // For an access, whether it only reads memory (not volatile or atomic),
