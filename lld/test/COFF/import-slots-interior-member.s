@@ -35,7 +35,7 @@
 # RUN: not lld-link -dll -noentry -import-slots -out:out.dll crt.obj ro.obj \
 # RUN:   protect.lib lib.lib 2>&1 | FileCheck --check-prefix=PROTECT %s
 
-# PROTECT: error: ro.obj: .rdata holds the address of obj plus 8, imported from lib.dll, which exports no name for it, and the image cannot make it read-only once written without NtProtectVirtualMemory from ntdll.lib
+# PROTECT: error: the image's fill needs NtProtectVirtualMemory from ntdll.lib
 
 #--- lib.def
 LIBRARY lib.dll

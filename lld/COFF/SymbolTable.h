@@ -104,11 +104,10 @@ public:
 
   // Under -import-slots, loads the import of each name that a DLL exports for
   // an address inside its data which a word of static data holds, and
-  // NtProtectVirtualMemory's where the residual fill, which writes a word for
-  // which no name is exported, would make a read-only word read-only again, or
-  // where a DLL's fill would write the read-only cells of an overridable
-  // default it imports. Returns whether it loaded any, which may change what a
-  // word needs.
+  // NtProtectVirtualMemory's where the fill would make a read-only word, for
+  // which no name is exported, read-only again once it writes it, or would
+  // write the read-only cells of an overridable default the DLL imports.
+  // Returns whether it loaded any, which may change what a word needs.
   bool loadInteriorImports();
   // The objects that loadInteriorImports has walked, the words among theirs
   // whose names were still to be loaded, by section and relocation, and

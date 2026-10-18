@@ -90,8 +90,8 @@
 # FILL-NEXT: ImportLookupTableRVA:
 # FILL-NEXT: ImportAddressTableRVA: 0x3000
 # FILL-NEXT: Symbol: hook
-## Each entry is {key, rva, name}, the key's bit 0 marking a read-only cell;
-## a default has no name.
+## Each entry is {key, rva, kind}, the key's bit 0 marking a read-only cell;
+## a default bound by name is of kind 0.
 # FILL:      180002000 d2315e5a e1358eba 00300000 00000000
 # FILL-NEXT: 180002010 d3315e5a e1358eba {{[0-9a-f]+}} 00000000
 # FILL:      cmpl $0x7b3ac2d5, 0x80(%rdi)
@@ -103,7 +103,7 @@
 # FILL:      callq *{{.*}}(%rip) # 0x[[#%x,0x180000000+PROTECT]]
 # FILL:      movq %r13, (%rcx,%rax)
 # FILL:      movq 0x8(%rax), %r13
-# FILL-NEXT: cmpl $0x0, 0xc(%rbx)
+# FILL-NEXT: jmp
 # RUN: FileCheck --check-prefix=NOSEARCH --input-file=use.txt %s
 # NOSEARCH-NOT: LdrAddRefDll
 # NOSEARCH-NOT: 0x6c8e9cf5

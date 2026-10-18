@@ -27,12 +27,13 @@
 # RUN:   FileCheck --check-prefix=LOG %s
 # RUN: llvm-readobj --coff-exports --coff-imports offer.dll > offer.txt
 # RUN: llvm-objdump -d offer.dll >> offer.txt
+# RUN: llvm-objdump -s -j .rdata offer.dll >> offer.txt
 # RUN: FileCheck --check-prefix=OFFER --input-file=offer.txt %s
 # LOG: Keeping __imp__Znwy for operator new(unsigned long long), which the image offers
 
 ## The import's entry, which the calls and the address-take read, and the
-## in-place slot of the data word are both cells of the default, which the
-## fill writes.
+## in-place slot of the data word are both cells of the default, in the fill's
+## list.
 # OFFER:      Name: rt.dll
 # OFFER-NEXT: ImportLookupTableRVA:
 # OFFER-NEXT: ImportAddressTableRVA: 0x[[#%X,ENTRY:]]
@@ -48,8 +49,10 @@
 # OFFER-NEXT: 48 8b 05 {{.*}} movq {{.*}}(%rip), %rax # 0x[[#%x,0x180000000+ENTRY]]
 # OFFER-NEXT: c3 retq
 # OFFER:      [[#%x,0x180000000+BODY]] <__ovr_offer$_Znwy>:
-# OFFER:      movq %rax, {{.*}}(%rip) # 0x[[#%x,0x180000000+SLOT]]
+# OFFER:      leaq {{.*}}(%rip), %rbx # 0x[[#%x,LIST:]]
 # OFFER:      [[#THUNK]]: ff 25 {{.*}} jmpq *{{.*}}(%rip) # 0x[[#%x,0x180000000+ENTRY]]
+# OFFER:      [[#%x,LIST]] 00000000 44000000 00300000 02000000
+# OFFER-NEXT: [[#%x,LIST+0x10]] 01000000 44000000 e0200000 02000000
 
 ## Without the runtime's import library there is no import to reach, and the
 ## definition stays the DLL's own.

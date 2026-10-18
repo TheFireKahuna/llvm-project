@@ -14,23 +14,16 @@
 
 # RUN: lld-link -import-slots -dll -noentry rt.obj take.obj crt.obj ntdll.lib \
 # RUN:   -out:rt.dll 2>&1 | count 0
-# RUN: llvm-objdump -d --print-imm-hex rt.dll | FileCheck %s
+# RUN: llvm-objdump -d --print-imm-hex rt.dll > rt.txt
+# RUN: llvm-objdump -s -j .rdata rt.dll >> rt.txt
+# RUN: FileCheck --input-file=rt.txt %s
 # CHECK:      <take>:
-# CHECK-NEXT: movq    {{.*}}(%rip), %rax # 0x[[#%x,POINTER:]]
-## The writable word, keyed by slot 0.
-# CHECK:      btl     $0x0, %r10d
-# CHECK-NEXT: jae
-# CHECK-NEXT: movl    0x44(%r11), %eax
-# CHECK-NEXT: addq    %r11, %rax
-# CHECK-NEXT: movq    %rax, {{.*}}(%rip) # 0x{{[0-9a-f]+}} <gw>
-## The pointer, read-only, within the bracket.
-# CHECK:      testl   $0x1, %r10d
-# CHECK:      callq
-# CHECK:      btl     $0x0, %r10d
-# CHECK-NEXT: jae
-# CHECK-NEXT: movl    0x44(%r11), %eax
-# CHECK-NEXT: addq    %r11, %rax
-# CHECK-NEXT: movq    %rax, {{.*}}(%rip) # 0x[[#POINTER]]
+# CHECK-NEXT: movq {{.*}}(%rip), %rax # 0x180002020
+# CHECK:      leaq {{.*}}(%rip), %rbx # 0x[[#%x,LIST:]]
+## The cells, {key, rva, kind}, each of slot 0, whose RVA is at 0x44 in the
+## executable's header: the read-only pointer and the writable word.
+# CHECK:      [[#%x,LIST]] 01000000 44000000 20200000 02000000
+# CHECK-NEXT: [[#%x,LIST+0x10]] 00000000 44000000 00300000 02000000
 
 ## Without an address-take there is no cell, no fill and no import of
 ## NtProtectVirtualMemory.

@@ -80,29 +80,25 @@ struct RunTimeCell {
 
 // Under -import-slots, the words of static data that hold imports' addresses:
 // the in-place import slots, which the loader writes, and the residual words,
-// which the residual fill writes. The writer lays out the chunks it holds
-// back, and the fill's.
+// which the image's fill writes. The writer lays out the chunks it holds back,
+// and the fill's.
 class ImportSlotContents {
 public:
   ImportSlotContents(COFFLinkerContext &ctx, IdataContents &idata)
       : ctx(ctx), idata(idata) {}
   void bind();
-  void createResidualFill();
-  // Builds the fill of a DLL's overridable-default cells, the words through
-  // which it reaches the defaults it imports.
-  void createOverrideCellFill();
-  // Builds a DLL's table of the vague entities it keeps preemptible, through
-  // which a DLL loaded at run time binds to its instances, and the fill of its
-  // cells bound by name: of overridable defaults replaced by name and of vague
-  // entities, which a search of the loaded modules binds where the
-  // executable's table does not name them.
-  void createNamedCellFill();
+  // Collects a DLL's cells, the words through which it reaches the
+  // overridable defaults it imports and the vague entities another image's
+  // instance may preempt.
+  void collectCells();
+  // Builds the table of the vague entities the image shares, through which a
+  // DLL loaded at run time binds to its instances.
+  void createOfferTable();
+  // Builds the image's fill.
+  void createFill();
   // Builds the copy of an executable's thread-local import slots into the main
   // thread's block.
   void createThreadLocalSlotCopy();
-  // Builds a DLL's run of the copy of the thread-local slots that the
-  // executable it imports from names.
-  void createThreadLocalSlotCopyCall();
   void check(Chunk *iatStart, uint64_t iatSize);
 
   // Whether sc is laid out apart from the other chunks of its section.
@@ -124,34 +120,16 @@ public:
   ArrayRef<RunTimeCell> getRunTimeCells() const { return runTimeCells; }
   // The names the fill resolves its cells by.
   ArrayRef<Chunk *> getRunTimeNames() const { return runTimeNames; }
-  Chunk *getFill() const { return residualFill; }
-  Chunk *getFillPointer() const { return residualFillPointer; }
-  Chunk *getFillUnwind() const { return residualFillUnwind; }
-  Chunk *getFillPdata() const { return residualFillPdata; }
-  Chunk *getOverrideCellFill() const { return overrideCellFill; }
-  Chunk *getOverrideCellFillPointer() const { return overrideCellFillPointer; }
-  Chunk *getOverrideCellFillUnwind() const { return overrideCellFillUnwind; }
-  Chunk *getOverrideCellFillPdata() const { return overrideCellFillPdata; }
-  Chunk *getNamedCellFill() const { return namedCellFill; }
-  Chunk *getNamedCellFillPointer() const { return namedCellFillPointer; }
-  Chunk *getNamedCellFillUnwind() const { return namedCellFillUnwind; }
-  Chunk *getNamedCellFillPdata() const { return namedCellFillPdata; }
-  Chunk *getNamedCellList() const { return namedCellList; }
+  Chunk *getFill() const { return fill; }
+  Chunk *getFillPointer() const { return fillPointer; }
+  Chunk *getFillUnwind() const { return fillUnwind; }
+  Chunk *getFillPdata() const { return fillPdata; }
+  Chunk *getFillList() const { return fillList; }
   Chunk *getVagueOfferTable() const { return vagueOfferTable; }
 
   Chunk *getThreadLocalSlotCopy() const { return threadLocalSlotCopy; }
   Chunk *getThreadLocalSlotCopyPointer() const {
     return threadLocalSlotCopyPointer;
-  }
-  Chunk *getThreadLocalSlotCopyCall() const { return threadLocalSlotCopyCall; }
-  Chunk *getThreadLocalSlotCopyCallPointer() const {
-    return threadLocalSlotCopyCallPointer;
-  }
-  Chunk *getThreadLocalSlotCopyCallUnwind() const {
-    return threadLocalSlotCopyCallUnwind;
-  }
-  Chunk *getThreadLocalSlotCopyCallPdata() const {
-    return threadLocalSlotCopyCallPdata;
   }
 
 private:
@@ -177,11 +155,11 @@ private:
   // The chunks laid out apart from the other chunks of their sections: those
   // above, and those of sealedChunks.
   llvm::DenseSet<const SectionChunk *> heldBackChunks;
-  // The words of static data that the residual fill writes, and the read-only
+  // The words of static data that the fill writes, and the read-only
   // chunks among theirs, which are laid out in .sealed, in their order there.
   std::vector<ResidualWord> residualWords;
   llvm::SetVector<SectionChunk *> sealedChunks;
-  // The imports the residual fill binds by name, which are laid out in
+  // The imports the fill binds by name, which are laid out in
   // .sealed before sealedChunks, and the names it binds them by.
   std::vector<RunTimeCell> runTimeCells;
   std::vector<Chunk *> runTimeNames;
@@ -189,42 +167,20 @@ private:
   // first such word.
   llvm::MapVector<ImportFile *, std::pair<SectionChunk *, uint32_t>>
       interiorBases;
-  // The residual fill, its pointer in the C initializer table and, when it has
-  // a frame, its unwind information and exception table entry.
-  Chunk *residualFill = nullptr;
-  Chunk *residualFillPointer = nullptr;
-  Chunk *residualFillUnwind = nullptr;
-  Chunk *residualFillPdata = nullptr;
-  // The fill of this image's overridable-default cells, its pointer in the C
-  // initializer table, and, when it has a frame, its unwind information and
-  // exception table entry.
-  Chunk *overrideCellFill = nullptr;
-  Chunk *overrideCellFillPointer = nullptr;
-  Chunk *overrideCellFillUnwind = nullptr;
-  Chunk *overrideCellFillPdata = nullptr;
-  // The fill of this DLL's cells bound by name, from the executable's table
-  // or, for a vague entity, a search of the loaded modules: its pointer in the
-  // C initializer table, its unwind information and exception table entry,
-  // and the list of the cells it writes; and the table through which another
-  // DLL's search finds this DLL's instances.
-  Chunk *namedCellFill = nullptr;
-  Chunk *namedCellFillPointer = nullptr;
-  Chunk *namedCellFillUnwind = nullptr;
-  Chunk *namedCellFillPdata = nullptr;
-  Chunk *namedCellList = nullptr;
+  // The fill, its pointer in the C initializer table, its unwind information
+  // and exception table entry, and the lists it works through; and the table
+  // through which another DLL's search finds this image's instances.
+  Chunk *fill = nullptr;
+  Chunk *fillPointer = nullptr;
+  Chunk *fillUnwind = nullptr;
+  Chunk *fillPdata = nullptr;
+  Chunk *fillList = nullptr;
   Chunk *vagueOfferTable = nullptr;
 
   // The copy of an executable's thread-local slots and its pointer in the C
   // initializer table.
   Chunk *threadLocalSlotCopy = nullptr;
   Chunk *threadLocalSlotCopyPointer = nullptr;
-  // A DLL's run of that copy, its pointer in the C initializer table, and, on
-  // AArch64, where it has a frame, its unwind information and exception table
-  // entry.
-  Chunk *threadLocalSlotCopyCall = nullptr;
-  Chunk *threadLocalSlotCopyCallPointer = nullptr;
-  Chunk *threadLocalSlotCopyCallUnwind = nullptr;
-  Chunk *threadLocalSlotCopyCallPdata = nullptr;
   // The read-only output sections other than .rdata that hold in-place import
   // slots, which are laid out before .rdata, and whether a $-group of .rdata
   // holds one; either places the import address tables at the start of

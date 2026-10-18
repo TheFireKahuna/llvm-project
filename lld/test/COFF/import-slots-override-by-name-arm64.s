@@ -1,8 +1,8 @@
 # REQUIRES: aarch64
 ## The AArch64 form of a DLL's fill of its cells bound by name: it searches
 ## the anchor's entries for each key of its list, writes the address an entry
-## with the key names into the cells under it, and writes the read-only ones
-## between two protection calls, made only once a cell is to be written.
+## with the key names into the cells under it, and makes the read-only cells
+## writable before it writes the first.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium l.s -o l.obj
@@ -37,8 +37,7 @@
 # CHECK:      blr     x16
 # CHECK:      str     x23, [x27, x9]
 # CHECK:      ldr     x23, [x11, #0x8]
-# CHECK-NEXT: ldr     w9, [x19, #0xc]
-# CHECK-NEXT: cbz     w9,
+# CHECK-NEXT: b
 
 #--- l.s
         .text

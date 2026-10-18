@@ -47,6 +47,8 @@
 ## process, if delay-loaded within that scope, or if it delay-loads this DLL.
 # CHECK:      stp x29, x30, [sp, #-0x90]!
 # CHECK:      mov w24, #0x0
+# CHECK-NEXT: adrp x27, 0x180000000
+# CHECK-NEXT: add x27, x27, #0x0
 # CHECK-NEXT: ldr x16, [x18, #0x60]
 # CHECK-NEXT: ldrb w9, [x16, #0x50]
 # CHECK-NEXT: tbnz w9, #0x1,
@@ -54,8 +56,8 @@
 # CHECK:      ldr x22, [x19]
 # CHECK-NEXT: and x22, x22, #0xfffffffffffffffe
 # CHECK:      ldr w9, [x19, #0xc]
-# CHECK-NEXT: cmp w9, #0x1
-# CHECK-NEXT: b.ls
+# CHECK-NEXT: cmp w9, #0x1, lsl #12
+# CHECK-NEXT: b.lo
 # CHECK-NEXT: tbz w24, #0x2,
 # CHECK:      ldr x26, [x9, #0x18]
 # CHECK-NEXT: add x26, x26, #0x10
@@ -106,7 +108,10 @@
 ## instance from it.
 # CHECK:      ldr x23, [x11, #0x8]
 # CHECK-NEXT: ldr w9, [x19, #0xc]
-# CHECK-NEXT: cbz w9,
+# CHECK-NEXT: cmp w9, #0x1
+# CHECK-NEXT: b.eq
+# CHECK-NEXT: cmp w9, #0x1, lsl #12
+# CHECK-NEXT: b.lo
 # CHECK-NEXT: ldr x23, [x23]
 # CHECK-NEXT: b
 ## Nothing pins the DLL itself.

@@ -40,8 +40,8 @@
 # CHECK-NEXT: [[#DONE]]: {{.*}} mov w0, #0x0
 # CHECK-NEXT: ret
 
-## A DLL that imports from an executable runs the copy the executable names
-## from its C initializer table, after the guard's check, in a frame its unwind
+## A DLL that imports from an executable first runs the copy the executable
+## names from its fill, after the guard's check, in a frame its unwind
 ## information describes.
 # RUN: lld-link -def:host.def -out:host.lib -machine:arm64
 # RUN: lld-link -def:ntdll.def -out:ntdll.lib -machine:arm64
@@ -51,31 +51,30 @@
 # RUN: llvm-objdump -d --print-imm-hex plug.dll > plug.txt
 # RUN: llvm-readobj --unwind plug.dll >> plug.txt
 # RUN: FileCheck --check-prefix=CALL --input-file=plug.txt %s
-# CALL:      180001010: {{.*}} stp x29, x30, [sp, #-0x30]!
-# CALL-NEXT: mov x29, sp
+# CALL:      180001010: {{.*}} stp x29, x30, [sp, #-0x90]!
+# CALL:      mov w24, #0x0
+# CALL-NEXT: adrp x27, 0x180000000
+# CALL-NEXT: add x27, x27, #0x0
 # CALL-NEXT: ldr x9, [x18, #0x60]
 # CALL-NEXT: ldr w10, [x9, #0x50]
-# CALL-NEXT: tbz w10, #0x1, 0x[[#%x,ZERO:]]
+# CALL-NEXT: tbz w10, #0x1, 0x[[#%x,SKIP:]]
 # CALL-NEXT: ldr x9, [x9, #0x10]
 # CALL-NEXT: ldr w10, [x9, #0x1c]
 # CALL-NEXT: mov w11, #0x79b9
 # CALL-NEXT: movk w11, #0x9e37, lsl #16
 # CALL-NEXT: cmp w10, w11
-# CALL-NEXT: b.ne 0x[[#ZERO]]
+# CALL-NEXT: b.ne 0x[[#SKIP]]
 # CALL-NEXT: ldr w10, [x9, #0x20]
 # CALL-NEXT: add x15, x9, x10
 # CALL-NEXT: adrp x16, 0x180002000
 # CALL-NEXT: ldr x16, [x16]
 # CALL-NEXT: blr x16
 # CALL-NEXT: blr x15
-# CALL-NEXT: [[#ZERO]]: {{.*}} mov w0, #0x0
-# CALL-NEXT: mov sp, x29
-# CALL-NEXT: ldp x29, x30, [sp], #0x30
-# CALL-NEXT: ret
+# CALL-NEXT: [[#SKIP]]:
 # CALL:      Function: 0x180001010
 # CALL:      Prologue [
-# CALL-NEXT:   0xe1 ; mov fp, sp
-# CALL-NEXT:   0x85 ; stp x29, x30, [sp, #-48]!
+# CALL:        0xe1 ; mov fp, sp
+# CALL-NEXT:   0x91 ; stp x29, x30, [sp, #-144]!
 # CALL-NEXT:   0xe4 ; end
 
 #--- ntdll.def

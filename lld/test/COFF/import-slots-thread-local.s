@@ -29,7 +29,7 @@
 # RUN: FileCheck --input-file=tl.txt %s
 
 ## The slot is at offset 8 in the template, after another thread-local datum;
-## the template holds its lookup entry, 0x2098.
+## the template holds its lookup entry, 0x20b0.
 # CHECK:      StartAddressOfRawData: 0x[[#%x,START:]]
 # CHECK:      AddressOfIndex: 0x[[#%x,INDEX:]]
 # CHECK:      140001010: {{.*}} movq %gs:0x60, %rax
@@ -39,7 +39,7 @@
 # CHECK-NEXT: movq %gs:0x58, %rdx
 # CHECK-NEXT: movq (%rdx,%rcx,8), %rdx
 # CHECK-NEXT: movq 0x8(%rdx), %rax
-# CHECK-NEXT: movabsq $0x2098, %r8
+# CHECK-NEXT: movabsq $0x20b0, %r8
 # CHECK-NEXT: cmpq %r8, %rax
 # CHECK-NEXT: jne 0x[[#DONE]]
 # CHECK-NEXT: movq {{.*}}(%rip), %rax # 0x[[#START + 8]]
@@ -48,7 +48,7 @@
 # CHECK-NEXT: retq
 
 ## The copy's pointer follows the TLS callback array's opening null; the C
-## initializer table holds only the residual fill's.
+## initializer table holds only the fill's.
 # CHECK:      Contents of section .CRT:
 # CHECK-NEXT: 11111111 11111111 60100040 01000000
 # CHECK-NEXT: 33333333 33333333 00000000 00000000
@@ -76,10 +76,11 @@
 # NOTAG: 00 00 00 00 00 00 00 00
 
 ## A DLL that imports from an executable may call it from its initializers
-## before the executable's TLS callbacks run, so its C initializer table runs
-## the copy the executable names first, ahead of every other initializer, while
-## the process initializes; through the guard's dispatch where the image has
-## it, here the first word of .rdata, or directly where it has none.
+## before the executable's TLS callbacks run, so its fill, which its C
+## initializer table runs ahead of every other initializer, first calls the
+## copy the executable names, while the process initializes; through the
+## guard's dispatch where the image has it, here the first word of .rdata, or
+## directly where it has none.
 # RUN: lld-link -def:host.def -out:host.lib -machine:x64
 # RUN: lld-link -def:ntdll.def -out:ntdll.lib -machine:x64
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium plug.s -o plug.obj
@@ -93,17 +94,18 @@
 # CALL:      Name: .rdata
 # CALL-NEXT: VirtualSize:
 # CALL-NEXT: VirtualAddress: 0x[[#%x,RDATA:]]
-# CALL:      180001010: {{.*}} movq %gs:0x60, %rax
+# CALL:      180001010: {{.*}} pushq %rbx
+# CALL:      xorl %r14d, %r14d
+# CALL-NEXT: movq %gs:0x60, %rax
 # CALL-NEXT: btl $0x1, 0x50(%rax)
-# CALL-NEXT: jae 0x[[#%x,ZERO:]]
+# CALL-NEXT: jae 0x[[#%x,SKIP:]]
 # CALL-NEXT: movq 0x10(%rax), %rax
 # CALL-NEXT: cmpl $0x9e3779b9, 0x1c(%rax)
-# CALL-NEXT: jne 0x[[#ZERO]]
+# CALL-NEXT: jne 0x[[#SKIP]]
 # CALL-NEXT: movl 0x20(%rax), %ecx
 # CALL-NEXT: addq %rcx, %rax
-# CALL-NEXT: jmpq *{{.*}}(%rip) # 0x[[#RDATA + 0x180000000]]
-# CALL-NEXT: [[#ZERO]]: {{.*}} xorl %eax, %eax
-# CALL-NEXT: retq
+# CALL-NEXT: callq *{{.*}}(%rip) # 0x[[#RDATA + 0x180000000]]
+# CALL-NEXT: [[#SKIP]]:
 # CALL:      Contents of section .CRT:
 # CALL-NEXT: 11111111 11111111 10100080 01000000
 
@@ -111,7 +113,7 @@
 # RUN:   -out:noguard.dll
 # RUN: llvm-objdump -d noguard.dll | FileCheck --check-prefix=NOGUARD %s
 # NOGUARD:      addq %rcx, %rax
-# NOGUARD-NEXT: jmpq *%rax
+# NOGUARD-NEXT: callq *%rax
 
 ## A DLL that imports from no executable carries none, and one with no C
 ## initializer table has nothing to bind its import from the executable.

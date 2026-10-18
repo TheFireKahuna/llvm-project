@@ -66,8 +66,8 @@
 # CHECK-NEXT: cmpl $0x7b3ac2d5, 0x80(%rdi)
 # CHECK:      movq (%rbx), %r12
 # CHECK-NEXT: andq $-0x2, %r12
-# CHECK:      cmpl $0x1, 0xc(%rbx)
-# CHECK-NEXT: jbe
+# CHECK:      cmpl $0x1000, 0xc(%rbx)
+# CHECK-NEXT: jb
 # CHECK-NEXT: btl $0x2, %r14d
 # CHECK-NEXT: jae
 # CHECK-NEXT: movq %gs:0x60, %rax
@@ -124,8 +124,10 @@
 ## An entity the table names takes the word its entry names, then the
 ## instance from it.
 # CHECK:      movq 0x8(%rax), %r13
-# CHECK-NEXT: cmpl $0x0, 0xc(%rbx)
+# CHECK-NEXT: cmpl $0x1, 0xc(%rbx)
 # CHECK-NEXT: je
+# CHECK-NEXT: cmpl $0x1000, 0xc(%rbx)
+# CHECK-NEXT: jb
 # CHECK-NEXT: movq (%r13), %r13
 # CHECK-NEXT: jmp
 # CHECK:      popq %rbx
@@ -204,7 +206,7 @@
 ## The search pins what it binds to.
 # RUN: not lld-link -import-slots -dll -noentry a.obj crt.obj x.lib \
 # RUN:   protect.lib -out:err.dll 2>&1 | FileCheck --check-prefix=ERR %s
-# ERR: error: the image binds cells by name at run time, which needs LdrAddRefDll from ntdll.lib
+# ERR: error: the image's fill needs LdrAddRefDll from ntdll.lib
 
 #--- a.s
   .linkbindings

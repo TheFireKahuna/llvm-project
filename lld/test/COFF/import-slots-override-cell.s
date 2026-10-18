@@ -25,99 +25,97 @@
 # RUN:   ntdll.lib -out:use.dll
 # RUN: llvm-readobj --coff-imports use.dll > use.txt
 # RUN: llvm-objdump -d --print-imm-hex use.dll >> use.txt
-# RUN: FileCheck --ignore-case --check-prefixes=IMPORT,FILL --input-file=use.txt \
-# RUN:   %s
+# RUN: llvm-objdump -s -j .rdata use.dll >> use.txt
+# RUN: FileCheck --check-prefixes=IMPORT,FILL --input-file=use.txt %s
 # IMPORT:      Name: rt.dll
 # IMPORT-NEXT: ImportLookupTableRVA:
-# IMPORT-NEXT: ImportAddressTableRVA: 0x[[RO:[0-9A-F]+]]
+# IMPORT-NEXT: ImportAddressTableRVA: 0x2090
 # IMPORT-NEXT: Symbol: _Znwy
 # IMPORT:      Name: ntdll.dll
 # IMPORT-NEXT: ImportLookupTableRVA:
-# IMPORT-NEXT: ImportAddressTableRVA: 0x[[PROTECT:[0-9A-F]+]]
+# IMPORT-NEXT: ImportAddressTableRVA: 0x20A0
 # IMPORT-NEXT: Symbol: NtProtectVirtualMemory
 # IMPORT:      Name: rt.dll
 # IMPORT-NEXT: ImportLookupTableRVA:
-# IMPORT-NEXT: ImportAddressTableRVA: 0x[[RW:[0-9A-F]+]]
+# IMPORT-NEXT: ImportAddressTableRVA: 0x3000
 # IMPORT-NEXT: Symbol: _Znwy
 
-## The fill reads the anchor's mask and writes the writable cell for slot 0 in
-## place. Only when a read-only cell's slot is replaced does it make their range
-## writable, write them, and make it read-only again, as read-only cells are
-## only in read-only data. It
-## returns 0, or the status of a failed protection call, which fails start-up.
-# FILL:      subq    $0x48, %rsp
-# FILL-NEXT: movq    %gs:0x60, %r11
-# FILL-NEXT: movq    0x10(%r11), %r11
-# FILL-NEXT: cmpl    $0x7b3ac2d5, 0x80(%r11)
-# FILL-NEXT: jne     0x[[ZERO:[0-9a-f]+]]
-# FILL-NEXT: movl    0x88(%r11), %r10d
-# FILL-NEXT: movl    0x8(%r11,%r10), %r10d
-# FILL-NEXT: btl     $0x0, %r10d
+## The fill reads the executable's base, zero where it has no table, and for
+## each cell of its list whose slot the anchor's mask names replaced, writes
+## the base plus the slot's RVA. Before the first read-only cell it makes
+## their range writable; it makes it read-only again at its end, as read-only
+## cells are only in read-only data. It returns 0, or the status of a failed
+## protection call, which fails start-up.
+# FILL:      movq %gs:0x60, %rax
+# FILL-NEXT: movq 0x10(%rax), %rdi
+# FILL-NEXT: cmpl $0x7b3ac2d5, 0x80(%rdi)
+# FILL-NEXT: je
+# FILL-NEXT: xorl %edi, %edi
+# FILL-NEXT: leaq {{.*}}(%rip), %rbx # 0x[[#%x,LIST:]]
+# FILL-NEXT: leaq {{.*}}(%rip), %rsi # 0x[[#%x,LIST+0x20]]
+# FILL-NEXT: cmpq %rsi, %rbx
 # FILL-NEXT: jae
-# FILL-NEXT: movl    0x44(%r11), %eax
-# FILL-NEXT: addq    %r11, %rax
-# FILL-NEXT: movq    %rax, {{.*}}(%rip) # 0x18000[[RW]]
-# FILL-NEXT: testl   $0x1, %r10d
-# FILL-NEXT: je      0x[[ZERO]]
-# FILL-NEXT: leaq    {{.*}}(%rip), %rax # 0x18000[[RO]]
-# FILL-NEXT: movq    %rax, 0x30(%rsp)
-# FILL-NEXT: movq    $0x8, 0x38(%rsp)
-# FILL-NEXT: movl    $0x4, %r9d
-# FILL-NEXT: leaq    0x40(%rsp), %rax
-# FILL-NEXT: movq    %rax, 0x20(%rsp)
-# FILL-NEXT: movq    $-0x1, %rcx
-# FILL-NEXT: leaq    0x30(%rsp), %rdx
-# FILL-NEXT: leaq    0x38(%rsp), %r8
-# FILL-NEXT: callq   *{{.*}}(%rip) # 0x18000[[PROTECT]]
-# FILL-NEXT: testl   %eax, %eax
-# FILL-NEXT: jne     0x[[DONE:[0-9a-f]+]]
-# FILL-NEXT: movq    %gs:0x60, %r11
-# FILL-NEXT: movq    0x10(%r11), %r11
-# FILL-NEXT: movl    0x88(%r11), %r10d
-# FILL-NEXT: movl    0x8(%r11,%r10), %r10d
-# FILL-NEXT: btl     $0x0, %r10d
+# FILL-NEXT: movq (%rbx), %r12
+# FILL-NEXT: andq $-0x2, %r12
+# FILL-NEXT: testq %rdi, %rdi
+# FILL-NEXT: je 0x[[#%x,SKIP:]]
+# FILL-NEXT: movl 0x88(%rdi), %eax
+# FILL-NEXT: movl 0x8(%rdi,%rax), %eax
+# FILL-NEXT: movl %r12d, %ecx
+# FILL-NEXT: shrl %ecx
+# FILL-NEXT: btl %ecx, %eax
 # FILL-NEXT: jae
-# FILL-NEXT: movl    0x44(%r11), %eax
-# FILL-NEXT: addq    %r11, %rax
-# FILL-NEXT: movq    %rax, {{.*}}(%rip) # 0x18000[[RO]]
-# FILL-NEXT: leaq    {{.*}}(%rip), %rax # 0x18000[[RO]]
-# FILL-NEXT: movq    %rax, 0x30(%rsp)
-# FILL-NEXT: movq    $0x8, 0x38(%rsp)
-# FILL-NEXT: movl    $0x2, %r9d
-# FILL-NEXT: leaq    0x40(%rsp), %rax
-# FILL-NEXT: movq    %rax, 0x20(%rsp)
-# FILL-NEXT: movq    $-0x1, %rcx
-# FILL-NEXT: leaq    0x30(%rsp), %rdx
-# FILL-NEXT: leaq    0x38(%rsp), %r8
-# FILL-NEXT: callq   *{{.*}}(%rip) # 0x18000[[PROTECT]]
-# FILL-NEXT: jmp     0x[[DONE]]
-# FILL-NEXT: [[ZERO]]: {{.*}} xorl %eax, %eax
-# FILL-NEXT: [[DONE]]: {{.*}} addq $0x48, %rsp
-# FILL-NEXT: retq
-# FILL:      jmpq    *{{.*}}(%rip) # 0x18000[[RO]]
+# FILL-NEXT: movq %r12, %rax
+# FILL-NEXT: shrq $0x20, %rax
+# FILL-NEXT: movl (%rdi,%rax), %eax
+# FILL-NEXT: leaq (%rdi,%rax), %r13
+# FILL-NEXT: jmp 0x[[#%x,NEXT:]]
+# FILL-NEXT: [[#%x,SKIP]]:
+# FILL-NEXT: [[#%x,NEXT]]: {{.*}} testb $0x1, (%rbx)
+# FILL-NEXT: je 0x[[#%x,STORE:]]
+# FILL-NEXT: btsl $0x0, %r14d
+# FILL-NEXT: jb 0x[[#%x,STORE]]
+# FILL-NEXT: leaq {{.*}}(%rip), %rax # 0x180002090
+# FILL-NEXT: movq %rax, 0x30(%rsp)
+# FILL-NEXT: movq $0x8, 0x38(%rsp)
+# FILL-NEXT: movl $0x4, %r9d
+# FILL:      callq *{{.*}}(%rip) # 0x1800020a0
+# FILL-NEXT: testl %eax, %eax
+# FILL-NEXT: jne
+# FILL-NEXT: [[#%x,STORE]]: {{.*}} movl 0x8(%rbx), %eax
+# FILL-NEXT: leaq {{.*}}(%rip), %rcx # 0x180000000
+# FILL-NEXT: movq %r13, (%rcx,%rax)
+# FILL:      testb $0x1, %r14b
+# FILL-NEXT: je
+# FILL-NEXT: leaq {{.*}}(%rip), %rax # 0x180002090
+# FILL-NEXT: movq %rax, 0x30(%rsp)
+# FILL-NEXT: movq $0x8, 0x38(%rsp)
+# FILL-NEXT: movl $0x2, %r9d
+# FILL:      jmpq *{{.*}}(%rip) # 0x180002090
 
-## The protection calls give the fill a frame, which its unwind information
-## describes, and the C initializer table holds its pointer right after the
-## table's start.
+## The cells, {key, rva, kind}: the writable one in .data and the read-only
+## import entry, bit 0 of whose key is set, each of slot 0, whose RVA is at
+## 0x44 in the executable's header.
+# FILL:      [[#%x,LIST]] 00000000 44000000 00300000 02000000
+# FILL-NEXT: [[#%x,LIST+0x10]] 01000000 44000000 90200000 02000000
+
+## The fill's unwind information describes its frame, and the C initializer
+## table holds its pointer right after the table's start.
 # RUN: llvm-readobj --unwind use.dll | FileCheck --check-prefix=UNWIND %s
 # UNWIND:      StartAddress: (0x180001010)
-# UNWIND:      PrologSize: 4
-# UNWIND:      0x04: ALLOC_SMALL size=72
+# UNWIND:      PrologSize: 16
 # RUN: llvm-objdump -s -j .CRT use.dll | FileCheck --check-prefix=CRT %s
 # CRT:      Contents of section .CRT:
 # CRT-NEXT: 00000000 00000000 10100080 01000000
 
 ## With only a writable cell, which is then the slot its import is read from,
-## the fill is a leaf that needs no protection call, and so no ntdll.lib.
+## the fill needs no protection call, and so no ntdll.lib.
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium rw.s -o rw.obj
 # RUN: lld-link -import-slots -dll -noentry rw.obj crt.obj rt.lib \
 # RUN:   -out:rw.dll
 # RUN: llvm-objdump -d --print-imm-hex rw.dll | FileCheck --check-prefix=LEAF %s
-# LEAF-NOT:  subq
-# LEAF:      btl     $0x0, %r10d
-# LEAF-NOT:  callq
-# LEAF:      xorl    %eax, %eax
-# LEAF-NEXT: retq
+# LEAF:     btl %ecx, %eax
+# LEAF-NOT: callq
 
 ## A DLL that reaches no overridable default carries no fill.
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium plain.s -o plain.obj
@@ -135,7 +133,7 @@
 # RUN: not lld-link -import-slots -dll -noentry use.obj crt.obj rt.lib \
 # RUN:   -out:noprotect.dll 2>&1 | \
 # RUN:   FileCheck --check-prefix=NOPROTECT %s
-# NOPROTECT: error: the image reaches __declspec(dllimport) operator new(unsigned long long), an overridable default imported from rt.dll, through a cell that it cannot write without NtProtectVirtualMemory from ntdll.lib
+# NOPROTECT: error: the image's fill needs NtProtectVirtualMemory from ntdll.lib
 
 ## A thread-local cell is a slot in the template of the DLL's thread-local
 ## data, which the loader binds before it copies the template into any thread's
@@ -147,28 +145,32 @@
 # RUN:   -out:tl.dll
 # RUN: llvm-readobj --coff-imports --sections tl.dll > tl.txt
 # RUN: llvm-objdump -d --print-imm-hex tl.dll >> tl.txt
-# RUN: FileCheck --ignore-case --check-prefix=TL --input-file=tl.txt %s
+# RUN: llvm-objdump -s -j .rdata tl.dll >> tl.txt
+# RUN: FileCheck --check-prefix=TL --input-file=tl.txt %s
 # TL:      Name: .data
 # TL-NEXT: VirtualSize:
-# TL-NEXT: VirtualAddress: 0x[[DATA:[0-9A-F]+]]
+# TL-NEXT: VirtualAddress: 0x3000
 # TL:      Name: .tls
 # TL-NEXT: VirtualSize:
-# TL-NEXT: VirtualAddress: 0x[[TLS:[0-9A-F]+]]
+# TL-NEXT: VirtualAddress: 0x6000
 # TL:      Name: rt.dll
 # TL-NEXT: ImportLookupTableRVA:
-# TL-NEXT: ImportAddressTableRVA: 0x[[CELL:[0-9A-F]+]]
+# TL-NEXT: ImportAddressTableRVA: 0x6008
 # TL-NEXT: Symbol: _Znwy
-# TL:      btl     $0x0, %r10d
+# TL:      leaq {{.*}}(%rip), %rbx # 0x[[#%x,LIST:]]
+# TL:      movq %r13, (%rcx,%rax)
+# TL-NEXT: movl 0xc(%rbx), %ecx
+# TL-NEXT: cmpl $0x1000, %ecx
 # TL-NEXT: jae
-# TL-NEXT: movl    0x44(%r11), %eax
-# TL-NEXT: addq    %r11, %rax
-# TL-NEXT: movq    %rax, {{.*}}(%rip) # 0x18000[[CELL]]
-# TL-NEXT: movl    {{.*}}(%rip), %ecx # 0x18000[[DATA]]
-# TL-NEXT: movq    %gs:0x58, %rdx
-# TL-NEXT: movq    (%rdx,%rcx,8), %rdx
-# TL-NEXT: movq    %rax, 0x8(%rdx)
-# TL-NEXT: xorl    %eax, %eax
-# TL-NEXT: retq
+# TL-NEXT: testb $0x4, %cl
+# TL-NEXT: je
+# TL-NEXT: movl {{.*}}(%rip), %ecx # 0x180003000
+# TL-NEXT: movq %gs:0x58, %rdx
+# TL-NEXT: movq (%rdx,%rcx,8), %rdx
+# TL-NEXT: addl $0xffffa000, %eax
+# TL-NEXT: movq %r13, (%rdx,%rax)
+## The cell, of kind 6, a slot in the template.
+# TL:      [[#%x,LIST]] 00000000 44000000 08600000 06000000
 
 ## A TLS directory that names no template or index leaves no thread's block
 ## to write.

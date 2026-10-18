@@ -886,11 +886,10 @@ void Writer::run() {
     });
     slots.bind();
     relaxSections(ctx);
-    slots.createResidualFill();
-    slots.createOverrideCellFill();
-    slots.createNamedCellFill();
+    slots.collectCells();
+    slots.createOfferTable();
+    slots.createFill();
     slots.createThreadLocalSlotCopy();
-    slots.createThreadLocalSlotCopyCall();
     if (ctx.kcfi.listsImports || !ctx.kcfi.listedImports.empty())
       kcfi.listThunks();
     createSections();
@@ -1313,61 +1312,24 @@ void Writer::createSections() {
     createPartialSection(".CRT$XLA$fill", data | r)
         ->chunks.push_back(slots.getThreadLocalSlotCopyPointer());
   }
-  // Right after the table's start, ahead of every other initializer: a DLL's
-  // run of the executable's copy of its thread-local slots, the fill of the
-  // overridable-default cells, the search of the loaded modules for the
-  // instances of its vague entities, then the residual fill, which seals the
-  // section of the cells that share a chunk with residual words.
-  if (Chunk *call = slots.getThreadLocalSlotCopyCall()) {
-    createPartialSection(".text", call->getOutputCharacteristics())
-        ->chunks.push_back(call);
-    createPartialSection(".CRT$XIA$fill", data | r)
-        ->chunks.push_back(slots.getThreadLocalSlotCopyCallPointer());
-  }
-  if (Chunk *pdata = slots.getThreadLocalSlotCopyCallPdata()) {
-    createPartialSection(".xdata", data | r)
-        ->chunks.push_back(slots.getThreadLocalSlotCopyCallUnwind());
-    createPartialSection(".pdata", data | r)->chunks.push_back(pdata);
-  }
-  if (Chunk *fill = slots.getOverrideCellFill()) {
-    createPartialSection(".text", fill->getOutputCharacteristics())
-        ->chunks.push_back(fill);
-    createPartialSection(".CRT$XIA$fill", data | r)
-        ->chunks.push_back(slots.getOverrideCellFillPointer());
-  }
-  if (Chunk *fill = slots.getNamedCellFill()) {
-    createPartialSection(".text", fill->getOutputCharacteristics())
-        ->chunks.push_back(fill);
-    createPartialSection(".CRT$XIA$fill", data | r)
-        ->chunks.push_back(slots.getNamedCellFillPointer());
-    createPartialSection(".rdata", data | r)
-        ->chunks.push_back(slots.getNamedCellList());
-    createPartialSection(".xdata", data | r)
-        ->chunks.push_back(slots.getNamedCellFillUnwind());
-    createPartialSection(".pdata", data | r)
-        ->chunks.push_back(slots.getNamedCellFillPdata());
-  }
-  if (Chunk *table = slots.getVagueOfferTable())
-    createPartialSection(".rdata", data | r)->chunks.push_back(table);
-
+  // Right after the table's start, ahead of every other initializer: the
+  // image's fill, with its lists, the names it binds imports by, and its unwind
+  // information.
   if (Chunk *fill = slots.getFill()) {
     createPartialSection(".text", fill->getOutputCharacteristics())
         ->chunks.push_back(fill);
     createPartialSection(".CRT$XIA$fill", data | r)
         ->chunks.push_back(slots.getFillPointer());
-    llvm::append_range(createPartialSection(".rdata", data | r)->chunks,
-                       slots.getRunTimeNames());
-  }
-  if (Chunk *pdata = slots.getFillPdata()) {
+    PartialSection *rdata = createPartialSection(".rdata", data | r);
+    rdata->chunks.push_back(slots.getFillList());
+    llvm::append_range(rdata->chunks, slots.getRunTimeNames());
     createPartialSection(".xdata", data | r)
         ->chunks.push_back(slots.getFillUnwind());
-    createPartialSection(".pdata", data | r)->chunks.push_back(pdata);
+    createPartialSection(".pdata", data | r)
+        ->chunks.push_back(slots.getFillPdata());
   }
-  if (Chunk *pdata = slots.getOverrideCellFillPdata()) {
-    createPartialSection(".xdata", data | r)
-        ->chunks.push_back(slots.getOverrideCellFillUnwind());
-    createPartialSection(".pdata", data | r)->chunks.push_back(pdata);
-  }
+  if (Chunk *table = slots.getVagueOfferTable())
+    createPartialSection(".rdata", data | r)->chunks.push_back(table);
 
   fixPartialSectionChars(".rsrc", data | r);
   fixPartialSectionChars(".edata", data | r);
@@ -1464,7 +1426,7 @@ void Writer::createSections() {
 
   // The read-only chunks holding residual words, and the cells of imports
   // bound at run time, get pages of their own, which the image maps writable
-  // and the residual fill makes read-only.
+  // and the fill makes read-only.
   if (!slots.getSealedChunks().empty() || !slots.getRunTimeCells().empty()) {
     OutputSection *sec = createSection(".sealed", data | r | w);
     for (const RunTimeCell &c : slots.getRunTimeCells())
@@ -3300,26 +3262,14 @@ void Writer::createGuardCFTables() {
       if (s.sym->file->thunkSym)
         giatsRVASet.insert({s.chunk, s.offset});
 
-  // The C initializer table calls the residual fill.
+  // The C initializer table calls the fill.
   if (Chunk *fill = slots.getFill())
-    addressTakenSyms.insert({fill, 0});
-
-  // The C initializer table calls the overridable-default cell fill.
-  if (Chunk *fill = slots.getOverrideCellFill())
-    addressTakenSyms.insert({fill, 0});
-
-  // The C initializer table calls the search for a DLL's vague entities.
-  if (Chunk *fill = slots.getNamedCellFill())
     addressTakenSyms.insert({fill, 0});
 
   // The TLS callback array, and the DLLs the executable's header names it to,
   // call the copy of the thread-local slots.
   if (Chunk *copy = slots.getThreadLocalSlotCopy())
     addressTakenSyms.insert({copy, 0});
-
-  // The C initializer table calls a DLL's run of that copy.
-  if (Chunk *call = slots.getThreadLocalSlotCopyCall())
-    addressTakenSyms.insert({call, 0});
 
   // The override table's anchor names each replacement body, and each
   // forwarding thunk, whose checked dispatch from a default needs it in the

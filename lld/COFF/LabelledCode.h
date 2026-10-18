@@ -121,17 +121,16 @@ public:
     applyArm64Imm(buf + off + 4, target & 0xfff, 0);
     off += 8;
   }
-  // adrp xN, imp; ldr xN, [xN, :lo12:imp]
-  void loadImport(uint32_t reg, uint64_t imp) {
+  // adrp xN, target; ldr xN, [xN, :lo12:target], or another load, ldr.
+  void loadImport(uint32_t reg, uint64_t target, uint32_t ldr = 0xF9400000) {
     if (!buf) {
       off += 8;
       return;
     }
     llvm::support::endian::write32le(buf + off, 0x90000000 | reg);
-    llvm::support::endian::write32le(buf + off + 4,
-                                     0xF9400000 | reg << 5 | reg);
-    applyArm64Addr(buf + off, imp, rva + off, 12);
-    applyArm64Ldr(buf + off + 4, imp & 0xfff);
+    llvm::support::endian::write32le(buf + off + 4, ldr | reg << 5 | reg);
+    applyArm64Addr(buf + off, target, rva + off, 12);
+    applyArm64Ldr(buf + off + 4, target & 0xfff);
     off += 8;
   }
   // adrp x16, imp; ldr x16, [x16, :lo12:imp]; blr x16

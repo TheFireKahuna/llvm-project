@@ -26,15 +26,17 @@
 # RUN: llvm-objdump -s -j .rdata b.dll > b.txt
 # RUN: llvm-objdump -d --print-imm-hex b.dll >> b.txt
 # RUN: FileCheck --check-prefix=CELL --input-file=b.txt %s
-## b's own reference reads its cell, which its fill of cells bound by name
-## writes from the word the executable's block names for the entity's key: its
-## list holds the cell, read-only, with the name its export holds.
+## b's own reference reads its cell, which its fill writes from the word the
+## executable's block names for the entity's key: its list holds the cell,
+## read-only, with the name its export holds.
 # CELL:      b75fec27 d80a3472 {{[0-9a-f]+}} {{[0-9a-f]*[2-9a-f][0-9a-f]*}}
 # CELL:      <fb>:
 # CELL-NEXT: movq {{.*}}(%rip), %rax
 # CELL:      movq 0x8(%rax), %r13
-# CELL-NEXT: cmpl $0x0, 0xc(%rbx)
+# CELL-NEXT: cmpl $0x1, 0xc(%rbx)
 # CELL-NEXT: je
+# CELL-NEXT: cmpl $0x1000, 0xc(%rbx)
+# CELL-NEXT: jb
 # CELL-NEXT: movq (%r13), %r13
 
 ## The executable picks a.dll, first in link order, and imports its instance.

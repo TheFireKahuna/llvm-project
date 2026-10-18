@@ -2,7 +2,7 @@
 ## Under -import-slots, an import of a DLL from an executable can only mean the
 ## process's own executable, whatever its file name, so it is bound by name
 ## when the DLL starts rather than by a descriptor naming the file: its pointer
-## is a cell in .sealed, which the residual fill writes through
+## is a cell in .sealed, which the image's fill writes through
 ## LdrGetProcedureAddressForCaller against PEB->ImageBaseAddress, failing the
 ## DLL's initialization with the resolver's status when the executable lacks
 ## the name, and a word of static data holding the address is written from the
@@ -20,11 +20,12 @@
 # RUN:   ntdll.lib -out:plug.dll
 # RUN: llvm-readobj --coff-imports --sections plug.dll > plug.txt
 # RUN: llvm-objdump -d --print-imm-hex plug.dll >> plug.txt
+# RUN: llvm-objdump -s -j .rdata plug.dll >> plug.txt
 # RUN: FileCheck --input-file=plug.txt %s
 
 # CHECK:      Name: .sealed
 # CHECK-NEXT: VirtualSize: 0x10
-# CHECK-NEXT: VirtualAddress: 0x[[#%x,SEALED:]]
+# CHECK-NEXT: VirtualAddress: 0x6000
 # CHECK-NOT:  Name: host.exe
 # CHECK:      Name: ntdll.dll
 # CHECK:      Symbol: LdrGetProcedureAddressForCaller
@@ -32,37 +33,52 @@
 # CHECK-NOT:  Name: host.exe
 
 # CHECK:      <.text>:
-# CHECK-NEXT: callq *{{.*}}(%rip) # 0x[[#SEALED + 0x180000000]]
-# CHECK-NEXT: movq {{.*}}(%rip), %rax # 0x[[#SEALED + 0x180000008]]
+# CHECK-NEXT: callq *{{.*}}(%rip) # 0x180006000
+# CHECK-NEXT: movq {{.*}}(%rip), %rax # 0x180006008
 
-## Each name is resolved in the executable, the PEB's ImageBaseAddress, with
-## flag 1, which binds without initializing it; a failure ends the fill with
-## its status.
-# CHECK:      subq $0x48, %rsp
+## Each name of the list's imports is resolved in the executable, the PEB's
+## ImageBaseAddress, with flag 1, which binds without initializing it; a
+## failure ends the fill with its status.
+# CHECK:      leaq {{.*}}(%rip), %rbx # 0x[[#%x,CELLS:]]
+# CHECK-NEXT: leaq {{.*}}(%rip), %rsi # 0x[[#%x,CELLS+0x20]]
+# CHECK-NEXT: cmpq %rsi, %rbx
+# CHECK-NEXT: jae
 # CHECK-NEXT: movq %gs:0x60, %rcx
 # CHECK-NEXT: movq 0x10(%rcx), %rcx
-# CHECK-NEXT: leaq {{.*}}(%rip), %rax
-# CHECK-NEXT: movq %rax, 0x38(%rsp)
-# CHECK-NEXT: movl $0x70006, 0x30(%rsp)
-# CHECK-NEXT: leaq 0x30(%rsp), %rdx
+# CHECK-NEXT: movl 0x4(%rbx), %eax
+# CHECK-NEXT: leaq {{.*}}(%rip), %rdx # 0x180000000
+# CHECK-NEXT: addq %rdx, %rax
+# CHECK-NEXT: movq %rax, 0x50(%rsp)
+# CHECK-NEXT: movzwl 0xc(%rbx), %eax
+# CHECK-NEXT: leal 0x1(%rax), %edx
+# CHECK-NEXT: shll $0x10, %edx
+# CHECK-NEXT: orl %edx, %eax
+# CHECK-NEXT: movl %eax, 0x48(%rsp)
+# CHECK-NEXT: leaq 0x48(%rsp), %rdx
 # CHECK-NEXT: xorl %r8d, %r8d
-# CHECK-NEXT: leaq {{.*}}(%rip), %r9 # 0x[[#SEALED + 0x180000000]]
+# CHECK-NEXT: movl (%rbx), %r9d
+# CHECK-NEXT: leaq {{.*}}(%rip), %rax # 0x180000000
+# CHECK-NEXT: addq %rax, %r9
 # CHECK-NEXT: movl $0x1, 0x20(%rsp)
-# CHECK-NEXT: leaq {{.*}}(%rip), %rax
+# CHECK-NEXT: leaq {{.*}}(%rip), %rax # 0x180001010
 # CHECK-NEXT: movq %rax, 0x28(%rsp)
 # CHECK-NEXT: callq *{{.*}}(%rip)
+# CHECK-NEXT: cmpl $0x0, 0x8(%rbx)
+# CHECK-NEXT: jne
 # CHECK-NEXT: testl %eax, %eax
-# CHECK-NEXT: js 0x[[#%x,END:]]
-# CHECK:      leaq {{.*}}(%rip), %r9 # 0x[[#SEALED + 0x180000008]]
-# CHECK:      js 0x[[#END]]
-## The word of .data holding hostfn's address, from its cell; then the seal.
-# CHECK-NEXT: movq {{.*}}(%rip), %rax # 0x[[#SEALED + 0x180000000]]
-# CHECK-NEXT: addq $0x0, %rax
-# CHECK-NEXT: movq %rax, {{.*}}(%rip)
+# CHECK-NEXT: js 0x[[#%x,FAIL:]]
+## Then the word of .data holding hostfn's address, from its cell, and the
+## seal.
+# CHECK:      leaq {{.*}}(%rip), %rbx # 0x[[#%x,CELLS+0x20]]
+# CHECK:      [[#%x,FAIL]]: {{.*}} movl %eax, %r12d
 # CHECK:      movl $0x2, %r9d
-# CHECK-NEXT: callq *{{.*}}(%rip)
-# CHECK-NEXT: [[#END]]: {{.*}} addq $0x48, %rsp
-# CHECK-NEXT: retq
+
+## The imports, {cell, name, 0 for one from the executable that is not weak,
+## the name's length}: hostfn and hostvar; then the word, {word, cell, 0}.
+# CHECK:      [[#%x,CELLS]] 00600000 30200000 00000000 06000000
+# CHECK-NEXT: [[#%x,CELLS+0x10]] 08600000 37200000 00000000 07000000
+# CHECK-NEXT: [[#%x,CELLS+0x20]] 00300000 00600000 00000000 00000000
+# CHECK-NEXT: 686f7374 666e0068 6f737476 61720000  hostfn.hostvar..
 
 ## The names are imported from the executable that loads the DLL.
 # RUN: lld-link -import-slots -dll -noentry plug.obj crt.obj ntdll.lib \
