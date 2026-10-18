@@ -28,11 +28,11 @@
 # RUN: FileCheck --check-prefixes=IMPORT,FILL --input-file=use.txt %s
 # IMPORT:      Name: rt.dll
 # IMPORT-NEXT: ImportLookupTableRVA:
-# IMPORT-NEXT: ImportAddressTableRVA: 0x20C8
+# IMPORT-NEXT: ImportAddressTableRVA: 0x20C0
 # IMPORT-NEXT: Symbol: _Znwy
 # IMPORT:      Name: ntdll.dll
 # IMPORT-NEXT: ImportLookupTableRVA:
-# IMPORT-NEXT: ImportAddressTableRVA: 0x20D8
+# IMPORT-NEXT: ImportAddressTableRVA: 0x20D0
 # IMPORT-NEXT: Symbol: NtProtectVirtualMemory
 # IMPORT:      Name: rt.dll
 # IMPORT-NEXT: ImportLookupTableRVA:
@@ -42,18 +42,18 @@
 ## __llvm_fill loads its list.
 # FILL:      leaq {{.*}}(%rip), %rax # 0x[[#%x,LIST:]]
 
-## The list header: one read-only range, two cells; no TLS; no section to seal;
-## the key of this DLL's name and a flag word that runs no copy. The range
-## spans the read-only cell, the import entry at 0x20C8.
+## The list header: one read-only range, two cells; no section to seal; then
+## the key of this DLL's name, and a flag word that runs no copy. The range
+## spans the read-only cell, the import entry at 0x20C0.
 # FILL:      [[#%x,LIST]]      01000000 02000000 00000000 00000000
-# FILL-NEXT: [[#%x,LIST+0x10]] 00000000 00000000 00000000 00000000
-# FILL-NEXT: [[#%x,LIST+0x20]] {{[0-9a-f]+ [0-9a-f]+}} 00000000 00000000
-## Then the range, {rva, size}, and the cells, {key, rva, kind}: the writable
-## one in .data, and the read-only import entry whose key has bit 0 set, each of
-## slot 0, whose RVA is at 0x44 in the executable's header, each of kind 2.
-# FILL-NEXT: [[#%x,LIST+0x30]] c8200000 08000000 00000000 44000000
-# FILL-NEXT: [[#%x,LIST+0x40]] 00300000 02000000 01000000 44000000
-# FILL-NEXT: [[#%x,LIST+0x50]] c8200000 02000000
+# FILL-NEXT: [[#%x,LIST+0x10]] 00000000 00000000 {{[0-9a-f]+ [0-9a-f]+}}
+## Then, after the 40-byte header, the range, {rva, size}, and the cells, {key,
+## rva, kind}: the writable one in .data, and the read-only import entry whose
+## key has bit 0 set, each of slot 0, whose RVA is at 0x44 in the executable's
+## header, each of kind 2.
+# FILL-NEXT: [[#%x,LIST+0x20]] 00000000 00000000 c0200000 08000000
+# FILL-NEXT: [[#%x,LIST+0x30]] 00000000 44000000 00300000 02000000
+# FILL-NEXT: [[#%x,LIST+0x40]] 01000000 44000000 c0200000 02000000
 
 ## The C initializer table holds the fill's pointer right after the table's
 ## start.
@@ -94,8 +94,8 @@
 # NOPROTECT: referenced by crt.obj:(__llvm_fill)
 
 ## A thread-local cell is a slot in the template of the DLL's thread-local data.
-## Its list names the TLS index and template start, and its kind is a slot in
-## the template (fillCellSlot | fillCellThreadLocal = 6).
+## The fill reads the image's TLS directory for the index and template, and the
+## cell's kind is a slot in the template (fillCellSlot | fillCellThreadLocal = 6).
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium tl.s -o tl.obj
 # RUN: lld-link -import-slots -dll -noentry tl.obj crt.obj rt.lib ntdll.lib \
 # RUN:   -out:tl.dll
@@ -114,19 +114,11 @@
 # TL-NEXT: ImportAddressTableRVA: 0x5008
 # TL-NEXT: Symbol: _Znwy
 # TL:      leaq {{.*}}(%rip), %rax # 0x[[#%x,LIST:]]
-## One cell; the TLS index 0x3000 and template start 0x5000; then the cell, a
-## slot in the template at 0x5008, of kind 6.
+## One cell, a slot in the template at 0x5008, of kind 6.
 # TL:      [[#%x,LIST]]      00000000 01000000 00000000 00000000
-# TL-NEXT: [[#%x,LIST+0x10]] 00300000 00500000 00000000 00000000
-# TL-NEXT: [[#%x,LIST+0x20]] {{[0-9a-f]+ [0-9a-f]+}} 00000000 00000000
-# TL-NEXT: [[#%x,LIST+0x30]] 00000000 44000000 08500000 06000000
-
-## A TLS directory that names no template or index leaves no thread's block
-## to write.
-# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium tlbad.s -o tlbad.obj
-# RUN: not lld-link -import-slots -dll -noentry tlbad.obj crt.obj rt.lib \
-# RUN:   ntdll.lib -out:tlbad.dll 2>&1 | FileCheck --check-prefix=TLBAD %s
-# TLBAD: error: the image reaches __declspec(dllimport) operator new(unsigned long long), an overridable default imported from rt.dll, through a cell in thread-local data, but the image's TLS directory (_tls_used) names no template or index
+# TL-NEXT: [[#%x,LIST+0x10]] 00000000 00000000 {{[0-9a-f]+ [0-9a-f]+}}
+# TL-NEXT: [[#%x,LIST+0x20]] 00000000 00000000 00000000 44000000
+# TL-NEXT: [[#%x,LIST+0x30]] 08500000 06000000 {{.*}}
 
 ## An executable binds its own references at link time and carries no fill.
 # RUN: lld-link -import-slots -entry:dllmain -subsystem:console use.obj crt.obj \
@@ -242,27 +234,6 @@ _tls_used:
         .quad _tls_start
         .quad _tls_end
         .quad _tls_index
-        .quad 0
-        .long 0
-        .long 0
-
-#--- tlbad.s
-        .text
-        .globl dllmain
-dllmain:
-        retq
-        .section .tls$,"dw"
-        .globl tnew
-        .p2align 3
-tnew:
-        .quad _Znwy
-        .section .rdata,"dr"
-        .globl _tls_used
-        .p2align 3
-_tls_used:
-        .quad 0
-        .quad 0
-        .quad 0
         .quad 0
         .long 0
         .long 0

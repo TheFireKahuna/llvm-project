@@ -40,19 +40,19 @@
 ## __llvm_fill loads its list.
 # CHECK:      leaq {{.*}}(%rip), %rax # 0x[[#%x,LIST:]]
 
-## The list: no cells, two run-time cells, one residual word; the section it
-## seals is .sealed at 0x5000, size 0x10; its flag word's bit 0 set, since the
-## DLL imports from the executable and runs its copy.
-# CHECK:      [[#%x,LIST]]      00000000 00000000 02000000 01000000
-# CHECK-NEXT: [[#%x,LIST+0x10]] 00000000 00000000 00500000 10000000
-# CHECK-NEXT: [[#%x,LIST+0x20]] {{[0-9a-f]+ [0-9a-f]+}} 01000000 00000000
-## The run-time cells, {cell, name, 0 for one from the executable that is not
-## weak, the name's length}: hostfn and hostvar; then the residual word {word,
-## cell, addend} for the .data copy.
-# CHECK-NEXT: [[#%x,LIST+0x30]] 00500000 60200000 00000000 06000000
-# CHECK-NEXT: [[#%x,LIST+0x40]] 08500000 67200000 00000000 07000000
-# CHECK-NEXT: [[#%x,LIST+0x50]] 00300000 00500000 00000000 00000000
-# CHECK-NEXT: [[#%x,LIST+0x60]] 686f7374 666e0068 6f737476 61720000  hostfn.hostvar..
+## The list: no cells, one residual word, two run-time cells; the section it
+## seals is .sealed at 0x5000, size 0x10; then the key of this DLL's name, and
+## a flag word whose bit 0 is set, since the DLL imports from the executable and
+## runs its copy.
+# CHECK:      [[#%x,LIST]]      00000000 00000000 01000000 02000000
+# CHECK-NEXT: [[#%x,LIST+0x10]] 00500000 10000000 {{[0-9a-f]+ [0-9a-f]+}}
+## After the 40-byte header, the residual word {word, cell, addend} for the
+## .data copy, then the run-time cells {cell, name, 0 for one from the executable
+## that is not weak}: hostfn and hostvar, whose names follow the list.
+# CHECK-NEXT: [[#%x,LIST+0x20]] 01000000 00000000 00300000 00500000
+# CHECK-NEXT: [[#%x,LIST+0x30]] 00000000 00000000 00500000 50200000
+# CHECK-NEXT: [[#%x,LIST+0x40]] 00000000 08500000 57200000 00000000
+# CHECK-NEXT: [[#%x,LIST+0x50]] 686f7374 666e0068 6f737476 61720000  hostfn.hostvar..
 
 ## The names are imported from the executable that loads the DLL.
 # RUN: lld-link -import-slots -dll -noentry plug.obj crt.obj ntdll.lib \

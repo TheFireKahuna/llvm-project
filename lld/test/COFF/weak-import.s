@@ -51,18 +51,17 @@
 ## __llvm_fill loads its list.
 # CHECK:      leaq {{.*}}(%rip), %rax # 0x[[#%x,LIST:]]
 
-## The list: no cells, two run-time cells, one residual word; the section it
+## The list: no cells, one residual word, two run-time cells; the section it
 ## seals is .sealed at 0x5000, size 0x10.
-# CHECK:      [[#%x,LIST]]      00000000 00000000 02000000 01000000
-# CHECK-NEXT: [[#%x,LIST+0x10]] 00000000 00000000 00500000 10000000
-# CHECK-NEXT: [[#%x,LIST+0x20]] {{[0-9a-f]+ [0-9a-f]+}} 00000000 00000000
-## The run-time cells, {cell, name, dll, name length, dll length}: f and v, each
-## resolved in dll.dll; then the residual word {word, cell, addend} that writes
-## the .data copy from v's cell.
-# CHECK-NEXT: [[#%x,LIST+0x30]] 00500000 60200000 62200000 01000e00
-# CHECK-NEXT: [[#%x,LIST+0x40]] 08500000 72200000 74200000 01000e00
-# CHECK-NEXT: [[#%x,LIST+0x50]] 00300000 08500000 00000000 00000000
-# CHECK-NEXT: [[#%x,LIST+0x60]] 66006400 6c006c00 2e006400 6c006c00  f.d.l.l...d.l.l.
+# CHECK:      [[#%x,LIST]]      00000000 00000000 01000000 02000000
+# CHECK-NEXT: [[#%x,LIST+0x10]] 00500000 10000000 {{[0-9a-f]+ [0-9a-f]+}}
+## After the 40-byte header, the residual word {word, cell, addend} that writes
+## the .data copy from v's cell, then the run-time cells {cell, name, dll}: f and
+## v, each resolved in dll.dll, whose names and UTF-16 DLL name follow the list.
+# CHECK-NEXT: [[#%x,LIST+0x20]] 00000000 00000000 00300000 08500000
+# CHECK-NEXT: [[#%x,LIST+0x30]] 00000000 00000000 00500000 50200000
+# CHECK-NEXT: [[#%x,LIST+0x40]] 52200000 08500000 62200000 64200000
+# CHECK-NEXT: [[#%x,LIST+0x50]] 66006400 6c006c00 2e006400 6c006c00  f.d.l.l...d.l.l.
 
 ## A reference other than a weak one, as a declaration marked dllimport gives,
 ## keeps f's import the loader's.

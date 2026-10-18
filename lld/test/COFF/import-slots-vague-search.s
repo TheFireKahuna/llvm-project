@@ -54,8 +54,7 @@
 ## of a kind that is the RVA of the name its export holds, never zero, by which
 ## the search binds it.
 # RUN: llvm-objdump -s -j .rdata a.dll | FileCheck --check-prefix=BIND %s
-# BIND:      {{.*}} b75fec27 d80a3472
-# BIND-NEXT: {{[0-9a-f]+}} {{[0-9a-f]*[2-9a-f][0-9a-f]*}}
+# BIND:      {{.*}} b75fec27 d80a3472 {{[0-9a-f]+}} {{[0-9a-f]*[2-9a-f][0-9a-f]*}}
 
 ## An importer of an entity that its DLL keeps preemptible reaches it through
 ## a cell, the import's entry, which the fill writes from the executable's
@@ -73,8 +72,7 @@
 # IMPORTER-NEXT: ImportAddressTableRVA:
 # IMPORTER:      Symbol: LdrAddRefDll
 # RUN: llvm-objdump -s -j .rdata c.dll | FileCheck --check-prefix=IMPLIST %s
-# IMPLIST:      {{.*}} b75fec27 d80a3472
-# IMPLIST-NEXT: {{[0-9a-f]+}} {{[0-9a-f]*[2-9a-f][0-9a-f]*}}
+# IMPLIST:      {{.*}} b75fec27 d80a3472 {{[0-9a-f]+}} {{[0-9a-f]*[2-9a-f][0-9a-f]*}}
 
 ## -Bsymbolic keeps the DLL's references local: no cells, no search, and,
 ## without a delay-loaded DLL, no table.

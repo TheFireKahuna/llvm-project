@@ -21,21 +21,20 @@
 # CHECK:      adrp x0, 0x[[#%x,PAGE:]]
 # CHECK-NEXT: add x0, x0, #0x[[#%x,OFF:]]
 
-## The list header: one read-only range, two cells; no TLS; no section to seal;
-## then the range {rva, size} over the read-only import entry at 0x20C8, and the
-## cells, {key, rva, kind}: the writable one in .data and the read-only import
-## entry whose key has bit 0 set, each of slot 0, whose RVA is at 0x44 in the
-## executable's header, each of kind 2.
+## The list header: one read-only range, two cells; no section to seal; then,
+## after the 40-byte header, the range {rva, size} over the read-only import
+## entry at 0x20C0, and the cells, {key, rva, kind}: the writable one in .data
+## and the read-only import entry whose key has bit 0 set, each of slot 0, whose
+## RVA is at 0x44 in the executable's header, each of kind 2.
 # CHECK:      [[#%x,PAGE+OFF]]      01000000 02000000 00000000 00000000
-# CHECK-NEXT: [[#%x,PAGE+OFF+0x10]] 00000000 00000000 00000000 00000000
-# CHECK-NEXT: [[#%x,PAGE+OFF+0x20]] {{[0-9a-f]+ [0-9a-f]+}} 00000000 00000000
-# CHECK-NEXT: [[#%x,PAGE+OFF+0x30]] c8200000 08000000 00000000 44000000
-# CHECK-NEXT: [[#%x,PAGE+OFF+0x40]] 00300000 02000000 01000000 44000000
-# CHECK-NEXT: [[#%x,PAGE+OFF+0x50]] c8200000 02000000
+# CHECK-NEXT: [[#%x,PAGE+OFF+0x10]] 00000000 00000000 {{[0-9a-f]+ [0-9a-f]+}}
+# CHECK-NEXT: [[#%x,PAGE+OFF+0x20]] 00000000 00000000 c0200000 08000000
+# CHECK-NEXT: [[#%x,PAGE+OFF+0x30]] 00000000 44000000 00300000 02000000
+# CHECK-NEXT: [[#%x,PAGE+OFF+0x40]] 01000000 44000000 c0200000 02000000
 
 ## A thread-local cell is a slot in the template of the DLL's thread-local data.
-## Its list names the TLS index and template start, and its kind is a slot in
-## the template (fillCellSlot | fillCellThreadLocal = 6).
+## The fill reads the image's TLS directory for the index and template, and the
+## cell's kind is a slot in the template (fillCellSlot | fillCellThreadLocal = 6).
 # RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium tl.s -o tl.obj
 # RUN: lld-link -import-slots -dll -noentry tl.obj crt.obj rt.lib \
 # RUN:   ntdll.lib -out:tl.dll
@@ -44,12 +43,11 @@
 # RUN: FileCheck --check-prefix=TL --input-file=tl.txt %s
 # TL:      adrp x0, 0x[[#%x,PAGE:]]
 # TL-NEXT: add x0, x0, #0x[[#%x,OFF:]]
-## One cell; the TLS index 0x3000 and template start 0x5000; then the cell, a
-## slot in the template at 0x5008, of kind 6.
+## One cell, a slot in the template at 0x5008, of kind 6.
 # TL:      [[#%x,PAGE+OFF]]      00000000 01000000 00000000 00000000
-# TL-NEXT: [[#%x,PAGE+OFF+0x10]] 00300000 00500000 00000000 00000000
-# TL-NEXT: [[#%x,PAGE+OFF+0x20]] {{[0-9a-f]+ [0-9a-f]+}} 00000000 00000000
-# TL-NEXT: [[#%x,PAGE+OFF+0x30]] 00000000 44000000 08500000 06000000
+# TL-NEXT: [[#%x,PAGE+OFF+0x10]] 00000000 00000000 {{[0-9a-f]+ [0-9a-f]+}}
+# TL-NEXT: [[#%x,PAGE+OFF+0x20]] 00000000 00000000 00000000 44000000
+# TL-NEXT: [[#%x,PAGE+OFF+0x30]] 08500000 06000000 {{.*}}
 
 #--- rt.s
         .text

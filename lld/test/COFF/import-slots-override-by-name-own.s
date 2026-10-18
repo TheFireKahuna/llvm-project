@@ -22,9 +22,9 @@
 ## u32, kind u32}, the key's bit 0 marking a read-only cell and a default bound
 ## by name being of kind 0: the read-only pointer, the writable word, and the
 ## read-only word.
-# CHECK:      {{.*}} d3315e5a e1358eba
-# CHECK-NEXT: {{.*}} 00000000 d2315e5a e1358eba
-# CHECK-NEXT: {{.*}} 00000000 d3315e5a e1358eba
+# CHECK:      {{.*}} d3315e5a e1358eba {{[0-9a-f]+}} 00000000
+# CHECK-NEXT: {{.*}} d2315e5a e1358eba {{[0-9a-f]+}} 00000000
+# CHECK-NEXT: {{.*}} d3315e5a e1358eba {{[0-9a-f]+}} 00000000
 # CHECK:      <take>:
 # CHECK-NEXT: movq    {{.*}}(%rip), %rax
 

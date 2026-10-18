@@ -32,7 +32,7 @@
 ## in .sealed. The fill imports NtProtectVirtualMemory to seal it.
 # CHECK:      Name: lib.dll
 # CHECK-NEXT: ImportLookupTableRVA:
-# CHECK-NEXT: ImportAddressTableRVA: 0x20C0
+# CHECK-NEXT: ImportAddressTableRVA: 0x20B8
 # CHECK-NEXT: Symbol: arr
 # CHECK:      Name: ntdll.dll
 # CHECK-NEXT: ImportLookupTableRVA:
@@ -60,16 +60,16 @@
 # CHECK-NEXT: leaq {{.*}}(%rip), %rax # 0x[[#%x,LIST:]]
 # CHECK-NEXT: callq *{{.*}}(%rip) # 0x[[#%x,PROTECT+0x180000000]]
 
-## The list header: no ranges, no cells, no run-time cells, two residual words;
-## no TLS; the section it seals is .sealed at 0x5000, size 0x10; then the key of
-## this DLL's name and a flag word that runs no copy.
-# CHECK:      [[#%x,LIST]]      00000000 00000000 00000000 02000000
-# CHECK-NEXT: [[#%x,LIST+0x10]] 00000000 00000000 00500000 10000000
-# CHECK-NEXT: [[#%x,LIST+0x20]] {{[0-9a-f]+ [0-9a-f]+}} 00000000 00000000
-## The words: the slot in .sealed, arr + 12, and the word in .data,
-## arr + 0x100000000, each from arr's entry at 0x20C0.
-# CHECK-NEXT: [[#%x,LIST+0x30]] 00500000 c0200000 0c000000 00000000
-# CHECK-NEXT: [[#%x,LIST+0x40]] 00300000 c0200000 00000000 01000000
+## The list header: no ranges, no cells, two residual words, no run-time cells;
+## the section it seals is .sealed at 0x5000, size 0x10; then the key of this
+## DLL's name, and a flag word that runs no copy.
+# CHECK:      [[#%x,LIST]]      00000000 00000000 02000000 00000000
+# CHECK-NEXT: [[#%x,LIST+0x10]] 00500000 10000000 {{[0-9a-f]+ [0-9a-f]+}}
+## The words follow the 40-byte header: the slot in .sealed, arr + 12, and the
+## word in .data, arr + 0x100000000, each from arr's entry at 0x20B8.
+# CHECK-NEXT: [[#%x,LIST+0x20]] 00000000 00000000 00500000 b8200000
+# CHECK-NEXT: [[#%x,LIST+0x30]] 0c000000 00000000 00300000 b8200000
+# CHECK-NEXT: [[#%x,LIST+0x40]] 00000000 01000000 {{.*}}
 
 ## The fill's pointer follows the table's start, ahead of the other initializer.
 # TABLE:      11111111 11111111 00100080 01000000
@@ -96,8 +96,8 @@
 
 # LEAF:      leaq {{.*}}(%rip), %rax # 0x[[#%x,LLIST:]]
 ## One residual word and no section to seal.
-# LEAF:      [[#%x,LLIST]]      00000000 00000000 00000000 01000000
-# LEAF-NEXT: [[#%x,LLIST+0x10]] 00000000 00000000 00000000 00000000
+# LEAF:      [[#%x,LLIST]]      00000000 00000000 01000000 00000000
+# LEAF-NEXT: [[#%x,LLIST+0x10]] 00000000 00000000 {{[0-9a-f]+ [0-9a-f]+}}
 # LEAF-NOT:  Name: .sealed
 
 # RUN: not lld-link -dll -noentry -import-slots -out:out.dll ro.obj lib.lib \

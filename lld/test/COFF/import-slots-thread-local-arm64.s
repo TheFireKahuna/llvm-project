@@ -1,10 +1,10 @@
 # REQUIRES: aarch64
 ## The AArch64 form of the executable's copy of its thread-local import slots,
 ## the builtins' __llvm_thread_local_slot_copy, which the linker makes the
-## executable's first TLS callback. The linker builds its list, naming the TLS
-## index and template start and, for each slot, its RVA and the lookup entry the
-## template holds for it, and names the list in the MZ header for a DLL that may
-## reach the executable first.
+## executable's first TLS callback. The linker builds its list, naming for each
+## slot its RVA and the lookup entry the template holds for it; the copy reads
+## the image's own TLS directory for the index and template, and the linker
+## names the list in the MZ header for a DLL that may reach the executable first.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: lld-link -def:lib.def -out:lib.lib -machine:arm64
@@ -26,12 +26,10 @@
 # CHECK-NEXT: 00000000 00000000 {{[0-9a-f]+}} 01000000
 # CHECK-NEXT: 00000000 00000000
 
-## The copy list: one slot; the TLS index 0x3000 and template start 0x5000; then
-## the slot's RVA, the template start plus 8, and the lookup entry 0x2080 the
-## template holds for it.
-# CHECK:      {{.*}} 01000000 00300000
-# CHECK-NEXT: {{.*}} 00500000 00000000 08500000 00000000
-# CHECK-NEXT: {{.*}} 80200000
+## The copy list: one slot, its count a 64-bit word; then the slot's RVA, the
+## template start plus 8, and the lookup entry 0x2078 the template holds for it.
+# CHECK:      140002020 {{[0-9a-f]+ [0-9a-f]+}} 01000000 00000000
+# CHECK-NEXT: 140002030 08500000 00000000 78200000 00000000
 
 ## The MZ header names the copy list: the tag 0x9E3779B9 and its RVA.
 # CHECK:      9e3779b9 00002028
@@ -50,11 +48,11 @@
 # CALL-NEXT: add x0, x0, #0x[[#%x,OFF:]]
 ## One run-time cell, the cell in .sealed at 0x4000; the flag word's bit 0 set
 ## to run the executable's copy; the run-time cell for hostfn, bound in the
-## executable (dll word 0) by a name of length 6.
-# CALL:      [[#%x,PAGE+OFF]]      00000000 00000000 01000000 00000000
-# CALL-NEXT: [[#%x,PAGE+OFF+0x10]] 00000000 00000000 00400000 08000000
-# CALL-NEXT: [[#%x,PAGE+OFF+0x20]] {{[0-9a-f]+ [0-9a-f]+}} 01000000 00000000
-# CALL-NEXT: [[#%x,PAGE+OFF+0x30]] 00400000 {{[0-9a-f]+}} 00000000 06000000
+## executable (dll word 0), whose name follows the list.
+# CALL:      [[#%x,PAGE+OFF]]      00000000 00000000 00000000 01000000
+# CALL-NEXT: [[#%x,PAGE+OFF+0x10]] 00400000 08000000 {{[0-9a-f]+ [0-9a-f]+}}
+# CALL-NEXT: [[#%x,PAGE+OFF+0x20]] 01000000 00000000 00400000 {{[0-9a-f]+}}
+# CALL-NEXT: [[#%x,PAGE+OFF+0x30]] 00000000 {{.*}}
 
 #--- host.def
 LIBRARY host.exe

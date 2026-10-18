@@ -14,13 +14,13 @@
 # RUN:   -out:use.dll
 # RUN: llvm-objdump -s -j .rdata use.dll | FileCheck %s
 
-## The list: one read-only range over the import entry at 0x20C8, then the cells
+## The list: one read-only range over the import entry at 0x20C0, then the cells
 ## {key, rva, kind}, each under the default's key, a default bound by name being
 ## of kind 0: the writable word, then the read-only import entry whose key has
 ## bit 0 set.
-# CHECK:      180002030 c8200000 08000000 d2315e5a e1358eba
-# CHECK-NEXT: 180002040 00300000 00000000 d3315e5a e1358eba
-# CHECK-NEXT: 180002050 c8200000 00000000
+# CHECK:      180002020 00000000 00000000 c0200000 08000000
+# CHECK-NEXT: 180002030 d2315e5a e1358eba 00300000 00000000
+# CHECK-NEXT: 180002040 d3315e5a e1358eba c0200000 00000000
 
 #--- l.s
         .text

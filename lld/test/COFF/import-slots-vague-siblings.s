@@ -30,8 +30,7 @@
 ## executable's block names for the entity's key: its list holds the cell,
 ## read-only, keyed by the entity and of a kind that is the RVA of the name its
 ## export holds, never zero, by which a search binds it.
-# CELL:      {{.*}} b75fec27 d80a3472
-# CELL-NEXT: {{[0-9a-f]+}} {{[0-9a-f]*[2-9a-f][0-9a-f]*}}
+# CELL:      {{.*}} b75fec27 d80a3472 {{[0-9a-f]+}} {{[0-9a-f]*[2-9a-f][0-9a-f]*}}
 # CELL:      <fb>:
 # CELL-NEXT: movq {{.*}}(%rip), %rax
 

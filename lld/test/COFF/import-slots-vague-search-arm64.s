@@ -35,8 +35,7 @@
 ## of a kind that is the RVA of the name its export holds, never zero, by which
 ## the search binds it.
 # RUN: llvm-objdump -s -j .rdata a.dll | FileCheck --check-prefix=BIND %s
-# BIND:      {{.*}} b75fec27 d80a3472
-# BIND-NEXT: {{[0-9a-f]+}} {{[0-9a-f]*[2-9a-f][0-9a-f]*}}
+# BIND:      {{.*}} b75fec27 d80a3472 {{[0-9a-f]+}} {{[0-9a-f]*[2-9a-f][0-9a-f]*}}
 
 #--- a.s
   .linkbindings

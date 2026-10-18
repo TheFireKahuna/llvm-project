@@ -26,17 +26,17 @@
 # CHECK-NEXT: adrp x0, 0x[[#%x,LIST:]]
 # CHECK-NEXT: add x0, x0, #0x[[#%x,OFF:]]
 
-## The list header: no ranges, no cells, no run-time cells, three residual
-## words; no TLS; the section it seals is .sealed at 0x5000, size 0x10; then the
-## key of this DLL's name and a flag word that runs no copy.
-# CHECK:      [[#%x,LIST+OFF]]      00000000 00000000 00000000 03000000
-# CHECK-NEXT: [[#%x,LIST+OFF+0x10]] 00000000 00000000 00500000 10000000
-# CHECK-NEXT: [[#%x,LIST+OFF+0x20]] {{[0-9a-f]+ [0-9a-f]+}} 00000000 00000000
-## The words: two in .sealed, arr + 12 and arr - 8, and the one in .data,
-## arr + 0x100002345, each from arr's entry at 0x20C0.
-# CHECK-NEXT: [[#%x,LIST+OFF+0x30]] 00500000 c0200000 0c000000 00000000
-# CHECK-NEXT: [[#%x,LIST+OFF+0x40]] 08500000 c0200000 f8ffffff ffffffff
-# CHECK-NEXT: [[#%x,LIST+OFF+0x50]] 00300000 c0200000 45230000 01000000
+## The list header: no ranges, no cells, three residual words, no run-time
+## cells; the section it seals is .sealed at 0x5000, size 0x10; then the key of
+## this DLL's name, and a flag word that runs no copy.
+# CHECK:      [[#%x,LIST+OFF]]      00000000 00000000 03000000 00000000
+# CHECK-NEXT: [[#%x,LIST+OFF+0x10]] 00500000 10000000 {{[0-9a-f]+ [0-9a-f]+}}
+## The words follow the 40-byte header: two in .sealed, arr + 12 and arr - 8,
+## and the one in .data, arr + 0x100002345, each from arr's entry at 0x20B8.
+# CHECK-NEXT: [[#%x,LIST+OFF+0x20]] 00000000 00000000 00500000 b8200000
+# CHECK-NEXT: [[#%x,LIST+OFF+0x30]] 0c000000 00000000 08500000 b8200000
+# CHECK-NEXT: [[#%x,LIST+OFF+0x40]] f8ffffff ffffffff 00300000 b8200000
+# CHECK-NEXT: [[#%x,LIST+OFF+0x50]] 45230000 01000000 {{.*}}
 
 # IMAGE:      Name: .sealed
 # IMAGE-NEXT: VirtualSize: 0x10
@@ -56,8 +56,8 @@
 # LEAF:      adrp x0, 0x[[#%x,LLIST:]]
 # LEAF-NEXT: add x0, x0, #0x[[#%x,LOFF:]]
 ## One residual word and no section to seal.
-# LEAF:      [[#%x,LLIST+LOFF]]      00000000 00000000 00000000 01000000
-# LEAF-NEXT: [[#%x,LLIST+LOFF+0x10]] 00000000 00000000 00000000 00000000
+# LEAF:      [[#%x,LLIST+LOFF]]      00000000 00000000 01000000 00000000
+# LEAF-NEXT: [[#%x,LLIST+LOFF+0x10]] 00000000 00000000 {{[0-9a-f]+ [0-9a-f]+}}
 # LEAF-NOT:  Name: .sealed
 
 #--- lib.def

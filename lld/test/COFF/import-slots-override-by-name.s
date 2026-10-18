@@ -90,16 +90,15 @@
 # FILL-NEXT: ImportLookupTableRVA:
 # FILL-NEXT: ImportAddressTableRVA: 0x3000
 # FILL-NEXT: Symbol: hook
-## The list: one read-only range over the import entry at 0x20C8, then the
+## The list: one read-only range over the import entry at 0x20C0, then the
 ## cells {key, rva, kind}, the key's bit 0 marking a read-only cell; a default
 ## bound by name is of kind 0: the writable word under hook's key, then the
 ## read-only import entry under the key with bit 0 set.
 # FILL:      180002000 01000000 02000000 00000000 00000000
-# FILL-NEXT: 180002010 00000000 00000000 00000000 00000000
-# FILL-NEXT: 180002020 {{[0-9a-f]+ [0-9a-f]+}} 00000000 00000000
-# FILL-NEXT: 180002030 c8200000 08000000 d2315e5a e1358eba
-# FILL-NEXT: 180002040 00300000 00000000 d3315e5a e1358eba
-# FILL-NEXT: 180002050 c8200000 00000000
+# FILL-NEXT: 180002010 00000000 00000000 {{[0-9a-f]+ [0-9a-f]+}}
+# FILL-NEXT: 180002020 00000000 00000000 c0200000 08000000
+# FILL-NEXT: 180002030 d2315e5a e1358eba 00300000 00000000
+# FILL-NEXT: 180002040 d3315e5a e1358eba c0200000 00000000
 # RUN: FileCheck --check-prefix=NOSEARCH --input-file=use.txt %s
 # NOSEARCH-NOT: LdrAddRefDll
 # NOSEARCH-NOT: 0x6c8e9cf5

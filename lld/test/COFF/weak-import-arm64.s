@@ -42,14 +42,13 @@
 # CHECK:      adrp x0, 0x[[#%x,LPAGE:]]
 # CHECK-NEXT: add x0, x0, #0x[[#%x,LOFF:]]
 
-## The list: no cells, one run-time cell, no residual word; the section it
+## The list: no cells, no residual word, one run-time cell; the section it
 ## seals is .sealed at 0x4000, size 8; then the run-time cell for g, {cell,
-## name, dll, name length, dll length}, resolved in dll.dll.
-# CHECK:      [[#%x,LPAGE+LOFF]]      00000000 00000000 01000000 00000000
-# CHECK-NEXT: [[#%x,LPAGE+LOFF+0x10]] 00000000 00000000 00400000 08000000
-# CHECK-NEXT: [[#%x,LPAGE+LOFF+0x20]] {{[0-9a-f]+ [0-9a-f]+}} 00000000 00000000
-# CHECK-NEXT: [[#%x,LPAGE+LOFF+0x30]] 00400000 40200000 42200000 01000e00
-# CHECK-NEXT: [[#%x,LPAGE+LOFF+0x40]] 67006400 6c006c00 2e006400 6c006c00  g.d.l.l...d.l.l.
+## name, dll}, resolved in dll.dll, whose name and UTF-16 DLL name follow.
+# CHECK:      [[#%x,LPAGE+LOFF]]      00000000 00000000 00000000 01000000
+# CHECK-NEXT: [[#%x,LPAGE+LOFF+0x10]] 00400000 08000000 {{[0-9a-f]+ [0-9a-f]+}}
+# CHECK-NEXT: [[#%x,LPAGE+LOFF+0x20]] 00000000 00000000 00400000 34200000
+# CHECK-NEXT: [[#%x,LPAGE+LOFF+0x30]] 36200000 67006400 6c006c00 2e006400  6 ..g.d.l.l...d.
 
 # IMAGE-NOT: Name: dll.dll
 # IMAGE:     Name: ntdll.dll
