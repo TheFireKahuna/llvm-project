@@ -199,6 +199,13 @@ bool isValueOnlyLoad(const SectionChunk *sc, size_t i, LinkSiteForm form,
 }
 
 
+// The edit of sc whose bytes include off, if any.
+static RelaxEdit *findEdit(const SectionChunk *sc, uint32_t off) {
+  auto &relaxations = sc->file->symtab.ctx.relaxations;
+  auto it = relaxations.find(sc);
+  return it == relaxations.end() ? nullptr : it->second.findEdit(off);
+}
+
 // The rewrite that makes the instruction at rel, of the given form, reach
 // target, as lld/ELF's relaxGot rewrites a GOT reference: a load (or adrp and
 // ldr) becomes an address-take, an address-take (or adrp and add) a load of
@@ -591,6 +598,10 @@ struct SlotScan {
   // which keep the copy as their address, so it is not split.
   DenseSet<Symbol *> keptCopies;
   MapVector<Symbol *, ObjFile *> undescribedOffers;
+  // The words of a DLL's static data that may hold its own overridable
+  // default's or preemptible vague entity's address, which are cells.
+  bool collectsOwnWords = false;
+  std::vector<std::tuple<SectionChunk *, uint32_t, Defined *>> ownWords;
   // Per object: the symbols reported, and the indices its guard metadata
   // lists as address-taken, once read.
   SmallPtrSet<Symbol *, 4> reported;
@@ -760,6 +771,13 @@ void ImportSlotContents::scanReference(SlotScan &scan, SectionChunk *sc,
   ImportFile *thunkFile = thunk ? thunk->wrappedSym->file : nullptr;
   if (thunkFile)
     ++thunkFile->thunkRefs;
+  if (auto *d = dyn_cast_or_null<Defined>(s);
+      d && scan.collectsOwnWords && !code && !isExceptionData(sc) &&
+      sc->isAddressWord(rel) && getAddressWordAddend(sc, rel) == 0 &&
+      (ctx.symtab.isPreemptibleVagueEntity(d) ||
+       ctx.symtab.isOwnSlotDefault(d->getName()) ||
+       ctx.symtab.overridablesByName.contains(d->getName())))
+    scan.ownWords.push_back({sc, rel.VirtualAddress, d});
   auto importedBut = [&](DefinedImportData *imp) {
     COFFSyncStream err = Err(ctx);
     err << file << ": " << file->symtab.printSymbol(s) << " is imported from "
@@ -999,8 +1017,7 @@ void ImportSlotContents::resolve(SlotScan &scan) {
   };
   // A load the linker already disposes of needs no rewrite.
   auto addSite = [&](SectionChunk *sc, const RelaxEdit &edit) {
-    auto it = ctx.relaxations.find(sc);
-    if (it == ctx.relaxations.end() || !it->second.findEdit(edit.offset))
+    if (!findEdit(sc, edit.offset))
       addEdit(sc, edit);
   };
   // ARM64 loads of a delay-loaded function's entry are rewritten all or none,
@@ -1254,32 +1271,38 @@ void ImportSlotContents::collectCells() {
   StringMap<StringSet<>> preemptibleOffers;
   if (isa_and_nonnull<Defined>(symtab.findUnderscore("__xi_a")))
     preemptibleOffers = getPreemptibleOffers(ctx);
-  auto add = [&](SectionChunk *sc, uint32_t offset, DefinedImportData *imp,
-                 bool readOnly, bool threadLocal) {
-    StringRef name = imp->getName().drop_front(strlen("__imp_"));
-    if (std::optional<uint32_t> k = symtab.overrideImportSlot(name)) {
-      cells.push_back({sc, offset, imp, *k, 0, readOnly, threadLocal});
-    } else if (symtab.defaultsByName.contains(name)) {
-      cells.push_back(
-          {sc, offset, imp, 0, overrideNameKey(name), readOnly, threadLocal});
-    } else if (!threadLocal) {
+  // A word holding the address of name, an overridable default, imported
+  // through imp or the image's own, is keyed by its slot or by its name; one
+  // holding a vague entity's is keyed by its name and names a word holding
+  // the instance: the image's own entity before its defaults, an imported one
+  // its DLL keeps preemptible after them.
+  auto addCell = [&](Chunk *c, uint32_t offset, DefinedImportData *imp,
+                     Defined *own, StringRef name, bool readOnly,
+                     bool threadLocal) {
+    auto vague = [&] {
+      if (threadLocal)
+        return false;
+      if (own)
+        return symtab.isPreemptibleVagueEntity(own);
       auto it = preemptibleOffers.find(imp->getDLLName().lower());
-      if (it != preemptibleOffers.end() && it->second.contains(name))
-        cells.push_back({sc, offset, imp, 0, overrideNameKey(name), readOnly,
-                         false, /*indirect=*/true, name});
-    }
+      return it != preemptibleOffers.end() && it->second.contains(name);
+    };
+    std::optional<uint32_t> slot = imp || symtab.isOwnSlotDefault(name)
+                                       ? symtab.overrideImportSlot(name)
+                                       : std::nullopt;
+    uint64_t key = overrideNameKey(name);
+    if (own && vague())
+      cells.push_back({c, offset, imp, 0, key, readOnly, false, true, name});
+    else if (slot)
+      cells.push_back({c, offset, imp, *slot, 0, readOnly, threadLocal});
+    else if (imp ? symtab.defaultsByName.contains(name)
+                 : symtab.overridablesByName.contains(name))
+      cells.push_back({c, offset, imp, 0, key, readOnly, threadLocal});
+    else if (imp && vague())
+      cells.push_back({c, offset, imp, 0, key, readOnly, false, true, name});
   };
-  auto addOwn = [&](Defined *d, StringRef name, Chunk *c, uint32_t offset,
-                    bool readOnly, bool threadLocal) {
-    if (d && !threadLocal && symtab.isPreemptibleVagueEntity(d))
-      cells.push_back({c, offset, nullptr, 0, overrideNameKey(d->getName()),
-                       readOnly, false, /*indirect=*/true, d->getName()});
-    else if (symtab.isOwnSlotDefault(name))
-      cells.push_back({c, offset, nullptr, *symtab.overrideImportSlot(name), 0,
-                       readOnly, threadLocal});
-    else if (symtab.overridablesByName.contains(name))
-      cells.push_back({c, offset, nullptr, 0, overrideNameKey(name), readOnly,
-                       threadLocal});
+  auto importName = [](DefinedImportData *imp) {
+    return imp->getName().drop_front(strlen("__imp_"));
   };
   // A chunk with residual words is writable until the fill seals it.
   auto cellReadOnly = [&](SectionChunk *sc) {
@@ -1289,13 +1312,14 @@ void ImportSlotContents::collectCells() {
   for (auto &[sc, slots] : ctx.importSlots) {
     auto *chunk = const_cast<SectionChunk *>(sc);
     for (const ImportSlot &slot : slots)
-      add(chunk, slot.offset, slot.sym, cellReadOnly(chunk),
-          getPartialSectionName(chunk, config.mingw).starts_with(".tls"));
+      addCell(chunk, slot.offset, slot.sym, nullptr, importName(slot.sym),
+              cellReadOnly(chunk),
+              getPartialSectionName(chunk, config.mingw).starts_with(".tls"));
   }
   // An import whose entry is one of its slots is covered by that slot.
   for (DefinedImportData *imp : idata.imports)
     if (!idata.slotOnly.contains(imp))
-      add(nullptr, 0, imp, true, false);
+      addCell(nullptr, 0, imp, nullptr, importName(imp), true, false);
 
   // Each preemptible entity gets a pointer, which the offer table names; a
   // thread-local variable's instance is its record.
@@ -1332,33 +1356,18 @@ void ImportSlotContents::collectCells() {
   for (Chunk *c : symtab.localImportChunks) {
     auto *li = cast<LocalImportChunk>(c);
     if (!li->overrideDefault.empty())
-      addOwn(nullptr, li->overrideDefault, li, 0, true, false);
+      addCell(li, 0, nullptr, nullptr, li->overrideDefault, true, false);
     else if (!li->vagueEntity.empty())
       cells.push_back({li, 0, nullptr, 0,
                        overrideNameKey(li->getTarget()->getName()), true,
                        false, /*indirect=*/true, li->getTarget()->getName()});
   }
-  // Static data holds cells only of own defaults and preemptible entities.
-  if (!symtab.overrideSlotFacts.empty() || !symtab.overridablesByName.empty() ||
-      !symtab.preemptibleVagueEntities->empty())
-    for (ObjFile *file : ctx.objFileInstances) {
-      if (&file->symtab != &symtab)
-        continue;
-      for (Chunk *c : file->getChunks()) {
-        auto *sc = dyn_cast_or_null<SectionChunk>(c);
-        if (!sc || !sc->live ||
-            (sc->header->Characteristics &
-             (IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_DISCARDABLE)) ||
-            isExceptionData(sc))
-          continue;
-        for (const coff_relocation &rel : sc->getRelocs())
-          if (auto *d = dyn_cast_or_null<Defined>(
-                  file->getSymbol(rel.SymbolTableIndex));
-              d && sc->isAddressWord(rel) && getAddressWordAddend(sc, rel) == 0)
-            addOwn(d, d->getName(), sc, rel.VirtualAddress, cellReadOnly(sc),
-                   getPartialSectionName(sc, config.mingw).starts_with(".tls"));
-      }
-    }
+  // The words of static data the scan found, in chunks still in the image.
+  if (slotScan)
+    for (auto [sc, offset, d] : slotScan->ownWords)
+      if (sc->live)
+        addCell(sc, offset, nullptr, d, d->getName(), cellReadOnly(sc),
+                getPartialSectionName(sc, config.mingw).starts_with(".tls"));
   if (cells.empty())
     return;
 
@@ -1612,28 +1621,6 @@ void ImportSlotContents::check(Chunk *iatStart, uint64_t iatSize) {
   }
 }
 
-//===----------------------------------------------------------------------===//
-// Local imports and fused uses
-//===----------------------------------------------------------------------===//
-
-static unsigned getLoadRegister(ArrayRef<uint8_t> data, uint32_t off,
-                                LinkSiteForm form) {
-  uint8_t prefix = data[off - 3];
-  unsigned reg = (data[off - 1] >> 3 & 7) | (prefix & 0x04) << 1;
-  if (form == LinkSiteLoadREX2)
-    reg |= (prefix & 0x40) >> 2;
-  return reg;
-}
-
-// The length of a fused add: add or sub of an 8- or 32-bit immediate, or lea
-// of a base plus an 8- or 32-bit displacement, with a SIB byte or not.
-static unsigned getAddLength(ArrayRef<uint8_t> data, uint32_t off) {
-  uint8_t op = data[off + 1], modrm = data[off + 2];
-  if (op == 0x83 || op == 0x81)
-    return op == 0x83 ? 4 : 7;
-  return 3 + ((modrm & 7) == 4) + (modrm >> 6 == 1 ? 1 : 4);
-}
-
 // The scaled immediate offset of an ARM64 load, store or prefetch at an
 // unsigned 12-bit offset, or of a pair at a signed 7-bit one.
 struct Arm64Access {
@@ -1666,12 +1653,15 @@ struct Arm64Access {
   }
 };
 
-// Binds the fused uses of sc's pointer loads once the pointers are bound. A
-// call goes direct into the image, through the pointer to a defined import
-// entry, or stays through its register, keeping its load; an access or add
-// reaches data in the image directly where the code may change, or the access
-// reads the image's copy of immutable data; a load nothing keeps is dead. On
-// ARM64 writeFusedArm64 writes the direct forms once addresses are known.
+// Binds the uses that an object fuses with its loads of pointers, once the
+// pointers are bound. A use whose pointer leads to a definition in the image
+// reaches it directly: a call becomes a direct call, and an access or add
+// reaches the data where the code may be resized, the add's sum going to the
+// load. An access that only reads immutable data reads the image's copy. A
+// call through a delay-loaded import's pointer reads the pointer, which holds
+// the loader's stub until the first call; any other call stays through its
+// register. A load no use keeps is dead. On ARM64, writeFusedArm64 writes the
+// direct forms once addresses are known.
 static void bindFusedUses(SectionChunk *sc,
                           MutableArrayRef<ObjFile::LinkFusion> fusions) {
   ObjFile *file = sc->file;
@@ -1681,9 +1671,6 @@ static void bindFusedUses(SectionChunk *sc,
       arm64 ? IMAGE_REL_ARM64_PAGEOFFSET_12L : IMAGE_REL_AMD64_REL32;
   ArrayRef<uint8_t> data = sc->getContents();
   bool covered = file->isCovered(sc);
-  auto it = sc->file->symtab.ctx.relaxations.find(sc);
-  Relaxation *edits =
-      it == sc->file->symtab.ctx.relaxations.end() ? nullptr : &it->second;
   DenseSet<uint32_t> keptLoads;
   for (ObjFile::LinkFusion &f : fusions) {
     const coff_relocation *rel;
@@ -1691,14 +1678,13 @@ static void bindFusedUses(SectionChunk *sc,
         !(rel = findReloc(sc, f.load, loadType)))
       continue;
     Symbol *s = file->getSymbol(rel->SymbolTableIndex);
-    auto *li = dyn_cast_or_null<DefinedLocalImport>(s);
     if (!s || (arm64 ? !isArm64PointerLoad(sc, *rel)
                      : !isLoadForm(getDescribedSite(sc, *rel)))) {
       reportMismatch(sc, f.load);
       continue;
     }
-    bool zero = li && isZeroPointer(li);
-    bool reaches = li && !zero &&
+    auto *li = dyn_cast<DefinedLocalImport>(s);
+    bool reaches = li && !isZeroPointer(li) &&
                    (arm64 ? li->getChunk()->bypassed : canBypass(li));
     bool immutable = f.use == ObjFile::LinkFusion::Access && f.valueRead &&
                      symtab.immutableReads.contains(s);
@@ -1709,69 +1695,64 @@ static void bindFusedUses(SectionChunk *sc,
         f.form = ObjFile::LinkFusion::Direct;
       continue;
     }
-    switch (f.use) {
-    case ObjFile::LinkFusion::Access:
+    if (f.use == ObjFile::LinkFusion::Access) {
       if (!covered || !reaches)
         keptLoads.insert(f.load);
+      unsigned disp = f.disp == 1 ? 1 : f.disp == 2 ? 4 : 0;
       if (covered && (reaches || immutable))
-        addEdit(sc, {f.offset, f.length,
-                     uint16_t(f.length - (f.disp == 1 ? 1 : f.disp == 2 ? 4 : 0) -
-                              f.sib + 4),
+        addEdit(sc, {f.offset, f.length, uint16_t(f.length - disp - f.sib + 4),
                      RelaxEdit::Access,
                      li ? li->getTarget() : symtab.immutableReads.lookup(s),
                      &f});
-      break;
-    case ObjFile::LinkFusion::Add:
-      // The load takes the sum of the add, which then goes.
-      if (RelaxEdit *load = edits ? edits->findEdit(f.load) : nullptr;
-          reaches && load && load->kind == RelaxEdit::LoadAddress) {
+    } else if (f.use == ObjFile::LinkFusion::Add) {
+      // The add is add or sub of an 8- or 32-bit immediate, or lea of a base
+      // and an 8- or 32-bit displacement, with or without a SIB byte.
+      RelaxEdit *load = findEdit(sc, f.load);
+      if (reaches && load && load->kind == RelaxEdit::LoadAddress) {
+        uint8_t op = data[f.offset + 1], modrm = data[f.offset + 2];
+        unsigned length = op == 0x83   ? 4
+                          : op == 0x81 ? 7
+                                       : 3 + ((modrm & 7) == 4) +
+                                             (modrm >> 6 == 1 ? 1 : 4);
         load->entry = &f;
-        addEdit(sc, {f.offset, uint16_t(getAddLength(data, f.offset)), 0,
-                     RelaxEdit::Dispose, nullptr, &f});
+        addEdit(sc, {f.offset, uint16_t(length), 0, RelaxEdit::Dispose, nullptr,
+                     &f});
       }
-      break;
-    case ObjFile::LinkFusion::Call: {
-      // A call through a delay-loaded import's pointer stays through its
-      // register: the pointer holds the loader's stub until the first call.
-      auto *imp = dyn_cast_or_null<DefinedImportData>(s);
+    } else if (auto *imp = dyn_cast<DefinedImportData>(s);
+               reaches || (imp && imp->file->isDelayLoaded())) {
       uint16_t size = f.isJump ? 7 : 6;
-      if (reaches)
-        addEdit(sc, {f.offset, size, 5,
-                     f.isJump ? RelaxEdit::DirectJump : RelaxEdit::DirectCall,
-                     li->getTarget()});
-      else if (imp && imp->file->isDelayLoaded())
-        addEdit(sc, {f.offset, size, size,
-                     f.isJump ? RelaxEdit::PointerJump : RelaxEdit::PointerCall,
-                     cast<Defined>(s)});
-      else {
-        // Resized, a jump keeps REX.W jmp through the register and drops the
-        // int3; a call drops the segment overrides before the register call.
-        keptLoads.insert(f.load);
-        if (covered)
-          addEdit(sc, f.isJump ? RelaxEdit(f.offset, 7, 3, RelaxEdit::KeepHead)
-                               : RelaxEdit(f.offset, 6,
-                                           f.reg >= 16  ? 4
-                                           : f.reg >= 8 ? 3
-                                                        : 2,
-                                           RelaxEdit::KeepTail));
-      }
-      break;
-    }
+      addEdit(sc,
+              reaches ? RelaxEdit(f.offset, size, 5,
+                                  f.isJump ? RelaxEdit::DirectJump
+                                           : RelaxEdit::DirectCall,
+                                  li->getTarget())
+                      : RelaxEdit(f.offset, size, size,
+                                  f.isJump ? RelaxEdit::PointerJump
+                                           : RelaxEdit::PointerCall,
+                                  imp));
+    } else {
+      // Resized, a jump keeps REX.W jmp through the register and drops the
+      // int3; a call drops the segment overrides before the register call.
+      keptLoads.insert(f.load);
+      if (covered)
+        addEdit(sc, f.isJump ? RelaxEdit(f.offset, 7, 3, RelaxEdit::KeepHead)
+                             : RelaxEdit(f.offset, 6,
+                                         f.reg >= 16  ? 4
+                                         : f.reg >= 8 ? 3
+                                                      : 2,
+                                         RelaxEdit::KeepTail));
     }
   }
   for (ObjFile::LinkFusion &f : fusions) {
+    const coff_relocation *rel;
     if (!f.isLoad || keptLoads.contains(f.offset) ||
-        !findReloc(sc, f.offset, loadType))
+        !(rel = findReloc(sc, f.offset, loadType)))
       continue;
-    if (arm64) {
-      f.dead = true;
+    f.dead = true;
+    if (arm64)
       continue;
-    }
-    uint16_t size = getDescribedSite(sc, *findReloc(sc, f.offset, loadType)) ==
-                            LinkSiteLoadREX2
-                        ? 8
-                        : 7;
-    if (RelaxEdit *e = edits ? edits->findEdit(f.offset) : nullptr) {
+    uint16_t size = getDescribedSite(sc, *rel) == LinkSiteLoadREX2 ? 8 : 7;
+    if (RelaxEdit *e = findEdit(sc, f.offset)) {
       e->kind = RelaxEdit::Dispose;
       e->relaxedSize = 0;
       e->entry = &f;
@@ -1819,8 +1800,8 @@ void writeFusedArm64(const SectionChunk *sc, uint8_t *buf) {
     if (f.form != ObjFile::LinkFusion::Direct)
       continue;
     if (f.use == ObjFile::LinkFusion::Add) {
-      // Where the data's page offset plus the constant fits, the load (which
-      // the pointer's bypass made an add of the offset) adds the sum into the
+      // Where the data's page offset plus the constant fits, the load, which
+      // the pointer's bypass made an add of the offset, adds the sum into the
       // add's register, and the add becomes a no-op.
       int64_t sum = (getData(f.load)->getRVA() & 0xFFF) + f.addend;
       if (sum >= 0 && sum <= 0xFFF) {
@@ -1829,21 +1810,20 @@ void writeFusedArm64(const SectionChunk *sc, uint8_t *buf) {
                   0x91000000 | uint32_t(sum) << 10 | (load & 0x3E0) | f.reg);
         write32le(buf + f.offset, nop);
       }
+    } else if (Defined *copy =
+                   f.use == ObjFile::LinkFusion::Access && f.valueRead
+                       ? sc->file->symtab.immutableReads.lookup(
+                             getSymbol(f.load))
+                       : nullptr) {
+      // An access that only reads immutable data, whose load stays, reads the
+      // image's copy PC-relative where it is near enough and aligned.
+      Ldr ldr;
+      if (!parseLdr(read32le(buf + f.offset), ldr))
+        continue;
+      ldr.offset += int64_t(copy->getRVA()) - int64_t(sc->getRVA() + f.offset);
+      if (isLiteralLdrEligible(ldr))
+        writeLiteralLdr(buf + f.offset, ldr);
     }
-  }
-  // An access that only reads immutable data, whose load stays, reads the
-  // image's copy PC-relative where it is near enough and aligned.
-  for (const ObjFile::LinkFusion &f : fusions) {
-    if (f.isLoad || f.use != ObjFile::LinkFusion::Access || !f.valueRead ||
-        f.form != ObjFile::LinkFusion::Direct)
-      continue;
-    Defined *copy = sc->file->symtab.immutableReads.lookup(getSymbol(f.load));
-    Ldr ldr;
-    if (!copy || !parseLdr(read32le(buf + f.offset), ldr))
-      continue;
-    ldr.offset += int64_t(copy->getRVA()) - int64_t(sc->getRVA() + f.offset);
-    if (isLiteralLdrEligible(ldr))
-      writeLiteralLdr(buf + f.offset, ldr);
   }
   // A dead load whose accesses all take the data's page offset in their
   // fields becomes a no-op, its register keeping the adrp's page.
@@ -1852,11 +1832,11 @@ void writeFusedArm64(const SectionChunk *sc, uint8_t *buf) {
     if (!l.isLoad || !l.dead || it == accessesOf.end())
       continue;
     uint64_t lo12 = getData(l.offset)->getRVA() & 0xFFF;
-    if (!llvm::all_of(it->second, [&](const ObjFile::LinkFusion *f) {
-          uint32_t insn = read32le(buf + f->offset);
-          Arm64Access access(insn);
-          return access.fits(lo12 + access.getOffset(insn));
-        }))
+    auto fits = [&](const ObjFile::LinkFusion *f) {
+      uint32_t insn = read32le(buf + f->offset);
+      return Arm64Access(insn).fits(lo12 + Arm64Access(insn).getOffset(insn));
+    };
+    if (!llvm::all_of(it->second, fits))
       continue;
     for (const ObjFile::LinkFusion *f : it->second) {
       uint32_t insn = read32le(buf + f->offset);
@@ -1944,6 +1924,13 @@ void ImportSlotContents::scan(SymbolTable &symtab) {
                  << "; export a forwarder to it instead";
     addRunTimeCells();
     slotScan = make<SlotScan>();
+    if (ctx.config.dll) {
+      symtab.readOverrideRecords();
+      symtab.isPreemptibleVagueEntity(nullptr); // which computes the set
+      slotScan->collectsOwnWords = !symtab.overrideSlotFacts.empty() ||
+                                   !symtab.overridablesByName.empty() ||
+                                   !symtab.preemptibleVagueEntities->empty();
+    }
   }
   for (Symbol *b : ctx.config.gcroot)
     if (auto *li = dyn_cast<DefinedLocalImport>(b))
