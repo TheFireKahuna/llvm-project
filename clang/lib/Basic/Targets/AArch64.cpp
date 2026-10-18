@@ -1863,6 +1863,16 @@ NTPOSIXWindowsARM64TargetInfo::NTPOSIXWindowsARM64TargetInfo(
     const llvm::Triple &Triple, const TargetOptions &Opts)
     : WindowsARM64TargetInfo(Triple, Opts) {
   TheCXXABI.set(TargetCXXABI::GenericAArch64);
+  // The POSIX face's data model is Linux's: LP64, and an IEEE quad long
+  // double.
+  LongWidth = LongAlign = 64;
+  IntMaxType = SignedLong;
+  Int64Type = SignedLong;
+  SizeType = UnsignedLong;
+  PtrDiffType = SignedLong;
+  IntPtrType = SignedLong;
+  LongDoubleWidth = LongDoubleAlign = 128;
+  LongDoubleFormat = &llvm::APFloat::IEEEquad();
 }
 
 MinGWARM64TargetInfo::MinGWARM64TargetInfo(const llvm::Triple &Triple,

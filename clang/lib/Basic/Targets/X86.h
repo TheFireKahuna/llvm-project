@@ -985,8 +985,17 @@ public:
   NTPOSIXWindowsX86_64TargetInfo(const llvm::Triple &Triple,
                                  const TargetOptions &Opts)
       : WindowsX86_64TargetInfo(Triple, Opts) {
-    LongDoubleWidth = LongDoubleAlign = 64;
-    LongDoubleFormat = &llvm::APFloat::IEEEdouble();
+    // The POSIX face's data model is Linux's: LP64, and an x87 long double in
+    // a 16-byte slot.
+    LongWidth = LongAlign = 64;
+    IntMaxType = SignedLong;
+    Int64Type = SignedLong;
+    SizeType = UnsignedLong;
+    PtrDiffType = SignedLong;
+    IntPtrType = SignedLong;
+    LongDoubleWidth = LongDoubleAlign = 128;
+    LongDoubleFormat = &llvm::APFloat::x87DoubleExtended();
+    HasFloat128 = true;
   }
 
   // The default convention is System V, so va_list and the conventions that

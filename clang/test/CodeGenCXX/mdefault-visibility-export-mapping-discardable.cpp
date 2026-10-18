@@ -47,7 +47,7 @@ template struct Tm<long>;
 API inline int inl() { return 7; }
 API inline int sloc() { static int s = inl(); return s; }
 API inline int iv = 5;
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__NTPOSIX__)
 __declspec(dllexport) inline int marked() { return 9; }
 #else
 inline int marked() { return 9; }

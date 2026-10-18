@@ -315,13 +315,10 @@ static void addVisualCDefines(const LangOptions &Opts, MacroBuilder &Builder,
 }
 
 // NT-POSIX is a POSIX C library on the NT system calls, neither Win32 nor
-// Unix. It defines _WIN32 for the PE/COFF ABI and the NT version macros, but
-// not WIN32, __unix__ or the MSVC and MinGW identity macros.
+// Unix. Its POSIX face defines neither _WIN32 nor __unix__, so ported source
+// takes its non-Windows paths, and none of the MSVC and MinGW identity macros.
 static void addNTPOSIXDefines(const LangOptions &Opts, MacroBuilder &Builder) {
   Builder.defineMacro("__NTPOSIX__");
-  DefineStd(Builder, "WINNT", Opts);
-  Builder.defineMacro("WINVER", "0x0A00");
-  Builder.defineMacro("_WIN32_WINNT", "0x0A00");
   if (Opts.POSIXThreads)
     Builder.defineMacro("_REENTRANT");
   // Required by the libc++ locale support.
@@ -331,13 +328,13 @@ static void addNTPOSIXDefines(const LangOptions &Opts, MacroBuilder &Builder) {
 
 void addWindowsDefines(const llvm::Triple &Triple, const LangOptions &Opts,
                        MacroBuilder &Builder) {
+  if (Triple.isWindowsNTPOSIXEnvironment())
+    return addNTPOSIXDefines(Opts, Builder);
   Builder.defineMacro("_WIN32");
   if (Triple.isArch64Bit())
     Builder.defineMacro("_WIN64");
   if (Triple.isWindowsGNUEnvironment())
     addMinGWDefines(Triple, Opts, Builder);
-  else if (Triple.isWindowsNTPOSIXEnvironment())
-    addNTPOSIXDefines(Opts, Builder);
   else if (Triple.isWindowsItaniumEnvironment()) {
     // Windows Itanium takes the MSVC environment's defines, but is not MSVC
     // and must not identify as it, so that headers never select MSVC-only

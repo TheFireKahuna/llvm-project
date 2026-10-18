@@ -11,7 +11,7 @@
 typedef decltype(sizeof(0)) size_t;
 extern "C" void *malloc(size_t);
 
-// CHECK: define {{.*}}ptr @_Znwy(i64{{.*}}) [[NEW:#[0-9]+]]
+// CHECK: define {{.*}}ptr @_Znw{{[my]}}(i64{{.*}}) [[NEW:#[0-9]+]]
 void *operator new(size_t n) { return malloc(n); }
 
 namespace std {

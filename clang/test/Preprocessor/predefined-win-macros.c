@@ -315,23 +315,26 @@
 // RUN:       --implicit-check-not="#define __MSVCRT__" \
 // RUN:       --implicit-check-not="#define __MINGW" \
 // RUN:       --implicit-check-not="#define __unix" \
-// RUN:       --implicit-check-not="#define UNICODE"
+// RUN:       --implicit-check-not="#define UNICODE" \
+// RUN:       --implicit-check-not="#define _WIN" \
+// RUN:       --implicit-check-not="#define WINNT" \
+// RUN:       --implicit-check-not="#define WINVER"
 // RUN: %clang_cc1 %s -x c++ -E -dM -triple aarch64-pc-windows-ntposix \
 // RUN:     -pthread -o - \
 // RUN:   | FileCheck -match-full-lines %s --check-prefix=CHECK-NTPOSIX \
 // RUN:       --implicit-check-not="#define WIN32" \
 // RUN:       --implicit-check-not="#define _M_" \
-// RUN:       --implicit-check-not="#define _MSC_"
+// RUN:       --implicit-check-not="#define _MSC_" \
+// RUN:       --implicit-check-not="#define _WIN" \
+// RUN:       --implicit-check-not="#define WINNT" \
+// RUN:       --implicit-check-not="#define WINVER"
 
-// CHECK-NTPOSIX: #define WINNT 1
-// CHECK-NTPOSIX: #define WINVER 0x0A00
 // CHECK-NTPOSIX: #define _GNU_SOURCE 1
 // CHECK-NTPOSIX: #define _REENTRANT 1
-// CHECK-NTPOSIX: #define _WIN32 1
-// CHECK-NTPOSIX: #define _WIN32_WINNT 0x0A00
-// CHECK-NTPOSIX: #define _WIN64 1
 // CHECK-NTPOSIX: #define __NTPOSIX__ 1
-// CHECK-NTPOSIX: #define __SIZEOF_LONG_DOUBLE__ 8
+// CHECK-NTPOSIX: #define __SIZEOF_LONG_DOUBLE__ 16
+// CHECK-NTPOSIX: #define __SIZEOF_LONG__ 8
+// CHECK-NTPOSIX: #define __SIZEOF_SIZE_T__ 8
 // CHECK-NTPOSIX: #define __SIZEOF_WCHAR_T__ 4
 // CHECK-NTPOSIX: #define __WCHAR_TYPE__ int
 // CHECK-NTPOSIX: #define __WINT_TYPE__ unsigned int
