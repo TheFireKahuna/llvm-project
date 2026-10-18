@@ -228,11 +228,16 @@ void X86WinCOFFStreamer::emitInstruction(const MCInst &Inst,
   describeJumpPrefixes(Fixups, Preceding);
 
   // A call or jump through an import pointer is one whose size a linker may
-  // change, as is each fused instruction the streamer describes.
+  // change, as is each fused instruction the streamer describes, and each jump
+  // the backend may still relax, which the linker may shorten or lengthen
+  // again once the code it spans is resized.
   bool Resizable = any_of(Fixups, [](const MCFixup &Fixup) {
     return Fixup.getUse() == MCFixupUse::Call ||
            Fixup.getUse() == MCFixupUse::Jump;
   });
+  if (Tail && (Tail->getOpcode() == X86::JCC_1 ||
+               Tail->getOpcode() == X86::JMP_1))
+    Resizable = true;
   if (FusedUse != NoFusedUse) {
     if (Fixups.empty())
       Resizable |= describeFusedUse(Inst, UseStart, Bytes);
