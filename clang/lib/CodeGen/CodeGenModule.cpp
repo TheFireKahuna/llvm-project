@@ -5889,6 +5889,12 @@ void CodeGenModule::setMultiVersionResolverAttributes(llvm::Function *Resolver,
 
   setDSOLocal(Resolver);
 
+  // Without ifuncs the resolver is the function callers reach, and the one
+  // its address names, so an indirect call through that address checks the
+  // resolver's type.
+  if (!getTarget().supportsIFunc() && hasFunctionTypePrefix())
+    setKCFIType(GD, Resolver);
+
   // The resolver must be exempt from sanitizer instrumentation, as it can run
   // before the sanitizer is initialized.
   // (https://github.com/llvm/llvm-project/issues/163369)
