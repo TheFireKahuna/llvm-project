@@ -1747,7 +1747,7 @@ void SymbolTable::reportProblemSymbols(
   bool arm64 = machine == ARM64 && !ctx.hybridSymtab;
   auto processFile = [&](InputFile *file, ArrayRef<Symbol *> symbols) {
     // References whose instructions may be rewritten are reported only if
-    // they still read the pointer, by bindLocalImports.
+    // they still read the pointer, by ImportSlotContents::scan.
     auto *obj = dyn_cast<ObjFile>(file);
     bool deferred = obj && defersLocalImportWarning(obj, arm64);
     uint32_t symIndex = (uint32_t)-1;

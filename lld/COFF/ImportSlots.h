@@ -223,7 +223,8 @@ bool isValueOnlyLoad(const SectionChunk *sc, size_t i,
 bool defersLocalImportWarning(const ObjFile *file, bool arm64);
 
 // Binds each .refptr.X pointer to a local import to X (in the image) or to
-// zero (absent weak X), whose references bindLocalImports rewrites directly.
+// zero (absent weak X), whose references ImportSlotContents::scan rewrites
+// directly.
 void bindPointerCells(SymbolTable &symtab);
 
 // Decides, once local imports are bound, which fused calls go through their
