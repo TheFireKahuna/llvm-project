@@ -199,10 +199,11 @@ getDescribedSite(const SectionChunk *sc,
                  const llvm::object::coff_relocation &rel);
 
 // Whether adrp and add (ARM64 relocations in sc against one symbol) compute
-// the symbol's address with no addend, the pair lld/ELF can relax.
+// the symbol's address plus addend, with no addend the pair lld/ELF can relax.
 bool isArm64AddressPair(const SectionChunk *sc,
                         const llvm::object::coff_relocation &adrp,
-                        const llvm::object::coff_relocation &add);
+                        const llvm::object::coff_relocation &add,
+                        int64_t addend = 0);
 
 // Whether rel is the adrp, or a 64-bit ldr with no offset, of a load of a
 // pointer.

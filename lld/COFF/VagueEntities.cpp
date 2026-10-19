@@ -681,22 +681,29 @@ DefinedRegular *SymbolTable::makeCopy(DefinedRegular *d) {
 }
 
 void SymbolTable::preemptWeakData() {
-  if (!ctx.config.importSlots || weakData.empty())
+  if (!ctx.config.importSlots || (weakData.empty() && jointPreempted.empty()))
     return;
   llvm::TimeTraceScope timeScope("Preempt weak data");
   DenseSet<Symbol *> seen;
   SmallVector<SectionChunk *, 4> chunks;
   SmallVector<DefinedRegular *, 4> members;
   SmallVector<DefinedImportData *, 4> imports;
-  for (Symbol *sym : weakData) {
+  // A joint link's member gives up a vtable, or a strong type_info or type
+  // name, for another member's the same way.
+  for (Symbol *sym : llvm::concat<Symbol *const>(weakData, jointPreempted)) {
     auto *d = dyn_cast<DefinedRegular>(sym);
+    bool joint = jointPreempted.count(sym);
     if (!d || !seen.insert(d).second || !isa<ObjFile>(d->getFile()) ||
-        !d->getChunk()->live || !isDefaultVisibility(d))
+        !d->getChunk()->live || (!joint && !isDefaultVisibility(d)))
       continue;
     auto *imp =
         dyn_cast_or_null<DefinedImportData>(impSymbol(getSharedName(d)));
-    if (!imp)
+    if (!imp) {
+      if (joint)
+        Err(ctx) << d->getFile() << ": the joint-link facts give up "
+                 << printSymbol(d) << " but import it from no member";
       continue;
+    }
 
     collectWeakDataGroup(d, chunks, members, /*liveOnly=*/true);
 
@@ -726,8 +733,11 @@ void SymbolTable::preemptWeakData() {
                                 (IMAGE_SCN_MEM_WRITE | IMAGE_SCN_CNT_CODE)))
       for (auto [m, mi] : llvm::zip_equal(members, imports))
         immutableCopies[mi] = makeCopy(m);
-    for (auto [m, mi] : llvm::zip_equal(members, imports))
+    for (auto [m, mi] : llvm::zip_equal(members, imports)) {
       preemptSymbol(m, mi);
+      if (joint)
+        jointGivenUp.insert(m);
+    }
     for (SectionChunk *c : chunks) {
       c->live = false;
       for (const coff_relocation &rel : c->getRelocs())
@@ -1056,8 +1066,11 @@ void SymbolTable::addOffers() {
       return nullptr;
     return imp;
   };
+  // What a joint link's member gave up is no offer: only its own exports of it
+  // forward.
   for (Symbol *s : preemptedData)
-    offer(s, /*data=*/true, cast<DefinedImportData>(s));
+    if (!jointGivenUp.contains(s))
+      offer(s, /*data=*/true, cast<DefinedImportData>(s));
   for (Symbol *sym : weakData) {
     auto *d = dyn_cast<DefinedRegular>(sym);
     if (!d || !isa<ObjFile>(d->getFile()) || !isDefaultVisibility(d))

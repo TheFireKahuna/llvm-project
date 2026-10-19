@@ -690,6 +690,9 @@ void LinkerDriver::parseDirectives(InputFile *file) {
     case OPT_overridable_by_name:
       file->symtab.overridablesByName.insert(arg->getValue());
       break;
+    case OPT_exactcast:
+      file->symtab.exactCastVTables.insert(arg->getValue());
+      break;
     case OPT_nodefaultlib:
       ctx.config.noDefaultLibs.insert(findLib(arg->getValue()).lower());
       break;

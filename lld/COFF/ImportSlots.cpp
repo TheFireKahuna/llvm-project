@@ -55,8 +55,10 @@ static bool isLoadForm(std::optional<LinkSiteForm> form) {
 }
 
 bool isSiteForm(ArrayRef<uint8_t> data, uint32_t off, LinkSiteForm form) {
-  // A displacement that names the pointer itself has no addend.
-  if (off < 2 || off + 4 > data.size() || read32le(&data[off]) != 0)
+  // A displacement that names the pointer itself has no addend; one with an
+  // offset has one.
+  if (off < 2 || off + 4 > data.size() ||
+      (read32le(&data[off]) != 0) != (form == LinkSiteAddressOffset))
     return false;
   uint8_t opcode = data[off - 2], modrm = data[off - 1];
   uint8_t prefix = off >= 3 ? data[off - 3] : 0;
@@ -74,11 +76,13 @@ bool isSiteForm(ArrayRef<uint8_t> data, uint32_t off, LinkSiteForm form) {
                 prefix));
   case LinkSiteLoad:
   case LinkSiteLoadREX2:
-  case LinkSiteAddress: {
+  case LinkSiteAddress:
+  case LinkSiteAddressOffset: {
     // mov or lea r64, [rip+d], with REX.W or with REX2's W bit.
+    bool lea = form == LinkSiteAddress || form == LinkSiteAddressOffset;
     bool rex = (prefix & 0xF8) == 0x48;
     bool rex2 = off >= 4 && data[off - 4] == 0xD5 && (prefix & 0x88) == 0x08;
-    return off >= 3 && opcode == (form == LinkSiteAddress ? 0x8D : 0x8B) &&
+    return off >= 3 && opcode == (lea ? 0x8D : 0x8B) &&
            (modrm & 0xC7) == 0x05 &&
            (form == LinkSiteLoad       ? rex
             : form == LinkSiteLoadREX2 ? rex2
@@ -97,7 +101,9 @@ static std::optional<LinkSiteForm> getSiteForm(const SectionChunk *sc,
   const ObjFile::RelocFact *f = sc->file->relocFact(sc, rel);
   if (!f || !f->hasSite)
     return std::nullopt;
-  return f->form;
+  // Only the rewrite of an address inside data an import preempted takes an
+  // address with an offset as one.
+  return f->form == LinkSiteAddressOffset ? LinkSiteOther : f->form;
 }
 
 std::optional<LinkSiteForm> getDescribedSite(const SectionChunk *sc,
@@ -125,7 +131,7 @@ static bool canBypass(Symbol *s) {
 }
 
 bool isArm64AddressPair(const SectionChunk *sc, const coff_relocation &adrp,
-                        const coff_relocation &add) {
+                        const coff_relocation &add, int64_t addend) {
   ArrayRef<uint8_t> data = sc->getContents();
   if (adrp.Type != IMAGE_REL_ARM64_PAGEBASE_REL21 ||
       add.Type != IMAGE_REL_ARM64_PAGEOFFSET_12A ||
@@ -133,13 +139,14 @@ bool isArm64AddressPair(const SectionChunk *sc, const coff_relocation &adrp,
       uint64_t(adrp.VirtualAddress) + 4 != add.VirtualAddress ||
       uint64_t(add.VirtualAddress) + 4 > data.size())
     return false;
-  // adrp xd with no addend, then add xd, xd, #0.
+  // adrp xd, then add xd, xd, each holding the addend, which an object's adrp
+  // holds in bytes.
   Adrp first;
   Add second;
   return parseAdrp(read32le(&data[adrp.VirtualAddress]), first) &&
-         first.addend == 0 &&
+         first.addend == addend * 4096 &&
          parseAdd(read32le(&data[add.VirtualAddress]), second) &&
-         second.addend == 0 && second.destRegister == first.destRegister &&
+         second.addend == addend && second.destRegister == first.destRegister &&
          second.srcRegister == first.destRegister;
 }
 
@@ -239,6 +246,19 @@ static RelaxEdit getRetarget(const SectionChunk *sc, const coff_relocation &rel,
             zero ? RelaxEdit::ZeroLoad : RelaxEdit::LoadAddress, target};
   }
   }
+}
+
+// The addend of the reference at rel in code: a REL32's displacement, or an
+// ARM64 adrp's immediate, which the link adds to the target.
+static int64_t getCodeAddend(const SectionChunk *sc,
+                             const coff_relocation &rel) {
+  uint32_t insn = read32le(sc->getContents().data() + rel.VirtualAddress);
+  if (sc->getArch() == Triple::aarch64)
+    return rel.Type == IMAGE_REL_ARM64_PAGEBASE_REL21
+               ? SignExtend64<21>(((insn >> 29) & 0x3) |
+                                  ((insn >> 3) & 0x1FFFFC))
+               : 0;
+  return rel.Type == IMAGE_REL_AMD64_REL32 ? int32_t(insn) : 0;
 }
 
 namespace {
@@ -794,15 +814,18 @@ void ImportSlotContents::scanReference(SlotScan &scan, SectionChunk *sc,
   // An ARM64 adrp and add pair, or an instruction its object describes, that
   // takes an address, which the import's entry then gives; it bypasses the
   // thunk.
-  auto rewriteAddress = [&](DefinedImportData *imp, Symbol *offer = nullptr) {
+  auto rewriteAddress = [&](DefinedImportData *imp, Symbol *offer = nullptr,
+                            bool offset = false) {
     const coff_relocation &r = relocs[i];
     const ObjFile::RelocFact *fact = file->relocFact(sc, r);
+    LinkSiteForm form = offset ? LinkSiteAddressOffset : LinkSiteAddress;
     bool pair = arm64 && r.Type == IMAGE_REL_ARM64_PAGEBASE_REL21 &&
-                i + 1 != e && isArm64AddressPair(sc, r, relocs[i + 1]);
+                i + 1 != e &&
+                isArm64AddressPair(sc, r, relocs[i + 1],
+                                   offset ? getCodeAddend(sc, r) : 0);
     if (!pair && (arm64 || r.Type != IMAGE_REL_AMD64_REL32 || !fact ||
-                  !fact->hasSite || fact->form != LinkSiteAddress ||
-                  !isSiteForm(sc->getContents(), r.VirtualAddress,
-                              LinkSiteAddress)))
+                  !fact->hasSite || fact->form != form ||
+                  !isSiteForm(sc->getContents(), r.VirtualAddress, form)))
       return false;
     for (size_t k = i, last = i + pair; k <= last; ++k)
       scan.addressSites.push_back(
@@ -878,10 +901,17 @@ void ImportSlotContents::scanReference(SlotScan &scan, SectionChunk *sc,
     return badType(imp, "names a section of this image");
   if (code) {
     if (!thunk) {
-      // Data a DLL's instance preempted is reached as a function's is.
+      // Data a DLL's instance preempted is reached as a function's is, an
+      // address inside it through the import of the name the DLL exports for
+      // that address.
       bool preempted = file->symtab.preemptedData.contains(s);
-      if (preempted && rewriteAddress(imp))
+      int64_t addend = preempted ? getCodeAddend(sc, rel) : 0;
+      if (addend)
+        imp = ctx.symtab.findInteriorImport(imp, addend);
+      if (preempted && imp && rewriteAddress(imp, nullptr, addend))
         return;
+      if (!imp)
+        imp = getAddressedImport(s);
       if (!scan.reported.insert(s).second)
         return;
       if (preempted)

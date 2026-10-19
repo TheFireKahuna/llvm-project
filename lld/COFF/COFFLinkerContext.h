@@ -226,6 +226,9 @@ public:
     uint8_t reg;
   };
   std::vector<JointAnchor> jointAnchors;
+  // The classes whose vtable runs the image exports for other members, each
+  // with the name of the run's start that they import.
+  llvm::StringMap<llvm::StringRef> jointRuns;
 
   // The changes the linker makes to the code of each section chunk it
   // changes, and how it lays out the code of each it resizes.

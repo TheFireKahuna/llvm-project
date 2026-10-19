@@ -46,6 +46,10 @@ void defineVTableRuns(COFFLinkerContext &ctx);
 // named by the class's address point, the others by names hashed from class.
 void addVTableRunExports(COFFLinkerContext &ctx);
 
+// The export name of the end ('e') or of the start plus the stride less one
+// ('m') of the class's run, hashed from the class, which may be long.
+std::string getVTableRunWordName(llvm::StringRef cls, char word);
+
 // Binds the owner run of each class the image's checks read to the first DLL it
 // imports statically whose import library holds it and from which it imports
 // the class's vtable or type_info; every other class gets an empty range.

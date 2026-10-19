@@ -300,6 +300,7 @@ def offers_baseline : Joined<["/", "-", "/?", "-?"], "offers-baseline:">;
 def offers_epoch : F<"offers-epoch">;
 def overridable : P_priv<"overridable">;
 def overridable_by_name : P_priv<"overridablebyname">;
+def exactcast : P_priv<"exactcast">;
 def kill_at : F<"kill-at">;
 defm lld_allow_duplicate_weak : B_priv<"lld-allow-duplicate-weak">;
 def lldemit : P<"lldemit", "Specify output type">;

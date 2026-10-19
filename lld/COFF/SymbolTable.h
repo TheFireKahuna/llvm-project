@@ -352,6 +352,15 @@ public:
   // libraries' DLLs define (from their records).
   llvm::DenseSet<StringRef> overridablesByName;
   llvm::DenseSet<StringRef> defaultsByName;
+
+  // The vtables of classes whose exact dynamic_casts compare vtable pointers,
+  // from /exactcast: directives, of which a joint link keeps one copy; and,
+  // as a member of one, the first symbols of the groups the image gives up for
+  // another member's, which their imports preempt, and the symbols preempted
+  // so, which the image does not offer.
+  llvm::DenseSet<StringRef> exactCastVTables;
+  llvm::SetVector<Symbol *> jointPreempted;
+  llvm::DenseSet<Symbol *> jointGivenUp;
   // Reads the overridable defaults that the import libraries the link names
   // record, by slot and by name, again only once more libraries have been read.
   size_t overrideRecordsArchives = 0;

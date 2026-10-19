@@ -727,7 +727,8 @@ static void writeEdit(const SectionChunk *sc, const RelaxEdit &e, uint8_t *buf,
     break;
   }
   case RelaxEdit::Arm64Page:
-    memcpy(buf, old, 4);
+    // The target is exact: an addend the old reference held does not apply.
+    write32le(buf, read32le(old) & ~((0x3 << 29) | (0x1FFFFC << 3)));
     applyArm64Addr(buf, e.target->getRVA(), p, 12);
     break;
   case RelaxEdit::Arm64Add:

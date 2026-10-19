@@ -30,16 +30,17 @@
 #include "COFFLinkerContext.h"
 #include "Driver.h"
 #include "InputFiles.h"
+#include "Relax.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
-#include "Relax.h"
+#include "VTableRuns.h"
 #include "VagueEntities.h"
 #include "lld/Common/ErrorHandler.h"
 #include "lld/Common/Memory.h"
 #include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
-#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/LTO/LTO.h"
@@ -59,7 +60,9 @@
 #include "llvm/Support/xxhash.h"
 #include <functional>
 #include <list>
+#include <map>
 #include <numeric>
+#include <set>
 
 using namespace llvm;
 using namespace llvm::COFF;
@@ -67,13 +70,27 @@ using namespace llvm::object;
 
 namespace lld::coff {
 namespace {
-// An observable vague entity a member defines: the names of its group, the
-// entity's first, and the DLL, in lowercase, whose offer of it the member
-// takes, if any.
+// What a member that defines it gives up for another member's instance: an
+// observable vague entity, as an importer gives it up for a DLL's offer; a
+// strong vtable, type_info or type name that another member exports too, as
+// one static library linked into both makes it; or the vtable of a class whose
+// exact dynamic_casts compare vtable pointers, which only one copy makes decide
+// for every member's objects.
+enum EntityKind : int { VagueEntity, StrongEntity, ExactCastVTable };
+
+// An entity a member defines: the names of its group, the entity's first, and
+// the DLL, in lowercase, whose offer of it the member takes, if any.
 struct Definition {
   std::vector<std::string> names;
   bool code = false;
   std::string offeredBy;
+  int kind = VagueEntity;
+};
+
+// A vtable the member defines with default visibility, by its class and the
+// name of its primary address point, where the class's vtable run starts.
+struct Run {
+  std::string cls, start;
 };
 
 struct NamedExport {
@@ -95,13 +112,19 @@ struct Summary {
   std::vector<Definition> definitions;
   std::vector<std::string> undefined;
   std::vector<Import> imports;
+  std::vector<Run> runs;
 };
 
 using Digest = std::array<uint8_t, 16>;
 
 json::Value toJSON(const Definition &d) {
-  return json::Object{
-      {"names", d.names}, {"code", d.code}, {"offeredBy", d.offeredBy}};
+  return json::Object{{"names", d.names},
+                      {"code", d.code},
+                      {"offeredBy", d.offeredBy},
+                      {"kind", d.kind}};
+}
+json::Value toJSON(const Run &r) {
+  return json::Object{{"class", r.cls}, {"start", r.start}};
 }
 json::Value toJSON(const NamedExport &e) {
   return json::Object{{"name", e.name}, {"data", e.data}};
@@ -118,13 +141,19 @@ json::Value toJSON(const Summary &s) {
                       {"exports", s.exports},
                       {"definitions", s.definitions},
                       {"undefined", s.undefined},
-                      {"imports", s.imports}};
+                      {"imports", s.imports},
+                      {"runs", s.runs}};
 }
 
 bool fromJSON(const json::Value &v, Definition &d, json::Path p) {
   json::ObjectMapper o(v, p);
   return o && o.map("names", d.names) && o.map("code", d.code) &&
-         o.map("offeredBy", d.offeredBy) && !d.names.empty();
+         o.map("offeredBy", d.offeredBy) && o.mapOptional("kind", d.kind) &&
+         d.kind >= VagueEntity && d.kind <= ExactCastVTable && !d.names.empty();
+}
+bool fromJSON(const json::Value &v, Run &r, json::Path p) {
+  json::ObjectMapper o(v, p);
+  return o && o.map("class", r.cls) && o.map("start", r.start);
 }
 bool fromJSON(const json::Value &v, NamedExport &e, json::Path p) {
   json::ObjectMapper o(v, p);
@@ -146,7 +175,8 @@ bool fromJSON(const json::Value &v, Summary &s, json::Path p) {
   return o.map("name", s.name) && o.map("dll", s.dll) &&
          o.map("machine", s.machine) && o.map("options", s.options) &&
          o.map("exports", s.exports) && o.map("definitions", s.definitions) &&
-         o.map("undefined", s.undefined) && o.map("imports", s.imports);
+         o.map("undefined", s.undefined) && o.map("imports", s.imports) &&
+         o.mapOptional("runs", s.runs);
 }
 } // namespace
 
@@ -206,10 +236,78 @@ static void addBitcodeGroup(SymbolTable &symtab, BitcodeFile *f, Symbol *d,
       names.push_back(symtab.getSharedName(syms[i]).str());
 }
 
-// The observable vague entities the image defines with default visibility, as
-// an importer's link matches them to a DLL's offers: COMDAT data with its group
+// What bitcode file f defines as d.
+static const lto::InputFile::Symbol *getBitcodeSymbol(BitcodeFile *f,
+                                                      Symbol *d) {
+  ArrayRef<Symbol *> syms = f->getSymbols();
+  ArrayRef<lto::InputFile::Symbol> objSyms = f->obj->symbols();
+  for (size_t i = 0, e = objSyms.size(); i != e; ++i)
+    if (syms[i] == d && !objSyms[i].isUndefined())
+      return &objSyms[i];
+  return nullptr;
+}
+
+// Whether d is a definition that no COMDAT copy replaces: a section that admits
+// no duplicate, or a bitcode definition outside a COMDAT that deduplicates.
+static bool isStrongDefinition(DefinedRegular *d) {
+  if (isa<ObjFile>(d->getFile()))
+    return d->isCOMDAT &&
+           d->getChunk()->selection == IMAGE_COMDAT_SELECT_NODUPLICATES;
+  auto *f = dyn_cast<BitcodeFile>(d->getFile());
+  const lto::InputFile::Symbol *o = f ? getBitcodeSymbol(f, d) : nullptr;
+  return o && !o->isWeak() &&
+         (o->getComdatIndex() == -1 ||
+          f->obj->getComdatTable()[o->getComdatIndex()].second ==
+              Comdat::NoDeduplicate);
+}
+
+// Whether d is a default-visibility COMDAT copy, of which a link keeps any.
+static bool isDefaultVisibilityCopy(DefinedRegular *d) {
+  if (isa<ObjFile>(d->getFile()))
+    return d->isCOMDAT &&
+           d->getChunk()->selection != IMAGE_COMDAT_SELECT_NODUPLICATES &&
+           isDefaultVisibility(d);
+  auto *f = dyn_cast<BitcodeFile>(d->getFile());
+  const lto::InputFile::Symbol *o = f ? getBitcodeSymbol(f, d) : nullptr;
+  return o && o->getComdatIndex() != -1 &&
+         f->obj->getComdatTable()[o->getComdatIndex()].second !=
+             Comdat::NoDeduplicate &&
+         o->getVisibility() == GlobalValue::DefaultVisibility;
+}
+
+// Adds the names of d's group: d's first, then those of the rest of its COMDAT
+// and its guard's, or for a vtable outside a COMDAT, its address points'.
+static bool addGroupNames(SymbolTable &symtab, DefinedRegular *d,
+                          std::vector<std::string> &names) {
+  names.push_back(symtab.getSharedName(d).str());
+  if (isa<ObjFile>(d->getFile())) {
+    SmallVector<SectionChunk *, 4> chunks;
+    SmallVector<DefinedRegular *, 4> members;
+    symtab.collectWeakDataGroup(d, chunks, members, /*liveOnly=*/false);
+    for (DefinedRegular *m : ArrayRef(members).drop_front())
+      names.push_back(symtab.getSharedName(m).str());
+  } else if (auto *f = dyn_cast<BitcodeFile>(d->getFile())) {
+    addBitcodeGroup(symtab, f, d, names);
+    std::string prefix = (d->getName() + "$ap").str();
+    if (names.size() == 1 && d->getName().starts_with("_ZTV"))
+      for (Symbol *sym : f->getSymbols())
+        if (sym && sym->getFile() == f && isa<DefinedRegular>(sym) &&
+            sym->getName().starts_with(prefix))
+          names.push_back(sym->getName().str());
+  } else {
+    return false;
+  }
+  llvm::sort(std::next(names.begin()), names.end());
+  names.erase(llvm::unique(names), names.end());
+  return true;
+}
+
+// The entities the image defines that another image's may replace: the
+// observable vague entities it defines with default visibility, as an
+// importer's link matches them to a DLL's offers (COMDAT data with its group
 // and guard, the record's name for a thread-local, and functions whose address
-// is significant.
+// is significant); the strong vtables, type_info and type names it exports;
+// and the vtables of classes whose exact casts compare vtable pointers.
 static std::vector<Definition> getDefinitions(SymbolTable &symtab) {
   auto getOfferer = [&](StringRef name, bool code) -> std::string {
     auto *imp = dyn_cast_or_null<DefinedImportData>(
@@ -220,24 +318,13 @@ static std::vector<Definition> getDefinitions(SymbolTable &symtab) {
   };
   std::vector<Definition> defs;
   DenseSet<Symbol *> seen;
-  SmallVector<SectionChunk *, 4> chunks;
-  SmallVector<DefinedRegular *, 4> members;
   for (Symbol *sym : symtab.weakData) {
     auto *d = dyn_cast<DefinedRegular>(sym);
     if (!d || !seen.insert(d).second || !isDefaultVisibility(d))
       continue;
     Definition def;
-    def.names.push_back(symtab.getSharedName(d).str());
-    if (isa<ObjFile>(d->getFile())) {
-      symtab.collectWeakDataGroup(d, chunks, members, /*liveOnly=*/false);
-      for (DefinedRegular *m : ArrayRef(members).drop_front())
-        def.names.push_back(symtab.getSharedName(m).str());
-    } else if (auto *f = dyn_cast<BitcodeFile>(d->getFile())) {
-      addBitcodeGroup(symtab, f, d, def.names);
-    } else {
+    if (!addGroupNames(symtab, d, def.names))
       continue;
-    }
-    llvm::sort(std::next(def.names.begin()), def.names.end());
     def.offeredBy = getOfferer(def.names.front(), /*code=*/false);
     defs.push_back(std::move(def));
   }
@@ -250,6 +337,26 @@ static std::vector<Definition> getDefinitions(SymbolTable &symtab) {
     def.code = true;
     def.offeredBy = getOfferer(d->getName(), /*code=*/true);
   }
+  auto add = [&](DefinedRegular *d, int kind) {
+    Definition def;
+    def.kind = kind;
+    if (seen.insert(d).second && addGroupNames(symtab, d, def.names))
+      defs.push_back(std::move(def));
+  };
+  for (const Export &e : symtab.exports) {
+    StringRef name = e.name;
+    if (e.isPrivate || !e.forwardTo.empty() || name.contains('$') ||
+        !(name.starts_with("_ZTV") || name.starts_with("_ZTI") ||
+          name.starts_with("_ZTS")))
+      continue;
+    if (auto *d = dyn_cast_or_null<DefinedRegular>(symtab.find(name));
+        d && isStrongDefinition(d))
+      add(d, StrongEntity);
+  }
+  for (StringRef name : symtab.exactCastVTables)
+    if (auto *d = dyn_cast_or_null<DefinedRegular>(symtab.find(name));
+        d && isDefaultVisibilityCopy(d))
+      add(d, ExactCastVTable);
   llvm::sort(defs, [](const Definition &a, const Definition &b) {
     return a.names.front() < b.names.front();
   });
@@ -314,6 +421,23 @@ static Summary getSummary(COFFLinkerContext &ctx,
   llvm::sort(s.imports, [](const Import &a, const Import &b) {
     return std::tie(a.name, a.dll) < std::tie(b.name, b.dll);
   });
+  // Only a vtable with default visibility has address-point names; its first
+  // starts its class's run.
+  std::map<std::string, uint64_t> starts;
+  symtab.forEachSymbol([&](Symbol *sym) {
+    StringRef name = sym->getName();
+    size_t pos = name.rfind("$ap");
+    uint64_t offset;
+    if (!isa<DefinedRegular>(sym) || !name.starts_with("_ZTV") ||
+        pos == StringRef::npos ||
+        name.substr(pos + strlen("$ap")).getAsInteger(10, offset))
+      return;
+    auto [it, inserted] =
+        starts.try_emplace(name.slice(strlen("_ZTV"), pos).str(), offset);
+    it->second = std::min(it->second, offset);
+  });
+  for (auto &[cls, offset] : starts)
+    s.runs.push_back({cls, ("_ZTV" + cls + "$ap" + Twine(offset)).str()});
   return s;
 }
 
@@ -417,7 +541,8 @@ void applyJointFacts(COFFLinkerContext &ctx, const opt::InputArgList &args) {
   }
   std::optional<Digest> digest;
   StringSet<> members;
-  std::vector<StringRef> kept;
+  std::vector<StringRef> kept, privateExports, runs;
+  std::vector<std::pair<StringRef, std::vector<StringRef>>> preempted;
   forEachLinkRecordGroup(
       lazy->getMemberBuffer(), ctx.config.machine,
       [&](uint64_t kind, ArrayRef<uint8_t> payload) {
@@ -429,8 +554,18 @@ void applyJointFacts(COFFLinkerContext &ctx, const opt::InputArgList &args) {
         data.getU8(c, d.data(), d.size());
         for (uint64_t i = 0, n = data.getULEB128(c); c && i != n; ++i)
           members.insert(data.getBytes(c, data.getULEB128(c)));
-        for (uint64_t i = 0, n = data.getULEB128(c); c && i != n; ++i)
-          kept.push_back(data.getBytes(c, data.getULEB128(c)));
+        auto getStrings = [&](std::vector<StringRef> &v) {
+          for (uint64_t i = 0, n = data.getULEB128(c); c && i != n; ++i)
+            v.push_back(data.getBytes(c, data.getULEB128(c)));
+        };
+        getStrings(kept);
+        getStrings(privateExports);
+        for (uint64_t i = 0, n = data.getULEB128(c); c && i != n; ++i) {
+          auto &[from, group] = preempted.emplace_back();
+          from = data.getBytes(c, data.getULEB128(c));
+          getStrings(group);
+        }
+        getStrings(runs);
         if (c && data.eof(c))
           digest = d;
         consumeError(c.takeError());
@@ -450,10 +585,49 @@ void applyJointFacts(COFFLinkerContext &ctx, const opt::InputArgList &args) {
   }
   for (const auto &m : members)
     ctx.jointMembers.insert(m.getKey());
-  // What the member keeps for the others stays live, and so is offered.
+  // What the member keeps for the others stays live, and so is offered or
+  // exported, and LTO keeps it.
+  SymbolTable &symtab = ctx.symtab;
   for (StringRef entity : kept)
-    if (auto *d = dyn_cast_or_null<Defined>(ctx.symtab.findVagueEntity(entity)))
+    if (auto *d = dyn_cast_or_null<Defined>(symtab.findVagueEntity(entity))) {
       ctx.config.gcroot.push_back(d);
+      d->isUsedInRegularObj = true;
+    }
+  for (StringRef name : privateExports) {
+    Export e;
+    e.name = name;
+    e.data = true;
+    e.isPrivate = true;
+    e.source = ExportSource::Export;
+    e.sym = symtab.addGCRoot(name);
+    e.symbolName = name;
+    symtab.exports.push_back(e);
+  }
+  // A group the member gives up for another's is preempted by its imports
+  // once liveness is decided; LTO keeps it until then, as it keeps data a DLL
+  // offers.
+  for (auto &[from, group] : preempted) {
+    for (StringRef name : group) {
+      // The owner's import library, on the link line, may hold the import.
+      Symbol *imp = symtab.find(("__imp_" + name).str());
+      if (auto *data = dyn_cast_or_null<DefinedImportData>(imp)) {
+        if (!data->getDLLName().equals_insensitive(from))
+          Err(ctx) << name << " is imported from " << data->getDLLName()
+                   << ", but the joint-link facts give it up for " << from
+                   << "'s";
+      } else if (!imp || isa<Undefined>(imp) || imp->isLazy()) {
+        ctx.driver.addFile(make<ImportFile>(
+            ctx, makeShortImport(ctx.config.machine, from, name, IMPORT_DATA,
+                                 IMPORT_NAME)));
+      }
+      if (Symbol *sym = symtab.find(name))
+        sym->isUsedInRegularObj = true;
+    }
+    if (Symbol *sym = group.empty() ? nullptr : symtab.find(group.front()))
+      symtab.jointPreempted.insert(sym);
+  }
+  for (StringRef start : runs)
+    ctx.jointRuns[start.slice(strlen("_ZTV"), start.rfind("$ap"))] = start;
 }
 
 namespace {
@@ -474,6 +648,7 @@ struct FactImport {
 struct Entity {
   std::string name;
   bool code = false;
+  int kind = VagueEntity;
   SmallVector<std::pair<unsigned, const Definition *>, 2> keepers;
   bool referenced = false;
 };
@@ -482,7 +657,9 @@ class Merge {
 public:
   Merge(COFFLinkerContext &ctx, std::vector<Summary> &summaries)
       : ctx(ctx), summaries(summaries), edges(summaries.size()),
-        imports(summaries.size()), kept(summaries.size()) {}
+        imports(summaries.size()), kept(summaries.size()),
+        privateExports(summaries.size()), preempted(summaries.size()),
+        runExports(summaries.size()), runImports(summaries.size()) {}
   void run(StringRef dir);
 
 private:
@@ -498,6 +675,15 @@ private:
   std::vector<SmallSetVector<unsigned, 4>> edges;
   std::vector<std::vector<FactImport>> imports;
   std::vector<std::vector<std::string>> kept;
+  // What a member exports for the others under names no import library holds;
+  // the groups it gives up for an owner's, which an importer's preemption of a
+  // vague entity does not, each with the owner; and the classes whose vtable
+  // runs it exports for the members that import the class from it.
+  std::vector<std::vector<std::string>> privateExports;
+  std::vector<std::vector<std::pair<unsigned, std::vector<std::string>>>>
+      preempted;
+  std::vector<std::set<std::string>> runExports;
+  std::vector<std::set<std::pair<unsigned, const Run *>>> runImports;
 };
 } // namespace
 
@@ -590,6 +776,20 @@ void Merge::writeFacts(StringRef dir, unsigned m, const Digest &digest) {
     members.push_back(createImportMember(
         summaries[i.from].name, ctx.config.machine, i.name,
         i.code ? IMPORT_CODE : IMPORT_DATA, buffers.emplace_back()));
+  // The three words of each vtable run the member imports, under the names
+  // the exporter's import library would give them.
+  static const StringRef runPrefixes[] = {
+      VTableRangeStartPrefix, VTableRangeEndPrefix, VTableRangeMaskPrefix};
+  for (const auto &[from, run] : runImports[m]) {
+    std::string dll = StringRef(summaries[from].name).lower();
+    for (int w : {0, 1, 2})
+      members.push_back(createImportMember(
+          summaries[from].name, ctx.config.machine,
+          (runPrefixes[w] + run->cls + "$" + dll).str(), IMPORT_DATA,
+          buffers.emplace_back(),
+          w == 0 ? StringRef(run->start)
+                 : getVTableRunWordName(run->cls, w == 1 ? 'e' : 'm')));
+  }
 
   std::string payload(digest.begin(), digest.end());
   raw_string_ostream os(payload);
@@ -605,6 +805,19 @@ void Merge::writeFacts(StringRef dir, unsigned m, const Digest &digest) {
   encodeULEB128(kept[m].size(), os);
   for (const std::string &name : kept[m])
     putString(name);
+  encodeULEB128(privateExports[m].size(), os);
+  for (const std::string &name : privateExports[m])
+    putString(name);
+  encodeULEB128(preempted[m].size(), os);
+  for (const auto &[from, group] : preempted[m]) {
+    putString(summaries[from].name);
+    encodeULEB128(group.size(), os);
+    for (const std::string &name : group)
+      putString(name);
+  }
+  encodeULEB128(runExports[m].size(), os);
+  for (const std::string &start : runExports[m])
+    putString(start);
   members.push_back(createLinkRecordMember(ctx, s.name, getFactsSymbol(s.name),
                                            {{LinkRecordJointFacts, payload}},
                                            buffers.emplace_back()));
@@ -688,7 +901,7 @@ void Merge::run(StringRef dir) {
           entityOf.try_emplace(d.names.front(), entities.size());
       unsigned e = it->second;
       if (inserted) {
-        entities.push_back({d.names.front(), d.code, {}, false});
+        entities.push_back({d.names.front(), d.code, d.kind, {}, false});
         for (const std::string &name : ArrayRef(d.names).drop_front())
           entityOf.try_emplace(name, e);
       }
@@ -751,11 +964,32 @@ void Merge::run(StringRef dir) {
     owners[i] = owner;
     const Definition *od = keeperDef(e, owner);
     llvm::append_range(kept[owner], od->names);
-    for (auto &[k, d] : e.keepers)
-      if (k != unsigned(owner))
-        for (const std::string &name : d->names)
-          if (llvm::is_contained(od->names, name))
+    for (auto &[k, d] : e.keepers) {
+      if (k == unsigned(owner))
+        continue;
+      // A vague entity meets the owner's instance as any importer meets a
+      // DLL's offer. A vtable or a strong type_info or type name is given up
+      // by name, its imports added once the member's link has resolved as its
+      // scan did, since their archive members would satisfy references that
+      // load the member's own definition from a library.
+      if (e.kind != VagueEntity) {
+        edges[k].insert(owner);
+        preempted[k].push_back({unsigned(owner), {}});
+      }
+      for (const std::string &name : d->names)
+        if (llvm::is_contained(od->names, name)) {
+          if (e.kind == VagueEntity)
             addImport(k, name, owner, e.code);
+          else
+            preempted[k].back().second.push_back(name);
+        }
+    }
+    // A vtable copy's owner exports it for the others, but not for the images
+    // that link its import library.
+    if (e.kind == ExactCastVTable &&
+        llvm::none_of(summaries[owner].exports,
+                      [&](const NamedExport &x) { return x.name == e.name; }))
+      llvm::append_range(privateExports[owner], od->names);
   }
 
   // References to an entity import it from its owner, or else from a member
@@ -775,6 +1009,33 @@ void Merge::run(StringRef dir) {
     }
   if (errorCount())
     return;
+
+  // A member's vtable guard finds the objects another member builds where it
+  // reads the other's vtable run: for each class whose vtable or type_info it
+  // imports from a DLL member that has the class's vtable, it imports the run,
+  // which that member exports.
+  auto addRun = [&](unsigned m, StringRef cls, unsigned from) {
+    if (!summaries[from].dll ||
+        (!cls.consume_front("_ZTV") && !cls.consume_front("_ZTI")))
+      return;
+    cls = cls.take_front(cls.find("$ap"));
+    if (cls.contains('$'))
+      return;
+    ArrayRef<Run> runs = summaries[from].runs;
+    auto it = llvm::lower_bound(
+        runs, cls, [](const Run &r, StringRef c) { return r.cls < c; });
+    if (it != runs.end() && it->cls == cls) {
+      runImports[m].insert({from, &*it});
+      runExports[from].insert(it->start);
+    }
+  };
+  for (unsigned m = 0; m != n; ++m) {
+    for (const FactImport &i : imports[m])
+      addRun(m, i.name, i.from);
+    for (const auto &[from, group] : preempted[m])
+      for (const std::string &name : group)
+        addRun(m, name, from);
+  }
 
   if (std::error_code ec = sys::fs::create_directories(dir)) {
     Err(ctx) << "cannot create " << dir << ": " << ec.message();

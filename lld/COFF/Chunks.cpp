@@ -544,8 +544,11 @@ bool SectionChunk::isSectionRelative(const coff_relocation &rel) const {
 Defined *SectionChunk::getEditTarget(const coff_relocation &rel) const {
   if (!edited)
     return nullptr;
-  const RelaxEdit *e = file->symtab.ctx.relaxations.find(this)->second.findEdit(
-      rel.VirtualAddress);
+  auto &relaxations = file->symtab.ctx.relaxations;
+  auto it = relaxations.find(this);
+  if (it == relaxations.end())
+    return nullptr;
+  const RelaxEdit *e = it->second.findEdit(rel.VirtualAddress);
   return e ? e->target : nullptr;
 }
 

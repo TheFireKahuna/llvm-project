@@ -685,7 +685,10 @@ bool SymbolTable::loadInteriorImports() {
     StringRef name = f->impSym->getName().drop_front(strlen("__imp_"));
     if (!weakExternalNames)
       readImportReferences();
-    if (weakExternalNames->contains(name) && !isImportedStrongly(name))
+    // A joint link's facts import only what their merge made a member export.
+    if (weakExternalNames->contains(name) && !isImportedStrongly(name) &&
+        (ctx.config.jointFacts.empty() ||
+         f->parentName != ctx.config.jointFacts))
       f->isWeakImport = true;
   }
   bool runTime = false, runTimeWeak = false;
@@ -1166,10 +1169,13 @@ void SymbolTable::bindImportsToDefinitions() {
       continue;
     }
     // What the image takes from an offering DLL keeps the import: a shared
-    // vague definition the DLL's instance preempts, or whose address it gives.
+    // vague definition the DLL's instance preempts, or whose address it gives;
+    // so does what a joint link's member gives up for another's.
     DefinedRegular *leader = d->getChunk()->sym;
-    if (leader && leader->isCOMDAT && isShareableVagueName(leader->getName()) &&
-        isDefaultVisibility(leader) && !ignoresOffersOf(imp))
+    if (leader &&
+        ((leader->isCOMDAT && isShareableVagueName(leader->getName()) &&
+          isDefaultVisibility(leader) && !ignoresOffersOf(imp)) ||
+         jointPreempted.count(leader)))
       continue;
     // A thread-local variable's import binds to the record the image writes.
     Defined *bound = d;

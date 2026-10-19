@@ -570,6 +570,9 @@ bool Writer::createThunks(OutputSection *os, int margin) {
       if (!sym)
         continue;
       sym = sc->getBranchTarget(rel, sym);
+      // A rewritten instruction reaches what its edit names.
+      if (Defined *target = sc->getEditTarget(rel))
+        sym = target;
 
       uint64_t s = sym->getRVA();
 
@@ -693,6 +696,8 @@ bool Writer::verifyRanges(const std::vector<Chunk *> chunks) {
       if (!sym)
         continue;
       sym = sc->getBranchTarget(rel, sym);
+      if (Defined *target = sc->getEditTarget(rel))
+        sym = target;
 
       uint64_t p = sc->getRVA() + rel.VirtualAddress;
       uint64_t s = sym->getRVA();

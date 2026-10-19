@@ -385,8 +385,9 @@ void BitcodeCompiler::add(BitcodeFile &f) {
       continue;
     }
     // Preempted after LTO, offered data is kept, and the references to it
-    // reach it through its import.
-    bool offered = dataOffer != nullptr;
+    // reach it through its import; so is what a joint link's member gives up
+    // for another's.
+    bool offered = dataOffer != nullptr || f.symtab.jointPreempted.count(sym);
     r.VisibleToRegularObj =
         sym->isUsedInRegularObj || offered ||
         (r.Prevailing && (isOfferedByImage(f, objSym, sym) ||

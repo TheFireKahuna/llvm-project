@@ -1010,7 +1010,7 @@ Error ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
       // A form this linker does not know is still a site that is not a
       // branch, which it leaves as it is.
       unsigned form = site & 7;
-      if (form > LinkSiteLoadREX2)
+      if (form > LinkSiteAddressOffset)
         form = LinkSiteOther;
       // A site with a relocation holds its 4-byte field, which the linker
       // checks with the site's bytes; one that facts describe may be shorter.

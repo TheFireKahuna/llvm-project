@@ -106,7 +106,9 @@ static void gatherClasses(COFFLinkerContext &ctx,
   DenseSet<StringRef> merged;
   for (ObjFile *file : ctx.objFileInstances) {
     for (const ObjFile::LinkVTable &vt : file->getLinkVTables()) {
-      if (!vt.vtable->getChunk() || !vt.vtable->getChunk()->live)
+      // A vtable another image's instance preempted has no slot here.
+      if (file->symtab.preemptedData.contains(vt.vtable) ||
+          !vt.vtable->getChunk() || !vt.vtable->getChunk()->live)
         continue;
       uint64_t apoff = vt.offset;
       if (!vt.onSection)
@@ -421,9 +423,7 @@ void lld::coff::defineVTableRuns(COFFLinkerContext &ctx) {
                                         r.words[0]->getChunk()->getRVA());
 }
 
-// The export name for a run word, hashed from the class name (which may be
-// long): the end ('e') or the start plus the stride less one ('m').
-static std::string runWordExportName(StringRef cls, char word) {
+std::string lld::coff::getVTableRunWordName(StringRef cls, char word) {
   return (VTableRunExportPrefix + getABIContractLocator(cls) + Twine(word))
       .str();
 }
@@ -461,10 +461,13 @@ void lld::coff::addVTableRunExports(COFFLinkerContext &ctx) {
   DenseSet<unsigned> clashed;
   for (ObjFile *file : ctx.objFileInstances) {
     for (const ObjFile::LinkVTable &vt : file->getLinkVTables()) {
+      if (file->symtab.preemptedData.contains(vt.vtable))
+        continue;
       SectionChunk *chunk = vt.vtable->getChunk();
       if (!chunk || !chunk->live || !seen.insert(vt.cls).second)
         continue;
-      if (!names.contains("_ZTV" + vt.cls) && !names.contains("_ZTI" + vt.cls))
+      if (!names.contains("_ZTV" + vt.cls) &&
+          !names.contains("_ZTI" + vt.cls) && !ctx.jointRuns.count(vt.cls))
         continue;
       uint64_t apoff = vt.offset + (vt.onSection ? 0 : vt.vtable->getValue());
       uint64_t point = apoff - vt.vtable->getValue();
@@ -480,14 +483,41 @@ void lld::coff::addVTableRunExports(COFFLinkerContext &ctx) {
                          ("_ZTV" + vt.cls + "$ap" + Twine(point)).str()});
     }
   }
+  // Other members of a joint link import the runs of some classes from the
+  // image under names its merge chose; a class whose vtable the image keeps
+  // no copy of builds no object here, and gets an empty run.
+  for (auto &[cls, start] : ctx.jointRuns) {
+    if (seen.insert(cls).second) {
+      if (!ctx.vtableOwnerEmpty)
+        ctx.vtableOwnerEmpty = make<EmptyOwnerRunChunk>();
+      auto [it, inserted] =
+          locators.try_emplace(getABIContractLocator(cls), classes.size());
+      if (!inserted) {
+        clashed.insert(it->second);
+        clashed.insert(classes.size());
+      }
+      classes.push_back({cls.str(), ctx.vtableOwnerEmpty, 0, start.str()});
+    }
+  }
 
   for (auto [i, c] : llvm::enumerate(classes)) {
+    auto joint = ctx.jointRuns.find(c.cls);
+    if (joint != ctx.jointRuns.end() &&
+        (clashed.contains(i) || joint->second != c.start)) {
+      Err(ctx) << "cannot export the vtable run of class " << c.cls
+               << " as the joint-link facts say, "
+               << (clashed.contains(i)
+                       ? "since another class's run has its names"
+                       : "since it starts at " + c.start + ", not " +
+                             joint->second.str());
+      continue;
+    }
     if (clashed.contains(i))
       continue;
     COFFLinkerContext::VTableRunExport e{c.cls, c.chunk, c.apoff, {}, {}};
     e.names[0] = saver().save(c.start);
-    e.names[1] = saver().save(runWordExportName(c.cls, 'e'));
-    e.names[2] = saver().save(runWordExportName(c.cls, 'm'));
+    e.names[1] = saver().save(getVTableRunWordName(c.cls, 'e'));
+    e.names[2] = saver().save(getVTableRunWordName(c.cls, 'm'));
     // The import library imports each word under the class's range symbol's
     // name. The start is the address point, which may already be exported by
     // name.

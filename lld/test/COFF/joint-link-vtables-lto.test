@@ -1,0 +1,64 @@
+# REQUIRES: x86
+## The scan reads which vtables exact casts compare from a bitcode member's
+## linker options, before LTO: b.dll gives up its copy of D's vtable for
+## a.dll's, which LTO keeps and a.dll exports under a name its import library
+## does not hold.
+
+# RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
+# RUN: llvm-as a.ll -o a.obj
+# RUN: llvm-as b.ll -o b.obj
+# RUN: lld-link -import-slots -dll -noentry a.obj -out:a.dll \
+# RUN:   -lldjointscan:a.jscan
+# RUN: lld-link -import-slots -dll -noentry b.obj -out:b.dll \
+# RUN:   -lldjointscan:b.jscan
+# RUN: lld-link -lldjointmerge -out:facts a.jscan b.jscan
+# RUN: lld-link -import-slots -dll -noentry a.obj -out:a.dll \
+# RUN:   -lldjoint:facts/a.dll.jfacts
+# RUN: lld-link -import-slots -dll -noentry b.obj -out:b.dll \
+# RUN:   -lldjoint:facts/b.dll.jfacts
+# RUN: llvm-readobj --coff-exports a.dll | FileCheck --check-prefix=A %s
+# RUN: llvm-nm a.lib | FileCheck --check-prefix=ALIB %s
+# RUN: llvm-readobj --coff-imports b.dll | FileCheck --check-prefix=B %s
+# RUN: llvm-objdump -s -j .rdata b.dll | FileCheck --check-prefix=BDATA %s
+
+# A-DAG: Name: _ZTV1D
+# A-DAG: Name: _ZTV1D$ap16
+# ALIB-NOT: _ZTV1D
+
+# B:     Name: a.dll
+# B:     Symbol: _ZTV1D
+
+## b.dll keeps no copy.
+# BDATA-NOT: 0b0b0b0b
+
+#--- a.ll
+target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-unknown-windows-itanium"
+
+$_ZTV1D = comdat any
+
+@_ZTV1D = linkonce_odr unnamed_addr constant { [3 x i64] } { [3 x i64] [i64 0, i64 0, i64 u0x0a0a0a0a0a0a0a0a] }, comdat, align 8
+@"_ZTV1D$ap16" = unnamed_addr alias i8, getelementptr inbounds (i8, ptr @_ZTV1D, i64 16)
+
+define dllexport ptr @af() {
+  ret ptr getelementptr inbounds (i8, ptr @_ZTV1D, i64 16)
+}
+
+!llvm.linker.options = !{!0}
+!0 = !{!"/EXACTCAST:_ZTV1D"}
+
+#--- b.ll
+target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-unknown-windows-itanium"
+
+$_ZTV1D = comdat any
+
+@_ZTV1D = linkonce_odr unnamed_addr constant { [3 x i64] } { [3 x i64] [i64 0, i64 0, i64 u0x0b0b0b0b0b0b0b0b] }, comdat, align 8
+@"_ZTV1D$ap16" = unnamed_addr alias i8, getelementptr inbounds (i8, ptr @_ZTV1D, i64 16)
+
+define dllexport ptr @bf() {
+  ret ptr getelementptr inbounds (i8, ptr @_ZTV1D, i64 16)
+}
+
+!llvm.linker.options = !{!0}
+!0 = !{!"/EXACTCAST:_ZTV1D"}

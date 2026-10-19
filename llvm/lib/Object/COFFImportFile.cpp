@@ -736,10 +736,12 @@ NewArchiveMember createLinkerFacts(StringRef ImportName, MachineTypes Machine,
 
 NewArchiveMember createImportMember(StringRef ImportName, MachineTypes Machine,
                                     StringRef Sym, ImportType Type,
-                                    std::vector<uint8_t> &Buffer) {
+                                    std::vector<uint8_t> &Buffer,
+                                    StringRef ExportAs) {
   ObjectFactory OF(llvm::sys::path::filename(ImportName), Machine);
-  NewArchiveMember Member =
-      OF.createShortImport(Sym, /*Ordinal=*/0, Type, IMPORT_NAME, "", Machine);
+  NewArchiveMember Member = OF.createShortImport(
+      Sym, /*Ordinal=*/0, Type,
+      ExportAs.empty() ? IMPORT_NAME : IMPORT_NAME_EXPORTAS, ExportAs, Machine);
   Buffer.assign(Member.Buf->getBufferStart(), Member.Buf->getBufferEnd());
   return {MemoryBufferRef(toStringRef(Buffer), Member.MemberName)};
 }
