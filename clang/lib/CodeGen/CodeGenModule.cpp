@@ -1196,9 +1196,9 @@ CodeGenModule::StackProtectorAttribute(const Decl *D) const {
   return std::nullopt;
 }
 
-// Whether the initializer of a global variable holds GV's address.
-static bool isAddressInStaticData(const llvm::GlobalValue *GV) {
-  SmallVector<const llvm::User *, 8> Worklist(GV->users());
+// Whether the initializer of a global variable holds the address C.
+static bool isAddressInStaticData(const llvm::Constant *C) {
+  SmallVector<const llvm::User *, 8> Worklist(C->users());
   llvm::SmallPtrSet<const llvm::User *, 8> Visited;
   while (!Worklist.empty()) {
     const llvm::User *U = Worklist.pop_back_val();
@@ -1231,6 +1231,7 @@ void CodeGenModule::Release() {
   // object instead.
   if (llvm::any_of(ConstantDLLImportAddresses, isAddressInStaticData))
     AppendLinkFact("/INCLUDE:__llvm_import_slots_v1");
+  emitInteriorDemands();
   // A strong definition of an overridable default replaces the runtime's weak
   // one for every image, which only the import-slots binding carries out: it
   // writes the override table and binds the replacement into it. A linker that
@@ -6956,6 +6957,40 @@ void CodeGenModule::emitSubobjectNames(const VarDecl &D,
       emitInteriorName(GV, "$so", Offset,
                        llvm::ConstantExpr::getInBoundsPtrAdd(
                            GV, llvm::ConstantInt::get(Int64Ty, Offset)));
+}
+
+// The loader writes another image's address into static data whole, adding no
+// offset, so a word holding an address inside another image's variable binds
+// to a name that image exports for the address. A joint link names the export
+// before LTO writes the data, so bitcode states the variable and offset in a
+// directive; an object's relocation states them itself. Static locals,
+// temporaries and compound literals are among the module's variables by now.
+void CodeGenModule::emitInteriorDemands() {
+  if (!getTriple().isWindowsItaniumOrNTPOSIXEnvironment() ||
+      !(CodeGenOpts.PrepareForLTO || CodeGenOpts.PrepareForThinLTO))
+    return;
+  const llvm::DataLayout &DL = getDataLayout();
+  SmallVector<std::pair<StringRef, uint64_t>, 4> Demands;
+  for (const llvm::GlobalVariable &GV : getModule().globals()) {
+    if (GV.isDSOLocal() || GV.hasLocalLinkage() || GV.isThreadLocal())
+      continue;
+    for (const llvm::User *U : GV.users()) {
+      const auto *CE = dyn_cast<llvm::ConstantExpr>(U);
+      llvm::APInt Offset(DL.getIndexTypeSizeInBits(GV.getType()), 0);
+      if (CE &&
+          CE->stripAndAccumulateConstantOffsets(DL, Offset,
+                                                /*AllowNonInbounds=*/true) ==
+              &GV &&
+          Offset.isStrictlyPositive() && isAddressInStaticData(CE))
+        Demands.push_back(
+            {llvm::GlobalValue::dropLLVMManglingEscape(GV.getName()),
+             Offset.getZExtValue()});
+    }
+  }
+  llvm::sort(Demands);
+  Demands.erase(llvm::unique(Demands), Demands.end());
+  for (auto [Name, Offset] : Demands)
+    AppendLinkFact(("/INTERIOR:" + Name + "," + Twine(Offset)).str());
 }
 
 /// Pass IsTentative as true if you want to create a tentative definition.

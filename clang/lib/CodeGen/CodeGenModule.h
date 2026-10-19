@@ -1092,6 +1092,9 @@ public:
                         uint64_t Offset, llvm::Constant *Address);
   /// Give the definition GV of D a name for each of its subobjects.
   void emitSubobjectNames(const VarDecl &D, llvm::GlobalVariable *GV);
+  /// Tell the linker of each address inside another image's variable that
+  /// the module's static data holds.
+  void emitInteriorDemands();
 
   /// Note that a constant holds the address C of the dllimport entity D,
   /// when only hasConstantDLLImportAddresses() lets it.
