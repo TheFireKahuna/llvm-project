@@ -22,6 +22,9 @@ const SymbolNameSpec RegisterJITLoaderGDBAllocActionName =
 const SymbolNameSpec DeregisterJITLoaderGDBAllocActionName =
     SymbolNameSpec::c("orc_rt_ci_aa_sps_GDBJITRegistrar_deregister");
 
+const SymbolNameSpec RestrictCallTargetsAllocActionName =
+    SymbolNameSpec::c("orc_rt_ci_aa_sps_CallTargets_restrict");
+
 const SymbolNameSpec DispatchName =
     SymbolNameSpec::verbatim("__orc_rt_jit_dispatch");
 const SymbolNameSpec DispatchCtxName =

@@ -14,6 +14,7 @@
 #include "llvm/ExecutionEngine/Orc/Shared/OrcRTBridge.h"
 #include "llvm/ExecutionEngine/Orc/TargetProcess/JITLoaderGDB.h"
 #include "llvm/ExecutionEngine/Orc/TargetProcess/RegisterEHFrames.h"
+#include "llvm/ExecutionEngine/Orc/TargetProcess/RestrictCallTargets.h"
 
 #ifdef __APPLE__
 #include <dlfcn.h>
@@ -37,6 +38,12 @@ void addDefaultBootstrapValuesForHostProcess(
   BootstrapSymbols[Mangle.mangledCopy(
       rt::RegisterJITLoaderGDBAllocActionName)] =
       ExecutorAddr::fromPtr(&llvm_orc_registerJITLoaderGDBAllocAction);
+
+#ifdef _WIN32
+  BootstrapSymbols[Mangle.mangledCopy(
+      rt::RestrictCallTargetsAllocActionName)] =
+      ExecutorAddr::fromPtr(&llvm_orc_restrictCallTargetsAllocAction);
+#endif // _WIN32
 
 #ifdef __APPLE__
   if (!dlsym(RTLD_DEFAULT, "__unw_add_find_dynamic_unwind_sections"))

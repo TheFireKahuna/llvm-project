@@ -22,6 +22,8 @@
 #include "llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h"
 #include "llvm/ExecutionEngine/Orc/RecordProxy.h"
 #include "llvm/ExecutionEngine/Orc/SelfExecutorProcessControl.h"
+#include "llvm/ExecutionEngine/Orc/Shared/Mangler.h"
+#include "llvm/ExecutionEngine/Orc/Shared/OrcRTBridge.h"
 #include "llvm/ExecutionEngine/Orc/TargetProcess/RegisterEHFrames.h"
 #include "llvm/ExecutionEngine/Orc/UnwindInfoRegistrationPlugin.h"
 #include "llvm/ExecutionEngine/SectionMemoryManager.h"
@@ -30,6 +32,7 @@
 #include "llvm/IR/Mangler.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/DynamicLibrary.h"
+#include "llvm/Support/Memory.h"
 
 #define DEBUG_TYPE "orc"
 
@@ -37,6 +40,84 @@ using namespace llvm;
 using namespace llvm::orc;
 
 namespace {
+
+// Where the process checks indirect calls against the targets of the memory
+// they reach, as Control Flow Guard does, executable memory is otherwise a
+// target throughout; these restrict JIT'd code's targets to its functions once
+// it is executable.
+class CallTargetRestrictionPlugin : public LinkGraphLinkingLayer::Plugin {
+public:
+  CallTargetRestrictionPlugin(ExecutorAddr Restrict) : Restrict(Restrict) {}
+
+  void modifyPassConfig(MaterializationResponsibility &MR,
+                        jitlink::LinkGraph &G,
+                        jitlink::PassConfiguration &Config) override {
+    Config.PostFixupPasses.push_back([this](jitlink::LinkGraph &G) {
+      using namespace shared;
+      for (jitlink::Section &Sec : G.sections()) {
+        if ((Sec.getMemProt() & MemProt::Exec) == MemProt::None ||
+            Sec.blocks().empty())
+          continue;
+        std::vector<ExecutorAddr> Entries;
+        for (jitlink::Symbol *Sym : Sec.symbols())
+          if (Sym->isCallable())
+            Entries.push_back(Sym->getAddress());
+        llvm::sort(Entries);
+        Entries.erase(llvm::unique(Entries), Entries.end());
+        G.allocActions().push_back(
+            {cantFail(WrapperFunctionCall::Create<
+                      SPSArgList<SPSExecutorAddrRange,
+                                 SPSSequence<SPSExecutorAddr>>>(
+                 Restrict, jitlink::SectionRange(Sec).getRange(), Entries)),
+             {}});
+      }
+      return Error::success();
+    });
+  }
+  Error notifyFailed(MaterializationResponsibility &MR) override {
+    return Error::success();
+  }
+  Error notifyRemovingResources(JITDylib &JD, ResourceKey K) override {
+    return Error::success();
+  }
+  void notifyTransferringResources(JITDylib &JD, ResourceKey DstKey,
+                                   ResourceKey SrcKey) override {}
+
+private:
+  ExecutorAddr Restrict;
+};
+
+class CallTargetRestrictionListener : public JITEventListener {
+public:
+  void notifyObjectLoaded(ObjectKey K, const object::ObjectFile &Obj,
+                          const RuntimeDyld::LoadedObjectInfo &L) override {
+    DenseMap<object::SectionRef, std::vector<uintptr_t>> Entries;
+    for (const object::SymbolRef &Sym : Obj.symbols()) {
+      Expected<object::SymbolRef::Type> Type = Sym.getType();
+      Expected<object::section_iterator> Sec = Sym.getSection();
+      Expected<uint64_t> Value = Sym.getValue();
+      if (!Type || !Sec || !Value || *Type != object::SymbolRef::ST_Function ||
+          *Sec == Obj.section_end()) {
+        consumeError(Type.takeError());
+        consumeError(Sec.takeError());
+        consumeError(Value.takeError());
+        continue;
+      }
+      if (uint64_t Addr = L.getSectionLoadAddress(**Sec))
+        Entries[**Sec].push_back(Addr + *Value);
+    }
+    for (const object::SectionRef &Sec : Obj.sections()) {
+      uint64_t Addr = L.getSectionLoadAddress(Sec);
+      if (!Sec.isText() || !Addr)
+        continue;
+      std::vector<uintptr_t> &E = Entries[Sec];
+      llvm::sort(E);
+      // The code stays a target throughout where this fails.
+      (void)sys::Memory::restrictCallTargets(
+          sys::MemoryBlock(reinterpret_cast<void *>(Addr), Sec.getSize()), E);
+    }
+  }
+};
 
 /// Adds helper function decls and wrapper functions that call the helper with
 /// some additional prefix arguments.
@@ -827,7 +908,16 @@ Error LLJITBuilderState::prepareForConstruction() {
       CreateObjectLinkingLayer = [](ExecutionSession &ES,
                                     jitlink::JITLinkMemoryManager &MemMgr)
           -> Expected<std::unique_ptr<ObjectLayer>> {
-        return std::make_unique<ObjectLinkingLayer>(ES, MemMgr);
+        auto Layer = std::make_unique<ObjectLinkingLayer>(ES, MemMgr);
+        const StringMap<ExecutorAddr> &Bootstrap =
+            ES.getExecutorProcessControl().getBootstrapSymbolsMap();
+        orc::Mangler Mangle(ES.getTargetTriple());
+        if (auto I = Bootstrap.find(
+                Mangle.mangledCopy(rt::RestrictCallTargetsAllocActionName));
+            I != Bootstrap.end())
+          Layer->addPlugin(
+              std::make_unique<CallTargetRestrictionPlugin>(I->second));
+        return Layer;
       };
     }
   }
@@ -965,6 +1055,8 @@ LLJIT::createObjectLinkingLayer(LLJITBuilderState &S, ExecutionSession &ES,
   if (S.JTMB->getTargetTriple().isOSBinFormatCOFF()) {
     Layer->setOverrideObjectFlagsWithResponsibilityFlags(true);
     Layer->setAutoClaimResponsibilityForObjectSymbols(true);
+    static CallTargetRestrictionListener Restrictor;
+    Layer->registerJITEventListener(Restrictor);
   }
 
   if (S.JTMB->getTargetTriple().isOSBinFormatELF() &&
