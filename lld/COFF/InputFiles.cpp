@@ -986,6 +986,7 @@ Error ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
     uint64_t size = getSection(*section)->SizeOfRawData;
     uint64_t offset = 0;
     size_t firstFusion = fusions.size();
+    size_t firstAnchor = linkRecords->anchors.size();
     // Each site's offset by index, so a fused call finds its load; and a
     // forward cursor over the section's relocations placing each site's form
     // in its slot.
@@ -1049,6 +1050,15 @@ Error ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
                  static_cast<LinkSiteForm>(form)});
           continue;
         }
+        // The load's index, resolved once the section's sites are read.
+        if (kind == LinkSiteAnchor) {
+          if (form == LinkSiteLoad)
+            linkRecords->anchors.push_back(
+                {*section, uint32_t(offset),
+                 uint32_t(std::min<uint64_t>(value >> 5, UINT32_MAX)),
+                 uint8_t(value & 31)});
+          continue;
+        }
         if (kind == LinkSiteFusedRead || kind == LinkSiteAccessedRead ||
             kind == LinkSiteIndexedRead) {
           f.isLoad = true;
@@ -1106,6 +1116,16 @@ Error ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
                                     " in section " + Twine(*section) +
                                     " reads a site that does not exist");
       f.load = siteOffsets[f.load];
+    }
+    for (LinkAnchor &a :
+         MutableArrayRef(linkRecords->anchors).drop_front(firstAnchor)) {
+      if (a.load >= siteOffsets.size())
+        return malformedLinkRecords("load at offset 0x" +
+                                    Twine::utohexstr(a.offset) +
+                                    " in section " + Twine(*section) +
+                                    " takes its pointer from a site that does "
+                                    "not exist");
+      a.load = siteOffsets[a.load];
     }
   }
   // A site that two facts describe keeps the first.

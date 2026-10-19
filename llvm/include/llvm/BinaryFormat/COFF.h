@@ -391,6 +391,18 @@ enum LinkRecordKind : uint64_t {
   // of the joint link, in lowercase, then those of the entities the member
   // keeps for the other members, which import them from it.
   LinkRecordJointFacts = 34,
+
+  // The layout of a DLL linked as a member of a joint link, in a member of its
+  // import library, so that a member that derives a pointer to data of the DLL
+  // from a register holding a pointer to other data of it knows the distance:
+  //
+  //   payload := identity count:ULEB128 (name rva:ULEB128){count}
+  //   name    := size:ULEB128 byte{size}
+  //
+  // identity is the name of the DLL's export that the layout decides, which
+  // such a member imports, and each name that of a data export with its
+  // address.
+  LinkRecordJointLayout = 36,
 };
 
 // The type of an entry in a LinkRecordCoverage group.

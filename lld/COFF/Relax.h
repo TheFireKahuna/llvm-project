@@ -64,6 +64,9 @@ struct RelaxEdit {
     // in its section from a register: the register left out and the offset
     // added to the displacement.
     Index,
+    // A load of a pointer of an image's data that becomes lea of base plus
+    // delta, base holding the pointer of other data of that image.
+    Anchor,
     // No-operations that align what follows, as coverage describes.
     Align,
     // The jump whose displacement coverage describes: 8-bit, widened to 32 when
@@ -96,6 +99,9 @@ struct RelaxEdit {
   uint16_t relaxedSize;
   uint16_t newSize = 0;
   Kind kind;
+  // For an anchor, the register numbered as encoded and the distance.
+  uint8_t base = 0;
+  int32_t delta = 0;
   Defined *target;
   // The record entry the edit writes, as its kind says.
   llvm::PointerUnion<const ObjFile::LinkFusion *, const ObjFile::LinkCoverage *>

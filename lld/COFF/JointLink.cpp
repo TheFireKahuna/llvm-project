@@ -32,12 +32,15 @@
 #include "InputFiles.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
+#include "Relax.h"
 #include "VagueEntities.h"
 #include "lld/Common/ErrorHandler.h"
 #include "lld/Common/Memory.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/LTO/LTO.h"
 #include "llvm/Object/ArchiveWriter.h"
@@ -51,6 +54,7 @@
 #include "llvm/Support/LEB128.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/SHA256.h"
 #include "llvm/Support/TimeProfiler.h"
 #include "llvm/Support/xxhash.h"
 #include <functional>
@@ -419,6 +423,8 @@ void applyJointFacts(COFFLinkerContext &ctx, const opt::InputArgList &args) {
                 "scan); rerun the scan and the merge";
     return;
   }
+  for (const auto &m : members)
+    ctx.jointMembers.insert(m.getKey());
   // What the member keeps for the others stays live, and so is offered.
   for (StringRef entity : kept)
     if (auto *d = dyn_cast_or_null<Defined>(ctx.symtab.findVagueEntity(entity)))
@@ -778,5 +784,239 @@ void mergeJointLink(COFFLinkerContext &ctx, const opt::InputArgList &args) {
   if (errorCount())
     return;
   Merge(ctx, summaries).run(dir);
+}
+} // namespace lld::coff
+
+namespace lld::coff {
+static constexpr StringLiteral identityPrefix = "__llvm_private$";
+
+static std::string getLayoutSymbol(StringRef dll) {
+  return "__llvm_layout$" + dll.lower();
+}
+
+// A DLL member whose data another member may reach through an anchor exports
+// its identity, which names its layout: the addresses of its data exports. The
+// name is decided once the layout is, so it takes the export's place in the
+// export table now with as many characters.
+bool addJointIdentityExport(COFFLinkerContext &ctx) {
+  if (ctx.config.jointFacts.empty() || !ctx.config.dll || ctx.config.noimplib)
+    return false;
+  Export *first = nullptr;
+  for (Export &e : ctx.symtab.exports)
+    if (e.data && e.forwardTo.empty() && isa_and_nonnull<DefinedRegular>(e.sym) &&
+        (!first || e.name < first->name))
+      first = &e;
+  if (!first)
+    return false;
+  ctx.jointIdentity =
+      make<std::string>((identityPrefix + std::string(16, '0')).str());
+  Export e;
+  e.name = *ctx.jointIdentity;
+  e.sym = first->sym;
+  e.data = true;
+  e.isPrivate = true;
+  e.source = ExportSource::Export;
+  ctx.symtab.exports.push_back(e);
+  return true;
+}
+
+void finalizeJointIdentity(COFFLinkerContext &ctx) {
+  if (!ctx.jointIdentity)
+    return;
+  for (const Export &e : ctx.symtab.exports)
+    if (e.data && !e.noname && e.forwardTo.empty() &&
+        e.exportName != *ctx.jointIdentity)
+      if (auto *d = dyn_cast_or_null<DefinedRegular>(e.sym))
+        ctx.jointLayout.push_back({e.exportName, d->getRVA()});
+  llvm::sort(ctx.jointLayout);
+  // The first 64 bits of the SHA-256 of the format, the machine and the
+  // exports with their addresses, in lowercase hexadecimal.
+  SHA256 hash;
+  hash.update(("1 " + Twine(ctx.config.machine) + "\n").str());
+  for (auto &[name, rva] : ctx.jointLayout)
+    hash.update((name + " " + Twine(rva) + "\n").str());
+  std::array<uint8_t, 32> digest = hash.final();
+  std::string hex = toHex(ArrayRef(digest).take_front(8), /*LowerCase=*/true);
+  // The export table's string names this storage, whose length stays.
+  ctx.jointIdentity->replace(identityPrefix.size(), 16, hex);
+}
+
+void addJointLayoutRecord(COFFLinkerContext &ctx, StringRef dllName,
+                          std::vector<NewArchiveMember> &members,
+                          std::vector<uint8_t> &buffer) {
+  if (!ctx.jointIdentity)
+    return;
+  std::string payload;
+  raw_string_ostream os(payload);
+  auto putString = [&](StringRef s) {
+    encodeULEB128(s.size(), os);
+    os << s;
+  };
+  putString(*ctx.jointIdentity);
+  encodeULEB128(ctx.jointLayout.size(), os);
+  for (auto &[name, rva] : ctx.jointLayout) {
+    putString(name);
+    encodeULEB128(rva, os);
+  }
+  members.push_back(createLinkRecordMember(ctx, dllName,
+                                           getLayoutSymbol(dllName),
+                                           {{LinkRecordJointLayout, payload}},
+                                           buffer));
+}
+
+namespace {
+// A member DLL's layout, as its import library records it.
+struct Layout {
+  StringRef identity;
+  StringMap<uint32_t> rvas;
+};
+} // namespace
+
+static const Layout *getLayout(COFFLinkerContext &ctx, StringRef dll,
+                               StringMap<std::optional<Layout>> &cache) {
+  auto [it, inserted] = cache.try_emplace(dll.lower());
+  if (!inserted)
+    return it->second ? &*it->second : nullptr;
+  auto *lazy =
+      dyn_cast_or_null<LazyArchive>(ctx.symtab.find(getLayoutSymbol(dll)));
+  if (!lazy)
+    return nullptr;
+  Layout layout;
+  bool ok = false;
+  forEachLinkRecordGroup(
+      lazy->getMemberBuffer(), ctx.config.machine,
+      [&](uint64_t kind, ArrayRef<uint8_t> payload) {
+        if (kind != LinkRecordJointLayout || ok)
+          return;
+        DataExtractor data(payload, /*IsLittleEndian=*/true);
+        DataExtractor::Cursor c(0);
+        layout.identity = data.getBytes(c, data.getULEB128(c));
+        for (uint64_t i = 0, n = data.getULEB128(c); c && i != n; ++i) {
+          StringRef name = data.getBytes(c, data.getULEB128(c));
+          layout.rvas[name] = data.getULEB128(c);
+        }
+        ok = c && data.eof(c) && layout.identity.starts_with(identityPrefix);
+        consumeError(c.takeError());
+      });
+  if (!ok)
+    return nullptr;
+  it->second = std::move(layout);
+  return &*it->second;
+}
+
+// The import of data from another image that the load of its pointer at off,
+// in x86-64 form, mov r64, [rip + __imp_X], reads; with the register it fills.
+static DefinedImportData *getLoadedImport(SectionChunk *sc, uint32_t off,
+                                          unsigned *reg) {
+  ArrayRef<uint8_t> data = sc->getContents();
+  if (off < 3 || off + 4 > data.size() || (data[off - 3] & 0xF8) != 0x48 ||
+      data[off - 2] != 0x8B || (data[off - 1] & 0xC7) != 0x05)
+    return nullptr;
+  *reg = (data[off - 3] & 4) << 1 | (data[off - 1] >> 3 & 7);
+  for (const coff_relocation &rel : sc->getRelocs())
+    if (rel.VirtualAddress == off && rel.Type == IMAGE_REL_AMD64_REL32) {
+      auto *imp = dyn_cast_or_null<DefinedImportData>(
+          sc->file->getSymbol(rel.SymbolTableIndex));
+      if (imp && imp->file->hdr->getType() == IMPORT_DATA &&
+          !imp->file->isDelayLoaded())
+        return imp;
+      return nullptr;
+    }
+  return nullptr;
+}
+
+bool bindJointAnchors(COFFLinkerContext &ctx) {
+  if (ctx.jointMembers.empty() || ctx.config.machine != AMD64)
+    return false;
+  llvm::TimeTraceScope timeScope("Bind joint-link anchors");
+  StringMap<std::optional<Layout>> layouts;
+  MapVector<StringRef, StringRef> identities;
+  for (ObjFile *file : ctx.objFileInstances) {
+    ArrayRef<ObjFile::LinkAnchor> anchors = file->getLinkAnchors();
+    if (anchors.empty())
+      continue;
+    // A load whose pointer may lead to the image's own copy keeps its form.
+    DenseSet<std::pair<uint32_t, uint32_t>> valueOnly;
+    for (const ObjFile::LinkValueOnly &v : file->getValueOnlyLoads())
+      valueOnly.insert({v.section, v.offset});
+    uint32_t done = UINT32_MAX, doneSection = UINT32_MAX;
+    for (const ObjFile::LinkAnchor &a : anchors) {
+      if (a.section == doneSection && a.offset == done)
+        continue;
+      SectionChunk *sc = file->getSectionChunk(a.section);
+      unsigned reg, anchorReg;
+      DefinedImportData *imp, *anchor;
+      if (!sc || valueOnly.contains({a.section, a.offset}) ||
+          valueOnly.contains({a.section, a.load}) ||
+          !(imp = getLoadedImport(sc, a.offset, &reg)) ||
+          !(anchor = getLoadedImport(sc, a.load, &anchorReg)) ||
+          anchorReg != a.reg || (a.reg & 7) == 4 || anchor == imp ||
+          !imp->getDLLName().equals_insensitive(anchor->getDLLName()) ||
+          !ctx.jointMembers.contains(imp->getDLLName().lower()))
+        continue;
+      const Layout *layout = getLayout(ctx, imp->getDLLName(), layouts);
+      if (!layout)
+        continue;
+      auto to = layout->rvas.find(imp->getExternalName());
+      auto from = layout->rvas.find(anchor->getExternalName());
+      if (to == layout->rvas.end() || from == layout->rvas.end())
+        continue;
+      ctx.jointAnchors.push_back({sc, a.offset, imp,
+                                  int32_t(int64_t(to->second) - from->second),
+                                  a.reg});
+      identities.try_emplace(imp->getDLLName(), layout->identity);
+      done = a.offset;
+      doneSection = a.section;
+    }
+  }
+  // A member whose loads derive a DLL's pointers imports its identity, so that
+  // a DLL linked with another layout fails to load beside it.
+  bool added = false;
+  for (auto &[dll, identity] : identities) {
+    std::string name = ("__imp_" + identity).str();
+    if (!ctx.symtab.find(name)) {
+      ctx.driver.addFile(make<ImportFile>(
+          ctx, makeShortImport(ctx.config.machine, dll, saver().save(identity),
+                               IMPORT_DATA, IMPORT_NAME)));
+      added = true;
+    }
+    ctx.symtab.addGCRoot(saver().save(name));
+  }
+  return added;
+}
+
+// An import that only anchored loads read is left out of the import tables.
+void leaveOutAnchoredImports(COFFLinkerContext &ctx) {
+  DenseMap<Symbol *, unsigned> anchored;
+  for (const COFFLinkerContext::JointAnchor &a : ctx.jointAnchors)
+    if (a.chunk->live)
+      ++anchored[a.imp];
+  if (anchored.empty())
+    return;
+  DenseMap<Symbol *, unsigned> reads;
+  for (ObjFile *file : ctx.objFileInstances)
+    for (Chunk *c : file->getChunks())
+      if (auto *sc = dyn_cast<SectionChunk>(c); sc && sc->live)
+        for (const coff_relocation &rel : sc->getRelocs())
+          if (Symbol *s = file->getSymbol(rel.SymbolTableIndex);
+              s && anchored.count(s))
+            ++reads[s];
+  for (auto &[s, n] : anchored)
+    if (reads.lookup(s) == n)
+      cast<DefinedImportData>(s)->file->live = false;
+}
+
+void addJointAnchorEdits(COFFLinkerContext &ctx) {
+  for (const COFFLinkerContext::JointAnchor &a : ctx.jointAnchors) {
+    if (!a.chunk->live)
+      continue;
+    // The shorter lea, with an 8-bit distance, where the chunk is resized.
+    uint16_t size =
+        a.chunk->file->isCovered(a.chunk) && isInt<8>(a.delta) ? 4 : 7;
+    RelaxEdit e(a.offset - 3, 7, size, RelaxEdit::Anchor);
+    e.base = a.reg;
+    e.delta = a.delta;
+    addEdit(a.chunk, e);
+  }
 }
 } // namespace lld::coff

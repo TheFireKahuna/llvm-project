@@ -1252,10 +1252,11 @@ void LinkerDriver::createImportLibrary(bool asLib) {
     getExports(*ctx.hybridSymtab, nativeExports);
 
   std::string path = getImplibPath();
-  std::vector<uint8_t> rangeRecord, vagueRecord;
+  std::vector<uint8_t> rangeRecord, vagueRecord, layoutRecord;
   if (!asLib && ctx.config.jointScan.empty()) {
     addKCFIRangeRecord(ctx, libName, extra, rangeRecord);
     addVagueEntityRecord(ctx, libName, extra, vagueRecord);
+    addJointLayoutRecord(ctx, libName, extra, layoutRecord);
   }
 
   if (!ctx.config.incremental) {
@@ -3454,6 +3455,12 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
       run();
     }
 
+  // A joint link's member may derive a pointer to another member's data from
+  // a register holding a pointer to other data of it, and then imports the
+  // other member's identity.
+  if (bindJointAnchors(ctx))
+    run();
+
   if (ctx.hybridSymtab) {
     // On ARM64X, merge tls chunks, there may be only one true _tls_start and
     // _tls_end chunk.
@@ -3521,6 +3528,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   if (config->dll && config->importSlots)
     ctx.forEachSymtab(
         [](SymbolTable &symtab) { symtab.offerOverridableDefaults(); });
+  leaveOutAnchoredImports(ctx);
 
   ctx.symtab.initializeSameAddressThunks();
   for (auto alias : aliases) {
@@ -3558,7 +3566,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   addVTableRunExports(ctx);
   bindVTableOwnerRuns(ctx);
   checkVersionScriptGlobals();
-  bool implibAfterImage = false;
+  // So does one whose identity its layout names.
+  bool implibAfterImage = addJointIdentityExport(ctx);
   if (config->dll || !ctx.symtab.exports.empty() ||
       (ctx.config.machine == ARM64X && !ctx.hybridSymtab->exports.empty())) {
     llvm::TimeTraceScope timeScope("Create .lib exports");
@@ -3566,7 +3575,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     if (!config->noimplib && (!config->mingw || !config->implib.empty())) {
       if (ctx.kcfi.rangeExports[0])
         implibAfterImage = true;
-      else
+      else if (!implibAfterImage)
         createImportLibrary(/*asLib=*/false);
     }
     ctx.forEachActiveSymtab(

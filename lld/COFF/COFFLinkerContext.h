@@ -210,6 +210,23 @@ public:
   // the member's buffer, so the passes read it without a reparse.
   llvm::DenseMap<const char *, LoadClosure *> vagueRecordCache;
 
+  // As a member of a joint link: the members, in lowercase; the image's
+  // identity export, whose name its final layout decides, and the exports it
+  // lists with their addresses; and the loads of the import pointers of data
+  // that the image makes lea of the distance from another load's register,
+  // each with its site, import, distance and register.
+  llvm::StringSet<> jointMembers;
+  std::string *jointIdentity = nullptr;
+  std::vector<std::pair<llvm::StringRef, uint32_t>> jointLayout;
+  struct JointAnchor {
+    SectionChunk *chunk;
+    uint32_t offset;
+    DefinedImportData *imp;
+    int32_t delta;
+    uint8_t reg;
+  };
+  std::vector<JointAnchor> jointAnchors;
+
   // The changes the linker makes to the code of each section chunk it
   // changes, and how it lays out the code of each it resizes.
   llvm::DenseMap<const SectionChunk *, Relaxation> relaxations;

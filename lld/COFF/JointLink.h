@@ -9,9 +9,16 @@
 #ifndef LLD_COFF_JOINTLINK_H
 #define LLD_COFF_JOINTLINK_H
 
-namespace llvm::opt {
+#include "llvm/ADT/StringRef.h"
+#include <cstdint>
+#include <vector>
+
+namespace llvm {
+struct NewArchiveMember;
+namespace opt {
 class InputArgList;
-} // namespace llvm::opt
+} // namespace opt
+} // namespace llvm
 
 namespace lld::coff {
 class COFFLinkerContext;
@@ -32,6 +39,25 @@ void applyJointFacts(COFFLinkerContext &ctx,
 // Runs /lldjointmerge.
 void mergeJointLink(COFFLinkerContext &ctx,
                     const llvm::opt::InputArgList &args);
+
+// A DLL member's identity export, which a member that derives a pointer from
+// another of the DLL's imports from it, named after the DLL's layout once that
+// is final, and the record of that layout in its import library, which such a
+// member reads. Returns whether the DLL has the export, and so writes its
+// import library after the image.
+bool addJointIdentityExport(COFFLinkerContext &ctx);
+void finalizeJointIdentity(COFFLinkerContext &ctx);
+void addJointLayoutRecord(COFFLinkerContext &ctx, llvm::StringRef dllName,
+                          std::vector<llvm::NewArchiveMember> &members,
+                          std::vector<uint8_t> &buffer);
+
+// The loads of the import pointers of a member DLL's data that may be lea of
+// the distance from a register holding the pointer of another of its data:
+// chosen, with the identity imports they need, before liveness is decided;
+// the imports they leave unread left out after; and rewritten with the code.
+bool bindJointAnchors(COFFLinkerContext &ctx);
+void leaveOutAnchoredImports(COFFLinkerContext &ctx);
+void addJointAnchorEdits(COFFLinkerContext &ctx);
 } // namespace lld::coff
 
 #endif

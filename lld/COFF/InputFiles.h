@@ -303,6 +303,16 @@ public:
     llvm::COFF::LinkSiteForm form;
   };
 
+  // A load of the import pointer of data, at offset in section, whose pointer
+  // register reg holds the pointer of other data that the load at load gave
+  // it, on every path to it.
+  struct LinkAnchor {
+    uint32_t section;
+    uint32_t offset;
+    uint32_t load;
+    uint8_t reg;
+  };
+
   // A site the records describe as a call or jump through a register a load
   // filled with a pointer (padded to the memory transfer's length), as such a
   // load only those calls read, or as an access or add through that register;
@@ -421,6 +431,12 @@ public:
   ArrayRef<LinkValueOnly> getValueOnlyLoads() const {
     return linkRecords ? ArrayRef(linkRecords->valueOnlyLoads)
                        : ArrayRef<LinkValueOnly>();
+  }
+
+  // The loads the object describes as able to take their pointers from the
+  // registers of other loads, by section and offset.
+  ArrayRef<LinkAnchor> getLinkAnchors() const {
+    return linkRecords ? ArrayRef(linkRecords->anchors) : ArrayRef<LinkAnchor>();
   }
 
   // A value or alignment the records say depends on where a covered section's
@@ -600,6 +616,7 @@ private:
     bool listsBindings = false;
     std::vector<LinkFusion> fusions;
     std::vector<LinkValueOnly> valueOnlyLoads;
+    std::vector<LinkAnchor> anchors;
     // Values and alignments depending on where resizable code lies, by section
     // and offset, and the covered sections' numbers, in order.
     std::vector<LinkCoverage> coverage;

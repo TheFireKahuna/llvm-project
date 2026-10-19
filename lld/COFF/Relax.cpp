@@ -538,6 +538,22 @@ static void writeEdit(const SectionChunk *sc, const RelaxEdit &e, uint8_t *buf,
     write32le(off, e.target->getRVA() + addend - (p + e.newSize));
     break;
   }
+  case RelaxEdit::Anchor: {
+    // REX.W with the load's REX.R and base's REX.B, then lea r64, [base +
+    // disp], whose displacement is 8 bits in the shorter form. base is not
+    // RSP or R12, whose operand would need a SIB byte.
+    buf[0] = 0x48 | (old[0] & 0x04) | (e.base >> 3 & 1);
+    buf[1] = 0x8D;
+    uint8_t reg = old[2] & 0x38;
+    if (e.newSize == 4) {
+      buf[2] = 0x40 | reg | (e.base & 7);
+      buf[3] = uint8_t(e.delta);
+    } else {
+      buf[2] = 0x80 | reg | (e.base & 7);
+      write32le(buf + 3, e.delta);
+    }
+    break;
+  }
   case RelaxEdit::ZeroLoad: {
     // mov r/m64, imm32, moving the register from ModRM.reg to ModRM.rm, and so
     // its high bits from R to B in the prefix, as lld/ELF's relaxGotNoPic does.

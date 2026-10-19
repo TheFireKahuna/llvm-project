@@ -13,6 +13,7 @@
 #include "DLL.h"
 #include "ImportSlots.h"
 #include "InputFiles.h"
+#include "JointLink.h"
 #include "KCFI.h"
 #include "LLDMapFile.h"
 #include "LinkPins.h"
@@ -874,6 +875,7 @@ void Writer::run() {
       slots.scan(symtab);
       bindFusedCalls(symtab);
     });
+    addJointAnchorEdits(ctx);
     slots.bind();
     relaxSections(ctx);
     slots.leaveOutUnreadRecords();
@@ -907,6 +909,7 @@ void Writer::run() {
     removeEmptySections();
     assignOutputSectionIndices();
     placeLinkerDefinedSymbols();
+    finalizeJointIdentity(ctx);
     setSectionPermissions();
     slots.check(iatStart, getIATSize());
     setECSymbols();
