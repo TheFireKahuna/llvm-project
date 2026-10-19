@@ -1673,13 +1673,16 @@ void CodeGenModule::Release() {
                                 CodeGenOpts.PatchableFunctionEntryOffset);
     if (CodeGenOpts.SanitizeKcfiArity)
       getModule().addModuleFlag(llvm::Module::Override, "kcfi-arity", 1);
-    // Store the hash algorithm choice for use in LLVM passes
+  }
+
+  // Store the hash algorithm choice for use in LLVM passes, which type the
+  // functions they create wherever functions carry a type prefix.
+  if (hasFunctionTypePrefix())
     getModule().addModuleFlag(
         llvm::Module::Override, "kcfi-hash",
         llvm::MDString::get(
             getLLVMContext(),
             llvm::stringifyKCFIHashAlgorithm(CodeGenOpts.SanitizeKcfiHash)));
-  }
 
   if (LangOpts.FunctionTypePrefix)
     getModule().addModuleFlag(llvm::Module::Override, "function-type-prefix",

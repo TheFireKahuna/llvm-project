@@ -7,7 +7,8 @@
 
 /// With function type prefixes, functions carry KCFI types whether or not
 /// -fsanitize=kcfi checks calls, and the module records the marker, which
-/// differs for each option that changes the type identifiers.
+/// differs for each option that changes the type identifiers, and the hash,
+/// by which LLVM types the functions it creates.
 
 typedef int (*fn_t)(int);
 
@@ -32,8 +33,10 @@ int call(fn_t f) { return f(1) + f3(2); }
 
 // NOCHECKS-NOT: !"kcfi"
 // CHECKS:       !{i32 4, !"kcfi", i32 1}
+// MARKER:       !{i32 4, !"kcfi-hash", !"xxHash64"}
 // MARKER:       !{i32 4, !"function-type-prefix", i32 661450628}
 // CHECKS:       ![[#TYPE]] = !{i32 [[#HASH]]}
 // GENERALIZED:  !{i32 4, !"function-type-prefix", i32 119298566}
 // NORMALIZED:   !{i32 4, !"function-type-prefix", i32 -1606313516}
+// FNV:          !{i32 4, !"kcfi-hash", !"FNV-1a"}
 // FNV:          !{i32 4, !"function-type-prefix", i32 -260265210}

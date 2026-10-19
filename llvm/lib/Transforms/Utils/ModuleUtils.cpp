@@ -201,7 +201,8 @@ void llvm::removeFromUsedLists(Module &M,
 }
 
 void llvm::setKCFIType(Module &M, Function &F, StringRef MangledType) {
-  if (!M.getModuleFlag("kcfi"))
+  // A module with a type prefix marker types every function, checked or not.
+  if (!M.getModuleFlag("kcfi") && !M.getModuleFlag("function-type-prefix"))
     return;
   // Matches CodeGenModule::CreateKCFITypeId in Clang.
   LLVMContext &Ctx = M.getContext();
